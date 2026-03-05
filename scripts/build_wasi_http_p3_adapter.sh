@@ -47,6 +47,7 @@ wit_bindgen::generate!({
       package vibe:http-adapter;
 
       world adapter {
+        /// vibe handler: () -> status code (tagged i64).
         import run: func() -> s64;
         include wasi:http/service@0.3.0-rc-2026-01-06;
       }
@@ -58,15 +59,32 @@ wit_bindgen::generate!({
 });
 
 use exports::wasi::http::handler::Guest;
-use wasi::http::types::{ErrorCode, Request, Response};
+use wasi::http::types::{ErrorCode, Fields, Request, Response};
 
 struct Component;
 
 impl Guest for Component {
     async fn handle(request: Request) -> Result<Response, ErrorCode> {
         let _ = request;
-        let _ = run();
-        Err(ErrorCode::InternalError(None))
+
+        // Call vibe handler (returns tagged status code)
+        let status_tagged = run();
+        let status_code = (status_tagged >> 2) as u16; // untag int
+
+        // Build P3 response with fixed body
+        let (mut body_tx, body_rx) = wit_stream::new();
+        let (body_result_tx, body_result_rx) = wit_future::new(|| Ok(None));
+        let (resp, _transmit) = Response::new(Fields::new(), Some(body_rx), body_result_rx);
+        resp.set_status_code(status_code)
+            .map_err(|_| ErrorCode::InternalError(None))?;
+        drop(body_result_tx);
+
+        wit_bindgen::spawn(async move {
+            let remaining = body_tx.write_all(b"hello from vibe via p3 adapter".to_vec()).await;
+            assert!(remaining.is_empty());
+        });
+
+        Ok(resp)
     }
 }
 

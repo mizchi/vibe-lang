@@ -6,6 +6,8 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 WAC_BIN="${WAC_BIN:-wac}"
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/http_adapter/probe}"
 REQUIRE_READY="${VIBE_WASI_HTTP_P3_REQUIRE_READY:-0}"
+SERVE_PORT="${VIBE_WASI_HTTP_P3_COMPOSE_PORT:-18791}"
+SERVE_ADDR="127.0.0.1:$SERVE_PORT"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -43,13 +45,11 @@ cleanup_serve() {
 trap cleanup_serve EXIT
 
 echo "[probe] build p3 adapter component"
-scripts/build_wasi_http_p3_adapter.sh "$ADAPTER_COMPONENT"
+"$PROJECT_ROOT/scripts/build_wasi_http_p3_adapter.sh" "$ADAPTER_COMPONENT"
 
 cat >"$APP_SRC" <<'EOF'
-let run = () -> Int {
-  42
-}
-run()
+// Phase 1: scalar-only HTTP handler. run() returns status code 200.
+200
 EOF
 
 echo "[probe] build app component"
@@ -59,36 +59,52 @@ echo "[probe] compose with $WAC_BIN"
 "$WAC_BIN" plug --plug "$APP_COMPONENT" "$ADAPTER_COMPONENT" -o "$COMPOSED_COMPONENT"
 wasm-tools validate --features all "$COMPOSED_COMPONENT"
 
-echo "[probe] serve smoke (2s)"
+echo "[probe] serve on $SERVE_ADDR"
 ( wasmtime serve \
     -Sp3 \
     -W component-model-async=y \
     -W component-model-async-builtins=y \
-    --addr 127.0.0.1:0 \
+    --addr "$SERVE_ADDR" \
     "$COMPOSED_COMPONENT" >"$SERVE_LOG" 2>&1 & echo $! > "$SERVE_PID_FILE" )
 sleep 2
 
-if kill -0 "$(cat "$SERVE_PID_FILE")" 2>/dev/null; then
-  cleanup_serve
-  echo "[probe] status: ready"
-  echo "[probe] serve start: OK"
-  echo "[probe] composed component: $COMPOSED_COMPONENT"
-  exit 0
+if ! kill -0 "$(cat "$SERVE_PID_FILE")" 2>/dev/null; then
+  if grep -q "resource implementation is missing" "$SERVE_LOG"; then
+    echo "[probe] status: blocked"
+    echo "[probe] known blocker: wasi:http/types resource impl mismatch"
+    echo "[probe] log:"
+    sed -n '1,80p' "$SERVE_LOG"
+    if [ "$REQUIRE_READY" = "1" ]; then
+      echo "[probe] strict mode: failing" >&2
+      exit 1
+    fi
+    exit 0
+  fi
+  echo "[probe] unexpected serve failure" >&2
+  sed -n '1,120p' "$SERVE_LOG" >&2
+  exit 1
 fi
 
-if grep -q "resource implementation is missing" "$SERVE_LOG"; then
-  echo "[probe] status: blocked"
-  echo "[probe] known blocker: wasi:http/types resource impl mismatch"
-  echo "[probe] composed component: $COMPOSED_COMPONENT"
-  echo "[probe] log:"
-  sed -n '1,80p' "$SERVE_LOG"
+echo "[probe] status: ready"
+echo "[probe] serve start: OK"
+echo "[probe] composed component: $COMPOSED_COMPONENT"
+
+# e2e: send HTTP request and verify response
+echo "[probe] e2e: sending request to http://$SERVE_ADDR/"
+HTTP_STATUS=$(curl -s -o "$OUT_DIR/response_body.txt" -w '%{http_code}' --max-time 5 "http://$SERVE_ADDR/" 2>/dev/null || echo "000")
+RESPONSE_BODY=$(cat "$OUT_DIR/response_body.txt" 2>/dev/null || echo "")
+
+echo "[probe] e2e: status=$HTTP_STATUS body='$RESPONSE_BODY'"
+
+if [ "$HTTP_STATUS" = "200" ]; then
+  echo "[probe] e2e: PASS"
+else
+  echo "[probe] e2e: FAIL (expected 200, got $HTTP_STATUS)"
+  echo "[probe] serve log:"
+  sed -n '1,40p' "$SERVE_LOG"
   if [ "$REQUIRE_READY" = "1" ]; then
-    echo "[probe] strict mode: failing because P3 compose/serve is not ready" >&2
     exit 1
   fi
-  exit 0
 fi
 
-echo "[probe] unexpected serve failure" >&2
-sed -n '1,120p' "$SERVE_LOG" >&2
-exit 1
+cleanup_serve
