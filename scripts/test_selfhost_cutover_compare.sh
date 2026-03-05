@@ -75,9 +75,13 @@ CANARY_FILES=(
 
 # Expand to compiler_size cases if requested
 if [ "$INCLUDE_COMPILER_SIZE" = "1" ] && [ -f "$PROJECT_ROOT/bench/compiler_size/cases.txt" ]; then
-  while IFS=' ' read -r _group path _prefer_no_dce; do
-    [[ "$path" =~ ^# ]] && continue
-    [ -z "$path" ] && continue
+  while IFS= read -r case_line; do
+    # Skip blanks/comments and parse "<group> <path> <prefer_no_dce>" rows.
+    case_line="${case_line#"${case_line%%[![:space:]]*}"}"
+    [ -z "$case_line" ] && continue
+    [[ "$case_line" == \#* ]] && continue
+    IFS=' ' read -r _group path _prefer_no_dce _rest <<< "$case_line"
+    [ -z "${path:-}" ] && continue
     CANARY_FILES+=("$PROJECT_ROOT/$path")
   done < "$PROJECT_ROOT/bench/compiler_size/cases.txt"
 fi
