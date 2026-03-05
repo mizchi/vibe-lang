@@ -92,6 +92,16 @@ coverage-selfhost entry="vibe/compiler/selfhost_coverage_run.vibe":
 coverage-selfhost-gate point="23" line="100" branch="20":
     VIBE_WASM_SOURCE_COVERAGE_MIN_POINT_RATE={{point}} VIBE_WASM_SOURCE_COVERAGE_MIN_LINE_RATE={{line}} VIBE_WASM_SOURCE_COVERAGE_MIN_BRANCH_RATE={{branch}} scripts/coverage_wasm_source.sh vibe/compiler/selfhost_coverage_run.vibe
 
+# Run selfhost suite coverage (selfhost workload + index invoke)
+# env: VIBE_SELFHOST_SUITE_COVERAGE_DIR, VIBE_SELFHOST_SUITE_SOURCE_DIR, VIBE_SELFHOST_SUITE_ENTRY_SELFHOST, VIBE_SELFHOST_SUITE_ENTRY_INDEX, VIBE_SELFHOST_SUITE_INDEX_INVOKE
+coverage-selfhost-suite:
+    scripts/coverage_selfhost_suite.sh
+
+# Run selfhost suite coverage with KPI gate
+# env: VIBE_SELFHOST_SUITE_MIN_POINT_RATE, VIBE_SELFHOST_SUITE_MIN_LINE_RATE, VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE
+coverage-selfhost-suite-gate point="14" line="95" branch="12":
+    VIBE_SELFHOST_SUITE_MIN_POINT_RATE={{point}} VIBE_SELFHOST_SUITE_MIN_LINE_RATE={{line}} VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE={{branch}} scripts/coverage_selfhost_suite.sh
+
 # Run source-level WASM coverage for eval sidecar tests (`<db>.tests/<target>_test.vibe`)
 # env: VIBE_EVAL_COVERAGE_DIR, VIBE_WASM_SOURCE_COVERAGE_MODE, VIBE_WASM_SOURCE_COVERAGE_NO_DCE, VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP, VIBE_WASM_SOURCE_COVERAGE_DIR
 coverage-eval-sidecar db target:
