@@ -209,6 +209,7 @@ Completed items are archived in `docs/DONE.md`.
   - [x] multi-mode parity（`--wasm`, `--wasm --no-dce`, `--wasm --debug-errors`）を常時比較
   - [x] expected-fail parity（parse/type/io エラー fixture）を mode ごとに比較し、失敗分類の不一致も fail-fast
   - [x] expected-fail で主要メッセージ断片（`UnexpectedToken` / `type mismatch (argument)`）の存在も host/selfhost 両方で検証
+  - [x] expected-fail case 定義を `bench/selfhost_cutover/fail_cases.txt` へ外出し
 - [x] Phase 3: Push/PR CI に cutover gate を追加する（定期実行なし）
   - [x] `scripts/test_selfhost_cutover_gate.sh` を追加（Phase 1/2 の検証を束ねる）
   - [x] `wasm-codegen-integrity` ジョブへ組み込み（parity 必須で fail-fast）

@@ -11,6 +11,7 @@ set -euo pipefail
 #   VIBE_CUTOVER_REQUIRE_PARITY        — 1: fail on mismatch (default: 1), 0: monitor-only
 #   VIBE_CUTOVER_INCLUDE_COMPILER_SIZE — 1: add bench/compiler_size/cases.txt canaries (default: 1)
 #   VIBE_CUTOVER_INCLUDE_FAIL_CASES    — 1: run expected-fail parity canaries (default: 1)
+#   VIBE_CUTOVER_FAIL_CASES_FILE       — fail canary case list (TSV path)
 #   VIBE_CUTOVER_MODES                 — comma-separated compile modes (default: mvp,no-dce,debug-errors)
 #   VIBE_CUTOVER_STAGE_TIMEOUT_SEC     — per-stage timeout (default: 300)
 
@@ -22,6 +23,7 @@ OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_cutover}"
 REQUIRE_PARITY="${VIBE_CUTOVER_REQUIRE_PARITY:-1}"
 INCLUDE_COMPILER_SIZE="${VIBE_CUTOVER_INCLUDE_COMPILER_SIZE:-1}"
 INCLUDE_FAIL_CASES="${VIBE_CUTOVER_INCLUDE_FAIL_CASES:-1}"
+FAIL_CASES_FILE="${VIBE_CUTOVER_FAIL_CASES_FILE:-$PROJECT_ROOT/bench/selfhost_cutover/fail_cases.txt}"
 CUTOVER_MODES_RAW="${VIBE_CUTOVER_MODES:-mvp,no-dce,debug-errors}"
 STAGE_TIMEOUT_SEC="${VIBE_CUTOVER_STAGE_TIMEOUT_SEC:-300}"
 
@@ -321,11 +323,31 @@ done
 
 FAIL_CANARY_CASES=()
 if [ "$INCLUDE_FAIL_CASES" = "1" ]; then
-  FAIL_CANARY_CASES+=(
-    "fixtures/typecheck/import_malformed_separator.vibe|parse|UnexpectedToken|0"
-    "fixtures/typecheck/type_mismatch_argument.vibe|type|type mismatch (argument)|0"
-    "__cutover_missing_input__.vibe|io|No such file or directory|1"
-  )
+  if [ ! -f "$FAIL_CASES_FILE" ]; then
+    echo "cutover gate failed: fail canary case list not found: $FAIL_CASES_FILE" >&2
+    exit 1
+  fi
+  while IFS=$'\t' read -r fail_rel_path expected_class expected_fragment allow_missing_source extra_fields; do
+    [ -n "${extra_fields:-}" ] && {
+      echo "cutover gate failed: invalid fail canary row (too many columns): $fail_rel_path" >&2
+      exit 1
+    }
+    fail_rel_path="${fail_rel_path#"${fail_rel_path%%[![:space:]]*}"}"
+    [ -z "$fail_rel_path" ] && continue
+    [[ "$fail_rel_path" == \#* ]] && continue
+    if [ -z "${expected_class:-}" ]; then
+      echo "cutover gate failed: fail canary expected_class is required: $fail_rel_path" >&2
+      exit 1
+    fi
+    case "${allow_missing_source:-0}" in
+      ''|0|1) ;;
+      *)
+        echo "cutover gate failed: allow_missing_source must be 0/1: $fail_rel_path" >&2
+        exit 1
+        ;;
+    esac
+    FAIL_CANARY_CASES+=("${fail_rel_path}|${expected_class}|${expected_fragment}|${allow_missing_source:-0}")
+  done < "$FAIL_CASES_FILE"
 fi
 
 for fail_case in "${FAIL_CANARY_CASES[@]}"; do
