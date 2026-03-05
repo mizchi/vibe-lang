@@ -9,6 +9,8 @@ SOURCE_OUT_DIR="${VIBE_SELFHOST_SUITE_SOURCE_DIR:-$OUT_DIR/wasm-source}"
 SELFHOST_ENTRY="${VIBE_SELFHOST_SUITE_ENTRY_SELFHOST:-vibe/compiler/selfhost_coverage_run.vibe}"
 INDEX_ENTRY="${VIBE_SELFHOST_SUITE_ENTRY_INDEX:-vibe/compiler/index.vibe}"
 INDEX_INVOKE="${VIBE_SELFHOST_SUITE_INDEX_INVOKE:-selfbuild_compile_stage2}"
+EXTRA_ENTRY="${VIBE_SELFHOST_SUITE_ENTRY_EXTRA:-vibe/compiler/eval_e2e_test.vibe}"
+EXTRA_RUN_TESTS="${VIBE_SELFHOST_SUITE_ENTRY_EXTRA_RUN_TESTS:-1}"
 MIN_POINT_RATE="${VIBE_SELFHOST_SUITE_MIN_POINT_RATE:-}"
 MIN_LINE_RATE="${VIBE_SELFHOST_SUITE_MIN_LINE_RATE:-}"
 MIN_BRANCH_RATE="${VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE:-}"
@@ -33,6 +35,14 @@ report_path_for_entry() {
 mkdir -p "$OUT_DIR" "$SOURCE_OUT_DIR"
 cd "$PROJECT_ROOT"
 
+case "$EXTRA_RUN_TESTS" in
+  0|1) ;;
+  *)
+    echo "[selfhost suite coverage] invalid extra run-tests flag: $EXTRA_RUN_TESTS (expected: 0|1)" >&2
+    exit 1
+    ;;
+esac
+
 echo "[selfhost suite coverage] collect: $SELFHOST_ENTRY"
 VIBE_WASM_SOURCE_COVERAGE_DIR="$SOURCE_OUT_DIR" \
   "$SCRIPT_DIR/coverage_wasm_source.sh" "$SELFHOST_ENTRY"
@@ -42,16 +52,25 @@ VIBE_WASM_SOURCE_COVERAGE_DIR="$SOURCE_OUT_DIR" \
   VIBE_WASM_SOURCE_COVERAGE_INVOKE="$INDEX_INVOKE" \
   "$SCRIPT_DIR/coverage_wasm_source.sh" "$INDEX_ENTRY"
 
-selfhost_report_path="$(report_path_for_entry "$SELFHOST_ENTRY")"
-index_report_path="$(report_path_for_entry "$INDEX_ENTRY")"
+if [ -n "$EXTRA_ENTRY" ]; then
+  echo "[selfhost suite coverage] collect: $EXTRA_ENTRY (run_tests=$EXTRA_RUN_TESTS)"
+  VIBE_WASM_SOURCE_COVERAGE_DIR="$SOURCE_OUT_DIR" \
+    VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS="$EXTRA_RUN_TESTS" \
+    "$SCRIPT_DIR/coverage_wasm_source.sh" "$EXTRA_ENTRY"
+fi
+
 report_list_path="$OUT_DIR/reports.txt"
 report_json_path="$OUT_DIR/selfhost_suite.report.json"
 summary_path="$OUT_DIR/selfhost_suite.summary.txt"
 
-cat >"$report_list_path" <<EOF
-$selfhost_report_path
-$index_report_path
-EOF
+report_paths=(
+  "$(report_path_for_entry "$SELFHOST_ENTRY")"
+  "$(report_path_for_entry "$INDEX_ENTRY")"
+)
+if [ -n "$EXTRA_ENTRY" ]; then
+  report_paths+=("$(report_path_for_entry "$EXTRA_ENTRY")")
+fi
+printf "%s\n" "${report_paths[@]}" >"$report_list_path"
 
 node_args=(
   "$SCRIPT_DIR/coverage_selfhost_suite.mjs"

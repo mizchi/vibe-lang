@@ -188,7 +188,7 @@ Completed items are archived in `docs/DONE.md`.
 - [x] selfhost workload coverage gate を追加（point/line/branch）
   - `vibe/compiler/selfhost_coverage_run.vibe` で lex/parse/print/eval/import の smoke workload を実行
   - `just coverage-selfhost-gate` で `point>=23`, `line>=100`, `branch>=20` を検証
-  - `just coverage-selfhost-suite-gate` で `selfhost_coverage_run + index invoke` 合算 (`point>=14`, `line>=95`, `branch>=12`) を検証
+  - `just coverage-selfhost-suite-gate` で `selfhost_coverage_run + index invoke + eval_e2e_test(run_tests)` 合算 (`point>=18`, `line>=97`, `branch>=15`) を検証
   - CI (`wasm-codegen-integrity`) に `Selfhost suite coverage gate` ステップを追加
 
 ## Selfhost Cutover Roadmap (MoonBit -> vibe selfhost, non-HTTP-P3)
