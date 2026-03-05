@@ -10,6 +10,7 @@ set -euo pipefail
 #   STAGE1_COMPILER_WASM               — selfhost WASI compiler wasm
 #   VIBE_CUTOVER_REQUIRE_PARITY        — 1: fail on mismatch (default: 1), 0: monitor-only
 #   VIBE_CUTOVER_INCLUDE_COMPILER_SIZE — 1: expand canary set (default: 1)
+#   VIBE_CUTOVER_INCLUDE_FAIL_CASES    — 1: run expected-fail parity canaries (default: 1)
 #   VIBE_CUTOVER_MODES                 — comma-separated compile modes (default: mvp,no-dce,debug-errors)
 #   VIBE_CUTOVER_STAGE_TIMEOUT_SEC     — per-stage timeout (default: 300)
 

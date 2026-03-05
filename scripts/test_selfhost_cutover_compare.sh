@@ -10,6 +10,7 @@ set -euo pipefail
 #   STAGE1_COMPILER_WASM               — selfhost WASI compiler wasm
 #   VIBE_CUTOVER_REQUIRE_PARITY        — 1: fail on mismatch (default: 1), 0: monitor-only
 #   VIBE_CUTOVER_INCLUDE_COMPILER_SIZE — 1: add bench/compiler_size/cases.txt canaries (default: 1)
+#   VIBE_CUTOVER_INCLUDE_FAIL_CASES    — 1: run expected-fail parity canaries (default: 1)
 #   VIBE_CUTOVER_MODES                 — comma-separated compile modes (default: mvp,no-dce,debug-errors)
 #   VIBE_CUTOVER_STAGE_TIMEOUT_SEC     — per-stage timeout (default: 300)
 
@@ -20,6 +21,7 @@ STAGE1_COMPILER_WASM="${STAGE1_COMPILER_WASM:-$PROJECT_ROOT/_build/wasm/debug/bu
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_cutover}"
 REQUIRE_PARITY="${VIBE_CUTOVER_REQUIRE_PARITY:-1}"
 INCLUDE_COMPILER_SIZE="${VIBE_CUTOVER_INCLUDE_COMPILER_SIZE:-1}"
+INCLUDE_FAIL_CASES="${VIBE_CUTOVER_INCLUDE_FAIL_CASES:-1}"
 CUTOVER_MODES_RAW="${VIBE_CUTOVER_MODES:-mvp,no-dce,debug-errors}"
 STAGE_TIMEOUT_SEC="${VIBE_CUTOVER_STAGE_TIMEOUT_SEC:-300}"
 
@@ -115,6 +117,8 @@ compile_mode() {
   local mode="$2"
   local source_file="$3"
   local output_file="$4"
+  local stdout_file="$5"
+  local stderr_file="$6"
   local -a mode_flags=()
   case "$mode" in
     mvp) mode_flags=(--wasm) ;;
@@ -127,16 +131,49 @@ compile_mode() {
   esac
 
   if [ "$runtime" = "host" ]; then
-    run_with_timeout "$STAGE_TIMEOUT_SEC" "$VIBE_BIN" compile "${mode_flags[@]}" "$source_file" -o "$output_file"
+    run_with_timeout "$STAGE_TIMEOUT_SEC" "$VIBE_BIN" compile "${mode_flags[@]}" "$source_file" -o "$output_file" >"$stdout_file" 2>"$stderr_file"
     return $?
   fi
   if [ "$runtime" = "selfhost" ]; then
-    run_with_timeout "$STAGE_TIMEOUT_SEC" moonrun "$STAGE1_COMPILER_WASM" "${mode_flags[@]}" "$source_file" -o "$output_file"
+    run_with_timeout "$STAGE_TIMEOUT_SEC" moonrun "$STAGE1_COMPILER_WASM" "${mode_flags[@]}" "$source_file" -o "$output_file" >"$stdout_file" 2>"$stderr_file"
     return $?
   fi
 
   echo "cutover gate failed: unknown runtime '$runtime'" >&2
   return 2
+}
+
+classify_compile_failure() {
+  local stdout_file="$1"
+  local stderr_file="$2"
+  local stdout_text stderr_text
+  stdout_text="$(cat "$stdout_file" 2>/dev/null || true)"
+  stderr_text="$(cat "$stderr_file" 2>/dev/null || true)"
+  if printf '%s\n%s\n' "$stdout_text" "$stderr_text" | rg -q 'compile: parse:|Compile\(Parse|UnexpectedToken'; then
+    echo "parse"
+    return 0
+  fi
+  if printf '%s\n%s\n' "$stdout_text" "$stderr_text" | rg -q 'type error:|TypeDiag\(|stage: "type"|type mismatch'; then
+    echo "type"
+    return 0
+  fi
+  if printf '%s\n%s\n' "$stdout_text" "$stderr_text" | rg -q 'No such file or directory|not found'; then
+    echo "io"
+    return 0
+  fi
+  echo "other"
+}
+
+first_output_line() {
+  local stdout_file="$1"
+  local stderr_file="$2"
+  local line
+  line="$(awk 'NF { print; exit }' "$stdout_file" 2>/dev/null || true)"
+  if [ -n "$line" ]; then
+    printf '%s\n' "$line"
+    return 0
+  fi
+  awk 'NF { print; exit }' "$stderr_file" 2>/dev/null || true
 }
 
 declare -a CUTOVER_MODES=()
@@ -165,6 +202,10 @@ parity_ok=0
 parity_fail=0
 deterministic_ok=0
 deterministic_fail=0
+fail_files=0
+fail_total_cases=0
+fail_parity_ok=0
+fail_parity_fail=0
 
 for file in "${CANARY_FILES[@]}"; do
   if [ ! -f "$file" ]; then
@@ -180,16 +221,22 @@ for file in "${CANARY_FILES[@]}"; do
     host_out="$OUT_DIR/${basename}_${mode_suffix}_host.wasm"
     selfhost_out="$OUT_DIR/${basename}_${mode_suffix}_selfhost.wasm"
     selfhost_out2="$OUT_DIR/${basename}_${mode_suffix}_selfhost2.wasm"
+    host_stdout="$OUT_DIR/${basename}_${mode_suffix}_host.stdout"
+    host_stderr="$OUT_DIR/${basename}_${mode_suffix}_host.stderr"
+    selfhost_stdout="$OUT_DIR/${basename}_${mode_suffix}_selfhost.stdout"
+    selfhost_stderr="$OUT_DIR/${basename}_${mode_suffix}_selfhost.stderr"
+    selfhost_stdout2="$OUT_DIR/${basename}_${mode_suffix}_selfhost2.stdout"
+    selfhost_stderr2="$OUT_DIR/${basename}_${mode_suffix}_selfhost2.stderr"
 
     # Host compile
     set +e
-    compile_mode host "$mode" "$file" "$host_out" >/dev/null 2>&1
+    compile_mode host "$mode" "$file" "$host_out" "$host_stdout" "$host_stderr"
     host_status=$?
     set -e
 
     # Selfhost compile
     set +e
-    compile_mode selfhost "$mode" "$file" "$selfhost_out" >/dev/null 2>&1
+    compile_mode selfhost "$mode" "$file" "$selfhost_out" "$selfhost_stdout" "$selfhost_stderr"
     selfhost_status=$?
     set -e
 
@@ -230,7 +277,7 @@ for file in "${CANARY_FILES[@]}"; do
 
       # Deterministic check: selfhost compile 2nd time
       set +e
-      compile_mode selfhost "$mode" "$file" "$selfhost_out2" >/dev/null 2>&1
+      compile_mode selfhost "$mode" "$file" "$selfhost_out2" "$selfhost_stdout2" "$selfhost_stderr2"
       selfhost_status2=$?
       set -e
       if [ "$selfhost_status2" -eq 0 ]; then
@@ -260,13 +307,111 @@ for file in "${CANARY_FILES[@]}"; do
   done
 done
 
+FAIL_CANARY_CASES=()
+if [ "$INCLUDE_FAIL_CASES" = "1" ]; then
+  FAIL_CANARY_CASES+=(
+    "fixtures/typecheck/import_malformed_separator.vibe|parse"
+    "fixtures/typecheck/type_mismatch_argument.vibe|type"
+  )
+fi
+
+for fail_case in "${FAIL_CANARY_CASES[@]}"; do
+  IFS='|' read -r fail_rel_path expected_class <<< "$fail_case"
+  fail_file="$PROJECT_ROOT/$fail_rel_path"
+  if [ ! -f "$fail_file" ]; then
+    echo "[cutover] warning: fail canary not found, skipping: $fail_file" >&2
+    continue
+  fi
+  fail_files=$((fail_files + 1))
+  basename="$(basename "$fail_file" .vibe)"
+  short_file="${fail_file#$PROJECT_ROOT/}"
+  for mode in "${CUTOVER_MODES[@]}"; do
+    total_cases=$((total_cases + 1))
+    fail_total_cases=$((fail_total_cases + 1))
+    mode_suffix="${mode//[^a-zA-Z0-9_-]/_}"
+    host_out="$OUT_DIR/${basename}_${mode_suffix}_fail_host.wasm"
+    selfhost_out="$OUT_DIR/${basename}_${mode_suffix}_fail_selfhost.wasm"
+    host_stdout="$OUT_DIR/${basename}_${mode_suffix}_fail_host.stdout"
+    host_stderr="$OUT_DIR/${basename}_${mode_suffix}_fail_host.stderr"
+    selfhost_stdout="$OUT_DIR/${basename}_${mode_suffix}_fail_selfhost.stdout"
+    selfhost_stderr="$OUT_DIR/${basename}_${mode_suffix}_fail_selfhost.stderr"
+
+    set +e
+    compile_mode host "$mode" "$fail_file" "$host_out" "$host_stdout" "$host_stderr"
+    host_status=$?
+    set -e
+
+    set +e
+    compile_mode selfhost "$mode" "$fail_file" "$selfhost_out" "$selfhost_stdout" "$selfhost_stderr"
+    selfhost_status=$?
+    set -e
+
+    host_class="unknown"
+    selfhost_class="unknown"
+    hash_match="EXPECTED FAIL"
+    det_label="n/a"
+    pass_case=1
+
+    if [ "$host_status" -eq 0 ] || [ "$selfhost_status" -eq 0 ]; then
+      pass_case=0
+      hash_match="UNEXPECTED SUCCESS"
+      det_label="n/a"
+      echo "[cutover] FAIL-CANARY mismatch: expected both fail: $fail_file (mode=$mode host=$host_status selfhost=$selfhost_status)" >&2
+    else
+      host_class="$(classify_compile_failure "$host_stdout" "$host_stderr")"
+      selfhost_class="$(classify_compile_failure "$selfhost_stdout" "$selfhost_stderr")"
+      host_label="exit=$host_status class=$host_class"
+      selfhost_label="exit=$selfhost_status class=$selfhost_class"
+      det_label="expected=$expected_class"
+      if [ "$host_class" != "$selfhost_class" ]; then
+        pass_case=0
+        hash_match="FAIL CLASS MISMATCH"
+        echo "[cutover] FAIL-CANARY class mismatch: $fail_file (mode=$mode host=$host_class selfhost=$selfhost_class)" >&2
+      elif [ -n "$expected_class" ] && [ "$host_class" != "$expected_class" ]; then
+        pass_case=0
+        hash_match="FAIL CLASS UNEXPECTED"
+        echo "[cutover] FAIL-CANARY unexpected class: $fail_file (mode=$mode expected=$expected_class actual=$host_class)" >&2
+      else
+        hash_match="YES"
+      fi
+    fi
+
+    if [ "$pass_case" -eq 1 ]; then
+      parity_ok=$((parity_ok + 1))
+      fail_parity_ok=$((fail_parity_ok + 1))
+      if [ -z "${host_label:-}" ]; then
+        host_label="exit=$host_status class=$host_class"
+      fi
+      if [ -z "${selfhost_label:-}" ]; then
+        selfhost_label="exit=$selfhost_status class=$selfhost_class"
+      fi
+    else
+      parity_fail=$((parity_fail + 1))
+      fail_parity_fail=$((fail_parity_fail + 1))
+      host_label="exit=$host_status class=${host_class}"
+      selfhost_label="exit=$selfhost_status class=${selfhost_class}"
+      host_first="$(first_output_line "$host_stdout" "$host_stderr")"
+      selfhost_first="$(first_output_line "$selfhost_stdout" "$selfhost_stderr")"
+      echo "  host first: ${host_first:-<none>}" >&2
+      echo "  self first: ${selfhost_first:-<none>}" >&2
+    fi
+
+    echo "[cutover] $short_file [mode=$mode fail=$expected_class]: host=$host_label selfhost=$selfhost_label result=$hash_match"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      printf -- "| %s (fail:%s) | %s | %s | %s | %s | %s |\n" \
+        "$short_file" "$expected_class" "$mode" "$host_label" "$selfhost_label" "$hash_match" "$det_label" \
+        >> "$GITHUB_STEP_SUMMARY" || true
+    fi
+  done
+done
+
 echo ""
-echo "[cutover] summary: ${total_files} files x ${mode_count} modes = ${total_cases} cases, ${parity_ok} parity-ok, ${parity_fail} parity-fail, ${deterministic_ok} deterministic-ok, ${deterministic_fail} deterministic-fail"
+echo "[cutover] summary: success=${total_files} files + fail=${fail_files} files, modes=${mode_count}, total=${total_cases} cases, parity-ok=${parity_ok}, parity-fail=${parity_fail}, deterministic-ok=${deterministic_ok}, deterministic-fail=${deterministic_fail}, failcase-ok=${fail_parity_ok}, failcase-fail=${fail_parity_fail}"
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
     echo ""
-    echo "**Summary**: ${total_files} files x ${mode_count} modes = ${total_cases} cases, ${parity_ok} parity-ok, ${parity_fail} parity-fail, ${deterministic_ok} det-ok, ${deterministic_fail} det-fail"
+    echo "**Summary**: success=${total_files} files + fail=${fail_files} files, modes=${mode_count}, total=${total_cases} cases, parity-ok=${parity_ok}, parity-fail=${parity_fail}, deterministic-ok=${deterministic_ok}, deterministic-fail=${deterministic_fail}, failcase-ok=${fail_parity_ok}, failcase-fail=${fail_parity_fail}"
   } >> "$GITHUB_STEP_SUMMARY" || true
 fi
 
