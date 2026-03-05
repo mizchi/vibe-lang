@@ -212,6 +212,7 @@ Completed items are archived in `docs/DONE.md`.
   - [x] expected-fail case 定義を `bench/selfhost_cutover/fail_cases.txt` へ外出し
   - [x] fail case を拡張（syntax: missing `from`, type: unknown name）して分類カバレッジを強化
   - [x] required fail classes（`parse,type,io`）を gate 化し、case 欠落を fail-fast
+  - [x] CI でも `VIBE_CUTOVER_REQUIRED_FAIL_CLASSES=parse,type,io` を明示固定
 - [x] Phase 3: Push/PR CI に cutover gate を追加する（定期実行なし）
   - [x] `scripts/test_selfhost_cutover_gate.sh` を追加（Phase 1/2 の検証を束ねる）
   - [x] `wasm-codegen-integrity` ジョブへ組み込み（parity 必須で fail-fast）
