@@ -80,9 +80,13 @@ coverage-deno:
 coverage-wasm-source entry="examples/pattern_coverage.vibe":
     scripts/coverage_wasm_source.sh {{entry}}
 
-# Run selfhost compiler source coverage with helper invoke
-coverage-selfhost entry="vibe/compiler/index.vibe":
+# Run selfhost compiler index coverage with helper invoke
+coverage-selfhost-index entry="vibe/compiler/index.vibe":
     VIBE_WASM_SOURCE_COVERAGE_INVOKE=selfbuild_compile_stage2 scripts/coverage_wasm_source.sh {{entry}}
+
+# Run selfhost workload coverage (lex/parse/print/eval/import smoke)
+coverage-selfhost entry="vibe/compiler/selfhost_coverage_run.vibe":
+    scripts/coverage_wasm_source.sh {{entry}}
 
 # Run source-level WASM coverage for eval sidecar tests (`<db>.tests/<target>_test.vibe`)
 # env: VIBE_EVAL_COVERAGE_DIR, VIBE_WASM_SOURCE_COVERAGE_MODE, VIBE_WASM_SOURCE_COVERAGE_NO_DCE, VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP, VIBE_WASM_SOURCE_COVERAGE_DIR
