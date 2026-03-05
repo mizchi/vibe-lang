@@ -12,6 +12,7 @@ set -euo pipefail
 #   VIBE_CUTOVER_INCLUDE_COMPILER_SIZE — 1: add bench/compiler_size/cases.txt canaries (default: 1)
 #   VIBE_CUTOVER_INCLUDE_FAIL_CASES    — 1: run expected-fail parity canaries (default: 1)
 #   VIBE_CUTOVER_FAIL_CASES_FILE       — fail canary case list (TSV path)
+#   VIBE_CUTOVER_REQUIRED_FAIL_CLASSES — comma-separated required fail classes (default: parse,type,io)
 #   VIBE_CUTOVER_MODES                 — comma-separated compile modes (default: mvp,no-dce,debug-errors)
 #   VIBE_CUTOVER_STAGE_TIMEOUT_SEC     — per-stage timeout (default: 300)
 
@@ -24,6 +25,7 @@ REQUIRE_PARITY="${VIBE_CUTOVER_REQUIRE_PARITY:-1}"
 INCLUDE_COMPILER_SIZE="${VIBE_CUTOVER_INCLUDE_COMPILER_SIZE:-1}"
 INCLUDE_FAIL_CASES="${VIBE_CUTOVER_INCLUDE_FAIL_CASES:-1}"
 FAIL_CASES_FILE="${VIBE_CUTOVER_FAIL_CASES_FILE:-$PROJECT_ROOT/bench/selfhost_cutover/fail_cases.txt}"
+REQUIRED_FAIL_CLASSES_RAW="${VIBE_CUTOVER_REQUIRED_FAIL_CLASSES:-parse,type,io}"
 CUTOVER_MODES_RAW="${VIBE_CUTOVER_MODES:-mvp,no-dce,debug-errors}"
 STAGE_TIMEOUT_SEC="${VIBE_CUTOVER_STAGE_TIMEOUT_SEC:-300}"
 
@@ -190,6 +192,18 @@ output_contains_fragment() {
     "$(cat "$stderr_file" 2>/dev/null || true)" | rg -F -q -- "$fragment"
 }
 
+array_contains_exact() {
+  local needle="$1"
+  shift
+  local item
+  for item in "$@"; do
+    if [ "$item" = "$needle" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 declare -a CUTOVER_MODES=()
 IFS=',' read -r -a raw_modes <<< "$CUTOVER_MODES_RAW"
 for raw_mode in "${raw_modes[@]}"; do
@@ -322,7 +336,21 @@ for file in "${CANARY_FILES[@]}"; do
 done
 
 FAIL_CANARY_CASES=()
+LOADED_FAIL_CLASSES=()
+REQUIRED_FAIL_CLASSES=()
 if [ "$INCLUDE_FAIL_CASES" = "1" ]; then
+  IFS=',' read -r -a required_classes_raw <<< "$REQUIRED_FAIL_CLASSES_RAW"
+  for required_class in "${required_classes_raw[@]}"; do
+    required_class="${required_class#"${required_class%%[![:space:]]*}"}"
+    required_class="${required_class%"${required_class##*[![:space:]]}"}"
+    [ -z "$required_class" ] && continue
+    REQUIRED_FAIL_CLASSES+=("$required_class")
+  done
+  if [ "${#REQUIRED_FAIL_CLASSES[@]}" -eq 0 ]; then
+    echo "cutover gate failed: VIBE_CUTOVER_REQUIRED_FAIL_CLASSES must contain at least one class" >&2
+    exit 1
+  fi
+
   if [ ! -f "$FAIL_CASES_FILE" ]; then
     echo "cutover gate failed: fail canary case list not found: $FAIL_CASES_FILE" >&2
     exit 1
@@ -346,8 +374,18 @@ if [ "$INCLUDE_FAIL_CASES" = "1" ]; then
         exit 1
         ;;
     esac
+    if ! array_contains_exact "$expected_class" "${LOADED_FAIL_CLASSES[@]}"; then
+      LOADED_FAIL_CLASSES+=("$expected_class")
+    fi
     FAIL_CANARY_CASES+=("${fail_rel_path}|${expected_class}|${expected_fragment}|${allow_missing_source:-0}")
   done < "$FAIL_CASES_FILE"
+
+  for required_class in "${REQUIRED_FAIL_CLASSES[@]}"; do
+    if ! array_contains_exact "$required_class" "${LOADED_FAIL_CLASSES[@]}"; then
+      echo "cutover gate failed: required fail class missing in $FAIL_CASES_FILE: $required_class" >&2
+      exit 1
+    fi
+  done
 fi
 
 for fail_case in "${FAIL_CANARY_CASES[@]}"; do
