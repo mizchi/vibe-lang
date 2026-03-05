@@ -187,7 +187,7 @@ Completed items are archived in `docs/DONE.md`.
   - optimize 段階は `VIBE_SELFHOST_PIPELINE_OPT_LEVEL` 指定時のみ実行（長時間化の回避）
 - [x] selfhost workload coverage gate を追加（point/line/branch）
   - `vibe/compiler/selfhost_coverage_run.vibe` で lex/parse/print/eval/import の smoke workload を実行
-  - `just coverage-selfhost-gate` で `point>=20`, `line>=100`, `branch>=16` を検証
+  - `just coverage-selfhost-gate` で `point>=23`, `line>=100`, `branch>=20` を検証
   - CI (`wasm-codegen-integrity`) に `Selfhost coverage gate` ステップを追加
 
 ## Selfhost Cutover Roadmap (MoonBit -> vibe selfhost, non-HTTP-P3)

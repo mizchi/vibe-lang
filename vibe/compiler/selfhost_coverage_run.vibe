@@ -24,6 +24,12 @@ let eval_text = run_and_lookup("let result = 40 + 2", "result")
 let eval_match_text = run_and_lookup("export enum Value {\n  VInt(Int);\n  VString(String);\n  VBool(Bool);\n  VUnit\n}\nlet v = VInt(42)\nlet result = match v {\n  VInt(n) => n,\n  _ => 0\n}", "result")
 let eval_handle_text = run_and_lookup("let result = handle { throw(\"oops\") } { Error(msg) => msg }", "result")
 let eval_loop_text = run_and_lookup("let mut i = 0\nwhile true {\n  i = i + 1\n  if i == 5 {\n    break\n  }\n}\nlet result = i", "result")
+let eval_continue_text = run_and_lookup("let mut sum = 0\nlet mut i = 0\nwhile i < 5 {\n  i = i + 1\n  if i == 3 {\n    continue\n  }\n  sum = sum + i\n}\nlet result = sum", "result")
+let eval_break_value_text = run_and_lookup("let result = while true {\n  break 42\n}", "result")
+let eval_throw_fn_text = run_and_lookup("let fail = (msg: String) -> Int with {Error} { throw(msg) }\nlet result = handle { fail(\"bad\") } { Error(msg) => msg }", "result")
+let eval_for_map_text = run_and_lookup("let doubled = for x in [1, 2, 3] { x * 2 }\nlet result = array_get(doubled, 1)", "result")
+let eval_char_classify_text = run_and_lookup("let is_digit = (c: Int) -> Bool { c >= 48 && c <= 57 }\nlet is_space = (c: Int) -> Bool { c == 32 }\nlet is_plus = (c: Int) -> Bool { c == 43 }\nlet r1 = is_digit(51)\nlet r2 = is_space(32)\nlet r3 = is_plus(43)\nlet result = if r1 { if r2 { if r3 { \"ok\" } else { \"bad3\" } } else { \"bad2\" } } else { \"bad1\" }", "result")
+let eval_number_parse_text = run_and_lookup("let s = \"123\"\nlet len = string_length(s)\nlet mut i = 0\nlet mut num = 0\nwhile i < len { let c = string_char_code_at(s, i); num = num * 10 + (c - 48); i = i + 1 }\nlet result = num", "result")
 let eval_array_builder_text = run_and_lookup("let b = array_builder()\nlet mut i = 0\nwhile i < 3 { array_builder_push(b, i); i = i + 1 }\nlet result = array_builder_freeze(b)", "result")
 
 let import_sources = [
@@ -39,16 +45,13 @@ let import_sources_3file = [
 ]
 let eval_import_3file_text = run_with_imports(import_sources_3file, "main.vibe", "result")
 
-let coverage_selfhost_checksum =
-  string_length(expr_text) +
-  string_length(prog_text) +
-  string_length(first_tok_name) +
-  string_length(eval_text) +
-  string_length(eval_match_text) +
-  string_length(eval_handle_text) +
-  string_length(eval_loop_text) +
-  string_length(eval_array_builder_text) +
-  string_length(eval_import_text) +
-  string_length(eval_import_3file_text)
+let import_sources_token_pipeline = [
+  ("tok.vibe", "export enum Tok { TNum(Int); TPlus; TEof }"),
+  ("lex.vibe", "import ./tok.vibe { Tok, TNum, TPlus, TEof }\nexport let is_digit = (c: Int) -> Int { if c >= 48 && c <= 57 { 1 } else { 0 } }"),
+  ("main.vibe", "import ./tok.vibe { Tok, TNum, TPlus, TEof }\nimport ./lex.vibe { is_digit }\nlet s = \"7+8+5\"\nlet len = string_length(s)\nlet b = array_builder()\nlet mut i = 0\nlet mut mode = 0\nlet mut num = 0\nwhile i < len { let c = string_char_code_at(s, i); let d = is_digit(c); let act = mode * 2 + d; if act == 1 { mode = 1; num = c - 48; i = i + 1 } else { 0 }; if act == 3 { num = num * 10 + (c - 48); i = i + 1 } else { 0 }; if act == 2 { let tok = TNum(num); array_builder_push(b, tok); mode = 0; num = 0 } else { 0 }; if act == 0 && c == 43 { array_builder_push(b, TPlus); i = i + 1 } else { 0 }; if act == 0 && c != 43 { i = i + 1 } else { 0 } }\nlet flush = if mode == 1 { let tok = TNum(num); array_builder_push(b, tok) } else { 0 }\narray_builder_push(b, TEof)\nlet toks = array_builder_freeze(b)\nlet tlen = array_length(toks)\nlet mut j = 0\nlet mut acc = 0\nwhile j < tlen { let t = array_get(toks, j); let v = match t { TNum(n) => n, _ => 0 }; acc = acc + v; j = j + 1 }\nlet result = acc")
+]
+let eval_import_token_pipeline_text = run_with_imports(import_sources_token_pipeline, "main.vibe", "result")
+
+let coverage_selfhost_checksum = string_length(expr_text) + string_length(prog_text) + string_length(first_tok_name) + string_length(eval_text) + string_length(eval_match_text) + string_length(eval_handle_text) + string_length(eval_loop_text) + string_length(eval_continue_text) + string_length(eval_break_value_text) + string_length(eval_throw_fn_text) + string_length(eval_for_map_text) + string_length(eval_char_classify_text) + string_length(eval_number_parse_text) + string_length(eval_array_builder_text) + string_length(eval_import_text) + string_length(eval_import_3file_text) + string_length(eval_import_token_pipeline_text)
 
 let _keep = coverage_selfhost_checksum
