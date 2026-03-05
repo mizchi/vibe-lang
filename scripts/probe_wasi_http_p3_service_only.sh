@@ -61,7 +61,7 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-wit-bindgen = { version = "0.51.0", default-features = false, features = ["macros", "realloc", "bitflags", "async"] }
+wit-bindgen = { version = "0.53.1", default-features = false, features = ["macros", "realloc", "bitflags", "async", "async-spawn"] }
 EOF
 
 cat >"$TMP_DIR/src/lib.rs" <<EOF
@@ -80,14 +80,22 @@ wit_bindgen::generate!({
 });
 
 use exports::wasi::http::handler::Guest;
-use wasi::http::types::{ErrorCode, Request, Response};
+use wasi::http::types::{ErrorCode, Fields, Request, Response};
 
 struct Component;
 
 impl Guest for Component {
-    async fn handle(request: Request) -> Result<Response, ErrorCode> {
-        let _ = request;
-        Err(ErrorCode::InternalError(None))
+    async fn handle(_request: Request) -> Result<Response, ErrorCode> {
+        let (mut body_tx, body_rx) = wit_stream::new();
+        let (body_result_tx, body_result_rx) = wit_future::new(|| Ok(None));
+        let (resp, _transmit) = Response::new(Fields::new(), Some(body_rx), body_result_rx);
+        drop(body_result_tx);
+
+        wit_bindgen::spawn(async move {
+            let remaining = body_tx.write_all(b"hello from wasi p3".to_vec()).await;
+            assert!(remaining.is_empty());
+        });
+        Ok(resp)
     }
 }
 
@@ -104,35 +112,56 @@ popd >/dev/null
 
 wasm-tools validate --features all "$SERVICE_COMPONENT"
 
-echo "[probe] serve smoke (2s)"
+SERVE_PORT="${VIBE_WASI_HTTP_P3_PORT:-18787}"
+SERVE_ADDR="127.0.0.1:$SERVE_PORT"
+
+echo "[probe] serve smoke on $SERVE_ADDR"
 ( wasmtime serve \
+    -Sp3 \
     -W component-model-async=y \
     -W component-model-async-builtins=y \
-    --addr 127.0.0.1:0 \
+    --addr "$SERVE_ADDR" \
     "$SERVICE_COMPONENT" >"$SERVE_LOG" 2>&1 & echo $! > "$SERVE_PID_FILE" )
 sleep 2
 
-if kill -0 "$(cat "$SERVE_PID_FILE")" 2>/dev/null; then
-  cleanup_serve
-  echo "[probe] status: ready"
-  echo "[probe] serve start: OK"
-  echo "[probe] component: $SERVICE_COMPONENT"
-  exit 0
+if ! kill -0 "$(cat "$SERVE_PID_FILE")" 2>/dev/null; then
+  if grep -q "resource implementation is missing" "$SERVE_LOG"; then
+    echo "[probe] status: blocked"
+    echo "[probe] known blocker: wasi:http/types resource impl mismatch"
+    echo "[probe] component: $SERVICE_COMPONENT"
+    echo "[probe] log:"
+    sed -n '1,80p' "$SERVE_LOG"
+    if [ "$REQUIRE_READY" = "1" ]; then
+      echo "[probe] strict mode: failing because P3 serve is not ready" >&2
+      exit 1
+    fi
+    exit 0
+  fi
+  echo "[probe] unexpected serve failure" >&2
+  sed -n '1,120p' "$SERVE_LOG" >&2
+  exit 1
 fi
 
-if grep -q "resource implementation is missing" "$SERVE_LOG"; then
-  echo "[probe] status: blocked"
-  echo "[probe] known blocker: wasi:http/types resource impl mismatch"
-  echo "[probe] component: $SERVICE_COMPONENT"
-  echo "[probe] log:"
-  sed -n '1,80p' "$SERVE_LOG"
+echo "[probe] status: ready"
+echo "[probe] serve start: OK"
+echo "[probe] component: $SERVICE_COMPONENT"
+
+# e2e: send HTTP request and verify response
+echo "[probe] e2e: sending request to http://$SERVE_ADDR/"
+HTTP_STATUS=$(curl -s -o "$OUT_DIR/response_body.txt" -w '%{http_code}' "http://$SERVE_ADDR/" 2>/dev/null || echo "000")
+RESPONSE_BODY=$(cat "$OUT_DIR/response_body.txt" 2>/dev/null || echo "")
+
+echo "[probe] e2e: status=$HTTP_STATUS body='$RESPONSE_BODY'"
+
+if [ "$HTTP_STATUS" = "200" ] && [ "$RESPONSE_BODY" = "hello from wasi p3" ]; then
+  echo "[probe] e2e: PASS"
+else
+  echo "[probe] e2e: FAIL (expected 200 'hello from wasi p3', got $HTTP_STATUS '$RESPONSE_BODY')"
+  echo "[probe] serve log:"
+  sed -n '1,40p' "$SERVE_LOG"
   if [ "$REQUIRE_READY" = "1" ]; then
-    echo "[probe] strict mode: failing because P3 serve is not ready" >&2
     exit 1
   fi
-  exit 0
 fi
 
-echo "[probe] unexpected serve failure" >&2
-sed -n '1,120p' "$SERVE_LOG" >&2
-exit 1
+cleanup_serve

@@ -38,7 +38,7 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-wit-bindgen = { version = "0.51.0", default-features = false, features = ["macros", "realloc", "bitflags", "async"] }
+wit-bindgen = { version = "0.53.1", default-features = false, features = ["macros", "realloc", "bitflags", "async", "async-spawn"] }
 EOF
 
 cat >"$TMP_DIR/src/lib.rs" <<EOF
@@ -83,4 +83,4 @@ popd >/dev/null
 
 echo "wrote $OUT_PATH"
 echo "note: wasmtime serve で async p3 component を起動するには少なくとも次が必要"
-echo "  wasmtime serve -W component-model-async=y -W component-model-async-builtins=y <component.wasm>"
+echo "  wasmtime serve -Sp3 -W component-model-async=y -W component-model-async-builtins=y <component.wasm>"

@@ -61,6 +61,7 @@ wasm-tools validate --features all "$COMPOSED_COMPONENT"
 
 echo "[probe] serve smoke (2s)"
 ( wasmtime serve \
+    -Sp3 \
     -W component-model-async=y \
     -W component-model-async-builtins=y \
     --addr 127.0.0.1:0 \
