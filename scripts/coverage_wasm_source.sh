@@ -80,6 +80,12 @@ if [ ! -f "$cov_map_path" ]; then
 fi
 
 echo "[wasm source coverage] execute + collect"
+node_runner_cmd=(node)
+if command -v node >/dev/null 2>&1; then
+  if node --experimental-wasm-exnref -e "" >/dev/null 2>&1; then
+    node_runner_cmd+=(--experimental-wasm-exnref)
+  fi
+fi
 node_args=(
   "$SCRIPT_DIR/coverage_wasm_source.mjs"
   "$wasm_path"
@@ -90,7 +96,7 @@ node_args=(
 if [ "$ALLOW_TRAP" = "1" ]; then
   node_args+=(--allow-trap)
 fi
-node "${node_args[@]}"
+"${node_runner_cmd[@]}" "${node_args[@]}"
 
 echo "[wasm source coverage] reports:"
 echo "  - $summary_path"
