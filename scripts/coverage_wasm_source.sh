@@ -9,10 +9,11 @@ MODE="${VIBE_WASM_SOURCE_COVERAGE_MODE:-wasm}"
 NO_DCE="${VIBE_WASM_SOURCE_COVERAGE_NO_DCE:-0}"
 RUN_TESTS="${VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS:-0}"
 ALLOW_TRAP="${VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP:-0}"
+INVOKE_EXPORTS="${VIBE_WASM_SOURCE_COVERAGE_INVOKE:-}"
 
 if [ "$#" -lt 1 ]; then
   echo "usage: coverage_wasm_source.sh <entry.vibe>" >&2
-  echo "env: VIBE_WASM_SOURCE_COVERAGE_MODE=wasm|wasm-js-string VIBE_WASM_SOURCE_COVERAGE_NO_DCE=0|1 VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS=0|1 VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP=0|1 VIBE_WASM_SOURCE_COVERAGE_DIR=<dir>" >&2
+  echo "env: VIBE_WASM_SOURCE_COVERAGE_MODE=wasm|wasm-js-string VIBE_WASM_SOURCE_COVERAGE_NO_DCE=0|1 VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS=0|1 VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP=0|1 VIBE_WASM_SOURCE_COVERAGE_INVOKE=<export[,export...]> VIBE_WASM_SOURCE_COVERAGE_DIR=<dir>" >&2
   exit 1
 fi
 
@@ -95,6 +96,16 @@ node_args=(
 )
 if [ "$ALLOW_TRAP" = "1" ]; then
   node_args+=(--allow-trap)
+fi
+if [ -n "$INVOKE_EXPORTS" ]; then
+  IFS=',' read -r -a invoke_list <<< "$INVOKE_EXPORTS"
+  for invoke_name in "${invoke_list[@]}"; do
+    trimmed="${invoke_name#"${invoke_name%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    if [ -n "$trimmed" ]; then
+      node_args+=(--invoke "$trimmed")
+    fi
+  done
 fi
 "${node_runner_cmd[@]}" "${node_args[@]}"
 

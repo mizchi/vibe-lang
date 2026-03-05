@@ -5,11 +5,11 @@ import { pathToFileURL } from "node:url";
 
 function usage() {
   console.error(
-    "usage: coverage_wasm_source.mjs <wasm-file> <map-json> [--json <report.json>] [--summary <summary.txt>] [--allow-trap]",
+    "usage: coverage_wasm_source.mjs <wasm-file> <map-json> [--json <report.json>] [--summary <summary.txt>] [--allow-trap] [--invoke <export-name> ...]",
   );
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   if (argv.length < 2) {
     usage();
     process.exit(1);
@@ -19,6 +19,7 @@ function parseArgs(argv) {
   let reportJsonPath = "";
   let summaryPath = "";
   let allowTrap = false;
+  const invokeNames = [];
   let i = 2;
   while (i < argv.length) {
     const arg = argv[i];
@@ -43,9 +44,24 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === "--invoke") {
+      if (i + 1 >= argv.length) {
+        throw new Error("missing export name after --invoke");
+      }
+      invokeNames.push(argv[i + 1]);
+      i += 2;
+      continue;
+    }
     throw new Error(`unknown option: ${arg}`);
   }
-  return { wasmPath, mapPath, reportJsonPath, summaryPath, allowTrap };
+  return {
+    wasmPath,
+    mapPath,
+    reportJsonPath,
+    summaryPath,
+    allowTrap,
+    invokeNames,
+  };
 }
 
 function percent(hit, total) {
@@ -67,6 +83,9 @@ function buildSummaryText(report) {
   lines.push("vibe wasm source coverage");
   lines.push(`wasm: ${report.wasm_path}`);
   lines.push(`map: ${report.map_path}`);
+  if (Array.isArray(report.execution.invoked) && report.execution.invoked.length > 0) {
+    lines.push(`invoked: ${report.execution.invoked.join(",")}`);
+  }
   lines.push(`execution: ${report.execution.ok ? "ok" : `trap (${report.execution.error})`}`);
   lines.push(
     `points: ${report.stats.point_hit}/${report.stats.point_total} (${percent(report.stats.point_hit, report.stats.point_total)}%)`,
@@ -123,12 +142,17 @@ function readSourceLines(entryPath) {
   return raw.split(/\r?\n/);
 }
 
-function isImportListIdentifierLine(sourceLines, lineIndex) {
+function isListIdentifierLine(sourceLine) {
+  return /^[A-Za-z_][A-Za-z0-9_]*(\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*,?$/.test(
+    sourceLine,
+  );
+}
+
+function isLineInsideListBlock(sourceLines, lineIndex, blockStartPattern) {
   if (lineIndex < 0 || lineIndex >= sourceLines.length) {
     return false;
   }
-  const trimmed = sourceLines[lineIndex].trim();
-  if (!/^[A-Za-z_][A-Za-z0-9_]*,$/.test(trimmed)) {
+  if (!isListIdentifierLine(sourceLines[lineIndex].trim())) {
     return false;
   }
   for (let i = lineIndex - 1; i >= 0; i -= 1) {
@@ -136,7 +160,7 @@ function isImportListIdentifierLine(sourceLines, lineIndex) {
     if (prev.length === 0) {
       continue;
     }
-    if (/^import\s*\{/.test(prev)) {
+    if (blockStartPattern.test(prev)) {
       return true;
     }
     if (/^\}/.test(prev)) {
@@ -144,6 +168,22 @@ function isImportListIdentifierLine(sourceLines, lineIndex) {
     }
   }
   return false;
+}
+
+function isImportListIdentifierLine(sourceLines, lineIndex) {
+  return isLineInsideListBlock(sourceLines, lineIndex, /^import\s*\{/);
+}
+
+function isExportListHeaderLine(trimmed) {
+  return /^export(?:\s+\.[^\s{]+)?\s*\{$/.test(trimmed);
+}
+
+function isExportListIdentifierLine(sourceLines, lineIndex) {
+  return isLineInsideListBlock(
+    sourceLines,
+    lineIndex,
+    /^export(?:\s+\.[^\s{]+)?\s*\{/,
+  );
 }
 
 export function isCoverageNoiseLine(sourceLines, lineNumber) {
@@ -161,6 +201,9 @@ export function isCoverageNoiseLine(sourceLines, lineNumber) {
   if (trimmed.length === 0) {
     return true;
   }
+  if (/^\/\//.test(trimmed)) {
+    return true;
+  }
   if (
     trimmed === "}" ||
     trimmed === "};" ||
@@ -170,7 +213,13 @@ export function isCoverageNoiseLine(sourceLines, lineNumber) {
   ) {
     return true;
   }
+  if (isExportListHeaderLine(trimmed)) {
+    return true;
+  }
   if (isImportListIdentifierLine(sourceLines, lineIndex)) {
+    return true;
+  }
+  if (isExportListIdentifierLine(sourceLines, lineIndex)) {
     return true;
   }
   return false;
@@ -196,7 +245,7 @@ function makeHostFunction(moduleName, importName) {
     return (value) => value;
   }
   if (moduleName === "vibe" && importName === "sh") {
-    return (_value) => 0;
+    return (_value) => 0n;
   }
   return (..._args) => 0;
 }
@@ -264,6 +313,13 @@ async function main() {
 
   let runError = null;
   try {
+    for (const invokeName of args.invokeNames) {
+      const invokeTarget = exports[invokeName];
+      if (typeof invokeTarget !== "function") {
+        throw new Error(`missing export "${invokeName}"`);
+      }
+      invokeTarget();
+    }
     exports.run();
   } catch (error) {
     runError = error instanceof Error ? error.message : String(error);
@@ -331,6 +387,7 @@ async function main() {
     execution: {
       ok: runError === null,
       error: runError,
+      invoked: args.invokeNames,
     },
     points,
     lines,

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   applySourceNoiseExclusion,
   isCoverageNoiseLine,
+  parseArgs,
 } from "./coverage_wasm_source.mjs";
 
 test("isCoverageNoiseLine: import list identifier is excluded", () => {
@@ -32,6 +33,44 @@ test("isCoverageNoiseLine: executable line is not excluded", () => {
     "}",
   ];
   assert.equal(isCoverageNoiseLine(sourceLines, 2), false);
+});
+
+test("isCoverageNoiseLine: comment line is excluded", () => {
+  const sourceLines = [
+    "//# Header",
+    "let x = 1",
+  ];
+  assert.equal(isCoverageNoiseLine(sourceLines, 1), true);
+});
+
+test("isCoverageNoiseLine: export list item is excluded", () => {
+  const sourceLines = [
+    "export {",
+    "  Token, token_to_string",
+    "}",
+  ];
+  assert.equal(isCoverageNoiseLine(sourceLines, 2), true);
+});
+
+test("isCoverageNoiseLine: export list header is excluded", () => {
+  const sourceLines = [
+    "export ./parser.vibe {",
+    "  parse",
+    "}",
+  ];
+  assert.equal(isCoverageNoiseLine(sourceLines, 1), true);
+});
+
+test("parseArgs: --invoke can be provided multiple times", () => {
+  const args = parseArgs([
+    "a.wasm",
+    "a.wasm.cov.json",
+    "--invoke",
+    "setup",
+    "--invoke",
+    "run_extra",
+  ]);
+  assert.deepEqual(args.invokeNames, ["setup", "run_extra"]);
 });
 
 test("applySourceNoiseExclusion: excluded lines are removed from line KPI", () => {
