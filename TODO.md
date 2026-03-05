@@ -232,42 +232,43 @@ Completed items are archived in `docs/DONE.md`.
   - [x] MoonBit 側は自動ビルドフォールバック（wasm 未存在時のみ `moon build`）で保持
   - [x] 切替完了条件: bootstrap gate + selfbuild gate + cutover gate が全て green（selfhost 経路）
 
+## WASM HTTP P3 Implementation (In Progress)
+
+目標: `wasmtime serve -Sp3` で vibe の HTTP server handler を実行可能にする。
+
+**ツールチェーン要件**: wasmtime >= 42.0.1, wit-bindgen >= 0.53.1, wac-cli >= 0.9.0
+
+**解消済みブロッカー**:
+- [x] `wasmtime serve` の `resource implementation is missing` エラー → wasmtime 42 + `-Sp3` フラグで解消 (2026-03-05)
+- [x] service-only component の serve + e2e (HTTP 200 + body) → `scripts/probe_wasi_http_p3_service_only.sh`
+- [x] adapter compose (vibe component + Rust adapter) の serve + e2e → `scripts/probe_wasi_http_p3_compose.sh`
+- [x] blocked gate を strict mode (`VIBE_WASI_HTTP_P3_REQUIRE_READY=1`) + compose (`VIBE_WASI_HTTP_P3_RUN_COMPOSE=1`) で PASS
+
+**Phase 1 (scalar-only, 完了)**:
+- [x] Rust adapter: `import run: func() -> s64`, `export wasi:http/handler` をブリッジ
+- [x] vibe fixture (`fixtures/http_p3_handler.vibe`): `run()` で status code 200 を返す
+- [x] `wac plug` で compose → `wasmtime serve -Sp3` → HTTP 200
+
+**Phase 2 (string params, 未実装)**:
+- [ ] component codegen に string lift/lower (canon lift with memory + realloc) を追加
+- [ ] adapter が vibe handler に request fields (method, url, headers, body) を string で渡す
+- [ ] vibe handler が response body/headers を string で返す
+- [ ] e2e: request method/url に応じた動的 response を返す
+
+**Phase 3 (本実装)**:
+- [ ] codegen: HTTP client builtins を `wasi:http/client.send` + resource 操作へ lower
+- [ ] codegen: HTTP server builtins を `wasi:http/handler` export モデルへ再設計
+- [ ] component emit: handler export を持つ component を直接生成（adapter 不要化）
+- [ ] runtime contract: interpreter/compiled でエラー契約を P3 経路でも一致
+- [ ] e2e gate を CI (`wasm-codegen-integrity`) に追加
+
+**検証スクリプト**:
+- `scripts/probe_wasi_http_p3_service_only.sh` — Rust のみの P3 service + e2e
+- `scripts/probe_wasi_http_p3_compose.sh` — vibe + adapter compose + e2e
+- `scripts/test_wasi_http_p3_blocked_gate.sh` — 上記を束ねる gate
+
 ## Blocked / External
 
-- [ ] WASM HTTP builtins の本実装（現状は wasm で catchable fallback error）。WASI P3 HTTP (`wasi:http@0.3.0-draft`) 安定待ち
-  - Client: `wasi:http/client.send` で outgoing request 送信
-  - Server: `wasi:http/handler` export で incoming-request 受信 (wasmtime serve)
-  - [ ] Adapter compose ツールチェーンを P3 async 対応へ更新する（現状ブロッカー）
-    - `wit-bindgen 0.51` + `wasm-tools component new` で作った service-only component（compose なし）でも `wasmtime serve` が `resource implementation is missing` で失敗する
-    - `wac-cli 0.9.0` では `plug + validate` は通るが、`wasmtime serve` で `wasi:http/types` resource 実装不一致（`resource implementation is missing`）により起動できない
-    - `mwac/wite compose` は同入力で `unknown type ... type index out of bounds` となり invalid component を出力する
-    - `wasm-tools compose` は function import (`run`) 経路で panic するため、現行では直列 compose の代替にならない
-    - 外部 issue:
-      - wasmtime: https://github.com/bytecodealliance/wasmtime/issues/12714
-      - wit-bindgen: https://github.com/bytecodealliance/wit-bindgen/issues/1554
-    - 再現スクリプト:
-      - `scripts/build_wasi_http_p3_adapter.sh`（P3 adapter build）
-      - `scripts/probe_wasi_http_p3_compose.sh`（app component build + `wac plug` + `wasmtime serve` smoke）
-      - `scripts/probe_wasi_http_p3_service_only.sh`（service-only build + `wasmtime serve` smoke）
-      - `scripts/test_wasi_http_p3_blocked_gate.sh`（blocked/strict gate。`VIBE_WASI_HTTP_P3_REQUIRE_READY=0` なら既知ブロッカーを許容）
-  - 実装タスク（vibe 側）:
-    - [ ] codegen: HTTP client builtins (`http_request` / `http_response_*` / `http_close`) を `wasi:http/client.send` + `wasi:http/types` resource 操作へ lower
-      - [x] component compile 経路（`--component --http-host-imports`）の client import 名を `wasi:http/client@0.3.0-draft` / `wasi:http/types@0.3.0-draft` shim へ切り替え（`send` / `response-*` / `[drop]response`）
-      - [ ] server builtin 分は現状 `vibe:http/*` のまま（`wasi:http/handler` export 実装まで据え置き）
-      - [ ] resource 本体（`types.request` / `types.response`）を使う実 lower は未実装（現状は i64 handle shim ABI）
-    - [ ] codegen: HTTP server builtins (`http_listen` / `http_accept` / `http_request_*` / `http_respond`) を `wasi:http/handler` export モデルへ再設計（listen/accept API との対応を確定）
-      - [x] component WIT 生成で server builtin 使用時は `wasi:http/handler` を import ではなく export として出力
-    - [ ] component emit: HTTP server builtin 使用時に `wasi:http/handler` export を持つ component を生成（現状は WIT 契約のみ）
-    - [ ] runtime contract: interpreter/compiled でエラー契約（`Io(op=...)`, `PermissionDenied: net_*`）を P3 経路でも一致させる
-    - [ ] e2e gate: `wasmtime serve` で request -> handler -> response の往復を CI で検証
-  - 実装前提（vibe 側）:
-    - [x] host import で String を返すための guest allocator/export 契約を定義
-      - wasm codegen が `vibe_http_host_string_new(i32)->i64` を export（`--http-host-imports` + HTTP builtin 使用時）
-      - host は `memory` に UTF-8 bytes を書き込み、tagged string (`i64`) を返せることを e2e で検証
-    - [x] compiled 実行系（`vibe run/test`）で `vibe:http` host runtime を提供（`scripts/wasm_http_host_runner.js` を使用）
-    - [x] capability allowlist を compiled host runner 側へ統合（`VIBE_HTTP_ALLOW_CONNECT`, `VIBE_HTTP_ALLOW_LISTEN`）
-      - `can_connect_any` / `can_listen_any` 判定は interpreter 契約に一致（該当 capability が1つでもあれば許可）
-      - deny/allow の回帰を `scripts/test_compiled_backend_http_policy.sh` に追加
 - [ ] HTTPS/TLS 非対応: HTTP のみ (port 80 デフォルト)
 - [ ] IPv4 のみ: DNS 解決・IPv6 未対応
 
