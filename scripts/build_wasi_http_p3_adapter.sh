@@ -47,8 +47,8 @@ wit_bindgen::generate!({
       package vibe:http-adapter;
 
       world adapter {
-        /// vibe handler: () -> status code (tagged i64).
-        import run: func() -> s64;
+        /// vibe handler: (method, url) -> status code (tagged i64).
+        import handler: func(method: string, url: string) -> s64;
         include wasi:http/service@0.3.0-rc-2026-01-06;
       }
     "#,
@@ -65,13 +65,26 @@ struct Component;
 
 impl Guest for Component {
     async fn handle(request: Request) -> Result<Response, ErrorCode> {
-        let _ = request;
+        // Extract method and url from request
+        let method = match request.get_method() {
+            wasi::http::types::Method::Get => "GET".to_string(),
+            wasi::http::types::Method::Post => "POST".to_string(),
+            wasi::http::types::Method::Put => "PUT".to_string(),
+            wasi::http::types::Method::Delete => "DELETE".to_string(),
+            wasi::http::types::Method::Head => "HEAD".to_string(),
+            wasi::http::types::Method::Options => "OPTIONS".to_string(),
+            wasi::http::types::Method::Patch => "PATCH".to_string(),
+            wasi::http::types::Method::Other(m) => m,
+            _ => "UNKNOWN".to_string(),
+        };
+        let url = request.get_path_with_query().unwrap_or_else(|| "/".to_string());
 
-        // Call vibe handler (returns tagged status code)
-        let status_tagged = run();
+        // Call vibe handler with method and url (returns tagged status code)
+        let status_tagged = handler(&method, &url);
         let status_code = (status_tagged >> 2) as u16; // untag int
 
-        // Build P3 response with fixed body
+        // Build P3 response with body
+        let body_text = format!("method={} url={} status={}", method, url, status_code);
         let (mut body_tx, body_rx) = wit_stream::new();
         let (body_result_tx, body_result_rx) = wit_future::new(|| Ok(None));
         let (resp, _transmit) = Response::new(Fields::new(), Some(body_rx), body_result_rx);
@@ -80,7 +93,7 @@ impl Guest for Component {
         drop(body_result_tx);
 
         wit_bindgen::spawn(async move {
-            let remaining = body_tx.write_all(b"hello from vibe via p3 adapter".to_vec()).await;
+            let remaining = body_tx.write_all(body_text.into_bytes()).await;
             assert!(remaining.is_empty());
         });
 

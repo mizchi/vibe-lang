@@ -337,11 +337,16 @@ pub fn compile_module_wasm(
   path : String,
   debug_errors? : Bool = false,
   http_host_imports? : Bool = false,
+  force_cabi_realloc? : Bool = false,
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(db, path, @runtime.bundle_for_wasm, ast => {
     @codegen.emit_module_wasm_with_options(
       ast,
-      wasm_emit_options(debug_errors, http_host_imports~),
+      @codegen.wasm_emit_options(
+        embed_error_strings=debug_errors,
+        http_host_imports~,
+        force_cabi_realloc~,
+      ),
     )
   })
 }
@@ -365,11 +370,24 @@ pub fn compile_module_wasm_with_opt_level(
   opt_level? : String? = None,
   debug_errors? : Bool = false,
   http_host_imports? : Bool = false,
+  force_cabi_realloc? : Bool = false,
 ) -> Bytes raise WasmCompileError {
   let wasm = if no_dce {
-    compile_module_wasm_no_dce(db, path, debug_errors~, http_host_imports~)
+    compile_module_wasm_no_dce(
+      db,
+      path,
+      debug_errors~,
+      http_host_imports~,
+      force_cabi_realloc~,
+    )
   } else {
-    compile_module_wasm(db, path, debug_errors~, http_host_imports~)
+    compile_module_wasm(
+      db,
+      path,
+      debug_errors~,
+      http_host_imports~,
+      force_cabi_realloc~,
+    )
   }
   optimize_wasm_bytes_with_opt_level(wasm, opt_level)
 }
@@ -589,11 +607,16 @@ pub fn compile_module_wasm_no_dce(
   path : String,
   debug_errors? : Bool = false,
   http_host_imports? : Bool = false,
+  force_cabi_realloc? : Bool = false,
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(db, path, @runtime.bundle_for_wasm_no_dce, ast => {
     @codegen.emit_module_wasm_with_options(
       ast,
-      wasm_emit_options(debug_errors, http_host_imports~),
+      @codegen.wasm_emit_options(
+        embed_error_strings=debug_errors,
+        http_host_imports~,
+        force_cabi_realloc~,
+      ),
     )
   })
 }
@@ -621,6 +644,96 @@ pub fn compile_module_component(
     e => raise WasmCompileError::Gen(e)
   }
   @codegen.emit_component_wasm_with_lift(core_wasm, "run")
+}
+
+///|
+/// Compile a module to Component WASM with string param support.
+/// Uses a trampoline to convert canonical ABI strings to vibe tagged strings.
+pub fn compile_module_component_with_string_lift(
+  db : @runtime.VibeDb,
+  path : String,
+  target_func_name : String,
+  export_name : String,
+  string_param_count : Int,
+) -> Bytes raise WasmCompileError {
+  let compiled = compile_module(db, path) catch {
+    e => raise WasmCompileError::Compile(e)
+  }
+  let bundled = @runtime.bundle_for_wasm(db, path, compiled.ast)
+  let core_wasm = @codegen.emit_module_wasm_with_options(
+    bundled,
+    @codegen.wasm_emit_options(force_cabi_realloc=true),
+  ) catch {
+    e => raise WasmCompileError::Gen(e)
+  }
+  @codegen.emit_component_wasm_with_string_lift(
+    core_wasm,
+    target_func_name,
+    export_name,
+    string_param_count,
+  )
+}
+
+///|
+/// Auto-detect exported function with string params and compile to Component
+/// with string lift trampoline. Scans AST for the first ExportLet with Fn
+/// whose params include Type::String.
+pub fn compile_module_component_string_lift_auto(
+  db : @runtime.VibeDb,
+  path : String,
+  opt_level? : String? = None,
+) -> Bytes raise WasmCompileError {
+  let compiled = compile_module(db, path) catch {
+    e => raise WasmCompileError::Compile(e)
+  }
+  // Find first exported function with string params
+  let mut target_func_name : String? = None
+  let mut string_param_count = 0
+  let string_param_names : Array[String] = []
+  for stmt in compiled.ast.stmts {
+    match stmt {
+      @core.Stmt::ExportLet(name~, expr~, ..) =>
+        match expr {
+          @core.Expr::Fn(params~, ..) => {
+            for p in params {
+              if p.ty == @core.Type::String ||
+                p.ty == @core.Type::Named(name="String", args=[]) {
+                string_param_names.push(p.name)
+              }
+            }
+            if string_param_names.length() > 0 {
+              target_func_name = Some(name)
+              string_param_count = string_param_names.length()
+              break
+            }
+          }
+          _ => ()
+        }
+      _ => ()
+    }
+  }
+  let func_name = match target_func_name {
+    Some(n) => n
+    None =>
+      raise WasmCompileError::Optimize(
+        "no exported function with string params found",
+      )
+  }
+  let bundled = @runtime.bundle_for_wasm(db, path, compiled.ast)
+  let core_wasm = @codegen.emit_module_wasm_with_options(
+    bundled,
+    @codegen.wasm_emit_options(force_cabi_realloc=true),
+  ) catch {
+    e => raise WasmCompileError::Gen(e)
+  }
+  let component = @codegen.emit_component_wasm_with_string_lift(
+    core_wasm,
+    func_name,
+    func_name,
+    string_param_count,
+    param_names=string_param_names,
+  )
+  optimize_wasm_bytes_with_opt_level(component, opt_level)
 }
 
 ///|

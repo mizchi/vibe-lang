@@ -249,11 +249,19 @@ Completed items are archived in `docs/DONE.md`.
 - [x] vibe fixture (`fixtures/http_p3_handler.vibe`): `run()` で status code 200 を返す
 - [x] `wac plug` で compose → `wasmtime serve -Sp3` → HTTP 200
 
-**Phase 2 (string params, 未実装)**:
-- [ ] component codegen に string lift/lower (canon lift with memory + realloc) を追加
-- [ ] adapter が vibe handler に request fields (method, url, headers, body) を string で渡す
-- [ ] vibe handler が response body/headers を string で返す
-- [ ] e2e: request method/url に応じた動的 response を返す
+**Phase 2 (string params, 完了)**:
+- [x] component codegen に string lift/lower (canon lift with memory + realloc) を追加
+  - `emit_component_wasm_with_string_lift()`: trampoline module で canonical ABI flat (ptr, len) → vibe tagged string 変換
+  - canon lift options: `0x00`=utf8, `0x03`=memory, `0x04`=realloc (component model binary spec 準拠)
+  - trampoline に closure env (i32 0) パラメータを追加（vibe の export function は closure ABI）
+  - `--component-string-lift` CLI フラグ + `compile_module_component_string_lift_auto()` で AST から string param を自動検出
+- [x] adapter が vibe handler に request fields (method, url) を string で渡す
+  - adapter WIT: `import handler: func(method: string, url: string) -> s64`
+  - Rust adapter: `request.get_method()` / `request.get_path_with_query()` を extract
+- [x] `force_cabi_realloc` で cabi_realloc 関数生成 + heap global 有効化を強制
+- [x] e2e: request method/url に応じた動的 response を返す
+  - `scripts/test_http_p3_string_e2e.sh`: compose + serve + curl (GET / → 200, GET /notfound → 404, POST / → 405)
+- 既知制限: vibe の `==` 演算子は wasm backend で string 比較未対応（`string_equals()` builtin を使用）
 
 **Phase 3 (本実装)**:
 - [ ] codegen: HTTP client builtins を `wasi:http/client.send` + resource 操作へ lower
@@ -264,8 +272,10 @@ Completed items are archived in `docs/DONE.md`.
 
 **検証スクリプト**:
 - `scripts/probe_wasi_http_p3_service_only.sh` — Rust のみの P3 service + e2e
-- `scripts/probe_wasi_http_p3_compose.sh` — vibe + adapter compose + e2e
+- `scripts/probe_wasi_http_p3_compose.sh` — vibe + adapter compose + e2e (Phase 1: scalar)
 - `scripts/test_wasi_http_p3_blocked_gate.sh` — 上記を束ねる gate
+- `scripts/test_component_string_lift.sh` — Phase 2 infrastructure validation (exports + validate)
+- `scripts/test_http_p3_string_e2e.sh` — Phase 2 e2e (string params + dynamic response)
 
 ## Blocked / External
 

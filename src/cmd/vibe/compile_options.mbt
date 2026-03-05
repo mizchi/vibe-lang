@@ -5,6 +5,7 @@ pub enum CompileMode {
   WasmJsString
   WasmGc
   Component
+  ComponentStringLift
   Wac
   Wit
   WitComponent
@@ -18,6 +19,7 @@ pub struct CompileCmdOptions {
   coverage_run_tests : Bool
   debug_errors : Bool
   http_host_imports : Bool
+  force_cabi_realloc : Bool
   out_path : String?
   entry_path : String
   opt_level : String?
@@ -38,6 +40,7 @@ fn compile_mode_supports_wite_opt(mode : CompileMode) -> Bool {
     | CompileMode::WasmJsString
     | CompileMode::WasmGc
     | CompileMode::Component
+    | CompileMode::ComponentStringLift
     | CompileMode::Wac => true
     _ => false
   }
@@ -85,6 +88,7 @@ pub fn parse_compile_cmd_args(
   let mut coverage_run_tests = false
   let mut debug_errors = false
   let mut http_host_imports = false
+  let mut force_cabi_realloc = false
   let mut out_path : String? = None
   let mut entry_path : String? = None
   let mut opt_level : String? = None
@@ -106,6 +110,10 @@ pub fn parse_compile_cmd_args(
       }
       "--component" => {
         mode = CompileMode::Component
+        i += 1
+      }
+      "--component-string-lift" => {
+        mode = CompileMode::ComponentStringLift
         i += 1
       }
       "--wac" => {
@@ -138,6 +146,10 @@ pub fn parse_compile_cmd_args(
       }
       "--http-host-imports" => {
         http_host_imports = true
+        i += 1
+      }
+      "--force-cabi-realloc" => {
+        force_cabi_realloc = true
         i += 1
       }
       "--wite" => {
@@ -205,6 +217,7 @@ pub fn parse_compile_cmd_args(
         coverage_run_tests,
         debug_errors,
         http_host_imports,
+        force_cabi_realloc,
         out_path,
         entry_path: path,
         opt_level,

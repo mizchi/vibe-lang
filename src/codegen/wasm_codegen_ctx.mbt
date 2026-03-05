@@ -94,6 +94,8 @@ priv struct CodegenCtx {
   mut cached_untag_ptrs : Map[Int, Int]
   // Constant values inlined at use sites (pre-tagged i64, skip local allocation)
   mut const_i64_values : Map[String, Int64]
+  // Force cabi_realloc export for component string lift
+  force_cabi_realloc : Bool
 }
 
 ///|
@@ -103,6 +105,7 @@ fn CodegenCtx::new(
   embed_error_strings? : Bool = false,
   http_host_imports? : Bool = false,
   http_component_wasi_shim? : Bool = false,
+  force_cabi_realloc? : Bool = false,
 ) -> CodegenCtx {
   // Register builtin enum constructors
   let enum_ctor_tags : Map[String, Int] = {}
@@ -206,6 +209,8 @@ fn CodegenCtx::new(
     cached_untag_ptrs: {},
     // Constant values (pre-tagged i64)
     const_i64_values: {},
+    // Force cabi_realloc export
+    force_cabi_realloc,
   }
 }
 

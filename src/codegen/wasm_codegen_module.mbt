@@ -893,7 +893,8 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let user_export_count = ctx.exported_fns.length()
   let need_cabi_realloc_export = ctx.need_stdin_read_char ||
     ctx.need_socket ||
-    ctx.need_http
+    ctx.need_http ||
+    ctx.force_cabi_realloc
   let need_http_host_string_new_export = ctx.need_http && ctx.http_host_imports
   let export_count = 2 +
     user_export_count +
@@ -1568,7 +1569,8 @@ fn emit_module_with_coverage(
     ctx.need_stdin_read_char ||
     ctx.need_fs ||
     ctx.need_socket ||
-    ctx.need_http {
+    ctx.need_http ||
+    ctx.force_cabi_realloc {
     ctx.use_heap_global = true
     let global_imports = if ctx.use_js_strings {
       ctx.js_strings.names.length()
@@ -1663,7 +1665,8 @@ fn emit_module_with_coverage(
       ),
     )
   }
-  if ctx.need_stdin_read_char || ctx.need_socket || ctx.need_http {
+  if ctx.need_stdin_read_char || ctx.need_socket || ctx.need_http ||
+    ctx.force_cabi_realloc {
     let cabi_realloc_sig = FuncSig::{
       params: [ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32],
       results: [ValueKind::I32],
@@ -1729,6 +1732,7 @@ pub fn emit_module_wasm_with_options(
     embed_error_strings=options.embed_error_strings,
     http_host_imports=options.http_host_imports,
     http_component_wasi_shim=options.http_component_wasi_shim,
+    force_cabi_realloc=options.force_cabi_realloc,
   )
   emit_module(ctx, ast)
 }

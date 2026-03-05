@@ -420,6 +420,7 @@ fn default_output_path(input_path : String, mode : CompileMode) -> String {
     CompileMode::WasmJsString => "dist/" + basename + ".wasm"
     CompileMode::WasmGc => "dist/" + basename + ".wasm"
     CompileMode::Component => "dist/" + basename + ".component.wasm"
+    CompileMode::ComponentStringLift => "dist/" + basename + ".component.wasm"
     CompileMode::Wac => "dist/" + basename + ".component.wasm"
     CompileMode::Wit => "dist/" + basename + ".wit"
     CompileMode::WitComponent => "dist/" + basename + ".component.wit"
@@ -664,6 +665,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               opt_level=opts.opt_level,
               debug_errors=opts.debug_errors,
               http_host_imports=opts.http_host_imports,
+              force_cabi_realloc=opts.force_cabi_realloc,
             ) catch {
               e => abort("compile: " + e.user_message())
             }
@@ -738,6 +740,20 @@ fn compile_cmd(args : Array[String]) -> Unit {
             entry,
             opt_level=opts.opt_level,
             http_host_imports=opts.http_host_imports,
+          ) catch {
+            e => abort("compile: " + e.user_message())
+          }
+          match @io.write_bytes_with(fs, resolved_out, wasm_bytes) {
+            Ok(_) => ()
+            Err(err) => abort("compile: " + err)
+          }
+          println("wrote " + resolved_out)
+        }
+        CompileMode::ComponentStringLift => {
+          let wasm_bytes = @runtime_compile.compile_module_component_string_lift_auto(
+            db,
+            entry,
+            opt_level=opts.opt_level,
           ) catch {
             e => abort("compile: " + e.user_message())
           }

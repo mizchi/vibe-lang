@@ -52,6 +52,7 @@ pub struct WasmEmitOptions {
   embed_error_strings : Bool
   http_host_imports : Bool
   http_component_wasi_shim : Bool
+  force_cabi_realloc : Bool
 } derive(Show, Eq)
 
 ///|
@@ -59,8 +60,9 @@ pub fn wasm_emit_options(
   embed_error_strings? : Bool = false,
   http_host_imports? : Bool = false,
   http_component_wasi_shim? : Bool = false,
+  force_cabi_realloc? : Bool = false,
 ) -> WasmEmitOptions {
-  { embed_error_strings, http_host_imports, http_component_wasi_shim }
+  { embed_error_strings, http_host_imports, http_component_wasi_shim, force_cabi_realloc }
 }
 
 ///|

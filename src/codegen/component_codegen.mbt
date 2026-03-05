@@ -84,6 +84,9 @@ let component_valtype_f32 : Byte = b'\x76'
 let component_valtype_f64 : Byte = b'\x75'
 
 ///|
+let component_valtype_string : Byte = b'\x73'
+
+///|
 priv struct CoreFuncSig {
   params : Array[Byte]
   results : Array[Byte]
@@ -419,6 +422,164 @@ fn parse_core_import_funcs(core_wasm : Bytes) -> Array[CoreImportFunc] {
     i = section_end
   }
   imports
+}
+
+///|
+priv struct CoreExportFunc {
+  name : String
+  func_idx : Int
+  sig : CoreFuncSig
+}
+
+///|
+fn parse_core_export_funcs(core_wasm : Bytes) -> Array[CoreExportFunc] {
+  let bytes = core_wasm.to_array()
+  let exports : Array[CoreExportFunc] = []
+  if bytes.length() < 8 {
+    return exports
+  }
+  let type_sigs : Array[CoreFuncSig] = []
+  let mut import_func_count = 0
+  let func_type_indices : Array[Int] = []
+  let mut i = 8
+  while i < bytes.length() {
+    let section_id = bytes[i].to_int()
+    i += 1
+    let (section_size, after_size) = core_read_uleb_u32(bytes, i)
+    i = after_size
+    let section_end = i + section_size
+    if section_end > bytes.length() {
+      break
+    }
+    match section_id {
+      1 => {
+        // Type section: parse function signatures
+        let mut j = i
+        let (type_count, after_count) = core_read_uleb_u32(bytes, j)
+        j = after_count
+        for _ in 0..<type_count {
+          if j >= section_end {
+            break
+          }
+          let form = bytes[j].to_int()
+          j += 1
+          if form != 0x60 {
+            break
+          }
+          let (param_count, after_param_count) = core_read_uleb_u32(bytes, j)
+          j = after_param_count
+          let params : Array[Byte] = []
+          for _ in 0..<param_count {
+            if j >= section_end {
+              break
+            }
+            params.push(bytes[j])
+            j += 1
+          }
+          let (result_count, after_result_count) = core_read_uleb_u32(bytes, j)
+          j = after_result_count
+          let results : Array[Byte] = []
+          for _ in 0..<result_count {
+            if j >= section_end {
+              break
+            }
+            results.push(bytes[j])
+            j += 1
+          }
+          type_sigs.push(CoreFuncSig::{ params, results })
+        }
+      }
+      2 => {
+        // Import section: count imported functions
+        let mut j = i
+        let (import_count, after_count) = core_read_uleb_u32(bytes, j)
+        j = after_count
+        for _ in 0..<import_count {
+          if j >= section_end {
+            break
+          }
+          let (_, after_module_name) = core_read_name(bytes, j)
+          j = after_module_name
+          let (_, after_func_name) = core_read_name(bytes, j)
+          j = after_func_name
+          if j >= section_end {
+            break
+          }
+          let kind = bytes[j].to_int()
+          j += 1
+          if kind == 0 {
+            // function import
+            let (_, after_type_idx) = core_read_uleb_u32(bytes, j)
+            j = after_type_idx
+            import_func_count += 1
+          } else {
+            j = skip_core_import_desc(bytes, j, kind, section_end)
+          }
+        }
+      }
+      3 => {
+        // Function section: type indices for locally defined functions
+        let mut j = i
+        let (func_count, after_count) = core_read_uleb_u32(bytes, j)
+        j = after_count
+        for _ in 0..<func_count {
+          if j >= section_end {
+            break
+          }
+          let (type_idx, after_type_idx) = core_read_uleb_u32(bytes, j)
+          j = after_type_idx
+          func_type_indices.push(type_idx)
+        }
+      }
+      7 => {
+        // Export section: collect exported functions
+        let mut j = i
+        let (export_count, after_count) = core_read_uleb_u32(bytes, j)
+        j = after_count
+        for _ in 0..<export_count {
+          if j >= section_end {
+            break
+          }
+          let (name, after_name) = core_read_name(bytes, j)
+          j = after_name
+          if j >= section_end {
+            break
+          }
+          let kind = bytes[j].to_int()
+          j += 1
+          let (index, after_index) = core_read_uleb_u32(bytes, j)
+          j = after_index
+          if kind == 0 {
+            // function export - resolve type signature
+            let type_idx = if index < import_func_count {
+              // imported function - would need import type tracking
+              // for now skip (we mainly care about locally defined exports)
+              -1
+            } else {
+              let local_idx = index - import_func_count
+              if local_idx < func_type_indices.length() {
+                func_type_indices[local_idx]
+              } else {
+                -1
+              }
+            }
+            if type_idx >= 0 && type_idx < type_sigs.length() {
+              exports.push(
+                CoreExportFunc::{
+                  name,
+                  func_idx: index,
+                  sig: type_sigs[type_idx],
+                },
+              )
+            }
+          }
+        }
+      }
+      _ => ()
+    }
+    i = section_end
+  }
+  exports
 }
 
 ///|
@@ -1044,16 +1205,240 @@ pub fn generate_component_wit(
 }
 
 ///|
-/// Canon lift with options
+/// Emit alias section for arbitrary exports from a core instance
+/// Each entry: (name, sort) where sort is core_sort_func or core_sort_mem
+fn emit_alias_section(
+  buf : Array[Byte],
+  core_instance_idx : Int,
+  entries : Array[(String, Byte)],
+) -> Unit {
+  if entries.length() == 0 {
+    return
+  }
+  buf.push(component_section_alias)
+  let content : Array[Byte] = []
+  component_write_uleb128(content, entries.length())
+  for entry in entries {
+    content.push(b'\x00') // core export from instance
+    content.push(entry.1) // sort
+    content.push(b'\x01') // aliaskind marker
+    component_write_uleb128(content, core_instance_idx)
+    component_write_name(content, entry.0)
+  }
+  component_write_uleb128(buf, content.length())
+  for b in content {
+    buf.push(b)
+  }
+}
+
+///|
+/// Generate a trampoline core wasm module that wraps a vibe function for canonical ABI.
+/// Converts (i32 ptr, i32 len) string params to vibe tagged strings.
+/// Uses cabi_realloc to allocate vibe heap objects, then writes obj_string header + copies bytes.
+/// Imports: "env"."target_func" (i64,...)->i64, "env"."cabi_realloc" (i32,i32,i32,i32)->i32, "env"."memory"
+/// Exports: "canon_func" (i32, i32, ...) -> i64
+fn generate_string_trampoline_module(
+  string_param_count : Int,
+) -> Bytes {
+  let buf : Array[Byte] = []
+  // Magic + version
+  for b in [b'\x00', b'\x61', b'\x73', b'\x6d', b'\x01', b'\x00', b'\x00', b'\x00'] {
+    buf.push(b)
+  }
+  let body = ByteBuf::new()
+
+  // Type section (id=1): 3 types
+  // Type 0: target_func (i64 * string_param_count) -> i64
+  // Type 1: cabi_realloc (i32, i32, i32, i32) -> i32
+  // Type 2: canon_func (i32, i32) * string_param_count -> i64
+  let type_sec = ByteBuf::new()
+  write_u32_leb(type_sec, 3)
+  // Type 0: target func (i64 * count, i32 closure_env) -> i64
+  type_sec.push(b'\x60')
+  write_u32_leb(type_sec, string_param_count + 1) // +1 for closure env
+  for _ in 0..<string_param_count {
+    type_sec.push(b'\x7e') // i64
+  }
+  type_sec.push(b'\x7f') // i32 closure env
+  type_sec.push(b'\x01')
+  type_sec.push(b'\x7e') // result: i64
+  // Type 1: cabi_realloc(i32, i32, i32, i32) -> i32
+  type_sec.push(b'\x60')
+  type_sec.push(b'\x04')
+  for _ in 0..<4 {
+    type_sec.push(b'\x7f') // i32
+  }
+  type_sec.push(b'\x01')
+  type_sec.push(b'\x7f') // result: i32
+  // Type 2: canon func (i32, i32) * count -> i64
+  type_sec.push(b'\x60')
+  write_u32_leb(type_sec, string_param_count * 2)
+  for _ in 0..<(string_param_count * 2) {
+    type_sec.push(b'\x7f') // i32
+  }
+  type_sec.push(b'\x01')
+  type_sec.push(b'\x7e') // result: i64
+  write_section(body, 1, type_sec.data)
+
+  // Import section (id=2): target_func, cabi_realloc, memory
+  let import_sec = ByteBuf::new()
+  write_u32_leb(import_sec, 3)
+  // import 0: target_func
+  write_name(import_sec, "env")
+  write_name(import_sec, "target_func")
+  import_sec.push(b'\x00') // func import
+  write_u32_leb(import_sec, 0) // type 0
+  // import 1: cabi_realloc
+  write_name(import_sec, "env")
+  write_name(import_sec, "cabi_realloc")
+  import_sec.push(b'\x00') // func import
+  write_u32_leb(import_sec, 1) // type 1
+  // import 2: memory
+  write_name(import_sec, "env")
+  write_name(import_sec, "memory")
+  import_sec.push(b'\x02') // memory import
+  import_sec.push(b'\x00') // limits: no max
+  write_u32_leb(import_sec, 0) // min pages
+  write_section(body, 2, import_sec.data)
+
+  // Function section (id=3): 1 function
+  let func_sec = ByteBuf::new()
+  write_u32_leb(func_sec, 1) // 1 function
+  write_u32_leb(func_sec, 2) // uses type 2 (canon func)
+  write_section(body, 3, func_sec.data)
+
+  // Export section (id=7): export the canon func
+  let export_sec = ByteBuf::new()
+  write_u32_leb(export_sec, 1)
+  write_name(export_sec, "canon_func")
+  export_sec.push(b'\x00') // func export
+  write_u32_leb(export_sec, 2) // func index 2 (after 2 func imports)
+  write_section(body, 7, export_sec.data)
+
+  // Code section (id=10): trampoline body
+  let code_sec = ByteBuf::new()
+  write_u32_leb(code_sec, 1) // 1 function body
+
+  // Function body
+  let func_body = ByteBuf::new()
+  // Locals: string_param_count i64 (tagged strings) + string_param_count i32 (obj ptrs)
+  write_u32_leb(func_body, 2) // 2 local declarations
+  write_u32_leb(func_body, string_param_count)
+  func_body.push(b'\x7e') // i64 locals
+  write_u32_leb(func_body, string_param_count)
+  func_body.push(b'\x7f') // i32 locals
+
+  // Layout: params are [ptr0, len0, ptr1, len1, ...]
+  // Locals after params: tagged_0..tagged_n (i64), obj_0..obj_n (i32)
+  let tagged_base = string_param_count * 2
+  let obj_base = tagged_base + string_param_count
+  for i in 0..<string_param_count {
+    let ptr_local = i * 2
+    let len_local = i * 2 + 1
+    let tagged_local = tagged_base + i
+    let obj_local = obj_base + i
+
+    // obj = cabi_realloc(0, 0, 4, 8 + len)
+    emit_i32_const_raw(func_body, 0)
+    emit_i32_const_raw(func_body, 0)
+    emit_i32_const_raw(func_body, 4) // alignment
+    emit_local_get(func_body, len_local)
+    emit_i32_const_raw(func_body, 8)
+    emit_i32_add(func_body)
+    func_body.push(b'\x10') // call
+    write_u32_leb(func_body, 1) // func 1 = cabi_realloc
+    emit_local_set(func_body, obj_local)
+
+    // obj[0] = obj_string (1)
+    emit_local_get(func_body, obj_local)
+    emit_i32_const_raw(func_body, 1) // obj_string = 1
+    emit_i32_store(func_body, 0)
+
+    // obj[4] = len
+    emit_local_get(func_body, obj_local)
+    emit_local_get(func_body, len_local)
+    emit_i32_store(func_body, 4)
+
+    // memory.copy(obj + 8, src_ptr, len)
+    emit_local_get(func_body, obj_local)
+    emit_i32_const_raw(func_body, 8)
+    emit_i32_add(func_body)
+    emit_local_get(func_body, ptr_local)
+    emit_local_get(func_body, len_local)
+    func_body.push(b'\xfc')
+    write_u32_leb(func_body, 10) // memory.copy
+    func_body.push(b'\x00') // dst memory
+    func_body.push(b'\x00') // src memory
+
+    // tagged = (obj as i64) | tag_obj
+    emit_local_get(func_body, obj_local)
+    emit_i64_extend_i32_u(func_body)
+    emit_i64_const_raw(func_body, 1) // tag_obj = 1
+    emit_i64_or(func_body)
+    emit_local_set(func_body, tagged_local)
+  }
+
+  // Call target_func(tagged_0, tagged_1, ..., 0 /*closure_env*/)
+  for i in 0..<string_param_count {
+    emit_local_get(func_body, tagged_base + i)
+  }
+  emit_i32_const_raw(func_body, 0) // dummy closure env
+  func_body.push(b'\x10') // call
+  write_u32_leb(func_body, 0) // func 0 = target_func
+  // result is on stack
+  func_body.push(b'\x0b') // end
+
+  // Write function body with length prefix
+  write_u32_leb(code_sec, func_body.data.length())
+  for b in func_body.data {
+    code_sec.push(b)
+  }
+  write_section(body, 10, code_sec.data)
+
+  for b in body.data {
+    buf.push(b)
+  }
+  Bytes::from_iter(buf.iter())
+}
+
+///|
+/// Canon lift with options (scalar only, no memory/realloc)
 fn emit_canon_lift_func(
   buf : Array[Byte],
   core_func_idx : Int,
   type_idx : Int,
 ) -> Unit {
+  emit_canon_lift_func_with_opts(buf, core_func_idx, type_idx, need_string=false, memory_idx=0, realloc_idx=0)
+}
+
+///|
+/// Canon lift with options, optionally with memory + realloc for string support
+fn emit_canon_lift_func_with_opts(
+  buf : Array[Byte],
+  core_func_idx : Int,
+  type_idx : Int,
+  need_string~ : Bool,
+  memory_idx~ : Int,
+  realloc_idx~ : Int,
+) -> Unit {
   buf.push(b'\x00') // canon lift
   buf.push(b'\x00') // func
   component_write_uleb128(buf, core_func_idx) // core func index
-  component_write_uleb128(buf, 0) // 0 options (no memory/realloc for primitive scalar)
+  if need_string {
+    // 3 options: string-encoding utf8, memory, realloc
+    // Component model binary canon option tags:
+    //   0x00 = string-encoding utf8
+    //   0x03 = memory <memidx>
+    //   0x04 = realloc <funcidx>
+    component_write_uleb128(buf, 3)
+    buf.push(b'\x00') // string-encoding utf8
+    buf.push(b'\x03') // memory
+    component_write_uleb128(buf, memory_idx)
+    buf.push(b'\x04') // realloc
+    component_write_uleb128(buf, realloc_idx)
+  } else {
+    component_write_uleb128(buf, 0) // 0 options (no memory/realloc for primitive scalar)
+  }
   component_write_uleb128(buf, type_idx) // type index
 }
 
@@ -1139,5 +1524,141 @@ pub fn emit_component_wasm_with_lift(
   emit_canon_lift_section(buf, run_core_func_idx, run_type_idx)
   // Section 11: Component export
   emit_component_export_section(buf, export_name, run_func_idx)
+  Bytes::from_iter(buf.iter())
+}
+
+///|
+/// Emit a Component WASM with string param support.
+/// Uses a trampoline core module to convert canonical ABI strings to vibe tagged strings.
+/// The exported function accepts (string, string, ...) -> s64.
+/// Requires core wasm to export: target_func_name (i64,...)->i64, memory, cabi_realloc (i32,i32,i32,i32)->i32
+pub fn emit_component_wasm_with_string_lift(
+  core_wasm : Bytes,
+  target_func_name : String,
+  export_name : String,
+  string_param_count : Int,
+  param_names? : Array[String] = [],
+) -> Bytes {
+  let import_plan = build_core_import_plan(core_wasm)
+  let import_func_count = import_plan.bindings.length()
+  let main_instance_idx = import_plan.module_names.length()
+  // Generate the trampoline module
+  let trampoline_wasm = generate_string_trampoline_module(string_param_count)
+  let buf : Array[Byte] = []
+  // Component header
+  for b in component_magic {
+    buf.push(b)
+  }
+  // Module 0: Core vibe module
+  emit_core_module_section(buf, core_wasm)
+  // Module 1: Trampoline module
+  emit_core_module_section(buf, trampoline_wasm)
+  // Import + lower component imports (same as before)
+  emit_component_type_section_for_sigs(
+    buf,
+    collect_component_import_sigs(import_plan.bindings),
+  )
+  emit_component_import_section_for_funcs(buf, import_plan.bindings)
+  emit_canon_lower_section(buf, import_func_count)
+  emit_core_instance_from_exports_section(buf, import_plan.module_bindings)
+  // Instantiate module 0 (vibe core)
+  emit_core_instance_instantiate_section(buf, 0, import_plan.module_names)
+  // Alias target_func, cabi_realloc, and memory from vibe instance
+  // core func idx: import_func_count = target_func
+  // core func idx: import_func_count + 1 = cabi_realloc
+  // core memory idx: 0 = memory
+  emit_alias_section(buf, main_instance_idx, [
+    (target_func_name, core_sort_func),
+    ("cabi_realloc", core_sort_func),
+    ("memory", core_sort_mem),
+  ])
+  let target_func_core_idx = import_func_count
+  let cabi_realloc_core_idx = import_func_count + 1
+  // Build trampoline instance (module 1) with imports from vibe instance
+  // The trampoline imports: "env"."target_func", "env"."cabi_realloc", "env"."memory"
+  // We create a core instance from exports to satisfy the "env" namespace
+  buf.push(component_section_core_instance)
+  let tramp_inst_content : Array[Byte] = []
+  component_write_uleb128(tramp_inst_content, 1) // 1 instance
+  tramp_inst_content.push(b'\x01') // from exports
+  component_write_uleb128(tramp_inst_content, 3) // 3 exports
+  component_write_name(tramp_inst_content, "target_func")
+  tramp_inst_content.push(core_sort_func)
+  component_write_uleb128(tramp_inst_content, target_func_core_idx)
+  component_write_name(tramp_inst_content, "cabi_realloc")
+  tramp_inst_content.push(core_sort_func)
+  component_write_uleb128(tramp_inst_content, cabi_realloc_core_idx)
+  component_write_name(tramp_inst_content, "memory")
+  tramp_inst_content.push(core_sort_mem)
+  component_write_uleb128(tramp_inst_content, 0) // memory index 0
+  component_write_uleb128(buf, tramp_inst_content.length())
+  for b in tramp_inst_content {
+    buf.push(b)
+  }
+  let env_instance_idx = main_instance_idx + 1
+  // Instantiate module 1 (trampoline) with "env" instance
+  // Cannot use emit_core_instance_instantiate_section because instance index
+  // is not sequential from 0 — we need env_instance_idx explicitly.
+  buf.push(component_section_core_instance)
+  let tramp_inst2 : Array[Byte] = []
+  component_write_uleb128(tramp_inst2, 1) // 1 instance
+  tramp_inst2.push(b'\x00') // instantiate
+  component_write_uleb128(tramp_inst2, 1) // module index 1
+  component_write_uleb128(tramp_inst2, 1) // 1 arg
+  component_write_name(tramp_inst2, "env")
+  tramp_inst2.push(component_instantiation_arg_instance)
+  component_write_uleb128(tramp_inst2, env_instance_idx)
+  component_write_uleb128(buf, tramp_inst2.length())
+  for b in tramp_inst2 {
+    buf.push(b)
+  }
+  let trampoline_instance_idx = env_instance_idx + 1
+  // Alias canon_func from trampoline instance
+  emit_alias_section(buf, trampoline_instance_idx, [
+    ("canon_func", core_sort_func),
+  ])
+  let canon_func_core_idx = cabi_realloc_core_idx + 1
+  // Component type for (string, string, ...) -> s64
+  buf.push(component_section_type)
+  let type_content : Array[Byte] = []
+  component_write_uleb128(type_content, 1) // 1 type
+  // Emit component func type inline with correct param names
+  type_content.push(b'\x40') // component func type
+  component_write_uleb128(type_content, string_param_count)
+  for i in 0..<string_param_count {
+    let name = if i < param_names.length() {
+      param_names[i]
+    } else {
+      "p" + i.to_string()
+    }
+    component_write_name(type_content, name)
+    type_content.push(component_valtype_string)
+  }
+  type_content.push(b'\x00') // single unnamed result
+  type_content.push(component_valtype_s64)
+  component_write_uleb128(buf, type_content.length())
+  for b in type_content {
+    buf.push(b)
+  }
+  let component_type_idx = import_func_count // after all import types
+  // Canon lift with string support (memory + realloc + string-encoding)
+  buf.push(component_section_canon)
+  let canon_content : Array[Byte] = []
+  component_write_uleb128(canon_content, 1) // 1 canon definition
+  emit_canon_lift_func_with_opts(
+    canon_content,
+    canon_func_core_idx,
+    component_type_idx,
+    need_string=true,
+    memory_idx=0,
+    realloc_idx=cabi_realloc_core_idx,
+  )
+  component_write_uleb128(buf, canon_content.length())
+  for b in canon_content {
+    buf.push(b)
+  }
+  // Export the lifted function
+  let lifted_func_idx = import_func_count // component func index
+  emit_component_export_section(buf, export_name, lifted_func_idx)
   Bytes::from_iter(buf.iter())
 }
