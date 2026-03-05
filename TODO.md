@@ -185,6 +185,10 @@ Completed items are archived in `docs/DONE.md`.
   - `VIBE_TEST_BATCH_WEIGHT_CACHE` で過去実行時間を再利用し、バッチ分割を重み付きへ最適化（cold start は `scripts/selfhost_test_batch_weights.seed.json` を seed）
   - `VIBE_SELFHOST_BOOTSTRAP_STAGE_TIMEOUT_SEC` / `VIBE_SELFHOST_SELFBUILD_STAGE_TIMEOUT_SEC` で stage timeout を適用
   - optimize 段階は `VIBE_SELFHOST_PIPELINE_OPT_LEVEL` 指定時のみ実行（長時間化の回避）
+- [x] selfhost workload coverage gate を追加（point/line/branch）
+  - `vibe/compiler/selfhost_coverage_run.vibe` で lex/parse/print/eval/import の smoke workload を実行
+  - `just coverage-selfhost-gate` で `point>=20`, `line>=100`, `branch>=16` を検証
+  - CI (`wasm-codegen-integrity`) に `Selfhost coverage gate` ステップを追加
 
 ## Selfhost Cutover Roadmap (MoonBit -> vibe selfhost, non-HTTP-P3)
 

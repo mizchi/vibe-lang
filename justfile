@@ -89,7 +89,7 @@ coverage-selfhost entry="vibe/compiler/selfhost_coverage_run.vibe":
     scripts/coverage_wasm_source.sh {{entry}}
 
 # Run selfhost workload coverage with KPI gate
-coverage-selfhost-gate point="15" line="100" branch="12":
+coverage-selfhost-gate point="20" line="100" branch="16":
     VIBE_WASM_SOURCE_COVERAGE_MIN_POINT_RATE={{point}} VIBE_WASM_SOURCE_COVERAGE_MIN_LINE_RATE={{line}} VIBE_WASM_SOURCE_COVERAGE_MIN_BRANCH_RATE={{branch}} scripts/coverage_wasm_source.sh vibe/compiler/selfhost_coverage_run.vibe
 
 # Run source-level WASM coverage for eval sidecar tests (`<db>.tests/<target>_test.vibe`)
