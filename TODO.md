@@ -118,14 +118,14 @@ Completed items are archived in `docs/DONE.md`.
 
 目標: importer-level DCE で主要 std モジュールのサイズ最適化。
 
-**Importers (wasm with DCE, 2026-03-01):**
+**Importers (wasm with DCE, 2026-03-05):**
 
 | file | bytes |
 |------|-------|
-| consumer_option_core | 1028 |
-| consumer_option_extra | 1558 |
+| consumer_option_core | 923 |
+| consumer_option_extra | 1352 |
 | consumer_double_core | 1764 |
-| consumer_double_rounding | 4877 |
+| consumer_double_rounding | 4942 |
 
 ベンチ: `scripts/bench_bundle_size.sh`, `bench/bundle_size/cases.txt`
 
