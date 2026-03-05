@@ -176,6 +176,18 @@ first_output_line() {
   awk 'NF { print; exit }' "$stderr_file" 2>/dev/null || true
 }
 
+output_contains_fragment() {
+  local stdout_file="$1"
+  local stderr_file="$2"
+  local fragment="$3"
+  if [ -z "$fragment" ]; then
+    return 0
+  fi
+  printf '%s\n%s\n' \
+    "$(cat "$stdout_file" 2>/dev/null || true)" \
+    "$(cat "$stderr_file" 2>/dev/null || true)" | rg -F -q -- "$fragment"
+}
+
 declare -a CUTOVER_MODES=()
 IFS=',' read -r -a raw_modes <<< "$CUTOVER_MODES_RAW"
 for raw_mode in "${raw_modes[@]}"; do
@@ -310,13 +322,13 @@ done
 FAIL_CANARY_CASES=()
 if [ "$INCLUDE_FAIL_CASES" = "1" ]; then
   FAIL_CANARY_CASES+=(
-    "fixtures/typecheck/import_malformed_separator.vibe|parse"
-    "fixtures/typecheck/type_mismatch_argument.vibe|type"
+    "fixtures/typecheck/import_malformed_separator.vibe|parse|UnexpectedToken"
+    "fixtures/typecheck/type_mismatch_argument.vibe|type|type mismatch (argument)"
   )
 fi
 
 for fail_case in "${FAIL_CANARY_CASES[@]}"; do
-  IFS='|' read -r fail_rel_path expected_class <<< "$fail_case"
+  IFS='|' read -r fail_rel_path expected_class expected_fragment <<< "$fail_case"
   fail_file="$PROJECT_ROOT/$fail_rel_path"
   if [ ! -f "$fail_file" ]; then
     echo "[cutover] warning: fail canary not found, skipping: $fail_file" >&2
@@ -371,8 +383,19 @@ for fail_case in "${FAIL_CANARY_CASES[@]}"; do
         pass_case=0
         hash_match="FAIL CLASS UNEXPECTED"
         echo "[cutover] FAIL-CANARY unexpected class: $fail_file (mode=$mode expected=$expected_class actual=$host_class)" >&2
+      elif [ -n "$expected_fragment" ] && ! output_contains_fragment "$host_stdout" "$host_stderr" "$expected_fragment"; then
+        pass_case=0
+        hash_match="FAIL MSG MISSING(host)"
+        echo "[cutover] FAIL-CANARY missing expected fragment in host output: $fail_file (mode=$mode fragment='$expected_fragment')" >&2
+      elif [ -n "$expected_fragment" ] && ! output_contains_fragment "$selfhost_stdout" "$selfhost_stderr" "$expected_fragment"; then
+        pass_case=0
+        hash_match="FAIL MSG MISSING(selfhost)"
+        echo "[cutover] FAIL-CANARY missing expected fragment in selfhost output: $fail_file (mode=$mode fragment='$expected_fragment')" >&2
       else
         hash_match="YES"
+        if [ -n "$expected_fragment" ]; then
+          det_label="expected=$expected_class,fragment=$expected_fragment"
+        fi
       fi
     fi
 
