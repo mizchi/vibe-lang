@@ -111,6 +111,7 @@ Completed items are archived in `docs/DONE.md`.
   tree-sitter-based extractor を baseline とし、optional semantic providers (compiler/LSP) で type-resolution gaps を補完。
   `vibe ide`/`vibe lsif` は shared backend API 上に維持。
   - [x] 拡張子判定を拡張（`.mts`/`.cts`/`.mjs`/`.cjs`/`.pyi`）
+  - [x] baseline extractor に optional semantic provider フックを追加（row merge API + `vibe ide/lsif` 接続）
 
 ## Bundle Size (In Progress)
 

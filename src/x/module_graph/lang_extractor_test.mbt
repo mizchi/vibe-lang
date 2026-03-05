@@ -132,3 +132,94 @@ test "extract_graph_ir_rows_by_ext dispatches correctly" {
   let unknown = extract_graph_ir_rows_by_ext("file.rs", "fn main() {}")
   assert_true(unknown is Err(_))
 }
+
+///|
+test "extract_graph_ir_rows_with_semantic_provider can refine baseline rows" {
+  let result = extract_graph_ir_rows_with_semantic_provider(
+    "app.ts",
+    "export function greet(name) {}\n",
+    provider=Some(fn(path, source, baseline) {
+      let _ = path
+      let _ = source
+      if baseline.length() == 0 {
+        return Ok([])
+      }
+      let row = baseline[0]
+      let patched = new_graph_ir_row(
+        row.language_id,
+        row.path,
+        row.name,
+        row.kind,
+        "function greet(name: string): string",
+        row.start,
+        row.end,
+        row.module_hash,
+        ["string"],
+        row.refs,
+        row.calls,
+        row.imports,
+      )
+      Ok([patched])
+    }),
+  )
+  match result {
+    Ok(rows) => {
+      assert_eq(rows.length(), 1)
+      assert_eq(rows[0].signature, "function greet(name: string): string")
+      assert_eq(rows[0].type_terms, ["string"])
+    }
+    Err(e) => fail(e)
+  }
+}
+
+///|
+test "extract_graph_ir_rows_with_semantic_provider appends provider-only rows" {
+  let result = extract_graph_ir_rows_with_semantic_provider(
+    "app.ts",
+    "export function greet(name) {}\n",
+    provider=Some(fn(path, source, baseline) {
+      let _ = source
+      let out : Array[GraphIrRow] = []
+      for row in baseline {
+        out.push(row)
+      }
+      out.push(
+        new_graph_ir_row(
+          "typescript",
+          path,
+          "extra_symbol",
+          "function",
+          "function extra_symbol(): void",
+          100,
+          120,
+          @core.content_address_hash_string("extra"),
+          ["void"],
+          [],
+          [],
+          [],
+        ),
+      )
+      Ok(out)
+    }),
+  )
+  match result {
+    Ok(rows) => {
+      assert_eq(rows.length(), 2)
+      assert_eq(rows[1].name, "extra_symbol")
+    }
+    Err(e) => fail(e)
+  }
+}
+
+///|
+test "extract_graph_ir_rows_with_semantic_provider wraps provider error" {
+  let result = extract_graph_ir_rows_with_semantic_provider(
+    "app.ts",
+    "export function greet(name) {}\n",
+    provider=Some(fn(_, _, _) { Err("provider failed") }),
+  )
+  match result {
+    Ok(_) => fail("expected error")
+    Err(err) => assert_eq(err, "semantic provider: provider failed")
+  }
+}

@@ -130,7 +130,7 @@ fn ide_outline_cmd(args : Array[String]) -> Unit {
       let source = @os_fs.read_file_to_string(path) catch {
         e => abort("ide outline: " + e.to_string())
       }
-      match @x_exp.extract_graph_ir_rows_by_ext(path, source) {
+      match @x_exp.extract_graph_ir_rows_with_semantic_provider(path, source) {
         Ok(rows) => {
           if rows.length() == 0 {
             println("No symbols found in " + path)
@@ -244,7 +244,10 @@ fn ide_peek_def_cmd(args : Array[String]) -> Unit {
       let source = @os_fs.read_file_to_string(entry_file) catch {
         e => abort("ide peek-def: " + e.to_string())
       }
-      match @x_exp.extract_graph_ir_rows_by_ext(entry_file, source) {
+      match @x_exp.extract_graph_ir_rows_with_semantic_provider(
+        entry_file,
+        source,
+      ) {
         Ok(rows) => {
           let matches = graph_ir_find_exact_rows(rows, symbol)
           if matches.length() == 0 {
@@ -324,7 +327,10 @@ fn ide_search_cmd(args : Array[String]) -> Unit {
       let source = @os_fs.read_file_to_string(entry_file) catch {
         e => abort("ide search: " + e.to_string())
       }
-      match @x_exp.extract_graph_ir_rows_by_ext(entry_file, source) {
+      match @x_exp.extract_graph_ir_rows_with_semantic_provider(
+        entry_file,
+        source,
+      ) {
         Ok(rows) => {
           let matches = graph_ir_search_rows(rows, query)
           if matches.length() == 0 {
@@ -428,7 +434,10 @@ fn lsif_cmd(args : Array[String]) -> Unit {
       let source = @os_fs.read_file_to_string(entries[0]) catch {
         e => abort("lsif: " + e.to_string())
       }
-      match @x_exp.extract_graph_ir_rows_by_ext(entries[0], source) {
+      match @x_exp.extract_graph_ir_rows_with_semantic_provider(
+        entries[0],
+        source,
+      ) {
         Ok(rows) => {
           let index = graph_ir_rows_to_symbol_index(rows)
           let lines = @frontend.symbol_index_to_lsif_lines(index, fn(path) {
