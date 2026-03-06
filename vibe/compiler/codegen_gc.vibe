@@ -49,7 +49,8 @@ import ./codegen_common.vibe {
   resolve_local, resolve_func,
   emit_str_ref, collect_strings_stmts,
   array_contains_str, collect_free_vars, is_mut_captured_in,
-  str_table_lookup, find_catchall_idx, find_func_stmt
+  str_table_lookup, find_catchall_idx, find_func_stmt,
+  lookup_ctor
 }
 
 // === Expression compiler (GC backend) ===
@@ -77,11 +78,14 @@ let rec compile_expr_gc = (
   lambda_meta_i64: Array[Int],
   num_user_funcs: Int,
   func_offset: Int,
-  closure_type_base: Int
+  closure_type_base: Int,
+  ctor_names: Array[String],
+  ctor_tags: Array[Int],
+  ctor_field_counts: Array[Int]
 ) -> Int with { Error } {
   // shorthand for recursive call
   let ce = (b: Array[Int], e: Expr, ln: Array[String], nl: Int, d: Int) -> Int with { Error } {
-    compile_expr_gc(b, e, ln, nl, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths, d, ref_cell_names, ref_local_indices, refcell_type_idx, lambda_bodies, lambda_param_counts, lambda_captures, lambda_meta_i32, lambda_meta_i64, num_user_funcs, func_offset, closure_type_base)
+    compile_expr_gc(b, e, ln, nl, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths, d, ref_cell_names, ref_local_indices, refcell_type_idx, lambda_bodies, lambda_param_counts, lambda_captures, lambda_meta_i32, lambda_meta_i64, num_user_funcs, func_offset, closure_type_base, ctor_names, ctor_tags, ctor_field_counts)
   }
   match expr {
     EInt(n) => {
@@ -121,6 +125,31 @@ let rec compile_expr_gc = (
           emit_local_get(buf, local_idx)
         }
       } else {
+        // Check if it's a 0-arg enum constructor
+        let ctor_idx = lookup_ctor(ctor_names, name, 0)
+        if ctor_idx >= 0 {
+          let tag_c = array_get(ctor_tags, ctor_idx)
+          let ptr_l = next_local
+          array_push(local_names, "__ctor_ptr")
+          emit_global_get(buf, 0)
+          emit_i64_extend_i32_u(buf)
+          emit_local_set(buf, ptr_l)
+          emit_global_get(buf, 0)
+          emit_i32_const(buf, 8)
+          emit_i32_add(buf)
+          emit_global_set(buf, 0)
+          emit_local_get(buf, ptr_l)
+          emit_i32_wrap_i64(buf)
+          emit_i32_const(buf, tag_c)
+          emit_i32_store(buf, 2, 0)
+          emit_local_get(buf, ptr_l)
+          emit_i32_wrap_i64(buf)
+          emit_i32_const(buf, 0)
+          emit_i32_store(buf, 2, 4)
+          emit_local_get(buf, ptr_l)
+          emit_i64_const(buf, 1)
+          emit_i64_or(buf)
+        } else {
         // Check if it's a top-level function — emit as bare fn value
         let fn_len = array_length(fn_names)
         let rec try_fn = (j: Int) -> Int with { Error } {
@@ -132,6 +161,7 @@ let rec compile_expr_gc = (
         let fidx = array_get(fn_indices, fni)
         let table_slot = fidx - func_offset
         emit_i64_const(buf, (table_slot << 2) | 2)
+        }
       }
       next_local
     },
@@ -188,6 +218,49 @@ let rec compile_expr_gc = (
     ECall(callee, args) => {
       match callee {
         EIdent(fname) => {
+          // Check if this is an enum constructor call
+          let ctor_lookup_idx = lookup_ctor(ctor_names, fname, 0)
+          if ctor_lookup_idx >= 0 {
+            let tag = array_get(ctor_tags, ctor_lookup_idx)
+            let fc = array_get(ctor_field_counts, ctor_lookup_idx)
+            let obj_size = 8 + fc * 8
+            let ptr_local = next_local
+            array_push(local_names, "__ctor_ptr")
+            emit_global_get(buf, 0)
+            emit_i64_extend_i32_u(buf)
+            emit_local_set(buf, ptr_local)
+            emit_global_get(buf, 0)
+            emit_i32_const(buf, obj_size)
+            emit_i32_add(buf)
+            emit_global_set(buf, 0)
+            emit_local_get(buf, ptr_local)
+            emit_i32_wrap_i64(buf)
+            emit_i32_const(buf, tag)
+            emit_i32_store(buf, 2, 0)
+            emit_local_get(buf, ptr_local)
+            emit_i32_wrap_i64(buf)
+            emit_i32_const(buf, fc)
+            emit_i32_store(buf, 2, 4)
+            let mut nl_c = next_local + 1
+            let mut fi_c = 0
+            while fi_c < array_length(args) {
+              nl_c = ce(buf, array_get(args, fi_c), local_names, nl_c, ld)
+              let val_local = nl_c
+              array_push(local_names, "__ctor_val")
+              emit_local_set(buf, val_local)
+              nl_c = nl_c + 1
+              emit_local_get(buf, ptr_local)
+              emit_i32_wrap_i64(buf)
+              emit_local_get(buf, val_local)
+              emit_i64_store(buf, 3, 8 + fi_c * 8)
+              fi_c = fi_c + 1
+            }
+            emit_local_get(buf, ptr_local)
+            emit_i64_const(buf, 1)
+            emit_i64_or(buf)
+            nl_c
+          }
+          else {
           let fn_len2 = array_length(fn_names)
           let rec try_resolve = (j: Int) -> Int {
             if j >= fn_len2 { -1 }
@@ -267,6 +340,7 @@ let rec compile_expr_gc = (
             emit_call_indirect(buf, closure_type_base + num_args)
             nl
           }
+          } // close ctor_lookup else
         },
         _ => {
           // Callee is an arbitrary expression
@@ -450,11 +524,61 @@ let rec compile_expr_gc = (
             emit_if_i64(buf)
             0
           },
+          PCtor(cname_cond, _) => {
+            let ctor_ci = lookup_ctor(ctor_names, cname_cond, 0)
+            let expected_tag = if ctor_ci >= 0 { array_get(ctor_tags, ctor_ci) } else { -1 }
+            emit_local_get(buf, scrut_local)
+            emit_i64_const(buf, -2)
+            emit_i64_and(buf)
+            emit_i32_wrap_i64(buf)
+            emit_i32_load(buf, 2, 0)
+            emit_i32_const(buf, expected_tag)
+            emit_i32_eq(buf)
+            emit_if_i64(buf)
+            0
+          },
+          PString(sval) => {
+            let str_idx = str_table_lookup(str_strs, sval)
+            if str_idx >= 0 {
+              emit_local_get(buf, scrut_local)
+              emit_str_ref(buf, array_get(str_offsets, str_idx), array_get(str_lengths, str_idx))
+              emit_call(buf, 4)
+              emit_i64_const(buf, 1)
+              emit_i64_eq(buf)
+              emit_if_i64(buf)
+            }
+            0
+          },
           _ => 0
         }
-        let (_, arm_body) = array_get(arms, ai)
+        // Compile arm body — for PCtor, bind fields first
+        let (p2, arm_body) = array_get(arms, ai)
         let ld_arm = if ld >= 0 { ld + ai + 1 } else { -1 }
-        ce(buf, arm_body, local_names, nl1, ld_arm)
+        match p2 {
+          PCtor(_, cargs_bind) => {
+            let mut cbi = 0
+            while cbi < array_length(cargs_bind) {
+              match array_get(cargs_bind, cbi) {
+                PBind(pname) => {
+                  let fl = array_length(local_names)
+                  emit_local_get(buf, scrut_local)
+                  emit_i64_const(buf, -2)
+                  emit_i64_and(buf)
+                  emit_i32_wrap_i64(buf)
+                  emit_i64_load(buf, 3, 8 + cbi * 8)
+                  emit_local_set(buf, fl)
+                  array_push(local_names, pname)
+                  0
+                },
+                PWild => 0,
+                _ => 0
+              }
+              cbi = cbi + 1
+            }
+            ce(buf, arm_body, local_names, array_length(local_names), ld_arm)
+          },
+          _ => ce(buf, arm_body, local_names, nl1, ld_arm)
+        }
         emit_else(buf)
         ai = ai + 1
       }
@@ -471,13 +595,26 @@ let rec compile_expr_gc = (
             0
           },
           PCtor(cname, cargs) => {
-            if array_length(cargs) == 0 {
-              let bind_local2 = array_length(local_names)
-              emit_local_get(buf, scrut_local)
-              emit_local_set(buf, bind_local2)
-              array_push(local_names, cname)
-              ce(buf, cbody, local_names, array_length(local_names), ld_catch)
-            } else { 0 }
+            let mut cbi2 = 0
+            while cbi2 < array_length(cargs) {
+              match array_get(cargs, cbi2) {
+                PBind(pname) => {
+                  let fl2 = array_length(local_names)
+                  emit_local_get(buf, scrut_local)
+                  emit_i64_const(buf, -2)
+                  emit_i64_and(buf)
+                  emit_i32_wrap_i64(buf)
+                  emit_i64_load(buf, 3, 8 + cbi2 * 8)
+                  emit_local_set(buf, fl2)
+                  array_push(local_names, pname)
+                  0
+                },
+                PWild => 0,
+                _ => 0
+              }
+              cbi2 = cbi2 + 1
+            }
+            ce(buf, cbody, local_names, array_length(local_names), ld_catch)
             0
           },
           PTuple(pats) => {
@@ -669,7 +806,7 @@ let rec compile_expr_gc = (
         lam_ref_cells, lam_ref_local_indices, refcell_type_idx,
         lambda_bodies, lambda_param_counts, lambda_captures,
         lambda_meta_i32, lambda_meta_i64, num_user_funcs, func_offset,
-        closure_type_base
+        closure_type_base, ctor_names, ctor_tags, ctor_field_counts
       )
 
       // Record lambda AFTER body compilation (nested lambdas already added)
@@ -1168,6 +1305,13 @@ let gen_int_to_double_body = () -> Array[Int] {
   b
 }
 
+// Generate __identity body (func 16): (val: i64) -> i64
+let gen_identity_body = () -> Array[Int] {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  b
+}
+
 // === WASI Module compiler (GC backend) ===
 
 export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> Bytes with { Error } {
@@ -1192,6 +1336,29 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
       _ => 0
     }
     i = i + 1
+  }
+
+  // Collect enum variant constructors
+  let ctor_names_list = array_slice([""], 0, 0)
+  let ctor_tags_list = array_slice([0], 0, 0)
+  let ctor_field_counts_list = array_slice([0], 0, 0)
+  let mut ei2 = 0
+  while ei2 < array_length(stmts) {
+    match array_get(stmts, ei2) {
+      SEnum(_, _, variants) => {
+        let mut vi = 0
+        while vi < array_length(variants) {
+          let (vname, vfields) = array_get(variants, vi)
+          array_push(ctor_names_list, vname)
+          array_push(ctor_tags_list, vi)
+          array_push(ctor_field_counts_list, array_length(vfields))
+          vi = vi + 1
+        }
+        0
+      },
+      _ => 0
+    }
+    ei2 = ei2 + 1
   }
 
   let num_user_funcs = array_length(fn_names_list)
@@ -1232,11 +1399,11 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
 
   // Function layout:
   // func 0: fd_write (import)
-  // func 1-12: generated builtins (12 funcs)
-  // func 13..13+N-1: user functions (NO __env param)
-  // func 13+N: _start
-  let num_generated = 15
-  let func_offset = 1 + num_generated  // = 16
+  // func 1-16: generated builtins (16 funcs)
+  // func 17..17+N-1: user functions
+  // func 17+N: _start
+  let num_generated = 16
+  let func_offset = 1 + num_generated  // = 17
 
   // Register user-callable builtins
   array_push(fn_names_list, "print_int")
@@ -1269,6 +1436,13 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
   array_push(fn_param_counts, 1)
   array_push(fn_names_list, "string_substring")
   array_push(fn_param_counts, 3)
+  // array_builder aliases
+  array_push(fn_names_list, "array_builder")
+  array_push(fn_param_counts, 0)
+  array_push(fn_names_list, "array_builder_push")
+  array_push(fn_param_counts, 2)
+  array_push(fn_names_list, "array_builder_freeze")
+  array_push(fn_param_counts, 1)
 
   // Build fn_indices and fn_returns
   let fn_indices_list = array_slice([0], 0, 0)
@@ -1309,6 +1483,13 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
   array_push(fn_indices_list, 14)  // string_from_char_code
   array_push(fn_returns_list, 1)
   array_push(fn_indices_list, 15)  // string_substring
+  array_push(fn_returns_list, 1)
+  // array_builder aliases
+  array_push(fn_indices_list, 6)   // array_builder -> array_new
+  array_push(fn_returns_list, 1)
+  array_push(fn_indices_list, 9)   // array_builder_push -> array_push
+  array_push(fn_returns_list, 0)
+  array_push(fn_indices_list, 16)  // array_builder_freeze -> identity
   array_push(fn_returns_list, 1)
 
   // === Type section ===
@@ -1408,6 +1589,11 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
   array_push(meta_i64, 0)
   array_push(user_ref_local_indices_all, array_slice([0], 0, 0))
 
+  array_push(bodies, gen_identity_body())
+  array_push(meta_i32, 0)
+  array_push(meta_i64, 0)
+  array_push(user_ref_local_indices_all, array_slice([0], 0, 0))
+
   // Compile user function bodies (with __env param for table compatibility)
   let mut bi = 0
   while bi < num_user_funcs {
@@ -1437,7 +1623,8 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
               ref_cell_names_f, ref_local_indices_f, refcell_type_idx,
               lambda_bodies_w, lambda_param_counts_w, lambda_captures_w,
               lambda_meta_i32_w, lambda_meta_i64_w, num_user_funcs, func_offset,
-              closure_type_base
+              closure_type_base,
+              ctor_names_list, ctor_tags_list, ctor_field_counts_list
             )
             array_push(bodies, body_buf)
             let extra = if final_nl > param_count { final_nl - param_count } else { 0 }
@@ -1556,6 +1743,7 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
   array_push(func_type_indices, 4)  // __str_char_code_at
   array_push(func_type_indices, 3)  // __str_from_char_code
   array_push(func_type_indices, 8)  // __str_substring
+  array_push(func_type_indices, 3)  // __identity (array_builder_freeze)
   // User funcs: type = closure call type for their arity (includes env)
   let mut fti = 0
   while fti < num_user_funcs {
