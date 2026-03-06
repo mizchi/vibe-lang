@@ -6,6 +6,7 @@ pub enum CompileMode {
   WasmGc
   Component
   ComponentStringLift
+  ComposeP3
   Wac
   Wit
   WitComponent
@@ -21,6 +22,7 @@ pub struct CompileCmdOptions {
   http_host_imports : Bool
   force_cabi_realloc : Bool
   is_async : Bool
+  adapter_path : String?
   out_path : String?
   entry_path : String
   opt_level : String?
@@ -91,6 +93,7 @@ pub fn parse_compile_cmd_args(
   let mut http_host_imports = false
   let mut force_cabi_realloc = false
   let mut is_async = false
+  let mut adapter_path : String? = None
   let mut out_path : String? = None
   let mut entry_path : String? = None
   let mut opt_level : String? = None
@@ -117,6 +120,17 @@ pub fn parse_compile_cmd_args(
       "--component-string-lift" => {
         mode = CompileMode::ComponentStringLift
         i += 1
+      }
+      "--compose-p3" => {
+        mode = CompileMode::ComposeP3
+        i += 1
+      }
+      "--adapter" => {
+        if i + 1 >= args.length() {
+          return Err("compile: missing adapter path after --adapter")
+        }
+        adapter_path = Some(args[i + 1])
+        i += 2
       }
       "--wac" => {
         mode = CompileMode::Wac
@@ -221,6 +235,11 @@ pub fn parse_compile_cmd_args(
           "compile: --async is only supported with --component-string-lift",
         )
       }
+      if mode == CompileMode::ComposeP3 && adapter_path is None {
+        return Err(
+          "compile: --compose-p3 requires --adapter <adapter.wasm>",
+        )
+      }
       Ok({
         mode,
         no_dce,
@@ -230,6 +249,7 @@ pub fn parse_compile_cmd_args(
         http_host_imports,
         force_cabi_realloc,
         is_async,
+        adapter_path,
         out_path,
         entry_path: path,
         opt_level,
