@@ -1,0 +1,59 @@
+import ./lexer.vibe { lex }
+import ./parser.vibe { parse_program }
+import ./codegen.vibe { compile_module }
+
+// Helper: compile vibe source to .wasm bytes
+let compile_source = (source: String) -> Bytes with { Error } {
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  compile_module(stmts)
+}
+
+test "codegen: add function" {
+  let source = "export let add = (a: Int, b: Int) -> Int { a + b }"
+  let bytes = compile_source(source)
+  fs_write_bytes("/tmp/test_cg_add.wasm", bytes)
+  sh("wasmtime run --invoke add /tmp/test_cg_add.wasm 3 4")
+}
+
+test "codegen: sub function" {
+  let source = "export let sub = (a: Int, b: Int) -> Int { a - b }"
+  let bytes = compile_source(source)
+  fs_write_bytes("/tmp/test_cg_sub.wasm", bytes)
+  sh("wasmtime run --invoke sub /tmp/test_cg_sub.wasm 10 3")
+}
+
+test "codegen: mul function" {
+  let source = "export let mul = (a: Int, b: Int) -> Int { a * b }"
+  let bytes = compile_source(source)
+  fs_write_bytes("/tmp/test_cg_mul.wasm", bytes)
+  sh("wasmtime run --invoke mul /tmp/test_cg_mul.wasm 6 7")
+}
+
+test "codegen: if-else" {
+  let source = "export let max = (a: Int, b: Int) -> Int { if a > b { a } else { b } }"
+  let bytes = compile_source(source)
+  fs_write_bytes("/tmp/test_cg_max.wasm", bytes)
+  sh("wasmtime run --invoke max /tmp/test_cg_max.wasm 3 7")
+}
+
+test "codegen: local let" {
+  let source = "export let f = (x: Int) -> Int { let y = x + 1\ny * 2 }"
+  let bytes = compile_source(source)
+  fs_write_bytes("/tmp/test_cg_let.wasm", bytes)
+  sh("wasmtime run --invoke f /tmp/test_cg_let.wasm 5")
+}
+
+test "codegen: multi-function with internal call" {
+  let source = "let square = (x: Int) -> Int { x * x }\nexport let sum_sq = (a: Int, b: Int) -> Int { square(a) + square(b) }"
+  let bytes = compile_source(source)
+  fs_write_bytes("/tmp/test_cg_sumsq.wasm", bytes)
+  sh("wasmtime run --invoke sum_sq /tmp/test_cg_sumsq.wasm 3 4")
+}
+
+test "codegen: while loop (factorial)" {
+  let source = "export let fact = (n: Int) -> Int {\n  let mut result = 1\n  let mut i = n\n  while i > 1 {\n    result = result * i\n    i = i - 1\n  }\n  result\n}"
+  let bytes = compile_source(source)
+  fs_write_bytes("/tmp/test_cg_fact.wasm", bytes)
+  sh("wasmtime run --invoke fact /tmp/test_cg_fact.wasm 10")
+}
