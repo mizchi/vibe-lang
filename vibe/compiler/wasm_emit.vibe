@@ -309,9 +309,143 @@ export let emit_i64_extend_i32_s = (buf: Array[Int]) -> Unit {
   bytebuf_push(buf, 172)  // 0xAC
 }
 
-// i32.wrap_i64 — truncate i64 to i32 (for br_if which needs i32 condition)
+// i32.wrap_i64 — truncate i64 to i32
 export let emit_i32_wrap_i64 = (buf: Array[Int]) -> Unit {
   bytebuf_push(buf, 167)  // 0xA7
+}
+
+// === i32 instructions (needed for WASI APIs) ===
+
+export let emit_i32_const = (buf: Array[Int], value: Int) -> Unit {
+  bytebuf_push(buf, 65)  // i32.const
+  leb128_encode_s64(buf, value)  // sleb128 works for i32 too
+}
+
+export let emit_i32_add = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 106)  // 0x6A
+}
+
+export let emit_i32_store = (buf: Array[Int], align: Int, offset: Int) -> Unit {
+  bytebuf_push(buf, 54)  // 0x36 i32.store
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
+
+export let emit_i32_load = (buf: Array[Int], align: Int, offset: Int) -> Unit {
+  bytebuf_push(buf, 40)  // 0x28 i32.load
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
+
+export let emit_i32_store8 = (buf: Array[Int], align: Int, offset: Int) -> Unit {
+  bytebuf_push(buf, 58)  // 0x3A i32.store8
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
+
+export let emit_i32_load8_u = (buf: Array[Int], align: Int, offset: Int) -> Unit {
+  bytebuf_push(buf, 45)  // 0x2D i32.load8_u
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
+
+// === Section emitters: Import, Data, Global ===
+
+// Emit raw func type with explicit valtype arrays
+// param_types/result_types: arrays of valtype ints (126=i64, 127=i32)
+export let emit_func_type_raw = (buf: Array[Int], param_types: Array[Int], result_types: Array[Int]) -> Unit {
+  bytebuf_push(buf, 96)  // 0x60
+  leb128_encode_u32(buf, array_length(param_types))
+  let mut i = 0
+  while i < array_length(param_types) {
+    bytebuf_push(buf, array_get(param_types, i))
+    i = i + 1
+  }
+  leb128_encode_u32(buf, array_length(result_types))
+  let mut j = 0
+  while j < array_length(result_types) {
+    bytebuf_push(buf, array_get(result_types, j))
+    j = j + 1
+  }
+}
+
+// Emit import section: import a function
+// module_name, field_name: import path, type_idx: type index
+export let emit_import_section_func = (out: Array[Int], module_name: String, field_name: String, type_idx: Int) -> Unit {
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, 1)  // 1 import
+  emit_name(content, module_name)
+  emit_name(content, field_name)
+  bytebuf_push(content, 0)  // import kind: function
+  leb128_encode_u32(content, type_idx)
+  bytebuf_push_section(out, 2, content)  // section id 2 = import
+}
+
+// Emit data section: place byte data at a memory offset
+// segments: array of [offset, data_buf] pairs
+export let emit_data_section = (out: Array[Int], offset: Int, data: Array[Int]) -> Unit {
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, 1)  // 1 data segment
+  // Active data segment: memory index 0
+  bytebuf_push(content, 0)  // flags: active, memory 0
+  // Offset expression: i32.const <offset>, end
+  emit_i32_const(content, offset)
+  emit_end(content)
+  // Data bytes
+  leb128_encode_u32(content, array_length(data))
+  bytebuf_push_array(content, data)
+  bytebuf_push_section(out, 11, content)  // section id 11 = data
+}
+
+// Emit global section: one mutable i32 global with initial value
+export let emit_global_section_i32_mut = (out: Array[Int], init_value: Int) -> Unit {
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, 1)  // 1 global
+  bytebuf_push(content, 127)  // i32
+  bytebuf_push(content, 1)    // mutable
+  emit_i32_const(content, init_value)
+  emit_end(content)
+  bytebuf_push_section(out, 6, content)  // section id 6 = global
+}
+
+export let emit_global_get = (buf: Array[Int], idx: Int) -> Unit {
+  bytebuf_push(buf, 35)  // global.get
+  leb128_encode_u32(buf, idx)
+}
+
+export let emit_global_set = (buf: Array[Int], idx: Int) -> Unit {
+  bytebuf_push(buf, 36)  // global.set
+  leb128_encode_u32(buf, idx)
+}
+
+// Emit export for memory
+export let emit_export_memory = (out: Array[Int], name: String, mem_idx: Int) -> Unit {
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, 1)
+  emit_name(content, name)
+  bytebuf_push(content, 2)  // export kind: memory
+  leb128_encode_u32(content, mem_idx)
+  bytebuf_push_section(out, 7, content)
+}
+
+// Emit combined export section: functions + optional memory
+export let emit_exports_with_memory = (out: Array[Int], fn_names: Array[String], fn_indices: Array[Int], mem_name: String, mem_idx: Int) -> Unit {
+  let count = array_length(fn_names) + 1
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, count)
+  // Function exports
+  let mut i = 0
+  while i < array_length(fn_names) {
+    emit_name(content, array_get(fn_names, i))
+    bytebuf_push(content, 0)  // function
+    leb128_encode_u32(content, array_get(fn_indices, i))
+    i = i + 1
+  }
+  // Memory export
+  emit_name(content, mem_name)
+  bytebuf_push(content, 2)  // memory
+  leb128_encode_u32(content, mem_idx)
+  bytebuf_push_section(out, 7, content)
 }
 
 // === High-level: build a complete module ===
@@ -505,5 +639,77 @@ export let build_factorial_module = () -> Bytes {
   emit_local_get(b, 1)
 
   emit_code_section_with_locals(out, [b], [1])
+  bytebuf_to_bytes(out)
+}
+
+// Build a WASI hello world module
+// Imports fd_write from wasi_snapshot_preview1, writes "hello world\n" to stdout
+export let build_hello_module = () -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+
+  // Type section:
+  //   type0: fd_write(i32, i32, i32, i32) -> i32
+  //   type1: _start() -> void
+  let type_content = bytebuf_new()
+  bytebuf_push_vec_header(type_content, 2)
+  emit_func_type_raw(type_content, [127, 127, 127, 127], [127])
+  emit_func_type_raw(type_content, array_slice([0], 0, 0), array_slice([0], 0, 0))
+  bytebuf_push_section(out, 1, type_content)
+
+  // Import section: fd_write from wasi_snapshot_preview1 (func index 0)
+  emit_import_section_func(out, "wasi_snapshot_preview1", "fd_write", 0)
+
+  // Function section: _start is func index 1 (after 1 import), type 1
+  emit_function_section(out, [1])
+
+  // Memory section: 1 page
+  emit_memory_section(out, 1)
+
+  // Export section: _start + memory
+  emit_exports_with_memory(out, ["_start"], [1], "memory", 0)
+
+  // Code section: _start body (must come before data section)
+  // Setup iovec at memory[0]: {ptr=8, len=12}
+  // Then call fd_write(1, 0, 1, 100)
+  //   fd=1 (stdout), iovs_ptr=0, iovs_count=1, nwritten_ptr=100
+  let b = bytebuf_new()
+
+  // mem[0] = 8 (iovec.buf pointer)
+  emit_i32_const(b, 0)
+  emit_i32_const(b, 8)
+  emit_i32_store(b, 2, 0)
+
+  // mem[4] = 12 (iovec.buf_len)
+  emit_i32_const(b, 4)
+  emit_i32_const(b, 12)
+  emit_i32_store(b, 2, 0)
+
+  // call fd_write(1, 0, 1, 100)
+  emit_i32_const(b, 1)    // fd = stdout
+  emit_i32_const(b, 0)    // iovs ptr
+  emit_i32_const(b, 1)    // iovs count
+  emit_i32_const(b, 100)  // nwritten ptr
+  emit_call(b, 0)         // call fd_write (import index 0)
+  emit_drop(b)            // discard return value
+
+  emit_code_section(out, [b])
+
+  // Data section: "hello world\n" at offset 8
+  let hello_data = bytebuf_new()
+  bytebuf_push(hello_data, 104)  // h
+  bytebuf_push(hello_data, 101)  // e
+  bytebuf_push(hello_data, 108)  // l
+  bytebuf_push(hello_data, 108)  // l
+  bytebuf_push(hello_data, 111)  // o
+  bytebuf_push(hello_data, 32)   // ' '
+  bytebuf_push(hello_data, 119)  // w
+  bytebuf_push(hello_data, 111)  // o
+  bytebuf_push(hello_data, 114)  // r
+  bytebuf_push(hello_data, 108)  // l
+  bytebuf_push(hello_data, 100)  // d
+  bytebuf_push(hello_data, 10)   // \n
+  emit_data_section(out, 8, hello_data)
+
   bytebuf_to_bytes(out)
 }
