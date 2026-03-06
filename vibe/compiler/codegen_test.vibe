@@ -1,6 +1,6 @@
 import ./lexer.vibe { lex }
 import ./parser.vibe { parse_program }
-import ./codegen.vibe { compile_module }
+import ./codegen.vibe { compile_module, compile_wasi_module }
 
 // Helper: compile vibe source to .wasm bytes
 let compile_source = (source: String) -> Bytes with { Error } {
@@ -51,9 +51,73 @@ test "codegen: multi-function with internal call" {
   sh("wasmtime run --invoke sum_sq /tmp/test_cg_sumsq.wasm 3 4")
 }
 
+test "codegen: recursive fibonacci" {
+  let source = "export let rec fib = (n: Int) -> Int {\n  if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }\n}"
+  let bytes = compile_source(source)
+  fs_write_bytes("/tmp/test_cg_fib.wasm", bytes)
+  sh("wasmtime run --invoke fib /tmp/test_cg_fib.wasm 10")
+}
+
+test "codegen: recursive factorial" {
+  let source = "export let rec fact = (n: Int) -> Int {\n  if n <= 1 { 1 } else { n * fact(n - 1) }\n}"
+  let bytes = compile_source(source)
+  fs_write_bytes("/tmp/test_cg_rfact.wasm", bytes)
+  sh("wasmtime run --invoke fact /tmp/test_cg_rfact.wasm 10")
+}
+
 test "codegen: while loop (factorial)" {
   let source = "export let fact = (n: Int) -> Int {\n  let mut result = 1\n  let mut i = n\n  while i > 1 {\n    result = result * i\n    i = i - 1\n  }\n  result\n}"
   let bytes = compile_source(source)
   fs_write_bytes("/tmp/test_cg_fact.wasm", bytes)
   sh("wasmtime run --invoke fact /tmp/test_cg_fact.wasm 10")
+}
+
+// === WASI module tests ===
+
+let compile_wasi = (source: String, entry: String) -> Bytes with { Error } {
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  compile_wasi_module(stmts, entry)
+}
+
+test "wasi: simple constant" {
+  let source = "let main = () -> Int { 42 }"
+  let bytes = compile_wasi(source, "main")
+  fs_write_bytes("/tmp/test_cg_wasi_const.wasm", bytes)
+  sh("wasmtime run /tmp/test_cg_wasi_const.wasm")
+}
+
+test "wasi: arithmetic" {
+  let source = "let main = () -> Int { 3 + 4 * 5 }"
+  let bytes = compile_wasi(source, "main")
+  fs_write_bytes("/tmp/test_cg_wasi_arith.wasm", bytes)
+  sh("wasmtime run /tmp/test_cg_wasi_arith.wasm")
+}
+
+test "wasi: fibonacci" {
+  let source = "let rec fib = (n: Int) -> Int {\n  if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }\n}\nlet main = () -> Int { fib(10) }"
+  let bytes = compile_wasi(source, "main")
+  fs_write_bytes("/tmp/test_cg_wasi_fib.wasm", bytes)
+  sh("wasmtime run /tmp/test_cg_wasi_fib.wasm")
+}
+
+test "wasi: negative number" {
+  let source = "let main = () -> Int { -123 }"
+  let bytes = compile_wasi(source, "main")
+  fs_write_bytes("/tmp/test_cg_wasi_neg.wasm", bytes)
+  sh("wasmtime run /tmp/test_cg_wasi_neg.wasm")
+}
+
+test "wasi: zero" {
+  let source = "let main = () -> Int { 0 }"
+  let bytes = compile_wasi(source, "main")
+  fs_write_bytes("/tmp/test_cg_wasi_zero.wasm", bytes)
+  sh("wasmtime run /tmp/test_cg_wasi_zero.wasm")
+}
+
+test "wasi: factorial" {
+  let source = "let rec fact = (n: Int) -> Int {\n  if n <= 1 { 1 } else { n * fact(n - 1) }\n}\nlet main = () -> Int { fact(12) }"
+  let bytes = compile_wasi(source, "main")
+  fs_write_bytes("/tmp/test_cg_wasi_fact.wasm", bytes)
+  sh("wasmtime run /tmp/test_cg_wasi_fact.wasm")
 }
