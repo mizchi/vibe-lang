@@ -1,0 +1,150 @@
+// WASM binary emitter — generates minimal valid .wasm modules
+// Uses bytebuf.vibe for byte-level binary construction
+
+import ./bytebuf.vibe {
+  bytebuf_new, bytebuf_push, bytebuf_length, bytebuf_to_bytes,
+  bytebuf_push_array, bytebuf_push_section, bytebuf_push_vec_header,
+  leb128_encode_u32, leb128_encode_s64
+}
+
+// === Emit helpers ===
+
+// Emit WASM magic number and version
+export let emit_header = (buf: Array[Int]) -> Unit {
+  // \0asm
+  bytebuf_push(buf, 0)
+  bytebuf_push(buf, 97)   // 'a'
+  bytebuf_push(buf, 115)  // 's'
+  bytebuf_push(buf, 109)  // 'm'
+  // version 1 (little-endian u32)
+  bytebuf_push(buf, 1)
+  bytebuf_push(buf, 0)
+  bytebuf_push(buf, 0)
+  bytebuf_push(buf, 0)
+}
+
+// Encode a function type: (params...) -> (results...)
+// All params and results are i64 (valtype 0x7E = 126)
+export let emit_func_type = (buf: Array[Int], param_count: Int, result_count: Int) -> Unit {
+  bytebuf_push(buf, 96)  // 0x60 = func type marker
+  leb128_encode_u32(buf, param_count)
+  let mut i = 0
+  while i < param_count {
+    bytebuf_push(buf, 126)  // i64
+    i = i + 1
+  }
+  leb128_encode_u32(buf, result_count)
+  let mut j = 0
+  while j < result_count {
+    bytebuf_push(buf, 126)  // i64
+    j = j + 1
+  }
+}
+
+// Emit type section with a single function type
+export let emit_type_section = (out: Array[Int], param_count: Int, result_count: Int) -> Unit {
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, 1)  // 1 type
+  emit_func_type(content, param_count, result_count)
+  bytebuf_push_section(out, 1, content)  // section id 1 = type
+}
+
+// Emit function section — maps function index to type index
+export let emit_function_section = (out: Array[Int], type_indices: Array[Int]) -> Unit {
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, array_length(type_indices))
+  let mut i = 0
+  while i < array_length(type_indices) {
+    leb128_encode_u32(content, array_get(type_indices, i))
+    i = i + 1
+  }
+  bytebuf_push_section(out, 3, content)  // section id 3 = function
+}
+
+// Emit export section — export a function by name
+export let emit_export_section = (out: Array[Int], name: String, func_idx: Int) -> Unit {
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, 1)  // 1 export
+  // name as ASCII bytes (char_code_at returns UTF-16 code units, ok for ASCII)
+  let name_len = string_length(name)
+  leb128_encode_u32(content, name_len)
+  let mut i = 0
+  while i < name_len {
+    bytebuf_push(content, string_char_code_at(name, i))
+    i = i + 1
+  }
+  bytebuf_push(content, 0)  // export kind: function
+  leb128_encode_u32(content, func_idx)
+  bytebuf_push_section(out, 7, content)  // section id 7 = export
+}
+
+// Emit a code section with function bodies
+// Each body is pre-encoded instructions (without end opcode)
+export let emit_code_section = (out: Array[Int], bodies: Array[Array[Int]]) -> Unit {
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, array_length(bodies))
+  let mut i = 0
+  while i < array_length(bodies) {
+    let body = array_get(bodies, i)
+    // Each function body: size + 0_local_decls + instructions + end
+    let func_buf = bytebuf_new()
+    leb128_encode_u32(func_buf, 0)  // 0 local declarations
+    bytebuf_push_array(func_buf, body)
+    bytebuf_push(func_buf, 11)  // end opcode
+    // Write size-prefixed body
+    leb128_encode_u32(content, bytebuf_length(func_buf))
+    bytebuf_push_array(content, func_buf)
+    i = i + 1
+  }
+  bytebuf_push_section(out, 10, content)  // section id 10 = code
+}
+
+// === Instruction emitters ===
+
+export let emit_local_get = (buf: Array[Int], idx: Int) -> Unit {
+  bytebuf_push(buf, 32)  // local.get
+  leb128_encode_u32(buf, idx)
+}
+
+export let emit_i64_const = (buf: Array[Int], value: Int) -> Unit {
+  bytebuf_push(buf, 66)  // i64.const
+  leb128_encode_s64(buf, value)
+}
+
+export let emit_i64_add = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 124)  // i64.add
+}
+
+export let emit_i64_sub = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 125)  // i64.sub
+}
+
+export let emit_i64_mul = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 126)  // i64.mul
+}
+
+// === High-level: build a complete module ===
+
+// Build a minimal WASM module with one exported function: add(i64, i64) -> i64
+export let build_add_module = () -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+
+  // Type section: (i64, i64) -> (i64)
+  emit_type_section(out, 2, 1)
+
+  // Function section: func 0 uses type 0
+  emit_function_section(out, [0])
+
+  // Export section: export "add" as func 0
+  emit_export_section(out, "add", 0)
+
+  // Code section: func body = local.get 0, local.get 1, i64.add
+  let body = bytebuf_new()
+  emit_local_get(body, 0)
+  emit_local_get(body, 1)
+  emit_i64_add(body)
+  emit_code_section(out, [body])
+
+  bytebuf_to_bytes(out)
+}

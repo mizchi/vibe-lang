@@ -1,0 +1,53 @@
+import ./wasm_emit.vibe {
+  build_add_module, emit_header
+}
+import ./bytebuf.vibe {
+  bytebuf_new, bytebuf_length, bytebuf_to_bytes
+}
+
+test "wasm header" {
+  let buf = bytebuf_new()
+  emit_header(buf)
+  assert(bytebuf_length(buf) == 8)
+  let bytes = bytebuf_to_bytes(buf)
+  assert(bytes_get(bytes, 0) == 0)
+  assert(bytes_get(bytes, 1) == 97)
+  assert(bytes_get(bytes, 2) == 115)
+  assert(bytes_get(bytes, 3) == 109)
+  assert(bytes_get(bytes, 4) == 1)
+  assert(bytes_get(bytes, 5) == 0)
+  assert(bytes_get(bytes, 6) == 0)
+  assert(bytes_get(bytes, 7) == 0)
+}
+
+test "build_add_module produces valid wasm" {
+  let bytes = build_add_module()
+  // Must have magic + version (8 bytes) + sections
+  assert(bytes_length(bytes) > 20)
+  // Magic: \0asm
+  assert(bytes_get(bytes, 0) == 0)
+  assert(bytes_get(bytes, 1) == 97)
+  assert(bytes_get(bytes, 2) == 115)
+  assert(bytes_get(bytes, 3) == 109)
+  // Version 1
+  assert(bytes_get(bytes, 4) == 1)
+  // After header: type section (id=1)
+  assert(bytes_get(bytes, 8) == 1)
+}
+
+test "build_add_module writes to file" {
+  let bytes = build_add_module()
+  fs_write_bytes("/tmp/test_vibe_add.wasm", bytes)
+  // Verify file was written by reading it back
+  let read_back = fs_read_bytes("/tmp/test_vibe_add.wasm")
+  assert(bytes_length(read_back) == bytes_length(bytes))
+  assert(bytes_get(read_back, 0) == 0)
+  assert(bytes_get(read_back, 1) == 97)
+}
+
+test "build_add_module validates with wasmtime" {
+  let bytes = build_add_module()
+  fs_write_bytes("/tmp/test_vibe_add.wasm", bytes)
+  // Use sh to validate (sh returns Unit, we just check it doesn't error)
+  sh("wasmtime run --invoke add /tmp/test_vibe_add.wasm 3 4")
+}
