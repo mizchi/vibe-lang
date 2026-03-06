@@ -1,5 +1,6 @@
 // AST-to-WASM codegen — compiles vibe AST to WASM binary
-// Subset: Int arithmetic, let bindings, functions, if/else, while, calls
+// Supports: Int arithmetic, let/mut/assign, functions, if/else, while, calls,
+// strings (packed i64 refs), tuples (heap), arrays (heap), match expressions
 
 import ./ast.vibe {
   Expr, Pat, Stmt, TypeExpr
@@ -26,7 +27,7 @@ import ./wasm_emit.vibe {
   emit_i64_eq, emit_i64_ne, emit_i64_lt_s, emit_i64_gt_s,
   emit_i64_le_s, emit_i64_ge_s, emit_i64_eqz,
   emit_i64_extend_i32_s, emit_i32_wrap_i64,
-  emit_i32_const, emit_i32_store, emit_i32_add,
+  emit_i32_const, emit_i32_store, emit_i32_add, emit_i32_load,
   emit_i32_store8, emit_i32_load8_u,
   emit_call, emit_drop, emit_return,
   emit_block_void, emit_block_i64, emit_loop_void,
@@ -36,16 +37,59 @@ import ./wasm_emit.vibe {
   string_to_data
 }
 
+// === Additional i32/i64 ops not in wasm_emit ===
+
+let emit_i32_sub = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 107)  // 0x6B
+}
+
+let emit_i32_mul = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 108)  // 0x6C
+}
+
+let emit_i32_ne = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 71)  // 0x47
+}
+
+let emit_i32_eq = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 70)  // 0x46
+}
+
+let emit_i32_ge_u = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 79)  // 0x4F
+}
+
+let emit_i32_eqz = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 69)  // 0x45
+}
+
+let emit_i64_store = (buf: Array[Int], align: Int, offset: Int) -> Unit {
+  bytebuf_push(buf, 55)  // 0x37
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
+
+let emit_i64_load = (buf: Array[Int], align: Int, offset: Int) -> Unit {
+  bytebuf_push(buf, 41)  // 0x29
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
+
+let emit_i64_extend_i32_u = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 173)  // 0xAD
+}
+
+let emit_memory_copy = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 252)  // 0xFC prefix
+  leb128_encode_u32(buf, 10)  // memory.copy
+  bytebuf_push(buf, 0)  // src memory
+  bytebuf_push(buf, 0)  // dst memory
+}
+
 // === Compilation context ===
 
-// A local variable entry: (name, local_index)
-// locals_env is a flat array of (String, Int) pairs stored as parallel arrays
-// func_env maps function names to (func_index, param_count)
-
-// Resolve a local variable name to its WASM local index
 let resolve_local = (names: Array[String], name: String) -> Int with { Error } {
   let len = array_length(names)
-  // Search backwards for most recent binding (shadowing)
   let rec search = (i: Int) -> Int with { Error } {
     if i < 0 {
       throw(string_concat("undefined variable: ", name))
@@ -57,8 +101,7 @@ let resolve_local = (names: Array[String], name: String) -> Int with { Error } {
   search(len - 1)
 }
 
-// Resolve a function name to (func_index, param_count, has_return)
-// has_return: 1 = returns i64, 0 = void
+// Resolve function: returns (func_index, param_count, has_return)
 let resolve_func = (fn_names: Array[String], fn_indices: Array[Int], fn_params: Array[Int], fn_returns: Array[Int], name: String) -> (Int, Int, Int) with { Error } {
   let len = array_length(fn_names)
   let rec search = (i: Int) -> (Int, Int, Int) with { Error } {
@@ -74,7 +117,6 @@ let resolve_func = (fn_names: Array[String], fn_indices: Array[Int], fn_params: 
 
 // === String table ===
 
-// Pack a string reference as i64: (offset << 32) | length
 let emit_str_ref = (buf: Array[Int], offset: Int, length: Int) -> Unit {
   emit_i64_const(buf, offset)
   emit_i64_const(buf, 32)
@@ -83,7 +125,6 @@ let emit_str_ref = (buf: Array[Int], offset: Int, length: Int) -> Unit {
   emit_i64_or(buf)
 }
 
-// Collect all unique string literals from an expression (recursive walk)
 let rec collect_strings_expr = (expr: Expr, out: Array[String]) -> Int {
   match expr {
     EString(s) => {
@@ -149,12 +190,21 @@ let rec collect_strings_expr = (expr: Expr, out: Array[String]) -> Int {
       }
       0
     },
+    EMatch(scrutinee, arms) => {
+      collect_strings_expr(scrutinee, out)
+      let mut i = 0
+      while i < array_length(arms) {
+        let (_, arm_expr) = array_get(arms, i)
+        collect_strings_expr(arm_expr, out)
+        i = i + 1
+      }
+      0
+    },
     EFn(_, _, _, _, _, body) => collect_strings_expr(body, out),
     _ => 0
   }
 }
 
-// Collect strings from all function bodies in stmts
 let collect_strings_stmts = (stmts: Array[Stmt]) -> Array[String] {
   let out = array_slice([""], 0, 0)
   let mut i = 0
@@ -168,7 +218,6 @@ let collect_strings_stmts = (stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
-// Look up a string in the table, return its index
 let str_table_lookup = (strs: Array[String], s: String) -> Int with { Error } {
   let rec search = (i: Int) -> Int with { Error } {
     if i >= array_length(strs) {
@@ -181,12 +230,29 @@ let str_table_lookup = (strs: Array[String], s: String) -> Int with { Error } {
   search(0)
 }
 
+// Find the index of the first catch-all pattern in match arms
+// Returns num_arms if no catch-all found
+let find_catchall_idx = (arms: Array[(Pat, Expr)]) -> Int {
+  let num = array_length(arms)
+  let rec search = (idx: Int) -> Int {
+    if idx >= num { num }
+    else {
+      let (p, _) = array_get(arms, idx)
+      let is_catch = match p {
+        PWild => true,
+        PBind(_) => true,
+        PTuple(_) => true,
+        PCtor(_, args) => array_length(args) == 0,
+        _ => false
+      }
+      if is_catch { idx } else search(idx + 1)
+    }
+  }
+  search(0)
+}
+
 // === Expression compiler ===
 
-// Compile an expression to WASM instructions in buf
-// str_strs: pre-collected unique strings
-// str_offsets: memory offset for each string
-// str_lengths: byte length for each string
 let rec compile_expr = (
   buf: Array[Int],
   expr: Expr,
@@ -200,13 +266,17 @@ let rec compile_expr = (
   str_offsets: Array[Int],
   str_lengths: Array[Int]
 ) -> Int with { Error } {
+  // shorthand for recursive call
+  let ce = (b: Array[Int], e: Expr, ln: Array[String], nl: Int) -> Int with { Error } {
+    compile_expr(b, e, ln, nl, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
+  }
   match expr {
     EInt(n) => {
       emit_i64_const(buf, n)
       next_local
     },
-    EBool(b) => {
-      emit_i64_const(buf, if b { 1 } else { 0 })
+    EBool(b_val) => {
+      emit_i64_const(buf, if b_val { 1 } else { 0 })
       next_local
     },
     EString(s) => {
@@ -220,66 +290,37 @@ let rec compile_expr = (
       next_local
     },
     EBinOp(op, lhs, rhs) => {
-      let nl1 = compile_expr(buf, lhs, local_names, next_local, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
-      let nl2 = compile_expr(buf, rhs, local_names, nl1, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
-      if string_equals(op, "+") {
-        emit_i64_add(buf)
-      } else if string_equals(op, "-") {
-        emit_i64_sub(buf)
-      } else if string_equals(op, "*") {
-        emit_i64_mul(buf)
-      } else if string_equals(op, "/") {
-        emit_i64_div_s(buf)
-      } else if string_equals(op, "%") {
-        emit_i64_rem_s(buf)
-      } else if string_equals(op, "&") {
-        emit_i64_and(buf)
-      } else if string_equals(op, "|") {
-        emit_i64_or(buf)
-      } else if string_equals(op, "^") {
-        emit_i64_xor(buf)
-      } else if string_equals(op, "<<") {
-        emit_i64_shl(buf)
-      } else if string_equals(op, ">>") {
-        emit_i64_shr_s(buf)
-      } else if string_equals(op, "==") {
-        emit_i64_eq(buf)
-        emit_i64_extend_i32_s(buf)
-      } else if string_equals(op, "!=") {
-        emit_i64_ne(buf)
-        emit_i64_extend_i32_s(buf)
-      } else if string_equals(op, "<") {
-        emit_i64_lt_s(buf)
-        emit_i64_extend_i32_s(buf)
-      } else if string_equals(op, ">") {
-        emit_i64_gt_s(buf)
-        emit_i64_extend_i32_s(buf)
-      } else if string_equals(op, "<=") {
-        emit_i64_le_s(buf)
-        emit_i64_extend_i32_s(buf)
-      } else if string_equals(op, ">=") {
-        emit_i64_ge_s(buf)
-        emit_i64_extend_i32_s(buf)
-      } else if string_equals(op, "&&") {
-        // logical and: (lhs != 0) & (rhs != 0) extended
-        // Already have lhs and rhs on stack as i64
-        // But we need short-circuit... for now just use bitwise and
-        emit_i64_and(buf)
-      } else if string_equals(op, "||") {
-        emit_i64_or(buf)
-      } else {
-        throw(string_concat("unsupported binop: ", op))
-      }
+      let nl1 = ce(buf, lhs, local_names, next_local)
+      let nl2 = ce(buf, rhs, local_names, nl1)
+      if string_equals(op, "+") { emit_i64_add(buf) }
+      else if string_equals(op, "-") { emit_i64_sub(buf) }
+      else if string_equals(op, "*") { emit_i64_mul(buf) }
+      else if string_equals(op, "/") { emit_i64_div_s(buf) }
+      else if string_equals(op, "%") { emit_i64_rem_s(buf) }
+      else if string_equals(op, "&") { emit_i64_and(buf) }
+      else if string_equals(op, "|") { emit_i64_or(buf) }
+      else if string_equals(op, "^") { emit_i64_xor(buf) }
+      else if string_equals(op, "<<") { emit_i64_shl(buf) }
+      else if string_equals(op, ">>") { emit_i64_shr_s(buf) }
+      else if string_equals(op, "==") { emit_i64_eq(buf); emit_i64_extend_i32_s(buf) }
+      else if string_equals(op, "!=") { emit_i64_ne(buf); emit_i64_extend_i32_s(buf) }
+      else if string_equals(op, "<") { emit_i64_lt_s(buf); emit_i64_extend_i32_s(buf) }
+      else if string_equals(op, ">") { emit_i64_gt_s(buf); emit_i64_extend_i32_s(buf) }
+      else if string_equals(op, "<=") { emit_i64_le_s(buf); emit_i64_extend_i32_s(buf) }
+      else if string_equals(op, ">=") { emit_i64_ge_s(buf); emit_i64_extend_i32_s(buf) }
+      else if string_equals(op, "&&") { emit_i64_and(buf) }
+      else if string_equals(op, "||") { emit_i64_or(buf) }
+      else { throw(string_concat("unsupported binop: ", op)) }
       nl2
     },
     EUnaryOp(op, operand) => {
       if string_equals(op, "-") {
         emit_i64_const(buf, 0)
-        let nl = compile_expr(buf, operand, local_names, next_local, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
+        let nl = ce(buf, operand, local_names, next_local)
         emit_i64_sub(buf)
         nl
       } else if string_equals(op, "!") {
-        let nl = compile_expr(buf, operand, local_names, next_local, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
+        let nl = ce(buf, operand, local_names, next_local)
         emit_i64_eqz(buf)
         emit_i64_extend_i32_s(buf)
         nl
@@ -288,13 +329,12 @@ let rec compile_expr = (
       }
     },
     EIf(cond, then_e, else_e) => {
-      let nl1 = compile_expr(buf, cond, local_names, next_local, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
-      // Condition is i64 (nonzero = true), need i32 for if
+      let nl1 = ce(buf, cond, local_names, next_local)
       emit_i32_wrap_i64(buf)
       emit_if_i64(buf)
-      let nl2 = compile_expr(buf, then_e, local_names, nl1, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
+      let nl2 = ce(buf, then_e, local_names, nl1)
       emit_else(buf)
-      let nl3 = compile_expr(buf, else_e, local_names, nl2, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
+      let nl3 = ce(buf, else_e, local_names, nl2)
       emit_end(buf)
       nl3
     },
@@ -303,10 +343,10 @@ let rec compile_expr = (
         EIdent(fname) => {
           let (fidx, _, has_ret) = resolve_func(fn_names, fn_indices, fn_params, fn_returns, fname)
           let mut nl = next_local
-          let mut i = 0
-          while i < array_length(args) {
-            nl = compile_expr(buf, array_get(args, i), local_names, nl, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
-            i = i + 1
+          let mut ci = 0
+          while ci < array_length(args) {
+            nl = ce(buf, array_get(args, ci), local_names, nl)
+            ci = ci + 1
           }
           emit_call(buf, fidx)
           if has_ret == 0 {
@@ -318,75 +358,220 @@ let rec compile_expr = (
       }
     },
     ELet(name, value, body) => {
-      // Allocate a new local for this let binding
       let local_idx = next_local
-      let nl = compile_expr(buf, value, local_names, next_local + 1, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
+      let nl = ce(buf, value, local_names, next_local + 1)
       emit_local_set(buf, local_idx)
-      // Extend local_names with the new binding
       array_push(local_names, name)
-      let nl2 = compile_expr(buf, body, local_names, nl, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
+      let nl2 = ce(buf, body, local_names, nl)
+      nl2
+    },
+    ELetRec(name, value, body) => {
+      // Same as ELet for codegen (recursion handled by function-level indices)
+      let local_idx = next_local
+      let nl = ce(buf, value, local_names, next_local + 1)
+      emit_local_set(buf, local_idx)
+      array_push(local_names, name)
+      let nl2 = ce(buf, body, local_names, nl)
       nl2
     },
     ELetMut(name, value, body) => {
       let local_idx = next_local
-      let nl = compile_expr(buf, value, local_names, next_local + 1, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
+      let nl = ce(buf, value, local_names, next_local + 1)
       emit_local_set(buf, local_idx)
       array_push(local_names, name)
-      let nl2 = compile_expr(buf, body, local_names, nl, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
+      let nl2 = ce(buf, body, local_names, nl)
       nl2
     },
     EAssign(name, value, body) => {
       let idx = resolve_local(local_names, name)
-      let nl = compile_expr(buf, value, local_names, next_local, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
+      let nl = ce(buf, value, local_names, next_local)
       emit_local_set(buf, idx)
-      compile_expr(buf, body, local_names, nl, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
+      ce(buf, body, local_names, nl)
     },
     ESeq(first, second) => {
-      let nl = compile_expr(buf, first, local_names, next_local, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
+      let nl = ce(buf, first, local_names, next_local)
       emit_drop(buf)
-      compile_expr(buf, second, local_names, nl, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
+      ce(buf, second, local_names, nl)
     },
     EWhile(cond, body) => {
-      // block $break { loop $loop { br_if (cond==0) $break; body; drop; br $loop } }
-      // Result: i64(0) = unit
       emit_block_void(buf)
         emit_loop_void(buf)
-          // Check condition
-          let nl1 = compile_expr(buf, cond, local_names, next_local, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
-          emit_i64_eqz(buf)  // returns i32
-          emit_br_if(buf, 1)  // if zero, break to outer block
-          // Execute body
-          let nl2 = compile_expr(buf, body, local_names, nl1, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
+          let nl1 = ce(buf, cond, local_names, next_local)
+          emit_i64_eqz(buf)
+          emit_br_if(buf, 1)
+          let nl2 = ce(buf, body, local_names, nl1)
           emit_drop(buf)
-          emit_br(buf, 0)  // continue loop
+          emit_br(buf, 0)
         emit_end(buf)
       emit_end(buf)
-      // Push unit value (0)
       emit_i64_const(buf, 0)
       nl2
+    },
+    ETuple(elems) => {
+      // Allocate N*8 bytes on heap, store each element as i64
+      let num_elems = array_length(elems)
+      let alloc_size = num_elems * 8
+      // ptr_local stores heap ptr as i64 (user locals are i64)
+      let ptr_local = next_local
+      let mut nl = next_local + 1
+      // ptr = heap_ptr as i64; heap_ptr += alloc_size
+      emit_global_get(buf, 0)  // i32
+      emit_i64_extend_i32_u(buf)  // -> i64
+      emit_local_tee(buf, ptr_local)  // save as i64
+      emit_i32_wrap_i64(buf)  // back to i32 for arithmetic
+      emit_i32_const(buf, alloc_size)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      // Store each element
+      let mut ti = 0
+      while ti < num_elems {
+        emit_local_get(buf, ptr_local)
+        emit_i32_wrap_i64(buf)  // ptr as i32 for store
+        nl = ce(buf, array_get(elems, ti), local_names, nl)
+        emit_i64_store(buf, 3, ti * 8)
+        ti = ti + 1
+      }
+      // Return ptr as i64 (already stored as i64)
+      emit_local_get(buf, ptr_local)
+      array_push(local_names, "__tuple_ptr")
+      nl
+    },
+    EMatch(scrutinee, arms) => {
+      // Compile scrutinee, store in temp local
+      let scrut_local = next_local
+      let nl1 = ce(buf, scrutinee, local_names, next_local + 1)
+      emit_local_set(buf, scrut_local)
+      array_push(local_names, "__match_scrut")
+      // Compile match arms as nested if-else
+      // We build this iteratively: for each arm, emit condition check + body
+      // Last arm (or PWild/PBind) just emits body directly
+      let num_arms = array_length(arms)
+      // Find first catch-all index using helper defined before compile_expr
+      let catchall_idx = find_catchall_idx(arms)
+      let num_cond_arms = catchall_idx
+      // Emit nested if-else: each conditional arm opens if+else, closed after
+      let mut ai = 0
+      while ai < num_cond_arms {
+        let (p, _) = array_get(arms, ai)
+        match p {
+          PInt(n) => {
+            emit_local_get(buf, scrut_local)
+            emit_i64_const(buf, n)
+            emit_i64_eq(buf)
+            emit_if_i64(buf)
+            0
+          },
+          PBool(bv) => {
+            emit_local_get(buf, scrut_local)
+            emit_i64_const(buf, if bv { 1 } else { 0 })
+            emit_i64_eq(buf)
+            emit_if_i64(buf)
+            0
+          },
+          _ => 0
+        }
+        // Compile arm body
+        let (_, arm_body) = array_get(arms, ai)
+        ce(buf, arm_body, local_names, nl1)
+        // Open else for next arm
+        emit_else(buf)
+        ai = ai + 1
+      }
+      // Compile catchall arm (or unreachable)
+      // NOTE: Use array_length(local_names) instead of mutable final_nl
+      // inside match arms (quirk #13b: mutable scalars don't propagate out of match)
+      if catchall_idx < num_arms {
+        let (cp, cbody) = array_get(arms, catchall_idx)
+        match cp {
+          PBind(bname) => {
+            let bind_local = array_length(local_names)
+            emit_local_get(buf, scrut_local)
+            emit_local_set(buf, bind_local)
+            array_push(local_names, bname)
+            ce(buf, cbody, local_names, array_length(local_names))
+            0
+          },
+          PCtor(cname, cargs) => {
+            if array_length(cargs) == 0 {
+              let bind_local2 = array_length(local_names)
+              emit_local_get(buf, scrut_local)
+              emit_local_set(buf, bind_local2)
+              array_push(local_names, cname)
+              ce(buf, cbody, local_names, array_length(local_names))
+            } else { 0 }
+            0
+          },
+          PTuple(pats) => {
+            // Destructure tuple: scrutinee is i64 (ptr as i64)
+            let ptr_local2 = array_length(local_names)
+            emit_local_get(buf, scrut_local)
+            emit_local_set(buf, ptr_local2)  // keep as i64
+            array_push(local_names, "__tup_ptr2")
+            let mut pi2 = 0
+            while pi2 < array_length(pats) {
+              let tp = array_get(pats, pi2)
+              match tp {
+                PBind(pname) => {
+                  let field_l = array_length(local_names)
+                  emit_local_get(buf, ptr_local2)
+                  emit_i32_wrap_i64(buf)  // ptr as i32 for load
+                  emit_i64_load(buf, 3, pi2 * 8)
+                  emit_local_set(buf, field_l)
+                  array_push(local_names, pname)
+                  0
+                },
+                PWild => 0,
+                _ => throw("unsupported pattern in tuple destructure")
+              }
+              pi2 = pi2 + 1
+            }
+            ce(buf, cbody, local_names, array_length(local_names))
+            0
+          },
+          _ => {
+            // PWild or other catch-all
+            ce(buf, cbody, local_names, array_length(local_names))
+            0
+          }
+        }
+      } else {
+        // No catch-all: unreachable
+        bytebuf_push(buf, 0)  // unreachable
+        0
+      }
+      let final_nl = array_length(local_names)
+      // Close all the if-else blocks
+      let mut ci2 = 0
+      while ci2 < num_cond_arms {
+        emit_end(buf)
+        ci2 = ci2 + 1
+      }
+      final_nl
     },
     EUnit => {
       emit_i64_const(buf, 0)
       next_local
     },
+    EThrow(msg_expr) => {
+      // Compile msg, then unreachable
+      let nl = ce(buf, msg_expr, local_names, next_local)
+      emit_drop(buf)
+      bytebuf_push(buf, 0)  // unreachable
+      nl
+    },
     _ => throw("unsupported expression in codegen")
   }
 }
 
-// === Module compiler ===
 
-// Compile a list of top-level function definitions to a WASM module
-// Each SLet with EFn becomes a WASM function
-// Only export=true functions are exported
+// === Module compiler (non-WASI, for --invoke) ===
+
 export let compile_module = (stmts: Array[Stmt]) -> Bytes with { Error } {
-  // First pass: collect function signatures
   let fn_names_list = array_slice([""], 0, 0)
   let fn_param_counts = array_slice([0], 0, 0)
   let export_names = array_slice([""], 0, 0)
   let export_indices = array_slice([0], 0, 0)
 
-  // Collect all function definitions
-  // Note: use array_length(fn_names_list) as func_idx since match forks scope
   let mut i = 0
   while i < array_length(stmts) {
     let stmt = array_get(stmts, i)
@@ -416,27 +601,23 @@ export let compile_module = (stmts: Array[Stmt]) -> Bytes with { Error } {
     throw("no functions found to compile")
   }
 
-  // Build func indices and returns arrays
   let fn_indices_list = array_slice([0], 0, 0)
   let fn_returns_list = array_slice([0], 0, 0)
   let mut fi = 0
   while fi < num_funcs {
     array_push(fn_indices_list, fi)
-    array_push(fn_returns_list, 1)  // all user functions return i64
+    array_push(fn_returns_list, 1)
     fi = fi + 1
   }
 
-  // Second pass: build type section and compile bodies
-  // For now: each function has its own type = (i64 x params) -> (i64)
   let type_defs = array_slice([0], 0, 0)
   let mut ti = 0
   while ti < num_funcs {
     array_push(type_defs, array_get(fn_param_counts, ti))
-    array_push(type_defs, 1)  // always return i64
+    array_push(type_defs, 1)
     ti = ti + 1
   }
 
-  // Type indices: func i uses type i (1:1 mapping)
   let type_indices = array_slice([0], 0, 0)
   let mut tii = 0
   while tii < num_funcs {
@@ -444,7 +625,6 @@ export let compile_module = (stmts: Array[Stmt]) -> Bytes with { Error } {
     tii = tii + 1
   }
 
-  // Compile function bodies
   let bodies = array_slice([array_slice([0], 0, 0)], 0, 0)
   let local_counts = array_slice([0], 0, 0)
   let mut bi = 0
@@ -455,7 +635,6 @@ export let compile_module = (stmts: Array[Stmt]) -> Bytes with { Error } {
         match expr {
           EFn(_, _, params, _, _, body) => {
             let body_buf = bytebuf_new()
-            // Build local names: params first
             let local_names = array_slice([""], 0, 0)
             let mut pi = 0
             while pi < array_length(params) {
@@ -485,7 +664,6 @@ export let compile_module = (stmts: Array[Stmt]) -> Bytes with { Error } {
     bi = bi + 1
   }
 
-  // Emit module
   let out = bytebuf_new()
   emit_header(out)
   emit_type_section_multi(out, type_defs)
@@ -500,48 +678,28 @@ export let compile_module = (stmts: Array[Stmt]) -> Bytes with { Error } {
 }
 
 // === WASI Module compiler ===
-// Generates a WASI-compatible module with _start that calls an entry function
-// and prints the result to stdout.
-//
-// Module layout:
-//   func 0: fd_write (imported from wasi_snapshot_preview1)
-//   func 1: __print_i64 (internal, generated)
-//   func 2..N+1: user functions
-//   func N+2: _start (calls entry function + __print_i64)
-//
 // Memory layout:
 //   0-7: iovec struct
 //   8-11: nwritten
-//   16-47: digit buffer (32 bytes for itoa + newline)
+//   16-47: digit buffer (itoa + newline)
+//   48-63: reserved
+//   64+: string literal data
+//   after strings: heap (bump allocator, global 0 = heap_ptr)
 
-// Emit i32.sub (opcode 0x6B) - not in wasm_emit yet
-let emit_i32_sub = (buf: Array[Int]) -> Unit {
-  bytebuf_push(buf, 107)  // 0x6B
-}
-
-// Generate __print_i64 function body
-// Takes i64, converts to decimal string, writes to stdout via fd_write
-// Uses memory[16..47] as scratch buffer, \n at 47
-// locals: 0=val(i64), 1=is_neg(i32), 2=pos(i32), 3=abs_val(i64), 4=digit(i32)
+// Generate __print_i64 body (func 1)
+// Param: 0=val(i64)
+// Extra locals (i32 first, then i64): 1=is_neg(i32), 2=pos(i32), 3=digit(i32), 4=abs_val(i64)
 let gen_print_i64_body = () -> Array[Int] {
   let b = bytebuf_new()
-
-  // pos = 46
   emit_i32_const(b, 46)
   emit_local_set(b, 2)
-
-  // mem[47] = '\n'
   emit_i32_const(b, 47)
   emit_i32_const(b, 10)
   emit_i32_store8(b, 0, 0)
-
-  // is_neg = (val < 0)
   emit_local_get(b, 0)
   emit_i64_const(b, 0)
   emit_i64_lt_s(b)
   emit_local_set(b, 1)
-
-  // abs_val = is_neg ? -val : val
   emit_local_get(b, 1)
   emit_if_i64(b)
     emit_i64_const(b, 0)
@@ -550,10 +708,8 @@ let gen_print_i64_body = () -> Array[Int] {
   emit_else(b)
     emit_local_get(b, 0)
   emit_end(b)
-  emit_local_set(b, 3)
-
-  // if abs_val == 0: write '0' and decrement pos
-  emit_local_get(b, 3)
+  emit_local_set(b, 4)
+  emit_local_get(b, 4)
   emit_i64_eqz(b)
   emit_if_void(b)
     emit_local_get(b, 2)
@@ -564,45 +720,32 @@ let gen_print_i64_body = () -> Array[Int] {
     emit_i32_sub(b)
     emit_local_set(b, 2)
   emit_end(b)
-
-  // while abs_val > 0: extract digits
   emit_block_void(b)
     emit_loop_void(b)
-      emit_local_get(b, 3)
+      emit_local_get(b, 4)
       emit_i64_eqz(b)
       emit_br_if(b, 1)
-
-      // digit = abs_val % 10
-      emit_local_get(b, 3)
+      emit_local_get(b, 4)
       emit_i64_const(b, 10)
       emit_i64_rem_s(b)
       emit_i32_wrap_i64(b)
-      emit_local_set(b, 4)
-
-      // mem[pos] = digit + '0'
+      emit_local_set(b, 3)
       emit_local_get(b, 2)
-      emit_local_get(b, 4)
+      emit_local_get(b, 3)
       emit_i32_const(b, 48)
       emit_i32_add(b)
       emit_i32_store8(b, 0, 0)
-
-      // pos = pos - 1
       emit_local_get(b, 2)
       emit_i32_const(b, 1)
       emit_i32_sub(b)
       emit_local_set(b, 2)
-
-      // abs_val = abs_val / 10
-      emit_local_get(b, 3)
+      emit_local_get(b, 4)
       emit_i64_const(b, 10)
       emit_i64_div_s(b)
-      emit_local_set(b, 3)
-
+      emit_local_set(b, 4)
       emit_br(b, 0)
     emit_end(b)
   emit_end(b)
-
-  // if is_neg: write '-'
   emit_local_get(b, 1)
   emit_if_void(b)
     emit_local_get(b, 2)
@@ -613,73 +756,382 @@ let gen_print_i64_body = () -> Array[Int] {
     emit_i32_sub(b)
     emit_local_set(b, 2)
   emit_end(b)
-
-  // iovec.buf = pos + 1
   emit_i32_const(b, 0)
   emit_local_get(b, 2)
   emit_i32_const(b, 1)
   emit_i32_add(b)
   emit_i32_store(b, 2, 0)
-
-  // iovec.len = 47 - pos
   emit_i32_const(b, 4)
   emit_i32_const(b, 47)
   emit_local_get(b, 2)
   emit_i32_sub(b)
   emit_i32_store(b, 2, 0)
-
-  // fd_write(stdout=1, iovs=0, count=1, nwritten=8)
   emit_i32_const(b, 1)
   emit_i32_const(b, 0)
   emit_i32_const(b, 1)
   emit_i32_const(b, 8)
   emit_call(b, 0)
   emit_drop(b)
-
   b
 }
 
-// Generate __print_str function body
-// Takes i64 packed ref = (offset << 32) | length
-// Unpacks to offset (i32) and length (i32), writes to stdout via fd_write
-// local 0: packed (i64 param)
-// local 1: offset (i32)
-// local 2: length (i32)
+// Generate __print_str body (func 2)
+// local 0: packed(i64), local 1: offset(i32), local 2: length(i32)
 let gen_print_str_body = () -> Array[Int] {
   let b = bytebuf_new()
-
-  // offset = (packed >> 32) as i32
   emit_local_get(b, 0)
   emit_i64_const(b, 32)
   emit_i64_shr_s(b)
   emit_i32_wrap_i64(b)
   emit_local_set(b, 1)
-
-  // length = packed as i32 (low 32 bits)
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
   emit_local_set(b, 2)
-
-  // iovec[0].buf = offset
   emit_i32_const(b, 0)
   emit_local_get(b, 1)
   emit_i32_store(b, 2, 0)
-
-  // iovec[0].len = length
   emit_i32_const(b, 4)
   emit_local_get(b, 2)
   emit_i32_store(b, 2, 0)
-
-  // fd_write(stdout=1, iovs=0, count=1, nwritten=8)
   emit_i32_const(b, 1)
   emit_i32_const(b, 0)
   emit_i32_const(b, 1)
   emit_i32_const(b, 8)
   emit_call(b, 0)
   emit_drop(b)
-
   b
 }
+
+// Generate __str_len body (func 3): (packed: i64) -> i64
+// Returns lower 32 bits as i64
+let gen_str_len_body = () -> Array[Int] {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_i64_const(b, 4294967295)  // 0xFFFFFFFF
+  emit_i64_and(b)
+  b
+}
+
+// Generate __str_eq body (func 4): (a: i64, b: i64) -> i64
+// Compare string contents byte-by-byte
+// locals: 0=a(i64), 1=b(i64), 2=len_a(i32), 3=len_b(i32),
+//         4=off_a(i32), 5=off_b(i32), 6=i(i32)
+let gen_str_eq_body = () -> Array[Int] {
+  let b = bytebuf_new()
+  // len_a = a & 0xFFFFFFFF
+  emit_local_get(b, 0)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 2)
+  // len_b = b & 0xFFFFFFFF
+  emit_local_get(b, 1)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 3)
+  // if len_a != len_b, return 0
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i32_ne(b)
+  emit_if_i64(b)
+    emit_i64_const(b, 0)
+  emit_else(b)
+    // off_a = (a >> 32) as i32
+    emit_local_get(b, 0)
+    emit_i64_const(b, 32)
+    emit_i64_shr_s(b)
+    emit_i32_wrap_i64(b)
+    emit_local_set(b, 4)
+    // off_b = (b >> 32) as i32
+    emit_local_get(b, 1)
+    emit_i64_const(b, 32)
+    emit_i64_shr_s(b)
+    emit_i32_wrap_i64(b)
+    emit_local_set(b, 5)
+    // i = 0
+    emit_i32_const(b, 0)
+    emit_local_set(b, 6)
+    // loop: compare bytes
+    emit_block_i64(b)
+      emit_block_void(b)
+        emit_loop_void(b)
+          // if i >= len_a, break (all matched)
+          emit_local_get(b, 6)
+          emit_local_get(b, 2)
+          emit_i32_ge_u(b)
+          emit_br_if(b, 1)  // break to inner block_void
+          // if mem[off_a+i] != mem[off_b+i], return 0
+          emit_local_get(b, 4)
+          emit_local_get(b, 6)
+          emit_i32_add(b)
+          emit_i32_load8_u(b, 0, 0)
+          emit_local_get(b, 5)
+          emit_local_get(b, 6)
+          emit_i32_add(b)
+          emit_i32_load8_u(b, 0, 0)
+          emit_i32_ne(b)
+          emit_if_void(b)
+            emit_i64_const(b, 0)
+            emit_br(b, 3)  // break to block_i64 with 0
+          emit_end(b)
+          // i++
+          emit_local_get(b, 6)
+          emit_i32_const(b, 1)
+          emit_i32_add(b)
+          emit_local_set(b, 6)
+          emit_br(b, 0)  // continue loop
+        emit_end(b)
+      emit_end(b)
+      // All bytes matched
+      emit_i64_const(b, 1)
+    emit_end(b)
+  emit_end(b)
+  b
+}
+
+// Generate __str_concat body (func 5): (a: i64, b: i64) -> i64
+// Allocate new string, copy bytes, return packed ref
+// locals: 0=a(i64), 1=b(i64), 2=len_a(i32), 3=len_b(i32),
+//         4=off_a(i32), 5=off_b(i32), 6=new_ptr(i32), 7=new_len(i32)
+let gen_str_concat_body = () -> Array[Int] {
+  let b = bytebuf_new()
+  // len_a = a & 0xFFFFFFFF
+  emit_local_get(b, 0)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 2)
+  // len_b
+  emit_local_get(b, 1)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 3)
+  // off_a = (a >> 32) as i32
+  emit_local_get(b, 0)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 4)
+  // off_b
+  emit_local_get(b, 1)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 5)
+  // new_len = len_a + len_b
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i32_add(b)
+  emit_local_set(b, 7)
+  // new_ptr = heap_ptr; heap_ptr += new_len
+  emit_global_get(b, 0)
+  emit_local_tee(b, 6)
+  emit_local_get(b, 7)
+  emit_i32_add(b)
+  emit_global_set(b, 0)
+  // memory.copy(new_ptr, off_a, len_a)
+  emit_local_get(b, 6)  // dest
+  emit_local_get(b, 4)  // src
+  emit_local_get(b, 2)  // len
+  emit_memory_copy(b)
+  // memory.copy(new_ptr + len_a, off_b, len_b)
+  emit_local_get(b, 6)
+  emit_local_get(b, 2)
+  emit_i32_add(b)   // dest = new_ptr + len_a
+  emit_local_get(b, 5)  // src
+  emit_local_get(b, 3)  // len
+  emit_memory_copy(b)
+  // Return packed ref: (new_ptr << 32) | new_len
+  emit_local_get(b, 6)
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 32)
+  emit_i64_shl(b)
+  emit_local_get(b, 7)
+  emit_i64_extend_i32_u(b)
+  emit_i64_or(b)
+  b
+}
+
+// Generate __arr_new body (func 6): () -> i64
+// Create empty array: [cap=8(i32), len=0(i32), data_ptr(i32)]
+// Header: 12 bytes. Data: cap * 8 bytes.
+// Returns header ptr as i64.
+let gen_arr_new_body = () -> Array[Int] {
+  let b = bytebuf_new()
+  // local 0: header_ptr (i32)
+  // Allocate header (12 bytes) + data (8*8 = 64 bytes) = 76 bytes
+  emit_global_get(b, 0)
+  emit_local_tee(b, 0)
+  emit_i32_const(b, 76)
+  emit_i32_add(b)
+  emit_global_set(b, 0)
+  // header[0] = cap = 8
+  emit_local_get(b, 0)
+  emit_i32_const(b, 8)
+  emit_i32_store(b, 2, 0)
+  // header[4] = len = 0
+  emit_local_get(b, 0)
+  emit_i32_const(b, 0)
+  emit_i32_store(b, 2, 4)
+  // header[8] = data_ptr = header_ptr + 12
+  emit_local_get(b, 0)
+  emit_local_get(b, 0)
+  emit_i32_const(b, 12)
+  emit_i32_add(b)
+  emit_i32_store(b, 2, 8)
+  // Return header_ptr as i64
+  emit_local_get(b, 0)
+  emit_i64_extend_i32_u(b)
+  b
+}
+
+// Generate __arr_len body (func 7): (arr: i64) -> i64
+// Read header[4] = length
+let gen_arr_len_body = () -> Array[Int] {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 4)  // header[4] = length
+  emit_i64_extend_i32_u(b)
+  b
+}
+
+// Generate __arr_get body (func 8): (arr: i64, idx: i64) -> i64
+// Read data[idx * 8]
+// local 0: arr(i64), local 1: idx(i64), local 2: data_ptr(i32)
+let gen_arr_get_body = () -> Array[Int] {
+  let b = bytebuf_new()
+  // data_ptr = header[8]
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 8)
+  emit_local_set(b, 2)
+  // load data_ptr + idx*8
+  emit_local_get(b, 2)
+  emit_local_get(b, 1)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 3)
+  // i32.shl
+  bytebuf_push(b, 116)  // 0x74 i32.shl
+  emit_i32_add(b)
+  emit_i64_load(b, 3, 0)
+  b
+}
+
+// Generate __arr_push body (func 9): (arr: i64, val: i64) -> void
+// Append val to array, grow if needed
+// local 0: arr(i64), local 1: val(i64), local 2: hdr(i32),
+// local 3: cap(i32), local 4: len(i32), local 5: data_ptr(i32),
+// local 6: new_data(i32), local 7: new_cap(i32)
+let gen_arr_push_body = () -> Array[Int] {
+  let b = bytebuf_new()
+  // hdr = arr as i32
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 2)
+  // cap = hdr[0]
+  emit_local_get(b, 2)
+  emit_i32_load(b, 2, 0)
+  emit_local_set(b, 3)
+  // len = hdr[4]
+  emit_local_get(b, 2)
+  emit_i32_load(b, 2, 4)
+  emit_local_set(b, 4)
+  // data_ptr = hdr[8]
+  emit_local_get(b, 2)
+  emit_i32_load(b, 2, 8)
+  emit_local_set(b, 5)
+  // if len >= cap: grow
+  emit_local_get(b, 4)
+  emit_local_get(b, 3)
+  emit_i32_ge_u(b)
+  emit_if_void(b)
+    // new_cap = cap * 2
+    emit_local_get(b, 3)
+    emit_i32_const(b, 2)
+    emit_i32_mul(b)
+    emit_local_set(b, 7)
+    // new_data = alloc(new_cap * 8)
+    emit_global_get(b, 0)
+    emit_local_tee(b, 6)
+    emit_local_get(b, 7)
+    emit_i32_const(b, 8)
+    emit_i32_mul(b)
+    emit_i32_add(b)
+    emit_global_set(b, 0)
+    // memory.copy(new_data, data_ptr, len * 8)
+    emit_local_get(b, 6)
+    emit_local_get(b, 5)
+    emit_local_get(b, 4)
+    emit_i32_const(b, 8)
+    emit_i32_mul(b)
+    emit_memory_copy(b)
+    // update header
+    emit_local_get(b, 2)
+    emit_local_get(b, 7)
+    emit_i32_store(b, 2, 0)  // cap = new_cap
+    emit_local_get(b, 2)
+    emit_local_get(b, 6)
+    emit_i32_store(b, 2, 8)  // data_ptr = new_data
+    // update local
+    emit_local_get(b, 6)
+    emit_local_set(b, 5)
+  emit_end(b)
+  // data[len] = val
+  emit_local_get(b, 5)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 3)
+  bytebuf_push(b, 116)  // i32.shl
+  emit_i32_add(b)
+  emit_local_get(b, 1)
+  emit_i64_store(b, 3, 0)
+  // len++
+  emit_local_get(b, 2)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 1)
+  emit_i32_add(b)
+  emit_i32_store(b, 2, 4)
+  b
+}
+
+// Generate __arr_set body (func 10): (arr: i64, idx: i64, val: i64) -> void
+// local 0: arr(i64), local 1: idx(i64), local 2: val(i64), local 3: data_ptr(i32)
+let gen_arr_set_body = () -> Array[Int] {
+  let b = bytebuf_new()
+  // data_ptr = header[8]
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 8)
+  emit_local_set(b, 3)
+  // data[idx*8] = val
+  emit_local_get(b, 3)
+  emit_local_get(b, 1)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 3)
+  bytebuf_push(b, 116)  // i32.shl
+  emit_i32_add(b)
+  emit_local_get(b, 2)
+  emit_i64_store(b, 3, 0)
+  b
+}
+
+// === Builtin registry ===
+// Each builtin: (name, gen_body_fn_result, num_extra_locals, local_types_descriptor, param_count, has_return)
+// local_types_descriptor: 0 = all i64, 1 = custom (handled in code section)
+
+// Builtin descriptor indices (after fd_write import at func 0):
+// func 1: __print_i64 — (i64) -> void, 4 mixed locals
+// func 2: __print_str — (i64) -> void, 2 i32 locals
+// func 3: __str_len — (i64) -> i64, 0 extra
+// func 4: __str_eq — (i64,i64) -> i64, 5 i32 locals
+// func 5: __str_concat — (i64,i64) -> i64, 6 i32 locals
+// func 6: __arr_new — () -> i64, 1 i32 local
+// func 7: __arr_len — (i64) -> i64, 0 extra
+// func 8: __arr_get — (i64,i64) -> i64, 1 i32 local
+// func 9: __arr_push — (i64,i64) -> void, 6 i32 locals
+// func 10: __arr_set — (i64,i64,i64) -> void, 1 i32 local
 
 export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Bytes with { Error } {
   // Collect user functions
@@ -710,7 +1162,7 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
     throw("no functions found to compile")
   }
 
-  // Find entry function index (among user funcs)
+  // Find entry function
   let mut entry_user_idx = -1
   let mut ei = 0
   while ei < num_user_funcs {
@@ -723,16 +1175,10 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
     throw(string_concat("entry function not found: ", entry_name))
   }
 
-  // Module function indices:
-  // 0 = fd_write (import)
-  // 1 = __print_i64 (generated)
-  // 2..num_user_funcs+1 = user functions
-  // num_user_funcs+2 = _start
-
-  // === String table ===
+  // String table
   let str_strs = collect_strings_stmts(stmts)
   let num_strings = array_length(str_strs)
-  let data_base = 64  // strings start at memory offset 64
+  let data_base = 64
   let str_offsets = array_slice([0], 0, 0)
   let str_lengths = array_slice([0], 0, 0)
   let mut str_pos = data_base
@@ -745,50 +1191,96 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
     str_pos = str_pos + slen
     si = si + 1
   }
+  // Align heap start to 8 bytes
+  let heap_start = ((str_pos + 7) / 8) * 8
 
-  // === Function layout ===
+  // Function layout:
   // func 0: fd_write (import)
-  // func 1: __print_i64 (generated)
-  // func 2: __print_str (generated) — takes i64 packed ref, writes to stdout
-  // func 3..N+2: user functions
-  // func N+3: _start
-  let import_count = 1
-  let generated_count = 2  // __print_i64, __print_str
-  let func_offset = import_count + generated_count  // = 3
+  // func 1-10: generated builtins (10 funcs)
+  // func 11..11+N-1: user functions
+  // func 11+N: _start
+  let num_generated = 10
+  let func_offset = 1 + num_generated  // = 11
 
-  // Register builtins in fn env so user code can call print_int/print_str
+  // Register user-callable builtins
+  // print_int -> func 1, print_str -> func 2
+  // string_length -> func 3, string_equals -> func 4, string_concat -> func 5
+  // array_new -> func 6, array_length -> func 7, array_get -> func 8
+  // array_push -> func 9, array_set -> func 10
   array_push(fn_names_list, "print_int")
   array_push(fn_param_counts, 1)
   array_push(fn_names_list, "print_str")
   array_push(fn_param_counts, 1)
+  array_push(fn_names_list, "string_length")
+  array_push(fn_param_counts, 1)
+  array_push(fn_names_list, "string_equals")
+  array_push(fn_param_counts, 2)
+  array_push(fn_names_list, "string_concat")
+  array_push(fn_param_counts, 2)
+  array_push(fn_names_list, "array_new")
+  array_push(fn_param_counts, 0)
+  array_push(fn_names_list, "array_length")
+  array_push(fn_param_counts, 1)
+  array_push(fn_names_list, "array_get")
+  array_push(fn_param_counts, 2)
+  array_push(fn_names_list, "array_push")
+  array_push(fn_param_counts, 2)
+  array_push(fn_names_list, "array_set")
+  array_push(fn_param_counts, 3)
 
-  // Build fn_indices and fn_returns for resolve_func
+  // Build fn_indices and fn_returns
   let fn_indices_list = array_slice([0], 0, 0)
   let fn_returns_list = array_slice([0], 0, 0)
   let mut fi = 0
   while fi < num_user_funcs {
     array_push(fn_indices_list, fi + func_offset)
-    array_push(fn_returns_list, 1)  // user functions return i64
+    array_push(fn_returns_list, 1)
     fi = fi + 1
   }
-  // print_int -> func 1 (void), print_str -> func 2 (void)
-  array_push(fn_indices_list, 1)
-  array_push(fn_returns_list, 0)  // print_int is void
-  array_push(fn_indices_list, 2)
-  array_push(fn_returns_list, 0)  // print_str is void
+  // Builtin indices and returns
+  array_push(fn_indices_list, 1)   // print_int
+  array_push(fn_returns_list, 0)
+  array_push(fn_indices_list, 2)   // print_str
+  array_push(fn_returns_list, 0)
+  array_push(fn_indices_list, 3)   // string_length
+  array_push(fn_returns_list, 1)
+  array_push(fn_indices_list, 4)   // string_equals
+  array_push(fn_returns_list, 1)
+  array_push(fn_indices_list, 5)   // string_concat
+  array_push(fn_returns_list, 1)
+  array_push(fn_indices_list, 6)   // array_new
+  array_push(fn_returns_list, 1)
+  array_push(fn_indices_list, 7)   // array_length
+  array_push(fn_returns_list, 1)
+  array_push(fn_indices_list, 8)   // array_get
+  array_push(fn_returns_list, 1)
+  array_push(fn_indices_list, 9)   // array_push
+  array_push(fn_returns_list, 0)
+  array_push(fn_indices_list, 10)  // array_set
+  array_push(fn_returns_list, 0)
 
   // === Type section ===
   // type 0: fd_write (i32,i32,i32,i32) -> (i32)
-  // type 1: __print_i64 (i64) -> ()  — also used for __print_str
-  // type 2: _start () -> ()
-  // type 3+: user function types
+  // type 1: (i64) -> () [print_int, print_str]
+  // type 2: () -> () [_start]
+  // type 3: (i64) -> (i64) [string_length, array_length]
+  // type 4: (i64,i64) -> (i64) [string_equals, string_concat, array_get]
+  // type 5: () -> (i64) [array_new]
+  // type 6: (i64,i64) -> () [array_push]
+  // type 7: (i64,i64,i64) -> () [array_set]
+  // type 8+: user function types
+  let num_base_types = 8
   let type_content = bytebuf_new()
-  let num_types = 3 + num_user_funcs
-  bytebuf_push_vec_header(type_content, num_types)
+  bytebuf_push_vec_header(type_content, num_base_types + num_user_funcs)
 
   emit_func_type_raw(type_content, [127, 127, 127, 127], [127])  // type 0: fd_write
   emit_func_type_raw(type_content, [126], array_slice([0], 0, 0))  // type 1: (i64)->()
   emit_func_type_raw(type_content, array_slice([0], 0, 0), array_slice([0], 0, 0))  // type 2: ()->()
+  emit_func_type_raw(type_content, [126], [126])  // type 3: (i64)->(i64)
+  emit_func_type_raw(type_content, [126, 126], [126])  // type 4: (i64,i64)->(i64)
+  emit_func_type_raw(type_content, array_slice([0], 0, 0), [126])  // type 5: ()->(i64)
+  emit_func_type_raw(type_content, [126, 126], array_slice([0], 0, 0))  // type 6: (i64,i64)->()
+  emit_func_type_raw(type_content, [126, 126, 126], array_slice([0], 0, 0))  // type 7: (i64,i64,i64)->()
 
   let mut uti = 0
   while uti < num_user_funcs {
@@ -811,19 +1303,42 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
   emit_import_section_func(out, "wasi_snapshot_preview1", "fd_write", 0)
 
   // === Function section ===
+  // func 1: __print_i64 -> type 1
+  // func 2: __print_str -> type 1
+  // func 3: __str_len -> type 3
+  // func 4: __str_eq -> type 4
+  // func 5: __str_concat -> type 4
+  // func 6: __arr_new -> type 5
+  // func 7: __arr_len -> type 3
+  // func 8: __arr_get -> type 4
+  // func 9: __arr_push -> type 6
+  // func 10: __arr_set -> type 7
+  // func 11..11+N-1: user funcs -> type 8+i
+  // func 11+N: _start -> type 2
   let func_type_indices = array_slice([0], 0, 0)
-  array_push(func_type_indices, 1)  // func 1: __print_i64 -> type 1
-  array_push(func_type_indices, 1)  // func 2: __print_str -> type 1 (same sig)
+  array_push(func_type_indices, 1)  // __print_i64
+  array_push(func_type_indices, 1)  // __print_str
+  array_push(func_type_indices, 3)  // __str_len
+  array_push(func_type_indices, 4)  // __str_eq
+  array_push(func_type_indices, 4)  // __str_concat
+  array_push(func_type_indices, 5)  // __arr_new
+  array_push(func_type_indices, 3)  // __arr_len
+  array_push(func_type_indices, 4)  // __arr_get
+  array_push(func_type_indices, 6)  // __arr_push
+  array_push(func_type_indices, 7)  // __arr_set
   let mut fti = 0
   while fti < num_user_funcs {
-    array_push(func_type_indices, 3 + fti)
+    array_push(func_type_indices, num_base_types + fti)
     fti = fti + 1
   }
-  array_push(func_type_indices, 2)  // _start -> type 2
+  array_push(func_type_indices, 2)  // _start
   emit_function_section(out, func_type_indices)
 
   // === Memory section ===
   emit_memory_section(out, 1)
+
+  // === Global section: heap_ptr ===
+  emit_global_section_i32_mut(out, heap_start)
 
   // === Export section ===
   let start_func_idx = func_offset + num_user_funcs
@@ -831,18 +1346,60 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
 
   // === Code section ===
   let bodies = array_slice([array_slice([0], 0, 0)], 0, 0)
-  let local_counts = array_slice([0], 0, 0)
+  // bodies_meta: parallel array of (num_i32_locals, num_i64_locals) for manual local encoding
+  // We'll encode locals manually for all functions
+  let meta_i32 = array_slice([0], 0, 0)  // num i32 extra locals per body
+  let meta_i64 = array_slice([0], 0, 0)  // num i64 extra locals per body
 
   // Body 0: __print_i64
-  let print_i64_body = gen_print_i64_body()
-  array_push(bodies, print_i64_body)
-  array_push(local_counts, 4)  // mixed-type locals handled in manual code section
+  array_push(bodies, gen_print_i64_body())
+  array_push(meta_i32, 3)  // is_neg, pos, digit
+  array_push(meta_i64, 1)  // abs_val
 
   // Body 1: __print_str
-  // Takes i64 packed = (offset << 32 | length), writes to stdout
-  let print_str_body = gen_print_str_body()
-  array_push(bodies, print_str_body)
-  array_push(local_counts, 2)  // 2 extra locals: offset(i32), length(i32)
+  array_push(bodies, gen_print_str_body())
+  array_push(meta_i32, 2)
+  array_push(meta_i64, 0)
+
+  // Body 2: __str_len
+  array_push(bodies, gen_str_len_body())
+  array_push(meta_i32, 0)
+  array_push(meta_i64, 0)
+
+  // Body 3: __str_eq
+  array_push(bodies, gen_str_eq_body())
+  array_push(meta_i32, 5)  // len_a, len_b, off_a, off_b, i
+  array_push(meta_i64, 0)
+
+  // Body 4: __str_concat
+  array_push(bodies, gen_str_concat_body())
+  array_push(meta_i32, 6)  // len_a, len_b, off_a, off_b, new_ptr, new_len
+  array_push(meta_i64, 0)
+
+  // Body 5: __arr_new
+  array_push(bodies, gen_arr_new_body())
+  array_push(meta_i32, 1)  // header_ptr
+  array_push(meta_i64, 0)
+
+  // Body 6: __arr_len
+  array_push(bodies, gen_arr_len_body())
+  array_push(meta_i32, 0)
+  array_push(meta_i64, 0)
+
+  // Body 7: __arr_get
+  array_push(bodies, gen_arr_get_body())
+  array_push(meta_i32, 1)  // data_ptr
+  array_push(meta_i64, 0)
+
+  // Body 8: __arr_push
+  array_push(bodies, gen_arr_push_body())
+  array_push(meta_i32, 6)  // hdr, cap, len, data_ptr, new_data, new_cap
+  array_push(meta_i64, 0)
+
+  // Body 9: __arr_set
+  array_push(bodies, gen_arr_set_body())
+  array_push(meta_i32, 1)  // data_ptr
+  array_push(meta_i64, 0)
 
   // Compile user function bodies
   let mut bi = 0
@@ -869,7 +1426,8 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
             )
             array_push(bodies, body_buf)
             let extra = if final_nl > param_count { final_nl - param_count } else { 0 }
-            array_push(local_counts, extra)
+            array_push(meta_i32, 0)
+            array_push(meta_i64, extra)
           },
           _ => throw("expected function")
         }
@@ -879,7 +1437,7 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
     bi = bi + 1
   }
 
-  // Body N+2: _start
+  // _start body
   let start_body = bytebuf_new()
   let entry_func_idx = entry_user_idx + func_offset
   let entry_params = array_get(fn_param_counts, entry_user_idx)
@@ -889,9 +1447,10 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
   emit_call(start_body, entry_func_idx)
   emit_call(start_body, 1)  // __print_i64
   array_push(bodies, start_body)
-  array_push(local_counts, 0)
+  array_push(meta_i32, 0)
+  array_push(meta_i64, 0)
 
-  // === Code section (manual, mixed local types) ===
+  // === Encode code section manually (mixed local types) ===
   let code_content = bytebuf_new()
   bytebuf_push_vec_header(code_content, array_length(bodies))
 
@@ -899,30 +1458,27 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
   while ci < array_length(bodies) {
     let body = array_get(bodies, ci)
     let func_buf = bytebuf_new()
+    let ni32 = array_get(meta_i32, ci)
+    let ni64 = array_get(meta_i64, ci)
 
-    if ci == 0 {
-      // __print_i64: is_neg(i32), pos(i32), abs_val(i64), digit(i32)
-      leb128_encode_u32(func_buf, 4)
-      leb128_encode_u32(func_buf, 1)
-      bytebuf_push(func_buf, 127)  // i32
-      leb128_encode_u32(func_buf, 1)
-      bytebuf_push(func_buf, 127)  // i32
-      leb128_encode_u32(func_buf, 1)
-      bytebuf_push(func_buf, 126)  // i64
-      leb128_encode_u32(func_buf, 1)
-      bytebuf_push(func_buf, 127)  // i32
-    } else if ci == 1 {
-      // __print_str: offset(i32), length(i32)
-      leb128_encode_u32(func_buf, 1)
-      leb128_encode_u32(func_buf, 2)
-      bytebuf_push(func_buf, 127)  // 2 x i32
-    } else {
-      let num_locals = array_get(local_counts, ci)
-      if num_locals == 0 {
-        leb128_encode_u32(func_buf, 0)
+    if ni32 == 0 {
+      if ni64 == 0 {
+        leb128_encode_u32(func_buf, 0)  // no locals
       } else {
+        leb128_encode_u32(func_buf, 1)  // 1 group
+        leb128_encode_u32(func_buf, ni64)
+        bytebuf_push(func_buf, 126)  // i64
+      }
+    } else {
+      if ni64 == 0 {
         leb128_encode_u32(func_buf, 1)
-        leb128_encode_u32(func_buf, num_locals)
+        leb128_encode_u32(func_buf, ni32)
+        bytebuf_push(func_buf, 127)  // i32
+      } else {
+        leb128_encode_u32(func_buf, 2)  // 2 groups
+        leb128_encode_u32(func_buf, ni32)
+        bytebuf_push(func_buf, 127)  // i32
+        leb128_encode_u32(func_buf, ni64)
         bytebuf_push(func_buf, 126)  // i64
       }
     }
@@ -936,7 +1492,7 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
 
   bytebuf_push_section(out, 10, code_content)
 
-  // === Data section (string literals) ===
+  // === Data section ===
   if num_strings > 0 {
     let data_offsets = array_slice([0], 0, 0)
     let data_bufs = array_slice([array_slice([0], 0, 0)], 0, 0)
