@@ -1,0 +1,919 @@
+import ../json/index.vibe {
+  Json, stringify
+}
+
+import ../shell/index.vibe {
+  join_str, split, trim
+}
+
+export struct CoverageCaseInput {
+  report_path: String;
+  report_json: String
+}
+
+export struct CaseStats {
+  point_total: Int;
+  point_hit: Int;
+  line_total: Int;
+  line_hit: Int;
+  branch_total: Int;
+  branch_hit: Int
+}
+
+export struct CoverageCase {
+  report_path: String;
+  entry_path: String;
+  execution_ok: Bool;
+  execution_error: String;
+  stats: CaseStats;
+  point_rate: Double;
+  line_rate: Double;
+  branch_rate: Double
+}
+
+export struct SuiteStats {
+  point_total: Int;
+  point_hit: Int;
+  line_total: Int;
+  line_hit: Int;
+  branch_total: Int;
+  branch_hit: Int
+}
+
+export struct SuiteReport {
+  case_count: Int;
+  trap_case_count: Int;
+  stats: SuiteStats;
+  point_rate: Double;
+  line_rate: Double;
+  branch_rate: Double;
+  cases: Array[CoverageCase]
+}
+
+export struct KpiResult {
+  ok: Bool;
+  point_rate: Double;
+  line_rate: Double;
+  branch_rate: Double;
+  min_point_rate: Option[Double];
+  min_line_rate: Option[Double];
+  min_branch_rate: Option[Double];
+  has_thresholds: Bool;
+  failures: Array[String]
+}
+
+struct PointEntry {
+  key: String;
+  kind: String;
+  hit: Bool
+}
+
+struct PointSummary {
+  point_total: Int;
+  point_hit: Int;
+  line_point_total: Int;
+  line_point_hit: Int;
+  branch_total: Int;
+  branch_hit: Int
+}
+
+let empty_point_entries = () -> Array[PointEntry] {
+  array_slice([
+    PointEntry::{ key: "", kind: "", hit: false }
+  ], 0, 0)
+}
+
+let rate_percent = (hit: Int, total: Int) -> Double {
+  if total <= 0 {
+    0.0
+  } else {
+    (int_to_double(hit) * 100.0) / int_to_double(total)
+  }
+}
+
+let format_fixed2 = (value: Double) -> String {
+  let scaled = double_to_int(value * 100.0 + 0.5)
+  let whole = scaled / 100
+  let frac = scaled - whole * 100
+  let frac_text = if frac < 10 {
+    string_concat("0", __to_string(frac))
+  } else {
+    __to_string(frac)
+  }
+  string_concat(string_concat(__to_string(whole), "."), frac_text)
+}
+
+let percent_text = (hit: Int, total: Int) -> String {
+  format_fixed2(rate_percent(hit, total))
+}
+
+let obj_get_str_or = (obj: Json, key: String, fallback: String) -> String {
+  handle {
+    if not(obj_has_key(obj, key)) {
+      fallback
+    } else {
+      let value = json_get(obj, key)
+      if string_equals(json_type(value), "string") {
+        json_string(value)
+      } else fallback
+    }
+  } {
+    Error(_) => fallback
+  }
+}
+
+let obj_get_bool_or = (obj: Json, key: String, fallback: Bool) -> Bool {
+  handle {
+    if not(obj_has_key(obj, key)) {
+      fallback
+    } else {
+      let value = json_get(obj, key)
+      let ty = json_type(value)
+      if string_equals(ty, "bool") || string_equals(ty, "boolean") {
+        json_bool(value)
+      } else fallback
+    }
+  } {
+    Error(_) => fallback
+  }
+}
+
+let obj_get_num_or = (obj: Json, key: String, fallback: Int) -> Int {
+  handle {
+    if not(obj_has_key(obj, key)) {
+      fallback
+    } else {
+      let value = json_get(obj, key)
+      let ty = json_type(value)
+      if string_equals(ty, "number") || string_equals(ty, "num") {
+        double_to_int(json_number(value))
+      } else fallback
+    }
+  } {
+    Error(_) => fallback
+  }
+}
+
+let obj_has_key = (obj: Json, key: String) -> Bool {
+  handle {
+    let keys = json_keys(obj)
+    let mut found = false
+    let mut i = 0
+    while i < array_length(keys) {
+      if string_equals(array_get(keys, i), key) {
+        found = true
+      }
+      i = i + 1
+    }
+    found
+  } {
+    Error(_) => false
+  }
+}
+
+let point_signature = (entry_path: String, point_obj: Json) -> String {
+  let kind = obj_get_str_or(point_obj, "kind", "")
+  if string_length(kind) == 0 {
+    ""
+  } else {
+    let id_text = if obj_has_key(point_obj, "id") {
+      __to_string(obj_get_num_or(point_obj, "id", -1))
+    } else ""
+    if string_length(id_text) > 0 {
+      string_concat(string_concat(entry_path, ":"), id_text)
+    } else {
+      let line_text = handle {
+        __to_string(double_to_int(json_number(json_get(point_obj, "line"))))
+      } {
+        Error(_) => ""
+      }
+      let span_start = handle {
+        __to_string(
+          double_to_int(
+            json_number(json_get(json_get(point_obj, "span"), "start"))
+          )
+        )
+      } {
+        Error(_) => ""
+      }
+      let span_end = handle {
+        __to_string(
+          double_to_int(
+            json_number(json_get(json_get(point_obj, "span"), "end"))
+          )
+        )
+      } {
+        Error(_) => ""
+      }
+      let start_line = handle {
+        __to_string(
+          double_to_int(
+            json_number(
+              json_get(
+                json_get(json_get(point_obj, "range"), "start"),
+                "line"
+              )
+            )
+          )
+        )
+      } {
+        Error(_) => ""
+      }
+      let start_char = handle {
+        __to_string(
+          double_to_int(
+            json_number(
+              json_get(
+                json_get(json_get(point_obj, "range"), "start"),
+                "character"
+              )
+            )
+          )
+        )
+      } {
+        Error(_) => ""
+      }
+      let end_line = handle {
+        __to_string(
+          double_to_int(
+            json_number(
+              json_get(
+                json_get(json_get(point_obj, "range"), "end"),
+                "line"
+              )
+            )
+          )
+        )
+      } {
+        Error(_) => ""
+      }
+      let end_char = handle {
+        __to_string(
+          double_to_int(
+            json_number(
+              json_get(
+                json_get(json_get(point_obj, "range"), "end"),
+                "character"
+              )
+            )
+          )
+        )
+      } {
+        Error(_) => ""
+      }
+      string_concat(
+        string_concat(
+          string_concat(
+            string_concat(
+              string_concat(
+                string_concat(
+                  string_concat(
+                    string_concat(
+                      string_concat(
+                        string_concat(
+                          string_concat(
+                            string_concat(
+                              string_concat(
+                                string_concat(
+                                  string_concat(
+                                    string_concat(entry_path, ":"),
+                                    kind
+                                  ),
+                                  ":"
+                                ),
+                                line_text
+                              ),
+                              ":"
+                            ),
+                            span_start
+                          ),
+                          ":"
+                        ),
+                        span_end
+                      ),
+                      ":"
+                    ),
+                    start_line
+                  ),
+                  ":"
+                ),
+                start_char
+              ),
+              ":"
+            ),
+            end_line
+          ),
+          ":"
+        ),
+        end_char
+      )
+    }
+  }
+}
+
+let collect_point_entries = (raw_obj: Json) -> Array[PointEntry] with { Error } {
+  let entry_path = obj_get_str_or(raw_obj, "entry_path", "")
+  if not(obj_has_key(raw_obj, "points")) {
+    empty_point_entries()
+  } else {
+    let points = json_get(raw_obj, "points")
+    if not(string_equals(json_type(points), "array")) {
+      empty_point_entries()
+    } else {
+      let points_len = json_length(points)
+      let out = array_builder()
+      let mut i = 0
+      while i < points_len {
+        let point_value = json_index(points, i)
+        let point_type = json_type(point_value)
+        if string_equals(point_type, "string") {
+          let raw = json_string(point_value)
+          let parts = split(raw, "|")
+          if array_length(parts) >= 3 {
+            let pid = array_get(parts, 0)
+            let kind = array_get(parts, 1)
+            let hit = string_equals(array_get(parts, 2), "1")
+            if string_length(pid) > 0 && string_length(kind) > 0 {
+              let key = string_concat(string_concat(entry_path, ":"), pid)
+              array_builder_push(
+                out,
+                PointEntry::{ key: key, kind: kind, hit: hit }
+              )
+            }
+          }
+        } else {
+          let key = point_signature(entry_path, point_value)
+          if string_length(key) > 0 {
+            let kind = obj_get_str_or(point_value, "kind", "unknown")
+            let hit = obj_get_bool_or(point_value, "hit", false)
+            array_builder_push(
+              out,
+              PointEntry::{ key: key, kind: kind, hit: hit }
+            )
+          }
+        }
+        i = i + 1
+      }
+      array_builder_freeze(out)
+    }
+  }
+}
+
+let summarize_point_entries = (entries: Array[PointEntry]) -> Option[PointSummary] {
+  if array_length(entries) == 0 {
+    None
+  } else {
+    let kind_builder = map_builder()
+    let hit_builder = map_builder()
+    let mut i = 0
+    while i < array_length(entries) {
+      let entry = array_get(entries, i)
+      map_builder_set(kind_builder, entry.key, entry.kind)
+      map_builder_set(hit_builder, entry.key, false)
+      i = i + 1
+    }
+    let mut j = 0
+    while j < array_length(entries) {
+      let entry = array_get(entries, j)
+      if entry.hit {
+        map_builder_set(hit_builder, entry.key, true)
+      }
+      j = j + 1
+    }
+    let kind_map: Map[String] = map_builder_freeze(kind_builder)
+    let hit_map: Map[Bool] = map_builder_freeze(hit_builder)
+    let keys = map_keys(kind_map)
+    let mut point_total = 0
+    let mut point_hit = 0
+    let mut line_point_total = 0
+    let mut line_point_hit = 0
+    let mut branch_total = 0
+    let mut branch_hit = 0
+    let mut k = 0
+    while k < array_length(keys) {
+      let key = array_get(keys, k)
+      let kind = map_get(kind_map, key)
+      let hit = map_get(hit_map, key)
+      point_total = point_total + 1
+      if hit {
+        point_hit = point_hit + 1
+      }
+      if string_equals(kind, "line") {
+        line_point_total = line_point_total + 1
+        if hit {
+          line_point_hit = line_point_hit + 1
+        }
+      } else {
+        branch_total = branch_total + 1
+        if hit {
+          branch_hit = branch_hit + 1
+        }
+      }
+      k = k + 1
+    }
+    Some(
+      PointSummary::{
+        point_total: point_total,
+        point_hit: point_hit,
+        line_point_total: line_point_total,
+        line_point_hit: line_point_hit,
+        branch_total: branch_total,
+        branch_hit: branch_hit
+      }
+    )
+  }
+}
+
+let normalize_line_stats = (raw_obj: Json, stats_obj: Json) -> (Int, Int) with { Error } {
+  if not(obj_has_key(raw_obj, "lines")) {
+    (
+      obj_get_num_or(stats_obj, "line_total", 0),
+      obj_get_num_or(stats_obj, "line_hit", 0)
+    )
+  } else {
+    let lines = json_get(raw_obj, "lines")
+    if not(string_equals(json_type(lines), "array")) {
+      (
+        obj_get_num_or(stats_obj, "line_total", 0),
+        obj_get_num_or(stats_obj, "line_hit", 0)
+      )
+    } else {
+      let lines_len = json_length(lines)
+      let mut line_total = 0
+      let mut line_hit = 0
+      let mut i = 0
+      while i < lines_len {
+        let line_obj = json_index(lines, i)
+        let excluded = obj_get_bool_or(line_obj, "excluded", false)
+        if not(excluded) {
+          line_total = line_total + 1
+          let hit = obj_get_bool_or(line_obj, "hit", false)
+          if hit {
+            line_hit = line_hit + 1
+          }
+        }
+        i = i + 1
+      }
+      (line_total, line_hit)
+    }
+  }
+}
+
+export let parse_line_list = (content: String) -> Array[String] {
+  let out = array_builder()
+  let lines = split(content, "\n")
+  let mut i = 0
+  while i < array_length(lines) {
+    let line = trim(array_get(lines, i))
+    if string_length(line) > 0 {
+      array_builder_push(out, line)
+    }
+    i = i + 1
+  }
+  array_builder_freeze(out)
+}
+
+export let build_suite_report_from_json_texts = (inputs: Array[CoverageCaseInput]) -> SuiteReport with { Error } {
+  let mut line_total = 0
+  let mut line_hit = 0
+  let mut fallback_point_total = 0
+  let mut fallback_point_hit = 0
+  let mut fallback_branch_total = 0
+  let mut fallback_branch_hit = 0
+  let mut has_point_map = false
+  let mut trap_case_count = 0
+
+  let global_point_entries_builder = array_builder()
+  let cases_builder = array_builder()
+
+  let mut i = 0
+  while i < array_length(inputs) {
+    let input = array_get(inputs, i)
+    let raw_obj = from_json(input.report_json)
+    let stats_obj = if obj_has_key(raw_obj, "stats") {
+      json_get(raw_obj, "stats")
+    } else raw_obj
+    let point_entries = collect_point_entries(raw_obj)
+    let point_summary_opt = summarize_point_entries(point_entries)
+    let has_point_summary = match point_summary_opt {
+      Some(_) => true
+      None => false
+    }
+
+    let point_total = match point_summary_opt {
+      Some(summary) => summary.point_total
+      None => obj_get_num_or(stats_obj, "point_total", 0)
+    }
+
+    let point_hit = match point_summary_opt {
+      Some(summary) => summary.point_hit
+      None => obj_get_num_or(stats_obj, "point_hit", 0)
+    }
+
+    let branch_total = match point_summary_opt {
+      Some(summary) => summary.branch_total
+      None => obj_get_num_or(stats_obj, "branch_total", 0)
+    }
+
+    let branch_hit = match point_summary_opt {
+      Some(summary) => summary.branch_hit
+      None => obj_get_num_or(stats_obj, "branch_hit", 0)
+    }
+
+    if has_point_summary {
+      has_point_map = true
+      let mut j = 0
+      while j < array_length(point_entries) {
+        array_builder_push(
+          global_point_entries_builder,
+          array_get(point_entries, j)
+        )
+        j = j + 1
+      }
+    } else {
+      fallback_point_total = fallback_point_total + point_total
+      fallback_point_hit = fallback_point_hit + point_hit
+      fallback_branch_total = fallback_branch_total + branch_total
+      fallback_branch_hit = fallback_branch_hit + branch_hit
+    }
+
+    let (case_line_total, case_line_hit) = normalize_line_stats(raw_obj, stats_obj)
+    line_total = line_total + case_line_total
+    line_hit = line_hit + case_line_hit
+
+    let execution_obj = if obj_has_key(raw_obj, "execution") {
+      json_get(raw_obj, "execution")
+    } else raw_obj
+    let execution_ok = obj_get_bool_or(execution_obj, "ok", true)
+    if not(execution_ok) {
+      trap_case_count = trap_case_count + 1
+    }
+    let execution_error = obj_get_str_or(execution_obj, "error", "")
+
+    let case_stats = CaseStats::{
+      point_total: point_total,
+      point_hit: point_hit,
+      line_total: case_line_total,
+      line_hit: case_line_hit,
+      branch_total: branch_total,
+      branch_hit: branch_hit
+    }
+
+    array_builder_push(
+      cases_builder,
+      CoverageCase::{
+        report_path: input.report_path,
+        entry_path: obj_get_str_or(raw_obj, "entry_path", ""),
+        execution_ok: execution_ok,
+        execution_error: execution_error,
+        stats: case_stats,
+        point_rate: rate_percent(point_hit, point_total),
+        line_rate: rate_percent(case_line_hit, case_line_total),
+        branch_rate: rate_percent(branch_hit, branch_total)
+      }
+    )
+
+    i = i + 1
+  }
+
+  let global_summary_opt = if has_point_map {
+    summarize_point_entries(array_builder_freeze(global_point_entries_builder))
+  } else None
+
+  let total_point_total = match global_summary_opt {
+    Some(summary) => summary.point_total + fallback_point_total
+    None => fallback_point_total
+  }
+  let total_point_hit = match global_summary_opt {
+    Some(summary) => summary.point_hit + fallback_point_hit
+    None => fallback_point_hit
+  }
+  let total_branch_total = match global_summary_opt {
+    Some(summary) => summary.branch_total + fallback_branch_total
+    None => fallback_branch_total
+  }
+  let total_branch_hit = match global_summary_opt {
+    Some(summary) => summary.branch_hit + fallback_branch_hit
+    None => fallback_branch_hit
+  }
+
+  let stats = SuiteStats::{
+    point_total: total_point_total,
+    point_hit: total_point_hit,
+    line_total: line_total,
+    line_hit: line_hit,
+    branch_total: total_branch_total,
+    branch_hit: total_branch_hit
+  }
+  let cases = array_builder_freeze(cases_builder)
+
+  SuiteReport::{
+    case_count: array_length(cases),
+    trap_case_count: trap_case_count,
+    stats: stats,
+    point_rate: rate_percent(stats.point_hit, stats.point_total),
+    line_rate: rate_percent(stats.line_hit, stats.line_total),
+    branch_rate: rate_percent(stats.branch_hit, stats.branch_total),
+    cases: cases
+  }
+}
+
+export let evaluate_kpi = (
+  report: SuiteReport,
+  min_point_rate: Option[Double],
+  min_line_rate: Option[Double],
+  min_branch_rate: Option[Double]
+) -> KpiResult {
+  let point_ok = match min_point_rate {
+    Some(min) => report.point_rate >= min,
+    None => true
+  }
+  let line_ok = match min_line_rate {
+    Some(min) => report.line_rate >= min,
+    None => true
+  }
+  let branch_ok = match min_branch_rate {
+    Some(min) => report.branch_rate >= min,
+    None => true
+  }
+
+  let failures_builder = array_builder()
+
+  if not(point_ok) {
+    let min = match min_point_rate {
+      Some(v) => v,
+      None => 0.0
+    }
+    array_builder_push(
+      failures_builder,
+      string_concat(
+        string_concat(
+          string_concat(
+            string_concat("point_coverage ", format_fixed2(report.point_rate)),
+            "% < "
+          ),
+          format_fixed2(min)
+        ),
+        "%"
+      )
+    )
+  }
+
+  if not(line_ok) {
+    let min = match min_line_rate {
+      Some(v) => v,
+      None => 0.0
+    }
+    array_builder_push(
+      failures_builder,
+      string_concat(
+        string_concat(
+          string_concat(
+            string_concat("line_coverage ", format_fixed2(report.line_rate)),
+            "% < "
+          ),
+          format_fixed2(min)
+        ),
+        "%"
+      )
+    )
+  }
+
+  if not(branch_ok) {
+    let min = match min_branch_rate {
+      Some(v) => v,
+      None => 0.0
+    }
+    array_builder_push(
+      failures_builder,
+      string_concat(
+        string_concat(
+          string_concat(
+            string_concat("branch_coverage ", format_fixed2(report.branch_rate)),
+            "% < "
+          ),
+          format_fixed2(min)
+        ),
+        "%"
+      )
+    )
+  }
+
+  let failures = array_builder_freeze(failures_builder)
+  let has_point_threshold = match min_point_rate {
+    Some(_) => true,
+    None => false
+  }
+  let has_line_threshold = match min_line_rate {
+    Some(_) => true,
+    None => false
+  }
+  let has_branch_threshold = match min_branch_rate {
+    Some(_) => true,
+    None => false
+  }
+
+  KpiResult::{
+    ok: point_ok && line_ok && branch_ok,
+    point_rate: report.point_rate,
+    line_rate: report.line_rate,
+    branch_rate: report.branch_rate,
+    min_point_rate: min_point_rate,
+    min_line_rate: min_line_rate,
+    min_branch_rate: min_branch_rate,
+    has_thresholds: has_point_threshold || has_line_threshold || has_branch_threshold,
+    failures: failures
+  }
+}
+
+export let build_summary_text = (report: SuiteReport, kpi: KpiResult) -> String {
+  let lines = array_builder()
+  array_builder_push(lines, "vibe selfhost suite coverage")
+  array_builder_push(lines, string_concat("cases: ", __to_string(report.case_count)))
+  array_builder_push(
+    lines,
+    string_concat(
+      string_concat(
+        string_concat(
+          string_concat(
+            string_concat("points: ", __to_string(report.stats.point_hit)),
+            "/"
+          ),
+          __to_string(report.stats.point_total)
+        ),
+        " ("
+      ),
+      string_concat(percent_text(report.stats.point_hit, report.stats.point_total), "%)")
+    )
+  )
+  array_builder_push(
+    lines,
+    string_concat(
+      string_concat(
+        string_concat(
+          string_concat(
+            string_concat("lines: ", __to_string(report.stats.line_hit)),
+            "/"
+          ),
+          __to_string(report.stats.line_total)
+        ),
+        " ("
+      ),
+      string_concat(percent_text(report.stats.line_hit, report.stats.line_total), "%)")
+    )
+  )
+  array_builder_push(
+    lines,
+    string_concat(
+      string_concat(
+        string_concat(
+          string_concat(
+            string_concat("branches: ", __to_string(report.stats.branch_hit)),
+            "/"
+          ),
+          __to_string(report.stats.branch_total)
+        ),
+        " ("
+      ),
+      string_concat(percent_text(report.stats.branch_hit, report.stats.branch_total), "%)")
+    )
+  )
+  array_builder_push(lines, string_concat("traps: ", __to_string(report.trap_case_count)))
+
+  if kpi.has_thresholds {
+    let kpi_line = if kpi.ok {
+      "kpi: ok"
+    } else {
+      "kpi: fail"
+    }
+    array_builder_push(lines, kpi_line)
+    if not(kpi.ok) && array_length(kpi.failures) > 0 {
+      array_builder_push(
+        lines,
+        string_concat("kpi_failures: ", join_str(kpi.failures, " | "))
+      )
+    }
+  }
+
+  string_concat(join_str(array_builder_freeze(lines), "\n"), "\n")
+}
+
+let int_json = (value: Int) -> Json {
+  JNum(int_to_double(value))
+}
+
+let double_json = (value: Double) -> Json {
+  JNum(value)
+}
+
+let bool_json = (value: Bool) -> Json {
+  JBool(value)
+}
+
+let string_json = (value: String) -> Json {
+  JStr(value)
+}
+
+let option_double_json = (value: Option[Double]) -> Json {
+  match value {
+    Some(v) => double_json(v),
+    None => JNull
+  }
+}
+
+let case_json = (case: CoverageCase) -> Json {
+  let stats_obj_b = map_builder()
+  map_builder_set(stats_obj_b, "point_total", int_json(case.stats.point_total))
+  map_builder_set(stats_obj_b, "point_hit", int_json(case.stats.point_hit))
+  map_builder_set(stats_obj_b, "line_total", int_json(case.stats.line_total))
+  map_builder_set(stats_obj_b, "line_hit", int_json(case.stats.line_hit))
+  map_builder_set(stats_obj_b, "branch_total", int_json(case.stats.branch_total))
+  map_builder_set(stats_obj_b, "branch_hit", int_json(case.stats.branch_hit))
+
+  let rates_obj_b = map_builder()
+  map_builder_set(rates_obj_b, "point", double_json(case.point_rate))
+  map_builder_set(rates_obj_b, "line", double_json(case.line_rate))
+  map_builder_set(rates_obj_b, "branch", double_json(case.branch_rate))
+
+  let obj_b = map_builder()
+  map_builder_set(obj_b, "report_path", string_json(case.report_path))
+  map_builder_set(obj_b, "entry_path", string_json(case.entry_path))
+  map_builder_set(obj_b, "execution_ok", bool_json(case.execution_ok))
+  map_builder_set(obj_b, "execution_error", string_json(case.execution_error))
+  map_builder_set(obj_b, "stats", JObj(map_builder_freeze(stats_obj_b)))
+  map_builder_set(obj_b, "rates", JObj(map_builder_freeze(rates_obj_b)))
+  JObj(map_builder_freeze(obj_b))
+}
+
+export let suite_report_json = (report: SuiteReport, kpi: KpiResult) -> String {
+  let stats_obj_b = map_builder()
+  map_builder_set(stats_obj_b, "point_total", int_json(report.stats.point_total))
+  map_builder_set(stats_obj_b, "point_hit", int_json(report.stats.point_hit))
+  map_builder_set(stats_obj_b, "line_total", int_json(report.stats.line_total))
+  map_builder_set(stats_obj_b, "line_hit", int_json(report.stats.line_hit))
+  map_builder_set(stats_obj_b, "branch_total", int_json(report.stats.branch_total))
+  map_builder_set(stats_obj_b, "branch_hit", int_json(report.stats.branch_hit))
+
+  let rates_obj_b = map_builder()
+  map_builder_set(rates_obj_b, "point", double_json(report.point_rate))
+  map_builder_set(rates_obj_b, "line", double_json(report.line_rate))
+  map_builder_set(rates_obj_b, "branch", double_json(report.branch_rate))
+
+  let exec_obj_b = map_builder()
+  map_builder_set(exec_obj_b, "trap_case_count", int_json(report.trap_case_count))
+
+  let kpi_thresholds_b = map_builder()
+  map_builder_set(
+    kpi_thresholds_b,
+    "min_point_rate",
+    option_double_json(kpi.min_point_rate)
+  )
+  map_builder_set(
+    kpi_thresholds_b,
+    "min_line_rate",
+    option_double_json(kpi.min_line_rate)
+  )
+  map_builder_set(
+    kpi_thresholds_b,
+    "min_branch_rate",
+    option_double_json(kpi.min_branch_rate)
+  )
+
+  let failures_b = array_builder()
+  let mut i = 0
+  while i < array_length(kpi.failures) {
+    array_builder_push(failures_b, string_json(array_get(kpi.failures, i)))
+    i = i + 1
+  }
+
+  let kpi_obj_b = map_builder()
+  map_builder_set(kpi_obj_b, "ok", bool_json(kpi.ok))
+  map_builder_set(kpi_obj_b, "point_rate", double_json(kpi.point_rate))
+  map_builder_set(kpi_obj_b, "line_rate", double_json(kpi.line_rate))
+  map_builder_set(kpi_obj_b, "branch_rate", double_json(kpi.branch_rate))
+  map_builder_set(
+    kpi_obj_b,
+    "thresholds",
+    JObj(map_builder_freeze(kpi_thresholds_b))
+  )
+  map_builder_set(kpi_obj_b, "has_thresholds", bool_json(kpi.has_thresholds))
+  map_builder_set(kpi_obj_b, "failures", JArr(array_builder_freeze(failures_b)))
+
+  let cases_b = array_builder()
+  let mut j = 0
+  while j < array_length(report.cases) {
+    array_builder_push(cases_b, case_json(array_get(report.cases, j)))
+    j = j + 1
+  }
+
+  let root_b = map_builder()
+  map_builder_set(root_b, "format", string_json("vibe-selfhost-suite-coverage-v1"))
+  map_builder_set(root_b, "case_count", int_json(report.case_count))
+  map_builder_set(root_b, "execution", JObj(map_builder_freeze(exec_obj_b)))
+  map_builder_set(root_b, "stats", JObj(map_builder_freeze(stats_obj_b)))
+  map_builder_set(root_b, "rates", JObj(map_builder_freeze(rates_obj_b)))
+  map_builder_set(root_b, "cases", JArr(array_builder_freeze(cases_b)))
+  map_builder_set(root_b, "kpi", JObj(map_builder_freeze(kpi_obj_b)))
+
+  stringify(JObj(map_builder_freeze(root_b)))
+}

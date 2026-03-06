@@ -443,10 +443,7 @@ async function main() {
       id: typeof rawPoint.id === "number" ? rawPoint.id : i,
       kind: pointKind(rawPoint),
       line: normalizeLine(rawPoint),
-      count,
       hit: count > 0,
-      span: rawPoint.span ?? null,
-      range: rawPoint.range ?? null,
     });
   }
 
@@ -494,7 +491,9 @@ async function main() {
       error: runError,
       invoked: args.invokeNames,
     },
-    points,
+    points: points.map((point) =>
+      `${point.id}|${point.kind}|${point.hit ? 1 : 0}|${point.line}`,
+    ),
     lines,
     stats: {
       point_total: points.length,

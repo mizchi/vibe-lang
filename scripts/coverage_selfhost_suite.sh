@@ -97,22 +97,14 @@ for extra_entry in "${extra_entries[@]}"; do
 done
 printf "%s\n" "${report_paths[@]}" >"$report_list_path"
 
-node_args=(
-  "$SCRIPT_DIR/coverage_selfhost_suite.mjs"
-  "$report_list_path"
-  --json "$report_json_path"
-  --summary "$summary_path"
-)
-if [ -n "$MIN_POINT_RATE" ]; then
-  node_args+=(--min-point-rate "$MIN_POINT_RATE")
-fi
-if [ -n "$MIN_LINE_RATE" ]; then
-  node_args+=(--min-line-rate "$MIN_LINE_RATE")
-fi
-if [ -n "$MIN_BRANCH_RATE" ]; then
-  node_args+=(--min-branch-rate "$MIN_BRANCH_RATE")
-fi
-node "${node_args[@]}"
+VIBE_TEST_BACKEND=interpreter \
+  VIBE_SELFHOST_SUITE_REPORT_LIST="$report_list_path" \
+  VIBE_SELFHOST_SUITE_REPORT_JSON="$report_json_path" \
+  VIBE_SELFHOST_SUITE_SUMMARY="$summary_path" \
+  VIBE_SELFHOST_SUITE_MIN_POINT_RATE="$MIN_POINT_RATE" \
+  VIBE_SELFHOST_SUITE_MIN_LINE_RATE="$MIN_LINE_RATE" \
+  VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE="$MIN_BRANCH_RATE" \
+  moon run src/cmd/vibe/main.mbt --target native -- test vibe/compiler/coverage_selfhost_suite_run.vibe
 
 echo "[selfhost suite coverage] reports:"
 echo "  - $summary_path"
