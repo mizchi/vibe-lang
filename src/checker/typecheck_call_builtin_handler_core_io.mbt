@@ -444,10 +444,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::String,
         true,
       )
-    "fs_read_file" =>
+    "fs_read_file" | "fs_read_string" =>
       check_builtin_simple(
         env,
-        "fs_read_file",
+        name,
         args,
         aliases,
         effects,
@@ -457,16 +457,42 @@ fn type_call_builtin_handler_core_io(
         @core.Type::String,
         true,
       )
-    "fs_write_file" =>
+    "fs_write_file" | "fs_write_string" =>
       check_builtin_simple(
         env,
-        "fs_write_file",
+        name,
         args,
         aliases,
         effects,
         allow_effect,
         call_span,
         [@core.Type::String, @core.Type::String],
+        @core.Type::Unit,
+        true,
+      )
+    "fs_read_bytes" =>
+      check_builtin_simple(
+        env,
+        "fs_read_bytes",
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+        [@core.Type::String],
+        @core.Type::Bytes,
+        true,
+      )
+    "fs_write_bytes" =>
+      check_builtin_simple(
+        env,
+        "fs_write_bytes",
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+        [@core.Type::String, @core.Type::Bytes],
         @core.Type::Unit,
         true,
       )

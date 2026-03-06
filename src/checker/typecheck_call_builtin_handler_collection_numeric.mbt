@@ -385,6 +385,53 @@ fn type_call_builtin_handler_collection_numeric(
       let elem_ty = expect_array_elem_type(env, array_ty, pos_args[0].span())
       elem_ty
     }
+    "array_push" => {
+      let pos_args = check_positional_arity(args, "array_push", 2, call_span)
+      let array_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let elem_ty = expect_array_elem_type(env, array_ty, pos_args[0].span())
+      let _ = check_arg_type(
+        env,
+        pos_args[1],
+        elem_ty,
+        aliases,
+        effects,
+        allow_effect,
+      )
+      @core.Type::Unit
+    }
+    "array_slice" => {
+      let pos_args = check_positional_arity(args, "array_slice", 3, call_span)
+      let array_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let _ = check_arg_type(
+        env,
+        pos_args[1],
+        @core.Type::Int,
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let _ = check_arg_type(
+        env,
+        pos_args[2],
+        @core.Type::Int,
+        aliases,
+        effects,
+        allow_effect,
+      )
+      array_ty
+    }
     "map_get" => {
       let pos_args = check_positional_arity(args, "map_get", 2, call_span)
       let map_ty = type_expr_eff(

@@ -374,7 +374,8 @@ pub impl Show for Value with output(self, logger) {
 ///|
 pub fn Value::is_mutable_builder(self : Value) -> Bool {
   match self {
-    Value::ArrayBuilder(_)
+    Value::Array(_)
+    | Value::ArrayBuilder(_)
     | Value::MapBuilder(_)
     | Value::StringBuilder(_)
     | Value::Bytes(_) => true

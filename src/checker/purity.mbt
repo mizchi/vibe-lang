@@ -601,7 +601,11 @@ fn is_effectful_call_name(name : String) -> Bool {
   name == "stdin_read_char" ||
   name == "stdin_read_stream" ||
   name == "fs_read_file" ||
+  name == "fs_read_string" ||
+  name == "fs_read_bytes" ||
   name == "fs_write_file" ||
+  name == "fs_write_string" ||
+  name == "fs_write_bytes" ||
   name == "fs_exists" ||
   name == "fs_readdir" ||
   name == "fs_is_dir" ||
@@ -630,6 +634,8 @@ fn is_effectful_call_name(name : String) -> Bool {
   name == "http_request_url" ||
   name == "http_request_header" ||
   name == "http_request_body" ||
+  name == "array_push" ||
+  name == "array_slice" ||
   name == "__perform" ||
   name == "__resume" ||
   name == "http_respond"
@@ -664,7 +670,6 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "map_keys" ||
   name == "map_values" ||
   name == "map_has_key" ||
-  name == "array_slice" ||
   name == "int_to_float" ||
   name == "int_to_double" ||
   name == "float_to_int" ||

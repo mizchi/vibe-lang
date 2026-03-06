@@ -2379,7 +2379,7 @@ fn eval_builtin_call(
           )
       }
     }
-    "fs_read_file" => {
+    "fs_read_file" | "fs_read_string" => {
       let out = eval_args(rt, args)
       let pos_args = extract_positional_values(out.args, "fs_read_file")
       if pos_args.length() != 1 {
@@ -2406,7 +2406,7 @@ fn eval_builtin_call(
           )
       }
     }
-    "fs_write_file" => {
+    "fs_write_file" | "fs_write_string" => {
       let out = eval_args(rt, args)
       let pos_args = extract_positional_values(out.args, "fs_write_file")
       if pos_args.length() != 2 {
@@ -3677,6 +3677,143 @@ fn eval_builtin_call(
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(fn_name="map_builder_freeze", detail="bad call"),
+          )
+      }
+    }
+    "array_push" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "array_push")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall(
+          BuiltinDetail(fn_name="array_push", detail="expected 2 arguments"),
+        )
+      }
+      match pos_args[0] {
+        @core.Value::Array(arr) => {
+          arr.push(pos_args[1])
+          { value: @core.Value::Unit, effects: out.effects }
+        }
+        _ =>
+          raise EvalError::BadCall(
+            BuiltinDetail(
+              fn_name="array_push",
+              detail="expected Array, got " + value_type_name(pos_args[0]),
+            ),
+          )
+      }
+    }
+    "array_slice" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "array_slice")
+      if pos_args.length() != 3 {
+        raise EvalError::BadCall(
+          BuiltinDetail(fn_name="array_slice", detail="expected 3 arguments"),
+        )
+      }
+      match (pos_args[0], pos_args[1], pos_args[2]) {
+        (
+          @core.Value::Array(arr),
+          @core.Value::Int(start),
+          @core.Value::Int(end_),
+        ) => {
+          let s = start.to_int()
+          let e = end_.to_int()
+          let result : Array[@core.Value] = []
+          for i in s..<e {
+            if i >= 0 && i < arr.length() {
+              result.push(arr[i])
+            }
+          }
+          { value: @core.Value::Array(result), effects: out.effects }
+        }
+        _ =>
+          raise EvalError::BadCall(
+            BuiltinDetail(
+              fn_name="array_slice",
+              detail="expected (Array, Int, Int)",
+            ),
+          )
+      }
+    }
+    "fs_read_bytes" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "fs_read_bytes")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall(
+          BuiltinDetail(fn_name="fs_read_bytes", detail="expected 1 argument"),
+        )
+      }
+      match pos_args[0] {
+        @core.Value::String(path) => {
+          let resolved = rt.resolve_path(path)
+          if not(rt.caps().can_read(resolved)) {
+            raise EvalError::BadCall(
+              BuiltinDetail(
+                fn_name="fs_read_bytes",
+                detail="no read capability for " + resolved,
+              ),
+            )
+          }
+          match @io.read_bytes(resolved) {
+            Ok(bytes) => {
+              let arr : Array[Byte] = []
+              for i in 0..<bytes.length() {
+                arr.push(bytes[i])
+              }
+              { value: @core.Value::Bytes(arr), effects: out.effects }
+            }
+            Err(e) =>
+              raise EvalError::BadCall(
+                BuiltinDetail(fn_name="fs_read_bytes", detail=e),
+              )
+          }
+        }
+        _ =>
+          raise EvalError::BadCall(
+            BuiltinDetail(
+              fn_name="fs_read_bytes",
+              detail="expected String, got " + value_type_name(pos_args[0]),
+            ),
+          )
+      }
+    }
+    "fs_write_bytes" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "fs_write_bytes")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall(
+          BuiltinDetail(
+            fn_name="fs_write_bytes",
+            detail="expected 2 arguments (path, bytes)",
+          ),
+        )
+      }
+      match (pos_args[0], pos_args[1]) {
+        (@core.Value::String(path), @core.Value::Bytes(byte_arr)) => {
+          let resolved = rt.resolve_path(path)
+          if not(rt.caps().can_write(resolved)) {
+            raise EvalError::BadCall(
+              BuiltinDetail(
+                fn_name="fs_write_bytes",
+                detail="no write capability for " + resolved,
+              ),
+            )
+          }
+          let bytes = Bytes::from_array(byte_arr[:])
+          match @io.write_bytes(resolved, bytes) {
+            Ok(_) => { value: @core.Value::Unit, effects: out.effects }
+            Err(e) =>
+              raise EvalError::BadCall(
+                BuiltinDetail(fn_name="fs_write_bytes", detail=e),
+              )
+          }
+        }
+        _ =>
+          raise EvalError::BadCall(
+            BuiltinDetail(
+              fn_name="fs_write_bytes",
+              detail="expected (String, Bytes)",
+            ),
           )
       }
     }

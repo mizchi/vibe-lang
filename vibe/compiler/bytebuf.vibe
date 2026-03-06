@@ -1,0 +1,87 @@
+// ByteBuf: mutable byte buffer for WASM binary generation
+// ByteBuf = Array[Int], converts to Bytes via bytes_from_array
+
+export let bytebuf_new = () -> Array[Int] {
+  array_slice([0], 0, 0)
+}
+
+export let bytebuf_push = (buf: Array[Int], byte: Int) -> Unit {
+  array_push(buf, byte & 255)
+}
+
+export let bytebuf_length = (buf: Array[Int]) -> Int {
+  array_length(buf)
+}
+
+export let bytebuf_to_bytes = (buf: Array[Int]) -> Bytes {
+  bytes_from_array(buf)
+}
+
+// LEB128 unsigned encoding
+export let leb128_encode_u32 = (buf: Array[Int], value: Int) -> Unit {
+  let mut v = value
+  let mut more = true
+  while more {
+    let byte = v & 127
+    v = (v >> 7) & ((1 << 25) - 1)
+    if v == 0 {
+      array_push(buf, byte)
+      more = false
+    } else {
+      array_push(buf, byte | 128)
+    }
+  }
+}
+
+// LEB128 signed encoding (for i32/i64 immediates)
+export let leb128_encode_s32 = (buf: Array[Int], value: Int) -> Unit {
+  let mut v = value
+  let mut more = true
+  while more {
+    let byte = v & 127
+    v = v >> 7
+    if (v == 0) && ((byte & 64) == 0) {
+      array_push(buf, byte)
+      more = false
+    } else {
+      if (v == 0 - 1) && ((byte & 64) != 0) {
+        array_push(buf, byte)
+        more = false
+      } else {
+        array_push(buf, byte | 128)
+      }
+    }
+  }
+}
+
+export let leb128_encode_s64 = (buf: Array[Int], value: Int) -> Unit {
+  leb128_encode_s32(buf, value)
+}
+
+export let bytebuf_push_bytes = (buf: Array[Int], bytes: Bytes) -> Unit {
+  let len = bytes_length(bytes)
+  let mut i = 0
+  while i < len {
+    array_push(buf, bytes_get(bytes, i))
+    i = i + 1
+  }
+}
+
+export let bytebuf_push_array = (buf: Array[Int], arr: Array[Int]) -> Unit {
+  let len = array_length(arr)
+  let mut i = 0
+  while i < len {
+    array_push(buf, array_get(arr, i) & 255)
+    i = i + 1
+  }
+}
+
+export let bytebuf_push_section = (out: Array[Int], section_id: Int, content: Array[Int]) -> Unit {
+  array_push(out, section_id)
+  leb128_encode_u32(out, array_length(content))
+  bytebuf_push_array(out, content)
+}
+
+export let bytebuf_push_vec_header = (buf: Array[Int], count: Int) -> Unit {
+  leb128_encode_u32(buf, count)
+}

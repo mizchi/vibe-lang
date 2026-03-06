@@ -296,6 +296,61 @@ Completed items are archived in `docs/DONE.md`.
 - `scripts/compose_http_p3_handler.sh` — 1-command compose pipeline
 - `scripts/test_http_p3_handler_gate.sh` — CI gate (component validate + export check + rejection)
 
+## Self-Host WASM Codegen (vibe/compiler/ で .vibe → .wasm)
+
+**目標**: selfhost コンパイラが自身を WASM にコンパイルできる真の完全セルフホスト
+
+### P0: ブロッカー解消（codegen 着手の前提条件）
+
+- [ ] `fs_write_bytes(path, bytes)` builtin 追加 — .wasm ファイル書き出しに必須
+- [ ] `ByteBuf` を .vibe で実装 — `Array[Int]` ベース + `bytes_from_array` で最終変換
+- [ ] LEB128 encoder を .vibe で実装 — `<<`, `&`, `|` で可能
+
+### P1: Core WASM codegen プロトタイプ
+
+- [ ] WASM バイナリ構造の emit（magic + version + sections）
+- [ ] Type section — function signature の encode
+- [ ] Function / Code section — 基本命令 (i64.const, i64.add, local.get/set, call, return)
+- [ ] Export section — 関数 export
+- [ ] Memory section — linear memory 宣言
+- [ ] Data section — string literal の data segment 配置
+- [ ] milestone: `let add = (a, b) -> a + b` が valid .wasm になる
+
+### P2: 制御フロー + 関数呼び出し
+
+- [ ] block/loop/br/br_if — if/else, while の codegen
+- [ ] call / call_indirect — 関数呼び出し + closure
+- [ ] local 変数割り当て — let / let mut の local index 管理
+- [ ] Global section — mutable global（heap pointer 等）
+- [ ] milestone: fibonacci, factorial が動く .wasm
+
+### P3: データ型 + ランタイム
+
+- [ ] tagged value encoding (62-bit int, string ref)
+- [ ] string operations — data section + runtime builtins
+- [ ] array / tuple — heap allocation + GC-less bump allocator
+- [ ] pattern match → br_table / nested br_if
+- [ ] Import section — host builtins (print 等) の import
+- [ ] milestone: selfhost の lexer.vibe が .wasm にコンパイルされ実行可能
+
+### P4: Component Model + 外部ツール連携
+
+- [ ] component_codegen を .vibe で再実装（core wasm → component binary wrap）
+- [ ] mwac plug 相当を .vibe で実装 or builtin 化（adapter compose）
+- [ ] wite optimize 相当を builtin 化（サイズ最適化）
+- [ ] milestone: selfhost compiler 全体が .wasm component として動作
+
+### 現在の .vibe 言語の制約と回避策
+
+| 制約 | 影響 | 回避策 |
+|------|------|--------|
+| `bytes_set`/`bytes_push` がスタブ | バイナリ構築不可 | `Array[Int]` を buffer、最後に `bytes_from_array` |
+| ファイル I/O なし | 出力書き出し不可 | `fs_write_bytes` builtin 追加（P0） |
+| mwac/wite は MBT パッケージ | .vibe から直呼び不可 | P3 まで後回し。core wasm を先に |
+| mutable closure 制限 | CodegenCtx 的な状態管理 | レコード + 関数引数で明示受け渡し |
+| `~` (bit_not) 非対応 | ビット反転 | `x ^ 0x7FFFFFFFFFFFFFFF` で代用 |
+| else-expr (braces-less) 未対応 | 一部パターン | `else { expr }` で回避 |
+
 ## Blocked / External
 
 - [ ] HTTPS/TLS 非対応: HTTP のみ (port 80 デフォルト)
@@ -303,4 +358,4 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Deferred
 
-- none
+- [ ] `wasi:http/handler` interface export を codegen で直接生成（P4 の先、resource/stream/future 40+ 型）
