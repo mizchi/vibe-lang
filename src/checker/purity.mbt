@@ -676,6 +676,8 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "float_to_double" ||
   name == "double_to_int" ||
   name == "double_to_float" ||
+  name == "double_to_i64_bits" ||
+  name == "i64_bits_to_double" ||
   name == "f32_neg" ||
   name == "f32_abs" ||
   name == "f32_ceil" ||

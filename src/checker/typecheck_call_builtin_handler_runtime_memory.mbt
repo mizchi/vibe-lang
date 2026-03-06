@@ -258,6 +258,30 @@ fn type_call_builtin_handler_runtime_memory(
         @core.Type::Double,
         @core.Type::Int,
       )
+    "double_to_i64_bits" =>
+      type_check_unary_convert(
+        env,
+        args,
+        call_span,
+        aliases,
+        effects,
+        allow_effect,
+        name,
+        @core.Type::Double,
+        @core.Type::Int,
+      )
+    "i64_bits_to_double" =>
+      type_check_unary_convert(
+        env,
+        args,
+        call_span,
+        aliases,
+        effects,
+        allow_effect,
+        name,
+        @core.Type::Int,
+        @core.Type::Double,
+      )
     "double_to_float" | "f32_demote_f64" =>
       type_check_unary_convert(
         env,

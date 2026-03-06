@@ -1358,6 +1358,86 @@ let gen_arr_set_body = () -> Array[Int] {
   b
 }
 
+// Generate __str_char_code_at body (func 13): (s: i64, idx: i64) -> i64
+// Extract offset from packed string, load byte at offset+idx
+// locals: 0=s(i64), 1=idx(i64), 2=offset(i32)
+let gen_str_char_code_at_body = () -> Array[Int] {
+  let b = bytebuf_new()
+  // offset = (s >> 32) as i32
+  emit_local_get(b, 0)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 2)
+  // result = mem[offset + idx] as i64
+  emit_local_get(b, 2)
+  emit_local_get(b, 1)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i64_extend_i32_u(b)
+  b
+}
+
+// Generate __str_from_char_code body (func 14): (code: i64) -> i64
+// Allocate 1 byte on heap, store char, return packed i64
+// locals: 0=code(i64), 1=ptr(i32)
+let gen_str_from_char_code_body = () -> Array[Int] {
+  let b = bytebuf_new()
+  // ptr = heap_ptr
+  emit_global_get(b, 0)
+  emit_local_tee(b, 1)
+  // heap_ptr += 1
+  emit_i32_const(b, 1)
+  emit_i32_add(b)
+  emit_global_set(b, 0)
+  // mem[ptr] = code as byte
+  emit_local_get(b, 1)
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i32_store8(b, 0, 0)
+  // return (ptr << 32) | 1
+  emit_local_get(b, 1)
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 32)
+  emit_i64_shl(b)
+  emit_i64_const(b, 1)
+  emit_i64_or(b)
+  b
+}
+
+// Generate __str_substring body (func 15): (s: i64, start: i64, end: i64) -> i64
+// Return packed i64 with new_offset = old_offset + start, new_len = end - start
+// locals: 0=s(i64), 1=start(i64), 2=end(i64), 3=old_offset(i32), 4=new_len(i32)
+let gen_str_substring_body = () -> Array[Int] {
+  let b = bytebuf_new()
+  // old_offset = (s >> 32) as i32
+  emit_local_get(b, 0)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 3)
+  // new_len = (end - start) as i32
+  emit_local_get(b, 2)
+  emit_local_get(b, 1)
+  emit_i64_sub(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 4)
+  // new_offset = old_offset + start as i32
+  emit_local_get(b, 3)
+  emit_local_get(b, 1)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  // return (new_offset << 32) | new_len
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 32)
+  emit_i64_shl(b)
+  emit_local_get(b, 4)
+  emit_i64_extend_i32_u(b)
+  emit_i64_or(b)
+  b
+}
+
 // Generate __double_to_int body (func 11): (val: i64) -> i64
 // Reinterpret i64 bits as f64, then truncate to i64
 let gen_double_to_int_body = () -> Array[Int] {
@@ -1379,9 +1459,6 @@ let gen_int_to_double_body = () -> Array[Int] {
 }
 
 // === Builtin registry ===
-// Each builtin: (name, gen_body_fn_result, num_extra_locals, local_types_descriptor, param_count, has_return)
-// local_types_descriptor: 0 = all i64, 1 = custom (handled in code section)
-
 // Builtin descriptor indices (after fd_write import at func 0):
 // func 1: __print_i64 — (i64) -> void, 4 mixed locals
 // func 2: __print_str — (i64) -> void, 2 i32 locals
@@ -1395,6 +1472,9 @@ let gen_int_to_double_body = () -> Array[Int] {
 // func 10: __arr_set — (i64,i64,i64) -> void, 1 i32 local
 // func 11: __double_to_int — (i64) -> i64, 0 extra
 // func 12: __int_to_double — (i64) -> i64, 0 extra
+// func 13: __str_char_code_at — (i64,i64) -> i64, 1 i32 local
+// func 14: __str_from_char_code — (i64) -> i64, 1 i32 local
+// func 15: __str_substring — (i64,i64,i64) -> i64, 2 i32 locals
 
 export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Bytes with { Error } {
   // Collect user functions
@@ -1459,11 +1539,11 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
 
   // Function layout:
   // func 0: fd_write (import)
-  // func 1-12: generated builtins (12 funcs)
-  // func 13..13+N-1: user functions
-  // func 13+N: _start
-  let num_generated = 12
-  let func_offset = 1 + num_generated  // = 13
+  // func 1-15: generated builtins (15 funcs)
+  // func 16..16+N-1: user functions
+  // func 16+N: _start
+  let num_generated = 15
+  let func_offset = 1 + num_generated  // = 16
 
   // Register user-callable builtins
   // print_int -> func 1, print_str -> func 2
@@ -1495,6 +1575,12 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
   array_push(fn_param_counts, 1)
   array_push(fn_names_list, "int_to_double")
   array_push(fn_param_counts, 1)
+  array_push(fn_names_list, "string_char_code_at")
+  array_push(fn_param_counts, 2)
+  array_push(fn_names_list, "string_from_char_code")
+  array_push(fn_param_counts, 1)
+  array_push(fn_names_list, "string_substring")
+  array_push(fn_param_counts, 3)
 
   // Build fn_indices and fn_returns
   let fn_indices_list = array_slice([0], 0, 0)
@@ -1530,19 +1616,25 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
   array_push(fn_returns_list, 1)
   array_push(fn_indices_list, 12)  // int_to_double
   array_push(fn_returns_list, 1)
+  array_push(fn_indices_list, 13)  // string_char_code_at
+  array_push(fn_returns_list, 1)
+  array_push(fn_indices_list, 14)  // string_from_char_code
+  array_push(fn_returns_list, 1)
+  array_push(fn_indices_list, 15)  // string_substring
+  array_push(fn_returns_list, 1)
 
   // === Type section ===
   // type 0: fd_write (i32,i32,i32,i32) -> (i32)
   // type 1: (i64) -> () [print_int, print_str]
   // type 2: () -> () [_start]
-  // type 3: (i64) -> (i64) [string_length, array_length]
-  // type 4: (i64,i64) -> (i64) [string_equals, string_concat, array_get]
+  // type 3: (i64) -> (i64) [string_length, array_length, str_from_char_code]
+  // type 4: (i64,i64) -> (i64) [string_equals, string_concat, array_get, str_char_code_at]
   // type 5: () -> (i64) [array_new]
   // type 6: (i64,i64) -> () [array_push]
   // type 7: (i64,i64,i64) -> () [array_set]
-  // type 8+: user function types
-  // Closure call types added after compilation (see below)
-  let num_base_types = 8
+  // type 8: (i64,i64,i64) -> (i64) [str_substring]
+  // type 9+: closure call types
+  let num_base_types = 9
 
   // Lambda accumulators (populated during compilation)
   let lambda_bodies_w = array_slice([array_slice([0], 0, 0)], 0, 0)
@@ -1592,6 +1684,15 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
   array_push(meta_i64, 0)
   array_push(bodies, gen_int_to_double_body())
   array_push(meta_i32, 0)
+  array_push(meta_i64, 0)
+  array_push(bodies, gen_str_char_code_at_body())
+  array_push(meta_i32, 1)
+  array_push(meta_i64, 0)
+  array_push(bodies, gen_str_from_char_code_body())
+  array_push(meta_i32, 1)
+  array_push(meta_i64, 0)
+  array_push(bodies, gen_str_substring_body())
+  array_push(meta_i32, 2)
   array_push(meta_i64, 0)
 
   // Compile user function bodies (lambdas accumulated here)
@@ -1699,6 +1800,7 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
   emit_func_type_raw(type_content, array_slice([0], 0, 0), [126])  // type 5: ()->(i64)
   emit_func_type_raw(type_content, [126, 126], array_slice([0], 0, 0))  // type 6: (i64,i64)->()
   emit_func_type_raw(type_content, [126, 126, 126], array_slice([0], 0, 0))  // type 7: (i64,i64,i64)->()
+  emit_func_type_raw(type_content, [126, 126, 126], [126])  // type 8: (i64,i64,i64)->(i64)
 
   // Closure call types: (i64^(N+1)) -> i64 for N = 0..max_closure_arity
   // Used for both user funcs (with env) and lambdas
@@ -1723,7 +1825,7 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
   emit_import_section_func(out, "wasi_snapshot_preview1", "fd_write", 0)
 
   // === Function section ===
-  // func 1-12: builtins, func 13..13+N-1: user, func 13+N: _start, func 13+N+1...: lambdas
+  // func 1-15: builtins, func 16..16+N-1: user, func 16+N: _start, func 16+N+1...: lambdas
   let func_type_indices = array_slice([0], 0, 0)
   array_push(func_type_indices, 1)  // __print_i64
   array_push(func_type_indices, 1)  // __print_str
@@ -1737,6 +1839,9 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
   array_push(func_type_indices, 7)  // __arr_set
   array_push(func_type_indices, 3)  // __double_to_int
   array_push(func_type_indices, 3)  // __int_to_double
+  array_push(func_type_indices, 4)  // __str_char_code_at
+  array_push(func_type_indices, 3)  // __str_from_char_code
+  array_push(func_type_indices, 8)  // __str_substring
   // User funcs: type = closure call type for their arity (includes env)
   let mut fti = 0
   while fti < num_user_funcs {

@@ -34,6 +34,8 @@ fn is_cheap_pure_builtin(name : String) -> Bool {
   name == "float_to_double" ||
   name == "double_to_int" ||
   name == "double_to_float" ||
+  name == "double_to_i64_bits" ||
+  name == "i64_bits_to_double" ||
   name == "char_to_int" ||
   name == "char_from_int" ||
   name == "string_from_char_code" ||
@@ -1084,6 +1086,24 @@ fn eval_pure_builtin(
       match args[0] {
         @core.Value::Double(d) => @core.Value::Float(Float::from_double(d))
         _ => raise EvalError::BadCall(E("double_to_float"))
+      }
+    }
+    "double_to_i64_bits" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall(E("double_to_i64_bits"))
+      }
+      match args[0] {
+        @core.Value::Double(d) => @core.Value::Int(d.reinterpret_as_int64())
+        _ => raise EvalError::BadCall(E("double_to_i64_bits"))
+      }
+    }
+    "i64_bits_to_double" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall(E("i64_bits_to_double"))
+      }
+      match args[0] {
+        @core.Value::Int(n) => @core.Value::Double(n.reinterpret_as_double())
+        _ => raise EvalError::BadCall(E("i64_bits_to_double"))
       }
     }
     "__to_string" => {
