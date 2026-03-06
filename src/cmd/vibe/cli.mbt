@@ -754,6 +754,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
             db,
             entry,
             opt_level=opts.opt_level,
+            is_async=opts.is_async,
           ) catch {
             e => abort("compile: " + e.user_message())
           }

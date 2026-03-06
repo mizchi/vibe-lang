@@ -682,6 +682,7 @@ pub fn compile_module_component_string_lift_auto(
   db : @runtime.VibeDb,
   path : String,
   opt_level? : String? = None,
+  is_async? : Bool = false,
 ) -> Bytes raise WasmCompileError {
   let compiled = compile_module(db, path) catch {
     e => raise WasmCompileError::Compile(e)
@@ -744,6 +745,7 @@ pub fn compile_module_component_string_lift_auto(
     func_name,
     string_param_count,
     param_names=string_param_names,
+    is_async=is_async,
   )
   optimize_wasm_bytes_with_opt_level(component, opt_level)
 }

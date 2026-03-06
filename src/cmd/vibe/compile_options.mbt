@@ -20,6 +20,7 @@ pub struct CompileCmdOptions {
   debug_errors : Bool
   http_host_imports : Bool
   force_cabi_realloc : Bool
+  is_async : Bool
   out_path : String?
   entry_path : String
   opt_level : String?
@@ -89,6 +90,7 @@ pub fn parse_compile_cmd_args(
   let mut debug_errors = false
   let mut http_host_imports = false
   let mut force_cabi_realloc = false
+  let mut is_async = false
   let mut out_path : String? = None
   let mut entry_path : String? = None
   let mut opt_level : String? = None
@@ -152,6 +154,10 @@ pub fn parse_compile_cmd_args(
         force_cabi_realloc = true
         i += 1
       }
+      "--async" => {
+        is_async = true
+        i += 1
+      }
       "--wite" => {
         if opt_level is None {
           opt_level = Some("-Oz")
@@ -210,6 +216,11 @@ pub fn parse_compile_cmd_args(
           "compile: --http-host-imports is only supported with --wasm or --component",
         )
       }
+      if is_async && mode != CompileMode::ComponentStringLift {
+        return Err(
+          "compile: --async is only supported with --component-string-lift",
+        )
+      }
       Ok({
         mode,
         no_dce,
@@ -218,6 +229,7 @@ pub fn parse_compile_cmd_args(
         debug_errors,
         http_host_imports,
         force_cabi_realloc,
+        is_async,
         out_path,
         entry_path: path,
         opt_level,

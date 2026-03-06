@@ -103,6 +103,8 @@ priv struct CoreImportFunc {
 priv struct ComponentFuncSig {
   params : Array[Byte]
   results : Array[Byte]
+  param_names : Array[String]
+  is_async : Bool
 }
 
 ///|
@@ -609,7 +611,7 @@ fn component_sig_from_core(sig : CoreFuncSig) -> ComponentFuncSig? {
       None => return None
     }
   }
-  Some(ComponentFuncSig::{ params, results })
+  Some(ComponentFuncSig::{ params, results, param_names: [], is_async: false })
 }
 
 ///|
@@ -658,10 +660,19 @@ fn emit_component_func_type(
   content : Array[Byte],
   sig : ComponentFuncSig,
 ) -> Unit {
-  content.push(b'\x40') // component func type
+  if sig.is_async {
+    content.push(b'\x43') // async component func type
+  } else {
+    content.push(b'\x40') // sync component func type
+  }
   component_write_uleb128(content, sig.params.length())
   for i, param in sig.params {
-    component_write_name(content, "p" + i.to_string())
+    let name = if i < sig.param_names.length() {
+      sig.param_names[i]
+    } else {
+      "p" + i.to_string()
+    }
+    component_write_name(content, name)
     content.push(param)
   }
   if sig.results.length() == 0 {
@@ -1445,7 +1456,12 @@ fn emit_canon_lift_func_with_opts(
 ///|
 fn emit_component_type_section_run_result(buf : Array[Byte]) -> Unit {
   emit_component_type_section_for_sigs(buf, [
-    ComponentFuncSig::{ params: [], results: [component_valtype_s64] },
+    ComponentFuncSig::{
+      params: [],
+      results: [component_valtype_s64],
+      param_names: [],
+      is_async: false,
+    },
   ])
 }
 
@@ -1538,6 +1554,7 @@ pub fn emit_component_wasm_with_string_lift(
   export_name : String,
   string_param_count : Int,
   param_names? : Array[String] = [],
+  is_async? : Bool = false,
 ) -> Bytes {
   let import_plan = build_core_import_plan(core_wasm)
   let import_func_count = import_plan.bindings.length()
@@ -1623,7 +1640,11 @@ pub fn emit_component_wasm_with_string_lift(
   let type_content : Array[Byte] = []
   component_write_uleb128(type_content, 1) // 1 type
   // Emit component func type inline with correct param names
-  type_content.push(b'\x40') // component func type
+  if is_async {
+    type_content.push(b'\x43') // async component func type
+  } else {
+    type_content.push(b'\x40') // sync component func type
+  }
   component_write_uleb128(type_content, string_param_count)
   for i in 0..<string_param_count {
     let name = if i < param_names.length() {

@@ -428,6 +428,51 @@ test "P3 handler: component_string_lift_auto exports handler" {
 }
 
 ///|
+test "P3 handler: async component func type (0x43) prototype" {
+  let db = VibeDb::new()
+  let src =
+    #|export let handler = (method: String, url: String) -> Int {
+    #|  if string_equals(method, "GET") { 200 } else { 405 }
+    #|}
+    #|handler("GET", "/")
+  db.set_source("main", src)
+  let compiled = try compile_module(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise { c => c }
+  let bundled = @runtime.bundle_for_wasm(db, "main", compiled.ast)
+  let core_wasm = try
+    @codegen.emit_module_wasm_with_options(
+      bundled,
+      @codegen.wasm_emit_options(force_cabi_realloc=true),
+    )
+  catch {
+    e => fail("wasm gen error: " + e.to_string())
+  } noraise { w => w }
+  let async_component = @codegen.emit_component_wasm_with_string_lift(
+    core_wasm,
+    "handler",
+    "handler",
+    2,
+    param_names=["method", "url"],
+    is_async=true,
+  )
+  // Component header
+  assert_eq(async_component[0].to_int(), 0x00) // \0
+  assert_eq(async_component[4].to_int(), 0x0d) // component version
+  // Should contain 0x43 (async func type) somewhere in the binary
+  let bytes = async_component
+  let mut found_async = false
+  for i in 0..<(bytes.length() - 2) {
+    // Look for 0x43 followed by param count 2
+    if bytes[i].to_int() == 0x43 && bytes[i + 1].to_int() == 0x02 {
+      found_async = true
+      break
+    }
+  }
+  assert_true(found_async)
+}
+
+///|
 test "P3 handler: interpreter returns correct status codes" {
   let base =
     #|let handler = (method: String, url: String) -> Int {
