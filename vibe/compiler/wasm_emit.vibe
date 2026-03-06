@@ -259,6 +259,61 @@ export let emit_return = (buf: Array[Int]) -> Unit {
   bytebuf_push(buf, 15)  // return
 }
 
+// Control flow: block types
+// 0x40 = void block, 0x7E = i64 block
+export let emit_block_void = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 2)   // block
+  bytebuf_push(buf, 64)  // 0x40 = void
+}
+
+export let emit_block_i64 = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 2)   // block
+  bytebuf_push(buf, 126) // 0x7E = i64
+}
+
+export let emit_loop_void = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 3)   // loop
+  bytebuf_push(buf, 64)  // void
+}
+
+export let emit_if_void = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 4)   // if
+  bytebuf_push(buf, 64)  // void
+}
+
+export let emit_if_i64 = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 4)   // if
+  bytebuf_push(buf, 126) // i64
+}
+
+export let emit_else = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 5)   // else
+}
+
+export let emit_end = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 11)  // end
+}
+
+export let emit_br = (buf: Array[Int], label: Int) -> Unit {
+  bytebuf_push(buf, 12)  // br
+  leb128_encode_u32(buf, label)
+}
+
+export let emit_br_if = (buf: Array[Int], label: Int) -> Unit {
+  bytebuf_push(buf, 13)  // br_if
+  leb128_encode_u32(buf, label)
+}
+
+// i64.extend_i32_s — extend i32 comparison result to i64
+export let emit_i64_extend_i32_s = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 172)  // 0xAC
+}
+
+// i32.wrap_i64 — truncate i64 to i32 (for br_if which needs i32 condition)
+export let emit_i32_wrap_i64 = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 167)  // 0xA7
+}
+
 // === High-level: build a complete module ===
 
 // Build a minimal WASM module with one exported function: add(i64, i64) -> i64
@@ -339,5 +394,116 @@ export let build_arithmetic_module = () -> Bytes {
   emit_i64_mul(mul_body)
 
   emit_code_section(out, [add_body, sub_body, mul_body])
+  bytebuf_to_bytes(out)
+}
+
+// Build fibonacci module: fib(n) iterative
+// params: n (local 0)
+// locals: a (local 1), b (local 2), tmp (local 3)
+// Algorithm: a=0, b=1, while(n>0) { tmp=a+b; a=b; b=tmp; n=n-1 }; return a
+export let build_fibonacci_module = () -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+
+  // type0: (i64) -> (i64)
+  emit_type_section(out, 1, 1)
+  emit_function_section(out, [0])
+  emit_export_section(out, "fib", 0)
+
+  let b = bytebuf_new()
+  // local 0 = n (param), locals 1=a, 2=b, 3=tmp
+
+  // a = 0
+  emit_i64_const(b, 0)
+  emit_local_set(b, 1)
+  // b = 1
+  emit_i64_const(b, 1)
+  emit_local_set(b, 2)
+
+  // block $break
+  emit_block_void(b)
+    // loop $continue
+    emit_loop_void(b)
+      // if n <= 0, break
+      emit_local_get(b, 0)
+      emit_i64_const(b, 0)
+      emit_i64_le_s(b)
+      emit_br_if(b, 1)  // br $break (label 1 = outer block)
+
+      // tmp = a + b
+      emit_local_get(b, 1)
+      emit_local_get(b, 2)
+      emit_i64_add(b)
+      emit_local_set(b, 3)
+      // a = b
+      emit_local_get(b, 2)
+      emit_local_set(b, 1)
+      // b = tmp
+      emit_local_get(b, 3)
+      emit_local_set(b, 2)
+      // n = n - 1
+      emit_local_get(b, 0)
+      emit_i64_const(b, 1)
+      emit_i64_sub(b)
+      emit_local_set(b, 0)
+
+      // br $continue (label 0 = loop)
+      emit_br(b, 0)
+    emit_end(b)  // end loop
+  emit_end(b)    // end block
+
+  // return a
+  emit_local_get(b, 1)
+
+  emit_code_section_with_locals(out, [b], [3])
+  bytebuf_to_bytes(out)
+}
+
+// Build factorial module: fact(n) iterative
+// params: n (local 0), locals: result (local 1)
+// Algorithm: result=1, while(n>1) { result=result*n; n=n-1 }; return result
+export let build_factorial_module = () -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+
+  emit_type_section(out, 1, 1)
+  emit_function_section(out, [0])
+  emit_export_section(out, "fact", 0)
+
+  let b = bytebuf_new()
+  // result = 1
+  emit_i64_const(b, 1)
+  emit_local_set(b, 1)
+
+  // block $break
+  emit_block_void(b)
+    // loop $continue
+    emit_loop_void(b)
+      // if n <= 1, break
+      emit_local_get(b, 0)
+      emit_i64_const(b, 1)
+      emit_i64_le_s(b)
+      emit_br_if(b, 1)
+
+      // result = result * n
+      emit_local_get(b, 1)
+      emit_local_get(b, 0)
+      emit_i64_mul(b)
+      emit_local_set(b, 1)
+
+      // n = n - 1
+      emit_local_get(b, 0)
+      emit_i64_const(b, 1)
+      emit_i64_sub(b)
+      emit_local_set(b, 0)
+
+      emit_br(b, 0)
+    emit_end(b)
+  emit_end(b)
+
+  // return result
+  emit_local_get(b, 1)
+
+  emit_code_section_with_locals(out, [b], [1])
   bytebuf_to_bytes(out)
 }
