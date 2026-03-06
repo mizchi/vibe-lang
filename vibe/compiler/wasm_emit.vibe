@@ -789,3 +789,122 @@ export let build_print_string_module = (msg: String) -> Bytes {
   emit_data_section(out, 16, str_data)
   bytebuf_to_bytes(out)
 }
+
+// === f64 instructions ===
+
+// f64.const — emit raw i64 bits as f64 constant
+// Caller provides the raw i64 bits (from double_to_i64_bits builtin)
+export let emit_f64_const_bits = (buf: Array[Int], bits: Int) -> Unit {
+  bytebuf_push(buf, 68)  // 0x44 f64.const
+  // Emit 8 bytes in little-endian
+  bytebuf_push(buf, bits & 255)
+  bytebuf_push(buf, (bits >> 8) & 255)
+  bytebuf_push(buf, (bits >> 16) & 255)
+  bytebuf_push(buf, (bits >> 24) & 255)
+  bytebuf_push(buf, (bits >> 32) & 255)
+  bytebuf_push(buf, (bits >> 40) & 255)
+  bytebuf_push(buf, (bits >> 48) & 255)
+  bytebuf_push(buf, (bits >> 56) & 255)
+}
+
+export let emit_f64_add = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 160)  // 0xA0
+}
+
+export let emit_f64_sub = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 161)  // 0xA1
+}
+
+export let emit_f64_mul = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 162)  // 0xA2
+}
+
+export let emit_f64_div = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 163)  // 0xA3
+}
+
+export let emit_f64_eq = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 97)  // 0x61
+}
+
+export let emit_f64_ne = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 98)  // 0x62
+}
+
+export let emit_f64_lt = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 99)  // 0x63
+}
+
+export let emit_f64_gt = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 100)  // 0x64
+}
+
+export let emit_f64_le = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 101)  // 0x65
+}
+
+export let emit_f64_ge = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 102)  // 0x66
+}
+
+export let emit_f64_neg = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 154)  // 0x9A
+}
+
+// i64.reinterpret_f64 — reinterpret f64 bits as i64
+export let emit_i64_reinterpret_f64 = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 189)  // 0xBD
+}
+
+// f64.reinterpret_i64 — reinterpret i64 bits as f64
+export let emit_f64_reinterpret_i64 = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 191)  // 0xBF
+}
+
+// i64.trunc_f64_s — truncate f64 to signed i64
+export let emit_i64_trunc_f64_s = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 176)  // 0xB0
+}
+
+// f64.convert_i64_s — convert signed i64 to f64
+export let emit_f64_convert_i64_s = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 185)  // 0xB9
+}
+
+// === Table and indirect call support ===
+
+// call_indirect: opcode 0x11 + type_idx (LEB128) + table 0x00
+export let emit_call_indirect = (buf: Array[Int], type_idx: Int) -> Unit {
+  bytebuf_push(buf, 17)  // 0x11
+  leb128_encode_u32(buf, type_idx)
+  bytebuf_push(buf, 0)   // table index 0
+}
+
+// Emit table section (section 4): 1 funcref table with min=num_entries, no max
+export let emit_table_section_funcref = (out: Array[Int], num_entries: Int) -> Unit {
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, 1)  // 1 table
+  bytebuf_push(content, 112)  // 0x70 = funcref
+  bytebuf_push(content, 0)    // limits: no max
+  leb128_encode_u32(content, num_entries)
+  bytebuf_push_section(out, 4, content)
+}
+
+// Emit element section (section 9): active segment for table 0 at offset 0
+// func_indices: array of function indices to place in table
+export let emit_element_section_active = (out: Array[Int], func_indices: Array[Int]) -> Unit {
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, 1)  // 1 segment
+  bytebuf_push(content, 0)  // flags: active, table 0
+  // Offset expression: i32.const 0, end
+  emit_i32_const(content, 0)
+  emit_end(content)
+  // Function indices
+  leb128_encode_u32(content, array_length(func_indices))
+  let mut i = 0
+  while i < array_length(func_indices) {
+    leb128_encode_u32(content, array_get(func_indices, i))
+    i = i + 1
+  }
+  bytebuf_push_section(out, 9, content)
+}
