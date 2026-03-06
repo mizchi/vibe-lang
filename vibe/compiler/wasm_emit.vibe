@@ -908,3 +908,60 @@ export let emit_element_section_active = (out: Array[Int], func_indices: Array[I
   }
   bytebuf_push_section(out, 9, content)
 }
+
+// === GC instructions ===
+
+// Emit a struct type definition: struct { field_types[i] with field_muts[i] }
+// field_types: valtype bytes (0x7E=i64, 0x7F=i32, etc.)
+// field_muts: 0x00=const, 0x01=mut
+export let emit_struct_type_raw = (buf: Array[Int], field_types: Array[Int], field_muts: Array[Int]) -> Unit {
+  bytebuf_push(buf, 95)  // 0x5F = struct
+  leb128_encode_u32(buf, array_length(field_types))
+  let mut i = 0
+  while i < array_length(field_types) {
+    bytebuf_push(buf, array_get(field_types, i))
+    bytebuf_push(buf, array_get(field_muts, i))
+    i = i + 1
+  }
+}
+
+// struct.new $type — create a new struct (values on stack)
+export let emit_struct_new = (buf: Array[Int], type_idx: Int) -> Unit {
+  bytebuf_push(buf, 251)  // 0xFB GC prefix
+  leb128_encode_u32(buf, 0)  // struct.new
+  leb128_encode_u32(buf, type_idx)
+}
+
+// struct.get $type $field — read a struct field
+export let emit_struct_get = (buf: Array[Int], type_idx: Int, field_idx: Int) -> Unit {
+  bytebuf_push(buf, 251)  // 0xFB
+  leb128_encode_u32(buf, 2)  // struct.get
+  leb128_encode_u32(buf, type_idx)
+  leb128_encode_u32(buf, field_idx)
+}
+
+// struct.set $type $field — write a struct field
+export let emit_struct_set = (buf: Array[Int], type_idx: Int, field_idx: Int) -> Unit {
+  bytebuf_push(buf, 251)  // 0xFB
+  leb128_encode_u32(buf, 5)  // struct.set
+  leb128_encode_u32(buf, type_idx)
+  leb128_encode_u32(buf, field_idx)
+}
+
+// ref.func $func — get a typed function reference
+export let emit_ref_func = (buf: Array[Int], func_idx: Int) -> Unit {
+  bytebuf_push(buf, 210)  // 0xD2
+  leb128_encode_u32(buf, func_idx)
+}
+
+// call_ref $type — call a function reference
+export let emit_call_ref = (buf: Array[Int], type_idx: Int) -> Unit {
+  bytebuf_push(buf, 20)  // 0x14
+  leb128_encode_u32(buf, type_idx)
+}
+
+// ref.null $heaptype — push a null reference
+export let emit_ref_null = (buf: Array[Int], heap_type_byte: Int) -> Unit {
+  bytebuf_push(buf, 208)  // 0xD0
+  bytebuf_push(buf, heap_type_byte)
+}

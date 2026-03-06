@@ -1,0 +1,494 @@
+// Shared utilities for WASM codegen backends (linear memory & wasm-gc)
+// AST analysis, string tables, free variable analysis, helper emitters
+
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ./bytebuf.vibe {
+  bytebuf_push, leb128_encode_u32
+}
+
+import ./wasm_emit.vibe {
+  emit_i64_const, emit_i64_shl, emit_i64_or
+}
+
+// === Additional i32/i64 ops not in wasm_emit ===
+
+export let emit_i32_sub = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 107)  // 0x6B
+}
+
+export let emit_i32_mul = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 108)  // 0x6C
+}
+
+export let emit_i32_ne = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 71)  // 0x47
+}
+
+export let emit_i32_eq = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 70)  // 0x46
+}
+
+export let emit_i32_ge_u = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 79)  // 0x4F
+}
+
+export let emit_i32_eqz = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 69)  // 0x45
+}
+
+export let emit_i64_store = (buf: Array[Int], align: Int, offset: Int) -> Unit {
+  bytebuf_push(buf, 55)  // 0x37
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
+
+export let emit_i64_load = (buf: Array[Int], align: Int, offset: Int) -> Unit {
+  bytebuf_push(buf, 41)  // 0x29
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
+
+export let emit_i64_extend_i32_u = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 173)  // 0xAD
+}
+
+export let emit_memory_copy = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 252)  // 0xFC prefix
+  leb128_encode_u32(buf, 10)  // memory.copy
+  bytebuf_push(buf, 0)  // src memory
+  bytebuf_push(buf, 0)  // dst memory
+}
+
+// === Compilation context ===
+
+export let resolve_local = (names: Array[String], name: String) -> Int with { Error } {
+  let len = array_length(names)
+  let rec search = (i: Int) -> Int with { Error } {
+    if i < 0 {
+      throw(string_concat("undefined variable: ", name))
+    }
+    if string_equals(array_get(names, i), name) {
+      i
+    } else search(i - 1)
+  }
+  search(len - 1)
+}
+
+// Resolve function: returns (func_index, param_count, has_return)
+export let resolve_func = (fn_names: Array[String], fn_indices: Array[Int], fn_params: Array[Int], fn_returns: Array[Int], name: String) -> (Int, Int, Int) with { Error } {
+  let len = array_length(fn_names)
+  let rec search = (i: Int) -> (Int, Int, Int) with { Error } {
+    if i >= len {
+      throw(string_concat("undefined function: ", name))
+    }
+    if string_equals(array_get(fn_names, i), name) {
+      (array_get(fn_indices, i), array_get(fn_params, i), array_get(fn_returns, i))
+    } else search(i + 1)
+  }
+  search(0)
+}
+
+// === String table ===
+
+export let emit_str_ref = (buf: Array[Int], offset: Int, length: Int) -> Unit {
+  emit_i64_const(buf, offset)
+  emit_i64_const(buf, 32)
+  emit_i64_shl(buf)
+  emit_i64_const(buf, length)
+  emit_i64_or(buf)
+}
+
+export let rec collect_strings_expr = (expr: Expr, out: Array[String]) -> Int {
+  match expr {
+    EString(s) => {
+      let mut found = false
+      let mut i = 0
+      while i < array_length(out) {
+        if string_equals(array_get(out, i), s) {
+          found = true
+        }
+        i = i + 1
+      }
+      if !found { array_push(out, s) }
+      0
+    },
+    EBinOp(_, lhs, rhs) => {
+      collect_strings_expr(lhs, out)
+      collect_strings_expr(rhs, out)
+    },
+    EUnaryOp(_, operand) => collect_strings_expr(operand, out),
+    EIf(cond, then_e, else_e) => {
+      collect_strings_expr(cond, out)
+      collect_strings_expr(then_e, out)
+      collect_strings_expr(else_e, out)
+    },
+    ECall(callee, args) => {
+      collect_strings_expr(callee, out)
+      let mut i = 0
+      while i < array_length(args) {
+        collect_strings_expr(array_get(args, i), out)
+        i = i + 1
+      }
+      0
+    },
+    ELet(_, value, body) => {
+      collect_strings_expr(value, out)
+      collect_strings_expr(body, out)
+    },
+    ELetRec(_, value, body) => {
+      collect_strings_expr(value, out)
+      collect_strings_expr(body, out)
+    },
+    ELetMut(_, value, body) => {
+      collect_strings_expr(value, out)
+      collect_strings_expr(body, out)
+    },
+    EAssign(_, value, body) => {
+      collect_strings_expr(value, out)
+      collect_strings_expr(body, out)
+    },
+    EAssignOp(_, _, value, body) => {
+      collect_strings_expr(value, out)
+      collect_strings_expr(body, out)
+    },
+    ESeq(first, second) => {
+      collect_strings_expr(first, out)
+      collect_strings_expr(second, out)
+    },
+    EWhile(cond, body) => {
+      collect_strings_expr(cond, out)
+      collect_strings_expr(body, out)
+    },
+    EForIn(_, iter_e, body) => {
+      collect_strings_expr(iter_e, out)
+      collect_strings_expr(body, out)
+    },
+    ETuple(elems) => {
+      let mut i = 0
+      while i < array_length(elems) {
+        collect_strings_expr(array_get(elems, i), out)
+        i = i + 1
+      }
+      0
+    },
+    EArray(elems) => {
+      let mut i = 0
+      while i < array_length(elems) {
+        collect_strings_expr(array_get(elems, i), out)
+        i = i + 1
+      }
+      0
+    },
+    EMatch(scrutinee, arms) => {
+      collect_strings_expr(scrutinee, out)
+      let mut i = 0
+      while i < array_length(arms) {
+        let (_, arm_expr) = array_get(arms, i)
+        collect_strings_expr(arm_expr, out)
+        i = i + 1
+      }
+      0
+    },
+    EFn(_, _, _, _, _, body) => collect_strings_expr(body, out),
+    _ => 0
+  }
+}
+
+export let collect_strings_stmts = (stmts: Array[Stmt]) -> Array[String] {
+  let out = array_slice([""], 0, 0)
+  let mut i = 0
+  while i < array_length(stmts) {
+    match array_get(stmts, i) {
+      SLet(_, _, _, _, expr) => collect_strings_expr(expr, out),
+      _ => 0
+    }
+    i = i + 1
+  }
+  out
+}
+
+// === Free variable analysis ===
+
+export let array_contains_str = (arr: Array[String], s: String) -> Bool {
+  let len = array_length(arr)
+  let rec search = (i: Int) -> Bool {
+    if i >= len { false }
+    else if string_equals(array_get(arr, i), s) { true }
+    else search(i + 1)
+  }
+  search(0)
+}
+
+export let rec collect_free_vars_expr = (expr: Expr, bound: Array[String], fn_names: Array[String], out: Array[String]) -> Int {
+  let cfv = (e: Expr, b: Array[String]) -> Int {
+    collect_free_vars_expr(e, b, fn_names, out)
+  }
+  match expr {
+    EIdent(name) => {
+      if !array_contains_str(bound, name) {
+        if !array_contains_str(fn_names, name) {
+          if !array_contains_str(out, name) {
+            array_push(out, name)
+          }
+        }
+      }
+      0
+    },
+    EInt(_) => 0,
+    EBool(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EUnit => 0,
+    EBinOp(_, lhs, rhs) => { cfv(lhs, bound); cfv(rhs, bound) },
+    EUnaryOp(_, operand) => cfv(operand, bound),
+    EIf(cond, then_e, else_e) => { cfv(cond, bound); cfv(then_e, bound); cfv(else_e, bound) },
+    ECall(callee, args) => {
+      cfv(callee, bound)
+      let mut i = 0
+      while i < array_length(args) {
+        cfv(array_get(args, i), bound)
+        i = i + 1
+      }
+      0
+    },
+    ELet(name, value, body) => {
+      cfv(value, bound)
+      let b2 = array_slice(bound, 0, array_length(bound))
+      array_push(b2, name)
+      cfv(body, b2)
+    },
+    ELetRec(name, value, body) => {
+      let b2 = array_slice(bound, 0, array_length(bound))
+      array_push(b2, name)
+      cfv(value, b2)
+      cfv(body, b2)
+    },
+    ELetMut(name, value, body) => {
+      cfv(value, bound)
+      let b2 = array_slice(bound, 0, array_length(bound))
+      array_push(b2, name)
+      cfv(body, b2)
+    },
+    EAssign(_, value, body) => { cfv(value, bound); cfv(body, bound) },
+    EAssignOp(_, _, value, body) => { cfv(value, bound); cfv(body, bound) },
+    ESeq(first, second) => { cfv(first, bound); cfv(second, bound) },
+    EWhile(cond, body) => { cfv(cond, bound); cfv(body, bound) },
+    EForIn(var_name, iter_e, body) => {
+      cfv(iter_e, bound)
+      let b2 = array_slice(bound, 0, array_length(bound))
+      array_push(b2, var_name)
+      cfv(body, b2)
+    },
+    ETuple(elems) => {
+      let mut i = 0
+      while i < array_length(elems) {
+        cfv(array_get(elems, i), bound)
+        i = i + 1
+      }
+      0
+    },
+    EArray(elems) => {
+      let mut i = 0
+      while i < array_length(elems) {
+        cfv(array_get(elems, i), bound)
+        i = i + 1
+      }
+      0
+    },
+    EMatch(scrutinee, arms) => {
+      cfv(scrutinee, bound)
+      let mut i = 0
+      while i < array_length(arms) {
+        let (_, arm_expr) = array_get(arms, i)
+        cfv(arm_expr, bound)
+        i = i + 1
+      }
+      0
+    },
+    EFn(_, _, params, _, _, body) => {
+      let b2 = array_slice(bound, 0, array_length(bound))
+      let mut pi = 0
+      while pi < array_length(params) {
+        let (pname, _) = array_get(params, pi)
+        array_push(b2, pname)
+        pi = pi + 1
+      }
+      cfv(body, b2)
+    },
+    EBreak(_) => 0,
+    EContinue(_) => 0,
+    EThrow(msg) => cfv(msg, bound),
+    _ => 0
+  }
+}
+
+export let collect_free_vars = (body: Expr, param_names: Array[String], fn_names: Array[String]) -> Array[String] {
+  let out = array_slice([""], 0, 0)
+  collect_free_vars_expr(body, param_names, fn_names, out)
+  out
+}
+
+// === Mutable capture analysis ===
+
+// Check if a mutable variable is captured by any nested EFn in the given expression
+export let rec is_mut_captured_in = (expr: Expr, name: String) -> Bool {
+  match expr {
+    EIdent(_) => false,
+    EInt(_) => false,
+    EBool(_) => false,
+    EFloat(_) => false,
+    EString(_) => false,
+    EUnit => false,
+    EBinOp(_, lhs, rhs) => is_mut_captured_in(lhs, name) || is_mut_captured_in(rhs, name),
+    EUnaryOp(_, operand) => is_mut_captured_in(operand, name),
+    EIf(cond, then_e, else_e) => is_mut_captured_in(cond, name) || is_mut_captured_in(then_e, name) || is_mut_captured_in(else_e, name),
+    ECall(callee, args) => {
+      if is_mut_captured_in(callee, name) { true }
+      else {
+        let mut i = 0
+        let mut found = false
+        while i < array_length(args) {
+          if is_mut_captured_in(array_get(args, i), name) { found = true }
+          i = i + 1
+        }
+        found
+      }
+    },
+    ELet(n, value, body) => {
+      if string_equals(n, name) { is_mut_captured_in(value, name) }
+      else { is_mut_captured_in(value, name) || is_mut_captured_in(body, name) }
+    },
+    ELetRec(n, value, body) => {
+      if string_equals(n, name) { false }
+      else { is_mut_captured_in(value, name) || is_mut_captured_in(body, name) }
+    },
+    ELetMut(n, value, body) => {
+      if string_equals(n, name) { is_mut_captured_in(value, name) }
+      else { is_mut_captured_in(value, name) || is_mut_captured_in(body, name) }
+    },
+    EAssign(_, value, body) => is_mut_captured_in(value, name) || is_mut_captured_in(body, name),
+    EAssignOp(_, _, value, body) => is_mut_captured_in(value, name) || is_mut_captured_in(body, name),
+    ESeq(first, second) => is_mut_captured_in(first, name) || is_mut_captured_in(second, name),
+    EWhile(cond, body) => is_mut_captured_in(cond, name) || is_mut_captured_in(body, name),
+    EForIn(_, iter_e, body) => is_mut_captured_in(iter_e, name) || is_mut_captured_in(body, name),
+    ETuple(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < array_length(elems) {
+        if is_mut_captured_in(array_get(elems, i), name) { found = true }
+        i = i + 1
+      }
+      found
+    },
+    EArray(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < array_length(elems) {
+        if is_mut_captured_in(array_get(elems, i), name) { found = true }
+        i = i + 1
+      }
+      found
+    },
+    EMatch(scrutinee, arms) => {
+      if is_mut_captured_in(scrutinee, name) { true }
+      else {
+        let mut i = 0
+        let mut found = false
+        while i < array_length(arms) {
+          let (_, arm_expr) = array_get(arms, i)
+          if is_mut_captured_in(arm_expr, name) { found = true }
+          i = i + 1
+        }
+        found
+      }
+    },
+    EFn(_, _, params, _, _, fn_body) => {
+      // Check if name is shadowed by params
+      let mut shadowed = false
+      let mut pi = 0
+      while pi < array_length(params) {
+        let (pname, _) = array_get(params, pi)
+        if string_equals(pname, name) { shadowed = true }
+        pi = pi + 1
+      }
+      if shadowed { false }
+      else {
+        // Check if name is free in this EFn
+        let param_names = array_slice([""], 0, 0)
+        let mut pi2 = 0
+        while pi2 < array_length(params) {
+          let (pname2, _) = array_get(params, pi2)
+          array_push(param_names, pname2)
+          pi2 = pi2 + 1
+        }
+        let fv = collect_free_vars(fn_body, param_names, array_slice([""], 0, 0))
+        if array_contains_str(fv, name) { true }
+        else {
+          // Also check recursively for deeper nesting
+          is_mut_captured_in(fn_body, name)
+        }
+      }
+    },
+    EBreak(_) => false,
+    EContinue(_) => false,
+    EThrow(msg) => is_mut_captured_in(msg, name),
+    _ => false
+  }
+}
+
+// === Lookup helpers ===
+
+export let str_table_lookup = (strs: Array[String], s: String) -> Int with { Error } {
+  let rec search = (i: Int) -> Int with { Error } {
+    if i >= array_length(strs) {
+      throw(string_concat("string not in table: ", s))
+    }
+    if string_equals(array_get(strs, i), s) {
+      i
+    } else search(i + 1)
+  }
+  search(0)
+}
+
+// Find the index of the first catch-all pattern in match arms
+// Returns num_arms if no catch-all found
+export let find_catchall_idx = (arms: Array[(Pat, Expr)]) -> Int {
+  let num = array_length(arms)
+  let rec search = (idx: Int) -> Int {
+    if idx >= num { num }
+    else {
+      let (p, _) = array_get(arms, idx)
+      let is_catch = match p {
+        PWild => true,
+        PBind(_) => true,
+        PTuple(_) => true,
+        PCtor(_, args) => array_length(args) == 0,
+        _ => false
+      }
+      if is_catch { idx } else search(idx + 1)
+    }
+  }
+  search(0)
+}
+
+// Find the SLet statement for a given function name
+export let find_func_stmt = (stmts: Array[Stmt], name: String) -> Stmt with { Error } {
+  let rec search = (i: Int) -> Stmt with { Error } {
+    if i >= array_length(stmts) {
+      throw(string_concat("function not found: ", name))
+    }
+    let stmt = array_get(stmts, i)
+    match stmt {
+      SLet(_, _, sname, _, _) => {
+        if string_equals(sname, name) {
+          stmt
+        } else search(i + 1)
+      },
+      _ => search(i + 1)
+    }
+  }
+  search(0)
+}

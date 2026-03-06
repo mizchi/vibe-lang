@@ -1,6 +1,6 @@
-// AST-to-WASM codegen (linear memory backend)
-// Supports: Int arithmetic, let/mut/assign, functions, if/else, while, calls,
-// strings (packed i64 refs), tuples (heap), arrays (heap), match expressions, closures
+// AST-to-WASM codegen (wasm-gc backend)
+// Uses GC struct types for ref cells instead of linear memory bump allocation.
+// Closures use table-based call_indirect (same as linear memory backend).
 
 import ./ast.vibe {
   Expr, Pat, Stmt, TypeExpr
@@ -39,7 +39,8 @@ import ./wasm_emit.vibe {
   emit_f64_eq, emit_f64_ne, emit_f64_lt, emit_f64_gt, emit_f64_le, emit_f64_ge,
   emit_f64_neg, emit_i64_reinterpret_f64, emit_f64_reinterpret_i64,
   emit_i64_trunc_f64_s, emit_f64_convert_i64_s,
-  emit_call_indirect, emit_table_section_funcref, emit_element_section_active
+  emit_call_indirect, emit_table_section_funcref, emit_element_section_active,
+  emit_struct_type_raw, emit_struct_new, emit_struct_get, emit_struct_set
 }
 
 import ./codegen_common.vibe {
@@ -51,9 +52,9 @@ import ./codegen_common.vibe {
   str_table_lookup, find_catchall_idx, find_func_stmt
 }
 
-// === Expression compiler ===
+// === Expression compiler (GC backend) ===
 
-let rec compile_expr = (
+let rec compile_expr_gc = (
   buf: Array[Int],
   expr: Expr,
   local_names: Array[String],
@@ -65,7 +66,10 @@ let rec compile_expr = (
   str_strs: Array[String],
   str_offsets: Array[Int],
   str_lengths: Array[Int],
-  ld: Int,  // loop depth: -1 = not in loop, 0+ = depth from while's loop block
+  ld: Int,
+  ref_cell_names: Array[String],
+  ref_local_indices: Array[Int],
+  refcell_type_idx: Int,
   lambda_bodies: Array[Array[Int]],
   lambda_param_counts: Array[Int],
   lambda_captures: Array[Array[String]],
@@ -73,11 +77,11 @@ let rec compile_expr = (
   lambda_meta_i64: Array[Int],
   num_user_funcs: Int,
   func_offset: Int,
-  ref_cell_names: Array[String]
+  closure_type_base: Int
 ) -> Int with { Error } {
   // shorthand for recursive call
   let ce = (b: Array[Int], e: Expr, ln: Array[String], nl: Int, d: Int) -> Int with { Error } {
-    compile_expr(b, e, ln, nl, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths, d, lambda_bodies, lambda_param_counts, lambda_captures, lambda_meta_i32, lambda_meta_i64, num_user_funcs, func_offset, ref_cell_names)
+    compile_expr_gc(b, e, ln, nl, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths, d, ref_cell_names, ref_local_indices, refcell_type_idx, lambda_bodies, lambda_param_counts, lambda_captures, lambda_meta_i32, lambda_meta_i64, num_user_funcs, func_offset, closure_type_base)
   }
   match expr {
     EInt(n) => {
@@ -100,7 +104,7 @@ let rec compile_expr = (
       next_local
     },
     EIdent(name) => {
-      // Try local first, then check if it's a top-level function as value
+      // Try local first
       let len = array_length(local_names)
       let rec try_local = (i: Int) -> Int {
         if i < 0 { -1 }
@@ -110,10 +114,9 @@ let rec compile_expr = (
       let local_idx = try_local(len - 1)
       if local_idx >= 0 {
         if array_contains_str(ref_cell_names, name) {
-          // Ref cell: local holds pointer, dereference to get value
+          // Ref cell: local holds (ref $RefCell), read via struct.get
           emit_local_get(buf, local_idx)
-          emit_i32_wrap_i64(buf)
-          emit_i64_load(buf, 3, 0)
+          emit_struct_get(buf, refcell_type_idx, 0)
         } else {
           emit_local_get(buf, local_idx)
         }
@@ -126,7 +129,6 @@ let rec compile_expr = (
           else try_fn(j + 1)
         }
         let fni = try_fn(0)
-        // table_slot for user func at fn_names index fni
         let fidx = array_get(fn_indices, fni)
         let table_slot = fidx - func_offset
         emit_i64_const(buf, (table_slot << 2) | 2)
@@ -186,7 +188,6 @@ let rec compile_expr = (
     ECall(callee, args) => {
       match callee {
         EIdent(fname) => {
-          // Try direct call first
           let fn_len2 = array_length(fn_names)
           let rec try_resolve = (j: Int) -> Int {
             if j >= fn_len2 { -1 }
@@ -204,7 +205,7 @@ let rec compile_expr = (
               nl = ce(buf, array_get(args, ci), local_names, nl, ld)
               ci = ci + 1
             }
-            // In WASI mode, user funcs have env param — push 0
+            // User funcs in GC backend have __env param for table compatibility
             if func_offset > 0 {
               if fidx >= func_offset {
                 emit_i64_const(buf, 0)
@@ -216,10 +217,9 @@ let rec compile_expr = (
             }
             nl
           } else {
-            // fname is a local variable holding a closure/fn value — indirect call
+            // Indirect call: fname is a local holding a closure/fn value
             let local_idx2 = resolve_local(local_names, fname)
             let num_args = array_length(args)
-            // We need temp locals for fn_val, table_slot, env
             let fn_val_local = next_local
             let slot_local = next_local + 1
             let env_local = next_local + 2
@@ -227,12 +227,9 @@ let rec compile_expr = (
             array_push(local_names, "__fn_val")
             array_push(local_names, "__slot")
             array_push(local_names, "__env")
-            // Load fn value
             emit_local_get(buf, local_idx2)
             emit_local_set(buf, fn_val_local)
-            // Check tag: (fn_val & 3)
-            // If tag == 2: bare fn, env = 0
-            // If tag == 1: closure object on heap
+            // Check tag: (fn_val & 3) == 2 ? bare fn : closure
             emit_local_get(buf, fn_val_local)
             emit_i64_const(buf, 3)
             emit_i64_and(buf)
@@ -243,17 +240,15 @@ let rec compile_expr = (
               emit_local_get(buf, fn_val_local)
               emit_i64_const(buf, 2)
               emit_i64_shr_s(buf)
-              // Keep as i64 (slot stored as i64)
               emit_local_set(buf, slot_local)
               emit_i64_const(buf, 0)
               emit_local_set(buf, env_local)
             emit_else(buf)
-              // Closure: ptr = fn_val & ~3, slot = i32.load(ptr,0), env = fn_val & ~3 as i64
+              // Closure: ptr = fn_val & ~3, slot = i32.load(ptr,0), env = ptr
               emit_local_get(buf, fn_val_local)
-              emit_i64_const(buf, -4)  // ~3 = ...11111100
+              emit_i64_const(buf, -4)
               emit_i64_and(buf)
               emit_local_set(buf, env_local)
-              // table_slot = mem[ptr + 0] as i32 -> extend to i64
               emit_local_get(buf, env_local)
               emit_i32_wrap_i64(buf)
               emit_i32_load(buf, 2, 0)
@@ -266,18 +261,15 @@ let rec compile_expr = (
               nl = ce(buf, array_get(args, ci), local_names, nl, ld)
               ci = ci + 1
             }
-            // Push env as last arg
             emit_local_get(buf, env_local)
-            // Push table_slot for call_indirect (i32)
             emit_local_get(buf, slot_local)
             emit_i32_wrap_i64(buf)
-            // Closure call type: type (8 + num_args) = (i64^(num_args+1)) -> i64
-            emit_call_indirect(buf, 8 + num_args)
+            emit_call_indirect(buf, closure_type_base + num_args)
             nl
           }
         },
         _ => {
-          // Callee is an arbitrary expression (e.g. result of another call)
+          // Callee is an arbitrary expression
           let num_args = array_length(args)
           let fn_val_local = next_local
           let slot_local = next_local + 1
@@ -288,7 +280,6 @@ let rec compile_expr = (
           array_push(local_names, "__env")
           nl = ce(buf, callee, local_names, nl, ld)
           emit_local_set(buf, fn_val_local)
-          // Same dispatch as above
           emit_local_get(buf, fn_val_local)
           emit_i64_const(buf, 3)
           emit_i64_and(buf)
@@ -320,14 +311,13 @@ let rec compile_expr = (
           emit_local_get(buf, env_local)
           emit_local_get(buf, slot_local)
           emit_i32_wrap_i64(buf)
-          emit_call_indirect(buf, 8 + num_args)
+          emit_call_indirect(buf, closure_type_base + num_args)
           nl
         }
       }
     },
     ELet(name, value, body) => {
       let local_idx = next_local
-      // Push name BEFORE compiling value so temp locals from value don't shift indices
       array_push(local_names, name)
       let nl = ce(buf, value, local_names, next_local + 1, ld)
       emit_local_set(buf, local_idx)
@@ -335,7 +325,6 @@ let rec compile_expr = (
       nl2
     },
     ELetRec(name, value, body) => {
-      // Same as ELet for codegen (recursion handled by function-level indices)
       let local_idx = next_local
       array_push(local_names, name)
       let nl = ce(buf, value, local_names, next_local + 1, ld)
@@ -347,21 +336,12 @@ let rec compile_expr = (
       let local_idx = next_local
       array_push(local_names, name)
       if is_mut_captured_in(body, name) {
-        // Mutable captured: allocate ref cell (8 bytes) on heap
+        // Mutable captured: allocate GC ref cell via struct.new
         array_push(ref_cell_names, name)
-        // Allocate 8 bytes
-        emit_global_get(buf, 0)          // i32 heap_ptr
-        emit_i64_extend_i32_u(buf)       // i64
-        emit_local_tee(buf, local_idx)   // save ptr as i64
-        emit_i32_wrap_i64(buf)           // i32 for arithmetic
-        emit_i32_const(buf, 8)
-        emit_i32_add(buf)
-        emit_global_set(buf, 0)          // bump heap
-        // Store initial value at ref cell
-        emit_local_get(buf, local_idx)
-        emit_i32_wrap_i64(buf)
         let nl = ce(buf, value, local_names, next_local + 1, ld)
-        emit_i64_store(buf, 3, 0)
+        emit_struct_new(buf, refcell_type_idx)
+        emit_local_set(buf, local_idx)
+        array_push(ref_local_indices, local_idx)
         let nl2 = ce(buf, body, local_names, nl, ld)
         nl2
       } else {
@@ -374,11 +354,10 @@ let rec compile_expr = (
     EAssign(name, value, body) => {
       let idx = resolve_local(local_names, name)
       if array_contains_str(ref_cell_names, name) {
-        // Ref cell: store value through pointer
+        // Ref cell: struct.set
         emit_local_get(buf, idx)
-        emit_i32_wrap_i64(buf)
         let nl = ce(buf, value, local_names, next_local, ld)
-        emit_i64_store(buf, 3, 0)
+        emit_struct_set(buf, refcell_type_idx, 0)
         ce(buf, body, local_names, nl, ld)
       } else {
         let nl = ce(buf, value, local_names, next_local, ld)
@@ -387,15 +366,12 @@ let rec compile_expr = (
       }
     },
     EAssignOp(name, op, value, body) => {
-      // name = name op value
       let idx = resolve_local(local_names, name)
       if array_contains_str(ref_cell_names, name) {
-        // Ref cell: read through pointer, compute, write back
-        emit_local_get(buf, idx)
-        emit_i32_wrap_i64(buf)   // addr for store (left on stack)
-        emit_local_get(buf, idx)
-        emit_i32_wrap_i64(buf)   // addr for load
-        emit_i64_load(buf, 3, 0) // current value
+        // Ref cell: read via struct.get, compute, write via struct.set
+        emit_local_get(buf, idx)   // ref on stack (for struct.set later)
+        emit_local_get(buf, idx)   // ref on stack (for struct.get)
+        emit_struct_get(buf, refcell_type_idx, 0)  // current value
         let nl = ce(buf, value, local_names, next_local, ld)
         if string_equals(op, "+") { emit_i64_add(buf) }
         else if string_equals(op, "-") { emit_i64_sub(buf) }
@@ -403,7 +379,7 @@ let rec compile_expr = (
         else if string_equals(op, "/") { emit_i64_div_s(buf) }
         else if string_equals(op, "%") { emit_i64_rem_s(buf) }
         else { throw(string_concat("unsupported assign op: ", op)) }
-        emit_i64_store(buf, 3, 0)
+        emit_struct_set(buf, refcell_type_idx, 0)
         ce(buf, body, local_names, nl, ld)
       } else {
         emit_local_get(buf, idx)
@@ -427,45 +403,35 @@ let rec compile_expr = (
       // Allocate N*8 bytes on heap, store each element as i64
       let num_elems = array_length(elems)
       let alloc_size = num_elems * 8
-      // ptr_local stores heap ptr as i64 (user locals are i64)
       let ptr_local = next_local
       let mut nl = next_local + 1
-      // ptr = heap_ptr as i64; heap_ptr += alloc_size
-      emit_global_get(buf, 0)  // i32
-      emit_i64_extend_i32_u(buf)  // -> i64
-      emit_local_tee(buf, ptr_local)  // save as i64
-      emit_i32_wrap_i64(buf)  // back to i32 for arithmetic
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_tee(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
       emit_i32_const(buf, alloc_size)
       emit_i32_add(buf)
       emit_global_set(buf, 0)
-      // Store each element
       let mut ti = 0
       while ti < num_elems {
         emit_local_get(buf, ptr_local)
-        emit_i32_wrap_i64(buf)  // ptr as i32 for store
+        emit_i32_wrap_i64(buf)
         nl = ce(buf, array_get(elems, ti), local_names, nl, ld)
         emit_i64_store(buf, 3, ti * 8)
         ti = ti + 1
       }
-      // Return ptr as i64 (already stored as i64)
       emit_local_get(buf, ptr_local)
       array_push(local_names, "__tuple_ptr")
       nl
     },
     EMatch(scrutinee, arms) => {
-      // Compile scrutinee, store in temp local
       let scrut_local = next_local
       let nl1 = ce(buf, scrutinee, local_names, next_local + 1, ld)
       emit_local_set(buf, scrut_local)
       array_push(local_names, "__match_scrut")
-      // Compile match arms as nested if-else
-      // We build this iteratively: for each arm, emit condition check + body
-      // Last arm (or PWild/PBind) just emits body directly
       let num_arms = array_length(arms)
-      // Find first catch-all index using helper defined before compile_expr
       let catchall_idx = find_catchall_idx(arms)
       let num_cond_arms = catchall_idx
-      // Emit nested if-else: each conditional arm opens if+else, closed after
       let mut ai = 0
       while ai < num_cond_arms {
         let (p, _) = array_get(arms, ai)
@@ -486,17 +452,12 @@ let rec compile_expr = (
           },
           _ => 0
         }
-        // Compile arm body (inside ai+1 levels of if blocks)
         let (_, arm_body) = array_get(arms, ai)
         let ld_arm = if ld >= 0 { ld + ai + 1 } else { -1 }
         ce(buf, arm_body, local_names, nl1, ld_arm)
-        // Open else for next arm
         emit_else(buf)
         ai = ai + 1
       }
-      // Compile catchall arm (or unreachable)
-      // NOTE: Use array_length(local_names) instead of mutable final_nl
-      // inside match arms (quirk #13b: mutable scalars don't propagate out of match)
       let ld_catch = if ld >= 0 { ld + num_cond_arms } else { -1 }
       if catchall_idx < num_arms {
         let (cp, cbody) = array_get(arms, catchall_idx)
@@ -520,10 +481,9 @@ let rec compile_expr = (
             0
           },
           PTuple(pats) => {
-            // Destructure tuple: scrutinee is i64 (ptr as i64)
             let ptr_local2 = array_length(local_names)
             emit_local_get(buf, scrut_local)
-            emit_local_set(buf, ptr_local2)  // keep as i64
+            emit_local_set(buf, ptr_local2)
             array_push(local_names, "__tup_ptr2")
             let mut pi2 = 0
             while pi2 < array_length(pats) {
@@ -532,7 +492,7 @@ let rec compile_expr = (
                 PBind(pname) => {
                   let field_l = array_length(local_names)
                   emit_local_get(buf, ptr_local2)
-                  emit_i32_wrap_i64(buf)  // ptr as i32 for load
+                  emit_i32_wrap_i64(buf)
                   emit_i64_load(buf, 3, pi2 * 8)
                   emit_local_set(buf, field_l)
                   array_push(local_names, pname)
@@ -547,18 +507,15 @@ let rec compile_expr = (
             0
           },
           _ => {
-            // PWild or other catch-all
             ce(buf, cbody, local_names, array_length(local_names), ld_catch)
             0
           }
         }
       } else {
-        // No catch-all: unreachable
         bytebuf_push(buf, 0)  // unreachable
         0
       }
       let final_nl = array_length(local_names)
-      // Close all the if-else blocks
       let mut ci2 = 0
       while ci2 < num_cond_arms {
         emit_end(buf)
@@ -567,7 +524,6 @@ let rec compile_expr = (
       final_nl
     },
     EArray(elems) => {
-      // Compile [a, b, c] as: let arr = array_new(); array_push(arr, a); ...
       let (arr_new_idx, _, _) = resolve_func(fn_names, fn_indices, fn_params, fn_returns, "array_new")
       let (arr_push_idx, _, _) = resolve_func(fn_names, fn_indices, fn_params, fn_returns, "array_push")
       let arr_local = next_local
@@ -586,24 +542,19 @@ let rec compile_expr = (
       nl
     },
     EForIn(var_name, iter_expr, body) => {
-      // for x in arr { body } => let arr = iter; let mut i = 0; while i < array_length(arr) { let x = array_get(arr, i); body; i = i + 1 }
       let (arr_len_idx, _, _) = resolve_func(fn_names, fn_indices, fn_params, fn_returns, "array_length")
       let (arr_get_idx, _, _) = resolve_func(fn_names, fn_indices, fn_params, fn_returns, "array_get")
-      // Compile iterator and store
       let arr_local = next_local
       let nl1 = ce(buf, iter_expr, local_names, next_local + 1, ld)
       emit_local_set(buf, arr_local)
       array_push(local_names, "__for_arr")
-      // Counter local
       let i_local = nl1
       emit_i64_const(buf, 0)
       emit_local_set(buf, i_local)
       array_push(local_names, "__for_i")
       let nl2 = nl1 + 1
-      // block { loop {
       emit_block_void(buf)
         emit_loop_void(buf)
-          // if i >= array_length(arr) then break
           emit_local_get(buf, i_local)
           emit_local_get(buf, arr_local)
           emit_call(buf, arr_len_idx)
@@ -611,7 +562,6 @@ let rec compile_expr = (
           emit_i64_extend_i32_s(buf)
           emit_i32_wrap_i64(buf)
           emit_br_if(buf, 1)
-          // let var_name = array_get(arr, i)
           let var_local = nl2
           emit_local_get(buf, arr_local)
           emit_local_get(buf, i_local)
@@ -619,10 +569,8 @@ let rec compile_expr = (
           emit_local_set(buf, var_local)
           array_push(local_names, var_name)
           let nl3 = nl2 + 1
-          // body
           let nl4 = ce(buf, body, local_names, nl3, 0)
           emit_drop(buf)
-          // i = i + 1
           emit_local_get(buf, i_local)
           emit_i64_const(buf, 1)
           emit_i64_add(buf)
@@ -634,8 +582,6 @@ let rec compile_expr = (
       nl4
     },
     EWhile(cond, body) => {
-      // block @break { loop @continue { cond; br_if 1; body; br 0 } }
-      // Inside body: ld=0. EBreak => br (ld+1), EContinue => br ld
       emit_block_void(buf)
         emit_loop_void(buf)
           let nl1 = ce(buf, cond, local_names, next_local, 0)
@@ -650,13 +596,11 @@ let rec compile_expr = (
       nl2
     },
     EBreak(_) => {
-      // br to block (break target): loop is at ld, block is at ld+1
       emit_br(buf, ld + 1)
       emit_i64_const(buf, 0)
       next_local
     },
     EContinue(_) => {
-      // br to loop header (continue target): loop is at ld
       emit_br(buf, ld)
       emit_i64_const(buf, 0)
       next_local
@@ -666,7 +610,6 @@ let rec compile_expr = (
       next_local
     },
     EThrow(msg_expr) => {
-      // Compile msg, then unreachable
       let nl = ce(buf, msg_expr, local_names, next_local, ld)
       emit_drop(buf)
       bytebuf_push(buf, 0)  // unreachable
@@ -686,10 +629,8 @@ let rec compile_expr = (
       let user_params = array_length(params)
 
       // Compile lambda body into a separate buffer
-      // Note: nested EFn may add to lambda_bodies before this one
       let lam_buf = bytebuf_new()
       let lam_locals = array_slice([""], 0, 0)
-      // Params: p0, ..., pN, __env
       let mut lpi = 0
       while lpi < user_params {
         let (lpname, _) = array_get(params, lpi)
@@ -697,12 +638,12 @@ let rec compile_expr = (
         lpi = lpi + 1
       }
       array_push(lam_locals, "__env")
-      let env_param_idx = user_params  // index of __env parameter
+      let env_param_idx = user_params
       let lam_nl_start = user_params + 1
 
       // Prologue: extract captures from env
-      // For ref-cell-backed captures, the captured value IS the pointer — keep it as-is
       let lam_ref_cells = array_slice([""], 0, 0)
+      let lam_ref_local_indices = array_slice([0], 0, 0)
       let mut ci3 = 0
       let mut lam_nl = lam_nl_start
       while ci3 < num_captures {
@@ -713,7 +654,6 @@ let rec compile_expr = (
         emit_i64_load(lam_buf, 3, 8 + ci3 * 8)
         emit_local_set(lam_buf, cap_local)
         array_push(lam_locals, cap_name)
-        // If the capture is a ref cell in the enclosing scope, it stays a ref cell
         if array_contains_str(ref_cell_names, cap_name) {
           array_push(lam_ref_cells, cap_name)
         }
@@ -721,14 +661,15 @@ let rec compile_expr = (
         ci3 = ci3 + 1
       }
 
-      // Compile lambda body (may add nested lambdas to arrays first)
-      let final_lam_nl = compile_expr(
+      // Compile lambda body
+      let final_lam_nl = compile_expr_gc(
         lam_buf, fn_body, lam_locals, lam_nl,
         fn_names, fn_indices, fn_params, fn_returns,
         str_strs, str_offsets, str_lengths, -1,
+        lam_ref_cells, lam_ref_local_indices, refcell_type_idx,
         lambda_bodies, lambda_param_counts, lambda_captures,
         lambda_meta_i32, lambda_meta_i64, num_user_funcs, func_offset,
-        lam_ref_cells
+        closure_type_base
       )
 
       // Record lambda AFTER body compilation (nested lambdas already added)
@@ -740,20 +681,16 @@ let rec compile_expr = (
       array_push(lambda_meta_i32, 0)
       array_push(lambda_meta_i64, extra_lam)
 
-      // Emit closure creation code in the current function
-      // table_slot = num_user_funcs + lambda_idx (user funcs occupy slots 0..num_user_funcs-1)
+      // Emit closure creation code
       let table_slot = num_user_funcs + lambda_idx
       if num_captures == 0 {
-        // Bare fn value: (table_slot << 2) | 2
         emit_i64_const(buf, (table_slot << 2) | 2)
         next_local
       } else {
-        // Allocate closure on heap: [func_table_slot(i32), num_captures(i32), cap0(i64), ...]
         let alloc_size = 8 + num_captures * 8
         let ptr_local = next_local
         let mut nl2 = next_local + 1
         array_push(local_names, "__closure_ptr")
-        // ptr = heap_ptr; heap_ptr += alloc_size
         emit_global_get(buf, 0)
         emit_i64_extend_i32_u(buf)
         emit_local_tee(buf, ptr_local)
@@ -761,17 +698,14 @@ let rec compile_expr = (
         emit_i32_const(buf, alloc_size)
         emit_i32_add(buf)
         emit_global_set(buf, 0)
-        // Store table_slot at offset 0 (i32)
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
         emit_i32_const(buf, table_slot)
         emit_i32_store(buf, 2, 0)
-        // Store num_captures at offset 4 (i32)
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
         emit_i32_const(buf, num_captures)
         emit_i32_store(buf, 2, 4)
-        // Store each captured variable at offset 8+i*8 (i64)
         let mut csi = 0
         while csi < num_captures {
           let cap_name = array_get(captures, csi)
@@ -782,154 +716,18 @@ let rec compile_expr = (
           emit_i64_store(buf, 3, 8 + csi * 8)
           csi = csi + 1
         }
-        // Result = heap_ptr | 1 (tag_obj)
         emit_local_get(buf, ptr_local)
         emit_i64_const(buf, 1)
         emit_i64_or(buf)
         nl2
       }
     },
-    _ => throw("unsupported expression in codegen")
+    _ => throw("unsupported expression in gc codegen")
   }
 }
 
+// === Builtin generators (copied from codegen.vibe) ===
 
-// === Module compiler (non-WASI, for --invoke) ===
-
-export let compile_module = (stmts: Array[Stmt]) -> Bytes with { Error } {
-  let fn_names_list = array_slice([""], 0, 0)
-  let fn_param_counts = array_slice([0], 0, 0)
-  let export_names = array_slice([""], 0, 0)
-  let export_indices = array_slice([0], 0, 0)
-
-  let mut i = 0
-  while i < array_length(stmts) {
-    let stmt = array_get(stmts, i)
-    match stmt {
-      SLet(is_export, _, name, _, expr) => {
-        match expr {
-          EFn(_, _, params, _, _, _) => {
-            let cur_idx = array_length(fn_names_list)
-            array_push(fn_names_list, name)
-            array_push(fn_param_counts, array_length(params))
-            if is_export {
-              array_push(export_names, name)
-              array_push(export_indices, cur_idx)
-            }
-            0
-          },
-          _ => 0
-        }
-      },
-      _ => 0
-    }
-    i = i + 1
-  }
-
-  let num_funcs = array_length(fn_names_list)
-  if num_funcs == 0 {
-    throw("no functions found to compile")
-  }
-
-  let fn_indices_list = array_slice([0], 0, 0)
-  let fn_returns_list = array_slice([0], 0, 0)
-  let mut fi = 0
-  while fi < num_funcs {
-    array_push(fn_indices_list, fi)
-    array_push(fn_returns_list, 1)
-    fi = fi + 1
-  }
-
-  let type_defs = array_slice([0], 0, 0)
-  let mut ti = 0
-  while ti < num_funcs {
-    array_push(type_defs, array_get(fn_param_counts, ti))
-    array_push(type_defs, 1)
-    ti = ti + 1
-  }
-
-  let type_indices = array_slice([0], 0, 0)
-  let mut tii = 0
-  while tii < num_funcs {
-    array_push(type_indices, tii)
-    tii = tii + 1
-  }
-
-  // Lambda accumulators (not used in non-WASI compile_module for now)
-  let lambda_bodies_m = array_slice([array_slice([0], 0, 0)], 0, 0)
-  let lambda_param_counts_m = array_slice([0], 0, 0)
-  let lambda_captures_m = array_slice([array_slice([""], 0, 0)], 0, 0)
-  let lambda_meta_i32_m = array_slice([0], 0, 0)
-  let lambda_meta_i64_m = array_slice([0], 0, 0)
-
-  let bodies = array_slice([array_slice([0], 0, 0)], 0, 0)
-  let local_counts = array_slice([0], 0, 0)
-  let mut bi = 0
-  while bi < num_funcs {
-    let stmt = find_func_stmt(stmts, array_get(fn_names_list, bi))
-    match stmt {
-      SLet(_, _, _, _, expr) => {
-        match expr {
-          EFn(_, _, params, _, _, body) => {
-            let body_buf = bytebuf_new()
-            let local_names = array_slice([""], 0, 0)
-            let mut pi = 0
-            while pi < array_length(params) {
-              let (pname, _) = array_get(params, pi)
-              array_push(local_names, pname)
-              pi = pi + 1
-            }
-            let param_count = array_length(params)
-            let empty_strs = array_slice([""], 0, 0)
-            let empty_offs = array_slice([0], 0, 0)
-            let empty_lens = array_slice([0], 0, 0)
-            let final_nl = compile_expr(
-              body_buf, body, local_names,
-              param_count,
-              fn_names_list, fn_indices_list, fn_param_counts, fn_returns_list,
-              empty_strs, empty_offs, empty_lens,
-              -1,
-              lambda_bodies_m, lambda_param_counts_m, lambda_captures_m,
-              lambda_meta_i32_m, lambda_meta_i64_m, num_funcs, 0,
-              array_slice([""], 0, 0)
-            )
-            array_push(bodies, body_buf)
-            let extra = if final_nl > param_count { final_nl - param_count } else { 0 }
-            array_push(local_counts, extra)
-          },
-          _ => throw("expected function")
-        }
-      },
-      _ => throw("expected let statement")
-    }
-    bi = bi + 1
-  }
-
-  let out = bytebuf_new()
-  emit_header(out)
-  emit_type_section_multi(out, type_defs)
-  emit_function_section(out, type_indices)
-
-  if array_length(export_names) > 0 {
-    emit_export_section_multi(out, export_names, export_indices)
-  }
-
-  emit_code_section_with_locals(out, bodies, local_counts)
-  bytebuf_to_bytes(out)
-}
-
-// === WASI Module compiler ===
-// Memory layout:
-//   0-7: iovec struct
-//   8-11: nwritten
-//   16-47: digit buffer (itoa + newline)
-//   48-63: reserved
-//   64+: string literal data
-//   after strings: heap (bump allocator, global 0 = heap_ptr)
-
-// Generate __print_i64 body (func 1)
-// Param: 0=val(i64)
-// Extra locals (i32 first, then i64): 1=is_neg(i32), 2=pos(i32), 3=digit(i32), 4=abs_val(i64)
 let gen_print_i64_body = () -> Array[Int] {
   let b = bytebuf_new()
   emit_i32_const(b, 46)
@@ -1016,8 +814,6 @@ let gen_print_i64_body = () -> Array[Int] {
   b
 }
 
-// Generate __print_str body (func 2)
-// local 0: packed(i64), local 1: offset(i32), local 2: length(i32)
 let gen_print_str_body = () -> Array[Int] {
   let b = bytebuf_new()
   emit_local_get(b, 0)
@@ -1043,66 +839,51 @@ let gen_print_str_body = () -> Array[Int] {
   b
 }
 
-// Generate __str_len body (func 3): (packed: i64) -> i64
-// Returns lower 32 bits as i64
 let gen_str_len_body = () -> Array[Int] {
   let b = bytebuf_new()
   emit_local_get(b, 0)
-  emit_i64_const(b, 4294967295)  // 0xFFFFFFFF
+  emit_i64_const(b, 4294967295)
   emit_i64_and(b)
   b
 }
 
-// Generate __str_eq body (func 4): (a: i64, b: i64) -> i64
-// Compare string contents byte-by-byte
-// locals: 0=a(i64), 1=b(i64), 2=len_a(i32), 3=len_b(i32),
-//         4=off_a(i32), 5=off_b(i32), 6=i(i32)
 let gen_str_eq_body = () -> Array[Int] {
   let b = bytebuf_new()
-  // len_a = a & 0xFFFFFFFF
   emit_local_get(b, 0)
   emit_i64_const(b, 4294967295)
   emit_i64_and(b)
   emit_i32_wrap_i64(b)
   emit_local_set(b, 2)
-  // len_b = b & 0xFFFFFFFF
   emit_local_get(b, 1)
   emit_i64_const(b, 4294967295)
   emit_i64_and(b)
   emit_i32_wrap_i64(b)
   emit_local_set(b, 3)
-  // if len_a != len_b, return 0
   emit_local_get(b, 2)
   emit_local_get(b, 3)
   emit_i32_ne(b)
   emit_if_i64(b)
     emit_i64_const(b, 0)
   emit_else(b)
-    // off_a = (a >> 32) as i32
     emit_local_get(b, 0)
     emit_i64_const(b, 32)
     emit_i64_shr_s(b)
     emit_i32_wrap_i64(b)
     emit_local_set(b, 4)
-    // off_b = (b >> 32) as i32
     emit_local_get(b, 1)
     emit_i64_const(b, 32)
     emit_i64_shr_s(b)
     emit_i32_wrap_i64(b)
     emit_local_set(b, 5)
-    // i = 0
     emit_i32_const(b, 0)
     emit_local_set(b, 6)
-    // loop: compare bytes
     emit_block_i64(b)
       emit_block_void(b)
         emit_loop_void(b)
-          // if i >= len_a, break (all matched)
           emit_local_get(b, 6)
           emit_local_get(b, 2)
           emit_i32_ge_u(b)
-          emit_br_if(b, 1)  // break to inner block_void
-          // if mem[off_a+i] != mem[off_b+i], return 0
+          emit_br_if(b, 1)
           emit_local_get(b, 4)
           emit_local_get(b, 6)
           emit_i32_add(b)
@@ -1114,77 +895,62 @@ let gen_str_eq_body = () -> Array[Int] {
           emit_i32_ne(b)
           emit_if_void(b)
             emit_i64_const(b, 0)
-            emit_br(b, 3)  // break to block_i64 with 0
+            emit_br(b, 3)
           emit_end(b)
-          // i++
           emit_local_get(b, 6)
           emit_i32_const(b, 1)
           emit_i32_add(b)
           emit_local_set(b, 6)
-          emit_br(b, 0)  // continue loop
+          emit_br(b, 0)
         emit_end(b)
       emit_end(b)
-      // All bytes matched
       emit_i64_const(b, 1)
     emit_end(b)
   emit_end(b)
   b
 }
 
-// Generate __str_concat body (func 5): (a: i64, b: i64) -> i64
-// Allocate new string, copy bytes, return packed ref
-// locals: 0=a(i64), 1=b(i64), 2=len_a(i32), 3=len_b(i32),
-//         4=off_a(i32), 5=off_b(i32), 6=new_ptr(i32), 7=new_len(i32)
 let gen_str_concat_body = () -> Array[Int] {
   let b = bytebuf_new()
-  // len_a = a & 0xFFFFFFFF
   emit_local_get(b, 0)
   emit_i64_const(b, 4294967295)
   emit_i64_and(b)
   emit_i32_wrap_i64(b)
   emit_local_set(b, 2)
-  // len_b
   emit_local_get(b, 1)
   emit_i64_const(b, 4294967295)
   emit_i64_and(b)
   emit_i32_wrap_i64(b)
   emit_local_set(b, 3)
-  // off_a = (a >> 32) as i32
   emit_local_get(b, 0)
   emit_i64_const(b, 32)
   emit_i64_shr_s(b)
   emit_i32_wrap_i64(b)
   emit_local_set(b, 4)
-  // off_b
   emit_local_get(b, 1)
   emit_i64_const(b, 32)
   emit_i64_shr_s(b)
   emit_i32_wrap_i64(b)
   emit_local_set(b, 5)
-  // new_len = len_a + len_b
   emit_local_get(b, 2)
   emit_local_get(b, 3)
   emit_i32_add(b)
   emit_local_set(b, 7)
-  // new_ptr = heap_ptr; heap_ptr += new_len
   emit_global_get(b, 0)
   emit_local_tee(b, 6)
   emit_local_get(b, 7)
   emit_i32_add(b)
   emit_global_set(b, 0)
-  // memory.copy(new_ptr, off_a, len_a)
-  emit_local_get(b, 6)  // dest
-  emit_local_get(b, 4)  // src
-  emit_local_get(b, 2)  // len
+  emit_local_get(b, 6)
+  emit_local_get(b, 4)
+  emit_local_get(b, 2)
   emit_memory_copy(b)
-  // memory.copy(new_ptr + len_a, off_b, len_b)
   emit_local_get(b, 6)
   emit_local_get(b, 2)
-  emit_i32_add(b)   // dest = new_ptr + len_a
-  emit_local_get(b, 5)  // src
-  emit_local_get(b, 3)  // len
+  emit_i32_add(b)
+  emit_local_get(b, 5)
+  emit_local_get(b, 3)
   emit_memory_copy(b)
-  // Return packed ref: (new_ptr << 32) | new_len
   emit_local_get(b, 6)
   emit_i64_extend_i32_u(b)
   emit_i64_const(b, 32)
@@ -1195,106 +961,76 @@ let gen_str_concat_body = () -> Array[Int] {
   b
 }
 
-// Generate __arr_new body (func 6): () -> i64
-// Create empty array: [cap=8(i32), len=0(i32), data_ptr(i32)]
-// Header: 12 bytes. Data: cap * 8 bytes.
-// Returns header ptr as i64.
 let gen_arr_new_body = () -> Array[Int] {
   let b = bytebuf_new()
-  // local 0: header_ptr (i32)
-  // Allocate header (12 bytes) + data (8*8 = 64 bytes) = 76 bytes
   emit_global_get(b, 0)
   emit_local_tee(b, 0)
   emit_i32_const(b, 76)
   emit_i32_add(b)
   emit_global_set(b, 0)
-  // header[0] = cap = 8
   emit_local_get(b, 0)
   emit_i32_const(b, 8)
   emit_i32_store(b, 2, 0)
-  // header[4] = len = 0
   emit_local_get(b, 0)
   emit_i32_const(b, 0)
   emit_i32_store(b, 2, 4)
-  // header[8] = data_ptr = header_ptr + 12
   emit_local_get(b, 0)
   emit_local_get(b, 0)
   emit_i32_const(b, 12)
   emit_i32_add(b)
   emit_i32_store(b, 2, 8)
-  // Return header_ptr as i64
   emit_local_get(b, 0)
   emit_i64_extend_i32_u(b)
   b
 }
 
-// Generate __arr_len body (func 7): (arr: i64) -> i64
-// Read header[4] = length
 let gen_arr_len_body = () -> Array[Int] {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
-  emit_i32_load(b, 2, 4)  // header[4] = length
+  emit_i32_load(b, 2, 4)
   emit_i64_extend_i32_u(b)
   b
 }
 
-// Generate __arr_get body (func 8): (arr: i64, idx: i64) -> i64
-// Read data[idx * 8]
-// local 0: arr(i64), local 1: idx(i64), local 2: data_ptr(i32)
 let gen_arr_get_body = () -> Array[Int] {
   let b = bytebuf_new()
-  // data_ptr = header[8]
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
   emit_i32_load(b, 2, 8)
   emit_local_set(b, 2)
-  // load data_ptr + idx*8
   emit_local_get(b, 2)
   emit_local_get(b, 1)
   emit_i32_wrap_i64(b)
   emit_i32_const(b, 3)
-  // i32.shl
-  bytebuf_push(b, 116)  // 0x74 i32.shl
+  bytebuf_push(b, 116)  // i32.shl
   emit_i32_add(b)
   emit_i64_load(b, 3, 0)
   b
 }
 
-// Generate __arr_push body (func 9): (arr: i64, val: i64) -> void
-// Append val to array, grow if needed
-// local 0: arr(i64), local 1: val(i64), local 2: hdr(i32),
-// local 3: cap(i32), local 4: len(i32), local 5: data_ptr(i32),
-// local 6: new_data(i32), local 7: new_cap(i32)
 let gen_arr_push_body = () -> Array[Int] {
   let b = bytebuf_new()
-  // hdr = arr as i32
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
   emit_local_set(b, 2)
-  // cap = hdr[0]
   emit_local_get(b, 2)
   emit_i32_load(b, 2, 0)
   emit_local_set(b, 3)
-  // len = hdr[4]
   emit_local_get(b, 2)
   emit_i32_load(b, 2, 4)
   emit_local_set(b, 4)
-  // data_ptr = hdr[8]
   emit_local_get(b, 2)
   emit_i32_load(b, 2, 8)
   emit_local_set(b, 5)
-  // if len >= cap: grow
   emit_local_get(b, 4)
   emit_local_get(b, 3)
   emit_i32_ge_u(b)
   emit_if_void(b)
-    // new_cap = cap * 2
     emit_local_get(b, 3)
     emit_i32_const(b, 2)
     emit_i32_mul(b)
     emit_local_set(b, 7)
-    // new_data = alloc(new_cap * 8)
     emit_global_get(b, 0)
     emit_local_tee(b, 6)
     emit_local_get(b, 7)
@@ -1302,25 +1038,21 @@ let gen_arr_push_body = () -> Array[Int] {
     emit_i32_mul(b)
     emit_i32_add(b)
     emit_global_set(b, 0)
-    // memory.copy(new_data, data_ptr, len * 8)
     emit_local_get(b, 6)
     emit_local_get(b, 5)
     emit_local_get(b, 4)
     emit_i32_const(b, 8)
     emit_i32_mul(b)
     emit_memory_copy(b)
-    // update header
     emit_local_get(b, 2)
     emit_local_get(b, 7)
-    emit_i32_store(b, 2, 0)  // cap = new_cap
+    emit_i32_store(b, 2, 0)
     emit_local_get(b, 2)
     emit_local_get(b, 6)
-    emit_i32_store(b, 2, 8)  // data_ptr = new_data
-    // update local
+    emit_i32_store(b, 2, 8)
     emit_local_get(b, 6)
     emit_local_set(b, 5)
   emit_end(b)
-  // data[len] = val
   emit_local_get(b, 5)
   emit_local_get(b, 4)
   emit_i32_const(b, 3)
@@ -1328,7 +1060,6 @@ let gen_arr_push_body = () -> Array[Int] {
   emit_i32_add(b)
   emit_local_get(b, 1)
   emit_i64_store(b, 3, 0)
-  // len++
   emit_local_get(b, 2)
   emit_local_get(b, 4)
   emit_i32_const(b, 1)
@@ -1337,16 +1068,12 @@ let gen_arr_push_body = () -> Array[Int] {
   b
 }
 
-// Generate __arr_set body (func 10): (arr: i64, idx: i64, val: i64) -> void
-// local 0: arr(i64), local 1: idx(i64), local 2: val(i64), local 3: data_ptr(i32)
 let gen_arr_set_body = () -> Array[Int] {
   let b = bytebuf_new()
-  // data_ptr = header[8]
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
   emit_i32_load(b, 2, 8)
   emit_local_set(b, 3)
-  // data[idx*8] = val
   emit_local_get(b, 3)
   emit_local_get(b, 1)
   emit_i32_wrap_i64(b)
@@ -1358,8 +1085,6 @@ let gen_arr_set_body = () -> Array[Int] {
   b
 }
 
-// Generate __double_to_int body (func 11): (val: i64) -> i64
-// Reinterpret i64 bits as f64, then truncate to i64
 let gen_double_to_int_body = () -> Array[Int] {
   let b = bytebuf_new()
   emit_local_get(b, 0)
@@ -1368,8 +1093,6 @@ let gen_double_to_int_body = () -> Array[Int] {
   b
 }
 
-// Generate __int_to_double body (func 12): (val: i64) -> i64
-// Convert i64 to f64, then reinterpret as i64 bits
 let gen_int_to_double_body = () -> Array[Int] {
   let b = bytebuf_new()
   emit_local_get(b, 0)
@@ -1378,25 +1101,9 @@ let gen_int_to_double_body = () -> Array[Int] {
   b
 }
 
-// === Builtin registry ===
-// Each builtin: (name, gen_body_fn_result, num_extra_locals, local_types_descriptor, param_count, has_return)
-// local_types_descriptor: 0 = all i64, 1 = custom (handled in code section)
+// === WASI Module compiler (GC backend) ===
 
-// Builtin descriptor indices (after fd_write import at func 0):
-// func 1: __print_i64 — (i64) -> void, 4 mixed locals
-// func 2: __print_str — (i64) -> void, 2 i32 locals
-// func 3: __str_len — (i64) -> i64, 0 extra
-// func 4: __str_eq — (i64,i64) -> i64, 5 i32 locals
-// func 5: __str_concat — (i64,i64) -> i64, 6 i32 locals
-// func 6: __arr_new — () -> i64, 1 i32 local
-// func 7: __arr_len — (i64) -> i64, 0 extra
-// func 8: __arr_get — (i64,i64) -> i64, 1 i32 local
-// func 9: __arr_push — (i64,i64) -> void, 6 i32 locals
-// func 10: __arr_set — (i64,i64,i64) -> void, 1 i32 local
-// func 11: __double_to_int — (i64) -> i64, 0 extra
-// func 12: __int_to_double — (i64) -> i64, 0 extra
-
-export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Bytes with { Error } {
+export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> Bytes with { Error } {
   // Collect user functions
   let fn_names_list = array_slice([""], 0, 0)
   let fn_param_counts = array_slice([0], 0, 0)
@@ -1454,23 +1161,17 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
     str_pos = str_pos + slen
     si = si + 1
   }
-  // Align heap start to 8 bytes
   let heap_start = ((str_pos + 7) / 8) * 8
 
   // Function layout:
   // func 0: fd_write (import)
   // func 1-12: generated builtins (12 funcs)
-  // func 13..13+N-1: user functions
+  // func 13..13+N-1: user functions (NO __env param)
   // func 13+N: _start
   let num_generated = 12
   let func_offset = 1 + num_generated  // = 13
 
   // Register user-callable builtins
-  // print_int -> func 1, print_str -> func 2
-  // string_length -> func 3, string_equals -> func 4, string_concat -> func 5
-  // array_new -> func 6, array_length -> func 7, array_get -> func 8
-  // array_push -> func 9, array_set -> func 10
-  // double_to_int -> func 11, int_to_double -> func 12
   array_push(fn_names_list, "print_int")
   array_push(fn_param_counts, 1)
   array_push(fn_names_list, "print_str")
@@ -1535,67 +1236,93 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
   // type 0: fd_write (i32,i32,i32,i32) -> (i32)
   // type 1: (i64) -> () [print_int, print_str]
   // type 2: () -> () [_start]
-  // type 3: (i64) -> (i64) [string_length, array_length]
+  // type 3: (i64) -> (i64) [string_length, array_length, double_to_int, int_to_double]
   // type 4: (i64,i64) -> (i64) [string_equals, string_concat, array_get]
   // type 5: () -> (i64) [array_new]
   // type 6: (i64,i64) -> () [array_push]
   // type 7: (i64,i64,i64) -> () [array_set]
-  // type 8+: user function types
-  // Closure call types added after compilation (see below)
-  let num_base_types = 8
+  // type 0-7: base func types
+  // type 8: struct { mut i64 } -- RefCell GC type
+  // type 9+: closure call types (i64^(N+1)) -> i64
+  let refcell_type_idx = 8
+  let closure_type_base = 9
 
   // Lambda accumulators (populated during compilation)
   let lambda_bodies_w = array_slice([array_slice([0], 0, 0)], 0, 0)
   let lambda_param_counts_w = array_slice([0], 0, 0)
   let lambda_captures_w = array_slice([array_slice([""], 0, 0)], 0, 0)
-  let lambda_meta_i32 = array_slice([0], 0, 0)
-  let lambda_meta_i64 = array_slice([0], 0, 0)
+  let lambda_meta_i32_w = array_slice([0], 0, 0)
+  let lambda_meta_i64_w = array_slice([0], 0, 0)
 
   // === Code section bodies ===
   let bodies = array_slice([array_slice([0], 0, 0)], 0, 0)
   let meta_i32 = array_slice([0], 0, 0)
   let meta_i64 = array_slice([0], 0, 0)
+  // Track which user func bodies have ref locals (for mixed local declarations)
+  let user_ref_local_indices_all = array_slice([array_slice([0], 0, 0)], 0, 0)
 
   // Builtin bodies
   array_push(bodies, gen_print_i64_body())
   array_push(meta_i32, 3)
   array_push(meta_i64, 1)
+  array_push(user_ref_local_indices_all, array_slice([0], 0, 0))
+
   array_push(bodies, gen_print_str_body())
   array_push(meta_i32, 2)
   array_push(meta_i64, 0)
+  array_push(user_ref_local_indices_all, array_slice([0], 0, 0))
+
   array_push(bodies, gen_str_len_body())
   array_push(meta_i32, 0)
   array_push(meta_i64, 0)
+  array_push(user_ref_local_indices_all, array_slice([0], 0, 0))
+
   array_push(bodies, gen_str_eq_body())
   array_push(meta_i32, 5)
   array_push(meta_i64, 0)
+  array_push(user_ref_local_indices_all, array_slice([0], 0, 0))
+
   array_push(bodies, gen_str_concat_body())
   array_push(meta_i32, 6)
   array_push(meta_i64, 0)
+  array_push(user_ref_local_indices_all, array_slice([0], 0, 0))
+
   array_push(bodies, gen_arr_new_body())
   array_push(meta_i32, 1)
   array_push(meta_i64, 0)
+  array_push(user_ref_local_indices_all, array_slice([0], 0, 0))
+
   array_push(bodies, gen_arr_len_body())
   array_push(meta_i32, 0)
   array_push(meta_i64, 0)
+  array_push(user_ref_local_indices_all, array_slice([0], 0, 0))
+
   array_push(bodies, gen_arr_get_body())
   array_push(meta_i32, 1)
   array_push(meta_i64, 0)
+  array_push(user_ref_local_indices_all, array_slice([0], 0, 0))
+
   array_push(bodies, gen_arr_push_body())
   array_push(meta_i32, 6)
   array_push(meta_i64, 0)
+  array_push(user_ref_local_indices_all, array_slice([0], 0, 0))
+
   array_push(bodies, gen_arr_set_body())
   array_push(meta_i32, 1)
   array_push(meta_i64, 0)
+  array_push(user_ref_local_indices_all, array_slice([0], 0, 0))
+
   array_push(bodies, gen_double_to_int_body())
   array_push(meta_i32, 0)
   array_push(meta_i64, 0)
+  array_push(user_ref_local_indices_all, array_slice([0], 0, 0))
+
   array_push(bodies, gen_int_to_double_body())
   array_push(meta_i32, 0)
   array_push(meta_i64, 0)
+  array_push(user_ref_local_indices_all, array_slice([0], 0, 0))
 
-  // Compile user function bodies (lambdas accumulated here)
-  // In WASI mode, all user funcs get an extra __env param (i64) for table compatibility
+  // Compile user function bodies (with __env param for table compatibility)
   let mut bi = 0
   while bi < num_user_funcs {
     let stmt = find_func_stmt(stmts, array_get(fn_names_list, bi))
@@ -1605,29 +1332,32 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
           EFn(_, _, params, _, _, body) => {
             let body_buf = bytebuf_new()
             let local_names = array_slice([""], 0, 0)
-            let mut pi = 0
-            while pi < array_length(params) {
-              let (pname, _) = array_get(params, pi)
+            let mut ppi = 0
+            while ppi < array_length(params) {
+              let (pname, _) = array_get(params, ppi)
               array_push(local_names, pname)
-              pi = pi + 1
+              ppi = ppi + 1
             }
-            // Add __env param (unused, but needed for table calling convention)
             array_push(local_names, "__env")
             let param_count = array_length(params) + 1  // includes __env
-            let final_nl = compile_expr(
+            let ref_cell_names_f = array_slice([""], 0, 0)
+            let ref_local_indices_f = array_slice([0], 0, 0)
+            let final_nl = compile_expr_gc(
               body_buf, body, local_names,
               param_count,
               fn_names_list, fn_indices_list, fn_param_counts, fn_returns_list,
               str_strs, str_offsets, str_lengths,
               -1,
+              ref_cell_names_f, ref_local_indices_f, refcell_type_idx,
               lambda_bodies_w, lambda_param_counts_w, lambda_captures_w,
-              lambda_meta_i32, lambda_meta_i64, num_user_funcs, func_offset,
-              array_slice([""], 0, 0)
+              lambda_meta_i32_w, lambda_meta_i64_w, num_user_funcs, func_offset,
+              closure_type_base
             )
             array_push(bodies, body_buf)
             let extra = if final_nl > param_count { final_nl - param_count } else { 0 }
             array_push(meta_i32, 0)
             array_push(meta_i64, extra)
+            array_push(user_ref_local_indices_all, ref_local_indices_f)
           },
           _ => throw("expected function")
         }
@@ -1652,42 +1382,40 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
   array_push(bodies, start_body)
   array_push(meta_i32, 0)
   array_push(meta_i64, 0)
+  array_push(user_ref_local_indices_all, array_slice([0], 0, 0))
 
   // Append lambda bodies after _start
   let mut li = 0
   while li < num_lambdas {
     array_push(bodies, array_get(lambda_bodies_w, li))
-    array_push(meta_i32, array_get(lambda_meta_i32, li))
-    array_push(meta_i64, array_get(lambda_meta_i64, li))
+    array_push(meta_i32, array_get(lambda_meta_i32_w, li))
+    array_push(meta_i64, array_get(lambda_meta_i64_w, li))
+    array_push(user_ref_local_indices_all, array_slice([0], 0, 0))
     li = li + 1
   }
 
-  // Determine max closure call arity needed (user_params, i.e. N where sig is (i64^(N+1))->i64)
-  // Closure call types: for each arity N (0,1,2,...,max_arity), type = (i64^(N+1)) -> i64
-  // These start at type index = num_base_types + num_user_funcs
+  // Determine max closure call arity
   let mut max_closure_arity = -1
-  // Check all lambda param counts (which include +1 for env)
   let mut lai = 0
   while lai < num_lambdas {
-    let lpc = array_get(lambda_param_counts_w, lai) - 1  // user_params = total - 1 (env)
+    let lpc = array_get(lambda_param_counts_w, lai) - 1
     if lpc > max_closure_arity {
       max_closure_arity = lpc
     }
     lai = lai + 1
   }
-  // Also check user funcs that might be used as values (they get env=0 appended)
-  // Their call_indirect arity = their param_count
-  let mut uai = 0
-  while uai < num_user_funcs {
-    let upc = array_get(fn_param_counts, uai)
+  let mut uai2 = 0
+  while uai2 < num_user_funcs {
+    let upc = array_get(fn_param_counts, uai2)
     if upc > max_closure_arity {
       max_closure_arity = upc
     }
-    uai = uai + 1
+    uai2 = uai2 + 1
   }
   let num_closure_types = if max_closure_arity >= 0 { max_closure_arity + 1 } else { 0 }
 
   // === Type section ===
+  let num_base_types = 9  // 0-7 func types + 8 struct
   let type_content = bytebuf_new()
   bytebuf_push_vec_header(type_content, num_base_types + num_closure_types)
 
@@ -1700,8 +1428,10 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
   emit_func_type_raw(type_content, [126, 126], array_slice([0], 0, 0))  // type 6: (i64,i64)->()
   emit_func_type_raw(type_content, [126, 126, 126], array_slice([0], 0, 0))  // type 7: (i64,i64,i64)->()
 
+  // type 8: struct { mut i64 }
+  emit_struct_type_raw(type_content, [126], [1])
+
   // Closure call types: (i64^(N+1)) -> i64 for N = 0..max_closure_arity
-  // Used for both user funcs (with env) and lambdas
   let mut cti = 0
   while cti < num_closure_types {
     let num_params = cti + 1  // N user params + 1 env
@@ -1723,7 +1453,6 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
   emit_import_section_func(out, "wasi_snapshot_preview1", "fd_write", 0)
 
   // === Function section ===
-  // func 1-12: builtins, func 13..13+N-1: user, func 13+N: _start, func 13+N+1...: lambdas
   let func_type_indices = array_slice([0], 0, 0)
   array_push(func_type_indices, 1)  // __print_i64
   array_push(func_type_indices, 1)  // __print_str
@@ -1741,7 +1470,7 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
   let mut fti = 0
   while fti < num_user_funcs {
     let upc = array_get(fn_param_counts, fti)
-    array_push(func_type_indices, num_base_types + upc)
+    array_push(func_type_indices, closure_type_base + upc)
     fti = fti + 1
   }
   array_push(func_type_indices, 2)  // _start
@@ -1749,12 +1478,12 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
   let mut lfi = 0
   while lfi < num_lambdas {
     let lam_user_params = array_get(lambda_param_counts_w, lfi) - 1
-    array_push(func_type_indices, num_base_types + lam_user_params)
+    array_push(func_type_indices, closure_type_base + lam_user_params)
     lfi = lfi + 1
   }
   emit_function_section(out, func_type_indices)
 
-  // === Table section (if closures exist) ===
+  // === Table section ===
   let total_table_entries = num_user_funcs + num_lambdas
   if total_table_entries > 0 {
     emit_table_section_funcref(out, total_table_entries)
@@ -1770,16 +1499,14 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
   let start_func_idx = func_offset + num_user_funcs
   emit_exports_with_memory(out, ["_start"], [start_func_idx], "memory", 0)
 
-  // === Element section (if closures exist) ===
+  // === Element section ===
   if total_table_entries > 0 {
     let table_func_indices = array_slice([0], 0, 0)
-    // User funcs: table slot i -> func index func_offset+i
     let mut tei = 0
     while tei < num_user_funcs {
       array_push(table_func_indices, func_offset + tei)
       tei = tei + 1
     }
-    // Lambda funcs: table slot num_user_funcs+j -> func index start_func_idx+1+j
     let mut tej = 0
     while tej < num_lambdas {
       array_push(table_func_indices, start_func_idx + 1 + tej)
@@ -1788,7 +1515,7 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
     emit_element_section_active(out, table_func_indices)
   }
 
-  // === Encode code section manually (mixed local types) ===
+  // === Encode code section with mixed locals (i64 and ref types) ===
   let code_content = bytebuf_new()
   bytebuf_push_vec_header(code_content, array_length(bodies))
 
@@ -1798,26 +1525,56 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
     let func_buf = bytebuf_new()
     let ni32 = array_get(meta_i32, ci)
     let ni64 = array_get(meta_i64, ci)
+    let ref_indices = array_get(user_ref_local_indices_all, ci)
+    let num_ref_locals = array_length(ref_indices)
 
-    if ni32 == 0 {
-      if ni64 == 0 {
-        leb128_encode_u32(func_buf, 0)  // no locals
+    if num_ref_locals == 0 {
+      if ni32 == 0 {
+        if ni64 == 0 {
+          leb128_encode_u32(func_buf, 0)
+        } else {
+          leb128_encode_u32(func_buf, 1)
+          leb128_encode_u32(func_buf, ni64)
+          bytebuf_push(func_buf, 126)  // i64
+        }
       } else {
-        leb128_encode_u32(func_buf, 1)  // 1 group
-        leb128_encode_u32(func_buf, ni64)
-        bytebuf_push(func_buf, 126)  // i64
+        if ni64 == 0 {
+          leb128_encode_u32(func_buf, 1)
+          leb128_encode_u32(func_buf, ni32)
+          bytebuf_push(func_buf, 127)  // i32
+        } else {
+          leb128_encode_u32(func_buf, 2)
+          leb128_encode_u32(func_buf, ni32)
+          bytebuf_push(func_buf, 127)  // i32
+          leb128_encode_u32(func_buf, ni64)
+          bytebuf_push(func_buf, 126)  // i64
+        }
       }
     } else {
-      if ni64 == 0 {
+      // Has ref locals — emit individual local declarations
+      let body_idx_in_user = ci - num_generated
+      let param_count_for_body = array_get(fn_param_counts, body_idx_in_user) + 1  // +1 for __env
+      let num_extra = ni64
+      leb128_encode_u32(func_buf, num_extra)
+      let mut rli = 0
+      while rli < num_extra {
+        let actual_local_idx = param_count_for_body + rli
+        let mut is_ref = false
+        let mut ri = 0
+        while ri < num_ref_locals {
+          if array_get(ref_indices, ri) == actual_local_idx {
+            is_ref = true
+          }
+          ri = ri + 1
+        }
         leb128_encode_u32(func_buf, 1)
-        leb128_encode_u32(func_buf, ni32)
-        bytebuf_push(func_buf, 127)  // i32
-      } else {
-        leb128_encode_u32(func_buf, 2)  // 2 groups
-        leb128_encode_u32(func_buf, ni32)
-        bytebuf_push(func_buf, 127)  // i32
-        leb128_encode_u32(func_buf, ni64)
-        bytebuf_push(func_buf, 126)  // i64
+        if is_ref {
+          bytebuf_push(func_buf, 100)  // 0x64 = ref
+          leb128_encode_u32(func_buf, refcell_type_idx)
+        } else {
+          bytebuf_push(func_buf, 126)  // i64
+        }
+        rli = rli + 1
       }
     }
 

@@ -1,6 +1,7 @@
 import ./lexer.vibe { lex }
 import ./parser.vibe { parse_program }
 import ./codegen.vibe { compile_module, compile_wasi_module }
+import ./codegen_gc.vibe { compile_wasi_module_gc }
 
 // Helper: compile vibe source to .wasm bytes
 let compile_source = (source: String) -> Bytes with { Error } {
@@ -614,6 +615,24 @@ test "wasi: nested closure" {
   sh("wasmtime run /tmp/test_cg_closure_nested.wasm")
 }
 
+// === Mutable Capture ===
+
+test "wasi: closure mutable capture" {
+  // let mut n = 0; let inc = () -> Int { n = n + 1; n }; inc(); inc() → 2
+  let source = "let main = () -> Int {\n  let mut n = 0\n  let inc = () -> Int { n = n + 1\n  n }\n  inc()\n  inc()\n}"
+  let bytes = compile_wasi(source, "main")
+  fs_write_bytes("/tmp/test_cg_mutcap.wasm", bytes)
+  sh("wasmtime run /tmp/test_cg_mutcap.wasm")
+}
+
+test "wasi: closure mutable capture shared" {
+  // Two closures share the same mutable variable
+  let source = "let main = () -> Int {\n  let mut n = 0\n  let inc = () -> Int { n = n + 1\n  n }\n  let get = () -> Int { n }\n  inc()\n  inc()\n  inc()\n  get()\n}"
+  let bytes = compile_wasi(source, "main")
+  fs_write_bytes("/tmp/test_cg_mutcap_shared.wasm", bytes)
+  sh("wasmtime run /tmp/test_cg_mutcap_shared.wasm")
+}
+
 // === Float / Double ===
 
 test "wasi: double_to_int basic" {
@@ -642,4 +661,126 @@ test "wasi: float arithmetic via int_to_double" {
   let bytes = compile_wasi(source, "main")
   fs_write_bytes("/tmp/test_cg_float_arith.wasm", bytes)
   sh("wasmtime run /tmp/test_cg_float_arith.wasm")
+}
+
+// === GC Backend ===
+
+let compile_wasi_gc = (source: String, entry: String) -> Bytes with { Error } {
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  compile_wasi_module_gc(stmts, entry)
+}
+
+test "gc: basic add" {
+  let source = "let main = () -> Int { 3 + 4 }"
+  let bytes = compile_wasi_gc(source, "main")
+  fs_write_bytes("/tmp/test_gc_add.wasm", bytes)
+  sh("wasmtime run -W gc /tmp/test_gc_add.wasm")
+}
+
+test "gc: let bindings" {
+  let source = "let main = () -> Int {\n  let a = 10\n  let b = a + 5\n  b * 2\n}"
+  let bytes = compile_wasi_gc(source, "main")
+  fs_write_bytes("/tmp/test_gc_let.wasm", bytes)
+  sh("wasmtime run -W gc /tmp/test_gc_let.wasm")
+}
+
+test "gc: if else" {
+  let source = "let main = () -> Int {\n  let x = 5\n  if x > 3 { 10 } else { 20 }\n}"
+  let bytes = compile_wasi_gc(source, "main")
+  fs_write_bytes("/tmp/test_gc_ifelse.wasm", bytes)
+  sh("wasmtime run -W gc /tmp/test_gc_ifelse.wasm")
+}
+
+test "gc: while loop" {
+  let source = "let main = () -> Int {\n  let mut sum = 0\n  let mut i = 1\n  while i <= 10 {\n    sum = sum + i\n    i = i + 1\n  }\n  sum\n}"
+  let bytes = compile_wasi_gc(source, "main")
+  fs_write_bytes("/tmp/test_gc_while.wasm", bytes)
+  sh("wasmtime run -W gc /tmp/test_gc_while.wasm")
+}
+
+test "gc: function call" {
+  let source = "let add = (a: Int, b: Int) -> Int { a + b }\nlet main = () -> Int { add(3, 4) }"
+  let bytes = compile_wasi_gc(source, "main")
+  fs_write_bytes("/tmp/test_gc_call.wasm", bytes)
+  sh("wasmtime run -W gc /tmp/test_gc_call.wasm")
+}
+
+test "gc: match expression" {
+  let source = "let f = (x: Int) -> Int {\n  match x {\n    0 => 10,\n    1 => 20,\n    _ => 30\n  }\n}\nlet main = () -> Int { f(1) }"
+  let bytes = compile_wasi_gc(source, "main")
+  fs_write_bytes("/tmp/test_gc_match.wasm", bytes)
+  sh("wasmtime run -W gc /tmp/test_gc_match.wasm")
+}
+
+test "gc: string length" {
+  let source = "let main = () -> Int {\n  let s = \"hello\"\n  string_length(s)\n}"
+  let bytes = compile_wasi_gc(source, "main")
+  fs_write_bytes("/tmp/test_gc_strlen.wasm", bytes)
+  sh("wasmtime run -W gc /tmp/test_gc_strlen.wasm")
+}
+
+test "gc: let mut and assign" {
+  let source = "let main = () -> Int {\n  let mut x = 10\n  x = x + 5\n  x\n}"
+  let bytes = compile_wasi_gc(source, "main")
+  fs_write_bytes("/tmp/test_gc_letmut.wasm", bytes)
+  sh("wasmtime run -W gc /tmp/test_gc_letmut.wasm")
+}
+
+test "gc: fibonacci iterative" {
+  let source = "let main = () -> Int {\n  let mut a = 0\n  let mut b = 1\n  let mut i = 0\n  while i < 10 {\n    let t = b\n    b = a + b\n    a = t\n    i = i + 1\n  }\n  a\n}"
+  let bytes = compile_wasi_gc(source, "main")
+  fs_write_bytes("/tmp/test_gc_fib.wasm", bytes)
+  sh("wasmtime run -W gc /tmp/test_gc_fib.wasm")
+}
+
+// === GC Backend: Closures ===
+
+test "gc: closure no capture" {
+  let source = "let main = () -> Int {\n  let f = (x: Int) -> Int { x + 1 }\n  f(5)\n}"
+  let bytes = compile_wasi_gc(source, "main")
+  fs_write_bytes("/tmp/test_gc_closure_nocap.wasm", bytes)
+  sh("wasmtime run -W gc /tmp/test_gc_closure_nocap.wasm")
+}
+
+test "gc: closure simple capture" {
+  let source = "let main = () -> Int {\n  let n = 10\n  let f = (x: Int) -> Int { x + n }\n  f(5)\n}"
+  let bytes = compile_wasi_gc(source, "main")
+  fs_write_bytes("/tmp/test_gc_closure_cap.wasm", bytes)
+  sh("wasmtime run -W gc /tmp/test_gc_closure_cap.wasm")
+}
+
+test "gc: function as value" {
+  let source = "let double = (x: Int) -> Int { x * 2 }\nlet main = () -> Int {\n  let f = double\n  f(21)\n}"
+  let bytes = compile_wasi_gc(source, "main")
+  fs_write_bytes("/tmp/test_gc_fn_value.wasm", bytes)
+  sh("wasmtime run -W gc /tmp/test_gc_fn_value.wasm")
+}
+
+test "gc: higher-order function" {
+  let source = "let apply = (f: (Int) -> Int, x: Int) -> Int { f(x) }\nlet inc = (x: Int) -> Int { x + 1 }\nlet main = () -> Int { apply(inc, 41) }"
+  let bytes = compile_wasi_gc(source, "main")
+  fs_write_bytes("/tmp/test_gc_higher_order.wasm", bytes)
+  sh("wasmtime run -W gc /tmp/test_gc_higher_order.wasm")
+}
+
+test "gc: nested closure" {
+  let source = "let main = () -> Int {\n  let a = 10\n  let make_adder = (n: Int) -> (Int) -> Int {\n    (x: Int) -> Int { x + n }\n  }\n  let add10 = make_adder(a)\n  add10(32)\n}"
+  let bytes = compile_wasi_gc(source, "main")
+  fs_write_bytes("/tmp/test_gc_closure_nested.wasm", bytes)
+  sh("wasmtime run -W gc /tmp/test_gc_closure_nested.wasm")
+}
+
+test "gc: mutable capture" {
+  let source = "let main = () -> Int {\n  let mut n = 0\n  let inc = () -> Int { n = n + 1\n  n }\n  inc()\n  inc()\n}"
+  let bytes = compile_wasi_gc(source, "main")
+  fs_write_bytes("/tmp/test_gc_mutcap.wasm", bytes)
+  sh("wasmtime run -W gc /tmp/test_gc_mutcap.wasm")
+}
+
+test "gc: mutable capture shared" {
+  let source = "let main = () -> Int {\n  let mut n = 0\n  let inc = () -> Int { n = n + 1\n  n }\n  let get = () -> Int { n }\n  inc()\n  inc()\n  inc()\n  get()\n}"
+  let bytes = compile_wasi_gc(source, "main")
+  fs_write_bytes("/tmp/test_gc_mutcap_shared.wasm", bytes)
+  sh("wasmtime run -W gc /tmp/test_gc_mutcap_shared.wasm")
 }
