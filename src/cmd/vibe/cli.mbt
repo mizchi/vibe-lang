@@ -421,6 +421,7 @@ fn default_output_path(input_path : String, mode : CompileMode) -> String {
     CompileMode::WasmGc => "dist/" + basename + ".wasm"
     CompileMode::Component => "dist/" + basename + ".component.wasm"
     CompileMode::ComponentStringLift => "dist/" + basename + ".component.wasm"
+    CompileMode::ComposeP3 => "dist/" + basename + ".p3.component.wasm"
     CompileMode::Wac => "dist/" + basename + ".component.wasm"
     CompileMode::Wit => "dist/" + basename + ".wit"
     CompileMode::WitComponent => "dist/" + basename + ".component.wit"
@@ -759,6 +760,38 @@ fn compile_cmd(args : Array[String]) -> Unit {
             e => abort("compile: " + e.user_message())
           }
           match @io.write_bytes_with(fs, resolved_out, wasm_bytes) {
+            Ok(_) => ()
+            Err(err) => abort("compile: " + err)
+          }
+          println("wrote " + resolved_out)
+        }
+        CompileMode::ComposeP3 => {
+          let adapter_path = match opts.adapter_path {
+            Some(p) => p
+            None => abort("compile: --compose-p3 requires --adapter")
+          }
+          // Step 1: Compile vibe → sync component (adapter handles async wrapping)
+          let app_bytes = @runtime_compile.compile_module_component_string_lift_auto(
+            db,
+            entry,
+            opt_level=opts.opt_level,
+            is_async=false,
+          ) catch {
+            e => abort("compile: " + e.user_message())
+          }
+          // Step 2: Read adapter and compose with mwac plug
+          let adapter_bytes = match @io.read_bytes_with(fs, adapter_path) {
+            Ok(b) => b
+            Err(err) => abort("compile: failed to read adapter: " + err)
+          }
+          // adapter = socket (imports handler), app = plug (exports handler)
+          let composed = @runtime_compile.compose_p3_component(
+            app_bytes,
+            adapter_bytes,
+          ) catch {
+            e => abort("compile: " + e.user_message())
+          }
+          match @io.write_bytes_with(fs, resolved_out, composed) {
             Ok(_) => ()
             Err(err) => abort("compile: " + err)
           }

@@ -19,6 +19,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 CACHE_DIR="${VIBE_HTTP_P3_CACHE:-$PROJECT_ROOT/_build/http_adapter}"
+VIBE="${VIBE:-moon run --target native src/cmd/vibe --}"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -29,8 +30,6 @@ require_cmd() {
 
 require_cmd moon
 require_cmd wasm-tools
-require_cmd wac
-require_cmd python3
 
 INPUT=""
 OUTPUT=""
@@ -63,43 +62,11 @@ else
   echo "[compose] using cached adapter"
 fi
 
-# Step 2: Compile vibe handler
-APP_COMPONENT="$CACHE_DIR/app_$(basename "${INPUT%.vibe}").component.wasm"
-echo "[compose] compiling $INPUT..."
-moon run --target native src/cmd/vibe -- compile --component-string-lift \
-  "$INPUT" -o "$APP_COMPONENT" 2>/dev/null
+# Step 2: Compile + compose + patch via vibe CLI
+echo "[compose] compiling and composing $INPUT..."
+$VIBE compile --compose-p3 --adapter "$ADAPTER" "$INPUT" -o "$OUTPUT" 2>/dev/null
 
-# Step 3: Compose with wac compose --no-validate + binary patch
-WAC_FILE="$CACHE_DIR/compose.wac"
-cat >"$WAC_FILE" <<'WACEOF'
-package test:composed;
-let app = new vibe:app {};
-let adapter = new vibe:adapter { handler: app.handler, ... };
-export adapter...;
-WACEOF
-
-echo "[compose] composing..."
-wac compose \
-  -d "vibe:app=$APP_COMPONENT" \
-  -d "vibe:adapter=$ADAPTER" \
-  --no-validate \
-  -o "$OUTPUT" \
-  "$WAC_FILE"
-
-# Step 4: Binary patch async func type (wac drops async flag on client.send)
-python3 -c "
-import re, sys
-data = bytearray(open('$OUTPUT', 'rb').read())
-pattern = b'\x40\x01\x07request'
-matches = [m.start() for m in re.finditer(re.escape(pattern), data)]
-if len(matches) < 1:
-    print('warning: no sync send func type found to patch (may already be async)', file=sys.stderr)
-else:
-    data[matches[0]] = 0x43
-    open('$OUTPUT', 'wb').write(bytes(data))
-"
-
-# Step 5: Validate
+# Step 3: Validate
 wasm-tools validate --features all "$OUTPUT"
 echo "[compose] wrote $OUTPUT"
 echo "[compose] serve with: wasmtime serve -Sp3 -W component-model-async=y -W component-model-async-builtins=y $OUTPUT"

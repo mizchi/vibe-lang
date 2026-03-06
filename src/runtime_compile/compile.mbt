@@ -751,6 +751,58 @@ pub fn compile_module_component_string_lift_auto(
 }
 
 ///|
+/// Patch sync func types (0x40) to async (0x43) for patterns matching
+/// Patch sync func types (0x40) to async (0x43) in composed P3 components.
+/// wac compose drops async flags; this restores them for:
+///   - handler: 0x40 0x02 0x06 "method" (handler(method, url) -> s64)
+///   - client.send: 0x40 0x01 0x07 "request" (send(request) -> response)
+pub fn patch_p3_async_func_types(data : Bytes) -> Bytes {
+  let patterns : Array[Array[Byte]] = [
+    // handler(method: string, url: string) -> s64
+    [
+      b'\x40', b'\x02', b'\x06', b'\x6d', b'\x65', b'\x74', b'\x68', b'\x6f',
+      b'\x64',
+    ],
+    // send(request: ...) -> response
+    [
+      b'\x40', b'\x01', b'\x07', b'\x72', b'\x65', b'\x71', b'\x75', b'\x65',
+      b'\x73', b'\x74',
+    ],
+  ]
+  let buf = data.to_array()
+  for pattern in patterns {
+    for i in 0..<(buf.length() - pattern.length()) {
+      let mut match_ = true
+      for j in 0..<pattern.length() {
+        if buf[i + j] != pattern[j] {
+          match_ = false
+          break
+        }
+      }
+      if match_ {
+        buf[i] = b'\x43' // async func type
+      }
+    }
+  }
+  Bytes::from_array(buf)
+}
+
+///|
+/// Compose a vibe app component with a P3 adapter using mwac plug.
+/// The adapter (socket) imports handler, the app (plug) exports handler.
+/// No external tools (wac) or binary patches needed.
+pub fn compose_p3_component(
+  app_bytes : Bytes,
+  adapter_bytes : Bytes,
+) -> Bytes raise WasmCompileError {
+  match @mwac.plug_components(adapter_bytes, [app_bytes], best_effort=true) {
+    Ok(composed) => composed
+    Err(e) =>
+      raise WasmCompileError::Optimize("mwac plug failed: " + e.to_string())
+  }
+}
+
+///|
 /// Check if AST uses server builtins incompatible with P3 handler mode.
 fn check_incompatible_server_builtins(ast : @core.Module) -> Array[String] {
   let found : Array[String] = []

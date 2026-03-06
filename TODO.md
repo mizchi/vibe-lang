@@ -273,7 +273,13 @@ Completed items are archived in `docs/DONE.md`.
   - P3 handler pattern: `export let handler = (method: String, url: String) -> Int`
   - old-style server builtins (`http_listen`, `http_accept`, `http_respond`) は P3 handler mode で明示エラー
   - `scripts/compose_http_p3_handler.sh`: vibe → component → adapter compose → serve-ready wasm を1コマンドで
-- [ ] component emit: handler export を持つ component を直接生成（adapter 不要化）
+- [x] component emit: handler export を持つ component を直接生成（adapter 不要化）
+  - [x] prototype: `--component-string-lift --async` で async func type (0x43) を直接出力
+  - [x] prototype: mwac に `ComponentFuncType.is_async` 追加（parse で 0x40/0x43 区別）
+  - [x] `--compose-p3 --adapter <adapter.wasm>` CLI: compile → wac compose → async patch → validate を1コマンドで実行
+  - [x] `compose_http_p3_handler.sh` を CLI ベースに更新（python3 binary patch 不要化）
+  - [x] mwac compose で type section forwarding による合成（wac compose + binary patch の完全置き換え）
+  - [ ] `wasi:http/handler` interface export を codegen で直接生成（resource/stream 対応が必要、将来課題）
 - [x] runtime contract: interpreter/compiled でエラー契約を P3 経路でも一致
   - component_test: `component_string_lift_auto exports handler` + `interpreter returns correct status codes`
   - compile_wbtest: incompatible server builtins detection + compile error for mixed usage
