@@ -686,6 +686,18 @@ pub fn compile_module_component_string_lift_auto(
   let compiled = compile_module(db, path) catch {
     e => raise WasmCompileError::Compile(e)
   }
+  // Check for incompatible server builtins (listen/accept model is not supported in P3 handler mode)
+  let incompatible = check_incompatible_server_builtins(compiled.ast)
+  if incompatible.length() > 0 {
+    raise WasmCompileError::Optimize(
+      "P3 handler mode is incompatible with server builtins: " +
+        incompatible.iter().fold(
+          init="",
+          fn(acc, s) { if acc == "" { s } else { acc + ", " + s } },
+        ) +
+        ". Use `export let handler = (method: String, url: String) -> Int` pattern instead.",
+    )
+  }
   // Find first exported function with string params
   let mut target_func_name : String? = None
   let mut string_param_count = 0
@@ -734,6 +746,67 @@ pub fn compile_module_component_string_lift_auto(
     param_names=string_param_names,
   )
   optimize_wasm_bytes_with_opt_level(component, opt_level)
+}
+
+///|
+/// Check if AST uses server builtins incompatible with P3 handler mode.
+fn check_incompatible_server_builtins(ast : @core.Module) -> Array[String] {
+  let found : Array[String] = []
+  let incompatible_names = [
+    "http_listen", "http_accept", "http_request_method", "http_request_url",
+    "http_request_header", "http_request_body", "http_respond",
+  ]
+  scan_server_builtins_block(ast, incompatible_names, found)
+  found
+}
+
+///|
+fn scan_server_builtins_block(
+  block : @core.Module,
+  names : Array[String],
+  found : Array[String],
+) -> Unit {
+  for stmt in block.stmts {
+    match stmt {
+      @core.Stmt::Let(expr~, ..)
+      | @core.Stmt::ExportLet(expr~, ..)
+      | @core.Stmt::Expr(expr~, ..)
+      | @core.Stmt::LetMut(expr~, ..)
+      | @core.Stmt::Assign(expr~, ..) =>
+        scan_server_builtins_expr(expr, names, found)
+      _ => ()
+    }
+  }
+}
+
+///|
+fn scan_server_builtins_expr(
+  expr : @core.Expr,
+  names : Array[String],
+  found : Array[String],
+) -> Unit {
+  match expr {
+    @core.Expr::Call(name~, args~, ..) => {
+      for n in names {
+        if name == n && not(found.contains(n)) {
+          found.push(n)
+        }
+      }
+      for arg in args {
+        scan_server_builtins_expr(arg.expr, names, found)
+      }
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      scan_server_builtins_expr(cond, names, found)
+      scan_server_builtins_block(then_body, names, found)
+      scan_server_builtins_block(else_body, names, found)
+    }
+    @core.Expr::Block(body~, ..) =>
+      scan_server_builtins_block(body, names, found)
+    @core.Expr::Fn(body~, ..) =>
+      scan_server_builtins_block(body, names, found)
+    _ => ()
+  }
 }
 
 ///|

@@ -1585,3 +1585,24 @@ test "vibe backends match: mixed expressions" {
   assert_eval_backends_same("let x = mul(3, 3)\nadd(x, 1)")
   assert_eval_backends_same("match true { true => 1, false => 0 }")
 }
+
+///|
+test "vibe backends match: P3 handler pattern" {
+  // handler returns status codes — interpreter and wasm should agree
+  let handler_code =
+    #|let handler = (method: String, url: String) -> Int {
+    #|  if string_equals(method, "GET") {
+    #|    if string_equals(url, "/") { 200 }
+    #|    else { if string_equals(url, "/health") { 200 }
+    #|    else { if string_starts_with(url, "/proxy") { -1 }
+    #|    else { 404 } } }
+    #|  } else {
+    #|    405
+    #|  }
+    #|}
+  assert_eval_backends_same(handler_code + "\nhandler(\"GET\", \"/\")")
+  assert_eval_backends_same(handler_code + "\nhandler(\"GET\", \"/health\")")
+  assert_eval_backends_same(handler_code + "\nhandler(\"GET\", \"/notfound\")")
+  assert_eval_backends_same(handler_code + "\nhandler(\"POST\", \"/\")")
+  assert_eval_backends_same(handler_code + "\nhandler(\"GET\", \"/proxy?target=http://example.com\")")
+}

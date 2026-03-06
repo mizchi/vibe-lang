@@ -264,11 +264,21 @@ Completed items are archived in `docs/DONE.md`.
 - 既知制限: vibe の `==` 演算子は wasm backend で string 比較未対応（`string_equals()` builtin を使用）
 
 **Phase 3 (本実装)**:
-- [ ] codegen: HTTP client builtins を `wasi:http/client.send` + resource 操作へ lower
-- [ ] codegen: HTTP server builtins を `wasi:http/handler` export モデルへ再設計
+- [x] codegen: HTTP client builtins を `wasi:http/client.send` + resource 操作へ lower
+  - combined adapter (Rust) が handler + client を一体化: handler returns -1/-2 → proxy GET/POST
+  - `wac compose --no-validate` + binary patch (0x40→0x43) で async func type mismatch を回避
+  - `futures::join!` で request/response stream を並行処理、`body_rx.collect()` で body 読み取り
+  - `scripts/test_http_p3_client_e2e.sh`: direct + proxy e2e (5/5 PASS)
+- [x] codegen: HTTP server builtins を `wasi:http/handler` export モデルへ再設計
+  - P3 handler pattern: `export let handler = (method: String, url: String) -> Int`
+  - old-style server builtins (`http_listen`, `http_accept`, `http_respond`) は P3 handler mode で明示エラー
+  - `scripts/compose_http_p3_handler.sh`: vibe → component → adapter compose → serve-ready wasm を1コマンドで
 - [ ] component emit: handler export を持つ component を直接生成（adapter 不要化）
-- [ ] runtime contract: interpreter/compiled でエラー契約を P3 経路でも一致
-- [ ] e2e gate を CI (`wasm-codegen-integrity`) に追加
+- [x] runtime contract: interpreter/compiled でエラー契約を P3 経路でも一致
+  - component_test: `component_string_lift_auto exports handler` + `interpreter returns correct status codes`
+  - compile_wbtest: incompatible server builtins detection + compile error for mixed usage
+- [x] e2e gate を CI (`wasm-codegen-integrity`) に追加
+  - `scripts/test_http_p3_handler_gate.sh`: component validate + handler export + incompatible builtins rejection (8 checks)
 
 **検証スクリプト**:
 - `scripts/probe_wasi_http_p3_service_only.sh` — Rust のみの P3 service + e2e
@@ -276,6 +286,9 @@ Completed items are archived in `docs/DONE.md`.
 - `scripts/test_wasi_http_p3_blocked_gate.sh` — 上記を束ねる gate
 - `scripts/test_component_string_lift.sh` — Phase 2 infrastructure validation (exports + validate)
 - `scripts/test_http_p3_string_e2e.sh` — Phase 2 e2e (string params + dynamic response)
+- `scripts/test_http_p3_client_e2e.sh` — Phase 3 e2e (direct + proxy client)
+- `scripts/compose_http_p3_handler.sh` — 1-command compose pipeline
+- `scripts/test_http_p3_handler_gate.sh` — CI gate (component validate + export check + rejection)
 
 ## Blocked / External
 

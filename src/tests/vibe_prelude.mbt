@@ -3,6 +3,7 @@ pub using @runtime_compile {
   compile_module,
   compile_module_component,
   compile_module_component_with_opt_level,
+  compile_module_component_string_lift_auto,
   compile_module_wasm,
   compile_module_wasm_with_coverage,
   compile_module_wasm_gc,

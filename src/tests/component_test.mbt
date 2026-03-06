@@ -402,3 +402,59 @@ fn component_bytes_contains_ascii(bytes : Bytes, needle : String) -> Bool {
   }
   false
 }
+
+///|
+test "P3 handler: component_string_lift_auto exports handler" {
+  let db = VibeDb::new()
+  let src =
+    #|export let handler = (method: String, url: String) -> Int {
+    #|  if string_equals(method, "GET") { 200 } else { 405 }
+    #|}
+    #|handler("GET", "/")
+  db.set_source("main", src)
+  let wasm = try
+    compile_module_component_string_lift_auto(db, "main")
+  catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  // Component should export "handler" function
+  assert_true(component_bytes_contains_ascii(wasm, "handler"))
+  // Should have component header
+  assert_eq(wasm[0].to_int(), 0x00) // \0
+  assert_eq(wasm[1].to_int(), 0x61) // a
+  assert_eq(wasm[4].to_int(), 0x0d) // component version
+}
+
+///|
+test "P3 handler: interpreter returns correct status codes" {
+  let base =
+    #|let handler = (method: String, url: String) -> Int {
+    #|  if string_equals(method, "GET") {
+    #|    if string_equals(url, "/") { 200 }
+    #|    else { if string_equals(url, "/notfound") { 404 }
+    #|    else { -1 } }
+    #|  } else { 405 }
+    #|}
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let r1 = try rt.eval_script(base + "\nhandler(\"GET\", \"/\")") catch {
+    e => fail("eval error: " + e.to_string())
+  } noraise { r => r }
+  assert_eq(r1.last, Some(@core.Value::Int(200)))
+  let rt2 = Runtime::new(@capability.CapabilitySet::new())
+  let r2 = try rt2.eval_script(base + "\nhandler(\"GET\", \"/notfound\")") catch {
+    e => fail("eval error: " + e.to_string())
+  } noraise { r => r }
+  assert_eq(r2.last, Some(@core.Value::Int(404)))
+  let rt3 = Runtime::new(@capability.CapabilitySet::new())
+  let r3 = try rt3.eval_script(base + "\nhandler(\"POST\", \"/\")") catch {
+    e => fail("eval error: " + e.to_string())
+  } noraise { r => r }
+  assert_eq(r3.last, Some(@core.Value::Int(405)))
+  let rt4 = Runtime::new(@capability.CapabilitySet::new())
+  let r4 = try rt4.eval_script(base + "\nhandler(\"GET\", \"/proxy\")") catch {
+    e => fail("eval error: " + e.to_string())
+  } noraise { r => r }
+  assert_eq(r4.last, Some(@core.Value::Int(-1)))
+}
