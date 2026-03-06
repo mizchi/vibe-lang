@@ -713,3 +713,79 @@ export let build_hello_module = () -> Bytes {
 
   bytebuf_to_bytes(out)
 }
+
+// === String data helpers ===
+
+// Convert a string to a byte array (ASCII only)
+export let string_to_data = (s: String) -> Array[Int] {
+  let buf = bytebuf_new()
+  let len = string_length(s)
+  let mut i = 0
+  while i < len {
+    bytebuf_push(buf, string_char_code_at(s, i))
+    i = i + 1
+  }
+  buf
+}
+
+// Emit data section with multiple segments
+export let emit_data_section_multi = (out: Array[Int], offsets: Array[Int], datas: Array[Array[Int]]) -> Unit {
+  let count = array_length(offsets)
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, count)
+  let mut i = 0
+  while i < count {
+    bytebuf_push(content, 0)  // active, memory 0
+    emit_i32_const(content, array_get(offsets, i))
+    emit_end(content)
+    let data = array_get(datas, i)
+    leb128_encode_u32(content, array_length(data))
+    bytebuf_push_array(content, data)
+    i = i + 1
+  }
+  bytebuf_push_section(out, 11, content)
+}
+
+// Build a WASI module that prints a custom string
+export let build_print_string_module = (msg: String) -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+
+  // Types: fd_write(i32,i32,i32,i32)->i32, _start()->void
+  let type_content = bytebuf_new()
+  bytebuf_push_vec_header(type_content, 2)
+  emit_func_type_raw(type_content, [127, 127, 127, 127], [127])
+  emit_func_type_raw(type_content, array_slice([0], 0, 0), array_slice([0], 0, 0))
+  bytebuf_push_section(out, 1, type_content)
+
+  emit_import_section_func(out, "wasi_snapshot_preview1", "fd_write", 0)
+  emit_function_section(out, [1])
+  emit_memory_section(out, 1)
+  emit_exports_with_memory(out, ["_start"], [1], "memory", 0)
+
+  // String data at offset 16 (leave 0-15 for iovec + nwritten)
+  let str_data = string_to_data(msg)
+  let str_len = array_length(str_data)
+
+  // Code: setup iovec and call fd_write
+  let b = bytebuf_new()
+  // iovec[0].buf = 16
+  emit_i32_const(b, 0)
+  emit_i32_const(b, 16)
+  emit_i32_store(b, 2, 0)
+  // iovec[0].len = str_len
+  emit_i32_const(b, 4)
+  emit_i32_const(b, str_len)
+  emit_i32_store(b, 2, 0)
+  // fd_write(stdout=1, iovs=0, count=1, nwritten=8)
+  emit_i32_const(b, 1)
+  emit_i32_const(b, 0)
+  emit_i32_const(b, 1)
+  emit_i32_const(b, 8)
+  emit_call(b, 0)
+  emit_drop(b)
+
+  emit_code_section(out, [b])
+  emit_data_section(out, 16, str_data)
+  bytebuf_to_bytes(out)
+}
