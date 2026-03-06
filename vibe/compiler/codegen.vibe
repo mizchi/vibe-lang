@@ -174,6 +174,10 @@ let rec collect_strings_expr = (expr: Expr, out: Array[String]) -> Int {
       collect_strings_expr(value, out)
       collect_strings_expr(body, out)
     },
+    EAssignOp(_, _, value, body) => {
+      collect_strings_expr(value, out)
+      collect_strings_expr(body, out)
+    },
     ESeq(first, second) => {
       collect_strings_expr(first, out)
       collect_strings_expr(second, out)
@@ -182,7 +186,19 @@ let rec collect_strings_expr = (expr: Expr, out: Array[String]) -> Int {
       collect_strings_expr(cond, out)
       collect_strings_expr(body, out)
     },
+    EForIn(_, iter_e, body) => {
+      collect_strings_expr(iter_e, out)
+      collect_strings_expr(body, out)
+    },
     ETuple(elems) => {
+      let mut i = 0
+      while i < array_length(elems) {
+        collect_strings_expr(array_get(elems, i), out)
+        i = i + 1
+      }
+      0
+    },
+    EArray(elems) => {
       let mut i = 0
       while i < array_length(elems) {
         collect_strings_expr(array_get(elems, i), out)
@@ -264,11 +280,12 @@ let rec compile_expr = (
   fn_returns: Array[Int],
   str_strs: Array[String],
   str_offsets: Array[Int],
-  str_lengths: Array[Int]
+  str_lengths: Array[Int],
+  ld: Int  // loop depth: -1 = not in loop, 0+ = depth from while's loop block
 ) -> Int with { Error } {
   // shorthand for recursive call
-  let ce = (b: Array[Int], e: Expr, ln: Array[String], nl: Int) -> Int with { Error } {
-    compile_expr(b, e, ln, nl, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths)
+  let ce = (b: Array[Int], e: Expr, ln: Array[String], nl: Int, d: Int) -> Int with { Error } {
+    compile_expr(b, e, ln, nl, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths, d)
   }
   match expr {
     EInt(n) => {
@@ -290,8 +307,8 @@ let rec compile_expr = (
       next_local
     },
     EBinOp(op, lhs, rhs) => {
-      let nl1 = ce(buf, lhs, local_names, next_local)
-      let nl2 = ce(buf, rhs, local_names, nl1)
+      let nl1 = ce(buf, lhs, local_names, next_local, ld)
+      let nl2 = ce(buf, rhs, local_names, nl1, ld)
       if string_equals(op, "+") { emit_i64_add(buf) }
       else if string_equals(op, "-") { emit_i64_sub(buf) }
       else if string_equals(op, "*") { emit_i64_mul(buf) }
@@ -316,11 +333,11 @@ let rec compile_expr = (
     EUnaryOp(op, operand) => {
       if string_equals(op, "-") {
         emit_i64_const(buf, 0)
-        let nl = ce(buf, operand, local_names, next_local)
+        let nl = ce(buf, operand, local_names, next_local, ld)
         emit_i64_sub(buf)
         nl
       } else if string_equals(op, "!") {
-        let nl = ce(buf, operand, local_names, next_local)
+        let nl = ce(buf, operand, local_names, next_local, ld)
         emit_i64_eqz(buf)
         emit_i64_extend_i32_s(buf)
         nl
@@ -329,12 +346,13 @@ let rec compile_expr = (
       }
     },
     EIf(cond, then_e, else_e) => {
-      let nl1 = ce(buf, cond, local_names, next_local)
+      let nl1 = ce(buf, cond, local_names, next_local, ld)
       emit_i32_wrap_i64(buf)
       emit_if_i64(buf)
-      let nl2 = ce(buf, then_e, local_names, nl1)
+      let ld_inner = if ld >= 0 { ld + 1 } else { -1 }
+      let nl2 = ce(buf, then_e, local_names, nl1, ld_inner)
       emit_else(buf)
-      let nl3 = ce(buf, else_e, local_names, nl2)
+      let nl3 = ce(buf, else_e, local_names, nl2, ld_inner)
       emit_end(buf)
       nl3
     },
@@ -345,7 +363,7 @@ let rec compile_expr = (
           let mut nl = next_local
           let mut ci = 0
           while ci < array_length(args) {
-            nl = ce(buf, array_get(args, ci), local_names, nl)
+            nl = ce(buf, array_get(args, ci), local_names, nl, ld)
             ci = ci + 1
           }
           emit_call(buf, fidx)
@@ -359,53 +377,53 @@ let rec compile_expr = (
     },
     ELet(name, value, body) => {
       let local_idx = next_local
-      let nl = ce(buf, value, local_names, next_local + 1)
+      let nl = ce(buf, value, local_names, next_local + 1, ld)
       emit_local_set(buf, local_idx)
       array_push(local_names, name)
-      let nl2 = ce(buf, body, local_names, nl)
+      let nl2 = ce(buf, body, local_names, nl, ld)
       nl2
     },
     ELetRec(name, value, body) => {
       // Same as ELet for codegen (recursion handled by function-level indices)
       let local_idx = next_local
-      let nl = ce(buf, value, local_names, next_local + 1)
+      let nl = ce(buf, value, local_names, next_local + 1, ld)
       emit_local_set(buf, local_idx)
       array_push(local_names, name)
-      let nl2 = ce(buf, body, local_names, nl)
+      let nl2 = ce(buf, body, local_names, nl, ld)
       nl2
     },
     ELetMut(name, value, body) => {
       let local_idx = next_local
-      let nl = ce(buf, value, local_names, next_local + 1)
+      let nl = ce(buf, value, local_names, next_local + 1, ld)
       emit_local_set(buf, local_idx)
       array_push(local_names, name)
-      let nl2 = ce(buf, body, local_names, nl)
+      let nl2 = ce(buf, body, local_names, nl, ld)
       nl2
     },
     EAssign(name, value, body) => {
       let idx = resolve_local(local_names, name)
-      let nl = ce(buf, value, local_names, next_local)
+      let nl = ce(buf, value, local_names, next_local, ld)
       emit_local_set(buf, idx)
-      ce(buf, body, local_names, nl)
+      ce(buf, body, local_names, nl, ld)
+    },
+    EAssignOp(name, op, value, body) => {
+      // name = name op value
+      let idx = resolve_local(local_names, name)
+      emit_local_get(buf, idx)
+      let nl = ce(buf, value, local_names, next_local, ld)
+      if string_equals(op, "+") { emit_i64_add(buf) }
+      else if string_equals(op, "-") { emit_i64_sub(buf) }
+      else if string_equals(op, "*") { emit_i64_mul(buf) }
+      else if string_equals(op, "/") { emit_i64_div_s(buf) }
+      else if string_equals(op, "%") { emit_i64_rem_s(buf) }
+      else { throw(string_concat("unsupported assign op: ", op)) }
+      emit_local_set(buf, idx)
+      ce(buf, body, local_names, nl, ld)
     },
     ESeq(first, second) => {
-      let nl = ce(buf, first, local_names, next_local)
+      let nl = ce(buf, first, local_names, next_local, ld)
       emit_drop(buf)
-      ce(buf, second, local_names, nl)
-    },
-    EWhile(cond, body) => {
-      emit_block_void(buf)
-        emit_loop_void(buf)
-          let nl1 = ce(buf, cond, local_names, next_local)
-          emit_i64_eqz(buf)
-          emit_br_if(buf, 1)
-          let nl2 = ce(buf, body, local_names, nl1)
-          emit_drop(buf)
-          emit_br(buf, 0)
-        emit_end(buf)
-      emit_end(buf)
-      emit_i64_const(buf, 0)
-      nl2
+      ce(buf, second, local_names, nl, ld)
     },
     ETuple(elems) => {
       // Allocate N*8 bytes on heap, store each element as i64
@@ -427,7 +445,7 @@ let rec compile_expr = (
       while ti < num_elems {
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)  // ptr as i32 for store
-        nl = ce(buf, array_get(elems, ti), local_names, nl)
+        nl = ce(buf, array_get(elems, ti), local_names, nl, ld)
         emit_i64_store(buf, 3, ti * 8)
         ti = ti + 1
       }
@@ -439,7 +457,7 @@ let rec compile_expr = (
     EMatch(scrutinee, arms) => {
       // Compile scrutinee, store in temp local
       let scrut_local = next_local
-      let nl1 = ce(buf, scrutinee, local_names, next_local + 1)
+      let nl1 = ce(buf, scrutinee, local_names, next_local + 1, ld)
       emit_local_set(buf, scrut_local)
       array_push(local_names, "__match_scrut")
       // Compile match arms as nested if-else
@@ -470,9 +488,10 @@ let rec compile_expr = (
           },
           _ => 0
         }
-        // Compile arm body
+        // Compile arm body (inside ai+1 levels of if blocks)
         let (_, arm_body) = array_get(arms, ai)
-        ce(buf, arm_body, local_names, nl1)
+        let ld_arm = if ld >= 0 { ld + ai + 1 } else { -1 }
+        ce(buf, arm_body, local_names, nl1, ld_arm)
         // Open else for next arm
         emit_else(buf)
         ai = ai + 1
@@ -480,6 +499,7 @@ let rec compile_expr = (
       // Compile catchall arm (or unreachable)
       // NOTE: Use array_length(local_names) instead of mutable final_nl
       // inside match arms (quirk #13b: mutable scalars don't propagate out of match)
+      let ld_catch = if ld >= 0 { ld + num_cond_arms } else { -1 }
       if catchall_idx < num_arms {
         let (cp, cbody) = array_get(arms, catchall_idx)
         match cp {
@@ -488,7 +508,7 @@ let rec compile_expr = (
             emit_local_get(buf, scrut_local)
             emit_local_set(buf, bind_local)
             array_push(local_names, bname)
-            ce(buf, cbody, local_names, array_length(local_names))
+            ce(buf, cbody, local_names, array_length(local_names), ld_catch)
             0
           },
           PCtor(cname, cargs) => {
@@ -497,7 +517,7 @@ let rec compile_expr = (
               emit_local_get(buf, scrut_local)
               emit_local_set(buf, bind_local2)
               array_push(local_names, cname)
-              ce(buf, cbody, local_names, array_length(local_names))
+              ce(buf, cbody, local_names, array_length(local_names), ld_catch)
             } else { 0 }
             0
           },
@@ -525,12 +545,12 @@ let rec compile_expr = (
               }
               pi2 = pi2 + 1
             }
-            ce(buf, cbody, local_names, array_length(local_names))
+            ce(buf, cbody, local_names, array_length(local_names), ld_catch)
             0
           },
           _ => {
             // PWild or other catch-all
-            ce(buf, cbody, local_names, array_length(local_names))
+            ce(buf, cbody, local_names, array_length(local_names), ld_catch)
             0
           }
         }
@@ -548,13 +568,108 @@ let rec compile_expr = (
       }
       final_nl
     },
+    EArray(elems) => {
+      // Compile [a, b, c] as: let arr = array_new(); array_push(arr, a); ...
+      let (arr_new_idx, _, _) = resolve_func(fn_names, fn_indices, fn_params, fn_returns, "array_new")
+      let (arr_push_idx, _, _) = resolve_func(fn_names, fn_indices, fn_params, fn_returns, "array_push")
+      let arr_local = next_local
+      emit_call(buf, arr_new_idx)
+      emit_local_set(buf, arr_local)
+      array_push(local_names, "__arr_lit")
+      let mut nl = next_local + 1
+      let mut ei = 0
+      while ei < array_length(elems) {
+        emit_local_get(buf, arr_local)
+        nl = ce(buf, array_get(elems, ei), local_names, nl, ld)
+        emit_call(buf, arr_push_idx)
+        ei = ei + 1
+      }
+      emit_local_get(buf, arr_local)
+      nl
+    },
+    EForIn(var_name, iter_expr, body) => {
+      // for x in arr { body } => let arr = iter; let mut i = 0; while i < array_length(arr) { let x = array_get(arr, i); body; i = i + 1 }
+      let (arr_len_idx, _, _) = resolve_func(fn_names, fn_indices, fn_params, fn_returns, "array_length")
+      let (arr_get_idx, _, _) = resolve_func(fn_names, fn_indices, fn_params, fn_returns, "array_get")
+      // Compile iterator and store
+      let arr_local = next_local
+      let nl1 = ce(buf, iter_expr, local_names, next_local + 1, ld)
+      emit_local_set(buf, arr_local)
+      array_push(local_names, "__for_arr")
+      // Counter local
+      let i_local = nl1
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, i_local)
+      array_push(local_names, "__for_i")
+      let nl2 = nl1 + 1
+      // block { loop {
+      emit_block_void(buf)
+        emit_loop_void(buf)
+          // if i >= array_length(arr) then break
+          emit_local_get(buf, i_local)
+          emit_local_get(buf, arr_local)
+          emit_call(buf, arr_len_idx)
+          emit_i64_ge_s(buf)
+          emit_i64_extend_i32_s(buf)
+          emit_i32_wrap_i64(buf)
+          emit_br_if(buf, 1)
+          // let var_name = array_get(arr, i)
+          let var_local = nl2
+          emit_local_get(buf, arr_local)
+          emit_local_get(buf, i_local)
+          emit_call(buf, arr_get_idx)
+          emit_local_set(buf, var_local)
+          array_push(local_names, var_name)
+          let nl3 = nl2 + 1
+          // body
+          let nl4 = ce(buf, body, local_names, nl3, 0)
+          emit_drop(buf)
+          // i = i + 1
+          emit_local_get(buf, i_local)
+          emit_i64_const(buf, 1)
+          emit_i64_add(buf)
+          emit_local_set(buf, i_local)
+          emit_br(buf, 0)
+        emit_end(buf)
+      emit_end(buf)
+      emit_i64_const(buf, 0)
+      nl4
+    },
+    EWhile(cond, body) => {
+      // block @break { loop @continue { cond; br_if 1; body; br 0 } }
+      // Inside body: ld=0. EBreak => br (ld+1), EContinue => br ld
+      emit_block_void(buf)
+        emit_loop_void(buf)
+          let nl1 = ce(buf, cond, local_names, next_local, 0)
+          emit_i64_eqz(buf)
+          emit_br_if(buf, 1)
+          let nl2 = ce(buf, body, local_names, nl1, 0)
+          emit_drop(buf)
+          emit_br(buf, 0)
+        emit_end(buf)
+      emit_end(buf)
+      emit_i64_const(buf, 0)
+      nl2
+    },
+    EBreak(_) => {
+      // br to block (break target): loop is at ld, block is at ld+1
+      emit_br(buf, ld + 1)
+      emit_i64_const(buf, 0)
+      next_local
+    },
+    EContinue(_) => {
+      // br to loop header (continue target): loop is at ld
+      emit_br(buf, ld)
+      emit_i64_const(buf, 0)
+      next_local
+    },
     EUnit => {
       emit_i64_const(buf, 0)
       next_local
     },
     EThrow(msg_expr) => {
       // Compile msg, then unreachable
-      let nl = ce(buf, msg_expr, local_names, next_local)
+      let nl = ce(buf, msg_expr, local_names, next_local, ld)
       emit_drop(buf)
       bytebuf_push(buf, 0)  // unreachable
       nl
@@ -650,7 +765,8 @@ export let compile_module = (stmts: Array[Stmt]) -> Bytes with { Error } {
               body_buf, body, local_names,
               param_count,
               fn_names_list, fn_indices_list, fn_param_counts, fn_returns_list,
-              empty_strs, empty_offs, empty_lens
+              empty_strs, empty_offs, empty_lens,
+              -1
             )
             array_push(bodies, body_buf)
             let extra = if final_nl > param_count { final_nl - param_count } else { 0 }
@@ -1422,7 +1538,8 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
               body_buf, body, local_names,
               param_count,
               fn_names_list, fn_indices_list, fn_param_counts, fn_returns_list,
-              str_strs, str_offsets, str_lengths
+              str_strs, str_offsets, str_lengths,
+              -1
             )
             array_push(bodies, body_buf)
             let extra = if final_nl > param_count { final_nl - param_count } else { 0 }
