@@ -46,7 +46,7 @@ import ./wasm_emit.vibe {
 import ./codegen_common.vibe {
   emit_i32_sub, emit_i32_mul, emit_i32_ne, emit_i32_eq, emit_i32_ge_u, emit_i32_eqz,
   emit_i64_store, emit_i64_load, emit_i64_extend_i32_u, emit_memory_copy,
-  resolve_local, resolve_func, FuncTable, StrTable, LambdaTable, CtorTable,
+  resolve_local, resolve_func, FuncTable, StrTable, LambdaTable, CtorTable, CompileCtxGc,
   emit_str_ref, collect_strings_stmts,
   array_contains_str, collect_free_vars, is_mut_captured_in,
   str_table_lookup, find_catchall_idx, find_func_stmt,
@@ -61,21 +61,12 @@ let rec compile_expr_gc = (
   expr: Expr,
   local_names: Array[String],
   next_local: Int,
-  func_table: FuncTable,
-  str_table: StrTable,
-  ld: Int,
-  ref_cell_names: Array[String],
-  ref_local_indices: Array[Int],
-  refcell_type_idx: Int,
-  lambda_table: LambdaTable,
-  num_user_funcs: Int,
-  func_offset: Int,
-  closure_type_base: Int,
-  ctor_table: CtorTable
+  ctx: CompileCtxGc,
+  ld: Int
 ) -> Int with { Error } {
   // shorthand for recursive call
   let ce = (b: Array[Int], e: Expr, ln: Array[String], nl: Int, d: Int) -> Int with { Error } {
-    compile_expr_gc(b, e, ln, nl, func_table, str_table, d, ref_cell_names, ref_local_indices, refcell_type_idx, lambda_table, num_user_funcs, func_offset, closure_type_base, ctor_table)
+    compile_expr_gc(b, e, ln, nl, ctx, d)
   }
   match expr {
     EInt(n) => {
@@ -93,8 +84,8 @@ let rec compile_expr_gc = (
       next_local
     },
     EString(s) => {
-      let idx = str_table_lookup(str_table.strs, s)
-      emit_str_ref(buf, array_get(str_table.offsets, idx), array_get(str_table.lengths, idx))
+      let idx = str_table_lookup(ctx.str_table.strs, s)
+      emit_str_ref(buf, array_get(ctx.str_table.offsets, idx), array_get(ctx.str_table.lengths, idx))
       next_local
     },
     EIdent(name) => {
@@ -107,19 +98,19 @@ let rec compile_expr_gc = (
       }
       let local_idx = try_local(len - 1)
       if local_idx >= 0 {
-        if array_contains_str(ref_cell_names, name) {
+        if array_contains_str(ctx.ref_cell_names, name) {
           // Ref cell: local holds (ref $RefCell), read via struct.get
           emit_local_get(buf, local_idx)
-          emit_struct_get(buf, refcell_type_idx, 0)
+          emit_struct_get(buf, ctx.refcell_type_idx, 0)
         } else {
           emit_local_get(buf, local_idx)
         }
         next_local
       } else {
         // Check if it's a 0-arg enum constructor
-        let ctor_idx = lookup_ctor(ctor_table.names, name, 0)
+        let ctor_idx = lookup_ctor(ctx.ctor_table.names, name, 0)
         if ctor_idx >= 0 {
-          let tag_c = array_get(ctor_table.tags, ctor_idx)
+          let tag_c = array_get(ctx.ctor_table.tags, ctor_idx)
           let ptr_l = next_local
           array_push(local_names, "__ctor_ptr")
           emit_global_get(buf, 0)
@@ -143,15 +134,15 @@ let rec compile_expr_gc = (
           next_local + 1
         } else {
         // Check if it's a top-level function — emit as bare fn value
-        let fn_len = array_length(func_table.names)
+        let fn_len = array_length(ctx.func_table.names)
         let rec try_fn = (j: Int) -> Int with { Error } {
           if j >= fn_len { throw(string_concat("undefined variable: ", name)) }
-          else if string_equals(array_get(func_table.names, j), name) { j }
+          else if string_equals(array_get(ctx.func_table.names, j), name) { j }
           else try_fn(j + 1)
         }
         let fni = try_fn(0)
-        let fidx = array_get(func_table.indices, fni)
-        let table_slot = fidx - func_offset
+        let fidx = array_get(ctx.func_table.indices, fni)
+        let table_slot = fidx - ctx.func_offset
         emit_i64_const(buf, (table_slot << 2) | 2)
         next_local
         }
@@ -195,10 +186,10 @@ let rec compile_expr_gc = (
       match callee {
         EIdent(fname) => {
           // Check if this is an enum constructor call
-          let ctor_lookup_idx = lookup_ctor(ctor_table.names, fname, 0)
+          let ctor_lookup_idx = lookup_ctor(ctx.ctor_table.names, fname, 0)
           if ctor_lookup_idx >= 0 {
-            let tag = array_get(ctor_table.tags, ctor_lookup_idx)
-            let fc = array_get(ctor_table.field_counts, ctor_lookup_idx)
+            let tag = array_get(ctx.ctor_table.tags, ctor_lookup_idx)
+            let fc = array_get(ctx.ctor_table.field_counts, ctor_lookup_idx)
             let obj_size = 8 + fc * 8
             let ptr_local = next_local
             array_push(local_names, "__ctor_ptr")
@@ -222,13 +213,13 @@ let rec compile_expr_gc = (
               match array_get(args, 0) {
                 ERecord(rec_fields) => {
                   let rec find_sn = (sni: Int) -> Int {
-                    if sni >= array_length(ctor_table.struct_names) { -1 }
-                    else if string_equals(array_get(ctor_table.struct_names, sni), fname) { sni }
+                    if sni >= array_length(ctx.ctor_table.struct_names) { -1 }
+                    else if string_equals(array_get(ctx.ctor_table.struct_names, sni), fname) { sni }
                     else find_sn(sni + 1)
                   }
                   let sn_idx = find_sn(0)
                   if sn_idx >= 0 {
-                    let def_fnames = array_get(ctor_table.struct_field_names, sn_idx)
+                    let def_fnames = array_get(ctx.ctor_table.struct_field_names, sn_idx)
                     let ordered = array_slice([EUnit], 0, 0)
                     let mut oi = 0
                     while oi < array_length(def_fnames) {
@@ -270,17 +261,17 @@ let rec compile_expr_gc = (
             nl_c
           }
           else {
-          let fn_len2 = array_length(func_table.names)
+          let fn_len2 = array_length(ctx.func_table.names)
           let rec try_resolve = (j: Int) -> Int {
             if j >= fn_len2 { -1 }
-            else if string_equals(array_get(func_table.names, j), fname) { j }
+            else if string_equals(array_get(ctx.func_table.names, j), fname) { j }
             else try_resolve(j + 1)
           }
           let fn_idx_in_list = try_resolve(0)
           if fn_idx_in_list >= 0 {
             // Direct call to known function
-            let fidx = array_get(func_table.indices, fn_idx_in_list)
-            let has_ret = array_get(func_table.returns, fn_idx_in_list)
+            let fidx = array_get(ctx.func_table.indices, fn_idx_in_list)
+            let has_ret = array_get(ctx.func_table.returns, fn_idx_in_list)
             let mut nl = next_local
             let mut ci = 0
             while ci < array_length(args) {
@@ -288,8 +279,8 @@ let rec compile_expr_gc = (
               ci = ci + 1
             }
             // User funcs in GC backend have __env param for table compatibility
-            if func_offset > 0 {
-              if fidx >= func_offset {
+            if ctx.func_offset > 0 {
+              if fidx >= ctx.func_offset {
                 emit_i64_const(buf, 0)
               }
             }
@@ -317,7 +308,7 @@ let rec compile_expr_gc = (
               nl = ce(buf, array_get(args, ci), local_names, nl, ld)
               ci = ci + 1
             }
-            emit_closure_call_tail(buf, env_local, slot_local, closure_type_base, num_args)
+            emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, num_args)
             nl
           }
           } // close ctor_lookup else
@@ -340,7 +331,7 @@ let rec compile_expr_gc = (
             nl = ce(buf, array_get(args, ci), local_names, nl, ld)
             ci = ci + 1
           }
-          emit_closure_call_tail(buf, env_local, slot_local, closure_type_base, num_args)
+          emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, num_args)
           nl
         }
       }
@@ -368,7 +359,7 @@ let rec compile_expr_gc = (
             array_push(param_names_bp, pn)
             bpi = bpi + 1
           }
-          let caps = collect_free_vars(fn_body, param_names_bp, array_concat(func_table.names, ctor_table.names))
+          let caps = collect_free_vars(fn_body, param_names_bp, array_concat(ctx.func_table.names, ctx.ctor_table.names))
           let mut self_cap_idx = -1
           let mut bci = 0
           while bci < array_length(caps) {
@@ -397,11 +388,11 @@ let rec compile_expr_gc = (
       array_push(local_names, name)
       if is_mut_captured_in(body, name) {
         // Mutable captured: allocate GC ref cell via struct.new
-        array_push(ref_cell_names, name)
+        array_push(ctx.ref_cell_names, name)
         let nl = ce(buf, value, local_names, next_local + 1, ld)
-        emit_struct_new(buf, refcell_type_idx)
+        emit_struct_new(buf, ctx.refcell_type_idx)
         emit_local_set(buf, local_idx)
-        array_push(ref_local_indices, local_idx)
+        array_push(ctx.ref_local_indices, local_idx)
         let nl2 = ce(buf, body, local_names, nl, ld)
         nl2
       } else {
@@ -413,11 +404,11 @@ let rec compile_expr_gc = (
     },
     EAssign(name, value, body) => {
       let idx = resolve_local(local_names, name)
-      if array_contains_str(ref_cell_names, name) {
+      if array_contains_str(ctx.ref_cell_names, name) {
         // Ref cell: struct.set
         emit_local_get(buf, idx)
         let nl = ce(buf, value, local_names, next_local, ld)
-        emit_struct_set(buf, refcell_type_idx, 0)
+        emit_struct_set(buf, ctx.refcell_type_idx, 0)
         ce(buf, body, local_names, nl, ld)
       } else {
         let nl = ce(buf, value, local_names, next_local, ld)
@@ -427,14 +418,14 @@ let rec compile_expr_gc = (
     },
     EAssignOp(name, op, value, body) => {
       let idx = resolve_local(local_names, name)
-      if array_contains_str(ref_cell_names, name) {
+      if array_contains_str(ctx.ref_cell_names, name) {
         // Ref cell: read via struct.get, compute, write via struct.set
         emit_local_get(buf, idx)   // ref on stack (for struct.set later)
         emit_local_get(buf, idx)   // ref on stack (for struct.get)
-        emit_struct_get(buf, refcell_type_idx, 0)  // current value
+        emit_struct_get(buf, ctx.refcell_type_idx, 0)  // current value
         let nl = ce(buf, value, local_names, next_local, ld)
         emit_assignop_op(buf, op)
-        emit_struct_set(buf, refcell_type_idx, 0)
+        emit_struct_set(buf, ctx.refcell_type_idx, 0)
         ce(buf, body, local_names, nl, ld)
       } else {
         emit_local_get(buf, idx)
@@ -503,8 +494,8 @@ let rec compile_expr_gc = (
             0
           },
           PCtor(cname_cond, _) => {
-            let ctor_ci = lookup_ctor(ctor_table.names, cname_cond, 0)
-            let expected_tag = if ctor_ci >= 0 { array_get(ctor_table.tags, ctor_ci) } else { -1 }
+            let ctor_ci = lookup_ctor(ctx.ctor_table.names, cname_cond, 0)
+            let expected_tag = if ctor_ci >= 0 { array_get(ctx.ctor_table.tags, ctor_ci) } else { -1 }
             emit_local_get(buf, scrut_local)
             emit_i64_const(buf, -2)
             emit_i64_and(buf)
@@ -516,10 +507,10 @@ let rec compile_expr_gc = (
             0
           },
           PString(sval) => {
-            let str_idx = str_table_lookup(str_table.strs, sval)
+            let str_idx = str_table_lookup(ctx.str_table.strs, sval)
             if str_idx >= 0 {
               emit_local_get(buf, scrut_local)
-              emit_str_ref(buf, array_get(str_table.offsets, str_idx), array_get(str_table.lengths, str_idx))
+              emit_str_ref(buf, array_get(ctx.str_table.offsets, str_idx), array_get(ctx.str_table.lengths, str_idx))
               emit_call(buf, 4)
               emit_i64_const(buf, 1)
               emit_i64_eq(buf)
@@ -645,8 +636,8 @@ let rec compile_expr_gc = (
       max_nl
     },
     EArray(elems) => {
-      let (arr_new_idx, _, _) = resolve_func(func_table, "array_new")
-      let (arr_push_idx, _, _) = resolve_func(func_table, "array_push")
+      let (arr_new_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+      let (arr_push_idx, _, _) = resolve_func(ctx.func_table, "array_push")
       let arr_local = next_local
       emit_call(buf, arr_new_idx)
       emit_local_set(buf, arr_local)
@@ -663,8 +654,8 @@ let rec compile_expr_gc = (
       nl
     },
     EForIn(var_name, iter_expr, body) => {
-      let (arr_len_idx, _, _) = resolve_func(func_table, "array_length")
-      let (arr_get_idx, _, _) = resolve_func(func_table, "array_get")
+      let (arr_len_idx, _, _) = resolve_func(ctx.func_table, "array_length")
+      let (arr_get_idx, _, _) = resolve_func(ctx.func_table, "array_get")
       let arr_local = next_local
       let nl1 = ce(buf, iter_expr, local_names, next_local + 1, ld)
       emit_local_set(buf, arr_local)
@@ -745,7 +736,7 @@ let rec compile_expr_gc = (
         array_push(param_names_arr, pname)
         pi = pi + 1
       }
-      let fn_and_ctor = array_concat(func_table.names, ctor_table.names)
+      let fn_and_ctor = array_concat(ctx.func_table.names, ctx.ctor_table.names)
       let captures = collect_free_vars(fn_body, param_names_arr, fn_and_ctor)
       let num_captures = array_length(captures)
       let user_params = array_length(params)
@@ -776,7 +767,7 @@ let rec compile_expr_gc = (
         emit_i64_load(lam_buf, 3, 8 + ci3 * 8)
         emit_local_set(lam_buf, cap_local)
         array_push(lam_locals, cap_name)
-        if array_contains_str(ref_cell_names, cap_name) {
+        if array_contains_str(ctx.ref_cell_names, cap_name) {
           array_push(lam_ref_cells, cap_name)
         }
         lam_nl = lam_nl + 1
@@ -784,26 +775,30 @@ let rec compile_expr_gc = (
       }
 
       // Compile lambda body
+      let lam_ctx = CompileCtxGc::{
+        func_table: ctx.func_table, str_table: ctx.str_table,
+        lambda_table: ctx.lambda_table,
+        num_user_funcs: ctx.num_user_funcs, func_offset: ctx.func_offset,
+        ref_cell_names: lam_ref_cells, ref_local_indices: lam_ref_local_indices,
+        refcell_type_idx: ctx.refcell_type_idx, closure_type_base: ctx.closure_type_base,
+        ctor_table: ctx.ctor_table
+      }
       let final_lam_nl = compile_expr_gc(
         lam_buf, fn_body, lam_locals, lam_nl,
-        func_table,
-        str_table, -1,
-        lam_ref_cells, lam_ref_local_indices, refcell_type_idx,
-        lambda_table, num_user_funcs, func_offset,
-        closure_type_base, ctor_table
+        lam_ctx, ld
       )
 
       // Record lambda AFTER body compilation (nested lambdas already added)
-      let lambda_idx = array_length(lambda_table.bodies)
-      array_push(lambda_table.bodies, lam_buf)
-      array_push(lambda_table.param_counts, user_params + 1)  // +1 for env
-      array_push(lambda_table.captures, captures)
+      let lambda_idx = array_length(ctx.lambda_table.bodies)
+      array_push(ctx.lambda_table.bodies, lam_buf)
+      array_push(ctx.lambda_table.param_counts, user_params + 1)  // +1 for env
+      array_push(ctx.lambda_table.captures, captures)
       let extra_lam = if final_lam_nl > (user_params + 1) { final_lam_nl - (user_params + 1) } else { 0 }
-      array_push(lambda_table.meta_i32, 0)
-      array_push(lambda_table.meta_i64, extra_lam)
+      array_push(ctx.lambda_table.meta_i32, 0)
+      array_push(ctx.lambda_table.meta_i64, extra_lam)
 
       // Emit closure creation code
-      let table_slot = num_user_funcs + lambda_idx
+      let table_slot = ctx.num_user_funcs + lambda_idx
       if num_captures == 0 {
         emit_i64_const(buf, (table_slot << 2) | 2)
         next_local
@@ -844,11 +839,11 @@ let rec compile_expr_gc = (
       }
     },
     EDot(obj, field) => {
-      // Struct field access: find field index from ctor_table.struct_field_names
+      // Struct field access: find field index from ctx.ctor_table.struct_field_names
       let rec find_struct_field_idx = (si2: Int) -> Int {
-        if si2 >= array_length(ctor_table.struct_names) { -1 }
+        if si2 >= array_length(ctx.ctor_table.struct_names) { -1 }
         else {
-          let fnames = array_get(ctor_table.struct_field_names, si2)
+          let fnames = array_get(ctx.ctor_table.struct_field_names, si2)
           let rec find_f = (fi: Int) -> Int {
             if fi >= array_length(fnames) { -1 }
             else if string_equals(array_get(fnames, fi), field) { fi }
@@ -1665,16 +1660,18 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
             let ref_local_indices_f = array_slice([0], 0, 0)
             let ft = FuncTable::{ names: fn_names_list, indices: fn_indices_list, params: fn_param_counts, returns: fn_returns_list }
             let st = StrTable::{ strs: str_strs, offsets: str_offsets, lengths: str_lengths }
+            let ct = CtorTable::{ names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, struct_names: struct_names, struct_field_names: struct_field_names }
+            let func_ctx = CompileCtxGc::{
+              func_table: ft, str_table: st, lambda_table: lt_w,
+              num_user_funcs: num_user_funcs, func_offset: func_offset,
+              ref_cell_names: ref_cell_names_f, ref_local_indices: ref_local_indices_f,
+              refcell_type_idx: refcell_type_idx, closure_type_base: closure_type_base,
+              ctor_table: ct
+            }
             let final_nl = compile_expr_gc(
               body_buf, body, local_names,
               param_count,
-              ft,
-              st,
-              -1,
-              ref_cell_names_f, ref_local_indices_f, refcell_type_idx,
-              lt_w, num_user_funcs, func_offset,
-              closure_type_base,
-              CtorTable::{ names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, struct_names: struct_names, struct_field_names: struct_field_names }
+              func_ctx, -1
             )
             array_push(bodies, body_buf)
             let extra = if final_nl > param_count { final_nl - param_count } else { 0 }
