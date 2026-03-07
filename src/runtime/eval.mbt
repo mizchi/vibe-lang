@@ -3702,6 +3702,35 @@ fn eval_builtin_call(
           )
       }
     }
+    "array_truncate" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "array_truncate")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall(
+          BuiltinDetail(
+            fn_name="array_truncate",
+            detail="expected 2 arguments",
+          ),
+        )
+      }
+      match (pos_args[0], pos_args[1]) {
+        (@core.Value::Array(arr), @core.Value::Int(new_len)) => {
+          let target = new_len.to_int()
+          while arr.length() > target {
+            let _ = arr.pop()
+
+          }
+          { value: @core.Value::Unit, effects: out.effects }
+        }
+        _ =>
+          raise EvalError::BadCall(
+            BuiltinDetail(
+              fn_name="array_truncate",
+              detail="expected (Array, Int)",
+            ),
+          )
+      }
+    }
     "array_slice" => {
       let out = eval_args(rt, args)
       let pos_args = extract_positional_values(out.args, "array_slice")

@@ -635,6 +635,7 @@ fn is_effectful_call_name(name : String) -> Bool {
   name == "http_request_header" ||
   name == "http_request_body" ||
   name == "array_push" ||
+  name == "array_truncate" ||
   name == "array_slice" ||
   name == "__perform" ||
   name == "__resume" ||

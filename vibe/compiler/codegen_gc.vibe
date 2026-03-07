@@ -124,6 +124,7 @@ let rec compile_expr_gc = (
         } else {
           emit_local_get(buf, local_idx)
         }
+        next_local
       } else {
         // Check if it's a 0-arg enum constructor
         let ctor_idx = lookup_ctor(ctor_names, name, 0)
@@ -149,6 +150,7 @@ let rec compile_expr_gc = (
           emit_local_get(buf, ptr_l)
           emit_i64_const(buf, 1)
           emit_i64_or(buf)
+          next_local + 1
         } else {
         // Check if it's a top-level function — emit as bare fn value
         let fn_len = array_length(fn_names)
@@ -161,9 +163,9 @@ let rec compile_expr_gc = (
         let fidx = array_get(fn_indices, fni)
         let table_slot = fidx - func_offset
         emit_i64_const(buf, (table_slot << 2) | 2)
+        next_local
         }
       }
-      next_local
     },
     EBinOp(op, lhs, rhs) => {
       let nl1 = ce(buf, lhs, local_names, next_local, ld)
@@ -209,11 +211,13 @@ let rec compile_expr_gc = (
       emit_i32_wrap_i64(buf)
       emit_if_i64(buf)
       let ld_inner = if ld >= 0 { ld + 1 } else { -1 }
+      let names_len_before = array_length(local_names)
       let nl2 = ce(buf, then_e, local_names, nl1, ld_inner)
       emit_else(buf)
-      let nl3 = ce(buf, else_e, local_names, nl2, ld_inner)
+      array_truncate(local_names, names_len_before)
+      let nl3 = ce(buf, else_e, local_names, nl1, ld_inner)
       emit_end(buf)
-      nl3
+      if nl2 > nl3 { nl2 } else { nl3 }
     },
     ECall(callee, args) => {
       match callee {
@@ -403,6 +407,37 @@ let rec compile_expr_gc = (
       array_push(local_names, name)
       let nl = ce(buf, value, local_names, next_local + 1, ld)
       emit_local_set(buf, local_idx)
+      // Backpatch self-reference in closure for recursive let rec
+      match value {
+        EFn(_, _, params, _, _, fn_body) => {
+          let param_names_bp = array_slice([""], 0, 0)
+          let mut bpi = 0
+          while bpi < array_length(params) {
+            let (pn, _) = array_get(params, bpi)
+            array_push(param_names_bp, pn)
+            bpi = bpi + 1
+          }
+          let caps = collect_free_vars(fn_body, param_names_bp, array_concat(fn_names, ctor_names))
+          let mut self_cap_idx = -1
+          let mut bci = 0
+          while bci < array_length(caps) {
+            if string_equals(array_get(caps, bci), name) {
+              self_cap_idx = bci
+            }
+            bci = bci + 1
+          }
+          if self_cap_idx >= 0 {
+            emit_local_get(buf, local_idx)
+            emit_i64_const(buf, -4)
+            emit_i64_and(buf)
+            emit_i32_wrap_i64(buf)
+            emit_local_get(buf, local_idx)
+            emit_i64_store(buf, 3, 8 + self_cap_idx * 8)
+          }
+          0
+        },
+        _ => 0
+      }
       let nl2 = ce(buf, body, local_names, nl, ld)
       nl2
     },
@@ -478,6 +513,7 @@ let rec compile_expr_gc = (
       let num_elems = array_length(elems)
       let alloc_size = num_elems * 8
       let ptr_local = next_local
+      array_push(local_names, "__tuple_ptr")
       let mut nl = next_local + 1
       emit_global_get(buf, 0)
       emit_i64_extend_i32_u(buf)
@@ -495,17 +531,18 @@ let rec compile_expr_gc = (
         ti = ti + 1
       }
       emit_local_get(buf, ptr_local)
-      array_push(local_names, "__tuple_ptr")
       nl
     },
     EMatch(scrutinee, arms) => {
       let scrut_local = next_local
+      // Push name BEFORE compiling scrutinee so temp locals don't shift indices
+      array_push(local_names, "__match_scrut")
       let nl1 = ce(buf, scrutinee, local_names, next_local + 1, ld)
       emit_local_set(buf, scrut_local)
-      array_push(local_names, "__match_scrut")
       let num_arms = array_length(arms)
       let catchall_idx = find_catchall_idx(arms)
       let num_cond_arms = catchall_idx
+      let mut max_nl = nl1
       let mut ai = 0
       while ai < num_cond_arms {
         let (p, _) = array_get(arms, ai)
@@ -552,6 +589,7 @@ let rec compile_expr_gc = (
           _ => 0
         }
         // Compile arm body — for PCtor, bind fields first
+        let names_len_at_arm = array_length(local_names)
         let (p2, arm_body) = array_get(arms, ai)
         let ld_arm = if ld >= 0 { ld + ai + 1 } else { -1 }
         match p2 {
@@ -575,24 +613,31 @@ let rec compile_expr_gc = (
               }
               cbi = cbi + 1
             }
-            ce(buf, arm_body, local_names, array_length(local_names), ld_arm)
+            let arm_nl = ce(buf, arm_body, local_names, array_length(local_names), ld_arm)
+            if arm_nl > max_nl { max_nl = arm_nl }
+            0
           },
-          _ => ce(buf, arm_body, local_names, nl1, ld_arm)
+          _ => {
+            let arm_nl = ce(buf, arm_body, local_names, nl1, ld_arm)
+            if arm_nl > max_nl { max_nl = arm_nl }
+            0
+          }
         }
         emit_else(buf)
+        array_truncate(local_names, names_len_at_arm)
         ai = ai + 1
       }
       let ld_catch = if ld >= 0 { ld + num_cond_arms } else { -1 }
+      let names_len_at_catch = array_length(local_names)
       if catchall_idx < num_arms {
         let (cp, cbody) = array_get(arms, catchall_idx)
-        match cp {
+        let catch_nl = match cp {
           PBind(bname) => {
             let bind_local = array_length(local_names)
             emit_local_get(buf, scrut_local)
             emit_local_set(buf, bind_local)
             array_push(local_names, bname)
             ce(buf, cbody, local_names, array_length(local_names), ld_catch)
-            0
           },
           PCtor(cname, cargs) => {
             let mut cbi2 = 0
@@ -615,7 +660,6 @@ let rec compile_expr_gc = (
               cbi2 = cbi2 + 1
             }
             ce(buf, cbody, local_names, array_length(local_names), ld_catch)
-            0
           },
           PTuple(pats) => {
             let ptr_local2 = array_length(local_names)
@@ -641,24 +685,23 @@ let rec compile_expr_gc = (
               pi2 = pi2 + 1
             }
             ce(buf, cbody, local_names, array_length(local_names), ld_catch)
-            0
           },
           _ => {
             ce(buf, cbody, local_names, array_length(local_names), ld_catch)
-            0
           }
         }
+        if catch_nl > max_nl { max_nl = catch_nl }
+        0
       } else {
         bytebuf_push(buf, 0)  // unreachable
         0
       }
-      let final_nl = array_length(local_names)
       let mut ci2 = 0
       while ci2 < num_cond_arms {
         emit_end(buf)
         ci2 = ci2 + 1
       }
-      final_nl
+      max_nl
     },
     EArray(elems) => {
       let (arr_new_idx, _, _) = resolve_func(fn_names, fn_indices, fn_params, fn_returns, "array_new")
@@ -761,7 +804,8 @@ let rec compile_expr_gc = (
         array_push(param_names_arr, pname)
         pi = pi + 1
       }
-      let captures = collect_free_vars(fn_body, param_names_arr, fn_names)
+      let fn_and_ctor = array_concat(fn_names, ctor_names)
+      let captures = collect_free_vars(fn_body, param_names_arr, fn_and_ctor)
       let num_captures = array_length(captures)
       let user_params = array_length(params)
 
@@ -1338,10 +1382,10 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
     i = i + 1
   }
 
-  // Collect enum variant constructors
-  let ctor_names_list = array_slice([""], 0, 0)
-  let ctor_tags_list = array_slice([0], 0, 0)
-  let ctor_field_counts_list = array_slice([0], 0, 0)
+  // Collect enum variant constructors (start with built-in Option: None=0, Some=1)
+  let ctor_names_list = array_slice(["None", "Some"], 0, 2)
+  let ctor_tags_list = array_slice([0, 1], 0, 2)
+  let ctor_field_counts_list = array_slice([0, 1], 0, 2)
   let mut ei2 = 0
   while ei2 < array_length(stmts) {
     match array_get(stmts, ei2) {

@@ -68,7 +68,7 @@ export let resolve_local = (names: Array[String], name: String) -> Int with { Er
   let len = array_length(names)
   let rec search = (i: Int) -> Int with { Error } {
     if i < 0 {
-      throw(string_concat("undefined variable: ", name))
+      throw(string_concat("undefined variable (local): ", name))
     }
     if string_equals(array_get(names, i), name) {
       i
@@ -186,13 +186,37 @@ export let rec collect_strings_expr = (expr: Expr, out: Array[String]) -> Int {
       collect_strings_expr(scrutinee, out)
       let mut i = 0
       while i < array_length(arms) {
-        let (_, arm_expr) = array_get(arms, i)
+        let (pat, arm_expr) = array_get(arms, i)
+        match pat {
+          PString(s) => {
+            let mut pf = false
+            let mut pi = 0
+            while pi < array_length(out) {
+              if string_equals(array_get(out, pi), s) { pf = true }
+              pi = pi + 1
+            }
+            if !pf { array_push(out, s) }
+            0
+          },
+          _ => 0
+        }
         collect_strings_expr(arm_expr, out)
         i = i + 1
       }
       0
     },
     EFn(_, _, _, _, _, body) => collect_strings_expr(body, out),
+    EThrow(msg) => collect_strings_expr(msg, out),
+    EHandle(body, arms) => {
+      collect_strings_expr(body, out)
+      let mut hi = 0
+      while hi < array_length(arms) {
+        let (_, arm_expr) = array_get(arms, hi)
+        collect_strings_expr(arm_expr, out)
+        hi = hi + 1
+      }
+      0
+    },
     _ => 0
   }
 }
@@ -220,6 +244,31 @@ export let array_contains_str = (arr: Array[String], s: String) -> Bool {
     else search(i + 1)
   }
   search(0)
+}
+
+// Extract all binding names from a pattern into the given array
+let rec collect_pattern_bindings = (pat: Pat, bindings: Array[String]) -> Int {
+  match pat {
+    PBind(name) => { array_push(bindings, name); 0 },
+    PTuple(pats) => {
+      let mut i = 0
+      while i < array_length(pats) {
+        collect_pattern_bindings(array_get(pats, i), bindings)
+        i = i + 1
+      }
+      0
+    },
+    PCtor(_, args) => {
+      let mut i = 0
+      while i < array_length(args) {
+        collect_pattern_bindings(array_get(args, i), bindings)
+        i = i + 1
+      }
+      0
+    },
+    POr(l, r) => { collect_pattern_bindings(l, bindings); collect_pattern_bindings(r, bindings) },
+    _ => 0
+  }
 }
 
 export let rec collect_free_vars_expr = (expr: Expr, bound: Array[String], fn_names: Array[String], out: Array[String]) -> Int {
@@ -302,8 +351,10 @@ export let rec collect_free_vars_expr = (expr: Expr, bound: Array[String], fn_na
       cfv(scrutinee, bound)
       let mut i = 0
       while i < array_length(arms) {
-        let (_, arm_expr) = array_get(arms, i)
-        cfv(arm_expr, bound)
+        let (arm_pat, arm_expr) = array_get(arms, i)
+        let b2 = array_slice(bound, 0, array_length(bound))
+        collect_pattern_bindings(arm_pat, b2)
+        cfv(arm_expr, b2)
         i = i + 1
       }
       0
@@ -321,6 +372,16 @@ export let rec collect_free_vars_expr = (expr: Expr, bound: Array[String], fn_na
     EBreak(_) => 0,
     EContinue(_) => 0,
     EThrow(msg) => cfv(msg, bound),
+    EHandle(body, arms) => {
+      cfv(body, bound)
+      let mut hi = 0
+      while hi < array_length(arms) {
+        let (_, arm_expr) = array_get(arms, hi)
+        cfv(arm_expr, bound)
+        hi = hi + 1
+      }
+      0
+    },
     _ => 0
   }
 }
@@ -490,6 +551,319 @@ export let find_func_stmt = (stmts: Array[Stmt], name: String) -> Stmt with { Er
     }
   }
   search(0)
+}
+
+// Extract function body from SLet(_, _, _, _, EFn(_, _, _, _, _, body))
+export let get_func_body = (stmt: Stmt) -> Expr with { Error } {
+  match stmt {
+    SLet(_, _, _, _, expr) => match expr {
+      EFn(_, _, _, _, _, body) => body,
+      _ => throw("get_func_body: not a function")
+    },
+    _ => throw("get_func_body: not a let statement")
+  }
+}
+
+// Extract function param names from SLet(_, _, _, _, EFn(_, _, params, _, _, _))
+export let get_func_param_names = (stmt: Stmt) -> Array[String] with { Error } {
+  match stmt {
+    SLet(_, _, _, _, expr) => match expr {
+      EFn(_, _, params, _, _, _) => {
+        let names = array_slice([""], 0, 0)
+        let mut i = 0
+        while i < array_length(params) {
+          let (pname, _) = array_get(params, i)
+          array_push(names, pname)
+          i = i + 1
+        }
+        names
+      },
+      _ => throw("get_func_param_names: not a function")
+    },
+    _ => throw("get_func_param_names: not a let statement")
+  }
+}
+
+// Extract scrutinee from EMatch (non-recursive to avoid stale binding bug in let rec)
+export let get_match_scrutinee = (expr: Expr) -> Expr with { Error } {
+  match expr {
+    EMatch(scrutinee, _) => scrutinee,
+    _ => throw("get_match_scrutinee: not an EMatch")
+  }
+}
+
+// Extract arms from EMatch (non-recursive to avoid stale binding bug in let rec)
+export let get_match_arms = (expr: Expr) -> Array[(Pat, Expr)] with { Error } {
+  match expr {
+    EMatch(_, arms) => arms,
+    _ => throw("get_match_arms: not an EMatch")
+  }
+}
+
+// Extract pattern from match arm pair
+export let get_arm_pat = (arm: (Pat, Expr)) -> Pat {
+  let (p, _) = arm
+  p
+}
+
+// Extract body from match arm pair
+export let get_arm_body = (arm: (Pat, Expr)) -> Expr {
+  let (_, b) = arm
+  b
+}
+
+// Extract sub-patterns from PTuple
+export let get_ptuple_pats = (p: Pat) -> Array[Pat] with { Error } {
+  match p {
+    PTuple(pats) => pats,
+    _ => throw("get_ptuple_pats: not a PTuple")
+  }
+}
+
+// Extract name from PBind
+export let get_pbind_name = (p: Pat) -> String with { Error } {
+  match p {
+    PBind(name) => name,
+    _ => throw("get_pbind_name: not a PBind")
+  }
+}
+
+// Extract PCtor name and args
+export let get_pctor_name = (p: Pat) -> String with { Error } {
+  match p {
+    PCtor(name, _) => name,
+    _ => throw("get_pctor_name: not a PCtor")
+  }
+}
+
+export let get_pctor_args = (p: Pat) -> Array[Pat] with { Error } {
+  match p {
+    PCtor(_, args) => args,
+    _ => throw("get_pctor_args: not a PCtor")
+  }
+}
+
+// Extract PInt value
+export let get_pint_value = (p: Pat) -> Int with { Error } {
+  match p {
+    PInt(n) => n,
+    _ => throw("get_pint_value: not a PInt")
+  }
+}
+
+// Extract PBool value
+export let get_pbool_value = (p: Pat) -> Bool with { Error } {
+  match p {
+    PBool(v) => v,
+    _ => throw("get_pbool_value: not a PBool")
+  }
+}
+
+// Extract PString value
+export let get_pstring_value = (p: Pat) -> String with { Error } {
+  match p {
+    PString(s) => s,
+    _ => throw("get_pstring_value: not a PString")
+  }
+}
+
+// Extract elements from ETuple
+export let get_etuple_elems = (expr: Expr) -> Array[Expr] with { Error } {
+  match expr {
+    ETuple(elems) => elems,
+    _ => throw("get_etuple_elems: not an ETuple")
+  }
+}
+
+// Check if expr is an ETuple
+export let is_etuple = (expr: Expr) -> Bool {
+  match expr {
+    ETuple(_) => true,
+    _ => false
+  }
+}
+
+// Check pattern type
+export let is_ptuple = (p: Pat) -> Bool {
+  match p { PTuple(_) => true, _ => false }
+}
+export let is_pwild = (p: Pat) -> Bool {
+  match p { PWild => true, _ => false }
+}
+export let is_pbind = (p: Pat) -> Bool {
+  match p { PBind(_) => true, _ => false }
+}
+export let is_pint = (p: Pat) -> Bool {
+  match p { PInt(_) => true, _ => false }
+}
+export let is_pbool = (p: Pat) -> Bool {
+  match p { PBool(_) => true, _ => false }
+}
+export let is_pctor = (p: Pat) -> Bool {
+  match p { PCtor(_, _) => true, _ => false }
+}
+export let is_pstring = (p: Pat) -> Bool {
+  match p { PString(_) => true, _ => false }
+}
+
+// === Expr extraction helpers (to avoid stale match bindings in let rec) ===
+
+export let get_eint_value = (expr: Expr) -> Int with { Error } {
+  match expr { EInt(n) => n, _ => throw("not EInt") }
+}
+export let get_ebool_value = (expr: Expr) -> Bool with { Error } {
+  match expr { EBool(b) => b, _ => throw("not EBool") }
+}
+export let get_efloat_value = (expr: Expr) -> Double with { Error } {
+  match expr { EFloat(v) => v, _ => throw("not EFloat") }
+}
+export let get_estring_value = (expr: Expr) -> String with { Error } {
+  match expr { EString(s) => s, _ => throw("not EString") }
+}
+export let get_eident_name = (expr: Expr) -> String with { Error } {
+  match expr { EIdent(name) => name, _ => throw("not EIdent") }
+}
+export let get_ecall_callee = (expr: Expr) -> Expr with { Error } {
+  match expr { ECall(callee, _) => callee, _ => throw("not ECall") }
+}
+export let get_ecall_args = (expr: Expr) -> Array[Expr] with { Error } {
+  match expr { ECall(_, args) => args, _ => throw("not ECall") }
+}
+export let get_ebinop_op = (expr: Expr) -> String with { Error } {
+  match expr { EBinOp(op, _, _) => op, _ => throw("not EBinOp") }
+}
+export let get_ebinop_lhs = (expr: Expr) -> Expr with { Error } {
+  match expr { EBinOp(_, lhs, _) => lhs, _ => throw("not EBinOp") }
+}
+export let get_ebinop_rhs = (expr: Expr) -> Expr with { Error } {
+  match expr { EBinOp(_, _, rhs) => rhs, _ => throw("not EBinOp") }
+}
+export let get_eif_cond = (expr: Expr) -> Expr with { Error } {
+  match expr { EIf(c, _, _) => c, _ => throw("not EIf") }
+}
+export let get_eif_then = (expr: Expr) -> Expr with { Error } {
+  match expr { EIf(_, t, _) => t, _ => throw("not EIf") }
+}
+export let get_eif_else = (expr: Expr) -> Expr with { Error } {
+  match expr { EIf(_, _, e) => e, _ => throw("not EIf") }
+}
+export let get_elet_name = (expr: Expr) -> String with { Error } {
+  match expr { ELet(name, _, _) => name, _ => throw("not ELet") }
+}
+export let get_elet_val = (expr: Expr) -> Expr with { Error } {
+  match expr { ELet(_, val, _) => val, _ => throw("not ELet") }
+}
+export let get_elet_body = (expr: Expr) -> Expr with { Error } {
+  match expr { ELet(_, _, body) => body, _ => throw("not ELet") }
+}
+export let get_eletrec_name = (expr: Expr) -> String with { Error } {
+  match expr { ELetRec(name, _, _) => name, _ => throw("not ELetRec") }
+}
+export let get_eletrec_val = (expr: Expr) -> Expr with { Error } {
+  match expr { ELetRec(_, val, _) => val, _ => throw("not ELetRec") }
+}
+export let get_eletrec_body = (expr: Expr) -> Expr with { Error } {
+  match expr { ELetRec(_, _, body) => body, _ => throw("not ELetRec") }
+}
+export let get_eletmut_name = (expr: Expr) -> String with { Error } {
+  match expr { ELetMut(name, _, _) => name, _ => throw("not ELetMut") }
+}
+export let get_eletmut_val = (expr: Expr) -> Expr with { Error } {
+  match expr { ELetMut(_, val, _) => val, _ => throw("not ELetMut") }
+}
+export let get_eletmut_body = (expr: Expr) -> Expr with { Error } {
+  match expr { ELetMut(_, _, body) => body, _ => throw("not ELetMut") }
+}
+export let get_eassign_name = (expr: Expr) -> String with { Error } {
+  match expr { EAssign(name, _, _) => name, _ => throw("not EAssign") }
+}
+export let get_eassign_val = (expr: Expr) -> Expr with { Error } {
+  match expr { EAssign(_, val, _) => val, _ => throw("not EAssign") }
+}
+export let get_eassign_body = (expr: Expr) -> Expr with { Error } {
+  match expr { EAssign(_, _, body) => body, _ => throw("not EAssign") }
+}
+export let get_eassignop_name = (expr: Expr) -> String with { Error } {
+  match expr { EAssignOp(name, _, _, _) => name, _ => throw("not EAssignOp") }
+}
+export let get_eassignop_op = (expr: Expr) -> String with { Error } {
+  match expr { EAssignOp(_, op, _, _) => op, _ => throw("not EAssignOp") }
+}
+export let get_eassignop_val = (expr: Expr) -> Expr with { Error } {
+  match expr { EAssignOp(_, _, val, _) => val, _ => throw("not EAssignOp") }
+}
+export let get_eassignop_body = (expr: Expr) -> Expr with { Error } {
+  match expr { EAssignOp(_, _, _, body) => body, _ => throw("not EAssignOp") }
+}
+export let get_eseq_first = (expr: Expr) -> Expr with { Error } {
+  match expr { ESeq(first, _) => first, _ => throw("not ESeq") }
+}
+export let get_eseq_second = (expr: Expr) -> Expr with { Error } {
+  match expr { ESeq(_, second) => second, _ => throw("not ESeq") }
+}
+export let get_ewhile_cond = (expr: Expr) -> Expr with { Error } {
+  match expr { EWhile(cond, _) => cond, _ => throw("not EWhile") }
+}
+export let get_ewhile_body = (expr: Expr) -> Expr with { Error } {
+  match expr { EWhile(_, body) => body, _ => throw("not EWhile") }
+}
+export let get_eunaryop_op = (expr: Expr) -> String with { Error } {
+  match expr { EUnaryOp(op, _) => op, _ => throw("not EUnaryOp") }
+}
+export let get_eunaryop_expr = (expr: Expr) -> Expr with { Error } {
+  match expr { EUnaryOp(_, e) => e, _ => throw("not EUnaryOp") }
+}
+export let get_eforin_name = (expr: Expr) -> String with { Error } {
+  match expr { EForIn(name, _, _) => name, _ => throw("not EForIn") }
+}
+export let get_eforin_iter = (expr: Expr) -> Expr with { Error } {
+  match expr { EForIn(_, iter, _) => iter, _ => throw("not EForIn") }
+}
+export let get_eforin_body = (expr: Expr) -> Expr with { Error } {
+  match expr { EForIn(_, _, body) => body, _ => throw("not EForIn") }
+}
+export let get_earray_elems = (expr: Expr) -> Array[Expr] with { Error } {
+  match expr { EArray(elems) => elems, _ => throw("not EArray") }
+}
+export let get_ethrow_expr = (expr: Expr) -> Expr with { Error } {
+  match expr { EThrow(e) => e, _ => throw("not EThrow") }
+}
+export let get_efn_params = (expr: Expr) -> Array[(String, Option[TypeExpr])] with { Error } {
+  match expr { EFn(_, _, params, _, _, _) => params, _ => throw("not EFn") }
+}
+export let get_efn_body = (expr: Expr) -> Expr with { Error } {
+  match expr { EFn(_, _, _, _, _, body) => body, _ => throw("not EFn") }
+}
+// Expr type checks (only those needed inside match arms)
+export let is_eident = (expr: Expr) -> Bool { match expr { EIdent(_) => true, _ => false } }
+export let is_efn = (expr: Expr) -> Bool { match expr { EFn(_, _, _, _, _, _) => true, _ => false } }
+
+// Expr tag: returns a numeric tag for dispatch without match in let rec
+// 0=EInt, 1=EBool, 2=EFloat, 3=EString, 4=EIdent, 5=EBinOp, 6=EUnaryOp,
+// 7=EIf, 8=ECall, 9=ELet, 10=ELetRec, 11=ELetMut, 12=EAssign, 13=EAssignOp,
+// 14=ESeq, 15=ETuple, 16=EMatch, 17=EArray, 18=EForIn, 19=EWhile,
+// 20=EBreak, 21=EContinue, 22=EUnit, 23=EThrow, 24=EFn, -1=unknown
+export let expr_tag = (expr: Expr) -> Int {
+  match expr {
+    EInt(_) => 0, EBool(_) => 1, EFloat(_) => 2, EString(_) => 3,
+    EIdent(_) => 4, EBinOp(_, _, _) => 5, EUnaryOp(_, _) => 6,
+    EIf(_, _, _) => 7, ECall(_, _) => 8, ELet(_, _, _) => 9,
+    ELetRec(_, _, _) => 10, ELetMut(_, _, _) => 11, EAssign(_, _, _) => 12,
+    EAssignOp(_, _, _, _) => 13, ESeq(_, _) => 14, ETuple(_) => 15,
+    EMatch(_, _) => 16, EArray(_) => 17, EForIn(_, _, _) => 18,
+    EWhile(_, _) => 19, EBreak(_) => 20, EContinue(_) => 21,
+    EUnit => 22, EThrow(_) => 23, EFn(_, _, _, _, _, _) => 24,
+    _ => -1
+  }
+}
+
+// === Stmt extractors ===
+export let is_slet = (stmt: Stmt) -> Bool { match stmt { SLet(_, _, _, _, _) => true, _ => false } }
+export let get_slet_name = (stmt: Stmt) -> String with { Error } {
+  match stmt { SLet(_, _, name, _, _) => name, _ => throw("not SLet") }
+}
+export let get_slet_expr = (stmt: Stmt) -> Expr with { Error } {
+  match stmt { SLet(_, _, _, _, expr) => expr, _ => throw("not SLet") }
 }
 
 // === Enum constructor lookup ===
