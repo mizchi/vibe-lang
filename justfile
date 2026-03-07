@@ -346,6 +346,10 @@ test-selfhost-wasi-http-boundary:
 test-selfhost-cutover:
     scripts/test_selfhost_cutover_gate.sh
 
+# Run selfhost check parity snapshot gate (diagnostic diff allowlist + snapshot)
+test-selfhost-check-parity:
+    scripts/test_selfhost_check_parity.sh
+
 bench-http:
     scripts/bench_http.sh
 
@@ -393,6 +397,11 @@ bench-typechecker:
 # env: VIBE_SELFHOST_PERF_RUNS, VIBE_SELFHOST_PERF_CASES_FILE, VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO, VIBE_SELFHOST_PERF_MAX_CHECK_RATIO
 bench-selfhost-perf *paths:
     scripts/bench_selfhost_perf.sh {{paths}}
+
+# KPI gate: selfhost perf ratio thresholds (host vs selfhost, same case set)
+# env override: VIBE_SELFHOST_PERF_RUNS / VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO / VIBE_SELFHOST_PERF_MAX_CHECK_RATIO
+test-selfhost-perf-gate runs="1" max_compile_ratio="2.5" max_check_ratio="0.8" cases_file="bench/selfhost_perf/kpi_cases.txt":
+    VIBE_SELFHOST_PERF_RUNS={{runs}} VIBE_SELFHOST_PERF_CASES_FILE={{cases_file}} VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO={{max_compile_ratio}} VIBE_SELFHOST_PERF_MAX_CHECK_RATIO={{max_check_ratio}} scripts/bench_selfhost_perf.sh
 
 # Product bundle-size monitor (live examples/ + use-case importers).
 # This captures product-facing size drift, including source edits.

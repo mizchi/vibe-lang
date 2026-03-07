@@ -39,6 +39,11 @@ Completed items are archived in `docs/DONE.md`.
   - DoD 達成: selfhost 用トップレベル e2e（実ソース入力）を CI で常時 green
   - テスト 4 件: token enum import、lex→tokens、lex→parse→print roundtrip、meta-circular eval pipeline
 
+### テスト方針
+
+- `VIBE_TEST_BACKEND=compiled` をメインとする（`interp` は基本的に使わない）
+- codegen_test.vibe: 132/134 pass（`fs_read_file` 依存の 2 件は compiled で常に失敗 = expected）
+
 ### Compiler Review Backlog (readability + selfhost robustness)
 
 - [ ] codegen: enum ctor tag をモジュール全体で一意にする
@@ -71,6 +76,11 @@ Completed items are archived in `docs/DONE.md`.
 - [x] refactor: `codegen_common` の extractor/getter 群を生成コード化
   - `scripts/gen_codegen_extractors.sh` で ast.vibe から extractor を自動生成可能
   - 既存の手書きコードは互換性維持のためそのまま利用（AST 変更時にスクリプトで差分確認）
+- [x] refactor: codegen 共通ロジックを `codegen_common.vibe` へ抽出
+  - `emit_binop_op`: 二項演算子→WASM命令ディスパッチ（codegen/codegen_gc 各3箇所を統合）
+  - `emit_assignop_op`: 代入演算子→WASM命令ディスパッチ（各4箇所を統合）
+  - `emit_closure_resolve`: closure/bare fn のタグ判定 + slot/env 解決（各2箇所を統合）
+  - `emit_closure_call_tail`: indirect call の末尾（env push + call_indirect）
 
 ### Language/Stdlib Proposals (AI-first authoring)
 
@@ -124,6 +134,26 @@ Completed items are archived in `docs/DONE.md`.
   - `vibe compile-lite` / `vibe_compile_wasi compile-lite` を追加し、`bench-selfhost-perf` の compile 経路を切替済み
   - `bench-selfhost-perf` で段階別時間 TSV（`raw_stage.<mode>.tsv`, `stage_summary.<mode>.tsv`）を出力
   - `VIBE_SELFHOST_PERF_REBUILD=auto|always|never` で計測前ビルドを制御（既定: `auto`）
+
+### Parallel Execution Breakdown (Self-host KPI)
+
+- [x] Agent A: check 計測精度を us 粒度へ拡張する
+  - [x] host/selfhost の `check --profile-tsv` を追加（`load/type/total`）
+  - [x] `bench-selfhost-perf` で check stage TSV を収集/集計
+  - [x] TSV に `elapsed_us` 列を追加し、bench 集計を us 優先に切替
+  - [x] selfhost `check` の no-import 経路でも `type_us` を計測（`0us` 固定を解消）
+- [ ] Agent B: checker 内部環境の高速化（TypeEnv lookup）
+  - [x] `SImport` の重複 `env_lookup` を局所 cache 化
+  - [x] `types.vibe` の substitution hot path を反復化（`subst_lookup`/`subst_bounds`）
+  - [x] `TypeEnv` の flat bindings ヘルパーを導入し、`checker_stmt` / `type_db` の import 解決で利用
+  - [ ] checker 全体で `name -> Type` フラット表現を段階導入（互換維持）
+- [x] Agent C: host/selfhost check parity を snapshot gate 化
+  - [x] 同一入力の診断 JSON 差分比較スクリプトを追加
+  - [x] 許容差分を明文化して CI で fail/pass 判定
+- [ ] Agent D: bootstrap KPI gate を CI/just に統合
+  - [x] `check/compile` 許容比率（例: `MAX_CHECK_RATIO`）を固定
+  - [ ] stage0->stage1->stage2 の KPI 判定を workflow に追加
+  - [x] ローカル `just` から同一判定を再現可能にする
 
 ## Self-host Parity: MoonBit 実装と結果一致
 

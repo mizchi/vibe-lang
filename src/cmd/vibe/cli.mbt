@@ -206,7 +206,7 @@ fn print_usage() -> Unit {
   )
   println("  runtime flags: --unstable-async --unstable-threads")
   println(
-    "  exec backend env: VIBE_RUN_BACKEND/VIBE_TEST_BACKEND=compiled|interpreter|auto (default auto=compiled path)",
+    "  exec backend env: VIBE_RUN_BACKEND=compiled|interpreter|auto (default: auto), VIBE_TEST_BACKEND=compiled|interpreter|auto (default: compiled)",
   )
   println(
     "                    VIBE_ALLOW_INTERPRETER_FALLBACK=1 enables fallback only when backend=auto",
@@ -635,9 +635,19 @@ fn split_compile_lite_args(
 }
 
 ///|
-fn elapsed_ms_from(start : @bench.Timestamp) -> Int {
+fn elapsed_us_from(start : @bench.Timestamp) -> Int {
   let elapsed_us = @bench.monotonic_clock_end(start)
-  let elapsed_ms = (elapsed_us / 1000.0).to_int()
+  let elapsed = elapsed_us.to_int()
+  if elapsed <= 0 {
+    1
+  } else {
+    elapsed
+  }
+}
+
+///|
+fn elapsed_ms_from_us(elapsed_us : Int) -> Int {
+  let elapsed_ms = elapsed_us / 1000
   if elapsed_ms <= 0 {
     1
   } else {
@@ -669,10 +679,12 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
   match @loader.load_db_with_fs(opts.entry_path, fs) {
     Err(err) => abort("compile-lite: " + err)
     Ok((db, entry)) => {
-      let load_ms = elapsed_ms_from(start_load)
+      let load_us = elapsed_us_from(start_load)
+      let load_ms = elapsed_ms_from_us(load_us)
       let start_type = @bench.monotonic_clock_start()
       let _ = db.types(entry)
-      let type_ms = elapsed_ms_from(start_type)
+      let type_us = elapsed_us_from(start_type)
+      let type_ms = elapsed_ms_from_us(type_us)
       let start_compile = @bench.monotonic_clock_start()
       let wasm_bytes = @runtime_compile.compile_module_wasm_with_opt_level(
         db,
@@ -685,35 +697,49 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
       ) catch {
         e => abort("compile-lite: " + e.user_message())
       }
-      let compile_ms = elapsed_ms_from(start_compile)
+      let compile_us = elapsed_us_from(start_compile)
+      let compile_ms = elapsed_ms_from_us(compile_us)
       let mut write_ms = 0
+      let mut write_us = 0
       if not(in_memory) {
         let start_write = @bench.monotonic_clock_start()
         match @io.write_bytes_with(fs, out_path, wasm_bytes) {
           Ok(_) => ()
           Err(err) => abort("compile-lite: " + err)
         }
-        write_ms = elapsed_ms_from(start_write)
+        write_us = elapsed_us_from(start_write)
+        write_ms = elapsed_ms_from_us(write_us)
       }
-      let total_ms = elapsed_ms_from(start_total)
+      let total_us = elapsed_us_from(start_total)
+      let total_ms = elapsed_ms_from_us(total_us)
       match profile_tsv {
         Some(path) => {
           let content =
-            "stage\telapsed_ms\n" +
+            "stage\telapsed_ms\telapsed_us\n" +
             "load\t" +
             load_ms.to_string() +
+            "\t" +
+            load_us.to_string() +
             "\n" +
             "type\t" +
             type_ms.to_string() +
+            "\t" +
+            type_us.to_string() +
             "\n" +
             "compile\t" +
             compile_ms.to_string() +
+            "\t" +
+            compile_us.to_string() +
             "\n" +
             "write\t" +
             write_ms.to_string() +
+            "\t" +
+            write_us.to_string() +
             "\n" +
             "total\t" +
             total_ms.to_string() +
+            "\t" +
+            total_us.to_string() +
             "\n"
           match @io.write_string_with(fs, path, content) {
             Ok(_) => ()
@@ -1713,6 +1739,9 @@ fn check_cmd(args : Array[String]) -> Unit {
   let mut load_ms_total = 0
   let mut type_ms_total = 0
   let mut total_ms_total = 0
+  let mut load_us_total = 0
+  let mut type_us_total = 0
+  let mut total_us_total = 0
   for entry_path in check_args {
     let start_total = @bench.monotonic_clock_start()
     let start_load = @bench.monotonic_clock_start()
@@ -1721,8 +1750,12 @@ fn check_cmd(args : Array[String]) -> Unit {
     }
     match resolve_entry_artifacts(entry_path, skip_types=true) {
       Err(err) => {
-        load_ms_total += elapsed_ms_from(start_load)
-        total_ms_total += elapsed_ms_from(start_total)
+        let load_us = elapsed_us_from(start_load)
+        let total_us = elapsed_us_from(start_total)
+        load_us_total += load_us
+        total_us_total += total_us
+        load_ms_total += elapsed_ms_from_us(load_us)
+        total_ms_total += elapsed_ms_from_us(total_us)
         println("check: \{entry_path}: \{err}")
         total_errors += 1
       }
@@ -1737,19 +1770,27 @@ fn check_cmd(args : Array[String]) -> Unit {
               e => {
                 println("check: \{entry_path}: \{e}")
                 total_errors += 1
-                load_ms_total += elapsed_ms_from(start_load)
-                total_ms_total += elapsed_ms_from(start_total)
+                let load_us = elapsed_us_from(start_load)
+                let total_us = elapsed_us_from(start_total)
+                load_us_total += load_us
+                total_us_total += total_us
+                load_ms_total += elapsed_ms_from_us(load_us)
+                total_ms_total += elapsed_ms_from_us(total_us)
                 continue
               }
             }
         }
-        load_ms_total += elapsed_ms_from(start_load)
+        let load_us = elapsed_us_from(start_load)
+        load_us_total += load_us
+        load_ms_total += elapsed_ms_from_us(load_us)
         let start_type = @bench.monotonic_clock_start()
         if check_debug {
           println("[check_debug] starting db.types: \{entry}")
         }
         let _env = db.types(entry)
-        type_ms_total += elapsed_ms_from(start_type)
+        let type_us = elapsed_us_from(start_type)
+        type_us_total += type_us
+        type_ms_total += elapsed_ms_from_us(type_us)
         if check_debug {
           println("[check_debug] finished db.types: \{entry}")
         }
@@ -1786,7 +1827,9 @@ fn check_cmd(args : Array[String]) -> Unit {
         }
         total_errors += diags.length()
         total_errors += layering_violations.length()
-        total_ms_total += elapsed_ms_from(start_total)
+        let total_us = elapsed_us_from(start_total)
+        total_us_total += total_us
+        total_ms_total += elapsed_ms_from_us(total_us)
       }
     }
   }
@@ -1794,15 +1837,21 @@ fn check_cmd(args : Array[String]) -> Unit {
     Some(path) => {
       let fs = @io.default_fs_adapter()
       let content =
-        "stage\telapsed_ms\n" +
+        "stage\telapsed_ms\telapsed_us\n" +
         "load\t" +
         load_ms_total.to_string() +
+        "\t" +
+        load_us_total.to_string() +
         "\n" +
         "type\t" +
         type_ms_total.to_string() +
+        "\t" +
+        type_us_total.to_string() +
         "\n" +
         "total\t" +
         total_ms_total.to_string() +
+        "\t" +
+        total_us_total.to_string() +
         "\n"
       match @io.write_string_with(fs, path, content) {
         Ok(_) => ()
@@ -2183,6 +2232,9 @@ fn build_compiled_test_case_source(
       out.write_char('\n')
     }
   }
+  // Compiled test case body is statement-oriented and may end in Unit.
+  // Keep `main: Int` contract by returning 0 explicitly.
+  out.write_string("0\n")
   out.write_string("}\n")
   out.to_string()
 }
@@ -2422,9 +2474,7 @@ fn run_test_file_with_backend(
   entry_path : String,
   features : @runtime.RuntimeFeatureFlags,
 ) -> Result[CliTestReport, String] {
-  let backend_pref = resolve_cli_exec_backend_pref_for_entry(
-    "VIBE_TEST_BACKEND", entry_path,
-  )
+  let backend_pref = resolve_test_backend_pref(entry_path)
   let allow_interpreter_fallback = cli_can_fallback_to_interpreter(backend_pref)
   if backend_pref != CliExecBackendPref::Interpreter {
     let stop_on_first_failure = allow_interpreter_fallback
@@ -2439,6 +2489,17 @@ fn run_test_file_with_backend(
     }
   }
   run_test_file_interpreter(entry_path, features)
+}
+
+///|
+fn resolve_test_backend_pref(entry_path : String) -> CliExecBackendPref {
+  let pref = resolve_cli_exec_backend_pref_for_entry("VIBE_TEST_BACKEND", entry_path)
+  if pref == CliExecBackendPref::Auto {
+    // `vibe test` defaults to compiled backend.
+    CliExecBackendPref::Compiled
+  } else {
+    pref
+  }
 }
 
 ///|

@@ -50,6 +50,7 @@ import ./codegen_common.vibe {
   array_contains_str, collect_free_vars, is_mut_captured_in,
   str_table_lookup, find_catchall_idx,
   lookup_ctor,
+  emit_binop_op, emit_assignop_op, emit_closure_resolve, emit_closure_call_tail,
   get_match_scrutinee, get_match_arms,
   get_arm_pat, get_arm_body,
   get_ptuple_pats, get_pbind_name,
@@ -220,25 +221,7 @@ let rec compile_expr = (
       let rhs = get_ebinop_rhs(expr)
       let nl1 = ce(buf, lhs, local_names, next_local, ld)
       let nl2 = ce(buf, rhs, local_names, nl1, ld)
-      if string_equals(op, "+") { emit_i64_add(buf) }
-      else if string_equals(op, "-") { emit_i64_sub(buf) }
-      else if string_equals(op, "*") { emit_i64_mul(buf) }
-      else if string_equals(op, "/") { emit_i64_div_s(buf) }
-      else if string_equals(op, "%") { emit_i64_rem_s(buf) }
-      else if string_equals(op, "&") { emit_i64_and(buf) }
-      else if string_equals(op, "|") { emit_i64_or(buf) }
-      else if string_equals(op, "^") { emit_i64_xor(buf) }
-      else if string_equals(op, "<<") { emit_i64_shl(buf) }
-      else if string_equals(op, ">>") { emit_i64_shr_s(buf) }
-      else if string_equals(op, "==") { emit_i64_eq(buf); emit_i64_extend_i32_s(buf) }
-      else if string_equals(op, "!=") { emit_i64_ne(buf); emit_i64_extend_i32_s(buf) }
-      else if string_equals(op, "<") { emit_i64_lt_s(buf); emit_i64_extend_i32_s(buf) }
-      else if string_equals(op, ">") { emit_i64_gt_s(buf); emit_i64_extend_i32_s(buf) }
-      else if string_equals(op, "<=") { emit_i64_le_s(buf); emit_i64_extend_i32_s(buf) }
-      else if string_equals(op, ">=") { emit_i64_ge_s(buf); emit_i64_extend_i32_s(buf) }
-      else if string_equals(op, "&&") { emit_i64_and(buf) }
-      else if string_equals(op, "||") { emit_i64_or(buf) }
-      else { throw(string_concat("unsupported binop: ", op)) }
+      emit_binop_op(buf, op)
       nl2
   } else if __tag == 6 {
       // EUnaryOp
@@ -376,52 +359,15 @@ let rec compile_expr = (
             array_push(local_names, "__fn_val")
             array_push(local_names, "__slot")
             array_push(local_names, "__env")
-            // Load fn value
             emit_local_get(buf, local_idx2)
             emit_local_set(buf, fn_val_local)
-            // Check tag: (fn_val & 3)
-            // If tag == 2: bare fn, env = 0
-            // If tag == 1: closure object on heap
-            emit_local_get(buf, fn_val_local)
-            emit_i64_const(buf, 3)
-            emit_i64_and(buf)
-            emit_i64_const(buf, 2)
-            emit_i64_eq(buf)
-            emit_if_void(buf)
-              // Bare fn: table_slot = fn_val >> 2, env = 0
-              emit_local_get(buf, fn_val_local)
-              emit_i64_const(buf, 2)
-              emit_i64_shr_s(buf)
-              // Keep as i64 (slot stored as i64)
-              emit_local_set(buf, slot_local)
-              emit_i64_const(buf, 0)
-              emit_local_set(buf, env_local)
-            emit_else(buf)
-              // Closure: ptr = fn_val & ~3, slot = i32.load(ptr,0), env = fn_val & ~3 as i64
-              emit_local_get(buf, fn_val_local)
-              emit_i64_const(buf, -4)  // ~3 = ...11111100
-              emit_i64_and(buf)
-              emit_local_set(buf, env_local)
-              // table_slot = mem[ptr + 0] as i32 -> extend to i64
-              emit_local_get(buf, env_local)
-              emit_i32_wrap_i64(buf)
-              emit_i32_load(buf, 2, 0)
-              emit_i64_extend_i32_u(buf)
-              emit_local_set(buf, slot_local)
-            emit_end(buf)
-            // Compile args
+            emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
             let mut ci = 0
             while ci < num_args {
               nl = ce(buf, array_get(args, ci), local_names, nl, ld)
               ci = ci + 1
             }
-            // Push env as last arg
-            emit_local_get(buf, env_local)
-            // Push table_slot for call_indirect (i32)
-            emit_local_get(buf, slot_local)
-            emit_i32_wrap_i64(buf)
-            // Closure call type: type (9 + num_args) = (i64^(num_args+1)) -> i64
-            emit_call_indirect(buf, 9 + num_args)
+            emit_closure_call_tail(buf, env_local, slot_local, 9, num_args)
             nl
           }
           } // close ctor_lookup else
@@ -437,39 +383,13 @@ let rec compile_expr = (
           array_push(local_names, "__env")
           nl = ce(buf, callee, local_names, nl, ld)
           emit_local_set(buf, fn_val_local)
-          // Same dispatch as above
-          emit_local_get(buf, fn_val_local)
-          emit_i64_const(buf, 3)
-          emit_i64_and(buf)
-          emit_i64_const(buf, 2)
-          emit_i64_eq(buf)
-          emit_if_void(buf)
-            emit_local_get(buf, fn_val_local)
-            emit_i64_const(buf, 2)
-            emit_i64_shr_s(buf)
-            emit_local_set(buf, slot_local)
-            emit_i64_const(buf, 0)
-            emit_local_set(buf, env_local)
-          emit_else(buf)
-            emit_local_get(buf, fn_val_local)
-            emit_i64_const(buf, -4)
-            emit_i64_and(buf)
-            emit_local_set(buf, env_local)
-            emit_local_get(buf, env_local)
-            emit_i32_wrap_i64(buf)
-            emit_i32_load(buf, 2, 0)
-            emit_i64_extend_i32_u(buf)
-            emit_local_set(buf, slot_local)
-          emit_end(buf)
+          emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
           let mut ci = 0
           while ci < num_args {
             nl = ce(buf, array_get(args, ci), local_names, nl, ld)
             ci = ci + 1
           }
-          emit_local_get(buf, env_local)
-          emit_local_get(buf, slot_local)
-          emit_i32_wrap_i64(buf)
-          emit_call_indirect(buf, 9 + num_args)
+          emit_closure_call_tail(buf, env_local, slot_local, 9, num_args)
           nl
       }
   } else if __tag == 9 {
@@ -583,23 +503,13 @@ let rec compile_expr = (
         emit_i32_wrap_i64(buf)
         emit_i64_load(buf, 3, 0)
         let nl = ce(buf, value, local_names, next_local, ld)
-        if string_equals(op, "+") { emit_i64_add(buf) }
-        else if string_equals(op, "-") { emit_i64_sub(buf) }
-        else if string_equals(op, "*") { emit_i64_mul(buf) }
-        else if string_equals(op, "/") { emit_i64_div_s(buf) }
-        else if string_equals(op, "%") { emit_i64_rem_s(buf) }
-        else { throw(string_concat("unsupported assign op: ", op)) }
+        emit_assignop_op(buf, op)
         emit_i64_store(buf, 3, 0)
         ce(buf, body, local_names, nl, ld)
       } else {
         emit_local_get(buf, idx)
         let nl = ce(buf, value, local_names, next_local, ld)
-        if string_equals(op, "+") { emit_i64_add(buf) }
-        else if string_equals(op, "-") { emit_i64_sub(buf) }
-        else if string_equals(op, "*") { emit_i64_mul(buf) }
-        else if string_equals(op, "/") { emit_i64_div_s(buf) }
-        else if string_equals(op, "%") { emit_i64_rem_s(buf) }
-        else { throw(string_concat("unsupported assign op: ", op)) }
+        emit_assignop_op(buf, op)
         emit_local_set(buf, idx)
         ce(buf, body, local_names, nl, ld)
       }

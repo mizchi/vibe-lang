@@ -10,7 +10,15 @@ import ./bytebuf.vibe {
 }
 
 import ./wasm_emit.vibe {
-  emit_i64_const, emit_i64_shl, emit_i64_or
+  emit_i64_const, emit_i64_shl, emit_i64_or,
+  emit_i64_add, emit_i64_sub, emit_i64_mul, emit_i64_div_s, emit_i64_rem_s,
+  emit_i64_and, emit_i64_xor, emit_i64_shr_s,
+  emit_i64_eq, emit_i64_ne, emit_i64_lt_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_ge_s,
+  emit_i64_extend_i32_s, emit_i64_eqz,
+  emit_local_get, emit_local_set,
+  emit_if_void, emit_else, emit_end,
+  emit_i32_wrap_i64, emit_i32_load,
+  emit_call_indirect
 }
 
 // === Additional i32/i64 ops not in wasm_emit ===
@@ -60,6 +68,79 @@ export let emit_memory_copy = (buf: Array[Int]) -> Unit {
   leb128_encode_u32(buf, 10)  // memory.copy
   bytebuf_push(buf, 0)  // src memory
   bytebuf_push(buf, 0)  // dst memory
+}
+
+// === Shared codegen helpers ===
+
+// Emit WASM instruction for a binary operator
+export let emit_binop_op = (buf: Array[Int], op: String) -> Unit with { Error } {
+  if string_equals(op, "+") { emit_i64_add(buf) }
+  else if string_equals(op, "-") { emit_i64_sub(buf) }
+  else if string_equals(op, "*") { emit_i64_mul(buf) }
+  else if string_equals(op, "/") { emit_i64_div_s(buf) }
+  else if string_equals(op, "%") { emit_i64_rem_s(buf) }
+  else if string_equals(op, "&") { emit_i64_and(buf) }
+  else if string_equals(op, "|") { emit_i64_or(buf) }
+  else if string_equals(op, "^") { emit_i64_xor(buf) }
+  else if string_equals(op, "<<") { emit_i64_shl(buf) }
+  else if string_equals(op, ">>") { emit_i64_shr_s(buf) }
+  else if string_equals(op, "==") { emit_i64_eq(buf); emit_i64_extend_i32_s(buf) }
+  else if string_equals(op, "!=") { emit_i64_ne(buf); emit_i64_extend_i32_s(buf) }
+  else if string_equals(op, "<") { emit_i64_lt_s(buf); emit_i64_extend_i32_s(buf) }
+  else if string_equals(op, ">") { emit_i64_gt_s(buf); emit_i64_extend_i32_s(buf) }
+  else if string_equals(op, "<=") { emit_i64_le_s(buf); emit_i64_extend_i32_s(buf) }
+  else if string_equals(op, ">=") { emit_i64_ge_s(buf); emit_i64_extend_i32_s(buf) }
+  else if string_equals(op, "&&") { emit_i64_and(buf) }
+  else if string_equals(op, "||") { emit_i64_or(buf) }
+  else { throw(string_concat("unsupported binop: ", op)) }
+}
+
+// Emit WASM instruction for an assign operator (+=, -=, etc.)
+export let emit_assignop_op = (buf: Array[Int], op: String) -> Unit with { Error } {
+  if string_equals(op, "+") { emit_i64_add(buf) }
+  else if string_equals(op, "-") { emit_i64_sub(buf) }
+  else if string_equals(op, "*") { emit_i64_mul(buf) }
+  else if string_equals(op, "/") { emit_i64_div_s(buf) }
+  else if string_equals(op, "%") { emit_i64_rem_s(buf) }
+  else { throw(string_concat("unsupported assign op: ", op)) }
+}
+
+// Resolve closure/fn value tag and fill slot_local/env_local
+// After this: slot_local = table slot index, env_local = env pointer (0 for bare fn)
+export let emit_closure_resolve = (buf: Array[Int], fn_val_local: Int, slot_local: Int, env_local: Int) -> Unit {
+  emit_local_get(buf, fn_val_local)
+  emit_i64_const(buf, 3)
+  emit_i64_and(buf)
+  emit_i64_const(buf, 2)
+  emit_i64_eq(buf)
+  emit_if_void(buf)
+    // Bare fn: table_slot = fn_val >> 2, env = 0
+    emit_local_get(buf, fn_val_local)
+    emit_i64_const(buf, 2)
+    emit_i64_shr_s(buf)
+    emit_local_set(buf, slot_local)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, env_local)
+  emit_else(buf)
+    // Closure: env = fn_val & ~3, slot = i32.load(env, 0)
+    emit_local_get(buf, fn_val_local)
+    emit_i64_const(buf, -4)
+    emit_i64_and(buf)
+    emit_local_set(buf, env_local)
+    emit_local_get(buf, env_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, slot_local)
+  emit_end(buf)
+}
+
+// Emit the tail of an indirect closure call (push env, push slot, call_indirect)
+export let emit_closure_call_tail = (buf: Array[Int], env_local: Int, slot_local: Int, closure_type_base: Int, num_args: Int) -> Unit {
+  emit_local_get(buf, env_local)
+  emit_local_get(buf, slot_local)
+  emit_i32_wrap_i64(buf)
+  emit_call_indirect(buf, closure_type_base + num_args)
 }
 
 // === Compilation context ===

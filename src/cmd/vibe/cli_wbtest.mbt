@@ -2645,21 +2645,32 @@ test "entry_prefers_compiled_backend detects vibe compiler paths" {
 }
 
 ///|
-test "resolve backend pref forces compiled for compiler entry in auto mode" {
+test "resolve_test_backend_pref defaults to compiled in auto mode" {
   let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
   @sys.unset_env_var("VIBE_TEST_BACKEND")
   defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
   assert_eq(
-    resolve_cli_exec_backend_pref_for_entry(
-      "VIBE_TEST_BACKEND", "vibe/compiler/eval_test.vibe",
-    ),
+    resolve_test_backend_pref("vibe/compiler/eval_test.vibe"),
     CliExecBackendPref::Compiled,
   )
   assert_eq(
-    resolve_cli_exec_backend_pref_for_entry(
-      "VIBE_TEST_BACKEND", "examples/hello.vibe",
-    ),
-    CliExecBackendPref::Auto,
+    resolve_test_backend_pref("examples/hello.vibe"),
+    CliExecBackendPref::Compiled,
+  )
+}
+
+///|
+test "resolve_test_backend_pref respects explicit interpreter" {
+  let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
+  @sys.set_env_var("VIBE_TEST_BACKEND", "interpreter")
+  defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
+  assert_eq(
+    resolve_test_backend_pref("vibe/compiler/eval_test.vibe"),
+    CliExecBackendPref::Interpreter,
+  )
+  assert_eq(
+    resolve_test_backend_pref("examples/hello.vibe"),
+    CliExecBackendPref::Interpreter,
   )
 }
 

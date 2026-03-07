@@ -173,7 +173,7 @@ main() {
   : > "$raw_tsv"
   printf "file\tphase\truntime\trun\telapsed_ms\tstatus\n" >> "$raw_tsv"
   : > "$raw_stage_tsv"
-  printf "file\tphase\truntime\trun\tstage\telapsed_ms\n" >> "$raw_stage_tsv"
+  printf "file\tphase\truntime\trun\tstage\telapsed_ms\telapsed_us\n" >> "$raw_stage_tsv"
 
   local cases=()
   while IFS= read -r p; do
@@ -242,12 +242,15 @@ main() {
               echo "bench-selfhost-perf: missing stage profile (${phase}/${runtime}): $rel_case" >&2
               exit 1
             fi
-            while IFS=$'\t' read -r stage ms; do
+            while IFS=$'\t' read -r stage ms us; do
               if [ "$stage" = "stage" ] || [ -z "$stage" ]; then
                 continue
               fi
-              printf "%s\t%s\t%s\t%d\t%s\t%s\n" "$rel_case" "$phase" "$runtime" "$run_idx" "$stage" "$ms" >> "$raw_stage_tsv"
-              echo "$ms" >> "$OUT_DIR/raw/${safe}.${phase}_stage.${runtime}.${stage}.txt"
+              if [ -z "$us" ]; then
+                us="$((ms * 1000))"
+              fi
+              printf "%s\t%s\t%s\t%d\t%s\t%s\t%s\n" "$rel_case" "$phase" "$runtime" "$run_idx" "$stage" "$ms" "$us" >> "$raw_stage_tsv"
+              echo "$us" >> "$OUT_DIR/raw/${safe}.${phase}_stage.${runtime}.${stage}.txt"
             done < "$profile_file"
           fi
           run_idx=$((run_idx + 1))
@@ -257,7 +260,7 @@ main() {
   done
 
   printf "file\tcompile_host_ms\tcompile_selfhost_ms\tcompile_ratio\tcheck_host_ms\tcheck_selfhost_ms\tcheck_ratio\n" > "$summary_tsv"
-  printf "file\tphase\tstage\thost_ms\tselfhost_ms\tratio\n" > "$stage_summary_tsv"
+  printf "file\tphase\tstage\thost_us\tselfhost_us\tratio\n" > "$stage_summary_tsv"
 
   local sum_compile_host=0
   local sum_compile_self=0

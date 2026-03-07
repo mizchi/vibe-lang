@@ -39,8 +39,11 @@ struct FormatFileSummary {
 ///|
 struct CheckTimingSummary {
   load_ms : Int
+  load_us : Int
   type_ms : Int
+  type_us : Int
   total_ms : Int
+  total_us : Int
 }
 
 ///|
@@ -129,9 +132,19 @@ pub fn parse_cmd_args(args : Array[String]) -> Result[CmdOptions, String] {
 }
 
 ///|
-fn elapsed_ms_from(start : @bench.Timestamp) -> Int {
+fn elapsed_us_from(start : @bench.Timestamp) -> Int {
   let elapsed_us = @bench.monotonic_clock_end(start)
-  let elapsed_ms = (elapsed_us / 1000.0).to_int()
+  let elapsed = elapsed_us.to_int()
+  if elapsed <= 0 {
+    1
+  } else {
+    elapsed
+  }
+}
+
+///|
+fn elapsed_ms_from_us(elapsed_us : Int) -> Int {
+  let elapsed_ms = elapsed_us / 1000
   if elapsed_ms <= 0 {
     1
   } else {
@@ -362,26 +375,39 @@ fn check_file_with_timing(
     Ok(content) => content
     Err(err) => return Err("read failed: " + err)
   }
-  let load_ms = elapsed_ms_from(start_load)
+  let load_us = elapsed_us_from(start_load)
+  let load_ms = elapsed_ms_from_us(load_us)
   let ast = @parser.parse_ast(source) catch {
-    err =>
+    err => {
+      let total_us = elapsed_us_from(start_total)
       return Ok((([err.diagnostic()], 1, 0), {
         load_ms,
+        load_us,
         type_ms: 0,
-        total_ms: elapsed_ms_from(start_total),
+        type_us: 0,
+        total_ms: elapsed_ms_from_us(total_us),
+        total_us,
       }))
+    }
   }
   if not(has_import_stmt(ast)) {
+    let start_type = @bench.monotonic_clock_start()
     let (out, error_count, warning_count) = check_ast_without_imports(ast)
+    let type_us = elapsed_us_from(start_type)
+    let type_ms = elapsed_ms_from_us(type_us)
     let out2 : Array[@core.Diagnostic] = []
     for diag in out {
       out2.push(diag)
     }
     let layering_errors = push_layering_violation_diags(resolved, source, out2)
+    let total_us = elapsed_us_from(start_total)
     return Ok(((out2, error_count + layering_errors, warning_count), {
       load_ms,
-      type_ms: 0,
-      total_ms: elapsed_ms_from(start_total),
+      load_us,
+      type_ms,
+      type_us,
+      total_ms: elapsed_ms_from_us(total_us),
+      total_us,
     }))
   }
   let (db, entry) = match @loader.load_db_with_fs(entry_path, fs) {
@@ -390,7 +416,8 @@ fn check_file_with_timing(
   }
   let start_type = @bench.monotonic_clock_start()
   let _ = db.types(entry)
-  let type_ms = elapsed_ms_from(start_type)
+  let type_us = elapsed_us_from(start_type)
+  let type_ms = elapsed_ms_from_us(type_us)
   let dep_diags = collect_direct_import_diagnostics(db, entry)
   let diagnostics = db.diagnostics(entry)
   let warnings = db.warnings(entry)
@@ -406,10 +433,14 @@ fn check_file_with_timing(
   }
   let layering_errors = push_layering_violation_diags(resolved, source, out)
   // Host `vibe check` counts only entry diagnostics + layering in exit status.
+  let total_us = elapsed_us_from(start_total)
   Ok(((out, diagnostics.length() + layering_errors, warnings.length()), {
     load_ms,
+    load_us,
     type_ms,
-    total_ms: elapsed_ms_from(start_total),
+    type_us,
+    total_ms: elapsed_ms_from_us(total_us),
+    total_us,
   }))
 }
 
@@ -652,11 +683,16 @@ fn main {
       let mut load_ms_total = 0
       let mut type_ms_total = 0
       let mut total_ms_total = 0
+      let mut load_us_total = 0
+      let mut type_us_total = 0
+      let mut total_us_total = 0
       let (diagnostics, error_count, warning_count, files) = match options.input {
         CheckInput::Source(source) => {
           let start_total = @bench.monotonic_clock_start()
           let (diagnostics, error_count, warning_count) = check_source(source)
-          total_ms_total += elapsed_ms_from(start_total)
+          let total_us = elapsed_us_from(start_total)
+          total_us_total += total_us
+          total_ms_total += elapsed_ms_from_us(total_us)
           let empty_summaries : Array[CheckFileSummary] = []
           (diagnostics, error_count, warning_count, empty_summaries)
         }
@@ -664,8 +700,11 @@ fn main {
           match check_file_with_timing(path, fs) {
             Ok(((diagnostics, error_count, warning_count), timing)) => {
               load_ms_total += timing.load_ms
+              load_us_total += timing.load_us
               type_ms_total += timing.type_ms
+              type_us_total += timing.type_us
               total_ms_total += timing.total_ms
+              total_us_total += timing.total_us
               (
               diagnostics,
               error_count,
@@ -691,8 +730,11 @@ fn main {
             match check_file_with_timing(path, fs) {
               Ok(((diags, err_count, warn_count), timing)) => {
                 load_ms_total += timing.load_ms
+                load_us_total += timing.load_us
                 type_ms_total += timing.type_ms
+                type_us_total += timing.type_us
                 total_ms_total += timing.total_ms
+                total_us_total += timing.total_us
                 for diag in diags {
                   all_diags.push(annotate_diagnostic_with_path(diag, path))
                 }
@@ -731,15 +773,21 @@ fn main {
       match options.profile_tsv {
         Some(path) => {
           let content =
-            "stage\telapsed_ms\n" +
+            "stage\telapsed_ms\telapsed_us\n" +
             "load\t" +
             load_ms_total.to_string() +
+            "\t" +
+            load_us_total.to_string() +
             "\n" +
             "type\t" +
             type_ms_total.to_string() +
+            "\t" +
+            type_us_total.to_string() +
             "\n" +
             "total\t" +
             total_ms_total.to_string() +
+            "\t" +
+            total_us_total.to_string() +
             "\n"
           match @io.write_string_with(fs, path, content) {
             Ok(_) => ()

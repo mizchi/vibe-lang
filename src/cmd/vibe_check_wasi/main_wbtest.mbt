@@ -357,3 +357,20 @@ test "check_file reports dependency error propagation through transitive imports
     Err(err) => fail(err)
   }
 }
+
+///|
+test "check_file_with_timing records type timing for no-import file" {
+  let root = "/workspace"
+  let fs = MemIoAdapter::new(root)
+  let entry = root + "/single.vibe"
+  wbtest_write_string_or_abort(fs, entry, "let value = 1 + 2\n")
+  match check_file_with_timing(entry, fs) {
+    Ok(((_, errors, _warnings), timing)) => {
+      assert_eq(errors, 0)
+      assert_true(timing.type_us > 0)
+      assert_true(timing.type_ms > 0)
+      assert_true(timing.total_us >= timing.type_us)
+    }
+    Err(err) => fail(err)
+  }
+}
