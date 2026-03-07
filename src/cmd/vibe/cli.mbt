@@ -37,6 +37,7 @@ pub fn run(args : Array[String]) -> Unit {
     "fmt" => fmt_cmd(cmd_args)
     "normalize" => normalize_cmd(cmd_args)
     "compile" => compile_cmd(cmd_args)
+    "compile-lite" => compile_lite_cmd(cmd_args)
     "precompile" => precompile_cmd(cmd_args)
     "bench" => bench_cmd(cmd_args, syntax_mode, runtime_features)
     "bench-file" => bench_file_cmd(cmd_args, runtime_features)
@@ -100,7 +101,9 @@ fn print_usage() -> Unit {
   println(
     "  test [--jobs N] <file|dir...>  run test blocks (parallel for dirs; default jobs=VIBE_TEST_JOBS or 1, max 16)",
   )
-  println("  check <file...>            parse/type check scripts")
+  println(
+    "  check [--profile-tsv path] <file...>  parse/type check scripts",
+  )
   println(
     "  finalize [--db file] [--export file] [--library] [--print] [--dry-run]  refactor scratch/db source",
   )
@@ -141,6 +144,12 @@ fn print_usage() -> Unit {
   )
   println(
     "                                     --http-host-imports wires HTTP builtins to host imports (--wasm: vibe:http/*, --component: wasi:http/* shim)",
+  )
+  println(
+    "  compile-lite --wasm [--no-dce] [--in-memory] [--profile-tsv path] [-O{0,1,2,3,4,s,z}] [-o out] <file>",
+  )
+  println(
+    "                                     minimal compile path for strict perf comparison (no coverage/debug/http/component)",
   )
   println(
     "  precompile [--out-dir dir] [--wasm|--wasm-js-string] [-O<level>] <dir...>",
@@ -565,6 +574,156 @@ fn sync_wac_dependencies_if_configured(
   @wite_deps.materialize_wac_dependencies_from_config(
     config_path, wac_path, false,
   )
+}
+
+///|
+fn compile_lite_validate_opts(
+  opts : CompileCmdOptions,
+  in_memory : Bool,
+) -> Result[Unit, String] {
+  if opts.mode != CompileMode::Wasm {
+    return Err("compile-lite: only --wasm mode is supported")
+  }
+  if opts.coverage || opts.coverage_run_tests {
+    return Err("compile-lite: --coverage/--coverage-run-tests are not supported")
+  }
+  if opts.debug_errors {
+    return Err("compile-lite: --debug-errors is not supported")
+  }
+  if opts.http_host_imports {
+    return Err("compile-lite: --http-host-imports is not supported")
+  }
+  if opts.force_cabi_realloc {
+    return Err("compile-lite: --force-cabi-realloc is not supported")
+  }
+  if opts.is_async {
+    return Err("compile-lite: --async is not supported")
+  }
+  if opts.adapter_path is Some(_) {
+    return Err("compile-lite: --adapter is not supported")
+  }
+  if not(in_memory) && opts.out_path is None {
+    return Err("compile-lite: -o/--out is required")
+  }
+  Ok(())
+}
+
+///|
+fn split_compile_lite_args(
+  args : Array[String],
+) -> Result[(Array[String], String?, Bool), String] {
+  let filtered : Array[String] = []
+  let mut profile_tsv : String? = None
+  let mut in_memory = false
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
+    if arg == "--profile-tsv" {
+      i += 1
+      if i >= args.length() {
+        return Err("compile-lite: missing path after --profile-tsv")
+      }
+      profile_tsv = Some(args[i])
+    } else if arg == "--in-memory" {
+      in_memory = true
+    } else {
+      filtered.push(arg)
+    }
+    i += 1
+  }
+  Ok((filtered, profile_tsv, in_memory))
+}
+
+///|
+fn elapsed_ms_from(start : @bench.Timestamp) -> Int {
+  let elapsed_us = @bench.monotonic_clock_end(start)
+  let elapsed_ms = (elapsed_us / 1000.0).to_int()
+  if elapsed_ms <= 0 {
+    1
+  } else {
+    elapsed_ms
+  }
+}
+
+///|
+fn compile_lite_cmd(args : Array[String]) -> Unit {
+  let (compile_args, profile_tsv, in_memory) = match split_compile_lite_args(args) {
+    Ok(v) => v
+    Err(msg) => abort(msg)
+  }
+  let opts = match parse_compile_cmd_args(compile_args) {
+    Ok(v) => v
+    Err(msg) => abort(msg)
+  }
+  match compile_lite_validate_opts(opts, in_memory) {
+    Ok(_) => ()
+    Err(msg) => abort(msg)
+  }
+  let fs = @io.default_fs_adapter()
+  let out_path = match opts.out_path {
+    Some(path) => path
+    None => ""
+  }
+  let start_total = @bench.monotonic_clock_start()
+  let start_load = @bench.monotonic_clock_start()
+  match @loader.load_db_with_fs(opts.entry_path, fs) {
+    Err(err) => abort("compile-lite: " + err)
+    Ok((db, entry)) => {
+      let load_ms = elapsed_ms_from(start_load)
+      let start_type = @bench.monotonic_clock_start()
+      let _ = db.types(entry)
+      let type_ms = elapsed_ms_from(start_type)
+      let start_compile = @bench.monotonic_clock_start()
+      let wasm_bytes = @runtime_compile.compile_module_wasm_with_opt_level(
+        db,
+        entry,
+        no_dce=opts.no_dce,
+        opt_level=opts.opt_level,
+        debug_errors=false,
+        http_host_imports=false,
+        force_cabi_realloc=false,
+      ) catch {
+        e => abort("compile-lite: " + e.user_message())
+      }
+      let compile_ms = elapsed_ms_from(start_compile)
+      let mut write_ms = 0
+      if not(in_memory) {
+        let start_write = @bench.monotonic_clock_start()
+        match @io.write_bytes_with(fs, out_path, wasm_bytes) {
+          Ok(_) => ()
+          Err(err) => abort("compile-lite: " + err)
+        }
+        write_ms = elapsed_ms_from(start_write)
+      }
+      let total_ms = elapsed_ms_from(start_total)
+      match profile_tsv {
+        Some(path) => {
+          let content =
+            "stage\telapsed_ms\n" +
+            "load\t" +
+            load_ms.to_string() +
+            "\n" +
+            "type\t" +
+            type_ms.to_string() +
+            "\n" +
+            "compile\t" +
+            compile_ms.to_string() +
+            "\n" +
+            "write\t" +
+            write_ms.to_string() +
+            "\n" +
+            "total\t" +
+            total_ms.to_string() +
+            "\n"
+          match @io.write_string_with(fs, path, content) {
+            Ok(_) => ()
+            Err(err) => abort("compile-lite: failed to write profile tsv: " + err)
+          }
+        }
+        None => ()
+      }
+    }
+  }
 }
 
 ///|
@@ -1542,17 +1701,28 @@ fn load_imports_into_runtime(
 
 ///|
 fn check_cmd(args : Array[String]) -> Unit {
-  if args.length() == 0 {
+  let (check_args, profile_tsv) = match split_check_cmd_args(args) {
+    Ok(v) => v
+    Err(msg) => abort(msg)
+  }
+  if check_args.length() == 0 {
     abort("check: expected <file...>")
   }
   let check_debug = check_debug_enabled()
   let mut total_errors = 0
-  for entry_path in args {
+  let mut load_ms_total = 0
+  let mut type_ms_total = 0
+  let mut total_ms_total = 0
+  for entry_path in check_args {
+    let start_total = @bench.monotonic_clock_start()
+    let start_load = @bench.monotonic_clock_start()
     if check_debug {
       println("[check_debug] resolving: \{entry_path}")
     }
     match resolve_entry_artifacts(entry_path, skip_types=true) {
       Err(err) => {
+        load_ms_total += elapsed_ms_from(start_load)
+        total_ms_total += elapsed_ms_from(start_total)
         println("check: \{entry_path}: \{err}")
         total_errors += 1
       }
@@ -1567,14 +1737,19 @@ fn check_cmd(args : Array[String]) -> Unit {
               e => {
                 println("check: \{entry_path}: \{e}")
                 total_errors += 1
+                load_ms_total += elapsed_ms_from(start_load)
+                total_ms_total += elapsed_ms_from(start_total)
                 continue
               }
             }
         }
+        load_ms_total += elapsed_ms_from(start_load)
+        let start_type = @bench.monotonic_clock_start()
         if check_debug {
           println("[check_debug] starting db.types: \{entry}")
         }
         let _env = db.types(entry)
+        type_ms_total += elapsed_ms_from(start_type)
         if check_debug {
           println("[check_debug] finished db.types: \{entry}")
         }
@@ -1611,12 +1786,57 @@ fn check_cmd(args : Array[String]) -> Unit {
         }
         total_errors += diags.length()
         total_errors += layering_violations.length()
+        total_ms_total += elapsed_ms_from(start_total)
       }
     }
+  }
+  match profile_tsv {
+    Some(path) => {
+      let fs = @io.default_fs_adapter()
+      let content =
+        "stage\telapsed_ms\n" +
+        "load\t" +
+        load_ms_total.to_string() +
+        "\n" +
+        "type\t" +
+        type_ms_total.to_string() +
+        "\n" +
+        "total\t" +
+        total_ms_total.to_string() +
+        "\n"
+      match @io.write_string_with(fs, path, content) {
+        Ok(_) => ()
+        Err(err) => abort("check: failed to write profile tsv: " + err)
+      }
+    }
+    None => ()
   }
   if total_errors > 0 {
     abort("check: \{total_errors} error(s) found")
   }
+}
+
+///|
+fn split_check_cmd_args(
+  args : Array[String],
+) -> Result[(Array[String], String?), String] {
+  let filtered : Array[String] = []
+  let mut profile_tsv : String? = None
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
+    if arg == "--profile-tsv" {
+      i += 1
+      if i >= args.length() {
+        return Err("check: missing path after --profile-tsv")
+      }
+      profile_tsv = Some(args[i])
+    } else {
+      filtered.push(arg)
+    }
+    i += 1
+  }
+  Ok((filtered, profile_tsv))
 }
 
 ///|

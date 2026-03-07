@@ -1,49 +1,93 @@
 ///|
-fn wbtest_make_temp_dir(prefix : String) -> String {
-  let tmp_root = @vibe_fs.normalize_path(@io.current_dir_or_root() + "/.tmp")
-  if not(@os_fs.path_exists(tmp_root)) {
-    @os_fs.create_dir(tmp_root) catch {
-      e => fail("create temp root failed: " + e.to_string())
-    }
-  }
-  let base = tmp_root + "/vibe_check_wasi_test_" + prefix
-  for i in 0..<1000 {
-    let path = if i == 0 { base } else { base + "_" + i.to_string() }
-    if not(@os_fs.path_exists(path)) {
-      @os_fs.create_dir(path) catch {
-        e => fail("create temp dir failed: " + e.to_string())
-      }
-      return path
-    }
-  }
-  fail("failed to allocate temp dir")
-  base
+struct MemIoAdapter {
+  fs : @vibe_fs.MemFs
+  cwd : String
 }
 
 ///|
-fn wbtest_remove_if_exists(path : String) -> Unit {
-  if not(@os_fs.path_exists(path)) {
-    return
+fn MemIoAdapter::new(cwd : String) -> MemIoAdapter {
+  let fs = @vibe_fs.MemFs::new()
+  fs.mkdir_p(cwd) catch {
+    e => abort("mem fs init failed: " + e.to_string())
   }
-  let is_file = @os_fs.is_file(path) catch { _ => false }
-  if is_file {
-    ignore(@os_fs.remove_file(path) catch { _ => () })
-    return
-  }
-  let is_dir = @os_fs.is_dir(path) catch { _ => false }
-  if is_dir {
-    let entries = @os_fs.read_dir(path) catch { _ => [] }
-    for name in entries {
-      wbtest_remove_if_exists(path + "/" + name)
-    }
-    ignore(@os_fs.remove_dir(path) catch { _ => () })
-  }
+  { fs, cwd }
 }
 
 ///|
-fn wbtest_write_file(path : String, content : String) -> Unit {
-  @os_fs.write_string_to_file(path, content) catch {
-    e => fail("write file failed: " + e.to_string())
+pub impl @io.FileSystemAdapter for MemIoAdapter with current_dir_or_root(self) {
+  self.cwd
+}
+
+///|
+pub impl @io.FileSystemAdapter for MemIoAdapter with path_exists(self, path) {
+  self.fs.exists(path)
+}
+
+///|
+pub impl @io.FileSystemAdapter for MemIoAdapter with create_dir(self, path) {
+  self.fs.mkdir_p(path) catch {
+    e => return Err(e.to_string())
+  }
+  Ok(())
+}
+
+///|
+pub impl @io.FileSystemAdapter for MemIoAdapter with read_dir(self, path) {
+  let entries = self.fs.readdir(path) catch { e => return Err(e.to_string()) }
+  let out : Array[String] = []
+  for entry in entries {
+    out.push(entry.name)
+  }
+  Ok(out)
+}
+
+///|
+pub impl @io.FileSystemAdapter for MemIoAdapter with read_string(self, path) {
+  let content = self.fs.read_string(path) catch {
+    e => return Err(e.to_string())
+  }
+  Ok(content)
+}
+
+///|
+pub impl @io.FileSystemAdapter for MemIoAdapter with read_bytes(self, path) {
+  let content = self.fs.read_file(path) catch { e => return Err(e.to_string()) }
+  Ok(content)
+}
+
+///|
+pub impl @io.FileSystemAdapter for MemIoAdapter with write_string(
+  self,
+  path,
+  content,
+) {
+  self.fs.write_string(path, content) catch {
+    e => return Err(e.to_string())
+  }
+  Ok(())
+}
+
+///|
+pub impl @io.FileSystemAdapter for MemIoAdapter with write_bytes(
+  self,
+  path,
+  content,
+) {
+  self.fs.write_file(path, content) catch {
+    e => return Err(e.to_string())
+  }
+  Ok(())
+}
+
+///|
+fn wbtest_write_string_or_abort(
+  fs : MemIoAdapter,
+  path : String,
+  content : String,
+) -> Unit {
+  match fs.write_string(path, content) {
+    Ok(_) => ()
+    Err(err) => abort("write file failed: " + err)
   }
 }
 
@@ -58,11 +102,22 @@ fn wbtest_contains_message(diags : Array[@core.Diagnostic], text : String) -> Bo
 }
 
 ///|
+fn wbtest_not_contains_message(diags : Array[@core.Diagnostic], text : String) -> Bool {
+  not(wbtest_contains_message(diags, text))
+}
+
+///|
 test "parse_cmd_args accepts --source input" {
   let parsed = parse_cmd_args(["--source", "1 + true"])
   match parsed {
-    Ok({ mode: CommandMode::Check, input: CheckInput::Source(source) }) =>
-      assert_eq(source, "1 + true")
+    Ok(
+      {
+        mode: CommandMode::Check,
+        input: CheckInput::Source(source),
+        human_readable: false,
+        profile_tsv: None,
+      },
+    ) => assert_eq(source, "1 + true")
     Ok(_) => fail("expected source input")
     Err(err) => fail(err)
   }
@@ -72,7 +127,7 @@ test "parse_cmd_args accepts --source input" {
 test "parse_cmd_args accepts positional file input" {
   let parsed = parse_cmd_args(["examples/basic.vibe"])
   match parsed {
-    Ok({ mode: CommandMode::Check, input: CheckInput::File(path) }) =>
+    Ok({ mode: CommandMode::Check, input: CheckInput::File(path), .. }) =>
       assert_eq(path, "examples/basic.vibe")
     Ok(_) => fail("expected file input")
     Err(err) => fail(err)
@@ -83,7 +138,7 @@ test "parse_cmd_args accepts positional file input" {
 test "parse_cmd_args accepts multiple positional files in check mode" {
   let parsed = parse_cmd_args(["a.vibe", "b.vibe"])
   match parsed {
-    Ok({ mode: CommandMode::Check, input: CheckInput::Files(paths) }) => {
+    Ok({ mode: CommandMode::Check, input: CheckInput::Files(paths), .. }) => {
       assert_eq(paths.length(), 2)
       assert_eq(paths[0], "a.vibe")
       assert_eq(paths[1], "b.vibe")
@@ -97,8 +152,14 @@ test "parse_cmd_args accepts multiple positional files in check mode" {
 test "parse_cmd_args parses --format mode" {
   let parsed = parse_cmd_args(["--format", "--source", "let  x=1"])
   match parsed {
-    Ok({ mode: CommandMode::Format, input: CheckInput::Source(source) }) =>
-      assert_eq(source, "let  x=1")
+    Ok(
+      {
+        mode: CommandMode::Format,
+        input: CheckInput::Source(source),
+        human_readable: false,
+        profile_tsv: None,
+      },
+    ) => assert_eq(source, "let  x=1")
     Ok(_) => fail("expected format source input")
     Err(err) => fail(err)
   }
@@ -108,8 +169,13 @@ test "parse_cmd_args parses --format mode" {
 test "parse_cmd_args rejects multiple file input in format mode" {
   let parsed = parse_cmd_args(["--format", "a.vibe", "b.vibe"])
   match parsed {
-    Ok(_) => fail("expected parse error")
-    Err(err) => assert_eq(err, "check: --format expects exactly one file input")
+    Ok({ mode: CommandMode::Format, input: CheckInput::Files(paths), .. }) => {
+      assert_eq(paths.length(), 2)
+      assert_eq(paths[0], "a.vibe")
+      assert_eq(paths[1], "b.vibe")
+    }
+    Ok(_) => fail("expected format files input")
+    Err(err) => fail(err)
   }
 }
 
@@ -157,33 +223,136 @@ test "report_to_json includes parity capability flags" {
   let output = report_to_json([], 0, 0, [])
   assert_true(output.contains("\"parity\""))
   assert_true(output.contains("\"graph_head_available\":true"))
-  assert_true(output.contains("\"human_readable_output\":false"))
-  assert_true(output.contains("\"format_multi_file\":false"))
+  assert_true(output.contains("\"human_readable_output\":true"))
+  assert_true(output.contains("\"format_multi_file\":true"))
+}
+
+///|
+test "parse_cmd_args accepts --human flag" {
+  let parsed = parse_cmd_args(["--human", "a.vibe"])
+  match parsed {
+    Ok(
+      {
+        mode: CommandMode::Check,
+        input: CheckInput::File(path),
+        human_readable: true,
+        profile_tsv: None,
+      },
+    ) => assert_eq(path, "a.vibe")
+    Ok(_) => fail("expected human-readable check input")
+    Err(err) => fail(err)
+  }
+}
+
+///|
+test "parse_cmd_args accepts --profile-tsv flag" {
+  let parsed = parse_cmd_args([
+    "--profile-tsv", "/tmp/check.tsv", "a.vibe",
+  ])
+  match parsed {
+    Ok(
+      {
+        mode: CommandMode::Check,
+        input: CheckInput::File(path),
+        profile_tsv: Some(profile_path),
+        ..
+      },
+    ) => {
+      assert_eq(path, "a.vibe")
+      assert_eq(profile_path, "/tmp/check.tsv")
+    }
+    Ok(_) => fail("expected profile path")
+    Err(err) => fail(err)
+  }
+}
+
+///|
+test "parse_cmd_args rejects missing --profile-tsv value" {
+  let parsed = parse_cmd_args(["--profile-tsv"])
+  match parsed {
+    Ok(_) => fail("expected parse error")
+    Err(err) => assert_eq(err, "check: missing path after --profile-tsv")
+  }
+}
+
+///|
+test "report_to_human includes summary" {
+  let output = report_to_human(
+    [],
+    0,
+    0,
+    [
+      CheckFileSummary::{
+        path: "a.vibe",
+        resolved_path: "/a.vibe",
+        graph_head: Some("abc"),
+        error_count: 0,
+        warning_count: 0,
+      },
+    ],
+  )
+  assert_true(output.contains("a.vibe: ok (graph_head=abc)"))
+  assert_true(output.contains("summary: errors=0, warnings=0"))
+}
+
+///|
+test "format_files_report_to_json includes per-file outputs" {
+  let output = format_files_report_to_json([
+    FormatFileSummary::{
+      path: "a.vibe",
+      resolved_path: "/abs/a.vibe",
+      formatted: "let a = 1\n",
+      changed: true,
+    },
+    FormatFileSummary::{
+      path: "b.vibe",
+      resolved_path: "/abs/b.vibe",
+      formatted: "let b = 2\n",
+      changed: false,
+    },
+  ])
+  assert_true(output.contains("\"files\""))
+  assert_true(output.contains("\"path\":\"a.vibe\""))
+  assert_true(output.contains("\"path\":\"b.vibe\""))
+  assert_true(output.contains("\"format_multi_file\":true"))
 }
 
 ///|
 test "check_file reports dependency error propagation through transitive imports" {
-  let root = wbtest_make_temp_dir("dep_scope")
-  defer wbtest_remove_if_exists(root)
+  let root = "/workspace"
+  let fs = MemIoAdapter::new(root)
   let a = root + "/a.vibe"
   let b = root + "/b.vibe"
   let c = root + "/c.vibe"
-  wbtest_write_file(c, "let broken = true + 1\nexport { broken }\n")
-  wbtest_write_file(
+  wbtest_write_string_or_abort(fs, c, "let broken = true + 1\nexport { broken }\n")
+  wbtest_write_string_or_abort(
+    fs,
     b, "import ./c.vibe { broken }\nlet b = broken\nexport { b }\n",
   )
-  wbtest_write_file(a, "import ./b.vibe { b }\nlet main = b\nexport { main }\n")
-  let fs = @io.default_fs_adapter()
-  match check_file(a, fs) {
-    Ok((diags, error_count, warning_count)) => {
-      assert_eq(error_count, 4)
+  wbtest_write_string_or_abort(
+    fs,
+    a,
+    "import ./b.vibe { b }\nlet main = b\nexport { main }\n",
+  )
+  let expected_entry_errors = match @loader.load_db_with_fs(a, fs) {
+    Ok((db, entry)) => {
+      let _ = db.types(entry)
+      db.diagnostics(entry).length()
+    }
+    Err(err) => fail(err)
+  }
+  match check_file_with_timing(a, fs) {
+    Ok(((diags, error_count, warning_count), _timing)) => {
+      assert_eq(error_count, expected_entry_errors)
       assert_eq(warning_count, 0)
       assert_true(
         wbtest_contains_message(
           diags, "dependency export unavailable due to upstream errors",
         ),
       )
+      assert_true(wbtest_contains_message(diags, "unknown name: broken"))
       assert_true(wbtest_contains_message(diags, "unknown name: b"))
+      assert_true(wbtest_not_contains_message(diags, "type mismatch (argument)"))
     }
     Err(err) => fail(err)
   }

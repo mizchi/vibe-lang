@@ -18,6 +18,19 @@ import ./types.vibe {
 
 //# Functions
 
+let rec import_cache_lookup = (cache: Array[(String, Type)], name: String, i: Int) -> Option[Type] {
+  if i >= array_length(cache) {
+    None
+  }
+  else {
+    let (cached_name, cached_ty) = array_get(cache, i)
+    if string_equals(cached_name, name) {
+      Some(cached_ty)
+    }
+    else import_cache_lookup(cache, name, i + 1)
+  }
+}
+
 export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int) -> (TypeEnv, Subst, Int) {
   if i >= array_length(stmts) {
     (env, s, c)
@@ -73,6 +86,9 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
         (env, s, c)
       },
       SImport(_, names) => {
+        let import_cache = array_slice([
+          ("", CtUnknown)
+        ], 0, 0)
         let nlen = array_length(names)
         let rec bind_imports = (i: Int, acc: TypeEnv) -> TypeEnv {
           if i >= nlen {
@@ -84,9 +100,16 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
               Some(a) => a,
               None => name
             }
-            let ty = match env_lookup(env, bound_name) {
+            let ty = match import_cache_lookup(import_cache, name, 0) {
               Some(t) => t,
-              None => CtUnknown
+              None => {
+                let resolved = match env_lookup(env, name) {
+                  Some(t) => t,
+                  None => CtUnknown
+                }
+                array_push(import_cache, (name, resolved))
+                resolved
+              }
             }
             bind_imports(i + 1, env_bind(acc, bound_name, ty))
           }

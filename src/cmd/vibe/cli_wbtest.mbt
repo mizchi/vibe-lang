@@ -1368,6 +1368,105 @@ test "compile args reject optimize flags on non-binary mode" {
 }
 
 ///|
+test "compile-lite validate allows wasm no-dce" {
+  let parsed = parse_compile_cmd_args([
+    "--wasm", "--no-dce", "-o", "/tmp/out.wasm", "main.vibe",
+  ])
+  match parsed {
+    Ok(opts) =>
+      match compile_lite_validate_opts(opts, false) {
+        Ok(_) => ()
+        Err(msg) => fail("unexpected err: " + msg)
+      }
+    Err(msg) => fail("unexpected parse err: " + msg)
+  }
+}
+
+///|
+test "compile-lite validate rejects coverage" {
+  let parsed = parse_compile_cmd_args([
+    "--wasm", "--coverage", "-o", "/tmp/out.wasm", "main.vibe",
+  ])
+  match parsed {
+    Ok(opts) =>
+      match compile_lite_validate_opts(opts, false) {
+        Ok(_) => fail("expected validation error")
+        Err(msg) =>
+          assert_eq(
+            msg, "compile-lite: --coverage/--coverage-run-tests are not supported",
+          )
+      }
+    Err(msg) => fail("unexpected parse err: " + msg)
+  }
+}
+
+///|
+test "compile-lite split args extracts profile tsv path" {
+  let parsed = split_compile_lite_args([
+    "--wasm", "--profile-tsv", "/tmp/profile.tsv", "-o", "/tmp/out.wasm", "main.vibe",
+  ])
+  match parsed {
+    Ok((args, Some(path), in_memory)) => {
+      assert_eq(path, "/tmp/profile.tsv")
+      assert_eq(args.length(), 4)
+      assert_eq(args[0], "--wasm")
+      assert_eq(args[1], "-o")
+      assert_false(in_memory)
+    }
+    Ok(_) => fail("expected profile path")
+    Err(msg) => fail(msg)
+  }
+}
+
+///|
+test "compile-lite split args rejects missing profile path" {
+  let parsed = split_compile_lite_args(["--wasm", "--profile-tsv"])
+  match parsed {
+    Ok(_) => fail("expected parse error")
+    Err(msg) => assert_eq(msg, "compile-lite: missing path after --profile-tsv")
+  }
+}
+
+///|
+test "compile-lite validate allows in-memory without out" {
+  let parsed = parse_compile_cmd_args(["--wasm", "main.vibe"])
+  match parsed {
+    Ok(opts) =>
+      match compile_lite_validate_opts(opts, true) {
+        Ok(_) => ()
+        Err(msg) => fail("unexpected err: " + msg)
+      }
+    Err(msg) => fail("unexpected parse err: " + msg)
+  }
+}
+
+///|
+test "check split args extracts profile tsv path" {
+  let parsed = split_check_cmd_args([
+    "--profile-tsv", "/tmp/check.tsv", "a.vibe", "b.vibe",
+  ])
+  match parsed {
+    Ok((args, Some(path))) => {
+      assert_eq(path, "/tmp/check.tsv")
+      assert_eq(args.length(), 2)
+      assert_eq(args[0], "a.vibe")
+      assert_eq(args[1], "b.vibe")
+    }
+    Ok(_) => fail("expected profile path")
+    Err(msg) => fail(msg)
+  }
+}
+
+///|
+test "check split args rejects missing profile path" {
+  let parsed = split_check_cmd_args(["--profile-tsv"])
+  match parsed {
+    Ok(_) => fail("expected parse error")
+    Err(msg) => assert_eq(msg, "check: missing path after --profile-tsv")
+  }
+}
+
+///|
 test "bench case arg parse named" {
   let parsed = parse_bench_case_arg("sum=add(1,2)", 1)
   match parsed {

@@ -15,6 +15,8 @@ pub enum CommandMode {
 pub struct CmdOptions {
   mode : CommandMode
   input : CheckInput
+  human_readable : Bool
+  profile_tsv : String?
 } derive(Eq, Show)
 
 ///|
@@ -24,6 +26,21 @@ struct CheckFileSummary {
   graph_head : String?
   error_count : Int
   warning_count : Int
+}
+
+///|
+struct FormatFileSummary {
+  path : String
+  resolved_path : String
+  formatted : String
+  changed : Bool
+}
+
+///|
+struct CheckTimingSummary {
+  load_ms : Int
+  type_ms : Int
+  total_ms : Int
 }
 
 ///|
@@ -40,6 +57,8 @@ pub fn parse_cmd_args(args : Array[String]) -> Result[CmdOptions, String] {
   let mut source : String? = None
   let files : Array[String] = []
   let mut mode = CommandMode::Check
+  let mut human_readable = false
+  let mut profile_tsv : String? = None
   let mut mode_flag_count = 0
   let mut i = 0
   while i < args.length() {
@@ -52,6 +71,19 @@ pub fn parse_cmd_args(args : Array[String]) -> Result[CmdOptions, String] {
       "--format" => {
         mode = CommandMode::Format
         mode_flag_count += 1
+      }
+      "--human" => {
+        human_readable = true
+      }
+      "--json" => {
+        human_readable = false
+      }
+      "--profile-tsv" => {
+        i += 1
+        if i >= args.length() {
+          return Err("check: missing path after --profile-tsv")
+        }
+        profile_tsv = Some(args[i])
       }
       "--source" => {
         i += 1
@@ -81,20 +113,29 @@ pub fn parse_cmd_args(args : Array[String]) -> Result[CmdOptions, String] {
   match source {
     Some(src) =>
       if files.length() == 0 {
-        Ok({ mode, input: CheckInput::Source(src) })
+        Ok({ mode, input: CheckInput::Source(src), human_readable, profile_tsv })
       } else {
         Err("check: --source and file input are exclusive")
       }
     None =>
       if files.length() == 0 {
         Err("check: expected --source <code> or <file>")
-      } else if mode == CommandMode::Format && files.length() > 1 {
-        Err("check: --format expects exactly one file input")
       } else if files.length() == 1 {
-        Ok({ mode, input: CheckInput::File(files[0]) })
+        Ok({ mode, input: CheckInput::File(files[0]), human_readable, profile_tsv })
       } else {
-        Ok({ mode, input: CheckInput::Files(files) })
+        Ok({ mode, input: CheckInput::Files(files), human_readable, profile_tsv })
       }
+  }
+}
+
+///|
+fn elapsed_ms_from(start : @bench.Timestamp) -> Int {
+  let elapsed_us = @bench.monotonic_clock_end(start)
+  let elapsed_ms = (elapsed_us / 1000.0).to_int()
+  if elapsed_ms <= 0 {
+    1
+  } else {
+    elapsed_ms
   }
 }
 
@@ -310,18 +351,25 @@ fn format_source(source : String) -> String {
   @parser.format_script(source)
 }
 
-///|
-fn check_file(
+fn check_file_with_timing(
   entry_path : String,
   fs : &@io.FileSystemAdapter,
-) -> Result[(Array[@core.Diagnostic], Int, Int), String] {
+) -> Result[((Array[@core.Diagnostic], Int, Int), CheckTimingSummary), String] {
+  let start_total = @bench.monotonic_clock_start()
+  let start_load = @bench.monotonic_clock_start()
   let resolved = @loader.resolve_entry_path_with_fs(entry_path, fs)
   let source = match @io.read_string_with(fs, resolved) {
     Ok(content) => content
     Err(err) => return Err("read failed: " + err)
   }
+  let load_ms = elapsed_ms_from(start_load)
   let ast = @parser.parse_ast(source) catch {
-    err => return Ok(([err.diagnostic()], 1, 0))
+    err =>
+      return Ok((([err.diagnostic()], 1, 0), {
+        load_ms,
+        type_ms: 0,
+        total_ms: elapsed_ms_from(start_total),
+      }))
   }
   if not(has_import_stmt(ast)) {
     let (out, error_count, warning_count) = check_ast_without_imports(ast)
@@ -330,24 +378,25 @@ fn check_file(
       out2.push(diag)
     }
     let layering_errors = push_layering_violation_diags(resolved, source, out2)
-    return Ok((out2, error_count + layering_errors, warning_count))
+    return Ok(((out2, error_count + layering_errors, warning_count), {
+      load_ms,
+      type_ms: 0,
+      total_ms: elapsed_ms_from(start_total),
+    }))
   }
   let (db, entry) = match @loader.load_db_with_fs(entry_path, fs) {
     Ok(v) => v
     Err(err) => return Err(err)
   }
+  let start_type = @bench.monotonic_clock_start()
   let _ = db.types(entry)
-  let dep_imports = db.imports(entry)
+  let type_ms = elapsed_ms_from(start_type)
+  let dep_diags = collect_direct_import_diagnostics(db, entry)
   let diagnostics = db.diagnostics(entry)
   let warnings = db.warnings(entry)
   let out : Array[@core.Diagnostic] = []
-  let mut dep_error_count = 0
-  for imp in dep_imports {
-    let dep_diags = db.diagnostics(imp.path)
-    dep_error_count += dep_diags.length()
-    for dep_diag in dep_diags {
-      out.push(dep_diag)
-    }
+  for dep_diag in dep_diags {
+    out.push(dep_diag)
   }
   for diag in diagnostics {
     out.push(diag)
@@ -356,7 +405,12 @@ fn check_file(
     out.push(warning)
   }
   let layering_errors = push_layering_violation_diags(resolved, source, out)
-  Ok((out, dep_error_count + diagnostics.length() + layering_errors, warnings.length()))
+  // Host `vibe check` counts only entry diagnostics + layering in exit status.
+  Ok(((out, diagnostics.length() + layering_errors, warnings.length()), {
+    load_ms,
+    type_ms,
+    total_ms: elapsed_ms_from(start_total),
+  }))
 }
 
 ///|
@@ -370,6 +424,22 @@ fn format_file(
     Err(err) => return Err("read failed: " + err)
   }
   Ok((source, format_source(source)))
+}
+
+///|
+fn collect_direct_import_diagnostics(
+  db : @runtime.VibeDb,
+  entry : String,
+) -> Array[@core.Diagnostic] {
+  // Match host `vibe check`: only immediate imports are expanded.
+  let out : Array[@core.Diagnostic] = []
+  for imp in db.imports(entry) {
+    let dep_diags = db.diagnostics(imp.path)
+    for dep_diag in dep_diags {
+      out.push(dep_diag)
+    }
+  }
+  out
 }
 
 ///|
@@ -448,8 +518,8 @@ fn report_to_json(
   let root : Map[String, Json] = {}
   let parity : Map[String, Json] = {}
   parity["graph_head_available"] = Json::boolean(true)
-  parity["human_readable_output"] = Json::boolean(false)
-  parity["format_multi_file"] = Json::boolean(false)
+  parity["human_readable_output"] = Json::boolean(true)
+  parity["format_multi_file"] = Json::boolean(true)
   root["ok"] = Json::boolean(error_count == 0)
   root["error_count"] = Json::number(error_count.to_double())
   root["warning_count"] = Json::number(warning_count.to_double())
@@ -460,18 +530,108 @@ fn report_to_json(
 }
 
 ///|
+fn report_to_human(
+  diagnostics : Array[@core.Diagnostic],
+  error_count : Int,
+  warning_count : Int,
+  files : Array[CheckFileSummary],
+) -> String {
+  let lines : Array[String] = []
+  for diag in diagnostics {
+    lines.push(diag.stage + ": " + diag.message)
+    match diag.hint {
+      Some(hint) => lines.push("  help: " + hint)
+      None => ()
+    }
+    match diag.note {
+      Some(note) => lines.push("  note: " + note)
+      None => ()
+    }
+  }
+  for file in files {
+    if file.error_count == 0 && file.warning_count == 0 {
+      let head = match file.graph_head {
+        Some(hash) => hash
+        None => "null"
+      }
+      lines.push(file.path + ": ok (graph_head=" + head + ")")
+    }
+  }
+  lines.push(
+    "summary: errors=" +
+    error_count.to_string() +
+    ", warnings=" +
+    warning_count.to_string(),
+  )
+  lines_to_text(lines)
+}
+
+///|
+fn lines_to_text(lines : Array[String]) -> String {
+  let builder = StringBuilder::new()
+  for i, line in lines {
+    if i > 0 {
+      builder.write_string("\n")
+    }
+    builder.write_string(line)
+  }
+  builder.to_string()
+}
+
+///|
 fn format_report_to_json(source : String, formatted : String) -> String {
   let root : Map[String, Json] = {}
+  let parity : Map[String, Json] = {}
+  parity["format_multi_file"] = Json::boolean(true)
   root["ok"] = Json::boolean(true)
   root["formatted"] = Json::string(formatted)
   root["changed"] = Json::boolean(source != formatted)
+  root["parity"] = Json::object(parity)
   Json::object(root).stringify()
+}
+
+///|
+fn format_report_to_human(formatted : String) -> String {
+  formatted
+}
+
+///|
+fn format_files_report_to_json(files : Array[FormatFileSummary]) -> String {
+  let entries : Array[Json] = []
+  for file in files {
+    let item : Map[String, Json] = {}
+    item["path"] = Json::string(file.path)
+    item["resolved_path"] = Json::string(file.resolved_path)
+    item["formatted"] = Json::string(file.formatted)
+    item["changed"] = Json::boolean(file.changed)
+    entries.push(Json::object(item))
+  }
+  let root : Map[String, Json] = {}
+  let parity : Map[String, Json] = {}
+  parity["format_multi_file"] = Json::boolean(true)
+  root["ok"] = Json::boolean(true)
+  root["files"] = Json::array(entries)
+  root["parity"] = Json::object(parity)
+  Json::object(root).stringify()
+}
+
+///|
+fn format_files_report_to_human(files : Array[FormatFileSummary]) -> String {
+  let lines : Array[String] = []
+  for i, file in files {
+    if i > 0 {
+      lines.push("")
+    }
+    lines.push("== " + file.path + " ==")
+    lines.push(file.formatted)
+  }
+  lines_to_text(lines)
 }
 
 ///|
 fn usage() -> Unit {
   println(
-    "vibe_check_wasi [--check|--format] [--source <code> | --file <path> | <path>]",
+    "vibe_check_wasi [--check|--format] [--json|--human] [--profile-tsv <path>] [--source <code> | --file <path> | <path>]",
   )
 }
 
@@ -489,15 +649,24 @@ fn main {
   let fs = @io.default_fs_adapter()
   match options.mode {
     CommandMode::Check => {
+      let mut load_ms_total = 0
+      let mut type_ms_total = 0
+      let mut total_ms_total = 0
       let (diagnostics, error_count, warning_count, files) = match options.input {
         CheckInput::Source(source) => {
+          let start_total = @bench.monotonic_clock_start()
           let (diagnostics, error_count, warning_count) = check_source(source)
+          total_ms_total += elapsed_ms_from(start_total)
           let empty_summaries : Array[CheckFileSummary] = []
           (diagnostics, error_count, warning_count, empty_summaries)
         }
         CheckInput::File(path) =>
-          match check_file(path, fs) {
-            Ok((diagnostics, error_count, warning_count)) => (
+          match check_file_with_timing(path, fs) {
+            Ok(((diagnostics, error_count, warning_count), timing)) => {
+              load_ms_total += timing.load_ms
+              type_ms_total += timing.type_ms
+              total_ms_total += timing.total_ms
+              (
               diagnostics,
               error_count,
               warning_count,
@@ -509,6 +678,7 @@ fn main {
                 warning_count,
               }],
             )
+            }
             Err(err) => abort("check: " + err)
           }
         CheckInput::Files(paths) => {
@@ -518,8 +688,11 @@ fn main {
           let mut warnings = 0
           for path in paths {
             let resolved = @loader.resolve_entry_path_with_fs(path, fs)
-            match check_file(path, fs) {
-              Ok((diags, err_count, warn_count)) => {
+            match check_file_with_timing(path, fs) {
+              Ok(((diags, err_count, warn_count), timing)) => {
+                load_ms_total += timing.load_ms
+                type_ms_total += timing.type_ms
+                total_ms_total += timing.total_ms
                 for diag in diags {
                   all_diags.push(annotate_diagnostic_with_path(diag, path))
                 }
@@ -555,20 +728,72 @@ fn main {
           (all_diags, errors, warnings, summaries)
         }
       }
-      println(report_to_json(diagnostics, error_count, warning_count, files))
+      match options.profile_tsv {
+        Some(path) => {
+          let content =
+            "stage\telapsed_ms\n" +
+            "load\t" +
+            load_ms_total.to_string() +
+            "\n" +
+            "type\t" +
+            type_ms_total.to_string() +
+            "\n" +
+            "total\t" +
+            total_ms_total.to_string() +
+            "\n"
+          match @io.write_string_with(fs, path, content) {
+            Ok(_) => ()
+            Err(err) => abort("check: failed to write profile tsv: " + err)
+          }
+        }
+        None => ()
+      }
+      if options.human_readable {
+        println(report_to_human(diagnostics, error_count, warning_count, files))
+      } else {
+        println(report_to_json(diagnostics, error_count, warning_count, files))
+      }
     }
     CommandMode::Format => {
-      let (source, formatted) = match options.input {
-        CheckInput::Source(source) => (source, format_source(source))
+      match options.input {
+        CheckInput::Source(source) =>
+          if options.human_readable {
+            println(format_report_to_human(format_source(source)))
+          } else {
+            println(format_report_to_json(source, format_source(source)))
+          }
         CheckInput::File(path) =>
           match format_file(path, fs) {
-            Ok(value) => value
+            Ok((source, formatted)) =>
+              if options.human_readable {
+                println(format_report_to_human(formatted))
+              } else {
+                println(format_report_to_json(source, formatted))
+              }
             Err(err) => abort("check: " + err)
           }
-        CheckInput::Files(_) =>
-          abort("check: --format expects exactly one file input")
+        CheckInput::Files(paths) => {
+          let outputs : Array[FormatFileSummary] = []
+          for path in paths {
+            let resolved = @loader.resolve_entry_path_with_fs(path, fs)
+            match format_file(path, fs) {
+              Ok((source, formatted)) =>
+                outputs.push(FormatFileSummary::{
+                  path,
+                  resolved_path: resolved,
+                  formatted,
+                  changed: source != formatted,
+                })
+              Err(err) => abort("check: " + err)
+            }
+          }
+          if options.human_readable {
+            println(format_files_report_to_human(outputs))
+          } else {
+            println(format_files_report_to_json(outputs))
+          }
+        }
       }
-      println(format_report_to_json(source, formatted))
     }
   }
 }

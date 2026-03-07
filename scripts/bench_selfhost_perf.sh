@@ -10,8 +10,10 @@ STAGE1_CHECKER_WASM="${STAGE1_CHECKER_WASM:-$PROJECT_ROOT/_build/wasm/debug/buil
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_perf}"
 CASES_FILE="${VIBE_SELFHOST_PERF_CASES_FILE:-$PROJECT_ROOT/bench/selfhost_perf/cases.txt}"
 RUNS="${VIBE_SELFHOST_PERF_RUNS:-3}"
+COMPILE_MODE="${VIBE_SELFHOST_PERF_COMPILE_MODE:-e2e}"
 MAX_COMPILE_RATIO="${VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO:-}"
 MAX_CHECK_RATIO="${VIBE_SELFHOST_PERF_MAX_CHECK_RATIO:-}"
+REBUILD_MODE="${VIBE_SELFHOST_PERF_REBUILD:-auto}"
 
 is_positive_int() {
   case "$1" in
@@ -110,15 +112,38 @@ collect_cases() {
 }
 
 ensure_binaries() {
-  if [ ! -x "$VIBE_BIN" ]; then
+  if [ "$REBUILD_MODE" != "auto" ] && [ "$REBUILD_MODE" != "always" ] && [ "$REBUILD_MODE" != "never" ]; then
+    echo "bench-selfhost-perf: VIBE_SELFHOST_PERF_REBUILD must be auto|always|never" >&2
+    exit 1
+  fi
+  local src_changed_since_host=0
+  local src_changed_since_compiler=0
+  local src_changed_since_checker=0
+  if [ "$REBUILD_MODE" = "always" ]; then
+    src_changed_since_host=1
+    src_changed_since_compiler=1
+    src_changed_since_checker=1
+  elif [ "$REBUILD_MODE" = "auto" ]; then
+    if [ ! -x "$VIBE_BIN" ] || [ -n "$(find "$PROJECT_ROOT/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' -o -name 'moon.mod.json' \) -newer "$VIBE_BIN" -print -quit 2>/dev/null)" ]; then
+      src_changed_since_host=1
+    fi
+    if [ ! -f "$STAGE1_COMPILER_WASM" ] || [ -n "$(find "$PROJECT_ROOT/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' -o -name 'moon.mod.json' \) -newer "$STAGE1_COMPILER_WASM" -print -quit 2>/dev/null)" ]; then
+      src_changed_since_compiler=1
+    fi
+    if [ ! -f "$STAGE1_CHECKER_WASM" ] || [ -n "$(find "$PROJECT_ROOT/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' -o -name 'moon.mod.json' \) -newer "$STAGE1_CHECKER_WASM" -print -quit 2>/dev/null)" ]; then
+      src_changed_since_checker=1
+    fi
+  fi
+
+  if [ ! -x "$VIBE_BIN" ] || [ "$src_changed_since_host" -eq 1 ]; then
     echo "[selfhost-perf] building host CLI..."
     moon build --target native --release src/cmd/vibe --warn-list '-29'
   fi
-  if [ ! -f "$STAGE1_COMPILER_WASM" ]; then
+  if [ ! -f "$STAGE1_COMPILER_WASM" ] || [ "$src_changed_since_compiler" -eq 1 ]; then
     echo "[selfhost-perf] building selfhost compiler wasm..."
     moon build --target wasm src/cmd/vibe_compile_wasi
   fi
-  if [ ! -f "$STAGE1_CHECKER_WASM" ]; then
+  if [ ! -f "$STAGE1_CHECKER_WASM" ] || [ "$src_changed_since_checker" -eq 1 ]; then
     echo "[selfhost-perf] building selfhost checker wasm..."
     moon build --target wasm src/cmd/vibe_check_wasi
   fi
@@ -133,14 +158,22 @@ main() {
     echo "bench-selfhost-perf: VIBE_SELFHOST_PERF_RUNS must be positive integer" >&2
     exit 1
   fi
+  if [ "$COMPILE_MODE" != "e2e" ] && [ "$COMPILE_MODE" != "in-memory" ]; then
+    echo "bench-selfhost-perf: VIBE_SELFHOST_PERF_COMPILE_MODE must be e2e or in-memory" >&2
+    exit 1
+  fi
 
   ensure_binaries
 
   mkdir -p "$OUT_DIR/raw" "$OUT_DIR/tmp"
-  local raw_tsv="$OUT_DIR/raw.tsv"
-  local summary_tsv="$OUT_DIR/summary.tsv"
+  local raw_tsv="$OUT_DIR/raw.${COMPILE_MODE}.tsv"
+  local summary_tsv="$OUT_DIR/summary.${COMPILE_MODE}.tsv"
+  local raw_stage_tsv="$OUT_DIR/raw_stage.${COMPILE_MODE}.tsv"
+  local stage_summary_tsv="$OUT_DIR/stage_summary.${COMPILE_MODE}.tsv"
   : > "$raw_tsv"
   printf "file\tphase\truntime\trun\telapsed_ms\tstatus\n" >> "$raw_tsv"
+  : > "$raw_stage_tsv"
+  printf "file\tphase\truntime\trun\tstage\telapsed_ms\n" >> "$raw_stage_tsv"
 
   local cases=()
   while IFS= read -r p; do
@@ -153,6 +186,7 @@ main() {
   fi
 
   echo "[selfhost-perf] cases=${#cases[@]} runs=${RUNS}"
+  echo "[selfhost-perf] compile_mode=${COMPILE_MODE}"
 
   local case_path rel_case safe
   for case_path in "${cases[@]}"; do
@@ -163,22 +197,38 @@ main() {
         local run_idx=1
         local sample_file="$OUT_DIR/raw/${safe}.${phase}.${runtime}.txt"
         : > "$sample_file"
+        if [ "$phase" = "compile" ]; then
+          for stage in load type compile write total; do
+            : > "$OUT_DIR/raw/${safe}.compile_stage.${runtime}.${stage}.txt"
+          done
+        else
+          for stage in load type total; do
+            : > "$OUT_DIR/raw/${safe}.check_stage.${runtime}.${stage}.txt"
+          done
+        fi
         while [ "$run_idx" -le "$RUNS" ]; do
           local stdout_file="$OUT_DIR/tmp/${safe}.${phase}.${runtime}.${run_idx}.stdout"
           local stderr_file="$OUT_DIR/tmp/${safe}.${phase}.${runtime}.${run_idx}.stderr"
+          local profile_file="$OUT_DIR/tmp/${safe}.${phase}.${runtime}.${run_idx}.profile.tsv"
           local cmd_status elapsed
-          if [ "$phase" = "compile" ] && [ "$runtime" = "host" ]; then
+          if [ "$phase" = "compile" ] && [ "$runtime" = "host" ] && [ "$COMPILE_MODE" = "e2e" ]; then
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
-              "$VIBE_BIN" compile --wasm --no-dce "$case_path" -o "$OUT_DIR/tmp/${safe}.${run_idx}.host.wasm")
+              "$VIBE_BIN" compile-lite --wasm --no-dce --profile-tsv "$profile_file" "$case_path" -o "$OUT_DIR/tmp/${safe}.${run_idx}.host.wasm")
+          elif [ "$phase" = "compile" ] && [ "$runtime" = "selfhost" ] && [ "$COMPILE_MODE" = "e2e" ]; then
+            read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
+              moonrun "$STAGE1_COMPILER_WASM" compile-lite --wasm --no-dce --profile-tsv "$profile_file" "$case_path" -o "$OUT_DIR/tmp/${safe}.${run_idx}.selfhost.wasm")
+          elif [ "$phase" = "compile" ] && [ "$runtime" = "host" ]; then
+            read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
+              "$VIBE_BIN" compile-lite --wasm --no-dce --in-memory --profile-tsv "$profile_file" "$case_path")
           elif [ "$phase" = "compile" ] && [ "$runtime" = "selfhost" ]; then
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
-              moonrun "$STAGE1_COMPILER_WASM" --wasm --no-dce "$case_path" -o "$OUT_DIR/tmp/${safe}.${run_idx}.selfhost.wasm")
+              moonrun "$STAGE1_COMPILER_WASM" compile-lite --wasm --no-dce --in-memory --profile-tsv "$profile_file" "$case_path")
           elif [ "$phase" = "check" ] && [ "$runtime" = "host" ]; then
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
-              env VIBE_CHECK_DEBUG=0 "$VIBE_BIN" check "$case_path")
+              env VIBE_CHECK_DEBUG=0 "$VIBE_BIN" check --profile-tsv "$profile_file" "$case_path")
           else
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
-              moonrun "$STAGE1_CHECKER_WASM" --check --file "$case_path")
+              moonrun "$STAGE1_CHECKER_WASM" --check --profile-tsv "$profile_file" --file "$case_path")
           fi
           printf "%s\t%s\t%s\t%d\t%s\t%s\n" "$rel_case" "$phase" "$runtime" "$run_idx" "$elapsed" "$cmd_status" >> "$raw_tsv"
           echo "$elapsed" >> "$sample_file"
@@ -187,6 +237,19 @@ main() {
             echo "  stderr: $stderr_file" >&2
             exit 1
           fi
+          if [ "$phase" = "compile" ] || [ "$phase" = "check" ]; then
+            if [ ! -f "$profile_file" ]; then
+              echo "bench-selfhost-perf: missing stage profile (${phase}/${runtime}): $rel_case" >&2
+              exit 1
+            fi
+            while IFS=$'\t' read -r stage ms; do
+              if [ "$stage" = "stage" ] || [ -z "$stage" ]; then
+                continue
+              fi
+              printf "%s\t%s\t%s\t%d\t%s\t%s\n" "$rel_case" "$phase" "$runtime" "$run_idx" "$stage" "$ms" >> "$raw_stage_tsv"
+              echo "$ms" >> "$OUT_DIR/raw/${safe}.${phase}_stage.${runtime}.${stage}.txt"
+            done < "$profile_file"
+          fi
           run_idx=$((run_idx + 1))
         done
       done
@@ -194,6 +257,7 @@ main() {
   done
 
   printf "file\tcompile_host_ms\tcompile_selfhost_ms\tcompile_ratio\tcheck_host_ms\tcheck_selfhost_ms\tcheck_ratio\n" > "$summary_tsv"
+  printf "file\tphase\tstage\thost_ms\tselfhost_ms\tratio\n" > "$stage_summary_tsv"
 
   local sum_compile_host=0
   local sum_compile_self=0
@@ -227,6 +291,25 @@ main() {
       echo "bench-selfhost-perf: check ratio exceeded ($rel_case: $kratio > $MAX_CHECK_RATIO)" >&2
       fail_ratio=1
     fi
+
+    for phase in compile check; do
+      if [ "$phase" = "compile" ]; then
+        local stages="load type compile write total"
+      else
+        local stages="load type total"
+      fi
+      for stage in $stages; do
+        local stage_host_file="$OUT_DIR/raw/${safe}.${phase}_stage.host.${stage}.txt"
+        local stage_self_file="$OUT_DIR/raw/${safe}.${phase}_stage.selfhost.${stage}.txt"
+        if [ -f "$stage_host_file" ] && [ -f "$stage_self_file" ]; then
+          local stage_host stage_self stage_ratio
+          stage_host="$(median_file_ms "$stage_host_file")"
+          stage_self="$(median_file_ms "$stage_self_file")"
+          stage_ratio="$(calc_ratio "$stage_self" "$stage_host")"
+          printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$rel_case" "$phase" "$stage" "$stage_host" "$stage_self" "$stage_ratio" >> "$stage_summary_tsv"
+        fi
+      done
+    done
   done
 
   local total_compile_ratio total_check_ratio
@@ -241,6 +324,12 @@ main() {
   echo "TOTAL check(host/selfhost):   ${sum_check_host} / ${sum_check_self} ms (ratio=${total_check_ratio})"
   echo "raw:     $raw_tsv"
   echo "summary: $summary_tsv"
+  if [ -s "$stage_summary_tsv" ]; then
+    echo "stage summary:"
+    column -t -s $'\t' "$stage_summary_tsv"
+    echo "raw stage:     $raw_stage_tsv"
+    echo "stage summary: $stage_summary_tsv"
+  fi
 
   if [ -n "$MAX_COMPILE_RATIO" ] && ratio_exceeds "$total_compile_ratio" "$MAX_COMPILE_RATIO"; then
     echo "bench-selfhost-perf: total compile ratio exceeded (${total_compile_ratio} > ${MAX_COMPILE_RATIO})" >&2

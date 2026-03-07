@@ -176,3 +176,74 @@ test "vibe_compile_wasi parse compile args reject http host imports on --wasm-gc
       )
   }
 }
+
+///|
+test "vibe_compile_wasi compile-lite validate allows wasm no-dce" {
+  let parsed = parse_compile_cmd_args([
+    "--wasm", "--no-dce", "-o", "/tmp/out.wasm", "main.vibe",
+  ])
+  match parsed {
+    Ok(opts) =>
+      match compile_lite_validate_opts(opts, false) {
+        Ok(_) => ()
+        Err(err) => fail(err)
+      }
+    Err(err) => fail(err)
+  }
+}
+
+///|
+test "vibe_compile_wasi compile-lite validate rejects component mode" {
+  let parsed = parse_compile_cmd_args([
+    "--component", "-o", "/tmp/out.wasm", "main.vibe",
+  ])
+  match parsed {
+    Ok(opts) =>
+      match compile_lite_validate_opts(opts, false) {
+        Ok(_) => fail("expected validation error")
+        Err(err) =>
+          assert_eq(err, "compile-lite: only --wasm mode is supported")
+      }
+    Err(err) => fail(err)
+  }
+}
+
+///|
+test "vibe_compile_wasi compile-lite split args extracts profile tsv path" {
+  let parsed = split_compile_lite_args([
+    "--wasm", "--profile-tsv", "/tmp/profile.tsv", "-o", "/tmp/out.wasm", "main.vibe",
+  ])
+  match parsed {
+    Ok((args, Some(path), in_memory)) => {
+      assert_eq(path, "/tmp/profile.tsv")
+      assert_eq(args.length(), 4)
+      assert_eq(args[0], "--wasm")
+      assert_eq(args[1], "-o")
+      assert_false(in_memory)
+    }
+    Ok(_) => fail("expected profile path")
+    Err(err) => fail(err)
+  }
+}
+
+///|
+test "vibe_compile_wasi compile-lite split args rejects missing profile path" {
+  let parsed = split_compile_lite_args(["--wasm", "--profile-tsv"])
+  match parsed {
+    Ok(_) => fail("expected parse error")
+    Err(err) => assert_eq(err, "compile-lite: missing path after --profile-tsv")
+  }
+}
+
+///|
+test "vibe_compile_wasi compile-lite validate allows in-memory without out" {
+  let parsed = parse_compile_cmd_args(["--wasm", "main.vibe"])
+  match parsed {
+    Ok(opts) =>
+      match compile_lite_validate_opts(opts, true) {
+        Ok(_) => ()
+        Err(err) => fail(err)
+      }
+    Err(err) => fail(err)
+  }
+}

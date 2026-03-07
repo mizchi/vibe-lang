@@ -202,6 +202,9 @@ fn print_usage() -> Unit {
   println(
     "vibe_compile_wasi [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wac|--wit|--wit-component] [--no-dce] [--debug-errors] [--http-host-imports] [--wite|-O{0,1,2,3,4,s,z}] [-o out] <file>",
   )
+  println(
+    "vibe_compile_wasi compile-lite --wasm [--no-dce] [--in-memory] [--profile-tsv path] [-O{0,1,2,3,4,s,z}] [-o out] <file>",
+  )
 }
 
 ///|
@@ -437,10 +440,153 @@ fn compile_cmd(
 }
 
 ///|
+fn compile_lite_validate_opts(
+  opts : CompileCmdOptions,
+  in_memory : Bool,
+) -> Result[Unit, String] {
+  if opts.mode != CompileMode::Wasm {
+    return Err("compile-lite: only --wasm mode is supported")
+  }
+  if opts.debug_errors {
+    return Err("compile-lite: --debug-errors is not supported")
+  }
+  if opts.http_host_imports {
+    return Err("compile-lite: --http-host-imports is not supported")
+  }
+  if not(in_memory) && opts.out_path is None {
+    return Err("compile-lite: -o/--out is required")
+  }
+  Ok(())
+}
+
+///|
+fn split_compile_lite_args(
+  args : Array[String],
+) -> Result[(Array[String], String?, Bool), String] {
+  let filtered : Array[String] = []
+  let mut profile_tsv : String? = None
+  let mut in_memory = false
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
+    if arg == "--profile-tsv" {
+      i += 1
+      if i >= args.length() {
+        return Err("compile-lite: missing path after --profile-tsv")
+      }
+      profile_tsv = Some(args[i])
+    } else if arg == "--in-memory" {
+      in_memory = true
+    } else {
+      filtered.push(arg)
+    }
+    i += 1
+  }
+  Ok((filtered, profile_tsv, in_memory))
+}
+
+///|
+fn elapsed_ms_from(start : @bench.Timestamp) -> Int {
+  let elapsed_us = @bench.monotonic_clock_end(start)
+  let elapsed_ms = (elapsed_us / 1000.0).to_int()
+  if elapsed_ms <= 0 {
+    1
+  } else {
+    elapsed_ms
+  }
+}
+
+///|
+fn compile_lite_cmd(
+  args : Array[String],
+  fs : &@io.FileSystemAdapter,
+) -> Result[String, String] {
+  let (compile_args, profile_tsv, in_memory) = match split_compile_lite_args(args) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let opts = match parse_compile_cmd_args(compile_args) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  match compile_lite_validate_opts(opts, in_memory) {
+    Ok(_) => ()
+    Err(err) => return Err(err)
+  }
+  let out_path = match opts.out_path {
+    Some(path) => path
+    None => ""
+  }
+  let start_total = @bench.monotonic_clock_start()
+  let start_load = @bench.monotonic_clock_start()
+  let loaded = match @loader.load_db_with_fs(opts.entry_path, fs) {
+    Ok(v) => v
+    Err(err) => return Err("compile-lite: " + err)
+  }
+  let load_ms = elapsed_ms_from(start_load)
+  let (db, entry) = loaded
+  let start_type = @bench.monotonic_clock_start()
+  let _ = db.types(entry)
+  let type_ms = elapsed_ms_from(start_type)
+  let start_compile = @bench.monotonic_clock_start()
+  let wasm_bytes = @runtime_compile.compile_module_wasm_with_opt_level(
+    db,
+    entry,
+    no_dce=opts.no_dce,
+    opt_level=opts.opt_level,
+    debug_errors=false,
+    http_host_imports=false,
+  ) catch {
+    e => return Err("compile-lite: " + e.to_string())
+  }
+  let compile_ms = elapsed_ms_from(start_compile)
+  let mut write_ms = 0
+  if not(in_memory) {
+    let start_write = @bench.monotonic_clock_start()
+    match @io.write_bytes_with(fs, out_path, wasm_bytes) {
+      Ok(_) => ()
+      Err(err) => return Err("compile-lite: " + err)
+    }
+    write_ms = elapsed_ms_from(start_write)
+  }
+  let total_ms = elapsed_ms_from(start_total)
+  match profile_tsv {
+    Some(path) => {
+      let content =
+        "stage\telapsed_ms\n" +
+        "load\t" +
+        load_ms.to_string() +
+        "\n" +
+        "type\t" +
+        type_ms.to_string() +
+        "\n" +
+        "compile\t" +
+        compile_ms.to_string() +
+        "\n" +
+        "write\t" +
+        write_ms.to_string() +
+        "\n" +
+        "total\t" +
+        total_ms.to_string() +
+        "\n"
+      match @io.write_string_with(fs, path, content) {
+        Ok(_) => ()
+        Err(err) => return Err("compile-lite: failed to write profile tsv: " + err)
+      }
+    }
+    None => ()
+  }
+  Ok(out_path)
+}
+
+///|
 fn main {
   let raw_args = @sys.get_cli_args()
   let args = args_tail(raw_args, 1)
+  let is_lite = args.length() > 0 && args[0] == "compile-lite"
   let compile_args = if args.length() > 0 && args[0] == "compile" {
+    args_tail(args, 1)
+  } else if is_lite {
     args_tail(args, 1)
   } else {
     args
@@ -450,7 +596,12 @@ fn main {
     return
   }
   let fs = @io.default_fs_adapter()
-  match compile_cmd(compile_args, fs) {
+  let result = if is_lite {
+    compile_lite_cmd(compile_args, fs)
+  } else {
+    compile_cmd(compile_args, fs)
+  }
+  match result {
     Ok(path) => println("wrote " + path)
     Err("help") => print_usage()
     Err(err) => {

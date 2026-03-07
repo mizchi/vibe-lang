@@ -58,6 +58,13 @@ Completed items are archived in `docs/DONE.md`.
 - [x] refactor: builtins 登録を宣言的テーブルへ統合
   - `builtin_defs` 配列（4-tuple: name, params, wasm_idx, has_return）で一元管理
   - codegen.vibe (20 entries) + codegen_gc.vibe (18 entries) 両方に適用
+- [x] checker: `SImport` の alias バインドで元シンボルの型を維持
+  - `checker_stmt.vibe` で `env_lookup(env, bound_name)` を `env_lookup(env, name)` に修正
+- [x] checker: `SImport` で import 名解決の局所 lookup cache を導入
+  - 重複 import 名の `env_lookup` をキャッシュし、同一ステートメント内の線形探索を削減
+- [x] checker: `types.vibe` の `array_concat` 連鎖を `array_push` 中心に置換
+  - `collect_tvars` / `generalize` / `instantiate` / `subst_apply` のホットパスで中間配列生成を削減
+  - `subst_lookup` / `subst_bounds` を再帰から反復走査へ変更し、深い substitution での fuel 消費を抑制
 - [x] refactor: parser `parse_impl(mode: Int)` を mode 定数 + 小関数へ分解
   - `mode_block/mode_if/mode_match/mode_while/mode_handle/mode_for_in` 定数を導入
   - precedence modes (0-10) は算術的に使われるためそのまま維持
@@ -86,15 +93,14 @@ Completed items are archived in `docs/DONE.md`.
 
 ### Check/Compile Perf Parity Backlog
 
-- [ ] `check` parity: host `vibe check` と selfhost `vibe_check_wasi` の機能差分を解消する
-  - 現状の差分（2026-03-07 時点）:
-    - 依存 diagnostics の収集範囲の仕様固定が未了（transitive 伝播時の件数/重複の扱いを host と揃える）
+- [x] `check` parity: host `vibe check` と selfhost `vibe_check_wasi` の機能差分を解消する
   - 直近で解消済み:
     - selfhost `files[].graph_head` を JSON 出力（index.vbundle 由来、未解決時は `null`）
     - selfhost `--check` の複数ファイル入力
     - selfhost `--format` の複数ファイル入力（`files[]` JSON で返却）
     - selfhost `--human` 出力（check/format の text output）
     - selfhost `error_count` を host 互換（entry diagnostics + layering）へ調整
+    - 依存 diagnostics の収集範囲を host 互換で固定（direct import scope、transitive は upstream error 経由）
     - 依存 import 先 diagnostics の root cause 優先表示
     - std layering violation 検証
     - selfhost JSON に parity capability flags を追加（`parity.graph_head_available` など）
@@ -102,19 +108,22 @@ Completed items are archived in `docs/DONE.md`.
 - [x] `check` perf 比較を「同一機能経路」に揃える
   - host/selfhost どちらも最小経路（余計な debug/log 出力なし）を使うベンチ実行モードを用意する
   - `bench-selfhost-perf` を追加し、固定ケース + 同一引数で check/compile を計測
+  - `check` の段階別時間 TSV（`load/type/total`）を host/selfhost 両方で出力
   - DoD: `bench-selfhost-perf` の check 比較で、実行経路の差分が仕様化され再現可能
 - [x] host `check` の常時 debug 出力を bench 時に無効化する
   - `check_debug` ログを `VIBE_CHECK_DEBUG` で制御し、bench では `0` を適用
   - DoD: bench 実行時に余分な stdout がなく、計測ノイズを抑制
 
-- [ ] `compile` 厳密比較の最小経路を固定する（host/selfhost 共通）
+- [x] `compile` 厳密比較の最小経路を固定する（host/selfhost 共通）
   - 比較対象は共通フラグのみ: `--wasm --no-dce`（coverage / wite / host-imports / component 系は除外）
   - case set は固定ファイル (`bench/selfhost_perf/cases.txt`) を基準にする
-  - 出力 write を含む/含まないの2モード（end-to-end, in-memory）を分離して計測する
-  - DoD: 同一ケース群で `parse+load`, `type`, `codegen`, `emit/write` の段階別 ms を host/selfhost 両方で取得
-- [ ] `compile` 比較用の lightweight command を追加する
+  - [x] `parse+load`, `type`, `compile`, `write`, `total` の段階別 ms を host/selfhost 両方で TSV 出力
+  - [x] 出力 write を含む/含まないの2モード（end-to-end, in-memory）を分離して計測する
+- [x] `compile` 比較用の lightweight command を追加する
   - CLI の周辺処理（表示・補助機能）を除いた runtime_compile 直結コマンドを host/selfhost の両方に用意
-  - DoD: `bench-selfhost-perf` が lightweight command を利用でき、総時間と段階別時間を TSV 出力
+  - `vibe compile-lite` / `vibe_compile_wasi compile-lite` を追加し、`bench-selfhost-perf` の compile 経路を切替済み
+  - `bench-selfhost-perf` で段階別時間 TSV（`raw_stage.<mode>.tsv`, `stage_summary.<mode>.tsv`）を出力
+  - `VIBE_SELFHOST_PERF_REBUILD=auto|always|never` で計測前ビルドを制御（既定: `auto`）
 
 ## Self-host Parity: MoonBit 実装と結果一致
 

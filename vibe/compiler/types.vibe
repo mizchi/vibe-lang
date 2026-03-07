@@ -289,26 +289,125 @@ export let find_typedef = (defs: Array[TypeDef], name: String) -> Option[TypeDef
   go(0)
 }
 
-let rec subst_bounds = (s: Subst, id: Int) -> Array[String] {
-  match s {
-    SubstEmpty => array_slice([
-      ""
-    ], 0, 0),
-    SubstBind(_, _, rest) => subst_bounds(rest, id),
-    SubstBound(bid, bounds, rest) => if eq(bid, id) {
-      bounds
-    } else subst_bounds(rest, id)
+let subst_bounds = (s: Subst, id: Int) -> Array[String] {
+  let empty = array_slice([
+    ""
+  ], 0, 0)
+  let mut cur = s
+  let mut out = empty
+  let mut done = false
+  while not(done) {
+    match cur {
+      SubstEmpty => {
+        done = true
+      },
+      SubstBind(_, _, rest) => {
+        cur = rest
+      },
+      SubstBound(bid, bounds, rest) => {
+        if eq(bid, id) {
+          out = bounds
+          done = true
+        } else {
+          cur = rest
+        }
+      }
+    }
+  }
+  out
+}
+
+let rec int_bounds_has_id = (pairs: Array[(Int, Array[String])], id: Int, i: Int) -> Bool {
+  if i >= array_length(pairs) {
+    false
+  } else {
+    let (pid, _) = array_get(pairs, i)
+    if eq(pid, id) {
+      true
+    } else {
+      int_bounds_has_id(pairs, id, i + 1)
+    }
   }
 }
 
-export let rec subst_lookup = (s: Subst, id: Int) -> Option[Type] {
-  match s {
-    SubstEmpty => None,
-    SubstBind(i, ty, rest) => if eq(i, id) {
-      Some(ty)
-    } else subst_lookup(rest, id),
-    SubstBound(_, _, rest) => subst_lookup(rest, id)
+let rec int_bounds_lookup = (pairs: Array[(Int, Array[String])], id: Int, i: Int) -> Array[String] {
+  if i >= array_length(pairs) {
+    array_slice([
+      ""
+    ], 0, 0)
+  } else {
+    let (pid, bounds) = array_get(pairs, i)
+    if eq(pid, id) {
+      bounds
+    } else {
+      int_bounds_lookup(pairs, id, i + 1)
+    }
   }
+}
+
+let collect_subst_bounds_pairs = (s: Subst) -> Array[(Int, Array[String])] {
+  let out = array_slice([
+    (0, array_slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let mut cur = s
+  let mut done = false
+  while not(done) {
+    match cur {
+      SubstEmpty => {
+        done = true
+      },
+      SubstBind(_, _, rest) => {
+        cur = rest
+      },
+      SubstBound(id, bounds, rest) => {
+        if not(int_bounds_has_id(out, id, 0)) {
+          array_push(out, (id, bounds))
+        }
+        cur = rest
+      }
+    }
+  }
+  out
+}
+
+let rec int_int_lookup_or = (pairs: Array[(Int, Int)], key: Int, fallback: Int, i: Int) -> Int {
+  if i >= array_length(pairs) {
+    fallback
+  } else {
+    let (k, v) = array_get(pairs, i)
+    if eq(k, key) {
+      v
+    } else {
+      int_int_lookup_or(pairs, key, fallback, i + 1)
+    }
+  }
+}
+
+export let subst_lookup = (s: Subst, id: Int) -> Option[Type] {
+  let mut cur = s
+  let mut out : Option[Type] = None
+  let mut done = false
+  while not(done) {
+    match cur {
+      SubstEmpty => {
+        done = true
+      },
+      SubstBind(i, ty, rest) => {
+        if eq(i, id) {
+          out = Some(ty)
+          done = true
+        } else {
+          cur = rest
+        }
+      },
+      SubstBound(_, _, rest) => {
+        cur = rest
+      }
+    }
+  }
+  out
 }
 
 export let rec subst_apply = (s: Subst, ty: Type) -> Type {
@@ -335,9 +434,7 @@ export let rec subst_apply = (s: Subst, ty: Type) -> Type {
             out = cur
             done = true
           } else {
-            seen = array_concat(seen, [
-              vid
-            ])
+            array_push(seen, vid)
             match subst_lookup(s, vid) {
               Some(next) => {
                 cur = next
@@ -463,43 +560,40 @@ let rec array_has_int = (arr: Array[Int], val: Int, i: Int) -> Bool {
 }
 
 export let collect_tvars = (ty: Type) -> Array[Int] {
-  let rec go = (t: Type, acc: Array[Int]) -> Array[Int] {
-    match t {
-      CtVar(id) => if array_has_int(acc, id, 0) {
-        acc
-      } else array_concat(acc, [
-        id
-      ]),
-      CtFn(params, ret, _) => {
-        let plen = array_length(params)
-        let rec do_params = (i: Int, a: Array[Int]) -> Array[Int] {
-          if i >= plen {
-            a
-          }
-          else do_params(i + 1, go(array_get(params, i), a))
-        }
-        go(ret, do_params(0, acc))
-      },
-      CtArray(elem) => go(elem, acc),
-      CtOption(elem) => go(elem, acc),
-      CtTuple(elems) => {
-        let elen = array_length(elems)
-        let rec do_elems = (i: Int, a: Array[Int]) -> Array[Int] {
-          if i >= elen {
-            a
-          }
-          else do_elems(i + 1, go(array_get(elems, i), a))
-        }
-        do_elems(0, acc)
-      },
-      CtForAll(_, _, body) => go(body, acc),
-      _ => acc
-    }
-  }
-  let empty = array_slice([
+  let out = array_slice([
     0
   ], 0, 0)
-  go(ty, empty)
+  let add_unique = (id: Int) -> Unit {
+    if not(array_has_int(out, id, 0)) {
+      array_push(out, id)
+    }
+  }
+  let rec walk = (t: Type) -> Int {
+    match t {
+      CtVar(id) => {
+        add_unique(id)
+        0
+      },
+      CtFn(params, ret, _) => {
+        for p in params {
+          let _ = walk(p)
+        }
+        walk(ret)
+      },
+      CtArray(elem) => walk(elem),
+      CtOption(elem) => walk(elem),
+      CtTuple(elems) => {
+        for e in elems {
+          let _ = walk(e)
+        }
+        0
+      },
+      CtForAll(_, _, body) => walk(body),
+      _ => 0
+    }
+  }
+  let _ = walk(ty)
+  out
 }
 
 export let generalize = (s: Subst, ty: Type) -> Type {
@@ -509,29 +603,18 @@ export let generalize = (s: Subst, ty: Type) -> Type {
     resolved
   }
   else {
-    let empty_vb = array_slice([
+    let bounds_pairs = collect_subst_bounds_pairs(s)
+    let var_bounds = array_slice([
       (0, array_slice([
         ""
       ], 0, 0))
     ], 0, 0)
-    let vlen = array_length(tvars)
-    let rec collect_bounds = (i: Int, acc: Array[(Int, Array[String])]) -> Array[(Int, Array[String])] {
-      if i >= vlen {
-        acc
-      }
-      else {
-        let vid = array_get(tvars, i)
-        let bounds = subst_bounds(s, vid)
-        if eq(array_length(bounds), 0) {
-          collect_bounds(i + 1, acc)
-        } else {
-          collect_bounds(i + 1, array_concat(acc, [
-            (vid, bounds)
-          ]))
-        }
+    for vid in tvars {
+      let bounds = int_bounds_lookup(bounds_pairs, vid, 0)
+      if not(eq(array_length(bounds), 0)) {
+        array_push(var_bounds, (vid, bounds))
       }
     }
-    let var_bounds = collect_bounds(0, empty_vb)
     CtForAll(tvars, var_bounds, resolved)
   }
 }
@@ -645,37 +728,31 @@ export let instantiate = (ty: Type, c: Int) -> (Type, Int, Array[(Int, Array[Str
   match ty {
     CtForAll(bound_vars, var_bounds, body) => {
       let blen = array_length(bound_vars)
-      let rec build_subst = (i: Int, acc: Subst, nc: Int) -> (Subst, Int) {
+      let rec build_subst = (i: Int, acc: Subst, id_map: Array[(Int, Int)], nc: Int) -> (Subst, Array[(Int, Int)], Int) {
         if i >= blen {
-          (acc, nc)
+          (acc, id_map, nc)
         }
         else {
           let old_id = array_get(bound_vars, i)
-          build_subst(i + 1, SubstBind(old_id, CtVar(nc), acc), nc + 1)
+          array_push(id_map, (old_id, nc))
+          build_subst(i + 1, SubstBind(old_id, CtVar(nc), acc), id_map, nc + 1)
         }
       }
-      let (inst_s, c1) = build_subst(0, SubstEmpty, c)
+      let id_map = array_slice([
+        (0, 0)
+      ], 0, 0)
+      let (inst_s, id_map2, c1) = build_subst(0, SubstEmpty, id_map, c)
       // Remap var_bounds: old_id -> new_id
-      let vblen = array_length(var_bounds)
-      let rec remap_bounds = (i: Int, acc: Array[(Int, Array[String])]) -> Array[(Int, Array[String])] {
-        if i >= vblen {
-          acc
-        }
-        else {
-          let (old_id, bounds) = array_get(var_bounds, i)
-          let new_id = match subst_lookup(inst_s, old_id) {
-            Some(t) => match t {
-              CtVar(nid) => nid,
-              _ => old_id
-            },
-            None => old_id
-          }
-          remap_bounds(i + 1, array_concat(acc, [
-            (new_id, bounds)
-          ]))
-        }
+      let new_bounds = array_slice([
+        (0, array_slice([
+          ""
+        ], 0, 0))
+      ], 0, 0)
+      for var_bound in var_bounds {
+        let (old_id, bounds) = var_bound
+        let new_id = int_int_lookup_or(id_map2, old_id, old_id, 0)
+        array_push(new_bounds, (new_id, bounds))
       }
-      let new_bounds = remap_bounds(0, empty_var_bounds)
       (subst_apply(inst_s, body), c1, new_bounds)
     },
     _ => (ty, c, empty_var_bounds)
