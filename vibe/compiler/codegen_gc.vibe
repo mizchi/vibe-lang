@@ -46,7 +46,7 @@ import ./wasm_emit.vibe {
 import ./codegen_common.vibe {
   emit_i32_sub, emit_i32_mul, emit_i32_ne, emit_i32_eq, emit_i32_ge_u, emit_i32_eqz,
   emit_i64_store, emit_i64_load, emit_i64_extend_i32_u, emit_memory_copy,
-  resolve_local, resolve_func, FuncTable, StrTable, CtorTable,
+  resolve_local, resolve_func, FuncTable, StrTable, LambdaTable, CtorTable,
   emit_str_ref, collect_strings_stmts,
   array_contains_str, collect_free_vars, is_mut_captured_in,
   str_table_lookup, find_catchall_idx, find_func_stmt,
@@ -67,11 +67,7 @@ let rec compile_expr_gc = (
   ref_cell_names: Array[String],
   ref_local_indices: Array[Int],
   refcell_type_idx: Int,
-  lambda_bodies: Array[Array[Int]],
-  lambda_param_counts: Array[Int],
-  lambda_captures: Array[Array[String]],
-  lambda_meta_i32: Array[Int],
-  lambda_meta_i64: Array[Int],
+  lambda_table: LambdaTable,
   num_user_funcs: Int,
   func_offset: Int,
   closure_type_base: Int,
@@ -79,7 +75,7 @@ let rec compile_expr_gc = (
 ) -> Int with { Error } {
   // shorthand for recursive call
   let ce = (b: Array[Int], e: Expr, ln: Array[String], nl: Int, d: Int) -> Int with { Error } {
-    compile_expr_gc(b, e, ln, nl, func_table, str_table, d, ref_cell_names, ref_local_indices, refcell_type_idx, lambda_bodies, lambda_param_counts, lambda_captures, lambda_meta_i32, lambda_meta_i64, num_user_funcs, func_offset, closure_type_base, ctor_table)
+    compile_expr_gc(b, e, ln, nl, func_table, str_table, d, ref_cell_names, ref_local_indices, refcell_type_idx, lambda_table, num_user_funcs, func_offset, closure_type_base, ctor_table)
   }
   match expr {
     EInt(n) => {
@@ -793,19 +789,18 @@ let rec compile_expr_gc = (
         func_table,
         str_table, -1,
         lam_ref_cells, lam_ref_local_indices, refcell_type_idx,
-        lambda_bodies, lambda_param_counts, lambda_captures,
-        lambda_meta_i32, lambda_meta_i64, num_user_funcs, func_offset,
+        lambda_table, num_user_funcs, func_offset,
         closure_type_base, ctor_table
       )
 
       // Record lambda AFTER body compilation (nested lambdas already added)
-      let lambda_idx = array_length(lambda_bodies)
-      array_push(lambda_bodies, lam_buf)
-      array_push(lambda_param_counts, user_params + 1)  // +1 for env
-      array_push(lambda_captures, captures)
+      let lambda_idx = array_length(lambda_table.bodies)
+      array_push(lambda_table.bodies, lam_buf)
+      array_push(lambda_table.param_counts, user_params + 1)  // +1 for env
+      array_push(lambda_table.captures, captures)
       let extra_lam = if final_lam_nl > (user_params + 1) { final_lam_nl - (user_params + 1) } else { 0 }
-      array_push(lambda_meta_i32, 0)
-      array_push(lambda_meta_i64, extra_lam)
+      array_push(lambda_table.meta_i32, 0)
+      array_push(lambda_table.meta_i64, extra_lam)
 
       // Emit closure creation code
       let table_slot = num_user_funcs + lambda_idx
@@ -1552,11 +1547,13 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
   let closure_type_base = 10
 
   // Lambda accumulators (populated during compilation)
-  let lambda_bodies_w = array_slice([array_slice([0], 0, 0)], 0, 0)
-  let lambda_param_counts_w = array_slice([0], 0, 0)
-  let lambda_captures_w = array_slice([array_slice([""], 0, 0)], 0, 0)
-  let lambda_meta_i32_w = array_slice([0], 0, 0)
-  let lambda_meta_i64_w = array_slice([0], 0, 0)
+  let lt_w = LambdaTable::{
+    bodies: array_slice([array_slice([0], 0, 0)], 0, 0),
+    param_counts: array_slice([0], 0, 0),
+    captures: array_slice([array_slice([""], 0, 0)], 0, 0),
+    meta_i32: array_slice([0], 0, 0),
+    meta_i64: array_slice([0], 0, 0)
+  }
 
   // === Code section bodies ===
   let bodies = array_slice([array_slice([0], 0, 0)], 0, 0)
@@ -1675,8 +1672,7 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
               st,
               -1,
               ref_cell_names_f, ref_local_indices_f, refcell_type_idx,
-              lambda_bodies_w, lambda_param_counts_w, lambda_captures_w,
-              lambda_meta_i32_w, lambda_meta_i64_w, num_user_funcs, func_offset,
+              lt_w, num_user_funcs, func_offset,
               closure_type_base,
               CtorTable::{ names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, struct_names: struct_names, struct_field_names: struct_field_names }
             )
@@ -1694,7 +1690,7 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
     bi = bi + 1
   }
 
-  let num_lambdas = array_length(lambda_bodies_w)
+  let num_lambdas = array_length(lt_w.bodies)
 
   // _start body
   let start_body = bytebuf_new()
@@ -1714,9 +1710,9 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
   // Append lambda bodies after _start
   let mut li = 0
   while li < num_lambdas {
-    array_push(bodies, array_get(lambda_bodies_w, li))
-    array_push(meta_i32, array_get(lambda_meta_i32_w, li))
-    array_push(meta_i64, array_get(lambda_meta_i64_w, li))
+    array_push(bodies, array_get(lt_w.bodies, li))
+    array_push(meta_i32, array_get(lt_w.meta_i32, li))
+    array_push(meta_i64, array_get(lt_w.meta_i64, li))
     array_push(user_ref_local_indices_all, array_slice([0], 0, 0))
     li = li + 1
   }
@@ -1725,7 +1721,7 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
   let mut max_closure_arity = -1
   let mut lai = 0
   while lai < num_lambdas {
-    let lpc = array_get(lambda_param_counts_w, lai) - 1
+    let lpc = array_get(lt_w.param_counts, lai) - 1
     if lpc > max_closure_arity {
       max_closure_arity = lpc
     }
@@ -1809,7 +1805,7 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
   // Lambda function type indices
   let mut lfi = 0
   while lfi < num_lambdas {
-    let lam_user_params = array_get(lambda_param_counts_w, lfi) - 1
+    let lam_user_params = array_get(lt_w.param_counts, lfi) - 1
     array_push(func_type_indices, closure_type_base + lam_user_params)
     lfi = lfi + 1
   }
