@@ -496,6 +496,14 @@ fn parse_bool_flag(value : String) -> Bool {
 }
 
 ///|
+fn check_debug_enabled() -> Bool {
+  match @sys.get_env_var("VIBE_CHECK_DEBUG") {
+    Some(raw) => parse_bool_flag(raw)
+    None => true
+  }
+}
+
+///|
 fn compile_coverage_test_mode_enabled() -> Bool {
   match @sys.get_env_var("VIBE_TEST_COVERAGE") {
     Some(raw) => parse_bool_flag(raw)
@@ -1537,16 +1545,21 @@ fn check_cmd(args : Array[String]) -> Unit {
   if args.length() == 0 {
     abort("check: expected <file...>")
   }
+  let check_debug = check_debug_enabled()
   let mut total_errors = 0
   for entry_path in args {
-    println("[check_debug] resolving: \{entry_path}")
+    if check_debug {
+      println("[check_debug] resolving: \{entry_path}")
+    }
     match resolve_entry_artifacts(entry_path, skip_types=true) {
       Err(err) => {
         println("check: \{entry_path}: \{err}")
         total_errors += 1
       }
       Ok((db, entry, _lock, _index, graph_head)) => {
-        println("[check_debug] resolved: \{entry}")
+        if check_debug {
+          println("[check_debug] resolved: \{entry}")
+        }
         let source = match db.get_source(entry) {
           Some(v) => v
           None =>
@@ -1558,9 +1571,13 @@ fn check_cmd(args : Array[String]) -> Unit {
               }
             }
         }
-        println("[check_debug] starting db.types: \{entry}")
+        if check_debug {
+          println("[check_debug] starting db.types: \{entry}")
+        }
         let _env = db.types(entry)
-        println("[check_debug] finished db.types: \{entry}")
+        if check_debug {
+          println("[check_debug] finished db.types: \{entry}")
+        }
         // Show dependency diagnostics first (root cause priority)
         let dep_imports = db.imports(entry)
         for imp in dep_imports {

@@ -18,6 +18,25 @@ import ./types.vibe {
 
 //# Functions
 
+let min_int = (a: Int, b: Int) -> Int {
+  if a < b {
+    a
+  } else {
+    b
+  }
+}
+
+let is_bool_binop = (op: String) -> Bool {
+  string_equals(op, "==")
+  || string_equals(op, "!=")
+  || string_equals(op, "<")
+  || string_equals(op, ">")
+  || string_equals(op, "<=")
+  || string_equals(op, ">=")
+  || string_equals(op, "&&")
+  || string_equals(op, "||")
+}
+
 export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int) -> (Type, Subst, Int) {
   match expr {
     EInt(_) => (CtInt, s, c),
@@ -29,19 +48,15 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
       Some(t) => {
         let (ti, c1, new_bounds) = instantiate(t, c)
         let nblen = array_length(new_bounds)
-        let rec add_bounds = (i: Int, acc: Subst) -> Subst {
-          if i >= nblen {
-            acc
+        let mut s1 = s
+        let mut bi = 0
+        while bi < nblen {
+          let (vid, bounds) = array_get(new_bounds, bi)
+          if !eq(array_length(bounds), 0) {
+            s1 = subst_add_bound(s1, vid, bounds)
           }
-          else {
-            let (vid, bounds) = array_get(new_bounds, i)
-            if eq(array_length(bounds), 0) {
-              add_bounds(i + 1, acc)
-            }
-            else add_bounds(i + 1, subst_add_bound(acc, vid, bounds))
-          }
+          bi = bi + 1
         }
-        let s1 = add_bounds(0, s)
         (ti, s1, c1)
       },
       None => match lookup_builtin(name) {
@@ -82,36 +97,31 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
     ECall(callee, args) => {
       let (ct, s1, c1) = check_expr(callee, env, defs, s, c)
       let alen = array_length(args)
-      let rec check_args = (i: Int, acc_s: Subst, acc_c: Int, arg_types: Array[Type]) -> (Array[Type], Subst, Int) {
-        if i >= alen {
-          (arg_types, acc_s, acc_c)
-        }
-        else {
-          let (at, ns, nc) = check_expr(array_get(args, i), env, defs, acc_s, acc_c)
-          check_args(i + 1, ns, nc, array_concat(arg_types, [
-            at
-          ]))
-        }
-      }
-      let empty_types = array_slice([
+      let arg_tys = array_slice([
         CtUnknown
       ], 0, 0)
-      let (arg_tys, s2, c2) = check_args(0, s1, c1, empty_types)
+      let mut ai = 0
+      let mut s2 = s1
+      let mut c2 = c1
+      while ai < alen {
+        let (at, ns, nc) = check_expr(array_get(args, ai), env, defs, s2, c2)
+        array_push(arg_tys, at)
+        s2 = ns
+        c2 = nc
+        ai = ai + 1
+      }
       match subst_apply(s2, ct) {
         CtFn(param_tys, ret, _) => {
-          let rec unify_args = (i: Int, us: Subst) -> Subst {
-            if i >= array_length(arg_tys) || i >= array_length(param_tys) {
-              us
+          let mut s3 = s2
+          let mut ui = 0
+          let ul = min_int(array_length(arg_tys), array_length(param_tys))
+          while ui < ul {
+            s3 = match unify(array_get(param_tys, ui), array_get(arg_tys, ui), s3) {
+              Some(su) => su,
+              None => s3
             }
-            else {
-              let ns = match unify(array_get(param_tys, i), array_get(arg_tys, i), us) {
-                Some(su) => su,
-                None => us
-              }
-              unify_args(i + 1, ns)
-            }
+            ui = ui + 1
           }
-          let s3 = unify_args(0, s2)
           (subst_apply(s3, ret), s3, c2)
         },
         _ => (CtUnknown, s2, c2)
@@ -120,28 +130,7 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
     EBinOp(op, left, right) => {
       let (_, s1, c1) = check_expr(left, env, defs, s, c)
       let (_, s2, c2) = check_expr(right, env, defs, s1, c1)
-      if string_equals(op, "==") {
-        (CtBool, s2, c2)
-      }
-      else if string_equals(op, "!=") {
-        (CtBool, s2, c2)
-      }
-      else if string_equals(op, "<") {
-        (CtBool, s2, c2)
-      }
-      else if string_equals(op, ">") {
-        (CtBool, s2, c2)
-      }
-      else if string_equals(op, "<=") {
-        (CtBool, s2, c2)
-      }
-      else if string_equals(op, ">=") {
-        (CtBool, s2, c2)
-      }
-      else if string_equals(op, "&&") {
-        (CtBool, s2, c2)
-      }
-      else if string_equals(op, "||") {
+      if is_bool_binop(op) {
         (CtBool, s2, c2)
       }
       else (CtInt, s2, c2)
@@ -230,38 +219,38 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
       }
       let (tp_env, s0, c0) = alloc_tparams(0, env, s, c)
       let plen = array_length(params)
-      let rec bind_params = (i: Int, acc: TypeEnv, acc_s: Subst, acc_c: Int, ptypes: Array[Type]) -> (TypeEnv, Subst, Int, Array[Type]) {
-        if i >= plen {
-          (acc, acc_s, acc_c, ptypes)
-        }
-        else {
-          let (name, ann) = array_get(params, i)
-          let (pt, ns, nc) = match ann {
-            Some(te) => {
-              let resolved = resolve_type_expr(te, defs)
-              let pt2 = match resolved {
-                CtNamed(tn, _) => match env_lookup(acc, tn) {
-                  Some(t) => t,
-                  None => resolved
-                },
-                _ => resolved
-              }
-              (pt2, acc_s, acc_c)
-            },
-            None => {
-              let (tv, nc) = fresh_var(acc_c)
-              (tv, acc_s, nc)
-            }
-          }
-          bind_params(i + 1, env_bind(acc, name, pt), ns, nc, array_concat(ptypes, [
-            pt
-          ]))
-        }
-      }
-      let empty_types = array_slice([
+      let mut fn_env = tp_env
+      let mut s1 = s0
+      let mut c1 = c0
+      let param_types = array_slice([
         CtUnknown
       ], 0, 0)
-      let (fn_env, s1, c1, param_types) = bind_params(0, tp_env, s0, c0, empty_types)
+      let mut pi = 0
+      while pi < plen {
+        let (name, ann) = array_get(params, pi)
+        let (pt, ns, nc) = match ann {
+          Some(te) => {
+            let resolved = resolve_type_expr(te, defs)
+            let pt2 = match resolved {
+              CtNamed(tn, _) => match env_lookup(fn_env, tn) {
+                Some(t) => t,
+                None => resolved
+              },
+              _ => resolved
+            }
+            (pt2, s1, c1)
+          },
+          None => {
+            let (tv, nc2) = fresh_var(c1)
+            (tv, s1, nc2)
+          }
+        }
+        fn_env = env_bind(fn_env, name, pt)
+        array_push(param_types, pt)
+        s1 = ns
+        c1 = nc
+        pi = pi + 1
+      }
       let (bt, s2, c2) = check_expr(body, fn_env, defs, s1, c1)
       let resolved_params = for p in param_types {
         subst_apply(s2, p)
@@ -279,16 +268,15 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
     ,
     EContinue(args) => {
       let alen = array_length(args)
-      let rec check_args = (i: Int, acc_s: Subst, acc_c: Int) -> (Subst, Int) {
-        if i >= alen {
-          (acc_s, acc_c)
-        }
-        else {
-          let (_, ns, nc) = check_expr(array_get(args, i), env, defs, acc_s, acc_c)
-          check_args(i + 1, ns, nc)
-        }
+      let mut s1 = s
+      let mut c1 = c
+      let mut ai = 0
+      while ai < alen {
+        let (_, ns, nc) = check_expr(array_get(args, ai), env, defs, s1, c1)
+        s1 = ns
+        c1 = nc
+        ai = ai + 1
       }
-      let (s1, c1) = check_args(0, s, c)
       (CtUnit, s1, c1)
     },
     _ => (CtUnknown, s, c)

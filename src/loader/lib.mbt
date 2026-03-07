@@ -232,6 +232,41 @@ pub fn resolve_entry_path(path : String) -> String {
 }
 
 ///|
+fn graph_head_from_index_vbundle(source : String) -> String? {
+  let parsed : Json = @json.parse(source) catch {
+    _ => return None
+  }
+  match parsed {
+    Json::Object(obj) =>
+      match obj.get("graph_head") {
+        Some(Json::String(hash)) => Some(hash)
+        _ => None
+      }
+    _ => None
+  }
+}
+
+///|
+pub fn resolve_entry_graph_head_with_fs(
+  entry_path : String,
+  fs : &@io.FileSystemAdapter,
+) -> String? {
+  let resolved = resolve_entry_path_with_fs(entry_path, fs)
+  let index_root = @codebase.resolve_index_root_with_fs(resolved, fs)
+  let index_vbundle_path = index_root + "/index.vbundle"
+  let source = match @io.read_string_with(fs, index_vbundle_path) {
+    Ok(v) => v
+    Err(_) => return None
+  }
+  graph_head_from_index_vbundle(source)
+}
+
+///|
+pub fn resolve_entry_graph_head(entry_path : String) -> String? {
+  resolve_entry_graph_head_with_fs(entry_path, @io.default_fs_adapter())
+}
+
+///|
 fn resolve_import_module_entry(path : String) -> String {
   let normalized = @vibe_fs.normalize_path(path)
   if normalized.has_suffix(".vibe") ||

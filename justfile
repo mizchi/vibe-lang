@@ -389,6 +389,11 @@ bench-advanced-graph:
 bench-typechecker:
     moon bench -p benches -f checker_bench.mbt
 
+# Compare host vs selfhost compile/check speed on the same case set
+# env: VIBE_SELFHOST_PERF_RUNS, VIBE_SELFHOST_PERF_CASES_FILE, VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO, VIBE_SELFHOST_PERF_MAX_CHECK_RATIO
+bench-selfhost-perf *paths:
+    scripts/bench_selfhost_perf.sh {{paths}}
+
 # Product bundle-size monitor (live examples/ + use-case importers).
 # This captures product-facing size drift, including source edits.
 # Default importer mode is runtime-first (`--wasm`/`--wasm-js-string`).

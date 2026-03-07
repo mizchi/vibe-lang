@@ -190,6 +190,53 @@ test "loader resolve_entry_path_with_fs uses index.vibe for directory" {
 }
 
 ///|
+test "loader resolve_entry_graph_head_with_fs reads graph_head from index.vbundle" {
+  let root = "/workspace"
+  let pkg = root + "/pkg"
+  let fs = MemIoAdapter::new(root)
+  match fs.create_dir(pkg) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match fs.write_string(pkg + "/index.vibe", "let version = \"0.1.0\"\n") {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match
+    fs.write_string(
+      pkg + "/index.vbundle",
+      "{\"graph_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+    ) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match resolve_entry_graph_head_with_fs(pkg, fs) {
+    Some(hash) => assert_eq(hash, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    None => fail("expected graph_head")
+  }
+}
+
+///|
+test "loader resolve_entry_graph_head_with_fs returns None without graph_head" {
+  let root = "/workspace"
+  let pkg = root + "/pkg"
+  let fs = MemIoAdapter::new(root)
+  match fs.create_dir(pkg) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match fs.write_string(pkg + "/index.vibe", "let version = \"0.1.0\"\n") {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match fs.write_string(pkg + "/index.vbundle", "{\"lock\":{}}") {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  assert_eq(resolve_entry_graph_head_with_fs(pkg, fs), None)
+}
+
+///|
 test "loader resolve_import_path maps extensionless path to index.vibe endpoint" {
   let base = "/workspace/pkg"
   let resolved = resolve_import_path(base, "./dep")
