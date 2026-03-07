@@ -18,6 +18,7 @@ priv struct CodegenCtx {
   fn_table_order : Array[Int] // table slot order -> function index
   // enum info: ctor_name -> (tag_index, arity, arg_kinds)
   enum_ctor_tags : Map[String, Int]
+  mut next_ctor_tag : Int
   enum_ctor_arities : Map[String, Int]
   enum_ctor_arg_kinds : Map[String, Array[ValueKind]]
   mut fn_local_sigs : Map[String, FuncSig]
@@ -136,6 +137,7 @@ fn CodegenCtx::new(
     fn_table_slots: {},
     fn_table_order: [],
     enum_ctor_tags,
+    next_ctor_tag: 2,
     enum_ctor_arities,
     enum_ctor_arg_kinds,
     fn_local_sigs: {},

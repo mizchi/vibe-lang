@@ -41,14 +41,15 @@ Completed items are archived in `docs/DONE.md`.
 
 ### テスト方針
 
-- `VIBE_TEST_BACKEND=compiled` をメインとする（`interp` は基本的に使わない）
-- codegen_test.vibe: 132/134 pass（`fs_read_file` 依存の 2 件は compiled で常に失敗 = expected）
+- `vibe test` はデフォルトで compiled backend を使う（`VIBE_TEST_BACKEND` 未指定時）
+- interpreter backend は `VIBE_TEST_BACKEND=interpreter` を明示したときのみ使う
+- codegen_test.vibe: 134/136 pass（`fs_read_file` 依存の 2 件は compiled で常に失敗 = expected）
 
 ### Compiler Review Backlog (readability + selfhost robustness)
 
-- [ ] codegen: enum ctor tag をモジュール全体で一意にする
-  - 現状は enum ごとに `vi` で tag を再利用しており、別 enum 間で衝突しうる
-  - DoD: ctor 判定は `enum-id + ctor-id` 相当で一意、交差ケースの regression test を追加
+- [x] codegen: enum ctor tag をモジュール全体で一意にする
+  - `vi`（enum 内 index）をグローバルカウンタ `ctor_next_tag` / `next_ctor_tag` に変更（builtin None=0, Some=1 の後は 2 から連番）
+  - MoonBit host + selfhost 両方を修正、交差ケースの regression test を追加
 - [x] codegen: `find_catchall_idx` から `PTuple` を catch-all 扱いしない
   - `is_catchall_pat` 再帰判定: PTuple は全sub-patternがPBind/PWildの場合のみcatch-all
   - codegen.vibe の first-arm 特殊判定を `find_catchall_idx` 統一に変更
@@ -84,22 +85,28 @@ Completed items are archived in `docs/DONE.md`.
 
 ### Language/Stdlib Proposals (AI-first authoring)
 
-- [ ] language: match 網羅性チェック + 到達不能 arm 検出
-  - normalize 時に自動修正しやすい診断を提供する
+- [x] language: match 網羅性チェック + 到達不能 arm 検出
+  - 網羅性: `NonExhaustiveMatch` に不足 ctor 名の列挙を追加（`note: missing patterns: Blue` 形式）
+  - 到達不能 arm: wildcard/bind（ガードなし）の後に続く arm を `warning: unreachable match arm` で検出
+  - fixture テスト: `non_exhaustive_match.vibe` + `unreachable_match_arm.vibe` を追加
 - [ ] language: variant の安定 ID（型ID + ctorID）を IR/実行時で保持
   - 文字列名や局所 tag 依存を減らし、codegen 実装を単純化する
 - [ ] language: tolerant parser（壊れた途中コードを AST 化して保持）
   - vibe shell での書き散らしを最後に normalize 可能にする
 - [ ] language: AST rewriter / macro API（構文正規化パスを定義可能にする）
   - desugar/normalize を言語内で記述し、自己ホスト実装を縮小
-- [ ] stdlib: `Array.find_index/find_last_index/contains_by/map/filter/fold`
-  - 線形探索の手書き loop を削減して可読性を上げる
-- [ ] stdlib: `Map[String, T]`（最低限の immutable/mutable 操作）
-  - 名前解決・テーブル管理の O(n) ループを削減する
-- [ ] stdlib: `StringBuilder`
-  - 診断メッセージ組み立ての `string_concat` 連鎖を解消する
-- [ ] stdlib: `Option/Result` の `map/flat_map/or_else` ヘルパー
-  - 深い if/match 連鎖を短くし、normalize 後の形を安定化する
+- [x] stdlib: `Array.find_index/find_last_index/contains_by/map/filter/fold`
+  - `array_map/filter/fold/find/any/all/reverse/sort/contains/foreach` は既存
+  - `array_find_index/find_last_index/contains_by` を prelude に追加
+- [x] stdlib: `Map[String, T]`（最低限の immutable/mutable 操作）
+  - 既存 builtin: `map_builder/set/freeze/get/keys/values/has_key` + prelude: `map_get_or/map_map/map_filter`
+  - `map_size/map_foreach/map_entries/map_merge` を prelude に追加
+- [x] stdlib: `StringBuilder`
+  - 既存 builtin: `string_builder/string_builder_push/string_builder_freeze`
+  - `string_concat_all(parts: Array[String])` を prelude に追加（`string_concat` 連鎖の代替）
+- [x] stdlib: `Option/Result` の `map/flat_map/or_else` ヘルパー
+  - `option_map/option_flat_map/option_or_else/option_is_some/option_is_none` を prelude に追加
+  - Result は `std` モジュールに `ok/err` ヘルパーが既存
 
 ### Check/Compile Perf Parity Backlog
 
@@ -267,7 +274,7 @@ Completed items are archived in `docs/DONE.md`.
 - [x] HTTP builtins の wasm fallback を catchable throw へ固定化し、`--debug-errors` でも validate + 実行可能な回帰テストを CI に追加する（`scripts/test_http_wasm_fallback.sh`）
 - [x] `while`/`loop` の codegen で block result(i64) のスタック整合を修正（`break` 値経路と fallthrough 経路の validate 失敗を解消）
 - [x] multi-value codegen で tuple 要素数と期待 arity の不一致を吸収し、`values remaining on stack` を解消
-- [x] `vibe test` / `vibe run` の auto backend で `vibe/compiler/` 配下は compiled を優先（env 未指定時）
+- [x] `vibe test` の backend 既定値を compiled に固定（`VIBE_TEST_BACKEND` 未指定時）
 - [x] compiled backend の selfhost parity 回復
   - 2026-03-03: file-by-file 実測（`VIBE_TEST_BACKEND=compiled just run test vibe/compiler/*_test.vibe`）は **392/392 pass, 0 fail**
   - 主要修正:

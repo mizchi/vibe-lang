@@ -860,22 +860,32 @@ fn type_expr_eff(
       if not(has_wildcard) {
         match scrutinee_ty {
           @core.Type::Variant(types) => {
-            let mut missing = false
+            let missing_names : Array[String] = []
             for name, _ in types {
               if not(covered.contains(name)) {
-                missing = true
-                break
+                missing_names.push(name)
               }
             }
-            if missing {
-              raise TypeError::NonExhaustiveMatch(span~)
+            if missing_names.length() > 0 {
+              raise TypeError::NonExhaustiveMatch(missing=missing_names, span~)
             }
           }
-          @core.Type::Bool =>
-            if not(has_bool_pat && covered_true && covered_false) {
-              raise TypeError::NonExhaustiveMatch(span~)
+          @core.Type::Bool => {
+            let missing_names : Array[String] = []
+            if not(covered_true) {
+              missing_names.push("true")
             }
-          _ => if not(has_ctor) { raise TypeError::NonExhaustiveMatch(span~) }
+            if not(covered_false) {
+              missing_names.push("false")
+            }
+            if not(has_bool_pat && covered_true && covered_false) {
+              raise TypeError::NonExhaustiveMatch(missing=missing_names, span~)
+            }
+          }
+          _ =>
+            if not(has_ctor) {
+              raise TypeError::NonExhaustiveMatch(missing=[], span~)
+            }
         }
       }
       match result {

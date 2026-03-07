@@ -117,6 +117,30 @@ let prelude_source : String =
   #|  }
   #|  loop(0)
   #|}
+  #|let array_find_index = [T](xs: Array[T], pred: (x: T) -> Bool) -> Int {
+  #|  let rec loop = (i: Int) -> Int {
+  #|    if i < array_length(xs) {
+  #|      if pred(array_get(xs, i)) { i } else { loop(i + 1) }
+  #|    } else { 0 - 1 }
+  #|  }
+  #|  loop(0)
+  #|}
+  #|let array_find_last_index = [T](xs: Array[T], pred: (x: T) -> Bool) -> Int {
+  #|  let rec loop = (i: Int) -> Int {
+  #|    if i >= 0 {
+  #|      if pred(array_get(xs, i)) { i } else { loop(i - 1) }
+  #|    } else { 0 - 1 }
+  #|  }
+  #|  loop(array_length(xs) - 1)
+  #|}
+  #|let array_contains_by = [T](xs: Array[T], pred: (x: T) -> Bool) -> Bool {
+  #|  let rec loop = (i: Int) -> Bool {
+  #|    if i < array_length(xs) {
+  #|      if pred(array_get(xs, i)) { true } else { loop(i + 1) }
+  #|    } else { false }
+  #|  }
+  #|  loop(0)
+  #|}
   #|let array_reverse = [T](xs: Array[T]) -> Array[T] {
   #|  {
   #|    let b = array_builder()
@@ -176,6 +200,47 @@ let prelude_source : String =
   #|  loop(0)
   #|}
   #|let array_join = [T](xs: Array[T], sep: String) -> String { string_join(xs, sep) }
+  #|let string_concat_all = (parts: Array[String]) -> String {
+  #|  let sb = string_builder()
+  #|  let rec loop = (i: Int) -> Unit {
+  #|    if i < array_length(parts) {
+  #|      string_builder_push(sb, array_get(parts, i))
+  #|      loop(i + 1)
+  #|    } else { }
+  #|  }
+  #|  loop(0)
+  #|  string_builder_freeze(sb)
+  #|}
+  #|let option_map = [T](opt: Option[T], f: (x: T) -> T) -> Option[T] {
+  #|  match opt {
+  #|    Some(x) => Some(f(x)),
+  #|    None => None
+  #|  }
+  #|}
+  #|let option_flat_map = [T](opt: Option[T], f: (x: T) -> Option[T]) -> Option[T] {
+  #|  match opt {
+  #|    Some(x) => f(x),
+  #|    None => None
+  #|  }
+  #|}
+  #|let option_or_else = [T](opt: Option[T], default: T) -> T {
+  #|  match opt {
+  #|    Some(x) => x,
+  #|    None => default
+  #|  }
+  #|}
+  #|let option_is_some = [T](opt: Option[T]) -> Bool {
+  #|  match opt {
+  #|    Some(_) => true,
+  #|    None => false
+  #|  }
+  #|}
+  #|let option_is_none = [T](opt: Option[T]) -> Bool {
+  #|  match opt {
+  #|    Some(_) => false,
+  #|    None => true
+  #|  }
+  #|}
   #|let map_get_or = [V](m: Map[V], key: String, default: V) -> V {
   #|  if map_has_key(m, key) { map_get(m, key) } else { default }
   #|}
@@ -212,6 +277,57 @@ let prelude_source : String =
   #|    }
   #|    loop(0)
   #|    map_builder_freeze(b)
+  #|  }
+  #|}
+  #|let map_size = [V](m: Map[V]) -> Int {
+  #|  array_length(map_keys(m))
+  #|}
+  #|let map_foreach = [V](m: Map[V], f: (key: String, value: V) -> Unit) -> Unit {
+  #|  let keys = map_keys(m)
+  #|  let rec loop = (i: Int) -> Unit {
+  #|    if i < array_length(keys) {
+  #|      let k = array_get(keys, i)
+  #|      f(k, map_get(m, k))
+  #|      loop(i + 1)
+  #|    } else { }
+  #|  }
+  #|  loop(0)
+  #|}
+  #|let map_entries = [V](m: Map[V]) -> Array[(String, V)] {
+  #|  let keys = map_keys(m)
+  #|  let b = array_builder()
+  #|  let rec loop = (i: Int) -> Unit {
+  #|    if i < array_length(keys) {
+  #|      let k = array_get(keys, i)
+  #|      array_builder_push(b, (k, map_get(m, k)))
+  #|      loop(i + 1)
+  #|    } else { }
+  #|  }
+  #|  loop(0)
+  #|  array_builder_freeze(b)
+  #|}
+  #|let map_merge = [V](a: Map[V], b: Map[V]) -> Map[V] {
+  #|  {
+  #|    let out = map_builder()
+  #|    let ka = map_keys(a)
+  #|    let rec loop1 = (i: Int) -> Unit {
+  #|      if i < array_length(ka) {
+  #|        let k = array_get(ka, i)
+  #|        map_builder_set(out, k, map_get(a, k))
+  #|        loop1(i + 1)
+  #|      } else { }
+  #|    }
+  #|    loop1(0)
+  #|    let kb = map_keys(b)
+  #|    let rec loop2 = (i: Int) -> Unit {
+  #|      if i < array_length(kb) {
+  #|        let k = array_get(kb, i)
+  #|        map_builder_set(out, k, map_get(b, k))
+  #|        loop2(i + 1)
+  #|      } else { }
+  #|    }
+  #|    loop2(0)
+  #|    map_builder_freeze(out)
   #|  }
   #|}
   #|let where = [T](xs: Array[T], pred: (x: T) -> Bool) -> Array[T] {

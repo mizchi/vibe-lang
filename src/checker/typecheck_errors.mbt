@@ -27,7 +27,7 @@ suberror TypeError {
   )
   BadRec(message~ : String, span~ : @core.Span)
   BadMatch(message~ : String, span~ : @core.Span)
-  NonExhaustiveMatch(span~ : @core.Span)
+  NonExhaustiveMatch(missing~ : Array[String], span~ : @core.Span)
   BadTypeDef(message~ : String, span~ : @core.Span)
   TraitSealed(trait_name~ : String, span~ : @core.Span)
   TraitImplOverlap(trait_name~ : String, span~ : @core.Span)
@@ -212,14 +212,30 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         hint: None,
         note: None,
       }
-    TypeError::NonExhaustiveMatch(span~) =>
+    TypeError::NonExhaustiveMatch(missing~, span~) => {
+      let note : String? = if missing.length() > 0 {
+        let names = missing.iter().fold(
+          init="",
+          fn(acc, name) {
+            if acc == "" {
+              name
+            } else {
+              acc + ", " + name
+            }
+          },
+        )
+        Some("missing patterns: " + names)
+      } else {
+        None
+      }
       @core.Diagnostic::{
         stage: "type",
         message: "non-exhaustive match",
         span: Some(span),
-        hint: None,
-        note: None,
+        hint: Some("add the missing patterns or a wildcard `_` arm"),
+        note,
       }
+    }
     TypeError::BadTypeDef(message~, span~) =>
       @core.Diagnostic::{
         stage: "type",

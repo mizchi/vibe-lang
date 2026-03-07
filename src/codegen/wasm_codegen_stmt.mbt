@@ -441,7 +441,8 @@ fn compile_stmt(
       let _ = span
       for i in 0..<ctors.length() {
         let ctor = ctors[i]
-        ctx.enum_ctor_tags[ctor.name] = i
+        ctx.enum_ctor_tags[ctor.name] = ctx.next_ctor_tag
+        ctx.next_ctor_tag += 1
         ctx.enum_ctor_arities[ctor.name] = ctor.args.length()
         if not(ctx.enum_ctor_arg_kinds.contains(ctor.name)) {
           let arg_kinds : Array[ValueKind] = []

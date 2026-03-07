@@ -574,7 +574,19 @@ fn walk_expr(
     }
     @core.Expr::Match(scrutinee~, arms~, ..) => {
       walk_expr(scrutinee, scopes, out)
+      let mut catchall_seen = false
       for arm in arms {
+        if catchall_seen {
+          out.push(
+            @core.Diagnostic::{
+              stage: "warning",
+              message: "unreachable match arm",
+              span: Some(arm.pat.span()),
+              hint: Some("this arm will never be matched because a previous arm catches all patterns"),
+              note: None,
+            },
+          )
+        }
         scopes.push(warning_scope_new())
         declare_pattern_bindings(scopes, arm.pat)
         match arm.cond {
@@ -583,6 +595,12 @@ fn walk_expr(
         }
         walk_expr(arm.expr, scopes, out)
         warning_scope_pop(scopes, out)
+        if not(catchall_seen) && arm.cond is None {
+          match arm.pat {
+            @core.Pat::Wildcard(..) | @core.Pat::Bind(..) => catchall_seen = true
+            _ => ()
+          }
+        }
       }
     }
     @core.Expr::Fn(params~, body~, span~, ..) => {
