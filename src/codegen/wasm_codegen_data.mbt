@@ -163,7 +163,7 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
           ctx.need_stdout_write_char = true
         "stdin_read_char" | "stdin_read_stream" =>
           ctx.need_stdin_read_char = true
-        "fs_read_file" | "fs_write_file" | "fs_exists" => {
+        "fs_read_file" | "fs_write_file" | "fs_write_bytes" | "fs_exists" => {
           ctx.need_fs = true
           ctx.need_heap = true
         }

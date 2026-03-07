@@ -940,6 +940,16 @@ fn is_builtin(name : String) -> Bool {
   name == "array_builder" ||
   name == "array_builder_push" ||
   name == "array_builder_freeze" ||
+  name == "array_push" ||
+  name == "array_new" ||
+  name == "array_truncate" ||
+  name == "array_contains_str" ||
+  name == "double_to_i64_bits" ||
+  name == "string_to_data" ||
+  name == "fs_write_bytes" ||
+  name == "bytes_from_array" ||
+  name == "bytes_length" ||
+  name == "bytes_get" ||
   name == "map_builder" ||
   name == "map_builder_set" ||
   name == "map_builder_freeze" ||

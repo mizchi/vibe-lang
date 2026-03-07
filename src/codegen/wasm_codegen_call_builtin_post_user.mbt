@@ -448,8 +448,18 @@ fn compile_call_builtin_post_user_inner(
       emit_local_get(buf, start_local)
       emit_i32_sub(buf)
       emit_local_set(buf, slice_len_local)
-      // alloc_size = align4(8 + slice_len * 4)
+      // alloc_size = align4(8 + max(slice_len, 4096) * 4)
+      // Reserve extra capacity so that array_push can append without realloc
+      let min_cap = 4096
       emit_local_get(buf, slice_len_local)
+      emit_i32_const_raw(buf, min_cap)
+      emit_i32_gt_s(buf)
+      buf.push((4).to_byte()) // if
+      buf.push((127).to_byte()) // result i32
+      emit_local_get(buf, slice_len_local)
+      buf.push((5).to_byte()) // else
+      emit_i32_const_raw(buf, min_cap)
+      buf.push((11).to_byte()) // end if
       emit_i32_const_raw(buf, 4)
       emit_i32_mul(buf)
       emit_i32_const_raw(buf, 8 + 3) // header + alignment

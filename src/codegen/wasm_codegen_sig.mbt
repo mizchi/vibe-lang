@@ -522,7 +522,15 @@ fn infer_expr_kind_with(
           }
         "string_equals" => ValueKind::I64
         "array_builder" | "array_builder_freeze" => ValueKind::I64
-        "array_builder_push" => ValueKind::I64
+        "array_builder_push" | "array_push" | "array_truncate" => ValueKind::I64
+        "array_new" => ValueKind::I64
+        "array_contains_str" => ValueKind::I64
+        "double_to_i64_bits" => ValueKind::I64
+        "string_to_data" => ValueKind::I64
+        "fs_write_bytes" => ValueKind::I64
+        "bytes_from_array" => ValueKind::I64
+        "bytes_length" => ValueKind::I64
+        "bytes_get" => ValueKind::I64
         "map_builder" | "map_builder_freeze" => ValueKind::I64
         "map_builder_set" => ValueKind::I64
         "array_length" => ValueKind::I64
@@ -1006,6 +1014,12 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "array_builder" ||
         name == "array_builder_push" ||
         name == "array_builder_freeze" ||
+        name == "array_push" ||
+        name == "array_new" ||
+        name == "array_truncate" ||
+        name == "array_contains_str" ||
+        name == "double_to_i64_bits" ||
+        name == "string_to_data" ||
         name == "map_builder" ||
         name == "map_builder_set" ||
         name == "map_builder_freeze" ||
@@ -1025,6 +1039,10 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "string_split" ||
         name == "fs_read_file" ||
         name == "fs_write_file" ||
+        name == "fs_write_bytes" ||
+        name == "bytes_from_array" ||
+        name == "bytes_length" ||
+        name == "bytes_get" ||
         name == "fs_exists" ||
         name == "socket_tcp_connect" ||
         name == "socket_tcp_read" ||
