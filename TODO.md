@@ -39,6 +39,75 @@ Completed items are archived in `docs/DONE.md`.
   - DoD 達成: selfhost 用トップレベル e2e（実ソース入力）を CI で常時 green
   - テスト 4 件: token enum import、lex→tokens、lex→parse→print roundtrip、meta-circular eval pipeline
 
+### Compiler Review Backlog (readability + selfhost robustness)
+
+- [ ] codegen: enum ctor tag をモジュール全体で一意にする
+  - 現状は enum ごとに `vi` で tag を再利用しており、別 enum 間で衝突しうる
+  - DoD: ctor 判定は `enum-id + ctor-id` 相当で一意、交差ケースの regression test を追加
+- [ ] codegen: `find_catchall_idx` から `PTuple` を catch-all 扱いしない
+  - 現状の catch-all 判定で tuple arm が早期フォールバックされる経路がある
+  - DoD: tuple pattern は shape check / field bind を経る、match arm の順序回帰テストを追加
+- [ ] codegen: ループ外 `break/continue` を compile error にする
+  - `ld < 0` で `br` を生成しないように明示ガードする
+  - DoD: parser/checker/codegen いずれかで必ず拒否し、エラーメッセージを固定
+- [ ] refactor: `compile_expr` の責務分割（`compile_ident` / `compile_call` / `compile_match` / `compile_lambda` / `compile_loop`）
+  - 目標: 1関数1責務、context 引数の削減、局所テストしやすい構造へ
+  - DoD: `compile_expr` の分岐密度を下げ、既存 codegen test を green 維持
+- [ ] refactor: builtins 登録を宣言的テーブルへ統合
+  - `fn_names/fn_indices/fn_returns/type_indices` の重複手書きを廃止
+  - DoD: builtin 追加時に1箇所編集で済むこと、既存 index 互換テストを追加
+- [ ] refactor: parser `parse_impl(mode: Int)` を mode enum + 小関数へ分解
+  - `Expr/Block/If/Match/Handle/While/For` 単位で分離し normalize しやすくする
+  - DoD: parse roundtrip テスト green、mode 数値依存の分岐を縮小
+- [ ] refactor: `codegen_common` の extractor/getter 群を生成コード化
+  - AST 変更時の追従漏れを減らし、手書きノイズを削減
+  - DoD: generator 実行で再生成可能、既存 API 契約は維持
+
+### Language/Stdlib Proposals (AI-first authoring)
+
+- [ ] language: match 網羅性チェック + 到達不能 arm 検出
+  - normalize 時に自動修正しやすい診断を提供する
+- [ ] language: variant の安定 ID（型ID + ctorID）を IR/実行時で保持
+  - 文字列名や局所 tag 依存を減らし、codegen 実装を単純化する
+- [ ] language: tolerant parser（壊れた途中コードを AST 化して保持）
+  - vibe shell での書き散らしを最後に normalize 可能にする
+- [ ] language: AST rewriter / macro API（構文正規化パスを定義可能にする）
+  - desugar/normalize を言語内で記述し、自己ホスト実装を縮小
+- [ ] stdlib: `Array.find_index/find_last_index/contains_by/map/filter/fold`
+  - 線形探索の手書き loop を削減して可読性を上げる
+- [ ] stdlib: `Map[String, T]`（最低限の immutable/mutable 操作）
+  - 名前解決・テーブル管理の O(n) ループを削減する
+- [ ] stdlib: `StringBuilder`
+  - 診断メッセージ組み立ての `string_concat` 連鎖を解消する
+- [ ] stdlib: `Option/Result` の `map/flat_map/or_else` ヘルパー
+  - 深い if/match 連鎖を短くし、normalize 後の形を安定化する
+
+### Check/Compile Perf Parity Backlog
+
+- [ ] `check` parity: host `vibe check` と selfhost `vibe_check_wasi` の機能差分を解消する
+  - 現状の差分:
+    - host は複数ファイル入力を処理、selfhost は単一入力前提
+    - host は依存 import 先の diagnostics を root cause 優先で先出し、selfhost は entry 集約のみ
+    - host は std layering violation を検証、selfhost は未実装
+    - host は `graph_head` を表示し lock/index 経路を可視化、selfhost は未表示
+    - host は human-readable 出力、selfhost は JSON 出力中心（比較指標が非対称）
+  - DoD: 同一入力で同一診断集合（errors/warnings/layering）を取得可能、出力形式差分は adapter で吸収
+- [ ] `check` perf 比較を「同一機能経路」に揃える
+  - host/selfhost どちらも最小経路（余計な debug/log 出力なし）を使うベンチ実行モードを用意する
+  - DoD: `bench-selfhost-perf` の check 比較で、実行経路の差分が仕様化され再現可能
+- [ ] host `check` の常時 debug 出力を bench 時に無効化する
+  - `check_debug` ログをフラグで制御し、bench では silent にする
+  - DoD: bench 実行時に余分な stdout がなく、計測ノイズを抑制
+
+- [ ] `compile` 厳密比較の最小経路を固定する（host/selfhost 共通）
+  - 比較対象は共通フラグのみ: `--wasm --no-dce`（coverage / wite / host-imports / component 系は除外）
+  - case set は固定ファイル (`bench/selfhost_perf/cases.txt`) を基準にする
+  - 出力 write を含む/含まないの2モード（end-to-end, in-memory）を分離して計測する
+  - DoD: 同一ケース群で `parse+load`, `type`, `codegen`, `emit/write` の段階別 ms を host/selfhost 両方で取得
+- [ ] `compile` 比較用の lightweight command を追加する
+  - CLI の周辺処理（表示・補助機能）を除いた runtime_compile 直結コマンドを host/selfhost の両方に用意
+  - DoD: `bench-selfhost-perf` が lightweight command を利用でき、総時間と段階別時間を TSV 出力
+
 ## Self-host Parity: MoonBit 実装と結果一致
 
 目標: selfhost compiler (vibe/compiler/) の lex → parse → print roundtrip が全 compiler ソースで MoonBit ホスト実装と一致すること。
@@ -333,8 +402,11 @@ Completed items are archived in `docs/DONE.md`.
 
 ### P4: セルフコンパイル + Component Model
 
-- [ ] selfhost の lexer.vibe が .wasm にコンパイルされ wasmtime で実行可能
-- [ ] selfhost compiler 全体 (vibe/compiler/) が .wasm にコンパイルされ実行可能
+- [x] selfhost の lexer.vibe が .wasm にコンパイルされ wasmtime で実行可能
+  - `scripts/test_selfhost_wasm_codegen_p4.sh`: lex + parse の E2E gate (16 checks)
+- [x] selfhost compiler 全体 (vibe/compiler/) が .wasm にコンパイルされ実行可能
+  - lex + parse + compile_wasi_module の全パイプラインが 283KB WASM でwasmtime 実行可能
+  - WASM 内で WASM バイナリを生成する meta-compilation が動作
 - [ ] component_codegen を .vibe で再実装（core wasm → component binary wrap）
 - [ ] mwac plug 相当を .vibe で実装 or builtin 化（adapter compose）
 - [ ] milestone: selfhost compiler 全体が .wasm component として動作
