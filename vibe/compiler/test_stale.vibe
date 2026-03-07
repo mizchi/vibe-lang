@@ -1,0 +1,91 @@
+// Reproduce the exact pattern of compile_expr more closely
+
+enum E {
+  EInt(Int);
+  EIdent(String);
+  EBinOp(String, E, E);
+  ETuple(Array[E]);
+  EMatch(E, Array[E])  // simplified: no Pat, just E for arm bodies
+}
+
+// Mimics compile_expr: big match on E, recursive calls via closure shorthand
+let rec compile = (
+  e: E,
+  names: Array[String],
+  next: Int
+) -> Int with { Error } {
+  let ce = (inner: E, ns: Array[String], n: Int) -> Int with { Error } {
+    compile(inner, ns, n)
+  }
+  match e {
+    EInt(v) => {
+      // Simulate: resolve_local would find "name" in names
+      next
+    },
+    EIdent(name) => {
+      // Look up name in names
+      let len = array_length(names)
+      let mut found = -1
+      let mut i = 0
+      while i < len {
+        if string_equals(array_get(names, i), name) {
+          found = i
+        }
+        i = i + 1
+      }
+      if found < 0 {
+        throw(string_concat("undefined: ", name))
+      }
+      next
+    },
+    EBinOp(op, lhs, rhs) => {
+      let n1 = ce(lhs, names, next)
+      ce(rhs, names, n1)
+    },
+    ETuple(elems) => {
+      let mut nl = next + 1
+      let mut ti = 0
+      while ti < array_length(elems) {
+        nl = ce(array_get(elems, ti), names, nl)
+        ti = ti + 1
+      }
+      nl
+    },
+    EMatch(scrutinee, arm_bodies) => {
+      let n1 = ce(scrutinee, names, next + 1)
+      // Simplified: just compile first arm body
+      if array_length(arm_bodies) > 0 {
+        ce(array_get(arm_bodies, 0), names, n1)
+      } else { n1 }
+    }
+  }
+}
+
+test "compile: simple" {
+  let names = ["x", "y"]
+  let r = compile(EBinOp("+", EIdent("x"), EIdent("y")), names, 0)
+  assert(r == 0)
+  0
+}
+
+test "compile: tuple then ident" {
+  let names = ["x", "y"]
+  // First call: compile ETuple with EIdent("x") and EIdent("y")
+  let r1 = compile(ETuple([EIdent("x"), EIdent("y")]), names, 0)
+  // Second call: compile simple EIdent
+  let r2 = compile(EIdent("x"), names, 0)
+  0
+}
+
+test "compile: match then match" {
+  let names1 = ["x", "y"]
+  // First: EMatch(ETuple([EInt(1), EInt(2)]), [ETuple([EIdent("x"), EIdent("y")])])
+  let body1 = EMatch(ETuple([EInt(1), EInt(2)]), [ETuple([EIdent("x"), EIdent("y")])])
+  let r1 = compile(body1, names1, 0)
+
+  // Second: EMatch(EInt(0), [EBinOp("+", EIdent("p"), EIdent("n"))])
+  let names2 = ["p", "n"]
+  let body2 = EMatch(EInt(0), [EBinOp("+", EIdent("p"), EIdent("n"))])
+  let r2 = compile(body2, names2, 0)
+  0
+}
