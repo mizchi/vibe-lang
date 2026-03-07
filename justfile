@@ -338,6 +338,10 @@ test-selfhost-bootstrap:
 test-selfhost-wasi-selfbuild:
     scripts/test_selfhost_wasi_selfbuild.sh
 
+# Run wasm selfbuild gate with KPI (total time budget)
+test-selfhost-wasi-selfbuild-kpi max_total_sec="300":
+    VIBE_SELFHOST_SELFBUILD_STRICT_RECURSIVE=1 VIBE_SELFHOST_SELFBUILD_REQUIRE_TRUE_RECURSIVE=1 VIBE_SELFHOST_SELFBUILD_MAX_TOTAL_SEC={{max_total_sec}} scripts/test_selfhost_wasi_selfbuild.sh
+
 # Run wasi:http boundary gate (stage0 wasm compiler -> component wit imports)
 test-selfhost-wasi-http-boundary:
     scripts/test_selfhost_wasi_http_boundary.sh

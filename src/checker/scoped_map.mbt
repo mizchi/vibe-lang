@@ -22,12 +22,20 @@ pub fn[V] ScopedMap::fork(self : ScopedMap[V]) -> ScopedMap[V] {
 
 ///|
 /// Lookup key in own map, then walk parent chain.
+/// When found in a parent, promotes the entry to own for O(1) next lookup.
 pub fn[V] ScopedMap::get(self : ScopedMap[V], key : String) -> V? {
   match self.own.get(key) {
     Some(v) => Some(v)
     None =>
       match self.parent {
-        Some(p) => p.get(key)
+        Some(p) =>
+          match p.get(key) {
+            Some(v) => {
+              self.own[key] = v
+              Some(v)
+            }
+            None => None
+          }
         None => None
       }
   }
@@ -46,7 +54,16 @@ pub fn[V] ScopedMap::contains(self : ScopedMap[V], key : String) -> Bool {
     return true
   }
   match self.parent {
-    Some(p) => p.contains(key)
+    Some(p) => {
+      // Use get() which promotes to own if found
+      match p.get(key) {
+        Some(v) => {
+          self.own[key] = v
+          true
+        }
+        None => false
+      }
+    }
     None => false
   }
 }

@@ -149,17 +149,21 @@ Completed items are archived in `docs/DONE.md`.
   - [x] `bench-selfhost-perf` で check stage TSV を収集/集計
   - [x] TSV に `elapsed_us` 列を追加し、bench 集計を us 優先に切替
   - [x] selfhost `check` の no-import 経路でも `type_us` を計測（`0us` 固定を解消）
-- [ ] Agent B: checker 内部環境の高速化（TypeEnv lookup）
+- [x] Agent B: checker 内部環境の高速化（TypeEnv lookup）
   - [x] `SImport` の重複 `env_lookup` を局所 cache 化
   - [x] `types.vibe` の substitution hot path を反復化（`subst_lookup`/`subst_bounds`）
   - [x] `TypeEnv` の flat bindings ヘルパーを導入し、`checker_stmt` / `type_db` の import 解決で利用
-  - [ ] checker 全体で `name -> Type` フラット表現を段階導入（互換維持）
+  - [x] checker 全体で `name -> Type` フラット表現を段階導入（互換維持）
+    - `ScopedMap::get` / `contains` に parent lookup 結果の own 昇格キャッシュを追加
+    - 再 lookup が O(1) になり、深い scope chain での繰り返し参照を高速化
 - [x] Agent C: host/selfhost check parity を snapshot gate 化
   - [x] 同一入力の診断 JSON 差分比較スクリプトを追加
   - [x] 許容差分を明文化して CI で fail/pass 判定
-- [ ] Agent D: bootstrap KPI gate を CI/just に統合
+- [x] Agent D: bootstrap KPI gate を CI/just に統合
   - [x] `check/compile` 許容比率（例: `MAX_CHECK_RATIO`）を固定
-  - [ ] stage0->stage1->stage2 の KPI 判定を workflow に追加
+  - [x] stage0->stage1->stage2 の KPI 判定を workflow に追加
+    - `VIBE_SELFHOST_SELFBUILD_MAX_TOTAL_SEC` で total 時間 KPI を gate 化
+    - CI では 300s、`just test-selfhost-wasi-selfbuild-kpi` でローカル再現可能
   - [x] ローカル `just` から同一判定を再現可能にする
 
 ## Self-host Parity: MoonBit 実装と結果一致

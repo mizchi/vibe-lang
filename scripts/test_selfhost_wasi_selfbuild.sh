@@ -14,6 +14,7 @@ VIBE_HOST_RUNNER="${VIBE_SELFHOST_WASM_VIBE_HOST_RUNNER:-$PROJECT_ROOT/scripts/w
 STAGE_TIMEOUT_SEC="${VIBE_SELFHOST_SELFBUILD_STAGE_TIMEOUT_SEC:-600}"
 STRICT_RECURSIVE="${VIBE_SELFHOST_SELFBUILD_STRICT_RECURSIVE:-0}"
 REQUIRE_TRUE_RECURSIVE="${VIBE_SELFHOST_SELFBUILD_REQUIRE_TRUE_RECURSIVE:-0}"
+SELFBUILD_MAX_TOTAL_SEC="${VIBE_SELFHOST_SELFBUILD_MAX_TOTAL_SEC:-0}"
 
 run_with_timeout() {
   local timeout_sec="$1"
@@ -107,6 +108,7 @@ is_non_negative_int() {
   esac
 }
 
+SELFBUILD_START_SEC="$(date +%s)"
 mkdir -p "$OUT_DIR"
 rm -f "$STAGE1_WASM" "$STAGE2_WASM"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
@@ -263,4 +265,19 @@ recursive_mode="strict-recursive"
 if [ "$recursive_stage2_ok" -eq 0 ]; then
   recursive_mode="seed-fallback"
 fi
-echo "selfbuild gate passed: hash=$HASH_STAGE1 stage1_run=$RUN_STAGE1 stage2_run=$RUN_STAGE2 mode=$recursive_mode recursive=$recursive_stage2_ok"
+SELFBUILD_END_SEC="$(date +%s)"
+SELFBUILD_TOTAL_SEC="$((SELFBUILD_END_SEC - SELFBUILD_START_SEC))"
+echo "[selfbuild] total elapsed: ${SELFBUILD_TOTAL_SEC}s"
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  printf -- "- %s: %ss\n" "total elapsed" "$SELFBUILD_TOTAL_SEC" >> "$GITHUB_STEP_SUMMARY" || true
+fi
+
+if [ "$SELFBUILD_MAX_TOTAL_SEC" -gt 0 ] 2>/dev/null; then
+  if [ "$SELFBUILD_TOTAL_SEC" -gt "$SELFBUILD_MAX_TOTAL_SEC" ]; then
+    echo "selfbuild KPI failed: total ${SELFBUILD_TOTAL_SEC}s > max ${SELFBUILD_MAX_TOTAL_SEC}s" >&2
+    exit 1
+  fi
+  echo "[selfbuild] KPI passed: total ${SELFBUILD_TOTAL_SEC}s <= max ${SELFBUILD_MAX_TOTAL_SEC}s"
+fi
+
+echo "selfbuild gate passed: hash=$HASH_STAGE1 stage1_run=$RUN_STAGE1 stage2_run=$RUN_STAGE2 mode=$recursive_mode recursive=$recursive_stage2_ok total=${SELFBUILD_TOTAL_SEC}s"
