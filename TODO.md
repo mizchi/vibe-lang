@@ -44,12 +44,13 @@ Completed items are archived in `docs/DONE.md`.
 - [ ] codegen: enum ctor tag をモジュール全体で一意にする
   - 現状は enum ごとに `vi` で tag を再利用しており、別 enum 間で衝突しうる
   - DoD: ctor 判定は `enum-id + ctor-id` 相当で一意、交差ケースの regression test を追加
-- [ ] codegen: `find_catchall_idx` から `PTuple` を catch-all 扱いしない
-  - 現状の catch-all 判定で tuple arm が早期フォールバックされる経路がある
-  - DoD: tuple pattern は shape check / field bind を経る、match arm の順序回帰テストを追加
-- [ ] codegen: ループ外 `break/continue` を compile error にする
-  - `ld < 0` で `br` を生成しないように明示ガードする
-  - DoD: parser/checker/codegen いずれかで必ず拒否し、エラーメッセージを固定
+- [x] codegen: `find_catchall_idx` から `PTuple` を catch-all 扱いしない
+  - `is_catchall_pat` 再帰判定: PTuple は全sub-patternがPBind/PWildの場合のみcatch-all
+  - codegen.vibe の first-arm 特殊判定を `find_catchall_idx` 統一に変更
+- [x] codegen: ループ外 `break/continue` を compile error にする
+  - 型チェッカー (`typecheck_expr.mbt`) が `loop_depth <= 0` で拒否済み
+  - MBT codegen (`wasm_codegen_expr_loop.mbt`) が `loop_*_offset < 0` でガード済み
+  - selfhost codegen: EWhile/EForIn の `ld` パラメータを `ld+1` に修正（バグ修正）
 - [ ] refactor: `compile_expr` の責務分割（`compile_ident` / `compile_call` / `compile_match` / `compile_lambda` / `compile_loop`）
   - 目標: 1関数1責務、context 引数の削減、局所テストしやすい構造へ
   - DoD: `compile_expr` の分岐密度を下げ、既存 codegen test を green 維持
@@ -85,18 +86,23 @@ Completed items are archived in `docs/DONE.md`.
 ### Check/Compile Perf Parity Backlog
 
 - [ ] `check` parity: host `vibe check` と selfhost `vibe_check_wasi` の機能差分を解消する
-  - 現状の差分:
-    - host は複数ファイル入力を処理、selfhost は単一入力前提
-    - host は依存 import 先の diagnostics を root cause 優先で先出し、selfhost は entry 集約のみ
-    - host は std layering violation を検証、selfhost は未実装
-    - host は `graph_head` を表示し lock/index 経路を可視化、selfhost は未表示
+  - 現状の差分（2026-03-07 時点）:
     - host は human-readable 出力、selfhost は JSON 出力中心（比較指標が非対称）
+    - selfhost `--format` は単一入力前提（`--check` は複数ファイル対応済み）
+    - 依存 diagnostics の収集範囲が host と一致しているか未検証（selfhost は direct imports 中心）
+  - 直近で解消済み:
+    - selfhost `files[].graph_head` を JSON 出力（index.vbundle 由来、未解決時は `null`）
+    - selfhost `--check` の複数ファイル入力
+    - 依存 import 先 diagnostics の root cause 優先表示
+    - std layering violation 検証
+    - selfhost JSON に parity capability flags を追加（`parity.graph_head_available` など）
   - DoD: 同一入力で同一診断集合（errors/warnings/layering）を取得可能、出力形式差分は adapter で吸収
-- [ ] `check` perf 比較を「同一機能経路」に揃える
+- [x] `check` perf 比較を「同一機能経路」に揃える
   - host/selfhost どちらも最小経路（余計な debug/log 出力なし）を使うベンチ実行モードを用意する
+  - `bench-selfhost-perf` を追加し、固定ケース + 同一引数で check/compile を計測
   - DoD: `bench-selfhost-perf` の check 比較で、実行経路の差分が仕様化され再現可能
-- [ ] host `check` の常時 debug 出力を bench 時に無効化する
-  - `check_debug` ログをフラグで制御し、bench では silent にする
+- [x] host `check` の常時 debug 出力を bench 時に無効化する
+  - `check_debug` ログを `VIBE_CHECK_DEBUG` で制御し、bench では `0` を適用
   - DoD: bench 実行時に余分な stdout がなく、計測ノイズを抑制
 
 - [ ] `compile` 厳密比較の最小経路を固定する（host/selfhost 共通）
