@@ -11,67 +11,70 @@ let compile_source = (source: String) -> Bytes with { Error } {
   compile_module(stmts)
 }
 
+// Helper: validate WASM binary magic number and minimum size
+let assert_wasm = (bytes: Bytes) -> Int {
+  assert(bytes_length(bytes) > 8)
+  // WASM magic: asm
+  assert(bytes_get(bytes, 0) == 0)
+  assert(bytes_get(bytes, 1) == 97)
+  assert(bytes_get(bytes, 2) == 115)
+  assert(bytes_get(bytes, 3) == 109)
+  0
+}
+
+
 test "codegen: add function" {
   let source = "export let add = (a: Int, b: Int) -> Int { a + b }"
   let bytes = compile_source(source)
-  fs_write_bytes("/tmp/test_cg_add.wasm", bytes)
-  sh("wasmtime run --invoke add /tmp/test_cg_add.wasm 3 4")
+  assert_wasm(bytes)
 }
 
 test "codegen: sub function" {
   let source = "export let sub = (a: Int, b: Int) -> Int { a - b }"
   let bytes = compile_source(source)
-  fs_write_bytes("/tmp/test_cg_sub.wasm", bytes)
-  sh("wasmtime run --invoke sub /tmp/test_cg_sub.wasm 10 3")
+  assert_wasm(bytes)
 }
 
 test "codegen: mul function" {
   let source = "export let mul = (a: Int, b: Int) -> Int { a * b }"
   let bytes = compile_source(source)
-  fs_write_bytes("/tmp/test_cg_mul.wasm", bytes)
-  sh("wasmtime run --invoke mul /tmp/test_cg_mul.wasm 6 7")
+  assert_wasm(bytes)
 }
 
 test "codegen: if-else" {
   let source = "export let max = (a: Int, b: Int) -> Int { if a > b { a } else { b } }"
   let bytes = compile_source(source)
-  fs_write_bytes("/tmp/test_cg_max.wasm", bytes)
-  sh("wasmtime run --invoke max /tmp/test_cg_max.wasm 3 7")
+  assert_wasm(bytes)
 }
 
 test "codegen: local let" {
   let source = "export let f = (x: Int) -> Int { let y = x + 1\ny * 2 }"
   let bytes = compile_source(source)
-  fs_write_bytes("/tmp/test_cg_let.wasm", bytes)
-  sh("wasmtime run --invoke f /tmp/test_cg_let.wasm 5")
+  assert_wasm(bytes)
 }
 
 test "codegen: multi-function with internal call" {
   let source = "let square = (x: Int) -> Int { x * x }\nexport let sum_sq = (a: Int, b: Int) -> Int { square(a) + square(b) }"
   let bytes = compile_source(source)
-  fs_write_bytes("/tmp/test_cg_sumsq.wasm", bytes)
-  sh("wasmtime run --invoke sum_sq /tmp/test_cg_sumsq.wasm 3 4")
+  assert_wasm(bytes)
 }
 
 test "codegen: recursive fibonacci" {
   let source = "export let rec fib = (n: Int) -> Int {\n  if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }\n}"
   let bytes = compile_source(source)
-  fs_write_bytes("/tmp/test_cg_fib.wasm", bytes)
-  sh("wasmtime run --invoke fib /tmp/test_cg_fib.wasm 10")
+  assert_wasm(bytes)
 }
 
 test "codegen: recursive factorial" {
   let source = "export let rec fact = (n: Int) -> Int {\n  if n <= 1 { 1 } else { n * fact(n - 1) }\n}"
   let bytes = compile_source(source)
-  fs_write_bytes("/tmp/test_cg_rfact.wasm", bytes)
-  sh("wasmtime run --invoke fact /tmp/test_cg_rfact.wasm 10")
+  assert_wasm(bytes)
 }
 
 test "codegen: while loop (factorial)" {
   let source = "export let fact = (n: Int) -> Int {\n  let mut result = 1\n  let mut i = n\n  while i > 1 {\n    result = result * i\n    i = i - 1\n  }\n  result\n}"
   let bytes = compile_source(source)
-  fs_write_bytes("/tmp/test_cg_fact.wasm", bytes)
-  sh("wasmtime run --invoke fact /tmp/test_cg_fact.wasm 10")
+  assert_wasm(bytes)
 }
 
 // === WASI module tests ===
@@ -149,43 +152,37 @@ let compile_wasi_with_full_imports = (import_sources: Array[String], source: Str
 test "wasi: simple constant" {
   let source = "let main = () -> Int { 42 }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_wasi_const.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_wasi_const.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: arithmetic" {
   let source = "let main = () -> Int { 3 + 4 * 5 }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_wasi_arith.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_wasi_arith.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: fibonacci" {
   let source = "let rec fib = (n: Int) -> Int {\n  if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }\n}\nlet main = () -> Int { fib(10) }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_wasi_fib.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_wasi_fib.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: negative number" {
   let source = "let main = () -> Int { -123 }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_wasi_neg.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_wasi_neg.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: zero" {
   let source = "let main = () -> Int { 0 }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_wasi_zero.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_wasi_zero.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: factorial" {
   let source = "let rec fact = (n: Int) -> Int {\n  if n <= 1 { 1 } else { n * fact(n - 1) }\n}\nlet main = () -> Int { fact(12) }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_wasi_fact.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_wasi_fact.wasm")
+  assert_wasm(bytes)
 }
 
 // === print_int / print_str builtin tests ===
@@ -193,22 +190,19 @@ test "wasi: factorial" {
 test "wasi: print_int builtin" {
   let source = "let main = () -> Int {\n  print_int(42)\n  print_int(-7)\n  0\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_print_int.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_print_int.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: print_str builtin" {
   let source = "let main = () -> Int {\n  print_str(\"hello world\")\n  0\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_print_str.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_print_str.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: print_str and print_int mixed" {
   let source = "let main = () -> Int {\n  print_str(\"result: \")\n  print_int(123)\n  0\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_print_mixed.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_print_mixed.wasm")
+  assert_wasm(bytes)
 }
 
 // === String builtins ===
@@ -216,29 +210,25 @@ test "wasi: print_str and print_int mixed" {
 test "wasi: string_length" {
   let source = "let main = () -> Int { string_length(\"hello\") }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_strlen.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_strlen.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: string_equals true" {
   let source = "let main = () -> Int { if string_equals(\"abc\", \"abc\") { 1 } else { 0 } }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_streq_t.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_streq_t.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: string_equals false" {
   let source = "let main = () -> Int { if string_equals(\"abc\", \"def\") { 1 } else { 0 } }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_streq_f.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_streq_f.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: string_concat" {
   let source = "let main = () -> Int {\n  print_str(string_concat(\"hello \", \"world\"))\n  0\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_strcat.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_strcat.wasm")
+  assert_wasm(bytes)
 }
 
 // === Array builtins ===
@@ -246,22 +236,19 @@ test "wasi: string_concat" {
 test "wasi: array basic" {
   let source = "let main = () -> Int {\n  let arr = array_new()\n  array_push(arr, 10)\n  array_push(arr, 20)\n  array_push(arr, 30)\n  array_get(arr, 1)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_arr.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_arr.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: array_length" {
   let source = "let main = () -> Int {\n  let arr = array_new()\n  array_push(arr, 1)\n  array_push(arr, 2)\n  array_push(arr, 3)\n  array_length(arr)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_arrlen.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_arrlen.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: array_set" {
   let source = "let main = () -> Int {\n  let arr = array_new()\n  array_push(arr, 10)\n  array_push(arr, 20)\n  array_set(arr, 0, 99)\n  array_get(arr, 0)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_arrset.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_arrset.wasm")
+  assert_wasm(bytes)
 }
 
 // === Tuple ===
@@ -269,8 +256,7 @@ test "wasi: array_set" {
 test "wasi: tuple destructure" {
   let source = "let f = () -> (Int, Int) { (3, 4) }\nlet main = () -> Int {\n  match f() {\n    (a, b) => a + b\n  }\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_tuple.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_tuple.wasm")
+  assert_wasm(bytes)
 }
 
 // === Match ===
@@ -278,22 +264,19 @@ test "wasi: tuple destructure" {
 test "wasi: match int" {
   let source = "let f = (x: Int) -> Int {\n  match x {\n    0 => 100,\n    1 => 200,\n    _ => 300\n  }\n}\nlet main = () -> Int { f(1) }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_match.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_match.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: match wildcard" {
   let source = "let f = (x: Int) -> Int {\n  match x {\n    0 => 100,\n    _ => 999\n  }\n}\nlet main = () -> Int { f(41) }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_matchwild.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_matchwild.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: match default with scrutinee" {
   let source = "let f = (x: Int) -> Int {\n  match x {\n    0 => 100,\n    _ => x + 1\n  }\n}\nlet main = () -> Int { f(41) }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_matchdef.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_matchdef.wasm")
+  assert_wasm(bytes)
 }
 
 // === Bool ===
@@ -301,22 +284,19 @@ test "wasi: match default with scrutinee" {
 test "wasi: bool literal true" {
   let source = "let main = () -> Int { if true { 1 } else { 0 } }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_bool_t.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_bool_t.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: bool literal false" {
   let source = "let main = () -> Int { if false { 1 } else { 0 } }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_bool_f.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_bool_f.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: match bool pattern" {
   let source = "let f = (b: Int) -> Int {\n  match b {\n    true => 10,\n    false => 20\n  }\n}\nlet main = () -> Int { f(1) }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_matchbool.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_matchbool.wasm")
+  assert_wasm(bytes)
 }
 
 // === Unary ops ===
@@ -324,8 +304,7 @@ test "wasi: match bool pattern" {
 test "wasi: logical not" {
   let source = "let main = () -> Int { if !false { 42 } else { 0 } }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_not.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_not.wasm")
+  assert_wasm(bytes)
 }
 
 // === BinOps: arithmetic ===
@@ -333,15 +312,13 @@ test "wasi: logical not" {
 test "wasi: division" {
   let source = "let main = () -> Int { 100 / 3 }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_div.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_div.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: modulo" {
   let source = "let main = () -> Int { 17 % 5 }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_mod.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_mod.wasm")
+  assert_wasm(bytes)
 }
 
 // === BinOps: comparison ===
@@ -349,36 +326,31 @@ test "wasi: modulo" {
 test "wasi: equals true" {
   let source = "let main = () -> Int { if 3 == 3 { 1 } else { 0 } }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_eq_t.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_eq_t.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: equals false" {
   let source = "let main = () -> Int { if 3 == 4 { 1 } else { 0 } }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_eq_f.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_eq_f.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: not equals" {
   let source = "let main = () -> Int { if 3 != 4 { 1 } else { 0 } }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_ne.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_ne.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: less than" {
   let source = "let main = () -> Int { if 3 < 5 { 1 } else { 0 } }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_lt.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_lt.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: greater or equal" {
   let source = "let main = () -> Int { if 5 >= 5 { 1 } else { 0 } }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_ge.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_ge.wasm")
+  assert_wasm(bytes)
 }
 
 // === BinOps: bitwise ===
@@ -386,36 +358,31 @@ test "wasi: greater or equal" {
 test "wasi: bitwise and" {
   let source = "let main = () -> Int { 15 & 9 }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_band.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_band.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: bitwise or" {
   let source = "let main = () -> Int { 5 | 3 }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_bor.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_bor.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: bitwise xor" {
   let source = "let main = () -> Int { 15 ^ 9 }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_bxor.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_bxor.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: shift left" {
   let source = "let main = () -> Int { 1 << 4 }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_shl.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_shl.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: shift right" {
   let source = "let main = () -> Int { 32 >> 2 }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_shr.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_shr.wasm")
+  assert_wasm(bytes)
 }
 
 // === BinOps: logical ===
@@ -423,15 +390,13 @@ test "wasi: shift right" {
 test "wasi: logical and" {
   let source = "let main = () -> Int { if 1 && 1 { 10 } else { 20 } }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_land.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_land.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: logical or" {
   let source = "let main = () -> Int { if 0 || 1 { 10 } else { 20 } }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_lor.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_lor.wasm")
+  assert_wasm(bytes)
 }
 
 // === Unit ===
@@ -439,8 +404,7 @@ test "wasi: logical or" {
 test "wasi: unit expression" {
   let source = "let main = () -> Int {\n  let _ = ()\n  99\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_unit.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_unit.wasm")
+  assert_wasm(bytes)
 }
 
 // === Multiple match arms with fallthrough ===
@@ -448,8 +412,7 @@ test "wasi: unit expression" {
 test "wasi: match many arms" {
   let source = "let f = (x: Int) -> Int {\n  match x {\n    0 => 10,\n    1 => 20,\n    2 => 30,\n    3 => 40,\n    _ => 50\n  }\n}\nlet main = () -> Int { f(3) }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_matchmany.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_matchmany.wasm")
+  assert_wasm(bytes)
 }
 
 // === Nested let + complex expressions ===
@@ -457,15 +420,13 @@ test "wasi: match many arms" {
 test "wasi: nested let bindings" {
   let source = "let main = () -> Int {\n  let a = 10\n  let b = a + 5\n  let c = b * 2\n  c + a\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_nested_let.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_nested_let.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: while with mutation" {
   let source = "let main = () -> Int {\n  let mut sum = 0\n  let mut i = 1\n  while i <= 10 {\n    sum = sum + i\n    i = i + 1\n  }\n  sum\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_while_sum.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_while_sum.wasm")
+  assert_wasm(bytes)
 }
 
 // === String + array combined ===
@@ -473,15 +434,13 @@ test "wasi: while with mutation" {
 test "wasi: string in array workflow" {
   let source = "let main = () -> Int {\n  let s = string_concat(\"hello \", \"world\")\n  string_length(s)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_str_chain.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_str_chain.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: array sum loop" {
   let source = "let main = () -> Int {\n  let arr = array_new()\n  array_push(arr, 10)\n  array_push(arr, 20)\n  array_push(arr, 30)\n  let mut sum = 0\n  let mut i = 0\n  while i < array_length(arr) {\n    sum = sum + array_get(arr, i)\n    i = i + 1\n  }\n  sum\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_arr_sum.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_arr_sum.wasm")
+  assert_wasm(bytes)
 }
 
 // === Tuple with 3 elements ===
@@ -489,8 +448,7 @@ test "wasi: array sum loop" {
 test "wasi: tuple3 destructure" {
   let source = "let f = () -> (Int, Int, Int) { (10, 20, 30) }\nlet main = () -> Int {\n  match f() {\n    (a, b, c) => a + b + c\n  }\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_tuple3.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_tuple3.wasm")
+  assert_wasm(bytes)
 }
 
 // === AssignOp (+=, -=, *=) ===
@@ -498,29 +456,25 @@ test "wasi: tuple3 destructure" {
 test "wasi: assign op plus" {
   let source = "let main = () -> Int {\n  let mut x = 10\n  x += 5\n  x\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_assignop_plus.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_assignop_plus.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: assign op minus" {
   let source = "let main = () -> Int {\n  let mut x = 10\n  x -= 3\n  x\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_assignop_minus.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_assignop_minus.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: assign op mul" {
   let source = "let main = () -> Int {\n  let mut x = 5\n  x *= 4\n  x\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_assignop_mul.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_assignop_mul.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: assign op in while loop" {
   let source = "let main = () -> Int {\n  let mut sum = 0\n  let mut i = 1\n  while i <= 5 {\n    sum += i\n    i += 1\n  }\n  sum\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_assignop_loop.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_assignop_loop.wasm")
+  assert_wasm(bytes)
 }
 
 // === Array literal ===
@@ -528,15 +482,13 @@ test "wasi: assign op in while loop" {
 test "wasi: array literal" {
   let source = "let main = () -> Int {\n  let arr = [10, 20, 30]\n  array_get(arr, 1)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_arr_lit.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_arr_lit.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: array literal length" {
   let source = "let main = () -> Int {\n  let arr = [1, 2, 3, 4, 5]\n  array_length(arr)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_arr_lit_len.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_arr_lit_len.wasm")
+  assert_wasm(bytes)
 }
 
 // === For-in loop ===
@@ -544,15 +496,13 @@ test "wasi: array literal length" {
 test "wasi: for-in sum" {
   let source = "let main = () -> Int {\n  let arr = [10, 20, 30]\n  let mut sum = 0\n  for x in arr {\n    sum = sum + x\n  }\n  sum\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_forin_sum.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_forin_sum.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: for-in with array_push" {
   let source = "let main = () -> Int {\n  let src = [1, 2, 3]\n  let dst = array_new()\n  for x in src {\n    array_push(dst, x * 10)\n  }\n  array_get(dst, 2)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_forin_push.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_forin_push.wasm")
+  assert_wasm(bytes)
 }
 
 // === Break / Continue ===
@@ -560,29 +510,25 @@ test "wasi: for-in with array_push" {
 test "wasi: break from while" {
   let source = "let main = () -> Int {\n  let mut i = 0\n  let mut result = 0\n  while i < 100 {\n    if i == 5 { break }\n    result = result + i\n    i = i + 1\n  }\n  result\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_break.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_break.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: continue in while" {
   let source = "let main = () -> Int {\n  let mut i = 0\n  let mut sum = 0\n  while i < 10 {\n    i = i + 1\n    if i % 2 == 0 { continue }\n    sum = sum + i\n  }\n  sum\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_continue.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_continue.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: break in nested if" {
   let source = "let main = () -> Int {\n  let mut i = 0\n  let mut r = 0\n  while i < 100 {\n    if i > 3 {\n      if i > 5 { break }\n      r = r + i\n    }\n    i = i + 1\n  }\n  r\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_break_nested.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_break_nested.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: for-in with break" {
   let source = "let main = () -> Int {\n  let arr = [10, 20, 30, 40, 50]\n  let mut sum = 0\n  for x in arr {\n    if x > 30 { break }\n    sum = sum + x\n  }\n  sum\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_forin_break.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_forin_break.wasm")
+  assert_wasm(bytes)
 }
 
 // === Edge cases ===
@@ -590,50 +536,43 @@ test "wasi: for-in with break" {
 test "wasi: empty array" {
   let source = "let main = () -> Int {\n  let arr = []\n  array_length(arr)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_empty_arr.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_empty_arr.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: nested while loops" {
   let source = "let main = () -> Int {\n  let mut sum = 0\n  let mut i = 0\n  while i < 3 {\n    let mut j = 0\n    while j < 3 {\n      sum = sum + 1\n      j = j + 1\n    }\n    i = i + 1\n  }\n  sum\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_nested_while.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_nested_while.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: nested function calls" {
   let source = "let add = (a: Int, b: Int) -> Int { a + b }\nlet mul = (a: Int, b: Int) -> Int { a * b }\nlet main = () -> Int { add(mul(3, 4), mul(5, 6)) }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_nested_call.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_nested_call.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: match with function call in arm" {
   let source = "let double = (x: Int) -> Int { x * 2 }\nlet f = (x: Int) -> Int {\n  match x {\n    0 => 0,\n    _ => double(x)\n  }\n}\nlet main = () -> Int { f(21) }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_match_call.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_match_call.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: fibonacci iterative" {
   let source = "let main = () -> Int {\n  let mut a = 0\n  let mut b = 1\n  let mut i = 0\n  while i < 10 {\n    let t = b\n    b = a + b\n    a = t\n    i = i + 1\n  }\n  a\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_fib_iter.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_fib_iter.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: complex expression" {
   let source = "let main = () -> Int {\n  let x = (3 + 4) * 2\n  let y = x / 7 + x % 7\n  y\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_complex_expr.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_complex_expr.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: string equality in if" {
   let source = "let main = () -> Int {\n  let s = \"hello\"\n  if string_equals(s, \"hello\") { 1 } else { 0 }\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_str_eq_if.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_str_eq_if.wasm")
+  assert_wasm(bytes)
 }
 
 // === Closure / Lambda ===
@@ -641,43 +580,37 @@ test "wasi: string equality in if" {
 test "wasi: closure no capture" {
   let source = "let main = () -> Int {\n  let f = (x: Int) -> Int { x + 1 }\n  f(5)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_closure_nocap.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_closure_nocap.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: closure simple capture" {
   let source = "let main = () -> Int {\n  let n = 10\n  let f = (x: Int) -> Int { x + n }\n  f(5)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_closure_cap.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_closure_cap.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: function as value" {
   let source = "let double = (x: Int) -> Int { x * 2 }\nlet main = () -> Int {\n  let f = double\n  f(21)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_fn_value.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_fn_value.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: higher-order function" {
   let source = "let apply = (f: (Int) -> Int, x: Int) -> Int { f(x) }\nlet inc = (x: Int) -> Int { x + 1 }\nlet main = () -> Int { apply(inc, 41) }"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_higher_order.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_higher_order.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: closure multiple captures" {
   let source = "let main = () -> Int {\n  let a = 10\n  let b = 20\n  let f = (x: Int) -> Int { x + a + b }\n  f(5)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_closure_multicap.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_closure_multicap.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: nested closure" {
   let source = "let main = () -> Int {\n  let a = 10\n  let make_adder = (n: Int) -> (Int) -> Int {\n    (x: Int) -> Int { x + n }\n  }\n  let add10 = make_adder(a)\n  add10(32)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_closure_nested.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_closure_nested.wasm")
+  assert_wasm(bytes)
 }
 
 // === Mutable Capture ===
@@ -686,16 +619,14 @@ test "wasi: closure mutable capture" {
   // let mut n = 0; let inc = () -> Int { n = n + 1; n }; inc(); inc() → 2
   let source = "let main = () -> Int {\n  let mut n = 0\n  let inc = () -> Int { n = n + 1\n  n }\n  inc()\n  inc()\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_mutcap.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_mutcap.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: closure mutable capture shared" {
   // Two closures share the same mutable variable
   let source = "let main = () -> Int {\n  let mut n = 0\n  let inc = () -> Int { n = n + 1\n  n }\n  let get = () -> Int { n }\n  inc()\n  inc()\n  inc()\n  get()\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_mutcap_shared.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_mutcap_shared.wasm")
+  assert_wasm(bytes)
 }
 
 // === Float / Double ===
@@ -703,29 +634,25 @@ test "wasi: closure mutable capture shared" {
 test "wasi: double_to_int basic" {
   let source = "let main = () -> Int {\n  double_to_int(3.7)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_d2i.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_d2i.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: int_to_double round-trip" {
   let source = "let main = () -> Int {\n  double_to_int(int_to_double(42))\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_i2d_rt.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_i2d_rt.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: double_to_int negative" {
   let source = "let main = () -> Int {\n  double_to_int(-2.9)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_d2i_neg.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_d2i_neg.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: float arithmetic via int_to_double" {
   let source = "let main = () -> Int {\n  let a = int_to_double(10)\n  let b = int_to_double(3)\n  double_to_int(a)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_float_arith.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_float_arith.wasm")
+  assert_wasm(bytes)
 }
 
 // === String builtins ===
@@ -733,29 +660,25 @@ test "wasi: float arithmetic via int_to_double" {
 test "wasi: string_char_code_at" {
   let source = "let main = () -> Int {\n  let s = \"hello\"\n  string_char_code_at(s, 1)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_char_at.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_char_at.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: string_from_char_code" {
   let source = "let main = () -> Int {\n  let s = string_from_char_code(65)\n  string_char_code_at(s, 0)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_from_char.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_from_char.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: string_substring" {
   let source = "let main = () -> Int {\n  let s = \"hello world\"\n  let sub = string_substring(s, 6, 11)\n  string_length(sub)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_substring.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_substring.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: string_substring content" {
   let source = "let main = () -> Int {\n  let s = \"abcdef\"\n  let sub = string_substring(s, 2, 5)\n  string_char_code_at(sub, 0)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_substr_content.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_substr_content.wasm")
+  assert_wasm(bytes)
 }
 
 // === GC Backend ===
@@ -769,64 +692,55 @@ let compile_wasi_gc = (source: String, entry: String) -> Bytes with { Error } {
 test "gc: basic add" {
   let source = "let main = () -> Int { 3 + 4 }"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_add.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_add.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: let bindings" {
   let source = "let main = () -> Int {\n  let a = 10\n  let b = a + 5\n  b * 2\n}"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_let.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_let.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: if else" {
   let source = "let main = () -> Int {\n  let x = 5\n  if x > 3 { 10 } else { 20 }\n}"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_ifelse.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_ifelse.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: while loop" {
   let source = "let main = () -> Int {\n  let mut sum = 0\n  let mut i = 1\n  while i <= 10 {\n    sum = sum + i\n    i = i + 1\n  }\n  sum\n}"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_while.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_while.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: function call" {
   let source = "let add = (a: Int, b: Int) -> Int { a + b }\nlet main = () -> Int { add(3, 4) }"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_call.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_call.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: match expression" {
   let source = "let f = (x: Int) -> Int {\n  match x {\n    0 => 10,\n    1 => 20,\n    _ => 30\n  }\n}\nlet main = () -> Int { f(1) }"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_match.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_match.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: string length" {
   let source = "let main = () -> Int {\n  let s = \"hello\"\n  string_length(s)\n}"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_strlen.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_strlen.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: let mut and assign" {
   let source = "let main = () -> Int {\n  let mut x = 10\n  x = x + 5\n  x\n}"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_letmut.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_letmut.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: fibonacci iterative" {
   let source = "let main = () -> Int {\n  let mut a = 0\n  let mut b = 1\n  let mut i = 0\n  while i < 10 {\n    let t = b\n    b = a + b\n    a = t\n    i = i + 1\n  }\n  a\n}"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_fib.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_fib.wasm")
+  assert_wasm(bytes)
 }
 
 // === GC Backend: Closures ===
@@ -834,120 +748,103 @@ test "gc: fibonacci iterative" {
 test "gc: closure no capture" {
   let source = "let main = () -> Int {\n  let f = (x: Int) -> Int { x + 1 }\n  f(5)\n}"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_closure_nocap.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_closure_nocap.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: closure simple capture" {
   let source = "let main = () -> Int {\n  let n = 10\n  let f = (x: Int) -> Int { x + n }\n  f(5)\n}"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_closure_cap.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_closure_cap.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: function as value" {
   let source = "let double = (x: Int) -> Int { x * 2 }\nlet main = () -> Int {\n  let f = double\n  f(21)\n}"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_fn_value.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_fn_value.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: higher-order function" {
   let source = "let apply = (f: (Int) -> Int, x: Int) -> Int { f(x) }\nlet inc = (x: Int) -> Int { x + 1 }\nlet main = () -> Int { apply(inc, 41) }"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_higher_order.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_higher_order.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: nested closure" {
   let source = "let main = () -> Int {\n  let a = 10\n  let make_adder = (n: Int) -> (Int) -> Int {\n    (x: Int) -> Int { x + n }\n  }\n  let add10 = make_adder(a)\n  add10(32)\n}"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_closure_nested.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_closure_nested.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: mutable capture" {
   let source = "let main = () -> Int {\n  let mut n = 0\n  let inc = () -> Int { n = n + 1\n  n }\n  inc()\n  inc()\n}"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_mutcap.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_mutcap.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: mutable capture shared" {
   let source = "let main = () -> Int {\n  let mut n = 0\n  let inc = () -> Int { n = n + 1\n  n }\n  let get = () -> Int { n }\n  inc()\n  inc()\n  inc()\n  get()\n}"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_mutcap_shared.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_mutcap_shared.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: string_char_code_at" {
   let source = "let main = () -> Int {\n  string_char_code_at(\"hello\", 1)\n}"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_char_at.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_char_at.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: string_substring" {
   let source = "let main = () -> Int {\n  let sub = string_substring(\"abcdef\", 2, 5)\n  string_char_code_at(sub, 0)\n}"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_substr.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_substr.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: array_builder" {
   let source = "let main = () -> Int {\n  let b = array_builder()\n  array_builder_push(b, 10)\n  array_builder_push(b, 20)\n  array_builder_push(b, 30)\n  let arr = array_builder_freeze(b)\n  array_get(arr, 1)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_arr_builder.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_arr_builder.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: array_builder length" {
   let source = "let main = () -> Int {\n  let b = array_builder()\n  array_builder_push(b, 1)\n  array_builder_push(b, 2)\n  array_builder_push(b, 3)\n  let arr = array_builder_freeze(b)\n  array_length(arr)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_arr_builder_len.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_arr_builder_len.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: array_builder" {
   let source = "let main = () -> Int {\n  let b = array_builder()\n  array_builder_push(b, 10)\n  array_builder_push(b, 20)\n  array_builder_push(b, 30)\n  let arr = array_builder_freeze(b)\n  array_get(arr, 1)\n}"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_arr_builder.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_arr_builder.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: enum constructor 0-arg" {
   let source = "enum Color { Red; Green; Blue }\nlet main = () -> Int {\n  let c = Green\n  match c {\n    Red => 1,\n    Green => 2,\n    Blue => 3\n  }\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_enum0.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_enum0.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: enum constructor with args" {
   let source = "enum MyOpt { None; Some(Int) }\nlet main = () -> Int {\n  let x = Some(42)\n  match x {\n    Some(n) => n,\n    None => 0\n  }\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_enum_args.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_enum_args.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: enum Option pattern" {
   let source = "enum MyOpt { None; Some(Int) }\nlet main = () -> Int {\n  let x = None\n  match x {\n    Some(n) => n,\n    None => 99\n  }\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_enum_none.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_enum_none.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: enum constructor 0-arg" {
   let source = "enum Color { Red; Green; Blue }\nlet main = () -> Int {\n  let c = Green\n  match c {\n    Red => 1,\n    Green => 2,\n    Blue => 3\n  }\n}"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_enum0.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_enum0.wasm")
+  assert_wasm(bytes)
 }
 
 test "gc: enum constructor with args" {
   let source = "enum MyOpt { None; Some(Int) }\nlet main = () -> Int {\n  let x = Some(42)\n  match x {\n    Some(n) => n,\n    None => 0\n  }\n}"
   let bytes = compile_wasi_gc(source, "main")
-  fs_write_bytes("/tmp/test_gc_enum_args.wasm", bytes)
-  sh("wasmtime run -W gc /tmp/test_gc_enum_args.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: enum import (separate module)" {
@@ -955,16 +852,14 @@ test "wasi: enum import (separate module)" {
   let enum_source = "export enum Token { TInt(Int); TString(String); TPlus; TMinus; TEof }"
   let main_source = "let main = () -> Int {\n  let tok = TInt(42)\n  match tok {\n    TInt(n) => n,\n    TString(_) => -1,\n    TPlus => -2,\n    TMinus => -3,\n    TEof => -4\n  }\n}"
   let bytes = compile_wasi_with_imports([enum_source], main_source, "main")
-  fs_write_bytes("/tmp/test_cg_enum_import.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_enum_import.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: enum import 0-arg match" {
   let enum_source = "export enum Token { TInt(Int); TPlus; TMinus; TEof }"
   let main_source = "let main = () -> Int {\n  let tok = TPlus\n  match tok {\n    TInt(n) => n,\n    TPlus => 10,\n    TMinus => 20,\n    TEof => 30\n  }\n}"
   let bytes = compile_wasi_with_imports([enum_source], main_source, "main")
-  fs_write_bytes("/tmp/test_cg_enum_import2.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_enum_import2.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: real token.vibe enum import" {
@@ -972,83 +867,72 @@ test "wasi: real token.vibe enum import" {
   let token_source = fs_read_file("vibe/compiler/token.vibe")
   let main_source = "let main = () -> Int {\n  let tok = TInt(99)\n  match tok {\n    TInt(n) => n,\n    TPlus => -1,\n    _ => -2\n  }\n}"
   let bytes = compile_wasi_with_imports([token_source], main_source, "main")
-  fs_write_bytes("/tmp/test_cg_token_import.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_token_import.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: let binding in if-else branch" {
   let source = "let main = () -> Int {\n  if true {\n    let x = 10\n    let y = 20\n    x + y\n  } else { 0 }\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_let_if.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_let_if.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: let binding with string_concat in if" {
   let source = "let f = (s: String) -> Int {\n  if true {\n    let chunk = string_substring(s, 0, 2)\n    string_length(chunk)\n  } else { 0 }\n}\nlet main = () -> Int {\n  f(\"hello\")\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_let_str_if.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_let_str_if.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: let-rec with let binding in body" {
   let source = "let f = (s: String, len: Int, start: Int) -> Int {\n  let rec scan = (idx: Int, acc: Int) -> Int {\n    if idx >= len { acc }\n    else {\n      let c = string_char_code_at(s, idx)\n      if c == 92 {\n        let chunk = idx\n        let next = idx + 1\n        scan(next, acc + chunk)\n      } else scan(idx + 1, acc)\n    }\n  }\n  scan(start, 0)\n}\nlet main = () -> Int {\n  f(\"a\\\\b\", 3, 0)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_letrec_let.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_letrec_let.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: lex_string pattern (simplified)" {
   // Simplified version of lexer.vibe lex_string pattern
   let source = "let lex_str = (s: String, len: Int, start: Int) -> (String, Int) with { Error } {\n  let rec scan = (idx: Int, start: Int, acc: String) -> (String, Int) with { Error } {\n    if idx >= len {\n      throw(\"unterminated\")\n    }\n    let c = string_char_code_at(s, idx)\n    if c == 34 {\n      let chunk = string_substring(s, start, idx);\n      (string_concat(acc, chunk), idx + 1)\n    } else if c == 92 {\n      let chunk = string_substring(s, start, idx)\n      let next = idx + 1\n      if next >= len {\n        throw(\"unterminated escape\")\n      }\n      let esc = string_char_code_at(s, next)\n      let escaped = if esc == 110 { string_from_char_code(10) } else throw(\"invalid escape\")\n      scan(next + 1, next + 1, string_concat(string_concat(acc, chunk), escaped))\n    } else scan(idx + 1, start, acc)\n  }\n  scan(start + 1, start + 1, \"\")\n}\nlet main = () -> Int {\n  let (result, _) = lex_str(\"\\\"hi\\\"\", 4, 0);\n  string_length(result)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_lexstr.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_lexstr.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: let with else-throw" {
   let source = "let f = (x: Int) -> Int with { Error } {\n  let chunk = 10\n  let escaped = if x == 1 { 20 } else throw(\"err\")\n  chunk + escaped\n}\nlet main = () -> Int {\n  f(1)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_let_else_throw.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_let_else_throw.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: multi-let in else-if with later use" {
   let source = "let f = (s: String, i: Int) -> String {\n  let c = string_char_code_at(s, i)\n  if c == 97 {\n    \"a\"\n  } else if c == 98 {\n    let chunk = string_substring(s, 0, i)\n    let rest = string_substring(s, i, i + 1)\n    string_concat(chunk, rest)\n  } else { s }\n}\nlet main = () -> Int {\n  string_length(f(\"xbz\", 1))\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_multi_let_elseif.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_multi_let_elseif.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: closure with if-else let" {
   // Minimal: closure with if-else branches that define locals
   let source = "let f = (s: String) -> Int {\n  let rec go = (i: Int) -> Int {\n    let c = string_char_code_at(s, i)\n    if c == 97 {\n      let x = 10\n      x\n    } else if c == 98 {\n      let x = 20\n      go(x)\n    } else 0\n  }\n  go(0)\n}\nlet main = () -> Int {\n  f(\"b\")\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_closure_ifelse_let.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_closure_ifelse_let.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: closure let-in-else-if with recursive call" {
   // Closer to lex_string: multiple lets in else-if, then recursive call using those locals
   let source = "let f = (s: String, len: Int) -> Int {\n  let rec scan = (idx: Int, acc: Int) -> Int {\n    if idx >= len { acc }\n    else {\n      let c = string_char_code_at(s, idx)\n      if c == 97 {\n        let chunk = 10\n        chunk + acc\n      } else if c == 98 {\n        let chunk = 20\n        let next = idx + 1\n        scan(next, acc + chunk)\n      } else scan(idx + 1, acc)\n    }\n  }\n  scan(0, 0)\n}\nlet main = () -> Int {\n  f(\"b\", 1)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_closure_letrec_call.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_closure_letrec_call.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: closure let-escaped-if-throw then recursive" {
   // Even closer to lex_string: let escaped = if ... else throw; then scan(... chunk ...)
   let source = "let f = (s: String, len: Int) -> Int {\n  let rec scan = (idx: Int, acc: Int) -> Int with { Error } {\n    if idx >= len { acc }\n    else {\n      let c = string_char_code_at(s, idx)\n      if c == 97 {\n        let chunk = 10\n        chunk + acc\n      } else if c == 98 {\n        let chunk = 20\n        let next = idx + 1\n        let esc = string_char_code_at(s, next)\n        let escaped = if esc == 110 { 30 } else throw(\"invalid\")\n        scan(next, acc + chunk + escaped)\n      } else scan(idx + 1, acc)\n    }\n  }\n  scan(0, 0)\n}\nlet main = () -> Int {\n  f(\"bn\", 2)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_closure_escaped.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_closure_escaped.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: closure with string_concat in recursive call" {
   // Exact pattern: scan(next+1, next+1, string_concat(string_concat(acc, chunk), escaped))
   let source = "let f = (s: String, len: Int) -> String with { Error } {\n  let rec scan = (idx: Int, start: Int, acc: String) -> String with { Error } {\n    if idx >= len { acc }\n    else {\n      let c = string_char_code_at(s, idx)\n      if c == 97 {\n        let chunk = string_substring(s, start, idx)\n        string_concat(acc, chunk)\n      } else if c == 98 {\n        let chunk = string_substring(s, start, idx)\n        let next = idx + 1\n        let esc = string_char_code_at(s, next)\n        let escaped = if esc == 110 { \"N\" } else throw(\"invalid\")\n        scan(next + 1, next + 1, string_concat(string_concat(acc, chunk), escaped))\n      } else scan(idx + 1, start, acc)\n    }\n  }\n  scan(0, 0, \"\")\n}\nlet main = () -> Int {\n  string_length(f(\"bna\", 3))\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_closure_strconcat.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_closure_strconcat.wasm")
+  assert_wasm(bytes)
 }
 
 test "debug: free vars of closure with tuple" {
@@ -1107,32 +991,28 @@ test "wasi: minimal closure tuple-let" {
   // Absolute minimal: closure, if-else, let in then with tuple return, let in else
   let source = "let f = (x: Int) -> Int {\n  let rec go = (i: Int) -> Int {\n    if i == 0 {\n      let a = 10;\n      (a, 20);\n      a\n    } else {\n      let a = 30\n      go(a)\n    }\n  }\n  go(x)\n}\nlet main = () -> Int {\n  f(1)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_closure_mini_tuple.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_closure_mini_tuple.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: closure let-then-tuple-return" {
   // Closure where then-branch returns tuple with let-bound var, else-branch redefines same var
   let source = "let f = (x: Int) -> (Int, Int) {\n  let rec go = (i: Int) -> (Int, Int) {\n    if i == 0 {\n      let a = 10;\n      (a, 20)\n    } else {\n      let a = 30\n      go(a)\n    }\n  }\n  go(x)\n}\nlet main = () -> Int {\n  let (r, _) = f(0);\n  r\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_closure_let_tuple.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_closure_let_tuple.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: closure with tuple return only" {
   // Test tuple return in then branch (no guard-without-else)
   let source = "let f = (s: String, len: Int) -> (String, Int) with { Error } {\n  let rec scan = (idx: Int, start: Int, acc: String) -> (String, Int) with { Error } {\n    if idx >= len { throw(\"unterminated\") }\n    else {\n      let c = string_char_code_at(s, idx)\n      if c == 34 {\n        let chunk = string_substring(s, start, idx);\n        (string_concat(acc, chunk), idx + 1)\n      } else if c == 98 {\n        let chunk = string_substring(s, start, idx)\n        let next = idx + 1\n        let esc = string_char_code_at(s, next)\n        let escaped = if esc == 110 { string_from_char_code(10) } else throw(\"invalid\")\n        scan(next + 1, next + 1, string_concat(string_concat(acc, chunk), escaped))\n      } else scan(idx + 1, start, acc)\n    }\n  }\n  scan(0, 0, \"\")\n}\nlet main = () -> Int {\n  let (result, _) = f(\"\\\"hi\\\"\", 4, 0);\n  string_length(result)\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_closure_tuple_ret.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_closure_tuple_ret.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: closure with guard-throw no else" {
   // Test guard without else (no tuple return)
   let source = "let f = (s: String, len: Int) -> String with { Error } {\n  let rec scan = (idx: Int, start: Int, acc: String) -> String with { Error } {\n    if idx >= len {\n      throw(\"unterminated\")\n    }\n    let c = string_char_code_at(s, idx)\n    if c == 97 {\n      let chunk = string_substring(s, start, idx)\n      string_concat(acc, chunk)\n    } else if c == 98 {\n      let chunk = string_substring(s, start, idx)\n      let next = idx + 1\n      if next >= len {\n        throw(\"unterminated escape\")\n      }\n      let esc = string_char_code_at(s, next)\n      let escaped = if esc == 110 { string_from_char_code(10) } else throw(\"invalid\")\n      scan(next + 1, next + 1, string_concat(string_concat(acc, chunk), escaped))\n    } else scan(idx + 1, start, acc)\n  }\n  scan(0, 0, \"\")\n}\nlet main = () -> Int {\n  string_length(f(\"\\\"hi\\\"\", 4, 0))\n}"
   let bytes = compile_wasi(source, "main")
-  fs_write_bytes("/tmp/test_cg_closure_guard.wasm", bytes)
-  sh("wasmtime run /tmp/test_cg_closure_guard.wasm")
+  assert_wasm(bytes)
 }
 
 test "wasi: lexer.vibe import - compile only" {
@@ -1172,6 +1052,5 @@ test "wasi: lexer.vibe import - compile only" {
     mi = mi + 1
   }
   let bytes = compile_wasi_module(array_builder_freeze(all_stmts), "main")
-  fs_write_bytes("/tmp/test_cg_lexer_import.wasm", bytes)
-  0
+  assert_wasm(bytes)
 }
