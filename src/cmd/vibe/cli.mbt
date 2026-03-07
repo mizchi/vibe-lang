@@ -1939,7 +1939,7 @@ fn build_compiled_test_case_source(
       out.write_char('\n')
     }
   }
-  out.write_string("{\n")
+  out.write_string("let main = () -> Int with { Error } {\n")
   if body_source.trim().to_string().length() > 0 {
     out.write_string(body_source)
     if not(body_source.has_suffix("\n")) {
@@ -1947,7 +1947,6 @@ fn build_compiled_test_case_source(
     }
   }
   out.write_string("}\n")
-  out.write_string("0\n")
   out.to_string()
 }
 
@@ -2110,7 +2109,8 @@ fn run_test_file_compiled(
         }
       CompiledTestCaseExec::Unsupported(err) =>
         return CompiledTestAttempt::Unsupported(err)
-      CompiledTestCaseExec::Error(err) => return CompiledTestAttempt::Error(err)
+      CompiledTestCaseExec::Error(err) =>
+        failures.push(CliTestFailure::{ name: case.name, error: err })
     }
   }
   CompiledTestAttempt::Success({
