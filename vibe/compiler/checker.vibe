@@ -13,7 +13,7 @@ import ./checker_resolve.vibe {
 }
 
 import ./types.vibe {
-  Subst, Type, TypeDef, TypeEnv, env_bind, env_lookup, fresh_var, generalize, instantiate, resolve_builtin, subst_add_bound, subst_apply, type_implements_trait, unify
+  Subst, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_typedef, fresh_var, generalize, instantiate, resolve_builtin, subst_add_bound, subst_apply, type_implements_trait, unify
 }
 
 //# Functions
@@ -124,6 +124,7 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
           }
           (subst_apply(s3, ret), s3, c2)
         },
+        CtStruct(sname) => (CtStruct(sname), s2, c2),
         _ => (CtUnknown, s2, c2)
       }
     },
@@ -174,9 +175,32 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
       let (bt, s2, c2) = check_expr(body, env_bind(env, name, et), defs, s1, c1)
       (CtArray(bt), s2, c2)
     },
-    EDot(obj, _) => {
-      let (_, s1, c1) = check_expr(obj, env, defs, s, c)
-      (CtUnknown, s1, c1)
+    EDot(obj, field) => {
+      let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c)
+      let resolved = subst_apply(s1, obj_ty)
+      let field_ty = match resolved {
+        CtStruct(sname) => match find_typedef(defs, sname) {
+          Some(td) => match td {
+            TDStruct(_, fields) => {
+              let rec find_field = (i: Int) -> Type {
+                if i >= array_length(fields) {
+                  CtUnknown
+                } else {
+                  let (fname, ftype) = array_get(fields, i)
+                  if string_equals(fname, field) {
+                    ftype
+                  } else find_field(i + 1)
+                }
+              }
+              find_field(0)
+            },
+            _ => CtUnknown
+          },
+          None => CtUnknown
+        },
+        _ => CtUnknown
+      }
+      (field_ty, s1, c1)
     },
     EFn(tparams, tbounds, params, _, effect, body) => {
       let he = match effect {
@@ -278,6 +302,52 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
         ai = ai + 1
       }
       (CtUnit, s1, c1)
+    },
+    ERecord(fields) => {
+      let flen = array_length(fields)
+      let mut s1 = s
+      let mut c1 = c
+      let mut fi = 0
+      while fi < flen {
+        let (_, fval) = array_get(fields, fi)
+        let (_, ns, nc) = check_expr(fval, env, defs, s1, c1)
+        s1 = ns
+        c1 = nc
+        fi = fi + 1
+      }
+      (CtUnknown, s1, c1)
+    },
+    ETuple(items) => {
+      let ilen = array_length(items)
+      let mut s1 = s
+      let mut c1 = c
+      let tys = array_slice([CtUnknown], 0, 0)
+      let mut ti = 0
+      while ti < ilen {
+        let (it, ns, nc) = check_expr(array_get(items, ti), env, defs, s1, c1)
+        array_push(tys, it)
+        s1 = ns
+        c1 = nc
+        ti = ti + 1
+      }
+      (CtTuple(tys), s1, c1)
+    },
+    EArray(items) => {
+      let ilen = array_length(items)
+      let mut s1 = s
+      let mut c1 = c
+      let mut elem_ty = CtUnknown
+      let mut ai = 0
+      while ai < ilen {
+        let (it, ns, nc) = check_expr(array_get(items, ai), env, defs, s1, c1)
+        if eq(ai, 0) {
+          elem_ty = it
+        }
+        s1 = ns
+        c1 = nc
+        ai = ai + 1
+      }
+      (CtArray(elem_ty), s1, c1)
     },
     _ => (CtUnknown, s, c)
   }

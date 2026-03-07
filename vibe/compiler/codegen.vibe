@@ -103,11 +103,13 @@ let rec compile_expr = (
   ref_cell_names: Array[String],
   ctor_names: Array[String],
   ctor_tags: Array[Int],
-  ctor_field_counts: Array[Int]
+  ctor_field_counts: Array[Int],
+  struct_names: Array[String],
+  struct_field_names: Array[Array[String]]
 ) -> Int with { Error } {
   // shorthand for recursive call
   let ce = (b: Array[Int], e: Expr, ln: Array[String], nl: Int, d: Int) -> Int with { Error } {
-    compile_expr(b, e, ln, nl, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths, d, lambda_bodies, lambda_param_counts, lambda_captures, lambda_meta_i32, lambda_meta_i64, num_user_funcs, func_offset, ref_cell_names, ctor_names, ctor_tags, ctor_field_counts)
+    compile_expr(b, e, ln, nl, fn_names, fn_indices, fn_params, fn_returns, str_strs, str_offsets, str_lengths, d, lambda_bodies, lambda_param_counts, lambda_captures, lambda_meta_i32, lambda_meta_i64, num_user_funcs, func_offset, ref_cell_names, ctor_names, ctor_tags, ctor_field_counts, struct_names, struct_field_names)
   }
   let __tag = expr_tag(expr)
   if __tag == 0 {
@@ -265,7 +267,7 @@ let rec compile_expr = (
           // Check if this is an enum constructor call
           let ctor_lookup_idx = lookup_ctor(ctor_names, fname, 0)
           if ctor_lookup_idx >= 0 {
-            // Enum constructor: allocate heap object [tag_i32 | field_count_i32 | fields...]
+            // Enum/struct constructor: allocate heap object [tag_i32 | field_count_i32 | fields...]
             let tag = array_get(ctor_tags, ctor_lookup_idx)
             let fc = array_get(ctor_field_counts, ctor_lookup_idx)
             let obj_size = 8 + fc * 8  // 4 bytes tag + 4 bytes fc + 8 bytes per field
@@ -290,11 +292,50 @@ let rec compile_expr = (
             emit_i32_wrap_i64(buf)
             emit_i32_const(buf, fc)
             emit_i32_store(buf, 2, 4)
+            // Check if this is a struct constructor: args = [ERecord(fields)]
+            // For structs, unwrap the ERecord and compile fields in definition order
+            let actual_args = if array_length(args) == 1 {
+              match array_get(args, 0) {
+                ERecord(rec_fields) => {
+                  // Find struct field order
+                  let rec find_sn = (si2: Int) -> Int {
+                    if si2 >= array_length(struct_names) { -1 }
+                    else if string_equals(array_get(struct_names, si2), fname) { si2 }
+                    else find_sn(si2 + 1)
+                  }
+                  let sn_idx = find_sn(0)
+                  if sn_idx >= 0 {
+                    // Reorder fields by struct definition order
+                    let def_fnames = array_get(struct_field_names, sn_idx)
+                    let ordered = array_slice([EUnit], 0, 0)
+                    let mut oi = 0
+                    while oi < array_length(def_fnames) {
+                      let target_name = array_get(def_fnames, oi)
+                      let rec find_rf = (ri: Int) -> Expr {
+                        if ri >= array_length(rec_fields) { EUnit }
+                        else {
+                          let (rfn, rfv) = array_get(rec_fields, ri)
+                          if string_equals(rfn, target_name) { rfv }
+                          else find_rf(ri + 1)
+                        }
+                      }
+                      array_push(ordered, find_rf(0))
+                      oi = oi + 1
+                    }
+                    ordered
+                  } else {
+                    // Not a struct, just use args as-is (single ERecord arg)
+                    args
+                  }
+                },
+                _ => args
+              }
+            } else { args }
             // Compile and store each field
             let mut nl_c = next_local + 1
             let mut fi_c = 0
-            while fi_c < array_length(args) {
-              nl_c = ce(buf, array_get(args, fi_c), local_names, nl_c, ld)
+            while fi_c < array_length(actual_args) {
+              nl_c = ce(buf, array_get(actual_args, fi_c), local_names, nl_c, ld)
               let val_local = nl_c
               array_push(local_names, "__ctor_val")
               emit_local_set(buf, val_local)
@@ -877,7 +918,8 @@ let rec compile_expr = (
         str_strs, str_offsets, str_lengths, -1,
         lambda_bodies, lambda_param_counts, lambda_captures,
         lambda_meta_i32, lambda_meta_i64, num_user_funcs, func_offset,
-        lam_ref_cells, ctor_names, ctor_tags, ctor_field_counts
+        lam_ref_cells, ctor_names, ctor_tags, ctor_field_counts,
+        struct_names, struct_field_names
       )
 
       let lambda_idx = array_length(lambda_bodies)
@@ -928,7 +970,87 @@ let rec compile_expr = (
         nl2
       }
   } else {
-      throw("unsupported expression in codegen")
+      // Handle EDot and ERecord (tag == -1)
+      match expr {
+        EDot(obj, field) => {
+          // Struct field access: obj must be a tagged heap ptr
+          // Find struct and field index
+          let rec find_struct_field_idx = (si: Int) -> Int {
+            if si >= array_length(struct_names) { -1 }
+            else {
+              let fnames = array_get(struct_field_names, si)
+              let rec find_f = (fi: Int) -> Int {
+                if fi >= array_length(fnames) { -1 }
+                else if string_equals(array_get(fnames, fi), field) { fi }
+                else find_f(fi + 1)
+              }
+              let idx = find_f(0)
+              if idx >= 0 { idx }
+              else find_struct_field_idx(si + 1)
+            }
+          }
+          let field_idx = find_struct_field_idx(0)
+          if field_idx < 0 {
+            throw(string_concat("unknown struct field: ", field))
+          }
+          // Compile obj, untag ptr, load field
+          let nl1 = ce(buf, obj, local_names, next_local, ld)
+          // Untag: ptr & ~1 (clear low bit), then wrap to i32
+          emit_i64_const(buf, -2)
+          emit_i64_and(buf)
+          emit_i32_wrap_i64(buf)
+          // Load field at offset 8 + field_idx * 8
+          emit_i64_load(buf, 3, 8 + field_idx * 8)
+          nl1
+        },
+        ERecord(fields) => {
+          // Record literal: allocate heap [tag_i32 | field_count_i32 | field_0 | field_1 | ...]
+          // Use tag 0 for anonymous records (struct ctor will wrap via ECall)
+          let flen = array_length(fields)
+          let obj_size = 8 + flen * 8
+          let ptr_local = next_local
+          array_push(local_names, "__rec_ptr")
+          emit_global_get(buf, 0)
+          emit_i64_extend_i32_u(buf)
+          emit_local_set(buf, ptr_local)
+          emit_global_get(buf, 0)
+          emit_i32_const(buf, obj_size)
+          emit_i32_add(buf)
+          emit_global_set(buf, 0)
+          // Store tag=0 at offset 0
+          emit_local_get(buf, ptr_local)
+          emit_i32_wrap_i64(buf)
+          emit_i32_const(buf, 0)
+          emit_i32_store(buf, 2, 0)
+          // Store field_count at offset 4
+          emit_local_get(buf, ptr_local)
+          emit_i32_wrap_i64(buf)
+          emit_i32_const(buf, flen)
+          emit_i32_store(buf, 2, 4)
+          // Compile and store each field
+          let mut nl_r = next_local + 1
+          let mut ri = 0
+          while ri < flen {
+            let (_, fexpr) = array_get(fields, ri)
+            nl_r = ce(buf, fexpr, local_names, nl_r, ld)
+            let val_local = nl_r
+            array_push(local_names, "__rec_val")
+            emit_local_set(buf, val_local)
+            nl_r = nl_r + 1
+            emit_local_get(buf, ptr_local)
+            emit_i32_wrap_i64(buf)
+            emit_local_get(buf, val_local)
+            emit_i64_store(buf, 3, 8 + ri * 8)
+            ri = ri + 1
+          }
+          // Return ptr | 1
+          emit_local_get(buf, ptr_local)
+          emit_i64_const(buf, 1)
+          emit_i64_or(buf)
+          nl_r
+        },
+        _ => throw("unsupported expression in codegen")
+      }
   }
 }
 
@@ -1038,7 +1160,8 @@ export let compile_module = (stmts: Array[Stmt]) -> Bytes with { Error } {
       lambda_bodies_m, lambda_param_counts_m, lambda_captures_m,
       lambda_meta_i32_m, lambda_meta_i64_m, num_funcs, 0,
       array_slice([""], 0, 0),
-      array_slice([""], 0, 0), array_slice([0], 0, 0), array_slice([0], 0, 0)
+      array_slice([""], 0, 0), array_slice([0], 0, 0), array_slice([0], 0, 0),
+      array_slice([""], 0, 0), array_slice([array_slice([""], 0, 0)], 0, 0)
     )
     array_push(bodies, body_buf)
     let extra = if final_nl > param_count { final_nl - param_count } else { 0 }
@@ -1828,9 +1951,41 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
         }
         0
       },
+      SStruct(_, sname, sfields) => {
+        // Register struct name as a constructor
+        array_push(ctor_names_list, sname)
+        array_push(ctor_tags_list, ctor_next_tag)
+        array_push(ctor_field_counts_list, array_length(sfields))
+        ctor_next_tag = ctor_next_tag + 1
+        0
+      },
       _ => 0
     }
     ei2 = ei2 + 1
+  }
+
+  // Build struct field name index tables (parallel arrays)
+  // struct_names[i] = struct name, struct_field_names[i] = [field0, field1, ...]
+  let struct_names = array_slice([""], 0, 0)
+  let struct_field_names = array_slice([array_slice([""], 0, 0)], 0, 0)
+  let mut si = 0
+  while si < array_length(stmts) {
+    match array_get(stmts, si) {
+      SStruct(_, sname, sfields) => {
+        array_push(struct_names, sname)
+        let fnames = array_slice([""], 0, 0)
+        let mut sfi = 0
+        while sfi < array_length(sfields) {
+          let (fname, _) = array_get(sfields, sfi)
+          array_push(fnames, fname)
+          sfi = sfi + 1
+        }
+        array_push(struct_field_names, fnames)
+        ()
+      },
+      _ => ()
+    }
+    si = si + 1
   }
 
   let num_user_funcs = array_length(fn_names_list)
@@ -2039,7 +2194,8 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
       lambda_bodies_w, lambda_param_counts_w, lambda_captures_w,
       lambda_meta_i32, lambda_meta_i64, num_user_funcs, func_offset,
       array_slice([""], 0, 0),
-      ctor_names_list, ctor_tags_list, ctor_field_counts_list
+      ctor_names_list, ctor_tags_list, ctor_field_counts_list,
+      struct_names, struct_field_names
     )
     array_push(bodies, body_buf)
     let extra = if final_nl > param_count { final_nl - param_count } else { 0 }
