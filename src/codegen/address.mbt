@@ -941,6 +941,7 @@ fn is_builtin(name : String) -> Bool {
   name == "array_builder_push" ||
   name == "array_builder_freeze" ||
   name == "array_push" ||
+  name == "array_set" ||
   name == "array_new" ||
   name == "array_truncate" ||
   name == "array_contains_str" ||

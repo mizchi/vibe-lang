@@ -405,6 +405,34 @@ fn type_call_builtin_handler_collection_numeric(
       )
       @core.Type::Unit
     }
+    "array_set" => {
+      let pos_args = check_positional_arity(args, "array_set", 3, call_span)
+      let array_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let _ = check_arg_type(
+        env,
+        pos_args[1],
+        @core.Type::Int,
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let elem_ty = expect_array_elem_type(env, array_ty, pos_args[0].span())
+      let _ = check_arg_type(
+        env,
+        pos_args[2],
+        elem_ty,
+        aliases,
+        effects,
+        allow_effect,
+      )
+      @core.Type::Unit
+    }
     "array_truncate" => {
       let pos_args = check_positional_arity(
         args, "array_truncate", 2, call_span,

@@ -2,6 +2,20 @@
 
 Completed items archived from `TODO.md`.
 
+## 2026-03-07
+
+- **WASM eval interpreter 大幅拡張**: block stack ベースの制御フロー（block/loop/br/br_if）、global.get/set、i64.load/store、i32.load8_u、内部関数呼び出し（cabi_realloc 等）の再帰実行、型セクション/関数セクションパースによる正確なパラメータ数取得
+- **WAT disassembler 拡張**: global.get/set、i64.load/store オペコード対応、グローバルセクション(id=6)のパース・レンダリング
+- **GC codegen 型サポート拡張**: Array(T)→gc array ref、Func→funcref、Param(型パラメータ)→anyref、Num→I64、Named with args(Option等)→anyref fallback
+- **codegen: enum ctor tag double-counting fix**: scan_needs_stmt と compile_stmt の両方で tag が振られるバグを修正
+- **codegen: compile_expr の共通ヘルパー抽出**: emit_ctor_obj_nullary, emit_ctor_alloc_header, emit_ctor_field_store, emit_tagged_ptr, emit_direct_call_post, emit_closure_create, emit_lambda_capture_prologue, record_lambda_meta, emit_letrec_backpatch を codegen_common.vibe に統合（codegen.vibe -131行, codegen_gc.vibe -127行）
+- **codegen: EMatch の共通ヘルパー抽出**: emit_pat_condition, emit_ctor_field_bindings, emit_tuple_field_bindings を codegen_common.vibe に統合
+
+## 2026-03-06
+
+- **Self-host WASM Codegen P4**: lexer.vibe WASM compilation 完了、dual backend (linear memory + wasm-gc)、closure 実装（lambda lifting, call_indirect, mutable capture ref cells）、ELetRec self-reference backpatch
+- **Selfhost Cutover Phase 0-5 完了**: MoonBit 依存を bootstrap 専用へ縮退、selfhost compiler CLI 契約統一、出力同値性 gate 化、CI 統合
+
 ## 2026-03-01
 
 - Gate 5: full self-host e2e テスト

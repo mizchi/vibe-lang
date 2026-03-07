@@ -630,7 +630,7 @@ test "vibe wasm-gc supports direct ref type member eq calls" {
     #|0
   db.set_source("main", src)
   let wasm = try
-    @runtime_compile.compile_module_wasm_gc_no_dce(db, "main")
+    @runtime_compile.compile_module_wasm_gc(db, "main")
   catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
@@ -650,7 +650,7 @@ test "vibe wasm-gc compiles for-in expressions" {
     #|}
   db.set_source("main", src)
   let wasm = try
-    @runtime_compile.compile_module_wasm_gc_no_dce(db, "main")
+    @runtime_compile.compile_module_wasm_gc(db, "main")
   catch {
     e => fail("compile error: " + e.to_string())
   } noraise {

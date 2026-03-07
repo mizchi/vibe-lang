@@ -1,16 +1,40 @@
 (module
-  (type (;0;) (func (result i64)))
-  (func (;0;) (type 0) (local i64)
+  (type (;0;) (func (param i64 i64 i32) (result i64)))
+  (type (;1;) (func (result i64)))
+  (func (;0;) (type 0) (local i32)
+    global.get 0
+    local.set 3
+    local.get 0
+    local.get 1
+    i64.add
+    local.get 3
+    global.set 0
+    end
+  )
+  (func (;1;) (type 0) (local i32)
+    global.get 0
+    local.set 3
+    local.get 0
+    local.get 1
+    i64.sub
+    local.get 3
+    global.set 0
+    end
+  )
+  (func (;2;) (type 1) (local i64)
     i64.const 4
     i64.const 8
-    i64.add
+    i32.const 0
+    call 0
     local.set 0
     local.get 0
     i64.const 4
-    i64.sub
+    i32.const 0
+    call 1
     end
   )
   (memory (;0;) 64)
-  (export "run" (func 0))
+  (global (;0;) (mut i32) i32.const 0)
+  (export "run" (func 2))
   (export "memory" (memory 0))
 )

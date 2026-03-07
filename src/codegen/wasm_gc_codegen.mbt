@@ -651,7 +651,7 @@ fn gc_val_kind_from_type(
     @core.Type::Named(name~, args~) =>
       if args.length() == 0 {
         match name {
-          "Int" | "i32" => GcValKind::I64
+          "Int" | "i32" | "Num" => GcValKind::I64
           "Float" | "f32" => GcValKind::F32
           "Double" | "f64" => GcValKind::F64
           "Bool" | "Unit" => GcValKind::I32
@@ -663,12 +663,36 @@ fn gc_val_kind_from_type(
           "arrayref" => GcValKind::ArrayRef
           "funcref" => GcValKind::FuncRef
           "externref" => GcValKind::ExternRef
-          _ => raise WasmGenError::Unsupported("gc type")
+          _ => raise WasmGenError::Unsupported("gc type: " + name)
         }
       } else {
-        raise WasmGenError::Unsupported("gc type")
+        match name {
+          "Array" => {
+            // Array<T> → gc array ref
+            let elem_kind = gc_val_kind_from_type(ctx, args[0])
+            let type_idx = ensure_array_type(
+              ctx.types, ctx.array_type_index, elem_kind,
+            )
+            GcValKind::Ref(type_idx)
+          }
+          // Option, Result, etc. — treat as anyref
+          _ => GcValKind::AnyRef
+        }
       }
-    _ => raise WasmGenError::Unsupported("gc type")
+    @core.Type::Array(elem_ty) => {
+      let elem_kind = gc_val_kind_from_type(ctx, elem_ty)
+      let type_idx = ensure_array_type(
+        ctx.types, ctx.array_type_index, elem_kind,
+      )
+      GcValKind::Ref(type_idx)
+    }
+    @core.Type::Func(..) =>
+      // Function values in GC mode are represented as funcref
+      GcValKind::FuncRef
+    @core.Type::Param(_) =>
+      // Unresolved type parameter — treat as anyref in GC mode
+      GcValKind::AnyRef
+    _ => raise WasmGenError::Unsupported("gc type: " + ty.to_string())
   }
 }
 

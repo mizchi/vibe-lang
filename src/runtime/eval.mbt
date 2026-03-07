@@ -3702,6 +3702,37 @@ fn eval_builtin_call(
           )
       }
     }
+    "array_set" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "array_set")
+      if pos_args.length() != 3 {
+        raise EvalError::BadCall(
+          BuiltinDetail(fn_name="array_set", detail="expected 3 arguments"),
+        )
+      }
+      match (pos_args[0], pos_args[1]) {
+        (@core.Value::Array(arr), @core.Value::Int(idx)) => {
+          let i = idx.to_int()
+          if i < 0 || i >= arr.length() {
+            raise EvalError::BadCall(
+              BuiltinDetail(
+                fn_name="array_set",
+                detail="index " + i.to_string() + " out of bounds (length " + arr.length().to_string() + ")",
+              ),
+            )
+          }
+          arr[i] = pos_args[2]
+          { value: @core.Value::Unit, effects: out.effects }
+        }
+        _ =>
+          raise EvalError::BadCall(
+            BuiltinDetail(
+              fn_name="array_set",
+              detail="expected (Array, Int, value)",
+            ),
+          )
+      }
+    }
     "array_truncate" => {
       let out = eval_args(rt, args)
       let pos_args = extract_positional_values(out.args, "array_truncate")

@@ -1500,6 +1500,13 @@ fn AstParser::parse_paren_expr(self : AstParser) -> @core.Expr raise ParseError 
     None => {
       let start = self.pos
       let _ = self.expect(lparen(), "(")
+      self.skip_trivia()
+      // () → unit (empty tuple)
+      if self.peek_kind() == rparen() {
+        let _ = self.bump()
+        let span = self.span_from(start)
+        return @core.Expr::Tuple(items=[], span~)
+      }
       let first = self.parse_expr()
       self.skip_trivia()
       if self.peek_kind() == comma() {
@@ -1818,7 +1825,9 @@ fn AstParser::parse_call_or_primary(
           span~,
         )
       }
-    } else if self.peek_kind() == lbracket() {
+    } else if self.peek_kind() == lbracket() && not(saw_newline) {
+      // Index access: expr[index] — only on the same line.
+      // A newline before [ starts a new array literal expression.
       let _ = self.bump()
       let index = self.parse_expr()
       let _ = self.expect(rbracket(), "]")

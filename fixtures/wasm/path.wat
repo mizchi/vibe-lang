@@ -2,7 +2,9 @@
   (type (;0;) (func (param i64) (result i64)))
   (type (;1;) (func (result i64)))
   (import "vibe" "path" (func (;0;) (type 0)))
-  (func (;1;) (type 1)
+  (func (;1;) (type 1) (local i32)
+    i32.const 16
+    local.set 0
     i64.const 1
     call 0
     end

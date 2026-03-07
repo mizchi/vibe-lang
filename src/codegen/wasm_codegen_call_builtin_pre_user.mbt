@@ -4598,6 +4598,32 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_load(buf, 8)
       emit_i64_extend_i32_s(buf)
     }
+    "array_set" => {
+      // array_set(arr, idx, value) -> arr[idx] = value
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "array_set", 3,
+      )
+      let ptr_local = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, ptr_local)
+      // addr = ptr + 8 + (idx >> 2) * 4
+      emit_local_get(buf, ptr_local)
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      // store value
+      compile_expr_i32(ctx, buf, pos_args[2])
+      emit_i32_wrap_i64(buf)
+      emit_i32_store(buf, 8)
+      emit_i64_const_tagged(buf, 0L) // return Unit
+    }
     "__index" => {
       // __index(obj, key) -> record/map field access when key is string,
       //                      array_get when key is integer

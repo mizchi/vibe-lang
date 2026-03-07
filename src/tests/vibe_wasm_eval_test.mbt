@@ -259,14 +259,13 @@ fn is_tagged_map(mem : Array[Byte], ptr : Int64) -> Bool raise WasmEvalError {
 }
 
 ///|
-fn parse_code_section(
-  bytes : Array[Byte],
-) -> (Array[Byte], Int) raise WasmEvalError {
-  let cur = Cursor::new(bytes)
-  let count = cur.read_leb_u32()
-  if count != 1 {
-    raise WasmEvalError::Unsupported("expected one function")
-  }
+struct FuncBody {
+  code : Array[Byte]
+  locals : Int
+}
+
+///|
+fn parse_one_func_body(cur : Cursor) -> FuncBody raise WasmEvalError {
   let body_size = cur.read_leb_u32()
   let body = cur.read_bytes(body_size)
   let body_cur = Cursor::new(body)
@@ -281,7 +280,44 @@ fn parse_code_section(
     locals_total += n
   }
   let code_bytes = body_cur.read_bytes(body_cur.remaining())
-  (code_bytes, locals_total)
+  { code: code_bytes, locals: locals_total }
+}
+
+///|
+fn parse_all_func_bodies(
+  bytes : Array[Byte],
+) -> Array[FuncBody] raise WasmEvalError {
+  let cur = Cursor::new(bytes)
+  let count = cur.read_leb_u32()
+  let bodies : Array[FuncBody] = []
+  for _ in 0..<count {
+    bodies.push(parse_one_func_body(cur))
+  }
+  bodies
+}
+
+///|
+fn parse_global_section(bytes : Array[Byte]) -> Array[Int64] raise WasmEvalError {
+  let cur = Cursor::new(bytes)
+  let count = cur.read_leb_u32()
+  let globals : Array[Int64] = []
+  for _ in 0..<count {
+    let _valtype = cur.read_u8()
+    let _mutability = cur.read_u8()
+    // Parse init expr: expect i32.const or i64.const followed by end
+    let op = cur.read_u8()
+    let value : Int64 = match op {
+      65 => cur.read_leb_u32().to_int64() // i32.const
+      66 => cur.read_leb_i64() // i64.const
+      _ => raise WasmEvalError::Unsupported("global init expr")
+    }
+    let end = cur.read_u8()
+    if end != 11 {
+      raise WasmEvalError::Invalid("global init end")
+    }
+    globals.push(value)
+  }
+  globals
 }
 
 ///|
@@ -384,7 +420,7 @@ fn skip_to_else_or_end(code : Cursor) -> Bool raise WasmEvalError {
   while code.remaining() > 0 {
     let op = code.read_u8()
     match op {
-      4 => { // if
+      2 | 3 | 4 => { // block, loop, if — all have blocktype byte
         let _ = code.read_u8()
         depth += 1
       }
@@ -395,8 +431,8 @@ fn skip_to_else_or_end(code : Cursor) -> Bool raise WasmEvalError {
           return false
         }
       }
-      65 | 66 | 32 | 33 | 34 | 16 => skip_leb(code)
-      40 | 42 | 43 | 54 => {
+      65 | 66 | 32 | 33 | 34 | 35 | 36 | 16 | 12 | 13 => skip_leb(code)
+      40 | 41 | 42 | 43 | 45 | 54 | 55 => {
         skip_leb(code)
         skip_leb(code)
       }
@@ -412,7 +448,7 @@ fn skip_to_end(code : Cursor) -> Unit raise WasmEvalError {
   while code.remaining() > 0 {
     let op = code.read_u8()
     match op {
-      4 => { // if
+      2 | 3 | 4 => { // block, loop, if
         let _ = code.read_u8()
         depth += 1
       }
@@ -422,8 +458,8 @@ fn skip_to_end(code : Cursor) -> Unit raise WasmEvalError {
           return
         }
       }
-      65 | 66 | 32 | 33 | 34 | 16 => skip_leb(code)
-      40 | 42 | 43 | 54 => {
+      65 | 66 | 32 | 33 | 34 | 35 | 36 | 16 | 12 | 13 => skip_leb(code)
+      40 | 41 | 42 | 43 | 45 | 54 | 55 => {
         skip_leb(code)
         skip_leb(code)
       }
@@ -434,7 +470,18 @@ fn skip_to_end(code : Cursor) -> Unit raise WasmEvalError {
 }
 
 ///|
-fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
+struct WasmModule {
+  func_bodies : Array[FuncBody]
+  func_param_counts : Array[Int] // param count for each local function
+  import_count : Int
+  sh_index : Int?
+  path_index : Int?
+  globals : Array[Int64]
+  mem : Array[Byte]
+}
+
+///|
+fn parse_wasm_module(bytes : Bytes) -> WasmModule raise WasmEvalError {
   let arr = bytes.to_array()
   if arr.length() < 8 {
     raise WasmEvalError::Invalid("short header")
@@ -447,18 +494,42 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
   }
   let cur = Cursor::new(arr)
   let _ = cur.read_bytes(8)
-  let mut code_bytes : Array[Byte] = []
-  let mut locals_total = 0
-  let mut import_index = 0
+  let mut func_bodies : Array[FuncBody] = []
+  let mut import_count = 0
   let mut sh_index : Int? = None
   let mut path_index : Int? = None
+  let globals : Array[Int64] = []
   let mem : Array[Byte] = Array::make(65536, (0).to_byte())
-  let mut heap_top = 0
+  let type_param_counts : Array[Int] = [] // param counts for each type entry
+  let func_type_indices : Array[Int] = [] // type index for each local function
   while cur.remaining() > 0 {
     let id = cur.read_u8()
     let size = cur.read_leb_u32()
     let payload = cur.read_bytes(size)
     match id {
+      // Type section
+      1 => {
+        let sec = Cursor::new(payload)
+        let count = sec.read_leb_u32()
+        for _ in 0..<count {
+          let tag = sec.read_u8()
+          if tag != 0x60 {
+            // Not a func type, skip
+            type_param_counts.push(0)
+            continue 0
+          }
+          let param_count = sec.read_leb_u32()
+          for _ in 0..<param_count {
+            let _ = sec.read_u8() // skip param types
+          }
+          let result_count = sec.read_leb_u32()
+          for _ in 0..<result_count {
+            let _ = sec.read_u8() // skip result types
+          }
+          type_param_counts.push(param_count)
+        }
+      }
+      // Import section
       2 => {
         let sec = Cursor::new(payload)
         let count = sec.read_leb_u32()
@@ -471,33 +542,118 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
           }
           let _ = sec.read_leb_u32()
           if module_name == "vibe" && name == "sh" {
-            sh_index = Some(import_index)
+            sh_index = Some(import_count)
           } else if module_name == "vibe" && name == "path" {
-            path_index = Some(import_index)
+            path_index = Some(import_count)
           }
-          import_index += 1
+          import_count += 1
         }
       }
-      10 => {
-        let (body, locals) = parse_code_section(payload)
-        code_bytes = body
-        locals_total = locals
+      // Function section
+      3 => {
+        let sec = Cursor::new(payload)
+        let count = sec.read_leb_u32()
+        for _ in 0..<count {
+          func_type_indices.push(sec.read_leb_u32())
+        }
       }
+      6 => {
+        let parsed = parse_global_section(payload)
+        for g in parsed {
+          globals.push(g)
+        }
+      }
+      10 => func_bodies = parse_all_func_bodies(payload)
       11 => {
-        let max_end = parse_data_section(payload, mem)
-        heap_top = align4(max_end)
+        let _ = parse_data_section(payload, mem)
       }
       _ => ()
     }
   }
-  if code_bytes.is_empty() {
+  // Build param counts for each local function
+  let func_param_counts : Array[Int] = []
+  for i in 0..<func_type_indices.length() {
+    let type_idx = func_type_indices[i]
+    if type_idx < type_param_counts.length() {
+      func_param_counts.push(type_param_counts[type_idx])
+    } else {
+      func_param_counts.push(0)
+    }
+  }
+  { func_bodies, func_param_counts, import_count, sh_index, path_index, globals, mem }
+}
+
+///|
+fn exec_func(
+  wmod : WasmModule,
+  func_idx : Int,
+  args : Array[Int64],
+  outputs : Array[String],
+  call_depth : Int,
+) -> Int64 raise WasmEvalError {
+  if call_depth > 32 {
+    raise WasmEvalError::Invalid("call stack overflow")
+  }
+  let local_idx = func_idx - wmod.import_count
+  if local_idx < 0 || local_idx >= wmod.func_bodies.length() {
+    raise WasmEvalError::Unsupported("call to import " + func_idx.to_string())
+  }
+  let fb = wmod.func_bodies[local_idx]
+  let param_count = if local_idx < wmod.func_param_counts.length() {
+    wmod.func_param_counts[local_idx]
+  } else {
+    args.length()
+  }
+  let locals : Array[Int64] = Array::make(param_count + fb.locals, 0L)
+  for i in 0..<args.length() {
+    locals[i] = args[i]
+  }
+  let code = Cursor::new(fb.code)
+  let stack : Array[Int64] = []
+  let mem = wmod.mem
+  let globals = wmod.globals
+  eval_loop(
+    wmod, code, locals, stack, mem, globals, outputs,
+    call_depth,
+  )
+}
+
+///|
+fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
+  let wmod = parse_wasm_module(bytes)
+  if wmod.func_bodies.is_empty() {
     raise WasmEvalError::Invalid("missing code")
   }
-  let code = Cursor::new(code_bytes)
-  let locals : Array[Int64] = Array::make(locals_total, 0L)
-  let stack : Array[Int64] = []
+  // Execute the last function (the `run` function)
+  let run_idx = wmod.import_count + wmod.func_bodies.length() - 1
   let outputs : Array[String] = []
-  let mut if_depth = 0
+  let value = exec_func(wmod, run_idx, [], outputs, 0)
+  { value, outputs, mem: wmod.mem }
+}
+
+///|
+fn eval_loop(
+  wmod : WasmModule,
+  code : Cursor,
+  locals : Array[Int64],
+  stack : Array[Int64],
+  mem : Array[Byte],
+  globals : Array[Int64],
+  outputs : Array[String],
+  call_depth : Int,
+) -> Int64 raise WasmEvalError {
+  let sh_index = wmod.sh_index
+  let path_index = wmod.path_index
+  let mut heap_top = if globals.length() > 0 {
+    globals[0].to_int()
+  } else {
+    0
+  }
+  // Block stack: each entry is (kind, pos, stack_height)
+  //   kind: 0=block, 1=loop, 2=if, 3=else
+  //   pos: for loop, the position right after the loop opcode+blocktype (restart point)
+  //   stack_height: stack height at block entry
+  let block_stack : Array[(Int, Int, Int)] = []
   while true {
     let op = code.read_u8()
     match op {
@@ -564,6 +720,33 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
         let b = stack.unsafe_pop()
         let a = stack.unsafe_pop()
         stack.push(if a.to_int() < b.to_int() { 1L } else { 0L })
+      }
+      // i32.gt_s
+      74 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(if a.to_int() > b.to_int() { 1L } else { 0L })
+      }
+      // i32.le_s
+      76 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(if a.to_int() <= b.to_int() { 1L } else { 0L })
+      }
+      // i32.ge_s
+      78 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(if a.to_int() >= b.to_int() { 1L } else { 0L })
       }
       // i32.eqz
       69 => {
@@ -840,6 +1023,28 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
         let value = read_u32_le(mem, addr + offset)
         stack.push(value.to_int64())
       }
+      // i32.load8_u
+      45 => {
+        let _ = code.read_leb_u32()
+        let offset = code.read_leb_u32()
+        if stack.is_empty() {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let addr = stack.unsafe_pop().to_int()
+        stack.push(mem[addr + offset].to_int().to_int64())
+      }
+      // i64.load
+      41 => {
+        let _ = code.read_leb_u32()
+        let offset = code.read_leb_u32()
+        if stack.is_empty() {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let addr = stack.unsafe_pop().to_int()
+        let lo = read_u32_le(mem, addr + offset).reinterpret_as_uint().to_int64()
+        let hi = read_u32_le(mem, addr + offset + 4).reinterpret_as_uint().to_int64()
+        stack.push(lo | (hi << 32))
+      }
       // i32.store
       54 => {
         let _ = code.read_leb_u32()
@@ -850,6 +1055,20 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
         let value = stack.unsafe_pop().to_int()
         let addr = stack.unsafe_pop().to_int()
         write_u32_le(mem, addr + offset, value)
+      }
+      // i64.store
+      55 => {
+        let _ = code.read_leb_u32()
+        let offset = code.read_leb_u32()
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let value = stack.unsafe_pop()
+        let addr = stack.unsafe_pop().to_int()
+        let lo = value.to_int()
+        let hi = (value >> 32).to_int()
+        write_u32_le(mem, addr + offset, lo)
+        write_u32_le(mem, addr + offset + 4, hi)
       }
       // local.get
       32 => {
@@ -886,12 +1105,12 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
       // call
       16 => {
         let idx = code.read_leb_u32()
-        if stack.is_empty() {
-          raise WasmEvalError::Invalid("stack underflow")
-        }
-        let ptr = stack.unsafe_pop()
         match path_index {
           Some(pidx) if idx == pidx => {
+            if stack.is_empty() {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let ptr = stack.unsafe_pop()
             let raw = read_string_object(mem, ptr)
             let normalized = @path.Path(raw).normalize().to_string()
             let resolved = if normalized.has_prefix("/") {
@@ -901,17 +1120,111 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
             }
             let alloc = alloc_string(mem, heap_top, resolved, obj_path)
             heap_top = alloc.next
+            if globals.length() > 0 {
+              globals[0] = heap_top.to_int64()
+            }
             stack.push(alloc.ptr.to_int64() | tag_obj)
           }
           _ =>
             match sh_index {
               Some(sidx) if idx == sidx => {
+                if stack.is_empty() {
+                  raise WasmEvalError::Invalid("stack underflow")
+                }
+                let ptr = stack.unsafe_pop()
                 let msg = read_string_object(mem, ptr)
                 outputs.push(msg)
                 stack.push(0L)
               }
-              _ => raise WasmEvalError::Unsupported("call")
+              _ => {
+                // Internal function call
+                let local_idx = idx - wmod.import_count
+                if local_idx >= 0 && local_idx < wmod.func_bodies.length() {
+                  let param_count = if local_idx < wmod.func_param_counts.length() {
+                    wmod.func_param_counts[local_idx]
+                  } else {
+                    0
+                  }
+                  let args : Array[Int64] = Array::make(param_count, 0L)
+                  for i = param_count - 1; i >= 0; i = i - 1 {
+                    args[i] = stack.unsafe_pop()
+                  }
+                  let result = exec_func(wmod, idx, args, outputs, call_depth + 1)
+                  stack.push(result)
+                } else {
+                  raise WasmEvalError::Unsupported(
+                    "call " + idx.to_string(),
+                  )
+                }
+              }
             }
+        }
+      }
+      // block
+      2 => {
+        let _ = code.read_u8() // block type
+        block_stack.push((0, code.pos, stack.length()))
+      }
+      // loop
+      3 => {
+        let _ = code.read_u8() // block type
+        block_stack.push((1, code.pos, stack.length()))
+      }
+      // br
+      12 => {
+        let depth = code.read_leb_u32()
+        let target_idx = block_stack.length() - 1 - depth
+        if target_idx < 0 {
+          raise WasmEvalError::Invalid("br depth")
+        }
+        let (kind, loop_pos, _sh) = block_stack[target_idx]
+        if kind == 1 {
+          // Loop: jump back to loop start
+          code.pos = loop_pos
+          // Pop blocks above the loop target
+          while block_stack.length() > target_idx + 1 {
+            let _ = block_stack.pop()
+          }
+        } else {
+          // Block/if: skip to end of each block from current to target
+          let blocks_to_exit = depth + 1
+          for _ in 0..<blocks_to_exit {
+            skip_to_end(code)
+          }
+          for _ in 0..<blocks_to_exit {
+            let _ = block_stack.pop()
+          }
+        }
+      }
+      // br_if
+      13 => {
+        let depth = code.read_leb_u32()
+        if stack.is_empty() {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let cond = stack.unsafe_pop()
+        if cond != 0L {
+          let target_idx = block_stack.length() - 1 - depth
+          if target_idx < 0 {
+            raise WasmEvalError::Invalid("br_if depth")
+          }
+          let (kind, loop_pos, _sh) = block_stack[target_idx]
+          if kind == 1 {
+            // Loop: jump back
+            code.pos = loop_pos
+            while block_stack.length() > target_idx + 1 {
+              let _ = block_stack.pop()
+            }
+          } else {
+            // Block/if: skip forward
+            let blocks_to_exit = depth + 1
+            for _ in 0..<blocks_to_exit {
+              skip_to_end(code)
+            }
+            for _ in 0..<blocks_to_exit {
+              let _ = block_stack.pop()
+            }
+          }
         }
       }
       // drop
@@ -929,29 +1242,53 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
         }
         let cond = stack.unsafe_pop()
         if cond != 0L {
-          if_depth += 1
+          block_stack.push((2, code.pos, stack.length()))
         } else {
           let has_else = skip_to_else_or_end(code)
           if has_else {
-            if_depth += 1
+            block_stack.push((3, code.pos, stack.length()))
           }
         }
       }
       // else
       5 => {
-        if if_depth == 0 {
+        if block_stack.is_empty() {
           raise WasmEvalError::Invalid("unexpected else")
         }
+        // We executed the then branch; skip the else body
         skip_to_end(code)
-        if_depth -= 1
+        let _ = block_stack.pop()
+      }
+      // global.get
+      35 => {
+        let idx = code.read_leb_u32()
+        if idx >= globals.length() {
+          raise WasmEvalError::Invalid("global.get idx " + idx.to_string())
+        }
+        stack.push(globals[idx])
+      }
+      // global.set
+      36 => {
+        let idx = code.read_leb_u32()
+        if idx >= globals.length() {
+          raise WasmEvalError::Invalid("global.set idx " + idx.to_string())
+        }
+        if stack.is_empty() {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        globals[idx] = stack.unsafe_pop()
       }
       // end
-      11 => if if_depth > 0 { if_depth -= 1 } else { break }
+      11 =>
+        if block_stack.is_empty() {
+          break
+        } else {
+          let _ = block_stack.pop()
+        }
       _ => raise WasmEvalError::Unsupported("opcode " + op.to_string())
     }
   }
-  let value = if stack.is_empty() { 0L } else { stack[stack.length() - 1] }
-  { value, outputs, mem }
+  if stack.is_empty() { 0L } else { stack[stack.length() - 1] }
 }
 
 ///|

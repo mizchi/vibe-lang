@@ -538,11 +538,15 @@ fn type_expr_eff(
       }
     @core.Expr::Tuple(items~, span~) => {
       let _ = span
-      let tys : Array[@core.Type] = []
-      for item in items {
-        tys.push(type_expr_eff(env, item, aliases, effects, allow_effect))
+      if items.is_empty() {
+        @core.Type::Unit
+      } else {
+        let tys : Array[@core.Type] = []
+        for item in items {
+          tys.push(type_expr_eff(env, item, aliases, effects, allow_effect))
+        }
+        @core.Type::Tuple(tys)
       }
-      @core.Type::Tuple(tys)
     }
     @core.Expr::TupleIndex(expr~, index~, span~) => {
       let tuple_ty = type_expr_eff(env, expr, aliases, effects, allow_effect)

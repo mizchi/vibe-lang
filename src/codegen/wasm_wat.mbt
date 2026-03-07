@@ -129,6 +129,14 @@ priv struct DataSegment {
 }
 
 ///|
+priv struct GlobalEntry {
+  valtype : Int
+  mutable_ : Bool
+  init_value : Int64
+  init_op : Int // 0x41=i32.const, 0x42=i64.const
+}
+
+///|
 priv enum Instr {
   Simple(String)
   If(String?)
@@ -215,6 +223,14 @@ fn parse_instrs(cursor : Cursor) -> Array[Instr] raise WasmWatError {
         let idx = cursor.read_leb_u32()
         instrs.push(Instr::Simple("call " + idx.to_string()))
       }
+      0x23 => {
+        let idx = cursor.read_leb_u32()
+        instrs.push(Instr::Simple("global.get " + idx.to_string()))
+      }
+      0x24 => {
+        let idx = cursor.read_leb_u32()
+        instrs.push(Instr::Simple("global.set " + idx.to_string()))
+      }
       0x1a => instrs.push(Instr::Simple("drop"))
       0x6a => instrs.push(Instr::Simple("i32.add"))
       0x6b => instrs.push(Instr::Simple("i32.sub"))
@@ -294,6 +310,18 @@ fn parse_instrs(cursor : Cursor) -> Array[Instr] raise WasmWatError {
           ),
         )
       }
+      0x29 => {
+        let align = cursor.read_leb_u32()
+        let offset = cursor.read_leb_u32()
+        instrs.push(
+          Instr::Simple(
+            "i64.load align=" +
+            align.to_string() +
+            " offset=" +
+            offset.to_string(),
+          ),
+        )
+      }
       0x2a => {
         let align = cursor.read_leb_u32()
         let offset = cursor.read_leb_u32()
@@ -324,6 +352,18 @@ fn parse_instrs(cursor : Cursor) -> Array[Instr] raise WasmWatError {
         instrs.push(
           Instr::Simple(
             "i32.store align=" +
+            align.to_string() +
+            " offset=" +
+            offset.to_string(),
+          ),
+        )
+      }
+      0x37 => {
+        let align = cursor.read_leb_u32()
+        let offset = cursor.read_leb_u32()
+        instrs.push(
+          Instr::Simple(
+            "i64.store align=" +
             align.to_string() +
             " offset=" +
             offset.to_string(),
@@ -466,6 +506,7 @@ pub fn wasm_to_wat(bytes : Bytes) -> String raise WasmWatError {
   let imports : Array[ImportEntry] = []
   let func_types : Array[Int] = []
   let memories : Array[MemoryType] = []
+  let globals_list : Array[GlobalEntry] = []
   let exports : Array[ExportEntry] = []
   let funcs : Array[FuncBody] = []
   let data : Array[DataSegment] = []
@@ -525,6 +566,28 @@ pub fn wasm_to_wat(bytes : Bytes) -> String raise WasmWatError {
             None
           }
           memories.push(MemoryType::{ min, max })
+        }
+      }
+      6 => {
+        let count = sec.read_leb_u32()
+        for _ in 0..<count {
+          let valtype = sec.read_u8()
+          let mutability = sec.read_u8()
+          let init_op = sec.read_u8()
+          let init_value : Int64 = match init_op {
+            0x41 => sec.read_leb_u32().to_int64()
+            0x42 => sec.read_leb_i64()
+            _ => 0L
+          }
+          let _ = sec.read_u8() // end
+          globals_list.push(
+            GlobalEntry::{
+              valtype,
+              mutable_: mutability == 1,
+              init_value,
+              init_op,
+            },
+          )
         }
       }
       7 => {
@@ -653,6 +716,28 @@ pub fn wasm_to_wat(bytes : Bytes) -> String raise WasmWatError {
       Some(max) => sb.write_string(" " + max.to_string())
       None => ()
     }
+    sb.write_string(")\n")
+  }
+  for i in 0..<globals_list.length() {
+    let g = globals_list[i]
+    write_indent(sb, 2)
+    sb.write_string("(global (;")
+    sb.write_string(i.to_string())
+    sb.write_string(";) ")
+    if g.mutable_ {
+      sb.write_string("(mut ")
+      sb.write_string(val_type_name(g.valtype))
+      sb.write_string(") ")
+    } else {
+      sb.write_string(val_type_name(g.valtype))
+      sb.write_string(" ")
+    }
+    if g.init_op == 0x41 {
+      sb.write_string("i32.const ")
+    } else {
+      sb.write_string("i64.const ")
+    }
+    sb.write_string(g.init_value.to_string())
     sb.write_string(")\n")
   }
   for exp in exports {
