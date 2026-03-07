@@ -12,6 +12,16 @@ import ./token.vibe {
   Token
 }
 
+//# Parse Mode Constants
+// Precedence modes: 0-10 (used arithmetically in parse_infix)
+// Named modes for structured parsing:
+let mode_block = 20
+let mode_if = 21
+let mode_match = 22
+let mode_while = 23
+let mode_handle = 24
+let mode_for_in = 25
+
 //# Functions
 
 let peek = (tokens: Array[Token], pos: Int) -> Token {
@@ -737,12 +747,12 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
               TIdent(_) => {
                 let (ty, tp) = parse_type_impl(tokens, after_arrow, 0)
                 match peek(tokens, tp) {
-                  TLBrace => parse_lambda_body(params, Some(ty), None, tp + 1, 20),
+                  TLBrace => parse_lambda_body(params, Some(ty), None, tp + 1, mode_block),
                   TWith => {
                     let wb = expect_tk(tokens, tp + 1, "{")
                     let (eff, eb) = collect_effect_names(tokens, wb, "")
                     let bb = expect_tk(tokens, eb, "{")
-                    parse_lambda_body(params, Some(ty), Some(eff), bb, 20)
+                    parse_lambda_body(params, Some(ty), Some(eff), bb, mode_block)
                   },
                   _ => parse_lambda_body(params, None, None, after_arrow, 0)
                 }
@@ -750,12 +760,12 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
               TLParen => {
                 let (ty, tp) = parse_type_impl(tokens, after_arrow, 0)
                 match peek(tokens, tp) {
-                  TLBrace => parse_lambda_body(params, Some(ty), None, tp + 1, 20),
+                  TLBrace => parse_lambda_body(params, Some(ty), None, tp + 1, mode_block),
                   TWith => {
                     let wb = expect_tk(tokens, tp + 1, "{")
                     let (eff, eb) = collect_effect_names(tokens, wb, "")
                     let bb = expect_tk(tokens, eb, "{")
-                    parse_lambda_body(params, Some(ty), Some(eff), bb, 20)
+                    parse_lambda_body(params, Some(ty), Some(eff), bb, mode_block)
                   },
                   _ => parse_lambda_body(params, None, None, after_arrow, 0)
                 }
@@ -763,7 +773,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
               _ => parse_lambda_body(params, None, None, after_arrow, 0)
             }
           },
-          TLBrace => parse_lambda_body(params, None, None, ap + 1, 20),
+          TLBrace => parse_lambda_body(params, None, None, ap + 1, mode_block),
           _ => throw("expected '->' or '{' after fn params")
         }
       } else match peek(tokens, pos + 1) {
@@ -794,12 +804,12 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
           (EArray(arr), en)
         }
       },
-      TLBrace => parse_impl(tokens, pos + 1, 20),
-      TIf => parse_impl(tokens, pos + 1, 21),
-      TMatch => parse_impl(tokens, pos + 1, 22),
-      THandle => parse_impl(tokens, pos + 1, 24),
-      TWhile => parse_impl(tokens, pos + 1, 23),
-      TFor => parse_impl(tokens, pos + 1, 25),
+      TLBrace => parse_impl(tokens, pos + 1, mode_block),
+      TIf => parse_impl(tokens, pos + 1, mode_if),
+      TMatch => parse_impl(tokens, pos + 1, mode_match),
+      THandle => parse_impl(tokens, pos + 1, mode_handle),
+      TWhile => parse_impl(tokens, pos + 1, mode_while),
+      TFor => parse_impl(tokens, pos + 1, mode_for_in),
       TThrow => {
         let lp = expect_tk(tokens, pos + 1, "(")
         let (e, en) = parse_impl(tokens, lp, 0)
@@ -1054,14 +1064,14 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
     match peek(tokens, pos) {
       TRBrace => (e, pos + 1),
       TSemicolon => {
-        let (rest, end) = parse_impl(tokens, pos + 1, 20);
+        let (rest, end) = parse_impl(tokens, pos + 1, mode_block);
         (ESeq(e, rest), end)
       },
       TEq => match e {
         EIdent(name) => {
           let (val, vn) = parse_impl(tokens, pos + 1, 0)
           let a = skip_semi(tokens, vn)
-          let (rest, end) = parse_impl(tokens, a, 20);
+          let (rest, end) = parse_impl(tokens, a, mode_block);
           (EAssign(name, val, rest), end)
         },
         _ => throw("invalid assignment target")
@@ -1070,7 +1080,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         EIdent(name) => {
           let (val, vn) = parse_impl(tokens, pos + 1, 0)
           let a = skip_semi(tokens, vn)
-          let (rest, end) = parse_impl(tokens, a, 20);
+          let (rest, end) = parse_impl(tokens, a, mode_block);
           (EAssignOp(name, "+", val, rest), end)
         },
         _ => throw("invalid assignment target")
@@ -1079,7 +1089,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         EIdent(name) => {
           let (val, vn) = parse_impl(tokens, pos + 1, 0)
           let a = skip_semi(tokens, vn)
-          let (rest, end) = parse_impl(tokens, a, 20);
+          let (rest, end) = parse_impl(tokens, a, mode_block);
           (EAssignOp(name, "-", val, rest), end)
         },
         _ => throw("invalid assignment target")
@@ -1088,7 +1098,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         EIdent(name) => {
           let (val, vn) = parse_impl(tokens, pos + 1, 0)
           let a = skip_semi(tokens, vn)
-          let (rest, end) = parse_impl(tokens, a, 20);
+          let (rest, end) = parse_impl(tokens, a, mode_block);
           (EAssignOp(name, "*", val, rest), end)
         },
         _ => throw("invalid assignment target")
@@ -1097,7 +1107,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         EIdent(name) => {
           let (val, vn) = parse_impl(tokens, pos + 1, 0)
           let a = skip_semi(tokens, vn)
-          let (rest, end) = parse_impl(tokens, a, 20);
+          let (rest, end) = parse_impl(tokens, a, mode_block);
           (EAssignOp(name, "/", val, rest), end)
         },
         _ => throw("invalid assignment target")
@@ -1106,21 +1116,21 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         EIdent(name) => {
           let (val, vn) = parse_impl(tokens, pos + 1, 0)
           let a = skip_semi(tokens, vn)
-          let (rest, end) = parse_impl(tokens, a, 20);
+          let (rest, end) = parse_impl(tokens, a, mode_block);
           (EAssignOp(name, "%", val, rest), end)
         },
         _ => throw("invalid assignment target")
       },
       _ => {
         // Implicit sequence: continue parsing rest of block (handles let, expressions, etc.)
-        let (rest, end) = parse_impl(tokens, pos, 20)
+        let (rest, end) = parse_impl(tokens, pos, mode_block)
         if end <= pos {
           throw("internal parser error: block continuation did not advance")
         } else (ESeq(e, rest), end)
       }
     }
   }
-  if mode == 22 {
+  if mode == mode_match {
     let (scrutinee, sn) = parse_impl(tokens, pos, 0)
     let br = expect_tk(tokens, sn, "{")
     match peek(tokens, br) {
@@ -1134,18 +1144,18 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         parse_match_rest(tokens, fn1, scrutinee, b)
       }
     }
-  } else if mode == 21 {
+  } else if mode == mode_if {
     let (cond, cn) = parse_impl(tokens, pos, 0)
     let br = expect_tk(tokens, cn, "{")
-    let (then_e, tn) = parse_impl(tokens, br, 20)
+    let (then_e, tn) = parse_impl(tokens, br, mode_block)
     match peek(tokens, tn) {
       TElse => match peek(tokens, tn + 1) {
         TIf => {
-          let (else_e, end) = parse_impl(tokens, tn + 2, 21);
+          let (else_e, end) = parse_impl(tokens, tn + 2, mode_if);
           (EIf(cond, then_e, else_e), end)
         },
         TLBrace => {
-          let (else_e, end) = parse_impl(tokens, tn + 2, 20);
+          let (else_e, end) = parse_impl(tokens, tn + 2, mode_block);
           (EIf(cond, then_e, else_e), end)
         },
         _ => {
@@ -1155,14 +1165,14 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       },
       _ => (EIf(cond, then_e, EUnit), tn)
     }
-  } else if mode == 23 {
+  } else if mode == mode_while {
     let (cond, cn) = parse_impl(tokens, pos, 0)
     let br = expect_tk(tokens, cn, "{")
-    let (body, end) = parse_impl(tokens, br, 20);
+    let (body, end) = parse_impl(tokens, br, mode_block);
     (EWhile(cond, body), end)
-  } else if mode == 24 {
+  } else if mode == mode_handle {
     let br = expect_tk(tokens, pos, "{")
-    let (body, bn) = parse_impl(tokens, br, 20)
+    let (body, bn) = parse_impl(tokens, br, mode_block)
     let hb = expect_tk(tokens, bn, "{")
     match peek(tokens, hb) {
       TRBrace => (EHandle(body, empty_arms()), hb + 1),
@@ -1175,18 +1185,18 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         parse_handle_rest(tokens, fn1, body, b)
       }
     }
-  } else if mode == 25 {
+  } else if mode == mode_for_in {
     match peek(tokens, pos) {
       TIdent(name) => {
         let ip = expect_tk(tokens, pos + 1, "in")
         let (iterable, inext) = parse_impl(tokens, ip, 0)
         let bb = expect_tk(tokens, inext, "{")
-        let (body, end) = parse_impl(tokens, bb, 20);
+        let (body, end) = parse_impl(tokens, bb, mode_block);
         (EForIn(name, iterable, body), end)
       },
       _ => throw("expected identifier after 'for'")
     }
-  } else if mode == 20 {
+  } else if mode == mode_block {
     match peek(tokens, pos) {
       TRBrace => (EUnit, pos + 1),
       TLet => {
@@ -1197,7 +1207,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
               let eq = expect_tk(tokens, next + 2, "=")
               let (val, vn) = parse_impl(tokens, eq, 0)
               let a = skip_semi(tokens, vn)
-              let (body, end) = parse_impl(tokens, a, 20)
+              let (body, end) = parse_impl(tokens, a, mode_block)
               if end <= a {
                 throw("internal parser error: block let-rec parser did not advance")
               } else (ELetRec(name, val, body), end)
@@ -1209,7 +1219,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
               let eq = expect_tk(tokens, next + 2, "=")
               let (val, vn) = parse_impl(tokens, eq, 0)
               let a = skip_semi(tokens, vn)
-              let (body, end) = parse_impl(tokens, a, 20)
+              let (body, end) = parse_impl(tokens, a, mode_block)
               if end <= a {
                 throw("internal parser error: block let-mut parser did not advance")
               } else (ELetMut(name, val, body), end)
@@ -1220,7 +1230,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
             let eq = expect_tk(tokens, next + 1, "=")
             let (val, vn) = parse_impl(tokens, eq, 0)
             let a = skip_semi(tokens, vn)
-            let (body, end) = parse_impl(tokens, a, 20)
+            let (body, end) = parse_impl(tokens, a, mode_block)
             if end <= a {
               throw("internal parser error: block let parser did not advance")
             } else (ELet(name, val, body), end)
@@ -1230,7 +1240,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
             let eq = expect_tk(tokens, pn, "=")
             let (val, vn) = parse_impl(tokens, eq, 0)
             let a = skip_semi(tokens, vn)
-            let (body, end) = parse_impl(tokens, a, 20)
+            let (body, end) = parse_impl(tokens, a, mode_block)
             if end <= a {
               throw("internal parser error: block let-pat parser did not advance")
             } else {
@@ -1330,7 +1340,7 @@ let parse_test_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Erro
   match peek(tokens, pos) {
     TString(name) => {
       let br = expect_tk(tokens, pos + 1, "{")
-      let (body, end) = parse_impl(tokens, br, 20);
+      let (body, end) = parse_impl(tokens, br, mode_block);
       (STest(name, body), end)
     },
     _ => throw("expected test name string")
@@ -1341,7 +1351,7 @@ let parse_bench_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Err
   match peek(tokens, pos) {
     TString(name) => {
       let br = expect_tk(tokens, pos + 1, "{")
-      let (body, end) = parse_impl(tokens, br, 20);
+      let (body, end) = parse_impl(tokens, br, mode_block);
       (SBench(name, body), end)
     },
     _ => throw("expected bench name string")

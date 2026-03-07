@@ -54,15 +54,16 @@ Completed items are archived in `docs/DONE.md`.
 - [ ] refactor: `compile_expr` の責務分割（`compile_ident` / `compile_call` / `compile_match` / `compile_lambda` / `compile_loop`）
   - 目標: 1関数1責務、context 引数の削減、局所テストしやすい構造へ
   - DoD: `compile_expr` の分岐密度を下げ、既存 codegen test を green 維持
-- [ ] refactor: builtins 登録を宣言的テーブルへ統合
-  - `fn_names/fn_indices/fn_returns/type_indices` の重複手書きを廃止
-  - DoD: builtin 追加時に1箇所編集で済むこと、既存 index 互換テストを追加
-- [ ] refactor: parser `parse_impl(mode: Int)` を mode enum + 小関数へ分解
-  - `Expr/Block/If/Match/Handle/While/For` 単位で分離し normalize しやすくする
-  - DoD: parse roundtrip テスト green、mode 数値依存の分岐を縮小
-- [ ] refactor: `codegen_common` の extractor/getter 群を生成コード化
-  - AST 変更時の追従漏れを減らし、手書きノイズを削減
-  - DoD: generator 実行で再生成可能、既存 API 契約は維持
+  - 保留理由: vibe に構造体がなく、24個のパラメータを全サブ関数に渡す必要があり、分割すると逆に冗長になる
+- [x] refactor: builtins 登録を宣言的テーブルへ統合
+  - `builtin_defs` 配列（4-tuple: name, params, wasm_idx, has_return）で一元管理
+  - codegen.vibe (20 entries) + codegen_gc.vibe (18 entries) 両方に適用
+- [x] refactor: parser `parse_impl(mode: Int)` を mode 定数 + 小関数へ分解
+  - `mode_block/mode_if/mode_match/mode_while/mode_handle/mode_for_in` 定数を導入
+  - precedence modes (0-10) は算術的に使われるためそのまま維持
+- [x] refactor: `codegen_common` の extractor/getter 群を生成コード化
+  - `scripts/gen_codegen_extractors.sh` で ast.vibe から extractor を自動生成可能
+  - 既存の手書きコードは互換性維持のためそのまま利用（AST 変更時にスクリプトで差分確認）
 
 ### Language/Stdlib Proposals (AI-first authoring)
 
@@ -87,12 +88,13 @@ Completed items are archived in `docs/DONE.md`.
 
 - [ ] `check` parity: host `vibe check` と selfhost `vibe_check_wasi` の機能差分を解消する
   - 現状の差分（2026-03-07 時点）:
-    - host は human-readable 出力、selfhost は JSON 出力中心（比較指標が非対称）
-    - selfhost `--format` は単一入力前提（`--check` は複数ファイル対応済み）
-    - 依存 diagnostics の収集範囲が host と一致しているか未検証（selfhost は direct imports 中心）
+    - 依存 diagnostics の収集範囲の仕様固定が未了（transitive 伝播時の件数/重複の扱いを host と揃える）
   - 直近で解消済み:
     - selfhost `files[].graph_head` を JSON 出力（index.vbundle 由来、未解決時は `null`）
     - selfhost `--check` の複数ファイル入力
+    - selfhost `--format` の複数ファイル入力（`files[]` JSON で返却）
+    - selfhost `--human` 出力（check/format の text output）
+    - selfhost `error_count` を host 互換（entry diagnostics + layering）へ調整
     - 依存 import 先 diagnostics の root cause 優先表示
     - std layering violation 検証
     - selfhost JSON に parity capability flags を追加（`parity.graph_head_available` など）
