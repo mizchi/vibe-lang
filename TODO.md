@@ -55,6 +55,18 @@ Completed items are archived in `docs/DONE.md`.
 - [x] SStruct: コンストラクタ関数の型を env に登録
 - テスト: `checker_ctor_test.vibe` (6 tests)
 
+#### T9: struct field 検査 — `checker_struct.vibe` ✅
+- [x] フィールド重複検出
+- [x] 構築時 arity 検査
+- [x] フィールドルックアップ / unknown・missing フィールド検出
+- テスト: `checker_struct_test.vibe` (12 tests)
+
+#### T11: unify 強化 — `types.vibe` 拡張 ✅
+- [x] CtForAll の unify（body unwrapping）
+- [x] occurs check テスト追加
+- [x] substitution chain 解決テスト
+- テスト: `checker_unify_test.vibe` (30 tests, +8)
+
 ### Compiler Review Backlog (readability + selfhost robustness)
 
 - [x] refactor: `compile_expr` の責務分割（`compile_call` / `compile_match` / `compile_lambda`）
