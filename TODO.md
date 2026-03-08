@@ -39,15 +39,15 @@ Completed items are archived in `docs/DONE.md`.
 #### S3: cli.vibe — 最小 CLI エントリポイント (部分完了)
 - [x] cli.vibe 作成: env_get で VIBE_INPUT/VIBE_OUTPUT/VIBE_ENTRY を受け取り compile_source → fs_write_bytes
 - [x] cli_test.vibe (6 tests): compile pipeline の E2E テスト（arithmetic, wasi, match, let rec, struct, closure）
-- [ ] **ブロッカー**: `vibe run` は WASM compiled backend を使うが、codegen が `env_get`/`fs_read_file`/`fs_write_bytes` を WASM に出力できない（interpreter-only builtins）
-- [ ] WASI I/O builtins を codegen に追加（`fd_read`/`fd_write`/`args_get` 等）→ P4 WASI 拡張と統合
-- [ ] 代替: MoonBit ホスト (`vibe_compile_wasi`) 経由で selfhost を呼び出す現行方式を維持
+- [ ] **ブロッカー**: WASI I/O (env_get/fs_read_file/fs_write_bytes) は MoonBit 側でも wasm target 未実装（runtime fallback throw）
+- [ ] **方針**: MoonBit ホスト (`vibe_compile_wasi`) が I/O を担当、selfhost は純粋コンパイル関数を提供する現行方式を維持
+- [ ] 将来: WASI Preview2 Component Model の FS/environ import を codegen に追加（大規模作業）
 
-#### S4: module loader — import 解決
-- [ ] `SImport` から依存ファイルパスを抽出
-- [ ] 依存グラフのトポロジカルソート
-- [ ] cross-module TypeEnv 伝播（import 先の型を caller に反映）
-- [ ] テスト: 複数ファイルの import 解決 → 結合コンパイル
+#### S4: module loader — import 解決 ✅
+- [x] `module_loader.vibe`: 再帰的 import 解決 + TypeEnv キャッシュ + サイクル検出
+- [x] `compiler.vibe`: `compile_with_modules` / `compile_with_modules_wasi` 追加
+- [x] cross-module TypeEnv 伝播（import 先の型を caller に反映）
+- [x] テスト: `module_loader_test.vibe` (6 tests) — single file, import, alias, transitive, cache, non-exported
 
 #### S5: meta-circular milestone
 - [ ] selfhost.wasm が自身のソース (vibe/compiler/*.vibe) をコンパイルして .wasm を出力

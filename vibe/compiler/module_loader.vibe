@@ -1,0 +1,204 @@
+//# Imports
+
+import ./lexer.vibe {
+  lex
+}
+
+import ./parser.vibe {
+  parse_program
+}
+
+import ./checker_stmt.vibe {
+  check_stmts
+}
+
+import ./eval_loader.vibe {
+  collect_exports, contains_str, source_lookup
+}
+
+import ./types.vibe {
+  Subst, Type, TypeDef, TypeEnv, env_bind, env_lookup
+}
+
+//# Path helpers (inline to avoid cross-module import issues)
+
+let dir_of = (file_path: String) -> String {
+  let idx = string_last_index_of(file_path, "/")
+  if idx < 0 {
+    ""
+  }
+  else {
+    string_substring(file_path, 0, idx)
+  }
+}
+
+let resolve_path = (base_dir: String, raw_path: String) -> String {
+  let len = string_length(raw_path)
+  if len >= 3 {
+    if string_equals(string_substring(raw_path, 0, 3), "../") {
+      let rest = string_substring(raw_path, 3, len)
+      let parent = dir_of(base_dir)
+      let resolved = if string_ends_with(rest, ".vibe") {
+        rest
+      } else {
+        string_concat(rest, ".vibe")
+      }
+      if string_equals(parent, "") {
+        resolved
+      } else {
+        string_concat(parent, string_concat("/", resolved))
+      }
+    }
+    else if string_equals(string_substring(raw_path, 0, 2), "./") {
+      let rest = string_substring(raw_path, 2, len)
+      let resolved = if string_ends_with(rest, ".vibe") {
+        rest
+      } else {
+        string_concat(rest, ".vibe")
+      }
+      if string_equals(base_dir, "") {
+        resolved
+      } else {
+        string_concat(base_dir, string_concat("/", resolved))
+      }
+    }
+    else {
+      raw_path
+    }
+  }
+  else if len >= 2 {
+    if string_equals(string_substring(raw_path, 0, 2), "./") {
+      let rest = string_substring(raw_path, 2, len)
+      let resolved = if string_ends_with(rest, ".vibe") {
+        rest
+      } else {
+        string_concat(rest, ".vibe")
+      }
+      if string_equals(base_dir, "") {
+        resolved
+      } else {
+        string_concat(base_dir, string_concat("/", resolved))
+      }
+    }
+    else {
+      raw_path
+    }
+  }
+  else {
+    raw_path
+  }
+}
+
+//# Helper functions
+
+// Cache lookup helper
+let cache_lookup = (cache: Array[(String, TypeEnv)], path: String) -> Option[TypeEnv] {
+  let rec go = (i: Int) -> Option[TypeEnv] {
+    if i >= array_length(cache) {
+      None
+    } else {
+      let (p, e) = array_get(cache, i)
+      if string_equals(p, path) {
+        Some(e)
+      } else {
+        go(i + 1)
+      }
+    }
+  }
+  go(0)
+}
+
+// Bind imported names from a checked module's env
+let rec bind_checked_imports = (
+  names: Array[(String, Option[String])],
+  i: Int,
+  env: TypeEnv,
+  mod_env: TypeEnv,
+  exports: Array[String]
+) -> TypeEnv {
+  if i >= array_length(names) {
+    env
+  } else {
+    let (name, alias) = array_get(names, i)
+    let bound_name = match alias {
+      Some(a) => a,
+      None => name
+    }
+    let new_env = if contains_str(exports, name) {
+      match env_lookup(mod_env, name) {
+        Some(ty) => env_bind(env, bound_name, ty),
+        None => env
+      }
+    } else {
+      env
+    }
+    bind_checked_imports(names, i + 1, new_env, mod_env, exports)
+  }
+}
+
+//# Module Loader
+
+// Check a module and return its TypeEnv, resolving imports recursively.
+// resolve_imports is inlined to avoid mutual recursion (vibe has no forward references).
+export let rec check_module = (
+  source: String,
+  path: String,
+  sources: Array[(String, String)],
+  loading: Array[String],
+  checked_cache: Array[(String, TypeEnv)]
+) -> TypeEnv with { Error } {
+  // Check cache first
+  let cached = cache_lookup(checked_cache, path)
+  match cached {
+    Some(env) => env,
+    None => {
+      // Cycle detection
+      if contains_str(loading, path) {
+        throw(string_concat("import cycle detected: ", path))
+      }
+      let tokens = lex(source)
+      let stmts = parse_program(tokens)
+      let base_dir = dir_of(path)
+      let new_loading = array_concat(loading, [path])
+
+      // Resolve imports inline (replaces separate resolve_imports function)
+      let rec resolve = (i: Int, env: TypeEnv) -> TypeEnv with { Error } {
+        if i >= array_length(stmts) {
+          env
+        } else {
+          let stmt = array_get(stmts, i)
+          let new_env = match stmt {
+            SImport(raw_path, names) => {
+              let resolved = resolve_path(base_dir, raw_path)
+              match source_lookup(sources, resolved) {
+                None => throw(string_concat("module not found: ", resolved)),
+                Some(mod_source) => {
+                  // Recursively check the imported module
+                  let mod_env = check_module(mod_source, resolved, sources, new_loading, checked_cache)
+                  let exports = {
+                    let mod_tokens = lex(mod_source)
+                    let mod_stmts = parse_program(mod_tokens)
+                    collect_exports(mod_stmts)
+                  }
+                  // Bind exported names into current env
+                  bind_checked_imports(names, 0, env, mod_env, exports)
+                }
+              }
+            },
+            _ => env
+          }
+          resolve(i + 1, new_env)
+        }
+      }
+      let import_env = resolve(0, EnvEmpty)
+
+      // Type-check with imported env
+      let empty_defs = array_slice([TDAlias("_dummy", CtUnit)], 0, 0)
+      let (env, _, _) = check_stmts(stmts, 0, import_env, empty_defs, SubstEmpty, 0)
+
+      // Cache result
+      array_push(checked_cache, (path, env))
+      env
+    }
+  }
+}

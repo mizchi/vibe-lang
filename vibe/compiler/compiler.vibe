@@ -20,6 +20,10 @@ import ./codegen.vibe {
   compile_module, compile_wasi_module
 }
 
+import ./module_loader.vibe {
+  check_module
+}
+
 import ./types.vibe {
   Type, TypeEnv
 }
@@ -40,5 +44,27 @@ export let compile_source_wasi = (source: String, entry_name: String) -> Bytes w
   let tokens = lex(source)
   let stmts = parse_program(tokens)
   let _ = check_program(stmts)
+  compile_wasi_module(stmts, entry_name)
+}
+
+// Multi-module compile pipeline: resolve imports, type-check, codegen
+// sources: Array of (path, source_code) pairs for all available modules
+// main_path: path of the entry module
+export let compile_with_modules = (main_source: String, main_path: String, sources: Array[(String, String)]) -> Bytes with { Error } {
+  let checked_cache = array_slice([("", EnvEmpty)], 0, 0)
+  let empty_loading = array_slice([""], 0, 0)
+  let _ = check_module(main_source, main_path, sources, empty_loading, checked_cache)
+  let tokens = lex(main_source)
+  let stmts = parse_program(tokens)
+  compile_module(stmts)
+}
+
+// Multi-module compile for WASI with entry
+export let compile_with_modules_wasi = (main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> Bytes with { Error } {
+  let checked_cache = array_slice([("", EnvEmpty)], 0, 0)
+  let empty_loading = array_slice([""], 0, 0)
+  let _ = check_module(main_source, main_path, sources, empty_loading, checked_cache)
+  let tokens = lex(main_source)
+  let stmts = parse_program(tokens)
   compile_wasi_module(stmts, entry_name)
 }
