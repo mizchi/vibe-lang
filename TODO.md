@@ -67,6 +67,24 @@ Completed items are archived in `docs/DONE.md`.
 - [x] substitution chain 解決テスト
 - テスト: `checker_unify_test.vibe` (30 tests, +8)
 
+#### T10: trait system — `checker_trait.vibe` ✅
+- [x] builtin traits 登録（Eq, Ord, Add, Sub, Mul, Div）+ primitive impls
+- [x] impl overlap 検出、super-trait 定義検証
+- [x] bounds 充足チェック
+- テスト: `checker_trait_test.vibe` (14 tests)
+
+#### T12: monomorphization — `monoify.vibe` ✅
+- [x] generic 関数の検出（型パラメータ付き EFn）
+- [x] call site 収集（AST 走査）
+- [x] 単相化名生成（base$suffix）
+- テスト: `monoify_test.vibe` (10 tests)
+
+#### T13: purity analysis — `checker_purity.vibe` ✅
+- [x] 3段階 purity（Pure/StateLocal/Impure）
+- [x] builtin 関数の purity 分類
+- [x] AST 再帰解析
+- テスト: `checker_purity_test.vibe` (18 tests)
+
 ### Compiler Review Backlog (readability + selfhost robustness)
 
 - [x] refactor: `compile_expr` の責務分割（`compile_call` / `compile_match` / `compile_lambda`）
