@@ -142,3 +142,71 @@ test "EIf with mixed purity takes max" {
   )
   assert(eq(analyze_purity(expr), 2))
 }
+
+// Helper: empty TypeExpr array
+let no_tyexprs = () -> Array[TypeExpr] {
+  array_slice([TyUnit], 0, 0)
+}
+
+// 19. pure let passes — SLet with EInt body
+test "pure let passes" {
+  let stmt = SLet(false, false, "x", None, EInt(1))
+  assert(eq(analyze_stmt_purity(stmt), 0))
+}
+
+// 20. pure fn passes — SLet with EFn body
+test "pure fn passes" {
+  let fn_expr = EFn(no_strings(), no_constraints(), [("x", None)], None, None, EBinOp("+", EIdent("x"), EInt(1)))
+  let stmt = SLet(false, false, "f", None, fn_expr)
+  assert(eq(analyze_stmt_purity(stmt), 0))
+}
+
+// 21. let mut is state_local — SLetMut
+test "let mut is state_local" {
+  let stmt = SLetMut("x", None, EInt(0))
+  assert(analyze_stmt_purity(stmt) >= 1)
+}
+
+// 22. test block allowed — STest with mutable inside
+test "test block allowed" {
+  let test_body = ELetMut("x", EInt(0), EAssign("x", EBinOp("+", EIdent("x"), EInt(1)), EIdent("x")))
+  let stmt = STest("t", test_body)
+  let p = analyze_stmt_purity(stmt)
+  assert(p >= 1)
+}
+
+// 23. enum def passes — SEnum is pure
+test "enum def passes" {
+  let stmt = SEnum(false, "Color", [("Red", no_tyexprs()), ("Green", no_tyexprs()), ("Blue", no_tyexprs())])
+  assert(eq(analyze_stmt_purity(stmt), 0))
+}
+
+// 24. for-in is state_local
+test "for-in is state_local" {
+  let expr = EForIn("x", EArray([EInt(1), EInt(2)]), EIdent("x"))
+  assert(analyze_purity(expr) >= 1)
+}
+
+// 25. chained pure calls stay pure
+test "chained pure calls stay pure" {
+  let call = ECall(EIdent("eq"), [EInt(1), EInt(2)])
+  assert(eq(analyze_purity(call), 0))
+}
+
+// 26. impure call propagates
+test "impure call propagates" {
+  let call = ECall(EIdent("print"), [EString("hello")])
+  assert(eq(analyze_purity(call), 2))
+}
+
+// 27. nested let with impure body
+test "nested let with impure body" {
+  let expr = ELet("x", EInt(1), ECall(EIdent("fs_read_file"), [EString("test.txt")]))
+  assert(eq(analyze_purity(expr), 2))
+}
+
+// 28. while loop is at least state_local
+test "while loop is at least state_local" {
+  let expr = EWhile(EBool(true), EUnit)
+  assert(analyze_purity(expr) >= 1)
+}

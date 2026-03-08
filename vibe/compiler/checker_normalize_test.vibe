@@ -162,3 +162,67 @@ test "normalize unknown Named type" {
   let ty = normalize_type(CtNamed("Unknown", array_slice([CtUnknown], 0, 0)), empty_defs())
   assert(types_equal(ty, CtNamed("Unknown", array_slice([CtUnknown], 0, 0))))
 }
+
+//# Alias update invalidates cached normalization
+
+test "alias update invalidates cached normalization" {
+  let no_args = array_slice([CtUnknown], 0, 0)
+  let defs1 = [
+    TDAlias("Box", CtInt)
+  ]
+  let ty1 = normalize_type(CtNamed("Box", no_args), defs1)
+  assert(types_equal(ty1, CtInt))
+  let defs2 = [
+    TDAlias("Box", CtString)
+  ]
+  let ty2 = normalize_type(CtNamed("Box", no_args), defs2)
+  assert(types_equal(ty2, CtString))
+}
+
+//# User alias overrides builtin names
+
+test "user alias overrides builtin Bytes" {
+  let no_args = array_slice([CtUnknown], 0, 0)
+  let defs = [
+    TDAlias("Bytes", CtArray(CtInt))
+  ]
+  let ty = normalize_type(CtNamed("Bytes", no_args), defs)
+  assert(types_equal(ty, CtArray(CtInt)))
+}
+
+test "user alias overrides builtin Int" {
+  let no_args = array_slice([CtUnknown], 0, 0)
+  let defs = [
+    TDAlias("Int", CtDouble)
+  ]
+  let ty = normalize_type(CtNamed("Int", no_args), defs)
+  assert(types_equal(ty, CtDouble))
+}
+
+//# Builtin fallback when no user alias
+
+test "builtin fallback no user alias passes through" {
+  let no_args = array_slice([CtUnknown], 0, 0)
+  let ty = normalize_type(CtNamed("Int", no_args), empty_defs())
+  assert(types_equal(ty, CtNamed("Int", no_args)))
+}
+
+test "builtin Array fallback passes through" {
+  let no_args = array_slice([CtUnknown], 0, 0)
+  let ty = normalize_type(CtNamed("Array", [CtNamed("Int", no_args)]), empty_defs())
+  assert(types_equal(ty, CtNamed("Array", [CtNamed("Int", no_args)])))
+}
+
+//# Recursive enum ctor payload keeps named references
+
+test "recursive enum ctor payload keeps named" {
+  let no_args = array_slice([CtUnknown], 0, 0)
+  let defs = [
+    TDEnum("Expr", [
+      ("Lit", [CtInt]),
+      ("Pair", [CtNamed("Expr", no_args), CtNamed("Expr", no_args)])
+    ])
+  ]
+  let ty = normalize_type(CtNamed("Expr", no_args), defs)
+  assert(types_equal(ty, CtEnum("Expr")))
+}
