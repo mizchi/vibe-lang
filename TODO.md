@@ -121,6 +121,12 @@ Completed items are archived in `docs/DONE.md`.
 - [x] LSIF レポート出力
 - テスト: `symbol_lsif_test.vibe` (12 tests)
 
+#### T20: builtin handler 拡充 ✅
+- [x] IO/FS/Net ハンドラ（42 builtins: sh, fs_*, http_*, socket_* 等）
+- [x] numeric/JSON/char/threads/wasm ops（53 builtins）
+- [x] checker_builtins に精密型推論追加
+- テスト: `checker_builtins_test.vibe` (16), `builtins_extended_test.vibe` (15)
+
 ### Compiler Review Backlog (readability + selfhost robustness)
 
 - [x] refactor: `compile_expr` の責務分割（`compile_call` / `compile_match` / `compile_lambda`）
