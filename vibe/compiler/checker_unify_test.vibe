@@ -1,7 +1,7 @@
 //# Imports
 
 import ./types.vibe {
-  Subst, Type, unify, types_equal, subst_apply, subst_lookup
+  Subst, Type, unify, types_equal, subst_apply, subst_lookup, occurs_in
 }
 
 //# Helpers
@@ -178,4 +178,80 @@ test "unify CtEnum with CtStruct fails" {
 test "unify CtEnum with CtInt fails" {
   let result = unify(CtEnum("Foo"), CtInt, SubstEmpty)
   assert(is_none(result))
+}
+
+//# CtForAll unification
+
+let empty_bounds: Array[(Int, Array[String])] = array_slice([
+  (0, array_slice([""], 0, 0))
+], 0, 0)
+
+test "unify CtForAll body with concrete type" {
+  // forall a. (a) -> a  unified with  (Int) -> Int
+  let forall_ty = CtForAll([0], empty_bounds, CtFn([CtVar(0)], CtVar(0), false))
+  let concrete = CtFn([CtInt], CtInt, false)
+  let result = unify(forall_ty, concrete, SubstEmpty)
+  assert(is_some(result))
+}
+
+test "unify two CtForAll with same structure" {
+  // forall a. (a) -> a  unified with  forall b. (b) -> b
+  let fa = CtForAll([0], empty_bounds, CtFn([CtVar(0)], CtVar(0), false))
+  let fb = CtForAll([1], empty_bounds, CtFn([CtVar(1)], CtVar(1), false))
+  let result = unify(fa, fb, SubstEmpty)
+  assert(is_some(result))
+}
+
+test "unify CtForAll with incompatible type" {
+  // forall a. (a) -> a  cannot unify with  (Int) -> String
+  let forall_ty = CtForAll([0], empty_bounds, CtFn([CtVar(0)], CtVar(0), false))
+  let incompatible = CtFn([CtInt], CtString, false)
+  let result = unify(forall_ty, incompatible, SubstEmpty)
+  assert(is_none(result))
+}
+
+test "unify concrete with CtForAll (symmetric)" {
+  // (Int) -> Int  unified with  forall a. (a) -> a
+  let concrete = CtFn([CtInt], CtInt, false)
+  let forall_ty = CtForAll([0], empty_bounds, CtFn([CtVar(0)], CtVar(0), false))
+  let result = unify(concrete, forall_ty, SubstEmpty)
+  assert(is_some(result))
+}
+
+//# Substitution chain resolution
+
+test "unify CtVar already bound resolves chain" {
+  // var(0) -> var(1) -> Int, then unify var(0) with Int
+  let s0 = SubstBind(0, CtVar(1), SubstEmpty)
+  let s1 = SubstBind(1, CtInt, s0)
+  let result = unify(CtVar(0), CtInt, s1)
+  assert(is_some(result))
+}
+
+//# CtOption with CtVar
+
+test "unify CtOption(CtVar) with CtOption(CtInt)" {
+  let result = unify(CtOption(CtVar(0)), CtOption(CtInt), SubstEmpty)
+  assert(is_some(result))
+  match result {
+    Some(s) => {
+      let resolved = subst_apply(s, CtVar(0))
+      assert(types_equal(resolved, CtInt))
+    },
+    None => assert(false)
+  }
+}
+
+//# Occurs check
+
+test "occurs check prevents infinite type" {
+  // unify var(0) with (var(0)) -> Int  should fail
+  let result = unify(CtVar(0), CtFn([CtVar(0)], CtInt, false), SubstEmpty)
+  assert(is_none(result))
+}
+
+test "occurs_in detects variable in function type" {
+  assert(occurs_in(0, CtFn([CtVar(0)], CtInt, false)))
+  assert(occurs_in(0, CtFn([CtInt], CtVar(0), false)))
+  assert(not(occurs_in(1, CtFn([CtVar(0)], CtInt, false))))
 }

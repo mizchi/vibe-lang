@@ -1,0 +1,129 @@
+//# Imports
+
+import ./types.vibe {
+  Type, TypeDef, find_typedef
+}
+
+import ./ast.vibe {
+  TypeExpr
+}
+
+//# Functions
+
+let array_has_string = (arr: Array[String], val: String, i: Int) -> Bool {
+  if i >= array_length(arr) {
+    false
+  } else if string_equals(array_get(arr, i), val) {
+    true
+  } else {
+    array_has_string(arr, val, i + 1)
+  }
+}
+
+let empty_strings = () -> Array[String] {
+  array_slice(["_placeholder"], 0, 0)
+}
+
+export let check_duplicate_fields = (fields: Array[(String, Type)]) -> Array[String] {
+  let seen = empty_strings()
+  let dupes = empty_strings()
+  let len = array_length(fields)
+  let mut i = 0
+  while i < len {
+    let (name, _) = array_get(fields, i)
+    if array_has_string(seen, name, 0) {
+      if not(array_has_string(dupes, name, 0)) {
+        array_push(dupes, name)
+      }
+    } else {
+      array_push(seen, name)
+    }
+    i = i + 1
+  }
+  dupes
+}
+
+let get_struct_fields = (defs: Array[TypeDef], struct_name: String) -> Option[Array[(String, Type)]] {
+  match find_typedef(defs, struct_name) {
+    Some(td) => match td {
+      TDStruct(_, fields) => Some(fields),
+      TDEnum(_, _) => None,
+      TDAlias(_, _) => None
+    },
+    None => None
+  }
+}
+
+export let check_struct_arity = (defs: Array[TypeDef], struct_name: String, num_args: Int) -> Bool {
+  match get_struct_fields(defs, struct_name) {
+    Some(fields) => eq(array_length(fields), num_args),
+    None => true
+  }
+}
+
+export let lookup_struct_field = (defs: Array[TypeDef], struct_name: String, field_name: String) -> Type {
+  match get_struct_fields(defs, struct_name) {
+    Some(fields) => {
+      let len = array_length(fields)
+      let mut i = 0
+      let mut result : Type = CtUnknown
+      while i < len {
+        let (name, ty) = array_get(fields, i)
+        if string_equals(name, field_name) {
+          result = ty
+          i = len
+        } else {
+          i = i + 1
+        }
+      }
+      result
+    },
+    None => CtUnknown
+  }
+}
+
+export let check_record_fields = (defs: Array[TypeDef], struct_name: String, field_names: Array[String]) -> Array[String] {
+  let unknown = empty_strings()
+  match get_struct_fields(defs, struct_name) {
+    Some(fields) => {
+      let def_names = empty_strings()
+      let flen = array_length(fields)
+      let mut fi = 0
+      while fi < flen {
+        let (name, _) = array_get(fields, fi)
+        array_push(def_names, name)
+        fi = fi + 1
+      }
+      let nlen = array_length(field_names)
+      let mut ni = 0
+      while ni < nlen {
+        let fn_name = array_get(field_names, ni)
+        if not(array_has_string(def_names, fn_name, 0)) {
+          array_push(unknown, fn_name)
+        }
+        ni = ni + 1
+      }
+      unknown
+    },
+    None => unknown
+  }
+}
+
+export let check_missing_fields = (defs: Array[TypeDef], struct_name: String, provided_names: Array[String]) -> Array[String] {
+  let missing = empty_strings()
+  match get_struct_fields(defs, struct_name) {
+    Some(fields) => {
+      let flen = array_length(fields)
+      let mut fi = 0
+      while fi < flen {
+        let (name, _) = array_get(fields, fi)
+        if not(array_has_string(provided_names, name, 0)) {
+          array_push(missing, name)
+        }
+        fi = fi + 1
+      }
+      missing
+    },
+    None => missing
+  }
+}
