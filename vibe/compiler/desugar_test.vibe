@@ -1,0 +1,149 @@
+//# Imports
+
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ./desugar.vibe {
+  desugar_expr, desugar_stmts
+}
+
+//# Helpers — avoid nested enum pattern matching (codegen limitation)
+
+let is_ecall = (e: Expr) -> Bool {
+  match e { ECall(_, _) => true, _ => false }
+}
+
+let ecall_callee = (e: Expr) -> Expr {
+  match e { ECall(c, _) => c, _ => EUnit }
+}
+
+let ecall_args = (e: Expr) -> Array[Expr] {
+  match e { ECall(_, a) => a, _ => array_slice([EUnit], 0, 0) }
+}
+
+let is_eident = (e: Expr) -> Bool {
+  match e { EIdent(_) => true, _ => false }
+}
+
+let eident_name = (e: Expr) -> String {
+  match e { EIdent(n) => n, _ => "" }
+}
+
+let is_eint = (e: Expr) -> Bool {
+  match e { EInt(_) => true, _ => false }
+}
+
+let eint_val = (e: Expr) -> Int {
+  match e { EInt(n) => n, _ => -1 }
+}
+
+let is_ebinop = (e: Expr) -> Bool {
+  match e { EBinOp(_, _, _) => true, _ => false }
+}
+
+let ebinop_op = (e: Expr) -> String {
+  match e { EBinOp(op, _, _) => op, _ => "" }
+}
+
+let is_edot = (e: Expr) -> Bool {
+  match e { EDot(_, _) => true, _ => false }
+}
+
+let edot_field = (e: Expr) -> String {
+  match e { EDot(_, f) => f, _ => "" }
+}
+
+let edot_obj = (e: Expr) -> Expr {
+  match e { EDot(o, _) => o, _ => EUnit }
+}
+
+let is_elet = (e: Expr) -> Bool {
+  match e { ELet(_, _, _) => true, _ => false }
+}
+
+let elet_body = (e: Expr) -> Expr {
+  match e { ELet(_, _, b) => b, _ => EUnit }
+}
+
+//# Pipe desugar
+
+test "pipe simple: x |> f => f(x)" {
+  let result = desugar_expr(EBinOp("|>", EInt(1), EIdent("f")))
+  assert(is_ecall(result))
+  assert(is_eident(ecall_callee(result)))
+  assert(string_equals(eident_name(ecall_callee(result)), "f"))
+  assert(eq(array_length(ecall_args(result)), 1))
+  assert(eq(eint_val(array_get(ecall_args(result), 0)), 1))
+}
+
+test "pipe with args: x |> f(y) => f(x, y)" {
+  let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EIdent("f"), [EInt(2)])))
+  assert(is_ecall(result))
+  assert(string_equals(eident_name(ecall_callee(result)), "f"))
+  assert(eq(array_length(ecall_args(result)), 2))
+  assert(eq(eint_val(array_get(ecall_args(result), 0)), 1))
+  assert(eq(eint_val(array_get(ecall_args(result), 1)), 2))
+}
+
+//# Method call desugar
+
+test "method call: obj.method() => method(obj)" {
+  let result = desugar_expr(ECall(EDot(EIdent("x"), "len"), array_slice([EUnit], 0, 0)))
+  assert(is_ecall(result))
+  assert(string_equals(eident_name(ecall_callee(result)), "len"))
+  assert(eq(array_length(ecall_args(result)), 1))
+  assert(string_equals(eident_name(array_get(ecall_args(result), 0)), "x"))
+}
+
+test "method call with args: obj.push(1) => push(obj, 1)" {
+  let result = desugar_expr(ECall(EDot(EIdent("x"), "push"), [EInt(1)]))
+  assert(is_ecall(result))
+  assert(string_equals(eident_name(ecall_callee(result)), "push"))
+  assert(eq(array_length(ecall_args(result)), 2))
+  assert(string_equals(eident_name(array_get(ecall_args(result), 0)), "x"))
+  assert(eq(eint_val(array_get(ecall_args(result), 1)), 1))
+}
+
+//# Pass-through cases
+
+test "non-pipe binop passes through" {
+  let result = desugar_expr(EBinOp("+", EInt(1), EInt(2)))
+  assert(is_ebinop(result))
+  assert(string_equals(ebinop_op(result), "+"))
+}
+
+test "EDot without call passes through" {
+  let result = desugar_expr(EDot(EIdent("x"), "y"))
+  assert(is_edot(result))
+  assert(string_equals(edot_field(result), "y"))
+  assert(string_equals(eident_name(edot_obj(result)), "x"))
+}
+
+//# Nested desugar
+
+test "nested: pipe inside let body" {
+  let result = desugar_expr(ELet("x", EInt(1), EBinOp("|>", EIdent("x"), EIdent("f"))))
+  assert(is_elet(result))
+  let body = elet_body(result)
+  assert(is_ecall(body))
+  assert(string_equals(eident_name(ecall_callee(body)), "f"))
+}
+
+//# Statement desugar
+
+test "SLet body gets desugared" {
+  let stmts = [
+    SLet(false, false, "x", None, EBinOp("|>", EInt(1), EIdent("f")))
+  ]
+  let result = desugar_stmts(stmts)
+  assert(eq(array_length(result), 1))
+  match array_get(result, 0) {
+    SLet(_, _, name, _, body) => {
+      assert(string_equals(name, "x"))
+      assert(is_ecall(body))
+      assert(string_equals(eident_name(ecall_callee(body)), "f"))
+    },
+    _ => assert(false)
+  }
+}

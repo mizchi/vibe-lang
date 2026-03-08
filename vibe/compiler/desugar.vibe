@@ -1,0 +1,124 @@
+//# Imports
+
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+//# Functions
+
+let prepend_expr = (first: Expr, rest: Array[Expr]) -> Array[Expr] {
+  let out = array_slice([EUnit], 0, 0)
+  array_push(out, first)
+  let mut i = 0
+  while i < array_length(rest) {
+    array_push(out, array_get(rest, i))
+    i = i + 1
+  }
+  out
+}
+
+export let rec desugar_expr = (expr: Expr) -> Expr {
+  match expr {
+    EBinOp(op, left, right) => {
+      if string_equals(op, "|>") {
+        let dl = desugar_expr(left)
+        let dr = desugar_expr(right)
+        match dr {
+          ECall(callee, args) => ECall(callee, prepend_expr(dl, args)),
+          _ => ECall(dr, [dl])
+        }
+      } else {
+        EBinOp(op, desugar_expr(left), desugar_expr(right))
+      }
+    },
+    ECall(callee, args) => {
+      let desugared_args = for a in args { desugar_expr(a) }
+      match callee {
+        EDot(obj, method_name) => ECall(EIdent(method_name), prepend_expr(desugar_expr(obj), desugared_args)),
+        _ => ECall(desugar_expr(callee), desugared_args)
+      }
+    },
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_) => expr,
+    EBool(_) => expr,
+    EIdent(_) => expr,
+    EUnit => expr,
+    ETuple(elems) => ETuple(for e in elems { desugar_expr(e) }),
+    EArray(elems) => EArray(for e in elems { desugar_expr(e) }),
+    ERecord(fields) => {
+      let out = array_slice([("", EUnit)], 0, 0)
+      let mut i = 0
+      while i < array_length(fields) {
+        let (fname, fval) = array_get(fields, i)
+        array_push(out, (fname, desugar_expr(fval)))
+        i = i + 1
+      }
+      ERecord(out)
+    },
+    EIf(cond, then_e, else_e) => EIf(desugar_expr(cond), desugar_expr(then_e), desugar_expr(else_e)),
+    ELet(name, val, body) => ELet(name, desugar_expr(val), desugar_expr(body)),
+    ELetRec(name, val, body) => ELetRec(name, desugar_expr(val), desugar_expr(body)),
+    ELetMut(name, val, body) => ELetMut(name, desugar_expr(val), desugar_expr(body)),
+    EAssign(name, val, cont) => EAssign(name, desugar_expr(val), desugar_expr(cont)),
+    EAssignOp(name, op, val, cont) => EAssignOp(name, op, desugar_expr(val), desugar_expr(cont)),
+    ESeq(a, b) => ESeq(desugar_expr(a), desugar_expr(b)),
+    EMatch(scrutinee, arms) => {
+      let out = array_slice([(PWild, EUnit)], 0, 0)
+      let mut i = 0
+      while i < array_length(arms) {
+        let (p, b) = array_get(arms, i)
+        array_push(out, (p, desugar_expr(b)))
+        i = i + 1
+      }
+      EMatch(desugar_expr(scrutinee), out)
+    },
+    EHandle(scrutinee, arms) => {
+      let out = array_slice([(PWild, EUnit)], 0, 0)
+      let mut i = 0
+      while i < array_length(arms) {
+        let (p, b) = array_get(arms, i)
+        array_push(out, (p, desugar_expr(b)))
+        i = i + 1
+      }
+      EHandle(desugar_expr(scrutinee), out)
+    },
+    EWhile(cond, body) => EWhile(desugar_expr(cond), desugar_expr(body)),
+    EForIn(name, iter, body) => EForIn(name, desugar_expr(iter), desugar_expr(body)),
+    EUnaryOp(op, operand) => EUnaryOp(op, desugar_expr(operand)),
+    EFn(type_params, bounds, params, ret_ty, effect, body) => EFn(type_params, bounds, params, ret_ty, effect, desugar_expr(body)),
+    EDot(obj, field) => EDot(desugar_expr(obj), field),
+    ELabeledArg(label, name, body) => ELabeledArg(label, name, desugar_expr(body)),
+    EThrow(e) => EThrow(desugar_expr(e)),
+    EBreak(opt) => match opt {
+      Some(e) => EBreak(Some(desugar_expr(e))),
+      None => expr
+    },
+    EContinue(exprs) => EContinue(for e in exprs { desugar_expr(e) })
+  }
+}
+
+export let rec desugar_stmt = (stmt: Stmt) -> Stmt {
+  match stmt {
+    SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, name, ty, desugar_expr(body)),
+    SLetMut(name, ty, body) => SLetMut(name, ty, desugar_expr(body)),
+    STest(name, body) => STest(name, desugar_expr(body)),
+    SBench(name, body) => SBench(name, desugar_expr(body)),
+    SExpr(e) => SExpr(desugar_expr(e)),
+    SModule(exported, name, stmts) => SModule(exported, name, for s in stmts { desugar_stmt(s) }),
+    SEnum(_, _, _) => stmt,
+    SSuberror(_, _, _) => stmt,
+    SStruct(_, _, _) => stmt,
+    STypeAlias(_, _, _) => stmt,
+    STrait(_, _, _) => stmt,
+    SImpl(_, _, _, _) => stmt,
+    SExternLet(_, _) => stmt,
+    SImport(_, _) => stmt,
+    SExport(_) => stmt,
+    SReExport(_, _) => stmt
+  }
+}
+
+export let desugar_stmts = (stmts: Array[Stmt]) -> Array[Stmt] {
+  for stmt in stmts { desugar_stmt(stmt) }
+}
