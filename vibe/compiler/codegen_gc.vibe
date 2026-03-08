@@ -54,6 +54,458 @@ import ./codegen_common.vibe {
   emit_binop_op, emit_assignop_op, emit_closure_resolve, emit_closure_call_tail
 }
 
+// === Sub-compilers (GC backend) ===
+
+let compile_call_gc = (
+  buf: Array[Int], callee: Expr, args: Array[Expr],
+  local_names: Array[String], next_local: Int,
+  ctx: CompileCtxGc, ld: Int,
+  ce: (Array[Int], Expr, Array[String], Int, Int) -> Int with { Error }
+) -> Int with { Error } {
+  match callee {
+    EIdent(fname) => {
+      // Check if this is an enum constructor call
+      let ctor_lookup_idx = lookup_ctor(ctx.ctor_table.names, fname, 0)
+      if ctor_lookup_idx >= 0 {
+        let tag = array_get(ctx.ctor_table.tags, ctor_lookup_idx)
+        let fc = array_get(ctx.ctor_table.field_counts, ctor_lookup_idx)
+        let obj_size = 8 + fc * 8
+        let ptr_local = next_local
+        array_push(local_names, "__ctor_ptr")
+        emit_global_get(buf, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, ptr_local)
+        emit_global_get(buf, 0)
+        emit_i32_const(buf, obj_size)
+        emit_i32_add(buf)
+        emit_global_set(buf, 0)
+        emit_local_get(buf, ptr_local)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, tag)
+        emit_i32_store(buf, 2, 0)
+        emit_local_get(buf, ptr_local)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, fc)
+        emit_i32_store(buf, 2, 4)
+        // For structs, unwrap ERecord and reorder fields
+        let actual_args = if array_length(args) == 1 {
+          match array_get(args, 0) {
+            ERecord(rec_fields) => {
+              let rec find_sn = (sni: Int) -> Int {
+                if sni >= array_length(ctx.ctor_table.struct_names) { -1 }
+                else if string_equals(array_get(ctx.ctor_table.struct_names, sni), fname) { sni }
+                else find_sn(sni + 1)
+              }
+              let sn_idx = find_sn(0)
+              if sn_idx >= 0 {
+                let def_fnames = array_get(ctx.ctor_table.struct_field_names, sn_idx)
+                let ordered = array_slice([EUnit], 0, 0)
+                let mut oi = 0
+                while oi < array_length(def_fnames) {
+                  let target_name = array_get(def_fnames, oi)
+                  let rec find_rf = (ri: Int) -> Expr {
+                    if ri >= array_length(rec_fields) { EUnit }
+                    else {
+                      let (rfn, rfv) = array_get(rec_fields, ri)
+                      if string_equals(rfn, target_name) { rfv }
+                      else find_rf(ri + 1)
+                    }
+                  }
+                  array_push(ordered, find_rf(0))
+                  oi = oi + 1
+                }
+                ordered
+              } else { args }
+            },
+            _ => args
+          }
+        } else { args }
+        let mut nl_c = next_local + 1
+        let mut fi_c = 0
+        while fi_c < array_length(actual_args) {
+          nl_c = ce(buf, array_get(actual_args, fi_c), local_names, nl_c, ld)
+          let val_local = nl_c
+          array_push(local_names, "__ctor_val")
+          emit_local_set(buf, val_local)
+          nl_c = nl_c + 1
+          emit_local_get(buf, ptr_local)
+          emit_i32_wrap_i64(buf)
+          emit_local_get(buf, val_local)
+          emit_i64_store(buf, 3, 8 + fi_c * 8)
+          fi_c = fi_c + 1
+        }
+        emit_local_get(buf, ptr_local)
+        emit_i64_const(buf, 1)
+        emit_i64_or(buf)
+        nl_c
+      }
+      else {
+      let fn_len2 = array_length(ctx.func_table.names)
+      let rec try_resolve = (j: Int) -> Int {
+        if j >= fn_len2 { -1 }
+        else if string_equals(array_get(ctx.func_table.names, j), fname) { j }
+        else try_resolve(j + 1)
+      }
+      let fn_idx_in_list = try_resolve(0)
+      if fn_idx_in_list >= 0 {
+        // Direct call to known function
+        let fidx = array_get(ctx.func_table.indices, fn_idx_in_list)
+        let has_ret = array_get(ctx.func_table.returns, fn_idx_in_list)
+        let mut nl = next_local
+        let mut ci = 0
+        while ci < array_length(args) {
+          nl = ce(buf, array_get(args, ci), local_names, nl, ld)
+          ci = ci + 1
+        }
+        // User funcs in GC backend have __env param for table compatibility
+        if ctx.func_offset > 0 {
+          if fidx >= ctx.func_offset {
+            emit_i64_const(buf, 0)
+          }
+        }
+        emit_call(buf, fidx)
+        if has_ret == 0 {
+          emit_i64_const(buf, 0)
+        }
+        nl
+      } else {
+        // Indirect call: fname is a local holding a closure/fn value
+        let local_idx2 = resolve_local(local_names, fname)
+        let num_args = array_length(args)
+        let fn_val_local = next_local
+        let slot_local = next_local + 1
+        let env_local = next_local + 2
+        let mut nl = next_local + 3
+        array_push(local_names, "__fn_val")
+        array_push(local_names, "__slot")
+        array_push(local_names, "__env")
+        emit_local_get(buf, local_idx2)
+        emit_local_set(buf, fn_val_local)
+        emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
+        let mut ci = 0
+        while ci < num_args {
+          nl = ce(buf, array_get(args, ci), local_names, nl, ld)
+          ci = ci + 1
+        }
+        emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, num_args)
+        nl
+      }
+      } // close ctor_lookup else
+    },
+    _ => {
+      // Callee is an arbitrary expression
+      let num_args = array_length(args)
+      let fn_val_local = next_local
+      let slot_local = next_local + 1
+      let env_local = next_local + 2
+      let mut nl = next_local + 3
+      array_push(local_names, "__fn_val")
+      array_push(local_names, "__slot")
+      array_push(local_names, "__env")
+      nl = ce(buf, callee, local_names, nl, ld)
+      emit_local_set(buf, fn_val_local)
+      emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
+      let mut ci = 0
+      while ci < num_args {
+        nl = ce(buf, array_get(args, ci), local_names, nl, ld)
+        ci = ci + 1
+      }
+      emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, num_args)
+      nl
+    }
+  }
+}
+
+let compile_match_gc = (
+  buf: Array[Int], scrutinee: Expr, arms: Array[(Pat, Expr)],
+  local_names: Array[String], next_local: Int,
+  ctx: CompileCtxGc, ld: Int,
+  ce: (Array[Int], Expr, Array[String], Int, Int) -> Int with { Error }
+) -> Int with { Error } {
+  let scrut_local = next_local
+  array_push(local_names, "__match_scrut")
+  let nl1 = ce(buf, scrutinee, local_names, next_local + 1, ld)
+  emit_local_set(buf, scrut_local)
+  let num_arms = array_length(arms)
+  let catchall_idx = find_catchall_idx(arms)
+  let num_cond_arms = catchall_idx
+  let mut max_nl = nl1
+  let mut ai = 0
+  while ai < num_cond_arms {
+    let (p, _) = array_get(arms, ai)
+    match p {
+      PInt(n) => {
+        emit_local_get(buf, scrut_local)
+        emit_i64_const(buf, n)
+        emit_i64_eq(buf)
+        emit_if_i64(buf)
+        0
+      },
+      PBool(bv) => {
+        emit_local_get(buf, scrut_local)
+        emit_i64_const(buf, if bv { 1 } else { 0 })
+        emit_i64_eq(buf)
+        emit_if_i64(buf)
+        0
+      },
+      PCtor(cname_cond, _) => {
+        let ctor_ci = lookup_ctor(ctx.ctor_table.names, cname_cond, 0)
+        let expected_tag = if ctor_ci >= 0 { array_get(ctx.ctor_table.tags, ctor_ci) } else { -1 }
+        emit_local_get(buf, scrut_local)
+        emit_i64_const(buf, -2)
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_i32_load(buf, 2, 0)
+        emit_i32_const(buf, expected_tag)
+        emit_i32_eq(buf)
+        emit_if_i64(buf)
+        0
+      },
+      PString(sval) => {
+        let str_idx = str_table_lookup(ctx.str_table.strs, sval)
+        if str_idx >= 0 {
+          emit_local_get(buf, scrut_local)
+          emit_str_ref(buf, array_get(ctx.str_table.offsets, str_idx), array_get(ctx.str_table.lengths, str_idx))
+          emit_call(buf, 4)
+          emit_i64_const(buf, 1)
+          emit_i64_eq(buf)
+          emit_if_i64(buf)
+        }
+        0
+      },
+      _ => 0
+    }
+    let names_len_at_arm = array_length(local_names)
+    let (p2, arm_body) = array_get(arms, ai)
+    let ld_arm = if ld >= 0 { ld + ai + 1 } else { -1 }
+    match p2 {
+      PCtor(_, cargs_bind) => {
+        let mut cbi = 0
+        while cbi < array_length(cargs_bind) {
+          match array_get(cargs_bind, cbi) {
+            PBind(pname) => {
+              let fl = array_length(local_names)
+              emit_local_get(buf, scrut_local)
+              emit_i64_const(buf, -2)
+              emit_i64_and(buf)
+              emit_i32_wrap_i64(buf)
+              emit_i64_load(buf, 3, 8 + cbi * 8)
+              emit_local_set(buf, fl)
+              array_push(local_names, pname)
+              0
+            },
+            PWild => 0,
+            _ => 0
+          }
+          cbi = cbi + 1
+        }
+        let arm_nl = ce(buf, arm_body, local_names, array_length(local_names), ld_arm)
+        if arm_nl > max_nl { max_nl = arm_nl }
+        0
+      },
+      _ => {
+        let arm_nl = ce(buf, arm_body, local_names, nl1, ld_arm)
+        if arm_nl > max_nl { max_nl = arm_nl }
+        0
+      }
+    }
+    emit_else(buf)
+    array_truncate(local_names, names_len_at_arm)
+    ai = ai + 1
+  }
+  let ld_catch = if ld >= 0 { ld + num_cond_arms } else { -1 }
+  let _names_len_at_catch = array_length(local_names)
+  if catchall_idx < num_arms {
+    let (cp, cbody) = array_get(arms, catchall_idx)
+    let catch_nl = match cp {
+      PBind(bname) => {
+        let bind_local = array_length(local_names)
+        emit_local_get(buf, scrut_local)
+        emit_local_set(buf, bind_local)
+        array_push(local_names, bname)
+        ce(buf, cbody, local_names, array_length(local_names), ld_catch)
+      },
+      PCtor(_cname, cargs) => {
+        let mut cbi2 = 0
+        while cbi2 < array_length(cargs) {
+          match array_get(cargs, cbi2) {
+            PBind(pname) => {
+              let fl2 = array_length(local_names)
+              emit_local_get(buf, scrut_local)
+              emit_i64_const(buf, -2)
+              emit_i64_and(buf)
+              emit_i32_wrap_i64(buf)
+              emit_i64_load(buf, 3, 8 + cbi2 * 8)
+              emit_local_set(buf, fl2)
+              array_push(local_names, pname)
+              0
+            },
+            PWild => 0,
+            _ => 0
+          }
+          cbi2 = cbi2 + 1
+        }
+        ce(buf, cbody, local_names, array_length(local_names), ld_catch)
+      },
+      PTuple(pats) => {
+        let ptr_local2 = array_length(local_names)
+        emit_local_get(buf, scrut_local)
+        emit_local_set(buf, ptr_local2)
+        array_push(local_names, "__tup_ptr2")
+        let mut pi2 = 0
+        while pi2 < array_length(pats) {
+          let tp = array_get(pats, pi2)
+          match tp {
+            PBind(pname) => {
+              let field_l = array_length(local_names)
+              emit_local_get(buf, ptr_local2)
+              emit_i32_wrap_i64(buf)
+              emit_i64_load(buf, 3, pi2 * 8)
+              emit_local_set(buf, field_l)
+              array_push(local_names, pname)
+              0
+            },
+            PWild => 0,
+            _ => throw("unsupported pattern in tuple destructure")
+          }
+          pi2 = pi2 + 1
+        }
+        ce(buf, cbody, local_names, array_length(local_names), ld_catch)
+      },
+      _ => {
+        ce(buf, cbody, local_names, array_length(local_names), ld_catch)
+      }
+    }
+    if catch_nl > max_nl { max_nl = catch_nl }
+    0
+  } else {
+    bytebuf_push(buf, 0)  // unreachable
+    0
+  }
+  let mut ci2 = 0
+  while ci2 < num_cond_arms {
+    emit_end(buf)
+    ci2 = ci2 + 1
+  }
+  max_nl
+}
+
+let compile_lambda_gc = (
+  buf: Array[Int], params: Array[(String, Option[TypeExpr])], fn_body: Expr,
+  local_names: Array[String], next_local: Int,
+  ctx: CompileCtxGc, ld: Int,
+  compile_fn: (Array[Int], Expr, Array[String], Int, CompileCtxGc, Int) -> Int with { Error }
+) -> Int with { Error } {
+  let param_names_arr = array_slice([""], 0, 0)
+  let mut pi = 0
+  while pi < array_length(params) {
+    let (pname, _) = array_get(params, pi)
+    array_push(param_names_arr, pname)
+    pi = pi + 1
+  }
+  let fn_and_ctor = array_concat(ctx.func_table.names, ctx.ctor_table.names)
+  let captures = collect_free_vars(fn_body, param_names_arr, fn_and_ctor)
+  let num_captures = array_length(captures)
+  let user_params = array_length(params)
+
+  // Compile lambda body into a separate buffer
+  let lam_buf = bytebuf_new()
+  let lam_locals = array_slice([""], 0, 0)
+  let mut lpi = 0
+  while lpi < user_params {
+    let (lpname, _) = array_get(params, lpi)
+    array_push(lam_locals, lpname)
+    lpi = lpi + 1
+  }
+  array_push(lam_locals, "__env")
+  let env_param_idx = user_params
+  let lam_nl_start = user_params + 1
+
+  // Prologue: extract captures from env
+  let lam_ref_cells = array_slice([""], 0, 0)
+  let lam_ref_local_indices = array_slice([0], 0, 0)
+  let mut ci3 = 0
+  let mut lam_nl = lam_nl_start
+  while ci3 < num_captures {
+    let cap_local = lam_nl
+    let cap_name = array_get(captures, ci3)
+    emit_local_get(lam_buf, env_param_idx)
+    emit_i32_wrap_i64(lam_buf)
+    emit_i64_load(lam_buf, 3, 8 + ci3 * 8)
+    emit_local_set(lam_buf, cap_local)
+    array_push(lam_locals, cap_name)
+    if array_contains_str(ctx.ref_cell_names, cap_name) {
+      array_push(lam_ref_cells, cap_name)
+    }
+    lam_nl = lam_nl + 1
+    ci3 = ci3 + 1
+  }
+
+  // Compile lambda body
+  let lam_ctx = CompileCtxGc::{
+    func_table: ctx.func_table, str_table: ctx.str_table,
+    lambda_table: ctx.lambda_table,
+    num_user_funcs: ctx.num_user_funcs, func_offset: ctx.func_offset,
+    ref_cell_names: lam_ref_cells, ref_local_indices: lam_ref_local_indices,
+    refcell_type_idx: ctx.refcell_type_idx, closure_type_base: ctx.closure_type_base,
+    ctor_table: ctx.ctor_table
+  }
+  let final_lam_nl = compile_fn(
+    lam_buf, fn_body, lam_locals, lam_nl,
+    lam_ctx, ld
+  )
+
+  // Record lambda AFTER body compilation (nested lambdas already added)
+  let lambda_idx = array_length(ctx.lambda_table.bodies)
+  array_push(ctx.lambda_table.bodies, lam_buf)
+  array_push(ctx.lambda_table.param_counts, user_params + 1)
+  array_push(ctx.lambda_table.captures, captures)
+  let extra_lam = if final_lam_nl > (user_params + 1) { final_lam_nl - (user_params + 1) } else { 0 }
+  array_push(ctx.lambda_table.meta_i32, 0)
+  array_push(ctx.lambda_table.meta_i64, extra_lam)
+
+  // Emit closure creation code
+  let table_slot = ctx.num_user_funcs + lambda_idx
+  if num_captures == 0 {
+    emit_i64_const(buf, (table_slot << 2) | 2)
+    next_local
+  } else {
+    let alloc_size = 8 + num_captures * 8
+    let ptr_local = next_local
+    let nl2 = next_local + 1
+    array_push(local_names, "__closure_ptr")
+    emit_global_get(buf, 0)
+    emit_i64_extend_i32_u(buf)
+    emit_local_tee(buf, ptr_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, alloc_size)
+    emit_i32_add(buf)
+    emit_global_set(buf, 0)
+    emit_local_get(buf, ptr_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, table_slot)
+    emit_i32_store(buf, 2, 0)
+    emit_local_get(buf, ptr_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, num_captures)
+    emit_i32_store(buf, 2, 4)
+    let mut csi = 0
+    while csi < num_captures {
+      let cap_name = array_get(captures, csi)
+      let cap_idx = resolve_local(local_names, cap_name)
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, cap_idx)
+      emit_i64_store(buf, 3, 8 + csi * 8)
+      csi = csi + 1
+    }
+    emit_local_get(buf, ptr_local)
+    emit_i64_const(buf, 1)
+    emit_i64_or(buf)
+    nl2
+  }
+}
+
 // === Expression compiler (GC backend) ===
 
 let rec compile_expr_gc = (
@@ -182,160 +634,7 @@ let rec compile_expr_gc = (
       emit_end(buf)
       if nl2 > nl3 { nl2 } else { nl3 }
     },
-    ECall(callee, args) => {
-      match callee {
-        EIdent(fname) => {
-          // Check if this is an enum constructor call
-          let ctor_lookup_idx = lookup_ctor(ctx.ctor_table.names, fname, 0)
-          if ctor_lookup_idx >= 0 {
-            let tag = array_get(ctx.ctor_table.tags, ctor_lookup_idx)
-            let fc = array_get(ctx.ctor_table.field_counts, ctor_lookup_idx)
-            let obj_size = 8 + fc * 8
-            let ptr_local = next_local
-            array_push(local_names, "__ctor_ptr")
-            emit_global_get(buf, 0)
-            emit_i64_extend_i32_u(buf)
-            emit_local_set(buf, ptr_local)
-            emit_global_get(buf, 0)
-            emit_i32_const(buf, obj_size)
-            emit_i32_add(buf)
-            emit_global_set(buf, 0)
-            emit_local_get(buf, ptr_local)
-            emit_i32_wrap_i64(buf)
-            emit_i32_const(buf, tag)
-            emit_i32_store(buf, 2, 0)
-            emit_local_get(buf, ptr_local)
-            emit_i32_wrap_i64(buf)
-            emit_i32_const(buf, fc)
-            emit_i32_store(buf, 2, 4)
-            // For structs, unwrap ERecord and reorder fields
-            let actual_args = if array_length(args) == 1 {
-              match array_get(args, 0) {
-                ERecord(rec_fields) => {
-                  let rec find_sn = (sni: Int) -> Int {
-                    if sni >= array_length(ctx.ctor_table.struct_names) { -1 }
-                    else if string_equals(array_get(ctx.ctor_table.struct_names, sni), fname) { sni }
-                    else find_sn(sni + 1)
-                  }
-                  let sn_idx = find_sn(0)
-                  if sn_idx >= 0 {
-                    let def_fnames = array_get(ctx.ctor_table.struct_field_names, sn_idx)
-                    let ordered = array_slice([EUnit], 0, 0)
-                    let mut oi = 0
-                    while oi < array_length(def_fnames) {
-                      let target_name = array_get(def_fnames, oi)
-                      let rec find_rf = (ri: Int) -> Expr {
-                        if ri >= array_length(rec_fields) { EUnit }
-                        else {
-                          let (rfn, rfv) = array_get(rec_fields, ri)
-                          if string_equals(rfn, target_name) { rfv }
-                          else find_rf(ri + 1)
-                        }
-                      }
-                      array_push(ordered, find_rf(0))
-                      oi = oi + 1
-                    }
-                    ordered
-                  } else { args }
-                },
-                _ => args
-              }
-            } else { args }
-            let mut nl_c = next_local + 1
-            let mut fi_c = 0
-            while fi_c < array_length(actual_args) {
-              nl_c = ce(buf, array_get(actual_args, fi_c), local_names, nl_c, ld)
-              let val_local = nl_c
-              array_push(local_names, "__ctor_val")
-              emit_local_set(buf, val_local)
-              nl_c = nl_c + 1
-              emit_local_get(buf, ptr_local)
-              emit_i32_wrap_i64(buf)
-              emit_local_get(buf, val_local)
-              emit_i64_store(buf, 3, 8 + fi_c * 8)
-              fi_c = fi_c + 1
-            }
-            emit_local_get(buf, ptr_local)
-            emit_i64_const(buf, 1)
-            emit_i64_or(buf)
-            nl_c
-          }
-          else {
-          let fn_len2 = array_length(ctx.func_table.names)
-          let rec try_resolve = (j: Int) -> Int {
-            if j >= fn_len2 { -1 }
-            else if string_equals(array_get(ctx.func_table.names, j), fname) { j }
-            else try_resolve(j + 1)
-          }
-          let fn_idx_in_list = try_resolve(0)
-          if fn_idx_in_list >= 0 {
-            // Direct call to known function
-            let fidx = array_get(ctx.func_table.indices, fn_idx_in_list)
-            let has_ret = array_get(ctx.func_table.returns, fn_idx_in_list)
-            let mut nl = next_local
-            let mut ci = 0
-            while ci < array_length(args) {
-              nl = ce(buf, array_get(args, ci), local_names, nl, ld)
-              ci = ci + 1
-            }
-            // User funcs in GC backend have __env param for table compatibility
-            if ctx.func_offset > 0 {
-              if fidx >= ctx.func_offset {
-                emit_i64_const(buf, 0)
-              }
-            }
-            emit_call(buf, fidx)
-            if has_ret == 0 {
-              emit_i64_const(buf, 0)
-            }
-            nl
-          } else {
-            // Indirect call: fname is a local holding a closure/fn value
-            let local_idx2 = resolve_local(local_names, fname)
-            let num_args = array_length(args)
-            let fn_val_local = next_local
-            let slot_local = next_local + 1
-            let env_local = next_local + 2
-            let mut nl = next_local + 3
-            array_push(local_names, "__fn_val")
-            array_push(local_names, "__slot")
-            array_push(local_names, "__env")
-            emit_local_get(buf, local_idx2)
-            emit_local_set(buf, fn_val_local)
-            emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
-            let mut ci = 0
-            while ci < num_args {
-              nl = ce(buf, array_get(args, ci), local_names, nl, ld)
-              ci = ci + 1
-            }
-            emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, num_args)
-            nl
-          }
-          } // close ctor_lookup else
-        },
-        _ => {
-          // Callee is an arbitrary expression
-          let num_args = array_length(args)
-          let fn_val_local = next_local
-          let slot_local = next_local + 1
-          let env_local = next_local + 2
-          let mut nl = next_local + 3
-          array_push(local_names, "__fn_val")
-          array_push(local_names, "__slot")
-          array_push(local_names, "__env")
-          nl = ce(buf, callee, local_names, nl, ld)
-          emit_local_set(buf, fn_val_local)
-          emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
-          let mut ci = 0
-          while ci < num_args {
-            nl = ce(buf, array_get(args, ci), local_names, nl, ld)
-            ci = ci + 1
-          }
-          emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, num_args)
-          nl
-        }
-      }
-    },
+    ECall(callee, args) => compile_call_gc(buf, callee, args, local_names, next_local, ctx, ld, ce),
     ELet(name, value, body) => {
       let local_idx = next_local
       array_push(local_names, name)
@@ -465,176 +764,7 @@ let rec compile_expr_gc = (
       emit_local_get(buf, ptr_local)
       nl
     },
-    EMatch(scrutinee, arms) => {
-      let scrut_local = next_local
-      // Push name BEFORE compiling scrutinee so temp locals don't shift indices
-      array_push(local_names, "__match_scrut")
-      let nl1 = ce(buf, scrutinee, local_names, next_local + 1, ld)
-      emit_local_set(buf, scrut_local)
-      let num_arms = array_length(arms)
-      let catchall_idx = find_catchall_idx(arms)
-      let num_cond_arms = catchall_idx
-      let mut max_nl = nl1
-      let mut ai = 0
-      while ai < num_cond_arms {
-        let (p, _) = array_get(arms, ai)
-        match p {
-          PInt(n) => {
-            emit_local_get(buf, scrut_local)
-            emit_i64_const(buf, n)
-            emit_i64_eq(buf)
-            emit_if_i64(buf)
-            0
-          },
-          PBool(bv) => {
-            emit_local_get(buf, scrut_local)
-            emit_i64_const(buf, if bv { 1 } else { 0 })
-            emit_i64_eq(buf)
-            emit_if_i64(buf)
-            0
-          },
-          PCtor(cname_cond, _) => {
-            let ctor_ci = lookup_ctor(ctx.ctor_table.names, cname_cond, 0)
-            let expected_tag = if ctor_ci >= 0 { array_get(ctx.ctor_table.tags, ctor_ci) } else { -1 }
-            emit_local_get(buf, scrut_local)
-            emit_i64_const(buf, -2)
-            emit_i64_and(buf)
-            emit_i32_wrap_i64(buf)
-            emit_i32_load(buf, 2, 0)
-            emit_i32_const(buf, expected_tag)
-            emit_i32_eq(buf)
-            emit_if_i64(buf)
-            0
-          },
-          PString(sval) => {
-            let str_idx = str_table_lookup(ctx.str_table.strs, sval)
-            if str_idx >= 0 {
-              emit_local_get(buf, scrut_local)
-              emit_str_ref(buf, array_get(ctx.str_table.offsets, str_idx), array_get(ctx.str_table.lengths, str_idx))
-              emit_call(buf, 4)
-              emit_i64_const(buf, 1)
-              emit_i64_eq(buf)
-              emit_if_i64(buf)
-            }
-            0
-          },
-          _ => 0
-        }
-        // Compile arm body — for PCtor, bind fields first
-        let names_len_at_arm = array_length(local_names)
-        let (p2, arm_body) = array_get(arms, ai)
-        let ld_arm = if ld >= 0 { ld + ai + 1 } else { -1 }
-        match p2 {
-          PCtor(_, cargs_bind) => {
-            let mut cbi = 0
-            while cbi < array_length(cargs_bind) {
-              match array_get(cargs_bind, cbi) {
-                PBind(pname) => {
-                  let fl = array_length(local_names)
-                  emit_local_get(buf, scrut_local)
-                  emit_i64_const(buf, -2)
-                  emit_i64_and(buf)
-                  emit_i32_wrap_i64(buf)
-                  emit_i64_load(buf, 3, 8 + cbi * 8)
-                  emit_local_set(buf, fl)
-                  array_push(local_names, pname)
-                  0
-                },
-                PWild => 0,
-                _ => 0
-              }
-              cbi = cbi + 1
-            }
-            let arm_nl = ce(buf, arm_body, local_names, array_length(local_names), ld_arm)
-            if arm_nl > max_nl { max_nl = arm_nl }
-            0
-          },
-          _ => {
-            let arm_nl = ce(buf, arm_body, local_names, nl1, ld_arm)
-            if arm_nl > max_nl { max_nl = arm_nl }
-            0
-          }
-        }
-        emit_else(buf)
-        array_truncate(local_names, names_len_at_arm)
-        ai = ai + 1
-      }
-      let ld_catch = if ld >= 0 { ld + num_cond_arms } else { -1 }
-      let names_len_at_catch = array_length(local_names)
-      if catchall_idx < num_arms {
-        let (cp, cbody) = array_get(arms, catchall_idx)
-        let catch_nl = match cp {
-          PBind(bname) => {
-            let bind_local = array_length(local_names)
-            emit_local_get(buf, scrut_local)
-            emit_local_set(buf, bind_local)
-            array_push(local_names, bname)
-            ce(buf, cbody, local_names, array_length(local_names), ld_catch)
-          },
-          PCtor(cname, cargs) => {
-            let mut cbi2 = 0
-            while cbi2 < array_length(cargs) {
-              match array_get(cargs, cbi2) {
-                PBind(pname) => {
-                  let fl2 = array_length(local_names)
-                  emit_local_get(buf, scrut_local)
-                  emit_i64_const(buf, -2)
-                  emit_i64_and(buf)
-                  emit_i32_wrap_i64(buf)
-                  emit_i64_load(buf, 3, 8 + cbi2 * 8)
-                  emit_local_set(buf, fl2)
-                  array_push(local_names, pname)
-                  0
-                },
-                PWild => 0,
-                _ => 0
-              }
-              cbi2 = cbi2 + 1
-            }
-            ce(buf, cbody, local_names, array_length(local_names), ld_catch)
-          },
-          PTuple(pats) => {
-            let ptr_local2 = array_length(local_names)
-            emit_local_get(buf, scrut_local)
-            emit_local_set(buf, ptr_local2)
-            array_push(local_names, "__tup_ptr2")
-            let mut pi2 = 0
-            while pi2 < array_length(pats) {
-              let tp = array_get(pats, pi2)
-              match tp {
-                PBind(pname) => {
-                  let field_l = array_length(local_names)
-                  emit_local_get(buf, ptr_local2)
-                  emit_i32_wrap_i64(buf)
-                  emit_i64_load(buf, 3, pi2 * 8)
-                  emit_local_set(buf, field_l)
-                  array_push(local_names, pname)
-                  0
-                },
-                PWild => 0,
-                _ => throw("unsupported pattern in tuple destructure")
-              }
-              pi2 = pi2 + 1
-            }
-            ce(buf, cbody, local_names, array_length(local_names), ld_catch)
-          },
-          _ => {
-            ce(buf, cbody, local_names, array_length(local_names), ld_catch)
-          }
-        }
-        if catch_nl > max_nl { max_nl = catch_nl }
-        0
-      } else {
-        bytebuf_push(buf, 0)  // unreachable
-        0
-      }
-      let mut ci2 = 0
-      while ci2 < num_cond_arms {
-        emit_end(buf)
-        ci2 = ci2 + 1
-      }
-      max_nl
-    },
+    EMatch(scrutinee, arms) => compile_match_gc(buf, scrutinee, arms, local_names, next_local, ctx, ld, ce),
     EArray(elems) => {
       let (arr_new_idx, _, _) = resolve_func(ctx.func_table, "array_new")
       let (arr_push_idx, _, _) = resolve_func(ctx.func_table, "array_push")
@@ -727,117 +857,8 @@ let rec compile_expr_gc = (
       bytebuf_push(buf, 0)  // unreachable
       nl
     },
-    EFn(_, _, params, _, _, fn_body) => {
-      // Lambda: collect free vars, compile body, create closure
-      let param_names_arr = array_slice([""], 0, 0)
-      let mut pi = 0
-      while pi < array_length(params) {
-        let (pname, _) = array_get(params, pi)
-        array_push(param_names_arr, pname)
-        pi = pi + 1
-      }
-      let fn_and_ctor = array_concat(ctx.func_table.names, ctx.ctor_table.names)
-      let captures = collect_free_vars(fn_body, param_names_arr, fn_and_ctor)
-      let num_captures = array_length(captures)
-      let user_params = array_length(params)
-
-      // Compile lambda body into a separate buffer
-      let lam_buf = bytebuf_new()
-      let lam_locals = array_slice([""], 0, 0)
-      let mut lpi = 0
-      while lpi < user_params {
-        let (lpname, _) = array_get(params, lpi)
-        array_push(lam_locals, lpname)
-        lpi = lpi + 1
-      }
-      array_push(lam_locals, "__env")
-      let env_param_idx = user_params
-      let lam_nl_start = user_params + 1
-
-      // Prologue: extract captures from env
-      let lam_ref_cells = array_slice([""], 0, 0)
-      let lam_ref_local_indices = array_slice([0], 0, 0)
-      let mut ci3 = 0
-      let mut lam_nl = lam_nl_start
-      while ci3 < num_captures {
-        let cap_local = lam_nl
-        let cap_name = array_get(captures, ci3)
-        emit_local_get(lam_buf, env_param_idx)
-        emit_i32_wrap_i64(lam_buf)
-        emit_i64_load(lam_buf, 3, 8 + ci3 * 8)
-        emit_local_set(lam_buf, cap_local)
-        array_push(lam_locals, cap_name)
-        if array_contains_str(ctx.ref_cell_names, cap_name) {
-          array_push(lam_ref_cells, cap_name)
-        }
-        lam_nl = lam_nl + 1
-        ci3 = ci3 + 1
-      }
-
-      // Compile lambda body
-      let lam_ctx = CompileCtxGc::{
-        func_table: ctx.func_table, str_table: ctx.str_table,
-        lambda_table: ctx.lambda_table,
-        num_user_funcs: ctx.num_user_funcs, func_offset: ctx.func_offset,
-        ref_cell_names: lam_ref_cells, ref_local_indices: lam_ref_local_indices,
-        refcell_type_idx: ctx.refcell_type_idx, closure_type_base: ctx.closure_type_base,
-        ctor_table: ctx.ctor_table
-      }
-      let final_lam_nl = compile_expr_gc(
-        lam_buf, fn_body, lam_locals, lam_nl,
-        lam_ctx, ld
-      )
-
-      // Record lambda AFTER body compilation (nested lambdas already added)
-      let lambda_idx = array_length(ctx.lambda_table.bodies)
-      array_push(ctx.lambda_table.bodies, lam_buf)
-      array_push(ctx.lambda_table.param_counts, user_params + 1)  // +1 for env
-      array_push(ctx.lambda_table.captures, captures)
-      let extra_lam = if final_lam_nl > (user_params + 1) { final_lam_nl - (user_params + 1) } else { 0 }
-      array_push(ctx.lambda_table.meta_i32, 0)
-      array_push(ctx.lambda_table.meta_i64, extra_lam)
-
-      // Emit closure creation code
-      let table_slot = ctx.num_user_funcs + lambda_idx
-      if num_captures == 0 {
-        emit_i64_const(buf, (table_slot << 2) | 2)
-        next_local
-      } else {
-        let alloc_size = 8 + num_captures * 8
-        let ptr_local = next_local
-        let mut nl2 = next_local + 1
-        array_push(local_names, "__closure_ptr")
-        emit_global_get(buf, 0)
-        emit_i64_extend_i32_u(buf)
-        emit_local_tee(buf, ptr_local)
-        emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, alloc_size)
-        emit_i32_add(buf)
-        emit_global_set(buf, 0)
-        emit_local_get(buf, ptr_local)
-        emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, table_slot)
-        emit_i32_store(buf, 2, 0)
-        emit_local_get(buf, ptr_local)
-        emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, num_captures)
-        emit_i32_store(buf, 2, 4)
-        let mut csi = 0
-        while csi < num_captures {
-          let cap_name = array_get(captures, csi)
-          let cap_idx = resolve_local(local_names, cap_name)
-          emit_local_get(buf, ptr_local)
-          emit_i32_wrap_i64(buf)
-          emit_local_get(buf, cap_idx)
-          emit_i64_store(buf, 3, 8 + csi * 8)
-          csi = csi + 1
-        }
-        emit_local_get(buf, ptr_local)
-        emit_i64_const(buf, 1)
-        emit_i64_or(buf)
-        nl2
-      }
-    },
+    EFn(_, _, params, _, _, fn_body) =>
+      compile_lambda_gc(buf, params, fn_body, local_names, next_local, ctx, ld, compile_expr_gc),
     EDot(obj, field) => {
       // Struct field access: find field index from ctx.ctor_table.struct_field_names
       let rec find_struct_field_idx = (si2: Int) -> Int {

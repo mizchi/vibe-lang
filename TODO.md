@@ -7,10 +7,10 @@ Completed items are archived in `docs/DONE.md`.
 
 ### Compiler Review Backlog (readability + selfhost robustness)
 
-- [ ] refactor: `compile_expr` の責務分割（`compile_ident` / `compile_call` / `compile_match` / `compile_lambda` / `compile_loop`）
-  - 目標: 1関数1責務、context 引数の削減、局所テストしやすい構造へ
-  - DoD: `compile_expr` の分岐密度を下げ、既存 codegen test を green 維持
-  - 保留理由: vibe に構造体がなく、24個のパラメータを全サブ関数に渡す必要があり、分割すると逆に冗長になる
+- [x] refactor: `compile_expr` の責務分割（`compile_call` / `compile_match` / `compile_lambda`）
+  - CompileCtx/CompileCtxGc struct 導入でパラメータ 25→6 に削減
+  - `compile_call`, `compile_match`, `compile_lambda` を両バックエンドで抽出
+  - `with { Error }` 付き関数型パラメータで再帰コールバックを渡す設計
 
 ### Language/Stdlib Proposals (AI-first authoring)
 
