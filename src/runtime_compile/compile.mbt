@@ -667,10 +667,7 @@ pub fn compile_module_component_with_string_lift(
     e => raise WasmCompileError::Gen(e)
   }
   @codegen.emit_component_wasm_with_string_lift(
-    core_wasm,
-    target_func_name,
-    export_name,
-    string_param_count,
+    core_wasm, target_func_name, export_name, string_param_count,
   )
 }
 
@@ -692,11 +689,10 @@ pub fn compile_module_component_string_lift_auto(
   if incompatible.length() > 0 {
     raise WasmCompileError::Optimize(
       "P3 handler mode is incompatible with server builtins: " +
-        incompatible.iter().fold(
-          init="",
-          fn(acc, s) { if acc == "" { s } else { acc + ", " + s } },
-        ) +
-        ". Use `export let handler = (method: String, url: String) -> Int` pattern instead.",
+      incompatible
+      .iter()
+      .fold(init="", fn(acc, s) { if acc == "" { s } else { acc + ", " + s } }) +
+      ". Use `export let handler = (method: String, url: String) -> Int` pattern instead.",
     )
   }
   // Find first exported function with string params
@@ -745,7 +741,7 @@ pub fn compile_module_component_string_lift_auto(
     func_name,
     string_param_count,
     param_names=string_param_names,
-    is_async=is_async,
+    is_async~,
   )
   optimize_wasm_bytes_with_opt_level(component, opt_level)
 }
@@ -760,13 +756,12 @@ pub fn patch_p3_async_func_types(data : Bytes) -> Bytes {
   let patterns : Array[Array[Byte]] = [
     // handler(method: string, url: string) -> s64
     [
-      b'\x40', b'\x02', b'\x06', b'\x6d', b'\x65', b'\x74', b'\x68', b'\x6f',
-      b'\x64',
+      b'\x40', b'\x02', b'\x06', b'\x6d', b'\x65', b'\x74', b'\x68', b'\x6f', b'\x64',
     ],
     // send(request: ...) -> response
     [
-      b'\x40', b'\x01', b'\x07', b'\x72', b'\x65', b'\x71', b'\x75', b'\x65',
-      b'\x73', b'\x74',
+      b'\x40', b'\x01', b'\x07', b'\x72', b'\x65', b'\x71', b'\x75', b'\x65', b'\x73',
+      b'\x74',
     ],
   ]
   let buf = data.to_array()
@@ -807,8 +802,8 @@ pub fn compose_p3_component(
 fn check_incompatible_server_builtins(ast : @core.Module) -> Array[String] {
   let found : Array[String] = []
   let incompatible_names = [
-    "http_listen", "http_accept", "http_request_method", "http_request_url",
-    "http_request_header", "http_request_body", "http_respond",
+    "http_listen", "http_accept", "http_request_method", "http_request_url", "http_request_header",
+    "http_request_body", "http_respond",
   ]
   scan_server_builtins_block(ast, incompatible_names, found)
   found
@@ -857,8 +852,7 @@ fn scan_server_builtins_expr(
     }
     @core.Expr::Block(body~, ..) =>
       scan_server_builtins_block(body, names, found)
-    @core.Expr::Fn(body~, ..) =>
-      scan_server_builtins_block(body, names, found)
+    @core.Expr::Fn(body~, ..) => scan_server_builtins_block(body, names, found)
     _ => ()
   }
 }

@@ -437,11 +437,14 @@ fn type_call_builtin_handler_collection_numeric(
       let pos_args = check_positional_arity(
         args, "array_truncate", 2, call_span,
       )
-      let _ = type_expr_eff(
-        env, pos_args[0], aliases, effects, allow_effect,
-      )
+      let _ = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
       let _ = check_arg_type(
-        env, pos_args[1], @core.Type::Int, aliases, effects, allow_effect,
+        env,
+        pos_args[1],
+        @core.Type::Int,
+        aliases,
+        effects,
+        allow_effect,
       )
       @core.Type::Unit
     }

@@ -60,10 +60,20 @@ struct WasmBenchReport {
 } derive(Show, Eq)
 
 ///|
+struct WasmBenchSummaryReport {
+  total : Int
+  passed : Int
+  failed : Int
+  results : Array[@runtime.BenchSummary]
+  failures : Array[WasmBenchFailure]
+} derive(Show, Eq)
+
+///|
 fn is_wasm_unsupported_compile_error(message : String) -> Bool {
   let lower = message.to_lower()
   (lower.contains("backend '") && lower.contains("' does not support:")) ||
-  lower.contains("unsupported:")
+  lower.contains("unsupported:") ||
+  lower.contains("handle kind mismatch")
 }
 
 ///|
@@ -85,7 +95,7 @@ fn wasm_bench_report_has_only_unsupported_compile_failures(
 fn bench_backend_name(backend : BenchBackend) -> String {
   match backend {
     BenchBackend::Interpreter => "interpreter"
-    BenchBackend::Wasm => "wasm"
+    BenchBackend::Wasm => "compiled"
   }
 }
 
@@ -93,7 +103,7 @@ fn bench_backend_name(backend : BenchBackend) -> String {
 fn parse_bench_backend(value : String) -> BenchBackend? {
   match value.trim().to_string().to_lower() {
     "interpreter" | "interp" => Some(BenchBackend::Interpreter)
-    "wasm" => Some(BenchBackend::Wasm)
+    "wasm" | "compiled" => Some(BenchBackend::Wasm)
     _ => None
   }
 }
@@ -104,7 +114,7 @@ fn parse_bench_backend_or_abort(value : String) -> BenchBackend {
     Some(v) => v
     None =>
       abort(
-        "bench: invalid --backend: " + value + " (expected wasm|interpreter)",
+        "bench: invalid --backend: " + value + " (expected compiled|interpreter)",
       )
   }
 }
@@ -371,20 +381,32 @@ fn bench_blocks_cmd(
   features : @runtime.RuntimeFeatureFlags,
   backend : BenchBackend,
 ) -> Unit {
-  let mut count = 1000
-  let mut warmup = 10
+  let mut runs = 10
+  let mut warmup = 3
+  let mut legacy_n : Int? = None
   let paths : Array[String] = []
   let mut i = 0
   while i < args.length() {
     let arg = args[i]
     match arg {
+      "--runs" => {
+        if i + 1 >= args.length() {
+          abort("bench: missing value for --runs")
+        }
+        runs = @strconv.parse_int(args[i + 1]) catch {
+          e => abort("bench: invalid --runs: " + e.to_string())
+        }
+        i += 2
+      }
       "-n" | "--n" => {
         if i + 1 >= args.length() {
           abort("bench: missing value for --n")
         }
-        count = @strconv.parse_int(args[i + 1]) catch {
-          e => abort("bench: invalid --n: " + e.to_string())
-        }
+        legacy_n = Some(
+          @strconv.parse_int(args[i + 1]) catch {
+            e => abort("bench: invalid --n: " + e.to_string())
+          },
+        )
         i += 2
       }
       "--warmup" => {
@@ -412,8 +434,8 @@ fn bench_blocks_cmd(
         }
     }
   }
-  if count <= 0 {
-    abort("bench: --n must be > 0")
+  if runs <= 0 {
+    abort("bench: --runs must be > 0")
   }
   if warmup < 0 {
     abort("bench: --warmup must be >= 0")
@@ -425,6 +447,11 @@ fn bench_blocks_cmd(
   if entry_paths.length() == 0 {
     abort("bench: no bench files found")
   }
+  // Legacy mode: if --n is specified without --runs, use old fixed-iteration behavior
+  let use_legacy = match legacy_n {
+    Some(_) => true
+    None => false
+  }
   let mut failed = false
   let mut total = 0
   let mut passed = 0
@@ -433,91 +460,161 @@ fn bench_blocks_cmd(
   let file_count = entry_paths.length()
   for entry_path in entry_paths {
     let resolved_entry_path = @loader.resolve_entry_path(entry_path)
-    match backend {
-      BenchBackend::Interpreter =>
-        match
-          run_bench_blocks_interpreter_entry(
-            resolved_entry_path, count, warmup, features,
-          ) {
-          Err(err) => {
-            println("[\{entry_path}] \{err}")
-            failed = true
-          }
-          Ok(report) => {
-            if !print_bench_report(entry_path, report) {
-              failed = true
-            }
-            total += report.total
-            passed += report.passed
-            failed_count += report.failed
-          }
-        }
-      BenchBackend::Wasm =>
-        match run_bench_blocks_wasm_entry(resolved_entry_path, count, warmup) {
-          Err(err) =>
-            if is_wasm_unsupported_compile_error(err) {
-              used_interpreter_fallback = true
-              println(
-                "[\{entry_path}] wasm backend unsupported, fallback to interpreter: \{err}",
-              )
-              match
-                run_bench_blocks_interpreter_entry(
-                  resolved_entry_path, count, warmup, features,
-                ) {
-                Err(interp_err) => {
-                  println("[\{entry_path}] \{interp_err}")
-                  failed = true
-                }
-                Ok(report) => {
-                  if !print_bench_report(entry_path, report) {
-                    failed = true
-                  }
-                  total += report.total
-                  passed += report.passed
-                  failed_count += report.failed
-                }
-              }
-            } else {
+    if use_legacy {
+      let count = match legacy_n {
+        Some(n) => n
+        None => 1000
+      }
+      match backend {
+        BenchBackend::Interpreter =>
+          match
+            run_bench_blocks_interpreter_entry(
+              resolved_entry_path, count, warmup, features,
+            ) {
+            Err(err) => {
               println("[\{entry_path}] \{err}")
               failed = true
             }
-          Ok(report) =>
-            if wasm_bench_report_has_only_unsupported_compile_failures(report) {
-              used_interpreter_fallback = true
-              let reason = if report.failures.length() > 0 {
-                report.failures[0].error
-              } else {
-                "unsupported wasm compile error"
-              }
-              println(
-                "[\{entry_path}] wasm backend unsupported, fallback to interpreter: \{reason}",
-              )
-              match
-                run_bench_blocks_interpreter_entry(
-                  resolved_entry_path, count, warmup, features,
-                ) {
-                Err(interp_err) => {
-                  println("[\{entry_path}] \{interp_err}")
-                  failed = true
-                }
-                Ok(interp_report) => {
-                  if !print_bench_report(entry_path, interp_report) {
-                    failed = true
-                  }
-                  total += interp_report.total
-                  passed += interp_report.passed
-                  failed_count += interp_report.failed
-                }
-              }
-            } else {
-              if !print_wasm_bench_report(entry_path, report) {
+            Ok(report) => {
+              if !print_bench_report(entry_path, report) {
                 failed = true
               }
               total += report.total
               passed += report.passed
               failed_count += report.failed
             }
-        }
+          }
+        BenchBackend::Wasm =>
+          match
+            run_bench_blocks_wasm_entry(resolved_entry_path, count, warmup) {
+            Err(err) =>
+              if is_wasm_unsupported_compile_error(err) {
+                used_interpreter_fallback = true
+                println(
+                  "[\{entry_path}] wasm backend unsupported, fallback to interpreter: \{err}",
+                )
+                match
+                  run_bench_blocks_interpreter_entry(
+                    resolved_entry_path, count, warmup, features,
+                  ) {
+                  Err(interp_err) => {
+                    println("[\{entry_path}] \{interp_err}")
+                    failed = true
+                  }
+                  Ok(report) => {
+                    if !print_bench_report(entry_path, report) {
+                      failed = true
+                    }
+                    total += report.total
+                    passed += report.passed
+                    failed_count += report.failed
+                  }
+                }
+              } else {
+                println("[\{entry_path}] \{err}")
+                failed = true
+              }
+            Ok(report) =>
+              if wasm_bench_report_has_only_unsupported_compile_failures(report) {
+                used_interpreter_fallback = true
+                let reason = if report.failures.length() > 0 {
+                  report.failures[0].error
+                } else {
+                  "unsupported wasm compile error"
+                }
+                println(
+                  "[\{entry_path}] wasm backend unsupported, fallback to interpreter: \{reason}",
+                )
+                match
+                  run_bench_blocks_interpreter_entry(
+                    resolved_entry_path, count, warmup, features,
+                  ) {
+                  Err(interp_err) => {
+                    println("[\{entry_path}] \{interp_err}")
+                    failed = true
+                  }
+                  Ok(interp_report) => {
+                    if !print_bench_report(entry_path, interp_report) {
+                      failed = true
+                    }
+                    total += interp_report.total
+                    passed += interp_report.passed
+                    failed_count += interp_report.failed
+                  }
+                }
+              } else {
+                if !print_wasm_bench_report(entry_path, report) {
+                  failed = true
+                }
+                total += report.total
+                passed += report.passed
+                failed_count += report.failed
+              }
+          }
+      }
+    } else {
+      // Statistical mode (default)
+      match backend {
+        BenchBackend::Interpreter =>
+          match
+            run_bench_blocks_interpreter_statistical_entry(
+              resolved_entry_path, runs, warmup, features,
+            ) {
+            Err(err) => {
+              println("[\{entry_path}] \{err}")
+              failed = true
+            }
+            Ok(report) => {
+              if !print_bench_summary_report(entry_path, report) {
+                failed = true
+              }
+              total += report.total
+              passed += report.passed
+              failed_count += report.failed
+            }
+          }
+        BenchBackend::Wasm =>
+          match
+            run_bench_blocks_wasm_statistical_entry(
+              resolved_entry_path, runs, warmup,
+            ) {
+            Err(err) =>
+              if is_wasm_unsupported_compile_error(err) {
+                used_interpreter_fallback = true
+                println(
+                  "[\{entry_path}] wasm backend unsupported, fallback to interpreter: \{err}",
+                )
+                match
+                  run_bench_blocks_interpreter_statistical_entry(
+                    resolved_entry_path, runs, warmup, features,
+                  ) {
+                  Err(interp_err) => {
+                    println("[\{entry_path}] \{interp_err}")
+                    failed = true
+                  }
+                  Ok(report) => {
+                    if !print_bench_summary_report(entry_path, report) {
+                      failed = true
+                    }
+                    total += report.total
+                    passed += report.passed
+                    failed_count += report.failed
+                  }
+                }
+              } else {
+                println("[\{entry_path}] \{err}")
+                failed = true
+              }
+            Ok(report) => {
+              if !print_wasm_bench_summary_report(entry_path, report) {
+                failed = true
+              }
+              total += report.total
+              passed += report.passed
+              failed_count += report.failed
+            }
+          }
+      }
     }
   }
   let backend_name = if backend == BenchBackend::Wasm &&
@@ -581,6 +678,58 @@ fn run_bench_blocks_interpreter_entry(
     rt.set_alias(name, target)
   }
   let report = rt.run_benches(converted_ast, count, warmup) catch {
+    e => return Err("eval error: " + e.to_string())
+  }
+  Ok(report)
+}
+
+///|
+fn run_bench_blocks_interpreter_statistical_entry(
+  entry_path : String,
+  runs : Int,
+  warmup : Int,
+  features : @runtime.RuntimeFeatureFlags,
+) -> Result[@runtime.BenchSummaryReport, String] {
+  let (db, entry) = match @loader.load_db(entry_path) {
+    Err(err) => return Err("load error: " + err)
+    Ok(v) => v
+  }
+  let compiled = @runtime_compile.compile_module(db, entry) catch {
+    e => return Err("compile error: " + e.to_string())
+  }
+  let rt = new_runtime_with_features(features)
+  rt.set_type_env(compiled.type_env)
+  let path_to_hash : Map[String, String] = {}
+  load_imports_into_runtime(rt, db, entry, path_to_hash)
+  let base_dir = @vibe_fs.parent_path(entry)
+  for stmt in compiled.ast.stmts {
+    match stmt {
+      @vibe_core.Stmt::Import(source~, ..)
+      | @vibe_core.Stmt::ReExport(source~, ..) =>
+        match source {
+          @vibe_core.ModuleRef::Path(path=raw_path) => {
+            let resolved = @loader.resolve_import_path(base_dir, raw_path)
+            match path_to_hash.get(resolved) {
+              Some(hash) => path_to_hash[raw_path] = hash
+              None => ()
+            }
+          }
+          @vibe_core.ModuleRef::Hash(_)
+          | @vibe_core.ModuleRef::Version(_)
+          | @vibe_core.ModuleRef::Symbol(_) => ()
+        }
+      _ => ()
+    }
+  }
+  let converted_ast = @vibe_core.convert_imports_to_hash(compiled.ast, fn(
+    path,
+  ) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let report = rt.run_benches_statistical(converted_ast, runs, warmup) catch {
     e => return Err("eval error: " + e.to_string())
   }
   Ok(report)
@@ -1074,6 +1223,308 @@ fn run_bench_blocks_wasm_entry(
     results,
     failures,
   })
+}
+
+///|
+/// WASM statistical bench: auto-calibrate batch_size, collect N samples
+fn run_bench_blocks_wasm_statistical_entry(
+  entry_path : String,
+  runs : Int,
+  warmup : Int,
+) -> Result[WasmBenchSummaryReport, String] {
+  let source = @os_fs.read_file_to_string(entry_path) catch {
+    e => return Err("read error: " + e.to_string())
+  }
+  let plan = match extract_bench_source_plan(source) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let runner = match resolve_bench_wasm_runner(entry_path) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let results : Array[@runtime.BenchSummary] = []
+  let failures : Array[WasmBenchFailure] = []
+  let mut passed = 0
+  let mut case_index = 0
+  for case_item in plan.cases {
+    case_index += 1
+    let case_name = case_item.name
+    let case_body_source = case_item.body_source
+    let parent_dir = @vibe_fs.parent_path(entry_path)
+    let prefix = parent_dir +
+      "/.vibe_bench_stat_" +
+      @env.now().to_string() +
+      "_" +
+      case_index.to_string()
+    // Auto-calibrate: try increasing batch sizes until ~100ms
+    let threshold_us = 100000.0
+    let mut batch_size = 1
+    let cal_source_path = prefix + "_cal.vibe"
+    let cal_wasm_path = prefix + "_cal.wasm"
+    let mut calibration_ok = true
+    let mut trial = 1
+    while true {
+      let cal_source = build_bench_case_loop_script(
+        plan.prelude_source,
+        case_body_source,
+        trial,
+      )
+      match
+        compile_bench_script_to_wasm(cal_source_path, cal_wasm_path, cal_source) {
+        Err(err) => {
+          failures.push(WasmBenchFailure::{
+            name: case_name,
+            error: "calibration compile failed: " + err,
+          })
+          calibration_ok = false
+          break
+        }
+        Ok(_) => ()
+      }
+      let start = @bench.monotonic_clock_start()
+      match run_wasmtime_bench_module(runner, cal_wasm_path) {
+        Err(err) => {
+          failures.push(WasmBenchFailure::{
+            name: case_name,
+            error: "calibration run failed: " + err,
+          })
+          calibration_ok = false
+          break
+        }
+        Ok(_) => ()
+      }
+      let elapsed_us = @bench.monotonic_clock_end(start)
+      let single_us = elapsed_us / trial.to_double()
+      if trial.to_double() * single_us > threshold_us {
+        let target = threshold_us /
+          (if single_us < 1.0 { 1.0 } else { single_us })
+        batch_size = if target < 1.0 { 1 } else { target.ceil().to_int() }
+        break
+      }
+      trial = trial * 2
+    }
+    remove_file_if_exists(cal_source_path)
+    remove_file_if_exists(cal_wasm_path)
+    if not(calibration_ok) {
+      continue
+    }
+    // Compile the measurement script once
+    let run_source_path = prefix + "_run.vibe"
+    let run_wasm_path = prefix + "_run.wasm"
+    let run_source = build_bench_case_loop_script(
+      plan.prelude_source,
+      case_body_source,
+      batch_size,
+    )
+    let wasm_bytes = match
+      compile_bench_script_to_wasm(run_source_path, run_wasm_path, run_source) {
+      Ok(bytes) => bytes
+      Err(err) => {
+        failures.push(WasmBenchFailure::{
+          name: case_name,
+          error: "compile failed: " + err,
+        })
+        remove_file_if_exists(run_source_path)
+        continue
+      }
+    }
+    // Warmup
+    let mut warmup_ok = true
+    for _ in 0..<warmup {
+      match run_wasmtime_bench_module(runner, run_wasm_path) {
+        Ok(_) => ()
+        Err(err) => {
+          failures.push(WasmBenchFailure::{
+            name: case_name,
+            error: "warmup failed: " + err,
+          })
+          warmup_ok = false
+          break
+        }
+      }
+    }
+    if not(warmup_ok) {
+      remove_file_if_exists(run_source_path)
+      remove_file_if_exists(run_wasm_path)
+      continue
+    }
+    // Collect samples
+    let samples : Array[Double] = []
+    let mut sample_ok = true
+    for _ in 0..<runs {
+      let start = @bench.monotonic_clock_start()
+      match run_wasmtime_bench_module(runner, run_wasm_path) {
+        Ok(_) => ()
+        Err(err) => {
+          failures.push(WasmBenchFailure::{
+            name: case_name,
+            error: "measurement run failed: " + err,
+          })
+          sample_ok = false
+          break
+        }
+      }
+      let elapsed_us = @bench.monotonic_clock_end(start)
+      samples.push(elapsed_us / batch_size.to_double())
+    }
+    remove_file_if_exists(run_source_path)
+    remove_file_if_exists(run_wasm_path)
+    if not(sample_ok) {
+      continue
+    }
+    results.push(
+      @runtime.compute_bench_summary(case_name, samples, batch_size, wasm_bytes),
+    )
+    passed += 1
+  }
+  Ok(WasmBenchSummaryReport::{
+    total: plan.cases.length(),
+    passed,
+    failed: failures.length(),
+    results,
+    failures,
+  })
+}
+
+///|
+fn format_us(us : Double) -> String {
+  if us >= 1000000.0 {
+    let s = us / 1000000.0
+    // format to 3 decimal places
+    let whole = s.floor().to_int()
+    let frac = ((s - whole.to_double()) * 1000.0).round().to_int()
+    whole.to_string() + "." + pad_left_zero(frac, 3) + "s"
+  } else if us >= 1000.0 {
+    let ms = us / 1000.0
+    let whole = ms.floor().to_int()
+    let frac = ((ms - whole.to_double()) * 100.0).round().to_int()
+    whole.to_string() + "." + pad_left_zero(frac, 2) + "ms"
+  } else if us >= 1.0 {
+    let whole = us.floor().to_int()
+    let frac = ((us - whole.to_double()) * 100.0).round().to_int()
+    whole.to_string() + "." + pad_left_zero(frac, 2) + "us"
+  } else {
+    let ns = us * 1000.0
+    let whole = ns.floor().to_int()
+    let frac = ((ns - whole.to_double()) * 100.0).round().to_int()
+    whole.to_string() + "." + pad_left_zero(frac, 2) + "ns"
+  }
+}
+
+///|
+fn pad_left_zero(n : Int, width : Int) -> String {
+  let s = n.abs().to_string()
+  if s.length() >= width {
+    return s
+  }
+  let mut out = ""
+  for _ in 0..<(width - s.length()) {
+    out += "0"
+  }
+  out + s
+}
+
+///|
+fn format_pct(pct : Double) -> String {
+  let whole = pct.floor().to_int()
+  let frac = ((pct - whole.to_double()) * 100.0).round().to_int()
+  whole.to_string() + "." + pad_left_zero(frac, 2) + "%"
+}
+
+///|
+fn print_bench_summary_entry(result : @runtime.BenchSummary) -> Unit {
+  let name = match result.name {
+    Some(v) => v
+    None => "<anon>"
+  }
+  // Machine-parseable line (backward compat: per_us= is median)
+  println(
+    "  bench: " +
+    name +
+    " runs=" +
+    result.runs.to_string() +
+    " batch_size=" +
+    result.batch_size.to_string() +
+    " per_us=" +
+    result.median.to_string() +
+    (if result.wasm_bytes > 0 {
+      " wasm_bytes=" + result.wasm_bytes.to_string()
+    } else {
+      ""
+    }),
+  )
+  // Human-readable line (moon bench style):
+  //   55.47 ms ±  1.11 ms    54.59 ms …  58.43 ms  in 10 × 2 runs
+  println(
+    "    " +
+    rpad(format_us(result.median), 10) +
+    " \u{00B1} " +
+    rpad(format_us(result.std_dev), 10) +
+    rpad(format_us(result.min), 10) +
+    " \u{2026} " +
+    rpad(format_us(result.max), 10) +
+    "in " +
+    result.runs.to_string() +
+    " \u{00D7} " +
+    rpad(result.batch_size.to_string(), 6) +
+    " runs",
+  )
+}
+
+///|
+fn rpad(s : String, width : Int) -> String {
+  if s.length() >= width {
+    return s
+  }
+  let buf = StringBuilder::new()
+  buf.write_string(s)
+  for _ in 0..<(width - s.length()) {
+    buf.write_char(' ')
+  }
+  buf.to_string()
+}
+
+///|
+fn print_bench_summary_report(
+  path : String,
+  report : @runtime.BenchSummaryReport,
+) -> Bool {
+  println("[\{path}]")
+  let mut success = true
+  for result in report.results {
+    print_bench_summary_entry(result)
+  }
+  for failure in report.failures {
+    success = false
+    let name = match failure.name {
+      Some(v) => v
+      None => "<anon>"
+    }
+    println("  bench: " + name + " failed: " + failure.error)
+  }
+  success
+}
+
+///|
+fn print_wasm_bench_summary_report(
+  path : String,
+  report : WasmBenchSummaryReport,
+) -> Bool {
+  println("[\{path}]")
+  let mut success = true
+  for result in report.results {
+    print_bench_summary_entry(result)
+  }
+  for failure in report.failures {
+    success = false
+    let name = match failure.name {
+      Some(v) => v
+      None => "<anon>"
+    }
+    println("  bench: " + name + " failed: " + failure.error)
+  }
+  success
 }
 
 ///|

@@ -1847,12 +1847,7 @@ fn AstParser::parse_call_or_primary(
           stmts: [
             @core.Stmt::Let(rec=false, name=chain_name, expr~, span~),
             @core.Stmt::Expr(
-              expr=@core.Expr::Call(
-                name=chain_name,
-                type_args=[],
-                args~,
-                span~,
-              ),
+              expr=@core.Expr::Call(name=chain_name, type_args=[], args~, span~),
               span~,
             ),
           ],

@@ -297,7 +297,9 @@ fn parse_all_func_bodies(
 }
 
 ///|
-fn parse_global_section(bytes : Array[Byte]) -> Array[Int64] raise WasmEvalError {
+fn parse_global_section(
+  bytes : Array[Byte],
+) -> Array[Int64] raise WasmEvalError {
   let cur = Cursor::new(bytes)
   let count = cur.read_leb_u32()
   let globals : Array[Int64] = []
@@ -580,7 +582,15 @@ fn parse_wasm_module(bytes : Bytes) -> WasmModule raise WasmEvalError {
       func_param_counts.push(0)
     }
   }
-  { func_bodies, func_param_counts, import_count, sh_index, path_index, globals, mem }
+  {
+    func_bodies,
+    func_param_counts,
+    import_count,
+    sh_index,
+    path_index,
+    globals,
+    mem,
+  }
 }
 
 ///|
@@ -612,10 +622,7 @@ fn exec_func(
   let stack : Array[Int64] = []
   let mem = wmod.mem
   let globals = wmod.globals
-  eval_loop(
-    wmod, code, locals, stack, mem, globals, outputs,
-    call_depth,
-  )
+  eval_loop(wmod, code, locals, stack, mem, globals, outputs, call_depth)
 }
 
 ///|
@@ -644,11 +651,7 @@ fn eval_loop(
 ) -> Int64 raise WasmEvalError {
   let sh_index = wmod.sh_index
   let path_index = wmod.path_index
-  let mut heap_top = if globals.length() > 0 {
-    globals[0].to_int()
-  } else {
-    0
-  }
+  let mut heap_top = if globals.length() > 0 { globals[0].to_int() } else { 0 }
   // Block stack: each entry is (kind, pos, stack_height)
   //   kind: 0=block, 1=loop, 2=if, 3=else
   //   pos: for loop, the position right after the loop opcode+blocktype (restart point)
@@ -1041,8 +1044,12 @@ fn eval_loop(
           raise WasmEvalError::Invalid("stack underflow")
         }
         let addr = stack.unsafe_pop().to_int()
-        let lo = read_u32_le(mem, addr + offset).reinterpret_as_uint().to_int64()
-        let hi = read_u32_le(mem, addr + offset + 4).reinterpret_as_uint().to_int64()
+        let lo = read_u32_le(mem, addr + offset)
+          .reinterpret_as_uint()
+          .to_int64()
+        let hi = read_u32_le(mem, addr + offset + 4)
+          .reinterpret_as_uint()
+          .to_int64()
         stack.push(lo | (hi << 32))
       }
       // i32.store
@@ -1140,7 +1147,8 @@ fn eval_loop(
                 // Internal function call
                 let local_idx = idx - wmod.import_count
                 if local_idx >= 0 && local_idx < wmod.func_bodies.length() {
-                  let param_count = if local_idx < wmod.func_param_counts.length() {
+                  let param_count = if local_idx <
+                    wmod.func_param_counts.length() {
                     wmod.func_param_counts[local_idx]
                   } else {
                     0
@@ -1149,12 +1157,16 @@ fn eval_loop(
                   for i = param_count - 1; i >= 0; i = i - 1 {
                     args[i] = stack.unsafe_pop()
                   }
-                  let result = exec_func(wmod, idx, args, outputs, call_depth + 1)
+                  let result = exec_func(
+                    wmod,
+                    idx,
+                    args,
+                    outputs,
+                    call_depth + 1,
+                  )
                   stack.push(result)
                 } else {
-                  raise WasmEvalError::Unsupported(
-                    "call " + idx.to_string(),
-                  )
+                  raise WasmEvalError::Unsupported("call " + idx.to_string())
                 }
               }
             }
@@ -1288,7 +1300,11 @@ fn eval_loop(
       _ => raise WasmEvalError::Unsupported("opcode " + op.to_string())
     }
   }
-  if stack.is_empty() { 0L } else { stack[stack.length() - 1] }
+  if stack.is_empty() {
+    0L
+  } else {
+    stack[stack.length() - 1]
+  }
 }
 
 ///|
@@ -1941,5 +1957,7 @@ test "vibe backends match: P3 handler pattern" {
   assert_eval_backends_same(handler_code + "\nhandler(\"GET\", \"/health\")")
   assert_eval_backends_same(handler_code + "\nhandler(\"GET\", \"/notfound\")")
   assert_eval_backends_same(handler_code + "\nhandler(\"POST\", \"/\")")
-  assert_eval_backends_same(handler_code + "\nhandler(\"GET\", \"/proxy?target=http://example.com\")")
+  assert_eval_backends_same(
+    handler_code + "\nhandler(\"GET\", \"/proxy?target=http://example.com\")",
+  )
 }

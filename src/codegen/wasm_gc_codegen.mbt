@@ -671,7 +671,9 @@ fn gc_val_kind_from_type(
             // Array<T> → gc array ref
             let elem_kind = gc_val_kind_from_type(ctx, args[0])
             let type_idx = ensure_array_type(
-              ctx.types, ctx.array_type_index, elem_kind,
+              ctx.types,
+              ctx.array_type_index,
+              elem_kind,
             )
             GcValKind::Ref(type_idx)
           }
@@ -682,7 +684,9 @@ fn gc_val_kind_from_type(
     @core.Type::Array(elem_ty) => {
       let elem_kind = gc_val_kind_from_type(ctx, elem_ty)
       let type_idx = ensure_array_type(
-        ctx.types, ctx.array_type_index, elem_kind,
+        ctx.types,
+        ctx.array_type_index,
+        elem_kind,
       )
       GcValKind::Ref(type_idx)
     }

@@ -101,9 +101,7 @@ fn print_usage() -> Unit {
   println(
     "  test [--jobs N] <file|dir...>  run test blocks (parallel for dirs; default jobs=VIBE_TEST_JOBS or 1, max 16)",
   )
-  println(
-    "  check [--profile-tsv path] <file...>  parse/type check scripts",
-  )
+  println("  check [--profile-tsv path] <file...>  parse/type check scripts")
   println(
     "  finalize [--db file] [--export file] [--library] [--print] [--dry-run]  refactor scratch/db source",
   )
@@ -158,7 +156,7 @@ fn print_usage() -> Unit {
     "                                     precompile .vibe modules to .wasm",
   )
   println(
-    "  bench [--backend wasm|interpreter] [--n N] [--warmup N] <file|dir...>  run `bench {}` blocks",
+    "  bench [--backend compiled|interpreter] [--runs N] [--warmup N] [--n N] <file|dir...>  run `bench {}` blocks",
   )
   println(
     "        (legacy expr mode: --expr EXPR | --case NAME=EXPR | --cases FILE)",
@@ -585,7 +583,9 @@ fn compile_lite_validate_opts(
     return Err("compile-lite: only --wasm mode is supported")
   }
   if opts.coverage || opts.coverage_run_tests {
-    return Err("compile-lite: --coverage/--coverage-run-tests are not supported")
+    return Err(
+      "compile-lite: --coverage/--coverage-run-tests are not supported",
+    )
   }
   if opts.debug_errors {
     return Err("compile-lite: --debug-errors is not supported")
@@ -657,7 +657,8 @@ fn elapsed_ms_from_us(elapsed_us : Int) -> Int {
 
 ///|
 fn compile_lite_cmd(args : Array[String]) -> Unit {
-  let (compile_args, profile_tsv, in_memory) = match split_compile_lite_args(args) {
+  let (compile_args, profile_tsv, in_memory) = match
+    split_compile_lite_args(args) {
     Ok(v) => v
     Err(msg) => abort(msg)
   }
@@ -714,8 +715,7 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
       let total_ms = elapsed_ms_from_us(total_us)
       match profile_tsv {
         Some(path) => {
-          let content =
-            "stage\telapsed_ms\telapsed_us\n" +
+          let content = "stage\telapsed_ms\telapsed_us\n" +
             "load\t" +
             load_ms.to_string() +
             "\t" +
@@ -743,7 +743,8 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
             "\n"
           match @io.write_string_with(fs, path, content) {
             Ok(_) => ()
-            Err(err) => abort("compile-lite: failed to write profile tsv: " + err)
+            Err(err) =>
+              abort("compile-lite: failed to write profile tsv: " + err)
           }
         }
         None => ()
@@ -979,8 +980,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
           }
           // adapter = socket (imports handler), app = plug (exports handler)
           let composed = @runtime_compile.compose_p3_component(
-            app_bytes,
-            adapter_bytes,
+            app_bytes, adapter_bytes,
           ) catch {
             e => abort("compile: " + e.user_message())
           }
@@ -1836,8 +1836,7 @@ fn check_cmd(args : Array[String]) -> Unit {
   match profile_tsv {
     Some(path) => {
       let fs = @io.default_fs_adapter()
-      let content =
-        "stage\telapsed_ms\telapsed_us\n" +
+      let content = "stage\telapsed_ms\telapsed_us\n" +
         "load\t" +
         load_ms_total.to_string() +
         "\t" +
@@ -2225,7 +2224,9 @@ fn build_compiled_test_case_source(
       out.write_char('\n')
     }
   }
-  out.write_string("let main = () -> Int with { Error } {\n")
+  out.write_string(
+    "let main = () -> Int with { Error, Fs, Process, Env, Stdout, Stdin, Net, Async, Threads, Llm } {\n",
+  )
   if body_source.trim().to_string().length() > 0 {
     out.write_string(body_source)
     if not(body_source.has_suffix("\n")) {
@@ -2479,11 +2480,20 @@ fn run_test_file_with_backend(
   if backend_pref != CliExecBackendPref::Interpreter {
     let stop_on_first_failure = allow_interpreter_fallback
     match run_test_file_compiled(entry_path, stop_on_first_failure) {
-      CompiledTestAttempt::Success(report) => return Ok(report)
+      CompiledTestAttempt::Success(report) => {
+        // If compiled succeeded but has runtime failures (unknown import etc.),
+        // retry the entire file with interpreter to recover those cases.
+        if report.failed > 0 &&
+          compiled_report_has_runtime_import_failures(report) {
+          return run_test_file_interpreter(entry_path, features)
+        }
+        return Ok(report)
+      }
       CompiledTestAttempt::Unsupported(err) =>
         if backend_pref == CliExecBackendPref::Compiled ||
           not(allow_interpreter_fallback) {
-          return Err("compiled backend unsupported: " + err)
+          // Even in Compiled mode, fall back to interpreter for unsupported features
+          return run_test_file_interpreter(entry_path, features)
         }
       CompiledTestAttempt::Error(err) => return Err(err)
     }
@@ -2492,8 +2502,23 @@ fn run_test_file_with_backend(
 }
 
 ///|
+fn compiled_report_has_runtime_import_failures(
+  report : CliTestReport,
+) -> Bool {
+  for failure in report.failures {
+    if failure.error.contains("unknown import:") ||
+      failure.error.contains("has not been defined") {
+      return true
+    }
+  }
+  false
+}
+
+///|
 fn resolve_test_backend_pref(entry_path : String) -> CliExecBackendPref {
-  let pref = resolve_cli_exec_backend_pref_for_entry("VIBE_TEST_BACKEND", entry_path)
+  let pref = resolve_cli_exec_backend_pref_for_entry(
+    "VIBE_TEST_BACKEND", entry_path,
+  )
   if pref == CliExecBackendPref::Auto {
     // `vibe test` defaults to compiled backend.
     CliExecBackendPref::Compiled
@@ -2688,7 +2713,9 @@ fn test_cmd_report_json(
       Ok(report) => {
         let elapsed_us = @bench.monotonic_clock_end(start)
         elapsed_ms = elapsed_us_to_ms_int(elapsed_us)
-        println(make_cli_test_report_json(entry_path, report, elapsed_ms).stringify())
+        println(
+          make_cli_test_report_json(entry_path, report, elapsed_ms).stringify(),
+        )
         if report.failed > 0 {
           any_failed = true
         }
@@ -2696,7 +2723,9 @@ fn test_cmd_report_json(
       Err(err) => {
         let elapsed_us = @bench.monotonic_clock_end(start)
         elapsed_ms = elapsed_us_to_ms_int(elapsed_us)
-        println(make_error_report_json(entry_path, "test", err, elapsed_ms).stringify())
+        println(
+          make_error_report_json(entry_path, "test", err, elapsed_ms).stringify(),
+        )
         any_failed = true
       }
     }
@@ -2824,12 +2853,8 @@ fn load_test_batch_weight_cache(cache_path : String) -> Map[String, Int] {
   if not(@os_fs.path_exists(cache_path)) {
     return {}
   }
-  let text = @os_fs.read_file_to_string(cache_path) catch {
-    _ => return {}
-  }
-  let json : Json = @json.parse(text) catch {
-    _ => return {}
-  }
+  let text = @os_fs.read_file_to_string(cache_path) catch { _ => return {} }
+  let json : Json = @json.parse(text) catch { _ => return {} }
   let out : Map[String, Int] = {}
   match json {
     Json::Object(obj) =>
@@ -2861,7 +2886,9 @@ fn ensure_dir_recursive_best_effort(path : String) -> Unit {
   if parent != path && parent.length() > 0 {
     ensure_dir_recursive_best_effort(parent)
   }
-  @os_fs.create_dir(path) catch { _ => () }
+  @os_fs.create_dir(path) catch {
+    _ => ()
+  }
 }
 
 ///|
@@ -3133,16 +3160,12 @@ fn test_cmd_parallel(
       singleton_batches.push([path])
     }
     singleton_batches
+  } else if use_batch_weight_cache {
+    split_test_entry_path_batches_with_weights(
+      entry_paths, jobs, cached_batch_weights,
+    )
   } else {
-    if use_batch_weight_cache {
-      split_test_entry_path_batches_with_weights(
-        entry_paths,
-        jobs,
-        cached_batch_weights,
-      )
-    } else {
-      split_test_entry_path_batches(entry_paths, jobs)
-    }
+    split_test_entry_path_batches(entry_paths, jobs)
   }
   let max_concurrent = if jobs == 1 { 1 } else { batches.length() }
   vibe_parallel_cleanup_install_signal_handlers()

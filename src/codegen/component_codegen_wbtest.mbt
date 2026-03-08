@@ -7,7 +7,10 @@ fn build_test_core_wasm(
 ) -> Bytes {
   let buf : Array[Byte] = []
   // magic + version
-  for b in [b'\x00', b'\x61', b'\x73', b'\x6d', b'\x01', b'\x00', b'\x00', b'\x00'] {
+  for
+    b in [
+      b'\x00', b'\x61', b'\x73', b'\x6d', b'\x01', b'\x00', b'\x00', b'\x00',
+    ] {
     buf.push(b)
   }
 
@@ -84,10 +87,10 @@ test "parse_core_export_funcs finds exported function with correct sig" {
   // Type 0: () -> i64, Type 1: (i64, i64) -> i64
   let core_wasm = build_test_core_wasm(
     [
-      ([], [b'\x7e']),                          // type 0: () -> i64
-      ([b'\x7e', b'\x7e'], [b'\x7e']),          // type 1: (i64, i64) -> i64
-    ],
-    [0, 1],  // func 0 uses type 0, func 1 uses type 1
+      ([], [b'\x7e']), // type 0: () -> i64
+      ([b'\x7e', b'\x7e'], [b'\x7e']),
+    ], // type 1: (i64, i64) -> i64
+    [0, 1], // func 0 uses type 0, func 1 uses type 1
     [("run", 0, 0), ("add", 0, 1)], // (name, kind=func, func_index)
   )
   let exports = parse_core_export_funcs(core_wasm)

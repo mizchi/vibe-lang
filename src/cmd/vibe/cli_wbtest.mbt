@@ -2263,8 +2263,7 @@ test "split test entry path batches with weights isolates heavy module first" {
   weights["vibe/light/c_test.vibe"] = 1
   let grouped = split_test_entry_path_batches_with_weights(
     [
-      "vibe/heavy/a_test.vibe", "vibe/light/b_test.vibe",
-      "vibe/light/c_test.vibe",
+      "vibe/heavy/a_test.vibe", "vibe/light/b_test.vibe", "vibe/light/c_test.vibe",
     ],
     2,
     weights,
@@ -2280,10 +2279,7 @@ test "test batch weight cache key relativizes cwd absolute path" {
   let cwd = @io.current_dir_or_root()
   let abs = @vibe_fs.normalize_path(cwd + "/vibe/compiler/eval_test.vibe")
   if @vibe_fs.normalize_path(cwd).has_prefix("/") {
-    assert_eq(
-      test_batch_weight_cache_key(abs),
-      "vibe/compiler/eval_test.vibe",
-    )
+    assert_eq(test_batch_weight_cache_key(abs), "vibe/compiler/eval_test.vibe")
   } else {
     assert_eq(test_batch_weight_cache_key(abs), abs)
   }
@@ -2805,10 +2801,11 @@ test "graph ir query helpers support exact and partial search" {
 
 ///|
 test "graph ir semantic option parser keeps positional args" {
-  let parsed = match graph_ir_parse_semantic_rows_flag(
-    ["query", "entry.ts", "--semantic-rows", "rows.json"],
-    "ide search",
-  ) {
+  let parsed = match
+    graph_ir_parse_semantic_rows_flag(
+      ["query", "entry.ts", "--semantic-rows", "rows.json"],
+      "ide search",
+    ) {
     Ok(v) => v
     Err(err) => fail(err)
   }
@@ -2846,12 +2843,13 @@ test "graph ir semantic rows json parser applies defaults" {
   row_obj["signature"] = Json::string("function greet(name: string): string")
   row_obj["start"] = Json::number(0.0)
   row_obj["end"] = Json::number(32.0)
-  let parsed = match graph_ir_parse_semantic_rows_json(
-    Json::array([Json::object(row_obj)]),
-    "typescript",
-    "app.ts",
-    "hash-default",
-  ) {
+  let parsed = match
+    graph_ir_parse_semantic_rows_json(
+      Json::array([Json::object(row_obj)]),
+      "typescript",
+      "app.ts",
+      "hash-default",
+    ) {
     Ok(v) => v
     Err(err) => fail(err)
   }
@@ -2872,12 +2870,13 @@ test "graph ir semantic rows json parser accepts object with rows field" {
   row_obj["end"] = Json::number(30.0)
   let root : Map[String, Json] = {}
   root["rows"] = Json::array([Json::object(row_obj)])
-  let parsed = match graph_ir_parse_semantic_rows_json(
-    Json::object(root),
-    "typescript",
-    "obj.ts",
-    "hash-obj",
-  ) {
+  let parsed = match
+    graph_ir_parse_semantic_rows_json(
+      Json::object(root),
+      "typescript",
+      "obj.ts",
+      "hash-obj",
+    ) {
     Ok(v) => v
     Err(err) => fail(err)
   }

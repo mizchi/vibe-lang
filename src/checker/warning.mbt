@@ -577,15 +577,15 @@ fn walk_expr(
       let mut catchall_seen = false
       for arm in arms {
         if catchall_seen {
-          out.push(
-            @core.Diagnostic::{
-              stage: "warning",
-              message: "unreachable match arm",
-              span: Some(arm.pat.span()),
-              hint: Some("this arm will never be matched because a previous arm catches all patterns"),
-              note: None,
-            },
-          )
+          out.push(@core.Diagnostic::{
+            stage: "warning",
+            message: "unreachable match arm",
+            span: Some(arm.pat.span()),
+            hint: Some(
+              "this arm will never be matched because a previous arm catches all patterns",
+            ),
+            note: None,
+          })
         }
         scopes.push(warning_scope_new())
         declare_pattern_bindings(scopes, arm.pat)
@@ -597,7 +597,8 @@ fn walk_expr(
         warning_scope_pop(scopes, out)
         if not(catchall_seen) && arm.cond is None {
           match arm.pat {
-            @core.Pat::Wildcard(..) | @core.Pat::Bind(..) => catchall_seen = true
+            @core.Pat::Wildcard(..) | @core.Pat::Bind(..) =>
+              catchall_seen = true
             _ => ()
           }
         }

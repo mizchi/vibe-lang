@@ -98,9 +98,8 @@ pub fn extract_graph_ir_rows_with_semantic_provider(
       match provider {
         Some(run_provider) =>
           match run_provider(path, source, baseline_rows) {
-            Ok(semantic_rows) => Ok(
-              merge_graph_ir_rows(baseline_rows, semantic_rows),
-            )
+            Ok(semantic_rows) =>
+              Ok(merge_graph_ir_rows(baseline_rows, semantic_rows))
             Err(err) => Err("semantic provider: " + err)
           }
         None => Ok(baseline_rows)

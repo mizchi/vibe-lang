@@ -62,7 +62,12 @@ pub fn wasm_emit_options(
   http_component_wasi_shim? : Bool = false,
   force_cabi_realloc? : Bool = false,
 ) -> WasmEmitOptions {
-  { embed_error_strings, http_host_imports, http_component_wasi_shim, force_cabi_realloc }
+  {
+    embed_error_strings,
+    http_host_imports,
+    http_component_wasi_shim,
+    force_cabi_realloc,
+  }
 }
 
 ///|

@@ -13,7 +13,7 @@ vibe_wasmtime_wasm_flags := env_var_or_default("VIBE_WASMTIME_WASM_FLAGS", "unkn
 # space-separated flags, each token is passed as `-S <token>`
 vibe_wasmtime_wasi_flags := env_var_or_default("VIBE_WASMTIME_WASI_FLAGS", "")
 # suppress noisy import-liveness warnings while keeping other warnings active
-moon_warn_list := env_var_or_default("VIBE_MOON_WARN_LIST", "-29")
+moon_warn_list := env_var_or_default("VIBE_MOON_WARN_LIST", "-1-7-24-29")
 vibe_test_ulimit_n := env_var_or_default("VIBE_TEST_ULIMIT_N", "8192")
 vibe_test_jobs := env_var_or_default("VIBE_TEST_JOBS", "1")
 
@@ -449,7 +449,7 @@ bench-bundle-size-monitor-strict:
 # Update std-focused benchmark baselines (bundle-size + KPI snapshots)
 bench-std-baseline-update:
     VIBE_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1 VIBE_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1 scripts/bench_bundle_size.sh --update
-    VIBE_BENCH_KPI_BACKEND=wasm VIBE_BENCH_KPI_REPORT=bench/golden/kpi_wasm.tsv scripts/bench_kpi.sh bench/kpi_bench.vibe bench/kpi_bench_large_fn.vibe bench/kpi_bench_strings.vibe bench/kpi_bench_effects.vibe bench/kpi_bench_match.vibe
+    VIBE_BENCH_KPI_BACKEND=compiled VIBE_BENCH_KPI_REPORT=bench/golden/kpi_wasm.tsv scripts/bench_kpi.sh bench/kpi_bench.vibe bench/kpi_bench_large_fn.vibe bench/kpi_bench_strings.vibe bench/kpi_bench_effects.vibe bench/kpi_bench_match.vibe
     VIBE_BENCH_KPI_BACKEND=interpreter VIBE_BENCH_KPI_REPORT=bench/golden/kpi_interpreter.tsv scripts/bench_kpi.sh bench/kpi_bench.vibe bench/kpi_bench_large_fn.vibe bench/kpi_bench_strings.vibe bench/kpi_bench_effects.vibe bench/kpi_bench_match.vibe
 
 # Regenerate advanced graph flatbuffers schema bindings

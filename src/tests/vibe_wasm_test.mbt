@@ -629,9 +629,7 @@ test "vibe wasm-gc supports direct ref type member eq calls" {
     #|let externref_eq = (a: externref, b: externref) -> i32 { vibe/wasm/externref::eq(a, b) }
     #|0
   db.set_source("main", src)
-  let wasm = try
-    @runtime_compile.compile_module_wasm_gc(db, "main")
-  catch {
+  let wasm = try @runtime_compile.compile_module_wasm_gc(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -649,9 +647,7 @@ test "vibe wasm-gc compiles for-in expressions" {
     #|  x + 1
     #|}
   db.set_source("main", src)
-  let wasm = try
-    @runtime_compile.compile_module_wasm_gc(db, "main")
-  catch {
+  let wasm = try @runtime_compile.compile_module_wasm_gc(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b

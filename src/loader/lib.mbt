@@ -233,9 +233,7 @@ pub fn resolve_entry_path(path : String) -> String {
 
 ///|
 fn graph_head_from_index_vbundle(source : String) -> String? {
-  let parsed : Json = @json.parse(source) catch {
-    _ => return None
-  }
+  let parsed : Json = @json.parse(source) catch { _ => return None }
   match parsed {
     Json::Object(obj) =>
       match obj.get("graph_head") {

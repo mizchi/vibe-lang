@@ -511,7 +511,8 @@ fn compile_lite_cmd(
   args : Array[String],
   fs : &@io.FileSystemAdapter,
 ) -> Result[String, String] {
-  let (compile_args, profile_tsv, in_memory) = match split_compile_lite_args(args) {
+  let (compile_args, profile_tsv, in_memory) = match
+    split_compile_lite_args(args) {
     Ok(v) => v
     Err(err) => return Err(err)
   }
@@ -568,8 +569,7 @@ fn compile_lite_cmd(
   let total_ms = elapsed_ms_from_us(total_us)
   match profile_tsv {
     Some(path) => {
-      let content =
-        "stage\telapsed_ms\telapsed_us\n" +
+      let content = "stage\telapsed_ms\telapsed_us\n" +
         "load\t" +
         load_ms.to_string() +
         "\t" +
@@ -597,7 +597,8 @@ fn compile_lite_cmd(
         "\n"
       match @io.write_string_with(fs, path, content) {
         Ok(_) => ()
-        Err(err) => return Err("compile-lite: failed to write profile tsv: " + err)
+        Err(err) =>
+          return Err("compile-lite: failed to write profile tsv: " + err)
       }
     }
     None => ()

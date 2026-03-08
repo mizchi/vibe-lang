@@ -92,7 +92,10 @@ fn wbtest_write_string_or_abort(
 }
 
 ///|
-fn wbtest_contains_message(diags : Array[@core.Diagnostic], text : String) -> Bool {
+fn wbtest_contains_message(
+  diags : Array[@core.Diagnostic],
+  text : String,
+) -> Bool {
   for diag in diags {
     if diag.message.contains(text) {
       return true
@@ -102,7 +105,10 @@ fn wbtest_contains_message(diags : Array[@core.Diagnostic], text : String) -> Bo
 }
 
 ///|
-fn wbtest_not_contains_message(diags : Array[@core.Diagnostic], text : String) -> Bool {
+fn wbtest_not_contains_message(
+  diags : Array[@core.Diagnostic],
+  text : String,
+) -> Bool {
   not(wbtest_contains_message(diags, text))
 }
 
@@ -116,7 +122,7 @@ test "parse_cmd_args accepts --source input" {
         input: CheckInput::Source(source),
         human_readable: false,
         profile_tsv: None,
-      },
+      }
     ) => assert_eq(source, "1 + true")
     Ok(_) => fail("expected source input")
     Err(err) => fail(err)
@@ -158,7 +164,7 @@ test "parse_cmd_args parses --format mode" {
         input: CheckInput::Source(source),
         human_readable: false,
         profile_tsv: None,
-      },
+      }
     ) => assert_eq(source, "let  x=1")
     Ok(_) => fail("expected format source input")
     Err(err) => fail(err)
@@ -237,7 +243,7 @@ test "parse_cmd_args accepts --human flag" {
         input: CheckInput::File(path),
         human_readable: true,
         profile_tsv: None,
-      },
+      }
     ) => assert_eq(path, "a.vibe")
     Ok(_) => fail("expected human-readable check input")
     Err(err) => fail(err)
@@ -246,17 +252,15 @@ test "parse_cmd_args accepts --human flag" {
 
 ///|
 test "parse_cmd_args accepts --profile-tsv flag" {
-  let parsed = parse_cmd_args([
-    "--profile-tsv", "/tmp/check.tsv", "a.vibe",
-  ])
+  let parsed = parse_cmd_args(["--profile-tsv", "/tmp/check.tsv", "a.vibe"])
   match parsed {
     Ok(
       {
         mode: CommandMode::Check,
         input: CheckInput::File(path),
         profile_tsv: Some(profile_path),
-        ..
-      },
+        ..,
+      }
     ) => {
       assert_eq(path, "a.vibe")
       assert_eq(profile_path, "/tmp/check.tsv")
@@ -277,20 +281,15 @@ test "parse_cmd_args rejects missing --profile-tsv value" {
 
 ///|
 test "report_to_human includes summary" {
-  let output = report_to_human(
-    [],
-    0,
-    0,
-    [
-      CheckFileSummary::{
-        path: "a.vibe",
-        resolved_path: "/a.vibe",
-        graph_head: Some("abc"),
-        error_count: 0,
-        warning_count: 0,
-      },
-    ],
-  )
+  let output = report_to_human([], 0, 0, [
+    CheckFileSummary::{
+      path: "a.vibe",
+      resolved_path: "/a.vibe",
+      graph_head: Some("abc"),
+      error_count: 0,
+      warning_count: 0,
+    },
+  ])
   assert_true(output.contains("a.vibe: ok (graph_head=abc)"))
   assert_true(output.contains("summary: errors=0, warnings=0"))
 }
@@ -324,15 +323,14 @@ test "check_file reports dependency error propagation through transitive imports
   let a = root + "/a.vibe"
   let b = root + "/b.vibe"
   let c = root + "/c.vibe"
-  wbtest_write_string_or_abort(fs, c, "let broken = true + 1\nexport { broken }\n")
   wbtest_write_string_or_abort(
-    fs,
-    b, "import ./c.vibe { broken }\nlet b = broken\nexport { b }\n",
+    fs, c, "let broken = true + 1\nexport { broken }\n",
   )
   wbtest_write_string_or_abort(
-    fs,
-    a,
-    "import ./b.vibe { b }\nlet main = b\nexport { main }\n",
+    fs, b, "import ./c.vibe { broken }\nlet b = broken\nexport { b }\n",
+  )
+  wbtest_write_string_or_abort(
+    fs, a, "import ./b.vibe { b }\nlet main = b\nexport { main }\n",
   )
   let expected_entry_errors = match @loader.load_db_with_fs(a, fs) {
     Ok((db, entry)) => {
@@ -352,7 +350,9 @@ test "check_file reports dependency error propagation through transitive imports
       )
       assert_true(wbtest_contains_message(diags, "unknown name: broken"))
       assert_true(wbtest_contains_message(diags, "unknown name: b"))
-      assert_true(wbtest_not_contains_message(diags, "type mismatch (argument)"))
+      assert_true(
+        wbtest_not_contains_message(diags, "type mismatch (argument)"),
+      )
     }
     Err(err) => fail(err)
   }

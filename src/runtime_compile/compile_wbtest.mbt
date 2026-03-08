@@ -31,14 +31,15 @@ test "check_incompatible_server_builtins detects http_listen" {
   let db = @runtime.VibeDb::new()
   db.set_source(
     "main",
-    #|let run = () -> Int with {Net} {
-    #|  let listener = http_listen(8080)
-    #|  let req = http_accept(listener)
-    #|  http_respond(req, 200, "", "ok")
-    #|  0
-    #|}
-    #|run()
-    ,
+    (
+      #|let run = () -> Int with {Net} {
+      #|  let listener = http_listen(8080)
+      #|  let req = http_accept(listener)
+      #|  http_respond(req, 200, "", "ok")
+      #|  0
+      #|}
+      #|run()
+    ),
   )
   let compiled = compile_module(db, "main")
   let found = check_incompatible_server_builtins(compiled.ast)
@@ -52,11 +53,12 @@ test "check_incompatible_server_builtins passes handler pattern" {
   let db = @runtime.VibeDb::new()
   db.set_source(
     "main",
-    #|export let handler = (method: String, url: String) -> Int {
-    #|  if string_equals(method, "GET") { 200 } else { 405 }
-    #|}
-    #|handler("GET", "/")
-    ,
+    (
+      #|export let handler = (method: String, url: String) -> Int {
+      #|  if string_equals(method, "GET") { 200 } else { 405 }
+      #|}
+      #|handler("GET", "/")
+    ),
   )
   let compiled = compile_module(db, "main")
   let found = check_incompatible_server_builtins(compiled.ast)
@@ -68,21 +70,22 @@ test "component_string_lift_auto rejects server builtins" {
   let db = @runtime.VibeDb::new()
   db.set_source(
     "main",
-    #|export let handler = (method: String, url: String) -> Int with {Net} {
-    #|  let listener = http_listen(8080)
-    #|  let _ = http_accept(listener)
-    #|  200
-    #|}
-    #|handler("GET", "/")
-    ,
+    (
+      #|export let handler = (method: String, url: String) -> Int with {Net} {
+      #|  let listener = http_listen(8080)
+      #|  let _ = http_accept(listener)
+      #|  200
+      #|}
+      #|handler("GET", "/")
+    ),
   )
-  let result : Result[Bytes, WasmCompileError] = try?
-    compile_module_component_string_lift_auto(db, "main")
+  let result : Result[Bytes, WasmCompileError] = try? compile_module_component_string_lift_auto(
+    db, "main",
+  )
   match result {
     Ok(_) => fail("expected error for incompatible builtins")
     Err(WasmCompileError::Optimize(msg)) =>
       assert_true(String::contains(msg, "incompatible"))
-    Err(err) =>
-      fail("expected Optimize error, got " + err.to_string())
+    Err(err) => fail("expected Optimize error, got " + err.to_string())
   }
 }

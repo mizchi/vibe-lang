@@ -214,16 +214,15 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
       }
     TypeError::NonExhaustiveMatch(missing~, span~) => {
       let note : String? = if missing.length() > 0 {
-        let names = missing.iter().fold(
-          init="",
-          fn(acc, name) {
+        let names = missing
+          .iter()
+          .fold(init="", fn(acc, name) {
             if acc == "" {
               name
             } else {
               acc + ", " + name
             }
-          },
-        )
+          })
         Some("missing patterns: " + names)
       } else {
         None

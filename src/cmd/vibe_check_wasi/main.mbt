@@ -75,12 +75,8 @@ pub fn parse_cmd_args(args : Array[String]) -> Result[CmdOptions, String] {
         mode = CommandMode::Format
         mode_flag_count += 1
       }
-      "--human" => {
-        human_readable = true
-      }
-      "--json" => {
-        human_readable = false
-      }
+      "--human" => human_readable = true
+      "--json" => human_readable = false
       "--profile-tsv" => {
         i += 1
         if i >= args.length() {
@@ -124,9 +120,19 @@ pub fn parse_cmd_args(args : Array[String]) -> Result[CmdOptions, String] {
       if files.length() == 0 {
         Err("check: expected --source <code> or <file>")
       } else if files.length() == 1 {
-        Ok({ mode, input: CheckInput::File(files[0]), human_readable, profile_tsv })
+        Ok({
+          mode,
+          input: CheckInput::File(files[0]),
+          human_readable,
+          profile_tsv,
+        })
       } else {
-        Ok({ mode, input: CheckInput::Files(files), human_readable, profile_tsv })
+        Ok({
+          mode,
+          input: CheckInput::Files(files),
+          human_readable,
+          profile_tsv,
+        })
       }
   }
 }
@@ -284,7 +290,10 @@ fn std_collect_direct_import_paths(
 }
 
 ///|
-fn std_layering_violations_for_source(path : String, source : String) -> Array[String] {
+fn std_layering_violations_for_source(
+  path : String,
+  source : String,
+) -> Array[String] {
   let source_layer = match std_layer_for_path(path) {
     Some(v) => v
     None => return []
@@ -364,6 +373,7 @@ fn format_source(source : String) -> String {
   @parser.format_script(source)
 }
 
+///|
 fn check_file_with_timing(
   entry_path : String,
   fs : &@io.FileSystemAdapter,
@@ -380,14 +390,19 @@ fn check_file_with_timing(
   let ast = @parser.parse_ast(source) catch {
     err => {
       let total_us = elapsed_us_from(start_total)
-      return Ok((([err.diagnostic()], 1, 0), {
-        load_ms,
-        load_us,
-        type_ms: 0,
-        type_us: 0,
-        total_ms: elapsed_ms_from_us(total_us),
-        total_us,
-      }))
+      return Ok(
+        (
+          ([err.diagnostic()], 1, 0),
+          {
+            load_ms,
+            load_us,
+            type_ms: 0,
+            type_us: 0,
+            total_ms: elapsed_ms_from_us(total_us),
+            total_us,
+          },
+        ),
+      )
     }
   }
   if not(has_import_stmt(ast)) {
@@ -401,14 +416,19 @@ fn check_file_with_timing(
     }
     let layering_errors = push_layering_violation_diags(resolved, source, out2)
     let total_us = elapsed_us_from(start_total)
-    return Ok(((out2, error_count + layering_errors, warning_count), {
-      load_ms,
-      load_us,
-      type_ms,
-      type_us,
-      total_ms: elapsed_ms_from_us(total_us),
-      total_us,
-    }))
+    return Ok(
+      (
+        (out2, error_count + layering_errors, warning_count),
+        {
+          load_ms,
+          load_us,
+          type_ms,
+          type_us,
+          total_ms: elapsed_ms_from_us(total_us),
+          total_us,
+        },
+      ),
+    )
   }
   let (db, entry) = match @loader.load_db_with_fs(entry_path, fs) {
     Ok(v) => v
@@ -434,14 +454,19 @@ fn check_file_with_timing(
   let layering_errors = push_layering_violation_diags(resolved, source, out)
   // Host `vibe check` counts only entry diagnostics + layering in exit status.
   let total_us = elapsed_us_from(start_total)
-  Ok(((out, diagnostics.length() + layering_errors, warnings.length()), {
-    load_ms,
-    load_us,
-    type_ms,
-    type_us,
-    total_ms: elapsed_ms_from_us(total_us),
-    total_us,
-  }))
+  Ok(
+    (
+      (out, diagnostics.length() + layering_errors, warnings.length()),
+      {
+        load_ms,
+        load_us,
+        type_ms,
+        type_us,
+        total_ms: elapsed_ms_from_us(total_us),
+        total_us,
+      },
+    ),
+  )
 }
 
 ///|
@@ -686,7 +711,8 @@ fn main {
       let mut load_us_total = 0
       let mut type_us_total = 0
       let mut total_us_total = 0
-      let (diagnostics, error_count, warning_count, files) = match options.input {
+      let (diagnostics, error_count, warning_count, files) = match
+        options.input {
         CheckInput::Source(source) => {
           let start_total = @bench.monotonic_clock_start()
           let (diagnostics, error_count, warning_count) = check_source(source)
@@ -706,17 +732,21 @@ fn main {
               total_ms_total += timing.total_ms
               total_us_total += timing.total_us
               (
-              diagnostics,
-              error_count,
-              warning_count,
-              [CheckFileSummary::{
-                path,
-                resolved_path: @loader.resolve_entry_path_with_fs(path, fs),
-                graph_head: @loader.resolve_entry_graph_head_with_fs(path, fs),
+                diagnostics,
                 error_count,
                 warning_count,
-              }],
-            )
+                [
+                  CheckFileSummary::{
+                    path,
+                    resolved_path: @loader.resolve_entry_path_with_fs(path, fs),
+                    graph_head: @loader.resolve_entry_graph_head_with_fs(
+                      path, fs,
+                    ),
+                    error_count,
+                    warning_count,
+                  },
+                ],
+              )
             }
             Err(err) => abort("check: " + err)
           }
@@ -772,8 +802,7 @@ fn main {
       }
       match options.profile_tsv {
         Some(path) => {
-          let content =
-            "stage\telapsed_ms\telapsed_us\n" +
+          let content = "stage\telapsed_ms\telapsed_us\n" +
             "load\t" +
             load_ms_total.to_string() +
             "\t" +
@@ -802,7 +831,7 @@ fn main {
         println(report_to_json(diagnostics, error_count, warning_count, files))
       }
     }
-    CommandMode::Format => {
+    CommandMode::Format =>
       match options.input {
         CheckInput::Source(source) =>
           if options.human_readable {
@@ -842,6 +871,5 @@ fn main {
           }
         }
       }
-    }
   }
 }

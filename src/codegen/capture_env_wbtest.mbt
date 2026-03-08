@@ -121,10 +121,10 @@ test "closure captures const int: env slot allocated unconditionally" {
 ///|
 test "closure captures multiple consts: all env slots present" {
   // `let a = 2; let b = 3; let f = (x: Int) -> Int { x * a + b }`
-  let body = wb_call(
-    "__add",
-    [wb_call("__mul", [wb_ident("x"), wb_ident("a")]), wb_ident("b")],
-  )
+  let body = wb_call("__add", [
+    wb_call("__mul", [wb_ident("x"), wb_ident("a")]),
+    wb_ident("b"),
+  ])
   let inner = wb_fn([wb_param("x")], [wb_expr(body)])
   let ast = @core.Module::{
     stmts: [

@@ -7,30 +7,28 @@ REPORT_DIR="${VIBE_BENCH_KPI_DIR:-$ROOT_DIR/dist/bench_kpi}"
 REPORT_FILE="${VIBE_BENCH_KPI_REPORT:-$REPORT_DIR/latest.tsv}"
 N_RAW="${VIBE_BENCH_KPI_N:-}"
 WARMUP_RAW="${VIBE_BENCH_KPI_WARMUP:-}"
-BACKEND="${VIBE_BENCH_KPI_BACKEND:-wasm}"
+BACKEND="${VIBE_BENCH_KPI_BACKEND:-compiled}"
 MAX_PER_US="${VIBE_BENCH_KPI_MAX_PER_US:-}"
 MAX_WASM_BYTES="${VIBE_BENCH_KPI_MAX_WASM_BYTES:-}"
 MAX_SCORE="${VIBE_BENCH_KPI_MAX_SCORE:-}"
 
-if [[ "$BACKEND" != "wasm" && "$BACKEND" != "interpreter" ]]; then
-  echo "bench-kpi: invalid backend: $BACKEND (expected wasm|interpreter)" >&2
+if [[ "$BACKEND" != "compiled" && "$BACKEND" != "wasm" && "$BACKEND" != "interpreter" ]]; then
+  echo "bench-kpi: invalid backend: $BACKEND (expected compiled|interpreter)" >&2
   exit 2
 fi
 
 if [[ -n "$N_RAW" ]]; then
   N="$N_RAW"
-elif [[ "$BACKEND" == "interpreter" ]]; then
-  N="2000"
+  LEGACY_MODE=1
 else
-  N="20000"
+  N="10"
+  LEGACY_MODE=0
 fi
 
 if [[ -n "$WARMUP_RAW" ]]; then
   WARMUP="$WARMUP_RAW"
-elif [[ "$BACKEND" == "interpreter" ]]; then
-  WARMUP="200"
 else
-  WARMUP="1000"
+  WARMUP="3"
 fi
 
 declare -a entries
@@ -44,7 +42,11 @@ mkdir -p "$REPORT_DIR"
 
 moon build --target native --release src/cmd/vibe >/dev/null
 
-bench_out="$("$CLI_BIN" bench --backend "$BACKEND" --n "$N" --warmup "$WARMUP" "${entries[@]}")"
+if [[ "$LEGACY_MODE" == "1" ]]; then
+  bench_out="$("$CLI_BIN" bench --backend "$BACKEND" --n "$N" --warmup "$WARMUP" "${entries[@]}")"
+else
+  bench_out="$("$CLI_BIN" bench --backend "$BACKEND" --runs "$N" --warmup "$WARMUP" "${entries[@]}")"
+fi
 printf '%s\n' "$bench_out"
 
 printf '%s\n' "$bench_out" | awk -v backend_name="$BACKEND" '
@@ -63,19 +65,31 @@ $0 ~ /^\[[^][]+\]$/ {
   sub(/: .*/, "", path)
   next
 }
-/bench: / {
+/^  bench: / {
   line = $0
   name = line
   sub(/^.*bench: /, "", name)
-  sub(/ count=.*/, "", name)
+  # strip first key=value onwards to get name
+  sub(/ (count|runs)=.*/, "", name)
 
-  iterations = line
-  sub(/^.*count=/, "", iterations)
-  sub(/ .*/, "", iterations)
+  # support both legacy (count=) and statistical (runs=) format
+  iterations = "-1"
+  if (line ~ /count=/) {
+    iterations = line
+    sub(/^.*count=/, "", iterations)
+    sub(/ .*/, "", iterations)
+  } else if (line ~ /runs=/) {
+    iterations = line
+    sub(/^.*runs=/, "", iterations)
+    sub(/ .*/, "", iterations)
+  }
 
-  elapsed_ms = line
-  sub(/^.*total_ms=/, "", elapsed_ms)
-  sub(/ .*/, "", elapsed_ms)
+  elapsed_ms = "-1"
+  if (line ~ /total_ms=/) {
+    elapsed_ms = line
+    sub(/^.*total_ms=/, "", elapsed_ms)
+    sub(/ .*/, "", elapsed_ms)
+  }
 
   per_us = line
   sub(/^.*per_us=/, "", per_us)

@@ -946,6 +946,7 @@ fn is_builtin(name : String) -> Bool {
   name == "array_truncate" ||
   name == "array_contains_str" ||
   name == "double_to_i64_bits" ||
+  name == "i64_bits_to_double" ||
   name == "string_to_data" ||
   name == "fs_write_bytes" ||
   name == "bytes_from_array" ||

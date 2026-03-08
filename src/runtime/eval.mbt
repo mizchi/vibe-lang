@@ -3717,7 +3717,11 @@ fn eval_builtin_call(
             raise EvalError::BadCall(
               BuiltinDetail(
                 fn_name="array_set",
-                detail="index " + i.to_string() + " out of bounds (length " + arr.length().to_string() + ")",
+                detail="index " +
+                  i.to_string() +
+                  " out of bounds (length " +
+                  arr.length().to_string() +
+                  ")",
               ),
             )
           }
@@ -3738,10 +3742,7 @@ fn eval_builtin_call(
       let pos_args = extract_positional_values(out.args, "array_truncate")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(
-            fn_name="array_truncate",
-            detail="expected 2 arguments",
-          ),
+          BuiltinDetail(fn_name="array_truncate", detail="expected 2 arguments"),
         )
       }
       match (pos_args[0], pos_args[1]) {
@@ -3749,7 +3750,6 @@ fn eval_builtin_call(
           let target = new_len.to_int()
           while arr.length() > target {
             let _ = arr.pop()
-
           }
           { value: @core.Value::Unit, effects: out.effects }
         }

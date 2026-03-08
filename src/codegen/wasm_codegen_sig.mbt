@@ -525,7 +525,7 @@ fn infer_expr_kind_with(
         "array_builder_push" | "array_push" | "array_truncate" => ValueKind::I64
         "array_new" => ValueKind::I64
         "array_contains_str" => ValueKind::I64
-        "double_to_i64_bits" => ValueKind::I64
+        "double_to_i64_bits" | "i64_bits_to_double" => ValueKind::I64
         "string_to_data" => ValueKind::I64
         "fs_write_bytes" => ValueKind::I64
         "bytes_from_array" => ValueKind::I64
@@ -1019,6 +1019,7 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "array_truncate" ||
         name == "array_contains_str" ||
         name == "double_to_i64_bits" ||
+        name == "i64_bits_to_double" ||
         name == "string_to_data" ||
         name == "map_builder" ||
         name == "map_builder_set" ||

@@ -45,7 +45,7 @@ fn collect_benches(ast : @core.Module) -> Array[BenchCase] {
 }
 
 ///|
-/// Run all benchmarks in a module.
+/// Run all benchmarks in a module (legacy: fixed iteration count, single measurement).
 pub fn Runtime::run_benches(
   self : Runtime,
   ast : @core.Module,
@@ -103,6 +103,93 @@ pub fn Runtime::run_benches(
       elapsed_ms,
       per_us,
     })
+    passed += 1
+  }
+  {
+    total: cases.length(),
+    passed,
+    failed: failures.length(),
+    results,
+    failures,
+  }
+}
+
+///|
+/// Run all benchmarks with statistical sampling (like moon bench).
+/// Auto-calibrates batch_size, collects `runs` samples, computes stats.
+pub fn Runtime::run_benches_statistical(
+  self : Runtime,
+  ast : @core.Module,
+  runs : Int,
+  warmup : Int,
+) -> BenchSummaryReport raise EvalError {
+  if runs <= 0 {
+    raise EvalError::BadCall(E("bench: runs must be > 0"))
+  }
+  if warmup < 0 {
+    raise EvalError::BadCall(E("bench: warmup must be >= 0"))
+  }
+  let _ = self.eval_module(ast)
+  let cases = collect_benches(ast)
+  let results : Array[BenchSummary] = []
+  let failures : Array[BenchFailure] = []
+  let mut passed = 0
+  for case in cases {
+    let bench_rt = self.fork_for_test()
+    let mut failed = false
+    // Auto-calibrate batch_size (target ~100ms per sample)
+    let threshold_us = 100000.0
+    let batch_size = calibrate_batch_size(
+      fn(trial) {
+        let start = @bench.monotonic_clock_start()
+        try {
+          for _ in 0..<trial {
+            let _ = bench_rt.eval_module(case.body)
+          }
+        } catch {
+          _ => ()
+        }
+        @bench.monotonic_clock_end(start)
+      },
+      threshold_us,
+    )
+    // Warmup
+    try {
+      for _ in 0..<warmup {
+        for _ in 0..<batch_size {
+          let _ = bench_rt.eval_module(case.body)
+        }
+      }
+    } catch {
+      e => {
+        failures.push(BenchFailure::{ name: case.name, error: e.to_string() })
+        failed = true
+      }
+    }
+    if failed {
+      continue
+    }
+    // Collect samples
+    let samples : Array[Double] = []
+    try {
+      for _ in 0..<runs {
+        let start = @bench.monotonic_clock_start()
+        for _ in 0..<batch_size {
+          let _ = bench_rt.eval_module(case.body)
+        }
+        let elapsed_us = @bench.monotonic_clock_end(start)
+        samples.push(elapsed_us / batch_size.to_double())
+      }
+    } catch {
+      e => {
+        failures.push(BenchFailure::{ name: case.name, error: e.to_string() })
+        failed = true
+      }
+    }
+    if failed {
+      continue
+    }
+    results.push(compute_bench_summary(case.name, samples, batch_size, 0))
     passed += 1
   }
   {

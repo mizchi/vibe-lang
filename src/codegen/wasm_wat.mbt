@@ -580,14 +580,12 @@ pub fn wasm_to_wat(bytes : Bytes) -> String raise WasmWatError {
             _ => 0L
           }
           let _ = sec.read_u8() // end
-          globals_list.push(
-            GlobalEntry::{
-              valtype,
-              mutable_: mutability == 1,
-              init_value,
-              init_op,
-            },
-          )
+          globals_list.push(GlobalEntry::{
+            valtype,
+            mutable_: mutability == 1,
+            init_value,
+            init_op,
+          })
         }
       }
       7 => {

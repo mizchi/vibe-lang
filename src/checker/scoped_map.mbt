@@ -54,7 +54,7 @@ pub fn[V] ScopedMap::contains(self : ScopedMap[V], key : String) -> Bool {
     return true
   }
   match self.parent {
-    Some(p) => {
+    Some(p) =>
       // Use get() which promotes to own if found
       match p.get(key) {
         Some(v) => {
@@ -63,7 +63,6 @@ pub fn[V] ScopedMap::contains(self : ScopedMap[V], key : String) -> Bool {
         }
         None => false
       }
-    }
     None => false
   }
 }

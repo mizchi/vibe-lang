@@ -1181,29 +1181,6 @@ fn unify_pair_cache_key(left : @core.Type, right : @core.Type) -> (Int, Int) {
 }
 
 ///|
-fn unify_pair_cache_lookup(
-  cache : Map[(Int, Int), Bool],
-  left : @core.Type,
-  right : @core.Type,
-) -> Bool? {
-  cache.get(unify_pair_cache_key(left, right))
-}
-
-///|
-fn unify_pair_cache_store(
-  cache : Map[(Int, Int), Bool],
-  left : @core.Type,
-  right : @core.Type,
-  result : Bool,
-) -> Unit {
-  let key = unify_pair_cache_key(left, right)
-  if cache.length() >= 8192 && not(cache.contains(key)) {
-    return
-  }
-  cache[key] = result
-}
-
-///|
 fn unify_pair_cacheable(left : @core.Type, right : @core.Type) -> Bool {
   match (left, right) {
     (@core.Type::Named(..), _) | (_, @core.Type::Named(..)) => true
@@ -1266,11 +1243,15 @@ fn unify_types_inner(
   let subs_size_before = env.subs.length()
   let effect_subs_size_before = env.effect_subs.length()
   let cacheable = unify_pair_cacheable(left, right)
-  if cacheable {
-    match unify_pair_cache_lookup(cache, left, right) {
+  let cache_key : (Int, Int)? = if cacheable {
+    let key = unify_pair_cache_key(left, right)
+    match cache.get(key) {
       Some(hit) => return hit
       None => ()
     }
+    Some(key)
+  } else {
+    None
   }
   let result = match (left, right) {
     (@core.Type::Never, _) => true
@@ -1402,11 +1383,16 @@ fn unify_types_inner(
       }
     _ => false
   }
-  if cacheable &&
-    result &&
-    env.subs.length() == subs_size_before &&
-    env.effect_subs.length() == effect_subs_size_before {
-    unify_pair_cache_store(cache, left, right, result)
+  match cache_key {
+    Some(key) =>
+      if result &&
+        env.subs.length() == subs_size_before &&
+        env.effect_subs.length() == effect_subs_size_before {
+        if cache.length() < 8192 || cache.contains(key) {
+          cache[key] = result
+        }
+      }
+    None => ()
   }
   result
 }
@@ -1560,13 +1546,10 @@ fn occurs_in(env : TypeEnv, id : Int, ty : @core.Type) -> Bool {
 
 ///|
 fn has_alias_prefix(name : String, aliases : Map[String, @core.Ref]) -> Bool {
-  let chars : Array[Char] = []
-  for c in name {
-    chars.push(c)
-  }
+  let len = name.length()
   let mut dot = -1
-  for i in 0..<chars.length() {
-    if chars[i] == '.' {
+  for i in 0..<len {
+    if name.unsafe_get(i) == '.' {
       dot = i
       break
     }
@@ -1574,10 +1557,5 @@ fn has_alias_prefix(name : String, aliases : Map[String, @core.Ref]) -> Bool {
   if dot == -1 {
     return false
   }
-  let buf = StringBuilder::new()
-  for i in 0..<dot {
-    buf.write_char(chars[i])
-  }
-  let prefix = buf.to_string()
-  aliases.contains(prefix)
+  aliases.contains(name.unsafe_substring(start=0, end=dot))
 }

@@ -676,8 +676,13 @@ fn compile_call_builtin_pre_user_inner(
         _ => raise WasmGenError::Unsupported("numeric kind")
       }
     }
-    "f32_neg" | "f32_abs" | "f32_ceil" | "f32_floor" | "f32_trunc"
-    | "f32_nearest" | "f32_sqrt" => {
+    "f32_neg"
+    | "f32_abs"
+    | "f32_ceil"
+    | "f32_floor"
+    | "f32_trunc"
+    | "f32_nearest"
+    | "f32_sqrt" => {
       let pos_args = extract_positional_exprs_with_arity(args, name, 1)
       let emit_op : (ByteBuf) -> Unit = match name {
         "f32_neg" => emit_f32_neg
@@ -693,8 +698,13 @@ fn compile_call_builtin_pre_user_inner(
         emit_op(buf)
       })
     }
-    "f64_neg" | "f64_abs" | "f64_ceil" | "f64_floor" | "f64_trunc"
-    | "f64_nearest" | "f64_sqrt" => {
+    "f64_neg"
+    | "f64_abs"
+    | "f64_ceil"
+    | "f64_floor"
+    | "f64_trunc"
+    | "f64_nearest"
+    | "f64_sqrt" => {
       let pos_args = extract_positional_exprs_with_arity(args, name, 1)
       let emit_op : (ByteBuf) -> Unit = match name {
         "f64_neg" => emit_f64_neg
@@ -1436,9 +1446,7 @@ fn compile_call_builtin_pre_user_inner(
     "parse_int" => {
       // parse_int(s: String) -> Int
       // Iterate string bytes, accumulate digits, handle optional sign.
-      let pos_args = extract_positional_exprs_with_arity(
-        args, "parse_int", 1,
-      )
+      let pos_args = extract_positional_exprs_with_arity(args, "parse_int", 1)
       if ctx.use_js_strings {
         raise WasmGenError::Unsupported("parse_int with js strings")
       } else {
@@ -1787,7 +1795,7 @@ fn compile_call_builtin_pre_user_inner(
 
         // Build f64 result: (int_part + frac_part / frac_div) * sign
         // Use emit_boxed_f64_raise to box the result
-        emit_boxed_f64_raise(ctx, buf, fn() {
+        emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
           // f64(int_part)
           emit_local_get(buf, int_part_local)
           emit_i64_extend_i32_s(buf)
@@ -3042,9 +3050,7 @@ fn compile_call_builtin_pre_user_inner(
     }
     "string_trim" if not(is_user_fn) => {
       // string_trim(str) -> String (trim ASCII whitespace from both ends)
-      let pos_args = extract_positional_exprs_with_arity(
-        args, "string_trim", 1,
-      )
+      let pos_args = extract_positional_exprs_with_arity(args, "string_trim", 1)
       if ctx.use_js_strings {
         raise WasmGenError::BackendLimit(
           backend="wasm-js-string",
@@ -3883,9 +3889,7 @@ fn compile_call_builtin_pre_user_inner(
     }
     "array_push" => {
       // array_push(arr, value) -> same as array_builder_push (arrays share layout)
-      let pos_args = extract_positional_exprs_with_arity(
-        args, "array_push", 2,
-      )
+      let pos_args = extract_positional_exprs_with_arity(args, "array_push", 2)
       let builder_local = alloc_temp_local(ctx)
       let ptr_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
@@ -3913,9 +3917,7 @@ fn compile_call_builtin_pre_user_inner(
     }
     "array_new" => {
       // array_new(size, default_val) -> allocate array with given size, fill with default
-      let pos_args = extract_positional_exprs_with_arity(
-        args, "array_new", 2,
-      )
+      let pos_args = extract_positional_exprs_with_arity(args, "array_new", 2)
       require_heap(ctx)
       let size_local = alloc_temp_local(ctx)
       let val_local = alloc_temp_local(ctx)
@@ -4092,6 +4094,22 @@ fn compile_call_builtin_pre_user_inner(
       // In our runtime, floats are stored as i64 (f64 reinterpret)
       // We just need to return the raw bits as-is (already i64)
       // No tagging needed since this is used for raw bit manipulation
+    }
+    "i64_bits_to_double" => {
+      // i64_bits_to_double(int_tagged) -> boxed f64
+      // Takes a tagged int, untags it to get raw i64 bits,
+      // reinterprets those bits as f64, and boxes the result.
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "i64_bits_to_double", 1,
+      )
+      emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
+        compile_expr_i32(ctx, buf, pos_args[0])
+        // Untag: arithmetic right shift by 2 to get raw i64 bits
+        emit_i64_const_raw(buf, 2L)
+        emit_i64_shr_s(buf)
+        // Reinterpret i64 bits as f64
+        emit_f64_reinterpret_i64(buf)
+      })
     }
     "string_to_data" => {
       // string_to_data(str) -> Array[Int] of byte values
@@ -4600,9 +4618,7 @@ fn compile_call_builtin_pre_user_inner(
     }
     "array_set" => {
       // array_set(arr, idx, value) -> arr[idx] = value
-      let pos_args = extract_positional_exprs_with_arity(
-        args, "array_set", 3,
-      )
+      let pos_args = extract_positional_exprs_with_arity(args, "array_set", 3)
       let ptr_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, (-4).to_int64())
@@ -5548,9 +5564,7 @@ fn compile_call_builtin_pre_user_inner(
     "bytes_get" => {
       // bytes_get(bytes, idx) -> Int (tagged byte value)
       // Same as array_get
-      let pos_args = extract_positional_exprs_with_arity(
-        args, "bytes_get", 2,
-      )
+      let pos_args = extract_positional_exprs_with_arity(args, "bytes_get", 2)
       let ptr_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, (-4).to_int64())
@@ -5572,7 +5586,9 @@ fn compile_call_builtin_pre_user_inner(
       // fs_write_bytes(path, byte_array) -> Unit
       // byte_array is Array[Int] where each element is a tagged byte value
       if ctx.use_js_strings {
-        raise WasmGenError::Unsupported("fs_write_bytes requires --wasm backend")
+        raise WasmGenError::Unsupported(
+          "fs_write_bytes requires --wasm backend",
+        )
       }
       let pos_args = extract_positional_exprs_with_arity(
         args, "fs_write_bytes", 2,
@@ -6951,8 +6967,7 @@ fn emit_string_split_impl(
   emit_local_get(buf, scan_i)
   emit_local_set(buf, seg_start)
   emit_alloc_substr_push(
-    ctx, buf, str_ptr, seg_start, sub_len, arr_ptr, arr_len, sub_ptr, copy_j,
-    obj_size_local,
+    ctx, buf, str_ptr, seg_start, sub_len, arr_ptr, arr_len, sub_ptr, copy_j, obj_size_local,
   )
   // scan_i++
   emit_local_get(buf, scan_i)
@@ -7018,8 +7033,7 @@ fn emit_string_split_impl(
   emit_i32_sub(buf)
   emit_local_set(buf, sub_len)
   emit_alloc_substr_push(
-    ctx, buf, str_ptr, seg_start, sub_len, arr_ptr, arr_len, sub_ptr, copy_j,
-    obj_size_local,
+    ctx, buf, str_ptr, seg_start, sub_len, arr_ptr, arr_len, sub_ptr, copy_j, obj_size_local,
   )
   // scan_i += del_len
   emit_local_get(buf, scan_i)
@@ -7045,8 +7059,7 @@ fn emit_string_split_impl(
   emit_i32_sub(buf)
   emit_local_set(buf, sub_len)
   emit_alloc_substr_push(
-    ctx, buf, str_ptr, seg_start, sub_len, arr_ptr, arr_len, sub_ptr, copy_j,
-    obj_size_local,
+    ctx, buf, str_ptr, seg_start, sub_len, arr_ptr, arr_len, sub_ptr, copy_j, obj_size_local,
   )
   emit_end(buf) // end if/else (del_len check)
   // Write final array length

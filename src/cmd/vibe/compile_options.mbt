@@ -236,9 +236,7 @@ pub fn parse_compile_cmd_args(
         )
       }
       if mode == CompileMode::ComposeP3 && adapter_path is None {
-        return Err(
-          "compile: --compose-p3 requires --adapter <adapter.wasm>",
-        )
+        return Err("compile: --compose-p3 requires --adapter <adapter.wasm>")
       }
       Ok({
         mode,

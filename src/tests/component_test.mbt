@@ -275,8 +275,12 @@ test "component wasm uses wasi http shim imports for http host imports" {
     b => b
   }
   assert_true(component_bytes_contains_ascii(wasm, "import-0"))
-  assert_true(component_bytes_contains_ascii(wasm, "wasi:http/client@0.3.0-draft"))
-  assert_true(component_bytes_contains_ascii(wasm, "wasi:http/types@0.3.0-draft"))
+  assert_true(
+    component_bytes_contains_ascii(wasm, "wasi:http/client@0.3.0-draft"),
+  )
+  assert_true(
+    component_bytes_contains_ascii(wasm, "wasi:http/types@0.3.0-draft"),
+  )
   assert_true(component_bytes_contains_ascii(wasm, "send"))
   assert_true(component_bytes_contains_ascii(wasm, "response-status"))
   assert_true(component_bytes_contains_ascii(wasm, "[drop]response"))
@@ -412,9 +416,7 @@ test "P3 handler: component_string_lift_auto exports handler" {
     #|}
     #|handler("GET", "/")
   db.set_source("main", src)
-  let wasm = try
-    compile_module_component_string_lift_auto(db, "main")
-  catch {
+  let wasm = try compile_module_component_string_lift_auto(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -438,7 +440,9 @@ test "P3 handler: async component func type (0x43) prototype" {
   db.set_source("main", src)
   let compiled = try compile_module(db, "main") catch {
     e => fail("compile error: " + e.to_string())
-  } noraise { c => c }
+  } noraise {
+    c => c
+  }
   let bundled = @runtime.bundle_for_wasm(db, "main", compiled.ast)
   let core_wasm = try
     @codegen.emit_module_wasm_with_options(
@@ -447,7 +451,9 @@ test "P3 handler: async component func type (0x43) prototype" {
     )
   catch {
     e => fail("wasm gen error: " + e.to_string())
-  } noraise { w => w }
+  } noraise {
+    w => w
+  }
   let async_component = @codegen.emit_component_wasm_with_string_lift(
     core_wasm,
     "handler",
@@ -485,21 +491,31 @@ test "P3 handler: interpreter returns correct status codes" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let r1 = try rt.eval_script(base + "\nhandler(\"GET\", \"/\")") catch {
     e => fail("eval error: " + e.to_string())
-  } noraise { r => r }
+  } noraise {
+    r => r
+  }
   assert_eq(r1.last, Some(@core.Value::Int(200)))
   let rt2 = Runtime::new(@capability.CapabilitySet::new())
-  let r2 = try rt2.eval_script(base + "\nhandler(\"GET\", \"/notfound\")") catch {
+  let r2 = try
+    rt2.eval_script(base + "\nhandler(\"GET\", \"/notfound\")")
+  catch {
     e => fail("eval error: " + e.to_string())
-  } noraise { r => r }
+  } noraise {
+    r => r
+  }
   assert_eq(r2.last, Some(@core.Value::Int(404)))
   let rt3 = Runtime::new(@capability.CapabilitySet::new())
   let r3 = try rt3.eval_script(base + "\nhandler(\"POST\", \"/\")") catch {
     e => fail("eval error: " + e.to_string())
-  } noraise { r => r }
+  } noraise {
+    r => r
+  }
   assert_eq(r3.last, Some(@core.Value::Int(405)))
   let rt4 = Runtime::new(@capability.CapabilitySet::new())
   let r4 = try rt4.eval_script(base + "\nhandler(\"GET\", \"/proxy\")") catch {
     e => fail("eval error: " + e.to_string())
-  } noraise { r => r }
+  } noraise {
+    r => r
+  }
   assert_eq(r4.last, Some(@core.Value::Int(-1)))
 }

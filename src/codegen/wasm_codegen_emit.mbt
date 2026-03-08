@@ -656,6 +656,11 @@ fn emit_f64_store(buf : ByteBuf, offset : Int) -> Unit {
 }
 
 ///|
+fn emit_f64_reinterpret_i64(buf : ByteBuf) -> Unit {
+  buf.push((0xBF).to_byte())
+}
+
+///|
 fn write_i64_leb(buf : ByteBuf, n : Int64) -> Unit {
   let mut value = n
   while true {
@@ -725,20 +730,6 @@ fn emit_i64_gt_s(buf : ByteBuf) -> Unit {
   buf.push((0x55).to_byte())
 }
 
-///|
-fn emit_i64_le_s(buf : ByteBuf) -> Unit {
-  buf.push((0x57).to_byte())
-}
-
-///|
-fn emit_i64_ge_s(buf : ByteBuf) -> Unit {
-  buf.push((0x59).to_byte())
-}
-
-///|
-fn emit_i64_ne(buf : ByteBuf) -> Unit {
-  buf.push((0x52).to_byte())
-}
 
 ///|
 fn emit_i64_eqz(buf : ByteBuf) -> Unit {

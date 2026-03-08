@@ -136,9 +136,7 @@ test "vibe_compile_wasi parse compile args --wasm-gc maps to WasmGc" {
 
 ///|
 test "vibe_compile_wasi parse compile args --debug-errors accepted on --wasm" {
-  let parsed = parse_compile_cmd_args([
-    "--wasm", "--debug-errors", "main.vibe",
-  ])
+  let parsed = parse_compile_cmd_args(["--wasm", "--debug-errors", "main.vibe"])
   match parsed {
     Ok(opts) => {
       assert_eq(opts.mode, CompileMode::Wasm)
