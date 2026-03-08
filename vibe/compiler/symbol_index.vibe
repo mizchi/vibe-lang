@@ -1,0 +1,320 @@
+//# Imports
+
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+//# Functions
+
+let _use_type_expr = (t: TypeExpr) -> TypeExpr { t }
+let _use_pat = (p: Pat) -> Pat { p }
+
+// Symbol kind constants
+// 0 = FnSym, 1 = ValueSym, 2 = TypeSym, 3 = CtorSym, 4 = TraitSym, 5 = ModuleSym
+
+let empty_symbols = () -> Array[(String, Int, Bool)] {
+  array_slice([("", 0, false)], 0, 0)
+}
+
+let array_contains_str = (arr: Array[String], s: String) -> Bool {
+  let len = array_length(arr)
+  let rec search = (i: Int) -> Bool {
+    if i >= len { false }
+    else if string_equals(array_get(arr, i), s) { true }
+    else search(i + 1)
+  }
+  search(0)
+}
+
+// Collect all symbol definitions from a list of statements
+// Returns Array[(String, Int, Bool)] — (name, kind, exported)
+export let collect_symbols = (stmts: Array[Stmt]) -> Array[(String, Int, Bool)] {
+  let out = empty_symbols()
+  let mut i = 0
+  while i < array_length(stmts) {
+    let stmt = array_get(stmts, i)
+    match stmt {
+      SLet(exported, _, name, _, body) => {
+        let is_fn = match body {
+          EFn(_, _, _, _, _, _) => true,
+          _ => false
+        }
+        let kind = if is_fn { 0 } else { 1 }
+        array_push(out, (name, kind, exported))
+      },
+      SLetMut(name, _, _) => {
+        array_push(out, (name, 1, false))
+      },
+      SEnum(exported, name, variants) => {
+        array_push(out, (name, 2, exported))
+        let mut j = 0
+        while j < array_length(variants) {
+          let (vname, _) = array_get(variants, j)
+          array_push(out, (vname, 3, exported))
+          j = j + 1
+        }
+      },
+      SSuberror(exported, name, variants) => {
+        array_push(out, (name, 2, exported))
+        let mut j = 0
+        while j < array_length(variants) {
+          let (vname, _) = array_get(variants, j)
+          array_push(out, (vname, 3, exported))
+          j = j + 1
+        }
+      },
+      SStruct(exported, name, _) => {
+        array_push(out, (name, 2, exported))
+      },
+      STypeAlias(exported, name, _) => {
+        array_push(out, (name, 2, exported))
+      },
+      STrait(exported, name, _) => {
+        array_push(out, (name, 4, exported))
+      },
+      SModule(exported, name, _) => {
+        array_push(out, (name, 5, exported))
+      },
+      SExternLet(name, _) => {
+        array_push(out, (name, 1, false))
+      },
+      _ => {
+      }
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Filter symbols by kind
+export let filter_by_kind = (symbols: Array[(String, Int, Bool)], kind: Int) -> Array[(String, Int, Bool)] {
+  let out = empty_symbols()
+  let mut i = 0
+  while i < array_length(symbols) {
+    let (name, k, exported) = array_get(symbols, i)
+    if k == kind {
+      array_push(out, (name, k, exported))
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Filter exported symbols only
+export let filter_exported = (symbols: Array[(String, Int, Bool)]) -> Array[(String, Int, Bool)] {
+  let out = empty_symbols()
+  let mut i = 0
+  while i < array_length(symbols) {
+    let (name, k, exported) = array_get(symbols, i)
+    if exported {
+      array_push(out, (name, k, exported))
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Find a symbol by name (returns first match or None)
+export let find_symbol = (symbols: Array[(String, Int, Bool)], name: String) -> Option[(String, Int, Bool)] {
+  let len = array_length(symbols)
+  let rec search = (i: Int) -> Option[(String, Int, Bool)] {
+    if i >= len { None }
+    else {
+      let entry = array_get(symbols, i)
+      let (n, _, _) = entry
+      if string_equals(n, name) { Some(entry) }
+      else search(i + 1)
+    }
+  }
+  search(0)
+}
+
+// Internal: collect all identifier references in an expression (deduplicated, mutates out)
+let rec collect_refs_into = (expr: Expr, out: Array[String]) -> Int {
+  match expr {
+    EIdent(name) => {
+      if not(array_contains_str(out, name)) {
+        array_push(out, name)
+      }
+      0
+    },
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EBreak(_) => 0,
+    EContinue(_) => 0,
+    EThrow(e) => collect_refs_into(e, out),
+    EUnaryOp(_, e) => collect_refs_into(e, out),
+    ETuple(items) => {
+      let mut i = 0
+      while i < array_length(items) {
+        collect_refs_into(array_get(items, i), out)
+        i = i + 1
+      }
+      0
+    },
+    EArray(items) => {
+      let mut i = 0
+      while i < array_length(items) {
+        collect_refs_into(array_get(items, i), out)
+        i = i + 1
+      }
+      0
+    },
+    ERecord(fields) => {
+      let mut i = 0
+      while i < array_length(fields) {
+        let (_, val) = array_get(fields, i)
+        collect_refs_into(val, out)
+        i = i + 1
+      }
+      0
+    },
+    EBinOp(_, l, r) => {
+      collect_refs_into(l, out)
+      collect_refs_into(r, out)
+      0
+    },
+    ECall(callee, args) => {
+      collect_refs_into(callee, out)
+      let mut i = 0
+      while i < array_length(args) {
+        collect_refs_into(array_get(args, i), out)
+        i = i + 1
+      }
+      0
+    },
+    EIf(cond, then_e, else_e) => {
+      collect_refs_into(cond, out)
+      collect_refs_into(then_e, out)
+      collect_refs_into(else_e, out)
+      0
+    },
+    ELet(_, val, body) => {
+      collect_refs_into(val, out)
+      collect_refs_into(body, out)
+      0
+    },
+    ELetRec(_, val, body) => {
+      collect_refs_into(val, out)
+      collect_refs_into(body, out)
+      0
+    },
+    ELetMut(_, val, body) => {
+      collect_refs_into(val, out)
+      collect_refs_into(body, out)
+      0
+    },
+    EAssign(_, val, body) => {
+      collect_refs_into(val, out)
+      collect_refs_into(body, out)
+      0
+    },
+    EAssignOp(_, _, val, body) => {
+      collect_refs_into(val, out)
+      collect_refs_into(body, out)
+      0
+    },
+    ESeq(l, r) => {
+      collect_refs_into(l, out)
+      collect_refs_into(r, out)
+      0
+    },
+    EMatch(scr, arms) => {
+      collect_refs_into(scr, out)
+      let mut i = 0
+      while i < array_length(arms) {
+        let (_, body) = array_get(arms, i)
+        collect_refs_into(body, out)
+        i = i + 1
+      }
+      0
+    },
+    EHandle(body_expr, arms) => {
+      collect_refs_into(body_expr, out)
+      let mut i = 0
+      while i < array_length(arms) {
+        let (_, arm_body) = array_get(arms, i)
+        collect_refs_into(arm_body, out)
+        i = i + 1
+      }
+      0
+    },
+    EWhile(cond, body) => {
+      collect_refs_into(cond, out)
+      collect_refs_into(body, out)
+      0
+    },
+    EForIn(_, iter, body) => {
+      collect_refs_into(iter, out)
+      collect_refs_into(body, out)
+      0
+    },
+    EFn(_, _, _, _, _, body) => {
+      collect_refs_into(body, out)
+      0
+    },
+    EDot(obj, _) => {
+      collect_refs_into(obj, out)
+      0
+    },
+    ELabeledArg(_, _, e) => {
+      collect_refs_into(e, out)
+      0
+    }
+  }
+}
+
+// Collect all identifier references in an expression (deduplicated)
+export let collect_refs = (expr: Expr) -> Array[String] {
+  let out = array_slice([""], 0, 0)
+  collect_refs_into(expr, out)
+  out
+}
+
+// Collect all references across statements
+export let collect_refs_stmts = (stmts: Array[Stmt]) -> Array[String] {
+  let out = array_slice([""], 0, 0)
+  let mut i = 0
+  while i < array_length(stmts) {
+    let stmt = array_get(stmts, i)
+    match stmt {
+      SLet(_, _, _, _, body) => {
+        collect_refs_into(body, out)
+      },
+      SLetMut(_, _, body) => {
+        collect_refs_into(body, out)
+      },
+      SExpr(e) => {
+        collect_refs_into(e, out)
+      },
+      STest(_, e) => {
+        collect_refs_into(e, out)
+      },
+      SBench(_, e) => {
+        collect_refs_into(e, out)
+      },
+      _ => {
+        0
+      }
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Find which symbols are referenced (intersection of defined symbols and refs)
+export let find_referenced_symbols = (symbols: Array[(String, Int, Bool)], refs: Array[String]) -> Array[(String, Int, Bool)] {
+  let out = empty_symbols()
+  let mut i = 0
+  while i < array_length(symbols) {
+    let (name, kind, exported) = array_get(symbols, i)
+    if array_contains_str(refs, name) {
+      array_push(out, (name, kind, exported))
+    }
+    i = i + 1
+  }
+  out
+}
