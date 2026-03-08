@@ -103,6 +103,24 @@ Completed items are archived in `docs/DONE.md`.
 - [x] nested method calls テスト
 - テスト: `desugar_test.vibe` (14 tests, +6)
 
+#### T16: capture safety — `checker_capture.vibe` ✅
+- [x] free variable 収集（スコープ考慮）
+- [x] mutable 変数キャプチャ検出
+- [x] クロージャの安全性解析
+- テスト: `checker_capture_test.vibe` (16 tests)
+
+#### T18: warning system — `checker_warning.vibe` ✅
+- [x] 未使用変数検出（`_` prefix 除外）
+- [x] 未使用 mut 検出（再代入なし）
+- [x] shadow 検出
+- テスト: `checker_warning_test.vibe` (14 tests)
+
+#### T19: LSIF export — `symbol_lsif.vibe` ✅
+- [x] シンボル定義・参照インデックス生成
+- [x] hover info、逆引き参照
+- [x] LSIF レポート出力
+- テスト: `symbol_lsif_test.vibe` (12 tests)
+
 ### Compiler Review Backlog (readability + selfhost robustness)
 
 - [x] refactor: `compile_expr` の責務分割（`compile_call` / `compile_match` / `compile_lambda`）
