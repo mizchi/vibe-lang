@@ -57,7 +57,46 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
         }
         (env_bind(env, name, t), ns, nc)
       },
-      SEnum(_, name, _) => (env_bind(env, name, CtEnum(name)), s, c)
+      SEnum(_, name, variants) => {
+        // Resolve variants and register TDEnum in defs
+        let resolved_variants = array_slice([
+          ("", array_slice([CtUnknown], 0, 0))
+        ], 0, 0)
+        let mut vi = 0
+        while vi < array_length(variants) {
+          let (vname, vtypes) = array_get(variants, vi)
+          let resolved_vtypes = array_slice([CtUnknown], 0, 0)
+          let mut ti = 0
+          while ti < array_length(vtypes) {
+            let vt = resolve_type_expr(array_get(vtypes, ti), defs)
+            array_push(resolved_vtypes, vt)
+            ti = ti + 1
+          }
+          array_push(resolved_variants, (vname, resolved_vtypes))
+          vi = vi + 1
+        }
+        array_push(defs, TDEnum(name, resolved_variants))
+        // Bind enum type name
+        let mut env1 = env_bind(env, name, CtEnum(name))
+        // Bind each variant constructor
+        let mut ci2 = 0
+        while ci2 < array_length(variants) {
+          let (vname, vtypes) = array_get(variants, ci2)
+          if eq(array_length(vtypes), 0) {
+            env1 = env_bind(env1, vname, CtEnum(name))
+          } else {
+            let resolved_args = array_slice([CtUnknown], 0, 0)
+            let mut ai = 0
+            while ai < array_length(vtypes) {
+              array_push(resolved_args, resolve_type_expr(array_get(vtypes, ai), defs))
+              ai = ai + 1
+            }
+            env1 = env_bind(env1, vname, CtFn(resolved_args, CtEnum(name), false))
+          }
+          ci2 = ci2 + 1
+        }
+        (env1, s, c)
+      }
       ,
       SStruct(_, name, field_defs) => {
         // Register TDStruct in defs for field type resolution
@@ -72,7 +111,15 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
           fi = fi + 1
         }
         array_push(defs, TDStruct(name, resolved_fields))
-        (env_bind(env, name, CtStruct(name)), s, c)
+        // Bind struct constructor as CtFn(field_types, CtStruct(name), false)
+        let field_types = array_slice([CtUnknown], 0, 0)
+        let mut fj = 0
+        while fj < array_length(resolved_fields) {
+          let (_, fty) = array_get(resolved_fields, fj)
+          array_push(field_types, fty)
+          fj = fj + 1
+        }
+        (env_bind(env, name, CtFn(field_types, CtStruct(name), false)), s, c)
       }
       ,
       STypeAlias(_, name, te) => {
