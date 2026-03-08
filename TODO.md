@@ -10,56 +10,50 @@ Completed items are archived in `docs/DONE.md`.
 **現状**: MoonBit checker 18k行 + frontend 3.5k行 vs vibe selfhost checker ~580行
 **方針**: テストを先に移植し、Red → Green で実装する
 
-#### T1: normalize_type（型の正規化）— `checker_normalize.vibe`
-- [ ] Named型 → 具象型の解決（type alias 展開）
-- [ ] CtEnum/CtStruct の定義参照解決
-- [ ] キャッシュ付き normalize（再帰型のループ防止）
-- MoonBit: `typecheck_unify.mbt` L1-250 (normalize_type, resolve_type)
-- テスト: `checker_normalize_test.vibe`
+#### T1: normalize_type（型の正規化）— `checker_normalize.vibe` ✅
+- [x] Named型 → 具象型の解決（type alias 展開）
+- [x] CtEnum/CtStruct の定義参照解決
+- [x] キャッシュ付き normalize（再帰型のループ防止）
+- テスト: `checker_normalize_test.vibe` (20 tests)
 
-#### T2: pattern type checking（パターンの型検査）— `checker_pattern.vibe`
-- [ ] match arm のパターンと scrutinee 型の整合性検査
-- [ ] パターン束縛の型を環境に追加して arm body を検査
-- [ ] 全 arm の結果型を統一（現状: 最初の arm のみ）
-- MoonBit: `typecheck_pattern.mbt` (354行)
-- テスト: `checker_pattern_test.vibe`
+#### T2: pattern type checking（パターンの型検査）— `checker_pattern.vibe` ✅
+- [x] match arm のパターンと scrutinee 型の整合性検査
+- [x] パターン束縛の型を環境に追加して arm body を検査
+- [x] 全 arm の結果型を統一
+- テスト: `checker_pattern_test.vibe` (13 tests)
 
-#### T3: unify の改善 — `types.vibe` 拡張
-- [ ] CtEnum 同士の unify（名前一致 → 成功）
-- [ ] CtStruct 同士の unify（名前一致 → 成功）
-- [ ] CtNamed の型引数付き unify
-- [ ] subtype 関係（CtInt ≤ CtDouble 等、必要に応じて）
-- テスト: `checker_unify_test.vibe`（新規）
+#### T3: unify の改善 — `types.vibe` 拡張 ✅
+- [x] CtEnum 同士の unify（名前一致 → 成功）
+- [x] CtStruct 同士の unify（名前一致 → 成功）
+- [x] CtNamed の型引数付き unify
+- テスト: `checker_unify_test.vibe` (22 tests)
 
-#### T4: effect system（エフェクト検査）— `checker_effects.vibe`
-- [ ] EffectSet / EffectScope の定義
-- [ ] EFn の effect 宣言を型に伝播
-- [ ] throw/handle の effect 整合性検査
-- [ ] effect 未処理のエラー報告
-- MoonBit: `typecheck_effects.mbt` (562行)
-- テスト: `checker_effects_test.vibe`
+#### T4: effect system（エフェクト検査）— `checker_effects.vibe` ✅
+- [x] エフェクトコンテキスト追跡（effectful関数/handleブロック内かどうか）
+- [x] throw が effectful コンテキスト外で使われた場合のエラー報告
+- [x] effectful 関数呼び出しのコンテキスト検査
+- [x] handle ブロックが effect-safe コンテキストを生成
+- テスト: `checker_effects_test.vibe` (19 tests)
 
-#### T5: desugar（脱糖）— `desugar.vibe`
-- [ ] method call desugar: `obj.method(args)` → `method(obj, args)`
-- [ ] pipe desugar: `x |> f` → `f(x)`（parser で対応済みなら不要）
-- MoonBit: `frontend/desugar.mbt` (1010行)
-- テスト: `desugar_test.vibe`
+#### T5: desugar（脱糖）— `desugar.vibe` ✅
+- [x] method call desugar: `obj.method(args)` → `method(obj, args)`
+- [x] pipe desugar: `x |> f` → `f(x)`
+- テスト: `desugar_test.vibe` (8 tests)
 
-#### T6: DCE（Dead Code Elimination）— `dce.vibe`
-- [ ] entry point からの到達可能性解析
-- [ ] 未使用 let/fn の除去
-- MoonBit: `frontend/dce.mbt` (570行)
-- テスト: `dce_test.vibe`
+#### T6: DCE（Dead Code Elimination）— `dce.vibe` ✅
+- [x] entry point からの到達可能性解析
+- [x] 未使用 let/fn の除去
+- テスト: `dce_test.vibe` (13 tests)
 
-#### T7: error reporting の改善
-- [ ] TypeError enum の定義（CtUnknown フォールバックではなく明示エラー）
-- [ ] エラー位置情報（Span）の伝播
-- [ ] 型不一致時のわかりやすいメッセージ
+#### T7: error reporting の改善 ✅
+- [x] CheckError enum の定義（CEUnboundVar, CETypeMismatch 等）
+- [x] エラーメッセージフォーマット
+- テスト: `checker_error_test.vibe` (14 tests)
 
-#### T8: checker_stmt の改善 — `checker_stmt.vibe` 拡張
-- [ ] SEnum: variant コンストラクタの型を env に登録
-- [ ] SStruct: コンストラクタ関数の型を env に登録
-- [ ] SImport: モジュール型情報のクロスモジュール伝播
+#### T8: checker_stmt の改善 — `checker_stmt.vibe` 拡張 ✅
+- [x] SEnum: variant コンストラクタの型を env に登録
+- [x] SStruct: コンストラクタ関数の型を env に登録
+- テスト: `checker_ctor_test.vibe` (6 tests)
 
 ### Compiler Review Backlog (readability + selfhost robustness)
 

@@ -1,0 +1,409 @@
+//# Imports
+
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ./types.vibe {
+  Type, TypeEnv, env_lookup
+}
+
+import ./builtins.vibe {
+  lookup_builtin
+}
+
+//# Effect checking
+//
+// Simplified effect system: tracks whether code is in an effectful context.
+// - `throw` requires being inside a `with { Error }` function or `handle` block
+// - Calling an effectful function requires an effectful context
+// - `handle` creates an effect-safe context (catches effects)
+
+// Builtin functions that have effects
+let is_effectful_builtin = (name: String) -> Bool {
+  string_equals(name, "throw")
+  || string_equals(name, "sh")
+  || string_equals(name, "sh_lines")
+  || string_equals(name, "fs_read_file")
+  || string_equals(name, "fs_write_file")
+  || string_equals(name, "fs_exists")
+  || string_equals(name, "fs_readdir")
+  || string_equals(name, "fs_is_dir")
+  || string_equals(name, "fs_mkdir")
+  || string_equals(name, "fs_mkdir_p")
+  || string_equals(name, "fs_getcwd")
+  || string_equals(name, "fs_chdir")
+  || string_equals(name, "fs_remove")
+  || string_equals(name, "fs_is_file")
+  || string_equals(name, "fs_copy")
+  || string_equals(name, "fs_rename")
+  || string_equals(name, "fs_append")
+  || string_equals(name, "fs_write_bytes")
+  || string_equals(name, "env_get")
+  || string_equals(name, "http_request")
+  || string_equals(name, "http_listen")
+}
+
+// Check if a function type is effectful
+let is_effectful_type = (ty: Type) -> Bool {
+  match ty {
+    CtFn(_, _, has_effect) => has_effect,
+    _ => false
+  }
+}
+
+// Lookup if a name refers to an effectful function
+let is_effectful_name = (name: String, env: TypeEnv) -> Bool {
+  if is_effectful_builtin(name) {
+    true
+  } else {
+    match env_lookup(env, name) {
+      Some(ty) => is_effectful_type(ty),
+      None => match lookup_builtin(name) {
+        Some(ty) => is_effectful_type(ty),
+        None => false
+      }
+    }
+  }
+}
+
+// EffectError: collects effect violations
+export enum EffectError {
+  EEThrowOutsideEffect(String);
+  EEEffectfulCallOutsideEffect(String)
+}
+
+// Format an effect error to string
+export let effect_error_to_string = (err: EffectError) -> String {
+  match err {
+    EEThrowOutsideEffect(msg) => string_concat("throw outside effectful context: ", msg),
+    EEEffectfulCallOutsideEffect(name) => string_concat("effectful call outside effectful context: ", name)
+  }
+}
+
+// Check expression for effect violations.
+// in_effect: whether we are in a context that allows effects
+// Returns: list of effect errors found
+export let rec check_effects_expr = (expr: Expr, env: TypeEnv, in_effect: Bool) -> Array[EffectError] {
+  let errors = array_slice([EEThrowOutsideEffect("")], 0, 0)
+  match expr {
+    EThrow(_) => {
+      if !in_effect {
+        array_push(errors, EEThrowOutsideEffect("throw"))
+      }
+      errors
+    },
+    EHandle(body, arms) => {
+      // Handle creates an effect-safe context: body runs with effects allowed
+      let body_errs = check_effects_expr(body, env, true)
+      let mut i = 0
+      while i < array_length(body_errs) {
+        array_push(errors, array_get(body_errs, i))
+        i = i + 1
+      }
+      // Arms run in the outer effect context
+      let mut ai = 0
+      while ai < array_length(arms) {
+        let (_, arm_body) = array_get(arms, ai)
+        let arm_errs = check_effects_expr(arm_body, env, in_effect)
+        let mut j = 0
+        while j < array_length(arm_errs) {
+          array_push(errors, array_get(arm_errs, j))
+          j = j + 1
+        }
+        ai = ai + 1
+      }
+      errors
+    },
+    ECall(callee, args) => {
+      // Check if calling an effectful function outside an effectful context
+      match callee {
+        EIdent(name) => {
+          if !in_effect && is_effectful_name(name, env) {
+            array_push(errors, EEEffectfulCallOutsideEffect(name))
+          }
+        },
+        _ => ()
+      }
+      // Recurse into callee and args
+      let ce = check_effects_expr(callee, env, in_effect)
+      let mut i = 0
+      while i < array_length(ce) {
+        array_push(errors, array_get(ce, i))
+        i = i + 1
+      }
+      let mut ai = 0
+      while ai < array_length(args) {
+        let ae = check_effects_expr(array_get(args, ai), env, in_effect)
+        let mut j = 0
+        while j < array_length(ae) {
+          array_push(errors, array_get(ae, j))
+          j = j + 1
+        }
+        ai = ai + 1
+      }
+      errors
+    },
+    EFn(_, _, _, _, effect, body) => {
+      // EFn with effect annotation creates an effectful context
+      let fn_in_effect = match effect {
+        Some(_) => true,
+        None => false
+      }
+      let body_errs = check_effects_expr(body, env, fn_in_effect)
+      let mut i = 0
+      while i < array_length(body_errs) {
+        array_push(errors, array_get(body_errs, i))
+        i = i + 1
+      }
+      errors
+    },
+    ELet(_, val, body) => {
+      let ve = check_effects_expr(val, env, in_effect)
+      let be = check_effects_expr(body, env, in_effect)
+      let mut i = 0
+      while i < array_length(ve) {
+        array_push(errors, array_get(ve, i))
+        i = i + 1
+      }
+      i = 0
+      while i < array_length(be) {
+        array_push(errors, array_get(be, i))
+        i = i + 1
+      }
+      errors
+    },
+    ELetRec(_, val, body) => {
+      let ve = check_effects_expr(val, env, in_effect)
+      let be = check_effects_expr(body, env, in_effect)
+      let mut i = 0
+      while i < array_length(ve) {
+        array_push(errors, array_get(ve, i))
+        i = i + 1
+      }
+      i = 0
+      while i < array_length(be) {
+        array_push(errors, array_get(be, i))
+        i = i + 1
+      }
+      errors
+    },
+    ELetMut(_, val, body) => {
+      let ve = check_effects_expr(val, env, in_effect)
+      let be = check_effects_expr(body, env, in_effect)
+      let mut i = 0
+      while i < array_length(ve) {
+        array_push(errors, array_get(ve, i))
+        i = i + 1
+      }
+      i = 0
+      while i < array_length(be) {
+        array_push(errors, array_get(be, i))
+        i = i + 1
+      }
+      errors
+    },
+    ESeq(a, b) => {
+      let ae = check_effects_expr(a, env, in_effect)
+      let be = check_effects_expr(b, env, in_effect)
+      let mut i = 0
+      while i < array_length(ae) {
+        array_push(errors, array_get(ae, i))
+        i = i + 1
+      }
+      i = 0
+      while i < array_length(be) {
+        array_push(errors, array_get(be, i))
+        i = i + 1
+      }
+      errors
+    },
+    EIf(cond, then_e, else_e) => {
+      let ce = check_effects_expr(cond, env, in_effect)
+      let te = check_effects_expr(then_e, env, in_effect)
+      let ee = check_effects_expr(else_e, env, in_effect)
+      let mut i = 0
+      while i < array_length(ce) {
+        array_push(errors, array_get(ce, i))
+        i = i + 1
+      }
+      i = 0
+      while i < array_length(te) {
+        array_push(errors, array_get(te, i))
+        i = i + 1
+      }
+      i = 0
+      while i < array_length(ee) {
+        array_push(errors, array_get(ee, i))
+        i = i + 1
+      }
+      errors
+    },
+    EMatch(scrutinee, arms) => {
+      let se = check_effects_expr(scrutinee, env, in_effect)
+      let mut i = 0
+      while i < array_length(se) {
+        array_push(errors, array_get(se, i))
+        i = i + 1
+      }
+      let mut ai = 0
+      while ai < array_length(arms) {
+        let (_, arm_body) = array_get(arms, ai)
+        let ae = check_effects_expr(arm_body, env, in_effect)
+        let mut j = 0
+        while j < array_length(ae) {
+          array_push(errors, array_get(ae, j))
+          j = j + 1
+        }
+        ai = ai + 1
+      }
+      errors
+    },
+    EWhile(cond, body) => {
+      let ce = check_effects_expr(cond, env, in_effect)
+      let be = check_effects_expr(body, env, in_effect)
+      let mut i = 0
+      while i < array_length(ce) {
+        array_push(errors, array_get(ce, i))
+        i = i + 1
+      }
+      i = 0
+      while i < array_length(be) {
+        array_push(errors, array_get(be, i))
+        i = i + 1
+      }
+      errors
+    },
+    EForIn(_, iter, body) => {
+      let ie = check_effects_expr(iter, env, in_effect)
+      let be = check_effects_expr(body, env, in_effect)
+      let mut i = 0
+      while i < array_length(ie) {
+        array_push(errors, array_get(ie, i))
+        i = i + 1
+      }
+      i = 0
+      while i < array_length(be) {
+        array_push(errors, array_get(be, i))
+        i = i + 1
+      }
+      errors
+    },
+    EBinOp(_, left, right) => {
+      let le = check_effects_expr(left, env, in_effect)
+      let re = check_effects_expr(right, env, in_effect)
+      let mut i = 0
+      while i < array_length(le) {
+        array_push(errors, array_get(le, i))
+        i = i + 1
+      }
+      i = 0
+      while i < array_length(re) {
+        array_push(errors, array_get(re, i))
+        i = i + 1
+      }
+      errors
+    },
+    EUnaryOp(_, operand) => check_effects_expr(operand, env, in_effect),
+    EAssign(_, val, cont) => {
+      let ve = check_effects_expr(val, env, in_effect)
+      let ce = check_effects_expr(cont, env, in_effect)
+      let mut i = 0
+      while i < array_length(ve) {
+        array_push(errors, array_get(ve, i))
+        i = i + 1
+      }
+      i = 0
+      while i < array_length(ce) {
+        array_push(errors, array_get(ce, i))
+        i = i + 1
+      }
+      errors
+    },
+    EAssignOp(_, _, val, cont) => {
+      let ve = check_effects_expr(val, env, in_effect)
+      let ce = check_effects_expr(cont, env, in_effect)
+      let mut i = 0
+      while i < array_length(ve) {
+        array_push(errors, array_get(ve, i))
+        i = i + 1
+      }
+      i = 0
+      while i < array_length(ce) {
+        array_push(errors, array_get(ce, i))
+        i = i + 1
+      }
+      errors
+    },
+    EDot(obj, _) => check_effects_expr(obj, env, in_effect),
+    ETuple(elems) => {
+      let mut ei = 0
+      while ei < array_length(elems) {
+        let ee = check_effects_expr(array_get(elems, ei), env, in_effect)
+        let mut j = 0
+        while j < array_length(ee) {
+          array_push(errors, array_get(ee, j))
+          j = j + 1
+        }
+        ei = ei + 1
+      }
+      errors
+    },
+    EArray(elems) => {
+      let mut ei = 0
+      while ei < array_length(elems) {
+        let ee = check_effects_expr(array_get(elems, ei), env, in_effect)
+        let mut j = 0
+        while j < array_length(ee) {
+          array_push(errors, array_get(ee, j))
+          j = j + 1
+        }
+        ei = ei + 1
+      }
+      errors
+    },
+    ERecord(fields) => {
+      let mut fi = 0
+      while fi < array_length(fields) {
+        let (_, fval) = array_get(fields, fi)
+        let fe = check_effects_expr(fval, env, in_effect)
+        let mut j = 0
+        while j < array_length(fe) {
+          array_push(errors, array_get(fe, j))
+          j = j + 1
+        }
+        fi = fi + 1
+      }
+      errors
+    },
+    _ => errors
+  }
+}
+
+// Check a statement for effect violations
+export let check_effects_stmt = (stmt: Stmt, env: TypeEnv) -> Array[EffectError] {
+  match stmt {
+    SLet(_, _, _, _, body) => check_effects_expr(body, env, false),
+    SLetMut(_, _, body) => check_effects_expr(body, env, false),
+    STest(_, body) => check_effects_expr(body, env, false),
+    SBench(_, body) => check_effects_expr(body, env, false),
+    SExpr(e) => check_effects_expr(e, env, false),
+    _ => array_slice([EEThrowOutsideEffect("")], 0, 0)
+  }
+}
+
+// Check all statements for effect violations
+export let check_effects_stmts = (stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError] {
+  let errors = array_slice([EEThrowOutsideEffect("")], 0, 0)
+  let mut i = 0
+  while i < array_length(stmts) {
+    let se = check_effects_stmt(array_get(stmts, i), env)
+    let mut j = 0
+    while j < array_length(se) {
+      array_push(errors, array_get(se, j))
+      j = j + 1
+    }
+    i = i + 1
+  }
+  errors
+}
