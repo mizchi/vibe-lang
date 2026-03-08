@@ -1,0 +1,257 @@
+// CST (Concrete Syntax Tree) for tolerant parsing
+// Preserves all tokens including errors for lossless round-trip
+
+import ./token.vibe { Token }
+
+//# Node Kinds
+
+export enum NodeKind {
+  // Top-level
+  NSourceFile;
+  // Statements
+  NLetStmt;
+  NLetMutStmt;
+  NEnumStmt;
+  NStructStmt;
+  NTypeAliasStmt;
+  NTraitStmt;
+  NImplStmt;
+  NExternLetStmt;
+  NImportStmt;
+  NTestStmt;
+  NBenchStmt;
+  NExprStmt;
+  NExportStmt;
+  NReExportStmt;
+  NModuleStmt;
+  NSuberrorStmt;
+  // Expressions
+  NIntExpr;
+  NFloatExpr;
+  NStringExpr;
+  NBoolExpr;
+  NIdentExpr;
+  NUnitExpr;
+  NTupleExpr;
+  NArrayExpr;
+  NRecordExpr;
+  NRecordField;
+  NIfExpr;
+  NLetExpr;
+  NLetRecExpr;
+  NLetMutExpr;
+  NAssignExpr;
+  NAssignOpExpr;
+  NSeqExpr;
+  NMatchExpr;
+  NHandleExpr;
+  NWhileExpr;
+  NForInExpr;
+  NCallExpr;
+  NBinOpExpr;
+  NUnaryOpExpr;
+  NFnExpr;
+  NDotExpr;
+  NThrowExpr;
+  NBreakExpr;
+  NContinueExpr;
+  NLabeledArgExpr;
+  // Patterns
+  NWildPat;
+  NBindPat;
+  NIntPat;
+  NStringPat;
+  NBoolPat;
+  NCtorPat;
+  NTuplePat;
+  NOrPat;
+  // Match arm
+  NMatchArm;
+  // Type expressions
+  NNameType;
+  NAppType;
+  NFnType;
+  NTupleType;
+  NUnitType;
+  // Misc
+  NParam;
+  NTypeParam;
+  NVariant;
+  NEnumVariant;
+  NStructField;
+  NImportItem;
+  NEffectClause;
+  // Error recovery
+  NError
+}
+
+//# CST Tree
+
+export enum CstChild {
+  CNode(NodeKind, Array[CstChild]);
+  CToken(Token);
+  CError(String)
+}
+
+//# NodeKind helpers (must come before functions that use them)
+
+export let node_kind_tag = (k: NodeKind) -> Int {
+  match k {
+    NSourceFile => 0,
+    NLetStmt => 1,
+    NLetMutStmt => 2,
+    NEnumStmt => 3,
+    NStructStmt => 4,
+    NTypeAliasStmt => 5,
+    NTraitStmt => 6,
+    NImplStmt => 7,
+    NExternLetStmt => 8,
+    NImportStmt => 9,
+    NTestStmt => 10,
+    NBenchStmt => 11,
+    NExprStmt => 12,
+    NExportStmt => 13,
+    NReExportStmt => 14,
+    NModuleStmt => 15,
+    NSuberrorStmt => 16,
+    NIntExpr => 20,
+    NFloatExpr => 21,
+    NStringExpr => 22,
+    NBoolExpr => 23,
+    NIdentExpr => 24,
+    NUnitExpr => 25,
+    NTupleExpr => 26,
+    NArrayExpr => 27,
+    NRecordExpr => 28,
+    NRecordField => 29,
+    NIfExpr => 30,
+    NLetExpr => 31,
+    NLetRecExpr => 32,
+    NLetMutExpr => 33,
+    NAssignExpr => 34,
+    NAssignOpExpr => 35,
+    NSeqExpr => 36,
+    NMatchExpr => 37,
+    NHandleExpr => 38,
+    NWhileExpr => 39,
+    NForInExpr => 40,
+    NCallExpr => 41,
+    NBinOpExpr => 42,
+    NUnaryOpExpr => 43,
+    NFnExpr => 44,
+    NDotExpr => 45,
+    NThrowExpr => 46,
+    NBreakExpr => 47,
+    NContinueExpr => 48,
+    NLabeledArgExpr => 49,
+    NWildPat => 60,
+    NBindPat => 61,
+    NIntPat => 62,
+    NStringPat => 63,
+    NBoolPat => 64,
+    NCtorPat => 65,
+    NTuplePat => 66,
+    NOrPat => 67,
+    NMatchArm => 70,
+    NNameType => 80,
+    NAppType => 81,
+    NFnType => 82,
+    NTupleType => 83,
+    NUnitType => 84,
+    NParam => 90,
+    NTypeParam => 91,
+    NVariant => 92,
+    NEnumVariant => 93,
+    NStructField => 94,
+    NImportItem => 95,
+    NEffectClause => 96,
+    NError => 99
+  }
+}
+
+export let node_kind_eq = (a: NodeKind, b: NodeKind) -> Bool {
+  node_kind_tag(a) == node_kind_tag(b)
+}
+
+//# Accessors
+
+export let cst_kind = (child: CstChild) -> NodeKind {
+  match child {
+    CNode(kind, _) => kind,
+    CToken(_) => NError,
+    CError(_) => NError
+  }
+}
+
+export let cst_children = (child: CstChild) -> Array[CstChild] {
+  match child {
+    CNode(_, children) => children,
+    _ => array_slice([CError("not a node")], 0, 0)
+  }
+}
+
+// Find first child node of given kind
+export let rec cst_find = (children: Array[CstChild], kind: NodeKind, i: Int) -> Option[CstChild] {
+  if i >= array_length(children) { None }
+  else {
+    let c = array_get(children, i)
+    match c {
+      CNode(k, _) => if node_kind_eq(k, kind) { Some(c) } else { cst_find(children, kind, i + 1) },
+      _ => cst_find(children, kind, i + 1)
+    }
+  }
+}
+
+// Find first token
+export let rec cst_find_token = (children: Array[CstChild], i: Int) -> Option[Token] {
+  if i >= array_length(children) { None }
+  else {
+    match array_get(children, i) {
+      CToken(t) => Some(t),
+      _ => cst_find_token(children, i + 1)
+    }
+  }
+}
+
+// Collect all child nodes of given kind
+export let cst_filter = (children: Array[CstChild], kind: NodeKind) -> Array[CstChild] {
+  let result = array_slice([CError("")], 0, 0)
+  let mut i = 0
+  while i < array_length(children) {
+    let c = array_get(children, i)
+    match c {
+      CNode(k, _) => if node_kind_eq(k, kind) { array_push(result, c) },
+      _ => ()
+    }
+    i = i + 1
+  }
+  result
+}
+
+// Collect all child nodes (skip tokens)
+export let cst_child_nodes = (children: Array[CstChild]) -> Array[CstChild] {
+  let result = array_slice([CError("")], 0, 0)
+  let mut i = 0
+  while i < array_length(children) {
+    match array_get(children, i) {
+      CNode(_, _) => array_push(result, array_get(children, i)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  result
+}
+
+// Collect all tokens (skip nodes)
+export let cst_tokens = (children: Array[CstChild]) -> Array[Token] {
+  let result = array_slice([TEof], 0, 0)
+  let mut i = 0
+  while i < array_length(children) {
+    match array_get(children, i) {
+      CToken(t) => array_push(result, t),
+      _ => ()
+    }
+    i = i + 1
+  }
+  result
+}

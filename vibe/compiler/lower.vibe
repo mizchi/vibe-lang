@@ -1,0 +1,822 @@
+// Lower: CST → AST conversion
+// Converts tolerant CST (with error recovery) to strict AST types
+
+import ./token.vibe { Token }
+import ./ast.vibe { Expr, Pat, Stmt, TypeExpr }
+import ./cst.vibe {
+  NodeKind, CstChild,
+  cst_children, cst_find, cst_find_token, cst_filter, cst_child_nodes, cst_tokens,
+  node_kind_eq
+}
+
+//# Token extractors
+
+// Extract first TIdent name from children (recursive to avoid return)
+let rec find_ident_at = (children: Array[CstChild], i: Int) -> String with { Error } {
+  if i >= array_length(children) { throw("no ident found") }
+  else {
+    match array_get(children, i) {
+      CToken(TIdent(s)) => s,
+      _ => find_ident_at(children, i + 1)
+    }
+  }
+}
+let find_ident = (children: Array[CstChild]) -> String with { Error } {
+  find_ident_at(children, 0)
+}
+
+// Extract all TIdent names from children
+let find_idents = (children: Array[CstChild]) -> Array[String] {
+  let result = array_slice([""], 0, 0)
+  let mut i = 0
+  while i < array_length(children) {
+    match array_get(children, i) {
+      CToken(TIdent(s)) => array_push(result, s),
+      _ => ()
+    }
+    i = i + 1
+  }
+  result
+}
+
+// Check if children contain a specific token kind (recursive)
+let rec has_token_kind_at = (children: Array[CstChild], check: (Token) -> Bool, i: Int) -> Bool {
+  if i >= array_length(children) { false }
+  else {
+    match array_get(children, i) {
+      CToken(t) => if check(t) { true } else { has_token_kind_at(children, check, i + 1) },
+      _ => has_token_kind_at(children, check, i + 1)
+    }
+  }
+}
+let has_token_kind = (children: Array[CstChild], check: (Token) -> Bool) -> Bool {
+  has_token_kind_at(children, check, 0)
+}
+
+let is_export_token = (t: Token) -> Bool {
+  match t { TExport => true, _ => false }
+}
+
+let is_rec_token = (t: Token) -> Bool {
+  match t { TRec => true, _ => false }
+}
+
+let is_mut_token = (t: Token) -> Bool {
+  match t { TMut => true, _ => false }
+}
+
+//# Pattern lowering
+
+export let rec lower_pat = (node: CstChild) -> Pat with { Error } {
+  let children = cst_children(node)
+  match node {
+    CNode(kind, _) => {
+      if node_kind_eq(kind, NWildPat) { PWild }
+      else if node_kind_eq(kind, NBindPat) { PBind(find_ident(children)) }
+      else if node_kind_eq(kind, NIntPat) {
+        let toks = cst_tokens(children)
+        match array_get(toks, 0) {
+          TInt(n) => PInt(n),
+          _ => throw("NIntPat: expected TInt")
+        }
+      }
+      else if node_kind_eq(kind, NStringPat) {
+        let toks = cst_tokens(children)
+        match array_get(toks, 0) {
+          TString(s) => PString(s),
+          _ => throw("NStringPat: expected TString")
+        }
+      }
+      else if node_kind_eq(kind, NBoolPat) {
+        let toks = cst_tokens(children)
+        match array_get(toks, 0) {
+          TIdent(s) => PBool(s == "true"),
+          _ => throw("NBoolPat: expected TIdent")
+        }
+      }
+      else if node_kind_eq(kind, NCtorPat) {
+        let name = find_ident(children)
+        let arg_nodes = cst_child_nodes(children)
+        // Skip the first child node if it's the ctor name itself
+        let pats = array_slice([PWild], 0, 0)
+        let mut i = 0
+        while i < array_length(arg_nodes) {
+          array_push(pats, lower_pat(array_get(arg_nodes, i)))
+          i = i + 1
+        }
+        PCtor(name, pats)
+      }
+      else if node_kind_eq(kind, NTuplePat) {
+        let elems = cst_child_nodes(children)
+        let pats = array_slice([PWild], 0, 0)
+        let mut i = 0
+        while i < array_length(elems) {
+          array_push(pats, lower_pat(array_get(elems, i)))
+          i = i + 1
+        }
+        PTuple(pats)
+      }
+      else if node_kind_eq(kind, NOrPat) {
+        let sub = cst_child_nodes(children)
+        if array_length(sub) >= 2 {
+          POr(lower_pat(array_get(sub, 0)), lower_pat(array_get(sub, 1)))
+        } else { throw("NOrPat: need 2 children") }
+      }
+      else { throw("lower_pat: unknown kind") }
+    },
+    _ => throw("lower_pat: not a node")
+  }
+}
+
+//# Type expression lowering
+
+export let rec lower_type = (node: CstChild) -> TypeExpr with { Error } {
+  let children = cst_children(node)
+  match node {
+    CNode(kind, _) => {
+      if node_kind_eq(kind, NNameType) {
+        TyName(find_ident(children))
+      }
+      else if node_kind_eq(kind, NAppType) {
+        let name = find_ident(children)
+        let arg_nodes = cst_filter(children, NNameType)
+        // Also check for other type node kinds as args
+        let type_children = cst_child_nodes(children)
+        let args = array_slice([TyUnit], 0, 0)
+        let mut i = 0
+        while i < array_length(type_children) {
+          array_push(args, lower_type(array_get(type_children, i)))
+          i = i + 1
+        }
+        TyApp(name, args)
+      }
+      else if node_kind_eq(kind, NFnType) {
+        let type_children = cst_child_nodes(children)
+        let len = array_length(type_children)
+        if len < 1 { throw("NFnType: need at least return type") }
+        else {
+          let params = array_slice([TyUnit], 0, 0)
+          let mut i = 0
+          while i < len - 1 {
+            array_push(params, lower_type(array_get(type_children, i)))
+            i = i + 1
+          }
+          let ret = lower_type(array_get(type_children, len - 1))
+          TyFn(params, ret)
+        }
+      }
+      else if node_kind_eq(kind, NTupleType) {
+        let type_children = cst_child_nodes(children)
+        let elems = array_slice([TyUnit], 0, 0)
+        let mut i = 0
+        while i < array_length(type_children) {
+          array_push(elems, lower_type(array_get(type_children, i)))
+          i = i + 1
+        }
+        TyTuple(elems)
+      }
+      else if node_kind_eq(kind, NUnitType) { TyUnit }
+      else { throw("lower_type: unknown kind") }
+    },
+    _ => throw("lower_type: not a node")
+  }
+}
+
+// Try to lower an optional type annotation child
+let lower_opt_type = (children: Array[CstChild], kind: NodeKind) -> Option[TypeExpr] with { Error } {
+  match cst_find(children, kind, 0) {
+    Some(n) => Some(lower_type(n)),
+    None => {
+      // Try other type kinds
+      match cst_find(children, NAppType, 0) {
+        Some(n) => Some(lower_type(n)),
+        None => match cst_find(children, NFnType, 0) {
+          Some(n) => Some(lower_type(n)),
+          None => match cst_find(children, NTupleType, 0) {
+            Some(n) => Some(lower_type(n)),
+            None => match cst_find(children, NUnitType, 0) {
+              Some(n) => Some(lower_type(n)),
+              None => None
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// Find any type node among children (recursive)
+let is_type_kind = (k: NodeKind) -> Bool {
+  if node_kind_eq(k, NNameType) { true }
+  else if node_kind_eq(k, NAppType) { true }
+  else if node_kind_eq(k, NFnType) { true }
+  else if node_kind_eq(k, NTupleType) { true }
+  else if node_kind_eq(k, NUnitType) { true }
+  else { false }
+}
+let rec find_type_node_at = (children: Array[CstChild], i: Int) -> Option[CstChild] {
+  if i >= array_length(children) { None }
+  else {
+    match array_get(children, i) {
+      CNode(k, _) => if is_type_kind(k) { Some(array_get(children, i)) } else { find_type_node_at(children, i + 1) },
+      _ => find_type_node_at(children, i + 1)
+    }
+  }
+}
+let find_type_node = (children: Array[CstChild]) -> Option[CstChild] {
+  find_type_node_at(children, 0)
+}
+
+//# Expression lowering
+
+export let rec lower_expr = (node: CstChild) -> Expr with { Error } {
+  let children = cst_children(node)
+  match node {
+    CNode(kind, _) => {
+      if node_kind_eq(kind, NIntExpr) {
+        match array_get(cst_tokens(children), 0) {
+          TInt(n) => EInt(n),
+          _ => throw("NIntExpr: expected TInt")
+        }
+      }
+      else if node_kind_eq(kind, NFloatExpr) {
+        match array_get(cst_tokens(children), 0) {
+          TFloat(n) => EFloat(n),
+          _ => throw("NFloatExpr: expected TFloat")
+        }
+      }
+      else if node_kind_eq(kind, NStringExpr) {
+        match array_get(cst_tokens(children), 0) {
+          TString(s) => EString(s),
+          _ => throw("NStringExpr: expected TString")
+        }
+      }
+      else if node_kind_eq(kind, NBoolExpr) {
+        match array_get(cst_tokens(children), 0) {
+          TIdent(s) => EBool(s == "true"),
+          _ => throw("NBoolExpr: expected TIdent")
+        }
+      }
+      else if node_kind_eq(kind, NIdentExpr) {
+        EIdent(find_ident(children))
+      }
+      else if node_kind_eq(kind, NUnitExpr) { EUnit }
+      else if node_kind_eq(kind, NTupleExpr) {
+        let elems = cst_child_nodes(children)
+        let exprs = array_slice([EUnit], 0, 0)
+        let mut i = 0
+        while i < array_length(elems) {
+          array_push(exprs, lower_expr(array_get(elems, i)))
+          i = i + 1
+        }
+        ETuple(exprs)
+      }
+      else if node_kind_eq(kind, NArrayExpr) {
+        let elems = cst_child_nodes(children)
+        let exprs = array_slice([EUnit], 0, 0)
+        let mut i = 0
+        while i < array_length(elems) {
+          array_push(exprs, lower_expr(array_get(elems, i)))
+          i = i + 1
+        }
+        EArray(exprs)
+      }
+      else if node_kind_eq(kind, NRecordExpr) {
+        let fields = cst_filter(children, NRecordField)
+        let pairs = array_slice([("", EUnit)], 0, 0)
+        let mut i = 0
+        while i < array_length(fields) {
+          let fc = cst_children(array_get(fields, i))
+          let fname = find_ident(fc)
+          let sub = cst_child_nodes(fc)
+          if array_length(sub) > 0 {
+            array_push(pairs, (fname, lower_expr(array_get(sub, 0))))
+          } else {
+            // Shorthand: { x } => { x: x }
+            array_push(pairs, (fname, EIdent(fname)))
+          }
+          i = i + 1
+        }
+        ERecord(pairs)
+      }
+      else if node_kind_eq(kind, NIfExpr) {
+        let sub = cst_child_nodes(children)
+        if array_length(sub) >= 3 {
+          EIf(lower_expr(array_get(sub, 0)), lower_expr(array_get(sub, 1)), lower_expr(array_get(sub, 2)))
+        } else if array_length(sub) >= 2 {
+          EIf(lower_expr(array_get(sub, 0)), lower_expr(array_get(sub, 1)), EUnit)
+        } else { throw("NIfExpr: need cond+then") }
+      }
+      else if node_kind_eq(kind, NLetExpr) {
+        lower_let_expr(children, false, false)
+      }
+      else if node_kind_eq(kind, NLetRecExpr) {
+        let name = find_ident(children)
+        let sub = cst_child_nodes(children)
+        if array_length(sub) >= 2 {
+          ELetRec(name, lower_expr(array_get(sub, 0)), lower_expr(array_get(sub, 1)))
+        } else { throw("NLetRecExpr: need value+body") }
+      }
+      else if node_kind_eq(kind, NLetMutExpr) {
+        lower_let_expr(children, true, false)
+      }
+      else if node_kind_eq(kind, NAssignExpr) {
+        let name = find_ident(children)
+        let sub = cst_child_nodes(children)
+        if array_length(sub) >= 2 {
+          EAssign(name, lower_expr(array_get(sub, 0)), lower_expr(array_get(sub, 1)))
+        } else if array_length(sub) >= 1 {
+          EAssign(name, lower_expr(array_get(sub, 0)), EUnit)
+        } else { throw("NAssignExpr: need value") }
+      }
+      else if node_kind_eq(kind, NAssignOpExpr) {
+        let idents = find_idents(children)
+        let name = array_get(idents, 0)
+        // op is stored as second ident or we extract from token
+        let op = find_assign_op(children)
+        let sub = cst_child_nodes(children)
+        if array_length(sub) >= 2 {
+          EAssignOp(name, op, lower_expr(array_get(sub, 0)), lower_expr(array_get(sub, 1)))
+        } else if array_length(sub) >= 1 {
+          EAssignOp(name, op, lower_expr(array_get(sub, 0)), EUnit)
+        } else { throw("NAssignOpExpr: need value") }
+      }
+      else if node_kind_eq(kind, NSeqExpr) {
+        let sub = cst_child_nodes(children)
+        if array_length(sub) >= 2 {
+          ESeq(lower_expr(array_get(sub, 0)), lower_expr(array_get(sub, 1)))
+        } else { throw("NSeqExpr: need 2 children") }
+      }
+      else if node_kind_eq(kind, NMatchExpr) {
+        let sub = cst_child_nodes(children)
+        let scrutinee = lower_expr(array_get(sub, 0))
+        let arm_nodes = cst_filter(children, NMatchArm)
+        let arms = array_slice([(PWild, EUnit)], 0, 0)
+        let mut i = 0
+        while i < array_length(arm_nodes) {
+          let ac = cst_children(array_get(arm_nodes, i))
+          let arm_sub = cst_child_nodes(ac)
+          if array_length(arm_sub) >= 2 {
+            array_push(arms, (lower_pat(array_get(arm_sub, 0)), lower_expr(array_get(arm_sub, 1))))
+          }
+          i = i + 1
+        }
+        EMatch(scrutinee, arms)
+      }
+      else if node_kind_eq(kind, NHandleExpr) {
+        let sub = cst_child_nodes(children)
+        let body = lower_expr(array_get(sub, 0))
+        let clause_nodes = cst_filter(children, NEffectClause)
+        let clauses = array_slice([(PWild, EUnit)], 0, 0)
+        let mut i = 0
+        while i < array_length(clause_nodes) {
+          let cc = cst_children(array_get(clause_nodes, i))
+          let csub = cst_child_nodes(cc)
+          if array_length(csub) >= 2 {
+            array_push(clauses, (lower_pat(array_get(csub, 0)), lower_expr(array_get(csub, 1))))
+          }
+          i = i + 1
+        }
+        EHandle(body, clauses)
+      }
+      else if node_kind_eq(kind, NWhileExpr) {
+        let sub = cst_child_nodes(children)
+        if array_length(sub) >= 2 {
+          EWhile(lower_expr(array_get(sub, 0)), lower_expr(array_get(sub, 1)))
+        } else { throw("NWhileExpr: need cond+body") }
+      }
+      else if node_kind_eq(kind, NForInExpr) {
+        let name = find_ident(children)
+        let sub = cst_child_nodes(children)
+        if array_length(sub) >= 2 {
+          EForIn(name, lower_expr(array_get(sub, 0)), lower_expr(array_get(sub, 1)))
+        } else { throw("NForInExpr: need iter+body") }
+      }
+      else if node_kind_eq(kind, NCallExpr) {
+        let sub = cst_child_nodes(children)
+        let callee = lower_expr(array_get(sub, 0))
+        let args = array_slice([EUnit], 0, 0)
+        let mut i = 1
+        while i < array_length(sub) {
+          array_push(args, lower_expr(array_get(sub, i)))
+          i = i + 1
+        }
+        ECall(callee, args)
+      }
+      else if node_kind_eq(kind, NBinOpExpr) {
+        let op = find_binop(children)
+        let sub = cst_child_nodes(children)
+        if array_length(sub) >= 2 {
+          EBinOp(op, lower_expr(array_get(sub, 0)), lower_expr(array_get(sub, 1)))
+        } else { throw("NBinOpExpr: need 2 operands") }
+      }
+      else if node_kind_eq(kind, NUnaryOpExpr) {
+        let op = find_unaryop(children)
+        let sub = cst_child_nodes(children)
+        if array_length(sub) >= 1 {
+          EUnaryOp(op, lower_expr(array_get(sub, 0)))
+        } else { throw("NUnaryOpExpr: need operand") }
+      }
+      else if node_kind_eq(kind, NFnExpr) {
+        lower_fn_expr(children)
+      }
+      else if node_kind_eq(kind, NDotExpr) {
+        let sub = cst_child_nodes(children)
+        let field = find_ident(children)
+        if array_length(sub) >= 1 {
+          EDot(lower_expr(array_get(sub, 0)), field)
+        } else { throw("NDotExpr: need object") }
+      }
+      else if node_kind_eq(kind, NThrowExpr) {
+        let sub = cst_child_nodes(children)
+        if array_length(sub) >= 1 {
+          EThrow(lower_expr(array_get(sub, 0)))
+        } else { throw("NThrowExpr: need expr") }
+      }
+      else if node_kind_eq(kind, NBreakExpr) {
+        let sub = cst_child_nodes(children)
+        if array_length(sub) >= 1 { EBreak(Some(lower_expr(array_get(sub, 0)))) }
+        else { EBreak(None) }
+      }
+      else if node_kind_eq(kind, NContinueExpr) {
+        let sub = cst_child_nodes(children)
+        let args = array_slice([EUnit], 0, 0)
+        let mut i = 0
+        while i < array_length(sub) {
+          array_push(args, lower_expr(array_get(sub, i)))
+          i = i + 1
+        }
+        EContinue(args)
+      }
+      else if node_kind_eq(kind, NLabeledArgExpr) {
+        let idents = find_idents(children)
+        let sub = cst_child_nodes(children)
+        if array_length(idents) >= 2 {
+          if array_length(sub) >= 1 {
+            ELabeledArg(array_get(idents, 0), array_get(idents, 1), lower_expr(array_get(sub, 0)))
+          } else {
+            ELabeledArg(array_get(idents, 0), array_get(idents, 1), EIdent(array_get(idents, 1)))
+          }
+        } else { throw("NLabeledArgExpr: need label+name") }
+      }
+      else { throw("lower_expr: unknown kind") }
+    },
+    _ => throw("lower_expr: not a node")
+  }
+}
+
+// Helper: lower let/let-mut expression
+let lower_let_expr = (children: Array[CstChild], is_mut: Bool, _is_rec: Bool) -> Expr with { Error } {
+  let name = find_ident(children)
+  let sub = cst_child_nodes(children)
+  if array_length(sub) >= 2 {
+    if is_mut { ELetMut(name, lower_expr(array_get(sub, 0)), lower_expr(array_get(sub, 1))) }
+    else { ELet(name, lower_expr(array_get(sub, 0)), lower_expr(array_get(sub, 1))) }
+  } else if array_length(sub) >= 1 {
+    if is_mut { ELetMut(name, lower_expr(array_get(sub, 0)), EUnit) }
+    else { ELet(name, lower_expr(array_get(sub, 0)), EUnit) }
+  } else { throw("lower_let_expr: need value") }
+}
+
+// Helper: lower fn expression
+let lower_fn_expr = (children: Array[CstChild]) -> Expr with { Error } {
+  let param_nodes = cst_filter(children, NParam)
+  let type_params = array_slice([""], 0, 0)
+  let tp_nodes = cst_filter(children, NTypeParam)
+  let mut i = 0
+  while i < array_length(tp_nodes) {
+    let tpc = cst_children(array_get(tp_nodes, i))
+    array_push(type_params, find_ident(tpc))
+    i = i + 1
+  }
+  let params = array_slice([("", None)], 0, 0)
+  i = 0
+  while i < array_length(param_nodes) {
+    let pc = cst_children(array_get(param_nodes, i))
+    let pname = find_ident(pc)
+    let pty = match find_type_node(pc) {
+      Some(tn) => Some(lower_type(tn)),
+      None => None
+    }
+    array_push(params, (pname, pty))
+    i = i + 1
+  }
+  let ret_type = match find_type_node(children) {
+    Some(tn) => Some(lower_type(tn)),
+    None => None
+  }
+  // Effect name (with { Error } etc.)
+  let effect_name = None  // TODO: extract from CstChild
+  let body_nodes = cst_child_nodes(children)
+  // Body is the last non-param, non-type child node
+  let body = if array_length(body_nodes) > 0 {
+    lower_expr(array_get(body_nodes, array_length(body_nodes) - 1))
+  } else { EUnit }
+  let no_bounds = array_slice([("", array_slice([""], 0, 0))], 0, 0)
+  EFn(type_params, no_bounds, params, ret_type, effect_name, body)
+}
+
+// Helper: token to binary operator string
+let token_to_binop = (t: Token) -> String {
+  match t {
+    TPlus => "+", TMinus => "-", TStar => "*", TSlash => "/", TPercent => "%",
+    TEqEq => "==", TNeq => "!=", TLt => "<", TLte => "<=", TGt => ">", TGte => ">=",
+    TAnd => "&&", TOr => "||",
+    TBitAnd => "&", TBitOr => "|", TBitXor => "^", TLShift => "<<", TRShift => ">>",
+    TPipeGt => "|>",
+    _ => ""
+  }
+}
+let rec find_binop_at = (children: Array[CstChild], i: Int) -> String {
+  if i >= array_length(children) { "?" }
+  else {
+    match array_get(children, i) {
+      CToken(t) => {
+        let op = token_to_binop(t)
+        if string_length(op) > 0 { op } else { find_binop_at(children, i + 1) }
+      },
+      _ => find_binop_at(children, i + 1)
+    }
+  }
+}
+let find_binop = (children: Array[CstChild]) -> String { find_binop_at(children, 0) }
+
+// Helper: find unary operator (recursive)
+let rec find_unaryop_at = (children: Array[CstChild], i: Int) -> String {
+  if i >= array_length(children) { "?" }
+  else {
+    match array_get(children, i) {
+      CToken(TMinus) => "-",
+      CToken(TNot) => "!",
+      _ => find_unaryop_at(children, i + 1)
+    }
+  }
+}
+let find_unaryop = (children: Array[CstChild]) -> String { find_unaryop_at(children, 0) }
+
+// Helper: find assign op (recursive)
+let rec find_assign_op_at = (children: Array[CstChild], i: Int) -> String {
+  if i >= array_length(children) { "?" }
+  else {
+    match array_get(children, i) {
+      CToken(TPlusEq) => "+",
+      CToken(TMinusEq) => "-",
+      CToken(TStarEq) => "*",
+      CToken(TSlashEq) => "/",
+      CToken(TPercentEq) => "%",
+      _ => find_assign_op_at(children, i + 1)
+    }
+  }
+}
+let find_assign_op = (children: Array[CstChild]) -> String { find_assign_op_at(children, 0) }
+
+//# Statement lowering
+
+export let lower_stmt = (node: CstChild) -> Stmt with { Error } {
+  let children = cst_children(node)
+  match node {
+    CNode(kind, _) => {
+      if node_kind_eq(kind, NLetStmt) {
+        let exported = has_token_kind(children, is_export_token)
+        let is_rec = has_token_kind(children, is_rec_token)
+        let name = find_ident(children)
+        let ty = match find_type_node(children) {
+          Some(tn) => Some(lower_type(tn)),
+          None => None
+        }
+        let sub = cst_child_nodes(children)
+        let body = if array_length(sub) > 0 {
+          lower_expr(array_get(sub, array_length(sub) - 1))
+        } else { EUnit }
+        SLet(exported, is_rec, name, ty, body)
+      }
+      else if node_kind_eq(kind, NLetMutStmt) {
+        let name = find_ident(children)
+        let ty = match find_type_node(children) {
+          Some(tn) => Some(lower_type(tn)),
+          None => None
+        }
+        let sub = cst_child_nodes(children)
+        let body = if array_length(sub) > 0 {
+          lower_expr(array_get(sub, array_length(sub) - 1))
+        } else { EUnit }
+        SLetMut(name, ty, body)
+      }
+      else if node_kind_eq(kind, NEnumStmt) {
+        let exported = has_token_kind(children, is_export_token)
+        let name = find_ident(children)
+        let variant_nodes = cst_filter(children, NEnumVariant)
+        let variants = array_slice([("", array_slice([TyUnit], 0, 0))], 0, 0)
+        let mut i = 0
+        while i < array_length(variant_nodes) {
+          let vc = cst_children(array_get(variant_nodes, i))
+          let vname = find_ident(vc)
+          let type_children = cst_child_nodes(vc)
+          let vtypes = array_slice([TyUnit], 0, 0)
+          let mut j = 0
+          while j < array_length(type_children) {
+            array_push(vtypes, lower_type(array_get(type_children, j)))
+            j = j + 1
+          }
+          array_push(variants, (vname, vtypes))
+          i = i + 1
+        }
+        SEnum(exported, name, variants)
+      }
+      else if node_kind_eq(kind, NSuberrorStmt) {
+        let exported = has_token_kind(children, is_export_token)
+        let name = find_ident(children)
+        let variant_nodes = cst_filter(children, NEnumVariant)
+        let variants = array_slice([("", array_slice([TyUnit], 0, 0))], 0, 0)
+        let mut i = 0
+        while i < array_length(variant_nodes) {
+          let vc = cst_children(array_get(variant_nodes, i))
+          let vname = find_ident(vc)
+          let type_children = cst_child_nodes(vc)
+          let vtypes = array_slice([TyUnit], 0, 0)
+          let mut j = 0
+          while j < array_length(type_children) {
+            array_push(vtypes, lower_type(array_get(type_children, j)))
+            j = j + 1
+          }
+          array_push(variants, (vname, vtypes))
+          i = i + 1
+        }
+        SSuberror(exported, name, variants)
+      }
+      else if node_kind_eq(kind, NStructStmt) {
+        let exported = has_token_kind(children, is_export_token)
+        let name = find_ident(children)
+        let field_nodes = cst_filter(children, NStructField)
+        let fields = array_slice([("", TyUnit)], 0, 0)
+        let mut i = 0
+        while i < array_length(field_nodes) {
+          let fc = cst_children(array_get(field_nodes, i))
+          let fname = find_ident(fc)
+          let ftype_children = cst_child_nodes(fc)
+          if array_length(ftype_children) > 0 {
+            array_push(fields, (fname, lower_type(array_get(ftype_children, 0))))
+          }
+          i = i + 1
+        }
+        SStruct(exported, name, fields)
+      }
+      else if node_kind_eq(kind, NTypeAliasStmt) {
+        let exported = has_token_kind(children, is_export_token)
+        let name = find_ident(children)
+        let type_children = cst_child_nodes(children)
+        if array_length(type_children) > 0 {
+          STypeAlias(exported, name, lower_type(array_get(type_children, 0)))
+        } else { throw("NTypeAliasStmt: need type") }
+      }
+      else if node_kind_eq(kind, NTraitStmt) {
+        let exported = has_token_kind(children, is_export_token)
+        let name = find_ident(children)
+        let method_names = find_idents(children)
+        // Skip the trait name itself
+        let methods = array_slice([""], 0, 0)
+        let mut i = 1
+        while i < array_length(method_names) {
+          array_push(methods, array_get(method_names, i))
+          i = i + 1
+        }
+        STrait(exported, name, methods)
+      }
+      else if node_kind_eq(kind, NImplStmt) {
+        let idents = find_idents(children)
+        // impl TraitName for TypeName { methods }
+        if array_length(idents) >= 2 {
+          let trait_name = array_get(idents, 0)
+          let type_name = array_get(idents, 1)
+          let type_params = array_slice([""], 0, 0)
+          let bounds = array_slice([("", array_slice([""], 0, 0))], 0, 0)
+          SImpl(type_params, bounds, trait_name, type_name)
+        } else { throw("NImplStmt: need trait+type names") }
+      }
+      else if node_kind_eq(kind, NExternLetStmt) {
+        let name = find_ident(children)
+        let type_children = cst_child_nodes(children)
+        if array_length(type_children) > 0 {
+          SExternLet(name, lower_type(array_get(type_children, 0)))
+        } else { throw("NExternLetStmt: need type") }
+      }
+      else if node_kind_eq(kind, NImportStmt) {
+        let path = find_import_path(children)
+        let item_nodes = cst_filter(children, NImportItem)
+        let items = array_slice([("", None)], 0, 0)
+        let mut i = 0
+        while i < array_length(item_nodes) {
+          let ic = cst_children(array_get(item_nodes, i))
+          let inames = find_idents(ic)
+          if array_length(inames) >= 2 {
+            array_push(items, (array_get(inames, 0), Some(array_get(inames, 1))))
+          } else if array_length(inames) >= 1 {
+            array_push(items, (array_get(inames, 0), None))
+          }
+          i = i + 1
+        }
+        SImport(path, items)
+      }
+      else if node_kind_eq(kind, NTestStmt) {
+        let toks = cst_tokens(children)
+        let name = match array_get(toks, 0) {
+          TString(s) => s,
+          _ => "test"
+        }
+        let sub = cst_child_nodes(children)
+        let body = if array_length(sub) > 0 {
+          lower_expr(array_get(sub, array_length(sub) - 1))
+        } else { EUnit }
+        STest(name, body)
+      }
+      else if node_kind_eq(kind, NBenchStmt) {
+        let toks = cst_tokens(children)
+        let name = match array_get(toks, 0) {
+          TString(s) => s,
+          _ => "bench"
+        }
+        let sub = cst_child_nodes(children)
+        let body = if array_length(sub) > 0 {
+          lower_expr(array_get(sub, array_length(sub) - 1))
+        } else { EUnit }
+        SBench(name, body)
+      }
+      else if node_kind_eq(kind, NExprStmt) {
+        let sub = cst_child_nodes(children)
+        if array_length(sub) > 0 {
+          SExpr(lower_expr(array_get(sub, 0)))
+        } else { throw("NExprStmt: need expr") }
+      }
+      else if node_kind_eq(kind, NExportStmt) {
+        let names = find_idents(children)
+        SExport(names)
+      }
+      else if node_kind_eq(kind, NReExportStmt) {
+        let path = find_import_path(children)
+        let item_nodes = cst_filter(children, NImportItem)
+        let items = array_slice([("", None)], 0, 0)
+        let mut i = 0
+        while i < array_length(item_nodes) {
+          let ic = cst_children(array_get(item_nodes, i))
+          let inames = find_idents(ic)
+          if array_length(inames) >= 2 {
+            array_push(items, (array_get(inames, 0), Some(array_get(inames, 1))))
+          } else if array_length(inames) >= 1 {
+            array_push(items, (array_get(inames, 0), None))
+          }
+          i = i + 1
+        }
+        SReExport(path, items)
+      }
+      else if node_kind_eq(kind, NModuleStmt) {
+        let exported = has_token_kind(children, is_export_token)
+        let name = find_ident(children)
+        let body_nodes = cst_child_nodes(children)
+        let stmts = array_slice([SExpr(EUnit)], 0, 0)
+        let mut i = 0
+        while i < array_length(body_nodes) {
+          array_push(stmts, lower_stmt(array_get(body_nodes, i)))
+          i = i + 1
+        }
+        SModule(exported, name, stmts)
+      }
+      else { throw("lower_stmt: unknown kind") }
+    },
+    _ => throw("lower_stmt: not a node")
+  }
+}
+
+// Helper: extract import path (recursive)
+let rec find_import_path_at = (children: Array[CstChild], i: Int) -> Option[String] {
+  if i >= array_length(children) { None }
+  else {
+    match array_get(children, i) {
+      CToken(TString(s)) => Some(s),
+      _ => find_import_path_at(children, i + 1)
+    }
+  }
+}
+let find_import_path = (children: Array[CstChild]) -> String {
+  match find_import_path_at(children, 0) {
+    Some(s) => s,
+    None => {
+      let idents = find_idents(children)
+      if array_length(idents) > 0 { array_get(idents, 0) }
+      else { "" }
+    }
+  }
+}
+
+//# Source file lowering
+
+export let lower_source_file = (root: CstChild) -> Array[Stmt] with { Error } {
+  let children = cst_children(root)
+  let stmts = array_slice([SExpr(EUnit)], 0, 0)
+  let nodes = cst_child_nodes(children)
+  let mut i = 0
+  while i < array_length(nodes) {
+    array_push(stmts, lower_stmt(array_get(nodes, i)))
+    i = i + 1
+  }
+  stmts
+}
