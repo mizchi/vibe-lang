@@ -14,8 +14,10 @@ Completed items are archived in `docs/DONE.md`.
 
 ### Language/Stdlib Proposals (AI-first authoring)
 
-- [ ] language: variant の安定 ID（型ID + ctorID）を IR/実行時で保持
-  - 文字列名や局所 tag 依存を減らし、codegen 実装を単純化する
+- [x] language: variant の安定 ID（型ID + ctorID）を IR/実行時で保持
+  - タグ計算: `(type_index << 16) | variant_index` — 型ごとに安定、宣言順非依存
+  - CtorTable に `type_names` 追加 — 各コンストラクタの所属型を記録
+  - 今後: lookup_ctor の型名フィルタ、同名コンストラクタ対応
 - [ ] language: tolerant parser（壊れた途中コードを AST 化して保持）
   - vibe shell での書き散らしを最後に normalize 可能にする
 - [ ] language: AST rewriter / macro API（構文正規化パスを定義可能にする）

@@ -1135,7 +1135,7 @@ export let compile_module = (stmts: Array[Stmt]) -> Bytes with { Error } {
       lambda_table: lt_m,
       num_user_funcs: num_funcs, func_offset: 0,
       ref_cell_names: array_slice([""], 0, 0),
-      ctor_table: CtorTable::{ names: array_slice([""], 0, 0), tags: array_slice([0], 0, 0), field_counts: array_slice([0], 0, 0), struct_names: array_slice([""], 0, 0), struct_field_names: array_slice([array_slice([""], 0, 0)], 0, 0) }
+      ctor_table: CtorTable::{ names: array_slice([""], 0, 0), tags: array_slice([0], 0, 0), field_counts: array_slice([0], 0, 0), type_names: array_slice([""], 0, 0), struct_names: array_slice([""], 0, 0), struct_field_names: array_slice([array_slice([""], 0, 0)], 0, 0) }
     }
     let final_nl = compile_expr(
       body_buf, body, local_names, param_count, compile_ctx, -1
@@ -1908,32 +1908,36 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
     i = i + 1
   }
 
-  // Collect enum variant constructors (start with built-in Option: None=0, Some=1)
+  // Collect enum variant constructors with stable type-scoped tags
+  // Tag scheme: (type_index << 16) | variant_index
+  // Built-in: Option = type 0 (None=0, Some=1)
   let ctor_names_list = array_slice(["None", "Some"], 0, 2)
   let ctor_tags_list = array_slice([0, 1], 0, 2)
   let ctor_field_counts_list = array_slice([0, 1], 0, 2)
-  let mut ctor_next_tag = 2
+  let ctor_type_names_list = array_slice(["Option", "Option"], 0, 2)
+  let mut type_index = 1  // type 0 = Option
   let mut ei2 = 0
   while ei2 < array_length(stmts) {
     match array_get(stmts, ei2) {
-      SEnum(_, _, variants) => {
+      SEnum(_, ename, variants) => {
+        type_index = type_index + 1
         let mut vi = 0
         while vi < array_length(variants) {
           let (vname, vfields) = array_get(variants, vi)
           array_push(ctor_names_list, vname)
-          array_push(ctor_tags_list, ctor_next_tag)
+          array_push(ctor_tags_list, (type_index << 16) | vi)
           array_push(ctor_field_counts_list, array_length(vfields))
-          ctor_next_tag = ctor_next_tag + 1
+          array_push(ctor_type_names_list, ename)
           vi = vi + 1
         }
         0
       },
       SStruct(_, sname, sfields) => {
-        // Register struct name as a constructor
+        type_index = type_index + 1
         array_push(ctor_names_list, sname)
-        array_push(ctor_tags_list, ctor_next_tag)
+        array_push(ctor_tags_list, type_index << 16)
         array_push(ctor_field_counts_list, array_length(sfields))
-        ctor_next_tag = ctor_next_tag + 1
+        array_push(ctor_type_names_list, sname)
         0
       },
       _ => 0
@@ -2170,7 +2174,7 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
       lambda_table: lt_w,
       num_user_funcs: num_user_funcs, func_offset: func_offset,
       ref_cell_names: array_slice([""], 0, 0),
-      ctor_table: CtorTable::{ names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, struct_names: struct_names, struct_field_names: struct_field_names }
+      ctor_table: CtorTable::{ names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names }
     }
     let final_nl = compile_expr(
       body_buf, body, local_names, param_count, compile_ctx, -1

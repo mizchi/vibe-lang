@@ -1408,31 +1408,35 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
     i = i + 1
   }
 
-  // Collect enum variant constructors (start with built-in Option: None=0, Some=1)
+  // Collect enum variant constructors with stable type-scoped tags
+  // Tag scheme: (type_index << 16) | variant_index
   let ctor_names_list = array_slice(["None", "Some"], 0, 2)
   let ctor_tags_list = array_slice([0, 1], 0, 2)
   let ctor_field_counts_list = array_slice([0, 1], 0, 2)
-  let mut ctor_next_tag = 2
+  let ctor_type_names_list = array_slice(["Option", "Option"], 0, 2)
+  let mut type_index = 1  // type 0 = Option
   let mut ei2 = 0
   while ei2 < array_length(stmts) {
     match array_get(stmts, ei2) {
-      SEnum(_, _, variants) => {
+      SEnum(_, ename, variants) => {
+        type_index = type_index + 1
         let mut vi = 0
         while vi < array_length(variants) {
           let (vname, vfields) = array_get(variants, vi)
           array_push(ctor_names_list, vname)
-          array_push(ctor_tags_list, ctor_next_tag)
+          array_push(ctor_tags_list, (type_index << 16) | vi)
           array_push(ctor_field_counts_list, array_length(vfields))
-          ctor_next_tag = ctor_next_tag + 1
+          array_push(ctor_type_names_list, ename)
           vi = vi + 1
         }
         0
       },
       SStruct(_, sname, sfields) => {
+        type_index = type_index + 1
         array_push(ctor_names_list, sname)
-        array_push(ctor_tags_list, ctor_next_tag)
+        array_push(ctor_tags_list, type_index << 16)
         array_push(ctor_field_counts_list, array_length(sfields))
-        ctor_next_tag = ctor_next_tag + 1
+        array_push(ctor_type_names_list, sname)
         0
       },
       _ => 0
@@ -1681,7 +1685,7 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
             let ref_local_indices_f = array_slice([0], 0, 0)
             let ft = FuncTable::{ names: fn_names_list, indices: fn_indices_list, params: fn_param_counts, returns: fn_returns_list }
             let st = StrTable::{ strs: str_strs, offsets: str_offsets, lengths: str_lengths }
-            let ct = CtorTable::{ names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, struct_names: struct_names, struct_field_names: struct_field_names }
+            let ct = CtorTable::{ names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names }
             let func_ctx = CompileCtxGc::{
               func_table: ft, str_table: st, lambda_table: lt_w,
               num_user_funcs: num_user_funcs, func_offset: func_offset,
