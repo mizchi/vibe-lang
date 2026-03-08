@@ -1,0 +1,175 @@
+// Purity analysis for vibe expressions
+//
+// 3-tier purity levels (represented as Int):
+//   0 = Pure       — no side effects, deterministic
+//   1 = StateLocal — local mutation only (let mut, array_push, while, etc.)
+//   2 = Impure     — I/O, effects, throws
+
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+// Merge two purity levels (takes the maximum / least pure)
+export let merge_purity = (a: Int, b: Int) -> Int {
+  if a > b { a } else { b }
+}
+
+// Determine purity of a builtin function by name
+export let builtin_purity = (name: String) -> Int {
+  // Impure (2): I/O, effects, throws
+  if string_equals(name, "print")
+    || string_equals(name, "println")
+    || string_equals(name, "assert")
+    || string_equals(name, "throw")
+    || string_equals(name, "sh")
+    || string_equals(name, "sh_lines")
+    || string_equals(name, "fs_read_file")
+    || string_equals(name, "fs_write_file")
+    || string_equals(name, "fs_exists")
+    || string_equals(name, "fs_readdir")
+    || string_equals(name, "fs_is_dir")
+    || string_equals(name, "fs_mkdir")
+    || string_equals(name, "fs_mkdir_p")
+    || string_equals(name, "fs_getcwd")
+    || string_equals(name, "fs_chdir")
+    || string_equals(name, "fs_remove")
+    || string_equals(name, "fs_is_file")
+    || string_equals(name, "fs_copy")
+    || string_equals(name, "fs_rename")
+    || string_equals(name, "fs_append")
+    || string_equals(name, "fs_write_bytes")
+    || string_equals(name, "env_get")
+    || string_equals(name, "http_request")
+    || string_equals(name, "http_listen")
+  {
+    2
+  }
+  // StateLocal (1): mutation of data structures
+  else if string_equals(name, "array_push")
+    || string_equals(name, "array_set")
+    || string_equals(name, "bytes_push")
+    || string_equals(name, "bytes_set")
+    || string_equals(name, "array_builder_push")
+    || string_equals(name, "string_builder_push")
+    || string_equals(name, "map_builder_set")
+  {
+    1
+  }
+  // Pure (0): everything else (eq, not, string_*, array_length, array_get, etc.)
+  else {
+    0
+  }
+}
+
+// Analyze purity of an expression
+export let rec analyze_purity = (expr: Expr) -> Int {
+  match expr {
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EIdent(_) => 0,
+    EArray(elems) => {
+      let mut result = 0
+      let mut i = 0
+      while i < array_length(elems) {
+        result = merge_purity(result, analyze_purity(array_get(elems, i)))
+        i = i + 1
+      }
+      result
+    },
+    ETuple(elems) => {
+      let mut result = 0
+      let mut i = 0
+      while i < array_length(elems) {
+        result = merge_purity(result, analyze_purity(array_get(elems, i)))
+        i = i + 1
+      }
+      result
+    },
+    ERecord(fields) => {
+      let mut result = 0
+      let mut i = 0
+      while i < array_length(fields) {
+        let (_, fval) = array_get(fields, i)
+        result = merge_purity(result, analyze_purity(fval))
+        i = i + 1
+      }
+      result
+    },
+    ELet(_, val, body) => merge_purity(analyze_purity(val), analyze_purity(body)),
+    ELetRec(_, val, body) => merge_purity(analyze_purity(val), analyze_purity(body)),
+    ELetMut(_, val, body) => merge_purity(1, merge_purity(analyze_purity(val), analyze_purity(body))),
+    EAssign(_, val, cont) => merge_purity(1, merge_purity(analyze_purity(val), analyze_purity(cont))),
+    EAssignOp(_, _, val, cont) => merge_purity(1, merge_purity(analyze_purity(val), analyze_purity(cont))),
+    ESeq(a, b) => merge_purity(analyze_purity(a), analyze_purity(b)),
+    EIf(cond, then_e, else_e) => merge_purity(analyze_purity(cond), merge_purity(analyze_purity(then_e), analyze_purity(else_e))),
+    EMatch(scrutinee, arms) => {
+      let mut result = analyze_purity(scrutinee)
+      let mut i = 0
+      while i < array_length(arms) {
+        let (_, arm_body) = array_get(arms, i)
+        result = merge_purity(result, analyze_purity(arm_body))
+        i = i + 1
+      }
+      result
+    },
+    EHandle(body, arms) => {
+      let mut result = analyze_purity(body)
+      let mut i = 0
+      while i < array_length(arms) {
+        let (_, arm_body) = array_get(arms, i)
+        result = merge_purity(result, analyze_purity(arm_body))
+        i = i + 1
+      }
+      result
+    },
+    EWhile(cond, body) => merge_purity(1, merge_purity(analyze_purity(cond), analyze_purity(body))),
+    EForIn(_, iter, body) => merge_purity(1, merge_purity(analyze_purity(iter), analyze_purity(body))),
+    EBinOp(_, left, right) => merge_purity(analyze_purity(left), analyze_purity(right)),
+    EUnaryOp(_, operand) => analyze_purity(operand),
+    EFn(_, _, _, _, _, _) => 0,
+    ECall(callee, args) => {
+      let base = match callee {
+        EIdent(name) => builtin_purity(name),
+        _ => 2
+      }
+      let mut args_p = 0
+      let mut i = 0
+      while i < array_length(args) {
+        args_p = merge_purity(args_p, analyze_purity(array_get(args, i)))
+        i = i + 1
+      }
+      merge_purity(base, args_p)
+    },
+    EThrow(_) => 2,
+    EDot(obj, _) => analyze_purity(obj),
+    EBreak(_) => 1,
+    EContinue(_) => 1,
+    ELabeledArg(_, _, body) => analyze_purity(body),
+    _ => 0
+  }
+}
+
+// Analyze purity of a statement
+export let analyze_stmt_purity = (stmt: Stmt) -> Int {
+  match stmt {
+    SLet(_, _, _, _, body) => analyze_purity(body),
+    SLetMut(_, _, body) => merge_purity(1, analyze_purity(body)),
+    STest(_, body) => analyze_purity(body),
+    SBench(_, body) => analyze_purity(body),
+    SExpr(e) => analyze_purity(e),
+    _ => 0
+  }
+}
+
+// Check if an expression is pure (purity == 0)
+export let is_pure = (expr: Expr) -> Bool {
+  eq(analyze_purity(expr), 0)
+}
+
+// Check if an expression has only local state (purity <= 1)
+export let is_local = (expr: Expr) -> Bool {
+  analyze_purity(expr) <= 1
+}
