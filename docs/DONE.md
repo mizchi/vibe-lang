@@ -2,6 +2,22 @@
 
 Completed items archived from `TODO.md`.
 
+## 2026-03-08
+
+- **Selfhost checker 機能差分 T1–T20 全完了** (318+ tests across 20+ files)
+  - T1: normalize_type (26 tests), T2: pattern checking (13), T3: unify (22), T4: effects (19)
+  - T5: desugar (14), T6: DCE (13), T7: error reporting (20), T8: checker_stmt (6)
+  - T9: struct field (12), T10: trait system (18), T11: unify 強化 (30)
+  - T12: monomorphization (10), T13: purity analysis (28), T14: builtin types (27)
+  - T15: symbol indexing (16), T16: capture safety (20), T17: desugar 強化 (14)
+  - T18: warning system (14), T19: LSIF export (12), T20: builtin handlers (31)
+- **MoonBit テスト移植完了**: ポータブルな 41 テストを selfhost に移植
+  - checker_normalize +6, checker_purity +10, checker_builtins +11
+  - checker_trait +4, checker_capture +4, checker_error +6
+  - 移植不可: typecheck_env_lifecycle/namespace/export, subtype, type_index, vibe shell desugar, monoify_module (MoonBit 固有機能依存)
+- **Compiler Review Backlog**: `compile_expr` 責務分割 (CompileCtx struct 導入, パラメータ 25→6)
+- **Language**: variant 安定 ID (type_index << 16 | variant_index)
+
 ## 2026-03-07
 
 - **WASM eval interpreter 大幅拡張**: block stack ベースの制御フロー（block/loop/br/br_if）、global.get/set、i64.load/store、i32.load8_u、内部関数呼び出し（cabi_realloc 等）の再帰実行、型セクション/関数セクションパースによる正確なパラメータ数取得
