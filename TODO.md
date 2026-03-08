@@ -36,11 +36,12 @@ Completed items are archived in `docs/DONE.md`.
 - [x] `compile_source_wasi(source, entry_name) -> Bytes` 関数（WASI エントリ付き）
 - [x] テスト: `compiler_test.vibe` (6 tests) — int/fn/if/enum/while/wasi
 
-#### S3: cli.vibe — 最小 CLI エントリポイント
-- [ ] argv 相当のコマンドライン引数取得（WASI or builtin）
-- [ ] `fs_read_file` でソース読み込み → `compile_source` → `fs_write_bytes` で .wasm 出力
-- [ ] `vibe compile <input.vibe> -o <output.wasm>` 相当の最小 CLI
-- [ ] テスト: CLI が実際にファイルを読み書きして .wasm を生成
+#### S3: cli.vibe — 最小 CLI エントリポイント (部分完了)
+- [x] cli.vibe 作成: env_get で VIBE_INPUT/VIBE_OUTPUT/VIBE_ENTRY を受け取り compile_source → fs_write_bytes
+- [x] cli_test.vibe (6 tests): compile pipeline の E2E テスト（arithmetic, wasi, match, let rec, struct, closure）
+- [ ] **ブロッカー**: `vibe run` は WASM compiled backend を使うが、codegen が `env_get`/`fs_read_file`/`fs_write_bytes` を WASM に出力できない（interpreter-only builtins）
+- [ ] WASI I/O builtins を codegen に追加（`fd_read`/`fd_write`/`args_get` 等）→ P4 WASI 拡張と統合
+- [ ] 代替: MoonBit ホスト (`vibe_compile_wasi`) 経由で selfhost を呼び出す現行方式を維持
 
 #### S4: module loader — import 解決
 - [ ] `SImport` から依存ファイルパスを抽出
