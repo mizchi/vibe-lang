@@ -1,0 +1,181 @@
+//# Imports
+
+import ./types.vibe {
+  Subst, Type, unify, types_equal, subst_apply, subst_lookup
+}
+
+//# Helpers
+
+let is_some = (opt: Option[Subst]) -> Bool {
+  match opt {
+    Some(_) => true,
+    None => false
+  }
+}
+
+let is_none = (opt: Option[Subst]) -> Bool {
+  match opt {
+    Some(_) => false,
+    None => true
+  }
+}
+
+//# Primitive unification
+
+test "unify Int with Int" {
+  let result = unify(CtInt, CtInt, SubstEmpty)
+  assert(is_some(result))
+}
+
+test "unify Int with String fails" {
+  let result = unify(CtInt, CtString, SubstEmpty)
+  assert(is_none(result))
+}
+
+test "unify Bool with Bool" {
+  let result = unify(CtBool, CtBool, SubstEmpty)
+  assert(is_some(result))
+}
+
+//# CtVar unification
+
+test "unify CtVar with Int binds var" {
+  let result = unify(CtVar(0), CtInt, SubstEmpty)
+  assert(is_some(result))
+  match result {
+    Some(s) => {
+      let resolved = subst_apply(s, CtVar(0))
+      assert(types_equal(resolved, CtInt))
+    },
+    None => assert(false)
+  }
+}
+
+test "unify Int with CtVar binds var" {
+  let result = unify(CtInt, CtVar(0), SubstEmpty)
+  assert(is_some(result))
+  match result {
+    Some(s) => {
+      let resolved = subst_apply(s, CtVar(0))
+      assert(types_equal(resolved, CtInt))
+    },
+    None => assert(false)
+  }
+}
+
+//# CtArray unification
+
+test "unify CtArray(Int) with CtArray(Int)" {
+  let result = unify(CtArray(CtInt), CtArray(CtInt), SubstEmpty)
+  assert(is_some(result))
+}
+
+test "unify CtArray(Int) with CtArray(String) fails" {
+  let result = unify(CtArray(CtInt), CtArray(CtString), SubstEmpty)
+  assert(is_none(result))
+}
+
+//# CtFn unification
+
+test "unify CtFn([Int], String) with CtFn([Int], String)" {
+  let result = unify(
+    CtFn([CtInt], CtString, false),
+    CtFn([CtInt], CtString, false),
+    SubstEmpty
+  )
+  assert(is_some(result))
+}
+
+test "unify CtFn([Int], String) with CtFn([Bool], String) fails" {
+  let result = unify(
+    CtFn([CtInt], CtString, false),
+    CtFn([CtBool], CtString, false),
+    SubstEmpty
+  )
+  assert(is_none(result))
+}
+
+//# CtTuple unification
+
+test "unify CtTuple([Int, String]) with CtTuple([Int, String])" {
+  let result = unify(
+    CtTuple([CtInt, CtString]),
+    CtTuple([CtInt, CtString]),
+    SubstEmpty
+  )
+  assert(is_some(result))
+}
+
+test "unify CtTuple([Int, String]) with CtTuple([Bool, String]) fails" {
+  let result = unify(
+    CtTuple([CtInt, CtString]),
+    CtTuple([CtBool, CtString]),
+    SubstEmpty
+  )
+  assert(is_none(result))
+}
+
+//# CtEnum unification
+
+test "unify CtEnum(Foo) with CtEnum(Foo)" {
+  let result = unify(CtEnum("Foo"), CtEnum("Foo"), SubstEmpty)
+  assert(is_some(result))
+}
+
+test "unify CtEnum(Foo) with CtEnum(Bar) fails" {
+  let result = unify(CtEnum("Foo"), CtEnum("Bar"), SubstEmpty)
+  assert(is_none(result))
+}
+
+//# CtStruct unification
+
+test "unify CtStruct(Foo) with CtStruct(Foo)" {
+  let result = unify(CtStruct("Foo"), CtStruct("Foo"), SubstEmpty)
+  assert(is_some(result))
+}
+
+test "unify CtStruct(Foo) with CtStruct(Bar) fails" {
+  let result = unify(CtStruct("Foo"), CtStruct("Bar"), SubstEmpty)
+  assert(is_none(result))
+}
+
+//# CtNamed unification
+
+test "unify CtNamed(X, [Int]) with CtNamed(X, [Int])" {
+  let result = unify(CtNamed("X", [CtInt]), CtNamed("X", [CtInt]), SubstEmpty)
+  assert(is_some(result))
+}
+
+test "unify CtNamed(X, [Int]) with CtNamed(X, [String]) fails" {
+  let result = unify(CtNamed("X", [CtInt]), CtNamed("X", [CtString]), SubstEmpty)
+  assert(is_none(result))
+}
+
+test "unify CtNamed(X, [Int]) with CtNamed(Y, [Int]) fails" {
+  let result = unify(CtNamed("X", [CtInt]), CtNamed("Y", [CtInt]), SubstEmpty)
+  assert(is_none(result))
+}
+
+//# CtOption unification
+
+test "unify CtOption(Int) with CtOption(Int)" {
+  let result = unify(CtOption(CtInt), CtOption(CtInt), SubstEmpty)
+  assert(is_some(result))
+}
+
+test "unify CtOption(Int) with CtOption(String) fails" {
+  let result = unify(CtOption(CtInt), CtOption(CtString), SubstEmpty)
+  assert(is_none(result))
+}
+
+//# Cross-type failures
+
+test "unify CtEnum with CtStruct fails" {
+  let result = unify(CtEnum("Foo"), CtStruct("Foo"), SubstEmpty)
+  assert(is_none(result))
+}
+
+test "unify CtEnum with CtInt fails" {
+  let result = unify(CtEnum("Foo"), CtInt, SubstEmpty)
+  assert(is_none(result))
+}

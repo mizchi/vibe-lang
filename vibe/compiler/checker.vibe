@@ -8,6 +8,10 @@ import ./builtins.vibe {
   lookup_builtin
 }
 
+import ./checker_pattern.vibe {
+  check_pattern
+}
+
 import ./checker_resolve.vibe {
   resolve_type_expr
 }
@@ -151,13 +155,28 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
       check_expr(body, env, defs, s1, c1)
     },
     EMatch(scrutinee, arms) => {
-      let (_, s1, c1) = check_expr(scrutinee, env, defs, s, c)
-      if eq(array_length(arms), 0) {
+      let (scr_ty, s1, c1) = check_expr(scrutinee, env, defs, s, c)
+      let alen = array_length(arms)
+      if eq(alen, 0) {
         (CtUnknown, s1, c1)
       }
       else {
-        let (_, fb) = array_get(arms, 0)
-        check_expr(fb, env, defs, s1, c1)
+        let mut result_ty = CtUnknown
+        let mut si = s1
+        let mut ci = c1
+        let mut ai = 0
+        while ai < alen {
+          let (pat, body) = array_get(arms, ai)
+          let arm_env = check_pattern(pat, scr_ty, env, defs)
+          let (arm_ty, ns, nc) = check_expr(body, arm_env, defs, si, ci)
+          if eq(ai, 0) {
+            result_ty = arm_ty
+          }
+          si = ns
+          ci = nc
+          ai = ai + 1
+        }
+        (result_ty, si, ci)
       }
     },
     EHandle(body, _) => check_expr(body, env, defs, s, c),
