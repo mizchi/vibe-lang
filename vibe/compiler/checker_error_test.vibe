@@ -88,3 +88,66 @@ test "format_errors multiple joined with newlines" {
   let msg = format_errors(errors)
   assert(string_equals(msg, "unbound variable: x\nnot callable: 42\nduplicate declaration: foo"))
 }
+
+//# Extended coverage
+
+test "format_errors preserves order" {
+  let errors = new_errors()
+  add_error(errors, CEUnboundVar("alpha"))
+  add_error(errors, CETypeMismatch("Bool", "Int"))
+  add_error(errors, CEDuplicateDecl("gamma"))
+  let msg = format_errors(errors)
+  assert(string_equals(msg, "unbound variable: alpha\ntype mismatch: expected Bool, got Int\nduplicate declaration: gamma"))
+}
+
+test "check_error_to_string CEUnknownField includes both type and field" {
+  let msg = check_error_to_string(CEUnknownField("MyRecord", "missing_field"))
+  assert(string_contains(msg, "MyRecord"))
+  assert(string_contains(msg, "missing_field"))
+}
+
+test "check_error_to_string CEArityMismatch with zero" {
+  let msg = check_error_to_string(CEArityMismatch("g", 0, 2))
+  assert(string_contains(msg, "g"))
+  assert(string_contains(msg, "0"))
+  assert(string_contains(msg, "2"))
+}
+
+test "add_error preserves all variants" {
+  let errors = new_errors()
+  add_error(errors, CEUnboundVar("a"))
+  add_error(errors, CETypeMismatch("Int", "Bool"))
+  add_error(errors, CEArityMismatch("f", 1, 2))
+  add_error(errors, CENotCallable("99"))
+  add_error(errors, CEUnknownField("Rec", "z"))
+  add_error(errors, CEUnknownCtor("Bar"))
+  add_error(errors, CEDuplicateDecl("dup"))
+  assert(eq(array_length(errors), 7))
+}
+
+test "has_errors after adding then checking" {
+  let errors = new_errors()
+  add_error(errors, CETypeMismatch("String", "Int"))
+  assert(has_errors(errors))
+  let msg = format_errors(errors)
+  assert(!string_equals(msg, ""))
+}
+
+test "format_errors with all error types" {
+  let errors = new_errors()
+  add_error(errors, CEUnboundVar("v"))
+  add_error(errors, CETypeMismatch("A", "B"))
+  add_error(errors, CEArityMismatch("h", 3, 1))
+  add_error(errors, CENotCallable("lit"))
+  add_error(errors, CEUnknownField("T", "f"))
+  add_error(errors, CEUnknownCtor("C"))
+  add_error(errors, CEDuplicateDecl("d"))
+  let msg = format_errors(errors)
+  assert(string_contains(msg, "unbound variable: v"))
+  assert(string_contains(msg, "type mismatch: expected A, got B"))
+  assert(string_contains(msg, "arity mismatch: h expects 3 args, got 1"))
+  assert(string_contains(msg, "not callable: lit"))
+  assert(string_contains(msg, "unknown field f on T"))
+  assert(string_contains(msg, "unknown constructor: C"))
+  assert(string_contains(msg, "duplicate declaration: d"))
+}

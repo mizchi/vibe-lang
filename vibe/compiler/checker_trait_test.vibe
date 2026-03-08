@@ -89,3 +89,33 @@ test "check_bounds_satisfied some unsatisfied returns names" {
   assert(eq(array_length(result), 1))
   assert(string_equals(array_get(result, 0), "Add"))
 }
+
+test "trait impl overlap precheck rejects disjoint concrete targets" {
+  let env = register_builtin_traits(EnvEmpty)
+  let empty_args = array_slice([CtInt], 0, 0)
+  let foo_type = CtNamed("Foo", empty_args)
+  let bar_type = CtNamed("Bar", empty_args)
+  let env2 = EnvTraitImpl("Eq", foo_type, env)
+  assert(validate_impl_no_overlap(env2, "Eq", bar_type))
+}
+
+test "trait impl overlap precheck keeps generic targets as maybe-overlap" {
+  let env = register_builtin_traits(EnvEmpty)
+  let var_type = CtVar(999)
+  assert(validate_impl_no_overlap(env, "Eq", var_type))
+}
+
+test "two different CtNamed types dont overlap for same trait" {
+  let env = register_builtin_traits(EnvEmpty)
+  let empty_args = array_slice([CtInt], 0, 0)
+  let alpha = CtNamed("Alpha", empty_args)
+  let beta = CtNamed("Beta", empty_args)
+  let env2 = EnvTraitImpl("Add", alpha, env)
+  assert(validate_impl_no_overlap(env2, "Add", beta))
+  assert(not(validate_impl_no_overlap(env2, "Add", alpha)))
+}
+
+test "String implements Eq from builtins so overlap is detected" {
+  let env = register_builtin_traits(EnvEmpty)
+  assert(not(validate_impl_no_overlap(env, "Eq", CtString)))
+}

@@ -218,3 +218,95 @@ test "analyze_captures_stmts: no captures returns empty" {
   let result = analyze_captures_stmts(stmts)
   assert(eq(array_length(result), 0))
 }
+
+//# Tests — ported from MoonBit capture_env_wbtest
+
+test "nested closure captures outer free var" {
+  // let y = 1 in (a) -> ((b) -> y)
+  // The outer lambda should have y as a free var
+  let inner_fn = EFn(
+    empty_tparams(),
+    empty_bounds(),
+    [("b", None)],
+    None,
+    None,
+    EIdent("y")
+  )
+  let outer_fn = EFn(
+    empty_tparams(),
+    empty_bounds(),
+    [("a", None)],
+    None,
+    None,
+    inner_fn
+  )
+  let expr = ELet("y", EInt(1), outer_fn)
+  let result = collect_free_vars(outer_fn, empty_strings())
+  // outer lambda body references y through inner lambda; y is free in outer
+  assert(eq(array_length(result), 1))
+  assert(string_equals(array_get(result, 0), "y"))
+}
+
+test "closure captures const: free var even if value is literal" {
+  // let n = 5 in let f = () -> n
+  // n is a free var inside the lambda
+  let lambda = EFn(
+    empty_tparams(),
+    empty_bounds(),
+    array_slice([("a", None)], 0, 0),
+    None,
+    None,
+    EIdent("n")
+  )
+  let result = collect_free_vars(lambda, empty_strings())
+  assert(eq(array_length(result), 1))
+  assert(string_equals(array_get(result, 0), "n"))
+}
+
+test "multiple captures: all free vars collected" {
+  // let a = 2 in let b = 3 in let f = (x) -> x * a + b
+  // Both a and b are free vars in f
+  let body = EBinOp("+",
+    EBinOp("*", EIdent("x"), EIdent("a")),
+    EIdent("b")
+  )
+  let lambda = EFn(
+    empty_tparams(),
+    empty_bounds(),
+    [("x", None)],
+    None,
+    None,
+    body
+  )
+  let result = collect_free_vars(lambda, empty_strings())
+  assert(eq(array_length(result), 2))
+  assert(contains_str(result, "a"))
+  assert(contains_str(result, "b"))
+}
+
+test "nested mut capture: inner lambda captures outer mut" {
+  // let mut x = 0 in let outer = () -> (let inner = () -> x)
+  // inner lambda has x as free var, and x is mut => analyze_captures flags it
+  let inner_fn = EFn(
+    empty_tparams(),
+    empty_bounds(),
+    array_slice([("a", None)], 0, 0),
+    None,
+    None,
+    EIdent("x")
+  )
+  let outer_fn = EFn(
+    empty_tparams(),
+    empty_bounds(),
+    array_slice([("a", None)], 0, 0),
+    None,
+    None,
+    inner_fn
+  )
+  let expr = ELetMut("x", EInt(0), outer_fn)
+  let result = analyze_captures(expr)
+  assert(eq(array_length(result), 1))
+  let (desc, name) = array_get(result, 0)
+  assert(string_equals(desc, "lambda"))
+  assert(string_equals(name, "x"))
+}
