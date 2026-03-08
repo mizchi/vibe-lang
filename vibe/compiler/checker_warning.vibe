@@ -1,0 +1,487 @@
+//# Imports
+
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+//# Helpers
+
+let _use_type_expr = (t: TypeExpr) -> TypeExpr { t }
+let _use_pat = (p: Pat) -> Pat { p }
+
+let empty_strings = () -> Array[String] {
+  array_slice([""], 0, 0)
+}
+
+let empty_warnings = () -> Array[(String, String, String)] {
+  array_slice([("", "", "")], 0, 0)
+}
+
+let array_contains_str = (arr: Array[String], s: String) -> Bool {
+  let len = array_length(arr)
+  let rec search = (i: Int) -> Bool {
+    if i >= len { false }
+    else if string_equals(array_get(arr, i), s) { true }
+    else search(i + 1)
+  }
+  search(0)
+}
+
+let starts_with_underscore = (s: String) -> Bool {
+  if eq(string_length(s), 0) { false }
+  else { eq(string_char_code_at(s, 0), 95) }
+}
+
+//# collect_defined_names
+
+export let collect_defined_names = (stmts: Array[Stmt]) -> Array[String] {
+  let out = empty_strings()
+  let mut i = 0
+  while i < array_length(stmts) {
+    let stmt = array_get(stmts, i)
+    match stmt {
+      SLet(_, _, name, _, _) => {
+        array_push(out, name)
+        0
+      },
+      SLetMut(name, _, _) => {
+        array_push(out, name)
+        0
+      },
+      _ => 0
+    }
+    i = i + 1
+  }
+  out
+}
+
+//# collect_used_names
+
+let rec collect_used_names_expr = (expr: Expr, out: Array[String]) -> Int {
+  match expr {
+    EIdent(name) => {
+      if not(array_contains_str(out, name)) {
+        array_push(out, name)
+      }
+      0
+    },
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EBreak(_) => 0,
+    EContinue(_) => 0,
+    EThrow(e) => collect_used_names_expr(e, out),
+    EUnaryOp(_, e) => collect_used_names_expr(e, out),
+    ETuple(items) => {
+      let mut i = 0
+      while i < array_length(items) {
+        collect_used_names_expr(array_get(items, i), out)
+        i = i + 1
+      }
+      0
+    },
+    EArray(items) => {
+      let mut i = 0
+      while i < array_length(items) {
+        collect_used_names_expr(array_get(items, i), out)
+        i = i + 1
+      }
+      0
+    },
+    ERecord(fields) => {
+      let mut i = 0
+      while i < array_length(fields) {
+        let (_, val) = array_get(fields, i)
+        collect_used_names_expr(val, out)
+        i = i + 1
+      }
+      0
+    },
+    EBinOp(_, l, r) => {
+      collect_used_names_expr(l, out)
+      collect_used_names_expr(r, out)
+      0
+    },
+    ECall(callee, args) => {
+      collect_used_names_expr(callee, out)
+      let mut i = 0
+      while i < array_length(args) {
+        collect_used_names_expr(array_get(args, i), out)
+        i = i + 1
+      }
+      0
+    },
+    EIf(cond, then_e, else_e) => {
+      collect_used_names_expr(cond, out)
+      collect_used_names_expr(then_e, out)
+      collect_used_names_expr(else_e, out)
+      0
+    },
+    ELet(_, val, body) => {
+      collect_used_names_expr(val, out)
+      collect_used_names_expr(body, out)
+      0
+    },
+    ELetRec(_, val, body) => {
+      collect_used_names_expr(val, out)
+      collect_used_names_expr(body, out)
+      0
+    },
+    ELetMut(_, val, body) => {
+      collect_used_names_expr(val, out)
+      collect_used_names_expr(body, out)
+      0
+    },
+    EAssign(_, val, body) => {
+      collect_used_names_expr(val, out)
+      collect_used_names_expr(body, out)
+      0
+    },
+    EAssignOp(_, _, val, body) => {
+      collect_used_names_expr(val, out)
+      collect_used_names_expr(body, out)
+      0
+    },
+    ESeq(l, r) => {
+      collect_used_names_expr(l, out)
+      collect_used_names_expr(r, out)
+      0
+    },
+    EMatch(scr, arms) => {
+      collect_used_names_expr(scr, out)
+      let mut i = 0
+      while i < array_length(arms) {
+        let (_, body) = array_get(arms, i)
+        collect_used_names_expr(body, out)
+        i = i + 1
+      }
+      0
+    },
+    EHandle(body_expr, arms) => {
+      collect_used_names_expr(body_expr, out)
+      let mut i = 0
+      while i < array_length(arms) {
+        let (_, arm_body) = array_get(arms, i)
+        collect_used_names_expr(arm_body, out)
+        i = i + 1
+      }
+      0
+    },
+    EWhile(cond, body) => {
+      collect_used_names_expr(cond, out)
+      collect_used_names_expr(body, out)
+      0
+    },
+    EForIn(_, iter, body) => {
+      collect_used_names_expr(iter, out)
+      collect_used_names_expr(body, out)
+      0
+    },
+    EFn(_, _, _, _, _, body) => {
+      collect_used_names_expr(body, out)
+      0
+    },
+    EDot(obj, _) => {
+      collect_used_names_expr(obj, out)
+      0
+    },
+    ELabeledArg(_, _, e) => {
+      collect_used_names_expr(e, out)
+      0
+    }
+  }
+}
+
+export let collect_used_names = (expr: Expr) -> Array[String] {
+  let out = empty_strings()
+  collect_used_names_expr(expr, out)
+  out
+}
+
+//# collect_used_names_stmts
+
+export let collect_used_names_stmts = (stmts: Array[Stmt]) -> Array[String] {
+  let out = empty_strings()
+  let mut i = 0
+  while i < array_length(stmts) {
+    let stmt = array_get(stmts, i)
+    match stmt {
+      SLet(_, _, _, _, expr) => collect_used_names_expr(expr, out),
+      SLetMut(_, _, expr) => collect_used_names_expr(expr, out),
+      SExpr(expr) => collect_used_names_expr(expr, out),
+      STest(_, expr) => collect_used_names_expr(expr, out),
+      SBench(_, expr) => collect_used_names_expr(expr, out),
+      _ => 0
+    }
+    i = i + 1
+  }
+  out
+}
+
+//# collect_assign_targets
+
+let rec collect_assign_targets_expr = (expr: Expr, out: Array[String]) -> Int {
+  match expr {
+    EAssign(name, val, body) => {
+      if not(array_contains_str(out, name)) {
+        array_push(out, name)
+      }
+      collect_assign_targets_expr(val, out)
+      collect_assign_targets_expr(body, out)
+      0
+    },
+    EAssignOp(name, _, val, body) => {
+      if not(array_contains_str(out, name)) {
+        array_push(out, name)
+      }
+      collect_assign_targets_expr(val, out)
+      collect_assign_targets_expr(body, out)
+      0
+    },
+    EIdent(_) => 0,
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EBreak(_) => 0,
+    EContinue(_) => 0,
+    EThrow(e) => collect_assign_targets_expr(e, out),
+    EUnaryOp(_, e) => collect_assign_targets_expr(e, out),
+    ETuple(items) => {
+      let mut i = 0
+      while i < array_length(items) {
+        collect_assign_targets_expr(array_get(items, i), out)
+        i = i + 1
+      }
+      0
+    },
+    EArray(items) => {
+      let mut i = 0
+      while i < array_length(items) {
+        collect_assign_targets_expr(array_get(items, i), out)
+        i = i + 1
+      }
+      0
+    },
+    ERecord(fields) => {
+      let mut i = 0
+      while i < array_length(fields) {
+        let (_, val) = array_get(fields, i)
+        collect_assign_targets_expr(val, out)
+        i = i + 1
+      }
+      0
+    },
+    EBinOp(_, l, r) => {
+      collect_assign_targets_expr(l, out)
+      collect_assign_targets_expr(r, out)
+      0
+    },
+    ECall(callee, args) => {
+      collect_assign_targets_expr(callee, out)
+      let mut i = 0
+      while i < array_length(args) {
+        collect_assign_targets_expr(array_get(args, i), out)
+        i = i + 1
+      }
+      0
+    },
+    EIf(cond, then_e, else_e) => {
+      collect_assign_targets_expr(cond, out)
+      collect_assign_targets_expr(then_e, out)
+      collect_assign_targets_expr(else_e, out)
+      0
+    },
+    ELet(_, val, body) => {
+      collect_assign_targets_expr(val, out)
+      collect_assign_targets_expr(body, out)
+      0
+    },
+    ELetRec(_, val, body) => {
+      collect_assign_targets_expr(val, out)
+      collect_assign_targets_expr(body, out)
+      0
+    },
+    ELetMut(_, val, body) => {
+      collect_assign_targets_expr(val, out)
+      collect_assign_targets_expr(body, out)
+      0
+    },
+    ESeq(l, r) => {
+      collect_assign_targets_expr(l, out)
+      collect_assign_targets_expr(r, out)
+      0
+    },
+    EMatch(scr, arms) => {
+      collect_assign_targets_expr(scr, out)
+      let mut i = 0
+      while i < array_length(arms) {
+        let (_, body) = array_get(arms, i)
+        collect_assign_targets_expr(body, out)
+        i = i + 1
+      }
+      0
+    },
+    EHandle(body_expr, arms) => {
+      collect_assign_targets_expr(body_expr, out)
+      let mut i = 0
+      while i < array_length(arms) {
+        let (_, arm_body) = array_get(arms, i)
+        collect_assign_targets_expr(arm_body, out)
+        i = i + 1
+      }
+      0
+    },
+    EWhile(cond, body) => {
+      collect_assign_targets_expr(cond, out)
+      collect_assign_targets_expr(body, out)
+      0
+    },
+    EForIn(_, iter, body) => {
+      collect_assign_targets_expr(iter, out)
+      collect_assign_targets_expr(body, out)
+      0
+    },
+    EFn(_, _, _, _, _, body) => {
+      collect_assign_targets_expr(body, out)
+      0
+    },
+    EDot(obj, _) => {
+      collect_assign_targets_expr(obj, out)
+      0
+    },
+    ELabeledArg(_, _, e) => {
+      collect_assign_targets_expr(e, out)
+      0
+    }
+  }
+}
+
+export let collect_assign_targets = (expr: Expr) -> Array[String] {
+  let out = empty_strings()
+  collect_assign_targets_expr(expr, out)
+  out
+}
+
+export let collect_assign_targets_stmts = (stmts: Array[Stmt]) -> Array[String] {
+  let out = empty_strings()
+  let mut i = 0
+  while i < array_length(stmts) {
+    let stmt = array_get(stmts, i)
+    match stmt {
+      SLet(_, _, _, _, expr) => collect_assign_targets_expr(expr, out),
+      SLetMut(_, _, expr) => collect_assign_targets_expr(expr, out),
+      SExpr(expr) => collect_assign_targets_expr(expr, out),
+      STest(_, expr) => collect_assign_targets_expr(expr, out),
+      SBench(_, expr) => collect_assign_targets_expr(expr, out),
+      _ => 0
+    }
+    i = i + 1
+  }
+  out
+}
+
+//# detect_unused_vars
+
+export let detect_unused_vars = (stmts: Array[Stmt]) -> Array[(String, String, String)] {
+  let defined = collect_defined_names(stmts)
+  let used = collect_used_names_stmts(stmts)
+  let out = empty_warnings()
+  let mut i = 0
+  while i < array_length(defined) {
+    let name = array_get(defined, i)
+    if not(starts_with_underscore(name)) {
+      if not(array_contains_str(used, name)) {
+        let msg = string_concat("variable '", string_concat(name, "' is defined but never used"))
+        array_push(out, ("unused_var", name, msg))
+      }
+    }
+    i = i + 1
+  }
+  out
+}
+
+//# detect_unused_mut
+
+export let detect_unused_mut = (stmts: Array[Stmt]) -> Array[(String, String, String)] {
+  let targets = collect_assign_targets_stmts(stmts)
+  let out = empty_warnings()
+  let mut i = 0
+  while i < array_length(stmts) {
+    let stmt = array_get(stmts, i)
+    match stmt {
+      SLetMut(name, _, _) => {
+        if not(array_contains_str(targets, name)) {
+          let msg = string_concat("mutable variable '", string_concat(name, "' is never reassigned, use 'let' instead"))
+          array_push(out, ("unused_mut", name, msg))
+        }
+        0
+      },
+      _ => 0
+    }
+    i = i + 1
+  }
+  out
+}
+
+//# detect_shadows
+
+export let detect_shadows = (stmts: Array[Stmt]) -> Array[(String, String, String)] {
+  let seen = empty_strings()
+  let out = empty_warnings()
+  let mut i = 0
+  while i < array_length(stmts) {
+    let stmt = array_get(stmts, i)
+    match stmt {
+      SLet(_, _, name, _, _) => {
+        if array_contains_str(seen, name) {
+          let msg = string_concat("variable '", string_concat(name, "' shadows a previous binding"))
+          array_push(out, ("shadow", name, msg))
+        } else {
+          array_push(seen, name)
+        }
+        0
+      },
+      SLetMut(name, _, _) => {
+        if array_contains_str(seen, name) {
+          let msg = string_concat("variable '", string_concat(name, "' shadows a previous binding"))
+          array_push(out, ("shadow", name, msg))
+        } else {
+          array_push(seen, name)
+        }
+        0
+      },
+      _ => 0
+    }
+    i = i + 1
+  }
+  out
+}
+
+//# check_warnings
+
+export let check_warnings = (stmts: Array[Stmt]) -> Array[(String, String, String)] {
+  let out = empty_warnings()
+  let unused = detect_unused_vars(stmts)
+  let mut i = 0
+  while i < array_length(unused) {
+    array_push(out, array_get(unused, i))
+    i = i + 1
+  }
+  let muts = detect_unused_mut(stmts)
+  let mut j = 0
+  while j < array_length(muts) {
+    array_push(out, array_get(muts, j))
+    j = j + 1
+  }
+  let shadows = detect_shadows(stmts)
+  let mut k = 0
+  while k < array_length(shadows) {
+    array_push(out, array_get(shadows, k))
+    k = k + 1
+  }
+  out
+}
