@@ -85,6 +85,24 @@ Completed items are archived in `docs/DONE.md`.
 - [x] AST 再帰解析
 - テスト: `checker_purity_test.vibe` (18 tests)
 
+#### T14: advanced builtins 型推論 — `checker_builtins.vibe` ✅
+- [x] array_get/push/slice の要素型推論
+- [x] string/map 操作の戻り型推論
+- [x] infer_builtin_call 統合エントリポイント
+- テスト: `checker_builtins_test.vibe` (16 tests)
+
+#### T15: symbol indexing — `symbol_index.vibe` ✅
+- [x] シンボル収集（Fn/Value/Type/Ctor/Trait/Module）
+- [x] 参照解析（AST 走査で EIdent 収集）
+- [x] フィルタ・検索・参照シンボル抽出
+- テスト: `symbol_index_test.vibe` (16 tests)
+
+#### T17: desugar 強化 — テスト追加 ✅
+- [x] chained pipe (`x |> f |> g`) テスト
+- [x] pipe + method call テスト
+- [x] nested method calls テスト
+- テスト: `desugar_test.vibe` (14 tests, +6)
+
 ### Compiler Review Backlog (readability + selfhost robustness)
 
 - [x] refactor: `compile_expr` の責務分割（`compile_call` / `compile_match` / `compile_lambda`）
