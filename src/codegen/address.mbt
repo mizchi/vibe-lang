@@ -955,6 +955,9 @@ fn is_builtin(name : String) -> Bool {
   name == "map_builder" ||
   name == "map_builder_set" ||
   name == "map_builder_freeze" ||
+  name == "MapBuilder::new" ||
+  name == "MapBuilder::set" ||
+  name == "MapBuilder::freeze" ||
   name == "map_keys" ||
   name == "map_values" ||
   name == "map_has_key" ||

@@ -531,8 +531,9 @@ fn infer_expr_kind_with(
         "bytes_from_array" => ValueKind::I64
         "bytes_length" => ValueKind::I64
         "bytes_get" => ValueKind::I64
-        "map_builder" | "map_builder_freeze" => ValueKind::I64
-        "map_builder_set" => ValueKind::I64
+        "map_builder" | "MapBuilder::new" => ValueKind::I64
+        "map_builder_freeze" | "MapBuilder::freeze" => ValueKind::I64
+        "map_builder_set" | "MapBuilder::set" => ValueKind::I64
         "array_length" => ValueKind::I64
         "array_get" => ValueKind::I64
         "map_get" => ValueKind::I64
@@ -1024,6 +1025,9 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "map_builder" ||
         name == "map_builder_set" ||
         name == "map_builder_freeze" ||
+        name == "MapBuilder::new" ||
+        name == "MapBuilder::set" ||
+        name == "MapBuilder::freeze" ||
         name == "string_builder" ||
         name == "string_join" ||
         name == "string_builder_push" ||

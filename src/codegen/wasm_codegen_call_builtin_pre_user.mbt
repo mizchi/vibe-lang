@@ -4385,7 +4385,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_obj.to_int64())
       emit_i64_or(buf)
     }
-    "map_builder" => {
+    "map_builder" | "MapBuilder::new" => {
       // map_builder() -> allocate empty map obj with len=0
       let max_cap = 128
       require_heap(ctx)
@@ -4403,10 +4403,10 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_obj.to_int64())
       emit_i64_or(buf)
     }
-    "map_builder_set" => {
+    "map_builder_set" | "MapBuilder::set" => {
       // map_builder_set(builder, key, value) -> overwrite existing key or append new pair
       let pos_args = extract_positional_exprs_with_arity(
-        args, "map_builder_set", 3,
+        args, "MapBuilder::set", 3,
       )
       let ptr_local = alloc_temp_local(ctx)
       let len_local = alloc_temp_local(ctx)
@@ -4649,10 +4649,10 @@ fn compile_call_builtin_pre_user_inner(
       // return unit
       emit_i64_const_tagged(buf, 0L)
     }
-    "map_builder_freeze" => {
+    "map_builder_freeze" | "MapBuilder::freeze" => {
       // map_builder_freeze(builder) -> return builder as-is (it is already a map obj)
       let pos_args = extract_positional_exprs_with_arity(
-        args, "map_builder_freeze", 1,
+        args, "MapBuilder::freeze", 1,
       )
       compile_expr_i32(ctx, buf, pos_args[0])
     }

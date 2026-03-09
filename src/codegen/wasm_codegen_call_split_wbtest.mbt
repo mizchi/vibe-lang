@@ -207,10 +207,13 @@ test "scan_needs_expr marks heap need for string_join" {
 }
 
 ///|
-test "needs_heap_expr returns true for map_builder call" {
-  let ctx = CodegenCtx::new(false)
-  let expr = call_split_test_call("map_builder", [])
-  assert_true(needs_heap_expr(ctx, expr))
+test "needs_heap_expr returns true for map_builder aliases" {
+  let legacy_ctx = CodegenCtx::new(false)
+  let legacy_expr = call_split_test_call("map_builder", [])
+  assert_true(needs_heap_expr(legacy_ctx, legacy_expr))
+  let renamed_ctx = CodegenCtx::new(false)
+  let renamed_expr = call_split_test_call("MapBuilder::new", [])
+  assert_true(needs_heap_expr(renamed_ctx, renamed_expr))
 }
 
 ///|
