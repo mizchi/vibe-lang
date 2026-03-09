@@ -33,8 +33,9 @@
     call 1
     end
   )
-  (memory (;0;) 64)
+  (memory (;0;) 1024)
   (global (;0;) (mut i32) i32.const 0)
   (export "run" (func 2))
   (export "memory" (memory 0))
+  (export "__heap_ptr" (unknown 0))
 )

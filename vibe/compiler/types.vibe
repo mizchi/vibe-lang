@@ -51,21 +51,36 @@ export let fresh_var = (c: Int) -> (Type, Int) {
 }
 
 export let rec occurs_in = (id: Int, ty: Type) -> Bool {
-  let rec check_list = (types: Array[Type], i: Int) -> Bool {
-    if i >= array_length(types) {
-      false
-    }
-    else if occurs_in(id, array_get(types, i)) {
-      true
-    }
-    else check_list(types, i + 1)
-  }
   match ty {
-    CtVar(vid) => eq(id, vid),
-    CtFn(params, ret, _) => check_list(params, 0) || occurs_in(id, ret),
+    CtVar(vid) => (id == vid),
+    CtFn(params, ret, _) => {
+      let mut i = 0
+      let mut found = false
+      while i < array_length(params) {
+        if occurs_in(id, array_get(params, i)) {
+          found = true
+          i = array_length(params)
+        } else {
+          i = i + 1
+        }
+      }
+      found || occurs_in(id, ret)
+    },
     CtArray(elem) => occurs_in(id, elem),
     CtOption(elem) => occurs_in(id, elem),
-    CtTuple(elems) => check_list(elems, 0),
+    CtTuple(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < array_length(elems) {
+        if occurs_in(id, array_get(elems, i)) {
+          found = true
+          i = array_length(elems)
+        } else {
+          i = i + 1
+        }
+      }
+      found
+    },
     CtForAll(_, _, body) => occurs_in(id, body),
     _ => false
   }
@@ -93,7 +108,7 @@ export let env_flat_bindings = (env: TypeEnv) -> Array[(String, Type)] {
   let out = empty_env_bindings()
   let mut cur = env
   let mut done = false
-  while not(done) {
+  while (!(done)) {
     match cur {
       EnvEmpty => {
         done = true
@@ -118,72 +133,58 @@ export let env_flat_bindings = (env: TypeEnv) -> Array[(String, Type)] {
 
 export let env_lookup_flat = (bindings: Array[(String, Type)], name: String) -> Option[Type] {
   let len = array_length(bindings)
-  let rec go = (i: Int) -> Option[Type] {
+  let mut i = 0
+  let mut result = None
+  let mut done = false
+  while (!(done)) {
     if i >= len {
-      None
+      done = true
     } else {
       let (n, ty) = array_get(bindings, i)
       if string_equals(n, name) {
-        Some(ty)
+        result = Some(ty)
+        done = true
       } else {
-        go(i + 1)
+        i = i + 1
       }
     }
   }
-  go(0)
+  result
 }
 
 let join_types = (arr: Array[String], sep: String) -> String {
   let len = array_length(arr)
-  let rec go = (i: Int, acc: String) -> String {
+  let mut i = 0
+  let mut acc = ""
+  while (!(i >= len)) {
+    let s = if i > 0 {
+      string_concat(string_concat(acc, sep), array_get(arr, i))
+    } else array_get(arr, i)
+    acc = s
+    i = i + 1
+  }
+  acc
+}
+
+let string_array_equal = (left: Array[String], right: Array[String]) -> Bool {
+  let len = array_length(left)
+  let mut i = 0
+  let mut result = true
+  let mut done = false
+  while (!(done)) {
     if i >= len {
-      acc
+      done = true
+    } else if (!(string_equals(array_get(left, i), array_get(right, i)))) {
+      result = false
+      done = true
     } else {
-      let s = if i > 0 {
-        string_concat(string_concat(acc, sep), array_get(arr, i))
-      } else array_get(arr, i)
-      go(i + 1, s)
+      i = i + 1
     }
   }
-  go(0, "")
+  result
 }
 
 export let rec types_equal = (a: Type, b: Type) -> Bool {
-  let rec string_array_equal = (left: Array[String], right: Array[String], i: Int) -> Bool {
-    if i >= array_length(left) {
-      true
-    } else if not(string_equals(array_get(left, i), array_get(right, i))) {
-      false
-    } else {
-      string_array_equal(left, right, i + 1)
-    }
-  }
-  let rec type_array_equal = (left: Array[Type], right: Array[Type], i: Int) -> Bool {
-    if i >= array_length(left) {
-      true
-    } else if not(types_equal(array_get(left, i), array_get(right, i))) {
-      false
-    } else {
-      type_array_equal(left, right, i + 1)
-    }
-  }
-  let rec forall_bounds_equal = (left: Array[(Int, Array[String])], right: Array[(Int, Array[String])], i: Int,) -> Bool {
-    if i >= array_length(left) {
-      true
-    } else {
-      let (lvar, lbounds) = array_get(left, i)
-      let (rvar, rbounds) = array_get(right, i)
-      if not(eq(lvar, rvar)) {
-        false
-      } else if not(eq(array_length(lbounds), array_length(rbounds))) {
-        false
-      } else if not(string_array_equal(lbounds, rbounds, 0)) {
-        false
-      } else {
-        forall_bounds_equal(left, right, i + 1)
-      }
-    }
-  }
   match a {
     CtInt => match b {
       CtInt => true,
@@ -218,7 +219,7 @@ export let rec types_equal = (a: Type, b: Type) -> Bool {
       _ => false
     },
     CtVar(aid) => match b {
-      CtVar(bid) => eq(aid, bid),
+      CtVar(bid) => (aid == bid),
       _ => false
     },
     CtArray(aelem) => match b {
@@ -239,66 +240,161 @@ export let rec types_equal = (a: Type, b: Type) -> Bool {
     },
     CtNamed(aname, aargs) => match b {
       CtNamed(bname, bargs) =>
-      if not(string_equals(aname, bname)) {
+      if (!(string_equals(aname, bname))) {
         false
-      } else if not(eq(array_length(aargs), array_length(bargs))) {
+      } else if (array_length(aargs) != array_length(bargs)) {
         false
       } else {
-        type_array_equal(aargs, bargs, 0)
+        let tae_len = array_length(aargs)
+        let mut tae_i = 0
+        let mut tae_result = true
+        let mut tae_done = false
+        while (!(tae_done)) {
+          if tae_i >= tae_len {
+            tae_done = true
+          } else if (!(types_equal(array_get(aargs, tae_i), array_get(bargs, tae_i)))) {
+            tae_result = false
+            tae_done = true
+          } else {
+            tae_i = tae_i + 1
+          }
+        }
+        tae_result
       },
       _ => false
     },
     CtTuple(aelems) => match b {
       CtTuple(belems) =>
-      if not(eq(array_length(aelems), array_length(belems))) {
+      if (array_length(aelems) != array_length(belems)) {
         false
       } else {
-        type_array_equal(aelems, belems, 0)
+        let tae_len2 = array_length(aelems)
+        let mut tae_i2 = 0
+        let mut tae_result2 = true
+        let mut tae_done2 = false
+        while (!(tae_done2)) {
+          if tae_i2 >= tae_len2 {
+            tae_done2 = true
+          } else if (!(types_equal(array_get(aelems, tae_i2), array_get(belems, tae_i2)))) {
+            tae_result2 = false
+            tae_done2 = true
+          } else {
+            tae_i2 = tae_i2 + 1
+          }
+        }
+        tae_result2
       },
       _ => false
     },
     CtFn(aparams, aret, ahas_error) => match b {
       CtFn(bparams, bret, bhas_error) =>
-      if not(eq(array_length(aparams), array_length(bparams))) {
+      if (array_length(aparams) != array_length(bparams)) {
         false
       } else if ahas_error {
-        if not(bhas_error) {
+        if (!(bhas_error)) {
           false
-        } else if not(type_array_equal(aparams, bparams, 0)) {
+        } else {
+          let tae_len3 = array_length(aparams)
+          let mut tae_i3 = 0
+          let mut tae_result3 = true
+          let mut tae_done3 = false
+          while (!(tae_done3)) {
+            if tae_i3 >= tae_len3 {
+              tae_done3 = true
+            } else if (!(types_equal(array_get(aparams, tae_i3), array_get(bparams, tae_i3)))) {
+              tae_result3 = false
+              tae_done3 = true
+            } else {
+              tae_i3 = tae_i3 + 1
+            }
+          }
+          if (!(tae_result3)) {
+            false
+          } else {
+            types_equal(aret, bret)
+          }
+        }
+      } else if bhas_error {
+        false
+      } else {
+        let tae_len4 = array_length(aparams)
+        let mut tae_i4 = 0
+        let mut tae_result4 = true
+        let mut tae_done4 = false
+        while (!(tae_done4)) {
+          if tae_i4 >= tae_len4 {
+            tae_done4 = true
+          } else if (!(types_equal(array_get(aparams, tae_i4), array_get(bparams, tae_i4)))) {
+            tae_result4 = false
+            tae_done4 = true
+          } else {
+            tae_i4 = tae_i4 + 1
+          }
+        }
+        if (!(tae_result4)) {
           false
         } else {
           types_equal(aret, bret)
         }
-      } else if bhas_error {
-        false
-      } else if not(type_array_equal(aparams, bparams, 0)) {
-        false
-      } else {
-        types_equal(aret, bret)
       },
       _ => false
     },
     CtForAll(avars, abounds, abody) => match b {
       CtForAll(bvars, bbounds, bbody) => {
-        let rec var_list_equal = (i: Int) -> Bool {
-          if i >= array_length(avars) {
-            true
-          } else if not(eq(array_get(avars, i), array_get(bvars, i))) {
-            false
-          } else {
-            var_list_equal(i + 1)
-          }
-        }
-        if not(eq(array_length(avars), array_length(bvars))) {
+        if (array_length(avars) != array_length(bvars)) {
           false
-        } else if not(eq(array_length(abounds), array_length(bbounds))) {
-          false
-        } else if not(var_list_equal(0)) {
-          false
-        } else if not(forall_bounds_equal(abounds, bbounds, 0)) {
+        } else if (array_length(abounds) != array_length(bbounds)) {
           false
         } else {
-          types_equal(abody, bbody)
+          // inline var_list_equal
+          let vlen = array_length(avars)
+          let mut vi = 0
+          let mut vresult = true
+          let mut vdone = false
+          while (!(vdone)) {
+            if vi >= vlen {
+              vdone = true
+            } else if (array_get(avars, vi) != array_get(bvars, vi)) {
+              vresult = false
+              vdone = true
+            } else {
+              vi = vi + 1
+            }
+          }
+          if (!(vresult)) {
+            false
+          } else {
+            // inline forall_bounds_equal
+            let fbe_len = array_length(abounds)
+            let mut fbe_i = 0
+            let mut fbe_result = true
+            let mut fbe_done = false
+            while (!(fbe_done)) {
+              if fbe_i >= fbe_len {
+                fbe_done = true
+              } else {
+                let (lvar, lbounds) = array_get(abounds, fbe_i)
+                let (rvar, rbounds) = array_get(bbounds, fbe_i)
+                if (lvar != rvar) {
+                  fbe_result = false
+                  fbe_done = true
+                } else if (array_length(lbounds) != array_length(rbounds)) {
+                  fbe_result = false
+                  fbe_done = true
+                } else if (!(string_array_equal(lbounds, rbounds))) {
+                  fbe_result = false
+                  fbe_done = true
+                } else {
+                  fbe_i = fbe_i + 1
+                }
+              }
+            }
+            if (!(fbe_result)) {
+              false
+            } else {
+              types_equal(abody, bbody)
+            }
+          }
         }
       },
       _ => false
@@ -308,22 +404,24 @@ export let rec types_equal = (a: Type, b: Type) -> Bool {
 
 export let env_bind_all = (env: TypeEnv, bindings: Array[(String, Type)]) -> TypeEnv {
   let len = array_length(bindings)
-  let rec go = (i: Int, acc: TypeEnv) -> TypeEnv {
-    if i >= len {
-      acc
-    } else {
-      let (name, ty) = array_get(bindings, i)
-      go(i + 1, EnvBind(name, ty, acc))
-    }
+  let mut i = 0
+  let mut acc = env
+  while (!(i >= len)) {
+    let (name, ty) = array_get(bindings, i)
+    acc = EnvBind(name, ty, acc)
+    i = i + 1
   }
-  go(0, env)
+  acc
 }
 
 export let find_typedef = (defs: Array[TypeDef], name: String) -> Option[TypeDef] {
   let len = array_length(defs)
-  let rec go = (i: Int) -> Option[TypeDef] {
+  let mut i = 0
+  let mut result = None
+  let mut done = false
+  while (!(done)) {
     if i >= len {
-      None
+      done = true
     } else {
       let d = array_get(defs, i)
       let dname = match d {
@@ -332,11 +430,14 @@ export let find_typedef = (defs: Array[TypeDef], name: String) -> Option[TypeDef
         TDAlias(n, _) => n
       }
       if string_equals(dname, name) {
-        Some(d)
-      } else go(i + 1)
+        result = Some(d)
+        done = true
+      } else {
+        i = i + 1
+      }
     }
   }
-  go(0)
+  result
 }
 
 let subst_bounds = (s: Subst, id: Int) -> Array[String] {
@@ -346,7 +447,7 @@ let subst_bounds = (s: Subst, id: Int) -> Array[String] {
   let mut cur = s
   let mut out = empty
   let mut done = false
-  while not(done) {
+  while (!(done)) {
     match cur {
       SubstEmpty => {
         done = true
@@ -355,7 +456,7 @@ let subst_bounds = (s: Subst, id: Int) -> Array[String] {
         cur = rest
       },
       SubstBound(bid, bounds, rest) => {
-        if eq(bid, id) {
+        if (bid == id) {
           out = bounds
           done = true
         } else {
@@ -372,7 +473,7 @@ let rec int_bounds_has_id = (pairs: Array[(Int, Array[String])], id: Int, i: Int
     false
   } else {
     let (pid, _) = array_get(pairs, i)
-    if eq(pid, id) {
+    if (pid == id) {
       true
     } else {
       int_bounds_has_id(pairs, id, i + 1)
@@ -387,7 +488,7 @@ let rec int_bounds_lookup = (pairs: Array[(Int, Array[String])], id: Int, i: Int
     ], 0, 0)
   } else {
     let (pid, bounds) = array_get(pairs, i)
-    if eq(pid, id) {
+    if (pid == id) {
       bounds
     } else {
       int_bounds_lookup(pairs, id, i + 1)
@@ -403,7 +504,7 @@ let collect_subst_bounds_pairs = (s: Subst) -> Array[(Int, Array[String])] {
   ], 0, 0)
   let mut cur = s
   let mut done = false
-  while not(done) {
+  while (!(done)) {
     match cur {
       SubstEmpty => {
         done = true
@@ -412,7 +513,7 @@ let collect_subst_bounds_pairs = (s: Subst) -> Array[(Int, Array[String])] {
         cur = rest
       },
       SubstBound(id, bounds, rest) => {
-        if not(int_bounds_has_id(out, id, 0)) {
+        if (!(int_bounds_has_id(out, id, 0))) {
           array_push(out, (id, bounds))
         }
         cur = rest
@@ -427,7 +528,7 @@ let rec int_int_lookup_or = (pairs: Array[(Int, Int)], key: Int, fallback: Int, 
     fallback
   } else {
     let (k, v) = array_get(pairs, i)
-    if eq(k, key) {
+    if (k == key) {
       v
     } else {
       int_int_lookup_or(pairs, key, fallback, i + 1)
@@ -437,15 +538,15 @@ let rec int_int_lookup_or = (pairs: Array[(Int, Int)], key: Int, fallback: Int, 
 
 export let subst_lookup = (s: Subst, id: Int) -> Option[Type] {
   let mut cur = s
-  let mut out : Option[Type] = None
+  let mut out = None
   let mut done = false
-  while not(done) {
+  while (!(done)) {
     match cur {
       SubstEmpty => {
         done = true
       },
       SubstBind(i, ty, rest) => {
-        if eq(i, id) {
+        if (i == id) {
           out = Some(ty)
           done = true
         } else {
@@ -460,6 +561,24 @@ export let subst_lookup = (s: Subst, id: Int) -> Option[Type] {
   out
 }
 
+let int_array_has = (arr: Array[Int], v: Int) -> Bool {
+  let slen = array_length(arr)
+  let mut si = 0
+  let mut sfound = false
+  let mut sdone = false
+  while (!(sdone)) {
+    if si >= slen {
+      sdone = true
+    } else if (array_get(arr, si) == v) {
+      sfound = true
+      sdone = true
+    } else {
+      si = si + 1
+    }
+  }
+  sfound
+}
+
 export let rec subst_apply = (s: Subst, ty: Type) -> Type {
   match ty {
     CtVar(_) => {
@@ -469,18 +588,9 @@ export let rec subst_apply = (s: Subst, ty: Type) -> Type {
       let mut seen = array_slice([
         0
       ], 0, 0)
-      let rec seen_has = (arr: Array[Int], v: Int, i: Int) -> Bool {
-        if i >= array_length(arr) {
-          false
-        } else if eq(array_get(arr, i), v) {
-          true
-        } else {
-          seen_has(arr, v, i + 1)
-        }
-      }
-      while not(done) {
+      while (!(done)) {
         match cur {
-          CtVar(vid) => if seen_has(seen, vid, 0) {
+          CtVar(vid) => if int_array_has(seen, vid) {
             out = cur
             done = true
           } else {
@@ -522,15 +632,6 @@ export let rec subst_apply = (s: Subst, ty: Type) -> Type {
 }
 
 export let rec unify = (a: Type, b: Type, s: Subst) -> Option[Subst] {
-  let rec unify_list = (pa: Array[Type], pb: Array[Type], i: Int, acc: Subst) -> Option[Subst] {
-    if i >= array_length(pa) {
-      Some(acc)
-    }
-    else match unify(array_get(pa, i), array_get(pb, i), acc) {
-      Some(s2) => unify_list(pa, pb, i + 1, s2),
-      None => None
-    }
-  }
   let ta = subst_apply(s, a)
   let tb = subst_apply(s, b)
   if types_equal(ta, tb) {
@@ -558,21 +659,69 @@ export let rec unify = (a: Type, b: Type, s: Subst) -> Option[Subst] {
               _ => None
             },
             CtFn(pa, ra, _) => match tb {
-              CtFn(pb, rb, _) => if not(eq(array_length(pa), array_length(pb))) {
+              CtFn(pb, rb, _) => if (array_length(pa) != array_length(pb)) {
                 None
               }
-              else match unify_list(pa, pb, 0, s) {
-                Some(s2) => unify(ra, rb, s2),
-                None => None
+              else {
+                let ul_len = array_length(pa)
+                let mut ul_i = 0
+                let mut ul_acc = s
+                let mut ul_result = Some(s)
+                let mut ul_done = false
+                while (!(ul_done)) {
+                  if ul_i >= ul_len {
+                    ul_result = Some(ul_acc)
+                    ul_done = true
+                  } else {
+                    match unify(array_get(pa, ul_i), array_get(pb, ul_i), ul_acc) {
+                      Some(s2) => {
+                        ul_acc = s2
+                        ul_i = ul_i + 1
+                      },
+                      None => {
+                        ul_result = None
+                        ul_done = true
+                      }
+                    }
+                  }
+                }
+                match ul_result {
+                  Some(s2) => unify(ra, rb, s2),
+                  None => None
+                }
               }
               ,
               _ => None
             },
             CtTuple(ea) => match tb {
-              CtTuple(eb) => if not(eq(array_length(ea), array_length(eb))) {
+              CtTuple(eb) => if (array_length(ea) != array_length(eb)) {
                 None
               }
-              else unify_list(ea, eb, 0, s)
+              else {
+                let ul_len2 = array_length(ea)
+                let mut ul_i2 = 0
+                let mut ul_acc2 = s
+                let mut ul_result2 = Some(s)
+                let mut ul_done2 = false
+                while (!(ul_done2)) {
+                  if ul_i2 >= ul_len2 {
+                    ul_result2 = Some(ul_acc2)
+                    ul_done2 = true
+                  } else {
+                    match unify(array_get(ea, ul_i2), array_get(eb, ul_i2), ul_acc2) {
+                      Some(s2) => {
+                        ul_acc2 = s2
+                        ul_i2 = ul_i2 + 1
+                      },
+                      None => {
+                        ul_result2 = None
+                        ul_done2 = true
+                      }
+                    }
+                  }
+                }
+                ul_result2
+              }
               ,
               _ => None
             },
@@ -589,13 +738,37 @@ export let rec unify = (a: Type, b: Type, s: Subst) -> Option[Subst] {
               _ => None
             },
             CtNamed(a_name, a_args) => match tb {
-              CtNamed(b_name, b_args) => if not(string_equals(a_name, b_name)) {
+              CtNamed(b_name, b_args) => if (!(string_equals(a_name, b_name))) {
                 None
               }
-              else if not(eq(array_length(a_args), array_length(b_args))) {
+              else if (array_length(a_args) != array_length(b_args)) {
                 None
               }
-              else unify_list(a_args, b_args, 0, s)
+              else {
+                let ul_len3 = array_length(a_args)
+                let mut ul_i3 = 0
+                let mut ul_acc3 = s
+                let mut ul_result3 = Some(s)
+                let mut ul_done3 = false
+                while (!(ul_done3)) {
+                  if ul_i3 >= ul_len3 {
+                    ul_result3 = Some(ul_acc3)
+                    ul_done3 = true
+                  } else {
+                    match unify(array_get(a_args, ul_i3), array_get(b_args, ul_i3), ul_acc3) {
+                      Some(s2) => {
+                        ul_acc3 = s2
+                        ul_i3 = ul_i3 + 1
+                      },
+                      None => {
+                        ul_result3 = None
+                        ul_done3 = true
+                      }
+                    }
+                  }
+                }
+                ul_result3
+              }
               ,
               _ => None
             },
@@ -633,53 +806,51 @@ let rec array_has_int = (arr: Array[Int], val: Int, i: Int) -> Bool {
   if i >= array_length(arr) {
     false
   }
-  else if eq(array_get(arr, i), val) {
+  else if (array_get(arr, i) == val) {
     true
   }
   else array_has_int(arr, val, i + 1)
+}
+
+let rec collect_tvars_walk = (t: Type, out: Array[Int]) -> Int {
+  match t {
+    CtVar(id) => {
+      if (!(array_has_int(out, id, 0))) {
+        array_push(out, id)
+      }
+      0
+    },
+    CtFn(params, ret, _) => {
+      for p in params {
+        let _ = collect_tvars_walk(p, out)
+      }
+      collect_tvars_walk(ret, out)
+    },
+    CtArray(elem) => collect_tvars_walk(elem, out),
+    CtOption(elem) => collect_tvars_walk(elem, out),
+    CtTuple(elems) => {
+      for e in elems {
+        let _ = collect_tvars_walk(e, out)
+      }
+      0
+    },
+    CtForAll(_, _, body) => collect_tvars_walk(body, out),
+    _ => 0
+  }
 }
 
 export let collect_tvars = (ty: Type) -> Array[Int] {
   let out = array_slice([
     0
   ], 0, 0)
-  let add_unique = (id: Int) -> Unit {
-    if not(array_has_int(out, id, 0)) {
-      array_push(out, id)
-    }
-  }
-  let rec walk = (t: Type) -> Int {
-    match t {
-      CtVar(id) => {
-        add_unique(id)
-        0
-      },
-      CtFn(params, ret, _) => {
-        for p in params {
-          let _ = walk(p)
-        }
-        walk(ret)
-      },
-      CtArray(elem) => walk(elem),
-      CtOption(elem) => walk(elem),
-      CtTuple(elems) => {
-        for e in elems {
-          let _ = walk(e)
-        }
-        0
-      },
-      CtForAll(_, _, body) => walk(body),
-      _ => 0
-    }
-  }
-  let _ = walk(ty)
+  let _ = collect_tvars_walk(ty, out)
   out
 }
 
 export let generalize = (s: Subst, ty: Type) -> Type {
   let resolved = subst_apply(s, ty)
   let tvars = collect_tvars(resolved)
-  if eq(array_length(tvars), 0) {
+  if (array_length(tvars) == 0) {
     resolved
   }
   else {
@@ -691,7 +862,7 @@ export let generalize = (s: Subst, ty: Type) -> Type {
     ], 0, 0)
     for vid in tvars {
       let bounds = int_bounds_lookup(bounds_pairs, vid, 0)
-      if not(eq(array_length(bounds), 0)) {
+      if (array_length(bounds) != 0) {
         array_push(var_bounds, (vid, bounds))
       }
     }
@@ -723,26 +894,24 @@ export let rec type_to_string = (ty: Type) -> String {
     CtVar(id) => string_concat("?t", __to_string(id)),
     CtForAll(vars, _, body) => {
       let vlen = array_length(vars)
-      let rec join_vars = (i: Int, acc: String) -> String {
-        if i >= vlen {
-          acc
-        }
-        else {
-          let v = string_concat("?t", __to_string(array_get(vars, i)))
-          let next = if i > 0 {
-            string_concat(string_concat(acc, " "), v)
-          } else v
-          join_vars(i + 1, next)
-        }
+      let mut vi = 0
+      let mut vacc = ""
+      while (!(vi >= vlen)) {
+        let v = string_concat("?t", __to_string(array_get(vars, vi)))
+        let next = if vi > 0 {
+          string_concat(string_concat(vacc, " "), v)
+        } else v
+        vacc = next
+        vi = vi + 1
       }
-      string_concat("forall ", string_concat(join_vars(0, ""), string_concat(". ", type_to_string(body))))
+      string_concat("forall ", string_concat(vacc, string_concat(". ", type_to_string(body))))
     },
     CtUnknown => "?",
     CtArray(elem) => string_concat("Array[", string_concat(type_to_string(elem), "]")),
     CtOption(elem) => string_concat("Option[", string_concat(type_to_string(elem), "]")),
     CtEnum(name) => name,
     CtStruct(name) => name,
-    CtNamed(name, args) => if eq(array_length(args), 0) {
+    CtNamed(name, args) => if (array_length(args) == 0) {
       name
     } else {
       let parts = for arg in args {
@@ -798,30 +967,34 @@ export let subst_add_bound = (s: Subst, id: Int, bounds: Array[String]) -> Subst
   SubstBound(id, bounds, s)
 }
 
-let empty_var_bounds: Array[(Int, Array[String])] = array_slice([
-  (0, array_slice([
-    ""
-  ], 0, 0))
-], 0, 0)
+let empty_var_bounds = () -> Array[(Int, Array[String])] {
+  array_slice([
+    (0, array_slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+}
 
 export let instantiate = (ty: Type, c: Int) -> (Type, Int, Array[(Int, Array[String])]) {
   match ty {
     CtForAll(bound_vars, var_bounds, body) => {
       let blen = array_length(bound_vars)
-      let rec build_subst = (i: Int, acc: Subst, id_map: Array[(Int, Int)], nc: Int) -> (Subst, Array[(Int, Int)], Int) {
-        if i >= blen {
-          (acc, id_map, nc)
-        }
-        else {
-          let old_id = array_get(bound_vars, i)
-          array_push(id_map, (old_id, nc))
-          build_subst(i + 1, SubstBind(old_id, CtVar(nc), acc), id_map, nc + 1)
-        }
-      }
       let id_map = array_slice([
         (0, 0)
       ], 0, 0)
-      let (inst_s, id_map2, c1) = build_subst(0, SubstEmpty, id_map, c)
+      let mut bi = 0
+      let mut bacc = SubstEmpty
+      let mut bnc = c
+      while (!(bi >= blen)) {
+        let old_id = array_get(bound_vars, bi)
+        array_push(id_map, (old_id, bnc))
+        bacc = SubstBind(old_id, CtVar(bnc), bacc)
+        bnc = bnc + 1
+        bi = bi + 1
+      }
+      let inst_s = bacc
+      let id_map2 = id_map
+      let c1 = bnc
       // Remap var_bounds: old_id -> new_id
       let new_bounds = array_slice([
         (0, array_slice([
@@ -832,10 +1005,10 @@ export let instantiate = (ty: Type, c: Int) -> (Type, Int, Array[(Int, Array[Str
         let (old_id, bounds) = var_bound
         let new_id = int_int_lookup_or(id_map2, old_id, old_id, 0)
         array_push(new_bounds, (new_id, bounds))
-      }
+      };
       (subst_apply(inst_s, body), c1, new_bounds)
     },
-    _ => (ty, c, empty_var_bounds)
+    _ => (ty, c, empty_var_bounds())
   }
 }
 
@@ -873,72 +1046,78 @@ export let rec trait_is_subtrait = (env: TypeEnv, sub: String, super_name: Strin
   else {
     let supers = trait_supers(env, sub)
     let slen = array_length(supers)
-    let rec check = (i: Int) -> Bool {
-      if i >= slen {
-        false
-      }
-      else {
-        let s = array_get(supers, i)
+    let mut si = 0
+    let mut sresult = false
+    let mut sdone = false
+    while (!(sdone)) {
+      if si >= slen {
+        sdone = true
+      } else {
+        let s = array_get(supers, si)
         if string_equals(s, super_name) {
-          true
+          sresult = true
+          sdone = true
+        } else if trait_is_subtrait(env, s, super_name) {
+          sresult = true
+          sdone = true
+        } else {
+          si = si + 1
         }
-        else if trait_is_subtrait(env, s, super_name) {
-          true
-        }
-        else check(i + 1)
       }
     }
-    check(0)
+    sresult
+  }
+}
+
+let rec type_implements_check_super = (e2: TypeEnv, full_env: TypeEnv, trait_name: String, resolved: Type) -> Bool {
+  match e2 {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
+    EnvTraitDef(_, _, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
+    EnvTraitImpl(tname, target, rest) => if types_equal(target, resolved) {
+      if trait_is_subtrait(full_env, tname, trait_name) {
+        true
+      }
+      else type_implements_check_super(rest, full_env, trait_name, resolved)
+    } else type_implements_check_super(rest, full_env, trait_name, resolved)
+    ,
+    EnvTraitImplGen(_, _, _, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved)
+  }
+}
+
+let rec type_implements_check_env = (e: TypeEnv, trait_name: String, resolved: Type) -> Bool {
+  match e {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => type_implements_check_env(rest, trait_name, resolved),
+    EnvTraitDef(_, _, _, rest) => type_implements_check_env(rest, trait_name, resolved),
+    EnvTraitImpl(tname, target, rest) => if string_equals(tname, trait_name) {
+      if types_equal(target, resolved) {
+        true
+      }
+      else type_implements_check_env(rest, trait_name, resolved)
+    } else type_implements_check_env(rest, trait_name, resolved)
+    ,
+    EnvTraitImplGen(_, _, _, _, rest) => type_implements_check_env(rest, trait_name, resolved)
   }
 }
 
 export let rec type_implements_trait = (env: TypeEnv, s: Subst, ty: Type, trait_name: String) -> Bool {
   let resolved = subst_apply(s, ty)
-  let rec check_env = (e: TypeEnv) -> Bool {
-    match e {
-      EnvEmpty => false,
-      EnvBind(_, _, rest) => check_env(rest),
-      EnvTraitDef(_, _, _, rest) => check_env(rest),
-      EnvTraitImpl(tname, target, rest) => if string_equals(tname, trait_name) {
-        if types_equal(target, resolved) {
-          true
-        }
-        else check_env(rest)
-      } else check_env(rest)
-      ,
-      EnvTraitImplGen(_, _, _, _, rest) => check_env(rest)
-    }
-  }
-  if check_env(env) {
+  if type_implements_check_env(env, trait_name, resolved) {
     true
   }
   else {
     // Check supertrait: if trait_name has subtrait impls
     let supers = trait_supers(env, trait_name)
     let slen = array_length(supers)
-    if eq(slen, 0) {
+    if (slen == 0) {
       false
     }
     else {
       // Type implements trait_name if it implements all supers? No — reversed:
       // If T implements sub-trait B where B: A, then T also implements A
       // So check all traits that the type implements and see if any is a subtrait of trait_name
-      let rec check_super = (e2: TypeEnv) -> Bool {
-        match e2 {
-          EnvEmpty => false,
-          EnvBind(_, _, rest) => check_super(rest),
-          EnvTraitDef(_, _, _, rest) => check_super(rest),
-          EnvTraitImpl(tname, target, rest) => if types_equal(target, resolved) {
-            if trait_is_subtrait(env, tname, trait_name) {
-              true
-            }
-            else check_super(rest)
-          } else check_super(rest)
-          ,
-          EnvTraitImplGen(_, _, _, _, rest) => check_super(rest)
-        }
-      }
-      check_super(env)
+      type_implements_check_super(env, env, trait_name, resolved)
     }
   }
 }

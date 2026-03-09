@@ -97,6 +97,8 @@ priv struct CodegenCtx {
   mut const_i64_values : Map[String, Int64]
   // Force cabi_realloc export for component string lift
   force_cabi_realloc : Bool
+  // Exported closures: maps exported fn name -> global index storing env pointer
+  exported_fn_env_globals : Map[String, Int]
 }
 
 ///|
@@ -213,6 +215,8 @@ fn CodegenCtx::new(
     const_i64_values: {},
     // Force cabi_realloc export
     force_cabi_realloc,
+    // Exported closures env globals
+    exported_fn_env_globals: {},
   }
 }
 

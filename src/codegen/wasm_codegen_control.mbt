@@ -106,17 +106,21 @@ fn compile_pat_match(
     }
     @core.Pat::Float(value=n, span~) => {
       let _ = span
-      // Combined check: tag_obj AND type==obj_float AND value==n
+      // Short-circuit check: first verify tag_obj, then load memory
       emit_tag_obj_check(buf, value_idx)
+      buf.push((4).to_byte()) // if
+      buf.push((127).to_byte()) // result i32
       emit_load_obj_type(buf, value_idx)
       emit_i32_const_raw(buf, obj_float)
       emit_i32_eq(buf)
-      emit_i32_and(buf)
       emit_untag_ptr(buf, value_idx)
       emit_f32_load(buf, 4)
       emit_f32_const(buf, n)
       emit_f32_eq(buf)
       emit_i32_and(buf)
+      buf.push((5).to_byte()) // else
+      emit_i32_const_raw(buf, 0)
+      buf.push((11).to_byte()) // end
       // Single if-else
       buf.push((4).to_byte()) // if
       buf.push((126).to_byte()) // result i64
@@ -131,17 +135,21 @@ fn compile_pat_match(
     }
     @core.Pat::Double(value=n, span~) => {
       let _ = span
-      // Combined check: tag_obj AND type==obj_double AND value==n
+      // Short-circuit check: first verify tag_obj, then load memory
       emit_tag_obj_check(buf, value_idx)
+      buf.push((4).to_byte()) // if
+      buf.push((127).to_byte()) // result i32
       emit_load_obj_type(buf, value_idx)
       emit_i32_const_raw(buf, obj_double)
       emit_i32_eq(buf)
-      emit_i32_and(buf)
       emit_untag_ptr(buf, value_idx)
       emit_f64_load(buf, 4)
       emit_f64_const(buf, n)
       emit_f64_eq(buf)
       emit_i32_and(buf)
+      buf.push((5).to_byte()) // else
+      emit_i32_const_raw(buf, 0)
+      buf.push((11).to_byte()) // end
       // Single if-else
       buf.push((4).to_byte()) // if
       buf.push((126).to_byte()) // result i64
@@ -219,16 +227,20 @@ fn compile_pat_match(
       }
       // Cache raw pointer for repeated use
       let raw_ptr = emit_untag_ptr_cached(ctx, buf, value_idx)
-      // Combined header check: tag_obj AND type==obj_enum AND tag matches
+      // Short-circuit header check: first verify tag_obj, then load memory
       emit_tag_obj_check(buf, value_idx)
+      buf.push((4).to_byte()) // if
+      buf.push((127).to_byte()) // result i32
       emit_load_obj_type_raw(buf, raw_ptr)
       emit_i32_const_raw(buf, obj_enum)
       emit_i32_eq(buf)
-      emit_i32_and(buf)
       emit_load_ctor_tag_raw(buf, raw_ptr)
       emit_i32_const_raw(buf, tag)
       emit_i32_eq(buf)
       emit_i32_and(buf)
+      buf.push((5).to_byte()) // else
+      emit_i32_const_raw(buf, 0)
+      buf.push((11).to_byte()) // end
       // Single if-else
       buf.push((4).to_byte()) // if
       buf.push((126).to_byte()) // result i64
@@ -253,16 +265,20 @@ fn compile_pat_match(
       let _ = span
       // Cache raw pointer for repeated use
       let raw_ptr = emit_untag_ptr_cached(ctx, buf, value_idx)
-      // Combined header check: tag_obj AND type==obj_tuple AND length matches
+      // Short-circuit header check: first verify tag_obj, then load memory
       emit_tag_obj_check(buf, value_idx)
+      buf.push((4).to_byte()) // if
+      buf.push((127).to_byte()) // result i32
       emit_load_obj_type_raw(buf, raw_ptr)
       emit_i32_const_raw(buf, obj_tuple)
       emit_i32_eq(buf)
-      emit_i32_and(buf)
       emit_load_obj_len_raw(buf, raw_ptr)
       emit_i32_const_raw(buf, items.length())
       emit_i32_eq(buf)
       emit_i32_and(buf)
+      buf.push((5).to_byte()) // else
+      emit_i32_const_raw(buf, 0)
+      buf.push((11).to_byte()) // end
       // Single if-else
       buf.push((4).to_byte()) // if
       buf.push((126).to_byte()) // result i64
@@ -280,16 +296,20 @@ fn compile_pat_match(
       let ordered = sort_record_fields_pat(fields)
       // Cache raw pointer for repeated use
       let raw_ptr = emit_untag_ptr_cached(ctx, buf, value_idx)
-      // Combined header check: tag_obj AND type==obj_record AND length matches
+      // Short-circuit header check: first verify tag_obj, then load memory
       emit_tag_obj_check(buf, value_idx)
+      buf.push((4).to_byte()) // if
+      buf.push((127).to_byte()) // result i32
       emit_load_obj_type_raw(buf, raw_ptr)
       emit_i32_const_raw(buf, obj_record)
       emit_i32_eq(buf)
-      emit_i32_and(buf)
       emit_load_obj_len_raw(buf, raw_ptr)
       emit_i32_const_raw(buf, ordered.length())
       emit_i32_eq(buf)
       emit_i32_and(buf)
+      buf.push((5).to_byte()) // else
+      emit_i32_const_raw(buf, 0)
+      buf.push((11).to_byte()) // end
       // Single if-else
       buf.push((4).to_byte()) // if
       buf.push((126).to_byte()) // result i64

@@ -503,7 +503,7 @@ fn compile_stmt(
         emit_i64_const_tagged(buf, 0L)
       }
     }
-    @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
+    @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
       // ExportLet is compiled like Let - the export is handled at module level
       compile_stmt(
         ctx,
@@ -511,6 +511,25 @@ fn compile_stmt(
         @core.Stmt::Let(rec~, name~, expr~, span~),
         is_last,
       )
+      // Store env pointer to global for exported closures with captures.
+      // When called externally (env=0), the function prelude reads this global.
+      match ctx.exported_fn_env_globals.get(name) {
+        Some(global_idx) =>
+          if global_idx >= 0 {
+            match ctx.locals.get(name) {
+              Some(local_idx) => {
+                emit_local_get(buf, local_idx) // push closure value (i64)
+                emit_i64_const_raw(buf, (-4).to_int64()) // mask ~3
+                emit_i64_and(buf) // strip tag bits
+                emit_i32_wrap_i64(buf) // i64 -> i32 env pointer
+                emit_global_set(buf, global_idx) // store in global
+              }
+              None => ()
+            }
+          }
+        None => ()
+      }
+    }
     @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) =>
       // InternalExportLet is compiled like Let - visibility is handled in runtime import resolution.
       compile_stmt(

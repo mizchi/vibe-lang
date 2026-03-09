@@ -875,7 +875,11 @@ fn compile_array_expr(
 ) -> Unit raise WasmGenError {
   require_heap(ctx)
   let len = items.length()
-  let size = align4(8 + len * 4)
+  // Over-allocate: arrays may grow via array_push; reserve capacity to avoid
+  // writing past the end of the allocated block and corrupting adjacent objects.
+  let min_cap = 65536
+  let cap = if len < min_cap { min_cap } else { len }
+  let size = align4(8 + cap * 4)
   let obj_local = alloc_temp_local(ctx)
   emit_heap_alloc(ctx, buf, size, obj_local)
   emit_local_get(buf, obj_local)
@@ -1129,6 +1133,26 @@ fn compile_function(
     body.stmts,
     ctx.fn_closure_captures,
   )
+  // Env=0 fallback: when an exported function with captures is called
+  // externally (env=0), load the real env from a pre-stored global.
+  if with_env && captures.length() > 0 {
+    match self_name {
+      Some(fn_name) =>
+        match ctx.exported_fn_env_globals.get(fn_name) {
+          Some(global_idx) =>
+            if global_idx >= 0 {
+              emit_local_get(prelude, env_idx)
+              emit_i32_eqz(prelude)
+              emit_if(prelude)
+              emit_global_get(prelude, global_idx)
+              emit_local_set(prelude, env_idx)
+              emit_end(prelude)
+            }
+          None => ()
+        }
+      None => ()
+    }
+  }
   if with_env && captures.length() > 0 {
     let mut effective_idx = 0
     for i in 0..<captures.length() {

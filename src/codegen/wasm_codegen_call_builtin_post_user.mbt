@@ -448,9 +448,12 @@ fn compile_call_builtin_post_user_inner(
       emit_local_get(buf, start_local)
       emit_i32_sub(buf)
       emit_local_set(buf, slice_len_local)
-      // alloc_size = align4(8 + max(slice_len, 4096) * 4)
+      // alloc_size = align4(8 + max(slice_len, 16384) * 4)
       // Reserve extra capacity so that array_push can append without realloc
-      let min_cap = 4096
+      // NOTE: array_push has no bounds check/realloc — this min_cap must be large
+      // enough for all use cases. 16384 covers the selfhost parser (~12000 tokens).
+      // TODO: implement proper capacity management with realloc in array_push.
+      let min_cap = 16384
       emit_local_get(buf, slice_len_local)
       emit_i32_const_raw(buf, min_cap)
       emit_i32_gt_s(buf)

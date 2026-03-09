@@ -30,13 +30,17 @@ let peek = (tokens: Array[Token], pos: Int) -> Token {
   } else TEof
 }
 
-let _no_tp = array_slice([
-  ""
-], 0, 0)
+let _no_tp = () -> Array[String] {
+  array_slice([
+    ""
+  ], 0, 0)
+}
 
-let _no_tb = array_slice([
-  ("", _no_tp)
-], 0, 0)
+let _no_tb = () -> Array[(String, Array[String])] {
+  array_slice([
+    ("", _no_tp())
+  ], 0, 0)
+}
 
 let tk_name = (tok: Token) -> String {
   match tok {
@@ -310,7 +314,29 @@ let rec parse_type_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (TypeEx
             atom_ty
           ]
         }
-        (TyFn(params, ret), rn)
+        // Skip optional `with { Error, ... }` effect annotation
+        let rn2 = match peek(tokens, rn) {
+          TWith => {
+            let p1 = rn + 1
+            match peek(tokens, p1) {
+              TLBrace => {
+                // skip tokens until matching TRBrace
+                let mut p2 = p1 + 1
+                let mut done = false
+                while (!(done)) {
+                  match peek(tokens, p2) {
+                    TRBrace => { done = true },
+                    _ => { p2 = p2 + 1 }
+                  }
+                }
+                p2 + 1
+              },
+              _ => rn
+            }
+          },
+          _ => rn
+        };
+        (TyFn(params, ret), rn2)
       },
       _ => (atom_ty, atom_next)
     }
@@ -325,7 +351,7 @@ let rec parse_type_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (TypeEx
             let b = array_builder()
             array_builder_push(b, first)
             let (rest, end) = type_list_rest(tokens, n1, b)
-            let en = expect_tk(tokens, end, ")")
+            let en = expect_tk(tokens, end, ")");
             (TyTuple(rest), en)
           },
           _ => throw("expected ')' or ',' in type")
@@ -343,7 +369,7 @@ let rec parse_type_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (TypeEx
             let b = array_builder()
             array_builder_push(b, first)
             let (rest, end) = type_list_rest(tokens, n1, b)
-            let en = expect_tk(tokens, end, "]")
+            let en = expect_tk(tokens, end, "]");
             (TyApp(name, rest), en)
           },
           _ => throw("expected ']' or ',' in type application")
@@ -733,12 +759,39 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       else if string_equals(name, "false") {
         (EBool(false), pos + 1)
       }
-      else (EIdent(name), pos + 1),
+      else match peek(tokens, pos + 1) {
+        TDoubleColon => match peek(tokens, pos + 2) {
+          TLBrace => {
+            // Name::{ field: val, ... } record literal
+            let rec parse_record_fields = (toks: Array[Token], p: Int, b: ArrayBuilder[(String, Expr)]) -> (Array[(String, Expr)], Int) with { Error } {
+              match peek(toks, p) {
+                TRBrace => (array_builder_freeze(b), p + 1),
+                TIdent(fname) => {
+                  let cn = expect_tk(toks, p + 1, ":")
+                  let (val, vn) = parse_impl(toks, cn, 0)
+                  array_builder_push(b, (fname, val))
+                  match peek(toks, vn) {
+                    TComma => parse_record_fields(toks, vn + 1, b),
+                    TRBrace => (array_builder_freeze(b), vn + 1),
+                    _ => throw("expected ',' or '}' in record literal")
+                  }
+                },
+                _ => throw("expected field name or '}' in record literal")
+              }
+            }
+            let rb = array_builder()
+            let (fields, end) = parse_record_fields(tokens, pos + 3, rb);
+            (ERecord(fields), end)
+          },
+          _ => (EIdent(name), pos + 1)
+        },
+        _ => (EIdent(name), pos + 1)
+      },
       TLParen => if is_lambda_start(tokens, pos + 1) {
         let (params, ap) = parse_param_list(tokens, pos + 1)
         let parse_lambda_body = (saved_params: Array[(String, Option[TypeExpr])], saved_ret_ty: Option[TypeExpr], saved_effect: Option[String], body_pos: Int, body_mode: Int) -> (Expr, Int)with { Error } {
           let (body, end) = parse_impl(tokens, body_pos, body_mode);
-          (EFn(_no_tp, _no_tb, saved_params, saved_ret_ty, saved_effect, body), end)
+          (EFn(_no_tp(), _no_tb(), saved_params, saved_ret_ty, saved_effect, body), end)
         }
         match peek(tokens, ap) {
           TThinArrow => {
@@ -786,7 +839,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
               let b = array_builder()
               array_builder_push(b, f)
               let (tup, end) = parse_comma_exprs_rest(tokens, n1, b)
-              let en = expect_tk(tokens, end, ")")
+              let en = expect_tk(tokens, end, ")");
               (ETuple(tup), en)
             },
             _ => throw("expected ')' or ','")
@@ -800,7 +853,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
           let (f, n1) = parse_impl(tokens, pos + 1, 0)
           array_builder_push(b, f)
           let (arr, end) = parse_comma_exprs_rest(tokens, n1, b)
-          let en = expect_tk(tokens, end, "]")
+          let en = expect_tk(tokens, end, "]");
           (EArray(arr), en)
         }
       },
@@ -813,7 +866,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       TThrow => {
         let lp = expect_tk(tokens, pos + 1, "(")
         let (e, en) = parse_impl(tokens, lp, 0)
-        let rp = expect_tk(tokens, en, ")")
+        let rp = expect_tk(tokens, en, ")");
         (EThrow(e), rp)
       },
       TBreak => {
@@ -837,7 +890,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
               let (f, fn1) = parse_impl(tokens, pos + 2, 0)
               array_builder_push(b, f)
               let (args, end) = parse_comma_exprs_rest(tokens, fn1, b)
-              let en = expect_tk(tokens, end, ")")
+              let en = expect_tk(tokens, end, ")");
               (EContinue(args), en)
             }
           }

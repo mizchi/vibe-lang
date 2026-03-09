@@ -145,17 +145,33 @@ export let emit_closure_call_tail = (buf: Array[Int], env_local: Int, slot_local
 
 // === Compilation context ===
 
-export let resolve_local = (names: Array[String], name: String) -> Int with { Error } {
-  let len = array_length(names)
-  let rec search = (i: Int) -> Int with { Error } {
-    if i < 0 {
-      throw(string_concat("undefined variable (local): ", name))
-    }
+export let resolve_local = (names: Array[String], name: String, tag: String) -> Int with { Error } {
+  let mut i = array_length(names) - 1
+  let mut result = -1
+  while i >= 0 {
     if string_equals(array_get(names, i), name) {
-      i
-    } else search(i - 1)
+      result = i
+      i = -1
+    } else {
+      i = i - 1
+    }
   }
-  search(len - 1)
+  if result < 0 {
+    let mut dbg = string_concat("undefined variable (local): ", name)
+    dbg = string_concat(dbg, " [locals: ")
+    let mut di = 0
+    let dlen = array_length(names)
+    while di < dlen {
+      if di > 0 { dbg = string_concat(dbg, ", ") }
+      dbg = string_concat(dbg, array_get(names, di))
+      di = di + 1
+    }
+    dbg = string_concat(dbg, "]")
+    dbg = string_concat(dbg, " @")
+    dbg = string_concat(dbg, tag)
+    throw(dbg)
+  }
+  result
 }
 
 // Function registry: groups parallel arrays for function metadata
@@ -169,15 +185,20 @@ export struct FuncTable {
 // Resolve function: returns (func_index, param_count, has_return)
 export let resolve_func = (ft: FuncTable, name: String) -> (Int, Int, Int) with { Error } {
   let len = array_length(ft.names)
-  let rec search = (i: Int) -> (Int, Int, Int) with { Error } {
-    if i >= len {
-      throw(string_concat("undefined function: ", name))
-    }
+  let mut i = 0
+  let mut found = -1
+  while i < len {
     if string_equals(array_get(ft.names, i), name) {
-      (array_get(ft.indices, i), array_get(ft.params, i), array_get(ft.returns, i))
-    } else search(i + 1)
+      found = i
+      i = len
+    } else {
+      i = i + 1
+    }
   }
-  search(0)
+  if found < 0 {
+    throw(string_concat("undefined function: ", name))
+  };
+  (array_get(ft.indices, found), array_get(ft.params, found), array_get(ft.returns, found))
 }
 
 // String table: groups string data with their WASM data segment offsets/lengths
@@ -214,7 +235,8 @@ export struct CompileCtx {
   num_user_funcs: Int;
   func_offset: Int;
   ref_cell_names: Array[String];
-  ctor_table: CtorTable
+  ctor_table: CtorTable;
+  thunk_names: Array[String]
 }
 
 // GC backend compilation context (extends CompileCtx with GC-specific fields)
@@ -378,12 +400,17 @@ export let collect_strings_stmts = (stmts: Array[Stmt]) -> Array[String] {
 
 export let array_contains_str = (arr: Array[String], s: String) -> Bool {
   let len = array_length(arr)
-  let rec search = (i: Int) -> Bool {
-    if i >= len { false }
-    else if string_equals(array_get(arr, i), s) { true }
-    else search(i + 1)
+  let mut i = 0
+  let mut found = false
+  while i < len {
+    if string_equals(array_get(arr, i), s) {
+      found = true
+      i = len
+    } else {
+      i = i + 1
+    }
   }
-  search(0)
+  found
 }
 
 // Extract all binding names from a pattern into the given array
@@ -411,70 +438,77 @@ let rec collect_pattern_bindings = (pat: Pat, bindings: Array[String]) -> Int {
   }
 }
 
+// Stack-based free variable analysis: uses in-place push/truncate on bound array
+// to avoid O(n) array copies at every scope boundary. This dramatically reduces
+// heap allocation during meta-circular self-compilation.
 export let rec collect_free_vars_expr = (expr: Expr, bound: Array[String], fn_names: Array[String], out: Array[String]) -> Int {
-  let cfv = (e: Expr, b: Array[String]) -> Int {
-    collect_free_vars_expr(e, b, fn_names, out)
-  }
   match expr {
     EIdent(name) => {
-      if !array_contains_str(bound, name) {
-        if !array_contains_str(fn_names, name) {
-          if !array_contains_str(out, name) {
-            array_push(out, name)
-          }
-        }
+      if array_contains_str(bound, name) { 0 }
+      else if array_contains_str(fn_names, name) { 0 }
+      else if array_contains_str(out, name) { 0 }
+      else {
+        array_push(out, name)
+        0
       }
-      0
     },
     EInt(_) => 0,
     EBool(_) => 0,
     EFloat(_) => 0,
     EString(_) => 0,
     EUnit => 0,
-    EBinOp(_, lhs, rhs) => { cfv(lhs, bound); cfv(rhs, bound) },
-    EUnaryOp(_, operand) => cfv(operand, bound),
-    EIf(cond, then_e, else_e) => { cfv(cond, bound); cfv(then_e, bound); cfv(else_e, bound) },
+    EBinOp(_, lhs, rhs) => { collect_free_vars_expr(lhs, bound, fn_names, out); collect_free_vars_expr(rhs, bound, fn_names, out) },
+    EUnaryOp(_, operand) => collect_free_vars_expr(operand, bound, fn_names, out),
+    EIf(cond, then_e, else_e) => { collect_free_vars_expr(cond, bound, fn_names, out); collect_free_vars_expr(then_e, bound, fn_names, out); collect_free_vars_expr(else_e, bound, fn_names, out) },
     ECall(callee, args) => {
-      cfv(callee, bound)
+      collect_free_vars_expr(callee, bound, fn_names, out)
       let mut i = 0
       while i < array_length(args) {
-        cfv(array_get(args, i), bound)
+        collect_free_vars_expr(array_get(args, i), bound, fn_names, out)
         i = i + 1
       }
       0
     },
     ELet(name, value, body) => {
-      cfv(value, bound)
-      let b2 = array_slice(bound, 0, array_length(bound))
-      array_push(b2, name)
-      cfv(body, b2)
+      collect_free_vars_expr(value, bound, fn_names, out)
+      let saved = array_length(bound)
+      array_push(bound, name)
+      collect_free_vars_expr(body, bound, fn_names, out)
+      array_truncate(bound, saved)
+      0
     },
     ELetRec(name, value, body) => {
-      let b2 = array_slice(bound, 0, array_length(bound))
-      array_push(b2, name)
-      cfv(value, b2)
-      cfv(body, b2)
+      let saved = array_length(bound)
+      array_push(bound, name)
+      collect_free_vars_expr(value, bound, fn_names, out)
+      collect_free_vars_expr(body, bound, fn_names, out)
+      array_truncate(bound, saved)
+      0
     },
     ELetMut(name, value, body) => {
-      cfv(value, bound)
-      let b2 = array_slice(bound, 0, array_length(bound))
-      array_push(b2, name)
-      cfv(body, b2)
+      collect_free_vars_expr(value, bound, fn_names, out)
+      let saved = array_length(bound)
+      array_push(bound, name)
+      collect_free_vars_expr(body, bound, fn_names, out)
+      array_truncate(bound, saved)
+      0
     },
-    EAssign(_, value, body) => { cfv(value, bound); cfv(body, bound) },
-    EAssignOp(_, _, value, body) => { cfv(value, bound); cfv(body, bound) },
-    ESeq(first, second) => { cfv(first, bound); cfv(second, bound) },
-    EWhile(cond, body) => { cfv(cond, bound); cfv(body, bound) },
+    EAssign(_, value, body) => { collect_free_vars_expr(value, bound, fn_names, out); collect_free_vars_expr(body, bound, fn_names, out) },
+    EAssignOp(_, _, value, body) => { collect_free_vars_expr(value, bound, fn_names, out); collect_free_vars_expr(body, bound, fn_names, out) },
+    ESeq(first, second) => { collect_free_vars_expr(first, bound, fn_names, out); collect_free_vars_expr(second, bound, fn_names, out) },
+    EWhile(cond, body) => { collect_free_vars_expr(cond, bound, fn_names, out); collect_free_vars_expr(body, bound, fn_names, out) },
     EForIn(var_name, iter_e, body) => {
-      cfv(iter_e, bound)
-      let b2 = array_slice(bound, 0, array_length(bound))
-      array_push(b2, var_name)
-      cfv(body, b2)
+      collect_free_vars_expr(iter_e, bound, fn_names, out)
+      let saved = array_length(bound)
+      array_push(bound, var_name)
+      collect_free_vars_expr(body, bound, fn_names, out)
+      array_truncate(bound, saved)
+      0
     },
     ETuple(elems) => {
       let mut i = 0
       while i < array_length(elems) {
-        cfv(array_get(elems, i), bound)
+        collect_free_vars_expr(array_get(elems, i), bound, fn_names, out)
         i = i + 1
       }
       0
@@ -482,53 +516,69 @@ export let rec collect_free_vars_expr = (expr: Expr, bound: Array[String], fn_na
     EArray(elems) => {
       let mut i = 0
       while i < array_length(elems) {
-        cfv(array_get(elems, i), bound)
+        collect_free_vars_expr(array_get(elems, i), bound, fn_names, out)
         i = i + 1
       }
       0
     },
     EMatch(scrutinee, arms) => {
-      cfv(scrutinee, bound)
+      collect_free_vars_expr(scrutinee, bound, fn_names, out)
       let mut i = 0
       while i < array_length(arms) {
         let (arm_pat, arm_expr) = array_get(arms, i)
-        let b2 = array_slice(bound, 0, array_length(bound))
-        collect_pattern_bindings(arm_pat, b2)
-        cfv(arm_expr, b2)
+        let saved = array_length(bound)
+        collect_pattern_bindings(arm_pat, bound)
+        collect_free_vars_expr(arm_expr, bound, fn_names, out)
+        array_truncate(bound, saved)
         i = i + 1
       }
       0
     },
     EFn(_, _, params, _, _, body) => {
-      let b2 = array_slice(bound, 0, array_length(bound))
+      let saved = array_length(bound)
       let mut pi = 0
       while pi < array_length(params) {
         let (pname, _) = array_get(params, pi)
-        array_push(b2, pname)
+        array_push(bound, pname)
         pi = pi + 1
       }
-      cfv(body, b2)
+      collect_free_vars_expr(body, bound, fn_names, out)
+      array_truncate(bound, saved)
+      0
     },
     EBreak(_) => 0,
     EContinue(_) => 0,
-    EThrow(msg) => cfv(msg, bound),
+    EThrow(msg) => collect_free_vars_expr(msg, bound, fn_names, out),
     EHandle(body, arms) => {
-      cfv(body, bound)
+      collect_free_vars_expr(body, bound, fn_names, out)
       let mut hi = 0
       while hi < array_length(arms) {
         let (_, arm_expr) = array_get(arms, hi)
-        cfv(arm_expr, bound)
+        collect_free_vars_expr(arm_expr, bound, fn_names, out)
         hi = hi + 1
       }
       0
     },
+    EDot(obj, _) => collect_free_vars_expr(obj, bound, fn_names, out),
+    ERecord(fields) => {
+      let mut ri = 0
+      while ri < array_length(fields) {
+        let (_, fval) = array_get(fields, ri)
+        collect_free_vars_expr(fval, bound, fn_names, out)
+        ri = ri + 1
+      }
+      0
+    },
+    ELabeledArg(_, _, arg_expr) => collect_free_vars_expr(arg_expr, bound, fn_names, out),
     _ => 0
   }
 }
 
 export let collect_free_vars = (body: Expr, param_names: Array[String], fn_names: Array[String]) -> Array[String] {
   let out = array_slice([""], 0, 0)
-  collect_free_vars_expr(body, param_names, fn_names, out)
+  // Make a mutable copy of param_names for stack-based push/truncate
+  let bound = array_slice(param_names, 0, array_length(param_names))
+  collect_free_vars_expr(body, bound, fn_names, out)
   out
 }
 
@@ -643,15 +693,21 @@ export let rec is_mut_captured_in = (expr: Expr, name: String) -> Bool {
 // === Lookup helpers ===
 
 export let str_table_lookup = (strs: Array[String], s: String) -> Int with { Error } {
-  let rec search = (i: Int) -> Int with { Error } {
-    if i >= array_length(strs) {
-      throw(string_concat("string not in table: ", s))
-    }
+  let len = array_length(strs)
+  let mut i = 0
+  let mut found = -1
+  while i < len {
     if string_equals(array_get(strs, i), s) {
-      i
-    } else search(i + 1)
+      found = i
+      i = len
+    } else {
+      i = i + 1
+    }
   }
-  search(0)
+  if found < 0 {
+    throw(string_concat("string not in table: ", s))
+  }
+  found
 }
 
 // Check if a pattern is unconditionally matching (catch-all)
@@ -677,33 +733,42 @@ export let is_catchall_pat = (p: Pat) -> Bool {
 // Returns num_arms if no catch-all found
 export let find_catchall_idx = (arms: Array[(Pat, Expr)]) -> Int {
   let num = array_length(arms)
-  let rec search = (idx: Int) -> Int {
-    if idx >= num { num }
-    else {
-      let (p, _) = array_get(arms, idx)
-      if is_catchall_pat(p) { idx } else search(idx + 1)
+  let mut idx = 0
+  let mut result = num
+  while idx < num {
+    let (p, _) = array_get(arms, idx)
+    if is_catchall_pat(p) {
+      result = idx
+      idx = num
+    } else {
+      idx = idx + 1
     }
   }
-  search(0)
+  result
 }
 
 // Find the SLet statement for a given function name
 export let find_func_stmt = (stmts: Array[Stmt], name: String) -> Stmt with { Error } {
-  let rec search = (i: Int) -> Stmt with { Error } {
-    if i >= array_length(stmts) {
-      throw(string_concat("function not found: ", name))
-    }
+  let len = array_length(stmts)
+  let mut i = 0
+  let mut found = -1
+  while i < len {
     let stmt = array_get(stmts, i)
     match stmt {
       SLet(_, _, sname, _, _) => {
         if string_equals(sname, name) {
-          stmt
-        } else search(i + 1)
+          found = i
+          i = len
+        }
       },
-      _ => search(i + 1)
+      _ => ()
     }
+    if found < 0 { i = i + 1 }
   }
-  search(0)
+  if found < 0 {
+    throw(string_concat("function not found: ", name))
+  }
+  array_get(stmts, found)
 }
 
 // Extract function body from SLet(_, _, _, _, EFn(_, _, _, _, _, body))
@@ -1017,6 +1082,9 @@ export let get_slet_name = (stmt: Stmt) -> String with { Error } {
 }
 export let get_slet_expr = (stmt: Stmt) -> Expr with { Error } {
   match stmt { SLet(_, _, _, _, expr) => expr, _ => throw("not SLet") }
+}
+export let get_slet_export = (stmt: Stmt) -> Bool with { Error } {
+  match stmt { SLet(is_export, _, _, _, _) => is_export, _ => throw("not SLet") }
 }
 
 // === Enum constructor lookup ===

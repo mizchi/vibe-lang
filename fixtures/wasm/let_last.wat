@@ -4,7 +4,8 @@
     i64.const 4
     end
   )
-  (memory (;0;) 64)
+  (memory (;0;) 1024)
   (export "run" (func 0))
   (export "memory" (memory 0))
+  (export "__heap_ptr" (unknown 0))
 )

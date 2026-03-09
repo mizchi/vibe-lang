@@ -170,7 +170,7 @@ let compile_call_gc = (
         nl
       } else {
         // Indirect call: fname is a local holding a closure/fn value
-        let local_idx2 = resolve_local(local_names, fname)
+        let local_idx2 = resolve_local(local_names, fname, "gc_call")
         let num_args = array_length(args)
         let fn_val_local = next_local
         let slot_local = next_local + 1
@@ -387,6 +387,10 @@ let compile_match_gc = (
     emit_end(buf)
     ci2 = ci2 + 1
   }
+  // Pad local_names to stay in sync with max_nl
+  while array_length(local_names) < max_nl {
+    array_push(local_names, "")
+  }
   max_nl
 }
 
@@ -492,7 +496,7 @@ let compile_lambda_gc = (
     let mut csi = 0
     while csi < num_captures {
       let cap_name = array_get(captures, csi)
-      let cap_idx = resolve_local(local_names, cap_name)
+      let cap_idx = resolve_local(local_names, cap_name, "gc_cap")
       emit_local_get(buf, ptr_local)
       emit_i32_wrap_i64(buf)
       emit_local_get(buf, cap_idx)
@@ -614,6 +618,7 @@ let rec compile_expr_gc = (
         nl
       } else if string_equals(op, "!") {
         let nl = ce(buf, operand, local_names, next_local, ld)
+        // Bool: true=1, false=0. Use eqz to negate.
         emit_i64_eqz(buf)
         emit_i64_extend_i32_s(buf)
         nl
@@ -632,7 +637,12 @@ let rec compile_expr_gc = (
       array_truncate(local_names, names_len_before)
       let nl3 = ce(buf, else_e, local_names, nl1, ld_inner)
       emit_end(buf)
-      if nl2 > nl3 { nl2 } else { nl3 }
+      let max_nl_if = if nl2 > nl3 { nl2 } else { nl3 }
+      // Pad local_names to stay in sync with max next_local
+      while array_length(local_names) < max_nl_if {
+        array_push(local_names, "")
+      }
+      max_nl_if
     },
     ECall(callee, args) => compile_call_gc(buf, callee, args, local_names, next_local, ctx, ld, ce),
     ELet(name, value, body) => {
@@ -702,7 +712,7 @@ let rec compile_expr_gc = (
       }
     },
     EAssign(name, value, body) => {
-      let idx = resolve_local(local_names, name)
+      let idx = resolve_local(local_names, name, "gc_var")
       if array_contains_str(ctx.ref_cell_names, name) {
         // Ref cell: struct.set
         emit_local_get(buf, idx)
@@ -716,7 +726,7 @@ let rec compile_expr_gc = (
       }
     },
     EAssignOp(name, op, value, body) => {
-      let idx = resolve_local(local_names, name)
+      let idx = resolve_local(local_names, name, "gc_var")
       if array_contains_str(ctx.ref_cell_names, name) {
         // Ref cell: read via struct.get, compute, write via struct.set
         emit_local_get(buf, idx)   // ref on stack (for struct.set later)

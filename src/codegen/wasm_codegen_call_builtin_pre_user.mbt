@@ -3830,7 +3830,10 @@ fn compile_call_builtin_pre_user_inner(
     "array_builder" => {
       // array_builder() -> allocate empty array obj with len=0
       // Reserve max_capacity * 4 bytes after header for future pushes
-      let max_cap = 4096
+      // NOTE: array_builder_push has no bounds check/realloc — this max_cap must
+      // be large enough for all use cases. 16384 covers selfhost parser tokens.
+      // TODO: implement proper capacity management with realloc.
+      let max_cap = 16384
       require_heap(ctx)
       let size = align4(8 + max_cap * 4)
       let obj_local = alloc_temp_local(ctx)
@@ -4010,7 +4013,7 @@ fn compile_call_builtin_pre_user_inner(
     }
     "array_contains_str" => {
       // array_contains_str(arr, str) -> Bool
-      // Linear scan: compare each element string with str
+      // Linear scan: compare each element string with str using content comparison
       let pos_args = extract_positional_exprs_with_arity(
         args, "array_contains_str", 2,
       )
@@ -4021,16 +4024,30 @@ fn compile_call_builtin_pre_user_inner(
       let idx_local = alloc_temp_local(ctx)
       let result_local = alloc_temp_local(ctx)
       let elem_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+      let needle_ptr = alloc_temp_local(ctx)
+      let needle_len = alloc_temp_local(ctx)
+      let elem_ptr = alloc_temp_local(ctx)
+      let elem_len = alloc_temp_local(ctx)
+      let cmp_i = alloc_temp_local(ctx)
+      let str_eq = alloc_temp_local(ctx)
       // Get array pointer
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, (-4).to_int64())
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, arr_ptr)
-      // Get needle string (tagged)
+      // Get needle string (tagged) and compute untagged pointer + length
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_local_set(buf, needle)
-      // len
+      emit_local_get(buf, needle)
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, needle_ptr)
+      emit_local_get(buf, needle_ptr)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, needle_len)
+      // array len
       emit_local_get(buf, arr_ptr)
       emit_i32_load(buf, 4)
       emit_local_set(buf, len_local)
@@ -4055,29 +4072,83 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_load(buf, 8)
       emit_i64_extend_i32_u(buf)
       emit_local_set(buf, elem_local)
-      // Call string_equals(elem, needle) via inline comparison
-      // For now, use simple pointer equality check on the tagged value
-      // This is correct for interned strings; for full comparison we need
-      // the string_equals builtin call path
+      // Get element untagged pointer
       emit_local_get(buf, elem_local)
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
-      emit_local_get(buf, needle)
-      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, elem_ptr)
+      // Fast path: pointer equality
+      emit_local_get(buf, elem_ptr)
+      emit_local_get(buf, needle_ptr)
       emit_i32_eq(buf)
-      emit_if(buf) // void if
+      emit_if(buf) // void if — pointers match
       emit_i32_const_raw(buf, 1)
       emit_local_set(buf, result_local)
-      emit_local_get(buf, len_local) // force break by setting idx = len
-      emit_local_set(buf, idx_local)
+      emit_local_get(buf, len_local)
+      emit_local_set(buf, idx_local) // force break
       emit_else(buf)
+      // Compare string lengths
+      emit_local_get(buf, elem_ptr)
+      emit_i32_load(buf, 4) // elem string length
+      emit_local_set(buf, elem_len)
+      emit_local_get(buf, elem_len)
+      emit_local_get(buf, needle_len)
+      emit_i32_eq(buf)
+      emit_if(buf) // void if — lengths match, compare bytes
+      emit_i32_const_raw(buf, 1)
+      emit_local_set(buf, str_eq)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, cmp_i)
+      // Byte comparison loop
+      emit_block(buf)
+      emit_loop(buf)
+      emit_local_get(buf, cmp_i)
+      emit_local_get(buf, elem_len)
+      emit_i32_ge_s(buf)
+      emit_br_if(buf, 1) // break if all bytes compared
+      emit_local_get(buf, elem_ptr)
+      emit_local_get(buf, cmp_i)
+      emit_i32_add(buf)
+      emit_i32_load8_u(buf, 8) // elem byte at offset 8 + cmp_i
+      emit_local_get(buf, needle_ptr)
+      emit_local_get(buf, cmp_i)
+      emit_i32_add(buf)
+      emit_i32_load8_u(buf, 8) // needle byte at offset 8 + cmp_i
+      emit_i32_eq(buf)
+      emit_i32_eqz(buf)
+      emit_if(buf) // void if — bytes differ
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, str_eq)
+      emit_local_get(buf, elem_len) // force exit byte loop
+      emit_local_set(buf, cmp_i)
+      emit_else(buf)
+      emit_local_get(buf, cmp_i)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_add(buf)
+      emit_local_set(buf, cmp_i)
+      emit_end(buf) // end if (byte compare)
+      emit_br(buf, 0) // continue byte loop
+      emit_end(buf) // end loop (byte loop)
+      emit_end(buf) // end block (byte loop)
+      // If str_eq is still 1, we found a match
+      emit_local_get(buf, str_eq)
+      emit_if(buf) // void if — string content matches
+      emit_i32_const_raw(buf, 1)
+      emit_local_set(buf, result_local)
+      emit_local_get(buf, len_local) // force break
+      emit_local_set(buf, idx_local)
+      emit_end(buf) // end if (str_eq)
+      emit_end(buf) // end if (length match)
+      // Increment index
       emit_local_get(buf, idx_local)
       emit_i32_const_raw(buf, 1)
       emit_i32_add(buf)
       emit_local_set(buf, idx_local)
-      emit_end(buf) // end if
-      emit_br(buf, 0) // continue
-      emit_end(buf) // end loop
-      emit_end(buf) // end block
+      emit_end(buf) // end else (pointer mismatch)
+      emit_br(buf, 0) // continue outer loop
+      emit_end(buf) // end loop (outer)
+      emit_end(buf) // end block (outer)
       // Return tagged bool (val << 2)
       emit_local_get(buf, result_local)
       emit_i64_extend_i32_u(buf)
@@ -4132,7 +4203,8 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_load(buf, 4) // string length
       emit_local_set(buf, str_len)
       emit_local_get(buf, str_ptr)
-      emit_i32_load(buf, 8) // string data offset
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf) // str_ptr = ptr + 8 (inline data start)
       emit_local_set(buf, str_ptr) // reuse as data ptr
       // Allocate array: header(8) + len*4
       emit_global_get(buf, ctx.heap_global)

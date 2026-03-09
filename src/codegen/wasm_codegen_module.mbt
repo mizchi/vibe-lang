@@ -780,8 +780,8 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let mem_sec = ByteBuf::new()
   write_u32_leb(mem_sec, 1)
   mem_sec.push((0).to_byte())
-  // Reserve enough linear memory for repeated allocations in bench loops.
-  write_u32_leb(mem_sec, 64)
+  // Reserve enough linear memory for selfhost compile and bench loops.
+  write_u32_leb(mem_sec, 1024)
   write_section(buf, 5, mem_sec.data)
 
   // tag section (section ID 13, placed between memory and global per spec)
@@ -810,18 +810,21 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   // global section
   let coverage_count = ctx.coverage_points.length()
   let coverage_bytes = coverage_count * 4
+  let exported_env_global_count = ctx.exported_fn_env_globals.length()
   let need_globals = ctx.use_heap_global ||
     ctx.need_stack_switching ||
     ctx.coverage_enabled ||
     ctx.need_fs ||
-    ctx.need_socket
+    ctx.need_socket ||
+    exported_env_global_count > 0
   if need_globals {
     let global_sec = ByteBuf::new()
     let global_count = (if ctx.use_heap_global { 1 } else { 0 }) +
       (if ctx.need_stack_switching { 1 } else { 0 }) +
       (if ctx.coverage_enabled { 2 } else { 0 }) +
       (if ctx.need_fs { 1 } else { 0 }) +
-      (if ctx.need_socket { 1 } else { 0 })
+      (if ctx.need_socket { 1 } else { 0 }) +
+      exported_env_global_count
     write_u32_leb(global_sec, global_count)
     // Heap pointer global
     if ctx.use_heap_global {
@@ -868,6 +871,23 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       emit_i32_const_raw(global_sec, 0)
       global_sec.push((11).to_byte()) // end
     }
+    // Exported function env globals: store closure env pointers for external calls
+    if exported_env_global_count > 0 {
+      let mut env_global_idx = (if ctx.use_heap_global { 1 } else { 0 }) +
+        (if ctx.need_stack_switching { 1 } else { 0 }) +
+        (if ctx.coverage_enabled { 2 } else { 0 }) +
+        (if ctx.need_fs { 1 } else { 0 }) +
+        (if ctx.need_socket { 1 } else { 0 })
+      for name, _ in ctx.exported_fn_env_globals {
+        // Mutable i32 global, initial value 0
+        global_sec.push((127).to_byte()) // i32
+        global_sec.push((1).to_byte()) // mutable
+        emit_i32_const_raw(global_sec, 0)
+        global_sec.push((11).to_byte()) // end
+        ctx.exported_fn_env_globals[name] = env_global_idx
+        env_global_idx = env_global_idx + 1
+      }
+    }
     write_section(buf, 6, global_sec.data)
   }
 
@@ -884,7 +904,8 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     (if need_http_host_string_new_export { 1 } else { 0 }) +
     (if ctx.need_exceptions { 1 } else { 0 }) +
     (if ctx.need_stack_switching { 3 } else { 0 }) + // await_tag + sleep_tag + global
-    (if ctx.coverage_enabled { 2 } else { 0 })
+    (if ctx.coverage_enabled { 2 } else { 0 }) +
+    1 // __heap_ptr global
   let export_sec = ByteBuf::new()
   write_u32_leb(export_sec, export_count)
   write_name(export_sec, "run")
@@ -946,6 +967,10 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     export_sec.push((3).to_byte()) // global export
     write_u32_leb(export_sec, ctx.coverage_count_global_index)
   }
+  // Export __heap_ptr global (global 0) for external memory management
+  write_name(export_sec, "__heap_ptr")
+  export_sec.push((3).to_byte()) // global export
+  write_u32_leb(export_sec, 0)
   write_section(buf, 7, export_sec.data)
 
   // element section
@@ -1366,7 +1391,31 @@ fn emit_module_with_coverage(
   for i in 0..<funcs.length() {
     ctx.fn_needs_env[i] = fn_needs_env[i]
   }
+  // Identify exported functions with captures — they need env globals
+  for name, _ in ctx.exported_fns {
+    match ctx.fn_indices.get(name) {
+      Some(idx) =>
+        if funcs[idx].captures.length() > 0 {
+          ctx.exported_fn_env_globals[name] = -1 // placeholder, assigned in build_module
+        }
+      None => ()
+    }
+  }
   scan_needs(ctx, ast)
+  // Assign actual global indices for exported fn env globals.
+  // Must happen after scan_needs so ctx.use_heap_global etc. are known,
+  // and before compile_function so the prelude can reference the globals.
+  if ctx.exported_fn_env_globals.length() > 0 {
+    let mut env_global_idx = (if ctx.use_heap_global { 1 } else { 0 }) +
+      (if ctx.need_stack_switching { 1 } else { 0 }) +
+      (if ctx.coverage_enabled { 2 } else { 0 }) +
+      (if ctx.need_fs { 1 } else { 0 }) +
+      (if ctx.need_socket { 1 } else { 0 })
+    for name, _ in ctx.exported_fn_env_globals {
+      ctx.exported_fn_env_globals[name] = env_global_idx
+      env_global_idx = env_global_idx + 1
+    }
+  }
   scan_strings(ctx, ast)
   if ctx.coverage_enabled {
     ctx.coverage_base_offset = align4(ctx.strings.next_offset)
