@@ -342,12 +342,7 @@ pub fn is_builtin_name(name : String) -> Bool {
   name == "array_builder" ||
   name == "array_builder_push" ||
   name == "array_builder_freeze" ||
-  name == "map_builder" ||
-  name == "map_builder_set" ||
-  name == "map_builder_freeze" ||
-  name == "MapBuilder::new" ||
-  name == "MapBuilder::set" ||
-  name == "MapBuilder::freeze" ||
+  is_map_builder_builtin_name(name) ||
   name == "bytes_new" ||
   name == "bytes_push" ||
   name == "bytes_set"
