@@ -32,13 +32,25 @@ check:
 check-lock-clean:
     scripts/check_lock_clean.sh
 
+# Sync vibe/* module lock payloads into index.vbundle
+sync-vbundle:
+    bash scripts/sync_vibe_index_vbundle.sh
+
 # Self-test lock contamination checker patterns
 test-lock-clean:
     scripts/check_lock_clean_test.sh
 
+# Self-test vibe index.vbundle sync helper
+test-sync-vbundle:
+    bash scripts/sync_vibe_index_vbundle_test.sh
+
 # Self-test builtin rename migration helper
 test-rename-builtins:
     bash scripts/rename_builtins_test.sh
+
+# Self-test normalize batching helper
+test-vibe-normalize:
+    bash scripts/vibe_normalize_all_test.sh
 
 # Run tests (includes examples, std, io, fs, shell, socket, http, rlm, collection, json/base64/sha1, x)
 test:
@@ -626,8 +638,8 @@ vibe-normalize-cached:
 vibe-normalize-check:
     scripts/vibe_normalize_all.sh --check
 
-# Pre-release check (includes wasm bundle-size monitor)
-release-check: fmt info check test vibe-normalize bench-bundle-size-monitor
+# Pre-release check (includes lock payload sync + wasm bundle-size monitor)
+release-check: fmt info sync-vbundle check test vibe-normalize bench-bundle-size-monitor
 
 # Alias for teams used to `check-release`
 check-release: release-check
