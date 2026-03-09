@@ -1,9 +1,10 @@
-// CST (Concrete Syntax Tree) for tolerant parsing
-// Preserves all tokens including errors for lossless round-trip
+//# Imports
 
-import ./token.vibe { Token }
+import ./token.vibe {
+  Token
+}
 
-//# Node Kinds
+//# Types
 
 export enum NodeKind {
   // Top-level
@@ -85,15 +86,45 @@ export enum NodeKind {
   NError
 }
 
-//# CST Tree
-
 export enum CstChild {
   CNode(NodeKind, Array[CstChild]);
   CToken(Token);
   CError(String)
 }
 
-//# NodeKind helpers (must come before functions that use them)
+//# Functions
+
+export let cst_kind = (child: CstChild) -> NodeKind {
+  match child {
+    CNode(kind, _) => kind,
+    CToken(_) => NError,
+    CError(_) => NError
+  }
+}
+
+export let cst_tokens = (children: Array[CstChild]) -> Array[Token] {
+  let result = Array::slice([
+    TEof
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(children) {
+    match Array::get(children, i) {
+      CToken(t) => Array::push(result, t),
+      _ => ()
+    }
+    i = i + 1
+  }
+  result
+}
+
+export let cst_children = (child: CstChild) -> Array[CstChild] {
+  match child {
+    CNode(_, children) => children,
+    _ => Array::slice([
+      CError("not a node")
+    ], 0, 0)
+  }
+}
 
 export let node_kind_tag = (k: NodeKind) -> Int {
   match k {
@@ -173,38 +204,45 @@ export let node_kind_eq = (a: NodeKind, b: NodeKind) -> Bool {
   node_kind_tag(a) == node_kind_tag(b)
 }
 
-//# Accessors
-
-export let cst_kind = (child: CstChild) -> NodeKind {
-  match child {
-    CNode(kind, _) => kind,
-    CToken(_) => NError,
-    CError(_) => NError
-  }
-}
-
-export let cst_children = (child: CstChild) -> Array[CstChild] {
-  match child {
-    CNode(_, children) => children,
-    _ => Array::slice([CError("not a node")], 0, 0)
-  }
-}
-
-// Find first child node of given kind
 export let rec cst_find = (children: Array[CstChild], kind: NodeKind, i: Int) -> Option[CstChild] {
-  if i >= Array::length(children) { None }
+  if i >= Array::length(children) {
+    None
+  }
   else {
     let c = Array::get(children, i)
     match c {
-      CNode(k, _) => if node_kind_eq(k, kind) { Some(c) } else { cst_find(children, kind, i + 1) },
+      CNode(k, _) => if node_kind_eq(k, kind) {
+        Some(c)
+      } else {
+        cst_find(children, kind, i + 1)
+      },
       _ => cst_find(children, kind, i + 1)
     }
   }
 }
 
-// Find first token
+export let cst_filter = (children: Array[CstChild], kind: NodeKind) -> Array[CstChild] {
+  let result = Array::slice([
+    CError("")
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(children) {
+    let c = Array::get(children, i)
+    match c {
+      CNode(k, _) => if node_kind_eq(k, kind) {
+        Array::push(result, c)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  result
+}
+
 export let rec cst_find_token = (children: Array[CstChild], i: Int) -> Option[Token] {
-  if i >= Array::length(children) { None }
+  if i >= Array::length(children) {
+    None
+  }
   else {
     match Array::get(children, i) {
       CToken(t) => Some(t),
@@ -213,42 +251,14 @@ export let rec cst_find_token = (children: Array[CstChild], i: Int) -> Option[To
   }
 }
 
-// Collect all child nodes of given kind
-export let cst_filter = (children: Array[CstChild], kind: NodeKind) -> Array[CstChild] {
-  let result = Array::slice([CError("")], 0, 0)
-  let mut i = 0
-  while i < Array::length(children) {
-    let c = Array::get(children, i)
-    match c {
-      CNode(k, _) => if node_kind_eq(k, kind) { Array::push(result, c) },
-      _ => ()
-    }
-    i = i + 1
-  }
-  result
-}
-
-// Collect all child nodes (skip tokens)
 export let cst_child_nodes = (children: Array[CstChild]) -> Array[CstChild] {
-  let result = Array::slice([CError("")], 0, 0)
+  let result = Array::slice([
+    CError("")
+  ], 0, 0)
   let mut i = 0
   while i < Array::length(children) {
     match Array::get(children, i) {
       CNode(_, _) => Array::push(result, Array::get(children, i)),
-      _ => ()
-    }
-    i = i + 1
-  }
-  result
-}
-
-// Collect all tokens (skip nodes)
-export let cst_tokens = (children: Array[CstChild]) -> Array[Token] {
-  let result = Array::slice([TEof], 0, 0)
-  let mut i = 0
-  while i < Array::length(children) {
-    match Array::get(children, i) {
-      CToken(t) => Array::push(result, t),
       _ => ()
     }
     i = i + 1

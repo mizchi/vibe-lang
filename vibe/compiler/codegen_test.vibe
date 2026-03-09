@@ -1,20 +1,29 @@
-import ./lexer.vibe { lex }
-import ./parser.vibe { parse_program }
-import ./codegen.vibe { compile_module, compile_wasi_module }
-import ./codegen_gc.vibe { compile_wasi_module_gc }
-import ./codegen_common.vibe { collect_free_vars }
+//# Imports
 
-// Helper: compile vibe source to .wasm bytes
-let compile_source = (source: String) -> Bytes with { Error } {
-  let tokens = lex(source)
-  let stmts = parse_program(tokens)
-  compile_module(stmts)
+import ./codegen.vibe {
+  compile_module, compile_wasi_module
 }
 
-// Helper: validate WASM binary magic number and minimum size
+import ./codegen_common.vibe {
+  collect_free_vars
+}
+
+import ./codegen_gc.vibe {
+  compile_wasi_module_gc
+}
+
+import ./lexer.vibe {
+  lex
+}
+
+import ./parser.vibe {
+  parse_program
+}
+
+//# Functions
+
 let assert_wasm = (bytes: Bytes) -> Int {
   assert(Bytes::length(bytes) > 8)
-  // WASM magic: asm
   assert(Bytes::get(bytes, 0) == 0)
   assert(Bytes::get(bytes, 1) == 97)
   assert(Bytes::get(bytes, 2) == 115)
@@ -22,6 +31,85 @@ let assert_wasm = (bytes: Bytes) -> Int {
   0
 }
 
+let compile_wasi = (source: String, entry: String) -> Bytes with { Error } {
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  compile_wasi_module(stmts, entry)
+}
+
+let compile_source = (source: String) -> Bytes with { Error } {
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  compile_module(stmts)
+}
+
+let compile_wasi_gc = (source: String, entry: String) -> Bytes with { Error } {
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  compile_wasi_module_gc(stmts, entry)
+}
+
+let compile_wasi_with_imports = (import_sources: Array[String], source: String, entry: String) -> Bytes with { Error } {
+  let all_stmts = ArrayBuilder::new()
+  let mut ii = 0
+  while ii < Array::length(import_sources) {
+    let itokens = lex(Array::get(import_sources, ii))
+    let istmts = parse_program(itokens)
+    let mut si = 0
+    while si < Array::length(istmts) {
+      let s = Array::get(istmts, si)
+      match s {
+        SEnum(_, _, _) => {
+          ArrayBuilder::push(all_stmts, s)
+          0
+        },
+        _ => 0
+      }
+      si = si + 1
+    }
+    ii = ii + 1
+  }
+  let main_tokens = lex(source)
+  let main_stmts = parse_program(main_tokens)
+  let mut mi = 0
+  while mi < Array::length(main_stmts) {
+    ArrayBuilder::push(all_stmts, Array::get(main_stmts, mi))
+    mi = mi + 1
+  }
+  compile_wasi_module(ArrayBuilder::freeze(all_stmts), entry)
+}
+
+let compile_wasi_with_full_imports = (import_sources: Array[String], source: String, entry: String) -> Bytes with { Error } {
+  let all_stmts = ArrayBuilder::new()
+  let mut ii = 0
+  while ii < Array::length(import_sources) {
+    let itokens = lex(Array::get(import_sources, ii))
+    let istmts = parse_program(itokens)
+    let mut si = 0
+    while si < Array::length(istmts) {
+      let s = Array::get(istmts, si)
+      match s {
+        SImport(_, _) => 0,
+        _ => {
+          ArrayBuilder::push(all_stmts, s)
+          0
+        }
+      }
+      si = si + 1
+    }
+    ii = ii + 1
+  }
+  let main_tokens = lex(source)
+  let main_stmts = parse_program(main_tokens)
+  let mut mi = 0
+  while mi < Array::length(main_stmts) {
+    ArrayBuilder::push(all_stmts, Array::get(main_stmts, mi))
+    mi = mi + 1
+  }
+  compile_wasi_module(ArrayBuilder::freeze(all_stmts), entry)
+}
+
+//# Misc
 
 test "codegen: add function" {
   let source = "export let add = (a: Int, b: Int) -> Int { a + b }"
@@ -77,78 +165,6 @@ test "codegen: while loop (factorial)" {
   assert_wasm(bytes)
 }
 
-// === WASI module tests ===
-
-let compile_wasi = (source: String, entry: String) -> Bytes with { Error } {
-  let tokens = lex(source)
-  let stmts = parse_program(tokens)
-  compile_wasi_module(stmts, entry)
-}
-
-// Compile with imported module stmts merged (enum-only: SEnum defs from imports + main source)
-let compile_wasi_with_imports = (import_sources: Array[String], source: String, entry: String) -> Bytes with { Error } {
-  // Parse import sources, collect SEnum stmts only
-  let all_stmts = ArrayBuilder::new()
-  let mut ii = 0
-  while ii < Array::length(import_sources) {
-    let itokens = lex(Array::get(import_sources, ii))
-    let istmts = parse_program(itokens)
-    let mut si = 0
-    while si < Array::length(istmts) {
-      let s = Array::get(istmts, si)
-      match s {
-        SEnum(_, _, _) => {
-          ArrayBuilder::push(all_stmts, s)
-          0
-        },
-        _ => 0
-      }
-      si = si + 1
-    }
-    ii = ii + 1
-  }
-  // Parse main source and add all stmts
-  let main_tokens = lex(source)
-  let main_stmts = parse_program(main_tokens)
-  let mut mi = 0
-  while mi < Array::length(main_stmts) {
-    ArrayBuilder::push(all_stmts, Array::get(main_stmts, mi))
-    mi = mi + 1
-  }
-  compile_wasi_module(ArrayBuilder::freeze(all_stmts), entry)
-}
-
-// Compile with full import (all stmts including functions)
-let compile_wasi_with_full_imports = (import_sources: Array[String], source: String, entry: String) -> Bytes with { Error } {
-  let all_stmts = ArrayBuilder::new()
-  let mut ii = 0
-  while ii < Array::length(import_sources) {
-    let itokens = lex(Array::get(import_sources, ii))
-    let istmts = parse_program(itokens)
-    let mut si = 0
-    while si < Array::length(istmts) {
-      let s = Array::get(istmts, si)
-      match s {
-        SImport(_, _) => 0,  // skip nested imports
-        _ => {
-          ArrayBuilder::push(all_stmts, s)
-          0
-        }
-      }
-      si = si + 1
-    }
-    ii = ii + 1
-  }
-  let main_tokens = lex(source)
-  let main_stmts = parse_program(main_tokens)
-  let mut mi = 0
-  while mi < Array::length(main_stmts) {
-    ArrayBuilder::push(all_stmts, Array::get(main_stmts, mi))
-    mi = mi + 1
-  }
-  compile_wasi_module(ArrayBuilder::freeze(all_stmts), entry)
-}
-
 test "wasi: simple constant" {
   let source = "let main = () -> Int { 42 }"
   let bytes = compile_wasi(source, "main")
@@ -185,8 +201,6 @@ test "wasi: factorial" {
   assert_wasm(bytes)
 }
 
-// === print_int / print_str builtin tests ===
-
 test "wasi: print_int builtin" {
   let source = "let main = () -> Int {\n  print_int(42)\n  print_int(-7)\n  0\n}"
   let bytes = compile_wasi(source, "main")
@@ -204,8 +218,6 @@ test "wasi: print_str and print_int mixed" {
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
-
-// === String builtins ===
 
 test "wasi: String::length" {
   let source = "let main = () -> Int { String::length(\"hello\") }"
@@ -231,8 +243,6 @@ test "wasi: String::concat" {
   assert_wasm(bytes)
 }
 
-// === Array builtins ===
-
 test "wasi: array basic" {
   let source = "let main = () -> Int {\n  let arr = array_new()\n  Array::push(arr, 10)\n  Array::push(arr, 20)\n  Array::push(arr, 30)\n  Array::get(arr, 1)\n}"
   let bytes = compile_wasi(source, "main")
@@ -251,15 +261,11 @@ test "wasi: Array::set" {
   assert_wasm(bytes)
 }
 
-// === Tuple ===
-
 test "wasi: tuple destructure" {
   let source = "let f = () -> (Int, Int) { (3, 4) }\nlet main = () -> Int {\n  match f() {\n    (a, b) => a + b\n  }\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
-
-// === Match ===
 
 test "wasi: match int" {
   let source = "let f = (x: Int) -> Int {\n  match x {\n    0 => 100,\n    1 => 200,\n    _ => 300\n  }\n}\nlet main = () -> Int { f(1) }"
@@ -279,8 +285,6 @@ test "wasi: match default with scrutinee" {
   assert_wasm(bytes)
 }
 
-// === Bool ===
-
 test "wasi: bool literal true" {
   let source = "let main = () -> Int { if true { 1 } else { 0 } }"
   let bytes = compile_wasi(source, "main")
@@ -299,15 +303,11 @@ test "wasi: match bool pattern" {
   assert_wasm(bytes)
 }
 
-// === Unary ops ===
-
 test "wasi: logical not" {
   let source = "let main = () -> Int { if !false { 42 } else { 0 } }"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
-
-// === BinOps: arithmetic ===
 
 test "wasi: division" {
   let source = "let main = () -> Int { 100 / 3 }"
@@ -320,8 +320,6 @@ test "wasi: modulo" {
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
-
-// === BinOps: comparison ===
 
 test "wasi: equals true" {
   let source = "let main = () -> Int { if 3 == 3 { 1 } else { 0 } }"
@@ -353,8 +351,6 @@ test "wasi: greater or equal" {
   assert_wasm(bytes)
 }
 
-// === BinOps: bitwise ===
-
 test "wasi: bitwise and" {
   let source = "let main = () -> Int { 15 & 9 }"
   let bytes = compile_wasi(source, "main")
@@ -385,8 +381,6 @@ test "wasi: shift right" {
   assert_wasm(bytes)
 }
 
-// === BinOps: logical ===
-
 test "wasi: logical and" {
   let source = "let main = () -> Int { if 1 && 1 { 10 } else { 20 } }"
   let bytes = compile_wasi(source, "main")
@@ -399,23 +393,17 @@ test "wasi: logical or" {
   assert_wasm(bytes)
 }
 
-// === Unit ===
-
 test "wasi: unit expression" {
   let source = "let main = () -> Int {\n  let _ = ()\n  99\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
-// === Multiple match arms with fallthrough ===
-
 test "wasi: match many arms" {
   let source = "let f = (x: Int) -> Int {\n  match x {\n    0 => 10,\n    1 => 20,\n    2 => 30,\n    3 => 40,\n    _ => 50\n  }\n}\nlet main = () -> Int { f(3) }"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
-
-// === Nested let + complex expressions ===
 
 test "wasi: nested let bindings" {
   let source = "let main = () -> Int {\n  let a = 10\n  let b = a + 5\n  let c = b * 2\n  c + a\n}"
@@ -429,8 +417,6 @@ test "wasi: while with mutation" {
   assert_wasm(bytes)
 }
 
-// === String + array combined ===
-
 test "wasi: string in array workflow" {
   let source = "let main = () -> Int {\n  let s = String::concat(\"hello \", \"world\")\n  String::length(s)\n}"
   let bytes = compile_wasi(source, "main")
@@ -443,15 +429,11 @@ test "wasi: array sum loop" {
   assert_wasm(bytes)
 }
 
-// === Tuple with 3 elements ===
-
 test "wasi: tuple3 destructure" {
   let source = "let f = () -> (Int, Int, Int) { (10, 20, 30) }\nlet main = () -> Int {\n  match f() {\n    (a, b, c) => a + b + c\n  }\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
-
-// === AssignOp (+=, -=, *=) ===
 
 test "wasi: assign op plus" {
   let source = "let main = () -> Int {\n  let mut x = 10\n  x += 5\n  x\n}"
@@ -477,8 +459,6 @@ test "wasi: assign op in while loop" {
   assert_wasm(bytes)
 }
 
-// === Array literal ===
-
 test "wasi: array literal" {
   let source = "let main = () -> Int {\n  let arr = [10, 20, 30]\n  Array::get(arr, 1)\n}"
   let bytes = compile_wasi(source, "main")
@@ -491,8 +471,6 @@ test "wasi: array literal length" {
   assert_wasm(bytes)
 }
 
-// === For-in loop ===
-
 test "wasi: for-in sum" {
   let source = "let main = () -> Int {\n  let arr = [10, 20, 30]\n  let mut sum = 0\n  for x in arr {\n    sum = sum + x\n  }\n  sum\n}"
   let bytes = compile_wasi(source, "main")
@@ -504,8 +482,6 @@ test "wasi: for-in with Array::push" {
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
-
-// === Break / Continue ===
 
 test "wasi: break from while" {
   let source = "let main = () -> Int {\n  let mut i = 0\n  let mut result = 0\n  while i < 100 {\n    if i == 5 { break }\n    result = result + i\n    i = i + 1\n  }\n  result\n}"
@@ -530,8 +506,6 @@ test "wasi: for-in with break" {
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
-
-// === Edge cases ===
 
 test "wasi: empty array" {
   let source = "let main = () -> Int {\n  let arr = []\n  Array::length(arr)\n}"
@@ -575,8 +549,6 @@ test "wasi: string equality in if" {
   assert_wasm(bytes)
 }
 
-// === Closure / Lambda ===
-
 test "wasi: closure no capture" {
   let source = "let main = () -> Int {\n  let f = (x: Int) -> Int { x + 1 }\n  f(5)\n}"
   let bytes = compile_wasi(source, "main")
@@ -613,8 +585,6 @@ test "wasi: nested closure" {
   assert_wasm(bytes)
 }
 
-// === Mutable Capture ===
-
 test "wasi: closure mutable capture" {
   // let mut n = 0; let inc = () -> Int { n = n + 1; n }; inc(); inc() → 2
   let source = "let main = () -> Int {\n  let mut n = 0\n  let inc = () -> Int { n = n + 1\n  n }\n  inc()\n  inc()\n}"
@@ -628,8 +598,6 @@ test "wasi: closure mutable capture shared" {
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
-
-// === Float / Double ===
 
 test "wasi: Double::to_int basic" {
   let source = "let main = () -> Int {\n  Double::to_int(3.7)\n}"
@@ -655,8 +623,6 @@ test "wasi: float arithmetic via Int::to_double" {
   assert_wasm(bytes)
 }
 
-// === String builtins ===
-
 test "wasi: String::char_code_at" {
   let source = "let main = () -> Int {\n  let s = \"hello\"\n  String::char_code_at(s, 1)\n}"
   let bytes = compile_wasi(source, "main")
@@ -679,14 +645,6 @@ test "wasi: String::substring content" {
   let source = "let main = () -> Int {\n  let s = \"abcdef\"\n  let sub = String::substring(s, 2, 5)\n  String::char_code_at(sub, 0)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
-}
-
-// === GC Backend ===
-
-let compile_wasi_gc = (source: String, entry: String) -> Bytes with { Error } {
-  let tokens = lex(source)
-  let stmts = parse_program(tokens)
-  compile_wasi_module_gc(stmts, entry)
 }
 
 test "gc: basic add" {
@@ -742,8 +700,6 @@ test "gc: fibonacci iterative" {
   let bytes = compile_wasi_gc(source, "main")
   assert_wasm(bytes)
 }
-
-// === GC Backend: Closures ===
 
 test "gc: closure no capture" {
   let source = "let main = () -> Int {\n  let f = (x: Int) -> Int { x + 1 }\n  f(5)\n}"
@@ -863,14 +819,18 @@ test "wasi: enum import (separate module)" {
   // Simulate importing enum from another module
   let enum_source = "export enum Token { TInt(Int); TString(String); TPlus; TMinus; TEof }"
   let main_source = "let main = () -> Int {\n  let tok = TInt(42)\n  match tok {\n    TInt(n) => n,\n    TString(_) => -1,\n    TPlus => -2,\n    TMinus => -3,\n    TEof => -4\n  }\n}"
-  let bytes = compile_wasi_with_imports([enum_source], main_source, "main")
+  let bytes = compile_wasi_with_imports([
+    enum_source
+  ], main_source, "main")
   assert_wasm(bytes)
 }
 
 test "wasi: enum import 0-arg match" {
   let enum_source = "export enum Token { TInt(Int); TPlus; TMinus; TEof }"
   let main_source = "let main = () -> Int {\n  let tok = TPlus\n  match tok {\n    TInt(n) => n,\n    TPlus => 10,\n    TMinus => 20,\n    TEof => 30\n  }\n}"
-  let bytes = compile_wasi_with_imports([enum_source], main_source, "main")
+  let bytes = compile_wasi_with_imports([
+    enum_source
+  ], main_source, "main")
   assert_wasm(bytes)
 }
 
@@ -878,7 +838,9 @@ test "wasi: real token.vibe enum import" {
   // Read actual token.vibe and use its Token enum
   let token_source = Fs::read_file("vibe/compiler/token.vibe")
   let main_source = "let main = () -> Int {\n  let tok = TInt(99)\n  match tok {\n    TInt(n) => n,\n    TPlus => -1,\n    _ => -2\n  }\n}"
-  let bytes = compile_wasi_with_imports([token_source], main_source, "main")
+  let bytes = compile_wasi_with_imports([
+    token_source
+  ], main_source, "main")
   assert_wasm(bytes)
 }
 
@@ -960,20 +922,26 @@ test "debug: free vars of closure with tuple" {
       EFn(_, _, _, _, _, f_body) => match f_body {
         ELetRec(_, go_fn, _) => match go_fn {
           EFn(_, _, params, _, _, go_body) => {
-            let param_names = Array::slice([""], 0, 0)
+            let param_names = Array::slice([
+              ""
+            ], 0, 0)
             let mut pi = 0
             while pi < Array::length(params) {
               let (pname, _) = Array::get(params, pi)
               Array::push(param_names, pname)
               pi = pi + 1
             }
-            let fn_names = Array::slice([""], 0, 0)
+            let fn_names = Array::slice([
+              ""
+            ], 0, 0)
             let fv = collect_free_vars(go_body, param_names, fn_names)
             // fv should be ["x", "go"] or similar - should NOT contain "a"
             let mut result = "free_vars=["
             let mut fi = 0
             while fi < Array::length(fv) {
-              if fi > 0 { result = String::concat(result, ",") }
+              if fi > 0 {
+                result = String::concat(result, ",")
+              }
               result = String::concat(result, Array::get(fv, fi))
               fi = fi + 1
             }
@@ -982,7 +950,9 @@ test "debug: free vars of closure with tuple" {
             let mut has_a = false
             let mut ai = 0
             while ai < Array::length(fv) {
-              if String::equals(Array::get(fv, ai), "a") { has_a = true }
+              if String::equals(Array::get(fv, ai), "a") {
+                has_a = true
+              }
               ai = ai + 1
             }
             if has_a {
@@ -1037,7 +1007,9 @@ test "wasi: lexer.vibe import - compile only" {
   let mut ti = 0
   while ti < Array::length(tk_stmts) {
     match Array::get(tk_stmts, ti) {
-      SEnum(_, _, _) => { ArrayBuilder::push(all_stmts, Array::get(tk_stmts, ti)); 0 },
+      SEnum(_, _, _) => {
+        ArrayBuilder::push(all_stmts, Array::get(tk_stmts, ti)); 0
+      },
       _ => 0
     }
     ti = ti + 1
@@ -1048,11 +1020,16 @@ test "wasi: lexer.vibe import - compile only" {
   while li < Array::length(lx_stmts) {
     match Array::get(lx_stmts, li) {
       SImport(_, _) => 0,
-      SLet(_, _, name, _, _) => {
-        if String::equals(name, "lex_ok") { 0 }
-        else { ArrayBuilder::push(all_stmts, Array::get(lx_stmts, li)); 0 }
-      },
-      _ => { ArrayBuilder::push(all_stmts, Array::get(lx_stmts, li)); 0 }
+      SLet(_, _, name, _, _) => if String::equals(name, "lex_ok") {
+        0
+      }
+      else {
+        ArrayBuilder::push(all_stmts, Array::get(lx_stmts, li)); 0
+      }
+      ,
+      _ => {
+        ArrayBuilder::push(all_stmts, Array::get(lx_stmts, li)); 0
+      }
     }
     li = li + 1
   }
@@ -1066,8 +1043,6 @@ test "wasi: lexer.vibe import - compile only" {
   let bytes = compile_wasi_module(ArrayBuilder::freeze(all_stmts), "main")
   assert_wasm(bytes)
 }
-
-// === Struct tests ===
 
 test "wasi: struct create and field access" {
   let bytes = compile_wasi("struct Point { x: Int; y: Int }\nexport let main = () -> Int { let p = Point::{ x: 10, y: 20 }; p.x + p.y }", "main")

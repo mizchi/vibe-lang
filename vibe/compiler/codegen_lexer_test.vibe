@@ -1,39 +1,54 @@
-import ./lexer.vibe { lex }
-import ./parser.vibe { parse_program }
-import ./codegen.vibe { compile_wasi_module }
+//# Imports
 
-// Helper: collect enum defs from token.vibe, function defs from lexer.vibe, and compile with given main
+import ./codegen.vibe {
+  compile_wasi_module
+}
+
+import ./lexer.vibe {
+  lex
+}
+
+import ./parser.vibe {
+  parse_program
+}
+
+//# Functions
+
 let compile_lexer_wasm = (main_source: String) -> Bytes with { Error, Fs } {
   let token_source = Fs::read_file("vibe/compiler/token.vibe")
   let lexer_source = Fs::read_file("vibe/compiler/lexer.vibe")
   let all_stmts = ArrayBuilder::new()
-  // Token enum
   let tk_tokens = lex(token_source)
   let tk_stmts = parse_program(tk_tokens)
   let mut ti = 0
   while ti < Array::length(tk_stmts) {
     match Array::get(tk_stmts, ti) {
-      SEnum(_, _, _) => { ArrayBuilder::push(all_stmts, Array::get(tk_stmts, ti)); 0 },
+      SEnum(_, _, _) => {
+        ArrayBuilder::push(all_stmts, Array::get(tk_stmts, ti)); 0
+      },
       _ => 0
     };
     ti = ti + 1
   }
-  // Lexer functions (skip imports, skip lex_ok which uses EHandle)
   let lx_tokens = lex(lexer_source)
   let lx_stmts = parse_program(lx_tokens)
   let mut li = 0
   while li < Array::length(lx_stmts) {
     match Array::get(lx_stmts, li) {
       SImport(_, _) => 0,
-      SLet(_, _, name, _, _) => {
-        if String::equals(name, "lex_ok") { 0 }
-        else { ArrayBuilder::push(all_stmts, Array::get(lx_stmts, li)); 0 }
-      },
-      _ => { ArrayBuilder::push(all_stmts, Array::get(lx_stmts, li)); 0 }
+      SLet(_, _, name, _, _) => if String::equals(name, "lex_ok") {
+        0
+      }
+      else {
+        ArrayBuilder::push(all_stmts, Array::get(lx_stmts, li)); 0
+      }
+      ,
+      _ => {
+        ArrayBuilder::push(all_stmts, Array::get(lx_stmts, li)); 0
+      }
     };
     li = li + 1
   }
-  // Main function
   let mn_tokens = lex(main_source)
   let mn_stmts = parse_program(mn_tokens)
   let mut mi = 0
@@ -43,6 +58,8 @@ let compile_lexer_wasm = (main_source: String) -> Bytes with { Error, Fs } {
   }
   compile_wasi_module(ArrayBuilder::freeze(all_stmts), "main")
 }
+
+//# Misc
 
 test "selfhost codegen: lexer.vibe - token count" {
   let bytes = compile_lexer_wasm("let main = () -> Int {\n  let tokens = lex(\"42\")\n  Array::length(tokens)\n}")

@@ -1,65 +1,25 @@
-// Tests for component_codegen.vibe
+//# Imports
+
+import ./bytebuf.vibe {
+  bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes
+}
 
 import ./component_codegen.vibe {
-  comp_emit_component_wasm,
-  comp_emit_component_wasm_with_lift,
-  comp_generate_string_trampoline,
-  comp_emit_component_wasm_with_string_lift
+  comp_emit_component_wasm, comp_emit_component_wasm_with_lift, comp_emit_component_wasm_with_string_lift, comp_generate_string_trampoline
 }
 
 import ./wasm_emit.vibe {
-  emit_header, emit_type_section, emit_function_section,
-  emit_export_section, emit_code_section,
-  emit_local_get, emit_i64_add, emit_exports_with_memory,
-  emit_memory_section, emit_func_type_raw,
-  emit_i32_const
+  emit_code_section, emit_export_section, emit_exports_with_memory, emit_func_type_raw, emit_function_section, emit_header, emit_i32_const, emit_i64_add, emit_local_get, emit_memory_section, emit_type_section
 }
 
-import ./bytebuf.vibe {
-  bytebuf_new, bytebuf_push, bytebuf_to_bytes,
-  bytebuf_push_section, bytebuf_push_vec_header
-}
+//# Functions
 
-// Build a minimal core wasm: (i64, i64) -> i64 export "run"
-let build_test_core = () -> Bytes {
-  let out = bytebuf_new()
-  emit_header(out)
-  emit_type_section(out, 2, 1)
-  emit_function_section(out, [0])
-  emit_export_section(out, "run", 0)
-  let body = bytebuf_new()
-  emit_local_get(body, 0)
-  emit_local_get(body, 1)
-  emit_i64_add(body)
-  emit_code_section(out, [body])
-  bytebuf_to_bytes(out)
-}
-
-// Build core wasm with memory + cabi_realloc + export "handler"
-let build_test_core_with_memory = () -> Bytes {
-  let out = bytebuf_new()
-  emit_header(out)
-  let type_content = bytebuf_new()
-  bytebuf_push_vec_header(type_content, 2)
-  emit_func_type_raw(type_content, [126, 126, 127], [126])
-  emit_func_type_raw(type_content, [127, 127, 127, 127], [127])
-  bytebuf_push_section(out, 1, type_content)
-  emit_function_section(out, [0, 1])
-  emit_memory_section(out, 1)
-  emit_exports_with_memory(out, ["handler", "cabi_realloc"], [0, 1], "memory", 0)
-  let h_body = bytebuf_new()
-  emit_local_get(h_body, 0)
-  let r_body = bytebuf_new()
-  emit_i32_const(r_body, 0)
-  emit_code_section(out, [h_body, r_body])
-  bytebuf_to_bytes(out)
-}
-
-// Helper: check bytes contains ASCII substring
 let bytes_contains = (hay: Bytes, needle: String) -> Int {
   let hay_len = Bytes::length(hay)
   let needle_len = String::length(needle)
-  if needle_len == 0 { 1 }
+  if needle_len == 0 {
+    1
+  }
   else {
     let limit = hay_len - needle_len
     let mut found = 0
@@ -68,15 +28,83 @@ let bytes_contains = (hay: Bytes, needle: String) -> Int {
       let mut ok = 1
       let mut j = 0
       while (j < needle_len) && (ok == 1) {
-        if Bytes::get(hay, i + j) != String::char_code_at(needle, j) { ok = 0 }
+        if Bytes::get(hay, i + j) != String::char_code_at(needle, j) {
+          ok = 0
+        }
         j = j + 1
       }
-      if ok == 1 { found = 1 }
+      if ok == 1 {
+        found = 1
+      }
       i = i + 1
     }
     found
   }
 }
+
+let build_test_core = () -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  emit_type_section(out, 2, 1)
+  emit_function_section(out, [
+    0
+  ])
+  emit_export_section(out, "run", 0)
+  let body = bytebuf_new()
+  emit_local_get(body, 0)
+  emit_local_get(body, 1)
+  emit_i64_add(body)
+  emit_code_section(out, [
+    body
+  ])
+  bytebuf_to_bytes(out)
+}
+
+let build_test_core_with_memory = () -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let type_content = bytebuf_new()
+  bytebuf_push_vec_header(type_content, 2)
+  emit_func_type_raw(type_content, [
+    126,
+    126,
+    127
+  ], [
+    126
+  ])
+  emit_func_type_raw(type_content, [
+    127,
+    127,
+    127,
+    127
+  ], [
+    127
+  ])
+  bytebuf_push_section(out, 1, type_content)
+  emit_function_section(out, [
+    0,
+    1
+  ])
+  emit_memory_section(out, 1)
+  emit_exports_with_memory(out, [
+    "handler",
+    "cabi_realloc"
+  ], [
+    0,
+    1
+  ], "memory", 0)
+  let h_body = bytebuf_new()
+  emit_local_get(h_body, 0)
+  let r_body = bytebuf_new()
+  emit_i32_const(r_body, 0)
+  emit_code_section(out, [
+    h_body,
+    r_body
+  ])
+  bytebuf_to_bytes(out)
+}
+
+//# Misc
 
 test "component: simple wrap has component header" {
   let core = build_test_core()

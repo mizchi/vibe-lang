@@ -6,28 +6,43 @@ import ./ast.vibe {
 
 //# Functions
 
-let _use_type_expr = (t: TypeExpr) -> TypeExpr { t }
-let _use_pat = (p: Pat) -> Pat { p }
-
-// Symbol kind constants
-// 0 = FnSym, 1 = ValueSym, 2 = TypeSym, 3 = CtorSym, 4 = TraitSym, 5 = ModuleSym
-
-let empty_symbols = () -> Array[(String, Int, Bool)] {
-  Array::slice([("", 0, false)], 0, 0)
-}
-
-let array_contains_str = (arr: Array[String], s: String) -> Bool {
-  let len = Array::length(arr)
-  let rec search = (i: Int) -> Bool {
-    if i >= len { false }
-    else if String::equals(Array::get(arr, i), s) { true }
-    else search(i + 1)
+export let find_symbol = (symbols: Array[(String, Int, Bool)], name: String) -> Option[(String, Int, Bool)] {
+  let len = Array::length(symbols)
+  let rec search = (i: Int) -> Option[(String, Int, Bool)] {
+    if i >= len {
+      None
+    }
+    else {
+      let entry = Array::get(symbols, i)
+      let (n, _, _) = entry
+      if String::equals(n, name) {
+        Some(entry)
+      }
+      else search(i + 1)
+    }
   }
   search(0)
 }
 
-// Collect all symbol definitions from a list of statements
-// Returns Array[(String, Int, Bool)] — (name, kind, exported)
+let empty_symbols = () -> Array[(String, Int, Bool)] {
+  Array::slice([
+    ("", 0, false)
+  ], 0, 0)
+}
+
+export let filter_by_kind = (symbols: Array[(String, Int, Bool)], kind: Int) -> Array[(String, Int, Bool)] {
+  let out = empty_symbols()
+  let mut i = 0
+  while i < Array::length(symbols) {
+    let (name, k, exported) = Array::get(symbols, i)
+    if k == kind {
+      Array::push(out, (name, k, exported))
+    }
+    i = i + 1
+  }
+  out
+}
+
 export let collect_symbols = (stmts: Array[Stmt]) -> Array[(String, Int, Bool)] {
   let out = empty_symbols()
   let mut i = 0
@@ -39,12 +54,15 @@ export let collect_symbols = (stmts: Array[Stmt]) -> Array[(String, Int, Bool)] 
           EFn(_, _, _, _, _, _) => true,
           _ => false
         }
-        let kind = if is_fn { 0 } else { 1 }
+        let kind = if is_fn {
+          0
+        } else {
+          1
+        }
         Array::push(out, (name, kind, exported))
       },
-      SLetMut(name, _, _) => {
-        Array::push(out, (name, 1, false))
-      },
+      SLetMut(name, _, _) => Array::push(out, (name, 1, false))
+      ,
       SEnum(exported, name, variants) => {
         Array::push(out, (name, 2, exported))
         let mut j = 0
@@ -63,21 +81,16 @@ export let collect_symbols = (stmts: Array[Stmt]) -> Array[(String, Int, Bool)] 
           j = j + 1
         }
       },
-      SStruct(exported, name, _) => {
-        Array::push(out, (name, 2, exported))
-      },
-      STypeAlias(exported, name, _) => {
-        Array::push(out, (name, 2, exported))
-      },
-      STrait(exported, name, _) => {
-        Array::push(out, (name, 4, exported))
-      },
-      SModule(exported, name, _) => {
-        Array::push(out, (name, 5, exported))
-      },
-      SExternLet(name, _) => {
-        Array::push(out, (name, 1, false))
-      },
+      SStruct(exported, name, _) => Array::push(out, (name, 2, exported))
+      ,
+      STypeAlias(exported, name, _) => Array::push(out, (name, 2, exported))
+      ,
+      STrait(exported, name, _) => Array::push(out, (name, 4, exported))
+      ,
+      SModule(exported, name, _) => Array::push(out, (name, 5, exported))
+      ,
+      SExternLet(name, _) => Array::push(out, (name, 1, false))
+      ,
       _ => {
       }
     }
@@ -86,21 +99,6 @@ export let collect_symbols = (stmts: Array[Stmt]) -> Array[(String, Int, Bool)] 
   out
 }
 
-// Filter symbols by kind
-export let filter_by_kind = (symbols: Array[(String, Int, Bool)], kind: Int) -> Array[(String, Int, Bool)] {
-  let out = empty_symbols()
-  let mut i = 0
-  while i < Array::length(symbols) {
-    let (name, k, exported) = Array::get(symbols, i)
-    if k == kind {
-      Array::push(out, (name, k, exported))
-    }
-    i = i + 1
-  }
-  out
-}
-
-// Filter exported symbols only
 export let filter_exported = (symbols: Array[(String, Int, Bool)]) -> Array[(String, Int, Bool)] {
   let out = empty_symbols()
   let mut i = 0
@@ -114,22 +112,20 @@ export let filter_exported = (symbols: Array[(String, Int, Bool)]) -> Array[(Str
   out
 }
 
-// Find a symbol by name (returns first match or None)
-export let find_symbol = (symbols: Array[(String, Int, Bool)], name: String) -> Option[(String, Int, Bool)] {
-  let len = Array::length(symbols)
-  let rec search = (i: Int) -> Option[(String, Int, Bool)] {
-    if i >= len { None }
-    else {
-      let entry = Array::get(symbols, i)
-      let (n, _, _) = entry
-      if String::equals(n, name) { Some(entry) }
-      else search(i + 1)
+let array_contains_str = (arr: Array[String], s: String) -> Bool {
+  let len = Array::length(arr)
+  let rec search = (i: Int) -> Bool {
+    if i >= len {
+      false
     }
+    else if String::equals(Array::get(arr, i), s) {
+      true
+    }
+    else search(i + 1)
   }
   search(0)
 }
 
-// Internal: collect all identifier references in an expression (deduplicated, mutates out)
 let rec collect_refs_into = (expr: Expr, out: Array[String]) -> Int {
   match expr {
     EIdent(name) => {
@@ -267,45 +263,39 @@ let rec collect_refs_into = (expr: Expr, out: Array[String]) -> Int {
   }
 }
 
-// Collect all identifier references in an expression (deduplicated)
 export let collect_refs = (expr: Expr) -> Array[String] {
-  let out = Array::slice([""], 0, 0)
+  let out = Array::slice([
+    ""
+  ], 0, 0)
   collect_refs_into(expr, out)
   out
 }
 
-// Collect all references across statements
 export let collect_refs_stmts = (stmts: Array[Stmt]) -> Array[String] {
-  let out = Array::slice([""], 0, 0)
+  let out = Array::slice([
+    ""
+  ], 0, 0)
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
     match stmt {
-      SLet(_, _, _, _, body) => {
-        collect_refs_into(body, out)
-      },
-      SLetMut(_, _, body) => {
-        collect_refs_into(body, out)
-      },
-      SExpr(e) => {
-        collect_refs_into(e, out)
-      },
-      STest(_, e) => {
-        collect_refs_into(e, out)
-      },
-      SBench(_, e) => {
-        collect_refs_into(e, out)
-      },
-      _ => {
-        0
-      }
+      SLet(_, _, _, _, body) => collect_refs_into(body, out)
+      ,
+      SLetMut(_, _, body) => collect_refs_into(body, out)
+      ,
+      SExpr(e) => collect_refs_into(e, out)
+      ,
+      STest(_, e) => collect_refs_into(e, out)
+      ,
+      SBench(_, e) => collect_refs_into(e, out)
+      ,
+      _ => 0
     }
     i = i + 1
   }
   out
 }
 
-// Find which symbols are referenced (intersection of defined symbols and refs)
 export let find_referenced_symbols = (symbols: Array[(String, Int, Bool)], refs: Array[String]) -> Array[(String, Int, Bool)] {
   let out = empty_symbols()
   let mut i = 0
