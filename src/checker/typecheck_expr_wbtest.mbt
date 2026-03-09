@@ -24,6 +24,22 @@ test "type_expr_eff: loop param purity tier is state_local" {
 }
 
 ///|
+test "type_expr_eff: canonical map builder names resolve as builtins" {
+  let expr = parse_first_expr_for_typecheck("MapBuilder::new()") catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let env = TypeEnv::new()
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_expr_eff(env, expr, aliases, effect_scope_all(), true) catch {
+    err => fail(err.to_string())
+  }
+  match actual {
+    @core.Type::MapBuilder(_) => ()
+    other => fail("expected MapBuilder type, got \{other.to_string()}")
+  }
+}
+
+///|
 test "type_check: handle resume value must match continuation destination type" {
   let script = "let run = () -> Int with { Error } {\n" +
     "  handle {\n" +

@@ -15,6 +15,13 @@ Completed items are archived in `docs/DONE.md`.
 **現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader も完成。
 **残**: standalone selfhost CLI の I/O 境界と component packaging。
 
+### Migration Cleanup
+
+- [ ] legacy cleanup: 古くなった builtin 表記・生成物・互換 shim を掃除する
+  - `map_builder*` の旧名を `MapBuilder::*` 正規形へ寄せる
+  - language-tour / builtin contract table / selfhost bundle / bench 系の生成物を再生成する
+  - alias 互換を残す範囲（runtime test / wbtest / codegen fallback）と削除タイミングを決める
+
 ### Selfhost CLI / I/O boundary
 
 - [ ] selfhost CLI の責務を「純粋 compile 関数」までに固定するか、WASI I/O まで selfhost 側に持ち込むかを文書化する

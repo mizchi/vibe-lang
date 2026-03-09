@@ -97,9 +97,9 @@ Builders require `do { ... }` or `for-in` context.
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `map_builder` | `() -> MapBuilder[K, V]` | Create builder |
-| `map_builder_set` | `(MapBuilder[K, V], K, V) -> Unit` | Set key-value |
-| `map_builder_freeze` | `(MapBuilder[K, V]) -> Map[K, V]` | Convert to map |
+| `MapBuilder::new` | `() -> MapBuilder[K, V]` | Create builder |
+| `MapBuilder::set` | `(MapBuilder[K, V], K, V) -> Unit` | Set key-value |
+| `MapBuilder::freeze` | `(MapBuilder[K, V]) -> Map[K, V]` | Convert to map |
 
 ## Record
 

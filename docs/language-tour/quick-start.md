@@ -313,7 +313,7 @@ map_has_key(map { a: 1, b: 2 }, "a")    // => true
 **Map Builder** (imperative map construction, requires `do { }` context):
 
 ```vibe
-do { let b = map_builder(); map_builder_set(b, "x", 10); map_builder_freeze(b) }
+do { let b = MapBuilder::new(); MapBuilder::set(b, "x", 10); MapBuilder::freeze(b) }
 ```
 
 **JSON**: `from_json`, `to_json`, `json_get`, `json_index`, `json_string`, `json_number`, `json_bool`, `json_type`, `json_keys`, `json_length`, `json_is_null`

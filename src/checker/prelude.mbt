@@ -246,23 +246,23 @@ let prelude_source : String =
   #|}
   #|let map_map = [K, V](m: Map[K, V], f: (v: V) -> V) -> Map[K, V] {
   #|  {
-  #|    let b = map_builder()
+  #|    let b = MapBuilder::new()
   #|    let keys = map_keys(m)
   #|    let len = array_length(keys)
   #|    let rec loop = (i: Int) -> Unit {
   #|      if i < len {
   #|        let k = array_get(keys, i)
-  #|        map_builder_set(b, k, f(map_get(m, k)))
+  #|        MapBuilder::set(b, k, f(map_get(m, k)))
   #|        loop(i + 1)
   #|      } else { }
   #|    }
   #|    loop(0)
-  #|    map_builder_freeze(b)
+  #|    MapBuilder::freeze(b)
   #|  }
   #|}
   #|let map_filter = [K, V](m: Map[K, V], pred: (v: V) -> Bool) -> Map[K, V] {
   #|  {
-  #|    let b = map_builder()
+  #|    let b = MapBuilder::new()
   #|    let keys = map_keys(m)
   #|    let len = array_length(keys)
   #|    let rec loop = (i: Int) -> Unit {
@@ -270,13 +270,13 @@ let prelude_source : String =
   #|        let k = array_get(keys, i)
   #|        let v = map_get(m, k)
   #|        if pred(v) {
-  #|          map_builder_set(b, k, v)
+  #|          MapBuilder::set(b, k, v)
   #|        } else { }
   #|        loop(i + 1)
   #|      } else { }
   #|    }
   #|    loop(0)
-  #|    map_builder_freeze(b)
+  #|    MapBuilder::freeze(b)
   #|  }
   #|}
   #|let map_size = [K, V](m: Map[K, V]) -> Int {
@@ -308,12 +308,12 @@ let prelude_source : String =
   #|}
   #|let map_merge = [K, V](a: Map[K, V], b: Map[K, V]) -> Map[K, V] {
   #|  {
-  #|    let out = map_builder()
+  #|    let out = MapBuilder::new()
   #|    let ka = map_keys(a)
   #|    let rec loop1 = (i: Int) -> Unit {
   #|      if i < array_length(ka) {
   #|        let k = array_get(ka, i)
-  #|        map_builder_set(out, k, map_get(a, k))
+  #|        MapBuilder::set(out, k, map_get(a, k))
   #|        loop1(i + 1)
   #|      } else { }
   #|    }
@@ -322,12 +322,12 @@ let prelude_source : String =
   #|    let rec loop2 = (i: Int) -> Unit {
   #|      if i < array_length(kb) {
   #|        let k = array_get(kb, i)
-  #|        map_builder_set(out, k, map_get(b, k))
+  #|        MapBuilder::set(out, k, map_get(b, k))
   #|        loop2(i + 1)
   #|      } else { }
   #|    }
   #|    loop2(0)
-  #|    map_builder_freeze(out)
+  #|    MapBuilder::freeze(out)
   #|  }
   #|}
   #|let where = [T](xs: Array[T], pred: (x: T) -> Bool) -> Array[T] {
