@@ -3425,6 +3425,26 @@ fn test_entry_batch_paths_weight(
 }
 
 ///|
+fn test_entry_batch_display_name(path : String) -> String {
+  get_basename(path)
+}
+
+///|
+fn summarize_test_entry_batch_paths(paths : Array[String]) -> String {
+  let parts : Array[String] = []
+  let preview_count = if paths.length() < 3 { paths.length() } else { 3 }
+  for i in 0..<preview_count {
+    parts.push(test_entry_batch_display_name(paths[i]))
+  }
+  let summary = parts.join(", ")
+  if paths.length() > preview_count {
+    summary + ", +" + (paths.length() - preview_count).to_string() + " more"
+  } else {
+    summary
+  }
+}
+
+///|
 fn split_test_entry_path_batches_with_weights(
   entry_paths : Array[String],
   jobs : Int,
@@ -3539,7 +3559,8 @@ fn test_cmd_parallel(
   vibe_parallel_cleanup_clear()
   defer vibe_parallel_cleanup_clear()
   let tasks : Array[async () -> (Array[String], Int, String, String)] = []
-  for batch in batches {
+  let should_print_batch_progress = batches.length() > 1
+  for i, batch in batches {
     let sub_args : Array[String] = ["test", "--report-json", "--jobs", "1"]
     let extra_env : Map[String, String] = {}
     extra_env["VIBE_INTERNAL_TEST_PARENT_PID"] = parent_pid_env_value
@@ -3555,7 +3576,23 @@ fn test_cmd_parallel(
     let captured_batch = batch
     let captured_args = sub_args
     let captured_extra_env = extra_env
+    let batch_index = i + 1
+    let batch_total = batches.length()
+    let batch_summary = summarize_test_entry_batch_paths(batch)
+    let batch_count = batch.length()
     tasks.push(async fn() {
+      if should_print_batch_progress {
+        println(
+          "test batch " +
+          batch_index.to_string() +
+          "/" +
+          batch_total.to_string() +
+          " start (" +
+          batch_count.to_string() +
+          " files): " +
+          batch_summary,
+        )
+      }
       @async.with_task_group(group => {
         let (r_out, w_out) = @async_process.read_from_process()
         let (r_err, w_err) = @async_process.read_from_process()
