@@ -62,7 +62,6 @@
   (memory (;0;) 1024)
   (export "run" (func 0))
   (export "memory" (memory 0))
-  (export "__heap_ptr" (unknown 0))
   (data (i32.const 0) "\01\00\00\00\01\00\00\00a")
   (data (i32.const 12) "\01\00\00\00\01\00\00\00b")
 )

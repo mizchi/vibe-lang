@@ -2200,6 +2200,63 @@ let gen_selfhost_sources_stub_body = () -> Array[Int] {
   b
 }
 
+// Generate proper selfhost_sources body that returns Array[(String, String)]
+// from embedded source data in the string table.
+// Each source pair (path, content) is stored as a 2-tuple (2 x i64) on the heap.
+// locals: local 0 = i32 (tuple heap ptr), local 1 = i64 (array ref)
+let gen_selfhost_sources_proper_body = (
+  num_sources: Int,
+  str_offsets: Array[Int],
+  str_lengths: Array[Int],
+  src_str_base: Int
+) -> Array[Int] {
+  let b = bytebuf_new()
+  // Create empty array
+  emit_call(b, 6)  // arr_new -> i64
+  emit_local_set(b, 1)  // local 1 (i64) = array
+
+  let mut si = 0
+  while si < num_sources {
+    let path_idx = src_str_base + si * 2
+    let content_idx = src_str_base + si * 2 + 1
+    let path_off = array_get(str_offsets, path_idx)
+    let path_len = array_get(str_lengths, path_idx)
+    let content_off = array_get(str_offsets, content_idx)
+    let content_len = array_get(str_lengths, content_idx)
+
+    // Allocate 16-byte tuple on heap (2 x i64 fields, no header)
+    emit_global_get(b, 0)    // heap_ptr (i32)
+    emit_local_tee(b, 0)     // local 0 (i32) = tuple_ptr
+    emit_i32_const(b, 16)
+    emit_i32_add(b)
+    emit_global_set(b, 0)    // heap_ptr += 16
+
+    // Write path string ref at tuple_ptr+0 (i64)
+    emit_local_get(b, 0)
+    let path_ref = (path_off << 32) | path_len
+    emit_i64_const(b, path_ref)
+    emit_i64_store(b, 3, 0)
+
+    // Write content string ref at tuple_ptr+8 (i64)
+    emit_local_get(b, 0)
+    let content_ref = (content_off << 32) | content_len
+    emit_i64_const(b, content_ref)
+    emit_i64_store(b, 3, 8)
+
+    // Push tuple to array: arr_push(array, tuple_ptr as i64)
+    emit_local_get(b, 1)     // array ref (i64)
+    emit_local_get(b, 0)     // tuple_ptr (i32)
+    emit_i64_extend_i32_u(b) // extend to i64
+    emit_call(b, 9)          // arr_push(i64, i64)
+
+    si = si + 1
+  }
+
+  // Return array
+  emit_local_get(b, 1)
+  b
+}
+
 // === Builtin registry ===
 // Builtin descriptor indices (after fd_write import at func 0):
 // func 1: __print_i64 — (i64) -> void, 4 mixed locals
@@ -2225,7 +2282,7 @@ let gen_selfhost_sources_stub_body = () -> Array[Int] {
 // func 21: __fs_read_file_stub — (i64) -> i64, 0 extra
 // func 22: __fs_write_bytes_stub — (i64,i64) -> void, 0 extra
 
-export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Bytes with { Error } {
+export let compile_wasi_module_with_sources = (stmts: Array[Stmt], entry_name: String, selfhost_srcs: Array[(String, String)]) -> Bytes with { Error } {
   // Collect user functions
   let fn_names_list = array_slice([""], 0, 0)
   let fn_param_counts = array_slice([0], 0, 0)
@@ -2349,6 +2406,18 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
 
   // String table
   let str_strs = collect_strings_stmts(stmts)
+  // Add selfhost source strings directly to the string table.
+  // This bypasses collect_strings_stmts dedup to avoid O(n²) comparisons
+  // on large source content strings, which caused OOM in previous approaches.
+  let src_str_base = array_length(str_strs)
+  let num_src_pairs = array_length(selfhost_srcs)
+  let mut __src_i = 0
+  while __src_i < num_src_pairs {
+    let (__src_path, __src_content) = array_get(selfhost_srcs, __src_i)
+    array_push(str_strs, __src_path)
+    array_push(str_strs, __src_content)
+    __src_i = __src_i + 1
+  }
   let num_strings = array_length(str_strs)
   let data_base = 64
   let str_offsets = array_slice([0], 0, 0)
@@ -2543,9 +2612,20 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
   array_push(bodies, gen_string_last_index_of_body())
   array_push(meta_i32, 3)
   array_push(meta_i64, 1)
-  array_push(bodies, gen_selfhost_sources_stub_body())
-  array_push(meta_i32, 0)
-  array_push(meta_i64, 0)
+  // func 26: selfhost_sources
+  // When sources are provided, generate a proper body that constructs the array
+  // from strings embedded in the data section. Otherwise, use the stub (empty array).
+  if num_src_pairs > 0 {
+    array_push(bodies, gen_selfhost_sources_proper_body(
+      num_src_pairs, str_offsets, str_lengths, src_str_base
+    ))
+    array_push(meta_i32, 1)  // 1 i32 local (tuple ptr)
+    array_push(meta_i64, 1)  // 1 i64 local (array ref)
+  } else {
+    array_push(bodies, gen_selfhost_sources_stub_body())
+    array_push(meta_i32, 0)
+    array_push(meta_i64, 0)
+  }
 
   // Compile user function bodies (lambdas accumulated here)
   // In WASI mode, all user funcs get an extra __env param (i64) for table compatibility
@@ -2854,4 +2934,9 @@ export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Byt
   }
 
   bytebuf_to_bytes(out)
+}
+
+// Backward-compatible wrapper: compile WASI module without embedded selfhost sources
+export let compile_wasi_module = (stmts: Array[Stmt], entry_name: String) -> Bytes with { Error } {
+  compile_wasi_module_with_sources(stmts, entry_name, array_slice([("", "")], 0, 0))
 }

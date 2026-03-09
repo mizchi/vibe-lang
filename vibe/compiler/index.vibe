@@ -21,7 +21,7 @@ export ./token.vibe {
 }
 
 export ./types.vibe {
-  Type, TypeEnv
+  Subst, Type, TypeDef, TypeEnv
 }
 
 export ./checker_stmt.vibe {
@@ -29,7 +29,7 @@ export ./checker_stmt.vibe {
 }
 
 export ./codegen.vibe {
-  compile_module, compile_wasi_module
+  compile_module, compile_wasi_module, compile_wasi_module_with_sources
 }
 
 export ./codegen_gc.vibe {
@@ -37,7 +37,19 @@ export ./codegen_gc.vibe {
 }
 
 export ./compiler.vibe {
-  compile_source, compile_source_wasi
+  compile_source, compile_source_wasi, compile_file_fs, compile_file_fs_module
+}
+
+import ./module_loader.vibe {
+  collect_all_sources_fs, collect_merged_stmts
+}
+
+import ./selfhost_sources_bundle.vibe {
+  selfhost_sources
+}
+
+import ./codegen_common.vibe {
+  collect_free_vars, is_slet, is_efn, get_slet_name, get_slet_expr, get_efn_params, get_efn_body, array_contains_str
 }
 
 //# Functions
@@ -68,20 +80,185 @@ export let compiler_print_program = print_program
 
 export let compiler_print_type_expr = print_type_expr
 
-// selfbuild helper: run from generated wasm and compile stage2 in-place.
-export let selfbuild_compile_stage2 = () -> Int with { Process } {
-  sh(
-    "moonrun _build/wasm/debug/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm --wasm-mvp vibe/compiler/index.vibe -o _build/bench/selfhost_wasi_selfbuild/index_stage2.wasm"
-  )
-  0
+// Lightweight entry for WASI _start/run wrapper.
+export let selfbuild_entry = () -> Int { 0 }
+
+// selfbuild helper: use the selfhost compiler's own compile pipeline to compile stage2.
+export let selfbuild_compile_stage2 = () -> Bytes with { Error } {
+  let sources = selfhost_sources()
+  // Guard: if selfhost_sources() returns empty (stub in selfhost codegen),
+  // fail early so the selfbuild gate falls back to the seed compiler.
+  if array_length(sources) == 0 { throw("selfhost_sources is empty (stub)") }
+  let merged_stmts = collect_merged_stmts(sources)
+  compile_wasi_module(merged_stmts, "selfbuild_entry")
+}
+
+// Debug probe: lex only
+export let selfbuild_probe_lex = () -> Int with { Error } {
+  let tokens = lex("let add = (a: Int, b: Int) -> Int { a + b }")
+  array_length(tokens)
+}
+
+// Debug probe: parse only
+export let selfbuild_probe_parse = () -> Int with { Error } {
+  let tokens = lex("let add = (a: Int, b: Int) -> Int { a + b }")
+  let stmts = parse_program(tokens)
+  array_length(stmts)
+}
+
+// Debug probe: check only
+export let selfbuild_probe_check = () -> Int with { Error } {
+  let tokens = lex("let add = (a: Int, b: Int) -> Int { a + b }")
+  let stmts = parse_program(tokens)
+  let _ = check_program(stmts)
+  1
+}
+
+// Debug probe: compile
+export let selfbuild_probe_compile = () -> Int with { Error } {
+  let bytes = compile_source("let add = (a: Int, b: Int) -> Int { a + b }")
+  bytes_length(bytes)
+}
+
+// Debug probe: parse_count
+export let selfbuild_probe_parse_count = () -> Int with { Error } {
+  let tokens = lex("let x = 42")
+  let num_tokens = array_length(tokens)
+  let stmts = parse_program(tokens)
+  let num_stmts = array_length(stmts)
+  num_tokens * 1000 + num_stmts
+}
+
+// Debug probe: token tag
+export let selfbuild_probe_token_tag = () -> Int with { Error } {
+  let tokens = lex("let x = 42")
+  let first = array_get(tokens, 0)
+  let tag = match first {
+    TLet => 1,
+    TEof => 2,
+    _ => 0
+  }
+  array_length(tokens) * 100 + tag
+}
+
+// Debug probe: deep if-else chain
+export let selfbuild_probe_deep_if = () -> Int with { Error } {
+  let c = 40
+  let result = if c == 43 { 1 }
+    else if c == 45 { 2 }
+    else if c == 42 { 3 }
+    else if c == 47 { 4 }
+    else if c == 37 { 5 }
+    else if c == 61 { 6 }
+    else if c == 33 { 7 }
+    else if c == 60 { 8 }
+    else if c == 62 { 9 }
+    else if c == 38 { 10 }
+    else if c == 124 { 11 }
+    else if c == 94 { 12 }
+    else if c == 40 { 13 }
+    else if c == 41 { 14 }
+    else if c == 123 { 15 }
+    else 0
+  result
+}
+
+// Debug probe: char code at position 10
+export let selfbuild_probe_char_at = () -> Int with { Error } {
+  let s = "let add = (a: Int, b: Int) -> Int { a + b }"
+  string_char_code_at(s, 10)
+}
+
+// Debug probe: fn_count in merged stmts
+export let selfbuild_probe_fn_count = () -> Int with { Error } {
+  let sources = selfhost_sources()
+  let merged = collect_merged_stmts(sources)
+  let mut count = 0
+  let mut i = 0
+  while i < array_length(merged) {
+    let stmt = array_get(merged, i)
+    match stmt {
+      SLet(_, _, name, _, expr) => {
+        match expr {
+          EFn(_, _, _, _, _, _) => { count = count + 1 },
+          _ => ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  count
+}
+
+// Debug probe: selfhost_sources length
+export let selfbuild_probe_sources_len = () -> Int with { Error } {
+  let sources = selfhost_sources()
+  array_length(sources)
+}
+
+// Debug probe: merged stmts length
+export let selfbuild_probe_merged_len = () -> Int with { Error } {
+  let sources = selfhost_sources()
+  let merged = collect_merged_stmts(sources)
+  array_length(merged)
+}
+
+// Binary search: compile first N source files
+export let selfbuild_probe_compile_first_5 = () -> Int with { Error } {
+  let sources = selfhost_sources()
+  let first = array_slice(sources, 0, 5)
+  let merged = collect_merged_stmts(first)
+  let entry_tokens = lex("export let __probe_entry = () -> Int { 0 }")
+  let entry_stmts = parse_program(entry_tokens)
+  let mut j = 0
+  while j < array_length(entry_stmts) { array_push(merged, array_get(entry_stmts, j)); j = j + 1 }
+  let bytes = compile_wasi_module(merged, "__probe_entry")
+  bytes_length(bytes)
+}
+
+export let selfbuild_probe_compile_first_8 = () -> Int with { Error } {
+  let sources = selfhost_sources()
+  let first = array_slice(sources, 0, 8)
+  let merged = collect_merged_stmts(first)
+  let entry_tokens = lex("export let __probe_entry = () -> Int { 0 }")
+  let entry_stmts = parse_program(entry_tokens)
+  let mut j = 0
+  while j < array_length(entry_stmts) { array_push(merged, array_get(entry_stmts, j)); j = j + 1 }
+  let bytes = compile_wasi_module(merged, "__probe_entry")
+  bytes_length(bytes)
+}
+
+export let selfbuild_probe_compile_first_10 = () -> Int with { Error } {
+  let sources = selfhost_sources()
+  let first = array_slice(sources, 0, 10)
+  let merged = collect_merged_stmts(first)
+  let entry_tokens = lex("export let __probe_entry = () -> Int { 0 }")
+  let entry_stmts = parse_program(entry_tokens)
+  let mut j = 0
+  while j < array_length(entry_stmts) { array_push(merged, array_get(entry_stmts, j)); j = j + 1 }
+  let bytes = compile_wasi_module(merged, "__probe_entry")
+  bytes_length(bytes)
+}
+
+export let selfbuild_probe_compile_first_15 = () -> Int with { Error } {
+  let sources = selfhost_sources()
+  let first = array_slice(sources, 0, 15)
+  let merged = collect_merged_stmts(first)
+  let entry_tokens = lex("export let __probe_entry = () -> Int { 0 }")
+  let entry_stmts = parse_program(entry_tokens)
+  let mut j = 0
+  while j < array_length(entry_stmts) { array_push(merged, array_get(entry_stmts, j)); j = j + 1 }
+  let bytes = compile_wasi_module(merged, "__probe_entry")
+  bytes_length(bytes)
 }
 
 //# Misc
 
 export {
-  Token, token_to_string, lex, Pat, Expr, TypeExpr, Stmt, Type, TypeEnv, parse, parse_ok, parse_expr, parse_type, parse_stmt, parse_program, print_expr, print_pat, print_type_expr, print_stmt, print_program, check_program, check_program_with_env, check_stmts, compile_module, compile_wasi_module, compile_wasi_module_gc, compile_source, compile_source_wasi, selfbuild_compile_stage2
+  Token, token_to_string, lex, Pat, Expr, TypeExpr, Stmt, Type, TypeEnv, Subst, TypeDef, parse, parse_ok, parse_expr, parse_type, parse_stmt, parse_program, print_expr, print_pat, print_type_expr, print_stmt, print_program, check_program, check_program_with_env, check_stmts, compile_module, compile_wasi_module, compile_wasi_module_with_sources, compile_wasi_module_gc, compile_source, compile_source_wasi, compile_file_fs, compile_file_fs_module, selfbuild_compile_stage2, selfbuild_entry, selfbuild_probe_lex, selfbuild_probe_parse, selfbuild_probe_check, selfbuild_probe_compile, selfbuild_probe_parse_count, selfbuild_probe_token_tag, selfbuild_probe_deep_if, selfbuild_probe_char_at, selfbuild_probe_fn_count, selfbuild_probe_sources_len, selfbuild_probe_merged_len, selfbuild_probe_compile_first_5, selfbuild_probe_compile_first_8, selfbuild_probe_compile_first_10, selfbuild_probe_compile_first_15
 }
 
 export {
-  Pat, lex, Expr, Stmt, Token, Type, TypeEnv, parse, version, TypeExpr, parse_ok, print_pat, parse_expr, parse_stmt, parse_type, print_expr, print_stmt, compiler_lex, parse_program, print_program, compiler_parse, print_type_expr, token_to_string, compiler_parse_ok, compiler_print_pat, compiler_parse_expr, compiler_parse_stmt, compiler_parse_type, compiler_print_expr, compiler_print_stmt, compiler_parse_program, compiler_print_program, compiler_print_type_expr, check_program, check_program_with_env, check_stmts, compile_module, compile_wasi_module, compile_wasi_module_gc, compile_source, compile_source_wasi, selfbuild_compile_stage2
+  Pat, lex, Expr, Stmt, Token, Type, TypeEnv, Subst, TypeDef, parse, version, TypeExpr, parse_ok, print_pat, parse_expr, parse_stmt, parse_type, print_expr, print_stmt, compiler_lex, parse_program, print_program, compiler_parse, print_type_expr, token_to_string, compiler_parse_ok, compiler_print_pat, compiler_parse_expr, compiler_parse_stmt, compiler_parse_type, compiler_print_expr, compiler_print_stmt, compiler_parse_program, compiler_print_program, compiler_print_type_expr, check_program, check_program_with_env, check_stmts, compile_module, compile_wasi_module, compile_wasi_module_with_sources, compile_wasi_module_gc, compile_source, compile_source_wasi, compile_file_fs, compile_file_fs_module, selfbuild_compile_stage2, selfbuild_entry, selfbuild_probe_lex, selfbuild_probe_parse, selfbuild_probe_check, selfbuild_probe_compile, selfbuild_probe_parse_count, selfbuild_probe_token_tag, selfbuild_probe_deep_if, selfbuild_probe_char_at, selfbuild_probe_fn_count, selfbuild_probe_sources_len, selfbuild_probe_merged_len, selfbuild_probe_compile_first_5, selfbuild_probe_compile_first_8, selfbuild_probe_compile_first_10, selfbuild_probe_compile_first_15
 }

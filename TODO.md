@@ -49,9 +49,13 @@ Completed items are archived in `docs/DONE.md`.
 - [x] cross-module TypeEnv 伝播（import 先の型を caller に反映）
 - [x] テスト: `module_loader_test.vibe` (6 tests) — single file, import, alias, transitive, cache, non-exported
 
-#### S5: meta-circular milestone
-- [ ] selfhost.wasm が自身のソース (vibe/compiler/*.vibe) をコンパイルして .wasm を出力
-- [ ] stage1 (host compile) と stage2 (selfhost compile) の出力が一致
+#### S5: meta-circular milestone (部分完了)
+- [x] selfhost コンパイラが自身のソースをコンパイルして有効な WASM を出力 (~385KB)
+- [x] 出力が決定的 (2回コンパイルの一致を確認)
+- [x] `selfhost_s5_test.vibe` (6 tests): single-file compile, bundle load (20 files), merge stmts, WASM magic, size check, determinism
+- [x] `selfbuild_compile_stage2` API (index.vibe): バンドル済みソースから meta-circular コンパイル
+- [ ] **ブロッカー**: stage2.wasm のファイル書き出し — eval の `fs_write_bytes` が大きな Bytes (~385KB) でハング、compiled backend は "vibe" module import 未解決
+- [ ] stage1 vs stage2 の WASM バイナリ比較 (ファイル書き出し後)
 - [ ] CI gate: bootstrap gate に S5 を追加
 
 ### P4: セルフコンパイル + Component Model (完了分)
