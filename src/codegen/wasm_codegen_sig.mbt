@@ -386,7 +386,7 @@ fn infer_expr_kind_with(
       let _ = span
       let name = @core.lower_wasm_intrinsic_name(name)
       let pos_args = extract_positional_exprs(args, name)
-      match name {
+      match @core.normalize_builtin_name(name) {
         "add" | "sub" | "mul" | "div" | "eq" | "lt" => ValueKind::I64
         "__index" => ValueKind::I64
         "__add" | "__sub" | "__mul" | "__div" | "__mod" => {
@@ -531,9 +531,9 @@ fn infer_expr_kind_with(
         "bytes_from_array" => ValueKind::I64
         "bytes_length" => ValueKind::I64
         "bytes_get" => ValueKind::I64
-        "map_builder" | "MapBuilder::new" => ValueKind::I64
-        "map_builder_freeze" | "MapBuilder::freeze" => ValueKind::I64
-        "map_builder_set" | "MapBuilder::set" => ValueKind::I64
+        "MapBuilder::new" => ValueKind::I64
+        "MapBuilder::freeze" => ValueKind::I64
+        "MapBuilder::set" => ValueKind::I64
         "array_length" => ValueKind::I64
         "array_get" => ValueKind::I64
         "map_get" => ValueKind::I64
@@ -1022,12 +1022,7 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "double_to_i64_bits" ||
         name == "i64_bits_to_double" ||
         name == "string_to_data" ||
-        name == "map_builder" ||
-        name == "map_builder_set" ||
-        name == "map_builder_freeze" ||
-        name == "MapBuilder::new" ||
-        name == "MapBuilder::set" ||
-        name == "MapBuilder::freeze" ||
+        @core.is_map_builder_builtin_name(name) ||
         name == "string_builder" ||
         name == "string_join" ||
         name == "string_builder_push" ||

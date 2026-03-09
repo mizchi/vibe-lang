@@ -150,6 +150,29 @@ test "type_call_builtin: array_builder_push returns Unit" {
 }
 
 ///|
+test "type_call_builtin: legacy map_builder alias resolves as MapBuilder" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  let args : Array[@core.CallArg] = []
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_call_builtin(
+    env,
+    "map_builder",
+    args,
+    aliases,
+    effect_scope_all(),
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  match actual {
+    @core.Type::MapBuilder(_, _) => assert_true(true)
+    _ => fail("expected MapBuilder")
+  }
+}
+
+///|
 test "type_call_builtin: json_get returns Json" {
   let env = TypeEnv::new()
   let span = builtin_test_span()

@@ -1943,7 +1943,8 @@ fn eval_builtin_call(
   args : Array[@core.CallArg],
   call_span : @core.Span,
 ) -> EvalOutput raise EvalError {
-  match name {
+  let builtin_name = @core.normalize_builtin_name(name)
+  match builtin_name {
     "__perform" => {
       let site_key = perform_site_key(rt, call_span)
       match rt.perform_resume_overrides.get(site_key) {
@@ -3632,7 +3633,7 @@ fn eval_builtin_call(
           )
       }
     }
-    "map_builder" | "MapBuilder::new" => {
+    "MapBuilder::new" => {
       let out = eval_args(rt, args)
       let pos_args = extract_positional_values(out.args, "MapBuilder::new")
       if pos_args.length() != 0 {
@@ -3642,7 +3643,7 @@ fn eval_builtin_call(
       }
       { value: @core.Value::MapBuilder({}), effects: out.effects }
     }
-    "map_builder_set" | "MapBuilder::set" => {
+    "MapBuilder::set" => {
       let out = eval_args(rt, args)
       let pos_args = extract_positional_values(out.args, "MapBuilder::set")
       if pos_args.length() != 3 {
@@ -3661,7 +3662,7 @@ fn eval_builtin_call(
           )
       }
     }
-    "map_builder_freeze" | "MapBuilder::freeze" => {
+    "MapBuilder::freeze" => {
       let out = eval_args(rt, args)
       let pos_args = extract_positional_values(out.args, "MapBuilder::freeze")
       if pos_args.length() != 1 {

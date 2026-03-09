@@ -511,7 +511,7 @@ fn compile_call_builtin_pre_user_inner(
   args : Array[@core.CallArg],
   is_user_fn : Bool,
 ) -> Unit raise WasmGenError {
-  match name {
+  match @core.normalize_builtin_name(name) {
     "sh" => {
       let pos_args = extract_positional_exprs_with_arity(args, "sh", 1)
       compile_expr_i32(ctx, buf, pos_args[0])
@@ -4385,8 +4385,8 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_obj.to_int64())
       emit_i64_or(buf)
     }
-    "map_builder" | "MapBuilder::new" => {
-      // map_builder() -> allocate empty map obj with len=0
+    "MapBuilder::new" => {
+      // MapBuilder::new() -> allocate empty map obj with len=0
       let max_cap = 128
       require_heap(ctx)
       let size = align4(8 + max_cap * 8)
@@ -4403,8 +4403,8 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_obj.to_int64())
       emit_i64_or(buf)
     }
-    "map_builder_set" | "MapBuilder::set" => {
-      // map_builder_set(builder, key, value) -> overwrite existing key or append new pair
+    "MapBuilder::set" => {
+      // MapBuilder::set(builder, key, value) -> overwrite existing key or append new pair
       let pos_args = extract_positional_exprs_with_arity(
         args, "MapBuilder::set", 3,
       )
@@ -4649,8 +4649,8 @@ fn compile_call_builtin_pre_user_inner(
       // return unit
       emit_i64_const_tagged(buf, 0L)
     }
-    "map_builder_freeze" | "MapBuilder::freeze" => {
-      // map_builder_freeze(builder) -> return builder as-is (it is already a map obj)
+    "MapBuilder::freeze" => {
+      // MapBuilder::freeze(builder) -> return builder as-is (it is already a map obj)
       let pos_args = extract_positional_exprs_with_arity(
         args, "MapBuilder::freeze", 1,
       )

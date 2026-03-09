@@ -952,12 +952,7 @@ fn is_builtin(name : String) -> Bool {
   name == "bytes_from_array" ||
   name == "bytes_length" ||
   name == "bytes_get" ||
-  name == "map_builder" ||
-  name == "map_builder_set" ||
-  name == "map_builder_freeze" ||
-  name == "MapBuilder::new" ||
-  name == "MapBuilder::set" ||
-  name == "MapBuilder::freeze" ||
+  @core.is_map_builder_builtin_name(name) ||
   name == "map_keys" ||
   name == "map_values" ||
   name == "map_has_key" ||

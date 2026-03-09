@@ -1631,6 +1631,22 @@ test "vibe map builder freeze snapshot" {
 }
 
 ///|
+test "vibe legacy map builder aliases still work" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script(
+    "let m = { let b = map_builder()\nmap_builder_set(b, \"a\", 1)\nmap_builder_freeze(b) }",
+  )
+  match rt.get("m") {
+    Some(@core.Value::Map(xs)) =>
+      match xs.get("a") {
+        Some(@core.Value::Int(v)) => assert_eq(v, 1)
+        _ => fail("legacy map builder value")
+      }
+    _ => fail("missing legacy map builder result")
+  }
+}
+
+///|
 test "vibe pure cache snapshot" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let a = path(\"/a\")")

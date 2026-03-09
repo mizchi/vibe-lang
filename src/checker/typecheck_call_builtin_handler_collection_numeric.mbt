@@ -9,7 +9,8 @@ fn type_call_builtin_handler_collection_numeric(
   allow_effect : Bool,
   call_span : @core.Span,
 ) -> @core.Type raise TypeError {
-  match builtin_name {
+  let normalized_builtin_name = @core.normalize_builtin_name(builtin_name)
+  match normalized_builtin_name {
     "string_from_char_code" =>
       check_builtin_simple(
         env,
@@ -288,7 +289,7 @@ fn type_call_builtin_handler_collection_numeric(
       )
       @core.Type::Array(elem_ty)
     }
-    "map_builder" | "MapBuilder::new" =>
+    "MapBuilder::new" =>
       check_builtin_simple(
         env,
         "MapBuilder::new",
@@ -301,7 +302,7 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::MapBuilder(fresh_type_var(env), fresh_type_var(env)),
         true,
       )
-    "map_builder_set" | "MapBuilder::set" => {
+    "MapBuilder::set" => {
       let pos_args = prepare_builtin_pos_args(
         env, "MapBuilder::set", args, 3, effects, allow_effect, call_span, true,
       )
@@ -336,7 +337,7 @@ fn type_call_builtin_handler_collection_numeric(
       ensure_type(env, value_ty, elem_ty, pos_args[2].span(), "argument")
       @core.Type::Unit
     }
-    "map_builder_freeze" | "MapBuilder::freeze" => {
+    "MapBuilder::freeze" => {
       let pos_args = prepare_builtin_pos_args(
         env, "MapBuilder::freeze", args, 1, effects, allow_effect, call_span, true,
       )

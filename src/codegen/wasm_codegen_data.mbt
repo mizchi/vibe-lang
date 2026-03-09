@@ -117,7 +117,7 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
   match expr {
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
-      match name {
+      match @core.normalize_builtin_name(name) {
         "sh" => ctx.need_sh = true
         "path" | "path_ref" => ctx.need_path = true
         "dynamic_path_resolve" => ctx.need_dynamic_path_resolve = true
@@ -143,7 +143,6 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
             ctx.need_js_equals = true
           }
         "array_builder"
-        | "map_builder"
         | "MapBuilder::new"
         | "string_builder"
         | "string_join"
