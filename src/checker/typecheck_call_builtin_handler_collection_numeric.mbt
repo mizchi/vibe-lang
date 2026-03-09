@@ -288,10 +288,10 @@ fn type_call_builtin_handler_collection_numeric(
       )
       @core.Type::Array(elem_ty)
     }
-    "map_builder" =>
+    "map_builder" | "MapBuilder::new" =>
       check_builtin_simple(
         env,
-        "map_builder",
+        "MapBuilder::new",
         args,
         aliases,
         effects,
@@ -301,9 +301,9 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::MapBuilder(fresh_type_var(env), fresh_type_var(env)),
         true,
       )
-    "map_builder_set" => {
+    "map_builder_set" | "MapBuilder::set" => {
       let pos_args = prepare_builtin_pos_args(
-        env, "map_builder_set", args, 3, effects, allow_effect, call_span, true,
+        env, "MapBuilder::set", args, 3, effects, allow_effect, call_span, true,
       )
       let builder_ty = type_expr_eff(
         env,
@@ -336,9 +336,9 @@ fn type_call_builtin_handler_collection_numeric(
       ensure_type(env, value_ty, elem_ty, pos_args[2].span(), "argument")
       @core.Type::Unit
     }
-    "map_builder_freeze" => {
+    "map_builder_freeze" | "MapBuilder::freeze" => {
       let pos_args = prepare_builtin_pos_args(
-        env, "map_builder_freeze", args, 1, effects, allow_effect, call_span, true,
+        env, "MapBuilder::freeze", args, 1, effects, allow_effect, call_span, true,
       )
       let builder_ty = type_expr_eff(
         env,

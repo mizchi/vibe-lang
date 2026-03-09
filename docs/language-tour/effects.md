@@ -143,7 +143,7 @@ let safe = [T](f: (T) -> T with { Error }, x: T) -> T {
 
 ## Builders and `for-in`
 
-Mutable builder APIs (`array_builder`, `map_builder`, `string_builder`) can be used
+Mutable builder APIs (`array_builder`, `MapBuilder::new`, `string_builder`) can be used
 inside any function. `for-in` comprehensions desugar to builder operations internally:
 
 ```vibe

@@ -2793,6 +2793,44 @@ test "compiled test wrapper overwrites duplicate map builder keys" {
 }
 
 ///|
+test "compiled test wrapper supports canonical map builder names" {
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_compiled_map_builder_canonical.vibe",
+  )
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "test \"map builder canonical\" {\n" +
+    "  let b = MapBuilder::new()\n" +
+    "  MapBuilder::set(b, \"name\", 1)\n" +
+    "  MapBuilder::set(b, \"name\", 2)\n" +
+    "  let m = MapBuilder::freeze(b)\n" +
+    "  assert(eq(array_length(map_keys(m)), 1))\n" +
+    "  assert(eq(map_get(m, \"name\"), 2))\n" +
+    "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+  match run_test_file_compiled(source_path, false) {
+    CompiledTestAttempt::Success(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    CompiledTestAttempt::Unsupported(err) =>
+      fail("compiled canonical map builder unexpectedly unsupported: " + err)
+    CompiledTestAttempt::Error(err) =>
+      fail("compiled canonical map builder unexpectedly errored: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
 test "compiled test wrapper keeps float add assertions valid" {
   let cwd = @io.current_dir_or_root()
   let source_path = @vibe_fs.normalize_path(

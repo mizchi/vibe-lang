@@ -76,10 +76,10 @@ map_filter(m, (v: Int) -> Bool { v > 1 })    // => map { b: 2 }
 
 ```vibe
 let m = do {
-  let b = map_builder()
-  map_builder_set(b, "x", 10)
-  map_builder_set(b, "y", 20)
-  map_builder_freeze(b)
+  let b = MapBuilder::new()
+  MapBuilder::set(b, "x", 10)
+  MapBuilder::set(b, "y", 20)
+  MapBuilder::freeze(b)
 }
 ```
 

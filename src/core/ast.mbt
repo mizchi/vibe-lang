@@ -31,6 +31,8 @@ pub(all) enum Pat {
 pub fn is_ctor_name(name : String) -> Bool {
   if name.length() == 0 {
     false
+  } else if name.contains("::") || name.contains(".") {
+    false
   } else {
     let chars = name.to_array()
     let c = chars[0]

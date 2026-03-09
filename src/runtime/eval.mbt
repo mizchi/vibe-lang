@@ -3632,22 +3632,22 @@ fn eval_builtin_call(
           )
       }
     }
-    "map_builder" => {
+    "map_builder" | "MapBuilder::new" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "map_builder")
+      let pos_args = extract_positional_values(out.args, "MapBuilder::new")
       if pos_args.length() != 0 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="map_builder", detail="bad call"),
+          BuiltinDetail(fn_name="MapBuilder::new", detail="bad call"),
         )
       }
       { value: @core.Value::MapBuilder({}), effects: out.effects }
     }
-    "map_builder_set" => {
+    "map_builder_set" | "MapBuilder::set" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "map_builder_set")
+      let pos_args = extract_positional_values(out.args, "MapBuilder::set")
       if pos_args.length() != 3 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="map_builder_set", detail="bad call"),
+          BuiltinDetail(fn_name="MapBuilder::set", detail="bad call"),
         )
       }
       match (pos_args[0], pos_args[1]) {
@@ -3657,16 +3657,16 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="map_builder_set", detail="bad call"),
+            BuiltinDetail(fn_name="MapBuilder::set", detail="bad call"),
           )
       }
     }
-    "map_builder_freeze" => {
+    "map_builder_freeze" | "MapBuilder::freeze" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "map_builder_freeze")
+      let pos_args = extract_positional_values(out.args, "MapBuilder::freeze")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="map_builder_freeze", detail="bad call"),
+          BuiltinDetail(fn_name="MapBuilder::freeze", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -3676,7 +3676,7 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="map_builder_freeze", detail="bad call"),
+            BuiltinDetail(fn_name="MapBuilder::freeze", detail="bad call"),
           )
       }
     }
