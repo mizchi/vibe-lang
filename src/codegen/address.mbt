@@ -729,10 +729,10 @@ fn addr_type_to_sexp(ty : @core.Type) -> String {
       buf.to_string()
     }
     @core.Type::Array(inner) => "(Array " + addr_type_to_sexp(inner) + ")"
-    @core.Type::Map(inner) => "(Map " + addr_type_to_sexp(inner) + ")"
+    @core.Type::Map(_key, inner) => "(Map " + addr_type_to_sexp(inner) + ")"
     @core.Type::ArrayBuilder(inner) =>
       "(ArrayBuilder " + addr_type_to_sexp(inner) + ")"
-    @core.Type::MapBuilder(inner) =>
+    @core.Type::MapBuilder(_key, inner) =>
       "(MapBuilder " + addr_type_to_sexp(inner) + ")"
     @core.Type::StringBuilder => "StringBuilder"
     @core.Type::Bytes => "Bytes"

@@ -108,10 +108,42 @@ fn expect_map_elem_type(
   env : TypeEnv,
   actual : @core.Type,
   span : @core.Span,
-) -> @core.Type raise TypeError {
+) -> (@core.Type, @core.Type) raise TypeError {
+  let key_ty = fresh_type_var(env)
   let elem_ty = fresh_type_var(env)
-  ensure_type(env, actual, @core.Type::Map(elem_ty), span, "argument")
-  elem_ty
+  ensure_type(
+    env, actual, @core.Type::Map(key_ty, elem_ty), span, "argument",
+  )
+  (key_ty, elem_ty)
+}
+
+///|
+/// Ensure that a key type satisfies the Hash trait bound for map operations.
+/// Primitive types (Int, Float, Double, Bool, Char, String) are always hashable.
+fn ensure_map_key_hashable(
+  env : TypeEnv,
+  key_ty : @core.Type,
+  span : @core.Span,
+) -> Unit raise TypeError {
+  let resolved = resolve_type(env, key_ty)
+  match resolved {
+    @core.Type::Var(_) => () // type variable: will be checked at instantiation
+    @core.Type::Int
+    | @core.Type::Float
+    | @core.Type::Double
+    | @core.Type::Bool
+    | @core.Type::Char
+    | @core.Type::String => () // primitive types are always hashable
+    _ =>
+      if not(type_implements_trait(env, resolved, "Hash")) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Named(name="Hash", args=[]),
+          actual=resolved,
+          span~,
+          context=Some("map key must implement Hash"),
+        )
+      }
+  }
 }
 
 ///|
@@ -130,10 +162,13 @@ fn expect_map_builder_elem_type(
   env : TypeEnv,
   actual : @core.Type,
   span : @core.Span,
-) -> @core.Type raise TypeError {
+) -> (@core.Type, @core.Type) raise TypeError {
+  let key_ty = fresh_type_var(env)
   let elem_ty = fresh_type_var(env)
-  ensure_type(env, actual, @core.Type::MapBuilder(elem_ty), span, "argument")
-  elem_ty
+  ensure_type(
+    env, actual, @core.Type::MapBuilder(key_ty, elem_ty), span, "argument",
+  )
+  (key_ty, elem_ty)
 }
 
 ///|

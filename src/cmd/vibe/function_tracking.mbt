@@ -161,11 +161,11 @@ fn function_tracking_type_to_json(ty : @vibe_core.Type) -> Json {
     @vibe_core.Type::Var(id) => obj["Var"] = Json::number(id.to_double())
     @vibe_core.Type::Array(inner) =>
       obj["Array"] = function_tracking_type_to_json(inner)
-    @vibe_core.Type::Map(inner) =>
+    @vibe_core.Type::Map(_key, inner) =>
       obj["Map"] = function_tracking_type_to_json(inner)
     @vibe_core.Type::ArrayBuilder(inner) =>
       obj["ArrayBuilder"] = function_tracking_type_to_json(inner)
-    @vibe_core.Type::MapBuilder(inner) =>
+    @vibe_core.Type::MapBuilder(_key, inner) =>
       obj["MapBuilder"] = function_tracking_type_to_json(inner)
     @vibe_core.Type::StringBuilder => obj["StringBuilder"] = Json::null()
     @vibe_core.Type::Bytes => obj["Bytes"] = Json::null()
@@ -360,7 +360,7 @@ fn function_tracking_type_from_json(json : Json) -> @vibe_core.Type? {
         }
       "Map" =>
         match function_tracking_type_from_json(value) {
-          Some(inner) => return Some(@vibe_core.Type::Map(inner))
+          Some(inner) => return Some(@vibe_core.Type::Map(@vibe_core.Type::String, inner))
           None => return None
         }
       "ArrayBuilder" =>
@@ -370,7 +370,7 @@ fn function_tracking_type_from_json(json : Json) -> @vibe_core.Type? {
         }
       "MapBuilder" =>
         match function_tracking_type_from_json(value) {
-          Some(inner) => return Some(@vibe_core.Type::MapBuilder(inner))
+          Some(inner) => return Some(@vibe_core.Type::MapBuilder(@vibe_core.Type::String, inner))
           None => return None
         }
       "StringBuilder" => return Some(@vibe_core.Type::StringBuilder)

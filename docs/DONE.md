@@ -2,6 +2,20 @@
 
 Completed items archived from `TODO.md`.
 
+## 2026-03-09
+
+- **Selfhost WASI selfbuild (P5/S1-S5) 完了**
+  - compiler API export、`compile_source(_wasi)`、module loader、bundle source compile を selfhost 側へ統合
+  - strict-recursive selfbuild が通過し、stage1 artifact が stage2 を直接コンパイル可能になった
+  - `test-selfhost-wasi-selfbuild` / KPI variant と GitHub Actions gate まで接続済み
+- **Compiled WASM backend 回帰を解消して `just test` 全通復帰**
+  - float/string/map equality、map builder overwrite、nested let record destructuring、perform/resume fallback、compiled test wrapper の alias/helper chain 回帰を修正
+  - compiled integration 657/657 pass に復帰
+- **wasm-gc bundling / goldens 整理**
+  - wasm-gc backend は `for-in` を直接 lowering するため、DCE で legacy `iter_*` helper を保持しない経路に分離
+  - WAT fixture / golden WAT / bench snapshot を現在の dynamic numeric codegen に更新
+  - 一時 repro は `cli_wbtest` の回帰テストへ吸収し、不要生成物は削除
+
 ## 2026-03-08
 
 - **Selfhost checker 機能差分 T1–T20 全完了** (318+ tests across 20+ files)

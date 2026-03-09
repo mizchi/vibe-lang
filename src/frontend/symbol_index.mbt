@@ -159,9 +159,11 @@ fn render_type(ty : @core.Type) -> String {
       "{ " + join_with(parts, "; ") + " }"
     }
     @core.Type::Array(item) => "Array[" + render_type(item) + "]"
-    @core.Type::Map(item) => "Map[" + render_type(item) + "]"
+    @core.Type::Map(key, item) =>
+      "Map[" + render_type(key) + ", " + render_type(item) + "]"
     @core.Type::ArrayBuilder(item) => "ArrayBuilder[" + render_type(item) + "]"
-    @core.Type::MapBuilder(item) => "MapBuilder[" + render_type(item) + "]"
+    @core.Type::MapBuilder(key, item) =>
+      "MapBuilder[" + render_type(key) + ", " + render_type(item) + "]"
     @core.Type::StringBuilder => "StringBuilder"
     @core.Type::Bytes => "Bytes"
     @core.Type::Variant(fields) => {

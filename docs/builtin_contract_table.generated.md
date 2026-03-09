@@ -22,7 +22,7 @@ Legend:
 | `__bit_xor` | `(Int, Int) -> Int` | `-` | yes | yes | yes |
 | `__div` | `(Num, Num) -> Num` | `-` | yes | yes | yes |
 | `__eq` | `(Eq, Eq) -> Bool` | `-` | yes | yes | yes |
-| `__index` | `(Array[T], Int) -> T \| (Map[T], String) -> T` | `-` | yes | yes | yes |
+| `__index` | `(Array[T], Int) -> T \| (Map[K, V], K) -> V` | `-` | yes | yes | yes |
 | `__lshift` | `(Int, Int) -> Int` | `-` | yes | yes | yes |
 | `__lt` | `(Ord, Ord) -> Bool` | `-` | yes | yes | yes |
 | `__mod` | `(Num, Num) -> Num` | `-` | yes | yes | yes |
@@ -61,13 +61,14 @@ Legend:
 | `i32_trunc_f64_s` | `(Double) -> Int` | `-` | no | yes | yes |
 | `int_to_double` | `(Int) -> Double` | `-` | yes | yes | yes |
 | `int_to_float` | `(Int) -> Float` | `-` | yes | yes | yes |
-| `map_builder` | `() -> MapBuilder[T]` | `-` | yes | yes | yes |
-| `map_builder_freeze` | `(MapBuilder[T]) -> Map[T]` | `-` | yes | yes | yes |
-| `map_builder_set` | `(MapBuilder[T], String, T) -> Unit` | `-` | yes | yes | yes |
-| `map_get` | `(Map[T], String) -> T` | `-` | yes | yes | yes |
-| `map_has_key` | `(Map[T], String) -> Bool` | `-` | yes | no | no |
-| `map_keys` | `(Map[T]) -> Array[String]` | `-` | yes | no | no |
-| `map_values` | `(Map[T]) -> Array[T]` | `-` | yes | no | no |
+| `map_builder` | `() -> MapBuilder[K, V]` | `-` | yes | yes | yes |
+| `map_builder_freeze` | `(MapBuilder[K, V]) -> Map[K, V]` | `-` | yes | yes | yes |
+| `map_builder_set` | `(MapBuilder[K, V], K, V) -> Unit` | `-` | yes | yes | yes |
+| `map_get` | `(Map[K, V], K) -> V` | `-` | yes | yes | yes |
+| `map_has_key` | `(Map[K, V], K) -> Bool` | `-` | yes | no | no |
+| `map_keys` | `(Map[K, V]) -> Array[K]` | `-` | yes | no | no |
+| `map_set` | `(Map[K, V], K, V) -> Map[K, V]` | `-` | yes | no | no |
+| `map_values` | `(Map[K, V]) -> Array[V]` | `-` | yes | no | no |
 | `path` | `(String) -> Path` | `-` | yes | yes | yes |
 | `record_set` | `(Record{...}, String, V) -> Record{...}` | `-` | yes | no | no |
 | `sh` | `(String) -> Unit` | `{Stdout}` | yes | yes | yes |

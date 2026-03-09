@@ -44,9 +44,9 @@ pub(all) enum Type {
   Tuple(Array[Type])
   Record(Map[String, Type])
   Array(Type)
-  Map(Type)
+  Map(Type, Type)
   ArrayBuilder(Type)
-  MapBuilder(Type)
+  MapBuilder(Type, Type)
   StringBuilder
   Bytes
   Variant(Map[String, Type])
@@ -167,10 +167,14 @@ fn format_type_compact(ty : Type) -> String {
       buf.to_string()
     }
     Type::Array(inner) => "Array[" + format_type_compact(inner) + "]"
-    Type::Map(inner) => "Map[" + format_type_compact(inner) + "]"
+    Type::Map(key, value) =>
+      "Map[" + format_type_compact(key) + ", " + format_type_compact(value) + "]"
     Type::ArrayBuilder(inner) =>
       "ArrayBuilder[" + format_type_compact(inner) + "]"
-    Type::MapBuilder(inner) => "MapBuilder[" + format_type_compact(inner) + "]"
+    Type::MapBuilder(key, value) =>
+      "MapBuilder[" + format_type_compact(key) + ", " + format_type_compact(
+        value,
+      ) + "]"
     Type::StringBuilder => "StringBuilder"
     Type::Bytes => "Bytes"
     Type::Variant(_) => "Variant"

@@ -184,9 +184,10 @@ fn collect_named_type_dependencies(
         collect_named_type_dependencies(field_ty, out)
       }
     @core.Type::Array(inner)
-    | @core.Type::Map(inner)
-    | @core.Type::ArrayBuilder(inner)
-    | @core.Type::MapBuilder(inner) =>
+    | @core.Type::ArrayBuilder(inner) =>
+      collect_named_type_dependencies(inner, out)
+    @core.Type::Map(_key, inner)
+    | @core.Type::MapBuilder(_key, inner) =>
       collect_named_type_dependencies(inner, out)
     @core.Type::Variant(fields) =>
       for _, field_ty in fields {

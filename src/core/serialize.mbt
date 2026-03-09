@@ -731,20 +731,24 @@ fn serialize_type_to(ty : Type, buf : StringBuilder) -> Unit {
       serialize_type_to(elem, buf)
       buf.write_char('}')
     }
-    Type::Map(elem) => {
-      buf.write_string("{\"Map\":")
-      serialize_type_to(elem, buf)
-      buf.write_char('}')
+    Type::Map(key, value) => {
+      buf.write_string("{\"Map\":[")
+      serialize_type_to(key, buf)
+      buf.write_char(',')
+      serialize_type_to(value, buf)
+      buf.write_string("]}")
     }
     Type::ArrayBuilder(elem) => {
       buf.write_string("{\"ArrayBuilder\":")
       serialize_type_to(elem, buf)
       buf.write_char('}')
     }
-    Type::MapBuilder(elem) => {
-      buf.write_string("{\"MapBuilder\":")
-      serialize_type_to(elem, buf)
-      buf.write_char('}')
+    Type::MapBuilder(key, value) => {
+      buf.write_string("{\"MapBuilder\":[")
+      serialize_type_to(key, buf)
+      buf.write_char(',')
+      serialize_type_to(value, buf)
+      buf.write_string("]}")
     }
     Type::StringBuilder => buf.write_string("{\"StringBuilder\":{}}")
     Type::Bytes => buf.write_string("{\"Bytes\":{}}")

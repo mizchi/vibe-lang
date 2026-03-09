@@ -222,9 +222,10 @@ fn normalize_type_annotation_allowed(ty : @vibe_core.Type) -> Bool {
       true
     }
     @vibe_core.Type::Array(inner)
-    | @vibe_core.Type::Map(inner)
-    | @vibe_core.Type::ArrayBuilder(inner)
-    | @vibe_core.Type::MapBuilder(inner) =>
+    | @vibe_core.Type::ArrayBuilder(inner) =>
+      normalize_type_annotation_allowed(inner)
+    @vibe_core.Type::Map(_key, inner)
+    | @vibe_core.Type::MapBuilder(_key, inner) =>
       normalize_type_annotation_allowed(inner)
     @vibe_core.Type::StringBuilder | @vibe_core.Type::Bytes => true
     @vibe_core.Type::Named(args~, ..) => {
@@ -286,12 +287,20 @@ fn normalize_render_type_annotation(ty : @vibe_core.Type) -> String {
     }
     @vibe_core.Type::Array(inner) =>
       "Array[" + normalize_render_type_annotation(inner) + "]"
-    @vibe_core.Type::Map(inner) =>
-      "Map[" + normalize_render_type_annotation(inner) + "]"
+    @vibe_core.Type::Map(key, inner) =>
+      "Map[" +
+      normalize_render_type_annotation(key) +
+      ", " +
+      normalize_render_type_annotation(inner) +
+      "]"
     @vibe_core.Type::ArrayBuilder(inner) =>
       "ArrayBuilder[" + normalize_render_type_annotation(inner) + "]"
-    @vibe_core.Type::MapBuilder(inner) =>
-      "MapBuilder[" + normalize_render_type_annotation(inner) + "]"
+    @vibe_core.Type::MapBuilder(key, inner) =>
+      "MapBuilder[" +
+      normalize_render_type_annotation(key) +
+      ", " +
+      normalize_render_type_annotation(inner) +
+      "]"
     @vibe_core.Type::StringBuilder => "StringBuilder"
     @vibe_core.Type::Bytes => "Bytes"
     @vibe_core.Type::Named(name~, args~) =>

@@ -1287,7 +1287,7 @@ test "roundtrip: type variants (arraybuilder, mapbuilder, stringbuilder, variant
       Stmt::TypeAlias(
         name="MB",
         params=[],
-        target=Type::MapBuilder(Type::String),
+        target=Type::MapBuilder(Type::String, Type::String),
         span=zero_span(),
       ),
       Stmt::TypeAlias(
@@ -1315,7 +1315,7 @@ test "roundtrip: type map" {
       Stmt::TypeAlias(
         name="M",
         params=[],
-        target=Type::Map(Type::Int),
+        target=Type::Map(Type::String, Type::Int),
         span=zero_span(),
       ),
     ],

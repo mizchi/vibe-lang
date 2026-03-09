@@ -86,19 +86,20 @@ Builders require `do { ... }` or `for-in` context.
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `map_get` | `(Map[T], String) -> T` | Get value by key (throws if missing) |
-| `map_get_or` | `(Map[T], String, T) -> T` | Get value or default |
-| `map_has_key` | `(Map[T], String) -> Bool` | Check key existence |
-| `map_keys` | `(Map[T]) -> Array[String]` | All keys |
-| `map_values` | `(Map[T]) -> Array[T]` | All values |
+| `map_get` | `(Map[K, V], K) -> V` | Get value by key (throws if missing) |
+| `map_set` | `(Map[K, V], K, V) -> Map[K, V]` | Set key-value (returns new map) |
+| `map_get_or` | `(Map[K, V], K, V) -> V` | Get value or default |
+| `map_has_key` | `(Map[K, V], K) -> Bool` | Check key existence |
+| `map_keys` | `(Map[K, V]) -> Array[K]` | All keys |
+| `map_values` | `(Map[K, V]) -> Array[V]` | All values |
 
 ## Map Builder
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `map_builder` | `() -> MapBuilder[T]` | Create builder |
-| `map_builder_set` | `(MapBuilder[T], String, T) -> Unit` | Set key-value |
-| `map_builder_freeze` | `(MapBuilder[T]) -> Map[T]` | Convert to map |
+| `map_builder` | `() -> MapBuilder[K, V]` | Create builder |
+| `map_builder_set` | `(MapBuilder[K, V], K, V) -> Unit` | Set key-value |
+| `map_builder_freeze` | `(MapBuilder[K, V]) -> Map[K, V]` | Convert to map |
 
 ## Record
 

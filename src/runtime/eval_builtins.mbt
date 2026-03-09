@@ -1,4 +1,19 @@
 ///|
+/// Convert a Value to a string key for Map lookup.
+/// Supports Hash-implementing types: String, Int, Float, Double, Bool, Char.
+fn value_to_map_key(value : @core.Value) -> String {
+  match value {
+    @core.Value::String(s) => s
+    @core.Value::Int(n) => n.to_string()
+    @core.Value::Float(f) => f.to_string()
+    @core.Value::Double(d) => d.to_string()
+    @core.Value::Bool(b) => if b { "true" } else { "false" }
+    @core.Value::Char(c) => c.to_string()
+    _ => value.to_string()
+  }
+}
+
+///|
 /// Cheap pure builtins: execute directly without cache.
 /// Cache key computation (pure_call_key → git_blob_hash_string) is
 /// more expensive than executing these operations.
@@ -52,6 +67,7 @@ fn is_cheap_pure_builtin(name : String) -> Bool {
   name == "double_floor" ||
   name == "double_ceil" ||
   name == "map_get" ||
+  name == "map_set" ||
   name == "map_has_key" ||
   name == "record_set" ||
   name == "string_contains" ||
@@ -217,21 +233,45 @@ fn eval_pure_builtin(
           E("map_get: expected 2 arguments, got " + args.length().to_string()),
         )
       }
-      match (args[0], args[1]) {
-        (@core.Value::Map(items), @core.Value::String(key)) =>
+      match args[0] {
+        @core.Value::Map(items) => {
+          let key = value_to_map_key(args[1])
           match items.get(key) {
             Some(value) => value
             None => raise EvalError::BadCall(MissingKey(op="map_get", key~))
           }
+        }
         _ =>
           raise EvalError::BadCall(
             E(
-              "map_get: expected (Map, String), got (" +
+              "map_get: expected (Map, key), got (" +
               value_type_name(args[0]) +
               ", " +
               value_type_name(args[1]) +
               ")",
             ),
+          )
+      }
+    }
+    "map_set" => {
+      if args.length() != 3 {
+        raise EvalError::BadCall(
+          E(
+            "map_set: expected 3 arguments, got " + args.length().to_string(),
+          ),
+        )
+      }
+      match args[0] {
+        @core.Value::Map(items) => {
+          let key = value_to_map_key(args[1])
+          let new_map : Map[String, @core.Value] = {}
+          items.each(fn(k, v) { new_map[k] = v })
+          new_map[key] = args[2]
+          @core.Value::Map(new_map)
+        }
+        _ =>
+          raise EvalError::BadCall(
+            E("map_set: expected Map as first argument"),
           )
       }
     }
@@ -991,9 +1031,11 @@ fn eval_pure_builtin(
       if args.length() != 2 {
         raise EvalError::BadCall(E("map_has_key"))
       }
-      match (args[0], args[1]) {
-        (@core.Value::Map(items), @core.Value::String(key)) =>
+      match args[0] {
+        @core.Value::Map(items) => {
+          let key = value_to_map_key(args[1])
           @core.Value::Bool(items.contains(key))
+        }
         _ => raise EvalError::BadCall(E("map_has_key"))
       }
     }

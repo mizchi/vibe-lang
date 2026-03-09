@@ -241,10 +241,10 @@ let prelude_source : String =
   #|    None => true
   #|  }
   #|}
-  #|let map_get_or = [V](m: Map[V], key: String, default: V) -> V {
+  #|let map_get_or = [K, V](m: Map[K, V], key: K, default: V) -> V {
   #|  if map_has_key(m, key) { map_get(m, key) } else { default }
   #|}
-  #|let map_map = [V](m: Map[V], f: (v: V) -> V) -> Map[V] {
+  #|let map_map = [K, V](m: Map[K, V], f: (v: V) -> V) -> Map[K, V] {
   #|  {
   #|    let b = map_builder()
   #|    let keys = map_keys(m)
@@ -260,7 +260,7 @@ let prelude_source : String =
   #|    map_builder_freeze(b)
   #|  }
   #|}
-  #|let map_filter = [V](m: Map[V], pred: (v: V) -> Bool) -> Map[V] {
+  #|let map_filter = [K, V](m: Map[K, V], pred: (v: V) -> Bool) -> Map[K, V] {
   #|  {
   #|    let b = map_builder()
   #|    let keys = map_keys(m)
@@ -279,10 +279,10 @@ let prelude_source : String =
   #|    map_builder_freeze(b)
   #|  }
   #|}
-  #|let map_size = [V](m: Map[V]) -> Int {
+  #|let map_size = [K, V](m: Map[K, V]) -> Int {
   #|  array_length(map_keys(m))
   #|}
-  #|let map_foreach = [V](m: Map[V], f: (key: String, value: V) -> Unit) -> Unit {
+  #|let map_foreach = [K, V](m: Map[K, V], f: (key: K, value: V) -> Unit) -> Unit {
   #|  let keys = map_keys(m)
   #|  let rec loop = (i: Int) -> Unit {
   #|    if i < array_length(keys) {
@@ -293,7 +293,7 @@ let prelude_source : String =
   #|  }
   #|  loop(0)
   #|}
-  #|let map_entries = [V](m: Map[V]) -> Array[(String, V)] {
+  #|let map_entries = [K, V](m: Map[K, V]) -> Array[(K, V)] {
   #|  let keys = map_keys(m)
   #|  let b = array_builder()
   #|  let rec loop = (i: Int) -> Unit {
@@ -306,7 +306,7 @@ let prelude_source : String =
   #|  loop(0)
   #|  array_builder_freeze(b)
   #|}
-  #|let map_merge = [V](a: Map[V], b: Map[V]) -> Map[V] {
+  #|let map_merge = [K, V](a: Map[K, V], b: Map[K, V]) -> Map[K, V] {
   #|  {
   #|    let out = map_builder()
   #|    let ka = map_keys(a)

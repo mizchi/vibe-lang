@@ -655,10 +655,10 @@ fn type_to_sexp(ty : @core.Type) -> String {
       buf.to_string()
     }
     @core.Type::Array(inner) => "(Array " + type_to_sexp(inner) + ")"
-    @core.Type::Map(inner) => "(Map " + type_to_sexp(inner) + ")"
+    @core.Type::Map(_key, inner) => "(Map " + type_to_sexp(inner) + ")"
     @core.Type::ArrayBuilder(inner) =>
       "(ArrayBuilder " + type_to_sexp(inner) + ")"
-    @core.Type::MapBuilder(inner) => "(MapBuilder " + type_to_sexp(inner) + ")"
+    @core.Type::MapBuilder(_key, inner) => "(MapBuilder " + type_to_sexp(inner) + ")"
     @core.Type::StringBuilder => "StringBuilder"
     @core.Type::Bytes => "Bytes"
     @core.Type::Variant(fields) => {

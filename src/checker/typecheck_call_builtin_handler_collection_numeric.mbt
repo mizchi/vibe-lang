@@ -298,7 +298,7 @@ fn type_call_builtin_handler_collection_numeric(
         allow_effect,
         call_span,
         [],
-        @core.Type::MapBuilder(fresh_type_var(env)),
+        @core.Type::MapBuilder(fresh_type_var(env), fresh_type_var(env)),
         true,
       )
     "map_builder_set" => {
@@ -312,10 +312,9 @@ fn type_call_builtin_handler_collection_numeric(
         effects,
         allow_effect,
       )
-      let _ = check_arg_type(
+      let key_arg_ty = type_expr_eff(
         env,
         pos_args[1],
-        @core.Type::String,
         aliases,
         effects,
         allow_effect,
@@ -327,11 +326,13 @@ fn type_call_builtin_handler_collection_numeric(
         effects,
         allow_effect,
       )
-      let elem_ty = expect_map_builder_elem_type(
+      let (key_ty, elem_ty) = expect_map_builder_elem_type(
         env,
         builder_ty,
         pos_args[0].span(),
       )
+      ensure_type(env, key_arg_ty, key_ty, pos_args[1].span(), "argument")
+      ensure_map_key_hashable(env, key_arg_ty, pos_args[1].span())
       ensure_type(env, value_ty, elem_ty, pos_args[2].span(), "argument")
       @core.Type::Unit
     }
@@ -346,12 +347,12 @@ fn type_call_builtin_handler_collection_numeric(
         effects,
         allow_effect,
       )
-      let elem_ty = expect_map_builder_elem_type(
+      let (key_ty, elem_ty) = expect_map_builder_elem_type(
         env,
         builder_ty,
         pos_args[0].span(),
       )
-      @core.Type::Map(elem_ty)
+      @core.Type::Map(key_ty, elem_ty)
     }
     "array_length" => {
       let pos_args = check_positional_arity(args, "array_length", 1, call_span)
@@ -484,16 +485,50 @@ fn type_call_builtin_handler_collection_numeric(
         effects,
         allow_effect,
       )
-      let _ = check_arg_type(
+      let key_arg_ty = type_expr_eff(
         env,
         pos_args[1],
-        @core.Type::String,
         aliases,
         effects,
         allow_effect,
       )
-      let elem_ty = expect_map_elem_type(env, map_ty, pos_args[0].span())
+      let (key_ty, elem_ty) = expect_map_elem_type(
+        env, map_ty, pos_args[0].span(),
+      )
+      ensure_type(env, key_arg_ty, key_ty, pos_args[1].span(), "argument")
+      ensure_map_key_hashable(env, key_arg_ty, pos_args[1].span())
       elem_ty
+    }
+    "map_set" => {
+      let pos_args = check_positional_arity(args, "map_set", 3, call_span)
+      let map_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let key_arg_ty = type_expr_eff(
+        env,
+        pos_args[1],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let value_ty = type_expr_eff(
+        env,
+        pos_args[2],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let (key_ty, elem_ty) = expect_map_elem_type(
+        env, map_ty, pos_args[0].span(),
+      )
+      ensure_type(env, key_arg_ty, key_ty, pos_args[1].span(), "argument")
+      ensure_map_key_hashable(env, key_arg_ty, pos_args[1].span())
+      ensure_type(env, value_ty, elem_ty, pos_args[2].span(), "argument")
+      map_ty
     }
     "string_length"
     | "string_utf8_length"
@@ -968,18 +1003,16 @@ fn type_call_builtin_handler_collection_numeric(
           }
           elem_ty
         }
-        @core.Type::Map(_) => {
-          if not(type_equal(env, index_ty, @core.Type::String)) {
+        @core.Type::Map(key_ty, _) => {
+          ensure_type(
+            env, index_ty, key_ty, pos_args[1].span(), "index",
+          )
+          ensure_map_key_hashable(env, index_ty, pos_args[1].span())
+          if not(
+              type_equal(env, resolved_container, @core.Type::Map(key_ty, elem_ty)),
+            ) {
             raise TypeError::Mismatch(
-              expected=@core.Type::String,
-              actual=index_ty,
-              span=pos_args[1].span(),
-              context=Some("index"),
-            )
-          }
-          if not(type_equal(env, resolved_container, @core.Type::Map(elem_ty))) {
-            raise TypeError::Mismatch(
-              expected=@core.Type::Map(elem_ty),
+              expected=@core.Type::Map(key_ty, elem_ty),
               actual=resolved_container,
               span=pos_args[0].span(),
               context=Some("argument"),

@@ -93,9 +93,9 @@ fn collect_free_vars(
         collect_free_vars(env, item, out)
       }
     @core.Type::Array(inner)
-    | @core.Type::Map(inner)
-    | @core.Type::ArrayBuilder(inner)
-    | @core.Type::MapBuilder(inner) => collect_free_vars(env, inner, out)
+    | @core.Type::ArrayBuilder(inner) => collect_free_vars(env, inner, out)
+    @core.Type::Map(_key, inner)
+    | @core.Type::MapBuilder(_key, inner) => collect_free_vars(env, inner, out)
     @core.Type::Variant(fields) =>
       for _, item in fields {
         collect_free_vars(env, item, out)
@@ -164,9 +164,9 @@ fn collect_free_effect_vars(
         collect_free_effect_vars(env, item, out)
       }
     @core.Type::Array(inner)
-    | @core.Type::Map(inner)
-    | @core.Type::ArrayBuilder(inner)
-    | @core.Type::MapBuilder(inner) => collect_free_effect_vars(env, inner, out)
+    | @core.Type::ArrayBuilder(inner) => collect_free_effect_vars(env, inner, out)
+    @core.Type::Map(_key, inner)
+    | @core.Type::MapBuilder(_key, inner) => collect_free_effect_vars(env, inner, out)
     @core.Type::Variant(fields) =>
       for _, item in fields {
         collect_free_effect_vars(env, item, out)

@@ -255,8 +255,8 @@ fn resolve_builtin_type_name(
         None
       }
     "Map" =>
-      if args.length() == 1 {
-        Some(@core.Type::Map(args[0]))
+      if args.length() == 2 {
+        Some(@core.Type::Map(args[0], args[1]))
       } else {
         None
       }
@@ -267,8 +267,8 @@ fn resolve_builtin_type_name(
         None
       }
     "MapBuilder" =>
-      if args.length() == 1 {
-        Some(@core.Type::MapBuilder(args[0]))
+      if args.length() == 2 {
+        Some(@core.Type::MapBuilder(args[0], args[1]))
       } else {
         None
       }
@@ -460,14 +460,15 @@ fn normalize_type_inner(
     }
     @core.Type::Array(inner) =>
       @core.Type::Array(normalize_type_inner(env, inner, visiting, expand_enum))
-    @core.Type::Map(inner) =>
-      @core.Type::Map(normalize_type_inner(env, inner, visiting, expand_enum))
+    @core.Type::Map(key, inner) =>
+      @core.Type::Map(normalize_type_inner(env, key, visiting, expand_enum), normalize_type_inner(env, inner, visiting, expand_enum))
     @core.Type::ArrayBuilder(inner) =>
       @core.Type::ArrayBuilder(
         normalize_type_inner(env, inner, visiting, expand_enum),
       )
-    @core.Type::MapBuilder(inner) =>
+    @core.Type::MapBuilder(key, inner) =>
       @core.Type::MapBuilder(
+        normalize_type_inner(env, key, visiting, expand_enum),
         normalize_type_inner(env, inner, visiting, expand_enum),
       )
     @core.Type::Variant(fields) => {
@@ -557,9 +558,9 @@ fn type_may_contain_scoped_ref_hint(ty : @core.Type) -> Bool {
       false
     }
     @core.Type::Array(inner)
-    | @core.Type::Map(inner)
-    | @core.Type::ArrayBuilder(inner)
-    | @core.Type::MapBuilder(inner) => type_may_contain_scoped_ref_hint(inner)
+    | @core.Type::ArrayBuilder(inner) => type_may_contain_scoped_ref_hint(inner)
+    @core.Type::Map(_key, inner)
+    | @core.Type::MapBuilder(_key, inner) => type_may_contain_scoped_ref_hint(inner)
     @core.Type::Variant(ctors) => {
       for _, payload_ty in ctors {
         if type_may_contain_scoped_ref_hint(payload_ty) {
@@ -850,9 +851,10 @@ fn type_contains_scoped_ref_inner_fast(
       hit
     }
     @core.Type::Array(inner)
-    | @core.Type::Map(inner)
-    | @core.Type::ArrayBuilder(inner)
-    | @core.Type::MapBuilder(inner) =>
+    | @core.Type::ArrayBuilder(inner) =>
+      type_contains_scoped_ref_inner_fast(env, inner, visiting, name_cache)
+    @core.Type::Map(_key, inner)
+    | @core.Type::MapBuilder(_key, inner) =>
       type_contains_scoped_ref_inner_fast(env, inner, visiting, name_cache)
     @core.Type::Variant(ctors) => {
       let mut hit = false
@@ -1092,12 +1094,12 @@ pub fn is_type_subtype(
     }
     (@core.Type::Array(sub_inner), @core.Type::Array(sup_inner)) =>
       is_type_subtype(env, sub_inner, sup_inner)
-    (@core.Type::Map(sub_inner), @core.Type::Map(sup_inner)) =>
-      is_type_subtype(env, sub_inner, sup_inner)
+    (@core.Type::Map(sub_key, sub_inner), @core.Type::Map(sup_key, sup_inner)) =>
+      is_type_subtype(env, sub_key, sup_key) && is_type_subtype(env, sub_inner, sup_inner)
     (@core.Type::ArrayBuilder(sub_inner), @core.Type::ArrayBuilder(sup_inner)) =>
       is_type_subtype(env, sub_inner, sup_inner)
-    (@core.Type::MapBuilder(sub_inner), @core.Type::MapBuilder(sup_inner)) =>
-      is_type_subtype(env, sub_inner, sup_inner)
+    (@core.Type::MapBuilder(sub_key, sub_inner), @core.Type::MapBuilder(sup_key, sup_inner)) =>
+      is_type_subtype(env, sub_key, sup_key) && is_type_subtype(env, sub_inner, sup_inner)
     (
       @core.Type::Func(params=sub_params, ret=sub_ret, effects=sub_effects),
       @core.Type::Func(params=sup_params, ret=sup_ret, effects=sup_effects),
@@ -1333,12 +1335,12 @@ fn unify_types_inner(
       }
     (@core.Type::Array(ae), @core.Type::Array(be)) =>
       unify_types_inner(env, ae, be, cache)
-    (@core.Type::Map(av), @core.Type::Map(bv)) =>
-      unify_types_inner(env, av, bv, cache)
+    (@core.Type::Map(ak, av), @core.Type::Map(bk, bv)) =>
+      unify_types_inner(env, ak, bk, cache) && unify_types_inner(env, av, bv, cache)
     (@core.Type::ArrayBuilder(ae), @core.Type::ArrayBuilder(be)) =>
       unify_types_inner(env, ae, be, cache)
-    (@core.Type::MapBuilder(av), @core.Type::MapBuilder(bv)) =>
-      unify_types_inner(env, av, bv, cache)
+    (@core.Type::MapBuilder(ak, av), @core.Type::MapBuilder(bk, bv)) =>
+      unify_types_inner(env, ak, bk, cache) && unify_types_inner(env, av, bv, cache)
     (@core.Type::StringBuilder, @core.Type::StringBuilder) => true
     (@core.Type::Bytes, @core.Type::Bytes) => true
     (@core.Type::Variant(ax), @core.Type::Variant(bx)) =>
@@ -1507,7 +1509,7 @@ fn occurs_in(env : TypeEnv, id : Int, ty : @core.Type) -> Bool {
       found
     }
     @core.Type::Array(inner) => occurs_in(env, id, inner)
-    @core.Type::Map(inner) => occurs_in(env, id, inner)
+    @core.Type::Map(_key, inner) => occurs_in(env, id, inner)
     @core.Type::Variant(fields) => {
       let mut found = false
       for _, item in fields {

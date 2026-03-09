@@ -613,7 +613,7 @@ fn type_expr_eff(
     @core.Expr::Map(fields~, span~) => {
       let _ = span
       if fields.is_empty() {
-        @core.Type::Map(@core.Type::Unit)
+        @core.Type::Map(@core.Type::String, @core.Type::Unit)
       } else {
         let first = type_expr_eff(
           env,
@@ -640,7 +640,7 @@ fn type_expr_eff(
             )
           }
         }
-        @core.Type::Map(val_ty)
+        @core.Type::Map(@core.Type::String, val_ty)
       }
     }
     @core.Expr::If(cond~, then_body~, else_body~, span~) => {

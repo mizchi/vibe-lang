@@ -459,10 +459,18 @@ pub fn Type::structural_hash(self : Type) -> Int {
       h
     }
     Type::Array(inner) => combine_hash(0x41727261, inner.structural_hash())
-    Type::Map(inner) => combine_hash(0x4d617000, inner.structural_hash())
+    Type::Map(key, value) =>
+      combine_hash(
+        combine_hash(0x4d617000, key.structural_hash()),
+        value.structural_hash(),
+      )
     Type::ArrayBuilder(inner) =>
       combine_hash(0x41724275, inner.structural_hash())
-    Type::MapBuilder(inner) => combine_hash(0x4d614275, inner.structural_hash())
+    Type::MapBuilder(key, value) =>
+      combine_hash(
+        combine_hash(0x4d614275, key.structural_hash()),
+        value.structural_hash(),
+      )
     Type::StringBuilder => 0x53744275
     Type::Bytes => 0x42797465
     Type::Variant(ctors) => {

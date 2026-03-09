@@ -93,7 +93,7 @@ fn type_call_builtin_handler_runtime_memory(
       )
       let resolved = normalize_type(env, map_ty)
       match resolved {
-        @core.Type::Map(_) => @core.Type::Array(@core.Type::String)
+        @core.Type::Map(key_ty, _) => @core.Type::Array(key_ty)
         _ => raise TypeError::BadCall(message="map_keys", span=call_span)
       }
     }
@@ -111,7 +111,7 @@ fn type_call_builtin_handler_runtime_memory(
       )
       let resolved = normalize_type(env, map_ty)
       match resolved {
-        @core.Type::Map(elem_ty) => @core.Type::Array(elem_ty)
+        @core.Type::Map(_key, elem_ty) => @core.Type::Array(elem_ty)
         _ => raise TypeError::BadCall(message="map_values", span=call_span)
       }
     }
@@ -127,25 +127,22 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      let resolved = normalize_type(env, map_ty)
-      match resolved {
-        @core.Type::Map(_) => ()
-        _ => raise TypeError::BadCall(message="map_has_key", span=call_span)
-      }
-      let key_ty = type_expr_eff(
+      let key_arg_ty = type_expr_eff(
         env,
         pos_args[1],
         aliases,
         effects,
         allow_effect,
       )
-      if not(type_equal(env, key_ty, @core.Type::String)) {
-        raise TypeError::Mismatch(
-          expected=@core.Type::String,
-          actual=key_ty,
-          span=pos_args[1].span(),
-          context=Some("argument"),
-        )
+      let resolved = normalize_type(env, map_ty)
+      match resolved {
+        @core.Type::Map(key_ty, _) => {
+          ensure_type(
+            env, key_arg_ty, key_ty, pos_args[1].span(), "argument",
+          )
+          ensure_map_key_hashable(env, key_arg_ty, pos_args[1].span())
+        }
+        _ => raise TypeError::BadCall(message="map_has_key", span=call_span)
       }
       @core.Type::Bool
     }

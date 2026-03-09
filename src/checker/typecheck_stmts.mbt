@@ -983,9 +983,9 @@ fn type_matches_impl_target(
           type_matches_impl_target(env, inner, actual_inner, mapping)
         _ => false
       }
-    @core.Type::Map(inner) =>
+    @core.Type::Map(_key, inner) =>
       match a {
-        @core.Type::Map(actual_inner) =>
+        @core.Type::Map(_akey, actual_inner) =>
           type_matches_impl_target(env, inner, actual_inner, mapping)
         _ => false
       }
@@ -995,9 +995,9 @@ fn type_matches_impl_target(
           type_matches_impl_target(env, inner, actual_inner, mapping)
         _ => false
       }
-    @core.Type::MapBuilder(inner) =>
+    @core.Type::MapBuilder(_key, inner) =>
       match a {
-        @core.Type::MapBuilder(actual_inner) =>
+        @core.Type::MapBuilder(_akey, actual_inner) =>
           type_matches_impl_target(env, inner, actual_inner, mapping)
         _ => false
       }
@@ -1336,9 +1336,9 @@ fn trait_impl_targets_may_overlap_concrete(
           trait_impl_targets_may_overlap(left_item, right_item)
         _ => false
       }
-    @core.Type::Map(left_item) =>
+    @core.Type::Map(_lkey, left_item) =>
       match right {
-        @core.Type::Map(right_item) =>
+        @core.Type::Map(_rkey, right_item) =>
           trait_impl_targets_may_overlap(left_item, right_item)
         _ => false
       }
@@ -1348,9 +1348,9 @@ fn trait_impl_targets_may_overlap_concrete(
           trait_impl_targets_may_overlap(left_item, right_item)
         _ => false
       }
-    @core.Type::MapBuilder(left_item) =>
+    @core.Type::MapBuilder(_lkey, left_item) =>
       match right {
-        @core.Type::MapBuilder(right_item) =>
+        @core.Type::MapBuilder(_rkey, right_item) =>
           trait_impl_targets_may_overlap(left_item, right_item)
         _ => false
       }
