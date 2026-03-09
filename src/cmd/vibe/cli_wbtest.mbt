@@ -2650,6 +2650,70 @@ test "compiled test wrapper keeps export helper chain top-level" {
 }
 
 ///|
+test "compiled test wrapper keeps recursive string helpers valid" {
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_compiled_recursive_string_helper.vibe",
+  )
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "let table = \"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/\"\n" +
+    "let to_b64 = (i: Int) -> String {\n" +
+    "  table|>string_substring(i, i + 1)\n" +
+    "}\n" +
+    "let encode_triplet = (a: Int, b: Int, c: Int) -> String {\n" +
+    "  let c0 = to_b64(a / 4)\n" +
+    "  let x1 = a % 4 * 16\n" +
+    "  let y1 = b / 16\n" +
+    "  let c1 = to_b64(x1 + y1)\n" +
+    "  let x2 = b % 16 * 4\n" +
+    "  let y2 = c / 64\n" +
+    "  let c2 = to_b64(x2 + y2)\n" +
+    "  let c3 = to_b64(c % 64)\n" +
+    "  c0|>string_concat(c1)|>string_concat(c2)|>string_concat(c3)\n" +
+    "}\n" +
+    "let rec enc_loop = (s: String, i: Int, out: String) -> String {\n" +
+    "  let len = s|>string_length()\n" +
+    "  if i + 3 <= len {\n" +
+    "    let j = i + 1\n" +
+    "    let k = i + 2\n" +
+    "    let a = s|>string_char_code_at(i)\n" +
+    "    let b = s|>string_char_code_at(j)\n" +
+    "    let c = s|>string_char_code_at(k)\n" +
+    "    enc_loop(s, i + 3, out|>string_concat(encode_triplet(a, b, c)))\n" +
+    "  } else {\n" +
+    "    out\n" +
+    "  }\n" +
+    "}\n" +
+    "let encode = (s: String) -> String {\n" +
+    "  enc_loop(s, 0, \"\")\n" +
+    "}\n" +
+    "test \"recursive string helper\" {\n" +
+    "  assert(string_equals(encode(\"Man\"), \"TWFu\"))\n" +
+    "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+  match run_test_file_compiled(source_path, false) {
+    CompiledTestAttempt::Success(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    CompiledTestAttempt::Unsupported(err) =>
+      fail("compiled recursive string helper unexpectedly unsupported: " + err)
+    CompiledTestAttempt::Error(err) =>
+      fail("compiled recursive string helper unexpectedly errored: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
 test "compiled test wrapper keeps map_keys results as strings" {
   let cwd = @io.current_dir_or_root()
   let source_path = @vibe_fs.normalize_path(
