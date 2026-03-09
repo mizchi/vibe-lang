@@ -117,80 +117,80 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
   match expr {
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
-      match @core.normalize_builtin_name(name) {
+      match name {
         "sh" => ctx.need_sh = true
-        "path" | "path_ref" => ctx.need_path = true
-        "dynamic_path_resolve" => ctx.need_dynamic_path_resolve = true
-        "string_length" => if ctx.use_js_strings { ctx.need_js_length = true }
-        "string_char_code_at" =>
+        "path" | "Path::ref" => ctx.need_path = true
+        "Path::resolve" => ctx.need_dynamic_path_resolve = true
+        "String::length" => if ctx.use_js_strings { ctx.need_js_length = true }
+        "String::char_code_at" =>
           if ctx.use_js_strings {
             ctx.need_js_char_code_at = true
           }
-        "string_substring" =>
+        "String::substring" =>
           if ctx.use_js_strings {
             ctx.need_js_substring = true
           } else {
             ctx.need_heap = true
           }
-        "string_concat" =>
+        "String::concat" =>
           if ctx.use_js_strings {
             ctx.need_js_concat = true
           } else {
             ctx.need_heap = true
           }
-        "string_equals" | "map_get" =>
+        "String::equals" | "Map::get" =>
           if ctx.use_js_strings {
             ctx.need_js_equals = true
           }
-        "array_builder"
+        "ArrayBuilder::new"
         | "MapBuilder::new"
-        | "string_builder"
-        | "string_join"
-        | "map_keys"
-        | "map_values"
-        | "string_trim"
-        | "string_trim_start"
-        | "string_trim_end"
-        | "string_to_upper"
-        | "string_to_lower"
-        | "string_replace"
-        | "string_replace_all"
-        | "string_split" => ctx.need_heap = true
+        | "StringBuilder::new"
+        | "String::join"
+        | "Map::keys"
+        | "Map::values"
+        | "String::trim"
+        | "String::trim_start"
+        | "String::trim_end"
+        | "String::to_upper"
+        | "String::to_lower"
+        | "String::replace"
+        | "String::replace_all"
+        | "String::split" => ctx.need_heap = true
         "sleep" => ctx.need_sleep = true
-        "stdout_write_char" | "stdout_write_stream" =>
+        "Stdout::write_char" | "Stdout::write_stream" =>
           ctx.need_stdout_write_char = true
-        "stdin_read_char" | "stdin_read_stream" =>
+        "Stdin::read_char" | "Stdin::read_stream" =>
           ctx.need_stdin_read_char = true
-        "fs_read_file" | "fs_write_file" | "fs_write_bytes" | "fs_exists" => {
+        "Fs::read_file" | "Fs::write_file" | "Fs::write_bytes" | "Fs::exists" => {
           ctx.need_fs = true
           ctx.need_heap = true
         }
-        "socket_tcp_connect"
-        | "socket_tcp_read"
-        | "socket_tcp_write"
-        | "socket_tcp_close" => {
+        "Socket::tcp_connect"
+        | "Socket::tcp_read"
+        | "Socket::tcp_write"
+        | "Socket::tcp_close" => {
           ctx.need_socket = true
           ctx.need_heap = true
         }
-        "http_request"
-        | "http_response_status"
-        | "http_response_header"
-        | "http_response_body"
-        | "http_close"
-        | "http_listen"
-        | "http_accept"
-        | "http_request_method"
-        | "http_request_url"
-        | "http_request_header"
-        | "http_request_body"
-        | "http_respond" => {
+        "Http::request"
+        | "Http::response_status"
+        | "Http::response_header"
+        | "Http::response_body"
+        | "Http::close"
+        | "Http::listen"
+        | "Http::accept"
+        | "Http::request_method"
+        | "Http::request_url"
+        | "Http::request_header"
+        | "Http::request_body"
+        | "Http::respond" => {
           ctx.need_http = true
           ctx.need_heap = true
           ctx.need_exceptions = true
         }
-        "string_from_char_code" | "to_double" | "parse_double" =>
+        "String::from_char_code" | "to_double" | "Double::parse" =>
           ctx.need_heap = true
-        "char_to_int" | "char_from_int" => ()
+        "Char::to_int" | "Char::from_int" => ()
         "__to_string" => if not(ctx.use_js_strings) { ctx.need_heap = true }
         _ =>
           if is_wasm_runtime_fallback_builtin(name) {

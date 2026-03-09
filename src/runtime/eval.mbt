@@ -1689,12 +1689,12 @@ fn try_eval_hot_builtin_call(
   name : String,
   args : Array[@core.CallArg],
 ) -> EvalOutput? raise EvalError {
-  let is_hot = name == "string_length" ||
-    name == "string_char_code_at" ||
-    name == "string_substring" ||
-    name == "string_concat" ||
-    name == "array_length" ||
-    name == "array_get"
+  let is_hot = name == "String::length" ||
+    name == "String::char_code_at" ||
+    name == "String::substring" ||
+    name == "String::concat" ||
+    name == "Array::length" ||
+    name == "Array::get"
   if not(is_hot) {
     return None
   }
@@ -1721,33 +1721,33 @@ fn try_eval_hot_builtin_call(
     extend_effects(effects, out.effects)
   }
   let value = match name {
-    "string_length" => {
+    "String::length" => {
       if values.length() != 1 {
-        raise EvalError::BadCall(E("string_length"))
+        raise EvalError::BadCall(E("String::length"))
       }
       match values[0] {
         @core.Value::String(s) => @core.Value::Int(String::length(s).to_int64())
-        _ => raise EvalError::BadCall(E("string_length"))
+        _ => raise EvalError::BadCall(E("String::length"))
       }
     }
-    "string_char_code_at" => {
+    "String::char_code_at" => {
       if values.length() != 2 {
-        raise EvalError::BadCall(E("string_char_code_at"))
+        raise EvalError::BadCall(E("String::char_code_at"))
       }
       match (values[0], values[1]) {
         (@core.Value::String(s), @core.Value::Int(index)) => {
           if index < 0L || index >= String::length(s).to_int64() {
-            raise EvalError::BadCall(E("string_char_code_at"))
+            raise EvalError::BadCall(E("String::char_code_at"))
           }
           let code = String::code_unit_at(s, index.to_int())
           @core.Value::Int(UInt16::to_int(code).to_int64())
         }
-        _ => raise EvalError::BadCall(E("string_char_code_at"))
+        _ => raise EvalError::BadCall(E("String::char_code_at"))
       }
     }
-    "string_substring" => {
+    "String::substring" => {
       if values.length() != 3 {
-        raise EvalError::BadCall(E("string_substring"))
+        raise EvalError::BadCall(E("String::substring"))
       }
       match (values[0], values[1], values[2]) {
         (@core.Value::String(s), @core.Value::Int(start), @core.Value::Int(end)) => {
@@ -1771,14 +1771,14 @@ fn try_eval_hot_builtin_call(
             String::unsafe_substring(s, start=from.to_int(), end=to.to_int()),
           )
         }
-        _ => raise EvalError::BadCall(E("string_substring"))
+        _ => raise EvalError::BadCall(E("String::substring"))
       }
     }
-    "string_concat" => {
+    "String::concat" => {
       if values.length() != 2 {
         raise EvalError::BadCall(
           E(
-            "string_concat: expected 2 arguments, got " +
+            "String::concat: expected 2 arguments, got " +
             values.length().to_string(),
           ),
         )
@@ -1789,7 +1789,7 @@ fn try_eval_hot_builtin_call(
         _ =>
           raise EvalError::BadCall(
             E(
-              "string_concat: expected (String, String), got (" +
+              "String::concat: expected (String, String), got (" +
               value_type_name(values[0]) +
               ", " +
               value_type_name(values[1]) +
@@ -1798,11 +1798,11 @@ fn try_eval_hot_builtin_call(
           )
       }
     }
-    "array_length" => {
+    "Array::length" => {
       if values.length() != 1 {
         raise EvalError::BadCall(
           E(
-            "array_length: expected 1 argument, got " +
+            "Array::length: expected 1 argument, got " +
             values.length().to_string(),
           ),
         )
@@ -1819,11 +1819,11 @@ fn try_eval_hot_builtin_call(
           )
       }
     }
-    "array_get" => {
+    "Array::get" => {
       if values.length() != 2 {
         raise EvalError::BadCall(
           E(
-            "array_get: expected 2 arguments, got " +
+            "Array::get: expected 2 arguments, got " +
             values.length().to_string(),
           ),
         )
@@ -1833,7 +1833,7 @@ fn try_eval_hot_builtin_call(
           if index < 0L || index >= items.length().to_int64() {
             raise EvalError::BadCall(
               E(
-                "array_get: index " +
+                "Array::get: index " +
                 index.to_string() +
                 " out of bounds (length " +
                 items.length().to_string() +
@@ -1846,7 +1846,7 @@ fn try_eval_hot_builtin_call(
         _ =>
           raise EvalError::BadCall(
             E(
-              "array_get: expected (Array, Int), got (" +
+              "Array::get: expected (Array, Int), got (" +
               value_type_name(values[0]) +
               ", " +
               value_type_name(values[1]) +
@@ -1943,8 +1943,7 @@ fn eval_builtin_call(
   args : Array[@core.CallArg],
   call_span : @core.Span,
 ) -> EvalOutput raise EvalError {
-  let builtin_name = @core.normalize_builtin_name(name)
-  match builtin_name {
+  match name {
     "__perform" => {
       let site_key = perform_site_key(rt, call_span)
       match rt.perform_resume_overrides.get(site_key) {
@@ -2001,12 +2000,12 @@ fn eval_builtin_call(
           )
       }
     }
-    "dynamic_path_resolve" => {
+    "Path::resolve" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "dynamic_path_resolve")
+      let pos_args = extract_positional_values(out.args, "Path::resolve")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="dynamic_path_resolve", detail="bad call"),
+          BuiltinDetail(fn_name="Path::resolve", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -2024,17 +2023,17 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="dynamic_path_resolve", detail="bad call"),
+            BuiltinDetail(fn_name="Path::resolve", detail="bad call"),
           )
       }
     }
-    "threads_probe_wat" => {
-      require_unstable_threads(rt, "threads_probe_wat")
+    "Threads::probe_wat" => {
+      require_unstable_threads(rt, "Threads::probe_wat")
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "threads_probe_wat")
+      let pos_args = extract_positional_values(out.args, "Threads::probe_wat")
       if pos_args.length() != 0 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="threads_probe_wat", detail="bad call"),
+          BuiltinDetail(fn_name="Threads::probe_wat", detail="bad call"),
         )
       }
       {
@@ -2042,16 +2041,16 @@ fn eval_builtin_call(
         effects: out.effects,
       }
     }
-    "threads_runtime_hints" => {
-      require_unstable_threads(rt, "threads_runtime_hints")
+    "Threads::runtime_hints" => {
+      require_unstable_threads(rt, "Threads::runtime_hints")
       let out = eval_args(rt, args)
       let pos_args = extract_positional_values(
         out.args,
-        "threads_runtime_hints",
+        "Threads::runtime_hints",
       )
       if pos_args.length() != 0 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="threads_runtime_hints", detail="bad call"),
+          BuiltinDetail(fn_name="Threads::runtime_hints", detail="bad call"),
         )
       }
       let wasm_flags = @x_threads.recommended_wasm_flags()
@@ -2075,13 +2074,13 @@ fn eval_builtin_call(
       )
       { value: @core.Value::Record(fields), effects: out.effects }
     }
-    "threads_channel_new" => {
-      require_unstable_threads(rt, "threads_channel_new")
+    "Threads::channel_new" => {
+      require_unstable_threads(rt, "Threads::channel_new")
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "threads_channel_new")
+      let pos_args = extract_positional_values(out.args, "Threads::channel_new")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="threads_channel_new", detail="bad call"),
+          BuiltinDetail(fn_name="Threads::channel_new", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -2094,17 +2093,17 @@ fn eval_builtin_call(
           }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="threads_channel_new", detail="bad call"),
+            BuiltinDetail(fn_name="Threads::channel_new", detail="bad call"),
           )
       }
     }
-    "threads_send" => {
-      require_unstable_threads(rt, "threads_send")
+    "Threads::send" => {
+      require_unstable_threads(rt, "Threads::send")
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "threads_send")
+      let pos_args = extract_positional_values(out.args, "Threads::send")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="threads_send", detail="bad call"),
+          BuiltinDetail(fn_name="Threads::send", detail="bad call"),
         )
       }
       match (pos_args[0], pos_args[1]) {
@@ -2113,22 +2112,22 @@ fn eval_builtin_call(
             Some(ok) => { value: @core.Value::Bool(ok), effects: out.effects }
             None =>
               raise EvalError::BadCall(
-                BuiltinDetail(fn_name="threads_send", detail="bad call"),
+                BuiltinDetail(fn_name="Threads::send", detail="bad call"),
               )
           }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="threads_send", detail="bad call"),
+            BuiltinDetail(fn_name="Threads::send", detail="bad call"),
           )
       }
     }
-    "threads_recv" => {
-      require_unstable_threads(rt, "threads_recv")
+    "Threads::recv" => {
+      require_unstable_threads(rt, "Threads::recv")
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "threads_recv")
+      let pos_args = extract_positional_values(out.args, "Threads::recv")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="threads_recv", detail="bad call"),
+          BuiltinDetail(fn_name="Threads::recv", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -2138,22 +2137,22 @@ fn eval_builtin_call(
               { value: @core.Value::String(message), effects: out.effects }
             None =>
               raise EvalError::BadCall(
-                BuiltinDetail(fn_name="threads_recv", detail="bad call"),
+                BuiltinDetail(fn_name="Threads::recv", detail="bad call"),
               )
           }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="threads_recv", detail="bad call"),
+            BuiltinDetail(fn_name="Threads::recv", detail="bad call"),
           )
       }
     }
-    "threads_spawn" => {
-      require_unstable_threads(rt, "threads_spawn")
+    "Threads::spawn" => {
+      require_unstable_threads(rt, "Threads::spawn")
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "threads_spawn")
+      let pos_args = extract_positional_values(out.args, "Threads::spawn")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="threads_spawn", detail="bad call"),
+          BuiltinDetail(fn_name="Threads::spawn", detail="bad call"),
         )
       }
       match (pos_args[0], pos_args[1]) {
@@ -2166,22 +2165,22 @@ fn eval_builtin_call(
               }
             None =>
               raise EvalError::BadCall(
-                BuiltinDetail(fn_name="threads_spawn", detail="bad call"),
+                BuiltinDetail(fn_name="Threads::spawn", detail="bad call"),
               )
           }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="threads_spawn", detail="bad call"),
+            BuiltinDetail(fn_name="Threads::spawn", detail="bad call"),
           )
       }
     }
-    "threads_wait" => {
-      require_unstable_threads(rt, "threads_wait")
+    "Threads::wait" => {
+      require_unstable_threads(rt, "Threads::wait")
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "threads_wait")
+      let pos_args = extract_positional_values(out.args, "Threads::wait")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="threads_wait", detail="bad call"),
+          BuiltinDetail(fn_name="Threads::wait", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -2194,12 +2193,12 @@ fn eval_builtin_call(
               }
             None =>
               raise EvalError::BadCall(
-                BuiltinDetail(fn_name="threads_wait", detail="bad call"),
+                BuiltinDetail(fn_name="Threads::wait", detail="bad call"),
               )
           }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="threads_wait", detail="bad call"),
+            BuiltinDetail(fn_name="Threads::wait", detail="bad call"),
           )
       }
     }
@@ -2301,12 +2300,12 @@ fn eval_builtin_call(
           )
       }
     }
-    "stdout_write_char" => {
+    "Stdout::write_char" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "stdout_write_char")
+      let pos_args = extract_positional_values(out.args, "Stdout::write_char")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="stdout_write_char", detail="bad call"),
+          BuiltinDetail(fn_name="Stdout::write_char", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -2317,16 +2316,16 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="stdout_write_char", detail="bad call"),
+            BuiltinDetail(fn_name="Stdout::write_char", detail="bad call"),
           )
       }
     }
-    "stdin_read_char" => {
+    "Stdin::read_char" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "stdin_read_char")
+      let pos_args = extract_positional_values(out.args, "Stdin::read_char")
       if pos_args.length() != 0 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="stdin_read_char", detail="bad call"),
+          BuiltinDetail(fn_name="Stdin::read_char", detail="bad call"),
         )
       }
       let code = -1
@@ -2334,12 +2333,12 @@ fn eval_builtin_call(
       effects.push(Effect::StdinReadChar(code))
       { value: @core.Value::Int(code.to_int64()), effects }
     }
-    "stdout_write_stream" => {
+    "Stdout::write_stream" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "stdout_write_stream")
+      let pos_args = extract_positional_values(out.args, "Stdout::write_stream")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="stdout_write_stream", detail="bad call"),
+          BuiltinDetail(fn_name="Stdout::write_stream", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -2350,23 +2349,23 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="stdout_write_stream", detail="bad call"),
+            BuiltinDetail(fn_name="Stdout::write_stream", detail="bad call"),
           )
       }
     }
-    "stdin_read_stream" => {
+    "Stdin::read_stream" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "stdin_read_stream")
+      let pos_args = extract_positional_values(out.args, "Stdin::read_stream")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="stdin_read_stream", detail="bad call"),
+          BuiltinDetail(fn_name="Stdin::read_stream", detail="bad call"),
         )
       }
       match pos_args[0] {
         @core.Value::Int(len) => {
           if len < 0L {
             raise EvalError::BadCall(
-              BuiltinDetail(fn_name="stdin_read_stream", detail="bad call"),
+              BuiltinDetail(fn_name="Stdin::read_stream", detail="bad call"),
             )
           }
           let chunk = ""
@@ -2376,16 +2375,16 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="stdin_read_stream", detail="bad call"),
+            BuiltinDetail(fn_name="Stdin::read_stream", detail="bad call"),
           )
       }
     }
-    "fs_read_file" | "fs_read_string" => {
+    "Fs::read_file" | "Fs::read_string" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "fs_read_file")
+      let pos_args = extract_positional_values(out.args, "Fs::read_file")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="fs_read_file", detail="bad call"),
+          BuiltinDetail(fn_name="Fs::read_file", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -2398,21 +2397,21 @@ fn eval_builtin_call(
               { value: @core.Value::String(content), effects }
             }
             Err(err) =>
-              raise EvalError::BadCall(Io(op="fs_read_file", detail=err))
+              raise EvalError::BadCall(Io(op="Fs::read_file", detail=err))
           }
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="fs_read_file", detail="bad call"),
+            BuiltinDetail(fn_name="Fs::read_file", detail="bad call"),
           )
       }
     }
-    "fs_write_file" | "fs_write_string" => {
+    "Fs::write_file" | "Fs::write_string" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "fs_write_file")
+      let pos_args = extract_positional_values(out.args, "Fs::write_file")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="fs_write_file", detail="bad call"),
+          BuiltinDetail(fn_name="Fs::write_file", detail="bad call"),
         )
       }
       match (pos_args[0], pos_args[1]) {
@@ -2425,21 +2424,21 @@ fn eval_builtin_call(
               { value: @core.Value::Unit, effects }
             }
             Err(err) =>
-              raise EvalError::BadCall(Io(op="fs_write_file", detail=err))
+              raise EvalError::BadCall(Io(op="Fs::write_file", detail=err))
           }
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="fs_write_file", detail="bad call"),
+            BuiltinDetail(fn_name="Fs::write_file", detail="bad call"),
           )
       }
     }
-    "fs_exists" => {
+    "Fs::exists" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "fs_exists")
+      let pos_args = extract_positional_values(out.args, "Fs::exists")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="fs_exists", detail="bad call"),
+          BuiltinDetail(fn_name="Fs::exists", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -2452,16 +2451,16 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="fs_exists", detail="bad call"),
+            BuiltinDetail(fn_name="Fs::exists", detail="bad call"),
           )
       }
     }
-    "fs_readdir" => {
+    "Fs::readdir" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "fs_readdir")
+      let pos_args = extract_positional_values(out.args, "Fs::readdir")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="fs_readdir", detail="bad call"),
+          BuiltinDetail(fn_name="Fs::readdir", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -2481,21 +2480,21 @@ fn eval_builtin_call(
               { value: @core.Value::Array(values), effects }
             }
             Err(err) =>
-              raise EvalError::BadCall(Io(op="fs_readdir", detail=err))
+              raise EvalError::BadCall(Io(op="Fs::readdir", detail=err))
           }
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="fs_readdir", detail="bad call"),
+            BuiltinDetail(fn_name="Fs::readdir", detail="bad call"),
           )
       }
     }
-    "fs_is_dir" => {
+    "Fs::is_dir" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "fs_is_dir")
+      let pos_args = extract_positional_values(out.args, "Fs::is_dir")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="fs_is_dir", detail="bad call"),
+          BuiltinDetail(fn_name="Fs::is_dir", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -2511,16 +2510,16 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="fs_is_dir", detail="bad call"),
+            BuiltinDetail(fn_name="Fs::is_dir", detail="bad call"),
           )
       }
     }
-    "fs_mkdir" => {
+    "Fs::mkdir" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "fs_mkdir")
+      let pos_args = extract_positional_values(out.args, "Fs::mkdir")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="fs_mkdir", detail="bad call"),
+          BuiltinDetail(fn_name="Fs::mkdir", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -2535,21 +2534,21 @@ fn eval_builtin_call(
               effects.push(Effect::FsMkdir(resolved))
               { value: @core.Value::Unit, effects }
             }
-            Err(err) => raise EvalError::BadCall(Io(op="fs_mkdir", detail=err))
+            Err(err) => raise EvalError::BadCall(Io(op="Fs::mkdir", detail=err))
           }
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="fs_mkdir", detail="bad call"),
+            BuiltinDetail(fn_name="Fs::mkdir", detail="bad call"),
           )
       }
     }
-    "fs_mkdir_p" => {
+    "Fs::mkdir_p" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "fs_mkdir_p")
+      let pos_args = extract_positional_values(out.args, "Fs::mkdir_p")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="fs_mkdir_p", detail="bad call"),
+          BuiltinDetail(fn_name="Fs::mkdir_p", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -2565,28 +2564,28 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="fs_mkdir_p", detail="bad call"),
+            BuiltinDetail(fn_name="Fs::mkdir_p", detail="bad call"),
           )
       }
     }
-    "fs_getcwd" => {
+    "Fs::getcwd" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "fs_getcwd")
+      let pos_args = extract_positional_values(out.args, "Fs::getcwd")
       if pos_args.length() != 0 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="fs_getcwd", detail="bad call"),
+          BuiltinDetail(fn_name="Fs::getcwd", detail="bad call"),
         )
       }
       let effects = out.effects
       effects.push(Effect::FsGetCwd(rt.cwd))
       { value: @core.Value::String(rt.cwd), effects }
     }
-    "fs_chdir" => {
+    "Fs::chdir" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "fs_chdir")
+      let pos_args = extract_positional_values(out.args, "Fs::chdir")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="fs_chdir", detail="bad call"),
+          BuiltinDetail(fn_name="Fs::chdir", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -2602,16 +2601,16 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="fs_chdir", detail="bad call"),
+            BuiltinDetail(fn_name="Fs::chdir", detail="bad call"),
           )
       }
     }
-    "fs_remove" => {
+    "Fs::remove" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "fs_remove")
+      let pos_args = extract_positional_values(out.args, "Fs::remove")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="fs_remove", detail="bad call"),
+          BuiltinDetail(fn_name="Fs::remove", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -2624,17 +2623,17 @@ fn eval_builtin_call(
             match @io.remove_file(resolved) {
               Ok(_) => ()
               Err(err) =>
-                raise EvalError::BadCall(Io(op="fs_remove", detail=err))
+                raise EvalError::BadCall(Io(op="Fs::remove", detail=err))
             }
           } else if @io.is_directory(resolved) {
             match @io.remove_dir(resolved) {
               Ok(_) => ()
               Err(err) =>
-                raise EvalError::BadCall(Io(op="fs_remove", detail=err))
+                raise EvalError::BadCall(Io(op="Fs::remove", detail=err))
             }
           } else {
             raise EvalError::BadCall(
-              Io(op="fs_remove", detail="not found: " + resolved),
+              Io(op="Fs::remove", detail="not found: " + resolved),
             )
           }
           let effects = out.effects
@@ -2643,16 +2642,16 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="fs_remove", detail="bad call"),
+            BuiltinDetail(fn_name="Fs::remove", detail="bad call"),
           )
       }
     }
-    "fs_is_file" => {
+    "Fs::is_file" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "fs_is_file")
+      let pos_args = extract_positional_values(out.args, "Fs::is_file")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="fs_is_file", detail="bad call"),
+          BuiltinDetail(fn_name="Fs::is_file", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -2668,16 +2667,16 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="fs_is_file", detail="bad call"),
+            BuiltinDetail(fn_name="Fs::is_file", detail="bad call"),
           )
       }
     }
-    "fs_copy" => {
+    "Fs::copy" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "fs_copy")
+      let pos_args = extract_positional_values(out.args, "Fs::copy")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="fs_copy", detail="bad call"),
+          BuiltinDetail(fn_name="Fs::copy", detail="bad call"),
         )
       }
       match (pos_args[0], pos_args[1]) {
@@ -2695,9 +2694,9 @@ fn eval_builtin_call(
               match @io.write_string(resolved_dst, content) {
                 Ok(_) => ()
                 Err(err) =>
-                  raise EvalError::BadCall(Io(op="fs_copy", detail=err))
+                  raise EvalError::BadCall(Io(op="Fs::copy", detail=err))
               }
-            Err(err) => raise EvalError::BadCall(Io(op="fs_copy", detail=err))
+            Err(err) => raise EvalError::BadCall(Io(op="Fs::copy", detail=err))
           }
           let effects = out.effects
           effects.push(Effect::FsCopy(resolved_src, resolved_dst))
@@ -2705,16 +2704,16 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="fs_copy", detail="bad call"),
+            BuiltinDetail(fn_name="Fs::copy", detail="bad call"),
           )
       }
     }
-    "fs_rename" => {
+    "Fs::rename" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "fs_rename")
+      let pos_args = extract_positional_values(out.args, "Fs::rename")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="fs_rename", detail="bad call"),
+          BuiltinDetail(fn_name="Fs::rename", detail="bad call"),
         )
       }
       match (pos_args[0], pos_args[1]) {
@@ -2735,15 +2734,16 @@ fn eval_builtin_call(
               match @io.write_string(resolved_new, content) {
                 Ok(_) => ()
                 Err(err) =>
-                  raise EvalError::BadCall(Io(op="fs_rename", detail=err))
+                  raise EvalError::BadCall(Io(op="Fs::rename", detail=err))
               }
               match @io.remove_file(resolved_old) {
                 Ok(_) => ()
                 Err(err) =>
-                  raise EvalError::BadCall(Io(op="fs_rename", detail=err))
+                  raise EvalError::BadCall(Io(op="Fs::rename", detail=err))
               }
             }
-            Err(err) => raise EvalError::BadCall(Io(op="fs_rename", detail=err))
+            Err(err) =>
+              raise EvalError::BadCall(Io(op="Fs::rename", detail=err))
           }
           let effects = out.effects
           effects.push(Effect::FsRename(resolved_old, resolved_new))
@@ -2751,16 +2751,16 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="fs_rename", detail="bad call"),
+            BuiltinDetail(fn_name="Fs::rename", detail="bad call"),
           )
       }
     }
-    "fs_append" => {
+    "Fs::append" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "fs_append")
+      let pos_args = extract_positional_values(out.args, "Fs::append")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="fs_append", detail="bad call"),
+          BuiltinDetail(fn_name="Fs::append", detail="bad call"),
         )
       }
       match (pos_args[0], pos_args[1]) {
@@ -2773,7 +2773,7 @@ fn eval_builtin_call(
             match @io.read_string(resolved) {
               Ok(s) => s
               Err(err) =>
-                raise EvalError::BadCall(Io(op="fs_append", detail=err))
+                raise EvalError::BadCall(Io(op="Fs::append", detail=err))
             }
           } else {
             ""
@@ -2781,7 +2781,8 @@ fn eval_builtin_call(
           let new_content = existing + content
           match @io.write_string(resolved, new_content) {
             Ok(_) => ()
-            Err(err) => raise EvalError::BadCall(Io(op="fs_append", detail=err))
+            Err(err) =>
+              raise EvalError::BadCall(Io(op="Fs::append", detail=err))
           }
           let effects = out.effects
           effects.push(Effect::FsAppend(resolved, content))
@@ -2789,16 +2790,16 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="fs_append", detail="bad call"),
+            BuiltinDetail(fn_name="Fs::append", detail="bad call"),
           )
       }
     }
-    "env_get" => {
+    "Env::get" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "env_get")
+      let pos_args = extract_positional_values(out.args, "Env::get")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="env_get", detail="bad call"),
+          BuiltinDetail(fn_name="Env::get", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -2813,16 +2814,16 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="env_get", detail="bad call"),
+            BuiltinDetail(fn_name="Env::get", detail="bad call"),
           )
       }
     }
-    "socket_tcp_connect" => {
+    "Socket::tcp_connect" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "socket_tcp_connect")
+      let pos_args = extract_positional_values(out.args, "Socket::tcp_connect")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="socket_tcp_connect", detail="bad call"),
+          BuiltinDetail(fn_name="Socket::tcp_connect", detail="bad call"),
         )
       }
       match (pos_args[0], pos_args[1]) {
@@ -2840,21 +2841,21 @@ fn eval_builtin_call(
               { value: @core.Value::Int(fd64), effects }
             }
             Err(err) =>
-              raise EvalError::BadCall(Io(op="socket_tcp_connect", detail=err))
+              raise EvalError::BadCall(Io(op="Socket::tcp_connect", detail=err))
           }
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="socket_tcp_connect", detail="bad call"),
+            BuiltinDetail(fn_name="Socket::tcp_connect", detail="bad call"),
           )
       }
     }
-    "socket_tcp_read" => {
+    "Socket::tcp_read" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "socket_tcp_read")
+      let pos_args = extract_positional_values(out.args, "Socket::tcp_read")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="socket_tcp_read", detail="bad call"),
+          BuiltinDetail(fn_name="Socket::tcp_read", detail="bad call"),
         )
       }
       match (pos_args[0], pos_args[1]) {
@@ -2866,20 +2867,20 @@ fn eval_builtin_call(
               { value: @core.Value::String(data), effects }
             }
             Err(err) =>
-              raise EvalError::BadCall(Io(op="socket_tcp_read", detail=err))
+              raise EvalError::BadCall(Io(op="Socket::tcp_read", detail=err))
           }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="socket_tcp_read", detail="bad call"),
+            BuiltinDetail(fn_name="Socket::tcp_read", detail="bad call"),
           )
       }
     }
-    "socket_tcp_write" => {
+    "Socket::tcp_write" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "socket_tcp_write")
+      let pos_args = extract_positional_values(out.args, "Socket::tcp_write")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="socket_tcp_write", detail="bad call"),
+          BuiltinDetail(fn_name="Socket::tcp_write", detail="bad call"),
         )
       }
       match (pos_args[0], pos_args[1]) {
@@ -2891,20 +2892,20 @@ fn eval_builtin_call(
               { value: @core.Value::Unit, effects }
             }
             Err(err) =>
-              raise EvalError::BadCall(Io(op="socket_tcp_write", detail=err))
+              raise EvalError::BadCall(Io(op="Socket::tcp_write", detail=err))
           }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="socket_tcp_write", detail="bad call"),
+            BuiltinDetail(fn_name="Socket::tcp_write", detail="bad call"),
           )
       }
     }
-    "socket_tcp_close" => {
+    "Socket::tcp_close" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "socket_tcp_close")
+      let pos_args = extract_positional_values(out.args, "Socket::tcp_close")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="socket_tcp_close", detail="bad call"),
+          BuiltinDetail(fn_name="Socket::tcp_close", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -2916,49 +2917,49 @@ fn eval_builtin_call(
               { value: @core.Value::Unit, effects }
             }
             Err(err) =>
-              raise EvalError::BadCall(Io(op="socket_tcp_close", detail=err))
+              raise EvalError::BadCall(Io(op="Socket::tcp_close", detail=err))
           }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="socket_tcp_close", detail="bad call"),
+            BuiltinDetail(fn_name="Socket::tcp_close", detail="bad call"),
           )
       }
     }
     // --- HTTP Client builtins ---
-    "http_request" => {
+    "Http::request" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "http_request")
+      let pos_args = extract_positional_values(out.args, "Http::request")
       if pos_args.length() != 4 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="http_request", detail="bad call"),
+          BuiltinDetail(fn_name="Http::request", detail="bad call"),
         )
       }
       let meth = match pos_args[0] {
         @core.Value::String(s) => s
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="http_request", detail="bad call"),
+            BuiltinDetail(fn_name="Http::request", detail="bad call"),
           )
       }
       let url = match pos_args[1] {
         @core.Value::String(s) => s
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="http_request", detail="bad call"),
+            BuiltinDetail(fn_name="Http::request", detail="bad call"),
           )
       }
       let headers = match pos_args[2] {
         @core.Value::String(s) => s
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="http_request", detail="bad call"),
+            BuiltinDetail(fn_name="Http::request", detail="bad call"),
           )
       }
       let body = match pos_args[3] {
         @core.Value::String(s) => s
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="http_request", detail="bad call"),
+            BuiltinDetail(fn_name="Http::request", detail="bad call"),
           )
       }
       let (connect_host, connect_port) = match parse_http_connect_target(url) {
@@ -2966,7 +2967,7 @@ fn eval_builtin_call(
         None =>
           raise EvalError::BadCall(
             Io(
-              op="http_request",
+              op="Http::request",
               detail="invalid URL for network capability check: " + url,
             ),
           )
@@ -2983,15 +2984,18 @@ fn eval_builtin_call(
           effects.push(Effect::HttpRequest(meth, url, headers, body, h64))
           { value: @core.Value::Int(h64), effects }
         }
-        Err(err) => raise EvalError::BadCall(Io(op="http_request", detail=err))
+        Err(err) => raise EvalError::BadCall(Io(op="Http::request", detail=err))
       }
     }
-    "http_response_status" => {
+    "Http::response_status" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "http_response_status")
+      let pos_args = extract_positional_values(
+        out.args,
+        "Http::response_status",
+      )
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="http_response_status", detail="bad call"),
+          BuiltinDetail(fn_name="Http::response_status", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -3007,22 +3011,25 @@ fn eval_builtin_call(
             }
             Err(err) =>
               raise EvalError::BadCall(
-                Io(op="http_response_status", detail=err),
+                Io(op="Http::response_status", detail=err),
               )
           }
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="http_response_status", detail="bad call"),
+            BuiltinDetail(fn_name="Http::response_status", detail="bad call"),
           )
       }
     }
-    "http_response_header" => {
+    "Http::response_header" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "http_response_header")
+      let pos_args = extract_positional_values(
+        out.args,
+        "Http::response_header",
+      )
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="http_response_header", detail="bad call"),
+          BuiltinDetail(fn_name="Http::response_header", detail="bad call"),
         )
       }
       match (pos_args[0], pos_args[1]) {
@@ -3040,22 +3047,22 @@ fn eval_builtin_call(
             }
             Err(err) =>
               raise EvalError::BadCall(
-                Io(op="http_response_header", detail=err),
+                Io(op="Http::response_header", detail=err),
               )
           }
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="http_response_header", detail="bad call"),
+            BuiltinDetail(fn_name="Http::response_header", detail="bad call"),
           )
       }
     }
-    "http_response_body" => {
+    "Http::response_body" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "http_response_body")
+      let pos_args = extract_positional_values(out.args, "Http::response_body")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="http_response_body", detail="bad call"),
+          BuiltinDetail(fn_name="Http::response_body", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -3070,21 +3077,21 @@ fn eval_builtin_call(
               { value: @core.Value::String(body), effects }
             }
             Err(err) =>
-              raise EvalError::BadCall(Io(op="http_response_body", detail=err))
+              raise EvalError::BadCall(Io(op="Http::response_body", detail=err))
           }
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="http_response_body", detail="bad call"),
+            BuiltinDetail(fn_name="Http::response_body", detail="bad call"),
           )
       }
     }
-    "http_close" => {
+    "Http::close" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "http_close")
+      let pos_args = extract_positional_values(out.args, "Http::close")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="http_close", detail="bad call"),
+          BuiltinDetail(fn_name="Http::close", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -3099,22 +3106,22 @@ fn eval_builtin_call(
               { value: @core.Value::Unit, effects }
             }
             Err(err) =>
-              raise EvalError::BadCall(Io(op="http_close", detail=err))
+              raise EvalError::BadCall(Io(op="Http::close", detail=err))
           }
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="http_close", detail="bad call"),
+            BuiltinDetail(fn_name="Http::close", detail="bad call"),
           )
       }
     }
     // --- HTTP Server builtins ---
-    "http_listen" => {
+    "Http::listen" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "http_listen")
+      let pos_args = extract_positional_values(out.args, "Http::listen")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="http_listen", detail="bad call"),
+          BuiltinDetail(fn_name="Http::listen", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -3130,21 +3137,21 @@ fn eval_builtin_call(
               { value: @core.Value::Int(h64), effects }
             }
             Err(err) =>
-              raise EvalError::BadCall(Io(op="http_listen", detail=err))
+              raise EvalError::BadCall(Io(op="Http::listen", detail=err))
           }
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="http_listen", detail="bad call"),
+            BuiltinDetail(fn_name="Http::listen", detail="bad call"),
           )
       }
     }
-    "http_accept" => {
+    "Http::accept" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "http_accept")
+      let pos_args = extract_positional_values(out.args, "Http::accept")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="http_accept", detail="bad call"),
+          BuiltinDetail(fn_name="Http::accept", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -3160,21 +3167,21 @@ fn eval_builtin_call(
               { value: @core.Value::Int(rh64), effects }
             }
             Err(err) =>
-              raise EvalError::BadCall(Io(op="http_accept", detail=err))
+              raise EvalError::BadCall(Io(op="Http::accept", detail=err))
           }
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="http_accept", detail="bad call"),
+            BuiltinDetail(fn_name="Http::accept", detail="bad call"),
           )
       }
     }
-    "http_request_method" => {
+    "Http::request_method" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "http_request_method")
+      let pos_args = extract_positional_values(out.args, "Http::request_method")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="http_request_method", detail="bad call"),
+          BuiltinDetail(fn_name="Http::request_method", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -3189,21 +3196,23 @@ fn eval_builtin_call(
               { value: @core.Value::String(meth), effects }
             }
             Err(err) =>
-              raise EvalError::BadCall(Io(op="http_request_method", detail=err))
+              raise EvalError::BadCall(
+                Io(op="Http::request_method", detail=err),
+              )
           }
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="http_request_method", detail="bad call"),
+            BuiltinDetail(fn_name="Http::request_method", detail="bad call"),
           )
       }
     }
-    "http_request_url" => {
+    "Http::request_url" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "http_request_url")
+      let pos_args = extract_positional_values(out.args, "Http::request_url")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="http_request_url", detail="bad call"),
+          BuiltinDetail(fn_name="Http::request_url", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -3218,21 +3227,21 @@ fn eval_builtin_call(
               { value: @core.Value::String(url), effects }
             }
             Err(err) =>
-              raise EvalError::BadCall(Io(op="http_request_url", detail=err))
+              raise EvalError::BadCall(Io(op="Http::request_url", detail=err))
           }
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="http_request_url", detail="bad call"),
+            BuiltinDetail(fn_name="Http::request_url", detail="bad call"),
           )
       }
     }
-    "http_request_header" => {
+    "Http::request_header" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "http_request_header")
+      let pos_args = extract_positional_values(out.args, "Http::request_header")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="http_request_header", detail="bad call"),
+          BuiltinDetail(fn_name="Http::request_header", detail="bad call"),
         )
       }
       match (pos_args[0], pos_args[1]) {
@@ -3247,21 +3256,23 @@ fn eval_builtin_call(
               { value: @core.Value::String(hdr_val), effects }
             }
             Err(err) =>
-              raise EvalError::BadCall(Io(op="http_request_header", detail=err))
+              raise EvalError::BadCall(
+                Io(op="Http::request_header", detail=err),
+              )
           }
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="http_request_header", detail="bad call"),
+            BuiltinDetail(fn_name="Http::request_header", detail="bad call"),
           )
       }
     }
-    "http_request_body" => {
+    "Http::request_body" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "http_request_body")
+      let pos_args = extract_positional_values(out.args, "Http::request_body")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="http_request_body", detail="bad call"),
+          BuiltinDetail(fn_name="Http::request_body", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -3276,49 +3287,49 @@ fn eval_builtin_call(
               { value: @core.Value::String(body), effects }
             }
             Err(err) =>
-              raise EvalError::BadCall(Io(op="http_request_body", detail=err))
+              raise EvalError::BadCall(Io(op="Http::request_body", detail=err))
           }
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="http_request_body", detail="bad call"),
+            BuiltinDetail(fn_name="Http::request_body", detail="bad call"),
           )
       }
     }
-    "http_respond" => {
+    "Http::respond" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "http_respond")
+      let pos_args = extract_positional_values(out.args, "Http::respond")
       if pos_args.length() != 4 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="http_respond", detail="bad call"),
+          BuiltinDetail(fn_name="Http::respond", detail="bad call"),
         )
       }
       let handle = match pos_args[0] {
         @core.Value::Int(v) => v
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="http_respond", detail="bad call"),
+            BuiltinDetail(fn_name="Http::respond", detail="bad call"),
           )
       }
       let status = match pos_args[1] {
         @core.Value::Int(v) => v
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="http_respond", detail="bad call"),
+            BuiltinDetail(fn_name="Http::respond", detail="bad call"),
           )
       }
       let headers = match pos_args[2] {
         @core.Value::String(s) => s
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="http_respond", detail="bad call"),
+            BuiltinDetail(fn_name="Http::respond", detail="bad call"),
           )
       }
       let body = match pos_args[3] {
         @core.Value::String(s) => s
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="http_respond", detail="bad call"),
+            BuiltinDetail(fn_name="Http::respond", detail="bad call"),
           )
       }
       if not(rt.caps().can_listen_any()) {
@@ -3333,15 +3344,15 @@ fn eval_builtin_call(
           )
           { value: @core.Value::Unit, effects }
         }
-        Err(err) => raise EvalError::BadCall(Io(op="http_respond", detail=err))
+        Err(err) => raise EvalError::BadCall(Io(op="Http::respond", detail=err))
       }
     }
-    "llm_complete" => {
+    "Llm::complete" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "llm_complete")
+      let pos_args = extract_positional_values(out.args, "Llm::complete")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="llm_complete", detail="bad call"),
+          BuiltinDetail(fn_name="Llm::complete", detail="bad call"),
         )
       }
       let system = match pos_args[0] {
@@ -3349,7 +3360,7 @@ fn eval_builtin_call(
         @core.Value::PromptText(pt) => pt.as_string()
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="llm_complete", detail="bad call"),
+            BuiltinDetail(fn_name="Llm::complete", detail="bad call"),
           )
       }
       let user = match pos_args[1] {
@@ -3357,14 +3368,14 @@ fn eval_builtin_call(
         @core.Value::PromptText(pt) => pt.as_string()
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="llm_complete", detail="bad call"),
+            BuiltinDetail(fn_name="Llm::complete", detail="bad call"),
           )
       }
       let config = match LlmConfig::from_env() {
         Some(c) => c
         None =>
           raise EvalError::BadCall(
-            E("llm_complete: VIBE_LLM_PROVIDER env var not set"),
+            E("Llm::complete: VIBE_LLM_PROVIDER env var not set"),
           )
       }
       if not(rt.caps().can_call_llm(config.model)) {
@@ -3381,12 +3392,12 @@ fn eval_builtin_call(
       )
       { value: @core.Value::String(response), effects }
     }
-    "rlm_run" => {
+    "Rlm::run" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "rlm_run")
+      let pos_args = extract_positional_values(out.args, "Rlm::run")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="rlm_run", detail="bad call"),
+          BuiltinDetail(fn_name="Rlm::run", detail="bad call"),
         )
       }
       let task = match pos_args[0] {
@@ -3394,7 +3405,7 @@ fn eval_builtin_call(
         @core.Value::PromptText(pt) => pt.as_string()
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="rlm_run", detail="bad call"),
+            BuiltinDetail(fn_name="Rlm::run", detail="bad call"),
           )
       }
       let prompt = match pos_args[1] {
@@ -3402,7 +3413,7 @@ fn eval_builtin_call(
         @core.Value::PromptText(pt) => pt.as_string()
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="rlm_run", detail="bad call"),
+            BuiltinDetail(fn_name="Rlm::run", detail="bad call"),
           )
       }
       let budget = RlmBudget::default()
@@ -3419,12 +3430,12 @@ fn eval_builtin_call(
       )
       { value: @core.Value::String(result), effects }
     }
-    "rlm_finalize" => {
+    "Rlm::finalize" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "rlm_finalize")
+      let pos_args = extract_positional_values(out.args, "Rlm::finalize")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="rlm_finalize", detail="bad call"),
+          BuiltinDetail(fn_name="Rlm::finalize", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -3432,7 +3443,7 @@ fn eval_builtin_call(
           { value: @core.Value::String(s), effects: out.effects }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="rlm_finalize", detail="bad call"),
+            BuiltinDetail(fn_name="Rlm::finalize", detail="bad call"),
           )
       }
     }
@@ -3459,22 +3470,22 @@ fn eval_builtin_call(
           )
       }
     }
-    "string_builder" => {
+    "StringBuilder::new" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "string_builder")
+      let pos_args = extract_positional_values(out.args, "StringBuilder::new")
       if pos_args.length() != 0 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="string_builder", detail="bad call"),
+          BuiltinDetail(fn_name="StringBuilder::new", detail="bad call"),
         )
       }
       { value: @core.Value::StringBuilder([]), effects: out.effects }
     }
-    "string_builder_push" => {
+    "StringBuilder::push" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "string_builder_push")
+      let pos_args = extract_positional_values(out.args, "StringBuilder::push")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="string_builder_push", detail="bad call"),
+          BuiltinDetail(fn_name="StringBuilder::push", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -3486,24 +3497,24 @@ fn eval_builtin_call(
             }
             _ =>
               raise EvalError::BadCall(
-                BuiltinDetail(fn_name="string_builder_push", detail="bad call"),
+                BuiltinDetail(fn_name="StringBuilder::push", detail="bad call"),
               )
           }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="string_builder_push", detail="bad call"),
+            BuiltinDetail(fn_name="StringBuilder::push", detail="bad call"),
           )
       }
     }
-    "string_builder_freeze" => {
+    "StringBuilder::freeze" => {
       let out = eval_args(rt, args)
       let pos_args = extract_positional_values(
         out.args,
-        "string_builder_freeze",
+        "StringBuilder::freeze",
       )
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="string_builder_freeze", detail="bad call"),
+          BuiltinDetail(fn_name="StringBuilder::freeze", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -3516,26 +3527,26 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="string_builder_freeze", detail="bad call"),
+            BuiltinDetail(fn_name="StringBuilder::freeze", detail="bad call"),
           )
       }
     }
-    "bytes_new" => {
+    "Bytes::new" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "bytes_new")
+      let pos_args = extract_positional_values(out.args, "Bytes::new")
       if pos_args.length() != 0 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="bytes_new", detail="bad call"),
+          BuiltinDetail(fn_name="Bytes::new", detail="bad call"),
         )
       }
       { value: @core.Value::Bytes([]), effects: out.effects }
     }
-    "bytes_push" => {
+    "Bytes::push" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "bytes_push")
+      let pos_args = extract_positional_values(out.args, "Bytes::push")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="bytes_push", detail="bad call"),
+          BuiltinDetail(fn_name="Bytes::push", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -3547,21 +3558,21 @@ fn eval_builtin_call(
             }
             _ =>
               raise EvalError::BadCall(
-                BuiltinDetail(fn_name="bytes_push", detail="bad call"),
+                BuiltinDetail(fn_name="Bytes::push", detail="bad call"),
               )
           }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="bytes_push", detail="bad call"),
+            BuiltinDetail(fn_name="Bytes::push", detail="bad call"),
           )
       }
     }
-    "bytes_set" => {
+    "Bytes::set" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "bytes_set")
+      let pos_args = extract_positional_values(out.args, "Bytes::set")
       if pos_args.length() != 3 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="bytes_set", detail="bad call"),
+          BuiltinDetail(fn_name="Bytes::set", detail="bad call"),
         )
       }
       match (pos_args[0], pos_args[1], pos_args[2]) {
@@ -3573,7 +3584,7 @@ fn eval_builtin_call(
           let i = index.to_int()
           if i < 0 || i >= data.length() {
             raise EvalError::BadCall(
-              BuiltinDetail(fn_name="bytes_set", detail="index out of bounds"),
+              BuiltinDetail(fn_name="Bytes::set", detail="index out of bounds"),
             )
           }
           data[i] = val.to_int().to_byte()
@@ -3581,26 +3592,26 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="bytes_set", detail="bad call"),
+            BuiltinDetail(fn_name="Bytes::set", detail="bad call"),
           )
       }
     }
-    "array_builder" => {
+    "ArrayBuilder::new" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "array_builder")
+      let pos_args = extract_positional_values(out.args, "ArrayBuilder::new")
       if pos_args.length() != 0 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="array_builder", detail="bad call"),
+          BuiltinDetail(fn_name="ArrayBuilder::new", detail="bad call"),
         )
       }
       { value: @core.Value::ArrayBuilder([]), effects: out.effects }
     }
-    "array_builder_push" => {
+    "ArrayBuilder::push" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "array_builder_push")
+      let pos_args = extract_positional_values(out.args, "ArrayBuilder::push")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="array_builder_push", detail="bad call"),
+          BuiltinDetail(fn_name="ArrayBuilder::push", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -3610,16 +3621,16 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="array_builder_push", detail="bad call"),
+            BuiltinDetail(fn_name="ArrayBuilder::push", detail="bad call"),
           )
       }
     }
-    "array_builder_freeze" => {
+    "ArrayBuilder::freeze" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "array_builder_freeze")
+      let pos_args = extract_positional_values(out.args, "ArrayBuilder::freeze")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="array_builder_freeze", detail="bad call"),
+          BuiltinDetail(fn_name="ArrayBuilder::freeze", detail="bad call"),
         )
       }
       match pos_args[0] {
@@ -3629,7 +3640,7 @@ fn eval_builtin_call(
         }
         _ =>
           raise EvalError::BadCall(
-            BuiltinDetail(fn_name="array_builder_freeze", detail="bad call"),
+            BuiltinDetail(fn_name="ArrayBuilder::freeze", detail="bad call"),
           )
       }
     }
@@ -3681,12 +3692,12 @@ fn eval_builtin_call(
           )
       }
     }
-    "array_push" => {
+    "Array::push" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "array_push")
+      let pos_args = extract_positional_values(out.args, "Array::push")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="array_push", detail="expected 2 arguments"),
+          BuiltinDetail(fn_name="Array::push", detail="expected 2 arguments"),
         )
       }
       match pos_args[0] {
@@ -3697,18 +3708,18 @@ fn eval_builtin_call(
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(
-              fn_name="array_push",
+              fn_name="Array::push",
               detail="expected Array, got " + value_type_name(pos_args[0]),
             ),
           )
       }
     }
-    "array_set" => {
+    "Array::set" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "array_set")
+      let pos_args = extract_positional_values(out.args, "Array::set")
       if pos_args.length() != 3 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="array_set", detail="expected 3 arguments"),
+          BuiltinDetail(fn_name="Array::set", detail="expected 3 arguments"),
         )
       }
       match (pos_args[0], pos_args[1]) {
@@ -3717,7 +3728,7 @@ fn eval_builtin_call(
           if i < 0 || i >= arr.length() {
             raise EvalError::BadCall(
               BuiltinDetail(
-                fn_name="array_set",
+                fn_name="Array::set",
                 detail="index " +
                   i.to_string() +
                   " out of bounds (length " +
@@ -3732,18 +3743,21 @@ fn eval_builtin_call(
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(
-              fn_name="array_set",
+              fn_name="Array::set",
               detail="expected (Array, Int, value)",
             ),
           )
       }
     }
-    "array_truncate" => {
+    "Array::truncate" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "array_truncate")
+      let pos_args = extract_positional_values(out.args, "Array::truncate")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="array_truncate", detail="expected 2 arguments"),
+          BuiltinDetail(
+            fn_name="Array::truncate",
+            detail="expected 2 arguments",
+          ),
         )
       }
       match (pos_args[0], pos_args[1]) {
@@ -3757,18 +3771,18 @@ fn eval_builtin_call(
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(
-              fn_name="array_truncate",
+              fn_name="Array::truncate",
               detail="expected (Array, Int)",
             ),
           )
       }
     }
-    "array_slice" => {
+    "Array::slice" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "array_slice")
+      let pos_args = extract_positional_values(out.args, "Array::slice")
       if pos_args.length() != 3 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="array_slice", detail="expected 3 arguments"),
+          BuiltinDetail(fn_name="Array::slice", detail="expected 3 arguments"),
         )
       }
       match (pos_args[0], pos_args[1], pos_args[2]) {
@@ -3790,18 +3804,18 @@ fn eval_builtin_call(
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(
-              fn_name="array_slice",
+              fn_name="Array::slice",
               detail="expected (Array, Int, Int)",
             ),
           )
       }
     }
-    "fs_read_bytes" => {
+    "Fs::read_bytes" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "fs_read_bytes")
+      let pos_args = extract_positional_values(out.args, "Fs::read_bytes")
       if pos_args.length() != 1 {
         raise EvalError::BadCall(
-          BuiltinDetail(fn_name="fs_read_bytes", detail="expected 1 argument"),
+          BuiltinDetail(fn_name="Fs::read_bytes", detail="expected 1 argument"),
         )
       }
       match pos_args[0] {
@@ -3810,7 +3824,7 @@ fn eval_builtin_call(
           if not(rt.caps().can_read(resolved)) {
             raise EvalError::BadCall(
               BuiltinDetail(
-                fn_name="fs_read_bytes",
+                fn_name="Fs::read_bytes",
                 detail="no read capability for " + resolved,
               ),
             )
@@ -3825,26 +3839,26 @@ fn eval_builtin_call(
             }
             Err(e) =>
               raise EvalError::BadCall(
-                BuiltinDetail(fn_name="fs_read_bytes", detail=e),
+                BuiltinDetail(fn_name="Fs::read_bytes", detail=e),
               )
           }
         }
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(
-              fn_name="fs_read_bytes",
+              fn_name="Fs::read_bytes",
               detail="expected String, got " + value_type_name(pos_args[0]),
             ),
           )
       }
     }
-    "fs_write_bytes" => {
+    "Fs::write_bytes" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "fs_write_bytes")
+      let pos_args = extract_positional_values(out.args, "Fs::write_bytes")
       if pos_args.length() != 2 {
         raise EvalError::BadCall(
           BuiltinDetail(
-            fn_name="fs_write_bytes",
+            fn_name="Fs::write_bytes",
             detail="expected 2 arguments (path, bytes)",
           ),
         )
@@ -3855,7 +3869,7 @@ fn eval_builtin_call(
           if not(rt.caps().can_write(resolved)) {
             raise EvalError::BadCall(
               BuiltinDetail(
-                fn_name="fs_write_bytes",
+                fn_name="Fs::write_bytes",
                 detail="no write capability for " + resolved,
               ),
             )
@@ -3865,14 +3879,14 @@ fn eval_builtin_call(
             Ok(_) => { value: @core.Value::Unit, effects: out.effects }
             Err(e) =>
               raise EvalError::BadCall(
-                BuiltinDetail(fn_name="fs_write_bytes", detail=e),
+                BuiltinDetail(fn_name="Fs::write_bytes", detail=e),
               )
           }
         }
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(
-              fn_name="fs_write_bytes",
+              fn_name="Fs::write_bytes",
               detail="expected (String, Bytes)",
             ),
           )

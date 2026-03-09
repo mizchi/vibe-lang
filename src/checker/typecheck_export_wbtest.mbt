@@ -23,14 +23,14 @@ test "typecheck keeps exported schemes for path wrapper module" {
     #|export struct PathRef { raw : String }
     #|export struct DynamicPath { raw : String }
     #|export let from_literal = (literal: String) -> PathRef {
-    #|  PathRef::{ raw: path_to_string(path_ref(literal)) }
+    #|  PathRef::{ raw: Path::to_string(Path::ref(literal)) }
     #|}
     #|export let dynamic = (raw: String) -> DynamicPath {
     #|  DynamicPath::{ raw: raw }
     #|}
     #|export let resolve = (path: DynamicPath) -> PathRef with {Env} {
     #|  {
-    #|    PathRef::{ raw: path_to_string(dynamic_path_resolve(path.raw)) }
+    #|    PathRef::{ raw: Path::to_string(Path::resolve(path.raw)) }
     #|  }
     #|}
   let ast = @parser.parse_ast(script)
@@ -50,23 +50,23 @@ test "typecheck keeps exported schemes for path wrapper module" {
 }
 
 ///|
-test "typecheck keeps exported schemes with array_builder local recursion" {
+test "typecheck keeps exported schemes with ArrayBuilder::new local recursion" {
   let script =
     #|export let build = (n: Int) -> Array[Int] {
     #|  let rec loop = (i: Int, b: ArrayBuilder[Int]) -> Array[Int] {
     #|    if i >= n {
     #|      {
-    #|        array_builder_freeze(b)
+    #|        ArrayBuilder::freeze(b)
     #|      }
     #|    } else {
     #|      {
-    #|        array_builder_push(b, i)
+    #|        ArrayBuilder::push(b, i)
     #|        loop(i + 1, b)
     #|      }
     #|    }
     #|  }
     #|  {
-    #|    loop(0, array_builder())
+    #|    loop(0, ArrayBuilder::new())
     #|  }
     #|}
   let ast = @parser.parse_ast(script)
@@ -81,27 +81,27 @@ test "typecheck keeps exported schemes with array_builder local recursion" {
 test "typecheck keeps exported schemes for threads runtime wrappers" {
   let script =
     #|export let recv = (channel: Int) -> String with { Threads } {
-    #|  threads_recv(channel)
+    #|  Threads::recv(channel)
     #|}
     #|export let send = (channel: Int, message: String) -> Bool with { Threads } {
-    #|  threads_send(channel, message)
+    #|  Threads::send(channel, message)
     #|}
     #|export let wait = (task: Int) -> Int with { Threads } {
-    #|  threads_wait(task)
+    #|  Threads::wait(task)
     #|}
     #|export let spawn = (name: String, mailbox: Int) -> Int with { Threads } {
     #|  {
-    #|    threads_spawn(name, mailbox)
+    #|    Threads::spawn(name, mailbox)
     #|  }
     #|}
     #|export let probe_wat = () -> String with { Threads } {
-    #|  threads_probe_wat()
+    #|  Threads::probe_wat()
     #|}
     #|export let channel_new = (capacity: Int) -> Int with { Threads } {
-    #|  threads_channel_new(capacity)
+    #|  Threads::channel_new(capacity)
     #|}
     #|export let runtime_hints = () -> Unit with { Threads } {
-    #|  let _ = threads_runtime_hints()
+    #|  let _ = Threads::runtime_hints()
     #|  if true {
     #|  } else {
     #|  }

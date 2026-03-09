@@ -7,33 +7,33 @@ let arr = [1, 2, 3]
 
 // Index access
 arr[0]           // => 1
-array_get(arr, 2) // => 3
+Array::get(arr, 2) // => 3
 
 // Length
-array_length(arr) // => 3
+Array::length(arr) // => 3
 
 // Iteration (returns collected array)
 for x in arr { x * 2 }   // => [2, 4, 6]
 
 // Higher-order functions (prelude) — collection-first, fn-last
-array_map(arr, x -> x * 2)            // => [2, 4, 6]
-array_filter(arr, (x: Int) -> Bool { x > 1 })  // => [2, 3]
-array_fold(arr, 0, _ + _)             // => 6
-array_any(arr, (x: Int) -> Bool { x > 2 })  // => true
-array_all(arr, (x: Int) -> Bool { x > 0 })  // => true
-array_find(arr, (x: Int) -> Bool { x > 1 }) // => Some(2) (None if not found)
+Array::map(arr, x -> x * 2)            // => [2, 4, 6]
+Array::filter(arr, (x: Int) -> Bool { x > 1 })  // => [2, 3]
+Array::fold(arr, 0, _ + _)             // => 6
+Array::any(arr, (x: Int) -> Bool { x > 2 })  // => true
+Array::all(arr, (x: Int) -> Bool { x > 0 })  // => true
+Array::find(arr, (x: Int) -> Bool { x > 1 }) // => Some(2) (None if not found)
 
 // Concat, reverse, sort, slice
-array_concat([1, 2], [3, 4])     // => [1, 2, 3, 4]
-array_reverse([1, 2, 3])         // => [3, 2, 1]
-array_sort([3, 1, 2])            // => [1, 2, 3]
-array_slice([10, 20, 30, 40], 1, 3) // => [20, 30]
+Array::concat([1, 2], [3, 4])     // => [1, 2, 3, 4]
+Array::reverse([1, 2, 3])         // => [3, 2, 1]
+Array::sort([3, 1, 2])            // => [1, 2, 3]
+Array::slice([10, 20, 30, 40], 1, 3) // => [20, 30]
 
-// Join (alias for string_join)
-array_join(["a", "b", "c"], ", ")  // => "a, b, c"
+// Join (alias for String::join)
+Array::join(["a", "b", "c"], ", ")  // => "a, b, c"
 
 // Generic — works with any type, not just numbers
-array_map(["hi", "there"], (s: String) -> String { string_to_upper(s) })
+Array::map(["hi", "there"], (s: String) -> String { String::to_upper(s) })
 // => ["HI", "THERE"]
 ```
 
@@ -41,10 +41,10 @@ array_map(["hi", "there"], (s: String) -> String { string_to_upper(s) })
 
 ```vibe
 let result = do {
-  let b = array_builder()
-  array_builder_push(b, 1)
-  array_builder_push(b, 2)
-  array_builder_freeze(b)
+  let b = ArrayBuilder::new()
+  ArrayBuilder::push(b, 1)
+  ArrayBuilder::push(b, 2)
+  ArrayBuilder::freeze(b)
 }
 // => [1, 2]
 ```
@@ -58,18 +58,18 @@ String-keyed dictionary.
 let m = map { a: 1, "b": 2 }
 
 // Access
-map_get(m, "a")     // => 1 (throws if key missing)
-map_get_or(m, "c", 0) // => 0 (safe, returns default)
+Map::get(m, "a")     // => 1 (throws if key missing)
+Map::get_or(m, "c", 0) // => 0 (safe, returns default)
 m["a"]              // => 1 (index syntax)
 
 // Query
-map_has_key(m, "a") // => true
-map_keys(m)         // => ["a", "b"]
-map_values(m)       // => [1, 2]
+Map::has_key(m, "a") // => true
+Map::keys(m)         // => ["a", "b"]
+Map::values(m)       // => [1, 2]
 
 // HOFs
-map_map(m, (v: Int) -> Int { v * 10 })       // => map { a: 10, b: 20 }
-map_filter(m, (v: Int) -> Bool { v > 1 })    // => map { b: 2 }
+Map::map(m, (v: Int) -> Int { v * 10 })       // => map { a: 10, b: 20 }
+Map::filter(m, (v: Int) -> Bool { v > 1 })    // => map { b: 2 }
 ```
 
 ### Map Builder
@@ -134,46 +134,46 @@ Parse, query, and serialize JSON data.
 
 ```vibe
 // Parse
-let data = from_json("{\"name\": \"vibe\", \"version\": 1}")
+let data = Json::parse("{\"name\": \"vibe\", \"version\": 1}")
 
 // Query
-json_type(data)              // => "object"
-json_get(data, "name")       // => Json
-json_string(json_get(data, "name"))  // => "vibe"
-json_number(json_get(data, "version")) // => 1.0
+Json::type_of(data)              // => "object"
+Json::get(data, "name")       // => Json
+Json::string(Json::get(data, "name"))  // => "vibe"
+Json::number(Json::get(data, "version")) // => 1.0
 
 // Array access
-let arr = from_json("[1, 2, 3]")
-json_index(arr, 0)           // => Json(1)
-json_length(arr)             // => 3
+let arr = Json::parse("[1, 2, 3]")
+Json::index(arr, 0)           // => Json(1)
+Json::length(arr)             // => 3
 
 // Type checks
-json_is_null(from_json("null"))  // => true
+Json::is_null(Json::parse("null"))  // => true
 
 // Object keys
-json_keys(data)              // => ["name", "version"]
+Json::keys(data)              // => ["name", "version"]
 
 // Serialize
-to_json(42)                  // => "42"
+Json::stringify(42)                  // => "42"
 
 // JSONL (newline-delimited JSON)
-from_jsonl("{\"a\":1}\n{\"b\":2}")  // => Array[Json]
+Json::parse_lines("{\"a\":1}\n{\"b\":2}")  // => Array[Json]
 ```
 
 ## String as Collection
 
 ```vibe
 // Length
-string_length("hello")       // => 5
+String::length("hello")       // => 5
 
 // Char access
-string_char_code_at("abc", 0) // => 97
+String::char_code_at("abc", 0) // => 97
 
 // Split / Join
-string_split("a,b,c", ",")   // => ["a", "b", "c"]
-string_join(["a", "b", "c"], ",") // => "a,b,c"
+String::split("a,b,c", ",")   // => ["a", "b", "c"]
+String::join(["a", "b", "c"], ",") // => "a,b,c"
 
 // Line operations
-from_lines("a\nb\nc")        // => ["a", "b", "c"]
-to_lines(["a", "b", "c"])    // => "a\nb\nc"
+Lines::parse("a\nb\nc")        // => ["a", "b", "c"]
+Lines::stringify(["a", "b", "c"])    // => "a\nb\nc"
 ```

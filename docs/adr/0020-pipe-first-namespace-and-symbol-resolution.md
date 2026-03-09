@@ -71,7 +71,7 @@ railway-oriented な記述規約を固定したい。
 
 例:
 
-- `map_set(m, key, value)` → `Map::set(m, key, value)`
+- `Map::set(m, key, value)` → `Map::set(m, key, value)`
 - pipe-first では `m |> Map::set(key, value)`
 
 このパターンは、collection / string / bytes など「型の所有操作」として読める API に
@@ -103,5 +103,5 @@ railway-oriented な記述規約を固定したい。
 - parser: `|>` 混在曖昧性の専用エラーコードと修正ヒント（括弧提案）を追加する
 - normalize/edit: 完全修飾シンボルから人間向け import へ再展開する規則を固定する
 - normalize/edit: 旧 free function 名から `Type::symbol` 正規形への rewrite 候補
-  （例: `map_set` -> `Map::set`）を段階的に追加する
+  （例: `Map::set` -> `Map::set`）を段階的に追加する
 - semver: 関数レベル semver とパッケージ semver の関係は別 ADR で定義する

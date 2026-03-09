@@ -566,13 +566,11 @@ fn parse_core_export_funcs(core_wasm : Bytes) -> Array[CoreExportFunc] {
               }
             }
             if type_idx >= 0 && type_idx < type_sigs.length() {
-              exports.push(
-                CoreExportFunc::{
-                  name,
-                  func_idx: index,
-                  sig: type_sigs[type_idx],
-                },
-              )
+              exports.push(CoreExportFunc::{
+                name,
+                func_idx: index,
+                sig: type_sigs[type_idx],
+              })
             }
           }
         }
@@ -1045,32 +1043,32 @@ fn scan_component_wit_imports_expr(
   match expr {
     @core.Expr::Call(name~, args~, ..) => {
       match name {
-        "path" | "path_ref" => acc.need_path = true
-        "dynamic_path_resolve" => acc.need_dynamic_path_resolve = true
+        "path" | "Path::ref" => acc.need_path = true
+        "Path::resolve" => acc.need_dynamic_path_resolve = true
         "sh" => acc.need_sh = true
         "sleep" => acc.need_sleep = true
-        "stdout_write_char" => acc.need_stdout_write_char = true
-        "stdout_write_stream" => acc.need_stdout_write_char = true
-        "stdin_read_char" => acc.need_stdin_read_char = true
-        "stdin_read_stream" => acc.need_stdin_read_char = true
-        "fs_read_file" | "fs_write_file" | "fs_write_bytes" | "fs_exists" =>
+        "Stdout::write_char" => acc.need_stdout_write_char = true
+        "Stdout::write_stream" => acc.need_stdout_write_char = true
+        "Stdin::read_char" => acc.need_stdin_read_char = true
+        "Stdin::read_stream" => acc.need_stdin_read_char = true
+        "Fs::read_file" | "Fs::write_file" | "Fs::write_bytes" | "Fs::exists" =>
           acc.need_fs = true
-        "socket_tcp_connect"
-        | "socket_tcp_read"
-        | "socket_tcp_write"
-        | "socket_tcp_close" => acc.need_socket = true
-        "http_request"
-        | "http_response_status"
-        | "http_response_header"
-        | "http_response_body"
-        | "http_close" => acc.need_http_client = true
-        "http_listen"
-        | "http_accept"
-        | "http_request_method"
-        | "http_request_url"
-        | "http_request_header"
-        | "http_request_body"
-        | "http_respond" => acc.need_http_handler = true
+        "Socket::tcp_connect"
+        | "Socket::tcp_read"
+        | "Socket::tcp_write"
+        | "Socket::tcp_close" => acc.need_socket = true
+        "Http::request"
+        | "Http::response_status"
+        | "Http::response_header"
+        | "Http::response_body"
+        | "Http::close" => acc.need_http_client = true
+        "Http::listen"
+        | "Http::accept"
+        | "Http::request_method"
+        | "Http::request_url"
+        | "Http::request_header"
+        | "Http::request_body"
+        | "Http::respond" => acc.need_http_handler = true
         _ => ()
       }
       for arg in args {
@@ -1249,12 +1247,13 @@ fn emit_alias_section(
 /// Uses cabi_realloc to allocate vibe heap objects, then writes obj_string header + copies bytes.
 /// Imports: "env"."target_func" (i64,...)->i64, "env"."cabi_realloc" (i32,i32,i32,i32)->i32, "env"."memory"
 /// Exports: "canon_func" (i32, i32, ...) -> i64
-fn generate_string_trampoline_module(
-  string_param_count : Int,
-) -> Bytes {
+fn generate_string_trampoline_module(string_param_count : Int) -> Bytes {
   let buf : Array[Byte] = []
   // Magic + version
-  for b in [b'\x00', b'\x61', b'\x73', b'\x6d', b'\x01', b'\x00', b'\x00', b'\x00'] {
+  for
+    b in [
+      b'\x00', b'\x61', b'\x73', b'\x6d', b'\x01', b'\x00', b'\x00', b'\x00',
+    ] {
     buf.push(b)
   }
   let body = ByteBuf::new()
@@ -1420,7 +1419,14 @@ fn emit_canon_lift_func(
   core_func_idx : Int,
   type_idx : Int,
 ) -> Unit {
-  emit_canon_lift_func_with_opts(buf, core_func_idx, type_idx, need_string=false, memory_idx=0, realloc_idx=0)
+  emit_canon_lift_func_with_opts(
+    buf,
+    core_func_idx,
+    type_idx,
+    need_string=false,
+    memory_idx=0,
+    realloc_idx=0,
+  )
 }
 
 ///|

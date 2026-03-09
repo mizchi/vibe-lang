@@ -31,9 +31,11 @@ pub(all) enum Pat {
 pub fn is_ctor_name(name : String) -> Bool {
   if name.length() == 0 {
     false
-  } else if name.contains("::") || name.contains(".") {
-    false
   } else {
+    // Type::method qualified names are NOT constructors
+    if name.contains("::") {
+      return false
+    }
     let chars = name.to_array()
     let c = chars[0]
     c >= 'A' && c <= 'Z'

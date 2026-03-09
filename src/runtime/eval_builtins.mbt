@@ -18,14 +18,14 @@ fn value_to_map_key(value : @core.Value) -> String {
 /// Cache key computation (pure_call_key → git_blob_hash_string) is
 /// more expensive than executing these operations.
 fn is_cheap_pure_builtin(name : String) -> Bool {
-  name == "string_concat" ||
-  name == "string_equals" ||
-  name == "string_length" ||
-  name == "string_char_code_at" ||
-  name == "string_substring" ||
-  name == "array_length" ||
-  name == "array_get" ||
-  name == "array_slice" ||
+  name == "String::concat" ||
+  name == "String::equals" ||
+  name == "String::length" ||
+  name == "String::char_code_at" ||
+  name == "String::substring" ||
+  name == "Array::length" ||
+  name == "Array::get" ||
+  name == "Array::slice" ||
   name == "__add" ||
   name == "__sub" ||
   name == "__mul" ||
@@ -43,57 +43,57 @@ fn is_cheap_pure_builtin(name : String) -> Bool {
   name == "__bit_and" ||
   name == "__bit_or" ||
   name == "__bit_xor" ||
-  name == "int_to_float" ||
-  name == "int_to_double" ||
-  name == "float_to_int" ||
-  name == "float_to_double" ||
-  name == "double_to_int" ||
-  name == "double_to_float" ||
-  name == "double_to_i64_bits" ||
-  name == "i64_bits_to_double" ||
-  name == "char_to_int" ||
-  name == "char_from_int" ||
-  name == "string_from_char_code" ||
-  name == "int_abs" ||
-  name == "int_max" ||
-  name == "int_min" ||
-  name == "int_clamp" ||
-  name == "int_signum" ||
-  name == "int_is_even" ||
-  name == "int_is_odd" ||
-  name == "double_abs" ||
-  name == "double_max" ||
-  name == "double_min" ||
-  name == "double_floor" ||
-  name == "double_ceil" ||
-  name == "map_get" ||
-  name == "map_set" ||
-  name == "map_has_key" ||
+  name == "Int::to_float" ||
+  name == "Int::to_double" ||
+  name == "Float::to_int" ||
+  name == "Float::to_double" ||
+  name == "Double::to_int" ||
+  name == "Double::to_float" ||
+  name == "Double::to_i64_bits" ||
+  name == "Double::from_i64_bits" ||
+  name == "Char::to_int" ||
+  name == "Char::from_int" ||
+  name == "String::from_char_code" ||
+  name == "Int::abs" ||
+  name == "Int::max" ||
+  name == "Int::min" ||
+  name == "Int::clamp" ||
+  name == "Int::signum" ||
+  name == "Int::is_even" ||
+  name == "Int::is_odd" ||
+  name == "Double::abs" ||
+  name == "Double::max" ||
+  name == "Double::min" ||
+  name == "Double::floor" ||
+  name == "Double::ceil" ||
+  name == "Map::get" ||
+  name == "Map::set" ||
+  name == "Map::has_key" ||
   name == "record_set" ||
-  name == "string_contains" ||
-  name == "string_index_of" ||
-  name == "string_starts_with" ||
-  name == "string_ends_with" ||
-  name == "string_trim" ||
-  name == "string_trim_start" ||
-  name == "string_trim_end" ||
-  name == "string_to_upper" ||
-  name == "string_to_lower" ||
-  name == "string_count" ||
-  name == "string_last_index_of" ||
-  name == "string_utf8_length" ||
-  name == "string_utf16_length" ||
-  name == "string_unicode_length" ||
-  name == "bytes_length" ||
-  name == "bytes_get" ||
-  name == "bytes_slice" ||
-  name == "bytes_concat" ||
-  name == "bytes_from_array" ||
-  name == "bytes_to_array" ||
-  name == "bytes_from_string" ||
-  name == "bytes_to_string" ||
-  name == "parse_int" ||
-  name == "parse_double"
+  name == "String::contains" ||
+  name == "String::index_of" ||
+  name == "String::starts_with" ||
+  name == "String::ends_with" ||
+  name == "String::trim" ||
+  name == "String::trim_start" ||
+  name == "String::trim_end" ||
+  name == "String::to_upper" ||
+  name == "String::to_lower" ||
+  name == "String::count" ||
+  name == "String::last_index_of" ||
+  name == "String::utf8_length" ||
+  name == "String::utf16_length" ||
+  name == "String::unicode_length" ||
+  name == "Bytes::length" ||
+  name == "Bytes::get" ||
+  name == "Bytes::slice" ||
+  name == "Bytes::concat" ||
+  name == "Bytes::from_array" ||
+  name == "Bytes::to_array" ||
+  name == "Bytes::from_string" ||
+  name == "Bytes::to_string" ||
+  name == "Int::parse" ||
+  name == "Double::parse"
 }
 
 ///|
@@ -101,33 +101,33 @@ fn is_cheap_pure_builtin(name : String) -> Bool {
 fn is_pure_builtin(name : String) -> Bool {
   is_cheap_pure_builtin(name) ||
   name == "path" ||
-  name == "path_ref" ||
-  name == "path_to_string" ||
-  name == "path_is_absolute" ||
+  name == "Path::ref" ||
+  name == "Path::to_string" ||
+  name == "Path::is_absolute" ||
   name == "addr" ||
-  name == "string_split" ||
-  name == "string_join" ||
-  name == "string_replace" ||
-  name == "string_replace_all" ||
-  name == "from_lines" ||
-  name == "to_lines" ||
-  name == "to_json" ||
-  name == "from_json" ||
-  name == "to_jsonl" ||
-  name == "from_jsonl" ||
-  name == "json_type" ||
-  name == "json_get" ||
-  name == "json_index" ||
-  name == "json_string" ||
-  name == "json_number" ||
-  name == "json_bool" ||
-  name == "json_is_null" ||
-  name == "json_length" ||
-  name == "json_keys" ||
-  name == "map_keys" ||
-  name == "map_values" ||
-  name == "prompt_text" ||
-  name == "prompt_text_to_string" ||
+  name == "String::split" ||
+  name == "String::join" ||
+  name == "String::replace" ||
+  name == "String::replace_all" ||
+  name == "Lines::parse" ||
+  name == "Lines::stringify" ||
+  name == "Json::stringify" ||
+  name == "Json::parse" ||
+  name == "Json::stringify_lines" ||
+  name == "Json::parse_lines" ||
+  name == "Json::type_of" ||
+  name == "Json::get" ||
+  name == "Json::index" ||
+  name == "Json::string" ||
+  name == "Json::number" ||
+  name == "Json::bool" ||
+  name == "Json::is_null" ||
+  name == "Json::length" ||
+  name == "Json::keys" ||
+  name == "Map::keys" ||
+  name == "Map::values" ||
+  name == "PromptText::new" ||
+  name == "PromptText::to_string" ||
   name == "select"
 }
 
@@ -137,7 +137,7 @@ fn eval_pure_builtin(
   args : Array[@core.Value],
 ) -> @core.Value raise EvalError {
   match name {
-    "path" | "path_ref" => {
+    "path" | "Path::ref" => {
       if args.length() != 1 {
         raise EvalError::BadCall(
           BuiltinArity(fn_name=name, expected=1, got=args.length()),
@@ -155,29 +155,29 @@ fn eval_pure_builtin(
           )
       }
     }
-    "path_to_string" => {
+    "Path::to_string" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("path_to_string"))
+        raise EvalError::BadCall(E("Path::to_string"))
       }
       match args[0] {
         @core.Value::Path(p) => @core.Value::String(p.as_string())
-        _ => raise EvalError::BadCall(E("path_to_string"))
+        _ => raise EvalError::BadCall(E("Path::to_string"))
       }
     }
-    "path_is_absolute" => {
+    "Path::is_absolute" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("path_is_absolute"))
+        raise EvalError::BadCall(E("Path::is_absolute"))
       }
       match args[0] {
         @core.Value::Path(p) => @core.Value::Bool(p.as_string().has_prefix("/"))
-        _ => raise EvalError::BadCall(E("path_is_absolute"))
+        _ => raise EvalError::BadCall(E("Path::is_absolute"))
       }
     }
-    "array_length" => {
+    "Array::length" => {
       if args.length() != 1 {
         raise EvalError::BadCall(
           E(
-            "array_length: expected 1 argument, got " +
+            "Array::length: expected 1 argument, got " +
             args.length().to_string(),
           ),
         )
@@ -194,10 +194,12 @@ fn eval_pure_builtin(
           )
       }
     }
-    "array_get" => {
+    "Array::get" => {
       if args.length() != 2 {
         raise EvalError::BadCall(
-          E("array_get: expected 2 arguments, got " + args.length().to_string()),
+          E(
+            "Array::get: expected 2 arguments, got " + args.length().to_string(),
+          ),
         )
       }
       match (args[0], args[1]) {
@@ -205,7 +207,7 @@ fn eval_pure_builtin(
           if index < 0L || index >= items.length().to_int64() {
             raise EvalError::BadCall(
               E(
-                "array_get: index " +
+                "Array::get: index " +
                 index.to_string() +
                 " out of bounds (length " +
                 items.length().to_string() +
@@ -218,7 +220,7 @@ fn eval_pure_builtin(
         _ =>
           raise EvalError::BadCall(
             E(
-              "array_get: expected (Array, Int), got (" +
+              "Array::get: expected (Array, Int), got (" +
               value_type_name(args[0]) +
               ", " +
               value_type_name(args[1]) +
@@ -227,10 +229,10 @@ fn eval_pure_builtin(
           )
       }
     }
-    "map_get" => {
+    "Map::get" => {
       if args.length() != 2 {
         raise EvalError::BadCall(
-          E("map_get: expected 2 arguments, got " + args.length().to_string()),
+          E("Map::get: expected 2 arguments, got " + args.length().to_string()),
         )
       }
       match args[0] {
@@ -238,13 +240,13 @@ fn eval_pure_builtin(
           let key = value_to_map_key(args[1])
           match items.get(key) {
             Some(value) => value
-            None => raise EvalError::BadCall(MissingKey(op="map_get", key~))
+            None => raise EvalError::BadCall(MissingKey(op="Map::get", key~))
           }
         }
         _ =>
           raise EvalError::BadCall(
             E(
-              "map_get: expected (Map, key), got (" +
+              "Map::get: expected (Map, key), got (" +
               value_type_name(args[0]) +
               ", " +
               value_type_name(args[1]) +
@@ -253,12 +255,10 @@ fn eval_pure_builtin(
           )
       }
     }
-    "map_set" => {
+    "Map::set" => {
       if args.length() != 3 {
         raise EvalError::BadCall(
-          E(
-            "map_set: expected 3 arguments, got " + args.length().to_string(),
-          ),
+          E("Map::set: expected 3 arguments, got " + args.length().to_string()),
         )
       }
       match args[0] {
@@ -271,59 +271,59 @@ fn eval_pure_builtin(
         }
         _ =>
           raise EvalError::BadCall(
-            E("map_set: expected Map as first argument"),
+            E("Map::set: expected Map as first argument"),
           )
       }
     }
-    "string_length" => {
+    "String::length" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("string_length"))
+        raise EvalError::BadCall(E("String::length"))
       }
       match args[0] {
         @core.Value::String(s) => @core.Value::Int(String::length(s).to_int64())
-        _ => raise EvalError::BadCall(E("string_length"))
+        _ => raise EvalError::BadCall(E("String::length"))
       }
     }
-    "string_utf8_length" => {
+    "String::utf8_length" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("string_utf8_length"))
+        raise EvalError::BadCall(E("String::utf8_length"))
       }
       match args[0] {
         @core.Value::String(s) =>
           @core.Value::Int(string_utf8_length(s).to_int64())
-        _ => raise EvalError::BadCall(E("string_utf8_length"))
+        _ => raise EvalError::BadCall(E("String::utf8_length"))
       }
     }
-    "string_utf16_length" => {
+    "String::utf16_length" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("string_utf16_length"))
+        raise EvalError::BadCall(E("String::utf16_length"))
       }
       match args[0] {
         @core.Value::String(s) =>
           @core.Value::Int(string_utf16_length(s).to_int64())
-        _ => raise EvalError::BadCall(E("string_utf16_length"))
+        _ => raise EvalError::BadCall(E("String::utf16_length"))
       }
     }
-    "string_unicode_length" => {
+    "String::unicode_length" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("string_unicode_length"))
+        raise EvalError::BadCall(E("String::unicode_length"))
       }
       match args[0] {
         @core.Value::String(s) =>
           @core.Value::Int(string_unicode_length(s).to_int64())
-        _ => raise EvalError::BadCall(E("string_unicode_length"))
+        _ => raise EvalError::BadCall(E("String::unicode_length"))
       }
     }
-    "parse_int" => {
+    "Int::parse" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("parse_int"))
+        raise EvalError::BadCall(E("Int::parse"))
       }
       match args[0] {
         @core.Value::String(s) => {
           let trimmed = s.trim()
           let len = trimmed.length()
           if len == 0 {
-            raise EvalError::BadCall(E("parse_int: empty string"))
+            raise EvalError::BadCall(E("Int::parse: empty string"))
           }
           let mut start = 0
           let mut negative = false
@@ -335,7 +335,7 @@ fn eval_pure_builtin(
             start = start + 1
           }
           if start >= len {
-            raise EvalError::BadCall(E("parse_int: no digits"))
+            raise EvalError::BadCall(E("Int::parse: no digits"))
           }
           let mut result : Int64 = 0L
           for i = start; i < len; i = i + 1 {
@@ -343,7 +343,7 @@ fn eval_pure_builtin(
             if c >= '0' && c <= '9' {
               result = result * 10L + (c.to_int() - 48).to_int64()
             } else {
-              raise EvalError::BadCall(E("parse_int: invalid digit"))
+              raise EvalError::BadCall(E("Int::parse: invalid digit"))
             }
           }
           if negative {
@@ -351,42 +351,42 @@ fn eval_pure_builtin(
           }
           @core.Value::Int(result)
         }
-        _ => raise EvalError::BadCall(E("parse_int"))
+        _ => raise EvalError::BadCall(E("Int::parse"))
       }
     }
-    "parse_double" => {
+    "Double::parse" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("parse_double"))
+        raise EvalError::BadCall(E("Double::parse"))
       }
       match args[0] {
         @core.Value::String(s) => {
           let trimmed = s.trim()
           let value = @strconv.parse_double(trimmed) catch {
-            _ => raise EvalError::BadCall(E("parse_double: invalid"))
+            _ => raise EvalError::BadCall(E("Double::parse: invalid"))
           }
           @core.Value::Double(value)
         }
-        _ => raise EvalError::BadCall(E("parse_double"))
+        _ => raise EvalError::BadCall(E("Double::parse"))
       }
     }
-    "string_char_code_at" => {
+    "String::char_code_at" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("string_char_code_at"))
+        raise EvalError::BadCall(E("String::char_code_at"))
       }
       match (args[0], args[1]) {
         (@core.Value::String(s), @core.Value::Int(index)) => {
           if index < 0L || index >= String::length(s).to_int64() {
-            raise EvalError::BadCall(E("string_char_code_at"))
+            raise EvalError::BadCall(E("String::char_code_at"))
           }
           let code = String::code_unit_at(s, index.to_int())
           @core.Value::Int(UInt16::to_int(code).to_int64())
         }
-        _ => raise EvalError::BadCall(E("string_char_code_at"))
+        _ => raise EvalError::BadCall(E("String::char_code_at"))
       }
     }
-    "string_substring" => {
+    "String::substring" => {
       if args.length() != 3 {
-        raise EvalError::BadCall(E("string_substring"))
+        raise EvalError::BadCall(E("String::substring"))
       }
       match (args[0], args[1], args[2]) {
         (@core.Value::String(s), @core.Value::Int(start), @core.Value::Int(end)) => {
@@ -410,14 +410,14 @@ fn eval_pure_builtin(
             String::unsafe_substring(s, start=from.to_int(), end=to.to_int()),
           )
         }
-        _ => raise EvalError::BadCall(E("string_substring"))
+        _ => raise EvalError::BadCall(E("String::substring"))
       }
     }
-    "string_concat" => {
+    "String::concat" => {
       if args.length() != 2 {
         raise EvalError::BadCall(
           E(
-            "string_concat: expected 2 arguments, got " +
+            "String::concat: expected 2 arguments, got " +
             args.length().to_string(),
           ),
         )
@@ -428,7 +428,7 @@ fn eval_pure_builtin(
         _ =>
           raise EvalError::BadCall(
             E(
-              "string_concat: expected (String, String), got (" +
+              "String::concat: expected (String, String), got (" +
               value_type_name(args[0]) +
               ", " +
               value_type_name(args[1]) +
@@ -437,19 +437,19 @@ fn eval_pure_builtin(
           )
       }
     }
-    "string_equals" => {
+    "String::equals" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("string_equals"))
+        raise EvalError::BadCall(E("String::equals"))
       }
       match (args[0], args[1]) {
         (@core.Value::String(a), @core.Value::String(b)) =>
           @core.Value::Bool(String::equal(a, b))
-        _ => raise EvalError::BadCall(E("string_equals"))
+        _ => raise EvalError::BadCall(E("String::equals"))
       }
     }
-    "string_split" => {
+    "String::split" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("string_split"))
+        raise EvalError::BadCall(E("String::split"))
       }
       match (args[0], args[1]) {
         (@core.Value::String(s), @core.Value::String(sep)) => {
@@ -459,12 +459,12 @@ fn eval_pure_builtin(
           }
           @core.Value::Array(parts)
         }
-        _ => raise EvalError::BadCall(E("string_split"))
+        _ => raise EvalError::BadCall(E("String::split"))
       }
     }
-    "string_index_of" => {
+    "String::index_of" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("string_index_of"))
+        raise EvalError::BadCall(E("String::index_of"))
       }
       match (args[0], args[1]) {
         (@core.Value::String(s), @core.Value::String(sub)) =>
@@ -472,69 +472,69 @@ fn eval_pure_builtin(
             Some(idx) => @core.Value::Int(idx.to_int64())
             None => @core.Value::Int(-1L)
           }
-        _ => raise EvalError::BadCall(E("string_index_of"))
+        _ => raise EvalError::BadCall(E("String::index_of"))
       }
     }
-    "string_contains" => {
+    "String::contains" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("string_contains"))
+        raise EvalError::BadCall(E("String::contains"))
       }
       match (args[0], args[1]) {
         (@core.Value::String(s), @core.Value::String(sub)) =>
           @core.Value::Bool(String::contains(s, sub[:]))
-        _ => raise EvalError::BadCall(E("string_contains"))
+        _ => raise EvalError::BadCall(E("String::contains"))
       }
     }
-    "string_trim" => {
+    "String::trim" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("string_trim"))
+        raise EvalError::BadCall(E("String::trim"))
       }
       match args[0] {
         @core.Value::String(s) => @core.Value::String(trim_whitespace(s))
-        _ => raise EvalError::BadCall(E("string_trim"))
+        _ => raise EvalError::BadCall(E("String::trim"))
       }
     }
-    "string_from_char_code" => {
+    "String::from_char_code" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("string_from_char_code"))
+        raise EvalError::BadCall(E("String::from_char_code"))
       }
       match args[0] {
         @core.Value::Int(code) =>
           if code < 0L || code > 1114111L {
-            raise EvalError::BadCall(E("string_from_char_code"))
+            raise EvalError::BadCall(E("String::from_char_code"))
           } else {
             match Int::to_char(code.to_int()) {
               Some(ch) => @core.Value::String(ch.to_string())
-              None => raise EvalError::BadCall(E("string_from_char_code"))
+              None => raise EvalError::BadCall(E("String::from_char_code"))
             }
           }
-        _ => raise EvalError::BadCall(E("string_from_char_code"))
+        _ => raise EvalError::BadCall(E("String::from_char_code"))
       }
     }
-    "char_to_int" => {
+    "Char::to_int" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("char_to_int"))
+        raise EvalError::BadCall(E("Char::to_int"))
       }
       match args[0] {
         @core.Value::Char(ch) => @core.Value::Int(ch.to_int().to_int64())
-        _ => raise EvalError::BadCall(E("char_to_int"))
+        _ => raise EvalError::BadCall(E("Char::to_int"))
       }
     }
-    "char_from_int" => {
+    "Char::from_int" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("char_from_int"))
+        raise EvalError::BadCall(E("Char::from_int"))
       }
       match args[0] {
         @core.Value::Int(code) =>
           if code < 0L || code > 1114111L {
-            raise EvalError::BadCall(E("char_from_int"))
+            raise EvalError::BadCall(E("Char::from_int"))
           } else {
             match Int::to_char(code.to_int()) {
               Some(ch) => @core.Value::Char(ch)
-              None => raise EvalError::BadCall(E("char_from_int"))
+              None => raise EvalError::BadCall(E("Char::from_int"))
             }
           }
-        _ => raise EvalError::BadCall(E("char_from_int"))
+        _ => raise EvalError::BadCall(E("Char::from_int"))
       }
     }
     "__add" => {
@@ -997,9 +997,9 @@ fn eval_pure_builtin(
         _ => raise EvalError::BadCall(E("record_set"))
       }
     }
-    "map_keys" => {
+    "Map::keys" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("map_keys"))
+        raise EvalError::BadCall(E("Map::keys"))
       }
       match args[0] {
         @core.Value::Map(items) => {
@@ -1009,12 +1009,12 @@ fn eval_pure_builtin(
           }
           @core.Value::Array(keys)
         }
-        _ => raise EvalError::BadCall(E("map_keys"))
+        _ => raise EvalError::BadCall(E("Map::keys"))
       }
     }
-    "map_values" => {
+    "Map::values" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("map_values"))
+        raise EvalError::BadCall(E("Map::values"))
       }
       match args[0] {
         @core.Value::Map(items) => {
@@ -1024,24 +1024,24 @@ fn eval_pure_builtin(
           }
           @core.Value::Array(values)
         }
-        _ => raise EvalError::BadCall(E("map_values"))
+        _ => raise EvalError::BadCall(E("Map::values"))
       }
     }
-    "map_has_key" => {
+    "Map::has_key" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("map_has_key"))
+        raise EvalError::BadCall(E("Map::has_key"))
       }
       match args[0] {
         @core.Value::Map(items) => {
           let key = value_to_map_key(args[1])
           @core.Value::Bool(items.contains(key))
         }
-        _ => raise EvalError::BadCall(E("map_has_key"))
+        _ => raise EvalError::BadCall(E("Map::has_key"))
       }
     }
-    "array_slice" => {
+    "Array::slice" => {
       if args.length() != 3 {
-        raise EvalError::BadCall(E("array_slice"))
+        raise EvalError::BadCall(E("Array::slice"))
       }
       match (args[0], args[1], args[2]) {
         (
@@ -1073,79 +1073,79 @@ fn eval_pure_builtin(
           }
           @core.Value::Array(out)
         }
-        _ => raise EvalError::BadCall(E("array_slice"))
+        _ => raise EvalError::BadCall(E("Array::slice"))
       }
     }
-    "int_to_float" => {
+    "Int::to_float" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("int_to_float"))
+        raise EvalError::BadCall(E("Int::to_float"))
       }
       match args[0] {
         @core.Value::Int(n) => @core.Value::Float(Float::from_int(n.to_int()))
-        _ => raise EvalError::BadCall(E("int_to_float"))
+        _ => raise EvalError::BadCall(E("Int::to_float"))
       }
     }
-    "int_to_double" => {
+    "Int::to_double" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("int_to_double"))
+        raise EvalError::BadCall(E("Int::to_double"))
       }
       match args[0] {
         @core.Value::Int(n) => @core.Value::Double(n.to_double())
-        _ => raise EvalError::BadCall(E("int_to_double"))
+        _ => raise EvalError::BadCall(E("Int::to_double"))
       }
     }
-    "float_to_int" => {
+    "Float::to_int" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("float_to_int"))
+        raise EvalError::BadCall(E("Float::to_int"))
       }
       match args[0] {
         @core.Value::Float(f) => @core.Value::Int(f.to_int().to_int64())
-        _ => raise EvalError::BadCall(E("float_to_int"))
+        _ => raise EvalError::BadCall(E("Float::to_int"))
       }
     }
-    "float_to_double" => {
+    "Float::to_double" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("float_to_double"))
+        raise EvalError::BadCall(E("Float::to_double"))
       }
       match args[0] {
         @core.Value::Float(f) => @core.Value::Double(f.to_double())
-        _ => raise EvalError::BadCall(E("float_to_double"))
+        _ => raise EvalError::BadCall(E("Float::to_double"))
       }
     }
-    "double_to_int" => {
+    "Double::to_int" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("double_to_int"))
+        raise EvalError::BadCall(E("Double::to_int"))
       }
       match args[0] {
         @core.Value::Double(d) => @core.Value::Int(d.to_int().to_int64())
-        _ => raise EvalError::BadCall(E("double_to_int"))
+        _ => raise EvalError::BadCall(E("Double::to_int"))
       }
     }
-    "double_to_float" => {
+    "Double::to_float" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("double_to_float"))
+        raise EvalError::BadCall(E("Double::to_float"))
       }
       match args[0] {
         @core.Value::Double(d) => @core.Value::Float(Float::from_double(d))
-        _ => raise EvalError::BadCall(E("double_to_float"))
+        _ => raise EvalError::BadCall(E("Double::to_float"))
       }
     }
-    "double_to_i64_bits" => {
+    "Double::to_i64_bits" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("double_to_i64_bits"))
+        raise EvalError::BadCall(E("Double::to_i64_bits"))
       }
       match args[0] {
         @core.Value::Double(d) => @core.Value::Int(d.reinterpret_as_int64())
-        _ => raise EvalError::BadCall(E("double_to_i64_bits"))
+        _ => raise EvalError::BadCall(E("Double::to_i64_bits"))
       }
     }
-    "i64_bits_to_double" => {
+    "Double::from_i64_bits" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("i64_bits_to_double"))
+        raise EvalError::BadCall(E("Double::from_i64_bits"))
       }
       match args[0] {
         @core.Value::Int(n) => @core.Value::Double(n.reinterpret_as_double())
-        _ => raise EvalError::BadCall(E("i64_bits_to_double"))
+        _ => raise EvalError::BadCall(E("Double::from_i64_bits"))
       }
     }
     "__to_string" => {
@@ -1169,9 +1169,9 @@ fn eval_pure_builtin(
           )
       }
     }
-    "string_join" => {
+    "String::join" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("string_join"))
+        raise EvalError::BadCall(E("String::join"))
       }
       match (args[0], args[1]) {
         (@core.Value::Array(items), @core.Value::String(sep)) => {
@@ -1182,17 +1182,17 @@ fn eval_pure_builtin(
             }
             match item {
               @core.Value::String(s) => buf.write_string(s)
-              _ => raise EvalError::BadCall(E("string_join"))
+              _ => raise EvalError::BadCall(E("String::join"))
             }
           }
           @core.Value::String(buf.to_string())
         }
-        _ => raise EvalError::BadCall(E("string_join"))
+        _ => raise EvalError::BadCall(E("String::join"))
       }
     }
-    "from_lines" => {
+    "Lines::parse" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("from_lines"))
+        raise EvalError::BadCall(E("Lines::parse"))
       }
       match args[0] {
         @core.Value::String(s) => {
@@ -1202,12 +1202,12 @@ fn eval_pure_builtin(
           }
           @core.Value::Array(parts)
         }
-        _ => raise EvalError::BadCall(E("from_lines"))
+        _ => raise EvalError::BadCall(E("Lines::parse"))
       }
     }
-    "to_lines" => {
+    "Lines::stringify" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("to_lines"))
+        raise EvalError::BadCall(E("Lines::stringify"))
       }
       match args[0] {
         @core.Value::Array(items) => {
@@ -1218,32 +1218,32 @@ fn eval_pure_builtin(
             }
             match item {
               @core.Value::String(s) => buf.write_string(s)
-              _ => raise EvalError::BadCall(E("to_lines"))
+              _ => raise EvalError::BadCall(E("Lines::stringify"))
             }
           }
           @core.Value::String(buf.to_string())
         }
-        _ => raise EvalError::BadCall(E("to_lines"))
+        _ => raise EvalError::BadCall(E("Lines::stringify"))
       }
     }
-    "to_json" => {
+    "Json::stringify" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("to_json"))
+        raise EvalError::BadCall(E("Json::stringify"))
       }
       @core.Value::String(value_to_json_string(args[0]))
     }
-    "from_json" => {
+    "Json::parse" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("from_json"))
+        raise EvalError::BadCall(E("Json::parse"))
       }
       match args[0] {
         @core.Value::String(s) => parse_json_value(s)
-        _ => raise EvalError::BadCall(E("from_json"))
+        _ => raise EvalError::BadCall(E("Json::parse"))
       }
     }
-    "to_jsonl" => {
+    "Json::stringify_lines" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("to_jsonl"))
+        raise EvalError::BadCall(E("Json::stringify_lines"))
       }
       match args[0] {
         @core.Value::Array(items) => {
@@ -1256,12 +1256,12 @@ fn eval_pure_builtin(
           }
           @core.Value::String(buf.to_string())
         }
-        _ => raise EvalError::BadCall(E("to_jsonl"))
+        _ => raise EvalError::BadCall(E("Json::stringify_lines"))
       }
     }
-    "from_jsonl" => {
+    "Json::parse_lines" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("from_jsonl"))
+        raise EvalError::BadCall(E("Json::parse_lines"))
       }
       match args[0] {
         @core.Value::String(s) => {
@@ -1274,12 +1274,12 @@ fn eval_pure_builtin(
           }
           @core.Value::Array(result)
         }
-        _ => raise EvalError::BadCall(E("from_jsonl"))
+        _ => raise EvalError::BadCall(E("Json::parse_lines"))
       }
     }
-    "json_type" => {
+    "Json::type_of" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("json_type"))
+        raise EvalError::BadCall(E("Json::type_of"))
       }
       let type_name = match args[0] {
         @core.Value::Unit => "null"
@@ -1289,86 +1289,86 @@ fn eval_pure_builtin(
         @core.Value::String(_) => "string"
         @core.Value::Array(_) => "array"
         @core.Value::Map(_) => "object"
-        _ => raise EvalError::BadCall(E("json_type"))
+        _ => raise EvalError::BadCall(E("Json::type_of"))
       }
       @core.Value::String(type_name)
     }
-    "json_get" => {
+    "Json::get" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("json_get"))
+        raise EvalError::BadCall(E("Json::get"))
       }
       match (args[0], args[1]) {
         (@core.Value::Map(items), @core.Value::String(key)) =>
           match items.get(key) {
             Some(value) => value
-            None => raise EvalError::BadCall(MissingKey(op="json_get", key~))
+            None => raise EvalError::BadCall(MissingKey(op="Json::get", key~))
           }
-        _ => raise EvalError::BadCall(E("json_get"))
+        _ => raise EvalError::BadCall(E("Json::get"))
       }
     }
-    "json_index" => {
+    "Json::index" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("json_index"))
+        raise EvalError::BadCall(E("Json::index"))
       }
       match (args[0], args[1]) {
         (@core.Value::Array(items), @core.Value::Int(index)) => {
           if index < 0L || index >= items.length().to_int64() {
-            raise EvalError::BadCall(E("json_index: out of bounds"))
+            raise EvalError::BadCall(E("Json::index: out of bounds"))
           }
           items[index.to_int()]
         }
-        _ => raise EvalError::BadCall(E("json_index"))
+        _ => raise EvalError::BadCall(E("Json::index"))
       }
     }
-    "json_string" => {
+    "Json::string" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("json_string"))
+        raise EvalError::BadCall(E("Json::string"))
       }
       match args[0] {
         @core.Value::String(s) => @core.Value::String(s)
-        _ => raise EvalError::BadCall(E("json_string: not a string"))
+        _ => raise EvalError::BadCall(E("Json::string: not a string"))
       }
     }
-    "json_number" => {
+    "Json::number" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("json_number"))
+        raise EvalError::BadCall(E("Json::number"))
       }
       match args[0] {
         @core.Value::Double(d) => @core.Value::Double(d)
         @core.Value::Int(n) => @core.Value::Double(n.to_double())
         @core.Value::Float(f) => @core.Value::Double(f.to_double())
-        _ => raise EvalError::BadCall(E("json_number: not a number"))
+        _ => raise EvalError::BadCall(E("Json::number: not a number"))
       }
     }
-    "json_bool" => {
+    "Json::bool" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("json_bool"))
+        raise EvalError::BadCall(E("Json::bool"))
       }
       match args[0] {
         @core.Value::Bool(b) => @core.Value::Bool(b)
-        _ => raise EvalError::BadCall(E("json_bool: not a bool"))
+        _ => raise EvalError::BadCall(E("Json::bool: not a bool"))
       }
     }
-    "json_is_null" => {
+    "Json::is_null" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("json_is_null"))
+        raise EvalError::BadCall(E("Json::is_null"))
       }
       @core.Value::Bool(args[0] is @core.Value::Unit)
     }
-    "json_length" => {
+    "Json::length" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("json_length"))
+        raise EvalError::BadCall(E("Json::length"))
       }
       match args[0] {
         @core.Value::Array(items) => @core.Value::Int(items.length().to_int64())
         @core.Value::Map(items) => @core.Value::Int(items.length().to_int64())
         @core.Value::String(s) => @core.Value::Int(s.length().to_int64())
-        _ => raise EvalError::BadCall(E("json_length"))
+        _ => raise EvalError::BadCall(E("Json::length"))
       }
     }
-    "json_keys" => {
+    "Json::keys" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("json_keys"))
+        raise EvalError::BadCall(E("Json::keys"))
       }
       match args[0] {
         @core.Value::Map(items) => {
@@ -1378,32 +1378,32 @@ fn eval_pure_builtin(
           }
           @core.Value::Array(keys)
         }
-        _ => raise EvalError::BadCall(E("json_keys"))
+        _ => raise EvalError::BadCall(E("Json::keys"))
       }
     }
-    "string_starts_with" => {
+    "String::starts_with" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("string_starts_with"))
+        raise EvalError::BadCall(E("String::starts_with"))
       }
       match (args[0], args[1]) {
         (@core.Value::String(s), @core.Value::String(prefix)) =>
           @core.Value::Bool(String::has_prefix(s, prefix[:]))
-        _ => raise EvalError::BadCall(E("string_starts_with"))
+        _ => raise EvalError::BadCall(E("String::starts_with"))
       }
     }
-    "string_ends_with" => {
+    "String::ends_with" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("string_ends_with"))
+        raise EvalError::BadCall(E("String::ends_with"))
       }
       match (args[0], args[1]) {
         (@core.Value::String(s), @core.Value::String(suffix)) =>
           @core.Value::Bool(String::has_suffix(s, suffix[:]))
-        _ => raise EvalError::BadCall(E("string_ends_with"))
+        _ => raise EvalError::BadCall(E("String::ends_with"))
       }
     }
-    "string_replace" => {
+    "String::replace" => {
       if args.length() != 3 {
-        raise EvalError::BadCall(E("string_replace"))
+        raise EvalError::BadCall(E("String::replace"))
       }
       match (args[0], args[1], args[2]) {
         (
@@ -1423,12 +1423,12 @@ fn eval_pure_builtin(
               @core.Value::String(before + replacement + after)
             }
           }
-        _ => raise EvalError::BadCall(E("string_replace"))
+        _ => raise EvalError::BadCall(E("String::replace"))
       }
     }
-    "string_replace_all" => {
+    "String::replace_all" => {
       if args.length() != 3 {
-        raise EvalError::BadCall(E("string_replace_all"))
+        raise EvalError::BadCall(E("String::replace_all"))
       }
       match (args[0], args[1], args[2]) {
         (
@@ -1443,12 +1443,12 @@ fn eval_pure_builtin(
               String::replace_all(s, old=pattern[:], new=replacement[:]),
             )
           }
-        _ => raise EvalError::BadCall(E("string_replace_all"))
+        _ => raise EvalError::BadCall(E("String::replace_all"))
       }
     }
-    "string_trim_start" => {
+    "String::trim_start" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("string_trim_start"))
+        raise EvalError::BadCall(E("String::trim_start"))
       }
       match args[0] {
         @core.Value::String(s) => {
@@ -1464,12 +1464,12 @@ fn eval_pure_builtin(
             @core.Value::String(String::unsafe_substring(s, start~, end=len))
           }
         }
-        _ => raise EvalError::BadCall(E("string_trim_start"))
+        _ => raise EvalError::BadCall(E("String::trim_start"))
       }
     }
-    "string_trim_end" => {
+    "String::trim_end" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("string_trim_end"))
+        raise EvalError::BadCall(E("String::trim_end"))
       }
       match args[0] {
         @core.Value::String(s) => {
@@ -1485,12 +1485,12 @@ fn eval_pure_builtin(
             @core.Value::String(String::unsafe_substring(s, start=0, end~))
           }
         }
-        _ => raise EvalError::BadCall(E("string_trim_end"))
+        _ => raise EvalError::BadCall(E("String::trim_end"))
       }
     }
-    "string_last_index_of" => {
+    "String::last_index_of" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("string_last_index_of"))
+        raise EvalError::BadCall(E("String::last_index_of"))
       }
       match (args[0], args[1]) {
         (@core.Value::String(s), @core.Value::String(sub)) => {
@@ -1516,12 +1516,12 @@ fn eval_pure_builtin(
             @core.Value::Int(found)
           }
         }
-        _ => raise EvalError::BadCall(E("string_last_index_of"))
+        _ => raise EvalError::BadCall(E("String::last_index_of"))
       }
     }
-    "string_count" => {
+    "String::count" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("string_count"))
+        raise EvalError::BadCall(E("String::count"))
       }
       match (args[0], args[1]) {
         (@core.Value::String(s), @core.Value::String(sub)) => {
@@ -1546,12 +1546,12 @@ fn eval_pure_builtin(
             @core.Value::Int(count)
           }
         }
-        _ => raise EvalError::BadCall(E("string_count"))
+        _ => raise EvalError::BadCall(E("String::count"))
       }
     }
-    "int_abs" => {
+    "Int::abs" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("int_abs"))
+        raise EvalError::BadCall(E("Int::abs"))
       }
       match args[0] {
         @core.Value::Int(x) =>
@@ -1560,100 +1560,100 @@ fn eval_pure_builtin(
           } else {
             @core.Value::Int(x)
           }
-        _ => raise EvalError::BadCall(E("int_abs"))
+        _ => raise EvalError::BadCall(E("Int::abs"))
       }
     }
-    "int_max" => {
+    "Int::max" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("int_max"))
+        raise EvalError::BadCall(E("Int::max"))
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) =>
           @core.Value::Int(if a > b { a } else { b })
-        _ => raise EvalError::BadCall(E("int_max"))
+        _ => raise EvalError::BadCall(E("Int::max"))
       }
     }
-    "int_min" => {
+    "Int::min" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("int_min"))
+        raise EvalError::BadCall(E("Int::min"))
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) =>
           @core.Value::Int(if a < b { a } else { b })
-        _ => raise EvalError::BadCall(E("int_min"))
+        _ => raise EvalError::BadCall(E("Int::min"))
       }
     }
-    "int_clamp" => {
+    "Int::clamp" => {
       if args.length() != 3 {
-        raise EvalError::BadCall(E("int_clamp"))
+        raise EvalError::BadCall(E("Int::clamp"))
       }
       match (args[0], args[1], args[2]) {
         (@core.Value::Int(x), @core.Value::Int(lo), @core.Value::Int(hi)) =>
           @core.Value::Int(if x < lo { lo } else if x > hi { hi } else { x })
-        _ => raise EvalError::BadCall(E("int_clamp"))
+        _ => raise EvalError::BadCall(E("Int::clamp"))
       }
     }
-    "int_signum" => {
+    "Int::signum" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("int_signum"))
+        raise EvalError::BadCall(E("Int::signum"))
       }
       match args[0] {
         @core.Value::Int(x) =>
           @core.Value::Int(if x < 0L { -1L } else if x > 0L { 1L } else { 0L })
-        _ => raise EvalError::BadCall(E("int_signum"))
+        _ => raise EvalError::BadCall(E("Int::signum"))
       }
     }
-    "int_is_even" => {
+    "Int::is_even" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("int_is_even"))
+        raise EvalError::BadCall(E("Int::is_even"))
       }
       match args[0] {
         @core.Value::Int(x) => @core.Value::Bool(x % 2L == 0L)
-        _ => raise EvalError::BadCall(E("int_is_even"))
+        _ => raise EvalError::BadCall(E("Int::is_even"))
       }
     }
-    "int_is_odd" => {
+    "Int::is_odd" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("int_is_odd"))
+        raise EvalError::BadCall(E("Int::is_odd"))
       }
       match args[0] {
         @core.Value::Int(x) => @core.Value::Bool(x % 2L != 0L)
-        _ => raise EvalError::BadCall(E("int_is_odd"))
+        _ => raise EvalError::BadCall(E("Int::is_odd"))
       }
     }
-    "double_abs" => {
+    "Double::abs" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("double_abs"))
+        raise EvalError::BadCall(E("Double::abs"))
       }
       match args[0] {
         @core.Value::Double(x) =>
           @core.Value::Double(if x < 0.0 { -x } else { x })
-        _ => raise EvalError::BadCall(E("double_abs"))
+        _ => raise EvalError::BadCall(E("Double::abs"))
       }
     }
-    "double_max" => {
+    "Double::max" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("double_max"))
+        raise EvalError::BadCall(E("Double::max"))
       }
       match (args[0], args[1]) {
         (@core.Value::Double(a), @core.Value::Double(b)) =>
           @core.Value::Double(if a > b { a } else { b })
-        _ => raise EvalError::BadCall(E("double_max"))
+        _ => raise EvalError::BadCall(E("Double::max"))
       }
     }
-    "double_min" => {
+    "Double::min" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("double_min"))
+        raise EvalError::BadCall(E("Double::min"))
       }
       match (args[0], args[1]) {
         (@core.Value::Double(a), @core.Value::Double(b)) =>
           @core.Value::Double(if a < b { a } else { b })
-        _ => raise EvalError::BadCall(E("double_min"))
+        _ => raise EvalError::BadCall(E("Double::min"))
       }
     }
-    "double_floor" => {
+    "Double::floor" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("double_floor"))
+        raise EvalError::BadCall(E("Double::floor"))
       }
       match args[0] {
         @core.Value::Double(x) => {
@@ -1670,12 +1670,12 @@ fn eval_pure_builtin(
             }
           }
         }
-        _ => raise EvalError::BadCall(E("double_floor"))
+        _ => raise EvalError::BadCall(E("Double::floor"))
       }
     }
-    "double_ceil" => {
+    "Double::ceil" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("double_ceil"))
+        raise EvalError::BadCall(E("Double::ceil"))
       }
       match args[0] {
         @core.Value::Double(x) => {
@@ -1692,45 +1692,45 @@ fn eval_pure_builtin(
             }
           }
         }
-        _ => raise EvalError::BadCall(E("double_ceil"))
+        _ => raise EvalError::BadCall(E("Double::ceil"))
       }
     }
-    "prompt_text" => {
+    "PromptText::new" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("prompt_text"))
+        raise EvalError::BadCall(E("PromptText::new"))
       }
       match args[0] {
         @core.Value::String(s) =>
           @core.Value::PromptText(@core.PromptText::new(s))
         @core.Value::PromptText(_) as pt => pt
-        _ => raise EvalError::BadCall(E("prompt_text"))
+        _ => raise EvalError::BadCall(E("PromptText::new"))
       }
     }
-    "prompt_text_to_string" => {
+    "PromptText::to_string" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("prompt_text_to_string"))
+        raise EvalError::BadCall(E("PromptText::to_string"))
       }
       match args[0] {
         @core.Value::PromptText(pt) => @core.Value::String(pt.as_string())
-        _ => raise EvalError::BadCall(E("prompt_text_to_string"))
+        _ => raise EvalError::BadCall(E("PromptText::to_string"))
       }
     }
-    "string_to_upper" => {
+    "String::to_upper" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("string_to_upper"))
+        raise EvalError::BadCall(E("String::to_upper"))
       }
       match args[0] {
         @core.Value::String(s) => @core.Value::String(s.to_upper())
-        _ => raise EvalError::BadCall(E("string_to_upper"))
+        _ => raise EvalError::BadCall(E("String::to_upper"))
       }
     }
-    "string_to_lower" => {
+    "String::to_lower" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("string_to_lower"))
+        raise EvalError::BadCall(E("String::to_lower"))
       }
       match args[0] {
         @core.Value::String(s) => @core.Value::String(s.to_lower())
-        _ => raise EvalError::BadCall(E("string_to_lower"))
+        _ => raise EvalError::BadCall(E("String::to_lower"))
       }
     }
     "select" => {
@@ -1778,33 +1778,33 @@ fn eval_pure_builtin(
         _ => raise EvalError::BadCall(E("select"))
       }
     }
-    "bytes_length" => {
+    "Bytes::length" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("bytes_length: expected 1 argument"))
+        raise EvalError::BadCall(E("Bytes::length: expected 1 argument"))
       }
       match args[0] {
         @core.Value::Bytes(data) => @core.Value::Int(data.length().to_int64())
-        _ => raise EvalError::BadCall(E("bytes_length: expected Bytes"))
+        _ => raise EvalError::BadCall(E("Bytes::length: expected Bytes"))
       }
     }
-    "bytes_get" => {
+    "Bytes::get" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("bytes_get: expected 2 arguments"))
+        raise EvalError::BadCall(E("Bytes::get: expected 2 arguments"))
       }
       match (args[0], args[1]) {
         (@core.Value::Bytes(data), @core.Value::Int(index)) => {
           let i = index.to_int()
           if i < 0 || i >= data.length() {
-            raise EvalError::BadCall(E("bytes_get: index out of bounds"))
+            raise EvalError::BadCall(E("Bytes::get: index out of bounds"))
           }
           @core.Value::Int(data[i].to_int().to_int64())
         }
-        _ => raise EvalError::BadCall(E("bytes_get: expected (Bytes, Int)"))
+        _ => raise EvalError::BadCall(E("Bytes::get: expected (Bytes, Int)"))
       }
     }
-    "bytes_slice" => {
+    "Bytes::slice" => {
       if args.length() != 3 {
-        raise EvalError::BadCall(E("bytes_slice: expected 3 arguments"))
+        raise EvalError::BadCall(E("Bytes::slice: expected 3 arguments"))
       }
       match (args[0], args[1], args[2]) {
         (
@@ -1821,12 +1821,14 @@ fn eval_pure_builtin(
           @core.Value::Bytes(result)
         }
         _ =>
-          raise EvalError::BadCall(E("bytes_slice: expected (Bytes, Int, Int)"))
+          raise EvalError::BadCall(
+            E("Bytes::slice: expected (Bytes, Int, Int)"),
+          )
       }
     }
-    "bytes_concat" => {
+    "Bytes::concat" => {
       if args.length() != 2 {
-        raise EvalError::BadCall(E("bytes_concat: expected 2 arguments"))
+        raise EvalError::BadCall(E("Bytes::concat: expected 2 arguments"))
       }
       match (args[0], args[1]) {
         (@core.Value::Bytes(a), @core.Value::Bytes(b)) => {
@@ -1840,12 +1842,12 @@ fn eval_pure_builtin(
           @core.Value::Bytes(result)
         }
         _ =>
-          raise EvalError::BadCall(E("bytes_concat: expected (Bytes, Bytes)"))
+          raise EvalError::BadCall(E("Bytes::concat: expected (Bytes, Bytes)"))
       }
     }
-    "bytes_from_array" => {
+    "Bytes::from_array" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("bytes_from_array: expected 1 argument"))
+        raise EvalError::BadCall(E("Bytes::from_array: expected 1 argument"))
       }
       match args[0] {
         @core.Value::Array(items) => {
@@ -1855,19 +1857,19 @@ fn eval_pure_builtin(
               @core.Value::Int(n) => result.push(n.to_int().to_byte())
               _ =>
                 raise EvalError::BadCall(
-                  E("bytes_from_array: array elements must be Int"),
+                  E("Bytes::from_array: array elements must be Int"),
                 )
             }
           }
           @core.Value::Bytes(result)
         }
         _ =>
-          raise EvalError::BadCall(E("bytes_from_array: expected Array[Int]"))
+          raise EvalError::BadCall(E("Bytes::from_array: expected Array[Int]"))
       }
     }
-    "bytes_to_array" => {
+    "Bytes::to_array" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("bytes_to_array: expected 1 argument"))
+        raise EvalError::BadCall(E("Bytes::to_array: expected 1 argument"))
       }
       match args[0] {
         @core.Value::Bytes(data) => {
@@ -1877,12 +1879,12 @@ fn eval_pure_builtin(
           }
           @core.Value::Array(result)
         }
-        _ => raise EvalError::BadCall(E("bytes_to_array: expected Bytes"))
+        _ => raise EvalError::BadCall(E("Bytes::to_array: expected Bytes"))
       }
     }
-    "bytes_from_string" => {
+    "Bytes::from_string" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("bytes_from_string: expected 1 argument"))
+        raise EvalError::BadCall(E("Bytes::from_string: expected 1 argument"))
       }
       match args[0] {
         @core.Value::String(s) => {
@@ -1893,12 +1895,12 @@ fn eval_pure_builtin(
           }
           @core.Value::Bytes(result)
         }
-        _ => raise EvalError::BadCall(E("bytes_from_string: expected String"))
+        _ => raise EvalError::BadCall(E("Bytes::from_string: expected String"))
       }
     }
-    "bytes_to_string" => {
+    "Bytes::to_string" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("bytes_to_string: expected 1 argument"))
+        raise EvalError::BadCall(E("Bytes::to_string: expected 1 argument"))
       }
       match args[0] {
         @core.Value::Bytes(data) => {
@@ -1910,11 +1912,11 @@ fn eval_pure_builtin(
             Ok(s) => @core.Value::String(s)
             Err(_) =>
               raise EvalError::BadCall(
-                E("bytes_to_string: invalid UTF-8 sequence"),
+                E("Bytes::to_string: invalid UTF-8 sequence"),
               )
           }
         }
-        _ => raise EvalError::BadCall(E("bytes_to_string: expected Bytes"))
+        _ => raise EvalError::BadCall(E("Bytes::to_string: expected Bytes"))
       }
     }
     _ => raise EvalError::BadCall(UnknownFn(name~))
@@ -2344,7 +2346,7 @@ fn JsonParser::parse_value(self : JsonParser) -> @core.Value raise EvalError {
       raise EvalError::BadCall(JsonParse(detail="unexpected end of input"))
     _ =>
       raise EvalError::BadCall(
-        E("from_json: unexpected character: " + ch.to_string()),
+        E("Json::parse: unexpected character: " + ch.to_string()),
       )
   }
 }
@@ -2358,7 +2360,7 @@ fn JsonParser::parse_string(self : JsonParser) -> @core.Value raise EvalError {
 ///|
 fn JsonParser::parse_string_raw(self : JsonParser) -> String raise EvalError {
   if self.advance() != '"' {
-    raise EvalError::BadCall(E("from_json: expected '\"'"))
+    raise EvalError::BadCall(E("Json::parse: expected '\"'"))
   }
   let buf = StringBuilder::new()
   while true {
@@ -2392,7 +2394,7 @@ fn JsonParser::parse_string_raw(self : JsonParser) -> String raise EvalError {
         }
         _ =>
           raise EvalError::BadCall(
-            E("from_json: invalid escape: \\" + esc.to_string()),
+            E("Json::parse: invalid escape: \\" + esc.to_string()),
           )
       }
     } else {

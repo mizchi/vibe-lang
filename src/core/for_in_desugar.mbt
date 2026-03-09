@@ -75,7 +75,7 @@ pub fn desugar_for_in(
   let let_b = Stmt::Let(
     rec=false,
     name="__for_b" + suffix,
-    expr=Expr::Call(name="array_builder", type_args=[], args=[], span~),
+    expr=Expr::Call(name="ArrayBuilder::new", type_args=[], args=[], span~),
     span~,
   )
   // let mut __for_iN = 0
@@ -125,7 +125,7 @@ pub fn desugar_for_in(
   while_stmts.push(
     Stmt::Expr(
       expr=Expr::Call(
-        name="array_builder_push",
+        name="ArrayBuilder::push",
         type_args=[],
         args=[
           CallArg::{ label: None, expr: b_ident, span: b_span },
@@ -144,7 +144,7 @@ pub fn desugar_for_in(
   let while_expr = Expr::While(cond~, body=while_body, span~)
   // Wrap in block, return frozen array
   let freeze_expr = Expr::Call(
-    name="array_builder_freeze",
+    name="ArrayBuilder::freeze",
     type_args=[],
     args=[CallArg::{ label: None, expr: b_ident, span: b_span }],
     span~,

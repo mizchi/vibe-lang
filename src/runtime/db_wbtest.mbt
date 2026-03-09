@@ -93,13 +93,13 @@ test "type query resolves Bytes parameter in imported function" {
   db.set_source(
     "./lib.vibe",
     "export let my_bytes_len = (b: Bytes) -> Int {\n" +
-    "  bytes_length(b)\n" +
+    "  Bytes::length(b)\n" +
     "}\n",
   )
   db.set_source(
     "main",
     "import ./lib.vibe { my_bytes_len }\n" +
-    "let b = bytes_new()\n" +
+    "let b = Bytes::new()\n" +
     "let x = my_bytes_len(b)\n" +
     "x\n",
   )
@@ -170,7 +170,7 @@ test "type query imports re-exported Process functions through index" {
     "main",
     "import ./index.vibe { run_lines }\n" +
     "let lines = run_lines(\"ok\")\n" +
-    "assert(eq(array_length(lines), 1))\n",
+    "assert(eq(Array::length(lines), 1))\n",
   )
   let env = db.types("main")
   let diags = db.diagnostics("main")
@@ -197,25 +197,25 @@ test "type query keeps exported schemes for thread runtime-style wrappers" {
   db.set_source(
     "main",
     "export let recv = (channel: Int) -> String with { Threads } {\n" +
-    "  threads_recv(channel)\n" +
+    "  Threads::recv(channel)\n" +
     "}\n" +
     "export let send = (channel: Int, message: String) -> Bool with { Threads } {\n" +
-    "  threads_send(channel, message)\n" +
+    "  Threads::send(channel, message)\n" +
     "}\n" +
     "export let wait = (task: Int) -> Int with { Threads } {\n" +
-    "  threads_wait(task)\n" +
+    "  Threads::wait(task)\n" +
     "}\n" +
     "export let spawn = (name: String, mailbox: Int) -> Int with { Threads } {\n" +
-    "  { threads_spawn(name, mailbox) }\n" +
+    "  { Threads::spawn(name, mailbox) }\n" +
     "}\n" +
     "export let probe_wat = () -> String with { Threads } {\n" +
-    "  threads_probe_wat()\n" +
+    "  Threads::probe_wat()\n" +
     "}\n" +
     "export let channel_new = (capacity: Int) -> Int with { Threads } {\n" +
-    "  threads_channel_new(capacity)\n" +
+    "  Threads::channel_new(capacity)\n" +
     "}\n" +
     "export let runtime_hints = () -> Unit with { Threads } {\n" +
-    "  let _ = threads_runtime_hints()\n" +
+    "  let _ = Threads::runtime_hints()\n" +
     "  if true {\n" +
     "  } else {\n" +
     "  }\n" +

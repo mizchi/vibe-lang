@@ -28,10 +28,10 @@ vibe language prototype and runtime (MoonBit).
 | `sleep(ms)` | native only | host runtime | Sleep for milliseconds |
 | `sh(cmd)` | native only | host import | Execute shell command |
 | `path(str)` | native only | host import | Normalize path |
-| `stdout_write_char(code)` | effect trace | `wasi:cli/stdout` + `wasi:io/streams` import | Write one char code to stdout |
-| `stdout_write_stream(text)` | effect trace | `wasi:cli/stdout` + `wasi:io/streams` import | Write a string chunk to stdout |
-| `stdin_read_char()` | returns `-1` on eof | `wasi:cli/stdin` + `wasi:io/streams` import | Read one char code from stdin |
-| `stdin_read_stream(max)` | returns `\"\"` on eof/error | `wasi:cli/stdin` + `wasi:io/streams` import | Read up to `max` bytes as a string chunk |
+| `Stdout::write_char(code)` | effect trace | `wasi:cli/stdout` + `wasi:io/streams` import | Write one char code to stdout |
+| `Stdout::write_stream(text)` | effect trace | `wasi:cli/stdout` + `wasi:io/streams` import | Write a string chunk to stdout |
+| `Stdin::read_char()` | returns `-1` on eof | `wasi:cli/stdin` + `wasi:io/streams` import | Read one char code from stdin |
+| `Stdin::read_stream(max)` | returns `\"\"` on eof/error | `wasi:cli/stdin` + `wasi:io/streams` import | Read up to `max` bytes as a string chunk |
 | `await expr` | interpreter | stack-switching (x86_64) | Async operation |
 
 ## Development
@@ -98,9 +98,9 @@ just run run --unstable-async examples/async.vibe
 # flags can also be placed before command
 just run --unstable-async run examples/async.vibe
 # unstable threads probe builtin (via line repl)
-printf 'threads_probe_wat()\nexit\n' | just run repl-stdin --no-prompt --unstable-threads
+printf 'Threads::probe_wat()\nexit\n' | just run repl-stdin --no-prompt --unstable-threads
 # unstable threads runtime hints (recommended -W/-S flags)
-printf 'threads_runtime_hints()\nexit\n' | just run repl-stdin --no-prompt --unstable-threads
+printf 'Threads::runtime_hints()\nexit\n' | just run repl-stdin --no-prompt --unstable-threads
 
 # Run tests in script
 just run test examples/*.vibe

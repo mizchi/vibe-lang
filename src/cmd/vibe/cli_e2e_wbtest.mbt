@@ -183,12 +183,12 @@ test "shell meta unknown command is handled" {
 
 ///|
 test "shell vibe parser extracts subcommand args and pipeline" {
-  match repl_parse_vibe_shell_invocation("vibe view inc |> json_get(\"ok\")") {
+  match repl_parse_vibe_shell_invocation("vibe view inc |> Json::get(\"ok\")") {
     Some(invocation) => {
       assert_eq(invocation.subcommand, "view")
       assert_eq(invocation.args, ["inc"])
       match invocation.pipeline_tail {
-        Some(tail) => assert_eq(tail, "json_get(\"ok\")")
+        Some(tail) => assert_eq(tail, "Json::get(\"ok\")")
         None => fail("expected pipeline tail")
       }
     }
@@ -365,7 +365,7 @@ test "shell vibe command supports pipeline transform over json payload" {
   let result = handle_repl_vibe_shell_command(
     rt,
     @runtime.ParserMode::VibeMode,
-    "vibe view inc |> json_get(\"ok\")",
+    "vibe view inc |> Json::get(\"ok\")",
     "/tmp/repl_vibe_pipeline.db",
     source,
     fn(s) { lines.push(s) },
@@ -872,11 +872,11 @@ test "cli wasm bench compile uses size-oriented optimize level" {
   let wasm_path = root + "/case.wasm"
   let source =
     #|let rec repeat = (s: String, n: Int) -> String {
-    #|  if eq(n, 0) { "" } else { string_concat(s, repeat(s, sub(n, 1))) }
+    #|  if eq(n, 0) { "" } else { String::concat(s, repeat(s, sub(n, 1))) }
     #|}
     #|let base = "abcdefghijklmnopqrstuvwxyz"
     #|let s = repeat(base, 12)
-    #|string_length(s)
+    #|String::length(s)
   let optimized_size = match
     compile_bench_script_to_wasm(source_path, wasm_path, source) {
     Ok(bytes) => bytes

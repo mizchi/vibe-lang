@@ -219,11 +219,11 @@ test "build_anthropic_request_body format" {
 }
 
 ///|
-test "llm_complete/rlm_run/rlm_finalize type check" {
+test "Llm::complete/Rlm::run/Rlm::finalize type check" {
   let rt = Runtime::new(@capability.CapabilitySet::unrestricted())
   // llm_complete needs Llm effect guard in the type system
   let result = try? rt.eval_script(
-    "let f = () -> String with { Llm } { { llm_complete(\"sys\", \"usr\") } }",
+    "let f = () -> String with { Llm } { { Llm::complete(\"sys\", \"usr\") } }",
   )
   match result {
     Ok(_) => ()
@@ -232,10 +232,10 @@ test "llm_complete/rlm_run/rlm_finalize type check" {
 }
 
 ///|
-test "rlm_run type check" {
+test "Rlm::run type check" {
   let rt = Runtime::new(@capability.CapabilitySet::unrestricted())
   let result = try? rt.eval_script(
-    "let f = () -> String with { Llm } { { rlm_run(\"task\", \"prompt\") } }",
+    "let f = () -> String with { Llm } { { Rlm::run(\"task\", \"prompt\") } }",
   )
   match result {
     Ok(_) => ()
@@ -244,9 +244,9 @@ test "rlm_run type check" {
 }
 
 ///|
-test "rlm_finalize type check and passthrough" {
+test "Rlm::finalize type check and passthrough" {
   let rt = Runtime::new(@capability.CapabilitySet::unrestricted())
-  let result = try? rt.eval_script("rlm_finalize(\"done\")")
+  let result = try? rt.eval_script("Rlm::finalize(\"done\")")
   match result {
     Ok(r) =>
       match r.last {
@@ -306,7 +306,7 @@ test "rlm_collect_bindings excludes prompt" {
 test "rlm_is_prelude_name identifies prelude" {
   assert_true(rlm_is_prelude_name("add"))
   assert_true(rlm_is_prelude_name("sub"))
-  assert_true(rlm_is_prelude_name("array_map"))
+  assert_true(rlm_is_prelude_name("Array::map"))
   assert_true(rlm_is_prelude_name("to_string"))
   assert_false(rlm_is_prelude_name("my_var"))
   assert_false(rlm_is_prelude_name("prompt"))

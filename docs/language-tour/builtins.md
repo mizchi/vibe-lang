@@ -27,58 +27,58 @@ Prelude wrappers: `add(a, b)`, `sub(a, b)`, `mul(a, b)`, `div(a, b)`, `eq(a, b)`
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `string_length` | `(String) -> Int` | Length |
-| `string_concat` | `(String, String) -> String` | Concatenate |
-| `string_substring` | `(String, Int, Int) -> String` | Substring (start, end) |
-| `string_char_code_at` | `(String, Int) -> Int` | Char code at index |
-| `string_from_char_code` | `(Int) -> String` | String from char code |
-| `string_equals` | `(String, String) -> Bool` | Equality |
-| `string_split` | `(String, String) -> Array[String]` | Split by separator |
-| `string_join` | `(Array[String], String) -> String` | Join with separator |
-| `string_contains` | `(String, String) -> Bool` | Contains substring |
-| `string_index_of` | `(String, String) -> Int` | Index of substring |
-| `string_last_index_of` | `(String, String) -> Int` | Last index of substring |
-| `string_starts_with` | `(String, String) -> Bool` | Starts with prefix |
-| `string_ends_with` | `(String, String) -> Bool` | Ends with suffix |
-| `string_trim` | `(String) -> String` | Trim whitespace |
-| `string_trim_start` | `(String) -> String` | Trim leading whitespace |
-| `string_trim_end` | `(String) -> String` | Trim trailing whitespace |
-| `string_replace` | `(String, String, String) -> String` | Replace first |
-| `string_replace_all` | `(String, String, String) -> String` | Replace all |
-| `string_to_upper` | `(String) -> String` | Uppercase |
-| `string_to_lower` | `(String) -> String` | Lowercase |
-| `string_count` | `(String, String) -> Int` | Count occurrences |
+| `String::length` | `(String) -> Int` | Length |
+| `String::concat` | `(String, String) -> String` | Concatenate |
+| `String::substring` | `(String, Int, Int) -> String` | Substring (start, end) |
+| `String::char_code_at` | `(String, Int) -> Int` | Char code at index |
+| `String::from_char_code` | `(Int) -> String` | String from char code |
+| `String::equals` | `(String, String) -> Bool` | Equality |
+| `String::split` | `(String, String) -> Array[String]` | Split by separator |
+| `String::join` | `(Array[String], String) -> String` | Join with separator |
+| `String::contains` | `(String, String) -> Bool` | Contains substring |
+| `String::index_of` | `(String, String) -> Int` | Index of substring |
+| `String::last_index_of` | `(String, String) -> Int` | Last index of substring |
+| `String::starts_with` | `(String, String) -> Bool` | Starts with prefix |
+| `String::ends_with` | `(String, String) -> Bool` | Ends with suffix |
+| `String::trim` | `(String) -> String` | Trim whitespace |
+| `String::trim_start` | `(String) -> String` | Trim leading whitespace |
+| `String::trim_end` | `(String) -> String` | Trim trailing whitespace |
+| `String::replace` | `(String, String, String) -> String` | Replace first |
+| `String::replace_all` | `(String, String, String) -> String` | Replace all |
+| `String::to_upper` | `(String) -> String` | Uppercase |
+| `String::to_lower` | `(String) -> String` | Lowercase |
+| `String::count` | `(String, String) -> Int` | Count occurrences |
 
 ## Array (builtins)
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `array_length` | `(Array[T]) -> Int` | Length |
-| `array_get` | `(Array[T], Int) -> T` | Get element |
-| `array_slice` | `(Array[T], Int, Int) -> Array[T]` | Slice (start, end) |
-| `array_concat` | `(Array[T], Array[T]) -> Array[T]` | Concatenate |
-| `array_reverse` | `(Array[T]) -> Array[T]` | Reverse |
+| `Array::length` | `(Array[T]) -> Int` | Length |
+| `Array::get` | `(Array[T], Int) -> T` | Get element |
+| `Array::slice` | `(Array[T], Int, Int) -> Array[T]` | Slice (start, end) |
+| `Array::concat` | `(Array[T], Array[T]) -> Array[T]` | Concatenate |
+| `Array::reverse` | `(Array[T]) -> Array[T]` | Reverse |
 
 ## Array (prelude)
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `array_map` | `(Array[T], (T) -> U) -> Array[U]` | Map function over array |
-| `array_filter` | `(Array[T], (T) -> Bool) -> Array[T]` | Filter by predicate |
-| `array_fold` | `(Array[T], U, (U, T) -> U) -> U` | Fold/reduce |
-| `array_foreach` | `(Array[T], (T) -> Unit) -> Unit` | Iterate with side effects |
-| `array_any` | `(Array[T], (T) -> Bool) -> Bool` | Any element matches |
-| `array_all` | `(Array[T], (T) -> Bool) -> Bool` | All elements match |
-| `array_find` | `(Array[T], (T) -> Bool) -> Option[T]` | Find first match (Some/None) |
+| `Array::map` | `(Array[T], (T) -> U) -> Array[U]` | Map function over array |
+| `Array::filter` | `(Array[T], (T) -> Bool) -> Array[T]` | Filter by predicate |
+| `Array::fold` | `(Array[T], U, (U, T) -> U) -> U` | Fold/reduce |
+| `Array::foreach` | `(Array[T], (T) -> Unit) -> Unit` | Iterate with side effects |
+| `Array::any` | `(Array[T], (T) -> Bool) -> Bool` | Any element matches |
+| `Array::all` | `(Array[T], (T) -> Bool) -> Bool` | All elements match |
+| `Array::find` | `(Array[T], (T) -> Bool) -> Option[T]` | Find first match (Some/None) |
 | `where` | `(Array[T], (T) -> Bool) -> Array[T]` | Filter (alias) |
 
 ## Array Builder
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `array_builder` | `() -> ArrayBuilder[T]` | Create builder |
-| `array_builder_push` | `(ArrayBuilder[T], T) -> Unit` | Add element |
-| `array_builder_freeze` | `(ArrayBuilder[T]) -> Array[T]` | Convert to array |
+| `ArrayBuilder::new` | `() -> ArrayBuilder[T]` | Create builder |
+| `ArrayBuilder::push` | `(ArrayBuilder[T], T) -> Unit` | Add element |
+| `ArrayBuilder::freeze` | `(ArrayBuilder[T]) -> Array[T]` | Convert to array |
 
 Builders require `do { ... }` or `for-in` context.
 
@@ -86,12 +86,12 @@ Builders require `do { ... }` or `for-in` context.
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `map_get` | `(Map[K, V], K) -> V` | Get value by key (throws if missing) |
-| `map_set` | `(Map[K, V], K, V) -> Map[K, V]` | Set key-value (returns new map) |
-| `map_get_or` | `(Map[K, V], K, V) -> V` | Get value or default |
-| `map_has_key` | `(Map[K, V], K) -> Bool` | Check key existence |
-| `map_keys` | `(Map[K, V]) -> Array[K]` | All keys |
-| `map_values` | `(Map[K, V]) -> Array[V]` | All values |
+| `Map::get` | `(Map[K, V], K) -> V` | Get value by key (throws if missing) |
+| `Map::set` | `(Map[K, V], K, V) -> Map[K, V]` | Set key-value (returns new map) |
+| `Map::get_or` | `(Map[K, V], K, V) -> V` | Get value or default |
+| `Map::has_key` | `(Map[K, V], K) -> Bool` | Check key existence |
+| `Map::keys` | `(Map[K, V]) -> Array[K]` | All keys |
+| `Map::values` | `(Map[K, V]) -> Array[V]` | All values |
 
 ## Map Builder
 
@@ -111,29 +111,29 @@ Builders require `do { ... }` or `for-in` context.
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `int_abs` | `(Int) -> Int` | Absolute value |
-| `int_max` | `(Int, Int) -> Int` | Maximum |
-| `int_min` | `(Int, Int) -> Int` | Minimum |
-| `int_clamp` | `(Int, Int, Int) -> Int` | Clamp to range |
-| `int_signum` | `(Int) -> Int` | Sign (-1, 0, 1) |
-| `int_is_even` | `(Int) -> Bool` | Even check |
-| `int_is_odd` | `(Int) -> Bool` | Odd check |
-| `double_abs` | `(Double) -> Double` | Absolute value |
-| `double_max` | `(Double, Double) -> Double` | Maximum |
-| `double_min` | `(Double, Double) -> Double` | Minimum |
-| `double_floor` | `(Double) -> Double` | Floor |
-| `double_ceil` | `(Double) -> Double` | Ceiling |
+| `Int::abs` | `(Int) -> Int` | Absolute value |
+| `Int::max` | `(Int, Int) -> Int` | Maximum |
+| `Int::min` | `(Int, Int) -> Int` | Minimum |
+| `Int::clamp` | `(Int, Int, Int) -> Int` | Clamp to range |
+| `Int::signum` | `(Int) -> Int` | Sign (-1, 0, 1) |
+| `Int::is_even` | `(Int) -> Bool` | Even check |
+| `Int::is_odd` | `(Int) -> Bool` | Odd check |
+| `Double::abs` | `(Double) -> Double` | Absolute value |
+| `Double::max` | `(Double, Double) -> Double` | Maximum |
+| `Double::min` | `(Double, Double) -> Double` | Minimum |
+| `Double::floor` | `(Double) -> Double` | Floor |
+| `Double::ceil` | `(Double) -> Double` | Ceiling |
 
 ## Type Conversion
 
 | Function | Signature |
 |----------|-----------|
-| `int_to_float` | `(Int) -> Float` |
-| `int_to_double` | `(Int) -> Double` |
-| `float_to_int` | `(Float) -> Int` |
-| `float_to_double` | `(Float) -> Double` |
-| `double_to_int` | `(Double) -> Int` |
-| `double_to_float` | `(Double) -> Float` |
+| `Int::to_float` | `(Int) -> Float` |
+| `Int::to_double` | `(Int) -> Double` |
+| `Float::to_int` | `(Float) -> Int` |
+| `Float::to_double` | `(Float) -> Double` |
+| `Double::to_int` | `(Double) -> Int` |
+| `Double::to_float` | `(Double) -> Float` |
 | `to_string` | `(Any) -> String` |
 
 ## IO
@@ -142,35 +142,35 @@ Builders require `do { ... }` or `for-in` context.
 |----------|-----------|--------|-------------|
 | `sh` | `(String) -> Unit` | `{Stdout}` | Execute command |
 | `sh_lines` | `(String) -> Array[String]` | `{Stdout}` | Execute, return lines |
-| `stdout_write_stream` | `(String) -> Unit` | `{Stdout}` | Write to stdout |
-| `stdout_write_char` | `(Int) -> Unit` | `{Stdout}` | Write char to stdout |
-| `stdin_read_stream` | `(Int) -> String` | `{Stdin}` | Read from stdin |
-| `stdin_read_char` | `() -> Int` | `{Stdin}` | Read char from stdin |
+| `Stdout::write_stream` | `(String) -> Unit` | `{Stdout}` | Write to stdout |
+| `Stdout::write_char` | `(Int) -> Unit` | `{Stdout}` | Write char to stdout |
+| `Stdin::read_stream` | `(Int) -> String` | `{Stdin}` | Read from stdin |
+| `Stdin::read_char` | `() -> Int` | `{Stdin}` | Read char from stdin |
 
 ## JSON
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `to_json` | `(Any) -> String` | Serialize to JSON |
-| `from_json` | `(String) -> Json` | Parse JSON string |
-| `json_type` | `(Json) -> String` | Type name |
-| `json_get` | `(Json, String) -> Json` | Object property |
-| `json_index` | `(Json, Int) -> Json` | Array element |
-| `json_string` | `(Json) -> String` | Extract string |
-| `json_number` | `(Json) -> Double` | Extract number |
-| `json_bool` | `(Json) -> Bool` | Extract bool |
-| `json_is_null` | `(Json) -> Bool` | Null check |
-| `json_length` | `(Json) -> Int` | Length |
-| `json_keys` | `(Json) -> Array[String]` | Object keys |
-| `to_jsonl` | `(Array[Json]) -> String` | Array to JSONL |
-| `from_jsonl` | `(String) -> Array[Json]` | Parse JSONL |
+| `Json::stringify` | `(Any) -> String` | Serialize to JSON |
+| `Json::parse` | `(String) -> Json` | Parse JSON string |
+| `Json::type_of` | `(Json) -> String` | Type name |
+| `Json::get` | `(Json, String) -> Json` | Object property |
+| `Json::index` | `(Json, Int) -> Json` | Array element |
+| `Json::string` | `(Json) -> String` | Extract string |
+| `Json::number` | `(Json) -> Double` | Extract number |
+| `Json::bool` | `(Json) -> Bool` | Extract bool |
+| `Json::is_null` | `(Json) -> Bool` | Null check |
+| `Json::length` | `(Json) -> Int` | Length |
+| `Json::keys` | `(Json) -> Array[String]` | Object keys |
+| `Json::stringify_lines` | `(Array[Json]) -> String` | Array to JSONL |
+| `Json::parse_lines` | `(String) -> Array[Json]` | Parse JSONL |
 
 ## Line Operations
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `from_lines` | `(String) -> Array[String]` | Split by newlines |
-| `to_lines` | `(Array[String]) -> String` | Join with newlines |
+| `Lines::parse` | `(String) -> Array[String]` | Split by newlines |
+| `Lines::stringify` | `(Array[String]) -> String` | Join with newlines |
 
 ## Assertion
 

@@ -7,33 +7,38 @@ import ./types.vibe {
 //# Functions
 
 let rec has_string = (arr: Array[String], s: String, i: Int) -> Bool {
-  if i >= array_length(arr) {
+  if i >= Array::length(arr) {
     false
-  } else if string_equals(array_get(arr, i), s) {
+  } else if String::equals(Array::get(arr, i), s) {
     true
   } else {
     has_string(arr, s, i + 1)
   }
 }
 
+let empty_strings = () -> Array[String] {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+
 let rec normalize_inner = (ty: Type, defs: Array[TypeDef], visited: Array[String]) -> Type {
   match ty {
-    CtNamed(name, _args) => {
-      if has_string(visited, name, 0) {
-        // Loop detected — return as-is to prevent infinite recursion
-        ty
-      } else {
-        array_push(visited, name)
-        match find_typedef(defs, name) {
-          Some(td) => match td {
-            TDAlias(_n, target) => normalize_inner(target, defs, visited),
-            TDEnum(n, _) => CtEnum(n),
-            TDStruct(n, _) => CtStruct(n)
-          },
-          None => ty
-        }
+    CtNamed(name, _args) => if has_string(visited, name, 0) {
+      // Loop detected — return as-is to prevent infinite recursion
+      ty
+    } else {
+      Array::push(visited, name)
+      match find_typedef(defs, name) {
+        Some(td) => match td {
+          TDAlias(_n, target) => normalize_inner(target, defs, visited),
+          TDEnum(n, _) => CtEnum(n),
+          TDStruct(n, _) => CtStruct(n)
+        },
+        None => ty
       }
-    },
+    }
+    ,
     CtFn(params, ret, he) => {
       let np = for p in params {
         normalize_inner(p, defs, visited)
@@ -48,12 +53,6 @@ let rec normalize_inner = (ty: Type, defs: Array[TypeDef], visited: Array[String
     CtForAll(vars, bounds, body) => CtForAll(vars, bounds, normalize_inner(body, defs, visited)),
     _ => ty
   }
-}
-
-let empty_strings = () -> Array[String] {
-  array_slice([
-    ""
-  ], 0, 0)
 }
 
 export let normalize_type = (ty: Type, defs: Array[TypeDef]) -> Type {

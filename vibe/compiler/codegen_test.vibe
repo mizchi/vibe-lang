@@ -13,12 +13,12 @@ let compile_source = (source: String) -> Bytes with { Error } {
 
 // Helper: validate WASM binary magic number and minimum size
 let assert_wasm = (bytes: Bytes) -> Int {
-  assert(bytes_length(bytes) > 8)
+  assert(Bytes::length(bytes) > 8)
   // WASM magic: asm
-  assert(bytes_get(bytes, 0) == 0)
-  assert(bytes_get(bytes, 1) == 97)
-  assert(bytes_get(bytes, 2) == 115)
-  assert(bytes_get(bytes, 3) == 109)
+  assert(Bytes::get(bytes, 0) == 0)
+  assert(Bytes::get(bytes, 1) == 97)
+  assert(Bytes::get(bytes, 2) == 115)
+  assert(Bytes::get(bytes, 3) == 109)
   0
 }
 
@@ -88,17 +88,17 @@ let compile_wasi = (source: String, entry: String) -> Bytes with { Error } {
 // Compile with imported module stmts merged (enum-only: SEnum defs from imports + main source)
 let compile_wasi_with_imports = (import_sources: Array[String], source: String, entry: String) -> Bytes with { Error } {
   // Parse import sources, collect SEnum stmts only
-  let all_stmts = array_builder()
+  let all_stmts = ArrayBuilder::new()
   let mut ii = 0
-  while ii < array_length(import_sources) {
-    let itokens = lex(array_get(import_sources, ii))
+  while ii < Array::length(import_sources) {
+    let itokens = lex(Array::get(import_sources, ii))
     let istmts = parse_program(itokens)
     let mut si = 0
-    while si < array_length(istmts) {
-      let s = array_get(istmts, si)
+    while si < Array::length(istmts) {
+      let s = Array::get(istmts, si)
       match s {
         SEnum(_, _, _) => {
-          array_builder_push(all_stmts, s)
+          ArrayBuilder::push(all_stmts, s)
           0
         },
         _ => 0
@@ -111,27 +111,27 @@ let compile_wasi_with_imports = (import_sources: Array[String], source: String, 
   let main_tokens = lex(source)
   let main_stmts = parse_program(main_tokens)
   let mut mi = 0
-  while mi < array_length(main_stmts) {
-    array_builder_push(all_stmts, array_get(main_stmts, mi))
+  while mi < Array::length(main_stmts) {
+    ArrayBuilder::push(all_stmts, Array::get(main_stmts, mi))
     mi = mi + 1
   }
-  compile_wasi_module(array_builder_freeze(all_stmts), entry)
+  compile_wasi_module(ArrayBuilder::freeze(all_stmts), entry)
 }
 
 // Compile with full import (all stmts including functions)
 let compile_wasi_with_full_imports = (import_sources: Array[String], source: String, entry: String) -> Bytes with { Error } {
-  let all_stmts = array_builder()
+  let all_stmts = ArrayBuilder::new()
   let mut ii = 0
-  while ii < array_length(import_sources) {
-    let itokens = lex(array_get(import_sources, ii))
+  while ii < Array::length(import_sources) {
+    let itokens = lex(Array::get(import_sources, ii))
     let istmts = parse_program(itokens)
     let mut si = 0
-    while si < array_length(istmts) {
-      let s = array_get(istmts, si)
+    while si < Array::length(istmts) {
+      let s = Array::get(istmts, si)
       match s {
         SImport(_, _) => 0,  // skip nested imports
         _ => {
-          array_builder_push(all_stmts, s)
+          ArrayBuilder::push(all_stmts, s)
           0
         }
       }
@@ -142,11 +142,11 @@ let compile_wasi_with_full_imports = (import_sources: Array[String], source: Str
   let main_tokens = lex(source)
   let main_stmts = parse_program(main_tokens)
   let mut mi = 0
-  while mi < array_length(main_stmts) {
-    array_builder_push(all_stmts, array_get(main_stmts, mi))
+  while mi < Array::length(main_stmts) {
+    ArrayBuilder::push(all_stmts, Array::get(main_stmts, mi))
     mi = mi + 1
   }
-  compile_wasi_module(array_builder_freeze(all_stmts), entry)
+  compile_wasi_module(ArrayBuilder::freeze(all_stmts), entry)
 }
 
 test "wasi: simple constant" {
@@ -207,26 +207,26 @@ test "wasi: print_str and print_int mixed" {
 
 // === String builtins ===
 
-test "wasi: string_length" {
-  let source = "let main = () -> Int { string_length(\"hello\") }"
+test "wasi: String::length" {
+  let source = "let main = () -> Int { String::length(\"hello\") }"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
-test "wasi: string_equals true" {
-  let source = "let main = () -> Int { if string_equals(\"abc\", \"abc\") { 1 } else { 0 } }"
+test "wasi: String::equals true" {
+  let source = "let main = () -> Int { if String::equals(\"abc\", \"abc\") { 1 } else { 0 } }"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
-test "wasi: string_equals false" {
-  let source = "let main = () -> Int { if string_equals(\"abc\", \"def\") { 1 } else { 0 } }"
+test "wasi: String::equals false" {
+  let source = "let main = () -> Int { if String::equals(\"abc\", \"def\") { 1 } else { 0 } }"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
-test "wasi: string_concat" {
-  let source = "let main = () -> Int {\n  print_str(string_concat(\"hello \", \"world\"))\n  0\n}"
+test "wasi: String::concat" {
+  let source = "let main = () -> Int {\n  print_str(String::concat(\"hello \", \"world\"))\n  0\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
@@ -234,19 +234,19 @@ test "wasi: string_concat" {
 // === Array builtins ===
 
 test "wasi: array basic" {
-  let source = "let main = () -> Int {\n  let arr = array_new()\n  array_push(arr, 10)\n  array_push(arr, 20)\n  array_push(arr, 30)\n  array_get(arr, 1)\n}"
+  let source = "let main = () -> Int {\n  let arr = array_new()\n  Array::push(arr, 10)\n  Array::push(arr, 20)\n  Array::push(arr, 30)\n  Array::get(arr, 1)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
-test "wasi: array_length" {
-  let source = "let main = () -> Int {\n  let arr = array_new()\n  array_push(arr, 1)\n  array_push(arr, 2)\n  array_push(arr, 3)\n  array_length(arr)\n}"
+test "wasi: Array::length" {
+  let source = "let main = () -> Int {\n  let arr = array_new()\n  Array::push(arr, 1)\n  Array::push(arr, 2)\n  Array::push(arr, 3)\n  Array::length(arr)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
-test "wasi: array_set" {
-  let source = "let main = () -> Int {\n  let arr = array_new()\n  array_push(arr, 10)\n  array_push(arr, 20)\n  array_set(arr, 0, 99)\n  array_get(arr, 0)\n}"
+test "wasi: Array::set" {
+  let source = "let main = () -> Int {\n  let arr = array_new()\n  Array::push(arr, 10)\n  Array::push(arr, 20)\n  Array::set(arr, 0, 99)\n  Array::get(arr, 0)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
@@ -432,13 +432,13 @@ test "wasi: while with mutation" {
 // === String + array combined ===
 
 test "wasi: string in array workflow" {
-  let source = "let main = () -> Int {\n  let s = string_concat(\"hello \", \"world\")\n  string_length(s)\n}"
+  let source = "let main = () -> Int {\n  let s = String::concat(\"hello \", \"world\")\n  String::length(s)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
 test "wasi: array sum loop" {
-  let source = "let main = () -> Int {\n  let arr = array_new()\n  array_push(arr, 10)\n  array_push(arr, 20)\n  array_push(arr, 30)\n  let mut sum = 0\n  let mut i = 0\n  while i < array_length(arr) {\n    sum = sum + array_get(arr, i)\n    i = i + 1\n  }\n  sum\n}"
+  let source = "let main = () -> Int {\n  let arr = array_new()\n  Array::push(arr, 10)\n  Array::push(arr, 20)\n  Array::push(arr, 30)\n  let mut sum = 0\n  let mut i = 0\n  while i < Array::length(arr) {\n    sum = sum + Array::get(arr, i)\n    i = i + 1\n  }\n  sum\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
@@ -480,13 +480,13 @@ test "wasi: assign op in while loop" {
 // === Array literal ===
 
 test "wasi: array literal" {
-  let source = "let main = () -> Int {\n  let arr = [10, 20, 30]\n  array_get(arr, 1)\n}"
+  let source = "let main = () -> Int {\n  let arr = [10, 20, 30]\n  Array::get(arr, 1)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
 test "wasi: array literal length" {
-  let source = "let main = () -> Int {\n  let arr = [1, 2, 3, 4, 5]\n  array_length(arr)\n}"
+  let source = "let main = () -> Int {\n  let arr = [1, 2, 3, 4, 5]\n  Array::length(arr)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
@@ -499,8 +499,8 @@ test "wasi: for-in sum" {
   assert_wasm(bytes)
 }
 
-test "wasi: for-in with array_push" {
-  let source = "let main = () -> Int {\n  let src = [1, 2, 3]\n  let dst = array_new()\n  for x in src {\n    array_push(dst, x * 10)\n  }\n  array_get(dst, 2)\n}"
+test "wasi: for-in with Array::push" {
+  let source = "let main = () -> Int {\n  let src = [1, 2, 3]\n  let dst = array_new()\n  for x in src {\n    Array::push(dst, x * 10)\n  }\n  Array::get(dst, 2)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
@@ -534,7 +534,7 @@ test "wasi: for-in with break" {
 // === Edge cases ===
 
 test "wasi: empty array" {
-  let source = "let main = () -> Int {\n  let arr = []\n  array_length(arr)\n}"
+  let source = "let main = () -> Int {\n  let arr = []\n  Array::length(arr)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
@@ -570,7 +570,7 @@ test "wasi: complex expression" {
 }
 
 test "wasi: string equality in if" {
-  let source = "let main = () -> Int {\n  let s = \"hello\"\n  if string_equals(s, \"hello\") { 1 } else { 0 }\n}"
+  let source = "let main = () -> Int {\n  let s = \"hello\"\n  if String::equals(s, \"hello\") { 1 } else { 0 }\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
@@ -631,52 +631,52 @@ test "wasi: closure mutable capture shared" {
 
 // === Float / Double ===
 
-test "wasi: double_to_int basic" {
-  let source = "let main = () -> Int {\n  double_to_int(3.7)\n}"
+test "wasi: Double::to_int basic" {
+  let source = "let main = () -> Int {\n  Double::to_int(3.7)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
-test "wasi: int_to_double round-trip" {
-  let source = "let main = () -> Int {\n  double_to_int(int_to_double(42))\n}"
+test "wasi: Int::to_double round-trip" {
+  let source = "let main = () -> Int {\n  Double::to_int(Int::to_double(42))\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
-test "wasi: double_to_int negative" {
-  let source = "let main = () -> Int {\n  double_to_int(-2.9)\n}"
+test "wasi: Double::to_int negative" {
+  let source = "let main = () -> Int {\n  Double::to_int(-2.9)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
-test "wasi: float arithmetic via int_to_double" {
-  let source = "let main = () -> Int {\n  let a = int_to_double(10)\n  let b = int_to_double(3)\n  double_to_int(a)\n}"
+test "wasi: float arithmetic via Int::to_double" {
+  let source = "let main = () -> Int {\n  let a = Int::to_double(10)\n  let b = Int::to_double(3)\n  Double::to_int(a)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
 // === String builtins ===
 
-test "wasi: string_char_code_at" {
-  let source = "let main = () -> Int {\n  let s = \"hello\"\n  string_char_code_at(s, 1)\n}"
+test "wasi: String::char_code_at" {
+  let source = "let main = () -> Int {\n  let s = \"hello\"\n  String::char_code_at(s, 1)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
-test "wasi: string_from_char_code" {
-  let source = "let main = () -> Int {\n  let s = string_from_char_code(65)\n  string_char_code_at(s, 0)\n}"
+test "wasi: String::from_char_code" {
+  let source = "let main = () -> Int {\n  let s = String::from_char_code(65)\n  String::char_code_at(s, 0)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
-test "wasi: string_substring" {
-  let source = "let main = () -> Int {\n  let s = \"hello world\"\n  let sub = string_substring(s, 6, 11)\n  string_length(sub)\n}"
+test "wasi: String::substring" {
+  let source = "let main = () -> Int {\n  let s = \"hello world\"\n  let sub = String::substring(s, 6, 11)\n  String::length(sub)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
-test "wasi: string_substring content" {
-  let source = "let main = () -> Int {\n  let s = \"abcdef\"\n  let sub = string_substring(s, 2, 5)\n  string_char_code_at(sub, 0)\n}"
+test "wasi: String::substring content" {
+  let source = "let main = () -> Int {\n  let s = \"abcdef\"\n  let sub = String::substring(s, 2, 5)\n  String::char_code_at(sub, 0)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
@@ -726,7 +726,7 @@ test "gc: match expression" {
 }
 
 test "gc: string length" {
-  let source = "let main = () -> Int {\n  let s = \"hello\"\n  string_length(s)\n}"
+  let source = "let main = () -> Int {\n  let s = \"hello\"\n  String::length(s)\n}"
   let bytes = compile_wasi_gc(source, "main")
   assert_wasm(bytes)
 }
@@ -787,32 +787,32 @@ test "gc: mutable capture shared" {
   assert_wasm(bytes)
 }
 
-test "gc: string_char_code_at" {
-  let source = "let main = () -> Int {\n  string_char_code_at(\"hello\", 1)\n}"
+test "gc: String::char_code_at" {
+  let source = "let main = () -> Int {\n  String::char_code_at(\"hello\", 1)\n}"
   let bytes = compile_wasi_gc(source, "main")
   assert_wasm(bytes)
 }
 
-test "gc: string_substring" {
-  let source = "let main = () -> Int {\n  let sub = string_substring(\"abcdef\", 2, 5)\n  string_char_code_at(sub, 0)\n}"
+test "gc: String::substring" {
+  let source = "let main = () -> Int {\n  let sub = String::substring(\"abcdef\", 2, 5)\n  String::char_code_at(sub, 0)\n}"
   let bytes = compile_wasi_gc(source, "main")
   assert_wasm(bytes)
 }
 
-test "wasi: array_builder" {
-  let source = "let main = () -> Int {\n  let b = array_builder()\n  array_builder_push(b, 10)\n  array_builder_push(b, 20)\n  array_builder_push(b, 30)\n  let arr = array_builder_freeze(b)\n  array_get(arr, 1)\n}"
+test "wasi: ArrayBuilder::new" {
+  let source = "let main = () -> Int {\n  let b = ArrayBuilder::new()\n  ArrayBuilder::push(b, 10)\n  ArrayBuilder::push(b, 20)\n  ArrayBuilder::push(b, 30)\n  let arr = ArrayBuilder::freeze(b)\n  Array::get(arr, 1)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
-test "wasi: array_builder length" {
-  let source = "let main = () -> Int {\n  let b = array_builder()\n  array_builder_push(b, 1)\n  array_builder_push(b, 2)\n  array_builder_push(b, 3)\n  let arr = array_builder_freeze(b)\n  array_length(arr)\n}"
+test "wasi: ArrayBuilder::new length" {
+  let source = "let main = () -> Int {\n  let b = ArrayBuilder::new()\n  ArrayBuilder::push(b, 1)\n  ArrayBuilder::push(b, 2)\n  ArrayBuilder::push(b, 3)\n  let arr = ArrayBuilder::freeze(b)\n  Array::length(arr)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
-test "gc: array_builder" {
-  let source = "let main = () -> Int {\n  let b = array_builder()\n  array_builder_push(b, 10)\n  array_builder_push(b, 20)\n  array_builder_push(b, 30)\n  let arr = array_builder_freeze(b)\n  array_get(arr, 1)\n}"
+test "gc: ArrayBuilder::new" {
+  let source = "let main = () -> Int {\n  let b = ArrayBuilder::new()\n  ArrayBuilder::push(b, 10)\n  ArrayBuilder::push(b, 20)\n  ArrayBuilder::push(b, 30)\n  let arr = ArrayBuilder::freeze(b)\n  Array::get(arr, 1)\n}"
   let bytes = compile_wasi_gc(source, "main")
   assert_wasm(bytes)
 }
@@ -876,7 +876,7 @@ test "wasi: enum import 0-arg match" {
 
 test "wasi: real token.vibe enum import" {
   // Read actual token.vibe and use its Token enum
-  let token_source = fs_read_file("vibe/compiler/token.vibe")
+  let token_source = Fs::read_file("vibe/compiler/token.vibe")
   let main_source = "let main = () -> Int {\n  let tok = TInt(99)\n  match tok {\n    TInt(n) => n,\n    TPlus => -1,\n    _ => -2\n  }\n}"
   let bytes = compile_wasi_with_imports([token_source], main_source, "main")
   assert_wasm(bytes)
@@ -888,21 +888,21 @@ test "wasi: let binding in if-else branch" {
   assert_wasm(bytes)
 }
 
-test "wasi: let binding with string_concat in if" {
-  let source = "let f = (s: String) -> Int {\n  if true {\n    let chunk = string_substring(s, 0, 2)\n    string_length(chunk)\n  } else { 0 }\n}\nlet main = () -> Int {\n  f(\"hello\")\n}"
+test "wasi: let binding with String::concat in if" {
+  let source = "let f = (s: String) -> Int {\n  if true {\n    let chunk = String::substring(s, 0, 2)\n    String::length(chunk)\n  } else { 0 }\n}\nlet main = () -> Int {\n  f(\"hello\")\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
 test "wasi: let-rec with let binding in body" {
-  let source = "let f = (s: String, len: Int, start: Int) -> Int {\n  let rec scan = (idx: Int, acc: Int) -> Int {\n    if idx >= len { acc }\n    else {\n      let c = string_char_code_at(s, idx)\n      if c == 92 {\n        let chunk = idx\n        let next = idx + 1\n        scan(next, acc + chunk)\n      } else scan(idx + 1, acc)\n    }\n  }\n  scan(start, 0)\n}\nlet main = () -> Int {\n  f(\"a\\\\b\", 3, 0)\n}"
+  let source = "let f = (s: String, len: Int, start: Int) -> Int {\n  let rec scan = (idx: Int, acc: Int) -> Int {\n    if idx >= len { acc }\n    else {\n      let c = String::char_code_at(s, idx)\n      if c == 92 {\n        let chunk = idx\n        let next = idx + 1\n        scan(next, acc + chunk)\n      } else scan(idx + 1, acc)\n    }\n  }\n  scan(start, 0)\n}\nlet main = () -> Int {\n  f(\"a\\\\b\", 3, 0)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
 test "wasi: lex_string pattern (simplified)" {
   // Simplified version of lexer.vibe lex_string pattern
-  let source = "let lex_str = (s: String, len: Int, start: Int) -> (String, Int) with { Error } {\n  let rec scan = (idx: Int, start: Int, acc: String) -> (String, Int) with { Error } {\n    if idx >= len {\n      throw(\"unterminated\")\n    }\n    let c = string_char_code_at(s, idx)\n    if c == 34 {\n      let chunk = string_substring(s, start, idx);\n      (string_concat(acc, chunk), idx + 1)\n    } else if c == 92 {\n      let chunk = string_substring(s, start, idx)\n      let next = idx + 1\n      if next >= len {\n        throw(\"unterminated escape\")\n      }\n      let esc = string_char_code_at(s, next)\n      let escaped = if esc == 110 { string_from_char_code(10) } else throw(\"invalid escape\")\n      scan(next + 1, next + 1, string_concat(string_concat(acc, chunk), escaped))\n    } else scan(idx + 1, start, acc)\n  }\n  scan(start + 1, start + 1, \"\")\n}\nlet main = () -> Int {\n  let (result, _) = lex_str(\"\\\"hi\\\"\", 4, 0);\n  string_length(result)\n}"
+  let source = "let lex_str = (s: String, len: Int, start: Int) -> (String, Int) with { Error } {\n  let rec scan = (idx: Int, start: Int, acc: String) -> (String, Int) with { Error } {\n    if idx >= len {\n      throw(\"unterminated\")\n    }\n    let c = String::char_code_at(s, idx)\n    if c == 34 {\n      let chunk = String::substring(s, start, idx);\n      (String::concat(acc, chunk), idx + 1)\n    } else if c == 92 {\n      let chunk = String::substring(s, start, idx)\n      let next = idx + 1\n      if next >= len {\n        throw(\"unterminated escape\")\n      }\n      let esc = String::char_code_at(s, next)\n      let escaped = if esc == 110 { String::from_char_code(10) } else throw(\"invalid escape\")\n      scan(next + 1, next + 1, String::concat(String::concat(acc, chunk), escaped))\n    } else scan(idx + 1, start, acc)\n  }\n  scan(start + 1, start + 1, \"\")\n}\nlet main = () -> Int {\n  let (result, _) = lex_str(\"\\\"hi\\\"\", 4, 0);\n  String::length(result)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
@@ -914,35 +914,35 @@ test "wasi: let with else-throw" {
 }
 
 test "wasi: multi-let in else-if with later use" {
-  let source = "let f = (s: String, i: Int) -> String {\n  let c = string_char_code_at(s, i)\n  if c == 97 {\n    \"a\"\n  } else if c == 98 {\n    let chunk = string_substring(s, 0, i)\n    let rest = string_substring(s, i, i + 1)\n    string_concat(chunk, rest)\n  } else { s }\n}\nlet main = () -> Int {\n  string_length(f(\"xbz\", 1))\n}"
+  let source = "let f = (s: String, i: Int) -> String {\n  let c = String::char_code_at(s, i)\n  if c == 97 {\n    \"a\"\n  } else if c == 98 {\n    let chunk = String::substring(s, 0, i)\n    let rest = String::substring(s, i, i + 1)\n    String::concat(chunk, rest)\n  } else { s }\n}\nlet main = () -> Int {\n  String::length(f(\"xbz\", 1))\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
 test "wasi: closure with if-else let" {
   // Minimal: closure with if-else branches that define locals
-  let source = "let f = (s: String) -> Int {\n  let rec go = (i: Int) -> Int {\n    let c = string_char_code_at(s, i)\n    if c == 97 {\n      let x = 10\n      x\n    } else if c == 98 {\n      let x = 20\n      go(x)\n    } else 0\n  }\n  go(0)\n}\nlet main = () -> Int {\n  f(\"b\")\n}"
+  let source = "let f = (s: String) -> Int {\n  let rec go = (i: Int) -> Int {\n    let c = String::char_code_at(s, i)\n    if c == 97 {\n      let x = 10\n      x\n    } else if c == 98 {\n      let x = 20\n      go(x)\n    } else 0\n  }\n  go(0)\n}\nlet main = () -> Int {\n  f(\"b\")\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
 test "wasi: closure let-in-else-if with recursive call" {
   // Closer to lex_string: multiple lets in else-if, then recursive call using those locals
-  let source = "let f = (s: String, len: Int) -> Int {\n  let rec scan = (idx: Int, acc: Int) -> Int {\n    if idx >= len { acc }\n    else {\n      let c = string_char_code_at(s, idx)\n      if c == 97 {\n        let chunk = 10\n        chunk + acc\n      } else if c == 98 {\n        let chunk = 20\n        let next = idx + 1\n        scan(next, acc + chunk)\n      } else scan(idx + 1, acc)\n    }\n  }\n  scan(0, 0)\n}\nlet main = () -> Int {\n  f(\"b\", 1)\n}"
+  let source = "let f = (s: String, len: Int) -> Int {\n  let rec scan = (idx: Int, acc: Int) -> Int {\n    if idx >= len { acc }\n    else {\n      let c = String::char_code_at(s, idx)\n      if c == 97 {\n        let chunk = 10\n        chunk + acc\n      } else if c == 98 {\n        let chunk = 20\n        let next = idx + 1\n        scan(next, acc + chunk)\n      } else scan(idx + 1, acc)\n    }\n  }\n  scan(0, 0)\n}\nlet main = () -> Int {\n  f(\"b\", 1)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
 test "wasi: closure let-escaped-if-throw then recursive" {
   // Even closer to lex_string: let escaped = if ... else throw; then scan(... chunk ...)
-  let source = "let f = (s: String, len: Int) -> Int {\n  let rec scan = (idx: Int, acc: Int) -> Int with { Error } {\n    if idx >= len { acc }\n    else {\n      let c = string_char_code_at(s, idx)\n      if c == 97 {\n        let chunk = 10\n        chunk + acc\n      } else if c == 98 {\n        let chunk = 20\n        let next = idx + 1\n        let esc = string_char_code_at(s, next)\n        let escaped = if esc == 110 { 30 } else throw(\"invalid\")\n        scan(next, acc + chunk + escaped)\n      } else scan(idx + 1, acc)\n    }\n  }\n  scan(0, 0)\n}\nlet main = () -> Int {\n  f(\"bn\", 2)\n}"
+  let source = "let f = (s: String, len: Int) -> Int {\n  let rec scan = (idx: Int, acc: Int) -> Int with { Error } {\n    if idx >= len { acc }\n    else {\n      let c = String::char_code_at(s, idx)\n      if c == 97 {\n        let chunk = 10\n        chunk + acc\n      } else if c == 98 {\n        let chunk = 20\n        let next = idx + 1\n        let esc = String::char_code_at(s, next)\n        let escaped = if esc == 110 { 30 } else throw(\"invalid\")\n        scan(next, acc + chunk + escaped)\n      } else scan(idx + 1, acc)\n    }\n  }\n  scan(0, 0)\n}\nlet main = () -> Int {\n  f(\"bn\", 2)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
-test "wasi: closure with string_concat in recursive call" {
-  // Exact pattern: scan(next+1, next+1, string_concat(string_concat(acc, chunk), escaped))
-  let source = "let f = (s: String, len: Int) -> String with { Error } {\n  let rec scan = (idx: Int, start: Int, acc: String) -> String with { Error } {\n    if idx >= len { acc }\n    else {\n      let c = string_char_code_at(s, idx)\n      if c == 97 {\n        let chunk = string_substring(s, start, idx)\n        string_concat(acc, chunk)\n      } else if c == 98 {\n        let chunk = string_substring(s, start, idx)\n        let next = idx + 1\n        let esc = string_char_code_at(s, next)\n        let escaped = if esc == 110 { \"N\" } else throw(\"invalid\")\n        scan(next + 1, next + 1, string_concat(string_concat(acc, chunk), escaped))\n      } else scan(idx + 1, start, acc)\n    }\n  }\n  scan(0, 0, \"\")\n}\nlet main = () -> Int {\n  string_length(f(\"bna\", 3))\n}"
+test "wasi: closure with String::concat in recursive call" {
+  // Exact pattern: scan(next+1, next+1, String::concat(String::concat(acc, chunk), escaped))
+  let source = "let f = (s: String, len: Int) -> String with { Error } {\n  let rec scan = (idx: Int, start: Int, acc: String) -> String with { Error } {\n    if idx >= len { acc }\n    else {\n      let c = String::char_code_at(s, idx)\n      if c == 97 {\n        let chunk = String::substring(s, start, idx)\n        String::concat(acc, chunk)\n      } else if c == 98 {\n        let chunk = String::substring(s, start, idx)\n        let next = idx + 1\n        let esc = String::char_code_at(s, next)\n        let escaped = if esc == 110 { \"N\" } else throw(\"invalid\")\n        scan(next + 1, next + 1, String::concat(String::concat(acc, chunk), escaped))\n      } else scan(idx + 1, start, acc)\n    }\n  }\n  scan(0, 0, \"\")\n}\nlet main = () -> Int {\n  String::length(f(\"bna\", 3))\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
@@ -954,39 +954,39 @@ test "debug: free vars of closure with tuple" {
   // stmts[0] = SLet("f", EFn(..., body_of_f))
   // body_of_f = ELetRec("go", EFn(..., body_of_go), ...)
   // We need to extract body_of_go's fn_body
-  let stmt0 = array_get(stmts, 0)
+  let stmt0 = Array::get(stmts, 0)
   match stmt0 {
     SLet(_, _, _, _, fn_expr) => match fn_expr {
       EFn(_, _, _, _, _, f_body) => match f_body {
         ELetRec(_, go_fn, _) => match go_fn {
           EFn(_, _, params, _, _, go_body) => {
-            let param_names = array_slice([""], 0, 0)
+            let param_names = Array::slice([""], 0, 0)
             let mut pi = 0
-            while pi < array_length(params) {
-              let (pname, _) = array_get(params, pi)
-              array_push(param_names, pname)
+            while pi < Array::length(params) {
+              let (pname, _) = Array::get(params, pi)
+              Array::push(param_names, pname)
               pi = pi + 1
             }
-            let fn_names = array_slice([""], 0, 0)
+            let fn_names = Array::slice([""], 0, 0)
             let fv = collect_free_vars(go_body, param_names, fn_names)
             // fv should be ["x", "go"] or similar - should NOT contain "a"
             let mut result = "free_vars=["
             let mut fi = 0
-            while fi < array_length(fv) {
-              if fi > 0 { result = string_concat(result, ",") }
-              result = string_concat(result, array_get(fv, fi))
+            while fi < Array::length(fv) {
+              if fi > 0 { result = String::concat(result, ",") }
+              result = String::concat(result, Array::get(fv, fi))
               fi = fi + 1
             }
-            result = string_concat(result, "]")
+            result = String::concat(result, "]")
             // Verify "a" is NOT in free vars (it's defined inside the body)
             let mut has_a = false
             let mut ai = 0
-            while ai < array_length(fv) {
-              if string_equals(array_get(fv, ai), "a") { has_a = true }
+            while ai < Array::length(fv) {
+              if String::equals(Array::get(fv, ai), "a") { has_a = true }
               ai = ai + 1
             }
             if has_a {
-              throw(string_concat("BUG: 'a' in free vars! ", result))
+              throw(String::concat("BUG: 'a' in free vars! ", result))
             }
           },
           _ => throw("expected EFn for go")
@@ -1015,29 +1015,29 @@ test "wasi: closure let-then-tuple-return" {
 
 test "wasi: closure with tuple return only" {
   // Test tuple return in then branch (no guard-without-else)
-  let source = "let f = (s: String, len: Int) -> (String, Int) with { Error } {\n  let rec scan = (idx: Int, start: Int, acc: String) -> (String, Int) with { Error } {\n    if idx >= len { throw(\"unterminated\") }\n    else {\n      let c = string_char_code_at(s, idx)\n      if c == 34 {\n        let chunk = string_substring(s, start, idx);\n        (string_concat(acc, chunk), idx + 1)\n      } else if c == 98 {\n        let chunk = string_substring(s, start, idx)\n        let next = idx + 1\n        let esc = string_char_code_at(s, next)\n        let escaped = if esc == 110 { string_from_char_code(10) } else throw(\"invalid\")\n        scan(next + 1, next + 1, string_concat(string_concat(acc, chunk), escaped))\n      } else scan(idx + 1, start, acc)\n    }\n  }\n  scan(0, 0, \"\")\n}\nlet main = () -> Int {\n  let (result, _) = f(\"\\\"hi\\\"\", 4, 0);\n  string_length(result)\n}"
+  let source = "let f = (s: String, len: Int) -> (String, Int) with { Error } {\n  let rec scan = (idx: Int, start: Int, acc: String) -> (String, Int) with { Error } {\n    if idx >= len { throw(\"unterminated\") }\n    else {\n      let c = String::char_code_at(s, idx)\n      if c == 34 {\n        let chunk = String::substring(s, start, idx);\n        (String::concat(acc, chunk), idx + 1)\n      } else if c == 98 {\n        let chunk = String::substring(s, start, idx)\n        let next = idx + 1\n        let esc = String::char_code_at(s, next)\n        let escaped = if esc == 110 { String::from_char_code(10) } else throw(\"invalid\")\n        scan(next + 1, next + 1, String::concat(String::concat(acc, chunk), escaped))\n      } else scan(idx + 1, start, acc)\n    }\n  }\n  scan(0, 0, \"\")\n}\nlet main = () -> Int {\n  let (result, _) = f(\"\\\"hi\\\"\", 4, 0);\n  String::length(result)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
 test "wasi: closure with guard-throw no else" {
   // Test guard without else (no tuple return)
-  let source = "let f = (s: String, len: Int) -> String with { Error } {\n  let rec scan = (idx: Int, start: Int, acc: String) -> String with { Error } {\n    if idx >= len {\n      throw(\"unterminated\")\n    }\n    let c = string_char_code_at(s, idx)\n    if c == 97 {\n      let chunk = string_substring(s, start, idx)\n      string_concat(acc, chunk)\n    } else if c == 98 {\n      let chunk = string_substring(s, start, idx)\n      let next = idx + 1\n      if next >= len {\n        throw(\"unterminated escape\")\n      }\n      let esc = string_char_code_at(s, next)\n      let escaped = if esc == 110 { string_from_char_code(10) } else throw(\"invalid\")\n      scan(next + 1, next + 1, string_concat(string_concat(acc, chunk), escaped))\n    } else scan(idx + 1, start, acc)\n  }\n  scan(0, 0, \"\")\n}\nlet main = () -> Int {\n  string_length(f(\"\\\"hi\\\"\", 4, 0))\n}"
+  let source = "let f = (s: String, len: Int) -> String with { Error } {\n  let rec scan = (idx: Int, start: Int, acc: String) -> String with { Error } {\n    if idx >= len {\n      throw(\"unterminated\")\n    }\n    let c = String::char_code_at(s, idx)\n    if c == 97 {\n      let chunk = String::substring(s, start, idx)\n      String::concat(acc, chunk)\n    } else if c == 98 {\n      let chunk = String::substring(s, start, idx)\n      let next = idx + 1\n      if next >= len {\n        throw(\"unterminated escape\")\n      }\n      let esc = String::char_code_at(s, next)\n      let escaped = if esc == 110 { String::from_char_code(10) } else throw(\"invalid\")\n      scan(next + 1, next + 1, String::concat(String::concat(acc, chunk), escaped))\n    } else scan(idx + 1, start, acc)\n  }\n  scan(0, 0, \"\")\n}\nlet main = () -> Int {\n  String::length(f(\"\\\"hi\\\"\", 4, 0))\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
 test "wasi: lexer.vibe import - compile only" {
-  let token_source = fs_read_file("vibe/compiler/token.vibe")
-  let lexer_source = fs_read_file("vibe/compiler/lexer.vibe")
-  let main_source = "let main = () -> Int {\n  let tokens = lex(\"42\")\n  array_length(tokens)\n}"
-  let all_stmts = array_builder()
+  let token_source = Fs::read_file("vibe/compiler/token.vibe")
+  let lexer_source = Fs::read_file("vibe/compiler/lexer.vibe")
+  let main_source = "let main = () -> Int {\n  let tokens = lex(\"42\")\n  Array::length(tokens)\n}"
+  let all_stmts = ArrayBuilder::new()
   let tk_tokens = lex(token_source)
   let tk_stmts = parse_program(tk_tokens)
   let mut ti = 0
-  while ti < array_length(tk_stmts) {
-    match array_get(tk_stmts, ti) {
-      SEnum(_, _, _) => { array_builder_push(all_stmts, array_get(tk_stmts, ti)); 0 },
+  while ti < Array::length(tk_stmts) {
+    match Array::get(tk_stmts, ti) {
+      SEnum(_, _, _) => { ArrayBuilder::push(all_stmts, Array::get(tk_stmts, ti)); 0 },
       _ => 0
     }
     ti = ti + 1
@@ -1045,25 +1045,25 @@ test "wasi: lexer.vibe import - compile only" {
   let lx_tokens = lex(lexer_source)
   let lx_stmts = parse_program(lx_tokens)
   let mut li = 0
-  while li < array_length(lx_stmts) {
-    match array_get(lx_stmts, li) {
+  while li < Array::length(lx_stmts) {
+    match Array::get(lx_stmts, li) {
       SImport(_, _) => 0,
       SLet(_, _, name, _, _) => {
-        if string_equals(name, "lex_ok") { 0 }
-        else { array_builder_push(all_stmts, array_get(lx_stmts, li)); 0 }
+        if String::equals(name, "lex_ok") { 0 }
+        else { ArrayBuilder::push(all_stmts, Array::get(lx_stmts, li)); 0 }
       },
-      _ => { array_builder_push(all_stmts, array_get(lx_stmts, li)); 0 }
+      _ => { ArrayBuilder::push(all_stmts, Array::get(lx_stmts, li)); 0 }
     }
     li = li + 1
   }
   let mn_tokens = lex(main_source)
   let mn_stmts = parse_program(mn_tokens)
   let mut mi = 0
-  while mi < array_length(mn_stmts) {
-    array_builder_push(all_stmts, array_get(mn_stmts, mi))
+  while mi < Array::length(mn_stmts) {
+    ArrayBuilder::push(all_stmts, Array::get(mn_stmts, mi))
     mi = mi + 1
   }
-  let bytes = compile_wasi_module(array_builder_freeze(all_stmts), "main")
+  let bytes = compile_wasi_module(ArrayBuilder::freeze(all_stmts), "main")
   assert_wasm(bytes)
 }
 

@@ -28,10 +28,10 @@
 
 ```
 // Before: throw で中断
-let json_get = (obj: Json, key: String) -> Json with { Error } { ... }
+let Json::get = (obj: Json, key: String) -> Json with { Error } { ... }
 
 // After: Result を返す
-let json_get = (obj: Json, key: String) -> Result[Json, String] { ... }
+let Json::get = (obj: Json, key: String) -> Result[Json, String] { ... }
 ```
 
 ### 2. エラー型の選定基準
@@ -64,17 +64,17 @@ let json_get = (obj: Json, key: String) -> Result[Json, String] { ... }
 ```vibe
 // Result を直接 match
 match json_parse(input) {
-  Ok(data) => json_get(data, "key"),
+  Ok(data) => Json::get(data, "key"),
   Err(e) => Err(e),
 }
 
 // bind でチェイン
 json_parse(input) |> bind((data: Json) -> Result[Json, String] {
-  json_get(data, "key")
+  Json::get(data, "key")
 })
 
 // unwrap_or でフォールバック
-unwrap_or(json_get(data, "name"), Null)
+unwrap_or(Json::get(data, "name"), Null)
 ```
 
 ## Consequences

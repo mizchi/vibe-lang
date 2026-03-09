@@ -52,12 +52,12 @@ test "extract_positional_exprs_with_arity returns positional args" {
 test "extract_positional_exprs_with_arity raises arity error" {
   let args = [call_split_test_arg(call_split_test_int(1L))]
   let result : Result[Array[@core.Expr], WasmGenError] = try? extract_positional_exprs_with_arity(
-    args, "array_get", 2,
+    args, "Array::get", 2,
   )
   match result {
     Ok(_) => fail("expected Unsupported")
     Err(WasmGenError::Unsupported(message)) =>
-      assert_eq(message, "array_get arity")
+      assert_eq(message, "Array::get arity")
     Err(other) => fail("unexpected error: \{other.to_string()}")
   }
 }
@@ -104,13 +104,13 @@ test "compile_call_builtin_pre_user returns false for unknown" {
 }
 
 ///|
-test "compile_call_builtin_pre_user emits wasm fallback throw for from_json" {
+test "compile_call_builtin_pre_user emits wasm fallback throw for Json::parse" {
   let ctx = CodegenCtx::new(false)
   ctx.need_exceptions = true
   let buf = ByteBuf::new()
   let args = [call_split_test_arg(call_split_test_string("{}"))]
   let handled = compile_call_builtin_pre_user(
-    ctx, buf, "from_json", args, false,
+    ctx, buf, "Json::parse", args, false,
   ) catch {
     err => fail(err.to_string())
   }
@@ -119,7 +119,7 @@ test "compile_call_builtin_pre_user emits wasm fallback throw for from_json" {
 }
 
 ///|
-test "compile_call_builtin_pre_user handles string_join" {
+test "compile_call_builtin_pre_user handles String::join" {
   let ctx = CodegenCtx::new(false)
   ctx.heap_local = alloc_temp_local(ctx)
   let buf = ByteBuf::new()
@@ -133,7 +133,7 @@ test "compile_call_builtin_pre_user handles string_join" {
     call_split_test_arg(call_split_test_string(",")),
   ]
   let handled = compile_call_builtin_pre_user(
-    ctx, buf, "string_join", args, false,
+    ctx, buf, "String::join", args, false,
   ) catch {
     err => fail(err.to_string())
   }
@@ -146,7 +146,9 @@ test "compile_call_builtin_pre_user keeps user fn priority for fallback names" {
   let ctx = CodegenCtx::new(false)
   let buf = ByteBuf::new()
   let args = [call_split_test_arg(call_split_test_string("{}"))]
-  let handled = compile_call_builtin_pre_user(ctx, buf, "from_json", args, true) catch {
+  let handled = compile_call_builtin_pre_user(
+    ctx, buf, "Json::parse", args, true,
+  ) catch {
     err => fail(err.to_string())
   }
   assert_false(handled)
@@ -188,7 +190,7 @@ test "compile_call_by_name handles __set_index" {
 ///|
 test "scan_needs_expr enables exceptions for wasm fallback builtins" {
   let ctx = CodegenCtx::new(false)
-  let expr = call_split_test_call("from_json", [
+  let expr = call_split_test_call("Json::parse", [
     call_split_test_arg(call_split_test_string("{}")),
   ])
   scan_needs_expr(ctx, expr)
@@ -196,9 +198,9 @@ test "scan_needs_expr enables exceptions for wasm fallback builtins" {
 }
 
 ///|
-test "scan_needs_expr marks heap need for string_join" {
+test "scan_needs_expr marks heap need for String::join" {
   let ctx = CodegenCtx::new(false)
-  let expr = call_split_test_call("string_join", [
+  let expr = call_split_test_call("String::join", [
     call_split_test_arg(call_split_test_int(0L)),
     call_split_test_arg(call_split_test_string(",")),
   ])
@@ -207,19 +209,16 @@ test "scan_needs_expr marks heap need for string_join" {
 }
 
 ///|
-test "needs_heap_expr returns true for map_builder aliases" {
-  let legacy_ctx = CodegenCtx::new(false)
-  let legacy_expr = call_split_test_call("map_builder", [])
-  assert_true(needs_heap_expr(legacy_ctx, legacy_expr))
-  let renamed_ctx = CodegenCtx::new(false)
-  let renamed_expr = call_split_test_call("MapBuilder::new", [])
-  assert_true(needs_heap_expr(renamed_ctx, renamed_expr))
+test "needs_heap_expr returns true for MapBuilder::new call" {
+  let ctx = CodegenCtx::new(false)
+  let expr = call_split_test_call("MapBuilder::new", [])
+  assert_true(needs_heap_expr(ctx, expr))
 }
 
 ///|
-test "needs_heap_expr returns true for string_join call" {
+test "needs_heap_expr returns true for String::join call" {
   let ctx = CodegenCtx::new(false)
-  let expr = call_split_test_call("string_join", [
+  let expr = call_split_test_call("String::join", [
     call_split_test_arg(call_split_test_int(0L)),
     call_split_test_arg(call_split_test_string(",")),
   ])
@@ -259,12 +258,12 @@ test "scan_needs_stmt registers struct fields as known record fields" {
 }
 
 ///|
-test "compile_call_builtin_post_user handles path_ref" {
+test "compile_call_builtin_post_user handles Path::ref" {
   let ctx = CodegenCtx::new(false)
   ctx.need_path = true
   let buf = ByteBuf::new()
   let args = [call_split_test_arg(call_split_test_string("./tmp"))]
-  let handled = compile_call_builtin_post_user(ctx, buf, "path_ref", args) catch {
+  let handled = compile_call_builtin_post_user(ctx, buf, "Path::ref", args) catch {
     err => fail(err.to_string())
   }
   assert_true(handled)

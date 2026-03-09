@@ -276,27 +276,27 @@ test "vibe integration char literal has Char type" {
 }
 
 ///|
-test "vibe integration imports module using array_builder helper" {
+test "vibe integration imports module using ArrayBuilder::new helper" {
   let db = VibeDb::new()
   let lib_source =
     #|export let build = (n: Int) -> Array[Int] {
     #|  let rec loop = (i: Int, b: ArrayBuilder[Int]) -> Array[Int] {
     #|    if i >= n {
     #|      {
-    #|        array_builder_freeze(b)
+    #|        ArrayBuilder::freeze(b)
     #|      }
     #|    } else {
     #|      {
-    #|        array_builder_push(b, i)
+    #|        ArrayBuilder::push(b, i)
     #|        loop(i + 1, b)
     #|      }
     #|    }
     #|  }
     #|  {
-    #|    loop(0, array_builder())
+    #|    loop(0, ArrayBuilder::new())
     #|  }
     #|}
-  let main_source = "import ./lib.vibe { build }\narray_length(build(3))"
+  let main_source = "import ./lib.vibe { build }\nArray::length(build(3))"
   db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let imported_env = db.types("./lib.vibe")
@@ -950,7 +950,7 @@ test "vibe integration resume rejects prior effects before perform" {
     #|  Ask(Int)
     #|}
     #|let run = () -> Int with {Ask, Stdout} {
-    #|  { stdout_write_char(65) }
+    #|  { Stdout::write_char(65) }
     #|  add(1, perform(Ask(41)))
     #|}
     #|let main = () -> Int with {Stdout} {
@@ -1008,7 +1008,7 @@ fn selfhost_probe_test_enabled() -> Bool {
   selfhost_deep_tests_enabled() ||
   env_truthy("VIBE_SELFHOST_PROBE_FULL") ||
   env_truthy("VIBE_SELFHOST_PROBE_STRICT") ||
-  (@sys.get_env_var("VIBE_SELFHOST_PROBE_FILES") is Some(_))
+  @sys.get_env_var("VIBE_SELFHOST_PROBE_FILES") is Some(_)
 }
 
 ///|
@@ -1061,7 +1061,7 @@ test "selfhost gate5: lex produces tokens" {
   let driver =
     #|import ./vibe/compiler/lexer.vibe { lex }
     #|let tokens = lex("let x = 1")
-    #|array_length(tokens)
+    #|Array::length(tokens)
   let result = eval_selfhost_module(db, driver)
   match result.last {
     Some(@core.Value::Int(n)) => assert_true(n > 0)
@@ -1134,9 +1134,9 @@ test "selfhost final: lexer tokenizes own source" {
   load_compiler_source(db, "vibe/compiler/lexer.vibe", visited)
   let driver =
     #|import ./vibe/compiler/lexer.vibe { lex }
-    #|let source = fs_read_file("vibe/compiler/token.vibe")
+    #|let source = Fs::read_file("vibe/compiler/token.vibe")
     #|let tokens = lex(source)
-    #|array_length(tokens)
+    #|Array::length(tokens)
   let result = eval_selfhost_module(db, driver)
   match result.last {
     Some(@core.Value::Int(n)) => {
@@ -1144,7 +1144,7 @@ test "selfhost final: lexer tokenizes own source" {
       inspect(
         n,
         content=(
-          #|583
+          #|599
         ),
       )
     }
@@ -1168,7 +1168,7 @@ test "selfhost final: parser roundtrips own source" {
     #|import ./vibe/compiler/lexer.vibe { lex }
     #|import ./vibe/compiler/parser.vibe { parse_program }
     #|import ./vibe/compiler/printer.vibe { print_program }
-    #|let source = fs_read_file("vibe/compiler/printer.vibe")
+    #|let source = Fs::read_file("vibe/compiler/printer.vibe")
     #|let tokens = lex(source)
     #|let stmts = parse_program(tokens)
     #|print_program(stmts)
@@ -1205,8 +1205,8 @@ test "selfhost final: eval pipeline processes own token module" {
   load_compiler_source(db, "vibe/compiler/eval_e2e_helpers.vibe", visited)
   let driver =
     #|import ./vibe/compiler/eval_e2e_helpers.vibe { run_and_lookup }
-    #|let source = fs_read_file("vibe/compiler/token.vibe")
-    #|let test_src = string_concat(source, "\nlet __result = token_to_string(TInt(42))")
+    #|let source = Fs::read_file("vibe/compiler/token.vibe")
+    #|let test_src = String::concat(source, "\nlet __result = token_to_string(TInt(42))")
     #|run_and_lookup(test_src, "__result")
   let result = eval_selfhost_module(db, driver)
   match result.last {
@@ -1315,7 +1315,7 @@ test "probe: selfhost roundtrip all compiler sources" {
     #|import ./vibe/compiler/printer.vibe { print_program }
     #|let check_file = (path: String, strict: Bool) -> String with { Fs } {
     #|  handle {
-    #|    let source = fs_read_file(path)
+    #|    let source = Fs::read_file(path)
     #|    let tokens = lex(source)
     #|    let stmts = parse_program(tokens)
     #|    let printed = print_program(stmts)
@@ -1323,7 +1323,7 @@ test "probe: selfhost roundtrip all compiler sources" {
     #|      let tokens2 = lex(printed)
     #|      let stmts2 = parse_program(tokens2)
     #|      let printed2 = print_program(stmts2)
-    #|      if string_equals(printed, printed2) { "OK" }
+    #|      if String::equals(printed, printed2) { "OK" }
     #|      else { "MISMATCH" }
     #|    } else {
     #|      "OK"

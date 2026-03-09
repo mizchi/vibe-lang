@@ -1,72 +1,65 @@
-// Purity analysis for vibe expressions
-//
-// 3-tier purity levels (represented as Int):
-//   0 = Pure       — no side effects, deterministic
-//   1 = StateLocal — local mutation only (let mut, array_push, while, etc.)
-//   2 = Impure     — I/O, effects, throws
+//# Imports
 
 import ./ast.vibe {
   Expr, Pat, Stmt, TypeExpr
 }
 
-import ./builtins.vibe {
-  normalize_builtin_name
-}
+//# Functions
 
-// Merge two purity levels (takes the maximum / least pure)
 export let merge_purity = (a: Int, b: Int) -> Int {
-  if a > b { a } else { b }
+  if a > b {
+    a
+  } else {
+    b
+  }
 }
 
-// Determine purity of a builtin function by name
 export let builtin_purity = (name: String) -> Int {
-  let normalized_name = normalize_builtin_name(name)
   // Impure (2): I/O, effects, throws
-  if string_equals(name, "print")
-    || string_equals(name, "println")
-    || string_equals(name, "assert")
-    || string_equals(name, "throw")
-    || string_equals(name, "sh")
-    || string_equals(name, "sh_lines")
-    || string_equals(name, "fs_read_file")
-    || string_equals(name, "fs_write_file")
-    || string_equals(name, "fs_exists")
-    || string_equals(name, "fs_readdir")
-    || string_equals(name, "fs_is_dir")
-    || string_equals(name, "fs_mkdir")
-    || string_equals(name, "fs_mkdir_p")
-    || string_equals(name, "fs_getcwd")
-    || string_equals(name, "fs_chdir")
-    || string_equals(name, "fs_remove")
-    || string_equals(name, "fs_is_file")
-    || string_equals(name, "fs_copy")
-    || string_equals(name, "fs_rename")
-    || string_equals(name, "fs_append")
-    || string_equals(name, "fs_write_bytes")
-    || string_equals(name, "env_get")
-    || string_equals(name, "http_request")
-    || string_equals(name, "http_listen")
+  if String::equals(name, "print")
+  || String::equals(name, "println")
+  || String::equals(name, "assert")
+  || String::equals(name, "throw")
+  || String::equals(name, "sh")
+  || String::equals(name, "sh_lines")
+  || String::equals(name, "Fs::read_file")
+  || String::equals(name, "Fs::write_file")
+  || String::equals(name, "Fs::exists")
+  || String::equals(name, "Fs::readdir")
+  || String::equals(name, "Fs::is_dir")
+  || String::equals(name, "Fs::mkdir")
+  || String::equals(name, "Fs::mkdir_p")
+  || String::equals(name, "Fs::getcwd")
+  || String::equals(name, "Fs::chdir")
+  || String::equals(name, "Fs::remove")
+  || String::equals(name, "Fs::is_file")
+  || String::equals(name, "Fs::copy")
+  || String::equals(name, "Fs::rename")
+  || String::equals(name, "Fs::append")
+  || String::equals(name, "Fs::write_bytes")
+  || String::equals(name, "Env::get")
+  || String::equals(name, "Http::request")
+  || String::equals(name, "Http::listen")
   {
     2
   }
   // StateLocal (1): mutation of data structures
-  else if string_equals(name, "array_push")
-    || string_equals(name, "array_set")
-    || string_equals(name, "bytes_push")
-    || string_equals(name, "bytes_set")
-    || string_equals(name, "array_builder_push")
-    || string_equals(name, "string_builder_push")
-    || string_equals(normalized_name, "MapBuilder::set")
+  else if String::equals(name, "Array::push")
+  || String::equals(name, "Array::set")
+  || String::equals(name, "Bytes::push")
+  || String::equals(name, "Bytes::set")
+  || String::equals(name, "ArrayBuilder::push")
+  || String::equals(name, "StringBuilder::push")
+  || String::equals(name, "MapBuilder::set")
   {
     1
   }
-  // Pure (0): everything else (eq, not, string_*, array_length, array_get, etc.)
+  // Pure (0): everything else (eq, not, string_*, Array::length, Array::get, etc.)
   else {
     0
   }
 }
 
-// Analyze purity of an expression
 export let rec analyze_purity = (expr: Expr) -> Int {
   match expr {
     EInt(_) => 0,
@@ -78,8 +71,8 @@ export let rec analyze_purity = (expr: Expr) -> Int {
     EArray(elems) => {
       let mut result = 0
       let mut i = 0
-      while i < array_length(elems) {
-        result = merge_purity(result, analyze_purity(array_get(elems, i)))
+      while i < Array::length(elems) {
+        result = merge_purity(result, analyze_purity(Array::get(elems, i)))
         i = i + 1
       }
       result
@@ -87,8 +80,8 @@ export let rec analyze_purity = (expr: Expr) -> Int {
     ETuple(elems) => {
       let mut result = 0
       let mut i = 0
-      while i < array_length(elems) {
-        result = merge_purity(result, analyze_purity(array_get(elems, i)))
+      while i < Array::length(elems) {
+        result = merge_purity(result, analyze_purity(Array::get(elems, i)))
         i = i + 1
       }
       result
@@ -96,8 +89,8 @@ export let rec analyze_purity = (expr: Expr) -> Int {
     ERecord(fields) => {
       let mut result = 0
       let mut i = 0
-      while i < array_length(fields) {
-        let (_, fval) = array_get(fields, i)
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
         result = merge_purity(result, analyze_purity(fval))
         i = i + 1
       }
@@ -113,8 +106,8 @@ export let rec analyze_purity = (expr: Expr) -> Int {
     EMatch(scrutinee, arms) => {
       let mut result = analyze_purity(scrutinee)
       let mut i = 0
-      while i < array_length(arms) {
-        let (_, arm_body) = array_get(arms, i)
+      while i < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, i)
         result = merge_purity(result, analyze_purity(arm_body))
         i = i + 1
       }
@@ -123,8 +116,8 @@ export let rec analyze_purity = (expr: Expr) -> Int {
     EHandle(body, arms) => {
       let mut result = analyze_purity(body)
       let mut i = 0
-      while i < array_length(arms) {
-        let (_, arm_body) = array_get(arms, i)
+      while i < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, i)
         result = merge_purity(result, analyze_purity(arm_body))
         i = i + 1
       }
@@ -142,8 +135,8 @@ export let rec analyze_purity = (expr: Expr) -> Int {
       }
       let mut args_p = 0
       let mut i = 0
-      while i < array_length(args) {
-        args_p = merge_purity(args_p, analyze_purity(array_get(args, i)))
+      while i < Array::length(args) {
+        args_p = merge_purity(args_p, analyze_purity(Array::get(args, i)))
         i = i + 1
       }
       merge_purity(base, args_p)
@@ -157,7 +150,14 @@ export let rec analyze_purity = (expr: Expr) -> Int {
   }
 }
 
-// Analyze purity of a statement
+export let is_pure = (expr: Expr) -> Bool {
+  eq(analyze_purity(expr), 0)
+}
+
+export let is_local = (expr: Expr) -> Bool {
+  analyze_purity(expr) <= 1
+}
+
 export let analyze_stmt_purity = (stmt: Stmt) -> Int {
   match stmt {
     SLet(_, _, _, _, body) => analyze_purity(body),
@@ -167,14 +167,4 @@ export let analyze_stmt_purity = (stmt: Stmt) -> Int {
     SExpr(e) => analyze_purity(e),
     _ => 0
   }
-}
-
-// Check if an expression is pure (purity == 0)
-export let is_pure = (expr: Expr) -> Bool {
-  eq(analyze_purity(expr), 0)
-}
-
-// Check if an expression has only local state (purity <= 1)
-export let is_local = (expr: Expr) -> Bool {
-  analyze_purity(expr) <= 1
 }

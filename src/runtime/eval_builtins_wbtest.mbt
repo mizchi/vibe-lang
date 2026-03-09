@@ -109,14 +109,14 @@ fn eval_builtin_for_contract_with_caps(
 }
 
 ///|
-test "http builtins contract: http_listen bad arg maps to BuiltinDetail" {
-  let result = eval_builtin_for_contract("http_listen", [
+test "http builtins contract: Http::listen bad arg maps to BuiltinDetail" {
+  let result = eval_builtin_for_contract("Http::listen", [
     builtin_test_string_arg("8080"),
   ])
   match result {
     Ok(_) => fail("expected bad call")
     Err(EvalError::BadCall(BuiltinDetail(fn_name~, detail~))) => {
-      assert_eq(fn_name, "http_listen")
+      assert_eq(fn_name, "Http::listen")
       assert_eq(detail, "bad call")
     }
     Err(other) => fail("unexpected error: " + other.to_string())
@@ -124,14 +124,14 @@ test "http builtins contract: http_listen bad arg maps to BuiltinDetail" {
 }
 
 ///|
-test "http builtins contract: http_accept bad arg maps to BuiltinDetail" {
-  let result = eval_builtin_for_contract("http_accept", [
+test "http builtins contract: Http::accept bad arg maps to BuiltinDetail" {
+  let result = eval_builtin_for_contract("Http::accept", [
     builtin_test_string_arg("1"),
   ])
   match result {
     Ok(_) => fail("expected bad call")
     Err(EvalError::BadCall(BuiltinDetail(fn_name~, detail~))) => {
-      assert_eq(fn_name, "http_accept")
+      assert_eq(fn_name, "Http::accept")
       assert_eq(detail, "bad call")
     }
     Err(other) => fail("unexpected error: " + other.to_string())
@@ -139,8 +139,8 @@ test "http builtins contract: http_accept bad arg maps to BuiltinDetail" {
 }
 
 ///|
-test "http builtins contract: http_respond bad arg maps to BuiltinDetail" {
-  let result = eval_builtin_for_contract("http_respond", [
+test "http builtins contract: Http::respond bad arg maps to BuiltinDetail" {
+  let result = eval_builtin_for_contract("Http::respond", [
     builtin_test_int_arg(1),
     builtin_test_string_arg("200"),
     builtin_test_string_arg(""),
@@ -149,7 +149,7 @@ test "http builtins contract: http_respond bad arg maps to BuiltinDetail" {
   match result {
     Ok(_) => fail("expected bad call")
     Err(EvalError::BadCall(BuiltinDetail(fn_name~, detail~))) => {
-      assert_eq(fn_name, "http_respond")
+      assert_eq(fn_name, "Http::respond")
       assert_eq(detail, "bad call")
     }
     Err(other) => fail("unexpected error: " + other.to_string())
@@ -157,14 +157,14 @@ test "http builtins contract: http_respond bad arg maps to BuiltinDetail" {
 }
 
 ///|
-test "http builtins contract: http_accept backend error maps to Io(http_accept)" {
-  let result = eval_builtin_for_contract("http_accept", [
+test "http builtins contract: Http::accept backend error maps to Io(Http::accept)" {
+  let result = eval_builtin_for_contract("Http::accept", [
     builtin_test_int_arg(-1),
   ])
   match result {
     Ok(_) => fail("expected io bad call")
     Err(EvalError::BadCall(Io(op~, detail~))) => {
-      assert_eq(op, "http_accept")
+      assert_eq(op, "Http::accept")
       assert_true(detail.length() > 0)
     }
     Err(other) => fail("unexpected error: " + other.to_string())
@@ -172,8 +172,8 @@ test "http builtins contract: http_accept backend error maps to Io(http_accept)"
 }
 
 ///|
-test "http builtins contract: http_respond backend error maps to Io(http_respond)" {
-  let result = eval_builtin_for_contract("http_respond", [
+test "http builtins contract: Http::respond backend error maps to Io(Http::respond)" {
+  let result = eval_builtin_for_contract("Http::respond", [
     builtin_test_int_arg(-1),
     builtin_test_int_arg(200),
     builtin_test_string_arg("content-type: text/plain"),
@@ -182,7 +182,7 @@ test "http builtins contract: http_respond backend error maps to Io(http_respond
   match result {
     Ok(_) => fail("expected io bad call")
     Err(EvalError::BadCall(Io(op~, detail~))) => {
-      assert_eq(op, "http_respond")
+      assert_eq(op, "Http::respond")
       assert_true(detail.length() > 0)
     }
     Err(other) => fail("unexpected error: " + other.to_string())
@@ -190,10 +190,10 @@ test "http builtins contract: http_respond backend error maps to Io(http_respond
 }
 
 ///|
-test "http builtins contract: http_listen requires net listen capability" {
+test "http builtins contract: Http::listen requires net listen capability" {
   let result = eval_builtin_for_contract_with_caps(
     @capability.CapabilitySet::new(),
-    "http_listen",
+    "Http::listen",
     [builtin_test_int_arg(8080)],
   )
   match result {
@@ -205,10 +205,10 @@ test "http builtins contract: http_listen requires net listen capability" {
 }
 
 ///|
-test "http builtins contract: http_accept requires net listen capability" {
+test "http builtins contract: Http::accept requires net listen capability" {
   let result = eval_builtin_for_contract_with_caps(
     @capability.CapabilitySet::new(),
-    "http_accept",
+    "Http::accept",
     [builtin_test_int_arg(1)],
   )
   match result {
@@ -219,10 +219,10 @@ test "http builtins contract: http_accept requires net listen capability" {
 }
 
 ///|
-test "http builtins contract: http_respond requires net listen capability" {
+test "http builtins contract: Http::respond requires net listen capability" {
   let result = eval_builtin_for_contract_with_caps(
     @capability.CapabilitySet::new(),
-    "http_respond",
+    "Http::respond",
     [
       builtin_test_int_arg(1),
       builtin_test_int_arg(200),
@@ -238,10 +238,10 @@ test "http builtins contract: http_respond requires net listen capability" {
 }
 
 ///|
-test "http builtins contract: http_request requires net connect capability" {
+test "http builtins contract: Http::request requires net connect capability" {
   let result = eval_builtin_for_contract_with_caps(
     @capability.CapabilitySet::new(),
-    "http_request",
+    "Http::request",
     [
       builtin_test_string_arg("GET"),
       builtin_test_string_arg("https://example.com"),
@@ -258,10 +258,10 @@ test "http builtins contract: http_request requires net connect capability" {
 }
 
 ///|
-test "http builtins contract: http_request rejects invalid URL before backend" {
+test "http builtins contract: Http::request rejects invalid URL before backend" {
   let result = eval_builtin_for_contract_with_caps(
     @capability.CapabilitySet::developer(),
-    "http_request",
+    "Http::request",
     [
       builtin_test_string_arg("GET"),
       builtin_test_string_arg("example.com"),
@@ -272,7 +272,7 @@ test "http builtins contract: http_request rejects invalid URL before backend" {
   match result {
     Ok(_) => fail("expected bad call")
     Err(EvalError::BadCall(Io(op~, detail~))) => {
-      assert_eq(op, "http_request")
+      assert_eq(op, "Http::request")
       assert_true(detail.contains("invalid URL for network capability check"))
     }
     Err(other) => fail("unexpected error: " + other.to_string())
@@ -280,10 +280,10 @@ test "http builtins contract: http_request rejects invalid URL before backend" {
 }
 
 ///|
-test "http builtins contract: http_response_status requires net connect capability" {
+test "http builtins contract: Http::response_status requires net connect capability" {
   let result = eval_builtin_for_contract_with_caps(
     @capability.CapabilitySet::new(),
-    "http_response_status",
+    "Http::response_status",
     [builtin_test_int_arg(1)],
   )
   match result {
@@ -295,10 +295,10 @@ test "http builtins contract: http_response_status requires net connect capabili
 }
 
 ///|
-test "http builtins contract: http_request_method requires net listen capability" {
+test "http builtins contract: Http::request_method requires net listen capability" {
   let result = eval_builtin_for_contract_with_caps(
     @capability.CapabilitySet::new(),
-    "http_request_method",
+    "Http::request_method",
     [builtin_test_int_arg(1)],
   )
   match result {
@@ -313,7 +313,7 @@ test "http builtins contract: http_request_method requires net listen capability
 test "socket builtins contract: connect requires net connect capability" {
   let result = eval_builtin_for_contract_with_caps(
     @capability.CapabilitySet::new(),
-    "socket_tcp_connect",
+    "Socket::tcp_connect",
     [builtin_test_string_arg("example.com"), builtin_test_int_arg(443)],
   )
   match result {

@@ -96,11 +96,7 @@ fn build_dep_graph(
 ) -> Map[String, Map[String, Bool]] {
   let graph : Map[String, Map[String, Bool]] = {}
   for stmt in stmts {
-    let (name, refs) = collect_stmt_info(
-      stmt,
-      on_name,
-      keep_for_in_helpers~,
-    )
+    let (name, refs) = collect_stmt_info(stmt, on_name, keep_for_in_helpers~)
     match name {
       Some(n) =>
         match graph.get(n) {
@@ -575,11 +571,10 @@ fn collect_for_in_helper_refs_expr(
     | @core.Expr::String(..)
     | @core.Expr::Ident(..)
     | @core.Expr::Placeholder(..) => ()
-    @core.Expr::Call(args~, ..) => {
+    @core.Expr::Call(args~, ..) =>
       for arg in args {
         collect_for_in_helper_refs_expr(arg.expr, bound, refs, on_name)
       }
-    }
     @core.Expr::Tuple(items~, ..) | @core.Expr::Array(items~, ..) =>
       for item in items {
         collect_for_in_helper_refs_expr(item, bound, refs, on_name)
@@ -628,7 +623,8 @@ fn collect_for_in_helper_refs_expr(
         let arm_bound = bound.child()
         @core.bind_pattern_names_scope(arm_bound, arm.pat)
         match arm.cond {
-          Some(cond) => collect_for_in_helper_refs_expr(cond, arm_bound, refs, on_name)
+          Some(cond) =>
+            collect_for_in_helper_refs_expr(cond, arm_bound, refs, on_name)
           None => ()
         }
         collect_for_in_helper_refs_expr(arm.expr, arm_bound, refs, on_name)
@@ -640,7 +636,8 @@ fn collect_for_in_helper_refs_expr(
         let arm_bound = bound.child()
         @core.bind_pattern_names_scope(arm_bound, arm.pat)
         match arm.cond {
-          Some(cond) => collect_for_in_helper_refs_expr(cond, arm_bound, refs, on_name)
+          Some(cond) =>
+            collect_for_in_helper_refs_expr(cond, arm_bound, refs, on_name)
           None => ()
         }
         collect_for_in_helper_refs_expr(arm.expr, arm_bound, refs, on_name)
@@ -663,7 +660,8 @@ fn collect_for_in_helper_refs_expr(
     }
     @core.Expr::Break(value~, ..) =>
       match value {
-        Some(inner) => collect_for_in_helper_refs_expr(inner, bound, refs, on_name)
+        Some(inner) =>
+          collect_for_in_helper_refs_expr(inner, bound, refs, on_name)
         None => ()
       }
     @core.Expr::Continue(args~, ..) =>
@@ -699,7 +697,8 @@ fn collect_for_in_helper_refs_stmt(
       scope.bindings[name] = true
     }
     @core.Stmt::ExternLet(name~, ..) => scope.bindings[name] = true
-    @core.Stmt::Assign(expr~, ..) => collect_for_in_helper_refs_expr(expr, scope, refs, on_name)
+    @core.Stmt::Assign(expr~, ..) =>
+      collect_for_in_helper_refs_expr(expr, scope, refs, on_name)
     @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
       collect_for_in_helper_refs_expr(target, scope, refs, on_name)
       collect_for_in_helper_refs_expr(index, scope, refs, on_name)
@@ -714,7 +713,8 @@ fn collect_for_in_helper_refs_stmt(
       collect_for_in_helper_refs_block(else_body, scope, refs, on_name)
       @core.bind_pattern_names_scope(scope, pat)
     }
-    @core.Stmt::Expr(expr~, ..) => collect_for_in_helper_refs_expr(expr, scope, refs, on_name)
+    @core.Stmt::Expr(expr~, ..) =>
+      collect_for_in_helper_refs_expr(expr, scope, refs, on_name)
     @core.Stmt::Test(body~, ..) | @core.Stmt::Bench(body~, ..) =>
       collect_for_in_helper_refs_block(body, scope, refs, on_name)
     @core.Stmt::EnumDef(name~, ..)
@@ -725,7 +725,8 @@ fn collect_for_in_helper_refs_stmt(
     | @core.Stmt::InternalExportTypeAlias(name~, ..)
     | @core.Stmt::StructDef(name~, ..)
     | @core.Stmt::ExportStructDef(name~, ..)
-    | @core.Stmt::InternalExportStructDef(name~, ..) => scope.bindings[name] = true
+    | @core.Stmt::InternalExportStructDef(name~, ..) =>
+      scope.bindings[name] = true
     @core.Stmt::Import(..)
     | @core.Stmt::TraitDef(..)
     | @core.Stmt::InternalTraitDef(..)
@@ -834,10 +835,10 @@ fn collect_refs_type(ty : @core.Type, refs : Map[String, Bool]) -> Unit {
       for _, field_ty in fields {
         collect_refs_type(field_ty, refs)
       }
-    @core.Type::Array(inner)
-    | @core.Type::ArrayBuilder(inner) => collect_refs_type(inner, refs)
-    @core.Type::Map(_key, inner)
-    | @core.Type::MapBuilder(_key, inner) => collect_refs_type(inner, refs)
+    @core.Type::Array(inner) | @core.Type::ArrayBuilder(inner) =>
+      collect_refs_type(inner, refs)
+    @core.Type::Map(_key, inner) | @core.Type::MapBuilder(_key, inner) =>
+      collect_refs_type(inner, refs)
     @core.Type::StringBuilder | @core.Type::Bytes => ()
     @core.Type::Variant(fields) =>
       for _, field_ty in fields {

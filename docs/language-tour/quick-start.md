@@ -32,14 +32,14 @@ let rec fact = (n: Int) -> Int {
 }
 
 // Lambda — use explicit types for reliable type inference
-array_map([1, 2, 3], (x: Int) -> Int { x * 2 })
-array_fold([1, 2, 3], 0, (acc: Int, x: Int) -> Int { acc + x })
+Array::map([1, 2, 3], (x: Int) -> Int { x * 2 })
+Array::fold([1, 2, 3], 0, (acc: Int, x: Int) -> Int { acc + x })
 
 // Short lambda / placeholder — MAY FAIL in REPL with type inference errors.
 // Always prefer explicit types:
-//   array_map(arr, x -> x * 2)     -- may fail
-//   array_map(arr, _ * 2)          -- may fail
-//   array_map(arr, (x: Int) -> Int { x * 2 })  -- reliable
+//   Array::map(arr, x -> x * 2)     -- may fail
+//   Array::map(arr, _ * 2)          -- may fail
+//   Array::map(arr, (x: Int) -> Int { x * 2 })  -- reliable
 
 // Generics
 let identity = [T](x: T) -> T { x }
@@ -48,7 +48,7 @@ let identity = [T](x: T) -> T { x }
 1 |> add(2) |> mul(3)  // => 9   (add(1,2) => mul(3,3))
 
 // Pipe-first call style
-"hello" |> string_length  // => 5
+"hello" |> String::length  // => 5
 // Note: struct.field (e.g. p.x) is field access only
 ```
 
@@ -57,8 +57,8 @@ let identity = [T](x: T) -> T { x }
 > so piping works naturally:
 > ```vibe
 > [1, 2, 3, 4, 5]
->   |> array_filter((x: Int) -> Bool { x % 2 == 0 })
->   |> array_fold(0, (acc: Int, x: Int) -> Int { acc + x })
+>   |> Array::filter((x: Int) -> Bool { x % 2 == 0 })
+>   |> Array::fold(0, (acc: Int, x: Int) -> Int { acc + x })
 > ```
 
 ## Types
@@ -109,7 +109,7 @@ impl Eq for Int                              // impl (declaration only)
 > `Point::{ x: 3, y: 4 }` syntax. `record` is a dynamic string-keyed object.
 > They are **not interchangeable** — `record { }` destructuring does not work on
 > structs, and struct types cannot be used as lambda type annotations in HOFs.
-> For data processing with `array_filter`/`array_map`, prefer `record` or use
+> For data processing with `Array::filter`/`Array::map`, prefer `record` or use
 > `for` comprehensions with structs.
 
 ## Collections
@@ -118,16 +118,16 @@ impl Eq for Int                              // impl (declaration only)
 // Array
 let arr = [1, 2, 3]
 arr[0]                    // index
-array_length(arr)         // 3
-array_map(arr, (x: Int) -> Int { x * 2 })
-array_filter(arr, (x: Int) -> Bool { x > 1 })
-array_fold(arr, 0, (acc: Int, x: Int) -> Int { acc + x })
-array_concat([1, 2], [3, 4])
+Array::length(arr)         // 3
+Array::map(arr, (x: Int) -> Int { x * 2 })
+Array::filter(arr, (x: Int) -> Bool { x > 1 })
+Array::fold(arr, 0, (acc: Int, x: Int) -> Int { acc + x })
+Array::concat([1, 2], [3, 4])
 
 // Map (string-keyed, all values must be same type)
 let m = map { a: 1, "b": 2 }
-map_get(m, "a")           // 1
-map_keys(m)               // ["a", "b"]
+Map::get(m, "a")           // 1
+Map::keys(m)               // ["a", "b"]
 
 // Record (dynamic)
 let r = record { x: 3, y: 4 }
@@ -143,31 +143,31 @@ let (a, b) = pair         // destructure
 
 ```vibe
 // Parse
-let data = from_json("{\"name\": \"vibe\", \"version\": 1}")
+let data = Json::parse("{\"name\": \"vibe\", \"version\": 1}")
 
 // Object access
-json_get(data, "name")                   // => Json
-json_string(json_get(data, "name"))      // => "vibe"
-json_number(json_get(data, "version"))   // => 1 (returns Double)
+Json::get(data, "name")                   // => Json
+Json::string(Json::get(data, "name"))      // => "vibe"
+Json::number(Json::get(data, "version"))   // => 1 (returns Double)
 
-// Array access — use json_index for arrays, json_get for objects
-let arr = from_json("[10, 20, 30]")
-json_index(arr, 0)        // => Json(10)
-json_length(arr)          // => 3
-json_number(json_index(arr, 1))  // => 20 (returns Double)
+// Array access — use Json::index for arrays, Json::get for objects
+let arr = Json::parse("[10, 20, 30]")
+Json::index(arr, 0)        // => Json(10)
+Json::length(arr)          // => 3
+Json::number(Json::index(arr, 1))  // => 20 (returns Double)
 
 // Type check
-json_type(data)           // => "object"
-json_is_null(from_json("null"))  // => true
-json_keys(data)           // => ["name", "version"]
+Json::type_of(data)           // => "object"
+Json::is_null(Json::parse("null"))  // => true
+Json::keys(data)           // => ["name", "version"]
 
-// Serialize (NOTE: to_json may hang in REPL — use in .vibe files or tests)
-// to_json(42)            // => "42"
+// Serialize (NOTE: Json::stringify may hang in REPL — use in .vibe files or tests)
+// Json::stringify(42)            // => "42"
 
-// JSON number → Int: json_number returns Double, convert with double_to_int
-let age = double_to_int(json_number(json_get(data, "version")))  // => 1
+// JSON number → Int: Json::number returns Double, convert with Double::to_int
+let age = Double::to_int(Json::number(Json::get(data, "version")))  // => 1
 
-// CAUTION: from_json with invalid input causes a runtime error
+// CAUTION: Json::parse with invalid input causes a runtime error
 // that cannot be caught by handle. Ensure input is valid JSON.
 ```
 
@@ -183,13 +183,13 @@ let age = double_to_int(json_number(json_get(data, "version")))  // => 1
 ```vibe
 // Wrap in do block — required even in REPL
 // In REPL, the entire do block must be on ONE line (semicolon-separated):
-do { sh("echo hello"); let files = sh_lines("ls src"); array_length(files) }
+do { sh("echo hello"); let files = sh_lines("ls src"); Array::length(files) }
 
 // In a .vibe file, multi-line is fine:
 // do {
 //   sh("echo hello")
 //   let files = sh_lines("ls src")
-//   array_length(files)
+//   Array::length(files)
 // }
 
 // In a function — declare effects in signature
@@ -200,7 +200,7 @@ let run = () -> Unit with { Stdout } {
 // In test blocks — effects are implicit
 test "shell" {
   let lines = sh_lines("echo hello")
-  assert(eq(array_length(lines), 1))
+  assert(eq(Array::length(lines), 1))
 }
 ```
 
@@ -258,7 +258,7 @@ let result = handle { safe_div(8, 0) } { Error(_) => -1 }
 ```
 
 > **Note**: `handle { ... } { Error(_) => ... }` catches errors from `throw()`.
-> Runtime errors from builtins (e.g. `from_json` with invalid input) are **not**
+> Runtime errors from builtins (e.g. `Json::parse` with invalid input) are **not**
 > catchable by `handle` — they abort execution. Validate input before calling
 > such functions.
 
@@ -267,47 +267,47 @@ let result = handle { safe_div(8, 0) } { Error(_) => -1 }
 ```vibe
 test "example" {
   assert(eq(1 + 1, 2))
-  assert(string_equals("hello", "hello"))
+  assert(String::equals("hello", "hello"))
 }
 ```
 
 > **Note**: Both `assert_eq(a, b)` and `assert(eq(a, b))` work for
-> numeric comparisons. For strings, use `assert(string_equals(a, b))`.
+> numeric comparisons. For strings, use `assert(String::equals(a, b))`.
 > Effects like `sh`/`sh_lines` work implicitly in test blocks (no `do { }` needed).
 
 ## Key Builtins
 
-**String**: `string_length`, `string_concat`, `string_split`, `string_join`, `string_contains`, `string_substring`, `string_replace`, `string_replace_all`, `string_trim`, `string_to_upper`, `string_to_lower`, `string_equals`
+**String**: `String::length`, `String::concat`, `String::split`, `String::join`, `String::contains`, `String::substring`, `String::replace`, `String::replace_all`, `String::trim`, `String::to_upper`, `String::to_lower`, `String::equals`
 
 ```vibe
-string_trim("  hello  ")                         // => "hello"
-string_replace("hello world", "world", "vibe")   // => "hello vibe"
-string_replace_all("aabaa", "a", "x")            // => "xxbxx"
-string_substring("hello world", 0, 5)            // => "hello"
-string_to_upper("hello")                         // => "HELLO"
-string_to_lower("HELLO")                         // => "hello"
+String::trim("  hello  ")                         // => "hello"
+String::replace("hello world", "world", "vibe")   // => "hello vibe"
+String::replace_all("aabaa", "a", "x")            // => "xxbxx"
+String::substring("hello world", 0, 5)            // => "hello"
+String::to_upper("hello")                         // => "HELLO"
+String::to_lower("HELLO")                         // => "hello"
 ```
 
-**Array**: `array_length`, `array_get`, `array_slice`, `array_concat`, `array_reverse`, `array_sort`, `array_map`, `array_filter`, `array_fold`, `array_any`, `array_all`, `array_find` (returns `Option[T]`), `array_contains`, `array_join`
+**Array**: `Array::length`, `Array::get`, `Array::slice`, `Array::concat`, `Array::reverse`, `Array::sort`, `Array::map`, `Array::filter`, `Array::fold`, `Array::any`, `Array::all`, `Array::find` (returns `Option[T]`), `Array::contains`, `Array::join`
 
 > Most array HOFs are **generic** — they work with any element type (String, Bool, etc.),
-> not just numbers. `array_sort` and `array_contains` require numeric types (`eq`/`lt`).
+> not just numbers. `Array::sort` and `Array::contains` require numeric types (`eq`/`lt`).
 
 ```vibe
-// array_any/all: collection is FIRST arg, predicate is LAST
-array_any([1, 2, 3, 4], (x: Int) -> Bool { x > 3 })   // => true
-array_all([1, 2, 3], (x: Int) -> Bool { x > 0 })       // => true
-// array_find: returns Option[T] — Some(value) or None
-array_find([1, 2, 3, 4, 5], (x: Int) -> Bool { x > 3 }) // => Some(4)
+// Array::any/all: collection is FIRST arg, predicate is LAST
+Array::any([1, 2, 3, 4], (x: Int) -> Bool { x > 3 })   // => true
+Array::all([1, 2, 3], (x: Int) -> Bool { x > 0 })       // => true
+// Array::find: returns Option[T] — Some(value) or None
+Array::find([1, 2, 3, 4, 5], (x: Int) -> Bool { x > 3 }) // => Some(4)
 ```
 
-**Map**: `map_get`, `map_get_or`, `map_has_key`, `map_keys`, `map_values`, `map_map`, `map_filter`
+**Map**: `Map::get`, `Map::get_or`, `Map::has_key`, `Map::keys`, `Map::values`, `Map::map`, `Map::filter`
 
-> **`map_get` throws on missing key.** Use `map_get_or` for safe access with a default.
+> **`Map::get` throws on missing key.** Use `Map::get_or` for safe access with a default.
 
 ```vibe
-map_get_or(map { a: 1, b: 2 }, "c", 0)  // => 0 (default)
-map_has_key(map { a: 1, b: 2 }, "a")    // => true
+Map::get_or(map { a: 1, b: 2 }, "c", 0)  // => 0 (default)
+Map::has_key(map { a: 1, b: 2 }, "a")    // => true
 ```
 
 **Map Builder** (imperative map construction, requires `do { }` context):
@@ -316,29 +316,29 @@ map_has_key(map { a: 1, b: 2 }, "a")    // => true
 do { let b = MapBuilder::new(); MapBuilder::set(b, "x", 10); MapBuilder::freeze(b) }
 ```
 
-**JSON**: `from_json`, `to_json`, `json_get`, `json_index`, `json_string`, `json_number`, `json_bool`, `json_type`, `json_keys`, `json_length`, `json_is_null`
+**JSON**: `Json::parse`, `Json::stringify`, `Json::get`, `Json::index`, `Json::string`, `Json::number`, `Json::bool`, `Json::type_of`, `Json::keys`, `Json::length`, `Json::is_null`
 
-**IO**: `sh`, `sh_lines`, `stdout_write_stream`, `stdin_read_stream`
+**IO**: `sh`, `sh_lines`, `Stdout::write_stream`, `Stdin::read_stream`
 
-**Math**: `int_abs`, `int_max`, `int_min`, `double_floor`, `double_ceil`
+**Math**: `Int::abs`, `Int::max`, `Int::min`, `Double::floor`, `Double::ceil`
 
 ```vibe
-int_abs(-5)        // => 5
-int_max(3, 7)      // => 7
+Int::abs(-5)        // => 5
+Int::max(3, 7)      // => 7
 ```
 
-**Conversion**: `int_to_double`, `double_to_int`, `int_to_float`, `float_to_int`, `to_string`
+**Conversion**: `Int::to_double`, `Double::to_int`, `Int::to_float`, `Float::to_int`, `to_string`
 
 ```vibe
 to_string(42)       // => "42"
-double_to_int(3.14) // => 3
+Double::to_int(3.14) // => 3
 ```
 
-**Lines**: `from_lines` (split string by `\n` → `Array[String]`), `to_lines` (join array with `\n`)
+**Lines**: `Lines::parse` (split string by `\n` → `Array[String]`), `Lines::stringify` (join array with `\n`)
 
 ```vibe
-from_lines("a\nb\nc")              // => ["a", "b", "c"]
-to_lines(["a", "b", "c"])          // => "a\nb\nc"
+Lines::parse("a\nb\nc")              // => ["a", "b", "c"]
+Lines::stringify(["a", "b", "c"])          // => "a\nb\nc"
 ```
 
 **Assert**: `assert(Bool)`, `assert_eq(a, b)`, `eq(a, b) -> Bool`

@@ -168,13 +168,19 @@ fn format_type_compact(ty : Type) -> String {
     }
     Type::Array(inner) => "Array[" + format_type_compact(inner) + "]"
     Type::Map(key, value) =>
-      "Map[" + format_type_compact(key) + ", " + format_type_compact(value) + "]"
+      "Map[" +
+      format_type_compact(key) +
+      ", " +
+      format_type_compact(value) +
+      "]"
     Type::ArrayBuilder(inner) =>
       "ArrayBuilder[" + format_type_compact(inner) + "]"
     Type::MapBuilder(key, value) =>
-      "MapBuilder[" + format_type_compact(key) + ", " + format_type_compact(
-        value,
-      ) + "]"
+      "MapBuilder[" +
+      format_type_compact(key) +
+      ", " +
+      format_type_compact(value) +
+      "]"
     Type::StringBuilder => "StringBuilder"
     Type::Bytes => "Bytes"
     Type::Variant(_) => "Variant"

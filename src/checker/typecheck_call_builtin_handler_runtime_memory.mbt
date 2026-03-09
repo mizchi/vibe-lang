@@ -79,10 +79,10 @@ fn type_call_builtin_handler_runtime_memory(
       }
       record_ty
     }
-    "map_keys" => {
-      let pos_args = extract_positional_args(args, "map_keys", call_span)
+    "Map::keys" => {
+      let pos_args = extract_positional_args(args, "Map::keys", call_span)
       if pos_args.length() != 1 {
-        raise TypeError::BadCall(message="map_keys", span=call_span)
+        raise TypeError::BadCall(message="Map::keys", span=call_span)
       }
       let map_ty = type_expr_eff(
         env,
@@ -94,13 +94,13 @@ fn type_call_builtin_handler_runtime_memory(
       let resolved = normalize_type(env, map_ty)
       match resolved {
         @core.Type::Map(key_ty, _) => @core.Type::Array(key_ty)
-        _ => raise TypeError::BadCall(message="map_keys", span=call_span)
+        _ => raise TypeError::BadCall(message="Map::keys", span=call_span)
       }
     }
-    "map_values" => {
-      let pos_args = extract_positional_args(args, "map_values", call_span)
+    "Map::values" => {
+      let pos_args = extract_positional_args(args, "Map::values", call_span)
       if pos_args.length() != 1 {
-        raise TypeError::BadCall(message="map_values", span=call_span)
+        raise TypeError::BadCall(message="Map::values", span=call_span)
       }
       let map_ty = type_expr_eff(
         env,
@@ -112,13 +112,13 @@ fn type_call_builtin_handler_runtime_memory(
       let resolved = normalize_type(env, map_ty)
       match resolved {
         @core.Type::Map(_key, elem_ty) => @core.Type::Array(elem_ty)
-        _ => raise TypeError::BadCall(message="map_values", span=call_span)
+        _ => raise TypeError::BadCall(message="Map::values", span=call_span)
       }
     }
-    "map_has_key" => {
-      let pos_args = extract_positional_args(args, "map_has_key", call_span)
+    "Map::has_key" => {
+      let pos_args = extract_positional_args(args, "Map::has_key", call_span)
       if pos_args.length() != 2 {
-        raise TypeError::BadCall(message="map_has_key", span=call_span)
+        raise TypeError::BadCall(message="Map::has_key", span=call_span)
       }
       let map_ty = type_expr_eff(
         env,
@@ -137,19 +137,17 @@ fn type_call_builtin_handler_runtime_memory(
       let resolved = normalize_type(env, map_ty)
       match resolved {
         @core.Type::Map(key_ty, _) => {
-          ensure_type(
-            env, key_arg_ty, key_ty, pos_args[1].span(), "argument",
-          )
+          ensure_type(env, key_arg_ty, key_ty, pos_args[1].span(), "argument")
           ensure_map_key_hashable(env, key_arg_ty, pos_args[1].span())
         }
-        _ => raise TypeError::BadCall(message="map_has_key", span=call_span)
+        _ => raise TypeError::BadCall(message="Map::has_key", span=call_span)
       }
       @core.Type::Bool
     }
-    "array_slice" => {
-      let pos_args = extract_positional_args(args, "array_slice", call_span)
+    "Array::slice" => {
+      let pos_args = extract_positional_args(args, "Array::slice", call_span)
       if pos_args.length() != 3 {
-        raise TypeError::BadCall(message="array_slice", span=call_span)
+        raise TypeError::BadCall(message="Array::slice", span=call_span)
       }
       let array_ty = type_expr_eff(
         env,
@@ -161,7 +159,7 @@ fn type_call_builtin_handler_runtime_memory(
       let resolved = normalize_type(env, array_ty)
       let elem_ty = match resolved {
         @core.Type::Array(elem_ty) => elem_ty
-        _ => raise TypeError::BadCall(message="array_slice", span=call_span)
+        _ => raise TypeError::BadCall(message="Array::slice", span=call_span)
       }
       let start_ty = type_expr_eff(
         env,
@@ -195,7 +193,7 @@ fn type_call_builtin_handler_runtime_memory(
       }
       @core.Type::Array(elem_ty)
     }
-    "int_to_float" | "f32_convert_i32_s" =>
+    "Int::to_float" | "f32_convert_i32_s" =>
       type_check_unary_convert(
         env,
         args,
@@ -207,7 +205,7 @@ fn type_call_builtin_handler_runtime_memory(
         @core.Type::Int,
         @core.Type::Float,
       )
-    "int_to_double" | "f64_convert_i32_s" =>
+    "Int::to_double" | "f64_convert_i32_s" =>
       type_check_unary_convert(
         env,
         args,
@@ -219,7 +217,7 @@ fn type_call_builtin_handler_runtime_memory(
         @core.Type::Int,
         @core.Type::Double,
       )
-    "float_to_int" | "i32_trunc_f32_s" =>
+    "Float::to_int" | "i32_trunc_f32_s" =>
       type_check_unary_convert(
         env,
         args,
@@ -231,7 +229,7 @@ fn type_call_builtin_handler_runtime_memory(
         @core.Type::Float,
         @core.Type::Int,
       )
-    "float_to_double" | "f64_promote_f32" =>
+    "Float::to_double" | "f64_promote_f32" =>
       type_check_unary_convert(
         env,
         args,
@@ -243,7 +241,7 @@ fn type_call_builtin_handler_runtime_memory(
         @core.Type::Float,
         @core.Type::Double,
       )
-    "double_to_int" | "i32_trunc_f64_s" =>
+    "Double::to_int" | "i32_trunc_f64_s" =>
       type_check_unary_convert(
         env,
         args,
@@ -255,7 +253,7 @@ fn type_call_builtin_handler_runtime_memory(
         @core.Type::Double,
         @core.Type::Int,
       )
-    "double_to_i64_bits" =>
+    "Double::to_i64_bits" =>
       type_check_unary_convert(
         env,
         args,
@@ -267,7 +265,7 @@ fn type_call_builtin_handler_runtime_memory(
         @core.Type::Double,
         @core.Type::Int,
       )
-    "i64_bits_to_double" =>
+    "Double::from_i64_bits" =>
       type_check_unary_convert(
         env,
         args,
@@ -279,7 +277,7 @@ fn type_call_builtin_handler_runtime_memory(
         @core.Type::Int,
         @core.Type::Double,
       )
-    "double_to_float" | "f32_demote_f64" =>
+    "Double::to_float" | "f32_demote_f64" =>
       type_check_unary_convert(
         env,
         args,

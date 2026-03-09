@@ -46,14 +46,14 @@ test "type_call_builtin: path returns Path" {
 }
 
 ///|
-test "type_call_builtin: string_length returns Int" {
+test "type_call_builtin: String::length returns Int" {
   let env = TypeEnv::new()
   let span = builtin_test_span()
   let args = [builtin_test_string_arg("abc")]
   let aliases : Map[String, @core.Ref] = {}
   let actual = type_call_builtin(
     env,
-    "string_length",
+    "String::length",
     args,
     aliases,
     effect_scope_all(),
@@ -66,7 +66,7 @@ test "type_call_builtin: string_length returns Int" {
 }
 
 ///|
-test "type_call_builtin: prompt_text accepts PromptText" {
+test "type_call_builtin: PromptText::new accepts PromptText" {
   let env = TypeEnv::new()
   let span = builtin_test_span()
   env.set("p", @core.Type::PromptText)
@@ -74,7 +74,7 @@ test "type_call_builtin: prompt_text accepts PromptText" {
   let aliases : Map[String, @core.Ref] = {}
   let actual = type_call_builtin(
     env,
-    "prompt_text",
+    "PromptText::new",
     args,
     aliases,
     effect_scope_all(),
@@ -87,7 +87,7 @@ test "type_call_builtin: prompt_text accepts PromptText" {
 }
 
 ///|
-test "type_call_builtin: llm_complete accepts PromptText" {
+test "type_call_builtin: Llm::complete accepts PromptText" {
   let env = TypeEnv::new()
   let span = builtin_test_span()
   env.set("p", @core.Type::PromptText)
@@ -95,7 +95,7 @@ test "type_call_builtin: llm_complete accepts PromptText" {
   let aliases : Map[String, @core.Ref] = {}
   let actual = type_call_builtin(
     env,
-    "llm_complete",
+    "Llm::complete",
     args,
     aliases,
     effect_scope_all(),
@@ -108,7 +108,7 @@ test "type_call_builtin: llm_complete accepts PromptText" {
 }
 
 ///|
-test "type_call_builtin: string_builder_push returns Unit" {
+test "type_call_builtin: StringBuilder::push returns Unit" {
   let env = TypeEnv::new()
   let span = builtin_test_span()
   env.set("sb", @core.Type::StringBuilder)
@@ -116,7 +116,7 @@ test "type_call_builtin: string_builder_push returns Unit" {
   let aliases : Map[String, @core.Ref] = {}
   let actual = type_call_builtin(
     env,
-    "string_builder_push",
+    "StringBuilder::push",
     args,
     aliases,
     effect_scope_all(),
@@ -129,7 +129,7 @@ test "type_call_builtin: string_builder_push returns Unit" {
 }
 
 ///|
-test "type_call_builtin: array_builder_push returns Unit" {
+test "type_call_builtin: ArrayBuilder::push returns Unit" {
   let env = TypeEnv::new()
   let span = builtin_test_span()
   env.set("ab", @core.Type::ArrayBuilder(@core.Type::String))
@@ -137,7 +137,7 @@ test "type_call_builtin: array_builder_push returns Unit" {
   let aliases : Map[String, @core.Ref] = {}
   let actual = type_call_builtin(
     env,
-    "array_builder_push",
+    "ArrayBuilder::push",
     args,
     aliases,
     effect_scope_all(),
@@ -150,30 +150,7 @@ test "type_call_builtin: array_builder_push returns Unit" {
 }
 
 ///|
-test "type_call_builtin: legacy map_builder alias resolves as MapBuilder" {
-  let env = TypeEnv::new()
-  let span = builtin_test_span()
-  let args : Array[@core.CallArg] = []
-  let aliases : Map[String, @core.Ref] = {}
-  let actual = type_call_builtin(
-    env,
-    "map_builder",
-    args,
-    aliases,
-    effect_scope_all(),
-    true,
-    span,
-  ) catch {
-    err => fail(err.to_string())
-  }
-  match actual {
-    @core.Type::MapBuilder(_, _) => assert_true(true)
-    _ => fail("expected MapBuilder")
-  }
-}
-
-///|
-test "type_call_builtin: json_get returns Json" {
+test "type_call_builtin: Json::get returns Json" {
   let env = TypeEnv::new()
   let span = builtin_test_span()
   let json_ty = @core.Type::Named(name="Json", args=[])
@@ -182,7 +159,7 @@ test "type_call_builtin: json_get returns Json" {
   let aliases : Map[String, @core.Ref] = {}
   let actual = type_call_builtin(
     env,
-    "json_get",
+    "Json::get",
     args,
     aliases,
     effect_scope_all(),
@@ -195,14 +172,14 @@ test "type_call_builtin: json_get returns Json" {
 }
 
 ///|
-test "type_call_builtin: http_listen returns Int" {
+test "type_call_builtin: Http::listen returns Int" {
   let env = TypeEnv::new()
   let span = builtin_test_span()
   let args = [builtin_test_int_arg(8080)]
   let aliases : Map[String, @core.Ref] = {}
   let actual = type_call_builtin(
     env,
-    "http_listen",
+    "Http::listen",
     args,
     aliases,
     effect_scope_from_list([@core.EffectAtom::Const("Net")]),
@@ -215,14 +192,14 @@ test "type_call_builtin: http_listen returns Int" {
 }
 
 ///|
-test "type_call_builtin: http_accept returns Int" {
+test "type_call_builtin: Http::accept returns Int" {
   let env = TypeEnv::new()
   let span = builtin_test_span()
   let args = [builtin_test_int_arg(1)]
   let aliases : Map[String, @core.Ref] = {}
   let actual = type_call_builtin(
     env,
-    "http_accept",
+    "Http::accept",
     args,
     aliases,
     effect_scope_from_list([@core.EffectAtom::Const("Net")]),
@@ -235,7 +212,7 @@ test "type_call_builtin: http_accept returns Int" {
 }
 
 ///|
-test "type_call_builtin: http_respond returns Unit" {
+test "type_call_builtin: Http::respond returns Unit" {
   let env = TypeEnv::new()
   let span = builtin_test_span()
   let args = [
@@ -247,7 +224,7 @@ test "type_call_builtin: http_respond returns Unit" {
   let aliases : Map[String, @core.Ref] = {}
   let actual = type_call_builtin(
     env,
-    "http_respond",
+    "Http::respond",
     args,
     aliases,
     effect_scope_from_list([@core.EffectAtom::Const("Net")]),
@@ -260,14 +237,14 @@ test "type_call_builtin: http_respond returns Unit" {
 }
 
 ///|
-test "type_call_builtin: http_listen requires Net effect" {
+test "type_call_builtin: Http::listen requires Net effect" {
   let env = TypeEnv::new()
   let span = builtin_test_span()
   let args = [builtin_test_int_arg(8080)]
   let aliases : Map[String, @core.Ref] = {}
   let result : Result[@core.Type, TypeError] = try? type_call_builtin(
     env,
-    "http_listen",
+    "Http::listen",
     args,
     aliases,
     effect_scope_from_list([]),
@@ -277,7 +254,7 @@ test "type_call_builtin: http_listen requires Net effect" {
   match result {
     Ok(_) => fail("expected effect guard error")
     Err(TypeError::EffectGuardNotSatisfied(operation~, missing_effect~, ..)) => {
-      assert_eq(operation, "http_listen")
+      assert_eq(operation, "Http::listen")
       assert_eq(missing_effect, Some("Net"))
     }
     Err(other) => fail("unexpected error: \{other.to_string()}")
@@ -333,7 +310,7 @@ test "type_call_builtin: sh keeps Stdout compatibility" {
 }
 
 ///|
-test "type_call_builtin: threads_spawn requires Threads effect" {
+test "type_call_builtin: Threads::spawn requires Threads effect" {
   let env = TypeEnv::new()
   let span = builtin_test_span()
   let args = [builtin_test_string_arg("worker"), builtin_test_ident_arg("ch")]
@@ -341,7 +318,7 @@ test "type_call_builtin: threads_spawn requires Threads effect" {
   let aliases : Map[String, @core.Ref] = {}
   let result : Result[@core.Type, TypeError] = try? type_call_builtin(
     env,
-    "threads_spawn",
+    "Threads::spawn",
     args,
     aliases,
     effect_scope_from_list([]),
@@ -351,7 +328,7 @@ test "type_call_builtin: threads_spawn requires Threads effect" {
   match result {
     Ok(_) => fail("expected effect guard error")
     Err(TypeError::EffectGuardNotSatisfied(operation~, missing_effect~, ..)) => {
-      assert_eq(operation, "threads_spawn")
+      assert_eq(operation, "Threads::spawn")
       assert_eq(missing_effect, Some("Threads"))
     }
     Err(other) => fail("unexpected error: \{other.to_string()}")
@@ -359,7 +336,7 @@ test "type_call_builtin: threads_spawn requires Threads effect" {
 }
 
 ///|
-test "type_call_builtin: threads_spawn succeeds with Threads effect scope" {
+test "type_call_builtin: Threads::spawn succeeds with Threads effect scope" {
   let env = TypeEnv::new()
   let span = builtin_test_span()
   let args = [builtin_test_string_arg("worker"), builtin_test_ident_arg("ch")]
@@ -367,7 +344,7 @@ test "type_call_builtin: threads_spawn succeeds with Threads effect scope" {
   let aliases : Map[String, @core.Ref] = {}
   let result : Result[@core.Type, TypeError] = try? type_call_builtin(
     env,
-    "threads_spawn",
+    "Threads::spawn",
     args,
     aliases,
     effect_scope_from_list([@core.EffectAtom::Const("Threads")]),

@@ -1444,7 +1444,7 @@ fn handle_repl_vibe_shell_command(
       ReplMetaCommandResult::HandledContinue
     }
     Some(pipe_tail) => {
-      let expression = "from_json(\"" +
+      let expression = "Json::parse(\"" +
         escape_string_for_vibe(payload_text) +
         "\") |> " +
         pipe_tail
@@ -3547,7 +3547,7 @@ fn handle_cd_builtin(
   if process_chdir(target) {
     // Update runtime cwd via fs_chdir
     let new_cwd = @io.current_dir_or_root()
-    let script = "fs_chdir(\"" + escape_string_for_vibe(new_cwd) + "\")"
+    let script = "Fs::chdir(\"" + escape_string_for_vibe(new_cwd) + "\")"
     try rt.eval_script(script) |> ignore catch {
       _ => ()
     }

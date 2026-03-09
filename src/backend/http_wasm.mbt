@@ -9,13 +9,13 @@ pub fn http_request(
   let _ = url
   let _ = headers
   let _ = body
-  Err("http_request not supported on wasm target")
+  Err("Http::request not supported on wasm target")
 }
 
 ///|
 pub fn http_response_status(handle : Int) -> Result[Int, String] {
   let _ = handle
-  Err("http_response_status not supported on wasm target")
+  Err("Http::response_status not supported on wasm target")
 }
 
 ///|
@@ -25,43 +25,43 @@ pub fn http_response_header(
 ) -> Result[String, String] {
   let _ = handle
   let _ = name
-  Err("http_response_header not supported on wasm target")
+  Err("Http::response_header not supported on wasm target")
 }
 
 ///|
 pub fn http_response_body(handle : Int) -> Result[String, String] {
   let _ = handle
-  Err("http_response_body not supported on wasm target")
+  Err("Http::response_body not supported on wasm target")
 }
 
 ///|
 pub fn http_close(handle : Int) -> Result[Unit, String] {
   let _ = handle
-  Err("http_close not supported on wasm target")
+  Err("Http::close not supported on wasm target")
 }
 
 ///|
 pub fn http_listen(port : Int) -> Result[Int, String] {
   let _ = port
-  Err("http_listen not supported on wasm target")
+  Err("Http::listen not supported on wasm target")
 }
 
 ///|
 pub fn http_accept(server_handle : Int) -> Result[Int, String] {
   let _ = server_handle
-  Err("http_accept not supported on wasm target")
+  Err("Http::accept not supported on wasm target")
 }
 
 ///|
 pub fn http_request_method(handle : Int) -> Result[String, String] {
   let _ = handle
-  Err("http_request_method not supported on wasm target")
+  Err("Http::request_method not supported on wasm target")
 }
 
 ///|
 pub fn http_request_url(handle : Int) -> Result[String, String] {
   let _ = handle
-  Err("http_request_url not supported on wasm target")
+  Err("Http::request_url not supported on wasm target")
 }
 
 ///|
@@ -71,13 +71,13 @@ pub fn http_request_header(
 ) -> Result[String, String] {
   let _ = handle
   let _ = name
-  Err("http_request_header not supported on wasm target")
+  Err("Http::request_header not supported on wasm target")
 }
 
 ///|
 pub fn http_request_body(handle : Int) -> Result[String, String] {
   let _ = handle
-  Err("http_request_body not supported on wasm target")
+  Err("Http::request_body not supported on wasm target")
 }
 
 ///|
@@ -91,5 +91,5 @@ pub fn http_respond(
   let _ = status
   let _ = headers
   let _ = body
-  Err("http_respond not supported on wasm target")
+  Err("Http::respond not supported on wasm target")
 }

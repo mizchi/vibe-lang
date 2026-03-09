@@ -4,13 +4,62 @@ import ./ast.vibe {
   Expr, Pat, Stmt, TypeExpr
 }
 
-//# Helpers
+//# Functions
+
+let append_all = (dst: Array[String], src: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(src) {
+    Array::push(dst, Array::get(src, i))
+    i = i + 1
+  }
+}
+
+let empty_pairs = () -> Array[(String, String)] {
+  Array::slice([
+    ("", "")
+  ], 0, 0)
+}
+
+let empty_strings = () -> Array[String] {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+
+let bound_with = (bound: Array[String], extras: Array[String]) -> Array[String] {
+  let result = empty_strings()
+  let mut i = 0
+  while i < Array::length(bound) {
+    Array::push(result, Array::get(bound, i))
+    i = i + 1
+  }
+  i = 0
+  while i < Array::length(extras) {
+    Array::push(result, Array::get(extras, i))
+    i = i + 1
+  }
+  result
+}
+
+let bound_with_one = (bound: Array[String], name: String) -> Array[String] {
+  bound_with(bound, [
+    name
+  ])
+}
+
+let append_all_pairs = (dst: Array[(String, String)], src: Array[(String, String)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(src) {
+    Array::push(dst, Array::get(src, i))
+    i = i + 1
+  }
+}
 
 let array_contains_str = (arr: Array[String], s: String) -> Bool {
   let mut i = 0
   let mut found = false
-  while i < array_length(arr) {
-    if string_equals(array_get(arr, i), s) {
+  while i < Array::length(arr) {
+    if String::equals(Array::get(arr, i), s) {
       found = true
     }
     i = i + 1
@@ -18,51 +67,60 @@ let array_contains_str = (arr: Array[String], s: String) -> Bool {
   found
 }
 
-let empty_strings = () -> Array[String] {
-  array_slice([""], 0, 0)
-}
-
-let empty_pairs = () -> Array[(String, String)] {
-  array_slice([("", "")], 0, 0)
-}
-
-let append_all = (dst: Array[String], src: Array[String]) -> Unit {
-  let mut i = 0
-  while i < array_length(src) {
-    array_push(dst, array_get(src, i))
-    i = i + 1
-  }
-}
-
-let append_all_pairs = (dst: Array[(String, String)], src: Array[(String, String)]) -> Unit {
-  let mut i = 0
-  while i < array_length(src) {
-    array_push(dst, array_get(src, i))
-    i = i + 1
-  }
-}
-
 let add_unique = (arr: Array[String], s: String) -> Unit {
   if not(array_contains_str(arr, s)) {
-    array_push(arr, s)
+    Array::push(arr, s)
   }
 }
 
-// Extract binding names from a pattern
+export let rec collect_mut_bindings = (expr: Expr) -> Array[String] {
+  let result = empty_strings()
+  match expr {
+    ELetMut(name, val, body) => {
+      Array::push(result, name)
+      append_all(result, collect_mut_bindings(val))
+      append_all(result, collect_mut_bindings(body))
+      result
+    },
+    ELet(_, val, body) => {
+      append_all(result, collect_mut_bindings(val))
+      append_all(result, collect_mut_bindings(body))
+      result
+    },
+    ELetRec(_, val, body) => {
+      append_all(result, collect_mut_bindings(val))
+      append_all(result, collect_mut_bindings(body))
+      result
+    },
+    ESeq(a, b) => {
+      append_all(result, collect_mut_bindings(a))
+      append_all(result, collect_mut_bindings(b))
+      result
+    },
+    EIf(cond, then_e, else_e) => {
+      append_all(result, collect_mut_bindings(cond))
+      append_all(result, collect_mut_bindings(then_e))
+      append_all(result, collect_mut_bindings(else_e))
+      result
+    },
+    _ => result
+  }
+}
+
 let rec collect_pat_bindings = (pat: Pat, out: Array[String]) -> Unit {
   match pat {
-    PBind(name) => array_push(out, name),
+    PBind(name) => Array::push(out, name),
     PCtor(_, pats) => {
       let mut i = 0
-      while i < array_length(pats) {
-        collect_pat_bindings(array_get(pats, i), out)
+      while i < Array::length(pats) {
+        collect_pat_bindings(Array::get(pats, i), out)
         i = i + 1
       }
     },
     PTuple(pats) => {
       let mut i = 0
-      while i < array_length(pats) {
-        collect_pat_bindings(array_get(pats, i), out)
+      while i < Array::length(pats) {
+        collect_pat_bindings(Array::get(pats, i), out)
         i = i + 1
       }
     },
@@ -74,29 +132,6 @@ let rec collect_pat_bindings = (pat: Pat, out: Array[String]) -> Unit {
   }
 }
 
-// Clone a string array and add more items
-let bound_with = (bound: Array[String], extras: Array[String]) -> Array[String] {
-  let result = empty_strings()
-  let mut i = 0
-  while i < array_length(bound) {
-    array_push(result, array_get(bound, i))
-    i = i + 1
-  }
-  i = 0
-  while i < array_length(extras) {
-    array_push(result, array_get(extras, i))
-    i = i + 1
-  }
-  result
-}
-
-let bound_with_one = (bound: Array[String], name: String) -> Array[String] {
-  bound_with(bound, [name])
-}
-
-//# collect_free_vars
-
-// Collect all free variables in an expression (not bound within it)
 export let rec collect_free_vars = (expr: Expr, bound: Array[String]) -> Array[String] {
   let result = empty_strings()
   match expr {
@@ -146,9 +181,9 @@ export let rec collect_free_vars = (expr: Expr, bound: Array[String]) -> Array[S
     EFn(_, _, params, _, _, body) => {
       let param_names = empty_strings()
       let mut i = 0
-      while i < array_length(params) {
-        let (pname, _) = array_get(params, i)
-        array_push(param_names, pname)
+      while i < Array::length(params) {
+        let (pname, _) = Array::get(params, i)
+        Array::push(param_names, pname)
         i = i + 1
       }
       append_all(result, collect_free_vars(body, bound_with(bound, param_names)))
@@ -157,8 +192,8 @@ export let rec collect_free_vars = (expr: Expr, bound: Array[String]) -> Array[S
     ECall(callee, args) => {
       append_all(result, collect_free_vars(callee, bound))
       let mut i = 0
-      while i < array_length(args) {
-        append_all(result, collect_free_vars(array_get(args, i), bound))
+      while i < Array::length(args) {
+        append_all(result, collect_free_vars(Array::get(args, i), bound))
         i = i + 1
       }
       result
@@ -196,8 +231,8 @@ export let rec collect_free_vars = (expr: Expr, bound: Array[String]) -> Array[S
     EMatch(scrut, arms) => {
       append_all(result, collect_free_vars(scrut, bound))
       let mut ai = 0
-      while ai < array_length(arms) {
-        let (pat, arm_body) = array_get(arms, ai)
+      while ai < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, ai)
         let pat_binds = empty_strings()
         collect_pat_bindings(pat, pat_binds)
         append_all(result, collect_free_vars(arm_body, bound_with(bound, pat_binds)))
@@ -208,8 +243,8 @@ export let rec collect_free_vars = (expr: Expr, bound: Array[String]) -> Array[S
     EHandle(body, arms) => {
       append_all(result, collect_free_vars(body, bound))
       let mut ai = 0
-      while ai < array_length(arms) {
-        let (pat, arm_body) = array_get(arms, ai)
+      while ai < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, ai)
         let pat_binds = empty_strings()
         collect_pat_bindings(pat, pat_binds)
         append_all(result, collect_free_vars(arm_body, bound_with(bound, pat_binds)))
@@ -219,24 +254,24 @@ export let rec collect_free_vars = (expr: Expr, bound: Array[String]) -> Array[S
     },
     ETuple(elems) => {
       let mut i = 0
-      while i < array_length(elems) {
-        append_all(result, collect_free_vars(array_get(elems, i), bound))
+      while i < Array::length(elems) {
+        append_all(result, collect_free_vars(Array::get(elems, i), bound))
         i = i + 1
       }
       result
     },
     EArray(elems) => {
       let mut i = 0
-      while i < array_length(elems) {
-        append_all(result, collect_free_vars(array_get(elems, i), bound))
+      while i < Array::length(elems) {
+        append_all(result, collect_free_vars(Array::get(elems, i), bound))
         i = i + 1
       }
       result
     },
     ERecord(fields) => {
       let mut i = 0
-      while i < array_length(fields) {
-        let (_, fval) = array_get(fields, i)
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
         append_all(result, collect_free_vars(fval, bound))
         i = i + 1
       }
@@ -263,8 +298,8 @@ export let rec collect_free_vars = (expr: Expr, bound: Array[String]) -> Array[S
     },
     EContinue(exprs) => {
       let mut i = 0
-      while i < array_length(exprs) {
-        append_all(result, collect_free_vars(array_get(exprs, i), bound))
+      while i < Array::length(exprs) {
+        append_all(result, collect_free_vars(Array::get(exprs, i), bound))
         i = i + 1
       }
       result
@@ -272,68 +307,12 @@ export let rec collect_free_vars = (expr: Expr, bound: Array[String]) -> Array[S
   }
 }
 
-//# collect_mut_bindings
-
-// Collect mutable bindings from an expression
-export let rec collect_mut_bindings = (expr: Expr) -> Array[String] {
-  let result = empty_strings()
-  match expr {
-    ELetMut(name, val, body) => {
-      array_push(result, name)
-      append_all(result, collect_mut_bindings(val))
-      append_all(result, collect_mut_bindings(body))
-      result
-    },
-    ELet(_, val, body) => {
-      append_all(result, collect_mut_bindings(val))
-      append_all(result, collect_mut_bindings(body))
-      result
-    },
-    ELetRec(_, val, body) => {
-      append_all(result, collect_mut_bindings(val))
-      append_all(result, collect_mut_bindings(body))
-      result
-    },
-    ESeq(a, b) => {
-      append_all(result, collect_mut_bindings(a))
-      append_all(result, collect_mut_bindings(b))
-      result
-    },
-    EIf(cond, then_e, else_e) => {
-      append_all(result, collect_mut_bindings(cond))
-      append_all(result, collect_mut_bindings(then_e))
-      append_all(result, collect_mut_bindings(else_e))
-      result
-    },
-    _ => result
-  }
-}
-
-// Collect mutable bindings from statements
-export let collect_mut_bindings_stmts = (stmts: Array[Stmt]) -> Array[String] {
-  let result = empty_strings()
-  let mut i = 0
-  while i < array_length(stmts) {
-    match array_get(stmts, i) {
-      SLetMut(name, _, _) => array_push(result, name),
-      SLet(_, _, _, _, body) => append_all(result, collect_mut_bindings(body)),
-      SExpr(e) => append_all(result, collect_mut_bindings(e)),
-      _ => ()
-    }
-    i = i + 1
-  }
-  result
-}
-
-//# check_mut_capture
-
-// Check if a closure captures any mutable variable
 export let check_mut_capture = (fn_body: Expr, outer_muts: Array[String]) -> Array[String] {
   let free = collect_free_vars(fn_body, empty_strings())
   let captured_muts = empty_strings()
   let mut i = 0
-  while i < array_length(free) {
-    let name = array_get(free, i)
+  while i < Array::length(free) {
+    let name = Array::get(free, i)
     if array_contains_str(outer_muts, name) {
       add_unique(captured_muts, name)
     }
@@ -342,8 +321,6 @@ export let check_mut_capture = (fn_body: Expr, outer_muts: Array[String]) -> Arr
   captured_muts
 }
 
-//# analyze_captures
-
 let rec analyze_captures_with_muts = (expr: Expr, outer_muts: Array[String]) -> Array[(String, String)] {
   let result = empty_pairs()
   match expr {
@@ -351,7 +328,7 @@ let rec analyze_captures_with_muts = (expr: Expr, outer_muts: Array[String]) -> 
       append_all_pairs(result, analyze_captures_with_muts(val, outer_muts))
       let new_muts = empty_strings()
       append_all(new_muts, outer_muts)
-      array_push(new_muts, name)
+      Array::push(new_muts, name)
       append_all_pairs(result, analyze_captures_with_muts(body, new_muts))
       result
     },
@@ -359,17 +336,17 @@ let rec analyze_captures_with_muts = (expr: Expr, outer_muts: Array[String]) -> 
       // Check if this lambda captures any mutable variable from outer scope
       let param_names = empty_strings()
       let mut pi = 0
-      while pi < array_length(params) {
-        let (pname, _) = array_get(params, pi)
-        array_push(param_names, pname)
+      while pi < Array::length(params) {
+        let (pname, _) = Array::get(params, pi)
+        Array::push(param_names, pname)
         pi = pi + 1
       }
       let free = collect_free_vars(body, param_names)
       let mut i = 0
-      while i < array_length(free) {
-        let name = array_get(free, i)
+      while i < Array::length(free) {
+        let name = Array::get(free, i)
         if array_contains_str(outer_muts, name) {
-          array_push(result, ("lambda", name))
+          Array::push(result, ("lambda", name))
         }
         i = i + 1
       }
@@ -401,8 +378,8 @@ let rec analyze_captures_with_muts = (expr: Expr, outer_muts: Array[String]) -> 
     ECall(callee, args) => {
       append_all_pairs(result, analyze_captures_with_muts(callee, outer_muts))
       let mut i = 0
-      while i < array_length(args) {
-        append_all_pairs(result, analyze_captures_with_muts(array_get(args, i), outer_muts))
+      while i < Array::length(args) {
+        append_all_pairs(result, analyze_captures_with_muts(Array::get(args, i), outer_muts))
         i = i + 1
       }
       result
@@ -420,8 +397,8 @@ let rec analyze_captures_with_muts = (expr: Expr, outer_muts: Array[String]) -> 
     EMatch(scrut, arms) => {
       append_all_pairs(result, analyze_captures_with_muts(scrut, outer_muts))
       let mut ai = 0
-      while ai < array_length(arms) {
-        let (_, arm_body) = array_get(arms, ai)
+      while ai < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, ai)
         append_all_pairs(result, analyze_captures_with_muts(arm_body, outer_muts))
         ai = ai + 1
       }
@@ -448,24 +425,24 @@ let rec analyze_captures_with_muts = (expr: Expr, outer_muts: Array[String]) -> 
     },
     ETuple(elems) => {
       let mut i = 0
-      while i < array_length(elems) {
-        append_all_pairs(result, analyze_captures_with_muts(array_get(elems, i), outer_muts))
+      while i < Array::length(elems) {
+        append_all_pairs(result, analyze_captures_with_muts(Array::get(elems, i), outer_muts))
         i = i + 1
       }
       result
     },
     EArray(elems) => {
       let mut i = 0
-      while i < array_length(elems) {
-        append_all_pairs(result, analyze_captures_with_muts(array_get(elems, i), outer_muts))
+      while i < Array::length(elems) {
+        append_all_pairs(result, analyze_captures_with_muts(Array::get(elems, i), outer_muts))
         i = i + 1
       }
       result
     },
     ERecord(fields) => {
       let mut i = 0
-      while i < array_length(fields) {
-        let (_, fval) = array_get(fields, i)
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
         append_all_pairs(result, analyze_captures_with_muts(fval, outer_muts))
         i = i + 1
       }
@@ -474,8 +451,8 @@ let rec analyze_captures_with_muts = (expr: Expr, outer_muts: Array[String]) -> 
     EHandle(body, arms) => {
       append_all_pairs(result, analyze_captures_with_muts(body, outer_muts))
       let mut ai = 0
-      while ai < array_length(arms) {
-        let (_, arm_body) = array_get(arms, ai)
+      while ai < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, ai)
         append_all_pairs(result, analyze_captures_with_muts(arm_body, outer_muts))
         ai = ai + 1
       }
@@ -493,31 +470,41 @@ let rec analyze_captures_with_muts = (expr: Expr, outer_muts: Array[String]) -> 
   }
 }
 
-// Analyze an expression for unsafe mutable captures in nested closures
 export let analyze_captures = (expr: Expr) -> Array[(String, String)] {
   analyze_captures_with_muts(expr, empty_strings())
 }
 
-// Analyze statements for unsafe captures
 export let analyze_captures_stmts = (stmts: Array[Stmt]) -> Array[(String, String)] {
   let result = empty_pairs()
   let muts = empty_strings()
   let mut i = 0
-  while i < array_length(stmts) {
-    match array_get(stmts, i) {
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
       SLetMut(name, _, val) => {
         append_all_pairs(result, analyze_captures_with_muts(val, muts))
-        array_push(muts, name)
+        Array::push(muts, name)
       },
-      SLet(_, _, _, _, body) => {
-        append_all_pairs(result, analyze_captures_with_muts(body, muts))
-      },
-      SExpr(e) => {
-        append_all_pairs(result, analyze_captures_with_muts(e, muts))
-      },
-      STest(_, body) => {
-        append_all_pairs(result, analyze_captures_with_muts(body, muts))
-      },
+      SLet(_, _, _, _, body) => append_all_pairs(result, analyze_captures_with_muts(body, muts))
+      ,
+      SExpr(e) => append_all_pairs(result, analyze_captures_with_muts(e, muts))
+      ,
+      STest(_, body) => append_all_pairs(result, analyze_captures_with_muts(body, muts))
+      ,
+      _ => ()
+    }
+    i = i + 1
+  }
+  result
+}
+
+export let collect_mut_bindings_stmts = (stmts: Array[Stmt]) -> Array[String] {
+  let result = empty_strings()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLetMut(name, _, _) => Array::push(result, name),
+      SLet(_, _, _, _, body) => append_all(result, collect_mut_bindings(body)),
+      SExpr(e) => append_all(result, collect_mut_bindings(e)),
       _ => ()
     }
     i = i + 1

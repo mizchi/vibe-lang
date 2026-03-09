@@ -335,17 +335,19 @@ pub fn is_builtin_name(name : String) -> Bool {
   name == "div" ||
   name == "eq" ||
   name == "lt" ||
-  name == "stdout_write_char" ||
-  name == "stdout_write_stream" ||
-  name == "stdin_read_char" ||
-  name == "stdin_read_stream" ||
-  name == "array_builder" ||
-  name == "array_builder_push" ||
-  name == "array_builder_freeze" ||
-  is_map_builder_builtin_name(name) ||
-  name == "bytes_new" ||
-  name == "bytes_push" ||
-  name == "bytes_set"
+  name == "Stdout::write_char" ||
+  name == "Stdout::write_stream" ||
+  name == "Stdin::read_char" ||
+  name == "Stdin::read_stream" ||
+  name == "ArrayBuilder::new" ||
+  name == "ArrayBuilder::push" ||
+  name == "ArrayBuilder::freeze" ||
+  name == "MapBuilder::new" ||
+  name == "MapBuilder::set" ||
+  name == "MapBuilder::freeze" ||
+  name == "Bytes::new" ||
+  name == "Bytes::push" ||
+  name == "Bytes::set"
 }
 
 ///|

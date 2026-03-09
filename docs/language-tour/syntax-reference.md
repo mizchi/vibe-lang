@@ -78,17 +78,17 @@ f(1, y = "ok", z = 5)
 
 ```vibe
 // Single param, arrow
-array_map(xs, x -> x * 2)
+Array::map(xs, x -> x * 2)
 
 // Multi param
-array_fold(xs, 0, (acc, x) -> acc + x)
+Array::fold(xs, 0, (acc, x) -> acc + x)
 
 // Block body
-array_map(xs, (x) { x + 1 })
+Array::map(xs, (x) { x + 1 })
 
 // Placeholder
-array_map(xs, _ * 2)
-array_fold(xs, 0, _ + _)
+Array::map(xs, _ * 2)
+Array::fold(xs, 0, _ + _)
 ```
 
 ### enum
@@ -201,9 +201,9 @@ loop { if done { break } }
 ```vibe
 // Enables mutable builders and effectful builtins
 do {
-  let b = array_builder()
-  array_builder_push(b, 1)
-  array_builder_freeze(b)
+  let b = ArrayBuilder::new()
+  ArrayBuilder::push(b, 1)
+  ArrayBuilder::freeze(b)
 }
 ```
 
@@ -218,8 +218,8 @@ x |> f |> g     // g(f(x))
 ### Pipe-first call style
 
 ```vibe
-arr |> array_length
-s |> string_substring(0, 5)
+arr |> Array::length
+s |> String::substring(0, 5)
 
 // value.field is field access only
 point.x
@@ -357,7 +357,7 @@ module MyModule {
 ```vibe
 test "name" {
   assert(eq(1 + 1, 2))
-  assert(string_equals("a", "a"))
+  assert(String::equals("a", "a"))
   assert_eq(42, 42)
 }
 

@@ -24,11 +24,13 @@ fn http_host_import_binding(
     return ("vibe:http", builtin_name)
   }
   match builtin_name {
-    "http_request" => ("wasi:http/client@0.3.0-draft", "send")
-    "http_response_status" => ("wasi:http/types@0.3.0-draft", "response-status")
-    "http_response_header" => ("wasi:http/types@0.3.0-draft", "response-header")
-    "http_response_body" => ("wasi:http/types@0.3.0-draft", "response-body")
-    "http_close" => ("wasi:http/types@0.3.0-draft", "[drop]response")
+    "Http::request" => ("wasi:http/client@0.3.0-draft", "send")
+    "Http::response_status" =>
+      ("wasi:http/types@0.3.0-draft", "response-status")
+    "Http::response_header" =>
+      ("wasi:http/types@0.3.0-draft", "response-header")
+    "Http::response_body" => ("wasi:http/types@0.3.0-draft", "response-body")
+    "Http::close" => ("wasi:http/types@0.3.0-draft", "[drop]response")
     _ => ("vibe:http", builtin_name)
   }
 }
@@ -692,42 +694,42 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     if ctx.need_http && ctx.http_host_imports {
       // http_request(method, url, headers, body) -> handle
       write_http_host_import(
-        import_sec, ctx, "http_request", http_host_arity4_type,
+        import_sec, ctx, "Http::request", http_host_arity4_type,
       )
       // response handle APIs
       write_http_host_import(
-        import_sec, ctx, "http_response_status", http_host_arity1_type,
+        import_sec, ctx, "Http::response_status", http_host_arity1_type,
       )
       write_http_host_import(
-        import_sec, ctx, "http_response_header", http_host_arity2_type,
+        import_sec, ctx, "Http::response_header", http_host_arity2_type,
       )
       write_http_host_import(
-        import_sec, ctx, "http_response_body", http_host_arity1_type,
+        import_sec, ctx, "Http::response_body", http_host_arity1_type,
       )
       write_http_host_import(
-        import_sec, ctx, "http_close", http_host_arity1_type,
+        import_sec, ctx, "Http::close", http_host_arity1_type,
       )
       // server APIs
       write_http_host_import(
-        import_sec, ctx, "http_listen", http_host_arity1_type,
+        import_sec, ctx, "Http::listen", http_host_arity1_type,
       )
       write_http_host_import(
-        import_sec, ctx, "http_accept", http_host_arity1_type,
+        import_sec, ctx, "Http::accept", http_host_arity1_type,
       )
       write_http_host_import(
-        import_sec, ctx, "http_request_method", http_host_arity1_type,
+        import_sec, ctx, "Http::request_method", http_host_arity1_type,
       )
       write_http_host_import(
-        import_sec, ctx, "http_request_url", http_host_arity1_type,
+        import_sec, ctx, "Http::request_url", http_host_arity1_type,
       )
       write_http_host_import(
-        import_sec, ctx, "http_request_header", http_host_arity2_type,
+        import_sec, ctx, "Http::request_header", http_host_arity2_type,
       )
       write_http_host_import(
-        import_sec, ctx, "http_request_body", http_host_arity1_type,
+        import_sec, ctx, "Http::request_body", http_host_arity1_type,
       )
       write_http_host_import(
-        import_sec, ctx, "http_respond", http_host_arity4_type,
+        import_sec, ctx, "Http::respond", http_host_arity4_type,
       )
     }
     if ctx.use_js_strings {
@@ -755,8 +757,9 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let has_extern_table = ctx.need_extern_table && ctx.extern_table_next_slot > 0
   // Reserve table 0 for funcref when externref table is used,
   // so extern_table_index can stay stable at 1.
-  let has_funcref_table =
-    funcref_slot_count > 0 || has_extern_table || ctx.need_funcref_table
+  let has_funcref_table = funcref_slot_count > 0 ||
+    has_extern_table ||
+    ctx.need_funcref_table
   let table_count = (if has_funcref_table { 1 } else { 0 }) +
     (if has_extern_table { 1 } else { 0 })
   if table_count > 0 {

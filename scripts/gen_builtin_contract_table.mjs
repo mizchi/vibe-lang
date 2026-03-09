@@ -69,56 +69,44 @@ const union = (...sets) => {
   return out;
 };
 
-const canonical_builtin_aliases = new Map([
-  ["map_builder", "MapBuilder::new"],
-  ["map_builder_set", "MapBuilder::set"],
-  ["map_builder_freeze", "MapBuilder::freeze"],
-]);
-
-const canonicalize_builtin_name = (name) =>
-  canonical_builtin_aliases.get(name) ?? name;
-
 const signatures = {
   path: "(String) -> Path",
   addr: "(String literal) -> T  // address lookup",
   sh: "(String) -> Unit",
   sh_lines: "(String) -> Array[String]",
   sleep: "(Int) -> Unit",
-  threads_probe_wat: "() -> String",
-  threads_runtime_hints:
+  Threads::probe_wat: "() -> String",
+  Threads::runtime_hints:
     "() -> {wasm_flags: Array[String], wasi_flags: Array[String], wasm_env: String, wasi_env: String}",
-  threads_channel_new: "(Int) -> Int",
-  threads_send: "(Int, String) -> Bool",
-  threads_recv: "(Int) -> String",
-  threads_spawn: "(String, Int) -> Int",
-  threads_wait: "(Int) -> Int",
-  stdout_write_char: "(Int) -> Unit",
-  stdout_write_stream: "(String) -> Unit",
-  stdin_read_char: "() -> Int",
-  stdin_read_stream: "(Int) -> String",
-  string_from_char_code: "(Int) -> String",
-  array_builder: "() -> ArrayBuilder[T]",
-  array_builder_push: "(ArrayBuilder[T], T) -> Unit",
-  array_builder_freeze: "(ArrayBuilder[T]) -> Array[T]",
-  map_builder: "() -> MapBuilder[K, V]",
-  map_builder_set: "(MapBuilder[K, V], K, V) -> Unit",
-  map_builder_freeze: "(MapBuilder[K, V]) -> Map[K, V]",
-  "MapBuilder::new": "() -> MapBuilder[K, V]",
-  "MapBuilder::set": "(MapBuilder[K, V], K, V) -> Unit",
-  "MapBuilder::freeze": "(MapBuilder[K, V]) -> Map[K, V]",
-  array_length: "(Array[T]) -> Int",
-  array_get: "(Array[T], Int) -> T",
-  map_get: "(Map[K, V], K) -> V",
-  map_set: "(Map[K, V], K, V) -> Map[K, V]",
-  string_length: "(String) -> Int",
-  string_char_code_at: "(String, Int) -> Int",
-  string_substring: "(String, Int, Int) -> String",
-  string_concat: "(String, String) -> String",
-  string_equals: "(String, String) -> Bool",
-  string_split: "(String, String) -> Array[String]",
-  string_index_of: "(String, String) -> Int",
-  string_contains: "(String, String) -> Bool",
-  string_trim: "(String) -> String",
+  Threads::channel_new: "(Int) -> Int",
+  Threads::send: "(Int, String) -> Bool",
+  Threads::recv: "(Int) -> String",
+  Threads::spawn: "(String, Int) -> Int",
+  Threads::wait: "(Int) -> Int",
+  Stdout::write_char: "(Int) -> Unit",
+  Stdout::write_stream: "(String) -> Unit",
+  Stdin::read_char: "() -> Int",
+  Stdin::read_stream: "(Int) -> String",
+  String::from_char_code: "(Int) -> String",
+  ArrayBuilder::new: "() -> ArrayBuilder[T]",
+  ArrayBuilder::push: "(ArrayBuilder[T], T) -> Unit",
+  ArrayBuilder::freeze: "(ArrayBuilder[T]) -> Array[T]",
+  MapBuilder::new: "() -> MapBuilder[K, V]",
+  MapBuilder::set: "(MapBuilder[K, V], K, V) -> Unit",
+  MapBuilder::freeze: "(MapBuilder[K, V]) -> Map[K, V]",
+  Array::length: "(Array[T]) -> Int",
+  Array::get: "(Array[T], Int) -> T",
+  Map::get: "(Map[K, V], K) -> V",
+  Map::set: "(Map[K, V], K, V) -> Map[K, V]",
+  String::length: "(String) -> Int",
+  String::char_code_at: "(String, Int) -> Int",
+  String::substring: "(String, Int, Int) -> String",
+  String::concat: "(String, String) -> String",
+  String::equals: "(String, String) -> Bool",
+  String::split: "(String, String) -> Array[String]",
+  String::index_of: "(String, String) -> Int",
+  String::contains: "(String, String) -> Bool",
+  String::trim: "(String) -> String",
   __add: "(Num, Num) -> Num",
   __sub: "(Num, Num) -> Num",
   __mul: "(Num, Num) -> Num",
@@ -136,21 +124,21 @@ const signatures = {
   __neg: "(Num) -> Num",
   __assert: "(Bool) -> Unit",
   record_set: "(Record{...}, String, V) -> Record{...}",
-  map_keys: "(Map[K, V]) -> Array[K]",
-  map_values: "(Map[K, V]) -> Array[V]",
-  map_has_key: "(Map[K, V], K) -> Bool",
-  array_slice: "(Array[T], Int, Int) -> Array[T]",
-  int_to_float: "(Int) -> Float",
+  Map::keys: "(Map[K, V]) -> Array[K]",
+  Map::values: "(Map[K, V]) -> Array[V]",
+  Map::has_key: "(Map[K, V], K) -> Bool",
+  Array::slice: "(Array[T], Int, Int) -> Array[T]",
+  Int::to_float: "(Int) -> Float",
   f32_convert_i32_s: "(Int) -> Float",
-  int_to_double: "(Int) -> Double",
+  Int::to_double: "(Int) -> Double",
   f64_convert_i32_s: "(Int) -> Double",
-  float_to_int: "(Float) -> Int",
+  Float::to_int: "(Float) -> Int",
   i32_trunc_f32_s: "(Float) -> Int",
-  float_to_double: "(Float) -> Double",
+  Float::to_double: "(Float) -> Double",
   f64_promote_f32: "(Float) -> Double",
-  double_to_int: "(Double) -> Int",
+  Double::to_int: "(Double) -> Int",
   i32_trunc_f64_s: "(Double) -> Int",
-  double_to_float: "(Double) -> Float",
+  Double::to_float: "(Double) -> Float",
   f32_demote_f64: "(Double) -> Float",
   f32_neg: "(Float) -> Float",
   f64_neg: "(Double) -> Double",
@@ -165,22 +153,21 @@ const signatures = {
   __to_string: "(Any) -> String",
 };
 
-const checker_builtin_handlers = [
-  read_text("src/checker/typecheck_call_builtin_handler_collection_numeric.mbt"),
-  read_text("src/checker/typecheck_call_builtin_handler_core_io.mbt"),
-  read_text("src/checker/typecheck_call_builtin_handler_runtime_memory.mbt"),
-  read_text("src/checker/typecheck_call_builtin_handler_json_and_fallback.mbt"),
-].join("\n");
-const checker_effects = read_text("src/checker/typecheck_effects.mbt");
+const checker = read_text("src/checker/typecheck.mbt");
 const eval_src = read_text("src/runtime/eval.mbt");
 const eval_builtins_src = read_text("src/runtime/eval_builtins.mbt");
-const wasm_builtin_codegen = [
-  read_text("src/codegen/address.mbt"),
-  read_text("src/codegen/wasm_codegen_call_builtin_pre_user.mbt"),
-  read_text("src/codegen/wasm_codegen_data.mbt"),
-  read_text("src/codegen/wasm_codegen_sig.mbt"),
-].join("\n");
+const wasm_codegen = read_text("src/codegen/wasm_codegen.mbt");
 
+const checker_type_call = slice_between(
+  checker,
+  "fn type_call(",
+  "fn try_field_access(",
+);
+const checker_builtin_effects = slice_between(
+  checker,
+  "fn builtin_effects(",
+  "fn effect_scope_extend(",
+);
 const eval_is_pure = slice_between(
   eval_builtins_src,
   "fn is_pure_builtin(",
@@ -191,80 +178,45 @@ const eval_call = slice_between(
   "fn eval_call(",
   "fn ctor_value_from_args(",
 );
+const wasm_compile_expr = slice_between(
+  wasm_codegen,
+  "fn compile_expr(",
+  "fn extract_positional_exprs(",
+);
 
-const checker_builtin_names = [...extract_case_names(checker_builtin_handlers)].sort();
-const effects = extract_builtin_effects(checker_effects);
-const do_required = extract_do_required(checker_builtin_handlers);
+const checker_builtins = [...extract_case_names(checker_type_call)].sort();
+const effects = extract_builtin_effects(checker_builtin_effects);
+const do_required = extract_do_required(checker_type_call);
 
 const interpreter_supported = union(
   extract_name_eq(eval_is_pure),
   extract_case_names(eval_call),
 );
 const wasm_supported = union(
-  extract_name_eq(wasm_builtin_codegen),
-  extract_case_names(wasm_builtin_codegen),
+  extract_name_eq(wasm_compile_expr),
+  extract_case_names(wasm_compile_expr),
 );
 
-const builtin_name_groups = new Map();
-for (const name of checker_builtin_names) {
-  const canonical_name = canonicalize_builtin_name(name);
-  const group = builtin_name_groups.get(canonical_name) ?? [];
-  group.push(name);
-  builtin_name_groups.set(canonical_name, group);
-}
-
-const builtin_names = [...builtin_name_groups.keys()].sort();
-
-const signature_for = (names) => {
-  for (const name of names) {
-    if (signatures[name]) {
-      return signatures[name];
-    }
-  }
-  return null;
-};
-
-const first_match = (names, pred) => {
-  for (const name of names) {
-    if (pred(name)) {
-      return name;
-    }
-  }
-  return null;
-};
-
-const missing_signatures = builtin_names.filter(
-  (name) => signature_for([name, ...(builtin_name_groups.get(name) ?? [])]) == null,
-);
+const missing_signatures = checker_builtins.filter((name) => !signatures[name]);
 if (missing_signatures.length > 0) {
-  console.warn(
-    `skipping ${missing_signatures.length} builtin(s) without signature metadata`,
+  throw new Error(
+    "Missing signature entries for: " + missing_signatures.join(", "),
   );
 }
-const checker_builtins = builtin_names.filter(
-  (name) => signature_for([name, ...(builtin_name_groups.get(name) ?? [])]) != null,
-);
 
 const markdown_escape = (s) => s.replaceAll("|", "\\|");
 
 const rows = checker_builtins.map((name) => {
-  const raw_names = [name, ...(builtin_name_groups.get(name) ?? [])];
-  const effect_name = first_match(raw_names, (raw_name) => effects.has(raw_name));
-  const effect = effect_name == null ? null : effects.get(effect_name);
-  const effect_text = effect != null
+  const effect = effects.get(name);
+  const effect_text = effect
     ? `{${effect}}`
-    : raw_names.some((raw_name) => do_required.has(raw_name))
+    : do_required.has(name)
       ? "- (do required)"
       : "-";
-  const interp = raw_names.some((raw_name) => interpreter_supported.has(raw_name))
-    ? "yes"
-    : "no";
-  const wasm = raw_names.some((raw_name) => wasm_supported.has(raw_name))
-    ? "yes"
-    : "no";
-  const component = wasm;
-  const signature = signature_for(raw_names);
-  return `| \`${name}\` | \`${markdown_escape(signature ?? "(missing)")}\` | \`${markdown_escape(effect_text)}\` | ${interp} | ${wasm} | ${component} |`;
+  const interp = interpreter_supported.has(name) ? "yes" : "no";
+  const wasm = wasm_supported.has(name) ? "yes" : "no";
+  const component = wasm_supported.has(name) ? "yes" : "no";
+  return `| \`${name}\` | \`${markdown_escape(signatures[name])}\` | \`${markdown_escape(effect_text)}\` | ${interp} | ${wasm} | ${component} |`;
 });
 
 const out = [
@@ -273,16 +225,14 @@ const out = [
   "Generated by `node scripts/gen_builtin_contract_table.mjs`.",
   "",
   "Sources:",
-  "- `src/checker/typecheck_call_builtin_handler_*.mbt` (builtin type rules)",
-  "- `src/checker/typecheck_effects.mbt` (`builtin_effects`)",
+  "- `src/checker/typecheck.mbt` (`type_call`, `builtin_effects`)",
   "- `src/runtime/eval.mbt` (`is_pure_builtin`, `eval_call`)",
-  "- `src/codegen/address.mbt`, `src/codegen/wasm_codegen_call_builtin_pre_user.mbt`, `src/codegen/wasm_codegen_data.mbt`, `src/codegen/wasm_codegen_sig.mbt` (WASM builtin support)",
+  "- `src/codegen/wasm_codegen.mbt` (`compile_expr`)",
   "",
   "Legend:",
   "- `required effects` is the effect-set contract (`with {...}` requirement).",
   "- `- (do required)` means no effect-set requirement, but current checker",
   "  requires an effect-allowed context (`do { ... }` or effectful function body).",
-  "- legacy builtin aliases are normalized to canonical names in this table.",
   "- `component` currently shares builtin codegen support with `wasm`.",
   "",
   "| name | signature | required effects | interpreter | wasm | component |",

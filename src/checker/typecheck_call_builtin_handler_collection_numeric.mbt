@@ -9,12 +9,11 @@ fn type_call_builtin_handler_collection_numeric(
   allow_effect : Bool,
   call_span : @core.Span,
 ) -> @core.Type raise TypeError {
-  let normalized_builtin_name = @core.normalize_builtin_name(builtin_name)
-  match normalized_builtin_name {
-    "string_from_char_code" =>
+  match builtin_name {
+    "String::from_char_code" =>
       check_builtin_simple(
         env,
-        "string_from_char_code",
+        "String::from_char_code",
         args,
         aliases,
         effects,
@@ -24,10 +23,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::String,
         false,
       )
-    "char_to_int" =>
+    "Char::to_int" =>
       check_builtin_simple(
         env,
-        "char_to_int",
+        "Char::to_int",
         args,
         aliases,
         effects,
@@ -37,10 +36,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Int,
         false,
       )
-    "char_from_int" =>
+    "Char::from_int" =>
       check_builtin_simple(
         env,
-        "char_from_int",
+        "Char::from_int",
         args,
         aliases,
         effects,
@@ -50,10 +49,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Char,
         false,
       )
-    "string_builder" =>
+    "StringBuilder::new" =>
       check_builtin_simple(
         env,
-        "string_builder",
+        "StringBuilder::new",
         args,
         aliases,
         effects,
@@ -63,10 +62,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::StringBuilder,
         true,
       )
-    "string_builder_push" =>
+    "StringBuilder::push" =>
       check_builtin_simple(
         env,
-        "string_builder_push",
+        "StringBuilder::push",
         args,
         aliases,
         effects,
@@ -76,10 +75,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Unit,
         true,
       )
-    "string_builder_freeze" =>
+    "StringBuilder::freeze" =>
       check_builtin_simple(
         env,
-        "string_builder_freeze",
+        "StringBuilder::freeze",
         args,
         aliases,
         effects,
@@ -89,10 +88,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::String,
         true,
       )
-    "bytes_new" =>
+    "Bytes::new" =>
       check_builtin_simple(
         env,
-        "bytes_new",
+        "Bytes::new",
         args,
         aliases,
         effects,
@@ -102,10 +101,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Bytes,
         true,
       )
-    "bytes_length" =>
+    "Bytes::length" =>
       check_builtin_simple(
         env,
-        "bytes_length",
+        "Bytes::length",
         args,
         aliases,
         effects,
@@ -115,10 +114,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Int,
         false,
       )
-    "bytes_get" =>
+    "Bytes::get" =>
       check_builtin_simple(
         env,
-        "bytes_get",
+        "Bytes::get",
         args,
         aliases,
         effects,
@@ -128,10 +127,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Int,
         false,
       )
-    "bytes_set" =>
+    "Bytes::set" =>
       check_builtin_simple(
         env,
-        "bytes_set",
+        "Bytes::set",
         args,
         aliases,
         effects,
@@ -141,10 +140,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Unit,
         true,
       )
-    "bytes_push" =>
+    "Bytes::push" =>
       check_builtin_simple(
         env,
-        "bytes_push",
+        "Bytes::push",
         args,
         aliases,
         effects,
@@ -154,10 +153,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Unit,
         true,
       )
-    "bytes_concat" =>
+    "Bytes::concat" =>
       check_builtin_simple(
         env,
-        "bytes_concat",
+        "Bytes::concat",
         args,
         aliases,
         effects,
@@ -167,10 +166,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Bytes,
         false,
       )
-    "bytes_slice" =>
+    "Bytes::slice" =>
       check_builtin_simple(
         env,
-        "bytes_slice",
+        "Bytes::slice",
         args,
         aliases,
         effects,
@@ -180,10 +179,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Bytes,
         false,
       )
-    "bytes_from_array" =>
+    "Bytes::from_array" =>
       check_builtin_simple(
         env,
-        "bytes_from_array",
+        "Bytes::from_array",
         args,
         aliases,
         effects,
@@ -193,10 +192,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Bytes,
         false,
       )
-    "bytes_to_array" =>
+    "Bytes::to_array" =>
       check_builtin_simple(
         env,
-        "bytes_to_array",
+        "Bytes::to_array",
         args,
         aliases,
         effects,
@@ -206,10 +205,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Array(@core.Type::Int),
         false,
       )
-    "bytes_from_string" =>
+    "Bytes::from_string" =>
       check_builtin_simple(
         env,
-        "bytes_from_string",
+        "Bytes::from_string",
         args,
         aliases,
         effects,
@@ -219,10 +218,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Bytes,
         false,
       )
-    "bytes_to_string" =>
+    "Bytes::to_string" =>
       check_builtin_simple(
         env,
-        "bytes_to_string",
+        "Bytes::to_string",
         args,
         aliases,
         effects,
@@ -232,10 +231,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::String,
         false,
       )
-    "array_builder" =>
+    "ArrayBuilder::new" =>
       check_builtin_simple(
         env,
-        "array_builder",
+        "ArrayBuilder::new",
         args,
         aliases,
         effects,
@@ -245,9 +244,9 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::ArrayBuilder(fresh_type_var(env)),
         true,
       )
-    "array_builder_push" => {
+    "ArrayBuilder::push" => {
       let pos_args = prepare_builtin_pos_args(
-        env, "array_builder_push", args, 2, effects, allow_effect, call_span, true,
+        env, "ArrayBuilder::push", args, 2, effects, allow_effect, call_span, true,
       )
       let builder_ty = type_expr_eff(
         env,
@@ -271,9 +270,9 @@ fn type_call_builtin_handler_collection_numeric(
       ensure_type(env, value_ty, elem_ty, pos_args[1].span(), "argument")
       @core.Type::Unit
     }
-    "array_builder_freeze" => {
+    "ArrayBuilder::freeze" => {
       let pos_args = prepare_builtin_pos_args(
-        env, "array_builder_freeze", args, 1, effects, allow_effect, call_span, true,
+        env, "ArrayBuilder::freeze", args, 1, effects, allow_effect, call_span, true,
       )
       let builder_ty = type_expr_eff(
         env,
@@ -355,8 +354,8 @@ fn type_call_builtin_handler_collection_numeric(
       )
       @core.Type::Map(key_ty, elem_ty)
     }
-    "array_length" => {
-      let pos_args = check_positional_arity(args, "array_length", 1, call_span)
+    "Array::length" => {
+      let pos_args = check_positional_arity(args, "Array::length", 1, call_span)
       let array_ty = type_expr_eff(
         env,
         pos_args[0],
@@ -367,8 +366,8 @@ fn type_call_builtin_handler_collection_numeric(
       let _ = expect_array_elem_type(env, array_ty, pos_args[0].span())
       @core.Type::Int
     }
-    "array_get" => {
-      let pos_args = check_positional_arity(args, "array_get", 2, call_span)
+    "Array::get" => {
+      let pos_args = check_positional_arity(args, "Array::get", 2, call_span)
       let array_ty = type_expr_eff(
         env,
         pos_args[0],
@@ -387,8 +386,8 @@ fn type_call_builtin_handler_collection_numeric(
       let elem_ty = expect_array_elem_type(env, array_ty, pos_args[0].span())
       elem_ty
     }
-    "array_push" => {
-      let pos_args = check_positional_arity(args, "array_push", 2, call_span)
+    "Array::push" => {
+      let pos_args = check_positional_arity(args, "Array::push", 2, call_span)
       let array_ty = type_expr_eff(
         env,
         pos_args[0],
@@ -407,8 +406,8 @@ fn type_call_builtin_handler_collection_numeric(
       )
       @core.Type::Unit
     }
-    "array_set" => {
-      let pos_args = check_positional_arity(args, "array_set", 3, call_span)
+    "Array::set" => {
+      let pos_args = check_positional_arity(args, "Array::set", 3, call_span)
       let array_ty = type_expr_eff(
         env,
         pos_args[0],
@@ -435,9 +434,9 @@ fn type_call_builtin_handler_collection_numeric(
       )
       @core.Type::Unit
     }
-    "array_truncate" => {
+    "Array::truncate" => {
       let pos_args = check_positional_arity(
-        args, "array_truncate", 2, call_span,
+        args, "Array::truncate", 2, call_span,
       )
       let _ = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
       let _ = check_arg_type(
@@ -450,8 +449,8 @@ fn type_call_builtin_handler_collection_numeric(
       )
       @core.Type::Unit
     }
-    "array_slice" => {
-      let pos_args = check_positional_arity(args, "array_slice", 3, call_span)
+    "Array::slice" => {
+      let pos_args = check_positional_arity(args, "Array::slice", 3, call_span)
       let array_ty = type_expr_eff(
         env,
         pos_args[0],
@@ -477,8 +476,8 @@ fn type_call_builtin_handler_collection_numeric(
       )
       array_ty
     }
-    "map_get" => {
-      let pos_args = check_positional_arity(args, "map_get", 2, call_span)
+    "Map::get" => {
+      let pos_args = check_positional_arity(args, "Map::get", 2, call_span)
       let map_ty = type_expr_eff(
         env,
         pos_args[0],
@@ -494,14 +493,16 @@ fn type_call_builtin_handler_collection_numeric(
         allow_effect,
       )
       let (key_ty, elem_ty) = expect_map_elem_type(
-        env, map_ty, pos_args[0].span(),
+        env,
+        map_ty,
+        pos_args[0].span(),
       )
       ensure_type(env, key_arg_ty, key_ty, pos_args[1].span(), "argument")
       ensure_map_key_hashable(env, key_arg_ty, pos_args[1].span())
       elem_ty
     }
-    "map_set" => {
-      let pos_args = check_positional_arity(args, "map_set", 3, call_span)
+    "Map::set" => {
+      let pos_args = check_positional_arity(args, "Map::set", 3, call_span)
       let map_ty = type_expr_eff(
         env,
         pos_args[0],
@@ -524,17 +525,19 @@ fn type_call_builtin_handler_collection_numeric(
         allow_effect,
       )
       let (key_ty, elem_ty) = expect_map_elem_type(
-        env, map_ty, pos_args[0].span(),
+        env,
+        map_ty,
+        pos_args[0].span(),
       )
       ensure_type(env, key_arg_ty, key_ty, pos_args[1].span(), "argument")
       ensure_map_key_hashable(env, key_arg_ty, pos_args[1].span())
       ensure_type(env, value_ty, elem_ty, pos_args[2].span(), "argument")
       map_ty
     }
-    "string_length"
-    | "string_utf8_length"
-    | "string_utf16_length"
-    | "string_unicode_length" =>
+    "String::length"
+    | "String::utf8_length"
+    | "String::utf16_length"
+    | "String::unicode_length" =>
       check_builtin_simple(
         env,
         name,
@@ -547,10 +550,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Int,
         false,
       )
-    "parse_int" =>
+    "Int::parse" =>
       check_builtin_simple(
         env,
-        "parse_int",
+        "Int::parse",
         args,
         aliases,
         effects,
@@ -560,10 +563,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Int,
         false,
       )
-    "parse_double" =>
+    "Double::parse" =>
       check_builtin_simple(
         env,
-        "parse_double",
+        "Double::parse",
         args,
         aliases,
         effects,
@@ -573,10 +576,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Double,
         false,
       )
-    "string_char_code_at" =>
+    "String::char_code_at" =>
       check_builtin_simple(
         env,
-        "string_char_code_at",
+        "String::char_code_at",
         args,
         aliases,
         effects,
@@ -586,10 +589,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Int,
         false,
       )
-    "string_substring" =>
+    "String::substring" =>
       check_builtin_simple(
         env,
-        "string_substring",
+        "String::substring",
         args,
         aliases,
         effects,
@@ -599,10 +602,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::String,
         false,
       )
-    "string_concat" =>
+    "String::concat" =>
       check_builtin_simple(
         env,
-        "string_concat",
+        "String::concat",
         args,
         aliases,
         effects,
@@ -612,10 +615,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::String,
         false,
       )
-    "string_equals" =>
+    "String::equals" =>
       check_builtin_simple(
         env,
-        "string_equals",
+        "String::equals",
         args,
         aliases,
         effects,
@@ -625,10 +628,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Bool,
         false,
       )
-    "string_split" =>
+    "String::split" =>
       check_builtin_simple(
         env,
-        "string_split",
+        "String::split",
         args,
         aliases,
         effects,
@@ -638,7 +641,7 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Array(@core.Type::String),
         false,
       )
-    "string_index_of" | "string_last_index_of" | "string_count" =>
+    "String::index_of" | "String::last_index_of" | "String::count" =>
       check_builtin_simple(
         env,
         name,
@@ -651,7 +654,7 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Int,
         false,
       )
-    "string_contains" | "string_starts_with" | "string_ends_with" =>
+    "String::contains" | "String::starts_with" | "String::ends_with" =>
       check_builtin_simple(
         env,
         name,
@@ -664,7 +667,7 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Bool,
         false,
       )
-    "string_trim" | "string_trim_start" | "string_trim_end" =>
+    "String::trim" | "String::trim_start" | "String::trim_end" =>
       check_builtin_simple(
         env,
         name,
@@ -677,7 +680,7 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::String,
         false,
       )
-    "string_replace" | "string_replace_all" =>
+    "String::replace" | "String::replace_all" =>
       check_builtin_simple(
         env,
         name,
@@ -690,7 +693,7 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::String,
         false,
       )
-    "int_abs" | "int_signum" =>
+    "Int::abs" | "Int::signum" =>
       type_check_unary_convert(
         env,
         args,
@@ -702,7 +705,7 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Int,
         @core.Type::Int,
       )
-    "int_is_even" | "int_is_odd" =>
+    "Int::is_even" | "Int::is_odd" =>
       type_check_unary_convert(
         env,
         args,
@@ -714,7 +717,7 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Int,
         @core.Type::Bool,
       )
-    "int_max" | "int_min" =>
+    "Int::max" | "Int::min" =>
       check_builtin_simple(
         env,
         name,
@@ -727,10 +730,10 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Int,
         false,
       )
-    "int_clamp" =>
+    "Int::clamp" =>
       check_builtin_simple(
         env,
-        "int_clamp",
+        "Int::clamp",
         args,
         aliases,
         effects,
@@ -740,7 +743,7 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Int,
         false,
       )
-    "double_abs" =>
+    "Double::abs" =>
       type_check_unary_convert(
         env,
         args,
@@ -752,7 +755,7 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Double,
         @core.Type::Double,
       )
-    "double_max" | "double_min" =>
+    "Double::max" | "Double::min" =>
       check_builtin_simple(
         env,
         name,
@@ -765,7 +768,7 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Double,
         false,
       )
-    "double_floor" | "double_ceil" =>
+    "Double::floor" | "Double::ceil" =>
       type_check_unary_convert(
         env,
         args,
@@ -777,7 +780,7 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Double,
         @core.Type::Double,
       )
-    "string_to_upper" | "string_to_lower" =>
+    "String::to_upper" | "String::to_lower" =>
       type_check_unary_convert(
         env,
         args,
@@ -1005,12 +1008,14 @@ fn type_call_builtin_handler_collection_numeric(
           elem_ty
         }
         @core.Type::Map(key_ty, _) => {
-          ensure_type(
-            env, index_ty, key_ty, pos_args[1].span(), "index",
-          )
+          ensure_type(env, index_ty, key_ty, pos_args[1].span(), "index")
           ensure_map_key_hashable(env, index_ty, pos_args[1].span())
           if not(
-              type_equal(env, resolved_container, @core.Type::Map(key_ty, elem_ty)),
+              type_equal(
+                env,
+                resolved_container,
+                @core.Type::Map(key_ty, elem_ty),
+              ),
             ) {
             raise TypeError::Mismatch(
               expected=@core.Type::Map(key_ty, elem_ty),

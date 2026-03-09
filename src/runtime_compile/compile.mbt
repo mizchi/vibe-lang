@@ -802,8 +802,8 @@ pub fn compose_p3_component(
 fn check_incompatible_server_builtins(ast : @core.Module) -> Array[String] {
   let found : Array[String] = []
   let incompatible_names = [
-    "http_listen", "http_accept", "http_request_method", "http_request_url", "http_request_header",
-    "http_request_body", "http_respond",
+    "Http::listen", "Http::accept", "Http::request_method", "Http::request_url",
+    "Http::request_header", "Http::request_body", "Http::respond",
   ]
   scan_server_builtins_block(ast, incompatible_names, found)
   found

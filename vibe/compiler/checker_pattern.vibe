@@ -10,23 +10,22 @@ import ./types.vibe {
 
 //# Functions
 
-// Find constructor in defs: returns (enum_name, payload_types) or None
 let find_ctor_in_defs = (defs: Array[TypeDef], ctor_name: String) -> Option[(String, Array[Type])] {
-  let dlen = array_length(defs)
+  let dlen = Array::length(defs)
   let rec go_defs = (di: Int) -> Option[(String, Array[Type])] {
     if di >= dlen {
       None
     } else {
-      let d = array_get(defs, di)
+      let d = Array::get(defs, di)
       match d {
         TDEnum(enum_name, variants) => {
-          let vlen = array_length(variants)
+          let vlen = Array::length(variants)
           let rec go_variants = (vi: Int) -> Option[(String, Array[Type])] {
             if vi >= vlen {
               go_defs(di + 1)
             } else {
-              let (vname, vtypes) = array_get(variants, vi)
-              if string_equals(vname, ctor_name) {
+              let (vname, vtypes) = Array::get(variants, vi)
+              if String::equals(vname, ctor_name) {
                 Some((enum_name, vtypes))
               } else {
                 go_variants(vi + 1)
@@ -50,57 +49,56 @@ export let rec check_pattern = (pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs
     PInt(_) => env,
     PString(_) => env,
     PBool(_) => env,
-    PCtor(name, sub_pats) => {
-      match find_ctor_in_defs(defs, name) {
-        Some(info) => {
-          let (_, payload_types) = info
-          let splen = array_length(sub_pats)
-          let ptlen = array_length(payload_types)
-          let rec bind_subs = (i: Int, acc_env: TypeEnv) -> TypeEnv {
-            if i >= splen {
-              acc_env
+    PCtor(name, sub_pats) => match find_ctor_in_defs(defs, name) {
+      Some(info) => {
+        let (_, payload_types) = info
+        let splen = Array::length(sub_pats)
+        let ptlen = Array::length(payload_types)
+        let rec bind_subs = (i: Int, acc_env: TypeEnv) -> TypeEnv {
+          if i >= splen {
+            acc_env
+          } else {
+            let sub_ty = if i < ptlen {
+              Array::get(payload_types, i)
             } else {
-              let sub_ty = if i < ptlen {
-                array_get(payload_types, i)
-              } else {
-                CtUnknown
-              }
-              let next_env = check_pattern(array_get(sub_pats, i), sub_ty, acc_env, defs)
-              bind_subs(i + 1, next_env)
+              CtUnknown
             }
+            let next_env = check_pattern(Array::get(sub_pats, i), sub_ty, acc_env, defs)
+            bind_subs(i + 1, next_env)
           }
-          bind_subs(0, env)
-        },
-        None => {
-          // Unknown constructor: bind sub-patterns to CtUnknown
-          let splen = array_length(sub_pats)
-          let rec bind_unknown = (i: Int, acc_env: TypeEnv) -> TypeEnv {
-            if i >= splen {
-              acc_env
-            } else {
-              let next_env = check_pattern(array_get(sub_pats, i), CtUnknown, acc_env, defs)
-              bind_unknown(i + 1, next_env)
-            }
-          }
-          bind_unknown(0, env)
         }
+        bind_subs(0, env)
+      },
+      None => {
+        // Unknown constructor: bind sub-patterns to CtUnknown
+        let splen = Array::length(sub_pats)
+        let rec bind_unknown = (i: Int, acc_env: TypeEnv) -> TypeEnv {
+          if i >= splen {
+            acc_env
+          } else {
+            let next_env = check_pattern(Array::get(sub_pats, i), CtUnknown, acc_env, defs)
+            bind_unknown(i + 1, next_env)
+          }
+        }
+        bind_unknown(0, env)
       }
-    },
+    }
+    ,
     PTuple(pats) => {
-      let plen = array_length(pats)
+      let plen = Array::length(pats)
       match scrutinee_ty {
         CtTuple(elem_tys) => {
-          let elen = array_length(elem_tys)
+          let elen = Array::length(elem_tys)
           let rec bind_tuple = (i: Int, acc_env: TypeEnv) -> TypeEnv {
             if i >= plen {
               acc_env
             } else {
               let et = if i < elen {
-                array_get(elem_tys, i)
+                Array::get(elem_tys, i)
               } else {
                 CtUnknown
               }
-              let next_env = check_pattern(array_get(pats, i), et, acc_env, defs)
+              let next_env = check_pattern(Array::get(pats, i), et, acc_env, defs)
               bind_tuple(i + 1, next_env)
             }
           }
@@ -112,7 +110,7 @@ export let rec check_pattern = (pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs
             if i >= plen {
               acc_env
             } else {
-              let next_env = check_pattern(array_get(pats, i), CtUnknown, acc_env, defs)
+              let next_env = check_pattern(Array::get(pats, i), CtUnknown, acc_env, defs)
               bind_unk(i + 1, next_env)
             }
           }
@@ -120,9 +118,6 @@ export let rec check_pattern = (pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs
         }
       }
     },
-    POr(left, _right) => {
-      // Check left side; both should produce same bindings, return left's
-      check_pattern(left, scrutinee_ty, env, defs)
-    }
+    POr(left, _right) => check_pattern(left, scrutinee_ty, env, defs)
   }
 }

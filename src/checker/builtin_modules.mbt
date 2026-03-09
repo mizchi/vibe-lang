@@ -781,24 +781,24 @@ let builtin_bool_source : String =
 let builtin_int_source : String =
   #|//# Functions
   #|
-  #|let int_max = (a: Int, b: Int) -> Int {
+  #|let Int::max = (a: Int, b: Int) -> Int {
   #|  if a > b {
   #|    a
   #|  } else b
   #|}
   #|
   #|export let max = (a: Int, b: Int) -> Int {
-  #|  int_max(a, b)
+  #|  Int::max(a, b)
   #|}
   #|
-  #|let int_min = (a: Int, b: Int) -> Int {
+  #|let Int::min = (a: Int, b: Int) -> Int {
   #|  if a < b {
   #|    a
   #|  } else b
   #|}
   #|
   #|export let min = (a: Int, b: Int) -> Int {
-  #|  int_min(a, b)
+  #|  Int::min(a, b)
   #|}
   #|
   #|let rec int_pow = (base: Int, exp: Int) -> Int {
@@ -818,7 +818,7 @@ let builtin_int_source : String =
   #|  int_pow(base, exp)
   #|}
   #|
-  #|let int_clamp = (x: Int, min_val: Int, max_val: Int) -> Int {
+  #|let Int::clamp = (x: Int, min_val: Int, max_val: Int) -> Int {
   #|  if x < min_val {
   #|    min_val
   #|  }
@@ -829,18 +829,18 @@ let builtin_int_source : String =
   #|}
   #|
   #|export let clamp = (x: Int, min_val: Int, max_val: Int) -> Int {
-  #|  int_clamp(x, min_val, max_val)
+  #|  Int::clamp(x, min_val, max_val)
   #|}
   #|
-  #|let int_is_odd = (x: Int) -> Bool {
+  #|let Int::is_odd = (x: Int) -> Bool {
   #|  x % 2 != 0
   #|}
   #|
   #|export let is_odd = (x: Int) -> Bool {
-  #|  int_is_odd(x)
+  #|  Int::is_odd(x)
   #|}
   #|
-  #|let int_signum = (x: Int) -> Int {
+  #|let Int::signum = (x: Int) -> Int {
   #|  if x < 0 {
   #|    -1
   #|  }
@@ -851,15 +851,15 @@ let builtin_int_source : String =
   #|}
   #|
   #|export let signum = (x: Int) -> Int {
-  #|  int_signum(x)
+  #|  Int::signum(x)
   #|}
   #|
-  #|let int_is_even = (x: Int) -> Bool {
+  #|let Int::is_even = (x: Int) -> Bool {
   #|  x % 2 == 0
   #|}
   #|
   #|export let is_even = (x: Int) -> Bool {
-  #|  int_is_even(x)
+  #|  Int::is_even(x)
   #|}
   #|
   #|let int_is_zero = (x: Int) -> Bool {
@@ -901,7 +901,7 @@ let builtin_int_source : String =
   #|
   #|let int_min_value: Int = 0 - 2305843009213693951 - 1
   #|
-  #|let int_abs = (x: Int) -> Int {
+  #|let Int::abs = (x: Int) -> Int {
   #|  if x == int_min_value {
   #|    int_max_value
   #|  }
@@ -912,12 +912,12 @@ let builtin_int_source : String =
   #|}
   #|
   #|export let abs = (x: Int) -> Int {
-  #|  int_abs(x)
+  #|  Int::abs(x)
   #|}
   #|
   #|let rec int_gcd = (a: Int, b: Int) -> Int {
-  #|  let abs_a = int_abs(a)
-  #|  let abs_b = int_abs(b)
+  #|  let abs_a = Int::abs(a)
+  #|  let abs_b = Int::abs(b)
   #|  if abs_b == 0 {
   #|    abs_a
   #|  }
@@ -935,7 +935,7 @@ let builtin_int_source : String =
   #|  else {
   #|    let g = int_gcd(a, b)
   #|    let scaled = a / g
-  #|    int_abs(scaled * b)
+  #|    Int::abs(scaled * b)
   #|  }
   #|}
   #|
@@ -962,7 +962,7 @@ let builtin_int_source : String =
   #|}
   #|
   #|export let Int::abs = (x: Int) -> Int {
-  #|  int_abs(x)
+  #|  Int::abs(x)
   #|}
   #|
   #|export let Int::gcd = (a: Int, b: Int) -> Int {
@@ -974,11 +974,11 @@ let builtin_int_source : String =
   #|}
   #|
   #|export let Int::max = (a: Int, b: Int) -> Int {
-  #|  int_max(a, b)
+  #|  Int::max(a, b)
   #|}
   #|
   #|export let Int::min = (a: Int, b: Int) -> Int {
-  #|  int_min(a, b)
+  #|  Int::min(a, b)
   #|}
   #|
   #|export let Int::pow = (base: Int, exp: Int) -> Int {
@@ -986,19 +986,19 @@ let builtin_int_source : String =
   #|}
   #|
   #|export let Int::clamp = (x: Int, min_val: Int, max_val: Int) -> Int {
-  #|  int_clamp(x, min_val, max_val)
+  #|  Int::clamp(x, min_val, max_val)
   #|}
   #|
   #|export let Int::is_odd = (x: Int) -> Bool {
-  #|  int_is_odd(x)
+  #|  Int::is_odd(x)
   #|}
   #|
   #|export let Int::signum = (x: Int) -> Int {
-  #|  int_signum(x)
+  #|  Int::signum(x)
   #|}
   #|
   #|export let Int::is_even = (x: Int) -> Bool {
-  #|  int_is_even(x)
+  #|  Int::is_even(x)
   #|}
   #|
   #|export let Int::is_zero = (x: Int) -> Bool {
@@ -1014,7 +1014,7 @@ let builtin_int_source : String =
   #|}
   #|
   #|export let Int::to_double = (x: Int) -> Double {
-  #|  int_to_double(x)
+  #|  Int::to_double(x)
   #|}
   #|
   #|export let Int::is_negative = (x: Int) -> Bool {
@@ -1171,29 +1171,29 @@ let builtin_float_source : String =
 let builtin_double_source : String =
   #|//# Functions
   #|
-  #|let double_abs = (x: Double) -> Double {
+  #|let Double::abs = (x: Double) -> Double {
   #|  if x < 0.0 {
   #|    0.0 - x
   #|  } else x
   #|}
   #|
-  #|export let abs = double_abs
+  #|export let abs = Double::abs
   #|
-  #|let double_max = (a: Double, b: Double) -> Double {
+  #|let Double::max = (a: Double, b: Double) -> Double {
   #|  if a > b {
   #|    a
   #|  } else b
   #|}
   #|
-  #|export let max = double_max
+  #|export let max = Double::max
   #|
-  #|let double_min = (a: Double, b: Double) -> Double {
+  #|let Double::min = (a: Double, b: Double) -> Double {
   #|  if a < b {
   #|    a
   #|  } else b
   #|}
   #|
-  #|export let min = double_min
+  #|export let min = Double::min
   #|
   #|let double_cube = (x: Double) -> Double {
   #|  x * x * x
@@ -1248,14 +1248,14 @@ let builtin_double_source : String =
   #|let double_int_min: Int = 0 - 2305843009213693951 - 1
   #|
   #|let double_approx_eq = (a: Double, b: Double, eps: Double) -> Bool {
-  #|  double_abs(a - b) <= eps
+  #|  Double::abs(a - b) <= eps
   #|}
   #|
   #|export let approx_eq = double_approx_eq
   #|
-  #|let double_int_max_value: Double = int_to_double(double_int_max)
+  #|let double_int_max_value: Double = Int::to_double(double_int_max)
   #|
-  #|let double_int_min_value: Double = int_to_double(double_int_min)
+  #|let double_int_min_value: Double = Int::to_double(double_int_min)
   #|
   #|let double_to_int_saturating = (x: Double) -> Int {
   #|  if x >= double_int_max_value {
@@ -1264,47 +1264,47 @@ let builtin_double_source : String =
   #|  else if x <= double_int_min_value {
   #|    double_int_min
   #|  }
-  #|  else double_to_int(x)
+  #|  else Double::to_int(x)
   #|}
   #|
-  #|let double_ceil = (x: Double) -> Double {
+  #|let Double::ceil = (x: Double) -> Double {
   #|  if x >= double_int_max_value {
   #|    double_int_max_value
   #|  } else {
   #|    let i = double_to_int_saturating(x)
-  #|    let d = int_to_double(i)
+  #|    let d = Int::to_double(i)
   #|    if d < x {
-  #|      int_to_double(i + 1)
+  #|      Int::to_double(i + 1)
   #|    } else d
   #|  }
   #|}
   #|
-  #|export let ceil = double_ceil
+  #|export let ceil = Double::ceil
   #|
-  #|let double_floor = (x: Double) -> Double {
+  #|let Double::floor = (x: Double) -> Double {
   #|  if x <= double_int_min_value {
   #|    double_int_min_value
   #|  } else {
   #|    let i = double_to_int_saturating(x)
-  #|    let d = int_to_double(i)
+  #|    let d = Int::to_double(i)
   #|    if d > x {
-  #|      int_to_double(i - 1)
+  #|      Int::to_double(i - 1)
   #|    } else d
   #|  }
   #|}
   #|
-  #|export let floor = double_floor
+  #|export let floor = Double::floor
   #|
   #|let double_round = (x: Double) -> Double {
   #|  if x >= 0.0 {
-  #|    double_floor(x + 0.5)
-  #|  } else double_ceil(x - 0.5)
+  #|    Double::floor(x + 0.5)
+  #|  } else Double::ceil(x - 0.5)
   #|}
   #|
   #|export let round = double_round
   #|
   #|let double_trunc = (x: Double) -> Double {
-  #|  int_to_double(double_to_int_saturating(x))
+  #|  Int::to_double(double_to_int_saturating(x))
   #|}
   #|
   #|export let trunc = double_trunc
@@ -1316,19 +1316,19 @@ let builtin_double_source : String =
   #|export let fract = double_fract
   #|
   #|export let Double::abs = (x: Double) -> Double {
-  #|  double_abs(x)
+  #|  Double::abs(x)
   #|}
   #|
   #|export let Double::max = (a: Double, b: Double) -> Double {
-  #|  double_max(a, b)
+  #|  Double::max(a, b)
   #|}
   #|
   #|export let Double::min = (a: Double, b: Double) -> Double {
-  #|  double_min(a, b)
+  #|  Double::min(a, b)
   #|}
   #|
   #|export let Double::ceil = (x: Double) -> Double {
-  #|  double_ceil(x)
+  #|  Double::ceil(x)
   #|}
   #|
   #|export let Double::cube = (x: Double) -> Double {
@@ -1344,7 +1344,7 @@ let builtin_double_source : String =
   #|}
   #|
   #|export let Double::floor = (x: Double) -> Double {
-  #|  double_floor(x)
+  #|  Double::floor(x)
   #|}
   #|
   #|export let Double::fract = (x: Double) -> Double {
@@ -1380,13 +1380,13 @@ let builtin_char_source : String =
   #|//# Functions
   #|
   #|export let to_int = (ch: Char) -> Int {
-  #|  char_to_int(ch)
+  #|  Char::to_int(ch)
   #|}
   #|
   #|export let from_int = (code: Int) -> Option[Char] {
   #|  if code < 0 || code > 1114111 {
   #|    None
-  #|  } else Some(char_from_int(code))
+  #|  } else Some(Char::from_int(code))
   #|}
   #|
   #|export let is_ascii = (ch: Char) -> Bool {
@@ -1395,12 +1395,12 @@ let builtin_char_source : String =
   #|}
   #|
   #|export let to_string = (ch: Char) -> String {
-  #|  string_from_char_code(to_int(ch))
+  #|  String::from_char_code(to_int(ch))
   #|}
   #|
   #|export let from_string = (s: String) -> Option[Char] {
-  #|  if string_length(s) == 1 {
-  #|    from_int(string_char_code_at(s, 0))
+  #|  if String::length(s) == 1 {
+  #|    from_int(String::char_code_at(s, 0))
   #|  } else None
   #|}
   #|
@@ -1428,13 +1428,13 @@ let builtin_char_source : String =
   #|
   #|export let to_ascii_lowercase = (ch: Char) -> Char {
   #|  if is_ascii_uppercase(ch) {
-  #|    char_from_int(to_int(ch) + 32)
+  #|    Char::from_int(to_int(ch) + 32)
   #|  } else ch
   #|}
   #|
   #|export let to_ascii_uppercase = (ch: Char) -> Char {
   #|  if is_ascii_lowercase(ch) {
-  #|    char_from_int(to_int(ch) - 32)
+  #|    Char::from_int(to_int(ch) - 32)
   #|  } else ch
   #|}
   #|
@@ -1456,61 +1456,61 @@ let builtin_string_source : String =
   #|//# Functions
   #|
   #|let string_drop = (s: String, n: Int) -> String {
-  #|  let len = string_length(s)
+  #|  let len = String::length(s)
   #|  if n <= 0 {
   #|    s
   #|  }
   #|  else if n >= len {
   #|    ""
   #|  }
-  #|  else string_substring(s, n, len)
+  #|  else String::substring(s, n, len)
   #|}
   #|
   #|let string_head = (s: String) -> String {
-  #|  if string_length(s) == 0 {
+  #|  if String::length(s) == 0 {
   #|    ""
   #|  }
-  #|  else string_substring(s, 0, 1)
+  #|  else String::substring(s, 0, 1)
   #|}
   #|
   #|let string_init = (s: String) -> String {
-  #|  let len = string_length(s)
+  #|  let len = String::length(s)
   #|  if len <= 1 {
   #|    ""
   #|  }
-  #|  else string_substring(s, 0, len - 1)
+  #|  else String::substring(s, 0, len - 1)
   #|}
   #|
   #|let string_last = (s: String) -> String {
-  #|  let len = string_length(s)
+  #|  let len = String::length(s)
   #|  if len == 0 {
   #|    ""
   #|  }
-  #|  else string_substring(s, len - 1, len)
+  #|  else String::substring(s, len - 1, len)
   #|}
   #|
   #|let string_tail = (s: String) -> String {
-  #|  let len = string_length(s)
+  #|  let len = String::length(s)
   #|  if len <= 1 {
   #|    ""
   #|  }
-  #|  else string_substring(s, 1, len)
+  #|  else String::substring(s, 1, len)
   #|}
   #|
   #|let string_take = (s: String, n: Int) -> String {
-  #|  let len = string_length(s)
+  #|  let len = String::length(s)
   #|  if n <= 0 {
   #|    ""
   #|  }
   #|  else if n >= len {
   #|    s
   #|  }
-  #|  else string_substring(s, 0, n)
+  #|  else String::substring(s, 0, n)
   #|}
   #|
-  #|let string_count = (s: String, sub: String) -> Int {
-  #|  let s_len = string_length(s)
-  #|  let sub_len = string_length(sub)
+  #|let String::count = (s: String, sub: String) -> Int {
+  #|  let s_len = String::length(s)
+  #|  let sub_len = String::length(sub)
   #|  if sub_len == 0 || sub_len > s_len {
   #|    0
   #|  }
@@ -1519,7 +1519,7 @@ let builtin_string_source : String =
   #|      if i > s_len - sub_len {
   #|        acc
   #|      }
-  #|      else if string_equals(string_substring(s, i, i + sub_len), sub) {
+  #|      else if String::equals(String::substring(s, i, i + sub_len), sub) {
   #|        go(i + sub_len, acc + 1)
   #|      } else go(i + 1, acc)
   #|    }
@@ -1533,18 +1533,18 @@ let builtin_string_source : String =
   #|      acc
   #|    }
   #|    else if count % 2 == 1 {
-  #|      go(string_concat(acc, chunk), string_concat(chunk, chunk), count / 2)
-  #|    } else go(acc, string_concat(chunk, chunk), count / 2)
+  #|      go(String::concat(acc, chunk), String::concat(chunk, chunk), count / 2)
+  #|    } else go(acc, String::concat(chunk, chunk), count / 2)
   #|  }
   #|  go("", s, n)
   #|}
   #|
   #|export let from_char_code = (code: Int) -> String {
-  #|  string_from_char_code(code)
+  #|  String::from_char_code(code)
   #|}
   #|
   #|let string_compare = (a: String, b: String) -> Int {
-  #|  if string_equals(a, b) {
+  #|  if String::equals(a, b) {
   #|    0
   #|  }
   #|  else if a < b {
@@ -1554,7 +1554,7 @@ let builtin_string_source : String =
   #|}
   #|
   #|let string_is_empty = (s: String) -> Bool {
-  #|  string_length(s) == 0
+  #|  String::length(s) == 0
   #|}
   #|
   #|let string_build_pad = (pad_char: String, pad_len: Int) -> String {
@@ -1562,7 +1562,7 @@ let builtin_string_source : String =
   #|    ""
   #|  }
   #|  else {
-  #|    let unit_len = string_length(pad_char)
+  #|    let unit_len = String::length(pad_char)
   #|    if unit_len == 0 {
   #|      ""
   #|    }
@@ -1574,63 +1574,63 @@ let builtin_string_source : String =
   #|}
   #|
   #|let string_pad_left = (s: String, target_len: Int, pad_char: String) -> String {
-  #|  let len = string_length(s)
+  #|  let len = String::length(s)
   #|  let pad_len = target_len - len
   #|  if pad_len <= 0 {
   #|    s
   #|  }
   #|  else {
   #|    let pad = string_build_pad(pad_char, pad_len)
-  #|    if string_length(pad) == 0 {
+  #|    if String::length(pad) == 0 {
   #|      s
-  #|    } else string_concat(pad, s)
+  #|    } else String::concat(pad, s)
   #|  }
   #|}
   #|
-  #|let string_ends_with = (s: String, suffix: String) -> Bool {
-  #|  let s_len = string_length(s)
-  #|  let suf_len = string_length(suffix)
+  #|let String::ends_with = (s: String, suffix: String) -> Bool {
+  #|  let s_len = String::length(s)
+  #|  let suf_len = String::length(suffix)
   #|  if suf_len > s_len {
   #|    false
   #|  }
-  #|  else string_equals(string_substring(s, s_len - suf_len, s_len), suffix)
+  #|  else String::equals(String::substring(s, s_len - suf_len, s_len), suffix)
   #|}
   #|
   #|let string_pad_right = (s: String, target_len: Int, pad_char: String) -> String {
-  #|  let len = string_length(s)
+  #|  let len = String::length(s)
   #|  let pad_len = target_len - len
   #|  if pad_len <= 0 {
   #|    s
   #|  }
   #|  else {
   #|    let pad = string_build_pad(pad_char, pad_len)
-  #|    if string_length(pad) == 0 {
+  #|    if String::length(pad) == 0 {
   #|      s
-  #|    } else string_concat(s, pad)
+  #|    } else String::concat(s, pad)
   #|  }
   #|}
   #|
-  #|let string_starts_with = (s: String, prefix: String) -> Bool {
-  #|  let s_len = string_length(s)
-  #|  let p_len = string_length(prefix)
+  #|let String::starts_with = (s: String, prefix: String) -> Bool {
+  #|  let s_len = String::length(s)
+  #|  let p_len = String::length(prefix)
   #|  if p_len > s_len {
   #|    false
   #|  }
-  #|  else string_equals(string_substring(s, 0, p_len), prefix)
+  #|  else String::equals(String::substring(s, 0, p_len), prefix)
   #|}
   #|
   #|let is_ascii_whitespace = (code: Int) -> Bool {
   #|  code == 32 || code == 9 || code == 10 || code == 13
   #|}
   #|
-  #|let string_trim_end = (s: String) -> String {
-  #|  let len = string_length(s)
+  #|let String::trim_end = (s: String) -> String {
+  #|  let len = String::length(s)
   #|  let rec find_end = (i: Int) -> Int {
   #|    if i <= 0 {
   #|      0
   #|    }
   #|    else {
-  #|      let code = string_char_code_at(s, i - 1)
+  #|      let code = String::char_code_at(s, i - 1)
   #|      if is_ascii_whitespace(code) {
   #|        find_end(i - 1)
   #|      }
@@ -1641,17 +1641,17 @@ let builtin_string_source : String =
   #|  if end == len {
   #|    s
   #|  }
-  #|  else string_substring(s, 0, end)
+  #|  else String::substring(s, 0, end)
   #|}
   #|
-  #|let string_trim_start = (s: String) -> String {
-  #|  let len = string_length(s)
+  #|let String::trim_start = (s: String) -> String {
+  #|  let len = String::length(s)
   #|  let rec find_start = (i: Int) -> Int {
   #|    if i >= len {
   #|      len
   #|    }
   #|    else {
-  #|      let code = string_char_code_at(s, i)
+  #|      let code = String::char_code_at(s, i)
   #|      if is_ascii_whitespace(code) {
   #|        find_start(i + 1)
   #|      }
@@ -1662,28 +1662,28 @@ let builtin_string_source : String =
   #|  if start == 0 {
   #|    s
   #|  }
-  #|  else string_substring(s, start, len)
+  #|  else String::substring(s, start, len)
   #|}
   #|
-  #|let string_trim = (s: String) -> String {
-  #|  string_trim_end(string_trim_start(s))
+  #|let String::trim = (s: String) -> String {
+  #|  String::trim_end(String::trim_start(s))
   #|}
   #|
   #|let string_is_blank = (s: String) -> Bool {
-  #|  string_is_empty(string_trim(s))
+  #|  string_is_empty(String::trim(s))
   #|}
   #|
   #|let string_equals_value = (a: String, b: String) -> Bool {
-  #|  string_equals(a, b)
+  #|  String::equals(a, b)
   #|}
   #|
   #|let string_is_not_empty = (s: String) -> Bool {
-  #|  string_length(s) > 0
+  #|  String::length(s) > 0
   #|}
   #|
   #|let string_index_of_from = (s: String, sub: String, start: Int) -> Int {
-  #|  let s_len = string_length(s)
-  #|  let sub_len = string_length(sub)
+  #|  let s_len = String::length(s)
+  #|  let sub_len = String::length(sub)
   #|  if start < 0 {
   #|    -1
   #|  }
@@ -1701,7 +1701,7 @@ let builtin_string_source : String =
   #|      if i > s_len - sub_len {
   #|        -1
   #|      }
-  #|      else if string_equals(string_substring(s, i, i + sub_len), sub) {
+  #|      else if String::equals(String::substring(s, i, i + sub_len), sub) {
   #|        i
   #|      }
   #|      else find(i + 1)
@@ -1710,35 +1710,35 @@ let builtin_string_source : String =
   #|  }
   #|}
   #|
-  #|let string_contains = (s: String, sub: String) -> Bool {
+  #|let String::contains = (s: String, sub: String) -> Bool {
   #|  string_index_of_from(s, sub, 0) >= 0
   #|}
   #|
-  #|let string_index_of = (s: String, sub: String) -> Int {
+  #|let String::index_of = (s: String, sub: String) -> Int {
   #|  string_index_of_from(s, sub, 0)
   #|}
   #|
-  #|let string_replace = (s: String, pattern: String, replacement: String) -> String {
-  #|  let pat_len = string_length(pattern)
+  #|let String::replace = (s: String, pattern: String, replacement: String) -> String {
+  #|  let pat_len = String::length(pattern)
   #|  if pat_len == 0 {
   #|    s
   #|  }
   #|  else {
-  #|    let idx = string_index_of(s, pattern)
+  #|    let idx = String::index_of(s, pattern)
   #|    if idx < 0 {
   #|      s
   #|    }
   #|    else {
-  #|      let before = string_substring(s, 0, idx)
-  #|      let after = string_substring(s, idx + pat_len, string_length(s))
-  #|      string_concat(string_concat(before, replacement), after)
+  #|      let before = String::substring(s, 0, idx)
+  #|      let after = String::substring(s, idx + pat_len, String::length(s))
+  #|      String::concat(String::concat(before, replacement), after)
   #|    }
   #|  }
   #|}
   #|
-  #|let string_replace_all = (s: String, pattern: String, replacement: String) -> String {
-  #|  let pat_len = string_length(pattern)
-  #|  let s_len = string_length(s)
+  #|let String::replace_all = (s: String, pattern: String, replacement: String) -> String {
+  #|  let pat_len = String::length(pattern)
+  #|  let s_len = String::length(s)
   #|  if pat_len == 0 || pat_len > s_len {
   #|    s
   #|  }
@@ -1746,27 +1746,27 @@ let builtin_string_source : String =
   #|    let rec go = (start: Int, sb: StringBuilder) -> String {
   #|      let idx = string_index_of_from(s, pattern, start)
   #|      if idx < 0 {
-  #|        let rest = string_substring(s, start, s_len)
+  #|        let rest = String::substring(s, start, s_len)
   #|        {
-  #|          string_builder_push(sb, rest)
-  #|          string_builder_freeze(sb)
+  #|          StringBuilder::push(sb, rest)
+  #|          StringBuilder::freeze(sb)
   #|        }
   #|      } else {
-  #|        let before = string_substring(s, start, idx)
+  #|        let before = String::substring(s, start, idx)
   #|        {
-  #|          string_builder_push(sb, before)
-  #|          string_builder_push(sb, replacement)
+  #|          StringBuilder::push(sb, before)
+  #|          StringBuilder::push(sb, replacement)
   #|        }
   #|        go(idx + pat_len, sb)
   #|      }
   #|    }
-  #|    go(0, string_builder())
+  #|    go(0, StringBuilder::new())
   #|  }
   #|}
   #|
-  #|let string_last_index_of = (s: String, sub: String) -> Int {
-  #|  let s_len = string_length(s)
-  #|  let sub_len = string_length(sub)
+  #|let String::last_index_of = (s: String, sub: String) -> Int {
+  #|  let s_len = String::length(s)
+  #|  let sub_len = String::length(sub)
   #|  if sub_len > s_len {
   #|    -1
   #|  }
@@ -1779,7 +1779,7 @@ let builtin_string_source : String =
   #|      if i < 0 {
   #|        -1
   #|      }
-  #|      else if string_equals(string_substring(s, i, i + sub_len), sub) {
+  #|      else if String::equals(String::substring(s, i, i + sub_len), sub) {
   #|        i
   #|      }
   #|      else find(i - 1)
@@ -1789,15 +1789,15 @@ let builtin_string_source : String =
   #|}
   #|
   #|let string_utf8_length_value = (s: String) -> Int {
-  #|  string_utf8_length(s)
+  #|  String::utf8_length(s)
   #|}
   #|
   #|let string_utf16_length_value = (s: String) -> Int {
-  #|  string_utf16_length(s)
+  #|  String::utf16_length(s)
   #|}
   #|
   #|let string_unicode_length_value = (s: String) -> Int {
-  #|  string_unicode_length(s)
+  #|  String::unicode_length(s)
   #|}
   #|
   #|export let String::drop = (s: String, n: Int) -> String {
@@ -1825,11 +1825,11 @@ let builtin_string_source : String =
   #|}
   #|
   #|export let String::trim = (s: String) -> String {
-  #|  string_trim(s)
+  #|  String::trim(s)
   #|}
   #|
   #|export let String::count = (s: String, sub: String) -> Int {
-  #|  string_count(s, sub)
+  #|  String::count(s, sub)
   #|}
   #|
   #|export let String::equals = (a: String, b: String) -> Bool {
@@ -1845,15 +1845,15 @@ let builtin_string_source : String =
   #|}
   #|
   #|export let String::replace = (s: String, pattern: String, replacement: String) -> String {
-  #|  string_replace(s, pattern, replacement)
+  #|  String::replace(s, pattern, replacement)
   #|}
   #|
   #|export let String::contains = (s: String, sub: String) -> Bool {
-  #|  string_contains(s, sub)
+  #|  String::contains(s, sub)
   #|}
   #|
   #|export let String::index_of = (s: String, sub: String) -> Int {
-  #|  string_index_of(s, sub)
+  #|  String::index_of(s, sub)
   #|}
   #|
   #|export let String::is_blank = (s: String) -> Bool {
@@ -1869,11 +1869,11 @@ let builtin_string_source : String =
   #|}
   #|
   #|export let String::trim_end = (s: String) -> String {
-  #|  string_trim_end(s)
+  #|  String::trim_end(s)
   #|}
   #|
   #|export let String::ends_with = (s: String, suffix: String) -> Bool {
-  #|  string_ends_with(s, suffix)
+  #|  String::ends_with(s, suffix)
   #|}
   #|
   #|export let String::pad_right = (s: String, target_len: Int, pad_char: String) -> String {
@@ -1881,15 +1881,15 @@ let builtin_string_source : String =
   #|}
   #|
   #|export let String::trim_start = (s: String) -> String {
-  #|  string_trim_start(s)
+  #|  String::trim_start(s)
   #|}
   #|
   #|export let String::replace_all = (s: String, pattern: String, replacement: String) -> String {
-  #|  string_replace_all(s, pattern, replacement)
+  #|  String::replace_all(s, pattern, replacement)
   #|}
   #|
   #|export let String::starts_with = (s: String, prefix: String) -> Bool {
-  #|  string_starts_with(s, prefix)
+  #|  String::starts_with(s, prefix)
   #|}
   #|
   #|export let String::utf8_length = (s: String) -> Int {
@@ -1905,7 +1905,7 @@ let builtin_string_source : String =
   #|}
   #|
   #|export let String::last_index_of = (s: String, sub: String) -> Int {
-  #|  string_last_index_of(s, sub)
+  #|  String::last_index_of(s, sub)
   #|}
   #|
   #|export let String::unicode_length = (s: String) -> Int {
@@ -1917,11 +1917,11 @@ let builtin_array_source : String =
   #|//# Functions
   #|
   #|export let all = [T](xs: Array[T], pred: (x: T) -> Bool) -> Bool {
-  #|  let len = array_length(xs)
+  #|  let len = Array::length(xs)
   #|  let rec r#loop = (i: Int) -> Bool {
   #|    if i >= len {
   #|      true
-  #|    } else if pred(array_get(xs, i)) {
+  #|    } else if pred(Array::get(xs, i)) {
   #|      r#loop(i + 1)
   #|    } else false
   #|  }
@@ -1929,38 +1929,38 @@ let builtin_array_source : String =
   #|}
   #|
   #|export let get = [T](xs: Array[T], index: Int) -> Option[T] {
-  #|  if index < 0 || index >= array_length(xs) {
+  #|  if index < 0 || index >= Array::length(xs) {
   #|    None
-  #|  } else Some(array_get(xs, index))
+  #|  } else Some(Array::get(xs, index))
   #|}
   #|
   #|export let zip = [A, B](xs: Array[A], ys: Array[B]) -> Array[(A, B)] {
-  #|  let len_x = array_length(xs)
-  #|  let len_y = array_length(ys)
+  #|  let len_x = Array::length(xs)
+  #|  let len_y = Array::length(ys)
   #|  let len = if len_x < len_y {
   #|    len_x
   #|  } else len_y
   #|  {
-  #|    let acc = array_builder()
+  #|    let acc = ArrayBuilder::new()
   #|    let rec r#loop = (i: Int) -> ArrayBuilder[(A, B)] {
   #|      if i >= len {
   #|        acc
   #|      } else {
-  #|        array_builder_push(acc, (array_get(xs, i), array_get(ys, i)))
+  #|        ArrayBuilder::push(acc, (Array::get(xs, i), Array::get(ys, i)))
   #|        r#loop(i + 1)
   #|      }
   #|    }
-  #|    array_builder_freeze(r#loop(0))
+  #|    ArrayBuilder::freeze(r#loop(0))
   #|  }
   #|}
   #|
   #|export let find = [T](xs: Array[T], pred: (x: T) -> Bool) -> Option[T] {
-  #|  let len = array_length(xs)
+  #|  let len = Array::length(xs)
   #|  let rec r#loop = (i: Int) -> Option[T] {
   #|    if i >= len {
   #|      None
   #|    } else {
-  #|      let value = array_get(xs, i)
+  #|      let value = Array::get(xs, i)
   #|      if pred(value) {
   #|        Some(value)
   #|      } else r#loop(i + 1)
@@ -1977,11 +1977,11 @@ let builtin_array_source : String =
   #|}
   #|
   #|export let fold = [A, B](xs: Array[A], init: B, f: (acc: B, x: A) -> B) -> B {
-  #|  let len = array_length(xs)
+  #|  let len = Array::length(xs)
   #|  let rec r#loop = (i: Int, acc: B) -> B {
   #|    if i >= len {
   #|      acc
-  #|    } else r#loop(i + 1, f(acc, array_get(xs, i)))
+  #|    } else r#loop(i + 1, f(acc, Array::get(xs, i)))
   #|  }
   #|  r#loop(0, init)
   #|}
@@ -1991,12 +1991,12 @@ let builtin_array_source : String =
   #|}
   #|
   #|export let iter = [T, R](xs: Array[T], f: (x: T) -> R) -> Int {
-  #|  let len = array_length(xs)
+  #|  let len = Array::length(xs)
   #|  let rec r#loop = (i: Int) -> Int {
   #|    if i >= len {
   #|      i
   #|    } else {
-  #|      f(array_get(xs, i))
+  #|      f(Array::get(xs, i))
   #|      r#loop(i + 1)
   #|    }
   #|  }
@@ -2004,54 +2004,54 @@ let builtin_array_source : String =
   #|}
   #|
   #|export let last = [T](xs: Array[T]) -> Option[T] {
-  #|  let len = array_length(xs)
+  #|  let len = Array::length(xs)
   #|  if len == 0 {
   #|    None
-  #|  } else Some(array_get(xs, len - 1))
+  #|  } else Some(Array::get(xs, len - 1))
   #|}
   #|
   #|export let slice = [T](xs: Array[T], start: Int, end: Int) -> Array[T] {
-  #|  array_slice(xs, start, end)
+  #|  Array::slice(xs, start, end)
   #|}
   #|
   #|export let append = [T](xs: Array[T], ys: Array[T]) -> Array[T] {
-  #|  array_concat(xs, ys)
+  #|  Array::concat(xs, ys)
   #|}
   #|
   #|export let filter = [T](xs: Array[T], pred: (x: T) -> Bool) -> Array[T] {
-  #|  let len = array_length(xs)
+  #|  let len = Array::length(xs)
   #|  {
-  #|    let acc = array_builder()
+  #|    let acc = ArrayBuilder::new()
   #|    let rec r#loop = (i: Int) -> ArrayBuilder[T] {
   #|      if i >= len {
   #|        acc
   #|      } else {
-  #|        let value = array_get(xs, i)
+  #|        let value = Array::get(xs, i)
   #|        if pred(value) {
   #|          {
-  #|            array_builder_push(acc, value)
+  #|            ArrayBuilder::push(acc, value)
   #|            r#loop(i + 1)
   #|          }
   #|        } else r#loop(i + 1)
   #|      }
   #|    }
-  #|    array_builder_freeze(r#loop(0))
+  #|    ArrayBuilder::freeze(r#loop(0))
   #|  }
   #|}
   #|
   #|export let length = [T](xs: Array[T]) -> Int {
-  #|  array_length(xs)
+  #|  Array::length(xs)
   #|}
   #|
   #|export let flatmap = [A, B](xs: Array[A], f: (x: A) -> Array[B]) -> Array[B] {
-  #|  let len = array_length(xs)
+  #|  let len = Array::length(xs)
   #|  {
-  #|    let acc = array_builder()
+  #|    let acc = ArrayBuilder::new()
   #|    let rec push_chunk = (chunk: Array[B], j: Int, chunk_len: Int) -> ArrayBuilder[B] {
   #|      if j >= chunk_len {
   #|        acc
   #|      } else {
-  #|        array_builder_push(acc, array_get(chunk, j))
+  #|        ArrayBuilder::push(acc, Array::get(chunk, j))
   #|        push_chunk(chunk, j + 1, chunk_len)
   #|      }
   #|    }
@@ -2059,50 +2059,50 @@ let builtin_array_source : String =
   #|      if i >= len {
   #|        acc
   #|      } else {
-  #|        let chunk = f(array_get(xs, i))
+  #|        let chunk = f(Array::get(xs, i))
   #|        {
-  #|          push_chunk(chunk, 0, array_length(chunk))
+  #|          push_chunk(chunk, 0, Array::length(chunk))
   #|          r#loop(i + 1)
   #|        }
   #|      }
   #|    }
-  #|    array_builder_freeze(r#loop(0))
+  #|    ArrayBuilder::freeze(r#loop(0))
   #|  }
   #|}
   #|
   #|export let reverse = [T](xs: Array[T]) -> Array[T] {
-  #|  let len = array_length(xs)
+  #|  let len = Array::length(xs)
   #|  {
-  #|    let acc = array_builder()
+  #|    let acc = ArrayBuilder::new()
   #|    let rec r#loop = (i: Int) -> ArrayBuilder[T] {
   #|      if i < 0 {
   #|        acc
   #|      } else {
-  #|        array_builder_push(acc, array_get(xs, i))
+  #|        ArrayBuilder::push(acc, Array::get(xs, i))
   #|        r#loop(i - 1)
   #|      }
   #|    }
-  #|    array_builder_freeze(r#loop(len - 1))
+  #|    ArrayBuilder::freeze(r#loop(len - 1))
   #|  }
   #|}
   #|
   #|export let is_empty = [T](xs: Array[T]) -> Bool {
-  #|  array_length(xs) == 0
+  #|  Array::length(xs) == 0
   #|}
   #|
-  #|export let array_map = [A, B](xs: Array[A], f: (x: A) -> B) -> Array[B] {
-  #|  let len = array_length(xs)
+  #|export let Array::map = [A, B](xs: Array[A], f: (x: A) -> B) -> Array[B] {
+  #|  let len = Array::length(xs)
   #|  {
-  #|    let acc = array_builder()
+  #|    let acc = ArrayBuilder::new()
   #|    let rec r#loop = (i: Int) -> ArrayBuilder[B] {
   #|      if i >= len {
   #|        acc
   #|      } else {
-  #|        array_builder_push(acc, f(array_get(xs, i)))
+  #|        ArrayBuilder::push(acc, f(Array::get(xs, i)))
   #|        r#loop(i + 1)
   #|      }
   #|    }
-  #|    array_builder_freeze(r#loop(0))
+  #|    ArrayBuilder::freeze(r#loop(0))
   #|  }
   #|}
 

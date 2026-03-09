@@ -125,51 +125,51 @@ fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
   match name {
     "sh" => [@core.EffectAtom::Const("Process")]
     "sh_lines" => [@core.EffectAtom::Const("Process")]
-    "stdout_write_char" => [@core.EffectAtom::Const("Stdout")]
-    "stdout_write_stream" => [@core.EffectAtom::Const("Stdout")]
-    "stdin_read_char" => [@core.EffectAtom::Const("Stdin")]
-    "stdin_read_stream" => [@core.EffectAtom::Const("Stdin")]
+    "Stdout::write_char" => [@core.EffectAtom::Const("Stdout")]
+    "Stdout::write_stream" => [@core.EffectAtom::Const("Stdout")]
+    "Stdin::read_char" => [@core.EffectAtom::Const("Stdin")]
+    "Stdin::read_stream" => [@core.EffectAtom::Const("Stdin")]
     "sleep" => [@core.EffectAtom::Const("Async")]
-    "threads_probe_wat"
-    | "threads_runtime_hints"
-    | "threads_channel_new"
-    | "threads_send"
-    | "threads_recv"
-    | "threads_spawn"
-    | "threads_wait" => [@core.EffectAtom::Const("Threads")]
-    "dynamic_path_resolve" => [@core.EffectAtom::Const("Env")]
-    "fs_read_file"
-    | "fs_write_file"
-    | "fs_exists"
-    | "fs_readdir"
-    | "fs_is_dir"
-    | "fs_mkdir"
-    | "fs_mkdir_p"
-    | "fs_getcwd"
-    | "fs_chdir"
-    | "fs_remove"
-    | "fs_is_file"
-    | "fs_copy"
-    | "fs_rename"
-    | "fs_append" => [@core.EffectAtom::Const("Fs")]
-    "env_get" => [@core.EffectAtom::Const("Env")]
-    "socket_tcp_connect"
-    | "socket_tcp_read"
-    | "socket_tcp_write"
-    | "socket_tcp_close" => [@core.EffectAtom::Const("Net")]
-    "http_request"
-    | "http_response_status"
-    | "http_response_header"
-    | "http_response_body"
-    | "http_close"
-    | "http_listen"
-    | "http_accept"
-    | "http_request_method"
-    | "http_request_url"
-    | "http_request_header"
-    | "http_request_body"
-    | "http_respond" => [@core.EffectAtom::Const("Net")]
-    "llm_complete" | "rlm_run" => [@core.EffectAtom::Const("Llm")]
+    "Threads::probe_wat"
+    | "Threads::runtime_hints"
+    | "Threads::channel_new"
+    | "Threads::send"
+    | "Threads::recv"
+    | "Threads::spawn"
+    | "Threads::wait" => [@core.EffectAtom::Const("Threads")]
+    "Path::resolve" => [@core.EffectAtom::Const("Env")]
+    "Fs::read_file"
+    | "Fs::write_file"
+    | "Fs::exists"
+    | "Fs::readdir"
+    | "Fs::is_dir"
+    | "Fs::mkdir"
+    | "Fs::mkdir_p"
+    | "Fs::getcwd"
+    | "Fs::chdir"
+    | "Fs::remove"
+    | "Fs::is_file"
+    | "Fs::copy"
+    | "Fs::rename"
+    | "Fs::append" => [@core.EffectAtom::Const("Fs")]
+    "Env::get" => [@core.EffectAtom::Const("Env")]
+    "Socket::tcp_connect"
+    | "Socket::tcp_read"
+    | "Socket::tcp_write"
+    | "Socket::tcp_close" => [@core.EffectAtom::Const("Net")]
+    "Http::request"
+    | "Http::response_status"
+    | "Http::response_header"
+    | "Http::response_body"
+    | "Http::close"
+    | "Http::listen"
+    | "Http::accept"
+    | "Http::request_method"
+    | "Http::request_url"
+    | "Http::request_header"
+    | "Http::request_body"
+    | "Http::respond" => [@core.EffectAtom::Const("Net")]
+    "Llm::complete" | "Rlm::run" => [@core.EffectAtom::Const("Llm")]
     _ => []
   }
 }

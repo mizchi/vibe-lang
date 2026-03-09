@@ -55,10 +55,10 @@ fn type_has_substitutable_var(env : TypeEnv, ty : @core.Type) -> Bool {
       }
       false
     }
-    @core.Type::Array(inner)
-    | @core.Type::ArrayBuilder(inner) => type_has_substitutable_var(env, inner)
-    @core.Type::Map(_key, inner)
-    | @core.Type::MapBuilder(_key, inner) => type_has_substitutable_var(env, inner)
+    @core.Type::Array(inner) | @core.Type::ArrayBuilder(inner) =>
+      type_has_substitutable_var(env, inner)
+    @core.Type::Map(_key, inner) | @core.Type::MapBuilder(_key, inner) =>
+      type_has_substitutable_var(env, inner)
     @core.Type::Variant(fields) => {
       for _, item in fields {
         if type_has_substitutable_var(env, item) {
@@ -167,7 +167,10 @@ fn resolve_type_walk(env : TypeEnv, ty : @core.Type) -> @core.Type {
       }
     @core.Type::Map(key, inner) =>
       if type_has_substitutable_var(env, inner) {
-        @core.Type::Map(resolve_type_walk(env, key), resolve_type_walk(env, inner))
+        @core.Type::Map(
+          resolve_type_walk(env, key),
+          resolve_type_walk(env, inner),
+        )
       } else {
         ty
       }
@@ -179,7 +182,10 @@ fn resolve_type_walk(env : TypeEnv, ty : @core.Type) -> @core.Type {
       }
     @core.Type::MapBuilder(key, inner) =>
       if type_has_substitutable_var(env, inner) {
-        @core.Type::MapBuilder(resolve_type_walk(env, key), resolve_type_walk(env, inner))
+        @core.Type::MapBuilder(
+          resolve_type_walk(env, key),
+          resolve_type_walk(env, inner),
+        )
       } else {
         ty
       }
@@ -283,11 +289,18 @@ fn substitute_type_vars(
     }
     @core.Type::Array(inner) =>
       @core.Type::Array(substitute_type_vars(inner, subs))
-    @core.Type::Map(key, inner) => @core.Type::Map(substitute_type_vars(key, subs), substitute_type_vars(inner, subs))
+    @core.Type::Map(key, inner) =>
+      @core.Type::Map(
+        substitute_type_vars(key, subs),
+        substitute_type_vars(inner, subs),
+      )
     @core.Type::ArrayBuilder(inner) =>
       @core.Type::ArrayBuilder(substitute_type_vars(inner, subs))
     @core.Type::MapBuilder(key, inner) =>
-      @core.Type::MapBuilder(substitute_type_vars(key, subs), substitute_type_vars(inner, subs))
+      @core.Type::MapBuilder(
+        substitute_type_vars(key, subs),
+        substitute_type_vars(inner, subs),
+      )
     @core.Type::Variant(fields) => {
       let out : Map[String, @core.Type] = {}
       for name, item in fields {
@@ -345,11 +358,17 @@ fn substitute_effect_vars(
     @core.Type::Array(inner) =>
       @core.Type::Array(substitute_effect_vars(inner, subs))
     @core.Type::Map(key, inner) =>
-      @core.Type::Map(substitute_effect_vars(key, subs), substitute_effect_vars(inner, subs))
+      @core.Type::Map(
+        substitute_effect_vars(key, subs),
+        substitute_effect_vars(inner, subs),
+      )
     @core.Type::ArrayBuilder(inner) =>
       @core.Type::ArrayBuilder(substitute_effect_vars(inner, subs))
     @core.Type::MapBuilder(key, inner) =>
-      @core.Type::MapBuilder(substitute_effect_vars(key, subs), substitute_effect_vars(inner, subs))
+      @core.Type::MapBuilder(
+        substitute_effect_vars(key, subs),
+        substitute_effect_vars(inner, subs),
+      )
     @core.Type::Variant(fields) => {
       let out : Map[String, @core.Type] = {}
       for name, item in fields {
@@ -421,11 +440,15 @@ fn substitute_type(
       @core.Type::Record(out)
     }
     @core.Type::Array(inner) => @core.Type::Array(substitute_type(inner, subs))
-    @core.Type::Map(key, inner) => @core.Type::Map(substitute_type(key, subs), substitute_type(inner, subs))
+    @core.Type::Map(key, inner) =>
+      @core.Type::Map(substitute_type(key, subs), substitute_type(inner, subs))
     @core.Type::ArrayBuilder(inner) =>
       @core.Type::ArrayBuilder(substitute_type(inner, subs))
     @core.Type::MapBuilder(key, inner) =>
-      @core.Type::MapBuilder(substitute_type(key, subs), substitute_type(inner, subs))
+      @core.Type::MapBuilder(
+        substitute_type(key, subs),
+        substitute_type(inner, subs),
+      )
     @core.Type::Variant(fields) => {
       let out : Map[String, @core.Type] = {}
       for name, item in fields {

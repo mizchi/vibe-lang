@@ -158,12 +158,12 @@ test "interp vs compiled: boolean short-circuit-like patterns" {
 
 ///|
 test "interp vs compiled: array builtins" {
-  assert_interp_compiled_same("let a = [1, 2, 3]\narray_length(a)")
-  assert_interp_compiled_same("let a = [10, 20, 30]\narray_get(a, 1)")
+  assert_interp_compiled_same("let a = [1, 2, 3]\nArray::length(a)")
+  assert_interp_compiled_same("let a = [10, 20, 30]\nArray::get(a, 1)")
 }
 
 ///|
 test "interp vs compiled: string builtins" {
-  assert_interp_compiled_same("string_length(\"hello\")")
-  assert_interp_compiled_same("string_concat(\"foo\", \"bar\")")
+  assert_interp_compiled_same("String::length(\"hello\")")
+  assert_interp_compiled_same("String::concat(\"foo\", \"bar\")")
 }

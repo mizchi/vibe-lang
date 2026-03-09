@@ -1,27 +1,43 @@
+//# Imports
+
 import ./ast.vibe {
   Expr, Pat, Stmt, TypeExpr
 }
 
 import ./checker_purity.vibe {
-  merge_purity, builtin_purity, analyze_purity, analyze_stmt_purity, is_pure, is_local
+  analyze_purity, analyze_stmt_purity, builtin_purity, is_local, is_pure, merge_purity
 }
 
-// Helper: empty string array
-let no_strings = () -> Array[String] {
-  array_slice([""], 0, 0)
-}
+//# Functions
 
-// Helper: empty type constraint pairs
-let no_constraints = () -> Array[(String, Array[String])] {
-  array_slice([("", array_slice([""], 0, 0))], 0, 0)
-}
-
-// Helper: empty params
 let no_params = () -> Array[(String, Option[TypeExpr])] {
-  array_slice([("x", None)], 0, 0)
+  Array::slice([
+    ("x", None)
+  ], 0, 0)
 }
 
-// 1. Pure literals
+let no_strings = () -> Array[String] {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+
+let no_tyexprs = () -> Array[TypeExpr] {
+  Array::slice([
+    TyUnit
+  ], 0, 0)
+}
+
+let no_constraints = () -> Array[(String, Array[String])] {
+  Array::slice([
+    ("", Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+}
+
+//# Misc
+
 test "pure literals return 0" {
   assert(eq(analyze_purity(EInt(42)), 0))
   assert(eq(analyze_purity(EFloat(3.14)), 0))
@@ -30,99 +46,90 @@ test "pure literals return 0" {
   assert(eq(analyze_purity(EUnit), 0))
 }
 
-// 2. EIdent is pure
 test "EIdent is pure" {
   assert(eq(analyze_purity(EIdent("x")), 0))
 }
 
-// 3. EArray of pure elements
 test "EArray of pure elements is pure" {
-  assert(eq(analyze_purity(EArray([EInt(1), EInt(2)])), 0))
+  assert(eq(analyze_purity(EArray([
+    EInt(1),
+    EInt(2)
+  ])), 0))
 }
 
-// 4. ELetMut is at least StateLocal
 test "ELetMut is StateLocal" {
   let expr = ELetMut("x", EInt(0), EIdent("x"))
   assert(analyze_purity(expr) >= 1)
 }
 
-// 5. EAssign is at least StateLocal
 test "EAssign is StateLocal" {
   let expr = EAssign("x", EInt(1), EIdent("x"))
   assert(analyze_purity(expr) >= 1)
 }
 
-// 6. EWhile is at least StateLocal
 test "EWhile is StateLocal" {
   let expr = EWhile(EBool(false), EUnit)
   assert(analyze_purity(expr) >= 1)
 }
 
-// 7. print is Impure
 test "ECall print is Impure" {
-  let expr = ECall(EIdent("print"), [EString("hello")])
+  let expr = ECall(EIdent("print"), [
+    EString("hello")
+  ])
   assert(eq(analyze_purity(expr), 2))
 }
 
-// 8. eq is Pure
 test "ECall eq is Pure" {
-  let expr = ECall(EIdent("eq"), [EInt(1), EInt(2)])
+  let expr = ECall(EIdent("eq"), [
+    EInt(1),
+    EInt(2)
+  ])
   assert(eq(analyze_purity(expr), 0))
 }
 
-// 9. array_push is StateLocal
-test "ECall array_push is StateLocal" {
-  let expr = ECall(EIdent("array_push"), [EArray([EInt(1)]), EInt(2)])
+test "ECall Array::push is StateLocal" {
+  let expr = ECall(EIdent("Array::push"), [
+    EArray([
+      EInt(1)
+    ]),
+    EInt(2)
+  ])
   assert(eq(analyze_purity(expr), 1))
 }
 
-// 9b. map builder aliases are both StateLocal
-test "builtin_purity map builder aliases are StateLocal" {
-  assert(eq(builtin_purity("map_builder_set"), 1))
-  assert(eq(builtin_purity("MapBuilder::set"), 1))
-}
-
-// 10. fs_read_file is Impure
-test "ECall fs_read_file is Impure" {
-  let expr = ECall(EIdent("fs_read_file"), [EString("test.txt")])
+test "ECall Fs::read_file is Impure" {
+  let expr = ECall(EIdent("Fs::read_file"), [
+    EString("test.txt")
+  ])
   assert(eq(analyze_purity(expr), 2))
 }
 
-// 11. EThrow is Impure
 test "EThrow is Impure" {
   assert(eq(analyze_purity(EThrow(EString("error"))), 2))
 }
 
-// 12. EFn (lambda creation) is Pure
 test "EFn lambda creation is Pure" {
-  let expr = EFn(
-    no_strings(),
-    no_constraints(),
-    no_params(),
-    None,
-    None,
-    ECall(EIdent("print"), [EString("hi")])
-  )
+  let expr = EFn(no_strings(), no_constraints(), no_params(), None, None, ECall(EIdent("print"), [
+    EString("hi")
+  ]))
   assert(eq(analyze_purity(expr), 0))
 }
 
-// 13. is_pure on pure expr
 test "is_pure returns true for pure expr" {
   assert(is_pure(EInt(42)))
 }
 
-// 14. is_pure on impure expr
 test "is_pure returns false for impure expr" {
-  assert(!is_pure(ECall(EIdent("print"), [EString("hi")])))
+  assert(!is_pure(ECall(EIdent("print"), [
+    EString("hi")
+  ])))
 }
 
-// 15. is_local on StateLocal expr
 test "is_local returns true for StateLocal expr" {
   let expr = ELetMut("x", EInt(0), EIdent("x"))
   assert(is_local(expr))
 }
 
-// 16. merge_purity takes maximum
 test "merge_purity takes maximum" {
   assert(eq(merge_purity(0, 0), 0))
   assert(eq(merge_purity(0, 1), 1))
@@ -133,47 +140,38 @@ test "merge_purity takes maximum" {
   assert(eq(merge_purity(2, 1), 2))
 }
 
-// 17. Nested: ELet with impure body
 test "ELet with impure body is Impure" {
-  let expr = ELet("x", EInt(1), ECall(EIdent("println"), [EString("hi")]))
+  let expr = ELet("x", EInt(1), ECall(EIdent("println"), [
+    EString("hi")
+  ]))
   assert(eq(analyze_purity(expr), 2))
 }
 
-// 18. EIf with mixed purity takes max
 test "EIf with mixed purity takes max" {
-  let expr = EIf(
-    EBool(true),
-    EInt(1),
-    ECall(EIdent("print"), [EString("hi")])
-  )
+  let expr = EIf(EBool(true), EInt(1), ECall(EIdent("print"), [
+    EString("hi")
+  ]))
   assert(eq(analyze_purity(expr), 2))
 }
 
-// Helper: empty TypeExpr array
-let no_tyexprs = () -> Array[TypeExpr] {
-  array_slice([TyUnit], 0, 0)
-}
-
-// 19. pure let passes — SLet with EInt body
 test "pure let passes" {
   let stmt = SLet(false, false, "x", None, EInt(1))
   assert(eq(analyze_stmt_purity(stmt), 0))
 }
 
-// 20. pure fn passes — SLet with EFn body
 test "pure fn passes" {
-  let fn_expr = EFn(no_strings(), no_constraints(), [("x", None)], None, None, EBinOp("+", EIdent("x"), EInt(1)))
+  let fn_expr = EFn(no_strings(), no_constraints(), [
+    ("x", None)
+  ], None, None, EBinOp("+", EIdent("x"), EInt(1)))
   let stmt = SLet(false, false, "f", None, fn_expr)
   assert(eq(analyze_stmt_purity(stmt), 0))
 }
 
-// 21. let mut is state_local — SLetMut
 test "let mut is state_local" {
   let stmt = SLetMut("x", None, EInt(0))
   assert(analyze_stmt_purity(stmt) >= 1)
 }
 
-// 22. test block allowed — STest with mutable inside
 test "test block allowed" {
   let test_body = ELetMut("x", EInt(0), EAssign("x", EBinOp("+", EIdent("x"), EInt(1)), EIdent("x")))
   let stmt = STest("t", test_body)
@@ -181,37 +179,45 @@ test "test block allowed" {
   assert(p >= 1)
 }
 
-// 23. enum def passes — SEnum is pure
 test "enum def passes" {
-  let stmt = SEnum(false, "Color", [("Red", no_tyexprs()), ("Green", no_tyexprs()), ("Blue", no_tyexprs())])
+  let stmt = SEnum(false, "Color", [
+    ("Red", no_tyexprs()),
+    ("Green", no_tyexprs()),
+    ("Blue", no_tyexprs())
+  ])
   assert(eq(analyze_stmt_purity(stmt), 0))
 }
 
-// 24. for-in is state_local
 test "for-in is state_local" {
-  let expr = EForIn("x", EArray([EInt(1), EInt(2)]), EIdent("x"))
+  let expr = EForIn("x", EArray([
+    EInt(1),
+    EInt(2)
+  ]), EIdent("x"))
   assert(analyze_purity(expr) >= 1)
 }
 
-// 25. chained pure calls stay pure
 test "chained pure calls stay pure" {
-  let call = ECall(EIdent("eq"), [EInt(1), EInt(2)])
+  let call = ECall(EIdent("eq"), [
+    EInt(1),
+    EInt(2)
+  ])
   assert(eq(analyze_purity(call), 0))
 }
 
-// 26. impure call propagates
 test "impure call propagates" {
-  let call = ECall(EIdent("print"), [EString("hello")])
+  let call = ECall(EIdent("print"), [
+    EString("hello")
+  ])
   assert(eq(analyze_purity(call), 2))
 }
 
-// 27. nested let with impure body
 test "nested let with impure body" {
-  let expr = ELet("x", EInt(1), ECall(EIdent("fs_read_file"), [EString("test.txt")]))
+  let expr = ELet("x", EInt(1), ECall(EIdent("Fs::read_file"), [
+    EString("test.txt")
+  ]))
   assert(eq(analyze_purity(expr), 2))
 }
 
-// 28. while loop is at least state_local
 test "while loop is at least state_local" {
   let expr = EWhile(EBool(true), EUnit)
   assert(analyze_purity(expr) >= 1)

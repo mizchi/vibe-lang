@@ -36,6 +36,10 @@ check-lock-clean:
 test-lock-clean:
     scripts/check_lock_clean_test.sh
 
+# Self-test builtin rename migration helper
+test-rename-builtins:
+    bash scripts/rename_builtins_test.sh
+
 # Run tests (includes examples, std, io, fs, shell, socket, http, rlm, collection, json/base64/sha1, x)
 test:
     scripts/check_lock_clean.sh

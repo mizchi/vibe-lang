@@ -31,7 +31,7 @@ An experimental self-hosted compiler/interpreter for vibe-lang, written in vibe 
 
 - AST interpreter (functions, recursion, match, handle/throw, while, for-in)
 - Multi-file module loading with import cycle detection
-- `array_builder` runtime path used by self-host smoke scenarios
+- `ArrayBuilder::new` runtime path used by self-host smoke scenarios
 
 ### Incremental Typecheck Experiment
 

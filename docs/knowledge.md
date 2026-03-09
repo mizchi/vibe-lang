@@ -19,7 +19,7 @@ vibe ランタイムは pure 関数の結果を content-addressed cache に保�
 
 ```vibe
 export let exists = (path: String) -> Bool with { Fs } {
-  do { fs_exists(path) }
+  do { Fs::exists(path) }
 }
 ```
 
@@ -384,7 +384,7 @@ driver 返り値を配列で作る際、`[roundtrip(...), ...]` 形式が parser
 - driver の集約結果は array ではなく tuple で返す
 - 追加の高速化（2026-03-02）:
   - `vibe/compiler/printer.vibe`: `join` / `escape_string` を builder ベースに変更
-  - `src/runtime/eval.mbt`: `string_length` / `string_char_code_at` / `string_substring` / `string_concat` / `array_length` / `array_get` にホットパス追加
+  - `src/runtime/eval.mbt`: `String::length` / `String::char_code_at` / `String::substring` / `String::concat` / `Array::length` / `Array::get` にホットパス追加
   - `vibe/compiler/lexer.vibe`: `keyword_lookup` を length + 先頭文字ディスパッチに変更
 
 ### 効果
@@ -437,7 +437,7 @@ wasm backend に同名 call ハンドラがないと `BackendLimit(call: iter_re
 ### 修正
 
 - `iter_require` を identity として実装
-- `iter_length` / `iter_get` を `array_length` / `array_get` 相当の fallback として実装
+- `iter_length` / `iter_get` を `Array::length` / `Array::get` 相当の fallback として実装
 - 回帰テスト: `vibe wasm compiles for-in expressions`
 
 ### 教訓
@@ -548,7 +548,7 @@ top-level 関数が他の top-level 関数を機械的に capture すると、�
 
 ### 影響
 
-- `http_wasm.mbt` を単純に host import へ差し替えるだけでは、文字列を伴う API（`http_request`, `http_response_body`, `http_request_url` など）を安全に往復できない。
+- `http_wasm.mbt` を単純に host import へ差し替えるだけでは、文字列を伴う API（`Http::request`, `Http::response_body`, `Http::request_url` など）を安全に往復できない。
 - そのまま差し替えると、wasm instantiation 時に必須 import が増え、既存の non-HTTP 実行パスを壊すリスクがある。
 
 ### 必要な前提
@@ -559,7 +559,7 @@ top-level 関数が他の top-level 関数を機械的に capture すると、�
 ### 進捗 (2026-03-03)
 
 - wasm codegen に `vibe_http_host_string_new(i32)->i64` export を追加（`--http-host-imports` かつ HTTP builtin 使用時）。
-- host import e2e で、helper で確保した文字列に `memory` 経由で UTF-8 を書き込み、`http_request_method/url/header/body` の戻り値として消費できることを固定化。
+- host import e2e で、helper で確保した文字列に `memory` 経由で UTF-8 を書き込み、`Http::request_method/url/header/body` の戻り値として消費できることを固定化。
 - compiled 実行系（`vibe run/test`）で HTTP builtin を検出した場合、`--http-host-imports` 付き wasm を生成し、`scripts/wasm_http_host_runner.js` を自動起動して `vibe:http` import を解決する経路を追加（`scripts/test_compiled_backend_http_policy.sh` で auto/forced compiled を検証）。
 - compiled host runner に capability allowlist を統合（`VIBE_HTTP_ALLOW_CONNECT`, `VIBE_HTTP_ALLOW_LISTEN`）。
   - `VIBE_HTTP_ALLOW_CONNECT`:

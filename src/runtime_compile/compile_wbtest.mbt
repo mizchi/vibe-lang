@@ -27,15 +27,15 @@ test "compile_module cache reuses same key" {
 }
 
 ///|
-test "check_incompatible_server_builtins detects http_listen" {
+test "check_incompatible_server_builtins detects Http::listen" {
   let db = @runtime.VibeDb::new()
   db.set_source(
     "main",
     (
       #|let run = () -> Int with {Net} {
-      #|  let listener = http_listen(8080)
-      #|  let req = http_accept(listener)
-      #|  http_respond(req, 200, "", "ok")
+      #|  let listener = Http::listen(8080)
+      #|  let req = Http::accept(listener)
+      #|  Http::respond(req, 200, "", "ok")
       #|  0
       #|}
       #|run()
@@ -43,9 +43,9 @@ test "check_incompatible_server_builtins detects http_listen" {
   )
   let compiled = compile_module(db, "main")
   let found = check_incompatible_server_builtins(compiled.ast)
-  assert_true(found.contains("http_listen"))
-  assert_true(found.contains("http_accept"))
-  assert_true(found.contains("http_respond"))
+  assert_true(found.contains("Http::listen"))
+  assert_true(found.contains("Http::accept"))
+  assert_true(found.contains("Http::respond"))
 }
 
 ///|
@@ -55,7 +55,7 @@ test "check_incompatible_server_builtins passes handler pattern" {
     "main",
     (
       #|export let handler = (method: String, url: String) -> Int {
-      #|  if string_equals(method, "GET") { 200 } else { 405 }
+      #|  if String::equals(method, "GET") { 200 } else { 405 }
       #|}
       #|handler("GET", "/")
     ),
@@ -72,8 +72,8 @@ test "component_string_lift_auto rejects server builtins" {
     "main",
     (
       #|export let handler = (method: String, url: String) -> Int with {Net} {
-      #|  let listener = http_listen(8080)
-      #|  let _ = http_accept(listener)
+      #|  let listener = Http::listen(8080)
+      #|  let _ = Http::accept(listener)
       #|  200
       #|}
       #|handler("GET", "/")

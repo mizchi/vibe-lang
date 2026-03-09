@@ -43,13 +43,13 @@ endpoint 直下の `index.vibe` は、衝突しやすい名前に対して prefi
 |---|---|
 | `vibe/io` | `io_read`, `io_print`, `io_println`, `io_read_char`, `io_read_line`, `io_write_char` |
 | `vibe/socket` | `socket_connect`, `socket_read`, `socket_write`, `socket_close` |
-| `vibe/http` | `http_close`, `http_accept`, `http_listen`, `http_request`, `http_respond`, `http_request_*`, `http_response_*`, `http_request_with`, `http_respond_with` |
+| `vibe/http` | `Http::close`, `Http::accept`, `Http::listen`, `Http::request`, `Http::respond`, `http_request_*`, `http_response_*`, `http_request_with`, `http_respond_with` |
 | `vibe/process` | `process_run`, `process_run_lines`, `process_run_line`, `process_run_text` |
 | `vibe/compiler` | `compiler_lex`, `compiler_parse*`, `compiler_print_*` |
 | `vibe/json` | `json_parse`, `json_parse_ok`, `json_parse_err`, `json_stringify` |
 | `vibe/base64` | `base64_encode`, `base64_decode` |
 | `vibe/sha1` | `sha1_hash` |
-| `vibe/fs` | `fs_exists`, `fs_read_file`, `fs_write_file` |
+| `vibe/fs` | `Fs::exists`, `Fs::read_file`, `Fs::write_file` |
 | `vibe/shell` | `shell_print`, `shell_println`, `shell_read_line`, `shell_exists`, `shell_is_dir`, `shell_is_file`, `shell_write_file` |
 
 ## Consequences

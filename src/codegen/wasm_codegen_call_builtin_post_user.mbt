@@ -31,25 +31,25 @@ fn compile_call_builtin_post_user_inner(
   args : Array[@core.CallArg],
 ) -> Unit raise WasmGenError {
   match name {
-    "path_ref" => {
+    "Path::ref" => {
       // path_ref(s) -> same as path(s), calls the host import vibe.path
-      let pos_args = extract_positional_exprs_with_arity(args, "path_ref", 1)
+      let pos_args = extract_positional_exprs_with_arity(args, "Path::ref", 1)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_call(buf, import_index_path(ctx))
     }
-    "dynamic_path_resolve" => {
+    "Path::resolve" => {
       // dynamic_path_resolve(s) -> host import vibe.resolve_path
       let pos_args = extract_positional_exprs_with_arity(
-        args, "dynamic_path_resolve", 1,
+        args, "Path::resolve", 1,
       )
       compile_expr(ctx, buf, pos_args[0])
       emit_call(buf, import_index_dynamic_path_resolve(ctx))
     }
-    "path_is_absolute" => {
+    "Path::is_absolute" => {
       // path_is_absolute(path) -> check if first byte is '/'
       // In wasm, Path and String share the same object representation
       let pos_args = extract_positional_exprs_with_arity(
-        args, "path_is_absolute", 1,
+        args, "Path::is_absolute", 1,
       )
       let str_ptr_local = alloc_temp_local(ctx)
       let str_len_local = alloc_temp_local(ctx)
@@ -83,26 +83,26 @@ fn compile_call_builtin_post_user_inner(
       emit_i64_const_raw(buf, tag_int.to_int64())
       emit_i64_or(buf)
     }
-    "path_to_string" => {
+    "Path::to_string" => {
       // path_to_string(path) -> path is stored as string pointer in wasm, pass through
       let pos_args = extract_positional_exprs_with_arity(
-        args, "path_to_string", 1,
+        args, "Path::to_string", 1,
       )
       // In wasm, Path and String share the same object representation (string pointer)
       // so path_to_string is identity
       compile_expr(ctx, buf, pos_args[0])
     }
-    "string_utf8_length" => {
+    "String::utf8_length" => {
       // string_utf8_length(s) -> in non-js-string mode, string_length IS utf8 length
       // because strings are stored as UTF-8 bytes
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_utf8_length", 1,
+        args, "String::utf8_length", 1,
       )
       if ctx.use_js_strings {
         // JS strings are UTF-16; need host import for UTF-8 byte counting
         raise WasmGenError::BackendLimit(
           backend="wasm-js-string",
-          feature="string_utf8_length",
+          feature="String::utf8_length",
         )
       } else {
         // Non-js-string: strings are UTF-8, so length field = UTF-8 byte count
@@ -118,7 +118,7 @@ fn compile_call_builtin_post_user_inner(
         emit_i64_or(buf)
       }
     }
-    "string_utf16_length" | "string_unicode_length" => {
+    "String::utf16_length" | "String::unicode_length" => {
       // In non-js-string mode, strings are UTF-8 bytes.
       // string_utf16_length: count UTF-16 code units from UTF-8
       // string_unicode_length: count Unicode codepoints from UTF-8
@@ -172,7 +172,7 @@ fn compile_call_builtin_post_user_inner(
         emit_i32_const_raw(buf, 4)
         emit_i32_add(buf)
         emit_local_set(buf, loop_i_local)
-        if name == "string_utf16_length" {
+        if name == "String::utf16_length" {
           // 4-byte UTF-8 = 2 UTF-16 code units (surrogate pair)
           emit_local_get(buf, count_local)
           emit_i32_const_raw(buf, 2)
@@ -240,10 +240,10 @@ fn compile_call_builtin_post_user_inner(
         emit_i64_or(buf)
       }
     }
-    "array_concat" => {
+    "Array::concat" => {
       // array_concat(xs, ys) -> new array with all elements from xs then ys
       let pos_args = extract_positional_exprs_with_arity(
-        args, "array_concat", 2,
+        args, "Array::concat", 2,
       )
       require_heap(ctx)
       let xs_ptr_local = alloc_temp_local(ctx)
@@ -364,9 +364,11 @@ fn compile_call_builtin_post_user_inner(
       emit_i64_const_raw(buf, tag_obj.to_int64())
       emit_i64_or(buf)
     }
-    "array_slice" => {
+    "Array::slice" => {
       // array_slice(arr, start, end) -> new array with elements arr[start..end]
-      let pos_args = extract_positional_exprs_with_arity(args, "array_slice", 3)
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Array::slice", 3,
+      )
       require_heap(ctx)
       let arr_ptr_local = alloc_temp_local(ctx)
       let arr_len_local = alloc_temp_local(ctx)

@@ -83,16 +83,16 @@ Rules:
 - Current builtin mapping:
   - `sh(...)` requires `{Stdout}`
   - `sh_lines(...)` requires `{Stdout}`
-  - `stdout_write_char(...)` requires `{Stdout}`
-  - `stdout_write_stream(...)` requires `{Stdout}`
-  - `stdin_read_char()` requires `{Stdin}`
-  - `stdin_read_stream(...)` requires `{Stdin}`
+  - `Stdout::write_char(...)` requires `{Stdout}`
+  - `Stdout::write_stream(...)` requires `{Stdout}`
+  - `Stdin::read_char()` requires `{Stdin}`
+  - `Stdin::read_stream(...)` requires `{Stdin}`
   - `sleep(...)` requires `{Async}`
 - Runtime gate (current CLI behavior):
   - `sleep(...)`, `yield` execution is disabled by default.
   - enable with `--unstable-async` (`vibe run/test/repl/bench ...`).
-  - `threads_probe_wat()` execution is disabled by default.
-  - `threads_runtime_hints()` execution is disabled by default.
+  - `Threads::probe_wat()` execution is disabled by default.
+  - `Threads::runtime_hints()` execution is disabled by default.
   - enable with `--unstable-threads`.
 
 Examples:
@@ -276,40 +276,40 @@ Rules:
 ## Builtins (current)
 
 Array/Map:
-- `array_length(array)` -> `Int`
-- `array_get(array, index)` -> element
-- `map_get(map, key)` -> element (key is `String`)
+- `Array::length(array)` -> `Int`
+- `Array::get(array, index)` -> element
+- `Map::get(map, key)` -> element (key is `String`)
 
 String (aligned with wasm js-string builtins when using `--wasm-js-string`):
-- `string_length(string)` -> `Int`
-- `string_char_code_at(string, index)` -> `Int`
-- `string_from_char_code(code)` -> `String`
-- `string_substring(string, start, end)` -> `String`
-- `string_concat(left, right)` -> `String`
-- `string_equals(left, right)` -> `Bool`
+- `String::length(string)` -> `Int`
+- `String::char_code_at(string, index)` -> `Int`
+- `String::from_char_code(code)` -> `String`
+- `String::substring(string, start, end)` -> `String`
+- `String::concat(left, right)` -> `String`
+- `String::equals(left, right)` -> `Bool`
 
 StdIO (wasi stream primitives for wasm/component-friendly interop):
 - `sh_lines(cmd)` -> `Array[String]` with `{Stdout}`.
   Current interpreter executes a builtin command subset (`ls`, `cat`, `echo`)
   and returns output lines while also recording `ShellExec(cmd)` effect.
-- `stdout_write_char(code)` -> `Unit` with `{Stdout}`
-- `stdout_write_stream(text)` -> `Unit` with `{Stdout}` (chunk write)
-- `stdin_read_char()` -> `Int` with `{Stdin}` (`-1` = EOF)
-- `stdin_read_stream(max-bytes)` -> `String` with `{Stdin}` (`""` = EOF/error)
+- `Stdout::write_char(code)` -> `Unit` with `{Stdout}`
+- `Stdout::write_stream(text)` -> `Unit` with `{Stdout}` (chunk write)
+- `Stdin::read_char()` -> `Int` with `{Stdin}` (`-1` = EOF)
+- `Stdin::read_stream(max-bytes)` -> `String` with `{Stdin}` (`""` = EOF/error)
 - component WIT/wasm import mapping:
-  - `stdout_write_char` -> `wasi:cli/stdout@0.2.0#get-stdout` + `wasi:io/streams@0.2.0#[method]output-stream.blocking-write-and-flush`
-  - `stdout_write_stream` -> same as `stdout_write_char` (single host call for whole chunk)
-  - `stdin_read_char` -> `wasi:cli/stdin@0.2.0#get-stdin` + `wasi:io/streams@0.2.0#[method]input-stream.blocking-read`
-  - `stdin_read_stream` -> same as `stdin_read_char` (cabi read-buffer -> vibe string)
+  - `Stdout::write_char` -> `wasi:cli/stdout@0.2.0#get-stdout` + `wasi:io/streams@0.2.0#[method]output-stream.blocking-write-and-flush`
+  - `Stdout::write_stream` -> same as `Stdout::write_char` (single host call for whole chunk)
+  - `Stdin::read_char` -> `wasi:cli/stdin@0.2.0#get-stdin` + `wasi:io/streams@0.2.0#[method]input-stream.blocking-read`
+  - `Stdin::read_stream` -> same as `Stdin::read_char` (cabi read-buffer -> vibe string)
 
 Threads (experimental, runtime-gated by `--unstable-threads`):
-- `threads_probe_wat()` -> `String`
-- `threads_runtime_hints()` -> `{ wasm_flags: Array[String], wasi_flags: Array[String], wasm_env: String, wasi_env: String }`
-- `threads_channel_new(capacity: Int)` -> `Int` (channel id)
-- `threads_send(channel_id: Int, message: String)` -> `Bool`
-- `threads_recv(channel_id: Int)` -> `String` (`""` when empty)
-- `threads_spawn(name: String, channel_id: Int)` -> `Int` (task id)
-- `threads_wait(task_id: Int)` -> `Int` (current minimal runtime returns `0`)
+- `Threads::probe_wat()` -> `String`
+- `Threads::runtime_hints()` -> `{ wasm_flags: Array[String], wasi_flags: Array[String], wasm_env: String, wasi_env: String }`
+- `Threads::channel_new(capacity: Int)` -> `Int` (channel id)
+- `Threads::send(channel_id: Int, message: String)` -> `Bool`
+- `Threads::recv(channel_id: Int)` -> `String` (`""` when empty)
+- `Threads::spawn(name: String, channel_id: Int)` -> `Int` (task id)
+- `Threads::wait(task_id: Int)` -> `Int` (current minimal runtime returns `0`)
 - `vibe/prelude/threads.vibe` は test-safe な pure contract 層を分離:
   - `task_spec`, `channel_spec`, `actor_spec`, `deployment_plan`, `recommended_*`
   - これらは通常 `vibe test` で実行可能
@@ -748,7 +748,7 @@ Example:
 
 ```vibe
 let run = () -> Array[String] with {Stdout} {
-  ls |> where((line: String) -> Bool { string_contains(line, "vibe") })
+  ls |> where((line: String) -> Bool { String::contains(line, "vibe") })
 }
 ```
 

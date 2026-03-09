@@ -70,62 +70,62 @@ fn rlm_system_prompt() -> String {
     #|## Builtin Functions
     #|
     #|### String
-    #|- string_length(s) -> Int
-    #|- string_substring(s, start, end) -> String
-    #|- string_concat(s1, s2) -> String
-    #|- string_split(s, sep) -> Array[String]
-    #|- string_join(arr, sep) -> String
-    #|- string_contains(s, sub) -> Bool
-    #|- string_index_of(s, sub) -> Int (-1 if not found)
-    #|- string_trim(s) -> String
-    #|- string_starts_with(s, prefix) -> Bool
-    #|- string_ends_with(s, suffix) -> Bool
-    #|- string_replace(s, old, new) -> String
-    #|- string_replace_all(s, old, new) -> String
-    #|- string_char_code_at(s, i) -> Int
-    #|- string_from_char_code(code) -> String
+    #|- String::length(s) -> Int
+    #|- String::substring(s, start, end) -> String
+    #|- String::concat(s1, s2) -> String
+    #|- String::split(s, sep) -> Array[String]
+    #|- String::join(arr, sep) -> String
+    #|- String::contains(s, sub) -> Bool
+    #|- String::index_of(s, sub) -> Int (-1 if not found)
+    #|- String::trim(s) -> String
+    #|- String::starts_with(s, prefix) -> Bool
+    #|- String::ends_with(s, suffix) -> Bool
+    #|- String::replace(s, old, new) -> String
+    #|- String::replace_all(s, old, new) -> String
+    #|- String::char_code_at(s, i) -> Int
+    #|- String::from_char_code(code) -> String
     #|
     #|### Array
-    #|- array_length(arr) -> Int
-    #|- array_get(arr, index) -> T
-    #|- array_slice(arr, start, end) -> Array[T]
+    #|- Array::length(arr) -> Int
+    #|- Array::get(arr, index) -> T
+    #|- Array::slice(arr, start, end) -> Array[T]
     #|
     #|### Map
-    #|- map_get(m, key) -> T
-    #|- map_keys(m) -> Array[String]
-    #|- map_values(m) -> Array[T]
-    #|- map_has_key(m, key) -> Bool
+    #|- Map::get(m, key) -> T
+    #|- Map::keys(m) -> Array[String]
+    #|- Map::values(m) -> Array[T]
+    #|- Map::has_key(m, key) -> Bool
     #|
     #|### Conversion
     #|- to_string(value) -> String
-    #|- int_to_float(n) -> Float
-    #|- int_to_double(n) -> Double
-    #|- float_to_int(f) -> Int
-    #|- double_to_int(d) -> Int
+    #|- Int::to_float(n) -> Float
+    #|- Int::to_double(n) -> Double
+    #|- Float::to_int(f) -> Int
+    #|- Double::to_int(d) -> Int
     #|
     #|### Math
-    #|- int_abs(n) -> Int
-    #|- int_max(a, b) -> Int
-    #|- int_min(a, b) -> Int
-    #|- double_abs(d) -> Double
-    #|- double_floor(d) -> Double
-    #|- double_ceil(d) -> Double
+    #|- Int::abs(n) -> Int
+    #|- Int::max(a, b) -> Int
+    #|- Int::min(a, b) -> Int
+    #|- Double::abs(d) -> Double
+    #|- Double::floor(d) -> Double
+    #|- Double::ceil(d) -> Double
     #|
     #|### JSON
-    #|- to_json(value) -> String
-    #|- from_json(s) -> Value
-    #|- json_get(obj, key) -> Value
-    #|- json_keys(obj) -> Array[String]
+    #|- Json::stringify(value) -> String
+    #|- Json::parse(s) -> Value
+    #|- Json::get(obj, key) -> Value
+    #|- Json::keys(obj) -> Array[String]
   let rules =
     #|## RLM Rules
     #|
     #|1. Write ONE let binding or expression per turn.
     #|2. Each binding accumulates in the session — use previous bindings freely.
-    #|3. When the task is complete, call `rlm_finalize(result_string)` with the final answer as a String.
+    #|3. When the task is complete, call `Rlm::finalize(result_string)` with the final answer as a String.
     #|4. If you get an error, read the error message and try a different approach.
     #|5. Do NOT write multiple statements in one turn.
     #|6. Do NOT use markdown code fences or explanations — respond with ONLY vibe code.
-    #|7. Use `to_string(value)` to convert non-string values before passing to rlm_finalize.
+    #|7. Use `to_string(value)` to convert non-string values before passing to Rlm::finalize.
   syntax + "\n\n" + builtins + "\n\n" + rules
 }
 
@@ -143,7 +143,7 @@ fn rlm_build_user_message(
       msg = msg + "  let " + binding.0 + " = " + binding.1 + "\n"
     }
     msg = msg +
-      "\nYou already have the above bindings. Do NOT redefine them. Build on them or call rlm_finalize if the task is done.\n"
+      "\nYou already have the above bindings. Do NOT redefine them. Build on them or call Rlm::finalize if the task is done.\n"
   }
   let next_step = budget.steps_used + 1
   let remaining = budget.max_steps - budget.steps_used
@@ -157,7 +157,7 @@ fn rlm_build_user_message(
     " remaining)\n"
   if remaining <= budget.max_steps / 2 {
     msg = msg +
-      "WARNING: Budget is running low. Finalize soon with rlm_finalize(to_string(result)).\n"
+      "WARNING: Budget is running low. Finalize soon with Rlm::finalize(to_string(result)).\n"
   }
   if error_feedback.length() > 0 {
     msg = msg +
@@ -166,7 +166,7 @@ fn rlm_build_user_message(
       "\nFix: try a different syntax. Remember: `let rec f = (args) -> Type { body }` for recursion.\n"
   }
   msg = msg +
-    "\nWrite your next vibe statement (ONE statement only). When done, call: rlm_finalize(to_string(your_result))\n"
+    "\nWrite your next vibe statement (ONE statement only). When done, call: Rlm::finalize(to_string(your_result))\n"
   msg
 }
 
@@ -303,7 +303,7 @@ pub fn rlm_run_loop(
   let config = match LlmConfig::from_env() {
     Some(c) => c
     None =>
-      raise EvalError::BadCall(E("rlm_run: VIBE_LLM_PROVIDER env var not set"))
+      raise EvalError::BadCall(E("Rlm::run: VIBE_LLM_PROVIDER env var not set"))
   }
 
   // Check parent capability
@@ -334,7 +334,7 @@ pub fn rlm_run_loop(
   while true {
     // Budget check
     match budget.check() {
-      Some(err) => raise EvalError::BadCall(Io(op="rlm_run", detail=err))
+      Some(err) => raise EvalError::BadCall(Io(op="Rlm::run", detail=err))
       None => ()
     }
 
@@ -373,14 +373,15 @@ pub fn rlm_run_loop(
     )
 
     // Wrap effectful code in effect guard if needed
-    let eval_code = if code.contains("llm_complete") || code.contains("rlm_run") {
+    let eval_code = if code.contains("Llm::complete") ||
+      code.contains("Rlm::run") {
       "{ " + code + " }"
     } else {
       code
     }
 
     // Check for rlm_finalize call
-    if code.contains("rlm_finalize") {
+    if code.contains("Rlm::finalize") {
       let finalize_result = try? sandbox.eval_script(eval_code)
       match finalize_result {
         Ok(result) =>
@@ -389,7 +390,7 @@ pub fn rlm_run_loop(
             Some(v) => return v.to_string()
             None =>
               raise EvalError::BadCall(
-                E("rlm_run: rlm_finalize returned no value"),
+                E("Rlm::run: Rlm::finalize returned no value"),
               )
           }
         Err(e) => {
@@ -412,5 +413,5 @@ pub fn rlm_run_loop(
       }
     }
   }
-  raise EvalError::BadCall(E("rlm_run: unexpected loop exit"))
+  raise EvalError::BadCall(E("Rlm::run: unexpected loop exit"))
 }

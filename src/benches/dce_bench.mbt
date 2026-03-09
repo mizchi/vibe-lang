@@ -99,11 +99,6 @@ test "bench: dce.many_unused" {
     result,
     content=(
       #|{name: "many_unused", stmts_before: 62, stmts_after: 3, wasm_no_dce: Some(35161), wasm_with_dce: Some(392), reduction_percent: Some(98.88512840931713)}
-
-
-
-
-
     ),
   )
 }
@@ -126,11 +121,6 @@ test "bench: dce.single_module" {
     result,
     content=(
       #|{name: "single_module", stmts_before: 50, stmts_after: 3, wasm_no_dce: Some(33610), wasm_with_dce: Some(391), reduction_percent: Some(98.83665575721511)}
-
-
-
-
-
     ),
   )
 }
@@ -158,11 +148,6 @@ test "bench: dce.dependency_chain" {
     result,
     content=(
       #|{name: "dependency_chain", stmts_before: 50, stmts_after: 5, wasm_no_dce: Some(34841), wasm_with_dce: Some(1311), reduction_percent: Some(96.23719181424184)}
-
-
-
-
-
     ),
   )
 }
@@ -186,11 +171,6 @@ test "bench: dce.all_used" {
     result,
     content=(
       #|{name: "all_used", stmts_before: 47, stmts_after: 3, wasm_no_dce: Some(34210), wasm_with_dce: Some(991), reduction_percent: Some(97.10318620286465)}
-
-
-
-
-
     ),
   )
 }

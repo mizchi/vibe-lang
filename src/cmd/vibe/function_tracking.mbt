@@ -360,7 +360,8 @@ fn function_tracking_type_from_json(json : Json) -> @vibe_core.Type? {
         }
       "Map" =>
         match function_tracking_type_from_json(value) {
-          Some(inner) => return Some(@vibe_core.Type::Map(@vibe_core.Type::String, inner))
+          Some(inner) =>
+            return Some(@vibe_core.Type::Map(@vibe_core.Type::String, inner))
           None => return None
         }
       "ArrayBuilder" =>
@@ -370,7 +371,10 @@ fn function_tracking_type_from_json(json : Json) -> @vibe_core.Type? {
         }
       "MapBuilder" =>
         match function_tracking_type_from_json(value) {
-          Some(inner) => return Some(@vibe_core.Type::MapBuilder(@vibe_core.Type::String, inner))
+          Some(inner) =>
+            return Some(
+              @vibe_core.Type::MapBuilder(@vibe_core.Type::String, inner),
+            )
           None => return None
         }
       "StringBuilder" => return Some(@vibe_core.Type::StringBuilder)

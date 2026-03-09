@@ -24,7 +24,7 @@ test "preprocess_posix_source: command substitution" {
   let input = "echo $(date)"
   let result = preprocess_posix_source(input)
   assert_eq(
-    result, "sh_lines(\"echo \\({ match sh_lines(\"date\") { r if array_length(r) > 0 => array_get(r, 0), _ => \"\" } })\")",
+    result, "sh_lines(\"echo \\({ match sh_lines(\"date\") { r if Array::length(r) > 0 => Array::get(r, 0), _ => \"\" } })\")",
   )
 }
 
@@ -51,7 +51,7 @@ test "preprocess_posix_source: keyword lines unchanged" {
 ///|
 test "preprocess_posix_source: function call unchanged" {
   assert_eq(preprocess_posix_source("print_line(\"hi\")"), "print_line(\"hi\")")
-  assert_eq(preprocess_posix_source("array_length(xs)"), "array_length(xs)")
+  assert_eq(preprocess_posix_source("Array::length(xs)"), "Array::length(xs)")
 }
 
 ///|
@@ -128,8 +128,8 @@ test "preprocess_posix_source_with_compat_notes: rewritten command emits note" {
 ///|
 test "preprocess_posix_source_with_compat_notes: unchanged script has no notes" {
   let (result, notes) = preprocess_posix_source_with_compat_notes(
-    "let x = 1\narray_length([x])",
+    "let x = 1\nArray::length([x])",
   )
-  assert_eq(result, "let x = 1\narray_length([x])")
+  assert_eq(result, "let x = 1\nArray::length([x])")
   assert_eq(notes.length(), 0)
 }

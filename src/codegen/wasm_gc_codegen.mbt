@@ -923,7 +923,7 @@ fn infer_expr_kind_gc(
             _ => raise WasmGenError::Unsupported("numeric kind")
           }
         }
-        "__eq" | "__lt" | "string_equals" => GcValKind::I32
+        "__eq" | "__lt" | "String::equals" => GcValKind::I32
         "anyref_eq"
         | "eqref_eq"
         | "i31ref_eq"
@@ -931,8 +931,9 @@ fn infer_expr_kind_gc(
         | "arrayref_eq"
         | "funcref_eq"
         | "externref_eq" => GcValKind::I64
-        "string_length" | "string_char_code_at" => GcValKind::I64
-        "string_substring" | "string_concat" => GcValKind::Ref(ctx.string_type)
+        "String::length" | "String::char_code_at" => GcValKind::I64
+        "String::substring" | "String::concat" =>
+          GcValKind::Ref(ctx.string_type)
         "record_set" => {
           if pos_args.length() != 3 {
             raise WasmGenError::Unsupported("arity: record_set")
@@ -1932,22 +1933,22 @@ fn compile_expr_gc(
           emit_struct_set_gc(buf, type_idx, field_idx)
           emit_local_get_gc(buf, rec_idx)
         }
-        "string_length" => {
+        "String::length" => {
           if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("string_length arity")
+            raise WasmGenError::Unsupported("String::length arity")
           }
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           emit_struct_get_gc(buf, ctx.string_type, 0)
         }
-        "string_char_code_at" => {
+        "String::char_code_at" => {
           if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("string_char_code_at arity")
+            raise WasmGenError::Unsupported("String::char_code_at arity")
           }
           compile_string_char_code_at(ctx, fctx, buf, pos_args[0], pos_args[1])
         }
-        "string_substring" => {
+        "String::substring" => {
           if pos_args.length() != 3 {
-            raise WasmGenError::Unsupported("string_substring arity")
+            raise WasmGenError::Unsupported("String::substring arity")
           }
           compile_string_substring(
             ctx,
@@ -1958,15 +1959,15 @@ fn compile_expr_gc(
             pos_args[2],
           )
         }
-        "string_concat" => {
+        "String::concat" => {
           if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("string_concat arity")
+            raise WasmGenError::Unsupported("String::concat arity")
           }
           compile_string_concat(ctx, fctx, buf, pos_args[0], pos_args[1])
         }
-        "string_equals" => {
+        "String::equals" => {
           if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("string_equals arity")
+            raise WasmGenError::Unsupported("String::equals arity")
           }
           compile_string_equals(ctx, fctx, buf, pos_args[0], pos_args[1])
         }

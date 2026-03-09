@@ -84,8 +84,8 @@ test "component wit includes wasi stdio imports when used" {
   let src =
     #|let run = () -> Int with {Stdout, Stdin} {
     #|  {
-    #|    stdout_write_char(65)
-    #|    stdin_read_char()
+    #|    Stdout::write_char(65)
+    #|    Stdin::read_char()
     #|  }
     #|}
     #|run()
@@ -112,8 +112,8 @@ test "component wit includes wasi stdio imports for stream builtins" {
   let src =
     #|let run = () -> Int with {Stdout, Stdin} {
     #|  {
-    #|    stdout_write_stream("hello")
-    #|    stdin_read_stream(16)
+    #|    Stdout::write_stream("hello")
+    #|    Stdin::read_stream(16)
     #|    1
     #|  }
     #|}
@@ -163,9 +163,9 @@ test "component wit includes wasi http client imports when used" {
   let db = VibeDb::new()
   let src =
     #|let run = () -> Int with {Net} {
-    #|  let req = http_request("GET", "https://example.com", "", "")
-    #|  let status = http_response_status(req)
-    #|  http_close(req)
+    #|  let req = Http::request("GET", "https://example.com", "", "")
+    #|  let status = Http::response_status(req)
+    #|  Http::close(req)
     #|  status
     #|}
     #|run()
@@ -189,14 +189,14 @@ test "component wit includes wasi http handler imports when server builtins are 
   let db = VibeDb::new()
   let src =
     #|let run = () -> Int with {Net} {
-    #|  let listener = http_listen(8080)
-    #|  let req = http_accept(listener)
-    #|  let method = http_request_method(req)
-    #|  let _ = http_request_url(req)
-    #|  let _ = http_request_header(req, "x-test")
-    #|  let _ = http_request_body(req)
-    #|  http_respond(req, 200, "", "")
-    #|  string_length(method)
+    #|  let listener = Http::listen(8080)
+    #|  let req = Http::accept(listener)
+    #|  let method = Http::request_method(req)
+    #|  let _ = Http::request_url(req)
+    #|  let _ = Http::request_header(req, "x-test")
+    #|  let _ = Http::request_body(req)
+    #|  Http::respond(req, 200, "", "")
+    #|  String::length(method)
     #|}
     #|run()
   db.set_source("main", src)
@@ -220,7 +220,7 @@ test "component wasm instantiation carries import args when core has imports" {
   let db = VibeDb::new()
   let src =
     #|let run = () -> Int with {Stdout} {
-    #|  stdout_write_char(65)
+    #|  Stdout::write_char(65)
     #|  1
     #|}
     #|run()
@@ -238,7 +238,7 @@ test "component wasm uses stable func imports for stdio" {
   let db = VibeDb::new()
   let src =
     #|let run = () -> Int with {Stdout} {
-    #|  stdout_write_char(65)
+    #|  Stdout::write_char(65)
     #|  1
     #|}
     #|run()
@@ -260,9 +260,9 @@ test "component wasm uses wasi http shim imports for http host imports" {
   let db = VibeDb::new()
   let src =
     #|let run = () -> Int with {Net} {
-    #|  let req = http_request("GET", "https://example.com", "", "")
-    #|  let status = http_response_status(req)
-    #|  http_close(req)
+    #|  let req = Http::request("GET", "https://example.com", "", "")
+    #|  let status = Http::response_status(req)
+    #|  Http::close(req)
     #|  status
     #|}
     #|run()
@@ -412,7 +412,7 @@ test "P3 handler: component_string_lift_auto exports handler" {
   let db = VibeDb::new()
   let src =
     #|export let handler = (method: String, url: String) -> Int {
-    #|  if string_equals(method, "GET") { 200 } else { 405 }
+    #|  if String::equals(method, "GET") { 200 } else { 405 }
     #|}
     #|handler("GET", "/")
   db.set_source("main", src)
@@ -434,7 +434,7 @@ test "P3 handler: async component func type (0x43) prototype" {
   let db = VibeDb::new()
   let src =
     #|export let handler = (method: String, url: String) -> Int {
-    #|  if string_equals(method, "GET") { 200 } else { 405 }
+    #|  if String::equals(method, "GET") { 200 } else { 405 }
     #|}
     #|handler("GET", "/")
   db.set_source("main", src)
@@ -482,9 +482,9 @@ test "P3 handler: async component func type (0x43) prototype" {
 test "P3 handler: interpreter returns correct status codes" {
   let base =
     #|let handler = (method: String, url: String) -> Int {
-    #|  if string_equals(method, "GET") {
-    #|    if string_equals(url, "/") { 200 }
-    #|    else { if string_equals(url, "/notfound") { 404 }
+    #|  if String::equals(method, "GET") {
+    #|    if String::equals(url, "/") { 200 }
+    #|    else { if String::equals(url, "/notfound") { 404 }
     #|    else { -1 } }
     #|  } else { 405 }
     #|}

@@ -4,25 +4,26 @@ import ./ast.vibe {
   Expr, Pat, Stmt, TypeExpr
 }
 
-//# Helpers
-
-let _use_type_expr = (t: TypeExpr) -> TypeExpr { t }
-let _use_pat = (p: Pat) -> Pat { p }
+//# Functions
 
 let empty_strings = () -> Array[String] {
-  array_slice([""], 0, 0)
+  Array::slice([
+    ""
+  ], 0, 0)
 }
 
 let empty_warnings = () -> Array[(String, String, String)] {
-  array_slice([("", "", "")], 0, 0)
+  Array::slice([
+    ("", "", "")
+  ], 0, 0)
 }
 
 let array_contains_str = (arr: Array[String], s: String) -> Bool {
-  let len = array_length(arr)
+  let len = Array::length(arr)
   let mut i = 0
   let mut found = false
   while i < len {
-    if string_equals(array_get(arr, i), s) {
+    if String::equals(Array::get(arr, i), s) {
       found = true
       i = len
     } else {
@@ -32,25 +33,29 @@ let array_contains_str = (arr: Array[String], s: String) -> Bool {
   found
 }
 
-let starts_with_underscore = (s: String) -> Bool {
-  if eq(string_length(s), 0) { false }
-  else { eq(string_char_code_at(s, 0), 95) }
-}
-
-//# collect_defined_names
-
-export let collect_defined_names = (stmts: Array[Stmt]) -> Array[String] {
-  let out = empty_strings()
+export let detect_shadows = (stmts: Array[Stmt]) -> Array[(String, String, String)] {
+  let seen = empty_strings()
+  let out = empty_warnings()
   let mut i = 0
-  while i < array_length(stmts) {
-    let stmt = array_get(stmts, i)
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
     match stmt {
       SLet(_, _, name, _, _) => {
-        array_push(out, name)
+        if array_contains_str(seen, name) {
+          let msg = String::concat("variable '", String::concat(name, "' shadows a previous binding"))
+          Array::push(out, ("shadow", name, msg))
+        } else {
+          Array::push(seen, name)
+        }
         0
       },
       SLetMut(name, _, _) => {
-        array_push(out, name)
+        if array_contains_str(seen, name) {
+          let msg = String::concat("variable '", String::concat(name, "' shadows a previous binding"))
+          Array::push(out, ("shadow", name, msg))
+        } else {
+          Array::push(seen, name)
+        }
         0
       },
       _ => 0
@@ -60,13 +65,41 @@ export let collect_defined_names = (stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
-//# collect_used_names
+export let collect_defined_names = (stmts: Array[Stmt]) -> Array[String] {
+  let out = empty_strings()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    match stmt {
+      SLet(_, _, name, _, _) => {
+        Array::push(out, name)
+        0
+      },
+      SLetMut(name, _, _) => {
+        Array::push(out, name)
+        0
+      },
+      _ => 0
+    }
+    i = i + 1
+  }
+  out
+}
+
+let starts_with_underscore = (s: String) -> Bool {
+  if eq(String::length(s), 0) {
+    false
+  }
+  else {
+    eq(String::char_code_at(s, 0), 95)
+  }
+}
 
 let rec collect_used_names_expr = (expr: Expr, out: Array[String]) -> Int {
   match expr {
     EIdent(name) => {
       if not(array_contains_str(out, name)) {
-        array_push(out, name)
+        Array::push(out, name)
       }
       0
     },
@@ -81,24 +114,24 @@ let rec collect_used_names_expr = (expr: Expr, out: Array[String]) -> Int {
     EUnaryOp(_, e) => collect_used_names_expr(e, out),
     ETuple(items) => {
       let mut i = 0
-      while i < array_length(items) {
-        collect_used_names_expr(array_get(items, i), out)
+      while i < Array::length(items) {
+        collect_used_names_expr(Array::get(items, i), out)
         i = i + 1
       }
       0
     },
     EArray(items) => {
       let mut i = 0
-      while i < array_length(items) {
-        collect_used_names_expr(array_get(items, i), out)
+      while i < Array::length(items) {
+        collect_used_names_expr(Array::get(items, i), out)
         i = i + 1
       }
       0
     },
     ERecord(fields) => {
       let mut i = 0
-      while i < array_length(fields) {
-        let (_, val) = array_get(fields, i)
+      while i < Array::length(fields) {
+        let (_, val) = Array::get(fields, i)
         collect_used_names_expr(val, out)
         i = i + 1
       }
@@ -112,8 +145,8 @@ let rec collect_used_names_expr = (expr: Expr, out: Array[String]) -> Int {
     ECall(callee, args) => {
       collect_used_names_expr(callee, out)
       let mut i = 0
-      while i < array_length(args) {
-        collect_used_names_expr(array_get(args, i), out)
+      while i < Array::length(args) {
+        collect_used_names_expr(Array::get(args, i), out)
         i = i + 1
       }
       0
@@ -157,8 +190,8 @@ let rec collect_used_names_expr = (expr: Expr, out: Array[String]) -> Int {
     EMatch(scr, arms) => {
       collect_used_names_expr(scr, out)
       let mut i = 0
-      while i < array_length(arms) {
-        let (_, body) = array_get(arms, i)
+      while i < Array::length(arms) {
+        let (_, body) = Array::get(arms, i)
         collect_used_names_expr(body, out)
         i = i + 1
       }
@@ -167,8 +200,8 @@ let rec collect_used_names_expr = (expr: Expr, out: Array[String]) -> Int {
     EHandle(body_expr, arms) => {
       collect_used_names_expr(body_expr, out)
       let mut i = 0
-      while i < array_length(arms) {
-        let (_, arm_body) = array_get(arms, i)
+      while i < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, i)
         collect_used_names_expr(arm_body, out)
         i = i + 1
       }
@@ -205,13 +238,11 @@ export let collect_used_names = (expr: Expr) -> Array[String] {
   out
 }
 
-//# collect_used_names_stmts
-
 export let collect_used_names_stmts = (stmts: Array[Stmt]) -> Array[String] {
   let out = empty_strings()
   let mut i = 0
-  while i < array_length(stmts) {
-    let stmt = array_get(stmts, i)
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
     match stmt {
       SLet(_, _, _, _, expr) => collect_used_names_expr(expr, out),
       SLetMut(_, _, expr) => collect_used_names_expr(expr, out),
@@ -225,13 +256,29 @@ export let collect_used_names_stmts = (stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
-//# collect_assign_targets
+export let detect_unused_vars = (stmts: Array[Stmt]) -> Array[(String, String, String)] {
+  let defined = collect_defined_names(stmts)
+  let used = collect_used_names_stmts(stmts)
+  let out = empty_warnings()
+  let mut i = 0
+  while i < Array::length(defined) {
+    let name = Array::get(defined, i)
+    if not(starts_with_underscore(name)) {
+      if not(array_contains_str(used, name)) {
+        let msg = String::concat("variable '", String::concat(name, "' is defined but never used"))
+        Array::push(out, ("unused_var", name, msg))
+      }
+    }
+    i = i + 1
+  }
+  out
+}
 
 let rec collect_assign_targets_expr = (expr: Expr, out: Array[String]) -> Int {
   match expr {
     EAssign(name, val, body) => {
       if not(array_contains_str(out, name)) {
-        array_push(out, name)
+        Array::push(out, name)
       }
       collect_assign_targets_expr(val, out)
       collect_assign_targets_expr(body, out)
@@ -239,7 +286,7 @@ let rec collect_assign_targets_expr = (expr: Expr, out: Array[String]) -> Int {
     },
     EAssignOp(name, _, val, body) => {
       if not(array_contains_str(out, name)) {
-        array_push(out, name)
+        Array::push(out, name)
       }
       collect_assign_targets_expr(val, out)
       collect_assign_targets_expr(body, out)
@@ -257,24 +304,24 @@ let rec collect_assign_targets_expr = (expr: Expr, out: Array[String]) -> Int {
     EUnaryOp(_, e) => collect_assign_targets_expr(e, out),
     ETuple(items) => {
       let mut i = 0
-      while i < array_length(items) {
-        collect_assign_targets_expr(array_get(items, i), out)
+      while i < Array::length(items) {
+        collect_assign_targets_expr(Array::get(items, i), out)
         i = i + 1
       }
       0
     },
     EArray(items) => {
       let mut i = 0
-      while i < array_length(items) {
-        collect_assign_targets_expr(array_get(items, i), out)
+      while i < Array::length(items) {
+        collect_assign_targets_expr(Array::get(items, i), out)
         i = i + 1
       }
       0
     },
     ERecord(fields) => {
       let mut i = 0
-      while i < array_length(fields) {
-        let (_, val) = array_get(fields, i)
+      while i < Array::length(fields) {
+        let (_, val) = Array::get(fields, i)
         collect_assign_targets_expr(val, out)
         i = i + 1
       }
@@ -288,8 +335,8 @@ let rec collect_assign_targets_expr = (expr: Expr, out: Array[String]) -> Int {
     ECall(callee, args) => {
       collect_assign_targets_expr(callee, out)
       let mut i = 0
-      while i < array_length(args) {
-        collect_assign_targets_expr(array_get(args, i), out)
+      while i < Array::length(args) {
+        collect_assign_targets_expr(Array::get(args, i), out)
         i = i + 1
       }
       0
@@ -323,8 +370,8 @@ let rec collect_assign_targets_expr = (expr: Expr, out: Array[String]) -> Int {
     EMatch(scr, arms) => {
       collect_assign_targets_expr(scr, out)
       let mut i = 0
-      while i < array_length(arms) {
-        let (_, body) = array_get(arms, i)
+      while i < Array::length(arms) {
+        let (_, body) = Array::get(arms, i)
         collect_assign_targets_expr(body, out)
         i = i + 1
       }
@@ -333,8 +380,8 @@ let rec collect_assign_targets_expr = (expr: Expr, out: Array[String]) -> Int {
     EHandle(body_expr, arms) => {
       collect_assign_targets_expr(body_expr, out)
       let mut i = 0
-      while i < array_length(arms) {
-        let (_, arm_body) = array_get(arms, i)
+      while i < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, i)
         collect_assign_targets_expr(arm_body, out)
         i = i + 1
       }
@@ -374,8 +421,8 @@ export let collect_assign_targets = (expr: Expr) -> Array[String] {
 export let collect_assign_targets_stmts = (stmts: Array[Stmt]) -> Array[String] {
   let out = empty_strings()
   let mut i = 0
-  while i < array_length(stmts) {
-    let stmt = array_get(stmts, i)
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
     match stmt {
       SLet(_, _, _, _, expr) => collect_assign_targets_expr(expr, out),
       SLetMut(_, _, expr) => collect_assign_targets_expr(expr, out),
@@ -389,39 +436,17 @@ export let collect_assign_targets_stmts = (stmts: Array[Stmt]) -> Array[String] 
   out
 }
 
-//# detect_unused_vars
-
-export let detect_unused_vars = (stmts: Array[Stmt]) -> Array[(String, String, String)] {
-  let defined = collect_defined_names(stmts)
-  let used = collect_used_names_stmts(stmts)
-  let out = empty_warnings()
-  let mut i = 0
-  while i < array_length(defined) {
-    let name = array_get(defined, i)
-    if not(starts_with_underscore(name)) {
-      if not(array_contains_str(used, name)) {
-        let msg = string_concat("variable '", string_concat(name, "' is defined but never used"))
-        array_push(out, ("unused_var", name, msg))
-      }
-    }
-    i = i + 1
-  }
-  out
-}
-
-//# detect_unused_mut
-
 export let detect_unused_mut = (stmts: Array[Stmt]) -> Array[(String, String, String)] {
   let targets = collect_assign_targets_stmts(stmts)
   let out = empty_warnings()
   let mut i = 0
-  while i < array_length(stmts) {
-    let stmt = array_get(stmts, i)
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
     match stmt {
       SLetMut(name, _, _) => {
         if not(array_contains_str(targets, name)) {
-          let msg = string_concat("mutable variable '", string_concat(name, "' is never reassigned, use 'let' instead"))
-          array_push(out, ("unused_mut", name, msg))
+          let msg = String::concat("mutable variable '", String::concat(name, "' is never reassigned, use 'let' instead"))
+          Array::push(out, ("unused_mut", name, msg))
         }
         0
       },
@@ -431,61 +456,25 @@ export let detect_unused_mut = (stmts: Array[Stmt]) -> Array[(String, String, St
   }
   out
 }
-
-//# detect_shadows
-
-export let detect_shadows = (stmts: Array[Stmt]) -> Array[(String, String, String)] {
-  let seen = empty_strings()
-  let out = empty_warnings()
-  let mut i = 0
-  while i < array_length(stmts) {
-    let stmt = array_get(stmts, i)
-    match stmt {
-      SLet(_, _, name, _, _) => {
-        if array_contains_str(seen, name) {
-          let msg = string_concat("variable '", string_concat(name, "' shadows a previous binding"))
-          array_push(out, ("shadow", name, msg))
-        } else {
-          array_push(seen, name)
-        }
-        0
-      },
-      SLetMut(name, _, _) => {
-        if array_contains_str(seen, name) {
-          let msg = string_concat("variable '", string_concat(name, "' shadows a previous binding"))
-          array_push(out, ("shadow", name, msg))
-        } else {
-          array_push(seen, name)
-        }
-        0
-      },
-      _ => 0
-    }
-    i = i + 1
-  }
-  out
-}
-
-//# check_warnings
 
 export let check_warnings = (stmts: Array[Stmt]) -> Array[(String, String, String)] {
   let out = empty_warnings()
   let unused = detect_unused_vars(stmts)
   let mut i = 0
-  while i < array_length(unused) {
-    array_push(out, array_get(unused, i))
+  while i < Array::length(unused) {
+    Array::push(out, Array::get(unused, i))
     i = i + 1
   }
   let muts = detect_unused_mut(stmts)
   let mut j = 0
-  while j < array_length(muts) {
-    array_push(out, array_get(muts, j))
+  while j < Array::length(muts) {
+    Array::push(out, Array::get(muts, j))
     j = j + 1
   }
   let shadows = detect_shadows(stmts)
   let mut k = 0
-  while k < array_length(shadows) {
-    array_push(out, array_get(shadows, k))
+  while k < Array::length(shadows) {
+    Array::push(out, Array::get(shadows, k))
     k = k + 1
   }
   out

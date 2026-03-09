@@ -111,9 +111,7 @@ fn expect_map_elem_type(
 ) -> (@core.Type, @core.Type) raise TypeError {
   let key_ty = fresh_type_var(env)
   let elem_ty = fresh_type_var(env)
-  ensure_type(
-    env, actual, @core.Type::Map(key_ty, elem_ty), span, "argument",
-  )
+  ensure_type(env, actual, @core.Type::Map(key_ty, elem_ty), span, "argument")
   (key_ty, elem_ty)
 }
 
@@ -166,7 +164,11 @@ fn expect_map_builder_elem_type(
   let key_ty = fresh_type_var(env)
   let elem_ty = fresh_type_var(env)
   ensure_type(
-    env, actual, @core.Type::MapBuilder(key_ty, elem_ty), span, "argument",
+    env,
+    actual,
+    @core.Type::MapBuilder(key_ty, elem_ty),
+    span,
+    "argument",
   )
   (key_ty, elem_ty)
 }

@@ -22,96 +22,96 @@ let prelude_source : String =
   #|impl [T] Iterable for Array[T]
   #|let to_string = [T: Show](x: T) -> String { __to_string(x) }
   #|let iter_require = [C: Iterable](xs: C) -> C { xs }
-  #|let iter_length = [T](xs: Array[T]) -> Int { array_length(xs) }
-  #|let iter_get = [T](xs: Array[T], index: Int) -> T { array_get(xs, index) }
-  #|let array_map = [T](xs: Array[T], f: (x: T) -> T) -> Array[T] {
+  #|let iter_length = [T](xs: Array[T]) -> Int { Array::length(xs) }
+  #|let iter_get = [T](xs: Array[T], index: Int) -> T { Array::get(xs, index) }
+  #|let Array::map = [T](xs: Array[T], f: (x: T) -> T) -> Array[T] {
   #|  {
-  #|    let b = array_builder()
+  #|    let b = ArrayBuilder::new()
   #|    let rec loop = (i: Int) -> Unit {
-  #|      if i < array_length(xs) {
-  #|        array_builder_push(b, f(array_get(xs, i)))
+  #|      if i < Array::length(xs) {
+  #|        ArrayBuilder::push(b, f(Array::get(xs, i)))
   #|        loop(i + 1)
   #|      } else { }
   #|    }
   #|    loop(0)
-  #|    array_builder_freeze(b)
+  #|    ArrayBuilder::freeze(b)
   #|  }
   #|}
-  #|let array_fold = [T](xs: Array[T], init: T, f: (acc: T, x: T) -> T) -> T {
+  #|let Array::fold = [T](xs: Array[T], init: T, f: (acc: T, x: T) -> T) -> T {
   #|  let rec loop = (i: Int, acc: T) -> T {
-  #|    if i < array_length(xs) {
-  #|      loop(i + 1, f(acc, array_get(xs, i)))
+  #|    if i < Array::length(xs) {
+  #|      loop(i + 1, f(acc, Array::get(xs, i)))
   #|    } else {
   #|      acc
   #|    }
   #|  }
   #|  loop(0, init)
   #|}
-  #|let array_filter = [T](xs: Array[T], pred: (x: T) -> Bool) -> Array[T] {
+  #|let Array::filter = [T](xs: Array[T], pred: (x: T) -> Bool) -> Array[T] {
   #|  {
-  #|    let b = array_builder()
+  #|    let b = ArrayBuilder::new()
   #|    let rec loop = (i: Int) -> Unit {
-  #|      if i < array_length(xs) {
-  #|        let v = array_get(xs, i)
+  #|      if i < Array::length(xs) {
+  #|        let v = Array::get(xs, i)
   #|        if pred(v) {
-  #|          array_builder_push(b, v)
+  #|          ArrayBuilder::push(b, v)
   #|        } else { }
   #|        loop(i + 1)
   #|      } else { }
   #|    }
   #|    loop(0)
-  #|    array_builder_freeze(b)
+  #|    ArrayBuilder::freeze(b)
   #|  }
   #|}
-  #|let array_foreach = [T](xs: Array[T], f: (x: T) -> Unit) -> Unit {
+  #|let Array::foreach = [T](xs: Array[T], f: (x: T) -> Unit) -> Unit {
   #|  let rec loop = (i: Int) -> Unit {
-  #|    if i < array_length(xs) {
-  #|      f(array_get(xs, i))
+  #|    if i < Array::length(xs) {
+  #|      f(Array::get(xs, i))
   #|      loop(i + 1)
   #|    } else { }
   #|  }
   #|  loop(0)
   #|}
-  #|let array_concat = [T](xs: Array[T], ys: Array[T]) -> Array[T] {
+  #|let Array::concat = [T](xs: Array[T], ys: Array[T]) -> Array[T] {
   #|  {
-  #|    let b = array_builder()
+  #|    let b = ArrayBuilder::new()
   #|    let rec loop1 = (i: Int) -> Unit {
-  #|      if i < array_length(xs) {
-  #|        array_builder_push(b, array_get(xs, i))
+  #|      if i < Array::length(xs) {
+  #|        ArrayBuilder::push(b, Array::get(xs, i))
   #|        loop1(i + 1)
   #|      } else { }
   #|    }
   #|    loop1(0)
   #|    let rec loop2 = (i: Int) -> Unit {
-  #|      if i < array_length(ys) {
-  #|        array_builder_push(b, array_get(ys, i))
+  #|      if i < Array::length(ys) {
+  #|        ArrayBuilder::push(b, Array::get(ys, i))
   #|        loop2(i + 1)
   #|      } else { }
   #|    }
   #|    loop2(0)
-  #|    array_builder_freeze(b)
+  #|    ArrayBuilder::freeze(b)
   #|  }
   #|}
-  #|let array_any = [T](xs: Array[T], pred: (x: T) -> Bool) -> Bool {
+  #|let Array::any = [T](xs: Array[T], pred: (x: T) -> Bool) -> Bool {
   #|  let rec loop = (i: Int) -> Bool {
-  #|    if i < array_length(xs) {
-  #|      if pred(array_get(xs, i)) { true } else { loop(i + 1) }
+  #|    if i < Array::length(xs) {
+  #|      if pred(Array::get(xs, i)) { true } else { loop(i + 1) }
   #|    } else { false }
   #|  }
   #|  loop(0)
   #|}
-  #|let array_all = [T](xs: Array[T], pred: (x: T) -> Bool) -> Bool {
+  #|let Array::all = [T](xs: Array[T], pred: (x: T) -> Bool) -> Bool {
   #|  let rec loop = (i: Int) -> Bool {
-  #|    if i < array_length(xs) {
-  #|      if pred(array_get(xs, i)) { loop(i + 1) } else { false }
+  #|    if i < Array::length(xs) {
+  #|      if pred(Array::get(xs, i)) { loop(i + 1) } else { false }
   #|    } else { true }
   #|  }
   #|  loop(0)
   #|}
-  #|let array_find = [T](xs: Array[T], pred: (x: T) -> Bool) -> Option[T] {
+  #|let Array::find = [T](xs: Array[T], pred: (x: T) -> Bool) -> Option[T] {
   #|  let rec loop = (i: Int) -> Option[T] {
-  #|    if i < array_length(xs) {
-  #|      let v = array_get(xs, i)
+  #|    if i < Array::length(xs) {
+  #|      let v = Array::get(xs, i)
   #|      if pred(v) { Some(v) } else { loop(i + 1) }
   #|    } else { None }
   #|  }
@@ -119,8 +119,8 @@ let prelude_source : String =
   #|}
   #|let array_find_index = [T](xs: Array[T], pred: (x: T) -> Bool) -> Int {
   #|  let rec loop = (i: Int) -> Int {
-  #|    if i < array_length(xs) {
-  #|      if pred(array_get(xs, i)) { i } else { loop(i + 1) }
+  #|    if i < Array::length(xs) {
+  #|      if pred(Array::get(xs, i)) { i } else { loop(i + 1) }
   #|    } else { 0 - 1 }
   #|  }
   #|  loop(0)
@@ -128,88 +128,88 @@ let prelude_source : String =
   #|let array_find_last_index = [T](xs: Array[T], pred: (x: T) -> Bool) -> Int {
   #|  let rec loop = (i: Int) -> Int {
   #|    if i >= 0 {
-  #|      if pred(array_get(xs, i)) { i } else { loop(i - 1) }
+  #|      if pred(Array::get(xs, i)) { i } else { loop(i - 1) }
   #|    } else { 0 - 1 }
   #|  }
-  #|  loop(array_length(xs) - 1)
+  #|  loop(Array::length(xs) - 1)
   #|}
   #|let array_contains_by = [T](xs: Array[T], pred: (x: T) -> Bool) -> Bool {
   #|  let rec loop = (i: Int) -> Bool {
-  #|    if i < array_length(xs) {
-  #|      if pred(array_get(xs, i)) { true } else { loop(i + 1) }
+  #|    if i < Array::length(xs) {
+  #|      if pred(Array::get(xs, i)) { true } else { loop(i + 1) }
   #|    } else { false }
   #|  }
   #|  loop(0)
   #|}
-  #|let array_reverse = [T](xs: Array[T]) -> Array[T] {
+  #|let Array::reverse = [T](xs: Array[T]) -> Array[T] {
   #|  {
-  #|    let b = array_builder()
-  #|    let len = array_length(xs)
+  #|    let b = ArrayBuilder::new()
+  #|    let len = Array::length(xs)
   #|    let rec loop = (i: Int) -> Unit {
   #|      if i >= 0 {
-  #|        array_builder_push(b, array_get(xs, i))
+  #|        ArrayBuilder::push(b, Array::get(xs, i))
   #|        loop(i - 1)
   #|      } else { }
   #|    }
   #|    loop(len - 1)
-  #|    array_builder_freeze(b)
+  #|    ArrayBuilder::freeze(b)
   #|  }
   #|}
-  #|let rec array_sort = (xs: Array[Num]) -> Array[Num] {
-  #|  let len = array_length(xs)
+  #|let rec Array::sort = (xs: Array[Num]) -> Array[Num] {
+  #|  let len = Array::length(xs)
   #|  if len < 2 { xs } else {
   #|    let mid = div(len, 2)
-  #|    let left = array_sort(array_slice(xs, 0, mid))
-  #|    let right = array_sort(array_slice(xs, mid, len))
+  #|    let left = Array::sort(Array::slice(xs, 0, mid))
+  #|    let right = Array::sort(Array::slice(xs, mid, len))
   #|    {
-  #|      let b = array_builder()
-  #|      let ll = array_length(left)
-  #|      let rl = array_length(right)
+  #|      let b = ArrayBuilder::new()
+  #|      let ll = Array::length(left)
+  #|      let rl = Array::length(right)
   #|      let rec merge = (li: Int, ri: Int) -> Unit {
   #|        if li < ll {
   #|          if ri < rl {
-  #|            if lt(array_get(left, li), array_get(right, ri)) {
-  #|              array_builder_push(b, array_get(left, li))
+  #|            if lt(Array::get(left, li), Array::get(right, ri)) {
+  #|              ArrayBuilder::push(b, Array::get(left, li))
   #|              merge(li + 1, ri)
   #|            } else {
-  #|              array_builder_push(b, array_get(right, ri))
+  #|              ArrayBuilder::push(b, Array::get(right, ri))
   #|              merge(li, ri + 1)
   #|            }
   #|          } else {
-  #|            array_builder_push(b, array_get(left, li))
+  #|            ArrayBuilder::push(b, Array::get(left, li))
   #|            merge(li + 1, ri)
   #|          }
   #|        } else {
   #|          if ri < rl {
-  #|            array_builder_push(b, array_get(right, ri))
+  #|            ArrayBuilder::push(b, Array::get(right, ri))
   #|            merge(li, ri + 1)
   #|          } else { }
   #|        }
   #|      }
   #|      merge(0, 0)
-  #|      array_builder_freeze(b)
+  #|      ArrayBuilder::freeze(b)
   #|    }
   #|  }
   #|}
-  #|let array_contains = (xs: Array[Num], value: Num) -> Bool {
+  #|let Array::contains = (xs: Array[Num], value: Num) -> Bool {
   #|  let rec loop = (i: Int) -> Bool {
-  #|    if i < array_length(xs) {
-  #|      if eq(array_get(xs, i), value) { true } else { loop(i + 1) }
+  #|    if i < Array::length(xs) {
+  #|      if eq(Array::get(xs, i), value) { true } else { loop(i + 1) }
   #|    } else { false }
   #|  }
   #|  loop(0)
   #|}
-  #|let array_join = [T](xs: Array[T], sep: String) -> String { string_join(xs, sep) }
+  #|let Array::join = [T](xs: Array[T], sep: String) -> String { String::join(xs, sep) }
   #|let string_concat_all = (parts: Array[String]) -> String {
-  #|  let sb = string_builder()
+  #|  let sb = StringBuilder::new()
   #|  let rec loop = (i: Int) -> Unit {
-  #|    if i < array_length(parts) {
-  #|      string_builder_push(sb, array_get(parts, i))
+  #|    if i < Array::length(parts) {
+  #|      StringBuilder::push(sb, Array::get(parts, i))
   #|      loop(i + 1)
   #|    } else { }
   #|  }
   #|  loop(0)
-  #|  string_builder_freeze(sb)
+  #|  StringBuilder::freeze(sb)
   #|}
   #|let option_map = [T](opt: Option[T], f: (x: T) -> T) -> Option[T] {
   #|  match opt {
@@ -241,18 +241,18 @@ let prelude_source : String =
   #|    None => true
   #|  }
   #|}
-  #|let map_get_or = [K, V](m: Map[K, V], key: K, default: V) -> V {
-  #|  if map_has_key(m, key) { map_get(m, key) } else { default }
+  #|let Map::get_or = [K, V](m: Map[K, V], key: K, default: V) -> V {
+  #|  if Map::has_key(m, key) { Map::get(m, key) } else { default }
   #|}
-  #|let map_map = [K, V](m: Map[K, V], f: (v: V) -> V) -> Map[K, V] {
+  #|let Map::map = [K, V](m: Map[K, V], f: (v: V) -> V) -> Map[K, V] {
   #|  {
   #|    let b = MapBuilder::new()
-  #|    let keys = map_keys(m)
-  #|    let len = array_length(keys)
+  #|    let keys = Map::keys(m)
+  #|    let len = Array::length(keys)
   #|    let rec loop = (i: Int) -> Unit {
   #|      if i < len {
-  #|        let k = array_get(keys, i)
-  #|        MapBuilder::set(b, k, f(map_get(m, k)))
+  #|        let k = Array::get(keys, i)
+  #|        MapBuilder::set(b, k, f(Map::get(m, k)))
   #|        loop(i + 1)
   #|      } else { }
   #|    }
@@ -260,15 +260,15 @@ let prelude_source : String =
   #|    MapBuilder::freeze(b)
   #|  }
   #|}
-  #|let map_filter = [K, V](m: Map[K, V], pred: (v: V) -> Bool) -> Map[K, V] {
+  #|let Map::filter = [K, V](m: Map[K, V], pred: (v: V) -> Bool) -> Map[K, V] {
   #|  {
   #|    let b = MapBuilder::new()
-  #|    let keys = map_keys(m)
-  #|    let len = array_length(keys)
+  #|    let keys = Map::keys(m)
+  #|    let len = Array::length(keys)
   #|    let rec loop = (i: Int) -> Unit {
   #|      if i < len {
-  #|        let k = array_get(keys, i)
-  #|        let v = map_get(m, k)
+  #|        let k = Array::get(keys, i)
+  #|        let v = Map::get(m, k)
   #|        if pred(v) {
   #|          MapBuilder::set(b, k, v)
   #|        } else { }
@@ -279,50 +279,50 @@ let prelude_source : String =
   #|    MapBuilder::freeze(b)
   #|  }
   #|}
-  #|let map_size = [K, V](m: Map[K, V]) -> Int {
-  #|  array_length(map_keys(m))
+  #|let Map::size = [K, V](m: Map[K, V]) -> Int {
+  #|  Array::length(Map::keys(m))
   #|}
-  #|let map_foreach = [K, V](m: Map[K, V], f: (key: K, value: V) -> Unit) -> Unit {
-  #|  let keys = map_keys(m)
+  #|let Map::foreach = [K, V](m: Map[K, V], f: (key: K, value: V) -> Unit) -> Unit {
+  #|  let keys = Map::keys(m)
   #|  let rec loop = (i: Int) -> Unit {
-  #|    if i < array_length(keys) {
-  #|      let k = array_get(keys, i)
-  #|      f(k, map_get(m, k))
+  #|    if i < Array::length(keys) {
+  #|      let k = Array::get(keys, i)
+  #|      f(k, Map::get(m, k))
   #|      loop(i + 1)
   #|    } else { }
   #|  }
   #|  loop(0)
   #|}
-  #|let map_entries = [K, V](m: Map[K, V]) -> Array[(K, V)] {
-  #|  let keys = map_keys(m)
-  #|  let b = array_builder()
+  #|let Map::entries = [K, V](m: Map[K, V]) -> Array[(K, V)] {
+  #|  let keys = Map::keys(m)
+  #|  let b = ArrayBuilder::new()
   #|  let rec loop = (i: Int) -> Unit {
-  #|    if i < array_length(keys) {
-  #|      let k = array_get(keys, i)
-  #|      array_builder_push(b, (k, map_get(m, k)))
+  #|    if i < Array::length(keys) {
+  #|      let k = Array::get(keys, i)
+  #|      ArrayBuilder::push(b, (k, Map::get(m, k)))
   #|      loop(i + 1)
   #|    } else { }
   #|  }
   #|  loop(0)
-  #|  array_builder_freeze(b)
+  #|  ArrayBuilder::freeze(b)
   #|}
-  #|let map_merge = [K, V](a: Map[K, V], b: Map[K, V]) -> Map[K, V] {
+  #|let Map::merge = [K, V](a: Map[K, V], b: Map[K, V]) -> Map[K, V] {
   #|  {
   #|    let out = MapBuilder::new()
-  #|    let ka = map_keys(a)
+  #|    let ka = Map::keys(a)
   #|    let rec loop1 = (i: Int) -> Unit {
-  #|      if i < array_length(ka) {
-  #|        let k = array_get(ka, i)
-  #|        MapBuilder::set(out, k, map_get(a, k))
+  #|      if i < Array::length(ka) {
+  #|        let k = Array::get(ka, i)
+  #|        MapBuilder::set(out, k, Map::get(a, k))
   #|        loop1(i + 1)
   #|      } else { }
   #|    }
   #|    loop1(0)
-  #|    let kb = map_keys(b)
+  #|    let kb = Map::keys(b)
   #|    let rec loop2 = (i: Int) -> Unit {
-  #|      if i < array_length(kb) {
-  #|        let k = array_get(kb, i)
-  #|        MapBuilder::set(out, k, map_get(b, k))
+  #|      if i < Array::length(kb) {
+  #|        let k = Array::get(kb, i)
+  #|        MapBuilder::set(out, k, Map::get(b, k))
   #|        loop2(i + 1)
   #|      } else { }
   #|    }
@@ -332,18 +332,18 @@ let prelude_source : String =
   #|}
   #|let where = [T](xs: Array[T], pred: (x: T) -> Bool) -> Array[T] {
   #|  {
-  #|    let b = array_builder()
+  #|    let b = ArrayBuilder::new()
   #|    let rec loop = (i: Int) -> Unit {
-  #|      if i < array_length(xs) {
-  #|        let v = array_get(xs, i)
+  #|      if i < Array::length(xs) {
+  #|        let v = Array::get(xs, i)
   #|        if pred(v) {
-  #|          array_builder_push(b, v)
+  #|          ArrayBuilder::push(b, v)
   #|        } else { }
   #|        loop(i + 1)
   #|      } else { }
   #|    }
   #|    loop(0)
-  #|    array_builder_freeze(b)
+  #|    ArrayBuilder::freeze(b)
   #|  }
   #|}
 
@@ -356,9 +356,9 @@ pub fn prelude_ast() -> @core.Module {
 pub fn prelude_names() -> Array[String] {
   [
     "add", "sub", "mul", "div", "eq", "lt", "not", "and", "or", "assert", "to_string",
-    "iter_require", "iter_length", "iter_get", "array_map", "array_fold", "array_filter",
-    "array_foreach", "array_concat", "array_reverse", "array_any", "array_all", "array_find",
-    "assert_eq", "array_sort", "array_contains", "array_join", "map_get_or", "map_map",
-    "map_filter", "where",
+    "iter_require", "iter_length", "iter_get", "Array::map", "Array::fold", "Array::filter",
+    "Array::foreach", "Array::concat", "Array::reverse", "Array::any", "Array::all",
+    "Array::find", "assert_eq", "Array::sort", "Array::contains", "Array::join",
+    "Map::get_or", "Map::map", "Map::filter", "where",
   ]
 }

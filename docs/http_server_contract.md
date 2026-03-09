@@ -1,12 +1,12 @@
 # HTTP Server Builtins Contract (Phase 2-1)
 
-`http_listen` / `http_accept` / `http_respond` の API 契約をここで固定する。
+`Http::listen` / `Http::accept` / `Http::respond` の API 契約をここで固定する。
 
 ## Type Contract
 
-- `http_listen(port: Int) -> Int with { Net }`
-- `http_accept(server_handle: Int) -> Int with { Net }`
-- `http_respond(request_handle: Int, status: Int, headers: String, body: String) -> Unit with { Net }`
+- `Http::listen(port: Int) -> Int with { Net }`
+- `Http::accept(server_handle: Int) -> Int with { Net }`
+- `Http::respond(request_handle: Int, status: Int, headers: String, body: String) -> Unit with { Net }`
 
 補足:
 
@@ -22,7 +22,7 @@
 - バックエンド実行失敗:
   - `EvalError::BadCall(Io(op=<builtin>, detail=<backend error>))`
 
-`<builtin>` はそれぞれ `http_listen` / `http_accept` / `http_respond`。
+`<builtin>` はそれぞれ `Http::listen` / `Http::accept` / `Http::respond`。
 
 `detail` の値は backend 依存:
 
@@ -33,27 +33,27 @@
 
 interpreter runtime では `NetListen` capability をサーバー API に適用する。
 
-- `http_listen(port)`:
+- `Http::listen(port)`:
   - `caps.can_listen(port)` が `false` の場合、`EvalError::PermissionDenied("net_listen:<port>")`
-- `http_accept(server_handle)`:
+- `Http::accept(server_handle)`:
   - `caps.can_listen_any()` が `false` の場合、`EvalError::PermissionDenied("net_accept")`
-- `http_respond(request_handle, ...)`:
+- `Http::respond(request_handle, ...)`:
   - `caps.can_listen_any()` が `false` の場合、`EvalError::PermissionDenied("net_respond")`
 
 加えてクライアント API では `NetConnect` capability を適用する。
 
-- `http_request(method, url, headers, body)`:
+- `Http::request(method, url, headers, body)`:
   - URL が `http://` / `https://` で host/port 抽出できない場合:
-    - `EvalError::BadCall(Io(op="http_request", detail="invalid URL for network capability check: ..."))`
+    - `EvalError::BadCall(Io(op="Http::request", detail="invalid URL for network capability check: ..."))`
   - `caps.can_connect(host, port)` が `false` の場合:
     - `EvalError::PermissionDenied("net_connect:<host>:<port>")`
-- `http_response_status(handle)` / `http_response_header(handle, name)` / `http_response_body(handle)` / `http_close(handle)`:
+- `Http::response_status(handle)` / `Http::response_header(handle, name)` / `Http::response_body(handle)` / `Http::close(handle)`:
   - `caps.can_connect_any()` が `false` の場合:
     - `EvalError::PermissionDenied("net_response_status" | "net_response_header" | "net_response_body" | "net_close")`
 
 サーバー request handle API では `NetListen` capability を適用する。
 
-- `http_request_method(handle)` / `http_request_url(handle)` / `http_request_header(handle, name)` / `http_request_body(handle)`:
+- `Http::request_method(handle)` / `Http::request_url(handle)` / `Http::request_header(handle, name)` / `Http::request_body(handle)`:
   - `caps.can_listen_any()` が `false` の場合:
     - `EvalError::PermissionDenied("net_request_method" | "net_request_url" | "net_request_header" | "net_request_body")`
 
@@ -71,7 +71,7 @@ interpreter runtime では `NetListen` capability をサーバー API に適用�
     - `PermissionDenied: net_listen:<port>`
     - `PermissionDenied: net_accept`
   - allow ケース:
-    - call order に `http_request_method` / `http_request_url` / `http_request_header` / `http_request_body` を含み、`request handle` API が host-import 経路で往復すること
+    - call order に `Http::request_method` / `Http::request_url` / `Http::request_header` / `Http::request_body` を含み、`request handle` API が host-import 経路で往復すること
     - host 側が `vibe_http_host_string_new` export を使って文字列オブジェクトを guest ヒープに確保し、`http_request_*` の戻り値として返せること
 - compiled 実行系 host runner 契約:
   - `scripts/test_compiled_backend_http_policy.sh`

@@ -918,16 +918,16 @@ fn addr_clone_string_map(src : Map[String, String]) -> Map[String, String] {
 ///|
 fn is_builtin(name : String) -> Bool {
   name == "path" ||
-  name == "path_ref" ||
-  name == "path_to_string" ||
-  name == "path_is_absolute" ||
-  name == "dynamic_path_resolve" ||
+  name == "Path::ref" ||
+  name == "Path::to_string" ||
+  name == "Path::is_absolute" ||
+  name == "Path::resolve" ||
   name == "addr" ||
   name == "sh" ||
-  name == "stdout_write_char" ||
-  name == "stdout_write_stream" ||
-  name == "stdin_read_char" ||
-  name == "stdin_read_stream" ||
+  name == "Stdout::write_char" ||
+  name == "Stdout::write_stream" ||
+  name == "Stdin::read_char" ||
+  name == "Stdin::read_stream" ||
   name == "__add" ||
   name == "__sub" ||
   name == "__mul" ||
@@ -937,50 +937,52 @@ fn is_builtin(name : String) -> Bool {
   name == "__eq" ||
   name == "__lt" ||
   name == "__assert" ||
-  name == "array_builder" ||
-  name == "array_builder_push" ||
-  name == "array_builder_freeze" ||
-  name == "array_push" ||
-  name == "array_set" ||
+  name == "ArrayBuilder::new" ||
+  name == "ArrayBuilder::push" ||
+  name == "ArrayBuilder::freeze" ||
+  name == "Array::push" ||
+  name == "Array::set" ||
   name == "array_new" ||
-  name == "array_truncate" ||
+  name == "Array::truncate" ||
   name == "array_contains_str" ||
-  name == "double_to_i64_bits" ||
-  name == "i64_bits_to_double" ||
+  name == "Double::to_i64_bits" ||
+  name == "Double::from_i64_bits" ||
   name == "string_to_data" ||
-  name == "fs_write_bytes" ||
-  name == "bytes_from_array" ||
-  name == "bytes_length" ||
-  name == "bytes_get" ||
-  @core.is_map_builder_builtin_name(name) ||
-  name == "map_keys" ||
-  name == "map_values" ||
-  name == "map_has_key" ||
-  name == "array_slice" ||
-  name == "int_to_float" ||
-  name == "int_to_double" ||
-  name == "float_to_int" ||
-  name == "float_to_double" ||
-  name == "double_to_int" ||
-  name == "double_to_float" ||
+  name == "Fs::write_bytes" ||
+  name == "Bytes::from_array" ||
+  name == "Bytes::length" ||
+  name == "Bytes::get" ||
+  name == "MapBuilder::new" ||
+  name == "MapBuilder::set" ||
+  name == "MapBuilder::freeze" ||
+  name == "Map::keys" ||
+  name == "Map::values" ||
+  name == "Map::has_key" ||
+  name == "Array::slice" ||
+  name == "Int::to_float" ||
+  name == "Int::to_double" ||
+  name == "Float::to_int" ||
+  name == "Float::to_double" ||
+  name == "Double::to_int" ||
+  name == "Double::to_float" ||
   name == "__to_string" ||
-  name == "fs_read_file" ||
-  name == "fs_write_file" ||
-  name == "fs_exists" ||
-  name == "socket_tcp_connect" ||
-  name == "socket_tcp_read" ||
-  name == "socket_tcp_write" ||
-  name == "socket_tcp_close" ||
-  name == "http_request" ||
-  name == "http_response_status" ||
-  name == "http_response_header" ||
-  name == "http_response_body" ||
-  name == "http_close" ||
-  name == "http_listen" ||
-  name == "http_accept" ||
-  name == "http_request_method" ||
-  name == "http_request_url" ||
-  name == "http_request_header" ||
-  name == "http_request_body" ||
-  name == "http_respond"
+  name == "Fs::read_file" ||
+  name == "Fs::write_file" ||
+  name == "Fs::exists" ||
+  name == "Socket::tcp_connect" ||
+  name == "Socket::tcp_read" ||
+  name == "Socket::tcp_write" ||
+  name == "Socket::tcp_close" ||
+  name == "Http::request" ||
+  name == "Http::response_status" ||
+  name == "Http::response_header" ||
+  name == "Http::response_body" ||
+  name == "Http::close" ||
+  name == "Http::listen" ||
+  name == "Http::accept" ||
+  name == "Http::request_method" ||
+  name == "Http::request_url" ||
+  name == "Http::request_header" ||
+  name == "Http::request_body" ||
+  name == "Http::respond"
 }

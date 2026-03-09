@@ -50,7 +50,7 @@ test "vibe posix mode command pipeline with where" {
   let result : Result[EvalResult, VibeError] = try? rt.eval_script_with_mode(
     "let run = () -> Array[String] with {Stdout} {\n" +
     "  {\n" +
-    "    ls |> where((line: String) -> Bool { string_contains(line, \"x\") })\n" +
+    "    ls |> where((line: String) -> Bool { String::contains(line, \"x\") })\n" +
     "  }\n" +
     "}\n" +
     "let out = run()",
@@ -84,8 +84,8 @@ test "vibe posix mode keeps bound identifiers" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script_with_mode(
     "let ls = [\"a\", \"bb\"]\n" +
-    "let ys = where(ls, (line: String) -> Bool { string_contains(line, \"b\") })\n" +
-    "let n = array_length(ys)",
+    "let ys = where(ls, (line: String) -> Bool { String::contains(line, \"b\") })\n" +
+    "let n = Array::length(ys)",
     ParserMode::PosixMode,
   )
   match result {
@@ -103,8 +103,8 @@ test "vibe where prelude filters strings" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "let xs = [\"a\", \"bb\", \"ccc\"]\n" +
-    "let ys = where(xs, (line: String) -> Bool { string_contains(line, \"b\") })\n" +
-    "let n = array_length(ys)",
+    "let ys = where(xs, (line: String) -> Bool { String::contains(line, \"b\") })\n" +
+    "let n = Array::length(ys)",
   )
   match result {
     Err(err) => fail(err.to_string())
@@ -122,8 +122,8 @@ test "vibe sh_lines returns command output lines" {
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "let run = () -> Array[String] with {Stdout} { { sh_lines(\"echo hello\") } }\n" +
     "let lines = run()\n" +
-    "let line0 = array_get(lines, 0)\n" +
-    "let n = array_length(lines)",
+    "let line0 = Array::get(lines, 0)\n" +
+    "let n = Array::length(lines)",
   )
   match result {
     Err(err) => fail(err.to_string())
@@ -505,7 +505,7 @@ test "vibe fn labeled and optional args" {
 test "vibe fn variadic positional args" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script(
-    "let collect = (head: Int, ...xs: String[]) -> Int { head + array_length(xs) }\n" +
+    "let collect = (head: Int, ...xs: String[]) -> Int { head + Array::length(xs) }\n" +
     "let a = collect(2, \"x\", \"y\", \"z\")\n" +
     "let b = collect(3)",
   )
@@ -635,7 +635,7 @@ test "vibe let rec underscore is rejected" {
 test "vibe threads probe builtin requires unstable threads flag" {
   let rt = Runtime::new(@capability.CapabilitySet::developer())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "{ threads_probe_wat() }",
+    "{ Threads::probe_wat() }",
   )
   match result {
     Err(err) => assert_true(err.to_string().contains("--unstable-threads"))
@@ -650,7 +650,7 @@ test "vibe threads probe builtin works when unstable threads is enabled" {
     RuntimeFeatureFlags::unstable_threads_only(),
   )
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "{ threads_probe_wat() }",
+    "{ Threads::probe_wat() }",
   )
   match result {
     Err(err) => fail(err.to_string())
@@ -667,7 +667,7 @@ test "vibe threads probe builtin works when unstable threads is enabled" {
 test "vibe threads runtime hints requires unstable threads flag" {
   let rt = Runtime::new(@capability.CapabilitySet::developer())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "{ threads_runtime_hints() }",
+    "{ Threads::runtime_hints() }",
   )
   match result {
     Err(err) => assert_true(err.to_string().contains("--unstable-threads"))
@@ -682,7 +682,7 @@ test "vibe threads runtime hints returns recommended flags" {
     RuntimeFeatureFlags::unstable_threads_only(),
   )
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "{ threads_runtime_hints() }",
+    "{ Threads::runtime_hints() }",
   )
   match result {
     Err(err) => fail(err.to_string())
@@ -708,7 +708,7 @@ test "vibe threads runtime hints returns recommended flags" {
 test "vibe threads runtime queue builtins require unstable threads flag" {
   let rt = Runtime::new(@capability.CapabilitySet::developer())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "{\n  let ch = threads_channel_new(1)\n  threads_send(ch, \"hello\")\n}",
+    "{\n  let ch = Threads::channel_new(1)\n  Threads::send(ch, \"hello\")\n}",
   )
   match result {
     Err(err) => assert_true(err.to_string().contains("--unstable-threads"))
@@ -724,11 +724,11 @@ test "vibe threads runtime queue builtins work when unstable threads is enabled"
   )
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "{\n" +
-    "  let ch = threads_channel_new(2)\n" +
-    "  let task = threads_spawn(\"worker\", ch)\n" +
-    "  let ok = threads_send(ch, \"hello\")\n" +
-    "  let msg = threads_recv(ch)\n" +
-    "  let status = threads_wait(task)\n" +
+    "  let ch = Threads::channel_new(2)\n" +
+    "  let task = Threads::spawn(\"worker\", ch)\n" +
+    "  let ok = Threads::send(ch, \"hello\")\n" +
+    "  let msg = Threads::recv(ch)\n" +
+    "  let status = Threads::wait(task)\n" +
     "  ok && msg == \"hello\" && status == 0\n" +
     "}",
   )
@@ -750,10 +750,10 @@ test "vibe threads send returns false when channel is full" {
   )
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "{\n" +
-    "  let ch = threads_channel_new(1)\n" +
-    "  let first = threads_send(ch, \"a\")\n" +
-    "  let second = threads_send(ch, \"b\")\n" +
-    "  let got = threads_recv(ch)\n" +
+    "  let ch = Threads::channel_new(1)\n" +
+    "  let first = Threads::send(ch, \"a\")\n" +
+    "  let second = Threads::send(ch, \"b\")\n" +
+    "  let got = Threads::recv(ch)\n" +
     "  first && not(second) && got == \"a\"\n" +
     "}",
   )
@@ -771,18 +771,18 @@ test "vibe threads send returns false when channel is full" {
 test "vibe stdio builtins require effects" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result_stdout : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let run = () -> Unit { { stdout_write_char(65) } }",
+    "let run = () -> Unit { { Stdout::write_char(65) } }",
   )
   match result_stdout {
     Err(_) => ()
-    Ok(_) => fail("expected stdout_write_char effect error")
+    Ok(_) => fail("expected Stdout::write_char effect error")
   }
   let result_stdin : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let run = () -> Int { { stdin_read_char() } }",
+    "let run = () -> Int { { Stdin::read_char() } }",
   )
   match result_stdin {
     Err(_) => ()
-    Ok(_) => fail("expected stdin_read_char effect error")
+    Ok(_) => fail("expected Stdin::read_char effect error")
   }
 }
 
@@ -790,31 +790,31 @@ test "vibe stdio builtins require effects" {
 test "vibe stdio stream builtins require effects" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result_stdout : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let run = () -> Unit { { stdout_write_stream(\"hi\") } }",
+    "let run = () -> Unit { { Stdout::write_stream(\"hi\") } }",
   )
   match result_stdout {
     Err(_) => ()
-    Ok(_) => fail("expected stdout_write_stream effect error")
+    Ok(_) => fail("expected Stdout::write_stream effect error")
   }
   let result_stdin : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let run = () -> String { { stdin_read_stream(8) } }",
+    "let run = () -> String { { Stdin::read_stream(8) } }",
   )
   match result_stdin {
     Err(_) => ()
-    Ok(_) => fail("expected stdin_read_stream effect error")
+    Ok(_) => fail("expected Stdin::read_stream effect error")
   }
 }
 
 ///|
-test "vibe string_from_char_code and stdio eval" {
+test "vibe String::from_char_code and stdio eval" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let a = string_from_char_code(65)\n" +
-    "let readc = () -> Int with {Stdin} { { stdin_read_char() } }\n" +
-    "let writec = (x: Int) -> Unit with {Stdout} { { stdout_write_char(x) } }\n" +
+    "let a = String::from_char_code(65)\n" +
+    "let readc = () -> Int with {Stdin} { { Stdin::read_char() } }\n" +
+    "let writec = (x: Int) -> Unit with {Stdout} { { Stdout::write_char(x) } }\n" +
     "let b = readc()\n" +
     "let c = writec(66)\n" +
-    "let d = string_concat(a, string_from_char_code(66))\n" +
+    "let d = String::concat(a, String::from_char_code(66))\n" +
     "d",
   )
   match result {
@@ -840,8 +840,8 @@ test "vibe char literal and char conversion builtins eval" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "let a: Char = 'A'\n" +
-    "let b = char_to_int(a)\n" +
-    "let c = char_from_int(98)\n" +
+    "let b = Char::to_int(a)\n" +
+    "let c = Char::from_int(98)\n" +
     "let d = __to_string(c)\n" +
     "match c {\n" +
     "  'b' => b,\n" +
@@ -870,8 +870,8 @@ test "vibe char literal and char conversion builtins eval" {
 test "vibe stdio stream builtins eval" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let read_chunk = () -> String with {Stdin} { { stdin_read_stream(8) } }\n" +
-    "let write_chunk = (s: String) -> Unit with {Stdout} { { stdout_write_stream(s) } }\n" +
+    "let read_chunk = () -> String with {Stdin} { { Stdin::read_stream(8) } }\n" +
+    "let write_chunk = (s: String) -> Unit with {Stdout} { { Stdout::write_stream(s) } }\n" +
     "let r = read_chunk()\n" +
     "let u = write_chunk(\"hi\")\n" +
     "r",
@@ -1093,19 +1093,19 @@ test "vibe string concat hotspot regression" {
     #|  if eq(n, 0) {
     #|    ""
     #|  } else {
-    #|    string_concat(s, repeat(s, sub(n, 1)))
+    #|    String::concat(s, repeat(s, sub(n, 1)))
     #|  }
     #|}
     #|let rec concat_loop = (s: String, i: Int) -> String {
     #|  if eq(i, 0) {
     #|    s
     #|  } else {
-    #|    concat_loop(string_concat(s, "x"), sub(i, 1))
+    #|    concat_loop(String::concat(s, "x"), sub(i, 1))
     #|  }
     #|}
     #|let base = repeat("abcdef", 20)
     #|let out = concat_loop(base, 40)
-    #|let len = string_length(out)
+    #|let len = String::length(out)
   let _ = rt.eval_script(script)
   match rt.get("len") {
     Some(@core.Value::Int(v)) => assert_eq(v, 160)
@@ -1533,7 +1533,7 @@ test "vibe effect requires with declaration in function" {
 test "vibe builder works in block" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let xs = { let b = array_builder()\narray_builder_push(b, 42)\narray_builder_freeze(b) }",
+    "let xs = { let b = ArrayBuilder::new()\nArrayBuilder::push(b, 42)\nArrayBuilder::freeze(b) }",
   )
   match result {
     Ok(_) => ()
@@ -1546,7 +1546,7 @@ test "vibe builder type-checks in block" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   // Builder operations should type-check without requiring special wrapping in the checker.
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let build = () -> [Int] {\n  let b = array_builder()\n  array_builder_push(b, 1)\n  array_builder_freeze(b)\n}\nlet xs = build()",
+    "let build = () -> [Int] {\n  let b = ArrayBuilder::new()\n  ArrayBuilder::push(b, 1)\n  ArrayBuilder::freeze(b)\n}\nlet xs = build()",
   )
   match result {
     Ok(_) => () // type-checking passes in block
@@ -1559,7 +1559,7 @@ test "vibe io builtin with effect declaration only" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   // stdout_write_stream should type-check when with {Stdout} is declared
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let greet = (name: String) -> Unit with {Stdout} {\n  stdout_write_stream(name)\n}",
+    "let greet = (name: String) -> Unit with {Stdout} {\n  Stdout::write_stream(name)\n}",
   )
   match result {
     Ok(_) => ()
@@ -1571,7 +1571,7 @@ test "vibe io builtin with effect declaration only" {
 test "vibe array builder freeze snapshot" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script(
-    "let a = { let b = array_builder()\narray_builder_push(b, 1)\nlet x = array_builder_freeze(b)\narray_builder_push(b, 2)\nlet y = array_builder_freeze(b)\n(x, y) }",
+    "let a = { let b = ArrayBuilder::new()\nArrayBuilder::push(b, 1)\nlet x = ArrayBuilder::freeze(b)\nArrayBuilder::push(b, 2)\nlet y = ArrayBuilder::freeze(b)\n(x, y) }",
   )
   match rt.get("a") {
     Some(@core.Value::Tuple(items)) =>
@@ -1627,22 +1627,6 @@ test "vibe map builder freeze snapshot" {
         }
       }
     _ => fail("missing m")
-  }
-}
-
-///|
-test "vibe legacy map builder aliases still work" {
-  let rt = Runtime::new(@capability.CapabilitySet::new())
-  let _ = rt.eval_script(
-    "let m = { let b = map_builder()\nmap_builder_set(b, \"a\", 1)\nmap_builder_freeze(b) }",
-  )
-  match rt.get("m") {
-    Some(@core.Value::Map(xs)) =>
-      match xs.get("a") {
-        Some(@core.Value::Int(v)) => assert_eq(v, 1)
-        _ => fail("legacy map builder value")
-      }
-    _ => fail("missing legacy map builder result")
   }
 }
 
@@ -1802,7 +1786,7 @@ test "vibe posix mode echo pipeline" {
   let result : Result[EvalResult, VibeError] = try? rt.eval_script_with_mode(
     "let run = () -> Array[String] with {Stdout} {\n" +
     "  {\n" +
-    "    echo |> where((line: String) -> Bool { string_contains(line, \"\") })\n" +
+    "    echo |> where((line: String) -> Bool { String::contains(line, \"\") })\n" +
     "  }\n" +
     "}\n" +
     "let out = run()",
@@ -1832,7 +1816,7 @@ test "vibe posix mode nested scope shadows command" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script_with_mode(
     "let f = (ls: Array[String]) -> Int {\n" +
-    "  array_length(ls)\n" +
+    "  Array::length(ls)\n" +
     "}\n" +
     "let n = f([\"a\", \"b\"])",
     ParserMode::PosixMode,
@@ -1851,8 +1835,8 @@ test "vibe posix mode nested scope shadows command" {
 test "vibe posix mode builtin names preserved" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script_with_mode(
-    "let x = string_concat(\"hello\", \" world\")\n" +
-    "let n = array_length([1, 2, 3])",
+    "let x = String::concat(\"hello\", \" world\")\n" +
+    "let n = Array::length([1, 2, 3])",
     ParserMode::PosixMode,
   )
   match result {
@@ -1940,7 +1924,7 @@ test "vibe where prelude filters integers" {
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "let xs = [1, 2, 3, 4, 5]\n" +
     "let ys = where(xs, (x: Int) -> Bool { x > 3 })\n" +
-    "let n = array_length(ys)",
+    "let n = Array::length(ys)",
   )
   match result {
     Err(err) => fail(err.to_string())
@@ -1958,7 +1942,7 @@ test "vibe typed rows pipeline with where/select" {
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "let rows = [record { name: \"alice\", age: 20, city: \"tokyo\" }, record { name: \"bob\", age: 30, city: \"osaka\" }]\n" +
     "let selected = rows |> select(\"name\") |> where((_) -> Bool { true })\n" +
-    "let n = array_length(selected)",
+    "let n = Array::length(selected)",
   )
   match result {
     Err(err) => fail("unexpected error: " + err.to_string())
@@ -2029,7 +2013,7 @@ test "vibe select projects array of records" {
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "let xs = [record { name: \"a\", x: 1 }, record { name: \"b\", x: 2 }]\n" +
     "let ys = select(xs, \"name\")\n" +
-    "let n = array_length(ys)",
+    "let n = Array::length(ys)",
   )
   match result {
     Err(err) => fail(err.to_string())
@@ -2169,7 +2153,7 @@ test "vibe posix mode keyword lines unchanged in preprocessing" {
 test "vibe posix mode function call unchanged in preprocessing" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script_with_mode(
-    "let x = string_concat(\"hello\", \" world\")",
+    "let x = String::concat(\"hello\", \" world\")",
     ParserMode::PosixMode,
   )
   match result {
@@ -2183,17 +2167,17 @@ test "vibe posix mode function call unchanged in preprocessing" {
 }
 
 ///|
-test "bytes_new + bytes_push + bytes_length + bytes_get" {
+test "Bytes::new + Bytes::push + Bytes::length + Bytes::get" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let b = bytes_new()\n" +
-    "bytes_push(b, 10)\n" +
-    "bytes_push(b, 20)\n" +
-    "bytes_push(b, 30)\n" +
-    "let len = bytes_length(b)\n" +
-    "let v0 = bytes_get(b, 0)\n" +
-    "let v1 = bytes_get(b, 1)\n" +
-    "let v2 = bytes_get(b, 2)\n" +
+    "let b = Bytes::new()\n" +
+    "Bytes::push(b, 10)\n" +
+    "Bytes::push(b, 20)\n" +
+    "Bytes::push(b, 30)\n" +
+    "let len = Bytes::length(b)\n" +
+    "let v0 = Bytes::get(b, 0)\n" +
+    "let v1 = Bytes::get(b, 1)\n" +
+    "let v2 = Bytes::get(b, 2)\n" +
     "len",
   )
   match result {
@@ -2219,14 +2203,14 @@ test "bytes_new + bytes_push + bytes_length + bytes_get" {
 }
 
 ///|
-test "bytes_set mutation" {
+test "Bytes::set mutation" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let b = bytes_new()\n" +
-    "bytes_push(b, 1)\n" +
-    "bytes_push(b, 2)\n" +
-    "bytes_set(b, 0, 99)\n" +
-    "let v = bytes_get(b, 0)\n" +
+    "let b = Bytes::new()\n" +
+    "Bytes::push(b, 1)\n" +
+    "Bytes::push(b, 2)\n" +
+    "Bytes::set(b, 0, 99)\n" +
+    "let v = Bytes::get(b, 0)\n" +
     "v",
   )
   match result {
@@ -2240,20 +2224,20 @@ test "bytes_set mutation" {
 }
 
 ///|
-test "bytes_slice + bytes_concat" {
+test "Bytes::slice + Bytes::concat" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let b = bytes_new()\n" +
-    "bytes_push(b, 10)\n" +
-    "bytes_push(b, 20)\n" +
-    "bytes_push(b, 30)\n" +
-    "bytes_push(b, 40)\n" +
-    "let s = bytes_slice(b, 1, 3)\n" +
-    "let s_len = bytes_length(s)\n" +
-    "let s0 = bytes_get(s, 0)\n" +
-    "let s1 = bytes_get(s, 1)\n" +
-    "let c = bytes_concat(s, s)\n" +
-    "let c_len = bytes_length(c)\n" +
+    "let b = Bytes::new()\n" +
+    "Bytes::push(b, 10)\n" +
+    "Bytes::push(b, 20)\n" +
+    "Bytes::push(b, 30)\n" +
+    "Bytes::push(b, 40)\n" +
+    "let s = Bytes::slice(b, 1, 3)\n" +
+    "let s_len = Bytes::length(s)\n" +
+    "let s0 = Bytes::get(s, 0)\n" +
+    "let s1 = Bytes::get(s, 1)\n" +
+    "let c = Bytes::concat(s, s)\n" +
+    "let c_len = Bytes::length(c)\n" +
     "c_len",
   )
   match result {
@@ -2279,16 +2263,16 @@ test "bytes_slice + bytes_concat" {
 }
 
 ///|
-test "bytes_from_array + bytes_to_array roundtrip" {
+test "Bytes::from_array + Bytes::to_array roundtrip" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "let arr: Array[Int] = [65, 66, 67]\n" +
-    "let b = bytes_from_array(arr)\n" +
-    "let len = bytes_length(b)\n" +
-    "let arr2 = bytes_to_array(b)\n" +
-    "let a0 = array_get(arr2, 0)\n" +
-    "let a1 = array_get(arr2, 1)\n" +
-    "let a2 = array_get(arr2, 2)\n" +
+    "let b = Bytes::from_array(arr)\n" +
+    "let len = Bytes::length(b)\n" +
+    "let arr2 = Bytes::to_array(b)\n" +
+    "let a0 = Array::get(arr2, 0)\n" +
+    "let a1 = Array::get(arr2, 1)\n" +
+    "let a2 = Array::get(arr2, 2)\n" +
     "len",
   )
   match result {
@@ -2314,13 +2298,13 @@ test "bytes_from_array + bytes_to_array roundtrip" {
 }
 
 ///|
-test "bytes_from_string + bytes_to_string roundtrip" {
+test "Bytes::from_string + Bytes::to_string roundtrip" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "let s = \"hello\"\n" +
-    "let b = bytes_from_string(s)\n" +
-    "let len = bytes_length(b)\n" +
-    "let s2 = bytes_to_string(b)\n" +
+    "let b = Bytes::from_string(s)\n" +
+    "let len = Bytes::length(b)\n" +
+    "let s2 = Bytes::to_string(b)\n" +
     "s2",
   )
   match result {

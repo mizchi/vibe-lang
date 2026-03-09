@@ -1822,9 +1822,7 @@ test "vibe wasm eval matches interpreter for collection outputs" {
 
 ///|
 test "vibe wasm eval matches interpreter for map string key lookup" {
-  assert_eval_backends_same(
-    "let m = map { a: 1, b: 2 }\nmap_get(m, \"a\")",
-  )
+  assert_eval_backends_same("let m = map { a: 1, b: 2 }\nMap::get(m, \"a\")")
 }
 
 ///|
@@ -1952,10 +1950,10 @@ test "vibe backends match: P3 handler pattern" {
   // handler returns status codes — interpreter and wasm should agree
   let handler_code =
     #|let handler = (method: String, url: String) -> Int {
-    #|  if string_equals(method, "GET") {
-    #|    if string_equals(url, "/") { 200 }
-    #|    else { if string_equals(url, "/health") { 200 }
-    #|    else { if string_starts_with(url, "/proxy") { -1 }
+    #|  if String::equals(method, "GET") {
+    #|    if String::equals(url, "/") { 200 }
+    #|    else { if String::equals(url, "/health") { 200 }
+    #|    else { if String::starts_with(url, "/proxy") { -1 }
     #|    else { 404 } } }
     #|  } else {
     #|    405

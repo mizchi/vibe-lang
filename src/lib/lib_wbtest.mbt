@@ -76,7 +76,7 @@ test "init_state_report_json injects kv files for project requests" {
 ///|
 test "eval_report_json reports PromptText value type" {
   let _ = eval_reset_report_json("{}")
-  let request = "{\"source\":\"prompt_text(\\\"hello\\\")\"}"
+  let request = "{\"source\":\"PromptText::new(\\\"hello\\\")\"}"
   let json = eval_report_json(request)
   assert_true(json.contains("\"ok\":true"))
   assert_true(json.contains("\"value_type\":\"PromptText\""))

@@ -17,9 +17,9 @@ Status: draft memo for implementation planning.
 ## Boundary conversion
 
 - Text -> Object は明示変換でのみ行う。
-- 初期候補: `from_lines`, `from_json`, `from_jsonl`.
+- 初期候補: `Lines::parse`, `Json::parse`, `Json::parse_lines`.
 - Object -> Text も明示変換でのみ行う。
-- 初期候補: `to_lines`, `to_json`, `to_jsonl`.
+- 初期候補: `Lines::stringify`, `Json::stringify`, `Json::stringify_lines`.
 - 暗黙変換は行わない。
 
 ## Posix mode compatibility

@@ -77,7 +77,7 @@ pub fn format_error(code : ErrorCode) -> String {
     BuiltinType(fn_name~, expected~, got~) =>
       fn_name + ": expected " + expected + ", got " + got
     BuiltinDetail(fn_name~, detail~) => fn_name + ": " + detail
-    JsonParse(detail~) => "from_json: " + detail
+    JsonParse(detail~) => "Json::parse: " + detail
     Io(op~, detail~) => if detail == "" { op } else { op + ": " + detail }
     Llm(op~, detail~) => op + ": " + detail
     Effect(detail~) => detail

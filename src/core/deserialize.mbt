@@ -529,24 +529,22 @@ fn parse_type(json : Json) -> Type raise DeserializeError {
         let elem = parse_type(value)
         return Type::Array(elem)
       }
-      "Map" => {
+      "Map" =>
         match value {
           Json::Array(items) if items.length() == 2 =>
             return Type::Map(parse_type(items[0]), parse_type(items[1]))
           _ => abort("Map type requires exactly 2 type arguments")
         }
-      }
       "ArrayBuilder" => {
         let elem = parse_type(value)
         return Type::ArrayBuilder(elem)
       }
-      "MapBuilder" => {
+      "MapBuilder" =>
         match value {
           Json::Array(items) if items.length() == 2 =>
             return Type::MapBuilder(parse_type(items[0]), parse_type(items[1]))
           _ => abort("MapBuilder type requires exactly 2 type arguments")
         }
-      }
       "StringBuilder" => return Type::StringBuilder
       "Bytes" => return Type::Bytes
       "Tuple" => {

@@ -137,13 +137,13 @@ let safe = [T](f: (T) -> T with { Error }, x: T) -> T {
 | Effect | Operations |
 |--------|-----------|
 | `Error` | `throw(...)` |
-| `Stdout` | `sh(...)`, `sh_lines(...)`, `stdout_write_char(...)`, `stdout_write_stream(...)` |
-| `Stdin` | `stdin_read_char()`, `stdin_read_stream(...)` |
+| `Stdout` | `sh(...)`, `sh_lines(...)`, `Stdout::write_char(...)`, `Stdout::write_stream(...)` |
+| `Stdin` | `Stdin::read_char()`, `Stdin::read_stream(...)` |
 | `Async` | `yield`, `sleep(...)` (requires `--unstable-async`) |
 
 ## Builders and `for-in`
 
-Mutable builder APIs (`array_builder`, `MapBuilder::new`, `string_builder`) can be used
+Mutable builder APIs (`ArrayBuilder::new`, `MapBuilder::new`, `StringBuilder::new`) can be used
 inside any function. `for-in` comprehensions desugar to builder operations internally:
 
 ```vibe
@@ -152,10 +152,10 @@ let doubled = for x in [1, 2, 3] { x * 2 }
 
 // Builder pattern (typically inside do for runtime shared-mut semantics)
 let items = do {
-  let b = array_builder()
-  array_builder_push(b, 1)
-  array_builder_push(b, 2)
-  array_builder_freeze(b)
+  let b = ArrayBuilder::new()
+  ArrayBuilder::push(b, 1)
+  ArrayBuilder::push(b, 2)
+  ArrayBuilder::freeze(b)
 }
 ```
 
@@ -164,7 +164,7 @@ I/O builtins require the appropriate `with { Effect }` declaration:
 ```vibe
 // OK: effect declared
 let greet = (name: String) -> Unit with { Stdout } {
-  stdout_write_stream(name)
+  Stdout::write_stream(name)
 }
 
 // Error: missing effect declaration

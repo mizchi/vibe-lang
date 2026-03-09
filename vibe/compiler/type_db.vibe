@@ -41,14 +41,14 @@ export enum TypeDb {
 //# Functions
 
 let add_dep = (acc: Array[String], raw_path: String, base_dir: String) -> Array[String] {
-  if string_length(raw_path) == 0 {
+  if String::length(raw_path) == 0 {
     acc
   } else {
     let resolved = resolve_path(base_dir, raw_path)
     if contains_str(acc, resolved) {
       acc
     } else {
-      array_concat(acc, [
+      Array::concat(acc, [
         resolved
       ])
     }
@@ -56,7 +56,7 @@ let add_dep = (acc: Array[String], raw_path: String, base_dir: String) -> Array[
 }
 
 let empty_stack = () -> Array[String] {
-  array_slice([
+  Array::slice([
     ""
   ], 0, 0)
 }
@@ -68,13 +68,13 @@ export let db_set_source = (db: TypeDb, path: String, source: String) -> TypeDb 
 }
 
 let empty_dep_fps = () -> Array[(String, String)] {
-  array_slice([
+  Array::slice([
     ("", "")
   ], 0, 0)
 }
 
 let empty_env_cache = () -> Array[(String, TypeEnv)] {
-  array_slice([
+  Array::slice([
     ("", EnvEmpty)
   ], 0, 0)
 }
@@ -84,13 +84,13 @@ export let db_new = () -> TypeDb {
 }
 
 let lookup_env_cache = (cache: Array[(String, TypeEnv)], path: String) -> Option[TypeEnv] {
-  let len = array_length(cache)
+  let len = Array::length(cache)
   let rec go = (i: Int) -> Option[TypeEnv] {
     if i >= len {
       None
     } else {
-      let (p, env) = array_get(cache, i)
-      if string_equals(p, path) {
+      let (p, env) = Array::get(cache, i)
+      if String::equals(p, path) {
         Some(env)
       } else {
         go(i + 1)
@@ -107,12 +107,12 @@ export let db_check_env = (db: TypeDb, path: String) -> Option[TypeEnv] {
 }
 
 let build_import_env = (stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)]) -> TypeEnv {
-  let len = array_length(stmts)
+  let len = Array::length(stmts)
   let rec go = (i: Int, acc: TypeEnv) -> TypeEnv {
     if i >= len {
       acc
     } else {
-      let next = match array_get(stmts, i) {
+      let next = match Array::get(stmts, i) {
         SImport(raw_path, names) => {
           let resolved = resolve_path(base_dir, raw_path)
           let dep_env = match lookup_env_cache(cache, resolved) {
@@ -120,12 +120,12 @@ let build_import_env = (stmts: Array[Stmt], base_dir: String, cache: Array[(Stri
             None => EnvEmpty
           }
           let dep_bindings = env_flat_bindings(dep_env)
-          let nlen = array_length(names)
+          let nlen = Array::length(names)
           let rec bind_names = (j: Int, nacc: TypeEnv) -> TypeEnv {
             if j >= nlen {
               nacc
             } else {
-              let (name, alias) = array_get(names, j)
+              let (name, alias) = Array::get(names, j)
               let bound_name = match alias {
                 Some(a) => a,
                 None => name
@@ -148,35 +148,35 @@ let build_import_env = (stmts: Array[Stmt], base_dir: String, cache: Array[(Stri
 }
 
 let upsert_env_cache = (cache: Array[(String, TypeEnv)], path: String, env: TypeEnv) -> Array[(String, TypeEnv)] {
-  let len = array_length(cache)
+  let len = Array::length(cache)
   let rec build = (i: Int, acc: Array[(String, TypeEnv)]) -> Array[(String, TypeEnv)] {
     if i >= len {
       acc
     } else {
-      let (p, e) = array_get(cache, i)
-      if string_equals(p, path) {
+      let (p, e) = Array::get(cache, i)
+      if String::equals(p, path) {
         build(i + 1, acc)
       } else {
-        build(i + 1, array_concat(acc, [
+        build(i + 1, Array::concat(acc, [
           (p, e)
         ]))
       }
     }
   }
-  array_concat(build(0, empty_env_cache()), [
+  Array::concat(build(0, empty_env_cache()), [
     (path, env)
   ])
 }
 
 let build_fingerprint = (source: String, dep_fps: Array[(String, String)]) -> String {
-  let len = array_length(dep_fps)
+  let len = Array::length(dep_fps)
   let rec go = (i: Int, acc: String) -> String {
     if i >= len {
       acc
     }
     else {
-      let (dep_path, dep_fp) = array_get(dep_fps, i)
-      let next = string_concat(acc, string_concat("|", string_concat(dep_path, string_concat("=", dep_fp))))
+      let (dep_path, dep_fp) = Array::get(dep_fps, i)
+      let next = String::concat(acc, String::concat("|", String::concat(dep_path, String::concat("=", dep_fp))))
       go(i + 1, next)
     }
   }
@@ -191,12 +191,12 @@ export let db_typecheck_count = (db: TypeDb) -> Int {
 
 let collect_import_deps = (source: String, base_dir: String) -> Array[String] with { Error } {
   let stmts = parse_program(lex(source))
-  let len = array_length(stmts)
+  let len = Array::length(stmts)
   let rec go = (i: Int, acc: Array[String]) -> Array[String] {
     if i >= len {
       acc
     } else {
-      let next = match array_get(stmts, i) {
+      let next = match Array::get(stmts, i) {
         SImport(raw_path, _) => add_dep(acc, raw_path, base_dir),
         SReExport(raw_path, _) => add_dep(acc, raw_path, base_dir),
         _ => acc
@@ -209,23 +209,23 @@ let collect_import_deps = (source: String, base_dir: String) -> Array[String] wi
 
 let rec ensure_fingerprint = (db: RippleDb, cache: Array[(String, TypeEnv)], path: String, stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)])with { Error } {
   if contains_str(stack, path) {
-    throw(string_concat("type_db: import cycle detected at ", path))
+    throw(String::concat("type_db: import cycle detected at ", path))
   } else {
     match ripple_get_source(db, path) {
-      None => (string_concat("missing:", path), db, cache),
+      None => (String::concat("missing:", path), db, cache),
       Some(source) => {
         let deps = collect_import_deps(source, dir_of(path))
-        let dlen = array_length(deps)
-        let next_stack = array_concat(stack, [
+        let dlen = Array::length(deps)
+        let next_stack = Array::concat(stack, [
           path
         ])
         let rec resolve_deps = (i: Int, dep_acc: Array[(String, String)], dep_db: RippleDb, dep_cache: Array[(String, TypeEnv)]) -> (Array[(String, String)], RippleDb, Array[(String, TypeEnv)])with { Error } {
           if i >= dlen {
             (dep_acc, dep_db, dep_cache)
           } else {
-            let dep_path = array_get(deps, i)
+            let dep_path = Array::get(deps, i)
             let (dep_fp, next_db, next_cache) = ensure_fingerprint(dep_db, dep_cache, dep_path, next_stack)
-            resolve_deps(i + 1, array_concat(dep_acc, [
+            resolve_deps(i + 1, Array::concat(dep_acc, [
               (dep_path, dep_fp)
             ]), next_db, next_cache)
           }
@@ -233,7 +233,7 @@ let rec ensure_fingerprint = (db: RippleDb, cache: Array[(String, TypeEnv)], pat
         let (dep_fps, db_after_deps, cache_after_deps) = resolve_deps(0, empty_dep_fps(), db, cache)
         let fingerprint = build_fingerprint(source, dep_fps)
         match ripple_get_fingerprint(db_after_deps, path) {
-          Some(cached_fp) => if string_equals(cached_fp, fingerprint) {
+          Some(cached_fp) => if String::equals(cached_fp, fingerprint) {
             (fingerprint, db_after_deps, cache_after_deps)
           } else {
             let stmts = parse_program(lex(source))

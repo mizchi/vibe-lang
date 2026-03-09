@@ -2456,7 +2456,9 @@ test "compiled test case source omits example main binding" {
     }
   }
   let top_level_source = render_stmt_snippets(source, top_level_stmts)
-  let wrapper_prelude_source = render_stmt_snippets(source, wrapper_prelude_stmts)
+  let wrapper_prelude_source = render_stmt_snippets(
+    source, wrapper_prelude_stmts,
+  )
   assert_false(top_level_source.contains("let main ="))
   assert_false(wrapper_prelude_source.contains("let main ="))
   let cases = collect_compiled_test_cases(ast)
@@ -2471,9 +2473,7 @@ test "compiled test case source omits example main binding" {
 ///|
 test "compiled test case source keeps imported run visible in body" {
   let case_source = build_compiled_test_case_source(
-    "import ./string_parser.vibe { run }\n",
-    "",
-    "let _ = run\n",
+    "import ./string_parser.vibe { run }\n", "", "let _ = run\n",
   )
   assert_true(case_source.contains("let __vibe_compiled_test_case = () -> Int"))
   assert_true(case_source.contains("__vibe_compiled_test_case()"))
@@ -2494,9 +2494,9 @@ test "compiled test wrapper executes top-level computed let bindings" {
   @os_fs.write_string_to_file(
     source_path,
     "let base = \"he\"\n" +
-    "let text = string_concat(base, \"llo\")\n" +
+    "let text = String::concat(base, \"llo\")\n" +
     "test \"computed string let\" {\n" +
-    "  assert(string_equals(text, \"hello\"))\n" +
+    "  assert(String::equals(text, \"hello\"))\n" +
     "}\n",
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
@@ -2617,20 +2617,20 @@ test "compiled test wrapper keeps export helper chain top-level" {
     source_path,
     "let table = \"ABCDEF\"\n" +
     "let to_chunk = (i: Int) -> String {\n" +
-    "  table|>string_substring(i, i + 1)\n" +
+    "  table|>String::substring(i, i + 1)\n" +
     "}\n" +
     "let rec enc_loop = (rest: Int, out: String) -> String {\n" +
     "  if rest <= 0 {\n" +
     "    out\n" +
     "  } else {\n" +
-    "    enc_loop(rest - 1, out|>string_concat(to_chunk(1)))\n" +
+    "    enc_loop(rest - 1, out|>String::concat(to_chunk(1)))\n" +
     "  }\n" +
     "}\n" +
     "export let encode = () -> String {\n" +
     "  enc_loop(2, \"\")\n" +
     "}\n" +
     "test \"export helper chain\" {\n" +
-    "  assert(string_equals(encode(), \"BB\"))\n" +
+    "  assert(String::equals(encode(), \"BB\"))\n" +
     "}\n",
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
@@ -2664,7 +2664,7 @@ test "compiled test wrapper keeps recursive string helpers valid" {
     source_path,
     "let table = \"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/\"\n" +
     "let to_b64 = (i: Int) -> String {\n" +
-    "  table|>string_substring(i, i + 1)\n" +
+    "  table|>String::substring(i, i + 1)\n" +
     "}\n" +
     "let encode_triplet = (a: Int, b: Int, c: Int) -> String {\n" +
     "  let c0 = to_b64(a / 4)\n" +
@@ -2675,17 +2675,17 @@ test "compiled test wrapper keeps recursive string helpers valid" {
     "  let y2 = c / 64\n" +
     "  let c2 = to_b64(x2 + y2)\n" +
     "  let c3 = to_b64(c % 64)\n" +
-    "  c0|>string_concat(c1)|>string_concat(c2)|>string_concat(c3)\n" +
+    "  c0|>String::concat(c1)|>String::concat(c2)|>String::concat(c3)\n" +
     "}\n" +
     "let rec enc_loop = (s: String, i: Int, out: String) -> String {\n" +
-    "  let len = s|>string_length()\n" +
+    "  let len = s|>String::length()\n" +
     "  if i + 3 <= len {\n" +
     "    let j = i + 1\n" +
     "    let k = i + 2\n" +
-    "    let a = s|>string_char_code_at(i)\n" +
-    "    let b = s|>string_char_code_at(j)\n" +
-    "    let c = s|>string_char_code_at(k)\n" +
-    "    enc_loop(s, i + 3, out|>string_concat(encode_triplet(a, b, c)))\n" +
+    "    let a = s|>String::char_code_at(i)\n" +
+    "    let b = s|>String::char_code_at(j)\n" +
+    "    let c = s|>String::char_code_at(k)\n" +
+    "    enc_loop(s, i + 3, out|>String::concat(encode_triplet(a, b, c)))\n" +
     "  } else {\n" +
     "    out\n" +
     "  }\n" +
@@ -2694,7 +2694,7 @@ test "compiled test wrapper keeps recursive string helpers valid" {
     "  enc_loop(s, 0, \"\")\n" +
     "}\n" +
     "test \"recursive string helper\" {\n" +
-    "  assert(string_equals(encode(\"Man\"), \"TWFu\"))\n" +
+    "  assert(String::equals(encode(\"Man\"), \"TWFu\"))\n" +
     "}\n",
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
@@ -2714,7 +2714,7 @@ test "compiled test wrapper keeps recursive string helpers valid" {
 }
 
 ///|
-test "compiled test wrapper keeps map_keys results as strings" {
+test "compiled test wrapper keeps Map::keys results as strings" {
   let cwd = @io.current_dir_or_root()
   let source_path = @vibe_fs.normalize_path(
     cwd + "/.wbtest_compiled_map_keys_strings.vibe",
@@ -2726,16 +2726,16 @@ test "compiled test wrapper keeps map_keys results as strings" {
   }
   @os_fs.write_string_to_file(
     source_path,
-    "test \"map_keys strings\" {\n" +
+    "test \"Map::keys strings\" {\n" +
     "  let m: Map[Int] = map {\n" +
     "    \"name\": 1,\n" +
     "    \"ok\": 2\n" +
     "  }\n" +
-    "  let keys = map_keys(m)\n" +
-    "  let k0 = array_get(keys, 0)\n" +
-    "  let k1 = array_get(keys, 1)\n" +
-    "  let pair = string_concat(k0, k1)\n" +
-    "  assert(string_equals(pair, \"nameok\") || string_equals(pair, \"okname\"))\n" +
+    "  let keys = Map::keys(m)\n" +
+    "  let k0 = Array::get(keys, 0)\n" +
+    "  let k1 = Array::get(keys, 1)\n" +
+    "  let pair = String::concat(k0, k1)\n" +
+    "  assert(String::equals(pair, \"nameok\") || String::equals(pair, \"okname\"))\n" +
     "}\n",
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
@@ -2747,9 +2747,9 @@ test "compiled test wrapper keeps map_keys results as strings" {
       assert_eq(report.failed, 0)
     }
     CompiledTestAttempt::Unsupported(err) =>
-      fail("compiled map_keys strings unexpectedly unsupported: " + err)
+      fail("compiled Map::keys strings unexpectedly unsupported: " + err)
     CompiledTestAttempt::Error(err) =>
-      fail("compiled map_keys strings unexpectedly errored: " + err)
+      fail("compiled Map::keys strings unexpectedly errored: " + err)
   }
   wbtest_remove_if_exists(source_path)
 }
@@ -2772,8 +2772,8 @@ test "compiled test wrapper overwrites duplicate map builder keys" {
     "  MapBuilder::set(b, \"name\", 1)\n" +
     "  MapBuilder::set(b, \"name\", 2)\n" +
     "  let m = MapBuilder::freeze(b)\n" +
-    "  assert(eq(array_length(map_keys(m)), 1))\n" +
-    "  assert(eq(map_get(m, \"name\"), 2))\n" +
+    "  assert(eq(Array::length(Map::keys(m)), 1))\n" +
+    "  assert(eq(Map::get(m, \"name\"), 2))\n" +
     "}\n",
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
@@ -2793,44 +2793,6 @@ test "compiled test wrapper overwrites duplicate map builder keys" {
 }
 
 ///|
-test "compiled test wrapper supports canonical map builder names" {
-  let cwd = @io.current_dir_or_root()
-  let source_path = @vibe_fs.normalize_path(
-    cwd + "/.wbtest_compiled_map_builder_canonical.vibe",
-  )
-  wbtest_remove_if_exists(source_path)
-  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
-    Ok(_) => ()
-    Err(err) => fail("create temp source dir failed: " + err)
-  }
-  @os_fs.write_string_to_file(
-    source_path,
-    "test \"map builder canonical\" {\n" +
-    "  let b = MapBuilder::new()\n" +
-    "  MapBuilder::set(b, \"name\", 1)\n" +
-    "  MapBuilder::set(b, \"name\", 2)\n" +
-    "  let m = MapBuilder::freeze(b)\n" +
-    "  assert(eq(array_length(map_keys(m)), 1))\n" +
-    "  assert(eq(map_get(m, \"name\"), 2))\n" +
-    "}\n",
-  ) catch {
-    e => fail("write temp source failed: " + e.to_string())
-  }
-  match run_test_file_compiled(source_path, false) {
-    CompiledTestAttempt::Success(report) => {
-      assert_eq(report.total, 1)
-      assert_eq(report.passed, 1)
-      assert_eq(report.failed, 0)
-    }
-    CompiledTestAttempt::Unsupported(err) =>
-      fail("compiled canonical map builder unexpectedly unsupported: " + err)
-    CompiledTestAttempt::Error(err) =>
-      fail("compiled canonical map builder unexpectedly errored: " + err)
-  }
-  wbtest_remove_if_exists(source_path)
-}
-
-///|
 test "compiled test wrapper keeps float add assertions valid" {
   let cwd = @io.current_dir_or_root()
   let source_path = @vibe_fs.normalize_path(
@@ -2843,9 +2805,7 @@ test "compiled test wrapper keeps float add assertions valid" {
   }
   @os_fs.write_string_to_file(
     source_path,
-    "test \"float add\" {\n" +
-    "  assert(eq(add(1.5f, 2.5f), 4.0f))\n" +
-    "}\n",
+    "test \"float add\" {\n" + "  assert(eq(add(1.5f, 2.5f), 4.0f))\n" + "}\n",
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
   }
@@ -2896,7 +2856,9 @@ test "compiled test wrapper keeps nested let record destructuring valid" {
       assert_eq(report.failed, 0)
     }
     CompiledTestAttempt::Unsupported(err) =>
-      fail("compiled nested let record pattern unexpectedly unsupported: " + err)
+      fail(
+        "compiled nested let record pattern unexpectedly unsupported: " + err,
+      )
     CompiledTestAttempt::Error(err) =>
       fail("compiled nested let record pattern unexpectedly errored: " + err)
   }
@@ -2904,7 +2866,7 @@ test "compiled test wrapper keeps nested let record destructuring valid" {
 }
 
 ///|
-test "compiled test marks from_json builtins unsupported for fallback" {
+test "compiled test marks Json::parse builtins unsupported for fallback" {
   let cwd = @io.current_dir_or_root()
   let source_path = @vibe_fs.normalize_path(
     cwd + "/.wbtest_compiled_from_json_fallback.vibe",
@@ -2916,9 +2878,9 @@ test "compiled test marks from_json builtins unsupported for fallback" {
   }
   @os_fs.write_string_to_file(
     source_path,
-    "test \"from_json fallback\" {\n" +
-    "  let data = from_json(\"{\\\"name\\\":\\\"vibe\\\"}\")\n" +
-    "  assert(string_equals(json_string(json_get(data, \"name\")), \"vibe\"))\n" +
+    "test \"Json::parse fallback\" {\n" +
+    "  let data = Json::parse(\"{\\\"name\\\":\\\"vibe\\\"}\")\n" +
+    "  assert(String::equals(Json::string(Json::get(data, \"name\")), \"vibe\"))\n" +
     "}\n",
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
@@ -2927,9 +2889,12 @@ test "compiled test marks from_json builtins unsupported for fallback" {
     CompiledTestAttempt::Unsupported(err) =>
       assert_true(err.contains("wasm runtime fallback builtins"))
     CompiledTestAttempt::Success(report) =>
-      fail("expected unsupported fallback, got success: " + report.total.to_string())
+      fail(
+        "expected unsupported fallback, got success: " +
+        report.total.to_string(),
+      )
     CompiledTestAttempt::Error(err) =>
-      fail("compiled from_json fallback unexpectedly errored: " + err)
+      fail("compiled Json::parse fallback unexpectedly errored: " + err)
   }
   wbtest_remove_if_exists(source_path)
 }
@@ -2949,7 +2914,7 @@ test "compiled test marks imported jq fallback builtins unsupported" {
     source_path,
     "import ./vibe/shell/pipeline.vibe { jq }\n" +
     "test \"jq fallback\" {\n" +
-    "  assert(string_equals(jq(\"{\\\"x\\\":1}\", \"x\"), \"1\"))\n" +
+    "  assert(String::equals(jq(\"{\\\"x\\\":1}\", \"x\"), \"1\"))\n" +
     "}\n",
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
@@ -2958,7 +2923,10 @@ test "compiled test marks imported jq fallback builtins unsupported" {
     CompiledTestAttempt::Unsupported(err) =>
       assert_true(err.contains("wasm runtime fallback builtins"))
     CompiledTestAttempt::Success(report) =>
-      fail("expected unsupported jq fallback, got success: " + report.total.to_string())
+      fail(
+        "expected unsupported jq fallback, got success: " +
+        report.total.to_string(),
+      )
     CompiledTestAttempt::Error(err) =>
       fail("compiled jq fallback unexpectedly errored: " + err)
   }
@@ -3306,9 +3274,9 @@ test "compiled exec detects modules that use http builtins and emits host import
   let db = @runtime.VibeDb::new()
   let src =
     #|let run = () -> Int with {Net} {
-    #|  let req = http_request("GET", "https://example.com", "", "")
-    #|  let status = http_response_status(req)
-    #|  http_close(req)
+    #|  let req = Http::request("GET", "https://example.com", "", "")
+    #|  let status = Http::response_status(req)
+    #|  Http::close(req)
     #|  status
     #|}
     #|run()
@@ -3353,7 +3321,7 @@ test "compiled exec wasm embeds throw literal for handler parity" {
     #|handle {
     #|  fail()
     #|} {
-    #|  Error(msg) => if string_equals(msg, "@MSG@") { 1 } else { 2 }
+    #|  Error(msg) => if String::equals(msg, "@MSG@") { 1 } else { 2 }
     #|}
   db.set_source("main", src.replace(old="@MSG@", new=needle))
   let wasm = try compile_module_wasm_for_exec(db, "main") catch {

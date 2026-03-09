@@ -17,10 +17,10 @@ fn type_call_builtin_handler_json_and_fallback(
       let _ = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
       @core.Type::String
     }
-    "string_join" =>
+    "String::join" =>
       check_builtin_simple(
         env,
-        "string_join",
+        "String::join",
         args,
         aliases,
         effects,
@@ -30,10 +30,10 @@ fn type_call_builtin_handler_json_and_fallback(
         @core.Type::String,
         false,
       )
-    "from_lines" =>
+    "Lines::parse" =>
       check_builtin_simple(
         env,
-        "from_lines",
+        "Lines::parse",
         args,
         aliases,
         effects,
@@ -43,10 +43,10 @@ fn type_call_builtin_handler_json_and_fallback(
         @core.Type::Array(@core.Type::String),
         false,
       )
-    "to_lines" =>
+    "Lines::stringify" =>
       check_builtin_simple(
         env,
-        "to_lines",
+        "Lines::stringify",
         args,
         aliases,
         effects,
@@ -56,10 +56,10 @@ fn type_call_builtin_handler_json_and_fallback(
         @core.Type::String,
         false,
       )
-    "to_json" =>
+    "Json::stringify" =>
       check_builtin_simple(
         env,
-        "to_json",
+        "Json::stringify",
         args,
         aliases,
         effects,
@@ -69,10 +69,10 @@ fn type_call_builtin_handler_json_and_fallback(
         @core.Type::String,
         false,
       )
-    "from_json" =>
+    "Json::parse" =>
       check_builtin_simple(
         env,
-        "from_json",
+        "Json::parse",
         args,
         aliases,
         effects,
@@ -82,10 +82,10 @@ fn type_call_builtin_handler_json_and_fallback(
         builtin_json_type(),
         false,
       )
-    "to_jsonl" =>
+    "Json::stringify_lines" =>
       check_builtin_simple(
         env,
-        "to_jsonl",
+        "Json::stringify_lines",
         args,
         aliases,
         effects,
@@ -95,10 +95,10 @@ fn type_call_builtin_handler_json_and_fallback(
         @core.Type::String,
         false,
       )
-    "from_jsonl" =>
+    "Json::parse_lines" =>
       check_builtin_simple(
         env,
-        "from_jsonl",
+        "Json::parse_lines",
         args,
         aliases,
         effects,
@@ -108,7 +108,7 @@ fn type_call_builtin_handler_json_and_fallback(
         @core.Type::Array(builtin_json_type()),
         false,
       )
-    "json_type" | "json_string" =>
+    "Json::type_of" | "Json::string" =>
       check_builtin_simple(
         env,
         name,
@@ -121,10 +121,10 @@ fn type_call_builtin_handler_json_and_fallback(
         @core.Type::String,
         false,
       )
-    "json_get" =>
+    "Json::get" =>
       check_builtin_simple(
         env,
-        "json_get",
+        "Json::get",
         args,
         aliases,
         effects,
@@ -134,10 +134,10 @@ fn type_call_builtin_handler_json_and_fallback(
         builtin_json_type(),
         false,
       )
-    "json_index" =>
+    "Json::index" =>
       check_builtin_simple(
         env,
-        "json_index",
+        "Json::index",
         args,
         aliases,
         effects,
@@ -147,10 +147,10 @@ fn type_call_builtin_handler_json_and_fallback(
         builtin_json_type(),
         false,
       )
-    "json_number" =>
+    "Json::number" =>
       check_builtin_simple(
         env,
-        "json_number",
+        "Json::number",
         args,
         aliases,
         effects,
@@ -160,7 +160,7 @@ fn type_call_builtin_handler_json_and_fallback(
         @core.Type::Double,
         false,
       )
-    "json_bool" | "json_is_null" =>
+    "Json::bool" | "Json::is_null" =>
       check_builtin_simple(
         env,
         name,
@@ -173,10 +173,10 @@ fn type_call_builtin_handler_json_and_fallback(
         @core.Type::Bool,
         false,
       )
-    "json_length" =>
+    "Json::length" =>
       check_builtin_simple(
         env,
-        "json_length",
+        "Json::length",
         args,
         aliases,
         effects,
@@ -186,10 +186,10 @@ fn type_call_builtin_handler_json_and_fallback(
         @core.Type::Int,
         false,
       )
-    "json_keys" =>
+    "Json::keys" =>
       check_builtin_simple(
         env,
-        "json_keys",
+        "Json::keys",
         args,
         aliases,
         effects,

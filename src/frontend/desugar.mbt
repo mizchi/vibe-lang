@@ -36,19 +36,18 @@ fn known_vibe_non_command_names() -> Map[String, Bool] {
     out[name] = true
   }
   let builtins = [
-    "path", "addr", "sh", "sh_lines", "sleep", "select", "stdin_read_char", "stdin_read_stream",
-    "stdout_write_char", "stdout_write_stream", "string_from_char_code", "string_length",
-    "string_utf8_length", "string_utf16_length", "string_unicode_length", "string_char_code_at",
-    "string_substring", "string_concat", "string_equals", "string_split", "string_index_of",
-    "string_contains", "string_trim", "array_length", "array_get", "array_slice",
-    "array_builder", "array_builder_push", "array_builder_freeze", "map_builder",
-    "map_builder_set", "map_builder_freeze", "MapBuilder::new", "MapBuilder::set",
-    "MapBuilder::freeze", "map_keys", "map_values", "map_has_key",
-    "record_set", "char_to_int", "char_from_int", "fs_read_file", "fs_write_file",
-    "fs_exists", "socket_tcp_connect", "socket_tcp_read", "socket_tcp_write", "socket_tcp_close",
-    "http_request", "http_response_status", "http_response_header", "http_response_body",
-    "http_close", "http_listen", "http_accept", "http_request_method", "http_request_url",
-    "http_request_header", "http_request_body", "http_respond",
+    "path", "addr", "sh", "sh_lines", "sleep", "select", "Stdin::read_char", "Stdin::read_stream",
+    "Stdout::write_char", "Stdout::write_stream", "String::from_char_code", "String::length",
+    "String::utf8_length", "String::utf16_length", "String::unicode_length", "String::char_code_at",
+    "String::substring", "String::concat", "String::equals", "String::split", "String::index_of",
+    "String::contains", "String::trim", "Array::length", "Array::get", "Array::slice",
+    "ArrayBuilder::new", "ArrayBuilder::push", "ArrayBuilder::freeze", "MapBuilder::new",
+    "MapBuilder::set", "MapBuilder::freeze", "Map::keys", "Map::values", "Map::has_key",
+    "record_set", "Char::to_int", "Char::from_int", "Fs::read_file", "Fs::write_file",
+    "Fs::exists", "Socket::tcp_connect", "Socket::tcp_read", "Socket::tcp_write",
+    "Socket::tcp_close", "Http::request", "Http::response_status", "Http::response_header",
+    "Http::response_body", "Http::close", "Http::listen", "Http::accept", "Http::request_method",
+    "Http::request_url", "Http::request_header", "Http::request_body", "Http::respond",
   ]
   for name in builtins {
     out[name] = true

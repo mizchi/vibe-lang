@@ -114,7 +114,9 @@ fn parse_bench_backend_or_abort(value : String) -> BenchBackend {
     Some(v) => v
     None =>
       abort(
-        "bench: invalid --backend: " + value + " (expected compiled|interpreter)",
+        "bench: invalid --backend: " +
+        value +
+        " (expected compiled|interpreter)",
       )
   }
 }

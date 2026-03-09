@@ -68,10 +68,10 @@ let read_uleb = (bytes: Bytes, start: Int) -> Array[Int] {
   let mut value = 0
   let mut shift = 0
   let mut i = start
-  let len = bytes_length(bytes)
+  let len = Bytes::length(bytes)
   let mut done = false
   while (i < len) && (done == false) {
-    let b = bytes_get(bytes, i)
+    let b = Bytes::get(bytes, i)
     value = value | ((b & 127) << shift)
     i = i + 1
     if (b & 128) == 0 {
@@ -81,8 +81,8 @@ let read_uleb = (bytes: Bytes, start: Int) -> Array[Int] {
     }
   }
   let result = bytebuf_new()
-  array_push(result, value)
-  array_push(result, i)
+  Array::push(result, value)
+  Array::push(result, i)
   result
 }
 
@@ -90,23 +90,23 @@ let read_uleb = (bytes: Bytes, start: Int) -> Array[Int] {
 // The actual name bytes must be read separately
 let read_name_info = (bytes: Bytes, start: Int) -> Array[Int] {
   let r = read_uleb(bytes, start)
-  let name_len = array_get(r, 0)
-  let after_len = array_get(r, 1)
+  let name_len = Array::get(r, 0)
+  let after_len = Array::get(r, 1)
   let result = bytebuf_new()
-  array_push(result, name_len)
-  array_push(result, after_len)
+  Array::push(result, name_len)
+  Array::push(result, after_len)
   result
 }
 
 // Read name as string from bytes
 let read_name_string = (bytes: Bytes, start: Int) -> String {
   let r = read_uleb(bytes, start)
-  let name_len = array_get(r, 0)
-  let after_len = array_get(r, 1)
+  let name_len = Array::get(r, 0)
+  let after_len = Array::get(r, 1)
   let mut s = ""
   let mut i = 0
   while i < name_len {
-    s = string_concat(s, string_from_char_code(bytes_get(bytes, after_len + i)))
+    s = String::concat(s, String::from_char_code(Bytes::get(bytes, after_len + i)))
     i = i + 1
   }
   s
@@ -115,8 +115,8 @@ let read_name_string = (bytes: Bytes, start: Int) -> String {
 // Skip name: returns position after name
 let skip_name = (bytes: Bytes, start: Int) -> Int {
   let r = read_uleb(bytes, start)
-  let name_len = array_get(r, 0)
-  let after_len = array_get(r, 1)
+  let name_len = Array::get(r, 0)
+  let after_len = Array::get(r, 1)
   after_len + name_len
 }
 
@@ -127,17 +127,17 @@ let skip_wasm_limits = (bytes: Bytes, start: Int, end_pos: Int) -> Int {
   let mut i = start
   if i >= end_pos { end_pos }
   else {
-    let flags = bytes_get(bytes, i)
+    let flags = Bytes::get(bytes, i)
     i = i + 1
     let r1 = read_uleb(bytes, i)
-    i = array_get(r1, 1)
+    i = Array::get(r1, 1)
     if (flags & 1) != 0 {
       let r2 = read_uleb(bytes, i)
-      i = array_get(r2, 1)
+      i = Array::get(r2, 1)
     }
     if (flags & 4) != 0 {
       let r3 = read_uleb(bytes, i)
-      i = array_get(r3, 1)
+      i = Array::get(r3, 1)
     }
     if i > end_pos { end_pos } else { i }
   }
@@ -163,7 +163,7 @@ let skip_core_import_desc = (bytes: Bytes, start: Int, kind: Int, end_pos: Int) 
           // tag: attr + type index
           if i < end_pos { i = i + 1 }
           let r = read_uleb(bytes, i)
-          i = array_get(r, 1)
+          i = Array::get(r, 1)
         } else {
           i = end_pos
         }
@@ -178,47 +178,47 @@ let skip_core_import_desc = (bytes: Bytes, start: Int, kind: Int, end_pos: Int) 
 // Also returns type boundaries for indexing
 // Simplified: returns array of arrays, each = [param_count, p0, p1, ..., result_count, r0, r1, ...]
 let parse_type_sigs = (bytes: Bytes, sec_start: Int, sec_end: Int) -> Array[Array[Int]] {
-  let sigs = array_slice([[0]], 0, 0)
+  let sigs = Array::slice([[0]], 0, 0)
   let mut j = sec_start
   let r = read_uleb(bytes, j)
-  let type_count = array_get(r, 0)
-  j = array_get(r, 1)
+  let type_count = Array::get(r, 0)
+  j = Array::get(r, 1)
   let mut t = 0
   while t < type_count {
     if j >= sec_end { t = type_count }
     else {
-      let form = bytes_get(bytes, j)
+      let form = Bytes::get(bytes, j)
       j = j + 1
       if form != 96 { t = type_count }  // 0x60 = func type
       else {
         let sig = bytebuf_new()
         let rp = read_uleb(bytes, j)
-        let param_count = array_get(rp, 0)
-        j = array_get(rp, 1)
-        array_push(sig, param_count)
+        let param_count = Array::get(rp, 0)
+        j = Array::get(rp, 1)
+        Array::push(sig, param_count)
         let mut p = 0
         while p < param_count {
           if j >= sec_end { p = param_count }
           else {
-            array_push(sig, bytes_get(bytes, j))
+            Array::push(sig, Bytes::get(bytes, j))
             j = j + 1
             p = p + 1
           }
         }
         let rr = read_uleb(bytes, j)
-        let result_count = array_get(rr, 0)
-        j = array_get(rr, 1)
-        array_push(sig, result_count)
+        let result_count = Array::get(rr, 0)
+        j = Array::get(rr, 1)
+        Array::push(sig, result_count)
         let mut rv = 0
         while rv < result_count {
           if j >= sec_end { rv = result_count }
           else {
-            array_push(sig, bytes_get(bytes, j))
+            Array::push(sig, Bytes::get(bytes, j))
             j = j + 1
             rv = rv + 1
           }
         }
-        array_push(sigs, sig)
+        Array::push(sigs, sig)
         t = t + 1
       }
     }
@@ -228,15 +228,15 @@ let parse_type_sigs = (bytes: Bytes, sec_start: Int, sec_end: Int) -> Array[Arra
 
 // Get param types from a parsed sig entry
 let sig_params = (sig: Array[Int]) -> Array[Int] {
-  let param_count = array_get(sig, 0)
-  array_slice(sig, 1, 1 + param_count)
+  let param_count = Array::get(sig, 0)
+  Array::slice(sig, 1, 1 + param_count)
 }
 
 // Get result types from a parsed sig entry
 let sig_results = (sig: Array[Int]) -> Array[Int] {
-  let param_count = array_get(sig, 0)
-  let result_count = array_get(sig, 1 + param_count)
-  array_slice(sig, 2 + param_count, 2 + param_count + result_count)
+  let param_count = Array::get(sig, 0)
+  let result_count = Array::get(sig, 1 + param_count)
+  Array::slice(sig, 2 + param_count, 2 + param_count + result_count)
 }
 
 // === Parse core imports ===
@@ -257,17 +257,17 @@ let parse_core_imports = (
   out_type_indices: Array[Int],
   out_type_sigs: Array[Array[Int]]
 ) -> Int {
-  let len = bytes_length(core_wasm)
+  let len = Bytes::length(core_wasm)
   if len < 8 { 0 }
   else {
     let mut i = 8
     let mut import_count = 0
     while i < len {
-      let sec_id = bytes_get(core_wasm, i)
+      let sec_id = Bytes::get(core_wasm, i)
       i = i + 1
       let r = read_uleb(core_wasm, i)
-      let sec_size = array_get(r, 0)
-      i = array_get(r, 1)
+      let sec_size = Array::get(r, 0)
+      i = Array::get(r, 1)
       let sec_end = i + sec_size
       if sec_end > len { i = len }
       else {
@@ -275,8 +275,8 @@ let parse_core_imports = (
           // Type section
           let sigs = parse_type_sigs(core_wasm, i, sec_end)
           let mut s = 0
-          while s < array_length(sigs) {
-            array_push(out_type_sigs, array_get(sigs, s))
+          while s < Array::length(sigs) {
+            Array::push(out_type_sigs, Array::get(sigs, s))
             s = s + 1
           }
         } else {
@@ -284,8 +284,8 @@ let parse_core_imports = (
             // Import section
             let mut j = i
             let ri = read_uleb(core_wasm, j)
-            let imp_count = array_get(ri, 0)
-            j = array_get(ri, 1)
+            let imp_count = Array::get(ri, 0)
+            j = Array::get(ri, 1)
             let mut imp = 0
             while imp < imp_count {
               if j >= sec_end { imp = imp_count }
@@ -296,15 +296,15 @@ let parse_core_imports = (
                 j = skip_name(core_wasm, j)
                 if j >= sec_end { imp = imp_count }
                 else {
-                  let kind = bytes_get(core_wasm, j)
+                  let kind = Bytes::get(core_wasm, j)
                   j = j + 1
                   if kind == 0 {
                     let rt = read_uleb(core_wasm, j)
-                    let type_idx = array_get(rt, 0)
-                    j = array_get(rt, 1)
-                    array_push(out_module_names, mod_name)
-                    array_push(out_func_names, fn_name)
-                    array_push(out_type_indices, type_idx)
+                    let type_idx = Array::get(rt, 0)
+                    j = Array::get(rt, 1)
+                    Array::push(out_module_names, mod_name)
+                    Array::push(out_func_names, fn_name)
+                    Array::push(out_type_indices, type_idx)
                     import_count = import_count + 1
                   } else {
                     j = skip_core_import_desc(core_wasm, j, kind, sec_end)
@@ -330,28 +330,28 @@ let parse_core_exports = (
   out_func_indices: Array[Int],
   out_type_sigs: Array[Array[Int]]
 ) -> Int {
-  let len = bytes_length(core_wasm)
+  let len = Bytes::length(core_wasm)
   if len < 8 { 0 }
   else {
-    let type_sigs = array_slice([[0]], 0, 0)
+    let type_sigs = Array::slice([[0]], 0, 0)
     let func_type_indices = bytebuf_new()
     let mut import_func_count = 0
     let mut i = 8
     let mut export_count = 0
     while i < len {
-      let sec_id = bytes_get(core_wasm, i)
+      let sec_id = Bytes::get(core_wasm, i)
       i = i + 1
       let r = read_uleb(core_wasm, i)
-      let sec_size = array_get(r, 0)
-      i = array_get(r, 1)
+      let sec_size = Array::get(r, 0)
+      i = Array::get(r, 1)
       let sec_end = i + sec_size
       if sec_end > len { i = len }
       else {
         if sec_id == 1 {
           let sigs = parse_type_sigs(core_wasm, i, sec_end)
           let mut s = 0
-          while s < array_length(sigs) {
-            array_push(type_sigs, array_get(sigs, s))
+          while s < Array::length(sigs) {
+            Array::push(type_sigs, Array::get(sigs, s))
             s = s + 1
           }
         } else {
@@ -359,8 +359,8 @@ let parse_core_exports = (
             // Count imported functions
             let mut j = i
             let ri = read_uleb(core_wasm, j)
-            let imp_count = array_get(ri, 0)
-            j = array_get(ri, 1)
+            let imp_count = Array::get(ri, 0)
+            j = Array::get(ri, 1)
             let mut imp = 0
             while imp < imp_count {
               if j >= sec_end { imp = imp_count }
@@ -369,11 +369,11 @@ let parse_core_exports = (
                 j = skip_name(core_wasm, j)
                 if j >= sec_end { imp = imp_count }
                 else {
-                  let kind = bytes_get(core_wasm, j)
+                  let kind = Bytes::get(core_wasm, j)
                   j = j + 1
                   if kind == 0 {
                     let rt = read_uleb(core_wasm, j)
-                    j = array_get(rt, 1)
+                    j = Array::get(rt, 1)
                     import_func_count = import_func_count + 1
                   } else {
                     j = skip_core_import_desc(core_wasm, j, kind, sec_end)
@@ -387,15 +387,15 @@ let parse_core_exports = (
               // Function section
               let mut j = i
               let rf = read_uleb(core_wasm, j)
-              let func_count = array_get(rf, 0)
-              j = array_get(rf, 1)
+              let func_count = Array::get(rf, 0)
+              j = Array::get(rf, 1)
               let mut f = 0
               while f < func_count {
                 if j >= sec_end { f = func_count }
                 else {
                   let rt = read_uleb(core_wasm, j)
-                  array_push(func_type_indices, array_get(rt, 0))
-                  j = array_get(rt, 1)
+                  Array::push(func_type_indices, Array::get(rt, 0))
+                  j = Array::get(rt, 1)
                   f = f + 1
                 }
               }
@@ -404,8 +404,8 @@ let parse_core_exports = (
                 // Export section
                 let mut j = i
                 let re = read_uleb(core_wasm, j)
-                let exp_count = array_get(re, 0)
-                j = array_get(re, 1)
+                let exp_count = Array::get(re, 0)
+                j = Array::get(re, 1)
                 let mut e = 0
                 while e < exp_count {
                   if j >= sec_end { e = exp_count }
@@ -414,23 +414,23 @@ let parse_core_exports = (
                     j = skip_name(core_wasm, j)
                     if j >= sec_end { e = exp_count }
                     else {
-                      let kind = bytes_get(core_wasm, j)
+                      let kind = Bytes::get(core_wasm, j)
                       j = j + 1
                       let ri = read_uleb(core_wasm, j)
-                      let index = array_get(ri, 0)
-                      j = array_get(ri, 1)
+                      let index = Array::get(ri, 0)
+                      j = Array::get(ri, 1)
                       if kind == 0 {
                         let type_idx = if index < import_func_count { 0 - 1 }
                         else {
                           let local_idx = index - import_func_count
-                          if local_idx < array_length(func_type_indices) {
-                            array_get(func_type_indices, local_idx)
+                          if local_idx < Array::length(func_type_indices) {
+                            Array::get(func_type_indices, local_idx)
                           } else { 0 - 1 }
                         }
-                        if (type_idx >= 0) && (type_idx < array_length(type_sigs)) {
-                          array_push(out_names, name)
-                          array_push(out_func_indices, index)
-                          array_push(out_type_sigs, array_get(type_sigs, type_idx))
+                        if (type_idx >= 0) && (type_idx < Array::length(type_sigs)) {
+                          Array::push(out_names, name)
+                          Array::push(out_func_indices, index)
+                          Array::push(out_type_sigs, Array::get(type_sigs, type_idx))
                           export_count = export_count + 1
                         }
                       }
@@ -464,17 +464,17 @@ let core_to_comp_valtype = (v: Int) -> Int {
 // Emit core module section (section 1)
 let emit_core_module_section = (buf: Array[Int], core_wasm: Bytes) -> Unit {
   bytebuf_push(buf, section_module)
-  let wasm_len = bytes_length(core_wasm)
+  let wasm_len = Bytes::length(core_wasm)
   leb128_encode_u32(buf, wasm_len)
   let mut i = 0
   while i < wasm_len {
-    bytebuf_push(buf, bytes_get(core_wasm, i))
+    bytebuf_push(buf, Bytes::get(core_wasm, i))
     i = i + 1
   }
 }
 
 let emit_raw_content = (buf: Array[Int], content: Array[Int]) -> Unit {
-  leb128_encode_u32(buf, array_length(content))
+  leb128_encode_u32(buf, Array::length(content))
   bytebuf_push_array(buf, content)
 }
 
@@ -484,10 +484,10 @@ let emit_core_instance_instantiate_section = (buf: Array[Int], module_index: Int
   leb128_encode_u32(content, 1)
   bytebuf_push(content, 0)  // instantiate
   leb128_encode_u32(content, module_index)
-  leb128_encode_u32(content, array_length(module_names))
+  leb128_encode_u32(content, Array::length(module_names))
   let mut i = 0
-  while i < array_length(module_names) {
-    emit_name(content, array_get(module_names, i))
+  while i < Array::length(module_names) {
+    emit_name(content, Array::get(module_names, i))
     bytebuf_push(content, comp_inst_arg_instance)
     leb128_encode_u32(content, i)
     i = i + 1
@@ -513,14 +513,14 @@ let emit_core_instance_from_exports = (
     let mut offset = 0
     let mut m = 0
     while m < num_modules {
-      let count = array_get(module_binding_counts, m)
+      let count = Array::get(module_binding_counts, m)
       bytebuf_push(content, 1)  // from exports
       leb128_encode_u32(content, count)
       let mut b = 0
       while b < count {
-        emit_name(content, array_get(binding_func_names, offset + b))
+        emit_name(content, Array::get(binding_func_names, offset + b))
         bytebuf_push(content, core_sort_func)
-        leb128_encode_u32(content, array_get(binding_func_indices, offset + b))
+        leb128_encode_u32(content, Array::get(binding_func_indices, offset + b))
         b = b + 1
       }
       offset = offset + count
@@ -532,7 +532,7 @@ let emit_core_instance_from_exports = (
 
 // Emit alias section
 let emit_alias_section = (buf: Array[Int], core_instance_idx: Int, names: Array[String], sorts: Array[Int]) -> Unit {
-  let count = array_length(names)
+  let count = Array::length(names)
   if count == 0 { () }
   else {
     bytebuf_push(buf, section_alias)
@@ -541,10 +541,10 @@ let emit_alias_section = (buf: Array[Int], core_instance_idx: Int, names: Array[
     let mut i = 0
     while i < count {
       bytebuf_push(content, 0)  // core export from instance
-      bytebuf_push(content, array_get(sorts, i))  // sort
+      bytebuf_push(content, Array::get(sorts, i))  // sort
       bytebuf_push(content, 1)  // aliaskind marker
       leb128_encode_u32(content, core_instance_idx)
-      emit_name(content, array_get(names, i))
+      emit_name(content, Array::get(names, i))
       i = i + 1
     }
     emit_raw_content(buf, content)
@@ -571,29 +571,29 @@ let emit_comp_func_type = (
   } else {
     bytebuf_push(content, 64)  // 0x40 sync
   }
-  leb128_encode_u32(content, array_length(param_types))
+  leb128_encode_u32(content, Array::length(param_types))
   let mut i = 0
-  while i < array_length(param_types) {
-    let name = if i < array_length(param_names) { array_get(param_names, i) }
-    else { string_concat("p", __to_string(i)) }
+  while i < Array::length(param_types) {
+    let name = if i < Array::length(param_names) { Array::get(param_names, i) }
+    else { String::concat("p", __to_string(i)) }
     emit_name(content, name)
-    bytebuf_push(content, array_get(param_types, i))
+    bytebuf_push(content, Array::get(param_types, i))
     i = i + 1
   }
-  if array_length(result_types) == 0 {
+  if Array::length(result_types) == 0 {
     bytebuf_push(content, 1)  // named results
     leb128_encode_u32(content, 0)
   } else {
-    if array_length(result_types) == 1 {
+    if Array::length(result_types) == 1 {
       bytebuf_push(content, 0)  // single unnamed result
-      bytebuf_push(content, array_get(result_types, 0))
+      bytebuf_push(content, Array::get(result_types, 0))
     } else {
       bytebuf_push(content, 1)  // named results
-      leb128_encode_u32(content, array_length(result_types))
+      leb128_encode_u32(content, Array::length(result_types))
       let mut r = 0
-      while r < array_length(result_types) {
-        emit_name(content, string_concat("r", __to_string(r)))
-        bytebuf_push(content, array_get(result_types, r))
+      while r < Array::length(result_types) {
+        emit_name(content, String::concat("r", __to_string(r)))
+        bytebuf_push(content, Array::get(result_types, r))
         r = r + 1
       }
     }
@@ -610,7 +610,7 @@ let emit_comp_type_section = (
   sigs_results: Array[Array[Int]],
   sigs_async: Array[Int]
 ) -> Unit {
-  let count = array_length(sigs_params)
+  let count = Array::length(sigs_params)
   if count == 0 { () }
   else {
     bytebuf_push(buf, section_type)
@@ -620,10 +620,10 @@ let emit_comp_type_section = (
     while i < count {
       emit_comp_func_type(
         content,
-        array_get(sigs_params, i),
-        array_get(sigs_param_names, i),
-        array_get(sigs_results, i),
-        array_get(sigs_async, i)
+        Array::get(sigs_params, i),
+        Array::get(sigs_param_names, i),
+        Array::get(sigs_results, i),
+        Array::get(sigs_async, i)
       )
       i = i + 1
     }
@@ -636,7 +636,7 @@ let emit_comp_type_section_run = (buf: Array[Int]) -> Unit {
   bytebuf_push(buf, section_type)
   let content = bytebuf_new()
   leb128_encode_u32(content, 1)
-  emit_comp_func_type(content, bytebuf_new(), array_slice([""], 0, 0), [comp_valtype_s64], 0)
+  emit_comp_func_type(content, bytebuf_new(), Array::slice([""], 0, 0), [comp_valtype_s64], 0)
   emit_raw_content(buf, content)
 }
 
@@ -651,7 +651,7 @@ let emit_comp_import_section = (buf: Array[Int], import_names: Array[String], co
     let mut i = 0
     while i < count {
       bytebuf_push(content, 0)  // plain name
-      emit_name(content, array_get(import_names, i))
+      emit_name(content, Array::get(import_names, i))
       bytebuf_push(content, comp_extern_func)
       leb128_encode_u32(content, i)  // type index
       i = i + 1
@@ -749,36 +749,36 @@ let build_import_plan = (
   out_comp_param_names: Array[Array[String]],
   out_comp_results: Array[Array[Int]]
 ) -> Int {
-  let imp_module_names = array_slice([""], 0, 0)
-  let imp_func_names = array_slice([""], 0, 0)
+  let imp_module_names = Array::slice([""], 0, 0)
+  let imp_func_names = Array::slice([""], 0, 0)
   let imp_type_indices = bytebuf_new()
-  let type_sigs = array_slice([[0]], 0, 0)
+  let type_sigs = Array::slice([[0]], 0, 0)
   let _ = parse_core_imports(core_wasm, imp_module_names, imp_func_names, imp_type_indices, type_sigs)
 
-  let seen_keys = array_slice([""], 0, 0)
-  let module_idx_map_keys = array_slice([""], 0, 0)
+  let seen_keys = Array::slice([""], 0, 0)
+  let module_idx_map_keys = Array::slice([""], 0, 0)
   let module_idx_map_vals = bytebuf_new()
   let mut binding_count = 0
 
   let mut i = 0
-  while i < array_length(imp_module_names) {
-    let mod_name = array_get(imp_module_names, i)
-    let fn_name = array_get(imp_func_names, i)
-    let key = string_concat(string_concat(mod_name, "||"), fn_name)
+  while i < Array::length(imp_module_names) {
+    let mod_name = Array::get(imp_module_names, i)
+    let fn_name = Array::get(imp_func_names, i)
+    let key = String::concat(String::concat(mod_name, "||"), fn_name)
 
     // Check if already seen
     let mut already = false
     let mut s = 0
-    while s < array_length(seen_keys) {
-      if string_equals(array_get(seen_keys, s), key) { already = true }
+    while s < Array::length(seen_keys) {
+      if String::equals(Array::get(seen_keys, s), key) { already = true }
       s = s + 1
     }
 
     if already == false {
-      array_push(seen_keys, key)
-      let type_idx = array_get(imp_type_indices, i)
-      if type_idx < array_length(type_sigs) {
-        let sig = array_get(type_sigs, type_idx)
+      Array::push(seen_keys, key)
+      let type_idx = Array::get(imp_type_indices, i)
+      if type_idx < Array::length(type_sigs) {
+        let sig = Array::get(type_sigs, type_idx)
         let params = sig_params(sig)
         let results = sig_results(sig)
 
@@ -786,18 +786,18 @@ let build_import_plan = (
         let comp_params = bytebuf_new()
         let mut valid = true
         let mut p = 0
-        while p < array_length(params) {
-          let cv = core_to_comp_valtype(array_get(params, p))
+        while p < Array::length(params) {
+          let cv = core_to_comp_valtype(Array::get(params, p))
           if cv < 0 { valid = false }
-          else { array_push(comp_params, cv) }
+          else { Array::push(comp_params, cv) }
           p = p + 1
         }
         let comp_results = bytebuf_new()
         let mut r = 0
-        while r < array_length(results) {
-          let cv = core_to_comp_valtype(array_get(results, r))
+        while r < Array::length(results) {
+          let cv = core_to_comp_valtype(Array::get(results, r))
           if cv < 0 { valid = false }
-          else { array_push(comp_results, cv) }
+          else { Array::push(comp_results, cv) }
           r = r + 1
         }
 
@@ -805,32 +805,32 @@ let build_import_plan = (
           // Find or create module index
           let mut mod_idx = 0 - 1
           let mut mi = 0
-          while mi < array_length(module_idx_map_keys) {
-            if string_equals(array_get(module_idx_map_keys, mi), mod_name) {
-              mod_idx = array_get(module_idx_map_vals, mi)
+          while mi < Array::length(module_idx_map_keys) {
+            if String::equals(Array::get(module_idx_map_keys, mi), mod_name) {
+              mod_idx = Array::get(module_idx_map_vals, mi)
             }
             mi = mi + 1
           }
           if mod_idx < 0 {
-            mod_idx = array_length(out_unique_module_names)
-            array_push(out_unique_module_names, mod_name)
-            array_push(out_module_binding_counts, 0)
-            array_push(module_idx_map_keys, mod_name)
-            array_push(module_idx_map_vals, mod_idx)
+            mod_idx = Array::length(out_unique_module_names)
+            Array::push(out_unique_module_names, mod_name)
+            Array::push(out_module_binding_counts, 0)
+            Array::push(module_idx_map_keys, mod_name)
+            Array::push(module_idx_map_vals, mod_idx)
           }
 
-          let import_name = string_concat("import-", __to_string(binding_count))
-          array_push(out_import_names, import_name)
-          array_push(out_binding_func_names, fn_name)
-          array_push(out_binding_func_indices, binding_count)
-          array_push(out_comp_params, comp_params)
-          let empty_names = array_slice([""], 0, 0)
-          array_push(out_comp_param_names, empty_names)
-          array_push(out_comp_results, comp_results)
+          let import_name = String::concat("import-", __to_string(binding_count))
+          Array::push(out_import_names, import_name)
+          Array::push(out_binding_func_names, fn_name)
+          Array::push(out_binding_func_indices, binding_count)
+          Array::push(out_comp_params, comp_params)
+          let empty_names = Array::slice([""], 0, 0)
+          Array::push(out_comp_param_names, empty_names)
+          Array::push(out_comp_results, comp_results)
 
           // Increment module binding count
-          let cur = array_get(out_module_binding_counts, mod_idx)
-          array_set(out_module_binding_counts, mod_idx, cur + 1)
+          let cur = Array::get(out_module_binding_counts, mod_idx)
+          Array::set(out_module_binding_counts, mod_idx, cur + 1)
 
           binding_count = binding_count + 1
         }
@@ -848,21 +848,21 @@ export let comp_emit_component_wasm = (core_wasm: Bytes) -> Bytes {
   let buf = bytebuf_new()
   emit_component_header(buf)
   emit_core_module_section(buf, core_wasm)
-  emit_core_instance_instantiate_section(buf, 0, array_slice([""], 0, 0))
+  emit_core_instance_instantiate_section(buf, 0, Array::slice([""], 0, 0))
   emit_alias_run_and_memory(buf, 0)
   bytebuf_to_bytes(buf)
 }
 
 // Component with canon lift (handles imports)
 export let comp_emit_component_wasm_with_lift = (core_wasm: Bytes, export_name: String) -> Bytes {
-  let import_names = array_slice([""], 0, 0)
-  let binding_func_names = array_slice([""], 0, 0)
+  let import_names = Array::slice([""], 0, 0)
+  let binding_func_names = Array::slice([""], 0, 0)
   let binding_func_indices = bytebuf_new()
-  let unique_module_names = array_slice([""], 0, 0)
+  let unique_module_names = Array::slice([""], 0, 0)
   let module_binding_counts = bytebuf_new()
-  let comp_params = array_slice([[0]], 0, 0)
-  let comp_param_names = array_slice([array_slice([""], 0, 0)], 0, 0)
-  let comp_results = array_slice([[0]], 0, 0)
+  let comp_params = Array::slice([[0]], 0, 0)
+  let comp_param_names = Array::slice([Array::slice([""], 0, 0)], 0, 0)
+  let comp_results = Array::slice([[0]], 0, 0)
 
   let import_func_count = build_import_plan(
     core_wasm,
@@ -871,7 +871,7 @@ export let comp_emit_component_wasm_with_lift = (core_wasm: Bytes, export_name: 
     comp_params, comp_param_names, comp_results
   )
 
-  let main_instance_idx = array_length(unique_module_names)
+  let main_instance_idx = Array::length(unique_module_names)
   let run_core_func_idx = import_func_count
   let run_type_idx = import_func_count
   let run_func_idx = import_func_count
@@ -883,13 +883,13 @@ export let comp_emit_component_wasm_with_lift = (core_wasm: Bytes, export_name: 
   let async_flags = bytebuf_new()
   let mut af = 0
   while af < import_func_count {
-    array_push(async_flags, 0)
+    Array::push(async_flags, 0)
     af = af + 1
   }
   emit_comp_type_section(buf, comp_params, comp_param_names, comp_results, async_flags)
   emit_comp_import_section(buf, import_names, import_func_count)
   emit_canon_lower_section(buf, import_func_count)
-  emit_core_instance_from_exports(buf, array_length(unique_module_names),
+  emit_core_instance_from_exports(buf, Array::length(unique_module_names),
     module_binding_counts, binding_func_names, binding_func_indices)
   emit_core_instance_instantiate_section(buf, 0, unique_module_names)
   emit_alias_run_and_memory(buf, main_instance_idx)
@@ -1061,7 +1061,7 @@ export let comp_generate_string_trampoline = (string_param_count: Int) -> Bytes 
   leb128_encode_u32(func_body, 0)  // target_func
   bytebuf_push(func_body, 11)  // end
 
-  leb128_encode_u32(code_sec, array_length(func_body))
+  leb128_encode_u32(code_sec, Array::length(func_body))
   bytebuf_push_array(code_sec, func_body)
   bytebuf_push_section(body, 10, code_sec)
 
@@ -1078,14 +1078,14 @@ export let comp_emit_component_wasm_with_string_lift = (
   param_names: Array[String],
   is_async: Int
 ) -> Bytes {
-  let import_names = array_slice([""], 0, 0)
-  let binding_func_names = array_slice([""], 0, 0)
+  let import_names = Array::slice([""], 0, 0)
+  let binding_func_names = Array::slice([""], 0, 0)
   let binding_func_indices = bytebuf_new()
-  let unique_module_names = array_slice([""], 0, 0)
+  let unique_module_names = Array::slice([""], 0, 0)
   let module_binding_counts = bytebuf_new()
-  let comp_params = array_slice([[0]], 0, 0)
-  let comp_param_names = array_slice([array_slice([""], 0, 0)], 0, 0)
-  let comp_results = array_slice([[0]], 0, 0)
+  let comp_params = Array::slice([[0]], 0, 0)
+  let comp_param_names = Array::slice([Array::slice([""], 0, 0)], 0, 0)
+  let comp_results = Array::slice([[0]], 0, 0)
 
   let import_func_count = build_import_plan(
     core_wasm,
@@ -1094,7 +1094,7 @@ export let comp_emit_component_wasm_with_string_lift = (
     comp_params, comp_param_names, comp_results
   )
 
-  let main_instance_idx = array_length(unique_module_names)
+  let main_instance_idx = Array::length(unique_module_names)
   let trampoline_wasm = comp_generate_string_trampoline(string_param_count)
 
   let buf = bytebuf_new()
@@ -1109,13 +1109,13 @@ export let comp_emit_component_wasm_with_string_lift = (
   let async_flags = bytebuf_new()
   let mut af = 0
   while af < import_func_count {
-    array_push(async_flags, 0)
+    Array::push(async_flags, 0)
     af = af + 1
   }
   emit_comp_type_section(buf, comp_params, comp_param_names, comp_results, async_flags)
   emit_comp_import_section(buf, import_names, import_func_count)
   emit_canon_lower_section(buf, import_func_count)
-  emit_core_instance_from_exports(buf, array_length(unique_module_names),
+  emit_core_instance_from_exports(buf, Array::length(unique_module_names),
     module_binding_counts, binding_func_names, binding_func_indices)
 
   // Instantiate module 0 (vibe core)
@@ -1180,8 +1180,8 @@ export let comp_emit_component_wasm_with_string_lift = (
   leb128_encode_u32(type_content, string_param_count)
   let mut pi = 0
   while pi < string_param_count {
-    let pname = if pi < array_length(param_names) { array_get(param_names, pi) }
-    else { string_concat("p", __to_string(pi)) }
+    let pname = if pi < Array::length(param_names) { Array::get(param_names, pi) }
+    else { String::concat("p", __to_string(pi)) }
     emit_name(type_content, pname)
     bytebuf_push(type_content, comp_valtype_string)
     pi = pi + 1

@@ -573,13 +573,13 @@ fn MonoifyContext::tag_for_call(
       } else {
         None
       }
-    "array_map" | "array_filter" =>
+    "Array::map" | "Array::filter" =>
       if pos_args.length() >= 2 {
         self.array_elem_tag_from_expr(pos_args[1].expr)
       } else {
         None
       }
-    "array_fold" =>
+    "Array::fold" =>
       if pos_args.length() >= 2 {
         match self.num_tag_from_expr(pos_args[1].expr) {
           Some(tag) => Some(tag)
@@ -759,10 +759,10 @@ fn has_num_type(ty : @core.Type) -> Bool {
       }
       found
     }
-    @core.Type::Array(inner)
-    | @core.Type::ArrayBuilder(inner) => has_num_type(inner)
-    @core.Type::Map(_key, inner)
-    | @core.Type::MapBuilder(_key, inner) => has_num_type(inner)
+    @core.Type::Array(inner) | @core.Type::ArrayBuilder(inner) =>
+      has_num_type(inner)
+    @core.Type::Map(_key, inner) | @core.Type::MapBuilder(_key, inner) =>
+      has_num_type(inner)
     @core.Type::StringBuilder => false
     @core.Type::Variant(fields) => {
       let mut found = false
@@ -821,11 +821,18 @@ fn replace_num_type(ty : @core.Type, concrete : @core.Type) -> @core.Type {
     }
     @core.Type::Array(inner) =>
       @core.Type::Array(replace_num_type(inner, concrete))
-    @core.Type::Map(key, inner) => @core.Type::Map(replace_num_type(key, concrete), replace_num_type(inner, concrete))
+    @core.Type::Map(key, inner) =>
+      @core.Type::Map(
+        replace_num_type(key, concrete),
+        replace_num_type(inner, concrete),
+      )
     @core.Type::ArrayBuilder(inner) =>
       @core.Type::ArrayBuilder(replace_num_type(inner, concrete))
     @core.Type::MapBuilder(key, inner) =>
-      @core.Type::MapBuilder(replace_num_type(key, concrete), replace_num_type(inner, concrete))
+      @core.Type::MapBuilder(
+        replace_num_type(key, concrete),
+        replace_num_type(inner, concrete),
+      )
     @core.Type::StringBuilder => @core.Type::StringBuilder
     @core.Type::Variant(fields) => {
       let out : Map[String, @core.Type] = {}

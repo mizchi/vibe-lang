@@ -479,7 +479,7 @@ test "vibe wasm compiles handle arm bind patterns" {
     #|handle {
     #|  fail()
     #|} {
-    #|  Error(msg) => string_length(msg)
+    #|  Error(msg) => String::length(msg)
     #|}
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
@@ -604,7 +604,7 @@ test "vibe wasm supports direct vibe/wasm type member calls" {
     #|let b = vibe/wasm/i32::eqz(0)
     #|let c = vibe/wasm/i32::eq(a, 42)
     #|let d = vibe/wasm/f32::add(1.5f, 2.5f)
-    #|if c == 1 { a + b + float_to_int(d) } else { 0 }
+    #|if c == 1 { a + b + Float::to_int(d) } else { 0 }
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
@@ -679,11 +679,11 @@ test "vibe wasm compiles opcode-style helper module source" {
   let src =
     #|let i32_add = (a: i32, b: i32) -> i32 { a + b }
     #|let i32_eqz = (x: i32) -> i32 { if x == 0 { 1 } else 0 }
-    #|let f64_promote_f32 = (x: f32) -> f64 { float_to_double(x) }
+    #|let f64_promote_f32 = (x: f32) -> f64 { Float::to_double(x) }
     #|let run = () -> i32 {
     #|  let n = i32_add(40, 2)
     #|  let z = i32_eqz(0)
-    #|  n + z + double_to_int(f64_promote_f32(1.0f))
+    #|  n + z + Double::to_int(f64_promote_f32(1.0f))
     #|}
     #|run()
   let db = VibeDb::new()
@@ -731,13 +731,13 @@ test "vibe wasm compiles multiple local recursive `go` helpers" {
 test "vibe wasm compiles numeric conversion builtins" {
   let db = VibeDb::new()
   let src =
-    #|let a = int_to_float(42)
-    #|let b = int_to_double(42)
-    #|let c = float_to_int(a)
-    #|let d = double_to_int(b)
-    #|let e = float_to_double(a)
-    #|let f = double_to_float(b)
-    #|c + d + float_to_int(f) + double_to_int(e)
+    #|let a = Int::to_float(42)
+    #|let b = Int::to_double(42)
+    #|let c = Float::to_int(a)
+    #|let d = Double::to_int(b)
+    #|let e = Float::to_double(a)
+    #|let f = Double::to_float(b)
+    #|c + d + Float::to_int(f) + Double::to_int(e)
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
@@ -832,8 +832,8 @@ test "vibe wasm compiles Int pipe-style to_double call" {
   let db = VibeDb::new()
   let src =
     #|let v = 7
-    #|let d = v |> int_to_double
-    #|double_to_int(d)
+    #|let d = v |> Int::to_double
+    #|Double::to_int(d)
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
@@ -849,8 +849,8 @@ test "vibe wasm imports stdio char builtins" {
   let db = VibeDb::new()
   let src =
     #|{
-    #|  stdout_write_char(65)
-    #|  stdin_read_char()
+    #|  Stdout::write_char(65)
+    #|  Stdin::read_char()
     #|}
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
@@ -875,8 +875,8 @@ test "vibe wasm imports stdio stream builtins" {
   let db = VibeDb::new()
   let src =
     #|{
-    #|  stdout_write_stream("hello")
-    #|  stdin_read_stream(8)
+    #|  Stdout::write_stream("hello")
+    #|  Stdin::read_stream(8)
     #|}
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
@@ -901,8 +901,8 @@ test "vibe wasm http builtins default to fallback throw (no host import)" {
   let db = VibeDb::new()
   let src =
     #|{
-    #|  let req = http_request("GET", "https://example.com", "", "")
-    #|  http_response_status(req)
+    #|  let req = Http::request("GET", "https://example.com", "", "")
+    #|  Http::response_status(req)
     #|}
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
@@ -918,9 +918,9 @@ test "vibe wasm can route http builtins to host imports via emit option" {
   let db = VibeDb::new()
   let src =
     #|{
-    #|  let req = http_request("GET", "https://example.com", "", "")
-    #|  let status = http_response_status(req)
-    #|  http_close(req)
+    #|  let req = Http::request("GET", "https://example.com", "", "")
+    #|  let status = Http::response_status(req)
+    #|  Http::close(req)
     #|  status
     #|}
   db.set_source("main", src)
@@ -936,9 +936,9 @@ test "vibe wasm can route http builtins to host imports via emit option" {
     b => b
   }
   assert_true(bytes_contains_ascii(wasm, "vibe:http"))
-  assert_true(bytes_contains_ascii(wasm, "http_request"))
-  assert_true(bytes_contains_ascii(wasm, "http_response_status"))
-  assert_true(bytes_contains_ascii(wasm, "http_close"))
+  assert_true(bytes_contains_ascii(wasm, "Http::request"))
+  assert_true(bytes_contains_ascii(wasm, "Http::response_status"))
+  assert_true(bytes_contains_ascii(wasm, "Http::close"))
   assert_true(bytes_contains_ascii(wasm, "vibe_http_host_string_new"))
 }
 
@@ -950,11 +950,11 @@ test "vibe wasm compiles while with stdio char builtins" {
     #|  {
     #|    let mut i = 0
     #|    while i < 1 {
-    #|      let c = stdin_read_char()
+    #|      let c = Stdin::read_char()
     #|      if c < 0 {
     #|        i = 1
     #|      } else {
-    #|        stdout_write_char(c)
+    #|        Stdout::write_char(c)
     #|        i = i + 1
     #|      }
     #|    }
@@ -973,10 +973,10 @@ test "vibe wasm compiles while with stdio char builtins" {
 }
 
 ///|
-test "vibe wasm compiles string_from_char_code builtin" {
+test "vibe wasm compiles String::from_char_code builtin" {
   let db = VibeDb::new()
   let src =
-    #|string_from_char_code(65)
+    #|String::from_char_code(65)
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
@@ -992,11 +992,11 @@ test "vibe wasm compiles non-js string builtins" {
   let db = VibeDb::new()
   let src =
     #|let s = "ab"
-    #|let len = string_length(s)
-    #|let code = string_char_code_at(s, 1)
-    #|let joined = string_concat(s, "cd")
-    #|let part = string_substring(joined, 1, 3)
-    #|if string_equals(part, "bc") { len + code } else { 0 }
+    #|let len = String::length(s)
+    #|let code = String::char_code_at(s, 1)
+    #|let joined = String::concat(s, "cd")
+    #|let part = String::substring(joined, 1, 3)
+    #|if String::equals(part, "bc") { len + code } else { 0 }
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
@@ -1013,7 +1013,7 @@ test "vibe wasm compiles __to_string builtin" {
   let src =
     #|let s1 = __to_string(42)
     #|let s2 = __to_string(true)
-    #|if string_equals(s1, "42") && string_equals(s2, "true") { 1 } else { 0 }
+    #|if String::equals(s1, "42") && String::equals(s2, "true") { 1 } else { 0 }
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
@@ -1028,12 +1028,12 @@ test "vibe wasm compiles __to_string builtin" {
 test "vibe wasm compiles threads builtin thunks" {
   let db = VibeDb::new()
   let src =
-    #|let probe = () -> String with {Threads} { threads_probe_wat() }
-    #|let new_ch = () -> Int with {Threads} { threads_channel_new(1) }
-    #|let spawn_w = () -> Int with {Threads} { threads_spawn("worker", 1) }
-    #|let send_w = () -> Bool with {Threads} { threads_send(1, "msg") }
-    #|let recv_w = () -> String with {Threads} { threads_recv(1) }
-    #|let wait_w = () -> Int with {Threads} { threads_wait(1) }
+    #|let probe = () -> String with {Threads} { Threads::probe_wat() }
+    #|let new_ch = () -> Int with {Threads} { Threads::channel_new(1) }
+    #|let spawn_w = () -> Int with {Threads} { Threads::spawn("worker", 1) }
+    #|let send_w = () -> Bool with {Threads} { Threads::send(1, "msg") }
+    #|let recv_w = () -> String with {Threads} { Threads::recv(1) }
+    #|let wait_w = () -> Int with {Threads} { Threads::wait(1) }
     #|0
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {

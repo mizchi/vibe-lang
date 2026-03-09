@@ -1316,18 +1316,18 @@ fn decode_tagged_wasm_run_value(tagged : Int64) -> WasmRunValue? {
 ///|
 fn is_http_builtin_name(name : String) -> Bool {
   match name {
-    "http_request"
-    | "http_response_status"
-    | "http_response_header"
-    | "http_response_body"
-    | "http_close"
-    | "http_listen"
-    | "http_accept"
-    | "http_request_method"
-    | "http_request_url"
-    | "http_request_header"
-    | "http_request_body"
-    | "http_respond" => true
+    "Http::request"
+    | "Http::response_status"
+    | "Http::response_header"
+    | "Http::response_body"
+    | "Http::close"
+    | "Http::listen"
+    | "Http::accept"
+    | "Http::request_method"
+    | "Http::request_url"
+    | "Http::request_header"
+    | "Http::request_body"
+    | "Http::respond" => true
     _ => false
   }
 }
@@ -1335,38 +1335,38 @@ fn is_http_builtin_name(name : String) -> Bool {
 ///|
 fn is_wasm_runtime_fallback_builtin_name(name : String) -> Bool {
   match name {
-    "from_json"
-    | "to_json"
-    | "from_jsonl"
-    | "to_jsonl"
-    | "from_lines"
-    | "to_lines"
-    | "json_type"
-    | "json_string"
-    | "json_get"
-    | "json_index"
-    | "json_number"
-    | "json_bool"
-    | "json_is_null"
-    | "json_length"
-    | "json_keys"
-    | "fs_chdir"
-    | "fs_copy"
-    | "fs_readdir"
-    | "fs_is_dir"
-    | "fs_is_file"
-    | "fs_mkdir"
-    | "fs_mkdir_p"
-    | "fs_getcwd"
-    | "fs_remove"
-    | "fs_rename"
-    | "fs_append"
-    | "env_get"
-    | "llm_complete"
-    | "rlm_run"
-    | "rlm_finalize"
-    | "prompt_text"
-    | "prompt_text_to_string"
+    "Json::parse"
+    | "Json::stringify"
+    | "Json::parse_lines"
+    | "Json::stringify_lines"
+    | "Lines::parse"
+    | "Lines::stringify"
+    | "Json::type_of"
+    | "Json::string"
+    | "Json::get"
+    | "Json::index"
+    | "Json::number"
+    | "Json::bool"
+    | "Json::is_null"
+    | "Json::length"
+    | "Json::keys"
+    | "Fs::chdir"
+    | "Fs::copy"
+    | "Fs::readdir"
+    | "Fs::is_dir"
+    | "Fs::is_file"
+    | "Fs::mkdir"
+    | "Fs::mkdir_p"
+    | "Fs::getcwd"
+    | "Fs::remove"
+    | "Fs::rename"
+    | "Fs::append"
+    | "Env::get"
+    | "Llm::complete"
+    | "Rlm::run"
+    | "Rlm::finalize"
+    | "PromptText::new"
+    | "PromptText::to_string"
     | "select"
     | "sh_lines"
     | "__perform"
@@ -2474,8 +2474,7 @@ fn compiled_test_prelude_stmt_defined_names(
     | @vibe_core.Stmt::ExportLet(name~, ..)
     | @vibe_core.Stmt::InternalExportLet(name~, ..)
     | @vibe_core.Stmt::LetMut(name~, ..) => [name]
-    @vibe_core.Stmt::LetPat(pat~, ..)
-    | @vibe_core.Stmt::LetPatElse(pat~, ..) =>
+    @vibe_core.Stmt::LetPat(pat~, ..) | @vibe_core.Stmt::LetPatElse(pat~, ..) =>
       compiled_test_prelude_pattern_bound_names(pat)
     _ => []
   }
@@ -2739,7 +2738,9 @@ fn run_test_file_compiled(
     prelude_stmts,
   )
   let top_level_source = render_stmt_snippets(source, top_level_stmts)
-  let wrapper_prelude_source = render_stmt_snippets(source, wrapper_prelude_stmts)
+  let wrapper_prelude_source = render_stmt_snippets(
+    source, wrapper_prelude_stmts,
+  )
   let parent = @vibe_fs.parent_path(entry)
   let stamp = @env.now().to_string() + "_" + vibe_getpid().to_string()
   let failures : Array[CliTestFailure] = []
@@ -2870,9 +2871,7 @@ fn run_test_file_with_backend(
 }
 
 ///|
-fn compiled_report_has_runtime_import_failures(
-  report : CliTestReport,
-) -> Bool {
+fn compiled_report_has_runtime_import_failures(report : CliTestReport) -> Bool {
   for failure in report.failures {
     if failure.error.contains("unknown import:") ||
       failure.error.contains("has not been defined") {

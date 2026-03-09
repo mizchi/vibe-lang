@@ -19,7 +19,7 @@ let name = "world"
 let msg = "hello \(name)"
 
 test "greeting" {
-  assert(string_equals(msg, "hello world"))
+  assert(String::equals(msg, "hello world"))
 }
 ```
 

@@ -386,7 +386,7 @@ fn infer_expr_kind_with(
       let _ = span
       let name = @core.lower_wasm_intrinsic_name(name)
       let pos_args = extract_positional_exprs(args, name)
-      match @core.normalize_builtin_name(name) {
+      match name {
         "add" | "sub" | "mul" | "div" | "eq" | "lt" => ValueKind::I64
         "__index" => ValueKind::I64
         "__add" | "__sub" | "__mul" | "__div" | "__mod" => {
@@ -436,9 +436,9 @@ fn infer_expr_kind_with(
               raise WasmGenError::BackendLimit(backend~, feature="numeric kind")
           }
         }
-        "int_to_float"
+        "Int::to_float"
         | "f32_convert_i32_s"
-        | "double_to_float"
+        | "Double::to_float"
         | "f32_demote_f64"
         | "f32_neg"
         | "f32_abs"
@@ -448,12 +448,12 @@ fn infer_expr_kind_with(
         | "f32_nearest"
         | "f32_sqrt"
         | "f32_load" => ValueKind::BoxedF32
-        "int_to_double"
+        "Int::to_double"
         | "f64_convert_i32_s"
         | "to_double"
-        | "float_to_double"
+        | "Float::to_double"
         | "f64_promote_f32"
-        | "parse_double"
+        | "Double::parse"
         | "f64_neg"
         | "f64_abs"
         | "f64_ceil"
@@ -462,9 +462,9 @@ fn infer_expr_kind_with(
         | "f64_nearest"
         | "f64_sqrt"
         | "f64_load" => ValueKind::BoxedF64
-        "float_to_int"
+        "Float::to_int"
         | "i32_trunc_f32_s"
-        | "double_to_int"
+        | "Double::to_int"
         | "i32_trunc_f64_s"
         | "i32_eqz"
         | "i32_eq"
@@ -506,68 +506,68 @@ fn infer_expr_kind_with(
           } else {
             ValueKind::I64
           }
-        "string_length" => ValueKind::I64
-        "string_char_code_at" => ValueKind::I64
-        "string_substring" =>
+        "String::length" => ValueKind::I64
+        "String::char_code_at" => ValueKind::I64
+        "String::substring" =>
           if ctx.use_js_strings {
             ValueKind::ExternRef
           } else {
             ValueKind::I64
           }
-        "string_concat" =>
+        "String::concat" =>
           if ctx.use_js_strings {
             ValueKind::ExternRef
           } else {
             ValueKind::I64
           }
-        "string_equals" => ValueKind::I64
-        "array_builder" | "array_builder_freeze" => ValueKind::I64
-        "array_builder_push" | "array_push" | "array_truncate" => ValueKind::I64
+        "String::equals" => ValueKind::I64
+        "ArrayBuilder::new" | "ArrayBuilder::freeze" => ValueKind::I64
+        "ArrayBuilder::push" | "Array::push" | "Array::truncate" =>
+          ValueKind::I64
         "array_new" => ValueKind::I64
         "array_contains_str" => ValueKind::I64
-        "double_to_i64_bits" | "i64_bits_to_double" => ValueKind::I64
+        "Double::to_i64_bits" | "Double::from_i64_bits" => ValueKind::I64
         "string_to_data" => ValueKind::I64
-        "fs_write_bytes" => ValueKind::I64
-        "bytes_from_array" => ValueKind::I64
-        "bytes_length" => ValueKind::I64
-        "bytes_get" => ValueKind::I64
-        "MapBuilder::new" => ValueKind::I64
-        "MapBuilder::freeze" => ValueKind::I64
+        "Fs::write_bytes" => ValueKind::I64
+        "Bytes::from_array" => ValueKind::I64
+        "Bytes::length" => ValueKind::I64
+        "Bytes::get" => ValueKind::I64
+        "MapBuilder::new" | "MapBuilder::freeze" => ValueKind::I64
         "MapBuilder::set" => ValueKind::I64
-        "array_length" => ValueKind::I64
-        "array_get" => ValueKind::I64
-        "map_get" => ValueKind::I64
+        "Array::length" => ValueKind::I64
+        "Array::get" => ValueKind::I64
+        "Map::get" => ValueKind::I64
         "sleep" => ValueKind::I64
-        "stdout_write_char" => ValueKind::I64
-        "stdout_write_stream" => ValueKind::I64
-        "stdin_read_char" => ValueKind::I64
-        "stdin_read_stream" => ValueKind::I64
-        "string_from_char_code" => ValueKind::I64
-        "char_to_int" => ValueKind::I64
-        "char_from_int" => ValueKind::I64
-        "threads_probe_wat" =>
+        "Stdout::write_char" => ValueKind::I64
+        "Stdout::write_stream" => ValueKind::I64
+        "Stdin::read_char" => ValueKind::I64
+        "Stdin::read_stream" => ValueKind::I64
+        "String::from_char_code" => ValueKind::I64
+        "Char::to_int" => ValueKind::I64
+        "Char::from_int" => ValueKind::I64
+        "Threads::probe_wat" =>
           if ctx.use_js_strings {
             ValueKind::ExternRef
           } else {
             ValueKind::I64
           }
-        "threads_runtime_hints" => ValueKind::I64
+        "Threads::runtime_hints" => ValueKind::I64
         "wasm_env" | "wasi_env" =>
           if ctx.use_js_strings {
             ValueKind::ExternRef
           } else {
             ValueKind::I64
           }
-        "threads_channel_new" => ValueKind::I64
-        "threads_spawn" => ValueKind::I64
-        "threads_send" => ValueKind::I64
-        "threads_recv" =>
+        "Threads::channel_new" => ValueKind::I64
+        "Threads::spawn" => ValueKind::I64
+        "Threads::send" => ValueKind::I64
+        "Threads::recv" =>
           if ctx.use_js_strings {
             ValueKind::ExternRef
           } else {
             ValueKind::I64
           }
-        "threads_wait" => ValueKind::I64
+        "Threads::wait" => ValueKind::I64
         _ if ctx.fn_local_sigs.contains(name) =>
           match ctx.fn_local_sigs.get(name) {
             Some(sig) => sig.results[0]
@@ -977,14 +977,14 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "__div" ||
         name == "__mod" ||
         name == "__neg" ||
-        name == "int_to_float" ||
+        name == "Int::to_float" ||
         name == "f32_convert_i32_s" ||
-        name == "int_to_double" ||
+        name == "Int::to_double" ||
         name == "to_double" ||
         name == "f64_convert_i32_s" ||
-        name == "float_to_double" ||
+        name == "Float::to_double" ||
         name == "f64_promote_f32" ||
-        name == "double_to_float" ||
+        name == "Double::to_float" ||
         name == "f32_demote_f64" ||
         name == "f32_neg" ||
         name == "f32_abs" ||
@@ -1002,65 +1002,67 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "f64_sqrt" ||
         name == "f32_load" ||
         name == "f64_load" ||
-        name == "stdout_write_char" ||
-        name == "stdout_write_stream" ||
-        name == "stdin_read_char" ||
-        name == "stdin_read_stream" ||
-        name == "string_substring" ||
-        name == "string_concat" ||
+        name == "Stdout::write_char" ||
+        name == "Stdout::write_stream" ||
+        name == "Stdin::read_char" ||
+        name == "Stdin::read_stream" ||
+        name == "String::substring" ||
+        name == "String::concat" ||
         name == "__to_string" ||
-        name == "string_from_char_code" ||
-        name == "array_slice" ||
-        name == "array_concat" ||
-        name == "array_builder" ||
-        name == "array_builder_push" ||
-        name == "array_builder_freeze" ||
-        name == "array_push" ||
+        name == "String::from_char_code" ||
+        name == "Array::slice" ||
+        name == "Array::concat" ||
+        name == "ArrayBuilder::new" ||
+        name == "ArrayBuilder::push" ||
+        name == "ArrayBuilder::freeze" ||
+        name == "Array::push" ||
         name == "array_new" ||
-        name == "array_truncate" ||
+        name == "Array::truncate" ||
         name == "array_contains_str" ||
-        name == "double_to_i64_bits" ||
-        name == "i64_bits_to_double" ||
+        name == "Double::to_i64_bits" ||
+        name == "Double::from_i64_bits" ||
         name == "string_to_data" ||
-        @core.is_map_builder_builtin_name(name) ||
-        name == "string_builder" ||
-        name == "string_join" ||
-        name == "string_builder_push" ||
-        name == "string_builder_freeze" ||
-        name == "map_keys" ||
-        name == "map_values" ||
-        name == "string_trim" ||
-        name == "string_trim_start" ||
-        name == "string_trim_end" ||
-        name == "string_to_upper" ||
-        name == "string_to_lower" ||
-        name == "string_replace" ||
-        name == "string_replace_all" ||
-        name == "string_split" ||
-        name == "fs_read_file" ||
-        name == "fs_write_file" ||
-        name == "fs_write_bytes" ||
-        name == "bytes_from_array" ||
-        name == "bytes_length" ||
-        name == "bytes_get" ||
-        name == "fs_exists" ||
-        name == "socket_tcp_connect" ||
-        name == "socket_tcp_read" ||
-        name == "socket_tcp_write" ||
-        name == "socket_tcp_close" ||
-        name == "http_request" ||
-        name == "http_response_status" ||
-        name == "http_response_header" ||
-        name == "http_response_body" ||
-        name == "http_close" ||
-        name == "http_listen" ||
-        name == "http_accept" ||
-        name == "http_request_method" ||
-        name == "http_request_url" ||
-        name == "http_request_header" ||
-        name == "http_request_body" ||
-        name == "http_respond" ||
-        name == "parse_double" {
+        name == "MapBuilder::new" ||
+        name == "MapBuilder::set" ||
+        name == "MapBuilder::freeze" ||
+        name == "StringBuilder::new" ||
+        name == "String::join" ||
+        name == "StringBuilder::push" ||
+        name == "StringBuilder::freeze" ||
+        name == "Map::keys" ||
+        name == "Map::values" ||
+        name == "String::trim" ||
+        name == "String::trim_start" ||
+        name == "String::trim_end" ||
+        name == "String::to_upper" ||
+        name == "String::to_lower" ||
+        name == "String::replace" ||
+        name == "String::replace_all" ||
+        name == "String::split" ||
+        name == "Fs::read_file" ||
+        name == "Fs::write_file" ||
+        name == "Fs::write_bytes" ||
+        name == "Bytes::from_array" ||
+        name == "Bytes::length" ||
+        name == "Bytes::get" ||
+        name == "Fs::exists" ||
+        name == "Socket::tcp_connect" ||
+        name == "Socket::tcp_read" ||
+        name == "Socket::tcp_write" ||
+        name == "Socket::tcp_close" ||
+        name == "Http::request" ||
+        name == "Http::response_status" ||
+        name == "Http::response_header" ||
+        name == "Http::response_body" ||
+        name == "Http::close" ||
+        name == "Http::listen" ||
+        name == "Http::accept" ||
+        name == "Http::request_method" ||
+        name == "Http::request_url" ||
+        name == "Http::request_header" ||
+        name == "Http::request_body" ||
+        name == "Http::respond" ||
+        name == "Double::parse" {
         return true
       }
       // User function calls that are lowered to multi-value must be
@@ -1273,7 +1275,7 @@ fn import_index_dynamic_path_resolve(
   if not(ctx.need_dynamic_path_resolve) {
     raise WasmGenError::BackendLimit(
       backend="wasm",
-      feature="dynamic_path_resolve import",
+      feature="Path::resolve import",
     )
   }
   let mut idx = js_import_count(ctx)

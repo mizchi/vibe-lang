@@ -2129,7 +2129,7 @@ fn desugar_string_interp(
     let mut result = parts[0]
     for j in 1..<parts.length() {
       result = @core.Expr::Call(
-        name="string_concat",
+        name="String::concat",
         type_args=[],
         args=[
           @core.CallArg::{ label: None, expr: result, span },

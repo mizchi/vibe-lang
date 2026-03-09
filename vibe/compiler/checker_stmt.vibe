@@ -19,12 +19,12 @@ import ./types.vibe {
 //# Functions
 
 let rec import_cache_lookup = (cache: Array[(String, Type)], name: String, i: Int) -> Option[Type] {
-  if i >= array_length(cache) {
+  if i >= Array::length(cache) {
     None
   }
   else {
-    let (cached_name, cached_ty) = array_get(cache, i)
-    if string_equals(cached_name, name) {
+    let (cached_name, cached_ty) = Array::get(cache, i)
+    if String::equals(cached_name, name) {
       Some(cached_ty)
     }
     else import_cache_lookup(cache, name, i + 1)
@@ -32,10 +32,10 @@ let rec import_cache_lookup = (cache: Array[(String, Type)], name: String, i: In
 }
 
 export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int) -> (TypeEnv, Subst, Int) {
-  if i >= array_length(stmts) {
+  if i >= Array::length(stmts) {
     (env, s, c)
   } else {
-    let stmt = array_get(stmts, i)
+    let stmt = Array::get(stmts, i)
     let (new_env, s1, c1) = match stmt {
       SLet(_, is_rec, name, ann, val) => {
         let (vt, ns, nc) = if is_rec {
@@ -59,36 +59,42 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
       },
       SEnum(_, name, variants) => {
         // Resolve variants and register TDEnum in defs
-        let resolved_variants = array_slice([
-          ("", array_slice([CtUnknown], 0, 0))
+        let resolved_variants = Array::slice([
+          ("", Array::slice([
+            CtUnknown
+          ], 0, 0))
         ], 0, 0)
         let mut vi = 0
-        while vi < array_length(variants) {
-          let (vname, vtypes) = array_get(variants, vi)
-          let resolved_vtypes = array_slice([CtUnknown], 0, 0)
+        while vi < Array::length(variants) {
+          let (vname, vtypes) = Array::get(variants, vi)
+          let resolved_vtypes = Array::slice([
+            CtUnknown
+          ], 0, 0)
           let mut ti = 0
-          while ti < array_length(vtypes) {
-            let vt = resolve_type_expr(array_get(vtypes, ti), defs)
-            array_push(resolved_vtypes, vt)
+          while ti < Array::length(vtypes) {
+            let vt = resolve_type_expr(Array::get(vtypes, ti), defs)
+            Array::push(resolved_vtypes, vt)
             ti = ti + 1
           }
-          array_push(resolved_variants, (vname, resolved_vtypes))
+          Array::push(resolved_variants, (vname, resolved_vtypes))
           vi = vi + 1
         }
-        array_push(defs, TDEnum(name, resolved_variants))
+        Array::push(defs, TDEnum(name, resolved_variants))
         // Bind enum type name
         let mut env1 = env_bind(env, name, CtEnum(name))
         // Bind each variant constructor
         let mut ci2 = 0
-        while ci2 < array_length(variants) {
-          let (vname, vtypes) = array_get(variants, ci2)
-          if eq(array_length(vtypes), 0) {
+        while ci2 < Array::length(variants) {
+          let (vname, vtypes) = Array::get(variants, ci2)
+          if eq(Array::length(vtypes), 0) {
             env1 = env_bind(env1, vname, CtEnum(name))
           } else {
-            let resolved_args = array_slice([CtUnknown], 0, 0)
+            let resolved_args = Array::slice([
+              CtUnknown
+            ], 0, 0)
             let mut ai = 0
-            while ai < array_length(vtypes) {
-              array_push(resolved_args, resolve_type_expr(array_get(vtypes, ai), defs))
+            while ai < Array::length(vtypes) {
+              Array::push(resolved_args, resolve_type_expr(Array::get(vtypes, ai), defs))
               ai = ai + 1
             }
             env1 = env_bind(env1, vname, CtFn(resolved_args, CtEnum(name), false))
@@ -100,23 +106,25 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
       ,
       SStruct(_, name, field_defs) => {
         // Register TDStruct in defs for field type resolution
-        let resolved_fields = array_slice([
+        let resolved_fields = Array::slice([
           ("", CtUnit)
         ], 0, 0)
         let mut fi = 0
-        while fi < array_length(field_defs) {
-          let (fname, ftype_expr) = array_get(field_defs, fi)
+        while fi < Array::length(field_defs) {
+          let (fname, ftype_expr) = Array::get(field_defs, fi)
           let ftype = resolve_type_expr(ftype_expr, defs)
-          array_push(resolved_fields, (fname, ftype))
+          Array::push(resolved_fields, (fname, ftype))
           fi = fi + 1
         }
-        array_push(defs, TDStruct(name, resolved_fields))
+        Array::push(defs, TDStruct(name, resolved_fields))
         // Bind struct constructor as CtFn(field_types, CtStruct(name), false)
-        let field_types = array_slice([CtUnknown], 0, 0)
+        let field_types = Array::slice([
+          CtUnknown
+        ], 0, 0)
         let mut fj = 0
-        while fj < array_length(resolved_fields) {
-          let (_, fty) = array_get(resolved_fields, fj)
-          array_push(field_types, fty)
+        while fj < Array::length(resolved_fields) {
+          let (_, fty) = Array::get(resolved_fields, fj)
+          Array::push(field_types, fty)
           fj = fj + 1
         }
         (env_bind(env, name, CtFn(field_types, CtStruct(name), false)), s, c)
@@ -148,16 +156,16 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
       },
       SImport(_, names) => {
         let env_bindings = env_flat_bindings(env)
-        let import_cache = array_slice([
+        let import_cache = Array::slice([
           ("", CtUnknown)
         ], 0, 0)
-        let nlen = array_length(names)
+        let nlen = Array::length(names)
         let rec bind_imports = (i: Int, acc: TypeEnv) -> TypeEnv {
           if i >= nlen {
             acc
           }
           else {
-            let (name, alias) = array_get(names, i)
+            let (name, alias) = Array::get(names, i)
             let bound_name = match alias {
               Some(a) => a,
               None => name
@@ -169,7 +177,7 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
                   Some(t) => t,
                   None => CtUnknown
                 }
-                array_push(import_cache, (name, resolved))
+                Array::push(import_cache, (name, resolved))
                 resolved
               }
             }
@@ -187,7 +195,7 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
         // Resolve target type
         let target = match resolve_builtin(type_name) {
           Some(t) => t,
-          None => CtNamed(type_name, array_slice([
+          None => CtNamed(type_name, Array::slice([
             CtUnknown
           ], 0, 0))
         }
@@ -201,7 +209,7 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
 }
 
 export let check_program = (stmts: Array[Stmt]) -> TypeEnv {
-  let empty_defs = array_slice([
+  let empty_defs = Array::slice([
     TDAlias("_dummy", CtUnit)
   ], 0, 0)
   let (env, _, _) = check_stmts(stmts, 0, EnvEmpty, empty_defs, SubstEmpty, 0)
@@ -209,7 +217,7 @@ export let check_program = (stmts: Array[Stmt]) -> TypeEnv {
 }
 
 export let check_program_with_env = (stmts: Array[Stmt], initial_env: TypeEnv) -> TypeEnv {
-  let empty_defs = array_slice([
+  let empty_defs = Array::slice([
     TDAlias("_dummy", CtUnit)
   ], 0, 0)
   let (env, _, _) = check_stmts(stmts, 0, initial_env, empty_defs, SubstEmpty, 0)

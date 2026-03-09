@@ -24,15 +24,15 @@ x + y  // => 4.0f
 
 // Double (f64): default decimal literal
 let d = 3.14
-double_floor(d)  // => 3.0
-double_ceil(d)   // => 4.0
-double_abs(-2.5) // => 2.5
+Double::floor(d)  // => 3.0
+Double::ceil(d)   // => 4.0
+Double::abs(-2.5) // => 2.5
 
 // Conversion
-int_to_double(3)     // => 3.0
-double_to_int(3.14)  // => 3
-int_to_float(5)      // => 5.0f
-float_to_double(1.5f) // => 1.5
+Int::to_double(3)     // => 3.0
+Double::to_int(3.14)  // => 3
+Int::to_float(5)      // => 5.0f
+Float::to_double(1.5f) // => 1.5
 ```
 
 ## Variables
@@ -68,18 +68,18 @@ let rec fact = (n: Int) -> Int {
 }
 
 // Lambda (single param, arrow)
-array_map([1, 2, 3], x -> x * 2)
+Array::map([1, 2, 3], x -> x * 2)
 
 // Lambda (multi param)
-array_fold([1, 2, 3], 0, (acc, x) -> acc + x)
+Array::fold([1, 2, 3], 0, (acc, x) -> acc + x)
 
 // Lambda (block body)
-array_map([1, 2, 3], (x) { x + 1 })
+Array::map([1, 2, 3], (x) { x + 1 })
 
 // Placeholder shorthand
-array_map([1, 2, 3], _ * 2)
-array_fold([1, 2, 3], 0, _ + _)
-array_map([1, 2, 3], add(_, 10))
+Array::map([1, 2, 3], _ * 2)
+Array::fold([1, 2, 3], 0, _ + _)
+Array::map([1, 2, 3], add(_, 10))
 ```
 
 ## Generics
@@ -196,10 +196,10 @@ also work as a pure alternative:
 
 ```vibe
 let built = do {
-  let b = array_builder()
-  array_builder_push(b, 1)
-  array_builder_push(b, 2)
-  array_builder_freeze(b)
+  let b = ArrayBuilder::new()
+  ArrayBuilder::push(b, 1)
+  ArrayBuilder::push(b, 2)
+  ArrayBuilder::freeze(b)
 }
 
 // equivalent using for-in
@@ -218,15 +218,15 @@ let sum = "result: \(add(1, 2))" // => "result: 3"
 
 ```vibe
 let result = 1 |> add(2) |> mul(3)   // => 9
-let len = "hello" |> string_length   // => 5
+let len = "hello" |> String::length   // => 5
 ```
 
 ## Pipe-First Call Style
 
 ```vibe
 let s = "hello world"
-let sub = s |> string_substring(0, 5)
-sub |> string_length  // => 5
+let sub = s |> String::substring(0, 5)
+sub |> String::length  // => 5
 ```
 
 ## Type Definitions
@@ -321,7 +321,7 @@ let h = [T](x: T: Eq) -> T { x }
 
 ## Option[T]
 
-Built-in enum for optional values. Returned by `array_find`, optional labeled arguments, etc.
+Built-in enum for optional values. Returned by `Array::find`, optional labeled arguments, etc.
 
 ```vibe
 // Construction
@@ -335,8 +335,8 @@ let value = match x {
 }
 // => 42
 
-// Common usage: array_find
-match array_find([1, 2, 3], (x: Int) -> Bool { x > 1 }) {
+// Common usage: Array::find
+match Array::find([1, 2, 3], (x: Int) -> Bool { x > 1 }) {
   Some(v) => v,    // => 2
   None => -1,
 }
@@ -450,7 +450,7 @@ Selective imports: `import ./file.vibe { name1, name2 }`.
 ```vibe
 test "example" {
   assert(eq(1 + 1, 2))
-  assert(string_equals("a", "a"))
+  assert(String::equals("a", "a"))
 }
 ```
 

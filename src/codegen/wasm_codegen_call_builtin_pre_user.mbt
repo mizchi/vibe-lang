@@ -511,7 +511,7 @@ fn compile_call_builtin_pre_user_inner(
   args : Array[@core.CallArg],
   is_user_fn : Bool,
 ) -> Unit raise WasmGenError {
-  match @core.normalize_builtin_name(name) {
+  match name {
     "sh" => {
       let pos_args = extract_positional_exprs_with_arity(args, "sh", 1)
       compile_expr_i32(ctx, buf, pos_args[0])
@@ -842,7 +842,7 @@ fn compile_call_builtin_pre_user_inner(
         emit_op(buf)
       })
     }
-    "int_to_float" | "f32_convert_i32_s" => {
+    "Int::to_float" | "f32_convert_i32_s" => {
       let pos_args = extract_positional_exprs_with_arity(args, name, 1)
       emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
         compile_expr_i32(ctx, buf, pos_args[0])
@@ -852,7 +852,7 @@ fn compile_call_builtin_pre_user_inner(
         emit_f32_convert_i32_s(buf)
       })
     }
-    "int_to_double" | "f64_convert_i32_s" | "to_double" => {
+    "Int::to_double" | "f64_convert_i32_s" | "to_double" => {
       let pos_args = extract_positional_exprs_with_arity(args, name, 1)
       emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
         compile_expr_i32(ctx, buf, pos_args[0])
@@ -861,7 +861,7 @@ fn compile_call_builtin_pre_user_inner(
         emit_f64_convert_i64_s(buf)
       })
     }
-    "float_to_int" | "i32_trunc_f32_s" => {
+    "Float::to_int" | "i32_trunc_f32_s" => {
       let pos_args = extract_positional_exprs_with_arity(args, name, 1)
       emit_unbox_f32_expr(ctx, buf, pos_args[0])
       emit_i32_trunc_f32_s(buf)
@@ -871,7 +871,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_int.to_int64())
       emit_i64_or(buf)
     }
-    "double_to_int" | "i32_trunc_f64_s" => {
+    "Double::to_int" | "i32_trunc_f64_s" => {
       let pos_args = extract_positional_exprs_with_arity(args, name, 1)
       emit_unbox_f64_expr(ctx, buf, pos_args[0])
       emit_i64_trunc_f64_s(buf)
@@ -880,14 +880,14 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_int.to_int64())
       emit_i64_or(buf)
     }
-    "float_to_double" | "f64_promote_f32" => {
+    "Float::to_double" | "f64_promote_f32" => {
       let pos_args = extract_positional_exprs_with_arity(args, name, 1)
       emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
         emit_unbox_f32_expr(ctx, buf, pos_args[0])
         emit_f64_promote_f32(buf)
       })
     }
-    "double_to_float" | "f32_demote_f64" => {
+    "Double::to_float" | "f32_demote_f64" => {
       let pos_args = extract_positional_exprs_with_arity(args, name, 1)
       emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
         emit_unbox_f64_expr(ctx, buf, pos_args[0])
@@ -895,9 +895,9 @@ fn compile_call_builtin_pre_user_inner(
       })
     }
     // ========== Integer math builtins ==========
-    "int_abs" if not(is_user_fn) => {
+    "Int::abs" if not(is_user_fn) => {
       // int_abs(x): if x < 0 then -x else x (operates on tagged i64 directly)
-      let pos_args = extract_positional_exprs_with_arity(args, "int_abs", 1)
+      let pos_args = extract_positional_exprs_with_arity(args, "Int::abs", 1)
       let tmp = alloc_temp_local_with_kind(ctx, ValueKind::I64)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_local_tee(buf, tmp) // stack: x, tmp = x
@@ -911,9 +911,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_end(buf) // end if
       emit_local_get(buf, tmp)
     }
-    "int_max" if not(is_user_fn) => {
+    "Int::max" if not(is_user_fn) => {
       // int_max(a, b): works directly on tagged i64 values
-      let pos_args = extract_positional_exprs_with_arity(args, "int_max", 2)
+      let pos_args = extract_positional_exprs_with_arity(args, "Int::max", 2)
       let a_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
       let b_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
       compile_expr_i32(ctx, buf, pos_args[0])
@@ -928,9 +928,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_gt_s(buf) // a > b → 1:i32
       emit_select(buf) // select(a, b, a>b) → a if a>b else b
     }
-    "int_min" if not(is_user_fn) => {
+    "Int::min" if not(is_user_fn) => {
       // int_min(a, b): works directly on tagged i64 values
-      let pos_args = extract_positional_exprs_with_arity(args, "int_min", 2)
+      let pos_args = extract_positional_exprs_with_arity(args, "Int::min", 2)
       let a_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
       let b_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
       compile_expr_i32(ctx, buf, pos_args[0])
@@ -944,9 +944,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_lt_s(buf) // a < b → 1:i32
       emit_select(buf) // select(a, b, a<b) → a if a<b else b
     }
-    "int_clamp" if not(is_user_fn) => {
+    "Int::clamp" if not(is_user_fn) => {
       // int_clamp(x, lo, hi): max(lo, min(x, hi))
-      let pos_args = extract_positional_exprs_with_arity(args, "int_clamp", 3)
+      let pos_args = extract_positional_exprs_with_arity(args, "Int::clamp", 3)
       let x_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
       let lo_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
       let hi_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
@@ -972,9 +972,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_gt_s(buf)
       emit_select(buf) // max(lo, min(x, hi))
     }
-    "int_signum" if not(is_user_fn) => {
+    "Int::signum" if not(is_user_fn) => {
       // int_signum(x): -1 if x<0, 0 if x==0, 1 if x>0
-      let pos_args = extract_positional_exprs_with_arity(args, "int_signum", 1)
+      let pos_args = extract_positional_exprs_with_arity(args, "Int::signum", 1)
       let tmp = alloc_temp_local_with_kind(ctx, ValueKind::I64)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_local_set(buf, tmp)
@@ -1004,9 +1004,11 @@ fn compile_call_builtin_pre_user_inner(
       emit_end(buf) // end outer if
       emit_local_get(buf, tmp)
     }
-    "int_is_even" if not(is_user_fn) => {
+    "Int::is_even" if not(is_user_fn) => {
       // int_is_even(x): ((x >> 2) & 1) == 0 → tagged bool
-      let pos_args = extract_positional_exprs_with_arity(args, "int_is_even", 1)
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Int::is_even", 1,
+      )
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, 2L)
       emit_i64_shr_s(buf) // untag
@@ -1019,9 +1021,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_bool.to_int64())
       emit_i64_or(buf) // tag as bool
     }
-    "int_is_odd" if not(is_user_fn) => {
+    "Int::is_odd" if not(is_user_fn) => {
       // int_is_odd(x): ((x >> 2) & 1) == 1 → tagged bool
-      let pos_args = extract_positional_exprs_with_arity(args, "int_is_odd", 1)
+      let pos_args = extract_positional_exprs_with_arity(args, "Int::is_odd", 1)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, 2L)
       emit_i64_shr_s(buf) // untag
@@ -1405,13 +1407,13 @@ fn compile_call_builtin_pre_user_inner(
         buf.push((11).to_byte()) // end if
       }
     }
-    "threads_probe_wat" => {
-      let _ = extract_positional_exprs_with_arity(args, "threads_probe_wat", 0)
+    "Threads::probe_wat" => {
+      let _ = extract_positional_exprs_with_arity(args, "Threads::probe_wat", 0)
       emit_string_const(ctx, buf, "(module)")
     }
-    "threads_runtime_hints" => {
+    "Threads::runtime_hints" => {
       let _ = extract_positional_exprs_with_arity(
-        args, "threads_runtime_hints", 0,
+        args, "Threads::runtime_hints", 0,
       )
       emit_i64_const_tagged(buf, 0L)
     }
@@ -1427,9 +1429,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_drop(buf)
       emit_string_const(ctx, buf, "threads=y")
     }
-    "threads_channel_new" => {
+    "Threads::channel_new" => {
       let pos_args = extract_positional_exprs_with_arity(
-        args, "threads_channel_new", 1,
+        args, "Threads::channel_new", 1,
       )
       let cap_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
@@ -1452,17 +1454,17 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_int.to_int64())
       emit_i64_or(buf)
     }
-    "threads_spawn" => {
+    "Threads::spawn" => {
       let pos_args = extract_positional_exprs_with_arity(
-        args, "threads_spawn", 2,
+        args, "Threads::spawn", 2,
       )
       compile_expr(ctx, buf, pos_args[0])
       emit_drop(buf)
       compile_expr_i32(ctx, buf, pos_args[1])
     }
-    "threads_send" => {
+    "Threads::send" => {
       let pos_args = extract_positional_exprs_with_arity(
-        args, "threads_send", 2,
+        args, "Threads::send", 2,
       )
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_drop(buf)
@@ -1470,23 +1472,23 @@ fn compile_call_builtin_pre_user_inner(
       emit_drop(buf)
       emit_i64_const_raw(buf, tag_bool_value64(true))
     }
-    "threads_recv" => {
+    "Threads::recv" => {
       let pos_args = extract_positional_exprs_with_arity(
-        args, "threads_recv", 1,
+        args, "Threads::recv", 1,
       )
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_drop(buf)
       emit_string_const(ctx, buf, "")
     }
-    "threads_wait" => {
+    "Threads::wait" => {
       let pos_args = extract_positional_exprs_with_arity(
-        args, "threads_wait", 1,
+        args, "Threads::wait", 1,
       )
       compile_expr_i32(ctx, buf, pos_args[0])
     }
-    "string_length" => {
+    "String::length" => {
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_length", 1,
+        args, "String::length", 1,
       )
       if ctx.use_js_strings {
         ctx.need_js_length = true
@@ -1509,9 +1511,9 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
-    "string_char_code_at" => {
+    "String::char_code_at" => {
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_char_code_at", 2,
+        args, "String::char_code_at", 2,
       )
       if ctx.use_js_strings {
         ctx.need_js_char_code_at = true
@@ -1565,12 +1567,12 @@ fn compile_call_builtin_pre_user_inner(
         buf.push((11).to_byte()) // end if
       }
     }
-    "parse_int" => {
+    "Int::parse" => {
       // parse_int(s: String) -> Int
       // Iterate string bytes, accumulate digits, handle optional sign.
-      let pos_args = extract_positional_exprs_with_arity(args, "parse_int", 1)
+      let pos_args = extract_positional_exprs_with_arity(args, "Int::parse", 1)
       if ctx.use_js_strings {
-        raise WasmGenError::Unsupported("parse_int with js strings")
+        raise WasmGenError::Unsupported("Int::parse with js strings")
       } else {
         // Native string mode: byte-iterate and accumulate
         let str_ptr_local = alloc_temp_local(ctx) // base pointer
@@ -1717,14 +1719,14 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
-    "parse_double" => {
+    "Double::parse" => {
       // parse_double(s: String) -> Double
       // Parse integer + fractional parts, box result as f64 object.
       let pos_args = extract_positional_exprs_with_arity(
-        args, "parse_double", 1,
+        args, "Double::parse", 1,
       )
       if ctx.use_js_strings {
-        raise WasmGenError::Unsupported("parse_double with js strings")
+        raise WasmGenError::Unsupported("Double::parse with js strings")
       } else {
         // Native string mode: byte-iterate and accumulate
         let str_ptr_local = alloc_temp_local(ctx)
@@ -1945,9 +1947,9 @@ fn compile_call_builtin_pre_user_inner(
         })
       }
     }
-    "string_substring" => {
+    "String::substring" => {
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_substring", 3,
+        args, "String::substring", 3,
       )
       if ctx.use_js_strings {
         ctx.need_js_substring = true
@@ -2078,9 +2080,9 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
-    "string_concat" => {
+    "String::concat" => {
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_concat", 2,
+        args, "String::concat", 2,
       )
       if ctx.use_js_strings {
         ctx.need_js_concat = true
@@ -2186,12 +2188,14 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
-    "string_join" => {
-      let pos_args = extract_positional_exprs_with_arity(args, "string_join", 2)
+    "String::join" => {
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "String::join", 2,
+      )
       if ctx.use_js_strings {
         raise WasmGenError::BackendLimit(
           backend="wasm-js-string",
-          feature="string_join",
+          feature="String::join",
         )
       } else {
         require_heap(ctx)
@@ -2396,9 +2400,9 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
-    "string_equals" => {
+    "String::equals" => {
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_equals", 2,
+        args, "String::equals", 2,
       )
       if ctx.use_js_strings {
         ctx.need_js_equals = true
@@ -2493,15 +2497,15 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
-    "string_index_of" => {
+    "String::index_of" => {
       // string_index_of(str, sub) -> Int (byte offset or -1)
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_index_of", 2,
+        args, "String::index_of", 2,
       )
       if ctx.use_js_strings {
         raise WasmGenError::BackendLimit(
           backend="wasm-js-string",
-          feature="string_index_of",
+          feature="String::index_of",
         )
       } else {
         let str_ptr = alloc_temp_local(ctx)
@@ -2616,16 +2620,16 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
-    "string_contains" if not(is_user_fn) => {
+    "String::contains" if not(is_user_fn) => {
       // string_contains(str, sub) -> Bool
       // Reuses the same substring search as string_index_of but returns bool.
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_contains", 2,
+        args, "String::contains", 2,
       )
       if ctx.use_js_strings {
         raise WasmGenError::BackendLimit(
           backend="wasm-js-string",
-          feature="string_contains",
+          feature="String::contains",
         )
       } else {
         let str_ptr = alloc_temp_local(ctx)
@@ -2740,14 +2744,14 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
-    "string_starts_with" if not(is_user_fn) => {
+    "String::starts_with" if not(is_user_fn) => {
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_starts_with", 2,
+        args, "String::starts_with", 2,
       )
       if ctx.use_js_strings {
         raise WasmGenError::BackendLimit(
           backend="wasm-js-string",
-          feature="string_starts_with",
+          feature="String::starts_with",
         )
       } else {
         let str_ptr_local = alloc_temp_local(ctx)
@@ -2824,14 +2828,14 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
-    "string_ends_with" if not(is_user_fn) => {
+    "String::ends_with" if not(is_user_fn) => {
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_ends_with", 2,
+        args, "String::ends_with", 2,
       )
       if ctx.use_js_strings {
         raise WasmGenError::BackendLimit(
           backend="wasm-js-string",
-          feature="string_ends_with",
+          feature="String::ends_with",
         )
       } else {
         let str_ptr_local = alloc_temp_local(ctx)
@@ -2915,14 +2919,14 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
-    "string_last_index_of" if not(is_user_fn) => {
+    "String::last_index_of" if not(is_user_fn) => {
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_last_index_of", 2,
+        args, "String::last_index_of", 2,
       )
       if ctx.use_js_strings {
         raise WasmGenError::BackendLimit(
           backend="wasm-js-string",
-          feature="string_last_index_of",
+          feature="String::last_index_of",
         )
       } else {
         let str_ptr_local = alloc_temp_local(ctx)
@@ -3035,15 +3039,15 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
-    "string_count" if not(is_user_fn) => {
+    "String::count" if not(is_user_fn) => {
       // string_count(str, sub) -> Int (non-overlapping count)
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_count", 2,
+        args, "String::count", 2,
       )
       if ctx.use_js_strings {
         raise WasmGenError::BackendLimit(
           backend="wasm-js-string",
-          feature="string_count",
+          feature="String::count",
         )
       } else {
         let str_ptr = alloc_temp_local(ctx)
@@ -3170,13 +3174,15 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
-    "string_trim" if not(is_user_fn) => {
+    "String::trim" if not(is_user_fn) => {
       // string_trim(str) -> String (trim ASCII whitespace from both ends)
-      let pos_args = extract_positional_exprs_with_arity(args, "string_trim", 1)
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "String::trim", 1,
+      )
       if ctx.use_js_strings {
         raise WasmGenError::BackendLimit(
           backend="wasm-js-string",
-          feature="string_trim",
+          feature="String::trim",
         )
       } else {
         require_heap(ctx)
@@ -3306,15 +3312,15 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
-    "string_trim_start" if not(is_user_fn) => {
+    "String::trim_start" if not(is_user_fn) => {
       // string_trim_start(str) -> String (trim leading whitespace)
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_trim_start", 1,
+        args, "String::trim_start", 1,
       )
       if ctx.use_js_strings {
         raise WasmGenError::BackendLimit(
           backend="wasm-js-string",
-          feature="string_trim_start",
+          feature="String::trim_start",
         )
       } else {
         require_heap(ctx)
@@ -3413,15 +3419,15 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
-    "string_trim_end" if not(is_user_fn) => {
+    "String::trim_end" if not(is_user_fn) => {
       // string_trim_end(str) -> String (trim trailing whitespace)
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_trim_end", 1,
+        args, "String::trim_end", 1,
       )
       if ctx.use_js_strings {
         raise WasmGenError::BackendLimit(
           backend="wasm-js-string",
-          feature="string_trim_end",
+          feature="String::trim_end",
         )
       } else {
         require_heap(ctx)
@@ -3514,15 +3520,15 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
-    "string_to_upper" if not(is_user_fn) => {
+    "String::to_upper" if not(is_user_fn) => {
       // string_to_upper(str) -> String (convert ASCII lowercase to uppercase)
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_to_upper", 1,
+        args, "String::to_upper", 1,
       )
       if ctx.use_js_strings {
         raise WasmGenError::BackendLimit(
           backend="wasm-js-string",
-          feature="string_to_upper",
+          feature="String::to_upper",
         )
       } else {
         require_heap(ctx)
@@ -3611,15 +3617,15 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
-    "string_to_lower" if not(is_user_fn) => {
+    "String::to_lower" if not(is_user_fn) => {
       // string_to_lower(str) -> String (convert ASCII uppercase to lowercase)
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_to_lower", 1,
+        args, "String::to_lower", 1,
       )
       if ctx.use_js_strings {
         raise WasmGenError::BackendLimit(
           backend="wasm-js-string",
-          feature="string_to_lower",
+          feature="String::to_lower",
         )
       } else {
         require_heap(ctx)
@@ -3708,49 +3714,49 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
-    "string_replace" if not(is_user_fn) => {
+    "String::replace" if not(is_user_fn) => {
       // string_replace(str, pattern, replacement) -> String (replace first occurrence)
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_replace", 3,
+        args, "String::replace", 3,
       )
       if ctx.use_js_strings {
         raise WasmGenError::BackendLimit(
           backend="wasm-js-string",
-          feature="string_replace",
+          feature="String::replace",
         )
       } else {
         emit_string_replace_impl(ctx, buf, pos_args, replace_all=false)
       }
     }
-    "string_replace_all" if not(is_user_fn) => {
+    "String::replace_all" if not(is_user_fn) => {
       // string_replace_all(str, pattern, replacement) -> String (replace all occurrences)
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_replace_all", 3,
+        args, "String::replace_all", 3,
       )
       if ctx.use_js_strings {
         raise WasmGenError::BackendLimit(
           backend="wasm-js-string",
-          feature="string_replace_all",
+          feature="String::replace_all",
         )
       } else {
         emit_string_replace_impl(ctx, buf, pos_args, replace_all=true)
       }
     }
-    "string_split" if not(is_user_fn) => {
+    "String::split" if not(is_user_fn) => {
       // string_split(str, delimiter) -> Array[String]
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_split", 2,
+        args, "String::split", 2,
       )
       if ctx.use_js_strings {
         raise WasmGenError::BackendLimit(
           backend="wasm-js-string",
-          feature="string_split",
+          feature="String::split",
         )
       } else {
         emit_string_split_impl(ctx, buf, pos_args)
       }
     }
-    "string_builder" => {
+    "StringBuilder::new" => {
       // string_builder() -> allocate empty array obj with len=0 (same layout as array_builder)
       let max_cap = 4096
       require_heap(ctx)
@@ -3768,10 +3774,10 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_obj.to_int64())
       emit_i64_or(buf)
     }
-    "string_builder_push" => {
+    "StringBuilder::push" => {
       // string_builder_push(builder, value) -> same layout as array_builder_push
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_builder_push", 2,
+        args, "StringBuilder::push", 2,
       )
       let builder_local = alloc_temp_local(ctx)
       let ptr_local = alloc_temp_local(ctx)
@@ -3801,11 +3807,11 @@ fn compile_call_builtin_pre_user_inner(
       // return unit
       emit_i64_const_tagged(buf, 0L)
     }
-    "string_builder_freeze" => {
+    "StringBuilder::freeze" => {
       // string_builder_freeze(builder) -> concatenate all stored strings
       // Two-pass: 1) sum total byte length, 2) allocate and copy
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_builder_freeze", 1,
+        args, "StringBuilder::freeze", 1,
       )
       require_heap(ctx)
       let builder_ptr = alloc_temp_local(ctx)
@@ -3949,7 +3955,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_obj.to_int64())
       emit_i64_or(buf)
     }
-    "array_builder" => {
+    "ArrayBuilder::new" => {
       // array_builder() -> allocate empty array obj with len=0
       // Reserve max_capacity * 4 bytes after header for future pushes
       // NOTE: array_builder_push has no bounds check/realloc — this max_cap must
@@ -3971,10 +3977,10 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_obj.to_int64())
       emit_i64_or(buf)
     }
-    "array_builder_push" => {
+    "ArrayBuilder::push" => {
       // array_builder_push(builder, value) -> store value at [builder + 8 + len*4], increment len
       let pos_args = extract_positional_exprs_with_arity(
-        args, "array_builder_push", 2,
+        args, "ArrayBuilder::push", 2,
       )
       let builder_local = alloc_temp_local(ctx)
       let ptr_local = alloc_temp_local(ctx)
@@ -4005,16 +4011,16 @@ fn compile_call_builtin_pre_user_inner(
       // return unit
       emit_i64_const_tagged(buf, 0L)
     }
-    "array_builder_freeze" => {
+    "ArrayBuilder::freeze" => {
       // array_builder_freeze(builder) -> return builder as-is (it is already an array obj)
       let pos_args = extract_positional_exprs_with_arity(
-        args, "array_builder_freeze", 1,
+        args, "ArrayBuilder::freeze", 1,
       )
       compile_expr_i32(ctx, buf, pos_args[0])
     }
-    "array_push" => {
+    "Array::push" => {
       // array_push(arr, value) -> same as array_builder_push (arrays share layout)
-      let pos_args = extract_positional_exprs_with_arity(args, "array_push", 2)
+      let pos_args = extract_positional_exprs_with_arity(args, "Array::push", 2)
       let builder_local = alloc_temp_local(ctx)
       let ptr_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
@@ -4114,10 +4120,10 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_obj.to_int64())
       emit_i64_or(buf)
     }
-    "array_truncate" => {
+    "Array::truncate" => {
       // array_truncate(arr, new_len) -> set arr.len = new_len
       let pos_args = extract_positional_exprs_with_arity(
-        args, "array_truncate", 2,
+        args, "Array::truncate", 2,
       )
       let ptr_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
@@ -4277,10 +4283,10 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf)
     }
-    "double_to_i64_bits" => {
+    "Double::to_i64_bits" => {
       // double_to_i64_bits(f64_tagged) -> i64 raw bits as tagged int
       let pos_args = extract_positional_exprs_with_arity(
-        args, "double_to_i64_bits", 1,
+        args, "Double::to_i64_bits", 1,
       )
       compile_expr_i32(ctx, buf, pos_args[0])
       // The value is an i64 that is actually f64 bits reinterpreted
@@ -4288,12 +4294,12 @@ fn compile_call_builtin_pre_user_inner(
       // We just need to return the raw bits as-is (already i64)
       // No tagging needed since this is used for raw bit manipulation
     }
-    "i64_bits_to_double" => {
+    "Double::from_i64_bits" => {
       // i64_bits_to_double(int_tagged) -> boxed f64
       // Takes a tagged int, untags it to get raw i64 bits,
       // reinterprets those bits as f64, and boxes the result.
       let pos_args = extract_positional_exprs_with_arity(
-        args, "i64_bits_to_double", 1,
+        args, "Double::from_i64_bits", 1,
       )
       emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
         compile_expr_i32(ctx, buf, pos_args[0])
@@ -4386,7 +4392,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_or(buf)
     }
     "MapBuilder::new" => {
-      // MapBuilder::new() -> allocate empty map obj with len=0
+      // map_builder() -> allocate empty map obj with len=0
       let max_cap = 128
       require_heap(ctx)
       let size = align4(8 + max_cap * 8)
@@ -4404,7 +4410,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_or(buf)
     }
     "MapBuilder::set" => {
-      // MapBuilder::set(builder, key, value) -> overwrite existing key or append new pair
+      // map_builder_set(builder, key, value) -> overwrite existing key or append new pair
       let pos_args = extract_positional_exprs_with_arity(
         args, "MapBuilder::set", 3,
       )
@@ -4591,12 +4597,7 @@ fn compile_call_builtin_pre_user_inner(
         emit_i32_add(buf)
         emit_i32_load(buf, 8) // key
         emit_local_set(buf, entry_key_local)
-        emit_non_js_string_ptr_equals_i32(
-          ctx,
-          buf,
-          entry_key_local,
-          key_local,
-        )
+        emit_non_js_string_ptr_equals_i32(ctx, buf, entry_key_local, key_local)
         buf.push((4).to_byte()) // if
         buf.push((64).to_byte()) // void
         emit_local_get(buf, loop_i)
@@ -4650,15 +4651,17 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_tagged(buf, 0L)
     }
     "MapBuilder::freeze" => {
-      // MapBuilder::freeze(builder) -> return builder as-is (it is already a map obj)
+      // map_builder_freeze(builder) -> return builder as-is (it is already a map obj)
       let pos_args = extract_positional_exprs_with_arity(
         args, "MapBuilder::freeze", 1,
       )
       compile_expr_i32(ctx, buf, pos_args[0])
     }
-    "map_has_key" => {
+    "Map::has_key" => {
       // map_has_key(map, key) -> linear search for key, return tagged bool
-      let pos_args = extract_positional_exprs_with_arity(args, "map_has_key", 2)
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Map::has_key", 2,
+      )
       let map_ptr = alloc_temp_local(ctx)
       let map_len = alloc_temp_local(ctx)
       let loop_i = alloc_temp_local(ctx)
@@ -4767,12 +4770,7 @@ fn compile_call_builtin_pre_user_inner(
         emit_i32_add(buf)
         emit_i32_load(buf, 8) // key
         emit_local_set(buf, entry_key_local)
-        emit_non_js_string_ptr_equals_i32(
-          ctx,
-          buf,
-          entry_key_local,
-          key_local,
-        )
+        emit_non_js_string_ptr_equals_i32(ctx, buf, entry_key_local, key_local)
         buf.push((4).to_byte()) // if
         buf.push((64).to_byte()) // void
         emit_i32_const_raw(buf, 1)
@@ -4795,9 +4793,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_bool.to_int64())
       emit_i64_or(buf)
     }
-    "map_keys" => {
+    "Map::keys" => {
       // map_keys(map) -> allocate new array with keys from map
-      let pos_args = extract_positional_exprs_with_arity(args, "map_keys", 1)
+      let pos_args = extract_positional_exprs_with_arity(args, "Map::keys", 1)
       require_heap(ctx)
       let map_ptr = alloc_temp_local(ctx)
       let map_len = alloc_temp_local(ctx)
@@ -4871,9 +4869,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_obj.to_int64())
       emit_i64_or(buf)
     }
-    "map_values" => {
+    "Map::values" => {
       // map_values(map) -> allocate new array with values from map
-      let pos_args = extract_positional_exprs_with_arity(args, "map_values", 1)
+      let pos_args = extract_positional_exprs_with_arity(args, "Map::values", 1)
       require_heap(ctx)
       let map_ptr = alloc_temp_local(ctx)
       let map_len = alloc_temp_local(ctx)
@@ -4931,10 +4929,10 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_obj.to_int64())
       emit_i64_or(buf)
     }
-    "array_length" => {
+    "Array::length" => {
       // array_length(arr) -> load len field, shift left 2 (tag as int)
       let pos_args = extract_positional_exprs_with_arity(
-        args, "array_length", 1,
+        args, "Array::length", 1,
       )
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, (-4).to_int64())
@@ -4988,9 +4986,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_load(buf, 8)
       emit_i64_extend_i32_s(buf)
     }
-    "array_get" => {
+    "Array::get" => {
       // array_get(arr, idx) -> load arr[idx]
-      let pos_args = extract_positional_exprs_with_arity(args, "array_get", 2)
+      let pos_args = extract_positional_exprs_with_arity(args, "Array::get", 2)
       let ptr_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, (-4).to_int64())
@@ -5009,9 +5007,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_load(buf, 8)
       emit_i64_extend_i32_s(buf)
     }
-    "array_set" => {
+    "Array::set" => {
       // array_set(arr, idx, value) -> arr[idx] = value
-      let pos_args = extract_positional_exprs_with_arity(args, "array_set", 3)
+      let pos_args = extract_positional_exprs_with_arity(args, "Array::set", 3)
       let ptr_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, (-4).to_int64())
@@ -5150,9 +5148,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_store(buf, 8)
       emit_local_get(buf, value_local)
     }
-    "map_get" => {
+    "Map::get" => {
       // map_get(map, key) -> linear search for key, return value
-      let pos_args = extract_positional_exprs_with_arity(args, "map_get", 2)
+      let pos_args = extract_positional_exprs_with_arity(args, "Map::get", 2)
       let map_ptr = alloc_temp_local(ctx)
       let map_len = alloc_temp_local(ctx)
       let loop_i = alloc_temp_local(ctx)
@@ -5282,12 +5280,7 @@ fn compile_call_builtin_pre_user_inner(
         emit_i32_add(buf)
         emit_i32_load(buf, 8) // key
         emit_local_set(buf, entry_key_local)
-        emit_non_js_string_ptr_equals_i32(
-          ctx,
-          buf,
-          entry_key_local,
-          key_local,
-        )
+        emit_non_js_string_ptr_equals_i32(ctx, buf, entry_key_local, key_local)
         buf.push((4).to_byte()) // if
         buf.push((64).to_byte()) // void
         emit_local_get(buf, map_ptr)
@@ -5321,9 +5314,9 @@ fn compile_call_builtin_pre_user_inner(
       // Return Unit (tagged 0)
       emit_i64_const_raw(buf, tag_int_value64(0L))
     }
-    "stdout_write_char" => {
+    "Stdout::write_char" => {
       let pos_args = extract_positional_exprs_with_arity(
-        args, "stdout_write_char", 1,
+        args, "Stdout::write_char", 1,
       )
       require_heap(ctx)
       let code_local = alloc_temp_local(ctx)
@@ -5350,14 +5343,14 @@ fn compile_call_builtin_pre_user_inner(
       emit_call(buf, import_index_stdout_write_stream(ctx))
       emit_i64_const_raw(buf, tag_int_value64(0L))
     }
-    "stdout_write_stream" => {
+    "Stdout::write_stream" => {
       if ctx.use_js_strings {
         raise WasmGenError::Unsupported(
-          "stdout_write_stream requires --wasm backend",
+          "Stdout::write_stream requires --wasm backend",
         )
       }
       let pos_args = extract_positional_exprs_with_arity(
-        args, "stdout_write_stream", 1,
+        args, "Stdout::write_stream", 1,
       )
       require_heap(ctx)
       let raw_local = alloc_temp_local(ctx)
@@ -5391,8 +5384,8 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_int_value64(0L))
       buf.push((11).to_byte()) // end if
     }
-    "stdin_read_char" => {
-      let _ = extract_positional_exprs_with_arity(args, "stdin_read_char", 0)
+    "Stdin::read_char" => {
+      let _ = extract_positional_exprs_with_arity(args, "Stdin::read_char", 0)
       require_heap(ctx)
       let in_stream_local = alloc_temp_local(ctx)
       let ret_area_local = alloc_temp_local(ctx)
@@ -5446,14 +5439,14 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_int_value64(-1L))
       buf.push((11).to_byte()) // end if
     }
-    "stdin_read_stream" => {
+    "Stdin::read_stream" => {
       if ctx.use_js_strings {
         raise WasmGenError::Unsupported(
-          "stdin_read_stream requires --wasm backend",
+          "Stdin::read_stream requires --wasm backend",
         )
       }
       let pos_args = extract_positional_exprs_with_arity(
-        args, "stdin_read_stream", 1,
+        args, "Stdin::read_stream", 1,
       )
       require_heap(ctx)
       let in_stream_local = alloc_temp_local(ctx)
@@ -5562,11 +5555,11 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_or(buf)
       buf.push((11).to_byte()) // end if
     }
-    "fs_exists" => {
+    "Fs::exists" => {
       if ctx.use_js_strings {
-        raise WasmGenError::Unsupported("fs_exists requires --wasm backend")
+        raise WasmGenError::Unsupported("Fs::exists requires --wasm backend")
       }
-      let pos_args = extract_positional_exprs_with_arity(args, "fs_exists", 1)
+      let pos_args = extract_positional_exprs_with_arity(args, "Fs::exists", 1)
       require_heap(ctx)
       let raw_local = alloc_temp_local(ctx)
       let len_local = alloc_temp_local(ctx)
@@ -5631,12 +5624,12 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_int_value64(0L)) // false
       buf.push((11).to_byte()) // end if
     }
-    "fs_read_file" => {
+    "Fs::read_file" => {
       if ctx.use_js_strings {
-        raise WasmGenError::Unsupported("fs_read_file requires --wasm backend")
+        raise WasmGenError::Unsupported("Fs::read_file requires --wasm backend")
       }
       let pos_args = extract_positional_exprs_with_arity(
-        args, "fs_read_file", 1,
+        args, "Fs::read_file", 1,
       )
       require_heap(ctx)
       let raw_local = alloc_temp_local(ctx)
@@ -5821,12 +5814,14 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_or(buf)
       buf.push((11).to_byte()) // end if (open)
     }
-    "fs_write_file" => {
+    "Fs::write_file" => {
       if ctx.use_js_strings {
-        raise WasmGenError::Unsupported("fs_write_file requires --wasm backend")
+        raise WasmGenError::Unsupported(
+          "Fs::write_file requires --wasm backend",
+        )
       }
       let pos_args = extract_positional_exprs_with_arity(
-        args, "fs_write_file", 2,
+        args, "Fs::write_file", 2,
       )
       require_heap(ctx)
       let path_raw_local = alloc_temp_local(ctx)
@@ -5937,19 +5932,19 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_int_value64(0L))
       buf.push((11).to_byte()) // end if
     }
-    "bytes_from_array" => {
+    "Bytes::from_array" => {
       // bytes_from_array(arr) -> Bytes (same representation as array in WASM)
       // In linear memory backend, Bytes = Array[Int] with same layout, so just return as-is
       let pos_args = extract_positional_exprs_with_arity(
-        args, "bytes_from_array", 1,
+        args, "Bytes::from_array", 1,
       )
       compile_expr_i32(ctx, buf, pos_args[0])
     }
-    "bytes_length" => {
+    "Bytes::length" => {
       // bytes_length(bytes) -> Int (tagged)
       // Same as array_length - read len field from obj header
       let pos_args = extract_positional_exprs_with_arity(
-        args, "bytes_length", 1,
+        args, "Bytes::length", 1,
       )
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, (-4).to_int64())
@@ -5960,10 +5955,10 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf) // tag as int
     }
-    "bytes_get" => {
+    "Bytes::get" => {
       // bytes_get(bytes, idx) -> Int (tagged byte value)
       // Same as array_get
-      let pos_args = extract_positional_exprs_with_arity(args, "bytes_get", 2)
+      let pos_args = extract_positional_exprs_with_arity(args, "Bytes::get", 2)
       let ptr_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, (-4).to_int64())
@@ -5981,16 +5976,16 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_load(buf, 8) // load element at [ptr + 8 + idx*4]
       emit_i64_extend_i32_u(buf)
     }
-    "fs_write_bytes" => {
+    "Fs::write_bytes" => {
       // fs_write_bytes(path, byte_array) -> Unit
       // byte_array is Array[Int] where each element is a tagged byte value
       if ctx.use_js_strings {
         raise WasmGenError::Unsupported(
-          "fs_write_bytes requires --wasm backend",
+          "Fs::write_bytes requires --wasm backend",
         )
       }
       let pos_args = extract_positional_exprs_with_arity(
-        args, "fs_write_bytes", 2,
+        args, "Fs::write_bytes", 2,
       )
       require_heap(ctx)
       let path_raw_local = alloc_temp_local(ctx)
@@ -6140,14 +6135,14 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_int_value64(0L))
       buf.push((11).to_byte()) // end if
     }
-    "socket_tcp_connect" => {
+    "Socket::tcp_connect" => {
       if ctx.use_js_strings {
         raise WasmGenError::Unsupported(
-          "socket_tcp_connect requires --wasm backend",
+          "Socket::tcp_connect requires --wasm backend",
         )
       }
       let pos_args = extract_positional_exprs_with_arity(
-        args, "socket_tcp_connect", 2,
+        args, "Socket::tcp_connect", 2,
       )
       require_heap(ctx)
       let host_raw_local = alloc_temp_local(ctx)
@@ -6413,14 +6408,14 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_int_value64(-1L))
       buf.push((11).to_byte()) // end if (create-tcp-socket)
     }
-    "socket_tcp_read" => {
+    "Socket::tcp_read" => {
       if ctx.use_js_strings {
         raise WasmGenError::Unsupported(
-          "socket_tcp_read requires --wasm backend",
+          "Socket::tcp_read requires --wasm backend",
         )
       }
       let pos_args = extract_positional_exprs_with_arity(
-        args, "socket_tcp_read", 2,
+        args, "Socket::tcp_read", 2,
       )
       require_heap(ctx)
       let handle_local = alloc_temp_local(ctx)
@@ -6552,14 +6547,14 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_or(buf)
       buf.push((11).to_byte()) // end if
     }
-    "socket_tcp_write" => {
+    "Socket::tcp_write" => {
       if ctx.use_js_strings {
         raise WasmGenError::Unsupported(
-          "socket_tcp_write requires --wasm backend",
+          "Socket::tcp_write requires --wasm backend",
         )
       }
       let pos_args = extract_positional_exprs_with_arity(
-        args, "socket_tcp_write", 2,
+        args, "Socket::tcp_write", 2,
       )
       require_heap(ctx)
       let handle_local = alloc_temp_local(ctx)
@@ -6622,14 +6617,14 @@ fn compile_call_builtin_pre_user_inner(
       // Return Unit (tagged 0)
       emit_i64_const_raw(buf, tag_int_value64(0L))
     }
-    "socket_tcp_close" => {
+    "Socket::tcp_close" => {
       if ctx.use_js_strings {
         raise WasmGenError::Unsupported(
-          "socket_tcp_close requires --wasm backend",
+          "Socket::tcp_close requires --wasm backend",
         )
       }
       let pos_args = extract_positional_exprs_with_arity(
-        args, "socket_tcp_close", 1,
+        args, "Socket::tcp_close", 1,
       )
       require_heap(ctx)
       let handle_local = alloc_temp_local(ctx)
@@ -6690,18 +6685,18 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_int_value64(0L))
     }
     // --- HTTP builtins (P3 draft — raise error, interpreter-only for now) ---
-    "http_request"
-    | "http_response_status"
-    | "http_response_header"
-    | "http_response_body"
-    | "http_close"
-    | "http_listen"
-    | "http_accept"
-    | "http_request_method"
-    | "http_request_url"
-    | "http_request_header"
-    | "http_request_body"
-    | "http_respond" =>
+    "Http::request"
+    | "Http::response_status"
+    | "Http::response_header"
+    | "Http::response_body"
+    | "Http::close"
+    | "Http::listen"
+    | "Http::accept"
+    | "Http::request_method"
+    | "Http::request_url"
+    | "Http::request_header"
+    | "Http::request_body"
+    | "Http::respond" =>
       if ctx.need_http && ctx.http_host_imports {
         if ctx.use_js_strings {
           raise WasmGenError::Unsupported(
@@ -6709,9 +6704,9 @@ fn compile_call_builtin_pre_user_inner(
           )
         }
         match name {
-          "http_request" => {
+          "Http::request" => {
             let pos_args = extract_positional_exprs_with_arity(
-              args, "http_request", 4,
+              args, "Http::request", 4,
             )
             compile_expr(ctx, buf, pos_args[0])
             compile_expr(ctx, buf, pos_args[1])
@@ -6719,83 +6714,83 @@ fn compile_call_builtin_pre_user_inner(
             compile_expr(ctx, buf, pos_args[3])
             emit_call(buf, import_index_http_request(ctx))
           }
-          "http_response_status" => {
+          "Http::response_status" => {
             let pos_args = extract_positional_exprs_with_arity(
-              args, "http_response_status", 1,
+              args, "Http::response_status", 1,
             )
             compile_expr(ctx, buf, pos_args[0])
             emit_call(buf, import_index_http_response_status(ctx))
           }
-          "http_response_header" => {
+          "Http::response_header" => {
             let pos_args = extract_positional_exprs_with_arity(
-              args, "http_response_header", 2,
+              args, "Http::response_header", 2,
             )
             compile_expr(ctx, buf, pos_args[0])
             compile_expr(ctx, buf, pos_args[1])
             emit_call(buf, import_index_http_response_header(ctx))
           }
-          "http_response_body" => {
+          "Http::response_body" => {
             let pos_args = extract_positional_exprs_with_arity(
-              args, "http_response_body", 1,
+              args, "Http::response_body", 1,
             )
             compile_expr(ctx, buf, pos_args[0])
             emit_call(buf, import_index_http_response_body(ctx))
           }
-          "http_close" => {
+          "Http::close" => {
             let pos_args = extract_positional_exprs_with_arity(
-              args, "http_close", 1,
+              args, "Http::close", 1,
             )
             compile_expr(ctx, buf, pos_args[0])
             emit_call(buf, import_index_http_close(ctx))
             buf.push((26).to_byte()) // drop host return
             emit_i64_const_raw(buf, tag_int_value64(0L))
           }
-          "http_listen" => {
+          "Http::listen" => {
             let pos_args = extract_positional_exprs_with_arity(
-              args, "http_listen", 1,
+              args, "Http::listen", 1,
             )
             compile_expr(ctx, buf, pos_args[0])
             emit_call(buf, import_index_http_listen(ctx))
           }
-          "http_accept" => {
+          "Http::accept" => {
             let pos_args = extract_positional_exprs_with_arity(
-              args, "http_accept", 1,
+              args, "Http::accept", 1,
             )
             compile_expr(ctx, buf, pos_args[0])
             emit_call(buf, import_index_http_accept(ctx))
           }
-          "http_request_method" => {
+          "Http::request_method" => {
             let pos_args = extract_positional_exprs_with_arity(
-              args, "http_request_method", 1,
+              args, "Http::request_method", 1,
             )
             compile_expr(ctx, buf, pos_args[0])
             emit_call(buf, import_index_http_request_method(ctx))
           }
-          "http_request_url" => {
+          "Http::request_url" => {
             let pos_args = extract_positional_exprs_with_arity(
-              args, "http_request_url", 1,
+              args, "Http::request_url", 1,
             )
             compile_expr(ctx, buf, pos_args[0])
             emit_call(buf, import_index_http_request_url(ctx))
           }
-          "http_request_header" => {
+          "Http::request_header" => {
             let pos_args = extract_positional_exprs_with_arity(
-              args, "http_request_header", 2,
+              args, "Http::request_header", 2,
             )
             compile_expr(ctx, buf, pos_args[0])
             compile_expr(ctx, buf, pos_args[1])
             emit_call(buf, import_index_http_request_header(ctx))
           }
-          "http_request_body" => {
+          "Http::request_body" => {
             let pos_args = extract_positional_exprs_with_arity(
-              args, "http_request_body", 1,
+              args, "Http::request_body", 1,
             )
             compile_expr(ctx, buf, pos_args[0])
             emit_call(buf, import_index_http_request_body(ctx))
           }
-          "http_respond" => {
+          "Http::respond" => {
             let pos_args = extract_positional_exprs_with_arity(
-              args, "http_respond", 4,
+              args, "Http::respond", 4,
             )
             compile_expr(ctx, buf, pos_args[0])
             compile_expr(ctx, buf, pos_args[1])
@@ -6821,13 +6816,15 @@ fn compile_call_builtin_pre_user_inner(
         buf.push((8).to_byte()) // throw
         write_u32_leb(buf, ctx.error_tag_index)
       }
-    "char_to_int" => {
-      let pos_args = extract_positional_exprs_with_arity(args, "char_to_int", 1)
+    "Char::to_int" => {
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Char::to_int", 1,
+      )
       compile_expr(ctx, buf, pos_args[0])
     }
-    "char_from_int" => {
+    "Char::from_int" => {
       let pos_args = extract_positional_exprs_with_arity(
-        args, "char_from_int", 1,
+        args, "Char::from_int", 1,
       )
       compile_expr(ctx, buf, pos_args[0])
     }
@@ -6853,9 +6850,9 @@ fn compile_call_builtin_pre_user_inner(
       buf.push((8).to_byte()) // throw
       write_u32_leb(buf, ctx.error_tag_index)
     }
-    "string_from_char_code" => {
+    "String::from_char_code" => {
       let pos_args = extract_positional_exprs_with_arity(
-        args, "string_from_char_code", 1,
+        args, "String::from_char_code", 1,
       )
       require_heap(ctx)
       let raw_local = alloc_temp_local(ctx)

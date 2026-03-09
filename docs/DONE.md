@@ -65,7 +65,7 @@ Completed items archived from `TODO.md`.
   Added `BackendLimit(backend~, feature~)` to `WasmGenError`, structured `user_message()`,
   migrated ~30 codegen sites.
 - Implement Text/Object conversion builtins:
-  `string_join`, `from_lines`/`to_lines`, `from_json`/`to_json`, `from_jsonl`/`to_jsonl`,
+  `String::join`, `Lines::parse`/`Lines::stringify`, `Json::parse`/`Json::stringify`, `Json::parse_lines`/`Json::stringify_lines`,
   JSON accessors with opaque `Json` builtin type.
 - Generalize symbol/type/signature indexing beyond vibe:
   `language_id` in `AdvancedGraphDef`, language-aware index keys, multi-language test.
@@ -122,7 +122,7 @@ Completed items archived from `TODO.md`.
 - **Runtime**: VibeDb を import/query/graph/diagnostic 単位に分割、runtime 責務整理、resume one-shot 二重実行解消、perform サイト識別強化。
 - **Testing**: serialize/deserialize round-trip property test 追加。
 - **Compiler / Language Incident Follow-up**: eval_report_json バリアント取りこぼし修正、旧 import 記法 migration hint、bundle-size baseline 分離。
-- **Prelude API Consistency**: prelude HOF 引数順を collection-first 統一、array_find を Option 化、map_get_or/assert_eq/array_contains/array_sort/map_map/map_filter/array_join 追加、generics 移行。
+- **Prelude API Consistency**: prelude HOF 引数順を collection-first 統一、Array::find を Option 化、Map::get_or/assert_eq/Array::contains/Array::sort/Map::map/Map::filter/Array::join 追加、generics 移行。
 - **Playground** (completed items): ブラウザ eval プレイグラウンド作成、GitHub Pages 自動デプロイ CI、リアルタイム diagnostics 表示。
 - **Self-host Compiler Phase 1–6**: lexer/AST/parser/printer/stmt/fixture/type checker/interpreter 完了（~350 tests）。HM 型推論 + let-polymorphism、trait 制約解決、tree-walking eval、import 仮想 FS。
 - **Self-host Compiler pain points**: cascading diagnostics 根治、StateLocal/do ノイズ削減、printer while→for-in 移行。forward reference/string interpolation/multi-line string/iteration helper 確認済み。

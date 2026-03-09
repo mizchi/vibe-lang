@@ -13,7 +13,7 @@ This directory is the vibe core library, self-hosted by porting selected parts o
 | `int.vibe` | 14 | Integer helpers (`abs`, `max`, `min`, `clamp`, `pow`, `gcd`, `lcm`, `factorial`, `fibonacci`) |
 | `float.vibe` | 7 | Float helpers (`abs`, `signum`, `clamp`, `square`, `lerp`) |
 | `double.vibe` | 12 | Double helpers (`abs`, `signum`, `floor`/`ceil`/`round`, `lerp`) |
-| `array.vibe` | 4 | Generic array helpers (`length`, `get`, `head`, `last`, `append`, `slice`, `reverse`, `array_map`, `iter`, `zip`, `flatmap`, `filter`, `fold`, `find`, `any`, `all`) |
+| `array.vibe` | 4 | Generic array helpers (`length`, `get`, `head`, `last`, `append`, `slice`, `reverse`, `Array::map`, `iter`, `zip`, `flatmap`, `filter`, `fold`, `find`, `any`, `all`) |
 | `bool.vibe` | 8 | Boolean helpers (`to_int`, `implies`, `xor`, `nand`, `nor`) |
 | `char.vibe` | 3 | ASCII classification/conversion helpers (`is_ascii_*`, `to_ascii_*`, `to_string`, `from_string`) |
 | `bytes.vibe` | 5 | Byte array helpers (`is_byte`, `clamp_byte`, `from_ascii`, `to_ascii`, `to_hex`, `from_hex`) |
@@ -96,7 +96,7 @@ Boundary enforcement is active in:
 
 - Option: `map_opt`, `flatmap`, `map_or`, `unwrap_or`, `unwrap_or_else`
 - Result: `map_ok`, `bind`, `map_or`, `unwrap_or`, `unwrap_or_else`
-- Array: `array_map`, `flatmap`, `filter`, `fold`
+- Array: `Array::map`, `flatmap`, `filter`, `fold`
 
 互換 alias 運用ルール:
 

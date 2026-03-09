@@ -15,13 +15,6 @@ Completed items are archived in `docs/DONE.md`.
 **現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader も完成。
 **残**: standalone selfhost CLI の I/O 境界と component packaging。
 
-### Migration Cleanup
-
-- [ ] legacy cleanup: 古くなった builtin 表記・生成物・互換 shim を掃除する
-  - `map_builder*` の旧名を `MapBuilder::*` 正規形へ寄せる
-  - language-tour / builtin contract table / selfhost bundle / bench 系の生成物を再生成する
-  - alias 互換を残す範囲（runtime test / wbtest / codegen fallback）と削除タイミングを決める
-
 ### Selfhost CLI / I/O boundary
 
 - [ ] selfhost CLI の責務を「純粋 compile 関数」までに固定するか、WASI I/O まで selfhost 側に持ち込むかを文書化する
@@ -45,13 +38,13 @@ Completed items are archived in `docs/DONE.md`.
 ### 高優先度（日常的な不便）
 
 - [x] `==` で String/値比較（既に動作していた。examples を `==` スタイルに更新済み）
-- [x] Map 操作のビルトイン化: `map_set(m, key, value)` 追加、`Map[K, V]` ジェネリック化、Hash トレイトバウンド
-- [ ] メソッド構文の導入（`s.length()` 等。現状すべてフリー関数で `string_length(s)` が必要）
+- [x] Map 操作のビルトイン化: `Map::set(m, key, value)` 追加、`Map[K, V]` ジェネリック化、Hash トレイトバウンド
+- [ ] メソッド構文の導入（`s.length()` 等。現状すべてフリー関数で `String::length(s)` が必要）
 
 ### 中優先度（ボイラープレート削減）
 
 - [ ] 空 Map リテラル `map {}` のサポート
-- [ ] Array スプレッド構文 `[...xs, new_item]`（array_builder 3ステップの簡略化）
+- [ ] Array スプレッド構文 `[...xs, new_item]`（ArrayBuilder::new 3ステップの簡略化）
 - [ ] トレイトにメソッド定義を許可（現状マーカーのみ。ユーザー定義型の `Eq` 実装不可）
 - [ ] `?` 演算子または `try` 式（`handle { ... } { Error(_) => ... }` のネスト軽減）
 

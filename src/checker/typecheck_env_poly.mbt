@@ -48,10 +48,10 @@ fn has_num_type(ty : @core.Type) -> Bool {
       }
       found
     }
-    @core.Type::Array(inner)
-    | @core.Type::ArrayBuilder(inner) => has_num_type(inner)
-    @core.Type::Map(_key, inner)
-    | @core.Type::MapBuilder(_key, inner) => has_num_type(inner)
+    @core.Type::Array(inner) | @core.Type::ArrayBuilder(inner) =>
+      has_num_type(inner)
+    @core.Type::Map(_key, inner) | @core.Type::MapBuilder(_key, inner) =>
+      has_num_type(inner)
     @core.Type::Variant(fields) => {
       let mut found = false
       for _, item in fields {
@@ -109,11 +109,18 @@ fn replace_num_type(ty : @core.Type, num_var : @core.Type) -> @core.Type {
     }
     @core.Type::Array(inner) =>
       @core.Type::Array(replace_num_type(inner, num_var))
-    @core.Type::Map(key, inner) => @core.Type::Map(replace_num_type(key, num_var), replace_num_type(inner, num_var))
+    @core.Type::Map(key, inner) =>
+      @core.Type::Map(
+        replace_num_type(key, num_var),
+        replace_num_type(inner, num_var),
+      )
     @core.Type::ArrayBuilder(inner) =>
       @core.Type::ArrayBuilder(replace_num_type(inner, num_var))
     @core.Type::MapBuilder(key, inner) =>
-      @core.Type::MapBuilder(replace_num_type(key, num_var), replace_num_type(inner, num_var))
+      @core.Type::MapBuilder(
+        replace_num_type(key, num_var),
+        replace_num_type(inner, num_var),
+      )
     @core.Type::Variant(fields) => {
       let out : Map[String, @core.Type] = {}
       for name, item in fields {
@@ -173,11 +180,17 @@ fn substitute_type_params(
     @core.Type::Array(inner) =>
       @core.Type::Array(substitute_type_params(inner, mapping))
     @core.Type::Map(key, inner) =>
-      @core.Type::Map(substitute_type_params(key, mapping), substitute_type_params(inner, mapping))
+      @core.Type::Map(
+        substitute_type_params(key, mapping),
+        substitute_type_params(inner, mapping),
+      )
     @core.Type::ArrayBuilder(inner) =>
       @core.Type::ArrayBuilder(substitute_type_params(inner, mapping))
     @core.Type::MapBuilder(key, inner) =>
-      @core.Type::MapBuilder(substitute_type_params(key, mapping), substitute_type_params(inner, mapping))
+      @core.Type::MapBuilder(
+        substitute_type_params(key, mapping),
+        substitute_type_params(inner, mapping),
+      )
     @core.Type::Variant(fields) => {
       let out : Map[String, @core.Type] = {}
       for name, item in fields {

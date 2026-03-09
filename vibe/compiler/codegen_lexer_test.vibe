@@ -4,16 +4,16 @@ import ./codegen.vibe { compile_wasi_module }
 
 // Helper: collect enum defs from token.vibe, function defs from lexer.vibe, and compile with given main
 let compile_lexer_wasm = (main_source: String) -> Bytes with { Error, Fs } {
-  let token_source = fs_read_file("vibe/compiler/token.vibe")
-  let lexer_source = fs_read_file("vibe/compiler/lexer.vibe")
-  let all_stmts = array_builder()
+  let token_source = Fs::read_file("vibe/compiler/token.vibe")
+  let lexer_source = Fs::read_file("vibe/compiler/lexer.vibe")
+  let all_stmts = ArrayBuilder::new()
   // Token enum
   let tk_tokens = lex(token_source)
   let tk_stmts = parse_program(tk_tokens)
   let mut ti = 0
-  while ti < array_length(tk_stmts) {
-    match array_get(tk_stmts, ti) {
-      SEnum(_, _, _) => { array_builder_push(all_stmts, array_get(tk_stmts, ti)); 0 },
+  while ti < Array::length(tk_stmts) {
+    match Array::get(tk_stmts, ti) {
+      SEnum(_, _, _) => { ArrayBuilder::push(all_stmts, Array::get(tk_stmts, ti)); 0 },
       _ => 0
     };
     ti = ti + 1
@@ -22,14 +22,14 @@ let compile_lexer_wasm = (main_source: String) -> Bytes with { Error, Fs } {
   let lx_tokens = lex(lexer_source)
   let lx_stmts = parse_program(lx_tokens)
   let mut li = 0
-  while li < array_length(lx_stmts) {
-    match array_get(lx_stmts, li) {
+  while li < Array::length(lx_stmts) {
+    match Array::get(lx_stmts, li) {
       SImport(_, _) => 0,
       SLet(_, _, name, _, _) => {
-        if string_equals(name, "lex_ok") { 0 }
-        else { array_builder_push(all_stmts, array_get(lx_stmts, li)); 0 }
+        if String::equals(name, "lex_ok") { 0 }
+        else { ArrayBuilder::push(all_stmts, Array::get(lx_stmts, li)); 0 }
       },
-      _ => { array_builder_push(all_stmts, array_get(lx_stmts, li)); 0 }
+      _ => { ArrayBuilder::push(all_stmts, Array::get(lx_stmts, li)); 0 }
     };
     li = li + 1
   }
@@ -37,27 +37,27 @@ let compile_lexer_wasm = (main_source: String) -> Bytes with { Error, Fs } {
   let mn_tokens = lex(main_source)
   let mn_stmts = parse_program(mn_tokens)
   let mut mi = 0
-  while mi < array_length(mn_stmts) {
-    array_builder_push(all_stmts, array_get(mn_stmts, mi));
+  while mi < Array::length(mn_stmts) {
+    ArrayBuilder::push(all_stmts, Array::get(mn_stmts, mi));
     mi = mi + 1
   }
-  compile_wasi_module(array_builder_freeze(all_stmts), "main")
+  compile_wasi_module(ArrayBuilder::freeze(all_stmts), "main")
 }
 
 test "selfhost codegen: lexer.vibe - token count" {
-  let bytes = compile_lexer_wasm("let main = () -> Int {\n  let tokens = lex(\"42\")\n  array_length(tokens)\n}")
-  fs_write_bytes("/tmp/test_cg_lexer_count.wasm", bytes)
+  let bytes = compile_lexer_wasm("let main = () -> Int {\n  let tokens = lex(\"42\")\n  Array::length(tokens)\n}")
+  Fs::write_bytes("/tmp/test_cg_lexer_count.wasm", bytes)
   0
 }
 
 test "selfhost codegen: lexer.vibe - TInt value" {
-  let bytes = compile_lexer_wasm("let main = () -> Int {\n  let tokens = lex(\"42\")\n  let t = array_get(tokens, 0)\n  match t {\n    TInt(n) => n,\n    _ => -1\n  }\n}")
-  fs_write_bytes("/tmp/test_cg_lexer_tint.wasm", bytes)
+  let bytes = compile_lexer_wasm("let main = () -> Int {\n  let tokens = lex(\"42\")\n  let t = Array::get(tokens, 0)\n  match t {\n    TInt(n) => n,\n    _ => -1\n  }\n}")
+  Fs::write_bytes("/tmp/test_cg_lexer_tint.wasm", bytes)
   0
 }
 
 test "selfhost codegen: lexer.vibe - multi-token" {
-  let bytes = compile_lexer_wasm("let main = () -> Int {\n  let tokens = lex(\"1 + 2 * 3\")\n  array_length(tokens)\n}")
-  fs_write_bytes("/tmp/test_cg_lexer_multi.wasm", bytes)
+  let bytes = compile_lexer_wasm("let main = () -> Int {\n  let tokens = lex(\"1 + 2 * 3\")\n  Array::length(tokens)\n}")
+  Fs::write_bytes("/tmp/test_cg_lexer_multi.wasm", bytes)
   0
 }

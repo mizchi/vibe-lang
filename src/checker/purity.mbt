@@ -596,67 +596,67 @@ pub fn bind_pattern_names(
 ///|
 fn is_effectful_call_name(name : String) -> Bool {
   name == "sh" ||
-  name == "stdout_write_char" ||
-  name == "stdout_write_stream" ||
-  name == "stdin_read_char" ||
-  name == "stdin_read_stream" ||
-  name == "fs_read_file" ||
-  name == "fs_read_string" ||
-  name == "fs_read_bytes" ||
-  name == "fs_write_file" ||
-  name == "fs_write_string" ||
-  name == "fs_write_bytes" ||
-  name == "fs_exists" ||
-  name == "fs_readdir" ||
-  name == "fs_is_dir" ||
-  name == "fs_mkdir" ||
-  name == "fs_mkdir_p" ||
-  name == "fs_getcwd" ||
-  name == "fs_chdir" ||
-  name == "fs_remove" ||
-  name == "fs_is_file" ||
-  name == "fs_copy" ||
-  name == "fs_rename" ||
-  name == "fs_append" ||
-  name == "env_get" ||
-  name == "socket_tcp_connect" ||
-  name == "socket_tcp_read" ||
-  name == "socket_tcp_write" ||
-  name == "socket_tcp_close" ||
-  name == "http_request" ||
-  name == "http_response_status" ||
-  name == "http_response_header" ||
-  name == "http_response_body" ||
-  name == "http_close" ||
-  name == "http_listen" ||
-  name == "http_accept" ||
-  name == "http_request_method" ||
-  name == "http_request_url" ||
-  name == "http_request_header" ||
-  name == "http_request_body" ||
-  name == "array_push" ||
-  name == "array_truncate" ||
-  name == "array_slice" ||
+  name == "Stdout::write_char" ||
+  name == "Stdout::write_stream" ||
+  name == "Stdin::read_char" ||
+  name == "Stdin::read_stream" ||
+  name == "Fs::read_file" ||
+  name == "Fs::read_string" ||
+  name == "Fs::read_bytes" ||
+  name == "Fs::write_file" ||
+  name == "Fs::write_string" ||
+  name == "Fs::write_bytes" ||
+  name == "Fs::exists" ||
+  name == "Fs::readdir" ||
+  name == "Fs::is_dir" ||
+  name == "Fs::mkdir" ||
+  name == "Fs::mkdir_p" ||
+  name == "Fs::getcwd" ||
+  name == "Fs::chdir" ||
+  name == "Fs::remove" ||
+  name == "Fs::is_file" ||
+  name == "Fs::copy" ||
+  name == "Fs::rename" ||
+  name == "Fs::append" ||
+  name == "Env::get" ||
+  name == "Socket::tcp_connect" ||
+  name == "Socket::tcp_read" ||
+  name == "Socket::tcp_write" ||
+  name == "Socket::tcp_close" ||
+  name == "Http::request" ||
+  name == "Http::response_status" ||
+  name == "Http::response_header" ||
+  name == "Http::response_body" ||
+  name == "Http::close" ||
+  name == "Http::listen" ||
+  name == "Http::accept" ||
+  name == "Http::request_method" ||
+  name == "Http::request_url" ||
+  name == "Http::request_header" ||
+  name == "Http::request_body" ||
+  name == "Array::push" ||
+  name == "Array::truncate" ||
+  name == "Array::slice" ||
   name == "__perform" ||
   name == "__resume" ||
-  name == "http_respond"
+  name == "Http::respond"
 }
 
 ///|
 fn is_pure_builtin_name(name : String) -> Bool {
   name == "path" ||
   name == "addr" ||
-  name == "array_length" ||
-  name == "array_get" ||
-  name == "map_get" ||
-  name == "string_length" ||
-  name == "string_utf8_length" ||
-  name == "string_utf16_length" ||
-  name == "string_unicode_length" ||
-  name == "string_char_code_at" ||
-  name == "string_substring" ||
-  name == "string_concat" ||
-  name == "string_equals" ||
+  name == "Array::length" ||
+  name == "Array::get" ||
+  name == "Map::get" ||
+  name == "String::length" ||
+  name == "String::utf8_length" ||
+  name == "String::utf16_length" ||
+  name == "String::unicode_length" ||
+  name == "String::char_code_at" ||
+  name == "String::substring" ||
+  name == "String::concat" ||
+  name == "String::equals" ||
   name == "__add" ||
   name == "__sub" ||
   name == "__mul" ||
@@ -668,17 +668,17 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "__neg" ||
   name == "__assert" ||
   name == "record_set" ||
-  name == "map_keys" ||
-  name == "map_values" ||
-  name == "map_has_key" ||
-  name == "int_to_float" ||
-  name == "int_to_double" ||
-  name == "float_to_int" ||
-  name == "float_to_double" ||
-  name == "double_to_int" ||
-  name == "double_to_float" ||
-  name == "double_to_i64_bits" ||
-  name == "i64_bits_to_double" ||
+  name == "Map::keys" ||
+  name == "Map::values" ||
+  name == "Map::has_key" ||
+  name == "Int::to_float" ||
+  name == "Int::to_double" ||
+  name == "Float::to_int" ||
+  name == "Float::to_double" ||
+  name == "Double::to_int" ||
+  name == "Double::to_float" ||
+  name == "Double::to_i64_bits" ||
+  name == "Double::from_i64_bits" ||
   name == "f32_neg" ||
   name == "f32_abs" ||
   name == "f32_ceil" ||
@@ -708,35 +708,35 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "f64_nearest" ||
   name == "f64_sqrt" ||
   name == "__to_string" ||
-  name == "string_split" ||
-  name == "string_index_of" ||
-  name == "string_contains" ||
-  name == "string_trim" ||
-  name == "string_from_char_code" ||
-  name == "char_to_int" ||
-  name == "char_from_int" ||
-  name == "string_starts_with" ||
-  name == "string_ends_with" ||
-  name == "string_replace" ||
-  name == "string_replace_all" ||
-  name == "string_trim_start" ||
-  name == "string_trim_end" ||
-  name == "string_last_index_of" ||
-  name == "string_count" ||
-  name == "int_abs" ||
-  name == "int_max" ||
-  name == "int_min" ||
-  name == "int_clamp" ||
-  name == "int_signum" ||
-  name == "int_is_even" ||
-  name == "int_is_odd" ||
-  name == "double_abs" ||
-  name == "double_max" ||
-  name == "double_min" ||
-  name == "double_floor" ||
-  name == "double_ceil" ||
-  name == "string_to_upper" ||
-  name == "string_to_lower"
+  name == "String::split" ||
+  name == "String::index_of" ||
+  name == "String::contains" ||
+  name == "String::trim" ||
+  name == "String::from_char_code" ||
+  name == "Char::to_int" ||
+  name == "Char::from_int" ||
+  name == "String::starts_with" ||
+  name == "String::ends_with" ||
+  name == "String::replace" ||
+  name == "String::replace_all" ||
+  name == "String::trim_start" ||
+  name == "String::trim_end" ||
+  name == "String::last_index_of" ||
+  name == "String::count" ||
+  name == "Int::abs" ||
+  name == "Int::max" ||
+  name == "Int::min" ||
+  name == "Int::clamp" ||
+  name == "Int::signum" ||
+  name == "Int::is_even" ||
+  name == "Int::is_odd" ||
+  name == "Double::abs" ||
+  name == "Double::max" ||
+  name == "Double::min" ||
+  name == "Double::floor" ||
+  name == "Double::ceil" ||
+  name == "String::to_upper" ||
+  name == "String::to_lower"
 }
 
 ///|

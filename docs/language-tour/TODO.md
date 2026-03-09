@@ -19,7 +19,7 @@
 - [x] M4: docs - suberror のユースケース例を追加 + eval テスト
 - [x] M5: docs - モジュールシステム (use/export) の説明 + eval テスト
 - [x] M6: eval - trait bounds 付きジェネリクスのテストを追加
-- [x] M7: docs/eval - map_get_or (安全なMapアクセス) を記載 + テスト追加
+- [x] M7: docs/eval - Map::get_or (安全なMapアクセス) を記載 + テスト追加
 
 ## 低優先度（実験的/高度な機能）
 
@@ -31,4 +31,4 @@
 ## 整合性の問題
 
 - [x] C1: builtins.md の HOF 引数順序を統一 (collection-first, fn-last)
-- [x] C2: map_get_or を builtins.md に追加、from_jsonl/to_jsonl は既存
+- [x] C2: Map::get_or を builtins.md に追加、Json::parse_lines/Json::stringify_lines は既存

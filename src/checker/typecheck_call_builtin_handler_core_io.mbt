@@ -10,7 +10,7 @@ fn type_call_builtin_handler_core_io(
   call_span : @core.Span,
 ) -> @core.Type raise TypeError {
   match builtin_name {
-    "path" | "path_ref" =>
+    "path" | "Path::ref" =>
       check_builtin_simple(
         env,
         name,
@@ -23,10 +23,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Path,
         false,
       )
-    "path_to_string" =>
+    "Path::to_string" =>
       check_builtin_simple(
         env,
-        "path_to_string",
+        "Path::to_string",
         args,
         aliases,
         effects,
@@ -36,10 +36,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::String,
         false,
       )
-    "path_is_absolute" =>
+    "Path::is_absolute" =>
       check_builtin_simple(
         env,
-        "path_is_absolute",
+        "Path::is_absolute",
         args,
         aliases,
         effects,
@@ -49,9 +49,9 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Bool,
         false,
       )
-    "prompt_text" => {
+    "PromptText::new" => {
       let pos_args = prepare_builtin_pos_args(
-        env, "prompt_text", args, 1, effects, allow_effect, call_span, false,
+        env, "PromptText::new", args, 1, effects, allow_effect, call_span, false,
       )
       let _ = check_arg_string_or_prompt_text(
         env,
@@ -62,10 +62,10 @@ fn type_call_builtin_handler_core_io(
       )
       @core.Type::PromptText
     }
-    "prompt_text_to_string" =>
+    "PromptText::to_string" =>
       check_builtin_simple(
         env,
-        "prompt_text_to_string",
+        "PromptText::to_string",
         args,
         aliases,
         effects,
@@ -75,10 +75,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::String,
         false,
       )
-    "dynamic_path_resolve" =>
+    "Path::resolve" =>
       check_builtin_simple(
         env,
-        "dynamic_path_resolve",
+        "Path::resolve",
         args,
         aliases,
         effects,
@@ -257,10 +257,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Unit,
         true,
       )
-    "threads_probe_wat" =>
+    "Threads::probe_wat" =>
       check_builtin_simple(
         env,
-        "threads_probe_wat",
+        "Threads::probe_wat",
         args,
         aliases,
         effects,
@@ -270,21 +270,21 @@ fn type_call_builtin_handler_core_io(
         @core.Type::String,
         true,
       )
-    "threads_runtime_hints" => {
+    "Threads::runtime_hints" => {
       require_effect_guard(
         env,
         effects,
         allow_effect,
-        "threads_runtime_hints",
-        builtin_effects("threads_runtime_hints"),
+        "Threads::runtime_hints",
+        builtin_effects("Threads::runtime_hints"),
         call_span,
       )
       let pos_args = extract_positional_args(
-        args, "threads_runtime_hints", call_span,
+        args, "Threads::runtime_hints", call_span,
       )
       if pos_args.length() != 0 {
         raise TypeError::BadCall(
-          message="threads_runtime_hints",
+          message="Threads::runtime_hints",
           span=call_span,
         )
       }
@@ -295,10 +295,10 @@ fn type_call_builtin_handler_core_io(
       fields["wasi_env"] = @core.Type::String
       @core.Type::Record(fields)
     }
-    "threads_channel_new" =>
+    "Threads::channel_new" =>
       check_builtin_simple(
         env,
-        "threads_channel_new",
+        "Threads::channel_new",
         args,
         aliases,
         effects,
@@ -308,10 +308,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Int,
         true,
       )
-    "threads_send" =>
+    "Threads::send" =>
       check_builtin_simple(
         env,
-        "threads_send",
+        "Threads::send",
         args,
         aliases,
         effects,
@@ -321,10 +321,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Bool,
         true,
       )
-    "threads_recv" =>
+    "Threads::recv" =>
       check_builtin_simple(
         env,
-        "threads_recv",
+        "Threads::recv",
         args,
         aliases,
         effects,
@@ -334,18 +334,18 @@ fn type_call_builtin_handler_core_io(
         @core.Type::String,
         true,
       )
-    "threads_spawn" => {
+    "Threads::spawn" => {
       require_effect_guard(
         env,
         effects,
         allow_effect,
-        "threads_spawn",
-        builtin_effects("threads_spawn"),
+        "Threads::spawn",
+        builtin_effects("Threads::spawn"),
         call_span,
       )
-      let pos_args = extract_positional_args(args, "threads_spawn", call_span)
+      let pos_args = extract_positional_args(args, "Threads::spawn", call_span)
       if pos_args.length() != 2 {
-        raise TypeError::BadCall(message="threads_spawn", span=call_span)
+        raise TypeError::BadCall(message="Threads::spawn", span=call_span)
       }
       let name_ty = type_expr_eff(
         env,
@@ -379,10 +379,10 @@ fn type_call_builtin_handler_core_io(
       }
       @core.Type::Int
     }
-    "threads_wait" =>
+    "Threads::wait" =>
       check_builtin_simple(
         env,
-        "threads_wait",
+        "Threads::wait",
         args,
         aliases,
         effects,
@@ -392,10 +392,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Int,
         true,
       )
-    "stdout_write_char" =>
+    "Stdout::write_char" =>
       check_builtin_simple(
         env,
-        "stdout_write_char",
+        "Stdout::write_char",
         args,
         aliases,
         effects,
@@ -405,10 +405,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Unit,
         true,
       )
-    "stdin_read_char" =>
+    "Stdin::read_char" =>
       check_builtin_simple(
         env,
-        "stdin_read_char",
+        "Stdin::read_char",
         args,
         aliases,
         effects,
@@ -418,10 +418,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Int,
         true,
       )
-    "stdout_write_stream" =>
+    "Stdout::write_stream" =>
       check_builtin_simple(
         env,
-        "stdout_write_stream",
+        "Stdout::write_stream",
         args,
         aliases,
         effects,
@@ -431,10 +431,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Unit,
         true,
       )
-    "stdin_read_stream" =>
+    "Stdin::read_stream" =>
       check_builtin_simple(
         env,
-        "stdin_read_stream",
+        "Stdin::read_stream",
         args,
         aliases,
         effects,
@@ -444,7 +444,7 @@ fn type_call_builtin_handler_core_io(
         @core.Type::String,
         true,
       )
-    "fs_read_file" | "fs_read_string" =>
+    "Fs::read_file" | "Fs::read_string" =>
       check_builtin_simple(
         env,
         name,
@@ -457,7 +457,7 @@ fn type_call_builtin_handler_core_io(
         @core.Type::String,
         true,
       )
-    "fs_write_file" | "fs_write_string" =>
+    "Fs::write_file" | "Fs::write_string" =>
       check_builtin_simple(
         env,
         name,
@@ -470,10 +470,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Unit,
         true,
       )
-    "fs_read_bytes" =>
+    "Fs::read_bytes" =>
       check_builtin_simple(
         env,
-        "fs_read_bytes",
+        "Fs::read_bytes",
         args,
         aliases,
         effects,
@@ -483,10 +483,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Bytes,
         true,
       )
-    "fs_write_bytes" =>
+    "Fs::write_bytes" =>
       check_builtin_simple(
         env,
-        "fs_write_bytes",
+        "Fs::write_bytes",
         args,
         aliases,
         effects,
@@ -496,10 +496,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Unit,
         true,
       )
-    "fs_exists" =>
+    "Fs::exists" =>
       check_builtin_simple(
         env,
-        "fs_exists",
+        "Fs::exists",
         args,
         aliases,
         effects,
@@ -509,10 +509,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Bool,
         true,
       )
-    "fs_readdir" =>
+    "Fs::readdir" =>
       check_builtin_simple(
         env,
-        "fs_readdir",
+        "Fs::readdir",
         args,
         aliases,
         effects,
@@ -522,10 +522,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Array(@core.Type::String),
         true,
       )
-    "fs_is_dir" =>
+    "Fs::is_dir" =>
       check_builtin_simple(
         env,
-        "fs_is_dir",
+        "Fs::is_dir",
         args,
         aliases,
         effects,
@@ -535,7 +535,7 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Bool,
         true,
       )
-    "fs_mkdir" | "fs_mkdir_p" =>
+    "Fs::mkdir" | "Fs::mkdir_p" =>
       check_builtin_simple(
         env,
         name,
@@ -548,10 +548,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Unit,
         true,
       )
-    "fs_getcwd" =>
+    "Fs::getcwd" =>
       check_builtin_simple(
         env,
-        "fs_getcwd",
+        "Fs::getcwd",
         args,
         aliases,
         effects,
@@ -561,10 +561,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::String,
         true,
       )
-    "fs_chdir" =>
+    "Fs::chdir" =>
       check_builtin_simple(
         env,
-        "fs_chdir",
+        "Fs::chdir",
         args,
         aliases,
         effects,
@@ -574,10 +574,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Unit,
         true,
       )
-    "fs_remove" =>
+    "Fs::remove" =>
       check_builtin_simple(
         env,
-        "fs_remove",
+        "Fs::remove",
         args,
         aliases,
         effects,
@@ -587,10 +587,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Unit,
         true,
       )
-    "fs_is_file" =>
+    "Fs::is_file" =>
       check_builtin_simple(
         env,
-        "fs_is_file",
+        "Fs::is_file",
         args,
         aliases,
         effects,
@@ -600,7 +600,7 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Bool,
         true,
       )
-    "fs_copy" | "fs_rename" =>
+    "Fs::copy" | "Fs::rename" =>
       check_builtin_simple(
         env,
         name,
@@ -613,10 +613,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Unit,
         true,
       )
-    "fs_append" =>
+    "Fs::append" =>
       check_builtin_simple(
         env,
-        "fs_append",
+        "Fs::append",
         args,
         aliases,
         effects,
@@ -626,10 +626,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Unit,
         true,
       )
-    "env_get" =>
+    "Env::get" =>
       check_builtin_simple(
         env,
-        "env_get",
+        "Env::get",
         args,
         aliases,
         effects,
@@ -639,10 +639,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::String,
         true,
       )
-    "socket_tcp_connect" =>
+    "Socket::tcp_connect" =>
       check_builtin_simple(
         env,
-        "socket_tcp_connect",
+        "Socket::tcp_connect",
         args,
         aliases,
         effects,
@@ -652,10 +652,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Int,
         true,
       )
-    "socket_tcp_read" =>
+    "Socket::tcp_read" =>
       check_builtin_simple(
         env,
-        "socket_tcp_read",
+        "Socket::tcp_read",
         args,
         aliases,
         effects,
@@ -665,10 +665,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::String,
         true,
       )
-    "socket_tcp_write" =>
+    "Socket::tcp_write" =>
       check_builtin_simple(
         env,
-        "socket_tcp_write",
+        "Socket::tcp_write",
         args,
         aliases,
         effects,
@@ -678,10 +678,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Unit,
         true,
       )
-    "socket_tcp_close" =>
+    "Socket::tcp_close" =>
       check_builtin_simple(
         env,
-        "socket_tcp_close",
+        "Socket::tcp_close",
         args,
         aliases,
         effects,
@@ -692,10 +692,10 @@ fn type_call_builtin_handler_core_io(
         true,
       )
     // --- HTTP Client builtins ---
-    "http_request" =>
+    "Http::request" =>
       check_builtin_simple(
         env,
-        "http_request",
+        "Http::request",
         args,
         aliases,
         effects,
@@ -710,10 +710,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Int,
         true,
       )
-    "http_response_status" =>
+    "Http::response_status" =>
       check_builtin_simple(
         env,
-        "http_response_status",
+        "Http::response_status",
         args,
         aliases,
         effects,
@@ -723,10 +723,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Int,
         true,
       )
-    "http_response_header" =>
+    "Http::response_header" =>
       check_builtin_simple(
         env,
-        "http_response_header",
+        "Http::response_header",
         args,
         aliases,
         effects,
@@ -736,10 +736,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::String,
         true,
       )
-    "http_response_body" =>
+    "Http::response_body" =>
       check_builtin_simple(
         env,
-        "http_response_body",
+        "Http::response_body",
         args,
         aliases,
         effects,
@@ -749,10 +749,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::String,
         true,
       )
-    "http_close" =>
+    "Http::close" =>
       check_builtin_simple(
         env,
-        "http_close",
+        "Http::close",
         args,
         aliases,
         effects,
@@ -763,10 +763,10 @@ fn type_call_builtin_handler_core_io(
         true,
       )
     // --- HTTP Server builtins ---
-    "http_listen" =>
+    "Http::listen" =>
       check_builtin_simple(
         env,
-        "http_listen",
+        "Http::listen",
         args,
         aliases,
         effects,
@@ -776,10 +776,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Int,
         true,
       )
-    "http_accept" =>
+    "Http::accept" =>
       check_builtin_simple(
         env,
-        "http_accept",
+        "Http::accept",
         args,
         aliases,
         effects,
@@ -789,7 +789,7 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Int,
         true,
       )
-    "http_request_method" | "http_request_url" | "http_request_body" =>
+    "Http::request_method" | "Http::request_url" | "Http::request_body" =>
       check_builtin_simple(
         env,
         name,
@@ -802,10 +802,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::String,
         true,
       )
-    "http_request_header" =>
+    "Http::request_header" =>
       check_builtin_simple(
         env,
-        "http_request_header",
+        "Http::request_header",
         args,
         aliases,
         effects,
@@ -815,10 +815,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::String,
         true,
       )
-    "http_respond" =>
+    "Http::respond" =>
       check_builtin_simple(
         env,
-        "http_respond",
+        "Http::respond",
         args,
         aliases,
         effects,
@@ -833,10 +833,10 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Unit,
         true,
       )
-    "llm_complete" => {
+    "Llm::complete" => {
       // (system: String, user: String) -> String with { Llm }
       let pos_args = prepare_builtin_pos_args(
-        env, "llm_complete", args, 2, effects, allow_effect, call_span, true,
+        env, "Llm::complete", args, 2, effects, allow_effect, call_span, true,
       )
       for arg in pos_args {
         let _ = check_arg_string_or_prompt_text(
@@ -845,10 +845,10 @@ fn type_call_builtin_handler_core_io(
       }
       @core.Type::String
     }
-    "rlm_run" => {
+    "Rlm::run" => {
       // (task: String, prompt: String|PromptText) -> String with { Llm }
       let pos_args = prepare_builtin_pos_args(
-        env, "rlm_run", args, 2, effects, allow_effect, call_span, true,
+        env, "Rlm::run", args, 2, effects, allow_effect, call_span, true,
       )
       for arg in pos_args {
         let _ = check_arg_string_or_prompt_text(
@@ -857,10 +857,10 @@ fn type_call_builtin_handler_core_io(
       }
       @core.Type::String
     }
-    "rlm_finalize" =>
+    "Rlm::finalize" =>
       check_builtin_simple(
         env,
-        "rlm_finalize",
+        "Rlm::finalize",
         args,
         aliases,
         effects,

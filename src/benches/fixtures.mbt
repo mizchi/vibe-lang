@@ -15,7 +15,7 @@ pub let sample_pipeline_script : String =
 
 ///|
 pub let sample_pipeline_js_string_script : String =
-  #|"hello" |> string_length |> add(1) |> mul(2)
+  #|"hello" |> String::length |> add(1) |> mul(2)
 
 ///|
 pub let sample_user_fn_script : String =

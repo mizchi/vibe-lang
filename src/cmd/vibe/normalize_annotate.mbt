@@ -221,8 +221,7 @@ fn normalize_type_annotation_allowed(ty : @vibe_core.Type) -> Bool {
       }
       true
     }
-    @vibe_core.Type::Array(inner)
-    | @vibe_core.Type::ArrayBuilder(inner) =>
+    @vibe_core.Type::Array(inner) | @vibe_core.Type::ArrayBuilder(inner) =>
       normalize_type_annotation_allowed(inner)
     @vibe_core.Type::Map(_key, inner)
     | @vibe_core.Type::MapBuilder(_key, inner) =>

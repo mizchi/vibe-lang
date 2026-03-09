@@ -21,7 +21,7 @@ let run = () -> Unit with { Stdout } {
 // In tests, effects are implicit
 test "shell" {
   let lines = sh_lines("echo hello")
-  assert(eq(array_length(lines), 1))
+  assert(eq(Array::length(lines), 1))
 }
 ```
 
@@ -92,8 +92,8 @@ The vibe `|>` pipe operator can chain shell results with vibe functions:
 
 ```vibe
 let result = sh_lines("ls /tmp")
-  |> array_filter((s: String) -> Bool { string_contains(s, ".txt") })
-  |> array_length
+  |> Array::filter((s: String) -> Bool { String::contains(s, ".txt") })
+  |> Array::length
 // Works because |> inserts value as first arg, matching collection-first order
 ```
 
