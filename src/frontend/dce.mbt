@@ -5,7 +5,15 @@
 ///|
 /// Apply DCE to a bundled module, keeping only reachable definitions.
 pub fn dce_module(mod : @core.Module) -> @core.Module {
-  dce_module_with_entry_names_impl(mod, [], include_tests=false)
+  dce_module_impl(mod, [], include_tests=false, keep_for_in_helpers=true)
+}
+
+///|
+/// Apply DCE for wasm-gc bundling.
+/// The wasm-gc backend lowers `for-in` directly, so it must not retain
+/// iterator helper defs that only exist for the classic WASM lowering.
+pub fn dce_module_gc(mod : @core.Module) -> @core.Module {
+  dce_module_impl(mod, [], include_tests=false, keep_for_in_helpers=false)
 }
 
 ///|
@@ -14,20 +22,26 @@ pub fn dce_module_with_entry_names(
   mod : @core.Module,
   extra_entries : Array[String],
 ) -> @core.Module {
-  dce_module_with_entry_names_impl(mod, extra_entries, include_tests=false)
+  dce_module_impl(
+    mod,
+    extra_entries,
+    include_tests=false,
+    keep_for_in_helpers=true,
+  )
 }
 
 ///|
 /// Apply DCE including references from top-level `test {}` blocks.
 pub fn dce_module_for_tests(mod : @core.Module) -> @core.Module {
-  dce_module_with_entry_names_impl(mod, [], include_tests=true)
+  dce_module_impl(mod, [], include_tests=true, keep_for_in_helpers=true)
 }
 
 ///|
-fn dce_module_with_entry_names_impl(
+fn dce_module_impl(
   mod : @core.Module,
   extra_entries : Array[String],
   include_tests~ : Bool,
+  keep_for_in_helpers~ : Bool,
 ) -> @core.Module {
   // Collect user-defined names so we can detect when they shadow builtins.
   // Builtin names that are redefined by the user must NOT be filtered
@@ -58,8 +72,13 @@ fn dce_module_with_entry_names_impl(
     }
     refs[name] = true
   }
-  let graph = build_dep_graph(mod.stmts, on_name)
-  let entries = collect_entry_points(mod.stmts, include_tests~, on_name)
+  let graph = build_dep_graph(mod.stmts, on_name, keep_for_in_helpers~)
+  let entries = collect_entry_points(
+    mod.stmts,
+    include_tests~,
+    on_name,
+    keep_for_in_helpers~,
+  )
   for name in extra_entries {
     entries[name] = true
   }
@@ -73,10 +92,15 @@ fn dce_module_with_entry_names_impl(
 fn build_dep_graph(
   stmts : Array[@core.Stmt],
   on_name : (String, @core.WalkerScope, Map[String, Bool]) -> Unit,
+  keep_for_in_helpers~ : Bool,
 ) -> Map[String, Map[String, Bool]] {
   let graph : Map[String, Map[String, Bool]] = {}
   for stmt in stmts {
-    let (name, refs) = collect_stmt_info(stmt, on_name)
+    let (name, refs) = collect_stmt_info(
+      stmt,
+      on_name,
+      keep_for_in_helpers~,
+    )
     match name {
       Some(n) =>
         match graph.get(n) {
@@ -100,6 +124,7 @@ fn build_dep_graph(
 fn collect_stmt_info(
   stmt : @core.Stmt,
   on_name : (String, @core.WalkerScope, Map[String, Bool]) -> Unit,
+  keep_for_in_helpers~ : Bool,
 ) -> (String?, Map[String, Bool]) {
   let refs : Map[String, Bool] = {}
   let bound = @core.WalkerScope::new()
@@ -109,7 +134,7 @@ fn collect_stmt_info(
       if rec {
         bound.bindings[name] = true
       }
-      collect_refs_expr(expr, bound, refs, on_name)
+      collect_refs_expr(expr, bound, refs, on_name, keep_for_in_helpers~)
       (Some(name), refs)
     }
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
@@ -117,7 +142,7 @@ fn collect_stmt_info(
       if rec {
         bound.bindings[name] = true
       }
-      collect_refs_expr(expr, bound, refs, on_name)
+      collect_refs_expr(expr, bound, refs, on_name, keep_for_in_helpers~)
       (Some(name), refs)
     }
     @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) => {
@@ -125,7 +150,7 @@ fn collect_stmt_info(
       if rec {
         bound.bindings[name] = true
       }
-      collect_refs_expr(expr, bound, refs, on_name)
+      collect_refs_expr(expr, bound, refs, on_name, keep_for_in_helpers~)
       (Some(name), refs)
     }
     @core.Stmt::EnumDef(name~, params~, ctors~, span~) => {
@@ -179,7 +204,7 @@ fn collect_stmt_info(
     }
     @core.Stmt::LetMut(name~, expr~, span~) => {
       let _ = span
-      collect_refs_expr(expr, bound, refs, on_name)
+      collect_refs_expr(expr, bound, refs, on_name, keep_for_in_helpers~)
       (Some(name), refs)
     }
     @core.Stmt::StructDef(name~, params~, fields~, span~) => {
@@ -236,6 +261,7 @@ fn collect_entry_points(
   stmts : Array[@core.Stmt],
   include_tests~ : Bool,
   on_name : (String, @core.WalkerScope, Map[String, Bool]) -> Unit,
+  keep_for_in_helpers~ : Bool,
 ) -> Map[String, Bool] {
   let entries : Map[String, Bool] = {}
   let empty_bound = @core.WalkerScope::new()
@@ -251,31 +277,79 @@ fn collect_entry_points(
       // Collect ALL references - they will be resolved via dependency graph
       @core.Stmt::Expr(expr~, span~) => {
         let _ = span
-        collect_refs_expr(expr, empty_bound, entries, on_name)
+        collect_refs_expr(
+          expr,
+          empty_bound,
+          entries,
+          on_name,
+          keep_for_in_helpers~,
+        )
       }
       // Assignments are entry points (side effects)
       @core.Stmt::Assign(name~, expr~, span~) => {
         let _ = span
         entries[name] = true
-        collect_refs_expr(expr, empty_bound, entries, on_name)
+        collect_refs_expr(
+          expr,
+          empty_bound,
+          entries,
+          on_name,
+          keep_for_in_helpers~,
+        )
       }
       @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
         let _ = span
-        collect_refs_expr(target, empty_bound, entries, on_name)
-        collect_refs_expr(index, empty_bound, entries, on_name)
-        collect_refs_expr(value, empty_bound, entries, on_name)
+        collect_refs_expr(
+          target,
+          empty_bound,
+          entries,
+          on_name,
+          keep_for_in_helpers~,
+        )
+        collect_refs_expr(
+          index,
+          empty_bound,
+          entries,
+          on_name,
+          keep_for_in_helpers~,
+        )
+        collect_refs_expr(
+          value,
+          empty_bound,
+          entries,
+          on_name,
+          keep_for_in_helpers~,
+        )
       }
       // Let patterns with side effects - collect refs from expr
       @core.Stmt::LetPat(pat~, expr~, span~) => {
         let _ = pat
         let _ = span
-        collect_refs_expr(expr, empty_bound, entries, on_name)
+        collect_refs_expr(
+          expr,
+          empty_bound,
+          entries,
+          on_name,
+          keep_for_in_helpers~,
+        )
       }
       @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
         let _ = pat
         let _ = span
-        collect_refs_expr(expr, empty_bound, entries, on_name)
-        collect_refs_block(else_body, empty_bound, entries, on_name)
+        collect_refs_expr(
+          expr,
+          empty_bound,
+          entries,
+          on_name,
+          keep_for_in_helpers~,
+        )
+        collect_refs_block(
+          else_body,
+          empty_bound,
+          entries,
+          on_name,
+          keep_for_in_helpers~,
+        )
       }
       // Last let binding is an entry point (its value is returned by 'run')
       @core.Stmt::Let(name~, ..) => if is_last { entries[name] = true }
@@ -284,14 +358,26 @@ fn collect_entry_points(
         let _ = name
         let _ = span
         if include_tests {
-          collect_refs_block(body, empty_bound, entries, on_name)
+          collect_refs_block(
+            body,
+            empty_bound,
+            entries,
+            on_name,
+            keep_for_in_helpers~,
+          )
         }
       }
       @core.Stmt::Bench(name~, body~, span~) => {
         let _ = name
         let _ = span
         if include_tests {
-          collect_refs_block(body, empty_bound, entries, on_name)
+          collect_refs_block(
+            body,
+            empty_bound,
+            entries,
+            on_name,
+            keep_for_in_helpers~,
+          )
         }
       }
       @core.Stmt::EnumDef(..)
@@ -669,8 +755,11 @@ fn collect_refs_expr(
   bound : @core.WalkerScope,
   refs : Map[String, Bool],
   on_name : (String, @core.WalkerScope, Map[String, Bool]) -> Unit,
+  keep_for_in_helpers~ : Bool,
 ) -> Unit {
-  collect_for_in_helper_refs_expr(expr, bound, refs, on_name)
+  if keep_for_in_helpers {
+    collect_for_in_helper_refs_expr(expr, bound, refs, on_name)
+  }
   @core.walk_expr_refs(expr, bound, refs, on_name)
 }
 
@@ -683,8 +772,11 @@ fn collect_refs_block(
   bound : @core.WalkerScope,
   refs : Map[String, Bool],
   on_name : (String, @core.WalkerScope, Map[String, Bool]) -> Unit,
+  keep_for_in_helpers~ : Bool,
 ) -> Unit {
-  collect_for_in_helper_refs_block(body, bound, refs, on_name)
+  if keep_for_in_helpers {
+    collect_for_in_helper_refs_block(body, bound, refs, on_name)
+  }
   @core.walk_block_refs(body, bound, refs, on_name)
   // DCE also needs type-level refs from type definitions in blocks
   for stmt in body.stmts {

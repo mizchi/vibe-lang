@@ -14,6 +14,7 @@ pub using @frontend {monoify_module}
 ///|
 pub using @frontend {
   dce_module,
+  dce_module_gc,
   dce_module_with_entry_names,
   dce_module_for_tests,
 }

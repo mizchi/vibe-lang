@@ -570,7 +570,7 @@ pub fn compile_module_wasm_gc(
   path : String,
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(
-    db, path, @runtime.bundle_for_wasm, @codegen.emit_module_wasm_gc,
+    db, path, @runtime.bundle_for_wasm_gc, @codegen.emit_module_wasm_gc,
   )
 }
 

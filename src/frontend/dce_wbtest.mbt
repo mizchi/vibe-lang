@@ -101,3 +101,62 @@ test "dce keeps iterable helper defs referenced from for-in tests" {
   assert_true(names.contains("iter_length"))
   assert_true(names.contains("iter_get"))
 }
+
+///|
+test "dce gc drops iterable helper defs referenced only from for-in" {
+  let body = @core.Module::{
+    stmts: [@core.Stmt::Expr(expr=dce_test_ident("x"), span=dce_test_span())],
+  }
+  let for_in = @core.Expr::ForIn(
+    value_name="x",
+    index_name=None,
+    iterable=dce_test_call("list_of3", [
+      dce_test_int(1L),
+      dce_test_int(2L),
+      dce_test_int(3L),
+    ]),
+    body~,
+    span=dce_test_span(),
+  )
+  let mod = @core.Module::{
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="iter_require",
+        expr=dce_test_int(1L),
+        span=dce_test_span(),
+      ),
+      @core.Stmt::Let(
+        rec=false,
+        name="iter_length",
+        expr=dce_test_int(1L),
+        span=dce_test_span(),
+      ),
+      @core.Stmt::Let(
+        rec=false,
+        name="iter_get",
+        expr=dce_test_int(1L),
+        span=dce_test_span(),
+      ),
+      @core.Stmt::Let(
+        rec=false,
+        name="list_of3",
+        expr=dce_test_int(1L),
+        span=dce_test_span(),
+      ),
+      @core.Stmt::Expr(expr=for_in, span=dce_test_span()),
+    ],
+  }
+  let filtered = dce_module_gc(mod)
+  let names : Map[String, Bool] = {}
+  for stmt in filtered.stmts {
+    match stmt_name(stmt) {
+      Some(name) => names[name] = true
+      None => ()
+    }
+  }
+  assert_true(names.contains("list_of3"))
+  assert_false(names.contains("iter_require"))
+  assert_false(names.contains("iter_length"))
+  assert_false(names.contains("iter_get"))
+}

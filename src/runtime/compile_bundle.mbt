@@ -13,6 +13,23 @@ pub fn bundle_for_wasm(
     ast,
     apply_dce=true,
     include_test_entries=false,
+    keep_for_in_helpers=true,
+  )
+}
+
+///|
+pub fn bundle_for_wasm_gc(
+  db : VibeDb,
+  path : String,
+  ast : @core.Module,
+) -> @core.Module {
+  bundle_for_wasm_impl(
+    db,
+    path,
+    ast,
+    apply_dce=true,
+    include_test_entries=false,
+    keep_for_in_helpers=false,
   )
 }
 
@@ -29,6 +46,7 @@ pub fn bundle_for_wasm_no_dce(
     ast,
     apply_dce=false,
     include_test_entries=false,
+    keep_for_in_helpers=true,
   )
 }
 
@@ -40,7 +58,14 @@ pub fn bundle_for_wasm_test_coverage(
   path : String,
   ast : @core.Module,
 ) -> @core.Module {
-  bundle_for_wasm_impl(db, path, ast, apply_dce=true, include_test_entries=true)
+  bundle_for_wasm_impl(
+    db,
+    path,
+    ast,
+    apply_dce=true,
+    include_test_entries=true,
+    keep_for_in_helpers=true,
+  )
 }
 
 ///|
@@ -50,6 +75,7 @@ fn bundle_for_wasm_impl(
   ast : @core.Module,
   apply_dce~ : Bool,
   include_test_entries~ : Bool,
+  keep_for_in_helpers~ : Bool,
 ) -> @core.Module {
   let bundled_stmts : Array[@core.Stmt] = []
   let visited : Map[String, Bool] = {}
@@ -97,8 +123,10 @@ fn bundle_for_wasm_impl(
   let after_dce = if apply_dce {
     if include_test_entries {
       @pipeline.dce_module_for_tests(bundled)
-    } else {
+    } else if keep_for_in_helpers {
       @pipeline.dce_module(bundled)
+    } else {
+      @pipeline.dce_module_gc(bundled)
     }
   } else {
     bundled
