@@ -65,6 +65,7 @@ test "extract_positional_exprs_with_arity raises arity error" {
 ///|
 test "compile_call_builtin_pre_user handles __add" {
   let ctx = CodegenCtx::new(false)
+  ctx.heap_local = alloc_temp_local(ctx)
   let buf = ByteBuf::new()
   let args = [
     call_split_test_arg(call_split_test_int(1L)),

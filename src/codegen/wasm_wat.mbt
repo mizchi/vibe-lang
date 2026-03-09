@@ -191,6 +191,7 @@ fn parse_instrs(cursor : Cursor) -> Array[Instr] raise WasmWatError {
   while cursor.remaining() > 0 {
     let op = cursor.read_u8()
     match op {
+      0x00 => instrs.push(Instr::Simple("unreachable"))
       0x41 => {
         let value = cursor.read_leb_u32()
         instrs.push(Instr::Simple("i32.const " + value.to_string()))

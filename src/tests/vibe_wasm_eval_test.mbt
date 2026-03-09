@@ -434,7 +434,7 @@ fn skip_to_else_or_end(code : Cursor) -> Bool raise WasmEvalError {
         }
       }
       65 | 66 | 32 | 33 | 34 | 35 | 36 | 16 | 12 | 13 => skip_leb(code)
-      40 | 41 | 42 | 43 | 45 | 54 | 55 => {
+      40 | 41 | 42 | 43 | 45 | 54 | 55 | 56 | 57 => {
         skip_leb(code)
         skip_leb(code)
       }
@@ -461,7 +461,7 @@ fn skip_to_end(code : Cursor) -> Unit raise WasmEvalError {
         }
       }
       65 | 66 | 32 | 33 | 34 | 35 | 36 | 16 | 12 | 13 => skip_leb(code)
-      40 | 41 | 42 | 43 | 45 | 54 | 55 => {
+      40 | 41 | 42 | 43 | 45 | 54 | 55 | 56 | 57 => {
         skip_leb(code)
         skip_leb(code)
       }
@@ -660,6 +660,7 @@ fn eval_loop(
   while true {
     let op = code.read_u8()
     match op {
+      0 => raise WasmEvalError::Invalid("unreachable")
       // i32.const
       65 => {
         let v = code.read_leb_u32()
