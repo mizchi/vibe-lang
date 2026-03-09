@@ -112,6 +112,7 @@ fn compile_indirect_call(
   pos_args : Array[@core.Expr],
   fn_value_idx : Int,
 ) -> Unit raise WasmGenError {
+  ctx.need_funcref_table = true
   let sig_param_len = if sig.params.length() > 0 {
     sig.params.length() - 1
   } else {
@@ -181,6 +182,7 @@ fn compile_indirect_call_guessed(
   pos_args : Array[@core.Expr],
   fn_value_idx : Int,
 ) -> Unit raise WasmGenError {
+  ctx.need_funcref_table = true
   let sig_param_len = if sig.params.length() > 0 {
     sig.params.length() - 1
   } else {

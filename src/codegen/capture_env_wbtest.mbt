@@ -40,6 +40,22 @@ fn wb_fn(
 }
 
 ///|
+fn wb_fn_infer(
+  params : Array[@core.FuncParam],
+  body_stmts : Array[@core.Stmt],
+) -> @core.Expr {
+  @core.Expr::Fn(
+    type_params=[],
+    type_bounds={},
+    params~,
+    ret=None,
+    effects=[],
+    body=@core.Module::{ stmts: body_stmts },
+    span=wb_span(),
+  )
+}
+
+///|
 fn wb_ident(name : String) -> @core.Expr {
   @core.Expr::Ident(name~, span=wb_span())
 }
@@ -160,4 +176,19 @@ test "env requirement: function-only capture still needs closure env" {
   assert_true(idx >= 0)
   assert_true(contains_name(funcs[idx].captures, "helper"))
   assert_true(needs[idx])
+}
+
+///|
+test "nested lambda without return annotation keeps boxed int wasm result" {
+  let double_fn = wb_fn_infer([wb_param("x")], [
+    wb_expr(wb_call("__mul", [wb_ident("x"), wb_int(2)])),
+  ])
+  let run_fn = wb_fn([], [
+    wb_let("double", double_fn),
+    wb_expr(wb_int(0)),
+  ])
+  let ast = @core.Module::{ stmts: [wb_let("run", run_fn)] }
+  let wat = wasm_to_wat(emit_module_wasm(ast))
+  assert_true(wat.contains("(param i64 i32) (result i64)"))
+  assert_true(not(wat.contains("(param i64 i32) (result i32)")))
 }

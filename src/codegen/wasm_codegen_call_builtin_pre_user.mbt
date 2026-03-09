@@ -45,6 +45,88 @@ fn emit_load_obj_number_as_f64(
 }
 
 ///|
+fn emit_non_js_string_ptr_equals_i32(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  left_ptr_local : Int,
+  right_ptr_local : Int,
+) -> Unit {
+  let left_base_local = alloc_temp_local(ctx)
+  let right_base_local = alloc_temp_local(ctx)
+  let left_len_local = alloc_temp_local(ctx)
+  let right_len_local = alloc_temp_local(ctx)
+  let loop_i_local = alloc_temp_local(ctx)
+  let eq_local = alloc_temp_local(ctx)
+  emit_local_get(buf, left_ptr_local)
+  emit_i32_const_raw(buf, -4)
+  emit_i32_and(buf)
+  emit_local_set(buf, left_base_local)
+  emit_local_get(buf, right_ptr_local)
+  emit_i32_const_raw(buf, -4)
+  emit_i32_and(buf)
+  emit_local_set(buf, right_base_local)
+  emit_local_get(buf, left_base_local)
+  emit_local_get(buf, right_base_local)
+  emit_i32_eq(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((127).to_byte()) // result i32
+  emit_i32_const_raw(buf, 1)
+  buf.push((5).to_byte()) // else
+  emit_local_get(buf, left_base_local)
+  emit_i32_load(buf, 4)
+  emit_local_set(buf, left_len_local)
+  emit_local_get(buf, right_base_local)
+  emit_i32_load(buf, 4)
+  emit_local_set(buf, right_len_local)
+  emit_local_get(buf, left_len_local)
+  emit_local_get(buf, right_len_local)
+  emit_i32_eq(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((127).to_byte()) // result i32
+  emit_i32_const_raw(buf, 1)
+  emit_local_set(buf, eq_local)
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, loop_i_local)
+  emit_block(buf)
+  emit_loop(buf)
+  emit_local_get(buf, loop_i_local)
+  emit_local_get(buf, left_len_local)
+  emit_i32_lt_s(buf)
+  emit_i32_eqz(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, left_base_local)
+  emit_local_get(buf, loop_i_local)
+  emit_i32_add(buf)
+  emit_i32_load8_u(buf, 8)
+  emit_local_get(buf, right_base_local)
+  emit_local_get(buf, loop_i_local)
+  emit_i32_add(buf)
+  emit_i32_load8_u(buf, 8)
+  emit_i32_eq(buf)
+  emit_i32_eqz(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // void
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, eq_local)
+  emit_local_get(buf, left_len_local)
+  emit_local_set(buf, loop_i_local)
+  buf.push((5).to_byte()) // else
+  emit_local_get(buf, loop_i_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, loop_i_local)
+  buf.push((11).to_byte()) // end if
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+  emit_local_get(buf, eq_local)
+  buf.push((5).to_byte()) // else
+  emit_i32_const_raw(buf, 0)
+  buf.push((11).to_byte()) // end if
+  buf.push((11).to_byte()) // end if
+}
+
+///|
 fn emit_number_obj_to_string(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -444,19 +526,51 @@ fn compile_call_builtin_pre_user_inner(
     }
     "add" if not(is_user_fn) => {
       let pos_args = extract_positional_exprs_with_arity(args, "add", 2)
-      compile_i32_add_tagged(ctx, buf, pos_args[0], pos_args[1])
+      let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
+      match resolved_kind {
+        ValueKind::I32 | ValueKind::I64 =>
+          compile_i32_add_tagged(ctx, buf, pos_args[0], pos_args[1])
+        _ =>
+          compile_binary_arith_op(
+            ctx, buf, "add", args, emit_f32_add, emit_f64_add,
+          )
+      }
     }
     "sub" if not(is_user_fn) => {
       let pos_args = extract_positional_exprs_with_arity(args, "sub", 2)
-      compile_i32_sub_tagged(ctx, buf, pos_args[0], pos_args[1])
+      let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
+      match resolved_kind {
+        ValueKind::I32 | ValueKind::I64 =>
+          compile_i32_sub_tagged(ctx, buf, pos_args[0], pos_args[1])
+        _ =>
+          compile_binary_arith_op(
+            ctx, buf, "sub", args, emit_f32_sub, emit_f64_sub,
+          )
+      }
     }
     "mul" if not(is_user_fn) => {
       let pos_args = extract_positional_exprs_with_arity(args, "mul", 2)
-      compile_i32_mul_tagged(ctx, buf, pos_args[0], pos_args[1])
+      let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
+      match resolved_kind {
+        ValueKind::I32 | ValueKind::I64 =>
+          compile_i32_mul_tagged(ctx, buf, pos_args[0], pos_args[1])
+        _ =>
+          compile_binary_arith_op(
+            ctx, buf, "mul", args, emit_f32_mul, emit_f64_mul,
+          )
+      }
     }
     "div" if not(is_user_fn) => {
       let pos_args = extract_positional_exprs_with_arity(args, "div", 2)
-      compile_i32_div_tagged(ctx, buf, pos_args[0], pos_args[1])
+      let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
+      match resolved_kind {
+        ValueKind::I32 | ValueKind::I64 =>
+          compile_i32_div_tagged(ctx, buf, pos_args[0], pos_args[1])
+        _ =>
+          compile_binary_arith_op(
+            ctx, buf, "div", args, emit_f32_div, emit_f64_div,
+          )
+      }
     }
     "eq" if not(is_user_fn) =>
       compile_binary_cmp_op(
@@ -484,7 +598,9 @@ fn compile_call_builtin_pre_user_inner(
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
       match resolved_kind {
         ValueKind::I32 | ValueKind::I64 =>
-          compile_i32_add_tagged(ctx, buf, pos_args[0], pos_args[1])
+          compile_dynamic_numeric_arith_op(
+            ctx, buf, "__add", args, emit_f32_add, emit_f64_add,
+          )
         _ =>
           compile_binary_arith_op(
             ctx, buf, "__add", args, emit_f32_add, emit_f64_add,
@@ -496,7 +612,9 @@ fn compile_call_builtin_pre_user_inner(
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
       match resolved_kind {
         ValueKind::I32 | ValueKind::I64 =>
-          compile_i32_sub_tagged(ctx, buf, pos_args[0], pos_args[1])
+          compile_dynamic_numeric_arith_op(
+            ctx, buf, "__sub", args, emit_f32_sub, emit_f64_sub,
+          )
         _ =>
           compile_binary_arith_op(
             ctx, buf, "__sub", args, emit_f32_sub, emit_f64_sub,
@@ -508,7 +626,9 @@ fn compile_call_builtin_pre_user_inner(
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
       match resolved_kind {
         ValueKind::I32 | ValueKind::I64 =>
-          compile_i32_mul_tagged(ctx, buf, pos_args[0], pos_args[1])
+          compile_dynamic_numeric_arith_op(
+            ctx, buf, "__mul", args, emit_f32_mul, emit_f64_mul,
+          )
         _ =>
           compile_binary_arith_op(
             ctx, buf, "__mul", args, emit_f32_mul, emit_f64_mul,
@@ -520,7 +640,9 @@ fn compile_call_builtin_pre_user_inner(
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
       match resolved_kind {
         ValueKind::I32 | ValueKind::I64 =>
-          compile_i32_div_tagged(ctx, buf, pos_args[0], pos_args[1])
+          compile_dynamic_numeric_arith_op(
+            ctx, buf, "__div", args, emit_f32_div, emit_f64_div,
+          )
         _ =>
           compile_binary_arith_op(
             ctx, buf, "__div", args, emit_f32_div, emit_f64_div,
@@ -4282,61 +4404,248 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_or(buf)
     }
     "map_builder_set" => {
-      // map_builder_set(builder, key, value) -> store key+value at end, increment len
+      // map_builder_set(builder, key, value) -> overwrite existing key or append new pair
       let pos_args = extract_positional_exprs_with_arity(
         args, "map_builder_set", 3,
       )
       let ptr_local = alloc_temp_local(ctx)
+      let len_local = alloc_temp_local(ctx)
+      let loop_i = alloc_temp_local(ctx)
+      let found_local = alloc_temp_local(ctx)
+      let offset_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, (-4).to_int64())
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, ptr_local)
-      // key slot offset = 8 + len*8
-      let offset_local = alloc_temp_local(ctx)
       emit_local_get(buf, ptr_local)
       emit_i32_load(buf, 4) // len
-      emit_i32_const_raw(buf, 8)
-      emit_i32_mul(buf)
-      emit_local_set(buf, offset_local)
-      // store key at [ptr + 8 + len*8]
-      emit_local_get(buf, ptr_local)
-      emit_local_get(buf, offset_local)
-      emit_i32_add(buf)
+      emit_local_set(buf, len_local)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, loop_i)
+      emit_i32_const_raw(buf, -1)
+      emit_local_set(buf, found_local)
       if ctx.use_js_strings {
-        // key is externref -> store in extern table
         let key_kind = infer_expr_kind(ctx, pos_args[1])
         if key_kind == ValueKind::ExternRef {
           ctx.need_extern_table = true
+          compile_expr(ctx, buf, pos_args[1])
+          let key_local = alloc_temp_local_with_kind(ctx, ValueKind::ExternRef)
+          emit_local_set(buf, key_local)
+          ctx.need_js_equals = true
+          buf.push((3).to_byte()) // loop
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, loop_i)
+          emit_local_get(buf, len_local)
+          emit_i32_lt_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, ptr_local)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 8)
+          emit_i32_mul(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 8) // slot index
+          emit_table_get(buf, ctx.extern_table_index)
+          emit_local_get(buf, key_local)
+          emit_call(buf, import_index_js_equals(ctx))
+          buf.push((4).to_byte()) // if (equals)
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, loop_i)
+          emit_local_set(buf, found_local)
+          buf.push((11).to_byte()) // end if (equals)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, loop_i)
+          buf.push((12).to_byte()) // br
+          write_u32_leb(buf, 1) // to loop
+          buf.push((11).to_byte()) // end if (i < len)
+          buf.push((11).to_byte()) // end loop
+          emit_local_get(buf, found_local)
+          emit_i32_const_raw(buf, 0)
+          emit_i32_ge_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, ptr_local)
+          emit_local_get(buf, found_local)
+          emit_i32_const_raw(buf, 8)
+          emit_i32_mul(buf)
+          emit_i32_add(buf)
+          compile_expr_i32(ctx, buf, pos_args[2])
+          emit_i32_wrap_i64(buf)
+          emit_i32_store(buf, 12)
+          buf.push((5).to_byte()) // else
           let slot = ctx.extern_table_next_slot
           ctx.extern_table_next_slot += 1
+          emit_local_get(buf, len_local)
+          emit_i32_const_raw(buf, 8)
+          emit_i32_mul(buf)
+          emit_local_set(buf, offset_local)
+          emit_local_get(buf, ptr_local)
+          emit_local_get(buf, offset_local)
+          emit_i32_add(buf)
           emit_i32_const_raw(buf, slot)
-          compile_expr(ctx, buf, pos_args[1])
+          emit_local_get(buf, key_local)
           emit_table_set(buf, ctx.extern_table_index)
           emit_i32_const_raw(buf, slot)
+          emit_i32_store(buf, 8)
+          emit_local_get(buf, ptr_local)
+          emit_local_get(buf, offset_local)
+          emit_i32_add(buf)
+          compile_expr_i32(ctx, buf, pos_args[2])
+          emit_i32_wrap_i64(buf)
+          emit_i32_store(buf, 12)
+          emit_local_get(buf, ptr_local)
+          emit_local_get(buf, len_local)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_i32_store(buf, 4)
+          buf.push((11).to_byte()) // end if
         } else {
+          let key_local = alloc_temp_local(ctx)
           compile_expr_i32(ctx, buf, pos_args[1])
           emit_i32_wrap_i64(buf)
+          emit_local_set(buf, key_local)
+          buf.push((3).to_byte()) // loop
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, loop_i)
+          emit_local_get(buf, len_local)
+          emit_i32_lt_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, ptr_local)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 8)
+          emit_i32_mul(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 8) // key
+          emit_local_get(buf, key_local)
+          emit_i32_eq(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, loop_i)
+          emit_local_set(buf, found_local)
+          buf.push((11).to_byte()) // end if
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, loop_i)
+          buf.push((12).to_byte()) // br
+          write_u32_leb(buf, 1) // to loop
+          buf.push((11).to_byte()) // end if
+          buf.push((11).to_byte()) // end loop
+          emit_local_get(buf, found_local)
+          emit_i32_const_raw(buf, 0)
+          emit_i32_ge_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, ptr_local)
+          emit_local_get(buf, found_local)
+          emit_i32_const_raw(buf, 8)
+          emit_i32_mul(buf)
+          emit_i32_add(buf)
+          compile_expr_i32(ctx, buf, pos_args[2])
+          emit_i32_wrap_i64(buf)
+          emit_i32_store(buf, 12)
+          buf.push((5).to_byte()) // else
+          emit_local_get(buf, len_local)
+          emit_i32_const_raw(buf, 8)
+          emit_i32_mul(buf)
+          emit_local_set(buf, offset_local)
+          emit_local_get(buf, ptr_local)
+          emit_local_get(buf, offset_local)
+          emit_i32_add(buf)
+          emit_local_get(buf, key_local)
+          emit_i32_store(buf, 8)
+          emit_local_get(buf, ptr_local)
+          emit_local_get(buf, offset_local)
+          emit_i32_add(buf)
+          compile_expr_i32(ctx, buf, pos_args[2])
+          emit_i32_wrap_i64(buf)
+          emit_i32_store(buf, 12)
+          emit_local_get(buf, ptr_local)
+          emit_local_get(buf, len_local)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_i32_store(buf, 4)
+          buf.push((11).to_byte()) // end if
         }
       } else {
+        let key_local = alloc_temp_local(ctx)
+        let entry_key_local = alloc_temp_local(ctx)
         compile_expr_i32(ctx, buf, pos_args[1])
         emit_i32_wrap_i64(buf)
+        emit_local_set(buf, key_local)
+        buf.push((3).to_byte()) // loop
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, loop_i)
+        emit_local_get(buf, len_local)
+        emit_i32_lt_s(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, ptr_local)
+        emit_local_get(buf, loop_i)
+        emit_i32_const_raw(buf, 8)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i32_load(buf, 8) // key
+        emit_local_set(buf, entry_key_local)
+        emit_non_js_string_ptr_equals_i32(
+          ctx,
+          buf,
+          entry_key_local,
+          key_local,
+        )
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, loop_i)
+        emit_local_set(buf, found_local)
+        buf.push((11).to_byte()) // end if
+        emit_local_get(buf, loop_i)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, loop_i)
+        buf.push((12).to_byte()) // br
+        write_u32_leb(buf, 1) // to loop
+        buf.push((11).to_byte()) // end if
+        buf.push((11).to_byte()) // end loop
+        emit_local_get(buf, found_local)
+        emit_i32_const_raw(buf, 0)
+        emit_i32_ge_s(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, ptr_local)
+        emit_local_get(buf, found_local)
+        emit_i32_const_raw(buf, 8)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        compile_expr_i32(ctx, buf, pos_args[2])
+        emit_i32_wrap_i64(buf)
+        emit_i32_store(buf, 12)
+        buf.push((5).to_byte()) // else
+        emit_local_get(buf, len_local)
+        emit_i32_const_raw(buf, 8)
+        emit_i32_mul(buf)
+        emit_local_set(buf, offset_local)
+        emit_local_get(buf, ptr_local)
+        emit_local_get(buf, offset_local)
+        emit_i32_add(buf)
+        emit_local_get(buf, key_local)
+        emit_i32_store(buf, 8)
+        emit_local_get(buf, ptr_local)
+        emit_local_get(buf, offset_local)
+        emit_i32_add(buf)
+        compile_expr_i32(ctx, buf, pos_args[2])
+        emit_i32_wrap_i64(buf)
+        emit_i32_store(buf, 12)
+        emit_local_get(buf, ptr_local)
+        emit_local_get(buf, len_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_i32_store(buf, 4)
+        buf.push((11).to_byte()) // end if
       }
-      emit_i32_store(buf, 8)
-      // store value at [ptr + 8 + len*8 + 4]
-      emit_local_get(buf, ptr_local)
-      emit_local_get(buf, offset_local)
-      emit_i32_add(buf)
-      compile_expr_i32(ctx, buf, pos_args[2])
-      emit_i32_wrap_i64(buf)
-      emit_i32_store(buf, 12)
-      // increment len
-      emit_local_get(buf, ptr_local)
-      emit_local_get(buf, ptr_local)
-      emit_i32_load(buf, 4)
-      emit_i32_const_raw(buf, 1)
-      emit_i32_add(buf)
-      emit_i32_store(buf, 4)
       // return unit
       emit_i64_const_tagged(buf, 0L)
     }
@@ -4440,6 +4749,7 @@ fn compile_call_builtin_pre_user_inner(
       } else {
         // non-js-string mode: keys are i32 string pointers
         let key_local = alloc_temp_local(ctx)
+        let entry_key_local = alloc_temp_local(ctx)
         compile_expr_i32(ctx, buf, pos_args[1])
         emit_i32_wrap_i64(buf)
         emit_local_set(buf, key_local)
@@ -4456,8 +4766,13 @@ fn compile_call_builtin_pre_user_inner(
         emit_i32_mul(buf)
         emit_i32_add(buf)
         emit_i32_load(buf, 8) // key
-        emit_local_get(buf, key_local)
-        emit_i32_eq(buf)
+        emit_local_set(buf, entry_key_local)
+        emit_non_js_string_ptr_equals_i32(
+          ctx,
+          buf,
+          entry_key_local,
+          key_local,
+        )
         buf.push((4).to_byte()) // if
         buf.push((64).to_byte()) // void
         emit_i32_const_raw(buf, 1)
@@ -4533,6 +4848,12 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_mul(buf)
       emit_i32_add(buf)
       emit_i32_load(buf, 8)
+      if not(ctx.use_js_strings) {
+        emit_i64_extend_i32_u(buf)
+        emit_i64_const_raw(buf, tag_obj.to_int64())
+        emit_i64_or(buf)
+        emit_i32_wrap_i64(buf)
+      }
       // store to array
       emit_i32_store(buf, 8)
       // i++
@@ -4541,7 +4862,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_add(buf)
       emit_local_set(buf, loop_i)
       buf.push((12).to_byte()) // br
-      write_u32_leb(buf, 0) // to loop
+      write_u32_leb(buf, 1) // to loop
       buf.push((11).to_byte()) // end if
       buf.push((11).to_byte()) // end loop
       // return tagged arr_ptr
@@ -4602,7 +4923,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_add(buf)
       emit_local_set(buf, loop_i)
       buf.push((12).to_byte()) // br
-      write_u32_leb(buf, 0) // to loop
+      write_u32_leb(buf, 1) // to loop
       buf.push((11).to_byte()) // end if
       buf.push((11).to_byte()) // end loop
       emit_local_get(buf, arr_ptr)
@@ -4943,6 +5264,7 @@ fn compile_call_builtin_pre_user_inner(
       } else {
         // non-js-string mode: keys are i32 string pointers
         let key_local = alloc_temp_local(ctx)
+        let entry_key_local = alloc_temp_local(ctx)
         compile_expr_i32(ctx, buf, pos_args[1])
         emit_i32_wrap_i64(buf)
         emit_local_set(buf, key_local)
@@ -4959,8 +5281,13 @@ fn compile_call_builtin_pre_user_inner(
         emit_i32_mul(buf)
         emit_i32_add(buf)
         emit_i32_load(buf, 8) // key
-        emit_local_get(buf, key_local)
-        emit_i32_eq(buf)
+        emit_local_set(buf, entry_key_local)
+        emit_non_js_string_ptr_equals_i32(
+          ctx,
+          buf,
+          entry_key_local,
+          key_local,
+        )
         buf.push((4).to_byte()) // if
         buf.push((64).to_byte()) // void
         emit_local_get(buf, map_ptr)

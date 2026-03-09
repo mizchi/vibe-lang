@@ -1820,6 +1820,13 @@ test "vibe wasm eval matches interpreter for collection outputs" {
 }
 
 ///|
+test "vibe wasm eval matches interpreter for map string key lookup" {
+  assert_eval_backends_same(
+    "let m = map { a: 1, b: 2 }\nmap_get(m, \"a\")",
+  )
+}
+
+///|
 test "vibe wasm eval matches interpreter for shell effects" {
   assert_eval_backends_same_with_shell_effects(
     "{ sh(\"echo hello\") }\n{ sh(\"echo world\") }\n42",

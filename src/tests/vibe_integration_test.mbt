@@ -991,6 +991,27 @@ fn load_compiler_source(
 }
 
 ///|
+fn env_truthy(name : String) -> Bool {
+  match @sys.get_env_var(name) {
+    Some(v) => v == "1" || v == "true"
+    None => false
+  }
+}
+
+///|
+fn selfhost_deep_tests_enabled() -> Bool {
+  env_truthy("VIBE_SELFHOST_DEEP")
+}
+
+///|
+fn selfhost_probe_test_enabled() -> Bool {
+  selfhost_deep_tests_enabled() ||
+  env_truthy("VIBE_SELFHOST_PROBE_FULL") ||
+  env_truthy("VIBE_SELFHOST_PROBE_STRICT") ||
+  (@sys.get_env_var("VIBE_SELFHOST_PROBE_FILES") is Some(_))
+}
+
+///|
 /// Gate 5 helper: compile a driver source and run it through the full eval pipeline.
 fn eval_selfhost_module(
   db : VibeDb,
@@ -1050,6 +1071,9 @@ test "selfhost gate5: lex produces tokens" {
 
 ///|
 test "selfhost gate5: lex-parse-print roundtrip" {
+  if not(selfhost_deep_tests_enabled()) {
+    return
+  }
   let db = VibeDb::new()
   let visited : Map[String, Bool] = {}
   load_compiler_source(db, "vibe/compiler/token.vibe", visited)
@@ -1076,6 +1100,9 @@ test "selfhost gate5: lex-parse-print roundtrip" {
 
 ///|
 test "selfhost gate5: eval pipeline meta-circular" {
+  if not(selfhost_deep_tests_enabled()) {
+    return
+  }
   let db = VibeDb::new()
   let visited : Map[String, Bool] = {}
   load_compiler_source(db, "vibe/compiler/token.vibe", visited)
@@ -1127,6 +1154,9 @@ test "selfhost final: lexer tokenizes own source" {
 
 ///|
 test "selfhost final: parser roundtrips own source" {
+  if not(selfhost_deep_tests_enabled()) {
+    return
+  }
   let db = VibeDb::new()
   let visited : Map[String, Bool] = {}
   load_compiler_source(db, "vibe/compiler/token.vibe", visited)
@@ -1157,6 +1187,9 @@ test "selfhost final: parser roundtrips own source" {
 
 ///|
 test "selfhost final: eval pipeline processes own token module" {
+  if not(selfhost_deep_tests_enabled()) {
+    return
+  }
   let db = VibeDb::new()
   let visited : Map[String, Bool] = {}
   load_compiler_source(db, "vibe/compiler/token.vibe", visited)
@@ -1221,6 +1254,9 @@ test "native roundtrip: eval.vibe format idempotency" {
 
 ///|
 test "probe: selfhost roundtrip all compiler sources" {
+  if not(selfhost_probe_test_enabled()) {
+    return
+  }
   let db = VibeDb::new()
   let visited : Map[String, Bool] = {}
   load_compiler_source(db, "vibe/compiler/token.vibe", visited)

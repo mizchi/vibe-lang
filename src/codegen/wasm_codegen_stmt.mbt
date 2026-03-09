@@ -917,7 +917,7 @@ fn compile_let_pat_nested(
       let sorted = sort_record_fields_pat(fields)
       for i, field in sorted {
         let elem_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
-        emit_load_tuple_elem(buf, value_local, i)
+        emit_load_record_value(buf, value_local, i)
         emit_local_set(buf, elem_local)
         compile_let_pat_nested(ctx, buf, field.pat, elem_local)
       }

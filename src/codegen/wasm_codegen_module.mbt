@@ -755,7 +755,8 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let has_extern_table = ctx.need_extern_table && ctx.extern_table_next_slot > 0
   // Reserve table 0 for funcref when externref table is used,
   // so extern_table_index can stay stable at 1.
-  let has_funcref_table = funcref_slot_count > 0 || has_extern_table
+  let has_funcref_table =
+    funcref_slot_count > 0 || has_extern_table || ctx.need_funcref_table
   let table_count = (if has_funcref_table { 1 } else { 0 }) +
     (if has_extern_table { 1 } else { 0 })
   if table_count > 0 {
@@ -1466,23 +1467,21 @@ fn emit_module_with_coverage(
   }
   for i in 0..<funcs.length() {
     let f = funcs[i]
-    let ret_kind = if top_keys.contains(f.span_key) {
-      infer_func_return_kind(ctx, f.params, func_param_kinds[i], f.ret, f.body) catch {
-        e =>
-          match f.name {
-            Some(name) =>
-              raise WasmGenError::Unsupported(
-                "in function " + name + ": " + e.to_string(),
-              )
-            None => raise e
-          }
-      }
-    } else {
-      // Nested functions: use declared return type or default I32
-      match f.ret {
-        Some(r) => value_kind_from_type(ctx, r)
-        None => ValueKind::I32
-      }
+    let ret_kind = infer_func_return_kind(
+      ctx,
+      f.params,
+      func_param_kinds[i],
+      f.ret,
+      f.body,
+    ) catch {
+      e =>
+        match f.name {
+          Some(name) =>
+            raise WasmGenError::Unsupported(
+              "in function " + name + ": " + e.to_string(),
+            )
+          None => raise e
+        }
     }
     func_return_kinds.push(ret_kind)
     if top_keys.contains(f.span_key) {

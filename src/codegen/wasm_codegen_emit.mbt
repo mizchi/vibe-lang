@@ -101,7 +101,7 @@ fn emit_string_const(ctx : CodegenCtx, buf : ByteBuf, s : String) -> Unit {
     emit_global_get(buf, idx)
   } else {
     let offset = ctx.strings.intern(s)
-    emit_i32_const_raw(buf, tag_ptr(offset, tag_obj))
+    emit_i64_const_raw(buf, tag_ptr64(offset, tag_obj))
   }
 }
 

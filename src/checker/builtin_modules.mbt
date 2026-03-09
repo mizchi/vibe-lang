@@ -1395,7 +1395,7 @@ let builtin_char_source : String =
   #|}
   #|
   #|export let to_string = (ch: Char) -> String {
-  #|  __to_string(ch)
+  #|  string_from_char_code(to_int(ch))
   #|}
   #|
   #|export let from_string = (s: String) -> Option[Char] {

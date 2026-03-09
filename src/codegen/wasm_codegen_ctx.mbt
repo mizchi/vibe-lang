@@ -45,6 +45,7 @@ priv struct CodegenCtx {
   embed_error_strings : Bool
   error_codes : StringConstTable
   mut need_extern_table : Bool
+  mut need_funcref_table : Bool
   mut extern_table_index : Int
   mut extern_table_next_slot : Int
   known_record_fields : Map[String, Bool]
@@ -166,6 +167,7 @@ fn CodegenCtx::new(
     embed_error_strings,
     error_codes: StringConstTable::new(),
     need_extern_table: false,
+    need_funcref_table: false,
     extern_table_index: -1,
     extern_table_next_slot: 0,
     known_record_fields: {},

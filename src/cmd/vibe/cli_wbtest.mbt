@@ -2399,6 +2399,515 @@ test "compiled test case db load does not persist temporary lock refs" {
 }
 
 ///|
+test "compiled test prelude omits wrapper conflict names" {
+  let ast = @parser.parse_ast(
+    "let main = 1\n" +
+    "export let run = 2\n" +
+    "let keep = 3\n" +
+    "let __vibe_compiled_test_case = 4\n" +
+    "export { main, keep }\n",
+  ) catch {
+    e => fail("parse failed: " + e.to_string())
+  }
+  assert_true(should_omit_compiled_test_prelude_stmt(ast.stmts[0]))
+  assert_true(should_omit_compiled_test_prelude_stmt(ast.stmts[1]))
+  assert_false(should_omit_compiled_test_prelude_stmt(ast.stmts[2]))
+  assert_true(should_omit_compiled_test_prelude_stmt(ast.stmts[3]))
+  assert_true(should_omit_compiled_test_prelude_stmt(ast.stmts[4]))
+}
+
+///|
+test "compiled test prelude moves plain lets into wrapper" {
+  let ast = @parser.parse_ast(
+    "import ./dep.vibe { helper }\n" +
+    "let base = 1\n" +
+    "let derived = helper(base)\n" +
+    "export let kept = helper\n",
+  ) catch {
+    e => fail("parse failed: " + e.to_string())
+  }
+  assert_false(compiled_test_prelude_stmt_runs_in_wrapper(ast.stmts[0]))
+  assert_true(compiled_test_prelude_stmt_runs_in_wrapper(ast.stmts[1]))
+  assert_true(compiled_test_prelude_stmt_runs_in_wrapper(ast.stmts[2]))
+  assert_false(compiled_test_prelude_stmt_runs_in_wrapper(ast.stmts[3]))
+}
+
+///|
+test "compiled test case source omits example main binding" {
+  let source = @os_fs.read_file_to_string("examples/perform_handle.vibe") catch {
+    e => fail("read example failed: " + e.to_string())
+  }
+  let ast = @parser.parse_ast(source) catch {
+    e => fail("parse example failed: " + e.to_string())
+  }
+  let top_level_stmts : Array[@vibe_core.Stmt] = []
+  let wrapper_prelude_stmts : Array[@vibe_core.Stmt] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @vibe_core.Stmt::Test(..) | @vibe_core.Stmt::Bench(..) => ()
+      _ =>
+        if not(should_omit_compiled_test_prelude_stmt(stmt)) {
+          if compiled_test_prelude_stmt_runs_in_wrapper(stmt) {
+            wrapper_prelude_stmts.push(stmt)
+          } else {
+            top_level_stmts.push(stmt)
+          }
+        }
+    }
+  }
+  let top_level_source = render_stmt_snippets(source, top_level_stmts)
+  let wrapper_prelude_source = render_stmt_snippets(source, wrapper_prelude_stmts)
+  assert_false(top_level_source.contains("let main ="))
+  assert_false(wrapper_prelude_source.contains("let main ="))
+  let cases = collect_compiled_test_cases(ast)
+  let case_source = build_compiled_test_case_source(
+    top_level_source,
+    wrapper_prelude_source,
+    render_stmt_snippets(source, cases[0].body.stmts),
+  )
+  assert_false(case_source.contains("let main ="))
+}
+
+///|
+test "compiled test case source keeps imported run visible in body" {
+  let case_source = build_compiled_test_case_source(
+    "import ./string_parser.vibe { run }\n",
+    "",
+    "let _ = run\n",
+  )
+  assert_true(case_source.contains("let __vibe_compiled_test_case = () -> Int"))
+  assert_true(case_source.contains("__vibe_compiled_test_case()"))
+  assert_true(case_source.contains("let _ = run"))
+  assert_false(case_source.contains("let run = () -> Int"))
+}
+
+///|
+test "compiled test wrapper executes top-level computed let bindings" {
+  let cwd = @io.current_dir_or_root()
+  let rel_path = "tmp_probe/wbtest_compiled_top_level_computed.vibe"
+  let source_path = @vibe_fs.normalize_path(cwd + "/" + rel_path)
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "let base = \"he\"\n" +
+    "let text = string_concat(base, \"llo\")\n" +
+    "test \"computed string let\" {\n" +
+    "  assert(string_equals(text, \"hello\"))\n" +
+    "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+  match run_test_file_compiled(source_path, false) {
+    CompiledTestAttempt::Success(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    CompiledTestAttempt::Unsupported(err) =>
+      fail("compiled test unexpectedly unsupported: " + err)
+    CompiledTestAttempt::Error(err) =>
+      fail("compiled test unexpectedly errored: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
+test "compiled test wrapper executes imported let aliases" {
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_compiled_option_alias.vibe",
+  )
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "import ./vibe/prelude/option.vibe { or, is_some }\n" +
+    "let option_or = or\n" +
+    "let option_is_some = is_some\n" +
+    "test \"option alias\" {\n" +
+    "  assert(option_is_some(option_or(Some(1), Some(2))))\n" +
+    "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+  match run_test_file_compiled(source_path, false) {
+    CompiledTestAttempt::Success(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    CompiledTestAttempt::Unsupported(err) =>
+      fail("compiled option alias unexpectedly unsupported: " + err)
+    CompiledTestAttempt::Error(err) =>
+      fail("compiled option alias unexpectedly errored: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
+test "compiled test wrapper keeps higher-order imported aliases valid" {
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_compiled_option_hof_aliases.vibe",
+  )
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "import ./vibe/prelude/option.vibe {\n" +
+    "  Eq, Option, and, equals, filter, flatmap, flatten, is_none, is_some, map_opt, map_or, or, or_else, unwrap_or, unwrap_or_else, zip, zip_sum\n" +
+    "}\n" +
+    "let option_or = or\n" +
+    "let option_and = and\n" +
+    "let option_map = map_opt\n" +
+    "let option_zip = zip\n" +
+    "let option_equals = equals\n" +
+    "let option_filter = filter\n" +
+    "let option_map_or = map_or\n" +
+    "let option_flatmap = flatmap\n" +
+    "let option_flatten = flatten\n" +
+    "let option_is_none = is_none\n" +
+    "let option_is_some = is_some\n" +
+    "let option_or_else = or_else\n" +
+    "let option_unwrap_or = unwrap_or\n" +
+    "let option_unwrap_or_else = unwrap_or_else\n" +
+    "test \"option alias table\" {\n" +
+    "  assert(option_is_some(Some(42)))\n" +
+    "  assert(option_is_none(None))\n" +
+    "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+  match run_test_file_compiled(source_path, false) {
+    CompiledTestAttempt::Success(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    CompiledTestAttempt::Unsupported(err) =>
+      fail("compiled option alias unexpectedly unsupported: " + err)
+    CompiledTestAttempt::Error(err) =>
+      fail("compiled option alias unexpectedly errored: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
+test "compiled test wrapper keeps export helper chain top-level" {
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_compiled_export_helper_chain.vibe",
+  )
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "let table = \"ABCDEF\"\n" +
+    "let to_chunk = (i: Int) -> String {\n" +
+    "  table|>string_substring(i, i + 1)\n" +
+    "}\n" +
+    "let rec enc_loop = (rest: Int, out: String) -> String {\n" +
+    "  if rest <= 0 {\n" +
+    "    out\n" +
+    "  } else {\n" +
+    "    enc_loop(rest - 1, out|>string_concat(to_chunk(1)))\n" +
+    "  }\n" +
+    "}\n" +
+    "export let encode = () -> String {\n" +
+    "  enc_loop(2, \"\")\n" +
+    "}\n" +
+    "test \"export helper chain\" {\n" +
+    "  assert(string_equals(encode(), \"BB\"))\n" +
+    "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+  match run_test_file_compiled(source_path, false) {
+    CompiledTestAttempt::Success(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    CompiledTestAttempt::Unsupported(err) =>
+      fail("compiled export helper unexpectedly unsupported: " + err)
+    CompiledTestAttempt::Error(err) =>
+      fail("compiled export helper unexpectedly errored: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
+test "compiled test wrapper keeps map_keys results as strings" {
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_compiled_map_keys_strings.vibe",
+  )
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "test \"map_keys strings\" {\n" +
+    "  let m: Map[Int] = map {\n" +
+    "    \"name\": 1,\n" +
+    "    \"ok\": 2\n" +
+    "  }\n" +
+    "  let keys = map_keys(m)\n" +
+    "  let k0 = array_get(keys, 0)\n" +
+    "  let k1 = array_get(keys, 1)\n" +
+    "  let pair = string_concat(k0, k1)\n" +
+    "  assert(string_equals(pair, \"nameok\") || string_equals(pair, \"okname\"))\n" +
+    "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+  match run_test_file_compiled(source_path, false) {
+    CompiledTestAttempt::Success(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    CompiledTestAttempt::Unsupported(err) =>
+      fail("compiled map_keys strings unexpectedly unsupported: " + err)
+    CompiledTestAttempt::Error(err) =>
+      fail("compiled map_keys strings unexpectedly errored: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
+test "compiled test wrapper overwrites duplicate map builder keys" {
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_compiled_map_builder_dedupe.vibe",
+  )
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "test \"map builder dedupe\" {\n" +
+    "  let b = map_builder()\n" +
+    "  map_builder_set(b, \"name\", 1)\n" +
+    "  map_builder_set(b, \"name\", 2)\n" +
+    "  let m = map_builder_freeze(b)\n" +
+    "  assert(eq(array_length(map_keys(m)), 1))\n" +
+    "  assert(eq(map_get(m, \"name\"), 2))\n" +
+    "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+  match run_test_file_compiled(source_path, false) {
+    CompiledTestAttempt::Success(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    CompiledTestAttempt::Unsupported(err) =>
+      fail("compiled map builder dedupe unexpectedly unsupported: " + err)
+    CompiledTestAttempt::Error(err) =>
+      fail("compiled map builder dedupe unexpectedly errored: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
+test "compiled test wrapper keeps float add assertions valid" {
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_compiled_float_add_assert.vibe",
+  )
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "test \"float add\" {\n" +
+    "  assert(eq(add(1.5f, 2.5f), 4.0f))\n" +
+    "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+  match run_test_file_compiled(source_path, false) {
+    CompiledTestAttempt::Success(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    CompiledTestAttempt::Unsupported(err) =>
+      fail("compiled float add unexpectedly unsupported: " + err)
+    CompiledTestAttempt::Error(err) =>
+      fail("compiled float add unexpectedly errored: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
+test "compiled test wrapper keeps nested let record destructuring valid" {
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_compiled_nested_let_record_pattern.vibe",
+  )
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "test \"nested let record pattern\" {\n" +
+    "  let Some((a, record {\n" +
+    "    x: b,\n" +
+    "    y: c\n" +
+    "  })) = Some((1, record {\n" +
+    "    x: 2,\n" +
+    "    y: 3\n" +
+    "  }))\n" +
+    "  assert(eq(a + b + c, 6))\n" +
+    "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+  match run_test_file_compiled(source_path, false) {
+    CompiledTestAttempt::Success(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    CompiledTestAttempt::Unsupported(err) =>
+      fail("compiled nested let record pattern unexpectedly unsupported: " + err)
+    CompiledTestAttempt::Error(err) =>
+      fail("compiled nested let record pattern unexpectedly errored: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
+test "compiled test marks from_json builtins unsupported for fallback" {
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_compiled_from_json_fallback.vibe",
+  )
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "test \"from_json fallback\" {\n" +
+    "  let data = from_json(\"{\\\"name\\\":\\\"vibe\\\"}\")\n" +
+    "  assert(string_equals(json_string(json_get(data, \"name\")), \"vibe\"))\n" +
+    "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+  match run_test_file_compiled(source_path, false) {
+    CompiledTestAttempt::Unsupported(err) =>
+      assert_true(err.contains("wasm runtime fallback builtins"))
+    CompiledTestAttempt::Success(report) =>
+      fail("expected unsupported fallback, got success: " + report.total.to_string())
+    CompiledTestAttempt::Error(err) =>
+      fail("compiled from_json fallback unexpectedly errored: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
+test "compiled test marks imported jq fallback builtins unsupported" {
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_compiled_jq_fallback.vibe",
+  )
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "import ./vibe/shell/pipeline.vibe { jq }\n" +
+    "test \"jq fallback\" {\n" +
+    "  assert(string_equals(jq(\"{\\\"x\\\":1}\", \"x\"), \"1\"))\n" +
+    "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+  match run_test_file_compiled(source_path, false) {
+    CompiledTestAttempt::Unsupported(err) =>
+      assert_true(err.contains("wasm runtime fallback builtins"))
+    CompiledTestAttempt::Success(report) =>
+      fail("expected unsupported jq fallback, got success: " + report.total.to_string())
+    CompiledTestAttempt::Error(err) =>
+      fail("compiled jq fallback unexpectedly errored: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
+test "compiled test marks perform resume builtins unsupported for fallback" {
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_compiled_perform_resume_fallback.vibe",
+  )
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "enum Eff {\n" +
+    "  Ask(Int);\n" +
+    "}\n" +
+    "let ask_once = () -> Int with { Ask } {\n" +
+    "  perform(Ask(41))\n" +
+    "}\n" +
+    "test \"perform fallback\" {\n" +
+    "  let value = handle {\n" +
+    "    add(1, ask_once())\n" +
+    "  } {\n" +
+    "    Ask(_) => resume(42)\n" +
+    "  }\n" +
+    "  assert(eq(value, 43))\n" +
+    "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+  match run_test_file_compiled(source_path, false) {
+    CompiledTestAttempt::Unsupported(err) =>
+      assert_true(err.contains("wasm runtime fallback builtins"))
+    CompiledTestAttempt::Success(report) =>
+      fail(
+        "expected unsupported perform/resume fallback, got success: " +
+        report.total.to_string(),
+      )
+    CompiledTestAttempt::Error(err) =>
+      fail("compiled perform/resume fallback unexpectedly errored: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
 fn wbtest_make_temp_dir(prefix : String) -> String {
   let base = "/tmp/cmd_vibe_wbtest_" + prefix + "_" + @env.now().to_string()
   for i in 0..<1000 {

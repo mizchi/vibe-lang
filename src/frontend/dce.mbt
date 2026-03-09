@@ -473,6 +473,196 @@ fn filter_reachable_stmts(
 }
 
 ///|
+/// Collect `for-in` helper refs that are injected later during desugar.
+fn collect_for_in_helper_refs_expr(
+  expr : @core.Expr,
+  bound : @core.WalkerScope,
+  refs : Map[String, Bool],
+  on_name : (String, @core.WalkerScope, Map[String, Bool]) -> Unit,
+) -> Unit {
+  match expr {
+    @core.Expr::Int(..)
+    | @core.Expr::Float(..)
+    | @core.Expr::Double(..)
+    | @core.Expr::Bool(..)
+    | @core.Expr::Char(..)
+    | @core.Expr::String(..)
+    | @core.Expr::Ident(..)
+    | @core.Expr::Placeholder(..) => ()
+    @core.Expr::Call(args~, ..) => {
+      for arg in args {
+        collect_for_in_helper_refs_expr(arg.expr, bound, refs, on_name)
+      }
+    }
+    @core.Expr::Tuple(items~, ..) | @core.Expr::Array(items~, ..) =>
+      for item in items {
+        collect_for_in_helper_refs_expr(item, bound, refs, on_name)
+      }
+    @core.Expr::TupleIndex(expr~, ..) =>
+      collect_for_in_helper_refs_expr(expr, bound, refs, on_name)
+    @core.Expr::Record(fields~, ..) =>
+      for field in fields {
+        collect_for_in_helper_refs_expr(field.expr, bound, refs, on_name)
+      }
+    @core.Expr::Map(fields~, ..) =>
+      for field in fields {
+        collect_for_in_helper_refs_expr(field.expr, bound, refs, on_name)
+      }
+    @core.Expr::StructLit(fields~, ..) =>
+      for field in fields {
+        collect_for_in_helper_refs_expr(field.expr, bound, refs, on_name)
+      }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      collect_for_in_helper_refs_expr(cond, bound, refs, on_name)
+      collect_for_in_helper_refs_block(then_body, bound, refs, on_name)
+      collect_for_in_helper_refs_block(else_body, bound, refs, on_name)
+    }
+    @core.Expr::Block(body~, ..) =>
+      collect_for_in_helper_refs_block(body, bound, refs, on_name)
+    @core.Expr::While(cond~, body~, ..) => {
+      collect_for_in_helper_refs_expr(cond, bound, refs, on_name)
+      collect_for_in_helper_refs_block(body, bound, refs, on_name)
+    }
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, ..) => {
+      on_name("iter_require", bound, refs)
+      on_name("iter_length", bound, refs)
+      on_name("iter_get", bound, refs)
+      collect_for_in_helper_refs_expr(iterable, bound, refs, on_name)
+      let for_bound = bound.child()
+      for_bound.bindings[value_name] = true
+      match index_name {
+        Some(idx) => for_bound.bindings[idx] = true
+        None => ()
+      }
+      collect_for_in_helper_refs_block(body, for_bound, refs, on_name)
+    }
+    @core.Expr::Handle(body~, arms~, ..) => {
+      collect_for_in_helper_refs_block(body, bound, refs, on_name)
+      for arm in arms {
+        let arm_bound = bound.child()
+        @core.bind_pattern_names_scope(arm_bound, arm.pat)
+        match arm.cond {
+          Some(cond) => collect_for_in_helper_refs_expr(cond, arm_bound, refs, on_name)
+          None => ()
+        }
+        collect_for_in_helper_refs_expr(arm.expr, arm_bound, refs, on_name)
+      }
+    }
+    @core.Expr::Match(scrutinee~, arms~, ..) => {
+      collect_for_in_helper_refs_expr(scrutinee, bound, refs, on_name)
+      for arm in arms {
+        let arm_bound = bound.child()
+        @core.bind_pattern_names_scope(arm_bound, arm.pat)
+        match arm.cond {
+          Some(cond) => collect_for_in_helper_refs_expr(cond, arm_bound, refs, on_name)
+          None => ()
+        }
+        collect_for_in_helper_refs_expr(arm.expr, arm_bound, refs, on_name)
+      }
+    }
+    @core.Expr::Fn(params~, body~, ..) => {
+      let fn_bound = bound.child()
+      for param in params {
+        fn_bound.bindings[param.name] = true
+      }
+      collect_for_in_helper_refs_block(body, fn_bound, refs, on_name)
+    }
+    @core.Expr::Loop(params~, body~, ..) => {
+      let loop_bound = bound.child()
+      for param in params {
+        collect_for_in_helper_refs_expr(param.init, bound, refs, on_name)
+        loop_bound.bindings[param.name] = true
+      }
+      collect_for_in_helper_refs_block(body, loop_bound, refs, on_name)
+    }
+    @core.Expr::Break(value~, ..) =>
+      match value {
+        Some(inner) => collect_for_in_helper_refs_expr(inner, bound, refs, on_name)
+        None => ()
+      }
+    @core.Expr::Continue(args~, ..) =>
+      for arg in args {
+        collect_for_in_helper_refs_expr(arg, bound, refs, on_name)
+      }
+    @core.Expr::Raise(value~, ..) | @core.Expr::Yield(expr=value, ..) =>
+      collect_for_in_helper_refs_expr(value, bound, refs, on_name)
+  }
+}
+
+///|
+fn collect_for_in_helper_refs_stmt(
+  stmt : @core.Stmt,
+  scope : @core.WalkerScope,
+  refs : Map[String, Bool],
+  on_name : (String, @core.WalkerScope, Map[String, Bool]) -> Unit,
+) -> Unit {
+  match stmt {
+    @core.Stmt::Let(rec~, name~, expr~, ..)
+    | @core.Stmt::ExportLet(rec~, name~, expr~, ..)
+    | @core.Stmt::InternalExportLet(rec~, name~, expr~, ..) => {
+      if rec {
+        scope.bindings[name] = true
+      }
+      collect_for_in_helper_refs_expr(expr, scope, refs, on_name)
+      if not(rec) {
+        scope.bindings[name] = true
+      }
+    }
+    @core.Stmt::LetMut(name~, expr~, ..) => {
+      collect_for_in_helper_refs_expr(expr, scope, refs, on_name)
+      scope.bindings[name] = true
+    }
+    @core.Stmt::ExternLet(name~, ..) => scope.bindings[name] = true
+    @core.Stmt::Assign(expr~, ..) => collect_for_in_helper_refs_expr(expr, scope, refs, on_name)
+    @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
+      collect_for_in_helper_refs_expr(target, scope, refs, on_name)
+      collect_for_in_helper_refs_expr(index, scope, refs, on_name)
+      collect_for_in_helper_refs_expr(value, scope, refs, on_name)
+    }
+    @core.Stmt::LetPat(pat~, expr~, ..) => {
+      collect_for_in_helper_refs_expr(expr, scope, refs, on_name)
+      @core.bind_pattern_names_scope(scope, pat)
+    }
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, ..) => {
+      collect_for_in_helper_refs_expr(expr, scope, refs, on_name)
+      collect_for_in_helper_refs_block(else_body, scope, refs, on_name)
+      @core.bind_pattern_names_scope(scope, pat)
+    }
+    @core.Stmt::Expr(expr~, ..) => collect_for_in_helper_refs_expr(expr, scope, refs, on_name)
+    @core.Stmt::Test(body~, ..) | @core.Stmt::Bench(body~, ..) =>
+      collect_for_in_helper_refs_block(body, scope, refs, on_name)
+    @core.Stmt::EnumDef(name~, ..)
+    | @core.Stmt::ExportEnumDef(name~, ..)
+    | @core.Stmt::InternalExportEnumDef(name~, ..)
+    | @core.Stmt::TypeAlias(name~, ..)
+    | @core.Stmt::ExportTypeAlias(name~, ..)
+    | @core.Stmt::InternalExportTypeAlias(name~, ..)
+    | @core.Stmt::StructDef(name~, ..)
+    | @core.Stmt::ExportStructDef(name~, ..)
+    | @core.Stmt::InternalExportStructDef(name~, ..) => scope.bindings[name] = true
+    @core.Stmt::Import(..)
+    | @core.Stmt::TraitDef(..)
+    | @core.Stmt::InternalTraitDef(..)
+    | @core.Stmt::TraitImpl(..)
+    | @core.Stmt::Export(..)
+    | @core.Stmt::ReExport(..) => ()
+  }
+}
+
+///|
+fn collect_for_in_helper_refs_block(
+  body : @core.Module,
+  bound : @core.WalkerScope,
+  refs : Map[String, Bool],
+  on_name : (String, @core.WalkerScope, Map[String, Bool]) -> Unit,
+) -> Unit {
+  let scope = bound.child()
+  for stmt in body.stmts {
+    collect_for_in_helper_refs_stmt(stmt, scope, refs, on_name)
+  }
+}
+
+///|
 /// Collect references from an expression using the generic walker with DCE filtering.
 fn collect_refs_expr(
   expr : @core.Expr,
@@ -480,6 +670,7 @@ fn collect_refs_expr(
   refs : Map[String, Bool],
   on_name : (String, @core.WalkerScope, Map[String, Bool]) -> Unit,
 ) -> Unit {
+  collect_for_in_helper_refs_expr(expr, bound, refs, on_name)
   @core.walk_expr_refs(expr, bound, refs, on_name)
 }
 
@@ -493,6 +684,7 @@ fn collect_refs_block(
   refs : Map[String, Bool],
   on_name : (String, @core.WalkerScope, Map[String, Bool]) -> Unit,
 ) -> Unit {
+  collect_for_in_helper_refs_block(body, bound, refs, on_name)
   @core.walk_block_refs(body, bound, refs, on_name)
   // DCE also needs type-level refs from type definitions in blocks
   for stmt in body.stmts {

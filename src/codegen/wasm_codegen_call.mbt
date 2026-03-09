@@ -99,6 +99,165 @@ fn compile_i32_mod_tagged(
 }
 
 ///|
+fn emit_tagged_i64_arith_from_locals(
+  buf : ByteBuf,
+  name : String,
+  left_local : Int,
+  right_local : Int,
+) -> Unit raise WasmGenError {
+  match name {
+    "add" | "__add" => {
+      emit_local_get(buf, left_local)
+      emit_local_get(buf, right_local)
+      emit_i64_add(buf)
+    }
+    "sub" | "__sub" => {
+      emit_local_get(buf, left_local)
+      emit_local_get(buf, right_local)
+      emit_i64_sub(buf)
+    }
+    "mul" | "__mul" => {
+      emit_local_get(buf, left_local)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_local_get(buf, right_local)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i64_mul(buf)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf)
+      emit_i64_const_raw(buf, tag_int.to_int64())
+      emit_i64_or(buf)
+    }
+    "div" | "__div" => {
+      emit_local_get(buf, left_local)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_local_get(buf, right_local)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i64_div_s(buf)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf)
+      emit_i64_const_raw(buf, tag_int.to_int64())
+      emit_i64_or(buf)
+    }
+    _ => raise WasmGenError::Unsupported("dynamic numeric arith op: " + name)
+  }
+}
+
+///|
+fn compile_dynamic_numeric_arith_op(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  name : String,
+  args : Array[@core.CallArg],
+  emit_f32 : (ByteBuf) -> Unit,
+  emit_f64 : (ByteBuf) -> Unit,
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs_with_arity(args, name, 2)
+  let left_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+  let right_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+  let left_tag_local = alloc_temp_local(ctx)
+  let right_tag_local = alloc_temp_local(ctx)
+  let left_ptr_local = alloc_temp_local(ctx)
+  let right_ptr_local = alloc_temp_local(ctx)
+  let left_type_local = alloc_temp_local(ctx)
+  let right_type_local = alloc_temp_local(ctx)
+  compile_expr_i32(ctx, buf, pos_args[0])
+  emit_local_set(buf, left_local)
+  compile_expr_i32(ctx, buf, pos_args[1])
+  emit_local_set(buf, right_local)
+  emit_local_get(buf, left_local)
+  emit_i64_const_raw(buf, tag_mask.to_int64())
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_local_set(buf, left_tag_local)
+  emit_local_get(buf, right_local)
+  emit_i64_const_raw(buf, tag_mask.to_int64())
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_local_set(buf, right_tag_local)
+  emit_local_get(buf, left_tag_local)
+  emit_i32_const_raw(buf, tag_obj)
+  emit_i32_eq(buf)
+  emit_local_get(buf, right_tag_local)
+  emit_i32_const_raw(buf, tag_obj)
+  emit_i32_eq(buf)
+  emit_i32_and(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((126).to_byte()) // result i64
+  emit_local_get(buf, left_local)
+  emit_i64_const_raw(buf, (-4).to_int64())
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_local_set(buf, left_ptr_local)
+  emit_local_get(buf, right_local)
+  emit_i64_const_raw(buf, (-4).to_int64())
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_local_set(buf, right_ptr_local)
+  emit_local_get(buf, left_ptr_local)
+  emit_i32_load(buf, 0)
+  emit_local_set(buf, left_type_local)
+  emit_local_get(buf, right_ptr_local)
+  emit_i32_load(buf, 0)
+  emit_local_set(buf, right_type_local)
+  emit_local_get(buf, left_type_local)
+  emit_i32_const_raw(buf, obj_float)
+  emit_i32_eq(buf)
+  emit_local_get(buf, right_type_local)
+  emit_i32_const_raw(buf, obj_float)
+  emit_i32_eq(buf)
+  emit_i32_and(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((126).to_byte()) // result i64
+  emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
+    emit_local_get(buf, left_ptr_local)
+    emit_f32_load(buf, 4)
+    emit_local_get(buf, right_ptr_local)
+    emit_f32_load(buf, 4)
+    emit_f32(buf)
+  })
+  buf.push((5).to_byte()) // else
+  emit_local_get(buf, left_type_local)
+  emit_i32_const_raw(buf, obj_double)
+  emit_i32_eq(buf)
+  emit_local_get(buf, right_type_local)
+  emit_i32_const_raw(buf, obj_double)
+  emit_i32_eq(buf)
+  emit_i32_and(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((126).to_byte()) // result i64
+  emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
+    emit_local_get(buf, left_ptr_local)
+    emit_f64_load(buf, 4)
+    emit_local_get(buf, right_ptr_local)
+    emit_f64_load(buf, 4)
+    emit_f64(buf)
+  })
+  buf.push((5).to_byte()) // else
+  emit_unreachable(buf)
+  buf.push((11).to_byte()) // end if
+  buf.push((11).to_byte()) // end if
+  buf.push((5).to_byte()) // else
+  emit_local_get(buf, left_tag_local)
+  emit_i32_const_raw(buf, tag_int)
+  emit_i32_eq(buf)
+  emit_local_get(buf, right_tag_local)
+  emit_i32_const_raw(buf, tag_int)
+  emit_i32_eq(buf)
+  emit_i32_and(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((126).to_byte()) // result i64
+  emit_tagged_i64_arith_from_locals(buf, name, left_local, right_local)
+  buf.push((5).to_byte()) // else
+  emit_unreachable(buf)
+  buf.push((11).to_byte()) // end if
+  buf.push((11).to_byte()) // end if
+}
+
+///|
 fn compile_binary_arith_op(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -154,6 +313,10 @@ fn compile_binary_cmp_op(
       let right_ptr_local = alloc_temp_local(ctx)
       let left_type_local = alloc_temp_local(ctx)
       let right_type_local = alloc_temp_local(ctx)
+      let left_len_local = alloc_temp_local(ctx)
+      let right_len_local = alloc_temp_local(ctx)
+      let loop_i_local = alloc_temp_local(ctx)
+      let eq_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_local_set(buf, left_local)
       compile_expr_i32(ctx, buf, pos_args[1])
@@ -195,42 +358,150 @@ fn compile_binary_cmp_op(
       emit_local_get(buf, right_ptr_local)
       emit_i32_load(buf, 0)
       emit_local_set(buf, right_type_local)
-      emit_local_get(buf, left_type_local)
-      emit_i32_const_raw(buf, obj_float)
-      emit_i32_eq(buf)
-      emit_local_get(buf, right_type_local)
-      emit_i32_const_raw(buf, obj_float)
-      emit_i32_eq(buf)
-      emit_i32_and(buf)
-      buf.push((4).to_byte()) // if
-      buf.push((127).to_byte()) // result i32
-      emit_local_get(buf, left_ptr_local)
-      emit_f32_load(buf, 4)
-      emit_local_get(buf, right_ptr_local)
-      emit_f32_load(buf, 4)
-      emit_f32(buf)
-      buf.push((5).to_byte()) // else
-      emit_local_get(buf, left_type_local)
-      emit_i32_const_raw(buf, obj_double)
-      emit_i32_eq(buf)
-      emit_local_get(buf, right_type_local)
-      emit_i32_const_raw(buf, obj_double)
-      emit_i32_eq(buf)
-      emit_i32_and(buf)
-      buf.push((4).to_byte()) // if
-      buf.push((127).to_byte()) // result i32
-      emit_local_get(buf, left_ptr_local)
-      emit_f64_load(buf, 4)
-      emit_local_get(buf, right_ptr_local)
-      emit_f64_load(buf, 4)
-      emit_f64(buf)
-      buf.push((5).to_byte()) // else
-      // Compare tagged i64 values directly
-      emit_local_get(buf, left_local)
-      emit_local_get(buf, right_local)
-      emit_i64_cmp(buf)
-      buf.push((11).to_byte()) // end if
-      buf.push((11).to_byte()) // end if
+      if name == "eq" || name == "__eq" {
+        emit_local_get(buf, left_type_local)
+        emit_i32_const_raw(buf, obj_string)
+        emit_i32_eq(buf)
+        emit_local_get(buf, right_type_local)
+        emit_i32_const_raw(buf, obj_string)
+        emit_i32_eq(buf)
+        emit_i32_and(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((127).to_byte()) // result i32
+        emit_local_get(buf, left_ptr_local)
+        emit_local_get(buf, right_ptr_local)
+        emit_i32_eq(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((127).to_byte()) // result i32
+        emit_i32_const_raw(buf, 1)
+        buf.push((5).to_byte()) // else
+        emit_local_get(buf, left_ptr_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, left_len_local)
+        emit_local_get(buf, right_ptr_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, right_len_local)
+        emit_local_get(buf, left_len_local)
+        emit_local_get(buf, right_len_local)
+        emit_i32_eq(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((127).to_byte()) // result i32
+        emit_i32_const_raw(buf, 1)
+        emit_local_set(buf, eq_local)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, loop_i_local)
+        emit_block(buf)
+        emit_loop(buf)
+        emit_local_get(buf, loop_i_local)
+        emit_local_get(buf, left_len_local)
+        emit_i32_lt_s(buf)
+        emit_i32_eqz(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, left_ptr_local)
+        emit_local_get(buf, loop_i_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_local_get(buf, right_ptr_local)
+        emit_local_get(buf, loop_i_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_i32_eq(buf)
+        emit_i32_eqz(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, eq_local)
+        emit_local_get(buf, left_len_local)
+        emit_local_set(buf, loop_i_local)
+        buf.push((5).to_byte()) // else
+        emit_local_get(buf, loop_i_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, loop_i_local)
+        buf.push((11).to_byte()) // end if
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, eq_local)
+        buf.push((5).to_byte()) // else
+        emit_i32_const_raw(buf, 0)
+        buf.push((11).to_byte()) // end if
+        buf.push((11).to_byte()) // end if
+        buf.push((5).to_byte()) // else
+        emit_local_get(buf, left_type_local)
+        emit_i32_const_raw(buf, obj_float)
+        emit_i32_eq(buf)
+        emit_local_get(buf, right_type_local)
+        emit_i32_const_raw(buf, obj_float)
+        emit_i32_eq(buf)
+        emit_i32_and(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((127).to_byte()) // result i32
+        emit_local_get(buf, left_ptr_local)
+        emit_f32_load(buf, 4)
+        emit_local_get(buf, right_ptr_local)
+        emit_f32_load(buf, 4)
+        emit_f32(buf)
+        buf.push((5).to_byte()) // else
+        emit_local_get(buf, left_type_local)
+        emit_i32_const_raw(buf, obj_double)
+        emit_i32_eq(buf)
+        emit_local_get(buf, right_type_local)
+        emit_i32_const_raw(buf, obj_double)
+        emit_i32_eq(buf)
+        emit_i32_and(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((127).to_byte()) // result i32
+        emit_local_get(buf, left_ptr_local)
+        emit_f64_load(buf, 4)
+        emit_local_get(buf, right_ptr_local)
+        emit_f64_load(buf, 4)
+        emit_f64(buf)
+        buf.push((5).to_byte()) // else
+        emit_local_get(buf, left_local)
+        emit_local_get(buf, right_local)
+        emit_i64_cmp(buf)
+        buf.push((11).to_byte()) // end if
+        buf.push((11).to_byte()) // end if
+        buf.push((11).to_byte()) // end if
+      } else {
+        emit_local_get(buf, left_type_local)
+        emit_i32_const_raw(buf, obj_float)
+        emit_i32_eq(buf)
+        emit_local_get(buf, right_type_local)
+        emit_i32_const_raw(buf, obj_float)
+        emit_i32_eq(buf)
+        emit_i32_and(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((127).to_byte()) // result i32
+        emit_local_get(buf, left_ptr_local)
+        emit_f32_load(buf, 4)
+        emit_local_get(buf, right_ptr_local)
+        emit_f32_load(buf, 4)
+        emit_f32(buf)
+        buf.push((5).to_byte()) // else
+        emit_local_get(buf, left_type_local)
+        emit_i32_const_raw(buf, obj_double)
+        emit_i32_eq(buf)
+        emit_local_get(buf, right_type_local)
+        emit_i32_const_raw(buf, obj_double)
+        emit_i32_eq(buf)
+        emit_i32_and(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((127).to_byte()) // result i32
+        emit_local_get(buf, left_ptr_local)
+        emit_f64_load(buf, 4)
+        emit_local_get(buf, right_ptr_local)
+        emit_f64_load(buf, 4)
+        emit_f64(buf)
+        buf.push((5).to_byte()) // else
+        // Compare tagged i64 values directly
+        emit_local_get(buf, left_local)
+        emit_local_get(buf, right_local)
+        emit_i64_cmp(buf)
+        buf.push((11).to_byte()) // end if
+        buf.push((11).to_byte()) // end if
+      }
       buf.push((5).to_byte()) // else
       // Compare tagged i64 values directly
       emit_local_get(buf, left_local)

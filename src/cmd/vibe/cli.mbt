@@ -1333,6 +1333,211 @@ fn is_http_builtin_name(name : String) -> Bool {
 }
 
 ///|
+fn is_wasm_runtime_fallback_builtin_name(name : String) -> Bool {
+  match name {
+    "from_json"
+    | "to_json"
+    | "from_jsonl"
+    | "to_jsonl"
+    | "from_lines"
+    | "to_lines"
+    | "json_type"
+    | "json_string"
+    | "json_get"
+    | "json_index"
+    | "json_number"
+    | "json_bool"
+    | "json_is_null"
+    | "json_length"
+    | "json_keys"
+    | "fs_chdir"
+    | "fs_copy"
+    | "fs_readdir"
+    | "fs_is_dir"
+    | "fs_is_file"
+    | "fs_mkdir"
+    | "fs_mkdir_p"
+    | "fs_getcwd"
+    | "fs_remove"
+    | "fs_rename"
+    | "fs_append"
+    | "env_get"
+    | "llm_complete"
+    | "rlm_run"
+    | "rlm_finalize"
+    | "prompt_text"
+    | "prompt_text_to_string"
+    | "select"
+    | "sh_lines"
+    | "__perform"
+    | "__resume" => true
+    _ => false
+  }
+}
+
+///|
+fn expr_uses_wasm_runtime_fallback_builtins(expr : @vibe_core.Expr) -> Bool {
+  match expr {
+    @vibe_core.Expr::Call(name~, args~, ..) => {
+      if is_wasm_runtime_fallback_builtin_name(name) {
+        return true
+      }
+      for arg in args {
+        if expr_uses_wasm_runtime_fallback_builtins(arg.expr) {
+          return true
+        }
+      }
+      false
+    }
+    @vibe_core.Expr::Tuple(items~, ..) => {
+      for item in items {
+        if expr_uses_wasm_runtime_fallback_builtins(item) {
+          return true
+        }
+      }
+      false
+    }
+    @vibe_core.Expr::TupleIndex(expr~, ..) =>
+      expr_uses_wasm_runtime_fallback_builtins(expr)
+    @vibe_core.Expr::Record(fields~, ..)
+    | @vibe_core.Expr::StructLit(fields~, ..) => {
+      for field in fields {
+        if expr_uses_wasm_runtime_fallback_builtins(field.expr) {
+          return true
+        }
+      }
+      false
+    }
+    @vibe_core.Expr::Array(items~, ..) => {
+      for item in items {
+        if expr_uses_wasm_runtime_fallback_builtins(item) {
+          return true
+        }
+      }
+      false
+    }
+    @vibe_core.Expr::Map(fields~, ..) => {
+      for field in fields {
+        if expr_uses_wasm_runtime_fallback_builtins(field.expr) {
+          return true
+        }
+      }
+      false
+    }
+    @vibe_core.Expr::If(cond~, then_body~, else_body~, ..) =>
+      expr_uses_wasm_runtime_fallback_builtins(cond) ||
+      module_uses_wasm_runtime_fallback_builtins(then_body) ||
+      module_uses_wasm_runtime_fallback_builtins(else_body)
+    @vibe_core.Expr::Block(body~, ..) =>
+      module_uses_wasm_runtime_fallback_builtins(body)
+    @vibe_core.Expr::Match(scrutinee~, arms~, ..) => {
+      if expr_uses_wasm_runtime_fallback_builtins(scrutinee) {
+        return true
+      }
+      for arm in arms {
+        if expr_uses_wasm_runtime_fallback_builtins(arm.expr) {
+          return true
+        }
+        match arm.cond {
+          Some(cond) =>
+            if expr_uses_wasm_runtime_fallback_builtins(cond) {
+              return true
+            }
+          None => ()
+        }
+      }
+      false
+    }
+    @vibe_core.Expr::ForIn(iterable~, body~, ..) =>
+      expr_uses_wasm_runtime_fallback_builtins(iterable) ||
+      module_uses_wasm_runtime_fallback_builtins(body)
+    @vibe_core.Expr::Fn(body~, ..) =>
+      module_uses_wasm_runtime_fallback_builtins(body)
+    @vibe_core.Expr::While(cond~, body~, ..) =>
+      expr_uses_wasm_runtime_fallback_builtins(cond) ||
+      module_uses_wasm_runtime_fallback_builtins(body)
+    @vibe_core.Expr::Loop(params~, body~, ..) => {
+      for param in params {
+        if expr_uses_wasm_runtime_fallback_builtins(param.init) {
+          return true
+        }
+      }
+      module_uses_wasm_runtime_fallback_builtins(body)
+    }
+    @vibe_core.Expr::Break(value~, ..) =>
+      match value {
+        Some(v) => expr_uses_wasm_runtime_fallback_builtins(v)
+        None => false
+      }
+    @vibe_core.Expr::Continue(args~, ..) => {
+      for arg in args {
+        if expr_uses_wasm_runtime_fallback_builtins(arg) {
+          return true
+        }
+      }
+      false
+    }
+    @vibe_core.Expr::Raise(value~, ..) =>
+      expr_uses_wasm_runtime_fallback_builtins(value)
+    @vibe_core.Expr::Yield(expr~, ..) =>
+      expr_uses_wasm_runtime_fallback_builtins(expr)
+    @vibe_core.Expr::Handle(body~, arms~, ..) => {
+      if module_uses_wasm_runtime_fallback_builtins(body) {
+        return true
+      }
+      for arm in arms {
+        if expr_uses_wasm_runtime_fallback_builtins(arm.expr) {
+          return true
+        }
+        match arm.cond {
+          Some(cond) =>
+            if expr_uses_wasm_runtime_fallback_builtins(cond) {
+              return true
+            }
+          None => ()
+        }
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+///|
+fn stmt_uses_wasm_runtime_fallback_builtins(stmt : @vibe_core.Stmt) -> Bool {
+  match stmt {
+    @vibe_core.Stmt::Let(expr~, ..)
+    | @vibe_core.Stmt::LetMut(expr~, ..)
+    | @vibe_core.Stmt::Assign(expr~, ..)
+    | @vibe_core.Stmt::LetPat(expr~, ..)
+    | @vibe_core.Stmt::Expr(expr~, ..)
+    | @vibe_core.Stmt::ExportLet(expr~, ..)
+    | @vibe_core.Stmt::InternalExportLet(expr~, ..) =>
+      expr_uses_wasm_runtime_fallback_builtins(expr)
+    @vibe_core.Stmt::IndexAssign(target~, index~, value~, ..) =>
+      expr_uses_wasm_runtime_fallback_builtins(target) ||
+      expr_uses_wasm_runtime_fallback_builtins(index) ||
+      expr_uses_wasm_runtime_fallback_builtins(value)
+    @vibe_core.Stmt::LetPatElse(expr~, else_body~, ..) =>
+      expr_uses_wasm_runtime_fallback_builtins(expr) ||
+      module_uses_wasm_runtime_fallback_builtins(else_body)
+    @vibe_core.Stmt::Test(body~, ..) | @vibe_core.Stmt::Bench(body~, ..) =>
+      module_uses_wasm_runtime_fallback_builtins(body)
+    _ => false
+  }
+}
+
+///|
+fn module_uses_wasm_runtime_fallback_builtins(ast : @vibe_core.Module) -> Bool {
+  for stmt in ast.stmts {
+    if stmt_uses_wasm_runtime_fallback_builtins(stmt) {
+      return true
+    }
+  }
+  false
+}
+
+///|
 fn expr_uses_http_builtins(expr : @vibe_core.Expr) -> Bool {
   match expr {
     @vibe_core.Expr::Call(name~, args~, ..) => {
@@ -2213,20 +2418,169 @@ fn render_stmt_snippets(
 }
 
 ///|
+fn compiled_test_wrapper_conflict_name(name : String) -> Bool {
+  name == "main" || name == "run" || name == "__vibe_compiled_test_case"
+}
+
+///|
+fn should_omit_compiled_test_prelude_stmt(stmt : @vibe_core.Stmt) -> Bool {
+  match stmt {
+    @vibe_core.Stmt::Let(name~, ..)
+    | @vibe_core.Stmt::ExportLet(name~, ..)
+    | @vibe_core.Stmt::InternalExportLet(name~, ..) =>
+      compiled_test_wrapper_conflict_name(name)
+    @vibe_core.Stmt::Export(names~, ..) => {
+      for name in names {
+        if compiled_test_wrapper_conflict_name(name) {
+          return true
+        }
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+///|
+fn compiled_test_prelude_stmt_runs_in_wrapper(stmt : @vibe_core.Stmt) -> Bool {
+  match stmt {
+    @vibe_core.Stmt::Let(..)
+    | @vibe_core.Stmt::LetMut(..)
+    | @vibe_core.Stmt::LetPat(..)
+    | @vibe_core.Stmt::LetPatElse(..) => true
+    _ => false
+  }
+}
+
+///|
+fn compiled_test_prelude_pattern_bound_names(
+  pat : @vibe_core.Pat,
+) -> Array[String] {
+  let names : Map[String, Bool] = {}
+  @vibe_core.bind_pattern_names_walker(names, pat)
+  let out : Array[String] = []
+  for name, _ in names {
+    out.push(name)
+  }
+  out
+}
+
+///|
+fn compiled_test_prelude_stmt_defined_names(
+  stmt : @vibe_core.Stmt,
+) -> Array[String] {
+  match stmt {
+    @vibe_core.Stmt::Let(name~, ..)
+    | @vibe_core.Stmt::ExportLet(name~, ..)
+    | @vibe_core.Stmt::InternalExportLet(name~, ..)
+    | @vibe_core.Stmt::LetMut(name~, ..) => [name]
+    @vibe_core.Stmt::LetPat(pat~, ..)
+    | @vibe_core.Stmt::LetPatElse(pat~, ..) =>
+      compiled_test_prelude_pattern_bound_names(pat)
+    _ => []
+  }
+}
+
+///|
+fn compiled_test_prelude_collect_ref_name(
+  name : String,
+  scope : @vibe_core.WalkerScope,
+  refs : Map[String, Bool],
+) -> Unit {
+  if not(scope.contains(name)) {
+    refs[name] = true
+  }
+}
+
+///|
+fn compiled_test_prelude_stmt_refs(stmt : @vibe_core.Stmt) -> Map[String, Bool] {
+  let refs : Map[String, Bool] = {}
+  @vibe_core.walk_stmt_refs(
+    stmt,
+    @vibe_core.WalkerScope::new(),
+    refs,
+    compiled_test_prelude_collect_ref_name,
+  )
+  refs
+}
+
+///|
+fn compiled_test_prelude_stmt_must_stay_top_level(
+  stmt : @vibe_core.Stmt,
+  required_names : Map[String, Bool],
+) -> Bool {
+  for name in compiled_test_prelude_stmt_defined_names(stmt) {
+    if required_names.contains(name) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn compiled_test_prelude_absorb_stmt_refs(
+  stmt : @vibe_core.Stmt,
+  required_names : Map[String, Bool],
+) -> Unit {
+  let refs = compiled_test_prelude_stmt_refs(stmt)
+  for name, _ in refs {
+    required_names[name] = true
+  }
+}
+
+///|
+fn partition_compiled_test_prelude_stmts(
+  stmts : Array[@vibe_core.Stmt],
+) -> (Array[@vibe_core.Stmt], Array[@vibe_core.Stmt]) {
+  let required_names : Map[String, Bool] = {}
+  for stmt in stmts {
+    if not(compiled_test_prelude_stmt_runs_in_wrapper(stmt)) {
+      compiled_test_prelude_absorb_stmt_refs(stmt, required_names)
+    }
+  }
+  for _ in 0..<stmts.length() {
+    for stmt in stmts {
+      if compiled_test_prelude_stmt_runs_in_wrapper(stmt) &&
+        compiled_test_prelude_stmt_must_stay_top_level(stmt, required_names) {
+        compiled_test_prelude_absorb_stmt_refs(stmt, required_names)
+      }
+    }
+  }
+  let top_level_stmts : Array[@vibe_core.Stmt] = []
+  let wrapper_prelude_stmts : Array[@vibe_core.Stmt] = []
+  for stmt in stmts {
+    if compiled_test_prelude_stmt_runs_in_wrapper(stmt) &&
+      not(compiled_test_prelude_stmt_must_stay_top_level(stmt, required_names)) {
+      wrapper_prelude_stmts.push(stmt)
+    } else {
+      top_level_stmts.push(stmt)
+    }
+  }
+  (top_level_stmts, wrapper_prelude_stmts)
+}
+
+///|
 fn build_compiled_test_case_source(
-  prelude_source : String,
+  top_level_source : String,
+  wrapper_prelude_source : String,
   body_source : String,
 ) -> String {
   let out = StringBuilder::new()
-  if prelude_source.trim().to_string().length() > 0 {
-    out.write_string(prelude_source)
-    if not(prelude_source.has_suffix("\n")) {
+  if top_level_source.trim().to_string().length() > 0 {
+    out.write_string(top_level_source)
+    if not(top_level_source.has_suffix("\n")) {
       out.write_char('\n')
     }
   }
   out.write_string(
-    "let main = () -> Int with { Error, Fs, Process, Env, Stdout, Stdin, Net, Async, Threads, Llm } {\n",
+    "let __vibe_compiled_test_case = () -> Int with { Error, Fs, Process, Env, Stdout, Stdin, Net, Async, Threads, Llm } {\n",
   )
+  if wrapper_prelude_source.trim().to_string().length() > 0 {
+    out.write_string(wrapper_prelude_source)
+    if not(wrapper_prelude_source.has_suffix("\n")) {
+      out.write_char('\n')
+    }
+  }
   if body_source.trim().to_string().length() > 0 {
     out.write_string(body_source)
     if not(body_source.has_suffix("\n")) {
@@ -2234,9 +2588,10 @@ fn build_compiled_test_case_source(
     }
   }
   // Compiled test case body is statement-oriented and may end in Unit.
-  // Keep `main: Int` contract by returning 0 explicitly.
+  // Keep `run: Int` contract by returning 0 explicitly.
   out.write_string("0\n")
   out.write_string("}\n")
+  out.write_string("__vibe_compiled_test_case()\n")
   out.to_string()
 }
 
@@ -2324,7 +2679,13 @@ fn run_test_file_compiled(
     Ok(v) => v
   }
   let ast = db.ast(entry)
-  let use_http_host_runner = module_uses_http_builtins(ast)
+  let detect_ast = @runtime.bundle_for_wasm_no_dce(db, entry, ast)
+  let use_http_host_runner = module_uses_http_builtins(detect_ast)
+  if module_uses_wasm_runtime_fallback_builtins(detect_ast) {
+    return CompiledTestAttempt::Unsupported(
+      "wasm runtime fallback builtins in test module",
+    )
+  }
   for stmt in ast.stmts {
     match stmt {
       @vibe_core.Stmt::Test(..) | @vibe_core.Stmt::Bench(..) => ()
@@ -2368,10 +2729,17 @@ fn run_test_file_compiled(
   for stmt in ast.stmts {
     match stmt {
       @vibe_core.Stmt::Test(..) | @vibe_core.Stmt::Bench(..) => ()
-      _ => prelude_stmts.push(stmt)
+      _ =>
+        if not(should_omit_compiled_test_prelude_stmt(stmt)) {
+          prelude_stmts.push(stmt)
+        }
     }
   }
-  let prelude_source = render_stmt_snippets(source, prelude_stmts)
+  let (top_level_stmts, wrapper_prelude_stmts) = partition_compiled_test_prelude_stmts(
+    prelude_stmts,
+  )
+  let top_level_source = render_stmt_snippets(source, top_level_stmts)
+  let wrapper_prelude_source = render_stmt_snippets(source, wrapper_prelude_stmts)
   let parent = @vibe_fs.parent_path(entry)
   let stamp = @env.now().to_string() + "_" + vibe_getpid().to_string()
   let failures : Array[CliTestFailure] = []
@@ -2379,7 +2747,7 @@ fn run_test_file_compiled(
   for i, case in cases {
     let case_body_source = render_stmt_snippets(source, case.body.stmts)
     let case_source = build_compiled_test_case_source(
-      prelude_source, case_body_source,
+      top_level_source, wrapper_prelude_source, case_body_source,
     )
     let base = parent + "/.vibe_test_wasm_" + stamp + "_" + i.to_string()
     let source_path = base + ".vibe"
@@ -2489,7 +2857,7 @@ fn run_test_file_with_backend(
         }
         return Ok(report)
       }
-      CompiledTestAttempt::Unsupported(err) =>
+      CompiledTestAttempt::Unsupported(_) =>
         if backend_pref == CliExecBackendPref::Compiled ||
           not(allow_interpreter_fallback) {
           // Even in Compiled mode, fall back to interpreter for unsupported features

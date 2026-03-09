@@ -55,6 +55,13 @@ fn bundle_for_wasm_impl(
   let visited : Map[String, Bool] = {}
   // Collect all dependency definitions in topological order
   collect_dependency_defs(db, path, bundled_stmts, visited)
+  let existing_value_names : Map[String, Bool] = {}
+  for stmt in bundled_stmts {
+    match bundle_stmt_value_name(stmt) {
+      Some(name) => existing_value_names[name] = true
+      None => ()
+    }
+  }
   // Include prelude function definitions so that higher-order functions
   // like array_map, array_filter, array_fold etc. are available in WASM.
   // These are defined as user-level .vibe code using primitive builtins
@@ -64,7 +71,11 @@ fn bundle_for_wasm_impl(
   for stmt in prelude.stmts {
     match stmt {
       // Include function definitions from prelude
-      @core.Stmt::Let(..) => bundled_stmts.push(stmt)
+      @core.Stmt::Let(name~, ..) =>
+        if not(existing_value_names.contains(name)) {
+          bundled_stmts.push(stmt)
+          existing_value_names[name] = true
+        }
       // Skip trait definitions and impls (not needed for codegen)
       _ => ()
     }
@@ -93,6 +104,17 @@ fn bundle_for_wasm_impl(
     bundled
   }
   demote_unused_let_mut(after_dce)
+}
+
+///|
+fn bundle_stmt_value_name(stmt : @core.Stmt) -> String? {
+  match stmt {
+    @core.Stmt::Let(name~, ..)
+    | @core.Stmt::ExportLet(name~, ..)
+    | @core.Stmt::InternalExportLet(name~, ..)
+    | @core.Stmt::LetMut(name~, ..) => Some(name)
+    _ => None
+  }
 }
 
 ///|
