@@ -2768,10 +2768,10 @@ test "compiled test wrapper overwrites duplicate map builder keys" {
   @os_fs.write_string_to_file(
     source_path,
     "test \"map builder dedupe\" {\n" +
-    "  let b = map_builder()\n" +
-    "  map_builder_set(b, \"name\", 1)\n" +
-    "  map_builder_set(b, \"name\", 2)\n" +
-    "  let m = map_builder_freeze(b)\n" +
+    "  let b = MapBuilder::new()\n" +
+    "  MapBuilder::set(b, \"name\", 1)\n" +
+    "  MapBuilder::set(b, \"name\", 2)\n" +
+    "  let m = MapBuilder::freeze(b)\n" +
     "  assert(eq(array_length(map_keys(m)), 1))\n" +
     "  assert(eq(map_get(m, \"name\"), 2))\n" +
     "}\n",

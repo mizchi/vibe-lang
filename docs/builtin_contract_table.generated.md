@@ -12,6 +12,7 @@ Legend:
 - `required effects` is the effect-set contract (`with {...}` requirement).
 - `- (do required)` means no effect-set requirement, but current checker
   requires an effect-allowed context (`do { ... }` or effectful function body).
+- legacy builtin aliases are normalized to canonical names in this table.
 - `component` currently shares builtin codegen support with `wasm`.
 
 | name | signature | required effects | interpreter | wasm | component |
@@ -65,9 +66,6 @@ Legend:
 | `i32_trunc_f64_s` | `(Double) -> Int` | `-` | no | yes | yes |
 | `int_to_double` | `(Int) -> Double` | `-` | no | yes | yes |
 | `int_to_float` | `(Int) -> Float` | `-` | no | yes | yes |
-| `map_builder` | `() -> MapBuilder[K, V]` | `-` | yes | yes | yes |
-| `map_builder_freeze` | `(MapBuilder[K, V]) -> Map[K, V]` | `-` | yes | yes | yes |
-| `map_builder_set` | `(MapBuilder[K, V], K, V) -> Unit` | `-` | yes | yes | yes |
 | `map_get` | `(Map[K, V], K) -> V` | `-` | no | yes | yes |
 | `map_has_key` | `(Map[K, V], K) -> Bool` | `-` | no | yes | yes |
 | `map_keys` | `(Map[K, V]) -> Array[K]` | `-` | yes | yes | yes |
