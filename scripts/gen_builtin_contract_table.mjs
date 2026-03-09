@@ -69,6 +69,15 @@ const union = (...sets) => {
   return out;
 };
 
+const canonical_builtin_aliases = new Map([
+  ["map_builder", "MapBuilder::new"],
+  ["map_builder_set", "MapBuilder::set"],
+  ["map_builder_freeze", "MapBuilder::freeze"],
+]);
+
+const canonicalize_builtin_name = (name) =>
+  canonical_builtin_aliases.get(name) ?? name;
+
 const signatures = {
   path: "(String) -> Path",
   addr: "(String literal) -> T  // address lookup",
@@ -196,27 +205,66 @@ const wasm_supported = union(
   extract_case_names(wasm_builtin_codegen),
 );
 
-const missing_signatures = checker_builtin_names.filter((name) => !signatures[name]);
+const builtin_name_groups = new Map();
+for (const name of checker_builtin_names) {
+  const canonical_name = canonicalize_builtin_name(name);
+  const group = builtin_name_groups.get(canonical_name) ?? [];
+  group.push(name);
+  builtin_name_groups.set(canonical_name, group);
+}
+
+const builtin_names = [...builtin_name_groups.keys()].sort();
+
+const signature_for = (names) => {
+  for (const name of names) {
+    if (signatures[name]) {
+      return signatures[name];
+    }
+  }
+  return null;
+};
+
+const first_match = (names, pred) => {
+  for (const name of names) {
+    if (pred(name)) {
+      return name;
+    }
+  }
+  return null;
+};
+
+const missing_signatures = builtin_names.filter(
+  (name) => signature_for([name, ...(builtin_name_groups.get(name) ?? [])]) == null,
+);
 if (missing_signatures.length > 0) {
   console.warn(
     `skipping ${missing_signatures.length} builtin(s) without signature metadata`,
   );
 }
-const checker_builtins = checker_builtin_names.filter((name) => signatures[name]);
+const checker_builtins = builtin_names.filter(
+  (name) => signature_for([name, ...(builtin_name_groups.get(name) ?? [])]) != null,
+);
 
 const markdown_escape = (s) => s.replaceAll("|", "\\|");
 
 const rows = checker_builtins.map((name) => {
-  const effect = effects.get(name);
-  const effect_text = effect
+  const raw_names = [name, ...(builtin_name_groups.get(name) ?? [])];
+  const effect_name = first_match(raw_names, (raw_name) => effects.has(raw_name));
+  const effect = effect_name == null ? null : effects.get(effect_name);
+  const effect_text = effect != null
     ? `{${effect}}`
-    : do_required.has(name)
+    : raw_names.some((raw_name) => do_required.has(raw_name))
       ? "- (do required)"
       : "-";
-  const interp = interpreter_supported.has(name) ? "yes" : "no";
-  const wasm = wasm_supported.has(name) ? "yes" : "no";
-  const component = wasm_supported.has(name) ? "yes" : "no";
-  return `| \`${name}\` | \`${markdown_escape(signatures[name])}\` | \`${markdown_escape(effect_text)}\` | ${interp} | ${wasm} | ${component} |`;
+  const interp = raw_names.some((raw_name) => interpreter_supported.has(raw_name))
+    ? "yes"
+    : "no";
+  const wasm = raw_names.some((raw_name) => wasm_supported.has(raw_name))
+    ? "yes"
+    : "no";
+  const component = wasm;
+  const signature = signature_for(raw_names);
+  return `| \`${name}\` | \`${markdown_escape(signature ?? "(missing)")}\` | \`${markdown_escape(effect_text)}\` | ${interp} | ${wasm} | ${component} |`;
 });
 
 const out = [
@@ -234,6 +282,7 @@ const out = [
   "- `required effects` is the effect-set contract (`with {...}` requirement).",
   "- `- (do required)` means no effect-set requirement, but current checker",
   "  requires an effect-allowed context (`do { ... }` or effectful function body).",
+  "- legacy builtin aliases are normalized to canonical names in this table.",
   "- `component` currently shares builtin codegen support with `wasm`.",
   "",
   "| name | signature | required effects | interpreter | wasm | component |",
