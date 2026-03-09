@@ -1602,7 +1602,7 @@ test "vibe array builder freeze snapshot" {
 test "vibe map builder freeze snapshot" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script(
-    "let m = { let b = map_builder()\nmap_builder_set(b, \"a\", 1)\nlet x = map_builder_freeze(b)\nmap_builder_set(b, \"b\", 2)\nlet y = map_builder_freeze(b)\n(x, y) }",
+    "let m = { let b = MapBuilder::new()\nMapBuilder::set(b, \"a\", 1)\nlet x = MapBuilder::freeze(b)\nMapBuilder::set(b, \"b\", 2)\nlet y = MapBuilder::freeze(b)\n(x, y) }",
   )
   match rt.get("m") {
     Some(@core.Value::Tuple(items)) =>
