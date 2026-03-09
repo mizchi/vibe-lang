@@ -55,6 +55,29 @@ railway-oriented な記述規約を固定したい。
 2. `impl` は trait 実装（`impl Trait for Type`）に限定する。
 3. `impl Type::symbol` のような「メソッド機構としての別系統」は導入しない。
 
+### 5.1 型所有 API の rename パターン
+
+型に意味的に属する操作は、free function / builtin 名から `Type::verb` 形式へ
+寄せていく。これは「メソッド糖衣」ではなく、型名 namespace による通常の
+シンボル定義として扱う。
+
+基本ルール:
+
+1. 旧 API が `domain_verb(x, ...)` 形式でも、実体が特定の型操作なら
+   `Type::verb(x, ...)` を正規形にする。
+2. pipe-first では `x |> Type::verb(...)` を第一表記とする。
+3. 移行期間中は旧名を alias として残してよいが、normalize / docs / examples は
+   正規形へ寄せる。
+
+例:
+
+- `map_set(m, key, value)` → `Map::set(m, key, value)`
+- pipe-first では `m |> Map::set(key, value)`
+
+このパターンは、collection / string / bytes など「型の所有操作」として読める API に
+適用する。逆に endpoint 横断の衝突回避 alias（`process_run`, `json_parse` など）は
+別 ADR の canonical naming に従う。
+
 ### 6. Result 合成とエラー境界（Railway）
 
 1. アプリケーション pipeline は Result 合成を第一選択にする。
@@ -79,4 +102,6 @@ railway-oriented な記述規約を固定したい。
 
 - parser: `|>` 混在曖昧性の専用エラーコードと修正ヒント（括弧提案）を追加する
 - normalize/edit: 完全修飾シンボルから人間向け import へ再展開する規則を固定する
+- normalize/edit: 旧 free function 名から `Type::symbol` 正規形への rewrite 候補
+  （例: `map_set` -> `Map::set`）を段階的に追加する
 - semver: 関数レベル semver とパッケージ semver の関係は別 ADR で定義する

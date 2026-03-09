@@ -31,8 +31,9 @@ endpoint 直下の `index.vibe` は、衝突しやすい名前に対して prefi
 3. 旧名（短名）は互換のため維持し、段階的移行対象とする
 4. 新規 endpoint で衝突しやすい verb を公開する場合も同ルールを適用する
 
-`Type::method` 形式の member API（例: `String::starts_with`）は本 ADR の対象外。
-そちらは型名で namespace が分離されるため、既存規約を維持する。
+`Type::method` 形式の member API（例: `String::starts_with`, `Map::set`）は本 ADR の対象外。
+そちらは型名で namespace が分離されるため、既存規約を維持する。free function から
+`Type::symbol` への rename パターンは ADR-0020 に従う。
 
 ## Initial rollout (2026-02-25)
 
