@@ -943,25 +943,44 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       _ => (array_builder_freeze(b), pos)
     }
   }
-  let rec parse_postfix = (tokens: Array[Token], pos: Int, expr: Expr) -> (Expr, Int)with { Error } {
-    match peek(tokens, pos) {
-      TLParen => match peek(tokens, pos + 1) {
-        TRParen => parse_postfix(tokens, pos + 2, ECall(expr, empty_exprs())),
-        _ => {
-          let b = array_builder()
-          let (f, n1) = parse_call_arg(tokens, pos + 1)
-          array_builder_push(b, f)
-          let (args, end) = parse_call_args_rest(tokens, n1, b)
-          let en = expect_tk(tokens, end, ")")
-          parse_postfix(tokens, en, ECall(expr, args))
-        }
-      },
-      TDot => match peek(tokens, pos + 1) {
-        TIdent(field) => parse_postfix(tokens, pos + 2, EDot(expr, field)),
-        _ => (expr, pos)
-      },
-      _ => (expr, pos)
+  let parse_postfix = (tokens: Array[Token], pos: Int, expr: Expr) -> (Expr, Int)with { Error } {
+    let mut cur_expr = expr
+    let mut cur_pos = pos
+    let mut done = false
+    while !done {
+      match peek(tokens, cur_pos) {
+        TLParen => match cur_expr {
+          // Disallow direct call chaining like f(x)(y). This avoids
+          // ambiguity with newline-separated block expressions and matches
+          // how the current codebase uses function calls.
+          ECall(_, _) => { done = true },
+          _ => match peek(tokens, cur_pos + 1) {
+            TRParen => {
+              cur_expr = ECall(cur_expr, empty_exprs())
+              cur_pos = cur_pos + 2
+            },
+            _ => {
+              let b = array_builder()
+              let (f, n1) = parse_call_arg(tokens, cur_pos + 1)
+              array_builder_push(b, f)
+              let (args, end) = parse_call_args_rest(tokens, n1, b)
+              let en = expect_tk(tokens, end, ")")
+              cur_expr = ECall(cur_expr, args)
+              cur_pos = en
+            }
+          }
+        },
+        TDot => match peek(tokens, cur_pos + 1) {
+          TIdent(field) => {
+            cur_expr = EDot(cur_expr, field)
+            cur_pos = cur_pos + 2
+          },
+          _ => { done = true }
+        },
+        _ => { done = true }
+      }
     }
+    (cur_expr, cur_pos)
   }
   let pipe_desugar = (lhs: Expr, rhs: Expr) -> Expr {
     match rhs {

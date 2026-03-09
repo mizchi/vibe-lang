@@ -177,11 +177,153 @@ function taggedIntToText(tagged) {
   return tagged.toString();
 }
 
+function parseFuncToTableSlot(wasmBytes) {
+  const buf = Buffer.from(wasmBytes);
+  let pos = 8;
+  const funcToSlot = {};
+  while (pos < buf.length) {
+    const sectionId = buf[pos++];
+    let sectionLen = 0;
+    let shift = 0;
+    while (true) {
+      const b = buf[pos++];
+      sectionLen |= (b & 0x7f) << shift;
+      if ((b & 0x80) === 0) break;
+      shift += 7;
+    }
+    const sectionEnd = pos + sectionLen;
+    if (sectionId === 9) {
+      let elemCount = 0;
+      shift = 0;
+      while (true) {
+        const b = buf[pos++];
+        elemCount |= (b & 0x7f) << shift;
+        if ((b & 0x80) === 0) break;
+        shift += 7;
+      }
+      for (let i = 0; i < elemCount; i += 1) {
+        const flags = buf[pos++];
+        if (flags === 0) {
+          if (buf[pos++] !== 0x41) {
+            throw new Error("expected i32.const in elem section");
+          }
+          let tableOffset = 0;
+          shift = 0;
+          while (true) {
+            const b = buf[pos++];
+            tableOffset |= (b & 0x7f) << shift;
+            if ((b & 0x80) === 0) break;
+            shift += 7;
+          }
+          if (buf[pos++] !== 0x0b) {
+            throw new Error("expected end in elem expr");
+          }
+          let numFuncs = 0;
+          shift = 0;
+          while (true) {
+            const b = buf[pos++];
+            numFuncs |= (b & 0x7f) << shift;
+            if ((b & 0x80) === 0) break;
+            shift += 7;
+          }
+          for (let j = 0; j < numFuncs; j += 1) {
+            let funcIdx = 0;
+            shift = 0;
+            while (true) {
+              const b = buf[pos++];
+              funcIdx |= (b & 0x7f) << shift;
+              if ((b & 0x80) === 0) break;
+              shift += 7;
+            }
+            funcToSlot[funcIdx] = tableOffset + j;
+          }
+        } else {
+          pos = sectionEnd;
+          break;
+        }
+      }
+    }
+    pos = sectionEnd;
+  }
+  return funcToSlot;
+}
+
+function parseExportFuncIndices(wasmBytes) {
+  const buf = Buffer.from(wasmBytes);
+  let pos = 8;
+  const exports = {};
+  while (pos < buf.length) {
+    const sectionId = buf[pos++];
+    let sectionLen = 0;
+    let shift = 0;
+    while (true) {
+      const b = buf[pos++];
+      sectionLen |= (b & 0x7f) << shift;
+      if ((b & 0x80) === 0) break;
+      shift += 7;
+    }
+    const sectionEnd = pos + sectionLen;
+    if (sectionId === 7) {
+      let count = 0;
+      shift = 0;
+      while (true) {
+        const b = buf[pos++];
+        count |= (b & 0x7f) << shift;
+        if ((b & 0x80) === 0) break;
+        shift += 7;
+      }
+      for (let i = 0; i < count; i += 1) {
+        let nameLen = 0;
+        shift = 0;
+        while (true) {
+          const b = buf[pos++];
+          nameLen |= (b & 0x7f) << shift;
+          if ((b & 0x80) === 0) break;
+          shift += 7;
+        }
+        const name = buf.slice(pos, pos + nameLen).toString("utf8");
+        pos += nameLen;
+        const kind = buf[pos++];
+        let idx = 0;
+        shift = 0;
+        while (true) {
+          const b = buf[pos++];
+          idx |= (b & 0x7f) << shift;
+          if ((b & 0x80) === 0) break;
+          shift += 7;
+        }
+        if (kind === 0) {
+          exports[name] = idx;
+        }
+      }
+    }
+    pos = sectionEnd;
+  }
+  return exports;
+}
+
+function findClosureEnv(instance, heapStart, tableSlot) {
+  const heapGlobal = instance.exports.__heap_ptr;
+  if (!heapGlobal) {
+    return 0;
+  }
+  const heapEnd = heapGlobal.value;
+  const mem = new Uint8Array(instance.exports.memory.buffer);
+  for (let ptr = heapStart; ptr < heapEnd; ptr += 8) {
+    if (readU32LE(mem, ptr) === 7 && readU32LE(mem, ptr + 4) === tableSlot) {
+      return ptr;
+    }
+  }
+  return 0;
+}
+
 let instanceRefGlobal = null;
 
 async function main() {
   const { invoke, wasmPath } = parseArgs(process.argv.slice(2));
   const wasmBytes = fs.readFileSync(wasmPath);
+  const exportFuncIndices = parseExportFuncIndices(wasmBytes);
+  const funcToTableSlot = parseFuncToTableSlot(wasmBytes);
   let instanceRef = null;
   // Also store globally for error handler (see catch block)
 
@@ -288,24 +430,32 @@ async function main() {
 
   // User-exported functions have an implicit i32 env parameter (closure ABI).
   // The "run" entry has no params; all other exports take (i32) -> i64.
-  // Pass env=0 for non-closure exports.
-  // Always call run() first for non-run invocations to initialize module
-  // globals (exported function env pointers, etc.).
+  // For closure exports, resolve the real env pointer from the initialized heap.
   if (invoke !== "run" && typeof instance.exports.run === "function") {
+    const initHeap =
+      instance.exports.__heap_ptr instanceof WebAssembly.Global
+        ? instance.exports.__heap_ptr.value
+        : 0;
     instance.exports.run();
+    const funcIdx = exportFuncIndices[invoke];
+    const tableSlot = funcIdx !== undefined ? funcToTableSlot[funcIdx] : undefined;
+    var resolvedEnv =
+      tableSlot !== undefined ? findClosureEnv(instance, initHeap, tableSlot) : 0;
+  } else {
+    var resolvedEnv = 0;
   }
   let result;
   let isSelfhost = false;
   try {
-    // Pass env=0 for non-run exports. Try i32 (MoonBit) first, then i64 (selfhost).
+    // Try i32 ABI first, then i64 ABI used by selfhost-compiled exports.
     if (invoke === "run") {
       result = fn();
     } else {
       try {
-        result = fn(0);  // i32 env param (MoonBit-compiled)
+        result = fn(resolvedEnv);
       } catch (typeErr) {
         if (typeErr instanceof TypeError) {
-          result = fn(0n);  // i64 env param (selfhost-compiled)
+          result = fn(BigInt(resolvedEnv));
           isSelfhost = true;
         } else {
           throw typeErr;
