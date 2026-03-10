@@ -13,7 +13,7 @@ Completed items are archived in `docs/DONE.md`.
 ## Self-Host Compiler / Runtime Packaging
 
 **現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache は完成。
-**残**: standalone selfhost CLI の I/O 境界、host 側 loop への cache 再利用、component packaging。
+**残**: host 側 loop への cache 再利用、component packaging。
 
 ### Selfhost compiler modularization / cache
 
@@ -26,8 +26,8 @@ Completed items are archived in `docs/DONE.md`.
   - 目的はディレクトリ整理そのものではなく、manifest と cache 単位を一致させること
 ### Selfhost CLI / I/O boundary
 
-- [ ] selfhost CLI の責務を「純粋 compile 関数」までに固定するか、WASI I/O まで selfhost 側に持ち込むかを文書化する
-  - 現状は `vibe_compile_wasi` が I/O を担当し、selfhost は純粋 compile API を提供
+- [x] selfhost CLI の責務を「純粋 compile 関数」までに固定するか、WASI I/O まで selfhost 側に持ち込むかを文書化する
+  - ADR-0022: selfhost compiler は pure compile API に留め、filesystem / environ / stdio は `vibe_compile_wasi` など host wrapper 側で扱う
 - [ ] 将来: WASI Preview2 Component Model の FS/environ import を codegen に追加
   - selfhost 単体 artifact を CLI として閉じるための前提条件
 
