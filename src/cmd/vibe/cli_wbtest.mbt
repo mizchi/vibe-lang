@@ -3333,6 +3333,30 @@ test "resolve_test_backend_pref respects explicit interpreter" {
 }
 
 ///|
+test "cli entry db cache reuses db for same root" {
+  let cache = CliEntryDbCache::new()
+  let db1 = cache.db_for_resolved_entry("/tmp/workspace/pkg/a.vibe")
+  db1.set_source("/tmp/workspace/pkg/shared.vibe", "let value = 1\n")
+  let db2 = cache.db_for_resolved_entry("/tmp/workspace/pkg/b.vibe")
+  match db2.get_source("/tmp/workspace/pkg/shared.vibe") {
+    Some(source) => assert_eq(source, "let value = 1\n")
+    None => fail("expected same-root cache reuse")
+  }
+}
+
+///|
+test "cli entry db cache isolates different roots" {
+  let cache = CliEntryDbCache::new()
+  let db1 = cache.db_for_resolved_entry("/tmp/workspace/pkg1/a.vibe")
+  db1.set_source("/tmp/workspace/pkg1/shared.vibe", "let value = 1\n")
+  let db2 = cache.db_for_resolved_entry("/tmp/workspace/pkg2/b.vibe")
+  match db2.get_source("/tmp/workspace/pkg1/shared.vibe") {
+    Some(_) => fail("unexpected cross-root cache reuse")
+    None => ()
+  }
+}
+
+///|
 test "interpreter fallback is disabled by default" {
   let prev_fallback = @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
   @sys.unset_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")

@@ -12,13 +12,13 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Self-Host Compiler / Runtime Packaging
 
-**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache は完成。
-**残**: host 側 loop への cache 再利用、component packaging。
+**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache、host CLI の check/test loop cache 再利用は完成。
+**残**: component packaging。
 
 ### Selfhost compiler modularization / cache
 
-- [ ] host `src/cmd/vibe` 側の compile/test loop にも selfhost と同じ persistent cache パターンを持ち込む
-  - 現状は `vibe/compiler/cli_cache.vibe` 側で warm reuse はできるが、host CLI 全体の compile/test orchestration は別レイヤ
+- [x] host `src/cmd/vibe` 側の compile/test loop にも selfhost と同じ persistent cache パターンを持ち込む
+  - `src/loader` に `*_into` API を追加し、`check_cmd` / `test_cmd_sequential` / `test_cmd_report_json` が root 単位 `VibeDb` cache を持ち回るようにした
 - [ ] selfhost compiler の module fingerprint cache を typecheck 再利用から codegen/link 手前まで拡張する
   - manifest entry 単位で lowered/module artifact を再利用できる形に寄せる
 - [ ] `vibe/compiler` の論理分割を manifest `group` 列に合わせて進める

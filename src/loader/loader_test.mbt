@@ -539,6 +539,73 @@ test "loader load_db_for_test keeps stale index.lock untouched" {
 }
 
 ///|
+test "loader load_db_for_test_into reuses existing db across entry loads" {
+  let root = make_temp_dir("reuse_for_test")
+  let entry_a = root + "/a.vibe"
+  let entry_b = root + "/b.vibe"
+  let lib = root + "/lib.vibe"
+  let source_a = "import ./lib.vibe { value }\nlet main = value\nexport { main }\n"
+  let source_b = "import ./lib.vibe { value }\nlet other = value + 1\nexport { other }\n"
+  let lib_source = "let value = 41\nexport { value }\n"
+  write_file(entry_a, source_a)
+  write_file(entry_b, source_b)
+  write_file(lib, lib_source)
+  let db = @runtime.VibeDb::new()
+  match load_db_for_test_into(db, entry_a) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match load_db_for_test_into(db, entry_b) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  let entry_a_norm = @vibe_fs.normalize_path(entry_a)
+  let entry_b_norm = @vibe_fs.normalize_path(entry_b)
+  let lib_norm = @vibe_fs.normalize_path(lib)
+  match db.get_source(entry_a_norm) {
+    Some(source) => assert_eq(source, source_a)
+    None => fail("expected cached first entry source")
+  }
+  match db.get_source(entry_b_norm) {
+    Some(source) => assert_eq(source, source_b)
+    None => fail("expected cached second entry source")
+  }
+  match db.get_source(lib_norm) {
+    Some(source) => assert_eq(source, lib_source)
+    None => fail("expected cached shared import source")
+  }
+  remove_if_exists(root)
+}
+
+///|
+test "loader load_db_with_paths_into refreshes changed source in reused db" {
+  let root = make_temp_dir("reuse_refresh")
+  let entry = root + "/main.vibe"
+  let lib = root + "/lib.vibe"
+  let entry_source = "import ./lib.vibe { value }\nlet main = value\nexport { main }\n"
+  let lib_source1 = "let value = 1\nexport { value }\n"
+  let lib_source2 = "let value = 2\nexport { value }\n"
+  write_file(entry, entry_source)
+  write_file(lib, lib_source1)
+  let db = @runtime.VibeDb::new()
+  match load_db_with_paths_into(db, entry) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  write_file(lib, lib_source2)
+  match load_db_with_paths_into(db, entry) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  let lib_norm = @vibe_fs.normalize_path(lib)
+  match db.get_source(lib_norm) {
+    Some(source) => assert_eq(source, lib_source2)
+    None => fail("expected refreshed imported source")
+  }
+  remove_if_exists(root)
+}
+
+///|
 test "loader load_db_with_paths keeps re-exported Process function callable" {
   let root = make_temp_dir("process_reexport")
   let pkg_dir = root + "/pkg"

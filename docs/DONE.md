@@ -9,6 +9,7 @@ Completed items archived from `TODO.md`.
   - `TypeDb` cached compile API と cache probe を selfhost public API に追加し、strict-recursive selfbuild KPI に warm reuse 指標を載せた
   - `type_db.vibe` / `ripple` の selfhost 解決と `codegen.vibe` wrapper の validate failure を直し、strict-recursive selfbuild を維持したまま compiler 分割を進めた
   - ADR-0022 で selfhost CLI / I-O boundary を固定し、selfhost compiler 本体は pure compile API に留める方針を明文化した
+  - host `src/cmd/vibe` 側も `src/loader` の `*_into` API と root 単位 `VibeDb` cache で `check` / `test` loop の warm reuse を持てるようにした
 - **Release preflight に selfhost gate 群を統合**
   - `release-check` から `release-selfhost-gates` を実行し、`sync-vbundle`、selfhost bootstrap / strict-recursive KPI / cutover / check parity / golden WAT をローカル pre-release 導線へ接続
   - `sync_vibe_index_vbundle` と normalize batching helper の self-test を復帰し、preflight 補助 script の回帰も固定

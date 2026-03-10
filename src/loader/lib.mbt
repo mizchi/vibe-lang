@@ -311,10 +311,46 @@ pub fn load_db_with_fs(
 }
 
 ///|
+pub fn load_db_into(
+  db : @runtime.VibeDb,
+  entry_path : String,
+) -> Result[(@runtime.VibeDb, String), String] {
+  match load_db_with_fs_into(db, entry_path, @io.default_fs_adapter()) {
+    Ok((next_db, entry)) => Ok((next_db, entry))
+    Err(err) => Err(err)
+  }
+}
+
+///|
+pub fn load_db_with_fs_into(
+  db : @runtime.VibeDb,
+  entry_path : String,
+  fs : &@io.FileSystemAdapter,
+) -> Result[(@runtime.VibeDb, String), String] {
+  match load_db_with_paths_with_fs_into_impl(db, entry_path, fs, true) {
+    Ok((next_db, entry, _)) => Ok((next_db, entry))
+    Err(err) => Err(err)
+  }
+}
+
+///|
 pub fn load_db_with_paths(
   entry_path : String,
 ) -> Result[(@runtime.VibeDb, String, Array[String]), String] {
   load_db_with_paths_with_fs_impl(entry_path, @io.default_fs_adapter(), true)
+}
+
+///|
+pub fn load_db_with_paths_into(
+  db : @runtime.VibeDb,
+  entry_path : String,
+) -> Result[(@runtime.VibeDb, String, Array[String]), String] {
+  load_db_with_paths_with_fs_into_impl(
+    db,
+    entry_path,
+    @io.default_fs_adapter(),
+    true,
+  )
 }
 
 ///|
@@ -326,12 +362,31 @@ pub fn load_db_with_paths_with_fs(
 }
 
 ///|
+pub fn load_db_with_paths_with_fs_into(
+  db : @runtime.VibeDb,
+  entry_path : String,
+  fs : &@io.FileSystemAdapter,
+) -> Result[(@runtime.VibeDb, String, Array[String]), String] {
+  load_db_with_paths_with_fs_into_impl(db, entry_path, fs, true)
+}
+
+///|
 fn load_db_with_paths_with_fs_impl(
   entry_path : String,
   fs : &@io.FileSystemAdapter,
   persist_lock_updates : Bool,
 ) -> Result[(@runtime.VibeDb, String, Array[String]), String] {
   let db = @runtime.VibeDb::new()
+  load_db_with_paths_with_fs_into_impl(db, entry_path, fs, persist_lock_updates)
+}
+
+///|
+fn load_db_with_paths_with_fs_into_impl(
+  db : @runtime.VibeDb,
+  entry_path : String,
+  fs : &@io.FileSystemAdapter,
+  persist_lock_updates : Bool,
+) -> Result[(@runtime.VibeDb, String, Array[String]), String] {
   let entry = resolve_entry_path_with_fs(entry_path, fs)
   let root = @codebase.resolve_index_root_with_fs(entry, fs)
   let registry_modules = match
@@ -364,6 +419,23 @@ pub fn load_db_for_test(
   match
     load_db_with_paths_with_fs_impl(entry_path, @io.default_fs_adapter(), false) {
     Ok((db, entry, _)) => Ok((db, entry))
+    Err(err) => Err(err)
+  }
+}
+
+///|
+pub fn load_db_for_test_into(
+  db : @runtime.VibeDb,
+  entry_path : String,
+) -> Result[(@runtime.VibeDb, String), String] {
+  match
+    load_db_with_paths_with_fs_into_impl(
+      db,
+      entry_path,
+      @io.default_fs_adapter(),
+      false,
+    ) {
+    Ok((next_db, entry, _)) => Ok((next_db, entry))
     Err(err) => Err(err)
   }
 }

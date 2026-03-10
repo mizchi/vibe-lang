@@ -1966,6 +1966,79 @@ fn load_imports_into_runtime(
 }
 
 ///|
+struct CliEntryDbCache {
+  by_root : Map[String, @runtime.VibeDb]
+}
+
+///|
+fn CliEntryDbCache::new() -> CliEntryDbCache {
+  { by_root: {} }
+}
+
+///|
+fn CliEntryDbCache::db_for_resolved_entry(
+  self : CliEntryDbCache,
+  resolved_entry : String,
+) -> @runtime.VibeDb {
+  let root = @codebase.resolve_index_root(resolved_entry)
+  match self.by_root.get(root) {
+    Some(db) => db
+    None => {
+      let db = @runtime.VibeDb::new()
+      self.by_root[root] = db
+      db
+    }
+  }
+}
+
+///|
+fn load_db_for_test_with_cache(
+  cache : CliEntryDbCache,
+  entry_path : String,
+) -> Result[(@runtime.VibeDb, String), String] {
+  let resolved = @loader.resolve_entry_path(entry_path)
+  let db = cache.db_for_resolved_entry(resolved)
+  @loader.load_db_for_test_into(db, resolved)
+}
+
+///|
+fn resolve_entry_artifacts_with_cache(
+  cache : CliEntryDbCache,
+  entry_path : String,
+  skip_types? : Bool = false,
+) -> Result[
+  (
+    @runtime.VibeDb,
+    String,
+    @codebase.LockData,
+    @x_exp.AdvancedGraphIndex,
+    String,
+  ),
+  String,
+] {
+  let resolved = @loader.resolve_entry_path(entry_path)
+  let lock = match @codebase.update_lock_path_refs(resolved) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let synced_lock = sync_prelude_to_codebase(resolved, lock)
+  let db = cache.db_for_resolved_entry(resolved)
+  let (loaded_db, entry, paths) = match @loader.load_db_with_paths_into(
+    db,
+    resolved,
+  ) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let (index, graph_head) = match
+    sync_graph_head_for_loaded_db(loaded_db, entry, paths, "", skip_types~) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  Ok((loaded_db, entry, synced_lock, index, graph_head))
+}
+
+///|
 fn check_cmd(args : Array[String]) -> Unit {
   let (check_args, profile_tsv) = match split_check_cmd_args(args) {
     Ok(v) => v
@@ -1982,13 +2055,14 @@ fn check_cmd(args : Array[String]) -> Unit {
   let mut load_us_total = 0
   let mut type_us_total = 0
   let mut total_us_total = 0
+  let cache = CliEntryDbCache::new()
   for entry_path in check_args {
     let start_total = @bench.monotonic_clock_start()
     let start_load = @bench.monotonic_clock_start()
     if check_debug {
       println("[check_debug] resolving: \{entry_path}")
     }
-    match resolve_entry_artifacts(entry_path, skip_types=true) {
+    match resolve_entry_artifacts_with_cache(cache, entry_path, skip_types=true) {
       Err(err) => {
         let load_us = elapsed_us_from(start_load)
         let total_us = elapsed_us_from(start_total)
@@ -2704,11 +2778,12 @@ fn load_compiled_test_case_db(
 }
 
 ///|
-fn run_test_file_compiled(
+fn run_test_file_compiled_with_cache(
+  cache : CliEntryDbCache,
   entry_path : String,
   stop_on_first_failure : Bool,
 ) -> CompiledTestAttempt {
-  let (db, entry) = match @loader.load_db_for_test(entry_path) {
+  let (db, entry) = match load_db_for_test_with_cache(cache, entry_path) {
     Err(err) => return CompiledTestAttempt::Error("load error: " + err)
     Ok(v) => v
   }
@@ -2816,11 +2891,24 @@ fn run_test_file_compiled(
 }
 
 ///|
-fn run_test_file_interpreter(
+fn run_test_file_compiled(
+  entry_path : String,
+  stop_on_first_failure : Bool,
+) -> CompiledTestAttempt {
+  run_test_file_compiled_with_cache(
+    CliEntryDbCache::new(),
+    entry_path,
+    stop_on_first_failure,
+  )
+}
+
+///|
+fn run_test_file_interpreter_with_cache(
+  cache : CliEntryDbCache,
   entry_path : String,
   features : @runtime.RuntimeFeatureFlags,
 ) -> Result[CliTestReport, String] {
-  let (db, entry) = match @loader.load_db_for_test(entry_path) {
+  let (db, entry) = match load_db_for_test_with_cache(cache, entry_path) {
     Err(err) => return Err("load error: " + err)
     Ok(v) => v
   }
@@ -2875,7 +2963,16 @@ fn run_test_file_interpreter(
 }
 
 ///|
-fn run_test_file_with_backend(
+fn run_test_file_interpreter(
+  entry_path : String,
+  features : @runtime.RuntimeFeatureFlags,
+) -> Result[CliTestReport, String] {
+  run_test_file_interpreter_with_cache(CliEntryDbCache::new(), entry_path, features)
+}
+
+///|
+fn run_test_file_with_backend_with_cache(
+  cache : CliEntryDbCache,
   entry_path : String,
   features : @runtime.RuntimeFeatureFlags,
 ) -> Result[CliTestReport, String] {
@@ -2883,26 +2980,39 @@ fn run_test_file_with_backend(
   let allow_interpreter_fallback = cli_can_fallback_to_interpreter(backend_pref)
   if backend_pref != CliExecBackendPref::Interpreter {
     let stop_on_first_failure = allow_interpreter_fallback
-    match run_test_file_compiled(entry_path, stop_on_first_failure) {
+    match run_test_file_compiled_with_cache(
+      cache,
+      entry_path,
+      stop_on_first_failure,
+    ) {
       CompiledTestAttempt::Success(report) => {
-        // If compiled succeeded but has runtime failures (unknown import etc.),
-        // retry the entire file with interpreter to recover those cases.
         if report.failed > 0 &&
           compiled_report_has_runtime_import_failures(report) {
-          return run_test_file_interpreter(entry_path, features)
+          return run_test_file_interpreter_with_cache(cache, entry_path, features)
         }
         return Ok(report)
       }
       CompiledTestAttempt::Unsupported(_) =>
         if backend_pref == CliExecBackendPref::Compiled ||
           not(allow_interpreter_fallback) {
-          // Even in Compiled mode, fall back to interpreter for unsupported features
-          return run_test_file_interpreter(entry_path, features)
+          return run_test_file_interpreter_with_cache(cache, entry_path, features)
         }
       CompiledTestAttempt::Error(err) => return Err(err)
     }
   }
-  run_test_file_interpreter(entry_path, features)
+  run_test_file_interpreter_with_cache(cache, entry_path, features)
+}
+
+///|
+fn run_test_file_with_backend(
+  entry_path : String,
+  features : @runtime.RuntimeFeatureFlags,
+) -> Result[CliTestReport, String] {
+  run_test_file_with_backend_with_cache(
+    CliEntryDbCache::new(),
+    entry_path,
+    features,
+  )
 }
 
 ///|
@@ -3011,8 +3121,9 @@ fn test_cmd_sequential(
   let mut passed = 0
   let mut failed_count = 0
   let file_count = entry_paths.length()
+  let cache = CliEntryDbCache::new()
   for entry_path in entry_paths {
-    match run_test_file_with_backend(entry_path, features) {
+    match run_test_file_with_backend_with_cache(cache, entry_path, features) {
       Ok(report) => {
         if !print_cli_test_report(entry_path, report) {
           failed = true
@@ -3105,13 +3216,14 @@ fn test_cmd_report_json(
   }
   defer vibe_worker_parent_watchdog_stop()
   let mut any_failed = false
+  let cache = CliEntryDbCache::new()
   for entry_path in entry_paths {
     if should_exit_report_json_worker(worker_parent_pid) {
       c_exit(130)
     }
     let start = @bench.monotonic_clock_start()
     let mut elapsed_ms = 1
-    match run_test_file_with_backend(entry_path, features) {
+    match run_test_file_with_backend_with_cache(cache, entry_path, features) {
       Ok(report) => {
         let elapsed_us = @bench.monotonic_clock_end(start)
         elapsed_ms = elapsed_us_to_ms_int(elapsed_us)
