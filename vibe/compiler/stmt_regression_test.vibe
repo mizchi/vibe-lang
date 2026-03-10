@@ -1,0 +1,150 @@
+//# Imports
+
+import ./lexer.vibe {
+  lex
+}
+
+import ./parser.vibe {
+  parse_program
+}
+
+import ./stmt_test_support.vibe {
+  pp, ps
+}
+
+//# Misc
+
+test "stmt_let_fn_typed" {
+  let result = ps("let f: (Int) -> String = 1")
+  assert(String::equals(result, "let f: (Int) -> String = 1"))
+}
+
+test "stmt_let_fn_value" {
+  let result = ps("let f = (x: Int) -> 1")
+  assert(String::equals(result, "let f = (x: Int) -> 1"))
+}
+
+test "stmt_let_fn_arrow_untyped" {
+  let result = ps("let f = (x) -> x")
+  assert(String::equals(result, "let f = (x) -> x"))
+}
+
+test "stmt_let_fn_block_typed" {
+  let result = ps("let f = (x: Int) { x }")
+  assert(String::equals(result, "let f = (x: Int) -> x"))
+}
+
+test "stmt_let_fn_tuple_return_with_nested_if_tuple" {
+  let src = "let f = () -> (Int, Int) { let g = (idx: Int) -> (Int, Int) { if true { (idx, idx) } else { (idx, idx) } }; g(1) }"
+  let ok = handle {
+    let _ = parse_program(lex(src))
+    true
+  } {
+    Error(_) => false
+  }
+  assert(ok)
+}
+
+test "stmt_let_fn_tuple_return_with_nested_if_tuple_no_semi" {
+  let src = "let f = () -> (Int, Int) { let g = (idx: Int) -> (Int, Int) { if true { (idx, idx) } else { (idx, idx) } } g(1) }"
+  let ok = handle {
+    let _ = parse_program(lex(src))
+    true
+  } {
+    Error(_) => false
+  }
+  assert(ok)
+}
+
+test "stmt_nested_lambda_tuple_if_regression_matrix" {
+  let c1 = handle {
+    let _ = parse_program(lex("let g = (idx: Int) -> (Int, Int) { if true { (idx, idx) } else { (idx, idx) } }"))
+    true
+  } {
+    Error(_) => false
+  }
+  let c2 = handle {
+    let _ = parse_program(lex("let f = () -> (Int, Int) { let g = (idx: Int) -> (Int, Int) { (idx, idx) } g(1) }"))
+    true
+  } {
+    Error(_) => false
+  }
+  let c3 = handle {
+    let _ = parse_program(lex("let f = () -> (Int, Int) { let g = (idx: Int) -> (Int, Int) { if true { (idx, idx) } else { (idx, idx) } } g(1) }"))
+    true
+  } {
+    Error(_) => false
+  }
+  assert(c1 && c2 && c3)
+}
+
+test "stmt_enum_multi_args" {
+  let result = ps("enum Expr { EBinOp(String, Expr, Expr); EInt(Int) }")
+  assert(String::equals(result, "enum Expr { EBinOp(String, Expr, Expr); EInt(Int) }"))
+}
+
+test "stmt_struct_complex_types" {
+  let result = ps("struct Config { items: Array[String]; handler: (Int) -> Bool }")
+  assert(String::equals(result, "struct Config { items: Array[String]; handler: (Int) -> Bool }"))
+}
+
+test "stmt_type_alias_fn" {
+  let result = ps("type Handler = (String, Int) -> Bool")
+  assert(String::equals(result, "type Handler = (String, Int) -> Bool"))
+}
+
+test "stmt_export_trait" {
+  assert(String::equals(ps("export trait Eq"), "export trait Eq"))
+}
+
+test "program_import_then_let" {
+  let src = "import ./foo.vibe { Bar, Baz }\nlet x = 1"
+  let result = pp(src)
+  assert(String::equals(result, "import ./foo.vibe { Bar, Baz }\nlet x = 1"))
+}
+
+test "program_full" {
+  let src = "enum Color { Red; Blue }\nexport let name = \"hello\"\nexport { name }"
+  let result = pp(src)
+  assert(String::equals(result, "enum Color { Red; Blue }\nexport let name = \"hello\"\nexport { name }"))
+}
+
+test "stmt_suberror_single_payload" {
+  let result = ps("suberror AppError(String)")
+  assert(String::equals(result, "suberror AppError(String)"))
+}
+
+test "stmt_suberror_variants" {
+  let result = ps("suberror AppError { NotFound; Invalid(String) }")
+  assert(String::equals(result, "suberror AppError { NotFound; Invalid(String) }"))
+}
+
+test "stmt_export_suberror" {
+  let result = ps("export suberror AppError(String)")
+  assert(String::equals(result, "export suberror AppError(String)"))
+}
+
+test "stmt_extern_let_percent_symbol" {
+  let result = ps("extern let %read_file: (String) -> String")
+  assert(String::equals(result, "extern let %read_file: (String) -> String"))
+}
+
+test "stmt_import_keyword" {
+  let result = ps("import ./ast.vibe { Expr, Pat }")
+  assert(String::equals(result, "import ./ast.vibe { Expr, Pat }"))
+}
+
+test "stmt_export_path" {
+  let result = ps("export ./ast.vibe { Expr, Pat }")
+  assert(String::equals(result, "export ./ast.vibe { Expr, Pat }"))
+}
+
+test "stmt_export_path_alias" {
+  let result = ps("export ./token.vibe { Token, token_to_string }")
+  assert(String::equals(result, "export ./token.vibe { Token, token_to_string }"))
+}
+
+test "stmt_program_import_export" {
+  let result = pp("import ./ast.vibe { Expr }\nexport ./ast.vibe { Expr }\nexport let x = 1")
+  assert(String::equals(result, "import ./ast.vibe { Expr }\nexport ./ast.vibe { Expr }\nexport let x = 1"))
+}

@@ -1112,9 +1112,8 @@ fn entry_prefers_compiled_backend(entry_path : String) -> Bool {
 
 ///|
 fn entry_prefers_interpreter_backend(entry_path : String) -> Bool {
-  let normalized = normalize_cli_entry_path(entry_path)
-  normalized == "vibe/compiler/codegen_lexer_import_test.vibe" ||
-  normalized.has_suffix("/vibe/compiler/codegen_lexer_import_test.vibe")
+  ignore(entry_path)
+  false
 }
 
 ///|

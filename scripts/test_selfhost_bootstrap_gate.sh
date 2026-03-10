@@ -292,10 +292,18 @@ if [ ! -f "$BATCH_WEIGHT_CACHE_PATH" ] && [ -f "$BATCH_WEIGHT_SEED_PATH" ]; then
   cp "$BATCH_WEIGHT_SEED_PATH" "$BATCH_WEIGHT_CACHE_PATH"
 fi
 
-run_stage "compiled selfhost test suite" \
-  env VIBE_TEST_BACKEND=compiled VIBE_TEST_JOBS="$SELFHOST_TEST_JOBS" \
-  VIBE_TEST_BATCH_WEIGHT_CACHE="$BATCH_WEIGHT_CACHE_PATH" \
-  "$VIBE_BIN" test --jobs "$SELFHOST_TEST_JOBS" "$PROJECT_ROOT"/vibe/compiler/*_test.vibe
+if command -v stdbuf >/dev/null 2>&1; then
+  run_stage "compiled selfhost test suite" \
+    env VIBE_TEST_BACKEND=compiled VIBE_TEST_JOBS="$SELFHOST_TEST_JOBS" \
+    VIBE_TEST_BATCH_WEIGHT_CACHE="$BATCH_WEIGHT_CACHE_PATH" \
+    stdbuf -oL -eL \
+    "$VIBE_BIN" test --jobs "$SELFHOST_TEST_JOBS" "$PROJECT_ROOT"/vibe/compiler/*_test.vibe
+else
+  run_stage "compiled selfhost test suite" \
+    env VIBE_TEST_BACKEND=compiled VIBE_TEST_JOBS="$SELFHOST_TEST_JOBS" \
+    VIBE_TEST_BATCH_WEIGHT_CACHE="$BATCH_WEIGHT_CACHE_PATH" \
+    "$VIBE_BIN" test --jobs "$SELFHOST_TEST_JOBS" "$PROJECT_ROOT"/vibe/compiler/*_test.vibe
+fi
 
 echo "[bootstrap] selfhost __to_string source path check"
 if rg -n "double_to_string_compiler" \

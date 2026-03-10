@@ -3259,15 +3259,15 @@ test "entry_prefers_compiled_backend detects vibe compiler paths" {
 }
 
 ///|
-test "entry_prefers_interpreter_backend detects deep compiler import tests" {
-  assert_true(
+test "entry_prefers_interpreter_backend no longer special-cases compiler import tests" {
+  assert_false(
     entry_prefers_interpreter_backend(
-      "vibe/compiler/codegen_lexer_import_test.vibe",
+      "vibe/compiler/codegen_lexer_test.vibe",
     ),
   )
-  assert_true(
+  assert_false(
     entry_prefers_interpreter_backend(
-      "/Users/mz/ghq/github.com/mizchi/vibe-lang/vibe/compiler/codegen_lexer_import_test.vibe",
+      "/Users/mz/ghq/github.com/mizchi/vibe-lang/vibe/compiler/codegen_lexer_test.vibe",
     ),
   )
   assert_false(
@@ -3291,13 +3291,13 @@ test "resolve_test_backend_pref defaults to compiled in auto mode" {
 }
 
 ///|
-test "resolve_test_backend_pref keeps deep compiler import tests on interpreter" {
+test "resolve_test_backend_pref keeps compiler tests on compiled in auto mode" {
   let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
   @sys.unset_env_var("VIBE_TEST_BACKEND")
   defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
   assert_eq(
-    resolve_test_backend_pref("vibe/compiler/codegen_lexer_import_test.vibe"),
-    CliExecBackendPref::Interpreter,
+    resolve_test_backend_pref("vibe/compiler/codegen_lexer_test.vibe"),
+    CliExecBackendPref::Compiled,
   )
 }
 

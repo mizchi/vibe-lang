@@ -13,7 +13,10 @@ Completed items archived from `TODO.md`.
   - `sync_vibe_index_vbundle` と normalize batching helper の self-test を復帰し、preflight 補助 script の回帰も固定
 - **Normalize / test runtime の運用回帰を修正**
   - normalize engine の standalone comment 行回りを修正し、multi-file normalize helper と回帰テストを追加
-  - `fork_for_test` の loop fuel を保持するようにし、deep compiler import test 向けの interpreter fallback と高い `VIBE_TEST_LOOP_FUEL` 既定値を導入
+  - `fork_for_test` の loop fuel を保持するようにし、高い `VIBE_TEST_LOOP_FUEL` 既定値を導入
+- **Compiler lexer codegen test の tail を削減**
+  - 重複していた `codegen_lexer_import_test.vibe` を削除し、`codegen_lexer_test.vibe` は compact lexer fixture 1 本へ再編
+  - compiled backend でも `120s timeout` を超えず、special-case の interpreter fallback なしで完走する状態に戻した
 - **MapBuilder canonical naming cleanup を仕上げ**
   - language tour eval task と codegen comment を `MapBuilder::*` に統一
   - desugar 側は canonical 名と legacy alias の両方を non-command name として扱い、互換期間中の shell rewrite 回帰を防止

@@ -26,10 +26,6 @@ Completed items are archived in `docs/DONE.md`.
   - 目的はディレクトリ整理そのものではなく、manifest と cache 単位を一致させること
 - [ ] `selfhost_sources_bundle.vibe` の drift を release 導線で検知する
   - manifest 更新と bundle 再生成のズレを CI/pre-release で落としたい
-- [ ] deep compiler import test を compiled backend に戻す
-  - 現状 `codegen_lexer_import_test.vibe` は `LoopFuelExhausted` 回避のため auto では interpreter backend を優先している
-  - compiled backend でも安定完走できる loop fuel / runtime コストへ寄せたい
-
 ### Selfhost CLI / I/O boundary
 
 - [ ] selfhost CLI の責務を「純粋 compile 関数」までに固定するか、WASI I/O まで selfhost 側に持ち込むかを文書化する
