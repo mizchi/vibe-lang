@@ -19,8 +19,16 @@ Completed items are archived in `docs/DONE.md`.
 
 - [x] host `src/cmd/vibe` 側の compile/test loop にも selfhost と同じ persistent cache パターンを持ち込む
   - `src/loader` に `*_into` API を追加し、`check_cmd` / `test_cmd_sequential` / `test_cmd_report_json` が root 単位 `VibeDb` cache を持ち回るようにした
-- [ ] selfhost compiler の module fingerprint cache を typecheck 再利用から codegen/link 手前まで拡張する
-  - manifest entry 単位で lowered/module artifact を再利用できる形に寄せる
+- [x] selfhost compiler の module fingerprint cache を typecheck 再利用から codegen/link まで拡張する
+  - `TypeDb` に dependency source / merged source / final artifact cache を持たせ、warm compile で typecheck / parse / merge / codegen の再実行を避ける
+  - `compile_with_modules_cached` / `compile_file_fs*_cached` は fingerprint 一致時に cached wasm bytes を返す
+  - strict-recursive selfbuild KPI に `codegen_cache_count1/2` を追加し、stage1 artifact 上でも warm codegen reuse を確認できるようにした
+- [x] selfhost compiler の artifact cache を entry 間共有まで一般化する
+  - final artifact cache の key を path 依存から外し、artifact fingerprint を `program_source` / `merged_source` ベースに寄せた
+  - 同一 source を別 entry path からコンパイルしても warm codegen が再実行されない形にした
+- [ ] selfhost compiler の module fingerprint cache を merged/lowered artifact reuse まで一般化する
+  - 現状の entry 共有は final artifact cache まで
+  - 次は merged source cache 自体と lowered/module artifact を manifest entry 単位で共有し、codegen 手前の merge/parse もさらに減らしたい
 - [ ] `vibe/compiler` の論理分割を manifest `group` 列に合わせて進める
   - 候補: `core/`, `syntax/`, `checker/`, `codegen/`
   - 目的はディレクトリ整理そのものではなく、manifest と cache 単位を一致させること

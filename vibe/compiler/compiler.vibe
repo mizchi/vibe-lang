@@ -21,7 +21,8 @@ import ./module_loader.vibe {
 }
 
 import ./type_db.vibe {
-  TypeDb, db_new, db_set_source, db_typecheck, db_program_source, db_merged_source
+  TypeDb, db_new, db_set_source, db_typecheck, db_program_source, db_merged_source,
+  db_load_artifact, db_store_artifact
 }
 
 //# Functions
@@ -73,18 +74,36 @@ export let compile_with_modules_wasi = (main_source: String, main_path: String, 
   bytes
 }
 
+let artifact_fingerprint_from_source = (source: String) -> String {
+  source
+}
+
 export let compile_with_modules_cached = (db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)]) -> (Bytes, TypeDb) with { Error } {
   let next_db = prepare_modules_cached(db, main_path, main_source, sources)
-  let (program_source, codegen_db) = db_program_source(next_db, main_path)
-  let stmts = parse_program(lex(program_source))
-  (compile_module(stmts), codegen_db)
+  let (program_source, _, codegen_db) = db_program_source(next_db, main_path)
+  let artifact_fingerprint = artifact_fingerprint_from_source(program_source)
+  match db_load_artifact(codegen_db, main_path, "module", "", artifact_fingerprint) {
+    Some(bytes) => (bytes, codegen_db),
+    None => {
+      let stmts = parse_program(lex(program_source))
+      let bytes = compile_module(stmts)
+      (bytes, db_store_artifact(codegen_db, main_path, "module", "", artifact_fingerprint, bytes))
+    }
+  }
 }
 
 export let compile_with_modules_wasi_cached = (db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> (Bytes, TypeDb) with { Error } {
   let next_db = prepare_modules_cached(db, main_path, main_source, sources)
-  let (program_source, codegen_db) = db_program_source(next_db, main_path)
-  let stmts = parse_program(lex(program_source))
-  (compile_wasi_module(stmts, entry_name), codegen_db)
+  let (program_source, _, codegen_db) = db_program_source(next_db, main_path)
+  let artifact_fingerprint = artifact_fingerprint_from_source(program_source)
+  match db_load_artifact(codegen_db, main_path, "wasi", entry_name, artifact_fingerprint) {
+    Some(bytes) => (bytes, codegen_db),
+    None => {
+      let stmts = parse_program(lex(program_source))
+      let bytes = compile_wasi_module(stmts, entry_name)
+      (bytes, db_store_artifact(codegen_db, main_path, "wasi", entry_name, artifact_fingerprint, bytes))
+    }
+  }
 }
 
 // FS-based multi-module compile pipeline: read files from filesystem, bundle, codegen
@@ -110,15 +129,29 @@ export let prepare_file_fs_cached = (db: TypeDb, entry_path: String) -> TypeDb w
 export let compile_file_fs_cached = (db: TypeDb, entry_path: String, entry_name: String) -> (Bytes, TypeDb) with { Error, Fs } {
   let sources = collect_all_sources_fs(entry_path)
   let next_db = prepare_file_fs_cached(db, entry_path)
-  let (merged_source, codegen_db) = db_merged_source(next_db, entry_path, sources)
-  let merged_stmts = parse_program(lex(merged_source))
-  (compile_wasi_module(merged_stmts, entry_name), codegen_db)
+  let (merged_source, _, codegen_db) = db_merged_source(next_db, entry_path, sources)
+  let artifact_fingerprint = artifact_fingerprint_from_source(merged_source)
+  match db_load_artifact(codegen_db, entry_path, "wasi", entry_name, artifact_fingerprint) {
+    Some(bytes) => (bytes, codegen_db),
+    None => {
+      let merged_stmts = parse_program(lex(merged_source))
+      let bytes = compile_wasi_module(merged_stmts, entry_name)
+      (bytes, db_store_artifact(codegen_db, entry_path, "wasi", entry_name, artifact_fingerprint, bytes))
+    }
+  }
 }
 
 export let compile_file_fs_module_cached = (db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with { Error, Fs } {
   let sources = collect_all_sources_fs(entry_path)
   let next_db = prepare_file_fs_cached(db, entry_path)
-  let (merged_source, codegen_db) = db_merged_source(next_db, entry_path, sources)
-  let merged_stmts = parse_program(lex(merged_source))
-  (compile_module(merged_stmts), codegen_db)
+  let (merged_source, _, codegen_db) = db_merged_source(next_db, entry_path, sources)
+  let artifact_fingerprint = artifact_fingerprint_from_source(merged_source)
+  match db_load_artifact(codegen_db, entry_path, "module", "", artifact_fingerprint) {
+    Some(bytes) => (bytes, codegen_db),
+    None => {
+      let merged_stmts = parse_program(lex(merged_source))
+      let bytes = compile_module(merged_stmts)
+      (bytes, db_store_artifact(codegen_db, entry_path, "module", "", artifact_fingerprint, bytes))
+    }
+  }
 }

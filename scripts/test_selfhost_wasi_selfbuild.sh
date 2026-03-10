@@ -161,6 +161,8 @@ recursive_runner_mode=0
 cache_probe_runner_mode=0
 CACHE_PROBE_COUNT1="na"
 CACHE_PROBE_COUNT2="na"
+CODEGEN_CACHE_PROBE_COUNT1="na"
+CODEGEN_CACHE_PROBE_COUNT2="na"
 CLI_CACHE_PROBE_COUNT1="na"
 CLI_CACHE_PROBE_COUNT2="na"
 recursive_stage_name="stage1 artifact (generated wasm) -> stage2 wasm compile"
@@ -203,6 +205,27 @@ if [ "$cache_probe_runner_mode" -eq 1 ]; then
     exit 1
   fi
   echo "[selfbuild] cache probe counts: $CACHE_PROBE_COUNT1 -> $CACHE_PROBE_COUNT2"
+
+  CODEGEN_CACHE_PROBE_OUT="$OUT_DIR/stage1_codegen_cache_probe.out"
+  run_stage_capture_stdout "run stage1 codegen cache probe (--invoke selfbuild_probe_type_db_codegen_counts)" \
+    "$CODEGEN_CACHE_PROBE_OUT" \
+    "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_probe_type_db_codegen_counts "$STAGE1_WASM"
+  CODEGEN_CACHE_PROBE_RAW="$(rg -v '^warning' "$CODEGEN_CACHE_PROBE_OUT" | tail -n 1)"
+  if ! is_non_negative_int "$CODEGEN_CACHE_PROBE_RAW"; then
+    echo "selfbuild gate failed: stage1 codegen cache probe did not return packed counts: $CODEGEN_CACHE_PROBE_RAW" >&2
+    exit 1
+  fi
+  CODEGEN_CACHE_PROBE_COUNT1="$((CODEGEN_CACHE_PROBE_RAW / 1000))"
+  CODEGEN_CACHE_PROBE_COUNT2="$((CODEGEN_CACHE_PROBE_RAW % 1000))"
+  if [ "$CODEGEN_CACHE_PROBE_COUNT1" -le 0 ]; then
+    echo "selfbuild gate failed: stage1 codegen cache probe first count must be positive, got $CODEGEN_CACHE_PROBE_COUNT1" >&2
+    exit 1
+  fi
+  if [ "$CODEGEN_CACHE_PROBE_COUNT2" -ne "$CODEGEN_CACHE_PROBE_COUNT1" ]; then
+    echo "selfbuild gate failed: stage1 codegen cache probe did not reuse warm artifact state ($CODEGEN_CACHE_PROBE_COUNT1 -> $CODEGEN_CACHE_PROBE_COUNT2)" >&2
+    exit 1
+  fi
+  echo "[selfbuild] codegen cache probe counts: $CODEGEN_CACHE_PROBE_COUNT1 -> $CODEGEN_CACHE_PROBE_COUNT2"
 
   CLI_CACHE_PROBE_OUT="$OUT_DIR/stage1_cli_cache_probe.out"
   run_stage_capture_stdout "run stage1 cli cache probe (--invoke selfbuild_probe_cli_file_cache_counts)" \
@@ -344,4 +367,4 @@ fi
 
 SIZE_STAGE1="$(wc -c < "$STAGE1_WASM" | tr -d ' ')"
 SIZE_STAGE2="$(wc -c < "$STAGE2_WASM" | tr -d ' ')"
-echo "selfbuild gate passed: stage1_hash=$HASH_STAGE1 stage2_hash=$HASH_STAGE2 stage1_size=$SIZE_STAGE1 stage2_size=$SIZE_STAGE2 stage1_run=$RUN_STAGE1 stage2_run=$RUN_STAGE2 cache_prepare_count1=$CACHE_PROBE_COUNT1 cache_prepare_count2=$CACHE_PROBE_COUNT2 cli_cache_prepare_count1=$CLI_CACHE_PROBE_COUNT1 cli_cache_prepare_count2=$CLI_CACHE_PROBE_COUNT2 mode=$recursive_mode recursive=$recursive_stage2_ok total=${SELFBUILD_TOTAL_SEC}s"
+echo "selfbuild gate passed: stage1_hash=$HASH_STAGE1 stage2_hash=$HASH_STAGE2 stage1_size=$SIZE_STAGE1 stage2_size=$SIZE_STAGE2 stage1_run=$RUN_STAGE1 stage2_run=$RUN_STAGE2 cache_prepare_count1=$CACHE_PROBE_COUNT1 cache_prepare_count2=$CACHE_PROBE_COUNT2 codegen_cache_count1=$CODEGEN_CACHE_PROBE_COUNT1 codegen_cache_count2=$CODEGEN_CACHE_PROBE_COUNT2 cli_cache_prepare_count1=$CLI_CACHE_PROBE_COUNT1 cli_cache_prepare_count2=$CLI_CACHE_PROBE_COUNT2 mode=$recursive_mode recursive=$recursive_stage2_ok total=${SELFBUILD_TOTAL_SEC}s"
