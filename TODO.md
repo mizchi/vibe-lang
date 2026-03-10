@@ -12,8 +12,20 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Self-Host Compiler / Runtime Packaging
 
-**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader も完成。
-**残**: standalone selfhost CLI の I/O 境界と component packaging。
+**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、TypeDb cache probe は完成。
+**残**: standalone selfhost CLI の I/O 境界、persistent cache の実配線、component packaging。
+
+### Selfhost compiler modularization / cache
+
+- [ ] selfhost CLI / test loop で persistent `TypeDb` を持ち回り、同一プロセス内の warm compile を実際に再利用する
+  - 現状は `vibe/compiler` 側に cached API と probe はあるが、user-facing な compile/test loop にはまだ常駐 cache を配線していない
+- [ ] selfhost compiler の module fingerprint cache を typecheck 再利用から codegen/link 手前まで拡張する
+  - manifest entry 単位で lowered/module artifact を再利用できる形に寄せる
+- [ ] `vibe/compiler` の論理分割を manifest `group` 列に合わせて進める
+  - 候補: `core/`, `syntax/`, `checker/`, `codegen/`
+  - 目的はディレクトリ整理そのものではなく、manifest と cache 単位を一致させること
+- [ ] `selfhost_sources_bundle.vibe` の drift を release 導線で検知する
+  - manifest 更新と bundle 再生成のズレを CI/pre-release で落としたい
 
 ### Selfhost CLI / I/O boundary
 
@@ -32,6 +44,9 @@ Completed items are archived in `docs/DONE.md`.
 - [x] `release-check` に selfhost gate 群を束ねる
   - `sync-vbundle`, `test-selfhost-bootstrap`, `test-selfhost-wasi-selfbuild-kpi`, `test-selfhost-cutover`, `test-selfhost-check-parity`, `test-golden-wat` を `release-selfhost-gates` に集約
   - ローカル pre-release 導線から CI 相当の selfhost / golden WAT gate を実行可能にした
+- [ ] selfhost bootstrap の heavy shard をさらに削る
+  - 進捗ログと file 単位 batch 分割は入ったが、`parser_test` / `stmt_test` / `printer_test` のような巨大ファイルはまだ tail を引っ張る
+  - 方針候補: test file 分割、backend 固定、weight cache の見直し
 
 ## Migration Cleanup
 
