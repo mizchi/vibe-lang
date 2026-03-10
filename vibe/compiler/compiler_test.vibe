@@ -1,7 +1,11 @@
 //# Imports
 
 import ./compiler.vibe {
-  compile_source, compile_source_wasi
+  compile_source, compile_source_wasi, prepare_modules_cached
+}
+
+import ./type_db.vibe {
+  db_new, db_typecheck_count
 }
 
 //# Helpers
@@ -50,4 +54,14 @@ test "compile_source: nested tuple destructuring across recursive calls" {
   let source = "let rec f = (expr: Int, env: Int, defs: Int, s: Int, c: Int) -> (Int, Int, Int) {\n  let cond = expr\n  let then_e = env\n  let else_e = defs\n  let (_, s1, c1) = f(cond, env, defs, s, c)\n  let (tt, s2, c2) = f(then_e, env, defs, s1, c1)\n  let (_, s3, c3) = f(else_e, env, defs, s2, c2)\n  (tt, s3, c3)\n}"
   let bytes = compile_source(source)
   assert_wasm_magic(bytes)
+}
+
+test "prepare_modules_cached: warm prepare reuses typecheck cache" {
+  let helper_source = "export let add = (a: Int, b: Int) -> Int { a + b }"
+  let main_source = "import ./helpers.vibe { add }\nlet main = () -> Int { add(1, 2) }"
+  let sources = [("helpers.vibe", helper_source)]
+  let db1 = prepare_modules_cached(db_new(), "main.vibe", main_source, sources)
+  let count1 = db_typecheck_count(db1)
+  let db2 = prepare_modules_cached(db1, "main.vibe", main_source, sources)
+  assert(eq(db_typecheck_count(db2), count1))
 }

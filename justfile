@@ -32,13 +32,25 @@ check:
 check-lock-clean:
     scripts/check_lock_clean.sh
 
+# Sync vibe/* module lock payloads into index.vbundle
+sync-vbundle:
+    bash scripts/sync_vibe_index_vbundle.sh
+
 # Self-test lock contamination checker patterns
 test-lock-clean:
     scripts/check_lock_clean_test.sh
 
+# Self-test vibe index.vbundle sync helper
+test-sync-vbundle:
+    bash scripts/sync_vibe_index_vbundle_test.sh
+
 # Self-test builtin rename migration helper
 test-rename-builtins:
     bash scripts/rename_builtins_test.sh
+
+# Self-test normalize batching helper
+test-vibe-normalize:
+    bash scripts/vibe_normalize_all_test.sh
 
 # Run tests (includes examples, std, io, fs, shell, socket, http, rlm, collection, json/base64/sha1, x)
 test:
@@ -338,6 +350,11 @@ test-http-compiled-policy:
 test-selfhost-bootstrap:
     scripts/test_selfhost_bootstrap_gate.sh
 
+# Run quick selfhost cache probe (warm TypeDb reuse smoke)
+test-selfhost-cache-probe:
+    moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
+    _build/native/debug/build/cmd/vibe/vibe.exe test vibe/compiler/cache_probe_test.vibe
+
 # Run wasm selfbuild gate (stage0 wasm compiler -> stage1 selfhost wasm)
 test-selfhost-wasi-selfbuild:
     scripts/test_selfhost_wasi_selfbuild.sh
@@ -626,8 +643,11 @@ vibe-normalize-cached:
 vibe-normalize-check:
     scripts/vibe_normalize_all.sh --check
 
-# Pre-release check (includes wasm bundle-size monitor)
-release-check: fmt info check test vibe-normalize bench-bundle-size-monitor
+# Pre-release selfhost gate bundle
+release-selfhost-gates: sync-vbundle test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cutover test-selfhost-check-parity test-golden-wat
+
+# Pre-release check (includes selfhost gates + wasm bundle-size monitor)
+release-check: fmt info check test vibe-normalize bench-bundle-size-monitor release-selfhost-gates
 
 # Alias for teams used to `check-release`
 check-release: release-check

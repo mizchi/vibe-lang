@@ -158,6 +158,9 @@ recursive_stage2_ok=0
 RECURSIVE_STAGE2_LOG="$OUT_DIR/stage2_recursive_compile.log"
 recursive_start="$(date +%s)"
 recursive_runner_mode=0
+cache_probe_runner_mode=0
+CACHE_PROBE_COUNT1="na"
+CACHE_PROBE_COUNT2="na"
 recursive_stage_name="stage1 artifact (generated wasm) -> stage2 wasm compile"
 node_runner_cmd=(node)
 if command -v node >/dev/null 2>&1; then
@@ -166,11 +169,38 @@ if command -v node >/dev/null 2>&1; then
   fi
 fi
 if [ "$ENTRY_PATH" = "$DEFAULT_ENTRY_PATH" ] && \
+  [ -f "$VIBE_HOST_RUNNER" ] && \
+  command -v node >/dev/null 2>&1; then
+  cache_probe_runner_mode=1
+fi
+if [ "$ENTRY_PATH" = "$DEFAULT_ENTRY_PATH" ] && \
   [ "$OUT_DIR" = "$DEFAULT_OUT_DIR" ] && \
   [ -f "$VIBE_HOST_RUNNER" ] && \
   command -v node >/dev/null 2>&1; then
   recursive_runner_mode=1
   recursive_stage_name="stage1 artifact (generated wasm) -> stage2 wasm compile (invoke selfbuild_compile_stage2)"
+fi
+if [ "$cache_probe_runner_mode" -eq 1 ]; then
+  CACHE_PROBE_OUT="$OUT_DIR/stage1_cache_probe.out"
+  run_stage_capture_stdout "run stage1 cache probe (--invoke selfbuild_probe_type_db_cache_counts)" \
+    "$CACHE_PROBE_OUT" \
+    "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_probe_type_db_cache_counts "$STAGE1_WASM"
+  CACHE_PROBE_RAW="$(rg -v '^warning' "$CACHE_PROBE_OUT" | tail -n 1)"
+  if ! is_non_negative_int "$CACHE_PROBE_RAW"; then
+    echo "selfbuild gate failed: stage1 cache probe did not return packed counts: $CACHE_PROBE_RAW" >&2
+    exit 1
+  fi
+  CACHE_PROBE_COUNT1="$((CACHE_PROBE_RAW / 1000))"
+  CACHE_PROBE_COUNT2="$((CACHE_PROBE_RAW % 1000))"
+  if [ "$CACHE_PROBE_COUNT1" -le 0 ]; then
+    echo "selfbuild gate failed: stage1 cache probe first count must be positive, got $CACHE_PROBE_COUNT1" >&2
+    exit 1
+  fi
+  if [ "$CACHE_PROBE_COUNT2" -ne "$CACHE_PROBE_COUNT1" ]; then
+    echo "selfbuild gate failed: stage1 cache probe did not reuse warm typecheck state ($CACHE_PROBE_COUNT1 -> $CACHE_PROBE_COUNT2)" >&2
+    exit 1
+  fi
+  echo "[selfbuild] cache probe counts: $CACHE_PROBE_COUNT1 -> $CACHE_PROBE_COUNT2"
 fi
 echo "[selfbuild] $recursive_stage_name"
 set +e
@@ -291,4 +321,4 @@ fi
 
 SIZE_STAGE1="$(wc -c < "$STAGE1_WASM" | tr -d ' ')"
 SIZE_STAGE2="$(wc -c < "$STAGE2_WASM" | tr -d ' ')"
-echo "selfbuild gate passed: stage1_hash=$HASH_STAGE1 stage2_hash=$HASH_STAGE2 stage1_size=$SIZE_STAGE1 stage2_size=$SIZE_STAGE2 stage1_run=$RUN_STAGE1 stage2_run=$RUN_STAGE2 mode=$recursive_mode recursive=$recursive_stage2_ok total=${SELFBUILD_TOTAL_SEC}s"
+echo "selfbuild gate passed: stage1_hash=$HASH_STAGE1 stage2_hash=$HASH_STAGE2 stage1_size=$SIZE_STAGE1 stage2_size=$SIZE_STAGE2 stage1_run=$RUN_STAGE1 stage2_run=$RUN_STAGE2 cache_prepare_count1=$CACHE_PROBE_COUNT1 cache_prepare_count2=$CACHE_PROBE_COUNT2 mode=$recursive_mode recursive=$recursive_stage2_ok total=${SELFBUILD_TOTAL_SEC}s"

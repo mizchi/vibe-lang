@@ -93,6 +93,97 @@ let resolve_path = (base_dir: String, raw_path: String) -> String {
   }
 }
 
+let join_path = (base_dir: String, rel_path: String) -> String {
+  if String::equals(base_dir, "") {
+    rel_path
+  } else {
+    String::concat(base_dir, String::concat("/", rel_path))
+  }
+}
+
+let strip_trailing_cr = (line: String) -> String {
+  let len = String::length(line)
+  if len > 0 && String::char_code_at(line, len - 1) == 13 {
+    String::substring(line, 0, len - 1)
+  } else {
+    line
+  }
+}
+
+let find_char = (s: String, target: Int) -> Int {
+  let len = String::length(s)
+  let mut i = 0
+  let mut result = -1
+  while i < len {
+    if String::char_code_at(s, i) == target {
+      result = i
+      i = len
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+let parse_source_manifest_paths = (manifest_source: String) -> Array[String] with { Error } {
+  let paths = Array::slice([""], 0, 0)
+  let len = String::length(manifest_source)
+  let mut line_start = 0
+  let mut i = 0
+  while i <= len {
+    if i == len || String::char_code_at(manifest_source, i) == 10 {
+      let raw_line = strip_trailing_cr(String::substring(manifest_source, line_start, i))
+      let line_len = String::length(raw_line)
+      if line_len > 0 && String::char_code_at(raw_line, 0) != 35 {
+        let tab_idx = find_char(raw_line, 9)
+        if tab_idx < 0 || tab_idx + 1 >= line_len {
+          throw(String::concat("invalid source manifest row: ", raw_line))
+        }
+        Array::push(paths, String::substring(raw_line, tab_idx + 1, line_len))
+      }
+      line_start = i + 1
+    }
+    i = i + 1
+  }
+  paths
+}
+
+let is_manifest_root_entry = (entry_path: String) -> Bool {
+  String::equals(entry_path, "index.vibe") || String::ends_with(entry_path, "/index.vibe")
+}
+
+let try_collect_manifest_sources_fs = (entry_path: String) -> Option[Array[(String, String)]] with { Error, Fs } {
+  if !(is_manifest_root_entry(entry_path)) {
+    None
+  } else {
+    let base_dir = dir_of(entry_path)
+    let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
+    if !(Fs::exists(manifest_path)) {
+      None
+    } else {
+      let rel_paths = parse_source_manifest_paths(Fs::read_file(manifest_path))
+      let sources = Array::slice([("", "")], 0, 0)
+      let mut full_paths = Array::slice([""], 0, 0)
+      let mut i = 0
+      while i < Array::length(rel_paths) {
+        Array::push(full_paths, join_path(base_dir, Array::get(rel_paths, i)))
+        i = i + 1
+      }
+      if !(contains_str(full_paths, entry_path)) {
+        None
+      } else {
+        let mut j = 0
+        while j < Array::length(full_paths) {
+          let path = Array::get(full_paths, j)
+          Array::push(sources, (path, Fs::read_file(path)))
+          j = j + 1
+        }
+        Some(sources)
+      }
+    }
+  }
+}
+
 //# Helper functions
 
 // Cache lookup helper
@@ -248,10 +339,15 @@ let rec collect_sources_rec = (
 // Recursively collect all source files from filesystem, following imports and re-exports.
 // Returns Array[(path, source)] in dependency order (dependencies first).
 export let collect_all_sources_fs = (entry_path: String) -> Array[(String, String)] with { Error, Fs } {
-  let sources = Array::slice([("", "")], 0, 0)
-  let visited = Array::slice([""], 0, 0)
-  collect_sources_rec(entry_path, sources, visited)
-  sources
+  match try_collect_manifest_sources_fs(entry_path) {
+    Some(sources) => sources,
+    None => {
+      let sources = Array::slice([("", "")], 0, 0)
+      let visited = Array::slice([""], 0, 0)
+      collect_sources_rec(entry_path, sources, visited)
+      sources
+    }
+  }
 }
 
 //# Module bundling — merge stmts from all modules in dependency order

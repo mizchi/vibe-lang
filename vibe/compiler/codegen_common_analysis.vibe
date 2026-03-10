@@ -1,0 +1,552 @@
+//# Imports
+
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ./bytebuf.vibe {
+  bytebuf_push
+}
+
+import ./codegen_common_extractors.vibe {
+  array_contains_str
+}
+
+import ./wasm_emit.vibe {
+  emit_call_indirect, emit_else, emit_end, emit_i32_load, emit_i32_wrap_i64, emit_i64_and, emit_i64_const, emit_i64_eq, emit_i64_or, emit_i64_shl, emit_i64_shr_s, emit_if_void, emit_local_get, emit_local_set
+}
+
+//# Functions
+
+
+export let rec collect_strings_expr = (expr: Expr, out: Array[String]) -> Int {
+  match expr {
+    EString(s) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(out) {
+        if String::equals(Array::get(out, i), s) {
+          found = true
+        }
+        i = i + 1
+      }
+      if !found {
+        Array::push(out, s)
+      }
+      0
+    },
+    EBinOp(_, lhs, rhs) => {
+      collect_strings_expr(lhs, out)
+      collect_strings_expr(rhs, out)
+    },
+    EUnaryOp(_, operand) => collect_strings_expr(operand, out),
+    EIf(cond, then_e, else_e) => {
+      collect_strings_expr(cond, out)
+      collect_strings_expr(then_e, out)
+      collect_strings_expr(else_e, out)
+    },
+    ECall(callee, args) => {
+      collect_strings_expr(callee, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_strings_expr(Array::get(args, i), out)
+        i = i + 1
+      }
+      0
+    },
+    ELet(_, value, body) => {
+      collect_strings_expr(value, out)
+      collect_strings_expr(body, out)
+    },
+    ELetRec(_, value, body) => {
+      collect_strings_expr(value, out)
+      collect_strings_expr(body, out)
+    },
+    ELetMut(_, value, body) => {
+      collect_strings_expr(value, out)
+      collect_strings_expr(body, out)
+    },
+    EAssign(_, value, body) => {
+      collect_strings_expr(value, out)
+      collect_strings_expr(body, out)
+    },
+    EAssignOp(_, _, value, body) => {
+      collect_strings_expr(value, out)
+      collect_strings_expr(body, out)
+    },
+    ESeq(first, second) => {
+      collect_strings_expr(first, out)
+      collect_strings_expr(second, out)
+    },
+    EWhile(cond, body) => {
+      collect_strings_expr(cond, out)
+      collect_strings_expr(body, out)
+    },
+    EForIn(_, iter_e, body) => {
+      collect_strings_expr(iter_e, out)
+      collect_strings_expr(body, out)
+    },
+    ETuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        collect_strings_expr(Array::get(elems, i), out)
+        i = i + 1
+      }
+      0
+    },
+    EArray(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        collect_strings_expr(Array::get(elems, i), out)
+        i = i + 1
+      }
+      0
+    },
+    EMatch(scrutinee, arms) => {
+      collect_strings_expr(scrutinee, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, arm_expr) = Array::get(arms, i)
+        match pat {
+          PString(s) => {
+            let mut pf = false
+            let mut pi = 0
+            while pi < Array::length(out) {
+              if String::equals(Array::get(out, pi), s) {
+                pf = true
+              }
+              pi = pi + 1
+            }
+            if !pf {
+              Array::push(out, s)
+            }
+            0
+          },
+          _ => 0
+        }
+        collect_strings_expr(arm_expr, out)
+        i = i + 1
+      }
+      0
+    },
+    EFn(_, _, _, _, _, body) => collect_strings_expr(body, out),
+    EThrow(msg) => collect_strings_expr(msg, out),
+    EHandle(body, arms) => {
+      collect_strings_expr(body, out)
+      let mut hi = 0
+      while hi < Array::length(arms) {
+        let (_, arm_expr) = Array::get(arms, hi)
+        collect_strings_expr(arm_expr, out)
+        hi = hi + 1
+      }
+      0
+    },
+    _ => 0
+  }
+}
+
+// Extract function param names from SLet(_, _, _, _, EFn(_, _, params, _, _, _))
+export let get_func_param_names = (stmt: Stmt) -> Array[String] with { Error } {
+  match stmt {
+    SLet(_, _, _, _, expr) => match expr {
+      EFn(_, _, params, _, _, _) => {
+        let names = Array::slice([
+          ""
+        ], 0, 0)
+        let mut i = 0
+        while i < Array::length(params) {
+          let (pname, _) = Array::get(params, i)
+          Array::push(names, pname)
+          i = i + 1
+        }
+        names
+      },
+      _ => throw("get_func_param_names: not a function")
+    },
+    _ => throw("get_func_param_names: not a let statement")
+  }
+}
+
+export let collect_strings_stmts = (stmts: Array[Stmt]) -> Array[String] {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => collect_strings_expr(expr, out),
+      _ => 0
+    }
+    i = i + 1
+  }
+  out
+}
+
+export let emit_i64_extend_i32_u = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, 173)
+  // 0xAD
+}
+
+// Resolve closure/fn value tag and fill slot_local/env_local
+// After this: slot_local = table slot index, env_local = env pointer (0 for bare fn)
+export let emit_closure_resolve = (buf: Array[Int], fn_val_local: Int, slot_local: Int, env_local: Int) -> Unit {
+  emit_local_get(buf, fn_val_local)
+  emit_i64_const(buf, 3)
+  emit_i64_and(buf)
+  emit_i64_const(buf, 2)
+  emit_i64_eq(buf)
+  emit_if_void(buf)
+  // Bare fn: table_slot = fn_val >> 2, env = 0
+  emit_local_get(buf, fn_val_local)
+  emit_i64_const(buf, 2)
+  emit_i64_shr_s(buf)
+  emit_local_set(buf, slot_local)
+  emit_i64_const(buf, 0)
+  emit_local_set(buf, env_local)
+  emit_else(buf)
+  // Closure: env = fn_val & ~3, slot = i32.load(env, 0)
+  emit_local_get(buf, fn_val_local)
+  emit_i64_const(buf, -4)
+  emit_i64_and(buf)
+  emit_local_set(buf, env_local)
+  emit_local_get(buf, env_local)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i64_extend_i32_u(buf)
+  emit_local_set(buf, slot_local)
+  emit_end(buf)
+}
+
+// Emit the tail of an indirect closure call (push env, push slot, call_indirect)
+export let emit_closure_call_tail = (buf: Array[Int], env_local: Int, slot_local: Int, closure_type_base: Int, num_args: Int) -> Unit {
+  emit_local_get(buf, env_local)
+  emit_local_get(buf, slot_local)
+  emit_i32_wrap_i64(buf)
+  emit_call_indirect(buf, closure_type_base + num_args)
+}
+
+let rec collect_pattern_bindings = (pat: Pat, bindings: Array[String]) -> Int {
+  match pat {
+    PBind(name) => {
+      Array::push(bindings, name); 0
+    },
+    PTuple(pats) => {
+      let mut i = 0
+      while i < Array::length(pats) {
+        collect_pattern_bindings(Array::get(pats, i), bindings)
+        i = i + 1
+      }
+      0
+    },
+    PCtor(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_pattern_bindings(Array::get(args, i), bindings)
+        i = i + 1
+      }
+      0
+    },
+    POr(l, r) => {
+      collect_pattern_bindings(l, bindings); collect_pattern_bindings(r, bindings)
+    },
+    _ => 0
+  }
+}
+
+// Stack-based free variable analysis: uses in-place push/truncate on bound array
+// to avoid O(n) array copies at every scope boundary. This dramatically reduces
+// heap allocation during meta-circular self-compilation.
+export let rec collect_free_vars_expr = (expr: Expr, bound: Array[String], fn_names: Array[String], out: Array[String]) -> Int {
+  match expr {
+    EIdent(name) => if array_contains_str(bound, name) {
+      0
+    }
+    else if array_contains_str(fn_names, name) {
+      0
+    }
+    else if array_contains_str(out, name) {
+      0
+    }
+    else {
+      Array::push(out, name)
+      0
+    }
+    ,
+    EInt(_) => 0,
+    EBool(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EUnit => 0,
+    EBinOp(_, lhs, rhs) => {
+      collect_free_vars_expr(lhs, bound, fn_names, out); collect_free_vars_expr(rhs, bound, fn_names, out)
+    },
+    EUnaryOp(_, operand) => collect_free_vars_expr(operand, bound, fn_names, out),
+    EIf(cond, then_e, else_e) => {
+      collect_free_vars_expr(cond, bound, fn_names, out); collect_free_vars_expr(then_e, bound, fn_names, out); collect_free_vars_expr(else_e, bound, fn_names, out)
+    },
+    ECall(callee, args) => {
+      collect_free_vars_expr(callee, bound, fn_names, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_free_vars_expr(Array::get(args, i), bound, fn_names, out)
+        i = i + 1
+      }
+      0
+    },
+    ELet(name, value, body) => {
+      collect_free_vars_expr(value, bound, fn_names, out)
+      let saved = Array::length(bound)
+      Array::push(bound, name)
+      collect_free_vars_expr(body, bound, fn_names, out)
+      Array::truncate(bound, saved)
+      0
+    },
+    ELetRec(name, value, body) => {
+      let saved = Array::length(bound)
+      Array::push(bound, name)
+      collect_free_vars_expr(value, bound, fn_names, out)
+      collect_free_vars_expr(body, bound, fn_names, out)
+      Array::truncate(bound, saved)
+      0
+    },
+    ELetMut(name, value, body) => {
+      collect_free_vars_expr(value, bound, fn_names, out)
+      let saved = Array::length(bound)
+      Array::push(bound, name)
+      collect_free_vars_expr(body, bound, fn_names, out)
+      Array::truncate(bound, saved)
+      0
+    },
+    EAssign(_, value, body) => {
+      collect_free_vars_expr(value, bound, fn_names, out); collect_free_vars_expr(body, bound, fn_names, out)
+    },
+    EAssignOp(_, _, value, body) => {
+      collect_free_vars_expr(value, bound, fn_names, out); collect_free_vars_expr(body, bound, fn_names, out)
+    },
+    ESeq(first, second) => {
+      collect_free_vars_expr(first, bound, fn_names, out); collect_free_vars_expr(second, bound, fn_names, out)
+    },
+    EWhile(cond, body) => {
+      collect_free_vars_expr(cond, bound, fn_names, out); collect_free_vars_expr(body, bound, fn_names, out)
+    },
+    EForIn(var_name, iter_e, body) => {
+      collect_free_vars_expr(iter_e, bound, fn_names, out)
+      let saved = Array::length(bound)
+      Array::push(bound, var_name)
+      collect_free_vars_expr(body, bound, fn_names, out)
+      Array::truncate(bound, saved)
+      0
+    },
+    ETuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        collect_free_vars_expr(Array::get(elems, i), bound, fn_names, out)
+        i = i + 1
+      }
+      0
+    },
+    EArray(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        collect_free_vars_expr(Array::get(elems, i), bound, fn_names, out)
+        i = i + 1
+      }
+      0
+    },
+    EMatch(scrutinee, arms) => {
+      collect_free_vars_expr(scrutinee, bound, fn_names, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (arm_pat, arm_expr) = Array::get(arms, i)
+        let saved = Array::length(bound)
+        collect_pattern_bindings(arm_pat, bound)
+        collect_free_vars_expr(arm_expr, bound, fn_names, out)
+        Array::truncate(bound, saved)
+        i = i + 1
+      }
+      0
+    },
+    EFn(_, _, params, _, _, body) => {
+      let saved = Array::length(bound)
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pname, _) = Array::get(params, pi)
+        Array::push(bound, pname)
+        pi = pi + 1
+      }
+      collect_free_vars_expr(body, bound, fn_names, out)
+      Array::truncate(bound, saved)
+      0
+    },
+    EBreak(_) => 0,
+    EContinue(_) => 0,
+    EThrow(msg) => collect_free_vars_expr(msg, bound, fn_names, out),
+    EHandle(body, arms) => {
+      collect_free_vars_expr(body, bound, fn_names, out)
+      let mut hi = 0
+      while hi < Array::length(arms) {
+        let (_, arm_expr) = Array::get(arms, hi)
+        collect_free_vars_expr(arm_expr, bound, fn_names, out)
+        hi = hi + 1
+      }
+      0
+    },
+    EDot(obj, _) => collect_free_vars_expr(obj, bound, fn_names, out),
+    ERecord(fields) => {
+      let mut ri = 0
+      while ri < Array::length(fields) {
+        let (_, fval) = Array::get(fields, ri)
+        collect_free_vars_expr(fval, bound, fn_names, out)
+        ri = ri + 1
+      }
+      0
+    },
+    ELabeledArg(_, _, arg_expr) => collect_free_vars_expr(arg_expr, bound, fn_names, out),
+    _ => 0
+  }
+}
+
+export let collect_free_vars = (body: Expr, param_names: Array[String], fn_names: Array[String]) -> Array[String] {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  // Make a mutable copy of param_names for stack-based push/truncate
+  let bound = Array::slice(param_names, 0, Array::length(param_names))
+  collect_free_vars_expr(body, bound, fn_names, out)
+  out
+}
+
+// Check if a mutable variable is captured by any nested EFn in the given expression
+export let rec is_mut_captured_in = (expr: Expr, name: String) -> Bool {
+  match expr {
+    EIdent(_) => false,
+    EInt(_) => false,
+    EBool(_) => false,
+    EFloat(_) => false,
+    EString(_) => false,
+    EUnit => false,
+    EBinOp(_, lhs, rhs) => is_mut_captured_in(lhs, name) || is_mut_captured_in(rhs, name),
+    EUnaryOp(_, operand) => is_mut_captured_in(operand, name),
+    EIf(cond, then_e, else_e) => is_mut_captured_in(cond, name) || is_mut_captured_in(then_e, name) || is_mut_captured_in(else_e, name),
+    ECall(callee, args) => if is_mut_captured_in(callee, name) {
+      true
+    }
+    else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if is_mut_captured_in(Array::get(args, i), name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    }
+    ,
+    ELet(n, value, body) => if String::equals(n, name) {
+      is_mut_captured_in(value, name)
+    }
+    else {
+      is_mut_captured_in(value, name) || is_mut_captured_in(body, name)
+    }
+    ,
+    ELetRec(n, value, body) => if String::equals(n, name) {
+      false
+    }
+    else {
+      is_mut_captured_in(value, name) || is_mut_captured_in(body, name)
+    }
+    ,
+    ELetMut(n, value, body) => if String::equals(n, name) {
+      is_mut_captured_in(value, name)
+    }
+    else {
+      is_mut_captured_in(value, name) || is_mut_captured_in(body, name)
+    }
+    ,
+    EAssign(_, value, body) => is_mut_captured_in(value, name) || is_mut_captured_in(body, name),
+    EAssignOp(_, _, value, body) => is_mut_captured_in(value, name) || is_mut_captured_in(body, name),
+    ESeq(first, second) => is_mut_captured_in(first, name) || is_mut_captured_in(second, name),
+    EWhile(cond, body) => is_mut_captured_in(cond, name) || is_mut_captured_in(body, name),
+    EForIn(_, iter_e, body) => is_mut_captured_in(iter_e, name) || is_mut_captured_in(body, name),
+    ETuple(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if is_mut_captured_in(Array::get(elems, i), name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EArray(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if is_mut_captured_in(Array::get(elems, i), name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMatch(scrutinee, arms) => if is_mut_captured_in(scrutinee, name) {
+      true
+    }
+    else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(arms) {
+        let (_, arm_expr) = Array::get(arms, i)
+        if is_mut_captured_in(arm_expr, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    }
+    ,
+    EFn(_, _, params, _, _, fn_body) => {
+      // Check if name is shadowed by params
+      let mut shadowed = false
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pname, _) = Array::get(params, pi)
+        if String::equals(pname, name) {
+          shadowed = true
+        }
+        pi = pi + 1
+      }
+      if shadowed {
+        false
+      }
+      else {
+        // Check if name is free in this EFn
+        let param_names = Array::slice([
+          ""
+        ], 0, 0)
+        let mut pi2 = 0
+        while pi2 < Array::length(params) {
+          let (pname2, _) = Array::get(params, pi2)
+          Array::push(param_names, pname2)
+          pi2 = pi2 + 1
+        }
+        let fv = collect_free_vars(fn_body, param_names, Array::slice([
+          ""
+        ], 0, 0))
+        if array_contains_str(fv, name) {
+          true
+        }
+        else {
+          // Also check recursively for deeper nesting
+          is_mut_captured_in(fn_body, name)
+        }
+      }
+    },
+    EBreak(_) => false,
+    EContinue(_) => false,
+    EThrow(msg) => is_mut_captured_in(msg, name),
+    _ => false
+  }
+}
