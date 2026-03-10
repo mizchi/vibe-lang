@@ -66,6 +66,16 @@ export enum TypeDb {
 
 //# Functions
 
+let unwrap_db = (db: TypeDb) -> TypeDbState {
+  match db {
+    TypeDb(state) => state
+  }
+}
+
+let wrap_db = (state: TypeDbState) -> TypeDb {
+  TypeDb(state)
+}
+
 let dir_of = (file_path: String) -> String {
   let idx = String::last_index_of(file_path, "/")
   if idx < 0 {
@@ -179,7 +189,7 @@ let empty_stmt_array = () -> Array[Stmt] {
 }
 
 export let db_new = () -> TypeDb {
-  TypeDb(
+  wrap_db(
     TypeDbState(
       ripple_new(),
       empty_env_cache(),
@@ -285,9 +295,9 @@ let upsert_source_cache = (
 }
 
 export let db_set_source = (db: TypeDb, path: String, source: String) -> TypeDb {
-  match db {
-    TypeDb(TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, parse_count, merge_count)) =>
-      TypeDb(
+  match unwrap_db(db) {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, parse_count, merge_count) =>
+      wrap_db(
         TypeDbState(
           ripple_set_source(rdb, path, source),
           env_cache,
@@ -318,8 +328,8 @@ let lookup_env_cache = (cache: Array[(String, TypeEnv)], path: String) -> Option
 }
 
 export let db_check_env = (db: TypeDb, path: String) -> Option[TypeEnv] {
-  match db {
-    TypeDb(TypeDbState(_, cache, _, _, _, _)) => lookup_env_cache(cache, path)
+  match unwrap_db(db) {
+    TypeDbState(_, cache, _, _, _, _) => lookup_env_cache(cache, path)
   }
 }
 
@@ -407,20 +417,20 @@ let build_fingerprint = (source: String, dep_fps: Array[(String, String)]) -> St
 }
 
 export let db_typecheck_count = (db: TypeDb) -> Int {
-  match db {
-    TypeDb(TypeDbState(rdb, _, _, _, _, _)) => ripple_eval_count(rdb)
+  match unwrap_db(db) {
+    TypeDbState(rdb, _, _, _, _, _) => ripple_eval_count(rdb)
   }
 }
 
 export let db_parse_count = (db: TypeDb) -> Int {
-  match db {
-    TypeDb(TypeDbState(_, _, _, _, parse_count, _)) => parse_count
+  match unwrap_db(db) {
+    TypeDbState(_, _, _, _, parse_count, _) => parse_count
   }
 }
 
 export let db_merge_count = (db: TypeDb) -> Int {
-  match db {
-    TypeDb(TypeDbState(_, _, _, _, _, merge_count)) => merge_count
+  match unwrap_db(db) {
+    TypeDbState(_, _, _, _, _, merge_count) => merge_count
   }
 }
 
@@ -609,8 +619,8 @@ let rec ensure_fingerprint = (
 }
 
 export let db_typecheck = (db: TypeDb, path: String) -> TypeDb with { Error } {
-  match db {
-    TypeDb(TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, parse_count, merge_count)) => {
+  match unwrap_db(db) {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, parse_count, merge_count) => {
       let (
         _,
         next_rdb,
@@ -625,7 +635,7 @@ export let db_typecheck = (db: TypeDb, path: String) -> TypeDb with { Error } {
         path,
         empty_stack()
       )
-      TypeDb(
+      wrap_db(
         TypeDbState(
           next_rdb,
           next_env_cache,
@@ -641,8 +651,8 @@ export let db_typecheck = (db: TypeDb, path: String) -> TypeDb with { Error } {
 
 export let db_program_source = (db: TypeDb, path: String) -> (String, TypeDb) with { Error } {
   let checked = db_typecheck(db, path)
-  match checked {
-    TypeDb(TypeDbState(rdb, _, _, _, _, _)) =>
+  match unwrap_db(checked) {
+    TypeDbState(rdb, _, _, _, _, _) =>
       match ripple_get_source(rdb, path) {
         None => throw(String::concat("missing:", path)),
         Some(source) => (source, checked)
@@ -693,8 +703,8 @@ export let db_merged_source = (
   entry_path: String,
   sources: Array[(String, String)]
 ) -> (String, TypeDb) with { Error } {
-  match db {
-    TypeDb(TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, parse_count, merge_count)) => {
+  match unwrap_db(db) {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, parse_count, merge_count) => {
       let merge_fingerprint = build_merge_fingerprint(sources)
       match lookup_source_cache(merged_cache, entry_path, merge_fingerprint) {
         Some(merged_source) => (merged_source, db),
@@ -708,7 +718,7 @@ export let db_merged_source = (
           )
           (
             merged_source,
-            TypeDb(
+            wrap_db(
               TypeDbState(
                 rdb,
                 env_cache,
