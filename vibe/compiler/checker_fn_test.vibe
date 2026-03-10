@@ -1,0 +1,126 @@
+//# Imports
+
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ./checker_test_support.vibe {
+  check, no_tb, no_tp
+}
+
+import ./types.vibe {
+  Type, TypeEnv, env_bind, types_equal
+}
+
+//# Misc
+
+test "call returns fn return type" {
+  let env = env_bind(EnvEmpty, "f", CtFn([
+    CtInt
+  ], CtString, false))
+  let expr = ECall(EIdent("f"), [
+    EInt(42)
+  ])
+  assert(types_equal(check(expr, env), CtString))
+}
+
+test "while returns unit" {
+  let expr = EWhile(EBool(true), EInt(1))
+  assert(types_equal(check(expr, EnvEmpty), CtUnit))
+}
+
+test "for-in returns array" {
+  let env = env_bind(EnvEmpty, "xs", CtArray(CtInt))
+  let expr = EForIn("x", EIdent("xs"), EString("a"))
+  assert(types_equal(check(expr, env), CtArray(CtString)))
+}
+
+test "match returns first arm type" {
+  let expr = EMatch(EInt(1), [
+    (PInt(1), EString("one")),
+    (PWild, EString("other"))
+  ])
+  assert(types_equal(check(expr, EnvEmpty), CtString))
+}
+
+test "desugared pipe call returns fn return type" {
+  let env = env_bind(EnvEmpty, "f", CtFn([
+    CtInt
+  ], CtString, false))
+  let expr = ECall(EIdent("f"), [
+    EInt(42)
+  ])
+  assert(types_equal(check(expr, env), CtString))
+}
+
+test "fn typed param binds in body" {
+  let expr = EFn(no_tp, no_tb, [
+    ("x", Some(TyName("Int")))
+  ], None, None, EIdent("x"))
+  let ty = check(expr, EnvEmpty)
+  match ty {
+    CtFn(_, ret, he) => {
+      assert(types_equal(ret, CtInt))
+      assert(not(he))
+    },
+    _ => assert(false)
+  }
+}
+
+test "fn untyped param with usage" {
+  let body = EBinOp("+", EIdent("x"), EInt(1))
+  let expr = EFn(no_tp, no_tb, [
+    ("x", None)
+  ], None, None, body)
+  let ty = check(expr, EnvEmpty)
+  match ty {
+    CtFn(_, ret, _) => assert(types_equal(ret, CtInt)),
+    _ => assert(false)
+  }
+}
+
+test "fn multiple params typed" {
+  let body = EBinOp("+", EIdent("x"), EInt(1))
+  let expr = EFn(no_tp, no_tb, [
+    ("x", Some(TyName("Int"))),
+    ("y", Some(TyName("String")))
+  ], None, None, body)
+  let ty = check(expr, EnvEmpty)
+  match ty {
+    CtFn(params, ret, _) => {
+      assert(types_equal(ret, CtInt))
+      assert(eq(Array::length(params), 2))
+      assert(types_equal(Array::get(params, 0), CtInt))
+      assert(types_equal(Array::get(params, 1), CtString))
+    },
+    _ => assert(false)
+  }
+}
+
+test "fn with effect flag" {
+  let expr = EFn(no_tp, no_tb, [
+    ("x", None)
+  ], None, Some("Error"), EInt(1))
+  let ty = check(expr, EnvEmpty)
+  match ty {
+    CtFn(_, ret, he) => {
+      assert(types_equal(ret, CtInt))
+      assert(he)
+    },
+    _ => assert(false)
+  }
+}
+
+test "fn without effect flag" {
+  let expr = EFn(no_tp, no_tb, [
+    ("x", None)
+  ], None, None, EInt(1))
+  let ty = check(expr, EnvEmpty)
+  match ty {
+    CtFn(_, ret, he) => {
+      assert(types_equal(ret, CtInt))
+      assert(not(he))
+    },
+    _ => assert(false)
+  }
+}

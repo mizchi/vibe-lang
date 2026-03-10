@@ -12,20 +12,18 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Self-Host Compiler / Runtime Packaging
 
-**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、TypeDb cache probe は完成。
-**残**: standalone selfhost CLI の I/O 境界、persistent cache の実配線、component packaging。
+**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache は完成。
+**残**: standalone selfhost CLI の I/O 境界、host 側 loop への cache 再利用、component packaging。
 
 ### Selfhost compiler modularization / cache
 
-- [ ] selfhost CLI / test loop で persistent `TypeDb` を持ち回り、同一プロセス内の warm compile を実際に再利用する
-  - 現状は `vibe/compiler` 側に cached API と probe はあるが、user-facing な compile/test loop にはまだ常駐 cache を配線していない
+- [ ] host `src/cmd/vibe` 側の compile/test loop にも selfhost と同じ persistent cache パターンを持ち込む
+  - 現状は `vibe/compiler/cli_cache.vibe` 側で warm reuse はできるが、host CLI 全体の compile/test orchestration は別レイヤ
 - [ ] selfhost compiler の module fingerprint cache を typecheck 再利用から codegen/link 手前まで拡張する
   - manifest entry 単位で lowered/module artifact を再利用できる形に寄せる
 - [ ] `vibe/compiler` の論理分割を manifest `group` 列に合わせて進める
   - 候補: `core/`, `syntax/`, `checker/`, `codegen/`
   - 目的はディレクトリ整理そのものではなく、manifest と cache 単位を一致させること
-- [ ] `selfhost_sources_bundle.vibe` の drift を release 導線で検知する
-  - manifest 更新と bundle 再生成のズレを CI/pre-release で落としたい
 ### Selfhost CLI / I/O boundary
 
 - [ ] selfhost CLI の責務を「純粋 compile 関数」までに固定するか、WASI I/O まで selfhost 側に持ち込むかを文書化する
@@ -41,8 +39,15 @@ Completed items are archived in `docs/DONE.md`.
 ## Release / Gate Integration
 
 - [ ] selfhost bootstrap の heavy shard をさらに削る
-  - 進捗ログと file 単位 batch 分割は入ったが、`parser_test` / `stmt_test` / `printer_test` のような巨大ファイルはまだ tail を引っ張る
-  - 方針候補: test file 分割、backend 固定、weight cache の見直し
+  - 進捗ログ、file 単位 batch、`selfhost_test_batch_weights.seed.json` の refresh 導線、`parser` / `stmt` / `printer` / `fixture` / `eval` / `eval_stmt` / `eval_selfhost` / `eval_selfhost2` / `eval_selfhost3` / `type_db` / `eval_e2e` / `checker_stmt` / `checker` / `cst_lower` の分割までは入った
+  - refresh helper は bootstrap cache の実 path (`_build/bench/selfhost_bootstrap/...`) に追従済み
+  - `selfhost_s5_*` と `codegen_parser_test` は compiled bootstrap から外し、別導線で扱う前提に寄せた
+  - bootstrap 先頭 batch は 83 files まで分散済み
+  - 現在の seed 上位は `stmt_test`、`parser_expr_test`、`parser_test`、`printer_controlflow_test`、`printer_expr_test`、`stmt_decl_test`、`parser_flow_test`、`cst_lower_expr_test`
+  - 次の実作業候補: `stmt_test` / `stmt_decl_test` の再分割、`printer_controlflow_test` / `printer_expr_test` の再分割、`cst_lower_expr_test` の isolate
+- [ ] compiled bootstrap から外した重い回帰ケースの扱いを固定する
+  - `codegen_parser_test` は release binary でも 240s で完走しないため、専用 gate か fixture 化に寄せたい
+  - `selfhost_s5_*` は selfbuild / artifact gate と責務が重複しているので、compiled bootstrap では走らせない前提を文書化したい
 - [ ] `vibe_normalize_all` の explicit exclude を外す
   - 現状 `vibe/compiler/coverage_selfhost_suite_lib.vibe` は native normalize crash 回避のため batch 対象から外している
   - normalize engine 側の crash を直して exclude なしで回したい

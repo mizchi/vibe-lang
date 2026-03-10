@@ -52,6 +52,14 @@ check-selfhost-bundle-sync:
 test-selfhost-bundle-sync:
     bash scripts/check_selfhost_bundle_sync_test.sh
 
+# Refresh selfhost bootstrap batch weight seed from cached timings
+refresh-selfhost-batch-weights:
+    bash scripts/refresh_selfhost_batch_weight_seed.sh
+
+# Self-test selfhost batch weight seed refresh helper
+test-selfhost-batch-weights:
+    bash scripts/refresh_selfhost_batch_weight_seed_test.sh
+
 # Self-test builtin rename migration helper
 test-rename-builtins:
     bash scripts/rename_builtins_test.sh

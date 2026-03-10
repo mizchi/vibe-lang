@@ -8,35 +8,13 @@ import ./eval_stmt.vibe {
   eval_and_lookup, eval_program, eval_stmts
 }
 
+import ./eval_stmt_test_support.vibe {
+  _a1, _a2, _a3, _a4, no_tb, no_tp
+}
+
 import ./values.vibe {
   ValEnv, Value, val_env_lookup, value_to_string, values_equal
 }
-
-//# Functions
-
-let _a1 = (e: Expr) -> Expr {
-  e
-}
-
-let _a2 = (p: Pat) -> Pat {
-  p
-}
-
-let _a3 = (t: TypeExpr) -> TypeExpr {
-  t
-}
-
-let _a4 = (s: Stmt) -> Stmt {
-  s
-}
-
-let _no_tp = Array::slice([
-  ""
-], 0, 0)
-
-let _no_tb = Array::slice([
-  ("", _no_tp)
-], 0, 0)
 
 //# Misc
 
@@ -156,70 +134,4 @@ test "eval multiple stmts" {
     Some(v) => assert(values_equal(v, VInt(30))),
     None => assert(false)
   }
-}
-
-test "eval let rec factorial" {
-  // let rec fact = (n) -> if n <= 1 then 1 else n * fact(n - 1)
-  let fn_body = EIf(EBinOp("<=", EIdent("n"), EInt(1)), EInt(1), EBinOp("*", EIdent("n"), ECall(EIdent("fact"), [
-    EBinOp("-", EIdent("n"), EInt(1))
-  ])))
-  let fn_expr = EFn(_no_tp, _no_tb, [
-    ("n", None)
-  ], None, None, fn_body)
-  let stmts = [
-    SLet(false, true, "fact", None, fn_expr),
-    SLet(false, false, "result", None, ECall(EIdent("fact"), [
-      EInt(5)
-    ]))
-  ]
-  let env = eval_program(stmts)
-  match val_env_lookup(env, "result") {
-    Some(v) => assert(values_equal(v, VInt(120))),
-    None => assert(false)
-  }
-}
-
-test "eval enum match E2E" {
-  let variants = [
-    ("Some", [
-      TyName("Int")
-    ]),
-    ("None", Array::slice([
-      TyUnit
-    ], 0, 0))
-  ]
-  let match_expr = EMatch(EIdent("val"), [
-    (PCtor("Some", [
-      PBind("x")
-    ]), EIdent("x")),
-    (PCtor("None", Array::slice([
-      PWild
-    ], 0, 0)), EInt(0))
-  ])
-  let stmts = [
-    SEnum(false, "MyOpt", variants),
-    SLet(false, false, "val", None, ECall(EIdent("Some"), [
-      EInt(99)
-    ])),
-    SLet(false, false, "result", None, match_expr)
-  ]
-  let env = eval_program(stmts)
-  match val_env_lookup(env, "result") {
-    Some(v) => assert(values_equal(v, VInt(99))),
-    None => assert(false)
-  }
-}
-
-test "eval_and_lookup" {
-  let stmts = [
-    SLet(false, false, "x", None, EInt(42))
-  ]
-  assert(String::equals(eval_and_lookup(stmts, "x"), "42"))
-}
-
-test "eval_and_lookup not found" {
-  let stmts = [
-    SLet(false, false, "x", None, EInt(42))
-  ]
-  assert(String::equals(eval_and_lookup(stmts, "y"), "<not found>"))
 }
