@@ -42,12 +42,13 @@ fn known_vibe_non_command_names() -> Map[String, Bool] {
     "String::substring", "String::concat", "String::equals", "String::split", "String::index_of",
     "String::contains", "String::trim", "Array::length", "Array::get", "Array::slice",
     "ArrayBuilder::new", "ArrayBuilder::push", "ArrayBuilder::freeze", "MapBuilder::new",
-    "MapBuilder::set", "MapBuilder::freeze", "Map::keys", "Map::values", "Map::has_key",
-    "record_set", "Char::to_int", "Char::from_int", "Fs::read_file", "Fs::write_file",
-    "Fs::exists", "Socket::tcp_connect", "Socket::tcp_read", "Socket::tcp_write",
-    "Socket::tcp_close", "Http::request", "Http::response_status", "Http::response_header",
-    "Http::response_body", "Http::close", "Http::listen", "Http::accept", "Http::request_method",
-    "Http::request_url", "Http::request_header", "Http::request_body", "Http::respond",
+    "MapBuilder::set", "MapBuilder::freeze", "map_builder", "map_builder_set", "map_builder_freeze",
+    "Map::keys", "Map::values", "Map::has_key", "record_set", "Char::to_int", "Char::from_int",
+    "Fs::read_file", "Fs::write_file", "Fs::exists", "Socket::tcp_connect", "Socket::tcp_read",
+    "Socket::tcp_write", "Socket::tcp_close", "Http::request", "Http::response_status",
+    "Http::response_header", "Http::response_body", "Http::close", "Http::listen",
+    "Http::accept", "Http::request_method", "Http::request_url", "Http::request_header",
+    "Http::request_body", "Http::respond",
   ]
   for name in builtins {
     out[name] = true

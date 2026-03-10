@@ -2,6 +2,15 @@
 
 Completed items archived from `TODO.md`.
 
+## 2026-03-10
+
+- **Release preflight に selfhost gate 群を統合**
+  - `release-check` から `release-selfhost-gates` を実行し、`sync-vbundle`、selfhost bootstrap / strict-recursive KPI / cutover / check parity / golden WAT をローカル pre-release 導線へ接続
+  - `sync_vibe_index_vbundle` と normalize batching helper の self-test を復帰し、preflight 補助 script の回帰も固定
+- **MapBuilder canonical naming cleanup を仕上げ**
+  - language tour eval task と codegen comment を `MapBuilder::*` に統一
+  - desugar 側は canonical 名と legacy alias の両方を non-command name として扱い、互換期間中の shell rewrite 回帰を防止
+
 ## 2026-03-09
 
 - **Selfhost WASI selfbuild (P5/S1-S5) 完了**

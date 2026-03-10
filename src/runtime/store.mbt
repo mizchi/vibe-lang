@@ -217,6 +217,11 @@ pub struct Runtime {
 }
 
 ///|
+fn default_loop_fuel() -> Int {
+  100_000
+}
+
+///|
 pub fn Runtime::new(caps : @capability.CapabilitySet) -> Runtime {
   Runtime::new_with_features(caps, RuntimeFeatureFlags::stable())
 }
@@ -247,14 +252,14 @@ pub fn Runtime::new_with_features(
     cwd: @io.current_dir_or_root(),
     loop_fuel: match @io.get_env_var("VIBE_LOOP_FUEL") {
       Some(s) => {
-        let n = @strconv.parse_int(s) catch { _ => 100_000 }
+        let n = @strconv.parse_int(s) catch { _ => default_loop_fuel() }
         if n > 0 {
           n
         } else {
-          100_000
+          default_loop_fuel()
         }
       }
-      None => 100_000
+      None => default_loop_fuel()
     },
   }
   let env = @checker.TypeEnv::new()
@@ -448,7 +453,7 @@ fn Runtime::fork_for_test(self : Runtime) -> Runtime {
     active_handle_scope: self.active_handle_scope,
     prelude_loaded: self.prelude_loaded,
     cwd: self.cwd,
-    loop_fuel: 100_000,
+    loop_fuel: self.loop_fuel,
   }
 }
 

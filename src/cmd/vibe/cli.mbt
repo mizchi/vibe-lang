@@ -234,6 +234,32 @@ fn new_runtime_with_features(
 }
 
 ///|
+fn restore_cli_env_var(name : String, prev : String?) -> Unit {
+  match prev {
+    Some(value) => @sys.set_env_var(name, value)
+    None => @sys.unset_env_var(name)
+  }
+}
+
+///|
+fn resolve_test_loop_fuel_env_value() -> String {
+  match @sys.get_env_var("VIBE_TEST_LOOP_FUEL") {
+    Some(raw) => raw
+    None => "10000000"
+  }
+}
+
+///|
+fn new_test_runtime_with_features(
+  features : @runtime.RuntimeFeatureFlags,
+) -> @runtime.Runtime {
+  let prev_loop_fuel = @sys.get_env_var("VIBE_LOOP_FUEL")
+  @sys.set_env_var("VIBE_LOOP_FUEL", resolve_test_loop_fuel_env_value())
+  defer restore_cli_env_var("VIBE_LOOP_FUEL", prev_loop_fuel)
+  new_runtime_with_features(features)
+}
+
+///|
 fn new_runtime_with_llm(
   features : @runtime.RuntimeFeatureFlags,
 ) -> @runtime.Runtime {
@@ -1085,12 +1111,22 @@ fn entry_prefers_compiled_backend(entry_path : String) -> Bool {
 }
 
 ///|
+fn entry_prefers_interpreter_backend(entry_path : String) -> Bool {
+  let normalized = normalize_cli_entry_path(entry_path)
+  normalized == "vibe/compiler/codegen_lexer_import_test.vibe" ||
+  normalized.has_suffix("/vibe/compiler/codegen_lexer_import_test.vibe")
+}
+
+///|
 fn resolve_cli_exec_backend_pref_for_entry(
   env_name : String,
   entry_path : String,
 ) -> CliExecBackendPref {
   let pref = resolve_cli_exec_backend_pref(env_name)
   if pref == CliExecBackendPref::Auto {
+    if entry_prefers_interpreter_backend(entry_path) {
+      return CliExecBackendPref::Interpreter
+    }
     if entry_prefers_compiled_backend(entry_path) {
       return CliExecBackendPref::Compiled
     }
@@ -2792,7 +2828,7 @@ fn run_test_file_interpreter(
   let compiled = @runtime_compile.compile_module(db, entry) catch {
     e => return Err("compile error: " + e.to_string())
   }
-  let rt = new_runtime_with_features(features)
+  let rt = new_test_runtime_with_features(features)
   rt.set_type_env(compiled.type_env)
   let path_to_hash : Map[String, String] = {}
   load_imports_into_runtime(rt, db, entry, path_to_hash)

@@ -3259,6 +3259,23 @@ test "entry_prefers_compiled_backend detects vibe compiler paths" {
 }
 
 ///|
+test "entry_prefers_interpreter_backend detects deep compiler import tests" {
+  assert_true(
+    entry_prefers_interpreter_backend(
+      "vibe/compiler/codegen_lexer_import_test.vibe",
+    ),
+  )
+  assert_true(
+    entry_prefers_interpreter_backend(
+      "/Users/mz/ghq/github.com/mizchi/vibe-lang/vibe/compiler/codegen_lexer_import_test.vibe",
+    ),
+  )
+  assert_false(
+    entry_prefers_interpreter_backend("vibe/compiler/codegen_test.vibe"),
+  )
+}
+
+///|
 test "resolve_test_backend_pref defaults to compiled in auto mode" {
   let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
   @sys.unset_env_var("VIBE_TEST_BACKEND")
@@ -3271,6 +3288,33 @@ test "resolve_test_backend_pref defaults to compiled in auto mode" {
     resolve_test_backend_pref("examples/hello.vibe"),
     CliExecBackendPref::Compiled,
   )
+}
+
+///|
+test "resolve_test_backend_pref keeps deep compiler import tests on interpreter" {
+  let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
+  @sys.unset_env_var("VIBE_TEST_BACKEND")
+  defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
+  assert_eq(
+    resolve_test_backend_pref("vibe/compiler/codegen_lexer_import_test.vibe"),
+    CliExecBackendPref::Interpreter,
+  )
+}
+
+///|
+test "resolve_test_loop_fuel_env_value defaults high for test runtime" {
+  let prev = @sys.get_env_var("VIBE_TEST_LOOP_FUEL")
+  @sys.unset_env_var("VIBE_TEST_LOOP_FUEL")
+  defer wbtest_restore_env_var("VIBE_TEST_LOOP_FUEL", prev)
+  assert_eq(resolve_test_loop_fuel_env_value(), "10000000")
+}
+
+///|
+test "resolve_test_loop_fuel_env_value respects override" {
+  let prev = @sys.get_env_var("VIBE_TEST_LOOP_FUEL")
+  @sys.set_env_var("VIBE_TEST_LOOP_FUEL", "424242")
+  defer wbtest_restore_env_var("VIBE_TEST_LOOP_FUEL", prev)
+  assert_eq(resolve_test_loop_fuel_env_value(), "424242")
 }
 
 ///|

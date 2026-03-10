@@ -29,9 +29,19 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Release / Gate Integration
 
-- [ ] `release-check` か専用 preflight に selfhost gate 群を束ねる
-  - 候補: `test-selfhost-bootstrap`, `test-selfhost-wasi-selfbuild-kpi`, `test-selfhost-cutover`, `test-selfhost-check-parity`, `test-golden-wat`
-  - CI では実行済みだが、ローカル pre-release 導線は未統合
+- [x] `release-check` に selfhost gate 群を束ねる
+  - `sync-vbundle`, `test-selfhost-bootstrap`, `test-selfhost-wasi-selfbuild-kpi`, `test-selfhost-cutover`, `test-selfhost-check-parity`, `test-golden-wat` を `release-selfhost-gates` に集約
+  - ローカル pre-release 導線から CI 相当の selfhost / golden WAT gate を実行可能にした
+
+## Migration Cleanup
+
+- [x] `map_builder*` 互換 alias の user-facing 残骸を掃除する
+  - language tour / generated docs / comment を `MapBuilder::*` に統一
+  - legacy alias は互換用に維持しつつ、desugar の non-command name と coverage で後方互換を固定
+  - rename 用の `scripts/rename_builtins.py` は移行補助として維持し、恒久 API では旧名を増やさない
+- [ ] `map_builder*` 互換 alias を削除する条件を固める
+  - 条件案: docs と eval task の canonical 化完了、rename script の dry-run 実績、host/selfhost の alias coverage を維持したまま deprecation 期間を決める
+  - 対象: host checker/runtime/codegen の互換層、selfhost builtin 正規化、alias 専用 wbtest
 
 ## ユーザビリティ改善
 
