@@ -17,11 +17,11 @@ import ./codegen.vibe {
 }
 
 import ./module_loader.vibe {
-  collect_all_sources_fs, collect_merged_stmts
+  collect_all_sources_fs
 }
 
 import ./type_db.vibe {
-  TypeDb, db_new, db_set_source, db_typecheck
+  TypeDb, db_new, db_set_source, db_typecheck, db_program_source, db_merged_source
 }
 
 //# Functions
@@ -75,16 +75,16 @@ export let compile_with_modules_wasi = (main_source: String, main_path: String, 
 
 export let compile_with_modules_cached = (db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)]) -> (Bytes, TypeDb) with { Error } {
   let next_db = prepare_modules_cached(db, main_path, main_source, sources)
-  let tokens = lex(main_source)
-  let stmts = parse_program(tokens)
-  (compile_module(stmts), next_db)
+  let (program_source, codegen_db) = db_program_source(next_db, main_path)
+  let stmts = parse_program(lex(program_source))
+  (compile_module(stmts), codegen_db)
 }
 
 export let compile_with_modules_wasi_cached = (db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> (Bytes, TypeDb) with { Error } {
   let next_db = prepare_modules_cached(db, main_path, main_source, sources)
-  let tokens = lex(main_source)
-  let stmts = parse_program(tokens)
-  (compile_wasi_module(stmts, entry_name), next_db)
+  let (program_source, codegen_db) = db_program_source(next_db, main_path)
+  let stmts = parse_program(lex(program_source))
+  (compile_wasi_module(stmts, entry_name), codegen_db)
 }
 
 // FS-based multi-module compile pipeline: read files from filesystem, bundle, codegen
@@ -110,13 +110,15 @@ export let prepare_file_fs_cached = (db: TypeDb, entry_path: String) -> TypeDb w
 export let compile_file_fs_cached = (db: TypeDb, entry_path: String, entry_name: String) -> (Bytes, TypeDb) with { Error, Fs } {
   let sources = collect_all_sources_fs(entry_path)
   let next_db = prepare_file_fs_cached(db, entry_path)
-  let merged_stmts = collect_merged_stmts(sources)
-  (compile_wasi_module(merged_stmts, entry_name), next_db)
+  let (merged_source, codegen_db) = db_merged_source(next_db, entry_path, sources)
+  let merged_stmts = parse_program(lex(merged_source))
+  (compile_wasi_module(merged_stmts, entry_name), codegen_db)
 }
 
 export let compile_file_fs_module_cached = (db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with { Error, Fs } {
   let sources = collect_all_sources_fs(entry_path)
   let next_db = prepare_file_fs_cached(db, entry_path)
-  let merged_stmts = collect_merged_stmts(sources)
-  (compile_module(merged_stmts), next_db)
+  let (merged_source, codegen_db) = db_merged_source(next_db, entry_path, sources)
+  let merged_stmts = parse_program(lex(merged_source))
+  (compile_module(merged_stmts), codegen_db)
 }
