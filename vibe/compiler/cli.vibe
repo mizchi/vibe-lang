@@ -1,29 +1,33 @@
 //# Imports
 
-import ./compiler.vibe {
-  compile_source, compile_source_wasi
+import ./cli_cache.vibe {
+  parse_batch_jobs_tsv, compile_jobs_cached
+}
+
+import ./type_db.vibe {
+  db_new
 }
 
 //# Functions
 
 export let main = () -> Int with { Error, Fs, Process, Env, Stdout, Stdin } {
+  let batch_tsv = Env::get("VIBE_BATCH_TSV")
   let input_path = Env::get("VIBE_INPUT")
   let output_path = Env::get("VIBE_OUTPUT")
   let entry = Env::get("VIBE_ENTRY")
-  if String::equals(input_path, "") {
+  if not(String::equals(batch_tsv, "")) {
+    let jobs = parse_batch_jobs_tsv(batch_tsv)
+    let _ = compile_jobs_cached(db_new(), jobs)
+    0
+  }
+  else if String::equals(input_path, "") {
     1
   }
   else if String::equals(output_path, "") {
     1
   }
   else {
-    let source = Fs::read_file(input_path)
-    let bytes = if String::equals(entry, "") {
-      compile_source(source)
-    } else {
-      compile_source_wasi(source, entry)
-    }
-    Fs::write_bytes(output_path, bytes)
+    let _ = compile_jobs_cached(db_new(), [(input_path, output_path, entry)])
     0
   }
 }

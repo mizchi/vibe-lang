@@ -44,6 +44,14 @@ test-lock-clean:
 test-sync-vbundle:
     bash scripts/sync_vibe_index_vbundle_test.sh
 
+# Verify selfhost bundle matches manifest/source inputs
+check-selfhost-bundle-sync:
+    bash scripts/check_selfhost_bundle_sync.sh
+
+# Self-test selfhost bundle drift checker
+test-selfhost-bundle-sync:
+    bash scripts/check_selfhost_bundle_sync_test.sh
+
 # Self-test builtin rename migration helper
 test-rename-builtins:
     bash scripts/rename_builtins_test.sh
@@ -644,7 +652,7 @@ vibe-normalize-check:
     scripts/vibe_normalize_all.sh --check
 
 # Pre-release selfhost gate bundle
-release-selfhost-gates: sync-vbundle test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cutover test-selfhost-check-parity test-golden-wat
+release-selfhost-gates: sync-vbundle check-selfhost-bundle-sync test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cutover test-selfhost-check-parity test-golden-wat
 
 # Pre-release check (includes selfhost gates + wasm bundle-size monitor)
 release-check: fmt info check test vibe-normalize bench-bundle-size-monitor release-selfhost-gates
