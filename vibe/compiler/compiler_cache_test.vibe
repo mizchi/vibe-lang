@@ -11,6 +11,7 @@ import ./type_db.vibe {
   db_typecheck_count,
   db_parse_count,
   db_merge_count,
+  db_module_source_count,
   db_codegen_count
 }
 
@@ -79,6 +80,18 @@ test "compile_file_fs_module_cached: warm compile reuses merged module cache" {
   assert(eq(db_merge_count(db2), merge_count1))
 }
 
+test "compile_file_fs_module_cached: same merged source reuses merge cache across entry paths" {
+  let main_path1 = "/tmp/vibe_compiler_merge_cache_same_source_a.vibe"
+  let main_path2 = "/tmp/vibe_compiler_merge_cache_same_source_b.vibe"
+  let source = "let run = () -> Int { 1 + 2 }"
+  Fs::write_bytes(main_path1, string_to_bytes(source))
+  Fs::write_bytes(main_path2, string_to_bytes(source))
+  let (_, db1) = compile_file_fs_module_cached(db_new(), main_path1)
+  let merge_count1 = db_merge_count(db1)
+  let (_, db2) = compile_file_fs_module_cached(db1, main_path2)
+  assert(eq(db_merge_count(db2), merge_count1))
+}
+
 test "compile_with_modules_cached: warm compile reuses compiled artifact cache" {
   let main_source = "let main = () -> Int { 1 + 2 }"
   let sources = empty_sources()
@@ -105,6 +118,20 @@ test "compile_with_modules_cached: same source reuses compiled artifact cache ac
   let codegen_count1 = db_codegen_count(db1)
   let (_, db2) = compile_with_modules_cached(db1, main_source, "main_b.vibe", sources)
   assert(eq(db_codegen_count(db2), codegen_count1))
+}
+
+test "compile_with_modules_cached: same source reuses module source cache across paths" {
+  let main_source = "let main = () -> Int { 1 + 2 }"
+  let sources = empty_sources()
+  let (_, db1) = compile_with_modules_cached(
+    db_new(),
+    main_source,
+    "main_a.vibe",
+    sources
+  )
+  let module_source_count1 = db_module_source_count(db1)
+  let (_, db2) = compile_with_modules_cached(db1, main_source, "main_b.vibe", sources)
+  assert(eq(db_module_source_count(db2), module_source_count1))
 }
 
 test "compile_file_fs_module_cached: warm compile reuses compiled fs artifact cache" {
@@ -136,4 +163,16 @@ test "compile_file_fs_module_cached: same merged source reuses compiled artifact
   let codegen_count1 = db_codegen_count(db1)
   let (_, db2) = compile_file_fs_module_cached(db1, main_path2)
   assert(eq(db_codegen_count(db2), codegen_count1))
+}
+
+test "compile_file_fs_module_cached: same merged source reuses module source cache across entry paths" {
+  let main_path1 = "/tmp/vibe_compiler_module_source_cache_same_source_a.vibe"
+  let main_path2 = "/tmp/vibe_compiler_module_source_cache_same_source_b.vibe"
+  let source = "let run = () -> Int { 1 + 2 }"
+  Fs::write_bytes(main_path1, string_to_bytes(source))
+  Fs::write_bytes(main_path2, string_to_bytes(source))
+  let (_, db1) = compile_file_fs_module_cached(db_new(), main_path1)
+  let module_source_count1 = db_module_source_count(db1)
+  let (_, db2) = compile_file_fs_module_cached(db1, main_path2)
+  assert(eq(db_module_source_count(db2), module_source_count1))
 }

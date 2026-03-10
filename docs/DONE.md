@@ -11,6 +11,8 @@ Completed items archived from `TODO.md`.
   - ADR-0022 で selfhost CLI / I-O boundary を固定し、selfhost compiler 本体は pure compile API に留める方針を明文化した
   - host `src/cmd/vibe` 側も `src/loader` の `*_into` API と root 単位 `VibeDb` cache で `check` / `test` loop の warm reuse を持てるようにした
   - final artifact cache の key を entry path 非依存に寄せ、`program_source` / `merged_source` fingerprint で別 entry 間の warm codegen reuse まで通した
+  - `db_merged_source` も fingerprint ベースで entry path 非依存にし、同一 merged source なら merge cache も別 entry 間で共有するようにした
+  - `db_module_source` も fingerprint ベースで entry path 非依存にし、同一 module source なら codegen 手前の module-only parse/lower も別 entry 間で共有するようにした
 - **Release preflight に selfhost gate 群を統合**
   - `release-check` から `release-selfhost-gates` を実行し、`sync-vbundle`、selfhost bootstrap / strict-recursive KPI / cutover / check parity / golden WAT をローカル pre-release 導線へ接続
   - `sync_vibe_index_vbundle` と normalize batching helper の self-test を復帰し、preflight 補助 script の回帰も固定

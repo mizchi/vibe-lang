@@ -26,9 +26,9 @@ Completed items are archived in `docs/DONE.md`.
 - [x] selfhost compiler の artifact cache を entry 間共有まで一般化する
   - final artifact cache の key を path 依存から外し、artifact fingerprint を `program_source` / `merged_source` ベースに寄せた
   - 同一 source を別 entry path からコンパイルしても warm codegen が再実行されない形にした
-- [ ] selfhost compiler の module fingerprint cache を merged/lowered artifact reuse まで一般化する
-  - 現状の entry 共有は final artifact cache まで
-  - 次は merged source cache 自体と lowered/module artifact を manifest entry 単位で共有し、codegen 手前の merge/parse もさらに減らしたい
+- [x] selfhost compiler の module fingerprint cache を merged/lowered artifact reuse まで一般化する
+  - merged source cache は fingerprint ベースで別 entry 間共有まで入った
+  - module source cache も fingerprint ベースで別 entry 間共有にし、codegen 手前の parse/lower をさらに減らした
 - [ ] `vibe/compiler` の論理分割を manifest `group` 列に合わせて進める
   - 候補: `core/`, `syntax/`, `checker/`, `codegen/`
   - 目的はディレクトリ整理そのものではなく、manifest と cache 単位を一致させること

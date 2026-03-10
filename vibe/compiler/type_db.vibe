@@ -56,6 +56,8 @@ enum TypeDbState {
     Array[(String, String)],
     Array[StringTriple],
     Array[StringTriple],
+    Array[StringTriple],
+    Int,
     Int,
     Int,
     Int
@@ -198,6 +200,8 @@ export let db_new = () -> TypeDb {
       empty_string_pairs(),
       empty_string_triples(),
       empty_string_triples(),
+      empty_string_triples(),
+      0,
       0,
       0,
       0
@@ -283,7 +287,7 @@ let upsert_source_cache = (
     } else {
       match Array::get(cache, i) {
         StringTriple(p, fp, existing) =>
-          if String::equals(p, path) {
+          if String::equals(p, path) && String::equals(fp, fingerprint) {
             build(i + 1, acc)
           } else {
             build(i + 1, Array::concat(acc, [
@@ -300,16 +304,18 @@ let upsert_source_cache = (
 
 export let db_set_source = (db: TypeDb, path: String, source: String) -> TypeDb {
   match unwrap_db(db) {
-    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, artifact_cache, parse_count, merge_count, codegen_count) =>
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) =>
       wrap_db(
         TypeDbState(
           ripple_set_source(rdb, path, source),
           env_cache,
           dep_source_cache,
           merged_cache,
+          module_source_cache,
           artifact_cache,
           parse_count,
           merge_count,
+          module_source_count,
           codegen_count
         )
       )
@@ -335,7 +341,7 @@ let lookup_env_cache = (cache: Array[(String, TypeEnv)], path: String) -> Option
 
 export let db_check_env = (db: TypeDb, path: String) -> Option[TypeEnv] {
   match unwrap_db(db) {
-    TypeDbState(_, cache, _, _, _, _, _, _) => lookup_env_cache(cache, path)
+    TypeDbState(_, cache, _, _, _, _, _, _, _, _) => lookup_env_cache(cache, path)
   }
 }
 
@@ -424,25 +430,31 @@ let build_fingerprint = (source: String, dep_fps: Array[(String, String)]) -> St
 
 export let db_typecheck_count = (db: TypeDb) -> Int {
   match unwrap_db(db) {
-    TypeDbState(rdb, _, _, _, _, _, _, _) => ripple_eval_count(rdb)
+    TypeDbState(rdb, _, _, _, _, _, _, _, _, _) => ripple_eval_count(rdb)
   }
 }
 
 export let db_parse_count = (db: TypeDb) -> Int {
   match unwrap_db(db) {
-    TypeDbState(_, _, _, _, _, parse_count, _, _) => parse_count
+    TypeDbState(_, _, _, _, _, _, parse_count, _, _, _) => parse_count
   }
 }
 
 export let db_merge_count = (db: TypeDb) -> Int {
   match unwrap_db(db) {
-    TypeDbState(_, _, _, _, _, _, merge_count, _) => merge_count
+    TypeDbState(_, _, _, _, _, _, _, merge_count, _, _) => merge_count
+  }
+}
+
+export let db_module_source_count = (db: TypeDb) -> Int {
+  match unwrap_db(db) {
+    TypeDbState(_, _, _, _, _, _, _, _, module_source_count, _) => module_source_count
   }
 }
 
 export let db_codegen_count = (db: TypeDb) -> Int {
   match unwrap_db(db) {
-    TypeDbState(_, _, _, _, _, _, _, codegen_count) => codegen_count
+    TypeDbState(_, _, _, _, _, _, _, _, _, codegen_count) => codegen_count
   }
 }
 
@@ -632,7 +644,7 @@ let rec ensure_fingerprint = (
 
 export let db_typecheck = (db: TypeDb, path: String) -> TypeDb with { Error } {
   match unwrap_db(db) {
-    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, artifact_cache, parse_count, merge_count, codegen_count) => {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
       let (
         _,
         next_rdb,
@@ -653,9 +665,11 @@ export let db_typecheck = (db: TypeDb, path: String) -> TypeDb with { Error } {
           next_env_cache,
           next_dep_source_cache,
           merged_cache,
+          module_source_cache,
           artifact_cache,
           next_parse_count,
           merge_count,
+          module_source_count,
           codegen_count
         )
       )
@@ -666,7 +680,7 @@ export let db_typecheck = (db: TypeDb, path: String) -> TypeDb with { Error } {
 export let db_program_source = (db: TypeDb, path: String) -> (String, String, TypeDb) with { Error } {
   let checked = db_typecheck(db, path)
   match unwrap_db(checked) {
-    TypeDbState(rdb, _, _, _, _, _, _, _) =>
+    TypeDbState(rdb, _, _, _, _, _, _, _, _, _) =>
       match ripple_get_source(rdb, path) {
         None => throw(String::concat("missing:", path)),
         Some(source) =>
@@ -718,19 +732,20 @@ let build_merged_source = (sources: Array[(String, String)]) -> String with { Er
 
 export let db_merged_source = (
   db: TypeDb,
-  entry_path: String,
+  _entry_path: String,
   sources: Array[(String, String)]
 ) -> (String, String, TypeDb) with { Error } {
   match unwrap_db(db) {
-    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, artifact_cache, parse_count, merge_count, codegen_count) => {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
       let merge_fingerprint = build_merge_fingerprint(sources)
-      match lookup_source_cache(merged_cache, entry_path, merge_fingerprint) {
+      let merge_cache_key = "merged"
+      match lookup_source_cache(merged_cache, merge_cache_key, merge_fingerprint) {
         Some(merged_source) => (merged_source, merge_fingerprint, db),
         None => {
           let merged_source = build_merged_source(sources)
           let next_merged_cache = upsert_source_cache(
             merged_cache,
-            entry_path,
+            merge_cache_key,
             merge_fingerprint,
             merged_source
           )
@@ -743,9 +758,71 @@ export let db_merged_source = (
                 env_cache,
                 dep_source_cache,
                 next_merged_cache,
+                module_source_cache,
                 artifact_cache,
                 parse_count,
                 merge_count + 1,
+                module_source_count,
+                codegen_count
+              )
+            )
+          )
+        }
+      }
+    }
+  }
+}
+
+let build_module_source = (source: String) -> String with { Error } {
+  let stmts = parse_program(lex(source))
+  let filtered = empty_stmt_array()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    let keep = match stmt {
+      SLet(_, _, _, _, expr) => {
+        match expr {
+          EFn(_, _, _, _, _, _) => true,
+          _ => false
+        }
+      },
+      _ => false
+    }
+    if keep {
+      Array::push(filtered, stmt)
+    }
+    i = i + 1
+  }
+  print_program(filtered)
+}
+
+export let db_module_source = (db: TypeDb, fingerprint: String, source: String) -> (String, TypeDb) with { Error } {
+  match unwrap_db(db) {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
+      let module_cache_key = "module-source"
+      match lookup_source_cache(module_source_cache, module_cache_key, fingerprint) {
+        Some(module_source) => (module_source, db),
+        None => {
+          let module_source = build_module_source(source)
+          let next_module_source_cache = upsert_source_cache(
+            module_source_cache,
+            module_cache_key,
+            fingerprint,
+            module_source
+          )
+          (
+            module_source,
+            wrap_db(
+              TypeDbState(
+                rdb,
+                env_cache,
+                dep_source_cache,
+                merged_cache,
+                next_module_source_cache,
+                artifact_cache,
+                parse_count,
+                merge_count,
+                module_source_count + 1,
                 codegen_count
               )
             )
@@ -824,7 +901,7 @@ let hex_to_bytes = (hex: String) -> Bytes with { Error } {
 
 export let db_load_artifact = (db: TypeDb, _path: String, kind: String, entry_name: String, fingerprint: String) -> Option[Bytes] with { Error } {
   match unwrap_db(db) {
-    TypeDbState(_, _, _, _, artifact_cache, _, _, _) =>
+    TypeDbState(_, _, _, _, _, artifact_cache, _, _, _, _) =>
       match lookup_source_cache(artifact_cache, artifact_cache_key(kind, entry_name), fingerprint) {
         Some(hex) => Some(hex_to_bytes(hex)),
         None => None
@@ -841,13 +918,14 @@ export let db_store_artifact = (
   bytes: Bytes
 ) -> TypeDb {
   match unwrap_db(db) {
-    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, artifact_cache, parse_count, merge_count, codegen_count) =>
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) =>
       wrap_db(
         TypeDbState(
           rdb,
           env_cache,
           dep_source_cache,
           merged_cache,
+          module_source_cache,
           upsert_source_cache(
             artifact_cache,
             artifact_cache_key(kind, entry_name),
@@ -856,6 +934,7 @@ export let db_store_artifact = (
           ),
           parse_count,
           merge_count,
+          module_source_count,
           codegen_count + 1
         )
       )
