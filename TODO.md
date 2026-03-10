@@ -42,9 +42,14 @@ Completed items are archived in `docs/DONE.md`.
   - 進捗ログ、file 単位 batch、`selfhost_test_batch_weights.seed.json` の refresh 導線、`parser` / `stmt` / `printer` / `fixture` / `eval` / `eval_stmt` / `eval_selfhost` / `eval_selfhost2` / `eval_selfhost3` / `type_db` / `eval_e2e` / `checker_stmt` / `checker` / `cst_lower` の分割までは入った
   - refresh helper は bootstrap cache の実 path (`_build/bench/selfhost_bootstrap/...`) に追従済み
   - `selfhost_s5_*` と `codegen_parser_test` は compiled bootstrap から外し、別導線で扱う前提に寄せた
-  - bootstrap 先頭 batch は 83 files まで分散済み
-  - 現在の seed 上位は `stmt_test`、`parser_expr_test`、`parser_test`、`printer_controlflow_test`、`printer_expr_test`、`stmt_decl_test`、`parser_flow_test`、`cst_lower_expr_test`
-  - 次の実作業候補: `stmt_test` / `stmt_decl_test` の再分割、`printer_controlflow_test` / `printer_expr_test` の再分割、`cst_lower_expr_test` の isolate
+  - bootstrap 先頭 batch は 88 files まで分散済み
+  - printer 系は `printer_function_test` / `printer_literal_test` / `printer_block_test` / `printer_operator_test` / `printer_call_test` / `printer_loop_test` / `printer_effect_test` まで分割済み
+  - `stmt_decl_test` は import/use、data 宣言、type 宣言に分割済み、`cst_lower_expr_test` も literal/ops・binding/call・controlflow に分割済み
+  - `parser_test` は operator/function/literal へ分割済み、`parser_controlflow_test` / `parser_destructure_test` は loop / invalid keyword まで分離済み
+  - `fixture_selfhost_test` は parse / roundtrip に分割済み
+  - `stmt_fn_regression_test` は `stmt_fn_tuple_regression_test` に、`fixture_test` は parse / roundtrip に分割済み
+  - direct compiled 実測で重い候補は `compiler_test`、`stmt_regression_test`、`checker_stmt_regression_test`、`parser_flow_test`、`codegen_lexer_test`
+  - 次の実作業候補: `stmt_regression_test` / `checker_stmt_regression_test` の再分割、`compiler_test` の compile_source 系を独立 file に切り出す
 - [ ] compiled bootstrap から外した重い回帰ケースの扱いを固定する
   - `codegen_parser_test` は release binary でも 240s で完走しないため、専用 gate か fixture 化に寄せたい
   - `selfhost_s5_*` は selfbuild / artifact gate と責務が重複しているので、compiled bootstrap では走らせない前提を文書化したい
