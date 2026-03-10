@@ -32,6 +32,9 @@ Completed items are archived in `docs/DONE.md`.
 - [ ] `vibe/compiler` の論理分割を manifest `group` 列に合わせて進める
   - 候補: `core/`, `syntax/`, `checker/`, `codegen/`
   - 目的はディレクトリ整理そのものではなく、manifest と cache 単位を一致させること
+  - `module_loader` には manifest group を保った `collect_source_groups_fs` を追加済み
+  - `compiler` の FS compile path も grouped merge cache を通すようにした
+  - 物理分割は `core/ast.vibe` から着手し、旧 `ast.vibe` は wrapper で互換維持している
 ### Selfhost CLI / I/O boundary
 
 - [x] selfhost CLI の責務を「純粋 compile 関数」までに固定するか、WASI I/O まで selfhost 側に持ち込むかを文書化する

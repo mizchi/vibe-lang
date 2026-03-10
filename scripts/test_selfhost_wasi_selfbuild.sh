@@ -161,6 +161,8 @@ recursive_runner_mode=0
 cache_probe_runner_mode=0
 CACHE_PROBE_COUNT1="na"
 CACHE_PROBE_COUNT2="na"
+GROUP_MERGE_CACHE_PROBE_COUNT1="na"
+GROUP_MERGE_CACHE_PROBE_COUNT2="na"
 MODULE_SOURCE_CACHE_PROBE_COUNT1="na"
 MODULE_SOURCE_CACHE_PROBE_COUNT2="na"
 CODEGEN_CACHE_PROBE_COUNT1="na"
@@ -207,6 +209,27 @@ if [ "$cache_probe_runner_mode" -eq 1 ]; then
     exit 1
   fi
   echo "[selfbuild] cache probe counts: $CACHE_PROBE_COUNT1 -> $CACHE_PROBE_COUNT2"
+
+  GROUP_MERGE_CACHE_PROBE_OUT="$OUT_DIR/stage1_group_merge_cache_probe.out"
+  run_stage_capture_stdout "run stage1 grouped merge cache probe (--invoke selfbuild_probe_type_db_group_merge_counts)" \
+    "$GROUP_MERGE_CACHE_PROBE_OUT" \
+    "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_probe_type_db_group_merge_counts "$STAGE1_WASM"
+  GROUP_MERGE_CACHE_PROBE_RAW="$(rg -v '^warning' "$GROUP_MERGE_CACHE_PROBE_OUT" | tail -n 1)"
+  if ! is_non_negative_int "$GROUP_MERGE_CACHE_PROBE_RAW"; then
+    echo "selfbuild gate failed: stage1 grouped merge cache probe did not return packed counts: $GROUP_MERGE_CACHE_PROBE_RAW" >&2
+    exit 1
+  fi
+  GROUP_MERGE_CACHE_PROBE_COUNT1="$((GROUP_MERGE_CACHE_PROBE_RAW / 1000))"
+  GROUP_MERGE_CACHE_PROBE_COUNT2="$((GROUP_MERGE_CACHE_PROBE_RAW % 1000))"
+  if [ "$GROUP_MERGE_CACHE_PROBE_COUNT1" -le 0 ]; then
+    echo "selfbuild gate failed: stage1 grouped merge cache probe first count must be positive, got $GROUP_MERGE_CACHE_PROBE_COUNT1" >&2
+    exit 1
+  fi
+  if [ "$GROUP_MERGE_CACHE_PROBE_COUNT2" -ne "$GROUP_MERGE_CACHE_PROBE_COUNT1" ]; then
+    echo "selfbuild gate failed: stage1 grouped merge cache probe did not reuse warm grouped merge state ($GROUP_MERGE_CACHE_PROBE_COUNT1 -> $GROUP_MERGE_CACHE_PROBE_COUNT2)" >&2
+    exit 1
+  fi
+  echo "[selfbuild] grouped merge cache probe counts: $GROUP_MERGE_CACHE_PROBE_COUNT1 -> $GROUP_MERGE_CACHE_PROBE_COUNT2"
 
   MODULE_SOURCE_CACHE_PROBE_OUT="$OUT_DIR/stage1_module_source_cache_probe.out"
   run_stage_capture_stdout "run stage1 module source cache probe (--invoke selfbuild_probe_type_db_module_source_counts)" \
@@ -390,4 +413,4 @@ fi
 
 SIZE_STAGE1="$(wc -c < "$STAGE1_WASM" | tr -d ' ')"
 SIZE_STAGE2="$(wc -c < "$STAGE2_WASM" | tr -d ' ')"
-echo "selfbuild gate passed: stage1_hash=$HASH_STAGE1 stage2_hash=$HASH_STAGE2 stage1_size=$SIZE_STAGE1 stage2_size=$SIZE_STAGE2 stage1_run=$RUN_STAGE1 stage2_run=$RUN_STAGE2 cache_prepare_count1=$CACHE_PROBE_COUNT1 cache_prepare_count2=$CACHE_PROBE_COUNT2 module_source_cache_count1=$MODULE_SOURCE_CACHE_PROBE_COUNT1 module_source_cache_count2=$MODULE_SOURCE_CACHE_PROBE_COUNT2 codegen_cache_count1=$CODEGEN_CACHE_PROBE_COUNT1 codegen_cache_count2=$CODEGEN_CACHE_PROBE_COUNT2 cli_cache_prepare_count1=$CLI_CACHE_PROBE_COUNT1 cli_cache_prepare_count2=$CLI_CACHE_PROBE_COUNT2 mode=$recursive_mode recursive=$recursive_stage2_ok total=${SELFBUILD_TOTAL_SEC}s"
+echo "selfbuild gate passed: stage1_hash=$HASH_STAGE1 stage2_hash=$HASH_STAGE2 stage1_size=$SIZE_STAGE1 stage2_size=$SIZE_STAGE2 stage1_run=$RUN_STAGE1 stage2_run=$RUN_STAGE2 cache_prepare_count1=$CACHE_PROBE_COUNT1 cache_prepare_count2=$CACHE_PROBE_COUNT2 group_merge_cache_count1=$GROUP_MERGE_CACHE_PROBE_COUNT1 group_merge_cache_count2=$GROUP_MERGE_CACHE_PROBE_COUNT2 module_source_cache_count1=$MODULE_SOURCE_CACHE_PROBE_COUNT1 module_source_cache_count2=$MODULE_SOURCE_CACHE_PROBE_COUNT2 codegen_cache_count1=$CODEGEN_CACHE_PROBE_COUNT1 codegen_cache_count2=$CODEGEN_CACHE_PROBE_COUNT2 cli_cache_prepare_count1=$CLI_CACHE_PROBE_COUNT1 cli_cache_prepare_count2=$CLI_CACHE_PROBE_COUNT2 mode=$recursive_mode recursive=$recursive_stage2_ok total=${SELFBUILD_TOTAL_SEC}s"

@@ -709,6 +709,23 @@ let build_merge_fingerprint = (sources: Array[(String, String)]) -> String {
   go(0, "")
 }
 
+let build_grouped_merge_fingerprint = (group_fingerprints: Array[(String, String)]) -> String {
+  let len = Array::length(group_fingerprints)
+  let rec go = (i: Int, acc: String) -> String {
+    if i >= len {
+      acc
+    } else {
+      let (group_name, fingerprint) = Array::get(group_fingerprints, i)
+      let next = String::concat(
+        acc,
+        String::concat("|", String::concat(group_name, String::concat("=", fingerprint)))
+      )
+      go(i + 1, next)
+    }
+  }
+  go(0, "")
+}
+
 let build_merged_source = (sources: Array[(String, String)]) -> String with { Error } {
   let merged = empty_stmt_array()
   let mut si = 0
@@ -728,6 +745,24 @@ let build_merged_source = (sources: Array[(String, String)]) -> String with { Er
     si = si + 1
   }
   print_program(merged)
+}
+
+let join_group_sources = (group_sources: Array[(String, String)]) -> String {
+  let len = Array::length(group_sources)
+  let rec go = (i: Int, acc: String) -> String {
+    if i >= len {
+      acc
+    } else {
+      let (_, source) = Array::get(group_sources, i)
+      let next = if String::equals(acc, "") {
+        source
+      } else {
+        String::concat(acc, String::concat("\n", source))
+      }
+      go(i + 1, next)
+    }
+  }
+  go(0, "")
 }
 
 export let db_merged_source = (
@@ -762,6 +797,109 @@ export let db_merged_source = (
                 artifact_cache,
                 parse_count,
                 merge_count + 1,
+                module_source_count,
+                codegen_count
+              )
+            )
+          )
+        }
+      }
+    }
+  }
+}
+
+export let db_grouped_merged_source = (
+  db: TypeDb,
+  groups: Array[(String, Array[(String, String)])]
+) -> (String, String, TypeDb) with { Error } {
+  match unwrap_db(db) {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
+      let rec load_groups = (
+        i: Int,
+        group_fingerprints: Array[(String, String)],
+        group_sources: Array[(String, String)],
+        cache_acc: Array[StringTriple],
+        merge_count_acc: Int
+      ) -> (Array[(String, String)], Array[(String, String)], Array[StringTriple], Int) with { Error } {
+        if i >= Array::length(groups) {
+          (group_fingerprints, group_sources, cache_acc, merge_count_acc)
+        } else {
+          let (group_name, sources) = Array::get(groups, i)
+          let fingerprint = build_merge_fingerprint(sources)
+          let cache_key = String::concat("merged-group|", group_name)
+          match lookup_source_cache(cache_acc, cache_key, fingerprint) {
+            Some(source) =>
+              load_groups(
+                i + 1,
+                Array::concat(group_fingerprints, [(group_name, fingerprint)]),
+                Array::concat(group_sources, [(group_name, source)]),
+                cache_acc,
+                merge_count_acc
+              ),
+            None => {
+              let source = build_merged_source(sources)
+              let next_cache = upsert_source_cache(cache_acc, cache_key, fingerprint, source)
+              load_groups(
+                i + 1,
+                Array::concat(group_fingerprints, [(group_name, fingerprint)]),
+                Array::concat(group_sources, [(group_name, source)]),
+                next_cache,
+                merge_count_acc + 1
+              )
+            }
+          }
+        }
+      }
+      let (group_fingerprints, group_sources, next_merged_cache, next_merge_count) = load_groups(
+        0,
+        empty_string_pairs(),
+        empty_string_pairs(),
+        merged_cache,
+        merge_count
+      )
+      let grouped_fingerprint = build_grouped_merge_fingerprint(group_fingerprints)
+      let grouped_cache_key = "merged-groups"
+      match lookup_source_cache(next_merged_cache, grouped_cache_key, grouped_fingerprint) {
+        Some(source) =>
+          (
+            source,
+            grouped_fingerprint,
+            wrap_db(
+              TypeDbState(
+                rdb,
+                env_cache,
+                dep_source_cache,
+                next_merged_cache,
+                module_source_cache,
+                artifact_cache,
+                parse_count,
+                next_merge_count,
+                module_source_count,
+                codegen_count
+              )
+            )
+          ),
+        None => {
+          let source = join_group_sources(group_sources)
+          let final_merged_cache = upsert_source_cache(
+            next_merged_cache,
+            grouped_cache_key,
+            grouped_fingerprint,
+            source
+          )
+          (
+            source,
+            grouped_fingerprint,
+            wrap_db(
+              TypeDbState(
+                rdb,
+                env_cache,
+                dep_source_cache,
+                final_merged_cache,
+                module_source_cache,
+                artifact_cache,
+                parse_count,
+                next_merge_count + 1,
                 module_source_count,
                 codegen_count
               )

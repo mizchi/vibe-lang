@@ -126,7 +126,19 @@ let find_char = (s: String, target: Int) -> Int {
 }
 
 let parse_source_manifest_paths = (manifest_source: String) -> Array[String] with { Error } {
+  let rows = parse_source_manifest_rows(manifest_source)
   let paths = Array::slice([""], 0, 0)
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (_, path) = Array::get(rows, i)
+    Array::push(paths, path)
+    i = i + 1
+  }
+  paths
+}
+
+let parse_source_manifest_rows = (manifest_source: String) -> Array[(String, String)] with { Error } {
+  let rows = Array::slice([("", "")], 0, 0)
   let len = String::length(manifest_source)
   let mut line_start = 0
   let mut i = 0
@@ -139,13 +151,44 @@ let parse_source_manifest_paths = (manifest_source: String) -> Array[String] wit
         if tab_idx < 0 || tab_idx + 1 >= line_len {
           throw(String::concat("invalid source manifest row: ", raw_line))
         }
-        Array::push(paths, String::substring(raw_line, tab_idx + 1, line_len))
+        let group = String::substring(raw_line, 0, tab_idx)
+        let path = String::substring(raw_line, tab_idx + 1, line_len)
+        Array::push(rows, (group, path))
       }
       line_start = i + 1
     }
     i = i + 1
   }
-  paths
+  rows
+}
+
+let empty_grouped_sources = () -> Array[(String, Array[(String, String)])] {
+  Array::slice([("", Array::slice([("", "")], 0, 0))], 0, 0)
+}
+
+let push_grouped_source = (
+  groups: Array[(String, Array[(String, String)])],
+  group_name: String,
+  path: String,
+  source: String
+) -> Unit {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(groups) {
+    let (name, sources) = Array::get(groups, i)
+    if String::equals(name, group_name) {
+      Array::push(sources, (path, source))
+      found = true
+      i = Array::length(groups)
+    } else {
+      i = i + 1
+    }
+  }
+  if !found {
+    let sources = Array::slice([("", "")], 0, 0)
+    Array::push(sources, (path, source))
+    Array::push(groups, (group_name, sources))
+  }
 }
 
 let is_manifest_root_entry = (entry_path: String) -> Bool {
@@ -180,6 +223,33 @@ let try_collect_manifest_sources_fs = (entry_path: String) -> Option[Array[(Stri
         }
         Some(sources)
       }
+    }
+  }
+}
+
+let try_collect_manifest_source_groups_fs = (entry_path: String) -> Option[Array[(String, Array[(String, String)])]] with { Error, Fs } {
+  if !(is_manifest_root_entry(entry_path)) {
+    None
+  } else {
+    let base_dir = dir_of(entry_path)
+    let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
+    if !(Fs::exists(manifest_path)) {
+      None
+    } else {
+      let rows = parse_source_manifest_rows(Fs::read_file(manifest_path))
+      let groups = empty_grouped_sources()
+      let mut has_entry = false
+      let mut i = 0
+      while i < Array::length(rows) {
+        let (group_name, rel_path) = Array::get(rows, i)
+        let path = join_path(base_dir, rel_path)
+        if String::equals(path, entry_path) {
+          has_entry = true
+        }
+        push_grouped_source(groups, group_name, path, Fs::read_file(path))
+        i = i + 1
+      }
+      if has_entry { Some(groups) } else { None }
     }
   }
 }
@@ -346,6 +416,17 @@ export let collect_all_sources_fs = (entry_path: String) -> Array[(String, Strin
       let visited = Array::slice([""], 0, 0)
       collect_sources_rec(entry_path, sources, visited)
       sources
+    }
+  }
+}
+
+export let collect_source_groups_fs = (entry_path: String) -> Array[(String, Array[(String, String)])] with { Error, Fs } {
+  match try_collect_manifest_source_groups_fs(entry_path) {
+    Some(groups) => groups,
+    None => {
+      let groups = empty_grouped_sources()
+      Array::push(groups, ("recursive", collect_all_sources_fs(entry_path)))
+      groups
     }
   }
 }

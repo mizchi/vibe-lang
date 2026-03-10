@@ -12,6 +12,7 @@ import ./type_db.vibe {
   db_parse_count,
   db_merge_count,
   db_module_source_count,
+  db_grouped_merged_source,
   db_codegen_count
 }
 
@@ -90,6 +91,32 @@ test "compile_file_fs_module_cached: same merged source reuses merge cache acros
   let merge_count1 = db_merge_count(db1)
   let (_, db2) = compile_file_fs_module_cached(db1, main_path2)
   assert(eq(db_merge_count(db2), merge_count1))
+}
+
+test "db_grouped_merged_source: warm grouped merge reuses cached groups" {
+  let groups = [
+    ("core", [("helpers.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }")]),
+    ("entry", [("main.vibe", "import ./helpers.vibe { add }\nlet main = () -> Int { add(1, 2) }")])
+  ]
+  let (_, _, db1) = db_grouped_merged_source(db_new(), groups)
+  let merge_count1 = db_merge_count(db1)
+  let (_, _, db2) = db_grouped_merged_source(db1, groups)
+  assert(eq(db_merge_count(db2), merge_count1))
+}
+
+test "db_grouped_merged_source: changing one group only rebuilds that group and final merge" {
+  let groups1 = [
+    ("core", [("helpers.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }")]),
+    ("entry", [("main.vibe", "import ./helpers.vibe { add }\nlet main = () -> Int { add(1, 2) }")])
+  ]
+  let groups2 = [
+    ("core", [("helpers.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }")]),
+    ("entry", [("main.vibe", "import ./helpers.vibe { add }\nlet main = () -> Int { add(2, 3) }")])
+  ]
+  let (_, _, db1) = db_grouped_merged_source(db_new(), groups1)
+  let merge_count1 = db_merge_count(db1)
+  let (_, _, db2) = db_grouped_merged_source(db1, groups2)
+  assert(eq(db_merge_count(db2), merge_count1 + 2))
 }
 
 test "compile_with_modules_cached: warm compile reuses compiled artifact cache" {
