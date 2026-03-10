@@ -2275,6 +2275,45 @@ test "split test entry path batches with weights isolates heavy module first" {
 }
 
 ///|
+test "split test entry task batches with weights caps large sibling chunks" {
+  let grouped = split_test_entry_task_batches_with_weights(
+    [
+      "vibe/compiler/a_test.vibe", "vibe/compiler/b_test.vibe",
+      "vibe/compiler/c_test.vibe", "vibe/compiler/d_test.vibe",
+      "vibe/compiler/e_test.vibe", "vibe/compiler/f_test.vibe",
+      "vibe/compiler/g_test.vibe", "vibe/compiler/h_test.vibe",
+      "vibe/compiler/i_test.vibe", "vibe/compiler/j_test.vibe",
+    ],
+    2,
+    {},
+  )
+  assert_eq(grouped.length(), 3)
+  for batch in grouped {
+    assert_true(batch.length() <= 4)
+  }
+}
+
+///|
+test "split test entry task batches with weights uses file granularity" {
+  let weights : Map[String, Int] = {}
+  weights["vibe/compiler/a_test.vibe"] = 10
+  weights["vibe/compiler/b_test.vibe"] = 20
+  weights["vibe/compiler/c_test.vibe"] = 30
+  let grouped = split_test_entry_task_batches_with_weights(
+    [
+      "vibe/compiler/a_test.vibe", "vibe/compiler/b_test.vibe",
+      "vibe/compiler/c_test.vibe",
+    ],
+    2,
+    weights,
+  )
+  assert_eq(grouped.length(), 3)
+  assert_eq(grouped[0].length(), 1)
+  assert_eq(grouped[1].length(), 1)
+  assert_eq(grouped[2].length(), 1)
+}
+
+///|
 test "test batch weight cache key relativizes cwd absolute path" {
   let cwd = @io.current_dir_or_root()
   let abs = @vibe_fs.normalize_path(cwd + "/vibe/compiler/eval_test.vibe")

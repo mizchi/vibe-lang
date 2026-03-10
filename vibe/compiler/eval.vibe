@@ -841,6 +841,7 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
   let apply_fn = (fn_val: Value, evaled_args: Array[Value], caller_env: ValEnv) -> (Value, ValEnv)with { Error } {
     match fn_val {
       VFn(captures, params, _, self_name) => {
+        // First capture entry is ("__body", encoded_body)
         let encoded_body = if Array::length(captures) > 0 {
           let (key, bval) = Array::get(captures, 0)
           if String::equals(key, "__body") {
@@ -852,6 +853,7 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
           VUnit
         }
         let body = decode_expr(encoded_body)
+        // Build fn env from remaining captures (skip __body)
         let real_captures = if Array::length(captures) > 1 {
           Array::slice(captures, 1, Array::length(captures))
         } else {
@@ -880,11 +882,13 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
           }
         }
         let fn_env3 = bind_params(0, fn_env2)
+        // Propagate __bstore into function scope
         let fn_env4 = match val_env_lookup(caller_env, "__bstore") {
           Some(bs) => val_env_bind(fn_env3, "__bstore", bs),
           None => fn_env3
         }
         let (result, ret_env) = eval_expr(body, fn_env4)
+        // Propagate __bstore back to caller
         let caller_env2 = match val_env_lookup(ret_env, "__bstore") {
           Some(bs) => val_env_bind(caller_env, "__bstore", bs),
           None => caller_env
@@ -1150,6 +1154,7 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
             EIdent(n) => n,
             _ => ""
           }
+          // ArrayBuilder::new: managed via __bstore in env
           if String::equals(name, "ArrayBuilder::new") {
             let store = match val_env_lookup(env3, "__bstore") {
               Some(VArray(s)) => s,

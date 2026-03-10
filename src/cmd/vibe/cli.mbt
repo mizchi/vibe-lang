@@ -3425,41 +3425,44 @@ fn test_entry_batch_paths_weight(
 }
 
 ///|
+let test_entry_batch_max_chunk_size = 4
+
+///|
+fn test_entry_batch_target_chunk_size(
+  entry_count : Int,
+  worker_count : Int,
+  use_fine_grained_chunking : Bool,
+) -> Int {
+  if use_fine_grained_chunking {
+    return 1
+  }
+  let base = (entry_count + worker_count - 1) / worker_count
+  if base < 1 {
+    1
+  } else if base > test_entry_batch_max_chunk_size {
+    test_entry_batch_max_chunk_size
+  } else {
+    base
+  }
+}
+
+///|
 fn test_entry_batch_display_name(path : String) -> String {
   get_basename(path)
 }
 
 ///|
-fn summarize_test_entry_batch_paths(paths : Array[String]) -> String {
-  let parts : Array[String] = []
-  let preview_count = if paths.length() < 3 { paths.length() } else { 3 }
-  for i in 0..<preview_count {
-    parts.push(test_entry_batch_display_name(paths[i]))
-  }
-  let summary = parts.join(", ")
-  if paths.length() > preview_count {
-    summary + ", +" + (paths.length() - preview_count).to_string() + " more"
-  } else {
-    summary
-  }
-}
-
-///|
-fn split_test_entry_path_batches_with_weights(
+fn collect_test_entry_batch_units(
   entry_paths : Array[String],
   jobs : Int,
   weights : Map[String, Int],
-) -> Array[Array[String]] {
+) -> Array[TestEntryBatchUnit] {
   let mut worker_count = jobs
   if worker_count <= 0 {
     worker_count = 1
   }
   if worker_count > entry_paths.length() {
     worker_count = entry_paths.length()
-  }
-  let batches : Array[Array[String]] = []
-  for _ in 0..<worker_count {
-    batches.push([])
   }
   let grouped : Map[String, Array[String]] = {}
   for path in entry_paths {
@@ -3474,9 +3477,13 @@ fn split_test_entry_path_batches_with_weights(
     parent_keys.push(key)
   }
   sort_strings_for_batching(parent_keys)
+  let use_fine_grained_chunking = weights.length() > 0
 
-  let target_chunk_size = (entry_paths.length() + worker_count - 1) /
-    worker_count
+  let target_chunk_size = test_entry_batch_target_chunk_size(
+    entry_paths.length(),
+    worker_count,
+    use_fine_grained_chunking,
+  )
   let units : Array[TestEntryBatchUnit] = []
   for parent in parent_keys {
     let parent_paths = match grouped.get(parent) {
@@ -3501,6 +3508,55 @@ fn split_test_entry_path_batches_with_weights(
     }
   }
   sort_test_entry_batch_units(units)
+  units
+}
+
+///|
+fn summarize_test_entry_batch_paths(paths : Array[String]) -> String {
+  let parts : Array[String] = []
+  let preview_count = if paths.length() < 3 { paths.length() } else { 3 }
+  for i in 0..<preview_count {
+    parts.push(test_entry_batch_display_name(paths[i]))
+  }
+  let summary = parts.join(", ")
+  if paths.length() > preview_count {
+    summary + ", +" + (paths.length() - preview_count).to_string() + " more"
+  } else {
+    summary
+  }
+}
+
+///|
+fn split_test_entry_task_batches_with_weights(
+  entry_paths : Array[String],
+  jobs : Int,
+  weights : Map[String, Int],
+) -> Array[Array[String]] {
+  let batches : Array[Array[String]] = []
+  for unit in collect_test_entry_batch_units(entry_paths, jobs, weights) {
+    batches.push(unit.paths)
+  }
+  batches
+}
+
+///|
+fn split_test_entry_path_batches_with_weights(
+  entry_paths : Array[String],
+  jobs : Int,
+  weights : Map[String, Int],
+) -> Array[Array[String]] {
+  let mut worker_count = jobs
+  if worker_count <= 0 {
+    worker_count = 1
+  }
+  if worker_count > entry_paths.length() {
+    worker_count = entry_paths.length()
+  }
+  let batches : Array[Array[String]] = []
+  for _ in 0..<worker_count {
+    batches.push([])
+  }
+  let units = collect_test_entry_batch_units(entry_paths, worker_count, weights)
 
   let loads : Array[Int] = []
   for _ in 0..<worker_count {
@@ -3548,13 +3604,19 @@ fn test_cmd_parallel(
     }
     singleton_batches
   } else if use_batch_weight_cache {
-    split_test_entry_path_batches_with_weights(
+    split_test_entry_task_batches_with_weights(
       entry_paths, jobs, cached_batch_weights,
     )
   } else {
     split_test_entry_path_batches(entry_paths, jobs)
   }
-  let max_concurrent = if jobs == 1 { 1 } else { batches.length() }
+  let max_concurrent = if jobs == 1 {
+    1
+  } else if batches.length() < jobs {
+    batches.length()
+  } else {
+    jobs
+  }
   vibe_parallel_cleanup_install_signal_handlers()
   vibe_parallel_cleanup_clear()
   defer vibe_parallel_cleanup_clear()

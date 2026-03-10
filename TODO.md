@@ -33,15 +33,6 @@ Completed items are archived in `docs/DONE.md`.
   - 候補: `test-selfhost-bootstrap`, `test-selfhost-wasi-selfbuild-kpi`, `test-selfhost-cutover`, `test-selfhost-check-parity`, `test-golden-wat`
   - CI では実行済みだが、ローカル pre-release 導線は未統合
 
-## Migration Cleanup
-
-- [ ] `map_builder*` 互換 alias の user-facing 残骸を掃除する
-  - language tour / examples / generated docs / comment を `MapBuilder::*` に統一
-  - rename 用の `scripts/rename_builtins.py` は移行補助として維持し、恒久 API では旧名を増やさない
-- [ ] `map_builder*` 互換 alias を削除する条件を固める
-  - 条件案: docs と eval task の canonical 化完了、rename script の dry-run 実績、host/selfhost の alias coverage を維持したまま deprecation 期間を決める
-  - 対象: host checker/runtime/codegen の互換層、selfhost builtin 正規化、alias 専用 wbtest
-
 ## ユーザビリティ改善
 
 ### 高優先度（日常的な不便）

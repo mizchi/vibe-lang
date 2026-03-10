@@ -199,68 +199,6 @@ test "normalize_engine: infers fn return annotation in fn expression" {
 }
 
 ///|
-test "normalize_engine: inline comment in fn params falls back to rendered form" {
-  let source =
-    #|let rec compile_expr = (
-    #|  buf: Array[Int],
-    #|  expr: Int,
-    #|  ld: Int  // loop depth: -1 = not in loop, 0+ = depth from while's loop block
-    #|) -> Int with { Error } {
-    #|  expr
-    #|}
-    #|export { compile_expr }
-  let result = normalize_source_text(source)
-  match result {
-    Ok(normalized) => {
-      assert_false(normalized.contains("loop depth"))
-      assert_true(
-        normalized.contains("let rec compile_expr = (buf: Array[Int]"),
-      )
-      assert_true(normalized.contains("ld: Int"))
-      assert_true(normalized.contains("-> Int with"))
-    }
-    Err(msg) => fail("normalize failed: " + msg)
-  }
-}
-
-///|
-test "normalize_engine: comment-only lines in fn body do not hide array entries" {
-  let source =
-    #|export let run = () {
-    #|  let builtin_defs = [
-    #|    ("print_int", 1, 1, 0),
-    #|    // New builtins
-    #|    ("Array::truncate", 2, 19, 0),
-    #|    ("String::join", 2, 20, 1),
-    #|    // Aliases
-    #|    ("ArrayBuilder::new", 0, 6, 1),
-    #|    ("ArrayBuilder::push", 2, 9, 0),
-    #|    // Bytes aliases
-    #|    ("Bytes::from_array", 1, 16, 1),
-    #|    ("Bytes::length", 1, 7, 1),
-    #|    // Float aliases
-    #|    ("Double::to_i64_bits", 1, 16, 1)
-    #|  ]
-    #|  Array::length(builtin_defs)
-    #|}
-    #|export { run }
-  let result = normalize_source_text(source)
-  match result {
-    Ok(normalized) => {
-      assert_true(normalized.contains("\"Array::truncate\""))
-      assert_true(normalized.contains("\"ArrayBuilder::new\""))
-      assert_true(normalized.contains("\"Bytes::from_array\""))
-      assert_true(normalized.contains("\"Double::to_i64_bits\""))
-      assert_false(normalized.contains("// New builtins("))
-      assert_false(normalized.contains("// Aliases("))
-      assert_false(normalized.contains("// Bytes aliases("))
-      assert_false(normalized.contains("// Float aliases("))
-    }
-    Err(msg) => fail("normalize failed: " + msg)
-  }
-}
-
-///|
 test "normalize_engine: entry normalize drops pure top-level expr and exports entries" {
   let source =
     #|let f = (v: Int) { v * 2 }

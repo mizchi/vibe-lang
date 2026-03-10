@@ -332,16 +332,8 @@ fn normalize_render_stmt_accept_raw_snippet(snippet : String) -> Bool {
   if snippet.length() == 0 {
     return false
   }
-  if normalize_has_standalone_comment_line(snippet) {
-    return false
-  }
   let parsed = @parser.parse_ast(snippet) catch { _ => return false }
-  if parsed.stmts.length() != 1 {
-    return false
-  }
-  let formatted = @parser.format_script(snippet)
-  let reparsed = @parser.parse_ast(formatted) catch { _ => return false }
-  reparsed.stmts.length() == 1
+  parsed.stmts.length() == 1
 }
 
 ///|
@@ -421,11 +413,8 @@ fn normalize_render_fn_effects(
 fn normalize_find_fn_body_start(snippet : String) -> Int? {
   let mut depth_paren = 0
   let mut depth_bracket = 0
-  let mut depth_effect_brace = 0
   let mut in_string = false
   let mut escaped = false
-  let mut current_word = StringBuilder::new()
-  let mut pending_with = false
   for i, c in snippet {
     if in_string {
       if escaped {
@@ -437,52 +426,14 @@ fn normalize_find_fn_body_start(snippet : String) -> Int? {
       }
       continue
     }
-    if depth_effect_brace > 0 {
-      match c {
-        '"' => in_string = true
-        '{' => depth_effect_brace += 1
-        '}' => if depth_effect_brace > 0 { depth_effect_brace -= 1 }
-        _ => ()
-      }
-      continue
-    }
-    let is_ident_char = (c >= 'a' && c <= 'z') ||
-      (c >= 'A' && c <= 'Z') ||
-      (c >= '0' && c <= '9') ||
-      c == '_'
-    if is_ident_char {
-      current_word.write_char(c)
-      match c {
-        '(' => depth_paren += 1
-        ')' => if depth_paren > 0 { depth_paren -= 1 }
-        '[' => depth_bracket += 1
-        ']' => if depth_bracket > 0 { depth_bracket -= 1 }
-        _ => ()
-      }
-      continue
-    }
-    let current_word_text = current_word.to_string()
-    if current_word_text.length() > 0 {
-      pending_with = current_word_text == "with"
-      current_word = StringBuilder::new()
-    }
     match c {
       '"' => in_string = true
       '(' => depth_paren += 1
       ')' => if depth_paren > 0 { depth_paren -= 1 }
       '[' => depth_bracket += 1
       ']' => if depth_bracket > 0 { depth_bracket -= 1 }
-      '{' =>
-        if depth_paren == 0 && depth_bracket == 0 {
-          if pending_with {
-            depth_effect_brace = 1
-            pending_with = false
-          } else {
-            return Some(i)
-          }
-        }
-      ' ' | '\n' | '\t' | '\r' => ()
-      _ => pending_with = false
+      '{' => if depth_paren == 0 && depth_bracket == 0 { return Some(i) }
+      _ => ()
     }
   }
   None
@@ -569,7 +520,6 @@ fn normalize_render_fn_expr_with_inferred_type(
     start=body_start,
     end=snippet.length(),
   )
-  let stripped_body_text = normalize_strip_comment_only_lines(body_text)
   let out = StringBuilder::new()
   out.write_char('(')
   for i, param in resolved_params {
@@ -595,7 +545,7 @@ fn normalize_render_fn_expr_with_inferred_type(
   }
   out.write_string(normalize_render_fn_effects(resolved_effects))
   out.write_char(' ')
-  out.write_string(stripped_body_text)
+  out.write_string(body_text)
   Some(out.to_string())
 }
 
@@ -939,36 +889,6 @@ fn normalize_trim_rendered_block(text : String) -> String {
   } else {
     text.unsafe_substring(start=0, end~)
   }
-}
-
-///|
-fn normalize_strip_comment_only_lines(text : String) -> String {
-  let lines : Array[String] = []
-  for part in text.split("\n") {
-    lines.push(part.to_string())
-  }
-  let buf = StringBuilder::new()
-  let mut wrote = false
-  for line in lines {
-    if not(line.trim().to_string().has_prefix("//")) {
-      if wrote {
-        buf.write_char('\n')
-      }
-      buf.write_string(line)
-      wrote = true
-    }
-  }
-  buf.to_string()
-}
-
-///|
-fn normalize_has_standalone_comment_line(text : String) -> Bool {
-  for part in text.split("\n") {
-    if part.trim().to_string().has_prefix("//") {
-      return true
-    }
-  }
-  false
 }
 
 ///|

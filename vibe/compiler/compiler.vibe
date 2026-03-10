@@ -4,6 +4,14 @@ import ./ast.vibe {
   Expr, Pat, Stmt, TypeExpr
 }
 
+import ./lexer.vibe {
+  lex
+}
+
+import ./parser.vibe {
+  parse_program
+}
+
 import ./checker_stmt.vibe {
   check_program
 }
@@ -12,16 +20,8 @@ import ./codegen.vibe {
   compile_module, compile_wasi_module
 }
 
-import ./lexer.vibe {
-  lex
-}
-
 import ./module_loader.vibe {
   check_module, collect_all_sources_fs, collect_merged_stmts
-}
-
-import ./parser.vibe {
-  parse_program
 }
 
 import ./types.vibe {
@@ -30,6 +30,8 @@ import ./types.vibe {
 
 //# Functions
 
+// Unified compile pipeline: source string -> WASM bytes
+// Performs: lex -> parse -> check -> codegen
 export let compile_source = (source: String) -> Bytes with { Error } {
   let tokens = lex(source)
   let stmts = parse_program(tokens)
@@ -37,20 +39,7 @@ export let compile_source = (source: String) -> Bytes with { Error } {
   compile_module(stmts)
 }
 
-export let compile_file_fs = (entry_path: String, entry_name: String) -> Bytes with { Error, Fs } {
-  let sources = collect_all_sources_fs(entry_path)
-  let main_source = Fs::read_file(entry_path)
-  let checked_cache = Array::slice([
-    ("", EnvEmpty)
-  ], 0, 0)
-  let empty_loading = Array::slice([
-    ""
-  ], 0, 0)
-  let _ = check_module(main_source, entry_path, sources, empty_loading, checked_cache)
-  let merged_stmts = collect_merged_stmts(sources)
-  compile_wasi_module(merged_stmts, entry_name)
-}
-
+// Unified compile pipeline for WASI: source string -> WASM bytes with WASI entry
 export let compile_source_wasi = (source: String, entry_name: String) -> Bytes with { Error } {
   let tokens = lex(source)
   let stmts = parse_program(tokens)
@@ -58,42 +47,52 @@ export let compile_source_wasi = (source: String, entry_name: String) -> Bytes w
   compile_wasi_module(stmts, entry_name)
 }
 
+// Multi-module compile pipeline: resolve imports, type-check, codegen
+// sources: Array of (path, source_code) pairs for all available modules
+// main_path: path of the entry module
 export let compile_with_modules = (main_source: String, main_path: String, sources: Array[(String, String)]) -> Bytes with { Error } {
-  let checked_cache = Array::slice([
-    ("", EnvEmpty)
-  ], 0, 0)
-  let empty_loading = Array::slice([
-    ""
-  ], 0, 0)
+  let checked_cache = Array::slice([("", EnvEmpty)], 0, 0)
+  let empty_loading = Array::slice([""], 0, 0)
   let _ = check_module(main_source, main_path, sources, empty_loading, checked_cache)
   let tokens = lex(main_source)
   let stmts = parse_program(tokens)
   compile_module(stmts)
 }
 
-export let compile_file_fs_module = (entry_path: String) -> Bytes with { Error, Fs } {
-  let sources = collect_all_sources_fs(entry_path)
-  let main_source = Fs::read_file(entry_path)
-  let checked_cache = Array::slice([
-    ("", EnvEmpty)
-  ], 0, 0)
-  let empty_loading = Array::slice([
-    ""
-  ], 0, 0)
-  let _ = check_module(main_source, entry_path, sources, empty_loading, checked_cache)
-  let merged_stmts = collect_merged_stmts(sources)
-  compile_module(merged_stmts)
-}
-
+// Multi-module compile for WASI with entry
 export let compile_with_modules_wasi = (main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> Bytes with { Error } {
-  let checked_cache = Array::slice([
-    ("", EnvEmpty)
-  ], 0, 0)
-  let empty_loading = Array::slice([
-    ""
-  ], 0, 0)
+  let checked_cache = Array::slice([("", EnvEmpty)], 0, 0)
+  let empty_loading = Array::slice([""], 0, 0)
   let _ = check_module(main_source, main_path, sources, empty_loading, checked_cache)
   let tokens = lex(main_source)
   let stmts = parse_program(tokens)
   compile_wasi_module(stmts, entry_name)
+}
+
+// FS-based multi-module compile pipeline: read files from filesystem, bundle, codegen
+// entry_path: path to the main .vibe file (e.g. "vibe/compiler/index.vibe")
+// entry_name: WASI entry function name (e.g. "run")
+export let compile_file_fs = (entry_path: String, entry_name: String) -> Bytes with { Error, Fs } {
+  // 1. Collect all source files by following imports recursively
+  let sources = collect_all_sources_fs(entry_path)
+  // 2. Type-check all modules (validates cross-module types)
+  let main_source = Fs::read_file(entry_path)
+  let checked_cache = Array::slice([("", EnvEmpty)], 0, 0)
+  let empty_loading = Array::slice([""], 0, 0)
+  let _ = check_module(main_source, entry_path, sources, empty_loading, checked_cache)
+  // 3. Bundle: merge all module stmts in dependency order
+  let merged_stmts = collect_merged_stmts(sources)
+  // 4. Codegen on merged stmts
+  compile_wasi_module(merged_stmts, entry_name)
+}
+
+// FS-based compile for non-WASI (--invoke style, no _start entry)
+export let compile_file_fs_module = (entry_path: String) -> Bytes with { Error, Fs } {
+  let sources = collect_all_sources_fs(entry_path)
+  let main_source = Fs::read_file(entry_path)
+  let checked_cache = Array::slice([("", EnvEmpty)], 0, 0)
+  let empty_loading = Array::slice([""], 0, 0)
+  let _ = check_module(main_source, entry_path, sources, empty_loading, checked_cache)
+  let merged_stmts = collect_merged_stmts(sources)
+  compile_module(merged_stmts)
 }

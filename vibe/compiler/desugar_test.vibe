@@ -8,137 +8,65 @@ import ./desugar.vibe {
   desugar_expr, desugar_stmts
 }
 
-//# Functions
-
-let is_edot = (e: Expr) -> Bool {
-  match e {
-    EDot(_, _) => true,
-    _ => false
-  }
-}
-
-let is_eint = (e: Expr) -> Bool {
-  match e {
-    EInt(_) => true,
-    _ => false
-  }
-}
-
-let is_elet = (e: Expr) -> Bool {
-  match e {
-    ELet(_, _, _) => true,
-    _ => false
-  }
-}
-
-let is_slet = (s: Stmt) -> Bool {
-  match s {
-    SLet(_, _, _, _, _) => true,
-    _ => false
-  }
-}
-
-let edot_obj = (e: Expr) -> Expr {
-  match e {
-    EDot(o, _) => o,
-    _ => EUnit
-  }
-}
-
-let eint_val = (e: Expr) -> Int {
-  match e {
-    EInt(n) => n,
-    _ => -1
-  }
-}
+//# Helpers — avoid nested enum pattern matching (codegen limitation)
 
 let is_ecall = (e: Expr) -> Bool {
-  match e {
-    ECall(_, _) => true,
-    _ => false
-  }
-}
-
-let ebinop_op = (e: Expr) -> String {
-  match e {
-    EBinOp(op, _, _) => op,
-    _ => ""
-  }
-}
-
-let elet_body = (e: Expr) -> Expr {
-  match e {
-    ELet(_, _, b) => b,
-    _ => EUnit
-  }
-}
-
-let is_ebinop = (e: Expr) -> Bool {
-  match e {
-    EBinOp(_, _, _) => true,
-    _ => false
-  }
-}
-
-let is_eident = (e: Expr) -> Bool {
-  match e {
-    EIdent(_) => true,
-    _ => false
-  }
-}
-
-let slet_body = (s: Stmt) -> Expr {
-  match s {
-    SLet(_, _, _, _, b) => b,
-    _ => EUnit
-  }
-}
-
-let ecall_args = (e: Expr) -> Array[Expr] {
-  match e {
-    ECall(_, a) => a,
-    _ => Array::slice([
-      EUnit
-    ], 0, 0)
-  }
-}
-
-let edot_field = (e: Expr) -> String {
-  match e {
-    EDot(_, f) => f,
-    _ => ""
-  }
-}
-
-let eident_name = (e: Expr) -> String {
-  match e {
-    EIdent(n) => n,
-    _ => ""
-  }
+  match e { ECall(_, _) => true, _ => false }
 }
 
 let ecall_callee = (e: Expr) -> Expr {
-  match e {
-    ECall(c, _) => c,
-    _ => EUnit
-  }
+  match e { ECall(c, _) => c, _ => EUnit }
 }
 
-let is_eassignop = (e: Expr) -> Bool {
-  match e {
-    EAssignOp(_, _, _, _) => true,
-    _ => false
-  }
+let ecall_args = (e: Expr) -> Array[Expr] {
+  match e { ECall(_, a) => a, _ => Array::slice([EUnit], 0, 0) }
 }
 
-let eassignop_val = (e: Expr) -> Expr {
-  match e {
-    EAssignOp(_, _, v, _) => v,
-    _ => EUnit
-  }
+let is_eident = (e: Expr) -> Bool {
+  match e { EIdent(_) => true, _ => false }
 }
 
-//# Misc
+let eident_name = (e: Expr) -> String {
+  match e { EIdent(n) => n, _ => "" }
+}
+
+let is_eint = (e: Expr) -> Bool {
+  match e { EInt(_) => true, _ => false }
+}
+
+let eint_val = (e: Expr) -> Int {
+  match e { EInt(n) => n, _ => -1 }
+}
+
+let is_ebinop = (e: Expr) -> Bool {
+  match e { EBinOp(_, _, _) => true, _ => false }
+}
+
+let ebinop_op = (e: Expr) -> String {
+  match e { EBinOp(op, _, _) => op, _ => "" }
+}
+
+let is_edot = (e: Expr) -> Bool {
+  match e { EDot(_, _) => true, _ => false }
+}
+
+let edot_field = (e: Expr) -> String {
+  match e { EDot(_, f) => f, _ => "" }
+}
+
+let edot_obj = (e: Expr) -> Expr {
+  match e { EDot(o, _) => o, _ => EUnit }
+}
+
+let is_elet = (e: Expr) -> Bool {
+  match e { ELet(_, _, _) => true, _ => false }
+}
+
+let elet_body = (e: Expr) -> Expr {
+  match e { ELet(_, _, b) => b, _ => EUnit }
+}
+
+//# Pipe desugar
 
 test "pipe simple: x |> f => f(x)" {
   let result = desugar_expr(EBinOp("|>", EInt(1), EIdent("f")))
@@ -150,9 +78,7 @@ test "pipe simple: x |> f => f(x)" {
 }
 
 test "pipe with args: x |> f(y) => f(x, y)" {
-  let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EIdent("f"), [
-    EInt(2)
-  ])))
+  let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EIdent("f"), [EInt(2)])))
   assert(is_ecall(result))
   assert(String::equals(eident_name(ecall_callee(result)), "f"))
   assert(eq(Array::length(ecall_args(result)), 2))
@@ -160,10 +86,10 @@ test "pipe with args: x |> f(y) => f(x, y)" {
   assert(eq(eint_val(Array::get(ecall_args(result), 1)), 2))
 }
 
+//# Method call desugar
+
 test "method call: obj.method() => method(obj)" {
-  let result = desugar_expr(ECall(EDot(EIdent("x"), "len"), Array::slice([
-    EUnit
-  ], 0, 0)))
+  let result = desugar_expr(ECall(EDot(EIdent("x"), "len"), Array::slice([EUnit], 0, 0)))
   assert(is_ecall(result))
   assert(String::equals(eident_name(ecall_callee(result)), "len"))
   assert(eq(Array::length(ecall_args(result)), 1))
@@ -171,15 +97,15 @@ test "method call: obj.method() => method(obj)" {
 }
 
 test "method call with args: obj.push(1) => push(obj, 1)" {
-  let result = desugar_expr(ECall(EDot(EIdent("x"), "push"), [
-    EInt(1)
-  ]))
+  let result = desugar_expr(ECall(EDot(EIdent("x"), "push"), [EInt(1)]))
   assert(is_ecall(result))
   assert(String::equals(eident_name(ecall_callee(result)), "push"))
   assert(eq(Array::length(ecall_args(result)), 2))
   assert(String::equals(eident_name(Array::get(ecall_args(result), 0)), "x"))
   assert(eq(eint_val(Array::get(ecall_args(result), 1)), 1))
 }
+
+//# Pass-through cases
 
 test "non-pipe binop passes through" {
   let result = desugar_expr(EBinOp("+", EInt(1), EInt(2)))
@@ -194,6 +120,8 @@ test "EDot without call passes through" {
   assert(String::equals(eident_name(edot_obj(result)), "x"))
 }
 
+//# Nested desugar
+
 test "nested: pipe inside let body" {
   let result = desugar_expr(ELet("x", EInt(1), EBinOp("|>", EIdent("x"), EIdent("f"))))
   assert(is_elet(result))
@@ -201,6 +129,8 @@ test "nested: pipe inside let body" {
   assert(is_ecall(body))
   assert(String::equals(eident_name(ecall_callee(body)), "f"))
 }
+
+//# Statement desugar
 
 test "SLet body gets desugared" {
   let stmts = [
@@ -218,6 +148,8 @@ test "SLet body gets desugared" {
   }
 }
 
+//# Chained pipe desugar
+
 test "chained pipe: x |> f |> g => g(f(x))" {
   let result = desugar_expr(EBinOp("|>", EBinOp("|>", EInt(1), EIdent("f")), EIdent("g")))
   assert(is_ecall(result))
@@ -231,10 +163,10 @@ test "chained pipe: x |> f |> g => g(f(x))" {
   assert(eq(eint_val(Array::get(ecall_args(inner), 0)), 1))
 }
 
+//# Pipe into method call
+
 test "pipe into method call: 1 |> obj.method() => method(obj, 1)" {
-  let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EDot(EIdent("obj"), "method"), Array::slice([
-    EUnit
-  ], 0, 0))))
+  let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EDot(EIdent("obj"), "method"), Array::slice([EUnit], 0, 0))))
   assert(is_ecall(result))
   assert(is_eident(ecall_callee(result)))
   assert(String::equals(eident_name(ecall_callee(result)), "method"))
@@ -243,12 +175,10 @@ test "pipe into method call: 1 |> obj.method() => method(obj, 1)" {
   assert(eq(eint_val(Array::get(ecall_args(result), 1)), 1))
 }
 
+//# Nested method calls
+
 test "chained method: x.a().b() => b(a(x))" {
-  let result = desugar_expr(ECall(EDot(ECall(EDot(EIdent("x"), "a"), Array::slice([
-    EUnit
-  ], 0, 0)), "b"), Array::slice([
-    EUnit
-  ], 0, 0)))
+  let result = desugar_expr(ECall(EDot(ECall(EDot(EIdent("x"), "a"), Array::slice([EUnit], 0, 0)), "b"), Array::slice([EUnit], 0, 0)))
   assert(is_ecall(result))
   assert(is_eident(ecall_callee(result)))
   assert(String::equals(eident_name(ecall_callee(result)), "b"))
@@ -260,15 +190,25 @@ test "chained method: x.a().b() => b(a(x))" {
   assert(String::equals(eident_name(Array::get(ecall_args(inner), 0)), "x"))
 }
 
+//# Pipe into method call with push
+
 test "pipe into obj.push(): 1 |> obj.push() => push(obj, 1)" {
-  let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EDot(EIdent("obj"), "push"), Array::slice([
-    EUnit
-  ], 0, 0))))
+  let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EDot(EIdent("obj"), "push"), Array::slice([EUnit], 0, 0))))
   assert(is_ecall(result))
   assert(String::equals(eident_name(ecall_callee(result)), "push"))
   assert(eq(Array::length(ecall_args(result)), 2))
   assert(String::equals(eident_name(Array::get(ecall_args(result), 0)), "obj"))
   assert(eq(eint_val(Array::get(ecall_args(result), 1)), 1))
+}
+
+//# EAssignOp body desugared
+
+let is_eassignop = (e: Expr) -> Bool {
+  match e { EAssignOp(_, _, _, _) => true, _ => false }
+}
+
+let eassignop_val = (e: Expr) -> Expr {
+  match e { EAssignOp(_, _, v, _) => v, _ => EUnit }
 }
 
 test "EAssignOp desugars val: x += (1 |> f) => x += f(1)" {
@@ -279,6 +219,16 @@ test "EAssignOp desugars val: x += (1 |> f) => x += f(1)" {
   assert(String::equals(eident_name(ecall_callee(val)), "f"))
   assert(eq(Array::length(ecall_args(val)), 1))
   assert(eq(eint_val(Array::get(ecall_args(val), 0)), 1))
+}
+
+//# Multiple statements desugared
+
+let is_slet = (s: Stmt) -> Bool {
+  match s { SLet(_, _, _, _, _) => true, _ => false }
+}
+
+let slet_body = (s: Stmt) -> Expr {
+  match s { SLet(_, _, _, _, b) => b, _ => EUnit }
 }
 
 test "desugar_stmts handles multiple SLet with pipes" {

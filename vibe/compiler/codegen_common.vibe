@@ -14,6 +14,7 @@ import ./wasm_emit.vibe {
 
 //# Types
 
+// Function registry: groups parallel arrays for function metadata
 export struct FuncTable {
   names: Array[String];
   indices: Array[Int];
@@ -21,12 +22,14 @@ export struct FuncTable {
   returns: Array[Int]
 }
 
+// String table: groups string data with their WASM data segment offsets/lengths
 export struct StrTable {
   strs: Array[String];
   offsets: Array[Int];
   lengths: Array[Int]
 }
 
+// Lambda accumulator: collects compiled lambda bodies and metadata
 export struct LambdaTable {
   bodies: Array[Array[Int]];
   param_counts: Array[Int];
@@ -35,6 +38,7 @@ export struct LambdaTable {
   meta_i64: Array[Int]
 }
 
+// Constructor/struct registry: enum variant + struct constructors
 export struct CtorTable {
   names: Array[String];
   tags: Array[Int];
@@ -44,6 +48,7 @@ export struct CtorTable {
   struct_field_names: Array[Array[String]]
 }
 
+// Compilation context: all shared state for compile_expr
 export struct CompileCtx {
   func_table: FuncTable;
   str_table: StrTable;
@@ -55,6 +60,7 @@ export struct CompileCtx {
   thunk_names: Array[String]
 }
 
+// GC backend compilation context (extends CompileCtx with GC-specific fields)
 export struct CompileCtxGc {
   func_table: FuncTable;
   str_table: StrTable;
@@ -84,6 +90,7 @@ export let is_pint = (p: Pat) -> Bool {
   }
 }
 
+// === Stmt extractors ===
 export let is_slet = (stmt: Stmt) -> Bool {
   match stmt {
     SLet(_, _, _, _, _) => true,
@@ -91,6 +98,11 @@ export let is_slet = (stmt: Stmt) -> Bool {
   }
 }
 
+// Expr tag: returns a numeric tag for dispatch without match in let rec
+// 0=EInt, 1=EBool, 2=EFloat, 3=EString, 4=EIdent, 5=EBinOp, 6=EUnaryOp,
+// 7=EIf, 8=ECall, 9=ELet, 10=ELetRec, 11=ELetMut, 12=EAssign, 13=EAssignOp,
+// 14=ESeq, 15=ETuple, 16=EMatch, 17=EArray, 18=EForIn, 19=EWhile,
+// 20=EBreak, 21=EContinue, 22=EUnit, 23=EThrow, 24=EFn, -1=unknown
 export let expr_tag = (expr: Expr) -> Int {
   match expr {
     EInt(_) => 0,
@@ -150,6 +162,7 @@ export let is_pwild = (p: Pat) -> Bool {
   }
 }
 
+// Expr type checks (only those needed inside match arms)
 export let is_eident = (expr: Expr) -> Bool {
   match expr {
     EIdent(_) => true,
@@ -157,6 +170,7 @@ export let is_eident = (expr: Expr) -> Bool {
   }
 }
 
+// Check if expr is an ETuple
 export let is_etuple = (expr: Expr) -> Bool {
   match expr {
     ETuple(_) => true,
@@ -164,6 +178,7 @@ export let is_etuple = (expr: Expr) -> Bool {
   }
 }
 
+// Check pattern type
 export let is_ptuple = (p: Pat) -> Bool {
   match p {
     PTuple(_) => true,
@@ -180,17 +195,21 @@ export let is_pstring = (p: Pat) -> Bool {
 
 export let emit_i32_eq = (buf: Array[Int]) -> Unit {
   bytebuf_push(buf, 70)
+  // 0x46
 }
 
 export let emit_i32_ne = (buf: Array[Int]) -> Unit {
   bytebuf_push(buf, 71)
+  // 0x47
 }
 
+// Extract pattern from match arm pair
 export let get_arm_pat = (arm: (Pat, Expr)) -> Pat {
   let (p, _) = arm
   p
 }
 
+// Returns index into ctor_names array, or -1 if not found
 export let rec lookup_ctor = (ctor_names: Array[String], name: String, i: Int) -> Int {
   if i >= Array::length(ctor_names) {
     -1
@@ -203,14 +222,17 @@ export let rec lookup_ctor = (ctor_names: Array[String], name: String, i: Int) -
 
 export let emit_i32_eqz = (buf: Array[Int]) -> Unit {
   bytebuf_push(buf, 69)
+  // 0x45
 }
 
 export let emit_i32_mul = (buf: Array[Int]) -> Unit {
   bytebuf_push(buf, 108)
+  // 0x6C
 }
 
 export let emit_i32_sub = (buf: Array[Int]) -> Unit {
   bytebuf_push(buf, 107)
+  // 0x6B
 }
 
 export let emit_str_ref = (buf: Array[Int], offset: Int, length: Int) -> Unit {
@@ -221,6 +243,7 @@ export let emit_str_ref = (buf: Array[Int], offset: Int, length: Int) -> Unit {
   emit_i64_or(buf)
 }
 
+// Extract body from match arm pair
 export let get_arm_body = (arm: (Pat, Expr)) -> Expr {
   let (_, b) = arm
   b
@@ -261,6 +284,7 @@ export let get_elet_val = (expr: Expr) -> Expr with { Error } {
   }
 }
 
+// Resolve function: returns (func_index, param_count, has_return)
 export let resolve_func = (ft: FuncTable, name: String) -> (Int, Int, Int)with { Error } {
   let len = Array::length(ft.names)
   let mut i = 0
@@ -279,6 +303,7 @@ export let resolve_func = (ft: FuncTable, name: String) -> (Int, Int, Int)with {
   (Array::get(ft.indices, found), Array::get(ft.params, found), Array::get(ft.returns, found))
 }
 
+// Emit WASM instruction for a binary operator
 export let emit_binop_op = (buf: Array[Int], op: String) -> Unit with { Error } {
   if String::equals(op, "+") {
     emit_i64_add(buf)
@@ -341,10 +366,12 @@ export let emit_binop_op = (buf: Array[Int], op: String) -> Unit with { Error } 
 
 export let emit_i32_ge_u = (buf: Array[Int]) -> Unit {
   bytebuf_push(buf, 79)
+  // 0x4F
 }
 
 export let emit_i64_load = (buf: Array[Int], align: Int, offset: Int) -> Unit {
   bytebuf_push(buf, 41)
+  // 0x29
   leb128_encode_u32(buf, align)
   leb128_encode_u32(buf, offset)
 }
@@ -370,6 +397,7 @@ export let get_elet_name = (expr: Expr) -> String with { Error } {
   }
 }
 
+// Extract function body from SLet(_, _, _, _, EFn(_, _, _, _, _, body))
 export let get_func_body = (stmt: Stmt) -> Expr with { Error } {
   match stmt {
     SLet(_, _, _, _, expr) => match expr {
@@ -427,10 +455,12 @@ export let resolve_local = (names: Array[String], name: String, tag: String) -> 
 
 export let emit_i64_store = (buf: Array[Int], align: Int, offset: Int) -> Unit {
   bytebuf_push(buf, 55)
+  // 0x37
   leb128_encode_u32(buf, align)
   leb128_encode_u32(buf, offset)
 }
 
+// Find the SLet statement for a given function name
 export let find_func_stmt = (stmts: Array[Stmt], name: String) -> Stmt with { Error } {
   let len = Array::length(stmts)
   let mut i = 0
@@ -497,6 +527,7 @@ export let get_eseq_first = (expr: Expr) -> Expr with { Error } {
   }
 }
 
+// Extract arms from EMatch (non-recursive to avoid stale binding bug in let rec)
 export let get_match_arms = (expr: Expr) -> Array[(Pat, Expr)] with { Error } {
   match expr {
     EMatch(_, arms) => arms,
@@ -504,6 +535,7 @@ export let get_match_arms = (expr: Expr) -> Array[(Pat, Expr)] with { Error } {
   }
 }
 
+// Extract name from PBind
 export let get_pbind_name = (p: Pat) -> String with { Error } {
   match p {
     PBind(name) => name,
@@ -518,6 +550,7 @@ export let get_pctor_args = (p: Pat) -> Array[Pat] with { Error } {
   }
 }
 
+// Extract PCtor name and args
 export let get_pctor_name = (p: Pat) -> String with { Error } {
   match p {
     PCtor(name, _) => name,
@@ -525,6 +558,7 @@ export let get_pctor_name = (p: Pat) -> String with { Error } {
   }
 }
 
+// Extract PInt value
 export let get_pint_value = (p: Pat) -> Int with { Error } {
   match p {
     PInt(n) => n,
@@ -623,6 +657,7 @@ export let get_ewhile_cond = (expr: Expr) -> Expr with { Error } {
   }
 }
 
+// Extract PBool value
 export let get_pbool_value = (p: Pat) -> Bool with { Error } {
   match p {
     PBool(v) => v,
@@ -630,6 +665,7 @@ export let get_pbool_value = (p: Pat) -> Bool with { Error } {
   }
 }
 
+// Extract sub-patterns from PTuple
 export let get_ptuple_pats = (p: Pat) -> Array[Pat] with { Error } {
   match p {
     PTuple(pats) => pats,
@@ -644,11 +680,13 @@ export let get_slet_export = (stmt: Stmt) -> Bool with { Error } {
   }
 }
 
+// Check if a pattern is unconditionally matching (catch-all)
 export let is_catchall_pat = (p: Pat) -> Bool {
   match p {
     PWild => true,
     PBind(_) => true,
     PTuple(pats) => {
+      // PTuple is catch-all only if ALL sub-patterns are catch-all
       let mut i = 0
       let mut all_catch = true
       while i < Array::length(pats) {
@@ -663,6 +701,7 @@ export let is_catchall_pat = (p: Pat) -> Bool {
   }
 }
 
+// Emit WASM instruction for an assign operator (+=, -=, etc.)
 export let emit_assignop_op = (buf: Array[Int], op: String) -> Unit with { Error } {
   if String::equals(op, "+") {
     emit_i64_add(buf)
@@ -686,9 +725,13 @@ export let emit_assignop_op = (buf: Array[Int], op: String) -> Unit with { Error
 
 export let emit_memory_copy = (buf: Array[Int]) -> Unit {
   bytebuf_push(buf, 252)
+  // 0xFC prefix
   leb128_encode_u32(buf, 10)
+  // memory.copy
   bytebuf_push(buf, 0)
+  // src memory
   bytebuf_push(buf, 0)
+  // dst memory
 }
 
 export let get_earray_elems = (expr: Expr) -> Array[Expr] with { Error } {
@@ -761,6 +804,7 @@ export let get_eletrec_name = (expr: Expr) -> String with { Error } {
   }
 }
 
+// Extract elements from ETuple
 export let get_etuple_elems = (expr: Expr) -> Array[Expr] with { Error } {
   match expr {
     ETuple(elems) => elems,
@@ -786,6 +830,8 @@ export let str_table_lookup = (strs: Array[String], s: String) -> Int with { Err
   found
 }
 
+// Find the index of the first catch-all pattern in match arms
+// Returns num_arms if no catch-all found
 export let find_catchall_idx = (arms: Array[(Pat, Expr)]) -> Int {
   let num = Array::length(arms)
   let mut idx = 0
@@ -823,6 +869,7 @@ export let get_eunaryop_expr = (expr: Expr) -> Expr with { Error } {
   }
 }
 
+// Extract PString value
 export let get_pstring_value = (p: Pat) -> String with { Error } {
   match p {
     PString(s) => s,
@@ -859,6 +906,7 @@ export let get_eassignop_name = (expr: Expr) -> String with { Error } {
   }
 }
 
+// Extract scrutinee from EMatch (non-recursive to avoid stale binding bug in let rec)
 export let get_match_scrutinee = (expr: Expr) -> Expr with { Error } {
   match expr {
     EMatch(scrutinee, _) => scrutinee,
@@ -992,6 +1040,7 @@ export let rec collect_strings_expr = (expr: Expr, out: Array[String]) -> Int {
   }
 }
 
+// Extract function param names from SLet(_, _, _, _, EFn(_, _, params, _, _, _))
 export let get_func_param_names = (stmt: Stmt) -> Array[String] with { Error } {
   match stmt {
     SLet(_, _, _, _, expr) => match expr {
@@ -1030,8 +1079,11 @@ export let collect_strings_stmts = (stmts: Array[Stmt]) -> Array[String] {
 
 export let emit_i64_extend_i32_u = (buf: Array[Int]) -> Unit {
   bytebuf_push(buf, 173)
+  // 0xAD
 }
 
+// Resolve closure/fn value tag and fill slot_local/env_local
+// After this: slot_local = table slot index, env_local = env pointer (0 for bare fn)
 export let emit_closure_resolve = (buf: Array[Int], fn_val_local: Int, slot_local: Int, env_local: Int) -> Unit {
   emit_local_get(buf, fn_val_local)
   emit_i64_const(buf, 3)
@@ -1039,6 +1091,7 @@ export let emit_closure_resolve = (buf: Array[Int], fn_val_local: Int, slot_loca
   emit_i64_const(buf, 2)
   emit_i64_eq(buf)
   emit_if_void(buf)
+  // Bare fn: table_slot = fn_val >> 2, env = 0
   emit_local_get(buf, fn_val_local)
   emit_i64_const(buf, 2)
   emit_i64_shr_s(buf)
@@ -1046,6 +1099,7 @@ export let emit_closure_resolve = (buf: Array[Int], fn_val_local: Int, slot_loca
   emit_i64_const(buf, 0)
   emit_local_set(buf, env_local)
   emit_else(buf)
+  // Closure: env = fn_val & ~3, slot = i32.load(env, 0)
   emit_local_get(buf, fn_val_local)
   emit_i64_const(buf, -4)
   emit_i64_and(buf)
@@ -1058,6 +1112,7 @@ export let emit_closure_resolve = (buf: Array[Int], fn_val_local: Int, slot_loca
   emit_end(buf)
 }
 
+// Emit the tail of an indirect closure call (push env, push slot, call_indirect)
 export let emit_closure_call_tail = (buf: Array[Int], env_local: Int, slot_local: Int, closure_type_base: Int, num_args: Int) -> Unit {
   emit_local_get(buf, env_local)
   emit_local_get(buf, slot_local)
@@ -1093,6 +1148,9 @@ let rec collect_pattern_bindings = (pat: Pat, bindings: Array[String]) -> Int {
   }
 }
 
+// Stack-based free variable analysis: uses in-place push/truncate on bound array
+// to avoid O(n) array copies at every scope boundary. This dramatically reduces
+// heap allocation during meta-circular self-compilation.
 export let rec collect_free_vars_expr = (expr: Expr, bound: Array[String], fn_names: Array[String], out: Array[String]) -> Int {
   match expr {
     EIdent(name) => if array_contains_str(bound, name) {
@@ -1247,11 +1305,13 @@ export let collect_free_vars = (body: Expr, param_names: Array[String], fn_names
   let out = Array::slice([
     ""
   ], 0, 0)
+  // Make a mutable copy of param_names for stack-based push/truncate
   let bound = Array::slice(param_names, 0, Array::length(param_names))
   collect_free_vars_expr(body, bound, fn_names, out)
   out
 }
 
+// Check if a mutable variable is captured by any nested EFn in the given expression
 export let rec is_mut_captured_in = (expr: Expr, name: String) -> Bool {
   match expr {
     EIdent(_) => false,
@@ -1343,6 +1403,7 @@ export let rec is_mut_captured_in = (expr: Expr, name: String) -> Bool {
     }
     ,
     EFn(_, _, params, _, _, fn_body) => {
+      // Check if name is shadowed by params
       let mut shadowed = false
       let mut pi = 0
       while pi < Array::length(params) {
@@ -1356,6 +1417,7 @@ export let rec is_mut_captured_in = (expr: Expr, name: String) -> Bool {
         false
       }
       else {
+        // Check if name is free in this EFn
         let param_names = Array::slice([
           ""
         ], 0, 0)
@@ -1372,6 +1434,7 @@ export let rec is_mut_captured_in = (expr: Expr, name: String) -> Bool {
           true
         }
         else {
+          // Also check recursively for deeper nesting
           is_mut_captured_in(fn_body, name)
         }
       }

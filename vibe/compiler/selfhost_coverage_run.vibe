@@ -1,74 +1,55 @@
 //# Imports
 
-import ./eval_e2e_helpers.vibe {
-  run_and_lookup, run_with_imports
-}
-
 import ./index.vibe {
   compiler_lex, compiler_parse, compiler_parse_program, compiler_print_expr, compiler_print_program, token_to_string
 }
 
-//# Functions
+import ./eval_e2e_helpers.vibe {
+  run_and_lookup, run_with_imports
+}
 
-let eval_text = run_and_lookup("let result = 40 + 2", "result")
+//# Misc
 
 let expr_tokens = compiler_lex("1 + 2 * 3")
-
 let expr_ast = compiler_parse(expr_tokens)
-
 let expr_text = compiler_print_expr(expr_ast)
 
-let first_tok = Array::get(expr_tokens, 0)
-
 let prog_tokens = compiler_lex("let x = 1\nlet y = x + 2")
-
 let prog_ast = compiler_parse_program(prog_tokens)
-
 let prog_text = compiler_print_program(prog_ast)
 
-let eval_loop_text = run_and_lookup("let mut i = 0\nwhile true {\n  i = i + 1\n  if i == 5 {\n    break\n  }\n}\nlet result = i", "result")
-
+let first_tok = Array::get(expr_tokens, 0)
 let first_tok_name = token_to_string(first_tok)
+let eval_text = run_and_lookup("let result = 40 + 2", "result")
+let eval_match_text = run_and_lookup("export enum Value {\n  VInt(Int);\n  VString(String);\n  VBool(Bool);\n  VUnit\n}\nlet v = VInt(42)\nlet result = match v {\n  VInt(n) => n,\n  _ => 0\n}", "result")
+let eval_handle_text = run_and_lookup("let result = handle { throw(\"oops\") } { Error(msg) => msg }", "result")
+let eval_loop_text = run_and_lookup("let mut i = 0\nwhile true {\n  i = i + 1\n  if i == 5 {\n    break\n  }\n}\nlet result = i", "result")
+let eval_continue_text = run_and_lookup("let mut sum = 0\nlet mut i = 0\nwhile i < 5 {\n  i = i + 1\n  if i == 3 {\n    continue\n  }\n  sum = sum + i\n}\nlet result = sum", "result")
+let eval_break_value_text = run_and_lookup("let result = while true {\n  break 42\n}", "result")
+let eval_throw_fn_text = run_and_lookup("let fail = (msg: String) -> Int with {Error} { throw(msg) }\nlet result = handle { fail(\"bad\") } { Error(msg) => msg }", "result")
+let eval_for_map_text = run_and_lookup("let doubled = for x in [1, 2, 3] { x * 2 }\nlet result = Array::get(doubled, 1)", "result")
+let eval_char_classify_text = run_and_lookup("let is_digit = (c: Int) -> Bool { c >= 48 && c <= 57 }\nlet is_space = (c: Int) -> Bool { c == 32 }\nlet is_plus = (c: Int) -> Bool { c == 43 }\nlet r1 = is_digit(51)\nlet r2 = is_space(32)\nlet r3 = is_plus(43)\nlet result = if r1 { if r2 { if r3 { \"ok\" } else { \"bad3\" } } else { \"bad2\" } } else { \"bad1\" }", "result")
+let eval_number_parse_text = run_and_lookup("let s = \"123\"\nlet len = String::length(s)\nlet mut i = 0\nlet mut num = 0\nwhile i < len { let c = String::char_code_at(s, i); num = num * 10 + (c - 48); i = i + 1 }\nlet result = num", "result")
+let eval_array_builder_text = run_and_lookup("let b = ArrayBuilder::new()\nlet mut i = 0\nwhile i < 3 { ArrayBuilder::push(b, i); i = i + 1 }\nlet result = ArrayBuilder::freeze(b)", "result")
 
 let import_sources = [
   ("main.vibe", "import ./vals.vibe { Val, VInt, VStr, val_to_str }\nlet v = VInt(77)\nlet result = val_to_str(v)"),
   ("vals.vibe", "export enum Val {\n  VInt(Int);\n  VStr(String)\n}\nexport let val_to_str = (v: Val) -> String {\n  match v {\n    VInt(n) => __to_string(n),\n    VStr(s) => s\n  }\n}")
 ]
-
-let eval_match_text = run_and_lookup("export enum Value {\n  VInt(Int);\n  VString(String);\n  VBool(Bool);\n  VUnit\n}\nlet v = VInt(42)\nlet result = match v {\n  VInt(n) => n,\n  _ => 0\n}", "result")
-
-let eval_handle_text = run_and_lookup("let result = handle { throw(\"oops\") } { Error(msg) => msg }", "result")
-
 let eval_import_text = run_with_imports(import_sources, "main.vibe", "result")
-
-let eval_for_map_text = run_and_lookup("let doubled = for x in [1, 2, 3] { x * 2 }\nlet result = Array::get(doubled, 1)", "result")
-
-let eval_continue_text = run_and_lookup("let mut sum = 0\nlet mut i = 0\nwhile i < 5 {\n  i = i + 1\n  if i == 3 {\n    continue\n  }\n  sum = sum + i\n}\nlet result = sum", "result")
-
-let eval_throw_fn_text = run_and_lookup("let fail = (msg: String) -> Int with {Error} { throw(msg) }\nlet result = handle { fail(\"bad\") } { Error(msg) => msg }", "result")
 
 let import_sources_3file = [
   ("main.vibe", "import ./i.vibe { ev }\nimport ./a.vibe { E, N, A }\nlet result = ev(A(N(3), N(4)))"),
   ("a.vibe", "export enum E { N(Int); A(E, E) }"),
   ("i.vibe", "import ./a.vibe { E, N, A }\nexport let rec ev = (e: E) -> Int {\n  match e { N(n) => n, A(l, r) => ev(l) + ev(r) }\n}")
 ]
-
-let eval_break_value_text = run_and_lookup("let result = while true {\n  break 42\n}", "result")
-
 let eval_import_3file_text = run_with_imports(import_sources_3file, "main.vibe", "result")
-
-let eval_number_parse_text = run_and_lookup("let s = \"123\"\nlet len = String::length(s)\nlet mut i = 0\nlet mut num = 0\nwhile i < len { let c = String::char_code_at(s, i); num = num * 10 + (c - 48); i = i + 1 }\nlet result = num", "result")
-
-let eval_array_builder_text = run_and_lookup("let b = ArrayBuilder::new()\nlet mut i = 0\nwhile i < 3 { ArrayBuilder::push(b, i); i = i + 1 }\nlet result = ArrayBuilder::freeze(b)", "result")
-
-let eval_char_classify_text = run_and_lookup("let is_digit = (c: Int) -> Bool { c >= 48 && c <= 57 }\nlet is_space = (c: Int) -> Bool { c == 32 }\nlet is_plus = (c: Int) -> Bool { c == 43 }\nlet r1 = is_digit(51)\nlet r2 = is_space(32)\nlet r3 = is_plus(43)\nlet result = if r1 { if r2 { if r3 { \"ok\" } else { \"bad3\" } } else { \"bad2\" } } else { \"bad1\" }", "result")
 
 let import_sources_token_pipeline = [
   ("tok.vibe", "export enum Tok { TNum(Int); TPlus; TEof }"),
   ("lex.vibe", "import ./tok.vibe { Tok, TNum, TPlus, TEof }\nexport let is_digit = (c: Int) -> Int { if c >= 48 && c <= 57 { 1 } else { 0 } }"),
   ("main.vibe", "import ./tok.vibe { Tok, TNum, TPlus, TEof }\nimport ./lex.vibe { is_digit }\nlet s = \"7+8+5\"\nlet len = String::length(s)\nlet b = ArrayBuilder::new()\nlet mut i = 0\nlet mut mode = 0\nlet mut num = 0\nwhile i < len { let c = String::char_code_at(s, i); let d = is_digit(c); let act = mode * 2 + d; if act == 1 { mode = 1; num = c - 48; i = i + 1 } else { 0 }; if act == 3 { num = num * 10 + (c - 48); i = i + 1 } else { 0 }; if act == 2 { let tok = TNum(num); ArrayBuilder::push(b, tok); mode = 0; num = 0 } else { 0 }; if act == 0 && c == 43 { ArrayBuilder::push(b, TPlus); i = i + 1 } else { 0 }; if act == 0 && c != 43 { i = i + 1 } else { 0 } }\nlet flush = if mode == 1 { let tok = TNum(num); ArrayBuilder::push(b, tok) } else { 0 }\nArrayBuilder::push(b, TEof)\nlet toks = ArrayBuilder::freeze(b)\nlet tlen = Array::length(toks)\nlet mut j = 0\nlet mut acc = 0\nwhile j < tlen { let t = Array::get(toks, j); let v = match t { TNum(n) => n, _ => 0 }; acc = acc + v; j = j + 1 }\nlet result = acc")
 ]
-
 let eval_import_token_pipeline_text = run_with_imports(import_sources_token_pipeline, "main.vibe", "result")
 
 let coverage_selfhost_checksum = String::length(expr_text) + String::length(prog_text) + String::length(first_tok_name) + String::length(eval_text) + String::length(eval_match_text) + String::length(eval_handle_text) + String::length(eval_loop_text) + String::length(eval_continue_text) + String::length(eval_break_value_text) + String::length(eval_throw_fn_text) + String::length(eval_for_map_text) + String::length(eval_char_classify_text) + String::length(eval_number_parse_text) + String::length(eval_array_builder_text) + String::length(eval_import_text) + String::length(eval_import_3file_text) + String::length(eval_import_token_pipeline_text)

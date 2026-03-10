@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/_build/native/release/build/cmd/vibe/vibe.exe"
+CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/vibe/vibe.exe"
 REPORT_DIR="$ROOT_DIR/dist/bundle_size"
 REPORT_FILE="$REPORT_DIR/current.tsv"
 BUDGET_FILE="$ROOT_DIR/bench/golden/bundle_size_budget.tsv"
@@ -162,56 +162,67 @@ if [[ ! -f "$BUDGET_FILE" ]]; then
   exit 1
 fi
 
+declare -A budget_mode
+declare -A budget_bytes
+declare -A seen_keys
+
+while IFS=$'\t' read -r group path mode bytes; do
+  if [[ "$group" == "group" ]]; then
+    continue
+  fi
+  key="$group|$path"
+  budget_mode["$key"]="$mode"
+  budget_bytes["$key"]="$bytes"
+done < "$BUDGET_FILE"
+
 status=0
 
-if ! awk -F '\t' '
-  NR == FNR {
-    if (FNR == 1) {
-      next
-    }
-    key = $1 SUBSEP $2
-    budget_mode[key] = $3
-    budget_bytes[key] = $4 + 0
-    budget_group[key] = $1
-    next
-  }
-  FNR == 1 {
-    next
-  }
-  {
-    key = $1 SUBSEP $2
-    seen[key] = 1
-    active_group[$1] = 1
-    if (!(key in budget_bytes)) {
-      printf "bundle-size: new entry without budget: %s %s (%s %s)\n", $1, $2, $3, $4 > "/dev/stderr"
-      status = 1
-      next
-    }
-    if ($3 != budget_mode[key]) {
-      printf "bundle-size: mode changed: %s %s (got=%s expected=%s)\n", $1, $2, $3, budget_mode[key] > "/dev/stderr"
-      status = 1
-    }
-    if ($3 == "unsupported") {
-      next
-    }
-    if (($4 + 0) > budget_bytes[key]) {
-      printf "bundle-size: size regression: %s %s (got=%s budget=%s)\n", $1, $2, $4, budget_bytes[key] > "/dev/stderr"
-      status = 1
-    }
-  }
-  END {
-    for (key in budget_bytes) {
-      if ((budget_group[key] in active_group) && !(key in seen)) {
-        split(key, parts, SUBSEP)
-        printf "bundle-size: stale budget entry: %s|%s\n", parts[1], parts[2] > "/dev/stderr"
-        status = 1
-      }
-    }
-    exit status
-  }
-' "$BUDGET_FILE" "$REPORT_FILE"; then
-  status=1
-fi
+while IFS=$'\t' read -r group path mode bytes; do
+  if [[ "$group" == "group" ]]; then
+    continue
+  fi
+  key="$group|$path"
+  seen_keys["$key"]="1"
+  if [[ -z "${budget_bytes[$key]+x}" ]]; then
+    echo "bundle-size: new entry without budget: $group $path ($mode $bytes)" >&2
+    status=1
+    continue
+  fi
+  expected_mode="${budget_mode[$key]}"
+  expected_bytes="${budget_bytes[$key]}"
+  if [[ "$mode" != "$expected_mode" ]]; then
+    echo "bundle-size: mode changed: $group $path (got=$mode expected=$expected_mode)" >&2
+    status=1
+  fi
+  if [[ "$mode" == "unsupported" ]]; then
+    continue
+  fi
+  if (( bytes > expected_bytes )); then
+    echo "bundle-size: size regression: $group $path (got=$bytes budget=$expected_bytes)" >&2
+    status=1
+  fi
+done < "$REPORT_FILE"
+
+is_active_group() {
+  local group="$1"
+  for active in "${active_groups[@]}"; do
+    if [[ "$active" == "$group" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+for key in "${!budget_bytes[@]}"; do
+  group="${key%%|*}"
+  if ! is_active_group "$group"; then
+    continue
+  fi
+  if [[ -z "${seen_keys[$key]+x}" ]]; then
+    echo "bundle-size: stale budget entry: $key" >&2
+    status=1
+  fi
+done
 
 if (( status != 0 )); then
   exit 1

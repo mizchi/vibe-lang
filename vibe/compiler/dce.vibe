@@ -6,27 +6,13 @@ import ./ast.vibe {
 
 //# Functions
 
-let clone_arr = (arr: Array[String]) -> Array[String] {
-  Array::slice(arr, 0, Array::length(arr))
-}
-
-let stmt_name = (stmt: Stmt) -> Option[String] {
-  match stmt {
-    SLet(_, _, name, _, _) => Some(name),
-    SLetMut(name, _, _) => Some(name),
-    _ => None
-  }
-}
+let _use_type_expr = (t: TypeExpr) -> TypeExpr { t }
 
 let array_contains_str = (arr: Array[String], s: String) -> Bool {
   let len = Array::length(arr)
   let rec search = (i: Int) -> Bool {
-    if i >= len {
-      false
-    }
-    else if String::equals(Array::get(arr, i), s) {
-      true
-    }
+    if i >= len { false }
+    else if String::equals(Array::get(arr, i), s) { true }
     else search(i + 1)
   }
   search(0)
@@ -41,6 +27,11 @@ let add_ref = (out: Array[String], bound: Array[String], name: String) -> Int {
   0
 }
 
+let clone_arr = (arr: Array[String]) -> Array[String] {
+  Array::slice(arr, 0, Array::length(arr))
+}
+
+// Collect bindings introduced by a pattern
 let rec collect_pat_bindings = (pat: Pat, bound: Array[String]) -> Int {
   match pat {
     PWild => 0,
@@ -75,10 +66,12 @@ let rec collect_pat_bindings = (pat: Pat, bound: Array[String]) -> Int {
   }
 }
 
+// Collect free variable references from an expression
 let rec collect_refs_into = (expr: Expr, bound: Array[String], out: Array[String]) -> Int {
   match expr {
-    EIdent(name) => add_ref(out, bound, name)
-    ,
+    EIdent(name) => {
+      add_ref(out, bound, name)
+    },
     EInt(_) => 0,
     EFloat(_) => 0,
     EString(_) => 0,
@@ -86,10 +79,12 @@ let rec collect_refs_into = (expr: Expr, bound: Array[String], out: Array[String
     EUnit => 0,
     EBreak(_) => 0,
     EContinue(_) => 0,
-    EThrow(e) => collect_refs_into(e, bound, out)
-    ,
-    EUnaryOp(_, e) => collect_refs_into(e, bound, out)
-    ,
+    EThrow(e) => {
+      collect_refs_into(e, bound, out)
+    },
+    EUnaryOp(_, e) => {
+      collect_refs_into(e, bound, out)
+    },
     ETuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
@@ -229,14 +224,23 @@ let rec collect_refs_into = (expr: Expr, bound: Array[String], out: Array[String
   }
 }
 
+// Collect free variable references from an expression
 let collect_refs = (expr: Expr, bound: Array[String]) -> Array[String] {
-  let out = Array::slice([
-    ""
-  ], 0, 0)
+  let out = Array::slice([""], 0, 0)
   collect_refs_into(expr, bound, out)
   out
 }
 
+// Get the name defined by a statement, if any
+let stmt_name = (stmt: Stmt) -> Option[String] {
+  match stmt {
+    SLet(_, _, name, _, _) => Some(name),
+    SLetMut(name, _, _) => Some(name),
+    _ => None
+  }
+}
+
+// Check if a statement is a "type definition" or structural (always kept)
 let is_type_or_structural = (stmt: Stmt) -> Bool {
   match stmt {
     SEnum(_, _, _) => true,
@@ -257,18 +261,14 @@ let is_type_or_structural = (stmt: Stmt) -> Bool {
   }
 }
 
+// Main DCE function: keep only stmts reachable from entry_names
 export let dce_stmts = (stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stmt] {
-  let empty_bound = Array::slice([
-    ""
-  ], 0, 0)
-  let def_names = Array::slice([
-    ""
-  ], 0, 0)
-  let def_refs = Array::slice([
-    Array::slice([
-      ""
-    ], 0, 0)
-  ], 0, 0)
+  let empty_bound = Array::slice([""], 0, 0)
+
+  // Phase 1: collect all definition names and their references
+  let def_names = Array::slice([""], 0, 0)
+  let def_refs = Array::slice([Array::slice([""], 0, 0)], 0, 0)
+
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
@@ -278,9 +278,7 @@ export let dce_stmts = (stmts: Array[Stmt], entry_names: Array[String]) -> Array
         let refs = match stmt {
           SLet(_, _, _, _, expr) => collect_refs(expr, empty_bound),
           SLetMut(_, _, expr) => collect_refs(expr, empty_bound),
-          _ => Array::slice([
-            ""
-          ], 0, 0)
+          _ => Array::slice([""], 0, 0)
         }
         Array::push(def_refs, refs)
         0
@@ -289,12 +287,11 @@ export let dce_stmts = (stmts: Array[Stmt], entry_names: Array[String]) -> Array
     }
     i = i + 1
   }
-  let reachable = Array::slice([
-    ""
-  ], 0, 0)
-  let queue = Array::slice([
-    ""
-  ], 0, 0)
+
+  // Phase 2: BFS from entry_names to find all reachable names
+  let reachable = Array::slice([""], 0, 0)
+  let queue = Array::slice([""], 0, 0)
+
   let mut j = 0
   while j < Array::length(entry_names) {
     let name = Array::get(entry_names, j)
@@ -304,6 +301,7 @@ export let dce_stmts = (stmts: Array[Stmt], entry_names: Array[String]) -> Array
     }
     j = j + 1
   }
+
   let mut qi = 0
   while qi < Array::length(queue) {
     let current = Array::get(queue, qi)
@@ -325,9 +323,9 @@ export let dce_stmts = (stmts: Array[Stmt], entry_names: Array[String]) -> Array
       k = k + 1
     }
   }
-  let result = Array::slice([
-    Array::get(stmts, 0)
-  ], 0, 0)
+
+  // Phase 3: Filter stmts
+  let result = Array::slice([Array::get(stmts, 0)], 0, 0)
   let mut m = 0
   while m < Array::length(stmts) {
     let stmt = Array::get(stmts, m)
@@ -335,11 +333,14 @@ export let dce_stmts = (stmts: Array[Stmt], entry_names: Array[String]) -> Array
       Array::push(result, stmt)
     } else {
       match stmt_name(stmt) {
-        Some(name) => if array_contains_str(reachable, name) {
+        Some(name) => {
+          if array_contains_str(reachable, name) {
+            Array::push(result, stmt)
+          }
+        },
+        None => {
           Array::push(result, stmt)
         }
-        ,
-        None => Array::push(result, stmt)
       }
     }
     m = m + 1

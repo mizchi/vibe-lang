@@ -28,15 +28,10 @@ for arg in "$@"; do
 done
 
 CACHE_FILE="_build/.normalize-cache"
-NORMALIZE_BATCH_SIZE="${VIBE_NORMALIZE_BATCH_SIZE:-1}"
-if ! [[ "$NORMALIZE_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]]; then
-  echo "ERROR: VIBE_NORMALIZE_BATCH_SIZE must be a positive integer." >&2
-  exit 2
-fi
 
 # Build vibe CLI (reuse if already built)
-VIBE_BIN="${VIBE_NORMALIZE_BIN:-_build/native/debug/build/cmd/vibe/vibe.exe}"
-if [ "$VIBE_BIN" = "_build/native/debug/build/cmd/vibe/vibe.exe" ] && [ ! -x "$VIBE_BIN" ]; then
+VIBE_BIN="_build/native/debug/build/cmd/vibe/vibe.exe"
+if [ ! -x "$VIBE_BIN" ]; then
   moon build --target native src/cmd/vibe --warn-list '-29'
 fi
 
@@ -68,12 +63,6 @@ EXCLUDE_DIRS_RAW="${VIBE_NORMALIZE_EXCLUDE_DIRS:-examples/wasm}"
 EXCLUDE_DIRS_RAW="${EXCLUDE_DIRS_RAW//,/ }"
 EXCLUDE_DIRS_REGEX="$(echo "$EXCLUDE_DIRS_RAW" | awk '{$1=$1; print}' | tr ' ' '|')"
 
-# Explicit files to exclude from normalize
-# - vibe/compiler/coverage_selfhost_suite_lib.vibe currently crashes native normalize
-EXCLUDE_FILES_RAW="${VIBE_NORMALIZE_EXCLUDE_FILES:-vibe/compiler/coverage_selfhost_suite_lib.vibe}"
-EXCLUDE_FILES_RAW="${EXCLUDE_FILES_RAW//,/ }"
-EXCLUDE_FILES_REGEX="$(echo "$EXCLUDE_FILES_RAW" | awk '{$1=$1; print}' | tr ' ' '|')"
-
 filter_excluded_dirs() {
   if [ -n "$EXCLUDE_DIRS_REGEX" ]; then
     grep -Ev "^($EXCLUDE_DIRS_REGEX)$" || true
@@ -90,14 +79,6 @@ filter_excluded_files() {
   fi
 }
 
-filter_excluded_explicit_files() {
-  if [ -n "$EXCLUDE_FILES_REGEX" ]; then
-    grep -Ev "^($EXCLUDE_FILES_REGEX)$" || true
-  else
-    cat
-  fi
-}
-
 # Check cache for a file. Returns 0 (true) if hash matches cache.
 cache_hit() {
   local file="$1"
@@ -107,20 +88,6 @@ cache_hit() {
   local current_hash
   current_hash=$(shasum "$file" | cut -d' ' -f1)
   grep -q "^${current_hash}	${file}$" "$CACHE_FILE" 2>/dev/null
-}
-
-run_normalize_files() {
-  local files=("$@")
-  local offset=0
-  while [ $offset -lt ${#files[@]} ]; do
-    local batch=("${files[@]:$offset:$NORMALIZE_BATCH_SIZE}")
-    if [ "$MODE" = "check" ]; then
-      "$VIBE_BIN" normalize --check "${batch[@]}"
-    else
-      "$VIBE_BIN" normalize --write "${batch[@]}"
-    fi
-    offset=$((offset + NORMALIZE_BATCH_SIZE))
-  done
 }
 
 # Collect unique directories containing .vibe files (excluding known problematic dirs)
@@ -153,8 +120,7 @@ for dir in "${DIRS[@]}"; do
       -not -name '.tmp_*' \
       -not -name '.vibe_test_wasm_*' \
       -type f |
-      sort |
-      filter_excluded_explicit_files
+      sort
   )
   [ ${#FILES[@]} -eq 0 ] && continue
 
@@ -169,11 +135,19 @@ for dir in "${DIRS[@]}"; do
     done
     TOTAL=$((TOTAL + ${#FILES[@]}))
     if [ ${#CHANGED_FILES[@]} -gt 0 ]; then
-      run_normalize_files "${CHANGED_FILES[@]}"
+      if [ "$MODE" = "check" ]; then
+        "$VIBE_BIN" normalize --check "${CHANGED_FILES[@]}"
+      else
+        "$VIBE_BIN" normalize --write "${CHANGED_FILES[@]}"
+      fi
     fi
   else
     TOTAL=$((TOTAL + ${#FILES[@]}))
-    run_normalize_files "${FILES[@]}"
+    if [ "$MODE" = "check" ]; then
+      "$VIBE_BIN" normalize --check "${FILES[@]}"
+    else
+      "$VIBE_BIN" normalize --write "${FILES[@]}"
+    fi
   fi
 done
 
@@ -192,7 +166,6 @@ if [ "$USE_CACHE" = "1" ]; then
         -not -name '.tmp_*' \
         -not -name '.vibe_test_wasm_*' |
         filter_excluded_files |
-        filter_excluded_explicit_files |
         sort
     )
   done

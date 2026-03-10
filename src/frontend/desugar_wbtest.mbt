@@ -54,20 +54,6 @@ test "try_extract_posix_command: known name (path) returns None" {
 }
 
 ///|
-test "try_extract_posix_command: canonical MapBuilder name returns None" {
-  let expr = make_ident("MapBuilder::new")
-  let result = try_extract_posix_command(expr, empty_scope(), empty_known())
-  assert_true(result is None)
-}
-
-///|
-test "try_extract_posix_command: legacy map_builder alias returns None" {
-  let expr = make_ident("map_builder")
-  let result = try_extract_posix_command(expr, empty_scope(), empty_known())
-  assert_true(result is None)
-}
-
-///|
 test "try_extract_posix_command: __sub short flags (ls -al)" {
   // ls - al → __sub(Ident("ls"), Ident("al"))
   let expr = make_call("__sub", [

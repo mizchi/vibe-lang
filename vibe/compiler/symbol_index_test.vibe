@@ -5,39 +5,26 @@ import ./ast.vibe {
 }
 
 import ./symbol_index.vibe {
-  collect_refs, collect_refs_stmts, collect_symbols, filter_by_kind, filter_exported, find_referenced_symbols, find_symbol
+  collect_symbols, filter_by_kind, filter_exported, find_symbol,
+  collect_refs, collect_refs_stmts, find_referenced_symbols
 }
 
-//# Functions
+//# Helpers
 
-let _use_pat = (p: Pat) -> Pat {
-  p
-}
+let _use_type_expr = (t: TypeExpr) -> TypeExpr { t }
+let _use_pat = (p: Pat) -> Pat { p }
 
-let no_tparams = Array::slice([
-  ""
-], 0, 0)
-
-let no_bounds = Array::slice([
-  ("", no_tparams)
-], 0, 0)
+let no_tparams = Array::slice([""], 0, 0)
+let no_bounds = Array::slice([("", no_tparams)], 0, 0)
 
 let mk_fn_body = () -> Expr {
-  EFn(no_tparams, no_bounds, [
-    ("x", None)
-  ], None, None, EIdent("x"))
+  EFn(no_tparams, no_bounds, [("x", None)], None, None, EIdent("x"))
 }
 
-let _use_type_expr = (t: TypeExpr) -> TypeExpr {
-  t
-}
-
-//# Misc
+//# Tests
 
 test "collect_symbols finds SLet function (kind=0)" {
-  let stmts = [
-    SLet(true, false, "add", None, mk_fn_body())
-  ]
+  let stmts = [SLet(true, false, "add", None, mk_fn_body())]
   let syms = collect_symbols(stmts)
   assert(Array::length(syms) == 1)
   let (name, kind, exported) = Array::get(syms, 0)
@@ -47,9 +34,7 @@ test "collect_symbols finds SLet function (kind=0)" {
 }
 
 test "collect_symbols finds SLet value (kind=1)" {
-  let stmts = [
-    SLet(false, false, "x", None, EInt(42))
-  ]
+  let stmts = [SLet(false, false, "x", None, EInt(42))]
   let syms = collect_symbols(stmts)
   assert(Array::length(syms) == 1)
   let (name, kind, exported) = Array::get(syms, 0)
@@ -59,18 +44,9 @@ test "collect_symbols finds SLet value (kind=1)" {
 }
 
 test "collect_symbols finds SEnum type (kind=2) and constructors (kind=3)" {
-  let no_types = Array::slice([
-    TyName("_")
-  ], 0, 0)
-  let variants = [
-    ("Some", [
-      TyName("Int")
-    ]),
-    ("None", no_types)
-  ]
-  let stmts = [
-    SEnum(true, "Option", variants)
-  ]
+  let no_types = Array::slice([TyName("_")], 0, 0)
+  let variants = [("Some", [TyName("Int")]), ("None", no_types)]
+  let stmts = [SEnum(true, "Option", variants)]
   let syms = collect_symbols(stmts)
   assert(Array::length(syms) == 3)
   let (n0, k0, _) = Array::get(syms, 0)
@@ -85,12 +61,7 @@ test "collect_symbols finds SEnum type (kind=2) and constructors (kind=3)" {
 }
 
 test "collect_symbols finds SStruct (kind=2)" {
-  let stmts = [
-    SStruct(true, "Point", [
-      ("x", TyName("Int")),
-      ("y", TyName("Int"))
-    ])
-  ]
+  let stmts = [SStruct(true, "Point", [("x", TyName("Int")), ("y", TyName("Int"))])]
   let syms = collect_symbols(stmts)
   assert(Array::length(syms) == 1)
   let (name, kind, exported) = Array::get(syms, 0)
@@ -100,11 +71,7 @@ test "collect_symbols finds SStruct (kind=2)" {
 }
 
 test "collect_symbols finds STrait (kind=4)" {
-  let stmts = [
-    STrait(true, "Show", [
-      "show"
-    ])
-  ]
+  let stmts = [STrait(true, "Show", ["show"])]
   let syms = collect_symbols(stmts)
   assert(Array::length(syms) == 1)
   let (name, kind, exported) = Array::get(syms, 0)
@@ -130,9 +97,7 @@ test "filter_by_kind filters correctly" {
   let stmts = [
     SLet(true, false, "add", None, mk_fn_body()),
     SLet(false, false, "x", None, EInt(42)),
-    SStruct(true, "Point", [
-      ("x", TyName("Int"))
-    ])
+    SStruct(true, "Point", [("x", TyName("Int"))])
   ]
   let syms = collect_symbols(stmts)
   let fns = filter_by_kind(syms, 0)
@@ -147,9 +112,7 @@ test "filter_exported filters exported only" {
   let stmts = [
     SLet(true, false, "pub_fn", None, mk_fn_body()),
     SLet(false, false, "priv_fn", None, mk_fn_body()),
-    SStruct(true, "Point", [
-      ("x", TyName("Int"))
-    ])
+    SStruct(true, "Point", [("x", TyName("Int"))])
   ]
   let syms = collect_symbols(stmts)
   let exported = filter_exported(syms)
@@ -173,9 +136,7 @@ test "find_symbol finds existing symbol" {
 }
 
 test "find_symbol returns None for missing" {
-  let stmts = [
-    SLet(true, false, "add", None, mk_fn_body())
-  ]
+  let stmts = [SLet(true, false, "add", None, mk_fn_body())]
   let syms = collect_symbols(stmts)
   match find_symbol(syms, "missing") {
     Some(_) => assert(false),
@@ -184,10 +145,7 @@ test "find_symbol returns None for missing" {
 }
 
 test "collect_refs finds identifiers in expression" {
-  let expr = ECall(EIdent("add"), [
-    EIdent("x"),
-    EIdent("y")
-  ])
+  let expr = ECall(EIdent("add"), [EIdent("x"), EIdent("y")])
   let refs = collect_refs(expr)
   assert(Array::length(refs) == 3)
 }
@@ -199,10 +157,7 @@ test "find_referenced_symbols intersects symbols and refs" {
     SLet(false, false, "x", None, EInt(1))
   ]
   let syms = collect_symbols(stmts)
-  let refs = [
-    "add",
-    "x"
-  ]
+  let refs = ["add", "x"]
   let referenced = find_referenced_symbols(syms, refs)
   assert(Array::length(referenced) == 2)
   let (n0, _, _) = Array::get(referenced, 0)
@@ -212,11 +167,7 @@ test "find_referenced_symbols intersects symbols and refs" {
 }
 
 test "collect_symbols finds SModule (kind=5)" {
-  let stmts = [
-    SModule(true, "MyMod", [
-      SLet(false, false, "inner", None, EInt(1))
-    ])
-  ]
+  let stmts = [SModule(true, "MyMod", [SLet(false, false, "inner", None, EInt(1))])]
   let syms = collect_symbols(stmts)
   assert(Array::length(syms) == 1)
   let (name, kind, exported) = Array::get(syms, 0)
@@ -226,11 +177,7 @@ test "collect_symbols finds SModule (kind=5)" {
 }
 
 test "collect_symbols finds SExternLet (kind=1)" {
-  let stmts = [
-    SExternLet("print", TyFn([
-      TyName("String")
-    ], TyName("Unit")))
-  ]
+  let stmts = [SExternLet("print", TyFn([TyName("String")], TyName("Unit")))]
   let syms = collect_symbols(stmts)
   assert(Array::length(syms) == 1)
   let (name, kind, exported) = Array::get(syms, 0)
@@ -247,9 +194,7 @@ test "collect_refs deduplicates" {
 
 test "collect_refs_stmts across multiple stmts" {
   let stmts = [
-    SLet(false, false, "a", None, ECall(EIdent("f"), [
-      EIdent("x")
-    ])),
+    SLet(false, false, "a", None, ECall(EIdent("f"), [EIdent("x")])),
     SLet(false, false, "b", None, EIdent("y"))
   ]
   let refs = collect_refs_stmts(stmts)

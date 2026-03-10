@@ -1,22 +1,17 @@
-//# Imports
+// Tests for CST types and lower (CST → AST) conversion
 
-import ./ast.vibe {
-  Expr, Pat, Stmt, TypeExpr
-}
-
+import ./token.vibe { Token }
+import ./ast.vibe { Expr, Pat, Stmt, TypeExpr }
 import ./cst.vibe {
-  CstChild, NodeKind, cst_child_nodes, cst_children, cst_filter, cst_find, cst_find_token, cst_kind, cst_tokens, node_kind_eq, node_kind_tag
+  NodeKind, CstChild,
+  node_kind_tag, node_kind_eq,
+  cst_kind, cst_children, cst_find, cst_find_token, cst_filter, cst_child_nodes, cst_tokens
 }
-
 import ./lower.vibe {
-  lower_expr, lower_pat, lower_source_file, lower_stmt, lower_type
+  lower_pat, lower_type, lower_expr, lower_stmt, lower_source_file
 }
 
-import ./token.vibe {
-  Token
-}
-
-//# Misc
+//# CST accessor tests
 
 test "node_kind_tag returns distinct values" {
   assert(node_kind_tag(NSourceFile) == 0)
@@ -35,9 +30,7 @@ test "node_kind_eq different" {
 }
 
 test "cst_kind CNode" {
-  let n = CNode(NIntExpr, [
-    CToken(TInt(42))
-  ])
+  let n = CNode(NIntExpr, [CToken(TInt(42))])
   assert(node_kind_eq(cst_kind(n), NIntExpr))
 }
 
@@ -50,10 +43,7 @@ test "cst_kind CError returns NError" {
 }
 
 test "cst_children CNode" {
-  let kids = [
-    CToken(TInt(1)),
-    CToken(TInt(2))
-  ]
+  let kids = [CToken(TInt(1)), CToken(TInt(2))]
   let n = CNode(NTupleExpr, kids)
   assert(Array::length(cst_children(n)) == 2)
 }
@@ -65,12 +55,8 @@ test "cst_children CToken returns empty" {
 test "cst_find finds matching kind" {
   let children = [
     CToken(TLet),
-    CNode(NIntExpr, [
-      CToken(TInt(42))
-    ]),
-    CNode(NStringExpr, [
-      CToken(TString("hi"))
-    ])
+    CNode(NIntExpr, [CToken(TInt(42))]),
+    CNode(NStringExpr, [CToken(TString("hi"))])
   ]
   match cst_find(children, NIntExpr, 0) {
     Some(_) => assert(true),
@@ -79,12 +65,7 @@ test "cst_find finds matching kind" {
 }
 
 test "cst_find returns None for missing kind" {
-  let children = [
-    CToken(TLet),
-    CNode(NIntExpr, [
-      CToken(TInt(1))
-    ])
-  ]
+  let children = [CToken(TLet), CNode(NIntExpr, [CToken(TInt(1))])]
   match cst_find(children, NStringExpr, 0) {
     Some(_) => assert(false),
     None => assert(true)
@@ -92,13 +73,7 @@ test "cst_find returns None for missing kind" {
 }
 
 test "cst_find_token returns first token" {
-  let children = [
-    CNode(NIntExpr, [
-      CToken(TInt(0))
-    ]),
-    CToken(TLet),
-    CToken(TInt(1))
-  ]
+  let children = [CNode(NIntExpr, [CToken(TInt(0))]), CToken(TLet), CToken(TInt(1))]
   match cst_find_token(children, 0) {
     Some(TLet) => assert(true),
     _ => assert(false)
@@ -107,16 +82,10 @@ test "cst_find_token returns first token" {
 
 test "cst_filter collects matching nodes" {
   let children = [
-    CNode(NIntExpr, [
-      CToken(TInt(1))
-    ]),
+    CNode(NIntExpr, [CToken(TInt(1))]),
     CToken(TComma),
-    CNode(NIntExpr, [
-      CToken(TInt(2))
-    ]),
-    CNode(NStringExpr, [
-      CToken(TString("x"))
-    ])
+    CNode(NIntExpr, [CToken(TInt(2))]),
+    CNode(NStringExpr, [CToken(TString("x"))])
   ]
   let ints = cst_filter(children, NIntExpr)
   assert(Array::length(ints) == 2)
@@ -125,13 +94,9 @@ test "cst_filter collects matching nodes" {
 test "cst_child_nodes skips tokens" {
   let children = [
     CToken(TLParen),
-    CNode(NIntExpr, [
-      CToken(TInt(1))
-    ]),
+    CNode(NIntExpr, [CToken(TInt(1))]),
     CToken(TComma),
-    CNode(NIntExpr, [
-      CToken(TInt(2))
-    ]),
+    CNode(NIntExpr, [CToken(TInt(2))]),
     CToken(TRParen)
   ]
   let nodes = cst_child_nodes(children)
@@ -141,19 +106,17 @@ test "cst_child_nodes skips tokens" {
 test "cst_tokens skips nodes" {
   let children = [
     CToken(TLParen),
-    CNode(NIntExpr, [
-      CToken(TInt(1))
-    ]),
+    CNode(NIntExpr, [CToken(TInt(1))]),
     CToken(TRParen)
   ]
   let toks = cst_tokens(children)
   assert(Array::length(toks) == 2)
 }
 
+//# Lower: pattern tests
+
 test "lower PWild" {
-  let node = CNode(NWildPat, [
-    CToken(TIdent("_"))
-  ])
+  let node = CNode(NWildPat, [CToken(TIdent("_"))])
   match lower_pat(node) {
     PWild => assert(true),
     _ => assert(false)
@@ -161,9 +124,7 @@ test "lower PWild" {
 }
 
 test "lower PBind" {
-  let node = CNode(NBindPat, [
-    CToken(TIdent("x"))
-  ])
+  let node = CNode(NBindPat, [CToken(TIdent("x"))])
   match lower_pat(node) {
     PBind(name) => assert(name == "x"),
     _ => assert(false)
@@ -171,9 +132,7 @@ test "lower PBind" {
 }
 
 test "lower PInt" {
-  let node = CNode(NIntPat, [
-    CToken(TInt(42))
-  ])
+  let node = CNode(NIntPat, [CToken(TInt(42))])
   match lower_pat(node) {
     PInt(n) => assert(n == 42),
     _ => assert(false)
@@ -181,9 +140,7 @@ test "lower PInt" {
 }
 
 test "lower PString" {
-  let node = CNode(NStringPat, [
-    CToken(TString("hello"))
-  ])
+  let node = CNode(NStringPat, [CToken(TString("hello"))])
   match lower_pat(node) {
     PString(s) => assert(s == "hello"),
     _ => assert(false)
@@ -191,9 +148,7 @@ test "lower PString" {
 }
 
 test "lower PBool true" {
-  let node = CNode(NBoolPat, [
-    CToken(TIdent("true"))
-  ])
+  let node = CNode(NBoolPat, [CToken(TIdent("true"))])
   match lower_pat(node) {
     PBool(b) => assert(b == true),
     _ => assert(false)
@@ -201,9 +156,7 @@ test "lower PBool true" {
 }
 
 test "lower PBool false" {
-  let node = CNode(NBoolPat, [
-    CToken(TIdent("false"))
-  ])
+  let node = CNode(NBoolPat, [CToken(TIdent("false"))])
   match lower_pat(node) {
     PBool(b) => assert(b == false),
     _ => assert(false)
@@ -213,13 +166,9 @@ test "lower PBool false" {
 test "lower PTuple" {
   let node = CNode(NTuplePat, [
     CToken(TLParen),
-    CNode(NBindPat, [
-      CToken(TIdent("a"))
-    ]),
+    CNode(NBindPat, [CToken(TIdent("a"))]),
     CToken(TComma),
-    CNode(NBindPat, [
-      CToken(TIdent("b"))
-    ]),
+    CNode(NBindPat, [CToken(TIdent("b"))]),
     CToken(TRParen)
   ])
   match lower_pat(node) {
@@ -229,9 +178,7 @@ test "lower PTuple" {
 }
 
 test "lower PCtor no args" {
-  let node = CNode(NCtorPat, [
-    CToken(TIdent("None"))
-  ])
+  let node = CNode(NCtorPat, [CToken(TIdent("None"))])
   match lower_pat(node) {
     PCtor(name, args) => {
       assert(name == "None")
@@ -245,9 +192,7 @@ test "lower PCtor with args" {
   let node = CNode(NCtorPat, [
     CToken(TIdent("Some")),
     CToken(TLParen),
-    CNode(NBindPat, [
-      CToken(TIdent("x"))
-    ]),
+    CNode(NBindPat, [CToken(TIdent("x"))]),
     CToken(TRParen)
   ])
   match lower_pat(node) {
@@ -261,13 +206,9 @@ test "lower PCtor with args" {
 
 test "lower POr" {
   let node = CNode(NOrPat, [
-    CNode(NIntPat, [
-      CToken(TInt(1))
-    ]),
+    CNode(NIntPat, [CToken(TInt(1))]),
     CToken(TBitOr),
-    CNode(NIntPat, [
-      CToken(TInt(2))
-    ])
+    CNode(NIntPat, [CToken(TInt(2))])
   ])
   match lower_pat(node) {
     POr(_, _) => assert(true),
@@ -275,10 +216,10 @@ test "lower POr" {
   }
 }
 
+//# Lower: type expression tests
+
 test "lower TyName" {
-  let node = CNode(NNameType, [
-    CToken(TIdent("Int"))
-  ])
+  let node = CNode(NNameType, [CToken(TIdent("Int"))])
   match lower_type(node) {
     TyName(name) => assert(name == "Int"),
     _ => assert(false)
@@ -286,10 +227,7 @@ test "lower TyName" {
 }
 
 test "lower TyUnit" {
-  let node = CNode(NUnitType, [
-    CToken(TLParen),
-    CToken(TRParen)
-  ])
+  let node = CNode(NUnitType, [CToken(TLParen), CToken(TRParen)])
   match lower_type(node) {
     TyUnit => assert(true),
     _ => assert(false)
@@ -299,13 +237,9 @@ test "lower TyUnit" {
 test "lower TyTuple" {
   let node = CNode(NTupleType, [
     CToken(TLParen),
-    CNode(NNameType, [
-      CToken(TIdent("Int"))
-    ]),
+    CNode(NNameType, [CToken(TIdent("Int"))]),
     CToken(TComma),
-    CNode(NNameType, [
-      CToken(TIdent("String"))
-    ]),
+    CNode(NNameType, [CToken(TIdent("String"))]),
     CToken(TRParen)
   ])
   match lower_type(node) {
@@ -317,31 +251,24 @@ test "lower TyTuple" {
 test "lower TyFn" {
   let node = CNode(NFnType, [
     CToken(TLParen),
-    CNode(NNameType, [
-      CToken(TIdent("Int"))
-    ]),
+    CNode(NNameType, [CToken(TIdent("Int"))]),
     CToken(TRParen),
     CToken(TThinArrow),
-    CNode(NNameType, [
-      CToken(TIdent("String"))
-    ])
+    CNode(NNameType, [CToken(TIdent("String"))])
   ])
   match lower_type(node) {
     TyFn(params, ret) => {
       assert(Array::length(params) == 1)
-      match ret {
-        TyName(n) => assert(n == "String"),
-        _ => assert(false)
-      }
+      match ret { TyName(n) => assert(n == "String"), _ => assert(false) }
     },
     _ => assert(false)
   }
 }
 
+//# Lower: expression tests
+
 test "lower EInt" {
-  let node = CNode(NIntExpr, [
-    CToken(TInt(42))
-  ])
+  let node = CNode(NIntExpr, [CToken(TInt(42))])
   match lower_expr(node) {
     EInt(n) => assert(n == 42),
     _ => assert(false)
@@ -349,9 +276,7 @@ test "lower EInt" {
 }
 
 test "lower EFloat" {
-  let node = CNode(NFloatExpr, [
-    CToken(TFloat(3.14))
-  ])
+  let node = CNode(NFloatExpr, [CToken(TFloat(3.14))])
   match lower_expr(node) {
     EFloat(_) => assert(true),
     _ => assert(false)
@@ -359,9 +284,7 @@ test "lower EFloat" {
 }
 
 test "lower EString" {
-  let node = CNode(NStringExpr, [
-    CToken(TString("hi"))
-  ])
+  let node = CNode(NStringExpr, [CToken(TString("hi"))])
   match lower_expr(node) {
     EString(s) => assert(s == "hi"),
     _ => assert(false)
@@ -369,9 +292,7 @@ test "lower EString" {
 }
 
 test "lower EBool" {
-  let node = CNode(NBoolExpr, [
-    CToken(TIdent("true"))
-  ])
+  let node = CNode(NBoolExpr, [CToken(TIdent("true"))])
   match lower_expr(node) {
     EBool(b) => assert(b == true),
     _ => assert(false)
@@ -379,9 +300,7 @@ test "lower EBool" {
 }
 
 test "lower EIdent" {
-  let node = CNode(NIdentExpr, [
-    CToken(TIdent("foo"))
-  ])
+  let node = CNode(NIdentExpr, [CToken(TIdent("foo"))])
   match lower_expr(node) {
     EIdent(name) => assert(name == "foo"),
     _ => assert(false)
@@ -389,10 +308,7 @@ test "lower EIdent" {
 }
 
 test "lower EUnit" {
-  let node = CNode(NUnitExpr, [
-    CToken(TLParen),
-    CToken(TRParen)
-  ])
+  let node = CNode(NUnitExpr, [CToken(TLParen), CToken(TRParen)])
   match lower_expr(node) {
     EUnit => assert(true),
     _ => assert(false)
@@ -402,13 +318,9 @@ test "lower EUnit" {
 test "lower ETuple" {
   let node = CNode(NTupleExpr, [
     CToken(TLParen),
-    CNode(NIntExpr, [
-      CToken(TInt(1))
-    ]),
+    CNode(NIntExpr, [CToken(TInt(1))]),
     CToken(TComma),
-    CNode(NIntExpr, [
-      CToken(TInt(2))
-    ]),
+    CNode(NIntExpr, [CToken(TInt(2))]),
     CToken(TRParen)
   ])
   match lower_expr(node) {
@@ -420,13 +332,9 @@ test "lower ETuple" {
 test "lower EArray" {
   let node = CNode(NArrayExpr, [
     CToken(TLBracket),
-    CNode(NIntExpr, [
-      CToken(TInt(1))
-    ]),
+    CNode(NIntExpr, [CToken(TInt(1))]),
     CToken(TComma),
-    CNode(NIntExpr, [
-      CToken(TInt(2))
-    ]),
+    CNode(NIntExpr, [CToken(TInt(2))]),
     CToken(TRBracket)
   ])
   match lower_expr(node) {
@@ -441,15 +349,14 @@ test "lower ERecord" {
     CNode(NRecordField, [
       CToken(TIdent("x")),
       CToken(TColon),
-      CNode(NIntExpr, [
-        CToken(TInt(1))
-      ])
+      CNode(NIntExpr, [CToken(TInt(1))])
     ]),
     CToken(TRBrace)
   ])
   match lower_expr(node) {
-    ERecord(fields) => assert(Array::length(fields) == 1)
-    ,
+    ERecord(fields) => {
+      assert(Array::length(fields) == 1)
+    },
     _ => assert(false)
   }
 }
@@ -457,16 +364,10 @@ test "lower ERecord" {
 test "lower EIf" {
   let node = CNode(NIfExpr, [
     CToken(TIf),
-    CNode(NBoolExpr, [
-      CToken(TIdent("true"))
-    ]),
-    CNode(NIntExpr, [
-      CToken(TInt(1))
-    ]),
+    CNode(NBoolExpr, [CToken(TIdent("true"))]),
+    CNode(NIntExpr, [CToken(TInt(1))]),
     CToken(TElse),
-    CNode(NIntExpr, [
-      CToken(TInt(2))
-    ])
+    CNode(NIntExpr, [CToken(TInt(2))])
   ])
   match lower_expr(node) {
     EIf(_, _, _) => assert(true),
@@ -477,12 +378,8 @@ test "lower EIf" {
 test "lower EIf no else" {
   let node = CNode(NIfExpr, [
     CToken(TIf),
-    CNode(NBoolExpr, [
-      CToken(TIdent("true"))
-    ]),
-    CNode(NIntExpr, [
-      CToken(TInt(1))
-    ])
+    CNode(NBoolExpr, [CToken(TIdent("true"))]),
+    CNode(NIntExpr, [CToken(TInt(1))])
   ])
   match lower_expr(node) {
     EIf(_, _, _) => assert(true),
@@ -495,12 +392,8 @@ test "lower ELet" {
     CToken(TLet),
     CToken(TIdent("x")),
     CToken(TEq),
-    CNode(NIntExpr, [
-      CToken(TInt(42))
-    ]),
-    CNode(NIdentExpr, [
-      CToken(TIdent("x"))
-    ])
+    CNode(NIntExpr, [CToken(TInt(42))]),
+    CNode(NIdentExpr, [CToken(TIdent("x"))])
   ])
   match lower_expr(node) {
     ELet(name, _, _) => assert(name == "x"),
@@ -514,12 +407,8 @@ test "lower ELetMut" {
     CToken(TMut),
     CToken(TIdent("x")),
     CToken(TEq),
-    CNode(NIntExpr, [
-      CToken(TInt(0))
-    ]),
-    CNode(NIdentExpr, [
-      CToken(TIdent("x"))
-    ])
+    CNode(NIntExpr, [CToken(TInt(0))]),
+    CNode(NIdentExpr, [CToken(TIdent("x"))])
   ])
   match lower_expr(node) {
     ELetMut(name, _, _) => assert(name == "x"),
@@ -533,12 +422,8 @@ test "lower ELetRec" {
     CToken(TRec),
     CToken(TIdent("f")),
     CToken(TEq),
-    CNode(NIdentExpr, [
-      CToken(TIdent("f"))
-    ]),
-    CNode(NIntExpr, [
-      CToken(TInt(0))
-    ])
+    CNode(NIdentExpr, [CToken(TIdent("f"))]),
+    CNode(NIntExpr, [CToken(TInt(0))])
   ])
   match lower_expr(node) {
     ELetRec(name, _, _) => assert(name == "f"),
@@ -548,13 +433,9 @@ test "lower ELetRec" {
 
 test "lower ESeq" {
   let node = CNode(NSeqExpr, [
-    CNode(NIntExpr, [
-      CToken(TInt(1))
-    ]),
+    CNode(NIntExpr, [CToken(TInt(1))]),
     CToken(TSemicolon),
-    CNode(NIntExpr, [
-      CToken(TInt(2))
-    ])
+    CNode(NIntExpr, [CToken(TInt(2))])
   ])
   match lower_expr(node) {
     ESeq(_, _) => assert(true),
@@ -564,13 +445,9 @@ test "lower ESeq" {
 
 test "lower EBinOp plus" {
   let node = CNode(NBinOpExpr, [
-    CNode(NIntExpr, [
-      CToken(TInt(1))
-    ]),
+    CNode(NIntExpr, [CToken(TInt(1))]),
     CToken(TPlus),
-    CNode(NIntExpr, [
-      CToken(TInt(2))
-    ])
+    CNode(NIntExpr, [CToken(TInt(2))])
   ])
   match lower_expr(node) {
     EBinOp(op, _, _) => assert(op == "+"),
@@ -580,13 +457,9 @@ test "lower EBinOp plus" {
 
 test "lower EBinOp eq" {
   let node = CNode(NBinOpExpr, [
-    CNode(NIntExpr, [
-      CToken(TInt(1))
-    ]),
+    CNode(NIntExpr, [CToken(TInt(1))]),
     CToken(TEqEq),
-    CNode(NIntExpr, [
-      CToken(TInt(2))
-    ])
+    CNode(NIntExpr, [CToken(TInt(2))])
   ])
   match lower_expr(node) {
     EBinOp(op, _, _) => assert(op == "=="),
@@ -597,9 +470,7 @@ test "lower EBinOp eq" {
 test "lower EUnaryOp neg" {
   let node = CNode(NUnaryOpExpr, [
     CToken(TMinus),
-    CNode(NIntExpr, [
-      CToken(TInt(1))
-    ])
+    CNode(NIntExpr, [CToken(TInt(1))])
   ])
   match lower_expr(node) {
     EUnaryOp(op, _) => assert(op == "-"),
@@ -610,9 +481,7 @@ test "lower EUnaryOp neg" {
 test "lower EUnaryOp not" {
   let node = CNode(NUnaryOpExpr, [
     CToken(TNot),
-    CNode(NBoolExpr, [
-      CToken(TIdent("true"))
-    ])
+    CNode(NBoolExpr, [CToken(TIdent("true"))])
   ])
   match lower_expr(node) {
     EUnaryOp(op, _) => assert(op == "!"),
@@ -622,21 +491,14 @@ test "lower EUnaryOp not" {
 
 test "lower ECall" {
   let node = CNode(NCallExpr, [
-    CNode(NIdentExpr, [
-      CToken(TIdent("f"))
-    ]),
+    CNode(NIdentExpr, [CToken(TIdent("f"))]),
     CToken(TLParen),
-    CNode(NIntExpr, [
-      CToken(TInt(1))
-    ]),
+    CNode(NIntExpr, [CToken(TInt(1))]),
     CToken(TRParen)
   ])
   match lower_expr(node) {
     ECall(callee, args) => {
-      match callee {
-        EIdent(n) => assert(n == "f"),
-        _ => assert(false)
-      }
+      match callee { EIdent(n) => assert(n == "f"), _ => assert(false) }
       assert(Array::length(args) == 1)
     },
     _ => assert(false)
@@ -645,9 +507,7 @@ test "lower ECall" {
 
 test "lower EDot" {
   let node = CNode(NDotExpr, [
-    CNode(NIdentExpr, [
-      CToken(TIdent("obj"))
-    ]),
+    CNode(NIdentExpr, [CToken(TIdent("obj"))]),
     CToken(TDot),
     CToken(TIdent("field"))
   ])
@@ -660,28 +520,18 @@ test "lower EDot" {
 test "lower EMatch" {
   let node = CNode(NMatchExpr, [
     CToken(TMatch),
-    CNode(NIdentExpr, [
-      CToken(TIdent("x"))
-    ]),
+    CNode(NIdentExpr, [CToken(TIdent("x"))]),
     CToken(TLBrace),
     CNode(NMatchArm, [
-      CNode(NIntPat, [
-        CToken(TInt(1))
-      ]),
+      CNode(NIntPat, [CToken(TInt(1))]),
       CToken(TArrow),
-      CNode(NStringExpr, [
-        CToken(TString("one"))
-      ])
+      CNode(NStringExpr, [CToken(TString("one"))])
     ]),
     CToken(TComma),
     CNode(NMatchArm, [
-      CNode(NWildPat, [
-        CToken(TIdent("_"))
-      ]),
+      CNode(NWildPat, [CToken(TIdent("_"))]),
       CToken(TArrow),
-      CNode(NStringExpr, [
-        CToken(TString("other"))
-      ])
+      CNode(NStringExpr, [CToken(TString("other"))])
     ]),
     CToken(TRBrace)
   ])
@@ -694,12 +544,8 @@ test "lower EMatch" {
 test "lower EWhile" {
   let node = CNode(NWhileExpr, [
     CToken(TWhile),
-    CNode(NBoolExpr, [
-      CToken(TIdent("true"))
-    ]),
-    CNode(NIntExpr, [
-      CToken(TInt(0))
-    ])
+    CNode(NBoolExpr, [CToken(TIdent("true"))]),
+    CNode(NIntExpr, [CToken(TInt(0))])
   ])
   match lower_expr(node) {
     EWhile(_, _) => assert(true),
@@ -708,9 +554,7 @@ test "lower EWhile" {
 }
 
 test "lower EBreak none" {
-  let node = CNode(NBreakExpr, [
-    CToken(TBreak)
-  ])
+  let node = CNode(NBreakExpr, [CToken(TBreak)])
   match lower_expr(node) {
     EBreak(None) => assert(true),
     _ => assert(false)
@@ -720,9 +564,7 @@ test "lower EBreak none" {
 test "lower EBreak with value" {
   let node = CNode(NBreakExpr, [
     CToken(TBreak),
-    CNode(NIntExpr, [
-      CToken(TInt(42))
-    ])
+    CNode(NIntExpr, [CToken(TInt(42))])
   ])
   match lower_expr(node) {
     EBreak(Some(_)) => assert(true),
@@ -731,9 +573,7 @@ test "lower EBreak with value" {
 }
 
 test "lower EContinue" {
-  let node = CNode(NContinueExpr, [
-    CToken(TContinue)
-  ])
+  let node = CNode(NContinueExpr, [CToken(TContinue)])
   match lower_expr(node) {
     EContinue(args) => assert(Array::length(args) == 0),
     _ => assert(false)
@@ -743,9 +583,7 @@ test "lower EContinue" {
 test "lower EThrow" {
   let node = CNode(NThrowExpr, [
     CToken(TThrow),
-    CNode(NStringExpr, [
-      CToken(TString("err"))
-    ])
+    CNode(NStringExpr, [CToken(TString("err"))])
   ])
   match lower_expr(node) {
     EThrow(_) => assert(true),
@@ -757,13 +595,8 @@ test "lower EAssign" {
   let node = CNode(NAssignExpr, [
     CToken(TIdent("x")),
     CToken(TEq),
-    CNode(NIntExpr, [
-      CToken(TInt(10))
-    ]),
-    CNode(NUnitExpr, [
-      CToken(TLParen),
-      CToken(TRParen)
-    ])
+    CNode(NIntExpr, [CToken(TInt(10))]),
+    CNode(NUnitExpr, [CToken(TLParen), CToken(TRParen)])
   ])
   match lower_expr(node) {
     EAssign(name, _, _) => assert(name == "x"),
@@ -776,12 +609,8 @@ test "lower EForIn" {
     CToken(TFor),
     CToken(TIdent("x")),
     CToken(TIn),
-    CNode(NIdentExpr, [
-      CToken(TIdent("xs"))
-    ]),
-    CNode(NIntExpr, [
-      CToken(TInt(0))
-    ])
+    CNode(NIdentExpr, [CToken(TIdent("xs"))]),
+    CNode(NIntExpr, [CToken(TInt(0))])
   ])
   match lower_expr(node) {
     EForIn(name, _, _) => assert(name == "x"),
@@ -789,14 +618,14 @@ test "lower EForIn" {
   }
 }
 
+//# Lower: statement tests
+
 test "lower SLet" {
   let node = CNode(NLetStmt, [
     CToken(TLet),
     CToken(TIdent("x")),
     CToken(TEq),
-    CNode(NIntExpr, [
-      CToken(TInt(42))
-    ])
+    CNode(NIntExpr, [CToken(TInt(42))])
   ])
   match lower_stmt(node) {
     SLet(exported, is_rec, name, _, _) => {
@@ -815,9 +644,7 @@ test "lower SLet exported rec" {
     CToken(TRec),
     CToken(TIdent("f")),
     CToken(TEq),
-    CNode(NIdentExpr, [
-      CToken(TIdent("f"))
-    ])
+    CNode(NIdentExpr, [CToken(TIdent("f"))])
   ])
   match lower_stmt(node) {
     SLet(exported, is_rec, name, _, _) => {
@@ -835,9 +662,7 @@ test "lower SLetMut" {
     CToken(TMut),
     CToken(TIdent("x")),
     CToken(TEq),
-    CNode(NIntExpr, [
-      CToken(TInt(0))
-    ])
+    CNode(NIntExpr, [CToken(TInt(0))])
   ])
   match lower_stmt(node) {
     SLetMut(name, _, _) => assert(name == "x"),
@@ -851,13 +676,9 @@ test "lower SEnum" {
     CToken(TEnum),
     CToken(TIdent("Color")),
     CToken(TLBrace),
-    CNode(NEnumVariant, [
-      CToken(TIdent("Red"))
-    ]),
+    CNode(NEnumVariant, [CToken(TIdent("Red"))]),
     CToken(TSemicolon),
-    CNode(NEnumVariant, [
-      CToken(TIdent("Blue"))
-    ]),
+    CNode(NEnumVariant, [CToken(TIdent("Blue"))]),
     CToken(TRBrace)
   ])
   match lower_stmt(node) {
@@ -878,17 +699,13 @@ test "lower SStruct" {
     CNode(NStructField, [
       CToken(TIdent("x")),
       CToken(TColon),
-      CNode(NNameType, [
-        CToken(TIdent("Int"))
-      ])
+      CNode(NNameType, [CToken(TIdent("Int"))])
     ]),
     CToken(TSemicolon),
     CNode(NStructField, [
       CToken(TIdent("y")),
       CToken(TColon),
-      CNode(NNameType, [
-        CToken(TIdent("Int"))
-      ])
+      CNode(NNameType, [CToken(TIdent("Int"))])
     ]),
     CToken(TRBrace)
   ])
@@ -904,9 +721,7 @@ test "lower SStruct" {
 
 test "lower SExpr" {
   let node = CNode(NExprStmt, [
-    CNode(NIntExpr, [
-      CToken(TInt(42))
-    ])
+    CNode(NIntExpr, [CToken(TInt(42))])
   ])
   match lower_stmt(node) {
     SExpr(EInt(n)) => assert(n == 42),
@@ -918,9 +733,7 @@ test "lower STest" {
   let node = CNode(NTestStmt, [
     CToken(TTest),
     CToken(TString("my test")),
-    CNode(NIntExpr, [
-      CToken(TInt(1))
-    ])
+    CNode(NIntExpr, [CToken(TInt(1))])
   ])
   match lower_stmt(node) {
     STest(name, _) => assert(name == "my test"),
@@ -941,18 +754,12 @@ test "lower SExport" {
   }
 }
 
+//# Lower: source file test
+
 test "lower_source_file" {
   let root = CNode(NSourceFile, [
-    CNode(NExprStmt, [
-      CNode(NIntExpr, [
-        CToken(TInt(1))
-      ])
-    ]),
-    CNode(NExprStmt, [
-      CNode(NIntExpr, [
-        CToken(TInt(2))
-      ])
-    ])
+    CNode(NExprStmt, [CNode(NIntExpr, [CToken(TInt(1))])]),
+    CNode(NExprStmt, [CNode(NIntExpr, [CToken(TInt(2))])])
   ])
   let stmts = lower_source_file(root)
   assert(Array::length(stmts) == 2)
