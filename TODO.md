@@ -26,6 +26,9 @@ Completed items are archived in `docs/DONE.md`.
   - 目的はディレクトリ整理そのものではなく、manifest と cache 単位を一致させること
 - [ ] `selfhost_sources_bundle.vibe` の drift を release 導線で検知する
   - manifest 更新と bundle 再生成のズレを CI/pre-release で落としたい
+- [ ] deep compiler import test を compiled backend に戻す
+  - 現状 `codegen_lexer_import_test.vibe` は `LoopFuelExhausted` 回避のため auto では interpreter backend を優先している
+  - compiled backend でも安定完走できる loop fuel / runtime コストへ寄せたい
 
 ### Selfhost CLI / I/O boundary
 
@@ -41,19 +44,15 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Release / Gate Integration
 
-- [x] `release-check` に selfhost gate 群を束ねる
-  - `sync-vbundle`, `test-selfhost-bootstrap`, `test-selfhost-wasi-selfbuild-kpi`, `test-selfhost-cutover`, `test-selfhost-check-parity`, `test-golden-wat` を `release-selfhost-gates` に集約
-  - ローカル pre-release 導線から CI 相当の selfhost / golden WAT gate を実行可能にした
 - [ ] selfhost bootstrap の heavy shard をさらに削る
   - 進捗ログと file 単位 batch 分割は入ったが、`parser_test` / `stmt_test` / `printer_test` のような巨大ファイルはまだ tail を引っ張る
   - 方針候補: test file 分割、backend 固定、weight cache の見直し
+- [ ] `vibe_normalize_all` の explicit exclude を外す
+  - 現状 `vibe/compiler/coverage_selfhost_suite_lib.vibe` は native normalize crash 回避のため batch 対象から外している
+  - normalize engine 側の crash を直して exclude なしで回したい
 
 ## Migration Cleanup
 
-- [x] `map_builder*` 互換 alias の user-facing 残骸を掃除する
-  - language tour / generated docs / comment を `MapBuilder::*` に統一
-  - legacy alias は互換用に維持しつつ、desugar の non-command name と coverage で後方互換を固定
-  - rename 用の `scripts/rename_builtins.py` は移行補助として維持し、恒久 API では旧名を増やさない
 - [ ] `map_builder*` 互換 alias を削除する条件を固める
   - 条件案: docs と eval task の canonical 化完了、rename script の dry-run 実績、host/selfhost の alias coverage を維持したまま deprecation 期間を決める
   - 対象: host checker/runtime/codegen の互換層、selfhost builtin 正規化、alias 専用 wbtest

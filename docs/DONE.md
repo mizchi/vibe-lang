@@ -4,9 +4,16 @@ Completed items archived from `TODO.md`.
 
 ## 2026-03-10
 
+- **Selfhost compiler を manifest / cache 前提へ再編**
+  - `selfhost_sources_manifest.tsv` を source 順序の単一根拠にし、bundle 生成と `module_loader` の compiler root 列挙を一致させた
+  - `TypeDb` cached compile API と cache probe を selfhost public API に追加し、strict-recursive selfbuild KPI に warm reuse 指標を載せた
+  - `type_db.vibe` / `ripple` の selfhost 解決と `codegen.vibe` wrapper の validate failure を直し、strict-recursive selfbuild を維持したまま compiler 分割を進めた
 - **Release preflight に selfhost gate 群を統合**
   - `release-check` から `release-selfhost-gates` を実行し、`sync-vbundle`、selfhost bootstrap / strict-recursive KPI / cutover / check parity / golden WAT をローカル pre-release 導線へ接続
   - `sync_vibe_index_vbundle` と normalize batching helper の self-test を復帰し、preflight 補助 script の回帰も固定
+- **Normalize / test runtime の運用回帰を修正**
+  - normalize engine の standalone comment 行回りを修正し、multi-file normalize helper と回帰テストを追加
+  - `fork_for_test` の loop fuel を保持するようにし、deep compiler import test 向けの interpreter fallback と高い `VIBE_TEST_LOOP_FUEL` 既定値を導入
 - **MapBuilder canonical naming cleanup を仕上げ**
   - language tour eval task と codegen comment を `MapBuilder::*` に統一
   - desugar 側は canonical 名と legacy alias の両方を non-command name として扱い、互換期間中の shell rewrite 回帰を防止
