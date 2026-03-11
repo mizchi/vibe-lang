@@ -1,0 +1,221 @@
+//# Imports
+
+import ../core/index.vibe {
+  Stmt, Subst, Type, TypeDef, TypeEnv, env_bind, env_flat_bindings, env_lookup_flat, generalize, impls_overlap_for, resolve_builtin, subst_apply, trait_defined
+}
+
+import ./checker.vibe {
+  check_expr
+}
+
+import ./checker_resolve.vibe {
+  resolve_type_expr
+}
+
+//# Functions
+
+let rec import_cache_lookup = (cache: Array[(String, Type)], name: String, i: Int) -> Option[Type] {
+  if i >= Array::length(cache) {
+    None
+  }
+  else {
+    let (cached_name, cached_ty) = Array::get(cache, i)
+    if String::equals(cached_name, name) {
+      Some(cached_ty)
+    }
+    else import_cache_lookup(cache, name, i + 1)
+  }
+}
+
+export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int) -> (TypeEnv, Subst, Int) {
+  if i >= Array::length(stmts) {
+    (env, s, c)
+  } else {
+    let stmt = Array::get(stmts, i)
+    let (new_env, s1, c1) = match stmt {
+      SLet(_, is_rec, name, ann, val) => {
+        let (vt, ns, nc) = if is_rec {
+          check_expr(val, env_bind(env, name, CtUnknown), defs, s, c)
+        } else {
+          check_expr(val, env, defs, s, c)
+        }
+        let t = match ann {
+          Some(te) => resolve_type_expr(te, defs),
+          None => generalize(ns, vt)
+        }
+        (env_bind(env, name, t), ns, nc)
+      },
+      SLetMut(name, ann, val) => {
+        let (vt, ns, nc) = check_expr(val, env, defs, s, c)
+        let t = match ann {
+          Some(te) => resolve_type_expr(te, defs),
+          None => vt
+        }
+        (env_bind(env, name, t), ns, nc)
+      },
+      SEnum(_, name, variants) => {
+        // Resolve variants and register TDEnum in defs
+        let resolved_variants = Array::slice([
+          ("", Array::slice([
+            CtUnknown
+          ], 0, 0))
+        ], 0, 0)
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, vtypes) = Array::get(variants, vi)
+          let resolved_vtypes = Array::slice([
+            CtUnknown
+          ], 0, 0)
+          let mut ti = 0
+          while ti < Array::length(vtypes) {
+            let vt = resolve_type_expr(Array::get(vtypes, ti), defs)
+            Array::push(resolved_vtypes, vt)
+            ti = ti + 1
+          }
+          Array::push(resolved_variants, (vname, resolved_vtypes))
+          vi = vi + 1
+        }
+        Array::push(defs, TDEnum(name, resolved_variants))
+        // Bind enum type name
+        let mut env1 = env_bind(env, name, CtEnum(name))
+        // Bind each variant constructor
+        let mut ci2 = 0
+        while ci2 < Array::length(variants) {
+          let (vname, vtypes) = Array::get(variants, ci2)
+          if eq(Array::length(vtypes), 0) {
+            env1 = env_bind(env1, vname, CtEnum(name))
+          } else {
+            let resolved_args = Array::slice([
+              CtUnknown
+            ], 0, 0)
+            let mut ai = 0
+            while ai < Array::length(vtypes) {
+              Array::push(resolved_args, resolve_type_expr(Array::get(vtypes, ai), defs))
+              ai = ai + 1
+            }
+            env1 = env_bind(env1, vname, CtFn(resolved_args, CtEnum(name), false))
+          }
+          ci2 = ci2 + 1
+        }
+        (env1, s, c)
+      }
+      ,
+      SStruct(_, name, field_defs) => {
+        // Register TDStruct in defs for field type resolution
+        let resolved_fields = Array::slice([
+          ("", CtUnit)
+        ], 0, 0)
+        let mut fi = 0
+        while fi < Array::length(field_defs) {
+          let (fname, ftype_expr) = Array::get(field_defs, fi)
+          let ftype = resolve_type_expr(ftype_expr, defs)
+          Array::push(resolved_fields, (fname, ftype))
+          fi = fi + 1
+        }
+        Array::push(defs, TDStruct(name, resolved_fields))
+        // Bind struct constructor as CtFn(field_types, CtStruct(name), false)
+        let field_types = Array::slice([
+          CtUnknown
+        ], 0, 0)
+        let mut fj = 0
+        while fj < Array::length(resolved_fields) {
+          let (_, fty) = Array::get(resolved_fields, fj)
+          Array::push(field_types, fty)
+          fj = fj + 1
+        }
+        (env_bind(env, name, CtFn(field_types, CtStruct(name), false)), s, c)
+      }
+      ,
+      STypeAlias(_, name, te) => {
+        let t = resolve_type_expr(te, defs)
+        (env_bind(env, name, t), s, c)
+      },
+      SExternLet(name, te) => {
+        let t = resolve_type_expr(te, defs)
+        (env_bind(env, name, t), s, c)
+      },
+      STest(_, body) => {
+        let (_, ns, nc) = check_expr(body, env, defs, s, c)
+        (env, ns, nc)
+      },
+      SBench(_, body) => {
+        let (_, ns, nc) = check_expr(body, env, defs, s, c)
+        (env, ns, nc)
+      },
+      SExpr(expr) => {
+        let (_, ns, nc) = check_expr(expr, env, defs, s, c)
+        (env, ns, nc)
+      },
+      SModule(_, _, body) => {
+        let _ = check_stmts(body, 0, env, defs, s, c)
+        (env, s, c)
+      },
+      SImport(_, names) => {
+        let env_bindings = env_flat_bindings(env)
+        let import_cache = Array::slice([
+          ("", CtUnknown)
+        ], 0, 0)
+        let nlen = Array::length(names)
+        let rec bind_imports = (i: Int, acc: TypeEnv) -> TypeEnv {
+          if i >= nlen {
+            acc
+          }
+          else {
+            let (name, alias) = Array::get(names, i)
+            let bound_name = match alias {
+              Some(a) => a,
+              None => name
+            }
+            let ty = match import_cache_lookup(import_cache, name, 0) {
+              Some(t) => t,
+              None => {
+                let resolved = match env_lookup_flat(env_bindings, name) {
+                  Some(t) => t,
+                  None => CtUnknown
+                }
+                Array::push(import_cache, (name, resolved))
+                resolved
+              }
+            }
+            bind_imports(i + 1, env_bind(acc, bound_name, ty))
+          }
+        }
+        (bind_imports(0, env), s, c)
+      },
+      STrait(_, name, supers) => {
+        // Register trait definition in env
+        let is_open = false
+        (EnvTraitDef(name, supers, is_open, env), s, c)
+      },
+      SImpl(_, _, trait_name, type_name) => {
+        // Resolve target type
+        let target = match resolve_builtin(type_name) {
+          Some(t) => t,
+          None => CtNamed(type_name, Array::slice([
+            CtUnknown
+          ], 0, 0))
+        }
+        // Register impl in env
+        (EnvTraitImpl(trait_name, target, env), s, c)
+      },
+      _ => (env, s, c)
+    }
+    check_stmts(stmts, i + 1, new_env, defs, s1, c1)
+  }
+}
+
+export let check_program = (stmts: Array[Stmt]) -> TypeEnv {
+  let empty_defs = Array::slice([
+    TDAlias("_dummy", CtUnit)
+  ], 0, 0)
+  let (env, _, _) = check_stmts(stmts, 0, EnvEmpty, empty_defs, SubstEmpty, 0)
+  env
+}
+
+export let check_program_with_env = (stmts: Array[Stmt], initial_env: TypeEnv) -> TypeEnv {
+  let empty_defs = Array::slice([
+    TDAlias("_dummy", CtUnit)
+  ], 0, 0)
+  let (env, _, _) = check_stmts(stmts, 0, initial_env, empty_defs, SubstEmpty, 0)
+  env
+}

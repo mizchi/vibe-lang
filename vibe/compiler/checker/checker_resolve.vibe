@@ -1,0 +1,55 @@
+//# Imports
+
+import ../core/index.vibe {
+  TypeExpr, Type, TypeDef, find_typedef, resolve_builtin
+}
+
+//# Functions
+
+export let rec resolve_type_expr = (te: TypeExpr, defs: Array[TypeDef]) -> Type {
+  match te {
+    TyUnit => CtUnit,
+    TyName(name) => match resolve_builtin(name) {
+      Some(t) => t,
+      None => match find_typedef(defs, name) {
+        Some(td) => match td {
+          TDEnum(n, _) => CtEnum(n),
+          TDStruct(n, _) => CtStruct(n),
+          TDAlias(_, t) => t
+        },
+        None => CtNamed(name, Array::slice([
+          CtUnknown
+        ], 0, 0))
+      }
+    }
+    ,
+    TyApp(name, args) => {
+      let ra = for a in args {
+        resolve_type_expr(a, defs)
+      }
+      if String::equals(name, "Array") {
+        if Array::length(ra) == 1 {
+          CtArray(Array::get(ra, 0))
+        }
+        else CtNamed(name, ra)
+      } else if String::equals(name, "Option") {
+        if Array::length(ra) == 1 {
+          CtOption(Array::get(ra, 0))
+        }
+        else CtNamed(name, ra)
+      } else CtNamed(name, ra)
+    },
+    TyTuple(elems) => {
+      let r = for e in elems {
+        resolve_type_expr(e, defs)
+      }
+      CtTuple(r)
+    },
+    TyFn(params, ret) => {
+      let rp = for p in params {
+        resolve_type_expr(p, defs)
+      }
+      CtFn(rp, resolve_type_expr(ret, defs), false)
+    }
+  }
+}

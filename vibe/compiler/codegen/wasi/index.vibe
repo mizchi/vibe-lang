@@ -1,0 +1,810 @@
+//# Imports
+
+import ../../core/index.vibe {
+  Expr, Pat, Stmt, TypeExpr,
+  bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_array, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
+}
+
+import ../common_base/index.vibe {
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+}
+
+import ../common_extractors/index.vibe {
+  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_earray_elems, get_eassign_body, get_eassign_name, get_eassign_val, get_eassignop_body, get_eassignop_name, get_eassignop_op, get_eassignop_val, get_ebinop_lhs, get_ebinop_rhs, get_ebool_value, get_ecall_args, get_ecall_callee, get_efloat_value, get_efn_params, get_eforin_body, get_eforin_iter, get_eforin_name, get_eident_name, get_eint_value, get_eletmut_body, get_eletmut_name, get_eletmut_val, get_eletrec_body, get_eletrec_name, get_eletrec_val, get_eseq_first, get_eseq_second, get_estring_value, get_ethrow_expr, get_etuple_elems, get_eunaryop_expr, get_eunaryop_op, get_ewhile_body, get_ewhile_cond, get_match_arms, get_match_scrutinee, get_pbind_name, get_pbool_value, get_pctor_args, get_pctor_name, get_pint_value, get_pstring_value, get_ptuple_pats, get_slet_export, str_table_lookup
+}
+
+import ../common_analysis/index.vibe {
+  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in
+}
+
+import ../wasm_emit/index.vibe {
+  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_full, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data
+}
+
+import ../expr/index.vibe {
+  compile_expr
+}
+
+import ../builtin_bodies/index.vibe {
+  gen_eq_body, gen_str_eq_body, gen_arr_get_body, gen_arr_len_body, gen_arr_new_body, gen_arr_set_body, gen_str_len_body, gen_arr_push_body, gen_identity_body, gen_arr_slice_body, gen_print_i64_body, gen_print_str_body, gen_arr_concat_body, gen_str_concat_body, gen_string_join_body, gen_arr_truncate_body, gen_double_to_int_body, gen_int_to_double_body, gen_str_substring_body, gen_str_char_code_at_body, gen_string_ends_with_body, gen_fs_read_file_stub_body, gen_fs_exists_stub_body, gen_str_from_char_code_body, gen_fs_write_bytes_stub_body, gen_string_last_index_of_body, gen_selfhost_sources_stub_body, gen_selfhost_sources_proper_body
+}
+
+//# Functions
+
+export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_name: String, selfhost_srcs: Array[(String, String)]) -> Bytes with { Error } {
+  let fn_names_list = Array::slice([
+    ""
+  ], 0, 0)
+  let fn_param_counts = Array::slice([
+    0
+  ], 0, 0)
+  let fn_stmt_indices = Array::slice([
+    0
+  ], 0, 0)
+  let thunk_names_list = Array::slice([
+    ""
+  ], 0, 0)
+  let export_fn_names = Array::slice([
+    ""
+  ], 0, 0)
+  let export_fn_user_indices = Array::slice([
+    0
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    if is_slet(stmt) {
+      let name = get_slet_name(stmt)
+      let expr = get_slet_expr(stmt)
+      let is_export = get_slet_export(stmt)
+      let user_idx = Array::length(fn_names_list)
+      if is_efn(expr) {
+        let params = get_efn_params(expr)
+        Array::push(fn_names_list, name)
+        Array::push(fn_param_counts, Array::length(params))
+        Array::push(fn_stmt_indices, i)
+      } else {
+        Array::push(fn_names_list, name)
+        Array::push(fn_param_counts, 0)
+        Array::push(fn_stmt_indices, i)
+        Array::push(thunk_names_list, name)
+      }
+      if is_export {
+        Array::push(export_fn_names, name)
+        Array::push(export_fn_user_indices, user_idx)
+      }
+    }
+    i = i + 1
+  }
+  let ctor_names_list = Array::slice([
+    "None",
+    "Some"
+  ], 0, 2)
+  let ctor_tags_list = Array::slice([
+    0,
+    1
+  ], 0, 2)
+  let ctor_field_counts_list = Array::slice([
+    0,
+    1
+  ], 0, 2)
+  let ctor_type_names_list = Array::slice([
+    "Option",
+    "Option"
+  ], 0, 2)
+  let mut type_index = 1
+  // type 0 = Option
+  let mut ei2 = 0
+  while ei2 < Array::length(stmts) {
+    match Array::get(stmts, ei2) {
+      SEnum(_, ename, variants) => {
+        type_index = type_index + 1
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, vfields) = Array::get(variants, vi)
+          Array::push(ctor_names_list, vname)
+          Array::push(ctor_tags_list, (type_index<<16)|vi)
+          Array::push(ctor_field_counts_list, Array::length(vfields))
+          Array::push(ctor_type_names_list, ename)
+          vi = vi + 1
+        }
+        0
+      },
+      SStruct(_, sname, sfields) => {
+        type_index = type_index + 1
+        Array::push(ctor_names_list, sname)
+        Array::push(ctor_tags_list, type_index<<16)
+        Array::push(ctor_field_counts_list, Array::length(sfields))
+        Array::push(ctor_type_names_list, sname)
+        0
+      },
+      _ => 0
+    }
+    ei2 = ei2 + 1
+  }
+  let struct_names = Array::slice([
+    ""
+  ], 0, 0)
+  let struct_field_names = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SStruct(_, sname, sfields) => {
+        Array::push(struct_names, sname)
+        let fnames = Array::slice([
+          ""
+        ], 0, 0)
+        let mut sfi = 0
+        while sfi < Array::length(sfields) {
+          let (fname, _) = Array::get(sfields, sfi)
+          Array::push(fnames, fname)
+          sfi = sfi + 1
+        }
+        Array::push(struct_field_names, fnames)
+        ()
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+  let num_user_funcs = Array::length(fn_names_list)
+  if num_user_funcs == 0 {
+    throw("no functions found to compile")
+  }
+  let mut entry_user_idx = -1
+  let mut ei = 0
+  while ei < num_user_funcs {
+    if String::equals(Array::get(fn_names_list, ei), entry_name) {
+      entry_user_idx = ei
+    }
+    ei = ei + 1
+  }
+  if entry_user_idx < 0 {
+    throw(String::concat("entry function not found: ", entry_name))
+  }
+  let str_strs = collect_strings_stmts(stmts)
+  let src_str_base = Array::length(str_strs)
+  let num_src_pairs = Array::length(selfhost_srcs)
+  let mut __src_i = 0
+  while __src_i < num_src_pairs {
+    let (__src_path, __src_content) = Array::get(selfhost_srcs, __src_i)
+    Array::push(str_strs, __src_path)
+    Array::push(str_strs, __src_content)
+    __src_i = __src_i + 1
+  }
+  let num_strings = Array::length(str_strs)
+  let data_base = 64
+  let str_offsets = Array::slice([
+    0
+  ], 0, 0)
+  let str_lengths = Array::slice([
+    0
+  ], 0, 0)
+  let mut str_pos = data_base
+  let mut si = 0
+  while si < num_strings {
+    let s = Array::get(str_strs, si)
+    let slen = String::length(s)
+    Array::push(str_offsets, str_pos)
+    Array::push(str_lengths, slen)
+    str_pos = str_pos + slen
+    si = si + 1
+  }
+  let heap_start = ((str_pos + 7) / 8) * 8
+  let num_imported_funcs = 7
+  let num_generated = 27
+  let func_offset = num_imported_funcs + num_generated
+  // = 34
+  let builtin_defs = [
+    ("Env::get", 1, 1, 1),
+    ("Env::args_len", 0, 2, 1),
+    ("Env::args_get", 1, 3, 1),
+    ("Fs::read_file", 1, 4, 1),
+    ("Fs::exists", 1, 5, 1),
+    ("Fs::write_bytes", 2, 6, 0),
+    ("print_int", 1, 7, 0),
+    ("print_str", 1, 8, 0),
+    ("String::length", 1, 9, 1),
+    ("String::equals", 2, 10, 1),
+    ("String::concat", 2, 11, 1),
+    ("array_new", 0, 12, 1),
+    ("Array::length", 1, 13, 1),
+    ("Array::get", 2, 14, 1),
+    ("Array::push", 2, 15, 0),
+    ("Array::set", 3, 16, 0),
+    ("Double::to_int", 1, 17, 1),
+    ("Int::to_double", 1, 18, 1),
+    ("String::char_code_at", 2, 19, 1),
+    ("String::from_char_code", 1, 20, 1),
+    ("String::substring", 3, 21, 1),
+    ("Array::truncate", 2, 25, 0),
+    ("String::join", 2, 26, 1),
+    ("eq", 2, 30, 1),
+    ("String::ends_with", 2, 31, 1),
+    ("String::last_index_of", 2, 32, 1),
+    ("selfhost_sources", 0, 33, 1),
+    ("ArrayBuilder::new", 0, 12, 1),
+    ("ArrayBuilder::push", 2, 15, 0),
+    ("ArrayBuilder::freeze", 1, 22, 1),
+    ("Array::slice", 3, 23, 1),
+    ("Array::concat", 2, 24, 1),
+    ("Bytes::from_array", 1, 22, 1),
+    ("Bytes::length", 1, 13, 1),
+    ("Bytes::get", 2, 14, 1),
+    ("Double::to_i64_bits", 1, 22, 1)
+  ]
+  let mut __bi = 0
+  while __bi < Array::length(builtin_defs) {
+    let (bname, bparams, _, _) = Array::get(builtin_defs, __bi)
+    Array::push(fn_names_list, bname)
+    Array::push(fn_param_counts, bparams)
+    __bi = __bi + 1
+  }
+  let fn_indices_list = Array::slice([
+    0
+  ], 0, 0)
+  let fn_returns_list = Array::slice([
+    0
+  ], 0, 0)
+  let mut fi = 0
+  while fi < num_user_funcs {
+    Array::push(fn_indices_list, fi + func_offset)
+    Array::push(fn_returns_list, 1)
+    fi = fi + 1
+  }
+  let mut __bi2 = 0
+  while __bi2 < Array::length(builtin_defs) {
+    let (_, _, bwasm_idx, breturns) = Array::get(builtin_defs, __bi2)
+    Array::push(fn_indices_list, bwasm_idx)
+    Array::push(fn_returns_list, breturns)
+    __bi2 = __bi2 + 1
+  }
+  let num_base_types = 9
+  let lt_w = LambdaTable::{
+    bodies: Array::slice([
+      Array::slice([
+        0
+      ], 0, 0)
+    ], 0, 0),
+    param_counts: Array::slice([
+      0
+    ], 0, 0),
+    captures: Array::slice([
+      Array::slice([
+        ""
+      ], 0, 0)
+    ], 0, 0),
+    meta_i32: Array::slice([
+      0
+    ], 0, 0),
+    meta_i64: Array::slice([
+      0
+    ], 0, 0)
+  }
+  let bodies = Array::slice([
+    Array::slice([
+      0
+    ], 0, 0)
+  ], 0, 0)
+  let meta_i32 = Array::slice([
+    0
+  ], 0, 0)
+  let meta_i64 = Array::slice([
+    0
+  ], 0, 0)
+  Array::push(bodies, gen_print_i64_body())
+  Array::push(meta_i32, 3)
+  Array::push(meta_i64, 1)
+  Array::push(bodies, gen_print_str_body())
+  Array::push(meta_i32, 2)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_str_len_body())
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_str_eq_body())
+  Array::push(meta_i32, 5)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_str_concat_body())
+  Array::push(meta_i32, 6)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_arr_new_body())
+  Array::push(meta_i32, 1)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_arr_len_body())
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_arr_get_body())
+  Array::push(meta_i32, 1)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_arr_push_body())
+  Array::push(meta_i32, 6)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_arr_set_body())
+  Array::push(meta_i32, 1)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_double_to_int_body())
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_int_to_double_body())
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_str_char_code_at_body())
+  Array::push(meta_i32, 1)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_str_from_char_code_body())
+  Array::push(meta_i32, 1)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_str_substring_body())
+  Array::push(meta_i32, 2)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_identity_body())
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_arr_slice_body())
+  Array::push(meta_i32, 6)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_arr_concat_body())
+  Array::push(meta_i32, 9)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_arr_truncate_body())
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_string_join_body())
+  Array::push(meta_i32, 2)
+  Array::push(meta_i64, 2)
+  Array::push(bodies, gen_fs_read_file_stub_body())
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_fs_exists_stub_body())
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_fs_write_bytes_stub_body())
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_eq_body())
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(bodies, gen_string_ends_with_body())
+  Array::push(meta_i32, 2)
+  Array::push(meta_i64, 1)
+  Array::push(bodies, gen_string_last_index_of_body())
+  Array::push(meta_i32, 3)
+  Array::push(meta_i64, 1)
+  if num_src_pairs > 0 {
+    Array::push(bodies, gen_selfhost_sources_proper_body(num_src_pairs, str_offsets, str_lengths, src_str_base))
+    Array::push(meta_i32, 1)
+    // 1 i32 local (tuple ptr)
+    Array::push(meta_i64, 1)
+    // 1 i64 local (array ref)
+  } else {
+    Array::push(bodies, gen_selfhost_sources_stub_body())
+    Array::push(meta_i32, 0)
+    Array::push(meta_i64, 0)
+  }
+  let mut bi = 0
+  while bi < num_user_funcs {
+    let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
+    let __bi_expr = get_slet_expr(__bi_stmt)
+    let body_buf = bytebuf_new()
+    let local_names = Array::slice([
+      ""
+    ], 0, 0)
+    let fn_name_dbg = Array::get(fn_names_list, bi)
+    let compile_ctx = CompileCtx::{
+      func_table: FuncTable::{
+        names: fn_names_list, indices: fn_indices_list, params: fn_param_counts, returns: fn_returns_list
+      },
+      str_table: StrTable::{
+        strs: str_strs, offsets: str_offsets, lengths: str_lengths
+      },
+      lambda_table: lt_w,
+      num_user_funcs: num_user_funcs, func_offset: func_offset,
+      ref_cell_names: Array::slice([
+        ""
+      ], 0, 0),
+      ctor_table: CtorTable::{
+        names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
+      },
+      thunk_names: thunk_names_list
+    }
+    if is_efn(__bi_expr) {
+      let __bi_params = get_efn_params(__bi_expr)
+      let body = get_efn_body(__bi_expr)
+      let mut pi = 0
+      while pi < Array::length(__bi_params) {
+        let (pname, _) = Array::get(__bi_params, pi)
+        Array::push(local_names, pname)
+        pi = pi + 1
+      }
+      Array::push(local_names, "__env")
+      let param_count = Array::length(__bi_params) + 1
+      // includes __env
+      let final_nl = compile_expr(body_buf, body, local_names, param_count, compile_ctx, -1)
+      Array::push(bodies, body_buf)
+      let extra = if final_nl > param_count {
+        final_nl - param_count
+      } else {
+        0
+      }
+      Array::push(meta_i32, 0)
+      Array::push(meta_i64, extra)
+    } else {
+      Array::push(local_names, "__env")
+      let param_count = 1
+      // just __env
+      let final_nl = compile_expr(body_buf, __bi_expr, local_names, param_count, compile_ctx, -1)
+      Array::push(bodies, body_buf)
+      let extra = if final_nl > param_count {
+        final_nl - param_count
+      } else {
+        0
+      }
+      Array::push(meta_i32, 0)
+      Array::push(meta_i64, extra)
+    }
+    bi = bi + 1
+  }
+  let num_lambdas = Array::length(lt_w.bodies)
+  let start_body = bytebuf_new()
+  let entry_func_idx = entry_user_idx + func_offset
+  let entry_params = Array::get(fn_param_counts, entry_user_idx)
+  if entry_params != 0 {
+    throw("WASI entry function must take 0 parameters")
+  }
+  emit_i64_const(start_body, 0)
+  // env=0 for user func
+  emit_call(start_body, entry_func_idx)
+  emit_call(start_body, 5)
+  // __print_i64
+  Array::push(bodies, start_body)
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  let run_body = bytebuf_new()
+  emit_i64_const(run_body, 0)
+  // env=0 for user func; run returns the entry result for host-driven execution.
+  emit_call(run_body, entry_func_idx)
+  Array::push(bodies, run_body)
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  let mut li = 0
+  while li < num_lambdas {
+    Array::push(bodies, Array::get(lt_w.bodies, li))
+    Array::push(meta_i32, Array::get(lt_w.meta_i32, li))
+    Array::push(meta_i64, Array::get(lt_w.meta_i64, li))
+    li = li + 1
+  }
+  let mut max_closure_arity = -1
+  let mut lai = 0
+  while lai < num_lambdas {
+    let lpc = Array::get(lt_w.param_counts, lai) - 1
+    // user_params = total - 1 (env)
+    if lpc > max_closure_arity {
+      max_closure_arity = lpc
+    }
+    lai = lai + 1
+  }
+  let mut uai = 0
+  while uai < num_user_funcs {
+    let upc = Array::get(fn_param_counts, uai)
+    if upc > max_closure_arity {
+      max_closure_arity = upc
+    }
+    uai = uai + 1
+  }
+  let num_closure_types = if max_closure_arity >= 0 {
+    max_closure_arity + 1
+  } else {
+    0
+  }
+  let type_content = bytebuf_new()
+  bytebuf_push_vec_header(type_content, num_base_types + num_closure_types)
+  emit_func_type_raw(type_content, [
+    127,
+    127,
+    127,
+    127
+  ], [
+    127
+  ])
+  // type 0: fd_write
+  emit_func_type_raw(type_content, [
+    126
+  ], Array::slice([
+    0
+  ], 0, 0))
+  // type 1: (i64)->()
+  emit_func_type_raw(type_content, Array::slice([
+    0
+  ], 0, 0), Array::slice([
+    0
+  ], 0, 0))
+  // type 2: ()->()
+  emit_func_type_raw(type_content, [
+    126
+  ], [
+    126
+  ])
+  // type 3: (i64)->(i64)
+  emit_func_type_raw(type_content, [
+    126,
+    126
+  ], [
+    126
+  ])
+  // type 4: (i64,i64)->(i64)
+  emit_func_type_raw(type_content, Array::slice([
+    0
+  ], 0, 0), [
+    126
+  ])
+  // type 5: ()->(i64)
+  emit_func_type_raw(type_content, [
+    126,
+    126
+  ], Array::slice([
+    0
+  ], 0, 0))
+  // type 6: (i64,i64)->()
+  emit_func_type_raw(type_content, [
+    126,
+    126,
+    126
+  ], Array::slice([
+    0
+  ], 0, 0))
+  // type 7: (i64,i64,i64)->()
+  emit_func_type_raw(type_content, [
+    126,
+    126,
+    126
+  ], [
+    126
+  ])
+  // type 8: (i64,i64,i64)->(i64)
+  let mut cti = 0
+  while cti < num_closure_types {
+    let num_params = cti + 1
+    // N user params + 1 env
+    let ct_params = Array::slice([
+      0
+    ], 0, 0)
+    let mut cpti = 0
+    while cpti < num_params {
+      Array::push(ct_params, 126)
+      cpti = cpti + 1
+    }
+    emit_func_type_raw(type_content, ct_params, [
+      126
+    ])
+    cti = cti + 1
+  }
+  let out = bytebuf_new()
+  emit_header(out)
+  bytebuf_push_section(out, 1, type_content)
+  let import_content = bytebuf_new()
+  bytebuf_push_vec_header(import_content, num_imported_funcs)
+  emit_name(import_content, "wasi_snapshot_preview1")
+  emit_name(import_content, "fd_write")
+  bytebuf_push(import_content, 0)
+  leb128_encode_u32(import_content, 0)
+  emit_name(import_content, "vibe")
+  emit_name(import_content, "env-get")
+  bytebuf_push(import_content, 0)
+  leb128_encode_u32(import_content, 3)
+  emit_name(import_content, "vibe")
+  emit_name(import_content, "args-len")
+  bytebuf_push(import_content, 0)
+  leb128_encode_u32(import_content, 5)
+  emit_name(import_content, "vibe")
+  emit_name(import_content, "args-get")
+  bytebuf_push(import_content, 0)
+  leb128_encode_u32(import_content, 3)
+  emit_name(import_content, "vibe")
+  emit_name(import_content, "fs_read_file")
+  bytebuf_push(import_content, 0)
+  leb128_encode_u32(import_content, 3)
+  emit_name(import_content, "vibe")
+  emit_name(import_content, "fs_exists")
+  bytebuf_push(import_content, 0)
+  leb128_encode_u32(import_content, 3)
+  emit_name(import_content, "vibe")
+  emit_name(import_content, "fs_write_bytes")
+  bytebuf_push(import_content, 0)
+  leb128_encode_u32(import_content, 6)
+  bytebuf_push_section(out, 2, import_content)
+  let func_type_indices = Array::slice([
+    0
+  ], 0, 0)
+  Array::push(func_type_indices, 1)
+  // __print_i64
+  Array::push(func_type_indices, 1)
+  // __print_str
+  Array::push(func_type_indices, 3)
+  // __str_len
+  Array::push(func_type_indices, 4)
+  // __str_eq
+  Array::push(func_type_indices, 4)
+  // __str_concat
+  Array::push(func_type_indices, 5)
+  // __arr_new
+  Array::push(func_type_indices, 3)
+  // __arr_len
+  Array::push(func_type_indices, 4)
+  // __arr_get
+  Array::push(func_type_indices, 6)
+  // __arr_push
+  Array::push(func_type_indices, 7)
+  // __arr_set
+  Array::push(func_type_indices, 3)
+  // __double_to_int
+  Array::push(func_type_indices, 3)
+  // __int_to_double
+  Array::push(func_type_indices, 4)
+  // __str_char_code_at
+  Array::push(func_type_indices, 3)
+  // __str_from_char_code
+  Array::push(func_type_indices, 8)
+  // __str_substring
+  Array::push(func_type_indices, 3)
+  // __identity (ArrayBuilder::freeze)
+  Array::push(func_type_indices, 8)
+  // __arr_slice (i64,i64,i64) -> (i64)
+  Array::push(func_type_indices, 4)
+  // __arr_concat (i64,i64) -> (i64)
+  Array::push(func_type_indices, 6)
+  // __arr_truncate (i64,i64) -> ()
+  Array::push(func_type_indices, 4)
+  // __string_join (i64,i64) -> (i64)
+  Array::push(func_type_indices, 3)
+  // __fs_read_file_stub (i64) -> (i64)
+  Array::push(func_type_indices, 3)
+  // __fs_exists_stub (i64) -> (i64)
+  Array::push(func_type_indices, 6)
+  // __fs_write_bytes_stub (i64,i64) -> ()
+  Array::push(func_type_indices, 4)
+  // __eq (i64,i64) -> (i64)
+  Array::push(func_type_indices, 4)
+  // __string_ends_with (i64,i64) -> (i64)
+  Array::push(func_type_indices, 4)
+  // __string_last_index_of (i64,i64) -> (i64)
+  Array::push(func_type_indices, 5)
+  // __selfhost_sources_stub () -> (i64)
+  let mut fti = 0
+  while fti < num_user_funcs {
+    let upc = Array::get(fn_param_counts, fti)
+    Array::push(func_type_indices, num_base_types + upc)
+    fti = fti + 1
+  }
+  Array::push(func_type_indices, 2)
+  // _start () -> ()
+  Array::push(func_type_indices, 5)
+  // run () -> (i64)
+  let mut lfi = 0
+  while lfi < num_lambdas {
+    let lam_user_params = Array::get(lt_w.param_counts, lfi) - 1
+    Array::push(func_type_indices, num_base_types + lam_user_params)
+    lfi = lfi + 1
+  }
+  emit_function_section(out, func_type_indices)
+  let total_table_entries = num_user_funcs + num_lambdas
+  if total_table_entries > 0 {
+    emit_table_section_funcref(out, total_table_entries)
+  }
+  emit_memory_section(out, 8192)
+  emit_global_section_i32_mut(out, heap_start)
+  let start_func_idx = func_offset + num_user_funcs
+  let run_func_idx = start_func_idx + 1
+  let all_export_names = Array::slice([
+    "_start",
+    "run",
+    entry_name
+  ], 0, 3)
+  let all_export_indices = Array::slice([
+    start_func_idx,
+    run_func_idx,
+    entry_func_idx
+  ], 0, 3)
+  let mut exi = 0
+  while exi < Array::length(export_fn_names) {
+    let ename = Array::get(export_fn_names, exi)
+    if String::equals(ename, entry_name) == false {
+      Array::push(all_export_names, ename)
+      Array::push(all_export_indices, Array::get(export_fn_user_indices, exi) + func_offset)
+    }
+    exi = exi + 1
+  }
+  emit_exports_full(out, all_export_names, all_export_indices, "memory", 0, [
+    "__heap_ptr"
+  ], [
+    0
+  ])
+  if total_table_entries > 0 {
+    let table_func_indices = Array::slice([
+      0
+    ], 0, 0)
+    let mut tei = 0
+    while tei < num_user_funcs {
+      Array::push(table_func_indices, func_offset + tei)
+      tei = tei + 1
+    }
+    let mut tej = 0
+    while tej < num_lambdas {
+      Array::push(table_func_indices, run_func_idx + 1 + tej)
+      tej = tej + 1
+    }
+    emit_element_section_active(out, table_func_indices)
+  }
+  let code_content = bytebuf_new()
+  bytebuf_push_vec_header(code_content, Array::length(bodies))
+  let mut ci = 0
+  while ci < Array::length(bodies) {
+    let body = Array::get(bodies, ci)
+    let func_buf = bytebuf_new()
+    let ni32 = Array::get(meta_i32, ci)
+    let ni64 = Array::get(meta_i64, ci)
+    if ni32 == 0 {
+      if ni64 == 0 {
+        leb128_encode_u32(func_buf, 0)
+        // no locals
+      } else {
+        leb128_encode_u32(func_buf, 1)
+        // 1 group
+        leb128_encode_u32(func_buf, ni64)
+        bytebuf_push(func_buf, 126)
+        // i64
+      }
+    } else {
+      if ni64 == 0 {
+        leb128_encode_u32(func_buf, 1)
+        leb128_encode_u32(func_buf, ni32)
+        bytebuf_push(func_buf, 127)
+        // i32
+      } else {
+        leb128_encode_u32(func_buf, 2)
+        // 2 groups
+        leb128_encode_u32(func_buf, ni32)
+        bytebuf_push(func_buf, 127)
+        // i32
+        leb128_encode_u32(func_buf, ni64)
+        bytebuf_push(func_buf, 126)
+        // i64
+      }
+    }
+    bytebuf_push_array(func_buf, body)
+    bytebuf_push(func_buf, 11)
+    // end
+    leb128_encode_u32(code_content, bytebuf_length(func_buf))
+    bytebuf_push_array(code_content, func_buf)
+    ci = ci + 1
+  }
+  bytebuf_push_section(out, 10, code_content)
+  if num_strings > 0 {
+    let data_offsets = Array::slice([
+      0
+    ], 0, 0)
+    let data_bufs = Array::slice([
+      Array::slice([
+        0
+      ], 0, 0)
+    ], 0, 0)
+    let mut di = 0
+    while di < num_strings {
+      Array::push(data_offsets, Array::get(str_offsets, di))
+      Array::push(data_bufs, string_to_data(Array::get(str_strs, di)))
+      di = di + 1
+    }
+    emit_data_section_multi(out, data_offsets, data_bufs)
+  }
+  bytebuf_to_bytes(out)
+}
+
+// Backward-compatible wrapper: compile WASI module without embedded selfhost sources
+export let compile_wasi_module_impl = (stmts: Array[Stmt], entry_name: String) -> Bytes with { Error } {
+  compile_wasi_module_with_sources_impl(stmts, entry_name, Array::slice([
+    ("", "")
+  ], 0, 0))
+}

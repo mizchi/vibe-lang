@@ -16,11 +16,6 @@ if ! command -v wasm-tools >/dev/null 2>&1; then
   echo "wasm-tools is required" >&2
   exit 1
 fi
-if ! command -v wkg >/dev/null 2>&1; then
-  echo "wkg is required" >&2
-  exit 1
-fi
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
@@ -45,11 +40,28 @@ WIT_PKG="${TMP_DIR}/${BASE}.wit.wasm"
 
 VIBE_CMD=(moon run --target native src/cmd/vibe -- compile)
 
-"${VIBE_CMD[@]}" --wasm "$INPUT" -o "$CORE_WASM"
+"${VIBE_CMD[@]}" --wasm --force-cabi-realloc "$INPUT" -o "$CORE_WASM"
 "${VIBE_CMD[@]}" --wit-component "$INPUT" -o "$WIT_WORLD"
 WORLD_NAME="$(awk '/^world / {print $2; exit}' "$WIT_WORLD")"
 if [ -z "$WORLD_NAME" ]; then
   echo "failed to detect world name from $WIT_WORLD" >&2
+  exit 1
+fi
+
+if grep -q '^  import vibe: interface {$' "$WIT_WORLD"; then
+  "${VIBE_CMD[@]}" --component "$INPUT" -o "$OUT"
+  wasm-tools validate "$OUT" >/dev/null
+  echo "wrote $OUT"
+  exit 0
+fi
+
+if grep -q 'wasi:filesystem/types@0.3.0' "$WIT_WORLD"; then
+  "$SCRIPT_DIR/embed_preview2_filesystem_component.sh" "$CORE_WASM" "$WIT_WORLD" "$OUT" "$WORLD_NAME"
+  exit 0
+fi
+
+if ! command -v wkg >/dev/null 2>&1; then
+  echo "wkg is required for non-filesystem Preview2 component embedding" >&2
   exit 1
 fi
 

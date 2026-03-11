@@ -3,6 +3,7 @@
 import ./compiler.vibe {
   prepare_modules_cached,
   compile_with_modules_cached,
+  compile_with_modules_wasi_cached,
   compile_file_fs_module_cached
 }
 
@@ -12,6 +13,7 @@ import ./type_db.vibe {
   db_parse_count,
   db_merge_count,
   db_module_source_count,
+  db_merged_source,
   db_grouped_merged_source,
   db_codegen_count
 }
@@ -33,6 +35,23 @@ let empty_sources = () -> Array[(String, String)] {
   Array::slice([
     ("", "")
   ], 0, 0)
+}
+
+let repeat_string = (fragment: String, count: Int) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < count {
+    out = String::concat(out, fragment)
+    i = i + 1
+  }
+  out
+}
+
+let assert_wasm_magic = (bytes: Bytes) -> Unit {
+  assert(Bytes::get(bytes, 0) == 0)
+  assert(Bytes::get(bytes, 1) == 97)
+  assert(Bytes::get(bytes, 2) == 115)
+  assert(Bytes::get(bytes, 3) == 109)
 }
 
 //# Tests
@@ -119,6 +138,25 @@ test "db_grouped_merged_source: changing one group only rebuilds that group and 
   assert(eq(db_merge_count(db2), merge_count1 + 2))
 }
 
+test "db_merged_source: fingerprint stays compact for large sources" {
+  let large_source = repeat_string("let value = 42\n", 2048)
+  let (_, fingerprint, _) = db_merged_source(
+    db_new(),
+    "main.vibe",
+    [("main.vibe", large_source)]
+  )
+  assert(String::length(fingerprint) < 64)
+}
+
+test "db_grouped_merged_source: grouped fingerprint stays compact for large sources" {
+  let large_source = repeat_string("let value = 42\n", 2048)
+  let (_, fingerprint, _) = db_grouped_merged_source(
+    db_new(),
+    [("core", [("main.vibe", large_source)])]
+  )
+  assert(String::length(fingerprint) < 64)
+}
+
 test "compile_with_modules_cached: warm compile reuses compiled artifact cache" {
   let main_source = "let main = () -> Int { 1 + 2 }"
   let sources = empty_sources()
@@ -130,6 +168,30 @@ test "compile_with_modules_cached: warm compile reuses compiled artifact cache" 
   )
   let codegen_count1 = db_codegen_count(db1)
   let (_, db2) = compile_with_modules_cached(db1, main_source, "main.vibe", sources)
+  assert(eq(db_codegen_count(db2), codegen_count1))
+}
+
+test "compile_with_modules_wasi_cached: multi-module imports compile to valid WASM and reuse codegen cache" {
+  let helper_source = "export let add = (a: Int, b: Int) -> Int { a + b }"
+  let main_source = "import ./helpers.vibe { add }\nlet run = () -> Int { add(1, 2) }"
+  let sources = [("helpers.vibe", helper_source)]
+  let (bytes1, db1) = compile_with_modules_wasi_cached(
+    db_new(),
+    main_source,
+    "main.vibe",
+    sources,
+    "run"
+  )
+  assert_wasm_magic(bytes1)
+  let codegen_count1 = db_codegen_count(db1)
+  let (bytes2, db2) = compile_with_modules_wasi_cached(
+    db1,
+    main_source,
+    "main.vibe",
+    sources,
+    "run"
+  )
+  assert_wasm_magic(bytes2)
   assert(eq(db_codegen_count(db2), codegen_count1))
 }
 

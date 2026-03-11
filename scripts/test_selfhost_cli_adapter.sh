@@ -86,6 +86,7 @@ run_stage_capture_stdout() {
 
 mkdir -p "$OUT_DIR"
 rm -f "$STAGE1_CORE_WASM" "$STAGE1_CLI_WASM" "$OUTPUT_WASM" "$OUTPUT_RUN_LOG"
+printf '1' > "$OUT_DIR/.compile_cli_trigger"
 
 if ! command -v node >/dev/null 2>&1; then
   echo "selfhost cli adapter gate failed: node not found" >&2
@@ -117,7 +118,7 @@ EOF
 
 export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
 run_stage "stage1 index artifact -> selfhost cli wasm" \
-  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke selfbuild_compile_cli_adapter "$STAGE1_CORE_WASM"
+  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke selfbuild_write_cli_adapter "$STAGE1_CORE_WASM"
 
 if [ ! -f "$STAGE1_CLI_WASM" ]; then
   echo "selfhost cli adapter gate failed: stage1 cli artifact was not produced" >&2
@@ -131,10 +132,12 @@ if [ "$stage1_cli_magic" != "0061736d" ]; then
 fi
 
 run_stage "stage1 selfhost cli artifact -> sample wasm compile" \
-  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke run "$STAGE1_CLI_WASM" \
-    "${INPUT_SOURCE#$PROJECT_ROOT/}" \
-    "${OUTPUT_WASM#$PROJECT_ROOT/}" \
-    "$ENTRY_NAME"
+  env \
+    VIBE_INPUT="${INPUT_SOURCE#$PROJECT_ROOT/}" \
+    VIBE_OUTPUT="${OUTPUT_WASM#$PROJECT_ROOT/}" \
+    VIBE_ENTRY="$ENTRY_NAME" \
+    VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+    bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke run "$STAGE1_CLI_WASM"
 unset VIBE_PREOPEN_DIR
 
 if [ ! -f "$OUTPUT_WASM" ]; then
@@ -168,10 +171,9 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
     echo "### Selfhost CLI Adapter Gate"
     echo
-    echo "- stage1 index artifact produced a selfhost CLI wasm via selfbuild_compile_cli_adapter"
+    echo "- stage1 index artifact produced a selfhost CLI wasm via selfbuild_write_cli_adapter"
     echo "- the generated selfhost CLI wasm compiled a real input file via JS Preview2 host execution"
-    echo "- adapter input/output/entry were supplied via argv through Env::args_len / Env::args_get"
-    echo "- env variables remain compatibility fallback only"
+    echo "- adapter input/output/entry were supplied via VIBE_INPUT / VIBE_OUTPUT / VIBE_ENTRY"
     echo "- no seed compiler or MoonBit host was used after stage1 core wasm creation"
     echo "- compiled sample output returned \`42\` via artifact-only execution"
     echo

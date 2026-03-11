@@ -1,0 +1,1658 @@
+//# Imports
+
+import ../core/index.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ./token.vibe {
+  Token
+}
+
+//# Parse Mode Constants
+// Precedence modes: 0-10 (used arithmetically in parse_infix)
+// Named modes for structured parsing:
+let mode_block = 20
+let mode_if = 21
+let mode_match = 22
+let mode_while = 23
+let mode_handle = 24
+let mode_for_in = 25
+
+//# Functions
+
+let peek = (tokens: Array[Token], pos: Int) -> Token {
+  if pos < Array::length(tokens) {
+    Array::get(tokens, pos)
+  } else TEof
+}
+
+let _no_tp = () -> Array[String] {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+
+let _no_tb = () -> Array[(String, Array[String])] {
+  Array::slice([
+    ("", _no_tp())
+  ], 0, 0)
+}
+
+let tk_name = (tok: Token) -> String {
+  match tok {
+    TInt(_) => "int",
+    TFloat(_) => "float",
+    TString(_) => "string",
+    TIdent(_) => "ident",
+    TLet => "let",
+    TRec => "rec",
+    TMut => "mut",
+    TFn => "fn",
+    TIf => "if",
+    TElse => "else",
+    TMatch => "match",
+    TDo => "do",
+    TEnum => "enum",
+    TStruct => "struct",
+    TType => "type",
+    TTrait => "trait",
+    TImpl => "impl",
+    TExport => "export",
+    TTest => "test",
+    TWhile => "while",
+    TFor => "for",
+    TIn => "in",
+    TLoop => "loop",
+    TBreak => "break",
+    TContinue => "continue",
+    TReturn => "return",
+    TWith => "with",
+    THandle => "handle",
+    TThrow => "throw",
+    TRaise => "raise",
+    TYield => "yield",
+    TBench => "bench",
+    TDeclare => "declare",
+    TAs => "as",
+    TModule => "module",
+    TSuberror => "suberror",
+    TDerive => "derive",
+    TOpen => "open",
+    TImport => "import",
+    TPlus => "+",
+    TMinus => "-",
+    TStar => "*",
+    TSlash => "/",
+    TPercent => "%",
+    TEqEq => "==",
+    TNeq => "!=",
+    TLt => "<",
+    TLte => "<=",
+    TGt => ">",
+    TGte => ">=",
+    TAnd => "&&",
+    TOr => "||",
+    TNot => "!",
+    TBitAnd => "&",
+    TBitOr => "|",
+    TBitXor => "^",
+    TLShift => "<<",
+    TRShift => ">>",
+    TPipeGt => "|>",
+    TArrow => "=>",
+    TThinArrow => "->",
+    TEq => "=",
+    TDot => ".",
+    TColon => ":",
+    TDoubleColon => "::",
+    TComma => ",",
+    TSemicolon => ";",
+    THash => "#",
+    TTilde => "~",
+    TQuestion => "?",
+    TPlusEq => "+=",
+    TMinusEq => "-=",
+    TStarEq => "*=",
+    TSlashEq => "/=",
+    TPercentEq => "%=",
+    TLParen => "(",
+    TRParen => ")",
+    TLBrace => "{",
+    TRBrace => "}",
+    TLBracket => "[",
+    TRBracket => "]",
+    TEof => "eof"
+  }
+}
+
+let is_tk = (tok: Token, name: String) -> Bool {
+  String::equals(tk_name(tok), name)
+}
+
+let expect_tk = (tokens: Array[Token], pos: Int, expected: String) -> Int with { Error } {
+  if is_tk(peek(tokens, pos), expected) {
+    pos + 1
+  }
+  else throw(String::concat("expected ", String::concat(expected, String::concat(" but got ", tk_name(peek(tokens, pos))))))
+}
+
+let skip_semi = (tokens: Array[Token], pos: Int) -> Int {
+  match peek(tokens, pos) {
+    TSemicolon => pos + 1,
+    _ => pos
+  }
+}
+
+let empty_arms = () -> Array[(Pat, Expr)] {
+  Array::slice([
+    (PWild, EUnit)
+  ], 0, 0)
+}
+
+let empty_pats = () -> Array[Pat] {
+  Array::slice([
+    PWild
+  ], 0, 0)
+}
+
+let empty_ctors = () -> Array[(String, Array[TypeExpr])] {
+  Array::slice([
+    ("_", Array::slice([
+      TyUnit
+    ], 0, 0))
+  ], 0, 0)
+}
+
+let empty_exprs = () -> Array[Expr] {
+  Array::slice([
+    EUnit
+  ], 0, 0)
+}
+
+let empty_names = () -> Array[String] {
+  Array::slice([
+    "_"
+  ], 0, 0)
+}
+
+let empty_fields = () -> Array[(String, TypeExpr)] {
+  Array::slice([
+    ("_", TyUnit)
+  ], 0, 0)
+}
+
+let empty_params = () -> Array[(String, Option[TypeExpr])] {
+  Array::slice([
+    ("", None)
+  ], 0, 0)
+}
+
+let rec parse_pattern = (tokens: Array[Token], pos: Int) -> (Pat, Int)with { Error } {
+  let rec parse_pat_cont = (tokens: Array[Token], pos: Int, b: ArrayBuilder[Pat]) -> (Array[Pat], Int)with { Error } {
+    match peek(tokens, pos) {
+      TComma => {
+        let (p, pn) = parse_pattern(tokens, pos + 1)
+        ArrayBuilder::push(b, p)
+        parse_pat_cont(tokens, pn, b)
+      },
+      TRParen => (ArrayBuilder::freeze(b), pos + 1),
+      _ => throw("expected ',' or ')' in pattern list")
+    }
+  }
+  let parse_pats_until_rparen = (tokens: Array[Token], pos: Int) -> (Array[Pat], Int)with { Error } {
+    match peek(tokens, pos) {
+      TRParen => (empty_pats(), pos + 1),
+      _ => {
+        let (f, fn1) = parse_pattern(tokens, pos)
+        let b = ArrayBuilder::new()
+        ArrayBuilder::push(b, f)
+        parse_pat_cont(tokens, fn1, b)
+      }
+    }
+  }
+  let (pat, next) = match peek(tokens, pos) {
+    TInt(n) => (PInt(n), pos + 1),
+    TString(s) => (PString(s), pos + 1),
+    TIdent(name) => if String::equals(name, "true") {
+      (PBool(true), pos + 1)
+    }
+    else if String::equals(name, "false") {
+      (PBool(false), pos + 1)
+    }
+    else if String::equals(name, "_") {
+      (PWild, pos + 1)
+    }
+    else {
+      let fc = String::char_code_at(name, 0)
+      if fc >= 65 && fc <= 90 {
+        match peek(tokens, pos + 1) {
+          TLParen => {
+            let (args, end) = parse_pats_until_rparen(tokens, pos + 2);
+            (PCtor(name, args), end)
+          },
+          _ => (PCtor(name, empty_pats()), pos + 1)
+        }
+      } else (PBind(name), pos + 1)
+    },
+    TLParen => match peek(tokens, pos + 1) {
+      TRParen => (PTuple(empty_pats()), pos + 2),
+      _ => {
+        let (f, n1) = parse_pattern(tokens, pos + 1)
+        match peek(tokens, n1) {
+          TRParen => (f, n1 + 1),
+          TComma => {
+            let b = ArrayBuilder::new()
+            ArrayBuilder::push(b, f)
+            let (rest, end) = parse_pat_cont(tokens, n1, b);
+            (PTuple(rest), end)
+          },
+          _ => throw("expected ')' or ',' in pattern")
+        }
+      }
+    },
+    _ => throw(String::concat("unexpected in pattern: ", tk_name(peek(tokens, pos))))
+  }
+  match peek(tokens, next) {
+    TBitOr => {
+      let (right, end) = parse_pattern(tokens, next + 1);
+      (POr(pat, right), end)
+    },
+    _ => (pat, next)
+  }
+}
+
+let parse_impl_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Error } {
+  let empty_strings = Array::slice([
+    "_"
+  ], 0, 0)
+  let empty_bounds = Array::slice([
+    ("_", empty_strings)
+  ], 0, 0)
+  match peek(tokens, pos) {
+    TLBracket => throw("impl type parameters are not supported yet"),
+    TIdent(trait_name) => {
+      let fp = expect_tk(tokens, pos + 1, "for")
+      match peek(tokens, fp) {
+        TIdent(type_name) => (SImpl(empty_strings, empty_bounds, trait_name, type_name), fp + 1),
+        _ => throw("expected type name after 'for'")
+      }
+    },
+    _ => throw("expected trait name after 'impl'")
+  }
+}
+
+let empty_type_exprs = () -> Array[TypeExpr] {
+  Array::slice([
+    TyUnit
+  ], 0, 0)
+}
+
+let rec parse_type_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)with { Error } {
+  let rec type_list_rest = (tokens: Array[Token], pos: Int, b: ArrayBuilder[TypeExpr]) -> (Array[TypeExpr], Int)with { Error } {
+    match peek(tokens, pos) {
+      TComma => {
+        let (ty, next) = parse_type_impl(tokens, pos + 1, 0)
+        ArrayBuilder::push(b, ty)
+        type_list_rest(tokens, next, b)
+      },
+      _ => (ArrayBuilder::freeze(b), pos)
+    }
+  }
+  if mode == 0 {
+    let (atom_ty, atom_next) = parse_type_impl(tokens, pos, 1)
+    match peek(tokens, atom_next) {
+      TThinArrow => {
+        let (ret, rn) = parse_type_impl(tokens, atom_next + 1, 0)
+        let params = match atom_ty {
+          TyUnit => empty_type_exprs(),
+          TyTuple(elems) => elems,
+          _ => [
+            atom_ty
+          ]
+        }
+        // Skip optional `with { Error, ... }` effect annotation
+        let rn2 = match peek(tokens, rn) {
+          TWith => {
+            let p1 = rn + 1
+            match peek(tokens, p1) {
+              TLBrace => {
+                // skip tokens until matching TRBrace
+                let mut p2 = p1 + 1
+                let mut done = false
+                while (!(done)) {
+                  match peek(tokens, p2) {
+                    TRBrace => { done = true },
+                    _ => { p2 = p2 + 1 }
+                  }
+                }
+                p2 + 1
+              },
+              _ => rn
+            }
+          },
+          _ => rn
+        };
+        (TyFn(params, ret), rn2)
+      },
+      _ => (atom_ty, atom_next)
+    }
+  } else match peek(tokens, pos) {
+    TLParen => match peek(tokens, pos + 1) {
+      TRParen => (TyUnit, pos + 2),
+      _ => {
+        let (first, n1) = parse_type_impl(tokens, pos + 1, 0)
+        match peek(tokens, n1) {
+          TRParen => (first, n1 + 1),
+          TComma => {
+            let b = ArrayBuilder::new()
+            ArrayBuilder::push(b, first)
+            let (rest, end) = type_list_rest(tokens, n1, b)
+            let en = expect_tk(tokens, end, ")");
+            (TyTuple(rest), en)
+          },
+          _ => throw("expected ')' or ',' in type")
+        }
+      }
+    },
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TLBracket => {
+        let (first, n1) = parse_type_impl(tokens, pos + 2, 0)
+        match peek(tokens, n1) {
+          TRBracket => (TyApp(name, [
+            first
+          ]), n1 + 1),
+          TComma => {
+            let b = ArrayBuilder::new()
+            ArrayBuilder::push(b, first)
+            let (rest, end) = type_list_rest(tokens, n1, b)
+            let en = expect_tk(tokens, end, "]");
+            (TyApp(name, rest), en)
+          },
+          _ => throw("expected ']' or ',' in type application")
+        }
+      },
+      _ => (TyName(name), pos + 1)
+    },
+    _ => throw(String::concat("expected type but got ", tk_name(peek(tokens, pos))))
+  }
+}
+
+export let parse_type = (tokens: Array[Token], pos: Int) -> (TypeExpr, Int)with { Error } {
+  parse_type_impl(tokens, pos, 0)
+}
+
+let parse_one_param = (tokens: Array[Token], pos: Int) -> ((String, Option[TypeExpr]), Int)with { Error } {
+  match peek(tokens, pos) {
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TTilde => {
+        let labeled_name = String::concat(name, "~")
+        match peek(tokens, pos + 2) {
+          TColon => {
+            let (ty, tp) = parse_type_impl(tokens, pos + 3, 0);
+            ((labeled_name, Some(ty)), tp)
+          },
+          _ => ((labeled_name, None), pos + 2)
+        }
+      },
+      TColon => {
+        let (ty, tp) = parse_type_impl(tokens, pos + 2, 0);
+        ((name, Some(ty)), tp)
+      },
+      _ => ((name, None), pos + 1)
+    },
+    _ => throw("expected parameter name")
+  }
+}
+
+let rec parse_param_cont = (tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, Option[TypeExpr])]) -> (Array[(String, Option[TypeExpr])], Int)with { Error } {
+  match peek(tokens, pos) {
+    TComma => {
+      let (p, pn) = parse_one_param(tokens, pos + 1)
+      ArrayBuilder::push(b, p)
+      parse_param_cont(tokens, pn, b)
+    },
+    TRParen => (ArrayBuilder::freeze(b), pos + 1),
+    _ => throw("expected ',' or ')' in param list")
+  }
+}
+
+let parse_param_list = (tokens: Array[Token], pos: Int) -> (Array[(String, Option[TypeExpr])], Int)with { Error } {
+  match peek(tokens, pos) {
+    TRParen => (empty_params(), pos + 1),
+    _ => {
+      let (f, fn1) = parse_one_param(tokens, pos)
+      let b = ArrayBuilder::new()
+      ArrayBuilder::push(b, f)
+      parse_param_cont(tokens, fn1, b)
+    }
+  }
+}
+
+let parse_trait_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int)with { Error } {
+  let empty_strings = Array::slice([
+    "_"
+  ], 0, 0)
+  match peek(tokens, pos) {
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TColon => {
+        // Parse supertrait list: trait Name: Trait1 + Trait2
+        let rec parse_supers = (p: Int, acc: Array[String]) -> (Array[String], Int) {
+          match peek(tokens, p) {
+            TIdent(sname) => match peek(tokens, p + 1) {
+              TPlus => parse_supers(p + 2, Array::concat(acc, [
+                sname
+              ])),
+              _ => (Array::concat(acc, [
+                sname
+              ]), p + 1)
+            },
+            _ => (acc, p)
+          }
+        }
+        let (supers, np) = parse_supers(pos + 2, empty_strings);
+        (STrait(exported, name, supers), np)
+      },
+      _ => (STrait(exported, name, empty_strings), pos + 1)
+    },
+    _ => throw("expected trait name")
+  }
+}
+
+let is_expr_end_token = (tok: Token) -> Bool {
+  match tok {
+    TInt(_) => true,
+    TFloat(_) => true,
+    TString(_) => true,
+    TIdent(_) => true,
+    TRParen => true,
+    TRBracket => true,
+    TRBrace => true,
+    _ => false
+  }
+}
+
+let is_non_pipe_infix = (tok: Token) -> Bool {
+  match tok {
+    TOr => true,
+    TAnd => true,
+    TEqEq => true,
+    TNeq => true,
+    TLt => true,
+    TLte => true,
+    TGt => true,
+    TGte => true,
+    TBitOr => true,
+    TBitXor => true,
+    TBitAnd => true,
+    TLShift => true,
+    TRShift => true,
+    TPlus => true,
+    TMinus => true,
+    TStar => true,
+    TSlash => true,
+    TPercent => true,
+    _ => false
+  }
+}
+
+let parse_import_item = (tokens: Array[Token], pos: Int) -> ((String, Option[String]), Int)with { Error } {
+  match peek(tokens, pos) {
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TAs => match peek(tokens, pos + 2) {
+        TIdent(alias) => ((name, Some(alias)), pos + 3),
+        _ => throw("expected alias name after 'as'")
+      },
+      _ => ((name, None), pos + 1)
+    },
+    _ => throw("expected import item name")
+  }
+}
+
+let empty_import_items = () -> Array[(String, Option[String])] {
+  Array::slice([
+    ("_", None)
+  ], 0, 0)
+}
+
+let parse_struct_field = (tokens: Array[Token], pos: Int) -> ((String, TypeExpr), Int)with { Error } {
+  match peek(tokens, pos) {
+    TIdent(name) => {
+      let cn = expect_tk(tokens, pos + 1, ":")
+      let (ty, next) = parse_type_impl(tokens, cn, 0);
+      ((name, ty), next)
+    },
+    _ => throw("expected field name")
+  }
+}
+
+let rec collect_import_path = (tokens: Array[Token], pos: Int, acc: String) -> (String, Int)with { Error } {
+  match peek(tokens, pos) {
+    TLBrace => (acc, pos),
+    TDot => collect_import_path(tokens, pos + 1, String::concat(acc, ".")),
+    TSlash => collect_import_path(tokens, pos + 1, String::concat(acc, "/")),
+    TIdent(name) => collect_import_path(tokens, pos + 1, String::concat(acc, name)),
+    TMinus => collect_import_path(tokens, pos + 1, String::concat(acc, "-")),
+    TModule => collect_import_path(tokens, pos + 1, String::concat(acc, "module")),
+    TType => collect_import_path(tokens, pos + 1, String::concat(acc, "type")),
+    TMatch => collect_import_path(tokens, pos + 1, String::concat(acc, "match")),
+    TTest => collect_import_path(tokens, pos + 1, String::concat(acc, "test")),
+    _ => throw(String::concat("unexpected token in import path: ", tk_name(peek(tokens, pos))))
+  }
+}
+
+let rec collect_effect_names = (tokens: Array[Token], pos: Int, acc: String) -> (String, Int)with { Error } {
+  match peek(tokens, pos) {
+    TRBrace => (acc, pos + 1),
+    TIdent(name) => {
+      let new_acc = if String::length(acc) == 0 {
+        name
+      } else String::concat(acc, String::concat(", ", name))
+      match peek(tokens, pos + 1) {
+        TComma => collect_effect_names(tokens, pos + 2, new_acc),
+        TRBrace => (new_acc, pos + 2),
+        _ => throw("expected ',' or '}' in effect list")
+      }
+    },
+    _ => throw("expected effect name or '}'")
+  }
+}
+
+let rec is_lambda_start_impl = (tokens: Array[Token], pos: Int, depth: Int, has_colon: Bool) -> Bool {
+  match peek(tokens, pos) {
+    TColon => if depth == 0 {
+      is_lambda_start_impl(tokens, pos + 1, depth, true)
+    } else is_lambda_start_impl(tokens, pos + 1, depth, has_colon),
+    TRParen => if depth == 0 {
+      match peek(tokens, pos + 1) {
+        TThinArrow => true,
+        TLBrace => has_colon,
+        _ => false
+      }
+    } else is_lambda_start_impl(tokens, pos + 1, depth - 1, has_colon),
+    TLParen => is_lambda_start_impl(tokens, pos + 1, depth + 1, has_colon),
+    TEof => false,
+    _ => is_lambda_start_impl(tokens, pos + 1, depth, has_colon)
+  }
+}
+
+let is_lambda_start = (tokens: Array[Token], pos: Int) -> Bool {
+  is_lambda_start_impl(tokens, pos, 0, false)
+}
+
+let rec parse_ctor_types_rest = (tokens: Array[Token], pos: Int, b: ArrayBuilder[TypeExpr]) -> (Array[TypeExpr], Int)with { Error } {
+  match peek(tokens, pos) {
+    TComma => {
+      let (ty, next) = parse_type_impl(tokens, pos + 1, 0)
+      ArrayBuilder::push(b, ty)
+      parse_ctor_types_rest(tokens, next, b)
+    },
+    TRParen => (ArrayBuilder::freeze(b), pos + 1),
+    _ => throw("expected ',' or ')' in constructor types")
+  }
+}
+
+let parse_enum_ctor = (tokens: Array[Token], pos: Int) -> ((String, Array[TypeExpr]), Int)with { Error } {
+  match peek(tokens, pos) {
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TLParen => match peek(tokens, pos + 2) {
+        TRParen => ((name, empty_type_exprs()), pos + 3),
+        _ => {
+          let (first, n1) = parse_type_impl(tokens, pos + 2, 0)
+          let b = ArrayBuilder::new()
+          ArrayBuilder::push(b, first)
+          let (types, end) = parse_ctor_types_rest(tokens, n1, b);
+          ((name, types), end)
+        }
+      },
+      _ => ((name, empty_type_exprs()), pos + 1)
+    },
+    _ => throw("expected constructor name")
+  }
+}
+
+let rec parse_enum_ctors_rest = (tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, Array[TypeExpr])]) -> (Array[(String, Array[TypeExpr])], Int)with { Error } {
+  match peek(tokens, pos) {
+    TSemicolon => match peek(tokens, pos + 1) {
+      TRBrace => (ArrayBuilder::freeze(b), pos + 2),
+      _ => {
+        let (ctor, next) = parse_enum_ctor(tokens, pos + 1)
+        ArrayBuilder::push(b, ctor)
+        parse_enum_ctors_rest(tokens, next, b)
+      }
+    },
+    TComma => match peek(tokens, pos + 1) {
+      TRBrace => (ArrayBuilder::freeze(b), pos + 2),
+      _ => {
+        let (ctor, next) = parse_enum_ctor(tokens, pos + 1)
+        ArrayBuilder::push(b, ctor)
+        parse_enum_ctors_rest(tokens, next, b)
+      }
+    },
+    TRBrace => (ArrayBuilder::freeze(b), pos + 1),
+    _ => throw("expected ';', ',' or '}' in enum")
+  }
+}
+
+let parse_enum_ctors = (tokens: Array[Token], pos: Int) -> (Array[(String, Array[TypeExpr])], Int)with { Error } {
+  match peek(tokens, pos) {
+    TRBrace => (empty_ctors(), pos + 1),
+    _ => {
+      let (first, next) = parse_enum_ctor(tokens, pos)
+      let b = ArrayBuilder::new()
+      ArrayBuilder::push(b, first)
+      parse_enum_ctors_rest(tokens, next, b)
+    }
+  }
+}
+
+let parse_enum_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int)with { Error } {
+  match peek(tokens, pos) {
+    TIdent(name) => {
+      let br = expect_tk(tokens, pos + 1, "{")
+      let (ctors, end) = parse_enum_ctors(tokens, br);
+      (SEnum(exported, name, ctors), end)
+    },
+    _ => throw("expected enum name")
+  }
+}
+
+let parse_suberror_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int)with { Error } {
+  match peek(tokens, pos) {
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TLParen => match peek(tokens, pos + 2) {
+        TRParen => {
+          let b = ArrayBuilder::new()
+          ArrayBuilder::push(b, (name, empty_type_exprs()))
+          (SSuberror(exported, name, ArrayBuilder::freeze(b)), pos + 3)
+        },
+        _ => {
+          let (first, n1) = parse_type_impl(tokens, pos + 2, 0)
+          let args_b = ArrayBuilder::new()
+          ArrayBuilder::push(args_b, first)
+          let (args, end) = parse_ctor_types_rest(tokens, n1, args_b)
+          let ctors_b = ArrayBuilder::new()
+          ArrayBuilder::push(ctors_b, (name, args))
+          (SSuberror(exported, name, ArrayBuilder::freeze(ctors_b)), end)
+        }
+      },
+      TLBrace => {
+        let (ctors, end) = parse_enum_ctors(tokens, pos + 2);
+        (SSuberror(exported, name, ctors), end)
+      },
+      _ => throw("expected '(' or '{' after suberror name")
+    },
+    _ => throw("expected suberror name")
+  }
+}
+
+let parse_type_alias_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int)with { Error } {
+  match peek(tokens, pos) {
+    TIdent(name) => {
+      let ep = expect_tk(tokens, pos + 1, "=")
+      let (ty, next) = parse_type_impl(tokens, ep, 0);
+      (STypeAlias(exported, name, ty), next)
+    },
+    _ => throw("expected type alias name")
+  }
+}
+
+let has_non_pipe_infix_top = (tokens: Array[Token], start: Int, end: Int) -> Bool {
+  let rec go = (i: Int, depth: Int, prev_top_end: Bool) -> Bool {
+    if i >= end {
+      false
+    } else {
+      let tok = peek(tokens, i)
+      if depth == 0 {
+        if is_non_pipe_infix(tok) {
+          if prev_top_end {
+            true
+          } else go(i + 1, 0, false)
+        } else match tok {
+          TLParen => go(i + 1, 1, false),
+          TLBracket => go(i + 1, 1, false),
+          TLBrace => go(i + 1, 1, false),
+          _ => go(i + 1, 0, is_expr_end_token(tok))
+        }
+      } else match tok {
+        TLParen => go(i + 1, depth + 1, prev_top_end),
+        TLBracket => go(i + 1, depth + 1, prev_top_end),
+        TLBrace => go(i + 1, depth + 1, prev_top_end),
+        TRParen => if depth == 1 {
+          go(i + 1, 0, true)
+        } else go(i + 1, depth - 1, prev_top_end),
+        TRBracket => if depth == 1 {
+          go(i + 1, 0, true)
+        } else go(i + 1, depth - 1, prev_top_end),
+        TRBrace => if depth == 1 {
+          go(i + 1, 0, true)
+        } else go(i + 1, depth - 1, prev_top_end),
+        _ => go(i + 1, depth, prev_top_end)
+      }
+    }
+  }
+  go(start, 0, false)
+}
+
+export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr, Int)with { Error } {
+  let rec parse_comma_exprs_rest = (tokens: Array[Token], pos: Int, b: ArrayBuilder[Expr]) -> (Array[Expr], Int)with { Error } {
+    match peek(tokens, pos) {
+      TComma => {
+        let (e, next) = parse_impl(tokens, pos + 1, 0)
+        ArrayBuilder::push(b, e)
+        parse_comma_exprs_rest(tokens, next, b)
+      },
+      _ => (ArrayBuilder::freeze(b), pos)
+    }
+  }
+  let parse_primary = (tokens: Array[Token], pos: Int) -> (Expr, Int)with { Error } {
+    match peek(tokens, pos) {
+      TInt(n) => (EInt(n), pos + 1),
+      TFloat(n) => (EFloat(n), pos + 1),
+      TString(s) => (EString(s), pos + 1),
+      TIdent(name) => if String::equals(name, "true") {
+        (EBool(true), pos + 1)
+      }
+      else if String::equals(name, "false") {
+        (EBool(false), pos + 1)
+      }
+      else match peek(tokens, pos + 1) {
+        TDoubleColon => match peek(tokens, pos + 2) {
+          TIdent(member) => (EIdent(String::concat(name, String::concat("::", member))), pos + 3),
+          TLBrace => {
+            // Name::{ field: val, ... } record literal
+            let rec parse_record_fields = (toks: Array[Token], p: Int, b: ArrayBuilder[(String, Expr)]) -> (Array[(String, Expr)], Int) with { Error } {
+              match peek(toks, p) {
+                TRBrace => (ArrayBuilder::freeze(b), p + 1),
+                TIdent(fname) => {
+                  let cn = expect_tk(toks, p + 1, ":")
+                  let (val, vn) = parse_impl(toks, cn, 0)
+                  ArrayBuilder::push(b, (fname, val))
+                  match peek(toks, vn) {
+                    TComma => parse_record_fields(toks, vn + 1, b),
+                    TRBrace => (ArrayBuilder::freeze(b), vn + 1),
+                    _ => throw("expected ',' or '}' in record literal")
+                  }
+                },
+                _ => throw("expected field name or '}' in record literal")
+              }
+            }
+            let rb = ArrayBuilder::new()
+            let (fields, end) = parse_record_fields(tokens, pos + 3, rb);
+            (ERecord(fields), end)
+          },
+          _ => (EIdent(name), pos + 1)
+        },
+        _ => (EIdent(name), pos + 1)
+      },
+      TLParen => if is_lambda_start(tokens, pos + 1) {
+        let (params, ap) = parse_param_list(tokens, pos + 1)
+        let parse_lambda_body = (saved_params: Array[(String, Option[TypeExpr])], saved_ret_ty: Option[TypeExpr], saved_effect: Option[String], body_pos: Int, body_mode: Int) -> (Expr, Int)with { Error } {
+          let (body, end) = parse_impl(tokens, body_pos, body_mode);
+          (EFn(_no_tp(), _no_tb(), saved_params, saved_ret_ty, saved_effect, body), end)
+        }
+        match peek(tokens, ap) {
+          TThinArrow => {
+            let after_arrow = ap + 1
+            match peek(tokens, after_arrow) {
+              TIdent(_) => {
+                let (ty, tp) = parse_type_impl(tokens, after_arrow, 0)
+                match peek(tokens, tp) {
+                  TLBrace => parse_lambda_body(params, Some(ty), None, tp + 1, mode_block),
+                  TWith => {
+                    let wb = expect_tk(tokens, tp + 1, "{")
+                    let (eff, eb) = collect_effect_names(tokens, wb, "")
+                    let bb = expect_tk(tokens, eb, "{")
+                    parse_lambda_body(params, Some(ty), Some(eff), bb, mode_block)
+                  },
+                  _ => parse_lambda_body(params, None, None, after_arrow, 0)
+                }
+              },
+              TLParen => {
+                let (ty, tp) = parse_type_impl(tokens, after_arrow, 0)
+                match peek(tokens, tp) {
+                  TLBrace => parse_lambda_body(params, Some(ty), None, tp + 1, mode_block),
+                  TWith => {
+                    let wb = expect_tk(tokens, tp + 1, "{")
+                    let (eff, eb) = collect_effect_names(tokens, wb, "")
+                    let bb = expect_tk(tokens, eb, "{")
+                    parse_lambda_body(params, Some(ty), Some(eff), bb, mode_block)
+                  },
+                  _ => parse_lambda_body(params, None, None, after_arrow, 0)
+                }
+              },
+              _ => parse_lambda_body(params, None, None, after_arrow, 0)
+            }
+          },
+          TLBrace => parse_lambda_body(params, None, None, ap + 1, mode_block),
+          _ => throw("expected '->' or '{' after fn params")
+        }
+      } else match peek(tokens, pos + 1) {
+        TRParen => (EUnit, pos + 2),
+        _ => {
+          let (f, n1) = parse_impl(tokens, pos + 1, 0)
+          match peek(tokens, n1) {
+            TRParen => (f, n1 + 1),
+            TComma => {
+              let b = ArrayBuilder::new()
+              ArrayBuilder::push(b, f)
+              let (tup, end) = parse_comma_exprs_rest(tokens, n1, b)
+              let en = expect_tk(tokens, end, ")");
+              (ETuple(tup), en)
+            },
+            _ => throw("expected ')' or ','")
+          }
+        }
+      },
+      TLBracket => match peek(tokens, pos + 1) {
+        TRBracket => (EArray(empty_exprs()), pos + 2),
+        _ => {
+          let b = ArrayBuilder::new()
+          let (f, n1) = parse_impl(tokens, pos + 1, 0)
+          ArrayBuilder::push(b, f)
+          let (arr, end) = parse_comma_exprs_rest(tokens, n1, b)
+          let en = expect_tk(tokens, end, "]");
+          (EArray(arr), en)
+        }
+      },
+      TLBrace => parse_impl(tokens, pos + 1, mode_block),
+      TIf => parse_impl(tokens, pos + 1, mode_if),
+      TMatch => parse_impl(tokens, pos + 1, mode_match),
+      THandle => parse_impl(tokens, pos + 1, mode_handle),
+      TWhile => parse_impl(tokens, pos + 1, mode_while),
+      TFor => parse_impl(tokens, pos + 1, mode_for_in),
+      TThrow => {
+        let lp = expect_tk(tokens, pos + 1, "(")
+        let (e, en) = parse_impl(tokens, lp, 0)
+        let rp = expect_tk(tokens, en, ")");
+        (EThrow(e), rp)
+      },
+      TBreak => {
+        let next_tok = peek(tokens, pos + 1)
+        match next_tok {
+          TRBrace => (EBreak(None), pos + 1),
+          TSemicolon => (EBreak(None), pos + 1),
+          TEof => (EBreak(None), pos + 1),
+          _ => {
+            let (e, en) = parse_impl(tokens, pos + 1, 0);
+            (EBreak(Some(e)), en)
+          }
+        }
+      },
+      TContinue => match peek(tokens, pos + 1) {
+        TLParen => {
+          let b = ArrayBuilder::new()
+          match peek(tokens, pos + 2) {
+            TRParen => (EContinue(empty_exprs()), pos + 3),
+            _ => {
+              let (f, fn1) = parse_impl(tokens, pos + 2, 0)
+              ArrayBuilder::push(b, f)
+              let (args, end) = parse_comma_exprs_rest(tokens, fn1, b)
+              let en = expect_tk(tokens, end, ")");
+              (EContinue(args), en)
+            }
+          }
+        },
+        _ => (EContinue(empty_exprs()), pos + 1)
+      }
+      ,
+      TRaise => throw("'raise' is deprecated, use 'throw(expr)' instead"),
+      TReturn => throw("'return' is not supported; use implicit returns"),
+      TDo => throw("'do' is reserved; use 'while' or 'for' instead"),
+      TLoop => throw("'loop' is reserved; use 'while true' instead"),
+      TYield => throw("'yield' is not supported"),
+      TDeclare => throw("'declare' is not supported"),
+      _ => throw(String::concat("unexpected token: ", tk_name(peek(tokens, pos))))
+    }
+  }
+  let parse_call_arg = (tokens: Array[Token], pos: Int) -> (Expr, Int)with { Error } {
+    match peek(tokens, pos) {
+      TIdent(name) => match peek(tokens, pos + 1) {
+        TTilde => match peek(tokens, pos + 2) {
+          TEq => {
+            let (val, end) = parse_impl(tokens, pos + 3, 0);
+            (ELabeledArg(name, "~", val), end)
+          },
+          _ => parse_impl(tokens, pos, 0)
+        },
+        TQuestion => match peek(tokens, pos + 2) {
+          TEq => {
+            let (val, end) = parse_impl(tokens, pos + 3, 0);
+            (ELabeledArg(name, "?", val), end)
+          },
+          _ => parse_impl(tokens, pos, 0)
+        },
+        TEq => {
+          let (val, end) = parse_impl(tokens, pos + 2, 0);
+          (ELabeledArg(name, "~", val), end)
+        },
+        _ => parse_impl(tokens, pos, 0)
+      },
+      _ => parse_impl(tokens, pos, 0)
+    }
+  }
+  let rec parse_call_args_rest = (tokens: Array[Token], pos: Int, b: ArrayBuilder[Expr]) -> (Array[Expr], Int)with { Error } {
+    match peek(tokens, pos) {
+      TComma => {
+        let (e, next) = parse_call_arg(tokens, pos + 1)
+        ArrayBuilder::push(b, e)
+        parse_call_args_rest(tokens, next, b)
+      },
+      _ => (ArrayBuilder::freeze(b), pos)
+    }
+  }
+  let parse_postfix = (tokens: Array[Token], pos: Int, expr: Expr) -> (Expr, Int)with { Error } {
+    let mut cur_expr = expr
+    let mut cur_pos = pos
+    let mut done = false
+    while !done {
+      match peek(tokens, cur_pos) {
+        TLParen => match cur_expr {
+          // Disallow direct call chaining like f(x)(y). This avoids
+          // ambiguity with newline-separated block expressions and matches
+          // how the current codebase uses function calls.
+          ECall(_, _) => { done = true },
+          _ => match peek(tokens, cur_pos + 1) {
+            TRParen => {
+              cur_expr = ECall(cur_expr, empty_exprs())
+              cur_pos = cur_pos + 2
+            },
+            _ => {
+              let b = ArrayBuilder::new()
+              let (f, n1) = parse_call_arg(tokens, cur_pos + 1)
+              ArrayBuilder::push(b, f)
+              let (args, end) = parse_call_args_rest(tokens, n1, b)
+              let en = expect_tk(tokens, end, ")")
+              cur_expr = ECall(cur_expr, args)
+              cur_pos = en
+            }
+          }
+        },
+        TDot => match peek(tokens, cur_pos + 1) {
+          TIdent(field) => {
+            cur_expr = EDot(cur_expr, field)
+            cur_pos = cur_pos + 2
+          },
+          _ => { done = true }
+        },
+        _ => { done = true }
+      }
+    }
+    (cur_expr, cur_pos)
+  }
+  let pipe_desugar = (lhs: Expr, rhs: Expr) -> Expr {
+    match rhs {
+      ECall(callee, args) => ECall(callee, Array::concat([
+        lhs
+      ], args)),
+      _ => ECall(rhs, [
+        lhs
+      ])
+    }
+  }
+  let binop_prec = (tok: Token) -> Int {
+    match tok {
+      TOr => 0,
+      TAnd => 1,
+      TPipeGt => 2,
+      TEqEq => 3,
+      TNeq => 3,
+      TLt => 3,
+      TLte => 3,
+      TGt => 3,
+      TGte => 3,
+      TBitOr => 4,
+      TBitXor => 5,
+      TBitAnd => 6,
+      TLShift => 7,
+      TRShift => 7,
+      TPlus => 8,
+      TMinus => 8,
+      TStar => 9,
+      TSlash => 9,
+      TPercent => 9,
+      _ => -1
+    }
+  }
+  let binop_op = (tok: Token) -> String with { Error } {
+    match tok {
+      TOr => "||",
+      TAnd => "&&",
+      TPipeGt => "|>",
+      TEqEq => "==",
+      TNeq => "!=",
+      TLt => "<",
+      TLte => "<=",
+      TGt => ">",
+      TGte => ">=",
+      TBitOr => "|",
+      TBitXor => "^",
+      TBitAnd => "&",
+      TLShift => "<<",
+      TRShift => ">>",
+      TPlus => "+",
+      TMinus => "-",
+      TStar => "*",
+      TSlash => "/",
+      TPercent => "%",
+      _ => throw("internal parser error: not a binary operator")
+    }
+  }
+  let rec parse_prefix = (tokens: Array[Token], pos: Int) -> (Expr, Int)with { Error } {
+    match peek(tokens, pos) {
+      TMinus => {
+        let (e, next) = parse_prefix(tokens, pos + 1);
+        (EUnaryOp("-", e), next)
+      },
+      TNot => {
+        let (e, next) = parse_prefix(tokens, pos + 1);
+        (EUnaryOp("!", e), next)
+      },
+      _ => {
+        let (e, next) = parse_primary(tokens, pos)
+        parse_postfix(tokens, next, e)
+      }
+    }
+  }
+  let rec parse_infix_loop = (tokens: Array[Token], left: Expr, next: Int, min_prec: Int, expr_start: Int, cmp_locked: Bool) -> (Expr, Int)with { Error } {
+    let tok = peek(tokens, next)
+    let prec = binop_prec(tok)
+    if prec < min_prec || (cmp_locked && prec == 3) {
+      (left, next)
+    } else {
+      let op = binop_op(tok)
+      if String::equals(op, "|>") {
+        if has_non_pipe_infix_top(tokens, expr_start, next) {
+          throw("cannot mix '|>' with other infix operators without explicit parentheses")
+        } else {
+          0
+        }
+      } else {
+        0
+      }
+      let (right0, right_next0) = parse_prefix(tokens, next + 1)
+      let (right, rn) = parse_infix_loop(tokens, right0, right_next0, prec + 1, next + 1, false)
+      if String::equals(op, "|>") {
+        if has_non_pipe_infix_top(tokens, next + 1, rn) {
+          throw("cannot mix '|>' with other infix operators without explicit parentheses")
+        } else {
+          0
+        }
+      } else {
+        0
+      }
+      let combined = if String::equals(op, "|>") {
+        pipe_desugar(left, right)
+      } else {
+        EBinOp(op, left, right)
+      }
+      let next_cmp_locked = if prec == 3 {
+        true
+      } else {
+        cmp_locked
+      }
+      parse_infix_loop(tokens, combined, rn, min_prec, expr_start, next_cmp_locked)
+    }
+  }
+  let rec parse_infix = (tokens: Array[Token], pos: Int, min_prec: Int, expr_start: Int) -> (Expr, Int)with { Error } {
+    let (left0, next0) = parse_prefix(tokens, pos)
+    parse_infix_loop(tokens, left0, next0, min_prec, expr_start, false)
+  }
+  let rec parse_match_rest = (tokens: Array[Token], pos: Int, scrutinee: Expr, b: ArrayBuilder[(Pat, Expr)]) -> (Expr, Int)with { Error } {
+    match peek(tokens, pos) {
+      TComma => match peek(tokens, pos + 1) {
+        TRBrace => (EMatch(scrutinee, ArrayBuilder::freeze(b)), pos + 2),
+        _ => {
+          let (pa, paa) = parse_pattern(tokens, pos + 1)
+          let a2 = expect_tk(tokens, paa, "=>")
+          let (ea, en) = parse_impl(tokens, a2, 0)
+          ArrayBuilder::push(b, (pa, ea))
+          parse_match_rest(tokens, en, scrutinee, b)
+        }
+      },
+      TRBrace => (EMatch(scrutinee, ArrayBuilder::freeze(b)), pos + 1),
+      _ => throw("expected ',' or '}' in match")
+    }
+  }
+  let rec parse_handle_rest = (tokens: Array[Token], pos: Int, body: Expr, b: ArrayBuilder[(Pat, Expr)]) -> (Expr, Int)with { Error } {
+    match peek(tokens, pos) {
+      TComma => match peek(tokens, pos + 1) {
+        TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 2),
+        _ => {
+          let (pa, paa) = parse_pattern(tokens, pos + 1)
+          let a2 = expect_tk(tokens, paa, "=>")
+          let (ea, en) = parse_impl(tokens, a2, 0)
+          ArrayBuilder::push(b, (pa, ea))
+          parse_handle_rest(tokens, en, body, b)
+        }
+      },
+      TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 1),
+      _ => throw("expected ',' or '}' in handle")
+    }
+  }
+  let rec parse_block_after_expr = (tokens: Array[Token], pos: Int, e: Expr) -> (Expr, Int)with { Error } {
+    match peek(tokens, pos) {
+      TRBrace => (e, pos + 1),
+      TSemicolon => {
+        let (rest, end) = parse_impl(tokens, pos + 1, mode_block);
+        (ESeq(e, rest), end)
+      },
+      TEq => match e {
+        EIdent(name) => {
+          let (val, vn) = parse_impl(tokens, pos + 1, 0)
+          let a = skip_semi(tokens, vn)
+          let (rest, end) = parse_impl(tokens, a, mode_block);
+          (EAssign(name, val, rest), end)
+        },
+        _ => throw("invalid assignment target")
+      },
+      TPlusEq => match e {
+        EIdent(name) => {
+          let (val, vn) = parse_impl(tokens, pos + 1, 0)
+          let a = skip_semi(tokens, vn)
+          let (rest, end) = parse_impl(tokens, a, mode_block);
+          (EAssignOp(name, "+", val, rest), end)
+        },
+        _ => throw("invalid assignment target")
+      },
+      TMinusEq => match e {
+        EIdent(name) => {
+          let (val, vn) = parse_impl(tokens, pos + 1, 0)
+          let a = skip_semi(tokens, vn)
+          let (rest, end) = parse_impl(tokens, a, mode_block);
+          (EAssignOp(name, "-", val, rest), end)
+        },
+        _ => throw("invalid assignment target")
+      },
+      TStarEq => match e {
+        EIdent(name) => {
+          let (val, vn) = parse_impl(tokens, pos + 1, 0)
+          let a = skip_semi(tokens, vn)
+          let (rest, end) = parse_impl(tokens, a, mode_block);
+          (EAssignOp(name, "*", val, rest), end)
+        },
+        _ => throw("invalid assignment target")
+      },
+      TSlashEq => match e {
+        EIdent(name) => {
+          let (val, vn) = parse_impl(tokens, pos + 1, 0)
+          let a = skip_semi(tokens, vn)
+          let (rest, end) = parse_impl(tokens, a, mode_block);
+          (EAssignOp(name, "/", val, rest), end)
+        },
+        _ => throw("invalid assignment target")
+      },
+      TPercentEq => match e {
+        EIdent(name) => {
+          let (val, vn) = parse_impl(tokens, pos + 1, 0)
+          let a = skip_semi(tokens, vn)
+          let (rest, end) = parse_impl(tokens, a, mode_block);
+          (EAssignOp(name, "%", val, rest), end)
+        },
+        _ => throw("invalid assignment target")
+      },
+      _ => {
+        // Implicit sequence: continue parsing rest of block (handles let, expressions, etc.)
+        let (rest, end) = parse_impl(tokens, pos, mode_block)
+        if end <= pos {
+          throw("internal parser error: block continuation did not advance")
+        } else (ESeq(e, rest), end)
+      }
+    }
+  }
+  if mode == mode_match {
+    let (scrutinee, sn) = parse_impl(tokens, pos, 0)
+    let br = expect_tk(tokens, sn, "{")
+    match peek(tokens, br) {
+      TRBrace => (EMatch(scrutinee, empty_arms()), br + 1),
+      _ => {
+        let b = ArrayBuilder::new()
+        let (fp, fa) = parse_pattern(tokens, br)
+        let aa = expect_tk(tokens, fa, "=>")
+        let (fe, fn1) = parse_impl(tokens, aa, 0)
+        ArrayBuilder::push(b, (fp, fe))
+        parse_match_rest(tokens, fn1, scrutinee, b)
+      }
+    }
+  } else if mode == mode_if {
+    let (cond, cn) = parse_impl(tokens, pos, 0)
+    let br = expect_tk(tokens, cn, "{")
+    let (then_e, tn) = parse_impl(tokens, br, mode_block)
+    match peek(tokens, tn) {
+      TElse => match peek(tokens, tn + 1) {
+        TIf => {
+          let (else_e, end) = parse_impl(tokens, tn + 2, mode_if);
+          (EIf(cond, then_e, else_e), end)
+        },
+        TLBrace => {
+          let (else_e, end) = parse_impl(tokens, tn + 2, mode_block);
+          (EIf(cond, then_e, else_e), end)
+        },
+        _ => {
+          let (else_e, end) = parse_impl(tokens, tn + 1, 0);
+          (EIf(cond, then_e, else_e), end)
+        }
+      },
+      _ => (EIf(cond, then_e, EUnit), tn)
+    }
+  } else if mode == mode_while {
+    let (cond, cn) = parse_impl(tokens, pos, 0)
+    let br = expect_tk(tokens, cn, "{")
+    let (body, end) = parse_impl(tokens, br, mode_block);
+    (EWhile(cond, body), end)
+  } else if mode == mode_handle {
+    let br = expect_tk(tokens, pos, "{")
+    let (body, bn) = parse_impl(tokens, br, mode_block)
+    let hb = expect_tk(tokens, bn, "{")
+    match peek(tokens, hb) {
+      TRBrace => (EHandle(body, empty_arms()), hb + 1),
+      _ => {
+        let b = ArrayBuilder::new()
+        let (fp, fa) = parse_pattern(tokens, hb)
+        let aa = expect_tk(tokens, fa, "=>")
+        let (fe, fn1) = parse_impl(tokens, aa, 0)
+        ArrayBuilder::push(b, (fp, fe))
+        parse_handle_rest(tokens, fn1, body, b)
+      }
+    }
+  } else if mode == mode_for_in {
+    match peek(tokens, pos) {
+      TIdent(name) => {
+        let ip = expect_tk(tokens, pos + 1, "in")
+        let (iterable, inext) = parse_impl(tokens, ip, 0)
+        let bb = expect_tk(tokens, inext, "{")
+        let (body, end) = parse_impl(tokens, bb, mode_block);
+        (EForIn(name, iterable, body), end)
+      },
+      _ => throw("expected identifier after 'for'")
+    }
+  } else if mode == mode_block {
+    match peek(tokens, pos) {
+      TRBrace => (EUnit, pos + 1),
+      TLet => {
+        let next = pos + 1
+        match peek(tokens, next) {
+          TRec => match peek(tokens, next + 1) {
+            TIdent(name) => {
+              let eq = expect_tk(tokens, next + 2, "=")
+              let (val, vn) = parse_impl(tokens, eq, 0)
+              let a = skip_semi(tokens, vn)
+              let (body, end) = parse_impl(tokens, a, mode_block)
+              if end <= a {
+                throw("internal parser error: block let-rec parser did not advance")
+              } else (ELetRec(name, val, body), end)
+            },
+            _ => throw("expected identifier after 'let rec'")
+          },
+          TMut => match peek(tokens, next + 1) {
+            TIdent(name) => {
+              let eq = expect_tk(tokens, next + 2, "=")
+              let (val, vn) = parse_impl(tokens, eq, 0)
+              let a = skip_semi(tokens, vn)
+              let (body, end) = parse_impl(tokens, a, mode_block)
+              if end <= a {
+                throw("internal parser error: block let-mut parser did not advance")
+              } else (ELetMut(name, val, body), end)
+            },
+            _ => throw("expected identifier after 'let mut'")
+          },
+          TIdent(name) => {
+            let eq = expect_tk(tokens, next + 1, "=")
+            let (val, vn) = parse_impl(tokens, eq, 0)
+            let a = skip_semi(tokens, vn)
+            let (body, end) = parse_impl(tokens, a, mode_block)
+            if end <= a {
+              throw("internal parser error: block let parser did not advance")
+            } else (ELet(name, val, body), end)
+          },
+          TLParen => {
+            let (pat, pn) = parse_pattern(tokens, next)
+            let eq = expect_tk(tokens, pn, "=")
+            let (val, vn) = parse_impl(tokens, eq, 0)
+            let a = skip_semi(tokens, vn)
+            let (body, end) = parse_impl(tokens, a, mode_block)
+            if end <= a {
+              throw("internal parser error: block let-pat parser did not advance")
+            } else {
+              let arms = [
+                (pat, body)
+              ]
+              (EMatch(val, arms), end)
+            }
+          },
+          _ => throw("expected identifier after 'let'")
+        }
+      },
+      _ => {
+        let (e, next) = parse_impl(tokens, pos, 0)
+        if next <= pos {
+          throw("internal parser error: block expr parser did not advance")
+        } else parse_block_after_expr(tokens, next, e)
+      }
+    }
+  } else if mode >= 0 && mode <= 10 {
+    parse_infix(tokens, pos, mode, pos)
+  } else {
+    throw("internal parser error: unknown parse mode")
+  }
+}
+
+export let parse = (tokens: Array[Token]) -> Expr with { Error } {
+  let (e, next) = parse_impl(tokens, 0, 0)
+  match peek(tokens, next) {
+    TEof => e,
+    _ => throw(String::concat("unexpected after expression: ", tk_name(peek(tokens, next))))
+  }
+}
+
+export let parse_ok = (tokens: Array[Token]) -> Bool {
+  handle {
+    let _ = parse(tokens)
+    true
+  } {
+    Error(_) => false
+  }
+}
+
+export let parse_expr = (tokens: Array[Token], pos: Int) -> (Expr, Int)with { Error } {
+  parse_impl(tokens, pos, 0)
+}
+
+let parse_let_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int)with { Error } {
+  match peek(tokens, pos) {
+    TRec => match peek(tokens, pos + 1) {
+      TIdent(name) => {
+        let (ty_opt, eq_pos) = match peek(tokens, pos + 2) {
+          TColon => {
+            let (ty, tp) = parse_type_impl(tokens, pos + 3, 0);
+            (Some(ty), tp)
+          },
+          _ => (None, pos + 2)
+        }
+        let ep = expect_tk(tokens, eq_pos, "=")
+        let (val, vn) = parse_impl(tokens, ep, 0);
+        (SLet(exported, true, name, ty_opt, val), vn)
+      },
+      _ => throw("expected name after 'let rec'")
+    },
+    TMut => match peek(tokens, pos + 1) {
+      TIdent(name) => {
+        let (ty_opt, eq_pos) = match peek(tokens, pos + 2) {
+          TColon => {
+            let (ty, tp) = parse_type_impl(tokens, pos + 3, 0);
+            (Some(ty), tp)
+          },
+          _ => (None, pos + 2)
+        }
+        let ep = expect_tk(tokens, eq_pos, "=")
+        let (val, vn) = parse_impl(tokens, ep, 0);
+        (SLetMut(name, ty_opt, val), vn)
+      },
+      _ => throw("expected name after 'let mut'")
+    },
+    TIdent(name) => {
+      let (ty_opt, eq_pos) = match peek(tokens, pos + 1) {
+        TColon => {
+          let (ty, tp) = parse_type_impl(tokens, pos + 2, 0);
+          (Some(ty), tp)
+        },
+        _ => (None, pos + 1)
+      }
+      let ep = expect_tk(tokens, eq_pos, "=")
+      let (val, vn) = parse_impl(tokens, ep, 0);
+      (SLet(exported, false, name, ty_opt, val), vn)
+    },
+    _ => throw("expected name after 'let'")
+  }
+}
+
+let parse_test_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Error } {
+  match peek(tokens, pos) {
+    TString(name) => {
+      let br = expect_tk(tokens, pos + 1, "{")
+      let (body, end) = parse_impl(tokens, br, mode_block);
+      (STest(name, body), end)
+    },
+    _ => throw("expected test name string")
+  }
+}
+
+let parse_bench_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Error } {
+  match peek(tokens, pos) {
+    TString(name) => {
+      let br = expect_tk(tokens, pos + 1, "{")
+      let (body, end) = parse_impl(tokens, br, mode_block);
+      (SBench(name, body), end)
+    },
+    _ => throw("expected bench name string")
+  }
+}
+
+let rec parse_export_names_rest = (tokens: Array[Token], pos: Int, b: ArrayBuilder[String]) -> (Array[String], Int)with { Error } {
+  match peek(tokens, pos) {
+    TComma => match peek(tokens, pos + 1) {
+      TRBrace => (ArrayBuilder::freeze(b), pos + 2),
+      TIdent(name) => {
+        ArrayBuilder::push(b, name)
+        parse_export_names_rest(tokens, pos + 2, b)
+      },
+      _ => throw("expected name in export list")
+    },
+    TRBrace => (ArrayBuilder::freeze(b), pos + 1),
+    _ => throw("expected ',' or '}' in export list")
+  }
+}
+
+let rec parse_import_items_rest = (tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, Option[String])]) -> (Array[(String, Option[String])], Int)with { Error } {
+  match peek(tokens, pos) {
+    TComma => match peek(tokens, pos + 1) {
+      TRBrace => (ArrayBuilder::freeze(b), pos + 2),
+      _ => {
+        let (item, next) = parse_import_item(tokens, pos + 1)
+        ArrayBuilder::push(b, item)
+        parse_import_items_rest(tokens, next, b)
+      }
+    },
+    TRBrace => (ArrayBuilder::freeze(b), pos + 1),
+    _ => throw("expected ',' or '}' in import list")
+  }
+}
+
+let parse_import_items = (tokens: Array[Token], pos: Int) -> (Array[(String, Option[String])], Int)with { Error } {
+  match peek(tokens, pos) {
+    TRBrace => (empty_import_items(), pos + 1),
+    _ => {
+      let (first, next) = parse_import_item(tokens, pos)
+      let b = ArrayBuilder::new()
+      ArrayBuilder::push(b, first)
+      parse_import_items_rest(tokens, next, b)
+    }
+  }
+}
+
+let parse_import_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Error } {
+  let (path, bp) = collect_import_path(tokens, pos, "")
+  let br = expect_tk(tokens, bp, "{")
+  let (items, end) = parse_import_items(tokens, br);
+  (SImport(path, items), end)
+}
+
+let parse_impl_stmt_dispatch = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Error } {
+  parse_impl_stmt(tokens, pos)
+}
+
+let rec parse_struct_fields_rest = (tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, TypeExpr)]) -> (Array[(String, TypeExpr)], Int)with { Error } {
+  match peek(tokens, pos) {
+    TSemicolon => match peek(tokens, pos + 1) {
+      TRBrace => (ArrayBuilder::freeze(b), pos + 2),
+      _ => {
+        let (field, next) = parse_struct_field(tokens, pos + 1)
+        ArrayBuilder::push(b, field)
+        parse_struct_fields_rest(tokens, next, b)
+      }
+    },
+    TComma => match peek(tokens, pos + 1) {
+      TRBrace => (ArrayBuilder::freeze(b), pos + 2),
+      _ => {
+        let (field, next) = parse_struct_field(tokens, pos + 1)
+        ArrayBuilder::push(b, field)
+        parse_struct_fields_rest(tokens, next, b)
+      }
+    },
+    TRBrace => (ArrayBuilder::freeze(b), pos + 1),
+    _ => throw("expected ';', ',' or '}' in struct")
+  }
+}
+
+let parse_struct_fields = (tokens: Array[Token], pos: Int) -> (Array[(String, TypeExpr)], Int)with { Error } {
+  match peek(tokens, pos) {
+    TRBrace => (empty_fields(), pos + 1),
+    _ => {
+      let (first, next) = parse_struct_field(tokens, pos)
+      let b = ArrayBuilder::new()
+      ArrayBuilder::push(b, first)
+      parse_struct_fields_rest(tokens, next, b)
+    }
+  }
+}
+
+let parse_struct_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int)with { Error } {
+  match peek(tokens, pos) {
+    TIdent(name) => {
+      let br = expect_tk(tokens, pos + 1, "{")
+      let (fields, end) = parse_struct_fields(tokens, br);
+      (SStruct(exported, name, fields), end)
+    },
+    _ => throw("expected struct name")
+  }
+}
+
+let parse_export_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Error } {
+  match peek(tokens, pos) {
+    TLet => parse_let_stmt(tokens, pos + 1, true),
+    TEnum => parse_enum_stmt(tokens, pos + 1, true),
+    TSuberror => parse_suberror_stmt(tokens, pos + 1, true),
+    TStruct => parse_struct_stmt(tokens, pos + 1, true),
+    TType => parse_type_alias_stmt(tokens, pos + 1, true),
+    TTrait => parse_trait_stmt(tokens, pos + 1, true),
+    TOpen => match peek(tokens, pos + 1) {
+      TTrait => parse_trait_stmt(tokens, pos + 2, true),
+      _ => throw("expected 'trait' after 'open'")
+    },
+    TLBrace => match peek(tokens, pos + 1) {
+      TRBrace => (SExport(empty_names()), pos + 2),
+      TIdent(name) => {
+        let b = ArrayBuilder::new()
+        ArrayBuilder::push(b, name)
+        let (names, end) = parse_export_names_rest(tokens, pos + 2, b);
+        (SExport(names), end)
+      },
+      _ => throw("expected name in export list")
+    },
+    TDot => {
+      let (path, bp) = collect_import_path(tokens, pos, "")
+      let br = expect_tk(tokens, bp, "{")
+      let (items, end) = parse_import_items(tokens, br);
+      (SReExport(path, items), end)
+    },
+    _ => throw(String::concat("unexpected after 'export': ", tk_name(peek(tokens, pos))))
+  }
+}
+
+let parse_percent_symbol_name = (tokens: Array[Token], pos: Int, label: String) -> (String, Int)with { Error } {
+  let pp = expect_tk(tokens, pos, "%")
+  match peek(tokens, pp) {
+    TIdent(name) => (String::concat("%", name), pp + 1),
+    _ => throw(String::concat("expected ", String::concat(label, " after '%'")))
+  }
+}
+
+let parse_extern_let_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Error } {
+  let lp = expect_tk(tokens, pos, "let")
+  let (name, np) = parse_percent_symbol_name(tokens, lp, "extern symbol name")
+  let cp = expect_tk(tokens, np, ":")
+  let (ty, end) = parse_type_impl(tokens, cp, 0);
+  (SExternLet(name, ty), end)
+}
+
+export let rec parse_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Error } {
+  let rec parse_module_body = (tokens: Array[Token], pos: Int, b: ArrayBuilder[Stmt]) -> (Array[Stmt], Int)with { Error } {
+    match peek(tokens, pos) {
+      TRBrace => (ArrayBuilder::freeze(b), pos + 1),
+      _ => {
+        let (stmt, next) = parse_stmt(tokens, pos)
+        ArrayBuilder::push(b, stmt)
+        parse_module_body(tokens, next, b)
+      }
+    }
+  }
+  let head = peek(tokens, pos)
+  match head {
+    TLet => parse_let_stmt(tokens, pos + 1, false),
+    TExport => match peek(tokens, pos + 1) {
+      TModule => match peek(tokens, pos + 2) {
+        TIdent(name) => {
+          let br = expect_tk(tokens, pos + 3, "{")
+          {
+            let (stmts, end) = parse_module_body(tokens, br, ArrayBuilder::new());
+            (SModule(true, name, stmts), end)
+          }
+        },
+        _ => throw("expected module name")
+      },
+      _ => parse_export_stmt(tokens, pos + 1)
+    },
+    TModule => match peek(tokens, pos + 1) {
+      TIdent(name) => {
+        let br = expect_tk(tokens, pos + 2, "{")
+        {
+          let (stmts, end) = parse_module_body(tokens, br, ArrayBuilder::new());
+          (SModule(false, name, stmts), end)
+        }
+      },
+      _ => throw("expected module name")
+    },
+    TEnum => parse_enum_stmt(tokens, pos + 1, false),
+    TSuberror => parse_suberror_stmt(tokens, pos + 1, false),
+    TStruct => parse_struct_stmt(tokens, pos + 1, false),
+    TType => parse_type_alias_stmt(tokens, pos + 1, false),
+    TTrait => parse_trait_stmt(tokens, pos + 1, false),
+    TTest => parse_test_stmt(tokens, pos + 1),
+    TBench => parse_bench_stmt(tokens, pos + 1),
+    TImport => parse_import_stmt(tokens, pos + 1),
+    TIdent(name) => if String::equals(name, "extern") {
+      parse_extern_let_stmt(tokens, pos + 1)
+    } else if String::equals(name, "use") {
+      throw("'use' syntax is removed; use 'import <module-ref> { ... }'")
+    } else {
+      let (e, next) = parse_impl(tokens, pos, 0);
+      (SExpr(e), next)
+    },
+    _ => {
+      let (e, next) = parse_impl(tokens, pos, 0);
+      (SExpr(e), next)
+    }
+  }
+}
+
+export let parse_program = (tokens: Array[Token]) -> Array[Stmt] with { Error } {
+  let rec go = (pos: Int, b: ArrayBuilder[Stmt]) -> Array[Stmt] with { Error } {
+    if is_tk(peek(tokens, pos), "eof") {
+      ArrayBuilder::freeze(b)
+    } else {
+      let (stmt, next) = if is_tk(peek(tokens, pos), "impl") {
+        parse_impl_stmt_dispatch(tokens, pos + 1)
+      } else {
+        parse_stmt(tokens, pos)
+      }
+      ArrayBuilder::push(b, stmt)
+      go(next, b)
+    }
+  }
+  go(0, ArrayBuilder::new())
+}
+
+//# Misc
+
+export {
+  Pat, Expr, Stmt, parse, TypeExpr, parse_ok, parse_expr, parse_impl, parse_stmt, parse_type, parse_program
+}

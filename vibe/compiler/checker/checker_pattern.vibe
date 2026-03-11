@@ -1,0 +1,119 @@
+//# Imports
+
+import ../core/index.vibe {
+  Pat, Type, TypeDef, TypeEnv, env_bind, find_typedef
+}
+
+//# Functions
+
+let find_ctor_in_defs = (defs: Array[TypeDef], ctor_name: String) -> Option[(String, Array[Type])] {
+  let dlen = Array::length(defs)
+  let rec go_defs = (di: Int) -> Option[(String, Array[Type])] {
+    if di >= dlen {
+      None
+    } else {
+      let d = Array::get(defs, di)
+      match d {
+        TDEnum(enum_name, variants) => {
+          let vlen = Array::length(variants)
+          let rec go_variants = (vi: Int) -> Option[(String, Array[Type])] {
+            if vi >= vlen {
+              go_defs(di + 1)
+            } else {
+              let (vname, vtypes) = Array::get(variants, vi)
+              if String::equals(vname, ctor_name) {
+                Some((enum_name, vtypes))
+              } else {
+                go_variants(vi + 1)
+              }
+            }
+          }
+          go_variants(0)
+        },
+        _ => go_defs(di + 1)
+      }
+    }
+  }
+  go_defs(0)
+}
+
+// Check a pattern against a scrutinee type, returning extended env with bindings
+export let rec check_pattern = (pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[TypeDef]) -> TypeEnv {
+  match pat {
+    PWild => env,
+    PBind(name) => env_bind(env, name, scrutinee_ty),
+    PInt(_) => env,
+    PString(_) => env,
+    PBool(_) => env,
+    PCtor(name, sub_pats) => match find_ctor_in_defs(defs, name) {
+      Some(info) => {
+        let (_, payload_types) = info
+        let splen = Array::length(sub_pats)
+        let ptlen = Array::length(payload_types)
+        let rec bind_subs = (i: Int, acc_env: TypeEnv) -> TypeEnv {
+          if i >= splen {
+            acc_env
+          } else {
+            let sub_ty = if i < ptlen {
+              Array::get(payload_types, i)
+            } else {
+              CtUnknown
+            }
+            let next_env = check_pattern(Array::get(sub_pats, i), sub_ty, acc_env, defs)
+            bind_subs(i + 1, next_env)
+          }
+        }
+        bind_subs(0, env)
+      },
+      None => {
+        // Unknown constructor: bind sub-patterns to CtUnknown
+        let splen = Array::length(sub_pats)
+        let rec bind_unknown = (i: Int, acc_env: TypeEnv) -> TypeEnv {
+          if i >= splen {
+            acc_env
+          } else {
+            let next_env = check_pattern(Array::get(sub_pats, i), CtUnknown, acc_env, defs)
+            bind_unknown(i + 1, next_env)
+          }
+        }
+        bind_unknown(0, env)
+      }
+    }
+    ,
+    PTuple(pats) => {
+      let plen = Array::length(pats)
+      match scrutinee_ty {
+        CtTuple(elem_tys) => {
+          let elen = Array::length(elem_tys)
+          let rec bind_tuple = (i: Int, acc_env: TypeEnv) -> TypeEnv {
+            if i >= plen {
+              acc_env
+            } else {
+              let et = if i < elen {
+                Array::get(elem_tys, i)
+              } else {
+                CtUnknown
+              }
+              let next_env = check_pattern(Array::get(pats, i), et, acc_env, defs)
+              bind_tuple(i + 1, next_env)
+            }
+          }
+          bind_tuple(0, env)
+        },
+        _ => {
+          // Scrutinee not a tuple: bind all to CtUnknown
+          let rec bind_unk = (i: Int, acc_env: TypeEnv) -> TypeEnv {
+            if i >= plen {
+              acc_env
+            } else {
+              let next_env = check_pattern(Array::get(pats, i), CtUnknown, acc_env, defs)
+              bind_unk(i + 1, next_env)
+            }
+          }
+          bind_unk(0, env)
+        }
+      }
+    },
+    POr(left, _right) => check_pattern(left, scrutinee_ty, env, defs)
+  }
+}

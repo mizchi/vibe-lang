@@ -1,0 +1,388 @@
+//# Imports
+
+import ../../../syntax/lexer.vibe {
+  lex,
+}
+
+import ../../../syntax/parser.vibe {
+  parse_program
+}
+
+import ../../../core/ast.vibe {
+  Stmt
+}
+
+import ../../../codegen/index.vibe {
+  compile_module, compile_wasi_module
+}
+
+import ../../../loader/index.vibe {
+  collect_all_sources_fs, collect_source_groups_fs
+}
+
+import ../../../runtime/index.vibe {
+  TypeDb, db_new, db_set_source, db_typecheck, db_merged_source,
+  db_grouped_merged_source, db_module_source, db_load_artifact, db_store_artifact
+}
+
+//# Functions
+
+let contains_str = (arr: Array[String], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) && !found {
+    if String::equals(Array::get(arr, i), target) {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+let source_lookup = (sources: Array[(String, String)], path_key: String) -> Option[String] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(sources) {
+    let (path, source) = Array::get(sources, i)
+    if String::equals(path, path_key) {
+      found = Some(source)
+      i = Array::length(sources)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+let dir_of = (file_path: String) -> String {
+  let idx = String::last_index_of(file_path, "/")
+  if idx < 0 {
+    ""
+  } else {
+    String::substring(file_path, 0, idx)
+  }
+}
+
+let split_path_segments = (path: String) -> Array[String] {
+  let segments = Array::slice([""], 0, 0)
+  let len = String::length(path)
+  let mut start = 0
+  let mut i = 0
+  while i <= len {
+    if i == len || String::char_code_at(path, i) == 47 {
+      Array::push(segments, String::substring(path, start, i))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  segments
+}
+
+let join_path_segments = (segments: Array[String]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(segments) {
+    let seg = Array::get(segments, i)
+    if String::length(seg) > 0 {
+      out = if String::equals(out, "") {
+        seg
+      } else {
+        String::concat(out, String::concat("/", seg))
+      }
+    }
+    i = i + 1
+  }
+  out
+}
+
+let normalize_path = (path: String) -> String {
+  let raw_segments = split_path_segments(path)
+  let normalized = Array::slice([""], 0, 0)
+  let mut i = 0
+  while i < Array::length(raw_segments) {
+    let seg = Array::get(raw_segments, i)
+    if String::length(seg) == 0 || String::equals(seg, ".") {
+      ()
+    } else if String::equals(seg, "..") {
+      let norm_len = Array::length(normalized)
+      if norm_len > 0 {
+        Array::truncate(normalized, norm_len - 1)
+      }
+    } else {
+      Array::push(normalized, seg)
+    }
+    i = i + 1
+  }
+  join_path_segments(normalized)
+}
+
+let resolve_path = (base_dir: String, raw_path: String) -> String {
+  let len = String::length(raw_path)
+  if len >= 3 {
+    if String::equals(String::substring(raw_path, 0, 3), "../") {
+      let rest = String::substring(raw_path, 3, len)
+      let parent = dir_of(base_dir)
+      let resolved = if String::ends_with(rest, ".vibe") {
+        rest
+      } else {
+        String::concat(rest, ".vibe")
+      }
+      if String::equals(parent, "") {
+        normalize_path(resolved)
+      } else {
+        normalize_path(String::concat(parent, String::concat("/", resolved)))
+      }
+    } else if String::equals(String::substring(raw_path, 0, 2), "./") {
+      let rest = String::substring(raw_path, 2, len)
+      let resolved = if String::ends_with(rest, ".vibe") {
+        rest
+      } else {
+        String::concat(rest, ".vibe")
+      }
+      if String::equals(base_dir, "") {
+        normalize_path(resolved)
+      } else {
+        normalize_path(String::concat(base_dir, String::concat("/", resolved)))
+      }
+    } else {
+      normalize_path(raw_path)
+    }
+  } else if len >= 2 {
+    if String::equals(String::substring(raw_path, 0, 2), "./") {
+      let rest = String::substring(raw_path, 2, len)
+      let resolved = if String::ends_with(rest, ".vibe") {
+        rest
+      } else {
+        String::concat(rest, ".vibe")
+      }
+      if String::equals(base_dir, "") {
+        normalize_path(resolved)
+      } else {
+        normalize_path(String::concat(base_dir, String::concat("/", resolved)))
+      }
+    } else {
+      normalize_path(raw_path)
+    }
+  } else {
+    normalize_path(raw_path)
+  }
+}
+
+let rec collect_inline_sources = (
+  path: String,
+  source: String,
+  sources: Array[(String, String)],
+  ordered: Array[(String, String)],
+  visited: Array[String]
+) -> Unit with { Error } {
+  if contains_str(visited, path) {
+    ()
+  } else {
+    Array::push(visited, path)
+    let stmts = parse_program(lex(source))
+    let base_dir = dir_of(path)
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SImport(raw_path, _) => {
+          let resolved = resolve_path(base_dir, raw_path)
+          match source_lookup(sources, resolved) {
+            Some(dep_source) => collect_inline_sources(resolved, dep_source, sources, ordered, visited),
+            None => throw(String::concat("module not found: ", resolved))
+          }
+        },
+        SReExport(raw_path, _) => {
+          let resolved = resolve_path(base_dir, raw_path)
+          match source_lookup(sources, resolved) {
+            Some(dep_source) => collect_inline_sources(resolved, dep_source, sources, ordered, visited),
+            None => throw(String::concat("module not found: ", resolved))
+          }
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    Array::push(ordered, (path, source))
+  }
+}
+
+let collect_inline_sources_ordered = (
+  main_path: String,
+  main_source: String,
+  sources: Array[(String, String)]
+) -> Array[(String, String)] with { Error } {
+  let ordered = Array::slice([("", "")], 0, 0)
+  let visited = Array::slice([""], 0, 0)
+  collect_inline_sources(main_path, main_source, sources, ordered, visited)
+  ordered
+}
+
+let empty_stmt_array = () -> Array[Stmt] {
+  Array::slice([
+    SExport(["_dummy"])
+  ], 0, 0)
+}
+
+let seed_type_db = (db: TypeDb, main_path: String, main_source: String, sources: Array[(String, String)]) -> TypeDb {
+  let mut seeded = db
+  let mut i = 0
+  while i < Array::length(sources) {
+    let (path, source) = Array::get(sources, i)
+    seeded = db_set_source(seeded, path, source)
+    i = i + 1
+  }
+  db_set_source(seeded, main_path, main_source)
+}
+
+export let prepare_modules_cached = (db: TypeDb, main_path: String, main_source: String, sources: Array[(String, String)]) -> TypeDb with { Error } {
+  let seeded = seed_type_db(db, main_path, main_source, sources)
+  db_typecheck(seeded, main_path)
+}
+
+export let compile_with_modules = (main_source: String, main_path: String, sources: Array[(String, String)]) -> Bytes with { Error } {
+  let (bytes, _) = compile_with_modules_cached(db_new(), main_source, main_path, sources)
+  bytes
+}
+
+export let compile_with_modules_wasi = (main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> Bytes with { Error } {
+  let (bytes, _) = compile_with_modules_wasi_cached(db_new(), main_source, main_path, sources, entry_name)
+  bytes
+}
+
+let artifact_fingerprint_from_source = (source: String) -> String {
+  let mod1 = 2147483647
+  let mod2 = 2147483629
+  let step1 = 131
+  let step2 = 65599
+  let len = String::length(source)
+  let mut h1 = 17
+  let mut h2 = 29
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(source, i)
+    h1 = (h1 * step1 + c + 1) % mod1
+    h2 = (h2 * step2 + c + i + 1) % mod2
+    i = i + 1
+  }
+  String::concat(
+    __to_string(len),
+    String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2))))
+  )
+}
+
+let build_merge_fingerprint_inline = (sources: Array[(String, String)]) -> String {
+  let mut acc = "merged"
+  let mut i = 0
+  while i < Array::length(sources) {
+    let (_, source) = Array::get(sources, i)
+    let next = String::concat(
+      acc,
+      String::concat("|", artifact_fingerprint_from_source(source))
+    )
+    acc = artifact_fingerprint_from_source(next)
+    i = i + 1
+  }
+  acc
+}
+
+let build_merged_stmts_inline = (sources: Array[(String, String)]) -> Array[Stmt] with { Error } {
+  let merged = empty_stmt_array()
+  let mut si = 0
+  while si < Array::length(sources) {
+    let (_, source) = Array::get(sources, si)
+    let stmts = parse_program(lex(source))
+    let mut j = 0
+    while j < Array::length(stmts) {
+      let stmt = Array::get(stmts, j)
+      match stmt {
+        SImport(_, _) => (),
+        SReExport(_, _) => (),
+        _ => Array::push(merged, stmt),
+      }
+      j = j + 1
+    }
+    si = si + 1
+  }
+  merged
+}
+
+export let compile_with_modules_cached = (db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)]) -> (Bytes, TypeDb) with { Error } {
+  let next_db = prepare_modules_cached(db, main_path, main_source, sources)
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
+  let (merged_source, merge_fingerprint, merge_db) = db_merged_source(next_db, main_path, ordered_sources)
+  let (module_source, codegen_db) = db_module_source(merge_db, merge_fingerprint, merged_source)
+  let artifact_fingerprint = artifact_fingerprint_from_source(module_source)
+  match db_load_artifact(codegen_db, main_path, "module", "", artifact_fingerprint) {
+    Some(bytes) => (bytes, codegen_db),
+    None => {
+      let stmts = parse_program(lex(module_source))
+      let bytes = compile_module(stmts)
+      (bytes, db_store_artifact(codegen_db, main_path, "module", "", artifact_fingerprint, bytes))
+    }
+  }
+}
+
+export let compile_with_modules_wasi_cached = (db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> (Bytes, TypeDb) with { Error } {
+  let next_db = prepare_modules_cached(db, main_path, main_source, sources)
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
+  let merge_fingerprint = build_merge_fingerprint_inline(ordered_sources)
+  let artifact_fingerprint = artifact_fingerprint_from_source(
+    String::concat(merge_fingerprint, String::concat("|", entry_name))
+  )
+  match db_load_artifact(next_db, main_path, "wasi", entry_name, artifact_fingerprint) {
+    Some(bytes) => (bytes, next_db),
+    None => {
+      let merged_stmts = build_merged_stmts_inline(ordered_sources)
+      let bytes = compile_wasi_module(merged_stmts, entry_name)
+      (bytes, db_store_artifact(next_db, main_path, "wasi", entry_name, artifact_fingerprint, bytes))
+    }
+  }
+}
+
+export let compile_file_fs = (entry_path: String, entry_name: String) -> Bytes with { Error, Fs } {
+  let (bytes, _) = compile_file_fs_cached(db_new(), entry_path, entry_name)
+  bytes
+}
+
+export let compile_file_fs_module = (entry_path: String) -> Bytes with { Error, Fs } {
+  let (bytes, _) = compile_file_fs_module_cached(db_new(), entry_path)
+  bytes
+}
+
+export let prepare_file_fs_cached = (db: TypeDb, entry_path: String) -> TypeDb with { Error, Fs } {
+  let sources = collect_all_sources_fs(entry_path)
+  let main_source = Fs::read_file(entry_path)
+  prepare_modules_cached(db, entry_path, main_source, sources)
+}
+
+export let compile_file_fs_cached = (db: TypeDb, entry_path: String, entry_name: String) -> (Bytes, TypeDb) with { Error, Fs } {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let next_db = prepare_file_fs_cached(db, entry_path)
+  let (merged_source, _, codegen_db) = db_grouped_merged_source(next_db, source_groups)
+  let artifact_fingerprint = artifact_fingerprint_from_source(merged_source)
+  match db_load_artifact(codegen_db, entry_path, "wasi", entry_name, artifact_fingerprint) {
+    Some(bytes) => (bytes, codegen_db),
+    None => {
+      let merged_stmts = parse_program(lex(merged_source))
+      let bytes = compile_wasi_module(merged_stmts, entry_name)
+      (bytes, db_store_artifact(codegen_db, entry_path, "wasi", entry_name, artifact_fingerprint, bytes))
+    }
+  }
+}
+
+export let compile_file_fs_module_cached = (db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with { Error, Fs } {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let next_db = prepare_file_fs_cached(db, entry_path)
+  let (merged_source, merge_fingerprint, module_db) = db_grouped_merged_source(next_db, source_groups)
+  let (module_source, codegen_db) = db_module_source(module_db, merge_fingerprint, merged_source)
+  let artifact_fingerprint = artifact_fingerprint_from_source(module_source)
+  match db_load_artifact(codegen_db, entry_path, "module", "", artifact_fingerprint) {
+    Some(bytes) => (bytes, codegen_db),
+    None => {
+      let merged_stmts = parse_program(lex(module_source))
+      let bytes = compile_module(merged_stmts)
+      (bytes, db_store_artifact(codegen_db, entry_path, "module", "", artifact_fingerprint, bytes))
+    }
+  }
+}

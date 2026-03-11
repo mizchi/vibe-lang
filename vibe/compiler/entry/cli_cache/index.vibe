@@ -1,0 +1,127 @@
+//# Imports
+
+import ../compiler/file_compile/index.vibe {
+  prepare_file_fs_cached, compile_file_fs_cached, compile_file_fs_module_cached
+}
+
+import ../../runtime/index.vibe {
+  TypeDb, db_new, db_typecheck_count
+}
+
+//# Functions
+
+let strip_trailing_cr = (line: String) -> String {
+  let len = String::length(line)
+  if len > 0 && String::char_code_at(line, len - 1) == 13 {
+    String::substring(line, 0, len - 1)
+  } else {
+    line
+  }
+}
+
+let split_tsv_fields = (line: String) -> Array[String] {
+  let fields = Array::slice([""], 0, 0)
+  let len = String::length(line)
+  let mut start = 0
+  let mut i = 0
+  while i < len {
+    if String::char_code_at(line, i) == 9 {
+      Array::push(fields, String::substring(line, start, i))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  Array::push(fields, String::substring(line, start, len))
+  fields
+}
+
+let string_to_bytes = (s: String) -> Bytes {
+  let out = Array::slice([0], 0, 0)
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+export let parse_batch_jobs_tsv = (raw: String) -> Array[(String, String, String)] with { Error } {
+  let jobs = Array::slice([("", "", "")], 0, 0)
+  let len = String::length(raw)
+  let mut line_start = 0
+  let mut i = 0
+  while i <= len {
+    if i == len || String::char_code_at(raw, i) == 10 {
+      let line = strip_trailing_cr(String::substring(raw, line_start, i))
+      if String::length(line) > 0 {
+        let fields = split_tsv_fields(line)
+        let field_count = Array::length(fields)
+        if field_count < 2 || field_count > 3 {
+          throw("invalid VIBE_BATCH_TSV row: expected 2 or 3 tab-separated columns")
+        }
+        let input_path = Array::get(fields, 0)
+        let output_path = Array::get(fields, 1)
+        let entry_name = if field_count == 3 { Array::get(fields, 2) } else { "" }
+        if String::length(input_path) == 0 || String::length(output_path) == 0 {
+          throw("invalid VIBE_BATCH_TSV row: input/output path must be non-empty")
+        }
+        Array::push(jobs, (input_path, output_path, entry_name))
+      }
+      line_start = i + 1
+    }
+    i = i + 1
+  }
+  jobs
+}
+
+let compile_job_cached = (db: TypeDb, input_path: String, entry_name: String) -> (Bytes, TypeDb) with { Error, Fs } {
+  if String::equals(entry_name, "") {
+    compile_file_fs_module_cached(db, input_path)
+  } else {
+    compile_file_fs_cached(db, input_path, entry_name)
+  }
+}
+
+export let prepare_jobs_cached = (db: TypeDb, jobs: Array[(String, String, String)]) -> TypeDb with { Error, Fs } {
+  let mut next_db = db
+  let mut i = 0
+  while i < Array::length(jobs) {
+    let (input_path, _, _) = Array::get(jobs, i)
+    next_db = prepare_file_fs_cached(next_db, input_path)
+    i = i + 1
+  }
+  next_db
+}
+
+export let compile_jobs_cached = (db: TypeDb, jobs: Array[(String, String, String)]) -> TypeDb with { Error, Fs } {
+  let mut next_db = db
+  let mut i = 0
+  while i < Array::length(jobs) {
+    let (input_path, output_path, entry_name) = Array::get(jobs, i)
+    let (bytes, compiled_db) = compile_job_cached(next_db, input_path, entry_name)
+    Fs::write_bytes(output_path, bytes)
+    next_db = compiled_db
+    i = i + 1
+  }
+  next_db
+}
+
+export let selfbuild_probe_cli_cache_counts = () -> Int with { Error, Fs } {
+  let helper_path = "/tmp/vibe_selfhost_cli_cache_helper.vibe"
+  let main_path = "/tmp/vibe_selfhost_cli_cache_main.vibe"
+  Fs::write_bytes(
+    helper_path,
+    string_to_bytes("export let add = (a: Int, b: Int) -> Int { a + b }")
+  )
+  Fs::write_bytes(
+    main_path,
+    string_to_bytes("import ./vibe_selfhost_cli_cache_helper.vibe { add }\nlet run = () -> Int { add(1, 2) }")
+  )
+  let jobs = [(main_path, "/tmp/vibe_selfhost_cli_cache_out.wasm", "run")]
+  let db1 = prepare_jobs_cached(db_new(), jobs)
+  let count1 = db_typecheck_count(db1)
+  let db2 = prepare_jobs_cached(db1, jobs)
+  let count2 = db_typecheck_count(db2)
+  count1 * 1000 + count2
+}

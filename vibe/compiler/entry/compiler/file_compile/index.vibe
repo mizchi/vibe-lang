@@ -1,0 +1,103 @@
+//# Imports
+
+import ../../../syntax/lexer.vibe {
+  lex,
+}
+
+import ../../../syntax/parser.vibe {
+  parse_program
+}
+
+import ../../../codegen/index.vibe {
+  compile_module, compile_wasi_module
+}
+
+import ../../../loader/index.vibe {
+  collect_all_sources_fs, collect_source_groups_fs
+}
+
+import ../../../runtime/index.vibe {
+  TypeDb, db_new, db_set_source, db_typecheck, db_grouped_merged_source,
+  db_module_source, db_load_artifact, db_store_artifact
+}
+
+//# Functions
+
+let artifact_fingerprint_from_source = (source: String) -> String {
+  let mod1 = 2147483647
+  let mod2 = 2147483629
+  let step1 = 131
+  let step2 = 65599
+  let len = String::length(source)
+  let mut h1 = 17
+  let mut h2 = 29
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(source, i)
+    h1 = (h1 * step1 + c + 1) % mod1
+    h2 = (h2 * step2 + c + i + 1) % mod2
+    i = i + 1
+  }
+  String::concat(
+    __to_string(len),
+    String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2))))
+  )
+}
+
+let seed_type_db = (db: TypeDb, sources: Array[(String, String)]) -> TypeDb {
+  let mut seeded = db
+  let mut i = 0
+  while i < Array::length(sources) {
+    let (path, source) = Array::get(sources, i)
+    seeded = db_set_source(seeded, path, source)
+    i = i + 1
+  }
+  seeded
+}
+
+export let prepare_file_fs_cached = (db: TypeDb, entry_path: String) -> TypeDb with { Error, Fs } {
+  let sources = collect_all_sources_fs(entry_path)
+  let seeded = seed_type_db(db, sources)
+  db_typecheck(seeded, entry_path)
+}
+
+export let compile_file_fs = (entry_path: String, entry_name: String) -> Bytes with { Error, Fs } {
+  let (bytes, _) = compile_file_fs_cached(db_new(), entry_path, entry_name)
+  bytes
+}
+
+export let compile_file_fs_module = (entry_path: String) -> Bytes with { Error, Fs } {
+  let (bytes, _) = compile_file_fs_module_cached(db_new(), entry_path)
+  bytes
+}
+
+export let compile_file_fs_cached = (db: TypeDb, entry_path: String, entry_name: String) -> (Bytes, TypeDb) with { Error, Fs } {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let next_db = prepare_file_fs_cached(db, entry_path)
+  let (merged_source, _, codegen_db) = db_grouped_merged_source(next_db, source_groups)
+  let artifact_fingerprint = artifact_fingerprint_from_source(merged_source)
+  match db_load_artifact(codegen_db, entry_path, "wasi", entry_name, artifact_fingerprint) {
+    Some(bytes) => (bytes, codegen_db),
+    None => {
+      let merged_stmts = parse_program(lex(merged_source))
+      let bytes = compile_wasi_module(merged_stmts, entry_name)
+      (bytes, db_store_artifact(codegen_db, entry_path, "wasi", entry_name, artifact_fingerprint, bytes))
+    }
+  }
+}
+
+export let compile_file_fs_module_cached = (db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with { Error, Fs } {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let next_db = prepare_file_fs_cached(db, entry_path)
+  let (merged_source, merge_fingerprint, module_db) = db_grouped_merged_source(next_db, source_groups)
+  let (module_source, codegen_db) = db_module_source(module_db, merge_fingerprint, merged_source)
+  let artifact_fingerprint = artifact_fingerprint_from_source(module_source)
+  match db_load_artifact(codegen_db, entry_path, "module", "", artifact_fingerprint) {
+    Some(bytes) => (bytes, codegen_db),
+    None => {
+      let merged_stmts = parse_program(lex(module_source))
+      let bytes = compile_module(merged_stmts)
+      (bytes, db_store_artifact(codegen_db, entry_path, "module", "", artifact_fingerprint, bytes))
+    }
+  }
+}

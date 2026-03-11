@@ -1,0 +1,104 @@
+//# Imports
+
+import ../../syntax/index.vibe {
+  lex,
+  parse_program
+}
+
+import ../../core/index.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+//# Functions
+
+export let contains_str = (arr: Array[String], target: String) -> Bool {
+  let rec go = (i: Int) -> Bool {
+    if i >= Array::length(arr) {
+      false
+    }
+    else {
+      if String::equals(Array::get(arr, i), target) {
+        true
+      }
+      else {
+        go(i + 1)
+      }
+    }
+  }
+  go(0)
+}
+
+export let source_lookup = (sources: Array[(String, String)], path_key: String) -> Option[String] {
+  let rec go = (i: Int) -> Option[String] {
+    if i >= Array::length(sources) {
+      None
+    }
+    else {
+      let (p, src) = Array::get(sources, i)
+      if String::equals(p, path_key) {
+        Some(src)
+      }
+      else {
+        go(i + 1)
+      }
+    }
+  }
+  go(0)
+}
+
+export let load_and_parse = (source: String) -> Array[Stmt] with { Error } {
+  let tokens = lex(source)
+  parse_program(tokens)
+}
+
+export let collect_exports = (stmts: Array[Stmt]) -> Array[String] {
+  let rec go = (i: Int, acc: Array[String]) -> Array[String] {
+    if i >= Array::length(stmts) {
+      acc
+    }
+    else {
+      let stmt = Array::get(stmts, i)
+      let new_acc = match stmt {
+        SLet(true, _, name, _, _) => Array::concat(acc, [
+          name
+        ]),
+        SEnum(true, _, variants) => {
+          let rec add_ctors = (j: Int, a: Array[String]) -> Array[String] {
+            if j >= Array::length(variants) {
+              a
+            }
+            else {
+              let (cname, _) = Array::get(variants, j)
+              add_ctors(j + 1, Array::concat(a, [
+                cname
+              ]))
+            }
+          }
+          add_ctors(0, acc)
+        },
+        SExport(names) => {
+          let rec add_names = (j: Int, a: Array[String]) -> Array[String] {
+            if j >= Array::length(names) {
+              a
+            }
+            else {
+              add_names(j + 1, Array::concat(a, [
+                Array::get(names, j)
+              ]))
+            }
+          }
+          add_names(0, acc)
+        },
+        _ => acc
+      }
+      go(i + 1, new_acc)
+    }
+  }
+  go(0, Array::slice([
+    ""
+  ], 0, 0))
+}
+
+export let exports_contains = (exports: Array[String], name: String) -> Bool {
+  contains_str(exports, name)
+}
