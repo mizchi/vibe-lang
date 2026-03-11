@@ -387,6 +387,10 @@ test-selfhost-cli-adapter:
 test-selfhost-cli-core:
     bash scripts/test_selfhost_cli_core.sh
 
+# Verify wasm host runner string/env/args/fs ABI for core wasm execution
+test-wasm-vibe-host-runner:
+    bash scripts/test_wasm_vibe_host_runner.sh
+
 # Run fixed-path selfhost CLI adapter through wasmtime Preview2 fs only
 test-selfhost-cli-fixed-adapter-preview2:
     bash scripts/test_selfhost_cli_fixed_adapter_preview2.sh

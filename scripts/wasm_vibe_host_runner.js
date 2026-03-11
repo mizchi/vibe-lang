@@ -783,10 +783,11 @@ async function main() {
     throw new Error(`missing export: ${invoke}`);
   }
 
+  const skipRunInit = invoke.startsWith("probe_");
   // User-exported functions have an implicit i32 env parameter (closure ABI).
   // The "run" entry has no params; all other exports take (i32) -> i64.
   // For closure exports, resolve the real env pointer from the initialized heap.
-  if (invoke !== "run" && typeof instance.exports.run === "function") {
+  if (!skipRunInit && invoke !== "run" && typeof instance.exports.run === "function") {
     const initHeap =
       instance.exports.__heap_ptr instanceof WebAssembly.Global
         ? instance.exports.__heap_ptr.value
@@ -816,6 +817,7 @@ async function main() {
   };
   try {
     const envCandidates =
+      skipRunInit ? [0] :
       invoke !== "run" &&
       resolvedEnv !== 0 &&
       invoke.startsWith("selfbuild_")
