@@ -12,8 +12,8 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Self-Host Compiler / Runtime Packaging
 
-**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache、host CLI の check/test loop cache 再利用は完成。
-**残**: component packaging。
+**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache、host CLI の check/test loop cache 再利用、env-driven selfhost CLI adapter gate までは入った。
+**最優先の残**: JS host 補助なしで selfhost artifact を CLI として閉じるため、Preview2 / Component runtime 前提の import 配線と配布形を固めること。
 
 ### Selfhost compiler modularization / cache
 
@@ -35,17 +35,34 @@ Completed items are archived in `docs/DONE.md`.
   - `module_loader` には manifest group を保った `collect_source_groups_fs` を追加済み
   - `compiler` の FS compile path も grouped merge cache を通すようにした
   - 物理分割は `core/ast.vibe` から着手し、旧 `ast.vibe` は wrapper で互換維持している
+  - `syntax/token.vibe` / `syntax/float_format.vibe` / `syntax/lexer.vibe` / `syntax/parser.vibe` / `syntax/printer.vibe` を新設し、旧 root file は wrapper で互換維持している
+  - `core/types.vibe` と `checker/builtins.vibe` / `checker/checker_resolve.vibe` / `checker/checker_pattern.vibe` / `checker/checker.vibe` / `checker/checker_stmt.vibe` を新設し、旧 root file は wrapper で互換維持している
+  - `core/bytebuf.vibe` と `codegen/wasm_emit/index.vibe`, `codegen/common_base/index.vibe`, `codegen/common_extractors/index.vibe`, `codegen/common_analysis/index.vibe` を新設し、旧 root file は wrapper で互換維持している
+  - `codegen_expr.vibe` / `codegen_builtin_bodies.vibe` / `codegen_wasi.vibe` / `codegen_gc.vibe` は `codegen/*/index.vibe` へ移し、旧 root file は wrapper で互換維持している
+  - `runtime/eval_loader/index.vibe`, `runtime/index.vibe`, `loader/index.vibe`, `entry/compiler/index.vibe`, `entry/cli_cache/index.vibe` を新設し、旧 root file は wrapper で互換維持している
+  - 残りは public hub の `index.vibe` をどこまで薄くするかと、root wrapper をいつ整理するかの判断
 ### Selfhost CLI / I/O boundary
 
 - [x] selfhost CLI の責務を「純粋 compile 関数」までに固定するか、WASI I/O まで selfhost 側に持ち込むかを文書化する
   - ADR-0022: selfhost compiler は pure compile API に留め、filesystem / environ / stdio は `vibe_compile_wasi` など host wrapper 側で扱う
-- [ ] 将来: WASI Preview2 Component Model の FS/environ import を codegen に追加
-  - selfhost 単体 artifact を CLI として閉じるための前提条件
+- [x] Preview2 host 付きで selfhost artifact を実行する導線を作る
+  - stage1 用 wrapper source を `--wasm --force-cabi-realloc` で core wasm 化し、`node scripts/wasm_vibe_host_runner.js` に Preview2 filesystem import 実装を足して実行できるようにした
+  - stage1 selfhost compiler は seed compiler で一度だけ生成し、その後は JS host が Preview2 filesystem を供給して artifact-only で走らせる
+- [x] stage1 selfhost compiler artifact から fixed-path selfhost CLI adapter wasm を生成し、その adapter wasm で実ファイル compile を通す gate を持つ
+  - `scripts/test_selfhost_cli_adapter.sh` は `stage1 core wasm -> selfhost cli adapter core wasm -> sample wasm compile -> sample run=42` を確認する
+- [x] selfhost CLI adapter を env-driven に一般化する
+  - `VIBE_INPUT` / `VIBE_OUTPUT` / `VIBE_ENTRY` を読む `selfhost_cli_adapter.vibe` と `scripts/test_selfhost_cli_adapter.sh` が通る
+  - `scripts/wasm_vibe_host_runner.js` は host-only string arena を持ち、`Env::get` の戻り string が後続 allocation で壊れない
+- [x] selfhost CLI adapter に argv 契約を追加する
+  - `scripts/run_wasm_vibe_host_runner.sh <wasm> <input> <output> <entry>` で位置引数を `VIBE_INPUT` / `VIBE_OUTPUT` / `VIBE_ENTRY` へ写し、env-driven adapter をそのまま CLI 契約として使える
+- [ ] WASI Preview2 Component Model の FS/environ import を codegen に追加する
+  - JS host ではなく component runtime だけで selfhost 単体 artifact を CLI として閉じるための前提条件
 
 ### Component Model / Adapter Compose
 
 - [ ] mwac plug 相当を .vibe で実装するか builtin 化する
 - [ ] selfhost compiler 全体を `.wasm` component として配布・実行できる形にする
+  - env-driven adapter gate は JS Preview2 host で通っているので、残りは component 化と package 解決の整備
 
 ## Release / Gate Integration
 

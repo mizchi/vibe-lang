@@ -14,7 +14,15 @@ Completed items archived from `TODO.md`.
   - `db_merged_source` も fingerprint ベースで entry path 非依存にし、同一 merged source なら merge cache も別 entry 間で共有するようにした
   - `db_module_source` も fingerprint ベースで entry path 非依存にし、同一 module source なら codegen 手前の module-only parse/lower も別 entry 間で共有するようにした
   - `collect_source_groups_fs` と `db_grouped_merged_source` を追加し、manifest group 単位の grouped merge cache を FS compile path でも使うようにした
+  - `selfbuild_compile_file_from_env` と `test_selfhost_cli_adapter.sh` を追加し、stage1 compiler artifact が selfhost CLI wasm を生成し、その CLI wasm 単体で実ファイル compile を通す artifact-only gate を追加した
+  - `selfhost_cli_adapter.vibe` を `VIBE_INPUT` / `VIBE_OUTPUT` / `VIBE_ENTRY` 契約へ一般化し、`scripts/wasm_vibe_host_runner.js` に host-only string arena を追加して env-driven selfhost CLI adapter gate を通した
+  - `scripts/wasm_vibe_host_runner.js` が wasm path 後ろの位置引数を `VIBE_INPUT` / `VIBE_OUTPUT` / `VIBE_ENTRY` へ写すようにし、env-driven adapter を host-backed CLI 契約でも実行できるようにした
   - `core/ast.vibe` を新設して `ast.vibe` は wrapper 化し、`vibe/compiler` の物理分割を互換維持つきで始めた
+  - `syntax/token.vibe` / `syntax/float_format.vibe` / `syntax/lexer.vibe` / `syntax/parser.vibe` / `syntax/printer.vibe` を新設し、旧 root file は wrapper を残したまま syntax layer の切り出しを始めた
+  - `core/types.vibe` と `checker/builtins.vibe` / `checker/checker_resolve.vibe` / `checker/checker_pattern.vibe` / `checker/checker.vibe` / `checker/checker_stmt.vibe` を新設し、旧 root file は wrapper を残したまま checker layer の切り出しを始めた
+  - `core/bytebuf.vibe` と `codegen/wasm_emit/index.vibe`, `codegen/common_base/index.vibe`, `codegen/common_extractors/index.vibe`, `codegen/common_analysis/index.vibe` を新設し、旧 root file は wrapper を残したまま codegen layer の切り出しを始めた
+  - `codegen/expr/index.vibe`, `codegen/builtin_bodies/index.vibe`, `codegen/wasi/index.vibe`, `codegen/gc/index.vibe` を新設し、旧 root file は wrapper を残したまま codegen main leaf も分割した
+  - `runtime/eval_loader/index.vibe`, `runtime/index.vibe`, `loader/index.vibe`, `entry/compiler/index.vibe`, `entry/cli_cache/index.vibe` を新設し、旧 root file は wrapper を残したまま runtime/loader/entry layer も分割した
 - **Release preflight に selfhost gate 群を統合**
   - `release-check` から `release-selfhost-gates` を実行し、`sync-vbundle`、selfhost bootstrap / strict-recursive KPI / cutover / check parity / golden WAT をローカル pre-release 導線へ接続
   - `sync_vibe_index_vbundle` と normalize batching helper の self-test を復帰し、preflight 補助 script の回帰も固定
