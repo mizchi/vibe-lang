@@ -379,6 +379,18 @@ test-selfhost-wasi-selfbuild:
 test-selfhost-wasi-selfbuild-kpi max_total_sec="300":
     VIBE_SELFHOST_SELFBUILD_STRICT_RECURSIVE=1 VIBE_SELFHOST_SELFBUILD_REQUIRE_TRUE_RECURSIVE=1 VIBE_SELFHOST_SELFBUILD_MAX_TOTAL_SEC={{max_total_sec}} scripts/test_selfhost_wasi_selfbuild.sh
 
+# Run artifact-only selfhost CLI adapter gate (stage1 compiler -> selfhost cli -> sample compile)
+test-selfhost-cli-adapter:
+    bash scripts/test_selfhost_cli_adapter.sh
+
+# Run artifact-only selfhost core CLI gate (stage1 core wasm -> sample compile)
+test-selfhost-cli-core:
+    bash scripts/test_selfhost_cli_core.sh
+
+# Run fixed-path selfhost CLI adapter through wasmtime Preview2 fs only
+test-selfhost-cli-fixed-adapter-preview2:
+    bash scripts/test_selfhost_cli_fixed_adapter_preview2.sh
+
 # Run wasi:http boundary gate (stage0 wasm compiler -> component wit imports)
 test-selfhost-wasi-http-boundary:
     scripts/test_selfhost_wasi_http_boundary.sh
@@ -660,7 +672,7 @@ vibe-normalize-check:
     scripts/vibe_normalize_all.sh --check
 
 # Pre-release selfhost gate bundle
-release-selfhost-gates: sync-vbundle check-selfhost-bundle-sync test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cutover test-selfhost-check-parity test-golden-wat
+release-selfhost-gates: sync-vbundle check-selfhost-bundle-sync test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cli-core test-selfhost-cli-fixed-adapter-preview2 test-selfhost-cutover test-selfhost-check-parity test-golden-wat
 
 # Pre-release check (includes selfhost gates + wasm bundle-size monitor)
 release-check: fmt info check test vibe-normalize bench-bundle-size-monitor release-selfhost-gates

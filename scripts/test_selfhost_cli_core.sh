@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+OUT_DIR="$PROJECT_ROOT/_build/bench/selfhost_cli_core"
+ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/vibe/compiler/selfhost_cli_core_entry.vibe}"
+STAGE_TIMEOUT_SEC="${VIBE_SELFHOST_CLI_CORE_STAGE_TIMEOUT_SEC:-300}"
+STAGE1_CORE_WASM="$OUT_DIR/index_stage1.wasm"
+INPUT_SOURCE="$OUT_DIR/core_env_input.vibe"
+OUTPUT_WASM="$OUT_DIR/core_env_output.wasm"
+OUTPUT_RUN_LOG="$OUT_DIR/core_output_run.log"
+ENTRY_NAME="answer"
+HOST_VIBE_EXE_RELEASE="$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
+HOST_VIBE_EXE_DEBUG="$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe"
+HOST_MODE="${VIBE_SELFHOST_CLI_CORE_HOST_MODE:-debug}"
+
+run_with_timeout() {
+  local timeout_sec="$1"
+  shift
+  if [ "$timeout_sec" -le 0 ]; then
+    "$@"
+    return $?
+  fi
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$timeout_sec" "$@"
+    return $?
+  fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$timeout_sec" "$@"
+    return $?
+  fi
+  "$@" &
+  local cmd_pid=$!
+  (
+    sleep "$timeout_sec"
+    if kill -0 "$cmd_pid" 2>/dev/null; then
+      kill -TERM "$cmd_pid" 2>/dev/null || true
+      sleep 2
+      kill -KILL "$cmd_pid" 2>/dev/null || true
+    fi
+  ) &
+  local watchdog_pid=$!
+  wait "$cmd_pid"
+  local status=$?
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  if [ "$status" -eq 143 ] || [ "$status" -eq 137 ]; then
+    return 124
+  fi
+  return "$status"
+}
+
+run_stage() {
+  local name="$1"
+  shift
+  echo "[selfhost-cli-core] $name"
+  set +e
+  run_with_timeout "$STAGE_TIMEOUT_SEC" "$@"
+  local status=$?
+  set -e
+  if [ "$status" -eq 124 ]; then
+    echo "[selfhost-cli-core] timeout: $name (${STAGE_TIMEOUT_SEC}s)" >&2
+  fi
+  if [ "$status" -ne 0 ]; then
+    return "$status"
+  fi
+}
+
+run_stage_capture_stdout() {
+  local name="$1"
+  local out_path="$2"
+  shift 2
+  echo "[selfhost-cli-core] $name"
+  set +e
+  run_with_timeout "$STAGE_TIMEOUT_SEC" "$@" >"$out_path"
+  local status=$?
+  set -e
+  if [ "$status" -eq 124 ]; then
+    echo "[selfhost-cli-core] timeout: $name (${STAGE_TIMEOUT_SEC}s)" >&2
+  fi
+  if [ "$status" -ne 0 ]; then
+    return "$status"
+  fi
+}
+
+mkdir -p "$OUT_DIR"
+rm -f "$STAGE1_CORE_WASM" "$OUTPUT_WASM" "$OUTPUT_RUN_LOG"
+
+if [ "$HOST_MODE" = "release" ] && [ -x "$HOST_VIBE_EXE_RELEASE" ]; then
+  HOST_COMPILE_CMD=("$HOST_VIBE_EXE_RELEASE" compile --wasm --force-cabi-realloc)
+elif [ "$HOST_MODE" = "debug" ] && [ -x "$HOST_VIBE_EXE_DEBUG" ]; then
+  HOST_COMPILE_CMD=("$HOST_VIBE_EXE_DEBUG" compile --wasm --force-cabi-realloc)
+else
+  HOST_COMPILE_CMD=(moon run --target native src/cmd/vibe -- compile --wasm --force-cabi-realloc)
+fi
+
+run_stage "stage0 host compiler -> stage1 selfhost compiler core wasm" \
+  "${HOST_COMPILE_CMD[@]}" "$ENTRY_PATH" -o "$STAGE1_CORE_WASM" || exit $?
+
+cat >"$INPUT_SOURCE" <<'EOF'
+let answer = () -> Int { 40 + 2 }
+EOF
+
+export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
+
+run_stage "stage1 core artifact -> sample wasm compile" \
+  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" "$STAGE1_CORE_WASM" "${INPUT_SOURCE#$PROJECT_ROOT/}" "${OUTPUT_WASM#$PROJECT_ROOT/}" "$ENTRY_NAME" || exit $?
+
+unset VIBE_PREOPEN_DIR
+
+if [ ! -f "$OUTPUT_WASM" ]; then
+  echo "selfhost cli core gate failed: sample wasm not produced" >&2
+  exit 1
+fi
+
+output_magic="$(od -An -t x1 -N 4 "$OUTPUT_WASM" | tr -d ' \n')"
+if [ "$output_magic" != "0061736d" ]; then
+  echo "selfhost cli core gate failed: sample artifact is not wasm (magic=$output_magic)" >&2
+  exit 1
+fi
+
+run_stage_capture_stdout "run sample wasm produced by selfhost core cli" \
+  "$OUTPUT_RUN_LOG" \
+  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke run "$OUTPUT_WASM" || exit $?
+
+sample_result="$(grep -E '^-?[0-9]+$' "$OUTPUT_RUN_LOG" | tail -n 1 || true)"
+if [ -z "$sample_result" ]; then
+  echo "selfhost cli core gate failed: compiled sample returned no numeric result" >&2
+  exit 1
+fi
+
+if [ "$sample_result" != "42" ]; then
+  echo "selfhost cli core gate failed: compiled sample returned '$sample_result' (expected 42)" >&2
+  exit 1
+fi
+
+echo "selfhost cli core gate passed"
