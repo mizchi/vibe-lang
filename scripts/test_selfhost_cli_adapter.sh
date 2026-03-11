@@ -7,7 +7,6 @@ OUT_DIR="$PROJECT_ROOT/_build/bench/selfhost_cli_adapter"
 ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/vibe/compiler/index.vibe}"
 STAGE_TIMEOUT_SEC="${VIBE_SELFHOST_CLI_ADAPTER_STAGE_TIMEOUT_SEC:-300}"
 STAGE1_CORE_WASM="$OUT_DIR/index_stage1.wasm"
-STAGE1_CLI_WASM="$OUT_DIR/selfhost_cli_stage1.wasm"
 INPUT_SOURCE="$OUT_DIR/adapter_env_input.vibe"
 OUTPUT_WASM="$OUT_DIR/adapter_env_output.wasm"
 OUTPUT_RUN_LOG="$OUT_DIR/adapter_output_run.log"
@@ -85,7 +84,7 @@ run_stage_capture_stdout() {
 }
 
 mkdir -p "$OUT_DIR"
-rm -f "$STAGE1_CORE_WASM" "$STAGE1_CLI_WASM" "$OUTPUT_WASM" "$OUTPUT_RUN_LOG"
+rm -f "$STAGE1_CORE_WASM" "$OUTPUT_WASM" "$OUTPUT_RUN_LOG"
 printf '1' > "$OUT_DIR/.compile_cli_trigger"
 
 if ! command -v node >/dev/null 2>&1; then
@@ -117,27 +116,14 @@ let answer = () -> Int { 40 + 2 }
 EOF
 
 export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
-run_stage "stage1 index artifact -> selfhost cli wasm" \
-  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke selfbuild_write_cli_adapter "$STAGE1_CORE_WASM"
-
-if [ ! -f "$STAGE1_CLI_WASM" ]; then
-  echo "selfhost cli adapter gate failed: stage1 cli artifact was not produced" >&2
-  exit 1
-fi
-
-stage1_cli_magic="$(od -An -t x1 -N 4 "$STAGE1_CLI_WASM" | tr -d ' \n')"
-if [ "$stage1_cli_magic" != "0061736d" ]; then
-  echo "selfhost cli adapter gate failed: stage1 cli artifact is not wasm (magic=$stage1_cli_magic)" >&2
-  exit 1
-fi
-
-run_stage "stage1 selfhost cli artifact -> sample wasm compile" \
-  env \
-    VIBE_INPUT="${INPUT_SOURCE#$PROJECT_ROOT/}" \
-    VIBE_OUTPUT="${OUTPUT_WASM#$PROJECT_ROOT/}" \
-    VIBE_ENTRY="$ENTRY_NAME" \
-    VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
-    bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke run "$STAGE1_CLI_WASM"
+run_stage "stage1 selfhost compiler artifact -> sample wasm compile" \
+  env VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+    bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+      --invoke selfbuild_cli_args_entry \
+      "$STAGE1_CORE_WASM" \
+      "${INPUT_SOURCE#$PROJECT_ROOT/}" \
+      "${OUTPUT_WASM#$PROJECT_ROOT/}" \
+      "$ENTRY_NAME"
 unset VIBE_PREOPEN_DIR
 
 if [ ! -f "$OUTPUT_WASM" ]; then
@@ -171,9 +157,9 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
     echo "### Selfhost CLI Adapter Gate"
     echo
-    echo "- stage1 index artifact produced a selfhost CLI wasm via selfbuild_write_cli_adapter"
-    echo "- the generated selfhost CLI wasm compiled a real input file via JS Preview2 host execution"
-    echo "- adapter input/output/entry were supplied via VIBE_INPUT / VIBE_OUTPUT / VIBE_ENTRY"
+    echo "- stage1 index artifact itself compiled a real input file via JS Preview2 host execution"
+    echo "- selfhost compile contract was exercised through \`selfbuild_cli_args_entry\`"
+    echo "- adapter input/output/entry were supplied via argv, then handled inside the selfhost artifact"
     echo "- no seed compiler or MoonBit host was used after stage1 core wasm creation"
     echo "- compiled sample output returned \`42\` via artifact-only execution"
     echo

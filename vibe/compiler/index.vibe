@@ -75,7 +75,15 @@ import ./selfhost_sources_bundle.vibe {
 
 import ./selfhost_cli_adapter_bundle.vibe {
   selfhost_cli_adapter_sources, selfhost_cli_adapter_source_groups,
-  selfhost_cli_adapter_merged_source
+  selfhost_cli_adapter_merged_source, selfhost_cli_adapter_module_source
+}
+
+import ./core/index.vibe {
+  dce_stmts
+}
+
+import ./codegen/wasi/index.vibe {
+  compile_wasi_module_impl
 }
 
 import ./cli_cache.vibe {
@@ -124,20 +132,24 @@ export let compiler_print_program = print_program
 export let compiler_print_type_expr = print_type_expr
 
 let build_selfhost_cli_adapter_bytes = () -> Bytes with { Error } {
-  let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
-  let sources = selfhost_cli_adapter_sources()
-  if Array::length(sources) == 0 {
-    throw("selfhost_cli_adapter_sources is empty")
+  let module_source = selfhost_cli_adapter_module_source()
+  if String::equals(module_source, "") {
+    throw("selfhost_cli_adapter_module_source is empty")
   }
-  let adapter_source = lookup_selfhost_source(sources, adapter_path)
-  let (bytes, _) = compile_with_closure_sources_wasi_unchecked_cached(
-    db_new(),
-    adapter_source,
-    adapter_path,
-    sources,
-    "cli_main"
-  )
-  bytes
+  let stmts = parse_program(lex(module_source))
+  let pruned_stmts = dce_stmts(stmts, ["cli_main"])
+  compile_wasi_module_impl(pruned_stmts, "cli_main")
+}
+
+let string_to_bytes = (s: String) -> Bytes {
+  let out = Array::slice([0], 0, 0)
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
 }
 
 let compile_selfhost_cli_adapter_to = (output_path: String) -> Int with { Error, Fs } {
@@ -152,6 +164,8 @@ let compile_selfhost_cli_adapter_to = (output_path: String) -> Int with { Error,
 
 let selfhost_cli_trigger_path = "_build/bench/selfhost_cli_adapter/.compile_cli_trigger"
 let selfhost_cli_stage1_path = "_build/bench/selfhost_cli_adapter/selfhost_cli_stage1.wasm"
+let selfhost_cli_merged_dump_path = "_build/bench/selfhost_cli_adapter/selfhost_cli_adapter_merged_dump.vibe"
+let selfhost_cli_module_dump_path = "_build/bench/selfhost_cli_adapter/selfhost_cli_adapter_module_dump.vibe"
 
 // Lightweight entry for WASI _start/run wrapper.
 export let selfbuild_entry = () -> Int with { Error, Fs } {
@@ -168,6 +182,52 @@ export let selfbuild_entry = () -> Int with { Error, Fs } {
 
 export let selfbuild_write_cli_adapter = () -> Int with { Error, Fs } {
   compile_selfhost_cli_adapter_to(selfhost_cli_stage1_path)
+}
+
+export let selfbuild_dump_cli_adapter_merged_source = () -> Int with { Error, Fs } {
+  Fs::write_bytes(
+    selfhost_cli_merged_dump_path,
+    string_to_bytes(selfhost_cli_adapter_merged_source())
+  )
+  0
+}
+
+export let selfbuild_dump_cli_adapter_module_source = () -> Int with { Error, Fs } {
+  Fs::write_bytes(
+    selfhost_cli_module_dump_path,
+    string_to_bytes(selfhost_cli_adapter_module_source())
+  )
+  0
+}
+
+export let selfbuild_dump_cli_adapter_merged_source_env = () -> Int with { Error, Fs, Env } {
+  let output_path = Env::get("VIBE_OUTPUT")
+  Fs::write_bytes(output_path, string_to_bytes(selfhost_cli_adapter_merged_source()))
+  0
+}
+
+export let selfbuild_dump_cli_adapter_module_source_env = () -> Int with { Error, Fs, Env } {
+  let output_path = Env::get("VIBE_OUTPUT")
+  Fs::write_bytes(output_path, string_to_bytes(selfhost_cli_adapter_module_source()))
+  0
+}
+
+export let probe_dump_cli_adapter_merged_source_env = () -> Int with { Error, Fs, Env } {
+  let output_path = Env::get("VIBE_OUTPUT")
+  Fs::write_bytes(output_path, string_to_bytes(selfhost_cli_adapter_merged_source()))
+  0
+}
+
+export let probe_dump_cli_adapter_module_source_env = () -> Int with { Error, Fs, Env } {
+  let output_path = Env::get("VIBE_OUTPUT")
+  Fs::write_bytes(output_path, string_to_bytes(selfhost_cli_adapter_module_source()))
+  0
+}
+
+export let probe_write_bytes_smoke = () -> Int with { Error, Fs, Env } {
+  let output_path = Env::get("VIBE_OUTPUT")
+  Fs::write_bytes(output_path, string_to_bytes("ok\n"))
+  0
 }
 
 export let selfbuild_cli_env_entry = () -> Int with { Error, Fs, Env } {
@@ -510,6 +570,11 @@ let probe_compile_cli_adapter_closure_like = (main_source: String) -> Int with {
 
 export let selfbuild_compile_cli_adapter = () -> Bytes with { Error } {
   build_selfhost_cli_adapter_bytes()
+}
+
+export let selfbuild_probe_compile_cli_adapter_embedded_module_len = () -> Int with { Error } {
+  let bytes = build_selfhost_cli_adapter_bytes()
+  Bytes::length(bytes)
 }
 
 export let selfbuild_probe_cli_adapter_program_len = () -> Int with { Error } {

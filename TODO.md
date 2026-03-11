@@ -12,8 +12,8 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Self-Host Compiler / Runtime Packaging
 
-**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache、host CLI の check/test loop cache 再利用、env/argv 契約、adapter closure の grouped compile までは入った。
-**最優先の残**: `selfbuild_write_cli_adapter` を stage1 artifact 上で安定して完走させ、その後 JS host 補助なしで selfhost artifact を CLI として閉じるため、Preview2 / Component runtime 前提の import 配線と配布形を固めること。
+**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache、host CLI の check/test loop cache 再利用、env/argv 契約、stage1 core wasm 直接の artifact-only compile gate までは入った。
+**最優先の残**: JS host 補助を外し、Preview2 / Component runtime だけで selfhost artifact を CLI として閉じるための import 配線と配布形を固めること。
 
 ### Selfhost compiler modularization / cache
 
@@ -54,14 +54,17 @@ Completed items are archived in `docs/DONE.md`.
 - [x] Preview2 host 付きで selfhost artifact を実行する導線を作る
   - stage1 用 wrapper source を `--wasm --force-cabi-realloc` で core wasm 化し、`node scripts/wasm_vibe_host_runner.js` に Preview2 filesystem import 実装を足して実行できるようにした
   - stage1 selfhost compiler は seed compiler で一度だけ生成し、その後は JS host が Preview2 filesystem を供給して artifact-only で走らせる
-- [x] stage1 selfhost compiler artifact から fixed-path selfhost CLI adapter wasm を生成し、その adapter wasm で実ファイル compile を通す gate を持つ
-  - `scripts/test_selfhost_cli_adapter.sh` は `stage1 core wasm -> selfhost cli adapter core wasm -> sample wasm compile -> sample run=42` を確認する
+- [x] stage1 selfhost compiler artifact だけで実ファイル compile を通す artifact-only gate を持つ
+  - `scripts/test_selfhost_cli_adapter.sh` は `stage1 core wasm -> selfbuild_cli_args_entry -> sample wasm compile -> sample run=42` を確認する
 - [x] selfhost CLI adapter を env-driven に一般化する
   - `VIBE_INPUT` / `VIBE_OUTPUT` / `VIBE_ENTRY` を読む `selfhost_cli_adapter.vibe` と `scripts/test_selfhost_cli_adapter.sh` が通る
   - `scripts/wasm_vibe_host_runner.js` は host-only string arena を持ち、`Env::get` の戻り string が後続 allocation で壊れない
 - [x] selfhost CLI adapter に argv 契約を追加する
   - `scripts/run_wasm_vibe_host_runner.sh <wasm> <input> <output> <entry>` で位置引数を `VIBE_INPUT` / `VIBE_OUTPUT` / `VIBE_ENTRY` へ写し、env-driven adapter をそのまま CLI 契約として使える
-- [ ] stage1 selfhost compiler artifact から selfhost CLI adapter wasm を安定生成する
+- [x] selfbuild direct gate は env / argv の両契約で通る
+  - `selfbuild_cli_env_entry` / `selfbuild_cli_args_entry` の両方で sample compile と output wasm 実行が通る
+- [ ] stage1 selfhost compiler artifact から standalone selfhost CLI adapter wasm を安定生成する
+  - これは direct gate 後の任意最適化に降格した
   - `selfbuild_write_cli_adapter` は `selfhost_cli_adapter_sources` の grouped closure を使うようにした
   - `selfhost_cli_adapter_merged_source` は exact flat source としては不正（duplicate declaration を含む）と判明したため、`module_source` 経由で valid module text を作る経路へ寄せている途中
   - 直近の blocker は `db_module_source` / `compile_with_source_groups_via_module_source_wasi_unchecked_cached` が stage1 artifact 上でまだ重いこと

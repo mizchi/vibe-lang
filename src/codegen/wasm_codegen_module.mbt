@@ -959,6 +959,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     (if ctx.need_exceptions { 1 } else { 0 }) +
     (if ctx.need_stack_switching { 3 } else { 0 }) + // await_tag + sleep_tag + global
     (if ctx.coverage_enabled { 2 } else { 0 }) +
+    (if ctx.need_fs { 1 } else { 0 }) +
     (if ctx.use_heap_global { 1 } else { 0 }) // __heap_ptr global
   let export_sec = ByteBuf::new()
   write_u32_leb(export_sec, export_count)
@@ -1026,6 +1027,11 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     write_name(export_sec, "__heap_ptr")
     export_sec.push((3).to_byte()) // global export
     write_u32_leb(export_sec, 0)
+  }
+  if ctx.need_fs {
+    write_name(export_sec, "__fs_root_descriptor")
+    export_sec.push((3).to_byte()) // global export
+    write_u32_leb(export_sec, fs_root_descriptor_global_index(ctx))
   }
   write_section(buf, 7, export_sec.data)
 

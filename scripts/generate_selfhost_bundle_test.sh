@@ -18,23 +18,26 @@ entry	selfhost_cli_adapter_bundle.vibe
 EOF
 
 cat > "$TMP_ROOT/vibe/compiler/polyfill.vibe" <<'EOF'
-let polyfill = 1
+let polyfill = () -> Int { 1 }
 EOF
 
 cat > "$TMP_ROOT/vibe/compiler/token.vibe" <<'EOF'
-let token = polyfill
+import ./polyfill.vibe { polyfill }
+
+let token = () -> Int { polyfill() }
 EOF
 
 cat > "$TMP_ROOT/vibe/compiler/index.vibe" <<'EOF'
 import ./selfhost_cli_adapter_bundle.vibe { selfhost_cli_adapter_merged_source }
 
-let index = String::length(selfhost_cli_adapter_merged_source()) + token
+let index = String::length(selfhost_cli_adapter_merged_source()) + token()
 EOF
 
 cat > "$TMP_ROOT/vibe/compiler/selfhost_cli_adapter.vibe" <<'EOF'
 import ./token.vibe { token }
 
-let cli_main = () -> Int { token }
+let ignored = 1
+let cli_main = () -> Int { token() }
 EOF
 
 VIBE_SELFHOST_PROJECT_ROOT="$TMP_ROOT" \
@@ -110,6 +113,12 @@ if ! rg -q '^export let selfhost_cli_adapter_merged_source' "$OUT_ADAPTER"; then
   exit 1
 fi
 
+if ! rg -q '^export let selfhost_cli_adapter_module_source' "$OUT_ADAPTER"; then
+  echo "generate-selfhost-bundle self-test: missing selfhost_cli_adapter_module_source export" >&2
+  cat "$OUT_ADAPTER" >&2
+  exit 1
+fi
+
 if ! rg -Fq 'push_grouped_source_pair(groups, "core", source_0)' "$OUT"; then
   echo "generate-selfhost-bundle self-test: missing core group mapping" >&2
   cat "$OUT" >&2
@@ -130,6 +139,9 @@ fi
 
 adapter_sources_block="$(sed -n '/export let selfhost_cli_adapter_sources/,/^}/p' "$OUT_ADAPTER")"
 adapter_merged_block="$(sed -n '/export let selfhost_cli_adapter_merged_source/,/^}/p' "$OUT_ADAPTER")"
+adapter_module_block="$(sed -n '/export let selfhost_cli_adapter_module_source/,/^}/p' "$OUT_ADAPTER")"
+adapter_merged_value_block="$(sed -n '/let selfhost_cli_adapter_merged_source_value =/,/export let selfhost_cli_adapter_merged_source/p' "$OUT_ADAPTER")"
+adapter_module_value_block="$(sed -n '/let selfhost_cli_adapter_module_source_value =/,/export let selfhost_cli_adapter_module_source/p' "$OUT_ADAPTER")"
 
 if ! printf '%s\n' "$adapter_sources_block" | rg -Fq 'Array::push(sources, source_1)'; then
   echo "generate-selfhost-bundle self-test: adapter closure missing token source" >&2
@@ -137,13 +149,13 @@ if ! printf '%s\n' "$adapter_sources_block" | rg -Fq 'Array::push(sources, sourc
   exit 1
 fi
 
-if ! printf '%s\n' "$adapter_sources_block" | rg -Fq 'Array::push(sources, source_1)'; then
+if ! printf '%s\n' "$adapter_sources_block" | rg -Fq 'Array::push(sources, source_2)'; then
   echo "generate-selfhost-bundle self-test: adapter closure missing adapter source" >&2
   cat "$OUT_ADAPTER" >&2
   exit 1
 fi
 
-if printf '%s\n' "$adapter_sources_block" | rg -Fq 'Array::push(sources, source_2)'; then
+if printf '%s\n' "$adapter_sources_block" | rg -Fq 'vibe/compiler/index.vibe'; then
   echo "generate-selfhost-bundle self-test: adapter closure unexpectedly kept unrelated index source" >&2
   cat "$OUT_ADAPTER" >&2
   exit 1
@@ -155,20 +167,50 @@ if printf '%s\n' "$adapter_merged_block" | rg -Fq 'selfhost_cli_adapter_ordered_
   exit 1
 fi
 
-if ! printf '%s\n' "$adapter_merged_block" | rg -Fq 'let token = polyfill'; then
+if ! rg -Fq 'let selfhost_cli_adapter_merged_source_value =' "$OUT_ADAPTER"; then
+  echo "generate-selfhost-bundle self-test: adapter merged source should be bound as a direct string value" >&2
+  cat "$OUT_ADAPTER" >&2
+  exit 1
+fi
+
+if ! rg -Fq 'let selfhost_cli_adapter_module_source_value =' "$OUT_ADAPTER"; then
+  echo "generate-selfhost-bundle self-test: adapter module source should be bound as a direct string value" >&2
+  cat "$OUT_ADAPTER" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$adapter_merged_block" | rg -Fq 'selfhost_cli_adapter_merged_source_value'; then
+  echo "generate-selfhost-bundle self-test: adapter merged source should rebuild from the direct string binding" >&2
+  cat "$OUT_ADAPTER" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$adapter_module_block" | rg -Fq 'selfhost_cli_adapter_module_source_value'; then
+  echo "generate-selfhost-bundle self-test: adapter module source should rebuild from the direct string binding" >&2
+  cat "$OUT_ADAPTER" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$adapter_merged_value_block" | rg -Fq 'let token = () -> Int { polyfill() }'; then
   echo "generate-selfhost-bundle self-test: adapter merged source missing inlined dependency body" >&2
   cat "$OUT_ADAPTER" >&2
   exit 1
 fi
 
-if printf '%s\n' "$adapter_merged_block" | rg -Fq 'import ./token.vibe'; then
+if printf '%s\n' "$adapter_merged_value_block" | rg -Fq 'import ./token.vibe'; then
   echo "generate-selfhost-bundle self-test: adapter merged source still contains import statements" >&2
   cat "$OUT_ADAPTER" >&2
   exit 1
 fi
 
-if printf '%s\n' "$adapter_merged_block" | rg -Fq '  "\\n'; then
-  echo "generate-selfhost-bundle self-test: adapter merged source unexpectedly starts with a blank line" >&2
+if ! printf '%s\n' "$adapter_module_value_block" | rg -Fq 'let cli_main = () -> Int { token() }'; then
+  echo "generate-selfhost-bundle self-test: adapter module source missing cli_main function" >&2
+  cat "$OUT_ADAPTER" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$adapter_module_value_block" | rg -Fq 'let ignored = 1'; then
+  echo "generate-selfhost-bundle self-test: adapter module source should drop non-function lets" >&2
   cat "$OUT_ADAPTER" >&2
   exit 1
 fi

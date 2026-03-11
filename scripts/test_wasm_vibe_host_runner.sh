@@ -43,6 +43,20 @@ if [ "$args_result" != "3" ]; then
   exit 1
 fi
 
+closure_env_result="$(
+  FOO=abc compile_and_run closure_env \
+    'let suffix = "x"
+
+export let probe = () -> Int with { Env } {
+  String::length(String::concat(suffix, Env::get("FOO")))
+}' \
+    probe
+)"
+if [ "$closure_env_result" != "4" ]; then
+  echo "closure_env failed: expected 4, got '$closure_env_result'" >&2
+  exit 1
+fi
+
 printf 'hello' >"$OUT_DIR/input.txt"
 fs_result="$(
   cd "$OUT_DIR"
@@ -52,6 +66,17 @@ fs_result="$(
 )"
 if [ "$fs_result" != "5" ]; then
   echo "fs_read_file failed: expected 5, got '$fs_result'" >&2
+  exit 1
+fi
+
+run_skip_init_result="$(
+  cd "$OUT_DIR"
+  VIBE_SKIP_RUN_INIT=1 compile_and_run fs_read_skip_init \
+    'export let probe = () -> Int with { Error, Fs } { String::length(Fs::read_file("input.txt")) }' \
+    probe
+)"
+if [ "$run_skip_init_result" != "5" ]; then
+  echo "skip run init failed: expected 5, got '$run_skip_init_result'" >&2
   exit 1
 fi
 

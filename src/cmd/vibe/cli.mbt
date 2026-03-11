@@ -37,6 +37,7 @@ pub fn run(args : Array[String]) -> Unit {
     "fmt" => fmt_cmd(cmd_args)
     "normalize" => normalize_cmd(cmd_args)
     "compile" => compile_cmd(cmd_args)
+    "emit-module-source" => emit_module_source_cmd(cmd_args)
     "compile-lite" => compile_lite_cmd(cmd_args)
     "precompile" => precompile_cmd(cmd_args)
     "bench" => bench_cmd(cmd_args, syntax_mode, runtime_features)
@@ -102,6 +103,7 @@ fn print_usage() -> Unit {
     "  test [--jobs N] <file|dir...>  run test blocks (parallel for dirs; default jobs=VIBE_TEST_JOBS or 1, max 16)",
   )
   println("  check [--profile-tsv path] <file...>  parse/type check scripts")
+  println("  emit-module-source <in> <out> <entry>  internal: extract entry-pruned module source")
   println(
     "  finalize [--db file] [--export file] [--library] [--print] [--dry-run]  refactor scratch/db source",
   )
@@ -1735,6 +1737,18 @@ fn compile_module_wasm_for_exec(
     debug_errors=true,
     http_host_imports~,
   )
+}
+
+///|
+fn emit_module_source_cmd(args : Array[String]) -> Unit {
+  if args.length() != 3 {
+    abort("emit-module-source: expected <in> <out> <entry>")
+  }
+  let fs = @io.default_fs_adapter()
+  match emit_module_source_file(args[0], args[1], args[2], fs) {
+    Ok(_) => ()
+    Err(msg) => abort("emit-module-source: " + msg)
+  }
 }
 
 ///|

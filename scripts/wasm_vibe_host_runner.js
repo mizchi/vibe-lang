@@ -783,16 +783,24 @@ async function main() {
     throw new Error(`missing export: ${invoke}`);
   }
 
-  const skipRunInit = invoke.startsWith("probe_");
   // User-exported functions have an implicit i32 env parameter (closure ABI).
   // The "run" entry has no params; all other exports take (i32) -> i64.
   // For closure exports, resolve the real env pointer from the initialized heap.
+  const prefersZeroEnvFirst =
+    invoke.startsWith("probe_") ||
+    invoke.startsWith("selfbuild_") ||
+    process.env.VIBE_PREFER_ZERO_ENV_FIRST === "1";
+  const skipRunInit = process.env.VIBE_SKIP_RUN_INIT === "1";
   if (!skipRunInit && invoke !== "run" && typeof instance.exports.run === "function") {
     const initHeap =
       instance.exports.__heap_ptr instanceof WebAssembly.Global
         ? instance.exports.__heap_ptr.value
         : 0;
     instance.exports.run();
+    const fsRootDescriptor = instance.exports.__fs_root_descriptor;
+    if (fsRootDescriptor instanceof WebAssembly.Global) {
+      fsRootDescriptor.value = -1;
+    }
     const funcIdx = exportFuncIndices[invoke];
     const tableSlot = funcIdx !== undefined ? funcToTableSlot[funcIdx] : undefined;
     var resolvedEnv =
@@ -817,12 +825,11 @@ async function main() {
   };
   try {
     const envCandidates =
-      skipRunInit ? [0] :
-      invoke !== "run" &&
-      resolvedEnv !== 0 &&
-      invoke.startsWith("selfbuild_")
-        ? [resolvedEnv, 0]
-        : [resolvedEnv];
+      invoke === "run"
+        ? [0]
+        : resolvedEnv !== 0
+          ? (prefersZeroEnvFirst ? [0, resolvedEnv] : [resolvedEnv, 0])
+          : [0];
     let lastErr = null;
     for (const envValue of envCandidates) {
       try {
