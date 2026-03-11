@@ -20,6 +20,10 @@ import ../../../checker/checker_stmt.vibe {
   check_program
 }
 
+import ../../../core/index.vibe {
+  dce_stmts
+}
+
 import ../../../loader/index.vibe {
   collect_all_sources_fs, collect_source_groups_fs
 }
@@ -418,6 +422,24 @@ export let grouped_source_merged_len = (
   String::length(merged_source)
 }
 
+export let source_group_module_source_len = (
+  db: TypeDb,
+  main_source: String,
+  main_path: String,
+  source_groups: Array[(String, Array[(String, String)])]
+) -> Int with { Error } {
+  let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
+  let ordered_sources = collect_inline_sources_ordered(
+    main_path,
+    main_source,
+    flatten_source_groups(normalized_groups)
+  )
+  let filtered_groups = filter_source_groups(normalized_groups, ordered_sources)
+  let (merged_source, merge_fingerprint, module_db) = db_grouped_merged_source(db, filtered_groups)
+  let (module_source, _) = db_module_source(module_db, merge_fingerprint, merged_source)
+  String::length(module_source)
+}
+
 export let compile_with_modules = (main_source: String, main_path: String, sources: Array[(String, String)]) -> Bytes with { Error } {
   let (bytes, _) = compile_with_modules_cached(db_new(), main_source, main_path, sources)
   bytes
@@ -485,6 +507,60 @@ let build_merged_stmts_inline = (sources: Array[(String, String)]) -> Array[Stmt
   merged
 }
 
+let prune_entry_stmts = (stmts: Array[Stmt], entry_name: String) -> Array[Stmt] {
+  dce_stmts(stmts, [entry_name])
+}
+
+export let closure_ordered_source_count = (
+  main_source: String,
+  main_path: String,
+  sources: Array[(String, String)]
+) -> Int with { Error } {
+  Array::length(collect_inline_sources_ordered(main_path, main_source, sources))
+}
+
+export let closure_merged_stmt_count = (
+  main_source: String,
+  main_path: String,
+  sources: Array[(String, String)]
+) -> Int with { Error } {
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
+  let merged_stmts = build_merged_stmts_inline(ordered_sources)
+  Array::length(merged_stmts)
+}
+
+export let closure_pruned_stmt_count = (
+  main_source: String,
+  main_path: String,
+  sources: Array[(String, String)],
+  entry_name: String
+) -> Int with { Error } {
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
+  let merged_stmts = build_merged_stmts_inline(ordered_sources)
+  let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
+  Array::length(pruned_stmts)
+}
+
+export let source_group_pruned_stmt_count = (
+  db: TypeDb,
+  main_source: String,
+  main_path: String,
+  source_groups: Array[(String, Array[(String, String)])],
+  entry_name: String
+) -> Int with { Error } {
+  let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
+  let ordered_sources = collect_inline_sources_ordered(
+    main_path,
+    main_source,
+    flatten_source_groups(normalized_groups)
+  )
+  let filtered_groups = filter_source_groups(normalized_groups, ordered_sources)
+  let (merged_source, _, _) = db_grouped_merged_source(db, filtered_groups)
+  let merged_stmts = parse_program(lex(merged_source))
+  let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
+  Array::length(pruned_stmts)
+}
+
 export let compile_with_modules_cached = (db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)]) -> (Bytes, TypeDb) with { Error } {
   let next_db = prepare_modules_cached(db, main_path, main_source, sources)
   let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
@@ -512,7 +588,8 @@ export let compile_with_modules_wasi_cached = (db: TypeDb, main_source: String, 
     Some(bytes) => (bytes, next_db),
     None => {
       let merged_stmts = build_merged_stmts_inline(ordered_sources)
-      let bytes = compile_wasi_module(merged_stmts, entry_name)
+      let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
+      let bytes = compile_wasi_module(pruned_stmts, entry_name)
       (bytes, db_store_artifact(next_db, main_path, "wasi", entry_name, artifact_fingerprint, bytes))
     }
   }
@@ -535,7 +612,8 @@ export let compile_with_closure_sources_wasi_cached = (
     Some(bytes) => (bytes, next_db),
     None => {
       let merged_stmts = build_merged_stmts_inline(ordered_sources)
-      let bytes = compile_wasi_module(merged_stmts, entry_name)
+      let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
+      let bytes = compile_wasi_module(pruned_stmts, entry_name)
       (bytes, db_store_artifact(next_db, main_path, "wasi", entry_name, artifact_fingerprint, bytes))
     }
   }
@@ -557,8 +635,8 @@ export let compile_with_closure_sources_wasi_unchecked_cached = (
     Some(bytes) => (bytes, db),
     None => {
       let merged_stmts = build_merged_stmts_inline(ordered_sources)
-      let _ = check_program(merged_stmts)
-      let bytes = compile_wasi_module(merged_stmts, entry_name)
+      let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
+      let bytes = compile_wasi_module(pruned_stmts, entry_name)
       (bytes, db_store_artifact(db, main_path, "wasi", entry_name, artifact_fingerprint, bytes))
     }
   }
@@ -592,7 +670,8 @@ export let compile_with_source_groups_wasi_cached = (
     Some(bytes) => (bytes, codegen_db),
     None => {
       let merged_stmts = parse_program(lex(merged_source))
-      let bytes = compile_wasi_module(merged_stmts, entry_name)
+      let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
+      let bytes = compile_wasi_module(pruned_stmts, entry_name)
       (bytes, db_store_artifact(codegen_db, main_path, "wasi", entry_name, artifact_fingerprint, bytes))
     }
   }
@@ -620,9 +699,39 @@ export let compile_with_source_groups_wasi_unchecked_cached = (
     Some(bytes) => (bytes, merge_db),
     None => {
       let merged_stmts = parse_program(lex(merged_source))
-      let _ = check_program(merged_stmts)
-      let bytes = compile_wasi_module(merged_stmts, entry_name)
+      let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
+      let bytes = compile_wasi_module(pruned_stmts, entry_name)
       (bytes, db_store_artifact(merge_db, main_path, "wasi", entry_name, artifact_fingerprint, bytes))
+    }
+  }
+}
+
+export let compile_with_source_groups_via_module_source_wasi_unchecked_cached = (
+  db: TypeDb,
+  main_source: String,
+  main_path: String,
+  source_groups: Array[(String, Array[(String, String)])],
+  entry_name: String
+) -> (Bytes, TypeDb) with { Error } {
+  let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
+  let ordered_sources = collect_inline_sources_ordered(
+    main_path,
+    main_source,
+    flatten_source_groups(normalized_groups)
+  )
+  let filtered_groups = filter_source_groups(normalized_groups, ordered_sources)
+  let (merged_source, merge_fingerprint, module_db) = db_grouped_merged_source(db, filtered_groups)
+  let (module_source, codegen_db) = db_module_source(module_db, merge_fingerprint, merged_source)
+  let artifact_fingerprint = artifact_fingerprint_from_source(
+    String::concat(module_source, String::concat("|", entry_name))
+  )
+  match db_load_artifact(codegen_db, main_path, "wasi-module-source", entry_name, artifact_fingerprint) {
+    Some(bytes) => (bytes, codegen_db),
+    None => {
+      let module_stmts = parse_program(lex(module_source))
+      let pruned_stmts = prune_entry_stmts(module_stmts, entry_name)
+      let bytes = compile_wasi_module(pruned_stmts, entry_name)
+      (bytes, db_store_artifact(codegen_db, main_path, "wasi-module-source", entry_name, artifact_fingerprint, bytes))
     }
   }
 }
@@ -652,7 +761,8 @@ export let compile_file_fs_cached = (db: TypeDb, entry_path: String, entry_name:
     Some(bytes) => (bytes, codegen_db),
     None => {
       let merged_stmts = parse_program(lex(merged_source))
-      let bytes = compile_wasi_module(merged_stmts, entry_name)
+      let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
+      let bytes = compile_wasi_module(pruned_stmts, entry_name)
       (bytes, db_store_artifact(codegen_db, entry_path, "wasi", entry_name, artifact_fingerprint, bytes))
     }
   }

@@ -56,9 +56,11 @@ import ./entry/compiler/fs_compile/index.vibe {
   prepare_modules_cached, compile_with_modules_cached, compile_with_modules_wasi_cached,
   compile_with_closure_sources_wasi_cached, compile_with_closure_sources_wasi_unchecked_cached,
   compile_with_source_groups_wasi_cached, compile_with_source_groups_wasi_unchecked_cached,
+  compile_with_source_groups_via_module_source_wasi_unchecked_cached,
   source_group_total_source_count, source_group_ordered_source_count,
   source_group_filtered_group_count, source_group_prepare_typecheck_count,
-  grouped_source_merged_len,
+  grouped_source_merged_len, closure_ordered_source_count, closure_merged_stmt_count,
+  closure_pruned_stmt_count, source_group_pruned_stmt_count, source_group_module_source_len,
   compile_file_fs, compile_file_fs_module, prepare_file_fs_cached,
   compile_file_fs_cached, compile_file_fs_module_cached
 }
@@ -122,11 +124,20 @@ export let compiler_print_program = print_program
 export let compiler_print_type_expr = print_type_expr
 
 let build_selfhost_cli_adapter_bytes = () -> Bytes with { Error } {
-  let merged_source = selfhost_cli_adapter_merged_source()
-  if String::equals(merged_source, "") {
-    throw("selfhost_cli_adapter_merged_source is empty")
+  let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
+  let sources = selfhost_cli_adapter_sources()
+  if Array::length(sources) == 0 {
+    throw("selfhost_cli_adapter_sources is empty")
   }
-  compile_source_wasi_only(merged_source, "cli_main")
+  let adapter_source = lookup_selfhost_source(sources, adapter_path)
+  let (bytes, _) = compile_with_closure_sources_wasi_unchecked_cached(
+    db_new(),
+    adapter_source,
+    adapter_path,
+    sources,
+    "cli_main"
+  )
+  bytes
 }
 
 let compile_selfhost_cli_adapter_to = (output_path: String) -> Int with { Error, Fs } {
@@ -398,6 +409,78 @@ let probe_parse_import_stmt = (source: String) -> Int with { Error } {
   next
 }
 
+let probe_lex_source = (source: String) -> Int with { Error } {
+  Array::length(lex(source))
+}
+
+let probe_parse_source = (source: String) -> Int with { Error } {
+  let stmts = parse_program(lex(source))
+  Array::length(stmts)
+}
+
+let probe_check_source = (source: String) -> Int with { Error } {
+  let stmts = parse_program(lex(source))
+  let _ = check_program(stmts)
+  1
+}
+
+let probe_compile_source_len = (source: String, entry_name: String) -> Int with { Error } {
+  let bytes = compile_source_wasi_only(source, entry_name)
+  Bytes::length(bytes)
+}
+
+let probe_parse_stmt_progress_source = (source: String) -> Int with { Error } {
+  let tokens = lex(source)
+  let mut pos = 0
+  let mut stmt_index = 0
+  let mut result = -1
+  let mut done = false
+  while !done {
+    if pos >= Array::length(tokens) {
+      result = stmt_index * 100000 + pos
+      done = true
+    } else {
+      match Array::get(tokens, pos) {
+        TEof => {
+          result = stmt_index * 100000 + pos
+          done = true
+        },
+        _ => {
+          handle {
+            let (_, next) = parse_stmt(tokens, pos)
+            pos = next
+            stmt_index = stmt_index + 1
+          } {
+            Error(_) => {
+              result = stmt_index * 100000 + pos
+              done = true
+            }
+          }
+        }
+      }
+    }
+  }
+  result
+}
+
+let probe_parse_sources_first_failure = (sources: Array[(String, String)]) -> Int with { Error } {
+  let mut i = 0
+  let mut result = -1
+  while i < Array::length(sources) && result < 0 {
+    let (_, source) = Array::get(sources, i)
+    handle {
+      let _ = parse_program(lex(source))
+      ()
+    } {
+      Error(_) => {
+        result = i * 1000000 + probe_parse_stmt_progress_source(source)
+      }
+    }
+    i = i + 1
+  }
+  result
+}
+
 let probe_compile_cli_adapter_like = (main_source: String) -> Int with { Error } {
   let sources = selfhost_sources()
   if Array::length(sources) == 0 { throw("selfhost_sources is empty (stub)") }
@@ -405,6 +488,20 @@ let probe_compile_cli_adapter_like = (main_source: String) -> Int with { Error }
     db_new(),
     main_source,
     "vibe/compiler/probe_cli_adapter_like.vibe",
+    sources,
+    "cli_main"
+  )
+  Bytes::length(bytes)
+}
+
+let probe_compile_cli_adapter_closure_like = (main_source: String) -> Int with { Error } {
+  let adapter_path = "vibe/compiler/probe_cli_adapter_closure_like.vibe"
+  let sources = selfhost_cli_adapter_sources()
+  if Array::length(sources) == 0 { throw("selfhost_cli_adapter_sources is empty") }
+  let (bytes, _) = compile_with_closure_sources_wasi_unchecked_cached(
+    db_new(),
+    main_source,
+    adapter_path,
     sources,
     "cli_main"
   )
@@ -466,6 +563,30 @@ export let selfbuild_probe_cli_adapter_grouped_merged_len = () -> Int with { Err
   grouped_source_merged_len(db_new(), adapter_source, adapter_path, source_groups)
 }
 
+export let selfbuild_probe_cli_adapter_module_source_len = () -> Int with { Error } {
+  let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
+  let sources = selfhost_cli_adapter_sources()
+  let source_groups = selfhost_cli_adapter_source_groups()
+  let adapter_source = lookup_selfhost_source(sources, adapter_path)
+  source_group_module_source_len(db_new(), adapter_source, adapter_path, source_groups)
+}
+
+export let selfbuild_probe_compile_cli_adapter_via_module_source_len = () -> Int with { Error } {
+  let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
+  let sources = selfhost_cli_adapter_sources()
+  let source_groups = selfhost_cli_adapter_source_groups()
+  if Array::length(sources) == 0 { throw("selfhost_cli_adapter_sources is empty") }
+  let adapter_source = lookup_selfhost_source(sources, adapter_path)
+  let (bytes, _) = compile_with_source_groups_via_module_source_wasi_unchecked_cached(
+    db_new(),
+    adapter_source,
+    adapter_path,
+    source_groups,
+    "cli_main"
+  )
+  Bytes::length(bytes)
+}
+
 export let selfbuild_probe_cli_adapter_source_control = () -> Int with { Error } {
   let sources = selfhost_cli_adapter_sources()
   if Array::length(sources) == 0 { throw("selfhost_cli_adapter_sources is empty") }
@@ -482,6 +603,60 @@ export let selfbuild_probe_cli_adapter_program_control = () -> Int with { Error 
 export let selfbuild_probe_cli_adapter_merged_control = () -> Int with { Error } {
   let merged_source = load_cli_adapter_merged_source()
   find_unexpected_control_char(merged_source)
+}
+
+export let selfbuild_probe_cli_adapter_exact_len = () -> Int with { Error } {
+  String::length(selfhost_cli_adapter_merged_source())
+}
+
+export let selfbuild_probe_cli_adapter_exact_control = () -> Int with { Error } {
+  find_unexpected_control_char(selfhost_cli_adapter_merged_source())
+}
+
+export let selfbuild_probe_cli_adapter_exact_lex_count = () -> Int with { Error } {
+  probe_lex_source(selfhost_cli_adapter_merged_source())
+}
+
+export let selfbuild_probe_cli_adapter_exact_stmt_count = () -> Int with { Error } {
+  probe_parse_source(selfhost_cli_adapter_merged_source())
+}
+
+export let selfbuild_probe_cli_adapter_exact_parse_stmt_progress = () -> Int with { Error } {
+  probe_parse_stmt_progress_source(selfhost_cli_adapter_merged_source())
+}
+
+export let selfbuild_probe_cli_adapter_program_parse_stmt_progress = () -> Int with { Error } {
+  probe_parse_stmt_progress_source(load_cli_adapter_program_source())
+}
+
+export let selfbuild_probe_cli_adapter_merged_parse_stmt_progress = () -> Int with { Error } {
+  probe_parse_stmt_progress_source(load_cli_adapter_merged_source())
+}
+
+export let selfbuild_probe_cli_adapter_source_first_failure = () -> Int with { Error } {
+  probe_parse_sources_first_failure(selfhost_cli_adapter_sources())
+}
+
+export let selfbuild_probe_cli_adapter_exact_check = () -> Int with { Error } {
+  probe_check_source(selfhost_cli_adapter_merged_source())
+}
+
+export let selfbuild_probe_cli_adapter_exact_compile_len = () -> Int with { Error } {
+  probe_compile_source_len(selfhost_cli_adapter_merged_source(), "cli_main")
+}
+
+export let selfbuild_probe_compile_export_let_len = () -> Int with { Error } {
+  probe_compile_source_len(
+    "export let helper = () -> Int { 1 }\nlet cli_main = () -> Int { helper() }",
+    "cli_main"
+  )
+}
+
+export let selfbuild_probe_compile_export_enum_len = () -> Int with { Error } {
+  probe_compile_source_len(
+    "export enum Flag { On; Off }\nlet cli_main = () -> Int { 0 }",
+    "cli_main"
+  )
 }
 
 export let selfbuild_probe_source_control_lexer = () -> Int with { Error } {
@@ -651,6 +826,48 @@ export let selfbuild_probe_compile_cli_adapter_like_source_compile_wasi_only_con
   )
 }
 
+export let selfbuild_probe_compile_cli_adapter_closure_like_plain = () -> Int with { Error } {
+  probe_compile_cli_adapter_closure_like(
+    "let cli_main = () -> Int { 0 }"
+  )
+}
+
+export let selfbuild_probe_compile_cli_adapter_closure_like_import_syntax_lexer_unused = () -> Int with { Error } {
+  probe_compile_cli_adapter_closure_like(
+    "import ./syntax/lexer.vibe { lex }\nlet cli_main = () -> Int { 0 }"
+  )
+}
+
+export let selfbuild_probe_compile_cli_adapter_closure_like_import_syntax_parser_unused = () -> Int with { Error } {
+  probe_compile_cli_adapter_closure_like(
+    "import ./syntax/parser.vibe { parse_program }\nlet cli_main = () -> Int { 0 }"
+  )
+}
+
+export let selfbuild_probe_compile_cli_adapter_closure_like_import_checker_stmt_unused = () -> Int with { Error } {
+  probe_compile_cli_adapter_closure_like(
+    "import ./checker/checker_stmt.vibe { check_program }\nlet cli_main = () -> Int { 0 }"
+  )
+}
+
+export let selfbuild_probe_compile_cli_adapter_closure_like_import_codegen_wasi_unused = () -> Int with { Error } {
+  probe_compile_cli_adapter_closure_like(
+    "import ./codegen/wasi/index.vibe { compile_wasi_module_impl }\nlet cli_main = () -> Int { 0 }"
+  )
+}
+
+export let selfbuild_probe_compile_cli_adapter_closure_like_import_source_compile_wasi_only_unused = () -> Int with { Error } {
+  probe_compile_cli_adapter_closure_like(
+    "import ./entry/source_compile/wasi_only/index.vibe { compile_source_wasi_only }\nlet cli_main = () -> Int { 0 }"
+  )
+}
+
+export let selfbuild_probe_compile_cli_adapter_closure_like_source_compile_wasi_only_const = () -> Int with { Error } {
+  probe_compile_cli_adapter_closure_like(
+    "import ./entry/source_compile/wasi_only/index.vibe { compile_source_wasi_only }\nlet cli_main = () -> Int with { Error } { let _bytes = compile_source_wasi_only(\"let answer = () -> Int { 42 }\", \"answer\"); 0 }"
+  )
+}
+
 export let selfbuild_probe_compile_cli_adapter_like_args = () -> Int with { Error } {
   probe_compile_cli_adapter_like(
     "import ./type_db.vibe { db_new }\nimport ./entry/compiler/file_compile/index.vibe { compile_file_fs_cached }\nlet cli_main = () -> Int with { Error, Fs, Env } { let input_path = Env::args_get(0); let entry_name = Env::args_get(1); let (_, _) = compile_file_fs_cached(db_new(), input_path, entry_name); 0 }"
@@ -745,11 +962,11 @@ export let selfbuild_probe_prepare_cli_adapter = () -> Int with { Error } {
 
 export let selfbuild_probe_compile_cli_adapter_grouped_len = () -> Int with { Error } {
   let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
-  let sources = selfhost_sources()
-  let source_groups = selfhost_source_groups()
-  if Array::length(sources) == 0 { throw("selfhost_sources is empty (stub)") }
+  let sources = selfhost_cli_adapter_sources()
+  let source_groups = selfhost_cli_adapter_source_groups()
+  if Array::length(sources) == 0 { throw("selfhost_cli_adapter_sources is empty") }
   let adapter_source = lookup_selfhost_source(sources, adapter_path)
-  let (bytes, _) = compile_with_source_groups_wasi_cached(
+  let (bytes, _) = compile_with_source_groups_wasi_unchecked_cached(
     db_new(),
     adapter_source,
     adapter_path,
@@ -761,10 +978,10 @@ export let selfbuild_probe_compile_cli_adapter_grouped_len = () -> Int with { Er
 
 export let selfbuild_probe_compile_cli_adapter_closure_len = () -> Int with { Error } {
   let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
-  let sources = selfhost_sources()
-  if Array::length(sources) == 0 { throw("selfhost_sources is empty (stub)") }
+  let sources = selfhost_cli_adapter_sources()
+  if Array::length(sources) == 0 { throw("selfhost_cli_adapter_sources is empty") }
   let adapter_source = lookup_selfhost_source(sources, adapter_path)
-  let (bytes, _) = compile_with_closure_sources_wasi_cached(
+  let (bytes, _) = compile_with_closure_sources_wasi_unchecked_cached(
     db_new(),
     adapter_source,
     adapter_path,
@@ -772,6 +989,39 @@ export let selfbuild_probe_compile_cli_adapter_closure_len = () -> Int with { Er
     "cli_main"
   )
   Bytes::length(bytes)
+}
+
+export let selfbuild_probe_cli_adapter_closure_ordered_source_count = () -> Int with { Error } {
+  let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
+  let sources = selfhost_cli_adapter_sources()
+  if Array::length(sources) == 0 { throw("selfhost_cli_adapter_sources is empty") }
+  let adapter_source = lookup_selfhost_source(sources, adapter_path)
+  closure_ordered_source_count(adapter_source, adapter_path, sources)
+}
+
+export let selfbuild_probe_cli_adapter_closure_merged_stmt_count = () -> Int with { Error } {
+  let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
+  let sources = selfhost_cli_adapter_sources()
+  if Array::length(sources) == 0 { throw("selfhost_cli_adapter_sources is empty") }
+  let adapter_source = lookup_selfhost_source(sources, adapter_path)
+  closure_merged_stmt_count(adapter_source, adapter_path, sources)
+}
+
+export let selfbuild_probe_cli_adapter_closure_pruned_stmt_count = () -> Int with { Error } {
+  let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
+  let sources = selfhost_cli_adapter_sources()
+  if Array::length(sources) == 0 { throw("selfhost_cli_adapter_sources is empty") }
+  let adapter_source = lookup_selfhost_source(sources, adapter_path)
+  closure_pruned_stmt_count(adapter_source, adapter_path, sources, "cli_main")
+}
+
+export let selfbuild_probe_cli_adapter_grouped_pruned_stmt_count = () -> Int with { Error } {
+  let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
+  let sources = selfhost_cli_adapter_sources()
+  let source_groups = selfhost_cli_adapter_source_groups()
+  if Array::length(sources) == 0 { throw("selfhost_cli_adapter_sources is empty") }
+  let adapter_source = lookup_selfhost_source(sources, adapter_path)
+  source_group_pruned_stmt_count(db_new(), adapter_source, adapter_path, source_groups, "cli_main")
 }
 
 export let selfbuild_probe_compile_via_compiler_wrapper = () -> Int with { Error } {
@@ -1079,12 +1329,88 @@ export let selfbuild_probe_cli_file_cache_counts = () -> Int with { Error, Fs } 
   selfbuild_probe_cli_cache_counts()
 }
 
-//# Misc
-
 export {
-  Token, token_to_string, lex, Pat, Expr, TypeExpr, Stmt, Type, TypeEnv, Subst, TypeDef, TypeDb, parse, parse_ok, parse_expr, parse_type, parse_stmt, parse_program, print_expr, print_pat, print_type_expr, print_stmt, print_program, check_program, check_program_with_env, check_stmts, db_new, db_set_source, db_check_env, db_typecheck, db_typecheck_count, db_parse_count, db_merge_count, db_module_source_count, db_codegen_count, db_program_source, db_merged_source, db_grouped_merged_source, db_module_source, db_load_artifact, db_store_artifact, compile_module, compile_wasi_module, compile_wasi_module_with_sources, compile_wasi_module_gc, compile_source, compile_source_wasi, compile_with_modules, compile_with_modules_wasi, prepare_modules_cached, compile_with_modules_cached, compile_with_modules_wasi_cached, compile_file_fs, compile_file_fs_module, prepare_file_fs_cached, compile_file_fs_cached, compile_file_fs_module_cached, parse_batch_jobs_tsv, prepare_jobs_cached, compile_jobs_cached, selfbuild_compile_stage2, selfbuild_compile_cli_adapter, selfbuild_entry, selfbuild_write_cli_adapter, selfbuild_cli_env_entry, selfbuild_probe_cli_env_read_len, selfbuild_probe_cli_env_compile_len, selfbuild_probe_cli_args_read_len, selfbuild_probe_cli_args_compile_len, selfbuild_cli_args_entry, selfbuild_probe_lex, selfbuild_probe_parse, selfbuild_probe_check, selfbuild_probe_compile, selfbuild_probe_parse_count, selfbuild_probe_token_tag, selfbuild_probe_deep_if, selfbuild_probe_char_at, selfbuild_probe_fn_count, selfbuild_probe_sources_len, selfbuild_probe_merged_len, selfbuild_probe_compile_first_5, selfbuild_probe_compile_first_8, selfbuild_probe_compile_first_10, selfbuild_probe_compile_first_15, selfbuild_probe_compile_first_17, selfbuild_probe_compile_first_18, selfbuild_probe_compile_first_19, selfbuild_probe_compile_first_20, selfbuild_probe_compile_first_21, selfbuild_probe_compile_first_22, selfbuild_probe_compile_first_23, selfbuild_probe_compile_first_24, selfbuild_probe_compile_first_25, selfbuild_probe_compile_first_26, selfbuild_probe_compile_first_27, selfbuild_probe_compile_first_28, selfbuild_probe_compile_first_29, selfbuild_probe_compile_cli_adapter_like_plain, selfbuild_probe_compile_cli_adapter_like_args_only, selfbuild_probe_compile_cli_adapter_like_import_compile_only, selfbuild_probe_compile_cli_adapter_like_import_compile_unused, selfbuild_probe_compile_cli_adapter_like_import_loader_unused, selfbuild_probe_compile_cli_adapter_like_import_runtime_unused, selfbuild_probe_compile_cli_adapter_like_import_codegen_unused, selfbuild_probe_compile_cli_adapter_like_import_syntax_lexer_unused, selfbuild_probe_compile_cli_adapter_like_import_syntax_parser_unused, selfbuild_probe_compile_cli_adapter_like_import_checker_stmt_unused, selfbuild_probe_compile_cli_adapter_like_import_codegen_wasi_unused, selfbuild_probe_compile_cli_adapter_like_import_source_compile_unused, selfbuild_probe_compile_cli_adapter_like_source_compile_const, selfbuild_probe_prepare_import_source_compile_wasi_only, selfbuild_probe_compile_cli_adapter_like_import_source_compile_wasi_only_unused, selfbuild_probe_compile_cli_adapter_like_source_compile_wasi_only_const, selfbuild_probe_compile_cli_adapter_grouped_len, selfbuild_probe_compile_cli_adapter_closure_len, selfbuild_probe_type_db_cache_counts, selfbuild_probe_type_db_parse_counts, selfbuild_probe_type_db_merge_counts, selfbuild_probe_type_db_group_merge_counts, selfbuild_probe_type_db_module_source_counts, selfbuild_probe_type_db_codegen_counts, selfbuild_probe_cli_file_cache_counts, selfbuild_probe_source_control_lexer, selfbuild_probe_source_control_syntax_lexer, selfbuild_probe_source_control_parser, selfbuild_probe_source_control_syntax_parser, selfbuild_probe_source_control_entry_compiler, selfbuild_probe_source_control_entry_source_compile, selfbuild_probe_prepare_import_runtime, selfbuild_probe_prepare_import_loader, selfbuild_probe_prepare_import_leaf_codegen, selfbuild_probe_prepare_import_file_compile
-}
-
-export {
-  Pat, lex, Expr, Stmt, Token, Type, TypeEnv, Subst, TypeDef, TypeDb, parse, version, TypeExpr, parse_ok, print_pat, parse_expr, parse_stmt, parse_type, print_expr, print_stmt, compiler_lex, parse_program, print_program, compiler_parse, print_type_expr, token_to_string, compiler_parse_ok, compiler_print_pat, compiler_parse_expr, compiler_parse_stmt, compiler_parse_type, compiler_print_expr, compiler_print_stmt, compiler_parse_program, compiler_print_program, compiler_print_type_expr, check_program, check_program_with_env, check_stmts, db_new, db_set_source, db_check_env, db_typecheck, db_typecheck_count, db_parse_count, db_merge_count, db_module_source_count, db_codegen_count, db_program_source, db_merged_source, db_grouped_merged_source, db_module_source, db_load_artifact, db_store_artifact, compile_module, compile_wasi_module, compile_wasi_module_with_sources, compile_wasi_module_gc, compile_source, compile_source_wasi, compile_with_modules, compile_with_modules_wasi, prepare_modules_cached, compile_with_modules_cached, compile_with_modules_wasi_cached, compile_file_fs, compile_file_fs_module, prepare_file_fs_cached, compile_file_fs_cached, compile_file_fs_module_cached, parse_batch_jobs_tsv, prepare_jobs_cached, compile_jobs_cached, selfbuild_compile_stage2, selfbuild_compile_cli_adapter, selfbuild_entry, selfbuild_write_cli_adapter, selfbuild_cli_env_entry, selfbuild_probe_cli_env_read_len, selfbuild_probe_cli_env_compile_len, selfbuild_probe_cli_args_read_len, selfbuild_probe_cli_args_compile_len, selfbuild_cli_args_entry, selfbuild_probe_lex, selfbuild_probe_parse, selfbuild_probe_check, selfbuild_probe_compile, selfbuild_probe_parse_count, selfbuild_probe_token_tag, selfbuild_probe_deep_if, selfbuild_probe_char_at, selfbuild_probe_fn_count, selfbuild_probe_sources_len, selfbuild_probe_merged_len, selfbuild_probe_compile_first_5, selfbuild_probe_compile_first_8, selfbuild_probe_compile_first_10, selfbuild_probe_compile_first_15, selfbuild_probe_compile_first_17, selfbuild_probe_compile_first_18, selfbuild_probe_compile_first_19, selfbuild_probe_compile_first_20, selfbuild_probe_compile_first_21, selfbuild_probe_compile_first_22, selfbuild_probe_compile_first_23, selfbuild_probe_compile_first_24, selfbuild_probe_compile_first_25, selfbuild_probe_compile_first_26, selfbuild_probe_compile_first_27, selfbuild_probe_compile_first_28, selfbuild_probe_compile_first_29, selfbuild_probe_compile_cli_adapter_like_plain, selfbuild_probe_compile_cli_adapter_like_args_only, selfbuild_probe_compile_cli_adapter_like_import_compile_only, selfbuild_probe_compile_cli_adapter_like_import_compile_unused, selfbuild_probe_compile_cli_adapter_like_import_loader_unused, selfbuild_probe_compile_cli_adapter_like_import_runtime_unused, selfbuild_probe_compile_cli_adapter_like_import_codegen_unused, selfbuild_probe_compile_cli_adapter_like_import_syntax_lexer_unused, selfbuild_probe_compile_cli_adapter_like_import_syntax_parser_unused, selfbuild_probe_compile_cli_adapter_like_import_checker_stmt_unused, selfbuild_probe_compile_cli_adapter_like_import_codegen_wasi_unused, selfbuild_probe_compile_cli_adapter_like_import_source_compile_unused, selfbuild_probe_compile_cli_adapter_like_source_compile_const, selfbuild_probe_prepare_import_source_compile_wasi_only, selfbuild_probe_compile_cli_adapter_like_import_source_compile_wasi_only_unused, selfbuild_probe_compile_cli_adapter_like_source_compile_wasi_only_const, selfbuild_probe_compile_cli_adapter_grouped_len, selfbuild_probe_compile_cli_adapter_closure_len, selfbuild_probe_type_db_cache_counts, selfbuild_probe_type_db_parse_counts, selfbuild_probe_type_db_merge_counts, selfbuild_probe_type_db_group_merge_counts, selfbuild_probe_type_db_module_source_counts, selfbuild_probe_type_db_codegen_counts, selfbuild_probe_cli_file_cache_counts, selfbuild_probe_source_control_lexer, selfbuild_probe_source_control_syntax_lexer, selfbuild_probe_source_control_parser, selfbuild_probe_source_control_syntax_parser, selfbuild_probe_source_control_entry_compiler, selfbuild_probe_source_control_entry_source_compile, selfbuild_probe_prepare_import_runtime, selfbuild_probe_prepare_import_loader, selfbuild_probe_prepare_import_leaf_codegen, selfbuild_probe_prepare_import_file_compile
+  Pat, lex, Expr, Stmt, Token, Type, TypeEnv, Subst, TypeDef, TypeDb,
+  parse, version, TypeExpr, parse_ok, print_pat, parse_expr, parse_stmt, parse_type,
+  print_expr, print_stmt, compiler_lex, parse_program, print_program, compiler_parse,
+  print_type_expr, token_to_string, compiler_parse_ok, compiler_print_pat,
+  compiler_parse_expr, compiler_parse_stmt, compiler_parse_type, compiler_print_expr,
+  compiler_print_stmt, compiler_parse_program, compiler_print_program,
+  compiler_print_type_expr,
+  check_program, check_program_with_env, check_stmts,
+  db_new, db_set_source, db_check_env, db_typecheck, db_typecheck_count,
+  db_parse_count, db_merge_count, db_module_source_count, db_codegen_count,
+  db_program_source, db_merged_source, db_grouped_merged_source, db_module_source,
+  db_load_artifact, db_store_artifact,
+  compile_module, compile_wasi_module, compile_wasi_module_with_sources,
+  compile_wasi_module_gc, compile_source, compile_source_wasi,
+  compile_with_modules, compile_with_modules_wasi, prepare_modules_cached,
+  compile_with_modules_cached, compile_with_modules_wasi_cached,
+  compile_file_fs, compile_file_fs_module, prepare_file_fs_cached,
+  compile_file_fs_cached, compile_file_fs_module_cached,
+  parse_batch_jobs_tsv, prepare_jobs_cached, compile_jobs_cached,
+  selfbuild_compile_stage2, selfbuild_compile_cli_adapter, selfbuild_entry,
+  selfbuild_write_cli_adapter, selfbuild_cli_env_entry,
+  selfbuild_probe_cli_env_read_len, selfbuild_probe_cli_env_compile_len,
+  selfbuild_probe_cli_args_read_len, selfbuild_probe_cli_args_compile_len,
+  selfbuild_cli_args_entry,
+  selfbuild_probe_lex, selfbuild_probe_parse, selfbuild_probe_check,
+  selfbuild_probe_compile, selfbuild_probe_parse_count, selfbuild_probe_token_tag,
+  selfbuild_probe_deep_if, selfbuild_probe_char_at, selfbuild_probe_fn_count,
+  selfbuild_probe_sources_len, selfbuild_probe_merged_len,
+  selfbuild_probe_compile_first_5, selfbuild_probe_compile_first_8,
+  selfbuild_probe_compile_first_10, selfbuild_probe_compile_first_15,
+  selfbuild_probe_compile_first_17, selfbuild_probe_compile_first_18,
+  selfbuild_probe_compile_first_19, selfbuild_probe_compile_first_20,
+  selfbuild_probe_compile_first_21, selfbuild_probe_compile_first_22,
+  selfbuild_probe_compile_first_23, selfbuild_probe_compile_first_24,
+  selfbuild_probe_compile_first_25, selfbuild_probe_compile_first_26,
+  selfbuild_probe_compile_first_27, selfbuild_probe_compile_first_28,
+  selfbuild_probe_compile_first_29,
+  selfbuild_probe_compile_cli_adapter_like_plain,
+  selfbuild_probe_compile_cli_adapter_like_args_only,
+  selfbuild_probe_compile_cli_adapter_like_import_compile_only,
+  selfbuild_probe_compile_cli_adapter_like_import_compile_unused,
+  selfbuild_probe_compile_cli_adapter_like_import_loader_unused,
+  selfbuild_probe_compile_cli_adapter_like_import_runtime_unused,
+  selfbuild_probe_compile_cli_adapter_like_import_codegen_unused,
+  selfbuild_probe_compile_cli_adapter_like_import_syntax_lexer_unused,
+  selfbuild_probe_compile_cli_adapter_like_import_syntax_parser_unused,
+  selfbuild_probe_compile_cli_adapter_like_import_checker_stmt_unused,
+  selfbuild_probe_compile_cli_adapter_like_import_codegen_wasi_unused,
+  selfbuild_probe_compile_cli_adapter_like_import_source_compile_unused,
+  selfbuild_probe_compile_cli_adapter_like_source_compile_const,
+  selfbuild_probe_prepare_import_source_compile_wasi_only,
+  selfbuild_probe_compile_cli_adapter_like_import_source_compile_wasi_only_unused,
+  selfbuild_probe_compile_cli_adapter_like_source_compile_wasi_only_const,
+  selfbuild_probe_compile_cli_adapter_closure_like_plain,
+  selfbuild_probe_compile_cli_adapter_closure_like_import_syntax_lexer_unused,
+  selfbuild_probe_compile_cli_adapter_closure_like_import_syntax_parser_unused,
+  selfbuild_probe_compile_cli_adapter_closure_like_import_checker_stmt_unused,
+  selfbuild_probe_compile_cli_adapter_closure_like_import_codegen_wasi_unused,
+  selfbuild_probe_compile_cli_adapter_closure_like_import_source_compile_wasi_only_unused,
+  selfbuild_probe_compile_cli_adapter_closure_like_source_compile_wasi_only_const,
+  selfbuild_probe_compile_cli_adapter_grouped_len,
+  selfbuild_probe_compile_cli_adapter_closure_len,
+  selfbuild_probe_cli_adapter_closure_ordered_source_count,
+  selfbuild_probe_cli_adapter_closure_merged_stmt_count,
+  selfbuild_probe_cli_adapter_closure_pruned_stmt_count,
+  selfbuild_probe_cli_adapter_grouped_pruned_stmt_count,
+  selfbuild_probe_cli_adapter_module_source_len,
+  selfbuild_probe_compile_cli_adapter_via_module_source_len,
+  selfbuild_probe_cli_adapter_program_parse_stmt_progress,
+  selfbuild_probe_cli_adapter_merged_parse_stmt_progress,
+  selfbuild_probe_cli_adapter_source_first_failure,
+  selfbuild_probe_compile_export_let_len,
+  selfbuild_probe_compile_export_enum_len,
+  selfbuild_probe_type_db_cache_counts, selfbuild_probe_type_db_parse_counts,
+  selfbuild_probe_type_db_merge_counts, selfbuild_probe_type_db_group_merge_counts,
+  selfbuild_probe_type_db_module_source_counts, selfbuild_probe_type_db_codegen_counts,
+  selfbuild_probe_cli_file_cache_counts,
+  selfbuild_probe_source_control_lexer, selfbuild_probe_source_control_syntax_lexer,
+  selfbuild_probe_source_control_parser, selfbuild_probe_source_control_syntax_parser,
+  selfbuild_probe_source_control_entry_compiler,
+  selfbuild_probe_source_control_entry_source_compile,
+  selfbuild_probe_prepare_import_runtime, selfbuild_probe_prepare_import_loader,
+  selfbuild_probe_prepare_import_leaf_codegen, selfbuild_probe_prepare_import_file_compile
 }

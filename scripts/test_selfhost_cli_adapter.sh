@@ -118,7 +118,7 @@ EOF
 
 export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
 run_stage "stage1 index artifact -> selfhost cli wasm" \
-  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke selfbuild_compile_cli_adapter "$STAGE1_CORE_WASM"
+  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke selfbuild_write_cli_adapter "$STAGE1_CORE_WASM"
 
 if [ ! -f "$STAGE1_CLI_WASM" ]; then
   echo "selfhost cli adapter gate failed: stage1 cli artifact was not produced" >&2

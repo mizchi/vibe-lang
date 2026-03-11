@@ -1,0 +1,349 @@
+//# Imports
+
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+//# Functions
+
+let _use_type_expr = (t: TypeExpr) -> TypeExpr { t }
+
+let array_contains_str = (arr: Array[String], s: String) -> Bool {
+  let len = Array::length(arr)
+  let rec search = (i: Int) -> Bool {
+    if i >= len { false }
+    else if String::equals(Array::get(arr, i), s) { true }
+    else search(i + 1)
+  }
+  search(0)
+}
+
+let add_ref = (out: Array[String], bound: Array[String], name: String) -> Int {
+  if not(array_contains_str(bound, name)) {
+    if not(array_contains_str(out, name)) {
+      Array::push(out, name)
+    }
+  }
+  0
+}
+
+let clone_arr = (arr: Array[String]) -> Array[String] {
+  Array::slice(arr, 0, Array::length(arr))
+}
+
+// Collect bindings introduced by a pattern
+let rec collect_pat_bindings = (pat: Pat, bound: Array[String]) -> Int {
+  match pat {
+    PWild => 0,
+    PBind(name) => {
+      Array::push(bound, name)
+      0
+    },
+    PInt(_) => 0,
+    PString(_) => 0,
+    PBool(_) => 0,
+    PCtor(_, pats) => {
+      let mut i = 0
+      while i < Array::length(pats) {
+        collect_pat_bindings(Array::get(pats, i), bound)
+        i = i + 1
+      }
+      0
+    },
+    PTuple(pats) => {
+      let mut i = 0
+      while i < Array::length(pats) {
+        collect_pat_bindings(Array::get(pats, i), bound)
+        i = i + 1
+      }
+      0
+    },
+    POr(p1, p2) => {
+      collect_pat_bindings(p1, bound)
+      collect_pat_bindings(p2, bound)
+      0
+    }
+  }
+}
+
+// Collect free variable references from an expression
+let rec collect_refs_into = (expr: Expr, bound: Array[String], out: Array[String]) -> Int {
+  match expr {
+    EIdent(name) => {
+      add_ref(out, bound, name)
+    },
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EBreak(_) => 0,
+    EContinue(_) => 0,
+    EThrow(e) => {
+      collect_refs_into(e, bound, out)
+    },
+    EUnaryOp(_, e) => {
+      collect_refs_into(e, bound, out)
+    },
+    ETuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_refs_into(Array::get(items, i), bound, out)
+        i = i + 1
+      }
+      0
+    },
+    EArray(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_refs_into(Array::get(items, i), bound, out)
+        i = i + 1
+      }
+      0
+    },
+    ERecord(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, val) = Array::get(fields, i)
+        collect_refs_into(val, bound, out)
+        i = i + 1
+      }
+      0
+    },
+    EBinOp(_, l, r) => {
+      collect_refs_into(l, bound, out)
+      collect_refs_into(r, bound, out)
+      0
+    },
+    ECall(callee, args) => {
+      collect_refs_into(callee, bound, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_refs_into(Array::get(args, i), bound, out)
+        i = i + 1
+      }
+      0
+    },
+    EIf(cond, then_e, else_e) => {
+      collect_refs_into(cond, bound, out)
+      collect_refs_into(then_e, bound, out)
+      collect_refs_into(else_e, bound, out)
+      0
+    },
+    ELet(name, val, body) => {
+      collect_refs_into(val, bound, out)
+      let bound2 = clone_arr(bound)
+      Array::push(bound2, name)
+      collect_refs_into(body, bound2, out)
+      0
+    },
+    ELetRec(name, val, body) => {
+      let bound2 = clone_arr(bound)
+      Array::push(bound2, name)
+      collect_refs_into(val, bound2, out)
+      collect_refs_into(body, bound2, out)
+      0
+    },
+    ELetMut(name, val, body) => {
+      collect_refs_into(val, bound, out)
+      let bound2 = clone_arr(bound)
+      Array::push(bound2, name)
+      collect_refs_into(body, bound2, out)
+      0
+    },
+    EAssign(_, val, body) => {
+      collect_refs_into(val, bound, out)
+      collect_refs_into(body, bound, out)
+      0
+    },
+    EAssignOp(_, _, val, body) => {
+      collect_refs_into(val, bound, out)
+      collect_refs_into(body, bound, out)
+      0
+    },
+    ESeq(l, r) => {
+      collect_refs_into(l, bound, out)
+      collect_refs_into(r, bound, out)
+      0
+    },
+    EMatch(scr, arms) => {
+      collect_refs_into(scr, bound, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, body) = Array::get(arms, i)
+        let bound2 = clone_arr(bound)
+        collect_pat_bindings(pat, bound2)
+        collect_refs_into(body, bound2, out)
+        i = i + 1
+      }
+      0
+    },
+    EHandle(body_expr, arms) => {
+      collect_refs_into(body_expr, bound, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, i)
+        let bound2 = clone_arr(bound)
+        collect_pat_bindings(pat, bound2)
+        collect_refs_into(arm_body, bound2, out)
+        i = i + 1
+      }
+      0
+    },
+    EWhile(cond, body) => {
+      collect_refs_into(cond, bound, out)
+      collect_refs_into(body, bound, out)
+      0
+    },
+    EForIn(name, iter, body) => {
+      collect_refs_into(iter, bound, out)
+      let bound2 = clone_arr(bound)
+      Array::push(bound2, name)
+      collect_refs_into(body, bound2, out)
+      0
+    },
+    EFn(_, _, params, _, _, body) => {
+      let bound2 = clone_arr(bound)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pname, _) = Array::get(params, i)
+        Array::push(bound2, pname)
+        i = i + 1
+      }
+      collect_refs_into(body, bound2, out)
+      0
+    },
+    EDot(obj, _) => {
+      collect_refs_into(obj, bound, out)
+      0
+    },
+    ELabeledArg(_, _, e) => {
+      collect_refs_into(e, bound, out)
+      0
+    }
+  }
+}
+
+// Collect free variable references from an expression
+let collect_refs = (expr: Expr, bound: Array[String]) -> Array[String] {
+  let out = Array::slice([""], 0, 0)
+  collect_refs_into(expr, bound, out)
+  out
+}
+
+// Get the name defined by a statement, if any
+let stmt_name = (stmt: Stmt) -> Option[String] {
+  match stmt {
+    SLet(_, _, name, _, _) => Some(name),
+    SLetMut(name, _, _) => Some(name),
+    _ => None
+  }
+}
+
+// Check if a statement is a "type definition" or structural (always kept)
+let is_type_or_structural = (stmt: Stmt) -> Bool {
+  match stmt {
+    SEnum(_, _, _) => true,
+    SSuberror(_, _, _) => true,
+    SStruct(_, _, _) => true,
+    STypeAlias(_, _, _) => true,
+    STrait(_, _, _) => true,
+    SImpl(_, _, _, _) => true,
+    SExternLet(_, _) => true,
+    SImport(_, _) => true,
+    STest(_, _) => true,
+    SBench(_, _) => true,
+    SExpr(_) => true,
+    SExport(_) => true,
+    SReExport(_, _) => true,
+    SModule(_, _, _) => true,
+    _ => false
+  }
+}
+
+// Main DCE function: keep only stmts reachable from entry_names
+export let dce_stmts = (stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stmt] {
+  let empty_bound = Array::slice([""], 0, 0)
+
+  // Phase 1: collect all definition names and their references
+  let def_names = Array::slice([""], 0, 0)
+  let def_refs = Array::slice([Array::slice([""], 0, 0)], 0, 0)
+
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    match stmt_name(stmt) {
+      Some(name) => {
+        Array::push(def_names, name)
+        let refs = match stmt {
+          SLet(_, _, _, _, expr) => collect_refs(expr, empty_bound),
+          SLetMut(_, _, expr) => collect_refs(expr, empty_bound),
+          _ => Array::slice([""], 0, 0)
+        }
+        Array::push(def_refs, refs)
+        0
+      },
+      None => 0
+    }
+    i = i + 1
+  }
+
+  // Phase 2: BFS from entry_names to find all reachable names
+  let reachable = Array::slice([""], 0, 0)
+  let queue = Array::slice([""], 0, 0)
+
+  let mut j = 0
+  while j < Array::length(entry_names) {
+    let name = Array::get(entry_names, j)
+    if not(array_contains_str(reachable, name)) {
+      Array::push(reachable, name)
+      Array::push(queue, name)
+    }
+    j = j + 1
+  }
+
+  let mut qi = 0
+  while qi < Array::length(queue) {
+    let current = Array::get(queue, qi)
+    qi = qi + 1
+    let mut k = 0
+    while k < Array::length(def_names) {
+      if String::equals(Array::get(def_names, k), current) {
+        let refs = Array::get(def_refs, k)
+        let mut r = 0
+        while r < Array::length(refs) {
+          let dep = Array::get(refs, r)
+          if not(array_contains_str(reachable, dep)) {
+            Array::push(reachable, dep)
+            Array::push(queue, dep)
+          }
+          r = r + 1
+        }
+      }
+      k = k + 1
+    }
+  }
+
+  // Phase 3: Filter stmts
+  let result = Array::slice([Array::get(stmts, 0)], 0, 0)
+  let mut m = 0
+  while m < Array::length(stmts) {
+    let stmt = Array::get(stmts, m)
+    if is_type_or_structural(stmt) {
+      Array::push(result, stmt)
+    } else {
+      match stmt_name(stmt) {
+        Some(name) => {
+          if array_contains_str(reachable, name) {
+            Array::push(result, stmt)
+          }
+        },
+        None => {
+          Array::push(result, stmt)
+        }
+      }
+    }
+    m = m + 1
+  }
+  result
+}

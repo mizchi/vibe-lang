@@ -167,4 +167,10 @@ if printf '%s\n' "$adapter_merged_block" | rg -Fq 'import ./token.vibe'; then
   exit 1
 fi
 
+if printf '%s\n' "$adapter_merged_block" | rg -Fq '  "\\n'; then
+  echo "generate-selfhost-bundle self-test: adapter merged source unexpectedly starts with a blank line" >&2
+  cat "$OUT_ADAPTER" >&2
+  exit 1
+fi
+
 echo "generate-selfhost-bundle self-test: ok"

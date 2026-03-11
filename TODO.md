@@ -12,8 +12,8 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Self-Host Compiler / Runtime Packaging
 
-**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache、host CLI の check/test loop cache 再利用、env-driven selfhost CLI adapter gate までは入った。
-**最優先の残**: JS host 補助なしで selfhost artifact を CLI として閉じるため、Preview2 / Component runtime 前提の import 配線と配布形を固めること。
+**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache、host CLI の check/test loop cache 再利用、env/argv 契約、adapter closure の grouped compile までは入った。
+**最優先の残**: `selfbuild_write_cli_adapter` を stage1 artifact 上で安定して完走させ、その後 JS host 補助なしで selfhost artifact を CLI として閉じるため、Preview2 / Component runtime 前提の import 配線と配布形を固めること。
 
 ### Selfhost compiler modularization / cache
 
@@ -29,6 +29,12 @@ Completed items are archived in `docs/DONE.md`.
 - [x] selfhost compiler の module fingerprint cache を merged/lowered artifact reuse まで一般化する
   - merged source cache は fingerprint ベースで別 entry 間共有まで入った
   - module source cache も fingerprint ベースで別 entry 間共有にし、codegen 手前の parse/lower をさらに減らした
+- [x] selfhost compiler の grouped source compile を embedded adapter closure にも適用する
+  - `selfhost_cli_adapter_sources` / `selfhost_cli_adapter_source_groups` を導入し、adapter 専用 closure を compiler 全量 source から切り離した
+  - stage1 probe で adapter closure は `68 sources / 9 groups -> 24 sources / 5 groups` まで縮小できている
+- [x] `compile_wasi_module` 前に selfhost DCE を差し込み、entry 未到達定義を codegen しない経路を作る
+  - `core/dce.vibe` を新設して `dce_stmts` を core layer に寄せ、closure/grouped compile の両方で `prune_entry_stmts` を通すようにした
+  - `compiler_cache_test.vibe` に unreachable broken def を codegen 前に落とす回帰を追加した
 - [ ] `vibe/compiler` の論理分割を manifest `group` 列に合わせて進める
   - 候補: `core/`, `syntax/`, `checker/`, `codegen/`
   - 目的はディレクトリ整理そのものではなく、manifest と cache 単位を一致させること
@@ -55,6 +61,10 @@ Completed items are archived in `docs/DONE.md`.
   - `scripts/wasm_vibe_host_runner.js` は host-only string arena を持ち、`Env::get` の戻り string が後続 allocation で壊れない
 - [x] selfhost CLI adapter に argv 契約を追加する
   - `scripts/run_wasm_vibe_host_runner.sh <wasm> <input> <output> <entry>` で位置引数を `VIBE_INPUT` / `VIBE_OUTPUT` / `VIBE_ENTRY` へ写し、env-driven adapter をそのまま CLI 契約として使える
+- [ ] stage1 selfhost compiler artifact から selfhost CLI adapter wasm を安定生成する
+  - `selfbuild_write_cli_adapter` は `selfhost_cli_adapter_sources` の grouped closure を使うようにした
+  - `selfhost_cli_adapter_merged_source` は exact flat source としては不正（duplicate declaration を含む）と判明したため、`module_source` 経由で valid module text を作る経路へ寄せている途中
+  - 直近の blocker は `db_module_source` / `compile_with_source_groups_via_module_source_wasi_unchecked_cached` が stage1 artifact 上でまだ重いこと
 - [ ] WASI Preview2 Component Model の FS/environ import を codegen に追加する
   - JS host ではなく component runtime だけで selfhost 単体 artifact を CLI として閉じるための前提条件
 
@@ -62,7 +72,7 @@ Completed items are archived in `docs/DONE.md`.
 
 - [ ] mwac plug 相当を .vibe で実装するか builtin 化する
 - [ ] selfhost compiler 全体を `.wasm` component として配布・実行できる形にする
-  - env-driven adapter gate は JS Preview2 host で通っているので、残りは component 化と package 解決の整備
+  - env/argv 契約と host-backed adapter 実行までは入ったので、残りは component 化と package 解決、JS host 依存の除去
 
 ## Release / Gate Integration
 

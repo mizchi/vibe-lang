@@ -36,6 +36,18 @@ Completed items archived from `TODO.md`.
   - language tour eval task と codegen comment を `MapBuilder::*` に統一
   - desugar 側は canonical 名と legacy alias の両方を non-command name として扱い、互換期間中の shell rewrite 回帰を防止
 
+## 2026-03-12
+
+- **Selfhost CLI adapter の compile 入力を grouped closure へ縮小**
+  - `selfhost_cli_adapter_sources` / `selfhost_cli_adapter_source_groups` を bundle に追加し、adapter 専用 closure を compiler 全量 source から切り離した
+  - stage1 probe で adapter closure は `68 sources / 9 groups -> 24 sources / 5 groups` まで縮小できることを確認した
+- **Selfhost compile path に pre-codegen DCE を導入**
+  - `core/dce.vibe` を新設し、closure/grouped compile の両方で `compile_wasi_module` 前に unreachable def を pruning するようにした
+  - `compiler_cache_test.vibe` に unreachable broken def を codegen 前に落とす回帰を追加した
+- **Selfhost adapter bundle 生成の exact source を補強**
+  - bundle 生成時に adapter merged source の先頭空行を除去し、bundle self-test で regression を固定した
+  - exact merged source は flat source としては duplicate declaration を含み不正だと切り分け、`module_source` 経由の compile path を次段の本命にした
+
 ## 2026-03-09
 
 - **Selfhost WASI selfbuild (P5/S1-S5) 完了**

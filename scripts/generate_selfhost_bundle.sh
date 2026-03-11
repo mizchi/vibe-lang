@@ -32,13 +32,8 @@ while IFS=$'\t' read -r group relpath; do
   FILES+=("$relpath")
 done < "$MANIFEST"
 
-CLI_ADAPTER_INDEXES=()
-while IFS= read -r idx; do
-  if [ -n "$idx" ]; then
-    CLI_ADAPTER_INDEXES+=("$idx")
-  fi
-done < <(
-  python3 - "$COMPILER_DIR" "$MANIFEST" "selfhost_cli_adapter.vibe" <<'PY'
+cli_adapter_index_rows_file="$(mktemp)"
+python3 - "$COMPILER_DIR" "$MANIFEST" "selfhost_cli_adapter.vibe" >"$cli_adapter_index_rows_file" <<'PY'
 import os
 import re
 import sys
@@ -97,69 +92,17 @@ def visit(rel: str):
         visit(resolve_path(rel, dep))
 
 visit(root_rel)
-
+index_by_rel = {}
+for pair_index, (_, rel) in enumerate(rows):
+    index_by_rel[rel] = pair_index
 for idx, (_, rel) in enumerate(rows):
     if rel in reachable:
-        print(idx)
-PY
-)
-
-CLI_ADAPTER_ORDERED_INDEXES=()
-while IFS= read -r idx; do
-  if [ -n "$idx" ]; then
-    CLI_ADAPTER_ORDERED_INDEXES+=("$idx")
-  fi
-done < <(
-  python3 - "$COMPILER_DIR" "$MANIFEST" "selfhost_cli_adapter.vibe" <<'PY'
-import os
-import re
-import sys
-
-compiler_dir, manifest_path, root_rel = sys.argv[1:]
-rows = []
-for raw in open(manifest_path, "r", encoding="utf-8"):
-    line = raw.rstrip("\n")
-    if not line or line.startswith("#"):
-        continue
-    parts = line.split("\t")
-    if len(parts) != 2:
-        continue
-    rows.append((parts[0], parts[1]))
-
-source_by_rel = {}
-for _, rel in rows:
-    full = os.path.join(compiler_dir, rel)
-    if os.path.isfile(full):
-        with open(full, "r", encoding="utf-8") as f:
-            source_by_rel[rel] = f.read()
-
-dep_pattern = re.compile(r'^\s*(?:import|export)\s+([.][^\s{]+)', re.MULTILINE)
-
-def normalize_path(path: str) -> str:
-    parts = []
-    for seg in path.split("/"):
-        if seg == "" or seg == ".":
-            continue
-        if seg == "..":
-            if parts:
-                parts.pop()
-            continue
-        parts.append(seg)
-    return "/".join(parts)
-
-def resolve_path(base_rel: str, raw_path: str) -> str:
-    base_dir = os.path.dirname(base_rel)
-    path = raw_path if raw_path.endswith(".vibe") else raw_path + ".vibe"
-    if path.startswith("./") or path.startswith("../"):
-        if base_dir:
-            return normalize_path(base_dir + "/" + path)
-        return normalize_path(path)
-    return normalize_path(path)
+        print("reachable\t" + str(idx))
 
 visited = set()
 ordered = []
 
-def visit(rel: str):
+def visit_ordered(rel: str):
     if rel in visited:
         return
     source = source_by_rel.get(rel)
@@ -167,17 +110,28 @@ def visit(rel: str):
         return
     visited.add(rel)
     for dep in dep_pattern.findall(source):
-        visit(resolve_path(rel, dep))
+        visit_ordered(resolve_path(rel, dep))
     ordered.append(rel)
 
-visit(root_rel)
-index_by_rel = {rel: idx for idx, (_, rel) in enumerate(rows)}
+visit_ordered(root_rel)
 for rel in ordered:
     idx = index_by_rel.get(rel)
     if idx is not None:
-        print(idx)
+        print("ordered\t" + str(idx))
 PY
-)
+CLI_ADAPTER_INDEXES=()
+CLI_ADAPTER_ORDERED_INDEXES=()
+while IFS=$'\t' read -r kind idx; do
+  if [ -z "${kind}${idx}" ]; then
+    continue
+  fi
+  if [ "$kind" = "reachable" ]; then
+    CLI_ADAPTER_INDEXES+=("$idx")
+  elif [ "$kind" = "ordered" ]; then
+    CLI_ADAPTER_ORDERED_INDEXES+=("$idx")
+  fi
+done < "$cli_adapter_index_rows_file"
+rm -f "$cli_adapter_index_rows_file"
 
 if [ "${#FILES[@]}" -eq 0 ]; then
   echo "error: manifest contains no compiler sources: $MANIFEST" >&2
@@ -391,12 +345,17 @@ def strip_relative_imports(source: str) -> str:
     return merged
 
 visit(root_rel)
+first_chunk = True
 with open(out_path, "w", encoding="utf-8") as f:
     for rel in ordered:
         source = source_by_rel.get(rel)
         if source is None:
             continue
-        f.write(strip_relative_imports(source))
+        merged = strip_relative_imports(source)
+        if first_chunk:
+            merged = merged.lstrip("\r\n")
+            first_chunk = False
+        f.write(merged)
 PY
   printf '%s\n' "$merged_path"
 }
