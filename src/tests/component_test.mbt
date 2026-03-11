@@ -134,6 +134,56 @@ test "component wit includes wasi stdio imports for stream builtins" {
 }
 
 ///|
+test "component wit includes vibe env import when Env::get is used" {
+  let db = VibeDb::new()
+  let src =
+    #|let run = () -> Int with {Env} {
+    #|  let home = Env::get("HOME")
+    #|  String::length(home)
+    #|}
+    #|run()
+  db.set_source("main", src)
+  let wit = try
+    generate_module_component_wit(db, "main", "local:main", "main")
+  catch {
+    e => fail("wit error: " + e.to_string())
+  } noraise {
+    w => w
+  }
+  assert_true(String::contains(wit, "world main"))
+  assert_true(String::contains(wit, "import vibe: interface {"))
+  assert_true(String::contains(wit, "env-get: func(name: s32) -> s32;"))
+  assert_true(String::contains(wit, "export run: func() -> s64;"))
+}
+
+///|
+test "component wit includes vibe args imports when Env::args is used" {
+  let db = VibeDb::new()
+  let src =
+    #|let run = () -> Int with {Env} {
+    #|  if Env::args_len() > 0 {
+    #|    String::length(Env::args_get(0))
+    #|  } else {
+    #|    0
+    #|  }
+    #|}
+    #|run()
+  db.set_source("main", src)
+  let wit = try
+    generate_module_component_wit(db, "main", "local:main", "main")
+  catch {
+    e => fail("wit error: " + e.to_string())
+  } noraise {
+    w => w
+  }
+  assert_true(String::contains(wit, "world main"))
+  assert_true(String::contains(wit, "import vibe: interface {"))
+  assert_true(String::contains(wit, "args-len: func() -> s64;"))
+  assert_true(String::contains(wit, "args-get: func(index: s64) -> s32;"))
+  assert_true(String::contains(wit, "export run: func() -> s64;"))
+}
+
+///|
 test "component wit scans for-in bodies for host imports" {
   let db = VibeDb::new()
   let src =

@@ -208,7 +208,13 @@ fn builtin_type_count(ctx : CodegenCtx) -> Int {
   if ctx.need_js_equals {
     count += 1
   }
-  if ctx.need_sh || ctx.need_path || ctx.need_dynamic_path_resolve {
+  if ctx.need_sh || ctx.need_path || ctx.need_env_get {
+    count += 1
+  }
+  if ctx.need_env_args_get || ctx.need_dynamic_path_resolve {
+    count += 1
+  }
+  if ctx.need_env_args_len {
     count += 1
   }
   if ctx.need_sleep {
@@ -281,6 +287,15 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
     count += 1
   }
   if ctx.need_sh {
+    count += 1
+  }
+  if ctx.need_env_get {
+    count += 1
+  }
+  if ctx.need_env_args_len {
+    count += 1
+  }
+  if ctx.need_env_args_get {
     count += 1
   }
   if ctx.need_sleep {
@@ -1301,6 +1316,78 @@ fn import_index_sh(ctx : CodegenCtx) -> Int raise WasmGenError {
 }
 
 ///|
+fn import_index_env_get(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_env_get) {
+    raise WasmGenError::BackendLimit(
+      backend="wasm",
+      feature="Env::get import",
+    )
+  }
+  let mut idx = js_import_count(ctx)
+  if ctx.need_path {
+    idx += 1
+  }
+  if ctx.need_dynamic_path_resolve {
+    idx += 1
+  }
+  if ctx.need_sh {
+    idx += 1
+  }
+  idx
+}
+
+///|
+fn import_index_env_args_len(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_env_args_len) {
+    raise WasmGenError::BackendLimit(
+      backend="wasm",
+      feature="Env::args_len import",
+    )
+  }
+  let mut idx = js_import_count(ctx)
+  if ctx.need_path {
+    idx += 1
+  }
+  if ctx.need_dynamic_path_resolve {
+    idx += 1
+  }
+  if ctx.need_sh {
+    idx += 1
+  }
+  if ctx.need_env_get {
+    idx += 1
+  }
+  idx
+}
+
+///|
+fn import_index_env_args_get(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_env_args_get) {
+    raise WasmGenError::BackendLimit(
+      backend="wasm",
+      feature="Env::args_get import",
+    )
+  }
+  let mut idx = js_import_count(ctx)
+  if ctx.need_path {
+    idx += 1
+  }
+  if ctx.need_dynamic_path_resolve {
+    idx += 1
+  }
+  if ctx.need_sh {
+    idx += 1
+  }
+  if ctx.need_env_get {
+    idx += 1
+  }
+  if ctx.need_env_args_len {
+    idx += 1
+  }
+  idx
+}
+
+///|
 fn import_index_js_length(ctx : CodegenCtx) -> Int raise WasmGenError {
   if not(ctx.need_js_length) {
     raise WasmGenError::BackendLimit(
@@ -1395,7 +1482,19 @@ fn import_index_after_sleep(ctx : CodegenCtx) -> Int {
   if ctx.need_path {
     idx += 1
   }
+  if ctx.need_dynamic_path_resolve {
+    idx += 1
+  }
   if ctx.need_sh {
+    idx += 1
+  }
+  if ctx.need_env_get {
+    idx += 1
+  }
+  if ctx.need_env_args_len {
+    idx += 1
+  }
+  if ctx.need_env_args_get {
     idx += 1
   }
   if ctx.need_sleep {

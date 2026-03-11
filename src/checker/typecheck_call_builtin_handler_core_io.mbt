@@ -639,6 +639,32 @@ fn type_call_builtin_handler_core_io(
         @core.Type::String,
         true,
       )
+    "Env::args_len" =>
+      check_builtin_simple(
+        env,
+        "Env::args_len",
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+        [],
+        @core.Type::Int,
+        true,
+      )
+    "Env::args_get" =>
+      check_builtin_simple(
+        env,
+        "Env::args_get",
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+        [@core.Type::Int],
+        @core.Type::String,
+        true,
+      )
     "Socket::tcp_connect" =>
       check_builtin_simple(
         env,

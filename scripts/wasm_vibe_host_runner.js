@@ -14,13 +14,14 @@ const OBJ_ARRAY = 5;
 
 function usage() {
   console.error(
-    "usage: node scripts/wasm_vibe_host_runner.js [--invoke <name>] <module.wasm>",
+    "usage: node scripts/wasm_vibe_host_runner.js [--invoke <name>] <module.wasm> [argv...]",
   );
 }
 
 function parseArgs(argv) {
   let invoke = "run";
   let wasmPath = null;
+  const passthroughArgs = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--invoke") {
@@ -35,14 +36,15 @@ function parseArgs(argv) {
       throw new Error(`unknown option: ${arg}`);
     }
     if (wasmPath !== null) {
-      throw new Error(`unexpected argument: ${arg}`);
+      passthroughArgs.push(arg);
+      continue;
     }
     wasmPath = arg;
   }
   if (wasmPath === null) {
     throw new Error("missing wasm path");
   }
-  return { invoke, wasmPath };
+  return { invoke, wasmPath, passthroughArgs };
 }
 
 function readU32LE(mem, pos) {
@@ -64,52 +66,135 @@ function writeU32LE(mem, pos, val) {
   mem[pos + 3] = (val >>> 24) & 0xff;
 }
 
+function writeU8(mem, pos, val) {
+  mem[pos] = val & 0xff;
+}
+
+function decodeUtf8Range(instance, ptr, len) {
+  const mem = new Uint8Array(instance.exports.memory.buffer);
+  if (ptr < 0 || len < 0 || ptr + len > mem.length) {
+    throw new Error(`utf8 range out of bounds: ${ptr}..${ptr + len}`);
+  }
+  return new TextDecoder().decode(mem.subarray(ptr, ptr + len));
+}
+
+function allocPreview2Buffer(instance, size, align = 4) {
+  if (typeof instance.exports.cabi_realloc === "function") {
+    return instance.exports.cabi_realloc(0, 0, align, size) >>> 0;
+  }
+  const heapGlobal = instance.exports.__heap_ptr;
+  if (!heapGlobal) {
+    throw new Error("missing cabi_realloc/__heap_ptr for Preview2 allocation");
+  }
+  let mem = new Uint8Array(instance.exports.memory.buffer);
+  const alignedPtr = (heapGlobal.value + (align - 1)) & ~(align - 1);
+  const next = alignedPtr + size;
+  if (next > mem.length) {
+    const pagesNeeded = Math.ceil((next - mem.length) / 65536);
+    instance.exports.memory.grow(pagesNeeded);
+    mem = new Uint8Array(instance.exports.memory.buffer);
+  }
+  heapGlobal.value = next;
+  return alignedPtr;
+}
+
+let hostAllocPtrGlobal = null;
+
+function allocHostBuffer(instance, size, align = 8) {
+  if (!(instance.exports.memory instanceof WebAssembly.Memory)) {
+    throw new Error("missing exported memory for host allocation");
+  }
+  let mem = new Uint8Array(instance.exports.memory.buffer);
+  if (hostAllocPtrGlobal === null) {
+    hostAllocPtrGlobal = mem.length;
+  }
+  let alignedPtr = (hostAllocPtrGlobal + (align - 1)) & ~(align - 1);
+  let next = alignedPtr + size;
+  if (next > mem.length) {
+    const pagesNeeded = Math.ceil((next - mem.length) / 65536);
+    instance.exports.memory.grow(pagesNeeded);
+    mem = new Uint8Array(instance.exports.memory.buffer);
+  }
+  hostAllocPtrGlobal = next;
+  return alignedPtr;
+}
+
 function decodeTaggedString(instance, tagged) {
   if (typeof tagged !== "bigint") {
     throw new Error(`expected tagged string bigint, got ${typeof tagged}`);
   }
-  if ((tagged & TAG_MASK) !== TAG_OBJ) {
-    throw new Error(`expected tagged string object, got tag=${tagged & TAG_MASK}`);
-  }
   if (!(instance.exports.memory instanceof WebAssembly.Memory)) {
     throw new Error("missing exported memory for tagged string decode");
   }
-  const ptr = Number(tagged & ~TAG_MASK);
   const mem = new Uint8Array(instance.exports.memory.buffer);
-  const ty = readU32LE(mem, ptr);
-  if (ty !== OBJ_STRING) {
-    throw new Error(`expected obj_string(${OBJ_STRING}), got ${ty}`);
+
+  if ((tagged & TAG_MASK) === TAG_OBJ) {
+    const ptr = Number(tagged & ~TAG_MASK);
+    const ty = readU32LE(mem, ptr);
+    if (ty === OBJ_STRING) {
+      const len = readU32LE(mem, ptr + 4);
+      const start = ptr + 8;
+      const end = start + len;
+      if (end > mem.length) {
+        throw new Error(`string range out of bounds: ${start}..${end}`);
+      }
+      return new TextDecoder().decode(mem.subarray(start, end));
+    }
   }
-  const len = readU32LE(mem, ptr + 4);
-  const start = ptr + 8;
+
+  const ptr = Number(tagged >> 32n);
+  const len = Number(tagged & 0xffffffffn);
+  const start = ptr;
   const end = start + len;
+  if (start < 0 || end < start) {
+    throw new Error(`invalid string ref: ptr=${ptr} len=${len}`);
+  }
   if (end > mem.length) {
     throw new Error(`string range out of bounds: ${start}..${end}`);
   }
   return new TextDecoder().decode(mem.subarray(start, end));
 }
 
+function decodeRawStringPtr(instance, ptr) {
+  if (typeof ptr !== "number") {
+    throw new Error(`expected raw string ptr number, got ${typeof ptr}`);
+  }
+  if (!(instance.exports.memory instanceof WebAssembly.Memory)) {
+    throw new Error("missing exported memory for raw string decode");
+  }
+  const mem = new Uint8Array(instance.exports.memory.buffer);
+  const ty = readU32LE(mem, ptr);
+  if (ty !== OBJ_STRING) {
+    throw new Error(`unexpected raw string object type: ${ty}`);
+  }
+  const len = readU32LE(mem, ptr + 4);
+  const start = ptr + 8;
+  const end = start + len;
+  if (ptr < 0 || end > mem.length) {
+    throw new Error(`raw string range out of bounds: ${ptr}..${end}`);
+  }
+  return new TextDecoder().decode(mem.subarray(start, end));
+}
+
+function decodeStringArg(instance, value) {
+  if (typeof value === "bigint") {
+    return decodeTaggedString(instance, value);
+  }
+  if (typeof value === "number") {
+    return decodeRawStringPtr(instance, value >>> 0);
+  }
+  throw new Error(`unsupported string arg type: ${typeof value}`);
+}
+
 // Allocate a tagged string in WASM linear memory.
 // Requires __heap_ptr global to be exported.
 function encodeTaggedString(instance, jsStr) {
-  const heapGlobal = instance.exports.__heap_ptr;
-  if (!heapGlobal) {
-    throw new Error("__heap_ptr global not exported; cannot allocate string");
-  }
   const encoded = new TextEncoder().encode(jsStr);
   const headerSize = 8; // 4 bytes type + 4 bytes length
   const totalSize = headerSize + encoded.length;
   const alignedSize = (totalSize + 7) & ~7; // align to 8 bytes
-
-  // Ensure enough memory
-  let mem = new Uint8Array(instance.exports.memory.buffer);
-  const heapPtr = heapGlobal.value;
-  const needed = heapPtr + alignedSize;
-  if (needed > mem.length) {
-    const pagesNeeded = Math.ceil((needed - mem.length) / 65536);
-    instance.exports.memory.grow(pagesNeeded);
-    mem = new Uint8Array(instance.exports.memory.buffer);
-  }
+  const heapPtr = allocHostBuffer(instance, alignedSize, 8);
+  const mem = new Uint8Array(instance.exports.memory.buffer);
 
   // Write string object: [type:i32=1][length:i32][utf8_data...]
   const ptr = heapPtr;
@@ -117,11 +202,36 @@ function encodeTaggedString(instance, jsStr) {
   writeU32LE(mem, ptr + 4, encoded.length);
   mem.set(encoded, ptr + 8);
 
-  // Advance heap pointer
-  heapGlobal.value = ptr + alignedSize;
-
   // Return tagged pointer (tag = OBJ = 1)
   return BigInt(ptr) | TAG_OBJ;
+}
+
+function encodeSelfhostString(instance, jsStr) {
+  const encoded = new TextEncoder().encode(jsStr);
+  const alignedSize = (encoded.length + 7) & ~7;
+  const heapPtr = allocHostBuffer(instance, alignedSize, 8);
+  const mem = new Uint8Array(instance.exports.memory.buffer);
+
+  mem.set(encoded, heapPtr);
+  return (BigInt(heapPtr) << 32n) | BigInt(encoded.length);
+}
+
+function encodeTaggedBool(value) {
+  return value ? 7n : 3n;
+}
+
+function encodeTaggedInt(value) {
+  return BigInt(value) << 2n;
+}
+
+function decodeTaggedInt(value) {
+  if (typeof value !== "bigint") {
+    throw new Error(`expected tagged int bigint, got ${typeof value}`);
+  }
+  if ((value & TAG_MASK) !== TAG_INT) {
+    throw new Error(`expected tagged int, got tag=${value & TAG_MASK}`);
+  }
+  return Number(value >> 2n);
 }
 
 // Decode a tagged Bytes (Array[Int]) from WASM memory into a Uint8Array.
@@ -175,6 +285,195 @@ function taggedIntToText(tagged) {
     return (tagged >> 2n).toString();
   }
   return tagged.toString();
+}
+
+function createPreview2FilesystemHost(projectRoot) {
+  const rootPath = path.resolve(projectRoot);
+  const descriptors = new Map([[3, { kind: "dir", path: rootPath }]]);
+  let nextDescriptor = 4;
+  const debugFs = process.env.VIBE_DEBUG_PREVIEW2_FS === "1";
+  const debugFsData = process.env.VIBE_DEBUG_PREVIEW2_FS_DATA === "1";
+  const debugLogPath = process.env.VIBE_DEBUG_PREVIEW2_FS_LOG || "/tmp/vibe_preview2_fs.log";
+
+  function logDebug(message) {
+    if (!debugFs) {
+      return;
+    }
+    fs.appendFileSync(debugLogPath, `${message}\n`);
+  }
+
+  function getInstance() {
+    if (!instanceRefGlobal) {
+      throw new Error("preview2 fs host used before wasm instantiation");
+    }
+    return instanceRefGlobal;
+  }
+
+  function getMem() {
+    const instance = getInstance();
+    if (!(instance.exports.memory instanceof WebAssembly.Memory)) {
+      throw new Error("missing exported memory for Preview2 fs host");
+    }
+    return new Uint8Array(instance.exports.memory.buffer);
+  }
+
+  function writeResultErr(retptr, errCode = 8) {
+    const mem = getMem();
+    writeU8(mem, retptr, 1);
+    writeU32LE(mem, retptr + 4, errCode >>> 0);
+  }
+
+  function writeResultOkHandle(retptr, handle) {
+    const mem = getMem();
+    writeU8(mem, retptr, 0);
+    writeU32LE(mem, retptr + 4, handle >>> 0);
+  }
+
+  function writeResultOkPtrLen(retptr, ptr, len) {
+    const mem = getMem();
+    writeU8(mem, retptr, 0);
+    writeU32LE(mem, retptr + 4, ptr >>> 0);
+    writeU32LE(mem, retptr + 8, len >>> 0);
+  }
+
+  function resolveDescriptor(handle) {
+    const desc = descriptors.get(handle);
+    if (!desc) {
+      throw new Error(`unknown filesystem descriptor: ${handle}`);
+    }
+    return desc;
+  }
+
+  function resolvePath(baseHandle, rawPath) {
+    const base = resolveDescriptor(baseHandle);
+    const candidate = path.resolve(base.path, rawPath);
+    if (candidate !== rootPath && !candidate.startsWith(rootPath + path.sep)) {
+      throw new Error(`path escapes preopen root: ${rawPath}`);
+    }
+    return candidate;
+  }
+
+  return {
+    "wasi:filesystem/preopens@0.3.0": {
+      "get-directories"(retptr) {
+        // The caller reserves a 16-byte ret area but does not publish heap_ptr
+        // before this import. Reusing cabi_realloc/__heap_ptr would alias retptr.
+        const listPtr = retptr + 8;
+        const mem = getMem();
+        writeU32LE(mem, listPtr, 3);
+        writeU32LE(mem, retptr, listPtr);
+        writeU32LE(mem, retptr + 4, 1);
+        logDebug(`[preview2 fs] get-directories retptr=${retptr} listPtr=${listPtr}`);
+      },
+    },
+    "wasi:filesystem/types@0.3.0": {
+      "[method]descriptor.open-at"(baseHandle, _pathFlags, pathPtr, pathLen, openFlags, _flags, retptr) {
+        try {
+          const rawPath = decodeUtf8Range(getInstance(), pathPtr, pathLen);
+          const filePath = resolvePath(baseHandle, rawPath);
+          logDebug(`[preview2 fs] open-at base=${baseHandle} path=${JSON.stringify(rawPath)} resolved=${filePath} openFlags=${openFlags}`);
+          const wantCreate = (openFlags & 1) !== 0;
+          const wantDirectory = (openFlags & 2) !== 0;
+          const wantTruncate = (openFlags & 8) !== 0 || (openFlags & 4) !== 0;
+          if (wantDirectory) {
+            if (!fs.existsSync(filePath) || !fs.statSync(filePath).isDirectory()) {
+              writeResultErr(retptr, 24);
+              return;
+            }
+          } else {
+            if (wantCreate) {
+              fs.mkdirSync(path.dirname(filePath), { recursive: true });
+              if (!fs.existsSync(filePath)) {
+                fs.writeFileSync(filePath, Buffer.alloc(0));
+              }
+            }
+            if (!fs.existsSync(filePath)) {
+              writeResultErr(retptr, 44);
+              return;
+            }
+            if (wantTruncate) {
+              fs.writeFileSync(filePath, Buffer.alloc(0));
+            }
+          }
+          const handle = nextDescriptor++;
+          descriptors.set(handle, {
+            kind: wantDirectory ? "dir" : "file",
+            path: filePath,
+          });
+          writeResultOkHandle(retptr, handle);
+        } catch (_err) {
+          logDebug(`[preview2 fs] open-at error: ${_err && _err.stack ? _err.stack : _err}`);
+          writeResultErr(retptr, 8);
+        }
+      },
+      "[method]descriptor.read"(handle, maxLen, offset, retptr) {
+        try {
+          const desc = resolveDescriptor(handle);
+          logDebug(`[preview2 fs] read handle=${handle} path=${desc.path} maxLen=${maxLen} offset=${offset}`);
+          const file = fs.readFileSync(desc.path);
+          const start = Number(offset);
+          const end = Math.min(file.length, start + Number(maxLen));
+          const chunk = file.subarray(start, end);
+          const dataPtr = allocPreview2Buffer(getInstance(), chunk.length, 1);
+          getMem().set(chunk, dataPtr);
+          writeResultOkPtrLen(retptr, dataPtr, chunk.length);
+        } catch (_err) {
+          logDebug(`[preview2 fs] read error: ${_err && _err.stack ? _err.stack : _err}`);
+          writeResultErr(retptr, 8);
+        }
+      },
+      "[method]descriptor.write"(handle, dataPtr, dataLen, offset, retptr) {
+        try {
+          const desc = resolveDescriptor(handle);
+          logDebug(`[preview2 fs] write handle=${handle} path=${desc.path} dataLen=${dataLen} offset=${offset}`);
+          const mem = getMem();
+          const bytes = Buffer.from(mem.subarray(dataPtr, dataPtr + dataLen));
+          if (debugFsData) {
+            const preview = Array.from(bytes.subarray(0, Math.min(bytes.length, 16)))
+              .map((byte) => byte.toString(16).padStart(2, "0"))
+              .join(" ");
+            logDebug(`[preview2 fs] write bytes=${preview}`);
+          }
+          fs.mkdirSync(path.dirname(desc.path), { recursive: true });
+          const pos = Number(offset);
+          if (pos === 0) {
+            fs.writeFileSync(desc.path, bytes);
+          } else {
+            const fd = fs.openSync(desc.path, "r+");
+            try {
+              fs.writeSync(fd, bytes, 0, bytes.length, pos);
+            } finally {
+              fs.closeSync(fd);
+            }
+          }
+          const outMem = getMem();
+          writeU8(outMem, retptr, 0);
+          writeU32LE(outMem, retptr + 4, dataLen >>> 0);
+        } catch (_err) {
+          logDebug(`[preview2 fs] write error: ${_err && _err.stack ? _err.stack : _err}`);
+          writeResultErr(retptr, 8);
+        }
+      },
+      "[method]descriptor.stat-at"(baseHandle, _pathFlags, pathPtr, pathLen, retptr) {
+        try {
+          const rawPath = decodeUtf8Range(getInstance(), pathPtr, pathLen);
+          const filePath = resolvePath(baseHandle, rawPath);
+          const mem = getMem();
+          const exists = fs.existsSync(filePath);
+          logDebug(`[preview2 fs] stat-at base=${baseHandle} path=${JSON.stringify(rawPath)} resolved=${filePath} exists=${exists}`);
+          writeU8(mem, retptr, exists ? 0 : 1);
+        } catch (_err) {
+          logDebug(`[preview2 fs] stat-at error: ${_err && _err.stack ? _err.stack : _err}`);
+          writeResultErr(retptr, 8);
+        }
+      },
+      "[resource-drop]descriptor"(handle) {
+        if (handle !== 3) {
+          descriptors.delete(handle);
+        }
+      },
+    },
+  };
 }
 
 function parseFuncToTableSlot(wasmBytes) {
@@ -320,7 +619,18 @@ function findClosureEnv(instance, heapStart, tableSlot) {
 let instanceRefGlobal = null;
 
 async function main() {
-  const { invoke, wasmPath } = parseArgs(process.argv.slice(2));
+  const { invoke, wasmPath, passthroughArgs } = parseArgs(process.argv.slice(2));
+  if (passthroughArgs.length > 0) {
+    if (process.env.VIBE_INPUT === undefined && passthroughArgs.length >= 1) {
+      process.env.VIBE_INPUT = passthroughArgs[0];
+    }
+    if (process.env.VIBE_OUTPUT === undefined && passthroughArgs.length >= 2) {
+      process.env.VIBE_OUTPUT = passthroughArgs[1];
+    }
+    if (process.env.VIBE_ENTRY === undefined && passthroughArgs.length >= 3) {
+      process.env.VIBE_ENTRY = passthroughArgs[2];
+    }
+  }
   const wasmBytes = fs.readFileSync(wasmPath);
   const exportFuncIndices = parseExportFuncIndices(wasmBytes);
   const funcToTableSlot = parseFuncToTableSlot(wasmBytes);
@@ -345,12 +655,23 @@ async function main() {
   const vibeModule = new Proxy(
     {
       sh(cmdTagged) {
-        const cmd = decodeTaggedString(instanceRef, cmdTagged);
+        const cmd = decodeStringArg(instanceRef, cmdTagged);
         cp.execSync(cmd, { stdio: "inherit", shell: "/bin/bash" });
         return 0n;
       },
+      path(pathValue) {
+        const input = decodeStringArg(instanceRef, pathValue);
+        return encodeTaggedString(instanceRef, input);
+      },
+      ["resolve-path"](pathTagged) {
+        const input = decodeStringArg(instanceRef, pathTagged);
+        return encodeTaggedString(instanceRef, input);
+      },
+      resolve_path(pathTagged) {
+        return this["resolve-path"](pathTagged);
+      },
       fs_read_file(pathTagged) {
-        const filePath = decodeTaggedString(instanceRef, pathTagged);
+        const filePath = decodeStringArg(instanceRef, pathTagged);
         try {
           const content = fs.readFileSync(filePath, "utf8");
           return encodeTaggedString(instanceRef, content);
@@ -358,8 +679,12 @@ async function main() {
           throw new Error(`fs_read_file failed for '${filePath}': ${e.message}`);
         }
       },
+      fs_exists(pathTagged) {
+        const filePath = decodeStringArg(instanceRef, pathTagged);
+        return encodeTaggedBool(fs.existsSync(filePath));
+      },
       fs_write_bytes(pathTagged, bytesTagged) {
-        const filePath = decodeTaggedString(instanceRef, pathTagged);
+        const filePath = decodeStringArg(instanceRef, pathTagged);
         const bytes = decodeTaggedBytes(instanceRef, bytesTagged);
         const dir = path.dirname(filePath);
         if (dir && !fs.existsSync(dir)) {
@@ -368,10 +693,28 @@ async function main() {
         fs.writeFileSync(filePath, bytes);
         return 0n;
       },
-      env_get(nameTagged) {
-        const name = decodeTaggedString(instanceRef, nameTagged);
+      ["env-get"](nameTagged) {
+        const name = decodeStringArg(instanceRef, nameTagged);
         const val = process.env[name] || "";
         return encodeTaggedString(instanceRef, val);
+      },
+      ["args-len"]() {
+        return encodeTaggedInt(passthroughArgs.length);
+      },
+      ["args-get"](indexTagged) {
+        const index = decodeTaggedInt(indexTagged);
+        const val =
+          index >= 0 && index < passthroughArgs.length ? passthroughArgs[index] : "";
+        return encodeTaggedString(instanceRef, val);
+      },
+      env_get(nameTagged) {
+        return this["env-get"](nameTagged);
+      },
+      args_len() {
+        return this["args-len"]();
+      },
+      args_get(indexTagged) {
+        return this["args-get"](indexTagged);
       },
     },
     {
@@ -407,8 +750,19 @@ async function main() {
     },
   };
 
+  const preview2FsHost = createPreview2FilesystemHost(
+    process.env.VIBE_PREOPEN_DIR || process.cwd(),
+  );
+
   const imports = new Proxy(
-    { vibe: vibeModule, wasi_snapshot_preview1: wasiModule },
+    {
+      vibe: vibeModule,
+      wasi_snapshot_preview1: wasiModule,
+      "wasi:filesystem/preopens@0.3.0":
+        preview2FsHost["wasi:filesystem/preopens@0.3.0"],
+      "wasi:filesystem/types@0.3.0":
+        preview2FsHost["wasi:filesystem/types@0.3.0"],
+    },
     {
       get(target, key) {
         if (key in target) {
@@ -422,6 +776,7 @@ async function main() {
   const { instance } = await WebAssembly.instantiate(wasmBytes, imports);
   instanceRef = instance;
   instanceRefGlobal = instance;
+  hostAllocPtrGlobal = null;
 
   const fn = instance.exports[invoke];
   if (typeof fn !== "function") {
@@ -446,21 +801,38 @@ async function main() {
   }
   let result;
   let isSelfhost = false;
-  try {
-    // Try i32 ABI first, then i64 ABI used by selfhost-compiled exports.
+  const invokeWithEnv = (envValue) => {
     if (invoke === "run") {
-      result = fn();
-    } else {
-      try {
-        result = fn(resolvedEnv);
-      } catch (typeErr) {
-        if (typeErr instanceof TypeError) {
-          result = fn(BigInt(resolvedEnv));
-          isSelfhost = true;
-        } else {
-          throw typeErr;
-        }
+      return { result: fn(), isSelfhost: false };
+    }
+    try {
+      return { result: fn(envValue), isSelfhost: false };
+    } catch (typeErr) {
+      if (typeErr instanceof TypeError) {
+        return { result: fn(BigInt(envValue)), isSelfhost: true };
       }
+      throw typeErr;
+    }
+  };
+  try {
+    const envCandidates =
+      invoke !== "run" &&
+      resolvedEnv !== 0 &&
+      invoke.startsWith("selfbuild_")
+        ? [resolvedEnv, 0]
+        : [resolvedEnv];
+    let lastErr = null;
+    for (const envValue of envCandidates) {
+      try {
+        ({ result, isSelfhost } = invokeWithEnv(envValue));
+        lastErr = null;
+        break;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    if (lastErr !== null) {
+      throw lastErr;
     }
   } catch (err) {
     // Dump heap state on crash
@@ -480,12 +852,15 @@ async function main() {
     // Check if the result is a tagged object (could be Bytes from selfbuild)
     if (
       (result & TAG_MASK) === TAG_OBJ &&
-      invoke === "selfbuild_compile_stage2"
+      (invoke === "selfbuild_compile_stage2" ||
+        invoke === "selfbuild_compile_cli_adapter")
     ) {
       // Decode result as Bytes and write to expected output path
       const bytes = decodeTaggedBytes(instanceRef, result);
       const outPath =
-        "_build/bench/selfhost_wasi_selfbuild/index_stage2.wasm";
+        invoke === "selfbuild_compile_cli_adapter"
+          ? "_build/bench/selfhost_cli_adapter/selfhost_cli_stage1.wasm"
+          : "_build/bench/selfhost_wasi_selfbuild/index_stage2.wasm";
       const outDir = path.dirname(outPath);
       if (!fs.existsSync(outDir)) {
         fs.mkdirSync(outDir, { recursive: true });

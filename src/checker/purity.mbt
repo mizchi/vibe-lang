@@ -619,6 +619,8 @@ fn is_effectful_call_name(name : String) -> Bool {
   name == "Fs::rename" ||
   name == "Fs::append" ||
   name == "Env::get" ||
+  name == "Env::args_len" ||
+  name == "Env::args_get" ||
   name == "Socket::tcp_connect" ||
   name == "Socket::tcp_read" ||
   name == "Socket::tcp_write" ||

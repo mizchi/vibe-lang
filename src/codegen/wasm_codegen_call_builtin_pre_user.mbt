@@ -515,6 +515,9 @@ fn compile_call_builtin_pre_user_inner(
     "sh" => {
       let pos_args = extract_positional_exprs_with_arity(args, "sh", 1)
       compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
       emit_call(buf, import_index_sh(ctx))
       emit_drop(buf)
       emit_i64_const_tagged(buf, 0L)
@@ -522,7 +525,27 @@ fn compile_call_builtin_pre_user_inner(
     "path" => {
       let pos_args = extract_positional_exprs_with_arity(args, "path", 1)
       compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
       emit_call(buf, import_index_path(ctx))
+    }
+    "Env::get" if not(is_user_fn) => {
+      let pos_args = extract_positional_exprs_with_arity(args, "Env::get", 1)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_call(buf, import_index_env_get(ctx))
+    }
+    "Env::args_len" if not(is_user_fn) => {
+      let _ = extract_positional_exprs_with_arity(args, "Env::args_len", 0)
+      emit_call(buf, import_index_env_args_len(ctx))
+    }
+    "Env::args_get" if not(is_user_fn) => {
+      let pos_args = extract_positional_exprs_with_arity(args, "Env::args_get", 1)
+      compile_expr(ctx, buf, pos_args[0])
+      emit_call(buf, import_index_env_args_get(ctx))
     }
     "add" if not(is_user_fn) => {
       let pos_args = extract_positional_exprs_with_arity(args, "add", 2)
@@ -5992,6 +6015,7 @@ fn compile_call_builtin_pre_user_inner(
       let path_len_local = alloc_temp_local(ctx)
       let arr_ptr_local = alloc_temp_local(ctx)
       let arr_len_local = alloc_temp_local(ctx)
+      let data_size_local = alloc_temp_local(ctx)
       let data_ptr_local = alloc_temp_local(ctx)
       let ret_area_local = alloc_temp_local(ctx)
       let root_desc_local = alloc_temp_local(ctx)
@@ -6033,16 +6057,13 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_load(buf, 4)
       emit_local_set(buf, arr_len_local)
       // Allocate contiguous byte buffer on heap for the data
-      emit_global_get(buf, ctx.heap_global)
-      emit_local_set(buf, data_ptr_local)
-      emit_local_get(buf, data_ptr_local)
       emit_local_get(buf, arr_len_local)
       emit_i32_const_raw(buf, 3)
       emit_i32_add(buf)
       emit_i32_const_raw(buf, -4)
       emit_i32_and(buf)
-      emit_i32_add(buf)
-      emit_global_set(buf, ctx.heap_global)
+      emit_local_set(buf, data_size_local)
+      emit_heap_alloc_local(ctx, buf, data_size_local, data_ptr_local)
       // Copy array elements (tagged ints) to contiguous bytes
       emit_i32_const_raw(buf, 0)
       emit_local_set(buf, idx_local)

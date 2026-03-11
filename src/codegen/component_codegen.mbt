@@ -967,6 +967,9 @@ pub fn generate_wit(
 
 ///|
 pub(all) struct ComponentWitImports {
+  mut need_env_get : Bool
+  mut need_env_args_len : Bool
+  mut need_env_args_get : Bool
   mut need_path : Bool
   mut need_dynamic_path_resolve : Bool
   mut need_sh : Bool
@@ -982,6 +985,9 @@ pub(all) struct ComponentWitImports {
 ///|
 fn collect_component_wit_imports(ast : @core.Module) -> ComponentWitImports {
   let acc = ComponentWitImports::{
+    need_env_get: false,
+    need_env_args_len: false,
+    need_env_args_get: false,
     need_path: false,
     need_dynamic_path_resolve: false,
     need_sh: false,
@@ -1043,6 +1049,9 @@ fn scan_component_wit_imports_expr(
   match expr {
     @core.Expr::Call(name~, args~, ..) => {
       match name {
+        "Env::get" => acc.need_env_get = true
+        "Env::args_len" => acc.need_env_args_len = true
+        "Env::args_get" => acc.need_env_args_get = true
         "path" | "Path::ref" => acc.need_path = true
         "Path::resolve" => acc.need_dynamic_path_resolve = true
         "sh" => acc.need_sh = true
@@ -1157,11 +1166,23 @@ pub fn generate_component_wit(
   let imports = collect_component_wit_imports(ast)
   let mut wit = "package " + package_name + ";\n\n"
   wit = wit + "world " + world_name + " {\n"
-  if imports.need_path ||
+  if imports.need_env_get ||
+    imports.need_env_args_len ||
+    imports.need_env_args_get ||
+    imports.need_path ||
     imports.need_dynamic_path_resolve ||
     imports.need_sh ||
     imports.need_sleep {
     wit = wit + "  import vibe: interface {\n"
+    if imports.need_env_get {
+      wit = wit + "    env-get: func(name: s32) -> s32;\n"
+    }
+    if imports.need_env_args_len {
+      wit = wit + "    args-len: func() -> s64;\n"
+    }
+    if imports.need_env_args_get {
+      wit = wit + "    args-get: func(index: s64) -> s32;\n"
+    }
     if imports.need_path {
       wit = wit + "    path: func(value: s32) -> s32;\n"
     }

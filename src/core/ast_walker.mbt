@@ -339,6 +339,9 @@ pub fn is_builtin_name(name : String) -> Bool {
   name == "Stdout::write_stream" ||
   name == "Stdin::read_char" ||
   name == "Stdin::read_stream" ||
+  name == "Env::get" ||
+  name == "Env::args_len" ||
+  name == "Env::args_get" ||
   name == "ArrayBuilder::new" ||
   name == "ArrayBuilder::push" ||
   name == "ArrayBuilder::freeze" ||

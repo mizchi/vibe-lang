@@ -192,6 +192,35 @@ test "vibe wasm import path" {
 }
 
 ///|
+test "vibe wasm import env get" {
+  let db = VibeDb::new()
+  db.set_source("main", "Env::get(\"HOME\")")
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(bytes_contains_ascii(wasm, "vibe"))
+  assert_true(bytes_contains_ascii(wasm, "env-get"))
+  assert_true(bytes_contains_ascii(wasm, "__heap_ptr"))
+}
+
+///|
+test "vibe wasm import env args" {
+  let db = VibeDb::new()
+  db.set_source("main", "if Env::args_len() > 0 { Env::args_get(0) } else { \"\" }")
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(bytes_contains_ascii(wasm, "vibe"))
+  assert_true(bytes_contains_ascii(wasm, "args-len"))
+  assert_true(bytes_contains_ascii(wasm, "args-get"))
+  assert_true(bytes_contains_ascii(wasm, "__heap_ptr"))
+}
+
+///|
 test "vibe wasm compile export enum ctor call" {
   let db = VibeDb::new()
   let src =

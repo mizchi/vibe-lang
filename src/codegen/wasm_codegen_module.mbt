@@ -71,7 +71,9 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let mut js_substring_type = -1
   let mut js_concat_type = -1
   let mut js_equals_type = -1
-  let mut import_type = -1
+  let mut path_import_type = -1
+  let mut dynamic_path_import_type = -1
+  let mut env_args_len_type = -1
   let mut sleep_type = -1
   let mut wasi_stream_get_type = -1
   let mut stdout_write_char_type = -1
@@ -114,8 +116,16 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     js_equals_type = type_count
     type_count += 1
   }
-  if ctx.need_sh || ctx.need_path || ctx.need_dynamic_path_resolve {
-    import_type = type_count
+  if ctx.need_sh || ctx.need_path || ctx.need_env_get {
+    path_import_type = type_count
+    type_count += 1
+  }
+  if ctx.need_dynamic_path_resolve || ctx.need_env_args_get {
+    dynamic_path_import_type = type_count
+    type_count += 1
+  }
+  if ctx.need_env_args_len {
+    env_args_len_type = type_count
     type_count += 1
   }
   if ctx.need_sleep {
@@ -251,10 +261,23 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     write_u32_leb(type_sec, 1)
     type_sec.push((127).to_byte())
   }
-  if ctx.need_sh || ctx.need_path || ctx.need_dynamic_path_resolve {
+  if ctx.need_sh || ctx.need_path || ctx.need_env_get {
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 1)
+    type_sec.push((127).to_byte()) // i32 (raw string pointer)
+    write_u32_leb(type_sec, 1)
+    type_sec.push((126).to_byte()) // i64 (tagged value)
+  }
+  if ctx.need_dynamic_path_resolve || ctx.need_env_args_get {
     type_sec.push((96).to_byte())
     write_u32_leb(type_sec, 1)
     type_sec.push((126).to_byte()) // i64 (tagged value)
+    write_u32_leb(type_sec, 1)
+    type_sec.push((126).to_byte()) // i64 (tagged value)
+  }
+  if ctx.need_env_args_len {
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 0)
     write_u32_leb(type_sec, 1)
     type_sec.push((126).to_byte()) // i64 (tagged value)
   }
@@ -490,6 +513,15 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   if ctx.need_sh {
     func_import_count += 1
   }
+  if ctx.need_env_get {
+    func_import_count += 1
+  }
+  if ctx.need_env_args_len {
+    func_import_count += 1
+  }
+  if ctx.need_env_args_get {
+    func_import_count += 1
+  }
   if ctx.need_sleep {
     ctx.sleep_import_index = func_import_count
     func_import_count += 1
@@ -552,19 +584,37 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       write_name(import_sec, "vibe")
       write_name(import_sec, "path")
       import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, import_type)
+      write_u32_leb(import_sec, path_import_type)
     }
     if ctx.need_dynamic_path_resolve {
       write_name(import_sec, "vibe")
-      write_name(import_sec, "resolve_path")
+      write_name(import_sec, "resolve-path")
       import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, import_type)
+      write_u32_leb(import_sec, dynamic_path_import_type)
     }
     if ctx.need_sh {
       write_name(import_sec, "vibe")
       write_name(import_sec, "sh")
       import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, import_type)
+      write_u32_leb(import_sec, path_import_type)
+    }
+    if ctx.need_env_get {
+      write_name(import_sec, "vibe")
+      write_name(import_sec, "env-get")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, path_import_type)
+    }
+    if ctx.need_env_args_len {
+      write_name(import_sec, "vibe")
+      write_name(import_sec, "args-len")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, env_args_len_type)
+    }
+    if ctx.need_env_args_get {
+      write_name(import_sec, "vibe")
+      write_name(import_sec, "args-get")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, dynamic_path_import_type)
     }
     if ctx.need_sleep {
       write_name(import_sec, "vibe")
@@ -1601,6 +1651,8 @@ fn emit_module_with_coverage(
     any_user_heap = true
   }
   if any_user_heap ||
+    ctx.need_env_get ||
+    ctx.need_env_args_get ||
     ctx.need_stdin_read_char ||
     ctx.need_fs ||
     ctx.need_socket ||
@@ -1646,6 +1698,15 @@ fn emit_module_with_coverage(
       import_count += 1
     }
     if ctx.need_sh {
+      import_count += 1
+    }
+    if ctx.need_env_get {
+      import_count += 1
+    }
+    if ctx.need_env_args_len {
+      import_count += 1
+    }
+    if ctx.need_env_args_get {
       import_count += 1
     }
     ctx.sleep_import_index = import_count

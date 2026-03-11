@@ -28,6 +28,9 @@ priv struct CodegenCtx {
   mut need_sh : Bool
   mut need_path : Bool
   mut need_dynamic_path_resolve : Bool
+  mut need_env_get : Bool
+  mut need_env_args_len : Bool
+  mut need_env_args_get : Bool
   mut need_js_length : Bool
   mut need_js_char_code_at : Bool
   mut need_js_substring : Bool
@@ -150,6 +153,9 @@ fn CodegenCtx::new(
     need_sh: false,
     need_path: false,
     need_dynamic_path_resolve: false,
+    need_env_get: false,
+    need_env_args_len: false,
+    need_env_args_get: false,
     need_js_length: false,
     need_js_char_code_at: false,
     need_js_substring: false,

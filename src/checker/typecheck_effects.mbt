@@ -152,7 +152,8 @@ fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
     | "Fs::copy"
     | "Fs::rename"
     | "Fs::append" => [@core.EffectAtom::Const("Fs")]
-    "Env::get" => [@core.EffectAtom::Const("Env")]
+    "Env::get" | "Env::args_len" | "Env::args_get" =>
+      [@core.EffectAtom::Const("Env")]
     "Socket::tcp_connect"
     | "Socket::tcp_read"
     | "Socket::tcp_write"

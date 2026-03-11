@@ -121,6 +121,9 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         "sh" => ctx.need_sh = true
         "path" | "Path::ref" => ctx.need_path = true
         "Path::resolve" => ctx.need_dynamic_path_resolve = true
+        "Env::get" => ctx.need_env_get = true
+        "Env::args_len" => ctx.need_env_args_len = true
+        "Env::args_get" => ctx.need_env_args_get = true
         "String::length" => if ctx.use_js_strings { ctx.need_js_length = true }
         "String::char_code_at" =>
           if ctx.use_js_strings {
