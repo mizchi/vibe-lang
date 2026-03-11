@@ -383,6 +383,9 @@ test-selfhost-wasi-selfbuild-kpi max_total_sec="300":
 test-selfhost-cli-adapter:
     bash scripts/test_selfhost_cli_adapter.sh
 
+test-selfhost-cli-adapter-cache:
+    bash scripts/test_selfhost_cli_adapter_cache.sh
+
 # Run artifact-only selfhost core CLI gate (stage1 core wasm -> sample compile)
 test-selfhost-cli-core:
     bash scripts/test_selfhost_cli_core.sh

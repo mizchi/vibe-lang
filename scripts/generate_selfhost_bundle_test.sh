@@ -129,6 +129,7 @@ if ! rg -Fq 'push_grouped_source_pair(groups, "entry", source_2)' "$OUT"; then
 fi
 
 adapter_sources_block="$(sed -n '/export let selfhost_cli_adapter_sources/,/^}/p' "$OUT_ADAPTER")"
+adapter_merged_block="$(sed -n '/export let selfhost_cli_adapter_merged_source/,/^}/p' "$OUT_ADAPTER")"
 
 if ! printf '%s\n' "$adapter_sources_block" | rg -Fq 'Array::push(sources, source_1)'; then
   echo "generate-selfhost-bundle self-test: adapter closure missing token source" >&2
@@ -144,6 +145,24 @@ fi
 
 if printf '%s\n' "$adapter_sources_block" | rg -Fq 'Array::push(sources, source_2)'; then
   echo "generate-selfhost-bundle self-test: adapter closure unexpectedly kept unrelated index source" >&2
+  cat "$OUT_ADAPTER" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$adapter_merged_block" | rg -Fq 'selfhost_cli_adapter_ordered_sources'; then
+  echo "generate-selfhost-bundle self-test: adapter merged source should be exact merged text, not raw ordered concat" >&2
+  cat "$OUT_ADAPTER" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$adapter_merged_block" | rg -Fq 'let token = polyfill'; then
+  echo "generate-selfhost-bundle self-test: adapter merged source missing inlined dependency body" >&2
+  cat "$OUT_ADAPTER" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$adapter_merged_block" | rg -Fq 'import ./token.vibe'; then
+  echo "generate-selfhost-bundle self-test: adapter merged source still contains import statements" >&2
   cat "$OUT_ADAPTER" >&2
   exit 1
 fi
