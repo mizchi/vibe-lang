@@ -56,4 +56,28 @@ if [ "$polyfill_line" -ge "$token_line" ] || [ "$token_line" -ge "$index_line" ]
   exit 1
 fi
 
+if ! rg -q 'export let selfhost_source_groups' "$OUT"; then
+  echo "generate-selfhost-bundle self-test: missing selfhost_source_groups export" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+
+if ! rg -Fq 'push_grouped_source_pair(groups, "core", source_0)' "$OUT"; then
+  echo "generate-selfhost-bundle self-test: missing core group mapping" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+
+if ! rg -Fq 'push_grouped_source_pair(groups, "syntax", source_1)' "$OUT"; then
+  echo "generate-selfhost-bundle self-test: missing syntax group mapping" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+
+if ! rg -Fq 'push_grouped_source_pair(groups, "entry", source_2)' "$OUT"; then
+  echo "generate-selfhost-bundle self-test: missing entry group mapping" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+
 echo "generate-selfhost-bundle self-test: ok"

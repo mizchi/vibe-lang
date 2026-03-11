@@ -1,9 +1,13 @@
 //# Imports
 
-import ./compiler.vibe {
+import ./entry/compiler/fs_compile/index.vibe {
   prepare_modules_cached,
   compile_with_modules_cached,
   compile_with_modules_wasi_cached,
+  compile_with_source_groups_wasi_cached
+}
+
+import ./entry/compiler/file_compile/index.vibe {
   compile_file_fs_module_cached
 }
 
@@ -193,6 +197,33 @@ test "compile_with_modules_wasi_cached: multi-module imports compile to valid WA
   )
   assert_wasm_magic(bytes2)
   assert(eq(db_codegen_count(db2), codegen_count1))
+}
+
+test "compile_with_source_groups_wasi_cached: grouped sources reuse grouped merge cache" {
+  let helper_source = "export let add = (a: Int, b: Int) -> Int { a + b }"
+  let main_source = "import ./helpers.vibe { add }\nlet run = () -> Int { add(1, 2) }"
+  let source_groups = [
+    ("core", [("helpers.vibe", helper_source)]),
+    ("entry", [("main.vibe", main_source)])
+  ]
+  let (bytes1, db1) = compile_with_source_groups_wasi_cached(
+    db_new(),
+    main_source,
+    "main.vibe",
+    source_groups,
+    "run"
+  )
+  assert_wasm_magic(bytes1)
+  let merge_count1 = db_merge_count(db1)
+  let (bytes2, db2) = compile_with_source_groups_wasi_cached(
+    db1,
+    main_source,
+    "main.vibe",
+    source_groups,
+    "run"
+  )
+  assert_wasm_magic(bytes2)
+  assert(eq(db_merge_count(db2), merge_count1))
 }
 
 test "compile_with_modules_cached: same source reuses compiled artifact cache across paths" {

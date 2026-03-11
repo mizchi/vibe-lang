@@ -14,6 +14,7 @@ if [ ! -f "$MANIFEST" ]; then
   exit 1
 fi
 
+MANIFEST_GROUPS=()
 FILES=()
 while IFS=$'\t' read -r group relpath; do
   if [ -z "${group}${relpath}" ]; then
@@ -26,6 +27,7 @@ while IFS=$'\t' read -r group relpath; do
     echo "error: invalid manifest row in $MANIFEST: missing path for group '$group'" >&2
     exit 1
   fi
+  MANIFEST_GROUPS+=("$group")
   FILES+=("$relpath")
 done < "$MANIFEST"
 
@@ -42,8 +44,30 @@ fi
   echo ""
   echo "// All compiler source files bundled as (path, source) pairs."
   echo "// Used by selfbuild_compile_stage2 to avoid filesystem access."
-  echo "export let selfhost_sources = () -> Array[(String, String)] {"
-  echo "  let sources = Array::slice([(\"\", \"\")], 0, 0)"
+  echo "let empty_grouped_sources = () -> Array[(String, Array[(String, String)])] {"
+  echo "  Array::slice([(\"\", Array::slice([(\"\", \"\")], 0, 0))], 0, 0)"
+  echo "}"
+  echo ""
+  echo "let push_grouped_source_pair = (groups: Array[(String, Array[(String, String)])], group_name: String, pair: (String, String)) -> Unit {"
+  echo "  let (path, source) = pair"
+  echo "  let mut i = 0"
+  echo "  let mut found = false"
+  echo "  while i < Array::length(groups) {"
+  echo "    let (name, sources) = Array::get(groups, i)"
+  echo "    if String::equals(name, group_name) {"
+  echo "      Array::push(sources, (path, source))"
+  echo "      found = true"
+  echo "      i = Array::length(groups)"
+  echo "    } else {"
+  echo "      i = i + 1"
+  echo "    }"
+  echo "  }"
+  echo "  if !found {"
+  echo "    let sources = Array::slice([(\"\", \"\")], 0, 0)"
+  echo "    Array::push(sources, (path, source))"
+  echo "    Array::push(groups, (group_name, sources))"
+  echo "  }"
+  echo "}"
   echo ""
 
   idx=0
@@ -68,12 +92,35 @@ content = content.replace('\n', '\\\\n')
 sys.stdout.write('\"' + content + '\"')
 "
     echo ")"
-    echo "  Array::push(sources, source_$idx)"
     echo ""
     idx=$((idx + 1))
   done
 
+  echo "export let selfhost_sources = () -> Array[(String, String)] {"
+  echo "  let sources = Array::slice([(\"\", \"\")], 0, 0)"
+  echo ""
+
+  idx=0
+  for _f in "${FILES[@]}"; do
+    echo "  Array::push(sources, source_$idx)"
+    idx=$((idx + 1))
+  done
+
   echo "  sources"
+  echo "}"
+  echo ""
+  echo "export let selfhost_source_groups = () -> Array[(String, Array[(String, String)])] {"
+  echo "  let groups = empty_grouped_sources()"
+  echo ""
+
+  idx=0
+  for group in "${MANIFEST_GROUPS[@]}"; do
+    echo "  push_grouped_source_pair(groups, \"$group\", source_$idx)"
+    idx=$((idx + 1))
+  done
+
+  echo ""
+  echo "  groups"
   echo "}"
 } > "$OUT"
 
