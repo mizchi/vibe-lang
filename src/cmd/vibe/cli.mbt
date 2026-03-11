@@ -1396,7 +1396,6 @@ fn is_wasm_runtime_fallback_builtin_name(name : String) -> Bool {
     | "Fs::remove"
     | "Fs::rename"
     | "Fs::append"
-    | "Env::get"
     | "Llm::complete"
     | "Rlm::run"
     | "Rlm::finalize"

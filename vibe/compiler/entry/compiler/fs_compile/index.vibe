@@ -16,6 +16,10 @@ import ../../../codegen/index.vibe {
   compile_module, compile_wasi_module
 }
 
+import ../../../checker/checker_stmt.vibe {
+  check_program
+}
+
 import ../../../loader/index.vibe {
   collect_all_sources_fs, collect_source_groups_fs
 }
@@ -323,9 +327,95 @@ let filter_source_groups = (
   filtered_groups
 }
 
+export let source_group_total_source_count = (
+  source_groups: Array[(String, Array[(String, String)])]
+) -> Int {
+  let mut total = 0
+  let mut gi = 0
+  while gi < Array::length(source_groups) {
+    let (_, sources) = Array::get(source_groups, gi)
+    total = total + Array::length(sources)
+    gi = gi + 1
+  }
+  total
+}
+
+export let source_group_ordered_source_count = (
+  main_source: String,
+  main_path: String,
+  source_groups: Array[(String, Array[(String, String)])]
+) -> Int with { Error } {
+  let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
+  let ordered_sources = collect_inline_sources_ordered(
+    main_path,
+    main_source,
+    flatten_source_groups(normalized_groups)
+  )
+  Array::length(ordered_sources)
+}
+
+export let source_group_filtered_group_count = (
+  main_source: String,
+  main_path: String,
+  source_groups: Array[(String, Array[(String, String)])]
+) -> Int with { Error } {
+  let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
+  let ordered_sources = collect_inline_sources_ordered(
+    main_path,
+    main_source,
+    flatten_source_groups(normalized_groups)
+  )
+  let filtered_groups = filter_source_groups(normalized_groups, ordered_sources)
+  Array::length(filtered_groups)
+}
+
 export let prepare_modules_cached = (db: TypeDb, main_path: String, main_source: String, sources: Array[(String, String)]) -> TypeDb with { Error } {
   let seeded = seed_type_db(db, main_path, main_source, sources)
   db_typecheck(seeded, main_path)
+}
+
+export let source_group_prepare_typecheck_count = (
+  db: TypeDb,
+  main_source: String,
+  main_path: String,
+  source_groups: Array[(String, Array[(String, String)])]
+) -> Int with { Error } {
+  let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
+  let ordered_sources = collect_inline_sources_ordered(
+    main_path,
+    main_source,
+    flatten_source_groups(normalized_groups)
+  )
+  let next_db = prepare_modules_cached(
+    db,
+    main_path,
+    main_source,
+    ordered_sources
+  )
+  db_typecheck_count(next_db)
+}
+
+export let grouped_source_merged_len = (
+  db: TypeDb,
+  main_source: String,
+  main_path: String,
+  source_groups: Array[(String, Array[(String, String)])]
+) -> Int with { Error } {
+  let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
+  let ordered_sources = collect_inline_sources_ordered(
+    main_path,
+    main_source,
+    flatten_source_groups(normalized_groups)
+  )
+  let filtered_groups = filter_source_groups(normalized_groups, ordered_sources)
+  let next_db = prepare_modules_cached(
+    db,
+    main_path,
+    main_source,
+    ordered_sources
+  )
+  let (merged_source, _, _) = db_grouped_merged_source(next_db, filtered_groups)
+  String::length(merged_source)
 }
 
 export let compile_with_modules = (main_source: String, main_path: String, sources: Array[(String, String)]) -> Bytes with { Error } {
@@ -428,6 +518,52 @@ export let compile_with_modules_wasi_cached = (db: TypeDb, main_source: String, 
   }
 }
 
+export let compile_with_closure_sources_wasi_cached = (
+  db: TypeDb,
+  main_source: String,
+  main_path: String,
+  sources: Array[(String, String)],
+  entry_name: String
+) -> (Bytes, TypeDb) with { Error } {
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
+  let next_db = prepare_modules_cached(db, main_path, main_source, ordered_sources)
+  let merge_fingerprint = build_merge_fingerprint_inline(ordered_sources)
+  let artifact_fingerprint = artifact_fingerprint_from_source(
+    String::concat(merge_fingerprint, String::concat("|", entry_name))
+  )
+  match db_load_artifact(next_db, main_path, "wasi", entry_name, artifact_fingerprint) {
+    Some(bytes) => (bytes, next_db),
+    None => {
+      let merged_stmts = build_merged_stmts_inline(ordered_sources)
+      let bytes = compile_wasi_module(merged_stmts, entry_name)
+      (bytes, db_store_artifact(next_db, main_path, "wasi", entry_name, artifact_fingerprint, bytes))
+    }
+  }
+}
+
+export let compile_with_closure_sources_wasi_unchecked_cached = (
+  db: TypeDb,
+  main_source: String,
+  main_path: String,
+  sources: Array[(String, String)],
+  entry_name: String
+) -> (Bytes, TypeDb) with { Error } {
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
+  let merge_fingerprint = build_merge_fingerprint_inline(ordered_sources)
+  let artifact_fingerprint = artifact_fingerprint_from_source(
+    String::concat(merge_fingerprint, String::concat("|", entry_name))
+  )
+  match db_load_artifact(db, main_path, "wasi", entry_name, artifact_fingerprint) {
+    Some(bytes) => (bytes, db),
+    None => {
+      let merged_stmts = build_merged_stmts_inline(ordered_sources)
+      let _ = check_program(merged_stmts)
+      let bytes = compile_wasi_module(merged_stmts, entry_name)
+      (bytes, db_store_artifact(db, main_path, "wasi", entry_name, artifact_fingerprint, bytes))
+    }
+  }
+}
+
 export let compile_with_source_groups_wasi_cached = (
   db: TypeDb,
   main_source: String,
@@ -458,6 +594,35 @@ export let compile_with_source_groups_wasi_cached = (
       let merged_stmts = parse_program(lex(merged_source))
       let bytes = compile_wasi_module(merged_stmts, entry_name)
       (bytes, db_store_artifact(codegen_db, main_path, "wasi", entry_name, artifact_fingerprint, bytes))
+    }
+  }
+}
+
+export let compile_with_source_groups_wasi_unchecked_cached = (
+  db: TypeDb,
+  main_source: String,
+  main_path: String,
+  source_groups: Array[(String, Array[(String, String)])],
+  entry_name: String
+) -> (Bytes, TypeDb) with { Error } {
+  let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
+  let ordered_sources = collect_inline_sources_ordered(
+    main_path,
+    main_source,
+    flatten_source_groups(normalized_groups)
+  )
+  let filtered_groups = filter_source_groups(normalized_groups, ordered_sources)
+  let (merged_source, merge_fingerprint, merge_db) = db_grouped_merged_source(db, filtered_groups)
+  let artifact_fingerprint = artifact_fingerprint_from_source(
+    String::concat(merge_fingerprint, String::concat("|", entry_name))
+  )
+  match db_load_artifact(merge_db, main_path, "wasi", entry_name, artifact_fingerprint) {
+    Some(bytes) => (bytes, merge_db),
+    None => {
+      let merged_stmts = parse_program(lex(merged_source))
+      let _ = check_program(merged_stmts)
+      let bytes = compile_wasi_module(merged_stmts, entry_name)
+      (bytes, db_store_artifact(merge_db, main_path, "wasi", entry_name, artifact_fingerprint, bytes))
     }
   }
 }

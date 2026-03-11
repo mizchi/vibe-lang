@@ -1714,6 +1714,25 @@ test "vibe wasm eval array literal" {
 }
 
 ///|
+test "vibe wasm eval keeps tagged ints when Array::push uses param value" {
+  let src =
+    #|let push_arg = (buf: Array[Int], byte: Int) -> Unit {
+    #|  Array::push(buf, byte)
+    #|}
+    #|let out = ArrayBuilder::freeze(ArrayBuilder::new())
+    #|push_arg(out, 3)
+    #|Array::get(out, 0)
+  let res = try eval_run(src)
+  catch {
+    e => fail(e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_true(is_tagged_int(res.value))
+  assert_eq(decode_int(res.value), 3L)
+}
+
+///|
 test "vibe wasm eval map literal" {
   let res = try eval_run("map { a: 1 }") catch {
     e => fail(e.to_string())

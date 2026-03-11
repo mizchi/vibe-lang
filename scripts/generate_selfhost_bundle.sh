@@ -8,6 +8,7 @@ PROJECT_ROOT="${VIBE_SELFHOST_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
 COMPILER_DIR="${VIBE_SELFHOST_COMPILER_DIR:-$PROJECT_ROOT/vibe/compiler}"
 MANIFEST="${VIBE_SELFHOST_SOURCE_MANIFEST:-$COMPILER_DIR/selfhost_sources_manifest.tsv}"
 OUT="${VIBE_SELFHOST_BUNDLE_OUT:-$COMPILER_DIR/selfhost_sources_bundle.vibe}"
+OUT_ADAPTER="${VIBE_SELFHOST_ADAPTER_BUNDLE_OUT:-$COMPILER_DIR/selfhost_cli_adapter_bundle.vibe}"
 
 if [ ! -f "$MANIFEST" ]; then
   echo "error: manifest not found: $MANIFEST" >&2
@@ -31,10 +32,269 @@ while IFS=$'\t' read -r group relpath; do
   FILES+=("$relpath")
 done < "$MANIFEST"
 
+CLI_ADAPTER_INDEXES=()
+while IFS= read -r idx; do
+  if [ -n "$idx" ]; then
+    CLI_ADAPTER_INDEXES+=("$idx")
+  fi
+done < <(
+  python3 - "$COMPILER_DIR" "$MANIFEST" "selfhost_cli_adapter.vibe" <<'PY'
+import os
+import re
+import sys
+
+compiler_dir, manifest_path, root_rel = sys.argv[1:]
+rows = []
+for raw in open(manifest_path, "r", encoding="utf-8"):
+    line = raw.rstrip("\n")
+    if not line or line.startswith("#"):
+        continue
+    parts = line.split("\t")
+    if len(parts) != 2:
+        continue
+    rows.append((parts[0], parts[1]))
+
+source_by_rel = {}
+for _, rel in rows:
+    full = os.path.join(compiler_dir, rel)
+    if os.path.isfile(full):
+        with open(full, "r", encoding="utf-8") as f:
+            source_by_rel[rel] = f.read()
+
+dep_pattern = re.compile(r'^\s*(?:import|export)\s+([.][^\s{]+)', re.MULTILINE)
+
+def normalize_path(path: str) -> str:
+    parts = []
+    for seg in path.split("/"):
+        if seg == "" or seg == ".":
+            continue
+        if seg == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(seg)
+    return "/".join(parts)
+
+def resolve_path(base_rel: str, raw_path: str) -> str:
+    base_dir = os.path.dirname(base_rel)
+    path = raw_path if raw_path.endswith(".vibe") else raw_path + ".vibe"
+    if path.startswith("./") or path.startswith("../"):
+        if base_dir:
+            return normalize_path(base_dir + "/" + path)
+        return normalize_path(path)
+    return normalize_path(path)
+
+reachable = set()
+
+def visit(rel: str):
+    if rel in reachable:
+        return
+    source = source_by_rel.get(rel)
+    if source is None:
+        return
+    reachable.add(rel)
+    for dep in dep_pattern.findall(source):
+        visit(resolve_path(rel, dep))
+
+visit(root_rel)
+
+for idx, (_, rel) in enumerate(rows):
+    if rel in reachable:
+        print(idx)
+PY
+)
+
+CLI_ADAPTER_ORDERED_INDEXES=()
+while IFS= read -r idx; do
+  if [ -n "$idx" ]; then
+    CLI_ADAPTER_ORDERED_INDEXES+=("$idx")
+  fi
+done < <(
+  python3 - "$COMPILER_DIR" "$MANIFEST" "selfhost_cli_adapter.vibe" <<'PY'
+import os
+import re
+import sys
+
+compiler_dir, manifest_path, root_rel = sys.argv[1:]
+rows = []
+for raw in open(manifest_path, "r", encoding="utf-8"):
+    line = raw.rstrip("\n")
+    if not line or line.startswith("#"):
+        continue
+    parts = line.split("\t")
+    if len(parts) != 2:
+        continue
+    rows.append((parts[0], parts[1]))
+
+source_by_rel = {}
+for _, rel in rows:
+    full = os.path.join(compiler_dir, rel)
+    if os.path.isfile(full):
+        with open(full, "r", encoding="utf-8") as f:
+            source_by_rel[rel] = f.read()
+
+dep_pattern = re.compile(r'^\s*(?:import|export)\s+([.][^\s{]+)', re.MULTILINE)
+
+def normalize_path(path: str) -> str:
+    parts = []
+    for seg in path.split("/"):
+        if seg == "" or seg == ".":
+            continue
+        if seg == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(seg)
+    return "/".join(parts)
+
+def resolve_path(base_rel: str, raw_path: str) -> str:
+    base_dir = os.path.dirname(base_rel)
+    path = raw_path if raw_path.endswith(".vibe") else raw_path + ".vibe"
+    if path.startswith("./") or path.startswith("../"):
+        if base_dir:
+            return normalize_path(base_dir + "/" + path)
+        return normalize_path(path)
+    return normalize_path(path)
+
+visited = set()
+ordered = []
+
+def visit(rel: str):
+    if rel in visited:
+        return
+    source = source_by_rel.get(rel)
+    if source is None:
+        return
+    visited.add(rel)
+    for dep in dep_pattern.findall(source):
+        visit(resolve_path(rel, dep))
+    ordered.append(rel)
+
+visit(root_rel)
+index_by_rel = {rel: idx for idx, (_, rel) in enumerate(rows)}
+for rel in ordered:
+    idx = index_by_rel.get(rel)
+    if idx is not None:
+        print(idx)
+PY
+)
+
 if [ "${#FILES[@]}" -eq 0 ]; then
   echo "error: manifest contains no compiler sources: $MANIFEST" >&2
   exit 1
 fi
+
+find_adapter_local_index() {
+  local target="$1"
+  local i=0
+  local idx
+  for idx in "${CLI_ADAPTER_INDEXES[@]}"; do
+    if [ "$idx" = "$target" ]; then
+      echo "$i"
+      return 0
+    fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
+{
+  echo "// AUTO-GENERATED by scripts/generate_selfhost_bundle.sh"
+  echo "// Do not edit manually. Regenerate with: bash scripts/generate_selfhost_bundle.sh"
+  echo ""
+  echo "//# Selfhost CLI adapter bundle"
+  echo ""
+  echo "let empty_grouped_sources = () -> Array[(String, Array[(String, String)])] {"
+  echo "  Array::slice([(\"\", Array::slice([(\"\", \"\")], 0, 0))], 0, 0)"
+  echo "}"
+  echo ""
+  echo "let push_grouped_source_pair = (groups: Array[(String, Array[(String, String)])], group_name: String, pair: (String, String)) -> Unit {"
+  echo "  let (path, source) = pair"
+  echo "  let mut i = 0"
+  echo "  let mut found = false"
+  echo "  while i < Array::length(groups) {"
+  echo "    let (name, sources) = Array::get(groups, i)"
+  echo "    if String::equals(name, group_name) {"
+  echo "      Array::push(sources, (path, source))"
+  echo "      found = true"
+  echo "      i = Array::length(groups)"
+  echo "    } else {"
+  echo "      i = i + 1"
+  echo "    }"
+  echo "  }"
+  echo "  if !found {"
+  echo "    let sources = Array::slice([(\"\", \"\")], 0, 0)"
+  echo "    Array::push(sources, (path, source))"
+  echo "    Array::push(groups, (group_name, sources))"
+  echo "  }"
+  echo "}"
+  echo ""
+
+  adapter_local_idx=0
+  for idx in "${CLI_ADAPTER_INDEXES[@]}"; do
+    f="${FILES[$idx]}"
+    filepath="$COMPILER_DIR/$f"
+    relpath="vibe/compiler/$f"
+    echo "  let source_$adapter_local_idx = (\"$relpath\","
+    python3 -c "
+import sys
+with open('$filepath', 'r') as f:
+    content = f.read()
+content = content.replace('\\\\', '\\\\\\\\')
+content = content.replace('\"', '\\\\\"')
+content = content.replace('\n', '\\\\n')
+sys.stdout.write('\"' + content + '\"')
+"
+    echo ")"
+    echo ""
+    adapter_local_idx=$((adapter_local_idx + 1))
+  done
+
+  echo "export let selfhost_cli_adapter_sources = () -> Array[(String, String)] {"
+  echo "  let sources = Array::slice([(\"\", \"\")], 0, 0)"
+  adapter_local_idx=0
+  for _idx in "${CLI_ADAPTER_INDEXES[@]}"; do
+    echo "  Array::push(sources, source_$adapter_local_idx)"
+    adapter_local_idx=$((adapter_local_idx + 1))
+  done
+  echo "  sources"
+  echo "}"
+  echo ""
+  echo "export let selfhost_cli_adapter_source_groups = () -> Array[(String, Array[(String, String)])] {"
+  echo "  let groups = empty_grouped_sources()"
+  adapter_local_idx=0
+  for idx in "${CLI_ADAPTER_INDEXES[@]}"; do
+    group="${MANIFEST_GROUPS[$idx]}"
+    echo "  push_grouped_source_pair(groups, \"$group\", source_$adapter_local_idx)"
+    adapter_local_idx=$((adapter_local_idx + 1))
+  done
+  echo "  groups"
+  echo "}"
+  echo ""
+  echo "export let selfhost_cli_adapter_ordered_sources = () -> Array[(String, String)] {"
+  echo "  let sources = Array::slice([(\"\", \"\")], 0, 0)"
+  for idx in "${CLI_ADAPTER_ORDERED_INDEXES[@]}"; do
+    adapter_local_idx="$(find_adapter_local_index "$idx")"
+    echo "  Array::push(sources, source_$adapter_local_idx)"
+  done
+  echo "  sources"
+  echo "}"
+  echo ""
+  echo "export let selfhost_cli_adapter_merged_source = () -> String {"
+  echo "  let ordered = selfhost_cli_adapter_ordered_sources()"
+  echo "  let mut out = \"\""
+  echo "  let mut i = 0"
+  echo "  while i < Array::length(ordered) {"
+  echo "    let (_, source) = Array::get(ordered, i)"
+  echo "    out = String::concat(out, source)"
+  echo "    if !String::ends_with(source, \"\\n\") {"
+  echo "      out = String::concat(out, \"\\n\")"
+  echo "    }"
+  echo "    i = i + 1"
+  echo "  }"
+  echo "  out"
+  echo "}"
+} > "$OUT_ADAPTER"
 
 {
   echo "// AUTO-GENERATED by scripts/generate_selfhost_bundle.sh"
@@ -69,10 +329,13 @@ fi
   echo "  }"
   echo "}"
   echo ""
-
   idx=0
   for f in "${FILES[@]}"; do
-    filepath="$COMPILER_DIR/$f"
+    if [ "$f" = "selfhost_cli_adapter_bundle.vibe" ]; then
+      filepath="$OUT_ADAPTER"
+    else
+      filepath="$COMPILER_DIR/$f"
+    fi
     if [ ! -f "$filepath" ]; then
       echo "error: file not found: $filepath" >&2
       exit 1
@@ -125,3 +388,4 @@ sys.stdout.write('\"' + content + '\"')
 } > "$OUT"
 
 echo "Generated $OUT ($(wc -l < "$OUT") lines, $(wc -c < "$OUT" | tr -d ' ') bytes)"
+echo "Generated $OUT_ADAPTER ($(wc -l < "$OUT_ADAPTER") lines, $(wc -c < "$OUT_ADAPTER" | tr -d ' ') bytes)"

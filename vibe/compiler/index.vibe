@@ -54,7 +54,11 @@ import ./entry/source_compile/wasi_only/index.vibe {
 import ./entry/compiler/fs_compile/index.vibe {
   compile_with_modules, compile_with_modules_wasi,
   prepare_modules_cached, compile_with_modules_cached, compile_with_modules_wasi_cached,
-  compile_with_source_groups_wasi_cached,
+  compile_with_closure_sources_wasi_cached, compile_with_closure_sources_wasi_unchecked_cached,
+  compile_with_source_groups_wasi_cached, compile_with_source_groups_wasi_unchecked_cached,
+  source_group_total_source_count, source_group_ordered_source_count,
+  source_group_filtered_group_count, source_group_prepare_typecheck_count,
+  grouped_source_merged_len,
   compile_file_fs, compile_file_fs_module, prepare_file_fs_cached,
   compile_file_fs_cached, compile_file_fs_module_cached
 }
@@ -65,6 +69,11 @@ import ./module_loader.vibe {
 
 import ./selfhost_sources_bundle.vibe {
   selfhost_sources, selfhost_source_groups
+}
+
+import ./selfhost_cli_adapter_bundle.vibe {
+  selfhost_cli_adapter_sources, selfhost_cli_adapter_source_groups,
+  selfhost_cli_adapter_merged_source
 }
 
 import ./cli_cache.vibe {
@@ -114,15 +123,14 @@ export let compiler_print_type_expr = print_type_expr
 
 let build_selfhost_cli_adapter_bytes = () -> Bytes with { Error } {
   let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
-  let sources = selfhost_sources()
-  let source_groups = selfhost_source_groups()
-  if Array::length(sources) == 0 { throw("selfhost_sources is empty (stub)") }
+  let sources = selfhost_cli_adapter_sources()
+  if Array::length(sources) == 0 { throw("selfhost_cli_adapter_sources is empty") }
   let adapter_source = lookup_selfhost_source(sources, adapter_path)
-  let (bytes, _) = compile_with_source_groups_wasi_cached(
+  let (bytes, _) = compile_with_closure_sources_wasi_unchecked_cached(
     db_new(),
     adapter_source,
     adapter_path,
-    source_groups,
+    sources,
     "cli_main"
   )
   bytes
@@ -274,8 +282,8 @@ let lookup_selfhost_source = (sources: Array[(String, String)], path: String) ->
 }
 
 let load_cli_adapter_merged_source = () -> String with { Error } {
-  let sources = selfhost_sources()
-  if Array::length(sources) == 0 { throw("selfhost_sources is empty (stub)") }
+  let sources = selfhost_cli_adapter_sources()
+  if Array::length(sources) == 0 { throw("selfhost_cli_adapter_sources is empty") }
   let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
   let adapter_source = lookup_selfhost_source(sources, adapter_path)
   let prepared = prepare_modules_cached(db_new(), adapter_path, adapter_source, sources)
@@ -284,8 +292,8 @@ let load_cli_adapter_merged_source = () -> String with { Error } {
 }
 
 let load_cli_adapter_program_source = () -> String with { Error } {
-  let sources = selfhost_sources()
-  if Array::length(sources) == 0 { throw("selfhost_sources is empty (stub)") }
+  let sources = selfhost_cli_adapter_sources()
+  if Array::length(sources) == 0 { throw("selfhost_cli_adapter_sources is empty") }
   let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
   let adapter_source = lookup_selfhost_source(sources, adapter_path)
   let prepared = prepare_modules_cached(db_new(), adapter_path, adapter_source, sources)
@@ -425,9 +433,49 @@ export let selfbuild_probe_cli_adapter_stmt_count = () -> Int with { Error } {
   Array::length(stmts)
 }
 
+export let selfbuild_probe_cli_adapter_group_count = () -> Int with { Error } {
+  Array::length(selfhost_cli_adapter_source_groups())
+}
+
+export let selfbuild_probe_cli_adapter_group_source_count = () -> Int with { Error } {
+  source_group_total_source_count(selfhost_cli_adapter_source_groups())
+}
+
+export let selfbuild_probe_cli_adapter_ordered_source_count = () -> Int with { Error } {
+  let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
+  let sources = selfhost_cli_adapter_sources()
+  let source_groups = selfhost_cli_adapter_source_groups()
+  let adapter_source = lookup_selfhost_source(sources, adapter_path)
+  source_group_ordered_source_count(adapter_source, adapter_path, source_groups)
+}
+
+export let selfbuild_probe_cli_adapter_filtered_group_count = () -> Int with { Error } {
+  let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
+  let sources = selfhost_cli_adapter_sources()
+  let source_groups = selfhost_cli_adapter_source_groups()
+  let adapter_source = lookup_selfhost_source(sources, adapter_path)
+  source_group_filtered_group_count(adapter_source, adapter_path, source_groups)
+}
+
+export let selfbuild_probe_cli_adapter_prepare_typecheck_count = () -> Int with { Error } {
+  let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
+  let sources = selfhost_cli_adapter_sources()
+  let source_groups = selfhost_cli_adapter_source_groups()
+  let adapter_source = lookup_selfhost_source(sources, adapter_path)
+  source_group_prepare_typecheck_count(db_new(), adapter_source, adapter_path, source_groups)
+}
+
+export let selfbuild_probe_cli_adapter_grouped_merged_len = () -> Int with { Error } {
+  let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
+  let sources = selfhost_cli_adapter_sources()
+  let source_groups = selfhost_cli_adapter_source_groups()
+  let adapter_source = lookup_selfhost_source(sources, adapter_path)
+  grouped_source_merged_len(db_new(), adapter_source, adapter_path, source_groups)
+}
+
 export let selfbuild_probe_cli_adapter_source_control = () -> Int with { Error } {
-  let sources = selfhost_sources()
-  if Array::length(sources) == 0 { throw("selfhost_sources is empty (stub)") }
+  let sources = selfhost_cli_adapter_sources()
+  if Array::length(sources) == 0 { throw("selfhost_cli_adapter_sources is empty") }
   let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
   let adapter_source = lookup_selfhost_source(sources, adapter_path)
   find_unexpected_control_char(adapter_source)
@@ -700,6 +748,37 @@ export let selfbuild_probe_prepare_cli_adapter = () -> Int with { Error } {
   let adapter_source = lookup_selfhost_source(sources, adapter_path)
   let prepared = prepare_modules_cached(db_new(), adapter_path, adapter_source, sources)
   db_typecheck_count(prepared)
+}
+
+export let selfbuild_probe_compile_cli_adapter_grouped_len = () -> Int with { Error } {
+  let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
+  let sources = selfhost_sources()
+  let source_groups = selfhost_source_groups()
+  if Array::length(sources) == 0 { throw("selfhost_sources is empty (stub)") }
+  let adapter_source = lookup_selfhost_source(sources, adapter_path)
+  let (bytes, _) = compile_with_source_groups_wasi_cached(
+    db_new(),
+    adapter_source,
+    adapter_path,
+    source_groups,
+    "cli_main"
+  )
+  Bytes::length(bytes)
+}
+
+export let selfbuild_probe_compile_cli_adapter_closure_len = () -> Int with { Error } {
+  let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
+  let sources = selfhost_sources()
+  if Array::length(sources) == 0 { throw("selfhost_sources is empty (stub)") }
+  let adapter_source = lookup_selfhost_source(sources, adapter_path)
+  let (bytes, _) = compile_with_closure_sources_wasi_cached(
+    db_new(),
+    adapter_source,
+    adapter_path,
+    sources,
+    "cli_main"
+  )
+  Bytes::length(bytes)
 }
 
 export let selfbuild_probe_compile_via_compiler_wrapper = () -> Int with { Error } {
@@ -1010,9 +1089,9 @@ export let selfbuild_probe_cli_file_cache_counts = () -> Int with { Error, Fs } 
 //# Misc
 
 export {
-  Token, token_to_string, lex, Pat, Expr, TypeExpr, Stmt, Type, TypeEnv, Subst, TypeDef, TypeDb, parse, parse_ok, parse_expr, parse_type, parse_stmt, parse_program, print_expr, print_pat, print_type_expr, print_stmt, print_program, check_program, check_program_with_env, check_stmts, db_new, db_set_source, db_check_env, db_typecheck, db_typecheck_count, db_parse_count, db_merge_count, db_module_source_count, db_codegen_count, db_program_source, db_merged_source, db_grouped_merged_source, db_module_source, db_load_artifact, db_store_artifact, compile_module, compile_wasi_module, compile_wasi_module_with_sources, compile_wasi_module_gc, compile_source, compile_source_wasi, compile_with_modules, compile_with_modules_wasi, prepare_modules_cached, compile_with_modules_cached, compile_with_modules_wasi_cached, compile_file_fs, compile_file_fs_module, prepare_file_fs_cached, compile_file_fs_cached, compile_file_fs_module_cached, parse_batch_jobs_tsv, prepare_jobs_cached, compile_jobs_cached, selfbuild_compile_stage2, selfbuild_compile_cli_adapter, selfbuild_entry, selfbuild_write_cli_adapter, selfbuild_cli_env_entry, selfbuild_probe_cli_env_read_len, selfbuild_probe_cli_env_compile_len, selfbuild_probe_cli_args_read_len, selfbuild_probe_cli_args_compile_len, selfbuild_cli_args_entry, selfbuild_probe_lex, selfbuild_probe_parse, selfbuild_probe_check, selfbuild_probe_compile, selfbuild_probe_parse_count, selfbuild_probe_token_tag, selfbuild_probe_deep_if, selfbuild_probe_char_at, selfbuild_probe_fn_count, selfbuild_probe_sources_len, selfbuild_probe_merged_len, selfbuild_probe_compile_first_5, selfbuild_probe_compile_first_8, selfbuild_probe_compile_first_10, selfbuild_probe_compile_first_15, selfbuild_probe_compile_first_17, selfbuild_probe_compile_first_18, selfbuild_probe_compile_first_19, selfbuild_probe_compile_first_20, selfbuild_probe_compile_first_21, selfbuild_probe_compile_first_22, selfbuild_probe_compile_first_23, selfbuild_probe_compile_first_24, selfbuild_probe_compile_first_25, selfbuild_probe_compile_first_26, selfbuild_probe_compile_first_27, selfbuild_probe_compile_first_28, selfbuild_probe_compile_first_29, selfbuild_probe_compile_cli_adapter_like_plain, selfbuild_probe_compile_cli_adapter_like_args_only, selfbuild_probe_compile_cli_adapter_like_import_compile_only, selfbuild_probe_compile_cli_adapter_like_import_compile_unused, selfbuild_probe_compile_cli_adapter_like_import_loader_unused, selfbuild_probe_compile_cli_adapter_like_import_runtime_unused, selfbuild_probe_compile_cli_adapter_like_import_codegen_unused, selfbuild_probe_compile_cli_adapter_like_import_syntax_lexer_unused, selfbuild_probe_compile_cli_adapter_like_import_syntax_parser_unused, selfbuild_probe_compile_cli_adapter_like_import_checker_stmt_unused, selfbuild_probe_compile_cli_adapter_like_import_codegen_wasi_unused, selfbuild_probe_compile_cli_adapter_like_import_source_compile_unused, selfbuild_probe_compile_cli_adapter_like_source_compile_const, selfbuild_probe_prepare_import_source_compile_wasi_only, selfbuild_probe_compile_cli_adapter_like_import_source_compile_wasi_only_unused, selfbuild_probe_compile_cli_adapter_like_source_compile_wasi_only_const, selfbuild_probe_type_db_cache_counts, selfbuild_probe_type_db_parse_counts, selfbuild_probe_type_db_merge_counts, selfbuild_probe_type_db_group_merge_counts, selfbuild_probe_type_db_module_source_counts, selfbuild_probe_type_db_codegen_counts, selfbuild_probe_cli_file_cache_counts, selfbuild_probe_source_control_lexer, selfbuild_probe_source_control_syntax_lexer, selfbuild_probe_source_control_parser, selfbuild_probe_source_control_syntax_parser, selfbuild_probe_source_control_entry_compiler, selfbuild_probe_source_control_entry_source_compile, selfbuild_probe_prepare_import_runtime, selfbuild_probe_prepare_import_loader, selfbuild_probe_prepare_import_leaf_codegen, selfbuild_probe_prepare_import_file_compile
+  Token, token_to_string, lex, Pat, Expr, TypeExpr, Stmt, Type, TypeEnv, Subst, TypeDef, TypeDb, parse, parse_ok, parse_expr, parse_type, parse_stmt, parse_program, print_expr, print_pat, print_type_expr, print_stmt, print_program, check_program, check_program_with_env, check_stmts, db_new, db_set_source, db_check_env, db_typecheck, db_typecheck_count, db_parse_count, db_merge_count, db_module_source_count, db_codegen_count, db_program_source, db_merged_source, db_grouped_merged_source, db_module_source, db_load_artifact, db_store_artifact, compile_module, compile_wasi_module, compile_wasi_module_with_sources, compile_wasi_module_gc, compile_source, compile_source_wasi, compile_with_modules, compile_with_modules_wasi, prepare_modules_cached, compile_with_modules_cached, compile_with_modules_wasi_cached, compile_file_fs, compile_file_fs_module, prepare_file_fs_cached, compile_file_fs_cached, compile_file_fs_module_cached, parse_batch_jobs_tsv, prepare_jobs_cached, compile_jobs_cached, selfbuild_compile_stage2, selfbuild_compile_cli_adapter, selfbuild_entry, selfbuild_write_cli_adapter, selfbuild_cli_env_entry, selfbuild_probe_cli_env_read_len, selfbuild_probe_cli_env_compile_len, selfbuild_probe_cli_args_read_len, selfbuild_probe_cli_args_compile_len, selfbuild_cli_args_entry, selfbuild_probe_lex, selfbuild_probe_parse, selfbuild_probe_check, selfbuild_probe_compile, selfbuild_probe_parse_count, selfbuild_probe_token_tag, selfbuild_probe_deep_if, selfbuild_probe_char_at, selfbuild_probe_fn_count, selfbuild_probe_sources_len, selfbuild_probe_merged_len, selfbuild_probe_compile_first_5, selfbuild_probe_compile_first_8, selfbuild_probe_compile_first_10, selfbuild_probe_compile_first_15, selfbuild_probe_compile_first_17, selfbuild_probe_compile_first_18, selfbuild_probe_compile_first_19, selfbuild_probe_compile_first_20, selfbuild_probe_compile_first_21, selfbuild_probe_compile_first_22, selfbuild_probe_compile_first_23, selfbuild_probe_compile_first_24, selfbuild_probe_compile_first_25, selfbuild_probe_compile_first_26, selfbuild_probe_compile_first_27, selfbuild_probe_compile_first_28, selfbuild_probe_compile_first_29, selfbuild_probe_compile_cli_adapter_like_plain, selfbuild_probe_compile_cli_adapter_like_args_only, selfbuild_probe_compile_cli_adapter_like_import_compile_only, selfbuild_probe_compile_cli_adapter_like_import_compile_unused, selfbuild_probe_compile_cli_adapter_like_import_loader_unused, selfbuild_probe_compile_cli_adapter_like_import_runtime_unused, selfbuild_probe_compile_cli_adapter_like_import_codegen_unused, selfbuild_probe_compile_cli_adapter_like_import_syntax_lexer_unused, selfbuild_probe_compile_cli_adapter_like_import_syntax_parser_unused, selfbuild_probe_compile_cli_adapter_like_import_checker_stmt_unused, selfbuild_probe_compile_cli_adapter_like_import_codegen_wasi_unused, selfbuild_probe_compile_cli_adapter_like_import_source_compile_unused, selfbuild_probe_compile_cli_adapter_like_source_compile_const, selfbuild_probe_prepare_import_source_compile_wasi_only, selfbuild_probe_compile_cli_adapter_like_import_source_compile_wasi_only_unused, selfbuild_probe_compile_cli_adapter_like_source_compile_wasi_only_const, selfbuild_probe_compile_cli_adapter_grouped_len, selfbuild_probe_compile_cli_adapter_closure_len, selfbuild_probe_type_db_cache_counts, selfbuild_probe_type_db_parse_counts, selfbuild_probe_type_db_merge_counts, selfbuild_probe_type_db_group_merge_counts, selfbuild_probe_type_db_module_source_counts, selfbuild_probe_type_db_codegen_counts, selfbuild_probe_cli_file_cache_counts, selfbuild_probe_source_control_lexer, selfbuild_probe_source_control_syntax_lexer, selfbuild_probe_source_control_parser, selfbuild_probe_source_control_syntax_parser, selfbuild_probe_source_control_entry_compiler, selfbuild_probe_source_control_entry_source_compile, selfbuild_probe_prepare_import_runtime, selfbuild_probe_prepare_import_loader, selfbuild_probe_prepare_import_leaf_codegen, selfbuild_probe_prepare_import_file_compile
 }
 
 export {
-  Pat, lex, Expr, Stmt, Token, Type, TypeEnv, Subst, TypeDef, TypeDb, parse, version, TypeExpr, parse_ok, print_pat, parse_expr, parse_stmt, parse_type, print_expr, print_stmt, compiler_lex, parse_program, print_program, compiler_parse, print_type_expr, token_to_string, compiler_parse_ok, compiler_print_pat, compiler_parse_expr, compiler_parse_stmt, compiler_parse_type, compiler_print_expr, compiler_print_stmt, compiler_parse_program, compiler_print_program, compiler_print_type_expr, check_program, check_program_with_env, check_stmts, db_new, db_set_source, db_check_env, db_typecheck, db_typecheck_count, db_parse_count, db_merge_count, db_module_source_count, db_codegen_count, db_program_source, db_merged_source, db_grouped_merged_source, db_module_source, db_load_artifact, db_store_artifact, compile_module, compile_wasi_module, compile_wasi_module_with_sources, compile_wasi_module_gc, compile_source, compile_source_wasi, compile_with_modules, compile_with_modules_wasi, prepare_modules_cached, compile_with_modules_cached, compile_with_modules_wasi_cached, compile_file_fs, compile_file_fs_module, prepare_file_fs_cached, compile_file_fs_cached, compile_file_fs_module_cached, parse_batch_jobs_tsv, prepare_jobs_cached, compile_jobs_cached, selfbuild_compile_stage2, selfbuild_compile_cli_adapter, selfbuild_entry, selfbuild_write_cli_adapter, selfbuild_cli_env_entry, selfbuild_probe_cli_env_read_len, selfbuild_probe_cli_env_compile_len, selfbuild_probe_cli_args_read_len, selfbuild_probe_cli_args_compile_len, selfbuild_cli_args_entry, selfbuild_probe_lex, selfbuild_probe_parse, selfbuild_probe_check, selfbuild_probe_compile, selfbuild_probe_parse_count, selfbuild_probe_token_tag, selfbuild_probe_deep_if, selfbuild_probe_char_at, selfbuild_probe_fn_count, selfbuild_probe_sources_len, selfbuild_probe_merged_len, selfbuild_probe_compile_first_5, selfbuild_probe_compile_first_8, selfbuild_probe_compile_first_10, selfbuild_probe_compile_first_15, selfbuild_probe_compile_first_17, selfbuild_probe_compile_first_18, selfbuild_probe_compile_first_19, selfbuild_probe_compile_first_20, selfbuild_probe_compile_first_21, selfbuild_probe_compile_first_22, selfbuild_probe_compile_first_23, selfbuild_probe_compile_first_24, selfbuild_probe_compile_first_25, selfbuild_probe_compile_first_26, selfbuild_probe_compile_first_27, selfbuild_probe_compile_first_28, selfbuild_probe_compile_first_29, selfbuild_probe_compile_cli_adapter_like_plain, selfbuild_probe_compile_cli_adapter_like_args_only, selfbuild_probe_compile_cli_adapter_like_import_compile_only, selfbuild_probe_compile_cli_adapter_like_import_compile_unused, selfbuild_probe_compile_cli_adapter_like_import_loader_unused, selfbuild_probe_compile_cli_adapter_like_import_runtime_unused, selfbuild_probe_compile_cli_adapter_like_import_codegen_unused, selfbuild_probe_compile_cli_adapter_like_import_syntax_lexer_unused, selfbuild_probe_compile_cli_adapter_like_import_syntax_parser_unused, selfbuild_probe_compile_cli_adapter_like_import_checker_stmt_unused, selfbuild_probe_compile_cli_adapter_like_import_codegen_wasi_unused, selfbuild_probe_compile_cli_adapter_like_import_source_compile_unused, selfbuild_probe_compile_cli_adapter_like_source_compile_const, selfbuild_probe_prepare_import_source_compile_wasi_only, selfbuild_probe_compile_cli_adapter_like_import_source_compile_wasi_only_unused, selfbuild_probe_compile_cli_adapter_like_source_compile_wasi_only_const, selfbuild_probe_type_db_cache_counts, selfbuild_probe_type_db_parse_counts, selfbuild_probe_type_db_merge_counts, selfbuild_probe_type_db_group_merge_counts, selfbuild_probe_type_db_module_source_counts, selfbuild_probe_type_db_codegen_counts, selfbuild_probe_cli_file_cache_counts, selfbuild_probe_source_control_lexer, selfbuild_probe_source_control_syntax_lexer, selfbuild_probe_source_control_parser, selfbuild_probe_source_control_syntax_parser, selfbuild_probe_source_control_entry_compiler, selfbuild_probe_source_control_entry_source_compile, selfbuild_probe_prepare_import_runtime, selfbuild_probe_prepare_import_loader, selfbuild_probe_prepare_import_leaf_codegen, selfbuild_probe_prepare_import_file_compile
+  Pat, lex, Expr, Stmt, Token, Type, TypeEnv, Subst, TypeDef, TypeDb, parse, version, TypeExpr, parse_ok, print_pat, parse_expr, parse_stmt, parse_type, print_expr, print_stmt, compiler_lex, parse_program, print_program, compiler_parse, print_type_expr, token_to_string, compiler_parse_ok, compiler_print_pat, compiler_parse_expr, compiler_parse_stmt, compiler_parse_type, compiler_print_expr, compiler_print_stmt, compiler_parse_program, compiler_print_program, compiler_print_type_expr, check_program, check_program_with_env, check_stmts, db_new, db_set_source, db_check_env, db_typecheck, db_typecheck_count, db_parse_count, db_merge_count, db_module_source_count, db_codegen_count, db_program_source, db_merged_source, db_grouped_merged_source, db_module_source, db_load_artifact, db_store_artifact, compile_module, compile_wasi_module, compile_wasi_module_with_sources, compile_wasi_module_gc, compile_source, compile_source_wasi, compile_with_modules, compile_with_modules_wasi, prepare_modules_cached, compile_with_modules_cached, compile_with_modules_wasi_cached, compile_file_fs, compile_file_fs_module, prepare_file_fs_cached, compile_file_fs_cached, compile_file_fs_module_cached, parse_batch_jobs_tsv, prepare_jobs_cached, compile_jobs_cached, selfbuild_compile_stage2, selfbuild_compile_cli_adapter, selfbuild_entry, selfbuild_write_cli_adapter, selfbuild_cli_env_entry, selfbuild_probe_cli_env_read_len, selfbuild_probe_cli_env_compile_len, selfbuild_probe_cli_args_read_len, selfbuild_probe_cli_args_compile_len, selfbuild_cli_args_entry, selfbuild_probe_lex, selfbuild_probe_parse, selfbuild_probe_check, selfbuild_probe_compile, selfbuild_probe_parse_count, selfbuild_probe_token_tag, selfbuild_probe_deep_if, selfbuild_probe_char_at, selfbuild_probe_fn_count, selfbuild_probe_sources_len, selfbuild_probe_merged_len, selfbuild_probe_compile_first_5, selfbuild_probe_compile_first_8, selfbuild_probe_compile_first_10, selfbuild_probe_compile_first_15, selfbuild_probe_compile_first_17, selfbuild_probe_compile_first_18, selfbuild_probe_compile_first_19, selfbuild_probe_compile_first_20, selfbuild_probe_compile_first_21, selfbuild_probe_compile_first_22, selfbuild_probe_compile_first_23, selfbuild_probe_compile_first_24, selfbuild_probe_compile_first_25, selfbuild_probe_compile_first_26, selfbuild_probe_compile_first_27, selfbuild_probe_compile_first_28, selfbuild_probe_compile_first_29, selfbuild_probe_compile_cli_adapter_like_plain, selfbuild_probe_compile_cli_adapter_like_args_only, selfbuild_probe_compile_cli_adapter_like_import_compile_only, selfbuild_probe_compile_cli_adapter_like_import_compile_unused, selfbuild_probe_compile_cli_adapter_like_import_loader_unused, selfbuild_probe_compile_cli_adapter_like_import_runtime_unused, selfbuild_probe_compile_cli_adapter_like_import_codegen_unused, selfbuild_probe_compile_cli_adapter_like_import_syntax_lexer_unused, selfbuild_probe_compile_cli_adapter_like_import_syntax_parser_unused, selfbuild_probe_compile_cli_adapter_like_import_checker_stmt_unused, selfbuild_probe_compile_cli_adapter_like_import_codegen_wasi_unused, selfbuild_probe_compile_cli_adapter_like_import_source_compile_unused, selfbuild_probe_compile_cli_adapter_like_source_compile_const, selfbuild_probe_prepare_import_source_compile_wasi_only, selfbuild_probe_compile_cli_adapter_like_import_source_compile_wasi_only_unused, selfbuild_probe_compile_cli_adapter_like_source_compile_wasi_only_const, selfbuild_probe_compile_cli_adapter_grouped_len, selfbuild_probe_compile_cli_adapter_closure_len, selfbuild_probe_type_db_cache_counts, selfbuild_probe_type_db_parse_counts, selfbuild_probe_type_db_merge_counts, selfbuild_probe_type_db_group_merge_counts, selfbuild_probe_type_db_module_source_counts, selfbuild_probe_type_db_codegen_counts, selfbuild_probe_cli_file_cache_counts, selfbuild_probe_source_control_lexer, selfbuild_probe_source_control_syntax_lexer, selfbuild_probe_source_control_parser, selfbuild_probe_source_control_syntax_parser, selfbuild_probe_source_control_entry_compiler, selfbuild_probe_source_control_entry_source_compile, selfbuild_probe_prepare_import_runtime, selfbuild_probe_prepare_import_loader, selfbuild_probe_prepare_import_leaf_codegen, selfbuild_probe_prepare_import_file_compile
 }

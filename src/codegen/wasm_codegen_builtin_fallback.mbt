@@ -19,7 +19,7 @@ fn is_wasm_runtime_fallback_builtin(name : String) -> Bool {
     | "Json::keys"
     // All string builtins now have native WASM implementations in
     // wasm_codegen_call_builtin_pre_user.mbt.
-    // Filesystem/env helpers not mapped to wasm imports yet.
+    // Filesystem helpers not mapped to wasm imports yet.
     | "Fs::chdir"
     | "Fs::copy"
     | "Fs::readdir"
@@ -31,7 +31,6 @@ fn is_wasm_runtime_fallback_builtin(name : String) -> Bool {
     | "Fs::remove"
     | "Fs::rename"
     | "Fs::append"
-    | "Env::get"
     // LLM and interactive helpers are host-runtime specific.
     | "Llm::complete"
     | "Rlm::run"
