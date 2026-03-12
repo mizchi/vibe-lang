@@ -12,7 +12,7 @@ import ./wasm_emit.vibe {
   emit_export_section, emit_code_section,
   emit_local_get, emit_i64_add, emit_exports_with_memory,
   emit_memory_section, emit_func_type_raw,
-  emit_i32_const
+  emit_i32_const, emit_i64_const
 }
 
 import ./bytebuf.vibe {
@@ -52,6 +52,28 @@ let build_test_core_with_memory = () -> Bytes {
   let r_body = bytebuf_new()
   emit_i32_const(r_body, 0)
   emit_code_section(out, [h_body, r_body])
+  bytebuf_to_bytes(out)
+}
+
+let build_test_core_with_memory_and_run = () -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let type_content = bytebuf_new()
+  bytebuf_push_vec_header(type_content, 3)
+  emit_func_type_raw(type_content, [126, 126, 127], [126])
+  emit_func_type_raw(type_content, [127, 127, 127, 127], [127])
+  emit_func_type_raw(type_content, bytebuf_new(), [126])
+  bytebuf_push_section(out, 1, type_content)
+  emit_function_section(out, [0, 1, 2])
+  emit_memory_section(out, 1)
+  emit_exports_with_memory(out, ["handler", "cabi_realloc", "run"], [0, 1, 2], "memory", 0)
+  let h_body = bytebuf_new()
+  emit_local_get(h_body, 0)
+  let r_body = bytebuf_new()
+  emit_i32_const(r_body, 0)
+  let run_body = bytebuf_new()
+  emit_i64_const(run_body, 0)
+  emit_code_section(out, [h_body, r_body, run_body])
   bytebuf_to_bytes(out)
 }
 
@@ -98,7 +120,7 @@ test "component: lift no imports produces valid component" {
 }
 
 test "component: string trampoline has wasm header" {
-  let tramp = comp_generate_string_trampoline(2)
+  let tramp = comp_generate_string_trampoline(2, 0)
   assert(Bytes::get(tramp, 0) == 0)
   assert(Bytes::get(tramp, 1) == 97)
   assert(Bytes::get(tramp, 2) == 115)
@@ -107,10 +129,37 @@ test "component: string trampoline has wasm header" {
   assert(Bytes::length(tramp) > 20)
 }
 
+test "component: string lift injects run_init when core exports run" {
+  let core = build_test_core_with_memory_and_run()
+  let comp = comp_emit_component_wasm_with_string_lift(
+    core,
+    "handler",
+    "handler",
+    2,
+    ["method", "url"],
+    0
+  )
+  assert(bytes_contains(comp, "run_init") == 1)
+}
+
+test "component: string lift omits run_init without run export" {
+  let core = build_test_core_with_memory()
+  let comp = comp_emit_component_wasm_with_string_lift(
+    core,
+    "handler",
+    "handler",
+    2,
+    ["method", "url"],
+    0
+  )
+  assert(bytes_contains(comp, "run_init") == 0)
+}
+
 test "component: export contains name" {
   let core = build_test_core()
   let comp = comp_emit_component_wasm_with_lift(core, "my_run")
-  assert(bytes_contains(comp, "my_run") == 1)
+  assert(bytes_contains(comp, "my-run") == 1)
+  assert(bytes_contains(comp, "my_run") == 0)
 }
 
 test "component: simple wrap overhead is small" {

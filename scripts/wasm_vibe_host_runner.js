@@ -353,125 +353,135 @@ function createPreview2FilesystemHost(projectRoot) {
     return candidate;
   }
 
-  return {
-    "wasi:filesystem/preopens@0.3.0": {
-      "get-directories"(retptr) {
-        // The caller reserves a 16-byte ret area but does not publish heap_ptr
-        // before this import. Reusing cabi_realloc/__heap_ptr would alias retptr.
-        const listPtr = retptr + 8;
-        const mem = getMem();
-        writeU32LE(mem, listPtr, 3);
-        writeU32LE(mem, retptr, listPtr);
-        writeU32LE(mem, retptr + 4, 1);
-        logDebug(`[preview2 fs] get-directories retptr=${retptr} listPtr=${listPtr}`);
-      },
+  const preview2Preopens = {
+    "get-directories"(retptr) {
+      // The caller reserves a 16-byte ret area but does not publish heap_ptr
+      // before this import. Reusing cabi_realloc/__heap_ptr would alias retptr.
+      const listPtr = retptr + 8;
+      const mem = getMem();
+      writeU32LE(mem, listPtr, 3);
+      writeU32LE(mem, retptr, listPtr);
+      writeU32LE(mem, retptr + 4, 1);
+      logDebug(`[preview2 fs] get-directories retptr=${retptr} listPtr=${listPtr}`);
     },
-    "wasi:filesystem/types@0.3.0": {
-      "[method]descriptor.open-at"(baseHandle, _pathFlags, pathPtr, pathLen, openFlags, _flags, retptr) {
-        try {
-          const rawPath = decodeUtf8Range(getInstance(), pathPtr, pathLen);
-          const filePath = resolvePath(baseHandle, rawPath);
-          logDebug(`[preview2 fs] open-at base=${baseHandle} path=${JSON.stringify(rawPath)} resolved=${filePath} openFlags=${openFlags}`);
-          const wantCreate = (openFlags & 1) !== 0;
-          const wantDirectory = (openFlags & 2) !== 0;
-          const wantTruncate = (openFlags & 8) !== 0 || (openFlags & 4) !== 0;
-          if (wantDirectory) {
-            if (!fs.existsSync(filePath) || !fs.statSync(filePath).isDirectory()) {
-              writeResultErr(retptr, 24);
-              return;
-            }
-          } else {
-            if (wantCreate) {
-              fs.mkdirSync(path.dirname(filePath), { recursive: true });
-              if (!fs.existsSync(filePath)) {
-                fs.writeFileSync(filePath, Buffer.alloc(0));
-              }
-            }
+  };
+
+  const preview2Types = {
+    "[method]descriptor.open-at"(baseHandle, _pathFlags, pathPtr, pathLen, openFlags, _flags, retptr) {
+      try {
+        const rawPath = decodeUtf8Range(getInstance(), pathPtr, pathLen);
+        const filePath = resolvePath(baseHandle, rawPath);
+        logDebug(`[preview2 fs] open-at base=${baseHandle} path=${JSON.stringify(rawPath)} resolved=${filePath} openFlags=${openFlags}`);
+        const wantCreate = (openFlags & 1) !== 0;
+        const wantDirectory = (openFlags & 2) !== 0;
+        const wantTruncate = (openFlags & 8) !== 0 || (openFlags & 4) !== 0;
+        if (wantDirectory) {
+          if (!fs.existsSync(filePath) || !fs.statSync(filePath).isDirectory()) {
+            writeResultErr(retptr, 24);
+            return;
+          }
+        } else {
+          if (wantCreate) {
+            fs.mkdirSync(path.dirname(filePath), { recursive: true });
             if (!fs.existsSync(filePath)) {
-              writeResultErr(retptr, 44);
-              return;
-            }
-            if (wantTruncate) {
               fs.writeFileSync(filePath, Buffer.alloc(0));
             }
           }
-          const handle = nextDescriptor++;
-          descriptors.set(handle, {
-            kind: wantDirectory ? "dir" : "file",
-            path: filePath,
-          });
-          writeResultOkHandle(retptr, handle);
-        } catch (_err) {
-          logDebug(`[preview2 fs] open-at error: ${_err && _err.stack ? _err.stack : _err}`);
-          writeResultErr(retptr, 8);
-        }
-      },
-      "[method]descriptor.read"(handle, maxLen, offset, retptr) {
-        try {
-          const desc = resolveDescriptor(handle);
-          logDebug(`[preview2 fs] read handle=${handle} path=${desc.path} maxLen=${maxLen} offset=${offset}`);
-          const file = fs.readFileSync(desc.path);
-          const start = Number(offset);
-          const end = Math.min(file.length, start + Number(maxLen));
-          const chunk = file.subarray(start, end);
-          const dataPtr = allocPreview2Buffer(getInstance(), chunk.length, 1);
-          getMem().set(chunk, dataPtr);
-          writeResultOkPtrLen(retptr, dataPtr, chunk.length);
-        } catch (_err) {
-          logDebug(`[preview2 fs] read error: ${_err && _err.stack ? _err.stack : _err}`);
-          writeResultErr(retptr, 8);
-        }
-      },
-      "[method]descriptor.write"(handle, dataPtr, dataLen, offset, retptr) {
-        try {
-          const desc = resolveDescriptor(handle);
-          logDebug(`[preview2 fs] write handle=${handle} path=${desc.path} dataLen=${dataLen} offset=${offset}`);
-          const mem = getMem();
-          const bytes = Buffer.from(mem.subarray(dataPtr, dataPtr + dataLen));
-          if (debugFsData) {
-            const preview = Array.from(bytes.subarray(0, Math.min(bytes.length, 16)))
-              .map((byte) => byte.toString(16).padStart(2, "0"))
-              .join(" ");
-            logDebug(`[preview2 fs] write bytes=${preview}`);
+          if (!fs.existsSync(filePath)) {
+            writeResultErr(retptr, 44);
+            return;
           }
-          fs.mkdirSync(path.dirname(desc.path), { recursive: true });
-          const pos = Number(offset);
-          if (pos === 0) {
-            fs.writeFileSync(desc.path, bytes);
-          } else {
-            const fd = fs.openSync(desc.path, "r+");
-            try {
-              fs.writeSync(fd, bytes, 0, bytes.length, pos);
-            } finally {
-              fs.closeSync(fd);
-            }
+          if (wantTruncate) {
+            fs.writeFileSync(filePath, Buffer.alloc(0));
           }
-          const outMem = getMem();
-          writeU8(outMem, retptr, 0);
-          writeU32LE(outMem, retptr + 4, dataLen >>> 0);
-        } catch (_err) {
-          logDebug(`[preview2 fs] write error: ${_err && _err.stack ? _err.stack : _err}`);
-          writeResultErr(retptr, 8);
         }
-      },
-      "[method]descriptor.stat-at"(baseHandle, _pathFlags, pathPtr, pathLen, retptr) {
-        try {
-          const rawPath = decodeUtf8Range(getInstance(), pathPtr, pathLen);
-          const filePath = resolvePath(baseHandle, rawPath);
-          const mem = getMem();
-          const exists = fs.existsSync(filePath);
-          logDebug(`[preview2 fs] stat-at base=${baseHandle} path=${JSON.stringify(rawPath)} resolved=${filePath} exists=${exists}`);
-          writeU8(mem, retptr, exists ? 0 : 1);
-        } catch (_err) {
-          logDebug(`[preview2 fs] stat-at error: ${_err && _err.stack ? _err.stack : _err}`);
-          writeResultErr(retptr, 8);
+        const handle = nextDescriptor++;
+        descriptors.set(handle, {
+          kind: wantDirectory ? "dir" : "file",
+          path: filePath,
+        });
+        writeResultOkHandle(retptr, handle);
+      } catch (_err) {
+        logDebug(`[preview2 fs] open-at error: ${_err && _err.stack ? _err.stack : _err}`);
+        writeResultErr(retptr, 8);
+      }
+    },
+    "[method]descriptor.read"(handle, maxLen, offset, retptr) {
+      try {
+        const desc = resolveDescriptor(handle);
+        logDebug(`[preview2 fs] read handle=${handle} path=${desc.path} maxLen=${maxLen} offset=${offset}`);
+        const file = fs.readFileSync(desc.path);
+        const start = Number(offset);
+        const end = Math.min(file.length, start + Number(maxLen));
+        const chunk = file.subarray(start, end);
+        const dataPtr = allocPreview2Buffer(getInstance(), chunk.length, 1);
+        getMem().set(chunk, dataPtr);
+        writeResultOkPtrLen(retptr, dataPtr, chunk.length);
+      } catch (_err) {
+        logDebug(`[preview2 fs] read error: ${_err && _err.stack ? _err.stack : _err}`);
+        writeResultErr(retptr, 8);
+      }
+    },
+    "[method]descriptor.write"(handle, dataPtr, dataLen, offset, retptr) {
+      try {
+        const desc = resolveDescriptor(handle);
+        logDebug(`[preview2 fs] write handle=${handle} path=${desc.path} dataLen=${dataLen} offset=${offset}`);
+        const mem = getMem();
+        const bytes = Buffer.from(mem.subarray(dataPtr, dataPtr + dataLen));
+        if (debugFsData) {
+          const preview = Array.from(bytes.subarray(0, Math.min(bytes.length, 16)))
+            .map((byte) => byte.toString(16).padStart(2, "0"))
+            .join(" ");
+          logDebug(`[preview2 fs] write bytes=${preview}`);
         }
-      },
-      "[resource-drop]descriptor"(handle) {
-        if (handle !== 3) {
-          descriptors.delete(handle);
+        fs.mkdirSync(path.dirname(desc.path), { recursive: true });
+        const pos = Number(offset);
+        if (pos === 0) {
+          fs.writeFileSync(desc.path, bytes);
+        } else {
+          const fd = fs.openSync(desc.path, "r+");
+          try {
+            fs.writeSync(fd, bytes, 0, bytes.length, pos);
+          } finally {
+            fs.closeSync(fd);
+          }
         }
-      },
+        const outMem = getMem();
+        writeU8(outMem, retptr, 0);
+        writeU32LE(outMem, retptr + 4, dataLen >>> 0);
+      } catch (_err) {
+        logDebug(`[preview2 fs] write error: ${_err && _err.stack ? _err.stack : _err}`);
+        writeResultErr(retptr, 8);
+      }
+    },
+    "[method]descriptor.stat-at"(baseHandle, _pathFlags, pathPtr, pathLen, retptr) {
+      try {
+        const rawPath = decodeUtf8Range(getInstance(), pathPtr, pathLen);
+        const filePath = resolvePath(baseHandle, rawPath);
+        const mem = getMem();
+        const exists = fs.existsSync(filePath);
+        logDebug(`[preview2 fs] stat-at base=${baseHandle} path=${JSON.stringify(rawPath)} resolved=${filePath} exists=${exists}`);
+        writeU8(mem, retptr, exists ? 0 : 1);
+      } catch (_err) {
+        logDebug(`[preview2 fs] stat-at error: ${_err && _err.stack ? _err.stack : _err}`);
+        writeResultErr(retptr, 8);
+      }
+    },
+    "[resource-drop]descriptor"(handle) {
+      if (handle !== 3) {
+        descriptors.delete(handle);
+      }
+    },
+  };
+
+  return {
+    "wasi:filesystem/preopens@0.2.6": preview2Preopens,
+    "wasi:filesystem/preopens@0.3.0": {
+      ...preview2Preopens,
+    },
+    "wasi:filesystem/types@0.2.6": preview2Types,
+    "wasi:filesystem/types@0.3.0": {
+      ...preview2Types,
     },
   };
 }
@@ -758,6 +768,10 @@ async function main() {
     {
       vibe: vibeModule,
       wasi_snapshot_preview1: wasiModule,
+      "wasi:filesystem/preopens@0.2.6":
+        preview2FsHost["wasi:filesystem/preopens@0.2.6"],
+      "wasi:filesystem/types@0.2.6":
+        preview2FsHost["wasi:filesystem/types@0.2.6"],
       "wasi:filesystem/preopens@0.3.0":
         preview2FsHost["wasi:filesystem/preopens@0.3.0"],
       "wasi:filesystem/types@0.3.0":

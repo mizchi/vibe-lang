@@ -38,7 +38,12 @@ WIT_WORLD="${WIT_DIR}/world.wit"
 EMBEDDED_WASM="${TMP_DIR}/${BASE}.embedded.wasm"
 WIT_PKG="${TMP_DIR}/${BASE}.wit.wasm"
 
-VIBE_CMD=(moon run --target native src/cmd/vibe -- compile)
+RELEASE_VIBE_EXE="$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
+if [ -x "$RELEASE_VIBE_EXE" ]; then
+  VIBE_CMD=("$RELEASE_VIBE_EXE" compile)
+else
+  VIBE_CMD=(moon run --target native src/cmd/vibe -- compile)
+fi
 
 "${VIBE_CMD[@]}" --wasm --force-cabi-realloc "$INPUT" -o "$CORE_WASM"
 "${VIBE_CMD[@]}" --wit-component "$INPUT" -o "$WIT_WORLD"
@@ -55,7 +60,7 @@ if grep -q '^  import vibe: interface {$' "$WIT_WORLD"; then
   exit 0
 fi
 
-if grep -q 'wasi:filesystem/types@0.3.0' "$WIT_WORLD"; then
+if grep -Eq 'wasi:filesystem/types@0\.(2\.6|3\.0)' "$WIT_WORLD"; then
   "$SCRIPT_DIR/embed_preview2_filesystem_component.sh" "$CORE_WASM" "$WIT_WORLD" "$OUT" "$WORLD_NAME"
   exit 0
 fi

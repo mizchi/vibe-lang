@@ -47,6 +47,7 @@ trap cleanup EXIT
 
 WIT_DIR="$TMP_DIR/wit"
 DEPS_DIR="$WIT_DIR/deps"
+NORMALIZED_CORE_WASM="$TMP_DIR/core.normalized.wasm"
 EMBEDDED_WASM="$TMP_DIR/embedded.wasm"
 
 mkdir -p "$DEPS_DIR" "$(dirname "$OUT_COMPONENT")"
@@ -57,29 +58,29 @@ cp \
   "$PROJECT_ROOT/deps/wasmtime/crates/wasi/src/p2/wit/deps/clocks.wit" \
   "$DEPS_DIR/"
 
-DEPS_DIR="$DEPS_DIR" python3 - <<'PY'
+WORLD_WIT="$WIT_DIR/world.wit"
+NORMALIZED_CORE_WASM="$NORMALIZED_CORE_WASM" WORLD_WIT="$WORLD_WIT" CORE_WASM="$CORE_WASM" python3 - <<'PY'
 from pathlib import Path
+import os
 
-root = Path(__import__("os").environ["DEPS_DIR"])
-repls = {
-    "package wasi:filesystem@0.2.6;": "package wasi:filesystem@0.3.0;",
-    "package wasi:io@0.2.6;": "package wasi:io@0.3.0;",
-    "package wasi:clocks@0.2.6;": "package wasi:clocks@0.3.0;",
-    "wasi:io/streams@0.2.6": "wasi:io/streams@0.3.0",
-    "wasi:io/error@0.2.6": "wasi:io/error@0.3.0",
-    "wasi:io/poll@0.2.6": "wasi:io/poll@0.3.0",
-    "wasi:clocks/wall-clock@0.2.6": "wasi:clocks/wall-clock@0.3.0",
-    "@since(version = 0.2.0)": "@since(version = 0.3.0)",
-    "@since(version = 0.2.6)": "@since(version = 0.3.0)",
-}
-for path in root.glob("*.wit"):
-    text = path.read_text()
-    for before, after in repls.items():
-        text = text.replace(before, after)
-    path.write_text(text)
+world_path = Path(os.environ["WORLD_WIT"])
+world_text = world_path.read_text()
+world_text = world_text.replace("wasi:filesystem/types@0.3.0", "wasi:filesystem/types@0.2.6")
+world_text = world_text.replace("wasi:filesystem/preopens@0.3.0", "wasi:filesystem/preopens@0.2.6")
+world_path.write_text(world_text)
+
+core_in = Path(os.environ["CORE_WASM"]).read_bytes()
+core_out = core_in.replace(
+    b"wasi:filesystem/preopens@0.3.0",
+    b"wasi:filesystem/preopens@0.2.6",
+).replace(
+    b"wasi:filesystem/types@0.3.0",
+    b"wasi:filesystem/types@0.2.6",
+)
+Path(os.environ["NORMALIZED_CORE_WASM"]).write_bytes(core_out)
 PY
 
-wasm-tools component embed "$WIT_DIR" "$CORE_WASM" --world "$WORLD_NAME" -o "$EMBEDDED_WASM"
+wasm-tools component embed "$WIT_DIR" "$NORMALIZED_CORE_WASM" --world "$WORLD_NAME" -o "$EMBEDDED_WASM"
 wasm-tools component new "$EMBEDDED_WASM" -o "$OUT_COMPONENT"
 wasm-tools validate "$OUT_COMPONENT" >/dev/null
 

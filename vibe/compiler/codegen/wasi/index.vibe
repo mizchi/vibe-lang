@@ -31,6 +31,31 @@ import ../builtin_bodies/index.vibe {
 
 //# Functions
 
+let expr_uses_builtin = (expr: Expr, fn_names: Array[String], target: String) -> Bool {
+  let free_vars = collect_free_vars(expr, Array::slice([
+    ""
+  ], 0, 0), fn_names)
+  array_contains_str(free_vars, target)
+}
+
+let rec stmts_use_builtin = (stmts: Array[Stmt], fn_names: Array[String], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    found = match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => expr_uses_builtin(expr, fn_names, target),
+      SLetMut(_, _, expr) => expr_uses_builtin(expr, fn_names, target),
+      STest(_, expr) => expr_uses_builtin(expr, fn_names, target),
+      SBench(_, expr) => expr_uses_builtin(expr, fn_names, target),
+      SExpr(expr) => expr_uses_builtin(expr, fn_names, target),
+      SModule(_, _, inner) => stmts_use_builtin(inner, fn_names, target),
+      _ => false
+    }
+    i = i + 1
+  }
+  found
+}
+
 export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_name: String, selfhost_srcs: Array[(String, String)]) -> Bytes with { Error } {
   let fn_names_list = Array::slice([
     ""
@@ -195,44 +220,126 @@ export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_na
     si = si + 1
   }
   let heap_start = ((str_pos + 7) / 8) * 8
-  let num_imported_funcs = 7
+  let need_env_get_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::get")
+  let need_env_args_len_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::args_len")
+  let need_env_args_get_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::args_get")
+  let need_fs_read_file_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::read_file")
+  let need_fs_exists_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::exists")
+  let need_fs_write_bytes_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::write_bytes")
+  let mut next_import_idx = 1
+  let env_get_import_idx = if need_env_get_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let env_args_len_import_idx = if need_env_args_len_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let env_args_get_import_idx = if need_env_args_get_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_read_file_import_idx = if need_fs_read_file_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_exists_import_idx = if need_fs_exists_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_write_bytes_import_idx = if need_fs_write_bytes_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let num_imported_funcs = next_import_idx
+  let print_int_idx = num_imported_funcs
+  let print_str_idx = print_int_idx + 1
+  let str_len_idx = print_str_idx + 1
+  let str_eq_idx = str_len_idx + 1
+  let str_concat_idx = str_eq_idx + 1
+  let arr_new_idx = str_concat_idx + 1
+  let arr_len_idx = arr_new_idx + 1
+  let arr_get_idx = arr_len_idx + 1
+  let arr_push_idx = arr_get_idx + 1
+  let arr_set_idx = arr_push_idx + 1
+  let double_to_int_idx = arr_set_idx + 1
+  let int_to_double_idx = double_to_int_idx + 1
+  let str_char_code_at_idx = int_to_double_idx + 1
+  let str_from_char_code_idx = str_char_code_at_idx + 1
+  let str_substring_idx = str_from_char_code_idx + 1
+  let identity_idx = str_substring_idx + 1
+  let arr_slice_idx = identity_idx + 1
+  let arr_concat_idx = arr_slice_idx + 1
+  let arr_truncate_idx = arr_concat_idx + 1
+  let string_join_idx = arr_truncate_idx + 1
+  let fs_read_file_stub_idx = string_join_idx + 1
+  let fs_exists_stub_idx = fs_read_file_stub_idx + 1
+  let fs_write_bytes_stub_idx = fs_exists_stub_idx + 1
+  let eq_idx = fs_write_bytes_stub_idx + 1
+  let string_ends_with_idx = eq_idx + 1
+  let string_last_index_of_idx = string_ends_with_idx + 1
+  let selfhost_sources_idx = string_last_index_of_idx + 1
+  let env_get_idx = if env_get_import_idx >= 0 { env_get_import_idx } else { fs_read_file_stub_idx }
+  let env_args_len_idx = if env_args_len_import_idx >= 0 { env_args_len_import_idx } else { fs_exists_stub_idx }
+  let env_args_get_idx = if env_args_get_import_idx >= 0 { env_args_get_import_idx } else { fs_read_file_stub_idx }
+  let fs_read_file_idx = if fs_read_file_import_idx >= 0 { fs_read_file_import_idx } else { fs_read_file_stub_idx }
+  let fs_exists_idx = if fs_exists_import_idx >= 0 { fs_exists_import_idx } else { fs_exists_stub_idx }
+  let fs_write_bytes_idx = if fs_write_bytes_import_idx >= 0 { fs_write_bytes_import_idx } else { fs_write_bytes_stub_idx }
   let builtin_defs = [
-    ("Env::get", 1, 1, 1),
-    ("Env::args_len", 0, 2, 1),
-    ("Env::args_get", 1, 3, 1),
-    ("Fs::read_file", 1, 4, 1),
-    ("Fs::exists", 1, 5, 1),
-    ("Fs::write_bytes", 2, 6, 0),
-    ("print_int", 1, 7, 0),
-    ("print_str", 1, 8, 0),
-    ("String::length", 1, 9, 1),
-    ("String::equals", 2, 10, 1),
-    ("String::concat", 2, 11, 1),
-    ("array_new", 0, 12, 1),
-    ("Array::length", 1, 13, 1),
-    ("Array::get", 2, 14, 1),
-    ("Array::push", 2, 15, 0),
-    ("Array::set", 3, 16, 0),
-    ("Double::to_int", 1, 17, 1),
-    ("Int::to_double", 1, 18, 1),
-    ("String::char_code_at", 2, 19, 1),
-    ("String::from_char_code", 1, 20, 1),
-    ("String::substring", 3, 21, 1),
-    ("Array::truncate", 2, 25, 0),
-    ("String::join", 2, 26, 1),
-    ("eq", 2, 30, 1),
-    ("String::ends_with", 2, 31, 1),
-    ("String::last_index_of", 2, 32, 1),
-    ("selfhost_sources", 0, 33, 1),
-    ("ArrayBuilder::new", 0, 12, 1),
-    ("ArrayBuilder::push", 2, 15, 0),
-    ("ArrayBuilder::freeze", 1, 22, 1),
-    ("Array::slice", 3, 23, 1),
-    ("Array::concat", 2, 24, 1),
-    ("Bytes::from_array", 1, 22, 1),
-    ("Bytes::length", 1, 13, 1),
-    ("Bytes::get", 2, 14, 1),
-    ("Double::to_i64_bits", 1, 22, 1)
+    ("Env::get", 1, env_get_idx, 1),
+    ("Env::args_len", 0, env_args_len_idx, 1),
+    ("Env::args_get", 1, env_args_get_idx, 1),
+    ("Fs::read_file", 1, fs_read_file_idx, 1),
+    ("Fs::exists", 1, fs_exists_idx, 1),
+    ("Fs::write_bytes", 2, fs_write_bytes_idx, 0),
+    ("print_int", 1, print_int_idx, 0),
+    ("print_str", 1, print_str_idx, 0),
+    ("String::length", 1, str_len_idx, 1),
+    ("String::equals", 2, str_eq_idx, 1),
+    ("String::concat", 2, str_concat_idx, 1),
+    ("array_new", 0, arr_new_idx, 1),
+    ("Array::length", 1, arr_len_idx, 1),
+    ("Array::get", 2, arr_get_idx, 1),
+    ("Array::push", 2, arr_push_idx, 0),
+    ("Array::set", 3, arr_set_idx, 0),
+    ("Double::to_int", 1, double_to_int_idx, 1),
+    ("Int::to_double", 1, int_to_double_idx, 1),
+    ("String::char_code_at", 2, str_char_code_at_idx, 1),
+    ("String::from_char_code", 1, str_from_char_code_idx, 1),
+    ("String::substring", 3, str_substring_idx, 1),
+    ("Array::truncate", 2, arr_truncate_idx, 0),
+    ("String::join", 2, string_join_idx, 1),
+    ("eq", 2, eq_idx, 1),
+    ("String::ends_with", 2, string_ends_with_idx, 1),
+    ("String::last_index_of", 2, string_last_index_of_idx, 1),
+    ("selfhost_sources", 0, selfhost_sources_idx, 1),
+    ("ArrayBuilder::new", 0, arr_new_idx, 1),
+    ("ArrayBuilder::push", 2, arr_push_idx, 0),
+    ("ArrayBuilder::freeze", 1, identity_idx, 1),
+    ("Array::slice", 3, arr_slice_idx, 1),
+    ("Array::concat", 2, arr_concat_idx, 1),
+    ("Bytes::from_array", 1, identity_idx, 1),
+    ("Bytes::length", 1, arr_len_idx, 1),
+    ("Bytes::get", 2, arr_get_idx, 1),
+    ("Double::to_i64_bits", 1, identity_idx, 1)
   ]
   let mut max_builtin_func_idx = num_imported_funcs - 1
   let mut builtin_idx_i = 0
@@ -361,7 +468,7 @@ export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_na
   Array::push(bodies, gen_arr_truncate_body())
   Array::push(meta_i32, 0)
   Array::push(meta_i64, 0)
-  Array::push(bodies, gen_string_join_body())
+  Array::push(bodies, gen_string_join_body(arr_len_idx, arr_get_idx, str_concat_idx))
   Array::push(meta_i32, 2)
   Array::push(meta_i64, 2)
   Array::push(bodies, gen_fs_read_file_stub_body())
@@ -376,20 +483,20 @@ export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_na
   Array::push(bodies, gen_eq_body())
   Array::push(meta_i32, 0)
   Array::push(meta_i64, 0)
-  Array::push(bodies, gen_string_ends_with_body())
+  Array::push(bodies, gen_string_ends_with_body(str_len_idx, str_substring_idx, str_eq_idx))
   Array::push(meta_i32, 2)
   Array::push(meta_i64, 1)
-  Array::push(bodies, gen_string_last_index_of_body())
+  Array::push(bodies, gen_string_last_index_of_body(str_len_idx, str_substring_idx, str_eq_idx))
   Array::push(meta_i32, 3)
   Array::push(meta_i64, 1)
   if num_src_pairs > 0 {
-    Array::push(bodies, gen_selfhost_sources_proper_body(num_src_pairs, str_offsets, str_lengths, src_str_base))
+    Array::push(bodies, gen_selfhost_sources_proper_body(num_src_pairs, str_offsets, str_lengths, src_str_base, arr_new_idx, arr_push_idx))
     Array::push(meta_i32, 1)
     // 1 i32 local (tuple ptr)
     Array::push(meta_i64, 1)
     // 1 i64 local (array ref)
   } else {
-    Array::push(bodies, gen_selfhost_sources_stub_body())
+    Array::push(bodies, gen_selfhost_sources_stub_body(arr_new_idx))
     Array::push(meta_i32, 0)
     Array::push(meta_i64, 0)
   }
@@ -466,7 +573,7 @@ export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_na
   emit_i64_const(start_body, 0)
   // env=0 for user func
   emit_call(start_body, entry_func_idx)
-  emit_call(start_body, 7)
+  emit_call(start_body, print_int_idx)
   // __print_i64
   Array::push(bodies, start_body)
   Array::push(meta_i32, 0)
@@ -599,30 +706,42 @@ export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_na
   emit_name(import_content, "fd_write")
   bytebuf_push(import_content, 0)
   leb128_encode_u32(import_content, 0)
-  emit_name(import_content, "vibe")
-  emit_name(import_content, "env-get")
-  bytebuf_push(import_content, 0)
-  leb128_encode_u32(import_content, 3)
-  emit_name(import_content, "vibe")
-  emit_name(import_content, "args-len")
-  bytebuf_push(import_content, 0)
-  leb128_encode_u32(import_content, 5)
-  emit_name(import_content, "vibe")
-  emit_name(import_content, "args-get")
-  bytebuf_push(import_content, 0)
-  leb128_encode_u32(import_content, 3)
-  emit_name(import_content, "vibe")
-  emit_name(import_content, "fs_read_file")
-  bytebuf_push(import_content, 0)
-  leb128_encode_u32(import_content, 3)
-  emit_name(import_content, "vibe")
-  emit_name(import_content, "fs_exists")
-  bytebuf_push(import_content, 0)
-  leb128_encode_u32(import_content, 3)
-  emit_name(import_content, "vibe")
-  emit_name(import_content, "fs_write_bytes")
-  bytebuf_push(import_content, 0)
-  leb128_encode_u32(import_content, 6)
+  if env_get_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "env-get")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  if env_args_len_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "args-len")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+  }
+  if env_args_get_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "args-get")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  if fs_read_file_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_read_file")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  if fs_exists_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_exists")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  if fs_write_bytes_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_write_bytes")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 6)
+  }
   bytebuf_push_section(out, 2, import_content)
   let func_type_indices = Array::slice([
     0

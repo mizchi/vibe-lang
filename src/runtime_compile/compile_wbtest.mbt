@@ -1,4 +1,31 @@
 ///|
+///|
+fn bytes_contains_ascii(bytes : Bytes, needle : String) -> Bool {
+  let hay_len = bytes.length()
+  let needle_len = needle.length()
+  if needle_len == 0 {
+    return true
+  }
+  let limit = hay_len - needle_len
+  if limit < 0 {
+    return false
+  }
+  for i in 0..<=limit {
+    let mut ok = true
+    for j in 0..<needle_len {
+      if bytes[i + j].to_int() != needle[j].to_int() {
+        ok = false
+        break
+      }
+    }
+    if ok {
+      return true
+    }
+  }
+  false
+}
+
+///|
 test "compile_module keeps parse error variant" {
   let db = @runtime.VibeDb::new()
   db.set_source("main", "let x =")
@@ -88,4 +115,24 @@ test "component_string_lift_auto rejects server builtins" {
       assert_true(String::contains(msg, "incompatible"))
     Err(err) => fail("expected Optimize error, got " + err.to_string())
   }
+}
+
+///|
+test "component_string_lift_auto kebab-cases snake_case export names" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|export let compile_cli_request = (method: String, url: String) -> Int {
+      #|  if String::equals(method, url) { 1 } else { 0 }
+      #|}
+      #|compile_cli_request("GET", "GET")
+    ),
+  )
+  let wasm = try compile_module_component_string_lift_auto(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(bytes_contains_ascii(wasm, "compile-cli-request"))
 }

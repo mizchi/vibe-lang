@@ -12,8 +12,8 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Self-Host Compiler / Runtime Packaging
 
-**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache、host CLI の check/test loop cache 再利用、env/argv 契約、stage1 core wasm 直接の artifact-only compile gate までは入った。
-**最優先の残**: JS host 補助を外し、Preview2 / Component runtime だけで selfhost artifact を CLI として閉じるための import 配線と配布形を固めること。
+**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache、host CLI の check/test loop cache 再利用、env/argv 契約、stage1 core wasm 直接の artifact-only compile gate、Preview2 component-only selfhost CLI gate までは入った。
+**最優先の残**: Preview2 / Component runtime で閉じた selfhost CLI artifact を、配布しやすい契約と package 形に整理すること。
 
 ### Selfhost compiler modularization / cache
 
@@ -68,14 +68,16 @@ Completed items are archived in `docs/DONE.md`.
   - `selfbuild_write_cli_adapter` は `selfhost_cli_adapter_sources` の grouped closure を使うようにした
   - `selfhost_cli_adapter_merged_source` は exact flat source としては不正（duplicate declaration を含む）と判明したため、`module_source` 経由で valid module text を作る経路へ寄せている途中
   - 直近の blocker は `db_module_source` / `compile_with_source_groups_via_module_source_wasi_unchecked_cached` が stage1 artifact 上でまだ重いこと
-- [ ] WASI Preview2 Component Model の FS/environ import を codegen に追加する
-  - JS host ではなく component runtime だけで selfhost 単体 artifact を CLI として閉じるための前提条件
+- [x] JS host 依存を外し、Preview2 / Component runtime だけで selfhost artifact を CLI として閉じる
+  - `selfhost_cli_component_entry.vibe` は `compile_cli_request(source, request)` を string-lift component export として公開し、`len:<entry>` / `chunk:<entry>:<index>` 契約で compiled wasm bytes を段階取得できる
+  - `scripts/test_selfhost_cli_component_preview2.sh` は wasmtime Preview2 のみで component を実行し、復元した sample wasm の `run=42` まで確認する
+  - direct `fs/env` component import を無理に入れず、request/response 契約へ寄せて JS host / Node runner 依存を外した
 
 ### Component Model / Adapter Compose
 
 - [ ] mwac plug 相当を .vibe で実装するか builtin 化する
 - [ ] selfhost compiler 全体を `.wasm` component として配布・実行できる形にする
-  - env/argv 契約と host-backed adapter 実行までは入ったので、残りは component 化と package 解決、JS host 依存の除去
+  - env/argv 契約、host-backed adapter 実行、Preview2 component-only compile gate までは入ったので、残りは配布向け package/CLI surface の整理
 
 ## Release / Gate Integration
 

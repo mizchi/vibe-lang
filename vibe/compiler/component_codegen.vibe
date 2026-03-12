@@ -716,12 +716,17 @@ let emit_canon_lift_section = (buf: Array[Int], core_func_idx: Int, type_idx: In
 
 // === Component export section ===
 
+let normalize_comp_export_name = (name: String) -> String {
+  String::replace_all(name, "_", "-")
+}
+
 let emit_comp_export_section = (buf: Array[Int], name: String, func_idx: Int) -> Unit {
+  let export_name = normalize_comp_export_name(name)
   bytebuf_push(buf, section_export)
   let content = bytebuf_new()
   leb128_encode_u32(content, 1)
   bytebuf_push(content, 0)  // plain name discriminator
-  emit_name(content, name)
+  emit_name(content, export_name)
   bytebuf_push(content, comp_extern_func)
   leb128_encode_u32(content, func_idx)
   leb128_encode_u32(content, 0)  // no type annotation
@@ -901,7 +906,7 @@ export let comp_emit_component_wasm_with_lift = (core_wasm: Bytes, export_name: 
 
 // === String trampoline module ===
 
-export let comp_generate_string_trampoline = (string_param_count: Int) -> Bytes {
+export let comp_generate_string_trampoline = (string_param_count: Int, call_run_init: Int) -> Bytes {
   let buf = bytebuf_new()
   // WASM magic + version
   bytebuf_push(buf, 0)
@@ -915,9 +920,9 @@ export let comp_generate_string_trampoline = (string_param_count: Int) -> Bytes 
 
   let body = bytebuf_new()
 
-  // Type section (id=1): 3 types
+  // Type section (id=1): 3-4 types
   let type_sec = bytebuf_new()
-  leb128_encode_u32(type_sec, 3)
+  leb128_encode_u32(type_sec, if call_run_init != 0 { 4 } else { 3 })
   // Type 0: target_func (i64 * count + i32 env) -> i64
   bytebuf_push(type_sec, 96)
   leb128_encode_u32(type_sec, string_param_count + 1)
@@ -948,11 +953,17 @@ export let comp_generate_string_trampoline = (string_param_count: Int) -> Bytes 
   }
   bytebuf_push(type_sec, 1)
   bytebuf_push(type_sec, 126)  // i64
+  if call_run_init != 0 {
+    bytebuf_push(type_sec, 96)
+    leb128_encode_u32(type_sec, 0)
+    bytebuf_push(type_sec, 1)
+    bytebuf_push(type_sec, 126)  // i64
+  }
   bytebuf_push_section(body, 1, type_sec)
 
   // Import section (id=2)
   let import_sec = bytebuf_new()
-  leb128_encode_u32(import_sec, 3)
+  leb128_encode_u32(import_sec, if call_run_init != 0 { 4 } else { 3 })
   emit_name(import_sec, "env")
   emit_name(import_sec, "target_func")
   bytebuf_push(import_sec, 0)
@@ -961,6 +972,12 @@ export let comp_generate_string_trampoline = (string_param_count: Int) -> Bytes 
   emit_name(import_sec, "cabi_realloc")
   bytebuf_push(import_sec, 0)
   leb128_encode_u32(import_sec, 1)
+  if call_run_init != 0 {
+    emit_name(import_sec, "env")
+    emit_name(import_sec, "run_init")
+    bytebuf_push(import_sec, 0)
+    leb128_encode_u32(import_sec, 3)
+  }
   emit_name(import_sec, "env")
   emit_name(import_sec, "memory")
   bytebuf_push(import_sec, 2)  // memory import
@@ -979,7 +996,7 @@ export let comp_generate_string_trampoline = (string_param_count: Int) -> Bytes 
   leb128_encode_u32(export_sec, 1)
   emit_name(export_sec, "canon_func")
   bytebuf_push(export_sec, 0)
-  leb128_encode_u32(export_sec, 2)
+  leb128_encode_u32(export_sec, if call_run_init != 0 { 3 } else { 2 })
   bytebuf_push_section(body, 7, export_sec)
 
   // Code section (id=10)
@@ -993,6 +1010,12 @@ export let comp_generate_string_trampoline = (string_param_count: Int) -> Bytes 
   bytebuf_push(func_body, 126)  // i64
   leb128_encode_u32(func_body, string_param_count)
   bytebuf_push(func_body, 127)  // i32
+
+  if call_run_init != 0 {
+    bytebuf_push(func_body, 16)  // call
+    leb128_encode_u32(func_body, 2)  // run_init
+    bytebuf_push(func_body, 26)  // drop
+  }
 
   let tagged_base = string_param_count * 2
   let obj_base = tagged_base + string_param_count
@@ -1086,6 +1109,9 @@ export let comp_emit_component_wasm_with_string_lift = (
   let comp_params = Array::slice([[0]], 0, 0)
   let comp_param_names = Array::slice([Array::slice([""], 0, 0)], 0, 0)
   let comp_results = Array::slice([[0]], 0, 0)
+  let export_names = Array::slice([""], 0, 0)
+  let export_func_indices = bytebuf_new()
+  let export_type_sigs = Array::slice([[0]], 0, 0)
 
   let import_func_count = build_import_plan(
     core_wasm,
@@ -1093,9 +1119,28 @@ export let comp_emit_component_wasm_with_string_lift = (
     unique_module_names, module_binding_counts,
     comp_params, comp_param_names, comp_results
   )
+  let _ = parse_core_exports(
+    core_wasm,
+    export_names,
+    export_func_indices,
+    export_type_sigs
+  )
+
+  let mut call_run_init = 0
+  let mut ei = 0
+  while ei < Array::length(export_names) {
+    if Array::get(export_names, ei) == "run" {
+      call_run_init = 1
+      ei = Array::length(export_names)
+    } else {
+      ei = ei + 1
+    }
+  }
+  let has_distinct_run_alias =
+    if (call_run_init != 0) && (target_func_name != "run") { 1 } else { 0 }
 
   let main_instance_idx = Array::length(unique_module_names)
-  let trampoline_wasm = comp_generate_string_trampoline(string_param_count)
+  let trampoline_wasm = comp_generate_string_trampoline(string_param_count, call_run_init)
 
   let buf = bytebuf_new()
   emit_component_header(buf)
@@ -1122,25 +1167,46 @@ export let comp_emit_component_wasm_with_string_lift = (
   emit_core_instance_instantiate_section(buf, 0, unique_module_names)
 
   // Alias target_func, cabi_realloc, memory from vibe instance
-  emit_alias_section(buf, main_instance_idx,
-    [target_func_name, "cabi_realloc", "memory"],
-    [core_sort_func, core_sort_func, core_sort_mem])
+  let alias_names = Array::slice([""], 0, 0)
+  let alias_sorts = bytebuf_new()
+  Array::push(alias_names, target_func_name)
+  Array::push(alias_sorts, core_sort_func)
+  Array::push(alias_names, "cabi_realloc")
+  Array::push(alias_sorts, core_sort_func)
+  if has_distinct_run_alias != 0 {
+    Array::push(alias_names, "run")
+    Array::push(alias_sorts, core_sort_func)
+  }
+  Array::push(alias_names, "memory")
+  Array::push(alias_sorts, core_sort_mem)
+  emit_alias_section(buf, main_instance_idx, alias_names, alias_sorts)
 
   let target_func_core_idx = import_func_count
   let cabi_realloc_core_idx = import_func_count + 1
+  let run_init_core_idx =
+    if call_run_init != 0 {
+      if has_distinct_run_alias != 0 { import_func_count + 2 } else { target_func_core_idx }
+    } else {
+      0 - 1
+    }
 
   // Build env instance for trampoline
   bytebuf_push(buf, section_core_instance)
   let tramp_env = bytebuf_new()
   leb128_encode_u32(tramp_env, 1)
   bytebuf_push(tramp_env, 1)  // from exports
-  leb128_encode_u32(tramp_env, 3)
+  leb128_encode_u32(tramp_env, if call_run_init != 0 { 4 } else { 3 })
   emit_name(tramp_env, "target_func")
   bytebuf_push(tramp_env, core_sort_func)
   leb128_encode_u32(tramp_env, target_func_core_idx)
   emit_name(tramp_env, "cabi_realloc")
   bytebuf_push(tramp_env, core_sort_func)
   leb128_encode_u32(tramp_env, cabi_realloc_core_idx)
+  if call_run_init != 0 {
+    emit_name(tramp_env, "run_init")
+    bytebuf_push(tramp_env, core_sort_func)
+    leb128_encode_u32(tramp_env, run_init_core_idx)
+  }
   emit_name(tramp_env, "memory")
   bytebuf_push(tramp_env, core_sort_mem)
   leb128_encode_u32(tramp_env, 0)
@@ -1166,7 +1232,8 @@ export let comp_emit_component_wasm_with_string_lift = (
   emit_alias_section(buf, trampoline_instance_idx,
     ["canon_func"], [core_sort_func])
 
-  let canon_func_core_idx = cabi_realloc_core_idx + 1
+  let alias_func_count = if has_distinct_run_alias != 0 { 3 } else { 2 }
+  let canon_func_core_idx = import_func_count + alias_func_count
 
   // Component type: (string, string, ...) -> s64
   bytebuf_push(buf, section_type)

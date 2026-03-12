@@ -50,6 +50,11 @@ fn write_http_host_import(
 }
 
 ///|
+fn exported_env_global_export_name(name : String) -> String {
+  "__export_env_" + name
+}
+
+///|
 fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let buf = ByteBuf::new()
   // magic + version
@@ -644,32 +649,32 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     }
     if ctx.need_fs {
       // 1. get-directories
-      write_name(import_sec, "wasi:filesystem/preopens@0.3.0")
+      write_name(import_sec, "wasi:filesystem/preopens@0.2.6")
       write_name(import_sec, "get-directories")
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, fs_get_dirs_type)
       // 2. open-at
-      write_name(import_sec, "wasi:filesystem/types@0.3.0")
+      write_name(import_sec, "wasi:filesystem/types@0.2.6")
       write_name(import_sec, "[method]descriptor.open-at")
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, fs_open_at_type)
       // 3. read
-      write_name(import_sec, "wasi:filesystem/types@0.3.0")
+      write_name(import_sec, "wasi:filesystem/types@0.2.6")
       write_name(import_sec, "[method]descriptor.read")
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, fs_read_type)
       // 4. write
-      write_name(import_sec, "wasi:filesystem/types@0.3.0")
+      write_name(import_sec, "wasi:filesystem/types@0.2.6")
       write_name(import_sec, "[method]descriptor.write")
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, fs_write_type)
       // 5. stat-at
-      write_name(import_sec, "wasi:filesystem/types@0.3.0")
+      write_name(import_sec, "wasi:filesystem/types@0.2.6")
       write_name(import_sec, "[method]descriptor.stat-at")
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, fs_stat_at_type)
       // 6. resource-drop descriptor
-      write_name(import_sec, "wasi:filesystem/types@0.3.0")
+      write_name(import_sec, "wasi:filesystem/types@0.2.6")
       write_name(import_sec, "[resource-drop]descriptor")
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, fs_get_dirs_type)
@@ -954,6 +959,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let need_http_host_string_new_export = ctx.need_http && ctx.http_host_imports
   let export_count = 2 +
     user_export_count +
+    exported_env_global_count +
     (if need_cabi_realloc_export { 1 } else { 0 }) +
     (if need_http_host_string_new_export { 1 } else { 0 }) +
     (if ctx.need_exceptions { 1 } else { 0 }) +
@@ -994,6 +1000,15 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
         write_u32_leb(export_sec, func_import_count + idx)
       }
       None => ()
+    }
+  }
+  if exported_env_global_count > 0 {
+    for name, global_idx in ctx.exported_fn_env_globals {
+      if global_idx >= 0 {
+        write_name(export_sec, exported_env_global_export_name(name))
+        export_sec.push((3).to_byte()) // global export
+        write_u32_leb(export_sec, global_idx)
+      }
     }
   }
   if ctx.need_exceptions {
@@ -1464,20 +1479,6 @@ fn emit_module_with_coverage(
     }
   }
   scan_needs(ctx, ast)
-  // Assign actual global indices for exported fn env globals.
-  // Must happen after scan_needs so ctx.use_heap_global etc. are known,
-  // and before compile_function so the prelude can reference the globals.
-  if ctx.exported_fn_env_globals.length() > 0 {
-    let mut env_global_idx = (if ctx.use_heap_global { 1 } else { 0 }) +
-      (if ctx.need_stack_switching { 1 } else { 0 }) +
-      (if ctx.coverage_enabled { 2 } else { 0 }) +
-      (if ctx.need_fs { 1 } else { 0 }) +
-      (if ctx.need_socket { 1 } else { 0 })
-    for name, _ in ctx.exported_fn_env_globals {
-      ctx.exported_fn_env_globals[name] = env_global_idx
-      env_global_idx = env_global_idx + 1
-    }
-  }
   scan_strings(ctx, ast)
   if ctx.coverage_enabled {
     ctx.coverage_base_offset = align4(ctx.strings.next_offset)
@@ -1716,6 +1717,20 @@ fn emit_module_with_coverage(
       import_count += 1
     }
     ctx.sleep_import_index = import_count
+  }
+  // Assign actual global indices for exported fn env globals.
+  // Must happen after global layout decisions (heap/async/fs/socket) settle,
+  // and before compile_function so the generated code writes the final indices.
+  if ctx.exported_fn_env_globals.length() > 0 {
+    let mut env_global_idx = (if ctx.use_heap_global { 1 } else { 0 }) +
+      (if ctx.need_stack_switching { 1 } else { 0 }) +
+      (if ctx.coverage_enabled { 2 } else { 0 }) +
+      (if ctx.need_fs { 1 } else { 0 }) +
+      (if ctx.need_socket { 1 } else { 0 })
+    for name, _ in ctx.exported_fn_env_globals {
+      ctx.exported_fn_env_globals[name] = env_global_idx
+      env_global_idx = env_global_idx + 1
+    }
   }
   // Pre-compute extern_table_index for externref captures.
   // Table 0 is reserved for funcref table when extern table exists.

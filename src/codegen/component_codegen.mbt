@@ -29,6 +29,11 @@ fn component_write_name(buf : Array[Byte], name : String) -> Unit {
 }
 
 ///|
+fn component_normalize_export_name(name : String) -> String {
+  name.replace_all(old="_", new="-")
+}
+
+///|
 /// Component Model magic and version
 let component_magic : Array[Byte] = [
   b'\x00', b'\x61', b'\x73', b'\x6d', // \0asm
@@ -64,6 +69,9 @@ let core_sort_func : Byte = b'\x00'
 
 ///|
 let core_sort_mem : Byte = b'\x02'
+
+///|
+let core_sort_global : Byte = b'\x03'
 
 ///|
 let component_extern_func : Byte = b'\x01'
@@ -1207,8 +1215,8 @@ pub fn generate_component_wit(
     wit = wit + "  import wasi:io/streams@0.2.0;\n"
   }
   if imports.need_fs {
-    wit = wit + "  import wasi:filesystem/types@0.3.0;\n"
-    wit = wit + "  import wasi:filesystem/preopens@0.3.0;\n"
+    wit = wit + "  import wasi:filesystem/types@0.2.6;\n"
+    wit = wit + "  import wasi:filesystem/preopens@0.2.6;\n"
   }
   if imports.need_socket {
     wit = wit + "  import wasi:sockets/instance-network@0.2.0;\n"
@@ -1266,9 +1274,16 @@ fn emit_alias_section(
 /// Generate a trampoline core wasm module that wraps a vibe function for canonical ABI.
 /// Converts (i32 ptr, i32 len) string params to vibe tagged strings.
 /// Uses cabi_realloc to allocate vibe heap objects, then writes obj_string header + copies bytes.
-/// Imports: "env"."target_func" (i64,...)->i64, "env"."cabi_realloc" (i32,i32,i32,i32)->i32, "env"."memory"
+/// When `call_run_init` is true, the trampoline first calls the core module's `run`
+/// export to initialize env-backed imported closures before invoking the lifted export.
+/// When `needs_target_env` is true, the trampoline imports a `target_env` global and passes
+/// it as the closure env parameter to the lifted core export.
 /// Exports: "canon_func" (i32, i32, ...) -> i64
-fn generate_string_trampoline_module(string_param_count : Int) -> Bytes {
+fn generate_string_trampoline_module(
+  string_param_count : Int,
+  needs_target_env? : Bool = true,
+  call_run_init? : Bool = false,
+) -> Bytes {
   let buf : Array[Byte] = []
   // Magic + version
   for
@@ -1278,20 +1293,31 @@ fn generate_string_trampoline_module(string_param_count : Int) -> Bytes {
     buf.push(b)
   }
   let body = ByteBuf::new()
+  let target_env_param_count = if needs_target_env { 1 } else { 0 }
+  let run_init_type_count = if call_run_init { 1 } else { 0 }
+  let run_init_import_count = if call_run_init { 1 } else { 0 }
+  let target_env_import_count = if needs_target_env { 1 } else { 0 }
+  let trampoline_type_count = 3 + run_init_type_count
+  let trampoline_import_count = 3 + run_init_import_count + target_env_import_count
+  let canon_func_export_idx = if call_run_init { 3 } else { 2 }
+  let run_init_func_idx = 2
 
-  // Type section (id=1): 3 types
-  // Type 0: target_func (i64 * string_param_count) -> i64
+  // Type section (id=1): 3-4 types
+  // Type 0: target_func (i64 * string_param_count, optional i32 env) -> i64
   // Type 1: cabi_realloc (i32, i32, i32, i32) -> i32
   // Type 2: canon_func (i32, i32) * string_param_count -> i64
+  // Type 3: run_init () -> i64
   let type_sec = ByteBuf::new()
-  write_u32_leb(type_sec, 3)
+  write_u32_leb(type_sec, trampoline_type_count)
   // Type 0: target func (i64 * count, i32 closure_env) -> i64
   type_sec.push(b'\x60')
-  write_u32_leb(type_sec, string_param_count + 1) // +1 for closure env
+  write_u32_leb(type_sec, string_param_count + target_env_param_count)
   for _ in 0..<string_param_count {
     type_sec.push(b'\x7e') // i64
   }
-  type_sec.push(b'\x7f') // i32 closure env
+  if needs_target_env {
+    type_sec.push(b'\x7f') // i32 closure env
+  }
   type_sec.push(b'\x01')
   type_sec.push(b'\x7e') // result: i64
   // Type 1: cabi_realloc(i32, i32, i32, i32) -> i32
@@ -1310,11 +1336,17 @@ fn generate_string_trampoline_module(string_param_count : Int) -> Bytes {
   }
   type_sec.push(b'\x01')
   type_sec.push(b'\x7e') // result: i64
+  if call_run_init {
+    type_sec.push(b'\x60')
+    write_u32_leb(type_sec, 0)
+    type_sec.push(b'\x01')
+    type_sec.push(b'\x7e') // result: i64
+  }
   write_section(body, 1, type_sec.data)
 
-  // Import section (id=2): target_func, cabi_realloc, memory
+  // Import section (id=2): target_func, cabi_realloc, run_init?, memory, target_env?
   let import_sec = ByteBuf::new()
-  write_u32_leb(import_sec, 3)
+  write_u32_leb(import_sec, trampoline_import_count)
   // import 0: target_func
   write_name(import_sec, "env")
   write_name(import_sec, "target_func")
@@ -1325,12 +1357,25 @@ fn generate_string_trampoline_module(string_param_count : Int) -> Bytes {
   write_name(import_sec, "cabi_realloc")
   import_sec.push(b'\x00') // func import
   write_u32_leb(import_sec, 1) // type 1
-  // import 2: memory
+  if call_run_init {
+    write_name(import_sec, "env")
+    write_name(import_sec, "run_init")
+    import_sec.push(b'\x00') // func import
+    write_u32_leb(import_sec, 3) // type 3
+  }
+  // import 2/3: memory
   write_name(import_sec, "env")
   write_name(import_sec, "memory")
   import_sec.push(b'\x02') // memory import
   import_sec.push(b'\x00') // limits: no max
   write_u32_leb(import_sec, 0) // min pages
+  if needs_target_env {
+    write_name(import_sec, "env")
+    write_name(import_sec, "target_env")
+    import_sec.push(b'\x03') // global import
+    import_sec.push(b'\x7f') // i32
+    import_sec.push(b'\x01') // mutable
+  }
   write_section(body, 2, import_sec.data)
 
   // Function section (id=3): 1 function
@@ -1344,7 +1389,7 @@ fn generate_string_trampoline_module(string_param_count : Int) -> Bytes {
   write_u32_leb(export_sec, 1)
   write_name(export_sec, "canon_func")
   export_sec.push(b'\x00') // func export
-  write_u32_leb(export_sec, 2) // func index 2 (after 2 func imports)
+  write_u32_leb(export_sec, canon_func_export_idx)
   write_section(body, 7, export_sec.data)
 
   // Code section (id=10): trampoline body
@@ -1359,6 +1404,12 @@ fn generate_string_trampoline_module(string_param_count : Int) -> Bytes {
   func_body.push(b'\x7e') // i64 locals
   write_u32_leb(func_body, string_param_count)
   func_body.push(b'\x7f') // i32 locals
+
+  if call_run_init {
+    func_body.push(b'\x10') // call
+    write_u32_leb(func_body, run_init_func_idx)
+    emit_drop(func_body)
+  }
 
   // Layout: params are [ptr0, len0, ptr1, len1, ...]
   // Locals after params: tagged_0..tagged_n (i64), obj_0..obj_n (i32)
@@ -1410,11 +1461,14 @@ fn generate_string_trampoline_module(string_param_count : Int) -> Bytes {
     emit_local_set(func_body, tagged_local)
   }
 
-  // Call target_func(tagged_0, tagged_1, ..., 0 /*closure_env*/)
+  // Call target_func(tagged_0, tagged_1, ..., target_env?)
   for i in 0..<string_param_count {
     emit_local_get(func_body, tagged_base + i)
   }
-  emit_i32_const_raw(func_body, 0) // dummy closure env
+  if needs_target_env {
+    func_body.push(b'\x23') // global.get
+    write_u32_leb(func_body, 0) // global 0 = target_env
+  }
   func_body.push(b'\x10') // call
   write_u32_leb(func_body, 0) // func 0 = target_func
   // result is on stack
@@ -1516,12 +1570,13 @@ fn emit_component_export_section(
   name : String,
   func_idx : Int,
 ) -> Unit {
+  let export_name = component_normalize_export_name(name)
   buf.push(component_section_export)
   let content : Array[Byte] = []
   component_write_uleb128(content, 1) // 1 export
   // Export name: 0x00 prefix (plain name) + length-prefixed string
   content.push(b'\x00') // plain name discriminator
-  component_write_name(content, name)
+  component_write_name(content, export_name)
   // Sort idx: sort (0x01 = func) + index
   content.push(component_extern_func) // sort: func
   component_write_uleb128(content, func_idx)
@@ -1587,8 +1642,31 @@ pub fn emit_component_wasm_with_string_lift(
   let import_plan = build_core_import_plan(core_wasm)
   let import_func_count = import_plan.bindings.length()
   let main_instance_idx = import_plan.module_names.length()
+  let export_funcs = parse_core_export_funcs(core_wasm)
+  let mut call_run_init = false
+  let mut needs_target_env = false
+  for export_func in export_funcs {
+    if export_func.name == "run" {
+      call_run_init = true
+    }
+    if export_func.name == target_func_name {
+      let param_count = export_func.sig.params.length()
+      if param_count == string_param_count + 1 &&
+        export_func.sig.params[param_count - 1] == b'\x7f' {
+        needs_target_env = true
+      }
+    }
+  }
+  let has_distinct_run_alias = call_run_init && target_func_name != "run"
+  let run_init_import_count = if call_run_init { 1 } else { 0 }
+  let run_alias_func_count = if has_distinct_run_alias { 1 } else { 0 }
+  let target_env_alias_count = if needs_target_env { 1 } else { 0 }
   // Generate the trampoline module
-  let trampoline_wasm = generate_string_trampoline_module(string_param_count)
+  let trampoline_wasm = generate_string_trampoline_module(
+    string_param_count,
+    needs_target_env=needs_target_env,
+    call_run_init=call_run_init,
+  )
   let buf : Array[Byte] = []
   // Component header
   for b in component_magic {
@@ -1612,27 +1690,54 @@ pub fn emit_component_wasm_with_string_lift(
   // core func idx: import_func_count = target_func
   // core func idx: import_func_count + 1 = cabi_realloc
   // core memory idx: 0 = memory
-  emit_alias_section(buf, main_instance_idx, [
+  let alias_entries : Array[(String, Byte)] = [
     (target_func_name, core_sort_func),
     ("cabi_realloc", core_sort_func),
-    ("memory", core_sort_mem),
-  ])
+  ]
+  if has_distinct_run_alias {
+    alias_entries.push(("run", core_sort_func))
+  }
+  if needs_target_env {
+    alias_entries.push((exported_env_global_export_name(target_func_name), core_sort_global))
+  }
+  alias_entries.push(("memory", core_sort_mem))
+  emit_alias_section(buf, main_instance_idx, alias_entries)
   let target_func_core_idx = import_func_count
   let cabi_realloc_core_idx = import_func_count + 1
+  let target_env_core_idx = if needs_target_env { 0 } else { -1 }
+  let run_init_core_idx = if call_run_init {
+    if has_distinct_run_alias { import_func_count + 2 } else { target_func_core_idx }
+  } else {
+    -1
+  }
+  let alias_func_count = 2 + run_alias_func_count
+  let trampoline_env_export_count = 3 + run_init_import_count + target_env_alias_count
+  let canon_func_core_idx = import_func_count + alias_func_count
   // Build trampoline instance (module 1) with imports from vibe instance
-  // The trampoline imports: "env"."target_func", "env"."cabi_realloc", "env"."memory"
+  // The trampoline imports:
+  // "env"."target_func", "env"."cabi_realloc", optional "env"."run_init", "env"."memory"
   // We create a core instance from exports to satisfy the "env" namespace
   buf.push(component_section_core_instance)
   let tramp_inst_content : Array[Byte] = []
   component_write_uleb128(tramp_inst_content, 1) // 1 instance
   tramp_inst_content.push(b'\x01') // from exports
-  component_write_uleb128(tramp_inst_content, 3) // 3 exports
+  component_write_uleb128(tramp_inst_content, trampoline_env_export_count)
   component_write_name(tramp_inst_content, "target_func")
   tramp_inst_content.push(core_sort_func)
   component_write_uleb128(tramp_inst_content, target_func_core_idx)
   component_write_name(tramp_inst_content, "cabi_realloc")
   tramp_inst_content.push(core_sort_func)
   component_write_uleb128(tramp_inst_content, cabi_realloc_core_idx)
+  if call_run_init {
+    component_write_name(tramp_inst_content, "run_init")
+    tramp_inst_content.push(core_sort_func)
+    component_write_uleb128(tramp_inst_content, run_init_core_idx)
+  }
+  if needs_target_env {
+    component_write_name(tramp_inst_content, "target_env")
+    tramp_inst_content.push(core_sort_global)
+    component_write_uleb128(tramp_inst_content, target_env_core_idx)
+  }
   component_write_name(tramp_inst_content, "memory")
   tramp_inst_content.push(core_sort_mem)
   component_write_uleb128(tramp_inst_content, 0) // memory index 0
@@ -1662,7 +1767,6 @@ pub fn emit_component_wasm_with_string_lift(
   emit_alias_section(buf, trampoline_instance_idx, [
     ("canon_func", core_sort_func),
   ])
-  let canon_func_core_idx = cabi_realloc_core_idx + 1
   // Component type for (string, string, ...) -> s64
   buf.push(component_section_type)
   let type_content : Array[Byte] = []

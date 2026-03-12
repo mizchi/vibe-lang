@@ -184,6 +184,32 @@ test "component wit includes vibe args imports when Env::args is used" {
 }
 
 ///|
+test "component wit includes preview2 filesystem imports when fs builtins are used" {
+  let db = VibeDb::new()
+  let src =
+    #|let run = () -> Int with {Fs} {
+    #|  if Fs::exists("foo.txt") {
+    #|    String::length(Fs::read_file("foo.txt"))
+    #|  } else {
+    #|    0
+    #|  }
+    #|}
+    #|run()
+  db.set_source("main", src)
+  let wit = try
+    generate_module_component_wit(db, "main", "local:main", "main")
+  catch {
+    e => fail("wit error: " + e.to_string())
+  } noraise {
+    w => w
+  }
+  assert_true(String::contains(wit, "world main"))
+  assert_true(String::contains(wit, "import wasi:filesystem/types@0.2.6;"))
+  assert_true(String::contains(wit, "import wasi:filesystem/preopens@0.2.6;"))
+  assert_false(String::contains(wit, "import wasi:filesystem/types@0.3.0;"))
+}
+
+///|
 test "component wit scans for-in bodies for host imports" {
   let db = VibeDb::new()
   let src =
@@ -477,6 +503,42 @@ test "P3 handler: component_string_lift_auto exports handler" {
   assert_eq(wasm[0].to_int(), 0x00) // \0
   assert_eq(wasm[1].to_int(), 0x61) // a
   assert_eq(wasm[4].to_int(), 0x0d) // component version
+}
+
+///|
+test "P3 handler: component_string_lift_auto kebab-cases snake_case export names" {
+  let db = VibeDb::new()
+  let src =
+    #|export let compile_cli_request = (method: String, url: String) -> Int {
+    #|  if String::equals(method, url) { 1 } else { 0 }
+    #|}
+    #|compile_cli_request("GET", "GET")
+  db.set_source("main", src)
+  let wasm = try compile_module_component_string_lift_auto(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(component_bytes_contains_ascii(wasm, "compile-cli-request"))
+  assert_false(component_bytes_contains_ascii(wasm, "compile_cli_request"))
+}
+
+///|
+test "P3 handler: component_string_lift_auto injects run_init when run export exists" {
+  let db = VibeDb::new()
+  let src =
+    #|export let handler = (method: String, url: String) -> Int {
+    #|  if String::equals(method, "GET") { 200 } else { 405 }
+    #|}
+    #|let run = () -> Int { handler("GET", "/") }
+    #|run()
+  db.set_source("main", src)
+  let wasm = try compile_module_component_string_lift_auto(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(component_bytes_contains_ascii(wasm, "run_init"))
 }
 
 ///|
