@@ -38,6 +38,10 @@ Completed items archived from `TODO.md`.
 
 ## 2026-03-12
 
+- **Strict-recursive selfbuild を lean stage2 target で復帰**
+  - `selfbuild_runtime_entry.vibe` を lean stage2 runtime target に切り出し、`selfbuild_runtime_entry_bundle.vibe` から source を読む形へ整理した
+  - `selfbuild_compile_stage2` は `compile_source_wasi_only(..., "selfbuild_entry")` で stage2 target を直接焼くようにし、stage1 artifact からの stage2 compile を source-group 依存なしで通した
+  - `just test-selfhost-wasi-selfbuild-kpi 300` は strict-recursive mode で `recursive=1`, `stage2_run=0`, `total=11s` に復帰した
 - **JS host 依存なしの Preview2 selfhost CLI gate を追加**
   - `selfhost_cli_component_entry.vibe` を string-lift component export (`compile_cli_request`) として追加し、`len:<entry>` / `chunk:<entry>:<index>` 契約で compiled wasm bytes を返すようにした
   - `scripts/test_selfhost_cli_component_preview2.sh` は wasmtime Preview2 だけで selfhost component を実行し、復元した sample wasm を validate/run して `42` まで確認する

@@ -12,10 +12,23 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Self-Host Compiler / Runtime Packaging
 
-**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache、host CLI の check/test loop cache 再利用、env/argv 契約、stage1 core wasm 直接の artifact-only compile gate、Preview2 component-only selfhost CLI gate、Preview2 package、command world 配布 gate、direct fs/argv component 配布 gate まで入った。
-**最優先の残**: string-lift component が direct Preview2 import を typed world として直接持てるようにして、compose adapter なしでも `selfhost_cli_component_run_entry.vibe` をそのまま配布可能にすること。
+**現状**: compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache、host CLI の check/test loop cache 再利用、env/argv 契約、stage1 core wasm 直接の artifact-only compile gate、Preview2 component-only selfhost CLI gate、Preview2 package、command world 配布 gate、direct fs/argv component 配布 gate、strict-recursive selfbuild 復帰まで入った。`stage1 artifact 自体で sample を compile して run=42` と `just test-selfhost-wasi-selfbuild-kpi 300` の strict-recursive mode は通る。
+**最優先の残**: MoonBit host CLI を bootstrap 専用へ縮退し、selfhost 配布形を `check/test/release-check` の本流へ寄せること。そのうえで typed Preview2 import と perf gap を詰める。
 
 ### Selfhost compiler modularization / cache
+
+- [x] strict-recursive selfbuild regression を解消する
+  - `selfbuild_runtime_entry.vibe` を lean stage2 runtime target に切り出し、`selfbuild_runtime_entry_bundle.vibe` から source を読む形にした
+  - `selfbuild_compile_stage2` は grouped source compile ではなく `compile_source_wasi_only(..., "selfbuild_entry")` で stage2 target を直接焼く
+  - `just test-selfhost-wasi-selfbuild-kpi 300` は strict-recursive mode で `recursive=1`, `total=11s`, `stage2_run=0` に復帰した
+
+- [ ] MoonBit host CLI を bootstrap 専用へ縮退する
+  - selfhost 配布形は Preview2 package / command component / direct fs/argv component まで揃ったが、`check/test/release-check` の本流はまだ `src/cmd/vibe` に残っている
+  - 次は selfhost command/direct component を host CLI の一部フローへ差し込み、dual-run で差分を見ながら切り替える
+
+- [ ] selfhost perf gap を cutover 可能な水準まで詰める
+  - 直近比較では host 比で compile 約4.2x、check 約3.3x 遅い
+  - grouped merge / module source / codegen cache は入っているので、次の本命は typecheck / codegen hot path の profiling と削減
 
 - [x] host `src/cmd/vibe` 側の compile/test loop にも selfhost と同じ persistent cache パターンを持ち込む
   - `src/loader` に `*_into` API を追加し、`check_cmd` / `test_cmd_sequential` / `test_cmd_report_json` が root 単位 `VibeDb` cache を持ち回るようにした
