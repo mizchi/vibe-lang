@@ -4,9 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/target/native/release/build/cmd/vibe/vibe.exe}"
-STAGE1_COMPILER_WASM="${STAGE1_COMPILER_WASM:-$PROJECT_ROOT/_build/wasm/debug/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm}"
-STAGE1_CHECKER_WASM="${STAGE1_CHECKER_WASM:-$PROJECT_ROOT/_build/wasm/debug/build/cmd/vibe_check_wasi/vibe_check_wasi.wasm}"
+SELFHOST_WASM_PROFILE="${VIBE_SELFHOST_PERF_WASM_PROFILE:-debug}"
+DEFAULT_STAGE1_COMPILER_WASM="$PROJECT_ROOT/_build/wasm/$SELFHOST_WASM_PROFILE/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm"
+DEFAULT_STAGE1_CHECKER_WASM="$PROJECT_ROOT/_build/wasm/$SELFHOST_WASM_PROFILE/build/cmd/vibe_check_wasi/vibe_check_wasi.wasm"
+VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe}"
+STAGE1_COMPILER_WASM="${STAGE1_COMPILER_WASM:-$DEFAULT_STAGE1_COMPILER_WASM}"
+STAGE1_CHECKER_WASM="${STAGE1_CHECKER_WASM:-$DEFAULT_STAGE1_CHECKER_WASM}"
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_perf}"
 CASES_FILE="${VIBE_SELFHOST_PERF_CASES_FILE:-$PROJECT_ROOT/bench/selfhost_perf/cases.txt}"
 RUNS="${VIBE_SELFHOST_PERF_RUNS:-3}"
@@ -112,6 +115,10 @@ collect_cases() {
 }
 
 ensure_binaries() {
+  if [ "$SELFHOST_WASM_PROFILE" != "release" ] && [ "$SELFHOST_WASM_PROFILE" != "debug" ]; then
+    echo "bench-selfhost-perf: VIBE_SELFHOST_PERF_WASM_PROFILE must be release or debug" >&2
+    exit 1
+  fi
   if [ "$REBUILD_MODE" != "auto" ] && [ "$REBUILD_MODE" != "always" ] && [ "$REBUILD_MODE" != "never" ]; then
     echo "bench-selfhost-perf: VIBE_SELFHOST_PERF_REBUILD must be auto|always|never" >&2
     exit 1
@@ -140,12 +147,20 @@ ensure_binaries() {
     moon build --target native --release src/cmd/vibe --warn-list '-29'
   fi
   if [ ! -f "$STAGE1_COMPILER_WASM" ] || [ "$src_changed_since_compiler" -eq 1 ]; then
-    echo "[selfhost-perf] building selfhost compiler wasm..."
-    moon build --target wasm src/cmd/vibe_compile_wasi
+    echo "[selfhost-perf] building selfhost compiler wasm ($SELFHOST_WASM_PROFILE)..."
+    if [ "$SELFHOST_WASM_PROFILE" = "release" ]; then
+      moon build --target wasm --release src/cmd/vibe_compile_wasi
+    else
+      moon build --target wasm src/cmd/vibe_compile_wasi
+    fi
   fi
   if [ ! -f "$STAGE1_CHECKER_WASM" ] || [ "$src_changed_since_checker" -eq 1 ]; then
-    echo "[selfhost-perf] building selfhost checker wasm..."
-    moon build --target wasm src/cmd/vibe_check_wasi
+    echo "[selfhost-perf] building selfhost checker wasm ($SELFHOST_WASM_PROFILE)..."
+    if [ "$SELFHOST_WASM_PROFILE" = "release" ]; then
+      moon build --target wasm --release src/cmd/vibe_check_wasi
+    else
+      moon build --target wasm src/cmd/vibe_check_wasi
+    fi
   fi
   if ! command -v moonrun >/dev/null 2>&1; then
     echo "bench-selfhost-perf: moonrun not found" >&2
@@ -187,6 +202,7 @@ main() {
 
   echo "[selfhost-perf] cases=${#cases[@]} runs=${RUNS}"
   echo "[selfhost-perf] compile_mode=${COMPILE_MODE}"
+  echo "[selfhost-perf] selfhost_wasm_profile=${SELFHOST_WASM_PROFILE}"
 
   local case_path rel_case safe
   for case_path in "${cases[@]}"; do
@@ -330,6 +346,18 @@ main() {
   if [ -s "$stage_summary_tsv" ]; then
     echo "stage summary:"
     column -t -s $'\t' "$stage_summary_tsv"
+    echo
+    echo "top selfhost hotspots:"
+    {
+      printf "file\tphase\tstage\tselfhost_us\tratio\n"
+      tail -n +2 "$stage_summary_tsv" | sort -t $'\t' -k5,5nr | head -n 8 | awk -F'\t' '{ printf "%s\t%s\t%s\t%s\t%s\n", $1, $2, $3, $5, $6 }'
+    } | column -t -s $'\t'
+    echo
+    echo "worst selfhost ratios:"
+    {
+      printf "file\tphase\tstage\thost_us\tselfhost_us\tratio\n"
+      tail -n +2 "$stage_summary_tsv" | sort -t $'\t' -k6,6nr | head -n 8
+    } | column -t -s $'\t'
     echo "raw stage:     $raw_stage_tsv"
     echo "stage summary: $stage_summary_tsv"
   fi

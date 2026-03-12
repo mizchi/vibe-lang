@@ -49,9 +49,12 @@ Phase 4 (応用):
   - `test_selfhost_check_parity.sh` も最終的には component 配布形へ寄せ、`moonrun "$STAGE1_CHECKER_WASM"` 依存を bootstrap 専用へ押し込む
 
 - [ ] selfhost perf gap を cutover 可能な水準まで詰める
-  - stable 5-case set の直近比較では host 比で compile 約4.5x、check 約2.95x 遅い
+  - stable 5-case set の debug selfhost wasm baseline では host 比 compile 約5x、check 約2-4x 遅い
+  - `VIBE_SELFHOST_PERF_WASM_PROFILE=release` でも計測できるようにしたが、現状は `base64` compile が大きく悪化するため KPI default はまだ debug baseline に置いている
   - `vibe/compiler/index.vibe` は compile-lite の unsupported closure capture path をまだ踏むため、perf KPI default からは外して別測定にしている
   - grouped merge / module source / codegen cache は入っているので、次の本命は typecheck / codegen hot path の profiling と削減
+  - 直近の hotspot は `check/type` と `compile/compile` で、stable set の stage summary を `scripts/bench_selfhost_perf.sh` が出せるようにした
+  - `compile/write` も比率は極端だが絶対時間は数 ms〜30 ms 台なので、まずは `check/type` と `compile/compile` を削る
 
 - [x] host `src/cmd/vibe` 側の compile/test loop にも selfhost と同じ persistent cache パターンを持ち込む
   - `src/loader` に `*_into` API を追加し、`check_cmd` / `test_cmd_sequential` / `test_cmd_report_json` が root 単位 `VibeDb` cache を持ち回るようにした

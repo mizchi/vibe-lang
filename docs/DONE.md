@@ -42,6 +42,11 @@ Completed items archived from `TODO.md`.
   - `selfbuild_runtime_entry.vibe` を lean stage2 runtime target に切り出し、`selfbuild_runtime_entry_bundle.vibe` から source を読む形へ整理した
   - `selfbuild_compile_stage2` は `compile_source_wasi_only(..., "selfbuild_entry")` で stage2 target を直接焼くようにし、stage1 artifact からの stage2 compile を source-group 依存なしで通した
   - `just test-selfhost-wasi-selfbuild-kpi 300` は strict-recursive mode で `recursive=1`, `stage2_run=0`, `total=11s` に復帰した
+- **Selfhost perf benchmark を release wasm 基準へ寄せた**
+  - `scripts/bench_selfhost_perf.sh` は `VIBE_SELFHOST_PERF_WASM_PROFILE=release|debug` を受けて selfhost wasm artifact を切り替えられるようにした
+  - KPI の default は従来どおり debug selfhost wasm に置きつつ、summary に `top selfhost hotspots` と `worst selfhost ratios` を出すようにして、perf gap の次の削減対象をすぐ見られるようにした
+  - release selfhost wasm でも同じ stable 5-case set を測れるようにし、`base64` compile が現状の main outlier だと切り分けた
+  - `_build` release host binary に揃えた stable debug baseline は compile 約5x / check 約2-4x のレンジで、perf gate の headroom もその実測に追従させた
 - **Selfhost check packaging を追加**
   - `selfhost_check_component_entry.vibe` を追加し、最小 contract `check-source-report(source) -> "ok" | "error:<msg>"` を selfhost 側に固定した
   - `scripts/test_selfhost_check_preview2_package.sh` は Preview2 string-lift component を直接 invoke して valid/invalid source の report contract を固定する
