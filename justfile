@@ -438,6 +438,38 @@ test-selfhost-cli-direct-component:
 test-selfhost-cli-direct-parity:
     bash scripts/test_selfhost_cli_direct_parity.sh
 
+# Build distributable selfhost check Preview2 component package
+build-selfhost-check-preview2-component out="dist/selfhost_check_preview2.component.wasm" wit="dist/selfhost_check_preview2.component.wit":
+    bash scripts/build_selfhost_check_preview2_component.sh {{out}} {{wit}}
+
+# Run distributable selfhost check Preview2 component package
+run-selfhost-check-preview2-component component input:
+    bash scripts/run_selfhost_check_preview2_component.sh {{component}} {{input}}
+
+# Run distributable selfhost check Preview2 component package gate
+test-selfhost-check-preview2-package:
+    bash scripts/test_selfhost_check_preview2_package.sh
+
+# Build a distributable selfhost check command component (stdin=source, stdout=report)
+build-selfhost-check-command-component out="dist/selfhost_check_command.component.wasm" wit="dist/selfhost_check_command.component.wit":
+    bash scripts/build_selfhost_check_command_component.sh {{out}} {{wit}}
+
+# Run distributable selfhost check command component gate
+test-selfhost-check-command-component:
+    bash scripts/test_selfhost_check_command_component.sh
+
+# Build distributable selfhost check direct filesystem component
+build-selfhost-check-direct-component out="dist/selfhost_check_direct.component.wasm" wit="dist/selfhost_check_direct.component.wit":
+    bash scripts/build_selfhost_check_direct_component.sh {{out}} {{wit}}
+
+# Run distributable selfhost check direct filesystem component
+run-selfhost-check-direct-component component input output:
+    bash scripts/run_selfhost_check_direct_component.sh {{component}} {{input}} {{output}}
+
+# Run distributable selfhost check direct filesystem component gate
+test-selfhost-check-direct-component:
+    bash scripts/test_selfhost_check_direct_component.sh
+
 # Run wasi:http boundary gate (stage0 wasm compiler -> component wit imports)
 test-selfhost-wasi-http-boundary:
     scripts/test_selfhost_wasi_http_boundary.sh
@@ -721,7 +753,7 @@ vibe-normalize-check:
     scripts/vibe_normalize_all.sh --check
 
 # Pre-release selfhost gate bundle
-release-selfhost-gates: sync-vbundle check-selfhost-bundle-sync test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cli-core test-selfhost-cli-component-preview2 test-selfhost-cli-preview2-package test-selfhost-cli-command-component test-selfhost-cli-direct-component test-selfhost-cli-direct-parity test-selfhost-cutover test-selfhost-check-parity test-golden-wat
+release-selfhost-gates: sync-vbundle check-selfhost-bundle-sync test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cli-core test-selfhost-cli-component-preview2 test-selfhost-cli-preview2-package test-selfhost-cli-command-component test-selfhost-cli-direct-component test-selfhost-cli-direct-parity test-selfhost-check-preview2-package test-selfhost-check-command-component test-selfhost-check-direct-component test-selfhost-cutover test-selfhost-check-parity test-golden-wat
 
 # Pre-release check (includes selfhost gates + wasm bundle-size monitor)
 release-check: fmt info check test vibe-normalize bench-bundle-size-monitor release-selfhost-gates

@@ -42,6 +42,11 @@ Completed items archived from `TODO.md`.
   - `selfbuild_runtime_entry.vibe` を lean stage2 runtime target に切り出し、`selfbuild_runtime_entry_bundle.vibe` から source を読む形へ整理した
   - `selfbuild_compile_stage2` は `compile_source_wasi_only(..., "selfbuild_entry")` で stage2 target を直接焼くようにし、stage1 artifact からの stage2 compile を source-group 依存なしで通した
   - `just test-selfhost-wasi-selfbuild-kpi 300` は strict-recursive mode で `recursive=1`, `stage2_run=0`, `total=11s` に復帰した
+- **Selfhost check packaging を追加**
+  - `selfhost_check_component_entry.vibe` を追加し、最小 contract `check-source-report(source) -> "ok" | "error:<msg>"` を selfhost 側に固定した
+  - `scripts/test_selfhost_check_preview2_package.sh` は Preview2 string-lift component を直接 invoke して valid/invalid source の report contract を固定する
+  - `scripts/test_selfhost_check_command_component.sh` は stdin=source / stdout=report / exit code=success-fail の command world 配布形を固定する
+  - `scripts/test_selfhost_check_direct_component.sh` は input file -> output report file の direct fs gate を固定し、3 形すべて `release-selfhost-gates` に接続した
 - **JS host 依存なしの Preview2 selfhost CLI gate を追加**
   - `selfhost_cli_component_entry.vibe` を string-lift component export (`compile_cli_request`) として追加し、`len:<entry>` / `chunk:<entry>:<index>` 契約で compiled wasm bytes を返すようにした
   - `scripts/test_selfhost_cli_component_preview2.sh` は wasmtime Preview2 だけで selfhost component を実行し、復元した sample wasm を validate/run して `42` まで確認する
