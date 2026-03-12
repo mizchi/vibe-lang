@@ -1,8 +1,8 @@
-# ADR-0001: Named 型の遅延展開（Lazy Enum Expansion）
+# ADR-0024: Named 型の遅延展開（Lazy Enum Expansion）
 
-## Status
-
-Accepted (2026-02-27)
+- Date: 2026-02-27
+- Status: accepted (実装済み・計測結果あり)
+- Note: 旧番号 ADR-0001 から重複回避のためリナンバー
 
 ## Context
 

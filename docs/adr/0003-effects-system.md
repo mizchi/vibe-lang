@@ -31,8 +31,25 @@ vibe は「pure by default」を目指しており、副作用を型レベルで
 - `for-in` デシュガーや配列操作が内部でビルダーを使うため、ユーザーレベルでは既に隠蔽されている
 - 二層あることで学習コストが高い
 
+## 現在の実装状態
+
+- エフェクトチェッカー (`checker_effects.vibe`) は `in_effect: Bool` の二値フラグで実装
+- エフェクト名の個別追跡（エフェクトセット）は未実装
+- `EFn` の第5フィールド `Option[String]` がエフェクト注釈を保持
+- `EHandle` は `in_effect=true` にするだけで、エフェクト名の区別なし
+
+## 発展方針
+
+ADR-0021 でユーザー定義エフェクト（`effect Mut<T> { ... }`）と `perform`/`resume`
+を導入し、本 ADR のエフェクトセット検証を拡張する計画:
+
+- `in_effect: Bool` → `EffectSet = Array[String]` に拡張
+- `handle ... with EffectName { ... }` でエフェクトを消去
+- 既存の `handle { } { Error(_) => ... }` はそのまま維持（後方互換）
+
 ## Consequences
 
 - 純粋関数とエフェクトフル関数の区別が型シグネチャに表れ、コードの意図が明確になる
 - `do {}` はランタイムで shared-mut セマンティクスを提供する（eval_block_shared_mut）ため、AST ノードとしては存続
-- 将来の `{Async}`, `{Net}` 等のエフェクト追加が自然に拡張可能
+- 将来の `{Async}`, `{Net}` 等のエフェクト追加が自然に拡張可能（ADR-0012 参照、延期中）
+- ユーザー定義エフェクトと Component Model 統合は ADR-0021 で計画

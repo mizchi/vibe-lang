@@ -1,7 +1,7 @@
 # ADR-0013: Num 制約の単相化 (Monoify)
 
 - Date: 2026-02-17
-- Status: proposed
+- Status: proposed (未着手)
 
 ## Context
 

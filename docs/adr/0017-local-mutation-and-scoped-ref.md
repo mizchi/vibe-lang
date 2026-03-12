@@ -1,7 +1,10 @@
 # ADR-0017: 局所可変状態 (`let mut`) とスコープ付き `Ref[T]`
 
 - Date: 2026-02-21
-- Status: accepted
+- Status: partially-implemented
+  - `let mut`: **実装済み** (項目 1)
+  - `Ref[T]`: **abandoned** — ADR-0021 の Effect Handler で設計意図を代替
+  - 軽量 effect 区分 (`pure`/`state_local`/`impure`): **未実装** — ADR-0003 拡張として再検討
 
 ## Context
 

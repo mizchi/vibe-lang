@@ -26,6 +26,23 @@ just component-run examples/wasm/hello.vibe
 just component-run-moonix examples/wasm/hello.vibe
 ```
 
+## 発展方針
+
+ADR-0021 で `#import` ディレクティブ (ADR-0022) を使い、エフェクト宣言と
+Component Model import を型レベルで統合する計画がある。本 ADR の手動ワイヤリングを
+自動化し、export 関数のエフェクトセットから world を自動導出する:
+
+```
+#import("wasi:filesystem/read@0.2.0")
+effect Fs { read_file(path: String) -> String }
+
+export let main = () -> Unit with { Fs } { ... }
+// → world の import wasi:filesystem/read@0.2.0 を自動導出
+```
+
+本 ADR の `--component` コンパイルフローは維持し、`#import` による自動化をその上に
+追加する形とする。
+
 ## Consequences
 
 - 標準的な WASM コンポーネントとして他ツール・言語と合成可能

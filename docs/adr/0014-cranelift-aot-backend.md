@@ -1,7 +1,7 @@
 # ADR-0014: Cranelift AOT バックエンド
 
 - Date: 2026-02-17
-- Status: proposed
+- Status: proposed (未着手。WASM バックエンドが主経路であり優先度低)
 
 ## Context
 

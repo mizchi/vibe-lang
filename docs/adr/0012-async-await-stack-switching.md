@@ -1,7 +1,9 @@
 # ADR-0012: Async/Await (Stack Switching + WASI P3)
 
 - Date: 2026-02-17
-- Status: superseded by ADR-0016
+- Status: deferred (エラー制御構文は ADR-0016 に統一。Async/Stream 機能自体は延期)
+- Note: `{Async}`, `Future[T]`, `Stream[T]` は廃止ではなく延期。
+  WASM Stack Switching の安定化後に ADR-0021 Phase 4 で再検討予定
 
 ## Context
 
