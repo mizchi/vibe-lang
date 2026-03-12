@@ -323,6 +323,17 @@ fn scheme_receiver_root_name(
 }
 
 ///|
+fn scheme_return_root_name(
+  imported_env : @checker.TypeEnv,
+  scheme : @checker.TypeScheme,
+) -> String? {
+  match scheme.ty {
+    @core.Type::Func(ret~, ..) => imported_env.namespace_root(ret)
+    _ => None
+  }
+}
+
+///|
 fn collect_exported_names(ast : @core.Module) -> Map[String, Bool] {
   let exports : Map[String, Bool] = {}
   let defined : Map[String, Bool] = {}

@@ -51,6 +51,231 @@ test "type query resolves extensionless directory import to index.vibe" {
 }
 
 ///|
+test "type query keeps re-exported value return type through directory index" {
+  let db = VibeDb::new()
+  db.set_source(
+    "/project/scan/scan.vibe",
+    "export struct Scanner {\n" +
+    "  input: String;\n" +
+    "  pos: Int\n" +
+    "}\n" +
+    "export let new = (input: String) -> Scanner {\n" +
+    "  Scanner::{ input: input, pos: 0 }\n" +
+    "}\n" +
+    "export let Scanner::remaining = (scan: Scanner) -> String {\n" +
+    "  String::substring(scan.input, scan.pos, String::length(scan.input))\n" +
+    "}\n" +
+    "export let remaining = (scan: Scanner) -> String {\n" +
+    "  Scanner::remaining(scan)\n" +
+    "}\n",
+  )
+  db.set_source(
+    "/project/scan/index.vibe",
+    "export ./scan.vibe { Scanner, Scanner::remaining, new, remaining }\n" +
+    "export { Scanner, Scanner::remaining, new, remaining }\n",
+  )
+  db.set_source(
+    "/project/main.vibe",
+    "import ./scan { Scanner, new, remaining }\n" +
+    "let scan = new(\"abc\")\n" +
+    "let rest = remaining(scan)\n" +
+    "let x = String::length(rest)\n" +
+    "x\n",
+  )
+  let index_env = db.types("/project/scan/index.vibe")
+  let index_diags = db.diagnostics("/project/scan/index.vibe")
+  if not(index_diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in index_diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected index diagnostics: " + lines.join(","))
+  }
+  match index_env.get_scheme("new") {
+    Some(_) => ()
+    None => fail("expected re-exported scheme in index: new")
+  }
+  match index_env.get_scheme("remaining") {
+    Some(_) => ()
+    None => fail("expected re-exported scheme in index: remaining")
+  }
+  let env = db.types("/project/main.vibe")
+  let diags = db.diagnostics("/project/main.vibe")
+  if not(diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected diagnostics: " + lines.join(","))
+  }
+  match env.get_scheme("rest") {
+    Some(scheme) =>
+      match scheme.ty {
+        @core.Type::String => ()
+        _ => fail("expected String scheme for rest")
+      }
+    None => fail("expected scheme for rest")
+  }
+  match env.get_scheme("x") {
+    Some(_) => ()
+    None => fail("expected scheme for x")
+  }
+}
+
+///|
+test "type query explicit namespace member import does not duplicate auto-forward" {
+  let db = VibeDb::new()
+  db.set_source(
+    "/project/scan/scan.vibe",
+    "export struct Scanner {\n" +
+    "  input: String;\n" +
+    "  pos: Int\n" +
+    "}\n" +
+    "export let new = (input: String) -> Scanner {\n" +
+    "  Scanner::{ input: input, pos: 0 }\n" +
+    "}\n" +
+    "export let Scanner::remaining = (scan: Scanner) -> String {\n" +
+    "  String::substring(scan.input, scan.pos, String::length(scan.input))\n" +
+    "}\n" +
+    "export let remaining = (scan: Scanner) -> String {\n" +
+    "  Scanner::remaining(scan)\n" +
+    "}\n",
+  )
+  db.set_source(
+    "/project/scan/index.vibe",
+    "export ./scan.vibe { Scanner, Scanner::remaining, new, remaining }\n" +
+    "export { Scanner, Scanner::remaining, new, remaining }\n",
+  )
+  db.set_source(
+    "/project/main.vibe",
+    "import ./scan { Scanner, Scanner::remaining, new }\n" +
+    "let scan = new(\"abc\")\n" +
+    "let rest = Scanner::remaining(scan)\n" +
+    "rest\n",
+  )
+  let env = db.types("/project/main.vibe")
+  let diags = db.diagnostics("/project/main.vibe")
+  let has_duplicate = diags
+    .iter()
+    .any(fn(diag) {
+      diag.message.contains("duplicate declaration: Scanner::remaining")
+    })
+  if has_duplicate {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected duplicate diagnostics: " + lines.join(","))
+  }
+  let has_unknown = diags
+    .iter()
+    .any(fn(diag) {
+      diag.message.contains("unknown function: `new`") ||
+      diag.message.contains("unknown function: `Scanner::remaining`")
+    })
+  if has_unknown {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected import resolution diagnostics: " + lines.join(","))
+  }
+  match env.get_scheme("rest") {
+    Some(scheme) =>
+      match scheme.ty {
+        @core.Type::String => ()
+        _ => fail("expected String scheme for rest")
+      }
+    None => fail("expected scheme for rest")
+  }
+}
+
+///|
+test "type query root import exposes constructor-like helpers under namespace" {
+  let db = VibeDb::new()
+  db.set_source(
+    "/project/scan/scan.vibe",
+    "export struct Scanner {\n" +
+    "  input: String;\n" +
+    "  pos: Int\n" +
+    "}\n" +
+    "export let new = (input: String) -> Scanner {\n" +
+    "  Scanner::{ input: input, pos: 0 }\n" +
+    "}\n" +
+    "export let Scanner::remaining = (scan: Scanner) -> String {\n" +
+    "  String::substring(scan.input, scan.pos, String::length(scan.input))\n" +
+    "}\n",
+  )
+  db.set_source(
+    "/project/scan/index.vibe",
+    "export ./scan.vibe { Scanner, new, Scanner::remaining }\n" +
+    "export { Scanner, new, Scanner::remaining }\n",
+  )
+  db.set_source(
+    "/project/main.vibe",
+    "import ./scan { Scanner }\n" +
+    "let scan = Scanner::new(\"abc\")\n" +
+    "let rest = Scanner::remaining(scan)\n" +
+    "rest\n",
+  )
+  let env = db.types("/project/main.vibe")
+  let diags = db.diagnostics("/project/main.vibe")
+  if not(diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected diagnostics: " + lines.join(","))
+  }
+  match env.get_scheme("Scanner::new") {
+    Some(scheme) =>
+      match scheme.ty {
+        @core.Type::Func(..) => ()
+        _ => fail("expected function scheme for Scanner::new")
+      }
+    None => fail("expected imported namespaced helper: Scanner::new")
+  }
+  match env.get_scheme("rest") {
+    Some(scheme) =>
+      match scheme.ty {
+        @core.Type::String => ()
+        _ => fail("expected String scheme for rest")
+      }
+    None => fail("expected scheme for rest")
+  }
+}
+
+///|
+test "type query resolves nested relative re-export from dot-prefixed keys" {
+  let db = VibeDb::new()
+  db.set_source(
+    "./scan/scan.vibe",
+    "export let value = () -> Int {\n" + "  1\n" + "}\n" + "export { value }\n",
+  )
+  db.set_source(
+    "./scan/index.vibe",
+    "export ./scan.vibe { value }\n" + "export { value }\n",
+  )
+  db.set_source(
+    "main",
+    "import ./scan { value }\n" + "let x = value()\n" + "x\n",
+  )
+  let env = db.types("main")
+  let diags = db.diagnostics("main")
+  if not(diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected diagnostics: " + lines.join(","))
+  }
+  match env.get_scheme("x") {
+    Some(_) => ()
+    None => fail("expected scheme for x")
+  }
+}
+
+///|
 test "type query keeps no-import dependency exports for alias call" {
   let db = VibeDb::new()
   db.set_source(

@@ -598,6 +598,14 @@ pub fn Runtime::eval_module(
                 symbol_name.contains("::")
               )
             }
+            let explicit_targets : Map[String, Bool] = {}
+            for explicit_item in spec.items {
+              let local_name = match explicit_item.rename {
+                Some(rename_name) => rename_name
+                None => explicit_item.name
+              }
+              explicit_targets[local_name] = true
+            }
             let bind_namespace_members = fn(
               item : @core.ImportItem,
               source_root : String,
@@ -613,6 +621,9 @@ pub fn Runtime::eval_module(
                     end=exported_name.length(),
                   )
                   let target_name = target_prefix + suffix
+                  if explicit_targets.contains(target_name) {
+                    continue
+                  }
                   imported_any = true
                   if should_bind_runtime_value(item, exported_name) {
                     bind_import(exported_name, target_name)
@@ -631,6 +642,9 @@ pub fn Runtime::eval_module(
                 }
                 let target_name = target_prefix + exported_name
                 if not(should_bind_runtime_value(item, target_name)) {
+                  continue
+                }
+                if explicit_targets.contains(target_name) {
                   continue
                 }
                 if self.type_env.get(target_name) is Some(_) {

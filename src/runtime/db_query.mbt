@@ -69,6 +69,10 @@ pub fn VibeDb::new() -> VibeDb {
                 }
               }
               push_candidate(path_obj.normalized)
+              match raw_relative_candidate(base_dir, path) {
+                Some(candidate) => push_candidate(candidate)
+                None => ()
+              }
               if not(path_obj.normalized.has_suffix(".vibe")) {
                 push_candidate(path_obj.normalized + ".vibe")
               }
@@ -112,7 +116,9 @@ pub fn VibeDb::new() -> VibeDb {
                     }
                 }
               }
-              let resolved_path_obj = normalize_path_obj(base_dir, final_path)
+              let resolved_path_obj = path_obj_from_resolved_path(
+                base_dir, path, final_path,
+              )
               if is_reexport {
                 if not(path.has_prefix("./")) {
                   diags.push(rt, @core.Diagnostic::{
@@ -931,6 +937,14 @@ pub fn VibeDb::new() -> VibeDb {
                   let trait_aliases = collect_import_trait_aliases(
                     spec, imported_env,
                   )
+                  let explicit_targets : Map[String, Bool] = {}
+                  for explicit_item in spec.items {
+                    let local_name = match explicit_item.rename {
+                      Some(n) => n
+                      None => explicit_item.name
+                    }
+                    explicit_targets[local_name] = true
+                  }
                   let import_symbol = fn(
                     item : @core.ImportItem,
                     source_name : String,
@@ -1128,15 +1142,19 @@ pub fn VibeDb::new() -> VibeDb {
                           end=exported_name.length(),
                         )
                         let target_name = target_prefix + suffix
+                        if explicit_targets.contains(target_name) {
+                          continue
+                        }
                         imported_any = true
                         if not(import_symbol(item, exported_name, target_name)) {
                           report_kind_mismatch(item, exported_name)
                         }
                       }
                     }
-                    // Auto-forward receiver-first exported functions as
-                    // namespace members so `import { Type }` can activate
-                    // method-style calls without manual `Type::...` wrappers.
+                    // Auto-forward receiver-first and factory-style exported
+                    // functions as namespace members so `import { Type }`
+                    // activates `Type::member` calls without explicit member
+                    // imports.
                     for exported_name, _ in visible_names {
                       if exported_name.contains("::") {
                         continue
@@ -1148,37 +1166,45 @@ pub fn VibeDb::new() -> VibeDb {
                       if not(import_item_accepts_value(item, target_name)) {
                         continue
                       }
+                      if explicit_targets.contains(target_name) {
+                        continue
+                      }
                       if imported_value_decl_spans.contains(target_name) {
                         continue
                       }
                       match imported_env.get_scheme(exported_name) {
-                        Some(scheme) =>
-                          match
+                        Some(scheme) => {
+                          let recv_match = match
                             scheme_receiver_root_name(imported_env, scheme) {
-                            Some(recv_root) =>
-                              if recv_root == source_root {
-                                import_scheme_dependencies(
-                                  env, imported_env, scheme, trait_aliases, visible_names,
-                                )
-                                if can_bind_import_value(target_name, span) {
-                                  env.set_scheme(target_name, scheme)
-                                  match
-                                    imported_env.get_purity_tier(exported_name) {
-                                    Some(tier) =>
-                                      env.set_purity_tier(target_name, tier)
-                                    None =>
-                                      match
-                                        imported_env.get_purity(exported_name) {
-                                        Some(pure) =>
-                                          env.set_purity(target_name, pure)
-                                        None => ()
-                                      }
-                                  }
-                                  imported_any = true
-                                }
-                              }
-                            None => ()
+                            Some(recv_root) => recv_root == source_root
+                            None => false
                           }
+                          let return_match = match
+                            scheme_return_root_name(imported_env, scheme) {
+                            Some(ret_root) => ret_root == source_root
+                            None => false
+                          }
+                          if recv_match || return_match {
+                            import_scheme_dependencies(
+                              env, imported_env, scheme, trait_aliases, visible_names,
+                            )
+                            if can_bind_import_value(target_name, span) {
+                              env.set_scheme(target_name, scheme)
+                              match
+                                imported_env.get_purity_tier(exported_name) {
+                                Some(tier) =>
+                                  env.set_purity_tier(target_name, tier)
+                                None =>
+                                  match imported_env.get_purity(exported_name) {
+                                    Some(pure) =>
+                                      env.set_purity(target_name, pure)
+                                    None => ()
+                                  }
+                              }
+                              imported_any = true
+                            }
+                          }
+                        }
                         None => ()
                       }
                     }

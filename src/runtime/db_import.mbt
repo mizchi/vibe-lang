@@ -31,9 +31,13 @@ fn normalize_lock_path(path : String) -> String {
 ///|
 fn strip_module_ext(path : String) -> String {
   if path.has_suffix(".vibe") && path.length() > 5 {
-    try { path[0:path.length() - 5].to_string() } catch { _ => path }
+    path[0:path.length() - 5].to_string() catch {
+      _ => path
+    }
   } else if path.has_suffix(".xm") && path.length() > 3 {
-    try { path[0:path.length() - 3].to_string() } catch { _ => path }
+    path[0:path.length() - 3].to_string() catch {
+      _ => path
+    }
   } else {
     path
   }
@@ -215,6 +219,42 @@ fn normalize_path_obj(base_dir : String, raw_path : String) -> PathObj {
     }
   }
   let normalized = normalize_module_entry_path(normalized_raw)
+  PathObj::{ raw: raw_path, base: base_dir, normalized }
+}
+
+///|
+fn raw_relative_candidate(base_dir : String, raw_path : String) -> String? {
+  if raw_path.has_prefix("./") && raw_path.length() > 2 {
+    let suffix = raw_path.unsafe_substring(start=2, end=raw_path.length())
+    if base_dir == "." {
+      Some("./" + suffix)
+    } else if base_dir == "/" {
+      Some("/" + suffix)
+    } else {
+      Some(base_dir + "/" + suffix)
+    }
+  } else if raw_path.has_prefix("../") {
+    if base_dir == "/" {
+      Some("/" + raw_path)
+    } else if base_dir == "." {
+      Some(raw_path)
+    } else {
+      Some(base_dir + "/" + raw_path)
+    }
+  } else {
+    None
+  }
+}
+
+///|
+fn path_obj_from_resolved_path(
+  base_dir : String,
+  raw_path : String,
+  resolved_path : String,
+) -> PathObj {
+  let normalized = normalize_module_entry_path(
+    @path.Path(resolved_path).normalize().to_string(),
+  )
   PathObj::{ raw: raw_path, base: base_dir, normalized }
 }
 
