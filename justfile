@@ -434,6 +434,10 @@ run-selfhost-cli-direct-component component input output entry:
 test-selfhost-cli-direct-component:
     bash scripts/test_selfhost_cli_direct_component.sh
 
+# Run host-vs-selfhost parity gate via direct filesystem component
+test-selfhost-cli-direct-parity:
+    bash scripts/test_selfhost_cli_direct_parity.sh
+
 # Run wasi:http boundary gate (stage0 wasm compiler -> component wit imports)
 test-selfhost-wasi-http-boundary:
     scripts/test_selfhost_wasi_http_boundary.sh
@@ -715,7 +719,7 @@ vibe-normalize-check:
     scripts/vibe_normalize_all.sh --check
 
 # Pre-release selfhost gate bundle
-release-selfhost-gates: sync-vbundle check-selfhost-bundle-sync test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cli-core test-selfhost-cli-component-preview2 test-selfhost-cli-preview2-package test-selfhost-cli-command-component test-selfhost-cli-direct-component test-selfhost-cutover test-selfhost-check-parity test-golden-wat
+release-selfhost-gates: sync-vbundle check-selfhost-bundle-sync test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cli-core test-selfhost-cli-component-preview2 test-selfhost-cli-preview2-package test-selfhost-cli-command-component test-selfhost-cli-direct-component test-selfhost-cli-direct-parity test-selfhost-cutover test-selfhost-check-parity test-golden-wat
 
 # Pre-release check (includes selfhost gates + wasm bundle-size monitor)
 release-check: fmt info check test vibe-normalize bench-bundle-size-monitor release-selfhost-gates

@@ -3,6 +3,25 @@
 Spec-locked decisions are tracked in `spec/decisions.md`.
 Completed items are archived in `docs/DONE.md`.
 
+## vibe/x 準公式ライブラリ拡充
+
+Phase 1 (基盤):
+- [ ] x/fmt — printf 風文字列フォーマット (`format("{} is {}", [s("hello"), i(42)])`)
+- [ ] x/url — URL パース・クエリ文字列エンコード/デコード
+- [ ] x/uuid — UUID v4 生成 (random ベース)
+
+Phase 2 (DX):
+- [ ] x/color — ANSI カラー出力 (red, green, bold 等)
+
+Phase 3 (機能):
+- [ ] x/regexp — 正規表現 (NFA ベース)
+- [ ] x/toml — TOML パーサー
+
+Phase 4 (応用):
+- [ ] x/template — 簡易テンプレートエンジン (`{{variable}}` 置換)
+- [ ] x/semver — セマンティックバージョニングのパース・比較
+- [ ] x/diff — テキスト差分 (Myers diff)
+
 ## Language/Stdlib Proposals (AI-first authoring)
 
 - [ ] language: tolerant parser（壊れた途中コードを AST 化して保持）
@@ -24,7 +43,8 @@ Completed items are archived in `docs/DONE.md`.
 
 - [ ] MoonBit host CLI を bootstrap 専用へ縮退する
   - selfhost 配布形は Preview2 package / command component / direct fs/argv component まで揃ったが、`check/test/release-check` の本流はまだ `src/cmd/vibe` に残っている
-  - 次は selfhost command/direct component を host CLI の一部フローへ差し込み、dual-run で差分を見ながら切り替える
+  - selfhost direct fs component と host compile を並走させる dual-compile smoke gate は追加済み
+  - 次は selfhost command/direct component を host CLI の一部フローへ差し込み、dual-run 対象を `check/test/release-check` へ広げながら切り替える
 
 - [ ] selfhost perf gap を cutover 可能な水準まで詰める
   - 直近比較では host 比で compile 約4.2x、check 約3.3x 遅い
