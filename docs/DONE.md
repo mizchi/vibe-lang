@@ -83,6 +83,7 @@ Completed items archived from `TODO.md`.
 - **Stage1 checker parity を bootstrap-only target に分離**
   - `test-selfhost-check-parity` を `test-selfhost-check-bootstrap-parity` へ実体移動し、`release-selfhost-gates` からは外した
   - `release-selfhost-gates` は selfhost check package / command / direct component の smoke gate を本流に残し、`moonrun "$STAGE1_CHECKER_WASM"` 依存は bootstrap 専用へ押し込んだ
+  - `release-selfhost-bootstrap-gates` を追加し、stage1/stage2 artifact health と full checker parity の入口を bootstrap bundle に明示した
 - **Selfhost CLI adapter の compile 入力を grouped closure へ縮小**
   - `selfhost_cli_adapter_sources` / `selfhost_cli_adapter_source_groups` を bundle に追加し、adapter 専用 closure を compiler 全量 source から切り離した
   - stage1 probe で adapter closure は `68 sources / 9 groups -> 24 sources / 5 groups` まで縮小できることを確認した

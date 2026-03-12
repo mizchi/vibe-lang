@@ -489,6 +489,9 @@ test-selfhost-check-bootstrap-parity:
 # Backward-compatible alias for the bootstrap-only parity snapshot gate
 test-selfhost-check-parity: test-selfhost-check-bootstrap-parity
 
+# Bootstrap-only selfhost gate bundle (stage1/stage2 artifact health + checker parity)
+release-selfhost-bootstrap-gates: test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-check-bootstrap-parity
+
 bench-http:
     scripts/bench_http.sh
 
