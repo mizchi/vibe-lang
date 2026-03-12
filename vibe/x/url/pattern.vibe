@@ -1,0 +1,279 @@
+//# Imports
+
+import ../regexp {
+  compile, compile_regex, escape, get_named_capture, match_groups, test_match
+}
+
+import ./url.vibe {
+  parse
+}
+
+//# Types
+
+export enum UrlPatternPart {
+  UrlPatternPart(Bool, String, Array[String])
+  // active, regex source, param names
+}
+
+export enum UrlPattern {
+  UrlPattern(UrlPatternPart, UrlPatternPart, UrlPatternPart, UrlPatternPart, UrlPatternPart, UrlPatternPart)
+  // scheme, host, port, path, query, fragment
+}
+
+export enum UrlPatternMatch {
+  UrlPatternMatch(Bool, Array[(String, String)])
+  // matched, params
+}
+
+//# Functions
+
+export let get_param = (m: UrlPatternMatch, name: String) -> String {
+  match m {
+    UrlPatternMatch(_, params) => {
+      let len = Array::length(params)
+      let mut idx = 0
+      let mut result = ""
+      while idx < len {
+        let (key, value) = Array::get(params, idx)
+        if String::equals(key, name) {
+          result = value
+        }
+        idx = idx + 1
+      }
+      result
+    }
+  }
+}
+
+let match_part = (part: UrlPatternPart, value: String, params: Array[(String, String)]) -> Bool {
+  match part {
+    UrlPatternPart(active, regex_src, names) => if not(active) {
+      true
+    }
+    else if not(test_match(compile(regex_src), value)) {
+      false
+    }
+    else {
+      let name_len = Array::length(names)
+      if name_len > 0 {
+        let m = match_groups(compile_regex(regex_src), value)
+        let mut idx = 0
+        while idx < name_len {
+          let name = Array::get(names, idx)
+          Array::push(params, (name, get_named_capture(m, name)))
+          idx = idx + 1
+        }
+      }
+      true
+    }
+  }
+}
+
+let empty_names = () -> Array[String] {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+
+let empty_params = () -> Array[(String, String)] {
+  Array::slice([
+    ("", "")
+  ], 0, 0)
+}
+
+let is_name_char = (ch: String) -> Bool {
+  let c = String::char_code_at(ch, 0)
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+}
+
+let int_to_string = (n: Int) -> String {
+  if n == 0 {
+    "0"
+  } else {
+    let mut value = n
+    let mut result = ""
+    while value > 0 {
+      let digit = value % 10
+      result = String::concat(String::from_char_code(48 + digit), result)
+      value = value / 10
+    }
+    result
+  }
+}
+
+export let exec_pattern = (pattern: UrlPattern, input: String) -> UrlPatternMatch {
+  let url = parse(input)
+  let (scheme_value, host_value, port_value, path_value, query_value, fragment_value) = match url {
+    Url(scheme, host, port, path, query, fragment) => (scheme, host, port, path, query, fragment)
+  }
+  let params = empty_params()
+  let matched = match pattern {
+    UrlPattern(scheme, host, port, path, query, fragment) =>
+    match_part(scheme, scheme_value, params) &&
+    match_part(host, host_value, params) &&
+    match_part(port, int_to_string(port_value), params) &&
+    match_part(path, path_value, params) &&
+    match_part(query, query_value, params) &&
+    match_part(fragment, fragment_value, params)
+  }
+  if matched {
+    UrlPatternMatch(true, params)
+  } else {
+    UrlPatternMatch(false, empty_params())
+  }
+}
+
+export let test_pattern = (pattern: UrlPattern, input: String) -> Bool {
+  match exec_pattern(pattern, input) {
+    UrlPatternMatch(matched, _) => matched
+  }
+}
+
+let pattern_char_at = (s: String, idx: Int) -> String {
+  String::substring(s, idx, idx + 1)
+}
+
+export let pattern_has_match = (m: UrlPatternMatch) -> Bool {
+  match m {
+    UrlPatternMatch(matched, _) => matched
+  }
+}
+
+let rec last_index_of_char = (s: String, ch: String, idx: Int) -> Int {
+  if idx < 0 {
+    -1
+  } else if String::equals(pattern_char_at(s, idx), ch) {
+    idx
+  } else {
+    last_index_of_char(s, ch, idx - 1)
+  }
+}
+
+let split_pattern_source = (raw: String) -> (Bool, String, String, Bool, String, String, Bool, String) {
+  let len = String::length(raw)
+  let scheme_idx = String::index_of(raw, "://")
+  let has_scheme = scheme_idx >= 0
+  let after_scheme = if has_scheme {
+    String::substring(raw, scheme_idx + 3, len)
+  } else {
+    raw
+  }
+  let scheme = if has_scheme {
+    String::substring(raw, 0, scheme_idx)
+  } else {
+    ""
+  }
+  let hash_idx = String::index_of(after_scheme, "#")
+  let has_fragment = hash_idx >= 0
+  let _fragment = if has_fragment {
+    String::substring(after_scheme, hash_idx + 1, String::length(after_scheme))
+  } else {
+    ""
+  }
+  let before_fragment = if has_fragment {
+    String::substring(after_scheme, 0, hash_idx)
+  } else {
+    after_scheme
+  }
+  let query_idx = String::index_of(before_fragment, "?")
+  let has_query = query_idx >= 0
+  let query = if has_query {
+    String::substring(before_fragment, query_idx + 1, String::length(before_fragment))
+  } else {
+    ""
+  }
+  let before_query = if has_query {
+    String::substring(before_fragment, 0, query_idx)
+  } else {
+    before_fragment
+  }
+  if has_scheme {
+    let slash_idx = String::index_of(before_query, "/")
+    let authority = if slash_idx >= 0 {
+      String::substring(before_query, 0, slash_idx)
+    } else {
+      before_query
+    }
+    let path = if slash_idx >= 0 {
+      String::substring(before_query, slash_idx, String::length(before_query))
+    } else {
+      "/"
+    }
+    let last_colon = last_index_of_char(authority, ":", String::length(authority) - 1)
+    if last_colon >= 0 {
+      let suffix = String::substring(authority, last_colon + 1, String::length(authority))
+      if String::length(suffix) > 0 &&
+      String::index_of(suffix, ".") < 0 &&
+      String::index_of(suffix, "]") < 0 {
+        (true, scheme, String::substring(authority, 0, last_colon), true, suffix, path, has_query, query)
+      } else {
+        (true, scheme, authority, false, "", path, has_query, query)
+      }
+    } else {
+      (true, scheme, authority, false, "", path, has_query, query)
+    }
+  } else {
+    (false, "", "", false, "", before_query, has_query, query)
+  }
+}
+
+let translate_component_pattern = (pattern: String, segment_pattern: String) -> (String, Array[String]) {
+  let len = String::length(pattern)
+  let mut regex = ""
+  let names = empty_names()
+  let mut idx = 0
+  while idx < len {
+    let ch = pattern_char_at(pattern, idx)
+    if String::equals(ch, "*") {
+      regex = String::concat(regex, ".*")
+      idx = idx + 1
+    }
+    else if String::equals(ch, ":") {
+      let mut next_idx = idx + 1
+      let mut name = ""
+      while next_idx < len && is_name_char(pattern_char_at(pattern, next_idx)) {
+        name = String::concat(name, pattern_char_at(pattern, next_idx))
+        next_idx = next_idx + 1
+      }
+      if String::length(name) == 0 {
+        regex = String::concat(regex, escape(ch))
+        idx = idx + 1
+      } else {
+        Array::push(names, name)
+        if next_idx < len && String::equals(pattern_char_at(pattern, next_idx), "*") {
+          regex = String::concat(regex, String::concat(String::concat("(?<", name), ">.*)"))
+          idx = next_idx + 1
+        } else {
+          regex = String::concat(regex, String::concat(String::concat(String::concat("(?<", name), ">"), String::concat(segment_pattern, ")")))
+          idx = next_idx
+        }
+      }
+    }
+    else {
+      regex = String::concat(regex, escape(ch))
+      idx = idx + 1
+    }
+  }
+  (String::concat(String::concat("^", regex), "$"), names)
+}
+
+let compile_part = (pattern: String, active: Bool, segment_pattern: String) -> UrlPatternPart {
+  if active {
+    let (regex_src, names) = translate_component_pattern(pattern, segment_pattern)
+    UrlPatternPart(true, regex_src, names)
+  } else {
+    UrlPatternPart(false, "", empty_names())
+  }
+}
+
+export let compile_pattern = (raw: String) -> UrlPattern {
+  let (has_scheme, scheme, host, has_port, port, path, has_query, query) = split_pattern_source(raw)
+  let has_fragment = String::index_of(raw, "#") >= 0
+  let fragment = if has_fragment {
+    let hash_idx = String::index_of(raw, "#")
+    String::substring(raw, hash_idx + 1, String::length(raw))
+  } else {
+    ""
+  }
+  UrlPattern(compile_part(scheme, has_scheme, "[^:]+"), compile_part(host, has_scheme, "[^.]+"), compile_part(port, has_port, "[0-9]+"), compile_part(path, true, "[^/]+"), compile_part(query, has_query, "[^&]+"), compile_part(fragment, has_fragment, "[^#]+"))
+}
