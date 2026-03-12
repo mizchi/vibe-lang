@@ -327,13 +327,49 @@ fn compile_module_wasm_coverage_with(
 ///|
 fn lower_top_level_tests_to_exprs(ast : @core.Module) -> @core.Module {
   let stmts : Array[@core.Stmt] = []
+  let mut test_i = 0
   for stmt in ast.stmts {
     match stmt {
-      @core.Stmt::Test(name~, body~, span~) => {
-        let _ = name
-        stmts.push(
-          @core.Stmt::Expr(expr=@core.Expr::Block(body~, span~), span~),
+      @core.Stmt::Test(body~, span~, ..) | @core.Stmt::Bench(body~, span~, ..) => {
+        let wrapper_name = "__vibe_cov_test_" + test_i.to_string()
+        let fn_body_stmts : Array[@core.Stmt] = []
+        for body_stmt in body.stmts {
+          fn_body_stmts.push(body_stmt)
+        }
+        fn_body_stmts.push(
+          @core.Stmt::Expr(
+            expr=@core.Expr::Int(value=0L, span~),
+            span~,
+          ),
         )
+        stmts.push(
+          @core.Stmt::Let(
+            rec=false,
+            name=wrapper_name,
+            expr=@core.Expr::Fn(
+              type_params=[],
+              type_bounds={},
+              params=[],
+              ret=Some(@core.Type::Int),
+              effects=[],
+              body=@core.Module::{ stmts: fn_body_stmts },
+              span~,
+            ),
+            span~,
+          ),
+        )
+        stmts.push(
+          @core.Stmt::Expr(
+            expr=@core.Expr::Call(
+              name=wrapper_name,
+              type_args=[],
+              args=[],
+              span~,
+            ),
+            span~,
+          ),
+        )
+        test_i += 1
       }
       _ => stmts.push(stmt)
     }

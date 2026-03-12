@@ -190,3 +190,119 @@ test "wasm_compile_profile_tsv emits compile substage rows" {
   assert_true(String::contains(content, "write\t7\t7000\n"))
   assert_true(String::contains(content, "total\t28\t28000\n"))
 }
+
+///|
+test "lower_top_level_tests_to_exprs wraps each test body in a function" {
+  let source =
+    #|let mut counter = 0
+    #|test "a" {
+    #|  counter = counter + 1
+    #|}
+    #|test "b" {
+    #|  assert(eq(counter, 0))
+    #|}
+    #|0
+  let ast = try @parser.parse_ast(source) catch {
+    e => fail("parse error: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  let lowered = lower_top_level_tests_to_exprs(ast)
+  assert_eq(lowered.stmts.length(), 6)
+  match lowered.stmts[0] {
+    @core.Stmt::LetMut(name~, expr=@core.Expr::Int(value~, ..), ..) => {
+      assert_eq(name, "counter")
+      assert_eq(value, 0L)
+    }
+    _ => fail("expected mutable prelude to stay top-level")
+  }
+  match lowered.stmts[1] {
+    @core.Stmt::Let(name~, expr=@core.Expr::Fn(body~, ret~, ..), ..) => {
+      assert_eq(name, "__vibe_cov_test_0")
+      match ret {
+        Some(@core.Type::Int) => ()
+        _ => fail("expected wrapped test function to return Int")
+      }
+      assert_eq(body.stmts.length(), 2)
+      match body.stmts[1] {
+        @core.Stmt::Expr(expr=@core.Expr::Int(value~, ..), ..) =>
+          assert_eq(value, 0L)
+        _ => fail("expected wrapped test function to append explicit 0")
+      }
+    }
+    _ => fail("expected first wrapper function")
+  }
+  match lowered.stmts[2] {
+    @core.Stmt::Expr(expr=@core.Expr::Call(name~, args~, ..), ..) => {
+      assert_eq(name, "__vibe_cov_test_0")
+      assert_eq(args.length(), 0)
+    }
+    _ => fail("expected first wrapper invocation")
+  }
+  match lowered.stmts[3] {
+    @core.Stmt::Let(name~, expr=@core.Expr::Fn(body~, ..), ..) => {
+      assert_eq(name, "__vibe_cov_test_1")
+      assert_eq(body.stmts.length(), 2)
+      match body.stmts[1] {
+        @core.Stmt::Expr(expr=@core.Expr::Int(value~, ..), ..) =>
+          assert_eq(value, 0L)
+        _ => fail("expected second wrapped test function to append explicit 0")
+      }
+    }
+    _ => fail("expected second wrapper function")
+  }
+  match lowered.stmts[4] {
+    @core.Stmt::Expr(expr=@core.Expr::Call(name~, args~, ..), ..) => {
+      assert_eq(name, "__vibe_cov_test_1")
+      assert_eq(args.length(), 0)
+    }
+    _ => fail("expected second wrapper invocation")
+  }
+  match lowered.stmts[5] {
+    @core.Stmt::Expr(expr=@core.Expr::Int(value~, ..), ..) => assert_eq(value, 0L)
+    _ => fail("expected non-test expr to stay top-level")
+  }
+}
+
+///|
+test "lower_top_level_tests_to_exprs keeps imports and helpers top-level" {
+  let source =
+    #|import ./helper.vibe { helper }
+    #|let support = () -> Int { 1 }
+    #|test "a" {
+    #|  assert(helper(support()) == 2)
+    #|}
+  let ast = try @parser.parse_ast(source) catch {
+    e => fail("parse error: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  let lowered = lower_top_level_tests_to_exprs(ast)
+  assert_eq(lowered.stmts.length(), 4)
+  match lowered.stmts[0] {
+    @core.Stmt::Import(..) => ()
+    _ => fail("expected import to remain top-level")
+  }
+  match lowered.stmts[1] {
+    @core.Stmt::Let(name~, expr=@core.Expr::Fn(..), ..) => assert_eq(name, "support")
+    _ => fail("expected helper definition to remain top-level")
+  }
+  match lowered.stmts[2] {
+    @core.Stmt::Let(name~, expr=@core.Expr::Fn(body~, ..), ..) => {
+      assert_eq(name, "__vibe_cov_test_0")
+      assert_eq(body.stmts.length(), 2)
+      match body.stmts[0] {
+        @core.Stmt::Expr(..) => ()
+        _ => fail("expected original test body inside wrapper function")
+      }
+    }
+    _ => fail("expected lowered test wrapper")
+  }
+  match lowered.stmts[3] {
+    @core.Stmt::Expr(expr=@core.Expr::Call(name~, args~, ..), ..) => {
+      assert_eq(name, "__vibe_cov_test_0")
+      assert_eq(args.length(), 0)
+    }
+    _ => fail("expected wrapper invocation")
+  }
+}
