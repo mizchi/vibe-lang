@@ -15,9 +15,9 @@ printf 'let answer = () -> Int { 40 + 2 }\n' >"$INPUT_PATH"
 rm -f "$OUTPUT_PATH" "$RUN_LOG"
 
 bash "$SCRIPT_DIR/build_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$WIT_PATH"
-bash "$SCRIPT_DIR/run_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$INPUT_PATH" "$OUTPUT_PATH" answer
+bash "$SCRIPT_DIR/run_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$INPUT_PATH" "$OUTPUT_PATH" answer mvp
 
-if ! grep -q 'export run-cli-request: func(input-path: string, output-path: string, entry-name: string) -> s32;' "$WIT_PATH"; then
+if ! grep -q 'export run-cli-request: func(input-path: string, output-path: string, entry-name: string, mode: string) -> s32;' "$WIT_PATH"; then
   echo "selfhost cli direct component gate failed: unexpected component surface" >&2
   exit 1
 fi

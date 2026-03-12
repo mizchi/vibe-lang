@@ -3,33 +3,27 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_cli_direct_parity}"
-COMPONENT_PATH="$OUT_DIR/selfhost_cli_direct.component.wasm"
-WIT_PATH="$OUT_DIR/selfhost_cli_direct.component.wit"
+OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_cli_command_parity}"
+COMPONENT_PATH="$OUT_DIR/selfhost_cli_command.component.wasm"
+WIT_PATH="$OUT_DIR/selfhost_cli_command.component.wit"
 VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe}"
 WASMTIME_RUN="$PROJECT_ROOT/scripts/wasmtime_run.sh"
 WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y}"
+WASMTIME_WASI_FLAGS="${VIBE_WASMTIME_WASI_FLAGS:-cli=y}"
 
 mkdir -p "$OUT_DIR"
 
 if [ ! -x "$VIBE_BIN" ]; then
-  echo "[selfhost-cli-direct-parity] building host CLI..." >&2
+  echo "[selfhost-cli-command-parity] building host CLI..." >&2
   moon build --target native --release src/cmd/vibe --warn-list '-29'
 fi
 
-bash "$SCRIPT_DIR/build_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$WIT_PATH"
+bash "$SCRIPT_DIR/build_selfhost_cli_command_component.sh" "$COMPONENT_PATH" "$WIT_PATH"
 
-compile_mode_flags() {
-  local mode="$1"
-  case "$mode" in
-    mvp) printf '%s\n' "--wasm" ;;
-    no-dce) printf '%s\n' "--wasm" "--no-dce" ;;
-    *)
-      echo "selfhost cli direct parity gate failed: unsupported mode '$mode'" >&2
-      exit 1
-      ;;
-  esac
-}
+if ! grep -q 'export wasi:cli/run@0.2.6;' "$WIT_PATH"; then
+  echo "selfhost cli command parity gate failed: component wit is not command-shaped" >&2
+  exit 1
+fi
 
 run_case() {
   local case_name="$1"
@@ -48,9 +42,14 @@ run_case() {
   printf '%s' "$source_text" >"$input_path"
   rm -f "$host_out" "$selfhost_out" "$host_run_log" "$selfhost_run_log"
 
-  mapfile -t mode_flags < <(compile_mode_flags "$mode")
-  "$VIBE_BIN" compile-lite "${mode_flags[@]}" "$input_path" -o "$host_out"
-  bash "$SCRIPT_DIR/run_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$input_path" "$selfhost_out" "$entry_name" "$mode"
+  if [ "$mode" = "no-dce" ]; then
+    "$VIBE_BIN" compile-lite --wasm --no-dce "$input_path" -o "$host_out"
+  else
+    "$VIBE_BIN" compile-lite --wasm "$input_path" -o "$host_out"
+  fi
+  env VIBE_WASMTIME_WASM_FLAGS="$WASMTIME_WASM_FLAGS" \
+    VIBE_WASMTIME_WASI_FLAGS="$WASMTIME_WASI_FLAGS" \
+    "$WASMTIME_RUN" run "$COMPONENT_PATH" "$entry_name" "$mode" <"$input_path" >"$selfhost_out"
 
   wasm-tools validate "$host_out" >/dev/null
   wasm-tools validate "$selfhost_out" >/dev/null
@@ -65,11 +64,11 @@ run_case() {
   host_result="$(grep -E '^-?[0-9]+$' "$host_run_log" | tail -n 1 || true)"
   selfhost_result="$(grep -E '^-?[0-9]+$' "$selfhost_run_log" | tail -n 1 || true)"
   if [ -z "$host_result" ]; then
-    echo "selfhost cli direct parity gate failed: host result missing for $case_name" >&2
+    echo "selfhost cli command parity gate failed: host result missing for $case_name" >&2
     exit 1
   fi
   if [ "$selfhost_result" != "$expected_result" ]; then
-    echo "selfhost cli direct parity gate failed: selfhost result mismatch for $case_name: $selfhost_result" >&2
+    echo "selfhost cli command parity gate failed: selfhost result mismatch for $case_name: $selfhost_result" >&2
     exit 1
   fi
 }
@@ -95,4 +94,4 @@ run_case \
   "42" \
   "no-dce"
 
-echo "selfhost cli direct parity gate passed"
+echo "selfhost cli command parity gate passed"

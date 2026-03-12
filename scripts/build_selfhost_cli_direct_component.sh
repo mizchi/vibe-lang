@@ -71,10 +71,10 @@ mod bindings {
           package vibe:selfhost-cli-direct-adapter;
 
           world adapter {
-            import compile-cli-hex: func(source: string, entry-name: string) -> string;
+            import compile-cli-hex: func(source: string, entry-name: string, mode: string) -> string;
             import wasi:filesystem/types@0.2.6;
             import wasi:filesystem/preopens@0.2.6;
-            export run-cli-request: func(input-path: string, output-path: string, entry-name: string) -> s32;
+            export run-cli-request: func(input-path: string, output-path: string, entry-name: string, mode: string) -> s32;
           }
         "#,
         path: "$PROJECT_ROOT/deps/wasmtime/crates/wasi/src/p2/wit",
@@ -84,8 +84,8 @@ mod bindings {
 }
 
 use bindings::wasi::filesystem;
-use bindings::Guest;
 use bindings::compile_cli_hex;
+use bindings::Guest;
 
 struct Component;
 
@@ -137,8 +137,8 @@ fn decode_hex_bytes(hex: &str) -> Result<Vec<u8>, ()> {
     Ok(out)
 }
 
-fn compile_bytes(source: &str, entry_name: &str) -> Result<Vec<u8>, ()> {
-    let hex = compile_cli_hex(source, entry_name);
+fn compile_bytes(source: &str, entry_name: &str, mode: &str) -> Result<Vec<u8>, ()> {
+    let hex = compile_cli_hex(source, entry_name, mode);
     decode_hex_bytes(&hex)
 }
 
@@ -167,10 +167,10 @@ fn write_output(path: &str, bytes: &[u8]) -> Result<(), ()> {
 }
 
 impl Guest for Component {
-    fn run_cli_request(input_path: String, output_path: String, entry_name: String) -> i32 {
+    fn run_cli_request(input_path: String, output_path: String, entry_name: String, mode: String) -> i32 {
         match (|| -> Result<(), ()> {
             let source = read_source(&input_path)?;
-            let bytes = compile_bytes(&source, &entry_name)?;
+            let bytes = compile_bytes(&source, &entry_name, &mode)?;
             write_output(&output_path, &bytes)?;
             Ok(())
         })() {
@@ -187,10 +187,10 @@ cat >"$ADAPTER_WIT_DIR/world.wit" <<'EOF'
 package vibe:selfhost-cli-direct-adapter;
 
 world adapter {
-  import compile-cli-hex: func(source: string, entry-name: string) -> string;
+  import compile-cli-hex: func(source: string, entry-name: string, mode: string) -> string;
   import wasi:filesystem/types@0.2.6;
   import wasi:filesystem/preopens@0.2.6;
-  export run-cli-request: func(input-path: string, output-path: string, entry-name: string) -> s32;
+  export run-cli-request: func(input-path: string, output-path: string, entry-name: string, mode: string) -> s32;
 }
 EOF
 

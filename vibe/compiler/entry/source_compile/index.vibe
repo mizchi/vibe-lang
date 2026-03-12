@@ -13,8 +13,15 @@ import ../../checker/checker_stmt.vibe {
 }
 
 import ../../codegen/index.vibe {
-  compile_module,
-  compile_wasi_module
+  compile_module
+}
+
+import ../../codegen/wasi/index.vibe {
+  compile_wasi_module_impl
+}
+
+import ../../core/dce.vibe {
+  dce_stmts
 }
 
 //# Functions
@@ -30,5 +37,19 @@ export let compile_source_wasi = (source: String, entry_name: String) -> Bytes w
   let tokens = lex(source)
   let stmts = parse_program(tokens)
   let _ = check_program(stmts)
-  compile_wasi_module(stmts, entry_name)
+  compile_wasi_module_impl(stmts, entry_name)
+}
+
+export let compile_source_wasi_mode = (source: String, entry_name: String, mode: String) -> Bytes with { Error } {
+  if String::equals(mode, "mvp") {
+    let tokens = lex(source)
+    let stmts = parse_program(tokens)
+    let _ = check_program(stmts)
+    let pruned_stmts = dce_stmts(stmts, [entry_name])
+    compile_wasi_module_impl(pruned_stmts, entry_name)
+  } else if String::equals(mode, "no-dce") {
+    compile_source_wasi(source, entry_name)
+  } else {
+    throw(String::concat("unsupported compile mode: ", mode))
+  }
 }

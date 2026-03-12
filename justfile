@@ -422,6 +422,10 @@ build-selfhost-cli-command-component out="dist/selfhost_cli_command.component.wa
 test-selfhost-cli-command-component:
     bash scripts/test_selfhost_cli_command_component.sh
 
+# Run host-vs-selfhost smoke gate via command component
+test-selfhost-cli-command-parity:
+    bash scripts/test_selfhost_cli_command_parity.sh
+
 # Build distributable selfhost CLI direct filesystem component
 build-selfhost-cli-direct-component out="dist/selfhost_cli_direct.component.wasm" wit="dist/selfhost_cli_direct.component.wit":
     bash scripts/build_selfhost_cli_direct_component.sh {{out}} {{wit}}
@@ -457,6 +461,10 @@ build-selfhost-check-command-component out="dist/selfhost_check_command.componen
 # Run distributable selfhost check command component gate
 test-selfhost-check-command-component:
     bash scripts/test_selfhost_check_command_component.sh
+
+# Run host-vs-selfhost smoke gate via check command component
+test-selfhost-check-command-parity:
+    bash scripts/test_selfhost_check_command_parity.sh
 
 # Build distributable selfhost check direct filesystem component
 build-selfhost-check-direct-component out="dist/selfhost_check_direct.component.wasm" wit="dist/selfhost_check_direct.component.wit":
@@ -669,6 +677,10 @@ experimental_wasi_threads_probe:
 # Backward-compatible alias
 wasi-threads-probe: experimental_wasi_threads_probe
 
+# Run CM async probe (concurrency-support + component-model-async on current platform)
+probe-cm-async:
+    VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} src/x/cm_async/run_probe.sh
+
 # Initialize wasmtime submodule for experimental runtime flags
 wasmtime-submodule-init:
     git submodule update --init deps/wasmtime
@@ -764,7 +776,7 @@ vibe-normalize-check:
     scripts/vibe_normalize_all.sh --check
 
 # Pre-release selfhost gate bundle
-release-selfhost-gates: sync-vbundle check-selfhost-bundle-sync test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cli-core test-selfhost-cli-component-preview2 test-selfhost-cli-preview2-package test-selfhost-cli-command-component test-selfhost-cli-direct-component test-selfhost-cli-direct-parity test-selfhost-check-preview2-package test-selfhost-check-command-component test-selfhost-check-direct-component test-selfhost-check-direct-parity test-selfhost-cutover test-golden-wat
+release-selfhost-gates: sync-vbundle check-selfhost-bundle-sync test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cli-core test-selfhost-cli-component-preview2 test-selfhost-cli-preview2-package test-selfhost-cli-command-component test-selfhost-cli-command-parity test-selfhost-cli-direct-component test-selfhost-cli-direct-parity test-selfhost-check-preview2-package test-selfhost-check-command-component test-selfhost-check-command-parity test-selfhost-check-direct-component test-selfhost-check-direct-parity test-selfhost-cutover test-golden-wat
 
 # Pre-release check (includes selfhost gates + wasm bundle-size monitor)
 release-check: fmt info check test vibe-normalize bench-bundle-size-monitor release-selfhost-gates

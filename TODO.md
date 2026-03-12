@@ -43,10 +43,14 @@ Phase 4 (応用):
 
 - [ ] MoonBit host CLI を bootstrap 専用へ縮退する
   - selfhost 配布形は Preview2 package / command component / direct fs/argv component まで揃ったが、`check/test/release-check` の本流はまだ `src/cmd/vibe` に残っている
-  - selfhost direct fs component と host compile-lite を並走させる dual-compile smoke gate は追加済み
+  - selfhost CLI command component の dual-run smoke gate を追加し、source-text compile surface については host CLI と selfhost 配布形を `release-selfhost-gates` で並走できるようにした
+  - command component parity は `mvp/no-dce` の両 mode まで拡張済みで、source-text compile-lite の既定比較は command/direct の両配布形で取れる
+  - selfhost direct fs component と host compile-lite を並走させる dual-compile smoke gate は `mvp/no-dce` の両 mode まで追加済みで、runner も input/output staging を吸収する
   - selfhost cutover compare も `compile` から `compile-lite` ベースへ移し、artifact parity の既定 mode は `mvp,no-dce` に寄せた
-  - selfhost check 配布形も Preview2 package / command component / direct fs component まで揃い、`release-selfhost-gates` に smoke gate を追加した
-  - 次は selfhost command/direct component を host CLI の一部フローへ差し込み、dual-run 対象を `check/test/release-check` へ広げながら切り替える
+  - selfhost check 配布形も Preview2 package / command component / direct fs component まで揃い、command component parity を含む smoke gate を `release-selfhost-gates` に追加した
+  - ただし current direct fs component は source-text compile surface なので、relative import を含む full file parity はまだ `moonrun "$STAGE1_COMPILER_WASM" compile-lite` 側に残る
+  - full file parity 用の groundwork として `compile_file_fs_mode_cached(..., mode)` は追加済みで、file/import 閉包側にも `mvp/no-dce` を持ち込めるようにした
+  - 次は file/import 閉包を含む compile-lite surface を selfhost component 側に持ち込むか、先に command/package 形で `check/test/release-check` の本流を段階的に selfhost 配布形へ差し替える
   - `test_selfhost_check_parity.sh` は `test-selfhost-check-bootstrap-parity` として bootstrap-only target に退避し、`release-selfhost-gates` からは component smoke 系だけを残した
   - `release-selfhost-bootstrap-gates` を追加し、stage1/stage2 artifact health と full checker parity の入口を bootstrap 専用 bundle に分離した
   - full diagnostic parity 自体はまだ `moonrun "$STAGE1_CHECKER_WASM"` に依存するので、将来的に component 側で type diagnostics を返せるようになった段階で置き換える
@@ -94,7 +98,7 @@ Phase 4 (応用):
 ### Selfhost CLI / I/O boundary
 
 - [x] selfhost CLI の責務を「純粋 compile 関数」までに固定するか、WASI I/O まで selfhost 側に持ち込むかを文書化する
-  - ADR-0022: selfhost compiler は pure compile API に留め、filesystem / environ / stdio は `vibe_compile_wasi` など host wrapper 側で扱う
+  - ADR-0028: selfhost compiler は pure compile API に留め、filesystem / environ / stdio は `vibe_compile_wasi` など host wrapper 側で扱う
 - [x] Preview2 host 付きで selfhost artifact を実行する導線を作る
   - stage1 用 wrapper source を `--wasm --force-cabi-realloc` で core wasm 化し、`node scripts/wasm_vibe_host_runner.js` に Preview2 filesystem import 実装を足して実行できるようにした
   - stage1 selfhost compiler は seed compiler で一度だけ生成し、その後は JS host が Preview2 filesystem を供給して artifact-only で走らせる

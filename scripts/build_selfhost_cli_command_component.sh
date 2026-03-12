@@ -42,10 +42,11 @@ ADAPTER_WIT_DEPS_DIR="$ADAPTER_WIT_DIR/deps"
 mkdir -p "$ADAPTER_WIT_DEPS_DIR"
 
 RELEASE_VIBE_EXE="$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
-moon build --target native --release --warn-list '-29-55-67-23-24-7-1' src/cmd/vibe >/dev/null
-VIBE_CMD=("$RELEASE_VIBE_EXE" compile)
+if [ ! -x "$RELEASE_VIBE_EXE" ]; then
+  moon build --target native --release --warn-list '-29-55-67-23-24-7-1' src/cmd/vibe >/dev/null
+fi
 
-"${VIBE_CMD[@]}" --component-string-lift "$ENTRY_PATH" -o "$PLUG_COMPONENT"
+"$RELEASE_VIBE_EXE" compile --component-string-lift "$ENTRY_PATH" -o "$PLUG_COMPONENT"
 
 cat >"$TMP_DIR/Cargo.toml" <<'EOF'
 [package]
@@ -66,7 +67,7 @@ wit_bindgen::generate!({
       package vibe:selfhost-cli-command-adapter;
 
       world adapter {
-        import compile-cli-hex: func(source: string, entry-name: string) -> string;
+        import compile-cli-hex: func(source: string, entry-name: string, mode: string) -> string;
         include wasi:cli/command@0.2.6;
       }
     "#,
@@ -77,15 +78,6 @@ wit_bindgen::generate!({
 });
 
 struct Component;
-
-fn tail_args(count: usize) -> Result<Vec<String>, ()> {
-    let args = wasi::cli::environment::get_arguments();
-    if args.len() < count {
-        Err(())
-    } else {
-        Ok(args[args.len() - count..].to_vec())
-    }
-}
 
 fn debug_enabled() -> bool {
     wasi::cli::environment::get_environment()
@@ -156,12 +148,21 @@ fn decode_hex_string(hex: &str) -> Result<Vec<u8>, ()> {
 impl exports::wasi::cli::run::Guest for Component {
     fn run() -> Result<(), ()> {
         debug_log("run:start");
-        let args = tail_args(1)?;
+        let args = wasi::cli::environment::get_arguments();
+        let (entry_name, mode) = if args.len() >= 2 {
+            (
+                args[args.len() - 2].clone(),
+                args[args.len() - 1].clone(),
+            )
+        } else if args.len() >= 1 {
+            (args[args.len() - 1].clone(), "mvp".to_string())
+        } else {
+            return Err(());
+        };
         debug_log("run:args");
-        let entry_name = &args[0];
         let source = read_stdin_all()?;
         debug_log("run:stdin");
-        let hex = compile_cli_hex(&source, entry_name);
+        let hex = compile_cli_hex(&source, &entry_name, &mode);
         debug_log("run:hex-ready");
         let output = decode_hex_string(&hex)?;
         debug_log("run:output-ready");
@@ -176,7 +177,7 @@ cat >"$ADAPTER_WIT_DIR/world.wit" <<'EOF'
 package vibe:selfhost-cli-command-adapter;
 
 world adapter {
-  import compile-cli-hex: func(source: string, entry-name: string) -> string;
+  import compile-cli-hex: func(source: string, entry-name: string, mode: string) -> string;
   include wasi:cli/command@0.2.6;
 }
 EOF
