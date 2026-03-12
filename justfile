@@ -482,9 +482,12 @@ test-selfhost-wasi-http-boundary:
 test-selfhost-cutover:
     scripts/test_selfhost_cutover_gate.sh
 
-# Run selfhost check parity snapshot gate (diagnostic diff allowlist + snapshot)
-test-selfhost-check-parity:
+# Run bootstrap-only selfhost check parity snapshot gate (stage1 checker diff snapshot)
+test-selfhost-check-bootstrap-parity:
     scripts/test_selfhost_check_parity.sh
+
+# Backward-compatible alias for the bootstrap-only parity snapshot gate
+test-selfhost-check-parity: test-selfhost-check-bootstrap-parity
 
 bench-http:
     scripts/bench_http.sh
@@ -758,7 +761,7 @@ vibe-normalize-check:
     scripts/vibe_normalize_all.sh --check
 
 # Pre-release selfhost gate bundle
-release-selfhost-gates: sync-vbundle check-selfhost-bundle-sync test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cli-core test-selfhost-cli-component-preview2 test-selfhost-cli-preview2-package test-selfhost-cli-command-component test-selfhost-cli-direct-component test-selfhost-cli-direct-parity test-selfhost-check-preview2-package test-selfhost-check-command-component test-selfhost-check-direct-component test-selfhost-check-direct-parity test-selfhost-cutover test-selfhost-check-parity test-golden-wat
+release-selfhost-gates: sync-vbundle check-selfhost-bundle-sync test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cli-core test-selfhost-cli-component-preview2 test-selfhost-cli-preview2-package test-selfhost-cli-command-component test-selfhost-cli-direct-component test-selfhost-cli-direct-parity test-selfhost-check-preview2-package test-selfhost-check-command-component test-selfhost-check-direct-component test-selfhost-check-direct-parity test-selfhost-cutover test-golden-wat
 
 # Pre-release check (includes selfhost gates + wasm bundle-size monitor)
 release-check: fmt info check test vibe-normalize bench-bundle-size-monitor release-selfhost-gates

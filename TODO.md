@@ -47,7 +47,8 @@ Phase 4 (応用):
   - selfhost cutover compare も `compile` から `compile-lite` ベースへ移し、artifact parity の既定 mode は `mvp,no-dce` に寄せた
   - selfhost check 配布形も Preview2 package / command component / direct fs component まで揃い、`release-selfhost-gates` に smoke gate を追加した
   - 次は selfhost command/direct component を host CLI の一部フローへ差し込み、dual-run 対象を `check/test/release-check` へ広げながら切り替える
-  - `test_selfhost_check_parity.sh` も最終的には component 配布形へ寄せ、`moonrun "$STAGE1_CHECKER_WASM"` 依存を bootstrap 専用へ押し込む
+  - `test_selfhost_check_parity.sh` は `test-selfhost-check-bootstrap-parity` として bootstrap-only target に退避し、`release-selfhost-gates` からは component smoke 系だけを残した
+  - full diagnostic parity 自体はまだ `moonrun "$STAGE1_CHECKER_WASM"` に依存するので、将来的に component 側で type diagnostics を返せるようになった段階で置き換える
 
 - [ ] selfhost perf gap を cutover 可能な水準まで詰める
   - stable 5-case set の debug selfhost wasm baseline では host 比 compile 約5x、check 約2-4x 遅い

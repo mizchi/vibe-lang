@@ -79,6 +79,10 @@ Completed items archived from `TODO.md`.
 - **Selfhost cutover parity を compile-lite ベースへ移行**
   - `scripts/test_selfhost_cutover_compare.sh` の host/selfhost 両方を `compile` から `compile-lite` に切り替え、既定 mode を `mvp,no-dce` に寄せた
   - `scripts/test_selfhost_cutover_gate.sh` も Stage 2 を compile-lite parity として扱うように更新した
+
+- **Stage1 checker parity を bootstrap-only target に分離**
+  - `test-selfhost-check-parity` を `test-selfhost-check-bootstrap-parity` へ実体移動し、`release-selfhost-gates` からは外した
+  - `release-selfhost-gates` は selfhost check package / command / direct component の smoke gate を本流に残し、`moonrun "$STAGE1_CHECKER_WASM"` 依存は bootstrap 専用へ押し込んだ
 - **Selfhost CLI adapter の compile 入力を grouped closure へ縮小**
   - `selfhost_cli_adapter_sources` / `selfhost_cli_adapter_source_groups` を bundle に追加し、adapter 専用 closure を compiler 全量 source から切り離した
   - stage1 probe で adapter closure は `68 sources / 9 groups -> 24 sources / 5 groups` まで縮小できることを確認した
