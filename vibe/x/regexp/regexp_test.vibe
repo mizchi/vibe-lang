@@ -1,8 +1,7 @@
 //# Imports
 
 import ./index.vibe {
-  compile, count, escape, find, find_all, find_match,
-  is_match, replace_all, replace_first, split, test_match
+  compile, compile_regex, count, escape, find, find_all, find_match, get_capture, get_match_text, get_named_capture, has_match, is_match, match_groups, replace_all, replace_first, replace_with_groups, split, test_match
 }
 
 //# Misc
@@ -475,4 +474,141 @@ test "mixed quantifiers" {
   assert(test_match(re, "abcd12"))
   assert(not(test_match(re, "a12")))
   assert(not(test_match(re, "abcde12")))
+}
+
+test "numbered capture group" {
+  let re = compile_regex("(\\d+)-(\\d+)")
+  let m = match_groups(re, "date: 2026-03")
+  assert(has_match(m))
+  assert(String::equals(get_match_text(m), "2026-03"))
+  assert(String::equals(get_capture(m, 0), "2026"))
+  assert(String::equals(get_capture(m, 1), "03"))
+}
+
+test "named capture group" {
+  let re = compile_regex("(?<year>\\d{4})-(?<month>\\d{2})")
+  let m = match_groups(re, "date: 2026-03-13")
+  assert(has_match(m))
+  assert(String::equals(get_named_capture(m, "year"), "2026"))
+  assert(String::equals(get_named_capture(m, "month"), "03"))
+}
+
+test "non-capturing group" {
+  let re = compile_regex("(?:foo|bar)(baz)")
+  let m = match_groups(re, "foobaz")
+  assert(has_match(m))
+  assert(String::equals(get_match_text(m), "foobaz"))
+  assert(String::equals(get_capture(m, 0), "baz"))
+}
+
+test "backreference" {
+  let re = compile_regex("(\\w+)=\\1")
+  let m = match_groups(re, "abc=abc")
+  assert(has_match(m))
+  assert(String::equals(get_match_text(m), "abc=abc"))
+}
+
+test "backreference no match" {
+  let re = compile_regex("(\\w+)=\\1")
+  let m = match_groups(re, "abc=def")
+  assert(not(has_match(m)))
+}
+
+test "capture no match" {
+  let re = compile_regex("(\\d+)")
+  let m = match_groups(re, "abc")
+  assert(not(has_match(m)))
+}
+
+test "replace with numbered capture" {
+  let re = compile_regex("(\\w+)@(\\w+)")
+  let result = replace_with_groups(re, "user@host", "$2/$1")
+  assert(String::equals(result, "host/user"))
+}
+
+test "replace with named capture" {
+  let re = compile_regex("(?<first>\\w+)-(?<last>\\w+)")
+  let result = replace_with_groups(re, "John-Doe", "${last}, ${first}")
+  assert(String::equals(result, "Doe, John"))
+}
+
+test "multiple captures same pattern" {
+  let re = compile_regex("(\\d+)\\+(\\d+)=(\\d+)")
+  let m = match_groups(re, "1+2=3")
+  assert(has_match(m))
+  assert(String::equals(get_capture(m, 0), "1"))
+  assert(String::equals(get_capture(m, 1), "2"))
+  assert(String::equals(get_capture(m, 2), "3"))
+}
+
+test "get_capture out of bounds" {
+  let re = compile_regex("(\\d+)")
+  let m = match_groups(re, "42")
+  assert(String::equals(get_capture(m, 0), "42"))
+  assert(String::equals(get_capture(m, 99), ""))
+}
+
+test "lazy star prefers shortest match" {
+  let re = compile("a.*?b")
+  assert(String::equals(find_match(re, "zzaxxbxxbzz"), "axxb"))
+}
+
+test "lazy plus prefers shortest match" {
+  let re = compile("a.+?b")
+  assert(String::equals(find_match(re, "zzaxbxxbzz"), "axb"))
+}
+
+test "lazy optional prefers zero repetition" {
+  let re = compile("colou??r")
+  assert(test_match(re, "color"))
+  assert(test_match(re, "colour"))
+}
+
+test "positive lookahead is zero width" {
+  let re = compile("foo(?=bar)")
+  assert(is_match(re, "xxfoobarxx"))
+  assert(not(is_match(re, "xxfoobazxx")))
+  assert(String::equals(find_match(re, "xxfoobarxx"), "foo"))
+}
+
+test "negative lookahead rejects forbidden suffix" {
+  let re = compile("foo(?!bar)")
+  assert(is_match(re, "xxfoobazxx"))
+  assert(not(is_match(re, "xxfoobarxx")))
+}
+
+test "positive lookbehind checks prefix" {
+  let re = compile("(?<=foo)bar")
+  assert(is_match(re, "xxfoobarxx"))
+  assert(not(is_match(re, "xxbazbarxx")))
+  assert(String::equals(find_match(re, "xxfoobarxx"), "bar"))
+}
+
+test "negative lookbehind rejects forbidden prefix" {
+  let re = compile("(?<!foo)bar")
+  assert(is_match(re, "xxbazbarxx"))
+  assert(not(is_match(re, "xxfoobarxx")))
+}
+
+test "ignore case flag matches regardless of letter case" {
+  let re = compile("(?i)abc")
+  assert(test_match(re, "abc"))
+  assert(test_match(re, "AbC"))
+  assert(not(test_match(re, "abd")))
+}
+
+test "multiline flag lets anchors match line boundaries" {
+  let re = compile("(?m)^bar$")
+  assert(is_match(re, "foo\nbar\nbaz"))
+  assert(not(is_match(compile("^bar$"), "foo\nbar\nbaz")))
+}
+
+test "dotall flag controls newline matching" {
+  assert(not(test_match(compile("a.b"), "a\nb")))
+  assert(test_match(compile("(?s)a.b"), "a\nb"))
+}
+
+test "atomic group prevents backtracking into group" {
+  assert(test_match(compile("(a|ab)c"), "abc"))
+  assert(not(test_match(compile("(?>a|ab)c"), "abc")))
 }
