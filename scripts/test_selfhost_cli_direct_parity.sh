@@ -35,7 +35,7 @@ run_case() {
   printf '%s' "$source_text" >"$input_path"
   rm -f "$host_out" "$selfhost_out" "$host_run_log" "$selfhost_run_log"
 
-  "$VIBE_BIN" compile --wasm "$input_path" -o "$host_out"
+  "$VIBE_BIN" compile-lite --wasm "$input_path" -o "$host_out"
   bash "$SCRIPT_DIR/run_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$input_path" "$selfhost_out" "$entry_name"
 
   wasm-tools validate "$host_out" >/dev/null

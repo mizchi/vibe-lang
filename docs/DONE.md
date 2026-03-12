@@ -73,6 +73,8 @@ Completed items archived from `TODO.md`.
 - **Stage1 core wasm 直接の artifact-only selfhost compile gate を完成**
   - `selfbuild_cli_env_entry` / `selfbuild_cli_args_entry` の両方で、stage1 core wasm 自体が real input を compile し、生成 wasm が `run=42` まで通ることを確認した
   - `scripts/test_selfhost_cli_adapter.sh` は `selfbuild_write_cli_adapter` 経由ではなく、stage1 core wasm をそのまま selfhost CLI artifact として叩く gate に切り替えた
+- **Host compile-lite と selfhost direct component の dual-run smoke を追加**
+  - `scripts/test_selfhost_cli_direct_parity.sh` の host 側を `compile --wasm` から `compile-lite --wasm` に切り替え、host CLI 縮退対象に近い経路で selfhost direct fs component と並走させるようにした
 - **Selfhost CLI adapter の compile 入力を grouped closure へ縮小**
   - `selfhost_cli_adapter_sources` / `selfhost_cli_adapter_source_groups` を bundle に追加し、adapter 専用 closure を compiler 全量 source から切り離した
   - stage1 probe で adapter closure は `68 sources / 9 groups -> 24 sources / 5 groups` まで縮小できることを確認した
