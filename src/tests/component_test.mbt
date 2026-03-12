@@ -524,6 +524,26 @@ test "P3 handler: component_string_lift_auto kebab-cases snake_case export names
 }
 
 ///|
+test "P3 handler: component_string_lift_auto kebab-cases snake_case parameter names" {
+  let db = VibeDb::new()
+  let src =
+    #|export let run_cli_request = (input_path: String, output_path: String) -> Int {
+    #|  if String::equals(input_path, output_path) { 1 } else { 0 }
+    #|}
+    #|run_cli_request("GET", "GET")
+  db.set_source("main", src)
+  let wasm = try compile_module_component_string_lift_auto(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(component_bytes_contains_ascii(wasm, "input-path"))
+  assert_true(component_bytes_contains_ascii(wasm, "output-path"))
+  assert_false(component_bytes_contains_ascii(wasm, "input_path"))
+  assert_false(component_bytes_contains_ascii(wasm, "output_path"))
+}
+
+///|
 test "P3 handler: component_string_lift_auto injects run_init when run export exists" {
   let db = VibeDb::new()
   let src =

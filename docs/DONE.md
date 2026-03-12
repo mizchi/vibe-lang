@@ -43,6 +43,9 @@ Completed items archived from `TODO.md`.
   - `scripts/test_selfhost_cli_component_preview2.sh` は wasmtime Preview2 だけで selfhost component を実行し、復元した sample wasm を validate/run して `42` まで確認する
   - `release-selfhost-gates` も JS host 前提の fixed adapter preview2 gate ではなく、この component-only gate を通すように更新した
   - selfhost `compile_wasi_module` は pure sample で未使用の `vibe::env-get` / `args-len` / `args-get` / `fs_*` import を出さないようにし、component から復元した sample wasm を wasmtime 単体でそのまま実行できるようにした
+- **Preview2 selfhost CLI を配布形へ整理**
+  - `scripts/build_selfhost_cli_preview2_component.sh` で selfhost component/WIT を build し、`scripts/run_selfhost_cli_preview2_component.sh` が `compile-cli-request` 契約を使って input file -> output wasm を復元する
+  - `scripts/test_selfhost_cli_preview2_package.sh` を追加し、build/run/validate/run=42 を package gate として固定した
 - **Stage1 core wasm 直接の artifact-only selfhost compile gate を完成**
   - `selfbuild_cli_env_entry` / `selfbuild_cli_args_entry` の両方で、stage1 core wasm 自体が real input を compile し、生成 wasm が `run=42` まで通ることを確認した
   - `scripts/test_selfhost_cli_adapter.sh` は `selfbuild_write_cli_adapter` 経由ではなく、stage1 core wasm をそのまま selfhost CLI artifact として叩く gate に切り替えた

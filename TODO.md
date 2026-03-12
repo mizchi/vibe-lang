@@ -13,7 +13,7 @@ Completed items are archived in `docs/DONE.md`.
 ## Self-Host Compiler / Runtime Packaging
 
 **現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache、host CLI の check/test loop cache 再利用、env/argv 契約、stage1 core wasm 直接の artifact-only compile gate、Preview2 component-only selfhost CLI gate までは入った。
-**最優先の残**: Preview2 / Component runtime で閉じた selfhost CLI artifact を、配布しやすい契約と package 形に整理すること。
+**最優先の残**: selfhost CLI の package surface を command world / direct fs argv component まで一般化すること。
 
 ### Selfhost compiler modularization / cache
 
@@ -76,8 +76,12 @@ Completed items are archived in `docs/DONE.md`.
 ### Component Model / Adapter Compose
 
 - [ ] mwac plug 相当を .vibe で実装するか builtin 化する
-- [ ] selfhost compiler 全体を `.wasm` component として配布・実行できる形にする
-  - env/argv 契約、host-backed adapter 実行、Preview2 component-only compile gate までは入ったので、残りは配布向け package/CLI surface の整理
+- [x] selfhost compiler 全体を `.wasm` component として配布・実行できる形にする
+  - `scripts/build_selfhost_cli_preview2_component.sh` で selfhost component/WIT を build し、`scripts/run_selfhost_cli_preview2_component.sh` が `compile-cli-request` 契約を使って input file -> output wasm を復元する
+  - `scripts/test_selfhost_cli_preview2_package.sh` は package build -> sample compile -> wasm validate -> run=42 を固定する
+- [ ] selfhost CLI の package surface を command world / direct fs argv component に一般化する
+  - 現状の配布契約は `compile-cli-request(source, request)` を wasmtime wrapper で包む形
+  - `selfhost_cli_component_run_entry.vibe` の direct fs/argv component は generic import / raw ABI の壁で未完
 
 ## Release / Gate Integration
 

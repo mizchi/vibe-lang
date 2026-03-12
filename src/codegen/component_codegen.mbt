@@ -34,6 +34,11 @@ fn component_normalize_export_name(name : String) -> String {
 }
 
 ///|
+fn component_normalize_param_name(name : String) -> String {
+  name.replace_all(old="_", new="-")
+}
+
+///|
 /// Component Model magic and version
 let component_magic : Array[Byte] = [
   b'\x00', b'\x61', b'\x73', b'\x6d', // \0asm
@@ -674,7 +679,7 @@ fn emit_component_func_type(
   component_write_uleb128(content, sig.params.length())
   for i, param in sig.params {
     let name = if i < sig.param_names.length() {
-      sig.param_names[i]
+      component_normalize_param_name(sig.param_names[i])
     } else {
       "p" + i.to_string()
     }
@@ -1780,7 +1785,7 @@ pub fn emit_component_wasm_with_string_lift(
   component_write_uleb128(type_content, string_param_count)
   for i in 0..<string_param_count {
     let name = if i < param_names.length() {
-      param_names[i]
+      component_normalize_param_name(param_names[i])
     } else {
       "p" + i.to_string()
     }

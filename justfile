@@ -402,6 +402,26 @@ test-selfhost-cli-fixed-adapter-preview2:
 test-selfhost-cli-component-preview2:
     bash scripts/test_selfhost_cli_component_preview2.sh
 
+# Build distributable selfhost Preview2 component package
+build-selfhost-cli-preview2-component out="dist/selfhost_cli_preview2.component.wasm" wit="dist/selfhost_cli_preview2.component.wit":
+    bash scripts/build_selfhost_cli_preview2_component.sh {{out}} {{wit}}
+
+# Run distributable selfhost Preview2 component package
+run-selfhost-cli-preview2-component component input output entry:
+    bash scripts/run_selfhost_cli_preview2_component.sh {{component}} {{input}} {{output}} {{entry}}
+
+# Run distributable selfhost Preview2 component package gate
+test-selfhost-cli-preview2-package:
+    bash scripts/test_selfhost_cli_preview2_package.sh
+
+# Build a distributable selfhost CLI command component (stdin=source, argv[-1]=entry, stdout=wasm)
+build-selfhost-cli-command-component out="dist/selfhost_cli_command.component.wasm" wit="dist/selfhost_cli_command.component.wit":
+    bash scripts/build_selfhost_cli_command_component.sh {{out}} {{wit}}
+
+# Run distributable selfhost CLI command component gate
+test-selfhost-cli-command-component:
+    bash scripts/test_selfhost_cli_command_component.sh
+
 # Run wasi:http boundary gate (stage0 wasm compiler -> component wit imports)
 test-selfhost-wasi-http-boundary:
     scripts/test_selfhost_wasi_http_boundary.sh
