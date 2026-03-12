@@ -12,8 +12,8 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Self-Host Compiler / Runtime Packaging
 
-**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache、host CLI の check/test loop cache 再利用、env/argv 契約、stage1 core wasm 直接の artifact-only compile gate、Preview2 component-only selfhost CLI gate、Preview2 package、command world 配布 gate までは入った。
-**最優先の残**: selfhost CLI の direct fs/argv component を command world と同等の Preview2 配布導線まで持ち上げること。
+**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache、host CLI の check/test loop cache 再利用、env/argv 契約、stage1 core wasm 直接の artifact-only compile gate、Preview2 component-only selfhost CLI gate、Preview2 package、command world 配布 gate、direct fs/argv component 配布 gate まで入った。
+**最優先の残**: string-lift component が direct Preview2 import を typed world として直接持てるようにして、compose adapter なしでも `selfhost_cli_component_run_entry.vibe` をそのまま配布可能にすること。
 
 ### Selfhost compiler modularization / cache
 
@@ -83,10 +83,14 @@ Completed items are archived in `docs/DONE.md`.
   - `scripts/build_selfhost_cli_command_component.sh` は `compile-cli-hex(source, entry-name)` を import する Preview2 command adapter component を組み立てる
   - `scripts/test_selfhost_cli_command_component.sh` は stdin=source / argv[-1]=entry / stdout=wasm の command world で sample compile -> wasm validate -> run=42 を固定する
   - `release-selfhost-gates` に `test-selfhost-cli-preview2-package` と `test-selfhost-cli-command-component` を接続し、配布形の gate を pre-release 導線へ載せた
-- [ ] selfhost CLI の package surface を direct fs/argv component に一般化する
-  - 現状の配布契約は request/response component か command adapter component を wasmtime wrapper で実行する形
+- [x] selfhost CLI の package surface を direct fs/argv component に一般化する
+  - `selfhost_cli_direct_component_entry.vibe` は `compile-cli-hex(source, entry-name)` だけを export する専用 plug component として build できる
+  - `scripts/build_selfhost_cli_direct_component.sh` はその plug component を Preview2 filesystem adapter component と compose し、`run-cli-request(input-path, output-path, entry-name)` surface を配布可能にした
+  - `scripts/test_selfhost_cli_direct_component.sh` は input file -> output wasm -> run=42 を direct fs/argv gate として固定し、`release-selfhost-gates` に接続した
+- [ ] string-lift component の direct Preview2 import surface を typed world にする
   - `selfhost_cli_component_run_entry.vibe` 自体は `run-cli-request(input-path, output-path, entry-name)` component まで生成できる
   - ただし top-level component import は `import-0..5` の flat ABI に潰れており、wasmtime linker が Preview2 `wasi:filesystem/*` 実装へ自動結線できない
+  - 現状は `compile-cli-hex` 専用 plug component + filesystem adapter component の compose で direct fs/argv 配布を実現している
   - 次の本命は `emit_component_wasm_with_string_lift` 側で typed Preview2 import を持つ import/adapter 生成へ寄せること
 
 ## Release / Gate Integration

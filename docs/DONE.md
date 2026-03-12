@@ -51,6 +51,10 @@ Completed items archived from `TODO.md`.
   - `src/codegen/component_codegen.mbt` と `src/runtime_compile/compile.mbt` を更新し、component string-lift が string result を正しく retptr ABI で返せるようにした
   - `scripts/build_selfhost_cli_command_component.sh` は Preview2 `wasi:cli/command` adapter component を組み立て、`scripts/test_selfhost_cli_command_component.sh` は stdin=source / argv[-1]=entry / stdout=wasm の command world で sample compile -> wasm validate -> run=42 を固定した
   - `release-selfhost-gates` に `test-selfhost-cli-preview2-package` と `test-selfhost-cli-command-component` を追加し、配布 gate を pre-release 導線へ統合した
+- **Preview2 selfhost CLI の direct fs/argv component 配布形を追加**
+  - `selfhost_cli_direct_component_entry.vibe` は `compile-cli-hex(source, entry-name)` だけを export する専用 plug component として build できるようにした
+  - `scripts/build_selfhost_cli_direct_component.sh` はその plug component を Preview2 filesystem adapter component と compose し、`run-cli-request(input-path, output-path, entry-name)` surface の distributable component を生成する
+  - `scripts/test_selfhost_cli_direct_component.sh` は input file -> output wasm -> wasm validate -> run=42 を direct fs/argv gate として固定し、`release-selfhost-gates` に `test-selfhost-cli-direct-component` を追加した
 - **Stage1 core wasm 直接の artifact-only selfhost compile gate を完成**
   - `selfbuild_cli_env_entry` / `selfbuild_cli_args_entry` の両方で、stage1 core wasm 自体が real input を compile し、生成 wasm が `run=42` まで通ることを確認した
   - `scripts/test_selfhost_cli_adapter.sh` は `selfbuild_write_cli_adapter` 経由ではなく、stage1 core wasm をそのまま selfhost CLI artifact として叩く gate に切り替えた
