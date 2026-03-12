@@ -14,6 +14,34 @@ MIN_POINT_RATE="${VIBE_WASM_SOURCE_COVERAGE_MIN_POINT_RATE:-}"
 MIN_LINE_RATE="${VIBE_WASM_SOURCE_COVERAGE_MIN_LINE_RATE:-}"
 MIN_BRANCH_RATE="${VIBE_WASM_SOURCE_COVERAGE_MIN_BRANCH_RATE:-}"
 
+resolve_vibe_cmd() {
+  local candidates=()
+  if [ -n "${VIBE_BIN:-}" ] && [ -x "$VIBE_BIN" ]; then
+    VIBE_CMD=("$VIBE_BIN")
+    return 0
+  fi
+  candidates+=(
+    "$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
+    "$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe"
+    "$PROJECT_ROOT/target/native/release/build/cmd/vibe/vibe.exe"
+    "$PROJECT_ROOT/target/native/debug/build/cmd/vibe/vibe.exe"
+  )
+  for candidate in "${candidates[@]}"; do
+    if [ ! -x "$candidate" ]; then
+      continue
+    fi
+    if [ "$PROJECT_ROOT/moon.mod.json" -nt "$candidate" ]; then
+      continue
+    fi
+    if find "$PROJECT_ROOT/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' \) -newer "$candidate" -print -quit 2>/dev/null | grep -q .; then
+      continue
+    fi
+    VIBE_CMD=("$candidate")
+    return 0
+  done
+  VIBE_CMD=(moon run src/cmd/vibe/main.mbt --target native --)
+}
+
 if [ "$#" -lt 1 ]; then
   echo "usage: coverage_wasm_source.sh <entry.vibe>" >&2
   echo "env: VIBE_WASM_SOURCE_COVERAGE_MODE=wasm|wasm-js-string VIBE_WASM_SOURCE_COVERAGE_NO_DCE=0|1 VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS=0|1 VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP=0|1 VIBE_WASM_SOURCE_COVERAGE_INVOKE=<export[,export...]> VIBE_WASM_SOURCE_COVERAGE_MIN_POINT_RATE=<0-100> VIBE_WASM_SOURCE_COVERAGE_MIN_LINE_RATE=<0-100> VIBE_WASM_SOURCE_COVERAGE_MIN_BRANCH_RATE=<0-100> VIBE_WASM_SOURCE_COVERAGE_DIR=<dir>" >&2
@@ -52,6 +80,7 @@ esac
 
 mkdir -p "$OUT_DIR"
 cd "$PROJECT_ROOT"
+resolve_vibe_cmd
 
 entry_norm="${ENTRY_PATH#./}"
 if [[ "$entry_norm" == "$PROJECT_ROOT/"* ]]; then
@@ -76,7 +105,7 @@ if [ "$RUN_TESTS" = "1" ]; then
 fi
 
 echo "[wasm source coverage] compile: mode=$MODE no_dce=$NO_DCE run_tests=$RUN_TESTS allow_trap=$ALLOW_TRAP entry=$ENTRY_PATH"
-VIBE_TEST_COVERAGE=1 moon run src/cmd/vibe/main.mbt --target native -- "${compile_args[@]}"
+VIBE_TEST_COVERAGE=1 "${VIBE_CMD[@]}" "${compile_args[@]}"
 
 if [ ! -f "$cov_map_path" ]; then
   echo "[wasm source coverage] missing coverage map: $cov_map_path" >&2

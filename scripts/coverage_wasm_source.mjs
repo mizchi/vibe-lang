@@ -102,6 +102,8 @@ export function parseArgs(argv) {
   };
 }
 
+const summaryOnlyReport = process.env.VIBE_WASM_SOURCE_COVERAGE_REPORT_SUMMARY_ONLY === "1";
+
 function ratePercent(hit, total) {
   if (total <= 0) {
     return 0;
@@ -153,6 +155,42 @@ function buildSummaryText(report) {
     .sort((a, b) => a - b);
   if (missedLineList.length > 0) {
     lines.push(`missed_lines: ${missedLineList.join(",")}`);
+  }
+  return lines.join("\n") + "\n";
+}
+
+function compactPointString(points) {
+  return points.map((point) => `${point.id}:${point.hit ? 1 : 0}`).join(",");
+}
+
+function sanitizeReportField(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  return String(value).replace(/[\r\n\t]/g, " ");
+}
+
+function buildSuiteCaseText(report) {
+  const pointTotal = summaryOnlyReport ? 0 : report.stats.point_total;
+  const pointHit = summaryOnlyReport ? 0 : report.stats.point_hit;
+  const lineTotal = summaryOnlyReport ? 0 : report.stats.line_total;
+  const lineHit = summaryOnlyReport ? 0 : report.stats.line_hit;
+  const branchTotal = summaryOnlyReport ? 0 : report.stats.branch_total;
+  const branchHit = summaryOnlyReport ? 0 : report.stats.branch_hit;
+  const lines = [];
+  lines.push("format\tvibe-wasm-source-coverage-v4");
+  lines.push(`entry_path\t${sanitizeReportField(report.entry_path)}`);
+  lines.push(`execution_ok\t${report.execution.ok ? 1 : 0}`);
+  lines.push(`execution_error\t${sanitizeReportField(report.execution.error)}`);
+  lines.push(`point_total\t${pointTotal}`);
+  lines.push(`point_hit\t${pointHit}`);
+  lines.push(`line_total\t${lineTotal}`);
+  lines.push(`line_hit\t${lineHit}`);
+  lines.push(`branch_total\t${branchTotal}`);
+  lines.push(`branch_hit\t${branchHit}`);
+  if (!summaryOnlyReport) {
+    lines.push(`line_points\t${report.line_points}`);
+    lines.push(`branch_points\t${report.branch_points}`);
   }
   return lines.join("\n") + "\n";
 }
@@ -480,7 +518,7 @@ async function main() {
   const lineHit = lineCoverage.line_hit;
 
   const report = {
-    format: "vibe-wasm-source-coverage-v2",
+    format: "vibe-wasm-source-coverage-v3",
     wasm_path: args.wasmPath,
     map_path: args.mapPath,
     counter_base: counterBase,
@@ -491,10 +529,9 @@ async function main() {
       error: runError,
       invoked: args.invokeNames,
     },
-    points: points.map((point) =>
-      `${point.id}|${point.kind}|${point.hit ? 1 : 0}|${point.line}`,
-    ),
     lines,
+    line_points: compactPointString(linePoints),
+    branch_points: compactPointString(branchPoints),
     stats: {
       point_total: points.length,
       point_hit: pointHit,
@@ -515,8 +552,21 @@ async function main() {
   );
 
   const summary = buildSummaryText(report);
+  const reportJson = {
+    format: report.format,
+    wasm_path: report.wasm_path,
+    map_path: report.map_path,
+    counter_base: report.counter_base,
+    counter_count: report.counter_count,
+    entry_path: report.entry_path,
+    execution: report.execution,
+    line_points: report.line_points,
+    branch_points: report.branch_points,
+    stats: report.stats,
+    kpi: report.kpi,
+  };
   if (args.reportJsonPath.length > 0) {
-    fs.writeFileSync(args.reportJsonPath, JSON.stringify(report, null, 2) + "\n");
+    fs.writeFileSync(args.reportJsonPath, buildSuiteCaseText(reportJson));
   }
   if (args.summaryPath.length > 0) {
     fs.writeFileSync(args.summaryPath, summary);

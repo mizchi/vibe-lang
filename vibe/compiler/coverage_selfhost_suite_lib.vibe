@@ -1,5 +1,5 @@
 import ../json/index.vibe {
-  Json, stringify
+  Json, parse, stringify
 }
 
 import ../shell/index.vibe {
@@ -77,6 +77,19 @@ struct PointSummary {
   branch_hit: Int
 }
 
+struct ParsedCoverageCase {
+  entry_path: String;
+  execution_ok: Bool;
+  execution_error: String;
+  point_entries: Array[PointEntry];
+  point_total: Int;
+  point_hit: Int;
+  line_total: Int;
+  line_hit: Int;
+  branch_total: Int;
+  branch_hit: Int
+}
+
 let empty_point_entries = () -> Array[PointEntry] {
   Array::slice([
     PointEntry::{ key: "", kind: "", hit: false }
@@ -107,67 +120,47 @@ let percent_text = (hit: Int, total: Int) -> String {
   format_fixed2(rate_percent(hit, total))
 }
 
+let obj_get_opt = (obj: Json, key: String) -> Option[Json] {
+  match obj {
+    JObj(m) => if Map::has_key(m, key) {
+      Some(Map::get(m, key))
+    } else None,
+    _ => None
+  }
+}
+
 let obj_get_str_or = (obj: Json, key: String, fallback: String) -> String {
-  handle {
-    if not(obj_has_key(obj, key)) {
-      fallback
-    } else {
-      let value = Json::get(obj, key)
-      if String::equals(Json::type_of(value), "string") {
-        Json::string(value)
-      } else fallback
-    }
-  } {
-    Error(_) => fallback
+  match obj_get_opt(obj, key) {
+    Some(JStr(value)) => value,
+    _ => fallback
   }
 }
 
 let obj_get_bool_or = (obj: Json, key: String, fallback: Bool) -> Bool {
-  handle {
-    if not(obj_has_key(obj, key)) {
-      fallback
-    } else {
-      let value = Json::get(obj, key)
-      let ty = Json::type_of(value)
-      if String::equals(ty, "bool") || String::equals(ty, "boolean") {
-        Json::bool(value)
-      } else fallback
-    }
-  } {
-    Error(_) => fallback
+  match obj_get_opt(obj, key) {
+    Some(JBool(value)) => value,
+    _ => fallback
   }
 }
 
 let obj_get_num_or = (obj: Json, key: String, fallback: Int) -> Int {
-  handle {
-    if not(obj_has_key(obj, key)) {
-      fallback
-    } else {
-      let value = Json::get(obj, key)
-      let ty = Json::type_of(value)
-      if String::equals(ty, "number") || String::equals(ty, "num") {
-        Double::to_int(Json::number(value))
-      } else fallback
-    }
-  } {
-    Error(_) => fallback
+  match obj_get_opt(obj, key) {
+    Some(JNum(value)) => Double::to_int(value),
+    _ => fallback
   }
 }
 
-let obj_has_key = (obj: Json, key: String) -> Bool {
-  handle {
-    let keys = Json::keys(obj)
-    let mut found = false
-    let mut i = 0
-    while i < Array::length(keys) {
-      if String::equals(Array::get(keys, i), key) {
-        found = true
-      }
-      i = i + 1
-    }
-    found
-  } {
-    Error(_) => false
+let json_int_text = (value: Json) -> String {
+  match value {
+    JNum(n) => __to_string(Double::to_int(n)),
+    _ => ""
+  }
+}
+
+let obj_get_int_text = (obj: Json, key: String) -> String {
+  match obj_get_opt(obj, key) {
+    Some(value) => json_int_text(value),
+    None => ""
   }
 }
 
@@ -176,90 +169,46 @@ let point_signature = (entry_path: String, point_obj: Json) -> String {
   if String::length(kind) == 0 {
     ""
   } else {
-    let id_text = if obj_has_key(point_obj, "id") {
-      __to_string(obj_get_num_or(point_obj, "id", -1))
-    } else ""
+    let id_text = obj_get_int_text(point_obj, "id")
     if String::length(id_text) > 0 {
-      String::concat(String::concat(entry_path, ":"), id_text)
+      id_text
     } else {
-      let line_text = handle {
-        __to_string(Double::to_int(Json::number(Json::get(point_obj, "line"))))
-      } {
-        Error(_) => ""
+      let line_text = obj_get_int_text(point_obj, "line")
+      let span_start = match obj_get_opt(point_obj, "span") {
+        Some(span_obj) => obj_get_int_text(span_obj, "start"),
+        None => ""
       }
-      let span_start = handle {
-        __to_string(
-          Double::to_int(
-            Json::number(Json::get(Json::get(point_obj, "span"), "start"))
-          )
-        )
-      } {
-        Error(_) => ""
+      let span_end = match obj_get_opt(point_obj, "span") {
+        Some(span_obj) => obj_get_int_text(span_obj, "end"),
+        None => ""
       }
-      let span_end = handle {
-        __to_string(
-          Double::to_int(
-            Json::number(Json::get(Json::get(point_obj, "span"), "end"))
-          )
-        )
-      } {
-        Error(_) => ""
+      let start_line = match obj_get_opt(point_obj, "range") {
+        Some(range_obj) => match obj_get_opt(range_obj, "start") {
+          Some(start_obj) => obj_get_int_text(start_obj, "line"),
+          None => ""
+        },
+        None => ""
       }
-      let start_line = handle {
-        __to_string(
-          Double::to_int(
-            Json::number(
-              Json::get(
-                Json::get(Json::get(point_obj, "range"), "start"),
-                "line"
-              )
-            )
-          )
-        )
-      } {
-        Error(_) => ""
+      let start_char = match obj_get_opt(point_obj, "range") {
+        Some(range_obj) => match obj_get_opt(range_obj, "start") {
+          Some(start_obj) => obj_get_int_text(start_obj, "character"),
+          None => ""
+        },
+        None => ""
       }
-      let start_char = handle {
-        __to_string(
-          Double::to_int(
-            Json::number(
-              Json::get(
-                Json::get(Json::get(point_obj, "range"), "start"),
-                "character"
-              )
-            )
-          )
-        )
-      } {
-        Error(_) => ""
+      let end_line = match obj_get_opt(point_obj, "range") {
+        Some(range_obj) => match obj_get_opt(range_obj, "end") {
+          Some(end_obj) => obj_get_int_text(end_obj, "line"),
+          None => ""
+        },
+        None => ""
       }
-      let end_line = handle {
-        __to_string(
-          Double::to_int(
-            Json::number(
-              Json::get(
-                Json::get(Json::get(point_obj, "range"), "end"),
-                "line"
-              )
-            )
-          )
-        )
-      } {
-        Error(_) => ""
-      }
-      let end_char = handle {
-        __to_string(
-          Double::to_int(
-            Json::number(
-              Json::get(
-                Json::get(Json::get(point_obj, "range"), "end"),
-                "character"
-              )
-            )
-          )
-        )
-      } {
-        Error(_) => ""
+      let end_char = match obj_get_opt(point_obj, "range") {
+        Some(range_obj) => match obj_get_opt(range_obj, "end") {
+          Some(end_obj) => obj_get_int_text(end_obj, "character"),
+          None => ""
+        },
+        None => ""
       }
       String::concat(
         String::concat(
@@ -311,50 +260,97 @@ let point_signature = (entry_path: String, point_obj: Json) -> String {
   }
 }
 
-let collect_point_entries = (raw_obj: Json) -> Array[PointEntry] with { Error } {
-  let entry_path = obj_get_str_or(raw_obj, "entry_path", "")
-  if not(obj_has_key(raw_obj, "points")) {
+let concat_point_entries = (a: Array[PointEntry], b: Array[PointEntry]) -> Array[PointEntry] {
+  let out = ArrayBuilder::new()
+  let mut i = 0
+  while i < Array::length(a) {
+    ArrayBuilder::push(out, Array::get(a, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(b) {
+    ArrayBuilder::push(out, Array::get(b, j))
+    j = j + 1
+  }
+  ArrayBuilder::freeze(out)
+}
+
+let compact_point_entries = (raw: String, kind: String) -> Array[PointEntry] {
+  if String::length(raw) == 0 {
     empty_point_entries()
   } else {
-    let points = Json::get(raw_obj, "points")
-    if not(String::equals(Json::type_of(points), "array")) {
-      empty_point_entries()
-    } else {
-      let points_len = Json::length(points)
-      let out = ArrayBuilder::new()
-      let mut i = 0
-      while i < points_len {
-        let point_value = Json::index(points, i)
-        let point_type = Json::type_of(point_value)
-        if String::equals(point_type, "string") {
-          let raw = Json::string(point_value)
-          let parts = split(raw, "|")
-          if Array::length(parts) >= 3 {
-            let pid = Array::get(parts, 0)
-            let kind = Array::get(parts, 1)
-            let hit = String::equals(Array::get(parts, 2), "1")
-            if String::length(pid) > 0 && String::length(kind) > 0 {
-              let key = String::concat(String::concat(entry_path, ":"), pid)
-              ArrayBuilder::push(
-                out,
-                PointEntry::{ key: key, kind: kind, hit: hit }
-              )
-            }
-          }
-        } else {
-          let key = point_signature(entry_path, point_value)
-          if String::length(key) > 0 {
-            let kind = obj_get_str_or(point_value, "kind", "unknown")
-            let hit = obj_get_bool_or(point_value, "hit", false)
+    let out = ArrayBuilder::new()
+    let items = split(raw, ",")
+    let mut i = 0
+    while i < Array::length(items) {
+      let item = trim(Array::get(items, i))
+      if String::length(item) > 0 {
+        let parts = split(item, ":")
+        if Array::length(parts) >= 2 {
+          let pid = Array::get(parts, 0)
+          let hit = String::equals(Array::get(parts, 1), "1")
+          if String::length(pid) > 0 {
             ArrayBuilder::push(
               out,
-              PointEntry::{ key: key, kind: kind, hit: hit }
+              PointEntry::{ key: pid, kind: kind, hit: hit }
             )
           }
         }
-        i = i + 1
       }
-      ArrayBuilder::freeze(out)
+      i = i + 1
+    }
+    ArrayBuilder::freeze(out)
+  }
+}
+
+let collect_point_entries = (raw_obj: Json) -> Array[PointEntry] with { Error } {
+  let entry_path = obj_get_str_or(raw_obj, "entry_path", "")
+  let line_points = obj_get_str_or(raw_obj, "line_points", "")
+  let branch_points = obj_get_str_or(raw_obj, "branch_points", "")
+  if String::length(line_points) > 0 || String::length(branch_points) > 0 {
+    concat_point_entries(
+      compact_point_entries(line_points, "line"),
+      compact_point_entries(branch_points, "branch")
+    )
+  } else {
+    match obj_get_opt(raw_obj, "points") {
+      Some(JArr(points)) => {
+        let out = ArrayBuilder::new()
+        let mut i = 0
+        while i < Array::length(points) {
+          let point_value = Array::get(points, i)
+          match point_value {
+            JStr(raw) => {
+              let parts = split(raw, "|")
+              if Array::length(parts) >= 3 {
+                let pid = Array::get(parts, 0)
+                let kind = Array::get(parts, 1)
+                let hit = String::equals(Array::get(parts, 2), "1")
+                if String::length(pid) > 0 && String::length(kind) > 0 {
+                  ArrayBuilder::push(
+                    out,
+                    PointEntry::{ key: pid, kind: kind, hit: hit }
+                  )
+                }
+              }
+            }
+            _ => {
+              let key = point_signature(entry_path, point_value)
+              if String::length(key) > 0 {
+                let kind = obj_get_str_or(point_value, "kind", "unknown")
+                let hit = obj_get_bool_or(point_value, "hit", false)
+                ArrayBuilder::push(
+                  out,
+                  PointEntry::{ key: key, kind: kind, hit: hit }
+                )
+              }
+            }
+          }
+          i = i + 1
+        }
+        ArrayBuilder::freeze(out)
+      }
+      _ => empty_point_entries()
     }
   }
 }
@@ -425,25 +421,13 @@ let summarize_point_entries = (entries: Array[PointEntry]) -> Option[PointSummar
 }
 
 let normalize_line_stats = (raw_obj: Json, stats_obj: Json) -> (Int, Int) with { Error } {
-  if not(obj_has_key(raw_obj, "lines")) {
-    (
-      obj_get_num_or(stats_obj, "line_total", 0),
-      obj_get_num_or(stats_obj, "line_hit", 0)
-    )
-  } else {
-    let lines = Json::get(raw_obj, "lines")
-    if not(String::equals(Json::type_of(lines), "array")) {
-      (
-        obj_get_num_or(stats_obj, "line_total", 0),
-        obj_get_num_or(stats_obj, "line_hit", 0)
-      )
-    } else {
-      let lines_len = Json::length(lines)
+  match obj_get_opt(raw_obj, "lines") {
+    Some(JArr(lines)) => {
       let mut line_total = 0
       let mut line_hit = 0
       let mut i = 0
-      while i < lines_len {
-        let line_obj = Json::index(lines, i)
+      while i < Array::length(lines) {
+        let line_obj = Array::get(lines, i)
         let excluded = obj_get_bool_or(line_obj, "excluded", false)
         if not(excluded) {
           line_total = line_total + 1
@@ -456,6 +440,11 @@ let normalize_line_stats = (raw_obj: Json, stats_obj: Json) -> (Int, Int) with {
       };
       (line_total, line_hit)
     }
+    _ =>
+      (
+        obj_get_num_or(stats_obj, "line_total", 0),
+        obj_get_num_or(stats_obj, "line_hit", 0)
+      )
   }
 }
 
@@ -471,6 +460,128 @@ export let parse_line_list = (content: String) -> Array[String] {
     i = i + 1
   }
   ArrayBuilder::freeze(out)
+}
+
+let parse_int_or = (raw: String, fallback: Int) -> Int {
+  handle {
+    Int::parse(raw)
+  } {
+    Error(_) => fallback
+  }
+}
+
+let parse_custom_case_input = (input: CoverageCaseInput) -> ParsedCoverageCase {
+  let mut entry_path = ""
+  let mut execution_ok = true
+  let mut execution_error = ""
+  let mut point_total = 0
+  let mut point_hit = 0
+  let mut line_total = 0
+  let mut line_hit = 0
+  let mut branch_total = 0
+  let mut branch_hit = 0
+  let mut line_points = ""
+  let mut branch_points = ""
+  let lines = split(input.report_json, "\n")
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    let parts = split(line, "\t")
+    if Array::length(parts) >= 2 {
+      let key = Array::get(parts, 0)
+      let value = Array::get(parts, 1)
+      if String::equals(key, "entry_path") {
+        entry_path = value
+      } else if String::equals(key, "execution_ok") {
+        execution_ok = String::equals(value, "1") || String::equals(value, "true")
+      } else if String::equals(key, "execution_error") {
+        execution_error = value
+      } else if String::equals(key, "point_total") {
+        point_total = parse_int_or(value, 0)
+      } else if String::equals(key, "point_hit") {
+        point_hit = parse_int_or(value, 0)
+      } else if String::equals(key, "line_total") {
+        line_total = parse_int_or(value, 0)
+      } else if String::equals(key, "line_hit") {
+        line_hit = parse_int_or(value, 0)
+      } else if String::equals(key, "branch_total") {
+        branch_total = parse_int_or(value, 0)
+      } else if String::equals(key, "branch_hit") {
+        branch_hit = parse_int_or(value, 0)
+      } else if String::equals(key, "line_points") {
+        line_points = value
+      } else if String::equals(key, "branch_points") {
+        branch_points = value
+      }
+    }
+    i = i + 1
+  }
+  ParsedCoverageCase::{
+    entry_path: entry_path,
+    execution_ok: execution_ok,
+    execution_error: execution_error,
+    point_entries: concat_point_entries(
+      compact_point_entries(line_points, "line"),
+      compact_point_entries(branch_points, "branch")
+    ),
+    point_total: point_total,
+    point_hit: point_hit,
+    line_total: line_total,
+    line_hit: line_hit,
+    branch_total: branch_total,
+    branch_hit: branch_hit
+  }
+}
+
+let parse_json_case_input = (input: CoverageCaseInput) -> ParsedCoverageCase with { Error } {
+  let (raw_obj, _) = parse(input.report_json)
+  let stats_obj = match obj_get_opt(raw_obj, "stats") {
+    Some(value) => value,
+    None => raw_obj
+  }
+  let point_entries = collect_point_entries(raw_obj)
+  let point_summary_opt = summarize_point_entries(point_entries)
+  let point_total = match point_summary_opt {
+    Some(summary) => summary.point_total
+    None => obj_get_num_or(stats_obj, "point_total", 0)
+  }
+  let point_hit = match point_summary_opt {
+    Some(summary) => summary.point_hit
+    None => obj_get_num_or(stats_obj, "point_hit", 0)
+  }
+  let branch_total = match point_summary_opt {
+    Some(summary) => summary.branch_total
+    None => obj_get_num_or(stats_obj, "branch_total", 0)
+  }
+  let branch_hit = match point_summary_opt {
+    Some(summary) => summary.branch_hit
+    None => obj_get_num_or(stats_obj, "branch_hit", 0)
+  }
+  let (case_line_total, case_line_hit) = normalize_line_stats(raw_obj, stats_obj)
+  let execution_obj = match obj_get_opt(raw_obj, "execution") {
+    Some(value) => value,
+    None => raw_obj
+  }
+  ParsedCoverageCase::{
+    entry_path: obj_get_str_or(raw_obj, "entry_path", ""),
+    execution_ok: obj_get_bool_or(execution_obj, "ok", true),
+    execution_error: obj_get_str_or(execution_obj, "error", ""),
+    point_entries: point_entries,
+    point_total: point_total,
+    point_hit: point_hit,
+    line_total: case_line_total,
+    line_hit: case_line_hit,
+    branch_total: branch_total,
+    branch_hit: branch_hit
+  }
+}
+
+let parse_case_input = (input: CoverageCaseInput) -> ParsedCoverageCase with { Error } {
+  if String::starts_with(input.report_json, "format\tvibe-wasm-source-coverage-v4\n") {
+    parse_custom_case_input(input)
+  } else {
+    parse_json_case_input(input)
+  }
 }
 
 export let build_suite_report_from_json_texts = (inputs: Array[CoverageCaseInput]) -> SuiteReport with { Error } {
@@ -489,38 +600,14 @@ export let build_suite_report_from_json_texts = (inputs: Array[CoverageCaseInput
   let mut i = 0
   while i < Array::length(inputs) {
     let input = Array::get(inputs, i)
-    let raw_obj = Json::parse(input.report_json)
-    let stats_obj = if obj_has_key(raw_obj, "stats") {
-      Json::get(raw_obj, "stats")
-    } else raw_obj
-    let point_entries = collect_point_entries(raw_obj)
-    let point_summary_opt = summarize_point_entries(point_entries)
-    let has_point_summary = match point_summary_opt {
-      Some(_) => true
-      None => false
-    }
+    let parsed = parse_case_input(input)
+    let point_entries = parsed.point_entries
+    let point_total = parsed.point_total
+    let point_hit = parsed.point_hit
+    let branch_total = parsed.branch_total
+    let branch_hit = parsed.branch_hit
 
-    let point_total = match point_summary_opt {
-      Some(summary) => summary.point_total
-      None => obj_get_num_or(stats_obj, "point_total", 0)
-    }
-
-    let point_hit = match point_summary_opt {
-      Some(summary) => summary.point_hit
-      None => obj_get_num_or(stats_obj, "point_hit", 0)
-    }
-
-    let branch_total = match point_summary_opt {
-      Some(summary) => summary.branch_total
-      None => obj_get_num_or(stats_obj, "branch_total", 0)
-    }
-
-    let branch_hit = match point_summary_opt {
-      Some(summary) => summary.branch_hit
-      None => obj_get_num_or(stats_obj, "branch_hit", 0)
-    }
-
-    if has_point_summary {
+    if Array::length(point_entries) > 0 {
       has_point_map = true
       let mut j = 0
       while j < Array::length(point_entries) {
@@ -537,18 +624,16 @@ export let build_suite_report_from_json_texts = (inputs: Array[CoverageCaseInput
       fallback_branch_hit = fallback_branch_hit + branch_hit
     }
 
-    let (case_line_total, case_line_hit) = normalize_line_stats(raw_obj, stats_obj)
+    let case_line_total = parsed.line_total
+    let case_line_hit = parsed.line_hit
     line_total = line_total + case_line_total
     line_hit = line_hit + case_line_hit
 
-    let execution_obj = if obj_has_key(raw_obj, "execution") {
-      Json::get(raw_obj, "execution")
-    } else raw_obj
-    let execution_ok = obj_get_bool_or(execution_obj, "ok", true)
+    let execution_ok = parsed.execution_ok
     if not(execution_ok) {
       trap_case_count = trap_case_count + 1
     }
-    let execution_error = obj_get_str_or(execution_obj, "error", "")
+    let execution_error = parsed.execution_error
 
     let case_stats = CaseStats::{
       point_total: point_total,
@@ -563,7 +648,7 @@ export let build_suite_report_from_json_texts = (inputs: Array[CoverageCaseInput
       cases_builder,
       CoverageCase::{
         report_path: input.report_path,
-        entry_path: obj_get_str_or(raw_obj, "entry_path", ""),
+        entry_path: parsed.entry_path,
         execution_ok: execution_ok,
         execution_error: execution_error,
         stats: case_stats,
