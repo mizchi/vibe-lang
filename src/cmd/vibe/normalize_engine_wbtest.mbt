@@ -11,11 +11,7 @@ fn ne_substring_index(haystack : String, needle : String) -> Int {
   let mut i = 0
   let limit = h_len - n_len
   while i <= limit {
-    let slice = try haystack[i:i + n_len] catch {
-      _ => ""
-    } noraise {
-      value => value.to_string()
-    }
+    let slice = try { haystack[i:i + n_len].to_string() } catch { _ => "" }
     if slice == needle {
       return i
     }

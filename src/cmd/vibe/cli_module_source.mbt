@@ -17,7 +17,7 @@ fn module_source_slice_by_span(source : String, start : Int, end : Int) -> Strin
   if stop <= s {
     return ""
   }
-  source[s:stop].to_string()
+  try { source[s:stop].to_string() } catch { _ => "" }
 }
 
 ///|

@@ -1,0 +1,571 @@
+//# Types
+
+export enum Re {
+  RChar(Int);
+  RDot;
+  RSeq(Array[Re]);
+  RAlt(Re, Re);
+  RStar(Re);
+  RPlus(Re);
+  ROpt(Re);
+  RClass(Array[(Int, Int)]);
+  RNClass(Array[(Int, Int)]);
+  RAnchorStart;
+  RAnchorEnd
+}
+
+//# Functions
+
+let char_at = (s: String, idx: Int) -> String {
+  String::substring(s, idx, idx + 1)
+}
+
+let in_ranges = (c: Int, ranges: Array[(Int, Int)]) -> Bool {
+  let len = Array::length(ranges)
+  let rec check = (i: Int) -> Bool {
+    if i >= len {
+      false
+    }
+    else {
+      let (lo, hi) = Array::get(ranges, i)
+      if c >= lo && c <= hi {
+        true
+      } else {
+        check(i + 1)
+      }
+    }
+  }
+  check(0)
+}
+
+let char_at_code = (s: String, idx: Int) -> Int {
+  String::char_code_at(s, idx)
+}
+
+let rec match_engine = (re: Re, s: String, pos: Int, mode: Int, parts: Array[Re], idx: Int, collector: Array[Int]) -> Int {
+  let len = String::length(s)
+  if mode == 2 {
+    Array::push(collector, pos)
+    let r = match_engine(re, s, pos, 0, parts, 0, collector)
+    if r > pos {
+      match_engine(re, s, r, 2, parts, idx, collector)
+    } else {
+      Array::length(collector)
+    }
+  } else if mode == 1 {
+    let part_count = Array::length(parts)
+    if idx >= part_count {
+      pos
+    }
+    else {
+      let part = Array::get(parts, idx)
+      match part {
+        RStar(inner) => {
+          let positions = Array::slice([
+            0
+          ], 0, 0)
+          let _ = match_engine(inner, s, pos, 2, parts, idx, positions)
+          let plen = Array::length(positions)
+          let mut pi = plen - 1
+          let mut bt_result = -1
+          while pi >= 0 && bt_result < 0 {
+            let p = Array::get(positions, pi)
+            let dummy_c = Array::slice([
+              0
+            ], 0, 0)
+            let r = match_engine(RDot, s, p, 1, parts, idx + 1, dummy_c)
+            if r >= 0 {
+              bt_result = r
+            }
+            else {
+              pi = pi - 1
+            }
+          }
+          bt_result
+        },
+        RPlus(inner) => {
+          let positions = Array::slice([
+            0
+          ], 0, 0)
+          let _ = match_engine(inner, s, pos, 2, parts, idx, positions)
+          let plen = Array::length(positions)
+          if plen < 2 {
+            -1
+          }
+          else {
+            let mut pi = plen - 1
+            let mut bt_result = -1
+            while pi >= 1 && bt_result < 0 {
+              let p = Array::get(positions, pi)
+              let dummy_c = Array::slice([
+                0
+              ], 0, 0)
+              let r = match_engine(RDot, s, p, 1, parts, idx + 1, dummy_c)
+              if r >= 0 {
+                bt_result = r
+              }
+              else {
+                pi = pi - 1
+              }
+            }
+            bt_result
+          }
+        },
+        ROpt(inner) => {
+          let r1 = match_engine(inner, s, pos, 0, parts, 0, collector)
+          if r1 >= 0 {
+            let rest = match_engine(re, s, r1, 1, parts, idx + 1, collector)
+            if rest >= 0 {
+              rest
+            }
+            else {
+              match_engine(re, s, pos, 1, parts, idx + 1, collector)
+            }
+          } else {
+            match_engine(re, s, pos, 1, parts, idx + 1, collector)
+          }
+        },
+        _ => {
+          let r = match_engine(part, s, pos, 0, parts, 0, collector)
+          if r < 0 {
+            -1
+          }
+          else {
+            match_engine(re, s, r, 1, parts, idx + 1, collector)
+          }
+        }
+      }
+    }
+  } else {
+    match re {
+      RChar(c) => if pos < len && char_at_code(s, pos) == c {
+        pos + 1
+      } else {
+        -1
+      },
+      RDot => if pos < len {
+        pos + 1
+      } else {
+        -1
+      },
+      RClass(ranges) => if pos < len && in_ranges(char_at_code(s, pos), ranges) {
+        pos + 1
+      } else {
+        -1
+      },
+      RNClass(ranges) => if pos < len && not(in_ranges(char_at_code(s, pos), ranges)) {
+        pos + 1
+      } else {
+        -1
+      },
+      RAnchorStart => if pos == 0 {
+        pos
+      } else {
+        -1
+      },
+      RAnchorEnd => if pos == len {
+        pos
+      } else {
+        -1
+      },
+      RSeq(seq_parts) => match_engine(re, s, pos, 1, seq_parts, 0, collector),
+      RAlt(a, b) => {
+        let r = match_engine(a, s, pos, 0, parts, 0, collector)
+        if r >= 0 {
+          r
+        } else {
+          match_engine(b, s, pos, 0, parts, 0, collector)
+        }
+      },
+      RStar(inner) => {
+        let r = match_engine(inner, s, pos, 0, parts, 0, collector)
+        if r > pos {
+          match_engine(re, s, r, 0, parts, 0, collector)
+        } else {
+          pos
+        }
+      },
+      RPlus(inner) => {
+        let r = match_engine(inner, s, pos, 0, parts, 0, collector)
+        if r < 0 {
+          -1
+        }
+        else {
+          match_engine(RStar(inner), s, r, 0, parts, 0, collector)
+        }
+      },
+      ROpt(inner) => {
+        let r = match_engine(inner, s, pos, 0, parts, 0, collector)
+        if r >= 0 {
+          r
+        } else {
+          pos
+        }
+      }
+    }
+  }
+}
+
+let do_match = (re: Re, s: String, pos: Int) -> Int {
+  let dummy_parts = Array::slice([
+    RDot
+  ], 0, 0)
+  let dummy_collector = Array::slice([
+    0
+  ], 0, 0)
+  match_engine(re, s, pos, 0, dummy_parts, 0, dummy_collector)
+}
+
+export let find = (re: Re, s: String) -> Int {
+  let len = String::length(s)
+  let rec try_pos = (pos: Int) -> Int {
+    if pos > len {
+      -1
+    }
+    else {
+      let r = do_match(re, s, pos)
+      if r >= 0 {
+        pos
+      } else {
+        try_pos(pos + 1)
+      }
+    }
+  }
+  try_pos(0)
+}
+
+export let split = (re: Re, s: String) -> Array[String] {
+  let len = String::length(s)
+  let mut results = Array::slice([
+    ""
+  ], 0, 0)
+  let mut start = 0
+  let mut pos = 0
+  while pos <= len {
+    let r = do_match(re, s, pos)
+    if r >= 0 && r > pos {
+      Array::push(results, String::substring(s, start, pos))
+      start = r
+      pos = r
+    } else {
+      pos = pos + 1
+    }
+  }
+  Array::push(results, String::substring(s, start, len))
+  results
+}
+
+export let find_all = (re: Re, s: String) -> Array[String] {
+  let len = String::length(s)
+  let mut results = Array::slice([
+    ""
+  ], 0, 0)
+  let mut pos = 0
+  while pos <= len {
+    let r = do_match(re, s, pos)
+    if r >= 0 {
+      Array::push(results, String::substring(s, pos, r))
+      if r == pos {
+        pos = pos + 1
+      } else {
+        pos = r
+      }
+    } else {
+      pos = pos + 1
+    }
+  }
+  results
+}
+
+export let is_match = (re: Re, s: String) -> Bool {
+  find(re, s) >= 0
+}
+
+export let find_match = (re: Re, s: String) -> String {
+  let len = String::length(s)
+  let rec try_pos = (pos: Int) -> String {
+    if pos > len {
+      ""
+    }
+    else {
+      let r = do_match(re, s, pos)
+      if r >= 0 {
+        String::substring(s, pos, r)
+      } else {
+        try_pos(pos + 1)
+      }
+    }
+  }
+  try_pos(0)
+}
+
+export let test_match = (re: Re, s: String) -> Bool {
+  do_match(re, s, 0) == String::length(s)
+}
+
+export let replace_all = (re: Re, s: String, replacement: String) -> String {
+  let len = String::length(s)
+  let mut result = ""
+  let mut pos = 0
+  while pos <= len {
+    let r = do_match(re, s, pos)
+    if r >= 0 {
+      result = String::concat(result, replacement)
+      if r == pos {
+        if pos < len {
+          result = String::concat(result, String::substring(s, pos, pos + 1))
+        }
+        pos = pos + 1
+      } else {
+        pos = r
+      }
+    } else {
+      if pos < len {
+        result = String::concat(result, String::substring(s, pos, pos + 1))
+      }
+      pos = pos + 1
+    }
+  }
+  result
+}
+
+export let replace_first = (re: Re, s: String, replacement: String) -> String {
+  let len = String::length(s)
+  let rec try_pos = (pos: Int) -> String {
+    if pos > len {
+      s
+    }
+    else {
+      let r = do_match(re, s, pos)
+      if r >= 0 {
+        String::concat(String::concat(String::substring(s, 0, pos), replacement), String::substring(s, r, len))
+      } else {
+        try_pos(pos + 1)
+      }
+    }
+  }
+  try_pos(0)
+}
+
+let parse_class_ranges = (pattern: String, pos: Int) -> (Array[(Int, Int)], Int) {
+  let len = String::length(pattern)
+  let mut ranges = Array::slice([
+    (0, 0)
+  ], 0, 0)
+  let mut i = pos
+  while i < len && not(String::equals(char_at(pattern, i), "]")) {
+    if String::equals(char_at(pattern, i), "\\") && i + 1 < len {
+      let next = char_at(pattern, i + 1)
+      if String::equals(next, "d") {
+        Array::push(ranges, (48, 57))
+        i = i + 2
+      } else if String::equals(next, "w") {
+        Array::push(ranges, (48, 57))
+        Array::push(ranges, (65, 90))
+        Array::push(ranges, (97, 122))
+        Array::push(ranges, (95, 95))
+        i = i + 2
+      } else if String::equals(next, "s") {
+        Array::push(ranges, (9, 10))
+        Array::push(ranges, (13, 13))
+        Array::push(ranges, (32, 32))
+        i = i + 2
+      } else {
+        Array::push(ranges, (char_at_code(pattern, i + 1), char_at_code(pattern, i + 1)))
+        i = i + 2
+      }
+    } else {
+      let c = char_at_code(pattern, i)
+      if i + 2 < len && String::equals(char_at(pattern, i + 1), "-") && not(String::equals(char_at(pattern, i + 2), "]")) {
+        let c2 = char_at_code(pattern, i + 2)
+        Array::push(ranges, (c, c2))
+        i = i + 3
+      } else {
+        Array::push(ranges, (c, c))
+        i = i + 1
+      }
+    }
+  }
+  (ranges, i + 1)
+}
+
+let rec parse_impl = (pattern: String, pos: Int, mode: Int, parts_acc: Array[Re]) -> (Re, Int) {
+  let len = String::length(pattern)
+  if mode == 0 {
+    let (left, next_pos) = parse_impl(pattern, pos, 1, Array::slice([
+      RDot
+    ], 0, 0))
+    if next_pos < len && String::equals(char_at(pattern, next_pos), "|") {
+      let (right, end_pos) = parse_impl(pattern, next_pos + 1, 0, Array::slice([
+        RDot
+      ], 0, 0))
+      (RAlt(left, right), end_pos)
+    } else {
+      (left, next_pos)
+    }
+  } else if mode == 1 {
+    if pos >= len {
+      let count = Array::length(parts_acc)
+      if count == 0 {
+        (RSeq(Array::slice([
+          RDot
+        ], 0, 0)), pos)
+      }
+      else if count == 1 {
+        (Array::get(parts_acc, 0), pos)
+      }
+      else {
+        (RSeq(parts_acc), pos)
+      }
+    } else {
+      let ch = char_at(pattern, pos)
+      if String::equals(ch, ")") || String::equals(ch, "|") {
+        let count = Array::length(parts_acc)
+        if count == 0 {
+          (RSeq(Array::slice([
+            RDot
+          ], 0, 0)), pos)
+        }
+        else if count == 1 {
+          (Array::get(parts_acc, 0), pos)
+        }
+        else {
+          (RSeq(parts_acc), pos)
+        }
+      } else {
+        let (atom, next_i) = parse_impl(pattern, pos, 2, Array::slice([
+          RDot
+        ], 0, 0))
+        parse_impl(pattern, next_i, 1, Array::concat(parts_acc, [
+          atom
+        ]))
+      }
+    }
+  } else if mode == 2 {
+    let (atom, next_pos) = parse_impl(pattern, pos, 3, Array::slice([
+      RDot
+    ], 0, 0))
+    if next_pos < len {
+      let ch = char_at(pattern, next_pos)
+      if String::equals(ch, "*") {
+        (RStar(atom), next_pos + 1)
+      }
+      else if String::equals(ch, "+") {
+        (RPlus(atom), next_pos + 1)
+      }
+      else if String::equals(ch, "?") {
+        (ROpt(atom), next_pos + 1)
+      }
+      else {
+        (atom, next_pos)
+      }
+    } else {
+      (atom, next_pos)
+    }
+  } else {
+    if pos >= len {
+      (RSeq(Array::slice([
+        RDot
+      ], 0, 0)), pos)
+    } else {
+      let ch = char_at(pattern, pos)
+      if String::equals(ch, "^") {
+        (RAnchorStart, pos + 1)
+      }
+      else if String::equals(ch, "$") {
+        (RAnchorEnd, pos + 1)
+      }
+      else if String::equals(ch, "(") {
+        let (inner, end_pos) = parse_impl(pattern, pos + 1, 0, Array::slice([
+          RDot
+        ], 0, 0))
+        let skip = if end_pos < len && String::equals(char_at(pattern, end_pos), ")") {
+          end_pos + 1
+        } else {
+          end_pos
+        }
+        (inner, skip)
+      } else if String::equals(ch, "[") {
+        let negated = pos + 1 < len && String::equals(char_at(pattern, pos + 1), "^")
+        let start = if negated {
+          pos + 2
+        } else {
+          pos + 1
+        }
+        let (ranges, end_pos) = parse_class_ranges(pattern, start)
+        if negated {
+          (RNClass(ranges), end_pos)
+        } else {
+          (RClass(ranges), end_pos)
+        }
+      } else if String::equals(ch, ".") {
+        (RDot, pos + 1)
+      } else if String::equals(ch, "\\") && pos + 1 < len {
+        let next = char_at(pattern, pos + 1)
+        if String::equals(next, "d") {
+          (RClass([
+            (48, 57)
+          ]), pos + 2)
+        }
+        else if String::equals(next, "D") {
+          (RNClass([
+            (48, 57)
+          ]), pos + 2)
+        }
+        else if String::equals(next, "w") {
+          (RClass([
+            (48, 57),
+            (65, 90),
+            (97, 122),
+            (95, 95)
+          ]), pos + 2)
+        }
+        else if String::equals(next, "W") {
+          (RNClass([
+            (48, 57),
+            (65, 90),
+            (97, 122),
+            (95, 95)
+          ]), pos + 2)
+        }
+        else if String::equals(next, "s") {
+          (RClass([
+            (32, 32),
+            (9, 9),
+            (10, 10),
+            (13, 13)
+          ]), pos + 2)
+        }
+        else if String::equals(next, "S") {
+          (RNClass([
+            (32, 32),
+            (9, 9),
+            (10, 10),
+            (13, 13)
+          ]), pos + 2)
+        }
+        else if String::equals(next, "t") {
+          (RChar(9), pos + 2)
+        }
+        else if String::equals(next, "n") {
+          (RChar(10), pos + 2)
+        }
+        else if String::equals(next, "r") {
+          (RChar(13), pos + 2)
+        }
+        else {
+          (RChar(char_at_code(pattern, pos + 1)), pos + 2)
+        }
+      } else {
+        (RChar(char_at_code(pattern, pos)), pos + 1)
+      }
+    }
+  }
+}
+
+export let compile = (pattern: String) -> Re {
+  let (re, _) = parse_impl(pattern, 0, 0, Array::slice([
+    RDot
+  ], 0, 0))
+  re
+}

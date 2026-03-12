@@ -5,6 +5,7 @@ pub fn exec_available() -> Bool {
 
 ///|
 #borrow(cmd_ptr)
+#borrow(cmd_ptr, buf, out_len)
 extern "c" fn c_popen_exec(
   cmd_ptr : Bytes,
   cmd_len : Int,

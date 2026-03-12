@@ -55,9 +55,9 @@ pub fn extract_let_name_line(line : String) -> String? {
   if not(t.has_prefix("let ")) {
     return None
   }
-  let mut rest = (try! t[4:]).trim().to_string()
+  let mut rest = try { t[4:].trim().to_string() } catch { _ => "" }
   if rest.has_prefix("rec ") {
-    rest = (try! rest[4:]).trim().to_string()
+    rest = try { rest[4:].trim().to_string() } catch { _ => "" }
   }
   let out = StringBuilder::new()
   for _, c in rest {

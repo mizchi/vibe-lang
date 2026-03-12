@@ -41,7 +41,7 @@ pub fn format_error_for_repl(
         // Shift span back by prefix length and render against original source
         let suffix_len = 2 // strip " }" suffix
         let end = source.length() - suffix_len
-        let original = source[offset:end].to_string() catch { _ => source }
+        let original = try { source[offset:end].to_string() } catch { _ => source }
         let shifted = match diag.span {
           Some(span) =>
             @core.Diagnostic::{

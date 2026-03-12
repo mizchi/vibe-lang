@@ -1,0 +1,306 @@
+//# Types
+
+// Random state (seed)
+export enum Rng {
+  Rng(Int)
+}
+
+// Result of a property check
+export enum QcResult {
+  QcOk;
+  QcFail(String)
+}
+
+//# Functions
+
+export let is_ok = (result: QcResult) -> Bool {
+  match result {
+    QcOk => true,
+    QcFail(_) => false
+  }
+}
+
+let mask31: Int = 2147483647
+
+export let rng_new = (seed: Int) -> Rng {
+  let s = seed&mask31
+  if s == 0 {
+    Rng(1)
+  } else {
+    Rng(s)
+  }
+}
+
+export let fail_msg = (result: QcResult) -> String {
+  match result {
+    QcOk => "",
+    QcFail(msg) => msg
+  }
+}
+
+export let show_bool = (b: Bool) -> String {
+  if b {
+    "true"
+  } else {
+    "false"
+  }
+}
+
+let digit_char = (d: Int) -> String {
+  match d {
+    0 => "0",
+    1 => "1",
+    2 => "2",
+    3 => "3",
+    4 => "4",
+    5 => "5",
+    6 => "6",
+    7 => "7",
+    8 => "8",
+    _ => "9"
+  }
+}
+
+export let show_int = (n: Int) -> String {
+  if n == 0 {
+    "0"
+  }
+  else {
+    let neg = n < 0
+    let mut v = if neg {
+      0 - n
+    } else {
+      n
+    }
+    let mut s = ""
+    while v > 0 {
+      s = String::concat(digit_char(v - (v / 10) * 10), s)
+      v = v / 10
+    }
+    if neg {
+      String::concat("-", s)
+    } else {
+      s
+    }
+  }
+}
+
+let xorshift31 = (state: Int) -> Int {
+  let mut x = state&mask31
+  if x == 0 {
+    x = 1
+  }
+  x = x^(x<<13)
+  x = x^(x>>17)
+  x = x^(x<<5)
+  x&mask31
+}
+
+export let rng_next = (rng: Rng) -> (Int, Rng) {
+  match rng {
+    Rng(s) => {
+      let next = xorshift31(s)
+      (next, Rng(next))
+    }
+  }
+}
+
+// Generate Bool
+export let gen_bool = (rng: Rng) -> (Bool, Rng) {
+  let (n, r2) = rng_next(rng)
+  ((n&1) == 0, r2)
+}
+
+// Run a property test with Bool argument
+export let check_bool = (name: String, seed: Int, count: Int, prop: (Bool) -> Bool) -> QcResult {
+  let mut r = rng_new(seed)
+  let mut i = 0
+  let mut fail_msg = ""
+  while i < count && String::equals(fail_msg, "") {
+    let (v, r2) = gen_bool(r)
+    r = r2
+    if not(prop(v)) {
+      fail_msg = String::concat(String::concat(String::concat(name, ": failed for "), show_bool(v)), String::concat(" (iteration ", String::concat(show_int(i), ")")))
+    }
+    i = i + 1
+  }
+  if String::equals(fail_msg, "") {
+    QcOk
+  } else {
+    QcFail(fail_msg)
+  }
+}
+
+// Generate Int in [lo, hi] inclusive
+export let gen_int_range = (rng: Rng, lo: Int, hi: Int) -> (Int, Rng) {
+  let (raw, r2) = rng_next(rng)
+  let range = hi - lo + 1
+  let pos = raw&mask31
+  let val = if range <= 0 {
+    lo
+  } else {
+    lo + pos - (pos / range) * range
+  }
+  (val, r2)
+}
+
+// Generate Int in full range [-1000, 1000] (small ints for testing)
+export let gen_int = (rng: Rng) -> (Int, Rng) {
+  gen_int_range(rng, -1000, 1000)
+}
+
+// Generate non-negative Int [0, 1000]
+export let gen_nat = (rng: Rng) -> (Int, Rng) {
+  gen_int_range(rng, 0, 1000)
+}
+
+// Run a property test with Int argument
+export let check_int = (name: String, seed: Int, count: Int, prop: (Int) -> Bool) -> QcResult {
+  let mut r = rng_new(seed)
+  let mut i = 0
+  let mut fail_msg = ""
+  while i < count && String::equals(fail_msg, "") {
+    let (v, r2) = gen_int(r)
+    r = r2
+    if not(prop(v)) {
+      fail_msg = String::concat(String::concat(String::concat(name, ": failed for "), show_int(v)), String::concat(" (iteration ", String::concat(show_int(i), ")")))
+    }
+    i = i + 1
+  }
+  if String::equals(fail_msg, "") {
+    QcOk
+  } else {
+    QcFail(fail_msg)
+  }
+}
+
+// Run a property test with nat (non-negative Int [0,1000]) argument
+export let check_nat = (name: String, seed: Int, count: Int, prop: (Int) -> Bool) -> QcResult {
+  let mut r = rng_new(seed)
+  let mut i = 0
+  let mut fail_msg = ""
+  while i < count && String::equals(fail_msg, "") {
+    let (v, r2) = gen_nat(r)
+    r = r2
+    if not(prop(v)) {
+      fail_msg = String::concat(String::concat(String::concat(name, ": failed for "), show_int(v)), String::concat(" (iteration ", String::concat(show_int(i), ")")))
+    }
+    i = i + 1
+  }
+  if String::equals(fail_msg, "") {
+    QcOk
+  } else {
+    QcFail(fail_msg)
+  }
+}
+
+// Run a property test with (Int, Int) arguments
+export let check_int2 = (name: String, seed: Int, count: Int, prop: (Int, Int) -> Bool) -> QcResult {
+  let mut r = rng_new(seed)
+  let mut i = 0
+  let mut fail_msg = ""
+  while i < count && String::equals(fail_msg, "") {
+    let (a, r1) = gen_int(r)
+    let (b, r2) = gen_int(r1)
+    r = r2
+    if not(prop(a, b)) {
+      fail_msg = String::concat(String::concat(String::concat(name, ": failed for ("), String::concat(show_int(a), String::concat(", ", show_int(b)))), String::concat(") (iteration ", String::concat(show_int(i), ")")))
+    }
+    i = i + 1
+  }
+  if String::equals(fail_msg, "") {
+    QcOk
+  } else {
+    QcFail(fail_msg)
+  }
+}
+
+// Generate Array[Int] of length [0, max_len]
+export let gen_int_array = (rng: Rng, max_len: Int) -> (Array[Int], Rng) {
+  let (alen, r1) = gen_int_range(rng, 0, max_len)
+  let mut r = r1
+  let mut arr = Array::slice([
+    0
+  ], 0, 0)
+  let mut i = 0
+  while i < alen {
+    let (v, r2) = gen_int(r)
+    Array::push(arr, v)
+    r = r2
+    i = i + 1
+  }
+  (arr, r)
+}
+
+let gen_ascii_code = (rng: Rng) -> (Int, Rng) {
+  gen_int_range(rng, 97, 122)
+}
+
+// Generate a String of length [0, max_len]
+export let gen_string = (rng: Rng, max_len: Int) -> (String, Rng) {
+  let (slen, r1) = gen_int_range(rng, 0, max_len)
+  let mut r = r1
+  let mut s = ""
+  let mut i = 0
+  while i < slen {
+    let (code, r2) = gen_ascii_code(r)
+    s = String::concat(s, String::from_char_code(code))
+    r = r2
+    i = i + 1
+  }
+  (s, r)
+}
+
+// Run a property test with String argument
+export let check_string = (name: String, seed: Int, count: Int, max_len: Int, prop: (String) -> Bool) -> QcResult {
+  let mut r = rng_new(seed)
+  let mut i = 0
+  let mut fail_msg = ""
+  while i < count && String::equals(fail_msg, "") {
+    let (s, r2) = gen_string(r, max_len)
+    r = r2
+    if not(prop(s)) {
+      fail_msg = String::concat(String::concat(String::concat(name, ": failed for \""), s), String::concat("\" (iteration ", String::concat(show_int(i), ")")))
+    }
+    i = i + 1
+  }
+  if String::equals(fail_msg, "") {
+    QcOk
+  } else {
+    QcFail(fail_msg)
+  }
+}
+
+export let show_int_array = (arr: Array[Int]) -> String {
+  let mut s = "["
+  let len = Array::length(arr)
+  let mut i = 0
+  while i < len {
+    if i > 0 {
+      s = String::concat(s, ", ")
+    }
+    s = String::concat(s, show_int(Array::get(arr, i)))
+    i = i + 1
+  }
+  String::concat(s, "]")
+}
+
+// Run a property test with Array[Int] argument
+export let check_int_array = (name: String, seed: Int, count: Int, max_len: Int, prop: (Array[Int]) -> Bool) -> QcResult {
+  let mut r = rng_new(seed)
+  let mut i = 0
+  let mut fail_msg = ""
+  while i < count && String::equals(fail_msg, "") {
+    let (arr, r2) = gen_int_array(r, max_len)
+    r = r2
+    if not(prop(arr)) {
+      fail_msg = String::concat(String::concat(String::concat(name, ": failed for "), show_int_array(arr)), String::concat(" (iteration ", String::concat(show_int(i), ")")))
+    }
+    i = i + 1
+  }
+  if String::equals(fail_msg, "") {
+    QcOk
+  } else {
+    QcFail(fail_msg)
+  }
+}

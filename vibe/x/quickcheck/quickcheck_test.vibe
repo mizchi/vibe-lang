@@ -1,0 +1,201 @@
+//# Imports
+
+import ./index.vibe {
+  QcResult, Rng, check_bool, check_int, check_int2, check_int_array, check_nat, check_string, fail_msg, gen_bool, gen_int, gen_int_array, gen_int_range, gen_nat, gen_string, is_ok, rng_new, rng_next, show_bool, show_int, show_int_array
+}
+
+//# Misc
+
+test "rng deterministic" {
+  let r1 = rng_new(42)
+  let r2 = rng_new(42)
+  let (a, _) = rng_next(r1)
+  let (b, _) = rng_next(r2)
+  assert(a == b)
+}
+
+test "rng different seeds" {
+  let (a, _) = rng_next(rng_new(1))
+  let (b, _) = rng_next(rng_new(2))
+  assert(not(a == b))
+}
+
+test "rng chained calls" {
+  let r0 = rng_new(123)
+  let (v1, r1) = rng_next(r0)
+  let (v2, r2) = rng_next(r1)
+  let (v3, _) = rng_next(r2)
+  assert(not(v1 == v2))
+  assert(not(v2 == v3))
+}
+
+test "gen_int_range stays in bounds" {
+  let mut r = rng_new(42)
+  let mut i = 0
+  while i < 100 {
+    let (v, r2) = gen_int_range(r, 10, 20)
+    assert(v >= 10)
+    assert(v <= 20)
+    r = r2
+    i = i + 1
+  }
+}
+
+test "gen_int produces values in range" {
+  let mut r = rng_new(99)
+  let mut i = 0
+  while i < 50 {
+    let (v, r2) = gen_int(r)
+    assert(v >= -1000)
+    assert(v <= 1000)
+    r = r2
+    i = i + 1
+  }
+}
+
+test "gen_nat produces non-negative" {
+  let mut r = rng_new(77)
+  let mut i = 0
+  while i < 50 {
+    let (v, r2) = gen_nat(r)
+    assert(v >= 0)
+    assert(v <= 1000)
+    r = r2
+    i = i + 1
+  }
+}
+
+test "gen_bool produces both values" {
+  let mut r = rng_new(42)
+  let mut got_true = false
+  let mut got_false = false
+  let mut i = 0
+  while i < 50 {
+    let (v, r2) = gen_bool(r)
+    if v {
+      got_true = true
+    } else {
+      got_false = true
+    }
+    r = r2
+    i = i + 1
+  }
+  assert(got_true)
+  assert(got_false)
+}
+
+test "gen_string length in bounds" {
+  let mut r = rng_new(42)
+  let mut i = 0
+  while i < 20 {
+    let (s, r2) = gen_string(r, 10)
+    assert(String::length(s) <= 10)
+    r = r2
+    i = i + 1
+  }
+}
+
+test "gen_int_array length in bounds" {
+  let mut r = rng_new(42)
+  let mut i = 0
+  while i < 20 {
+    let (arr, r2) = gen_int_array(r, 8)
+    assert(Array::length(arr) <= 8)
+    r = r2
+    i = i + 1
+  }
+}
+
+test "show_int positive" {
+  assert(String::equals(show_int(42), "42"))
+}
+
+test "show_int zero" {
+  assert(String::equals(show_int(0), "0"))
+}
+
+test "show_int negative" {
+  assert(String::equals(show_int(-7), "-7"))
+}
+
+test "show_bool" {
+  assert(String::equals(show_bool(true), "true"))
+  assert(String::equals(show_bool(false), "false"))
+}
+
+test "show_int_array" {
+  assert(String::equals(show_int_array([
+    1,
+    2,
+    3
+  ]), "[1, 2, 3]"))
+  assert(String::equals(show_int_array(Array::slice([
+    0
+  ], 0, 0)), "[]"))
+}
+
+test "check_int passes for trivial property" {
+  let result = check_int("add_zero", 42, 100, (n: Int) -> Bool {
+    n + 0 == n
+  })
+  assert(is_ok(result))
+}
+
+test "check_int2 addition commutative" {
+  let result = check_int2("commutative", 42, 100, (a: Int, b: Int) -> Bool {
+    a + b == b + a
+  })
+  assert(is_ok(result))
+}
+
+test "check_int2 multiplication commutative" {
+  let result = check_int2("mul_commut", 42, 100, (a: Int, b: Int) -> Bool {
+    a * b == b * a
+  })
+  assert(is_ok(result))
+}
+
+test "check_nat non-negative" {
+  let result = check_nat("non_neg", 42, 100, (n: Int) -> Bool {
+    n >= 0
+  })
+  assert(is_ok(result))
+}
+
+test "check_bool identity" {
+  let result = check_bool("id", 42, 100, (b: Bool) -> Bool {
+    not(not(b)) == b
+  })
+  assert(is_ok(result))
+}
+
+test "check_string non-negative length" {
+  let result = check_string("str_len", 42, 50, 20, (s: String) -> Bool {
+    String::length(s) >= 0
+  })
+  assert(is_ok(result))
+}
+
+test "check_int_array non-negative length" {
+  let result = check_int_array("arr_len", 42, 50, 10, (arr: Array[Int]) -> Bool {
+    Array::length(arr) >= 0
+  })
+  assert(is_ok(result))
+}
+
+test "check_int detects failure" {
+  let result = check_int("always_false", 42, 10, (n: Int) -> Bool {
+    n > 9999
+  })
+  assert(not(is_ok(result)))
+  let msg = fail_msg(result)
+  assert(String::contains(msg, "always_false"))
+  assert(String::contains(msg, "failed for"))
+}
+
+test "check_int2 detects failure" {
+  let result = check_int2("bad_prop", 42, 10, (a: Int, b: Int) -> Bool {
+    a == b
+  })
+  assert(not(is_ok(result)))
+}

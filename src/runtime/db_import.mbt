@@ -31,9 +31,9 @@ fn normalize_lock_path(path : String) -> String {
 ///|
 fn strip_module_ext(path : String) -> String {
   if path.has_suffix(".vibe") && path.length() > 5 {
-    (try! path[0:path.length() - 5]).to_string()
+    try { path[0:path.length() - 5].to_string() } catch { _ => path }
   } else if path.has_suffix(".xm") && path.length() > 3 {
-    (try! path[0:path.length() - 3]).to_string()
+    try { path[0:path.length() - 3].to_string() } catch { _ => path }
   } else {
     path
   }

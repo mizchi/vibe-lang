@@ -518,7 +518,7 @@ fn parse_wasm_module(bytes : Bytes) -> WasmModule raise WasmEvalError {
           if tag != 0x60 {
             // Not a func type, skip
             type_param_counts.push(0)
-            continue 0
+            continue
           }
           let param_count = sec.read_leb_u32()
           for _ in 0..<param_count {

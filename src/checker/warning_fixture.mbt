@@ -11,11 +11,7 @@ fn trim_trailing_newlines_warning(text : String) -> String {
     return text
   }
   if text.has_suffix("\n") || text.has_suffix("\r") {
-    let next = try text[:text.length() - 1] catch {
-      _ => return text
-    } noraise {
-      view => view.to_string()
-    }
+    let next = try { text[:text.length() - 1].to_string() } catch { _ => text }
     trim_trailing_newlines_warning(next)
   } else {
     text
