@@ -16,6 +16,8 @@ MIN_POINT_RATE="${VIBE_SELFHOST_SUITE_MIN_POINT_RATE:-}"
 MIN_LINE_RATE="${VIBE_SELFHOST_SUITE_MIN_LINE_RATE:-}"
 MIN_BRANCH_RATE="${VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE:-}"
 TEST_BACKEND="${VIBE_SELFHOST_SUITE_TEST_BACKEND:-compiled}"
+COLLECT_JOBS="${VIBE_SELFHOST_SUITE_COLLECT_JOBS:-}"
+REUSE_SUITE_CACHE="${VIBE_SELFHOST_SUITE_REUSE_CACHE:-1}"
 
 resolve_vibe_cmd() {
   local candidates=()
@@ -45,6 +47,96 @@ resolve_vibe_cmd() {
   VIBE_CMD=(moon run src/cmd/vibe/main.mbt --target native --)
 }
 
+is_non_negative_int() {
+  case "$1" in
+    ''|*[!0-9]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+is_positive_int() {
+  if ! is_non_negative_int "$1"; then
+    return 1
+  fi
+  [ "$1" -gt 0 ]
+}
+
+detect_default_collect_jobs() {
+  local cpus
+  cpus=""
+  if command -v nproc >/dev/null 2>&1; then
+    cpus="$(nproc || true)"
+  elif command -v sysctl >/dev/null 2>&1; then
+    cpus="$(sysctl -n hw.ncpu 2>/dev/null || true)"
+  fi
+  if ! is_positive_int "${cpus:-}"; then
+    cpus=2
+  fi
+  if [ "$cpus" -gt 4 ]; then
+    cpus=4
+  fi
+  if [ "$cpus" -lt 1 ]; then
+    cpus=1
+  fi
+  echo "$cpus"
+}
+
+cache_key_equals() {
+  local path="$1"
+  local expected="$2"
+  if [ ! -f "$path" ]; then
+    return 1
+  fi
+  [ "$(cat "$path")" = "$expected" ]
+}
+
+build_suite_cache_key() {
+  SUITE_CACHE_SOURCE_FILES="$PROJECT_ROOT/vibe/compiler/coverage_selfhost_suite_run.vibe,$PROJECT_ROOT/vibe/compiler/coverage_selfhost_suite_lib.vibe" \
+    SUITE_CACHE_TEST_BACKEND="$TEST_BACKEND" \
+    SUITE_CACHE_MIN_POINT_RATE="$MIN_POINT_RATE" \
+    SUITE_CACHE_MIN_LINE_RATE="$MIN_LINE_RATE" \
+    SUITE_CACHE_MIN_BRANCH_RATE="$MIN_BRANCH_RATE" \
+    node - "$report_list_path" <<'NODE'
+const fs = require("node:fs");
+
+const reportListPath = process.argv[2];
+const listContent = fs.readFileSync(reportListPath, "utf8");
+const reportPaths = listContent.split(/\r?\n/).filter(Boolean);
+const sourceFiles = (process.env.SUITE_CACHE_SOURCE_FILES || "")
+  .split(",")
+  .filter(Boolean);
+
+function statLine(filePath) {
+  const stat = fs.statSync(filePath);
+  return `${filePath}\t${stat.mtimeMs}\t${stat.size}`;
+}
+
+const lines = [
+  `test_backend=${process.env.SUITE_CACHE_TEST_BACKEND || ""}`,
+  `min_point_rate=${process.env.SUITE_CACHE_MIN_POINT_RATE || ""}`,
+  `min_line_rate=${process.env.SUITE_CACHE_MIN_LINE_RATE || ""}`,
+  `min_branch_rate=${process.env.SUITE_CACHE_MIN_BRANCH_RATE || ""}`,
+  `report_list=${listContent.trim()}`,
+];
+
+for (const filePath of [...reportPaths, ...sourceFiles]) {
+  lines.push(statLine(filePath));
+}
+
+process.stdout.write(lines.join("\n"));
+NODE
+}
+
+suite_cache_valid() {
+  if [ "$REUSE_SUITE_CACHE" != "1" ]; then
+    return 1
+  fi
+  if [ ! -f "$summary_path" ] || [ ! -f "$report_json_path" ] || [ ! -f "$suite_meta_path" ] || [ ! -f "$suite_status_path" ]; then
+    return 1
+  fi
+  cache_key_equals "$suite_meta_path" "$suite_cache_key"
+}
+
 entry_slug() {
   local entry="$1"
   local norm="${entry#./}"
@@ -65,6 +157,9 @@ report_path_for_entry() {
 mkdir -p "$OUT_DIR" "$SOURCE_OUT_DIR"
 cd "$PROJECT_ROOT"
 resolve_vibe_cmd
+if [ -z "$COLLECT_JOBS" ]; then
+  COLLECT_JOBS="$(detect_default_collect_jobs)"
+fi
 
 case "$EXTRA_RUN_TESTS" in
   0|1) ;;
@@ -81,6 +176,19 @@ case "$TEST_BACKEND" in
     exit 1
     ;;
 esac
+
+case "$REUSE_SUITE_CACHE" in
+  0|1) ;;
+  *)
+    echo "[selfhost suite coverage] invalid suite cache flag: $REUSE_SUITE_CACHE (expected: 0|1)" >&2
+    exit 1
+    ;;
+esac
+
+if ! is_positive_int "$COLLECT_JOBS"; then
+  echo "[selfhost suite coverage] invalid collect jobs: $COLLECT_JOBS (expected positive int)" >&2
+  exit 1
+fi
 
 extra_entries=()
 append_unique_entry() {
@@ -106,33 +214,107 @@ if [ -n "$LEGACY_EXTRA_ENTRY" ]; then
   append_unique_entry "$LEGACY_EXTRA_ENTRY"
 fi
 
-echo "[selfhost suite coverage] collect: $SELFHOST_ENTRY"
-VIBE_WASM_SOURCE_COVERAGE_DIR="$SOURCE_OUT_DIR" \
-  "$SCRIPT_DIR/coverage_wasm_source.sh" "$SELFHOST_ENTRY"
+collect_labels=()
+collect_entries=()
+collect_summary_only=()
+collect_invokes=()
+collect_run_tests=()
 
+append_collect_task() {
+  collect_labels+=("$1")
+  collect_entries+=("$2")
+  collect_summary_only+=("$3")
+  collect_invokes+=("$4")
+  collect_run_tests+=("$5")
+}
+
+run_collect_task() {
+  local idx="$1"
+  local label="${collect_labels[$idx]}"
+  local entry="${collect_entries[$idx]}"
+  local summary_only="${collect_summary_only[$idx]}"
+  local invoke_name="${collect_invokes[$idx]}"
+  local run_tests="${collect_run_tests[$idx]}"
+  echo "[selfhost suite coverage] collect: $label"
+  if [ -n "$invoke_name" ]; then
+    VIBE_WASM_SOURCE_COVERAGE_DIR="$SOURCE_OUT_DIR" \
+      VIBE_WASM_SOURCE_COVERAGE_REPORT_SUMMARY_ONLY="$summary_only" \
+      VIBE_WASM_SOURCE_COVERAGE_INVOKE="$invoke_name" \
+      VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS="$run_tests" \
+      "$SCRIPT_DIR/coverage_wasm_source.sh" "$entry"
+  else
+    VIBE_WASM_SOURCE_COVERAGE_DIR="$SOURCE_OUT_DIR" \
+      VIBE_WASM_SOURCE_COVERAGE_REPORT_SUMMARY_ONLY="$summary_only" \
+      VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS="$run_tests" \
+      "$SCRIPT_DIR/coverage_wasm_source.sh" "$entry"
+  fi
+}
+
+append_collect_task "$SELFHOST_ENTRY" "$SELFHOST_ENTRY" 0 "" 0
 if [ -n "$INDEX_INVOKE" ]; then
-  echo "[selfhost suite coverage] collect: $INDEX_ENTRY (invoke=$INDEX_INVOKE)"
-  VIBE_WASM_SOURCE_COVERAGE_DIR="$SOURCE_OUT_DIR" \
-    VIBE_WASM_SOURCE_COVERAGE_REPORT_SUMMARY_ONLY=1 \
-    VIBE_WASM_SOURCE_COVERAGE_INVOKE="$INDEX_INVOKE" \
-    "$SCRIPT_DIR/coverage_wasm_source.sh" "$INDEX_ENTRY"
+  append_collect_task "$INDEX_ENTRY (invoke=$INDEX_INVOKE)" "$INDEX_ENTRY" 1 "$INDEX_INVOKE" 0
 else
-  echo "[selfhost suite coverage] collect: $INDEX_ENTRY"
-  VIBE_WASM_SOURCE_COVERAGE_DIR="$SOURCE_OUT_DIR" \
-    VIBE_WASM_SOURCE_COVERAGE_REPORT_SUMMARY_ONLY=1 \
-    "$SCRIPT_DIR/coverage_wasm_source.sh" "$INDEX_ENTRY"
+  append_collect_task "$INDEX_ENTRY" "$INDEX_ENTRY" 1 "" 0
 fi
-
 for extra_entry in "${extra_entries[@]-}"; do
-  echo "[selfhost suite coverage] collect: $extra_entry (run_tests=$EXTRA_RUN_TESTS)"
-  VIBE_WASM_SOURCE_COVERAGE_DIR="$SOURCE_OUT_DIR" \
-    VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS="$EXTRA_RUN_TESTS" \
-    "$SCRIPT_DIR/coverage_wasm_source.sh" "$extra_entry"
+  append_collect_task "$extra_entry (run_tests=$EXTRA_RUN_TESTS)" "$extra_entry" 0 "" "$EXTRA_RUN_TESTS"
+done
+
+collect_log_dir="$OUT_DIR/.collect-logs"
+rm -rf "$collect_log_dir"
+mkdir -p "$collect_log_dir"
+cleanup_collect_logs() {
+  rm -rf "$collect_log_dir"
+}
+trap cleanup_collect_logs EXIT
+
+run_collect_batch() {
+  local start="$1"
+  local end="$2"
+  local pids=()
+  local logs=()
+  local i
+  for ((i = start; i < end; i++)); do
+    local log_path="$collect_log_dir/$i.log"
+    logs+=("$log_path")
+    run_collect_task "$i" >"$log_path" 2>&1 &
+    pids+=("$!")
+  done
+
+  local failed=0
+  local status=0
+  for ((i = 0; i < ${#pids[@]}; i++)); do
+    local wait_status=0
+    wait "${pids[$i]}" || wait_status="$?"
+    if [ "$wait_status" -ne 0 ]; then
+      failed=1
+      status="$wait_status"
+    fi
+    cat "${logs[$i]}"
+  done
+  if [ "$failed" -ne 0 ]; then
+    echo "[selfhost suite coverage] collect failed" >&2
+    exit "$status"
+  fi
+}
+
+task_count="${#collect_entries[@]}"
+task_start=0
+while [ "$task_start" -lt "$task_count" ]; do
+  task_end=$((task_start + COLLECT_JOBS))
+  if [ "$task_end" -gt "$task_count" ]; then
+    task_end="$task_count"
+  fi
+  run_collect_batch "$task_start" "$task_end"
+  task_start="$task_end"
 done
 
 report_list_path="$OUT_DIR/reports.txt"
 report_json_path="$OUT_DIR/selfhost_suite.report.json"
 summary_path="$OUT_DIR/selfhost_suite.summary.txt"
+suite_meta_path="$OUT_DIR/selfhost_suite.meta"
+suite_status_path="$OUT_DIR/selfhost_suite.status"
+suite_log_path="$OUT_DIR/selfhost_suite.log"
 
 report_paths=(
   "$(report_path_for_entry "$SELFHOST_ENTRY")"
@@ -143,14 +325,37 @@ for extra_entry in "${extra_entries[@]-}"; do
 done
 printf "%s\n" "${report_paths[@]}" >"$report_list_path"
 
-VIBE_TEST_BACKEND="$TEST_BACKEND" \
-  VIBE_SELFHOST_SUITE_REPORT_LIST="$report_list_path" \
-  VIBE_SELFHOST_SUITE_REPORT_JSON="$report_json_path" \
-  VIBE_SELFHOST_SUITE_SUMMARY="$summary_path" \
-  VIBE_SELFHOST_SUITE_MIN_POINT_RATE="$MIN_POINT_RATE" \
-  VIBE_SELFHOST_SUITE_MIN_LINE_RATE="$MIN_LINE_RATE" \
-  VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE="$MIN_BRANCH_RATE" \
-  "${VIBE_CMD[@]}" test vibe/compiler/coverage_selfhost_suite_run.vibe
+suite_cache_key="$(build_suite_cache_key)"
+
+if suite_cache_valid; then
+  echo "[selfhost suite coverage] reuse suite aggregate cache"
+  cat "$summary_path"
+  suite_status="$(cat "$suite_status_path")"
+  if [ "$suite_status" != "0" ]; then
+    if [ -f "$suite_log_path" ]; then
+      cat "$suite_log_path" >&2
+    fi
+    exit "$suite_status"
+  fi
+else
+  set +e
+  VIBE_TEST_BACKEND="$TEST_BACKEND" \
+    VIBE_SELFHOST_SUITE_REPORT_LIST="$report_list_path" \
+    VIBE_SELFHOST_SUITE_REPORT_JSON="$report_json_path" \
+    VIBE_SELFHOST_SUITE_SUMMARY="$summary_path" \
+    VIBE_SELFHOST_SUITE_MIN_POINT_RATE="$MIN_POINT_RATE" \
+    VIBE_SELFHOST_SUITE_MIN_LINE_RATE="$MIN_LINE_RATE" \
+    VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE="$MIN_BRANCH_RATE" \
+    "${VIBE_CMD[@]}" test vibe/compiler/coverage_selfhost_suite_run.vibe >"$suite_log_path" 2>&1
+  suite_status="$?"
+  set -e
+  cat "$suite_log_path"
+  printf '%s' "$suite_cache_key" >"$suite_meta_path"
+  printf '%s' "$suite_status" >"$suite_status_path"
+  if [ "$suite_status" != "0" ]; then
+    exit "$suite_status"
+  fi
+fi
 
 echo "[selfhost suite coverage] reports:"
 echo "  - $summary_path"
