@@ -7,12 +7,25 @@ import {
   buildTextReport,
   computeNextBranchEntries,
   parseArgs,
+  presetExtraEntries,
 } from "./coverage_selfhost_suite_next_branches.mjs";
 
 test("parseArgs: default path and text format", () => {
   const args = parseArgs([]);
   assert.equal(args.reportPath, "_build/coverage/selfhost-suite/selfhost_suite.report.json");
   assert.equal(args.format, "text");
+  assert.equal(args.preset, null);
+});
+
+test("parseArgs: preset branch with env format", () => {
+  const args = parseArgs(["--preset", "branch", "--format", "env"]);
+  assert.equal(args.reportPath, "_build/coverage/selfhost-suite/selfhost_suite.report.json");
+  assert.equal(args.format, "env");
+  assert.equal(args.preset, "branch");
+});
+
+test("presetExtraEntries: branch returns branch-focused preset entries", () => {
+  assert.deepEqual(presetExtraEntries("branch"), branchFocusedExtraEntries);
 });
 
 test("computeNextBranchEntries: returns missing branch-focused preset entries", () => {
@@ -51,6 +64,14 @@ test("buildTextReport: includes top gaps and suggested entries", () => {
     ],
     top_branch_gaps: [
       {
+        entry_path: "vibe/compiler/eval_selfhost_test.vibe",
+        branch_miss: 120,
+        branch_total: 400,
+        branch_hit: 280,
+      },
+    ],
+    top_non_aggregate_branch_gaps: [
+      {
         entry_path: "vibe/compiler/selfhost_stage2_coverage_run.vibe",
         branch_miss: 5354,
         branch_total: 5354,
@@ -60,6 +81,11 @@ test("buildTextReport: includes top gaps and suggested entries", () => {
   };
   const text = buildTextReport(report, "/tmp/selfhost_suite.report.json");
   assert.match(text, /top_branch_gaps:/);
+  assert.match(
+    text,
+    /vibe\/compiler\/eval_selfhost_test\.vibe 120 missed \(280\/400\)/,
+  );
+  assert.match(text, /top_non_aggregate_branch_gaps:/);
   assert.match(
     text,
     /vibe\/compiler\/selfhost_stage2_coverage_run\.vibe 5354 missed \(0\/5354\)/,
@@ -75,6 +101,14 @@ test("buildJsonReport: emits suggested entries and gaps", () => {
     cases: [{ entry_path: "vibe/compiler/eval_e2e_test.vibe" }],
     top_branch_gaps: [
       {
+        entry_path: "vibe/compiler/eval_selfhost_test.vibe",
+        branch_miss: 120,
+        branch_total: 400,
+        branch_hit: 280,
+      },
+    ],
+    top_non_aggregate_branch_gaps: [
+      {
         entry_path: "vibe/compiler/selfhost_stage2_coverage_run.vibe",
         branch_miss: 5354,
         branch_total: 5354,
@@ -85,7 +119,8 @@ test("buildJsonReport: emits suggested entries and gaps", () => {
   const jsonText = buildJsonReport(report, "/tmp/selfhost_suite.report.json");
   const parsed = JSON.parse(jsonText);
   assert.equal(parsed.report_path, "/tmp/selfhost_suite.report.json");
-  assert.equal(parsed.top_branch_gaps[0].branch_miss, 5354);
+  assert.equal(parsed.top_branch_gaps[0].branch_miss, 120);
+  assert.equal(parsed.top_non_aggregate_branch_gaps[0].branch_miss, 5354);
   assert.deepEqual(parsed.suggested_extra_entries, [
     "vibe/compiler/fixture_test.vibe",
     "vibe/compiler/eval_selfhost_test.vibe",

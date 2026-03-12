@@ -25,6 +25,7 @@ export struct CoverageCase {
   entry_path: String;
   execution_ok: Bool;
   execution_error: String;
+  summary_only: Bool;
   stats: CaseStats;
   case_branch_total: Int;
   case_branch_hit: Int;
@@ -90,6 +91,7 @@ struct ParsedCoverageCase {
   entry_path: String;
   execution_ok: Bool;
   execution_error: String;
+  summary_only: Bool;
   point_entries: Array[PointEntry];
   point_total: Int;
   point_hit: Int;
@@ -496,6 +498,7 @@ let parse_custom_case_input = (input: CoverageCaseInput) -> ParsedCoverageCase {
   let mut entry_path = ""
   let mut execution_ok = true
   let mut execution_error = ""
+  let mut summary_only = false
   let mut point_total = 0
   let mut point_hit = 0
   let mut line_total = 0
@@ -520,6 +523,8 @@ let parse_custom_case_input = (input: CoverageCaseInput) -> ParsedCoverageCase {
         execution_ok = String::equals(value, "1") || String::equals(value, "true")
       } else if String::equals(key, "execution_error") {
         execution_error = value
+      } else if String::equals(key, "summary_only") {
+        summary_only = String::equals(value, "1") || String::equals(value, "true")
       } else if String::equals(key, "point_total") {
         point_total = parse_int_or(value, 0)
       } else if String::equals(key, "point_hit") {
@@ -548,6 +553,7 @@ let parse_custom_case_input = (input: CoverageCaseInput) -> ParsedCoverageCase {
     entry_path: entry_path,
     execution_ok: execution_ok,
     execution_error: execution_error,
+    summary_only: summary_only || ((case_branch_total > 0 || case_branch_hit > 0) && branch_total == 0),
     point_entries: concat_point_entries(
       compact_point_entries(line_points, "line"),
       compact_point_entries(branch_points, "branch")
@@ -604,6 +610,7 @@ let parse_json_case_input = (input: CoverageCaseInput) -> ParsedCoverageCase wit
     entry_path: obj_get_str_or(raw_obj, "entry_path", ""),
     execution_ok: obj_get_bool_or(execution_obj, "ok", true),
     execution_error: obj_get_str_or(execution_obj, "error", ""),
+    summary_only: obj_get_bool_or(raw_obj, "summary_only", false),
     point_entries: point_entries,
     point_total: point_total,
     point_hit: point_hit,
@@ -693,6 +700,7 @@ export let build_suite_report_from_json_texts = (inputs: Array[CoverageCaseInput
         entry_path: parsed.entry_path,
         execution_ok: execution_ok,
         execution_error: execution_error,
+        summary_only: parsed.summary_only,
         stats: case_stats,
         case_branch_total: case_branch_total,
         case_branch_hit: case_branch_hit,
@@ -890,6 +898,19 @@ let branch_gap_precedes = (lhs: BranchGapEntry, rhs: BranchGapEntry) -> Bool {
   }
 }
 
+let is_non_aggregate_branch_case = (case: CoverageCase) -> Bool {
+  case.summary_only || (case.stats.branch_total <= 0 && case.case_branch_total > 0)
+}
+
+let branch_gap_entry_from_case = (case: CoverageCase) -> BranchGapEntry {
+  BranchGapEntry::{
+    entry_path: case.entry_path,
+    branch_miss: case.case_branch_total - case.case_branch_hit,
+    branch_total: case.case_branch_total,
+    branch_hit: case.case_branch_hit
+  }
+}
+
 let insert_branch_gap_entry = (
   entries: Array[BranchGapEntry],
   next: BranchGapEntry,
@@ -930,23 +951,20 @@ let insert_branch_gap_entry = (
 
 let top_branch_gap_entries = (
   cases: Array[CoverageCase],
-  limit: Int
+  limit: Int,
+  include_non_aggregate: Bool
 ) -> Array[BranchGapEntry] {
   let mut out = empty_branch_gap_entries()
   let mut i = 0
   while i < Array::length(cases) {
     let case = Array::get(cases, i)
-    let branch_miss = case.case_branch_total - case.case_branch_hit
-    out = insert_branch_gap_entry(
-      out,
-      BranchGapEntry::{
-        entry_path: case.entry_path,
-        branch_miss: branch_miss,
-        branch_total: case.case_branch_total,
-        branch_hit: case.case_branch_hit
-      },
-      limit
-    )
+    if is_non_aggregate_branch_case(case) == include_non_aggregate {
+      out = insert_branch_gap_entry(
+        out,
+        branch_gap_entry_from_case(case),
+        limit
+      )
+    }
     i = i + 1
   }
   out
@@ -1006,7 +1024,7 @@ export let build_summary_text = (report: SuiteReport, kpi: KpiResult) -> String 
   )
   ArrayBuilder::push(lines, String::concat("traps: ", __to_string(report.trap_case_count)))
 
-  let branch_gaps = top_branch_gap_entries(report.cases, 5)
+  let branch_gaps = top_branch_gap_entries(report.cases, 5, false)
   if Array::length(branch_gaps) > 0 {
     ArrayBuilder::push(lines, "top_branch_gaps:")
     let mut i = 0
@@ -1032,6 +1050,34 @@ export let build_summary_text = (report: SuiteReport, kpi: KpiResult) -> String 
         )
       )
       i = i + 1
+    }
+  }
+  let non_aggregate_branch_gaps = top_branch_gap_entries(report.cases, 5, true)
+  if Array::length(non_aggregate_branch_gaps) > 0 {
+    ArrayBuilder::push(lines, "top_non_aggregate_branch_gaps:")
+    let mut j = 0
+    while j < Array::length(non_aggregate_branch_gaps) {
+      let gap = Array::get(non_aggregate_branch_gaps, j)
+      ArrayBuilder::push(
+        lines,
+        String::concat(
+          String::concat(
+            String::concat(
+              String::concat(
+                String::concat("- ", gap.entry_path),
+                " "
+              ),
+              __to_string(gap.branch_miss)
+            ),
+            " missed ("
+          ),
+          String::concat(
+            String::concat(__to_string(gap.branch_hit), "/"),
+            String::concat(__to_string(gap.branch_total), ")")
+          )
+        )
+      )
+      j = j + 1
     }
   }
 
@@ -1136,6 +1182,7 @@ let case_json_text = (case: CoverageCase) -> String {
     json_field_text("entry_path", json_value_string(case.entry_path)),
     json_field_text("execution_ok", json_value_bool(case.execution_ok)),
     json_field_text("execution_error", json_value_string(case.execution_error)),
+    json_field_text("summary_only", json_value_bool(case.summary_only)),
     json_field_text("stats", json_object_text(stats_fields)),
     json_field_text("case_branch_total", json_value_int(case.case_branch_total)),
     json_field_text("case_branch_hit", json_value_int(case.case_branch_hit)),
@@ -1168,7 +1215,7 @@ export let suite_report_json = (report: SuiteReport, kpi: KpiResult) -> String {
   }
 
   let branch_gaps_b = ArrayBuilder::new()
-  let branch_gaps = top_branch_gap_entries(report.cases, 5)
+  let branch_gaps = top_branch_gap_entries(report.cases, 5, false)
   let mut k = 0
   while k < Array::length(branch_gaps) {
     ArrayBuilder::push(
@@ -1176,6 +1223,16 @@ export let suite_report_json = (report: SuiteReport, kpi: KpiResult) -> String {
       branch_gap_json_text(Array::get(branch_gaps, k))
     )
     k = k + 1
+  }
+  let non_aggregate_branch_gaps_b = ArrayBuilder::new()
+  let non_aggregate_branch_gaps = top_branch_gap_entries(report.cases, 5, true)
+  let mut m = 0
+  while m < Array::length(non_aggregate_branch_gaps) {
+    ArrayBuilder::push(
+      non_aggregate_branch_gaps_b,
+      branch_gap_json_text(Array::get(non_aggregate_branch_gaps, m))
+    )
+    m = m + 1
   }
   let stats_json = json_object_text([
     json_field_text("point_total", json_value_int(report.stats.point_total)),
@@ -1217,6 +1274,10 @@ export let suite_report_json = (report: SuiteReport, kpi: KpiResult) -> String {
     json_field_text(
       "top_branch_gaps",
       json_array_text(ArrayBuilder::freeze(branch_gaps_b))
+    ),
+    json_field_text(
+      "top_non_aggregate_branch_gaps",
+      json_array_text(ArrayBuilder::freeze(non_aggregate_branch_gaps_b))
     ),
     json_field_text("kpi", kpi_json)
   ])

@@ -306,6 +306,7 @@ export function buildSuiteCaseText(report, options = {}) {
   lines.push(`entry_path\t${sanitizeReportField(report.entry_path)}`);
   lines.push(`execution_ok\t${report.execution.ok ? 1 : 0}`);
   lines.push(`execution_error\t${sanitizeReportField(report.execution.error)}`);
+  lines.push(`summary_only\t${summaryOnly ? 1 : 0}`);
   lines.push(`point_total\t${pointTotal}`);
   lines.push(`point_hit\t${pointHit}`);
   lines.push(`line_total\t${lineTotal}`);
@@ -383,6 +384,35 @@ function isLineInsideListBlock(sourceLines, lineIndex, blockStartPattern) {
   return false;
 }
 
+function isSimpleArrayItemLine(trimmed) {
+  return /^(?:[A-Za-z_][A-Za-z0-9_:]*(?:\([^][]*\))?|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|-?\d+(?:\.\d+)?|true|false|null|_)\s*,?$/.test(
+    trimmed,
+  );
+}
+
+function isArrayLiteralItemLine(sourceLines, lineIndex) {
+  if (lineIndex < 0 || lineIndex >= sourceLines.length) {
+    return false;
+  }
+  const trimmed = sourceLines[lineIndex].trim();
+  if (!isSimpleArrayItemLine(trimmed)) {
+    return false;
+  }
+  for (let i = lineIndex - 1; i >= 0; i -= 1) {
+    const prev = sourceLines[i].trim();
+    if (prev.length === 0 || /^\/\//.test(prev)) {
+      continue;
+    }
+    if (/\[\s*$/.test(prev)) {
+      return true;
+    }
+    if (/^[\])}]/.test(prev)) {
+      return false;
+    }
+  }
+  return false;
+}
+
 function isImportListIdentifierLine(sourceLines, lineIndex) {
   return isLineInsideListBlock(sourceLines, lineIndex, /^import\s*\{/);
 }
@@ -422,6 +452,10 @@ export function isCoverageNoiseLine(sourceLines, lineNumber) {
     trimmed === "};" ||
     trimmed === "})" ||
     trimmed === "});" ||
+    trimmed === "," ||
+    /^\],/.test(trimmed) ||
+    /^\}\s+else\s+\{$/.test(trimmed) ||
+    /^\}\s+\{$/.test(trimmed) ||
     /^\}\s+from\b/.test(trimmed)
   ) {
     return true;
@@ -433,6 +467,9 @@ export function isCoverageNoiseLine(sourceLines, lineNumber) {
     return true;
   }
   if (isExportListIdentifierLine(sourceLines, lineIndex)) {
+    return true;
+  }
+  if (isArrayLiteralItemLine(sourceLines, lineIndex)) {
     return true;
   }
   return false;

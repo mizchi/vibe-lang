@@ -16,6 +16,7 @@ vibe_wasmtime_wasi_flags := env_var_or_default("VIBE_WASMTIME_WASI_FLAGS", "")
 moon_warn_list := env_var_or_default("VIBE_MOON_WARN_LIST", "-1-7-24-29")
 vibe_test_ulimit_n := env_var_or_default("VIBE_TEST_ULIMIT_N", "8192")
 vibe_test_jobs := env_var_or_default("VIBE_TEST_JOBS", "1")
+selfhost_suite_branch_extra_entries := `node scripts/coverage_selfhost_suite_next_branches.mjs --preset branch --format env`
 
 # Default task: check and test
 default: check test
@@ -141,11 +142,11 @@ coverage-selfhost-suite-next-branches report="_build/coverage/selfhost-suite/sel
 
 # Run branch-focused selfhost suite coverage (adds lexer/printer/eval_builtins/checker tests)
 coverage-selfhost-suite-branch:
-    VIBE_SELFHOST_SUITE_COVERAGE_DIR=_build/coverage/selfhost-suite-branch VIBE_SELFHOST_SUITE_EXTRA_ENTRIES='vibe/compiler/eval_e2e_test.vibe,vibe/compiler/fixture_test.vibe,vibe/compiler/eval_selfhost_test.vibe,vibe/compiler/eval_selfhost2_test.vibe,vibe/compiler/eval_selfhost3_test.vibe,vibe/compiler/lexer_test.vibe,vibe/compiler/printer_test.vibe,vibe/compiler/eval_builtins_test.vibe,vibe/compiler/checker_test.vibe' scripts/coverage_selfhost_suite.sh
+    VIBE_SELFHOST_SUITE_COVERAGE_DIR=_build/coverage/selfhost-suite-branch VIBE_SELFHOST_SUITE_EXTRA_ENTRIES='{{selfhost_suite_branch_extra_entries}}' scripts/coverage_selfhost_suite.sh
 
 # Run branch-focused selfhost suite coverage with KPI gate
 coverage-selfhost-suite-branch-gate point="40" line="93" branch="33":
-    VIBE_SELFHOST_SUITE_COVERAGE_DIR=_build/coverage/selfhost-suite-branch VIBE_SELFHOST_SUITE_EXTRA_ENTRIES='vibe/compiler/eval_e2e_test.vibe,vibe/compiler/fixture_test.vibe,vibe/compiler/eval_selfhost_test.vibe,vibe/compiler/eval_selfhost2_test.vibe,vibe/compiler/eval_selfhost3_test.vibe,vibe/compiler/lexer_test.vibe,vibe/compiler/printer_test.vibe,vibe/compiler/eval_builtins_test.vibe,vibe/compiler/checker_test.vibe' VIBE_SELFHOST_SUITE_MIN_POINT_RATE={{point}} VIBE_SELFHOST_SUITE_MIN_LINE_RATE={{line}} VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE={{branch}} scripts/coverage_selfhost_suite.sh
+    VIBE_SELFHOST_SUITE_COVERAGE_DIR=_build/coverage/selfhost-suite-branch VIBE_SELFHOST_SUITE_EXTRA_ENTRIES='{{selfhost_suite_branch_extra_entries}}' VIBE_SELFHOST_SUITE_MIN_POINT_RATE={{point}} VIBE_SELFHOST_SUITE_MIN_LINE_RATE={{line}} VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE={{branch}} scripts/coverage_selfhost_suite.sh
 
 # Run source-level WASM coverage for eval sidecar tests (`<db>.tests/<target>_test.vibe`)
 # env: VIBE_EVAL_COVERAGE_DIR, VIBE_WASM_SOURCE_COVERAGE_MODE, VIBE_WASM_SOURCE_COVERAGE_NO_DCE, VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP, VIBE_WASM_SOURCE_COVERAGE_DIR

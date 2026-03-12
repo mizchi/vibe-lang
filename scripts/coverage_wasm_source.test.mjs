@@ -32,6 +32,28 @@ test("isCoverageNoiseLine: block closing brace is excluded", () => {
   assert.equal(isCoverageNoiseLine(sourceLines, 3), true);
 });
 
+test("isCoverageNoiseLine: else bridge line is excluded", () => {
+  const sourceLines = [
+    "if cond {",
+    "  left()",
+    "} else {",
+    "  right()",
+    "}",
+  ];
+  assert.equal(isCoverageNoiseLine(sourceLines, 3), true);
+});
+
+test("isCoverageNoiseLine: handle bridge line is excluded", () => {
+  const sourceLines = [
+    "let ok = handle {",
+    "  run()",
+    "} {",
+    "  Error(_) => false",
+    "}",
+  ];
+  assert.equal(isCoverageNoiseLine(sourceLines, 3), true);
+});
+
 test("isCoverageNoiseLine: executable line is not excluded", () => {
   const sourceLines = [
     "test \"x\" {",
@@ -65,6 +87,40 @@ test("isCoverageNoiseLine: export list header is excluded", () => {
     "}",
   ];
   assert.equal(isCoverageNoiseLine(sourceLines, 1), true);
+});
+
+test("isCoverageNoiseLine: multiline array literal items are excluded", () => {
+  const sourceLines = [
+    "assert(tokens_match(tokens, [",
+    "  TInt(1),",
+    "  TPlus,",
+    "  TEof",
+    "]))",
+  ];
+  assert.equal(isCoverageNoiseLine(sourceLines, 2), true);
+  assert.equal(isCoverageNoiseLine(sourceLines, 3), true);
+  assert.equal(isCoverageNoiseLine(sourceLines, 4), true);
+});
+
+test("isCoverageNoiseLine: comma-only continuation line is excluded", () => {
+  const sourceLines = [
+    "match value {",
+    "  Some(result) => ok(result)",
+    "  ,",
+    "  None => false",
+    "}",
+  ];
+  assert.equal(isCoverageNoiseLine(sourceLines, 3), true);
+});
+
+test("isCoverageNoiseLine: array close continuation line is excluded", () => {
+  const sourceLines = [
+    "assert(types_equal(ty, CtFn([",
+    "  CtString,",
+    "  CtString",
+    "], CtString, false)))",
+  ];
+  assert.equal(isCoverageNoiseLine(sourceLines, 4), true);
 });
 
 test("parseArgs: --invoke can be provided multiple times", () => {
@@ -197,6 +253,7 @@ test("buildSuiteCaseText: summary-only keeps case branch stats for ranking", () 
     { summaryOnly: true },
   );
 
+  assert.match(compact, /summary_only\t1/);
   assert.match(compact, /point_total\t0/);
   assert.match(compact, /branch_total\t0/);
   assert.match(compact, /case_branch_total\t20/);
