@@ -71,6 +71,9 @@ Completed items archived from `TODO.md`.
 - **Selfhost adapter bundle 生成の exact source を補強**
   - bundle 生成時に adapter merged source の先頭空行を除去し、bundle self-test で regression を固定した
   - exact merged source は flat source としては duplicate declaration を含み不正だと切り分け、`module_source` 経由の compile path を次段の本命にした
+- **Selfhost perf KPI の stable case set を固定**
+  - `bench/selfhost_perf/cases.txt` と `bench/selfhost_perf/kpi_cases.txt` から `vibe/compiler/index.vibe` を外し、default/KPI とも stable 5-case set に揃えた
+  - `just test-selfhost-perf-gate` の既定閾値を current 実測に合わせ、compile 約4.6x / check 約2.9x の現状を継続観測できる状態へ戻した
 
 ## 2026-03-09
 

@@ -47,7 +47,8 @@ Phase 4 (応用):
   - 次は selfhost command/direct component を host CLI の一部フローへ差し込み、dual-run 対象を `check/test/release-check` へ広げながら切り替える
 
 - [ ] selfhost perf gap を cutover 可能な水準まで詰める
-  - 直近比較では host 比で compile 約4.2x、check 約3.3x 遅い
+  - stable 5-case set の直近比較では host 比で compile 約4.5x、check 約2.95x 遅い
+  - `vibe/compiler/index.vibe` は compile-lite の unsupported closure capture path をまだ踏むため、perf KPI default からは外して別測定にしている
   - grouped merge / module source / codegen cache は入っているので、次の本命は typecheck / codegen hot path の profiling と削減
 
 - [x] host `src/cmd/vibe` 側の compile/test loop にも selfhost と同じ persistent cache パターンを持ち込む
