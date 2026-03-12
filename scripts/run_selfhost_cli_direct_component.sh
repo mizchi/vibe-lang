@@ -7,12 +7,14 @@ if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 COMPONENT_PATH="$1"
 INPUT_PATH="$2"
 OUTPUT_PATH="$3"
 ENTRY_NAME="$4"
 COMPILE_MODE="${5:-mvp}"
 WASMTIME_RUN="$SCRIPT_DIR/wasmtime_run.sh"
+VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe}"
 WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y}"
 WASMTIME_WASI_FLAGS="${VIBE_WASMTIME_WASI_FLAGS:-cli=y}"
 
@@ -35,17 +37,34 @@ cleanup() {
 trap cleanup EXIT
 
 INPUT_NAME="$(basename "$INPUT_PATH")"
+PAYLOAD_NAME="input.payload"
 OUTPUT_NAME="output.wasm"
 cp -R "$INPUT_DIR"/. "$TMP_DIR/"
+
+ensure_host_vibe_bin() {
+  if [ ! -x "$VIBE_BIN" ]; then
+    moon build --target native --release --warn-list '-29-55-67-23-24-7-1' src/cmd/vibe >/dev/null
+    return
+  fi
+  if ! "$VIBE_BIN" 2>&1 | grep -q 'emit-closure-payload'; then
+    moon build --target native --release --warn-list '-29-55-67-23-24-7-1' src/cmd/vibe >/dev/null
+  fi
+}
+
+ensure_host_vibe_bin
 
 quote_string() {
   python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
 }
 
-INPUT_EXPR="$(quote_string "$INPUT_NAME")"
+INPUT_EXPR="$(quote_string "$PAYLOAD_NAME")"
 OUTPUT_EXPR="$(quote_string "$OUTPUT_NAME")"
 ENTRY_EXPR="$(quote_string "$ENTRY_NAME")"
 MODE_EXPR="$(quote_string "$COMPILE_MODE")"
+
+STAGED_INPUT_PATH="$TMP_DIR/$INPUT_NAME"
+STAGED_PAYLOAD_PATH="$TMP_DIR/$PAYLOAD_NAME"
+"$VIBE_BIN" emit-closure-payload "$STAGED_INPUT_PATH" "$STAGED_PAYLOAD_PATH"
 
 (
   cd "$TMP_DIR"

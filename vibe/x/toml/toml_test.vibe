@@ -1,0 +1,187 @@
+//# Imports
+
+import ./toml.vibe {
+  TomlValue::as_array, TomlValue::as_bool, TomlValue::as_float, TomlValue::as_int, TomlValue::as_string, TomlValue::as_table, TomlValue::get, parse
+}
+
+//# Misc
+
+test "toml parse string value" {
+  let doc = parse("title = \"TOML Example\"")
+  assert(String::equals(TomlValue::as_string(TomlValue::get(doc, "title")), "TOML Example"))
+}
+
+test "toml parse int value" {
+  let doc = parse("version = 42")
+  assert(TomlValue::as_int(TomlValue::get(doc, "version")) == 42)
+}
+
+test "toml parse bool true" {
+  let doc = parse("enabled = true")
+  assert(TomlValue::as_bool(TomlValue::get(doc, "enabled")))
+}
+
+test "toml parse bool false" {
+  let doc = parse("disabled = false")
+  assert(not(TomlValue::as_bool(TomlValue::get(doc, "disabled"))))
+}
+
+test "toml parse negative int" {
+  let doc = parse("offset = -10")
+  assert(TomlValue::as_int(TomlValue::get(doc, "offset")) == -10)
+}
+
+test "toml parse zero" {
+  let doc = parse("z = 0")
+  assert(TomlValue::as_int(TomlValue::get(doc, "z")) == 0)
+}
+
+test "toml parse float" {
+  let doc = parse("pi = 3.14")
+  let val = TomlValue::as_float(TomlValue::get(doc, "pi"))
+  assert(val > 3.13 && val < 3.15)
+}
+
+test "toml parse multiple key-values" {
+  let doc = parse("title = \"TOML Example\"\nversion = 42\nenabled = true")
+  assert(String::equals(TomlValue::as_string(TomlValue::get(doc, "title")), "TOML Example"))
+  assert(TomlValue::as_int(TomlValue::get(doc, "version")) == 42)
+  assert(TomlValue::as_bool(TomlValue::get(doc, "enabled")))
+}
+
+test "toml parse section" {
+  let doc = parse("[server]\nhost = \"localhost\"\nport = 8080")
+  let server = TomlValue::get(doc, "server")
+  assert(String::equals(TomlValue::as_string(TomlValue::get(server, "host")), "localhost"))
+  assert(TomlValue::as_int(TomlValue::get(server, "port")) == 8080)
+}
+
+test "toml multiple sections" {
+  let doc = parse("[a]\nx = 1\n[b]\ny = 2")
+  let a = TomlValue::get(doc, "a")
+  let b = TomlValue::get(doc, "b")
+  assert(TomlValue::as_int(TomlValue::get(a, "x")) == 1)
+  assert(TomlValue::as_int(TomlValue::get(b, "y")) == 2)
+}
+
+test "toml section with multiple keys" {
+  let doc = parse("[db]\nhost = \"pg\"\nport = 5432\nname = \"mydb\"\nssl = true")
+  let db = TomlValue::get(doc, "db")
+  assert(String::equals(TomlValue::as_string(TomlValue::get(db, "host")), "pg"))
+  assert(TomlValue::as_int(TomlValue::get(db, "port")) == 5432)
+  assert(String::equals(TomlValue::as_string(TomlValue::get(db, "name")), "mydb"))
+  assert(TomlValue::as_bool(TomlValue::get(db, "ssl")))
+}
+
+test "toml top level and section mixed" {
+  let doc = parse("name = \"app\"\n[server]\nport = 3000")
+  assert(String::equals(TomlValue::as_string(TomlValue::get(doc, "name")), "app"))
+  let server = TomlValue::get(doc, "server")
+  assert(TomlValue::as_int(TomlValue::get(server, "port")) == 3000)
+}
+
+test "toml parse int array" {
+  let doc = parse("tags = [1, 2, 3]")
+  let arr = TomlValue::as_array(TomlValue::get(doc, "tags"))
+  assert(Array::length(arr) == 3)
+  assert(TomlValue::as_int(Array::get(arr, 0)) == 1)
+  assert(TomlValue::as_int(Array::get(arr, 1)) == 2)
+  assert(TomlValue::as_int(Array::get(arr, 2)) == 3)
+}
+
+test "toml parse string array" {
+  let doc = parse("names = [\"alice\", \"bob\"]")
+  let arr = TomlValue::as_array(TomlValue::get(doc, "names"))
+  assert(Array::length(arr) == 2)
+  assert(String::equals(TomlValue::as_string(Array::get(arr, 0)), "alice"))
+  assert(String::equals(TomlValue::as_string(Array::get(arr, 1)), "bob"))
+}
+
+test "toml parse empty array" {
+  let doc = parse("empty = []")
+  let arr = TomlValue::as_array(TomlValue::get(doc, "empty"))
+  assert(Array::length(arr) == 0)
+}
+
+test "toml parse single element array" {
+  let doc = parse("one = [42]")
+  let arr = TomlValue::as_array(TomlValue::get(doc, "one"))
+  assert(Array::length(arr) == 1)
+  assert(TomlValue::as_int(Array::get(arr, 0)) == 42)
+}
+
+test "toml parse bool array" {
+  let doc = parse("flags = [true, false, true]")
+  let arr = TomlValue::as_array(TomlValue::get(doc, "flags"))
+  assert(Array::length(arr) == 3)
+  assert(TomlValue::as_bool(Array::get(arr, 0)))
+  assert(not(TomlValue::as_bool(Array::get(arr, 1))))
+  assert(TomlValue::as_bool(Array::get(arr, 2)))
+}
+
+test "toml escape sequences in strings" {
+  let doc = parse("msg = \"hello\\nworld\"")
+  let msg = TomlValue::as_string(TomlValue::get(doc, "msg"))
+  assert(String::contains(msg, "\n"))
+}
+
+test "toml escape tab" {
+  let doc = parse("msg = \"col1\\tcol2\"")
+  let msg = TomlValue::as_string(TomlValue::get(doc, "msg"))
+  assert(String::contains(msg, "\t"))
+}
+
+test "toml escape backslash" {
+  let doc = parse("path = \"C:\\\\Users\"")
+  let path = TomlValue::as_string(TomlValue::get(doc, "path"))
+  assert(String::contains(path, "\\"))
+}
+
+test "toml empty string value" {
+  let doc = parse("empty = \"\"")
+  assert(String::equals(TomlValue::as_string(TomlValue::get(doc, "empty")), ""))
+}
+
+test "toml comments ignored" {
+  let doc = parse("# comment\nkey = \"val\"")
+  assert(String::equals(TomlValue::as_string(TomlValue::get(doc, "key")), "val"))
+}
+
+test "toml empty lines ignored" {
+  let doc = parse("\n\nkey = 1\n\n")
+  assert(TomlValue::as_int(TomlValue::get(doc, "key")) == 1)
+}
+
+test "toml get missing key returns empty string" {
+  let doc = parse("a = 1")
+  assert(String::equals(TomlValue::as_string(TomlValue::get(doc, "missing")), ""))
+}
+
+test "toml as_int on missing returns 0" {
+  let doc = parse("a = 1")
+  assert(TomlValue::as_int(TomlValue::get(doc, "missing")) == 0)
+}
+
+test "toml as_bool on missing returns false" {
+  let doc = parse("a = 1")
+  assert(not(TomlValue::as_bool(TomlValue::get(doc, "missing"))))
+}
+
+test "toml as_table returns entries" {
+  let doc = parse("[cfg]\nk = \"v\"")
+  let entries = TomlValue::as_table(TomlValue::get(doc, "cfg"))
+  assert(Array::length(entries) == 1)
+  let (k, v) = Array::get(entries, 0)
+  assert(String::equals(k, "k"))
+  assert(String::equals(TomlValue::as_string(v), "v"))
+}
+
+test "toml realistic package config" {
+  let input = "name = \"my-app\"\nversion = 1\n[dependencies]\nfoo = 2\nbar = 3"
+  let doc = parse(input)
+  assert(String::equals(TomlValue::as_string(TomlValue::get(doc, "name")), "my-app"))
+  assert(TomlValue::as_int(TomlValue::get(doc, "version")) == 1)
+  let deps = TomlValue::get(doc, "dependencies")
+  assert(TomlValue::as_int(TomlValue::get(deps, "foo")) == 2)
+  assert(TomlValue::as_int(TomlValue::get(deps, "bar")) == 3)
+}

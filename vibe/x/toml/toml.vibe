@@ -1,0 +1,322 @@
+//# Types
+
+export enum TomlValue {
+  TString(String);
+  TInt(Int);
+  TFloat(Double);
+  TBool(Bool);
+  TArray(Array[TomlValue]);
+  TTable(Array[(String, TomlValue)])
+}
+
+//# Functions
+
+let char_at = (s: String, idx: Int) -> String {
+  String::substring(s, idx, idx + 1)
+}
+
+let is_digit = (ch: String) -> Bool {
+  let c = String::char_code_at(ch, 0)
+  c >= 48 && c <= 57
+}
+
+let trim_line = (line: String) -> String {
+  String::trim(line)
+}
+
+let check_float = (s: String, pos: Int) -> Bool {
+  let len = String::length(s)
+  let mut idx = pos
+  let mut has_dot = false
+  let mut valid = true
+  if idx < len && (String::equals(char_at(s, idx), "-") || String::equals(char_at(s, idx), "+")) {
+    idx = idx + 1
+  }
+  while idx < len && valid {
+    let ch = char_at(s, idx)
+    if String::equals(ch, ".") {
+      has_dot = true
+    } else if not(is_digit(ch)) && not(String::equals(ch, "_")) {
+      valid = false
+    }
+    idx = idx + 1
+  }
+  has_dot && valid
+}
+
+let split_lines = (text: String) -> Array[String] {
+  let len = String::length(text)
+  let mut lines = Array::slice([
+    ""
+  ], 0, 0)
+  let mut start = 0
+  let mut idx = 0
+  while idx < len {
+    let ch = char_at(text, idx)
+    if String::equals(ch, "\n") {
+      Array::push(lines, String::substring(text, start, idx))
+      start = idx + 1
+    }
+    idx = idx + 1
+  }
+  if start <= len {
+    Array::push(lines, String::substring(text, start, len))
+  }
+  lines
+}
+
+let parse_int_val = (s: String) -> Int {
+  let len = String::length(s)
+  let mut result = 0
+  let mut idx = 0
+  let is_neg = String::length(s) > 0 && String::equals(char_at(s, 0), "-")
+  if is_neg {
+    idx = 1
+  }
+  if String::length(s) > 0 && String::equals(char_at(s, 0), "+") {
+    idx = 1
+  }
+  while idx < len {
+    let c = String::char_code_at(s, idx)
+    if c >= 48 && c <= 57 {
+      result = result * 10 + (c - 48)
+    }
+    idx = idx + 1
+  }
+  if is_neg {
+    0 - result
+  } else {
+    result
+  }
+}
+
+let parse_float_simple = (s: String) -> Double {
+  let dot = String::index_of(s, ".")
+  let int_part = parse_int_val(String::substring(s, 0, dot))
+  let frac_str = String::substring(s, dot + 1, String::length(s))
+  let frac_int = parse_int_val(frac_str)
+  let frac_len = String::length(frac_str)
+  let mut divisor = 1.0
+  let mut idx = 0
+  while idx < frac_len {
+    divisor = divisor * 10.0
+    idx = idx + 1
+  }
+  Int::to_double(int_part) + Int::to_double(frac_int) / divisor
+}
+
+let parse_quoted_string = (line: String, pos: Int) -> (String, Int) {
+  let quote = char_at(line, pos)
+  let len = String::length(line)
+  let mut end = pos + 1
+  let mut result = ""
+  while end < len && not(String::equals(char_at(line, end), quote)) {
+    if String::equals(char_at(line, end), "\\") && end + 1 < len {
+      let next = char_at(line, end + 1)
+      if String::equals(next, "n") {
+        result = String::concat(result, "\n")
+      } else if String::equals(next, "t") {
+        result = String::concat(result, "\t")
+      } else if String::equals(next, "\\") {
+        result = String::concat(result, "\\")
+      } else if String::equals(next, "\"") {
+        result = String::concat(result, "\"")
+      } else {
+        result = String::concat(String::concat(result, "\\"), next)
+      }
+      end = end + 2
+    } else {
+      result = String::concat(result, char_at(line, end))
+      end = end + 1
+    }
+  }
+  (result, end + 1)
+  // skip closing quote
+}
+
+let rec find_top_level_comma = (s: String, pos: Int, depth: Int) -> Int {
+  let len = String::length(s)
+  if pos >= len {
+    -1
+  } else {
+    let ch = char_at(s, pos)
+    if String::equals(ch, "[") {
+      find_top_level_comma(s, pos + 1, depth + 1)
+    } else if String::equals(ch, "]") {
+      find_top_level_comma(s, pos + 1, depth - 1)
+    } else if String::equals(ch, ",") && depth == 0 {
+      pos
+    } else find_top_level_comma(s, pos + 1, depth)
+  }
+}
+
+let rec parse_value = (raw: String) -> TomlValue {
+  let s = String::trim(raw)
+  let len = String::length(s)
+  if len == 0 {
+    TString("")
+  } else if String::equals(s, "true") {
+    TBool(true)
+  } else if String::equals(s, "false") {
+    TBool(false)
+  } else if String::equals(char_at(s, 0), "\"") {
+    let (str_val, _) = parse_quoted_string(s, 0)
+    TString(str_val)
+  } else if String::equals(char_at(s, 0), "'") {
+    let end = String::index_of(String::substring(s, 1, len), "'")
+    if end >= 0 {
+      TString(String::substring(s, 1, end + 1))
+    } else TString(String::substring(s, 1, len))
+  } else if String::equals(char_at(s, 0), "[") {
+    let inner = String::trim(String::substring(s, 1, len - 1))
+    if String::length(inner) == 0 {
+      TArray(Array::slice([
+        TBool(false)
+      ], 0, 0))
+    } else {
+      let mut items = Array::slice([
+        TBool(false)
+      ], 0, 0)
+      let mut arr_rest = inner
+      while String::length(arr_rest) > 0 {
+        let trimmed = String::trim(arr_rest)
+        if String::length(trimmed) == 0 {
+          arr_rest = ""
+        } else {
+          let comma = find_top_level_comma(trimmed, 0, 0)
+          let (item_str, new_rest) = if comma >= 0 {
+            (String::substring(trimmed, 0, comma), String::substring(trimmed, comma + 1, String::length(trimmed)))
+          } else {
+            (trimmed, "")
+          }
+          Array::push(items, parse_value(item_str))
+          arr_rest = new_rest
+        }
+      }
+      TArray(items)
+    }
+  } else if String::contains(s, ".") && not(String::equals(char_at(s, 0), "-")) && not(String::equals(char_at(s, 0), "+")) {
+    let has_only_digits_dot = check_float(s, 0)
+    if has_only_digits_dot {
+      TFloat(parse_float_simple(s))
+    } else TString(s)
+  } else if is_digit(char_at(s, 0)) || String::equals(char_at(s, 0), "-") || String::equals(char_at(s, 0), "+") {
+    TInt(parse_int_val(s))
+  } else TString(s)
+}
+
+export let parse = (text: String) -> TomlValue {
+  let lines = split_lines(text)
+  let line_count = Array::length(lines)
+  let mut entries = Array::slice([
+    ("", TBool(false))
+  ], 0, 0)
+  let mut current_section = ""
+  let mut section_entries = Array::slice([
+    ("", TBool(false))
+  ], 0, 0)
+  let mut idx = 0
+  while idx < line_count {
+    let raw_line = Array::get(lines, idx)
+    let line = trim_line(raw_line)
+    let line_len = String::length(line)
+    if line_len == 0 || String::equals(char_at(line, 0), "#") {
+      idx = idx + 1
+    } else if String::equals(char_at(line, 0), "[") && not(String::equals(String::substring(line, 0, 2), "[[")) {
+      if String::length(current_section) > 0 {
+        Array::push(entries, (current_section, TTable(section_entries)))
+        section_entries = Array::slice([
+          ("", TBool(false))
+        ], 0, 0)
+      }
+      let close = String::index_of(line, "]")
+      current_section = String::trim(String::substring(line, 1, close))
+      idx = idx + 1
+    } else {
+      let eq_pos = String::index_of(line, "=")
+      if eq_pos > 0 {
+        let key = String::trim(String::substring(line, 0, eq_pos))
+        let val_str = String::trim(String::substring(line, eq_pos + 1, line_len))
+        let value = parse_value(val_str)
+        if String::length(current_section) > 0 {
+          Array::push(section_entries, (key, value))
+        } else {
+          Array::push(entries, (key, value))
+        }
+      }
+      idx = idx + 1
+    }
+  }
+  if String::length(current_section) > 0 {
+    Array::push(entries, (current_section, TTable(section_entries)))
+  }
+  TTable(entries)
+}
+
+export let TomlValue::get = (table: TomlValue, key: String) -> TomlValue {
+  match table {
+    TTable(entries) => {
+      let len = Array::length(entries)
+      let rec find = (i: Int) -> TomlValue {
+        if i >= len {
+          TString("")
+        } else {
+          let (k, v) = Array::get(entries, i)
+          if String::equals(k, key) {
+            v
+          } else {
+            find(i + 1)
+          }
+        }
+      }
+      find(0)
+    },
+    _ => TString("")
+  }
+}
+
+export let TomlValue::as_int = (v: TomlValue) -> Int {
+  match v {
+    TInt(n) => n,
+    _ => 0
+  }
+}
+
+export let TomlValue::as_bool = (v: TomlValue) -> Bool {
+  match v {
+    TBool(b) => b,
+    _ => false
+  }
+}
+
+export let TomlValue::as_array = (v: TomlValue) -> Array[TomlValue] {
+  match v {
+    TArray(arr) => arr,
+    _ => Array::slice([
+      TBool(false)
+    ], 0, 0)
+  }
+}
+
+export let TomlValue::as_float = (v: TomlValue) -> Double {
+  match v {
+    TFloat(f) => f,
+    _ => 0.0
+  }
+}
+
+export let TomlValue::as_table = (v: TomlValue) -> Array[(String, TomlValue)] {
+  match v {
+    TTable(entries) => entries,
+    _ => Array::slice([
+      ("", TBool(false))
+    ], 0, 0)
+  }
+}
+
+export let TomlValue::as_string = (v: TomlValue) -> String {
+  match v {
+    TString(s) => s,
+    _ => ""
+  }
+}

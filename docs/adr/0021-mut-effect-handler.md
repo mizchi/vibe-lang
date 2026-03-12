@@ -13,7 +13,7 @@
 ### 現在の実装状況
 
 - `let mut` は実装済み（ADR-0017 の項目 1）
-- `Ref[T]` は ADR-0017 で accepted だが**未実装**
+- `Ref[T]` は ADR-0017 で当初 accepted だったが **abandoned** (本 ADR の Effect Handler で代替)
 - `EHandle(Expr, Array[(Pat, Expr)])` は実装済みだが、エフェクト名の区別はなく
   `in_effect: Bool` フラグでの二値チェックのみ
 - `perform`/`resume` は `examples/perform_handle.vibe` に関数呼び出し形式の

@@ -15,6 +15,7 @@ EXTRA_RUN_TESTS="${VIBE_SELFHOST_SUITE_ENTRY_EXTRA_RUN_TESTS:-1}"
 MIN_POINT_RATE="${VIBE_SELFHOST_SUITE_MIN_POINT_RATE:-}"
 MIN_LINE_RATE="${VIBE_SELFHOST_SUITE_MIN_LINE_RATE:-}"
 MIN_BRANCH_RATE="${VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE:-}"
+TEST_BACKEND="${VIBE_SELFHOST_SUITE_TEST_BACKEND:-compiled}"
 
 resolve_vibe_cmd() {
   local candidates=()
@@ -69,6 +70,14 @@ case "$EXTRA_RUN_TESTS" in
   0|1) ;;
   *)
     echo "[selfhost suite coverage] invalid extra run-tests flag: $EXTRA_RUN_TESTS (expected: 0|1)" >&2
+    exit 1
+    ;;
+esac
+
+case "$TEST_BACKEND" in
+  compiled|interpreter|auto) ;;
+  *)
+    echo "[selfhost suite coverage] invalid test backend: $TEST_BACKEND (expected: compiled|interpreter|auto)" >&2
     exit 1
     ;;
 esac
@@ -134,7 +143,7 @@ for extra_entry in "${extra_entries[@]-}"; do
 done
 printf "%s\n" "${report_paths[@]}" >"$report_list_path"
 
-VIBE_TEST_BACKEND=interpreter \
+VIBE_TEST_BACKEND="$TEST_BACKEND" \
   VIBE_SELFHOST_SUITE_REPORT_LIST="$report_list_path" \
   VIBE_SELFHOST_SUITE_REPORT_JSON="$report_json_path" \
   VIBE_SELFHOST_SUITE_SUMMARY="$summary_path" \

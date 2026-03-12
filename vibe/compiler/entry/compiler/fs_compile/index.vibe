@@ -16,6 +16,10 @@ import ../../../codegen/index.vibe {
   compile_module, compile_wasi_module
 }
 
+import ../../../codegen/wasi/index.vibe {
+  compile_wasi_module_impl
+}
+
 import ../../../checker/checker_stmt.vibe {
   check_program
 }
@@ -615,6 +619,42 @@ export let compile_with_closure_sources_wasi_cached = (
       let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
       let bytes = compile_wasi_module(pruned_stmts, entry_name)
       (bytes, db_store_artifact(next_db, main_path, "wasi", entry_name, artifact_fingerprint, bytes))
+    }
+  }
+}
+
+export let compile_with_closure_sources_wasi_mode_cached = (
+  db: TypeDb,
+  main_source: String,
+  main_path: String,
+  sources: Array[(String, String)],
+  entry_name: String,
+  mode: String
+) -> (Bytes, TypeDb) with { Error } {
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
+  let next_db = prepare_modules_cached(db, main_path, main_source, ordered_sources)
+  let merge_fingerprint = build_merge_fingerprint_inline(ordered_sources)
+  let artifact_kind = if String::equals(mode, "mvp") {
+    "wasi-mvp"
+  } else if String::equals(mode, "no-dce") {
+    "wasi"
+  } else {
+    throw(String::concat("unsupported compile mode: ", mode))
+  }
+  let artifact_fingerprint = artifact_fingerprint_from_source(
+    String::concat(merge_fingerprint, String::concat("|", String::concat(entry_name, String::concat("|", mode))))
+  )
+  match db_load_artifact(next_db, main_path, artifact_kind, entry_name, artifact_fingerprint) {
+    Some(bytes) => (bytes, next_db),
+    None => {
+      let merged_stmts = build_merged_stmts_inline(ordered_sources)
+      let bytes = if String::equals(mode, "mvp") {
+        let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
+        compile_wasi_module_impl(pruned_stmts, entry_name)
+      } else {
+        compile_wasi_module(merged_stmts, entry_name)
+      }
+      (bytes, db_store_artifact(next_db, main_path, artifact_kind, entry_name, artifact_fingerprint, bytes))
     }
   }
 }

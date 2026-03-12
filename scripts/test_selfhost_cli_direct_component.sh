@@ -32,4 +32,24 @@ if [ "$RESULT" != "42" ]; then
   exit 1
 fi
 
+cat >"$OUT_DIR/lib.vibe" <<'EOF'
+let helper = () -> Int { 40 + 2 }
+EOF
+
+cat >"$OUT_DIR/import_main.vibe" <<'EOF'
+import ./lib.vibe { helper }
+let answer = () -> Int { helper() }
+EOF
+
+IMPORT_OUTPUT="$OUT_DIR/import_output.wasm"
+rm -f "$IMPORT_OUTPUT"
+bash "$SCRIPT_DIR/run_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$OUT_DIR/import_main.vibe" "$IMPORT_OUTPUT" answer mvp
+wasm-tools validate "$IMPORT_OUTPUT" >/dev/null
+env VIBE_WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y}" \
+  "$SCRIPT_DIR/wasmtime_run.sh" --invoke run "$IMPORT_OUTPUT" >"$RUN_LOG"
+if ! grep -q '^42$' "$RUN_LOG"; then
+  echo "selfhost cli direct component gate failed: import case did not run to 42" >&2
+  exit 1
+fi
+
 echo "selfhost cli direct component gate passed"

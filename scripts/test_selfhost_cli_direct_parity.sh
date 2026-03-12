@@ -95,4 +95,34 @@ run_case \
   "42" \
   "no-dce"
 
+import_case_dir="$OUT_DIR/import_case"
+mkdir -p "$import_case_dir"
+cat >"$import_case_dir/lib.vibe" <<'EOF'
+let helper = () -> Int { 40 + 2 }
+EOF
+cat >"$import_case_dir/main.vibe" <<'EOF'
+import ./lib.vibe { helper }
+let answer = () -> Int { helper() }
+EOF
+host_import_out="$import_case_dir/host.wasm"
+selfhost_import_out="$import_case_dir/selfhost.wasm"
+host_import_log="$import_case_dir/host.run.log"
+selfhost_import_log="$import_case_dir/selfhost.run.log"
+host_import_payload="$import_case_dir/host.payload"
+"$VIBE_BIN" emit-closure-payload "$import_case_dir/main.vibe" "$host_import_payload"
+"$VIBE_BIN" compile-closure-payload "$host_import_payload" "$host_import_out" "mvp"
+bash "$SCRIPT_DIR/run_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$import_case_dir/main.vibe" "$selfhost_import_out" "answer" "mvp"
+wasm-tools validate "$host_import_out" >/dev/null
+wasm-tools validate "$selfhost_import_out" >/dev/null
+env VIBE_WASMTIME_WASM_FLAGS="$WASMTIME_WASM_FLAGS" \
+  "$WASMTIME_RUN" --invoke run "$host_import_out" >"$host_import_log"
+env VIBE_WASMTIME_WASM_FLAGS="$WASMTIME_WASM_FLAGS" \
+  "$WASMTIME_RUN" --invoke run "$selfhost_import_out" >"$selfhost_import_log"
+host_import_result="$(grep -E '^-?[0-9]+$' "$host_import_log" | tail -n 1 || true)"
+selfhost_import_result="$(grep -E '^-?[0-9]+$' "$selfhost_import_log" | tail -n 1 || true)"
+if [ "$host_import_result" != "42" ] || [ "$selfhost_import_result" != "42" ]; then
+  echo "selfhost cli direct parity gate failed: import case mismatch host=$host_import_result selfhost=$selfhost_import_result" >&2
+  exit 1
+fi
+
 echo "selfhost cli direct parity gate passed"

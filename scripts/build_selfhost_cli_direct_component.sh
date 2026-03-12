@@ -97,7 +97,7 @@ fn root_dir() -> Result<filesystem::types::Descriptor, ()> {
         .ok_or(())
 }
 
-fn read_source(path: &str) -> Result<String, ()> {
+fn read_payload(path: &str) -> Result<String, ()> {
     let root = root_dir()?;
     let file = root
         .open_at(
@@ -137,8 +137,8 @@ fn decode_hex_bytes(hex: &str) -> Result<Vec<u8>, ()> {
     Ok(out)
 }
 
-fn compile_bytes(source: &str, entry_name: &str, mode: &str) -> Result<Vec<u8>, ()> {
-    let hex = compile_cli_hex(source, entry_name, mode);
+fn compile_bytes(payload: &str, entry_name: &str, mode: &str) -> Result<Vec<u8>, ()> {
+    let hex = compile_cli_hex(payload, entry_name, mode);
     decode_hex_bytes(&hex)
 }
 
@@ -169,8 +169,8 @@ fn write_output(path: &str, bytes: &[u8]) -> Result<(), ()> {
 impl Guest for Component {
     fn run_cli_request(input_path: String, output_path: String, entry_name: String, mode: String) -> i32 {
         match (|| -> Result<(), ()> {
-            let source = read_source(&input_path)?;
-            let bytes = compile_bytes(&source, &entry_name, &mode)?;
+            let payload = read_payload(&input_path)?;
+            let bytes = compile_bytes(&payload, &entry_name, &mode)?;
             write_output(&output_path, &bytes)?;
             Ok(())
         })() {

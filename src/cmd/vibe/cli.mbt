@@ -38,6 +38,8 @@ pub fn run(args : Array[String]) -> Unit {
     "normalize" => normalize_cmd(cmd_args)
     "compile" => compile_cmd(cmd_args)
     "emit-module-source" => emit_module_source_cmd(cmd_args)
+    "emit-closure-payload" => emit_closure_payload_cmd(cmd_args)
+    "compile-closure-payload" => compile_closure_payload_cmd(cmd_args)
     "compile-lite" => compile_lite_cmd(cmd_args)
     "precompile" => precompile_cmd(cmd_args)
     "bench" => bench_cmd(cmd_args, syntax_mode, runtime_features)
@@ -104,6 +106,10 @@ fn print_usage() -> Unit {
   )
   println("  check [--profile-tsv path] <file...>  parse/type check scripts")
   println("  emit-module-source <in> <out> <entry>  internal: extract entry-pruned module source")
+  println("  emit-closure-payload <in> <out>  internal: materialize transitive closure payload")
+  println(
+    "  compile-closure-payload <in> <out> [mvp|no-dce]  internal: compile closure payload to wasm",
+  )
   println(
     "  finalize [--db file] [--export file] [--library] [--print] [--dry-run]  refactor scratch/db source",
   )
@@ -1721,6 +1727,31 @@ fn emit_module_source_cmd(args : Array[String]) -> Unit {
   match emit_module_source_file(args[0], args[1], args[2], fs) {
     Ok(_) => ()
     Err(msg) => abort("emit-module-source: " + msg)
+  }
+}
+
+///|
+fn emit_closure_payload_cmd(args : Array[String]) -> Unit {
+  if args.length() != 2 {
+    abort("emit-closure-payload: expected <in> <out>")
+  }
+  let fs = @io.default_fs_adapter()
+  match emit_closure_payload_file(args[0], args[1], fs) {
+    Ok(_) => ()
+    Err(msg) => abort("emit-closure-payload: " + msg)
+  }
+}
+
+///|
+fn compile_closure_payload_cmd(args : Array[String]) -> Unit {
+  if args.length() < 2 || args.length() > 3 {
+    abort("compile-closure-payload: expected <in> <out> [mvp|no-dce]")
+  }
+  let mode = if args.length() == 3 { args[2] } else { "mvp" }
+  let fs = @io.default_fs_adapter()
+  match compile_closure_payload_file(args[0], args[1], mode, fs) {
+    Ok(_) => ()
+    Err(msg) => abort("compile-closure-payload: " + msg)
   }
 }
 

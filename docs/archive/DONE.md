@@ -8,7 +8,7 @@ Completed items archived from `TODO.md`.
   - `selfhost_sources_manifest.tsv` を source 順序の単一根拠にし、bundle 生成と `module_loader` の compiler root 列挙を一致させた
   - `TypeDb` cached compile API と cache probe を selfhost public API に追加し、strict-recursive selfbuild KPI に warm reuse 指標を載せた
   - `type_db.vibe` / `ripple` の selfhost 解決と `codegen.vibe` wrapper の validate failure を直し、strict-recursive selfbuild を維持したまま compiler 分割を進めた
-  - ADR-0022 で selfhost CLI / I-O boundary を固定し、selfhost compiler 本体は pure compile API に留める方針を明文化した
+  - ADR-0028 で selfhost CLI / I-O boundary を固定し、selfhost compiler 本体は pure compile API に留める方針を明文化した
   - host `src/cmd/vibe` 側も `src/loader` の `*_into` API と root 単位 `VibeDb` cache で `check` / `test` loop の warm reuse を持てるようにした
   - final artifact cache の key を entry path 非依存に寄せ、`program_source` / `merged_source` fingerprint で別 entry 間の warm codegen reuse まで通した
   - `db_merged_source` も fingerprint ベースで entry path 非依存にし、同一 merged source なら merge cache も別 entry 間で共有するようにした
@@ -37,6 +37,11 @@ Completed items archived from `TODO.md`.
   - desugar 側は canonical 名と legacy alias の両方を non-command name として扱い、互換期間中の shell rewrite 回帰を防止
 
 ## 2026-03-12
+
+- **Selfhost direct fs component parity を compile-lite mode まで拡張**
+  - `selfhost_cli_direct_component_entry.vibe` に `compile_source_wasi_mode(..., mode)` を通し、direct component が `mvp/no-dce` の両 mode を受けられるようにした
+  - `build_selfhost_cli_direct_component.sh` / `run_selfhost_cli_direct_component.sh` を `run-cli-request(input, output, entry, mode)` 契約へ更新し、runner 側で input/output staging も吸収するようにした
+  - `test_selfhost_cli_direct_component.sh` と `test_selfhost_cli_direct_parity.sh` を更新し、selfhost direct fs component と host `compile-lite` の parity を `mvp/no-dce` まで固定した
 
 - **Strict-recursive selfbuild を lean stage2 target で復帰**
   - `selfbuild_runtime_entry.vibe` を lean stage2 runtime target に切り出し、`selfbuild_runtime_entry_bundle.vibe` から source を読む形へ整理した

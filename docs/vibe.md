@@ -56,7 +56,7 @@ Documented but excluded from standard tutorial:
 - placeholder lambda shorthand (`_` in call arguments)
 - raw identifiers (`r#name`)
 - boundary-style exceptions (`throw`)
-- scoped capability details (`Ref[T]`)
+- local mutation (`let mut`), `Ref[T]` abandoned (→ ADR-0021)
 - PosixMode command-head desugar and unstable runtime flags
 
 ## Effects
@@ -196,7 +196,7 @@ let apply_ok = [T](f: (x: T) -> T with {e}, x: T) -> T with {e} {
 }
 ```
 
-## Local mutation (`let mut`) and scoped `Ref[T]`
+## Local mutation (`let mut`)
 
 Design policy (ADR-0017):
 - `let mut` is local deterministic state, not an externally observable side
@@ -204,8 +204,6 @@ Design policy (ADR-0017):
 - local mutation is hash-safe when it is confined to lexical scope and cannot
   escape async boundaries.
 - `let mut` is the primary user-facing model for local mutable state.
-- `Ref[T]` is a constrained capability model and is not the default
-  user-facing mutation API in Phase 1.
 
 Constraints:
 - `let mut` variables are block-scoped and cannot remain live across
@@ -213,26 +211,14 @@ Constraints:
 - `let mut` variables cannot be captured by async closures.
 - Snapshotting is required to pass data into async closures.
 
-`Ref[T]` (scoped capability model):
-- `Ref[T]` values must not escape their defining scope.
-- returning/exporting/storing `Ref[T]` outside its scope is rejected.
-- passing `Ref[T]` requires synchronous same-scope completion guarantees.
-- crossing `await`/`spawn` with live `Ref[T]` is rejected.
-- In Phase 1, `Ref[T]` should be treated as advanced/limited-use capability.
-
-Current checker coverage:
-- `Ref[T]` is a reserved builtin type (`Ref` arity = 1).
-- function parameter declarations containing `Ref[T]` are rejected.
-- returning `Ref[T]` from functions is rejected.
-- top-level binding/export positions that expose `Ref[T]` are rejected.
-- closure literals that capture outer `Ref[T]` values are rejected.
-- passing `Ref[T]` as a function call argument is conservatively rejected.
-- full no-escape flow analysis (for all nested store/callback/async paths) is
-  policy-targeted but not yet fully enforced.
+> **Note**: `Ref[T]` は ADR-0017 で当初 accepted だったが、ADR-0021 の
+> Effect Handler で設計意図を代替する方針に変更され **abandoned** となった。
+> ミュータブル参照の安全な抽象化は `effect Mut<T>` で提供する計画
+> (ADR-0021 参照)。
 
 Lightweight effect tiers (policy direction):
 - `pure`: no external effects, no local mutable state.
-- `state_local`: local mutable state only (`let mut`/no-escape `Ref[T]`).
+- `state_local`: local mutable state only (`let mut`).
 - `impure`: external effects (I/O, shell, time, randomness, etc.).
 
 Current effect signature checks continue to gate `impure` operations.
@@ -811,7 +797,7 @@ CLI:
 - `moon run --target native src/cmd/vibe -- compile [--wasm | --wasm-js-string] [-o out] <file>` emits IR (default) or wasm bytes.
 - `moon run --target wasm src/cmd/vibe_compile_wasi -- [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wit|--wit-component] [-o out] <file>` runs compile pipeline from wasm target as well.
   - `vibe_compile_wasi` only: `--wasm` prefers `wasm-gc`; use `--wasm-mvp` for core wasm backend (broader language coverage).
-  - selfhost compiler boundary: compile logic stays in `vibe/compiler/*`; filesystem / environ / stdio stay in the host wrapper (`src/cmd/vibe_compile_wasi`). See ADR-0022.
+  - selfhost compiler boundary: compile logic stays in `vibe/compiler/*`; filesystem / environ / stdio stay in the host wrapper (`src/cmd/vibe_compile_wasi`). See ADR-0028.
 - Parser-consuming commands support `--syntax vibe|posix` (default `vibe`);
   `posix` is preview-enabled for `shell/shell-stdin/shell-wasi` and is
   rejected on static/compile-oriented commands.
