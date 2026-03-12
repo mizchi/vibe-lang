@@ -23,6 +23,15 @@ test("isCoverageNoiseLine: import list identifier is excluded", () => {
   assert.equal(isCoverageNoiseLine(sourceLines, 2), true);
 });
 
+test("isCoverageNoiseLine: path import list identifier is excluded", () => {
+  const sourceLines = [
+    "import ./types.vibe {",
+    "  Type, TypeEnv, env_bind, types_equal",
+    "}",
+  ];
+  assert.equal(isCoverageNoiseLine(sourceLines, 2), true);
+});
+
 test("isCoverageNoiseLine: block closing brace is excluded", () => {
   const sourceLines = [
     "test \"x\" {",

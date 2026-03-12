@@ -414,7 +414,11 @@ function isArrayLiteralItemLine(sourceLines, lineIndex) {
 }
 
 function isImportListIdentifierLine(sourceLines, lineIndex) {
-  return isLineInsideListBlock(sourceLines, lineIndex, /^import\s*\{/);
+  return isLineInsideListBlock(
+    sourceLines,
+    lineIndex,
+    /^import(?:\s+[^\s{]+)?\s*\{$/,
+  );
 }
 
 function isExportListHeaderLine(trimmed) {
