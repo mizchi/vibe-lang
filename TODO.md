@@ -85,7 +85,9 @@ Completed items are archived in `docs/DONE.md`.
   - `release-selfhost-gates` に `test-selfhost-cli-preview2-package` と `test-selfhost-cli-command-component` を接続し、配布形の gate を pre-release 導線へ載せた
 - [ ] selfhost CLI の package surface を direct fs/argv component に一般化する
   - 現状の配布契約は request/response component か command adapter component を wasmtime wrapper で実行する形
-  - `selfhost_cli_component_run_entry.vibe` の direct fs/argv component は generic import / raw ABI の壁で未完
+  - `selfhost_cli_component_run_entry.vibe` 自体は `run-cli-request(input-path, output-path, entry-name)` component まで生成できる
+  - ただし top-level component import は `import-0..5` の flat ABI に潰れており、wasmtime linker が Preview2 `wasi:filesystem/*` 実装へ自動結線できない
+  - 次の本命は `emit_component_wasm_with_string_lift` 側で typed Preview2 import を持つ import/adapter 生成へ寄せること
 
 ## Release / Gate Integration
 
