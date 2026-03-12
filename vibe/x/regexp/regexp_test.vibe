@@ -1,7 +1,8 @@
 //# Imports
 
 import ./index.vibe {
-  compile, find, find_all, find_match, is_match, replace_all, replace_first, split, test_match
+  compile, count, escape, find, find_all, find_match,
+  is_match, replace_all, replace_first, split, test_match
 }
 
 //# Misc
@@ -361,4 +362,117 @@ test "split no delimiter" {
   let results = split(re, "abc")
   assert(Array::length(results) == 1)
   assert(String::equals(Array::get(results, 0), "abc"))
+}
+
+test "repeat exact {3}" {
+  let re = compile("a{3}")
+  assert(test_match(re, "aaa"))
+  assert(not(test_match(re, "aa")))
+  assert(not(test_match(re, "aaaa")))
+}
+
+test "repeat min {2,}" {
+  let re = compile("a{2,}")
+  assert(not(test_match(re, "a")))
+  assert(test_match(re, "aa"))
+  assert(test_match(re, "aaa"))
+  assert(test_match(re, "aaaa"))
+}
+
+test "repeat range {2,4}" {
+  let re = compile("a{2,4}")
+  assert(not(test_match(re, "a")))
+  assert(test_match(re, "aa"))
+  assert(test_match(re, "aaa"))
+  assert(test_match(re, "aaaa"))
+  assert(not(test_match(re, "aaaaa")))
+}
+
+test "repeat with group" {
+  let re = compile("(ab){2}")
+  assert(test_match(re, "abab"))
+  assert(not(test_match(re, "ab")))
+  assert(not(test_match(re, "ababab")))
+}
+
+test "repeat {0,1} is optional" {
+  let re = compile("ab{0,1}c")
+  assert(test_match(re, "ac"))
+  assert(test_match(re, "abc"))
+  assert(not(test_match(re, "abbc")))
+}
+
+test "word boundary basic" {
+  let re = compile("\\bhello\\b")
+  assert(is_match(re, "hello world"))
+  assert(is_match(re, "say hello!"))
+  assert(not(is_match(re, "helloworld")))
+  assert(not(is_match(re, "sayhello")))
+}
+
+test "word boundary find" {
+  let re = compile("\\bcat\\b")
+  assert(is_match(re, "the cat sat"))
+  assert(not(is_match(re, "concatenate")))
+  assert(not(is_match(re, "category")))
+}
+
+test "not word boundary" {
+  let re = compile("\\Bcat\\B")
+  assert(is_match(re, "concatenate"))
+  assert(not(is_match(re, "cat sat")))
+}
+
+test "word boundary at start and end" {
+  let re = compile("\\btest\\b")
+  assert(is_match(re, "test"))
+  assert(is_match(re, "test."))
+  assert(is_match(re, ".test"))
+}
+
+test "count matches" {
+  assert(count(compile("\\d+"), "a1b23c456") == 3)
+  assert(count(compile("\\d+"), "abc") == 0)
+  assert(count(compile("a"), "banana") == 3)
+}
+
+test "escape meta characters" {
+  let escaped = escape("hello.world*foo")
+  let re = compile(escaped)
+  assert(test_match(re, "hello.world*foo"))
+  assert(not(test_match(re, "helloXworldXfoo")))
+}
+
+test "escape brackets and parens" {
+  let escaped = escape("[a](b)")
+  let re = compile(escaped)
+  assert(test_match(re, "[a](b)"))
+}
+
+test "escape preserves normal chars" {
+  let escaped = escape("abc123")
+  assert(String::equals(escaped, "abc123"))
+}
+
+test "repeat digit {3}" {
+  let re = compile("\\d{3}")
+  assert(test_match(re, "123"))
+  assert(not(test_match(re, "12")))
+  assert(not(test_match(re, "1234")))
+}
+
+test "ip-like pattern" {
+  let re = compile("\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}")
+  assert(test_match(re, "192.168.1.1"))
+  assert(test_match(re, "10.0.0.1"))
+  assert(not(test_match(re, "1234.1.1.1")))
+}
+
+test "mixed quantifiers" {
+  let re = compile("[a-z]{2,4}\\d{2}")
+  assert(test_match(re, "ab12"))
+  assert(test_match(re, "abc12"))
+  assert(test_match(re, "abcd12"))
+  assert(not(test_match(re, "a12")))
+  assert(not(test_match(re, "abcde12")))
 }

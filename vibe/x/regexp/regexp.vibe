@@ -11,7 +11,11 @@ export enum Re {
   RClass(Array[(Int, Int)]);
   RNClass(Array[(Int, Int)]);
   RAnchorStart;
-  RAnchorEnd
+  RAnchorEnd;
+  RRepeat(Re, Int, Int);
+  RWordBound;
+  RNotWordBound;
+  RCapture(Re, Int)
 }
 
 //# Functions
@@ -40,6 +44,18 @@ let in_ranges = (c: Int, ranges: Array[(Int, Int)]) -> Bool {
 
 let char_at_code = (s: String, idx: Int) -> Int {
   String::char_code_at(s, idx)
+}
+
+let is_word_char = (c: Int) -> Bool {
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+}
+
+let is_at_word_boundary = (s: String, pos: Int) -> Bool {
+  let len = String::length(s)
+  let before = if pos > 0 { is_word_char(char_at_code(s, pos - 1)) } else { false }
+  let after = if pos < len { is_word_char(char_at_code(s, pos)) } else { false }
+  // word boundary: one side is word char, other is not
+  if before { not(after) } else { after }
 }
 
 let rec match_engine = (re: Re, s: String, pos: Int, mode: Int, parts: Array[Re], idx: Int, collector: Array[Int]) -> Int {
@@ -167,6 +183,51 @@ let rec match_engine = (re: Re, s: String, pos: Int, mode: Int, parts: Array[Re]
         pos
       } else {
         -1
+      },
+      RWordBound => if is_at_word_boundary(s, pos) {
+        pos
+      } else {
+        -1
+      },
+      RNotWordBound => if not(is_at_word_boundary(s, pos)) {
+        pos
+      } else {
+        -1
+      },
+      RRepeat(inner, min_n, max_n) => {
+        // Match inner exactly min_n..max_n times (greedy)
+        let mut count = 0
+        let mut cur = pos
+        let mut failed = false
+        // First, match at least min_n times
+        while count < min_n && not(failed) {
+          let r = match_engine(inner, s, cur, 0, parts, 0, collector)
+          if r > cur {
+            cur = r
+            count = count + 1
+          } else {
+            failed = true
+          }
+        }
+        if failed {
+          -1
+        } else {
+          // Then, greedily match up to max_n
+          while count < max_n {
+            let r = match_engine(inner, s, cur, 0, parts, 0, collector)
+            if r > cur {
+              cur = r
+              count = count + 1
+            } else {
+              count = max_n
+            }
+          }
+          cur
+        }
+      },
+      RCapture(inner, _group_id) => {
+        // Capture groups match like their inner expression
+        match_engine(inner, s, pos, 0, parts, 0, collector)
       },
       RSeq(seq_parts) => match_engine(re, s, pos, 1, seq_parts, 0, collector),
       RAlt(a, b) => {
@@ -347,6 +408,54 @@ export let replace_first = (re: Re, s: String, replacement: String) -> String {
   try_pos(0)
 }
 
+let parse_int = (s: String, start: Int) -> (Int, Int) {
+  let len = String::length(s)
+  let mut i = start
+  let mut n = 0
+  let mut done = false
+  while i < len && not(done) {
+    let c = char_at_code(s, i)
+    if c >= 48 && c <= 57 {
+      n = n * 10 + (c - 48)
+      i = i + 1
+    } else {
+      done = true
+    }
+  }
+  (n, i)
+}
+
+// Parse {n}, {n,}, {n,m} — returns (min, max, end_pos)
+// max = 999999 for unbounded
+let parse_repeat = (pattern: String, pos: Int) -> (Int, Int, Int) {
+  let len = String::length(pattern)
+  let (n, after_n) = parse_int(pattern, pos)
+  if after_n >= len {
+    (0, 0, pos)
+  }
+  else if String::equals(char_at(pattern, after_n), "}") {
+    // {n}
+    (n, n, after_n + 1)
+  }
+  else if String::equals(char_at(pattern, after_n), ",") {
+    if after_n + 1 < len && String::equals(char_at(pattern, after_n + 1), "}") {
+      // {n,}
+      (n, 999999, after_n + 2)
+    } else {
+      let (m, after_m) = parse_int(pattern, after_n + 1)
+      if after_m < len && String::equals(char_at(pattern, after_m), "}") {
+        // {n,m}
+        (n, m, after_m + 1)
+      } else {
+        (0, 0, pos)
+      }
+    }
+  }
+  else {
+    (0, 0, pos)
+  }
+}
+
 let parse_class_ranges = (pattern: String, pos: Int) -> (Array[(Int, Int)], Int) {
   let len = String::length(pattern)
   let mut ranges = Array::slice([
@@ -456,6 +565,14 @@ let rec parse_impl = (pattern: String, pos: Int, mode: Int, parts_acc: Array[Re]
       else if String::equals(ch, "?") {
         (ROpt(atom), next_pos + 1)
       }
+      else if String::equals(ch, "{") {
+        let (min_n, max_n, end_pos) = parse_repeat(pattern, next_pos + 1)
+        if end_pos > next_pos {
+          (RRepeat(atom, min_n, max_n), end_pos)
+        } else {
+          (atom, next_pos)
+        }
+      }
       else {
         (atom, next_pos)
       }
@@ -544,6 +661,12 @@ let rec parse_impl = (pattern: String, pos: Int, mode: Int, parts_acc: Array[Re]
             (13, 13)
           ]), pos + 2)
         }
+        else if String::equals(next, "b") {
+          (RWordBound, pos + 2)
+        }
+        else if String::equals(next, "B") {
+          (RNotWordBound, pos + 2)
+        }
         else if String::equals(next, "t") {
           (RChar(9), pos + 2)
         }
@@ -568,4 +691,30 @@ export let compile = (pattern: String) -> Re {
     RDot
   ], 0, 0))
   re
+}
+
+export let count = (re: Re, s: String) -> Int {
+  Array::length(find_all(re, s))
+}
+
+let is_meta_char = (c: Int) -> Bool {
+  // . * + ? ^ $ | \ ( ) [ ] { }
+  c == 46 || c == 42 || c == 43 || c == 63 || c == 94 || c == 36 ||
+  c == 124 || c == 92 || c == 40 || c == 41 || c == 91 || c == 93 ||
+  c == 123 || c == 125
+}
+
+export let escape = (s: String) -> String {
+  let len = String::length(s)
+  let mut result = ""
+  let mut i = 0
+  while i < len {
+    let c = char_at_code(s, i)
+    if is_meta_char(c) {
+      result = String::concat(result, "\\")
+    }
+    result = String::concat(result, String::substring(s, i, i + 1))
+    i = i + 1
+  }
+  result
 }
