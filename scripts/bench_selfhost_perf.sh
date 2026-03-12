@@ -312,12 +312,8 @@ main() {
     fi
 
     for phase in compile check; do
-      if [ "$phase" = "compile" ]; then
-        local stages="load type compile write total"
-      else
-        local stages="load type total"
-      fi
-      for stage in $stages; do
+      while IFS= read -r stage; do
+        [ -z "$stage" ] && continue
         local stage_host_file="$OUT_DIR/raw/${safe}.${phase}_stage.host.${stage}.txt"
         local stage_self_file="$OUT_DIR/raw/${safe}.${phase}_stage.selfhost.${stage}.txt"
         if [ -f "$stage_host_file" ] && [ -f "$stage_self_file" ]; then
@@ -327,7 +323,9 @@ main() {
           stage_ratio="$(calc_ratio "$stage_self" "$stage_host")"
           printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$rel_case" "$phase" "$stage" "$stage_host" "$stage_self" "$stage_ratio" >> "$stage_summary_tsv"
         fi
-      done
+      done < <(awk -F'\t' -v file="$rel_case" -v phase="$phase" '
+        NR > 1 && $1 == file && $2 == phase { print $5 }
+      ' "$raw_stage_tsv" | sort -u)
     done
   done
 

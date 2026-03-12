@@ -56,6 +56,15 @@ pub struct WasmCoverageArtifact {
 } derive(Show, Eq)
 
 ///|
+pub struct WasmCompileStageProfile {
+  module_us : Int
+  bundle_us : Int
+  emit_us : Int
+  optimize_us : Int
+  total_us : Int
+} derive(Show, Eq)
+
+///|
 pub struct CompiledModule {
   path : String
   ir : String
@@ -70,6 +79,48 @@ pub struct CompiledModule {
 
 ///|
 let compile_module_cache : Ref[Map[String, CompiledModule]] = @ref.new({})
+
+///|
+fn elapsed_us_from(start : @bench.Timestamp) -> Int {
+  @bench.monotonic_clock_end(start).to_int()
+}
+
+///|
+fn elapsed_ms_from_us(elapsed_us : Int) -> Int {
+  let elapsed_ms = elapsed_us / 1000
+  if elapsed_ms <= 0 {
+    1
+  } else {
+    elapsed_ms
+  }
+}
+
+///|
+fn profile_tsv_line(stage : String, elapsed_us : Int) -> String {
+  let elapsed_ms = if elapsed_us <= 0 { 0 } else { elapsed_ms_from_us(elapsed_us) }
+  stage + "\t" + elapsed_ms.to_string() + "\t" +
+  elapsed_us.to_string() + "\n"
+}
+
+///|
+pub fn wasm_compile_profile_tsv(
+  load_us : Int,
+  type_us : Int,
+  compile_profile : WasmCompileStageProfile,
+  write_us : Int,
+  total_us : Int,
+) -> String {
+  "stage\telapsed_ms\telapsed_us\n" +
+  profile_tsv_line("load", load_us) +
+  profile_tsv_line("type", type_us) +
+  profile_tsv_line("compile_module", compile_profile.module_us) +
+  profile_tsv_line("bundle", compile_profile.bundle_us) +
+  profile_tsv_line("emit", compile_profile.emit_us) +
+  profile_tsv_line("optimize", compile_profile.optimize_us) +
+  profile_tsv_line("compile", compile_profile.total_us) +
+  profile_tsv_line("write", write_us) +
+  profile_tsv_line("total", total_us)
+}
 
 ///|
 fn compile_module_cache_key(
@@ -331,6 +382,44 @@ fn optimize_wasm_coverage_with_opt_level(
 }
 
 ///|
+fn compile_module_wasm_profiled_with(
+  db : @runtime.VibeDb,
+  path : String,
+  bundler : (@runtime.VibeDb, String, @core.Module) -> @core.Module,
+  emitter : (@core.Module) -> Bytes raise @codegen.WasmGenError,
+  opt_level : String?,
+) -> (Bytes, WasmCompileStageProfile) raise WasmCompileError {
+  let start_total = @bench.monotonic_clock_start()
+  let start_module = @bench.monotonic_clock_start()
+  let compiled = compile_module(db, path) catch {
+    e => raise WasmCompileError::Compile(e)
+  }
+  let module_us = elapsed_us_from(start_module)
+  let start_bundle = @bench.monotonic_clock_start()
+  let bundled = bundler(db, path, compiled.ast)
+  let bundle_us = elapsed_us_from(start_bundle)
+  let start_emit = @bench.monotonic_clock_start()
+  let wasm = emitter(bundled) catch {
+    e => raise WasmCompileError::Gen(e)
+  }
+  let emit_us = elapsed_us_from(start_emit)
+  let start_optimize = @bench.monotonic_clock_start()
+  let optimized = optimize_wasm_bytes_with_opt_level(wasm, opt_level)
+  let optimize_us = elapsed_us_from(start_optimize)
+  let total_us = elapsed_us_from(start_total)
+  (
+    optimized,
+    {
+      module_us,
+      bundle_us,
+      emit_us,
+      optimize_us,
+      total_us,
+    },
+  )
+}
+
+///|
 /// Compile a module to WASM (wasm-gc compatible, minimal MVP).
 pub fn compile_module_wasm(
   db : @runtime.VibeDb,
@@ -372,24 +461,63 @@ pub fn compile_module_wasm_with_opt_level(
   http_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
 ) -> Bytes raise WasmCompileError {
-  let wasm = if no_dce {
-    compile_module_wasm_no_dce(
+  let (wasm, _) = compile_module_wasm_with_opt_level_profiled(
+    db,
+    path,
+    no_dce~,
+    opt_level~,
+    debug_errors~,
+    http_host_imports~,
+    force_cabi_realloc~,
+  )
+  wasm
+}
+
+///|
+pub fn compile_module_wasm_with_opt_level_profiled(
+  db : @runtime.VibeDb,
+  path : String,
+  no_dce? : Bool = false,
+  opt_level? : String? = None,
+  debug_errors? : Bool = false,
+  http_host_imports? : Bool = false,
+  force_cabi_realloc? : Bool = false,
+) -> (Bytes, WasmCompileStageProfile) raise WasmCompileError {
+  if no_dce {
+    compile_module_wasm_profiled_with(
       db,
       path,
-      debug_errors~,
-      http_host_imports~,
-      force_cabi_realloc~,
+      @runtime.bundle_for_wasm_no_dce,
+      ast => {
+        @codegen.emit_module_wasm_with_options(
+          ast,
+          @codegen.wasm_emit_options(
+            embed_error_strings=debug_errors,
+            http_host_imports~,
+            force_cabi_realloc~,
+          ),
+        )
+      },
+      opt_level,
     )
   } else {
-    compile_module_wasm(
+    compile_module_wasm_profiled_with(
       db,
       path,
-      debug_errors~,
-      http_host_imports~,
-      force_cabi_realloc~,
+      @runtime.bundle_for_wasm,
+      ast => {
+        @codegen.emit_module_wasm_with_options(
+          ast,
+          @codegen.wasm_emit_options(
+            embed_error_strings=debug_errors,
+            http_host_imports~,
+            force_cabi_realloc~,
+          ),
+        )
+      },
+      opt_level,
     )
   }
-  optimize_wasm_bytes_with_opt_level(wasm, opt_level)
 }
 
 ///|

@@ -50,11 +50,13 @@ Phase 4 (応用):
 
 - [ ] selfhost perf gap を cutover 可能な水準まで詰める
   - stable 5-case set の debug selfhost wasm baseline では host 比 compile 約5x、check 約2-4x 遅い
+  - `compile-lite --profile-tsv` は `compile_module` / `bundle` / `emit` / `optimize` まで細粒度で出すようにした
+  - 直近の stable 5-case run では TOTAL が compile `3.20x`, check `5.07x`。特に `module_import.vibe` の `check/type`、`module_export.vibe` の `check/type`、`base64.vibe` の `compile/optimize` が突出している
   - `VIBE_SELFHOST_PERF_WASM_PROFILE=release` でも計測できるようにしたが、現状は `base64` compile が大きく悪化するため KPI default はまだ debug baseline に置いている
   - `vibe/compiler/index.vibe` は compile-lite の unsupported closure capture path をまだ踏むため、perf KPI default からは外して別測定にしている
   - grouped merge / module source / codegen cache は入っているので、次の本命は typecheck / codegen hot path の profiling と削減
-  - 直近の hotspot は `check/type` と `compile/compile` で、stable set の stage summary を `scripts/bench_selfhost_perf.sh` が出せるようにした
-  - `compile/write` も比率は極端だが絶対時間は数 ms〜30 ms 台なので、まずは `check/type` と `compile/compile` を削る
+  - 直近の hotspot は `check/type` と `compile/emit` / `compile/bundle` を含む compile substage で、stable set の stage summary を `scripts/bench_selfhost_perf.sh` が動的 stage 集計で出せるようにした
+  - `compile/write` と `compile/optimize` は比率が極端でも絶対時間が小さいケースがあるので、まずは `check/type` と `compile/emit` を削る
 
 - [x] host `src/cmd/vibe` 側の compile/test loop にも selfhost と同じ persistent cache パターンを持ち込む
   - `src/loader` に `*_into` API を追加し、`check_cmd` / `test_cmd_sequential` / `test_cmd_report_json` が root 単位 `VibeDb` cache を持ち回るようにした

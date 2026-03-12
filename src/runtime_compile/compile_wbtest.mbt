@@ -136,3 +136,57 @@ test "component_string_lift_auto kebab-cases snake_case export names" {
   }
   assert_true(bytes_contains_ascii(wasm, "compile-cli-request"))
 }
+
+///|
+test "compile_module_wasm_with_opt_level_profiled returns wasm and stage timings" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let add = (x : Int, y : Int) -> Int { x + y }
+      #|add(20, 22)
+    ),
+  )
+  let plain = try compile_module_wasm_with_opt_level(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    bytes => bytes
+  }
+  let (profiled, stage_profile) = try
+    compile_module_wasm_with_opt_level_profiled(db, "main") catch {
+    e => fail("profiled compile error: " + e.to_string())
+  } noraise {
+    value => value
+  }
+  assert_eq(profiled, plain)
+  assert_true(stage_profile.module_us >= 0)
+  assert_true(stage_profile.bundle_us >= 0)
+  assert_true(stage_profile.emit_us >= 0)
+  assert_true(stage_profile.optimize_us >= 0)
+  assert_true(stage_profile.total_us >= 0)
+}
+
+///|
+test "wasm_compile_profile_tsv emits compile substage rows" {
+  let content = wasm_compile_profile_tsv(
+    1000,
+    2000,
+    {
+      module_us: 3000,
+      bundle_us: 4000,
+      emit_us: 5000,
+      optimize_us: 6000,
+      total_us: 18000,
+    },
+    7000,
+    28000,
+  )
+  assert_true(String::contains(content, "stage\telapsed_ms\telapsed_us\n"))
+  assert_true(String::contains(content, "compile_module\t3\t3000\n"))
+  assert_true(String::contains(content, "bundle\t4\t4000\n"))
+  assert_true(String::contains(content, "emit\t5\t5000\n"))
+  assert_true(String::contains(content, "optimize\t6\t6000\n"))
+  assert_true(String::contains(content, "compile\t18\t18000\n"))
+  assert_true(String::contains(content, "write\t7\t7000\n"))
+  assert_true(String::contains(content, "total\t28\t28000\n"))
+}

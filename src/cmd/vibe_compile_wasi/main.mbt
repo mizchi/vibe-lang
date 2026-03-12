@@ -496,17 +496,6 @@ fn elapsed_us_from(start : @bench.Timestamp) -> Int {
   }
 }
 
-///|
-fn elapsed_ms_from_us(elapsed_us : Int) -> Int {
-  let elapsed_ms = elapsed_us / 1000
-  if elapsed_ms <= 0 {
-    1
-  } else {
-    elapsed_ms
-  }
-}
-
-///|
 fn compile_lite_cmd(
   args : Array[String],
   fs : &@io.FileSystemAdapter,
@@ -535,14 +524,11 @@ fn compile_lite_cmd(
     Err(err) => return Err("compile-lite: " + err)
   }
   let load_us = elapsed_us_from(start_load)
-  let load_ms = elapsed_ms_from_us(load_us)
   let (db, entry) = loaded
   let start_type = @bench.monotonic_clock_start()
   let _ = db.types(entry)
   let type_us = elapsed_us_from(start_type)
-  let type_ms = elapsed_ms_from_us(type_us)
-  let start_compile = @bench.monotonic_clock_start()
-  let wasm_bytes = @runtime_compile.compile_module_wasm_with_opt_level(
+  let (wasm_bytes, compile_profile) = @runtime_compile.compile_module_wasm_with_opt_level_profiled(
     db,
     entry,
     no_dce=opts.no_dce,
@@ -552,9 +538,6 @@ fn compile_lite_cmd(
   ) catch {
     e => return Err("compile-lite: " + e.to_string())
   }
-  let compile_us = elapsed_us_from(start_compile)
-  let compile_ms = elapsed_ms_from_us(compile_us)
-  let mut write_ms = 0
   let mut write_us = 0
   if not(in_memory) {
     let start_write = @bench.monotonic_clock_start()
@@ -563,38 +546,17 @@ fn compile_lite_cmd(
       Err(err) => return Err("compile-lite: " + err)
     }
     write_us = elapsed_us_from(start_write)
-    write_ms = elapsed_ms_from_us(write_us)
   }
   let total_us = elapsed_us_from(start_total)
-  let total_ms = elapsed_ms_from_us(total_us)
   match profile_tsv {
     Some(path) => {
-      let content = "stage\telapsed_ms\telapsed_us\n" +
-        "load\t" +
-        load_ms.to_string() +
-        "\t" +
-        load_us.to_string() +
-        "\n" +
-        "type\t" +
-        type_ms.to_string() +
-        "\t" +
-        type_us.to_string() +
-        "\n" +
-        "compile\t" +
-        compile_ms.to_string() +
-        "\t" +
-        compile_us.to_string() +
-        "\n" +
-        "write\t" +
-        write_ms.to_string() +
-        "\t" +
-        write_us.to_string() +
-        "\n" +
-        "total\t" +
-        total_ms.to_string() +
-        "\t" +
-        total_us.to_string() +
-        "\n"
+      let content = @runtime_compile.wasm_compile_profile_tsv(
+        load_us,
+        type_us,
+        compile_profile,
+        write_us,
+        total_us,
+      )
       match @io.write_string_with(fs, path, content) {
         Ok(_) => ()
         Err(err) =>
