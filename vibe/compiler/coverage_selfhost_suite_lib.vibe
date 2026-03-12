@@ -26,6 +26,8 @@ export struct CoverageCase {
   execution_ok: Bool;
   execution_error: String;
   stats: CaseStats;
+  case_branch_total: Int;
+  case_branch_hit: Int;
   point_rate: Double;
   line_rate: Double;
   branch_rate: Double
@@ -62,6 +64,13 @@ export struct KpiResult {
   failures: Array[String]
 }
 
+struct BranchGapEntry {
+  entry_path: String;
+  branch_miss: Int;
+  branch_total: Int;
+  branch_hit: Int
+}
+
 struct PointEntry {
   key: String;
   kind: String;
@@ -87,12 +96,25 @@ struct ParsedCoverageCase {
   line_total: Int;
   line_hit: Int;
   branch_total: Int;
-  branch_hit: Int
+  branch_hit: Int;
+  case_branch_total: Int;
+  case_branch_hit: Int
 }
 
 let empty_point_entries = () -> Array[PointEntry] {
   Array::slice([
     PointEntry::{ key: "", kind: "", hit: false }
+  ], 0, 0)
+}
+
+let empty_branch_gap_entries = () -> Array[BranchGapEntry] {
+  Array::slice([
+    BranchGapEntry::{
+      entry_path: "",
+      branch_miss: 0,
+      branch_total: 0,
+      branch_hit: 0
+    }
   ], 0, 0)
 }
 
@@ -480,6 +502,8 @@ let parse_custom_case_input = (input: CoverageCaseInput) -> ParsedCoverageCase {
   let mut line_hit = 0
   let mut branch_total = 0
   let mut branch_hit = 0
+  let mut case_branch_total = 0
+  let mut case_branch_hit = 0
   let mut line_points = ""
   let mut branch_points = ""
   let lines = split(input.report_json, "\n")
@@ -508,6 +532,10 @@ let parse_custom_case_input = (input: CoverageCaseInput) -> ParsedCoverageCase {
         branch_total = parse_int_or(value, 0)
       } else if String::equals(key, "branch_hit") {
         branch_hit = parse_int_or(value, 0)
+      } else if String::equals(key, "case_branch_total") {
+        case_branch_total = parse_int_or(value, 0)
+      } else if String::equals(key, "case_branch_hit") {
+        case_branch_hit = parse_int_or(value, 0)
       } else if String::equals(key, "line_points") {
         line_points = value
       } else if String::equals(key, "branch_points") {
@@ -529,7 +557,17 @@ let parse_custom_case_input = (input: CoverageCaseInput) -> ParsedCoverageCase {
     line_total: line_total,
     line_hit: line_hit,
     branch_total: branch_total,
-    branch_hit: branch_hit
+    branch_hit: branch_hit,
+    case_branch_total: if case_branch_total > 0 || case_branch_hit > 0 {
+      case_branch_total
+    } else {
+      branch_total
+    },
+    case_branch_hit: if case_branch_total > 0 || case_branch_hit > 0 {
+      case_branch_hit
+    } else {
+      branch_hit
+    }
   }
 }
 
@@ -572,7 +610,9 @@ let parse_json_case_input = (input: CoverageCaseInput) -> ParsedCoverageCase wit
     line_total: case_line_total,
     line_hit: case_line_hit,
     branch_total: branch_total,
-    branch_hit: branch_hit
+    branch_hit: branch_hit,
+    case_branch_total: branch_total,
+    case_branch_hit: branch_hit
   }
 }
 
@@ -606,6 +646,8 @@ export let build_suite_report_from_json_texts = (inputs: Array[CoverageCaseInput
     let point_hit = parsed.point_hit
     let branch_total = parsed.branch_total
     let branch_hit = parsed.branch_hit
+    let case_branch_total = parsed.case_branch_total
+    let case_branch_hit = parsed.case_branch_hit
 
     if Array::length(point_entries) > 0 {
       has_point_map = true
@@ -652,6 +694,8 @@ export let build_suite_report_from_json_texts = (inputs: Array[CoverageCaseInput
         execution_ok: execution_ok,
         execution_error: execution_error,
         stats: case_stats,
+        case_branch_total: case_branch_total,
+        case_branch_hit: case_branch_hit,
         point_rate: rate_percent(point_hit, point_total),
         line_rate: rate_percent(case_line_hit, case_line_total),
         branch_rate: rate_percent(branch_hit, branch_total)
@@ -811,6 +855,103 @@ export let evaluate_kpi = (
   }
 }
 
+let string_lt = (a: String, b: String) -> Bool {
+  let len_a = String::length(a)
+  let len_b = String::length(b)
+  let rec go = (i: Int) -> Bool {
+    if i >= len_a || i >= len_b {
+      len_a < len_b
+    } else {
+      let ca = String::char_code_at(a, i)
+      let cb = String::char_code_at(b, i)
+      if ca < cb {
+        true
+      } else if ca > cb {
+        false
+      } else {
+        go(i + 1)
+      }
+    }
+  }
+  go(0)
+}
+
+let branch_gap_precedes = (lhs: BranchGapEntry, rhs: BranchGapEntry) -> Bool {
+  if lhs.branch_miss > rhs.branch_miss {
+    true
+  } else if lhs.branch_miss < rhs.branch_miss {
+    false
+  } else if lhs.branch_total > rhs.branch_total {
+    true
+  } else if lhs.branch_total < rhs.branch_total {
+    false
+  } else {
+    string_lt(lhs.entry_path, rhs.entry_path)
+  }
+}
+
+let insert_branch_gap_entry = (
+  entries: Array[BranchGapEntry],
+  next: BranchGapEntry,
+  limit: Int
+) -> Array[BranchGapEntry] {
+  if next.branch_miss <= 0 || limit <= 0 {
+    entries
+  } else {
+    let out = ArrayBuilder::new()
+    let mut out_len = 0
+    let mut inserted = false
+    let mut i = 0
+    while i < Array::length(entries) {
+      let current = Array::get(entries, i)
+      if not(inserted) && branch_gap_precedes(next, current) {
+        ArrayBuilder::push(out, next)
+        inserted = true
+        out_len = out_len + 1
+      }
+      if out_len < limit {
+        ArrayBuilder::push(out, current)
+        out_len = out_len + 1
+      }
+      i = i + 1
+    }
+    if not(inserted) && out_len < limit {
+      ArrayBuilder::push(out, next)
+      out_len = out_len + 1
+    }
+    let frozen = ArrayBuilder::freeze(out)
+    if Array::length(frozen) > limit {
+      Array::slice(frozen, 0, limit)
+    } else {
+      frozen
+    }
+  }
+}
+
+let top_branch_gap_entries = (
+  cases: Array[CoverageCase],
+  limit: Int
+) -> Array[BranchGapEntry] {
+  let mut out = empty_branch_gap_entries()
+  let mut i = 0
+  while i < Array::length(cases) {
+    let case = Array::get(cases, i)
+    let branch_miss = case.case_branch_total - case.case_branch_hit
+    out = insert_branch_gap_entry(
+      out,
+      BranchGapEntry::{
+        entry_path: case.entry_path,
+        branch_miss: branch_miss,
+        branch_total: case.case_branch_total,
+        branch_hit: case.case_branch_hit
+      },
+      limit
+    )
+    i = i + 1
+  }
+  out
+}
+
 export let build_summary_text = (report: SuiteReport, kpi: KpiResult) -> String {
   let lines = ArrayBuilder::new()
   ArrayBuilder::push(lines, "vibe selfhost suite coverage")
@@ -865,6 +1006,35 @@ export let build_summary_text = (report: SuiteReport, kpi: KpiResult) -> String 
   )
   ArrayBuilder::push(lines, String::concat("traps: ", __to_string(report.trap_case_count)))
 
+  let branch_gaps = top_branch_gap_entries(report.cases, 5)
+  if Array::length(branch_gaps) > 0 {
+    ArrayBuilder::push(lines, "top_branch_gaps:")
+    let mut i = 0
+    while i < Array::length(branch_gaps) {
+      let gap = Array::get(branch_gaps, i)
+      ArrayBuilder::push(
+        lines,
+        String::concat(
+          String::concat(
+            String::concat(
+              String::concat(
+                String::concat("- ", gap.entry_path),
+                " "
+              ),
+              __to_string(gap.branch_miss)
+            ),
+            " missed ("
+          ),
+          String::concat(
+            String::concat(__to_string(gap.branch_hit), "/"),
+            String::concat(__to_string(gap.branch_total), ")")
+          )
+        )
+      )
+      i = i + 1
+    }
+  }
+
   if kpi.has_thresholds {
     let kpi_line = if kpi.ok {
       "kpi: ok"
@@ -906,99 +1076,148 @@ let option_double_json = (value: Option[Double]) -> Json {
   }
 }
 
-let case_json = (case: CoverageCase) -> Json {
-  let stats_obj_b = MapBuilder::new()
-  MapBuilder::set(stats_obj_b, "point_total", int_json(case.stats.point_total))
-  MapBuilder::set(stats_obj_b, "point_hit", int_json(case.stats.point_hit))
-  MapBuilder::set(stats_obj_b, "line_total", int_json(case.stats.line_total))
-  MapBuilder::set(stats_obj_b, "line_hit", int_json(case.stats.line_hit))
-  MapBuilder::set(stats_obj_b, "branch_total", int_json(case.stats.branch_total))
-  MapBuilder::set(stats_obj_b, "branch_hit", int_json(case.stats.branch_hit))
+let json_value_string = (value: String) -> String {
+  stringify(string_json(value))
+}
 
-  let rates_obj_b = MapBuilder::new()
-  MapBuilder::set(rates_obj_b, "point", double_json(case.point_rate))
-  MapBuilder::set(rates_obj_b, "line", double_json(case.line_rate))
-  MapBuilder::set(rates_obj_b, "branch", double_json(case.branch_rate))
+let json_value_int = (value: Int) -> String {
+  stringify(int_json(value))
+}
 
-  let obj_b = MapBuilder::new()
-  MapBuilder::set(obj_b, "report_path", string_json(case.report_path))
-  MapBuilder::set(obj_b, "entry_path", string_json(case.entry_path))
-  MapBuilder::set(obj_b, "execution_ok", bool_json(case.execution_ok))
-  MapBuilder::set(obj_b, "execution_error", string_json(case.execution_error))
-  MapBuilder::set(obj_b, "stats", JObj(MapBuilder::freeze(stats_obj_b)))
-  MapBuilder::set(obj_b, "rates", JObj(MapBuilder::freeze(rates_obj_b)))
-  JObj(MapBuilder::freeze(obj_b))
+let json_value_double = (value: Double) -> String {
+  stringify(double_json(value))
+}
+
+let json_value_bool = (value: Bool) -> String {
+  stringify(bool_json(value))
+}
+
+let json_value_option_double = (value: Option[Double]) -> String {
+  stringify(option_double_json(value))
+}
+
+let json_field_text = (key: String, value_json: String) -> String {
+  String::concat(
+    String::concat(json_value_string(key), ":"),
+    value_json
+  )
+}
+
+let json_object_text = (fields: Array[String]) -> String {
+  String::concat(
+    String::concat("{", join_str(fields, ",")),
+    "}"
+  )
+}
+
+let json_array_text = (items: Array[String]) -> String {
+  String::concat(
+    String::concat("[", join_str(items, ",")),
+    "]"
+  )
+}
+
+let case_json_text = (case: CoverageCase) -> String {
+  let stats_fields = [
+    json_field_text("point_total", json_value_int(case.stats.point_total)),
+    json_field_text("point_hit", json_value_int(case.stats.point_hit)),
+    json_field_text("line_total", json_value_int(case.stats.line_total)),
+    json_field_text("line_hit", json_value_int(case.stats.line_hit)),
+    json_field_text("branch_total", json_value_int(case.stats.branch_total)),
+    json_field_text("branch_hit", json_value_int(case.stats.branch_hit))
+  ]
+  let rates_fields = [
+    json_field_text("point", json_value_double(case.point_rate)),
+    json_field_text("line", json_value_double(case.line_rate)),
+    json_field_text("branch", json_value_double(case.branch_rate))
+  ]
+  json_object_text([
+    json_field_text("report_path", json_value_string(case.report_path)),
+    json_field_text("entry_path", json_value_string(case.entry_path)),
+    json_field_text("execution_ok", json_value_bool(case.execution_ok)),
+    json_field_text("execution_error", json_value_string(case.execution_error)),
+    json_field_text("stats", json_object_text(stats_fields)),
+    json_field_text("case_branch_total", json_value_int(case.case_branch_total)),
+    json_field_text("case_branch_hit", json_value_int(case.case_branch_hit)),
+    json_field_text("rates", json_object_text(rates_fields))
+  ])
+}
+
+let branch_gap_json_text = (gap: BranchGapEntry) -> String {
+  json_object_text([
+    json_field_text("entry_path", json_value_string(gap.entry_path)),
+    json_field_text("branch_miss", json_value_int(gap.branch_miss)),
+    json_field_text("branch_total", json_value_int(gap.branch_total)),
+    json_field_text("branch_hit", json_value_int(gap.branch_hit))
+  ])
 }
 
 export let suite_report_json = (report: SuiteReport, kpi: KpiResult) -> String {
-  let stats_obj_b = MapBuilder::new()
-  MapBuilder::set(stats_obj_b, "point_total", int_json(report.stats.point_total))
-  MapBuilder::set(stats_obj_b, "point_hit", int_json(report.stats.point_hit))
-  MapBuilder::set(stats_obj_b, "line_total", int_json(report.stats.line_total))
-  MapBuilder::set(stats_obj_b, "line_hit", int_json(report.stats.line_hit))
-  MapBuilder::set(stats_obj_b, "branch_total", int_json(report.stats.branch_total))
-  MapBuilder::set(stats_obj_b, "branch_hit", int_json(report.stats.branch_hit))
-
-  let rates_obj_b = MapBuilder::new()
-  MapBuilder::set(rates_obj_b, "point", double_json(report.point_rate))
-  MapBuilder::set(rates_obj_b, "line", double_json(report.line_rate))
-  MapBuilder::set(rates_obj_b, "branch", double_json(report.branch_rate))
-
-  let exec_obj_b = MapBuilder::new()
-  MapBuilder::set(exec_obj_b, "trap_case_count", int_json(report.trap_case_count))
-
-  let kpi_thresholds_b = MapBuilder::new()
-  MapBuilder::set(
-    kpi_thresholds_b,
-    "min_point_rate",
-    option_double_json(kpi.min_point_rate)
-  )
-  MapBuilder::set(
-    kpi_thresholds_b,
-    "min_line_rate",
-    option_double_json(kpi.min_line_rate)
-  )
-  MapBuilder::set(
-    kpi_thresholds_b,
-    "min_branch_rate",
-    option_double_json(kpi.min_branch_rate)
-  )
-
   let failures_b = ArrayBuilder::new()
   let mut i = 0
   while i < Array::length(kpi.failures) {
-    ArrayBuilder::push(failures_b, string_json(Array::get(kpi.failures, i)))
+    ArrayBuilder::push(failures_b, json_value_string(Array::get(kpi.failures, i)))
     i = i + 1
   }
-
-  let kpi_obj_b = MapBuilder::new()
-  MapBuilder::set(kpi_obj_b, "ok", bool_json(kpi.ok))
-  MapBuilder::set(kpi_obj_b, "point_rate", double_json(kpi.point_rate))
-  MapBuilder::set(kpi_obj_b, "line_rate", double_json(kpi.line_rate))
-  MapBuilder::set(kpi_obj_b, "branch_rate", double_json(kpi.branch_rate))
-  MapBuilder::set(
-    kpi_obj_b,
-    "thresholds",
-    JObj(MapBuilder::freeze(kpi_thresholds_b))
-  )
-  MapBuilder::set(kpi_obj_b, "has_thresholds", bool_json(kpi.has_thresholds))
-  MapBuilder::set(kpi_obj_b, "failures", JArr(ArrayBuilder::freeze(failures_b)))
 
   let cases_b = ArrayBuilder::new()
   let mut j = 0
   while j < Array::length(report.cases) {
-    ArrayBuilder::push(cases_b, case_json(Array::get(report.cases, j)))
+    ArrayBuilder::push(cases_b, case_json_text(Array::get(report.cases, j)))
     j = j + 1
   }
 
-  let root_b = MapBuilder::new()
-  MapBuilder::set(root_b, "format", string_json("vibe-selfhost-suite-coverage-v1"))
-  MapBuilder::set(root_b, "case_count", int_json(report.case_count))
-  MapBuilder::set(root_b, "execution", JObj(MapBuilder::freeze(exec_obj_b)))
-  MapBuilder::set(root_b, "stats", JObj(MapBuilder::freeze(stats_obj_b)))
-  MapBuilder::set(root_b, "rates", JObj(MapBuilder::freeze(rates_obj_b)))
-  MapBuilder::set(root_b, "cases", JArr(ArrayBuilder::freeze(cases_b)))
-  MapBuilder::set(root_b, "kpi", JObj(MapBuilder::freeze(kpi_obj_b)))
-
-  stringify(JObj(MapBuilder::freeze(root_b)))
+  let branch_gaps_b = ArrayBuilder::new()
+  let branch_gaps = top_branch_gap_entries(report.cases, 5)
+  let mut k = 0
+  while k < Array::length(branch_gaps) {
+    ArrayBuilder::push(
+      branch_gaps_b,
+      branch_gap_json_text(Array::get(branch_gaps, k))
+    )
+    k = k + 1
+  }
+  let stats_json = json_object_text([
+    json_field_text("point_total", json_value_int(report.stats.point_total)),
+    json_field_text("point_hit", json_value_int(report.stats.point_hit)),
+    json_field_text("line_total", json_value_int(report.stats.line_total)),
+    json_field_text("line_hit", json_value_int(report.stats.line_hit)),
+    json_field_text("branch_total", json_value_int(report.stats.branch_total)),
+    json_field_text("branch_hit", json_value_int(report.stats.branch_hit))
+  ])
+  let rates_json = json_object_text([
+    json_field_text("point", json_value_double(report.point_rate)),
+    json_field_text("line", json_value_double(report.line_rate)),
+    json_field_text("branch", json_value_double(report.branch_rate))
+  ])
+  let execution_json = json_object_text([
+    json_field_text("trap_case_count", json_value_int(report.trap_case_count))
+  ])
+  let kpi_thresholds_json = json_object_text([
+    json_field_text("min_point_rate", json_value_option_double(kpi.min_point_rate)),
+    json_field_text("min_line_rate", json_value_option_double(kpi.min_line_rate)),
+    json_field_text("min_branch_rate", json_value_option_double(kpi.min_branch_rate))
+  ])
+  let kpi_json = json_object_text([
+    json_field_text("ok", json_value_bool(kpi.ok)),
+    json_field_text("point_rate", json_value_double(kpi.point_rate)),
+    json_field_text("line_rate", json_value_double(kpi.line_rate)),
+    json_field_text("branch_rate", json_value_double(kpi.branch_rate)),
+    json_field_text("thresholds", kpi_thresholds_json),
+    json_field_text("has_thresholds", json_value_bool(kpi.has_thresholds)),
+    json_field_text("failures", json_array_text(ArrayBuilder::freeze(failures_b)))
+  ])
+  json_object_text([
+    json_field_text("format", json_value_string("vibe-selfhost-suite-coverage-v1")),
+    json_field_text("case_count", json_value_int(report.case_count)),
+    json_field_text("execution", execution_json),
+    json_field_text("stats", stats_json),
+    json_field_text("rates", rates_json),
+    json_field_text("cases", json_array_text(ArrayBuilder::freeze(cases_b))),
+    json_field_text(
+      "top_branch_gaps",
+      json_array_text(ArrayBuilder::freeze(branch_gaps_b))
+    ),
+    json_field_text("kpi", kpi_json)
+  ])
 }

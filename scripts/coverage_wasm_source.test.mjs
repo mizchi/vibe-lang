@@ -1,8 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import {
   applySourceNoiseExclusion,
+  buildSourceDepSignature,
+  buildSuiteCaseText,
   evaluateKpi,
   isCoverageNoiseLine,
   parseArgs,
@@ -132,4 +137,69 @@ test("applySourceNoiseExclusion: excluded lines are removed from line KPI", () =
   assert.equal(result.line_hit, 1);
   assert.equal(result.line_excluded_total, 3);
   assert.equal(result.lines.filter((line) => line.excluded).length, 3);
+});
+
+test("buildSourceDepSignature: follows relative and root imports with lock sidecars", () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vibe_cov_dep_sig."));
+  const write = (relPath, content) => {
+    const absPath = path.join(tmpRoot, relPath);
+    fs.mkdirSync(path.dirname(absPath), { recursive: true });
+    fs.writeFileSync(absPath, content);
+    return absPath;
+  };
+
+  const entryPath = write(
+    "workspace/main.vibe",
+    [
+      "import ./dep.vibe { dep }",
+      "import /vibe/prelude/option.vibe { unwrap_or }",
+      'let s = "import ./ignored.vibe { nope }"',
+      "// import ./comment_only.vibe { nope }",
+      "",
+    ].join("\n"),
+  );
+  write("workspace/dep.vibe", "export let dep = 1\n");
+  write("workspace/index.lock", "{}\n");
+  write("workspace/index.vbundle", "{\"lock\":{}}\n");
+  write("vibe/prelude/option.vibe", "export let unwrap_or = (x, y) -> x\n");
+  write("vibe/prelude/index.lock", "{}\n");
+  write("vibe/prelude/index.vbundle", "{\"lock\":{}}\n");
+
+  const signature = buildSourceDepSignature(entryPath, { projectRoot: tmpRoot });
+
+  assert.match(signature, /workspace\/main\.vibe\t/);
+  assert.match(signature, /workspace\/dep\.vibe\t/);
+  assert.match(signature, /workspace\/index\.lock\t/);
+  assert.match(signature, /workspace\/index\.vbundle\t/);
+  assert.match(signature, /vibe\/prelude\/option\.vibe\t/);
+  assert.match(signature, /vibe\/prelude\/index\.lock\t/);
+  assert.match(signature, /vibe\/prelude\/index\.vbundle\t/);
+  assert.doesNotMatch(signature, /ignored\.vibe/);
+  assert.doesNotMatch(signature, /comment_only\.vibe/);
+});
+
+test("buildSuiteCaseText: summary-only keeps case branch stats for ranking", () => {
+  const compact = buildSuiteCaseText(
+    {
+      entry_path: "vibe/compiler/selfhost_stage2_coverage_run.vibe",
+      execution: { ok: true, error: "" },
+      stats: {
+        point_total: 12,
+        point_hit: 1,
+        line_total: 4,
+        line_hit: 3,
+        branch_total: 20,
+        branch_hit: 5,
+      },
+      line_points: "1:1",
+      branch_points: "0:1,1:0",
+    },
+    { summaryOnly: true },
+  );
+
+  assert.match(compact, /point_total\t0/);
+  assert.match(compact, /branch_total\t0/);
+  assert.match(compact, /case_branch_total\t20/);
+  assert.match(compact, /case_branch_hit\t5/);
+  assert.doesNotMatch(compact, /branch_points\t/);
 });

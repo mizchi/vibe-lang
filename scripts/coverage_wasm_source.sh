@@ -63,92 +63,16 @@ cache_key_equals() {
 }
 
 build_source_dep_signature() {
-  node - "$ENTRY_PATH" <<'NODE'
-const fs = require("node:fs");
-const path = require("node:path");
+  node --input-type=module - "$ENTRY_PATH" "$PROJECT_ROOT" "$SCRIPT_DIR/coverage_wasm_source.mjs" <<'NODE'
+import { pathToFileURL } from "node:url";
 
-const entryPath = path.resolve(process.argv[2]);
-const seen = new Set();
-const relImportPatterns = [
-  /\bimport\s+(\.[^\s{]+)\s*\{/g,
-  /\bexport\s+(\.[^\s{]+)\s*\{/g,
-];
-
-function stripStringsAndComments(source) {
-  let out = "";
-  let mode = "code";
-  for (let i = 0; i < source.length; i += 1) {
-    const ch = source[i];
-    const next = i + 1 < source.length ? source[i + 1] : "";
-    if (mode === "code") {
-      if (ch === "\"") {
-        mode = "string";
-        out += " ";
-        continue;
-      }
-      if (ch === "/" && next === "/") {
-        mode = "line_comment";
-        out += "  ";
-        i += 1;
-        continue;
-      }
-      out += ch;
-      continue;
-    }
-    if (mode === "string") {
-      if (ch === "\\" && i + 1 < source.length) {
-        out += "  ";
-        i += 1;
-        continue;
-      }
-      if (ch === "\"") {
-        mode = "code";
-      }
-      out += ch === "\n" ? "\n" : " ";
-      continue;
-    }
-    if (mode === "line_comment") {
-      if (ch === "\n") {
-        mode = "code";
-        out += "\n";
-      } else {
-        out += " ";
-      }
-    }
-  }
-  return out;
-}
-
-function visit(filePath) {
-  const absPath = path.resolve(filePath);
-  if (seen.has(absPath)) return;
-  let source = "";
-  try {
-    source = fs.readFileSync(absPath, "utf8");
-  } catch {
-    return;
-  }
-  seen.add(absPath);
-  const scanSource = stripStringsAndComments(source);
-  const baseDir = path.dirname(absPath);
-  for (const pattern of relImportPatterns) {
-    pattern.lastIndex = 0;
-    for (;;) {
-      const match = pattern.exec(scanSource);
-      if (!match) break;
-      const rel = match[1];
-      if (!rel) continue;
-      const depPath = path.resolve(baseDir, rel);
-      visit(depPath);
-    }
-  }
-}
-
-visit(entryPath);
-for (const filePath of Array.from(seen).sort()) {
-  const stat = fs.statSync(filePath);
-  console.log(`${filePath}\t${stat.mtimeMs}\t${stat.size}`);
-}
+const entryPath = process.argv[2];
+const projectRoot = process.argv[3];
+const helperPath = process.argv[4];
+const helperModule = await import(pathToFileURL(helperPath).href);
+process.stdout.write(
+  helperModule.buildSourceDepSignature(entryPath, { projectRoot }),
+);
 NODE
 }
 

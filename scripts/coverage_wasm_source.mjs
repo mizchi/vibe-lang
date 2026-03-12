@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 function usage() {
@@ -102,6 +103,128 @@ export function parseArgs(argv) {
   };
 }
 
+function stripStringsAndComments(source) {
+  let out = "";
+  let mode = "code";
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i];
+    const next = i + 1 < source.length ? source[i + 1] : "";
+    if (mode === "code") {
+      if (ch === "\"") {
+        mode = "string";
+        out += " ";
+        continue;
+      }
+      if (ch === "/" && next === "/") {
+        mode = "line_comment";
+        out += "  ";
+        i += 1;
+        continue;
+      }
+      out += ch;
+      continue;
+    }
+    if (mode === "string") {
+      if (ch === "\\" && i + 1 < source.length) {
+        out += "  ";
+        i += 1;
+        continue;
+      }
+      if (ch === "\"") {
+        mode = "code";
+      }
+      out += ch === "\n" ? "\n" : " ";
+      continue;
+    }
+    if (mode === "line_comment") {
+      if (ch === "\n") {
+        mode = "code";
+        out += "\n";
+      } else {
+        out += " ";
+      }
+    }
+  }
+  return out;
+}
+
+function statLine(filePath) {
+  const stat = fs.statSync(filePath);
+  return `${filePath}\t${stat.mtimeMs}\t${stat.size}`;
+}
+
+function addTrackedPath(outputPaths, filePath) {
+  if (!fs.existsSync(filePath)) {
+    return;
+  }
+  const stat = fs.statSync(filePath);
+  if (!stat.isFile()) {
+    return;
+  }
+  outputPaths.add(path.resolve(filePath));
+}
+
+function resolveImportedPath(rawImportPath, baseDir, projectRoot) {
+  if (rawImportPath.startsWith("./") || rawImportPath.startsWith("../")) {
+    return path.resolve(baseDir, rawImportPath);
+  }
+  if (rawImportPath.startsWith("/")) {
+    return path.resolve(projectRoot, `.${rawImportPath}`);
+  }
+  return null;
+}
+
+export function buildSourceDepSignature(entryPath, options = {}) {
+  const projectRoot = path.resolve(options.projectRoot ?? process.cwd());
+  const entryAbsPath = path.resolve(entryPath);
+  const seenSourcePaths = new Set();
+  const trackedPaths = new Set();
+  const importPatterns = [
+    /\bimport\s+([/.][^\s{]+)\s*\{/g,
+    /\bexport\s+([/.][^\s{]+)\s*\{/g,
+  ];
+
+  function visitSource(filePath) {
+    const absPath = path.resolve(filePath);
+    if (seenSourcePaths.has(absPath)) {
+      return;
+    }
+    let source = "";
+    try {
+      source = fs.readFileSync(absPath, "utf8");
+    } catch {
+      return;
+    }
+    seenSourcePaths.add(absPath);
+    addTrackedPath(trackedPaths, absPath);
+    addTrackedPath(trackedPaths, path.join(path.dirname(absPath), "index.lock"));
+    addTrackedPath(trackedPaths, path.join(path.dirname(absPath), "index.vbundle"));
+
+    const scanSource = stripStringsAndComments(source);
+    const baseDir = path.dirname(absPath);
+    for (const pattern of importPatterns) {
+      pattern.lastIndex = 0;
+      for (;;) {
+        const match = pattern.exec(scanSource);
+        if (!match) {
+          break;
+        }
+        const rawImportPath = match[1];
+        if (!rawImportPath) {
+          continue;
+        }
+        const resolvedPath = resolveImportedPath(rawImportPath, baseDir, projectRoot);
+        if (resolvedPath !== null) {
+          visitSource(resolvedPath);
+        }
+      }
+    }
+  }
+
+  visitSource(entryAbsPath);
+  return Array.from(trackedPaths).sort().map(statLine).join("\n");
+}
+
 const summaryOnlyReport = process.env.VIBE_WASM_SOURCE_COVERAGE_REPORT_SUMMARY_ONLY === "1";
 
 function ratePercent(hit, total) {
@@ -170,13 +293,14 @@ function sanitizeReportField(value) {
   return String(value).replace(/[\r\n\t]/g, " ");
 }
 
-function buildSuiteCaseText(report) {
-  const pointTotal = summaryOnlyReport ? 0 : report.stats.point_total;
-  const pointHit = summaryOnlyReport ? 0 : report.stats.point_hit;
-  const lineTotal = summaryOnlyReport ? 0 : report.stats.line_total;
-  const lineHit = summaryOnlyReport ? 0 : report.stats.line_hit;
-  const branchTotal = summaryOnlyReport ? 0 : report.stats.branch_total;
-  const branchHit = summaryOnlyReport ? 0 : report.stats.branch_hit;
+export function buildSuiteCaseText(report, options = {}) {
+  const summaryOnly = options.summaryOnly ?? summaryOnlyReport;
+  const pointTotal = summaryOnly ? 0 : report.stats.point_total;
+  const pointHit = summaryOnly ? 0 : report.stats.point_hit;
+  const lineTotal = summaryOnly ? 0 : report.stats.line_total;
+  const lineHit = summaryOnly ? 0 : report.stats.line_hit;
+  const branchTotal = summaryOnly ? 0 : report.stats.branch_total;
+  const branchHit = summaryOnly ? 0 : report.stats.branch_hit;
   const lines = [];
   lines.push("format\tvibe-wasm-source-coverage-v4");
   lines.push(`entry_path\t${sanitizeReportField(report.entry_path)}`);
@@ -188,7 +312,10 @@ function buildSuiteCaseText(report) {
   lines.push(`line_hit\t${lineHit}`);
   lines.push(`branch_total\t${branchTotal}`);
   lines.push(`branch_hit\t${branchHit}`);
-  if (!summaryOnlyReport) {
+  if (summaryOnly) {
+    lines.push(`case_branch_total\t${report.stats.branch_total}`);
+    lines.push(`case_branch_hit\t${report.stats.branch_hit}`);
+  } else {
     lines.push(`line_points\t${report.line_points}`);
     lines.push(`branch_points\t${report.branch_points}`);
   }
