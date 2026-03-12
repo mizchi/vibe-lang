@@ -12,8 +12,8 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Self-Host Compiler / Runtime Packaging
 
-**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache、host CLI の check/test loop cache 再利用、env/argv 契約、stage1 core wasm 直接の artifact-only compile gate、Preview2 component-only selfhost CLI gate までは入った。
-**最優先の残**: selfhost CLI の package surface を command world / direct fs argv component まで一般化すること。
+**現状**: strict-recursive selfbuild と CI gate は完了。compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache、host CLI の check/test loop cache 再利用、env/argv 契約、stage1 core wasm 直接の artifact-only compile gate、Preview2 component-only selfhost CLI gate、Preview2 package、command world 配布 gate までは入った。
+**最優先の残**: selfhost CLI の direct fs/argv component を command world と同等の Preview2 配布導線まで持ち上げること。
 
 ### Selfhost compiler modularization / cache
 
@@ -79,8 +79,12 @@ Completed items are archived in `docs/DONE.md`.
 - [x] selfhost compiler 全体を `.wasm` component として配布・実行できる形にする
   - `scripts/build_selfhost_cli_preview2_component.sh` で selfhost component/WIT を build し、`scripts/run_selfhost_cli_preview2_component.sh` が `compile-cli-request` 契約を使って input file -> output wasm を復元する
   - `scripts/test_selfhost_cli_preview2_package.sh` は package build -> sample compile -> wasm validate -> run=42 を固定する
-- [ ] selfhost CLI の package surface を command world / direct fs argv component に一般化する
-  - 現状の配布契約は `compile-cli-request(source, request)` を wasmtime wrapper で包む形
+- [x] selfhost CLI の package surface を command world に一般化する
+  - `scripts/build_selfhost_cli_command_component.sh` は `compile-cli-hex(source, entry-name)` を import する Preview2 command adapter component を組み立てる
+  - `scripts/test_selfhost_cli_command_component.sh` は stdin=source / argv[-1]=entry / stdout=wasm の command world で sample compile -> wasm validate -> run=42 を固定する
+  - `release-selfhost-gates` に `test-selfhost-cli-preview2-package` と `test-selfhost-cli-command-component` を接続し、配布形の gate を pre-release 導線へ載せた
+- [ ] selfhost CLI の package surface を direct fs/argv component に一般化する
+  - 現状の配布契約は request/response component か command adapter component を wasmtime wrapper で実行する形
   - `selfhost_cli_component_run_entry.vibe` の direct fs/argv component は generic import / raw ABI の壁で未完
 
 ## Release / Gate Integration

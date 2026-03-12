@@ -703,7 +703,7 @@ vibe-normalize-check:
     scripts/vibe_normalize_all.sh --check
 
 # Pre-release selfhost gate bundle
-release-selfhost-gates: sync-vbundle check-selfhost-bundle-sync test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cli-core test-selfhost-cli-component-preview2 test-selfhost-cutover test-selfhost-check-parity test-golden-wat
+release-selfhost-gates: sync-vbundle check-selfhost-bundle-sync test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cli-core test-selfhost-cli-component-preview2 test-selfhost-cli-preview2-package test-selfhost-cli-command-component test-selfhost-cutover test-selfhost-check-parity test-golden-wat
 
 # Pre-release check (includes selfhost gates + wasm bundle-size monitor)
 release-check: fmt info check test vibe-normalize bench-bundle-size-monitor release-selfhost-gates

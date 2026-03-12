@@ -46,6 +46,11 @@ Completed items archived from `TODO.md`.
 - **Preview2 selfhost CLI を配布形へ整理**
   - `scripts/build_selfhost_cli_preview2_component.sh` で selfhost component/WIT を build し、`scripts/run_selfhost_cli_preview2_component.sh` が `compile-cli-request` 契約を使って input file -> output wasm を復元する
   - `scripts/test_selfhost_cli_preview2_package.sh` を追加し、build/run/validate/run=42 を package gate として固定した
+- **Preview2 selfhost CLI の command world 配布形を追加**
+  - `selfhost_cli_command_entry.vibe` は `compile_cli_hex(source, entry-name)` を string-lift export として公開し、command adapter が one-shot で wasm bytes を取り出せるようにした
+  - `src/codegen/component_codegen.mbt` と `src/runtime_compile/compile.mbt` を更新し、component string-lift が string result を正しく retptr ABI で返せるようにした
+  - `scripts/build_selfhost_cli_command_component.sh` は Preview2 `wasi:cli/command` adapter component を組み立て、`scripts/test_selfhost_cli_command_component.sh` は stdin=source / argv[-1]=entry / stdout=wasm の command world で sample compile -> wasm validate -> run=42 を固定した
+  - `release-selfhost-gates` に `test-selfhost-cli-preview2-package` と `test-selfhost-cli-command-component` を追加し、配布 gate を pre-release 導線へ統合した
 - **Stage1 core wasm 直接の artifact-only selfhost compile gate を完成**
   - `selfbuild_cli_env_entry` / `selfbuild_cli_args_entry` の両方で、stage1 core wasm 自体が real input を compile し、生成 wasm が `run=42` まで通ることを確認した
   - `scripts/test_selfhost_cli_adapter.sh` は `selfbuild_write_cli_adapter` 経由ではなく、stage1 core wasm をそのまま selfhost CLI artifact として叩く gate に切り替えた

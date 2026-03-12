@@ -132,6 +132,20 @@ test "generate_string_trampoline_module produces valid structure" {
 }
 
 ///|
+test "generate_string_trampoline_module supports string results" {
+  let trampoline = generate_string_trampoline_module(
+    1,
+    result_kind=ComponentStringLiftResult::String,
+  )
+  let exports = parse_core_export_funcs(trampoline)
+  assert_eq(exports.length(), 1)
+  assert_eq(exports[0].name, "canon_func")
+  assert_eq(exports[0].sig.params.length(), 2)
+  assert_eq(exports[0].sig.results.length(), 1)
+  assert_eq(exports[0].sig.results[0], b'\x7f')
+}
+
+///|
 test "parse_core_export_funcs skips non-function exports" {
   // Type 0: () -> i64
   let core_wasm = build_test_core_wasm(

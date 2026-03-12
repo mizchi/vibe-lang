@@ -100,6 +100,12 @@ let component_valtype_f64 : Byte = b'\x75'
 let component_valtype_string : Byte = b'\x73'
 
 ///|
+priv enum ComponentStringLiftResult {
+  S64
+  String
+}
+
+///|
 priv struct CoreFuncSig {
   params : Array[Byte]
   results : Array[Byte]
@@ -1283,11 +1289,12 @@ fn emit_alias_section(
 /// export to initialize env-backed imported closures before invoking the lifted export.
 /// When `needs_target_env` is true, the trampoline imports a `target_env` global and passes
 /// it as the closure env parameter to the lifted core export.
-/// Exports: "canon_func" (i32, i32, ...) -> i64
+/// Exports: "canon_func" (i32, i32, ...) -> i64 or (i32, i32) for string results.
 fn generate_string_trampoline_module(
   string_param_count : Int,
   needs_target_env? : Bool = true,
   call_run_init? : Bool = false,
+  result_kind? : ComponentStringLiftResult = ComponentStringLiftResult::S64,
 ) -> Bytes {
   let buf : Array[Byte] = []
   // Magic + version
@@ -1310,7 +1317,7 @@ fn generate_string_trampoline_module(
   // Type section (id=1): 3-4 types
   // Type 0: target_func (i64 * string_param_count, optional i32 env) -> i64
   // Type 1: cabi_realloc (i32, i32, i32, i32) -> i32
-  // Type 2: canon_func (i32, i32) * string_param_count -> i64
+  // Type 2: canon_func (i32, i32) * string_param_count -> i64 or (i32, i32)
   // Type 3: run_init () -> i64
   let type_sec = ByteBuf::new()
   write_u32_leb(type_sec, trampoline_type_count)
@@ -1333,14 +1340,22 @@ fn generate_string_trampoline_module(
   }
   type_sec.push(b'\x01')
   type_sec.push(b'\x7f') // result: i32
-  // Type 2: canon func (i32, i32) * count -> i64
+  // Type 2: canon func (i32, i32) * count -> i64 or i32 retptr for string results
   type_sec.push(b'\x60')
   write_u32_leb(type_sec, string_param_count * 2)
   for _ in 0..<(string_param_count * 2) {
     type_sec.push(b'\x7f') // i32
   }
-  type_sec.push(b'\x01')
-  type_sec.push(b'\x7e') // result: i64
+  match result_kind {
+    ComponentStringLiftResult::S64 => {
+      type_sec.push(b'\x01')
+      type_sec.push(b'\x7e') // result: i64
+    }
+    ComponentStringLiftResult::String => {
+      type_sec.push(b'\x01')
+      type_sec.push(b'\x7f') // result retptr
+    }
+  }
   if call_run_init {
     type_sec.push(b'\x60')
     write_u32_leb(type_sec, 0)
@@ -1404,10 +1419,15 @@ fn generate_string_trampoline_module(
   // Function body
   let func_body = ByteBuf::new()
   // Locals: string_param_count i64 (tagged strings) + string_param_count i32 (obj ptrs)
-  write_u32_leb(func_body, 2) // 2 local declarations
+  // + optional i32 result obj ptr / retptr for string results
+  let string_result_local_count = match result_kind {
+    ComponentStringLiftResult::S64 => 0
+    ComponentStringLiftResult::String => 2
+  }
+  write_u32_leb(func_body, 2) // local declarations
   write_u32_leb(func_body, string_param_count)
   func_body.push(b'\x7e') // i64 locals
-  write_u32_leb(func_body, string_param_count)
+  write_u32_leb(func_body, string_param_count + string_result_local_count)
   func_body.push(b'\x7f') // i32 locals
 
   if call_run_init {
@@ -1476,7 +1496,34 @@ fn generate_string_trampoline_module(
   }
   func_body.push(b'\x10') // call
   write_u32_leb(func_body, 0) // func 0 = target_func
-  // result is on stack
+  match result_kind {
+    ComponentStringLiftResult::S64 => ()
+    ComponentStringLiftResult::String => {
+      let result_obj_local = obj_base + string_param_count
+      let result_retptr_local = result_obj_local + 1
+      emit_i32_wrap_i64(func_body)
+      emit_i32_const_raw(func_body, 1)
+      emit_i32_sub(func_body)
+      emit_local_set(func_body, result_obj_local)
+      emit_i32_const_raw(func_body, 0)
+      emit_i32_const_raw(func_body, 0)
+      emit_i32_const_raw(func_body, 4)
+      emit_i32_const_raw(func_body, 8)
+      func_body.push(b'\x10') // call
+      write_u32_leb(func_body, 1) // func 1 = cabi_realloc
+      emit_local_set(func_body, result_retptr_local)
+      emit_local_get(func_body, result_retptr_local)
+      emit_local_get(func_body, result_obj_local)
+      emit_i32_const_raw(func_body, 8)
+      emit_i32_add(func_body)
+      emit_i32_store(func_body, 0)
+      emit_local_get(func_body, result_retptr_local)
+      emit_local_get(func_body, result_obj_local)
+      emit_i32_load(func_body, 4)
+      emit_i32_store(func_body, 4)
+      emit_local_get(func_body, result_retptr_local)
+    }
+  }
   func_body.push(b'\x0b') // end
 
   // Write function body with length prefix
@@ -1634,7 +1681,7 @@ pub fn emit_component_wasm_with_lift(
 ///|
 /// Emit a Component WASM with string param support.
 /// Uses a trampoline core module to convert canonical ABI strings to vibe tagged strings.
-/// The exported function accepts (string, string, ...) -> s64.
+/// The exported function accepts (string, string, ...) -> s64 or string.
 /// Requires core wasm to export: target_func_name (i64,...)->i64, memory, cabi_realloc (i32,i32,i32,i32)->i32
 pub fn emit_component_wasm_with_string_lift(
   core_wasm : Bytes,
@@ -1643,6 +1690,7 @@ pub fn emit_component_wasm_with_string_lift(
   string_param_count : Int,
   param_names? : Array[String] = [],
   is_async? : Bool = false,
+  string_result? : Bool = false,
 ) -> Bytes {
   let import_plan = build_core_import_plan(core_wasm)
   let import_func_count = import_plan.bindings.length()
@@ -1666,11 +1714,17 @@ pub fn emit_component_wasm_with_string_lift(
   let run_init_import_count = if call_run_init { 1 } else { 0 }
   let run_alias_func_count = if has_distinct_run_alias { 1 } else { 0 }
   let target_env_alias_count = if needs_target_env { 1 } else { 0 }
+  let result_kind = if string_result {
+    ComponentStringLiftResult::String
+  } else {
+    ComponentStringLiftResult::S64
+  }
   // Generate the trampoline module
   let trampoline_wasm = generate_string_trampoline_module(
     string_param_count,
     needs_target_env=needs_target_env,
     call_run_init=call_run_init,
+    result_kind=result_kind,
   )
   let buf : Array[Byte] = []
   // Component header
@@ -1772,7 +1826,7 @@ pub fn emit_component_wasm_with_string_lift(
   emit_alias_section(buf, trampoline_instance_idx, [
     ("canon_func", core_sort_func),
   ])
-  // Component type for (string, string, ...) -> s64
+  // Component type for (string, string, ...) -> s64|string
   buf.push(component_section_type)
   let type_content : Array[Byte] = []
   component_write_uleb128(type_content, 1) // 1 type
@@ -1793,7 +1847,11 @@ pub fn emit_component_wasm_with_string_lift(
     type_content.push(component_valtype_string)
   }
   type_content.push(b'\x00') // single unnamed result
-  type_content.push(component_valtype_s64)
+  if string_result {
+    type_content.push(component_valtype_string)
+  } else {
+    type_content.push(component_valtype_s64)
+  }
   component_write_uleb128(buf, type_content.length())
   for b in type_content {
     buf.push(b)

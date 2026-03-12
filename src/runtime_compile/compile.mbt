@@ -699,11 +699,12 @@ pub fn compile_module_component_string_lift_auto(
   let mut target_func_name : String? = None
   let mut string_param_count = 0
   let string_param_names : Array[String] = []
+  let mut string_result = false
   for stmt in compiled.ast.stmts {
     match stmt {
       @core.Stmt::ExportLet(name~, expr~, ..) =>
         match expr {
-          @core.Expr::Fn(params~, ..) => {
+          @core.Expr::Fn(params~, ret~, ..) => {
             for p in params {
               if p.ty == @core.Type::String ||
                 p.ty == @core.Type::Named(name="String", args=[]) {
@@ -713,6 +714,8 @@ pub fn compile_module_component_string_lift_auto(
             if string_param_names.length() > 0 {
               target_func_name = Some(name)
               string_param_count = string_param_names.length()
+              string_result = ret == Some(@core.Type::String) ||
+                ret == Some(@core.Type::Named(name="String", args=[]))
               break
             }
           }
@@ -742,6 +745,7 @@ pub fn compile_module_component_string_lift_auto(
     string_param_count,
     param_names=string_param_names,
     is_async~,
+    string_result=string_result,
   )
   optimize_wasm_bytes_with_opt_level(component, opt_level)
 }
