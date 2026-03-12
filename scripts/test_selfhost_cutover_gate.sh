@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Selfhost cutover gate: CLI contract verification + artifact parity.
+# Selfhost cutover gate: CLI contract verification + compile-lite parity.
 # This script bundles Phase 1 (CLI contract) and Phase 0+2 (artifact parity)
 # checks into a single CI gate.
 #
@@ -11,7 +11,7 @@ set -euo pipefail
 #   VIBE_CUTOVER_REQUIRE_PARITY        — 1: fail on mismatch (default: 1), 0: monitor-only
 #   VIBE_CUTOVER_INCLUDE_COMPILER_SIZE — 1: expand canary set (default: 1)
 #   VIBE_CUTOVER_INCLUDE_FAIL_CASES    — 1: run expected-fail parity canaries (default: 1)
-#   VIBE_CUTOVER_MODES                 — comma-separated compile modes (default: mvp,no-dce,debug-errors)
+#   VIBE_CUTOVER_MODES                 — comma-separated compile-lite modes (default: mvp,no-dce)
 #   VIBE_CUTOVER_STAGE_TIMEOUT_SEC     — per-stage timeout (default: 300)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -114,7 +114,7 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
 fi
 
 echo ""
-echo "=== Stage 2: Artifact parity comparison ==="
+echo "=== Stage 2: compile-lite parity comparison ==="
 
 VIBE_BIN="$VIBE_BIN" \
 STAGE1_COMPILER_WASM="$STAGE1_COMPILER_WASM" \

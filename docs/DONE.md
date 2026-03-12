@@ -75,6 +75,10 @@ Completed items archived from `TODO.md`.
   - `scripts/test_selfhost_cli_adapter.sh` は `selfbuild_write_cli_adapter` 経由ではなく、stage1 core wasm をそのまま selfhost CLI artifact として叩く gate に切り替えた
 - **Host compile-lite と selfhost direct component の dual-run smoke を追加**
   - `scripts/test_selfhost_cli_direct_parity.sh` の host 側を `compile --wasm` から `compile-lite --wasm` に切り替え、host CLI 縮退対象に近い経路で selfhost direct fs component と並走させるようにした
+
+- **Selfhost cutover parity を compile-lite ベースへ移行**
+  - `scripts/test_selfhost_cutover_compare.sh` の host/selfhost 両方を `compile` から `compile-lite` に切り替え、既定 mode を `mvp,no-dce` に寄せた
+  - `scripts/test_selfhost_cutover_gate.sh` も Stage 2 を compile-lite parity として扱うように更新した
 - **Selfhost CLI adapter の compile 入力を grouped closure へ縮小**
   - `selfhost_cli_adapter_sources` / `selfhost_cli_adapter_source_groups` を bundle に追加し、adapter 専用 closure を compiler 全量 source から切り離した
   - stage1 probe で adapter closure は `68 sources / 9 groups -> 24 sources / 5 groups` まで縮小できることを確認した

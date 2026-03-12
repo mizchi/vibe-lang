@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Selfhost cutover comparison: host vs selfhost wasm output parity.
+# Selfhost cutover comparison: host vs selfhost compile-lite wasm parity.
 # Compiles canary files with both host CLI and selfhost WASI compiler,
 # then compares exit codes, wasm byte hashes, and deterministic output.
 #
@@ -13,7 +13,7 @@ set -euo pipefail
 #   VIBE_CUTOVER_INCLUDE_FAIL_CASES    — 1: run expected-fail parity canaries (default: 1)
 #   VIBE_CUTOVER_FAIL_CASES_FILE       — fail canary case list (TSV path)
 #   VIBE_CUTOVER_REQUIRED_FAIL_CLASSES — comma-separated required fail classes (default: parse,type,io)
-#   VIBE_CUTOVER_MODES                 — comma-separated compile modes (default: mvp,no-dce,debug-errors)
+#   VIBE_CUTOVER_MODES                 — comma-separated compile-lite modes (default: mvp,no-dce)
 #   VIBE_CUTOVER_STAGE_TIMEOUT_SEC     — per-stage timeout (default: 300)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,7 +26,7 @@ INCLUDE_COMPILER_SIZE="${VIBE_CUTOVER_INCLUDE_COMPILER_SIZE:-1}"
 INCLUDE_FAIL_CASES="${VIBE_CUTOVER_INCLUDE_FAIL_CASES:-1}"
 FAIL_CASES_FILE="${VIBE_CUTOVER_FAIL_CASES_FILE:-$PROJECT_ROOT/bench/selfhost_cutover/fail_cases.txt}"
 REQUIRED_FAIL_CLASSES_RAW="${VIBE_CUTOVER_REQUIRED_FAIL_CLASSES:-parse,type,io}"
-CUTOVER_MODES_RAW="${VIBE_CUTOVER_MODES:-mvp,no-dce,debug-errors}"
+CUTOVER_MODES_RAW="${VIBE_CUTOVER_MODES:-mvp,no-dce}"
 STAGE_TIMEOUT_SEC="${VIBE_CUTOVER_STAGE_TIMEOUT_SEC:-300}"
 
 run_with_timeout() {
@@ -127,19 +127,18 @@ compile_mode() {
   case "$mode" in
     mvp) mode_flags=(--wasm) ;;
     no-dce) mode_flags=(--wasm --no-dce) ;;
-    debug-errors) mode_flags=(--wasm --debug-errors) ;;
     *)
-      echo "cutover gate failed: unknown mode '$mode' (supported: mvp,no-dce,debug-errors)" >&2
+      echo "cutover gate failed: unknown mode '$mode' (supported: mvp,no-dce)" >&2
       return 2
       ;;
   esac
 
   if [ "$runtime" = "host" ]; then
-    run_with_timeout "$STAGE_TIMEOUT_SEC" "$VIBE_BIN" compile "${mode_flags[@]}" "$source_file" -o "$output_file" >"$stdout_file" 2>"$stderr_file"
+    run_with_timeout "$STAGE_TIMEOUT_SEC" "$VIBE_BIN" compile-lite "${mode_flags[@]}" "$source_file" -o "$output_file" >"$stdout_file" 2>"$stderr_file"
     return $?
   fi
   if [ "$runtime" = "selfhost" ]; then
-    run_with_timeout "$STAGE_TIMEOUT_SEC" moonrun "$STAGE1_COMPILER_WASM" "${mode_flags[@]}" "$source_file" -o "$output_file" >"$stdout_file" 2>"$stderr_file"
+    run_with_timeout "$STAGE_TIMEOUT_SEC" moonrun "$STAGE1_COMPILER_WASM" compile-lite "${mode_flags[@]}" "$source_file" -o "$output_file" >"$stdout_file" 2>"$stderr_file"
     return $?
   fi
 
@@ -211,7 +210,7 @@ for raw_mode in "${raw_modes[@]}"; do
   mode="${mode%"${mode##*[![:space:]]}"}"
   [ -z "$mode" ] && continue
   case "$mode" in
-    mvp|no-dce|debug-errors) CUTOVER_MODES+=("$mode") ;;
+    mvp|no-dce) CUTOVER_MODES+=("$mode") ;;
     *)
       echo "cutover gate failed: unknown VIBE_CUTOVER_MODES item '$mode'" >&2
       exit 1

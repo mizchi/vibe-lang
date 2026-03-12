@@ -44,6 +44,7 @@ Phase 4 (応用):
 - [ ] MoonBit host CLI を bootstrap 専用へ縮退する
   - selfhost 配布形は Preview2 package / command component / direct fs/argv component まで揃ったが、`check/test/release-check` の本流はまだ `src/cmd/vibe` に残っている
   - selfhost direct fs component と host compile-lite を並走させる dual-compile smoke gate は追加済み
+  - selfhost cutover compare も `compile` から `compile-lite` ベースへ移し、artifact parity の既定 mode は `mvp,no-dce` に寄せた
   - selfhost check 配布形も Preview2 package / command component / direct fs component まで揃い、`release-selfhost-gates` に smoke gate を追加した
   - 次は selfhost command/direct component を host CLI の一部フローへ差し込み、dual-run 対象を `check/test/release-check` へ広げながら切り替える
   - `test_selfhost_check_parity.sh` も最終的には component 配布形へ寄せ、`moonrun "$STAGE1_CHECKER_WASM"` 依存を bootstrap 専用へ押し込む
