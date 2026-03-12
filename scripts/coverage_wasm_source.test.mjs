@@ -93,6 +93,7 @@ test("isCoverageNoiseLine: multiline array literal items are excluded", () => {
   const sourceLines = [
     "assert(tokens_match(tokens, [",
     "  TInt(1),",
+    '  TIdent("x"),',
     "  TPlus,",
     "  TEof",
     "]))",
@@ -100,6 +101,7 @@ test("isCoverageNoiseLine: multiline array literal items are excluded", () => {
   assert.equal(isCoverageNoiseLine(sourceLines, 2), true);
   assert.equal(isCoverageNoiseLine(sourceLines, 3), true);
   assert.equal(isCoverageNoiseLine(sourceLines, 4), true);
+  assert.equal(isCoverageNoiseLine(sourceLines, 5), true);
 });
 
 test("isCoverageNoiseLine: comma-only continuation line is excluded", () => {
@@ -119,6 +121,16 @@ test("isCoverageNoiseLine: array close continuation line is excluded", () => {
     "  CtString,",
     "  CtString",
     "], CtString, false)))",
+  ];
+  assert.equal(isCoverageNoiseLine(sourceLines, 4), true);
+});
+
+test("isCoverageNoiseLine: closing array call line is excluded", () => {
+  const sourceLines = [
+    "assert(tokens_match(tokens, [",
+    "  TInt(1),",
+    "  TEof",
+    "]))",
   ];
   assert.equal(isCoverageNoiseLine(sourceLines, 4), true);
 });
