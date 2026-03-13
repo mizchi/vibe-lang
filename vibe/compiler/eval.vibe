@@ -1005,6 +1005,20 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
       }
     }
   }
+  let value_type_prefix = (v: Value) -> String {
+    match v {
+      VInt(_) => "Int",
+      VFloat(_) => "Double",
+      VString(_) => "String",
+      VBool(_) => "Bool",
+      VUnit => "Unit",
+      VTuple(_) => "Tuple",
+      VArray(_) => "Array",
+      VRecord(_) => "Record",
+      VBytes(_) => "Bytes",
+      _ => ""
+    }
+  }
   let empty_vals = Array::slice([
     VUnit
   ], 0, 0)
@@ -1140,6 +1154,34 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
       (VFn(captures, param_names, 0, None), env)
     },
     ECall(callee, arg_exprs) => {
+      let is_method_call = match callee {
+        EDot(_, _) => true,
+        _ => false
+      }
+      if is_method_call {
+        let (obj_expr, method_name) = match callee {
+          EDot(o, m) => (o, m),
+          _ => (EUnit, "")
+        }
+        let (obj_val, env2) = eval_expr(obj_expr, env)
+        let type_prefix = value_type_prefix(obj_val)
+        let qualified = String::concat(type_prefix, String::concat("::", method_name))
+        let (rest_args, env3) = eval_args(arg_exprs, env2, 0, empty_vals)
+        let all_args = Array::slice([VUnit], 0, 0)
+        Array::push(all_args, obj_val)
+        let mut ri = 0
+        while ri < Array::length(rest_args) {
+          Array::push(all_args, Array::get(rest_args, ri))
+          ri = ri + 1
+        }
+        match val_env_lookup(env3, qualified) {
+          Some(fn_val) => apply_fn(fn_val, all_args, env3),
+          None => match eval_builtin_call(qualified, all_args) {
+            Some(v) => (v, env3),
+            None => (VUnit, env3)
+          }
+        }
+      } else {
       let callee_is_ident = match callee {
         EIdent(_) => true,
         _ => false
@@ -1237,6 +1279,7 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
         } else {
           (VUnit, env3)
         }
+      }
       }
     },
     EBinOp(op, left, right) => {
