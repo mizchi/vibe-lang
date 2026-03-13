@@ -141,6 +141,7 @@ fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
     "Fs::read_file"
     | "Fs::write_file"
     | "Fs::exists"
+    | "Fs::stat_token"
     | "Fs::readdir"
     | "Fs::is_dir"
     | "Fs::mkdir"

@@ -66,6 +66,14 @@ function writeU32LE(mem, pos, val) {
   mem[pos + 3] = (val >>> 24) & 0xff;
 }
 
+function writeU64LE(mem, pos, val) {
+  let next = BigInt.asUintN(64, BigInt(val));
+  for (let i = 0; i < 8; i += 1) {
+    mem[pos + i] = Number(next & 0xffn);
+    next >>= 8n;
+  }
+}
+
 function writeU8(mem, pos, val) {
   mem[pos] = val & 0xff;
 }
@@ -336,6 +344,24 @@ function createPreview2FilesystemHost(projectRoot) {
     writeU32LE(mem, retptr + 8, len >>> 0);
   }
 
+  function buildFsMetadataHashParts(filePath) {
+    const stat = fs.statSync(filePath, { bigint: true });
+    const size = typeof stat.size === "bigint" ? stat.size : BigInt(stat.size);
+    const mtimeNs =
+      typeof stat.mtimeNs === "bigint"
+        ? stat.mtimeNs
+        : BigInt(Math.round(Number(stat.mtimeMs) * 1e6));
+    const lower = BigInt.asUintN(
+      64,
+      (size * 0x9e3779b185ebca87n) ^ mtimeNs ^ 0x243f6a8885a308d3n,
+    );
+    const upper = BigInt.asUintN(
+      64,
+      ((mtimeNs << 1n) ^ (size << 17n) ^ 0x13198a2e03707344n),
+    );
+    return { lower, upper };
+  }
+
   function resolveDescriptor(handle) {
     const desc = descriptors.get(handle);
     if (!desc) {
@@ -464,6 +490,26 @@ function createPreview2FilesystemHost(projectRoot) {
         writeU8(mem, retptr, exists ? 0 : 1);
       } catch (_err) {
         logDebug(`[preview2 fs] stat-at error: ${_err && _err.stack ? _err.stack : _err}`);
+        writeResultErr(retptr, 8);
+      }
+    },
+    "[method]descriptor.metadata-hash-at"(baseHandle, _pathFlags, pathPtr, pathLen, retptr) {
+      try {
+        const rawPath = decodeUtf8Range(getInstance(), pathPtr, pathLen);
+        const filePath = resolvePath(baseHandle, rawPath);
+        const mem = getMem();
+        const exists = fs.existsSync(filePath);
+        logDebug(`[preview2 fs] metadata-hash-at base=${baseHandle} path=${JSON.stringify(rawPath)} resolved=${filePath} exists=${exists}`);
+        if (!exists) {
+          writeResultErr(retptr, 44);
+          return;
+        }
+        const { lower, upper } = buildFsMetadataHashParts(filePath);
+        writeU8(mem, retptr, 0);
+        writeU64LE(mem, retptr + 8, lower);
+        writeU64LE(mem, retptr + 16, upper);
+      } catch (_err) {
+        logDebug(`[preview2 fs] metadata-hash-at error: ${_err && _err.stack ? _err.stack : _err}`);
         writeResultErr(retptr, 8);
       }
     },
@@ -692,6 +738,11 @@ async function main() {
       fs_exists(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
         return encodeTaggedBool(fs.existsSync(filePath));
+      },
+      fs_stat_token(pathTagged) {
+        const filePath = decodeStringArg(instanceRef, pathTagged);
+        const { lower, upper } = buildFsMetadataHashParts(filePath);
+        return encodeTaggedInt(BigInt.asUintN(61, lower ^ upper));
       },
       fs_write_bytes(pathTagged, bytesTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);

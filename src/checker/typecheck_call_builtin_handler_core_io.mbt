@@ -509,6 +509,19 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Bool,
         true,
       )
+    "Fs::stat_token" =>
+      check_builtin_simple(
+        env,
+        "Fs::stat_token",
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+        [@core.Type::String],
+        @core.Type::Int,
+        true,
+      )
     "Fs::readdir" =>
       check_builtin_simple(
         env,

@@ -609,6 +609,7 @@ fn is_effectful_call_name(name : String) -> Bool {
   name == "Fs::write_string" ||
   name == "Fs::write_bytes" ||
   name == "Fs::exists" ||
+  name == "Fs::stat_token" ||
   name == "Fs::readdir" ||
   name == "Fs::is_dir" ||
   name == "Fs::mkdir" ||

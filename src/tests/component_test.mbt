@@ -210,6 +210,29 @@ test "component wit includes preview2 filesystem imports when fs builtins are us
 }
 
 ///|
+test "component wit includes preview2 metadata hash imports when Fs::stat_token is used" {
+  let db = VibeDb::new()
+  db.set_source("main", "let run = () -> Int with {Fs} { Fs::stat_token(\"foo.txt\") }\nrun()")
+  let wasm = try
+    compile_module_wasm(db, "main")
+  catch {
+    e => fail("wasm error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  let wit = try
+    generate_module_component_wit(db, "main", "local:main", "main")
+  catch {
+    e => fail("wit error: " + e.to_string())
+  } noraise {
+    w => w
+  }
+  assert_true(String::contains(wit, "import wasi:filesystem/types@0.2.6;"))
+  assert_true(String::contains(wit, "import wasi:filesystem/preopens@0.2.6;"))
+  assert_true(component_bytes_contains_ascii(wasm, "[method]descriptor.metadata-hash-at"))
+}
+
+///|
 test "component wit scans for-in bodies for host imports" {
   let db = VibeDb::new()
   let src =

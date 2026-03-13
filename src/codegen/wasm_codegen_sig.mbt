@@ -231,7 +231,7 @@ fn builtin_type_count(ctx : CodegenCtx) -> Int {
   }
   if ctx.need_fs {
     // Keep in sync with wasm_codegen_module.mbt type section:
-    // get-directories/resource-drop, open-at, read, write, stat-at
+    // get-directories/resource-drop, open-at, read, write, metadata-hash-at, stat-at
     count += 5
   }
   if ctx.need_socket {
@@ -308,7 +308,7 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
     count += 2
   }
   if ctx.need_fs {
-    count += 6
+    count += 7
   }
   if ctx.need_socket {
     count += 13
@@ -543,7 +543,7 @@ fn infer_expr_kind_with(
         "array_contains_str" => ValueKind::I64
         "Double::to_i64_bits" | "Double::from_i64_bits" => ValueKind::I64
         "string_to_data" => ValueKind::I64
-        "Fs::write_bytes" => ValueKind::I64
+        "Fs::write_bytes" | "Fs::stat_token" => ValueKind::I64
         "Bytes::from_array" => ValueKind::I64
         "Bytes::length" => ValueKind::I64
         "Bytes::get" => ValueKind::I64
@@ -1068,6 +1068,7 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "Bytes::length" ||
         name == "Bytes::get" ||
         name == "Fs::exists" ||
+        name == "Fs::stat_token" ||
         name == "Socket::tcp_connect" ||
         name == "Socket::tcp_read" ||
         name == "Socket::tcp_write" ||
@@ -1591,13 +1592,18 @@ fn import_index_fs_write(ctx : CodegenCtx) -> Int raise WasmGenError {
 }
 
 ///|
-fn import_index_fs_stat_at(ctx : CodegenCtx) -> Int raise WasmGenError {
+fn import_index_fs_metadata_hash_at(ctx : CodegenCtx) -> Int raise WasmGenError {
   import_index_fs_get_directories(ctx) + 4
 }
 
 ///|
-fn import_index_fs_resource_drop(ctx : CodegenCtx) -> Int raise WasmGenError {
+fn import_index_fs_stat_at(ctx : CodegenCtx) -> Int raise WasmGenError {
   import_index_fs_get_directories(ctx) + 5
+}
+
+///|
+fn import_index_fs_resource_drop(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_get_directories(ctx) + 6
 }
 
 ///|
@@ -1611,7 +1617,7 @@ fn fs_root_descriptor_global_index(ctx : CodegenCtx) -> Int {
 fn import_index_after_fs(ctx : CodegenCtx) -> Int {
   let mut idx = import_index_after_stdin(ctx)
   if ctx.need_fs {
-    idx += 6
+    idx += 7
   }
   idx
 }

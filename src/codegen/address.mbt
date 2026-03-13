@@ -973,6 +973,7 @@ fn is_builtin(name : String) -> Bool {
   name == "Fs::read_file" ||
   name == "Fs::write_file" ||
   name == "Fs::exists" ||
+  name == "Fs::stat_token" ||
   name == "Socket::tcp_connect" ||
   name == "Socket::tcp_read" ||
   name == "Socket::tcp_write" ||

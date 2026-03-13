@@ -5649,6 +5649,75 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_int_value64(0L)) // false
       buf.push((11).to_byte()) // end if
     }
+    "Fs::stat_token" => {
+      if ctx.use_js_strings {
+        raise WasmGenError::Unsupported("Fs::stat_token requires --wasm backend")
+      }
+      let pos_args = extract_positional_exprs_with_arity(args, "Fs::stat_token", 1)
+      require_heap(ctx)
+      let raw_local = alloc_temp_local(ctx)
+      let len_local = alloc_temp_local(ctx)
+      let ret_area_local = alloc_temp_local(ctx)
+      let root_desc_local = alloc_temp_local(ctx)
+      let fs_global = fs_root_descriptor_global_index(ctx)
+      emit_global_get(buf, fs_global)
+      emit_i32_const_raw(buf, -1)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte()) // if
+      buf.push((64).to_byte()) // void
+      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+      emit_local_get(buf, ret_area_local)
+      emit_call(buf, import_index_fs_get_directories(ctx))
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load(buf, 0)
+      emit_i32_load(buf, 0)
+      emit_global_set(buf, fs_global)
+      buf.push((11).to_byte()) // end if
+      emit_global_get(buf, fs_global)
+      emit_local_set(buf, root_desc_local)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, raw_local)
+      emit_local_get(buf, raw_local)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, len_local)
+      emit_heap_alloc(ctx, buf, align4(24), ret_area_local)
+      if ctx.heap_local >= 0 && ctx.use_heap_global {
+        emit_local_get(buf, ctx.heap_local)
+        emit_global_set(buf, ctx.heap_global)
+      }
+      emit_local_get(buf, root_desc_local)
+      emit_i32_const_raw(buf, 0)
+      emit_local_get(buf, raw_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf)
+      emit_local_get(buf, len_local)
+      emit_local_get(buf, ret_area_local)
+      emit_call(buf, import_index_fs_metadata_hash_at(ctx))
+      if ctx.heap_local >= 0 && ctx.use_heap_global {
+        emit_global_get(buf, ctx.heap_global)
+        emit_local_set(buf, ctx.heap_local)
+      }
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load8_u(buf, 0)
+      emit_i32_eqz(buf)
+      buf.push((4).to_byte()) // if
+      buf.push((126).to_byte()) // result i64
+      emit_local_get(buf, ret_area_local)
+      emit_i64_load(buf, 8)
+      emit_local_get(buf, ret_area_local)
+      emit_i64_load(buf, 16)
+      emit_i64_xor(buf)
+      emit_i64_const_raw(buf, 2305843009213693951L)
+      emit_i64_and(buf)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf)
+      buf.push((5).to_byte()) // else
+      emit_i64_const_raw(buf, tag_int_value64(0L))
+      buf.push((11).to_byte()) // end if
+    }
     "Fs::read_file" => {
       if ctx.use_js_strings {
         raise WasmGenError::Unsupported("Fs::read_file requires --wasm backend")

@@ -254,6 +254,25 @@ fn parse_http_connect_target(url : String) -> (String, Int)? {
 }
 
 ///|
+fn fs_stat_token_from_text(source : String) -> Int {
+  let mod1 = 2147483647
+  let mod2 = 2147483629
+  let step1 = 131
+  let step2 = 65599
+  let len = source.length()
+  let mut h1 = 17
+  let mut h2 = 29
+  let mut i = 0
+  while i < len {
+    let c = source[i].to_int()
+    h1 = (h1 * step1 + c + 1) % mod1
+    h2 = (h2 * step2 + c + i + 1) % mod2
+    i += 1
+  }
+  ((len % mod1) * step1 + h1 + h2) % mod1
+}
+
+///|
 /// Generate a site identification key for perform/resume matching.
 /// The key must be deterministic for the same source location because
 /// resume re-evaluates the body and needs to find the stored value.
@@ -2502,6 +2521,33 @@ fn eval_builtin_call(
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(fn_name="Fs::exists", detail="bad call"),
+          )
+      }
+    }
+    "Fs::stat_token" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "Fs::stat_token")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall(
+          BuiltinDetail(fn_name="Fs::stat_token", detail="bad call"),
+        )
+      }
+      match pos_args[0] {
+        @core.Value::String(path) => {
+          let resolved = rt.resolve_path(path)
+          match @io.read_string(resolved) {
+            Ok(content) => {
+              let effects = out.effects
+              effects.push(Effect::FsReadFile(resolved, content))
+              { value: @core.Value::Int(fs_stat_token_from_text(content).to_int64()), effects }
+            }
+            Err(err) =>
+              raise EvalError::BadCall(Io(op="Fs::stat_token", detail=err))
+          }
+        }
+        _ =>
+          raise EvalError::BadCall(
+            BuiltinDetail(fn_name="Fs::stat_token", detail="bad call"),
           )
       }
     }

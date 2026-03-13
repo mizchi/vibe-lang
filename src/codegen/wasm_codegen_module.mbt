@@ -538,7 +538,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     func_import_count += 2
   }
   if ctx.need_fs {
-    func_import_count += 6
+    func_import_count += 7
   }
   if ctx.need_socket {
     func_import_count += 13
@@ -668,12 +668,17 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       write_name(import_sec, "[method]descriptor.write")
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, fs_write_type)
-      // 5. stat-at
+      // 5. metadata-hash-at
+      write_name(import_sec, "wasi:filesystem/types@0.2.6")
+      write_name(import_sec, "[method]descriptor.metadata-hash-at")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, fs_stat_at_type)
+      // 6. stat-at
       write_name(import_sec, "wasi:filesystem/types@0.2.6")
       write_name(import_sec, "[method]descriptor.stat-at")
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, fs_stat_at_type)
-      // 6. resource-drop descriptor
+      // 7. resource-drop descriptor
       write_name(import_sec, "wasi:filesystem/types@0.2.6")
       write_name(import_sec, "[resource-drop]descriptor")
       import_sec.push((0).to_byte())

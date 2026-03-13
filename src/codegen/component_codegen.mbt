@@ -1079,7 +1079,7 @@ fn scan_component_wit_imports_expr(
         "Stdout::write_stream" => acc.need_stdout_write_char = true
         "Stdin::read_char" => acc.need_stdin_read_char = true
         "Stdin::read_stream" => acc.need_stdin_read_char = true
-        "Fs::read_file" | "Fs::write_file" | "Fs::write_bytes" | "Fs::exists" =>
+        "Fs::read_file" | "Fs::write_file" | "Fs::write_bytes" | "Fs::exists" | "Fs::stat_token" =>
           acc.need_fs = true
         "Socket::tcp_connect"
         | "Socket::tcp_read"
