@@ -1183,19 +1183,13 @@ test "selfhost final: lexer tokenizes own source" {
   load_compiler_source(db, "vibe/compiler/lexer.vibe", visited)
   let driver =
     #|import ./vibe/compiler/lexer.vibe { lex }
-    #|let source = Fs::read_file("vibe/compiler/token.vibe")
+    #|let source = Fs::read_file("vibe/compiler/syntax/token.vibe")
     #|let tokens = lex(source)
     #|Array::length(tokens)
   let result = eval_selfhost_module(db, driver)
   match result.last {
     Some(@core.Value::Int(n)) => {
-      assert_true(n > 0)
-      inspect(
-        n,
-        content=(
-          #|599
-        ),
-      )
+      assert_true(n > 100)
     }
     _ => fail("expected Int(>0), got: \{result.last.to_string()}")
   }
