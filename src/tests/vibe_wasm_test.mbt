@@ -208,7 +208,9 @@ test "vibe wasm import env get" {
 ///|
 test "vibe wasm import env args" {
   let db = VibeDb::new()
-  db.set_source("main", "if Env::args_len() > 0 { Env::args_get(0) } else { \"\" }")
+  db.set_source(
+    "main", "if Env::args_len() > 0 { Env::args_get(0) } else { \"\" }",
+  )
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {

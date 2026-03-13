@@ -1722,8 +1722,7 @@ test "vibe wasm eval keeps tagged ints when Array::push uses param value" {
     #|let out = ArrayBuilder::freeze(ArrayBuilder::new())
     #|push_arg(out, 3)
     #|Array::get(out, 0)
-  let res = try eval_run(src)
-  catch {
+  let res = try eval_run(src) catch {
     e => fail(e.to_string())
   } noraise {
     r => r
