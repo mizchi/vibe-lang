@@ -1,3 +1,9 @@
+//# Imports
+
+import ../collect {
+  empty_array
+}
+
 //# Types
 
 export enum Url {
@@ -29,25 +35,25 @@ let hex_val = (ch: String) -> Int {
 
 export let decode = (s: String) -> String {
   let len = String::length(s)
-  let mut result = ""
+  let sb = StringBuilder::new()
   let mut idx = 0
   while idx < len {
     let ch = char_at(s, idx)
-    if String::equals(ch, "+") {
-      result = String::concat(result, " ")
+    if ch == "+" {
+      StringBuilder::push(sb, " ")
       idx = idx + 1
-    } else if String::equals(ch, "%") && idx + 2 < len {
+    } else if ch == "%" && idx + 2 < len {
       let hi = hex_val(char_at(s, idx + 1))
       let lo = hex_val(char_at(s, idx + 2))
       let code = hi * 16 + lo
-      result = String::concat(result, String::from_char_code(code))
+      StringBuilder::push(sb, String::from_char_code(code))
       idx = idx + 3
     } else {
-      result = String::concat(result, ch)
+      StringBuilder::push(sb, ch)
       idx = idx + 1
     }
   }
-  result
+  StringBuilder::freeze(sb)
 }
 
 let hex_digit = (n: Int) -> String {
@@ -72,9 +78,7 @@ let hex_digit = (n: Int) -> String {
 }
 
 export let decode_query = (qs: String) -> Array[(String, String)] {
-  let mut result = Array::slice([
-    ("", "")
-  ], 0, 0)
+  let result: Array[(String, String)] = empty_array()
   if String::length(qs) > 0 {
     let mut rest = qs
     while String::length(rest) > 0 {
@@ -111,38 +115,42 @@ let is_unreserved = (ch: String) -> Bool {
 
 export let encode = (s: String) -> String {
   let len = String::length(s)
-  let mut result = ""
+  let sb = StringBuilder::new()
   let mut idx = 0
   while idx < len {
     let ch = char_at(s, idx)
     if is_unreserved(ch) {
-      result = String::concat(result, ch)
-    } else if String::equals(ch, " ") {
-      result = String::concat(result, "+")
+      StringBuilder::push(sb, ch)
+    } else if ch == " " {
+      StringBuilder::push(sb, "+")
     } else {
       let c = String::char_code_at(s, idx)
       let hi = hex_digit(c / 16)
       let lo = hex_digit(c % 16)
-      result = String::concat(String::concat(String::concat(result, "%"), hi), lo)
+      StringBuilder::push(sb, "%")
+      StringBuilder::push(sb, hi)
+      StringBuilder::push(sb, lo)
     }
     idx = idx + 1
   }
-  result
+  StringBuilder::freeze(sb)
 }
 
 export let encode_query = (pairs: Array[(String, String)]) -> String {
   let len = Array::length(pairs)
-  let mut result = ""
+  let sb = StringBuilder::new()
   let mut idx = 0
   while idx < len {
     let (k, v) = Array::get(pairs, idx)
     if idx > 0 {
-      result = String::concat(result, "&")
+      StringBuilder::push(sb, "&")
     }
-    result = String::concat(String::concat(String::concat(result, encode(k)), "="), encode(v))
+    StringBuilder::push(sb, encode(k))
+    StringBuilder::push(sb, "=")
+    StringBuilder::push(sb, encode(v))
     idx = idx + 1
   }
-  result
+  StringBuilder::freeze(sb)
 }
 
 let parse_int_simple = (s: String) -> Int {
@@ -195,7 +203,7 @@ export let parse = (raw: String) -> Url {
     let port_num = parse_int_simple(port_str)
     (String::substring(host_port, 0, colon_pos), port_num)
   } else {
-    let default_port = if String::equals(scheme, "https") {
+    let default_port = if scheme == "https" {
       443
     } else {
       80

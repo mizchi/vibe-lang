@@ -1,0 +1,71 @@
+//# Imports
+
+import ./scan.vibe {
+  Scanner::eat, Scanner::eat_if, Scanner::is_done, Scanner::next, Scanner::peek, Scanner::pos, Scanner::remaining, Scanner::take_until, Scanner::take_while, new
+}
+
+//# Misc
+
+test "scanner can peek and advance" {
+  let scan = new("abc")
+  assert(Scanner::pos(scan) == 0)
+  assert(Scanner::remaining(scan) == "abc")
+  match Scanner::peek(scan) {
+    Some(ch) => assert(ch == "a"),
+    _ => assert(false)
+  }
+  match Scanner::next(scan) {
+    Some((ch, next_scan)) => {
+      assert(ch == "a")
+      assert(Scanner::pos(next_scan) == 1)
+      assert(Scanner::remaining(next_scan) == "bc")
+    },
+    _ => assert(false)
+  }
+}
+
+test "scanner can eat prefixes and chars by predicate" {
+  let scan = new("://rest")
+  match Scanner::eat(scan, "://") {
+    Some(after_prefix) => {
+      assert(Scanner::remaining(after_prefix) == "rest")
+      match Scanner::eat_if(after_prefix, (ch: String) -> Bool {
+        ch == "r"
+      }) {
+        Some((ch, after_char)) => {
+          assert(ch == "r")
+          assert(Scanner::remaining(after_char) == "est")
+        },
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+}
+
+test "scanner can take while and until delimiter" {
+  let scan = new("name=alice&rest")
+  let (key, after_key) = Scanner::take_while(scan, (ch: String) -> Bool {
+    ch != "="
+  })
+  assert(key == "name")
+  match Scanner::eat(after_key, "=") {
+    Some(after_eq) => {
+      let (value, before_amp) = Scanner::take_until(after_eq, "&")
+      assert(value == "alice")
+      match Scanner::eat(before_amp, "&") {
+        Some(after_amp) => assert(Scanner::remaining(after_amp) == "rest"),
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+}
+
+test "scanner take_until consumes rest when needle is missing" {
+  let scan = new("tail")
+  let (chunk, done_scan) = Scanner::take_until(scan, ":")
+  assert(chunk == "tail")
+  assert(Scanner::is_done(done_scan))
+  assert(Scanner::remaining(done_scan) == "")
+}
