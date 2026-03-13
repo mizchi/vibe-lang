@@ -2278,11 +2278,10 @@ test "split test entry path batches with weights isolates heavy module first" {
 test "split test entry task batches with weights caps large sibling chunks" {
   let grouped = split_test_entry_task_batches_with_weights(
     [
-      "vibe/compiler/a_test.vibe", "vibe/compiler/b_test.vibe",
-      "vibe/compiler/c_test.vibe", "vibe/compiler/d_test.vibe",
-      "vibe/compiler/e_test.vibe", "vibe/compiler/f_test.vibe",
-      "vibe/compiler/g_test.vibe", "vibe/compiler/h_test.vibe",
-      "vibe/compiler/i_test.vibe", "vibe/compiler/j_test.vibe",
+      "vibe/compiler/a_test.vibe", "vibe/compiler/b_test.vibe", "vibe/compiler/c_test.vibe",
+      "vibe/compiler/d_test.vibe", "vibe/compiler/e_test.vibe", "vibe/compiler/f_test.vibe",
+      "vibe/compiler/g_test.vibe", "vibe/compiler/h_test.vibe", "vibe/compiler/i_test.vibe",
+      "vibe/compiler/j_test.vibe",
     ],
     2,
     {},
@@ -2301,8 +2300,7 @@ test "split test entry task batches with weights uses file granularity" {
   weights["vibe/compiler/c_test.vibe"] = 30
   let grouped = split_test_entry_task_batches_with_weights(
     [
-      "vibe/compiler/a_test.vibe", "vibe/compiler/b_test.vibe",
-      "vibe/compiler/c_test.vibe",
+      "vibe/compiler/a_test.vibe", "vibe/compiler/b_test.vibe", "vibe/compiler/c_test.vibe",
     ],
     2,
     weights,
@@ -3261,9 +3259,7 @@ test "entry_prefers_compiled_backend detects vibe compiler paths" {
 ///|
 test "entry_prefers_interpreter_backend no longer special-cases compiler import tests" {
   assert_false(
-    entry_prefers_interpreter_backend(
-      "vibe/compiler/codegen_lexer_test.vibe",
-    ),
+    entry_prefers_interpreter_backend("vibe/compiler/codegen_lexer_test.vibe"),
   )
   assert_false(
     entry_prefers_interpreter_backend(

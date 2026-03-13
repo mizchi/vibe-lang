@@ -516,7 +516,7 @@ fn compile_stmt(
         emit_i64_const_tagged(buf, 0L)
       }
     }
-    @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+    @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
       // ExportLet is compiled like Let - the export is handled at module level
       compile_stmt(
         ctx,
@@ -524,7 +524,6 @@ fn compile_stmt(
         @core.Stmt::Let(rec~, name~, expr~, span~),
         is_last,
       )
-    }
     @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) =>
       // InternalExportLet is compiled like Let - visibility is handled in runtime import resolution.
       compile_stmt(

@@ -1310,7 +1310,9 @@ fn generate_string_trampoline_module(
   let run_init_import_count = if call_run_init { 1 } else { 0 }
   let target_env_import_count = if needs_target_env { 1 } else { 0 }
   let trampoline_type_count = 3 + run_init_type_count
-  let trampoline_import_count = 3 + run_init_import_count + target_env_import_count
+  let trampoline_import_count = 3 +
+    run_init_import_count +
+    target_env_import_count
   let canon_func_export_idx = if call_run_init { 3 } else { 2 }
   let run_init_func_idx = 2
 
@@ -1722,9 +1724,9 @@ pub fn emit_component_wasm_with_string_lift(
   // Generate the trampoline module
   let trampoline_wasm = generate_string_trampoline_module(
     string_param_count,
-    needs_target_env=needs_target_env,
-    call_run_init=call_run_init,
-    result_kind=result_kind,
+    needs_target_env~,
+    call_run_init~,
+    result_kind~,
   )
   let buf : Array[Byte] = []
   // Component header
@@ -1757,7 +1759,9 @@ pub fn emit_component_wasm_with_string_lift(
     alias_entries.push(("run", core_sort_func))
   }
   if needs_target_env {
-    alias_entries.push((exported_env_global_export_name(target_func_name), core_sort_global))
+    alias_entries.push(
+      (exported_env_global_export_name(target_func_name), core_sort_global),
+    )
   }
   alias_entries.push(("memory", core_sort_mem))
   emit_alias_section(buf, main_instance_idx, alias_entries)
@@ -1765,12 +1769,18 @@ pub fn emit_component_wasm_with_string_lift(
   let cabi_realloc_core_idx = import_func_count + 1
   let target_env_core_idx = if needs_target_env { 0 } else { -1 }
   let run_init_core_idx = if call_run_init {
-    if has_distinct_run_alias { import_func_count + 2 } else { target_func_core_idx }
+    if has_distinct_run_alias {
+      import_func_count + 2
+    } else {
+      target_func_core_idx
+    }
   } else {
     -1
   }
   let alias_func_count = 2 + run_alias_func_count
-  let trampoline_env_export_count = 3 + run_init_import_count + target_env_alias_count
+  let trampoline_env_export_count = 3 +
+    run_init_import_count +
+    target_env_alias_count
   let canon_func_core_idx = import_func_count + alias_func_count
   // Build trampoline instance (module 1) with imports from vibe instance
   // The trampoline imports:

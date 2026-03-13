@@ -496,6 +496,7 @@ fn elapsed_us_from(start : @bench.Timestamp) -> Int {
   }
 }
 
+///|
 fn compile_lite_cmd(
   args : Array[String],
   fs : &@io.FileSystemAdapter,
@@ -551,11 +552,7 @@ fn compile_lite_cmd(
   match profile_tsv {
     Some(path) => {
       let content = @runtime_compile.wasm_compile_profile_tsv(
-        load_us,
-        type_us,
-        compile_profile,
-        write_us,
-        total_us,
+        load_us, type_us, compile_profile, write_us, total_us,
       )
       match @io.write_string_with(fs, path, content) {
         Ok(_) => ()

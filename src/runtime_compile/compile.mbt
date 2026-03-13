@@ -97,9 +97,12 @@ fn elapsed_ms_from_us(elapsed_us : Int) -> Int {
 
 ///|
 fn profile_tsv_line(stage : String, elapsed_us : Int) -> String {
-  let elapsed_ms = if elapsed_us <= 0 { 0 } else { elapsed_ms_from_us(elapsed_us) }
-  stage + "\t" + elapsed_ms.to_string() + "\t" +
-  elapsed_us.to_string() + "\n"
+  let elapsed_ms = if elapsed_us <= 0 {
+    0
+  } else {
+    elapsed_ms_from_us(elapsed_us)
+  }
+  stage + "\t" + elapsed_ms.to_string() + "\t" + elapsed_us.to_string() + "\n"
 }
 
 ///|
@@ -330,17 +333,15 @@ fn lower_top_level_tests_to_exprs(ast : @core.Module) -> @core.Module {
   let mut test_i = 0
   for stmt in ast.stmts {
     match stmt {
-      @core.Stmt::Test(body~, span~, ..) | @core.Stmt::Bench(body~, span~, ..) => {
+      @core.Stmt::Test(body~, span~, ..)
+      | @core.Stmt::Bench(body~, span~, ..) => {
         let wrapper_name = "__vibe_cov_test_" + test_i.to_string()
         let fn_body_stmts : Array[@core.Stmt] = []
         for body_stmt in body.stmts {
           fn_body_stmts.push(body_stmt)
         }
         fn_body_stmts.push(
-          @core.Stmt::Expr(
-            expr=@core.Expr::Int(value=0L, span~),
-            span~,
-          ),
+          @core.Stmt::Expr(expr=@core.Expr::Int(value=0L, span~), span~),
         )
         stmts.push(
           @core.Stmt::Let(
@@ -435,24 +436,13 @@ fn compile_module_wasm_profiled_with(
   let bundled = bundler(db, path, compiled.ast)
   let bundle_us = elapsed_us_from(start_bundle)
   let start_emit = @bench.monotonic_clock_start()
-  let wasm = emitter(bundled) catch {
-    e => raise WasmCompileError::Gen(e)
-  }
+  let wasm = emitter(bundled) catch { e => raise WasmCompileError::Gen(e) }
   let emit_us = elapsed_us_from(start_emit)
   let start_optimize = @bench.monotonic_clock_start()
   let optimized = optimize_wasm_bytes_with_opt_level(wasm, opt_level)
   let optimize_us = elapsed_us_from(start_optimize)
   let total_us = elapsed_us_from(start_total)
-  (
-    optimized,
-    {
-      module_us,
-      bundle_us,
-      emit_us,
-      optimize_us,
-      total_us,
-    },
-  )
+  (optimized, { module_us, bundle_us, emit_us, optimize_us, total_us })
 }
 
 ///|
@@ -909,7 +899,7 @@ pub fn compile_module_component_string_lift_auto(
     string_param_count,
     param_names=string_param_names,
     is_async~,
-    string_result=string_result,
+    string_result~,
   )
   optimize_wasm_bytes_with_opt_level(component, opt_level)
 }

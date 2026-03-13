@@ -10,14 +10,20 @@ fn clamp_module_source_offset(source : String, offset : Int) -> Int {
 }
 
 ///|
-fn module_source_slice_by_span(source : String, start : Int, end : Int) -> String {
+fn module_source_slice_by_span(
+  source : String,
+  start : Int,
+  end : Int,
+) -> String {
   let s = clamp_module_source_offset(source, start)
   let e = clamp_module_source_offset(source, end)
   let stop = if e < s { s } else { e }
   if stop <= s {
     return ""
   }
-  try { source[s:stop].to_string() } catch { _ => "" }
+  source[s:stop].to_string() catch {
+    _ => ""
+  }
 }
 
 ///|
@@ -94,7 +100,8 @@ pub fn emit_module_source_file(
     Ok(v) => v
     Err(err) => return Err("read failed: " + err)
   }
-  let module_source = match build_module_source_from_source(source, entry_name) {
+  let module_source = match
+    build_module_source_from_source(source, entry_name) {
     Ok(v) => v
     Err(err) => return Err(err)
   }

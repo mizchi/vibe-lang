@@ -105,8 +105,12 @@ fn print_usage() -> Unit {
     "  test [--jobs N] <file|dir...>  run test blocks (parallel for dirs; default jobs=VIBE_TEST_JOBS or 1, max 16)",
   )
   println("  check [--profile-tsv path] <file...>  parse/type check scripts")
-  println("  emit-module-source <in> <out> <entry>  internal: extract entry-pruned module source")
-  println("  emit-closure-payload <in> <out>  internal: materialize transitive closure payload")
+  println(
+    "  emit-module-source <in> <out> <entry>  internal: extract entry-pruned module source",
+  )
+  println(
+    "  emit-closure-payload <in> <out>  internal: materialize transitive closure payload",
+  )
   println(
     "  compile-closure-payload <in> <out> [mvp|no-dce]  internal: compile closure payload to wasm",
   )
@@ -742,11 +746,7 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
       match profile_tsv {
         Some(path) => {
           let content = @runtime_compile.wasm_compile_profile_tsv(
-            load_us,
-            type_us,
-            compile_profile,
-            write_us,
-            total_us,
+            load_us, type_us, compile_profile, write_us, total_us,
           )
           match @io.write_string_with(fs, path, content) {
             Ok(_) => ()
@@ -2040,10 +2040,8 @@ fn resolve_entry_artifacts_with_cache(
   }
   let synced_lock = sync_prelude_to_codebase(resolved, lock)
   let db = cache.db_for_resolved_entry(resolved)
-  let (loaded_db, entry, paths) = match @loader.load_db_with_paths_into(
-    db,
-    resolved,
-  ) {
+  let (loaded_db, entry, paths) = match
+    @loader.load_db_with_paths_into(db, resolved) {
     Ok(v) => v
     Err(err) => return Err(err)
   }
@@ -2079,7 +2077,8 @@ fn check_cmd(args : Array[String]) -> Unit {
     if check_debug {
       println("[check_debug] resolving: \{entry_path}")
     }
-    match resolve_entry_artifacts_with_cache(cache, entry_path, skip_types=true) {
+    match
+      resolve_entry_artifacts_with_cache(cache, entry_path, skip_types=true) {
       Err(err) => {
         let load_us = elapsed_us_from(start_load)
         let total_us = elapsed_us_from(start_total)
@@ -2984,7 +2983,11 @@ fn run_test_file_interpreter(
   entry_path : String,
   features : @runtime.RuntimeFeatureFlags,
 ) -> Result[CliTestReport, String] {
-  run_test_file_interpreter_with_cache(CliEntryDbCache::new(), entry_path, features)
+  run_test_file_interpreter_with_cache(
+    CliEntryDbCache::new(),
+    entry_path,
+    features,
+  )
 }
 
 ///|
@@ -2997,22 +3000,25 @@ fn run_test_file_with_backend_with_cache(
   let allow_interpreter_fallback = cli_can_fallback_to_interpreter(backend_pref)
   if backend_pref != CliExecBackendPref::Interpreter {
     let stop_on_first_failure = allow_interpreter_fallback
-    match run_test_file_compiled_with_cache(
-      cache,
-      entry_path,
-      stop_on_first_failure,
-    ) {
+    match
+      run_test_file_compiled_with_cache(
+        cache, entry_path, stop_on_first_failure,
+      ) {
       CompiledTestAttempt::Success(report) => {
         if report.failed > 0 &&
           compiled_report_has_runtime_import_failures(report) {
-          return run_test_file_interpreter_with_cache(cache, entry_path, features)
+          return run_test_file_interpreter_with_cache(
+            cache, entry_path, features,
+          )
         }
         return Ok(report)
       }
       CompiledTestAttempt::Unsupported(_) =>
         if backend_pref == CliExecBackendPref::Compiled ||
           not(allow_interpreter_fallback) {
-          return run_test_file_interpreter_with_cache(cache, entry_path, features)
+          return run_test_file_interpreter_with_cache(
+            cache, entry_path, features,
+          )
         }
       CompiledTestAttempt::Error(err) => return Err(err)
     }

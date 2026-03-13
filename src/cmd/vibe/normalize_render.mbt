@@ -1194,7 +1194,9 @@ fn normalize_source_slice_by_span(
   if stop <= s {
     return ""
   }
-  try { source[s:stop].to_string() } catch { _ => "" }
+  source[s:stop].to_string() catch {
+    _ => ""
+  }
 }
 
 ///|

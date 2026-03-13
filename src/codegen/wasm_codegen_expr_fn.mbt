@@ -85,7 +85,7 @@ fn compile_expr_fn(
           Some(idx) => emit_local_get(buf, idx)
           None =>
             match ctx.fn_indices.get(name) {
-              Some(idx) => {
+              Some(idx) =>
                 if fn_index_needs_env(ctx, idx) {
                   match ctx.exported_fn_env_globals.get(name) {
                     Some(global_idx) if global_idx >= 0 => {
@@ -104,7 +104,6 @@ fn compile_expr_fn(
                   let slot = ensure_funcref_slot(ctx, idx)
                   emit_i64_const_raw(buf, tag_fn_value64(slot.to_int64()))
                 }
-              }
               None => raise WasmGenError::UnknownName(name)
             }
         }

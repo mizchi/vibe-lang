@@ -85,8 +85,7 @@ test "build_closure_payload_with_fs serializes entry and imported sources" {
   let fs = MemIoAdapter::new(root)
   let main_path = root + "/main.vibe"
   let lib_path = root + "/lib.vibe"
-  let main_source =
-    "import ./lib.vibe { helper }\n" +
+  let main_source = "import ./lib.vibe { helper }\n" +
     "let answer = () -> Int { helper() }\n"
   let lib_source = "let helper = () -> Int { 40 + 2 }\n"
   ignore(fs.write_string(main_path, main_source))
@@ -96,7 +95,9 @@ test "build_closure_payload_with_fs serializes entry and imported sources" {
     Err(err) => fail(err)
   }
   let parts = split_payload_parts(payload)
-  assert_eq(parts, ["/workspace/main.vibe", main_source, "/workspace/lib.vibe", lib_source])
+  assert_eq(parts, [
+    "/workspace/main.vibe", main_source, "/workspace/lib.vibe", lib_source,
+  ])
 }
 
 ///|
@@ -126,7 +127,11 @@ test "compile_closure_payload_file compiles import closure payload" {
   let lib_path = root + "/lib.vibe"
   let payload_path = root + "/payload.txt"
   let out_path = root + "/out.wasm"
-  ignore(fs.write_string(main_path, "import ./lib.vibe { helper }\nlet answer = () -> Int { helper() }\n"))
+  ignore(
+    fs.write_string(
+      main_path, "import ./lib.vibe { helper }\nlet answer = () -> Int { helper() }\n",
+    ),
+  )
   ignore(fs.write_string(lib_path, "let helper = () -> Int { 40 + 2 }\n"))
   match emit_closure_payload_file(main_path, payload_path, fs) {
     Ok(_) => ()
@@ -142,6 +147,7 @@ test "compile_closure_payload_file compiles import closure payload" {
   }
   assert_true(wasm.length() > 0)
 }
+
 ///|
 fn split_payload_parts(payload : String) -> Array[String] {
   let parts : Array[String] = []

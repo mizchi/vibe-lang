@@ -600,8 +600,7 @@ fn type_expr_eff(
               _ => spread_ty
             }
           }
-          _ =>
-            type_expr_eff(env, first_item, aliases, effects, allow_effect)
+          _ => type_expr_eff(env, first_item, aliases, effects, allow_effect)
         }
         let elem_ty = normalize_type(env, first)
         for i in 1..<items.length() {
@@ -615,10 +614,7 @@ fn type_expr_eff(
                 _ => spread_ty
               }
             }
-            _ =>
-              type_expr_eff(
-                env, items[i], aliases, effects, allow_effect,
-              )
+            _ => type_expr_eff(env, items[i], aliases, effects, allow_effect)
           }
           if not(type_equal(env, elem_ty, item_ty)) {
             raise TypeError::Mismatch(
