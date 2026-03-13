@@ -1456,3 +1456,34 @@ test "native compile: all compiler sources pass compile_module" {
     )
   }
 }
+
+///|
+test "string interpolation: basic" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let name = "world"
+    #|"hello \{name}"
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::String("hello world")))
+}
+
+///|
+test "string interpolation: expression" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let x = 3
+    #|"x is \{x + 1}"
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::String("x is 4")))
+}
+
+///|
+test "string interpolation: multiple" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let a = 1
+    #|let b = 2
+    #|"\{a} + \{b} = \{a + b}"
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::String("1 + 2 = 3")))
+}

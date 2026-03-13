@@ -134,24 +134,24 @@ fn Lexer::lex_string(self : Lexer) -> Token {
     match self.advance() {
       Some('\\') =>
         match self.peek() {
-          Some('(') => {
+          Some('{') => {
             has_interp = true
             raw.write_char('\\')
-            raw.write_char('(')
+            raw.write_char('{')
             let _ = self.advance()
             let mut depth = 1
             while depth > 0 {
               match self.advance() {
-                Some('(') => {
+                Some('{') => {
                   depth += 1
-                  raw.write_char('(')
+                  raw.write_char('{')
                 }
-                Some(')') => {
+                Some('}') => {
                   depth -= 1
                   if depth > 0 {
-                    raw.write_char(')')
+                    raw.write_char('}')
                   } else {
-                    raw.write_char(')')
+                    raw.write_char('}')
                   }
                 }
                 Some(c) => raw.write_char(c)

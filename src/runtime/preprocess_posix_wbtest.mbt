@@ -16,7 +16,7 @@ test "preprocess_posix_source: command with flags" {
 test "preprocess_posix_source: brace interpolation" {
   let input = "echo hello {{ name }}"
   let result = preprocess_posix_source(input)
-  assert_eq(result, "sh_lines(\"echo hello \\(name)\")")
+  assert_eq(result, "sh_lines(\"echo hello \\{name}\")")
 }
 
 ///|
@@ -24,7 +24,7 @@ test "preprocess_posix_source: command substitution" {
   let input = "echo $(date)"
   let result = preprocess_posix_source(input)
   assert_eq(
-    result, "sh_lines(\"echo \\({ match sh_lines(\"date\") { r if Array::length(r) > 0 => Array::get(r, 0), _ => \"\" } })\")",
+    result, "sh_lines(\"echo \\{{ match sh_lines(\"date\") { r if Array::length(r) > 0 => Array::get(r, 0), _ => \"\" } }}\")",
   )
 }
 

@@ -79,7 +79,7 @@ test:
     moon test -p mizchi/vibe/cmd/vibe_check_wasi --target wasm --warn-list '{{moon_warn_list}}'
     moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
     bash scripts/test_parallel_cleanup_e2e.sh _build/native/debug/build/cmd/vibe/vibe.exe
-    ulimit -n {{vibe_test_ulimit_n}} && _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async --jobs {{vibe_test_jobs}} examples vibe/prelude vibe/path vibe/io vibe/fs vibe/time vibe/random vibe/process vibe/shell vibe/x/rlm vibe/socket/socket_test.vibe vibe/http/http_test.vibe vibe/http/high_level_test.vibe vibe/collection vibe/json vibe/base64 vibe/sha1 vibe/x vibe/x/args vibe/x/jsonschema
+    ulimit -n {{vibe_test_ulimit_n}} && _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async --jobs {{vibe_test_jobs}} examples vibe/prelude vibe/path vibe/io vibe/fs vibe/time vibe/random vibe/process vibe/shell vibe/x/rlm vibe/socket/socket_test.vibe vibe/http/http_test.vibe vibe/http/high_level_test.vibe vibe/collection vibe/json vibe/sha1 vibe/x vibe/x/args vibe/x/jsonschema
 
 # Build wasm artifact used by Deno integration tests
 build-integration-deno-wasm:
@@ -767,8 +767,8 @@ run-wasm-async file: build-async-host
 # Precompile all vibe modules to dist/**/*.wasm
 precompile:
     moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
-    mkdir -p dist/std dist/path dist/std/threads dist/fs dist/socket dist/http dist/collection dist/json dist/base64 dist/sha1 dist/x dist/x/args
-    _build/native/debug/build/cmd/vibe/vibe.exe precompile vibe/prelude vibe/path vibe/prelude/threads vibe/fs vibe/socket vibe/http vibe/collection vibe/json vibe/base64 vibe/sha1 vibe/x vibe/x/args --out-dir "$(pwd)/dist" --wasm
+    mkdir -p dist/std dist/path dist/std/threads dist/fs dist/socket dist/http dist/collection dist/json dist/sha1 dist/x dist/x/args
+    _build/native/debug/build/cmd/vibe/vibe.exe precompile vibe/prelude vibe/path vibe/prelude/threads vibe/fs vibe/socket vibe/http vibe/collection vibe/json vibe/sha1 vibe/x vibe/x/args --out-dir "$(pwd)/dist" --wasm
 
 # Create a new ADR (usage: just adr "タイトル slug")
 adr title:
