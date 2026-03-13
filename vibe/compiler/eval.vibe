@@ -449,7 +449,11 @@ export let rec decode_expr = (v: Value) -> Expr {
           VString(sv) => sv,
           _ => ""
         }
-        EForIn(name, decode_expr(Array::get(arr, 2)), decode_expr(Array::get(arr, 3)))
+        let index_name = match Array::get(arr, 2) {
+          VString(sv) => Some(sv),
+          _ => None
+        }
+        EForIn(name, index_name, decode_expr(Array::get(arr, 3)), decode_expr(Array::get(arr, 4)))
       }
       else if String::equals(tag, "dt") {
         let field = match Array::get(arr, 2) {
@@ -726,9 +730,13 @@ export let rec encode_expr = (expr: Expr) -> Value {
       encode_expr(cond),
       encode_expr(body)
     ]),
-    EForIn(name, iter, body) => VArray([
+    EForIn(name, index_name, iter, body) => VArray([
       VString("fi"),
       VString(name),
+      match index_name {
+        Some(index_name) => VString(index_name),
+        None => VUnit
+      },
       encode_expr(iter),
       encode_expr(body)
     ]),
@@ -980,6 +988,53 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
       ]))
     }
   }
+  let empty_vals = Array::slice([
+    VUnit
+  ], 0, 0)
+  let empty_pairs = Array::slice([
+    ("_", VUnit)
+  ], 0, 0)
+  let rec rebuild_env_bindings = (bindings: Array[(String, Value)], i: Int, base_env: ValEnv) -> ValEnv {
+    if i < 0 {
+      base_env
+    } else {
+      let (name, value) = Array::get(bindings, i)
+      rebuild_env_bindings(bindings, i - 1, VEnvBind(name, value, base_env))
+    }
+  }
+  let rec collect_for_scope_bindings = (
+    current: ValEnv,
+    scope_mark: String,
+    loop_name: String,
+    index_name: Option[String],
+    acc: Array[(String, Value)]
+  ) -> Option[Array[(String, Value)]] {
+    match current {
+      VEnvEmpty => None,
+      VEnvBind(name, value, rest) => if String::equals(name, scope_mark) {
+        Some(acc)
+      } else {
+        let is_index_name = match index_name {
+          Some(index_name) => String::equals(name, index_name),
+          None => false
+        }
+        let next_acc = if String::equals(name, loop_name) || is_index_name {
+          acc
+        } else {
+          Array::concat(acc, [
+            (name, value)
+          ])
+        }
+        collect_for_scope_bindings(rest, scope_mark, loop_name, index_name, next_acc)
+      }
+    }
+  }
+  let strip_for_scope = (current: ValEnv, scope_mark: String, loop_name: String, index_name: Option[String], base_env: ValEnv) -> ValEnv {
+    match collect_for_scope_bindings(current, scope_mark, loop_name, index_name, empty_pairs) {
+      Some(bindings) => rebuild_env_bindings(bindings, Array::length(bindings) - 1, base_env),
+      None => current
+    }
+  }
   let rec capture_env = (e: ValEnv, acc: Array[(String, Value)]) -> Array[(String, Value)] {
     match e {
       VEnvEmpty => acc,
@@ -988,29 +1043,33 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
       ]))
     }
   }
-  let rec eval_for_in = (vname: String, elems: Array[Value], body_expr: Expr, for_env: ValEnv, i: Int, acc: Array[Value]) -> (Value, ValEnv)with { Error } {
+  let rec eval_for_in = (vname: String, index_name: Option[String], elems: Array[Value], body_expr: Expr, for_env: ValEnv, i: Int, acc: Array[Value]) -> (Value, ValEnv)with { Error } {
     if i >= Array::length(elems) {
       (VArray(acc), for_env)
     }
     else {
       let elem = Array::get(elems, i)
-      let iter_env = val_env_bind(for_env, vname, elem)
-      let (rv, _) = eval_expr(body_expr, iter_env)
+      let scope_mark = String::concat("__vibe_for_scope__", vname)
+      let scoped_env = val_env_bind(for_env, scope_mark, VUnit)
+      let index_env = match index_name {
+        Some(index_name) => val_env_bind(scoped_env, index_name, VInt(i)),
+        None => scoped_env
+      }
+      let iter_env = val_env_bind(index_env, vname, elem)
+      let (rv, env2_raw) = eval_expr(body_expr, iter_env)
+      let env2 = strip_for_scope(env2_raw, scope_mark, vname, index_name, for_env)
       match rv {
-        VBreak(val) => (val, for_env),
-        VContinue(_) => eval_for_in(vname, elems, body_expr, for_env, i + 1, acc),
-        _ => eval_for_in(vname, elems, body_expr, for_env, i + 1, Array::concat(acc, [
+        VBreak(val) => match val {
+          VUnit => (VArray(acc), env2),
+          _ => (val, env2)
+        },
+        VContinue(_) => eval_for_in(vname, index_name, elems, body_expr, env2, i + 1, acc),
+        _ => eval_for_in(vname, index_name, elems, body_expr, env2, i + 1, Array::concat(acc, [
           rv
         ]))
       }
     }
   }
-  let empty_vals = Array::slice([
-    VUnit
-  ], 0, 0)
-  let empty_pairs = Array::slice([
-    ("_", VUnit)
-  ], 0, 0)
   match expr {
     EInt(n) => (VInt(n), env),
     EFloat(f) => (VFloat(f), env),
@@ -1110,10 +1169,10 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
       eval_match_arms(arms, sv, env2, 0)
     },
     EWhile(cond_expr, body_expr) => eval_while_loop(cond_expr, body_expr, env),
-    EForIn(vname, iterable, body_expr) => {
+    EForIn(vname, index_name, iterable, body_expr) => {
       let (iv, env2) = eval_expr(iterable, env)
       match iv {
-        VArray(elems) => eval_for_in(vname, elems, body_expr, env2, 0, empty_vals),
+        VArray(elems) => eval_for_in(vname, index_name, elems, body_expr, env2, 0, empty_vals),
         _ => (VUnit, env2)
       }
     },

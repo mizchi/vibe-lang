@@ -506,6 +506,21 @@ test-selfhost-check-parity: test-selfhost-check-bootstrap-parity
 # Bootstrap-only selfhost gate bundle (stage1/stage2 artifact health + checker parity)
 release-selfhost-bootstrap-gates: test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-check-bootstrap-parity
 
+# Selfhost checker parity across typecheck diagnostic fixtures
+test-selfhost-typecheck-fixtures:
+    scripts/test_selfhost_typecheck_fixtures.sh
+
+# Selfhost runtime fixture smoke via compiled backend
+test-selfhost-runtime-fixtures:
+    scripts/test_selfhost_runtime_fixtures.sh
+
+update-selfhost-runtime-fixture-snapshot:
+    node scripts/update_selfhost_runtime_fixture_snapshot.mjs
+
+# Selfhost checker parity across warning diagnostic fixtures
+test-selfhost-warning-fixtures:
+    scripts/test_selfhost_warning_fixtures.sh
+
 bench-http:
     scripts/bench_http.sh
 

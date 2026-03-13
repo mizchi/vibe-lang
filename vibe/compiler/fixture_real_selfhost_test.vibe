@@ -1,0 +1,84 @@
+//# Imports
+
+import ./fixture_test_support.vibe {
+  list_root_fixture_paths, parse_fixture_spec
+}
+
+//# Functions
+
+let is_http_p3_fixture = (path: String) -> Bool {
+  String::contains(path, "/http_p3_")
+}
+
+let contains_path = (paths: Array[String], target: String) -> Bool {
+  let rec go = (i: Int) -> Bool {
+    if i >= Array::length(paths) {
+      false
+    } else if String::equals(Array::get(paths, i), target) {
+      true
+    } else {
+      go(i + 1)
+    }
+  }
+  go(0)
+}
+
+//# Misc
+
+test "real fixture spec accepts compile_error alias" {
+  let spec = parse_fixture_spec("{\"compile_error\":\"Mismatch\"}", "fixture")
+  match spec.error_contains {
+    Some(msg) => assert(String::equals(msg, "Mismatch")),
+    None => assert(false)
+  }
+}
+
+test "real fixture spec parses runtime fields" {
+  let spec = parse_fixture_spec("{\"last\":\"15\",\"effects\":[\"ShellExec(\\\"echo hi\\\")\"],\"error_contains\":\"Mismatch\",\"todo\":true,\"skip\":true}", "fixture")
+  match spec.last {
+    Some(msg) => assert(String::equals(msg, "15")),
+    None => assert(false)
+  }
+  match spec.effects {
+    Some(items) => {
+      assert(Array::length(items) == 1)
+      assert(String::equals(Array::get(items, 0), "ShellExec(\"echo hi\")"))
+    },
+    None => assert(false)
+  }
+  match spec.error_contains {
+    Some(msg) => assert(String::equals(msg, "Mismatch")),
+    None => assert(false)
+  }
+  assert(spec.todo)
+  assert(spec.skip)
+}
+
+test "real fixture discovery lists root fixtures" {
+  let files = list_root_fixture_paths("fixtures")
+  assert(Array::length(files) > 0)
+  assert(contains_path(files, "fixtures/closure_capture.vibe"))
+}
+
+test "real fixture discovery can exclude http p3" {
+  let files = list_root_fixture_paths("fixtures")
+  let mut count = 0
+  for path in files {
+    if not(is_http_p3_fixture(path)) {
+      count = count + 1
+    }
+  }
+  assert(count > 0)
+}
+
+test "real fixture discovery has no stale todo files" {
+  let files = list_root_fixture_paths("fixtures")
+  let mut stale = 0
+  for path in files {
+    let base = String::substring(path, String::length("fixtures/"), String::length(path))
+    if String::length(base) >= 5 && String::equals(String::substring(base, 0, 5), "todo_") {
+      stale = stale + 1
+    }
+  }
+  assert(stale == 0)
+}
