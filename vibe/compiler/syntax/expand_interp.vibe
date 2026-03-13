@@ -1,0 +1,121 @@
+//# Imports
+
+import ../core/index.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ./token.vibe {
+  Token
+}
+
+import ./lexer.vibe {
+  lex
+}
+
+import ./parser.vibe {
+  parse
+}
+
+//# Functions
+
+// Desugar EStringInterp(parts) into String::concat + __to_string calls.
+let desugar_parts = (parts: Array[String]) -> Expr with { Error } {
+  let plen = Array::length(parts)
+  let exprs = ArrayBuilder::new()
+  let mut i = 0
+  while i < plen {
+    let lit = Array::get(parts, i)
+    if String::length(lit) > 0 {
+      ArrayBuilder::push(exprs, EString(lit))
+    }
+    if i + 1 < plen {
+      let expr_src = Array::get(parts, i + 1)
+      let expr_tokens = lex(expr_src)
+      let parsed = parse(expr_tokens)
+      // Recursively resolve any nested interpolation
+      let resolved = resolve_expr(parsed)
+      ArrayBuilder::push(exprs, ECall(EIdent("__to_string"), [resolved]))
+    }
+    i = i + 2
+  }
+  let result_arr = ArrayBuilder::freeze(exprs)
+  let result_len = Array::length(result_arr)
+  if result_len == 0 {
+    EString("")
+  } else {
+    let mut result = Array::get(result_arr, 0)
+    let mut j = 1
+    while j < result_len {
+      result = ECall(EIdent("String::concat"), [result, Array::get(result_arr, j)])
+      j = j + 1
+    }
+    result
+  }
+}
+
+let resolve_arr = (exprs: Array[Expr]) -> Array[Expr] with { Error } {
+  for e in exprs {
+    resolve_expr(e)
+  }
+}
+
+let rec resolve_expr = (e: Expr) -> Expr with { Error } {
+  match e {
+    EStringInterp(parts) => desugar_parts(parts),
+    EInt(_) => e,
+    EFloat(_) => e,
+    EString(_) => e,
+    EBool(_) => e,
+    EUnit => e,
+    EIdent(_) => e,
+    ETuple(elems) => ETuple(resolve_arr(elems)),
+    EArray(elems) => EArray(resolve_arr(elems)),
+    ERecord(fields) => ERecord(for f in fields { let (n, v) = f; (n, resolve_expr(v)) }),
+    EMap(fields) => EMap(for f in fields { let (n, v) = f; (n, resolve_expr(v)) }),
+    EIf(c, t, el) => EIf(resolve_expr(c), resolve_expr(t), resolve_expr(el)),
+    ELet(n, v, b) => ELet(n, resolve_expr(v), resolve_expr(b)),
+    ELetRec(n, v, b) => ELetRec(n, resolve_expr(v), resolve_expr(b)),
+    ELetMut(n, v, b) => ELetMut(n, resolve_expr(v), resolve_expr(b)),
+    EAssign(n, v, b) => EAssign(n, resolve_expr(v), resolve_expr(b)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, resolve_expr(v), resolve_expr(b)),
+    ESeq(a, b) => ESeq(resolve_expr(a), resolve_expr(b)),
+    EMatch(s, arms) => EMatch(resolve_expr(s), for a in arms { let (p, ex) = a; (p, resolve_expr(ex)) }),
+    EHandle(body, arms) => EHandle(resolve_expr(body), for a in arms { let (p, ex) = a; (p, resolve_expr(ex)) }),
+    EWhile(c, b) => EWhile(resolve_expr(c), resolve_expr(b)),
+    EForIn(vn, idx, it, b) => EForIn(vn, idx, resolve_expr(it), resolve_expr(b)),
+    ECall(callee, args) => ECall(resolve_expr(callee), resolve_arr(args)),
+    EBinOp(op, l, r) => EBinOp(op, resolve_expr(l), resolve_expr(r)),
+    EUnaryOp(op, inner) => EUnaryOp(op, resolve_expr(inner)),
+    EFn(a, b, params, ret, eff, body) => EFn(a, b, params, ret, eff, resolve_expr(body)),
+    EDot(inner, field) => EDot(resolve_expr(inner), field),
+    EThrow(inner) => EThrow(resolve_expr(inner)),
+    EBreak(opt) => match opt { None => e, Some(v) => EBreak(Some(resolve_expr(v))) },
+    EContinue(args) => EContinue(resolve_arr(args)),
+    ELabeledArg(n, m, v) => ELabeledArg(n, m, resolve_expr(v)),
+    ESpread(inner) => ESpread(resolve_expr(inner))
+  }
+}
+
+let resolve_stmt = (s: Stmt) -> Stmt with { Error } {
+  match s {
+    SLet(exp, is_rec, name, ty, val) => SLet(exp, is_rec, name, ty, resolve_expr(val)),
+    SLetMut(name, ty, val) => SLetMut(name, ty, resolve_expr(val)),
+    STest(name, body) => STest(name, resolve_expr(body)),
+    SBench(name, body) => SBench(name, resolve_expr(body)),
+    SExpr(e) => SExpr(resolve_expr(e)),
+    _ => s
+  }
+}
+
+// Resolve all EStringInterp nodes in a program's statements.
+// Call this after parse_program to desugar interpolations.
+export let resolve_interp_stmts = (stmts: Array[Stmt]) -> Array[Stmt] with { Error } {
+  for s in stmts {
+    resolve_stmt(s)
+  }
+}
+
+// Resolve all EStringInterp nodes in a single expression.
+export let resolve_interp_expr = (e: Expr) -> Expr with { Error } {
+  resolve_expr(e)
+}

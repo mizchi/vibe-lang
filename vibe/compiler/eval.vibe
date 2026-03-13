@@ -12,6 +12,14 @@ import ./values.vibe {
   ValEnv, Value, val_env_bind, val_env_bind_all, val_env_lookup, value_to_string, values_equal
 }
 
+import ./lexer.vibe {
+  lex
+}
+
+import ./parser.vibe {
+  parse
+}
+
 //# Functions
 
 let _no_tp = Array::slice([
@@ -1152,6 +1160,26 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
       (VRecord(result), cur_env)
     },
     ESpread(_) => throw("spread operator is only allowed inside array literals"),
+    EStringInterp(parts) => {
+      let plen = Array::length(parts)
+      let sb = StringBuilder::new()
+      let mut i = 0
+      while i < plen {
+        let lit = Array::get(parts, i)
+        if String::length(lit) > 0 {
+          StringBuilder::push(sb, lit)
+        }
+        if i + 1 < plen {
+          let expr_src = Array::get(parts, i + 1)
+          let tokens = lex(expr_src)
+          let parsed = parse(tokens)
+          let (val, _) = eval_expr(parsed, env)
+          StringBuilder::push(sb, value_to_string(val))
+        }
+        i = i + 2
+      }
+      (VString(StringBuilder::freeze(sb)), env)
+    },
     ELet(name, val_expr, body) => {
       let (v, env2) = eval_expr(val_expr, env)
       match v {

@@ -105,9 +105,93 @@ let rec lex_string_scan = (s: String, len: Int, idx: Int, start: Int, acc: Strin
   } else lex_string_scan(s, len, idx + 1, start, acc)
 }
 
+let rec scan_string_end = (s: String, len: Int, idx: Int) -> Int with { Error } {
+  if idx >= len {
+    throw("unterminated string")
+  }
+  let c = String::char_code_at(s, idx)
+  if c == '"' {
+    idx + 1
+  } else if c == '\\' {
+    if idx + 1 >= len {
+      throw("unterminated string escape")
+    }
+    scan_string_end(s, len, idx + 2)
+  } else scan_string_end(s, len, idx + 1)
+}
+
+let rec scan_interp_expr_end = (s: String, len: Int, idx: Int, depth: Int) -> Int with { Error } {
+  if idx >= len {
+    throw("unterminated interpolation expression")
+  }
+  let c = String::char_code_at(s, idx)
+  if c == '{' {
+    scan_interp_expr_end(s, len, idx + 1, depth + 1)
+  } else if c == '}' {
+    if depth == 1 {
+      idx
+    } else scan_interp_expr_end(s, len, idx + 1, depth - 1)
+  } else if c == '"' {
+    let skip_end = scan_string_end(s, len, idx + 1)
+    scan_interp_expr_end(s, len, skip_end, depth)
+  } else scan_interp_expr_end(s, len, idx + 1, depth)
+}
+
+// Scan string with interpolation support, collecting parts into builder
+// Returns (has_interp, final_acc, end_pos)
+let rec lex_string_interp_scan = (s: String, len: Int, idx: Int, start: Int, acc: String, parts: ArrayBuilder[String], has_interp: Bool) -> (Bool, String, Int) with { Error } {
+  if idx >= len {
+    throw("unterminated string")
+  }
+  let c = String::char_code_at(s, idx)
+  if c == '"' {
+    let chunk = String::substring(s, start, idx)
+    let final_acc = String::concat(acc, chunk);
+    (has_interp, final_acc, idx + 1)
+  } else if c == '\\' {
+    let next = idx + 1
+    if next >= len {
+      throw("unterminated string escape")
+    }
+    let esc = String::char_code_at(s, next)
+    if esc == '{' {
+      // Interpolation
+      let chunk = String::substring(s, start, idx)
+      let lit = String::concat(acc, chunk)
+      ArrayBuilder::push(parts, lit)
+      let expr_end = scan_interp_expr_end(s, len, next + 1, 1)
+      let expr_src = String::substring(s, next + 1, expr_end)
+      ArrayBuilder::push(parts, expr_src)
+      lex_string_interp_scan(s, len, expr_end + 1, expr_end + 1, "", parts, true)
+    } else {
+      let escaped = if esc == '"' {
+        "\""
+      } else if esc == '\\' {
+        "\\"
+      } else if esc == 'n' {
+        "\n"
+      } else if esc == 't' {
+        "\t"
+      } else if esc == 'r' {
+        String::from_char_code(13)
+      } else if esc == '0' {
+        String::from_char_code(0)
+      } else throw("invalid escape sequence")
+      let chunk = String::substring(s, start, idx)
+      lex_string_interp_scan(s, len, next + 1, next + 1, String::concat(String::concat(acc, chunk), escaped), parts, has_interp)
+    }
+  } else lex_string_interp_scan(s, len, idx + 1, start, acc, parts, has_interp)
+}
+
 let lex_string = (s: String, len: Int, i: Int) -> (Token, Int)with { Error } {
-  let (value, end) = lex_string_scan(s, len, i + 1, i + 1, "");
-  (TString(value), end)
+  let parts = ArrayBuilder::new()
+  let (has_interp, final_acc, end) = lex_string_interp_scan(s, len, i + 1, i + 1, "", parts, false)
+  if has_interp {
+    ArrayBuilder::push(parts, final_acc)
+    (TStringInterp(ArrayBuilder::freeze(parts)), end)
+  } else {
+    (TString(final_acc), end)
+  }
 }
 
 let is_hex_digit = (c: Int) -> Bool {

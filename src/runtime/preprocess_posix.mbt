@@ -178,7 +178,7 @@ fn scan_brace_interp(chars : Array[Char], i : Int, len : Int) -> (String, Int)? 
     return None
   }
   let expr = chars_slice(chars, start, j).trim().to_string()
-  Some(("\\(" + expr + ")", j + 2))
+  Some(("\\{" + expr + "}", j + 2))
 }
 
 ///|
@@ -205,9 +205,9 @@ fn scan_cmd_subst(chars : Array[Char], i : Int, len : Int) -> (String, Int)? {
   }
   let cmd = chars_slice(chars, start, j).trim().to_string()
   let escaped = escape_posix_for_vibe_string(cmd)
-  let s = "\\({ match sh_lines(\"" +
+  let s = "\\{{ match sh_lines(\"" +
     escaped +
-    "\") { r if Array::length(r) > 0 => Array::get(r, 0), _ => \"\" } })"
+    "\") { r if Array::length(r) > 0 => Array::get(r, 0), _ => \"\" } }}"
   Some((s, j + 1))
 }
 
