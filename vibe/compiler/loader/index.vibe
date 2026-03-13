@@ -29,6 +29,12 @@ import ../runtime/eval_loader/index.vibe {
   collect_exports, contains_str, source_lookup, load_and_parse
 }
 
+import ../cache/persistent/index.vibe {
+  compact_string_fingerprint,
+  persistent_source_group_cache_path,
+  persistent_source_list_cache_path
+}
+
 //# Path helpers (inline to avoid cross-module import issues)
 
 let dir_of = (file_path: String) -> String {
@@ -155,6 +161,309 @@ let parse_source_manifest_rows = (manifest_source: String) -> Array[(String, Str
   rows
 }
 
+let string_to_bytes = (s: String) -> Bytes {
+  let out = Array::slice([0], 0, 0)
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+let split_tsv_fields = (line: String) -> Array[String] {
+  let fields = Array::slice([""], 0, 0)
+  let len = String::length(line)
+  let mut start = 0
+  let mut i = 0
+  while i <= len {
+    if i == len || String::char_code_at(line, i) == 9 {
+      Array::push(fields, String::substring(line, start, i))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  fields
+}
+
+let empty_source_specs = () -> Array[(String, String)] {
+  Array::slice([("", "")], 0, 0)
+}
+
+let empty_group_specs = () -> Array[(String, String, String)] {
+  Array::slice([("", "", "")], 0, 0)
+}
+
+let parse_persistent_source_list_cache = (
+  raw: String
+) -> (Option[(String, String)], Array[(String, String)]) with { Error } {
+  let len = String::length(raw)
+  let mut line_start = 0
+  let mut i = 0
+  let mut manifest = None
+  let sources = empty_source_specs()
+  while i <= len {
+    if i == len || String::char_code_at(raw, i) == 10 {
+      let line = strip_trailing_cr(String::substring(raw, line_start, i))
+      if String::length(line) > 0 {
+        let fields = split_tsv_fields(line)
+        let tag = Array::get(fields, 0)
+        if String::equals(tag, "version") {
+          if Array::length(fields) != 2 || !(String::equals(Array::get(fields, 1), "1")) {
+            throw("invalid persistent source list cache version")
+          }
+        } else if String::equals(tag, "manifest") {
+          if Array::length(fields) != 3 {
+            throw("invalid persistent source list cache manifest row")
+          }
+          manifest = Some((Array::get(fields, 1), Array::get(fields, 2)))
+        } else if String::equals(tag, "source") {
+          if Array::length(fields) != 3 {
+            throw("invalid persistent source list cache source row")
+          }
+          Array::push(sources, (Array::get(fields, 1), Array::get(fields, 2)))
+        } else {
+          throw(String::concat("invalid persistent source list cache row: ", line))
+        }
+      }
+      line_start = i + 1
+    }
+    i = i + 1
+  }
+  (manifest, sources)
+}
+
+let parse_persistent_source_group_cache = (
+  raw: String
+) -> (Option[(String, String)], Array[(String, String, String)]) with { Error } {
+  let len = String::length(raw)
+  let mut line_start = 0
+  let mut i = 0
+  let mut manifest = None
+  let rows = empty_group_specs()
+  while i <= len {
+    if i == len || String::char_code_at(raw, i) == 10 {
+      let line = strip_trailing_cr(String::substring(raw, line_start, i))
+      if String::length(line) > 0 {
+        let fields = split_tsv_fields(line)
+        let tag = Array::get(fields, 0)
+        if String::equals(tag, "version") {
+          if Array::length(fields) != 2 || !(String::equals(Array::get(fields, 1), "1")) {
+            throw("invalid persistent source group cache version")
+          }
+        } else if String::equals(tag, "manifest") {
+          if Array::length(fields) != 3 {
+            throw("invalid persistent source group cache manifest row")
+          }
+          manifest = Some((Array::get(fields, 1), Array::get(fields, 2)))
+        } else if String::equals(tag, "group") {
+          if Array::length(fields) != 4 {
+            throw("invalid persistent source group cache group row")
+          }
+          Array::push(rows, (Array::get(fields, 1), Array::get(fields, 2), Array::get(fields, 3)))
+        } else {
+          throw(String::concat("invalid persistent source group cache row: ", line))
+        }
+      }
+      line_start = i + 1
+    }
+    i = i + 1
+  }
+  (manifest, rows)
+}
+
+let manifest_cache_is_valid = (manifest: Option[(String, String)]) -> Bool with { Error, Fs } {
+  match manifest {
+    Some((path, fingerprint)) =>
+      if !(Fs::exists(path)) {
+        false
+      } else {
+        String::equals(compact_string_fingerprint(Fs::read_file(path)), fingerprint)
+      },
+    None => true
+  }
+}
+
+let load_persistent_sources_cache_if_valid = (
+  entry_path: String
+) -> Option[Array[(String, String)]] with { Error, Fs } {
+  let cache_path = persistent_source_list_cache_path(entry_path)
+  if !(Fs::exists(cache_path)) {
+    None
+  } else {
+    let (manifest, specs) = parse_persistent_source_list_cache(Fs::read_file(cache_path))
+    if !(manifest_cache_is_valid(manifest)) {
+      None
+    } else {
+      let sources = empty_source_specs()
+      let mut valid = true
+      let mut i = 0
+      while i < Array::length(specs) {
+        if valid {
+          let (path, fingerprint) = Array::get(specs, i)
+          if !(Fs::exists(path)) {
+            valid = false
+          } else {
+            let source = Fs::read_file(path)
+            if !(String::equals(compact_string_fingerprint(source), fingerprint)) {
+              valid = false
+            } else {
+              Array::push(sources, (path, source))
+            }
+          }
+        }
+        i = i + 1
+      }
+      if valid { Some(sources) } else { None }
+    }
+  }
+}
+
+let load_persistent_source_groups_cache_if_valid = (
+  entry_path: String
+) -> Option[Array[(String, Array[(String, String)])]] with { Error, Fs } {
+  let cache_path = persistent_source_group_cache_path(entry_path)
+  if !(Fs::exists(cache_path)) {
+    None
+  } else {
+    let (manifest, rows) = parse_persistent_source_group_cache(Fs::read_file(cache_path))
+    if !(manifest_cache_is_valid(manifest)) {
+      None
+    } else {
+      let groups = empty_grouped_sources()
+      let mut valid = true
+      let mut i = 0
+      while i < Array::length(rows) {
+        if valid {
+          let (group_name, path, fingerprint) = Array::get(rows, i)
+          if !(Fs::exists(path)) {
+            valid = false
+          } else {
+            let source = Fs::read_file(path)
+            if !(String::equals(compact_string_fingerprint(source), fingerprint)) {
+              valid = false
+            } else {
+              push_grouped_source(groups, group_name, path, source)
+            }
+          }
+        }
+        i = i + 1
+      }
+      if valid { Some(groups) } else { None }
+    }
+  }
+}
+
+let build_persistent_sources_cache_text = (
+  manifest_path: Option[String],
+  sources: Array[(String, String)]
+  ) -> String with { Error, Fs } {
+  let mut out = "version\t1\n"
+  match manifest_path {
+    Some(path) => {
+      out = String::concat(
+        out,
+        String::concat(
+          "manifest\t",
+          String::concat(
+            path,
+            String::concat("\t", String::concat(compact_string_fingerprint(Fs::read_file(path)), "\n"))
+          )
+        )
+      )
+    },
+    None => ()
+  }
+  let mut i = 0
+  while i < Array::length(sources) {
+    let (path, source) = Array::get(sources, i)
+    out = String::concat(
+      out,
+      String::concat(
+        "source\t",
+        String::concat(
+          path,
+          String::concat("\t", String::concat(compact_string_fingerprint(source), "\n"))
+        )
+      )
+    )
+    i = i + 1
+  }
+  out
+}
+
+let build_persistent_source_groups_cache_text = (
+  manifest_path: Option[String],
+  groups: Array[(String, Array[(String, String)])]
+) -> String with { Error, Fs } {
+  let mut out = "version\t1\n"
+  match manifest_path {
+    Some(path) => {
+      out = String::concat(
+        out,
+        String::concat(
+          "manifest\t",
+          String::concat(
+            path,
+            String::concat("\t", String::concat(compact_string_fingerprint(Fs::read_file(path)), "\n"))
+          )
+        )
+      )
+    },
+    None => ()
+  }
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (group_name, sources) = Array::get(groups, gi)
+    let mut si = 0
+    while si < Array::length(sources) {
+      let (path, source) = Array::get(sources, si)
+      out = String::concat(
+        out,
+        String::concat(
+          "group\t",
+          String::concat(
+            group_name,
+            String::concat(
+              "\t",
+              String::concat(
+                path,
+                String::concat("\t", String::concat(compact_string_fingerprint(source), "\n"))
+              )
+            )
+          )
+        )
+      )
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  out
+}
+
+let store_persistent_sources_cache = (
+  entry_path: String,
+  manifest_path: Option[String],
+  sources: Array[(String, String)]
+) -> Unit with { Error, Fs } {
+  Fs::write_bytes(
+    persistent_source_list_cache_path(entry_path),
+    string_to_bytes(build_persistent_sources_cache_text(manifest_path, sources))
+  )
+}
+
+let store_persistent_source_groups_cache = (
+  entry_path: String,
+  manifest_path: Option[String],
+  groups: Array[(String, Array[(String, String)])]
+) -> Unit with { Error, Fs } {
+  Fs::write_bytes(
+    persistent_source_group_cache_path(entry_path),
+    string_to_bytes(build_persistent_source_groups_cache_text(manifest_path, groups))
+  )
+}
+
 let empty_grouped_sources = () -> Array[(String, Array[(String, String)])] {
   Array::slice([("", Array::slice([("", "")], 0, 0))], 0, 0)
 }
@@ -258,9 +567,10 @@ let load_manifest_full_sources = (
   full_sources
 }
 
-let try_collect_manifest_sources_fs = (entry_path: String) -> Option[Array[(String, String)]] with { Error, Fs } {
+let try_collect_manifest_sources_fs = (entry_path: String) -> Option[(String, Array[(String, String)])] with { Error, Fs } {
   match try_load_manifest_rows(entry_path) {
     Some((base_dir, rows)) => {
+      let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
       let preloaded_sources = load_manifest_full_sources(base_dir, rows)
       let needed_paths = Array::slice([""], 0, 0)
       collect_needed_paths_rec(entry_path, preloaded_sources, needed_paths)
@@ -273,15 +583,16 @@ let try_collect_manifest_sources_fs = (entry_path: String) -> Option[Array[(Stri
         }
         j = j + 1
       }
-      Some(sources)
+      Some((manifest_path, sources))
     },
     None => None
   }
 }
 
-let try_collect_manifest_source_groups_fs = (entry_path: String) -> Option[Array[(String, Array[(String, String)])]] with { Error, Fs } {
+let try_collect_manifest_source_groups_fs = (entry_path: String) -> Option[(String, Array[(String, Array[(String, String)])])] with { Error, Fs } {
   match try_load_manifest_rows(entry_path) {
     Some((base_dir, rows)) => {
+      let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
       let preloaded_sources = load_manifest_full_sources(base_dir, rows)
       let needed_paths = Array::slice([""], 0, 0)
       collect_needed_paths_rec(entry_path, preloaded_sources, needed_paths)
@@ -298,7 +609,7 @@ let try_collect_manifest_source_groups_fs = (entry_path: String) -> Option[Array
         }
         j = j + 1
       }
-      Some(groups)
+      Some((manifest_path, groups))
     },
     None => None
   }
@@ -459,25 +770,41 @@ let rec collect_sources_rec = (
 // Recursively collect all source files from filesystem, following imports and re-exports.
 // Returns Array[(path, source)] in dependency order (dependencies first).
 export let collect_all_sources_fs = (entry_path: String) -> Array[(String, String)] with { Error, Fs } {
-  match try_collect_manifest_sources_fs(entry_path) {
+  match load_persistent_sources_cache_if_valid(entry_path) {
     Some(sources) => sources,
-    None => {
-      let sources = Array::slice([("", "")], 0, 0)
-      let visited = Array::slice([""], 0, 0)
-      collect_sources_rec(entry_path, sources, visited)
-      sources
-    }
+    None =>
+      match try_collect_manifest_sources_fs(entry_path) {
+        Some((manifest_path, sources)) => {
+          store_persistent_sources_cache(entry_path, Some(manifest_path), sources)
+          sources
+        },
+        None => {
+          let sources = Array::slice([("", "")], 0, 0)
+          let visited = Array::slice([""], 0, 0)
+          collect_sources_rec(entry_path, sources, visited)
+          store_persistent_sources_cache(entry_path, None, sources)
+          sources
+        }
+      }
   }
 }
 
 export let collect_source_groups_fs = (entry_path: String) -> Array[(String, Array[(String, String)])] with { Error, Fs } {
-  match try_collect_manifest_source_groups_fs(entry_path) {
+  match load_persistent_source_groups_cache_if_valid(entry_path) {
     Some(groups) => groups,
-    None => {
-      let groups = empty_grouped_sources()
-      Array::push(groups, ("recursive", collect_all_sources_fs(entry_path)))
-      groups
-    }
+    None =>
+      match try_collect_manifest_source_groups_fs(entry_path) {
+        Some((manifest_path, groups)) => {
+          store_persistent_source_groups_cache(entry_path, Some(manifest_path), groups)
+          groups
+        },
+        None => {
+          let groups = empty_grouped_sources()
+          Array::push(groups, ("recursive", collect_all_sources_fs(entry_path)))
+          store_persistent_source_groups_cache(entry_path, None, groups)
+          groups
+        }
+      }
   }
 }
 

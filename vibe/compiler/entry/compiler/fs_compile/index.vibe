@@ -37,6 +37,13 @@ import ../../../runtime/index.vibe {
   db_grouped_merged_source, db_module_source, db_load_artifact, db_store_artifact
 }
 
+import ../../../cache/persistent/index.vibe {
+  build_fs_compile_module_artifact_fingerprint,
+  build_fs_compile_wasi_artifact_fingerprint,
+  load_persistent_artifact,
+  store_persistent_artifact
+}
+
 //# Functions
 
 let contains_str = (arr: Array[String], target: String) -> Bool {
@@ -787,39 +794,80 @@ export let compile_file_fs_module = (entry_path: String) -> Bytes with { Error, 
 }
 
 export let prepare_file_fs_cached = (db: TypeDb, entry_path: String) -> TypeDb with { Error, Fs } {
-  let sources = collect_all_sources_fs(entry_path)
-  let main_source = Fs::read_file(entry_path)
+  let source_groups = collect_source_groups_fs(entry_path)
+  prepare_file_fs_from_source_groups_cached(db, entry_path, source_groups)
+}
+
+let prepare_file_fs_from_source_groups_cached = (
+  db: TypeDb,
+  entry_path: String,
+  source_groups: Array[(String, Array[(String, String)])]
+) -> TypeDb with { Error } {
+  let sources = flatten_source_groups(source_groups)
+  let main_source = match source_lookup(sources, entry_path) {
+    Some(source) => source,
+    None => throw(String::concat("module not found: ", entry_path))
+  }
   prepare_modules_cached(db, entry_path, main_source, sources)
 }
 
 export let compile_file_fs_cached = (db: TypeDb, entry_path: String, entry_name: String) -> (Bytes, TypeDb) with { Error, Fs } {
   let source_groups = collect_source_groups_fs(entry_path)
-  let next_db = prepare_file_fs_cached(db, entry_path)
-  let (merged_source, _, codegen_db) = db_grouped_merged_source(next_db, source_groups)
-  let artifact_fingerprint = artifact_fingerprint_from_source(merged_source)
-  match db_load_artifact(codegen_db, entry_path, "wasi", entry_name, artifact_fingerprint) {
-    Some(bytes) => (bytes, codegen_db),
+  let persistent_artifact_fingerprint = build_fs_compile_wasi_artifact_fingerprint(
+    source_groups,
+    entry_name
+  )
+  match load_persistent_artifact("fs-compile-wasi", entry_name, persistent_artifact_fingerprint) {
+    Some(bytes) => (bytes, db),
     None => {
-      let merged_stmts = parse_program(lex(merged_source))
-      let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
-      let bytes = compile_wasi_module(pruned_stmts, entry_name)
-      (bytes, db_store_artifact(codegen_db, entry_path, "wasi", entry_name, artifact_fingerprint, bytes))
+      let next_db = prepare_file_fs_from_source_groups_cached(db, entry_path, source_groups)
+      let (merged_source, _, codegen_db) = db_grouped_merged_source(next_db, source_groups)
+      let artifact_fingerprint = artifact_fingerprint_from_source(merged_source)
+      match db_load_artifact(codegen_db, entry_path, "wasi", entry_name, artifact_fingerprint) {
+        Some(bytes) => (bytes, codegen_db),
+        None => {
+          let merged_stmts = parse_program(lex(merged_source))
+          let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
+          let bytes = compile_wasi_module(pruned_stmts, entry_name)
+          store_persistent_artifact(
+            "fs-compile-wasi",
+            entry_name,
+            persistent_artifact_fingerprint,
+            bytes
+          )
+          (bytes, db_store_artifact(codegen_db, entry_path, "wasi", entry_name, artifact_fingerprint, bytes))
+        }
+      }
     }
   }
 }
 
 export let compile_file_fs_module_cached = (db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with { Error, Fs } {
   let source_groups = collect_source_groups_fs(entry_path)
-  let next_db = prepare_file_fs_cached(db, entry_path)
-  let (merged_source, merge_fingerprint, module_db) = db_grouped_merged_source(next_db, source_groups)
-  let (module_source, codegen_db) = db_module_source(module_db, merge_fingerprint, merged_source)
-  let artifact_fingerprint = artifact_fingerprint_from_source(module_source)
-  match db_load_artifact(codegen_db, entry_path, "module", "", artifact_fingerprint) {
-    Some(bytes) => (bytes, codegen_db),
+  let persistent_artifact_fingerprint = build_fs_compile_module_artifact_fingerprint(
+    source_groups
+  )
+  match load_persistent_artifact("fs-compile-module", "", persistent_artifact_fingerprint) {
+    Some(bytes) => (bytes, db),
     None => {
-      let merged_stmts = parse_program(lex(module_source))
-      let bytes = compile_module(merged_stmts)
-      (bytes, db_store_artifact(codegen_db, entry_path, "module", "", artifact_fingerprint, bytes))
+      let next_db = prepare_file_fs_from_source_groups_cached(db, entry_path, source_groups)
+      let (merged_source, merge_fingerprint, module_db) = db_grouped_merged_source(next_db, source_groups)
+      let (module_source, codegen_db) = db_module_source(module_db, merge_fingerprint, merged_source)
+      let artifact_fingerprint = artifact_fingerprint_from_source(module_source)
+      match db_load_artifact(codegen_db, entry_path, "module", "", artifact_fingerprint) {
+        Some(bytes) => (bytes, codegen_db),
+        None => {
+          let merged_stmts = parse_program(lex(module_source))
+          let bytes = compile_module(merged_stmts)
+          store_persistent_artifact(
+            "fs-compile-module",
+            "",
+            persistent_artifact_fingerprint,
+            bytes
+          )
+          (bytes, db_store_artifact(codegen_db, entry_path, "module", "", artifact_fingerprint, bytes))
+        }
+      }
     }
   }
 }

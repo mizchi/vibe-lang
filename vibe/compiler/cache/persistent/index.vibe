@@ -1,0 +1,228 @@
+//# Functions
+
+let string_to_bytes = (s: String) -> Bytes {
+  let out = Array::slice([
+    0
+  ], 0, 0)
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+let bytes_to_hex_digit = (n: Int) -> String {
+  if n < 10 {
+    __to_string(n)
+  } else if n == 10 {
+    "a"
+  } else if n == 11 {
+    "b"
+  } else if n == 12 {
+    "c"
+  } else if n == 13 {
+    "d"
+  } else if n == 14 {
+    "e"
+  } else {
+    "f"
+  }
+}
+
+let nibble_from_hex_char = (c: Int) -> Int with { Error } {
+  if c >= 48 && c <= 57 {
+    c - 48
+  } else if c >= 97 && c <= 102 {
+    c - 87
+  } else if c >= 65 && c <= 70 {
+    c - 55
+  } else {
+    throw("invalid hex digit")
+  }
+}
+
+let bytes_to_hex = (bytes: Bytes) -> String {
+  let len = Bytes::length(bytes)
+  let mut i = 0
+  let mut out = ""
+  while i < len {
+    let byte = Bytes::get(bytes, i)
+    let hi = byte / 16
+    let lo = byte % 16
+    out = String::concat(out, bytes_to_hex_digit(hi))
+    out = String::concat(out, bytes_to_hex_digit(lo))
+    i = i + 1
+  }
+  out
+}
+
+let hex_to_bytes = (hex: String) -> Bytes with { Error } {
+  let len = String::length(hex)
+  if len % 2 != 0 {
+    throw("invalid hex length")
+  } else {
+    let out = Array::slice([0], 0, 0)
+    let mut i = 0
+    while i < len {
+      let hi = nibble_from_hex_char(String::char_code_at(hex, i))
+      let lo = nibble_from_hex_char(String::char_code_at(hex, i + 1))
+      Array::push(out, hi * 16 + lo)
+      i = i + 2
+    }
+    Bytes::from_array(out)
+  }
+}
+
+export let compact_string_fingerprint = (source: String) -> String {
+  let mod1 = 2147483647
+  let mod2 = 2147483629
+  let step1 = 131
+  let step2 = 65599
+  let len = String::length(source)
+  let mut h1 = 17
+  let mut h2 = 29
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(source, i)
+    h1 = (h1 * step1 + c + 1) % mod1
+    h2 = (h2 * step2 + c + i + 1) % mod2
+    i = i + 1
+  }
+  String::concat(
+    __to_string(len),
+    String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2))))
+  )
+}
+
+let build_sources_fingerprint = (sources: Array[(String, String)]) -> String {
+  let mut acc = "merged"
+  let mut i = 0
+  while i < Array::length(sources) {
+    let (_, source) = Array::get(sources, i)
+    let next = String::concat(
+      acc,
+      String::concat("|", compact_string_fingerprint(source))
+    )
+    acc = compact_string_fingerprint(next)
+    i = i + 1
+  }
+  acc
+}
+
+export let build_source_groups_fingerprint = (groups: Array[(String, Array[(String, String)])]) -> String {
+  let mut acc = "merged-groups"
+  let mut i = 0
+  while i < Array::length(groups) {
+    let (group_name, sources) = Array::get(groups, i)
+    let fingerprint = build_sources_fingerprint(sources)
+    let next = String::concat(
+      acc,
+      String::concat("|", String::concat(group_name, String::concat("=", fingerprint)))
+    )
+    acc = compact_string_fingerprint(next)
+    i = i + 1
+  }
+  acc
+}
+
+let stable_cache_path = (prefix: String, seed: String, suffix: String) -> String {
+  String::concat(
+    "/tmp/vibe_",
+    String::concat(
+      prefix,
+      String::concat(
+        "_",
+        String::concat(compact_string_fingerprint(String::concat("persistent-cache-v1|", seed)), suffix)
+      )
+    )
+  )
+}
+
+export let persistent_source_list_cache_path = (entry_path: String) -> String {
+  stable_cache_path("selfhost_source_list", entry_path, ".tsv")
+}
+
+export let persistent_source_group_cache_path = (entry_path: String) -> String {
+  stable_cache_path("selfhost_source_groups", entry_path, ".tsv")
+}
+
+export let build_file_compile_wasi_artifact_fingerprint = (
+  source_groups: Array[(String, Array[(String, String)])],
+  entry_name: String,
+  mode: String
+) -> String {
+  compact_string_fingerprint(
+    String::concat(
+      "file-compile|",
+      String::concat(
+        build_source_groups_fingerprint(source_groups),
+        String::concat("|", String::concat(entry_name, String::concat("|", mode)))
+      )
+    )
+  )
+}
+
+export let build_file_compile_module_artifact_fingerprint = (
+  source_groups: Array[(String, Array[(String, String)])]
+) -> String {
+  compact_string_fingerprint(
+    String::concat("file-compile-module|", build_source_groups_fingerprint(source_groups))
+  )
+}
+
+export let build_fs_compile_wasi_artifact_fingerprint = (
+  source_groups: Array[(String, Array[(String, String)])],
+  entry_name: String
+) -> String {
+  compact_string_fingerprint(
+    String::concat(
+      "fs-compile|",
+      String::concat(build_source_groups_fingerprint(source_groups), String::concat("|", entry_name))
+    )
+  )
+}
+
+export let build_fs_compile_module_artifact_fingerprint = (
+  source_groups: Array[(String, Array[(String, String)])]
+) -> String {
+  compact_string_fingerprint(
+    String::concat("fs-compile-module|", build_source_groups_fingerprint(source_groups))
+  )
+}
+
+export let persistent_artifact_cache_path = (
+  kind: String,
+  entry_name: String,
+  fingerprint: String
+) -> String {
+  stable_cache_path(
+    "selfhost_artifact",
+    String::concat(kind, String::concat("|", String::concat(entry_name, String::concat("|", fingerprint)))),
+    ".hex"
+  )
+}
+
+export let load_persistent_artifact = (
+  kind: String,
+  entry_name: String,
+  fingerprint: String
+) -> Option[Bytes] with { Error, Fs } {
+  let path = persistent_artifact_cache_path(kind, entry_name, fingerprint)
+  if !(Fs::exists(path)) {
+    None
+  } else {
+    Some(hex_to_bytes(Fs::read_file(path)))
+  }
+}
+
+export let store_persistent_artifact = (
+  kind: String,
+  entry_name: String,
+  fingerprint: String,
+  bytes: Bytes
+) -> Unit with { Error, Fs } {
+  let path = persistent_artifact_cache_path(kind, entry_name, fingerprint)
+  Fs::write_bytes(path, string_to_bytes(bytes_to_hex(bytes)))
+}

@@ -1,0 +1,146 @@
+//# Imports
+
+import ./entry / compiler / file_compile {
+  compile_file_fs_mode_cached, compile_file_fs_module_cached
+}
+
+import ./entry / compiler / fs_compile {
+  compile_file_fs_cached
+}
+
+import ./type_db.vibe {
+  db_codegen_count, db_new
+}
+
+import ./module_loader.vibe {
+  collect_source_groups_fs
+}
+
+import ./cache / persistent {
+  build_file_compile_module_artifact_fingerprint,
+  build_file_compile_wasi_artifact_fingerprint,
+  build_fs_compile_wasi_artifact_fingerprint,
+  persistent_artifact_cache_path,
+  persistent_source_group_cache_path
+}
+
+//# Functions
+
+let string_to_bytes = (s: String) -> Bytes {
+  let out = Array::slice([
+    0
+  ], 0, 0)
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+let remove_file_if_exists = (path: String) -> Unit with { Fs } {
+  if Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
+  }
+}
+
+let lookup_group_source = (
+  groups: Array[(String, Array[(String, String)])],
+  target_path: String
+) -> Option[String] {
+  let mut gi = 0
+  let mut found = None
+  while gi < Array::length(groups) {
+    let (_, sources) = Array::get(groups, gi)
+    let mut si = 0
+    while si < Array::length(sources) {
+      let (path, source) = Array::get(sources, si)
+      if String::equals(path, target_path) {
+        found = Some(source)
+        si = Array::length(sources)
+        gi = Array::length(groups)
+      } else {
+        si = si + 1
+      }
+    }
+    gi = gi + 1
+  }
+  found
+}
+
+//# Tests
+
+test "compile_file_fs_module_cached: fresh db reuses persistent artifact cache across entry paths" {
+  let main_path1 = "/tmp/vibe_compiler_persistent_module_cache_a.vibe"
+  let main_path2 = "/tmp/vibe_compiler_persistent_module_cache_b.vibe"
+  let source = "let run = () -> Int { 1 + 2 }"
+  Fs::write_bytes(main_path1, string_to_bytes(source))
+  Fs::write_bytes(main_path2, string_to_bytes(source))
+  let source_groups = collect_source_groups_fs(main_path1)
+  let cache_path = persistent_artifact_cache_path(
+    "file-compile-module",
+    "",
+    build_file_compile_module_artifact_fingerprint(source_groups)
+  )
+  remove_file_if_exists(cache_path)
+  let (_, db1) = compile_file_fs_module_cached(db_new(), main_path1)
+  assert(db_codegen_count(db1) > 0)
+  let (_, db2) = compile_file_fs_module_cached(db_new(), main_path2)
+  assert(eq(db_codegen_count(db2), 0))
+}
+
+test "compile_file_fs_mode_cached: fresh db reuses persistent artifact cache" {
+  let main_path = "/tmp/vibe_compiler_persistent_mode_cache_main.vibe"
+  let source = "let unused = () -> Int { 0 }\nlet run = () -> Int { 40 + 2 }"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let source_groups = collect_source_groups_fs(main_path)
+  let cache_path = persistent_artifact_cache_path(
+    "file-compile-wasi",
+    "run",
+    build_file_compile_wasi_artifact_fingerprint(source_groups, "run", "no-dce")
+  )
+  remove_file_if_exists(cache_path)
+  let (_, db1) = compile_file_fs_mode_cached(db_new(), main_path, "run", "no-dce")
+  assert(db_codegen_count(db1) > 0)
+  let (_, db2) = compile_file_fs_mode_cached(db_new(), main_path, "run", "no-dce")
+  assert(eq(db_codegen_count(db2), 0))
+}
+
+test "compile_file_fs_cached: fresh db reuses persistent fs artifact cache" {
+  let main_path = "/tmp/vibe_compiler_persistent_fs_compile_main.vibe"
+  let source = "let run = () -> Int { 40 + 2 }"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let source_groups = collect_source_groups_fs(main_path)
+  let cache_path = persistent_artifact_cache_path(
+    "fs-compile-wasi",
+    "run",
+    build_fs_compile_wasi_artifact_fingerprint(source_groups, "run")
+  )
+  remove_file_if_exists(cache_path)
+  let (_, db1) = compile_file_fs_cached(db_new(), main_path, "run")
+  assert(db_codegen_count(db1) > 0)
+  let (_, db2) = compile_file_fs_cached(db_new(), main_path, "run")
+  assert(eq(db_codegen_count(db2), 0))
+}
+
+test "collect_source_groups_fs: persistent cache invalidates when dependency source changes" {
+  let helper_path = "/tmp/vibe_compiler_persistent_loader_helper.vibe"
+  let main_path = "/tmp/vibe_compiler_persistent_loader_main.vibe"
+  let source1 = "export let add = () -> Int { 1 }"
+  let source2 = "export let add = () -> Int { 2 }"
+  let main_source = "import ./vibe_compiler_persistent_loader_helper.vibe { add }\nlet run = () -> Int { add() }"
+  Fs::write_bytes(helper_path, string_to_bytes(source1))
+  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  remove_file_if_exists(persistent_source_group_cache_path(main_path))
+  collect_source_groups_fs(main_path)
+  assert(Fs::exists(persistent_source_group_cache_path(main_path)))
+  Fs::write_bytes(helper_path, string_to_bytes(source2))
+  let groups2 = collect_source_groups_fs(main_path)
+  match lookup_group_source(groups2, helper_path) {
+    Some(source) => assert(String::equals(source, source2)),
+    None => assert(false)
+  }
+}
