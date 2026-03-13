@@ -1102,13 +1102,56 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
       (VTuple(vals), env2)
     },
     EArray(elems) => {
-      let (vals, env2) = eval_elems(elems, env, 0, empty_vals)
-      (VArray(vals), env2)
+      // Check for spread elements
+      let result = Array::slice([VUnit], 0, 0)
+      let mut cur_env = env
+      let mut ei = 0
+      while ei < Array::length(elems) {
+        let elem = Array::get(elems, ei)
+        match elem {
+          ESpread(inner) => {
+            let (sv, se) = eval_expr(inner, cur_env)
+            cur_env = se
+            match sv {
+              VArray(spread_items) => {
+                let mut si = 0
+                while si < Array::length(spread_items) {
+                  Array::push(result, Array::get(spread_items, si))
+                  si = si + 1
+                }
+              },
+              _ => Array::push(result, sv)
+            }
+          },
+          _ => {
+            let (v, ve) = eval_expr(elem, cur_env)
+            cur_env = ve
+            Array::push(result, v)
+          }
+        }
+        ei = ei + 1
+      }
+      (VArray(result), cur_env)
     },
     ERecord(fields) => {
       let (fvals, env2) = eval_fields(fields, env, 0, empty_pairs)
       (VRecord(fvals), env2)
     },
+    EMap(fields) => {
+      // Evaluate map fields into a Record (used as map representation)
+      let result = Array::slice([("", VUnit)], 0, 0)
+      let mut cur_env = env
+      let mut mi = 0
+      while mi < Array::length(fields) {
+        let (k, v_expr) = Array::get(fields, mi)
+        let (v, ve) = eval_expr(v_expr, cur_env)
+        cur_env = ve
+        Array::push(result, (k, v))
+        mi = mi + 1
+      }
+      (VRecord(result), cur_env)
+    },
+    ESpread(_) => throw("spread operator is only allowed inside array literals"),
     ELet(name, val_expr, body) => {
       let (v, env2) = eval_expr(val_expr, env)
       match v {

@@ -397,6 +397,11 @@ pub fn Expr::structural_hash(self : Expr) -> Int {
       h = combine_hash(h, expr.structural_hash())
       h
     }
+    Expr::Spread(expr~, ..) => {
+      let mut h = 0x53707264 // "Sprd"
+      h = combine_hash(h, expr.structural_hash())
+      h
+    }
     Expr::Handle(body~, arms~, ..) => {
       let mut h = 0x48616e64 // "Hand"
       h = combine_hash(h, body.structural_hash())

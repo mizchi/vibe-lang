@@ -422,6 +422,11 @@ fn serialize_expr_to(expr : Expr, buf : StringBuilder) -> Unit {
       serialize_expr_to(inner, buf)
       buf.write_char('}')
     }
+    Expr::Spread(expr~, ..) => {
+      buf.write_string("{\"Spread\":")
+      serialize_expr_to(expr, buf)
+      buf.write_char('}')
+    }
     Expr::StructLit(name~, type_args~, fields~, ..) => {
       buf.write_string("{\"StructLit\":{\"fields\":")
       serialize_record_fields_to(fields, buf)

@@ -595,6 +595,11 @@ pub fn double_colon() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn dotdotdot() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(87)
+}
+
+///|
 /// Check if a SyntaxKind is a token (not a node)
 pub fn is_token(kind : @cst.SyntaxKind) -> Bool {
   kind.raw() < 100

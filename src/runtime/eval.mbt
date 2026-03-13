@@ -994,20 +994,53 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       let values : Array[@core.Value] = []
       let effects : Array[Effect] = []
       for item in items {
-        let out : EvalOutput = eval_expr(rt, item) catch {
-          e =>
-            match e {
-              EvalError::Performed(performed_value, site_key, has_prior_effect) =>
-                raise EvalError::Performed(
-                  performed_value,
-                  site_key,
-                  has_prior_effect || effects.length() > 0,
-                )
-              _ => raise e
+        match item {
+          @core.Expr::Spread(expr~, ..) => {
+            let out : EvalOutput = eval_expr(rt, expr) catch {
+              e =>
+                match e {
+                  EvalError::Performed(performed_value, site_key, has_prior_effect) =>
+                    raise EvalError::Performed(
+                      performed_value,
+                      site_key,
+                      has_prior_effect || effects.length() > 0,
+                    )
+                  _ => raise e
+                }
             }
+            match out.value {
+              @core.Value::Array(spread_items) =>
+                for si in spread_items {
+                  values.push(si)
+                }
+              _ =>
+                raise EvalError::BadCall(
+                  E("spread requires an array value"),
+                )
+            }
+            extend_effects(effects, out.effects)
+          }
+          _ => {
+            let out : EvalOutput = eval_expr(rt, item) catch {
+              e =>
+                match e {
+                  EvalError::Performed(
+                    performed_value,
+                    site_key,
+                    has_prior_effect
+                  ) =>
+                    raise EvalError::Performed(
+                      performed_value,
+                      site_key,
+                      has_prior_effect || effects.length() > 0,
+                    )
+                  _ => raise e
+                }
+            }
+            values.push(out.value)
+            extend_effects(effects, out.effects)
+          }
         }
-        values.push(out.value)
-        extend_effects(effects, out.effects)
       }
       { value: @core.Value::Array(values), effects }
     }
@@ -1201,6 +1234,8 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       // Future: handle Stream[T] generation
       eval_expr(rt, expr)
     }
+    @core.Expr::Spread(..) =>
+      abort("eval: spread operator should only appear inside array literals")
   }
 }
 

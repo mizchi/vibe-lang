@@ -647,6 +647,7 @@ fn walk_expr(
       for arg in args {
         walk_expr(arg, scopes, out)
       }
+    @core.Expr::Spread(expr~, ..) => walk_expr(expr, scopes, out)
     @core.Expr::Int(..)
     | @core.Expr::Float(..)
     | @core.Expr::Double(..)

@@ -670,6 +670,8 @@ fn collect_for_in_helper_refs_expr(
       }
     @core.Expr::Raise(value~, ..) | @core.Expr::Yield(expr=value, ..) =>
       collect_for_in_helper_refs_expr(value, bound, refs, on_name)
+    @core.Expr::Spread(expr~, ..) =>
+      collect_for_in_helper_refs_expr(expr, bound, refs, on_name)
   }
 }
 

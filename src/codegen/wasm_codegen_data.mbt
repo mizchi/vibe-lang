@@ -877,30 +877,91 @@ fn compile_array_expr(
   items : Array[@core.Expr],
 ) -> Unit raise WasmGenError {
   require_heap(ctx)
-  let len = items.length()
-  // Over-allocate: arrays may grow via array_push; reserve capacity to avoid
-  // writing past the end of the allocated block and corrupting adjacent objects.
-  let min_cap = 65536
-  let cap = if len < min_cap { min_cap } else { len }
-  let size = align4(8 + cap * 4)
-  let obj_local = alloc_temp_local(ctx)
-  emit_heap_alloc(ctx, buf, size, obj_local)
-  emit_local_get(buf, obj_local)
-  emit_i32_const_raw(buf, obj_array)
-  emit_i32_store(buf, 0)
-  emit_local_get(buf, obj_local)
-  emit_i32_const_raw(buf, len)
-  emit_i32_store(buf, 4)
-  for i in 0..<len {
+  // Check if any item is a Spread
+  let has_spread = items.iter().any(
+    fn(item) {
+      match item {
+        @core.Expr::Spread(..) => true
+        _ => false
+      }
+    },
+  )
+  if has_spread {
+    // Desugar spread into Array::concat chain, then compile
+    let zero_span = @core.Span::{ start: 0, end: 0 }
+    // Group consecutive non-spread items into Array literals,
+    // spread items become their inner expr.
+    // Then fold with Array::concat calls.
+    let segments : Array[@core.Expr] = []
+    let buf_items : Array[@core.Expr] = []
+    for item in items {
+      match item {
+        @core.Expr::Spread(expr~, ..) => {
+          if buf_items.length() > 0 {
+            segments.push(
+              @core.Expr::Array(items=buf_items.copy(), span=zero_span),
+            )
+            buf_items.clear()
+          }
+          segments.push(expr)
+        }
+        _ => buf_items.push(item)
+      }
+    }
+    if buf_items.length() > 0 {
+      segments.push(
+        @core.Expr::Array(items=buf_items.copy(), span=zero_span),
+      )
+    }
+    // Fold segments with Array::concat
+    let mut acc = segments[0]
+    for i in 1..<segments.length() {
+      acc = @core.Expr::Call(
+        name="Array::concat",
+        type_args=[],
+        args=[
+          @core.CallArg::{
+            label: None,
+            expr: acc,
+            span: zero_span,
+          },
+          @core.CallArg::{
+            label: None,
+            expr: segments[i],
+            span: zero_span,
+          },
+        ],
+        span=zero_span,
+      )
+    }
+    compile_expr(ctx, buf, acc)
+  } else {
+    // Static path: direct heap allocation
+    let len = items.length()
+    // Over-allocate: arrays may grow via array_push; reserve capacity to avoid
+    // writing past the end of the allocated block and corrupting adjacent objects.
+    let min_cap = 65536
+    let cap = if len < min_cap { min_cap } else { len }
+    let size = align4(8 + cap * 4)
+    let obj_local = alloc_temp_local(ctx)
+    emit_heap_alloc(ctx, buf, size, obj_local)
     emit_local_get(buf, obj_local)
-    compile_expr_i32(ctx, buf, items[i])
-    emit_i32_wrap_i64(buf)
-    emit_i32_store(buf, 8 + i * 4)
+    emit_i32_const_raw(buf, obj_array)
+    emit_i32_store(buf, 0)
+    emit_local_get(buf, obj_local)
+    emit_i32_const_raw(buf, len)
+    emit_i32_store(buf, 4)
+    for i in 0..<len {
+      emit_local_get(buf, obj_local)
+      compile_expr_i32(ctx, buf, items[i])
+      emit_i32_wrap_i64(buf)
+      emit_i32_store(buf, 8 + i * 4)
+    }
+    emit_local_get(buf, obj_local)
+    emit_i64_extend_i32_u(buf)
+    emit_i64_const_raw(buf, tag_obj.to_int64())
+    emit_i64_or(buf)
   }
-  emit_local_get(buf, obj_local)
-  emit_i64_extend_i32_u(buf)
-  emit_i64_const_raw(buf, tag_obj.to_int64())
-  emit_i64_or(buf)
 }
 
 ///|

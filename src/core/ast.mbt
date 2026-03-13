@@ -258,6 +258,7 @@ pub(all) enum Expr {
     fields~ : Array[RecordFieldExpr],
     span~ : Span
   )
+  Spread(expr~ : Expr, span~ : Span)
 } derive(Show, Eq)
 
 ///|
@@ -321,7 +322,8 @@ pub fn Expr::span(self : Expr) -> Span {
     | Expr::Raise(span~, ..)
     | Expr::Yield(span~, ..)
     | Expr::Handle(span~, ..)
-    | Expr::StructLit(span~, ..) => span
+    | Expr::StructLit(span~, ..)
+    | Expr::Spread(span~, ..) => span
   }
 }
 

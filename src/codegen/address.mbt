@@ -311,6 +311,10 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       buf.write_char(')')
       buf.to_string()
     }
+    @core.Expr::Spread(span~, ..) => {
+      let _ = span
+      "(spread)"
+    }
   }
 }
 

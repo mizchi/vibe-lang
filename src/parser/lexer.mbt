@@ -541,7 +541,16 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
             _ => Token::new(bit_or(), "|")
           }
         '^' => Token::new(bit_xor(), "^")
-        '.' => Token::new(dot(), ".")
+        '.' =>
+          if self.pos + 1 < self.input.length() &&
+            self.input[self.pos].to_int().unsafe_to_char() == '.' &&
+            self.input[self.pos + 1].to_int().unsafe_to_char() == '.' {
+            let _ = self.advance()
+            let _ = self.advance()
+            Token::new(dotdotdot(), "...")
+          } else {
+            Token::new(dot(), ".")
+          }
         '#' =>
           if self.peek() == Some('|') {
             // Multiline string literal: #| lines joined by newline

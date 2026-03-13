@@ -296,6 +296,7 @@ fn expr_may_use_scoped_ref(expr : @core.Expr) -> Bool {
       }
       false
     }
+    @core.Expr::Spread(expr~, ..) => expr_may_use_scoped_ref(expr)
   }
 }
 
