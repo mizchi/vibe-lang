@@ -238,6 +238,55 @@ test "vibe integration type namespace import auto-forwards receiver-first functi
 }
 
 ///|
+test "vibe integration explicit namespace member import coexists with root import" {
+  let db = VibeDb::new()
+  db.set_source(
+    "/project/scan/scan.vibe",
+    "export struct Scanner {\n" +
+    "  input: String;\n" +
+    "  pos: Int\n" +
+    "}\n" +
+    "export let new = (input: String) -> Scanner {\n" +
+    "  Scanner::{ input: input, pos: 0 }\n" +
+    "}\n" +
+    "export let Scanner::remaining = (scan: Scanner) -> String {\n" +
+    "  String::substring(scan.input, scan.pos, String::length(scan.input))\n" +
+    "}\n" +
+    "export let remaining = (scan: Scanner) -> String {\n" +
+    "  Scanner::remaining(scan)\n" +
+    "}\n",
+  )
+  db.set_source(
+    "/project/scan/index.vibe",
+    "export ./scan.vibe { Scanner, Scanner::remaining, new, remaining }\n" +
+    "export { Scanner, Scanner::remaining, new, remaining }\n",
+  )
+  db.set_source(
+    "/project/main.vibe",
+    "import ./scan { Scanner, Scanner::remaining, new }\n" +
+    "let scan = new(\"abc\")\n" +
+    "String::length(Scanner::remaining(scan))\n",
+  )
+  let compiled = compile_module(db, "/project/main.vibe")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  rt.set_type_env(compiled.type_env)
+  let visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_import_modules(rt, db, "/project/main.vibe", visited, path_to_hash)
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(path) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let result = rt.eval_module(converted_ast)
+  match result.last {
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
+    _ => fail("expected Int(3), got: " + result.last.to_string())
+  }
+}
+
+///|
 test "vibe integration raw identifier supports reserved names" {
   let db = VibeDb::new()
   let main_source =
