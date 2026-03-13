@@ -1,4 +1,4 @@
-// Tests for CST lower: expression conversion
+// Tests for CST lower: binding and operator expression conversion
 
 import ./token.vibe { Token }
 import ./ast.vibe { Expr }
@@ -7,127 +7,7 @@ import ./lower.vibe {
   lower_expr
 }
 
-//# Lower: expression tests
-
-test "lower EInt" {
-  let node = CNode(NIntExpr, [CToken(TInt(42))])
-  match lower_expr(node) {
-    EInt(n) => assert(n == 42),
-    _ => assert(false)
-  }
-}
-
-test "lower EFloat" {
-  let node = CNode(NFloatExpr, [CToken(TFloat(3.14))])
-  match lower_expr(node) {
-    EFloat(_) => assert(true),
-    _ => assert(false)
-  }
-}
-
-test "lower EString" {
-  let node = CNode(NStringExpr, [CToken(TString("hi"))])
-  match lower_expr(node) {
-    EString(s) => assert(s == "hi"),
-    _ => assert(false)
-  }
-}
-
-test "lower EBool" {
-  let node = CNode(NBoolExpr, [CToken(TIdent("true"))])
-  match lower_expr(node) {
-    EBool(b) => assert(b == true),
-    _ => assert(false)
-  }
-}
-
-test "lower EIdent" {
-  let node = CNode(NIdentExpr, [CToken(TIdent("foo"))])
-  match lower_expr(node) {
-    EIdent(name) => assert(name == "foo"),
-    _ => assert(false)
-  }
-}
-
-test "lower EUnit" {
-  let node = CNode(NUnitExpr, [CToken(TLParen), CToken(TRParen)])
-  match lower_expr(node) {
-    EUnit => assert(true),
-    _ => assert(false)
-  }
-}
-
-test "lower ETuple" {
-  let node = CNode(NTupleExpr, [
-    CToken(TLParen),
-    CNode(NIntExpr, [CToken(TInt(1))]),
-    CToken(TComma),
-    CNode(NIntExpr, [CToken(TInt(2))]),
-    CToken(TRParen)
-  ])
-  match lower_expr(node) {
-    ETuple(elems) => assert(Array::length(elems) == 2),
-    _ => assert(false)
-  }
-}
-
-test "lower EArray" {
-  let node = CNode(NArrayExpr, [
-    CToken(TLBracket),
-    CNode(NIntExpr, [CToken(TInt(1))]),
-    CToken(TComma),
-    CNode(NIntExpr, [CToken(TInt(2))]),
-    CToken(TRBracket)
-  ])
-  match lower_expr(node) {
-    EArray(elems) => assert(Array::length(elems) == 2),
-    _ => assert(false)
-  }
-}
-
-test "lower ERecord" {
-  let node = CNode(NRecordExpr, [
-    CToken(TLBrace),
-    CNode(NRecordField, [
-      CToken(TIdent("x")),
-      CToken(TColon),
-      CNode(NIntExpr, [CToken(TInt(1))])
-    ]),
-    CToken(TRBrace)
-  ])
-  match lower_expr(node) {
-    ERecord(fields) => {
-      assert(Array::length(fields) == 1)
-    },
-    _ => assert(false)
-  }
-}
-
-test "lower EIf" {
-  let node = CNode(NIfExpr, [
-    CToken(TIf),
-    CNode(NBoolExpr, [CToken(TIdent("true"))]),
-    CNode(NIntExpr, [CToken(TInt(1))]),
-    CToken(TElse),
-    CNode(NIntExpr, [CToken(TInt(2))])
-  ])
-  match lower_expr(node) {
-    EIf(_, _, _) => assert(true),
-    _ => assert(false)
-  }
-}
-
-test "lower EIf no else" {
-  let node = CNode(NIfExpr, [
-    CToken(TIf),
-    CNode(NBoolExpr, [CToken(TIdent("true"))]),
-    CNode(NIntExpr, [CToken(TInt(1))])
-  ])
-  match lower_expr(node) {
-    EIf(_, _, _) => assert(true),
-    _ => assert(false)
-  }
-}
+//# Lower: binding expression tests
 
 test "lower ELet" {
   let node = CNode(NLetExpr, [
@@ -173,6 +53,21 @@ test "lower ELetRec" {
   }
 }
 
+test "lower EAssign" {
+  let node = CNode(NAssignExpr, [
+    CToken(TIdent("x")),
+    CToken(TEq),
+    CNode(NIntExpr, [CToken(TInt(10))]),
+    CNode(NUnitExpr, [CToken(TLParen), CToken(TRParen)])
+  ])
+  match lower_expr(node) {
+    EAssign(name, _, _) => assert(name == "x"),
+    _ => assert(false)
+  }
+}
+
+//# Lower: sequence expression tests
+
 test "lower ESeq" {
   let node = CNode(NSeqExpr, [
     CNode(NIntExpr, [CToken(TInt(1))]),
@@ -184,6 +79,8 @@ test "lower ESeq" {
     _ => assert(false)
   }
 }
+
+//# Lower: operator expression tests
 
 test "lower EBinOp plus" {
   let node = CNode(NBinOpExpr, [
@@ -255,107 +152,6 @@ test "lower EDot" {
   ])
   match lower_expr(node) {
     EDot(_, name) => assert(name == "field"),
-    _ => assert(false)
-  }
-}
-
-test "lower EMatch" {
-  let node = CNode(NMatchExpr, [
-    CToken(TMatch),
-    CNode(NIdentExpr, [CToken(TIdent("x"))]),
-    CToken(TLBrace),
-    CNode(NMatchArm, [
-      CNode(NIntPat, [CToken(TInt(1))]),
-      CToken(TArrow),
-      CNode(NStringExpr, [CToken(TString("one"))])
-    ]),
-    CToken(TComma),
-    CNode(NMatchArm, [
-      CNode(NWildPat, [CToken(TIdent("_"))]),
-      CToken(TArrow),
-      CNode(NStringExpr, [CToken(TString("other"))])
-    ]),
-    CToken(TRBrace)
-  ])
-  match lower_expr(node) {
-    EMatch(_, arms) => assert(Array::length(arms) == 2),
-    _ => assert(false)
-  }
-}
-
-test "lower EWhile" {
-  let node = CNode(NWhileExpr, [
-    CToken(TWhile),
-    CNode(NBoolExpr, [CToken(TIdent("true"))]),
-    CNode(NIntExpr, [CToken(TInt(0))])
-  ])
-  match lower_expr(node) {
-    EWhile(_, _) => assert(true),
-    _ => assert(false)
-  }
-}
-
-test "lower EBreak none" {
-  let node = CNode(NBreakExpr, [CToken(TBreak)])
-  match lower_expr(node) {
-    EBreak(None) => assert(true),
-    _ => assert(false)
-  }
-}
-
-test "lower EBreak with value" {
-  let node = CNode(NBreakExpr, [
-    CToken(TBreak),
-    CNode(NIntExpr, [CToken(TInt(42))])
-  ])
-  match lower_expr(node) {
-    EBreak(Some(_)) => assert(true),
-    _ => assert(false)
-  }
-}
-
-test "lower EContinue" {
-  let node = CNode(NContinueExpr, [CToken(TContinue)])
-  match lower_expr(node) {
-    EContinue(args) => assert(Array::length(args) == 0),
-    _ => assert(false)
-  }
-}
-
-test "lower EThrow" {
-  let node = CNode(NThrowExpr, [
-    CToken(TThrow),
-    CNode(NStringExpr, [CToken(TString("err"))])
-  ])
-  match lower_expr(node) {
-    EThrow(_) => assert(true),
-    _ => assert(false)
-  }
-}
-
-test "lower EAssign" {
-  let node = CNode(NAssignExpr, [
-    CToken(TIdent("x")),
-    CToken(TEq),
-    CNode(NIntExpr, [CToken(TInt(10))]),
-    CNode(NUnitExpr, [CToken(TLParen), CToken(TRParen)])
-  ])
-  match lower_expr(node) {
-    EAssign(name, _, _) => assert(name == "x"),
-    _ => assert(false)
-  }
-}
-
-test "lower EForIn" {
-  let node = CNode(NForInExpr, [
-    CToken(TFor),
-    CToken(TIdent("x")),
-    CToken(TIn),
-    CNode(NIdentExpr, [CToken(TIdent("xs"))]),
-    CNode(NIntExpr, [CToken(TInt(0))])
-  ])
-  match lower_expr(node) {
-    EForIn(name, _, _) => assert(name == "x"),
     _ => assert(false)
   }
 }

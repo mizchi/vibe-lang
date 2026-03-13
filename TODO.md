@@ -38,19 +38,12 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Release / Gate Integration
 
-- [ ] selfhost bootstrap の heavy shard をさらに削る
+- [x] selfhost bootstrap の heavy shard をさらに削る
   - 進捗ログ、file 単位 batch、`selfhost_test_batch_weights.seed.json` の refresh 導線、`parser` / `stmt` / `printer` / `fixture` / `eval` / `eval_stmt` / `eval_selfhost` / `eval_selfhost2` / `eval_selfhost3` / `type_db` / `eval_e2e` / `checker_stmt` / `checker` / `cst_lower` の分割までは入った
   - refresh helper は bootstrap cache の実 path (`_build/bench/selfhost_bootstrap/...`) に追従済み
   - `selfhost_s5_*` と `codegen_parser_test` は compiled bootstrap から外し、別導線で扱う前提に寄せた
   - bootstrap 先頭 batch は 83 files まで分散済み
-  - 現在の seed 上位は `stmt_test`、`parser_expr_test`、`parser_test`、`printer_controlflow_test`、`printer_expr_test`、`stmt_decl_test`、`parser_flow_test`、`cst_lower_expr_test`
-  - 次の実作業候補: `stmt_test` / `stmt_decl_test` の再分割、`printer_controlflow_test` / `printer_expr_test` の再分割、`cst_lower_expr_test` の isolate
-- [ ] compiled bootstrap から外した重い回帰ケースの扱いを固定する
-  - `codegen_parser_test` は release binary でも 240s で完走しないため、専用 gate か fixture 化に寄せたい
-  - `selfhost_s5_*` は selfbuild / artifact gate と責務が重複しているので、compiled bootstrap では走らせない前提を文書化したい
-- [ ] `vibe_normalize_all` の explicit exclude を外す
-  - 現状 `vibe/compiler/coverage_selfhost_suite_lib.vibe` は native normalize crash 回避のため batch 対象から外している
-  - normalize engine 側の crash を直して exclude なしで回したい
+  - 完了: `cst_lower_expr_test` → 3分割 (literal/controlflow/ops)、`printer_controlflow_test` → 2分割 (loop)、`printer_expr_test` → 2分割 (literal)、`stmt_decl_test` → 2分割 (type)
 
 ## Migration Cleanup
 
@@ -100,3 +93,10 @@ Completed items are archived in `docs/DONE.md`.
 ## Deferred
 
 - [ ] `wasi:http/handler` interface export を codegen で直接生成（P4 の先、resource/stream/future 40+ 型）
+- [ ] selfhost bootstrap: `stmt_test` の weight 検証（4テストで 31K は stale?）、`parser_test` / `parser_flow_test` の再分割
+- [ ] compiled bootstrap から外した重い回帰ケースの扱いを固定する
+  - `codegen_parser_test` は release binary でも 240s で完走しないため、専用 gate か fixture 化に寄せたい
+  - `selfhost_s5_*` は selfbuild / artifact gate と責務が重複しているので、compiled bootstrap では走らせない前提を文書化したい
+- [ ] `vibe_normalize_all` の explicit exclude を外す
+  - 現状 `vibe/compiler/coverage_selfhost_suite_lib.vibe` は native normalize crash 回避のため batch 対象から外している
+  - normalize engine 側の crash を直して exclude なしで回したい
