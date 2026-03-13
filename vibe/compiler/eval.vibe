@@ -444,6 +444,9 @@ export let rec decode_expr = (v: Value) -> Expr {
       else if String::equals(tag, "wh") {
         EWhile(decode_expr(Array::get(arr, 1)), decode_expr(Array::get(arr, 2)))
       }
+      else if String::equals(tag, "lo") {
+        ELoop(go_fields(Array::get(arr, 1)), decode_expr(Array::get(arr, 2)))
+      }
       else if String::equals(tag, "fi") {
         let name = match Array::get(arr, 1) {
           VString(sv) => sv,
@@ -730,6 +733,11 @@ export let rec encode_expr = (expr: Expr) -> Value {
       encode_expr(cond),
       encode_expr(body)
     ]),
+    ELoop(params, body) => VArray([
+      VString("lo"),
+      go_fields(params, 0),
+      encode_expr(body)
+    ]),
     EForIn(name, index_name, iter, body) => VArray([
       VString("fi"),
       VString(name),
@@ -1004,11 +1012,22 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
       rebuild_env_bindings(bindings, i - 1, VEnvBind(name, value, base_env))
     }
   }
-  let rec collect_for_scope_bindings = (
+  let has_name = (names: Array[String], target: String) -> Bool {
+    let rec go = (i: Int) -> Bool {
+      if i >= Array::length(names) {
+        false
+      } else if String::equals(Array::get(names, i), target) {
+        true
+      } else {
+        go(i + 1)
+      }
+    }
+    go(0)
+  }
+  let rec collect_scope_bindings = (
     current: ValEnv,
     scope_mark: String,
-    loop_name: String,
-    index_name: Option[String],
+    local_names: Array[String],
     acc: Array[(String, Value)]
   ) -> Option[Array[(String, Value)]] {
     match current {
@@ -1016,33 +1035,124 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
       VEnvBind(name, value, rest) => if String::equals(name, scope_mark) {
         Some(acc)
       } else {
-        let is_index_name = match index_name {
-          Some(index_name) => String::equals(name, index_name),
-          None => false
-        }
-        let next_acc = if String::equals(name, loop_name) || is_index_name {
+        let next_acc = if has_name(local_names, name) {
           acc
         } else {
           Array::concat(acc, [
             (name, value)
           ])
         }
-        collect_for_scope_bindings(rest, scope_mark, loop_name, index_name, next_acc)
+        collect_scope_bindings(rest, scope_mark, local_names, next_acc)
       }
     }
   }
-  let strip_for_scope = (current: ValEnv, scope_mark: String, loop_name: String, index_name: Option[String], base_env: ValEnv) -> ValEnv {
-    match collect_for_scope_bindings(current, scope_mark, loop_name, index_name, empty_pairs) {
+  let strip_scope = (current: ValEnv, scope_mark: String, local_names: Array[String], base_env: ValEnv) -> ValEnv {
+    match collect_scope_bindings(current, scope_mark, local_names, empty_pairs) {
       Some(bindings) => rebuild_env_bindings(bindings, Array::length(bindings) - 1, base_env),
       None => current
     }
   }
+  let for_scope_names = (loop_name: String, index_name: Option[String]) -> Array[String] {
+    let names = Array::slice([
+      loop_name
+    ], 0, 1)
+    match index_name {
+      Some(index_name) => Array::push(names, index_name),
+      None => ()
+    }
+    names
+  }
+  let bind_loop_values = (base_env: ValEnv, scope_mark: String, param_names: Array[String], values: Array[Value]) -> ValEnv {
+    let scoped_env = val_env_bind(base_env, scope_mark, VUnit)
+    let mut env1 = scoped_env
+    let mut i = 0
+    while i < Array::length(param_names) {
+      let value = if i < Array::length(values) {
+        Array::get(values, i)
+      } else {
+        VUnit
+      }
+      env1 = val_env_bind(env1, Array::get(param_names, i), value)
+      i = i + 1
+    }
+    env1
+  }
+  let merge_continue_values = (current_values: Array[Value], next_values: Array[Value]) -> Array[Value] {
+    let merged = Array::slice([
+      VUnit
+    ], 0, 0)
+    let mut i = 0
+    while i < Array::length(current_values) {
+      let next_value = if i < Array::length(next_values) {
+        Array::get(next_values, i)
+      } else {
+        Array::get(current_values, i)
+      }
+      Array::push(merged, next_value)
+      i = i + 1
+    }
+    merged
+  }
+  let rec eval_loop_initial_values = (
+    params: Array[(String, Expr)],
+    outer_env: ValEnv,
+    scope_mark: String,
+    i: Int,
+    names: Array[String],
+    values: Array[Value]
+  ) -> (Array[String], Array[Value], ValEnv)with { Error } {
+    if i >= Array::length(params) {
+      (names, values, outer_env)
+    } else {
+      let (name, init_expr) = Array::get(params, i)
+      let temp_env = bind_loop_values(outer_env, scope_mark, names, values)
+      let (init_value, env2_raw) = eval_expr(init_expr, temp_env)
+      let outer_env2 = strip_scope(env2_raw, scope_mark, names, outer_env)
+      eval_loop_initial_values(
+        params,
+        outer_env2,
+        scope_mark,
+        i + 1,
+        Array::concat(names, [
+          name
+        ]),
+        Array::concat(values, [
+          init_value
+        ])
+      )
+    }
+  }
+  let capture_has_name = (acc: Array[(String, Value)], name: String) -> Bool {
+    let rec go = (i: Int) -> Bool {
+      if i >= Array::length(acc) {
+        false
+      }
+      else {
+        let (current, _) = Array::get(acc, i)
+        if String::equals(current, name) {
+          true
+        }
+        else {
+          go(i + 1)
+        }
+      }
+    }
+    go(0)
+  }
   let rec capture_env = (e: ValEnv, acc: Array[(String, Value)]) -> Array[(String, Value)] {
     match e {
       VEnvEmpty => acc,
-      VEnvBind(n, v, rest) => capture_env(rest, Array::concat(acc, [
-        (n, v)
-      ]))
+      VEnvBind(n, v, rest) => {
+        let next_acc = if capture_has_name(acc, n) {
+          acc
+        }
+        else {
+          Array::concat(acc, [
+            (n, v)
+          ])
+        }
+        capture_env(rest, next_acc)
+      }
     }
   }
   let rec eval_for_in = (vname: String, index_name: Option[String], elems: Array[Value], body_expr: Expr, for_env: ValEnv, i: Int, acc: Array[Value]) -> (Value, ValEnv)with { Error } {
@@ -1051,6 +1161,7 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
     }
     else {
       let elem = Array::get(elems, i)
+      let local_names = for_scope_names(vname, index_name)
       let scope_mark = String::concat("__vibe_for_scope__", vname)
       let scoped_env = val_env_bind(for_env, scope_mark, VUnit)
       let index_env = match index_name {
@@ -1059,7 +1170,7 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
       }
       let iter_env = val_env_bind(index_env, vname, elem)
       let (rv, env2_raw) = eval_expr(body_expr, iter_env)
-      let env2 = strip_for_scope(env2_raw, scope_mark, vname, index_name, for_env)
+      let env2 = strip_scope(env2_raw, scope_mark, local_names, for_env)
       match rv {
         VBreak(val) => match val {
           VUnit => (VArray(acc), env2),
@@ -1070,6 +1181,16 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
           rv
         ]))
       }
+    }
+  }
+  let rec eval_loop = (param_names: Array[String], body_expr: Expr, outer_env: ValEnv, current_values: Array[Value], scope_mark: String) -> (Value, ValEnv)with { Error } {
+    let loop_env = bind_loop_values(outer_env, scope_mark, param_names, current_values)
+    let (rv, env2_raw) = eval_expr(body_expr, loop_env)
+    let env2 = strip_scope(env2_raw, scope_mark, param_names, outer_env)
+    match rv {
+      VBreak(val) => (val, env2),
+      VContinue(next_values) => eval_loop(param_names, body_expr, env2, merge_continue_values(current_values, next_values), scope_mark),
+      _ => eval_loop(param_names, body_expr, env2, current_values, scope_mark)
     }
   }
   let value_type_prefix = (v: Value) -> String {
@@ -1228,6 +1349,14 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
       eval_match_arms(arms, sv, env2, 0)
     },
     EWhile(cond_expr, body_expr) => eval_while_loop(cond_expr, body_expr, env),
+    ELoop(params, body_expr) => {
+      let scope_mark = "__vibe_loop_scope__"
+      let empty_names = Array::slice([
+        ""
+      ], 0, 0)
+      let (param_names, init_values, outer_env) = eval_loop_initial_values(params, env, scope_mark, 0, empty_names, empty_vals)
+      eval_loop(param_names, body_expr, outer_env, init_values, scope_mark)
+    },
     EForIn(vname, index_name, iterable, body_expr) => {
       let (iv, env2) = eval_expr(iterable, env)
       match iv {

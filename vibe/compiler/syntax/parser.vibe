@@ -497,14 +497,22 @@ let is_non_pipe_infix = (tok: Token) -> Bool {
 }
 
 let parse_import_item = (tokens: Array[Token], pos: Int) -> ((String, Option[String]), Int)with { Error } {
-  match peek(tokens, pos) {
-    TIdent(name) => match peek(tokens, pos + 1) {
-      TAs => match peek(tokens, pos + 2) {
-        TIdent(alias) => ((name, Some(alias)), pos + 3),
-        _ => throw("expected alias name after 'as'")
+  let parse_import_name = (name_pos: Int) -> ((String, Option[String]), Int)with { Error } {
+    match peek(tokens, name_pos) {
+      TIdent(name) => match peek(tokens, name_pos + 1) {
+        TAs => match peek(tokens, name_pos + 2) {
+          TIdent(alias) => ((name, Some(alias)), name_pos + 3),
+          _ => throw("expected alias name after 'as'")
+        },
+        _ => ((name, None), name_pos + 1)
       },
-      _ => ((name, None), pos + 1)
-    },
+      _ => throw("expected import item name")
+    }
+  }
+  match peek(tokens, pos) {
+    TIdent(_) => parse_import_name(pos),
+    TType => parse_import_name(pos + 1),
+    TTrait => parse_import_name(pos + 1),
     _ => throw("expected import item name")
   }
 }
@@ -965,7 +973,45 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       TRaise => throw("'raise' is deprecated, use 'throw(expr)' instead"),
       TReturn => throw("'return' is not supported; use implicit returns"),
       TDo => throw("'do' is reserved; use 'while' or 'for' instead"),
-      TLoop => throw("'loop' is reserved; use 'while true' instead"),
+      TLoop => match peek(tokens, pos + 1) {
+        TLParen => {
+          let params_b = ArrayBuilder::new()
+          let mut cur = pos + 2
+          let mut done = false
+          while !done {
+            match peek(tokens, cur) {
+              TRParen => {
+                cur = cur + 1
+                done = true
+              },
+              TIdent(name) => {
+                let eq = expect_tk(tokens, cur + 1, "=")
+                let (init, next) = parse_impl(tokens, eq, 0)
+                ArrayBuilder::push(params_b, (name, init))
+                match peek(tokens, next) {
+                  TComma => {
+                    cur = next + 1
+                  },
+                  TRParen => {
+                    cur = next + 1
+                    done = true
+                  },
+                  _ => throw("expected ',' or ')' in loop params")
+                }
+              },
+              _ => throw("expected loop parameter name or ')'")
+            }
+          }
+          let br = expect_tk(tokens, cur, "{")
+          let (body, end) = parse_impl(tokens, br, mode_block)
+          (ELoop(ArrayBuilder::freeze(params_b), body), end)
+        },
+        _ => {
+          let br = expect_tk(tokens, pos + 1, "{")
+          let (body, end) = parse_impl(tokens, br, mode_block)
+          (EWhile(EBool(true), body), end)
+        }
+      },
       TYield => throw("'yield' is not supported"),
       TDeclare => throw("'declare' is not supported"),
       _ => throw(String::concat("unexpected token: ", tk_name(peek(tokens, pos))))
@@ -1431,22 +1477,33 @@ export let parse_expr = (tokens: Array[Token], pos: Int) -> (Expr, Int)with { Er
   parse_impl(tokens, pos, 0)
 }
 
+let parse_binding_name = (tokens: Array[Token], pos: Int) -> (String, Int)with { Error } {
+  match peek(tokens, pos) {
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TDoubleColon => match peek(tokens, pos + 2) {
+        TIdent(member) => (String::concat(name, String::concat("::", member)), pos + 3),
+        _ => throw("expected qualified member name after '::'")
+      },
+      _ => (name, pos + 1)
+    },
+    _ => throw("expected name after 'let'")
+  }
+}
+
 let parse_let_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int)with { Error } {
   match peek(tokens, pos) {
-    TRec => match peek(tokens, pos + 1) {
-      TIdent(name) => {
-        let (ty_opt, eq_pos) = match peek(tokens, pos + 2) {
+    TRec => {
+      let (name, name_next) = parse_binding_name(tokens, pos + 1)
+      let (ty_opt, eq_pos) = match peek(tokens, name_next) {
           TColon => {
-            let (ty, tp) = parse_type_impl(tokens, pos + 3, 0);
+            let (ty, tp) = parse_type_impl(tokens, name_next + 1, 0);
             (Some(ty), tp)
           },
-          _ => (None, pos + 2)
+          _ => (None, name_next)
         }
         let ep = expect_tk(tokens, eq_pos, "=")
         let (val, vn) = parse_impl(tokens, ep, 0);
         (SLet(exported, true, name, ty_opt, val), vn)
-      },
-      _ => throw("expected name after 'let rec'")
     },
     TMut => match peek(tokens, pos + 1) {
       TIdent(name) => {
@@ -1463,13 +1520,14 @@ let parse_let_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, 
       },
       _ => throw("expected name after 'let mut'")
     },
-    TIdent(name) => {
-      let (ty_opt, eq_pos) = match peek(tokens, pos + 1) {
+    TIdent(_) => {
+      let (name, name_next) = parse_binding_name(tokens, pos)
+      let (ty_opt, eq_pos) = match peek(tokens, name_next) {
         TColon => {
-          let (ty, tp) = parse_type_impl(tokens, pos + 2, 0);
+          let (ty, tp) = parse_type_impl(tokens, name_next + 1, 0);
           (Some(ty), tp)
         },
-        _ => (None, pos + 1)
+        _ => (None, name_next)
       }
       let ep = expect_tk(tokens, eq_pos, "=")
       let (val, vn) = parse_impl(tokens, ep, 0);

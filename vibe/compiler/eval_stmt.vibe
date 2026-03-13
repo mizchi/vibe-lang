@@ -37,6 +37,52 @@ let rec bind_enum_ctors = (variants: Array[(String, Array[TypeExpr])], i: Int, e
   }
 }
 
+let export_has_namespace = (exports: Array[String], name: String) -> Bool {
+  let prefix = String::concat(name, "::")
+  let rec go = (i: Int) -> Bool {
+    if i >= Array::length(exports) {
+      false
+    }
+    else if String::starts_with(Array::get(exports, i), prefix) {
+      true
+    }
+    else {
+      go(i + 1)
+    }
+  }
+  go(0)
+}
+
+let bind_namespace_exports = (env: ValEnv, module_env: ValEnv, exports: Array[String], original_name: String, bind_name: String) -> ValEnv {
+  let prefix = String::concat(original_name, "::")
+  let bind_prefix = String::concat(bind_name, "::")
+  let rec go = (i: Int, acc: ValEnv) -> ValEnv {
+    if i >= Array::length(exports) {
+      acc
+    }
+    else {
+      let exported_name = Array::get(exports, i)
+      if String::starts_with(exported_name, prefix) {
+        let rebound_name = if String::equals(bind_name, original_name) {
+          exported_name
+        }
+        else {
+          String::concat(bind_prefix, String::substring(exported_name, String::length(prefix), String::length(exported_name)))
+        }
+        let next_env = match val_env_lookup(module_env, exported_name) {
+          Some(val) => val_env_bind(acc, rebound_name, val),
+          None => acc
+        }
+        go(i + 1, next_env)
+      }
+      else {
+        go(i + 1, acc)
+      }
+    }
+  }
+  go(0, env)
+}
+
 let rec bind_import_names = (names: Array[(String, Option[String])], j: Int, env: ValEnv, module_env: ValEnv, exports: Array[String]) -> ValEnv {
   if j >= Array::length(names) {
     env
@@ -47,15 +93,20 @@ let rec bind_import_names = (names: Array[(String, Option[String])], j: Int, env
       Some(a) => a,
       None => name
     }
-    let v = if contains_str(exports, name) {
-      match val_env_lookup(module_env, name) {
+    let next_env = if contains_str(exports, name) {
+      let v = match val_env_lookup(module_env, name) {
         Some(val) => val,
         None => VUnit
       }
-    } else {
-      VUnit
+      val_env_bind(env, bind_name, v)
     }
-    bind_import_names(names, j + 1, val_env_bind(env, bind_name, v), module_env, exports)
+    else if export_has_namespace(exports, name) {
+      bind_namespace_exports(env, module_env, exports, name, bind_name)
+    }
+    else {
+      val_env_bind(env, bind_name, VUnit)
+    }
+    bind_import_names(names, j + 1, next_env, module_env, exports)
   }
 }
 
