@@ -214,6 +214,7 @@ pub fn compile_closure_payload_file(
     Ok(v) => v
     Err(err) => return Err("load failed: " + err)
   }
+  db.require_path_lock(false)
   let wasm = @runtime_compile.compile_module_wasm_with_opt_level(
     db,
     entry,

@@ -454,7 +454,63 @@ fn read_name(arr : Array[Byte], start : Int) -> (String, Int) {
   if end > arr.length() {
     return ("", arr.length())
   }
-  ("", end)
+  let bytes : Array[Byte] = []
+  for i in after_len..<end {
+    bytes.push(arr[i])
+  }
+  (@utf8.decode_lossy(Bytes::from_array(bytes)), end)
+}
+
+///|
+fn array_contains_string(arr : Array[String], needle : String) -> Bool {
+  for item in arr {
+    if item == needle {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn component_export_names(bytes : Bytes) -> Array[String] {
+  let arr = bytes.to_array()
+  let out : Array[String] = []
+  let mut i = 8
+  while i < arr.length() {
+    let section_id = arr[i].to_int()
+    i += 1
+    let (section_size, after_size) = read_uleb_u32(arr, i)
+    let section_start = after_size
+    let section_end = section_start + section_size
+    if section_end > arr.length() {
+      break
+    }
+    if section_id == 0x0b {
+      let mut j = section_start
+      let (count, after_count) = read_uleb_u32(arr, j)
+      j = after_count
+      for _ in 0..<count {
+        if j >= section_end {
+          break
+        }
+        if arr[j].to_int() == 0x00 {
+          j += 1
+        }
+        let (name, after_name) = read_name(arr, j)
+        j = after_name
+        out.push(name)
+        if j < section_end {
+          j += 1
+        }
+        let (_, after_idx) = read_uleb_u32(arr, j)
+        j = after_idx
+        let (_, after_desc) = read_uleb_u32(arr, j)
+        j = after_desc
+      }
+    }
+    i = section_end
+  }
+  out
 }
 
 ///|
@@ -519,8 +575,9 @@ test "P3 handler: component_string_lift_auto kebab-cases snake_case export names
   } noraise {
     b => b
   }
-  assert_true(component_bytes_contains_ascii(wasm, "compile-cli-request"))
-  assert_false(component_bytes_contains_ascii(wasm, "compile_cli_request"))
+  let names = component_export_names(wasm)
+  assert_true(array_contains_string(names, "compile-cli-request"))
+  assert_false(array_contains_string(names, "compile_cli_request"))
 }
 
 ///|

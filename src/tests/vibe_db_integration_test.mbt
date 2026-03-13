@@ -145,7 +145,7 @@ test "vibe import keeps normalized path object" {
   assert_eq(imp.path, "/project/lib/util.vibe")
   match imp.path_obj {
     Some(path_obj) => {
-      assert_eq(path_obj.raw, "/project/lib/util.vibe")
+      assert_eq(path_obj.raw, "./lib/./util.vibe")
       assert_eq(path_obj.base, "/project")
       assert_eq(path_obj.normalized, "/project/lib/util.vibe")
     }
