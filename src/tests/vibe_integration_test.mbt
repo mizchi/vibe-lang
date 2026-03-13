@@ -1188,9 +1188,7 @@ test "selfhost final: lexer tokenizes own source" {
     #|Array::length(tokens)
   let result = eval_selfhost_module(db, driver)
   match result.last {
-    Some(@core.Value::Int(n)) => {
-      assert_true(n > 100)
-    }
+    Some(@core.Value::Int(n)) => assert_true(n > 100)
     _ => fail("expected Int(>0), got: \{result.last.to_string()}")
   }
 }

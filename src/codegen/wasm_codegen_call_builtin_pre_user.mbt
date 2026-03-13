@@ -543,7 +543,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_call(buf, import_index_env_args_len(ctx))
     }
     "Env::args_get" if not(is_user_fn) => {
-      let pos_args = extract_positional_exprs_with_arity(args, "Env::args_get", 1)
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Env::args_get", 1,
+      )
       compile_expr(ctx, buf, pos_args[0])
       emit_call(buf, import_index_env_args_get(ctx))
     }

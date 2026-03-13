@@ -16,28 +16,43 @@ struct ClosurePayloadFsAdapter {
 ///|
 fn ClosurePayloadFsAdapter::new(cwd : String) -> ClosurePayloadFsAdapter {
   let fs = @vibe_fs.MemFs::new()
-  fs.mkdir_p(cwd) catch { _ => () }
+  fs.mkdir_p(cwd) catch {
+    _ => ()
+  }
   { fs, cwd }
 }
 
 ///|
-pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with current_dir_or_root(self) {
+pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with current_dir_or_root(
+  self,
+) {
   self.cwd
 }
 
 ///|
-pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with path_exists(self, path) {
+pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with path_exists(
+  self,
+  path,
+) {
   self.fs.exists(path)
 }
 
 ///|
-pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with create_dir(self, path) {
-  self.fs.mkdir_p(path) catch { e => return Err(e.to_string()) }
+pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with create_dir(
+  self,
+  path,
+) {
+  self.fs.mkdir_p(path) catch {
+    e => return Err(e.to_string())
+  }
   Ok(())
 }
 
 ///|
-pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with read_dir(self, path) {
+pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with read_dir(
+  self,
+  path,
+) {
   let entries = self.fs.readdir(path) catch { e => return Err(e.to_string()) }
   let out : Array[String] = []
   for entry in entries {
@@ -47,13 +62,21 @@ pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with read_dir(self, p
 }
 
 ///|
-pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with read_string(self, path) {
-  let content = self.fs.read_string(path) catch { e => return Err(e.to_string()) }
+pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with read_string(
+  self,
+  path,
+) {
+  let content = self.fs.read_string(path) catch {
+    e => return Err(e.to_string())
+  }
   Ok(content)
 }
 
 ///|
-pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with read_bytes(self, path) {
+pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with read_bytes(
+  self,
+  path,
+) {
   let content = self.fs.read_file(path) catch { e => return Err(e.to_string()) }
   Ok(content)
 }
@@ -64,7 +87,9 @@ pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with write_string(
   path,
   content,
 ) {
-  self.fs.write_string(path, content) catch { e => return Err(e.to_string()) }
+  self.fs.write_string(path, content) catch {
+    e => return Err(e.to_string())
+  }
   Ok(())
 }
 
@@ -74,12 +99,18 @@ pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with write_bytes(
   path,
   content,
 ) {
-  self.fs.write_file(path, content) catch { e => return Err(e.to_string()) }
+  self.fs.write_file(path, content) catch {
+    e => return Err(e.to_string())
+  }
   Ok(())
 }
 
 ///|
-fn append_closure_payload_part(buf : StringBuilder, first : Bool, part : String) -> Unit {
+fn append_closure_payload_part(
+  buf : StringBuilder,
+  first : Bool,
+  part : String,
+) -> Unit {
   if not(first) {
     buf.write_string(closure_payload_separator)
   }
@@ -91,10 +122,8 @@ pub fn build_closure_payload_with_fs(
   input_path : String,
   fs : &@io.FileSystemAdapter,
 ) -> Result[String, String] {
-  let (_, entry_path, paths) = match @loader.load_db_with_paths_with_fs(
-    input_path,
-    fs,
-  ) {
+  let (_, entry_path, paths) = match
+    @loader.load_db_with_paths_with_fs(input_path, fs) {
     Ok(v) => v
     Err(err) => return Err("load failed: " + err)
   }
@@ -129,7 +158,9 @@ fn split_closure_payload_parts(payload : String) -> Array[String] {
 }
 
 ///|
-fn decode_closure_payload(payload : String) -> Result[Array[ClosurePayloadSource], String] {
+fn decode_closure_payload(
+  payload : String,
+) -> Result[Array[ClosurePayloadSource], String] {
   let parts = split_closure_payload_parts(payload)
   if parts.length() == 0 {
     return Err("payload is empty")
@@ -159,7 +190,9 @@ fn closure_payload_dirname(path : String) -> String {
   if last_slash <= 0 {
     "/"
   } else {
-    try { path[:last_slash].to_string() } catch { _ => "/" }
+    path[:last_slash].to_string() catch {
+      _ => "/"
+    }
   }
 }
 
@@ -218,7 +251,7 @@ pub fn compile_closure_payload_file(
   let wasm = @runtime_compile.compile_module_wasm_with_opt_level(
     db,
     entry,
-    no_dce=no_dce,
+    no_dce~,
     opt_level=None,
   ) catch {
     err => return Err("compile failed: " + err.user_message())

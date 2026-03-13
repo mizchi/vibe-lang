@@ -878,14 +878,14 @@ fn compile_array_expr(
 ) -> Unit raise WasmGenError {
   require_heap(ctx)
   // Check if any item is a Spread
-  let has_spread = items.iter().any(
-    fn(item) {
+  let has_spread = items
+    .iter()
+    .any(fn(item) {
       match item {
         @core.Expr::Spread(..) => true
         _ => false
       }
-    },
-  )
+    })
   if has_spread {
     // Desugar spread into Array::concat chain, then compile
     let zero_span = @core.Span::{ start: 0, end: 0 }
@@ -909,9 +909,7 @@ fn compile_array_expr(
       }
     }
     if buf_items.length() > 0 {
-      segments.push(
-        @core.Expr::Array(items=buf_items.copy(), span=zero_span),
-      )
+      segments.push(@core.Expr::Array(items=buf_items.copy(), span=zero_span))
     }
     // Fold segments with Array::concat
     let mut acc = segments[0]
@@ -920,16 +918,8 @@ fn compile_array_expr(
         name="Array::concat",
         type_args=[],
         args=[
-          @core.CallArg::{
-            label: None,
-            expr: acc,
-            span: zero_span,
-          },
-          @core.CallArg::{
-            label: None,
-            expr: segments[i],
-            span: zero_span,
-          },
+          @core.CallArg::{ label: None, expr: acc, span: zero_span },
+          @core.CallArg::{ label: None, expr: segments[i], span: zero_span },
         ],
         span=zero_span,
       )

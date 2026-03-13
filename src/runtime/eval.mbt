@@ -999,7 +999,11 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
             let out : EvalOutput = eval_expr(rt, expr) catch {
               e =>
                 match e {
-                  EvalError::Performed(performed_value, site_key, has_prior_effect) =>
+                  EvalError::Performed(
+                    performed_value,
+                    site_key,
+                    has_prior_effect
+                  ) =>
                     raise EvalError::Performed(
                       performed_value,
                       site_key,
@@ -1013,10 +1017,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
                 for si in spread_items {
                   values.push(si)
                 }
-              _ =>
-                raise EvalError::BadCall(
-                  E("spread requires an array value"),
-                )
+              _ => raise EvalError::BadCall(E("spread requires an array value"))
             }
             extend_effects(effects, out.effects)
           }

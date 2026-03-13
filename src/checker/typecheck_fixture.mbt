@@ -35,7 +35,7 @@ fn sort_strings_typecheck_fixture(arr : Array[String]) -> Unit {
 ///|
 fn diag_path_for_fixture(path : String) -> String {
   if path.has_suffix(".vibe") {
-    let stem = try { path[:path.length() - 5].to_string() } catch { _ => path }
+    let stem = path[:path.length() - 5].to_string() catch { _ => path }
     stem + ".diag"
   } else {
     path + ".diag"
@@ -48,7 +48,7 @@ fn trim_trailing_newlines(text : String) -> String {
     return text
   }
   if text.has_suffix("\n") || text.has_suffix("\r") {
-    let next = try { text[:text.length() - 1].to_string() } catch { _ => text }
+    let next = text[:text.length() - 1].to_string() catch { _ => text }
     trim_trailing_newlines(next)
   } else {
     text

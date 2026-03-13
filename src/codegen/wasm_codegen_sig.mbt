@@ -1325,10 +1325,7 @@ fn import_index_sh(ctx : CodegenCtx) -> Int raise WasmGenError {
 ///|
 fn import_index_env_get(ctx : CodegenCtx) -> Int raise WasmGenError {
   if not(ctx.need_env_get) {
-    raise WasmGenError::BackendLimit(
-      backend="wasm",
-      feature="Env::get import",
-    )
+    raise WasmGenError::BackendLimit(backend="wasm", feature="Env::get import")
   }
   let mut idx = js_import_count(ctx)
   if ctx.need_path {

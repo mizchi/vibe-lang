@@ -1,4 +1,5 @@
 ///|
+
 ///|
 fn bytes_contains_ascii(bytes : Bytes, needle : String) -> Bool {
   let hay_len = bytes.length()
@@ -153,7 +154,8 @@ test "compile_module_wasm_with_opt_level_profiled returns wasm and stage timings
     bytes => bytes
   }
   let (profiled, stage_profile) = try
-    compile_module_wasm_with_opt_level_profiled(db, "main") catch {
+    compile_module_wasm_with_opt_level_profiled(db, "main")
+  catch {
     e => fail("profiled compile error: " + e.to_string())
   } noraise {
     value => value
@@ -259,7 +261,8 @@ test "lower_top_level_tests_to_exprs wraps each test body in a function" {
     _ => fail("expected second wrapper invocation")
   }
   match lowered.stmts[5] {
-    @core.Stmt::Expr(expr=@core.Expr::Int(value~, ..), ..) => assert_eq(value, 0L)
+    @core.Stmt::Expr(expr=@core.Expr::Int(value~, ..), ..) =>
+      assert_eq(value, 0L)
     _ => fail("expected non-test expr to stay top-level")
   }
 }
@@ -284,7 +287,8 @@ test "lower_top_level_tests_to_exprs keeps imports and helpers top-level" {
     _ => fail("expected import to remain top-level")
   }
   match lowered.stmts[1] {
-    @core.Stmt::Let(name~, expr=@core.Expr::Fn(..), ..) => assert_eq(name, "support")
+    @core.Stmt::Let(name~, expr=@core.Expr::Fn(..), ..) =>
+      assert_eq(name, "support")
     _ => fail("expected helper definition to remain top-level")
   }
   match lowered.stmts[2] {
