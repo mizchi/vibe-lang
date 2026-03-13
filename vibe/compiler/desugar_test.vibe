@@ -86,23 +86,25 @@ test "pipe with args: x |> f(y) => f(x, y)" {
   assert(eq(eint_val(Array::get(ecall_args(result), 1)), 2))
 }
 
-//# Method call desugar
+//# Method call preserved through desugar (resolved in checker/eval)
 
-test "method call: obj.method() => method(obj)" {
+test "method call: obj.method() preserved as ECall(EDot(...))" {
   let result = desugar_expr(ECall(EDot(EIdent("x"), "len"), Array::slice([EUnit], 0, 0)))
   assert(is_ecall(result))
-  assert(String::equals(eident_name(ecall_callee(result)), "len"))
-  assert(eq(Array::length(ecall_args(result)), 1))
-  assert(String::equals(eident_name(Array::get(ecall_args(result), 0)), "x"))
+  let callee = ecall_callee(result)
+  assert(is_edot(callee))
+  assert(String::equals(edot_field(callee), "len"))
+  assert(String::equals(eident_name(edot_obj(callee)), "x"))
 }
 
-test "method call with args: obj.push(1) => push(obj, 1)" {
+test "method call with args: obj.push(1) preserved" {
   let result = desugar_expr(ECall(EDot(EIdent("x"), "push"), [EInt(1)]))
   assert(is_ecall(result))
-  assert(String::equals(eident_name(ecall_callee(result)), "push"))
-  assert(eq(Array::length(ecall_args(result)), 2))
-  assert(String::equals(eident_name(Array::get(ecall_args(result), 0)), "x"))
-  assert(eq(eint_val(Array::get(ecall_args(result), 1)), 1))
+  let callee = ecall_callee(result)
+  assert(is_edot(callee))
+  assert(String::equals(edot_field(callee), "push"))
+  assert(eq(Array::length(ecall_args(result)), 1))
+  assert(eq(eint_val(Array::get(ecall_args(result), 0)), 1))
 }
 
 //# Pass-through cases
@@ -165,40 +167,43 @@ test "chained pipe: x |> f |> g => g(f(x))" {
 
 //# Pipe into method call
 
-test "pipe into method call: 1 |> obj.method() => method(obj, 1)" {
+test "pipe into method call: 1 |> obj.method() preserved EDot" {
   let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EDot(EIdent("obj"), "method"), Array::slice([EUnit], 0, 0))))
+  // pipe prepends 1 to args of ECall(EDot(obj, method), [])
   assert(is_ecall(result))
-  assert(is_eident(ecall_callee(result)))
-  assert(String::equals(eident_name(ecall_callee(result)), "method"))
-  assert(eq(Array::length(ecall_args(result)), 2))
-  assert(String::equals(eident_name(Array::get(ecall_args(result), 0)), "obj"))
-  assert(eq(eint_val(Array::get(ecall_args(result), 1)), 1))
+  let callee = ecall_callee(result)
+  assert(is_edot(callee))
+  assert(String::equals(edot_field(callee), "method"))
+  assert(eq(Array::length(ecall_args(result)), 1))
+  assert(eq(eint_val(Array::get(ecall_args(result), 0)), 1))
 }
 
 //# Nested method calls
 
-test "chained method: x.a().b() => b(a(x))" {
+test "chained method: x.a().b() preserved as nested EDot" {
   let result = desugar_expr(ECall(EDot(ECall(EDot(EIdent("x"), "a"), Array::slice([EUnit], 0, 0)), "b"), Array::slice([EUnit], 0, 0)))
   assert(is_ecall(result))
-  assert(is_eident(ecall_callee(result)))
-  assert(String::equals(eident_name(ecall_callee(result)), "b"))
-  assert(eq(Array::length(ecall_args(result)), 1))
-  let inner = Array::get(ecall_args(result), 0)
+  let callee = ecall_callee(result)
+  assert(is_edot(callee))
+  assert(String::equals(edot_field(callee), "b"))
+  // inner is ECall(EDot(x, a), [])
+  let inner = edot_obj(callee)
   assert(is_ecall(inner))
-  assert(String::equals(eident_name(ecall_callee(inner)), "a"))
-  assert(eq(Array::length(ecall_args(inner)), 1))
-  assert(String::equals(eident_name(Array::get(ecall_args(inner), 0)), "x"))
+  let inner_callee = ecall_callee(inner)
+  assert(is_edot(inner_callee))
+  assert(String::equals(edot_field(inner_callee), "a"))
 }
 
 //# Pipe into method call with push
 
-test "pipe into obj.push(): 1 |> obj.push() => push(obj, 1)" {
+test "pipe into obj.push(): 1 |> obj.push() preserved EDot" {
   let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EDot(EIdent("obj"), "push"), Array::slice([EUnit], 0, 0))))
   assert(is_ecall(result))
-  assert(String::equals(eident_name(ecall_callee(result)), "push"))
-  assert(eq(Array::length(ecall_args(result)), 2))
-  assert(String::equals(eident_name(Array::get(ecall_args(result), 0)), "obj"))
-  assert(eq(eint_val(Array::get(ecall_args(result), 1)), 1))
+  let callee = ecall_callee(result)
+  assert(is_edot(callee))
+  assert(String::equals(edot_field(callee), "push"))
+  assert(eq(Array::length(ecall_args(result)), 1))
+  assert(eq(eint_val(Array::get(ecall_args(result), 0)), 1))
 }
 
 //# EAssignOp body desugared

@@ -26,6 +26,35 @@ let min_int = (a: Int, b: Int) -> Int {
   }
 }
 
+let prepend_expr = (first: Expr, rest: Array[Expr]) -> Array[Expr] {
+  let out = Array::slice([EUnit], 0, 0)
+  Array::push(out, first)
+  let mut i = 0
+  while i < Array::length(rest) {
+    Array::push(out, Array::get(rest, i))
+    i = i + 1
+  }
+  out
+}
+
+let type_name_prefix = (ty: Type) -> String {
+  match ty {
+    CtInt => "Int",
+    CtDouble => "Double",
+    CtBool => "Bool",
+    CtString => "String",
+    CtChar => "Char",
+    CtUnit => "Unit",
+    CtBytes => "Bytes",
+    CtArray(_) => "Array",
+    CtOption(_) => "Option",
+    CtEnum(name) => name,
+    CtStruct(name) => name,
+    CtNamed(name, _) => name,
+    _ => ""
+  }
+}
+
 let is_bool_binop = (op: String) -> Bool {
   String::equals(op, "==")
   || String::equals(op, "!=")
@@ -94,38 +123,87 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
       let (_, s3, c3) = check_expr(else_e, env, defs, s2, c2)
       (tt, s3, c3)
     },
-    ECall(callee, args) => {
-      let (ct, s1, c1) = check_expr(callee, env, defs, s, c)
-      let alen = Array::length(args)
-      let arg_tys = Array::slice([
-        CtUnknown
-      ], 0, 0)
-      let mut ai = 0
-      let mut s2 = s1
-      let mut c2 = c1
-      while ai < alen {
-        let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2)
-        Array::push(arg_tys, at)
-        s2 = ns
-        c2 = nc
-        ai = ai + 1
-      }
-      match subst_apply(s2, ct) {
-        CtFn(param_tys, ret, _) => {
-          let mut s3 = s2
-          let mut ui = 0
-          let ul = min_int(Array::length(arg_tys), Array::length(param_tys))
-          while ui < ul {
-            s3 = match unify(Array::get(param_tys, ui), Array::get(arg_tys, ui), s3) {
-              Some(su) => su,
-              None => s3
-            }
-            ui = ui + 1
+    ECall(callee, args) => match callee {
+      EDot(obj, method) => {
+        let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c)
+        let resolved = subst_apply(s1, obj_ty)
+        let type_prefix = type_name_prefix(resolved)
+        let qualified = String::concat(type_prefix, String::concat("::", method))
+        let method_ty = match env_lookup(env, qualified) {
+          Some(t) => {
+            let (ti, c2, _) = instantiate(t, c1)
+            (ti, s1, c2)
+          },
+          None => match lookup_builtin(qualified) {
+            Some(t) => (t, s1, c1),
+            None => (CtUnknown, s1, c1)
           }
-          (subst_apply(s3, ret), s3, c2)
-        },
-        CtStruct(sname) => (CtStruct(sname), s2, c2),
-        _ => (CtUnknown, s2, c2)
+        }
+        let (mt, s2, c2) = method_ty
+        let all_args = prepend_expr(obj, args)
+        let alen = Array::length(all_args)
+        let arg_tys = Array::slice([CtUnknown], 0, 0)
+        Array::push(arg_tys, obj_ty)
+        let mut ai = 1
+        let mut s3 = s2
+        let mut c3 = c2
+        while ai < alen {
+          let (at, ns, nc) = check_expr(Array::get(all_args, ai), env, defs, s3, c3)
+          Array::push(arg_tys, at)
+          s3 = ns
+          c3 = nc
+          ai = ai + 1
+        }
+        match subst_apply(s3, mt) {
+          CtFn(param_tys, ret, _) => {
+            let mut s4 = s3
+            let mut ui = 0
+            let ul = min_int(Array::length(arg_tys), Array::length(param_tys))
+            while ui < ul {
+              s4 = match unify(Array::get(param_tys, ui), Array::get(arg_tys, ui), s4) {
+                Some(su) => su,
+                None => s4
+              }
+              ui = ui + 1
+            }
+            (subst_apply(s4, ret), s4, c3)
+          },
+          _ => (CtUnknown, s3, c3)
+        }
+      },
+      _ => {
+        let (ct, s1, c1) = check_expr(callee, env, defs, s, c)
+        let alen = Array::length(args)
+        let arg_tys = Array::slice([
+          CtUnknown
+        ], 0, 0)
+        let mut ai = 0
+        let mut s2 = s1
+        let mut c2 = c1
+        while ai < alen {
+          let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2)
+          Array::push(arg_tys, at)
+          s2 = ns
+          c2 = nc
+          ai = ai + 1
+        }
+        match subst_apply(s2, ct) {
+          CtFn(param_tys, ret, _) => {
+            let mut s3 = s2
+            let mut ui = 0
+            let ul = min_int(Array::length(arg_tys), Array::length(param_tys))
+            while ui < ul {
+              s3 = match unify(Array::get(param_tys, ui), Array::get(arg_tys, ui), s3) {
+                Some(su) => su,
+                None => s3
+              }
+              ui = ui + 1
+            }
+            (subst_apply(s3, ret), s3, c2)
+          },
+          CtStruct(sname) => (CtStruct(sname), s2, c2),
+          _ => (CtUnknown, s2, c2)
+        }
       }
     },
     EBinOp(op, left, right) => {
