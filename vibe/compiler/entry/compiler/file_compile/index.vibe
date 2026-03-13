@@ -17,7 +17,7 @@ import ../../../codegen/wasi/index.vibe {
 }
 
 import ../../../loader/index.vibe {
-  collect_source_groups_fs
+  collect_source_groups_fs, load_persistent_source_group_fingerprint_if_valid
 }
 
 import ../../../core/dce.vibe {
@@ -30,6 +30,8 @@ import ../../../runtime/index.vibe {
 }
 
 import ../../../cache/persistent/index.vibe {
+  build_file_compile_module_artifact_fingerprint_from_group_fingerprint,
+  build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint,
   build_file_compile_module_artifact_fingerprint,
   build_file_compile_wasi_artifact_fingerprint,
   load_persistent_artifact,
@@ -121,15 +123,14 @@ export let compile_file_fs_cached = (db: TypeDb, entry_path: String, entry_name:
   compile_file_fs_mode_cached(db, entry_path, entry_name, "no-dce")
 }
 
-export let compile_file_fs_mode_cached = (db: TypeDb, entry_path: String, entry_name: String, mode: String) -> (Bytes, TypeDb) with { Error, Fs } {
+let compile_file_fs_mode_cached_slow = (
+  db: TypeDb,
+  entry_path: String,
+  entry_name: String,
+  mode: String,
+  persistent_artifact_kind: String
+) -> (Bytes, TypeDb) with { Error, Fs } {
   let source_groups = collect_source_groups_fs(entry_path)
-  let persistent_artifact_kind = if String::equals(mode, "mvp") {
-    "file-compile-wasi-mvp"
-  } else if String::equals(mode, "no-dce") {
-    "file-compile-wasi"
-  } else {
-    throw(String::concat("unsupported compile mode: ", mode))
-  }
   let persistent_artifact_fingerprint = build_file_compile_wasi_artifact_fingerprint(
     source_groups,
     entry_name,
@@ -175,7 +176,36 @@ export let compile_file_fs_mode_cached = (db: TypeDb, entry_path: String, entry_
   }
 }
 
-export let compile_file_fs_module_cached = (db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with { Error, Fs } {
+export let compile_file_fs_mode_cached = (db: TypeDb, entry_path: String, entry_name: String, mode: String) -> (Bytes, TypeDb) with { Error, Fs } {
+  let persistent_artifact_kind = if String::equals(mode, "mvp") {
+    "file-compile-wasi-mvp"
+  } else if String::equals(mode, "no-dce") {
+    "file-compile-wasi"
+  } else {
+    throw(String::concat("unsupported compile mode: ", mode))
+  }
+  match load_persistent_source_group_fingerprint_if_valid(entry_path) {
+    Some(source_groups_fingerprint) =>
+      match load_persistent_artifact(
+        persistent_artifact_kind,
+        entry_name,
+        build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint(
+          source_groups_fingerprint,
+          entry_name,
+          mode
+        )
+      ) {
+        Some(bytes) => (bytes, db),
+        None => compile_file_fs_mode_cached_slow(db, entry_path, entry_name, mode, persistent_artifact_kind)
+      },
+    None => compile_file_fs_mode_cached_slow(db, entry_path, entry_name, mode, persistent_artifact_kind)
+  }
+}
+
+let compile_file_fs_module_cached_slow = (
+  db: TypeDb,
+  entry_path: String
+) -> (Bytes, TypeDb) with { Error, Fs } {
   let source_groups = collect_source_groups_fs(entry_path)
   let persistent_artifact_fingerprint = build_file_compile_module_artifact_fingerprint(
     source_groups
@@ -206,5 +236,22 @@ export let compile_file_fs_module_cached = (db: TypeDb, entry_path: String) -> (
         }
       }
     }
+  }
+}
+
+export let compile_file_fs_module_cached = (db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with { Error, Fs } {
+  match load_persistent_source_group_fingerprint_if_valid(entry_path) {
+    Some(source_groups_fingerprint) =>
+      match load_persistent_artifact(
+        "file-compile-module",
+        "",
+        build_file_compile_module_artifact_fingerprint_from_group_fingerprint(
+          source_groups_fingerprint
+        )
+      ) {
+        Some(bytes) => (bytes, db),
+        None => compile_file_fs_module_cached_slow(db, entry_path)
+      },
+    None => compile_file_fs_module_cached_slow(db, entry_path)
   }
 }

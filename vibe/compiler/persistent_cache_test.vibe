@@ -13,10 +13,11 @@ import ./type_db.vibe {
 }
 
 import ./module_loader.vibe {
-  collect_source_groups_fs
+  collect_source_groups_fs, load_persistent_source_group_fingerprint_if_valid
 }
 
 import ./cache / persistent {
+  build_source_groups_fingerprint,
   build_file_compile_module_artifact_fingerprint,
   build_file_compile_wasi_artifact_fingerprint,
   build_fs_compile_wasi_artifact_fingerprint,
@@ -142,5 +143,27 @@ test "collect_source_groups_fs: persistent cache invalidates when dependency sou
   match lookup_group_source(groups2, helper_path) {
     Some(source) => assert(String::equals(source, source2)),
     None => assert(false)
+  }
+}
+
+test "load_persistent_source_group_fingerprint_if_valid: reuses cached source fingerprints while files stay unchanged" {
+  let helper_path = "/tmp/vibe_compiler_persistent_loader_fp_helper.vibe"
+  let main_path = "/tmp/vibe_compiler_persistent_loader_fp_main.vibe"
+  let helper_source1 = "export let add = () -> Int { 1 }"
+  let helper_source2 = "export let add = () -> Int { 2 }"
+  let main_source = "import ./vibe_compiler_persistent_loader_fp_helper.vibe { add }\nlet run = () -> Int { add() }"
+  Fs::write_bytes(helper_path, string_to_bytes(helper_source1))
+  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  remove_file_if_exists(persistent_source_group_cache_path(main_path))
+  let groups = collect_source_groups_fs(main_path)
+  let expected = build_source_groups_fingerprint(groups)
+  match load_persistent_source_group_fingerprint_if_valid(main_path) {
+    Some(fingerprint) => assert(String::equals(fingerprint, expected)),
+    None => assert(false)
+  }
+  Fs::write_bytes(helper_path, string_to_bytes(helper_source2))
+  match load_persistent_source_group_fingerprint_if_valid(main_path) {
+    Some(_) => assert(false),
+    None => assert(true)
   }
 }
