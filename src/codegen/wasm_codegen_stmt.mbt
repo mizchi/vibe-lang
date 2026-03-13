@@ -160,6 +160,19 @@ fn compile_stmt(
           } else {
             emit_local_set(buf, idx)
           }
+          // Store the closure env pointer for named top-level functions with
+          // captures so other closures can re-tag the same object later.
+          match ctx.exported_fn_env_globals.get(name) {
+            Some(global_idx) =>
+              if global_idx >= 0 {
+                emit_local_get(buf, idx)
+                emit_i64_const_raw(buf, (-4).to_int64())
+                emit_i64_and(buf)
+                emit_i32_wrap_i64(buf)
+                emit_global_set(buf, global_idx)
+              }
+            None => ()
+          }
           // Back-patch self-reference for recursive closures
           let is_forward_fn = match fn_ret {
             Some(_) => true
@@ -511,24 +524,6 @@ fn compile_stmt(
         @core.Stmt::Let(rec~, name~, expr~, span~),
         is_last,
       )
-      // Store env pointer to global for exported closures with captures.
-      // When called externally (env=0), the function prelude reads this global.
-      match ctx.exported_fn_env_globals.get(name) {
-        Some(global_idx) =>
-          if global_idx >= 0 {
-            match ctx.locals.get(name) {
-              Some(local_idx) => {
-                emit_local_get(buf, local_idx) // push closure value (i64)
-                emit_i64_const_raw(buf, (-4).to_int64()) // mask ~3
-                emit_i64_and(buf) // strip tag bits
-                emit_i32_wrap_i64(buf) // i64 -> i32 env pointer
-                emit_global_set(buf, global_idx) // store in global
-              }
-              None => ()
-            }
-          }
-        None => ()
-      }
     }
     @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) =>
       // InternalExportLet is compiled like Let - visibility is handled in runtime import resolution.

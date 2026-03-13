@@ -1430,6 +1430,27 @@ fn strip_type_assert_module(ast : @core.Module) -> @core.Module {
 }
 
 ///|
+fn ensure_run_ast_result(ast : @core.Module) -> @core.Module {
+  let stmts : Array[@core.Stmt] = []
+  for stmt in ast.stmts {
+    stmts.push(stmt)
+  }
+  let span = @core.Span::empty(0)
+  if stmts.length() == 0 {
+    stmts.push(@core.Stmt::Expr(expr=@core.Expr::Int(value=0L, span~), span~))
+  } else {
+    match stmts[stmts.length() - 1] {
+      @core.Stmt::Expr(..) => ()
+      _ =>
+        stmts.push(
+          @core.Stmt::Expr(expr=@core.Expr::Int(value=0L, span~), span~),
+        )
+    }
+  }
+  @core.Module::{ stmts, }
+}
+
+///|
 /// Emit a WASM module for a typed vibe AST.
 fn emit_module_with_coverage(
   ctx : CodegenCtx,
@@ -1468,12 +1489,15 @@ fn emit_module_with_coverage(
   for i in 0..<funcs.length() {
     ctx.fn_needs_env[i] = fn_needs_env[i]
   }
-  // Identify exported functions with captures — they need env globals
-  for name, _ in ctx.exported_fns {
-    match ctx.fn_indices.get(name) {
-      Some(idx) =>
-        if funcs[idx].captures.length() > 0 {
-          ctx.exported_fn_env_globals[name] = -1 // placeholder, assigned in build_module
+  // Named top-level functions with captures need a stable env pointer.
+  // Exported functions use it for external calls, and non-exported top-level
+  // functions use it when another closure captures them in merged modules.
+  for i in 0..<funcs.length() {
+    let f = funcs[i]
+    match f.name {
+      Some(name) =>
+        if top_keys.contains(f.span_key) && f.captures.length() > 0 {
+          ctx.exported_fn_env_globals[name] = -1
         }
       None => ()
     }
@@ -1626,7 +1650,7 @@ fn emit_module_with_coverage(
   }
   let run_sig = FuncSig::{ params: [], results: [ValueKind::I64] }
   let _ = ensure_sig_index(ctx, run_sig)
-  let run_ast = filter_top_level_funcs(ctx, ast)
+  let run_ast = ensure_run_ast_result(filter_top_level_funcs(ctx, ast))
   let func_needs_heap : Array[Bool] = []
   let mut any_user_heap = false
   for f in funcs {

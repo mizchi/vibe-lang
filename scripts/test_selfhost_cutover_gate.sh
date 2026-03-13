@@ -29,20 +29,13 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   } >> "$GITHUB_STEP_SUMMARY" || true
 fi
 
-# Ensure prerequisites
-if [ ! -x "$VIBE_BIN" ]; then
-  echo "[cutover-gate] building host CLI..." >&2
-  moon build --target native --release src/cmd/vibe --warn-list '-29'
-fi
+# Ensure prerequisites are synced to the current workspace state.
+# `moon build` is incremental, so always running it avoids stale parity inputs.
+echo "[cutover-gate] syncing host CLI..." >&2
+moon build --target native --release src/cmd/vibe --warn-list '-29'
 
-needs_selfhost_build=0
-if [ ! -f "$STAGE1_COMPILER_WASM" ]; then
-  needs_selfhost_build=1
-fi
-if [ "$needs_selfhost_build" -eq 1 ]; then
-  echo "[cutover-gate] building selfhost WASI compiler..." >&2
-  moon build --target wasm src/cmd/vibe_compile_wasi
-fi
+echo "[cutover-gate] syncing selfhost WASI compiler..." >&2
+moon build --target wasm src/cmd/vibe_compile_wasi
 
 if ! command -v moonrun >/dev/null 2>&1; then
   echo "cutover gate failed: moonrun not found" >&2

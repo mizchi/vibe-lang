@@ -33,6 +33,12 @@ Phase 4 (応用):
 
 **現状**: compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache、host CLI の check/test loop cache 再利用、env/argv 契約、stage1 core wasm 直接の artifact-only compile gate、Preview2 component-only selfhost CLI gate、Preview2 package、command world 配布 gate、direct fs/argv component 配布 gate、strict-recursive selfbuild 復帰まで入った。`stage1 artifact 自体で sample を compile して run=42` と `just test-selfhost-wasi-selfbuild-kpi 300` の strict-recursive mode は通る。
 **最優先の残**: MoonBit host CLI を bootstrap 専用へ縮退し、selfhost 配布形を `check/test/release-check` の本流へ寄せること。そのうえで typed Preview2 import と perf gap を詰める。
+**一時メモ**:
+- selfhost coverage suite aggregate は raw `id` ではなく `span.start-end` union に直し、warm rerun でも summary が安定する状態まで戻した
+- coverage 側に戻るときの次の入口は `eval_e2e_test.vibe` の branch gap を詰めること
+- その次は、coverage 拡張ではなく selfhost cutover 本体として `check/test/release-check` をどの配布形から差し替えるかを固定する
+- 2026-03-13 時点の再確認では `just test-selfhost-cutover` は `scripts/test_selfhost_cutover_compare.sh` の空配列展開 (`LOADED_FAIL_CLASSES[@]`) で落ちる
+- 同じく `just test-selfhost-wasi-selfbuild-kpi 300` は `compile_file_fs_mode_cached` の closure capture unsupported path で selfbuild 回帰している
 
 ### Selfhost compiler modularization / cache
 
@@ -172,6 +178,9 @@ Phase 4 (応用):
 - [ ] `map_builder*` 互換 alias を削除する条件を固める
   - 条件案: docs と eval task の canonical 化完了、rename script の dry-run 実績、host/selfhost の alias coverage を維持したまま deprecation 期間を決める
   - 対象: host checker/runtime/codegen の互換層、selfhost builtin 正規化、alias 専用 wbtest
+- [ ] `vibe/x` を現行構文へ寄せる
+  - 第一段階: `[]`, `==`, 文字列補間へ置換して `Array::slice([dummy], 0, 0)` / `String::equals` / `String::concat` の定型を減らす
+  - 第二段階: grammar 追加後に `String` index/slice や軽量 struct syntax へ移行する
 
 ## ユーザビリティ改善
 
@@ -183,6 +192,14 @@ Phase 4 (応用):
 
 ### 中優先度（ボイラープレート削減）
 
+- [ ] String index / slice 構文 `s[i]`, `s[i..j]`, `s[..j]`, `s[i..]`
+  - `vibe/x/url`, `vibe/x/toml`, `vibe/x/regexp` で `String::substring(s, i, i + 1)` が多発している
+- [ ] raw string / multiline string（`r"..."`, `"""..."""`）
+  - `vibe/x/regexp`, `vibe/x/toml` のエスケープ負荷を下げる
+- [ ] 軽量 struct リテラル sugar `Type { ... }`
+  - `Type::{ ... }` の冗長さで single-constructor enum に逃げている箇所を減らす
+- [ ] `String` を `for-in` 対象にする（`for c in s`, `for i, c in s`）
+  - scanner 系 (`vibe/x/url`, `vibe/x/toml`, `vibe/x/color`) の index loop を減らす
 - [ ] 空 Map リテラル `map {}` のサポート
 - [ ] Array スプレッド構文 `[...xs, new_item]`（ArrayBuilder::new 3ステップの簡略化）
 - [ ] トレイトにメソッド定義を許可（現状マーカーのみ。ユーザー定義型の `Eq` 実装不可）

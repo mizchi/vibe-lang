@@ -87,13 +87,23 @@ fn compile_expr_fn(
             match ctx.fn_indices.get(name) {
               Some(idx) => {
                 if fn_index_needs_env(ctx, idx) {
-                  raise WasmGenError::Unsupported(
-                    "closure capture requires env-backed function in scope: " +
-                    name,
-                  )
+                  match ctx.exported_fn_env_globals.get(name) {
+                    Some(global_idx) if global_idx >= 0 => {
+                      emit_global_get(buf, global_idx)
+                      emit_i64_extend_i32_u(buf)
+                      emit_i64_const_raw(buf, tag_obj.to_int64())
+                      emit_i64_or(buf)
+                    }
+                    _ =>
+                      raise WasmGenError::Unsupported(
+                        "closure capture requires env-backed function in scope: " +
+                        name,
+                      )
+                  }
+                } else {
+                  let slot = ensure_funcref_slot(ctx, idx)
+                  emit_i64_const_raw(buf, tag_fn_value64(slot.to_int64()))
                 }
-                let slot = ensure_funcref_slot(ctx, idx)
-                emit_i64_const_raw(buf, tag_fn_value64(slot.to_int64()))
               }
               None => raise WasmGenError::UnknownName(name)
             }

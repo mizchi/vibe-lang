@@ -373,14 +373,16 @@ if [ "$INCLUDE_FAIL_CASES" = "1" ]; then
         exit 1
         ;;
     esac
-    if ! array_contains_exact "$expected_class" "${LOADED_FAIL_CLASSES[@]}"; then
+    if [ "${#LOADED_FAIL_CLASSES[@]}" -eq 0 ] || \
+      ! array_contains_exact "$expected_class" "${LOADED_FAIL_CLASSES[@]}"; then
       LOADED_FAIL_CLASSES+=("$expected_class")
     fi
     FAIL_CANARY_CASES+=("${fail_rel_path}|${expected_class}|${expected_fragment}|${allow_missing_source:-0}")
   done < "$FAIL_CASES_FILE"
 
   for required_class in "${REQUIRED_FAIL_CLASSES[@]}"; do
-    if ! array_contains_exact "$required_class" "${LOADED_FAIL_CLASSES[@]}"; then
+    if [ "${#LOADED_FAIL_CLASSES[@]}" -eq 0 ] || \
+      ! array_contains_exact "$required_class" "${LOADED_FAIL_CLASSES[@]}"; then
       echo "cutover gate failed: required fail class missing in $FAIL_CASES_FILE: $required_class" >&2
       exit 1
     fi

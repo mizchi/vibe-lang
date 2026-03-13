@@ -71,6 +71,11 @@ fn wb_let(name : String, expr : @core.Expr) -> @core.Stmt {
 }
 
 ///|
+fn wb_export_let(name : String, expr : @core.Expr) -> @core.Stmt {
+  @core.Stmt::ExportLet(rec=false, name~, expr~, span=wb_span())
+}
+
+///|
 fn wb_expr(expr : @core.Expr) -> @core.Stmt {
   @core.Stmt::Expr(expr~, span=wb_span())
 }
@@ -176,6 +181,48 @@ test "env requirement: function-only capture still needs closure env" {
   assert_true(idx >= 0)
   assert_true(contains_name(funcs[idx].captures, "helper"))
   assert_true(needs[idx])
+}
+
+///|
+test "exported env-backed top-level function can be captured" {
+  let helper_fn = wb_fn([wb_param("n")], [
+    wb_expr(wb_call("__add", [wb_ident("n"), wb_ident("seed")])),
+  ])
+  let call_helper_fn = wb_fn([], [wb_expr(wb_call("helper", [wb_int(1)]))])
+  let run_fn = wb_fn([], [
+    wb_let("call_helper", call_helper_fn),
+    wb_expr(wb_call("call_helper", [])),
+  ])
+  let ast = @core.Module::{
+    stmts: [
+      wb_let("seed", wb_int(41)),
+      wb_export_let("helper", helper_fn),
+      wb_let("run", run_fn),
+    ],
+  }
+  let bytes = emit_module_wasm(ast)
+  assert_true(bytes.length() >= 8)
+}
+
+///|
+test "non-exported env-backed top-level function can be captured" {
+  let helper_fn = wb_fn([wb_param("n")], [
+    wb_expr(wb_call("__add", [wb_ident("n"), wb_ident("seed")])),
+  ])
+  let call_helper_fn = wb_fn([], [wb_expr(wb_call("helper", [wb_int(1)]))])
+  let run_fn = wb_fn([], [
+    wb_let("call_helper", call_helper_fn),
+    wb_expr(wb_call("call_helper", [])),
+  ])
+  let ast = @core.Module::{
+    stmts: [
+      wb_let("seed", wb_int(41)),
+      wb_let("helper", helper_fn),
+      wb_let("run", run_fn),
+    ],
+  }
+  let bytes = emit_module_wasm(ast)
+  assert_true(bytes.length() >= 8)
 }
 
 ///|
