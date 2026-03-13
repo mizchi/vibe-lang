@@ -193,93 +193,61 @@ let point_signature = (entry_path: String, point_obj: Json) -> String {
   if String::length(kind) == 0 {
     ""
   } else {
-    let id_text = obj_get_int_text(point_obj, "id")
-    if String::length(id_text) > 0 {
-      id_text
+    let span_start = match obj_get_opt(point_obj, "span") {
+      Some(span_obj) => obj_get_int_text(span_obj, "start"),
+      None => ""
+    }
+    let span_end = match obj_get_opt(point_obj, "span") {
+      Some(span_obj) => obj_get_int_text(span_obj, "end"),
+      None => ""
+    }
+    if String::length(span_start) > 0 && String::length(span_end) > 0 {
+      String::concat(String::concat(span_start, "-"), span_end)
     } else {
-      let line_text = obj_get_int_text(point_obj, "line")
-      let span_start = match obj_get_opt(point_obj, "span") {
-        Some(span_obj) => obj_get_int_text(span_obj, "start"),
-        None => ""
-      }
-      let span_end = match obj_get_opt(point_obj, "span") {
-        Some(span_obj) => obj_get_int_text(span_obj, "end"),
-        None => ""
-      }
-      let start_line = match obj_get_opt(point_obj, "range") {
-        Some(range_obj) => match obj_get_opt(range_obj, "start") {
-          Some(start_obj) => obj_get_int_text(start_obj, "line"),
+      let id_text = obj_get_int_text(point_obj, "id")
+      if String::length(id_text) > 0 {
+        id_text
+      } else {
+        let line_text = obj_get_int_text(point_obj, "line")
+        let start_line = match obj_get_opt(point_obj, "range") {
+          Some(range_obj) => match obj_get_opt(range_obj, "start") {
+            Some(start_obj) => obj_get_int_text(start_obj, "line"),
+            None => ""
+          },
           None => ""
-        },
-        None => ""
-      }
-      let start_char = match obj_get_opt(point_obj, "range") {
-        Some(range_obj) => match obj_get_opt(range_obj, "start") {
-          Some(start_obj) => obj_get_int_text(start_obj, "character"),
+        }
+        let start_char = match obj_get_opt(point_obj, "range") {
+          Some(range_obj) => match obj_get_opt(range_obj, "start") {
+            Some(start_obj) => obj_get_int_text(start_obj, "character"),
+            None => ""
+          },
           None => ""
-        },
-        None => ""
-      }
-      let end_line = match obj_get_opt(point_obj, "range") {
-        Some(range_obj) => match obj_get_opt(range_obj, "end") {
-          Some(end_obj) => obj_get_int_text(end_obj, "line"),
+        }
+        let end_line = match obj_get_opt(point_obj, "range") {
+          Some(range_obj) => match obj_get_opt(range_obj, "end") {
+            Some(end_obj) => obj_get_int_text(end_obj, "line"),
+            None => ""
+          },
           None => ""
-        },
-        None => ""
-      }
-      let end_char = match obj_get_opt(point_obj, "range") {
-        Some(range_obj) => match obj_get_opt(range_obj, "end") {
-          Some(end_obj) => obj_get_int_text(end_obj, "character"),
+        }
+        let end_char = match obj_get_opt(point_obj, "range") {
+          Some(range_obj) => match obj_get_opt(range_obj, "end") {
+            Some(end_obj) => obj_get_int_text(end_obj, "character"),
+            None => ""
+          },
           None => ""
-        },
-        None => ""
+        }
+        join_str([
+          entry_path,
+          kind,
+          line_text,
+          start_line,
+          start_char,
+          end_line,
+          end_char,
+          span_start
+        ], ":")
       }
-      String::concat(
-        String::concat(
-          String::concat(
-            String::concat(
-              String::concat(
-                String::concat(
-                  String::concat(
-                    String::concat(
-                      String::concat(
-                        String::concat(
-                          String::concat(
-                            String::concat(
-                              String::concat(
-                                String::concat(
-                                  String::concat(
-                                    String::concat(entry_path, ":"),
-                                    kind
-                                  ),
-                                  ":"
-                                ),
-                                line_text
-                              ),
-                              ":"
-                            ),
-                            span_start
-                          ),
-                          ":"
-                        ),
-                        span_end
-                      ),
-                      ":"
-                    ),
-                    start_line
-                  ),
-                  ":"
-                ),
-                start_char
-              ),
-              ":"
-            ),
-            end_line
-          ),
-          ":"
-        ),
-        end_char
-      )
     }
   }
 }
@@ -388,15 +356,17 @@ let summarize_point_entries = (entries: Array[PointEntry]) -> Option[PointSummar
     let mut i = 0
     while i < Array::length(entries) {
       let entry = Array::get(entries, i)
-      MapBuilder::set(kind_builder, entry.key, entry.kind)
-      MapBuilder::set(hit_builder, entry.key, false)
+      let dedupe_key = String::concat(String::concat(entry.kind, ":"), entry.key)
+      MapBuilder::set(kind_builder, dedupe_key, entry.kind)
+      MapBuilder::set(hit_builder, dedupe_key, false)
       i = i + 1
     }
     let mut j = 0
     while j < Array::length(entries) {
       let entry = Array::get(entries, j)
       if entry.hit {
-        MapBuilder::set(hit_builder, entry.key, true)
+        let dedupe_key = String::concat(String::concat(entry.kind, ":"), entry.key)
+        MapBuilder::set(hit_builder, dedupe_key, true)
       }
       j = j + 1
     }

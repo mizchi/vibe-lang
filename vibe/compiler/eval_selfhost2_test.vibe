@@ -34,3 +34,38 @@ test "selfhost: throw in function" {
   let src = "let fail = (msg: String) -> Int with {Error} { throw(msg) }\nlet result = handle { fail(\"bad\") } { Error(msg) => msg }"
   assert(String::equals(run_and_lookup(src, "result"), "bad"))
 }
+
+test "selfhost: import transitive" {
+  let sources = [
+    ("main.vibe", "import ./b.vibe { val_from_c }\nlet result = val_from_c"),
+    ("b.vibe", "import ./c.vibe { base }\nexport let val_from_c = base + 10"),
+    ("c.vibe", "export let base = 5")
+  ]
+  assert(String::equals(run_with_imports(sources, "main.vibe", "result"), "15"))
+}
+
+test "selfhost: import enum export" {
+  let sources = [
+    ("main.vibe", "import ./lib.vibe { Some, None }\nlet result = Some(42)"),
+    ("lib.vibe", "export enum MyOpt { Some(Int); None }")
+  ]
+  assert(String::equals(run_with_imports(sources, "main.vibe", "result"), "Some(42)"))
+}
+
+test "selfhost: import non-exported not visible" {
+  let sources = [
+    ("main.vibe", "import ./lib.vibe { secret }\nlet result = secret"),
+    ("lib.vibe", "let secret = 123\nexport let public_val = 1")
+  ]
+  assert(String::equals(run_with_imports(sources, "main.vibe", "result"), "()"))
+}
+
+test "selfhost: ArrayBuilder::new eval" {
+  let src = "let b = ArrayBuilder::new()\nArrayBuilder::push(b, 10)\nArrayBuilder::push(b, 20)\nlet result = ArrayBuilder::freeze(b)"
+  assert(String::equals(run_and_lookup(src, "result"), "[10, 20]"))
+}
+
+test "selfhost: throw + ArrayBuilder::new combined" {
+  let src = "let result = handle { let b = ArrayBuilder::new(); ArrayBuilder::push(b, 1); ArrayBuilder::push(b, 2); ArrayBuilder::freeze(b) } { Error(_) => [99] }"
+  assert(String::equals(run_and_lookup(src, "result"), "[1, 2]"))
+}

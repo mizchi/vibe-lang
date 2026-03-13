@@ -282,8 +282,37 @@ function buildSummaryText(report) {
   return lines.join("\n") + "\n";
 }
 
+function pointCompactKey(point) {
+  if (
+    point &&
+    typeof point === "object" &&
+    typeof point.key === "string" &&
+    point.key.length > 0
+  ) {
+    return point.key;
+  }
+  if (
+    point &&
+    typeof point === "object" &&
+    typeof point.id === "number" &&
+    Number.isFinite(point.id)
+  ) {
+    return String(point.id);
+  }
+  return "";
+}
+
 function compactPointString(points) {
-  return points.map((point) => `${point.id}:${point.hit ? 1 : 0}`).join(",");
+  return points
+    .map((point) => {
+      const key = pointCompactKey(point);
+      if (key.length === 0) {
+        return "";
+      }
+      return `${key}:${point.hit ? 1 : 0}`;
+    })
+    .filter((item) => item.length > 0)
+    .join(",");
 }
 
 function sanitizeReportField(value) {
@@ -343,6 +372,27 @@ function pointKind(point) {
     return "unknown";
   }
   return point.kind;
+}
+
+function stablePointKey(rawPoint, fallbackIndex) {
+  if (
+    rawPoint &&
+    typeof rawPoint === "object" &&
+    rawPoint.span &&
+    typeof rawPoint.span.start === "number" &&
+    typeof rawPoint.span.end === "number"
+  ) {
+    return `${rawPoint.span.start}-${rawPoint.span.end}`;
+  }
+  if (
+    rawPoint &&
+    typeof rawPoint === "object" &&
+    typeof rawPoint.id === "number" &&
+    Number.isFinite(rawPoint.id)
+  ) {
+    return String(rawPoint.id);
+  }
+  return String(fallbackIndex);
 }
 
 function readSourceLines(entryPath) {
@@ -649,6 +699,7 @@ async function main() {
     const rawPoint = map.points[i];
     const count = counters[i] ?? 0;
     points.push({
+      key: stablePointKey(rawPoint, i),
       id: typeof rawPoint.id === "number" ? rawPoint.id : i,
       kind: pointKind(rawPoint),
       line: normalizeLine(rawPoint),
