@@ -142,5 +142,9 @@ fn compile_expr(
       let _ = span
       compile_record_expr(ctx, buf, fields)
     }
+    @core.Expr::Spread(span~, ..) => {
+      let _ = span
+      raise WasmGenError::Unsupported("spread outside array literal")
+    }
   }
 }

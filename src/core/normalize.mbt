@@ -520,6 +520,8 @@ fn normalize_expr(expr : Expr, scope : NormScope) -> Expr {
       Expr::Raise(value=normalize_expr(value, scope), span=zero_span)
     Expr::Yield(expr~, ..) =>
       Expr::Yield(expr=normalize_expr(expr, scope), span=zero_span)
+    Expr::Spread(expr~, ..) =>
+      Expr::Spread(expr=normalize_expr(expr, scope), span=zero_span)
     Expr::StructLit(name~, type_args~, fields~, ..) =>
       Expr::StructLit(
         name~,

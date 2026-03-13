@@ -303,6 +303,10 @@ pub fn walk_expr_refs(
       let _ = span
       walk_expr_refs(expr, bound, refs, on_name)
     }
+    Expr::Spread(expr~, span~) => {
+      let _ = span
+      walk_expr_refs(expr, bound, refs, on_name)
+    }
   }
 }
 

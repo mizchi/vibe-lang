@@ -532,6 +532,10 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
       let _ = span
       "(yield " + expr_to_sexp(expr, aliases) + ")"
     }
+    @core.Expr::Spread(expr~, span~) => {
+      let _ = span
+      "(spread " + expr_to_sexp(expr, aliases) + ")"
+    }
   }
 }
 

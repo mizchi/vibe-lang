@@ -121,6 +121,7 @@ let tk_name = (tok: Token) -> String {
     TRBrace => "}",
     TLBracket => "[",
     TRBracket => "]",
+    TDotDotDot => "...",
     TEof => "eof"
   }
 }
@@ -755,6 +756,42 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       else if String::equals(name, "false") {
         (EBool(false), pos + 1)
       }
+      else if String::equals(name, "map") {
+        match peek(tokens, pos + 1) {
+          TLBrace => {
+            let rec parse_map_fields = (toks: Array[Token], p: Int, b: ArrayBuilder[(String, Expr)]) -> (Array[(String, Expr)], Int) with { Error } {
+              match peek(toks, p) {
+                TRBrace => (ArrayBuilder::freeze(b), p + 1),
+                TIdent(fname) => {
+                  let cn = expect_tk(toks, p + 1, ":")
+                  let (val, vn) = parse_impl(toks, cn, 0)
+                  ArrayBuilder::push(b, (fname, val))
+                  match peek(toks, vn) {
+                    TComma => parse_map_fields(toks, vn + 1, b),
+                    TRBrace => (ArrayBuilder::freeze(b), vn + 1),
+                    _ => throw("expected ',' or '}' in map literal")
+                  }
+                },
+                TString(skey) => {
+                  let cn = expect_tk(toks, p + 1, ":")
+                  let (val, vn) = parse_impl(toks, cn, 0)
+                  ArrayBuilder::push(b, (skey, val))
+                  match peek(toks, vn) {
+                    TComma => parse_map_fields(toks, vn + 1, b),
+                    TRBrace => (ArrayBuilder::freeze(b), vn + 1),
+                    _ => throw("expected ',' or '}' in map literal")
+                  }
+                },
+                _ => throw("expected field name or '}' in map literal")
+              }
+            }
+            let mb = ArrayBuilder::new()
+            let (fields, end) = parse_map_fields(tokens, pos + 2, mb);
+            (EMap(fields), end)
+          },
+          _ => (EIdent(name), pos + 1)
+        }
+      }
       else match peek(tokens, pos + 1) {
         TDoubleColon => match peek(tokens, pos + 2) {
           TIdent(member) => (EIdent(String::concat(name, String::concat("::", member))), pos + 3),
@@ -843,15 +880,45 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
           }
         }
       },
-      TLBracket => match peek(tokens, pos + 1) {
-        TRBracket => (EArray(empty_exprs()), pos + 2),
-        _ => {
-          let b = ArrayBuilder::new()
-          let (f, n1) = parse_impl(tokens, pos + 1, 0)
-          ArrayBuilder::push(b, f)
-          let (arr, end) = parse_comma_exprs_rest(tokens, n1, b)
-          let en = expect_tk(tokens, end, "]");
-          (EArray(arr), en)
+      TLBracket => {
+        let rec parse_array_elems_rest = (toks: Array[Token], p: Int, b: ArrayBuilder[Expr]) -> (Array[Expr], Int) with { Error } {
+          match peek(toks, p) {
+            TComma => {
+              let next_p = p + 1
+              match peek(toks, next_p) {
+                TDotDotDot => {
+                  let (e, en) = parse_impl(toks, next_p + 1, 0)
+                  ArrayBuilder::push(b, ESpread(e))
+                  parse_array_elems_rest(toks, en, b)
+                },
+                _ => {
+                  let (e, en) = parse_impl(toks, next_p, 0)
+                  ArrayBuilder::push(b, e)
+                  parse_array_elems_rest(toks, en, b)
+                }
+              }
+            },
+            _ => (ArrayBuilder::freeze(b), p)
+          }
+        }
+        match peek(tokens, pos + 1) {
+          TRBracket => (EArray(empty_exprs()), pos + 2),
+          TDotDotDot => {
+            let b = ArrayBuilder::new()
+            let (f, n1) = parse_impl(tokens, pos + 2, 0)
+            ArrayBuilder::push(b, ESpread(f))
+            let (arr, end) = parse_array_elems_rest(tokens, n1, b)
+            let en = expect_tk(tokens, end, "]");
+            (EArray(arr), en)
+          },
+          _ => {
+            let b = ArrayBuilder::new()
+            let (f, n1) = parse_impl(tokens, pos + 1, 0)
+            ArrayBuilder::push(b, f)
+            let (arr, end) = parse_array_elems_rest(tokens, n1, b)
+            let en = expect_tk(tokens, end, "]");
+            (EArray(arr), en)
+          }
         }
       },
       TLBrace => parse_impl(tokens, pos + 1, mode_block),

@@ -588,16 +588,38 @@ fn type_expr_eff(
       if items.is_empty() {
         @core.Type::Array(@core.Type::Unit)
       } else {
-        let first = type_expr_eff(env, items[0], aliases, effects, allow_effect)
+        // Find first element type (handle Spread extracting inner type)
+        let first_item = items[0]
+        let first = match first_item {
+          @core.Expr::Spread(expr~, ..) => {
+            let spread_ty = type_expr_eff(
+              env, expr, aliases, effects, allow_effect,
+            )
+            match normalize_type(env, spread_ty) {
+              @core.Type::Array(inner) => inner
+              _ => spread_ty
+            }
+          }
+          _ =>
+            type_expr_eff(env, first_item, aliases, effects, allow_effect)
+        }
         let elem_ty = normalize_type(env, first)
         for i in 1..<items.length() {
-          let item_ty = type_expr_eff(
-            env,
-            items[i],
-            aliases,
-            effects,
-            allow_effect,
-          )
+          let item_ty = match items[i] {
+            @core.Expr::Spread(expr~, ..) => {
+              let spread_ty = type_expr_eff(
+                env, expr, aliases, effects, allow_effect,
+              )
+              match normalize_type(env, spread_ty) {
+                @core.Type::Array(inner) => inner
+                _ => spread_ty
+              }
+            }
+            _ =>
+              type_expr_eff(
+                env, items[i], aliases, effects, allow_effect,
+              )
+          }
           if not(type_equal(env, elem_ty, item_ty)) {
             raise TypeError::Mismatch(
               expected=elem_ty,
@@ -1130,6 +1152,11 @@ fn type_expr_eff(
       )
       @core.Type::Unit
     }
+    @core.Expr::Spread(span~, ..) =>
+      raise TypeError::BadCall(
+        message="spread operator is only allowed inside array literals",
+        span~,
+      )
   }
   record_expr_type(env, expr.span(), ty)
   ty

@@ -922,7 +922,15 @@ fn AstParser::parse_array_expr(self : AstParser) -> @core.Expr raise ParseError 
     if self.peek_kind() == eof() {
       raise ParseError::UnexpectedEof(span=self.token_span())
     }
-    items.push(self.parse_expr())
+    if self.peek_kind() == dotdotdot() {
+      let spread_start = self.pos
+      let _ = self.expect(dotdotdot(), "...")
+      let expr = self.parse_expr()
+      let spread_span = self.span_from(spread_start)
+      items.push(@core.Expr::Spread(expr~, span=spread_span))
+    } else {
+      items.push(self.parse_expr())
+    }
     let _ = self.eat(comma())
     let _ = self.eat(semicolon())
   }
@@ -1130,6 +1138,10 @@ fn AstParser::parse_param(
 ///|
 fn AstParser::eat_variadic_prefix(self : AstParser) -> Bool {
   self.skip_trivia()
+  if self.peek_kind() == dotdotdot() {
+    let _ = self.bump()
+    return true
+  }
   let saved = self.pos
   if self.peek_kind() != dot() {
     return false

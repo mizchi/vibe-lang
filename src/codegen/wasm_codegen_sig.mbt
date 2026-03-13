@@ -726,6 +726,10 @@ fn infer_expr_kind_with(
       // Struct is compiled as record - same layout (pointer)
       ValueKind::I64
     }
+    @core.Expr::Spread(span~, ..) => {
+      let _ = span
+      raise WasmGenError::Unsupported("spread outside array literal")
+    }
   }
 }
 

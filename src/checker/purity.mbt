@@ -374,6 +374,8 @@ fn purity_expr_analysis_inner(
       purity_expr_analysis_inner(env, value, locals)
     }
     @core.Expr::Yield(..) => purity_analysis_impure()
+    @core.Expr::Spread(expr~, ..) =>
+      purity_expr_analysis_inner(env, expr, locals)
   }
 }
 

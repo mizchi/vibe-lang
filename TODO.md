@@ -188,7 +188,7 @@ Phase 4 (応用):
 
 - [x] `==` で String/値比較（既に動作していた。examples を `==` スタイルに更新済み）
 - [x] Map 操作のビルトイン化: `Map::set(m, key, value)` 追加、`Map[K, V]` ジェネリック化、Hash トレイトバウンド
-- [ ] メソッド構文の導入（`s.length()` 等。現状すべてフリー関数で `String::length(s)` が必要）
+- [x] メソッド構文の導入（`s.length()` 等。checker/eval で type-directed resolution）
 
 ### 中優先度（ボイラープレート削減）
 
@@ -200,8 +200,8 @@ Phase 4 (応用):
   - `Type::{ ... }` の冗長さで single-constructor enum に逃げている箇所を減らす
 - [ ] `String` を `for-in` 対象にする（`for c in s`, `for i, c in s`）
   - scanner 系 (`vibe/x/url`, `vibe/x/toml`, `vibe/x/color`) の index loop を減らす
-- [ ] 空 Map リテラル `map {}` のサポート
-- [ ] Array スプレッド構文 `[...xs, new_item]`（ArrayBuilder::new 3ステップの簡略化）
+- [x] 空 Map リテラル `map {}` のサポート — パーサ・eval・codegen 対応済み
+- [x] Array スプレッド構文 `[...xs, new_item]`（パーサ・eval・codegen 対応済み、`Array::concat` にデシュガー）
 - [ ] トレイトにメソッド定義を許可（現状マーカーのみ。ユーザー定義型の `Eq` 実装不可）
 - [ ] `?` 演算子または `try` 式（`handle { ... } { Error(_) => ... }` のネスト軽減）
 
