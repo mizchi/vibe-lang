@@ -1358,70 +1358,32 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
     }
   } else if mode == mode_if {
     let (cond, cn) = parse_impl(tokens, pos, 0)
+    let mut is_mode = false
+    let mut is_pat_val = PWild
+    let mut brace_pos = cn
     match peek(tokens, cn) {
       TIdent(kw) => if String::equals(kw, "is") {
         let (pat, pn) = parse_pattern(tokens, cn + 1)
-        let br = expect_tk(tokens, pn, "{")
-        let (then_e, tn) = parse_impl(tokens, br, mode_block)
-        match peek(tokens, tn) {
-          TElse => match peek(tokens, tn + 1) {
-            TIf => {
-              let (else_e, end2) = parse_impl(tokens, tn + 2, mode_if)
-              (EMatch(cond, [(pat, then_e), (PWild, else_e)]), end2)
-            },
-            TLBrace => {
-              let (else_e, end2) = parse_impl(tokens, tn + 2, mode_block)
-              (EMatch(cond, [(pat, then_e), (PWild, else_e)]), end2)
-            },
-            _ => {
-              let (else_e, end2) = parse_impl(tokens, tn + 1, 0)
-              (EMatch(cond, [(pat, then_e), (PWild, else_e)]), end2)
-            }
-          },
-          _ => (EMatch(cond, [(pat, then_e), (PWild, EUnit)]), tn)
-        }
-      } else {
-        let br = expect_tk(tokens, cn, "{")
-        let (then_e, tn) = parse_impl(tokens, br, mode_block)
-        match peek(tokens, tn) {
-          TElse => match peek(tokens, tn + 1) {
-            TIf => {
-              let (else_e, end2) = parse_impl(tokens, tn + 2, mode_if);
-              (EIf(cond, then_e, else_e), end2)
-            },
-            TLBrace => {
-              let (else_e, end2) = parse_impl(tokens, tn + 2, mode_block);
-              (EIf(cond, then_e, else_e), end2)
-            },
-            _ => {
-              let (else_e, end2) = parse_impl(tokens, tn + 1, 0);
-              (EIf(cond, then_e, else_e), end2)
-            }
-          },
-          _ => (EIf(cond, then_e, EUnit), tn)
-        }
+        is_mode = true
+        is_pat_val = pat
+        brace_pos = pn
       },
-      _ => {
-        let br = expect_tk(tokens, cn, "{")
-        let (then_e, tn) = parse_impl(tokens, br, mode_block)
-        match peek(tokens, tn) {
-          TElse => match peek(tokens, tn + 1) {
-            TIf => {
-              let (else_e, end2) = parse_impl(tokens, tn + 2, mode_if);
-              (EIf(cond, then_e, else_e), end2)
-            },
-            TLBrace => {
-              let (else_e, end2) = parse_impl(tokens, tn + 2, mode_block);
-              (EIf(cond, then_e, else_e), end2)
-            },
-            _ => {
-              let (else_e, end2) = parse_impl(tokens, tn + 1, 0);
-              (EIf(cond, then_e, else_e), end2)
-            }
-          },
-          _ => (EIf(cond, then_e, EUnit), tn)
-        }
-      }
+      _ => ()
+    }
+    let br = expect_tk(tokens, brace_pos, "{")
+    let (then_e, tn) = parse_impl(tokens, br, mode_block)
+    let (else_e, end_pos) = match peek(tokens, tn) {
+      TElse => match peek(tokens, tn + 1) {
+        TIf => parse_impl(tokens, tn + 2, mode_if),
+        TLBrace => parse_impl(tokens, tn + 2, mode_block),
+        _ => parse_impl(tokens, tn + 1, 0)
+      },
+      _ => (EUnit, tn)
+    }
+    if is_mode {
+      (EMatch(cond, [(is_pat_val, then_e), (PWild, else_e)]), end_pos)
+    } else {
+      (EIf(cond, then_e, else_e), end_pos)
     }
   } else if mode == mode_while {
     let (cond, cn) = parse_impl(tokens, pos, 0)
