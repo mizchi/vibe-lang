@@ -87,7 +87,7 @@ test "build_closure_payload_with_fs serializes entry and imported sources" {
   let lib_path = root + "/lib.vibe"
   let main_source = "import ./lib.vibe { helper }\n" +
     "let answer = () -> Int { helper() }\n"
-  let lib_source = "export let helper = () -> Int { 40 + 2 }\n"
+  let lib_source = "let helper = () -> Int { 40 + 2 }\n"
   ignore(fs.write_string(main_path, main_source))
   ignore(fs.write_string(lib_path, lib_source))
   let payload = match build_closure_payload_with_fs(main_path, fs) {
@@ -132,9 +132,7 @@ test "compile_closure_payload_file compiles import closure payload" {
       main_path, "import ./lib.vibe { helper }\nlet answer = () -> Int { helper() }\n",
     ),
   )
-  ignore(
-    fs.write_string(lib_path, "export let helper = () -> Int { 40 + 2 }\n"),
-  )
+  ignore(fs.write_string(lib_path, "let helper = () -> Int { 40 + 2 }\n"))
   match emit_closure_payload_file(main_path, payload_path, fs) {
     Ok(_) => ()
     Err(err) => fail(err)
