@@ -1485,3 +1485,69 @@ test "string interpolation: multiple" {
   let result = rt.eval_script(script)
   assert_eq(result.last, Some(@core.Value::String("1 + 2 = 3")))
 }
+
+///|
+test "is expression: bool check with wildcard" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|enum MyOpt { MySome(Int); MyNone }
+    #|let v = MySome(42)
+    #|let result = v is MySome(_)
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Bool(true)))
+}
+
+///|
+test "is expression: bool check false" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|enum MyOpt { MySome(Int); MyNone }
+    #|let v = MyNone
+    #|let result = v is MySome(_)
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Bool(false)))
+}
+
+///|
+test "is expression: if binding" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|enum MyOpt { MySome(Int); MyNone }
+    #|let v = MySome(42)
+    #|let result = if v is MySome(x) { x + 1 } else { 0 }
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Int(43)))
+}
+
+///|
+test "is expression: if binding no match" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|enum MyOpt { MySome(Int); MyNone }
+    #|let v = MyNone
+    #|let result = if v is MySome(x) { x + 1 } else { 0 }
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Int(0)))
+}
+
+///|
+test "is expression: if without else returns unit" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|enum MyOpt { MySome(Int); MyNone }
+    #|let v = MySome(10)
+    #|if v is MySome(x) { x + 1 } else { 0 }
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Int(11)))
+}
+
+///|
+test "is expression: 0-ary constructor" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|enum MyOpt { MySome(Int); MyNone }
+    #|let v = MyNone
+    #|let result = v is MyNone
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Bool(true)))
+}
