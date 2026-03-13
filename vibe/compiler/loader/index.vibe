@@ -130,18 +130,6 @@ let find_char = (s: String, target: Int) -> Int {
   result
 }
 
-let parse_source_manifest_paths = (manifest_source: String) -> Array[String] with { Error } {
-  let rows = parse_source_manifest_rows(manifest_source)
-  let paths = Array::slice([""], 0, 0)
-  let mut i = 0
-  while i < Array::length(rows) {
-    let (_, path) = Array::get(rows, i)
-    Array::push(paths, path)
-    i = i + 1
-  }
-  paths
-}
-
 let parse_source_manifest_rows = (manifest_source: String) -> Array[(String, String)] with { Error } {
   let rows = Array::slice([("", "")], 0, 0)
   let len = String::length(manifest_source)
@@ -173,13 +161,17 @@ let empty_grouped_sources = () -> Array[(String, Array[(String, String)])] {
 
 let rec collect_needed_paths_rec = (
   path: String,
+  preloaded_sources: Array[(String, String)],
   visited: Array[String]
 ) -> Unit with { Error, Fs } {
   if contains_str(visited, path) {
     ()
   } else {
     Array::push(visited, path)
-    let source = Fs::read_file(path)
+    let source = match source_lookup(preloaded_sources, path) {
+      Some(preloaded) => preloaded,
+      None => Fs::read_file(path)
+    }
     let tokens = lex(source)
     let stmts = parse_program(tokens)
     let base_dir = dir_of(path)
@@ -188,11 +180,11 @@ let rec collect_needed_paths_rec = (
       match Array::get(stmts, i) {
         SImport(raw_path, _) => {
           let resolved = resolve_path(base_dir, raw_path)
-          collect_needed_paths_rec(resolved, visited)
+          collect_needed_paths_rec(resolved, preloaded_sources, visited)
         },
         SReExport(raw_path, _) => {
           let resolved = resolve_path(base_dir, raw_path)
-          collect_needed_paths_rec(resolved, visited)
+          collect_needed_paths_rec(resolved, preloaded_sources, visited)
         },
         _ => ()
       }
@@ -226,69 +218,89 @@ let push_grouped_source = (
   }
 }
 
-let try_collect_manifest_sources_fs = (entry_path: String) -> Option[Array[(String, String)]] with { Error, Fs } {
-  let base_dir = dir_of(entry_path)
-  let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
-  if !(Fs::exists(manifest_path)) {
-    None
-  } else {
-    let rel_paths = parse_source_manifest_paths(Fs::read_file(manifest_path))
-    let mut full_paths = Array::slice([""], 0, 0)
-    let mut i = 0
-    while i < Array::length(rel_paths) {
-      Array::push(full_paths, join_path(base_dir, Array::get(rel_paths, i)))
-      i = i + 1
-    }
-    if !(contains_str(full_paths, entry_path)) {
-      None
-    } else {
-      let needed_paths = Array::slice([""], 0, 0)
-      collect_needed_paths_rec(entry_path, needed_paths)
-      let sources = Array::slice([("", "")], 0, 0)
-      let mut j = 0
-      while j < Array::length(full_paths) {
-        let path = Array::get(full_paths, j)
-        if contains_str(needed_paths, path) {
-          Array::push(sources, (path, Fs::read_file(path)))
-        }
-        j = j + 1
-      }
-      Some(sources)
-    }
-  }
-}
-
-let try_collect_manifest_source_groups_fs = (entry_path: String) -> Option[Array[(String, Array[(String, String)])]] with { Error, Fs } {
+let try_load_manifest_rows = (entry_path: String) -> Option[(String, Array[(String, String)])] with { Error, Fs } {
   let base_dir = dir_of(entry_path)
   let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
   if !(Fs::exists(manifest_path)) {
     None
   } else {
     let rows = parse_source_manifest_rows(Fs::read_file(manifest_path))
-    let manifest_paths = Array::slice([""], 0, 0)
+    let mut has_entry = false
     let mut i = 0
     while i < Array::length(rows) {
       let (_, rel_path) = Array::get(rows, i)
-      Array::push(manifest_paths, join_path(base_dir, rel_path))
+      let path = join_path(base_dir, rel_path)
+      if String::equals(path, entry_path) {
+        has_entry = true
+      }
       i = i + 1
     }
-    if !(contains_str(manifest_paths, entry_path)) {
-      None
+    if has_entry {
+      Some((base_dir, rows))
     } else {
+      None
+    }
+  }
+}
+
+let load_manifest_full_sources = (
+  base_dir: String,
+  rows: Array[(String, String)]
+) -> Array[(String, String)] with { Error, Fs } {
+  let full_sources = Array::slice([("", "")], 0, 0)
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (_, rel_path) = Array::get(rows, i)
+    let path = join_path(base_dir, rel_path)
+    Array::push(full_sources, (path, Fs::read_file(path)))
+    i = i + 1
+  }
+  full_sources
+}
+
+let try_collect_manifest_sources_fs = (entry_path: String) -> Option[Array[(String, String)]] with { Error, Fs } {
+  match try_load_manifest_rows(entry_path) {
+    Some((base_dir, rows)) => {
+      let preloaded_sources = load_manifest_full_sources(base_dir, rows)
       let needed_paths = Array::slice([""], 0, 0)
-      collect_needed_paths_rec(entry_path, needed_paths)
+      collect_needed_paths_rec(entry_path, preloaded_sources, needed_paths)
+      let sources = Array::slice([("", "")], 0, 0)
+      let mut j = 0
+      while j < Array::length(preloaded_sources) {
+        let (path, source) = Array::get(preloaded_sources, j)
+        if contains_str(needed_paths, path) {
+          Array::push(sources, (path, source))
+        }
+        j = j + 1
+      }
+      Some(sources)
+    },
+    None => None
+  }
+}
+
+let try_collect_manifest_source_groups_fs = (entry_path: String) -> Option[Array[(String, Array[(String, String)])]] with { Error, Fs } {
+  match try_load_manifest_rows(entry_path) {
+    Some((base_dir, rows)) => {
+      let preloaded_sources = load_manifest_full_sources(base_dir, rows)
+      let needed_paths = Array::slice([""], 0, 0)
+      collect_needed_paths_rec(entry_path, preloaded_sources, needed_paths)
       let groups = empty_grouped_sources()
       let mut j = 0
       while j < Array::length(rows) {
         let (group_name, rel_path) = Array::get(rows, j)
         let path = join_path(base_dir, rel_path)
         if contains_str(needed_paths, path) {
-          push_grouped_source(groups, group_name, path, Fs::read_file(path))
+          match source_lookup(preloaded_sources, path) {
+            Some(source) => push_grouped_source(groups, group_name, path, source),
+            None => ()
+          }
         }
         j = j + 1
       }
       Some(groups)
-    }
+    },
+    None => None
   }
 }
 

@@ -17,7 +17,7 @@ import ../../../codegen/wasi/index.vibe {
 }
 
 import ../../../loader/index.vibe {
-  collect_all_sources_fs, collect_source_groups_fs
+  collect_source_groups_fs
 }
 
 import ../../../core/dce.vibe {
@@ -52,21 +52,37 @@ let artifact_fingerprint_from_source = (source: String) -> String {
   )
 }
 
-let seed_type_db = (db: TypeDb, sources: Array[(String, String)]) -> TypeDb {
+let seed_type_db_from_source_groups = (
+  db: TypeDb,
+  source_groups: Array[(String, Array[(String, String)])]
+) -> TypeDb {
   let mut seeded = db
-  let mut i = 0
-  while i < Array::length(sources) {
-    let (path, source) = Array::get(sources, i)
-    seeded = db_set_source(seeded, path, source)
-    i = i + 1
+  let mut gi = 0
+  while gi < Array::length(source_groups) {
+    let (_, sources) = Array::get(source_groups, gi)
+    let mut si = 0
+    while si < Array::length(sources) {
+      let (path, source) = Array::get(sources, si)
+      seeded = db_set_source(seeded, path, source)
+      si = si + 1
+    }
+    gi = gi + 1
   }
   seeded
 }
 
-export let prepare_file_fs_cached = (db: TypeDb, entry_path: String) -> TypeDb with { Error, Fs } {
-  let sources = collect_all_sources_fs(entry_path)
-  let seeded = seed_type_db(db, sources)
+let prepare_file_fs_from_source_groups_cached = (
+  db: TypeDb,
+  entry_path: String,
+  source_groups: Array[(String, Array[(String, String)])]
+) -> TypeDb with { Error } {
+  let seeded = seed_type_db_from_source_groups(db, source_groups)
   db_typecheck(seeded, entry_path)
+}
+
+export let prepare_file_fs_cached = (db: TypeDb, entry_path: String) -> TypeDb with { Error, Fs } {
+  let source_groups = collect_source_groups_fs(entry_path)
+  prepare_file_fs_from_source_groups_cached(db, entry_path, source_groups)
 }
 
 export let compile_file_fs = (entry_path: String, entry_name: String) -> Bytes with { Error, Fs } {
@@ -76,7 +92,7 @@ export let compile_file_fs = (entry_path: String, entry_name: String) -> Bytes w
 
 export let compile_file_fs_mode = (entry_path: String, entry_name: String, mode: String) -> Bytes with { Error, Fs } {
   let source_groups = collect_source_groups_fs(entry_path)
-  let next_db = prepare_file_fs_cached(db_new(), entry_path)
+  let next_db = prepare_file_fs_from_source_groups_cached(db_new(), entry_path, source_groups)
   let (merged_source, _, _) = db_grouped_merged_source(next_db, source_groups)
   let merged_stmts = parse_program(lex(merged_source))
   if String::equals(mode, "mvp") {
@@ -100,7 +116,7 @@ export let compile_file_fs_cached = (db: TypeDb, entry_path: String, entry_name:
 
 export let compile_file_fs_mode_cached = (db: TypeDb, entry_path: String, entry_name: String, mode: String) -> (Bytes, TypeDb) with { Error, Fs } {
   let source_groups = collect_source_groups_fs(entry_path)
-  let next_db = prepare_file_fs_cached(db, entry_path)
+  let next_db = prepare_file_fs_from_source_groups_cached(db, entry_path, source_groups)
   let (merged_source, _, codegen_db) = db_grouped_merged_source(next_db, source_groups)
   let artifact_fingerprint = artifact_fingerprint_from_source(merged_source)
   let artifact_kind = if String::equals(mode, "mvp") {
@@ -127,7 +143,7 @@ export let compile_file_fs_mode_cached = (db: TypeDb, entry_path: String, entry_
 
 export let compile_file_fs_module_cached = (db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with { Error, Fs } {
   let source_groups = collect_source_groups_fs(entry_path)
-  let next_db = prepare_file_fs_cached(db, entry_path)
+  let next_db = prepare_file_fs_from_source_groups_cached(db, entry_path, source_groups)
   let (merged_source, merge_fingerprint, module_db) = db_grouped_merged_source(next_db, source_groups)
   let (module_source, codegen_db) = db_module_source(module_db, merge_fingerprint, merged_source)
   let artifact_fingerprint = artifact_fingerprint_from_source(module_source)
