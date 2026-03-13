@@ -128,8 +128,8 @@ detect_default_test_jobs() {
   if ! is_positive_int "${cpus:-}"; then
     cpus=4
   fi
-  if [ "$cpus" -gt 8 ]; then
-    cpus=8
+  if [ "$cpus" -gt 16 ]; then
+    cpus=16
   fi
   echo "$cpus"
 }
@@ -296,7 +296,7 @@ SELFHOST_COMPILED_TEST_FILES=()
 for test_path in "$PROJECT_ROOT"/vibe/compiler/*_test.vibe; do
   test_name="$(basename "$test_path")"
   case "$test_name" in
-    selfhost_s5_test.vibe|selfhost_s5_*_test.vibe|codegen_parser_test.vibe)
+    selfhost_s5_test.vibe|selfhost_s5_*_test.vibe|codegen_parser_test.vibe|compiler_cache_test.vibe|cli_cache_test.vibe|cli_adapter_cache_test.vibe|codegen_enum_import_test.vibe)
       ;;
     *)
       SELFHOST_COMPILED_TEST_FILES+=("$test_path")
@@ -304,18 +304,69 @@ for test_path in "$PROJECT_ROOT"/vibe/compiler/*_test.vibe; do
   esac
 done
 
-if command -v stdbuf >/dev/null 2>&1; then
-  run_stage "compiled selfhost test suite" \
-    env VIBE_TEST_BACKEND=compiled VIBE_TEST_JOBS="$SELFHOST_TEST_JOBS" \
-    VIBE_TEST_BATCH_WEIGHT_CACHE="$BATCH_WEIGHT_CACHE_PATH" \
-    stdbuf -oL -eL \
-    "$VIBE_BIN" test --jobs "$SELFHOST_TEST_JOBS" "${SELFHOST_COMPILED_TEST_FILES[@]}"
-else
-  run_stage "compiled selfhost test suite" \
-    env VIBE_TEST_BACKEND=compiled VIBE_TEST_JOBS="$SELFHOST_TEST_JOBS" \
-    VIBE_TEST_BATCH_WEIGHT_CACHE="$BATCH_WEIGHT_CACHE_PATH" \
-    "$VIBE_BIN" test --jobs "$SELFHOST_TEST_JOBS" "${SELFHOST_COMPILED_TEST_FILES[@]}"
-fi
+run_compiled_selfhost_test_shard() {
+  local shard_label="$1"
+  shift
+  if [ "$#" -eq 0 ]; then
+    return 0
+  fi
+  if command -v stdbuf >/dev/null 2>&1; then
+    run_stage "compiled selfhost test suite shard ${shard_label}" \
+      env VIBE_TEST_BACKEND=compiled VIBE_TEST_JOBS="$SELFHOST_TEST_JOBS" \
+      VIBE_TEST_BATCH_WEIGHT_CACHE="$BATCH_WEIGHT_CACHE_PATH" \
+      stdbuf -oL -eL \
+      "$VIBE_BIN" test --jobs "$SELFHOST_TEST_JOBS" "$@"
+  else
+    run_stage "compiled selfhost test suite shard ${shard_label}" \
+      env VIBE_TEST_BACKEND=compiled VIBE_TEST_JOBS="$SELFHOST_TEST_JOBS" \
+      VIBE_TEST_BATCH_WEIGHT_CACHE="$BATCH_WEIGHT_CACHE_PATH" \
+      "$VIBE_BIN" test --jobs "$SELFHOST_TEST_JOBS" "$@"
+  fi
+}
+
+SELFHOST_COMPILED_TEST_FILES_SHARD_0=()
+SELFHOST_COMPILED_TEST_FILES_SHARD_1=()
+SELFHOST_COMPILED_TEST_FILES_SHARD_2=()
+SELFHOST_COMPILED_TEST_FILES_SHARD_3=()
+shard_index=0
+for test_path in "${SELFHOST_COMPILED_TEST_FILES[@]}"; do
+  case "$shard_index" in
+    0)
+      SELFHOST_COMPILED_TEST_FILES_SHARD_0+=("$test_path")
+      ;;
+    1)
+      SELFHOST_COMPILED_TEST_FILES_SHARD_1+=("$test_path")
+      ;;
+    2)
+      SELFHOST_COMPILED_TEST_FILES_SHARD_2+=("$test_path")
+      ;;
+    *)
+      SELFHOST_COMPILED_TEST_FILES_SHARD_3+=("$test_path")
+      ;;
+  esac
+  shard_index=$(((shard_index + 1) % 4))
+done
+
+run_compiled_selfhost_test_shard "1/4" "${SELFHOST_COMPILED_TEST_FILES_SHARD_0[@]}"
+run_compiled_selfhost_test_shard "2/4" "${SELFHOST_COMPILED_TEST_FILES_SHARD_1[@]}"
+run_compiled_selfhost_test_shard "3/4" "${SELFHOST_COMPILED_TEST_FILES_SHARD_2[@]}"
+run_compiled_selfhost_test_shard "4/4" "${SELFHOST_COMPILED_TEST_FILES_SHARD_3[@]}"
+
+run_stage "compiled selfhost cli cache test" \
+  env VIBE_TEST_BACKEND=compiled \
+  "$VIBE_BIN" test "$PROJECT_ROOT/vibe/compiler/cli_cache_test.vibe"
+
+run_stage "compiled selfhost cli adapter cache test" \
+  env VIBE_TEST_BACKEND=compiled \
+  "$VIBE_BIN" test "$PROJECT_ROOT/vibe/compiler/cli_adapter_cache_test.vibe"
+
+run_stage "compiled selfhost codegen enum import test" \
+  env VIBE_TEST_BACKEND=compiled \
+  "$VIBE_BIN" test "$PROJECT_ROOT/vibe/compiler/codegen_enum_import_test.vibe"
+
+run_stage "compiled selfhost compiler cache test" \
+  env VIBE_TEST_BACKEND=compiled \
+  "$VIBE_BIN" test "$PROJECT_ROOT/vibe/compiler/compiler_cache_test.vibe"
 
 echo "[bootstrap] selfhost __to_string source path check"
 if rg -n "double_to_string_compiler" \

@@ -162,18 +162,22 @@ if [[ ! -f "$BUDGET_FILE" ]]; then
   exit 1
 fi
 
-declare -A budget_mode
-declare -A budget_bytes
-declare -A seen_keys
+SEEN_KEYS_FILE="$(mktemp)"
+cleanup_seen_keys() {
+  rm -f "$SEEN_KEYS_FILE"
+}
+trap cleanup_seen_keys EXIT
 
-while IFS=$'\t' read -r group path mode bytes; do
-  if [[ "$group" == "group" ]]; then
-    continue
-  fi
-  key="$group|$path"
-  budget_mode["$key"]="$mode"
-  budget_bytes["$key"]="$bytes"
-done < "$BUDGET_FILE"
+lookup_budget_line() {
+  local group="$1"
+  local path="$2"
+  awk -F '\t' -v group="$group" -v path="$path" '
+    NR > 1 && $1 == group && $2 == path {
+      print $0
+      exit
+    }
+  ' "$BUDGET_FILE"
+}
 
 status=0
 
@@ -181,15 +185,14 @@ while IFS=$'\t' read -r group path mode bytes; do
   if [[ "$group" == "group" ]]; then
     continue
   fi
-  key="$group|$path"
-  seen_keys["$key"]="1"
-  if [[ -z "${budget_bytes[$key]+x}" ]]; then
+  printf '%s|%s\n' "$group" "$path" >> "$SEEN_KEYS_FILE"
+  budget_line="$(lookup_budget_line "$group" "$path")"
+  if [[ -z "$budget_line" ]]; then
     echo "bundle-size: new entry without budget: $group $path ($mode $bytes)" >&2
     status=1
     continue
   fi
-  expected_mode="${budget_mode[$key]}"
-  expected_bytes="${budget_bytes[$key]}"
+  IFS=$'\t' read -r _ _ expected_mode expected_bytes <<< "$budget_line"
   if [[ "$mode" != "$expected_mode" ]]; then
     echo "bundle-size: mode changed: $group $path (got=$mode expected=$expected_mode)" >&2
     status=1
@@ -213,16 +216,19 @@ is_active_group() {
   return 1
 }
 
-for key in "${!budget_bytes[@]}"; do
-  group="${key%%|*}"
+while IFS=$'\t' read -r group path _mode _bytes; do
+  if [[ "$group" == "group" ]]; then
+    continue
+  fi
   if ! is_active_group "$group"; then
     continue
   fi
-  if [[ -z "${seen_keys[$key]+x}" ]]; then
+  key="$group|$path"
+  if ! grep -Fxq -- "$key" "$SEEN_KEYS_FILE"; then
     echo "bundle-size: stale budget entry: $key" >&2
     status=1
   fi
-done
+done < "$BUDGET_FILE"
 
 if (( status != 0 )); then
   exit 1
