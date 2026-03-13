@@ -385,7 +385,7 @@ function isLineInsideListBlock(sourceLines, lineIndex, blockStartPattern) {
 }
 
 function isSimpleArrayItemLine(trimmed) {
-  return /^(?:[A-Za-z_][A-Za-z0-9_:]*(?:\([^)]*\))?|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|-?\d+(?:\.\d+)?|true|false|null|_)\s*,?$/.test(
+  return /^(?:[A-Za-z_][A-Za-z0-9_:]*(?:\([^)]*\))?|\([^)]*\)|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|-?\d+(?:\.\d+)?|true|false|null|_)\s*,?$/.test(
     trimmed,
   );
 }
@@ -453,6 +453,8 @@ export function isCoverageNoiseLine(sourceLines, lineNumber) {
   }
   if (
     trimmed === "}" ||
+    trimmed === "]" ||
+    trimmed === "];" ||
     trimmed === "};" ||
     trimmed === "})" ||
     trimmed === "});" ||

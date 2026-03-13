@@ -144,6 +144,28 @@ test("isCoverageNoiseLine: closing array call line is excluded", () => {
   assert.equal(isCoverageNoiseLine(sourceLines, 4), true);
 });
 
+test("isCoverageNoiseLine: standalone array closing line is excluded", () => {
+  const sourceLines = [
+    "let values = [",
+    "  one,",
+    "  two,",
+    "]",
+    "use(values)",
+  ];
+  assert.equal(isCoverageNoiseLine(sourceLines, 4), true);
+});
+
+test("isCoverageNoiseLine: tuple array item line is excluded", () => {
+  const sourceLines = [
+    "let sources = [",
+    '  ("a.vibe", "export let x = 1"),',
+    '  ("b.vibe", "export let y = 2")',
+    "]",
+  ];
+  assert.equal(isCoverageNoiseLine(sourceLines, 2), true);
+  assert.equal(isCoverageNoiseLine(sourceLines, 3), true);
+});
+
 test("parseArgs: --invoke can be provided multiple times", () => {
   const args = parseArgs([
     "a.wasm",
