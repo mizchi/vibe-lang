@@ -1,150 +1,22 @@
-import ./entry/source_compile/index.vibe {
-  compile_source_wasi
-}
+//# Imports
 
-import ./syntax/index.vibe {
-  lex, parse_program
-}
-
-import ./checker/index.vibe {
+import ./checker {
   check_program
 }
 
-import ./codegen/index.vibe {
+import ./codegen {
   compile_wasi_module
 }
 
-let has_prefix = (s: String, prefix: String) -> Bool {
-  let plen = String::length(prefix)
-  if String::length(s) < plen {
-    false
-  } else {
-    String::equals(String::substring(s, 0, plen), prefix)
-  }
+import ./entry / source_compile {
+  compile_source_wasi
 }
 
-let find_char = (s: String, target: Int, start: Int) -> Int {
-  let len = String::length(s)
-  let mut i = start
-  let mut found = -1
-  while i < len && found == -1 {
-    if String::char_code_at(s, i) == target {
-      found = i
-    } else {
-      i = i + 1
-    }
-  }
-  found
+import ./syntax {
+  lex, parse_program
 }
 
-let parse_nonneg_int = (s: String) -> Int with { Error } {
-  let len = String::length(s)
-  if len == 0 {
-    throw("invalid int")
-  } else {
-    let mut acc = 0
-    let mut i = 0
-    while i < len {
-      let c = String::char_code_at(s, i)
-      if c < 48 || c > 57 {
-        throw("invalid int")
-      } else {
-        acc = acc * 10 + (c - 48)
-        i = i + 1
-      }
-    }
-    acc
-  }
-}
-
-let pack_chunk = (bytes: Bytes, chunk_index: Int) -> Int {
-  let len = Bytes::length(bytes)
-  let start = chunk_index * 7
-  let mut i = 0
-  let mut shift = 0
-  let mut out = 0
-  while i < 7 && start + i < len {
-    out = out | (Bytes::get(bytes, start + i) << shift)
-    i = i + 1
-    shift = shift + 8
-  }
-  out
-}
-
-let sample_source = "let answer = () -> Int { 40 + 2 }"
-let sample_entry = "answer"
-
-let handle_len_request = (source: String, request: String) -> Int with { Error } {
-  let entry_name = String::substring(request, 4, String::length(request))
-  let bytes = compile_source_wasi(source, entry_name)
-  Bytes::length(bytes)
-}
-
-let handle_chunk_request = (source: String, request: String) -> Int with { Error } {
-  let sep = find_char(request, 58, 6)
-  if sep == -1 {
-    0
-  } else {
-    let entry_name = String::substring(request, 6, sep)
-    let chunk_index = parse_nonneg_int(
-      String::substring(request, sep + 1, String::length(request))
-    )
-    let bytes = compile_source_wasi(source, entry_name)
-    pack_chunk(bytes, chunk_index)
-  }
-}
-
-let probe_lex_fixed = () -> Int with { Error } {
-  let _ = lex(sample_source)
-  1
-}
-
-let probe_parse_fixed = () -> Int with { Error } {
-  let _ = parse_program(lex(sample_source))
-  1
-}
-
-let probe_check_fixed = () -> Int with { Error } {
-  let _ = check_program(parse_program(lex(sample_source)))
-  1
-}
-
-let probe_compile_fixed_len = () -> Int with { Error } {
-  let bytes = compile_source_wasi(sample_source, sample_entry)
-  Bytes::length(bytes)
-}
-
-let probe_compile_dynamic_source_len = (source: String) -> Int with { Error } {
-  let bytes = compile_source_wasi(source, sample_entry)
-  Bytes::length(bytes)
-}
-
-let _compile_cli_request_impl = (source: String, request: String) -> Int with { Error } {
-  if String::equals(request, "probe:lex-fixed") {
-    probe_lex_fixed()
-  }
-  else if String::equals(request, "probe:parse-fixed") {
-    probe_parse_fixed()
-  }
-  else if String::equals(request, "probe:check-fixed") {
-    probe_check_fixed()
-  }
-  else if String::equals(request, "probe:compile-fixed-len") {
-    probe_compile_fixed_len()
-  }
-  else if String::equals(request, "probe:compile-dynamic-source-len") {
-    probe_compile_dynamic_source_len(source)
-  }
-  else if has_prefix(request, "len:") {
-    handle_len_request(source, request)
-  }
-  else if has_prefix(request, "chunk:") {
-    handle_chunk_request(source, request)
-  }
-  else {
-    0
-  }
-}
+//# Functions
 
 export let compile_cli_request = (source: String, request: String) -> Int {
   handle {
@@ -222,7 +94,7 @@ export let compile_cli_request = (source: String, request: String) -> Int {
         let mut shift = 0
         let mut k = 0
         while k < 7 && start + k < bytes_len {
-          out = out | (Bytes::get(bytes, start + k) << shift)
+          out = out|(Bytes::get(bytes, start + k)<<shift)
           k = k + 1
           shift = shift + 8
         }
@@ -236,5 +108,3 @@ export let compile_cli_request = (source: String, request: String) -> Int {
     Error(_) => -1
   }
 }
-
-0

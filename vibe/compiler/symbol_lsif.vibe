@@ -1,14 +1,81 @@
+//# Imports
+
 import ./ast.vibe {
   Expr, Pat, Stmt, TypeExpr
 }
 
 import ./symbol_index.vibe {
-  collect_symbols, collect_refs, collect_refs_stmts, find_symbol
+  collect_refs, collect_refs_stmts, collect_symbols, find_symbol
 }
 
-let _use_type_expr = (t: TypeExpr) -> TypeExpr { t }
-let _use_pat = (p: Pat) -> Pat { p }
-let _use_expr = (e: Expr) -> Expr { e }
+//# Functions
+
+export let kind_to_string = (kind: Int) -> String {
+  if kind == 0 {
+    "function"
+  }
+  else if kind == 1 {
+    "value"
+  }
+  else if kind == 2 {
+    "type"
+  }
+  else if kind == 3 {
+    "constructor"
+  }
+  else if kind == 4 {
+    "trait"
+  }
+  else if kind == 5 {
+    "module"
+  }
+  else {
+    "unknown"
+  }
+}
+
+export let hover_info = (symbols: Array[(String, Int, Bool)], name: String) -> String {
+  match find_symbol(symbols, name) {
+    Some(entry) => {
+      let (_, kind, exported) = entry
+      let kind_str = kind_to_string(kind)
+      let scope = if exported {
+        "(exported)"
+      } else {
+        "(local)"
+      }
+      String::concat(String::concat(String::concat(kind_str, " "), name), String::concat(" ", scope))
+    },
+    None => "unknown"
+  }
+}
+
+export let format_symbol = (sym: (String, Int, Bool)) -> String {
+  let (name, kind, exported) = sym
+  let kind_str = kind_to_string(kind)
+  let exp_str = if exported {
+    "true"
+  } else {
+    "false"
+  }
+  String::concat(String::concat(String::concat(String::concat(kind_str, ":"), name), ":"), exp_str)
+}
+
+export let format_symbols = (symbols: Array[(String, Int, Bool)]) -> String {
+  let len = Array::length(symbols)
+  if len == 0 {
+    ""
+  }
+  else {
+    let mut result = format_symbol(Array::get(symbols, 0))
+    let mut i = 1
+    while i < len {
+      result = String::concat(String::concat(result, "\n"), format_symbol(Array::get(symbols, i)))
+      i = i + 1
+    }
+    result
+  }
+}
 
 let array_contains_str = (arr: Array[String], s: String) -> Bool {
   let len = Array::length(arr)
@@ -23,35 +90,27 @@ let array_contains_str = (arr: Array[String], s: String) -> Bool {
   found
 }
 
-export let kind_to_string = (kind: Int) -> String {
-  if kind == 0 { "function" }
-  else if kind == 1 { "value" }
-  else if kind == 2 { "type" }
-  else if kind == 3 { "constructor" }
-  else if kind == 4 { "trait" }
-  else if kind == 5 { "module" }
-  else { "unknown" }
-}
-
-export let format_symbol = (sym: (String, Int, Bool)) -> String {
-  let (name, kind, exported) = sym
-  let kind_str = kind_to_string(kind)
-  let exp_str = if exported { "true" } else { "false" }
-  String::concat(String::concat(String::concat(String::concat(kind_str, ":"), name), ":"), exp_str)
-}
-
-export let format_symbols = (symbols: Array[(String, Int, Bool)]) -> String {
-  let len = Array::length(symbols)
-  if len == 0 { "" }
-  else {
-    let mut result = format_symbol(Array::get(symbols, 0))
-    let mut i = 1
-    while i < len {
-      result = String::concat(String::concat(result, "\n"), format_symbol(Array::get(symbols, i)))
-      i = i + 1
+export let find_references_in = (stmts: Array[Stmt], target_name: String) -> Array[String] {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let len = Array::length(stmts)
+  let mut i = 0
+  while i < len {
+    let stmt = Array::get(stmts, i)
+    match stmt {
+      SLet(_, _, name, _, body) => {
+        let refs = collect_refs(body)
+        if array_contains_str(refs, target_name) {
+          Array::push(out, name)
+        }
+      },
+      _ => {
+      }
     }
-    result
+    i = i + 1
   }
+  out
 }
 
 export let generate_def_index = (stmts: Array[Stmt]) -> String {
@@ -63,7 +122,9 @@ export let generate_ref_index = (stmts: Array[Stmt]) -> String {
   let refs = collect_refs_stmts(stmts)
   let syms = collect_symbols(stmts)
   let len = Array::length(refs)
-  if len == 0 { "" }
+  if len == 0 {
+    ""
+  }
   else {
     let mut result = ""
     let mut i = 0
@@ -83,39 +144,6 @@ export let generate_ref_index = (stmts: Array[Stmt]) -> String {
     }
     result
   }
-}
-
-export let hover_info = (symbols: Array[(String, Int, Bool)], name: String) -> String {
-  match find_symbol(symbols, name) {
-    Some(entry) => {
-      let (_, kind, exported) = entry
-      let kind_str = kind_to_string(kind)
-      let scope = if exported { "(exported)" } else { "(local)" }
-      String::concat(String::concat(String::concat(kind_str, " "), name), String::concat(" ", scope))
-    },
-    None => "unknown"
-  }
-}
-
-export let find_references_in = (stmts: Array[Stmt], target_name: String) -> Array[String] {
-  let out = Array::slice([""], 0, 0)
-  let len = Array::length(stmts)
-  let mut i = 0
-  while i < len {
-    let stmt = Array::get(stmts, i)
-    match stmt {
-      SLet(_, _, name, _, body) => {
-        let refs = collect_refs(body)
-        if array_contains_str(refs, target_name) {
-          Array::push(out, name)
-        }
-      },
-      _ => {
-      }
-    }
-    i = i + 1
-  }
-  out
 }
 
 export let generate_lsif_report = (stmts: Array[Stmt]) -> String {

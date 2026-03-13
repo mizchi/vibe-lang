@@ -865,7 +865,6 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
   let apply_fn = (fn_val: Value, evaled_args: Array[Value], caller_env: ValEnv) -> (Value, ValEnv)with { Error } {
     match fn_val {
       VFn(captures, params, _, self_name) => {
-        // First capture entry is ("__body", encoded_body)
         let encoded_body = if Array::length(captures) > 0 {
           let (key, bval) = Array::get(captures, 0)
           if String::equals(key, "__body") {
@@ -877,7 +876,6 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
           VUnit
         }
         let body = decode_expr(encoded_body)
-        // Build fn env from remaining captures (skip __body)
         let real_captures = if Array::length(captures) > 1 {
           Array::slice(captures, 1, Array::length(captures))
         } else {
@@ -885,8 +883,6 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
             ("_", VUnit)
           ], 0, 0)
         }
-        // Fall back to caller env for names that were not yet bound when the
-        // closure was created, such as later top-level function definitions.
         let fn_env = val_env_bind_all(caller_env, real_captures)
         let fn_env2 = match self_name {
           Some(sn) => val_env_bind(fn_env, sn, fn_val),
@@ -908,13 +904,11 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
           }
         }
         let fn_env3 = bind_params(0, fn_env2)
-        // Propagate __bstore into function scope
         let fn_env4 = match val_env_lookup(caller_env, "__bstore") {
           Some(bs) => val_env_bind(fn_env3, "__bstore", bs),
           None => fn_env3
         }
         let (result, ret_env) = eval_expr(body, fn_env4)
-        // Propagate __bstore back to caller
         let caller_env2 = match val_env_lookup(ret_env, "__bstore") {
           Some(bs) => val_env_bind(caller_env, "__bstore", bs),
           None => caller_env
@@ -1032,12 +1026,7 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
     }
     go(0)
   }
-  let rec collect_scope_bindings = (
-    current: ValEnv,
-    scope_mark: String,
-    local_names: Array[String],
-    acc: Array[(String, Value)]
-  ) -> Option[Array[(String, Value)]] {
+  let rec collect_scope_bindings = (current: ValEnv, scope_mark: String, local_names: Array[String], acc: Array[(String, Value)]) -> Option[Array[(String, Value)]] {
     match current {
       VEnvEmpty => None,
       VEnvBind(name, value, rest) => if String::equals(name, scope_mark) {
@@ -1101,14 +1090,7 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
     }
     merged
   }
-  let rec eval_loop_initial_values = (
-    params: Array[(String, Expr)],
-    outer_env: ValEnv,
-    scope_mark: String,
-    i: Int,
-    names: Array[String],
-    values: Array[Value]
-  ) -> (Array[String], Array[Value], ValEnv)with { Error } {
+  let rec eval_loop_initial_values = (params: Array[(String, Expr)], outer_env: ValEnv, scope_mark: String, i: Int, names: Array[String], values: Array[Value]) -> (Array[String], Array[Value], ValEnv)with { Error } {
     if i >= Array::length(params) {
       (names, values, outer_env)
     } else {
@@ -1116,18 +1098,11 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
       let temp_env = bind_loop_values(outer_env, scope_mark, names, values)
       let (init_value, env2_raw) = eval_expr(init_expr, temp_env)
       let outer_env2 = strip_scope(env2_raw, scope_mark, names, outer_env)
-      eval_loop_initial_values(
-        params,
-        outer_env2,
-        scope_mark,
-        i + 1,
-        Array::concat(names, [
-          name
-        ]),
-        Array::concat(values, [
-          init_value
-        ])
-      )
+      eval_loop_initial_values(params, outer_env2, scope_mark, i + 1, Array::concat(names, [
+        name
+      ]), Array::concat(values, [
+        init_value
+      ]))
     }
   }
   let capture_has_name = (acc: Array[(String, Value)], name: String) -> Bool {
@@ -1231,8 +1206,9 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
       (VTuple(vals), env2)
     },
     EArray(elems) => {
-      // Check for spread elements
-      let result = Array::slice([VUnit], 0, 0)
+      let result = Array::slice([
+        VUnit
+      ], 0, 0)
       let mut cur_env = env
       let mut ei = 0
       while ei < Array::length(elems) {
@@ -1267,8 +1243,9 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
       (VRecord(fvals), env2)
     },
     EMap(fields) => {
-      // Evaluate map fields into a Record (used as map representation)
-      let result = Array::slice([("", VUnit)], 0, 0)
+      let result = Array::slice([
+        ("", VUnit)
+      ], 0, 0)
       let mut cur_env = env
       let mut mi = 0
       while mi < Array::length(fields) {
@@ -1428,7 +1405,9 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
         let type_prefix = value_type_prefix(obj_val)
         let qualified = String::concat(type_prefix, String::concat("::", method_name))
         let (rest_args, env3) = eval_args(arg_exprs, env2, 0, empty_vals)
-        let all_args = Array::slice([VUnit], 0, 0)
+        let all_args = Array::slice([
+          VUnit
+        ], 0, 0)
         Array::push(all_args, obj_val)
         let mut ri = 0
         while ri < Array::length(rest_args) {
@@ -1443,104 +1422,103 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
           }
         }
       } else {
-      let callee_is_ident = match callee {
-        EIdent(_) => true,
-        _ => false
-      }
-      let (callee_val, env2) = eval_expr(callee, env)
-      let (evaled_args, env3) = eval_args(arg_exprs, env2, 0, empty_vals)
-      match callee_val {
-        VFn(_, _, _, _) => apply_fn(callee_val, evaled_args, env3),
-        VCtor(_, _) => apply_fn(callee_val, evaled_args, env3),
-        _ => if callee_is_ident {
-          let name = match callee {
-            EIdent(n) => n,
-            _ => ""
-          }
-          // ArrayBuilder::new: managed via __bstore in env
-          if String::equals(name, "ArrayBuilder::new") {
-            let store = match val_env_lookup(env3, "__bstore") {
-              Some(VArray(s)) => s,
-              _ => empty_vals
+        let callee_is_ident = match callee {
+          EIdent(_) => true,
+          _ => false
+        }
+        let (callee_val, env2) = eval_expr(callee, env)
+        let (evaled_args, env3) = eval_args(arg_exprs, env2, 0, empty_vals)
+        match callee_val {
+          VFn(_, _, _, _) => apply_fn(callee_val, evaled_args, env3),
+          VCtor(_, _) => apply_fn(callee_val, evaled_args, env3),
+          _ => if callee_is_ident {
+            let name = match callee {
+              EIdent(n) => n,
+              _ => ""
             }
-            let bid = Array::length(store) + 1
-            let new_store = Array::concat(store, [
-              VArray(empty_vals)
-            ])
-            let env4 = val_env_bind(env3, "__bstore", VArray(new_store))
-            (VInt(bid), env4)
-          }
-          else if String::equals(name, "ArrayBuilder::push") {
-            let builder = Array::get(evaled_args, 0)
-            let val = Array::get(evaled_args, 1)
-            match builder {
-              VInt(bid) => {
-                let store = match val_env_lookup(env3, "__bstore") {
-                  Some(VArray(s)) => s,
-                  _ => empty_vals
-                }
-                let idx = bid - 1
-                if idx >= 0 {
-                  if idx < Array::length(store) {
-                    let old_items = match Array::get(store, idx) {
-                      VArray(items) => items,
-                      _ => empty_vals
+            if String::equals(name, "ArrayBuilder::new") {
+              let store = match val_env_lookup(env3, "__bstore") {
+                Some(VArray(s)) => s,
+                _ => empty_vals
+              }
+              let bid = Array::length(store) + 1
+              let new_store = Array::concat(store, [
+                VArray(empty_vals)
+              ])
+              let env4 = val_env_bind(env3, "__bstore", VArray(new_store))
+              (VInt(bid), env4)
+            }
+            else if String::equals(name, "ArrayBuilder::push") {
+              let builder = Array::get(evaled_args, 0)
+              let val = Array::get(evaled_args, 1)
+              match builder {
+                VInt(bid) => {
+                  let store = match val_env_lookup(env3, "__bstore") {
+                    Some(VArray(s)) => s,
+                    _ => empty_vals
+                  }
+                  let idx = bid - 1
+                  if idx >= 0 {
+                    if idx < Array::length(store) {
+                      let old_items = match Array::get(store, idx) {
+                        VArray(items) => items,
+                        _ => empty_vals
+                      }
+                      let new_items = Array::concat(old_items, [
+                        val
+                      ])
+                      let before = Array::slice(store, 0, idx)
+                      let after = Array::slice(store, idx + 1, Array::length(store))
+                      let new_store = Array::concat(Array::concat(before, [
+                        VArray(new_items)
+                      ]), after)
+                      let env4 = val_env_bind(env3, "__bstore", VArray(new_store))
+                      (VUnit, env4)
+                    } else {
+                      (VUnit, env3)
                     }
-                    let new_items = Array::concat(old_items, [
-                      val
-                    ])
-                    let before = Array::slice(store, 0, idx)
-                    let after = Array::slice(store, idx + 1, Array::length(store))
-                    let new_store = Array::concat(Array::concat(before, [
-                      VArray(new_items)
-                    ]), after)
-                    let env4 = val_env_bind(env3, "__bstore", VArray(new_store))
-                    (VUnit, env4)
                   } else {
                     (VUnit, env3)
                   }
-                } else {
-                  (VUnit, env3)
-                }
-              },
-              _ => (VUnit, env3)
+                },
+                _ => (VUnit, env3)
+              }
             }
-          }
-          else if String::equals(name, "ArrayBuilder::freeze") {
-            let builder = Array::get(evaled_args, 0)
-            match builder {
-              VInt(bid) => {
-                let store = match val_env_lookup(env3, "__bstore") {
-                  Some(VArray(s)) => s,
-                  _ => empty_vals
-                }
-                let idx = bid - 1
-                if idx >= 0 {
-                  if idx < Array::length(store) {
-                    match Array::get(store, idx) {
-                      VArray(items) => (VArray(items), env3),
-                      _ => (VArray(empty_vals), env3)
+            else if String::equals(name, "ArrayBuilder::freeze") {
+              let builder = Array::get(evaled_args, 0)
+              match builder {
+                VInt(bid) => {
+                  let store = match val_env_lookup(env3, "__bstore") {
+                    Some(VArray(s)) => s,
+                    _ => empty_vals
+                  }
+                  let idx = bid - 1
+                  if idx >= 0 {
+                    if idx < Array::length(store) {
+                      match Array::get(store, idx) {
+                        VArray(items) => (VArray(items), env3),
+                        _ => (VArray(empty_vals), env3)
+                      }
+                    } else {
+                      (VArray(empty_vals), env3)
                     }
                   } else {
                     (VArray(empty_vals), env3)
                   }
-                } else {
-                  (VArray(empty_vals), env3)
-                }
-              },
-              _ => (VArray(empty_vals), env3)
+                },
+                _ => (VArray(empty_vals), env3)
+              }
             }
-          }
-          else {
-            match eval_builtin_call(name, evaled_args) {
-              Some(v) => (v, env3),
-              None => (VUnit, env3)
+            else {
+              match eval_builtin_call(name, evaled_args) {
+                Some(v) => (v, env3),
+                None => (VUnit, env3)
+              }
             }
+          } else {
+            (VUnit, env3)
           }
-        } else {
-          (VUnit, env3)
         }
-      }
       }
     },
     EBinOp(op, left, right) => {

@@ -1,22 +1,12 @@
 //# Imports
 
-import ../core/index.vibe {
+import ../core {
   Expr, Pat, Stmt, TypeExpr
 }
 
 import ./token.vibe {
   Token
 }
-
-//# Parse Mode Constants
-// Precedence modes: 0-10 (used arithmetically in parse_infix)
-// Named modes for structured parsing:
-let mode_block = 20
-let mode_if = 21
-let mode_match = 22
-let mode_while = 23
-let mode_handle = 24
-let mode_for_in = 25
 
 //# Functions
 
@@ -37,6 +27,8 @@ let _no_tb = () -> Array[(String, Array[String])] {
     ("", _no_tp())
   ], 0, 0)
 }
+
+let mode_if = 21
 
 let tk_name = (tok: Token) -> String {
   match tok {
@@ -158,6 +150,12 @@ let empty_pats = () -> Array[Pat] {
   ], 0, 0)
 }
 
+let mode_block = 20
+
+let mode_match = 22
+
+let mode_while = 23
+
 let empty_ctors = () -> Array[(String, Array[TypeExpr])] {
   Array::slice([
     ("_", Array::slice([
@@ -177,6 +175,10 @@ let empty_names = () -> Array[String] {
     "_"
   ], 0, 0)
 }
+
+let mode_for_in = 25
+
+let mode_handle = 24
 
 let empty_fields = () -> Array[(String, TypeExpr)] {
   Array::slice([
@@ -313,19 +315,21 @@ let rec parse_type_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (TypeEx
             atom_ty
           ]
         }
-        // Skip optional `with { Error, ... }` effect annotation
         let rn2 = match peek(tokens, rn) {
           TWith => {
             let p1 = rn + 1
             match peek(tokens, p1) {
               TLBrace => {
-                // skip tokens until matching TRBrace
                 let mut p2 = p1 + 1
                 let mut done = false
                 while (!(done)) {
                   match peek(tokens, p2) {
-                    TRBrace => { done = true },
-                    _ => { p2 = p2 + 1 }
+                    TRBrace => {
+                      done = true
+                    },
+                    _ => {
+                      p2 = p2 + 1
+                    }
                   }
                 }
                 p2 + 1
@@ -438,7 +442,6 @@ let parse_trait_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt
   match peek(tokens, pos) {
     TIdent(name) => match peek(tokens, pos + 1) {
       TColon => {
-        // Parse supertrait list: trait Name: Trait1 + Trait2
         let rec parse_supers = (p: Int, acc: Array[String]) -> (Array[String], Int) {
           match peek(tokens, p) {
             TIdent(sname) => match peek(tokens, p + 1) {
@@ -524,6 +527,19 @@ let empty_import_items = () -> Array[(String, Option[String])] {
   Array::slice([
     ("_", None)
   ], 0, 0)
+}
+
+let parse_binding_name = (tokens: Array[Token], pos: Int) -> (String, Int)with { Error } {
+  match peek(tokens, pos) {
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TDoubleColon => match peek(tokens, pos + 2) {
+        TIdent(member) => (String::concat(name, String::concat("::", member)), pos + 3),
+        _ => throw("expected qualified member name after '::'")
+      },
+      _ => (name, pos + 1)
+    },
+    _ => throw("expected name after 'let'")
+  }
 }
 
 let parse_struct_field = (tokens: Array[Token], pos: Int) -> ((String, TypeExpr), Int)with { Error } {
@@ -771,7 +787,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       else if String::equals(name, "map") {
         match peek(tokens, pos + 1) {
           TLBrace => {
-            let rec parse_map_fields = (toks: Array[Token], p: Int, b: ArrayBuilder[(String, Expr)]) -> (Array[(String, Expr)], Int) with { Error } {
+            let rec parse_map_fields = (toks: Array[Token], p: Int, b: ArrayBuilder[(String, Expr)]) -> (Array[(String, Expr)], Int)with { Error } {
               match peek(toks, p) {
                 TRBrace => (ArrayBuilder::freeze(b), p + 1),
                 TIdent(fname) => {
@@ -808,8 +824,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         TDoubleColon => match peek(tokens, pos + 2) {
           TIdent(member) => (EIdent(String::concat(name, String::concat("::", member))), pos + 3),
           TLBrace => {
-            // Name::{ field: val, ... } record literal
-            let rec parse_record_fields = (toks: Array[Token], p: Int, b: ArrayBuilder[(String, Expr)]) -> (Array[(String, Expr)], Int) with { Error } {
+            let rec parse_record_fields = (toks: Array[Token], p: Int, b: ArrayBuilder[(String, Expr)]) -> (Array[(String, Expr)], Int)with { Error } {
               match peek(toks, p) {
                 TRBrace => (ArrayBuilder::freeze(b), p + 1),
                 TIdent(fname) => {
@@ -893,7 +908,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         }
       },
       TLBracket => {
-        let rec parse_array_elems_rest = (toks: Array[Token], p: Int, b: ArrayBuilder[Expr]) -> (Array[Expr], Int) with { Error } {
+        let rec parse_array_elems_rest = (toks: Array[Token], p: Int, b: ArrayBuilder[Expr]) -> (Array[Expr], Int)with { Error } {
           match peek(toks, p) {
             TComma => {
               let next_p = p + 1
@@ -1064,10 +1079,9 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
     while !done {
       match peek(tokens, cur_pos) {
         TLParen => match cur_expr {
-          // Disallow direct call chaining like f(x)(y). This avoids
-          // ambiguity with newline-separated block expressions and matches
-          // how the current codebase uses function calls.
-          ECall(_, _) => { done = true },
+          ECall(_, _) => {
+            done = true
+          },
           _ => match peek(tokens, cur_pos + 1) {
             TRParen => {
               cur_expr = ECall(cur_expr, empty_exprs())
@@ -1089,9 +1103,13 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
             cur_expr = EDot(cur_expr, field)
             cur_pos = cur_pos + 2
           },
-          _ => { done = true }
+          _ => {
+            done = true
+          }
         },
-        _ => { done = true }
+        _ => {
+          done = true
+        }
       }
     }
     (cur_expr, cur_pos)
@@ -1308,7 +1326,6 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         _ => throw("invalid assignment target")
       },
       _ => {
-        // Implicit sequence: continue parsing rest of block (handles let, expressions, etc.)
         let (rest, end) = parse_impl(tokens, pos, mode_block)
         if end <= pos {
           throw("internal parser error: block continuation did not advance")
@@ -1481,33 +1498,20 @@ export let parse_expr = (tokens: Array[Token], pos: Int) -> (Expr, Int)with { Er
   parse_impl(tokens, pos, 0)
 }
 
-let parse_binding_name = (tokens: Array[Token], pos: Int) -> (String, Int)with { Error } {
-  match peek(tokens, pos) {
-    TIdent(name) => match peek(tokens, pos + 1) {
-      TDoubleColon => match peek(tokens, pos + 2) {
-        TIdent(member) => (String::concat(name, String::concat("::", member)), pos + 3),
-        _ => throw("expected qualified member name after '::'")
-      },
-      _ => (name, pos + 1)
-    },
-    _ => throw("expected name after 'let'")
-  }
-}
-
 let parse_let_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int)with { Error } {
   match peek(tokens, pos) {
     TRec => {
       let (name, name_next) = parse_binding_name(tokens, pos + 1)
       let (ty_opt, eq_pos) = match peek(tokens, name_next) {
-          TColon => {
-            let (ty, tp) = parse_type_impl(tokens, name_next + 1, 0);
-            (Some(ty), tp)
-          },
-          _ => (None, name_next)
-        }
-        let ep = expect_tk(tokens, eq_pos, "=")
-        let (val, vn) = parse_impl(tokens, ep, 0);
-        (SLet(exported, true, name, ty_opt, val), vn)
+        TColon => {
+          let (ty, tp) = parse_type_impl(tokens, name_next + 1, 0);
+          (Some(ty), tp)
+        },
+        _ => (None, name_next)
+      }
+      let ep = expect_tk(tokens, eq_pos, "=")
+      let (val, vn) = parse_impl(tokens, ep, 0);
+      (SLet(exported, true, name, ty_opt, val), vn)
     },
     TMut => match peek(tokens, pos + 1) {
       TIdent(name) => {

@@ -1,69 +1,15 @@
-// Component Model codegen for vibe (binary-level)
-// Wraps Core WASM in Component Model format
-// Reimplementation of src/codegen/component_codegen.mbt (binary parts only)
+//# Imports
 
 import ./bytebuf.vibe {
-  bytebuf_new, bytebuf_push, bytebuf_length, bytebuf_to_bytes,
-  bytebuf_push_array, bytebuf_push_section, bytebuf_push_vec_header,
-  leb128_encode_u32, leb128_encode_s64
+  bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_array, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
 }
 
 import ./wasm_emit.vibe {
-  emit_name, emit_i32_const, emit_i32_add, emit_i32_store,
-  emit_local_get, emit_local_set, emit_end,
-  emit_func_type_raw, emit_i64_extend_i32_s
+  emit_end, emit_func_type_raw, emit_i32_add, emit_i32_const, emit_i32_store, emit_i64_extend_i32_s, emit_local_get, emit_local_set, emit_name
 }
 
-// === Component Model constants ===
+//# Functions
 
-let component_magic_0 = 0
-let component_magic_1 = 97   // 'a'
-let component_magic_2 = 115  // 's'
-let component_magic_3 = 109  // 'm'
-let component_version_0 = 13 // component model version
-let component_version_1 = 0
-let component_version_2 = 1
-let component_version_3 = 0
-
-let section_module = 1
-let section_core_instance = 2
-let section_alias = 6
-let section_type = 7
-let section_canon = 8
-let section_import = 10
-let section_export = 11
-
-let core_sort_func = 0
-let core_sort_mem = 2
-
-let comp_extern_func = 1
-let comp_inst_arg_instance = 18  // 0x12
-
-let comp_valtype_s32 = 122  // 0x7a
-let comp_valtype_s64 = 120  // 0x78
-let comp_valtype_f32 = 118  // 0x76
-let comp_valtype_f64 = 117  // 0x75
-let comp_valtype_string = 115 // 0x73
-
-// === Component header ===
-
-let emit_component_header = (buf: Array[Int]) -> Unit {
-  bytebuf_push(buf, component_magic_0)
-  bytebuf_push(buf, component_magic_1)
-  bytebuf_push(buf, component_magic_2)
-  bytebuf_push(buf, component_magic_3)
-  bytebuf_push(buf, component_version_0)
-  bytebuf_push(buf, component_version_1)
-  bytebuf_push(buf, component_version_2)
-  bytebuf_push(buf, component_version_3)
-}
-
-// === LEB128 reader (for parsing core wasm) ===
-
-// Returns (value, new_pos) packed as value * 1000000 + new_pos
-// Caller: let packed = read_uleb(bytes, pos); let val = packed / 1000000; let next = packed - (val * 1000000)
-// Limitation: value < 1000000 (sufficient for wasm section sizes)
-// UPDATE: use array to return pair instead
 let read_uleb = (bytes: Bytes, start: Int) -> Array[Int] {
   let mut value = 0
   let mut shift = 0
@@ -72,9 +18,9 @@ let read_uleb = (bytes: Bytes, start: Int) -> Array[Int] {
   let mut done = false
   while (i < len) && (done == false) {
     let b = Bytes::get(bytes, i)
-    value = value | ((b & 127) << shift)
+    value = value|((b&127)<<shift)
     i = i + 1
-    if (b & 128) == 0 {
+    if (b&128) == 0 {
       done = true
     } else {
       shift = shift + 7
@@ -86,33 +32,6 @@ let read_uleb = (bytes: Bytes, start: Int) -> Array[Int] {
   result
 }
 
-// Read a name string: returns [name_length, new_pos]
-// The actual name bytes must be read separately
-let read_name_info = (bytes: Bytes, start: Int) -> Array[Int] {
-  let r = read_uleb(bytes, start)
-  let name_len = Array::get(r, 0)
-  let after_len = Array::get(r, 1)
-  let result = bytebuf_new()
-  Array::push(result, name_len)
-  Array::push(result, after_len)
-  result
-}
-
-// Read name as string from bytes
-let read_name_string = (bytes: Bytes, start: Int) -> String {
-  let r = read_uleb(bytes, start)
-  let name_len = Array::get(r, 0)
-  let after_len = Array::get(r, 1)
-  let mut s = ""
-  let mut i = 0
-  while i < name_len {
-    s = String::concat(s, String::from_char_code(Bytes::get(bytes, after_len + i)))
-    i = i + 1
-  }
-  s
-}
-
-// Skip name: returns position after name
 let skip_name = (bytes: Bytes, start: Int) -> Int {
   let r = read_uleb(bytes, start)
   let name_len = Array::get(r, 0)
@@ -120,80 +39,54 @@ let skip_name = (bytes: Bytes, start: Int) -> Int {
   after_len + name_len
 }
 
-let normalize_comp_param_name = (name: String) -> String {
-  String::replace_all(name, "_", "-")
+let sig_params = (sig: Array[Int]) -> Array[Int] {
+  let param_count = Array::get(sig, 0)
+  Array::slice(sig, 1, 1 + param_count)
 }
 
-// === Core WASM section parsing ===
-
-// Skip wasm limits (for table/memory import descriptors)
-let skip_wasm_limits = (bytes: Bytes, start: Int, end_pos: Int) -> Int {
-  let mut i = start
-  if i >= end_pos { end_pos }
-  else {
-    let flags = Bytes::get(bytes, i)
-    i = i + 1
-    let r1 = read_uleb(bytes, i)
-    i = Array::get(r1, 1)
-    if (flags & 1) != 0 {
-      let r2 = read_uleb(bytes, i)
-      i = Array::get(r2, 1)
-    }
-    if (flags & 4) != 0 {
-      let r3 = read_uleb(bytes, i)
-      i = Array::get(r3, 1)
-    }
-    if i > end_pos { end_pos } else { i }
-  }
+let sig_results = (sig: Array[Int]) -> Array[Int] {
+  let param_count = Array::get(sig, 0)
+  let result_count = Array::get(sig, 1 + param_count)
+  Array::slice(sig, 2 + param_count, 2 + param_count + result_count)
 }
 
-// Skip core import descriptor (non-function)
-let skip_core_import_desc = (bytes: Bytes, start: Int, kind: Int, end_pos: Int) -> Int {
-  let mut i = start
-  if kind == 1 {
-    // table: reftype + limits
-    if i < end_pos { i = i + 1 }
-    i = skip_wasm_limits(bytes, i, end_pos)
-  } else {
-    if kind == 2 {
-      // memory: limits
-      i = skip_wasm_limits(bytes, i, end_pos)
-    } else {
-      if kind == 3 {
-        // global: valtype + mutability
-        if (i + 2) <= end_pos { i = i + 2 } else { i = end_pos }
-      } else {
-        if kind == 4 {
-          // tag: attr + type index
-          if i < end_pos { i = i + 1 }
-          let r = read_uleb(bytes, i)
-          i = Array::get(r, 1)
-        } else {
-          i = end_pos
-        }
-      }
-    }
-  }
-  if i > end_pos { end_pos } else { i }
-}
+let section_type = 7
 
-// Parse type section signatures from core wasm
-// Returns flat array: [param_count_0, p0_type, p1_type, ..., result_count_0, r0_type, ..., param_count_1, ...]
-// Also returns type boundaries for indexing
-// Simplified: returns array of arrays, each = [param_count, p0, p1, ..., result_count, r0, r1, ...]
+let core_sort_mem = 2
+
+let section_alias = 6
+
+let section_canon = 8
+
+let core_sort_func = 0
+
+let section_export = 11
+
+let section_import = 10
+
+let section_module = 1
+
 let parse_type_sigs = (bytes: Bytes, sec_start: Int, sec_end: Int) -> Array[Array[Int]] {
-  let sigs = Array::slice([[0]], 0, 0)
+  let sigs = Array::slice([
+    [
+      0
+    ]
+  ], 0, 0)
   let mut j = sec_start
   let r = read_uleb(bytes, j)
   let type_count = Array::get(r, 0)
   j = Array::get(r, 1)
   let mut t = 0
   while t < type_count {
-    if j >= sec_end { t = type_count }
+    if j >= sec_end {
+      t = type_count
+    }
     else {
       let form = Bytes::get(bytes, j)
       j = j + 1
-      if form != 96 { t = type_count }  // 0x60 = func type
+      if form != 96 {
+        t = type_count
+      }
       else {
         let sig = bytebuf_new()
         let rp = read_uleb(bytes, j)
@@ -202,7 +95,9 @@ let parse_type_sigs = (bytes: Bytes, sec_start: Int, sec_end: Int) -> Array[Arra
         Array::push(sig, param_count)
         let mut p = 0
         while p < param_count {
-          if j >= sec_end { p = param_count }
+          if j >= sec_end {
+            p = param_count
+          }
           else {
             Array::push(sig, Bytes::get(bytes, j))
             j = j + 1
@@ -215,7 +110,9 @@ let parse_type_sigs = (bytes: Bytes, sec_start: Int, sec_end: Int) -> Array[Arra
         Array::push(sig, result_count)
         let mut rv = 0
         while rv < result_count {
-          if j >= sec_end { rv = result_count }
+          if j >= sec_end {
+            rv = result_count
+          }
           else {
             Array::push(sig, Bytes::get(bytes, j))
             j = j + 1
@@ -230,39 +127,335 @@ let parse_type_sigs = (bytes: Bytes, sec_start: Int, sec_end: Int) -> Array[Arra
   sigs
 }
 
-// Get param types from a parsed sig entry
-let sig_params = (sig: Array[Int]) -> Array[Int] {
-  let param_count = Array::get(sig, 0)
-  Array::slice(sig, 1, 1 + param_count)
+let comp_extern_func = 1
+
+let comp_valtype_f32 = 118
+
+let comp_valtype_f64 = 117
+
+let comp_valtype_s32 = 122
+
+let comp_valtype_s64 = 120
+
+let emit_raw_content = (buf: Array[Int], content: Array[Int]) -> Unit {
+  leb128_encode_u32(buf, Array::length(content))
+  bytebuf_push_array(buf, content)
 }
 
-// Get result types from a parsed sig entry
-let sig_results = (sig: Array[Int]) -> Array[Int] {
-  let param_count = Array::get(sig, 0)
-  let result_count = Array::get(sig, 1 + param_count)
-  Array::slice(sig, 2 + param_count, 2 + param_count + result_count)
+let read_name_string = (bytes: Bytes, start: Int) -> String {
+  let r = read_uleb(bytes, start)
+  let name_len = Array::get(r, 0)
+  let after_len = Array::get(r, 1)
+  let mut s = ""
+  let mut i = 0
+  while i < name_len {
+    s = String::concat(s, String::from_char_code(Bytes::get(bytes, after_len + i)))
+    i = i + 1
+  }
+  s
 }
 
-// === Parse core imports ===
-// Returns parallel arrays: [module_names, func_names, type_indices]
-// Each as flat array; module_names/func_names encoded as char arrays
-// Simplified: returns array of [module_name_str, func_name_str, type_idx]
-// But strings can't be in int arrays... so we return 3 separate arrays
-// import_module_names: Array[String], import_func_names: Array[String], import_type_indices: Array[Int]
+let skip_wasm_limits = (bytes: Bytes, start: Int, end_pos: Int) -> Int {
+  let mut i = start
+  if i >= end_pos {
+    end_pos
+  }
+  else {
+    let flags = Bytes::get(bytes, i)
+    i = i + 1
+    let r1 = read_uleb(bytes, i)
+    i = Array::get(r1, 1)
+    if (flags&1) != 0 {
+      let r2 = read_uleb(bytes, i)
+      i = Array::get(r2, 1)
+    }
+    if (flags&4) != 0 {
+      let r3 = read_uleb(bytes, i)
+      i = Array::get(r3, 1)
+    }
+    if i > end_pos {
+      end_pos
+    } else {
+      i
+    }
+  }
+}
 
-// Parse core wasm and return: [import_count, [module_names], [func_names], [type_indices], [type_sigs]]
-// Due to .vibe limitations, we pack results into a record-like structure using closures
+let component_magic_0 = 0
 
-// Simplified approach: parse imports and return count + arrays via side effects
-let parse_core_imports = (
-  core_wasm: Bytes,
-  out_module_names: Array[String],
-  out_func_names: Array[String],
-  out_type_indices: Array[Int],
-  out_type_sigs: Array[Array[Int]]
-) -> Int {
+let component_magic_1 = 97
+
+let component_magic_2 = 115
+
+let component_magic_3 = 109
+
+let emit_alias_section = (buf: Array[Int], core_instance_idx: Int, names: Array[String], sorts: Array[Int]) -> Unit {
+  let count = Array::length(names)
+  if count == 0 {
+    ()
+  }
+  else {
+    bytebuf_push(buf, section_alias)
+    let content = bytebuf_new()
+    leb128_encode_u32(content, count)
+    let mut i = 0
+    while i < count {
+      bytebuf_push(content, 0)
+      bytebuf_push(content, Array::get(sorts, i))
+      bytebuf_push(content, 1)
+      leb128_encode_u32(content, core_instance_idx)
+      emit_name(content, Array::get(names, i))
+      i = i + 1
+    }
+    emit_raw_content(buf, content)
+  }
+}
+
+let comp_valtype_string = 115
+
+let component_version_0 = 13
+
+let component_version_1 = 0
+
+let component_version_2 = 1
+
+let component_version_3 = 0
+
+let core_to_comp_valtype = (v: Int) -> Int {
+  if v == 127 {
+    comp_valtype_s32
+  }
+  else {
+    if v == 126 {
+      comp_valtype_s64
+    }
+    else {
+      if v == 125 {
+        comp_valtype_f32
+      }
+      else {
+        if v == 124 {
+          comp_valtype_f64
+        }
+        else {
+          0 - 1
+        }
+      }
+    }
+  }
+}
+
+let emit_canon_lift_func = (content: Array[Int], core_func_idx: Int, type_idx: Int, need_string: Int, memory_idx: Int, realloc_idx: Int) -> Unit {
+  bytebuf_push(content, 0)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, core_func_idx)
+  if need_string != 0 {
+    leb128_encode_u32(content, 3)
+    bytebuf_push(content, 0)
+    bytebuf_push(content, 3)
+    leb128_encode_u32(content, memory_idx)
+    bytebuf_push(content, 4)
+    leb128_encode_u32(content, realloc_idx)
+  } else {
+    leb128_encode_u32(content, 0)
+  }
+  leb128_encode_u32(content, type_idx)
+}
+
+let emit_component_header = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, component_magic_0)
+  bytebuf_push(buf, component_magic_1)
+  bytebuf_push(buf, component_magic_2)
+  bytebuf_push(buf, component_magic_3)
+  bytebuf_push(buf, component_version_0)
+  bytebuf_push(buf, component_version_1)
+  bytebuf_push(buf, component_version_2)
+  bytebuf_push(buf, component_version_3)
+}
+
+let section_core_instance = 2
+
+let skip_core_import_desc = (bytes: Bytes, start: Int, kind: Int, end_pos: Int) -> Int {
+  let mut i = start
+  if kind == 1 {
+    if i < end_pos {
+      i = i + 1
+    }
+    i = skip_wasm_limits(bytes, i, end_pos)
+  } else {
+    if kind == 2 {
+      i = skip_wasm_limits(bytes, i, end_pos)
+    } else {
+      if kind == 3 {
+        if (i + 2) <= end_pos {
+          i = i + 2
+        } else {
+          i = end_pos
+        }
+      } else {
+        if kind == 4 {
+          if i < end_pos {
+            i = i + 1
+          }
+          let r = read_uleb(bytes, i)
+          i = Array::get(r, 1)
+        } else {
+          i = end_pos
+        }
+      }
+    }
+  }
+  if i > end_pos {
+    end_pos
+  } else {
+    i
+  }
+}
+
+let parse_core_exports = (core_wasm: Bytes, out_names: Array[String], out_func_indices: Array[Int], out_type_sigs: Array[Array[Int]]) -> Int {
   let len = Bytes::length(core_wasm)
-  if len < 8 { 0 }
+  if len < 8 {
+    0
+  }
+  else {
+    let type_sigs = Array::slice([
+      [
+        0
+      ]
+    ], 0, 0)
+    let func_type_indices = bytebuf_new()
+    let mut import_func_count = 0
+    let mut i = 8
+    let mut export_count = 0
+    while i < len {
+      let sec_id = Bytes::get(core_wasm, i)
+      i = i + 1
+      let r = read_uleb(core_wasm, i)
+      let sec_size = Array::get(r, 0)
+      i = Array::get(r, 1)
+      let sec_end = i + sec_size
+      if sec_end > len {
+        i = len
+      }
+      else {
+        if sec_id == 1 {
+          let sigs = parse_type_sigs(core_wasm, i, sec_end)
+          let mut s = 0
+          while s < Array::length(sigs) {
+            Array::push(type_sigs, Array::get(sigs, s))
+            s = s + 1
+          }
+        } else {
+          if sec_id == 2 {
+            let mut j = i
+            let ri = read_uleb(core_wasm, j)
+            let imp_count = Array::get(ri, 0)
+            j = Array::get(ri, 1)
+            let mut imp = 0
+            while imp < imp_count {
+              if j >= sec_end {
+                imp = imp_count
+              }
+              else {
+                j = skip_name(core_wasm, j)
+                j = skip_name(core_wasm, j)
+                if j >= sec_end {
+                  imp = imp_count
+                }
+                else {
+                  let kind = Bytes::get(core_wasm, j)
+                  j = j + 1
+                  if kind == 0 {
+                    let rt = read_uleb(core_wasm, j)
+                    j = Array::get(rt, 1)
+                    import_func_count = import_func_count + 1
+                  } else {
+                    j = skip_core_import_desc(core_wasm, j, kind, sec_end)
+                  }
+                  imp = imp + 1
+                }
+              }
+            }
+          } else {
+            if sec_id == 3 {
+              let mut j = i
+              let rf = read_uleb(core_wasm, j)
+              let func_count = Array::get(rf, 0)
+              j = Array::get(rf, 1)
+              let mut f = 0
+              while f < func_count {
+                if j >= sec_end {
+                  f = func_count
+                }
+                else {
+                  let rt = read_uleb(core_wasm, j)
+                  Array::push(func_type_indices, Array::get(rt, 0))
+                  j = Array::get(rt, 1)
+                  f = f + 1
+                }
+              }
+            } else {
+              if sec_id == 7 {
+                let mut j = i
+                let re = read_uleb(core_wasm, j)
+                let exp_count = Array::get(re, 0)
+                j = Array::get(re, 1)
+                let mut e = 0
+                while e < exp_count {
+                  if j >= sec_end {
+                    e = exp_count
+                  }
+                  else {
+                    let name = read_name_string(core_wasm, j)
+                    j = skip_name(core_wasm, j)
+                    if j >= sec_end {
+                      e = exp_count
+                    }
+                    else {
+                      let kind = Bytes::get(core_wasm, j)
+                      j = j + 1
+                      let ri = read_uleb(core_wasm, j)
+                      let index = Array::get(ri, 0)
+                      j = Array::get(ri, 1)
+                      if kind == 0 {
+                        let type_idx = if index < import_func_count {
+                          0 - 1
+                        }
+                        else {
+                          let local_idx = index - import_func_count
+                          if local_idx < Array::length(func_type_indices) {
+                            Array::get(func_type_indices, local_idx)
+                          } else {
+                            0 - 1
+                          }
+                        }
+                        if (type_idx >= 0) && (type_idx < Array::length(type_sigs)) {
+                          Array::push(out_names, name)
+                          Array::push(out_func_indices, index)
+                          Array::push(out_type_sigs, Array::get(type_sigs, type_idx))
+                          export_count = export_count + 1
+                        }
+                      }
+                      e = e + 1
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        i = sec_end
+      }
+    }
+    export_count
+  }
+}
+
+let parse_core_imports = (core_wasm: Bytes, out_module_names: Array[String], out_func_names: Array[String], out_type_indices: Array[Int], out_type_sigs: Array[Array[Int]]) -> Int {
+  let len = Bytes::length(core_wasm)
+  if len < 8 {
+    0
+  }
   else {
     let mut i = 8
     let mut import_count = 0
@@ -273,10 +466,11 @@ let parse_core_imports = (
       let sec_size = Array::get(r, 0)
       i = Array::get(r, 1)
       let sec_end = i + sec_size
-      if sec_end > len { i = len }
+      if sec_end > len {
+        i = len
+      }
       else {
         if sec_id == 1 {
-          // Type section
           let sigs = parse_type_sigs(core_wasm, i, sec_end)
           let mut s = 0
           while s < Array::length(sigs) {
@@ -285,20 +479,23 @@ let parse_core_imports = (
           }
         } else {
           if sec_id == 2 {
-            // Import section
             let mut j = i
             let ri = read_uleb(core_wasm, j)
             let imp_count = Array::get(ri, 0)
             j = Array::get(ri, 1)
             let mut imp = 0
             while imp < imp_count {
-              if j >= sec_end { imp = imp_count }
+              if j >= sec_end {
+                imp = imp_count
+              }
               else {
                 let mod_name = read_name_string(core_wasm, j)
                 j = skip_name(core_wasm, j)
                 let fn_name = read_name_string(core_wasm, j)
                 j = skip_name(core_wasm, j)
-                if j >= sec_end { imp = imp_count }
+                if j >= sec_end {
+                  imp = imp_count
+                }
                 else {
                   let kind = Bytes::get(core_wasm, j)
                   j = j + 1
@@ -326,463 +523,41 @@ let parse_core_imports = (
   }
 }
 
-// === Parse core exports ===
-
-let parse_core_exports = (
-  core_wasm: Bytes,
-  out_names: Array[String],
-  out_func_indices: Array[Int],
-  out_type_sigs: Array[Array[Int]]
-) -> Int {
-  let len = Bytes::length(core_wasm)
-  if len < 8 { 0 }
-  else {
-    let type_sigs = Array::slice([[0]], 0, 0)
-    let func_type_indices = bytebuf_new()
-    let mut import_func_count = 0
-    let mut i = 8
-    let mut export_count = 0
-    while i < len {
-      let sec_id = Bytes::get(core_wasm, i)
-      i = i + 1
-      let r = read_uleb(core_wasm, i)
-      let sec_size = Array::get(r, 0)
-      i = Array::get(r, 1)
-      let sec_end = i + sec_size
-      if sec_end > len { i = len }
-      else {
-        if sec_id == 1 {
-          let sigs = parse_type_sigs(core_wasm, i, sec_end)
-          let mut s = 0
-          while s < Array::length(sigs) {
-            Array::push(type_sigs, Array::get(sigs, s))
-            s = s + 1
-          }
-        } else {
-          if sec_id == 2 {
-            // Count imported functions
-            let mut j = i
-            let ri = read_uleb(core_wasm, j)
-            let imp_count = Array::get(ri, 0)
-            j = Array::get(ri, 1)
-            let mut imp = 0
-            while imp < imp_count {
-              if j >= sec_end { imp = imp_count }
-              else {
-                j = skip_name(core_wasm, j)
-                j = skip_name(core_wasm, j)
-                if j >= sec_end { imp = imp_count }
-                else {
-                  let kind = Bytes::get(core_wasm, j)
-                  j = j + 1
-                  if kind == 0 {
-                    let rt = read_uleb(core_wasm, j)
-                    j = Array::get(rt, 1)
-                    import_func_count = import_func_count + 1
-                  } else {
-                    j = skip_core_import_desc(core_wasm, j, kind, sec_end)
-                  }
-                  imp = imp + 1
-                }
-              }
-            }
-          } else {
-            if sec_id == 3 {
-              // Function section
-              let mut j = i
-              let rf = read_uleb(core_wasm, j)
-              let func_count = Array::get(rf, 0)
-              j = Array::get(rf, 1)
-              let mut f = 0
-              while f < func_count {
-                if j >= sec_end { f = func_count }
-                else {
-                  let rt = read_uleb(core_wasm, j)
-                  Array::push(func_type_indices, Array::get(rt, 0))
-                  j = Array::get(rt, 1)
-                  f = f + 1
-                }
-              }
-            } else {
-              if sec_id == 7 {
-                // Export section
-                let mut j = i
-                let re = read_uleb(core_wasm, j)
-                let exp_count = Array::get(re, 0)
-                j = Array::get(re, 1)
-                let mut e = 0
-                while e < exp_count {
-                  if j >= sec_end { e = exp_count }
-                  else {
-                    let name = read_name_string(core_wasm, j)
-                    j = skip_name(core_wasm, j)
-                    if j >= sec_end { e = exp_count }
-                    else {
-                      let kind = Bytes::get(core_wasm, j)
-                      j = j + 1
-                      let ri = read_uleb(core_wasm, j)
-                      let index = Array::get(ri, 0)
-                      j = Array::get(ri, 1)
-                      if kind == 0 {
-                        let type_idx = if index < import_func_count { 0 - 1 }
-                        else {
-                          let local_idx = index - import_func_count
-                          if local_idx < Array::length(func_type_indices) {
-                            Array::get(func_type_indices, local_idx)
-                          } else { 0 - 1 }
-                        }
-                        if (type_idx >= 0) && (type_idx < Array::length(type_sigs)) {
-                          Array::push(out_names, name)
-                          Array::push(out_func_indices, index)
-                          Array::push(out_type_sigs, Array::get(type_sigs, type_idx))
-                          export_count = export_count + 1
-                        }
-                      }
-                      e = e + 1
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-        i = sec_end
-      }
-    }
-    export_count
-  }
-}
-
-// === Core valtype → component valtype ===
-
-let core_to_comp_valtype = (v: Int) -> Int {
-  if v == 127 { comp_valtype_s32 }       // i32 → s32
-  else { if v == 126 { comp_valtype_s64 } // i64 → s64
-  else { if v == 125 { comp_valtype_f32 } // f32 → f32
-  else { if v == 124 { comp_valtype_f64 } // f64 → f64
-  else { 0 - 1 } } } }                    // unsupported
-}
-
-// === Component section emitters ===
-
-// Emit core module section (section 1)
-let emit_core_module_section = (buf: Array[Int], core_wasm: Bytes) -> Unit {
-  bytebuf_push(buf, section_module)
-  let wasm_len = Bytes::length(core_wasm)
-  leb128_encode_u32(buf, wasm_len)
-  let mut i = 0
-  while i < wasm_len {
-    bytebuf_push(buf, Bytes::get(core_wasm, i))
-    i = i + 1
-  }
-}
-
-let emit_raw_content = (buf: Array[Int], content: Array[Int]) -> Unit {
-  leb128_encode_u32(buf, Array::length(content))
-  bytebuf_push_array(buf, content)
-}
-
-let emit_core_instance_instantiate_section = (buf: Array[Int], module_index: Int, module_names: Array[String]) -> Unit {
-  bytebuf_push(buf, section_core_instance)
-  let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 0)  // instantiate
-  leb128_encode_u32(content, module_index)
-  leb128_encode_u32(content, Array::length(module_names))
-  let mut i = 0
-  while i < Array::length(module_names) {
-    emit_name(content, Array::get(module_names, i))
-    bytebuf_push(content, comp_inst_arg_instance)
-    leb128_encode_u32(content, i)
-    i = i + 1
-  }
-  emit_raw_content(buf, content)
-}
-
-// Emit core instance from exports section
-let emit_core_instance_from_exports = (
-  buf: Array[Int],
-  // module_bindings: array of arrays, each inner array = [func_name_indices..., func_idx...]
-  // Simplified: we pass binding_func_names and binding_func_indices grouped by module
-  num_modules: Int,
-  module_binding_counts: Array[Int],
-  binding_func_names: Array[String],
-  binding_func_indices: Array[Int]
-) -> Unit {
-  if num_modules == 0 { () }
-  else {
-    bytebuf_push(buf, section_core_instance)
-    let content = bytebuf_new()
-    leb128_encode_u32(content, num_modules)
-    let mut offset = 0
-    let mut m = 0
-    while m < num_modules {
-      let count = Array::get(module_binding_counts, m)
-      bytebuf_push(content, 1)  // from exports
-      leb128_encode_u32(content, count)
-      let mut b = 0
-      while b < count {
-        emit_name(content, Array::get(binding_func_names, offset + b))
-        bytebuf_push(content, core_sort_func)
-        leb128_encode_u32(content, Array::get(binding_func_indices, offset + b))
-        b = b + 1
-      }
-      offset = offset + count
-      m = m + 1
-    }
-    emit_raw_content(buf, content)
-  }
-}
-
-// Emit alias section
-let emit_alias_section = (buf: Array[Int], core_instance_idx: Int, names: Array[String], sorts: Array[Int]) -> Unit {
-  let count = Array::length(names)
-  if count == 0 { () }
-  else {
-    bytebuf_push(buf, section_alias)
-    let content = bytebuf_new()
-    leb128_encode_u32(content, count)
-    let mut i = 0
-    while i < count {
-      bytebuf_push(content, 0)  // core export from instance
-      bytebuf_push(content, Array::get(sorts, i))  // sort
-      bytebuf_push(content, 1)  // aliaskind marker
-      leb128_encode_u32(content, core_instance_idx)
-      emit_name(content, Array::get(names, i))
-      i = i + 1
-    }
-    emit_raw_content(buf, content)
-  }
-}
-
-// Emit alias for run + memory
-let emit_alias_run_and_memory = (buf: Array[Int], core_instance_idx: Int) -> Unit {
-  emit_alias_section(buf, core_instance_idx, ["run", "memory"], [core_sort_func, core_sort_mem])
-}
-
-// === Component type section ===
-
-// Emit component func type into content buffer
-let emit_comp_func_type = (
-  content: Array[Int],
-  param_types: Array[Int],
-  param_names: Array[String],
-  result_types: Array[Int],
-  is_async: Int  // 0 = sync, 1 = async
-) -> Unit {
-  if is_async != 0 {
-    bytebuf_push(content, 67)  // 0x43 async
-  } else {
-    bytebuf_push(content, 64)  // 0x40 sync
-  }
-  leb128_encode_u32(content, Array::length(param_types))
-  let mut i = 0
-  while i < Array::length(param_types) {
-    let name = if i < Array::length(param_names) { normalize_comp_param_name(Array::get(param_names, i)) }
-    else { String::concat("p", __to_string(i)) }
-    emit_name(content, name)
-    bytebuf_push(content, Array::get(param_types, i))
-    i = i + 1
-  }
-  if Array::length(result_types) == 0 {
-    bytebuf_push(content, 1)  // named results
-    leb128_encode_u32(content, 0)
-  } else {
-    if Array::length(result_types) == 1 {
-      bytebuf_push(content, 0)  // single unnamed result
-      bytebuf_push(content, Array::get(result_types, 0))
-    } else {
-      bytebuf_push(content, 1)  // named results
-      leb128_encode_u32(content, Array::length(result_types))
-      let mut r = 0
-      while r < Array::length(result_types) {
-        emit_name(content, String::concat("r", __to_string(r)))
-        bytebuf_push(content, Array::get(result_types, r))
-        r = r + 1
-      }
-    }
-  }
-}
-
-// Emit type section with multiple component func sigs
-// sigs_params: array of param type arrays
-// sigs_results: array of result type arrays
-let emit_comp_type_section = (
-  buf: Array[Int],
-  sigs_params: Array[Array[Int]],
-  sigs_param_names: Array[Array[String]],
-  sigs_results: Array[Array[Int]],
-  sigs_async: Array[Int]
-) -> Unit {
-  let count = Array::length(sigs_params)
-  if count == 0 { () }
-  else {
-    bytebuf_push(buf, section_type)
-    let content = bytebuf_new()
-    leb128_encode_u32(content, count)
-    let mut i = 0
-    while i < count {
-      emit_comp_func_type(
-        content,
-        Array::get(sigs_params, i),
-        Array::get(sigs_param_names, i),
-        Array::get(sigs_results, i),
-        Array::get(sigs_async, i)
-      )
-      i = i + 1
-    }
-    emit_raw_content(buf, content)
-  }
-}
-
-// Emit type section for run result: () -> s64
-let emit_comp_type_section_run = (buf: Array[Int]) -> Unit {
-  bytebuf_push(buf, section_type)
-  let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  emit_comp_func_type(content, bytebuf_new(), Array::slice([""], 0, 0), [comp_valtype_s64], 0)
-  emit_raw_content(buf, content)
-}
-
-// === Component import section ===
-
-let emit_comp_import_section = (buf: Array[Int], import_names: Array[String], count: Int) -> Unit {
-  if count == 0 { () }
-  else {
-    bytebuf_push(buf, section_import)
-    let content = bytebuf_new()
-    leb128_encode_u32(content, count)
-    let mut i = 0
-    while i < count {
-      bytebuf_push(content, 0)  // plain name
-      emit_name(content, Array::get(import_names, i))
-      bytebuf_push(content, comp_extern_func)
-      leb128_encode_u32(content, i)  // type index
-      i = i + 1
-    }
-    emit_raw_content(buf, content)
-  }
-}
-
-// === Canon lower section ===
-
-let emit_canon_lower_section = (buf: Array[Int], count: Int) -> Unit {
-  if count == 0 { () }
-  else {
-    bytebuf_push(buf, section_canon)
-    let content = bytebuf_new()
-    leb128_encode_u32(content, count)
-    let mut i = 0
-    while i < count {
-      bytebuf_push(content, 1)  // canon lower
-      bytebuf_push(content, 0)  // func
-      leb128_encode_u32(content, i)  // component func index
-      leb128_encode_u32(content, 0)  // 0 options
-      i = i + 1
-    }
-    emit_raw_content(buf, content)
-  }
-}
-
-// === Canon lift ===
-
-let emit_canon_lift_func = (
-  content: Array[Int],
-  core_func_idx: Int,
-  type_idx: Int,
-  need_string: Int,  // 0 = no, 1 = yes
-  memory_idx: Int,
-  realloc_idx: Int
-) -> Unit {
-  bytebuf_push(content, 0)  // canon lift
-  bytebuf_push(content, 0)  // func
-  leb128_encode_u32(content, core_func_idx)
-  if need_string != 0 {
-    leb128_encode_u32(content, 3)  // 3 options
-    bytebuf_push(content, 0)  // string-encoding utf8
-    bytebuf_push(content, 3)  // memory
-    leb128_encode_u32(content, memory_idx)
-    bytebuf_push(content, 4)  // realloc
-    leb128_encode_u32(content, realloc_idx)
-  } else {
-    leb128_encode_u32(content, 0)  // 0 options
-  }
-  leb128_encode_u32(content, type_idx)
-}
-
-let emit_canon_lift_section = (buf: Array[Int], core_func_idx: Int, type_idx: Int) -> Unit {
-  bytebuf_push(buf, section_canon)
-  let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  emit_canon_lift_func(content, core_func_idx, type_idx, 0, 0, 0)
-  emit_raw_content(buf, content)
-}
-
-// === Component export section ===
-
-let normalize_comp_export_name = (name: String) -> String {
-  String::replace_all(name, "_", "-")
-}
-
-let emit_comp_export_section = (buf: Array[Int], name: String, func_idx: Int) -> Unit {
-  let export_name = normalize_comp_export_name(name)
-  bytebuf_push(buf, section_export)
-  let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 0)  // plain name discriminator
-  emit_name(content, export_name)
-  bytebuf_push(content, comp_extern_func)
-  leb128_encode_u32(content, func_idx)
-  leb128_encode_u32(content, 0)  // no type annotation
-  emit_raw_content(buf, content)
-}
-
-// === Build import plan ===
-// Returns: import_count (also populates output arrays)
-// out_import_names: ["import-0", "import-1", ...]
-// out_binding_func_names: func names per binding
-// out_binding_func_indices: func indices per binding
-// out_unique_module_names: unique module names
-// out_module_binding_counts: number of bindings per module
-// out_comp_param_types: component param types per binding
-// out_comp_result_types: component result types per binding
-
-let build_import_plan = (
-  core_wasm: Bytes,
-  out_import_names: Array[String],
-  out_binding_func_names: Array[String],
-  out_binding_func_indices: Array[Int],
-  out_unique_module_names: Array[String],
-  out_module_binding_counts: Array[Int],
-  out_comp_params: Array[Array[Int]],
-  out_comp_param_names: Array[Array[String]],
-  out_comp_results: Array[Array[Int]]
-) -> Int {
-  let imp_module_names = Array::slice([""], 0, 0)
-  let imp_func_names = Array::slice([""], 0, 0)
+let build_import_plan = (core_wasm: Bytes, out_import_names: Array[String], out_binding_func_names: Array[String], out_binding_func_indices: Array[Int], out_unique_module_names: Array[String], out_module_binding_counts: Array[Int], out_comp_params: Array[Array[Int]], out_comp_param_names: Array[Array[String]], out_comp_results: Array[Array[Int]]) -> Int {
+  let imp_module_names = Array::slice([
+    ""
+  ], 0, 0)
+  let imp_func_names = Array::slice([
+    ""
+  ], 0, 0)
   let imp_type_indices = bytebuf_new()
-  let type_sigs = Array::slice([[0]], 0, 0)
+  let type_sigs = Array::slice([
+    [
+      0
+    ]
+  ], 0, 0)
   let _ = parse_core_imports(core_wasm, imp_module_names, imp_func_names, imp_type_indices, type_sigs)
-
-  let seen_keys = Array::slice([""], 0, 0)
-  let module_idx_map_keys = Array::slice([""], 0, 0)
+  let seen_keys = Array::slice([
+    ""
+  ], 0, 0)
+  let module_idx_map_keys = Array::slice([
+    ""
+  ], 0, 0)
   let module_idx_map_vals = bytebuf_new()
   let mut binding_count = 0
-
   let mut i = 0
   while i < Array::length(imp_module_names) {
     let mod_name = Array::get(imp_module_names, i)
     let fn_name = Array::get(imp_func_names, i)
     let key = String::concat(String::concat(mod_name, "||"), fn_name)
-
-    // Check if already seen
     let mut already = false
     let mut s = 0
     while s < Array::length(seen_keys) {
-      if String::equals(Array::get(seen_keys, s), key) { already = true }
+      if String::equals(Array::get(seen_keys, s), key) {
+        already = true
+      }
       s = s + 1
     }
-
     if already == false {
       Array::push(seen_keys, key)
       let type_idx = Array::get(imp_type_indices, i)
@@ -790,28 +565,32 @@ let build_import_plan = (
         let sig = Array::get(type_sigs, type_idx)
         let params = sig_params(sig)
         let results = sig_results(sig)
-
-        // Convert core valtypes to component valtypes
         let comp_params = bytebuf_new()
         let mut valid = true
         let mut p = 0
         while p < Array::length(params) {
           let cv = core_to_comp_valtype(Array::get(params, p))
-          if cv < 0 { valid = false }
-          else { Array::push(comp_params, cv) }
+          if cv < 0 {
+            valid = false
+          }
+          else {
+            Array::push(comp_params, cv)
+          }
           p = p + 1
         }
         let comp_results = bytebuf_new()
         let mut r = 0
         while r < Array::length(results) {
           let cv = core_to_comp_valtype(Array::get(results, r))
-          if cv < 0 { valid = false }
-          else { Array::push(comp_results, cv) }
+          if cv < 0 {
+            valid = false
+          }
+          else {
+            Array::push(comp_results, cv)
+          }
           r = r + 1
         }
-
         if valid {
-          // Find or create module index
           let mut mod_idx = 0 - 1
           let mut mi = 0
           while mi < Array::length(module_idx_map_keys) {
@@ -827,20 +606,18 @@ let build_import_plan = (
             Array::push(module_idx_map_keys, mod_name)
             Array::push(module_idx_map_vals, mod_idx)
           }
-
           let import_name = String::concat("import-", __to_string(binding_count))
           Array::push(out_import_names, import_name)
           Array::push(out_binding_func_names, fn_name)
           Array::push(out_binding_func_indices, binding_count)
           Array::push(out_comp_params, comp_params)
-          let empty_names = Array::slice([""], 0, 0)
+          let empty_names = Array::slice([
+            ""
+          ], 0, 0)
           Array::push(out_comp_param_names, empty_names)
           Array::push(out_comp_results, comp_results)
-
-          // Increment module binding count
           let cur = Array::get(out_module_binding_counts, mod_idx)
           Array::set(out_module_binding_counts, mod_idx, cur + 1)
-
           binding_count = binding_count + 1
         }
       }
@@ -850,69 +627,169 @@ let build_import_plan = (
   binding_count
 }
 
-// === Public API ===
+let comp_inst_arg_instance = 18
 
-// Simple component wrap (no imports)
-export let comp_emit_component_wasm = (core_wasm: Bytes) -> Bytes {
-  let buf = bytebuf_new()
-  emit_component_header(buf)
-  emit_core_module_section(buf, core_wasm)
-  emit_core_instance_instantiate_section(buf, 0, Array::slice([""], 0, 0))
-  emit_alias_run_and_memory(buf, 0)
-  bytebuf_to_bytes(buf)
+let emit_canon_lift_section = (buf: Array[Int], core_func_idx: Int, type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  emit_canon_lift_func(content, core_func_idx, type_idx, 0, 0, 0)
+  emit_raw_content(buf, content)
 }
 
-// Component with canon lift (handles imports)
-export let comp_emit_component_wasm_with_lift = (core_wasm: Bytes, export_name: String) -> Bytes {
-  let import_names = Array::slice([""], 0, 0)
-  let binding_func_names = Array::slice([""], 0, 0)
-  let binding_func_indices = bytebuf_new()
-  let unique_module_names = Array::slice([""], 0, 0)
-  let module_binding_counts = bytebuf_new()
-  let comp_params = Array::slice([[0]], 0, 0)
-  let comp_param_names = Array::slice([Array::slice([""], 0, 0)], 0, 0)
-  let comp_results = Array::slice([[0]], 0, 0)
-
-  let import_func_count = build_import_plan(
-    core_wasm,
-    import_names, binding_func_names, binding_func_indices,
-    unique_module_names, module_binding_counts,
-    comp_params, comp_param_names, comp_results
-  )
-
-  let main_instance_idx = Array::length(unique_module_names)
-  let run_core_func_idx = import_func_count
-  let run_type_idx = import_func_count
-  let run_func_idx = import_func_count
-
-  let buf = bytebuf_new()
-  emit_component_header(buf)
-  emit_core_module_section(buf, core_wasm)
-
-  let async_flags = bytebuf_new()
-  let mut af = 0
-  while af < import_func_count {
-    Array::push(async_flags, 0)
-    af = af + 1
+let emit_canon_lower_section = (buf: Array[Int], count: Int) -> Unit {
+  if count == 0 {
+    ()
   }
-  emit_comp_type_section(buf, comp_params, comp_param_names, comp_results, async_flags)
-  emit_comp_import_section(buf, import_names, import_func_count)
-  emit_canon_lower_section(buf, import_func_count)
-  emit_core_instance_from_exports(buf, Array::length(unique_module_names),
-    module_binding_counts, binding_func_names, binding_func_indices)
-  emit_core_instance_instantiate_section(buf, 0, unique_module_names)
-  emit_alias_run_and_memory(buf, main_instance_idx)
-  emit_comp_type_section_run(buf)
-  emit_canon_lift_section(buf, run_core_func_idx, run_type_idx)
-  emit_comp_export_section(buf, export_name, run_func_idx)
-  bytebuf_to_bytes(buf)
+  else {
+    bytebuf_push(buf, section_canon)
+    let content = bytebuf_new()
+    leb128_encode_u32(content, count)
+    let mut i = 0
+    while i < count {
+      bytebuf_push(content, 1)
+      bytebuf_push(content, 0)
+      leb128_encode_u32(content, i)
+      leb128_encode_u32(content, 0)
+      i = i + 1
+    }
+    emit_raw_content(buf, content)
+  }
 }
 
-// === String trampoline module ===
+let emit_comp_import_section = (buf: Array[Int], import_names: Array[String], count: Int) -> Unit {
+  if count == 0 {
+    ()
+  }
+  else {
+    bytebuf_push(buf, section_import)
+    let content = bytebuf_new()
+    leb128_encode_u32(content, count)
+    let mut i = 0
+    while i < count {
+      bytebuf_push(content, 0)
+      emit_name(content, Array::get(import_names, i))
+      bytebuf_push(content, comp_extern_func)
+      leb128_encode_u32(content, i)
+      i = i + 1
+    }
+    emit_raw_content(buf, content)
+  }
+}
+
+let emit_core_module_section = (buf: Array[Int], core_wasm: Bytes) -> Unit {
+  bytebuf_push(buf, section_module)
+  let wasm_len = Bytes::length(core_wasm)
+  leb128_encode_u32(buf, wasm_len)
+  let mut i = 0
+  while i < wasm_len {
+    bytebuf_push(buf, Bytes::get(core_wasm, i))
+    i = i + 1
+  }
+}
+
+let emit_alias_run_and_memory = (buf: Array[Int], core_instance_idx: Int) -> Unit {
+  emit_alias_section(buf, core_instance_idx, [
+    "run",
+    "memory"
+  ], [
+    core_sort_func,
+    core_sort_mem
+  ])
+}
+
+let normalize_comp_param_name = (name: String) -> String {
+  String::replace_all(name, "_", "-")
+}
+
+let emit_comp_func_type = (content: Array[Int], param_types: Array[Int], param_names: Array[String], result_types: Array[Int], is_async: Int) -> Unit {
+  if is_async != 0 {
+    bytebuf_push(content, 67)
+  } else {
+    bytebuf_push(content, 64)
+  }
+  leb128_encode_u32(content, Array::length(param_types))
+  let mut i = 0
+  while i < Array::length(param_types) {
+    let name = if i < Array::length(param_names) {
+      normalize_comp_param_name(Array::get(param_names, i))
+    }
+    else {
+      String::concat("p", __to_string(i))
+    }
+    emit_name(content, name)
+    bytebuf_push(content, Array::get(param_types, i))
+    i = i + 1
+  }
+  if Array::length(result_types) == 0 {
+    bytebuf_push(content, 1)
+    leb128_encode_u32(content, 0)
+  } else {
+    if Array::length(result_types) == 1 {
+      bytebuf_push(content, 0)
+      bytebuf_push(content, Array::get(result_types, 0))
+    } else {
+      bytebuf_push(content, 1)
+      leb128_encode_u32(content, Array::length(result_types))
+      let mut r = 0
+      while r < Array::length(result_types) {
+        emit_name(content, String::concat("r", __to_string(r)))
+        bytebuf_push(content, Array::get(result_types, r))
+        r = r + 1
+      }
+    }
+  }
+}
+
+let emit_comp_type_section = (buf: Array[Int], sigs_params: Array[Array[Int]], sigs_param_names: Array[Array[String]], sigs_results: Array[Array[Int]], sigs_async: Array[Int]) -> Unit {
+  let count = Array::length(sigs_params)
+  if count == 0 {
+    ()
+  }
+  else {
+    bytebuf_push(buf, section_type)
+    let content = bytebuf_new()
+    leb128_encode_u32(content, count)
+    let mut i = 0
+    while i < count {
+      emit_comp_func_type(content, Array::get(sigs_params, i), Array::get(sigs_param_names, i), Array::get(sigs_results, i), Array::get(sigs_async, i))
+      i = i + 1
+    }
+    emit_raw_content(buf, content)
+  }
+}
+
+let emit_comp_type_section_run = (buf: Array[Int]) -> Unit {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  emit_comp_func_type(content, bytebuf_new(), Array::slice([
+    ""
+  ], 0, 0), [
+    comp_valtype_s64
+  ], 0)
+  emit_raw_content(buf, content)
+}
+
+let normalize_comp_export_name = (name: String) -> String {
+  String::replace_all(name, "_", "-")
+}
+
+let emit_comp_export_section = (buf: Array[Int], name: String, func_idx: Int) -> Unit {
+  let export_name = normalize_comp_export_name(name)
+  bytebuf_push(buf, section_export)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 0)
+  emit_name(content, export_name)
+  bytebuf_push(content, comp_extern_func)
+  leb128_encode_u32(content, func_idx)
+  leb128_encode_u32(content, 0)
+  emit_raw_content(buf, content)
+}
 
 export let comp_generate_string_trampoline = (string_param_count: Int, call_run_init: Int) -> Bytes {
   let buf = bytebuf_new()
-  // WASM magic + version
   bytebuf_push(buf, 0)
   bytebuf_push(buf, 97)
   bytebuf_push(buf, 115)
@@ -921,24 +798,23 @@ export let comp_generate_string_trampoline = (string_param_count: Int, call_run_
   bytebuf_push(buf, 0)
   bytebuf_push(buf, 0)
   bytebuf_push(buf, 0)
-
   let body = bytebuf_new()
-
-  // Type section (id=1): 3-4 types
   let type_sec = bytebuf_new()
-  leb128_encode_u32(type_sec, if call_run_init != 0 { 4 } else { 3 })
-  // Type 0: target_func (i64 * count + i32 env) -> i64
+  leb128_encode_u32(type_sec, if call_run_init != 0 {
+    4
+  } else {
+    3
+  })
   bytebuf_push(type_sec, 96)
   leb128_encode_u32(type_sec, string_param_count + 1)
   let mut ti = 0
   while ti < string_param_count {
-    bytebuf_push(type_sec, 126)  // i64
+    bytebuf_push(type_sec, 126)
     ti = ti + 1
   }
-  bytebuf_push(type_sec, 127)  // i32 env
+  bytebuf_push(type_sec, 127)
   bytebuf_push(type_sec, 1)
-  bytebuf_push(type_sec, 126)  // result i64
-  // Type 1: cabi_realloc(i32,i32,i32,i32)->i32
+  bytebuf_push(type_sec, 126)
   bytebuf_push(type_sec, 96)
   bytebuf_push(type_sec, 4)
   bytebuf_push(type_sec, 127)
@@ -947,27 +823,28 @@ export let comp_generate_string_trampoline = (string_param_count: Int, call_run_
   bytebuf_push(type_sec, 127)
   bytebuf_push(type_sec, 1)
   bytebuf_push(type_sec, 127)
-  // Type 2: canon_func (i32,i32)*count -> i64
   bytebuf_push(type_sec, 96)
   leb128_encode_u32(type_sec, string_param_count * 2)
   let mut ci = 0
   while ci < (string_param_count * 2) {
-    bytebuf_push(type_sec, 127)  // i32
+    bytebuf_push(type_sec, 127)
     ci = ci + 1
   }
   bytebuf_push(type_sec, 1)
-  bytebuf_push(type_sec, 126)  // i64
+  bytebuf_push(type_sec, 126)
   if call_run_init != 0 {
     bytebuf_push(type_sec, 96)
     leb128_encode_u32(type_sec, 0)
     bytebuf_push(type_sec, 1)
-    bytebuf_push(type_sec, 126)  // i64
+    bytebuf_push(type_sec, 126)
   }
   bytebuf_push_section(body, 1, type_sec)
-
-  // Import section (id=2)
   let import_sec = bytebuf_new()
-  leb128_encode_u32(import_sec, if call_run_init != 0 { 4 } else { 3 })
+  leb128_encode_u32(import_sec, if call_run_init != 0 {
+    4
+  } else {
+    3
+  })
   emit_name(import_sec, "env")
   emit_name(import_sec, "target_func")
   bytebuf_push(import_sec, 0)
@@ -984,152 +861,240 @@ export let comp_generate_string_trampoline = (string_param_count: Int, call_run_
   }
   emit_name(import_sec, "env")
   emit_name(import_sec, "memory")
-  bytebuf_push(import_sec, 2)  // memory import
-  bytebuf_push(import_sec, 0)  // no max
+  bytebuf_push(import_sec, 2)
+  bytebuf_push(import_sec, 0)
   leb128_encode_u32(import_sec, 0)
   bytebuf_push_section(body, 2, import_sec)
-
-  // Function section (id=3)
   let func_sec = bytebuf_new()
   leb128_encode_u32(func_sec, 1)
   leb128_encode_u32(func_sec, 2)
   bytebuf_push_section(body, 3, func_sec)
-
-  // Export section (id=7)
   let export_sec = bytebuf_new()
   leb128_encode_u32(export_sec, 1)
   emit_name(export_sec, "canon_func")
   bytebuf_push(export_sec, 0)
-  leb128_encode_u32(export_sec, if call_run_init != 0 { 3 } else { 2 })
+  leb128_encode_u32(export_sec, if call_run_init != 0 {
+    3
+  } else {
+    2
+  })
   bytebuf_push_section(body, 7, export_sec)
-
-  // Code section (id=10)
   let code_sec = bytebuf_new()
   leb128_encode_u32(code_sec, 1)
-
   let func_body = bytebuf_new()
-  // Locals: count i64 + count i32
   leb128_encode_u32(func_body, 2)
   leb128_encode_u32(func_body, string_param_count)
-  bytebuf_push(func_body, 126)  // i64
+  bytebuf_push(func_body, 126)
   leb128_encode_u32(func_body, string_param_count)
-  bytebuf_push(func_body, 127)  // i32
-
+  bytebuf_push(func_body, 127)
   if call_run_init != 0 {
-    bytebuf_push(func_body, 16)  // call
-    leb128_encode_u32(func_body, 2)  // run_init
-    bytebuf_push(func_body, 26)  // drop
+    bytebuf_push(func_body, 16)
+    leb128_encode_u32(func_body, 2)
+    bytebuf_push(func_body, 26)
   }
-
   let tagged_base = string_param_count * 2
   let obj_base = tagged_base + string_param_count
-
   let mut si = 0
   while si < string_param_count {
     let ptr_local = si * 2
     let len_local = (si * 2) + 1
     let tagged_local = tagged_base + si
     let obj_local = obj_base + si
-
-    // obj = cabi_realloc(0, 0, 4, 8 + len)
     emit_i32_const(func_body, 0)
     emit_i32_const(func_body, 0)
     emit_i32_const(func_body, 4)
     emit_local_get(func_body, len_local)
     emit_i32_const(func_body, 8)
     emit_i32_add(func_body)
-    bytebuf_push(func_body, 16)  // call
-    leb128_encode_u32(func_body, 1)  // cabi_realloc
+    bytebuf_push(func_body, 16)
+    leb128_encode_u32(func_body, 1)
     emit_local_set(func_body, obj_local)
-
-    // obj[0] = 1 (obj_string tag)
     emit_local_get(func_body, obj_local)
     emit_i32_const(func_body, 1)
     emit_i32_store(func_body, 0, 0)
-
-    // obj[4] = len
     emit_local_get(func_body, obj_local)
     emit_local_get(func_body, len_local)
     emit_i32_store(func_body, 0, 4)
-
-    // memory.copy(obj+8, ptr, len)
     emit_local_get(func_body, obj_local)
     emit_i32_const(func_body, 8)
     emit_i32_add(func_body)
     emit_local_get(func_body, ptr_local)
     emit_local_get(func_body, len_local)
-    bytebuf_push(func_body, 252)  // 0xFC prefix
-    leb128_encode_u32(func_body, 10)  // memory.copy
-    bytebuf_push(func_body, 0)  // dst mem
-    bytebuf_push(func_body, 0)  // src mem
-
-    // tagged = (obj as i64) | 1
+    bytebuf_push(func_body, 252)
+    leb128_encode_u32(func_body, 10)
+    bytebuf_push(func_body, 0)
+    bytebuf_push(func_body, 0)
     emit_local_get(func_body, obj_local)
-    // i64.extend_i32_u = 0xAD
     bytebuf_push(func_body, 173)
-    // i64.const 1
     bytebuf_push(func_body, 66)
     leb128_encode_s64(func_body, 1)
-    // i64.or
     bytebuf_push(func_body, 132)
     emit_local_set(func_body, tagged_local)
-
     si = si + 1
   }
-
-  // Call target_func(tagged_0, ..., 0)
   let mut ci2 = 0
   while ci2 < string_param_count {
     emit_local_get(func_body, tagged_base + ci2)
     ci2 = ci2 + 1
   }
-  emit_i32_const(func_body, 0)  // dummy env
-  bytebuf_push(func_body, 16)  // call
-  leb128_encode_u32(func_body, 0)  // target_func
-  bytebuf_push(func_body, 11)  // end
-
+  emit_i32_const(func_body, 0)
+  bytebuf_push(func_body, 16)
+  leb128_encode_u32(func_body, 0)
+  bytebuf_push(func_body, 11)
   leb128_encode_u32(code_sec, Array::length(func_body))
   bytebuf_push_array(code_sec, func_body)
   bytebuf_push_section(body, 10, code_sec)
-
   bytebuf_push_array(buf, body)
   bytebuf_to_bytes(buf)
 }
 
-// Component with string lift
-export let comp_emit_component_wasm_with_string_lift = (
-  core_wasm: Bytes,
-  target_func_name: String,
-  export_name: String,
-  string_param_count: Int,
-  param_names: Array[String],
-  is_async: Int
-) -> Bytes {
-  let import_names = Array::slice([""], 0, 0)
-  let binding_func_names = Array::slice([""], 0, 0)
+let emit_core_instance_from_exports = (buf: Array[Int], num_modules: Int, module_binding_counts: Array[Int], binding_func_names: Array[String], binding_func_indices: Array[Int]) -> Unit {
+  if num_modules == 0 {
+    ()
+  }
+  else {
+    bytebuf_push(buf, section_core_instance)
+    let content = bytebuf_new()
+    leb128_encode_u32(content, num_modules)
+    let mut offset = 0
+    let mut m = 0
+    while m < num_modules {
+      let count = Array::get(module_binding_counts, m)
+      bytebuf_push(content, 1)
+      leb128_encode_u32(content, count)
+      let mut b = 0
+      while b < count {
+        emit_name(content, Array::get(binding_func_names, offset + b))
+        bytebuf_push(content, core_sort_func)
+        leb128_encode_u32(content, Array::get(binding_func_indices, offset + b))
+        b = b + 1
+      }
+      offset = offset + count
+      m = m + 1
+    }
+    emit_raw_content(buf, content)
+  }
+}
+
+let emit_core_instance_instantiate_section = (buf: Array[Int], module_index: Int, module_names: Array[String]) -> Unit {
+  bytebuf_push(buf, section_core_instance)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, module_index)
+  leb128_encode_u32(content, Array::length(module_names))
+  let mut i = 0
+  while i < Array::length(module_names) {
+    emit_name(content, Array::get(module_names, i))
+    bytebuf_push(content, comp_inst_arg_instance)
+    leb128_encode_u32(content, i)
+    i = i + 1
+  }
+  emit_raw_content(buf, content)
+}
+
+export let comp_emit_component_wasm = (core_wasm: Bytes) -> Bytes {
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  emit_core_module_section(buf, core_wasm)
+  emit_core_instance_instantiate_section(buf, 0, Array::slice([
+    ""
+  ], 0, 0))
+  emit_alias_run_and_memory(buf, 0)
+  bytebuf_to_bytes(buf)
+}
+
+export let comp_emit_component_wasm_with_lift = (core_wasm: Bytes, export_name: String) -> Bytes {
+  let import_names = Array::slice([
+    ""
+  ], 0, 0)
+  let binding_func_names = Array::slice([
+    ""
+  ], 0, 0)
   let binding_func_indices = bytebuf_new()
-  let unique_module_names = Array::slice([""], 0, 0)
+  let unique_module_names = Array::slice([
+    ""
+  ], 0, 0)
   let module_binding_counts = bytebuf_new()
-  let comp_params = Array::slice([[0]], 0, 0)
-  let comp_param_names = Array::slice([Array::slice([""], 0, 0)], 0, 0)
-  let comp_results = Array::slice([[0]], 0, 0)
-  let export_names = Array::slice([""], 0, 0)
+  let comp_params = Array::slice([
+    [
+      0
+    ]
+  ], 0, 0)
+  let comp_param_names = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  let comp_results = Array::slice([
+    [
+      0
+    ]
+  ], 0, 0)
+  let import_func_count = build_import_plan(core_wasm, import_names, binding_func_names, binding_func_indices, unique_module_names, module_binding_counts, comp_params, comp_param_names, comp_results)
+  let main_instance_idx = Array::length(unique_module_names)
+  let run_core_func_idx = import_func_count
+  let run_type_idx = import_func_count
+  let run_func_idx = import_func_count
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  emit_core_module_section(buf, core_wasm)
+  let async_flags = bytebuf_new()
+  let mut af = 0
+  while af < import_func_count {
+    Array::push(async_flags, 0)
+    af = af + 1
+  }
+  emit_comp_type_section(buf, comp_params, comp_param_names, comp_results, async_flags)
+  emit_comp_import_section(buf, import_names, import_func_count)
+  emit_canon_lower_section(buf, import_func_count)
+  emit_core_instance_from_exports(buf, Array::length(unique_module_names), module_binding_counts, binding_func_names, binding_func_indices)
+  emit_core_instance_instantiate_section(buf, 0, unique_module_names)
+  emit_alias_run_and_memory(buf, main_instance_idx)
+  emit_comp_type_section_run(buf)
+  emit_canon_lift_section(buf, run_core_func_idx, run_type_idx)
+  emit_comp_export_section(buf, export_name, run_func_idx)
+  bytebuf_to_bytes(buf)
+}
+
+export let comp_emit_component_wasm_with_string_lift = (core_wasm: Bytes, target_func_name: String, export_name: String, string_param_count: Int, param_names: Array[String], is_async: Int) -> Bytes {
+  let import_names = Array::slice([
+    ""
+  ], 0, 0)
+  let binding_func_names = Array::slice([
+    ""
+  ], 0, 0)
+  let binding_func_indices = bytebuf_new()
+  let unique_module_names = Array::slice([
+    ""
+  ], 0, 0)
+  let module_binding_counts = bytebuf_new()
+  let comp_params = Array::slice([
+    [
+      0
+    ]
+  ], 0, 0)
+  let comp_param_names = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  let comp_results = Array::slice([
+    [
+      0
+    ]
+  ], 0, 0)
+  let export_names = Array::slice([
+    ""
+  ], 0, 0)
   let export_func_indices = bytebuf_new()
-  let export_type_sigs = Array::slice([[0]], 0, 0)
-
-  let import_func_count = build_import_plan(
-    core_wasm,
-    import_names, binding_func_names, binding_func_indices,
-    unique_module_names, module_binding_counts,
-    comp_params, comp_param_names, comp_results
-  )
-  let _ = parse_core_exports(
-    core_wasm,
-    export_names,
-    export_func_indices,
-    export_type_sigs
-  )
-
+  let export_type_sigs = Array::slice([
+    [
+      0
+    ]
+  ], 0, 0)
+  let import_func_count = build_import_plan(core_wasm, import_names, binding_func_names, binding_func_indices, unique_module_names, module_binding_counts, comp_params, comp_param_names, comp_results)
+  let _ = parse_core_exports(core_wasm, export_names, export_func_indices, export_type_sigs)
   let mut call_run_init = 0
   let mut ei = 0
   while ei < Array::length(export_names) {
@@ -1141,20 +1106,17 @@ export let comp_emit_component_wasm_with_string_lift = (
     }
   }
   let has_distinct_run_alias =
-    if (call_run_init != 0) && (target_func_name != "run") { 1 } else { 0 }
-
+  if (call_run_init != 0) && (target_func_name != "run") {
+    1
+  } else {
+    0
+  }
   let main_instance_idx = Array::length(unique_module_names)
   let trampoline_wasm = comp_generate_string_trampoline(string_param_count, call_run_init)
-
   let buf = bytebuf_new()
   emit_component_header(buf)
-
-  // Module 0: core wasm
   emit_core_module_section(buf, core_wasm)
-  // Module 1: trampoline
   emit_core_module_section(buf, trampoline_wasm)
-
-  // Import types + imports + canon lower + core instances from exports
   let async_flags = bytebuf_new()
   let mut af = 0
   while af < import_func_count {
@@ -1164,14 +1126,11 @@ export let comp_emit_component_wasm_with_string_lift = (
   emit_comp_type_section(buf, comp_params, comp_param_names, comp_results, async_flags)
   emit_comp_import_section(buf, import_names, import_func_count)
   emit_canon_lower_section(buf, import_func_count)
-  emit_core_instance_from_exports(buf, Array::length(unique_module_names),
-    module_binding_counts, binding_func_names, binding_func_indices)
-
-  // Instantiate module 0 (vibe core)
+  emit_core_instance_from_exports(buf, Array::length(unique_module_names), module_binding_counts, binding_func_names, binding_func_indices)
   emit_core_instance_instantiate_section(buf, 0, unique_module_names)
-
-  // Alias target_func, cabi_realloc, memory from vibe instance
-  let alias_names = Array::slice([""], 0, 0)
+  let alias_names = Array::slice([
+    ""
+  ], 0, 0)
   let alias_sorts = bytebuf_new()
   Array::push(alias_names, target_func_name)
   Array::push(alias_sorts, core_sort_func)
@@ -1184,22 +1143,27 @@ export let comp_emit_component_wasm_with_string_lift = (
   Array::push(alias_names, "memory")
   Array::push(alias_sorts, core_sort_mem)
   emit_alias_section(buf, main_instance_idx, alias_names, alias_sorts)
-
   let target_func_core_idx = import_func_count
   let cabi_realloc_core_idx = import_func_count + 1
   let run_init_core_idx =
-    if call_run_init != 0 {
-      if has_distinct_run_alias != 0 { import_func_count + 2 } else { target_func_core_idx }
+  if call_run_init != 0 {
+    if has_distinct_run_alias != 0 {
+      import_func_count + 2
     } else {
-      0 - 1
+      target_func_core_idx
     }
-
-  // Build env instance for trampoline
+  } else {
+    0 - 1
+  }
   bytebuf_push(buf, section_core_instance)
   let tramp_env = bytebuf_new()
   leb128_encode_u32(tramp_env, 1)
-  bytebuf_push(tramp_env, 1)  // from exports
-  leb128_encode_u32(tramp_env, if call_run_init != 0 { 4 } else { 3 })
+  bytebuf_push(tramp_env, 1)
+  leb128_encode_u32(tramp_env, if call_run_init != 0 {
+    4
+  } else {
+    3
+  })
   emit_name(tramp_env, "target_func")
   bytebuf_push(tramp_env, core_sort_func)
   leb128_encode_u32(tramp_env, target_func_core_idx)
@@ -1215,65 +1179,60 @@ export let comp_emit_component_wasm_with_string_lift = (
   bytebuf_push(tramp_env, core_sort_mem)
   leb128_encode_u32(tramp_env, 0)
   emit_raw_content(buf, tramp_env)
-
   let env_instance_idx = main_instance_idx + 1
-
-  // Instantiate module 1 (trampoline) with env
   bytebuf_push(buf, section_core_instance)
   let tramp_inst = bytebuf_new()
   leb128_encode_u32(tramp_inst, 1)
-  bytebuf_push(tramp_inst, 0)  // instantiate
-  leb128_encode_u32(tramp_inst, 1)  // module 1
-  leb128_encode_u32(tramp_inst, 1)  // 1 arg
+  bytebuf_push(tramp_inst, 0)
+  leb128_encode_u32(tramp_inst, 1)
+  leb128_encode_u32(tramp_inst, 1)
   emit_name(tramp_inst, "env")
   bytebuf_push(tramp_inst, comp_inst_arg_instance)
   leb128_encode_u32(tramp_inst, env_instance_idx)
   emit_raw_content(buf, tramp_inst)
-
   let trampoline_instance_idx = env_instance_idx + 1
-
-  // Alias canon_func from trampoline
-  emit_alias_section(buf, trampoline_instance_idx,
-    ["canon_func"], [core_sort_func])
-
-  let alias_func_count = if has_distinct_run_alias != 0 { 3 } else { 2 }
+  emit_alias_section(buf, trampoline_instance_idx, [
+    "canon_func"
+  ], [
+    core_sort_func
+  ])
+  let alias_func_count = if has_distinct_run_alias != 0 {
+    3
+  } else {
+    2
+  }
   let canon_func_core_idx = import_func_count + alias_func_count
-
-  // Component type: (string, string, ...) -> s64
   bytebuf_push(buf, section_type)
   let type_content = bytebuf_new()
   leb128_encode_u32(type_content, 1)
   if is_async != 0 {
-    bytebuf_push(type_content, 67)  // 0x43
+    bytebuf_push(type_content, 67)
   } else {
-    bytebuf_push(type_content, 64)  // 0x40
+    bytebuf_push(type_content, 64)
   }
   leb128_encode_u32(type_content, string_param_count)
   let mut pi = 0
   while pi < string_param_count {
-    let pname = if pi < Array::length(param_names) { normalize_comp_param_name(Array::get(param_names, pi)) }
-    else { String::concat("p", __to_string(pi)) }
+    let pname = if pi < Array::length(param_names) {
+      normalize_comp_param_name(Array::get(param_names, pi))
+    }
+    else {
+      String::concat("p", __to_string(pi))
+    }
     emit_name(type_content, pname)
     bytebuf_push(type_content, comp_valtype_string)
     pi = pi + 1
   }
-  bytebuf_push(type_content, 0)  // single unnamed result
+  bytebuf_push(type_content, 0)
   bytebuf_push(type_content, comp_valtype_s64)
   emit_raw_content(buf, type_content)
-
   let component_type_idx = import_func_count
-
-  // Canon lift with string support
   bytebuf_push(buf, section_canon)
   let canon_content = bytebuf_new()
   leb128_encode_u32(canon_content, 1)
-  emit_canon_lift_func(canon_content, canon_func_core_idx, component_type_idx,
-    1, 0, cabi_realloc_core_idx)
+  emit_canon_lift_func(canon_content, canon_func_core_idx, component_type_idx, 1, 0, cabi_realloc_core_idx)
   emit_raw_content(buf, canon_content)
-
-  // Export
   let lifted_func_idx = import_func_count
   emit_comp_export_section(buf, export_name, lifted_func_idx)
-
   bytebuf_to_bytes(buf)
 }

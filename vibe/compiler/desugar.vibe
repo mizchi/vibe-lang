@@ -7,7 +7,9 @@ import ./ast.vibe {
 //# Functions
 
 let prepend_expr = (first: Expr, rest: Array[Expr]) -> Array[Expr] {
-  let out = Array::slice([EUnit], 0, 0)
+  let out = Array::slice([
+    EUnit
+  ], 0, 0)
   Array::push(out, first)
   let mut i = 0
   while i < Array::length(rest) {
@@ -19,20 +21,23 @@ let prepend_expr = (first: Expr, rest: Array[Expr]) -> Array[Expr] {
 
 export let rec desugar_expr = (expr: Expr) -> Expr {
   match expr {
-    EBinOp(op, left, right) => {
-      if String::equals(op, "|>") {
-        let dl = desugar_expr(left)
-        let dr = desugar_expr(right)
-        match dr {
-          ECall(callee, args) => ECall(callee, prepend_expr(dl, args)),
-          _ => ECall(dr, [dl])
-        }
-      } else {
-        EBinOp(op, desugar_expr(left), desugar_expr(right))
+    EBinOp(op, left, right) => if String::equals(op, "|>") {
+      let dl = desugar_expr(left)
+      let dr = desugar_expr(right)
+      match dr {
+        ECall(callee, args) => ECall(callee, prepend_expr(dl, args)),
+        _ => ECall(dr, [
+          dl
+        ])
       }
-    },
+    } else {
+      EBinOp(op, desugar_expr(left), desugar_expr(right))
+    }
+    ,
     ECall(callee, args) => {
-      let desugared_args = for a in args { desugar_expr(a) }
+      let desugared_args = for a in args {
+        desugar_expr(a)
+      }
       match callee {
         EDot(obj, method_name) => ECall(EDot(desugar_expr(obj), method_name), desugared_args),
         _ => ECall(desugar_expr(callee), desugared_args)
@@ -44,26 +49,33 @@ export let rec desugar_expr = (expr: Expr) -> Expr {
     EBool(_) => expr,
     EIdent(_) => expr,
     EUnit => expr,
-    ETuple(elems) => ETuple(for e in elems { desugar_expr(e) }),
+    ETuple(elems) => ETuple(for e in elems {
+      desugar_expr(e)
+    }),
     EArray(elems) => {
-      // Check if any element is ESpread
       let has_spread = {
         let mut found = false
         let mut si = 0
         while si < Array::length(elems) {
           match Array::get(elems, si) {
-            ESpread(_) => { found = true; si = Array::length(elems) },
-            _ => { si = si + 1 }
+            ESpread(_) => {
+              found = true; si = Array::length(elems)
+            },
+            _ => {
+              si = si + 1
+            }
           }
           si
         }
         found
       }
       if has_spread {
-        // Build Array::concat chain: group consecutive non-spread elements into EArray,
-        // spread elements become their inner expression
-        let segments = Array::slice([EUnit], 0, 0)
-        let buf = Array::slice([EUnit], 0, 0)
+        let segments = Array::slice([
+          EUnit
+        ], 0, 0)
+        let buf = Array::slice([
+          EUnit
+        ], 0, 0)
         let mut si = 0
         while si < Array::length(elems) {
           let elem = Array::get(elems, si)
@@ -71,8 +83,9 @@ export let rec desugar_expr = (expr: Expr) -> Expr {
             ESpread(inner) => {
               if Array::length(buf) > 0 {
                 let chunk = Array::slice(buf, 0, Array::length(buf))
-                Array::push(segments, EArray(for e in chunk { desugar_expr(e) }))
-                // clear buf by truncating
+                Array::push(segments, EArray(for e in chunk {
+                  desugar_expr(e)
+                }))
                 let mut ci = Array::length(buf) - 1
                 while ci >= 0 {
                   Array::pop(buf)
@@ -87,22 +100,30 @@ export let rec desugar_expr = (expr: Expr) -> Expr {
           si = si + 1
         }
         if Array::length(buf) > 0 {
-          Array::push(segments, EArray(for e in buf { desugar_expr(e) }))
+          Array::push(segments, EArray(for e in buf {
+            desugar_expr(e)
+          }))
         }
-        // Fold segments with Array::concat
         let mut acc = Array::get(segments, 0)
         let mut fi = 1
         while fi < Array::length(segments) {
-          acc = ECall(EIdent("Array::concat"), [acc, Array::get(segments, fi)])
+          acc = ECall(EIdent("Array::concat"), [
+            acc,
+            Array::get(segments, fi)
+          ])
           fi = fi + 1
         }
         acc
       } else {
-        EArray(for e in elems { desugar_expr(e) })
+        EArray(for e in elems {
+          desugar_expr(e)
+        })
       }
     },
     ERecord(fields) => {
-      let out = Array::slice([("", EUnit)], 0, 0)
+      let out = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
       let mut i = 0
       while i < Array::length(fields) {
         let (fname, fval) = Array::get(fields, i)
@@ -119,7 +140,9 @@ export let rec desugar_expr = (expr: Expr) -> Expr {
     EAssignOp(name, op, val, cont) => EAssignOp(name, op, desugar_expr(val), desugar_expr(cont)),
     ESeq(a, b) => ESeq(desugar_expr(a), desugar_expr(b)),
     EMatch(scrutinee, arms) => {
-      let out = Array::slice([(PWild, EUnit)], 0, 0)
+      let out = Array::slice([
+        (PWild, EUnit)
+      ], 0, 0)
       let mut i = 0
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
@@ -129,7 +152,9 @@ export let rec desugar_expr = (expr: Expr) -> Expr {
       EMatch(desugar_expr(scrutinee), out)
     },
     EHandle(scrutinee, arms) => {
-      let out = Array::slice([(PWild, EUnit)], 0, 0)
+      let out = Array::slice([
+        (PWild, EUnit)
+      ], 0, 0)
       let mut i = 0
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
@@ -140,8 +165,7 @@ export let rec desugar_expr = (expr: Expr) -> Expr {
     },
     EWhile(cond, body) => EWhile(desugar_expr(cond), desugar_expr(body)),
     ELoop(params, body) => ELoop(for param in params {
-      let (name, init) = param
-      (name, desugar_expr(init))
+      let (name, init) = param(name, desugar_expr(init))
     }, desugar_expr(body)),
     EForIn(name, index_name, iter, body) => EForIn(name, index_name, desugar_expr(iter), desugar_expr(body)),
     EUnaryOp(op, operand) => EUnaryOp(op, desugar_expr(operand)),
@@ -153,9 +177,13 @@ export let rec desugar_expr = (expr: Expr) -> Expr {
       Some(e) => EBreak(Some(desugar_expr(e))),
       None => expr
     },
-    EContinue(exprs) => EContinue(for e in exprs { desugar_expr(e) }),
+    EContinue(exprs) => EContinue(for e in exprs {
+      desugar_expr(e)
+    }),
     EMap(fields) => {
-      let out = Array::slice([("", EUnit)], 0, 0)
+      let out = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
       let mut mi = 0
       while mi < Array::length(fields) {
         let (k, v) = Array::get(fields, mi)
@@ -176,7 +204,9 @@ export let rec desugar_stmt = (stmt: Stmt) -> Stmt {
     STest(name, body) => STest(name, desugar_expr(body)),
     SBench(name, body) => SBench(name, desugar_expr(body)),
     SExpr(e) => SExpr(desugar_expr(e)),
-    SModule(exported, name, stmts) => SModule(exported, name, for s in stmts { desugar_stmt(s) }),
+    SModule(exported, name, stmts) => SModule(exported, name, for s in stmts {
+      desugar_stmt(s)
+    }),
     SEnum(_, _, _) => stmt,
     SSuberror(_, _, _) => stmt,
     SStruct(_, _, _) => stmt,
@@ -191,5 +221,7 @@ export let rec desugar_stmt = (stmt: Stmt) -> Stmt {
 }
 
 export let desugar_stmts = (stmts: Array[Stmt]) -> Array[Stmt] {
-  for stmt in stmts { desugar_stmt(stmt) }
+  for stmt in stmts {
+    desugar_stmt(stmt)
+  }
 }

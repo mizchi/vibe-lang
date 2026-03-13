@@ -1,17 +1,29 @@
-import ./coverage_selfhost_suite_lib.vibe {
-  CoverageCaseInput,
-  build_suite_report_from_json_texts,
-  build_summary_text,
-  evaluate_kpi,
-  parse_line_list,
-  suite_report_json
-}
+//# Imports
 
-import ../shell/index.vibe {
+import ../shell {
   cat, env_or, join_str, print, println, trim, write_file
 }
 
-let parse_rate_env = (name : String) -> Option[Double] with { Env, Error } {
+import ./coverage_selfhost_suite_lib.vibe {
+  CoverageCaseInput, build_suite_report_from_json_texts, build_summary_text, evaluate_kpi, parse_line_list, suite_report_json
+}
+
+//# Functions
+
+let load_inputs = (report_paths: Array[String]) -> Array[CoverageCaseInput] with { Fs } {
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < Array::length(report_paths) {
+    let report_path = Array::get(report_paths, i)
+    ArrayBuilder::push(b, CoverageCaseInput::{
+      report_path: report_path, report_json: cat(report_path)
+    })
+    i = i + 1
+  }
+  ArrayBuilder::freeze(b)
+}
+
+let parse_rate_env = (name: String) -> Option[Double] with { Env, Error } {
   let raw = trim(env_or(name, ""))
   if String::length(raw) == 0 {
     None
@@ -20,36 +32,12 @@ let parse_rate_env = (name : String) -> Option[Double] with { Env, Error } {
       Double::parse(raw)
     } {
       Error(_) =>
-        throw(
-          String::concat(
-            String::concat("invalid value for ", name),
-            String::concat(": ", raw)
-          )
-        )
+      throw(String::concat(String::concat("invalid value for ", name), String::concat(": ", raw)))
     }
     if value < 0.0 || value > 100.0 {
-      throw(
-        String::concat(
-          String::concat("invalid value for ", name),
-          String::concat(": ", raw)
-        )
-      )
+      throw(String::concat(String::concat("invalid value for ", name), String::concat(": ", raw)))
     } else Some(value)
   }
-}
-
-let load_inputs = (report_paths : Array[String]) -> Array[CoverageCaseInput] with { Fs } {
-  let b = ArrayBuilder::new()
-  let mut i = 0
-  while i < Array::length(report_paths) {
-    let report_path = Array::get(report_paths, i)
-    ArrayBuilder::push(b, CoverageCaseInput::{
-      report_path: report_path,
-      report_json: cat(report_path)
-    })
-    i = i + 1
-  }
-  ArrayBuilder::freeze(b)
 }
 
 let run = () -> Unit with { Env, Fs, Stdout, Error } {
@@ -63,42 +51,30 @@ let run = () -> Unit with { Env, Fs, Stdout, Error } {
   if Array::length(report_paths) == 0 {
     throw(String::concat("no report paths in list: ", list_path))
   }
-
   let min_point_rate = parse_rate_env("VIBE_SELFHOST_SUITE_MIN_POINT_RATE")
   let min_line_rate = parse_rate_env("VIBE_SELFHOST_SUITE_MIN_LINE_RATE")
   let min_branch_rate = parse_rate_env("VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE")
-
   let report = build_suite_report_from_json_texts(load_inputs(report_paths))
   let kpi = evaluate_kpi(report, min_point_rate, min_line_rate, min_branch_rate)
   let summary = build_summary_text(report, kpi)
-
   if String::length(report_json_path) > 0 {
-    write_file(
-      report_json_path,
-      String::concat(suite_report_json(report, kpi), "\n")
-    )
+    write_file(report_json_path, String::concat(suite_report_json(report, kpi), "\n"))
   }
   if String::length(summary_path) > 0 {
     write_file(summary_path, summary)
   }
   print(summary)
-
   if not(kpi.ok) {
-    throw(
-      String::concat(
-        "coverage KPI failed: ",
-        join_str(kpi.failures, "; ")
-      )
-    )
+    throw(String::concat("coverage KPI failed: ", join_str(kpi.failures, "; ")))
   }
 }
+
+//# Misc
 
 test "coverage selfhost suite run" {
   handle {
     run()
   } {
-    Error(msg) => {
-      throw(String::concat("[coverage_selfhost_suite] ", msg))
-    }
+    Error(msg) => throw(String::concat("[coverage_selfhost_suite] ", msg))
   }
 }

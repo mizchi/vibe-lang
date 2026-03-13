@@ -4,25 +4,66 @@ import ./ast.vibe {
   Expr, Pat, Stmt, TypeExpr
 }
 
-//# Helpers
+//# Functions
+
+export let mono_name = (base: String, suffix: String) -> String {
+  String::concat(String::concat(base, "$"), suffix)
+}
 
 let empty_exprs = () -> Array[Expr] {
-  Array::slice([EUnit], 0, 0)
+  Array::slice([
+    EUnit
+  ], 0, 0)
 }
-
-let empty_expr_arrays = () -> Array[Array[Expr]] {
-  Array::slice([empty_exprs()], 0, 0)
-}
-
-//# Functions
 
 export let is_generic_fn = (expr: Expr) -> Bool {
   match expr {
     EFn(type_params, _bounds, _params, _ret_ty, _effect, _body) =>
-      if eq(Array::length(type_params), 0) { false }
-      else { true },
+    if eq(Array::length(type_params), 0) {
+      false
+    }
+    else {
+      true
+    },
     _ => false
   }
+}
+
+let empty_expr_arrays = () -> Array[Array[Expr]] {
+  Array::slice([
+    empty_exprs()
+  ], 0, 0)
+}
+
+let empty_string_int_pairs = () -> Array[(String, Int)] {
+  Array::slice([
+    ("", 0)
+  ], 0, 0)
+}
+
+export let collect_generic_fns = (stmts: Array[Stmt]) -> Array[(String, Int)] {
+  let result = empty_string_int_pairs()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    match stmt {
+      SLet(_exported, _is_rec, name, _ty, body) =>
+      match body {
+        EFn(type_params, _bounds, _params, _ret, _eff, _fn_body) =>
+        if Array::length(type_params) > 0 {
+          Array::push(result, (name, Array::length(type_params)))
+          result
+        }
+        else {
+          result
+        },
+        _ => result
+      },
+      _ => result
+    }
+    i = i + 1
+  }
+  result
 }
 
 let rec collect_call_sites_expr = (expr: Expr, fn_name: String) -> Array[Array[Expr]] {
@@ -30,8 +71,14 @@ let rec collect_call_sites_expr = (expr: Expr, fn_name: String) -> Array[Array[E
     ECall(callee, args) => {
       let self_results = match callee {
         EIdent(name) =>
-          if String::equals(name, fn_name) { [args] }
-          else { empty_expr_arrays() },
+        if String::equals(name, fn_name) {
+          [
+            args
+          ]
+        }
+        else {
+          empty_expr_arrays()
+        },
         _ => empty_expr_arrays()
       }
       let callee_results = collect_call_sites_expr(callee, fn_name)
@@ -154,7 +201,7 @@ let rec collect_call_sites_expr = (expr: Expr, fn_name: String) -> Array[Array[E
     },
     EUnaryOp(_op, operand) => collect_call_sites_expr(operand, fn_name),
     EFn(_tp, _bounds, _params, _ret, _eff, body) =>
-      collect_call_sites_expr(body, fn_name),
+    collect_call_sites_expr(body, fn_name),
     EDot(e, _field) => collect_call_sites_expr(e, fn_name),
     ELabeledArg(_label, _name, e) => collect_call_sites_expr(e, fn_name),
     EThrow(e) => collect_call_sites_expr(e, fn_name),
@@ -180,13 +227,13 @@ export let collect_call_sites = (expr: Expr, fn_name: String) -> Array[Array[Exp
 let collect_call_sites_from_stmt = (stmt: Stmt, fn_name: String) -> Array[Array[Expr]] {
   match stmt {
     SLet(_exported, _is_rec, _name, _ty, body) =>
-      collect_call_sites_expr(body, fn_name),
+    collect_call_sites_expr(body, fn_name),
     SLetMut(_name, _ty, body) =>
-      collect_call_sites_expr(body, fn_name),
+    collect_call_sites_expr(body, fn_name),
     STest(_name, body) =>
-      collect_call_sites_expr(body, fn_name),
+    collect_call_sites_expr(body, fn_name),
     SExpr(body) =>
-      collect_call_sites_expr(body, fn_name),
+    collect_call_sites_expr(body, fn_name),
     _ => empty_expr_arrays()
   }
 }
@@ -199,37 +246,6 @@ export let collect_call_sites_stmts = (stmts: Array[Stmt], fn_name: String) -> A
     i = i + 1
   }
   result
-}
-
-let empty_string_int_pairs = () -> Array[(String, Int)] {
-  Array::slice([("", 0)], 0, 0)
-}
-
-export let collect_generic_fns = (stmts: Array[Stmt]) -> Array[(String, Int)] {
-  let result = empty_string_int_pairs()
-  let mut i = 0
-  while i < Array::length(stmts) {
-    let stmt = Array::get(stmts, i)
-    match stmt {
-      SLet(_exported, _is_rec, name, _ty, body) =>
-        match body {
-          EFn(type_params, _bounds, _params, _ret, _eff, _fn_body) =>
-            if Array::length(type_params) > 0 {
-              Array::push(result, (name, Array::length(type_params)))
-              result
-            }
-            else { result },
-          _ => result
-        },
-      _ => result
-    }
-    i = i + 1
-  }
-  result
-}
-
-export let mono_name = (base: String, suffix: String) -> String {
-  String::concat(String::concat(base, "$"), suffix)
 }
 
 export let count_instantiations = (stmts: Array[Stmt], fn_name: String) -> Int {

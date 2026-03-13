@@ -98,6 +98,445 @@ export let rec env_lookup = (env: TypeEnv, name: String) -> Option[Type] {
   }
 }
 
+let join_types = (arr: Array[String], sep: String) -> String {
+  let len = Array::length(arr)
+  let mut i = 0
+  let mut acc = ""
+  while (!(i >= len)) {
+    let s = if i > 0 {
+      String::concat(String::concat(acc, sep), Array::get(arr, i))
+    } else Array::get(arr, i)
+    acc = s
+    i = i + 1
+  }
+  acc
+}
+
+export let env_bind_all = (env: TypeEnv, bindings: Array[(String, Type)]) -> TypeEnv {
+  let len = Array::length(bindings)
+  let mut i = 0
+  let mut acc = env
+  while (!(i >= len)) {
+    let (name, ty) = Array::get(bindings, i)
+    acc = EnvBind(name, ty, acc)
+    i = i + 1
+  }
+  acc
+}
+
+export let find_typedef = (defs: Array[TypeDef], name: String) -> Option[TypeDef] {
+  let len = Array::length(defs)
+  let mut i = 0
+  let mut result = None
+  let mut done = false
+  while (!(done)) {
+    if i >= len {
+      done = true
+    } else {
+      let d = Array::get(defs, i)
+      let dname = match d {
+        TDEnum(n, _) => n,
+        TDStruct(n, _) => n,
+        TDAlias(n, _) => n
+      }
+      if String::equals(dname, name) {
+        result = Some(d)
+        done = true
+      } else {
+        i = i + 1
+      }
+    }
+  }
+  result
+}
+
+export let subst_lookup = (s: Subst, id: Int) -> Option[Type] {
+  let mut cur = s
+  let mut out = None
+  let mut done = false
+  while (!(done)) {
+    match cur {
+      SubstEmpty => {
+        done = true
+      },
+      SubstBind(i, ty, rest) => if (i == id) {
+        out = Some(ty)
+        done = true
+      } else {
+        cur = rest
+      }
+      ,
+      SubstBound(_, _, rest) => {
+        cur = rest
+      }
+    }
+  }
+  out
+}
+
+export let rec trait_supers = (env: TypeEnv, name: String) -> Array[String] {
+  let empty = Array::slice([
+    ""
+  ], 0, 0)
+  match env {
+    EnvEmpty => empty,
+    EnvBind(_, _, rest) => trait_supers(rest, name),
+    EnvTraitDef(tname, supers, _, rest) => if String::equals(tname, name) {
+      supers
+    } else trait_supers(rest, name),
+    EnvTraitImpl(_, _, rest) => trait_supers(rest, name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_supers(rest, name)
+  }
+}
+
+let rec array_has_int = (arr: Array[Int], val: Int, i: Int) -> Bool {
+  if i >= Array::length(arr) {
+    false
+  }
+  else if (Array::get(arr, i) == val) {
+    true
+  }
+  else array_has_int(arr, val, i + 1)
+}
+
+let int_array_has = (arr: Array[Int], v: Int) -> Bool {
+  let slen = Array::length(arr)
+  let mut si = 0
+  let mut sfound = false
+  let mut sdone = false
+  while (!(sdone)) {
+    if si >= slen {
+      sdone = true
+    } else if (Array::get(arr, si) == v) {
+      sfound = true
+      sdone = true
+    } else {
+      si = si + 1
+    }
+  }
+  sfound
+}
+
+export let rec subst_apply = (s: Subst, ty: Type) -> Type {
+  match ty {
+    CtVar(_) => {
+      let mut cur = ty
+      let mut out = ty
+      let mut done = false
+      let mut seen = Array::slice([
+        0
+      ], 0, 0)
+      while (!(done)) {
+        match cur {
+          CtVar(vid) => if int_array_has(seen, vid) {
+            out = cur
+            done = true
+          } else {
+            Array::push(seen, vid)
+            match subst_lookup(s, vid) {
+              Some(next) => {
+                cur = next
+                out = next
+              },
+              None => {
+                out = cur
+                done = true
+              }
+            }
+          }
+          ,
+          _ => {
+            out = subst_apply(s, cur)
+            done = true
+          }
+        }
+      }
+      out
+    },
+    CtFn(params, ret, he) => {
+      let rp = for p in params {
+        subst_apply(s, p)
+      }
+      CtFn(rp, subst_apply(s, ret), he)
+    },
+    CtArray(elem) => CtArray(subst_apply(s, elem)),
+    CtOption(elem) => CtOption(subst_apply(s, elem)),
+    CtTuple(elems) => CtTuple(for e in elems {
+      subst_apply(s, e)
+    }),
+    CtForAll(_, _, _) => ty,
+    _ => ty
+  }
+}
+
+export let rec trait_defined = (env: TypeEnv, name: String) -> Bool {
+  match env {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => trait_defined(rest, name),
+    EnvTraitDef(tname, _, _, rest) => if String::equals(tname, name) {
+      true
+    } else trait_defined(rest, name),
+    EnvTraitImpl(_, _, rest) => trait_defined(rest, name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_defined(rest, name)
+  }
+}
+
+export let rec type_to_string = (ty: Type) -> String {
+  match ty {
+    CtInt => "Int",
+    CtDouble => "Double",
+    CtBool => "Bool",
+    CtString => "String",
+    CtChar => "Char",
+    CtUnit => "()",
+    CtBytes => "Bytes",
+    CtVar(id) => String::concat("?t", __to_string(id)),
+    CtForAll(vars, _, body) => {
+      let vlen = Array::length(vars)
+      let mut vi = 0
+      let mut vacc = ""
+      while (!(vi >= vlen)) {
+        let v = String::concat("?t", __to_string(Array::get(vars, vi)))
+        let next = if vi > 0 {
+          String::concat(String::concat(vacc, " "), v)
+        } else v
+        vacc = next
+        vi = vi + 1
+      }
+      String::concat("forall ", String::concat(vacc, String::concat(". ", type_to_string(body))))
+    },
+    CtUnknown => "?",
+    CtArray(elem) => String::concat("Array[", String::concat(type_to_string(elem), "]")),
+    CtOption(elem) => String::concat("Option[", String::concat(type_to_string(elem), "]")),
+    CtEnum(name) => name,
+    CtStruct(name) => name,
+    CtNamed(name, args) => if (Array::length(args) == 0) {
+      name
+    } else {
+      let parts = for arg in args {
+        type_to_string(arg)
+      }
+      String::concat(name, String::concat("[", String::concat(join_types(parts, ", "), "]")))
+    }
+    ,
+    CtTuple(elems) => {
+      let parts = for e in elems {
+        type_to_string(e)
+      }
+      String::concat("(", String::concat(join_types(parts, ", "), ")"))
+    },
+    CtFn(params, ret, has_error) => {
+      let parts = for p in params {
+        type_to_string(p)
+      }
+      let base = String::concat("(", String::concat(join_types(parts, ", "), String::concat(") -> ", type_to_string(ret))))
+      if has_error {
+        String::concat(base, " with {Error}")
+      } else base
+    }
+  }
+}
+
+export let env_lookup_flat = (bindings: Array[(String, Type)], name: String) -> Option[Type] {
+  let len = Array::length(bindings)
+  let mut i = 0
+  let mut result = None
+  let mut done = false
+  while (!(done)) {
+    if i >= len {
+      done = true
+    } else {
+      let (n, ty) = Array::get(bindings, i)
+      if String::equals(n, name) {
+        result = Some(ty)
+        done = true
+      } else {
+        i = i + 1
+      }
+    }
+  }
+  result
+}
+
+export let resolve_builtin = (name: String) -> Option[Type] {
+  if String::equals(name, "Int") {
+    Some(CtInt)
+  }
+  else if String::equals(name, "Double") {
+    Some(CtDouble)
+  }
+  else if String::equals(name, "Bool") {
+    Some(CtBool)
+  }
+  else if String::equals(name, "String") {
+    Some(CtString)
+  }
+  else if String::equals(name, "Char") {
+    Some(CtChar)
+  }
+  else if String::equals(name, "Unit") {
+    Some(CtUnit)
+  }
+  else if String::equals(name, "Bytes") {
+    Some(CtBytes)
+  }
+  else None
+}
+
+export let subst_add_bound = (s: Subst, id: Int, bounds: Array[String]) -> Subst {
+  SubstBound(id, bounds, s)
+}
+
+let empty_var_bounds = () -> Array[(Int, Array[String])] {
+  Array::slice([
+    (0, Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+}
+
+let rec int_bounds_has_id = (pairs: Array[(Int, Array[String])], id: Int, i: Int) -> Bool {
+  if i >= Array::length(pairs) {
+    false
+  } else {
+    let (pid, _) = Array::get(pairs, i)
+    if (pid == id) {
+      true
+    } else {
+      int_bounds_has_id(pairs, id, i + 1)
+    }
+  }
+}
+
+let rec int_bounds_lookup = (pairs: Array[(Int, Array[String])], id: Int, i: Int) -> Array[String] {
+  if i >= Array::length(pairs) {
+    Array::slice([
+      ""
+    ], 0, 0)
+  } else {
+    let (pid, bounds) = Array::get(pairs, i)
+    if (pid == id) {
+      bounds
+    } else {
+      int_bounds_lookup(pairs, id, i + 1)
+    }
+  }
+}
+
+let rec int_int_lookup_or = (pairs: Array[(Int, Int)], key: Int, fallback: Int, i: Int) -> Int {
+  if i >= Array::length(pairs) {
+    fallback
+  } else {
+    let (k, v) = Array::get(pairs, i)
+    if (k == key) {
+      v
+    } else {
+      int_int_lookup_or(pairs, key, fallback, i + 1)
+    }
+  }
+}
+
+export let instantiate = (ty: Type, c: Int) -> (Type, Int, Array[(Int, Array[String])]) {
+  match ty {
+    CtForAll(bound_vars, var_bounds, body) => {
+      let blen = Array::length(bound_vars)
+      let id_map = Array::slice([
+        (0, 0)
+      ], 0, 0)
+      let mut bi = 0
+      let mut bacc = SubstEmpty
+      let mut bnc = c
+      while (!(bi >= blen)) {
+        let old_id = Array::get(bound_vars, bi)
+        Array::push(id_map, (old_id, bnc))
+        bacc = SubstBind(old_id, CtVar(bnc), bacc)
+        bnc = bnc + 1
+        bi = bi + 1
+      }
+      let inst_s = bacc
+      let id_map2 = id_map
+      let c1 = bnc
+      let new_bounds = Array::slice([
+        (0, Array::slice([
+          ""
+        ], 0, 0))
+      ], 0, 0)
+      for var_bound in var_bounds {
+        let (old_id, bounds) = var_bound
+        let new_id = int_int_lookup_or(id_map2, old_id, old_id, 0)
+        Array::push(new_bounds, (new_id, bounds))
+      };
+      (subst_apply(inst_s, body), c1, new_bounds)
+    },
+    _ => (ty, c, empty_var_bounds())
+  }
+}
+
+export let rec trait_is_subtrait = (env: TypeEnv, sub: String, super_name: String) -> Bool {
+  if String::equals(sub, super_name) {
+    true
+  }
+  else {
+    let supers = trait_supers(env, sub)
+    let slen = Array::length(supers)
+    let mut si = 0
+    let mut sresult = false
+    let mut sdone = false
+    while (!(sdone)) {
+      if si >= slen {
+        sdone = true
+      } else {
+        let s = Array::get(supers, si)
+        if String::equals(s, super_name) {
+          sresult = true
+          sdone = true
+        } else if trait_is_subtrait(env, s, super_name) {
+          sresult = true
+          sdone = true
+        } else {
+          si = si + 1
+        }
+      }
+    }
+    sresult
+  }
+}
+
+let rec collect_tvars_walk = (t: Type, out: Array[Int]) -> Int {
+  match t {
+    CtVar(id) => {
+      if (!(array_has_int(out, id, 0))) {
+        Array::push(out, id)
+      }
+      0
+    },
+    CtFn(params, ret, _) => {
+      for p in params {
+        let _ = collect_tvars_walk(p, out)
+      }
+      collect_tvars_walk(ret, out)
+    },
+    CtArray(elem) => collect_tvars_walk(elem, out),
+    CtOption(elem) => collect_tvars_walk(elem, out),
+    CtTuple(elems) => {
+      for e in elems {
+        let _ = collect_tvars_walk(e, out)
+      }
+      0
+    },
+    CtForAll(_, _, body) => collect_tvars_walk(body, out),
+    _ => 0
+  }
+}
+
+export let collect_tvars = (ty: Type) -> Array[Int] {
+  let out = Array::slice([
+    0
+  ], 0, 0)
+  let _ = collect_tvars_walk(ty, out)
+  out
+}
+
 let empty_env_bindings = () -> Array[(String, Type)] {
   Array::slice([
     ("", CtUnknown)
@@ -129,41 +568,6 @@ export let env_flat_bindings = (env: TypeEnv) -> Array[(String, Type)] {
     }
   }
   out
-}
-
-export let env_lookup_flat = (bindings: Array[(String, Type)], name: String) -> Option[Type] {
-  let len = Array::length(bindings)
-  let mut i = 0
-  let mut result = None
-  let mut done = false
-  while (!(done)) {
-    if i >= len {
-      done = true
-    } else {
-      let (n, ty) = Array::get(bindings, i)
-      if String::equals(n, name) {
-        result = Some(ty)
-        done = true
-      } else {
-        i = i + 1
-      }
-    }
-  }
-  result
-}
-
-let join_types = (arr: Array[String], sep: String) -> String {
-  let len = Array::length(arr)
-  let mut i = 0
-  let mut acc = ""
-  while (!(i >= len)) {
-    let s = if i > 0 {
-      String::concat(String::concat(acc, sep), Array::get(arr, i))
-    } else Array::get(arr, i)
-    acc = s
-    i = i + 1
-  }
-  acc
 }
 
 let string_array_equal = (left: Array[String], right: Array[String]) -> Bool {
@@ -340,294 +744,62 @@ export let rec types_equal = (a: Type, b: Type) -> Bool {
       _ => false
     },
     CtForAll(avars, abounds, abody) => match b {
-      CtForAll(bvars, bbounds, bbody) => {
-        if (Array::length(avars) != Array::length(bvars)) {
-          false
-        } else if (Array::length(abounds) != Array::length(bbounds)) {
+      CtForAll(bvars, bbounds, bbody) => if (Array::length(avars) != Array::length(bvars)) {
+        false
+      } else if (Array::length(abounds) != Array::length(bbounds)) {
+        false
+      } else {
+        let vlen = Array::length(avars)
+        let mut vi = 0
+        let mut vresult = true
+        let mut vdone = false
+        while (!(vdone)) {
+          if vi >= vlen {
+            vdone = true
+          } else if (Array::get(avars, vi) != Array::get(bvars, vi)) {
+            vresult = false
+            vdone = true
+          } else {
+            vi = vi + 1
+          }
+        }
+        if (!(vresult)) {
           false
         } else {
-          // inline var_list_equal
-          let vlen = Array::length(avars)
-          let mut vi = 0
-          let mut vresult = true
-          let mut vdone = false
-          while (!(vdone)) {
-            if vi >= vlen {
-              vdone = true
-            } else if (Array::get(avars, vi) != Array::get(bvars, vi)) {
-              vresult = false
-              vdone = true
+          let fbe_len = Array::length(abounds)
+          let mut fbe_i = 0
+          let mut fbe_result = true
+          let mut fbe_done = false
+          while (!(fbe_done)) {
+            if fbe_i >= fbe_len {
+              fbe_done = true
             } else {
-              vi = vi + 1
-            }
-          }
-          if (!(vresult)) {
-            false
-          } else {
-            // inline forall_bounds_equal
-            let fbe_len = Array::length(abounds)
-            let mut fbe_i = 0
-            let mut fbe_result = true
-            let mut fbe_done = false
-            while (!(fbe_done)) {
-              if fbe_i >= fbe_len {
+              let (lvar, lbounds) = Array::get(abounds, fbe_i)
+              let (rvar, rbounds) = Array::get(bbounds, fbe_i)
+              if (lvar != rvar) {
+                fbe_result = false
+                fbe_done = true
+              } else if (Array::length(lbounds) != Array::length(rbounds)) {
+                fbe_result = false
+                fbe_done = true
+              } else if (!(string_array_equal(lbounds, rbounds))) {
+                fbe_result = false
                 fbe_done = true
               } else {
-                let (lvar, lbounds) = Array::get(abounds, fbe_i)
-                let (rvar, rbounds) = Array::get(bbounds, fbe_i)
-                if (lvar != rvar) {
-                  fbe_result = false
-                  fbe_done = true
-                } else if (Array::length(lbounds) != Array::length(rbounds)) {
-                  fbe_result = false
-                  fbe_done = true
-                } else if (!(string_array_equal(lbounds, rbounds))) {
-                  fbe_result = false
-                  fbe_done = true
-                } else {
-                  fbe_i = fbe_i + 1
-                }
+                fbe_i = fbe_i + 1
               }
             }
-            if (!(fbe_result)) {
-              false
-            } else {
-              types_equal(abody, bbody)
-            }
+          }
+          if (!(fbe_result)) {
+            false
+          } else {
+            types_equal(abody, bbody)
           }
         }
-      },
+      }
+      ,
       _ => false
     }
-  }
-}
-
-export let env_bind_all = (env: TypeEnv, bindings: Array[(String, Type)]) -> TypeEnv {
-  let len = Array::length(bindings)
-  let mut i = 0
-  let mut acc = env
-  while (!(i >= len)) {
-    let (name, ty) = Array::get(bindings, i)
-    acc = EnvBind(name, ty, acc)
-    i = i + 1
-  }
-  acc
-}
-
-export let find_typedef = (defs: Array[TypeDef], name: String) -> Option[TypeDef] {
-  let len = Array::length(defs)
-  let mut i = 0
-  let mut result = None
-  let mut done = false
-  while (!(done)) {
-    if i >= len {
-      done = true
-    } else {
-      let d = Array::get(defs, i)
-      let dname = match d {
-        TDEnum(n, _) => n,
-        TDStruct(n, _) => n,
-        TDAlias(n, _) => n
-      }
-      if String::equals(dname, name) {
-        result = Some(d)
-        done = true
-      } else {
-        i = i + 1
-      }
-    }
-  }
-  result
-}
-
-let subst_bounds = (s: Subst, id: Int) -> Array[String] {
-  let empty = Array::slice([
-    ""
-  ], 0, 0)
-  let mut cur = s
-  let mut out = empty
-  let mut done = false
-  while (!(done)) {
-    match cur {
-      SubstEmpty => {
-        done = true
-      },
-      SubstBind(_, _, rest) => {
-        cur = rest
-      },
-      SubstBound(bid, bounds, rest) => {
-        if (bid == id) {
-          out = bounds
-          done = true
-        } else {
-          cur = rest
-        }
-      }
-    }
-  }
-  out
-}
-
-let rec int_bounds_has_id = (pairs: Array[(Int, Array[String])], id: Int, i: Int) -> Bool {
-  if i >= Array::length(pairs) {
-    false
-  } else {
-    let (pid, _) = Array::get(pairs, i)
-    if (pid == id) {
-      true
-    } else {
-      int_bounds_has_id(pairs, id, i + 1)
-    }
-  }
-}
-
-let rec int_bounds_lookup = (pairs: Array[(Int, Array[String])], id: Int, i: Int) -> Array[String] {
-  if i >= Array::length(pairs) {
-    Array::slice([
-      ""
-    ], 0, 0)
-  } else {
-    let (pid, bounds) = Array::get(pairs, i)
-    if (pid == id) {
-      bounds
-    } else {
-      int_bounds_lookup(pairs, id, i + 1)
-    }
-  }
-}
-
-let collect_subst_bounds_pairs = (s: Subst) -> Array[(Int, Array[String])] {
-  let out = Array::slice([
-    (0, Array::slice([
-      ""
-    ], 0, 0))
-  ], 0, 0)
-  let mut cur = s
-  let mut done = false
-  while (!(done)) {
-    match cur {
-      SubstEmpty => {
-        done = true
-      },
-      SubstBind(_, _, rest) => {
-        cur = rest
-      },
-      SubstBound(id, bounds, rest) => {
-        if (!(int_bounds_has_id(out, id, 0))) {
-          Array::push(out, (id, bounds))
-        }
-        cur = rest
-      }
-    }
-  }
-  out
-}
-
-let rec int_int_lookup_or = (pairs: Array[(Int, Int)], key: Int, fallback: Int, i: Int) -> Int {
-  if i >= Array::length(pairs) {
-    fallback
-  } else {
-    let (k, v) = Array::get(pairs, i)
-    if (k == key) {
-      v
-    } else {
-      int_int_lookup_or(pairs, key, fallback, i + 1)
-    }
-  }
-}
-
-export let subst_lookup = (s: Subst, id: Int) -> Option[Type] {
-  let mut cur = s
-  let mut out = None
-  let mut done = false
-  while (!(done)) {
-    match cur {
-      SubstEmpty => {
-        done = true
-      },
-      SubstBind(i, ty, rest) => {
-        if (i == id) {
-          out = Some(ty)
-          done = true
-        } else {
-          cur = rest
-        }
-      },
-      SubstBound(_, _, rest) => {
-        cur = rest
-      }
-    }
-  }
-  out
-}
-
-let int_array_has = (arr: Array[Int], v: Int) -> Bool {
-  let slen = Array::length(arr)
-  let mut si = 0
-  let mut sfound = false
-  let mut sdone = false
-  while (!(sdone)) {
-    if si >= slen {
-      sdone = true
-    } else if (Array::get(arr, si) == v) {
-      sfound = true
-      sdone = true
-    } else {
-      si = si + 1
-    }
-  }
-  sfound
-}
-
-export let rec subst_apply = (s: Subst, ty: Type) -> Type {
-  match ty {
-    CtVar(_) => {
-      let mut cur = ty
-      let mut out = ty
-      let mut done = false
-      let mut seen = Array::slice([
-        0
-      ], 0, 0)
-      while (!(done)) {
-        match cur {
-          CtVar(vid) => if int_array_has(seen, vid) {
-            out = cur
-            done = true
-          } else {
-            Array::push(seen, vid)
-            match subst_lookup(s, vid) {
-              Some(next) => {
-                cur = next
-                out = next
-              },
-              None => {
-                out = cur
-                done = true
-              }
-            }
-          }
-          ,
-          _ => {
-            out = subst_apply(s, cur)
-            done = true
-          }
-        }
-      }
-      out
-    },
-    CtFn(params, ret, he) => {
-      let rp = for p in params {
-        subst_apply(s, p)
-      }
-      CtFn(rp, subst_apply(s, ret), he)
-    },
-    CtArray(elem) => CtArray(subst_apply(s, elem)),
-    CtOption(elem) => CtOption(subst_apply(s, elem)),
-    CtTuple(elems) => CtTuple(for e in elems {
-      subst_apply(s, e)
-    }),
-    CtForAll(_, _, _) => ty,
-    _ => ty
   }
 }
 
@@ -787,231 +959,6 @@ export let rec unify = (a: Type, b: Type, s: Subst) -> Option[Subst] {
   }
 }
 
-export let rec trait_supers = (env: TypeEnv, name: String) -> Array[String] {
-  let empty = Array::slice([
-    ""
-  ], 0, 0)
-  match env {
-    EnvEmpty => empty,
-    EnvBind(_, _, rest) => trait_supers(rest, name),
-    EnvTraitDef(tname, supers, _, rest) => if String::equals(tname, name) {
-      supers
-    } else trait_supers(rest, name),
-    EnvTraitImpl(_, _, rest) => trait_supers(rest, name),
-    EnvTraitImplGen(_, _, _, _, rest) => trait_supers(rest, name)
-  }
-}
-
-let rec array_has_int = (arr: Array[Int], val: Int, i: Int) -> Bool {
-  if i >= Array::length(arr) {
-    false
-  }
-  else if (Array::get(arr, i) == val) {
-    true
-  }
-  else array_has_int(arr, val, i + 1)
-}
-
-let rec collect_tvars_walk = (t: Type, out: Array[Int]) -> Int {
-  match t {
-    CtVar(id) => {
-      if (!(array_has_int(out, id, 0))) {
-        Array::push(out, id)
-      }
-      0
-    },
-    CtFn(params, ret, _) => {
-      for p in params {
-        let _ = collect_tvars_walk(p, out)
-      }
-      collect_tvars_walk(ret, out)
-    },
-    CtArray(elem) => collect_tvars_walk(elem, out),
-    CtOption(elem) => collect_tvars_walk(elem, out),
-    CtTuple(elems) => {
-      for e in elems {
-        let _ = collect_tvars_walk(e, out)
-      }
-      0
-    },
-    CtForAll(_, _, body) => collect_tvars_walk(body, out),
-    _ => 0
-  }
-}
-
-export let collect_tvars = (ty: Type) -> Array[Int] {
-  let out = Array::slice([
-    0
-  ], 0, 0)
-  let _ = collect_tvars_walk(ty, out)
-  out
-}
-
-export let generalize = (s: Subst, ty: Type) -> Type {
-  let resolved = subst_apply(s, ty)
-  let tvars = collect_tvars(resolved)
-  if (Array::length(tvars) == 0) {
-    resolved
-  }
-  else {
-    let bounds_pairs = collect_subst_bounds_pairs(s)
-    let var_bounds = Array::slice([
-      (0, Array::slice([
-        ""
-      ], 0, 0))
-    ], 0, 0)
-    for vid in tvars {
-      let bounds = int_bounds_lookup(bounds_pairs, vid, 0)
-      if (Array::length(bounds) != 0) {
-        Array::push(var_bounds, (vid, bounds))
-      }
-    }
-    CtForAll(tvars, var_bounds, resolved)
-  }
-}
-
-export let rec trait_defined = (env: TypeEnv, name: String) -> Bool {
-  match env {
-    EnvEmpty => false,
-    EnvBind(_, _, rest) => trait_defined(rest, name),
-    EnvTraitDef(tname, _, _, rest) => if String::equals(tname, name) {
-      true
-    } else trait_defined(rest, name),
-    EnvTraitImpl(_, _, rest) => trait_defined(rest, name),
-    EnvTraitImplGen(_, _, _, _, rest) => trait_defined(rest, name)
-  }
-}
-
-export let rec type_to_string = (ty: Type) -> String {
-  match ty {
-    CtInt => "Int",
-    CtDouble => "Double",
-    CtBool => "Bool",
-    CtString => "String",
-    CtChar => "Char",
-    CtUnit => "()",
-    CtBytes => "Bytes",
-    CtVar(id) => String::concat("?t", __to_string(id)),
-    CtForAll(vars, _, body) => {
-      let vlen = Array::length(vars)
-      let mut vi = 0
-      let mut vacc = ""
-      while (!(vi >= vlen)) {
-        let v = String::concat("?t", __to_string(Array::get(vars, vi)))
-        let next = if vi > 0 {
-          String::concat(String::concat(vacc, " "), v)
-        } else v
-        vacc = next
-        vi = vi + 1
-      }
-      String::concat("forall ", String::concat(vacc, String::concat(". ", type_to_string(body))))
-    },
-    CtUnknown => "?",
-    CtArray(elem) => String::concat("Array[", String::concat(type_to_string(elem), "]")),
-    CtOption(elem) => String::concat("Option[", String::concat(type_to_string(elem), "]")),
-    CtEnum(name) => name,
-    CtStruct(name) => name,
-    CtNamed(name, args) => if (Array::length(args) == 0) {
-      name
-    } else {
-      let parts = for arg in args {
-        type_to_string(arg)
-      }
-      String::concat(name, String::concat("[", String::concat(join_types(parts, ", "), "]")))
-    }
-    ,
-    CtTuple(elems) => {
-      let parts = for e in elems {
-        type_to_string(e)
-      }
-      String::concat("(", String::concat(join_types(parts, ", "), ")"))
-    },
-    CtFn(params, ret, has_error) => {
-      let parts = for p in params {
-        type_to_string(p)
-      }
-      let base = String::concat("(", String::concat(join_types(parts, ", "), String::concat(") -> ", type_to_string(ret))))
-      if has_error {
-        String::concat(base, " with {Error}")
-      } else base
-    }
-  }
-}
-
-export let resolve_builtin = (name: String) -> Option[Type] {
-  if String::equals(name, "Int") {
-    Some(CtInt)
-  }
-  else if String::equals(name, "Double") {
-    Some(CtDouble)
-  }
-  else if String::equals(name, "Bool") {
-    Some(CtBool)
-  }
-  else if String::equals(name, "String") {
-    Some(CtString)
-  }
-  else if String::equals(name, "Char") {
-    Some(CtChar)
-  }
-  else if String::equals(name, "Unit") {
-    Some(CtUnit)
-  }
-  else if String::equals(name, "Bytes") {
-    Some(CtBytes)
-  }
-  else None
-}
-
-export let subst_add_bound = (s: Subst, id: Int, bounds: Array[String]) -> Subst {
-  SubstBound(id, bounds, s)
-}
-
-let empty_var_bounds = () -> Array[(Int, Array[String])] {
-  Array::slice([
-    (0, Array::slice([
-      ""
-    ], 0, 0))
-  ], 0, 0)
-}
-
-export let instantiate = (ty: Type, c: Int) -> (Type, Int, Array[(Int, Array[String])]) {
-  match ty {
-    CtForAll(bound_vars, var_bounds, body) => {
-      let blen = Array::length(bound_vars)
-      let id_map = Array::slice([
-        (0, 0)
-      ], 0, 0)
-      let mut bi = 0
-      let mut bacc = SubstEmpty
-      let mut bnc = c
-      while (!(bi >= blen)) {
-        let old_id = Array::get(bound_vars, bi)
-        Array::push(id_map, (old_id, bnc))
-        bacc = SubstBind(old_id, CtVar(bnc), bacc)
-        bnc = bnc + 1
-        bi = bi + 1
-      }
-      let inst_s = bacc
-      let id_map2 = id_map
-      let c1 = bnc
-      // Remap var_bounds: old_id -> new_id
-      let new_bounds = Array::slice([
-        (0, Array::slice([
-          ""
-        ], 0, 0))
-      ], 0, 0)
-      for var_bound in var_bounds {
-        let (old_id, bounds) = var_bound
-        let new_id = int_int_lookup_or(id_map2, old_id, old_id, 0)
-        Array::push(new_bounds, (new_id, bounds))
-      };
-      (subst_apply(inst_s, body), c1, new_bounds)
-    },
-    _ => (ty, c, empty_var_bounds())
-  }
-}
-
 export let types_compatible = (expected: Type, actual: Type) -> Bool {
   match expected {
     CtUnknown => true,
@@ -1038,34 +985,69 @@ export let rec impls_overlap_for = (env: TypeEnv, trait_name: String, new_target
   }
 }
 
-export let rec trait_is_subtrait = (env: TypeEnv, sub: String, super_name: String) -> Bool {
-  // DFS: sub's supers include super_name, or any of sub's supers is a subtrait of super_name
-  if String::equals(sub, super_name) {
-    true
+let rec type_implements_check_env = (e: TypeEnv, trait_name: String, resolved: Type) -> Bool {
+  match e {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => type_implements_check_env(rest, trait_name, resolved),
+    EnvTraitDef(_, _, _, rest) => type_implements_check_env(rest, trait_name, resolved),
+    EnvTraitImpl(tname, target, rest) => if String::equals(tname, trait_name) {
+      if types_equal(target, resolved) {
+        true
+      }
+      else type_implements_check_env(rest, trait_name, resolved)
+    } else type_implements_check_env(rest, trait_name, resolved)
+    ,
+    EnvTraitImplGen(_, _, _, _, rest) => type_implements_check_env(rest, trait_name, resolved)
   }
-  else {
-    let supers = trait_supers(env, sub)
-    let slen = Array::length(supers)
-    let mut si = 0
-    let mut sresult = false
-    let mut sdone = false
-    while (!(sdone)) {
-      if si >= slen {
-        sdone = true
-      } else {
-        let s = Array::get(supers, si)
-        if String::equals(s, super_name) {
-          sresult = true
-          sdone = true
-        } else if trait_is_subtrait(env, s, super_name) {
-          sresult = true
-          sdone = true
-        } else {
-          si = si + 1
+}
+
+let collect_subst_bounds_pairs = (s: Subst) -> Array[(Int, Array[String])] {
+  let out = Array::slice([
+    (0, Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let mut cur = s
+  let mut done = false
+  while (!(done)) {
+    match cur {
+      SubstEmpty => {
+        done = true
+      },
+      SubstBind(_, _, rest) => {
+        cur = rest
+      },
+      SubstBound(id, bounds, rest) => {
+        if (!(int_bounds_has_id(out, id, 0))) {
+          Array::push(out, (id, bounds))
         }
+        cur = rest
       }
     }
-    sresult
+  }
+  out
+}
+
+export let generalize = (s: Subst, ty: Type) -> Type {
+  let resolved = subst_apply(s, ty)
+  let tvars = collect_tvars(resolved)
+  if (Array::length(tvars) == 0) {
+    resolved
+  }
+  else {
+    let bounds_pairs = collect_subst_bounds_pairs(s)
+    let var_bounds = Array::slice([
+      (0, Array::slice([
+        ""
+      ], 0, 0))
+    ], 0, 0)
+    for vid in tvars {
+      let bounds = int_bounds_lookup(bounds_pairs, vid, 0)
+      if (Array::length(bounds) != 0) {
+        Array::push(var_bounds, (vid, bounds))
+      }
+    }
+    CtForAll(tvars, var_bounds, resolved)
   }
 }
 
@@ -1085,38 +1067,18 @@ let rec type_implements_check_super = (e2: TypeEnv, full_env: TypeEnv, trait_nam
   }
 }
 
-let rec type_implements_check_env = (e: TypeEnv, trait_name: String, resolved: Type) -> Bool {
-  match e {
-    EnvEmpty => false,
-    EnvBind(_, _, rest) => type_implements_check_env(rest, trait_name, resolved),
-    EnvTraitDef(_, _, _, rest) => type_implements_check_env(rest, trait_name, resolved),
-    EnvTraitImpl(tname, target, rest) => if String::equals(tname, trait_name) {
-      if types_equal(target, resolved) {
-        true
-      }
-      else type_implements_check_env(rest, trait_name, resolved)
-    } else type_implements_check_env(rest, trait_name, resolved)
-    ,
-    EnvTraitImplGen(_, _, _, _, rest) => type_implements_check_env(rest, trait_name, resolved)
-  }
-}
-
 export let rec type_implements_trait = (env: TypeEnv, s: Subst, ty: Type, trait_name: String) -> Bool {
   let resolved = subst_apply(s, ty)
   if type_implements_check_env(env, trait_name, resolved) {
     true
   }
   else {
-    // Check supertrait: if trait_name has subtrait impls
     let supers = trait_supers(env, trait_name)
     let slen = Array::length(supers)
     if (slen == 0) {
       false
     }
     else {
-      // Type implements trait_name if it implements all supers? No — reversed:
-      // If T implements sub-trait B where B: A, then T also implements A
-      // So check all traits that the type implements and see if any is a subtrait of trait_name
       type_implements_check_super(env, env, trait_name, resolved)
     }
   }

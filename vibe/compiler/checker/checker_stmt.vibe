@@ -1,6 +1,6 @@
 //# Imports
 
-import ../core/index.vibe {
+import ../core {
   Stmt, Subst, Type, TypeDef, TypeEnv, env_bind, env_flat_bindings, env_lookup_flat, generalize, impls_overlap_for, resolve_builtin, subst_apply, trait_defined
 }
 
@@ -54,7 +54,6 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
         (env_bind(env, name, t), ns, nc)
       },
       SEnum(_, name, variants) => {
-        // Resolve variants and register TDEnum in defs
         let resolved_variants = Array::slice([
           ("", Array::slice([
             CtUnknown
@@ -76,9 +75,7 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
           vi = vi + 1
         }
         Array::push(defs, TDEnum(name, resolved_variants))
-        // Bind enum type name
         let mut env1 = env_bind(env, name, CtEnum(name))
-        // Bind each variant constructor
         let mut ci2 = 0
         while ci2 < Array::length(variants) {
           let (vname, vtypes) = Array::get(variants, ci2)
@@ -101,7 +98,6 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
       }
       ,
       SStruct(_, name, field_defs) => {
-        // Register TDStruct in defs for field type resolution
         let resolved_fields = Array::slice([
           ("", CtUnit)
         ], 0, 0)
@@ -113,7 +109,6 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
           fi = fi + 1
         }
         Array::push(defs, TDStruct(name, resolved_fields))
-        // Bind struct constructor as CtFn(field_types, CtStruct(name), false)
         let field_types = Array::slice([
           CtUnknown
         ], 0, 0)
@@ -183,19 +178,16 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
         (bind_imports(0, env), s, c)
       },
       STrait(_, name, supers) => {
-        // Register trait definition in env
         let is_open = false
         (EnvTraitDef(name, supers, is_open, env), s, c)
       },
       SImpl(_, _, trait_name, type_name) => {
-        // Resolve target type
         let target = match resolve_builtin(type_name) {
           Some(t) => t,
           None => CtNamed(type_name, Array::slice([
             CtUnknown
           ], 0, 0))
         }
-        // Register impl in env
         (EnvTraitImpl(trait_name, target, env), s, c)
       },
       _ => (env, s, c)
