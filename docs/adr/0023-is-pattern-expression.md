@@ -1,7 +1,7 @@
 # ADR-0023: `is` パターンマッチ式
 
 - Date: 2026-03-11
-- Status: proposed
+- Status: accepted
 - Related: ADR-0016 (handle 統一構文)
 
 ## Context

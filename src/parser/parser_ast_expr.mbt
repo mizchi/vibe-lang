@@ -41,7 +41,35 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
     let span = self.span_from(start)
     @core.Expr::Block(body~, span~)
   } else {
-    self.parse_or_expr()
+    let left = self.parse_or_expr()
+    // Check for `expr is pattern` (Bool-returning) outside if context
+    self.skip_trivia()
+    if self.peek_kind() == name() && self.peek().text() == "is" {
+      let is_start = self.pos
+      let _ = self.bump() // consume "is"
+      let pat = self.parse_pattern()
+      let span = self.span_from(is_start)
+      @core.Expr::Match(
+        scrutinee=left,
+        arms=[
+          @core.MatchArm::{
+            pat,
+            cond: None,
+            expr: @core.Expr::Bool(value=true, span~),
+            span,
+          },
+          @core.MatchArm::{
+            pat: @core.Pat::Wildcard(span~),
+            cond: None,
+            expr: @core.Expr::Bool(value=false, span~),
+            span,
+          },
+        ],
+        span~,
+      )
+    } else {
+      left
+    }
   }
 }
 
@@ -469,10 +497,66 @@ fn AstParser::parse_unary_expr(self : AstParser) -> @core.Expr raise ParseError 
 }
 
 ///|
+/// Convert a Module (block body) into a single expression for use in match arms.
+/// Unlike Expr::Block, this does not create a new scope, so pattern bindings
+/// from the match arm remain visible.
+fn module_to_match_body(body : @core.Module, span : @core.Span) -> @core.Expr {
+  if body.stmts.is_empty() {
+    @core.Expr::Tuple(items=[], span~)
+  } else if body.stmts.length() == 1 {
+    match body.stmts[0] {
+      @core.Stmt::Expr(expr~, ..) => expr
+      _ => @core.Expr::Block(body~, span~)
+    }
+  } else {
+    @core.Expr::Block(body~, span~)
+  }
+}
+
+///|
 fn AstParser::parse_if_expr(self : AstParser) -> @core.Expr raise ParseError {
   let start = self.pos
   let _ = self.expect(if_kw(), "if")
-  let cond = self.parse_expr()
+  // Use parse_or_expr (not parse_expr) so `is` is not consumed as Bool-returning
+  let cond = self.parse_or_expr()
+  // Check for `if expr is pattern { ... }` syntax
+  self.skip_trivia()
+  if self.peek_kind() == name() && self.peek().text() == "is" {
+    let _ = self.bump() // consume "is"
+    let pat = self.parse_pattern()
+    let then_body = self.parse_block()
+    self.skip_trivia()
+    let else_body = if self.peek_kind() == else_kw() {
+      let _ = self.bump()
+      self.skip_trivia()
+      if self.peek_kind() == lbrace() {
+        self.parse_block()
+      } else {
+        let expr = self.parse_expr()
+        let expr_span = expr.span()
+        @core.Module::{ stmts: [@core.Stmt::Expr(expr~, span=expr_span)] }
+      }
+    } else {
+      @core.Module::{ stmts: [] }
+    }
+    let span = self.span_from(start)
+    let wildcard_span = span
+    let else_expr = module_to_match_body(else_body, wildcard_span)
+    let then_expr = module_to_match_body(then_body, span)
+    return @core.Expr::Match(
+      scrutinee=cond,
+      arms=[
+        @core.MatchArm::{ pat, cond: None, expr: then_expr, span },
+        @core.MatchArm::{
+          pat: @core.Pat::Wildcard(span=wildcard_span),
+          cond: None,
+          expr: else_expr,
+          span: wildcard_span,
+        },
+      ],
+      span~,
+    )
+  }
   let then_body = self.parse_block()
   self.skip_trivia()
   let else_body = if self.peek_kind() == else_kw() {

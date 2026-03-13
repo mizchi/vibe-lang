@@ -1166,7 +1166,16 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
   }
   let rec parse_infix = (tokens: Array[Token], pos: Int, min_prec: Int, expr_start: Int) -> (Expr, Int)with { Error } {
     let (left0, next0) = parse_prefix(tokens, pos)
-    parse_infix_loop(tokens, left0, next0, min_prec, expr_start, false)
+    let (expr, en) = parse_infix_loop(tokens, left0, next0, min_prec, expr_start, false)
+    match peek(tokens, en) {
+      TIdent(kw) => if String::equals(kw, "is") {
+        let (pat, pn) = parse_pattern(tokens, en + 1)
+        (EMatch(expr, [(pat, EBool(true)), (PWild, EBool(false))]), pn)
+      } else {
+        (expr, en)
+      },
+      _ => (expr, en)
+    }
   }
   let rec parse_match_rest = (tokens: Array[Token], pos: Int, scrutinee: Expr, b: ArrayBuilder[(Pat, Expr)]) -> (Expr, Int)with { Error } {
     match peek(tokens, pos) {
@@ -1286,24 +1295,70 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
     }
   } else if mode == mode_if {
     let (cond, cn) = parse_impl(tokens, pos, 0)
-    let br = expect_tk(tokens, cn, "{")
-    let (then_e, tn) = parse_impl(tokens, br, mode_block)
-    match peek(tokens, tn) {
-      TElse => match peek(tokens, tn + 1) {
-        TIf => {
-          let (else_e, end) = parse_impl(tokens, tn + 2, mode_if);
-          (EIf(cond, then_e, else_e), end)
-        },
-        TLBrace => {
-          let (else_e, end) = parse_impl(tokens, tn + 2, mode_block);
-          (EIf(cond, then_e, else_e), end)
-        },
-        _ => {
-          let (else_e, end) = parse_impl(tokens, tn + 1, 0);
-          (EIf(cond, then_e, else_e), end)
+    match peek(tokens, cn) {
+      TIdent(kw) => if String::equals(kw, "is") {
+        let (pat, pn) = parse_pattern(tokens, cn + 1)
+        let br = expect_tk(tokens, pn, "{")
+        let (then_e, tn) = parse_impl(tokens, br, mode_block)
+        match peek(tokens, tn) {
+          TElse => match peek(tokens, tn + 1) {
+            TIf => {
+              let (else_e, end2) = parse_impl(tokens, tn + 2, mode_if)
+              (EMatch(cond, [(pat, then_e), (PWild, else_e)]), end2)
+            },
+            TLBrace => {
+              let (else_e, end2) = parse_impl(tokens, tn + 2, mode_block)
+              (EMatch(cond, [(pat, then_e), (PWild, else_e)]), end2)
+            },
+            _ => {
+              let (else_e, end2) = parse_impl(tokens, tn + 1, 0)
+              (EMatch(cond, [(pat, then_e), (PWild, else_e)]), end2)
+            }
+          },
+          _ => (EMatch(cond, [(pat, then_e), (PWild, EUnit)]), tn)
+        }
+      } else {
+        let br = expect_tk(tokens, cn, "{")
+        let (then_e, tn) = parse_impl(tokens, br, mode_block)
+        match peek(tokens, tn) {
+          TElse => match peek(tokens, tn + 1) {
+            TIf => {
+              let (else_e, end2) = parse_impl(tokens, tn + 2, mode_if);
+              (EIf(cond, then_e, else_e), end2)
+            },
+            TLBrace => {
+              let (else_e, end2) = parse_impl(tokens, tn + 2, mode_block);
+              (EIf(cond, then_e, else_e), end2)
+            },
+            _ => {
+              let (else_e, end2) = parse_impl(tokens, tn + 1, 0);
+              (EIf(cond, then_e, else_e), end2)
+            }
+          },
+          _ => (EIf(cond, then_e, EUnit), tn)
         }
       },
-      _ => (EIf(cond, then_e, EUnit), tn)
+      _ => {
+        let br = expect_tk(tokens, cn, "{")
+        let (then_e, tn) = parse_impl(tokens, br, mode_block)
+        match peek(tokens, tn) {
+          TElse => match peek(tokens, tn + 1) {
+            TIf => {
+              let (else_e, end2) = parse_impl(tokens, tn + 2, mode_if);
+              (EIf(cond, then_e, else_e), end2)
+            },
+            TLBrace => {
+              let (else_e, end2) = parse_impl(tokens, tn + 2, mode_block);
+              (EIf(cond, then_e, else_e), end2)
+            },
+            _ => {
+              let (else_e, end2) = parse_impl(tokens, tn + 1, 0);
+              (EIf(cond, then_e, else_e), end2)
+            }
+          },
+          _ => (EIf(cond, then_e, EUnit), tn)
+        }
+      }
     }
   } else if mode == mode_while {
     let (cond, cn) = parse_impl(tokens, pos, 0)
