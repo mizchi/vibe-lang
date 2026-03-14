@@ -104,6 +104,8 @@ priv struct CodegenCtx {
   force_cabi_realloc : Bool
   // Exported closures: maps exported fn name -> global index storing env pointer
   exported_fn_env_globals : Map[String, Int]
+  // S8: heap_synced tracks whether heap_local == heap_global
+  mut heap_synced : Bool
 }
 
 ///|
@@ -227,6 +229,7 @@ fn CodegenCtx::new(
     force_cabi_realloc,
     // Exported closures env globals
     exported_fn_env_globals: {},
+    heap_synced: false,
   }
 }
 
