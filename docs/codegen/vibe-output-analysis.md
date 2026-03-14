@@ -196,8 +196,54 @@ P0+S1+S1b:    ~33 行,  3 locals, direct cmp→if
 P0+S1+S2:     ~19 行,  0 locals, no heap sync
 ```
 
+## 実装済み: S3 closure env check 省略
+
+`fn_index_needs_env(ctx, fn_idx)` が false を返す関数への直接呼び出しで、
+14命令のランタイム closure env check を省略し、`i32.const 0` を直接渡す。
+
+```
+Before: local.get → i64.const → i64.and → i32.wrap → i32.const → i32.eq →
+        if → untag_ptr → i32.load → else → i32.const 0 → end (14命令)
+After:  i32.const 0 (1命令)
+```
+
+basics.vibe では既に P0 で direct call 化済みのため WAT 行数への影響は限定的。
+クロージャを多用するコードで効果大。
+
+### 累計効果 (最終)
+
+```
+最適化前:                        16,371 行 (WAT)
+P0 (call直接化):                 16,371 行 (basics では変化なし、fib等で効果)
+P0 + S1 (int特殊化):            10,287 行 → 37% 削減
+P0 + S1 + S1b (cond省略):        9,960 行 → 39% 削減
+P0 + S1 + S1b + S2 (heap):       9,822 行 → 40% 削減
+P0 + S1 + S1b + S2 + S3 (env):   9,822 行 → 40% 削減 (basics.vibe は変化なし)
+```
+
+## 残存命令パターン分析 (最適化後)
+
+| 命令 | カウント | 備考 |
+|------|---------|------|
+| local.get | 2,485 | |
+| local.set | 1,172 | |
+| i32.const | 836 | |
+| i64.const | 758 | |
+| i32.add | 418 | |
+| i32.wrap_i64 | 325 | tagged → ptr 変換 |
+| if | 315 | |
+| i64.and | 272 | タグマスク (主に untag) |
+| i32.load | 227 | ヒープ読み出し |
+| i32.store | 178 | ヒープ書き込み |
+| global.get/set | 97×2 | heap sync (call 前後) |
+| memory.size/grow | 59×2 | heap reserve |
+| drop | 90 | memory.grow 戻り値等 |
+| call | 56 | direct calls |
+| call_indirect | 17 | closure/HOF calls |
+
 ## 次のステップ
 
-1. **定数畳み込み**: リテラル演算のコンパイル時評価
-2. **untag pointer キャッシュ**: 同じオブジェクトの複数フィールドアクセスで untag を共有
-3. **selfhost codegen にも同等の最適化を適用**
+1. **call 前後の heap sync 省略**: 呼び出し先が heap 不使用なら global.get/set 不要 (高コスト)
+2. **定数畳み込み**: リテラル演算のコンパイル時評価
+3. **untag pointer キャッシュ**: 同じオブジェクトの複数フィールドアクセスで untag を共有
+4. **selfhost codegen にも同等の最適化を適用**
