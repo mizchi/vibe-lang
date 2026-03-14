@@ -170,3 +170,122 @@ export let bytebuf_push_buf = (dst_hnd: Array[Int], src_hnd: Array[Int]) -> Unit
   FixedArray::blit(dst_data, dst_len + 2, src_data, 2, src_len)
   FixedArray::set(dst_data, 0, dst_len + src_len)
 }
+
+// === Batch push functions (reduce WASM function call overhead) ===
+
+// Push 2 bytes at once (block/if/loop opcodes)
+export let bytebuf_push2 = (hnd: Array[Int], b1: Int, b2: Int) -> Unit {
+  bytebuf_ensure(hnd, 2)
+  let data = FixedArray::get(hnd, 0)
+  let len = FixedArray::get(data, 0)
+  FixedArray::unsafe_set(data, len + 2, b1)
+  FixedArray::unsafe_set(data, len + 3, b2)
+  FixedArray::set(data, 0, len + 2)
+}
+
+// Push 3 bytes at once (GC prefix + opcode + small index, call_indirect + idx + 0x00)
+export let bytebuf_push3 = (hnd: Array[Int], b1: Int, b2: Int, b3: Int) -> Unit {
+  bytebuf_ensure(hnd, 3)
+  let data = FixedArray::get(hnd, 0)
+  let len = FixedArray::get(data, 0)
+  FixedArray::unsafe_set(data, len + 2, b1)
+  FixedArray::unsafe_set(data, len + 3, b2)
+  FixedArray::unsafe_set(data, len + 4, b3)
+  FixedArray::set(data, 0, len + 3)
+}
+
+// Fused opcode + unsigned LEB128 (local.get/set, call, br, global.get/set)
+// Covers: 1 byte opcode + up to 5 bytes LEB128 = max 6 bytes
+export let bytebuf_push_opcode_u32 = (hnd: Array[Int], opcode: Int, value: Int) -> Unit {
+  bytebuf_ensure(hnd, 6)
+  let data = FixedArray::get(hnd, 0)
+  let len = FixedArray::get(data, 0)
+  FixedArray::unsafe_set(data, len + 2, opcode)
+  // Inline unsigned LEB128
+  if value < 128 {
+    // 1-byte LEB128 (most common case: local index < 128)
+    FixedArray::unsafe_set(data, len + 3, value)
+    FixedArray::set(data, 0, len + 2)
+  } else {
+    FixedArray::unsafe_set(data, len + 3, (value & 127) | 128)
+    let r1 = (value >> 7) & ((1 << 25) - 1)
+    if r1 < 128 {
+      FixedArray::unsafe_set(data, len + 4, r1)
+      FixedArray::set(data, 0, len + 3)
+    } else {
+      FixedArray::unsafe_set(data, len + 4, (r1 & 127) | 128)
+      let r2 = (r1 >> 7) & ((1 << 18) - 1)
+      if r2 < 128 {
+        FixedArray::unsafe_set(data, len + 5, r2)
+        FixedArray::set(data, 0, len + 4)
+      } else {
+        FixedArray::unsafe_set(data, len + 5, (r2 & 127) | 128)
+        let r3 = (r2 >> 7) & ((1 << 11) - 1)
+        if r3 < 128 {
+          FixedArray::unsafe_set(data, len + 6, r3)
+          FixedArray::set(data, 0, len + 5)
+        } else {
+          FixedArray::unsafe_set(data, len + 6, (r3 & 127) | 128)
+          FixedArray::unsafe_set(data, len + 7, (r3 >> 7) & 127)
+          FixedArray::set(data, 0, len + 6)
+        }
+      }
+    }
+  }
+}
+
+// Fused opcode + signed LEB128 (i64.const, i32.const)
+// Covers: 1 byte opcode + up to 10 bytes LEB128 = max 11 bytes
+export let bytebuf_push_opcode_s64 = (hnd: Array[Int], opcode: Int, value: Int) -> Unit {
+  bytebuf_ensure(hnd, 11)
+  let data = FixedArray::get(hnd, 0)
+  let len = FixedArray::get(data, 0)
+  FixedArray::unsafe_set(data, len + 2, opcode)
+  // Inline signed LEB128
+  FixedArray::set(data, 0, len + 1)
+  leb128_encode_s32_unchecked(hnd, value)
+}
+
+// Fused opcode + two unsigned LEB128 values (i32.load/store align+offset)
+export let bytebuf_push_opcode_u32_u32 = (hnd: Array[Int], opcode: Int, a: Int, b: Int) -> Unit {
+  bytebuf_ensure(hnd, 11)
+  let data = FixedArray::get(hnd, 0)
+  let len = FixedArray::get(data, 0)
+  FixedArray::unsafe_set(data, len + 2, opcode)
+  FixedArray::set(data, 0, len + 1)
+  leb128_encode_u32_unchecked(hnd, a)
+  leb128_encode_u32_unchecked(hnd, b)
+}
+
+// Push string bytes (ensure once, then unsafe_set loop)
+export let bytebuf_push_string = (hnd: Array[Int], s: String) -> Unit {
+  let slen = String::length(s)
+  // LEB128 length prefix + string bytes
+  bytebuf_ensure(hnd, slen + 5)
+  leb128_encode_u32_unchecked(hnd, slen)
+  let data = FixedArray::get(hnd, 0)
+  let len = FixedArray::get(data, 0)
+  let mut i = 0
+  while i < slen {
+    FixedArray::unsafe_set(data, len + 2 + i, String::char_code_at(s, i))
+    i = i + 1
+  }
+  FixedArray::set(data, 0, len + slen)
+}
+
+// Push 9 bytes at once (f64.const: opcode + 8 raw bytes)
+export let bytebuf_push9 = (hnd: Array[Int], b1: Int, b2: Int, b3: Int, b4: Int, b5: Int, b6: Int, b7: Int, b8: Int, b9: Int) -> Unit {
+  bytebuf_ensure(hnd, 9)
+  let data = FixedArray::get(hnd, 0)
+  let len = FixedArray::get(data, 0)
+  FixedArray::unsafe_set(data, len + 2, b1)
+  FixedArray::unsafe_set(data, len + 3, b2)
+  FixedArray::unsafe_set(data, len + 4, b3)
+  FixedArray::unsafe_set(data, len + 5, b4)
+  FixedArray::unsafe_set(data, len + 6, b5)
+  FixedArray::unsafe_set(data, len + 7, b6)
+  FixedArray::unsafe_set(data, len + 8, b7)
+  FixedArray::unsafe_set(data, len + 9, b8)
+  FixedArray::unsafe_set(data, len + 10, b9)
+  FixedArray::set(data, 0, len + 9)
+}
