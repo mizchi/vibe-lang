@@ -29,6 +29,34 @@ Phase 4 (応用):
 - [ ] language: AST rewriter / macro API（構文正規化パスを定義可能にする）
   - desugar/normalize を言語内で記述し、自己ホスト実装を縮小
 
+## Vibe 言語仕様の整合性
+
+言語設計者視点での未整理項目。実装の局所修正ではなく、AST / 型 / 構文 / evaluator / checker の契約を仕様として揃える前提で扱う。
+
+- [ ] function type / effect 表現を AST・型・parser・printer・checker で統一する
+  - 現状は `TyFn` に effect がなく、`CtFn` は `Bool`、`EFn` は `Option[String]` で別表現になっている
+  - `EffectSet` か effect row を一次表現にして、`spec/decisions.md` に固定する
+- [ ] selfhost evaluator の AST codec を full-fidelity にする
+  - `EFn` の type params / bounds / return type / effect、`break` payload、`continue(args)` payload が encode/decode で落ちている
+  - closure 保存用の専用 IR に寄せるか、AST codec を完全往復可能にする
+- [ ] method syntax を nominal sugar と trait dispatch のどちらにするか仕様として固定する
+  - 現状は `obj.method(x)` を `Type::method(obj, x)` へ文字列ベースで落としており、generic receiver や trait method の規則が曖昧
+- [ ] import surface の kind 情報を AST に残す
+  - `import { type X }` / `import { trait Y }` を parser は受理するが AST で kind を捨てている
+  - `ImportItemKind` と typed `ModuleRef` を導入し、module system の仕様を固める
+- [ ] 演算子の型規則を checker と evaluator で一致させる
+  - 現状は checker が非 bool 二項演算をほぼ `Int` 扱いし、evaluator は `Float` と `String` の overload を持つ
+  - `+ - * /` と比較演算の overload を仕様に落としてから両実装を揃える
+- [ ] 文字列補間を raw source 再 parse ではなく typed AST にする
+  - `EStringInterp(Array[String])` は lossy で、expand 時に再 lex/parse している
+  - `Lit(String) | Expr(Expr)` の補間パーツへ変更し、parser が式まで責任を持つ
+- [ ] `loop` / `continue` の状態受け渡しを positional から named へ寄せる
+  - 現状の `EContinue(Array[Expr])` は `ELoop(Array[(String, Expr)], ...)` と契約がずれており、将来の拡張に弱い
+  - `continue(x = ..., y = ...)` 相当の AST にして merge 規則を明文化する
+- [ ] generic `impl` を AST だけ先行させる状態を解消する
+  - parser は `impl type parameters are not supported yet` で落とす一方、AST には generic `SImpl` がある
+  - 今すぐやらないなら AST から落とし、やるなら parser/checker/eval/codegen まで一気通しで揃える
+
 ## Self-Host Compiler / Runtime Packaging
 
 **現状**: compiler API export、統合 compile pipeline、module loader、selfhost source manifest、bundle drift check、TypeDb cache probe、selfhost CLI batch cache、host CLI の check/test loop cache 再利用、env/argv 契約、stage1 core wasm 直接の artifact-only compile gate、Preview2 component-only selfhost CLI gate、Preview2 package、command world 配布 gate、direct fs/argv component 配布 gate、strict-recursive selfbuild 復帰まで入った。`stage1 artifact 自体で sample を compile して run=42` と `just test-selfhost-wasi-selfbuild-kpi 300` の strict-recursive mode は通る。
