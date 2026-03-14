@@ -1406,7 +1406,7 @@ test "compile-lite split args extracts profile tsv path" {
     "--wasm", "--profile-tsv", "/tmp/profile.tsv", "-o", "/tmp/out.wasm", "main.vibe",
   ])
   match parsed {
-    Ok((args, Some(path), in_memory)) => {
+    Ok((args, Some(path), _, in_memory)) => {
       assert_eq(path, "/tmp/profile.tsv")
       assert_eq(args.length(), 4)
       assert_eq(args[0], "--wasm")
@@ -2270,37 +2270,81 @@ test "split test entry path batches with weights keeps same root on same worker 
   let a2 = root_a_json + "/b_test.vibe"
   let b1 = root_b_compiler + "/c_test.vibe"
   let b2 = root_b_json + "/d_test.vibe"
-  @os_fs.create_dir(root_a) catch { e => fail(e.to_string()) }
-  @os_fs.create_dir(root_b) catch { e => fail(e.to_string()) }
-  @os_fs.create_dir(root_a_vibe) catch { e => fail(e.to_string()) }
-  @os_fs.create_dir(root_b_vibe) catch { e => fail(e.to_string()) }
-  @os_fs.create_dir(root_a_compiler) catch { e => fail(e.to_string()) }
-  @os_fs.create_dir(root_a_json) catch { e => fail(e.to_string()) }
-  @os_fs.create_dir(root_b_compiler) catch { e => fail(e.to_string()) }
-  @os_fs.create_dir(root_b_json) catch { e => fail(e.to_string()) }
-  @os_fs.write_string_to_file(root_a_compiler + "/index.vibe", "export let version = \"0.1.0\"\n") catch {
+  @os_fs.create_dir(root_a) catch {
     e => fail(e.to_string())
   }
-  @os_fs.write_string_to_file(root_b_compiler + "/index.vibe", "export let version = \"0.1.0\"\n") catch {
+  @os_fs.create_dir(root_b) catch {
     e => fail(e.to_string())
   }
-  @os_fs.write_string_to_file(root_a_json + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}") catch {
+  @os_fs.create_dir(root_a_vibe) catch {
     e => fail(e.to_string())
   }
-  @os_fs.write_string_to_file(root_b_json + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}") catch {
+  @os_fs.create_dir(root_b_vibe) catch {
     e => fail(e.to_string())
   }
-  @os_fs.write_string_to_file(a1, "") catch { e => fail(e.to_string()) }
-  @os_fs.write_string_to_file(a2, "") catch { e => fail(e.to_string()) }
-  @os_fs.write_string_to_file(b1, "") catch { e => fail(e.to_string()) }
-  @os_fs.write_string_to_file(b2, "") catch { e => fail(e.to_string()) }
+  @os_fs.create_dir(root_a_compiler) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(root_a_json) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(root_b_compiler) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(root_b_json) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    root_a_compiler + "/index.vibe",
+    "export let version = \"0.1.0\"\n",
+  ) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    root_b_compiler + "/index.vibe",
+    "export let version = \"0.1.0\"\n",
+  ) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    root_a_json + "/index.lock",
+    "{\"path\":{},\"version\":{},\"symbol\":{}}",
+  ) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    root_b_json + "/index.lock",
+    "{\"path\":{},\"version\":{},\"symbol\":{}}",
+  ) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(a1, "") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(a2, "") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(b1, "") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(b2, "") catch {
+    e => fail(e.to_string())
+  }
 
-  let grouped = split_test_entry_path_batches_with_weights([a1, a2, b1, b2], 2, {})
+  let grouped = split_test_entry_path_batches_with_weights(
+    [a1, a2, b1, b2],
+    2,
+    {},
+  )
   assert_eq(grouped.length(), 2)
-  let batch0_has_a = wbtest_contains(grouped[0], a1) || wbtest_contains(grouped[0], a2)
-  let batch0_has_b = wbtest_contains(grouped[0], b1) || wbtest_contains(grouped[0], b2)
-  let batch1_has_a = wbtest_contains(grouped[1], a1) || wbtest_contains(grouped[1], a2)
-  let batch1_has_b = wbtest_contains(grouped[1], b1) || wbtest_contains(grouped[1], b2)
+  let batch0_has_a = wbtest_contains(grouped[0], a1) ||
+    wbtest_contains(grouped[0], a2)
+  let batch0_has_b = wbtest_contains(grouped[0], b1) ||
+    wbtest_contains(grouped[0], b2)
+  let batch1_has_a = wbtest_contains(grouped[1], a1) ||
+    wbtest_contains(grouped[1], a2)
+  let batch1_has_b = wbtest_contains(grouped[1], b1) ||
+    wbtest_contains(grouped[1], b2)
   assert_false(batch0_has_a && batch0_has_b)
   assert_false(batch1_has_a && batch1_has_b)
 
@@ -2424,9 +2468,7 @@ test "split test entry task batches keeps heavy weighted files isolated" {
   weights["vibe/compiler/d_test.vibe"] = 10
   let grouped = split_test_entry_task_batches_with_weights(
     [
-      "vibe/compiler/a_test.vibe",
-      "vibe/compiler/b_test.vibe",
-      "vibe/compiler/c_test.vibe",
+      "vibe/compiler/a_test.vibe", "vibe/compiler/b_test.vibe", "vibe/compiler/c_test.vibe",
       "vibe/compiler/d_test.vibe",
     ],
     2,
@@ -2458,37 +2500,81 @@ test "split test entry task batches with weights keeps same root on same worker 
   let a2 = root_a_json + "/b_test.vibe"
   let b1 = root_b_compiler + "/c_test.vibe"
   let b2 = root_b_json + "/d_test.vibe"
-  @os_fs.create_dir(root_a) catch { e => fail(e.to_string()) }
-  @os_fs.create_dir(root_b) catch { e => fail(e.to_string()) }
-  @os_fs.create_dir(root_a_vibe) catch { e => fail(e.to_string()) }
-  @os_fs.create_dir(root_b_vibe) catch { e => fail(e.to_string()) }
-  @os_fs.create_dir(root_a_compiler) catch { e => fail(e.to_string()) }
-  @os_fs.create_dir(root_a_json) catch { e => fail(e.to_string()) }
-  @os_fs.create_dir(root_b_compiler) catch { e => fail(e.to_string()) }
-  @os_fs.create_dir(root_b_json) catch { e => fail(e.to_string()) }
-  @os_fs.write_string_to_file(root_a_compiler + "/index.vibe", "export let version = \"0.1.0\"\n") catch {
+  @os_fs.create_dir(root_a) catch {
     e => fail(e.to_string())
   }
-  @os_fs.write_string_to_file(root_b_compiler + "/index.vibe", "export let version = \"0.1.0\"\n") catch {
+  @os_fs.create_dir(root_b) catch {
     e => fail(e.to_string())
   }
-  @os_fs.write_string_to_file(root_a_json + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}") catch {
+  @os_fs.create_dir(root_a_vibe) catch {
     e => fail(e.to_string())
   }
-  @os_fs.write_string_to_file(root_b_json + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}") catch {
+  @os_fs.create_dir(root_b_vibe) catch {
     e => fail(e.to_string())
   }
-  @os_fs.write_string_to_file(a1, "") catch { e => fail(e.to_string()) }
-  @os_fs.write_string_to_file(a2, "") catch { e => fail(e.to_string()) }
-  @os_fs.write_string_to_file(b1, "") catch { e => fail(e.to_string()) }
-  @os_fs.write_string_to_file(b2, "") catch { e => fail(e.to_string()) }
+  @os_fs.create_dir(root_a_compiler) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(root_a_json) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(root_b_compiler) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(root_b_json) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    root_a_compiler + "/index.vibe",
+    "export let version = \"0.1.0\"\n",
+  ) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    root_b_compiler + "/index.vibe",
+    "export let version = \"0.1.0\"\n",
+  ) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    root_a_json + "/index.lock",
+    "{\"path\":{},\"version\":{},\"symbol\":{}}",
+  ) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    root_b_json + "/index.lock",
+    "{\"path\":{},\"version\":{},\"symbol\":{}}",
+  ) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(a1, "") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(a2, "") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(b1, "") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(b2, "") catch {
+    e => fail(e.to_string())
+  }
 
-  let grouped = split_test_entry_task_batches_with_weights([a1, a2, b1, b2], 2, {})
+  let grouped = split_test_entry_task_batches_with_weights(
+    [a1, a2, b1, b2],
+    2,
+    {},
+  )
   assert_eq(grouped.length(), 2)
-  let batch0_has_a = wbtest_contains(grouped[0], a1) || wbtest_contains(grouped[0], a2)
-  let batch0_has_b = wbtest_contains(grouped[0], b1) || wbtest_contains(grouped[0], b2)
-  let batch1_has_a = wbtest_contains(grouped[1], a1) || wbtest_contains(grouped[1], a2)
-  let batch1_has_b = wbtest_contains(grouped[1], b1) || wbtest_contains(grouped[1], b2)
+  let batch0_has_a = wbtest_contains(grouped[0], a1) ||
+    wbtest_contains(grouped[0], a2)
+  let batch0_has_b = wbtest_contains(grouped[0], b1) ||
+    wbtest_contains(grouped[0], b2)
+  let batch1_has_a = wbtest_contains(grouped[1], a1) ||
+    wbtest_contains(grouped[1], a2)
+  let batch1_has_b = wbtest_contains(grouped[1], b1) ||
+    wbtest_contains(grouped[1], b2)
   assert_false(batch0_has_a && batch0_has_b)
   assert_false(batch1_has_a && batch1_has_b)
 

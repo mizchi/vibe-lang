@@ -190,9 +190,7 @@ fn closure_payload_dirname(path : String) -> String {
   if last_slash <= 0 {
     "/"
   } else {
-    path[:last_slash].to_string() catch {
-      _ => "/"
-    }
+    path[:last_slash].to_string()
   }
 }
 

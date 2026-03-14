@@ -269,7 +269,7 @@ fn fs_stat_token_from_text(source : String) -> Int {
     h2 = (h2 * step2 + c + i + 1) % mod2
     i += 1
   }
-  ((len % mod1) * step1 + h1 + h2) % mod1
+  (len % mod1 * step1 + h1 + h2) % mod1
 }
 
 ///|
@@ -2539,7 +2539,12 @@ fn eval_builtin_call(
             Ok(content) => {
               let effects = out.effects
               effects.push(Effect::FsReadFile(resolved, content))
-              { value: @core.Value::Int(fs_stat_token_from_text(content).to_int64()), effects }
+              {
+                value: @core.Value::Int(
+                  fs_stat_token_from_text(content).to_int64(),
+                ),
+                effects,
+              }
             }
             Err(err) =>
               raise EvalError::BadCall(Io(op="Fs::stat_token", detail=err))

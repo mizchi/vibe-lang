@@ -5621,9 +5621,13 @@ fn compile_call_builtin_pre_user_inner(
     }
     "Fs::stat_token" => {
       if ctx.use_js_strings {
-        raise WasmGenError::Unsupported("Fs::stat_token requires --wasm backend")
+        raise WasmGenError::Unsupported(
+          "Fs::stat_token requires --wasm backend",
+        )
       }
-      let pos_args = extract_positional_exprs_with_arity(args, "Fs::stat_token", 1)
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Fs::stat_token", 1,
+      )
       require_heap(ctx)
       let raw_local = alloc_temp_local(ctx)
       let len_local = alloc_temp_local(ctx)

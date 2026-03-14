@@ -396,7 +396,7 @@ fn compile_call_builtin_post_user_inner(
       let end_local = alloc_temp_local(ctx)
       let slice_len_local = alloc_temp_local(ctx)
       let obj_local = alloc_temp_local(ctx)
-      let copy_i_local = alloc_temp_local(ctx)
+      let _copy_i_local = alloc_temp_local(ctx)
       let alloc_size_local = alloc_temp_local(ctx)
       // Untag array pointer
       compile_expr_i32(ctx, buf, pos_args[0])

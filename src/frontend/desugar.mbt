@@ -919,8 +919,8 @@ fn split_method_call_name(name : String) -> (String, String)? {
   if dot <= 0 || dot >= chars.length() - 1 {
     return None
   }
-  let left = name[0:dot].to_string() catch { _ => name }
-  let right = name[dot + 1:chars.length()].to_string() catch { _ => name }
+  let left = name[0:dot].to_string()
+  let right = name[dot + 1:chars.length()].to_string()
   if not(is_simple_ident(left)) || not(is_simple_ident(right)) {
     return None
   }

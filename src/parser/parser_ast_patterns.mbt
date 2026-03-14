@@ -197,7 +197,7 @@ fn AstParser::parse_pattern(self : AstParser) -> @core.Pat raise ParseError {
         let last = text[len - 1]
         if last == 'f' || last == 'F' {
           is_float = true
-          raw = (try! text[0:len - 1]).to_string()
+          raw = text[0:len - 1].to_string()
         }
       }
       let parsed : Result[Double, @strconv.StrConvError] = try? @strconv.parse_double(

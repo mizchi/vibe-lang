@@ -271,7 +271,7 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
               }) {
           let _ = self.advance()
         }
-        let text = self.input[start:self.pos].to_string() catch { _ => "" }
+        let text = self.input[start:self.pos].to_string()
         return Token::new(whitespace(), text)
       }
       if c == '\n' {
@@ -351,7 +351,7 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
                   }) {
               let _ = self.advance()
             }
-            let text = self.input[start:self.pos].to_string() catch { _ => "" }
+            let text = self.input[start:self.pos].to_string()
             return Token::new(int_lit(), text)
           }
         }
@@ -396,7 +396,7 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           }
           _ => ()
         }
-        let text = self.input[start:self.pos].to_string() catch { _ => "" }
+        let text = self.input[start:self.pos].to_string()
         if is_float {
           return Token::new(float_lit(), text)
         }
@@ -459,9 +459,7 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
                     }) {
                 let _ = self.advance()
               }
-              let text = self.input[start:self.pos].to_string() catch {
-                _ => ""
-              }
+              let text = self.input[start:self.pos].to_string()
               Token::new(comment(), text)
             }
             _ => Token::new(slash(), "/")
@@ -678,9 +676,7 @@ fn Lexer::lex_ident(self : Lexer) -> String {
       None => break
     }
   }
-  self.input[start:self.pos].to_string() catch {
-    _ => ""
-  }
+  self.input[start:self.pos].to_string()
 }
 
 ///|

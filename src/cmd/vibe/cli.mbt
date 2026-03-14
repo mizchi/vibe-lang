@@ -3776,7 +3776,11 @@ fn test_entry_batch_target_weight_limit(
   }
   let safe_workers = if worker_count <= 0 { 1 } else { worker_count }
   let limit = (total_weight + safe_workers - 1) / safe_workers
-  if limit <= 0 { 1 } else { limit }
+  if limit <= 0 {
+    1
+  } else {
+    limit
+  }
 }
 
 ///|
@@ -3818,9 +3822,7 @@ fn collect_test_entry_batch_units(
     use_fine_grained_chunking,
   )
   let target_chunk_weight = test_entry_batch_target_weight_limit(
-    entry_paths,
-    worker_count,
-    weights,
+    entry_paths, worker_count, weights,
   )
   let units : Array[TestEntryBatchUnit] = []
   for parent in parent_keys {
@@ -3909,11 +3911,11 @@ fn split_test_entry_task_batches_with_weights(
     let batch_index = match same_root_index {
       Some(index) =>
         if test_entry_batch_has_unassigned_other_root_after(
-          units,
-          i + 1,
-          batch_roots,
-          unit.root,
-        ) {
+            units,
+            i + 1,
+            batch_roots,
+            unit.root,
+          ) {
           index
         } else {
           match empty_index {
@@ -3977,11 +3979,11 @@ fn split_test_entry_path_batches_with_weights(
     let batch_index = match same_root_index {
       Some(index) =>
         if test_entry_batch_has_unassigned_other_root_after(
-          units,
-          i + 1,
-          batch_roots,
-          unit.root,
-        ) {
+            units,
+            i + 1,
+            batch_roots,
+            unit.root,
+          ) {
           index
         } else {
           match empty_index {

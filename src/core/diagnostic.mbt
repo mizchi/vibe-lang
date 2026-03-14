@@ -86,7 +86,7 @@ fn repeat_char(c : Char, count : Int) -> String {
 ///|
 pub fn render_snippet(source : String, span : Span) -> String {
   let (pos, line_start, line_end) = line_info(source, span.start)
-  let line_text = source[line_start:line_end].to_string() catch { _ => "" }
+  let line_text = source[line_start:line_end].to_string()
   if line_text.length() == 0 {
     return ""
   }
