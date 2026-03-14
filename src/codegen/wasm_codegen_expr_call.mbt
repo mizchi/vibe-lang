@@ -7,6 +7,19 @@ fn compile_expr_call(
   args : Array[@core.CallArg],
 ) -> Unit raise WasmGenError {
   let name = @core.lower_wasm_intrinsic_name(name)
+  // Optimization: if name refers to a known module-level function with matching
+  // arity, use direct `call` instead of `call_indirect`. This avoids the
+  // overhead of table lookup, tag check (bare fn vs closure), and branch.
+  if ctx.fn_indices.contains(name) && not(ctx.enum_ctor_tags.contains(name)) {
+    let direct_arity_match = match ctx.fn_params.get(name) {
+      Some(params) => args.length() == params.length()
+      None => false
+    }
+    if direct_arity_match {
+      compile_call_by_name(ctx, buf, name, args)
+      return ()
+    }
+  }
   if ctx.fn_local_sigs.contains(name) &&
     ctx.locals.contains(name) &&
     not(ctx.enum_ctor_tags.contains(name)) {
