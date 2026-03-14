@@ -32,36 +32,56 @@ fn GcByteBuf::to_bytes(self : GcByteBuf) -> Bytes {
 
 ///|
 fn write_u32_leb_gc(buf : GcByteBuf, n : Int) -> Unit {
-  let mut value = n
-  while true {
-    let mut byte = value & 0x7f
-    value = value >> 7
-    if value != 0 {
-      byte = byte | 0x80
-    }
-    buf.push(byte)
-    if value == 0 {
-      break
-    }
+  let u = n.reinterpret_as_uint()
+  let v0 = (u & 0x7fU).reinterpret_as_int()
+  let r0 = u >> 7
+  if r0 == 0U {
+    buf.push(v0)
+    return
   }
+  buf.push(v0 | 0x80)
+  let v1 = (r0 & 0x7fU).reinterpret_as_int()
+  let r1 = r0 >> 7
+  if r1 == 0U {
+    buf.push(v1)
+    return
+  }
+  buf.push(v1 | 0x80)
+  let v2 = (r1 & 0x7fU).reinterpret_as_int()
+  let r2 = r1 >> 7
+  if r2 == 0U {
+    buf.push(v2)
+    return
+  }
+  buf.push(v2 | 0x80)
+  let v3 = (r2 & 0x7fU).reinterpret_as_int()
+  let r3 = r2 >> 7
+  if r3 == 0U {
+    buf.push(v3)
+    return
+  }
+  buf.push(v3 | 0x80)
+  buf.push((r3 & 0x7fU).reinterpret_as_int())
 }
 
 ///|
 fn write_i32_leb_gc(buf : GcByteBuf, n : Int) -> Unit {
-  let mut value = n
-  while true {
-    let mut byte = value & 0x7f
-    value = value >> 7
-    let sign_bit_set = (byte & 0x40) != 0
-    let done = (value == 0 && not(sign_bit_set)) ||
-      (value == -1 && sign_bit_set)
-    if not(done) {
-      byte = byte | 0x80
-    }
+  write_i32_leb_gc_inner(buf, n, 0)
+}
+
+///|
+fn write_i32_leb_gc_inner(buf : GcByteBuf, value : Int, depth : Int) -> Unit {
+  let byte = value & 0x7f
+  let rest = value >> 7
+  let sign_bit_set = (byte & 0x40) != 0
+  let done = (rest == 0 && not(sign_bit_set)) || (rest == -1 && sign_bit_set)
+  if done {
     buf.push(byte)
-    if done {
-      break
-    }
+  } else if depth < 4 {
+    buf.push(byte | 0x80)
+    write_i32_leb_gc_inner(buf, rest, depth + 1)
+  } else {
+    buf.push(byte)
   }
 }
 

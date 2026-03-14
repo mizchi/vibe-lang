@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Kill child processes on interrupt to prevent orphans
+trap 'trap - EXIT; kill -- -$$ 2>/dev/null || true' INT TERM
+
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CLI_BIN="$ROOT_DIR/_build/native/debug/build/cmd/vibe/vibe.exe"
 PORT=18281
