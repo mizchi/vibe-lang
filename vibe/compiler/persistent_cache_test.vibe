@@ -24,6 +24,7 @@ import ./cache / persistent {
   compact_string_fingerprint,
   persistent_dep_list_cache_path,
   persistent_artifact_cache_path,
+  persistent_module_header_cache_path,
   persistent_source_group_cache_path,
   persistent_type_env_cache_path
 }
@@ -321,4 +322,55 @@ test "db_typecheck_fs: fresh db reuses persistent dep cache for multi-dep module
   )
   let parse2 = db_parse_count(db2)
   assert(eq(parse2, 0))
+}
+
+test "db_typecheck_fs: module header cache rebuilds missing persistent dep cache" {
+  let helper_path = "/tmp/vibe_compiler_persistent_header_helper.vibe"
+  let main_path = "/tmp/vibe_compiler_persistent_header_main.vibe"
+  let helper_source = "export let add = () -> Int { 1 }"
+  let main_source = "import ./vibe_compiler_persistent_header_helper.vibe { add }\nlet run = () -> Int { add() }"
+  Fs::write_bytes(helper_path, string_to_bytes(helper_source))
+  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  let helper_fp = build_type_db_fingerprint(helper_source, Array::slice([("", "")], 0, 0))
+  let main_fp = build_type_db_fingerprint(main_source, [(helper_path, helper_fp)])
+  let helper_dep_cache = persistent_dep_list_cache_path(
+    helper_path,
+    compact_string_fingerprint(helper_source)
+  )
+  let main_dep_cache = persistent_dep_list_cache_path(
+    main_path,
+    compact_string_fingerprint(main_source)
+  )
+  let helper_header_cache = persistent_module_header_cache_path(
+    helper_path,
+    compact_string_fingerprint(helper_source)
+  )
+  let main_header_cache = persistent_module_header_cache_path(
+    main_path,
+    compact_string_fingerprint(main_source)
+  )
+  remove_file_if_exists(helper_dep_cache)
+  remove_file_if_exists(main_dep_cache)
+  remove_file_if_exists(helper_header_cache)
+  remove_file_if_exists(main_header_cache)
+  remove_file_if_exists(persistent_type_env_cache_path(helper_fp))
+  remove_file_if_exists(persistent_type_env_cache_path(main_fp))
+
+  let db1 = db_typecheck_fs(
+    db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source),
+    main_path
+  )
+  assert(eq(db_parse_count(db1), 4))
+  assert(Fs::exists(helper_header_cache))
+  assert(Fs::exists(main_header_cache))
+
+  remove_file_if_exists(helper_dep_cache)
+  remove_file_if_exists(main_dep_cache)
+  let db2 = db_typecheck_fs(
+    db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source),
+    main_path
+  )
+  assert(eq(db_parse_count(db2), 0))
+  assert(Fs::exists(helper_dep_cache))
+  assert(Fs::exists(main_dep_cache))
 }
