@@ -20,13 +20,15 @@ fn compile_expr_while(
   ctx.loop_param_locals = []
 
   // Evaluate condition
-  compile_expr_i32(ctx, buf, cond)
-  // Extract bool value: (tagged >> 2) & 1
-  emit_i64_const_raw(buf, 2L)
-  emit_i64_shr_u(buf)
-  emit_i32_wrap_i64(buf)
-  emit_i32_const_raw(buf, 1)
-  emit_i32_and(buf)
+  if not(try_compile_cond_i32(ctx, buf, cond)) {
+    compile_expr_i32(ctx, buf, cond)
+    // Extract bool value: (tagged >> 2) & 1
+    emit_i64_const_raw(buf, 2L)
+    emit_i64_shr_u(buf)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const_raw(buf, 1)
+    emit_i32_and(buf)
+  }
   // If condition is 0, exit loop with unit value.
   emit_i32_eqz(buf)
   buf.push((4).to_byte()) // if
