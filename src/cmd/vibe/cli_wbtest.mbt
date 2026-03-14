@@ -2542,6 +2542,16 @@ test "find json lines extracts all object-looking lines" {
 }
 
 ///|
+test "decode process output lossy keeps later json lines" {
+  let prefix = Bytes::from_array([b'\xff', b'\n'])
+  let json = @utf8.encode("{\"file\":\"a.vibe\",\"total\":1}\n")
+  let text = decode_process_output_lossy(prefix + json)
+  let lines = find_json_lines(text)
+  assert_eq(lines.length(), 1)
+  assert_eq(lines[0], "{\"file\":\"a.vibe\",\"total\":1}")
+}
+
+///|
 test "default test jobs uses safe fallback when env is unset" {
   let prev = @sys.get_env_var("VIBE_TEST_JOBS")
   @sys.unset_env_var("VIBE_TEST_JOBS")

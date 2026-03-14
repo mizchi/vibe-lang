@@ -3333,6 +3333,11 @@ fn find_json_lines(text : String) -> Array[String] {
 }
 
 ///|
+fn decode_process_output_lossy(bytes : Bytes) -> String {
+  @utf8.decode_lossy(bytes[:])
+}
+
+///|
 fn test_batch_weight_cache_path() -> String? {
   match @sys.get_env_var("VIBE_TEST_BATCH_WEIGHT_CACHE") {
     Some(raw) => {
@@ -4077,8 +4082,8 @@ fn test_cmd_parallel(
           r_err.read_all()
         })
         let code = child.wait()
-        let out = stdout_task.wait().text() catch { _ => "" }
-        let err = stderr_task.wait().text() catch { _ => "" }
+        let out = decode_process_output_lossy(stdout_task.wait().binary())
+        let err = decode_process_output_lossy(stderr_task.wait().binary())
         (captured_batch, code, out, err)
       })
     })

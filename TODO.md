@@ -37,8 +37,11 @@ Phase 4 (応用):
 - selfhost coverage suite aggregate は raw `id` ではなく `span.start-end` union に直し、warm rerun でも summary が安定する状態まで戻した
 - coverage 側に戻るときの次の入口は `eval_e2e_test.vibe` の branch gap を詰めること
 - その次は、coverage 拡張ではなく selfhost cutover 本体として `check/test/release-check` をどの配布形から差し替えるかを固定する
-- 2026-03-13 時点の再確認では `just test-selfhost-cutover` は `scripts/test_selfhost_cutover_compare.sh` の空配列展開 (`LOADED_FAIL_CLASSES[@]`) で落ちる
-- 同じく `just test-selfhost-wasi-selfbuild-kpi 300` は `compile_file_fs_mode_cached` の closure capture unsupported path で selfbuild 回帰している
+- `just test-selfhost-cutover` と `just test-selfhost-wasi-selfbuild-kpi 300` の回帰は復旧済み
+- compiled selfhost shard 2/4 の blocker だった `eval_e2e` の string interpolation、`checker_unify` の `CtForAll` 対称 unify、fixture selfhost の root 外 import、`monoify` の selfhost type error は解消済み
+- compiled selfhost shard 2/4 は root-affine batch 後の成功条件で `28 files / 10 batches / 281 tests / real 101.67s` を確認済み
+- parallel test wrapper の child stdout/stderr decode は lossy に修正し、compiled shard 1/4 で出ていた `invalid JSON report` の誤検知経路は潰した
+- compiled selfhost shard 1/4 は `module_loader_test` / `file_compile_mode_test` を含む 2 batch が支配しており、成功条件の確定前でも `13m+` 張り付きで bootstrap 全体の最重 shard 候補になっている
 
 ### Selfhost compiler modularization / cache
 
@@ -76,6 +79,9 @@ Phase 4 (応用):
     - `vibe test` / bootstrap shard の child process 分割を減らし、同じ root を同一 worker に寄せて `CliEntryDbCache` / shared `TypeDb` の hit 率を上げる
     - `prepare_jobs_cached` で入れた sibling 共有を、実際に重い bootstrap/test の selfhost compiled 経路へ直接適用する
     - dep list cache の次段として `header/interface` を永続化し、fresh process でも import closure discovery の CPU を落とす
+    - root-affine batch 後の compiled selfhost shard 1/4, 3/4, 4/4 を同条件で再計測し、bootstrap 全体の支配 shard を確定する
+    - `just test-selfhost-bootstrap` を再開し、timeout ではなく実 wall time / failure point を現行 tree で採り直す
+    - shard 1/4 については、まず `module_loader_test` と `file_compile_mode_test` を含む batch を個別導線へ逃がすか、さらに file 単位で分解するかを決める
 
 - [x] host `src/cmd/vibe` 側の compile/test loop にも selfhost と同じ persistent cache パターンを持ち込む
   - `src/loader` に `*_into` API を追加し、`check_cmd` / `test_cmd_sequential` / `test_cmd_report_json` が root 単位 `VibeDb` cache を持ち回るようにした
@@ -172,9 +178,15 @@ Phase 4 (応用):
   - `stmt_fn_regression_test` は `stmt_fn_tuple_regression_test` に、`fixture_test` は parse / roundtrip に分割済み
   - direct compiled 実測で重い候補は `compiler_test`、`stmt_regression_test`、`checker_stmt_regression_test`、`parser_flow_test`、`codegen_lexer_test`
   - 次の実作業候補: `stmt_regression_test` / `checker_stmt_regression_test` の再分割、`compiler_test` の compile_source 系を独立 file に切り出す
+  - root-affine batch で child process 数は `28-32 -> 10` まで減らせたが、wall time の再計測は shard 2/4 しか終わっていない
+  - shard 1/4 は `printer_loop + cst_lower_expr_binding + codegen_controlflow + file_compile_mode + codegen` と `stmt_data_decl + module_loader + types` の 2 batch が 13 分超で張り付き、現時点ではここが bootstrap 最重候補
+  - 次は shard 1/4, 3/4, 4/4 を同条件で取り直し、分割で解決する問題か、個別 test 最適化へ進むべきかを確定する
 - [ ] compiled bootstrap から外した重い回帰ケースの扱いを固定する
   - `codegen_parser_test` は release binary でも 240s で完走しないため、専用 gate か fixture 化に寄せたい
   - `selfhost_s5_*` は selfbuild / artifact gate と責務が重複しているので、compiled bootstrap では走らせない前提を文書化したい
+- [ ] `just release-check` を selfhost 復旧後の現行 tree で最後まで通す
+  - 直近では bootstrap shard の重さを優先して後回しにしている
+  - 残りは bootstrap 全体の再計測、通過確認、その上で `release-check` の再実行
 - [ ] `vibe_normalize_all` の explicit exclude を外す
   - 現状 `vibe/compiler/coverage_selfhost_suite_lib.vibe` は native normalize crash 回避のため batch 対象から外している
   - normalize engine 側の crash を直して exclude なしで回したい
