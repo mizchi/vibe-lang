@@ -16,9 +16,9 @@ if [[ ! -x "$CLI_BIN" ]]; then
   exit 1
 fi
 
-cmd_loader_list="timeout $TIMEOUT_SEC env VIBE_TEST_BACKEND=$BACKEND \"$CLI_BIN\" test \"$ROOT_DIR/vibe/compiler/cache_probe_loader_manifest_list_bench_test.vibe\" >/dev/null"
-cmd_loader_groups="timeout $TIMEOUT_SEC env VIBE_TEST_BACKEND=$BACKEND \"$CLI_BIN\" test \"$ROOT_DIR/vibe/compiler/cache_probe_loader_manifest_groups_bench_test.vibe\" >/dev/null"
-cmd_file_compile_same="timeout $TIMEOUT_SEC env VIBE_TEST_BACKEND=$BACKEND \"$CLI_BIN\" test \"$ROOT_DIR/vibe/compiler/cache_probe_file_compile_mode_same_content_bench_test.vibe\" >/dev/null"
+cmd_loader_list="timeout $TIMEOUT_SEC env VIBE_RUN_BACKEND=$BACKEND \"$CLI_BIN\" run \"$ROOT_DIR/vibe/compiler/bench_loader_manifest_list_run.vibe\" >/dev/null"
+cmd_loader_groups="timeout $TIMEOUT_SEC env VIBE_RUN_BACKEND=$BACKEND \"$CLI_BIN\" run \"$ROOT_DIR/vibe/compiler/bench_loader_manifest_groups_run.vibe\" >/dev/null"
+cmd_file_compile_same="timeout $TIMEOUT_SEC env VIBE_RUN_BACKEND=$BACKEND \"$CLI_BIN\" run \"$ROOT_DIR/vibe/compiler/bench_file_compile_mode_same_content_run.vibe\" >/dev/null"
 
 if command -v hyperfine >/dev/null 2>&1; then
   hyperfine \
