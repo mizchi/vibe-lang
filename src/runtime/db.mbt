@@ -23,6 +23,10 @@ pub struct ImportSpec {
 pub struct VibeDbInputs {
   sources : @ripple.Input[String, String]
   binary_sources : @ripple.Input[String, Bytes]
+  preparsed_ast_hashes : @ripple.Input[String, String]
+  preparsed_asts : @ripple.Input[String, HashedModule]
+  preparsed_import_hashes : @ripple.Input[String, String]
+  preparsed_imports : @ripple.Input[String, Array[ImportSpec]]
 }
 
 ///|
@@ -175,6 +179,56 @@ pub fn VibeDb::set_source(
   let _ = self.inputs.sources.set(self.rt, path, content)
   let hash = @core.content_address_hash_string(content)
   let _ = self.inputs.sources.set(self.rt, hash_source_key(hash), content)
+}
+
+///|
+pub fn VibeDb::set_preparsed_ast(
+  self : VibeDb,
+  path : String,
+  content : String,
+  ast : @core.Module,
+) -> Unit {
+  let hash = @core.content_address_hash_string(content)
+  let _ = self.inputs.preparsed_ast_hashes.set(self.rt, path, hash)
+  let _ = self.inputs.preparsed_asts.set(
+    self.rt,
+    path,
+    HashedModule::new(ast),
+  )
+}
+
+///|
+pub fn VibeDb::set_preparsed_imports(
+  self : VibeDb,
+  path : String,
+  content : String,
+  imports : Array[ImportSpec],
+) -> Unit {
+  let hash = @core.content_address_hash_string(content)
+  let _ = self.inputs.preparsed_import_hashes.set(self.rt, path, hash)
+  let _ = self.inputs.preparsed_imports.set(self.rt, path, imports)
+}
+
+///|
+pub fn make_import_spec(
+  path : String,
+  alias_name : String,
+  hash : String?,
+  module_ref : String?,
+  source_hash : String?,
+  source_version : String?,
+  source_symbol : String?,
+) -> ImportSpec {
+  ImportSpec::{
+    path,
+    alias_name,
+    hash,
+    module_ref,
+    path_obj: None,
+    source_hash,
+    source_version,
+    source_symbol,
+  }
 }
 
 ///|

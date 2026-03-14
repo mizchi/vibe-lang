@@ -665,3 +665,92 @@ test "cascading diagnostics: upstream type error produces root cause diagnostic"
     })
   assert_true(has_upstream_hint)
 }
+
+///|
+test "preparsed ast cache seeds ast and imports queries" {
+  let db = VibeDb::new()
+  db.set_source("/project/lib/dep.vibe", "export let dep = 1\nexport { dep }\n")
+  let source = "import ./lib/dep.vibe { dep }\nlet x = dep\n"
+  let ast = @parser.parse_ast(source) catch {
+    e => fail("parse failed: " + e.to_string())
+  }
+  db.set_source("/project/main.vibe", source)
+  db.set_preparsed_ast("/project/main.vibe", source, ast)
+  let loaded_ast = db.ast("/project/main.vibe")
+  let imports = db.imports("/project/main.vibe")
+  assert_eq(imports.length(), 1)
+  match loaded_ast.stmts[1] {
+    @core.Stmt::Let(name~, ..) => assert_eq(name, "x")
+    _ => fail("expected second stmt to be let x")
+  }
+}
+
+///|
+test "preparsed ast cache is ignored after source changes" {
+  let db = VibeDb::new()
+  let source1 = "let x = 1\n"
+  let ast1 = @parser.parse_ast(source1) catch {
+    e => fail("parse failed: " + e.to_string())
+  }
+  db.set_source("/project/main.vibe", source1)
+  db.set_preparsed_ast("/project/main.vibe", source1, ast1)
+  let source2 = "let y = 2\n"
+  db.set_source("/project/main.vibe", source2)
+  let loaded_ast = db.ast("/project/main.vibe")
+  match loaded_ast.stmts[0] {
+    @core.Stmt::Let(name~, ..) => assert_eq(name, "y")
+    _ => fail("expected let y after source update")
+  }
+}
+
+///|
+test "preparsed import cache seeds imports query" {
+  let db = VibeDb::new()
+  let source = "import ./lib/dep.vibe { dep }\nlet x = dep\n"
+  db.set_source("/project/main.vibe", source)
+  db.set_preparsed_imports(
+    "/project/main.vibe",
+    source,
+    [ImportSpec::{
+      path: "/project/lib/dep.vibe",
+      alias_name: @core.import_alias_name("./lib/dep.vibe"),
+      hash: Some("abc"),
+      module_ref: Some(@core.module_ref_from_hash("abc")),
+      path_obj: None,
+      source_hash: Some("abc"),
+      source_version: None,
+      source_symbol: None,
+    }],
+  )
+  let imports = db.imports("/project/main.vibe")
+  assert_eq(imports.length(), 1)
+  assert_eq(imports[0].path, "/project/lib/dep.vibe")
+}
+
+///|
+test "preparsed import cache is ignored after source changes" {
+  let db = VibeDb::new()
+  let source1 = "import ./lib/a.vibe { a }\n"
+  db.set_source("/project/main.vibe", source1)
+  db.set_source("/project/lib/a.vibe", "export let a = 1\nexport { a }\n")
+  db.set_source("/project/lib/b.vibe", "export let b = 2\nexport { b }\n")
+  db.set_preparsed_imports(
+    "/project/main.vibe",
+    source1,
+    [ImportSpec::{
+      path: "/project/lib/a.vibe",
+      alias_name: @core.import_alias_name("./lib/a.vibe"),
+      hash: Some("abc"),
+      module_ref: Some(@core.module_ref_from_hash("abc")),
+      path_obj: None,
+      source_hash: Some("abc"),
+      source_version: None,
+      source_symbol: None,
+    }],
+  )
+  let source2 = "import ./lib/b.vibe { b }\n"
+  db.set_source("/project/main.vibe", source2)
+  let imports = db.imports("/project/main.vibe")
+  assert_eq(imports.length(), 1)
+  assert_eq(imports[0].path, "/project/lib/b.vibe")
+}

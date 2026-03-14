@@ -169,6 +169,45 @@ test "loader load_db_with_paths loads transitive modules" {
 }
 
 ///|
+test "loader load_db_with_paths keeps transitive import diagnostics clean" {
+  let root = make_temp_dir("transitive_diags")
+  let entry = root + "/main.vibe"
+  let lib = root + "/lib.vibe"
+  let dep = root + "/dep.vibe"
+  write_file(
+    entry,
+    "import ./lib.vibe { value }\nlet main = value\nexport { main }\n",
+  )
+  write_file(
+    lib,
+    "import ./dep.vibe { dep }\nlet value = dep\nexport { value }\n",
+  )
+  write_file(dep, "let dep = 1\nexport { dep }\n")
+  let loaded = match load_db_with_paths(entry) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let (db, resolved, _) = loaded
+  let entry_diags = db.import_diagnostics(resolved)
+  if not(entry_diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in entry_diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected entry import diagnostics: " + lines.join(","))
+  }
+  let lib_diags = db.import_diagnostics(@vibe_fs.normalize_path(lib))
+  if not(lib_diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in lib_diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected lib import diagnostics: " + lines.join(","))
+  }
+  remove_if_exists(root)
+}
+
+///|
 test "loader resolve_entry_path_with_fs uses index.vibe for directory" {
   let root = "/workspace"
   let pkg = root + "/pkg"

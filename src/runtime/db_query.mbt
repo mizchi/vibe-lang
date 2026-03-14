@@ -6,6 +6,14 @@ pub fn VibeDb::new() -> VibeDb {
   sources.register(rt)
   let binary_sources : @ripple.Input[String, Bytes] = db.input()
   binary_sources.register(rt)
+  let preparsed_ast_hashes : @ripple.Input[String, String] = db.input()
+  preparsed_ast_hashes.register(rt)
+  let preparsed_asts : @ripple.Input[String, HashedModule] = db.input()
+  preparsed_asts.register(rt)
+  let preparsed_import_hashes : @ripple.Input[String, String] = db.input()
+  preparsed_import_hashes.register(rt)
+  let preparsed_imports : @ripple.Input[String, Array[ImportSpec]] = db.input()
+  preparsed_imports.register(rt)
   let diags : @ripple.Accumulator[@core.Diagnostic] = db.accumulator()
   let cst_query : @ripple.Query[String, @cst.SyntaxNode] = db.query(fn(
     rt,
@@ -22,13 +30,31 @@ pub fn VibeDb::new() -> VibeDb {
   let ast_query : @ripple.Query[String, HashedModule] = db.query(fn(rt, path) {
     match sources.get(rt, path) {
       Some(content) => {
-        let parsed = @parser.parse_ast(content) catch {
-          e => {
-            diags.push(rt, e.diagnostic())
-            { stmts: [] }
+        let source_hash = @core.content_address_hash_string(content)
+        match preparsed_ast_hashes.get(rt, path) {
+          Some(cached_hash) if cached_hash == source_hash =>
+            match preparsed_asts.get(rt, path) {
+              Some(cached_ast) => cached_ast
+              None => {
+                let parsed = @parser.parse_ast(content) catch {
+                  e => {
+                    diags.push(rt, e.diagnostic())
+                    { stmts: [] }
+                  }
+                }
+                HashedModule::new(parsed)
+              }
+            }
+          _ => {
+            let parsed = @parser.parse_ast(content) catch {
+              e => {
+                diags.push(rt, e.diagnostic())
+                { stmts: [] }
+              }
+            }
+            HashedModule::new(parsed)
           }
         }
-        HashedModule::new(parsed)
       }
       None => HashedModule::new({ stmts: [] })
     }
@@ -38,6 +64,20 @@ pub fn VibeDb::new() -> VibeDb {
     rt,
     file_path,
   ) {
+    match sources.get(rt, file_path) {
+      Some(content) => {
+        let source_hash = @core.content_address_hash_string(content)
+        match preparsed_import_hashes.get(rt, file_path) {
+          Some(cached_hash) if cached_hash == source_hash =>
+            match preparsed_imports.get(rt, file_path) {
+              Some(cached_imports) => return cached_imports
+              None => ()
+            }
+          _ => ()
+        }
+      }
+      None => ()
+    }
     let ast = ast_query.fetch(rt, file_path).unwrap()
     let base_dir = @path.Path(file_path).dirname().to_string()
     let out : Array[ImportSpec] = []
@@ -1403,7 +1443,14 @@ pub fn VibeDb::new() -> VibeDb {
   {
     db,
     rt,
-    inputs: { sources, binary_sources },
+    inputs: {
+      sources,
+      binary_sources,
+      preparsed_ast_hashes,
+      preparsed_asts,
+      preparsed_import_hashes,
+      preparsed_imports,
+    },
     queries: {
       cst_query,
       ast_query,

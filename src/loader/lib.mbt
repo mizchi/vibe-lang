@@ -99,6 +99,7 @@ fn load_sources_recursive_impl(
       return Err("parse: " + e.to_string())
     }
   }
+  db.set_preparsed_ast(norm, source, ast)
   let base = @vibe_fs.parent_path(norm)
   for stmt in ast.stmts {
     match stmt {
@@ -148,7 +149,8 @@ fn load_sources_recursive_impl(
           | @vibe_core.ModuleRef::Symbol(..) => ()
         }
       }
-      @vibe_core.Stmt::ReExport(source~, ..) =>
+      @vibe_core.Stmt::ReExport(spec~, source~, ..) => {
+        let _ = spec
         match source {
           @vibe_core.ModuleRef::Path(path~) => {
             let resolved = match
@@ -190,11 +192,114 @@ fn load_sources_recursive_impl(
           | @vibe_core.ModuleRef::Version(..)
           | @vibe_core.ModuleRef::Symbol(..) => ()
         }
+      }
       _ => ()
     }
   }
+  match build_preparsed_path_import_specs(db, norm, ast, root, registry_modules) {
+    Some(preparsed_imports) => db.set_preparsed_imports(norm, source, preparsed_imports)
+    None => ()
+  }
   let _ = stack.pop()
   Ok(())
+}
+
+///|
+fn build_preparsed_path_import_specs(
+  db : @runtime.VibeDb,
+  path : String,
+  ast : @vibe_core.Module,
+  root : String,
+  registry_modules : Map[String, String],
+) -> Array[@runtime.ImportSpec]? {
+  let base = @vibe_fs.parent_path(path)
+  let out : Array[@runtime.ImportSpec] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @vibe_core.Stmt::Import(spec~, source~, ..) => {
+        if spec.items.length() == 0 {
+          continue
+        }
+        match source {
+          @vibe_core.ModuleRef::Path(path~) => {
+            let raw_path = path
+            let resolved = match
+              @codebase.resolve_import_path_with_registry(
+                base, raw_path, root, registry_modules,
+              ) {
+              Ok(v) => v
+              Err(_) => return None
+            }
+            let source_hash = if resolved.has_suffix(".wasm") {
+              None
+            } else {
+              match db.get_source(resolved) {
+                Some(content) => Some(@vibe_core.content_address_hash_string(content))
+                None => None
+              }
+            }
+            let module_ref = match source_hash {
+              Some(hash) => Some(@vibe_core.module_ref_from_hash(hash))
+              None => None
+            }
+            out.push(
+              @runtime.make_import_spec(
+                resolved,
+                @vibe_core.import_alias_name(raw_path),
+                source_hash,
+                module_ref,
+                source_hash,
+                None,
+                None,
+              ),
+            )
+          }
+          _ => return None
+        }
+      }
+      @vibe_core.Stmt::ReExport(spec~, source~, ..) => {
+        let _ = spec
+        match source {
+          @vibe_core.ModuleRef::Path(path~) => {
+            let raw_path = path
+            let resolved = match
+              @codebase.resolve_import_path_with_registry(
+                base, raw_path, root, registry_modules,
+              ) {
+              Ok(v) => v
+              Err(_) => return None
+            }
+            let source_hash = if resolved.has_suffix(".wasm") {
+              None
+            } else {
+              match db.get_source(resolved) {
+                Some(content) => Some(@vibe_core.content_address_hash_string(content))
+                None => None
+              }
+            }
+            let module_ref = match source_hash {
+              Some(hash) => Some(@vibe_core.module_ref_from_hash(hash))
+              None => None
+            }
+            out.push(
+              @runtime.make_import_spec(
+                resolved,
+                @vibe_core.import_alias_name(raw_path),
+                source_hash,
+                module_ref,
+                source_hash,
+                None,
+                None,
+              ),
+            )
+          }
+          _ => return None
+        }
+      }
+      _ => ()
+    }
+  }
+  Some(out)
 }
 
 ///|
