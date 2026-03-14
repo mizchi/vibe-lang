@@ -597,14 +597,30 @@ fn compile_call_builtin_pre_user_inner(
           )
       }
     }
-    "eq" if not(is_user_fn) =>
-      compile_binary_cmp_op(
-        ctx, buf, "eq", args, emit_i64_eq, emit_f32_eq, emit_f64_eq,
-      )
-    "lt" if not(is_user_fn) =>
-      compile_binary_cmp_op(
-        ctx, buf, "lt", args, emit_i64_lt_s, emit_f32_lt, emit_f64_lt,
-      )
+    "eq" if not(is_user_fn) => {
+      let pos_args = extract_positional_exprs_with_arity(args, "eq", 2)
+      let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
+      match resolved_kind {
+        ValueKind::I32 | ValueKind::I64 =>
+          compile_i32_cmp_tagged(ctx, buf, pos_args[0], pos_args[1], emit_i64_eq)
+        _ =>
+          compile_binary_cmp_op(
+            ctx, buf, "eq", args, emit_i64_eq, emit_f32_eq, emit_f64_eq,
+          )
+      }
+    }
+    "lt" if not(is_user_fn) => {
+      let pos_args = extract_positional_exprs_with_arity(args, "lt", 2)
+      let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
+      match resolved_kind {
+        ValueKind::I32 | ValueKind::I64 =>
+          compile_i32_cmp_tagged(ctx, buf, pos_args[0], pos_args[1], emit_i64_lt_s)
+        _ =>
+          compile_binary_cmp_op(
+            ctx, buf, "lt", args, emit_i64_lt_s, emit_f32_lt, emit_f64_lt,
+          )
+      }
+    }
     "assert" | "__assert" if not(is_user_fn) => {
       let builtin_name = name
       let pos_args = extract_positional_exprs_with_arity(args, builtin_name, 1)
@@ -623,9 +639,7 @@ fn compile_call_builtin_pre_user_inner(
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
       match resolved_kind {
         ValueKind::I32 | ValueKind::I64 =>
-          compile_dynamic_numeric_arith_op(
-            ctx, buf, "__add", args, emit_f32_add, emit_f64_add,
-          )
+          compile_i32_add_tagged(ctx, buf, pos_args[0], pos_args[1])
         _ =>
           compile_binary_arith_op(
             ctx, buf, "__add", args, emit_f32_add, emit_f64_add,
@@ -637,9 +651,7 @@ fn compile_call_builtin_pre_user_inner(
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
       match resolved_kind {
         ValueKind::I32 | ValueKind::I64 =>
-          compile_dynamic_numeric_arith_op(
-            ctx, buf, "__sub", args, emit_f32_sub, emit_f64_sub,
-          )
+          compile_i32_sub_tagged(ctx, buf, pos_args[0], pos_args[1])
         _ =>
           compile_binary_arith_op(
             ctx, buf, "__sub", args, emit_f32_sub, emit_f64_sub,
@@ -651,9 +663,7 @@ fn compile_call_builtin_pre_user_inner(
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
       match resolved_kind {
         ValueKind::I32 | ValueKind::I64 =>
-          compile_dynamic_numeric_arith_op(
-            ctx, buf, "__mul", args, emit_f32_mul, emit_f64_mul,
-          )
+          compile_i32_mul_tagged(ctx, buf, pos_args[0], pos_args[1])
         _ =>
           compile_binary_arith_op(
             ctx, buf, "__mul", args, emit_f32_mul, emit_f64_mul,
@@ -665,9 +675,7 @@ fn compile_call_builtin_pre_user_inner(
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
       match resolved_kind {
         ValueKind::I32 | ValueKind::I64 =>
-          compile_dynamic_numeric_arith_op(
-            ctx, buf, "__div", args, emit_f32_div, emit_f64_div,
-          )
+          compile_i32_div_tagged(ctx, buf, pos_args[0], pos_args[1])
         _ =>
           compile_binary_arith_op(
             ctx, buf, "__div", args, emit_f32_div, emit_f64_div,
@@ -748,14 +756,30 @@ fn compile_call_builtin_pre_user_inner(
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_i64_xor(buf)
     }
-    "__eq" =>
-      compile_binary_cmp_op(
-        ctx, buf, "__eq", args, emit_i64_eq, emit_f32_eq, emit_f64_eq,
-      )
-    "__lt" =>
-      compile_binary_cmp_op(
-        ctx, buf, "__lt", args, emit_i64_lt_s, emit_f32_lt, emit_f64_lt,
-      )
+    "__eq" => {
+      let pos_args = extract_positional_exprs_with_arity(args, "__eq", 2)
+      let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
+      match resolved_kind {
+        ValueKind::I32 | ValueKind::I64 =>
+          compile_i32_cmp_tagged(ctx, buf, pos_args[0], pos_args[1], emit_i64_eq)
+        _ =>
+          compile_binary_cmp_op(
+            ctx, buf, "__eq", args, emit_i64_eq, emit_f32_eq, emit_f64_eq,
+          )
+      }
+    }
+    "__lt" => {
+      let pos_args = extract_positional_exprs_with_arity(args, "__lt", 2)
+      let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
+      match resolved_kind {
+        ValueKind::I32 | ValueKind::I64 =>
+          compile_i32_cmp_tagged(ctx, buf, pos_args[0], pos_args[1], emit_i64_lt_s)
+        _ =>
+          compile_binary_cmp_op(
+            ctx, buf, "__lt", args, emit_i64_lt_s, emit_f32_lt, emit_f64_lt,
+          )
+      }
+    }
     "i32_eqz" if not(is_user_fn) => {
       let pos_args = extract_positional_exprs_with_arity(args, "i32_eqz", 1)
       compile_expr_i32(ctx, buf, pos_args[0])

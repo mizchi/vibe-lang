@@ -1,4 +1,25 @@
 ///|
+fn compile_i32_cmp_tagged(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  left : @core.Expr,
+  right : @core.Expr,
+  emit_cmp : (ByteBuf) -> Unit,
+) -> Unit raise WasmGenError {
+  // For tagged ints (tag_int = 0): comparison on tagged values
+  // preserves ordering since (a<<2) < (b<<2) iff a < b
+  compile_expr_i32(ctx, buf, left)
+  compile_expr_i32(ctx, buf, right)
+  emit_cmp(buf)
+  // Convert i32 comparison result to tagged i64 bool
+  emit_i64_extend_i32_s(buf)
+  emit_i64_const_raw(buf, 2L)
+  emit_i64_shl(buf)
+  emit_i64_const_raw(buf, tag_bool.to_int64())
+  emit_i64_or(buf)
+}
+
+///|
 fn compile_i32_add_tagged(
   ctx : CodegenCtx,
   buf : ByteBuf,

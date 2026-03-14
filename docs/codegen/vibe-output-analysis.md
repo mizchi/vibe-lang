@@ -131,9 +131,38 @@ Before: fib → call_indirect (tag check + table lookup + call_indirect)
 After:  fib → call 44 (直接呼び出し)
 ```
 
+## 実装済み: S1 tagged pointer 整数演算特殊化
+
+`resolve_numeric_kind` で両辺が `I64`（整数確定）の場合、full type dispatch（tag check → f32/f64/int 分岐）を省略し、tagged pointer のまま直接演算する。
+
+### 対象 builtin
+
+| builtin | 特殊化方式 | 備考 |
+|---------|-----------|------|
+| `eq`, `__eq` | `compile_i32_cmp_tagged` (直接 `i64.eq`) | tag=0 なので tagged 値のまま比較可能 |
+| `lt`, `__lt` | `compile_i32_cmp_tagged` (直接 `i64.lt_s`) | 同上 |
+| `add`, `__add` | `compile_i32_add_tagged` (直接 `i64.add`) | `(a<<2) + (b<<2) = (a+b)<<2` |
+| `sub`, `__sub` | `compile_i32_sub_tagged` (直接 `i64.sub`) | 同上 |
+| `mul`, `__mul` | `compile_i32_mul_tagged` (untag → mul → retag) | 乗算は直接不可 |
+| `div`, `__div` | `compile_i32_div_tagged` (untag → div → retag) | 除算は直接不可 |
+
+### 結果: fib(30) 関数 WAT
+
+```
+Before (P0のみ): 50 locals, ~120 instructions, full type dispatch for n<2, n-1, n-2, +
+After  (P0+S1):   3 locals, ~40 instructions, 直接演算のみ
+```
+
+### basics.vibe 全体の命令数
+
+```
+P0 のみ:  16,371 行 (WAT)
+P0 + S1: 10,287 行 (WAT) → 37% 削減
+```
+
 ## 次のステップ
 
-1. **定数畳み込み**: `i32.const + i32.const + op` → `i32.const`
-2. **tagged pointer の整数演算特殊化**: 両辺が int と判明している場合にタグ操作を省略
-3. **dead code 除去**: `unreachable` 後の命令削除
+1. **定数畳み込み**: `i64.const 4; i64.sub` → tagged 演算時のリテラル最適化
+2. **dead code 除去**: `unreachable` 後の命令削除
+3. **bool タグ操作の簡略化**: 比較結果の bool tagging `(i64.extend + shl 2 + or 3 + shr_u 2 + i32.wrap)` の削減
 4. **selfhost codegen にも同等の最適化を適用**
