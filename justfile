@@ -572,6 +572,9 @@ bench-selfhost-perf *paths:
 bench-selfhost-cache-probe:
     scripts/bench_selfhost_cache_probe.sh
 
+bench-selfhost-loader-hotspots:
+    scripts/bench_selfhost_loader_hotspots.sh
+
 # KPI gate: selfhost perf ratio thresholds (host vs selfhost, same case set)
 # Default baseline uses debug selfhost wasm with 3-run median; switch with VIBE_SELFHOST_PERF_WASM_PROFILE=release when comparing packaging artifacts.
 # Current stable debug baseline is around compile ~5x / check ~2-4x slower than host.
