@@ -138,6 +138,38 @@ let eassignop_val = (e: Expr) -> Expr {
   }
 }
 
+let is_earray = (e: Expr) -> Bool {
+  match e {
+    EArray(_) => true,
+    _ => false
+  }
+}
+
+let is_eloop = (e: Expr) -> Bool {
+  match e {
+    ELoop(_, _) => true,
+    _ => false
+  }
+}
+
+let earray_elems = (e: Expr) -> Array[Expr] {
+  match e {
+    EArray(elems) => elems,
+    _ => Array::slice([
+      EUnit
+    ], 0, 0)
+  }
+}
+
+let eloop_params = (e: Expr) -> Array[(String, Expr)] {
+  match e {
+    ELoop(params, _) => params,
+    _ => Array::slice([
+      ("", EUnit)
+    ], 0, 0)
+  }
+}
+
 //# Misc
 
 test "pipe simple: x |> f => f(x)" {
@@ -301,4 +333,41 @@ test "desugar_stmts handles multiple SLet with pipes" {
   assert(is_ecall(body1))
   assert(String::equals(eident_name(ecall_callee(body1)), "g"))
   assert(eq(eint_val(Array::get(ecall_args(body1), 0)), 2))
+}
+
+test "array spread flushes buffered elems without Array::pop" {
+  let result = desugar_expr(EArray([
+    EInt(1),
+    ESpread(EIdent("xs")),
+    EInt(2)
+  ]))
+  assert(is_ecall(result))
+  assert(String::equals(eident_name(ecall_callee(result)), "Array::concat"))
+  let outer_left = Array::get(ecall_args(result), 0)
+  let outer_right = Array::get(ecall_args(result), 1)
+  assert(is_ecall(outer_left))
+  assert(is_earray(outer_right))
+  assert(eq(Array::length(earray_elems(outer_right)), 1))
+  assert(eq(eint_val(Array::get(earray_elems(outer_right), 0)), 2))
+  assert(String::equals(eident_name(ecall_callee(outer_left)), "Array::concat"))
+  let inner_left = Array::get(ecall_args(outer_left), 0)
+  let inner_right = Array::get(ecall_args(outer_left), 1)
+  assert(is_earray(inner_left))
+  assert(eq(Array::length(earray_elems(inner_left)), 1))
+  assert(eq(eint_val(Array::get(earray_elems(inner_left), 0)), 1))
+  assert(is_eident(inner_right))
+  assert(String::equals(eident_name(inner_right), "xs"))
+}
+
+test "parameterized loop desugars init exprs" {
+  let result = desugar_expr(ELoop([
+    ("i", EBinOp("|>", EInt(1), EIdent("f")))
+  ], EIdent("body")))
+  assert(is_eloop(result))
+  let params = eloop_params(result)
+  assert(eq(Array::length(params), 1))
+  let (name, init) = Array::get(params, 0)
+  assert(String::equals(name, "i"))
+  assert(is_ecall(init))
+  assert(String::equals(eident_name(ecall_callee(init)), "f"))
 }

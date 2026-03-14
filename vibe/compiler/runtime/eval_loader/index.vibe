@@ -1,7 +1,11 @@
 //# Imports
 
-import ../../syntax/index.vibe {
-  lex,
+import ../../syntax/lexer.vibe {
+  lex
+}
+
+import ../../syntax/parser.vibe {
+  parse,
   parse_program
 }
 
@@ -10,6 +14,101 @@ import ../../core/index.vibe {
 }
 
 //# Functions
+
+let rec resolve_interp_expr = (expr: Expr) -> Expr with { Error } {
+  match expr {
+    EStringInterp(parts) => {
+      let plen = Array::length(parts)
+      let exprs = ArrayBuilder::new()
+      let mut i = 0
+      while i < plen {
+        let lit = Array::get(parts, i)
+        if String::length(lit) > 0 {
+          ArrayBuilder::push(exprs, EString(lit))
+        }
+        if i + 1 < plen {
+          let expr_src = Array::get(parts, i + 1)
+          let resolved = resolve_interp_expr(parse(lex(expr_src)))
+          ArrayBuilder::push(exprs, ECall(EIdent("__to_string"), [
+            resolved
+          ]))
+        }
+        i = i + 2
+      }
+      let out = ArrayBuilder::freeze(exprs)
+      let len = Array::length(out)
+      if len == 0 {
+        EString("")
+      }
+      else {
+        let mut acc = Array::get(out, 0)
+        let mut j = 1
+        while j < len {
+          acc = ECall(EIdent("String::concat"), [
+            acc,
+            Array::get(out, j)
+          ])
+          j = j + 1
+        }
+        acc
+      }
+    },
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_) => expr,
+    EBool(_) => expr,
+    EUnit => expr,
+    EIdent(_) => expr,
+    ETuple(elems) => ETuple(for elem in elems {
+      resolve_interp_expr(elem)
+    }),
+    EArray(elems) => EArray(for elem in elems {
+      resolve_interp_expr(elem)
+    }),
+    ERecord(fields) => ERecord(for field in fields { let (name, value) = field; (name, resolve_interp_expr(value)) }),
+    EMap(fields) => EMap(for field in fields { let (name, value) = field; (name, resolve_interp_expr(value)) }),
+    EIf(cond, then_expr, else_expr) => EIf(resolve_interp_expr(cond), resolve_interp_expr(then_expr), resolve_interp_expr(else_expr)),
+    ELet(name, value, body) => ELet(name, resolve_interp_expr(value), resolve_interp_expr(body)),
+    ELetRec(name, value, body) => ELetRec(name, resolve_interp_expr(value), resolve_interp_expr(body)),
+    ELetMut(name, value, body) => ELetMut(name, resolve_interp_expr(value), resolve_interp_expr(body)),
+    EAssign(name, value, body) => EAssign(name, resolve_interp_expr(value), resolve_interp_expr(body)),
+    EAssignOp(name, op, value, body) => EAssignOp(name, op, resolve_interp_expr(value), resolve_interp_expr(body)),
+    ESeq(left, right) => ESeq(resolve_interp_expr(left), resolve_interp_expr(right)),
+    EMatch(scrutinee, arms) => EMatch(resolve_interp_expr(scrutinee), for arm in arms { let (pat, body) = arm; (pat, resolve_interp_expr(body)) }),
+    EHandle(scrutinee, arms) => EHandle(resolve_interp_expr(scrutinee), for arm in arms { let (pat, body) = arm; (pat, resolve_interp_expr(body)) }),
+    EWhile(cond, body) => EWhile(resolve_interp_expr(cond), resolve_interp_expr(body)),
+    ELoop(params, body) => ELoop(for param in params { let (name, init) = param; (name, resolve_interp_expr(init)) }, resolve_interp_expr(body)),
+    EForIn(name, index_name, iter, body) => EForIn(name, index_name, resolve_interp_expr(iter), resolve_interp_expr(body)),
+    ECall(callee, args) => ECall(resolve_interp_expr(callee), for arg in args {
+      resolve_interp_expr(arg)
+    }),
+    EBinOp(op, left, right) => EBinOp(op, resolve_interp_expr(left), resolve_interp_expr(right)),
+    EUnaryOp(op, inner) => EUnaryOp(op, resolve_interp_expr(inner)),
+    EFn(type_params, bounds, params, ret_ty, effect, body) => EFn(type_params, bounds, params, ret_ty, effect, resolve_interp_expr(body)),
+    EDot(inner, field) => EDot(resolve_interp_expr(inner), field),
+    EThrow(inner) => EThrow(resolve_interp_expr(inner)),
+    EBreak(opt) => match opt {
+      None => expr,
+      Some(value) => EBreak(Some(resolve_interp_expr(value)))
+    },
+    EContinue(args) => EContinue(for arg in args {
+      resolve_interp_expr(arg)
+    }),
+    ELabeledArg(label, name, value) => ELabeledArg(label, name, resolve_interp_expr(value)),
+    ESpread(inner) => ESpread(resolve_interp_expr(inner))
+  }
+}
+
+let resolve_interp_stmt = (stmt: Stmt) -> Stmt with { Error } {
+  match stmt {
+    SLet(exported, is_rec, name, ty, value) => SLet(exported, is_rec, name, ty, resolve_interp_expr(value)),
+    SLetMut(name, ty, value) => SLetMut(name, ty, resolve_interp_expr(value)),
+    STest(name, body) => STest(name, resolve_interp_expr(body)),
+    SBench(name, body) => SBench(name, resolve_interp_expr(body)),
+    SExpr(expr) => SExpr(resolve_interp_expr(expr)),
+    _ => stmt
+  }
+}
 
 export let contains_str = (arr: Array[String], target: String) -> Bool {
   let rec go = (i: Int) -> Bool {
@@ -48,7 +147,9 @@ export let source_lookup = (sources: Array[(String, String)], path_key: String) 
 
 export let load_and_parse = (source: String) -> Array[Stmt] with { Error } {
   let tokens = lex(source)
-  parse_program(tokens)
+  for stmt in parse_program(tokens) {
+    resolve_interp_stmt(stmt)
+  }
 }
 
 export let collect_exports = (stmts: Array[Stmt]) -> Array[String] {

@@ -19,6 +19,12 @@ let prepend_expr = (first: Expr, rest: Array[Expr]) -> Array[Expr] {
   out
 }
 
+let empty_expr_array = () -> Array[Expr] {
+  Array::slice([
+    EUnit
+  ], 0, 0)
+}
+
 export let rec desugar_expr = (expr: Expr) -> Expr {
   match expr {
     EBinOp(op, left, right) => if String::equals(op, "|>") {
@@ -73,25 +79,17 @@ export let rec desugar_expr = (expr: Expr) -> Expr {
         let segments = Array::slice([
           EUnit
         ], 0, 0)
-        let buf = Array::slice([
-          EUnit
-        ], 0, 0)
+        let mut buf = empty_expr_array()
         let mut si = 0
         while si < Array::length(elems) {
           let elem = Array::get(elems, si)
           match elem {
             ESpread(inner) => {
               if Array::length(buf) > 0 {
-                let chunk = Array::slice(buf, 0, Array::length(buf))
-                Array::push(segments, EArray(for e in chunk {
+                Array::push(segments, EArray(for e in buf {
                   desugar_expr(e)
                 }))
-                let mut ci = Array::length(buf) - 1
-                while ci >= 0 {
-                  Array::pop(buf)
-                  ci = ci - 1
-                }
-                ci
+                buf = empty_expr_array()
               }
               Array::push(segments, desugar_expr(inner))
             },
@@ -164,9 +162,7 @@ export let rec desugar_expr = (expr: Expr) -> Expr {
       EHandle(desugar_expr(scrutinee), out)
     },
     EWhile(cond, body) => EWhile(desugar_expr(cond), desugar_expr(body)),
-    ELoop(params, body) => ELoop(for param in params {
-      let (name, init) = param(name, desugar_expr(init))
-    }, desugar_expr(body)),
+    ELoop(params, body) => ELoop(for param in params { let (name, init) = param; (name, desugar_expr(init)) }, desugar_expr(body)),
     EForIn(name, index_name, iter, body) => EForIn(name, index_name, desugar_expr(iter), desugar_expr(body)),
     EUnaryOp(op, operand) => EUnaryOp(op, desugar_expr(operand)),
     EFn(type_params, bounds, params, ret_ty, effect, body) => EFn(type_params, bounds, params, ret_ty, effect, desugar_expr(body)),
