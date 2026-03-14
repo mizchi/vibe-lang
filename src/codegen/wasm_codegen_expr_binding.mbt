@@ -105,6 +105,44 @@ fn compile_expr_tuple_index(
   }
 }
 
+///| Check if a condition expression can be compiled directly as i32 (dry-run).
+fn can_compile_cond_i32(
+  ctx : CodegenCtx,
+  cond : @core.Expr,
+) -> Bool raise WasmGenError {
+  match cond {
+    @core.Expr::Bool(..) => true
+    @core.Expr::Call(name~, args~, ..) => {
+      let name = @core.lower_wasm_intrinsic_name(name)
+      match name {
+        "eq" | "__eq" | "lt" | "__lt" => {
+          let pos_args = extract_positional_exprs(args, name)
+          if pos_args.length() == 2 {
+            let resolved_kind = resolve_numeric_kind(
+              ctx, pos_args[0], pos_args[1],
+            )
+            resolved_kind == ValueKind::I32 || resolved_kind == ValueKind::I64
+          } else {
+            false
+          }
+        }
+        "not" => {
+          let pos_args = extract_positional_exprs(args, name)
+          pos_args.length() == 1 && can_compile_cond_i32(ctx, pos_args[0])
+        }
+        "and" | "or" => {
+          let pos_args = extract_positional_exprs(args, name)
+          pos_args.length() == 2 &&
+            can_compile_cond_i32(ctx, pos_args[0]) &&
+            can_compile_cond_i32(ctx, pos_args[1])
+        }
+        _ => false
+      }
+    }
+    _ => false
+  }
+}
+
 ///| Try to compile a condition expression directly as i32 (0 or 1),
 /// bypassing the tagged bool encode/decode roundtrip.
 /// Returns true if the shortcut was applied.
@@ -139,6 +177,42 @@ fn try_compile_cond_i32(
               }
               _ => false
             }
+          } else {
+            false
+          }
+        }
+        "not" => {
+          let pos_args = extract_positional_exprs(args, name)
+          if pos_args.length() == 1 &&
+            try_compile_cond_i32(ctx, buf, pos_args[0]) {
+            emit_i32_eqz(buf)
+            true
+          } else {
+            false
+          }
+        }
+        "and" => {
+          let pos_args = extract_positional_exprs(args, name)
+          if pos_args.length() == 2 &&
+            can_compile_cond_i32(ctx, pos_args[0]) &&
+            can_compile_cond_i32(ctx, pos_args[1]) {
+            let _ = try_compile_cond_i32(ctx, buf, pos_args[0])
+            let _ = try_compile_cond_i32(ctx, buf, pos_args[1])
+            emit_i32_and(buf)
+            true
+          } else {
+            false
+          }
+        }
+        "or" => {
+          let pos_args = extract_positional_exprs(args, name)
+          if pos_args.length() == 2 &&
+            can_compile_cond_i32(ctx, pos_args[0]) &&
+            can_compile_cond_i32(ctx, pos_args[1]) {
+            let _ = try_compile_cond_i32(ctx, buf, pos_args[0])
+            let _ = try_compile_cond_i32(ctx, buf, pos_args[1])
+            emit_i32_or(buf)
+            true
           } else {
             false
           }
