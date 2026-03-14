@@ -346,6 +346,28 @@ fn call2(name : String, left : @core.Expr, right : @core.Expr) -> @core.Expr {
 }
 
 ///|
+fn call3(
+  name : String,
+  a : @core.Expr,
+  b : @core.Expr,
+  c : @core.Expr,
+) -> @core.Expr {
+  let a_span = a.span()
+  let c_span = c.span()
+  let span = @core.Span::merge(a_span, c_span)
+  @core.Expr::Call(
+    name~,
+    type_args=[],
+    args=[
+      @core.CallArg::{ label: None, expr: a, span: a_span },
+      @core.CallArg::{ label: None, expr: b, span: b.span() },
+      @core.CallArg::{ label: None, expr: c, span: c_span },
+    ],
+    span~,
+  )
+}
+
+///|
 fn call_or_throw_expr(
   name : String,
   type_args : Array[@core.Type],
@@ -1920,12 +1942,64 @@ fn AstParser::parse_call_or_primary(
         )
       }
     } else if self.peek_kind() == lbracket() && not(saw_newline) {
-      // Index access: expr[index] — only on the same line.
+      // Index/slice access: expr[index] or expr[i..j] — only on the same line.
       // A newline before [ starts a new array literal expression.
       let _ = self.bump()
-      let index = self.parse_expr()
-      let _ = self.expect(rbracket(), "]")
-      expr = call2("__index", expr, index)
+      if self.peek_kind() == dotdot() {
+        // expr[..j] — slice from 0 to j
+        let _ = self.bump() // consume ..
+        let end_expr = self.parse_expr()
+        let _ = self.expect(rbracket(), "]")
+        let zero = @core.Expr::Int(value=0L, span=end_expr.span())
+        expr = call3("String::substring", expr, zero, end_expr)
+      } else {
+        let index = self.parse_expr()
+        if self.peek_kind() == dotdot() {
+          // expr[i..j] or expr[i..]
+          let _ = self.bump() // consume ..
+          if self.peek_kind() == rbracket() {
+            // expr[i..] — slice from i to length
+            let _ = self.bump() // consume ]
+            let slice_pos = self.pos
+            let temp_name = "__slice$" + slice_pos.to_string()
+            let span = @core.Span::merge(expr.span(), index.span())
+            let temp_ref = @core.Expr::Ident(name=temp_name, span~)
+            let len_call = @core.Expr::Call(
+              name="String::length",
+              type_args=[],
+              args=[
+                @core.CallArg::{
+                  label: None,
+                  expr: temp_ref,
+                  span: temp_ref.span(),
+                },
+              ],
+              span~,
+            )
+            expr = @core.Expr::Block(
+              body=@core.Module::{
+                stmts: [
+                  @core.Stmt::Let(rec=false, name=temp_name, expr~, span~),
+                  @core.Stmt::Expr(
+                    expr=call3("String::substring", temp_ref, index, len_call),
+                    span~,
+                  ),
+                ],
+              },
+              span~,
+            )
+          } else {
+            // expr[i..j]
+            let end_expr = self.parse_expr()
+            let _ = self.expect(rbracket(), "]")
+            expr = call3("String::substring", expr, index, end_expr)
+          }
+        } else {
+          // expr[index] — regular index access
+          let _ = self.expect(rbracket(), "]")
+          expr = call2("__index", expr, index)
+        }
+      }
     } else if self.peek_kind() == lparen() && not(saw_newline) {
       // Chained call: expr(args) where expr is not a simple name.
       // Only on the same line — a newline before ( starts a new statement.
