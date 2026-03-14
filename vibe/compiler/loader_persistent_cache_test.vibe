@@ -8,6 +8,7 @@ import ./module_loader.vibe {
 import ./cache / persistent {
   build_source_groups_fingerprint,
   compact_string_fingerprint,
+  persistent_manifest_header_cache_path,
   persistent_module_header_cache_path,
   persistent_source_group_cache_path,
   persistent_source_list_cache_path
@@ -138,6 +139,38 @@ test "collect_source_groups_fs: reuses valid source list cache when group cache 
   }
 }
 
+test "collect_all_sources_fs: reuses aggregated manifest headers when source caches are missing" {
+  let base_dir = "/tmp/vibe_compiler_persistent_manifest_headers"
+  let (_, helper_path, main_path) = setup_manifest_fixture(
+    base_dir,
+    "export let add = () -> Int { 1 }",
+    "import ./helper.vibe { add }\nlet run = () -> Int { add() }"
+  )
+  remove_file_if_exists(persistent_manifest_header_cache_path(main_path))
+  remove_file_if_exists(persistent_source_group_cache_path(main_path))
+  remove_file_if_exists(persistent_source_list_cache_path(main_path))
+  let initial = collect_all_sources_fs(main_path)
+  assert(eq(Array::length(initial), 2))
+  assert(Fs::exists(persistent_manifest_header_cache_path(main_path)))
+
+  remove_file_if_exists(persistent_source_group_cache_path(main_path))
+  remove_file_if_exists(persistent_source_list_cache_path(main_path))
+  remove_file_if_exists(
+    persistent_module_header_cache_path(main_path, compact_string_fingerprint(Fs::read_file(main_path)))
+  )
+  remove_file_if_exists(
+    persistent_module_header_cache_path(helper_path, compact_string_fingerprint(Fs::read_file(helper_path)))
+  )
+  Fs::write_bytes(helper_path, string_to_bytes("impl"))
+
+  let rebuilt = collect_all_sources_fs(main_path)
+  assert(eq(Array::length(rebuilt), 2))
+  match lookup_group_source([("recursive", rebuilt)], helper_path) {
+    Some(source) => assert(String::equals(source, "impl")),
+    None => assert(false)
+  }
+}
+
 test "load_or_parse_module_header_fs: warm cache reuses deps and exports" {
   let base_dir = "/tmp/vibe_compiler_persistent_module_header"
   let helper_path = String::concat(base_dir, "/helper.vibe")
@@ -164,4 +197,13 @@ test "load_or_parse_module_header_fs: warm cache reuses deps and exports" {
   assert(String::equals(Array::get(deps2, 0), helper_path))
   assert(eq(Array::length(exports2), 1))
   assert(String::equals(Array::get(exports2, 0), "run"))
+}
+
+test "persistent_module_header_cache_path: uses compiled-safe filename" {
+  let path = persistent_module_header_cache_path(
+    "/tmp/vibe_compiler_persistent_module_header/main.vibe",
+    compact_string_fingerprint("export let run = () -> Int { 1 }")
+  )
+  assert(String::index_of(path, ":") < 0)
+  assert(String::starts_with(path, "_build/vibe_selfhost_module_header_"))
 }

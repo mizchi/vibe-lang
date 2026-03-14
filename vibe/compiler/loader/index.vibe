@@ -32,6 +32,8 @@ import ../runtime/eval_loader/index.vibe {
 import ../cache/persistent/index.vibe {
   build_source_groups_fingerprint_from_compact_fingerprints,
   compact_string_fingerprint,
+  normalize_persistent_cache_text,
+  persistent_manifest_header_cache_path,
   persistent_module_header_cache_path,
   persistent_source_group_cache_path,
   persistent_source_list_cache_path
@@ -189,6 +191,41 @@ let split_tsv_fields = (line: String) -> Array[String] {
   fields
 }
 
+let header_value_separator = String::from_char_code(31)
+
+let join_header_values = (values: Array[String]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(values) {
+    if i > 0 {
+      out = String::concat(out, header_value_separator)
+    }
+    out = String::concat(out, Array::get(values, i))
+    i = i + 1
+  }
+  out
+}
+
+let split_header_values = (text: String) -> Array[String] {
+  let values = Array::slice([""], 0, 0)
+  if String::length(text) == 0 {
+    values
+  } else {
+    let sep = String::char_code_at(header_value_separator, 0)
+    let len = String::length(text)
+    let mut start = 0
+    let mut i = 0
+    while i <= len {
+      if i == len || String::char_code_at(text, i) == sep {
+        Array::push(values, String::substring(text, start, i))
+        start = i + 1
+      }
+      i = i + 1
+    }
+    values
+  }
+}
+
 let empty_source_specs = () -> Array[(String, String)] {
   Array::slice([("", "")], 0, 0)
 }
@@ -203,6 +240,10 @@ let empty_source_cache_specs = () -> Array[(String, String, String)] {
 
 let empty_group_cache_specs = () -> Array[(String, String, String, String)] {
   Array::slice([("", "", "", "")], 0, 0)
+}
+
+let empty_manifest_header_cache_rows = () -> Array[(String, String, String, String, String)] {
+  Array::slice([("", "", "", "", "")], 0, 0)
 }
 
 let parse_persistent_source_list_cache = (
@@ -329,6 +370,56 @@ let parse_persistent_source_group_cache = (
   (version, manifest, rows)
 }
 
+let parse_persistent_manifest_header_cache = (
+  raw: String
+) -> (Int, Option[(String, String, String)], Array[(String, String, String, String, String)]) with { Error } {
+  let len = String::length(raw)
+  let mut line_start = 0
+  let mut i = 0
+  let mut version = 0
+  let mut manifest = None
+  let rows = empty_manifest_header_cache_rows()
+  while i <= len {
+    if i == len || String::char_code_at(raw, i) == 10 {
+      let line = strip_trailing_cr(String::substring(raw, line_start, i))
+      if String::length(line) > 0 {
+        let fields = split_tsv_fields(line)
+        let tag = Array::get(fields, 0)
+        if String::equals(tag, "version") {
+          if Array::length(fields) != 2 || !(String::equals(Array::get(fields, 1), "1")) {
+            throw("invalid persistent manifest header cache version")
+          }
+          version = 1
+        } else if String::equals(tag, "manifest") {
+          if Array::length(fields) != 4 {
+            throw("invalid persistent manifest header cache manifest row")
+          }
+          manifest = Some((Array::get(fields, 1), Array::get(fields, 2), Array::get(fields, 3)))
+        } else if String::equals(tag, "header") {
+          if Array::length(fields) != 6 {
+            throw("invalid persistent manifest header cache header row")
+          }
+          Array::push(
+            rows,
+            (
+              Array::get(fields, 1),
+              Array::get(fields, 2),
+              Array::get(fields, 3),
+              Array::get(fields, 4),
+              Array::get(fields, 5)
+            )
+          )
+        } else {
+          throw(String::concat("invalid persistent manifest header cache row: ", line))
+        }
+      }
+      line_start = i + 1
+    }
+    i = i + 1
+  }
+  (version, manifest, rows)
+}
+
 let matches_cached_file_spec = (
   path: String,
   stat_token_text: String,
@@ -385,7 +476,9 @@ let load_persistent_sources_cache_if_valid = (
   if !(Fs::exists(cache_path)) {
     None
   } else {
-    let (_, manifest, specs) = parse_persistent_source_list_cache(Fs::read_file(cache_path))
+    let (_, manifest, specs) = parse_persistent_source_list_cache(
+      normalize_persistent_cache_text(Fs::read_file(cache_path))
+    )
     if !(manifest_cache_is_valid(manifest)) {
       None
     } else {
@@ -416,7 +509,9 @@ let load_persistent_source_groups_cache_if_valid = (
   if !(Fs::exists(cache_path)) {
     None
   } else {
-    let (_, manifest, rows) = parse_persistent_source_group_cache(Fs::read_file(cache_path))
+    let (_, manifest, rows) = parse_persistent_source_group_cache(
+      normalize_persistent_cache_text(Fs::read_file(cache_path))
+    )
     if !(manifest_cache_is_valid(manifest)) {
       None
     } else {
@@ -436,6 +531,54 @@ let load_persistent_source_groups_cache_if_valid = (
         i = i + 1
       }
       if valid { Some(groups) } else { None }
+    }
+  }
+}
+
+let load_persistent_manifest_header_cache_if_valid = (
+  entry_path: String,
+  manifest_path: String,
+  preloaded_sources: Array[(String, String)]
+) -> Option[Array[(String, String, String, String, String)]] with { Error, Fs } {
+  let cache_path = persistent_manifest_header_cache_path(entry_path)
+  if !(Fs::exists(cache_path)) {
+    None
+  } else {
+    let (_, manifest, rows) = parse_persistent_manifest_header_cache(
+      normalize_persistent_cache_text(Fs::read_file(cache_path))
+    )
+    let manifest_ok = match manifest {
+      Some((cached_path, stat_token_text, source_fingerprint)) =>
+        String::equals(cached_path, manifest_path) &&
+          matches_cached_file_spec(manifest_path, stat_token_text, source_fingerprint),
+      None => false
+    }
+    if !manifest_ok {
+      None
+    } else {
+      let mut valid = true
+      let mut i = 0
+      while i < Array::length(rows) {
+        if valid {
+          let (path, _, source_fingerprint, _, _) = Array::get(rows, i)
+          match source_lookup(preloaded_sources, path) {
+            Some(source) => {
+              if !(String::equals(compact_string_fingerprint(source), source_fingerprint)) {
+                valid = false
+              }
+            },
+            None => {
+              valid = false
+            }
+          }
+        }
+        i = i + 1
+      }
+      if valid {
+        Some(rows)
+      } else {
+        None
+      }
     }
   }
 }
@@ -498,7 +641,9 @@ let load_persistent_sources_from_group_cache_if_valid = (
   if !(Fs::exists(cache_path)) {
     None
   } else {
-    let (_, manifest, rows) = parse_persistent_source_group_cache(Fs::read_file(cache_path))
+    let (_, manifest, rows) = parse_persistent_source_group_cache(
+      normalize_persistent_cache_text(Fs::read_file(cache_path))
+    )
     if !(manifest_cache_is_valid(manifest)) {
       None
     } else {
@@ -533,7 +678,9 @@ let load_persistent_source_groups_from_source_list_cache_if_valid = (
   if !(Fs::exists(cache_path)) {
     None
   } else {
-    let (_, manifest, specs) = parse_persistent_source_list_cache(Fs::read_file(cache_path))
+    let (_, manifest, specs) = parse_persistent_source_list_cache(
+      normalize_persistent_cache_text(Fs::read_file(cache_path))
+    )
     if !(manifest_cache_is_valid(manifest)) {
       None
     } else {
@@ -578,7 +725,9 @@ export let load_persistent_source_group_fingerprint_if_valid = (
   if !(Fs::exists(cache_path)) {
     None
   } else {
-    let (_, manifest, rows) = parse_persistent_source_group_cache(Fs::read_file(cache_path))
+    let (_, manifest, rows) = parse_persistent_source_group_cache(
+      normalize_persistent_cache_text(Fs::read_file(cache_path))
+    )
     if !(manifest_cache_is_valid(manifest)) {
       None
     } else {
@@ -716,6 +865,57 @@ let build_persistent_source_groups_cache_text = (
   out
 }
 
+let build_persistent_manifest_header_cache_text = (
+  manifest_path: String,
+  rows: Array[(String, String, String, String, String)]
+) -> String with { Error, Fs } {
+  let mut out = "version\t1\n"
+  out = String::concat(
+    out,
+    String::concat(
+      "manifest\t",
+      String::concat(
+        manifest_path,
+        String::concat(
+          "\t",
+          String::concat(
+            __to_string(Fs::stat_token(manifest_path)),
+            String::concat("\t", String::concat(compact_string_fingerprint(Fs::read_file(manifest_path)), "\n"))
+          )
+        )
+      )
+    )
+  )
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (path, stat_token_text, source_fingerprint, deps_text, exports_text) = Array::get(rows, i)
+    out = String::concat(
+      out,
+      String::concat(
+        "header\t",
+        String::concat(
+          path,
+          String::concat(
+            "\t",
+            String::concat(
+              stat_token_text,
+              String::concat(
+                "\t",
+                String::concat(
+                  source_fingerprint,
+                  String::concat("\t", String::concat(deps_text, String::concat("\t", String::concat(exports_text, "\n"))))
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+    i = i + 1
+  }
+  out
+}
+
 let persistent_module_header_text = (deps: Array[String], exports: Array[String]) -> String {
   let mut out = "version\t1\n"
   let mut i = 0
@@ -740,31 +940,46 @@ let persistent_module_header_text = (deps: Array[String], exports: Array[String]
 let parse_persistent_module_header_text = (raw: String) -> (Array[String], Array[String]) with { Error } {
   let deps = Array::slice([""], 0, 0)
   let exports = Array::slice([""], 0, 0)
+  let mut saw_version = false
+  let has_prefix = (line: String, prefix: String) -> Bool {
+    let prefix_len = String::length(prefix)
+    if String::length(line) < prefix_len {
+      false
+    } else {
+      let mut ok = true
+      let mut i = 0
+      while ok && i < prefix_len {
+        ok = String::char_code_at(line, i) == String::char_code_at(prefix, i)
+        i = i + 1
+      }
+      ok
+    }
+  }
   let len = String::length(raw)
   let mut line_start = 0
   let mut i = 0
-  let mut saw_version = false
-  while i <= len {
-    if i == len || String::char_code_at(raw, i) == 10 {
+  while i < len {
+    if String::char_code_at(raw, i) == 10 {
       let line = strip_trailing_cr(String::substring(raw, line_start, i))
       if String::length(line) > 0 {
-        let fields = split_tsv_fields(line)
-        let tag = Array::get(fields, 0)
-        if String::equals(tag, "version") {
-          if Array::length(fields) != 2 || !(String::equals(Array::get(fields, 1), "1")) {
+        if has_prefix(line, "version\t") {
+          let value = String::substring(line, 8, String::length(line))
+          if !(String::equals(value, "1")) {
             throw("invalid persistent module header version")
           }
           saw_version = true
-        } else if String::equals(tag, "dep") {
-          if Array::length(fields) != 2 {
+        } else if has_prefix(line, "dep\t") {
+          let value = String::substring(line, 4, String::length(line))
+          if String::length(value) == 0 {
             throw("invalid persistent module header dep row")
           }
-          Array::push(deps, Array::get(fields, 1))
-        } else if String::equals(tag, "export") {
-          if Array::length(fields) != 2 {
+          Array::push(deps, value)
+        } else if has_prefix(line, "export\t") {
+          let value = String::substring(line, 7, String::length(line))
+          if String::length(value) == 0 {
             throw("invalid persistent module header export row")
           }
-          Array::push(exports, Array::get(fields, 1))
+          Array::push(exports, value)
         } else {
           throw(String::concat("invalid persistent module header row: ", line))
         }
@@ -772,6 +987,30 @@ let parse_persistent_module_header_text = (raw: String) -> (Array[String], Array
       line_start = i + 1
     }
     i = i + 1
+  }
+  let line = strip_trailing_cr(String::substring(raw, line_start, len))
+  if String::length(line) > 0 {
+    if has_prefix(line, "version\t") {
+      let value = String::substring(line, 8, String::length(line))
+      if !(String::equals(value, "1")) {
+        throw("invalid persistent module header version")
+      }
+      saw_version = true
+    } else if has_prefix(line, "dep\t") {
+      let value = String::substring(line, 4, String::length(line))
+      if String::length(value) == 0 {
+        throw("invalid persistent module header dep row")
+      }
+      Array::push(deps, value)
+    } else if has_prefix(line, "export\t") {
+      let value = String::substring(line, 7, String::length(line))
+      if String::length(value) == 0 {
+        throw("invalid persistent module header export row")
+      }
+      Array::push(exports, value)
+    } else {
+      throw(String::concat("invalid persistent module header row: ", line))
+    }
   }
   if !saw_version {
     throw("missing persistent module header version")
@@ -801,15 +1040,51 @@ export let load_or_parse_module_header_fs = (
 ) -> (Array[String], Array[String], Int) with { Error, Fs } {
   let cache_path = persistent_module_header_cache_path(path, compact_string_fingerprint(source))
   if Fs::exists(cache_path) {
-    let (deps, exports) = parse_persistent_module_header_text(Fs::read_file(cache_path))
+    let (deps, exports) = parse_persistent_module_header_text(
+      normalize_persistent_cache_text(Fs::read_file(cache_path))
+    )
     (deps, exports, parse_count)
   } else {
     let stmts = parse_program(lex(source))
     let deps = collect_import_deps_from_stmts(stmts, dir_of(path))
     let exports = collect_exports(stmts)
-    Fs::write_bytes(cache_path, string_to_bytes(persistent_module_header_text(deps, exports)))
+    Fs::write_file(cache_path, persistent_module_header_text(deps, exports))
     (deps, exports, parse_count + 1)
   }
+}
+
+let build_manifest_header_cache_rows = (
+  sources: Array[(String, String)]
+) -> Array[(String, String, String, String, String)] with { Error, Fs } {
+  let rows = empty_manifest_header_cache_rows()
+  let mut i = 0
+  while i < Array::length(sources) {
+    let (path, source) = Array::get(sources, i)
+    let (deps, exports, _) = load_or_parse_module_header_fs(path, source, 0)
+    Array::push(
+      rows,
+      (
+        path,
+        __to_string(Fs::stat_token(path)),
+        compact_string_fingerprint(source),
+        join_header_values(deps),
+        join_header_values(exports)
+      )
+    )
+    i = i + 1
+  }
+  rows
+}
+
+let store_persistent_manifest_header_cache = (
+  entry_path: String,
+  manifest_path: String,
+  rows: Array[(String, String, String, String, String)]
+) -> Unit with { Error, Fs } {
+  Fs::write_file(
+    persistent_manifest_header_cache_path(entry_path),
+    build_persistent_manifest_header_cache_text(manifest_path, rows)
+  )
 }
 
 let store_persistent_sources_cache = (
@@ -817,9 +1092,9 @@ let store_persistent_sources_cache = (
   manifest_path: Option[String],
   sources: Array[(String, String)]
 ) -> Unit with { Error, Fs } {
-  Fs::write_bytes(
+  Fs::write_file(
     persistent_source_list_cache_path(entry_path),
-    string_to_bytes(build_persistent_sources_cache_text(manifest_path, sources))
+    build_persistent_sources_cache_text(manifest_path, sources)
   )
 }
 
@@ -828,9 +1103,9 @@ let store_persistent_source_groups_cache = (
   manifest_path: Option[String],
   groups: Array[(String, Array[(String, String)])]
 ) -> Unit with { Error, Fs } {
-  Fs::write_bytes(
+  Fs::write_file(
     persistent_source_group_cache_path(entry_path),
-    string_to_bytes(build_persistent_source_groups_cache_text(manifest_path, groups))
+    build_persistent_source_groups_cache_text(manifest_path, groups)
   )
 }
 
@@ -855,6 +1130,58 @@ let rec collect_needed_paths_rec = (
     let mut i = 0
     while i < Array::length(deps) {
       collect_needed_paths_rec(Array::get(deps, i), preloaded_sources, visited)
+      i = i + 1
+    }
+  }
+}
+
+let manifest_header_deps_lookup = (
+  rows: Array[(String, String, String, String, String)],
+  path: String
+) -> Option[Array[String]] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(rows) {
+    let (row_path, _, _, deps_text, _) = Array::get(rows, i)
+    if String::equals(row_path, path) {
+      found = Some(split_header_values(deps_text))
+      i = Array::length(rows)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+let rec collect_needed_paths_from_manifest_headers = (
+  path: String,
+  preloaded_sources: Array[(String, String)],
+  rows: Array[(String, String, String, String, String)],
+  visited: Array[String]
+) -> Unit with { Error, Fs } {
+  if contains_str(visited, path) {
+    ()
+  } else {
+    Array::push(visited, path)
+    let deps = match manifest_header_deps_lookup(rows, path) {
+      Some(found) => found,
+      None => {
+        let source = match source_lookup(preloaded_sources, path) {
+          Some(preloaded) => preloaded,
+          None => Fs::read_file(path)
+        }
+        let (fallback_deps, _, _) = load_or_parse_module_header_fs(path, source, 0)
+        fallback_deps
+      }
+    }
+    let mut i = 0
+    while i < Array::length(deps) {
+      collect_needed_paths_from_manifest_headers(
+        Array::get(deps, i),
+        preloaded_sources,
+        rows,
+        visited
+      )
       i = i + 1
     }
   }
@@ -930,8 +1257,20 @@ let try_collect_manifest_sources_fs = (entry_path: String) -> Option[(String, Ar
     Some((base_dir, rows)) => {
       let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
       let preloaded_sources = load_manifest_full_sources(base_dir, rows)
+      let header_rows = match load_persistent_manifest_header_cache_if_valid(
+        entry_path,
+        manifest_path,
+        preloaded_sources
+      ) {
+        Some(cached_rows) => cached_rows,
+        None => {
+          let built_rows = build_manifest_header_cache_rows(preloaded_sources)
+          store_persistent_manifest_header_cache(entry_path, manifest_path, built_rows)
+          built_rows
+        }
+      }
       let needed_paths = Array::slice([""], 0, 0)
-      collect_needed_paths_rec(entry_path, preloaded_sources, needed_paths)
+      collect_needed_paths_from_manifest_headers(entry_path, preloaded_sources, header_rows, needed_paths)
       let sources = Array::slice([("", "")], 0, 0)
       let mut j = 0
       while j < Array::length(preloaded_sources) {
@@ -952,8 +1291,20 @@ let try_collect_manifest_source_groups_fs = (entry_path: String) -> Option[(Stri
     Some((base_dir, rows)) => {
       let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
       let preloaded_sources = load_manifest_full_sources(base_dir, rows)
+      let header_rows = match load_persistent_manifest_header_cache_if_valid(
+        entry_path,
+        manifest_path,
+        preloaded_sources
+      ) {
+        Some(cached_rows) => cached_rows,
+        None => {
+          let built_rows = build_manifest_header_cache_rows(preloaded_sources)
+          store_persistent_manifest_header_cache(entry_path, manifest_path, built_rows)
+          built_rows
+        }
+      }
       let needed_paths = Array::slice([""], 0, 0)
-      collect_needed_paths_rec(entry_path, preloaded_sources, needed_paths)
+      collect_needed_paths_from_manifest_headers(entry_path, preloaded_sources, header_rows, needed_paths)
       let groups = empty_grouped_sources()
       let mut j = 0
       while j < Array::length(rows) {

@@ -96,6 +96,19 @@ export let compact_string_fingerprint = (source: String) -> String {
   )
 }
 
+export let normalize_persistent_cache_text = (text: String) -> String {
+  let len = String::length(text)
+  let mut start = 0
+  while start < len && String::char_code_at(text, start) == 0 {
+    start = start + 1
+  }
+  if start == 0 {
+    text
+  } else {
+    String::substring(text, start, len)
+  }
+}
+
 let build_sources_fingerprint = (sources: Array[(String, String)]) -> String {
   let mut acc = "merged"
   let mut i = 0
@@ -169,13 +182,28 @@ export let build_source_groups_fingerprint_from_compact_fingerprints = (
 }
 
 let stable_cache_path = (prefix: String, seed: String, suffix: String) -> String {
+  let raw = compact_string_fingerprint(String::concat("persistent-cache-v1|", seed))
+  let mut token = ""
+  let mut i = 0
+  while i < String::length(raw) {
+    let c = String::char_code_at(raw, i)
+    token = String::concat(
+      token,
+      if c == 58 {
+        "_"
+      } else {
+        String::from_char_code(c)
+      }
+    )
+    i = i + 1
+  }
   String::concat(
     "_build/vibe_",
     String::concat(
       prefix,
       String::concat(
         "_",
-        String::concat(compact_string_fingerprint(String::concat("persistent-cache-v1|", seed)), suffix)
+        String::concat(token, suffix)
       )
     )
   )
@@ -187,6 +215,10 @@ export let persistent_source_list_cache_path = (entry_path: String) -> String {
 
 export let persistent_source_group_cache_path = (entry_path: String) -> String {
   stable_cache_path("selfhost_source_groups", entry_path, ".tsv")
+}
+
+export let persistent_manifest_header_cache_path = (entry_path: String) -> String {
+  stable_cache_path("selfhost_manifest_headers", entry_path, ".tsv")
 }
 
 export let persistent_type_env_cache_path = (fingerprint: String) -> String {
@@ -320,7 +352,7 @@ export let load_persistent_artifact = (
   if !(Fs::exists(path)) {
     None
   } else {
-    Some(hex_to_bytes(Fs::read_file(path)))
+    Some(hex_to_bytes(normalize_persistent_cache_text(Fs::read_file(path))))
   }
 }
 
@@ -331,5 +363,5 @@ export let store_persistent_artifact = (
   bytes: Bytes
 ) -> Unit with { Error, Fs } {
   let path = persistent_artifact_cache_path(kind, entry_name, fingerprint)
-  Fs::write_bytes(path, string_to_bytes(bytes_to_hex(bytes)))
+  Fs::write_file(path, bytes_to_hex(bytes))
 }

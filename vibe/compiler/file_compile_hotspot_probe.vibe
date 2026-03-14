@@ -1,0 +1,59 @@
+//# Imports
+
+import ./entry / compiler / file_compile {
+  compile_file_fs_mode_cached
+}
+
+import ./module_loader.vibe {
+  collect_source_groups_fs
+}
+
+import ./type_db.vibe {
+  db_codegen_count, db_new, db_parse_count
+}
+
+import ./cache / persistent {
+  build_file_compile_wasi_artifact_fingerprint,
+  persistent_artifact_cache_path
+}
+
+//# Functions
+
+let string_to_bytes = (s: String) -> Bytes {
+  let out = Array::slice([
+    0
+  ], 0, 0)
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+let remove_file_if_exists = (path: String) -> Unit with { Fs } {
+  if Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
+  }
+}
+
+export let probe_file_compile_mode_same_content_counts = () -> Int with { Error, Fs } {
+  let main_path = "_build/bench/file_compile_mode_same_content_probe_main.vibe"
+  let source = "let unused = () -> Int { 0 }\nlet run = () -> Int { 40 + 2 }"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let source_groups = collect_source_groups_fs(main_path)
+  remove_file_if_exists(
+    persistent_artifact_cache_path(
+      "file-compile-wasi",
+      "run",
+      build_file_compile_wasi_artifact_fingerprint(source_groups, "run", "no-dce")
+    )
+  )
+  let (_, _) = compile_file_fs_mode_cached(db_new(), main_path, "run", "no-dce")
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let (_, db2) = compile_file_fs_mode_cached(db_new(), main_path, "run", "no-dce")
+  db_parse_count(db2) * 1000 + db_codegen_count(db2)
+}
