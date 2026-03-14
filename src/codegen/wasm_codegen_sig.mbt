@@ -981,6 +981,27 @@ fn needs_heap_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Bool {
   }
 }
 
+///| Check if an expression tree contains any float/double literals
+/// or calls to float-producing functions, indicating that dynamic
+/// arithmetic might need heap for boxed float allocation.
+fn has_float_operand(expr : @core.Expr) -> Bool {
+  match expr {
+    @core.Expr::Float(..) | @core.Expr::Double(..) => true
+    @core.Expr::Call(name~, args~, ..) =>
+      match name {
+        "Int::to_float" | "f32_convert_i32_s" | "Int::to_double"
+        | "to_double" | "f64_convert_i32_s" | "Float::to_double"
+        | "f64_promote_f32" | "Double::to_float" | "f32_demote_f64"
+        | "f32_neg" | "f32_abs" | "f32_ceil" | "f32_floor" | "f32_trunc"
+        | "f32_nearest" | "f32_sqrt" | "f64_neg" | "f64_abs" | "f64_ceil"
+        | "f64_floor" | "f64_trunc" | "f64_nearest" | "f64_sqrt"
+        | "f32_load" | "f64_load" | "Double::parse" => true
+        _ => args.iter().any(fn(a) { has_float_operand(a.expr) })
+      }
+    _ => false
+  }
+}
+
 ///|
 fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
   match expr {
@@ -995,13 +1016,29 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
     @core.Expr::Map(..) => true
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
+      // __add/__sub/__mul/__div/__mod only need heap when operands
+      // include floats (boxed float allocation). With int operands,
+      // the tagged arithmetic path doesn't allocate.
       if name == "__add" ||
         name == "__sub" ||
         name == "__mul" ||
         name == "__div" ||
         name == "__mod" ||
-        name == "__neg" ||
-        name == "Int::to_float" ||
+        name == "__neg" {
+        for arg in args {
+          if has_float_operand(arg.expr) {
+            return true
+          }
+        }
+        // Int operands only: check if args themselves need heap
+        for arg in args {
+          if needs_heap_expr(ctx, arg.expr) {
+            return true
+          }
+        }
+        return false
+      }
+      if name == "Int::to_float" ||
         name == "f32_convert_i32_s" ||
         name == "Int::to_double" ||
         name == "to_double" ||
