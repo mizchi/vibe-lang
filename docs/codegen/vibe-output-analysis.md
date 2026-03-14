@@ -160,9 +160,27 @@ P0 のみ:  16,371 行 (WAT)
 P0 + S1: 10,287 行 (WAT) → 37% 削減
 ```
 
+## 実装済み: S1b bool タグ roundtrip 省略
+
+if/while 条件が整数比較 (`eq`/`lt`) の場合、tagged bool の encode/decode を省略。
+`not`/`and`/`or` の組み合わせにも対応。
+
+```
+Before: cmp → i64.extend → shl 2 → or 3 → shr_u 2 → i32.wrap → if (7命令)
+After:  cmp → if (2命令)
+```
+
+### 累計効果
+
+```
+最適化前:          16,371 行 (WAT)
+P0 (call直接化):   16,371 行 (basics では変化なし、fib等で効果)
+P0 + S1:          10,287 行 → 37% 削減
+P0 + S1 + S1b:     9,960 行 → 39% 削減
+```
+
 ## 次のステップ
 
-1. **定数畳み込み**: `i64.const 4; i64.sub` → tagged 演算時のリテラル最適化
-2. **dead code 除去**: `unreachable` 後の命令削除
-3. **bool タグ操作の簡略化**: 比較結果の bool tagging `(i64.extend + shl 2 + or 3 + shr_u 2 + i32.wrap)` の削減
-4. **selfhost codegen にも同等の最適化を適用**
+1. **ヒープポインタ sync 削減**: call 前後の global.get/set を最小化
+2. **定数畳み込み**: `i64.const 4; i64.sub` → tagged 演算時のリテラル最適化
+3. **selfhost codegen にも同等の最適化を適用**
