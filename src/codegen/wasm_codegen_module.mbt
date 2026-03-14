@@ -1683,6 +1683,27 @@ fn emit_module_with_coverage(
       None => ()
     }
   }
+  // S8: Transitive propagation — if a function calls a heap-needing function,
+  // it also needs heap (for pre/post call sync). Iterate until convergence.
+  for _pass = 0; _pass < 10; _pass = _pass + 1 {
+    let mut changed = false
+    for i in 0..<funcs.length() {
+      if not(func_needs_heap[i]) {
+        if needs_heap_block(ctx, funcs[i].body) {
+          func_needs_heap[i] = true
+          any_user_heap = true
+          changed = true
+          match funcs[i].name {
+            Some(name) => ctx.fn_needs_heap[name] = true
+            None => ()
+          }
+        }
+      }
+    }
+    if not(changed) {
+      break
+    }
+  }
   let mut run_need_heap = needs_heap_block(ctx, run_ast)
   // Check if top-level scope has ref cell variables
   let top_mut_captured = compute_mut_captured_for_block(

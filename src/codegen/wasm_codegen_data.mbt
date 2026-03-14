@@ -1345,6 +1345,7 @@ fn compile_function(
   ctx.local_count = saved_count
   ctx.need_heap = saved_need_heap
   ctx.heap_local = saved_heap_local
+  ctx.heap_synced = saved_heap_synced
   ctx.current_env_idx = saved_current_env_idx
   ctx.fn_local_sigs = saved_fn_locals
   ctx.mut_captured_vars = saved_mut_captured

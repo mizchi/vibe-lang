@@ -45,7 +45,6 @@ test "bench: wasm.size.pipeline" {
     snapshot,
     content=(
       #|{wasm_size: Some(118), ir_size: 237, note: None}
-
     ),
   )
 }
@@ -60,8 +59,7 @@ test "bench: wasm.size.pipeline_js_string" {
   inspect(
     snapshot,
     content=(
-      #|{wasm_size: Some(167), ir_size: 185, note: None}
-
+      #|{wasm_size: Some(161), ir_size: 185, note: None}
     ),
   )
 }

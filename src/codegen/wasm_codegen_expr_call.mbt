@@ -174,17 +174,10 @@ fn compile_indirect_call(
     None =>
       raise WasmGenError::BackendLimit(backend="wasm", feature="call: " + name)
   }
-  // Sync heap pointer to global before call so callee sees current heap
-  if ctx.heap_local >= 0 && ctx.use_heap_global {
-    emit_local_get(buf, ctx.heap_local)
-    emit_global_set(buf, ctx.heap_global)
-  }
+  // S8: sync heap before indirect call
+  emit_heap_pre_call_sync(ctx, buf)
   emit_call_indirect(buf, type_idx)
-  // Reload heap pointer from global after call (callee may have bumped it)
-  if ctx.heap_local >= 0 && ctx.use_heap_global {
-    emit_global_get(buf, ctx.heap_global)
-    emit_local_set(buf, ctx.heap_local)
-  }
+  emit_heap_post_call_sync(ctx, buf)
 }
 
 ///|
@@ -247,13 +240,8 @@ fn compile_indirect_call_guessed(
       new_idx
     }
   }
-  if ctx.heap_local >= 0 && ctx.use_heap_global {
-    emit_local_get(buf, ctx.heap_local)
-    emit_global_set(buf, ctx.heap_global)
-  }
+  // S8: sync heap before indirect call
+  emit_heap_pre_call_sync(ctx, buf)
   emit_call_indirect(buf, type_idx)
-  if ctx.heap_local >= 0 && ctx.use_heap_global {
-    emit_global_get(buf, ctx.heap_global)
-    emit_local_set(buf, ctx.heap_local)
-  }
+  emit_heap_post_call_sync(ctx, buf)
 }

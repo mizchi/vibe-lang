@@ -867,15 +867,14 @@ fn compile_call_user_fn(
     Some(false) => false
     _ => true // conservative: unknown or true
   }
-  if ctx.heap_local >= 0 && ctx.use_heap_global && callee_heap {
-    emit_local_get(buf, ctx.heap_local)
-    emit_global_set(buf, ctx.heap_global)
+  // S8: skip pre-call sync if heap_local already matches heap_global
+  if callee_heap {
+    emit_heap_pre_call_sync(ctx, buf)
   }
   let idx = func_import_count(ctx) + fn_idx
   emit_call(buf, idx)
-  if ctx.heap_local >= 0 && ctx.use_heap_global && callee_heap {
-    emit_global_get(buf, ctx.heap_global)
-    emit_local_set(buf, ctx.heap_local)
+  if callee_heap {
+    emit_heap_post_call_sync(ctx, buf)
   }
   // Multi-value re-boxing: if function returns multiple values,
   // re-pack them into a heap-allocated tuple for general use.

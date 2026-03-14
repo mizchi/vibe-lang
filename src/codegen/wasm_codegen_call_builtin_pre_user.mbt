@@ -4064,6 +4064,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, alloc_size_local)
       emit_i32_add(buf)
       emit_global_set(buf, ctx.heap_global)
+      ctx.heap_synced = false
       // Set header: tag=obj_array, len=size
       emit_local_get(buf, obj_local)
       emit_i32_const_raw(buf, obj_array)
@@ -4328,6 +4329,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_and(buf)
       emit_i32_add(buf)
       emit_global_set(buf, ctx.heap_global)
+      ctx.heap_synced = false
       // Set header
       emit_local_get(buf, obj_local)
       emit_i32_const_raw(buf, obj_array)
@@ -5374,10 +5376,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_set(buf, in_stream_local)
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
       // imported `blocking-read` may call cabi_realloc; sync local heap first.
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_local_get(buf, ctx.heap_local)
-        emit_global_set(buf, ctx.heap_global)
-      }
+      emit_heap_pre_call_sync(ctx, buf)
       emit_local_get(buf, in_stream_local)
       // i64.const 1 (len=1)
       buf.push((66).to_byte())
@@ -5385,10 +5384,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, ret_area_local)
       emit_call(buf, import_index_stdin_read_stream(ctx))
       // reload heap in case cabi_realloc bumped it.
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_global_get(buf, ctx.heap_global)
-        emit_local_set(buf, ctx.heap_local)
-      }
+      emit_heap_post_call_sync(ctx, buf)
       emit_local_get(buf, ret_area_local)
       emit_i32_load8_u(buf, 0)
       emit_i32_eqz(buf)
@@ -5452,10 +5448,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_set(buf, in_stream_local)
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
       // imported `blocking-read` may call cabi_realloc; sync local heap first.
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_local_get(buf, ctx.heap_local)
-        emit_global_set(buf, ctx.heap_global)
-      }
+      emit_heap_pre_call_sync(ctx, buf)
       emit_local_get(buf, in_stream_local)
       emit_local_get(buf, req_len_local)
       // i64.extend_i32_u
@@ -5463,10 +5456,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, ret_area_local)
       emit_call(buf, import_index_stdin_read_stream(ctx))
       // reload heap in case cabi_realloc bumped it.
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_global_get(buf, ctx.heap_global)
-        emit_local_set(buf, ctx.heap_local)
-      }
+      emit_heap_post_call_sync(ctx, buf)
       emit_local_get(buf, ret_area_local)
       emit_i32_load8_u(buf, 0)
       emit_i32_eqz(buf)
@@ -5573,10 +5563,7 @@ fn compile_call_builtin_pre_user_inner(
       // Allocate retptr for stat-at result (needs ~96 bytes)
       emit_heap_alloc(ctx, buf, align4(96), ret_area_local)
       // Sync heap before WASI call
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_local_get(buf, ctx.heap_local)
-        emit_global_set(buf, ctx.heap_global)
-      }
+      emit_heap_pre_call_sync(ctx, buf)
       // stat-at(root_desc, 0, path_ptr, path_len, retptr)
       emit_local_get(buf, root_desc_local)
       emit_i32_const_raw(buf, 0) // path-flags: no symlink follow
@@ -5587,10 +5574,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, ret_area_local)
       emit_call(buf, import_index_fs_stat_at(ctx))
       // Reload heap after WASI call
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_global_get(buf, ctx.heap_global)
-        emit_local_set(buf, ctx.heap_local)
-      }
+      emit_heap_post_call_sync(ctx, buf)
       // Check discriminant: 0=ok (exists), 1=err (not exists)
       emit_local_get(buf, ret_area_local)
       emit_i32_load8_u(buf, 0)
@@ -5641,10 +5625,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_load(buf, 4)
       emit_local_set(buf, len_local)
       emit_heap_alloc(ctx, buf, align4(24), ret_area_local)
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_local_get(buf, ctx.heap_local)
-        emit_global_set(buf, ctx.heap_global)
-      }
+      emit_heap_pre_call_sync(ctx, buf)
       emit_local_get(buf, root_desc_local)
       emit_i32_const_raw(buf, 0)
       emit_local_get(buf, raw_local)
@@ -5653,10 +5634,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, len_local)
       emit_local_get(buf, ret_area_local)
       emit_call(buf, import_index_fs_metadata_hash_at(ctx))
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_global_get(buf, ctx.heap_global)
-        emit_local_set(buf, ctx.heap_local)
-      }
+      emit_heap_post_call_sync(ctx, buf)
       emit_local_get(buf, ret_area_local)
       emit_i32_load8_u(buf, 0)
       emit_i32_eqz(buf)
@@ -5722,10 +5700,7 @@ fn compile_call_builtin_pre_user_inner(
       // Allocate retptr for open-at result
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
       // Sync heap
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_local_get(buf, ctx.heap_local)
-        emit_global_set(buf, ctx.heap_global)
-      }
+      emit_heap_pre_call_sync(ctx, buf)
       // open-at(root_desc, 0, path_ptr, path_len, 0, 1, retptr)
       // open-flags=0 (none), desc-flags=1 (read)
       emit_local_get(buf, root_desc_local)
@@ -5739,10 +5714,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, ret_area_local)
       emit_call(buf, import_index_fs_open_at(ctx))
       // Reload heap
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_global_get(buf, ctx.heap_global)
-        emit_local_set(buf, ctx.heap_local)
-      }
+      emit_heap_post_call_sync(ctx, buf)
       // Check open result: retptr[0] discriminant
       emit_local_get(buf, ret_area_local)
       emit_i32_load8_u(buf, 0)
@@ -5756,10 +5728,7 @@ fn compile_call_builtin_pre_user_inner(
       // Allocate retptr for read result
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
       // Sync heap
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_local_get(buf, ctx.heap_local)
-        emit_global_set(buf, ctx.heap_global)
-      }
+      emit_heap_pre_call_sync(ctx, buf)
       // read(opened_desc, max_len=0x7FFFFFFF, offset=0, retptr)
       emit_local_get(buf, opened_desc_local)
       // i64.const 0x7FFFFFFF (max read length)
@@ -5771,10 +5740,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, ret_area_local)
       emit_call(buf, import_index_fs_read(ctx))
       // Reload heap
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_global_get(buf, ctx.heap_global)
-        emit_local_set(buf, ctx.heap_local)
-      }
+      emit_heap_post_call_sync(ctx, buf)
       // resource-drop opened descriptor
       emit_local_get(buf, opened_desc_local)
       emit_call(buf, import_index_fs_resource_drop(ctx))
@@ -5920,10 +5886,7 @@ fn compile_call_builtin_pre_user_inner(
       // Allocate retptr for open-at result
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
       // Sync heap
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_local_get(buf, ctx.heap_local)
-        emit_global_set(buf, ctx.heap_global)
-      }
+      emit_heap_pre_call_sync(ctx, buf)
       // open-at(root_desc, 0, path_ptr, path_len, 5, 2, retptr)
       // open-flags=5 (create|truncate), desc-flags=2 (write)
       emit_local_get(buf, root_desc_local)
@@ -5937,10 +5900,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, ret_area_local)
       emit_call(buf, import_index_fs_open_at(ctx))
       // Reload heap
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_global_get(buf, ctx.heap_global)
-        emit_local_set(buf, ctx.heap_local)
-      }
+      emit_heap_post_call_sync(ctx, buf)
       // Check open result
       emit_local_get(buf, ret_area_local)
       emit_i32_load8_u(buf, 0)
@@ -5954,10 +5914,7 @@ fn compile_call_builtin_pre_user_inner(
       // Allocate retptr for write result
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
       // Sync heap
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_local_get(buf, ctx.heap_local)
-        emit_global_set(buf, ctx.heap_global)
-      }
+      emit_heap_pre_call_sync(ctx, buf)
       // write(opened_desc, content_data_ptr, content_len, offset=0, retptr)
       emit_local_get(buf, opened_desc_local)
       emit_local_get(buf, content_raw_local)
@@ -5970,10 +5927,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, ret_area_local)
       emit_call(buf, import_index_fs_write(ctx))
       // Reload heap
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_global_get(buf, ctx.heap_global)
-        emit_local_set(buf, ctx.heap_local)
-      }
+      emit_heap_post_call_sync(ctx, buf)
       // resource-drop opened descriptor
       emit_local_get(buf, opened_desc_local)
       emit_call(buf, import_index_fs_resource_drop(ctx))
@@ -6124,10 +6078,7 @@ fn compile_call_builtin_pre_user_inner(
       // Allocate retptr for open-at result
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
       // Sync heap
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_local_get(buf, ctx.heap_local)
-        emit_global_set(buf, ctx.heap_global)
-      }
+      emit_heap_pre_call_sync(ctx, buf)
       // open-at(root_desc, 0, path_ptr, path_len, 5, 2, retptr)
       emit_local_get(buf, root_desc_local)
       emit_i32_const_raw(buf, 0) // path-flags
@@ -6140,10 +6091,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, ret_area_local)
       emit_call(buf, import_index_fs_open_at(ctx))
       // Reload heap
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_global_get(buf, ctx.heap_global)
-        emit_local_set(buf, ctx.heap_local)
-      }
+      emit_heap_post_call_sync(ctx, buf)
       // Check open result
       emit_local_get(buf, ret_area_local)
       emit_i32_load8_u(buf, 0)
@@ -6157,10 +6105,7 @@ fn compile_call_builtin_pre_user_inner(
       // Allocate retptr for write result
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
       // Sync heap
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_local_get(buf, ctx.heap_local)
-        emit_global_set(buf, ctx.heap_global)
-      }
+      emit_heap_pre_call_sync(ctx, buf)
       // write(opened_desc, data_ptr, arr_len, offset=0, retptr)
       emit_local_get(buf, opened_desc_local)
       emit_local_get(buf, data_ptr_local) // contiguous byte data
@@ -6171,10 +6116,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, ret_area_local)
       emit_call(buf, import_index_fs_write(ctx))
       // Reload heap
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_global_get(buf, ctx.heap_global)
-        emit_local_set(buf, ctx.heap_local)
-      }
+      emit_heap_post_call_sync(ctx, buf)
       // resource-drop opened descriptor
       emit_local_get(buf, opened_desc_local)
       emit_call(buf, import_index_fs_resource_drop(ctx))
@@ -6325,10 +6267,7 @@ fn compile_call_builtin_pre_user_inner(
       // Allocate retptr (16 bytes)
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
       // Sync heap before WASI calls
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_local_get(buf, ctx.heap_local)
-        emit_global_set(buf, ctx.heap_global)
-      }
+      emit_heap_pre_call_sync(ctx, buf)
       // 1. instance-network() -> network
       emit_call(buf, import_index_socket_instance_network(ctx))
       emit_local_set(buf, network_local)
@@ -6383,10 +6322,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, ret_area_local)
       emit_call(buf, import_index_socket_finish_connect(ctx))
       // Reload heap after WASI calls
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_global_get(buf, ctx.heap_global)
-        emit_local_set(buf, ctx.heap_local)
-      }
+      emit_heap_post_call_sync(ctx, buf)
       // Check finish-connect result
       emit_local_get(buf, ret_area_local)
       emit_i32_load(buf, 0) // discriminant
@@ -6508,10 +6444,7 @@ fn compile_call_builtin_pre_user_inner(
       // Allocate retptr
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
       // Sync heap
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_local_get(buf, ctx.heap_local)
-        emit_global_set(buf, ctx.heap_global)
-      }
+      emit_heap_pre_call_sync(ctx, buf)
       // blocking-read(input_stream, max_bytes as i64, retptr)
       emit_local_get(buf, input_stream_local)
       emit_local_get(buf, max_bytes_local)
@@ -6519,10 +6452,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, ret_area_local)
       emit_call(buf, import_index_socket_stream_read(ctx))
       // Reload heap
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_global_get(buf, ctx.heap_global)
-        emit_local_set(buf, ctx.heap_local)
-      }
+      emit_heap_post_call_sync(ctx, buf)
       // Check result: retptr[0] discriminant
       emit_local_get(buf, ret_area_local)
       emit_i32_load8_u(buf, 0)
@@ -6646,10 +6576,7 @@ fn compile_call_builtin_pre_user_inner(
       // Allocate retptr
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
       // Sync heap
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_local_get(buf, ctx.heap_local)
-        emit_global_set(buf, ctx.heap_global)
-      }
+      emit_heap_pre_call_sync(ctx, buf)
       // blocking-write-and-flush(output_stream, data_ptr+8, data_len, retptr)
       emit_local_get(buf, output_stream_local)
       emit_local_get(buf, data_raw_local)
@@ -6659,10 +6586,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, ret_area_local)
       emit_call(buf, import_index_socket_stream_write(ctx))
       // Reload heap
-      if ctx.heap_local >= 0 && ctx.use_heap_global {
-        emit_global_get(buf, ctx.heap_global)
-        emit_local_set(buf, ctx.heap_local)
-      }
+      emit_heap_post_call_sync(ctx, buf)
       // Return Unit (tagged 0)
       emit_i64_const_raw(buf, tag_int_value64(0L))
     }
