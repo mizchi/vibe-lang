@@ -615,3 +615,74 @@ top-level 関数が他の top-level 関数を機械的に capture すると、�
 
 - P3 async を扱う場合、**guest 生成（bindgen）と compose 実装の対応レベルを必ずセットで検証**すること。  
   どちらか一方だけ更新しても end-to-end は成立しない。
+
+---
+
+## K-019: selfhost bootstrap の真のボトルネックは `module_loader_test` / `file_compile_mode_test`
+
+- 場所: `scripts/test_selfhost_bootstrap_gate.sh`, `src/cmd/vibe/cli.mbt`, `vibe/compiler/loader/index.vibe`, `vibe/compiler/entry/compiler/file_compile/index.vibe`
+- 発見: 2026-03
+
+### 背景
+
+compiled selfhost bootstrap は当初「parallel batch が細かすぎて child process が増えすぎている」ことが疑われた。  
+実際に root-affinity を入れて batch 数を減らすと、`shard 2/4` は次まで改善した。
+
+- files: `28`
+- batches: `10`
+- tests: `281/281`
+- wall time: `101.67s`
+
+しかし `shard 1/4` を同じ条件で再計測すると、他の batch が先に抜けた後も次の 2 本だけが高 CPU のまま残り続けた。
+
+- `vibe/compiler/module_loader_test.vibe`
+- `vibe/compiler/file_compile_mode_test.vibe`
+
+### 観測
+
+- heavy test を singleton batch に分離した後でも、`12m+` 時点で上の 2 本だけが継続
+- つまり scheduler / batch 数 / report 集約は **一次ボトルネックではない**
+- 支配コストは test 本体が踏む FS import 閉包収集と file-compile 準備経路にある
+
+### 真因
+
+#### 1. `stat token` だけで persistent cache を捨てていた
+
+`loader/index.vibe` の cache validation は `stat_token` が変わると即 miss 扱いだった。  
+そのため temp file を同じ内容で書き直す `file_compile_mode_test` のようなケースでも、content-addressed cache が刺さらない。
+
+```vibe
+// 旧挙動の要点
+if stat_token_text != "" {
+  Fs::stat_token(path) == stat_token_text
+} else {
+  compact_string_fingerprint(Fs::read_file(path)) == source_fingerprint
+}
+```
+
+同一 content rewrite では `stat_token` は変わるが `source_fingerprint` は変わらない。  
+ここで fingerprint fallback しないと、artifact hit 前の source-group cache が毎回 cold になる。
+
+#### 2. manifest list / group cache が片側 miss だと閉包収集をやり直していた
+
+`collect_all_sources_fs` と `collect_source_groups_fs` は別 cache を持つが、片側だけ cache が残っていても再利用せず、
+
+- manifest 読み直し
+- full source 読み込み
+- `collect_needed_paths_rec`
+
+をもう一度やっていた。  
+`module_loader_test` はこの両方を同じファイル内で繰り返し叩くため、二重コストが効く。
+
+### 修正
+
+- `matches_cached_file_spec` は `stat_token` mismatch 時に `source_fingerprint` fallback する
+- `load_source_if_cached_file_spec_matches` を追加して、valid 判定と source 読み出しを一体化
+- `collect_all_sources_fs` は valid な group cache から list cache を再構築できるようにした
+- `collect_source_groups_fs` は valid な list cache から group cache を再構築できるようにした
+
+### 教訓
+
+- content-addressed cache で本当に効かせたいなら、**mtime/stat 由来の invalidate を content hash より優先しすぎない**こと
+- persistent cache は artifact だけでなく、**dependency closure の表現（list/group/header/interface）を相互変換できる粒度**で持つと効く
+- bootstrap のような重い系では、batch 数の改善で child explosion を止めたあとに、**最後まで残る singleton test** を見て真因を切り分けるのが早い

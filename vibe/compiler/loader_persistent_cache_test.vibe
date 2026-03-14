@@ -1,0 +1,137 @@
+//# Imports
+
+import ./module_loader.vibe {
+  collect_all_sources_fs, collect_source_groups_fs,
+  load_persistent_source_group_fingerprint_if_valid
+}
+
+import ./cache / persistent {
+  build_source_groups_fingerprint,
+  persistent_source_group_cache_path,
+  persistent_source_list_cache_path
+}
+
+//# Functions
+
+let string_to_bytes = (s: String) -> Bytes {
+  let out = Array::slice([
+    0
+  ], 0, 0)
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+let remove_file_if_exists = (path: String) -> Unit with { Fs } {
+  if Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
+  }
+}
+
+let lookup_group_source = (
+  groups: Array[(String, Array[(String, String)])],
+  target_path: String
+) -> Option[String] {
+  let mut gi = 0
+  let mut found = None
+  while gi < Array::length(groups) {
+    let (_, sources) = Array::get(groups, gi)
+    let mut si = 0
+    while si < Array::length(sources) {
+      let (path, source) = Array::get(sources, si)
+      if String::equals(path, target_path) {
+        found = Some(source)
+        si = Array::length(sources)
+        gi = Array::length(groups)
+      } else {
+        si = si + 1
+      }
+    }
+    gi = gi + 1
+  }
+  found
+}
+
+let setup_manifest_fixture = (
+  base_dir: String,
+  helper_source: String,
+  main_source: String
+) -> (String, String, String) with { Error, Fs } {
+  let manifest_path = String::concat(base_dir, "/selfhost_sources_manifest.tsv")
+  let helper_path = String::concat(base_dir, "/helper.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(
+    manifest_path,
+    string_to_bytes("core\thelper.vibe\nentry\tmain.vibe\n")
+  )
+  Fs::write_bytes(helper_path, string_to_bytes(helper_source))
+  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  (manifest_path, helper_path, main_path)
+}
+
+//# Tests
+
+test "load_persistent_source_group_fingerprint_if_valid: same-content rewrite keeps cache valid" {
+  let helper_path = "/tmp/vibe_compiler_persistent_loader_same_helper.vibe"
+  let main_path = "/tmp/vibe_compiler_persistent_loader_same_main.vibe"
+  let helper_source = "export let add = () -> Int { 1 }"
+  let main_source = "import ./vibe_compiler_persistent_loader_same_helper.vibe { add }\nlet run = () -> Int { add() }"
+  Fs::write_bytes(helper_path, string_to_bytes(helper_source))
+  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  remove_file_if_exists(persistent_source_group_cache_path(main_path))
+  let groups = collect_source_groups_fs(main_path)
+  let expected = build_source_groups_fingerprint(groups)
+  Fs::write_bytes(helper_path, string_to_bytes(helper_source))
+  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  match load_persistent_source_group_fingerprint_if_valid(main_path) {
+    Some(fingerprint) => assert(String::equals(fingerprint, expected)),
+    None => assert(false)
+  }
+}
+
+test "collect_all_sources_fs: reuses valid source group cache when list cache is missing" {
+  let (_, helper_path, main_path) = setup_manifest_fixture(
+    "/tmp/vibe_compiler_persistent_manifest_groups_to_list",
+    "export let add = () -> Int { 1 }",
+    "import ./helper.vibe { add }\nlet run = () -> Int { add() }"
+  )
+  remove_file_if_exists(persistent_source_group_cache_path(main_path))
+  remove_file_if_exists(persistent_source_list_cache_path(main_path))
+  let groups = collect_source_groups_fs(main_path)
+  assert(eq(Array::length(groups), 2))
+  remove_file_if_exists(persistent_source_list_cache_path(main_path))
+  let sources = collect_all_sources_fs(main_path)
+  assert(eq(Array::length(sources), 2))
+  assert(Fs::exists(persistent_source_list_cache_path(main_path)))
+  match lookup_group_source(groups, helper_path) {
+    Some(source) => assert(String::equals(source, "export let add = () -> Int { 1 }")),
+    None => assert(false)
+  }
+}
+
+test "collect_source_groups_fs: reuses valid source list cache when group cache is missing" {
+  let (_, helper_path, main_path) = setup_manifest_fixture(
+    "/tmp/vibe_compiler_persistent_manifest_list_to_groups",
+    "export let add = () -> Int { 1 }",
+    "import ./helper.vibe { add }\nlet run = () -> Int { add() }"
+  )
+  remove_file_if_exists(persistent_source_group_cache_path(main_path))
+  remove_file_if_exists(persistent_source_list_cache_path(main_path))
+  let sources = collect_all_sources_fs(main_path)
+  assert(eq(Array::length(sources), 2))
+  remove_file_if_exists(persistent_source_group_cache_path(main_path))
+  let groups = collect_source_groups_fs(main_path)
+  assert(eq(Array::length(groups), 2))
+  assert(Fs::exists(persistent_source_group_cache_path(main_path)))
+  match lookup_group_source(groups, helper_path) {
+    Some(source) => assert(String::equals(source, "export let add = () -> Int { 1 }")),
+    None => assert(false)
+  }
+}
