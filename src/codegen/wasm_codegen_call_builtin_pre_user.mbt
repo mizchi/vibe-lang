@@ -715,8 +715,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_shl(buf)
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_int.to_int64())
-      emit_i64_or(buf)
+      // tag_int = 0, i64.or is a no-op
     }
     "__rshift" => {
       let pos_args = extract_positional_exprs_with_arity(args, "__rshift", 2)
@@ -730,8 +729,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_shr_s(buf)
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_int.to_int64())
-      emit_i64_or(buf)
+      // tag_int = 0, i64.or is a no-op
     }
     "i32_shr_u" => {
       let pos_args = extract_positional_exprs_with_arity(args, "i32_shr_u", 2)
@@ -744,8 +742,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_shr_u(buf)
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_int.to_int64())
-      emit_i64_or(buf)
+      // tag_int = 0, i64.or is a no-op
     }
     "__bit_and" => {
       let pos_args = extract_positional_exprs_with_arity(args, "__bit_and", 2)
@@ -941,8 +938,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_extend_i32_s(buf)
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_int.to_int64())
-      emit_i64_or(buf)
+      // tag_int = 0, i64.or is a no-op
     }
     "Double::to_int" | "i32_trunc_f64_s" => {
       let pos_args = extract_positional_exprs_with_arity(args, name, 1)
@@ -950,8 +946,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_trunc_f64_s(buf)
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_int.to_int64())
-      emit_i64_or(buf)
+      // tag_int = 0, i64.or is a no-op
     }
     "Float::to_double" | "f64_promote_f32" => {
       let pos_args = extract_positional_exprs_with_arity(args, name, 1)
@@ -1122,8 +1117,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_extend_i32_s(buf)
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_int.to_int64())
-      emit_i64_or(buf)
+      // tag_int = 0, i64.or is a no-op
     }
     "i32_load8_u" => {
       let pos_args = extract_positional_exprs_with_arity(args, "i32_load8_u", 2)
@@ -1140,8 +1134,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_extend_i32_s(buf)
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_int.to_int64())
-      emit_i64_or(buf)
+      // tag_int = 0, i64.or is a no-op
     }
     "i32_store" => {
       let pos_args = extract_positional_exprs_with_arity(args, "i32_store", 3)
@@ -1524,8 +1517,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_extend_i32_s(buf)
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_int.to_int64())
-      emit_i64_or(buf)
+      // tag_int = 0, i64.or is a no-op
     }
     "Threads::spawn" => {
       let pos_args = extract_positional_exprs_with_arity(
@@ -1580,8 +1572,7 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_extend_i32_s(buf)
         emit_i64_const_raw(buf, 2L)
         emit_i64_shl(buf)
-        emit_i64_const_raw(buf, tag_int.to_int64())
-        emit_i64_or(buf)
+        // tag_int = 0, i64.or is a no-op
       }
     }
     "String::char_code_at" => {
@@ -1635,8 +1626,7 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_extend_i32_s(buf)
         emit_i64_const_raw(buf, 2L)
         emit_i64_shl(buf)
-        emit_i64_const_raw(buf, tag_int.to_int64())
-        emit_i64_or(buf)
+        // tag_int = 0, i64.or is a no-op
         buf.push((11).to_byte()) // end if
       }
     }
@@ -1788,8 +1778,7 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_extend_i32_s(buf)
         emit_i64_const_raw(buf, 2L)
         emit_i64_shl(buf)
-        emit_i64_const_raw(buf, tag_int.to_int64())
-        emit_i64_or(buf)
+        // tag_int = 0, i64.or is a no-op
       }
     }
     "Double::parse" => {
@@ -2611,8 +2600,7 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_extend_i32_s(buf)
         emit_i64_const_raw(buf, 2L)
         emit_i64_shl(buf)
-        emit_i64_const_raw(buf, tag_int.to_int64())
-        emit_i64_or(buf)
+        // tag_int = 0, i64.or is a no-op
       }
     }
     "String::contains" if not(is_user_fn) => {
@@ -3030,8 +3018,7 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_extend_i32_s(buf)
         emit_i64_const_raw(buf, 2L)
         emit_i64_shl(buf)
-        emit_i64_const_raw(buf, tag_int.to_int64())
-        emit_i64_or(buf)
+        // tag_int = 0, i64.or is a no-op
       }
     }
     "String::count" if not(is_user_fn) => {
@@ -3165,8 +3152,7 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_extend_i32_s(buf)
         emit_i64_const_raw(buf, 2L)
         emit_i64_shl(buf)
-        emit_i64_const_raw(buf, tag_int.to_int64())
-        emit_i64_or(buf)
+        // tag_int = 0, i64.or is a no-op
       }
     }
     "String::trim" if not(is_user_fn) => {
@@ -4937,8 +4923,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_extend_i32_s(buf)
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_int.to_int64())
-      emit_i64_or(buf)
+      // tag_int = 0, i64.or is a no-op
     }
     "iter_require" if not(is_user_fn) => {
       // iter_require(xs) -> identity (prelude fallback for Array iteration)
@@ -4958,8 +4943,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_extend_i32_s(buf)
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_int.to_int64())
-      emit_i64_or(buf)
+      // tag_int = 0, i64.or is a no-op
     }
     "iter_get" if not(is_user_fn) => {
       // iter_get(xs, idx) -> fallback to array_get(xs, idx)
@@ -5427,8 +5411,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_extend_i32_s(buf)
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_int.to_int64())
-      emit_i64_or(buf)
+      // tag_int = 0, i64.or is a no-op
       buf.push((11).to_byte()) // end if
       buf.push((5).to_byte()) // else
       emit_i64_const_raw(buf, tag_int_value64(-1L))

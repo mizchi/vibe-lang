@@ -80,8 +80,7 @@ fn compile_call_builtin_post_user_inner(
       emit_i64_extend_i32_s(buf)
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_int.to_int64())
-      emit_i64_or(buf)
+      // tag_int = 0, i64.or is a no-op
     }
     "Path::to_string" => {
       // path_to_string(path) -> path is stored as string pointer in wasm, pass through
@@ -114,8 +113,7 @@ fn compile_call_builtin_post_user_inner(
         emit_i64_extend_i32_s(buf)
         emit_i64_const_raw(buf, 2L)
         emit_i64_shl(buf)
-        emit_i64_const_raw(buf, tag_int.to_int64())
-        emit_i64_or(buf)
+        // tag_int = 0, i64.or is a no-op
       }
     }
     "String::utf16_length" | "String::unicode_length" => {
@@ -236,8 +234,7 @@ fn compile_call_builtin_post_user_inner(
         emit_i64_extend_i32_s(buf)
         emit_i64_const_raw(buf, 2L)
         emit_i64_shl(buf)
-        emit_i64_const_raw(buf, tag_int.to_int64())
-        emit_i64_or(buf)
+        // tag_int = 0, i64.or is a no-op
       }
     }
     "Array::concat" => {
