@@ -50,6 +50,84 @@ let is_bool_binop = (op: String) -> Bool {
   || String::equals(op, "||")
 }
 
+let is_logic_binop = (op: String) -> Bool {
+  String::equals(op, "&&")
+  || String::equals(op, "||")
+}
+
+let is_equality_binop = (op: String) -> Bool {
+  String::equals(op, "==")
+  || String::equals(op, "!=")
+}
+
+let is_order_binop = (op: String) -> Bool {
+  String::equals(op, "<")
+  || String::equals(op, ">")
+  || String::equals(op, "<=")
+  || String::equals(op, ">=")
+}
+
+let unify_binop_candidate = (left_ty: Type, right_ty: Type, target_ty: Type, s: Subst) -> Option[Subst] {
+  match unify(left_ty, target_ty, s) {
+    Some(s1) => unify(right_ty, target_ty, s1),
+    None => None
+  }
+}
+
+let infer_binop_type = (op: String, left_ty: Type, right_ty: Type, s: Subst) -> (Type, Subst) {
+  if is_logic_binop(op) {
+    match unify_binop_candidate(left_ty, right_ty, CtBool, s) {
+      Some(s1) => (CtBool, s1),
+      None => (CtUnknown, s)
+    }
+  }
+  else if is_equality_binop(op) {
+    match unify(left_ty, right_ty, s) {
+      Some(s1) => (CtBool, s1),
+      None => (CtUnknown, s)
+    }
+  }
+  else if is_order_binop(op) {
+    match unify_binop_candidate(left_ty, right_ty, CtInt, s) {
+      Some(s1) => (CtBool, s1),
+      None => match unify_binop_candidate(left_ty, right_ty, CtDouble, s) {
+        Some(s1) => (CtBool, s1),
+        None => (CtUnknown, s)
+      }
+    }
+  }
+  else if String::equals(op, "+") {
+    match unify_binop_candidate(left_ty, right_ty, CtInt, s) {
+      Some(s1) => (CtInt, s1),
+      None => match unify_binop_candidate(left_ty, right_ty, CtDouble, s) {
+        Some(s1) => (CtDouble, s1),
+        None => match unify_binop_candidate(left_ty, right_ty, CtString, s) {
+          Some(s1) => (CtString, s1),
+          None => (CtUnknown, s)
+        }
+      }
+    }
+  }
+  else if String::equals(op, "-")
+    || String::equals(op, "*")
+    || String::equals(op, "/") {
+    match unify_binop_candidate(left_ty, right_ty, CtInt, s) {
+      Some(s1) => (CtInt, s1),
+      None => match unify_binop_candidate(left_ty, right_ty, CtDouble, s) {
+        Some(s1) => (CtDouble, s1),
+        None => (CtUnknown, s)
+      }
+    }
+  }
+  else if String::equals(op, "%") {
+    match unify_binop_candidate(left_ty, right_ty, CtInt, s) {
+      Some(s1) => (CtInt, s1),
+      None => (CtUnknown, s)
+    }
+  }
+  else (CtUnknown, s)
+}
+
 let type_name_prefix = (ty: Type) -> String {
   match ty {
     CtInt => "Int",
@@ -211,18 +289,32 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
       }
     },
     EBinOp(op, left, right) => {
-      let (_, s1, c1) = check_expr(left, env, defs, s, c)
-      let (_, s2, c2) = check_expr(right, env, defs, s1, c1)
-      if is_bool_binop(op) {
-        (CtBool, s2, c2)
-      }
-      else (CtInt, s2, c2)
+      let (left_ty, s1, c1) = check_expr(left, env, defs, s, c)
+      let (right_ty, s2, c2) = check_expr(right, env, defs, s1, c1)
+      let (result_ty, s3) = infer_binop_type(
+        op,
+        subst_apply(s2, left_ty),
+        subst_apply(s2, right_ty),
+        s2
+      )
+      (subst_apply(s3, result_ty), s3, c2)
     },
     EUnaryOp(op, operand) => {
-      let (_, s1, c1) = check_expr(operand, env, defs, s, c)
+      let (operand_ty, s1, c1) = check_expr(operand, env, defs, s, c)
       if String::equals(op, "!") {
-        (CtBool, s1, c1)
-      } else (CtInt, s1, c1)
+        match subst_apply(s1, operand_ty) {
+          CtBool => (CtBool, s1, c1),
+          CtVar(_) => (CtBool, s1, c1),
+          _ => (CtUnknown, s1, c1)
+        }
+      } else if String::equals(op, "-") {
+        match subst_apply(s1, operand_ty) {
+          CtDouble => (CtDouble, s1, c1),
+          CtInt => (CtInt, s1, c1),
+          CtVar(_) => (subst_apply(s1, operand_ty), s1, c1),
+          _ => (CtUnknown, s1, c1)
+        }
+      } else (CtUnknown, s1, c1)
     },
     EAssign(_, val, body) => {
       let (_, s1, c1) = check_expr(val, env, defs, s, c)
@@ -320,7 +412,7 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
       }
       (field_ty, s1, c1)
     },
-    EFn(tparams, tbounds, params, _, effect, body) => {
+    EFn(tparams, tbounds, params, ret_ty, effect, body) => {
       let he = match effect {
         Some(_) => true,
         None => false
@@ -392,11 +484,27 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
         pi = pi + 1
       }
       let (bt, s2, c2) = check_expr(body, fn_env, defs, s1, c1)
-      let resolved_params = for p in param_types {
-        subst_apply(s2, p)
+      let (final_ret, s3) = match ret_ty {
+        Some(te) => {
+          let resolved = resolve_type_expr(te, defs)
+          let resolved_ret = match resolved {
+            CtNamed(tn, _) => match env_lookup(fn_env, tn) {
+              Some(t) => t,
+              None => resolved
+            },
+            _ => resolved
+          }
+          match unify(bt, resolved_ret, s2) {
+            Some(ns) => (subst_apply(ns, resolved_ret), ns),
+            None => (CtUnknown, s2)
+          }
+        },
+        None => (subst_apply(s2, bt), s2)
       }
-      let resolved_ret = subst_apply(s2, bt)
-      (CtFn(resolved_params, resolved_ret, he), s2, c2)
+      let resolved_params = for p in param_types {
+        subst_apply(s3, p)
+      }
+      (CtFn(resolved_params, final_ret, he), s3, c2)
     },
     EBreak(opt) => match opt {
       Some(e) => {

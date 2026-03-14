@@ -5,7 +5,7 @@ import ./ast.vibe {
 }
 
 import ./eval.vibe {
-  eval_expr, match_pattern
+  decode_expr, encode_expr, eval_expr, match_pattern
 }
 
 import ./values.vibe {
@@ -156,6 +156,16 @@ test "eval BinOp compare" {
   }
 }
 
+test "eval BinOp double compare" {
+  handle {
+    let expr = EBinOp("<", EFloat(1.0), EFloat(2.0))
+    let (v, _) = eval_expr(expr, VEnvEmpty)
+    assert(values_equal(v, VBool(true)))
+  } {
+    Error(_) => assert(false)
+  }
+}
+
 test "eval BinOp string eq" {
   handle {
     let expr = EBinOp("==", EString("a"), EString("a"))
@@ -206,5 +216,110 @@ test "eval closure captures env" {
     assert(values_equal(v, VInt(15)))
   } {
     Error(_) => assert(false)
+  }
+}
+
+test "encode/decode fn preserves annotations" {
+  let expr = EFn([
+    "T"
+  ], [
+    ("T", [
+      "Show"
+    ])
+  ], [
+    ("x", Some(TyApp("Option", [
+      TyName("Int")
+    ]))),
+    ("y", None)
+  ], Some(TyTuple([
+    TyName("String"),
+    TyUnit
+  ])), Some("Error"), EIdent("x"))
+  match decode_expr(encode_expr(expr)) {
+    EFn(type_params, bounds, params, ret_ty, effect, body) => {
+      assert(eq(Array::length(type_params), 1))
+      assert(String::equals(Array::get(type_params, 0), "T"))
+      assert(eq(Array::length(bounds), 1))
+      let (bound_name, bound_traits) = Array::get(bounds, 0)
+      assert(String::equals(bound_name, "T"))
+      assert(eq(Array::length(bound_traits), 1))
+      assert(String::equals(Array::get(bound_traits, 0), "Show"))
+      assert(eq(Array::length(params), 2))
+      let (param_name, param_ty) = Array::get(params, 0)
+      assert(String::equals(param_name, "x"))
+      match param_ty {
+        Some(inner_ty) => match inner_ty {
+          TyApp(name, args) => {
+            assert(String::equals(name, "Option"))
+            assert(eq(Array::length(args), 1))
+            match Array::get(args, 0) {
+              TyName(inner) => assert(String::equals(inner, "Int")),
+              _ => assert(false)
+            }
+          },
+          _ => assert(false)
+        },
+        _ => assert(false)
+      }
+      let (param2_name, param2_ty) = Array::get(params, 1)
+      assert(String::equals(param2_name, "y"))
+      match param2_ty {
+        None => assert(true),
+        _ => assert(false)
+      }
+      match ret_ty {
+        Some(TyTuple(items)) => {
+          assert(eq(Array::length(items), 2))
+          match Array::get(items, 0) {
+            TyName(name) => assert(String::equals(name, "String")),
+            _ => assert(false)
+          }
+          match Array::get(items, 1) {
+            TyUnit => assert(true),
+            _ => assert(false)
+          }
+        },
+        _ => assert(false)
+      }
+      match effect {
+        Some(effect_name) => assert(String::equals(effect_name, "Error")),
+        None => assert(false)
+      }
+      match body {
+        EIdent(name) => assert(String::equals(name, "x")),
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+}
+
+test "encode/decode break preserves payload" {
+  match decode_expr(encode_expr(EBreak(Some(EInt(42))))) {
+    EBreak(Some(inner)) => match inner {
+      EInt(n) => assert(eq(n, 42)),
+      _ => assert(false)
+    },
+    _ => assert(false)
+  }
+}
+
+test "encode/decode continue preserves payloads" {
+  match decode_expr(encode_expr(EContinue([
+    EInt(1),
+    EString("x")
+  ]))) {
+    EContinue(args) => {
+      assert(eq(Array::length(args), 2))
+      match Array::get(args, 0) {
+        EInt(n) => assert(eq(n, 1)),
+        _ => assert(false)
+      }
+      match Array::get(args, 1) {
+        EString(s) => assert(String::equals(s, "x")),
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
   }
 }

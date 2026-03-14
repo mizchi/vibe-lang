@@ -107,6 +107,133 @@ let rec decode_pat = (v: Value) -> Pat {
   }
 }
 
+let rec decode_type_expr = (tv: Value) -> TypeExpr {
+  let rec decode_type_exprs_inner = (arr: Array[Value], i: Int, len: Int) -> Array[TypeExpr] {
+    if i >= len {
+      Array::slice([
+        TyUnit
+      ], 0, 0)
+    }
+    else {
+      Array::concat([
+        decode_type_expr(Array::get(arr, i))
+      ], decode_type_exprs_inner(arr, i + 1, len))
+    }
+  }
+  let decode_type_exprs = (value: Value) -> Array[TypeExpr] {
+    match value {
+      VArray(arr) => decode_type_exprs_inner(arr, 0, Array::length(arr)),
+      _ => Array::slice([
+        TyUnit
+      ], 0, 0)
+    }
+  }
+  match tv {
+    VArray(arr) => if eq(Array::length(arr), 0) {
+      TyUnit
+    }
+    else {
+      let tag = match Array::get(arr, 0) {
+        VString(t) => t,
+        _ => "tu"
+      }
+      if String::equals(tag, "tn") {
+        match Array::get(arr, 1) {
+          VString(name) => TyName(name),
+          _ => TyUnit
+        }
+      }
+      else if String::equals(tag, "ta") {
+        let name = match Array::get(arr, 1) {
+          VString(sv) => sv,
+          _ => ""
+        }
+        TyApp(name, decode_type_exprs(Array::get(arr, 2)))
+      }
+      else if String::equals(tag, "tf") {
+        TyFn(decode_type_exprs(Array::get(arr, 1)), decode_type_expr(Array::get(arr, 2)))
+      }
+      else if String::equals(tag, "tt") {
+        TyTuple(decode_type_exprs(Array::get(arr, 1)))
+      }
+      else TyUnit
+    },
+    _ => TyUnit
+  }
+}
+
+let decode_type_option = (tv: Value) -> Option[TypeExpr] {
+  match tv {
+    VUnit => None,
+    _ => Some(decode_type_expr(tv))
+  }
+}
+
+let rec decode_string_array_inner = (arr: Array[Value], i: Int, len: Int) -> Array[String] {
+  if i >= len {
+    Array::slice([
+      ""
+    ], 0, 0)
+  }
+  else {
+    let value = match Array::get(arr, i) {
+      VString(sv) => sv,
+      _ => ""
+    }
+    Array::concat([
+      value
+    ], decode_string_array_inner(arr, i + 1, len))
+  }
+}
+
+let decode_string_array = (tv: Value) -> Array[String] {
+  match tv {
+    VArray(arr) => decode_string_array_inner(arr, 0, Array::length(arr)),
+    _ => Array::slice([
+      ""
+    ], 0, 0)
+  }
+}
+
+let rec decode_bounds_inner = (arr: Array[Value], i: Int, len: Int) -> Array[(String, Array[String])] {
+  if i >= len {
+    Array::slice([
+      ("", Array::slice([
+        ""
+      ], 0, 0))
+    ], 0, 0)
+  }
+  else {
+    let entry = Array::get(arr, i)
+    let bound = match entry {
+      VArray(ea) => {
+        let name = match Array::get(ea, 0) {
+          VString(sv) => sv,
+          _ => ""
+        }
+        (name, decode_string_array(Array::get(ea, 1)))
+      },
+      _ => ("", Array::slice([
+        ""
+      ], 0, 0))
+    }
+    Array::concat([
+      bound
+    ], decode_bounds_inner(arr, i + 1, len))
+  }
+}
+
+let decode_bounds = (tv: Value) -> Array[(String, Array[String])] {
+  match tv {
+    VArray(arr) => decode_bounds_inner(arr, 0, Array::length(arr)),
+    _ => Array::slice([
+      ("", Array::slice([
+        ""
+      ], 0, 0))
+    ], 0, 0)
+  }
+}
+
 let eval_binop = (op: String, lv: Value, rv: Value) -> Value {
   if String::equals(op, "+") {
     match lv {
@@ -185,6 +312,10 @@ let eval_binop = (op: String, lv: Value, rv: Value) -> Value {
         VInt(b) => VBool(a < b),
         _ => VBool(false)
       },
+      VFloat(a) => match rv {
+        VFloat(b) => VBool(a < b),
+        _ => VBool(false)
+      },
       _ => VBool(false)
     }
   }
@@ -192,6 +323,10 @@ let eval_binop = (op: String, lv: Value, rv: Value) -> Value {
     match lv {
       VInt(a) => match rv {
         VInt(b) => VBool(a > b),
+        _ => VBool(false)
+      },
+      VFloat(a) => match rv {
+        VFloat(b) => VBool(a > b),
         _ => VBool(false)
       },
       _ => VBool(false)
@@ -203,6 +338,10 @@ let eval_binop = (op: String, lv: Value, rv: Value) -> Value {
         VInt(b) => VBool(a <= b),
         _ => VBool(false)
       },
+      VFloat(a) => match rv {
+        VFloat(b) => VBool(a <= b),
+        _ => VBool(false)
+      },
       _ => VBool(false)
     }
   }
@@ -210,6 +349,10 @@ let eval_binop = (op: String, lv: Value, rv: Value) -> Value {
     match lv {
       VInt(a) => match rv {
         VInt(b) => VBool(a >= b),
+        _ => VBool(false)
+      },
+      VFloat(a) => match rv {
+        VFloat(b) => VBool(a >= b),
         _ => VBool(false)
       },
       _ => VBool(false)
@@ -287,12 +430,24 @@ export let rec decode_expr = (v: Value) -> Expr {
       ], 0, 0)
     }
     else {
-      let name = match Array::get(arr, i) {
-        VString(sv) => sv,
-        _ => ""
+      let param = match Array::get(arr, i) {
+        VString(sv) => (sv, None),
+        VArray(ea) => {
+          let name = match Array::get(ea, 0) {
+            VString(sv) => sv,
+            _ => ""
+          }
+          let ann = if Array::length(ea) >= 2 {
+            decode_type_option(Array::get(ea, 1))
+          } else {
+            None
+          }
+          (name, ann)
+        },
+        _ => ("", None)
       }
       Array::concat([
-        (name, None)
+        param
       ], go_params_inner(arr, i + 1, len))
     }
   }
@@ -443,8 +598,22 @@ export let rec decode_expr = (v: Value) -> Expr {
         ERecord(go_fields(Array::get(arr, 1)))
       }
       else if String::equals(tag, "fn") {
-        let params = go_params(Array::get(arr, 1))
-        EFn(_no_tp, _no_tb, params, None, None, decode_expr(Array::get(arr, 2)))
+        if Array::length(arr) >= 7 {
+          EFn(
+            decode_string_array(Array::get(arr, 1)),
+            decode_bounds(Array::get(arr, 2)),
+            go_params(Array::get(arr, 3)),
+            decode_type_option(Array::get(arr, 4)),
+            match Array::get(arr, 5) {
+              VString(sv) => Some(sv),
+              _ => None
+            },
+            decode_expr(Array::get(arr, 6))
+          )
+        } else {
+          let params = go_params(Array::get(arr, 1))
+          EFn(_no_tp, _no_tb, params, None, None, decode_expr(Array::get(arr, 2)))
+        }
       }
       else if String::equals(tag, "ma") {
         EMatch(decode_expr(Array::get(arr, 1)), go_arms(Array::get(arr, 2)))
@@ -480,10 +649,17 @@ export let rec decode_expr = (v: Value) -> Expr {
         EThrow(decode_expr(Array::get(arr, 1)))
       }
       else if String::equals(tag, "br") {
-        EBreak(None)
+        if Array::length(arr) >= 2 {
+          match Array::get(arr, 1) {
+            VUnit => EBreak(None),
+            inner => EBreak(Some(decode_expr(inner)))
+          }
+        } else EBreak(None)
       }
       else if String::equals(tag, "co") {
-        EContinue(Array::slice([
+        if Array::length(arr) >= 2 {
+          EContinue(go_exprs(Array::get(arr, 1)))
+        } else EContinue(Array::slice([
           EUnit
         ], 0, 0))
       }
@@ -497,6 +673,94 @@ export let rec decode_expr = (v: Value) -> Expr {
 let empty_encoded = Array::slice([
   VUnit
 ], 0, 0)
+
+let rec encode_string_array = (items: Array[String], i: Int) -> Value {
+  if i >= Array::length(items) {
+    VArray(empty_encoded)
+  }
+  else {
+    let rest = encode_string_array(items, i + 1)
+    match rest {
+      VArray(rarr) => VArray(Array::concat([
+        VString(Array::get(items, i))
+      ], rarr)),
+      _ => VArray([
+        VString(Array::get(items, i))
+      ])
+    }
+  }
+}
+
+let rec encode_type_expr = (ty: TypeExpr) -> Value {
+  let rec encode_type_exprs = (items: Array[TypeExpr], i: Int) -> Value {
+    if i >= Array::length(items) {
+      VArray(empty_encoded)
+    }
+    else {
+      let rest = encode_type_exprs(items, i + 1)
+      match rest {
+        VArray(rarr) => VArray(Array::concat([
+          encode_type_expr(Array::get(items, i))
+        ], rarr)),
+        _ => VArray([
+          encode_type_expr(Array::get(items, i))
+        ])
+      }
+    }
+  }
+  match ty {
+    TyName(name) => VArray([
+      VString("tn"),
+      VString(name)
+    ]),
+    TyApp(name, args) => VArray([
+      VString("ta"),
+      VString(name),
+      encode_type_exprs(args, 0)
+    ]),
+    TyFn(params, ret) => VArray([
+      VString("tf"),
+      encode_type_exprs(params, 0),
+      encode_type_expr(ret)
+    ]),
+    TyTuple(items) => VArray([
+      VString("tt"),
+      encode_type_exprs(items, 0)
+    ]),
+    TyUnit => VArray([
+      VString("tu")
+    ])
+  }
+}
+
+let encode_type_option = (opt: Option[TypeExpr]) -> Value {
+  match opt {
+    Some(inner) => encode_type_expr(inner),
+    None => VUnit
+  }
+}
+
+let rec encode_bounds = (items: Array[(String, Array[String])], i: Int) -> Value {
+  if i >= Array::length(items) {
+    VArray(empty_encoded)
+  }
+  else {
+    let (name, traits) = Array::get(items, i)
+    let rest = encode_bounds(items, i + 1)
+    let encoded = VArray([
+      VString(name),
+      encode_string_array(traits, 0)
+    ])
+    match rest {
+      VArray(rarr) => VArray(Array::concat([
+        encoded
+      ], rarr)),
+      _ => VArray([
+        encoded
+      ])
+    }
+  }
+}
 
 let rec encode_pat = (p: Pat) -> Value {
   let rec go_arr = (pats: Array[Pat], i: Int) -> Value {
@@ -597,14 +861,18 @@ export let rec encode_expr = (expr: Expr) -> Value {
       VArray(empty_encoded)
     }
     else {
-      let (name, _) = Array::get(params, i)
+      let (name, ann) = Array::get(params, i)
       let rest = go_params(params, i + 1)
+      let encoded = VArray([
+        VString(name),
+        encode_type_option(ann)
+      ])
       match rest {
         VArray(rarr) => VArray(Array::concat([
-          VString(name)
+          encoded
         ], rarr)),
         _ => VArray([
-          VString(name)
+          encoded
         ])
       }
     }
@@ -726,9 +994,16 @@ export let rec encode_expr = (expr: Expr) -> Value {
       VString("rc"),
       go_fields(fields, 0)
     ]),
-    EFn(_, _, params, _, _, body) => VArray([
+    EFn(type_params, bounds, params, ret_ty, effect, body) => VArray([
       VString("fn"),
+      encode_string_array(type_params, 0),
+      encode_bounds(bounds, 0),
       go_params(params, 0),
+      encode_type_option(ret_ty),
+      match effect {
+        Some(effect_name) => VString(effect_name),
+        None => VUnit
+      },
       encode_expr(body)
     ]),
     EMatch(scrutinee, arms) => VArray([
@@ -770,11 +1045,16 @@ export let rec encode_expr = (expr: Expr) -> Value {
       VString("th"),
       encode_expr(val)
     ]),
-    EBreak(_) => VArray([
-      VString("br")
+    EBreak(opt) => VArray([
+      VString("br"),
+      match opt {
+        Some(inner) => encode_expr(inner),
+        None => VUnit
+      }
     ]),
-    EContinue(_) => VArray([
-      VString("co")
+    EContinue(items) => VArray([
+      VString("co"),
+      go_exprs(items, 0)
     ]),
     ELabeledArg(_, _, inner) => encode_expr(inner),
     _ => VArray([
