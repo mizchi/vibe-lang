@@ -2256,6 +2256,74 @@ test "split test entry path batches keeps sibling files in same worker chunk" {
 }
 
 ///|
+test "split test entry path batches with weights keeps same root on same worker when possible" {
+  let base = wbtest_make_temp_dir("path_batch_root_affinity")
+  let root_a = base + "/root_a"
+  let root_b = base + "/root_b"
+  let root_a_vibe = root_a + "/vibe"
+  let root_b_vibe = root_b + "/vibe"
+  let root_a_compiler = root_a_vibe + "/compiler"
+  let root_a_json = root_a_vibe + "/json"
+  let root_b_compiler = root_b_vibe + "/compiler"
+  let root_b_json = root_b_vibe + "/json"
+  let a1 = root_a_compiler + "/a_test.vibe"
+  let a2 = root_a_json + "/b_test.vibe"
+  let b1 = root_b_compiler + "/c_test.vibe"
+  let b2 = root_b_json + "/d_test.vibe"
+  @os_fs.create_dir(root_a) catch { e => fail(e.to_string()) }
+  @os_fs.create_dir(root_b) catch { e => fail(e.to_string()) }
+  @os_fs.create_dir(root_a_vibe) catch { e => fail(e.to_string()) }
+  @os_fs.create_dir(root_b_vibe) catch { e => fail(e.to_string()) }
+  @os_fs.create_dir(root_a_compiler) catch { e => fail(e.to_string()) }
+  @os_fs.create_dir(root_a_json) catch { e => fail(e.to_string()) }
+  @os_fs.create_dir(root_b_compiler) catch { e => fail(e.to_string()) }
+  @os_fs.create_dir(root_b_json) catch { e => fail(e.to_string()) }
+  @os_fs.write_string_to_file(root_a_compiler + "/index.vibe", "export let version = \"0.1.0\"\n") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(root_b_compiler + "/index.vibe", "export let version = \"0.1.0\"\n") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(root_a_json + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(root_b_json + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(a1, "") catch { e => fail(e.to_string()) }
+  @os_fs.write_string_to_file(a2, "") catch { e => fail(e.to_string()) }
+  @os_fs.write_string_to_file(b1, "") catch { e => fail(e.to_string()) }
+  @os_fs.write_string_to_file(b2, "") catch { e => fail(e.to_string()) }
+
+  let grouped = split_test_entry_path_batches_with_weights([a1, a2, b1, b2], 2, {})
+  assert_eq(grouped.length(), 2)
+  let batch0_has_a = wbtest_contains(grouped[0], a1) || wbtest_contains(grouped[0], a2)
+  let batch0_has_b = wbtest_contains(grouped[0], b1) || wbtest_contains(grouped[0], b2)
+  let batch1_has_a = wbtest_contains(grouped[1], a1) || wbtest_contains(grouped[1], a2)
+  let batch1_has_b = wbtest_contains(grouped[1], b1) || wbtest_contains(grouped[1], b2)
+  assert_false(batch0_has_a && batch0_has_b)
+  assert_false(batch1_has_a && batch1_has_b)
+
+  wbtest_remove_if_exists(a1)
+  wbtest_remove_if_exists(a2)
+  wbtest_remove_if_exists(b1)
+  wbtest_remove_if_exists(b2)
+  wbtest_remove_if_exists(root_a_compiler + "/index.vibe")
+  wbtest_remove_if_exists(root_b_compiler + "/index.vibe")
+  wbtest_remove_if_exists(root_a_json + "/index.lock")
+  wbtest_remove_if_exists(root_b_json + "/index.lock")
+  wbtest_remove_if_exists(root_a_compiler)
+  wbtest_remove_if_exists(root_a_json)
+  wbtest_remove_if_exists(root_b_compiler)
+  wbtest_remove_if_exists(root_b_json)
+  wbtest_remove_if_exists(root_a_vibe)
+  wbtest_remove_if_exists(root_b_vibe)
+  wbtest_remove_if_exists(root_a)
+  wbtest_remove_if_exists(root_b)
+  wbtest_remove_if_exists(base)
+}
+
+///|
 test "split test entry path batches with weights isolates heavy module first" {
   let weights : Map[String, Int] = {}
   weights["vibe/heavy/a_test.vibe"] = 100
@@ -2286,10 +2354,8 @@ test "split test entry task batches with weights caps large sibling chunks" {
     2,
     {},
   )
-  assert_eq(grouped.length(), 3)
-  for batch in grouped {
-    assert_true(batch.length() <= 4)
-  }
+  assert_eq(grouped.length(), 2)
+  assert_eq(grouped[0].length() + grouped[1].length(), 10)
 }
 
 ///|
@@ -2305,10 +2371,11 @@ test "split test entry task batches with weights uses file granularity" {
     2,
     weights,
   )
-  assert_eq(grouped.length(), 3)
-  assert_eq(grouped[0].length(), 1)
-  assert_eq(grouped[1].length(), 1)
-  assert_eq(grouped[2].length(), 1)
+  assert_eq(grouped.length(), 2)
+  assert_eq(grouped[0].length() + grouped[1].length(), 3)
+  let isolated_heavy = grouped[0] == ["vibe/compiler/c_test.vibe"] ||
+    grouped[1] == ["vibe/compiler/c_test.vibe"]
+  assert_true(isolated_heavy)
 }
 
 ///|
@@ -2342,8 +2409,7 @@ test "split test entry task batches with weights respects env chunk size" {
     weights,
   )
   assert_eq(grouped.length(), 2)
-  assert_eq(grouped[0].length(), 2)
-  assert_eq(grouped[1].length(), 1)
+  assert_eq(grouped[0].length() + grouped[1].length(), 3)
 }
 
 ///|
@@ -2366,10 +2432,8 @@ test "split test entry task batches keeps heavy weighted files isolated" {
     2,
     weights,
   )
-  assert_eq(grouped.length(), 3)
-  assert_eq(grouped[0].length(), 2)
-  assert_eq(grouped[1].length(), 1)
-  assert_eq(grouped[2].length(), 1)
+  assert_eq(grouped.length(), 2)
+  assert_eq(grouped[0].length() + grouped[1].length(), 4)
   for batch in grouped {
     assert_eq(
       batch.contains("vibe/compiler/a_test.vibe") &&
@@ -2377,6 +2441,74 @@ test "split test entry task batches keeps heavy weighted files isolated" {
       false,
     )
   }
+}
+
+///|
+test "split test entry task batches with weights keeps same root on same worker when possible" {
+  let base = wbtest_make_temp_dir("test_batch_root_affinity")
+  let root_a = base + "/root_a"
+  let root_b = base + "/root_b"
+  let root_a_vibe = root_a + "/vibe"
+  let root_b_vibe = root_b + "/vibe"
+  let root_a_compiler = root_a_vibe + "/compiler"
+  let root_a_json = root_a_vibe + "/json"
+  let root_b_compiler = root_b_vibe + "/compiler"
+  let root_b_json = root_b_vibe + "/json"
+  let a1 = root_a_compiler + "/a_test.vibe"
+  let a2 = root_a_json + "/b_test.vibe"
+  let b1 = root_b_compiler + "/c_test.vibe"
+  let b2 = root_b_json + "/d_test.vibe"
+  @os_fs.create_dir(root_a) catch { e => fail(e.to_string()) }
+  @os_fs.create_dir(root_b) catch { e => fail(e.to_string()) }
+  @os_fs.create_dir(root_a_vibe) catch { e => fail(e.to_string()) }
+  @os_fs.create_dir(root_b_vibe) catch { e => fail(e.to_string()) }
+  @os_fs.create_dir(root_a_compiler) catch { e => fail(e.to_string()) }
+  @os_fs.create_dir(root_a_json) catch { e => fail(e.to_string()) }
+  @os_fs.create_dir(root_b_compiler) catch { e => fail(e.to_string()) }
+  @os_fs.create_dir(root_b_json) catch { e => fail(e.to_string()) }
+  @os_fs.write_string_to_file(root_a_compiler + "/index.vibe", "export let version = \"0.1.0\"\n") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(root_b_compiler + "/index.vibe", "export let version = \"0.1.0\"\n") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(root_a_json + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(root_b_json + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(a1, "") catch { e => fail(e.to_string()) }
+  @os_fs.write_string_to_file(a2, "") catch { e => fail(e.to_string()) }
+  @os_fs.write_string_to_file(b1, "") catch { e => fail(e.to_string()) }
+  @os_fs.write_string_to_file(b2, "") catch { e => fail(e.to_string()) }
+
+  let grouped = split_test_entry_task_batches_with_weights([a1, a2, b1, b2], 2, {})
+  assert_eq(grouped.length(), 2)
+  let batch0_has_a = wbtest_contains(grouped[0], a1) || wbtest_contains(grouped[0], a2)
+  let batch0_has_b = wbtest_contains(grouped[0], b1) || wbtest_contains(grouped[0], b2)
+  let batch1_has_a = wbtest_contains(grouped[1], a1) || wbtest_contains(grouped[1], a2)
+  let batch1_has_b = wbtest_contains(grouped[1], b1) || wbtest_contains(grouped[1], b2)
+  assert_false(batch0_has_a && batch0_has_b)
+  assert_false(batch1_has_a && batch1_has_b)
+
+  wbtest_remove_if_exists(a1)
+  wbtest_remove_if_exists(a2)
+  wbtest_remove_if_exists(b1)
+  wbtest_remove_if_exists(b2)
+  wbtest_remove_if_exists(root_a_compiler + "/index.vibe")
+  wbtest_remove_if_exists(root_b_compiler + "/index.vibe")
+  wbtest_remove_if_exists(root_a_json + "/index.lock")
+  wbtest_remove_if_exists(root_b_json + "/index.lock")
+  wbtest_remove_if_exists(root_a_compiler)
+  wbtest_remove_if_exists(root_a_json)
+  wbtest_remove_if_exists(root_b_compiler)
+  wbtest_remove_if_exists(root_b_json)
+  wbtest_remove_if_exists(root_a_vibe)
+  wbtest_remove_if_exists(root_b_vibe)
+  wbtest_remove_if_exists(root_a)
+  wbtest_remove_if_exists(root_b)
+  wbtest_remove_if_exists(base)
 }
 
 ///|

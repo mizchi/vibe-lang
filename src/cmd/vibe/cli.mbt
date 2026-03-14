@@ -3454,7 +3454,14 @@ fn test_entry_batch_parent(path : String) -> String {
 }
 
 ///|
+fn test_entry_batch_root(path : String) -> String {
+  let resolved = @loader.resolve_entry_path(path)
+  @codebase.resolve_index_root(resolved)
+}
+
+///|
 struct TestEntryBatchUnit {
+  root : String
   parent : String
   paths : Array[String]
   weight : Int
@@ -3532,7 +3539,12 @@ fn compare_test_entry_batch_unit(
   } else if a_len < b_len {
     1
   } else {
-    a.parent.compare(b.parent)
+    let root_cmp = a.root.compare(b.root)
+    if root_cmp != 0 {
+      root_cmp
+    } else {
+      a.parent.compare(b.parent)
+    }
   }
 }
 
@@ -3568,6 +3580,83 @@ fn test_entry_batch_min_load_index(loads : Array[Int]) -> Int {
     }
   }
   min_index
+}
+
+///|
+fn test_entry_batch_min_same_root_index(
+  loads : Array[Int],
+  batch_roots : Array[Map[String, Bool]],
+  unit_root : String,
+) -> Int? {
+  let mut best_index : Int? = None
+  let mut best_load = 0
+  for i in 0..<loads.length() {
+    let load = loads[i]
+    if batch_roots[i].contains(unit_root) {
+      match best_index {
+        Some(_) =>
+          if load < best_load {
+            best_index = Some(i)
+            best_load = load
+          }
+        None => {
+          best_index = Some(i)
+          best_load = load
+        }
+      }
+    }
+  }
+  best_index
+}
+
+///|
+fn test_entry_batch_min_empty_index(
+  loads : Array[Int],
+  batch_roots : Array[Map[String, Bool]],
+) -> Int? {
+  let mut best_index : Int? = None
+  let mut best_load = 0
+  for i in 0..<loads.length() {
+    if batch_roots[i].length() == 0 {
+      let load = loads[i]
+      match best_index {
+        Some(_) =>
+          if load < best_load {
+            best_index = Some(i)
+            best_load = load
+          }
+        None => {
+          best_index = Some(i)
+          best_load = load
+        }
+      }
+    }
+  }
+  best_index
+}
+
+///|
+fn test_entry_batch_has_unassigned_other_root_after(
+  units : Array[TestEntryBatchUnit],
+  start_index : Int,
+  batch_roots : Array[Map[String, Bool]],
+  current_root : String,
+) -> Bool {
+  for i in start_index..<units.length() {
+    let root = units[i].root
+    if root != current_root {
+      let mut already_assigned = false
+      for roots in batch_roots {
+        if roots.contains(root) {
+          already_assigned = true
+        }
+      }
+      if not(already_assigned) {
+        return true
+      }
+    }
+  }
+  false
 }
 
 ///|
@@ -3706,6 +3795,7 @@ fn collect_test_entry_batch_units(
       Some(paths) => paths
       None => continue
     }
+    let root = test_entry_batch_root(parent_paths[0])
     sort_test_entry_paths_for_batching(parent_paths)
     let mut offset = 0
     while offset < parent_paths.length() {
@@ -3728,6 +3818,7 @@ fn collect_test_entry_batch_units(
         }
       }
       units.push(TestEntryBatchUnit::{
+        root,
         parent,
         weight: chunk_weight,
         paths: chunk,
@@ -3759,11 +3850,63 @@ fn split_test_entry_task_batches_with_weights(
   jobs : Int,
   weights : Map[String, Int],
 ) -> Array[Array[String]] {
-  let batches : Array[Array[String]] = []
-  for unit in collect_test_entry_batch_units(entry_paths, jobs, weights) {
-    batches.push(unit.paths)
+  let mut worker_count = jobs
+  if worker_count <= 0 {
+    worker_count = 1
   }
-  batches
+  if worker_count > entry_paths.length() {
+    worker_count = entry_paths.length()
+  }
+  let batches : Array[Array[String]] = []
+  let loads : Array[Int] = []
+  let batch_roots : Array[Map[String, Bool]] = []
+  for _ in 0..<worker_count {
+    batches.push([])
+    loads.push(0)
+    batch_roots.push({})
+  }
+  let units = collect_test_entry_batch_units(entry_paths, worker_count, weights)
+  for i, unit in units {
+    let same_root_index = test_entry_batch_min_same_root_index(
+      loads,
+      batch_roots,
+      unit.root,
+    )
+    let empty_index = test_entry_batch_min_empty_index(loads, batch_roots)
+    let batch_index = match same_root_index {
+      Some(index) =>
+        if test_entry_batch_has_unassigned_other_root_after(
+          units,
+          i + 1,
+          batch_roots,
+          unit.root,
+        ) {
+          index
+        } else {
+          match empty_index {
+            Some(empty) => empty
+            None => index
+          }
+        }
+      None =>
+        match empty_index {
+          Some(index) => index
+          None => test_entry_batch_min_load_index(loads)
+        }
+    }
+    for path in unit.paths {
+      batches[batch_index].push(path)
+    }
+    loads[batch_index] += unit.weight
+    batch_roots[batch_index][unit.root] = true
+  }
+  let compacted : Array[Array[String]] = []
+  for batch in batches {
+    if batch.length() > 0 {
+      compacted.push(batch)
+    }
+  }
+  compacted
 }
 
 ///|
@@ -3786,15 +3929,44 @@ fn split_test_entry_path_batches_with_weights(
   let units = collect_test_entry_batch_units(entry_paths, worker_count, weights)
 
   let loads : Array[Int] = []
+  let batch_roots : Array[Map[String, Bool]] = []
   for _ in 0..<worker_count {
     loads.push(0)
+    batch_roots.push({})
   }
-  for unit in units {
-    let batch_index = test_entry_batch_min_load_index(loads)
+  for i, unit in units {
+    let same_root_index = test_entry_batch_min_same_root_index(
+      loads,
+      batch_roots,
+      unit.root,
+    )
+    let empty_index = test_entry_batch_min_empty_index(loads, batch_roots)
+    let batch_index = match same_root_index {
+      Some(index) =>
+        if test_entry_batch_has_unassigned_other_root_after(
+          units,
+          i + 1,
+          batch_roots,
+          unit.root,
+        ) {
+          index
+        } else {
+          match empty_index {
+            Some(empty) => empty
+            None => index
+          }
+        }
+      None =>
+        match empty_index {
+          Some(index) => index
+          None => test_entry_batch_min_load_index(loads)
+        }
+    }
     for path in unit.paths {
       batches[batch_index].push(path)
     }
     loads[batch_index] += unit.weight
+    batch_roots[batch_index][unit.root] = true
   }
   batches
 }
