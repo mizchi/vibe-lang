@@ -1676,6 +1676,13 @@ fn emit_module_with_coverage(
       any_user_heap = true
     }
   }
+  // S4: Populate per-function heap requirement for call-site sync elimination
+  for i in 0..<funcs.length() {
+    match funcs[i].name {
+      Some(name) => ctx.fn_needs_heap[name] = func_needs_heap[i]
+      None => ()
+    }
+  }
   let mut run_need_heap = needs_heap_block(ctx, run_ast)
   // Check if top-level scope has ref cell variables
   let top_mut_captured = compute_mut_captured_for_block(

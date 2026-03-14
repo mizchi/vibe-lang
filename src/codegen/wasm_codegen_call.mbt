@@ -862,13 +862,18 @@ fn compile_call_user_fn(
         emit_i32_const_raw(buf, 0)
       }
   }
-  if ctx.heap_local >= 0 && ctx.use_heap_global {
+  // S4: Skip heap sync when callee is known to not use heap
+  let callee_heap = match ctx.fn_needs_heap.get(name) {
+    Some(false) => false
+    _ => true // conservative: unknown or true
+  }
+  if ctx.heap_local >= 0 && ctx.use_heap_global && callee_heap {
     emit_local_get(buf, ctx.heap_local)
     emit_global_set(buf, ctx.heap_global)
   }
   let idx = func_import_count(ctx) + fn_idx
   emit_call(buf, idx)
-  if ctx.heap_local >= 0 && ctx.use_heap_global {
+  if ctx.heap_local >= 0 && ctx.use_heap_global && callee_heap {
     emit_global_get(buf, ctx.heap_global)
     emit_local_set(buf, ctx.heap_local)
   }
