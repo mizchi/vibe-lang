@@ -48,25 +48,31 @@ fn compile_expr_ident(
             }
             None =>
               if ctx.enum_ctor_tags.contains(name) {
-                // Nullary enum constructor
-                let tag = match ctx.enum_ctor_tags.get(name) {
-                  Some(t) => t
-                  None => 0
+                // Nullary enum constructor — use singleton from data section
+                match ctx.enum_ctor_singletons.get(name) {
+                  Some(tagged_ptr) => emit_i64_const_raw(buf, tagged_ptr)
+                  None => {
+                    // Fallback for unregistered singletons (shouldn't happen)
+                    let tag = match ctx.enum_ctor_tags.get(name) {
+                      Some(t) => t
+                      None => 0
+                    }
+                    require_heap(ctx)
+                    let size = align4(8)
+                    let obj_local = alloc_temp_local(ctx)
+                    emit_heap_alloc(ctx, buf, size, obj_local)
+                    emit_local_get(buf, obj_local)
+                    emit_i32_const_raw(buf, obj_enum)
+                    emit_i32_store(buf, 0)
+                    emit_local_get(buf, obj_local)
+                    emit_i32_const_raw(buf, tag)
+                    emit_i32_store(buf, 4)
+                    emit_local_get(buf, obj_local)
+                    emit_i64_extend_i32_u(buf)
+                    emit_i64_const_raw(buf, tag_obj.to_int64())
+                    emit_i64_or(buf)
+                  }
                 }
-                require_heap(ctx)
-                let size = align4(8)
-                let obj_local = alloc_temp_local(ctx)
-                emit_heap_alloc(ctx, buf, size, obj_local)
-                emit_local_get(buf, obj_local)
-                emit_i32_const_raw(buf, obj_enum)
-                emit_i32_store(buf, 0)
-                emit_local_get(buf, obj_local)
-                emit_i32_const_raw(buf, tag)
-                emit_i32_store(buf, 4)
-                emit_local_get(buf, obj_local)
-                emit_i64_extend_i32_u(buf)
-                emit_i64_const_raw(buf, tag_obj.to_int64())
-                emit_i64_or(buf)
               } else {
                 raise WasmGenError::UnknownName(name)
               }

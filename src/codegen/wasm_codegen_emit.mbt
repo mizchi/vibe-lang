@@ -155,6 +155,19 @@ fn emit_call_indirect(buf : ByteBuf, type_idx : Int) -> Unit {
 }
 
 ///|
+fn emit_return_call(buf : ByteBuf, idx : Int) -> Unit {
+  buf.push((18).to_byte()) // return_call = 0x12
+  write_u32_leb(buf, idx)
+}
+
+///|
+fn emit_return_call_indirect(buf : ByteBuf, type_idx : Int) -> Unit {
+  buf.push((19).to_byte()) // return_call_indirect = 0x13
+  write_u32_leb(buf, type_idx)
+  buf.push((0).to_byte()) // table index
+}
+
+///|
 fn emit_table_get(buf : ByteBuf, table_idx : Int) -> Unit {
   buf.push((37).to_byte()) // table.get = 0x25
   write_u32_leb(buf, table_idx)
@@ -234,6 +247,23 @@ fn emit_br(buf : ByteBuf, label_idx : Int) -> Unit {
 fn emit_br_if(buf : ByteBuf, label_idx : Int) -> Unit {
   buf.push((13).to_byte()) // br_if = 0x0d
   write_u32_leb(buf, label_idx)
+}
+
+///|
+/// Emit br_table instruction (multi-way branch)
+/// labels: target label indices for each case (0..N-1)
+/// default_label: fallback label index
+fn emit_br_table(
+  buf : ByteBuf,
+  labels : Array[Int],
+  default_label : Int,
+) -> Unit {
+  buf.push((14).to_byte()) // br_table = 0x0e
+  write_u32_leb(buf, labels.length())
+  for label in labels {
+    write_u32_leb(buf, label)
+  }
+  write_u32_leb(buf, default_label)
 }
 
 ///|

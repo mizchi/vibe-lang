@@ -19,21 +19,27 @@ fn compile_call_enum_ctor_by_name(
   }
   let pos_args = extract_positional_exprs(args, name)
   if arity == 0 {
-    // Nullary ctor: heap object with just type + tag
-    require_heap(ctx)
-    let size = align4(8)
-    let obj_local = alloc_temp_local(ctx)
-    emit_heap_alloc(ctx, buf, size, obj_local)
-    emit_local_get(buf, obj_local)
-    emit_i32_const_raw(buf, obj_enum)
-    emit_i32_store(buf, 0)
-    emit_local_get(buf, obj_local)
-    emit_i32_const_raw(buf, tag)
-    emit_i32_store(buf, 4)
-    emit_local_get(buf, obj_local)
-    emit_i64_extend_i32_u(buf)
-    emit_i64_const_raw(buf, tag_obj.to_int64())
-    emit_i64_or(buf)
+    // Nullary ctor: use singleton from data section
+    match ctx.enum_ctor_singletons.get(name) {
+      Some(tagged_ptr) => emit_i64_const_raw(buf, tagged_ptr)
+      None => {
+        // Fallback for unregistered singletons
+        require_heap(ctx)
+        let size = align4(8)
+        let obj_local = alloc_temp_local(ctx)
+        emit_heap_alloc(ctx, buf, size, obj_local)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, obj_enum)
+        emit_i32_store(buf, 0)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, tag)
+        emit_i32_store(buf, 4)
+        emit_local_get(buf, obj_local)
+        emit_i64_extend_i32_u(buf)
+        emit_i64_const_raw(buf, tag_obj.to_int64())
+        emit_i64_or(buf)
+      }
+    }
   } else {
     // Ctor with args: heap object with type + tag + payload
     require_heap(ctx)

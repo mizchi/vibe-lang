@@ -618,6 +618,13 @@ fn compile_match_chain(
     emit_i64_const_tagged(buf, 0L)
     return
   }
+  // Try optimized enum match: tag_obj + obj_enum check once, then ctor_tag-only chain
+  if start == 0 && arms.length() >= 3 {
+    match try_compile_match_br_table(ctx, buf, scrut_idx, arms) {
+      Some(_) => return
+      None => ()
+    }
+  }
   let arm = arms[start]
   let saved = ctx.locals.copy()
   let saved_kinds = ctx.local_kinds.copy()
@@ -636,6 +643,215 @@ fn compile_match_chain(
   )
   restore_locals(ctx, saved)
   restore_local_kinds(ctx, saved_kinds)
+}
+
+///|
+/// Ctor arm info for optimized enum match
+priv struct BrTableCtorArm {
+  arm : @core.MatchArm
+  tag : Int
+  args : Array[@core.Pat]
+  name : String // ctor name for arg kind lookup
+  arm_index : Int // index in original arms array
+}
+
+///|
+/// Check if all arms are Ctor patterns (with optional trailing Wildcard/Bind default).
+/// Also checks that ctor arg patterns are only Bind or Wildcard (no nested patterns).
+fn analyze_enum_match_arms(
+  ctx : CodegenCtx,
+  arms : Array[@core.MatchArm],
+) -> (Array[BrTableCtorArm], @core.MatchArm?)? {
+  let ctor_arms : Array[BrTableCtorArm] = []
+  let mut default_arm : @core.MatchArm? = None
+  for i, arm in arms {
+    match arm.pat {
+      @core.Pat::Ctor(name~, args~, ..) => {
+        // Guard conditions prevent br_table optimization
+        match arm.cond {
+          Some(_) => return None
+          None => ()
+        }
+        // Check ctor args are only Bind or Wildcard
+        for arg in args {
+          match arg {
+            @core.Pat::Bind(..) | @core.Pat::Wildcard(..) => ()
+            _ => return None
+          }
+        }
+        match ctx.enum_ctor_tags.get(name) {
+          Some(tag) =>
+            ctor_arms.push(BrTableCtorArm::{
+              arm,
+              tag,
+              args,
+              name,
+              arm_index: i,
+            })
+          None => return None
+        }
+      }
+      @core.Pat::Wildcard(..) | @core.Pat::Bind(..) => {
+        default_arm = Some(arm)
+        break
+      }
+      _ => return None
+    }
+  }
+  if ctor_arms.length() < 2 {
+    return None
+  }
+  Some((ctor_arms, default_arm))
+}
+
+///|
+/// Optimized enum match: tag_obj + obj_enum check once, then ctor_tag-only if-chain.
+/// Returns Some(()) on success, None if not eligible.
+fn try_compile_match_br_table(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  scrut_idx : Int,
+  arms : Array[@core.MatchArm],
+) -> Unit? raise WasmGenError {
+  let result = analyze_enum_match_arms(ctx, arms)
+  let (ctor_arms, default_arm) = match result {
+    Some(v) => v
+    None => return None
+  }
+  // Cache raw pointer once
+  let raw_ptr = emit_untag_ptr_cached(ctx, buf, scrut_idx)
+  // Check tag_obj ONCE
+  emit_tag_obj_check(buf, scrut_idx)
+  buf.push((4).to_byte()) // if
+  buf.push((126).to_byte()) // result i64
+  adjust_loop_offsets(ctx, 1)
+  // Check obj_enum ONCE
+  emit_load_obj_type_raw(buf, raw_ptr)
+  emit_i32_const_raw(buf, obj_enum)
+  emit_i32_eq(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((126).to_byte()) // result i64
+  adjust_loop_offsets(ctx, 1)
+  // Emit ctor_tag-only if-chain
+  compile_enum_tag_chain(
+    ctx, buf, raw_ptr, scrut_idx, ctor_arms, 0, default_arm, arms,
+  )
+  buf.push((5).to_byte()) // else (not obj_enum)
+  compile_enum_default_body(ctx, buf, scrut_idx, default_arm, arms)
+  buf.push((11).to_byte()) // end
+  adjust_loop_offsets(ctx, -1)
+  buf.push((5).to_byte()) // else (not tag_obj)
+  compile_enum_default_body(ctx, buf, scrut_idx, default_arm, arms)
+  buf.push((11).to_byte()) // end
+  adjust_loop_offsets(ctx, -1)
+  Some(())
+}
+
+///|
+/// Emit ctor_tag-only if-chain (tag_obj + obj_enum already checked)
+fn compile_enum_tag_chain(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  raw_ptr : Int,
+  scrut_idx : Int,
+  ctor_arms : Array[BrTableCtorArm],
+  index : Int,
+  default_arm : @core.MatchArm?,
+  all_arms : Array[@core.MatchArm],
+) -> Unit raise WasmGenError {
+  if index >= ctor_arms.length() {
+    compile_enum_default_body(ctx, buf, scrut_idx, default_arm, all_arms)
+    return
+  }
+  let ca = ctor_arms[index]
+  let saved = ctx.locals.copy()
+  let saved_kinds = ctx.local_kinds.copy()
+  // Check ctor_tag only (3 instructions instead of ~11)
+  emit_load_ctor_tag_raw(buf, raw_ptr)
+  emit_i32_const_raw(buf, ca.tag)
+  emit_i32_eq(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((126).to_byte()) // result i64
+  adjust_loop_offsets(ctx, 1)
+  // Bind args and compile body
+  let bindings : Map[String, Int] = {}
+  if ca.args.length() == 0 {
+    compile_guarded_arm_with_bindings(
+      ctx,
+      buf,
+      scrut_idx,
+      all_arms,
+      ca.arm_index,
+      ca.arm,
+      bindings,
+    )
+  } else {
+    compile_ctor_args_cont(
+      ctx,
+      buf,
+      raw_ptr,
+      ca.args,
+      0,
+      ca.name,
+      PatCont::Arm,
+      scrut_idx,
+      all_arms,
+      ca.arm_index,
+      ca.arm,
+      bindings,
+    )
+  }
+  buf.push((5).to_byte()) // else
+  restore_locals(ctx, saved)
+  restore_local_kinds(ctx, saved_kinds)
+  // Next arm
+  compile_enum_tag_chain(
+    ctx,
+    buf,
+    raw_ptr,
+    scrut_idx,
+    ctor_arms,
+    index + 1,
+    default_arm,
+    all_arms,
+  )
+  buf.push((11).to_byte()) // end
+  adjust_loop_offsets(ctx, -1)
+}
+
+///|
+/// Emit default arm body or zero fallback
+fn compile_enum_default_body(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  scrut_idx : Int,
+  default_arm : @core.MatchArm?,
+  all_arms : Array[@core.MatchArm],
+) -> Unit raise WasmGenError {
+  match default_arm {
+    Some(arm) => {
+      let saved = ctx.locals.copy()
+      let saved_kinds = ctx.local_kinds.copy()
+      let bindings : Map[String, Int] = {}
+      // If it's a Bind pattern, bind the scrutinee
+      match arm.pat {
+        @core.Pat::Bind(name~, ..) => {
+          let idx = bind_local(ctx, name)
+          emit_local_get(buf, scrut_idx)
+          emit_local_set(buf, idx)
+          bindings[name] = idx
+        }
+        _ => ()
+      }
+      let arm_index = all_arms.length() - 1
+      compile_guarded_arm_with_bindings(
+        ctx, buf, scrut_idx, all_arms, arm_index, arm, bindings,
+      )
+      restore_locals(ctx, saved)
+      restore_local_kinds(ctx, saved_kinds)
+    }
+    None => emit_i64_const_tagged(buf, 0L)
+  }
 }
 
 ///|

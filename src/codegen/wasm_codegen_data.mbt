@@ -356,6 +356,14 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
           arg_kinds.push(value_kind_from_type(ctx, arg))
         }
         ctx.enum_ctor_arg_kinds[ctor.name] = arg_kinds
+        // Register singleton for 0-arg enum constructors
+        if ctor.args.length() == 0 {
+          let offset = ctx.strings.intern_enum_singleton(
+            ctor.name,
+            ctx.enum_ctor_tags[ctor.name],
+          )
+          ctx.enum_ctor_singletons[ctor.name] = tag_ptr64(offset, tag_obj)
+        }
       }
     }
     @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
@@ -1078,10 +1086,16 @@ fn compile_func_body(
     ctx.local_types.push(ValueKind::I32)
     ctx.heap_synced = true
   }
+  // Tail call optimization: only enabled when explicitly requested
+  // (wite optimizer and some wasm-opt versions don't support return_call)
+  if ctx.enable_tail_call {
+    ctx.is_tail_position = true
+  }
   match multivalue_kinds {
     Some(kinds) => compile_block_multivalue(ctx, instr, ast, kinds)
     None => compile_block_expr(ctx, instr, ast)
   }
+  ctx.is_tail_position = false
   if ctx.need_heap && ctx.use_heap_global {
     emit_local_get(instr, ctx.heap_local)
     emit_global_set(instr, ctx.heap_global)

@@ -464,6 +464,15 @@ fn compile_stmt(
           }
           ctx.enum_ctor_arg_kinds[ctor.name] = arg_kinds
         }
+        // Register singleton for 0-arg enum constructors
+        if ctor.args.length() == 0 &&
+          not(ctx.enum_ctor_singletons.contains(ctor.name)) {
+          let offset = ctx.strings.intern_enum_singleton(
+            ctor.name,
+            ctx.enum_ctor_tags[ctor.name],
+          )
+          ctx.enum_ctor_singletons[ctor.name] = tag_ptr64(offset, tag_obj)
+        }
       }
       if is_last {
         emit_i64_const_tagged(buf, 0L)
@@ -480,6 +489,8 @@ fn compile_stmt(
     }
     @core.Stmt::Expr(expr~, span~) => {
       let _ = span
+      // Tail position propagates only for the last expression in a block
+      // compile_expr will save/reset is_tail_position itself
       compile_expr(ctx, buf, expr)
       if not(is_last) {
         emit_drop(buf)

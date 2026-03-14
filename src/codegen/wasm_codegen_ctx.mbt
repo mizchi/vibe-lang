@@ -22,6 +22,8 @@ priv struct CodegenCtx {
   mut next_ctor_tag : Int
   enum_ctor_arities : Map[String, Int]
   enum_ctor_arg_kinds : Map[String, Array[ValueKind]]
+  enum_ctor_singletons : Map[String, Int64] // 0-arg ctor name -> precomputed tagged ptr
+  mut is_tail_position : Bool // true when compiling tail-position expression
   mut fn_local_sigs : Map[String, FuncSig]
   mut fn_sig_type_indices : Map[String, Int]
   mut fn_sig_order : Array[FuncSig]
@@ -106,6 +108,8 @@ priv struct CodegenCtx {
   exported_fn_env_globals : Map[String, Int]
   // S8: heap_synced tracks whether heap_local == heap_global
   mut heap_synced : Bool
+  // Tail call optimization (return_call / return_call_indirect)
+  enable_tail_call : Bool
 }
 
 ///|
@@ -128,7 +132,7 @@ fn CodegenCtx::new(
   enum_ctor_arities["Some"] = 1
   enum_ctor_arg_kinds["None"] = []
   enum_ctor_arg_kinds["Some"] = [ValueKind::I32]
-  {
+  let ctx : CodegenCtx = {
     locals: {},
     local_kinds: {},
     local_types: [],
@@ -150,6 +154,8 @@ fn CodegenCtx::new(
     next_ctor_tag: 2,
     enum_ctor_arities,
     enum_ctor_arg_kinds,
+    enum_ctor_singletons: {},
+    is_tail_position: false,
     fn_local_sigs: {},
     fn_sig_type_indices: {},
     fn_sig_order: [],
@@ -230,7 +236,12 @@ fn CodegenCtx::new(
     // Exported closures env globals
     exported_fn_env_globals: {},
     heap_synced: false,
+    enable_tail_call: false,
   }
+  // Register builtin None as singleton (strings is now initialized)
+  let none_offset = ctx.strings.intern_enum_singleton("None", 0)
+  ctx.enum_ctor_singletons["None"] = tag_ptr64(none_offset, tag_obj)
+  ctx
 }
 
 ///|
