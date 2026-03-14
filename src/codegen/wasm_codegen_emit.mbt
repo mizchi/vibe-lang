@@ -294,6 +294,11 @@ fn emit_i32_mul(buf : ByteBuf) -> Unit {
 }
 
 ///|
+fn emit_i32_shl(buf : ByteBuf) -> Unit {
+  buf.push((116).to_byte()) // i32.shl = 0x74
+}
+
+///|
 fn emit_i32_div_s(buf : ByteBuf) -> Unit {
   buf.push((109).to_byte())
 }
@@ -822,6 +827,17 @@ fn emit_memory_copy(buf : ByteBuf) -> Unit {
   write_u32_leb(buf, 10) // memory.copy
   buf.push((0).to_byte()) // src memory 0
   buf.push((0).to_byte()) // dst memory 0
+}
+
+///|
+/// Convert i32 comparison result (0/1) on stack to tagged i64 bool.
+/// Replaces the 5-instruction pattern: extend_i32_s, const 2, shl, const tag_bool, or
+fn emit_tag_bool_from_i32(buf : ByteBuf) -> Unit {
+  emit_i64_extend_i32_s(buf)
+  emit_i64_const_raw(buf, 2L)
+  emit_i64_shl(buf)
+  emit_i64_const_raw(buf, tag_bool.to_int64())
+  emit_i64_or(buf)
 }
 
 ///|

@@ -100,6 +100,8 @@ priv struct CodegenCtx {
   fn_closure_capture_is_ref_cell : Map[String, Array[Bool]]
   // Cache: scrutinee local → untagged raw pointer local (within match chains)
   mut cached_untag_ptrs : Map[Int, Int]
+  // Cache: raw_ptr local → obj_type local (within match chains)
+  mut cached_obj_types : Map[Int, Int]
   // Constant values inlined at use sites (pre-tagged i64, skip local allocation)
   mut const_i64_values : Map[String, Int64]
   // Force cabi_realloc export for component string lift
@@ -229,6 +231,7 @@ fn CodegenCtx::new(
     fn_closure_capture_is_ref_cell: {},
     // Untag pointer cache
     cached_untag_ptrs: {},
+    cached_obj_types: {},
     // Constant values (pre-tagged i64)
     const_i64_values: {},
     // Force cabi_realloc export

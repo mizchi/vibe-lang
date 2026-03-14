@@ -74,12 +74,7 @@ fn compile_i32_cmp_tagged(
   compile_expr_i32(ctx, buf, left)
   compile_expr_i32(ctx, buf, right)
   emit_cmp(buf)
-  // Convert i32 comparison result to tagged i64 bool
-  emit_i64_extend_i32_s(buf)
-  emit_i64_const_raw(buf, 2L)
-  emit_i64_shl(buf)
-  emit_i64_const_raw(buf, tag_bool.to_int64())
-  emit_i64_or(buf)
+  emit_tag_bool_from_i32(buf)
 }
 
 ///|
@@ -595,34 +590,19 @@ fn compile_binary_cmp_op(
       emit_local_get(buf, right_local)
       emit_i64_cmp(buf)
       buf.push((11).to_byte()) // end if
-      // Convert i32 comparison result to tagged i64 bool
-      emit_i64_extend_i32_s(buf)
-      emit_i64_const_raw(buf, 2L)
-      emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_bool.to_int64())
-      emit_i64_or(buf)
+      emit_tag_bool_from_i32(buf)
     }
     ValueKind::BoxedF32 => {
       emit_unbox_f32_expr(ctx, buf, pos_args[0])
       emit_unbox_f32_expr(ctx, buf, pos_args[1])
       emit_f32(buf)
-      // Convert i32 comparison result to tagged i64 bool
-      emit_i64_extend_i32_s(buf)
-      emit_i64_const_raw(buf, 2L)
-      emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_bool.to_int64())
-      emit_i64_or(buf)
+      emit_tag_bool_from_i32(buf)
     }
     ValueKind::BoxedF64 => {
       emit_unbox_f64_expr(ctx, buf, pos_args[0])
       emit_unbox_f64_expr(ctx, buf, pos_args[1])
       emit_f64(buf)
-      // Convert i32 comparison result to tagged i64 bool
-      emit_i64_extend_i32_s(buf)
-      emit_i64_const_raw(buf, 2L)
-      emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_bool.to_int64())
-      emit_i64_or(buf)
+      emit_tag_bool_from_i32(buf)
     }
     _ => raise WasmGenError::Unsupported("numeric kind")
   }

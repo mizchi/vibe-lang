@@ -227,11 +227,13 @@ fn compile_pat_match(
       }
       // Cache raw pointer for repeated use
       let raw_ptr = emit_untag_ptr_cached(ctx, buf, value_idx)
-      // Short-circuit header check: first verify tag_obj, then load memory
+      // Cache obj_type for repeated match arms on same scrutinee
+      let type_local = emit_load_obj_type_cached(ctx, buf, raw_ptr)
+      // Short-circuit header check: first verify tag_obj, then check cached type
       emit_tag_obj_check(buf, value_idx)
       buf.push((4).to_byte()) // if
       buf.push((127).to_byte()) // result i32
-      emit_load_obj_type_raw(buf, raw_ptr)
+      emit_local_get(buf, type_local)
       emit_i32_const_raw(buf, obj_enum)
       emit_i32_eq(buf)
       emit_load_ctor_tag_raw(buf, raw_ptr)
@@ -265,11 +267,13 @@ fn compile_pat_match(
       let _ = span
       // Cache raw pointer for repeated use
       let raw_ptr = emit_untag_ptr_cached(ctx, buf, value_idx)
-      // Short-circuit header check: first verify tag_obj, then load memory
+      // Cache obj_type for repeated match arms on same scrutinee
+      let type_local = emit_load_obj_type_cached(ctx, buf, raw_ptr)
+      // Short-circuit header check: first verify tag_obj, then check cached type
       emit_tag_obj_check(buf, value_idx)
       buf.push((4).to_byte()) // if
       buf.push((127).to_byte()) // result i32
-      emit_load_obj_type_raw(buf, raw_ptr)
+      emit_local_get(buf, type_local)
       emit_i32_const_raw(buf, obj_tuple)
       emit_i32_eq(buf)
       emit_load_obj_len_raw(buf, raw_ptr)
@@ -296,11 +300,13 @@ fn compile_pat_match(
       let ordered = sort_record_fields_pat(fields)
       // Cache raw pointer for repeated use
       let raw_ptr = emit_untag_ptr_cached(ctx, buf, value_idx)
-      // Short-circuit header check: first verify tag_obj, then load memory
+      // Cache obj_type for repeated match arms on same scrutinee
+      let type_local = emit_load_obj_type_cached(ctx, buf, raw_ptr)
+      // Short-circuit header check: first verify tag_obj, then check cached type
       emit_tag_obj_check(buf, value_idx)
       buf.push((4).to_byte()) // if
       buf.push((127).to_byte()) // result i32
-      emit_load_obj_type_raw(buf, raw_ptr)
+      emit_local_get(buf, type_local)
       emit_i32_const_raw(buf, obj_record)
       emit_i32_eq(buf)
       emit_load_obj_len_raw(buf, raw_ptr)
@@ -725,8 +731,9 @@ fn try_compile_match_br_table(
   buf.push((4).to_byte()) // if
   buf.push((126).to_byte()) // result i64
   adjust_loop_offsets(ctx, 1)
-  // Check obj_enum ONCE
-  emit_load_obj_type_raw(buf, raw_ptr)
+  // Check obj_enum ONCE (cached for reuse)
+  let type_local = emit_load_obj_type_cached(ctx, buf, raw_ptr)
+  emit_local_get(buf, type_local)
   emit_i32_const_raw(buf, obj_enum)
   emit_i32_eq(buf)
   buf.push((4).to_byte()) // if
@@ -977,6 +984,25 @@ fn emit_load_obj_type(buf : ByteBuf, scrut_idx : Int) -> Unit {
 fn emit_load_obj_type_raw(buf : ByteBuf, raw_ptr_idx : Int) -> Unit {
   emit_local_get(buf, raw_ptr_idx)
   emit_i32_load(buf, 0)
+}
+
+///|
+/// Load object type with caching — reuses the same local across match arms
+fn emit_load_obj_type_cached(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  raw_ptr_idx : Int,
+) -> Int {
+  match ctx.cached_obj_types.get(raw_ptr_idx) {
+    Some(existing) => existing
+    None => {
+      let type_local = alloc_temp_local(ctx)
+      emit_load_obj_type_raw(buf, raw_ptr_idx)
+      emit_local_set(buf, type_local)
+      ctx.cached_obj_types[raw_ptr_idx] = type_local
+      type_local
+    }
+  }
 }
 
 ///|

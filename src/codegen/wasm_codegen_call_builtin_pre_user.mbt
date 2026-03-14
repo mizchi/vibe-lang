@@ -2393,11 +2393,7 @@ fn compile_call_builtin_pre_user_inner(
         compile_expr_ref(ctx, buf, pos_args[0])
         compile_expr_ref(ctx, buf, pos_args[1])
         emit_call(buf, import_index_js_equals(ctx))
-        emit_i64_extend_i32_s(buf)
-        emit_i64_const_raw(buf, 2L)
-        emit_i64_shl(buf)
-        emit_i64_const_raw(buf, tag_bool.to_int64())
-        emit_i64_or(buf)
+        emit_tag_bool_from_i32(buf)
       } else {
         let left_ptr_local = alloc_temp_local(ctx)
         let right_ptr_local = alloc_temp_local(ctx)
@@ -2474,11 +2470,7 @@ fn compile_call_builtin_pre_user_inner(
         emit_i32_const_raw(buf, 0)
         buf.push((11).to_byte()) // end if
         buf.push((11).to_byte()) // end if
-        emit_i64_extend_i32_s(buf)
-        emit_i64_const_raw(buf, 2L)
-        emit_i64_shl(buf)
-        emit_i64_const_raw(buf, tag_bool.to_int64())
-        emit_i64_or(buf)
+        emit_tag_bool_from_i32(buf)
       }
     }
     "String::index_of" => {
@@ -2720,11 +2712,7 @@ fn compile_call_builtin_pre_user_inner(
         emit_end(buf) // end outer block
         // tag result as bool
         emit_local_get(buf, result_local)
-        emit_i64_extend_i32_s(buf)
-        emit_i64_const_raw(buf, 2L)
-        emit_i64_shl(buf)
-        emit_i64_const_raw(buf, tag_bool.to_int64())
-        emit_i64_or(buf)
+        emit_tag_bool_from_i32(buf)
       }
     }
     "String::starts_with" if not(is_user_fn) => {
@@ -2804,11 +2792,7 @@ fn compile_call_builtin_pre_user_inner(
         emit_end(buf)
         buf.push((11).to_byte()) // end if
         emit_local_get(buf, result_local)
-        emit_i64_extend_i32_s(buf)
-        emit_i64_const_raw(buf, 2L)
-        emit_i64_shl(buf)
-        emit_i64_const_raw(buf, tag_bool.to_int64())
-        emit_i64_or(buf)
+        emit_tag_bool_from_i32(buf)
       }
     }
     "String::ends_with" if not(is_user_fn) => {
@@ -2895,11 +2879,7 @@ fn compile_call_builtin_pre_user_inner(
         emit_end(buf)
         buf.push((11).to_byte()) // end if
         emit_local_get(buf, result_local)
-        emit_i64_extend_i32_s(buf)
-        emit_i64_const_raw(buf, 2L)
-        emit_i64_shl(buf)
-        emit_i64_const_raw(buf, tag_bool.to_int64())
-        emit_i64_or(buf)
+        emit_tag_bool_from_i32(buf)
       }
     }
     "String::last_index_of" if not(is_user_fn) => {
@@ -4431,8 +4411,8 @@ fn compile_call_builtin_pre_user_inner(
           buf.push((64).to_byte()) // void
           emit_local_get(buf, ptr_local)
           emit_local_get(buf, loop_i)
-          emit_i32_const_raw(buf, 8)
-          emit_i32_mul(buf)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
           emit_i32_add(buf)
           emit_i32_load(buf, 8) // slot index
           emit_table_get(buf, ctx.extern_table_index)
@@ -4458,8 +4438,8 @@ fn compile_call_builtin_pre_user_inner(
           buf.push((64).to_byte()) // void
           emit_local_get(buf, ptr_local)
           emit_local_get(buf, found_local)
-          emit_i32_const_raw(buf, 8)
-          emit_i32_mul(buf)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
           emit_i32_add(buf)
           compile_expr_i32(ctx, buf, pos_args[2])
           emit_i32_wrap_i64(buf)
@@ -4468,8 +4448,8 @@ fn compile_call_builtin_pre_user_inner(
           let slot = ctx.extern_table_next_slot
           ctx.extern_table_next_slot += 1
           emit_local_get(buf, len_local)
-          emit_i32_const_raw(buf, 8)
-          emit_i32_mul(buf)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
           emit_local_set(buf, offset_local)
           emit_local_get(buf, ptr_local)
           emit_local_get(buf, offset_local)
@@ -4505,8 +4485,8 @@ fn compile_call_builtin_pre_user_inner(
           buf.push((64).to_byte()) // void
           emit_local_get(buf, ptr_local)
           emit_local_get(buf, loop_i)
-          emit_i32_const_raw(buf, 8)
-          emit_i32_mul(buf)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
           emit_i32_add(buf)
           emit_i32_load(buf, 8) // key
           emit_local_get(buf, key_local)
@@ -4531,16 +4511,16 @@ fn compile_call_builtin_pre_user_inner(
           buf.push((64).to_byte()) // void
           emit_local_get(buf, ptr_local)
           emit_local_get(buf, found_local)
-          emit_i32_const_raw(buf, 8)
-          emit_i32_mul(buf)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
           emit_i32_add(buf)
           compile_expr_i32(ctx, buf, pos_args[2])
           emit_i32_wrap_i64(buf)
           emit_i32_store(buf, 12)
           buf.push((5).to_byte()) // else
           emit_local_get(buf, len_local)
-          emit_i32_const_raw(buf, 8)
-          emit_i32_mul(buf)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
           emit_local_set(buf, offset_local)
           emit_local_get(buf, ptr_local)
           emit_local_get(buf, offset_local)
@@ -4575,8 +4555,8 @@ fn compile_call_builtin_pre_user_inner(
         buf.push((64).to_byte()) // void
         emit_local_get(buf, ptr_local)
         emit_local_get(buf, loop_i)
-        emit_i32_const_raw(buf, 8)
-        emit_i32_mul(buf)
+        emit_i32_const_raw(buf, 3)
+        emit_i32_shl(buf)
         emit_i32_add(buf)
         emit_i32_load(buf, 8) // key
         emit_local_set(buf, entry_key_local)
@@ -4601,16 +4581,16 @@ fn compile_call_builtin_pre_user_inner(
         buf.push((64).to_byte()) // void
         emit_local_get(buf, ptr_local)
         emit_local_get(buf, found_local)
-        emit_i32_const_raw(buf, 8)
-        emit_i32_mul(buf)
+        emit_i32_const_raw(buf, 3)
+        emit_i32_shl(buf)
         emit_i32_add(buf)
         compile_expr_i32(ctx, buf, pos_args[2])
         emit_i32_wrap_i64(buf)
         emit_i32_store(buf, 12)
         buf.push((5).to_byte()) // else
         emit_local_get(buf, len_local)
-        emit_i32_const_raw(buf, 8)
-        emit_i32_mul(buf)
+        emit_i32_const_raw(buf, 3)
+        emit_i32_shl(buf)
         emit_local_set(buf, offset_local)
         emit_local_get(buf, ptr_local)
         emit_local_get(buf, offset_local)
@@ -4678,8 +4658,8 @@ fn compile_call_builtin_pre_user_inner(
           buf.push((64).to_byte()) // void
           emit_local_get(buf, map_ptr)
           emit_local_get(buf, loop_i)
-          emit_i32_const_raw(buf, 8)
-          emit_i32_mul(buf)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
           emit_i32_add(buf)
           emit_i32_load(buf, 8) // slot index
           emit_table_get(buf, ctx.extern_table_index)
@@ -4712,8 +4692,8 @@ fn compile_call_builtin_pre_user_inner(
           buf.push((64).to_byte()) // void
           emit_local_get(buf, map_ptr)
           emit_local_get(buf, loop_i)
-          emit_i32_const_raw(buf, 8)
-          emit_i32_mul(buf)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
           emit_i32_add(buf)
           emit_i32_load(buf, 8) // key
           emit_local_get(buf, key_local)
@@ -4748,8 +4728,8 @@ fn compile_call_builtin_pre_user_inner(
         buf.push((64).to_byte()) // void
         emit_local_get(buf, map_ptr)
         emit_local_get(buf, loop_i)
-        emit_i32_const_raw(buf, 8)
-        emit_i32_mul(buf)
+        emit_i32_const_raw(buf, 3)
+        emit_i32_shl(buf)
         emit_i32_add(buf)
         emit_i32_load(buf, 8) // key
         emit_local_set(buf, entry_key_local)
@@ -4770,11 +4750,7 @@ fn compile_call_builtin_pre_user_inner(
       }
       // convert found_local (i32: 0 or 1) to tagged bool
       emit_local_get(buf, found_local)
-      emit_i64_extend_i32_s(buf)
-      emit_i64_const_raw(buf, 2L)
-      emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_bool.to_int64())
-      emit_i64_or(buf)
+      emit_tag_bool_from_i32(buf)
     }
     "Map::keys" => {
       // map_keys(map) -> allocate new array with keys from map
@@ -4825,8 +4801,8 @@ fn compile_call_builtin_pre_user_inner(
       // load key from map
       emit_local_get(buf, map_ptr)
       emit_local_get(buf, loop_i)
-      emit_i32_const_raw(buf, 8)
-      emit_i32_mul(buf)
+      emit_i32_const_raw(buf, 3)
+      emit_i32_shl(buf)
       emit_i32_add(buf)
       emit_i32_load(buf, 8)
       if not(ctx.use_js_strings) {
@@ -4894,8 +4870,8 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_add(buf)
       emit_local_get(buf, map_ptr)
       emit_local_get(buf, loop_i)
-      emit_i32_const_raw(buf, 8)
-      emit_i32_mul(buf)
+      emit_i32_const_raw(buf, 3)
+      emit_i32_shl(buf)
       emit_i32_add(buf)
       emit_i32_load(buf, 12) // value at key_offset + 4
       emit_i32_store(buf, 8)
@@ -5049,8 +5025,8 @@ fn compile_call_builtin_pre_user_inner(
           // load name_ptr at obj_ptr + loop_i * 8 + 8
           emit_local_get(buf, obj_ptr)
           emit_local_get(buf, loop_i)
-          emit_i32_const_raw(buf, 8)
-          emit_i32_mul(buf)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
           emit_i32_add(buf)
           emit_i32_load(buf, 8) // name_ptr
           emit_i32_const_raw(buf, field_ptr)
@@ -5060,8 +5036,8 @@ fn compile_call_builtin_pre_user_inner(
           // load value at obj_ptr + loop_i * 8 + 12
           emit_local_get(buf, obj_ptr)
           emit_local_get(buf, loop_i)
-          emit_i32_const_raw(buf, 8)
-          emit_i32_mul(buf)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
           emit_i32_add(buf)
           emit_i32_load(buf, 12) // value
           emit_local_set(buf, result_local)
@@ -5169,8 +5145,8 @@ fn compile_call_builtin_pre_user_inner(
           // load stored key from extern table
           emit_local_get(buf, map_ptr)
           emit_local_get(buf, loop_i)
-          emit_i32_const_raw(buf, 8)
-          emit_i32_mul(buf)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
           emit_i32_add(buf)
           emit_i32_load(buf, 8) // slot index
           emit_table_get(buf, ctx.extern_table_index)
@@ -5181,8 +5157,8 @@ fn compile_call_builtin_pre_user_inner(
           // found: load value
           emit_local_get(buf, map_ptr)
           emit_local_get(buf, loop_i)
-          emit_i32_const_raw(buf, 8)
-          emit_i32_mul(buf)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
           emit_i32_add(buf)
           emit_i32_load(buf, 12) // value at key_offset + 4
           emit_local_set(buf, result_local)
@@ -5213,8 +5189,8 @@ fn compile_call_builtin_pre_user_inner(
           buf.push((64).to_byte()) // void
           emit_local_get(buf, map_ptr)
           emit_local_get(buf, loop_i)
-          emit_i32_const_raw(buf, 8)
-          emit_i32_mul(buf)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
           emit_i32_add(buf)
           emit_i32_load(buf, 8) // key
           emit_local_get(buf, key_local)
@@ -5223,8 +5199,8 @@ fn compile_call_builtin_pre_user_inner(
           buf.push((64).to_byte()) // void
           emit_local_get(buf, map_ptr)
           emit_local_get(buf, loop_i)
-          emit_i32_const_raw(buf, 8)
-          emit_i32_mul(buf)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
           emit_i32_add(buf)
           emit_i32_load(buf, 12) // value
           emit_local_set(buf, result_local)
@@ -5256,8 +5232,8 @@ fn compile_call_builtin_pre_user_inner(
         buf.push((64).to_byte()) // void
         emit_local_get(buf, map_ptr)
         emit_local_get(buf, loop_i)
-        emit_i32_const_raw(buf, 8)
-        emit_i32_mul(buf)
+        emit_i32_const_raw(buf, 3)
+        emit_i32_shl(buf)
         emit_i32_add(buf)
         emit_i32_load(buf, 8) // key
         emit_local_set(buf, entry_key_local)
@@ -5266,8 +5242,8 @@ fn compile_call_builtin_pre_user_inner(
         buf.push((64).to_byte()) // void
         emit_local_get(buf, map_ptr)
         emit_local_get(buf, loop_i)
-        emit_i32_const_raw(buf, 8)
-        emit_i32_mul(buf)
+        emit_i32_const_raw(buf, 3)
+        emit_i32_shl(buf)
         emit_i32_add(buf)
         emit_i32_load(buf, 12) // value
         emit_local_set(buf, result_local)

@@ -1153,9 +1153,11 @@ fn compile_function(
   let saved_fn_locals = ctx.fn_local_sigs
   let saved_mut_captured = ctx.mut_captured_vars
   let saved_cached_untag_ptrs = ctx.cached_untag_ptrs
+  let saved_cached_obj_types = ctx.cached_obj_types
   let saved_const_i64 = ctx.const_i64_values
   ctx.locals = {}
   ctx.cached_untag_ptrs = {}
+  ctx.cached_obj_types = {}
   ctx.local_kinds = {}
   ctx.local_types = []
   ctx.local_count = 0
@@ -1364,6 +1366,7 @@ fn compile_function(
   ctx.fn_local_sigs = saved_fn_locals
   ctx.mut_captured_vars = saved_mut_captured
   ctx.cached_untag_ptrs = saved_cached_untag_ptrs
+  ctx.cached_obj_types = saved_cached_obj_types
   ctx.const_i64_values = saved_const_i64
   func
 }
