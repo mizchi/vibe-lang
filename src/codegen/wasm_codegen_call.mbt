@@ -765,8 +765,10 @@ fn compile_call_user_fn(
   }
   // Direct call needs the callee's closure env when the function has captures.
   // Do not fall back to current function env; it may belong to another closure.
+  // Skip closure env check for functions known to not need env at compile time.
+  let known_no_env = not(fn_index_needs_env(ctx, fn_idx))
   match ctx.locals.get(name) {
-    Some(local_idx) if ctx.fn_local_sigs.contains(name) => {
+    Some(local_idx) if ctx.fn_local_sigs.contains(name) && not(known_no_env) => {
       let env_local = alloc_temp_local(ctx)
       emit_local_get(buf, local_idx)
       emit_i64_const_raw(buf, tag_mask.to_int64())

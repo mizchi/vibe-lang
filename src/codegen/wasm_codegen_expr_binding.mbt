@@ -105,7 +105,8 @@ fn compile_expr_tuple_index(
   }
 }
 
-///| Check if a condition expression can be compiled directly as i32 (dry-run).
+///|
+/// Check if a condition expression can be compiled directly as i32 (dry-run).
 fn can_compile_cond_i32(
   ctx : CodegenCtx,
   cond : @core.Expr,
@@ -119,7 +120,9 @@ fn can_compile_cond_i32(
           let pos_args = extract_positional_exprs(args, name)
           if pos_args.length() == 2 {
             let resolved_kind = resolve_numeric_kind(
-              ctx, pos_args[0], pos_args[1],
+              ctx,
+              pos_args[0],
+              pos_args[1],
             )
             resolved_kind == ValueKind::I32 || resolved_kind == ValueKind::I64
           } else {
@@ -133,8 +136,8 @@ fn can_compile_cond_i32(
         "and" | "or" => {
           let pos_args = extract_positional_exprs(args, name)
           pos_args.length() == 2 &&
-            can_compile_cond_i32(ctx, pos_args[0]) &&
-            can_compile_cond_i32(ctx, pos_args[1])
+          can_compile_cond_i32(ctx, pos_args[0]) &&
+          can_compile_cond_i32(ctx, pos_args[1])
         }
         _ => false
       }
@@ -143,7 +146,8 @@ fn can_compile_cond_i32(
   }
 }
 
-///| Try to compile a condition expression directly as i32 (0 or 1),
+///|
+/// Try to compile a condition expression directly as i32 (0 or 1),
 /// bypassing the tagged bool encode/decode roundtrip.
 /// Returns true if the shortcut was applied.
 fn try_compile_cond_i32(
@@ -163,7 +167,9 @@ fn try_compile_cond_i32(
           let pos_args = extract_positional_exprs(args, name)
           if pos_args.length() == 2 {
             let resolved_kind = resolve_numeric_kind(
-              ctx, pos_args[0], pos_args[1],
+              ctx,
+              pos_args[0],
+              pos_args[1],
             )
             match resolved_kind {
               ValueKind::I32 | ValueKind::I64 => {
