@@ -649,9 +649,10 @@ fn compile_lite_validate_opts(
 ///|
 fn split_compile_lite_args(
   args : Array[String],
-) -> Result[(Array[String], String?, Bool), String] {
+) -> Result[(Array[String], String?, String?, Bool), String] {
   let filtered : Array[String] = []
   let mut profile_tsv : String? = None
+  let mut profile_callstack : String? = None
   let mut in_memory = false
   let mut i = 0
   while i < args.length() {
@@ -662,6 +663,12 @@ fn split_compile_lite_args(
         return Err("compile-lite: missing path after --profile-tsv")
       }
       profile_tsv = Some(args[i])
+    } else if arg == "--profile-callstack" {
+      i += 1
+      if i >= args.length() {
+        return Err("compile-lite: missing path after --profile-callstack")
+      }
+      profile_callstack = Some(args[i])
     } else if arg == "--in-memory" {
       in_memory = true
     } else {
@@ -669,7 +676,7 @@ fn split_compile_lite_args(
     }
     i += 1
   }
-  Ok((filtered, profile_tsv, in_memory))
+  Ok((filtered, profile_tsv, profile_callstack, in_memory))
 }
 
 ///|
@@ -695,7 +702,7 @@ fn elapsed_ms_from_us(elapsed_us : Int) -> Int {
 
 ///|
 fn compile_lite_cmd(args : Array[String]) -> Unit {
-  let (compile_args, profile_tsv, in_memory) = match
+  let (compile_args, profile_tsv, profile_callstack, in_memory) = match
     split_compile_lite_args(args) {
     Ok(v) => v
     Err(msg) => abort(msg)
@@ -708,20 +715,28 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
     Ok(_) => ()
     Err(msg) => abort(msg)
   }
+  if profile_callstack is Some(_) {
+    @profiler.profiler_set_enabled(true)
+    @profiler.profiler_reset()
+  }
   let fs = @io.default_fs_adapter()
   let out_path = match opts.out_path {
     Some(path) => path
     None => ""
   }
   let start_total = @bench.monotonic_clock_start()
+  @profiler.profiler_enter("load")
   let start_load = @bench.monotonic_clock_start()
   match @loader.load_db_with_fs(opts.entry_path, fs) {
     Err(err) => abort("compile-lite: " + err)
     Ok((db, entry)) => {
       let load_us = elapsed_us_from(start_load)
+      @profiler.profiler_leave()
+      @profiler.profiler_enter("type")
       let start_type = @bench.monotonic_clock_start()
       let _ = db.types(entry)
       let type_us = elapsed_us_from(start_type)
+      @profiler.profiler_leave()
       let (wasm_bytes, compile_profile) = @runtime_compile.compile_module_wasm_with_opt_level_profiled(
         db,
         entry,
@@ -735,12 +750,14 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
       }
       let mut write_us = 0
       if not(in_memory) {
+        @profiler.profiler_enter("write")
         let start_write = @bench.monotonic_clock_start()
         match @io.write_bytes_with(fs, out_path, wasm_bytes) {
           Ok(_) => ()
           Err(err) => abort("compile-lite: " + err)
         }
         write_us = elapsed_us_from(start_write)
+        @profiler.profiler_leave()
       }
       let total_us = elapsed_us_from(start_total)
       match profile_tsv {
@@ -752,6 +769,17 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
             Ok(_) => ()
             Err(err) =>
               abort("compile-lite: failed to write profile tsv: " + err)
+          }
+        }
+        None => ()
+      }
+      match profile_callstack {
+        Some(path) => {
+          let content = @profiler.profiler_report_tsv()
+          match @io.write_string_with(fs, path, content) {
+            Ok(_) => ()
+            Err(err) =>
+              abort("compile-lite: failed to write callstack profile: " + err)
           }
         }
         None => ()

@@ -427,20 +427,28 @@ fn compile_module_wasm_profiled_with(
   opt_level : String?,
 ) -> (Bytes, WasmCompileStageProfile) raise WasmCompileError {
   let start_total = @bench.monotonic_clock_start()
+  @profiler.profiler_enter("compile/module")
   let start_module = @bench.monotonic_clock_start()
   let compiled = compile_module(db, path) catch {
     e => raise WasmCompileError::Compile(e)
   }
   let module_us = elapsed_us_from(start_module)
+  @profiler.profiler_leave()
+  @profiler.profiler_enter("compile/bundle")
   let start_bundle = @bench.monotonic_clock_start()
   let bundled = bundler(db, path, compiled.ast)
   let bundle_us = elapsed_us_from(start_bundle)
+  @profiler.profiler_leave()
+  @profiler.profiler_enter("compile/emit")
   let start_emit = @bench.monotonic_clock_start()
   let wasm = emitter(bundled) catch { e => raise WasmCompileError::Gen(e) }
   let emit_us = elapsed_us_from(start_emit)
+  @profiler.profiler_leave()
+  @profiler.profiler_enter("compile/optimize")
   let start_optimize = @bench.monotonic_clock_start()
   let optimized = optimize_wasm_bytes_with_opt_level(wasm, opt_level)
   let optimize_us = elapsed_us_from(start_optimize)
+  @profiler.profiler_leave()
   let total_us = elapsed_us_from(start_total)
   (optimized, { module_us, bundle_us, emit_us, optimize_us, total_us })
 }

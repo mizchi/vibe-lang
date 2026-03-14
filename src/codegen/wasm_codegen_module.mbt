@@ -1767,6 +1767,7 @@ fn emit_module_with_coverage(
   // Pre-compute ref cell capture flags for ALL functions before compile loop.
   // This is needed because compile_function runs before compile_expr_fn.
   precompute_ref_cell_captures_block(ctx, ast.stmts, top_mut_captured)
+  @profiler.profiler_enter("codegen/compile_functions")
   let compiled_funcs : Array[WasmFunc] = []
   for i in 0..<funcs.length() {
     let f = funcs[i]
@@ -1846,7 +1847,10 @@ fn emit_module_with_coverage(
       false,
     ),
   )
+  @profiler.profiler_leave()
+  @profiler.profiler_enter("codegen/build_module")
   let bytes = build_module(ctx, compiled_funcs)
+  @profiler.profiler_leave()
   {
     bytes,
     counter_base: ctx.coverage_base_offset,

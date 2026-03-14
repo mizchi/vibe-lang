@@ -17,6 +17,7 @@ COMPILE_MODE="${VIBE_SELFHOST_PERF_COMPILE_MODE:-e2e}"
 MAX_COMPILE_RATIO="${VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO:-}"
 MAX_CHECK_RATIO="${VIBE_SELFHOST_PERF_MAX_CHECK_RATIO:-}"
 REBUILD_MODE="${VIBE_SELFHOST_PERF_REBUILD:-auto}"
+PROFILE_CALLSTACK="${VIBE_SELFHOST_PERF_PROFILE_CALLSTACK:-}"
 
 is_positive_int() {
   case "$1" in
@@ -226,19 +227,24 @@ main() {
           local stdout_file="$OUT_DIR/tmp/${safe}.${phase}.${runtime}.${run_idx}.stdout"
           local stderr_file="$OUT_DIR/tmp/${safe}.${phase}.${runtime}.${run_idx}.stderr"
           local profile_file="$OUT_DIR/tmp/${safe}.${phase}.${runtime}.${run_idx}.profile.tsv"
+          local callstack_args=()
+          if [ -n "$PROFILE_CALLSTACK" ] && [ "$phase" = "compile" ] && [ "$run_idx" -eq 1 ]; then
+            local callstack_file="$OUT_DIR/tmp/${safe}.${phase}.${runtime}.callstack.tsv"
+            callstack_args=(--profile-callstack "$callstack_file")
+          fi
           local cmd_status elapsed
           if [ "$phase" = "compile" ] && [ "$runtime" = "host" ] && [ "$COMPILE_MODE" = "e2e" ]; then
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
-              "$VIBE_BIN" compile-lite --wasm --no-dce --profile-tsv "$profile_file" "$case_path" -o "$OUT_DIR/tmp/${safe}.${run_idx}.host.wasm")
+              "$VIBE_BIN" compile-lite --wasm --no-dce --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path" -o "$OUT_DIR/tmp/${safe}.${run_idx}.host.wasm")
           elif [ "$phase" = "compile" ] && [ "$runtime" = "selfhost" ] && [ "$COMPILE_MODE" = "e2e" ]; then
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
-              moonrun "$STAGE1_COMPILER_WASM" compile-lite --wasm --no-dce --profile-tsv "$profile_file" "$case_path" -o "$OUT_DIR/tmp/${safe}.${run_idx}.selfhost.wasm")
+              moonrun "$STAGE1_COMPILER_WASM" compile-lite --wasm --no-dce --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path" -o "$OUT_DIR/tmp/${safe}.${run_idx}.selfhost.wasm")
           elif [ "$phase" = "compile" ] && [ "$runtime" = "host" ]; then
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
-              "$VIBE_BIN" compile-lite --wasm --no-dce --in-memory --profile-tsv "$profile_file" "$case_path")
+              "$VIBE_BIN" compile-lite --wasm --no-dce --in-memory --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path")
           elif [ "$phase" = "compile" ] && [ "$runtime" = "selfhost" ]; then
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
-              moonrun "$STAGE1_COMPILER_WASM" compile-lite --wasm --no-dce --in-memory --profile-tsv "$profile_file" "$case_path")
+              moonrun "$STAGE1_COMPILER_WASM" compile-lite --wasm --no-dce --in-memory --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path")
           elif [ "$phase" = "check" ] && [ "$runtime" = "host" ]; then
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
               env VIBE_CHECK_DEBUG=0 "$VIBE_BIN" check --profile-tsv "$profile_file" "$case_path")
