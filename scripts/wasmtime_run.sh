@@ -20,6 +20,13 @@ append_prefixed_flags() {
   done
 }
 
+exec_wasmtime() {
+  if [ "${#WASMTIME_EXTRA_ARGS[@]}" -gt 0 ]; then
+    exec "$WASMTIME_BIN" "${WASMTIME_EXTRA_ARGS[@]}" "$@"
+  fi
+  exec "$WASMTIME_BIN" "$@"
+}
+
 if [ -n "${VIBE_WASMTIME_WASM_FLAGS:-}" ]; then
   append_prefixed_flags "-W" "${VIBE_WASMTIME_WASM_FLAGS}"
 fi
@@ -33,7 +40,7 @@ fi
 #   wasmtime --invoke run ...
 if [ "${1:-}" = "run" ]; then
   shift
-  exec "$WASMTIME_BIN" run "${WASMTIME_EXTRA_ARGS[@]}" "$@"
+  exec_wasmtime run "$@"
 fi
 
-exec "$WASMTIME_BIN" "${WASMTIME_EXTRA_ARGS[@]}" "$@"
+exec_wasmtime "$@"

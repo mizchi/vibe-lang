@@ -34,9 +34,14 @@ fn main() -> Result<()> {
     }
 
     let config = Config::new();
+    let engine_start = Instant::now();
     let engine = Engine::new(&config)?;
+    let engine_elapsed = engine_start.elapsed();
+
+    let module_start = Instant::now();
     let module = Module::from_file(&engine, &wasm_path)
         .with_context(|| format!("failed to load {wasm_path}"))?;
+    let module_elapsed = module_start.elapsed();
 
     let mut linker = Linker::new(&engine);
     // Provide no-op imports for vibe.path / vibe.sh when present
@@ -44,29 +49,54 @@ fn main() -> Result<()> {
     linker.func_wrap("vibe", "sh", |_x: i32| -> i32 { 0 })?;
 
     let mut store = Store::new(&engine, ());
+    let instantiate_start = Instant::now();
     let instance = linker
         .instantiate(&mut store, &module)
         .context("failed to instantiate module")?;
+    let instantiate_elapsed = instantiate_start.elapsed();
 
+    let lookup_start = Instant::now();
     let run_i32 = instance.get_typed_func::<(), i32>(&mut store, "run");
+    let run_i64 = instance.get_typed_func::<(), i64>(&mut store, "run");
     let run_unit = instance.get_typed_func::<(), ()>(&mut store, "run");
+    let lookup_elapsed = lookup_start.elapsed();
 
     enum RunFn {
         I32(TypedFunc<(), i32>),
+        I64(TypedFunc<(), i64>),
         Unit(TypedFunc<(), ()>),
     }
 
     let run = if let Ok(func) = run_i32 {
         RunFn::I32(func)
+    } else if let Ok(func) = run_i64 {
+        RunFn::I64(func)
     } else if let Ok(func) = run_unit {
         RunFn::Unit(func)
     } else {
-        bail!("exported function 'run' must be () -> i32 or () -> ()");
+        bail!("exported function 'run' must be () -> i32, () -> i64, or () -> ()");
     };
+
+    let first_call_start = Instant::now();
+    match run {
+        RunFn::I32(ref f) => {
+            let _ = f.call(&mut store, ())?;
+        }
+        RunFn::I64(ref f) => {
+            let _ = f.call(&mut store, ())?;
+        }
+        RunFn::Unit(ref f) => {
+            f.call(&mut store, ())?;
+        }
+    }
+    let first_call_elapsed = first_call_start.elapsed();
 
     for _ in 0..warmup {
         match run {
             RunFn::I32(ref f) => {
+                let _ = f.call(&mut store, ())?;
+            }
+            RunFn::I64(ref f) => {
                 let _ = f.call(&mut store, ())?;
             }
             RunFn::Unit(ref f) => {
@@ -81,6 +111,9 @@ fn main() -> Result<()> {
             RunFn::I32(ref f) => {
                 let _ = f.call(&mut store, ())?;
             }
+            RunFn::I64(ref f) => {
+                let _ = f.call(&mut store, ())?;
+            }
             RunFn::Unit(ref f) => {
                 f.call(&mut store, ())?;
             }
@@ -90,11 +123,21 @@ fn main() -> Result<()> {
     let total_ns = elapsed.as_nanos() as f64;
     let per_us = total_ns / 1000.0 / count as f64;
     let total_ms = total_ns / 1_000_000.0;
+    let engine_ms = engine_elapsed.as_secs_f64() * 1000.0;
+    let module_ms = module_elapsed.as_secs_f64() * 1000.0;
+    let instantiate_ms = instantiate_elapsed.as_secs_f64() * 1000.0;
+    let lookup_ms = lookup_elapsed.as_secs_f64() * 1000.0;
+    let first_call_ms = first_call_elapsed.as_secs_f64() * 1000.0;
+    let setup_ms = engine_ms + module_ms + instantiate_ms + lookup_ms + first_call_ms;
 
     if total_ms == 0.0 {
         eprintln!("bench: elapsed_ms=0; increase --n for measurable time");
     }
 
+    println!(
+        "startup: wasm={} engine_ms={} module_ms={} instantiate_ms={} lookup_ms={} first_call_ms={} setup_ms={}",
+        wasm_path, engine_ms, module_ms, instantiate_ms, lookup_ms, first_call_ms, setup_ms
+    );
     println!(
         "bench: wasm={} count={} total_ms={} per_us={}",
         wasm_path, count, total_ms, per_us

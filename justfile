@@ -302,6 +302,10 @@ install:
 bench-wasmtime:
     VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/bench_wasmtime.sh
 
+# Measure wasmtime fixed overhead (CLI one-shot + resident phases)
+bench-wasmtime-overhead path='':
+    VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/bench_wasmtime_overhead.sh {{path}}
+
 # Compare interpreter vs wasmtime
 bench-compare:
     VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/bench_compare.sh
