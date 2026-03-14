@@ -406,6 +406,27 @@ fn type_call_builtin_handler_collection_numeric(
       )
       @core.Type::Unit
     }
+    "Array::push_all" => {
+      let pos_args = check_positional_arity(
+        args, "Array::push_all", 2, call_span,
+      )
+      let dst_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let _ = check_arg_type(
+        env,
+        pos_args[1],
+        dst_ty,
+        aliases,
+        effects,
+        allow_effect,
+      )
+      @core.Type::Unit
+    }
     "Array::set" => {
       let pos_args = check_positional_arity(args, "Array::set", 3, call_span)
       let array_ty = type_expr_eff(

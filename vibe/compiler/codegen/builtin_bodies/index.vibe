@@ -239,6 +239,104 @@ export let gen_arr_push_body = () -> Array[Int] {
   b
 }
 
+// Array::push_all(dst, src) -> Unit
+// Appends all elements of src to dst in-place using memory.copy.
+// Layout: offset 0 = cap, offset 4 = len, offset 8 = data_ptr
+// Elements are i64 (8 bytes each) at data_ptr + idx*8.
+// Locals: 0=dst(i64), 1=src(i64), 2=dst_ptr(i32), 3=src_ptr(i32),
+//         4=dst_len(i32), 5=src_len(i32), 6=dst_data(i32), 7=src_data(i32),
+//         8=dst_cap(i32), 9=new_cap(i32), 10=new_data(i32)
+export let gen_arr_push_all_body = () -> Array[Int] {
+  let b = bytebuf_new()
+  // dst_ptr = untag(dst)
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 2)
+  // src_ptr = untag(src)
+  emit_local_get(b, 1)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 3)
+  // dst_len = dst_ptr[4]
+  emit_local_get(b, 2)
+  emit_i32_load(b, 2, 4)
+  emit_local_set(b, 4)
+  // src_len = src_ptr[4]
+  emit_local_get(b, 3)
+  emit_i32_load(b, 2, 4)
+  emit_local_set(b, 5)
+  // dst_data = dst_ptr[8]
+  emit_local_get(b, 2)
+  emit_i32_load(b, 2, 8)
+  emit_local_set(b, 6)
+  // src_data = src_ptr[8]
+  emit_local_get(b, 3)
+  emit_i32_load(b, 2, 8)
+  emit_local_set(b, 7)
+  // dst_cap = dst_ptr[0]
+  emit_local_get(b, 2)
+  emit_i32_load(b, 2, 0)
+  emit_local_set(b, 8)
+  // if dst_len + src_len > dst_cap { grow }
+  emit_local_get(b, 4)
+  emit_local_get(b, 5)
+  emit_i32_add(b)
+  emit_local_get(b, 8)
+  emit_i32_gt_u(b)
+  emit_if_void(b)
+  // new_cap = (dst_len + src_len) * 2
+  emit_local_get(b, 4)
+  emit_local_get(b, 5)
+  emit_i32_add(b)
+  emit_i32_const(b, 2)
+  emit_i32_mul(b)
+  emit_local_set(b, 9)
+  // new_data = heap; heap += new_cap * 8
+  emit_global_get(b, 0)
+  emit_local_tee(b, 10)
+  emit_local_get(b, 9)
+  emit_i32_const(b, 8)
+  emit_i32_mul(b)
+  emit_i32_add(b)
+  emit_global_set(b, 0)
+  // memory.copy(new_data, dst_data, dst_len * 8)
+  emit_local_get(b, 10)
+  emit_local_get(b, 6)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 8)
+  emit_i32_mul(b)
+  emit_memory_copy(b)
+  // dst_ptr[0] = new_cap
+  emit_local_get(b, 2)
+  emit_local_get(b, 9)
+  emit_i32_store(b, 2, 0)
+  // dst_ptr[8] = new_data
+  emit_local_get(b, 2)
+  emit_local_get(b, 10)
+  emit_i32_store(b, 2, 8)
+  // dst_data = new_data
+  emit_local_get(b, 10)
+  emit_local_set(b, 6)
+  emit_end(b)
+  // memory.copy(dst_data + dst_len*8, src_data, src_len*8)
+  emit_local_get(b, 6)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 3)
+  bytebuf_push(b, 116) // i32.shl
+  emit_i32_add(b)
+  emit_local_get(b, 7)
+  emit_local_get(b, 5)
+  emit_i32_const(b, 3)
+  bytebuf_push(b, 116) // i32.shl
+  emit_memory_copy(b)
+  // dst_ptr[4] = dst_len + src_len
+  emit_local_get(b, 2)
+  emit_local_get(b, 4)
+  emit_local_get(b, 5)
+  emit_i32_add(b)
+  emit_i32_store(b, 2, 4)
+  b
+}
+
 export let gen_identity_body = () -> Array[Int] {
   let b = bytebuf_new()
   emit_local_get(b, 0)

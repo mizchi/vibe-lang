@@ -640,6 +640,7 @@ fn is_effectful_call_name(name : String) -> Bool {
   name == "Http::request_header" ||
   name == "Http::request_body" ||
   name == "Array::push" ||
+  name == "Array::push_all" ||
   name == "Array::truncate" ||
   name == "Array::slice" ||
   name == "__perform" ||

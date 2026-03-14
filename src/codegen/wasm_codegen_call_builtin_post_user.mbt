@@ -242,6 +242,7 @@ fn compile_call_builtin_post_user_inner(
     }
     "Array::concat" => {
       // array_concat(xs, ys) -> new array with all elements from xs then ys
+      // Uses memory.copy for bulk transfer instead of element-by-element loops.
       let pos_args = extract_positional_exprs_with_arity(
         args, "Array::concat", 2,
       )
@@ -252,7 +253,6 @@ fn compile_call_builtin_post_user_inner(
       let ys_len_local = alloc_temp_local(ctx)
       let total_len_local = alloc_temp_local(ctx)
       let obj_local = alloc_temp_local(ctx)
-      let copy_i_local = alloc_temp_local(ctx)
       let alloc_size_local = alloc_temp_local(ctx)
       // Untag xs pointer
       compile_expr_i32(ctx, buf, pos_args[0])
@@ -296,73 +296,93 @@ fn compile_call_builtin_post_user_inner(
       emit_local_get(buf, obj_local)
       emit_local_get(buf, total_len_local)
       emit_i32_store(buf, 4)
-      // Copy xs elements: i = 0; i < xs_len; i++
-      emit_i32_const_raw(buf, 0)
-      emit_local_set(buf, copy_i_local)
-      emit_block(buf)
-      emit_loop(buf)
-      emit_local_get(buf, copy_i_local)
-      emit_local_get(buf, xs_len_local)
-      emit_i32_lt_s(buf)
-      emit_i32_eqz(buf)
-      emit_br_if(buf, 1)
-      // dst[i] = xs[i]
+      // memory.copy xs: dst=obj+8, src=xs_ptr+8, len=xs_len*4
       emit_local_get(buf, obj_local)
-      emit_local_get(buf, copy_i_local)
-      emit_i32_const_raw(buf, 4)
-      emit_i32_mul(buf)
+      emit_i32_const_raw(buf, 8)
       emit_i32_add(buf)
       emit_local_get(buf, xs_ptr_local)
-      emit_local_get(buf, copy_i_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf)
+      emit_local_get(buf, xs_len_local)
       emit_i32_const_raw(buf, 4)
       emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_i32_load(buf, 8)
-      emit_i32_store(buf, 8)
-      emit_local_get(buf, copy_i_local)
-      emit_i32_const_raw(buf, 1)
-      emit_i32_add(buf)
-      emit_local_set(buf, copy_i_local)
-      emit_br(buf, 0)
-      emit_end(buf)
-      emit_end(buf)
-      // Copy ys elements: i = 0; i < ys_len; i++
-      emit_i32_const_raw(buf, 0)
-      emit_local_set(buf, copy_i_local)
-      emit_block(buf)
-      emit_loop(buf)
-      emit_local_get(buf, copy_i_local)
-      emit_local_get(buf, ys_len_local)
-      emit_i32_lt_s(buf)
-      emit_i32_eqz(buf)
-      emit_br_if(buf, 1)
-      // dst[xs_len + i] = ys[i]
+      emit_memory_copy(buf)
+      // memory.copy ys: dst=obj+8+xs_len*4, src=ys_ptr+8, len=ys_len*4
       emit_local_get(buf, obj_local)
-      emit_local_get(buf, xs_len_local)
-      emit_local_get(buf, copy_i_local)
+      emit_i32_const_raw(buf, 8)
       emit_i32_add(buf)
+      emit_local_get(buf, xs_len_local)
       emit_i32_const_raw(buf, 4)
       emit_i32_mul(buf)
       emit_i32_add(buf)
       emit_local_get(buf, ys_ptr_local)
-      emit_local_get(buf, copy_i_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf)
+      emit_local_get(buf, ys_len_local)
       emit_i32_const_raw(buf, 4)
       emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_i32_load(buf, 8)
-      emit_i32_store(buf, 8)
-      emit_local_get(buf, copy_i_local)
-      emit_i32_const_raw(buf, 1)
-      emit_i32_add(buf)
-      emit_local_set(buf, copy_i_local)
-      emit_br(buf, 0)
-      emit_end(buf)
-      emit_end(buf)
+      emit_memory_copy(buf)
       // Return tagged pointer
       emit_local_get(buf, obj_local)
       emit_i64_extend_i32_u(buf)
       emit_i64_const_raw(buf, tag_obj.to_int64())
       emit_i64_or(buf)
+    }
+    "Array::push_all" => {
+      // array_push_all(dst, src) -> Unit: append all elements of src to dst in-place
+      // Uses memory.copy for bulk transfer instead of element-by-element loop.
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Array::push_all", 2,
+      )
+      let dst_ptr_local = alloc_temp_local(ctx)
+      let dst_len_local = alloc_temp_local(ctx)
+      let src_ptr_local = alloc_temp_local(ctx)
+      let src_len_local = alloc_temp_local(ctx)
+      // Untag dst pointer
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, dst_ptr_local)
+      emit_local_get(buf, dst_ptr_local)
+      emit_i32_load(buf, 4) // dst.len
+      emit_local_set(buf, dst_len_local)
+      // Untag src pointer
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, src_ptr_local)
+      emit_local_get(buf, src_ptr_local)
+      emit_i32_load(buf, 4) // src.len
+      emit_local_set(buf, src_len_local)
+      // memory.copy(dst_data + dst_len*4, src_data + 0, src_len*4)
+      // dst = dst_ptr + 8 + dst_len * 4
+      emit_local_get(buf, dst_ptr_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf)
+      emit_local_get(buf, dst_len_local)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      // src = src_ptr + 8
+      emit_local_get(buf, src_ptr_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf)
+      // size = src_len * 4
+      emit_local_get(buf, src_len_local)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      // memory.copy
+      emit_memory_copy(buf)
+      // dst.len += src_len
+      emit_local_get(buf, dst_ptr_local)
+      emit_local_get(buf, dst_len_local)
+      emit_local_get(buf, src_len_local)
+      emit_i32_add(buf)
+      emit_i32_store(buf, 4)
+      // return Unit (tagged 0)
+      emit_i64_const_tagged(buf, 0L)
     }
     "Array::slice" => {
       // array_slice(arr, start, end) -> new array with elements arr[start..end]
@@ -482,41 +502,21 @@ fn compile_call_builtin_post_user_inner(
       emit_local_get(buf, obj_local)
       emit_local_get(buf, slice_len_local)
       emit_i32_store(buf, 4)
-      // Copy elements: loop i = 0; i < slice_len; i++
-      emit_i32_const_raw(buf, 0)
-      emit_local_set(buf, copy_i_local)
-      emit_block(buf)
-      emit_loop(buf)
-      emit_local_get(buf, copy_i_local)
-      emit_local_get(buf, slice_len_local)
-      emit_i32_lt_s(buf)
-      emit_i32_eqz(buf)
-      emit_br_if(buf, 1) // break if i >= slice_len
-      // dst[i] = src[start + i] (each element is 4 bytes, at offset 8)
+      // memory.copy: dst=obj+8, src=arr_ptr+8+start*4, len=slice_len*4
       emit_local_get(buf, obj_local)
-      emit_local_get(buf, copy_i_local)
-      emit_i32_const_raw(buf, 4)
-      emit_i32_mul(buf)
+      emit_i32_const_raw(buf, 8)
       emit_i32_add(buf)
-      // load src[start + i]
       emit_local_get(buf, arr_ptr_local)
-      emit_local_get(buf, start_local)
-      emit_local_get(buf, copy_i_local)
+      emit_i32_const_raw(buf, 8)
       emit_i32_add(buf)
+      emit_local_get(buf, start_local)
       emit_i32_const_raw(buf, 4)
       emit_i32_mul(buf)
       emit_i32_add(buf)
-      emit_i32_load(buf, 8)
-      // store to dst
-      emit_i32_store(buf, 8)
-      // i++
-      emit_local_get(buf, copy_i_local)
-      emit_i32_const_raw(buf, 1)
-      emit_i32_add(buf)
-      emit_local_set(buf, copy_i_local)
-      emit_br(buf, 0) // continue loop
-      emit_end(buf)
-      emit_end(buf)
+      emit_local_get(buf, slice_len_local)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_memory_copy(buf)
       // Return tagged pointer
       emit_local_get(buf, obj_local)
       emit_i64_extend_i32_u(buf)

@@ -537,8 +537,10 @@ fn infer_expr_kind_with(
           }
         "String::equals" => ValueKind::I64
         "ArrayBuilder::new" | "ArrayBuilder::freeze" => ValueKind::I64
-        "ArrayBuilder::push" | "Array::push" | "Array::truncate" =>
-          ValueKind::I64
+        "ArrayBuilder::push"
+        | "Array::push"
+        | "Array::push_all"
+        | "Array::truncate" => ValueKind::I64
         "array_new" => ValueKind::I64
         "array_contains_str" => ValueKind::I64
         "Double::to_i64_bits" | "Double::from_i64_bits" => ValueKind::I64
@@ -1038,6 +1040,7 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "ArrayBuilder::push" ||
         name == "ArrayBuilder::freeze" ||
         name == "Array::push" ||
+        name == "Array::push_all" ||
         name == "array_new" ||
         name == "Array::truncate" ||
         name == "array_contains_str" ||

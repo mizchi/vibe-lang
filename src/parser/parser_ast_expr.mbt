@@ -516,7 +516,9 @@ fn module_to_match_body(body : @core.Module, span : @core.Span) -> @core.Expr {
 ///|
 /// Parse an optional else branch: `else { ... }` or `else if ...` or `else expr`.
 /// Returns an empty Module (Unit) if no else branch is present.
-fn AstParser::parse_else_body(self : AstParser) -> @core.Module raise ParseError {
+fn AstParser::parse_else_body(
+  self : AstParser,
+) -> @core.Module raise ParseError {
   self.skip_trivia()
   if self.peek_kind() == else_kw() {
     let _ = self.bump()

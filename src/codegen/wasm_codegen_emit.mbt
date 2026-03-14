@@ -787,3 +787,11 @@ fn emit_i64_extend_i32_u(buf : ByteBuf) -> Unit {
 }
 
 ///|
+fn emit_memory_copy(buf : ByteBuf) -> Unit {
+  buf.push((0xFC).to_byte()) // prefix
+  write_u32_leb(buf, 10) // memory.copy
+  buf.push((0).to_byte()) // src memory 0
+  buf.push((0).to_byte()) // dst memory 0
+}
+
+///|

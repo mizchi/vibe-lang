@@ -3810,6 +3810,37 @@ fn eval_builtin_call(
           )
       }
     }
+    "Array::push_all" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "Array::push_all")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall(
+          BuiltinDetail(
+            fn_name="Array::push_all",
+            detail="expected 2 arguments",
+          ),
+        )
+      }
+      match (pos_args[0], pos_args[1]) {
+        (@core.Value::Array(dst), @core.Value::Array(src)) => {
+          for item in src {
+            dst.push(item)
+          }
+          { value: @core.Value::Unit, effects: out.effects }
+        }
+        _ =>
+          raise EvalError::BadCall(
+            BuiltinDetail(
+              fn_name="Array::push_all",
+              detail="expected (Array, Array), got (" +
+                value_type_name(pos_args[0]) +
+                ", " +
+                value_type_name(pos_args[1]) +
+                ")",
+            ),
+          )
+      }
+    }
     "Array::set" => {
       let out = eval_args(rt, args)
       let pos_args = extract_positional_values(out.args, "Array::set")
