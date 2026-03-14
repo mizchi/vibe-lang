@@ -1053,29 +1053,6 @@ export let load_or_parse_module_header_fs = (
   }
 }
 
-let build_manifest_header_cache_rows = (
-  sources: Array[(String, String)]
-) -> Array[(String, String, String, String, String)] with { Error, Fs } {
-  let rows = empty_manifest_header_cache_rows()
-  let mut i = 0
-  while i < Array::length(sources) {
-    let (path, source) = Array::get(sources, i)
-    let (deps, exports, _) = load_or_parse_module_header_fs(path, source, 0)
-    Array::push(
-      rows,
-      (
-        path,
-        __to_string(Fs::stat_token(path)),
-        compact_string_fingerprint(source),
-        join_header_values(deps),
-        join_header_values(exports)
-      )
-    )
-    i = i + 1
-  }
-  rows
-}
-
 let store_persistent_manifest_header_cache = (
   entry_path: String,
   manifest_path: String,
@@ -1153,6 +1130,36 @@ let manifest_header_deps_lookup = (
   found
 }
 
+let manifest_header_row_for_path = (
+  rows: Array[(String, String, String, String, String)],
+  path: String
+) -> Option[(String, String, String, String, String)] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(rows) {
+    let row = Array::get(rows, i)
+    let (row_path, _, _, _, _) = row
+    if String::equals(row_path, path) {
+      found = Some(row)
+      i = Array::length(rows)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+let append_manifest_header_row_if_missing = (
+  rows: Array[(String, String, String, String, String)],
+  row: (String, String, String, String, String)
+) -> Unit {
+  let (path, _, _, _, _) = row
+  match manifest_header_row_for_path(rows, path) {
+    Some(_) => (),
+    None => Array::push(rows, row)
+  }
+}
+
 let rec collect_needed_paths_from_manifest_headers = (
   path: String,
   preloaded_sources: Array[(String, String)],
@@ -1177,6 +1184,50 @@ let rec collect_needed_paths_from_manifest_headers = (
     let mut i = 0
     while i < Array::length(deps) {
       collect_needed_paths_from_manifest_headers(
+        Array::get(deps, i),
+        preloaded_sources,
+        rows,
+        visited
+      )
+      i = i + 1
+    }
+  }
+}
+
+let rec collect_needed_paths_and_manifest_headers = (
+  path: String,
+  preloaded_sources: Array[(String, String)],
+  rows: Array[(String, String, String, String, String)],
+  visited: Array[String]
+) -> Unit with { Error, Fs } {
+  if contains_str(visited, path) {
+    ()
+  } else {
+    Array::push(visited, path)
+    let source = match source_lookup(preloaded_sources, path) {
+      Some(preloaded) => preloaded,
+      None => Fs::read_file(path)
+    }
+    let deps = match manifest_header_deps_lookup(rows, path) {
+      Some(found) => found,
+      None => {
+        let (parsed_deps, exports, _) = load_or_parse_module_header_fs(path, source, 0)
+        append_manifest_header_row_if_missing(
+          rows,
+          (
+            path,
+            __to_string(Fs::stat_token(path)),
+            compact_string_fingerprint(source),
+            join_header_values(parsed_deps),
+            join_header_values(exports)
+          )
+        )
+        parsed_deps
+      }
+    }
+    let mut i = 0
+    while i < Array::length(deps) {
+      collect_needed_paths_and_manifest_headers(
         Array::get(deps, i),
         preloaded_sources,
         rows,
@@ -1264,7 +1315,9 @@ let try_collect_manifest_sources_fs = (entry_path: String) -> Option[(String, Ar
       ) {
         Some(cached_rows) => cached_rows,
         None => {
-          let built_rows = build_manifest_header_cache_rows(preloaded_sources)
+          let built_rows = empty_manifest_header_cache_rows()
+          let visited = Array::slice([""], 0, 0)
+          collect_needed_paths_and_manifest_headers(entry_path, preloaded_sources, built_rows, visited)
           store_persistent_manifest_header_cache(entry_path, manifest_path, built_rows)
           built_rows
         }
@@ -1298,7 +1351,9 @@ let try_collect_manifest_source_groups_fs = (entry_path: String) -> Option[(Stri
       ) {
         Some(cached_rows) => cached_rows,
         None => {
-          let built_rows = build_manifest_header_cache_rows(preloaded_sources)
+          let built_rows = empty_manifest_header_cache_rows()
+          let visited = Array::slice([""], 0, 0)
+          collect_needed_paths_and_manifest_headers(entry_path, preloaded_sources, built_rows, visited)
           store_persistent_manifest_header_cache(entry_path, manifest_path, built_rows)
           built_rows
         }
