@@ -960,6 +960,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let need_cabi_realloc_export = ctx.need_stdin_read_char ||
     ctx.need_socket ||
     ctx.need_http ||
+    ctx.need_fs ||
     ctx.force_cabi_realloc
   let need_http_host_string_new_export = ctx.need_http && ctx.http_host_imports
   let export_count = 2 +
@@ -1822,6 +1823,7 @@ fn emit_module_with_coverage(
   if ctx.need_stdin_read_char ||
     ctx.need_socket ||
     ctx.need_http ||
+    ctx.need_fs ||
     ctx.force_cabi_realloc {
     let cabi_realloc_sig = FuncSig::{
       params: [ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32],

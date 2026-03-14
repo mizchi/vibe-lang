@@ -928,6 +928,24 @@ test "vibe wasm imports stdio stream builtins" {
 }
 
 ///|
+test "vibe wasm imports fs builtins and exports cabi_realloc" {
+  let db = VibeDb::new()
+  let src =
+    #|{
+    #|  Fs::read_file("fixtures/hello.vibe")
+    #|}
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(bytes_contains_ascii(wasm, "wasi:filesystem/preopens@0.2.6"))
+  assert_true(bytes_contains_ascii(wasm, "[method]descriptor.read"))
+  assert_true(bytes_contains_ascii(wasm, "cabi_realloc"))
+}
+
+///|
 test "vibe wasm http builtins default to fallback throw (no host import)" {
   let db = VibeDb::new()
   let src =

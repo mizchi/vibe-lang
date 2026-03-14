@@ -96,7 +96,8 @@ function allocPreview2Buffer(instance, size, align = 4) {
   }
   let mem = new Uint8Array(instance.exports.memory.buffer);
   const alignedPtr = (heapGlobal.value + (align - 1)) & ~(align - 1);
-  const next = alignedPtr + size;
+  const heapAlign = Math.max(align, 4);
+  const next = (alignedPtr + size + (heapAlign - 1)) & ~(heapAlign - 1);
   if (next > mem.length) {
     const pagesNeeded = Math.ceil((next - mem.length) / 65536);
     instance.exports.memory.grow(pagesNeeded);
