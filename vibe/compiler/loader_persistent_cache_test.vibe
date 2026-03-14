@@ -1,12 +1,14 @@
 //# Imports
 
 import ./module_loader.vibe {
-  collect_all_sources_fs, collect_source_groups_fs,
+  collect_all_sources_fs, collect_source_groups_fs, load_or_parse_module_header_fs,
   load_persistent_source_group_fingerprint_if_valid
 }
 
 import ./cache / persistent {
   build_source_groups_fingerprint,
+  compact_string_fingerprint,
+  persistent_module_header_cache_path,
   persistent_source_group_cache_path,
   persistent_source_list_cache_path
 }
@@ -134,4 +136,32 @@ test "collect_source_groups_fs: reuses valid source list cache when group cache 
     Some(source) => assert(String::equals(source, "export let add = () -> Int { 1 }")),
     None => assert(false)
   }
+}
+
+test "load_or_parse_module_header_fs: warm cache reuses deps and exports" {
+  let base_dir = "/tmp/vibe_compiler_persistent_module_header"
+  let helper_path = String::concat(base_dir, "/helper.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  let helper_source = "export let add = () -> Int { 1 }"
+  let main_source = "import ./helper.vibe { add }\nexport let run = () -> Int { add() }"
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(helper_path, string_to_bytes(helper_source))
+  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  remove_file_if_exists(
+    persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source))
+  )
+
+  let (deps1, exports1, parse1) = load_or_parse_module_header_fs(main_path, main_source, 0)
+  assert(eq(parse1, 1))
+  assert(eq(Array::length(deps1), 1))
+  assert(String::equals(Array::get(deps1, 0), helper_path))
+  assert(eq(Array::length(exports1), 1))
+  assert(String::equals(Array::get(exports1, 0), "run"))
+
+  let (deps2, exports2, parse2) = load_or_parse_module_header_fs(main_path, main_source, 0)
+  assert(eq(parse2, 0))
+  assert(eq(Array::length(deps2), 1))
+  assert(String::equals(Array::get(deps2, 0), helper_path))
+  assert(eq(Array::length(exports2), 1))
+  assert(String::equals(Array::get(exports2, 0), "run"))
 }
