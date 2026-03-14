@@ -170,17 +170,34 @@ Before: cmp → i64.extend → shl 2 → or 3 → shr_u 2 → i32.wrap → if (7
 After:  cmp → if (2命令)
 ```
 
+## 実装済み: S2 int-only 関数の heap sync 除去
+
+`__add`/`__sub` 等の operands が全て int（float リテラル・float 変換関数なし）の場合、
+`needs_heap_expr` が false を返すように変更。heap prologue/epilogue と call 前後の
+global.get/set が不要になる。
+
 ### 累計効果
 
 ```
-最適化前:          16,371 行 (WAT)
-P0 (call直接化):   16,371 行 (basics では変化なし、fib等で効果)
-P0 + S1:          10,287 行 → 37% 削減
-P0 + S1 + S1b:     9,960 行 → 39% 削減
+最適化前:                   16,371 行 (WAT)
+P0 (call直接化):            16,371 行 (basics では変化なし、fib等で効果)
+P0 + S1 (int特殊化):       10,287 行 → 37% 削減
+P0 + S1 + S1b (cond省略):   9,960 行 → 39% 削減
+P0 + S1 + S1b + S2 (heap):  9,822 行 → 40% 削減
+```
+
+### fib(30) 関数の推移
+
+```
+最適化前:    ~510 行, 50+ locals, full type dispatch + call_indirect
+P0:          ~120 行, 50+ locals, direct call
+P0 + S1:      ~40 行,  3 locals, tagged arithmetic
+P0+S1+S1b:    ~33 行,  3 locals, direct cmp→if
+P0+S1+S2:     ~19 行,  0 locals, no heap sync
 ```
 
 ## 次のステップ
 
-1. **ヒープポインタ sync 削減**: call 前後の global.get/set を最小化
-2. **定数畳み込み**: `i64.const 4; i64.sub` → tagged 演算時のリテラル最適化
+1. **定数畳み込み**: リテラル演算のコンパイル時評価
+2. **untag pointer キャッシュ**: 同じオブジェクトの複数フィールドアクセスで untag を共有
 3. **selfhost codegen にも同等の最適化を適用**
