@@ -42,6 +42,7 @@ Phase 4 (応用):
 - compiled selfhost shard 2/4 は root-affine batch 後の成功条件で `28 files / 10 batches / 281 tests / real 101.67s` を確認済み
 - parallel test wrapper の child stdout/stderr decode は lossy に修正し、compiled shard 1/4 で出ていた `invalid JSON report` の誤検知経路は潰した
 - compiled selfhost shard 1/4 は `module_loader_test` / `file_compile_mode_test` を含む 2 batch が支配しており、成功条件の確定前でも `13m+` 張り付きで bootstrap 全体の最重 shard 候補になっている
+- `selfhost_test_batch_weights.seed.json` に `module_loader_test` / `file_compile_mode_test` / `codegen_test` / `codegen_controlflow_test` の seed を補正し、preview 上は shard 1/4 の batch 1/10, 2/10 で `module_loader_test` と `file_compile_mode_test` を singleton 化できた
 
 ### Selfhost compiler modularization / cache
 
@@ -180,6 +181,7 @@ Phase 4 (応用):
   - 次の実作業候補: `stmt_regression_test` / `checker_stmt_regression_test` の再分割、`compiler_test` の compile_source 系を独立 file に切り出す
   - root-affine batch で child process 数は `28-32 -> 10` まで減らせたが、wall time の再計測は shard 2/4 しか終わっていない
   - shard 1/4 は `printer_loop + cst_lower_expr_binding + codegen_controlflow + file_compile_mode + codegen` と `stmt_data_decl + module_loader + types` の 2 batch が 13 分超で張り付き、現時点ではここが bootstrap 最重候補
+  - seed 補正後の preview では `module_loader_test` と `file_compile_mode_test` は singleton batch に分離できたので、次はこの seed で shard 1/4 の wall time を採り直す
   - 次は shard 1/4, 3/4, 4/4 を同条件で取り直し、分割で解決する問題か、個別 test 最適化へ進むべきかを確定する
 - [ ] compiled bootstrap から外した重い回帰ケースの扱いを固定する
   - `codegen_parser_test` は release binary でも 240s で完走しないため、専用 gate か fixture 化に寄せたい
