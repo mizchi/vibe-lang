@@ -105,6 +105,51 @@ fn compile_expr_tuple_index(
   }
 }
 
+///| Try to compile a condition expression directly as i32 (0 or 1),
+/// bypassing the tagged bool encode/decode roundtrip.
+/// Returns true if the shortcut was applied.
+fn try_compile_cond_i32(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  cond : @core.Expr,
+) -> Bool raise WasmGenError {
+  match cond {
+    @core.Expr::Bool(value~, ..) => {
+      emit_i32_const_raw(buf, if value { 1 } else { 0 })
+      true
+    }
+    @core.Expr::Call(name~, args~, ..) => {
+      let name = @core.lower_wasm_intrinsic_name(name)
+      match name {
+        "eq" | "__eq" | "lt" | "__lt" => {
+          let pos_args = extract_positional_exprs(args, name)
+          if pos_args.length() == 2 {
+            let resolved_kind = resolve_numeric_kind(
+              ctx, pos_args[0], pos_args[1],
+            )
+            match resolved_kind {
+              ValueKind::I32 | ValueKind::I64 => {
+                compile_expr_i32(ctx, buf, pos_args[0])
+                compile_expr_i32(ctx, buf, pos_args[1])
+                match name {
+                  "eq" | "__eq" => emit_i64_eq(buf)
+                  _ => emit_i64_lt_s(buf)
+                }
+                true
+              }
+              _ => false
+            }
+          } else {
+            false
+          }
+        }
+        _ => false
+      }
+    }
+    _ => false
+  }
+}
+
 ///|
 fn compile_expr_if(
   ctx : CodegenCtx,
@@ -120,10 +165,14 @@ fn compile_expr_if(
   } else {
     ValueKind::I64
   }
-  compile_expr_i32(ctx, buf, cond)
-  emit_i64_const_raw(buf, 2L)
-  emit_i64_shr_u(buf)
-  emit_i32_wrap_i64(buf)
+  // Optimization: if cond is an integer comparison, emit comparison directly
+  // without going through tagged bool (tag → untag cancels out)
+  if not(try_compile_cond_i32(ctx, buf, cond)) {
+    compile_expr_i32(ctx, buf, cond)
+    emit_i64_const_raw(buf, 2L)
+    emit_i64_shr_u(buf)
+    emit_i32_wrap_i64(buf)
+  }
   buf.push((4).to_byte()) // if
   buf.push(valtype_byte(if_kind))
   adjust_loop_offsets(ctx, 1)
