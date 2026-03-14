@@ -1,75 +1,172 @@
 //# Functions
 
+// ByteBuf layout:
+//   hnd = FixedArray of size 1, where hnd[0] = data array reference
+//   data   = FixedArray where:
+//     index 0: current byte count (len)
+//     index 1: capacity
+//     index 2..cap+1: byte data
+//
+// The hnd indirection allows grow to replace the data array
+// while keeping the same hnd reference for callers.
+
+let bytebuf_make_data = (cap: Int) -> Array[Int] {
+  let data = FixedArray::make(cap + 2, 0)
+  FixedArray::set(data, 0, 0)
+  FixedArray::set(data, 1, cap)
+  data
+}
+
 export let bytebuf_new = () -> Array[Int] {
-  ArrayBuilder::freeze(ArrayBuilder::new())
+  let hnd = FixedArray::make(1, 0)
+  let data = bytebuf_make_data(4096)
+  FixedArray::set(hnd, 0, data)
+  hnd
 }
 
-export let bytebuf_push = (buf: Array[Int], byte: Int) -> Unit {
-  Array::push(buf, byte)
+let bytebuf_grow = (hnd: Array[Int], needed: Int) -> Unit {
+  let data = FixedArray::get(hnd, 0)
+  let len = FixedArray::get(data, 0)
+  let cap = FixedArray::get(data, 1)
+  let new_cap = if cap * 2 > needed { cap * 2 } else { needed }
+  let new_data = FixedArray::make(new_cap + 2, 0)
+  FixedArray::set(new_data, 0, len)
+  FixedArray::set(new_data, 1, new_cap)
+  FixedArray::blit(new_data, 2, data, 2, len)
+  FixedArray::set(hnd, 0, new_data)
 }
 
-export let bytebuf_length = (buf: Array[Int]) -> Int {
-  Array::length(buf)
+let bytebuf_ensure = (hnd: Array[Int], additional: Int) -> Unit {
+  let data = FixedArray::get(hnd, 0)
+  let len = FixedArray::get(data, 0)
+  let cap = FixedArray::get(data, 1)
+  if len + additional > cap {
+    bytebuf_grow(hnd, len + additional)
+  }
 }
 
-export let bytebuf_to_bytes = (buf: Array[Int]) -> Bytes {
-  Bytes::from_array(buf)
+export let bytebuf_push = (hnd: Array[Int], byte: Int) -> Unit {
+  let data = FixedArray::get(hnd, 0)
+  let len = FixedArray::get(data, 0)
+  let cap = FixedArray::get(data, 1)
+  if len >= cap {
+    bytebuf_grow(hnd, len + 1)
+    let new_data = FixedArray::get(hnd, 0)
+    FixedArray::unsafe_set(new_data, len + 2, byte)
+    FixedArray::set(new_data, 0, len + 1)
+  } else {
+    FixedArray::unsafe_set(data, len + 2, byte)
+    FixedArray::set(data, 0, len + 1)
+  }
 }
 
-export let leb128_encode_s32 = (buf: Array[Int], value: Int) -> Unit {
-  let mut v = value
-  let mut more = true
-  while more {
-    let byte = v&127
-    v = v>>7
-    if (v == 0) && ((byte&64) == 0) {
-      Array::push(buf, byte)
-      more = false
+export let bytebuf_length = (hnd: Array[Int]) -> Int {
+  let data = FixedArray::get(hnd, 0)
+  FixedArray::get(data, 0)
+}
+
+export let bytebuf_to_bytes = (hnd: Array[Int]) -> Bytes {
+  let data = FixedArray::get(hnd, 0)
+  let len = FixedArray::get(data, 0)
+  // Build result array from data[2..len+2]
+  let result = FixedArray::make(len, 0)
+  FixedArray::blit(result, 0, data, 2, len)
+  Bytes::from_array(result)
+}
+
+export let leb128_encode_s32 = (hnd: Array[Int], value: Int) -> Unit {
+  bytebuf_ensure(hnd, 5)
+  leb128_encode_s32_unchecked(hnd, value)
+}
+
+let leb128_encode_s32_unchecked = (hnd: Array[Int], value: Int) -> Unit {
+  let byte = value&127
+  let rest = value>>7
+  if (rest == 0) && ((byte&64) == 0) {
+    let data = FixedArray::get(hnd, 0)
+    let len = FixedArray::get(data, 0)
+    FixedArray::unsafe_set(data, len + 2, byte)
+    FixedArray::set(data, 0, len + 1)
+  } else {
+    if (rest == 0 - 1) && ((byte&64) != 0) {
+      let data = FixedArray::get(hnd, 0)
+      let len = FixedArray::get(data, 0)
+      FixedArray::unsafe_set(data, len + 2, byte)
+      FixedArray::set(data, 0, len + 1)
     } else {
-      if (v == 0 - 1) && ((byte&64) != 0) {
-        Array::push(buf, byte)
-        more = false
-      } else {
-        Array::push(buf, byte|128)
-      }
+      let data = FixedArray::get(hnd, 0)
+      let len = FixedArray::get(data, 0)
+      FixedArray::unsafe_set(data, len + 2, byte|128)
+      FixedArray::set(data, 0, len + 1)
+      leb128_encode_s32_unchecked(hnd, rest)
     }
   }
 }
 
-export let leb128_encode_s64 = (buf: Array[Int], value: Int) -> Unit {
-  leb128_encode_s32(buf, value)
+export let leb128_encode_s64 = (hnd: Array[Int], value: Int) -> Unit {
+  leb128_encode_s32(hnd, value)
 }
 
-export let leb128_encode_u32 = (buf: Array[Int], value: Int) -> Unit {
-  let mut v = value
-  let mut more = true
-  while more {
-    let byte = v&127
-    v = (v>>7)&((1<<25) - 1)
-    if v == 0 {
-      Array::push(buf, byte)
-      more = false
-    } else {
-      Array::push(buf, byte|128)
-    }
+export let leb128_encode_u32 = (hnd: Array[Int], value: Int) -> Unit {
+  bytebuf_ensure(hnd, 5)
+  leb128_encode_u32_unchecked(hnd, value)
+}
+
+let leb128_encode_u32_unchecked = (hnd: Array[Int], value: Int) -> Unit {
+  let byte = value&127
+  let rest = (value>>7)&((1<<25) - 1)
+  if rest == 0 {
+    let data = FixedArray::get(hnd, 0)
+    let len = FixedArray::get(data, 0)
+    FixedArray::unsafe_set(data, len + 2, byte)
+    FixedArray::set(data, 0, len + 1)
+  } else {
+    let data = FixedArray::get(hnd, 0)
+    let len = FixedArray::get(data, 0)
+    FixedArray::unsafe_set(data, len + 2, byte|128)
+    FixedArray::set(data, 0, len + 1)
+    leb128_encode_u32_unchecked(hnd, rest)
   }
 }
 
-export let bytebuf_push_array = (buf: Array[Int], arr: Array[Int]) -> Unit {
-  Array::push_all(buf, arr)
+// bytebuf_push_array now expects a bytebuf hnd (not a raw Array).
+// All callers pass bytebuf hnds, so this is an alias for bytebuf_push_buf.
+export let bytebuf_push_array = (dst_hnd: Array[Int], src_hnd: Array[Int]) -> Unit {
+  bytebuf_push_buf(dst_hnd, src_hnd)
 }
 
-export let bytebuf_push_bytes = (buf: Array[Int], bytes: Bytes) -> Unit {
-  // In WASM backend, Bytes = Array[Int], so push_all works directly
-  Array::push_all(buf, bytes)
+export let bytebuf_push_bytes = (hnd: Array[Int], bytes: Bytes) -> Unit {
+  // Bytes in WASM backend is a raw Array[Int], not a bytebuf hnd.
+  // We need to push each byte individually.
+  let blen = Bytes::length(bytes)
+  bytebuf_ensure(hnd, blen)
+  let data = FixedArray::get(hnd, 0)
+  let len = FixedArray::get(data, 0)
+  let mut i = 0
+  while i < blen {
+    FixedArray::unsafe_set(data, len + 2 + i, Bytes::get(bytes, i))
+    i = i + 1
+  }
+  FixedArray::set(data, 0, len + blen)
 }
 
 export let bytebuf_push_section = (out: Array[Int], section_id: Int, content: Array[Int]) -> Unit {
-  Array::push(out, section_id)
-  leb128_encode_u32(out, Array::length(content))
-  bytebuf_push_array(out, content)
+  bytebuf_push(out, section_id)
+  leb128_encode_u32(out, bytebuf_length(content))
+  bytebuf_push_buf(out, content)
 }
 
-export let bytebuf_push_vec_header = (buf: Array[Int], count: Int) -> Unit {
-  leb128_encode_u32(buf, count)
+export let bytebuf_push_vec_header = (hnd: Array[Int], count: Int) -> Unit {
+  leb128_encode_u32(hnd, count)
+}
+
+// Copy bytes from one bytebuf into another (bulk)
+export let bytebuf_push_buf = (dst_hnd: Array[Int], src_hnd: Array[Int]) -> Unit {
+  let src_data = FixedArray::get(src_hnd, 0)
+  let src_len = FixedArray::get(src_data, 0)
+  bytebuf_ensure(dst_hnd, src_len)
+  let dst_data = FixedArray::get(dst_hnd, 0)
+  let dst_len = FixedArray::get(dst_data, 0)
+  FixedArray::blit(dst_data, dst_len + 2, src_data, 2, src_len)
+  FixedArray::set(dst_data, 0, dst_len + src_len)
 }

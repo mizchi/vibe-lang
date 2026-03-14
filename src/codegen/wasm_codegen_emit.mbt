@@ -1,92 +1,179 @@
 ///|
 priv struct ByteBuf {
-  data : Array[Byte]
+  mut data : FixedArray[Byte]
+  mut len : Int
 }
 
 ///|
 fn ByteBuf::new() -> ByteBuf {
-  { data: [] }
+  { data: FixedArray::make(4096, b'\x00'), len: 0 }
+}
+
+///|
+fn ByteBuf::grow_to(self : ByteBuf, needed : Int) -> Unit {
+  let new_cap = if self.data.length() * 2 > needed {
+    self.data.length() * 2
+  } else {
+    needed
+  }
+  let new_data = FixedArray::make(new_cap, b'\x00')
+  FixedArray::unsafe_blit(new_data, 0, self.data, 0, self.len)
+  self.data = new_data
+}
+
+///|
+fn ByteBuf::ensure(self : ByteBuf, additional : Int) -> Unit {
+  let needed = self.len + additional
+  if needed > self.data.length() {
+    self.grow_to(needed)
+  }
 }
 
 ///|
 fn ByteBuf::push(self : ByteBuf, b : Byte) -> Unit {
-  self.data.push(b)
+  if self.len == self.data.length() {
+    self.grow_to(self.data.length() * 2)
+  }
+  self.data.unsafe_set(self.len, b)
+  self.len += 1
 }
 
 ///|
 fn ByteBuf::extend(self : ByteBuf, bytes : Array[Byte]) -> Unit {
-  for b in bytes {
-    self.data.push(b)
+  self.ensure(bytes.length())
+  for i in 0..<bytes.length() {
+    self.data.unsafe_set(self.len + i, bytes[i])
   }
+  self.len += bytes.length()
+}
+
+///|
+fn ByteBuf::extend_buf(self : ByteBuf, other : ByteBuf) -> Unit {
+  self.ensure(other.len)
+  FixedArray::unsafe_blit(self.data, self.len, other.data, 0, other.len)
+  self.len += other.len
 }
 
 ///|
 fn ByteBuf::len(self : ByteBuf) -> Int {
-  self.data.length()
+  self.len
+}
+
+///|
+fn ByteBuf::to_array(self : ByteBuf) -> Array[Byte] {
+  Array::makei(self.len, fn(i) { self.data[i] })
 }
 
 ///|
 fn ByteBuf::to_bytes(self : ByteBuf) -> Bytes {
-  Bytes::from_array(self.data)
+  Bytes::from_array(self.to_array())
 }
 
 ///|
-/// Unrolled LEB128 encoder — avoids heap boxing of mut locals in MoonBit wasm target.
-/// u32 LEB128 is at most 5 bytes.
+/// Unrolled u32 LEB128 — single ensure + unsafe_set, zero capacity checks per byte.
 fn write_u32_leb(buf : ByteBuf, n : Int) -> Unit {
+  buf.ensure(5)
   let u = n.reinterpret_as_uint()
   let v0 = u & 0x7fU
   let r0 = u >> 7
   if r0 == 0U {
-    buf.push(v0.reinterpret_as_int().to_byte())
+    buf.data.unsafe_set(buf.len, v0.reinterpret_as_int().to_byte())
+    buf.len += 1
     return
   }
-  buf.push((v0 | 0x80U).reinterpret_as_int().to_byte())
+  buf.data.unsafe_set(buf.len, (v0 | 0x80U).reinterpret_as_int().to_byte())
   let v1 = r0 & 0x7fU
   let r1 = r0 >> 7
   if r1 == 0U {
-    buf.push(v1.reinterpret_as_int().to_byte())
+    buf.data.unsafe_set(buf.len + 1, v1.reinterpret_as_int().to_byte())
+    buf.len += 2
     return
   }
-  buf.push((v1 | 0x80U).reinterpret_as_int().to_byte())
+  buf.data.unsafe_set(buf.len + 1, (v1 | 0x80U).reinterpret_as_int().to_byte())
   let v2 = r1 & 0x7fU
   let r2 = r1 >> 7
   if r2 == 0U {
-    buf.push(v2.reinterpret_as_int().to_byte())
+    buf.data.unsafe_set(buf.len + 2, v2.reinterpret_as_int().to_byte())
+    buf.len += 3
     return
   }
-  buf.push((v2 | 0x80U).reinterpret_as_int().to_byte())
+  buf.data.unsafe_set(buf.len + 2, (v2 | 0x80U).reinterpret_as_int().to_byte())
   let v3 = r2 & 0x7fU
   let r3 = r2 >> 7
   if r3 == 0U {
-    buf.push(v3.reinterpret_as_int().to_byte())
+    buf.data.unsafe_set(buf.len + 3, v3.reinterpret_as_int().to_byte())
+    buf.len += 4
     return
   }
-  buf.push((v3 | 0x80U).reinterpret_as_int().to_byte())
-  buf.push((r3 & 0x7fU).reinterpret_as_int().to_byte())
+  buf.data.unsafe_set(buf.len + 3, (v3 | 0x80U).reinterpret_as_int().to_byte())
+  buf.data.unsafe_set(buf.len + 4, (r3 & 0x7fU).reinterpret_as_int().to_byte())
+  buf.len += 5
 }
 
 ///|
-/// Unrolled signed LEB128 encoder — avoids heap boxing of mut locals.
-/// i32 LEB128 is at most 5 bytes.
+/// u32 LEB128 without ensure — caller must have ensured at least 5 bytes.
+fn write_u32_leb_unchecked(buf : ByteBuf, n : Int) -> Unit {
+  let u = n.reinterpret_as_uint()
+  let v0 = u & 0x7fU
+  let r0 = u >> 7
+  if r0 == 0U {
+    buf.data.unsafe_set(buf.len, v0.reinterpret_as_int().to_byte())
+    buf.len += 1
+    return
+  }
+  buf.data.unsafe_set(buf.len, (v0 | 0x80U).reinterpret_as_int().to_byte())
+  let v1 = r0 & 0x7fU
+  let r1 = r0 >> 7
+  if r1 == 0U {
+    buf.data.unsafe_set(buf.len + 1, v1.reinterpret_as_int().to_byte())
+    buf.len += 2
+    return
+  }
+  buf.data.unsafe_set(buf.len + 1, (v1 | 0x80U).reinterpret_as_int().to_byte())
+  let v2 = r1 & 0x7fU
+  let r2 = r1 >> 7
+  if r2 == 0U {
+    buf.data.unsafe_set(buf.len + 2, v2.reinterpret_as_int().to_byte())
+    buf.len += 3
+    return
+  }
+  buf.data.unsafe_set(buf.len + 2, (v2 | 0x80U).reinterpret_as_int().to_byte())
+  let v3 = r2 & 0x7fU
+  let r3 = r2 >> 7
+  if r3 == 0U {
+    buf.data.unsafe_set(buf.len + 3, v3.reinterpret_as_int().to_byte())
+    buf.len += 4
+    return
+  }
+  buf.data.unsafe_set(buf.len + 3, (v3 | 0x80U).reinterpret_as_int().to_byte())
+  buf.data.unsafe_set(buf.len + 4, (r3 & 0x7fU).reinterpret_as_int().to_byte())
+  buf.len += 5
+}
+
+///|
+/// Unrolled signed LEB128 — single ensure + unsafe_set.
 fn write_i32_leb(buf : ByteBuf, n : Int) -> Unit {
-  write_i32_leb_inner(buf, n, 0)
+  buf.ensure(5)
+  write_i32_leb_unchecked(buf, n, 0)
 }
 
 ///|
-/// Recursive helper for signed LEB128 — uses immutable params to avoid heap boxing.
-fn write_i32_leb_inner(buf : ByteBuf, value : Int, depth : Int) -> Unit {
-  let byte = value & 0x7f
-  let rest = value >> 7 // arithmetic shift (sign-extending)
-  let sign_bit_set = (byte & 0x40) != 0
+/// Recursive helper for signed LEB128 — writes directly via unsafe_set after ensure.
+fn write_i32_leb_unchecked(buf : ByteBuf, value : Int, depth : Int) -> Unit {
+  let byte_val = value & 0x7f
+  let rest = value >> 7
+  let sign_bit_set = (byte_val & 0x40) != 0
   let done = (rest == 0 && not(sign_bit_set)) || (rest == -1 && sign_bit_set)
   if done {
-    buf.push(byte.to_byte())
+    buf.data.unsafe_set(buf.len, byte_val.to_byte())
+    buf.len += 1
   } else if depth < 4 {
-    buf.push((byte | 0x80).to_byte())
-    write_i32_leb_inner(buf, rest, depth + 1)
+    buf.data.unsafe_set(buf.len, (byte_val | 0x80).to_byte())
+    buf.len += 1
+    write_i32_leb_unchecked(buf, rest, depth + 1)
   } else {
-    buf.push(byte.to_byte())
+    buf.data.unsafe_set(buf.len, byte_val.to_byte())
+    buf.len += 1
   }
 }
 
@@ -109,14 +196,18 @@ fn write_name(buf : ByteBuf, s : String) -> Unit {
 
 ///|
 fn write_ref_extern(buf : ByteBuf) -> Unit {
-  buf.push((100).to_byte())
-  buf.push((111).to_byte())
+  buf.ensure(2)
+  buf.data.unsafe_set(buf.len, b'\x64')
+  buf.data.unsafe_set(buf.len + 1, b'\x6f')
+  buf.len += 2
 }
 
 ///|
 fn emit_i32_const_raw(buf : ByteBuf, n : Int) -> Unit {
-  buf.push((65).to_byte())
-  write_i32_leb(buf, n)
+  buf.ensure(6)
+  buf.data.unsafe_set(buf.len, b'\x41')
+  buf.len += 1
+  write_i32_leb_unchecked(buf, n, 0)
 }
 
 ///|
@@ -138,82 +229,110 @@ fn intern_error_code(ctx : CodegenCtx, message : String) -> Int {
 
 ///|
 fn emit_local_get(buf : ByteBuf, idx : Int) -> Unit {
-  buf.push((32).to_byte())
-  write_u32_leb(buf, idx)
+  buf.ensure(6)
+  buf.data.unsafe_set(buf.len, b'\x20')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, idx)
 }
 
 ///|
 fn emit_local_set(buf : ByteBuf, idx : Int) -> Unit {
-  buf.push((33).to_byte())
-  write_u32_leb(buf, idx)
+  buf.ensure(6)
+  buf.data.unsafe_set(buf.len, b'\x21')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, idx)
 }
 
 ///|
 fn emit_local_tee(buf : ByteBuf, idx : Int) -> Unit {
-  buf.push((34).to_byte())
-  write_u32_leb(buf, idx)
+  buf.ensure(6)
+  buf.data.unsafe_set(buf.len, b'\x22')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, idx)
 }
 
 ///|
 fn emit_global_get(buf : ByteBuf, idx : Int) -> Unit {
-  buf.push((35).to_byte())
-  write_u32_leb(buf, idx)
+  buf.ensure(6)
+  buf.data.unsafe_set(buf.len, b'\x23')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, idx)
 }
 
 ///|
 fn emit_global_set(buf : ByteBuf, idx : Int) -> Unit {
-  buf.push((36).to_byte())
-  write_u32_leb(buf, idx)
+  buf.ensure(6)
+  buf.data.unsafe_set(buf.len, b'\x24')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, idx)
 }
 
 ///|
 fn emit_call(buf : ByteBuf, idx : Int) -> Unit {
-  buf.push((16).to_byte())
-  write_u32_leb(buf, idx)
+  buf.ensure(6)
+  buf.data.unsafe_set(buf.len, b'\x10')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, idx)
 }
 
 ///|
 fn emit_call_indirect(buf : ByteBuf, type_idx : Int) -> Unit {
-  buf.push((17).to_byte())
-  write_u32_leb(buf, type_idx)
-  buf.push((0).to_byte())
+  buf.ensure(7)
+  buf.data.unsafe_set(buf.len, b'\x11')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, type_idx)
+  buf.data.unsafe_set(buf.len, b'\x00')
+  buf.len += 1
 }
 
 ///|
 fn emit_return_call(buf : ByteBuf, idx : Int) -> Unit {
-  buf.push((18).to_byte()) // return_call = 0x12
-  write_u32_leb(buf, idx)
+  buf.ensure(6)
+  buf.data.unsafe_set(buf.len, b'\x12')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, idx)
 }
 
 ///|
 fn emit_return_call_indirect(buf : ByteBuf, type_idx : Int) -> Unit {
-  buf.push((19).to_byte()) // return_call_indirect = 0x13
-  write_u32_leb(buf, type_idx)
-  buf.push((0).to_byte()) // table index
+  buf.ensure(7)
+  buf.data.unsafe_set(buf.len, b'\x13')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, type_idx)
+  buf.data.unsafe_set(buf.len, b'\x00')
+  buf.len += 1
 }
 
 ///|
 fn emit_table_get(buf : ByteBuf, table_idx : Int) -> Unit {
-  buf.push((37).to_byte()) // table.get = 0x25
-  write_u32_leb(buf, table_idx)
+  buf.ensure(6)
+  buf.data.unsafe_set(buf.len, b'\x25')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, table_idx)
 }
 
 ///|
 fn emit_table_set(buf : ByteBuf, table_idx : Int) -> Unit {
-  buf.push((38).to_byte()) // table.set = 0x26
-  write_u32_leb(buf, table_idx)
+  buf.ensure(6)
+  buf.data.unsafe_set(buf.len, b'\x26')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, table_idx)
 }
 
 ///|
 fn emit_memory_size(buf : ByteBuf) -> Unit {
-  buf.push((63).to_byte()) // memory.size = 0x3f
-  buf.push((0).to_byte()) // memory index
+  buf.ensure(2)
+  buf.data.unsafe_set(buf.len, b'\x3f')
+  buf.data.unsafe_set(buf.len + 1, b'\x00')
+  buf.len += 2
 }
 
 ///|
 fn emit_memory_grow(buf : ByteBuf) -> Unit {
-  buf.push((64).to_byte()) // memory.grow = 0x40
-  buf.push((0).to_byte()) // memory index
+  buf.ensure(2)
+  buf.data.unsafe_set(buf.len, b'\x40')
+  buf.data.unsafe_set(buf.len + 1, b'\x00')
+  buf.len += 2
 }
 
 ///|
@@ -224,35 +343,45 @@ fn emit_drop(buf : ByteBuf) -> Unit {
 ///|
 /// Emit block instruction (blocktype is void for now)
 fn emit_block(buf : ByteBuf) -> Unit {
-  buf.push((2).to_byte()) // block = 0x02
-  buf.push((64).to_byte()) // void blocktype = 0x40
+  buf.ensure(2)
+  buf.data.unsafe_set(buf.len, b'\x02')
+  buf.data.unsafe_set(buf.len + 1, b'\x40')
+  buf.len += 2
 }
 
 ///|
 /// Emit if instruction (consumes i32 condition from stack)
 fn emit_if(buf : ByteBuf) -> Unit {
-  buf.push((4).to_byte()) // if = 0x04
-  buf.push((64).to_byte()) // void blocktype = 0x40
+  buf.ensure(2)
+  buf.data.unsafe_set(buf.len, b'\x04')
+  buf.data.unsafe_set(buf.len + 1, b'\x40')
+  buf.len += 2
 }
 
 ///|
 /// Emit else instruction
 fn emit_else(buf : ByteBuf) -> Unit {
-  buf.push((5).to_byte()) // else = 0x05
+  buf.ensure(1)
+  buf.data.unsafe_set(buf.len, b'\x05')
+  buf.len += 1
 }
 
 ///|
 /// Emit block instruction with i64 result type
 fn emit_block_i64(buf : ByteBuf) -> Unit {
-  buf.push((2).to_byte()) // block = 0x02
-  buf.push((126).to_byte()) // i64 blocktype = 0x7E
+  buf.ensure(2)
+  buf.data.unsafe_set(buf.len, b'\x02')
+  buf.data.unsafe_set(buf.len + 1, b'\x7e')
+  buf.len += 2
 }
 
 ///|
 /// Emit loop instruction (blocktype is void for now)
 fn emit_loop(buf : ByteBuf) -> Unit {
-  buf.push((3).to_byte()) // loop = 0x03
-  buf.push((64).to_byte()) // void blocktype = 0x40
+  buf.ensure(2)
+  buf.data.unsafe_set(buf.len, b'\x03')
+  buf.data.unsafe_set(buf.len + 1, b'\x40')
+  buf.len += 2
 }
 
 ///|
@@ -263,15 +392,19 @@ fn emit_unreachable(buf : ByteBuf) -> Unit {
 ///|
 /// Emit br instruction (unconditional branch)
 fn emit_br(buf : ByteBuf, label_idx : Int) -> Unit {
-  buf.push((12).to_byte()) // br = 0x0c
-  write_u32_leb(buf, label_idx)
+  buf.ensure(6)
+  buf.data.unsafe_set(buf.len, b'\x0c')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, label_idx)
 }
 
 ///|
 /// Emit br_if instruction (conditional branch)
 fn emit_br_if(buf : ByteBuf, label_idx : Int) -> Unit {
-  buf.push((13).to_byte()) // br_if = 0x0d
-  write_u32_leb(buf, label_idx)
+  buf.ensure(6)
+  buf.data.unsafe_set(buf.len, b'\x0d')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, label_idx)
 }
 
 ///|
@@ -390,23 +523,29 @@ fn emit_i32_xor(buf : ByteBuf) -> Unit {
 
 ///|
 fn emit_i32_load(buf : ByteBuf, offset : Int) -> Unit {
-  buf.push((40).to_byte())
-  write_u32_leb(buf, 2)
-  write_u32_leb(buf, offset)
+  buf.ensure(11) // opcode + align_leb(5) + offset_leb(5)
+  buf.data.unsafe_set(buf.len, b'\x28')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, 2)
+  write_u32_leb_unchecked(buf, offset)
 }
 
 ///|
 fn emit_i32_load8_u(buf : ByteBuf, offset : Int) -> Unit {
-  buf.push((45).to_byte())
-  write_u32_leb(buf, 0)
-  write_u32_leb(buf, offset)
+  buf.ensure(11)
+  buf.data.unsafe_set(buf.len, b'\x2d')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, 0)
+  write_u32_leb_unchecked(buf, offset)
 }
 
 ///|
 fn emit_i32_store(buf : ByteBuf, offset : Int) -> Unit {
-  buf.push((54).to_byte())
-  write_u32_leb(buf, 2)
-  write_u32_leb(buf, offset)
+  buf.ensure(11)
+  buf.data.unsafe_set(buf.len, b'\x36')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, 2)
+  write_u32_leb_unchecked(buf, offset)
 }
 
 ///|
@@ -453,9 +592,11 @@ fn emit_coverage(
 
 ///|
 fn emit_i32_store8(buf : ByteBuf, offset : Int) -> Unit {
-  buf.push((58).to_byte())
-  write_u32_leb(buf, 0)
-  write_u32_leb(buf, offset)
+  buf.ensure(11)
+  buf.data.unsafe_set(buf.len, b'\x3a')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, 0)
+  write_u32_leb_unchecked(buf, offset)
 }
 
 ///|
@@ -675,44 +816,56 @@ fn emit_f64_promote_f32(buf : ByteBuf) -> Unit {
 
 ///|
 fn emit_i64_load(buf : ByteBuf, offset : Int) -> Unit {
-  buf.push((41).to_byte())
-  write_u32_leb(buf, 3)
-  write_u32_leb(buf, offset)
+  buf.ensure(11)
+  buf.data.unsafe_set(buf.len, b'\x29')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, 3)
+  write_u32_leb_unchecked(buf, offset)
 }
 
 ///|
 fn emit_i64_store(buf : ByteBuf, offset : Int) -> Unit {
-  buf.push((55).to_byte())
-  write_u32_leb(buf, 3)
-  write_u32_leb(buf, offset)
+  buf.ensure(11)
+  buf.data.unsafe_set(buf.len, b'\x37')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, 3)
+  write_u32_leb_unchecked(buf, offset)
 }
 
 ///|
 fn emit_f32_load(buf : ByteBuf, offset : Int) -> Unit {
-  buf.push((42).to_byte())
-  write_u32_leb(buf, 2)
-  write_u32_leb(buf, offset)
+  buf.ensure(11)
+  buf.data.unsafe_set(buf.len, b'\x2a')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, 2)
+  write_u32_leb_unchecked(buf, offset)
 }
 
 ///|
 fn emit_f64_load(buf : ByteBuf, offset : Int) -> Unit {
-  buf.push((43).to_byte())
-  write_u32_leb(buf, 3)
-  write_u32_leb(buf, offset)
+  buf.ensure(11)
+  buf.data.unsafe_set(buf.len, b'\x2b')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, 3)
+  write_u32_leb_unchecked(buf, offset)
 }
 
 ///|
 fn emit_f32_store(buf : ByteBuf, offset : Int) -> Unit {
-  buf.push((56).to_byte())
-  write_u32_leb(buf, 2)
-  write_u32_leb(buf, offset)
+  buf.ensure(11)
+  buf.data.unsafe_set(buf.len, b'\x38')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, 2)
+  write_u32_leb_unchecked(buf, offset)
 }
 
 ///|
 fn emit_f64_store(buf : ByteBuf, offset : Int) -> Unit {
-  buf.push((57).to_byte())
-  write_u32_leb(buf, 3)
-  write_u32_leb(buf, offset)
+  buf.ensure(11)
+  buf.data.unsafe_set(buf.len, b'\x39')
+  buf.len += 1
+  write_u32_leb_unchecked(buf, 3)
+  write_u32_leb_unchecked(buf, offset)
 }
 
 ///|
@@ -721,28 +874,46 @@ fn emit_f64_reinterpret_i64(buf : ByteBuf) -> Unit {
 }
 
 ///|
+/// i64 LEB128 — max 10 bytes. Uses ensure + unsafe_set.
 fn write_i64_leb(buf : ByteBuf, n : Int64) -> Unit {
-  let mut value = n
-  while true {
-    let mut byte = (value & 0x7fL).to_int()
-    value = value >> 7
-    let sign_bit_set = (byte & 0x40) != 0
-    let done = (value == 0L && not(sign_bit_set)) ||
-      (value == -1L && sign_bit_set)
-    if not(done) {
-      byte = byte | 0x80
-    }
-    buf.push(byte.to_byte())
-    if done {
-      break
-    }
+  buf.ensure(10)
+  write_i64_leb_unchecked(buf, n)
+}
+
+///|
+fn write_i64_leb_unchecked(buf : ByteBuf, n : Int64) -> Unit {
+  write_i64_leb_unchecked_inner(buf, n, 0)
+}
+
+///|
+fn write_i64_leb_unchecked_inner(
+  buf : ByteBuf,
+  value : Int64,
+  depth : Int,
+) -> Unit {
+  let byte_val = (value & 0x7fL).to_int()
+  let rest = value >> 7
+  let sign_bit_set = (byte_val & 0x40) != 0
+  let done = (rest == 0L && not(sign_bit_set)) || (rest == -1L && sign_bit_set)
+  if done {
+    buf.data.unsafe_set(buf.len, byte_val.to_byte())
+    buf.len += 1
+  } else if depth < 9 {
+    buf.data.unsafe_set(buf.len, (byte_val | 0x80).to_byte())
+    buf.len += 1
+    write_i64_leb_unchecked_inner(buf, rest, depth + 1)
+  } else {
+    buf.data.unsafe_set(buf.len, byte_val.to_byte())
+    buf.len += 1
   }
 }
 
 ///|
 fn emit_i64_const_raw(buf : ByteBuf, n : Int64) -> Unit {
-  buf.push((0x42).to_byte())
-  write_i64_leb(buf, n)
+  buf.ensure(11) // opcode + max 10 LEB128 bytes
+  buf.data.unsafe_set(buf.len, b'\x42')
+  buf.len += 1
+  write_i64_leb_unchecked(buf, n)
 }
 
 ///|

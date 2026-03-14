@@ -1121,10 +1121,10 @@ fn compile_func_body(
     if prelude.length() > 0 {
       prologue.extend(prelude)
     }
-    prologue.extend(instr.data)
-    prologue.data
+    prologue.extend_buf(instr)
+    prologue.to_array()
   } else {
-    instr.data
+    instr.to_array()
   }
 }
 
@@ -1330,7 +1330,7 @@ fn compile_function(
     body,
     result_kind,
     need_heap,
-    prelude.data,
+    prelude.to_array(),
     multivalue_kinds=mv_kinds,
   )
   let locals = ctx.local_types
@@ -1424,7 +1424,7 @@ fn compile_cabi_realloc_function(
     params: [ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32],
     locals: [ValueKind::I32, ValueKind::I32],
     results: [ValueKind::I32],
-    body: body.data,
+    body: body.to_array(),
   }
 }
 
@@ -1481,6 +1481,6 @@ fn compile_http_host_string_new_function(
     params: [ValueKind::I32],
     locals: [ValueKind::I32, ValueKind::I32],
     results: [ValueKind::I64],
-    body: body.data,
+    body: body.to_array(),
   }
 }

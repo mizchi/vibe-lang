@@ -4988,6 +4988,189 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_store(buf, 8)
       emit_i64_const_tagged(buf, 0L) // return Unit
     }
+    "FixedArray::make" => {
+      // FixedArray::make(size, default) -> same as array_new
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "FixedArray::make", 2,
+      )
+      require_heap(ctx)
+      let size_local = alloc_temp_local(ctx)
+      let val_local = alloc_temp_local(ctx)
+      let obj_local = alloc_temp_local(ctx)
+      let idx_local = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, size_local)
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, val_local)
+      emit_local_get(buf, size_local)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf)
+      emit_i32_const_raw(buf, 3)
+      emit_i32_add(buf)
+      emit_i32_const_raw(buf, -4)
+      emit_i32_and(buf)
+      let alloc_size_local = alloc_temp_local(ctx)
+      emit_local_set(buf, alloc_size_local)
+      emit_global_get(buf, ctx.heap_global)
+      emit_local_tee(buf, obj_local)
+      emit_local_get(buf, alloc_size_local)
+      emit_i32_add(buf)
+      emit_global_set(buf, ctx.heap_global)
+      ctx.heap_synced = false
+      emit_local_get(buf, obj_local)
+      emit_i32_const_raw(buf, obj_array)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, size_local)
+      emit_i32_store(buf, 4)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, idx_local)
+      emit_block(buf)
+      emit_loop(buf)
+      emit_local_get(buf, idx_local)
+      emit_local_get(buf, size_local)
+      emit_i32_ge_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, idx_local)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, val_local)
+      emit_i32_store(buf, 8)
+      emit_local_get(buf, idx_local)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_add(buf)
+      emit_local_set(buf, idx_local)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, obj_local)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
+    }
+    "FixedArray::length" => {
+      // FixedArray::length(arr) -> read header length
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "FixedArray::length", 1,
+      )
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_load(buf, 4)
+      emit_i64_extend_i32_s(buf)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf)
+    }
+    "FixedArray::get" => {
+      // FixedArray::get(arr, idx) -> arr[idx]
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "FixedArray::get", 2,
+      )
+      let ptr_local = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, ptr_local)
+      emit_local_get(buf, ptr_local)
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i32_load(buf, 8)
+      emit_i64_extend_i32_s(buf)
+    }
+    "FixedArray::set" | "FixedArray::unsafe_set" => {
+      // FixedArray::set(arr, idx, val) / FixedArray::unsafe_set(arr, idx, val)
+      // -> store val at arr[idx], no length update
+      let pos_args = extract_positional_exprs_with_arity(args, name, 3)
+      let ptr_local = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, ptr_local)
+      emit_local_get(buf, ptr_local)
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      compile_expr_i32(ctx, buf, pos_args[2])
+      emit_i32_wrap_i64(buf)
+      emit_i32_store(buf, 8)
+      emit_i64_const_tagged(buf, 0L)
+    }
+    "FixedArray::blit" => {
+      // FixedArray::blit(dst, dst_off, src, src_off, len)
+      // -> memory.copy(dst_addr, src_addr, byte_count)
+      // dst_addr = untag(dst) + 8 + dst_off_raw * 4
+      // src_addr = untag(src) + 8 + src_off_raw * 4
+      // byte_count = len_raw * 4
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "FixedArray::blit", 5,
+      )
+      let dst_ptr = alloc_temp_local(ctx)
+      let src_ptr = alloc_temp_local(ctx)
+      // dst ptr
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, dst_ptr)
+      // src ptr
+      compile_expr_i32(ctx, buf, pos_args[2])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, src_ptr)
+      // push dst_addr: dst_ptr + 8 + dst_off_raw * 4
+      emit_local_get(buf, dst_ptr)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf)
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      // push src_addr: src_ptr + 8 + src_off_raw * 4
+      emit_local_get(buf, src_ptr)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf)
+      compile_expr_i32(ctx, buf, pos_args[3])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      // push byte_count: len_raw * 4
+      compile_expr_i32(ctx, buf, pos_args[4])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      // memory.copy
+      emit_memory_copy(buf)
+      emit_i64_const_tagged(buf, 0L)
+    }
     "__index" => {
       // __index(obj, key) -> record/map field access when key is string,
       //                      array_get when key is integer
