@@ -70,6 +70,12 @@ Phase 4 (応用):
   - grouped merge / module source / codegen cache は入っているので、次の本命は typecheck / codegen hot path の profiling と削減
   - 直近の hotspot は `check/type` と `compile/emit` / `compile/bundle` を含む compile substage で、stable set の stage summary を `scripts/bench_selfhost_perf.sh` が動的 stage 集計で出せるようにした
   - `compile/write` と `compile/optimize` は比率が極端でも絶対時間が小さいケースがあるので、まずは `check/type` と `compile/emit` を削る
+  - persistent dep cache の parse-count probe は `fresh db` 2回目を `6 -> 0` まで下げたが、wall time はまだ process cold start と import closure 解析が支配している
+  - `just bench-selfhost-cache-probe` を追加し、`TypeDb fs multi-dep` と `CLI prepare batch shared TypeDb` の専用 probe を常設した
+  - 次にやること:
+    - `vibe test` / bootstrap shard の child process 分割を減らし、同じ root を同一 worker に寄せて `CliEntryDbCache` / shared `TypeDb` の hit 率を上げる
+    - `prepare_jobs_cached` で入れた sibling 共有を、実際に重い bootstrap/test の selfhost compiled 経路へ直接適用する
+    - dep list cache の次段として `header/interface` を永続化し、fresh process でも import closure discovery の CPU を落とす
 
 - [x] host `src/cmd/vibe` 側の compile/test loop にも selfhost と同じ persistent cache パターンを持ち込む
   - `src/loader` に `*_into` API を追加し、`check_cmd` / `test_cmd_sequential` / `test_cmd_report_json` が root 単位 `VibeDb` cache を持ち回るようにした

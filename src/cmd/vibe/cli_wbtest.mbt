@@ -2312,6 +2312,74 @@ test "split test entry task batches with weights uses file granularity" {
 }
 
 ///|
+test "test entry batch env chunk size accepts positive int only" {
+  let prev = @sys.get_env_var("VIBE_TEST_BATCH_CHUNK_SIZE")
+  defer wbtest_restore_env_var("VIBE_TEST_BATCH_CHUNK_SIZE", prev)
+  @sys.unset_env_var("VIBE_TEST_BATCH_CHUNK_SIZE")
+  assert_eq(test_entry_batch_env_chunk_size(), None)
+  @sys.set_env_var("VIBE_TEST_BATCH_CHUNK_SIZE", "3")
+  assert_eq(test_entry_batch_env_chunk_size(), Some(3))
+  @sys.set_env_var("VIBE_TEST_BATCH_CHUNK_SIZE", "0")
+  assert_eq(test_entry_batch_env_chunk_size(), None)
+  @sys.set_env_var("VIBE_TEST_BATCH_CHUNK_SIZE", "bad")
+  assert_eq(test_entry_batch_env_chunk_size(), None)
+}
+
+///|
+test "split test entry task batches with weights respects env chunk size" {
+  let prev = @sys.get_env_var("VIBE_TEST_BATCH_CHUNK_SIZE")
+  defer wbtest_restore_env_var("VIBE_TEST_BATCH_CHUNK_SIZE", prev)
+  @sys.set_env_var("VIBE_TEST_BATCH_CHUNK_SIZE", "2")
+  let weights : Map[String, Int] = {}
+  weights["vibe/compiler/a_test.vibe"] = 10
+  weights["vibe/compiler/b_test.vibe"] = 20
+  weights["vibe/compiler/c_test.vibe"] = 30
+  let grouped = split_test_entry_task_batches_with_weights(
+    [
+      "vibe/compiler/a_test.vibe", "vibe/compiler/b_test.vibe", "vibe/compiler/c_test.vibe",
+    ],
+    2,
+    weights,
+  )
+  assert_eq(grouped.length(), 2)
+  assert_eq(grouped[0].length(), 2)
+  assert_eq(grouped[1].length(), 1)
+}
+
+///|
+test "split test entry task batches keeps heavy weighted files isolated" {
+  let prev = @sys.get_env_var("VIBE_TEST_BATCH_CHUNK_SIZE")
+  defer wbtest_restore_env_var("VIBE_TEST_BATCH_CHUNK_SIZE", prev)
+  @sys.set_env_var("VIBE_TEST_BATCH_CHUNK_SIZE", "4")
+  let weights : Map[String, Int] = {}
+  weights["vibe/compiler/a_test.vibe"] = 100
+  weights["vibe/compiler/b_test.vibe"] = 90
+  weights["vibe/compiler/c_test.vibe"] = 10
+  weights["vibe/compiler/d_test.vibe"] = 10
+  let grouped = split_test_entry_task_batches_with_weights(
+    [
+      "vibe/compiler/a_test.vibe",
+      "vibe/compiler/b_test.vibe",
+      "vibe/compiler/c_test.vibe",
+      "vibe/compiler/d_test.vibe",
+    ],
+    2,
+    weights,
+  )
+  assert_eq(grouped.length(), 3)
+  assert_eq(grouped[0].length(), 2)
+  assert_eq(grouped[1].length(), 1)
+  assert_eq(grouped[2].length(), 1)
+  for batch in grouped {
+    assert_eq(
+      batch.contains("vibe/compiler/a_test.vibe") &&
+      batch.contains("vibe/compiler/b_test.vibe"),
+      false,
+    )
+  }
+}
+
+///|
 test "test batch weight cache key relativizes cwd absolute path" {
   let cwd = @io.current_dir_or_root()
   let abs = @vibe_fs.normalize_path(cwd + "/vibe/compiler/eval_test.vibe")

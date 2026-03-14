@@ -10,6 +10,7 @@ KPI_BASELINE_SEC="${VIBE_SELFHOST_BOOTSTRAP_BASELINE_SEC:-}"
 KPI_REDUCTION_PCT="${VIBE_SELFHOST_BOOTSTRAP_REDUCTION_PCT:-30}"
 PIPELINE_OPT_LEVEL="${VIBE_SELFHOST_PIPELINE_OPT_LEVEL:-}"
 SELFHOST_TEST_JOBS="${VIBE_SELFHOST_BOOTSTRAP_TEST_JOBS:-}"
+SELFHOST_BATCH_CHUNK_SIZE="${VIBE_SELFHOST_BOOTSTRAP_BATCH_CHUNK_SIZE:-1}"
 STAGE_TIMEOUT_SEC="${VIBE_SELFHOST_BOOTSTRAP_STAGE_TIMEOUT_SEC:-1800}"
 BATCH_WEIGHT_CACHE_PATH="${VIBE_SELFHOST_BOOTSTRAP_BATCH_WEIGHT_CACHE:-$OUT_DIR/selfhost_test_batch_weights.json}"
 BATCH_WEIGHT_SEED_PATH="${VIBE_SELFHOST_BOOTSTRAP_BATCH_WEIGHT_SEED:-$PROJECT_ROOT/scripts/selfhost_test_batch_weights.seed.json}"
@@ -272,6 +273,10 @@ if ! is_positive_int "$SELFHOST_TEST_JOBS"; then
   echo "bootstrap gate failed: VIBE_SELFHOST_BOOTSTRAP_TEST_JOBS must be positive integer" >&2
   exit 1
 fi
+if ! is_positive_int "$SELFHOST_BATCH_CHUNK_SIZE"; then
+  echo "bootstrap gate failed: VIBE_SELFHOST_BOOTSTRAP_BATCH_CHUNK_SIZE must be positive integer" >&2
+  exit 1
+fi
 if ! is_non_negative_int "$STAGE_TIMEOUT_SEC"; then
   echo "bootstrap gate failed: VIBE_SELFHOST_BOOTSTRAP_STAGE_TIMEOUT_SEC must be integer seconds" >&2
   exit 1
@@ -280,8 +285,10 @@ if [ "$SELFHOST_TEST_JOBS" -gt 16 ]; then
   SELFHOST_TEST_JOBS=16
 fi
 echo "[bootstrap] selfhost test jobs: $SELFHOST_TEST_JOBS"
+echo "[bootstrap] selfhost batch chunk size: $SELFHOST_BATCH_CHUNK_SIZE"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   printf -- "- %s: %s\n" "selfhost test jobs" "$SELFHOST_TEST_JOBS" >> "$GITHUB_STEP_SUMMARY" || true
+  printf -- "- %s: %s\n" "selfhost batch chunk size" "$SELFHOST_BATCH_CHUNK_SIZE" >> "$GITHUB_STEP_SUMMARY" || true
   printf -- "- %s: %ss\n" "stage timeout" "$STAGE_TIMEOUT_SEC" >> "$GITHUB_STEP_SUMMARY" || true
   printf -- "- %s: %s\n" "cutover" "$( [ "$SELFHOST_CUTOVER" = "1" ] && echo "selfhost (moonrun)" || echo "host CLI" )" >> "$GITHUB_STEP_SUMMARY" || true
   printf -- "- %s: %s\n" "batch weight cache" "$BATCH_WEIGHT_CACHE_PATH" >> "$GITHUB_STEP_SUMMARY" || true
@@ -313,12 +320,14 @@ run_compiled_selfhost_test_shard() {
   if command -v stdbuf >/dev/null 2>&1; then
     run_stage "compiled selfhost test suite shard ${shard_label}" \
       env VIBE_TEST_BACKEND=compiled VIBE_TEST_JOBS="$SELFHOST_TEST_JOBS" \
+      VIBE_TEST_BATCH_CHUNK_SIZE="$SELFHOST_BATCH_CHUNK_SIZE" \
       VIBE_TEST_BATCH_WEIGHT_CACHE="$BATCH_WEIGHT_CACHE_PATH" \
       stdbuf -oL -eL \
       "$VIBE_BIN" test --jobs "$SELFHOST_TEST_JOBS" "$@"
   else
     run_stage "compiled selfhost test suite shard ${shard_label}" \
       env VIBE_TEST_BACKEND=compiled VIBE_TEST_JOBS="$SELFHOST_TEST_JOBS" \
+      VIBE_TEST_BATCH_CHUNK_SIZE="$SELFHOST_BATCH_CHUNK_SIZE" \
       VIBE_TEST_BATCH_WEIGHT_CACHE="$BATCH_WEIGHT_CACHE_PATH" \
       "$VIBE_BIN" test --jobs "$SELFHOST_TEST_JOBS" "$@"
   fi

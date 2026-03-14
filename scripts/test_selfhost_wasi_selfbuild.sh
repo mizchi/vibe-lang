@@ -161,6 +161,8 @@ recursive_runner_mode=0
 cache_probe_runner_mode=0
 CACHE_PROBE_COUNT1="na"
 CACHE_PROBE_COUNT2="na"
+FS_PARSE_CACHE_PROBE_COUNT1="na"
+FS_PARSE_CACHE_PROBE_COUNT2="na"
 GROUP_MERGE_CACHE_PROBE_COUNT1="na"
 GROUP_MERGE_CACHE_PROBE_COUNT2="na"
 MODULE_SOURCE_CACHE_PROBE_COUNT1="na"
@@ -209,6 +211,27 @@ if [ "$cache_probe_runner_mode" -eq 1 ]; then
     exit 1
   fi
   echo "[selfbuild] cache probe counts: $CACHE_PROBE_COUNT1 -> $CACHE_PROBE_COUNT2"
+
+  FS_PARSE_CACHE_PROBE_OUT="$OUT_DIR/stage1_fs_parse_cache_probe.out"
+  run_stage_capture_stdout "run stage1 fs parse cache probe (--invoke selfbuild_probe_type_db_fs_parse_counts)" \
+    "$FS_PARSE_CACHE_PROBE_OUT" \
+    "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_probe_type_db_fs_parse_counts "$STAGE1_WASM"
+  FS_PARSE_CACHE_PROBE_RAW="$(rg -v '^warning' "$FS_PARSE_CACHE_PROBE_OUT" | tail -n 1)"
+  if ! is_non_negative_int "$FS_PARSE_CACHE_PROBE_RAW"; then
+    echo "selfbuild gate failed: stage1 fs parse cache probe did not return packed counts: $FS_PARSE_CACHE_PROBE_RAW" >&2
+    exit 1
+  fi
+  FS_PARSE_CACHE_PROBE_COUNT1="$((FS_PARSE_CACHE_PROBE_RAW / 1000))"
+  FS_PARSE_CACHE_PROBE_COUNT2="$((FS_PARSE_CACHE_PROBE_RAW % 1000))"
+  if [ "$FS_PARSE_CACHE_PROBE_COUNT1" -ne 4 ]; then
+    echo "selfbuild gate failed: stage1 fs parse cache probe first count must be 4, got $FS_PARSE_CACHE_PROBE_COUNT1" >&2
+    exit 1
+  fi
+  if [ "$FS_PARSE_CACHE_PROBE_COUNT2" -ne 0 ]; then
+    echo "selfbuild gate failed: stage1 fs parse cache probe second count must be 0, got $FS_PARSE_CACHE_PROBE_COUNT2" >&2
+    exit 1
+  fi
+  echo "[selfbuild] fs parse cache probe counts: $FS_PARSE_CACHE_PROBE_COUNT1 -> $FS_PARSE_CACHE_PROBE_COUNT2"
 
   GROUP_MERGE_CACHE_PROBE_OUT="$OUT_DIR/stage1_group_merge_cache_probe.out"
   run_stage_capture_stdout "run stage1 grouped merge cache probe (--invoke selfbuild_probe_type_db_group_merge_counts)" \

@@ -3598,11 +3598,34 @@ fn test_entry_batch_paths_weight(
 let test_entry_batch_max_chunk_size = 4
 
 ///|
+fn test_entry_batch_env_chunk_size() -> Int? {
+  match @sys.get_env_var("VIBE_TEST_BATCH_CHUNK_SIZE") {
+    Some(raw) => {
+      let parsed = @strconv.parse_int(raw.trim().to_string()) catch { _ => 0 }
+      if parsed > 0 {
+        Some(parsed)
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+}
+
+///|
 fn test_entry_batch_target_chunk_size(
   entry_count : Int,
   worker_count : Int,
   use_fine_grained_chunking : Bool,
 ) -> Int {
+  let configured = test_entry_batch_env_chunk_size()
+  if configured is Some(chunk_size) {
+    if chunk_size > test_entry_batch_max_chunk_size {
+      return test_entry_batch_max_chunk_size
+    } else {
+      return chunk_size
+    }
+  }
   if use_fine_grained_chunking {
     return 1
   }
@@ -3614,6 +3637,24 @@ fn test_entry_batch_target_chunk_size(
   } else {
     base
   }
+}
+
+///|
+fn test_entry_batch_target_weight_limit(
+  entry_paths : Array[String],
+  worker_count : Int,
+  weights : Map[String, Int],
+) -> Int {
+  if weights.length() == 0 {
+    return 0
+  }
+  let total_weight = test_entry_batch_paths_weight(entry_paths, weights)
+  if total_weight <= 0 {
+    return 0
+  }
+  let safe_workers = if worker_count <= 0 { 1 } else { worker_count }
+  let limit = (total_weight + safe_workers - 1) / safe_workers
+  if limit <= 0 { 1 } else { limit }
 }
 
 ///|
@@ -3654,6 +3695,11 @@ fn collect_test_entry_batch_units(
     worker_count,
     use_fine_grained_chunking,
   )
+  let target_chunk_weight = test_entry_batch_target_weight_limit(
+    entry_paths,
+    worker_count,
+    weights,
+  )
   let units : Array[TestEntryBatchUnit] = []
   for parent in parent_keys {
     let parent_paths = match grouped.get(parent) {
@@ -3665,14 +3711,25 @@ fn collect_test_entry_batch_units(
     while offset < parent_paths.length() {
       let chunk : Array[String] = []
       let mut chunk_count = 0
+      let mut chunk_weight = 0
       while offset < parent_paths.length() && chunk_count < target_chunk_size {
-        chunk.push(parent_paths[offset])
-        offset += 1
-        chunk_count += 1
+        let next_path = parent_paths[offset]
+        let next_weight = test_entry_batch_path_weight(next_path, weights)
+        if target_chunk_weight > 0 &&
+          chunk_count > 0 &&
+          chunk_weight + next_weight > target_chunk_weight {
+          offset = offset
+          chunk_count = target_chunk_size
+        } else {
+          chunk.push(next_path)
+          chunk_weight += next_weight
+          offset += 1
+          chunk_count += 1
+        }
       }
       units.push(TestEntryBatchUnit::{
         parent,
-        weight: test_entry_batch_paths_weight(chunk, weights),
+        weight: chunk_weight,
         paths: chunk,
       })
     }

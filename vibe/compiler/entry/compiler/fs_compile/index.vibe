@@ -33,7 +33,7 @@ import ../../../loader/index.vibe {
 }
 
 import ../../../runtime/index.vibe {
-  TypeDb, db_new, db_set_source, db_typecheck, db_merged_source,
+  TypeDb, db_new, db_set_source, db_typecheck, db_typecheck_fs, db_merged_source,
   db_grouped_merged_source, db_module_source, db_load_artifact, db_store_artifact
 }
 
@@ -389,6 +389,11 @@ export let source_group_filtered_group_count = (
 export let prepare_modules_cached = (db: TypeDb, main_path: String, main_source: String, sources: Array[(String, String)]) -> TypeDb with { Error } {
   let seeded = seed_type_db(db, main_path, main_source, sources)
   db_typecheck(seeded, main_path)
+}
+
+let prepare_modules_persistent_fs_cached = (db: TypeDb, main_path: String, main_source: String, sources: Array[(String, String)]) -> TypeDb with { Error, Fs } {
+  let seeded = seed_type_db(db, main_path, main_source, sources)
+  db_typecheck_fs(seeded, main_path)
 }
 
 export let source_group_prepare_typecheck_count = (
@@ -797,7 +802,7 @@ export let compile_file_fs_module = (entry_path: String) -> Bytes with { Error, 
 
 export let prepare_file_fs_cached = (db: TypeDb, entry_path: String) -> TypeDb with { Error, Fs } {
   let source_groups = collect_source_groups_fs(entry_path)
-  prepare_file_fs_from_source_groups_cached(db, entry_path, source_groups)
+  prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
 }
 
 let prepare_file_fs_from_source_groups_cached = (
@@ -813,6 +818,19 @@ let prepare_file_fs_from_source_groups_cached = (
   prepare_modules_cached(db, entry_path, main_source, sources)
 }
 
+let prepare_file_fs_from_source_groups_persistent_cached = (
+  db: TypeDb,
+  entry_path: String,
+  source_groups: Array[(String, Array[(String, String)])]
+) -> TypeDb with { Error, Fs } {
+  let sources = flatten_source_groups(source_groups)
+  let main_source = match source_lookup(sources, entry_path) {
+    Some(source) => source,
+    None => throw(String::concat("module not found: ", entry_path))
+  }
+  prepare_modules_persistent_fs_cached(db, entry_path, main_source, sources)
+}
+
 let compile_file_fs_cached_slow = (
   db: TypeDb,
   entry_path: String,
@@ -826,7 +844,7 @@ let compile_file_fs_cached_slow = (
   match load_persistent_artifact("fs-compile-wasi", entry_name, persistent_artifact_fingerprint) {
     Some(bytes) => (bytes, db),
     None => {
-      let next_db = prepare_file_fs_from_source_groups_cached(db, entry_path, source_groups)
+      let next_db = prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
       let (merged_source, _, codegen_db) = db_grouped_merged_source(next_db, source_groups)
       let artifact_fingerprint = artifact_fingerprint_from_source(merged_source)
       match db_load_artifact(codegen_db, entry_path, "wasi", entry_name, artifact_fingerprint) {
@@ -877,7 +895,7 @@ let compile_file_fs_module_cached_slow = (
   match load_persistent_artifact("fs-compile-module", "", persistent_artifact_fingerprint) {
     Some(bytes) => (bytes, db),
     None => {
-      let next_db = prepare_file_fs_from_source_groups_cached(db, entry_path, source_groups)
+      let next_db = prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
       let (merged_source, merge_fingerprint, module_db) = db_grouped_merged_source(next_db, source_groups)
       let (module_source, codegen_db) = db_module_source(module_db, merge_fingerprint, merged_source)
       let artifact_fingerprint = artifact_fingerprint_from_source(module_source)
