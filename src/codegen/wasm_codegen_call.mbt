@@ -1,4 +1,67 @@
 ///|
+/// S5: Try to fold a binary integer operation at compile time.
+/// Returns true if folding succeeded (result emitted), false otherwise.
+fn try_fold_int_arith(
+  buf : ByteBuf,
+  name : String,
+  left : @core.Expr,
+  right : @core.Expr,
+) -> Bool {
+  match (left, right) {
+    (Int(value=a, ..), Int(value=b, ..)) => {
+      let result : Int64? = match name {
+        "add" | "__add" => Some(a + b)
+        "sub" | "__sub" => Some(a - b)
+        "mul" | "__mul" => Some(a * b)
+        "div" | "__div" => if b != 0L { Some(a / b) } else { None }
+        "mod" | "__mod" => if b != 0L { Some(a % b) } else { None }
+        _ => None
+      }
+      match result {
+        Some(r) => {
+          emit_i64_const_tagged(buf, r)
+          true
+        }
+        None => false
+      }
+    }
+    _ => false
+  }
+}
+
+///|
+/// S5: Try to fold a binary integer comparison at compile time.
+/// Returns true if folding succeeded (result emitted), false otherwise.
+fn try_fold_int_cmp(
+  buf : ByteBuf,
+  name : String,
+  left : @core.Expr,
+  right : @core.Expr,
+) -> Bool {
+  match (left, right) {
+    (Int(value=a, ..), Int(value=b, ..)) => {
+      let result : Bool? = match name {
+        "eq" | "__eq" => Some(a == b)
+        "ne" | "__ne" | "neq" => Some(a != b)
+        "lt" | "__lt" => Some(a < b)
+        "gt" | "__gt" => Some(a > b)
+        "le" | "__le" | "lte" => Some(a <= b)
+        "ge" | "__ge" | "gte" => Some(a >= b)
+        _ => None
+      }
+      match result {
+        Some(r) => {
+          emit_i64_const_raw(buf, tag_bool_value64(r))
+          true
+        }
+        None => false
+      }
+    }
+    _ => false
+  }
+}
+
+///|
 fn compile_i32_cmp_tagged(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -26,11 +89,12 @@ fn compile_i32_add_tagged(
   left : @core.Expr,
   right : @core.Expr,
 ) -> Unit raise WasmGenError {
+  if try_fold_int_arith(buf, "add", left, right) {
+    return
+  }
   compile_expr_i32(ctx, buf, left)
   compile_expr_i32(ctx, buf, right)
   emit_i64_add(buf)
-  // Correction only needed if tag_int != 0
-  // Currently tag_int = 0, so no correction needed
 }
 
 ///|
@@ -40,11 +104,12 @@ fn compile_i32_sub_tagged(
   left : @core.Expr,
   right : @core.Expr,
 ) -> Unit raise WasmGenError {
+  if try_fold_int_arith(buf, "sub", left, right) {
+    return
+  }
   compile_expr_i32(ctx, buf, left)
   compile_expr_i32(ctx, buf, right)
   emit_i64_sub(buf)
-  // Correction only needed if tag_int != 0
-  // Currently tag_int = 0, so no correction needed
 }
 
 ///|
@@ -54,6 +119,9 @@ fn compile_i32_mul_tagged(
   left : @core.Expr,
   right : @core.Expr,
 ) -> Unit raise WasmGenError {
+  if try_fold_int_arith(buf, "mul", left, right) {
+    return
+  }
   // Untag first operand
   compile_expr_i32(ctx, buf, left)
   emit_i64_const_raw(buf, 2L)
@@ -64,11 +132,9 @@ fn compile_i32_mul_tagged(
   emit_i64_shr_s(buf)
   // Multiply
   emit_i64_mul(buf)
-  // Retag result
+  // Retag result: (result << 2) — tag_int = 0 so i64.or is a no-op
   emit_i64_const_raw(buf, 2L)
   emit_i64_shl(buf)
-  emit_i64_const_raw(buf, tag_int.to_int64())
-  emit_i64_or(buf)
 }
 
 ///|
@@ -78,6 +144,9 @@ fn compile_i32_div_tagged(
   left : @core.Expr,
   right : @core.Expr,
 ) -> Unit raise WasmGenError {
+  if try_fold_int_arith(buf, "div", left, right) {
+    return
+  }
   // Untag first operand
   compile_expr_i32(ctx, buf, left)
   emit_i64_const_raw(buf, 2L)
@@ -88,11 +157,9 @@ fn compile_i32_div_tagged(
   emit_i64_shr_s(buf)
   // Divide (signed)
   emit_i64_div_s(buf)
-  // Retag result
+  // Retag result: (result << 2) — tag_int = 0 so i64.or is a no-op
   emit_i64_const_raw(buf, 2L)
   emit_i64_shl(buf)
-  emit_i64_const_raw(buf, tag_int.to_int64())
-  emit_i64_or(buf)
 }
 
 ///|
@@ -102,6 +169,9 @@ fn compile_i32_mod_tagged(
   left : @core.Expr,
   right : @core.Expr,
 ) -> Unit raise WasmGenError {
+  if try_fold_int_arith(buf, "mod", left, right) {
+    return
+  }
   // Untag first operand
   compile_expr_i32(ctx, buf, left)
   emit_i64_const_raw(buf, 2L)
@@ -112,11 +182,9 @@ fn compile_i32_mod_tagged(
   emit_i64_shr_s(buf)
   // Remainder (signed)
   emit_i64_rem_s(buf)
-  // Retag result
+  // Retag result: (result << 2) — tag_int = 0 so i64.or is a no-op
   emit_i64_const_raw(buf, 2L)
   emit_i64_shl(buf)
-  emit_i64_const_raw(buf, tag_int.to_int64())
-  emit_i64_or(buf)
 }
 
 ///|
@@ -145,10 +213,9 @@ fn emit_tagged_i64_arith_from_locals(
       emit_i64_const_raw(buf, 2L)
       emit_i64_shr_s(buf)
       emit_i64_mul(buf)
+      // Retag: (result << 2) — tag_int = 0 so i64.or is a no-op
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_int.to_int64())
-      emit_i64_or(buf)
     }
     "div" | "__div" => {
       emit_local_get(buf, left_local)
@@ -158,10 +225,9 @@ fn emit_tagged_i64_arith_from_locals(
       emit_i64_const_raw(buf, 2L)
       emit_i64_shr_s(buf)
       emit_i64_div_s(buf)
+      // Retag: (result << 2) — tag_int = 0 so i64.or is a no-op
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_int.to_int64())
-      emit_i64_or(buf)
     }
     _ => raise WasmGenError::Unsupported("dynamic numeric arith op: " + name)
   }
@@ -567,8 +633,7 @@ fn emit_i32_result_as_tagged_int(buf : ByteBuf) -> Unit {
   emit_i64_extend_i32_s(buf)
   emit_i64_const_raw(buf, 2L)
   emit_i64_shl(buf)
-  emit_i64_const_raw(buf, tag_int.to_int64())
-  emit_i64_or(buf)
+  // tag_int = 0, i64.or is a no-op
 }
 
 ///|
@@ -797,13 +862,18 @@ fn compile_call_user_fn(
         emit_i32_const_raw(buf, 0)
       }
   }
-  if ctx.heap_local >= 0 && ctx.use_heap_global {
+  // S4: Skip heap sync when callee is known to not use heap
+  let callee_heap = match ctx.fn_needs_heap.get(name) {
+    Some(false) => false
+    _ => true // conservative: unknown or true
+  }
+  if ctx.heap_local >= 0 && ctx.use_heap_global && callee_heap {
     emit_local_get(buf, ctx.heap_local)
     emit_global_set(buf, ctx.heap_global)
   }
   let idx = func_import_count(ctx) + fn_idx
   emit_call(buf, idx)
-  if ctx.heap_local >= 0 && ctx.use_heap_global {
+  if ctx.heap_local >= 0 && ctx.use_heap_global && callee_heap {
     emit_global_get(buf, ctx.heap_global)
     emit_local_set(buf, ctx.heap_local)
   }

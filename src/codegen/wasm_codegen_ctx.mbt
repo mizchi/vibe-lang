@@ -6,6 +6,7 @@ priv struct CodegenCtx {
   mut local_count : Int
   fn_indices : Map[String, Int]
   fn_needs_env : Map[Int, Bool] // function index -> closure env required
+  fn_needs_heap : Map[String, Bool] // function name -> needs heap allocation
   fn_params : Map[String, Array[ValueKind]]
   fn_param_names : Map[String, Array[String]] // function name -> param names
   fn_returns : Map[String, ValueKind]
@@ -103,6 +104,8 @@ priv struct CodegenCtx {
   force_cabi_realloc : Bool
   // Exported closures: maps exported fn name -> global index storing env pointer
   exported_fn_env_globals : Map[String, Int]
+  // S8: heap_synced tracks whether heap_local == heap_global
+  mut heap_synced : Bool
 }
 
 ///|
@@ -132,6 +135,7 @@ fn CodegenCtx::new(
     local_count: 0,
     fn_indices: {},
     fn_needs_env: {},
+    fn_needs_heap: {},
     fn_params: {},
     fn_param_names: {},
     fn_returns: {},
@@ -225,6 +229,7 @@ fn CodegenCtx::new(
     force_cabi_realloc,
     // Exported closures env globals
     exported_fn_env_globals: {},
+    heap_synced: false,
   }
 }
 

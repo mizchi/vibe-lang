@@ -706,6 +706,25 @@ fn emit_heap_reserve(
 }
 
 ///|
+/// S8: Sync heap_local -> heap_global before a call, skipping if already synced.
+fn emit_heap_pre_call_sync(ctx : CodegenCtx, buf : ByteBuf) -> Unit {
+  if ctx.heap_local >= 0 && ctx.use_heap_global && not(ctx.heap_synced) {
+    emit_local_get(buf, ctx.heap_local)
+    emit_global_set(buf, ctx.heap_global)
+  }
+}
+
+///|
+/// S8: Reload heap_global -> heap_local after a call, marking as synced.
+fn emit_heap_post_call_sync(ctx : CodegenCtx, buf : ByteBuf) -> Unit {
+  if ctx.heap_local >= 0 && ctx.use_heap_global {
+    emit_global_get(buf, ctx.heap_global)
+    emit_local_set(buf, ctx.heap_local)
+    ctx.heap_synced = true
+  }
+}
+
+///|
 fn emit_heap_alloc(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -719,6 +738,7 @@ fn emit_heap_alloc(
   emit_i32_const_raw(buf, size)
   emit_i32_add(buf)
   emit_local_set(buf, ctx.heap_local)
+  ctx.heap_synced = false
 }
 
 ///|
@@ -739,6 +759,7 @@ fn emit_heap_alloc_unchecked(
   emit_i32_const_raw(buf, size)
   emit_i32_add(buf)
   emit_local_set(buf, ctx.heap_local)
+  ctx.heap_synced = false
 }
 
 ///|
@@ -790,6 +811,7 @@ fn emit_heap_alloc_local(
   emit_local_get(buf, size_local)
   emit_i32_add(buf)
   emit_local_set(buf, ctx.heap_local)
+  ctx.heap_synced = false
 }
 
 ///|
@@ -1054,6 +1076,7 @@ fn compile_func_body(
     ctx.heap_local = ctx.local_count
     ctx.local_count += 1
     ctx.local_types.push(ValueKind::I32)
+    ctx.heap_synced = true
   }
   match multivalue_kinds {
     Some(kinds) => compile_block_multivalue(ctx, instr, ast, kinds)
@@ -1111,6 +1134,7 @@ fn compile_function(
   let saved_count = ctx.local_count
   let saved_need_heap = ctx.need_heap
   let saved_heap_local = ctx.heap_local
+  let saved_heap_synced = ctx.heap_synced
   let saved_current_env_idx = ctx.current_env_idx
   let saved_fn_locals = ctx.fn_local_sigs
   let saved_mut_captured = ctx.mut_captured_vars
@@ -1123,6 +1147,7 @@ fn compile_function(
   ctx.local_count = 0
   ctx.need_heap = false
   ctx.heap_local = -1
+  ctx.heap_synced = false
   ctx.fn_local_sigs = {}
   ctx.const_i64_values = {}
   let param_len = if params.length() < param_kinds.length() {
