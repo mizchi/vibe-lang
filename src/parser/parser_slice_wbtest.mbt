@@ -1,6 +1,6 @@
 ///|
-test "parse string slice s[i..j] desugars to __slice" {
-  let module_ = parse_ast("let x = s[1..3]")
+test "parse string slice s[i:j] desugars to __slice" {
+  let module_ = parse_ast("let x = s[1:3]")
   match module_.stmts[0] {
     @core.Stmt::Let(
       name="x",
@@ -12,8 +12,8 @@ test "parse string slice s[i..j] desugars to __slice" {
 }
 
 ///|
-test "parse string slice s[..j] desugars to __slice with 0 start" {
-  let module_ = parse_ast("let x = s[..3]")
+test "parse string slice s[:j] desugars to __slice with 0 start" {
+  let module_ = parse_ast("let x = s[:3]")
   match module_.stmts[0] {
     @core.Stmt::Let(
       name="x",
@@ -31,11 +31,20 @@ test "parse string slice s[..j] desugars to __slice with 0 start" {
 }
 
 ///|
-test "parse string slice s[i..] desugars to block with String::length" {
-  let module_ = parse_ast("let x = s[1..]")
+test "parse string slice s[i:] desugars to block with String::length" {
+  let module_ = parse_ast("let x = s[1:]")
   match module_.stmts[0] {
     @core.Stmt::Let(name="x", expr=@core.Expr::Block(..), ..) => ()
-    _ => fail("expected let with block expr for s[i..]")
+    _ => fail("expected let with block expr for s[i:]")
+  }
+}
+
+///|
+test "parse string slice s[:] desugars to full copy" {
+  let module_ = parse_ast("let x = s[:]")
+  match module_.stmts[0] {
+    @core.Stmt::Let(name="x", expr=@core.Expr::Block(..), ..) => ()
+    _ => fail("expected let with block expr for s[:]")
   }
 }
 

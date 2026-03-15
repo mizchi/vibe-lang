@@ -1942,23 +1942,57 @@ fn AstParser::parse_call_or_primary(
         )
       }
     } else if self.peek_kind() == lbracket() && not(saw_newline) {
-      // Index/slice access: expr[index] or expr[i..j] — only on the same line.
+      // Index/slice access: expr[index] or expr[i:j] — only on the same line.
       // A newline before [ starts a new array literal expression.
       let _ = self.bump()
-      if self.peek_kind() == dotdot() {
-        // expr[..j] — slice from 0 to j
-        let _ = self.bump() // consume ..
-        let end_expr = self.parse_expr()
-        let _ = self.expect(rbracket(), "]")
-        let zero = @core.Expr::Int(value=0L, span=end_expr.span())
-        expr = call3("__slice", expr, zero, end_expr)
+      if self.peek_kind() == colon() {
+        // expr[:j] — slice from 0 to j, or expr[:] — full copy
+        let _ = self.bump() // consume :
+        if self.peek_kind() == rbracket() {
+          // expr[:] — slice from 0 to length
+          let _ = self.bump() // consume ]
+          let slice_pos = self.pos
+          let temp_name = "__slice$" + slice_pos.to_string()
+          let span = expr.span()
+          let temp_ref = @core.Expr::Ident(name=temp_name, span~)
+          let zero = @core.Expr::Int(value=0L, span~)
+          let len_call = @core.Expr::Call(
+            name="String::length",
+            type_args=[],
+            args=[
+              @core.CallArg::{
+                label: None,
+                expr: temp_ref,
+                span: temp_ref.span(),
+              },
+            ],
+            span~,
+          )
+          expr = @core.Expr::Block(
+            body=@core.Module::{
+              stmts: [
+                @core.Stmt::Let(rec=false, name=temp_name, expr~, span~),
+                @core.Stmt::Expr(
+                  expr=call3("__slice", temp_ref, zero, len_call),
+                  span~,
+                ),
+              ],
+            },
+            span~,
+          )
+        } else {
+          let end_expr = self.parse_expr()
+          let _ = self.expect(rbracket(), "]")
+          let zero = @core.Expr::Int(value=0L, span=end_expr.span())
+          expr = call3("__slice", expr, zero, end_expr)
+        }
       } else {
         let index = self.parse_expr()
-        if self.peek_kind() == dotdot() {
-          // expr[i..j] or expr[i..]
-          let _ = self.bump() // consume ..
+        if self.peek_kind() == colon() {
+          // expr[i:j] or expr[i:]
+          let _ = self.bump() // consume :
           if self.peek_kind() == rbracket() {
-            // expr[i..] — slice from i to length
+            // expr[i:] — slice from i to length
             let _ = self.bump() // consume ]
             let slice_pos = self.pos
             let temp_name = "__slice$" + slice_pos.to_string()
@@ -1989,7 +2023,7 @@ fn AstParser::parse_call_or_primary(
               span~,
             )
           } else {
-            // expr[i..j]
+            // expr[i:j]
             let end_expr = self.parse_expr()
             let _ = self.expect(rbracket(), "]")
             expr = call3("__slice", expr, index, end_expr)
