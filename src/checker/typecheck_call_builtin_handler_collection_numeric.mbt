@@ -1186,6 +1186,17 @@ fn type_call_builtin_handler_collection_numeric(
                 span=call_span,
               )
           }
+        @core.Type::String => {
+          if not(type_equal(env, index_ty, @core.Type::Int)) {
+            raise TypeError::Mismatch(
+              expected=@core.Type::Int,
+              actual=index_ty,
+              span=pos_args[1].span(),
+              context=Some("string index"),
+            )
+          }
+          @core.Type::String
+        }
         _ => {
           let _ = index_ty
           let _ = elem_ty

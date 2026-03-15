@@ -813,6 +813,22 @@ fn eval_pure_builtin(
             Some(v) => v
             None => raise EvalError::BadCall(MissingKey(op="[]", key~))
           }
+        (@core.Value::String(s), @core.Value::Int(i)) => {
+          let idx = i.to_int()
+          if idx >= 0 && idx < s.length() {
+            @core.Value::String(s.substring(start=idx, end=idx + 1))
+          } else {
+            raise EvalError::BadCall(
+              E(
+                "[]: string index " +
+                i.to_string() +
+                " out of bounds (length " +
+                s.length().to_string() +
+                ")",
+              ),
+            )
+          }
+        }
         _ =>
           raise EvalError::BadCall(
             E(

@@ -5226,14 +5226,68 @@ fn compile_call_builtin_pre_user_inner(
           emit_i64_extend_i32_s(buf)
         }
         _ => {
-          // Integer index: array-style direct access
+          // Integer index: array access or string char access
+          let obj_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
           let ptr_local = alloc_temp_local(ctx)
           compile_expr_i32(ctx, buf, pos_args[0])
+          emit_local_set(buf, obj_local)
+          emit_local_get(buf, obj_local)
           emit_i64_const_raw(buf, (-4).to_int64())
           emit_i64_and(buf)
           emit_i32_wrap_i64(buf)
           emit_local_set(buf, ptr_local)
-          // offset = 8 + (idx >> 2) * 4
+          // Check obj_type: string (1) vs array (5)
+          emit_local_get(buf, ptr_local)
+          emit_i32_load(buf, 0) // obj_type
+          emit_i32_const_raw(buf, obj_string)
+          emit_i32_eq(buf)
+          buf.push((4).to_byte()) // if (string)
+          buf.push((126).to_byte()) // result i64
+          // String path: emit substring(s, i, i+1) inline
+          let _ = compile_call_builtin_pre_user(
+            ctx,
+            buf,
+            "String::substring",
+            [
+              @core.CallArg::{
+                label: None,
+                expr: pos_args[0],
+                span: pos_args[0].span(),
+              },
+              @core.CallArg::{
+                label: None,
+                expr: pos_args[1],
+                span: pos_args[1].span(),
+              },
+              @core.CallArg::{
+                label: None,
+                expr: @core.Expr::Call(
+                  name="__add",
+                  type_args=[],
+                  args=[
+                    @core.CallArg::{
+                      label: None,
+                      expr: pos_args[1],
+                      span: pos_args[1].span(),
+                    },
+                    @core.CallArg::{
+                      label: None,
+                      expr: @core.Expr::Int(
+                        value=1L,
+                        span=pos_args[1].span(),
+                      ),
+                      span: pos_args[1].span(),
+                    },
+                  ],
+                  span=pos_args[1].span(),
+                ),
+                span: pos_args[1].span(),
+              },
+            ],
+            false,
+          )
+          buf.push((5).to_byte()) // else (array)
+          // Array path: direct access at offset 8 + (idx >> 2) * 4
           emit_local_get(buf, ptr_local)
           compile_expr_i32(ctx, buf, pos_args[1])
           emit_i64_const_raw(buf, 2L)
@@ -5244,6 +5298,7 @@ fn compile_call_builtin_pre_user_inner(
           emit_i32_add(buf)
           emit_i32_load(buf, 8)
           emit_i64_extend_i32_s(buf)
+          buf.push((11).to_byte()) // end if
         }
       }
     }
