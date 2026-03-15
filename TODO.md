@@ -251,8 +251,9 @@ Phase 4 (応用):
 
 ### 中優先度（ボイラープレート削減）
 
-- [ ] String index / slice 構文 `s[i]`, `s[i..j]`, `s[..j]`, `s[i..]`
-  - `vibe/x/url`, `vibe/x/toml`, `vibe/x/regexp` で `String::substring(s, i, i + 1)` が多発している
+- [x] String index / slice 構文 `s[i]`, `s[i..j]`, `s[..j]`, `s[i..]`
+  - `s[i]` → checker/eval/codegen 対応済み。`s[i..j]` は既存 (パーサーで `String::substring` にデシュガー)
+  - `vibe/x/url`, `vibe/x/toml`, `vibe/x/regexp` で `String::substring(s, i, i + 1)` → `s[i]` へ置換可能
 - [ ] raw string / multiline string（`r"..."`, `"""..."""`）
   - `vibe/x/regexp`, `vibe/x/toml` のエスケープ負荷を下げる
 - [ ] 軽量 struct リテラル sugar `Type { ... }`
