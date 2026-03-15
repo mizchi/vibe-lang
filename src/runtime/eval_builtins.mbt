@@ -39,6 +39,7 @@ fn is_cheap_pure_builtin(name : String) -> Bool {
   name == "__lt" ||
   name == "__neg" ||
   name == "__index" ||
+  name == "__slice" ||
   name == "__set_index" ||
   name == "__assert" ||
   name == "__to_string" ||
@@ -837,6 +838,41 @@ fn eval_pure_builtin(
               " with " +
               value_type_name(args[1]),
             ),
+          )
+      }
+    }
+    "__slice" => {
+      if args.length() != 3 {
+        raise EvalError::BadCall(
+          E("[..]: expected 3 arguments, got " + args.length().to_string()),
+        )
+      }
+      match (args[0], args[1], args[2]) {
+        (@core.Value::String(s), @core.Value::Int(start), @core.Value::Int(end_)) => {
+          let len = s.length().to_int64()
+          let s0 = if start < 0L { 0L } else if start > len { len } else { start }
+          let e0 = if end_ < 0L { 0L } else if end_ > len { len } else { end_ }
+          let fields : Map[String, @core.Value] = {
+            "source": @core.Value::String(s),
+            "start": @core.Value::Int(s0),
+            "end": @core.Value::Int(e0),
+          }
+          @core.Value::Record(fields)
+        }
+        (@core.Value::Array(arr), @core.Value::Int(start), @core.Value::Int(end_)) => {
+          let len = arr.length().to_int64()
+          let s0 = if start < 0L { 0L } else if start > len { len } else { start }
+          let e0 = if end_ < 0L { 0L } else if end_ > len { len } else { end_ }
+          let fields : Map[String, @core.Value] = {
+            "source": @core.Value::Array(arr),
+            "start": @core.Value::Int(s0),
+            "end": @core.Value::Int(e0),
+          }
+          @core.Value::Record(fields)
+        }
+        _ =>
+          raise EvalError::BadCall(
+            E("[..]: cannot slice " + value_type_name(args[0])),
           )
       }
     }

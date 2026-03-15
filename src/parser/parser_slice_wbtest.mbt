@@ -1,23 +1,23 @@
 ///|
-test "parse string slice s[i..j] desugars to String::substring" {
+test "parse string slice s[i..j] desugars to __slice" {
   let module_ = parse_ast("let x = s[1..3]")
   match module_.stmts[0] {
     @core.Stmt::Let(
       name="x",
-      expr=@core.Expr::Call(name="String::substring", args~, ..),
+      expr=@core.Expr::Call(name="__slice", args~, ..),
       ..
     ) => assert_eq(args.length(), 3)
-    _ => fail("expected let with String::substring call")
+    _ => fail("expected let with __slice call")
   }
 }
 
 ///|
-test "parse string slice s[..j] desugars to String::substring with 0 start" {
+test "parse string slice s[..j] desugars to __slice with 0 start" {
   let module_ = parse_ast("let x = s[..3]")
   match module_.stmts[0] {
     @core.Stmt::Let(
       name="x",
-      expr=@core.Expr::Call(name="String::substring", args~, ..),
+      expr=@core.Expr::Call(name="__slice", args~, ..),
       ..
     ) => {
       assert_eq(args.length(), 3)
@@ -26,7 +26,7 @@ test "parse string slice s[..j] desugars to String::substring with 0 start" {
         _ => fail("expected start=0")
       }
     }
-    _ => fail("expected let with String::substring call")
+    _ => fail("expected let with __slice call")
   }
 }
 

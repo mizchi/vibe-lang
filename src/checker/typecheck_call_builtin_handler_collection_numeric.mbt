@@ -1207,6 +1207,33 @@ fn type_call_builtin_handler_collection_numeric(
         }
       }
     }
+    "__slice" => {
+      let pos_args = extract_positional_args(args, "__slice", call_span)
+      if pos_args.length() != 3 {
+        raise TypeError::BadCall(message="__slice", span=call_span)
+      }
+      let container_ty = type_expr_eff(
+        env, pos_args[0], aliases, effects, allow_effect,
+      )
+      let _start_ty = type_expr_eff(
+        env, pos_args[1], aliases, effects, allow_effect,
+      )
+      let _end_ty = type_expr_eff(
+        env, pos_args[2], aliases, effects, allow_effect,
+      )
+      let resolved_container = resolve_type(env, container_ty)
+      match resolved_container {
+        @core.Type::String =>
+          @core.Type::Named(name="StringView", args=[])
+        @core.Type::Array(elem_ty) =>
+          @core.Type::Named(name="ArrayView", args=[elem_ty])
+        _ =>
+          raise TypeError::BadCall(
+            message="__slice: not sliceable",
+            span=call_span,
+          )
+      }
+    }
     "__eq" => {
       let pos_args = extract_positional_args(args, "__eq", call_span)
       if pos_args.length() != 2 {

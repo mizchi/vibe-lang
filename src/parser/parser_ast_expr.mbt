@@ -1951,7 +1951,7 @@ fn AstParser::parse_call_or_primary(
         let end_expr = self.parse_expr()
         let _ = self.expect(rbracket(), "]")
         let zero = @core.Expr::Int(value=0L, span=end_expr.span())
-        expr = call3("String::substring", expr, zero, end_expr)
+        expr = call3("__slice", expr, zero, end_expr)
       } else {
         let index = self.parse_expr()
         if self.peek_kind() == dotdot() {
@@ -1981,7 +1981,7 @@ fn AstParser::parse_call_or_primary(
                 stmts: [
                   @core.Stmt::Let(rec=false, name=temp_name, expr~, span~),
                   @core.Stmt::Expr(
-                    expr=call3("String::substring", temp_ref, index, len_call),
+                    expr=call3("__slice", temp_ref, index, len_call),
                     span~,
                   ),
                 ],
@@ -1992,7 +1992,7 @@ fn AstParser::parse_call_or_primary(
             // expr[i..j]
             let end_expr = self.parse_expr()
             let _ = self.expect(rbracket(), "]")
-            expr = call3("String::substring", expr, index, end_expr)
+            expr = call3("__slice", expr, index, end_expr)
           }
         } else {
           // expr[index] — regular index access
