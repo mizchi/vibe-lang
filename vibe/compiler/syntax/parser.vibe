@@ -114,6 +114,7 @@ let tk_name = (tok: Token) -> String {
     TRBrace => "}",
     TLBracket => "[",
     TRBracket => "]",
+    TDotDot => "..",
     TDotDotDot => "...",
     TStringInterp(_) => "string",
     TEof => "eof"
@@ -557,6 +558,7 @@ let rec collect_import_path = (tokens: Array[Token], pos: Int, acc: String) -> (
   match peek(tokens, pos) {
     TLBrace => (acc, pos),
     TDot => collect_import_path(tokens, pos + 1, "\{acc}."),
+    TDotDot => collect_import_path(tokens, pos + 1, "\{acc}.."),
     TSlash => collect_import_path(tokens, pos + 1, "\{acc}/"),
     TIdent(name) => collect_import_path(tokens, pos + 1, "\{acc}\{name}"),
     TMinus => collect_import_path(tokens, pos + 1, "\{acc}-"),
@@ -1095,6 +1097,38 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
               let en = expect_tk(tokens, end, ")")
               cur_expr = ECall(cur_expr, args)
               cur_pos = en
+            }
+          }
+        },
+        TLBracket => {
+          match peek(tokens, cur_pos + 1) {
+            TDotDot => {
+              let (end_expr, en) = parse_impl(tokens, cur_pos + 2, 0)
+              let en2 = expect_tk(tokens, en, "]")
+              cur_expr = ECall(EIdent("__slice"), [cur_expr, EInt(0), end_expr])
+              cur_pos = en2
+            },
+            _ => {
+              let (idx, n1) = parse_impl(tokens, cur_pos + 1, 0)
+              match peek(tokens, n1) {
+                TDotDot => match peek(tokens, n1 + 1) {
+                  TRBracket => {
+                    cur_expr = ECall(EIdent("__slice"), [cur_expr, idx, ECall(EIdent("Array::length"), [cur_expr])])
+                    cur_pos = n1 + 2
+                  },
+                  _ => {
+                    let (end_expr, en) = parse_impl(tokens, n1 + 1, 0)
+                    let en2 = expect_tk(tokens, en, "]")
+                    cur_expr = ECall(EIdent("__slice"), [cur_expr, idx, end_expr])
+                    cur_pos = en2
+                  }
+                },
+                _ => {
+                  let en = expect_tk(tokens, n1, "]")
+                  cur_expr = ECall(EIdent("__index"), [cur_expr, idx])
+                  cur_pos = en
+                }
+              }
             }
           }
         },
