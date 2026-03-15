@@ -4878,18 +4878,39 @@ fn compile_call_builtin_pre_user_inner(
     }
     "Array::length" => {
       // array_length(arr) -> load len field, shift left 2 (tag as int)
+      // Supports both obj_array (len at offset 4) and
+      // obj_array_view (end - start, offsets 12 and 8)
       let pos_args = extract_positional_exprs_with_arity(
         args, "Array::length", 1,
       )
+      let arr_ptr = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, (-4).to_int64())
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
-      emit_i32_load(buf, 4)
+      emit_local_set(buf, arr_ptr)
+      emit_local_get(buf, arr_ptr)
+      emit_i32_load(buf, 0) // obj_type
+      emit_i32_const_raw(buf, obj_array_view)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte()) // if (array_view)
+      buf.push((126).to_byte()) // result i64
+      // ArrayView: length = end - start
+      emit_local_get(buf, arr_ptr)
+      emit_i32_load(buf, 12) // end
+      emit_local_get(buf, arr_ptr)
+      emit_i32_load(buf, 8) // start
+      emit_i32_sub(buf)
       emit_i64_extend_i32_s(buf)
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf)
-      // tag_int = 0, i64.or is a no-op
+      buf.push((5).to_byte()) // else (regular array)
+      emit_local_get(buf, arr_ptr)
+      emit_i32_load(buf, 4) // length field
+      emit_i64_extend_i32_s(buf)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf)
+      buf.push((11).to_byte()) // end if
     }
     "iter_require" if not(is_user_fn) => {
       // iter_require(xs) -> identity (prelude fallback for Array iteration)
@@ -4933,24 +4954,48 @@ fn compile_call_builtin_pre_user_inner(
     }
     "Array::get" => {
       // array_get(arr, idx) -> load arr[idx]
+      // Supports both obj_array and obj_array_view
       let pos_args = extract_positional_exprs_with_arity(args, "Array::get", 2)
-      let ptr_local = alloc_temp_local(ctx)
+      let arr_ptr = alloc_temp_local(ctx)
+      let idx_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, (-4).to_int64())
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
-      emit_local_set(buf, ptr_local)
-      // offset = 8 + (idx >> 2) * 4
-      emit_local_get(buf, ptr_local)
+      emit_local_set(buf, arr_ptr)
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_i64_const_raw(buf, 2L)
       emit_i64_shr_s(buf)
       emit_i32_wrap_i64(buf)
+      emit_local_set(buf, idx_local)
+      emit_local_get(buf, arr_ptr)
+      emit_i32_load(buf, 0) // obj_type
+      emit_i32_const_raw(buf, obj_array_view)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte()) // if (array_view)
+      buf.push((126).to_byte()) // result i64
+      // ArrayView: source[start + idx]
+      emit_local_get(buf, arr_ptr)
+      emit_i32_load(buf, 4) // source_ptr
+      emit_local_get(buf, arr_ptr)
+      emit_i32_load(buf, 8) // start
+      emit_local_get(buf, idx_local)
+      emit_i32_add(buf) // start + idx
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf) // source_ptr + (start + idx) * 4
+      emit_i32_load(buf, 8) // load element
+      emit_i64_extend_i32_s(buf)
+      buf.push((5).to_byte()) // else (regular array)
+      // offset = 8 + idx * 4
+      emit_local_get(buf, arr_ptr)
+      emit_local_get(buf, idx_local)
       emit_i32_const_raw(buf, 4)
       emit_i32_mul(buf)
       emit_i32_add(buf)
       emit_i32_load(buf, 8)
       emit_i64_extend_i32_s(buf)
+      buf.push((11).to_byte()) // end if
     }
     "Array::set" => {
       // array_set(arr, idx, value) -> arr[idx] = value
@@ -5286,7 +5331,33 @@ fn compile_call_builtin_pre_user_inner(
             ],
             false,
           )
-          buf.push((5).to_byte()) // else (array)
+          buf.push((5).to_byte()) // else
+          // Check for array_view
+          emit_local_get(buf, ptr_local)
+          emit_i32_load(buf, 0)
+          emit_i32_const_raw(buf, obj_array_view)
+          emit_i32_eq(buf)
+          buf.push((4).to_byte()) // if (array_view)
+          buf.push((126).to_byte()) // result i64
+          // ArrayView: source[start + idx]
+          let av_idx = alloc_temp_local(ctx)
+          compile_expr_i32(ctx, buf, pos_args[1])
+          emit_i64_const_raw(buf, 2L)
+          emit_i64_shr_s(buf)
+          emit_i32_wrap_i64(buf)
+          emit_local_set(buf, av_idx)
+          emit_local_get(buf, ptr_local)
+          emit_i32_load(buf, 4) // source_ptr
+          emit_local_get(buf, ptr_local)
+          emit_i32_load(buf, 8) // start
+          emit_local_get(buf, av_idx)
+          emit_i32_add(buf)
+          emit_i32_const_raw(buf, 4)
+          emit_i32_mul(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 8)
+          emit_i64_extend_i32_s(buf)
+          buf.push((5).to_byte()) // else (regular array)
           // Array path: direct access at offset 8 + (idx >> 2) * 4
           emit_local_get(buf, ptr_local)
           compile_expr_i32(ctx, buf, pos_args[1])
@@ -5298,32 +5369,47 @@ fn compile_call_builtin_pre_user_inner(
           emit_i32_add(buf)
           emit_i32_load(buf, 8)
           emit_i64_extend_i32_s(buf)
-          buf.push((11).to_byte()) // end if
+          buf.push((11).to_byte()) // end if (array_view)
+          buf.push((11).to_byte()) // end if (string)
         }
       }
     }
     "__slice" => {
-      // __slice(container, start, end) -> StringView (zero-copy)
-      // Layout: [obj_string_view(4), source_ptr_i32(4), start_raw(4), end_raw(4)]
+      // __slice(container, start, end) -> StringView or ArrayView (zero-copy)
+      // Layout: [obj_type(4), source_ptr_i32(4), start_raw(4), end_raw(4)]
+      // obj_type = obj_string_view (11) for String, obj_array_view (12) for Array
       let pos_args = extract_positional_exprs_with_arity(args, "__slice", 3)
       require_heap(ctx)
       let source_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+      let ptr_local = alloc_temp_local(ctx)
       let obj_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_local_set(buf, source_local)
-      // Allocate 16 bytes for StringView
-      let size = 16
-      emit_heap_alloc(ctx, buf, size, obj_local)
-      // offset 0: obj_string_view type tag
-      emit_local_get(buf, obj_local)
-      emit_i32_const_raw(buf, obj_string_view)
-      emit_i32_store(buf, 0)
-      // offset 4: source pointer (untagged i32)
-      emit_local_get(buf, obj_local)
+      // Determine obj_type from source container
       emit_local_get(buf, source_local)
       emit_i64_const_raw(buf, (-4).to_int64())
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
+      emit_local_set(buf, ptr_local)
+      // Allocate 16 bytes for view
+      let size = 16
+      emit_heap_alloc(ctx, buf, size, obj_local)
+      // offset 0: type tag (string_view or array_view based on source obj_type)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 0) // source obj_type
+      emit_i32_const_raw(buf, obj_string) // 1
+      emit_i32_eq(buf)
+      buf.push((4).to_byte()) // if (string)
+      buf.push((127).to_byte()) // result i32
+      emit_i32_const_raw(buf, obj_string_view)
+      buf.push((5).to_byte()) // else (array)
+      emit_i32_const_raw(buf, obj_array_view)
+      buf.push((11).to_byte()) // end if
+      emit_i32_store(buf, 0)
+      // offset 4: source pointer (untagged i32)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, ptr_local)
       emit_i32_store(buf, 4)
       // offset 8: start (untagged i32, from tagged int >> 2)
       emit_local_get(buf, obj_local)
