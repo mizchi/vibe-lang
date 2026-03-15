@@ -111,11 +111,12 @@ pub fn type_check_with_env(
   ast : @core.Module,
   aliases : Map[String, @core.Ref],
 ) -> TypeEnv raise TypeError {
+  @profiler.profiler_enter("checker/type_check_with_env")
   ensure_prelude_option(env)
   ensure_prelude_functions(env, aliases)
   env.set_scoped_ref_checks_enabled(module_may_use_scoped_ref(ast))
   let exported_names = collect_exported_names(ast.stmts)
-  type_check_stmts(
+  let result = type_check_stmts(
     env,
     ast.stmts,
     aliases,
@@ -123,8 +124,13 @@ pub fn type_check_with_env(
     false,
     exported_names,
   ) catch {
-    e => raise e.resolve_vars(env)
+    e => {
+      @profiler.profiler_leave()
+      raise e.resolve_vars(env)
+    }
   }
+  @profiler.profiler_leave()
+  result
 }
 
 ///|

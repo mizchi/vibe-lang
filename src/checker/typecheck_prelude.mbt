@@ -156,7 +156,12 @@ pub fn ensure_prelude_functions(
   match env.get_purity("__prelude_loaded") {
     Some(_) => ()
     None => {
+      @profiler.profiler_enter("type/prelude_functions")
+      @profiler.profiler_enter("type/prelude_parse")
       let prelude = prelude_ast()
+      @profiler.profiler_leave()
+      @profiler.profiler_enter("type/prelude_typecheck")
+      env.session_state.skip_fn_body_check = true
       let _ = type_check_stmts(
         env,
         prelude.stmts,
@@ -165,7 +170,10 @@ pub fn ensure_prelude_functions(
         false,
         {},
       )
+      env.session_state.skip_fn_body_check = false
+      @profiler.profiler_leave() // type/prelude_typecheck
       env.set_purity("__prelude_loaded", true)
+      @profiler.profiler_leave() // type/prelude_functions
     }
   }
 }
@@ -178,6 +186,7 @@ pub fn ensure_builtin_modules(
   match env.get_purity("__builtins_loaded") {
     Some(_) => ()
     None => {
+      @profiler.profiler_enter("type/builtin_modules")
       // Save prelude bindings so builtins don't overwrite them
       let preserved : Map[String, TypeScheme] = {}
       for name in prelude_names() {
@@ -188,7 +197,8 @@ pub fn ensure_builtin_modules(
       }
       env.session_state.lenient_mode = true
       for pair in builtin_module_sources {
-        let (_, source) = pair
+        let (mod_name, source) = pair
+        @profiler.profiler_enter("type/builtin/" + mod_name)
         let parsed = try? @parser.parse_ast(source)
         match parsed {
           Ok(m) => {
@@ -202,8 +212,9 @@ pub fn ensure_builtin_modules(
               exported_names,
             )
           }
-          Err(_) => continue
+          Err(_) => ()
         }
+        @profiler.profiler_leave()
       }
       env.session_state.lenient_mode = false
       // Restore prelude bindings that were overwritten
@@ -211,6 +222,7 @@ pub fn ensure_builtin_modules(
         env.set_scheme(name, scheme)
       }
       env.set_purity("__builtins_loaded", true)
+      @profiler.profiler_leave()
     }
   }
 }

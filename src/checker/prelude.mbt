@@ -348,8 +348,18 @@ let prelude_source : String =
   #|}
 
 ///|
+let cached_prelude_ast : Ref[@core.Module?] = @ref.new(None)
+
+///|
 pub fn prelude_ast() -> @core.Module {
-  try! @parser.parse_ast(prelude_source)
+  match cached_prelude_ast.val {
+    Some(ast) => ast
+    None => {
+      let ast = try! @parser.parse_ast(prelude_source)
+      cached_prelude_ast.val = Some(ast)
+      ast
+    }
+  }
 }
 
 ///|
