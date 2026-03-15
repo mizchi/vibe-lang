@@ -42,6 +42,11 @@ fn compile_expr_while(
   for i in 0..<body.stmts.length() {
     compile_stmt(ctx, buf, body.stmts[i], false)
   }
+  // Reset heap_synced before looping back: the condition check at the
+  // top of the loop may call functions that need a fresh heap sync.
+  // Without this, heap allocations in the body set heap_synced=true,
+  // which leaks into the next iteration's condition evaluation.
+  ctx.heap_synced = false
 
   // Loop back to continue
   emit_br(buf, 0) // br $continue (label 0 = inner loop)
