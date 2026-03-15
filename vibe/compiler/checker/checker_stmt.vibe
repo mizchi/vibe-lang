@@ -1,7 +1,11 @@
 //# Imports
 
-import ../core {
-  Stmt, Subst, Type, TypeDef, TypeEnv, env_bind, env_flat_bindings, env_lookup_flat, generalize, impls_overlap_for, resolve_builtin, subst_apply, trait_defined
+import ../core/ast.vibe {
+  Stmt
+}
+
+import ../core/types.vibe {
+  Subst, Type, TypeDef, TypeEnv, env_bind, env_flat_bindings, env_lookup_flat, generalize, impls_overlap_for, resolve_builtin, subst_apply, trait_defined
 }
 
 import ./checker.vibe {
@@ -25,6 +29,39 @@ let rec import_cache_lookup = (cache: Array[(String, Type)], name: String, i: In
     }
     else import_cache_lookup(cache, name, i + 1)
   }
+}
+
+let bind_stmt_imports = (env: TypeEnv, names: Array[(String, Option[String])]) -> TypeEnv {
+  let env_bindings = env_flat_bindings(env)
+  let import_cache = Array::slice([
+    ("", CtUnknown)
+  ], 0, 0)
+  let nlen = Array::length(names)
+  let rec bind_imports = (i: Int, acc: TypeEnv) -> TypeEnv {
+    if i >= nlen {
+      acc
+    }
+    else {
+      let (name, alias) = Array::get(names, i)
+      let bound_name = match alias {
+        Some(a) => a,
+        None => name
+      }
+      let ty = match import_cache_lookup(import_cache, name, 0) {
+        Some(t) => t,
+        None => {
+          let resolved = match env_lookup_flat(env_bindings, name) {
+            Some(t) => t,
+            None => CtUnknown
+          }
+          Array::push(import_cache, (name, resolved))
+          resolved
+        }
+      }
+      bind_imports(i + 1, env_bind(acc, bound_name, ty))
+    }
+  }
+  bind_imports(0, env)
 }
 
 export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int) -> (TypeEnv, Subst, Int) {
@@ -146,36 +183,10 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
         (env, s, c)
       },
       SImport(_, names) => {
-        let env_bindings = env_flat_bindings(env)
-        let import_cache = Array::slice([
-          ("", CtUnknown)
-        ], 0, 0)
-        let nlen = Array::length(names)
-        let rec bind_imports = (i: Int, acc: TypeEnv) -> TypeEnv {
-          if i >= nlen {
-            acc
-          }
-          else {
-            let (name, alias) = Array::get(names, i)
-            let bound_name = match alias {
-              Some(a) => a,
-              None => name
-            }
-            let ty = match import_cache_lookup(import_cache, name, 0) {
-              Some(t) => t,
-              None => {
-                let resolved = match env_lookup_flat(env_bindings, name) {
-                  Some(t) => t,
-                  None => CtUnknown
-                }
-                Array::push(import_cache, (name, resolved))
-                resolved
-              }
-            }
-            bind_imports(i + 1, env_bind(acc, bound_name, ty))
-          }
-        }
-        (bind_imports(0, env), s, c)
+        (bind_stmt_imports(env, names), s, c)
+      },
+      SReExport(_, names) => {
+        (bind_stmt_imports(env, names), s, c)
       },
       STrait(_, name, supers) => {
         let is_open = false

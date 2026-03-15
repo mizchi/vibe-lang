@@ -30,6 +30,15 @@ test "vibe warning ignores underscore-prefixed name" {
 }
 
 ///|
+test "vibe db types accepts array_new builtin" {
+  let db = VibeDb::new()
+  db.set_source("main", "let arr = array_new()\nArray::push(arr, 1)\nArray::length(arr)")
+  let _ = db.types("main")
+  let diags = db.diagnostics("main")
+  assert_true(diags.is_empty())
+}
+
+///|
 test "vibe warning reports unnecessary mut binding" {
   let db = VibeDb::new()
   db.set_source("main", "let mut value = 1\nvalue")

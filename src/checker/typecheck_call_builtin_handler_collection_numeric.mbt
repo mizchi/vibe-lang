@@ -354,7 +354,11 @@ fn type_call_builtin_handler_collection_numeric(
       )
       @core.Type::Map(key_ty, elem_ty)
     }
-    "Array::length" => {
+    "array_new" => {
+      let _ = check_positional_arity(args, "array_new", 0, call_span)
+      @core.Type::Array(fresh_type_var(env))
+    }
+    "Array::length" | "FixedArray::length" => {
       let pos_args = check_positional_arity(args, "Array::length", 1, call_span)
       let array_ty = type_expr_eff(
         env,
@@ -366,7 +370,7 @@ fn type_call_builtin_handler_collection_numeric(
       let _ = expect_array_elem_type(env, array_ty, pos_args[0].span())
       @core.Type::Int
     }
-    "Array::get" => {
+    "Array::get" | "FixedArray::get" => {
       let pos_args = check_positional_arity(args, "Array::get", 2, call_span)
       let array_ty = type_expr_eff(
         env,
@@ -385,6 +389,25 @@ fn type_call_builtin_handler_collection_numeric(
       )
       let elem_ty = expect_array_elem_type(env, array_ty, pos_args[0].span())
       elem_ty
+    }
+    "FixedArray::make" => {
+      let pos_args = check_positional_arity(args, "FixedArray::make", 2, call_span)
+      let _ = check_arg_type(
+        env,
+        pos_args[0],
+        @core.Type::Int,
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let elem_ty = type_expr_eff(
+        env,
+        pos_args[1],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      @core.Type::Array(elem_ty)
     }
     "Array::push" => {
       let pos_args = check_positional_arity(args, "Array::push", 2, call_span)
@@ -427,7 +450,7 @@ fn type_call_builtin_handler_collection_numeric(
       )
       @core.Type::Unit
     }
-    "Array::set" => {
+    "Array::set" | "FixedArray::set" | "FixedArray::unsafe_set" => {
       let pos_args = check_positional_arity(args, "Array::set", 3, call_span)
       let array_ty = type_expr_eff(
         env,
@@ -449,6 +472,50 @@ fn type_call_builtin_handler_collection_numeric(
         env,
         pos_args[2],
         elem_ty,
+        aliases,
+        effects,
+        allow_effect,
+      )
+      @core.Type::Unit
+    }
+    "FixedArray::blit" => {
+      let pos_args = check_positional_arity(args, "FixedArray::blit", 5, call_span)
+      let dst_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let _ = expect_array_elem_type(env, dst_ty, pos_args[0].span())
+      let _ = check_arg_type(
+        env,
+        pos_args[1],
+        @core.Type::Int,
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let _ = check_arg_type(
+        env,
+        pos_args[2],
+        dst_ty,
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let _ = check_arg_type(
+        env,
+        pos_args[3],
+        @core.Type::Int,
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let _ = check_arg_type(
+        env,
+        pos_args[4],
+        @core.Type::Int,
         aliases,
         effects,
         allow_effect,

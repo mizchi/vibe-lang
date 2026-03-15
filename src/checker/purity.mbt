@@ -643,6 +643,9 @@ fn is_effectful_call_name(name : String) -> Bool {
   name == "Array::push_all" ||
   name == "Array::truncate" ||
   name == "Array::slice" ||
+  name == "FixedArray::set" ||
+  name == "FixedArray::unsafe_set" ||
+  name == "FixedArray::blit" ||
   name == "__perform" ||
   name == "__resume" ||
   name == "Http::respond"
@@ -652,8 +655,12 @@ fn is_effectful_call_name(name : String) -> Bool {
 fn is_pure_builtin_name(name : String) -> Bool {
   name == "path" ||
   name == "addr" ||
+  name == "array_new" ||
   name == "Array::length" ||
   name == "Array::get" ||
+  name == "FixedArray::make" ||
+  name == "FixedArray::length" ||
+  name == "FixedArray::get" ||
   name == "Map::get" ||
   name == "String::length" ||
   name == "String::utf8_length" ||

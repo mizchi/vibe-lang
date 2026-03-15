@@ -18,6 +18,7 @@ fn value_to_map_key(value : @core.Value) -> String {
 /// Cache key computation (pure_call_key → git_blob_hash_string) is
 /// more expensive than executing these operations.
 fn is_cheap_pure_builtin(name : String) -> Bool {
+  name == "array_new" ||
   name == "String::concat" ||
   name == "String::equals" ||
   name == "String::length" ||
@@ -26,6 +27,9 @@ fn is_cheap_pure_builtin(name : String) -> Bool {
   name == "Array::length" ||
   name == "Array::get" ||
   name == "Array::slice" ||
+  name == "FixedArray::make" ||
+  name == "FixedArray::length" ||
+  name == "FixedArray::get" ||
   name == "__add" ||
   name == "__sub" ||
   name == "__mul" ||
@@ -137,6 +141,17 @@ fn eval_pure_builtin(
   args : Array[@core.Value],
 ) -> @core.Value raise EvalError {
   match name {
+    "array_new" => {
+      if args.length() != 0 {
+        raise EvalError::BadCall(
+          E(
+            "array_new: expected 0 arguments, got " +
+            args.length().to_string(),
+          ),
+        )
+      }
+      @core.Value::Array([])
+    }
     "path" | "Path::ref" => {
       if args.length() != 1 {
         raise EvalError::BadCall(
@@ -173,7 +188,7 @@ fn eval_pure_builtin(
         _ => raise EvalError::BadCall(E("Path::is_absolute"))
       }
     }
-    "Array::length" => {
+    "Array::length" | "FixedArray::length" => {
       if args.length() != 1 {
         raise EvalError::BadCall(
           E(
@@ -194,7 +209,7 @@ fn eval_pure_builtin(
           )
       }
     }
-    "Array::get" => {
+    "Array::get" | "FixedArray::get" => {
       if args.length() != 2 {
         raise EvalError::BadCall(
           E(
@@ -227,6 +242,67 @@ fn eval_pure_builtin(
               ")",
             ),
           )
+      }
+    }
+    "FixedArray::make" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall(E("FixedArray::make"))
+      }
+      match args[0] {
+        @core.Value::Int(size) => {
+          if size < 0L {
+            raise EvalError::BadCall(E("FixedArray::make"))
+          }
+          let out : Array[@core.Value] = []
+          for _ in 0..<size.to_int() {
+            out.push(args[1])
+          }
+          @core.Value::Array(out)
+        }
+        _ => raise EvalError::BadCall(E("FixedArray::make"))
+      }
+    }
+    "FixedArray::set" | "FixedArray::unsafe_set" => {
+      if args.length() != 3 {
+        raise EvalError::BadCall(E("FixedArray::set"))
+      }
+      match (args[0], args[1]) {
+        (@core.Value::Array(items), @core.Value::Int(index)) => {
+          if index < 0L || index >= items.length().to_int64() {
+            raise EvalError::BadCall(E("FixedArray::set"))
+          }
+          items[index.to_int()] = args[2]
+          @core.Value::Unit
+        }
+        _ => raise EvalError::BadCall(E("FixedArray::set"))
+      }
+    }
+    "FixedArray::blit" => {
+      if args.length() != 5 {
+        raise EvalError::BadCall(E("FixedArray::blit"))
+      }
+      match (args[0], args[1], args[2], args[3], args[4]) {
+        (
+          @core.Value::Array(dst),
+          @core.Value::Int(dst_off),
+          @core.Value::Array(src),
+          @core.Value::Int(src_off),
+          @core.Value::Int(len),
+        ) => {
+          let d0 = dst_off.to_int()
+          let s0 = src_off.to_int()
+          let n = len.to_int()
+          if d0 < 0 || s0 < 0 || n < 0 ||
+             d0 + n > dst.length() ||
+             s0 + n > src.length() {
+            raise EvalError::BadCall(E("FixedArray::blit"))
+          }
+          for i in 0..<n {
+            dst[d0 + i] = src[s0 + i]
+          }
+          @core.Value::Unit
+        }
+        _ => raise EvalError::BadCall(E("FixedArray::blit"))
       }
     }
     "Map::get" => {

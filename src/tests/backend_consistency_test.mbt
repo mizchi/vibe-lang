@@ -158,8 +158,31 @@ test "interp vs compiled: boolean short-circuit-like patterns" {
 
 ///|
 test "interp vs compiled: array builtins" {
+  assert_interp_compiled_same("let a = array_new()\nArray::push(a, 10)\nArray::length(a)")
   assert_interp_compiled_same("let a = [1, 2, 3]\nArray::length(a)")
   assert_interp_compiled_same("let a = [10, 20, 30]\nArray::get(a, 1)")
+}
+
+///|
+test "interp vs compiled: fixed array builtins" {
+  assert_interp_compiled_same(
+    #|let a = FixedArray::make(3, 0)
+    #|FixedArray::set(a, 1, 20)
+    #|FixedArray::get(a, 1)
+  )
+  assert_interp_compiled_same(
+    #|let src = FixedArray::make(3, 0)
+    #|FixedArray::set(src, 0, 7)
+    #|FixedArray::set(src, 1, 8)
+    #|let dst = FixedArray::make(3, 0)
+    #|FixedArray::blit(dst, 1, src, 0, 2)
+    #|FixedArray::get(dst, 2)
+  )
+  assert_interp_compiled_same(
+    #|let data : Array[Int] = FixedArray::make(2, 0)
+    #|FixedArray::set(data, 0, 42)
+    #|FixedArray::get(data, 0)
+  )
 }
 
 ///|

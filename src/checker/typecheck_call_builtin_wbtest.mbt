@@ -66,6 +66,28 @@ test "type_call_builtin: String::length returns Int" {
 }
 
 ///|
+test "type_call_builtin: array_new returns Array" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_call_builtin(
+    env,
+    "array_new",
+    [],
+    aliases,
+    effect_scope_all(),
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  match actual {
+    @core.Type::Array(_) => ()
+    _ => fail("expected Array type")
+  }
+}
+
+///|
 test "type_call_builtin: PromptText::new accepts PromptText" {
   let env = TypeEnv::new()
   let span = builtin_test_span()

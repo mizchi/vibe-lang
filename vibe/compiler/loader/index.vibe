@@ -104,6 +104,29 @@ let resolve_path = (base_dir: String, raw_path: String) -> String {
   }
 }
 
+let resolve_path_candidates = (base_dir: String, raw_path: String) -> Array[String] {
+  let len = String::length(raw_path)
+  let joined = if (len >= 2 && String::equals(String::substring(raw_path, 0, 2), "./")) ||
+    (len >= 3 && String::equals(String::substring(raw_path, 0, 3), "../")) {
+      if String::equals(base_dir, "") {
+        raw_path
+      } else {
+        String::concat(base_dir, String::concat("/", raw_path))
+      }
+    } else {
+      raw_path
+    }
+  let normalized = normalize_path(joined)
+  if String::ends_with(normalized, ".vibe") {
+    [normalized]
+  } else {
+    [
+      String::concat(normalized, ".vibe"),
+      String::concat(normalized, "/index.vibe")
+    ]
+  }
+}
+
 let contains_str = (arr: Array[String], target: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -132,6 +155,46 @@ let source_lookup = (sources: Array[(String, String)], path_key: String) -> Opti
     i = i + 1
   }
   found
+}
+
+let resolve_path_in_sources = (base_dir: String, raw_path: String, sources: Array[(String, String)]) -> Option[(String, String)] {
+  let candidates = resolve_path_candidates(base_dir, raw_path)
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(candidates) {
+    match found {
+      Some(_) => (),
+      None => {
+        let candidate = Array::get(candidates, i)
+        match source_lookup(sources, candidate) {
+          Some(source) => found = Some((candidate, source)),
+          None => ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  found
+}
+
+let resolve_path_fs = (base_dir: String, raw_path: String) -> String with { Fs } {
+  let candidates = resolve_path_candidates(base_dir, raw_path)
+  let mut i = 0
+  let mut found = ""
+  while i < Array::length(candidates) {
+    if String::equals(found, "") {
+      let candidate = Array::get(candidates, i)
+      if Fs::exists(candidate) {
+        found = candidate
+      }
+    }
+    i = i + 1
+  }
+  if String::equals(found, "") {
+    Array::get(candidates, 0)
+  } else {
+    found
+  }
 }
 
 let join_path = (base_dir: String, rel_path: String) -> String {
@@ -1077,13 +1140,13 @@ let parse_persistent_module_header_text = (raw: String) -> (Array[String], Array
   }
 }
 
-let collect_import_deps_from_stmts = (stmts: Array[Stmt], base_dir: String) -> Array[String] {
+let collect_import_deps_from_stmts = (stmts: Array[Stmt], base_dir: String) -> Array[String] with { Fs } {
   let deps = Array::slice([""], 0, 0)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImport(raw_path, _) => Array::push(deps, resolve_path(base_dir, raw_path)),
-      SReExport(raw_path, _) => Array::push(deps, resolve_path(base_dir, raw_path)),
+      SImport(raw_path, _) => Array::push(deps, resolve_path_fs(base_dir, raw_path)),
+      SReExport(raw_path, _) => Array::push(deps, resolve_path_fs(base_dir, raw_path)),
       _ => ()
     }
     i = i + 1
@@ -1757,13 +1820,19 @@ export let rec check_module = (
         let stmt = Array::get(stmts, ri)
         import_env = match stmt {
           SImport(raw_path, names) => {
-            let resolved = resolve_path(base_dir, raw_path)
-            match source_lookup(sources, resolved) {
-              None => throw(String::concat("module not found: ", resolved)),
-              Some(mod_source) => {
-                // Recursively check the imported module
+            match resolve_path_in_sources(base_dir, raw_path, sources) {
+              None => throw(String::concat("module not found: ", resolve_path(base_dir, raw_path))),
+              Some((resolved, mod_source)) => {
                 let mod_env = check_module(mod_source, resolved, sources, new_loading, checked_cache)
-                // Bind exported names into current env
+                bind_checked_imports(names, 0, import_env, mod_env)
+              }
+            }
+          },
+          SReExport(raw_path, names) => {
+            match resolve_path_in_sources(base_dir, raw_path, sources) {
+              None => throw(String::concat("module not found: ", resolve_path(base_dir, raw_path))),
+              Some((resolved, mod_source)) => {
+                let mod_env = check_module(mod_source, resolved, sources, new_loading, checked_cache)
                 bind_checked_imports(names, 0, import_env, mod_env)
               }
             }

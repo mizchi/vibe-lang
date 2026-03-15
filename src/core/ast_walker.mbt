@@ -332,6 +332,7 @@ pub fn walk_block_refs(
 pub fn is_builtin_name(name : String) -> Bool {
   name == "path" ||
   name == "addr" ||
+  name == "array_new" ||
   name == "sh" ||
   name == "add" ||
   name == "sub" ||

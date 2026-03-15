@@ -1762,8 +1762,12 @@ fn try_eval_hot_builtin_call(
     name == "String::char_code_at" ||
     name == "String::substring" ||
     name == "String::concat" ||
+    name == "array_new" ||
     name == "Array::length" ||
-    name == "Array::get"
+    name == "Array::get" ||
+    name == "FixedArray::make" ||
+    name == "FixedArray::length" ||
+    name == "FixedArray::get"
   if not(is_hot) {
     return None
   }
@@ -1790,6 +1794,17 @@ fn try_eval_hot_builtin_call(
     extend_effects(effects, out.effects)
   }
   let value = match name {
+    "array_new" => {
+      if values.length() != 0 {
+        raise EvalError::BadCall(
+          E(
+            "array_new: expected 0 arguments, got " +
+            values.length().to_string(),
+          ),
+        )
+      }
+      @core.Value::Array([])
+    }
     "String::length" => {
       if values.length() != 1 {
         raise EvalError::BadCall(E("String::length"))
@@ -1867,7 +1882,7 @@ fn try_eval_hot_builtin_call(
           )
       }
     }
-    "Array::length" => {
+    "Array::length" | "FixedArray::length" => {
       if values.length() != 1 {
         raise EvalError::BadCall(
           E(
@@ -1888,7 +1903,7 @@ fn try_eval_hot_builtin_call(
           )
       }
     }
-    "Array::get" => {
+    "Array::get" | "FixedArray::get" => {
       if values.length() != 2 {
         raise EvalError::BadCall(
           E(
@@ -1921,7 +1936,30 @@ fn try_eval_hot_builtin_call(
               value_type_name(values[1]) +
               ")",
             ),
-          )
+        )
+      }
+    }
+    "FixedArray::make" => {
+      if values.length() != 2 {
+        raise EvalError::BadCall(
+          E(
+            "FixedArray::make: expected 2 arguments, got " +
+            values.length().to_string(),
+          ),
+        )
+      }
+      match values[0] {
+        @core.Value::Int(size) => {
+          if size < 0L {
+            raise EvalError::BadCall(E("FixedArray::make"))
+          }
+          let out : Array[@core.Value] = []
+          for _ in 0..<size.to_int() {
+            out.push(values[1])
+          }
+          @core.Value::Array(out)
+        }
+        _ => raise EvalError::BadCall(E("FixedArray::make"))
       }
     }
     _ => return None
@@ -3846,7 +3884,7 @@ fn eval_builtin_call(
           )
       }
     }
-    "Array::set" => {
+    "Array::set" | "FixedArray::set" | "FixedArray::unsafe_set" => {
       let out = eval_args(rt, args)
       let pos_args = extract_positional_values(out.args, "Array::set")
       if pos_args.length() != 3 {
@@ -3877,6 +3915,52 @@ fn eval_builtin_call(
             BuiltinDetail(
               fn_name="Array::set",
               detail="expected (Array, Int, value)",
+            ),
+          )
+      }
+    }
+    "FixedArray::blit" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "FixedArray::blit")
+      if pos_args.length() != 5 {
+        raise EvalError::BadCall(
+          BuiltinDetail(
+            fn_name="FixedArray::blit",
+            detail="expected 5 arguments",
+          ),
+        )
+      }
+      match (pos_args[0], pos_args[1], pos_args[2], pos_args[3], pos_args[4]) {
+        (
+          @core.Value::Array(dst),
+          @core.Value::Int(dst_off),
+          @core.Value::Array(src),
+          @core.Value::Int(src_off),
+          @core.Value::Int(len),
+        ) => {
+          let d0 = dst_off.to_int()
+          let s0 = src_off.to_int()
+          let n = len.to_int()
+          if d0 < 0 || s0 < 0 || n < 0 ||
+             d0 + n > dst.length() ||
+             s0 + n > src.length() {
+            raise EvalError::BadCall(
+              BuiltinDetail(
+                fn_name="FixedArray::blit",
+                detail="out of bounds",
+              ),
+            )
+          }
+          for i in 0..<n {
+            dst[d0 + i] = src[s0 + i]
+          }
+          { value: @core.Value::Unit, effects: out.effects }
+        }
+        _ =>
+          raise EvalError::BadCall(
+            BuiltinDetail(
+              fn_name="FixedArray::blit",
+              detail="expected (Array, Int, Array, Int, Int)",
             ),
           )
       }
