@@ -116,15 +116,12 @@ fn bundle_for_wasm_impl(
     }
   }
   // Add main module statements (excluding imports and expanding re-exports)
-  let base_dir = @path.Path(path).dirname().to_string()
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Import(..) => () // Skip imports
       @core.Stmt::ReExport(spec~, source~, span=_) =>
         // Expand re-exports in main module
-        collect_reexport_defs(
-          db, base_dir, spec, source, bundled_stmts, visited,
-        )
+        collect_reexport_defs(db, path, spec, source, bundled_stmts, visited)
       _ => {
         match bundle_stmt_value_name(stmt) {
           Some(name) => non_prelude_names.push(name)
@@ -134,7 +131,7 @@ fn bundle_for_wasm_impl(
       }
     }
   }
-  let bundled = @core.Module::{ stmts: bundled_stmts }
+  let bundled = @core.Module::{ stmts: dedupe_bundle_structural_defs(bundled_stmts) }
   let after_dce = if apply_dce {
     if include_test_entries {
       @pipeline.dce_module_for_tests(bundled)
@@ -185,7 +182,6 @@ fn collect_dependency_defs(
   // Skip the entry module itself (it will be added separately)
   if not(is_entry) {
     let dep_ast = db.ast_with_hash_imports(path)
-    let base_dir = @path.Path(path).dirname().to_string()
     for stmt in dep_ast.stmts {
       match stmt {
         // Convert exports to regular definitions
@@ -201,7 +197,7 @@ fn collect_dependency_defs(
         | @core.Stmt::TypeAlias(..) => out.push(stmt)
         // Handle re-exports: fetch definitions from source module
         @core.Stmt::ReExport(spec~, source~, span=_) =>
-          collect_reexport_defs(db, base_dir, spec, source, out, visited)
+          collect_reexport_defs(db, path, spec, source, out, visited)
         // Skip imports and exports in dependencies
         @core.Stmt::Import(..) | @core.Stmt::Export(..) => ()
         // Skip tests from dependencies
@@ -220,10 +216,39 @@ fn collect_dependency_defs(
 }
 
 ///|
+fn bundle_stmt_type_name(stmt : @core.Stmt) -> String? {
+  match stmt {
+    @core.Stmt::EnumDef(name~, ..)
+    | @core.Stmt::TypeAlias(name~, ..)
+    | @core.Stmt::StructDef(name~, ..) => Some(name)
+    _ => None
+  }
+}
+
+///|
+fn dedupe_bundle_structural_defs(
+  stmts : Array[@core.Stmt],
+) -> Array[@core.Stmt] {
+  let out : Array[@core.Stmt] = []
+  let seen_type_names : Map[String, Bool] = {}
+  for stmt in stmts {
+    match bundle_stmt_type_name(stmt) {
+      Some(name) =>
+        if not(seen_type_names.contains(name)) {
+          out.push(stmt)
+          seen_type_names[name] = true
+        }
+      None => out.push(stmt)
+    }
+  }
+  out
+}
+
+///|
 /// Collect definitions for re-export statement.
 fn collect_reexport_defs(
   db : VibeDb,
-  base_dir : String,
+  owner_path : String,
   spec : @core.ImportSpec,
   source : @core.ModuleRef,
   out : Array[@core.Stmt],
@@ -236,13 +261,26 @@ fn collect_reexport_defs(
       hash
     }
   }
+  let base_dir = @path.Path(owner_path).dirname().to_string()
+  let resolved_from_imports = fn() -> String? {
+    for imp in db.imports(owner_path) {
+      if import_stmt_matches_spec(base_dir, source, imp) {
+        return Some(imp.path)
+      }
+    }
+    None
+  }
   // Resolve source module path
   let source_path = match source {
     @core.ModuleRef::Path(path~) =>
-      if path.has_prefix("/") {
-        path
-      } else {
-        @path.Path(base_dir).join(@path.Path(path)).normalize().to_string()
+      match resolved_from_imports() {
+        Some(resolved) => resolved
+        None =>
+          if path.has_prefix("/") {
+            path
+          } else {
+            @path.Path(base_dir).join(@path.Path(path)).normalize().to_string()
+          }
       }
     @core.ModuleRef::Hash(hash~) => "__hash__/" + normalize_hash_ref(hash)
     @core.ModuleRef::Version(name~) =>

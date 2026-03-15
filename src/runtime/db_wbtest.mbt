@@ -378,6 +378,55 @@ test "type query imports transitive type deps from imported value schemes" {
 }
 
 ///|
+test "type query re-exported enum type imports constructors" {
+  let db = VibeDb::new()
+  db.set_source(
+    "./types_impl.vibe",
+    "export enum Type {\n" +
+    "  CtInt;\n" +
+    "  CtArray(Type)\n" +
+    "}\n",
+  )
+  db.set_source(
+    "./types.vibe",
+    "export ./types_impl.vibe { Type }\n" + "export { Type }\n",
+  )
+  db.set_source(
+    "main",
+    "import ./types.vibe { Type }\n" +
+    "let value: Type = CtArray(CtInt)\n" +
+    "let result = match value { CtArray(inner) => inner, _ => CtInt }\n" +
+    "result\n",
+  )
+  let env = db.types("main")
+  let diags = db.diagnostics("main")
+  if not(diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected diagnostics: " + lines.join(","))
+  }
+  match env.get_scheme("value") {
+    Some(scheme) =>
+      match scheme.ty {
+        @core.Type::Named(name~, ..) =>
+          assert_eq(name, "Type")
+        _ => fail("expected Type scheme for value")
+      }
+    None => fail("expected scheme for value")
+  }
+  match env.get_ctor("CtInt") {
+    Some(_) => ()
+    None => fail("expected imported constructor: CtInt")
+  }
+  match env.get_ctor("CtArray") {
+    Some(_) => ()
+    None => fail("expected imported constructor: CtArray")
+  }
+}
+
+///|
 test "type query imports re-exported Process functions through index" {
   let db = VibeDb::new()
   db.set_source(
