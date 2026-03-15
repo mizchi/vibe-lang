@@ -348,8 +348,10 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
       let _ = span
       for i in 0..<ctors.length() {
         let ctor = ctors[i]
-        ctx.enum_ctor_tags[ctor.name] = ctx.next_ctor_tag
-        ctx.next_ctor_tag += 1
+        if not(ctx.enum_ctor_tags.contains(ctor.name)) {
+          ctx.enum_ctor_tags[ctor.name] = ctx.next_ctor_tag
+          ctx.next_ctor_tag += 1
+        }
         ctx.enum_ctor_arities[ctor.name] = ctor.args.length()
         let arg_kinds : Array[ValueKind] = []
         for arg in ctor.args {

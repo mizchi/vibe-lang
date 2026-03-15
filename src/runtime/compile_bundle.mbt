@@ -221,8 +221,11 @@ fn collect_dependency_defs(
 fn bundle_stmt_type_name(stmt : @core.Stmt) -> String? {
   match stmt {
     @core.Stmt::EnumDef(name~, ..)
+    | @core.Stmt::ExportEnumDef(name~, ..)
     | @core.Stmt::TypeAlias(name~, ..)
-    | @core.Stmt::StructDef(name~, ..) => Some(name)
+    | @core.Stmt::ExportTypeAlias(name~, ..)
+    | @core.Stmt::StructDef(name~, ..)
+    | @core.Stmt::ExportStructDef(name~, ..) => Some(name)
     _ => None
   }
 }
