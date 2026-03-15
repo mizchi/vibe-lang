@@ -718,7 +718,10 @@ fn emit_heap_reserve(
 ///|
 /// S8: Sync heap_local -> heap_global before a call, skipping if already synced.
 fn emit_heap_pre_call_sync(ctx : CodegenCtx, buf : ByteBuf) -> Unit {
-  if ctx.heap_local >= 0 && ctx.use_heap_global && not(ctx.heap_synced) {
+  // Always sync before calls. The heap_synced optimization is fragile
+  // and causes heap corruption when sync state leaks across control
+  // flow boundaries (if/else, match, while, let rec).
+  if ctx.heap_local >= 0 && ctx.use_heap_global {
     emit_local_get(buf, ctx.heap_local)
     emit_global_set(buf, ctx.heap_global)
   }
