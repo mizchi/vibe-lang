@@ -226,9 +226,14 @@ Phase 4 (応用):
 - [ ] `map_builder*` 互換 alias を削除する条件を固める
   - 条件案: docs と eval task の canonical 化完了、rename script の dry-run 実績、host/selfhost の alias coverage を維持したまま deprecation 期間を決める
   - 対象: host checker/runtime/codegen の互換層、selfhost builtin 正規化、alias 専用 wbtest
-- [ ] `vibe/x` を現行構文へ寄せる
-  - 第一段階: `[]`, `==`, 文字列補間へ置換して `Array::slice([dummy], 0, 0)` / `String::equals` / `String::concat` の定型を減らす
-  - 第二段階: grammar 追加後に `String` index/slice や軽量 struct syntax へ移行する
+- [x] `vibe/` 全体を現行構文へ寄せる（第一段階）
+  - [x] `String::equals(a, b)` → `a == b`: 1600+ 箇所 / 154 ファイル置換済み
+  - [x] `String::concat(a, b)` → `"\{a}\{b}"` 文字列補間: 1000+ 箇所 / 89 ファイル置換済み（パイプ演算子使用の 31 箇所は残留）
+  - [-] `Array::slice([dummy], 0, 0)` → `[]`: 不可。`[]` は常に `Array[Unit]` に型推論されるため、型付き空配列リテラル構文が必要
+  - [-] `Type::method(obj, ...)` → `obj.method(...)`: 不可。method-call sugar は削除済み（#13a）
+- [ ] `vibe/` を現行構文へ寄せる（第二段階）
+  - grammar 追加後に `String` index/slice や軽量 struct syntax へ移行する
+  - `[]` 型推論の改善後に `Array::slice([dummy], 0, 0)` → `[]` を再実施する
 
 ## ユーザビリティ改善
 
