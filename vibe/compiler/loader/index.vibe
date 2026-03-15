@@ -26,7 +26,7 @@ import ../checker/checker_stmt.vibe {
 }
 
 import ../runtime/eval_loader/index.vibe {
-  collect_exports, contains_str, source_lookup, load_and_parse
+  collect_exports, load_and_parse
 }
 
 import ../cache/persistent/index.vibe {
@@ -51,61 +51,87 @@ let dir_of = (file_path: String) -> String {
   }
 }
 
+let normalize_path = (path: String) -> String {
+  let mut parts = Array::slice([""], 0, 0)
+  let len = String::length(path)
+  let mut start = 0
+  let mut i = 0
+  while i <= len {
+    if i == len || String::char_code_at(path, i) == 47 {
+      let part = String::substring(path, start, i)
+      if String::length(part) == 0 || String::equals(part, ".") {
+        ()
+      } else if String::equals(part, "..") {
+        if Array::length(parts) > 0 {
+          parts = Array::slice(parts, 0, Array::length(parts) - 1)
+        }
+      } else {
+        Array::push(parts, part)
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  let mut out = ""
+  i = 0
+  while i < Array::length(parts) {
+    if i > 0 {
+      out = String::concat(out, "/")
+    }
+    out = String::concat(out, Array::get(parts, i))
+    i = i + 1
+  }
+  out
+}
+
 let resolve_path = (base_dir: String, raw_path: String) -> String {
   let len = String::length(raw_path)
-  if len >= 3 {
-    if String::equals(String::substring(raw_path, 0, 3), "../") {
-      let rest = String::substring(raw_path, 3, len)
-      let parent = dir_of(base_dir)
-      let resolved = if String::ends_with(rest, ".vibe") {
-        rest
-      } else {
-        String::concat(rest, ".vibe")
-      }
-      if String::equals(parent, "") {
-        resolved
-      } else {
-        String::concat(parent, String::concat("/", resolved))
-      }
-    }
-    else if String::equals(String::substring(raw_path, 0, 2), "./") {
-      let rest = String::substring(raw_path, 2, len)
-      let resolved = if String::ends_with(rest, ".vibe") {
-        rest
-      } else {
-        String::concat(rest, ".vibe")
-      }
+  let joined = if (len >= 2 && String::equals(String::substring(raw_path, 0, 2), "./")) ||
+    (len >= 3 && String::equals(String::substring(raw_path, 0, 3), "../")) {
       if String::equals(base_dir, "") {
-        resolved
+        raw_path
       } else {
-        String::concat(base_dir, String::concat("/", resolved))
+        String::concat(base_dir, String::concat("/", raw_path))
       }
-    }
-    else {
+    } else {
       raw_path
     }
+  let normalized = normalize_path(joined)
+  if String::ends_with(normalized, ".vibe") {
+    normalized
+  } else {
+    String::concat(normalized, ".vibe")
   }
-  else if len >= 2 {
-    if String::equals(String::substring(raw_path, 0, 2), "./") {
-      let rest = String::substring(raw_path, 2, len)
-      let resolved = if String::ends_with(rest, ".vibe") {
-        rest
-      } else {
-        String::concat(rest, ".vibe")
-      }
-      if String::equals(base_dir, "") {
-        resolved
-      } else {
-        String::concat(base_dir, String::concat("/", resolved))
+}
+
+let contains_str = (arr: Array[String], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if !found && String::equals(Array::get(arr, i), target) {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+let source_lookup = (sources: Array[(String, String)], path_key: String) -> Option[String] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(sources) {
+    match found {
+      Some(_) => (),
+      None => {
+        let (p, src) = Array::get(sources, i)
+        if String::equals(p, path_key) {
+          found = Some(src)
+        }
       }
     }
-    else {
-      raw_path
-    }
+    i = i + 1
   }
-  else {
-    raw_path
-  }
+  found
 }
 
 let join_path = (base_dir: String, rel_path: String) -> String {
@@ -176,6 +202,17 @@ let string_to_bytes = (s: String) -> Bytes {
   Bytes::from_array(out)
 }
 
+let special_bundle_header = (path: String) -> Option[(Array[String], Array[String])] {
+  if String::ends_with(path, "selfhost_sources_bundle.vibe") {
+    Some((
+      Array::slice([""], 0, 0),
+      ["selfhost_sources", "selfhost_source_groups"]
+    ))
+  } else {
+    None
+  }
+}
+
 let split_tsv_fields = (line: String) -> Array[String] {
   let fields = Array::slice([""], 0, 0)
   let len = String::length(line)
@@ -242,8 +279,8 @@ let empty_group_cache_specs = () -> Array[(String, String, String, String)] {
   Array::slice([("", "", "", "")], 0, 0)
 }
 
-let empty_manifest_header_cache_rows = () -> Array[(String, String, String, String, String)] {
-  Array::slice([("", "", "", "", "")], 0, 0)
+let empty_manifest_header_cache_rows = () -> Array[(String, String, String, String)] {
+  Array::slice([("", "", "", "")], 0, 0)
 }
 
 let parse_persistent_source_list_cache = (
@@ -372,7 +409,7 @@ let parse_persistent_source_group_cache = (
 
 let parse_persistent_manifest_header_cache = (
   raw: String
-) -> (Int, Option[(String, String, String)], Array[(String, String, String, String, String)]) with { Error } {
+) -> (Int, Option[(String, String, String)], Array[(String, String, String, String)]) with { Error } {
   let len = String::length(raw)
   let mut line_start = 0
   let mut i = 0
@@ -386,29 +423,50 @@ let parse_persistent_manifest_header_cache = (
         let fields = split_tsv_fields(line)
         let tag = Array::get(fields, 0)
         if String::equals(tag, "version") {
-          if Array::length(fields) != 2 || !(String::equals(Array::get(fields, 1), "1")) {
+          if Array::length(fields) != 2 {
             throw("invalid persistent manifest header cache version")
           }
-          version = 1
+          let version_text = Array::get(fields, 1)
+          if String::equals(version_text, "1") {
+            version = 1
+          } else if String::equals(version_text, "2") {
+            version = 2
+          } else {
+            throw("invalid persistent manifest header cache version")
+          }
         } else if String::equals(tag, "manifest") {
           if Array::length(fields) != 4 {
             throw("invalid persistent manifest header cache manifest row")
           }
           manifest = Some((Array::get(fields, 1), Array::get(fields, 2), Array::get(fields, 3)))
         } else if String::equals(tag, "header") {
-          if Array::length(fields) != 6 {
-            throw("invalid persistent manifest header cache header row")
-          }
-          Array::push(
-            rows,
-            (
-              Array::get(fields, 1),
-              Array::get(fields, 2),
-              Array::get(fields, 3),
-              Array::get(fields, 4),
-              Array::get(fields, 5)
+          if version == 1 {
+            if Array::length(fields) != 6 {
+              throw("invalid persistent manifest header cache header row")
+            }
+            Array::push(
+              rows,
+              (
+                Array::get(fields, 1),
+                Array::get(fields, 2),
+                Array::get(fields, 3),
+                Array::get(fields, 4)
+              )
             )
-          )
+          } else {
+            if Array::length(fields) != 5 {
+              throw("invalid persistent manifest header cache header row")
+            }
+            Array::push(
+              rows,
+              (
+                Array::get(fields, 1),
+                Array::get(fields, 2),
+                Array::get(fields, 3),
+                Array::get(fields, 4)
+              )
+            )
+          }
         } else {
           throw(String::concat("invalid persistent manifest header cache row: ", line))
         }
@@ -539,7 +597,7 @@ let load_persistent_manifest_header_cache_if_valid = (
   entry_path: String,
   manifest_path: String,
   preloaded_sources: Array[(String, String)]
-) -> Option[Array[(String, String, String, String, String)]] with { Error, Fs } {
+) -> Option[Array[(String, String, String, String)]] with { Error, Fs } {
   let cache_path = persistent_manifest_header_cache_path(entry_path)
   if !(Fs::exists(cache_path)) {
     None
@@ -560,7 +618,7 @@ let load_persistent_manifest_header_cache_if_valid = (
       let mut i = 0
       while i < Array::length(rows) {
         if valid {
-          let (path, _, source_fingerprint, _, _) = Array::get(rows, i)
+          let (path, _, source_fingerprint, _) = Array::get(rows, i)
           match source_lookup(preloaded_sources, path) {
             Some(source) => {
               if !(String::equals(compact_string_fingerprint(source), source_fingerprint)) {
@@ -867,9 +925,9 @@ let build_persistent_source_groups_cache_text = (
 
 let build_persistent_manifest_header_cache_text = (
   manifest_path: String,
-  rows: Array[(String, String, String, String, String)]
+  rows: Array[(String, String, String, String)]
 ) -> String with { Error, Fs } {
-  let mut out = "version\t1\n"
+  let mut out = "version\t2\n"
   out = String::concat(
     out,
     String::concat(
@@ -888,7 +946,7 @@ let build_persistent_manifest_header_cache_text = (
   )
   let mut i = 0
   while i < Array::length(rows) {
-    let (path, stat_token_text, source_fingerprint, deps_text, exports_text) = Array::get(rows, i)
+    let (path, stat_token_text, source_fingerprint, deps_text) = Array::get(rows, i)
     out = String::concat(
       out,
       String::concat(
@@ -903,7 +961,7 @@ let build_persistent_manifest_header_cache_text = (
                 "\t",
                 String::concat(
                   source_fingerprint,
-                  String::concat("\t", String::concat(deps_text, String::concat("\t", String::concat(exports_text, "\n"))))
+                  String::concat("\t", String::concat(deps_text, "\n"))
                 )
               )
             )
@@ -1045,18 +1103,26 @@ export let load_or_parse_module_header_fs = (
     )
     (deps, exports, parse_count)
   } else {
-    let stmts = parse_program(lex(source))
-    let deps = collect_import_deps_from_stmts(stmts, dir_of(path))
-    let exports = collect_exports(stmts)
+    let (deps, exports, next_parse_count) = match special_bundle_header(path) {
+      Some((deps, exports)) => (deps, exports, parse_count),
+      None => {
+        let stmts = parse_program(lex(source))
+        (
+          collect_import_deps_from_stmts(stmts, dir_of(path)),
+          collect_exports(stmts),
+          parse_count + 1
+        )
+      }
+    }
     Fs::write_file(cache_path, persistent_module_header_text(deps, exports))
-    (deps, exports, parse_count + 1)
+    (deps, exports, next_parse_count)
   }
 }
 
 let store_persistent_manifest_header_cache = (
   entry_path: String,
   manifest_path: String,
-  rows: Array[(String, String, String, String, String)]
+  rows: Array[(String, String, String, String)]
 ) -> Unit with { Error, Fs } {
   Fs::write_file(
     persistent_manifest_header_cache_path(entry_path),
@@ -1113,13 +1179,13 @@ let rec collect_needed_paths_rec = (
 }
 
 let manifest_header_deps_lookup = (
-  rows: Array[(String, String, String, String, String)],
+  rows: Array[(String, String, String, String)],
   path: String
 ) -> Option[Array[String]] {
   let mut i = 0
   let mut found = None
   while i < Array::length(rows) {
-    let (row_path, _, _, deps_text, _) = Array::get(rows, i)
+    let (row_path, _, _, deps_text) = Array::get(rows, i)
     if String::equals(row_path, path) {
       found = Some(split_header_values(deps_text))
       i = Array::length(rows)
@@ -1131,14 +1197,14 @@ let manifest_header_deps_lookup = (
 }
 
 let manifest_header_row_for_path = (
-  rows: Array[(String, String, String, String, String)],
+  rows: Array[(String, String, String, String)],
   path: String
-) -> Option[(String, String, String, String, String)] {
+) -> Option[(String, String, String, String)] {
   let mut i = 0
   let mut found = None
   while i < Array::length(rows) {
     let row = Array::get(rows, i)
-    let (row_path, _, _, _, _) = row
+    let (row_path, _, _, _) = row
     if String::equals(row_path, path) {
       found = Some(row)
       i = Array::length(rows)
@@ -1150,92 +1216,139 @@ let manifest_header_row_for_path = (
 }
 
 let append_manifest_header_row_if_missing = (
-  rows: Array[(String, String, String, String, String)],
-  row: (String, String, String, String, String)
+  rows: Array[(String, String, String, String)],
+  row: (String, String, String, String)
 ) -> Unit {
-  let (path, _, _, _, _) = row
+  let (path, _, _, _) = row
   match manifest_header_row_for_path(rows, path) {
     Some(_) => (),
     None => Array::push(rows, row)
   }
 }
 
-let rec collect_needed_paths_from_manifest_headers = (
+let collect_needed_paths_from_manifest_headers = (
   path: String,
   preloaded_sources: Array[(String, String)],
-  rows: Array[(String, String, String, String, String)],
-  visited: Array[String]
-) -> Unit with { Error, Fs } {
-  if contains_str(visited, path) {
-    ()
-  } else {
-    Array::push(visited, path)
-    let deps = match manifest_header_deps_lookup(rows, path) {
-      Some(found) => found,
-      None => {
-        let source = match source_lookup(preloaded_sources, path) {
-          Some(preloaded) => preloaded,
-          None => Fs::read_file(path)
+  rows: Array[(String, String, String, String)]
+) -> Array[String] with { Error, Fs } {
+  let visited = Array::slice([""], 0, 0)
+  let worklist = Array::slice([""], 0, 0)
+  let scheduled = Array::slice([""], 0, 0)
+  Array::push(worklist, path)
+  Array::push(scheduled, path)
+  let mut work_len = 1
+  let mut work_i = 0
+  loop {
+    if work_i >= work_len {
+      break
+    }
+    let current = Array::get(worklist, work_i)
+    if !(contains_str(visited, current)) {
+      Array::push(visited, current)
+      let deps = match manifest_header_deps_lookup(rows, current) {
+        Some(found) => found,
+        None => {
+          let source = match source_lookup(preloaded_sources, current) {
+            Some(preloaded) => preloaded,
+            None => Fs::read_file(current)
+          }
+          let (fallback_deps, _, _) = load_or_parse_module_header_fs(current, source, 0)
+          fallback_deps
         }
-        let (fallback_deps, _, _) = load_or_parse_module_header_fs(path, source, 0)
-        fallback_deps
+      }
+      let mut dep_i = 0
+      while dep_i < Array::length(deps) {
+        let dep_path = Array::get(deps, dep_i)
+        if !(contains_str(scheduled, dep_path)) {
+          Array::push(worklist, dep_path)
+          Array::push(scheduled, dep_path)
+          work_len = work_len + 1
+        }
+        dep_i = dep_i + 1
       }
     }
-    let mut i = 0
-    while i < Array::length(deps) {
-      collect_needed_paths_from_manifest_headers(
-        Array::get(deps, i),
-        preloaded_sources,
-        rows,
-        visited
-      )
-      i = i + 1
-    }
+    work_i = work_i + 1
   }
+  visited
 }
 
-let rec collect_needed_paths_and_manifest_headers = (
+let collect_needed_paths_and_manifest_headers = (
   path: String,
-  preloaded_sources: Array[(String, String)],
-  rows: Array[(String, String, String, String, String)],
-  visited: Array[String]
-) -> Unit with { Error, Fs } {
-  if contains_str(visited, path) {
-    ()
-  } else {
-    Array::push(visited, path)
-    let source = match source_lookup(preloaded_sources, path) {
-      Some(preloaded) => preloaded,
-      None => Fs::read_file(path)
+  preloaded_sources: Array[(String, String)]
+) -> (Array[(String, String, String, String)], Array[String]) with { Error, Fs } {
+  let rows = empty_manifest_header_cache_rows()
+  let visited = Array::slice([""], 0, 0)
+  let worklist = Array::slice([""], 0, 0)
+  let scheduled = Array::slice([""], 0, 0)
+  Array::push(worklist, path)
+  Array::push(scheduled, path)
+  let mut work_len = 1
+  let mut work_i = 0
+  loop {
+    if work_i >= work_len {
+      break
     }
-    let deps = match manifest_header_deps_lookup(rows, path) {
-      Some(found) => found,
-      None => {
-        let (parsed_deps, exports, _) = load_or_parse_module_header_fs(path, source, 0)
-        append_manifest_header_row_if_missing(
-          rows,
-          (
-            path,
-            __to_string(Fs::stat_token(path)),
-            compact_string_fingerprint(source),
-            join_header_values(parsed_deps),
-            join_header_values(exports)
+    let current = Array::get(worklist, work_i)
+    if !(contains_str(visited, current)) {
+      if work_i == 0 {
+        Fs::write_file("_build/collect_manifest_helper_first_current.txt", current)
+      }
+      Array::push(visited, current)
+      let source = match source_lookup(preloaded_sources, current) {
+        Some(preloaded) => {
+          if work_i == 0 {
+            Fs::write_file("_build/collect_manifest_helper_first_source_lookup.txt", "1")
+          }
+          preloaded
+        },
+        None => {
+          if work_i == 0 {
+            Fs::write_file("_build/collect_manifest_helper_first_source_lookup.txt", "0")
+          }
+          Fs::read_file(current)
+        }
+      }
+      let deps = match manifest_header_deps_lookup(rows, current) {
+        Some(found) => found,
+        None => {
+          let (parsed_deps, _, _) = load_or_parse_module_header_fs(current, source, 0)
+          append_manifest_header_row_if_missing(
+            rows,
+            (
+              current,
+              __to_string(Fs::stat_token(current)),
+              compact_string_fingerprint(source),
+              join_header_values(parsed_deps)
+            )
           )
-        )
-        parsed_deps
+          parsed_deps
+        }
+      }
+      if work_i == 0 {
+        Fs::write_file("_build/collect_manifest_helper_first_rows_len.txt", __to_string(Array::length(rows)))
+        Fs::write_file("_build/collect_manifest_helper_first_deps_len.txt", __to_string(Array::length(deps)))
+      }
+      let mut dep_i = 0
+      while dep_i < Array::length(deps) {
+        let dep_path = Array::get(deps, dep_i)
+        if !(contains_str(scheduled, dep_path)) {
+          Array::push(worklist, dep_path)
+          Array::push(scheduled, dep_path)
+          work_len = work_len + 1
+        }
+        dep_i = dep_i + 1
+      }
+      if work_i == 0 {
+        Fs::write_file("_build/collect_manifest_helper_first_work_len.txt", __to_string(work_len))
       }
     }
-    let mut i = 0
-    while i < Array::length(deps) {
-      collect_needed_paths_and_manifest_headers(
-        Array::get(deps, i),
-        preloaded_sources,
-        rows,
-        visited
-      )
-      i = i + 1
-    }
+    work_i = work_i + 1
   }
+  Fs::write_file("_build/collect_manifest_helper_final_rows_len.txt", __to_string(Array::length(rows)))
+  Fs::write_file("_build/collect_manifest_helper_final_visited_len.txt", __to_string(Array::length(visited)))
+  Fs::write_file("_build/collect_manifest_helper_final_work_i.txt", __to_string(work_i))
+  Fs::write_file("_build/collect_manifest_helper_final_work_len.txt", __to_string(work_len))
+  (rows, visited)
 }
 
 let push_grouped_source = (
@@ -1317,13 +1430,94 @@ let try_collect_manifest_sources_fs = (entry_path: String) -> Option[(String, Ar
         None => {
           let built_rows = empty_manifest_header_cache_rows()
           let visited = Array::slice([""], 0, 0)
-          collect_needed_paths_and_manifest_headers(entry_path, preloaded_sources, built_rows, visited)
+          let worklist = Array::slice([""], 0, 0)
+          let scheduled = Array::slice([""], 0, 0)
+          Array::push(worklist, entry_path)
+          Array::push(scheduled, entry_path)
+          let mut work_len = 1
+          let mut work_i = 0
+          loop {
+            if work_i >= work_len {
+              break
+            }
+            let current = Array::get(worklist, work_i)
+            if !(contains_str(visited, current)) {
+              Array::push(visited, current)
+              let source = match source_lookup(preloaded_sources, current) {
+                Some(preloaded) => preloaded,
+                None => Fs::read_file(current)
+              }
+              let deps = match manifest_header_deps_lookup(built_rows, current) {
+                Some(found) => found,
+                None => {
+                  let (parsed_deps, _, _) = load_or_parse_module_header_fs(current, source, 0)
+                  append_manifest_header_row_if_missing(
+                    built_rows,
+                    (
+                      current,
+                      __to_string(Fs::stat_token(current)),
+                      compact_string_fingerprint(source),
+                      join_header_values(parsed_deps)
+                    )
+                  )
+                  parsed_deps
+                }
+              }
+              let mut dep_i = 0
+              while dep_i < Array::length(deps) {
+                let dep_path = Array::get(deps, dep_i)
+                if !(contains_str(scheduled, dep_path)) {
+                  Array::push(worklist, dep_path)
+                  Array::push(scheduled, dep_path)
+                  work_len = work_len + 1
+                }
+                dep_i = dep_i + 1
+              }
+            }
+            work_i = work_i + 1
+          }
           store_persistent_manifest_header_cache(entry_path, manifest_path, built_rows)
           built_rows
         }
       }
       let needed_paths = Array::slice([""], 0, 0)
-      collect_needed_paths_from_manifest_headers(entry_path, preloaded_sources, header_rows, needed_paths)
+      let worklist = Array::slice([""], 0, 0)
+      let scheduled = Array::slice([""], 0, 0)
+      Array::push(worklist, entry_path)
+      Array::push(scheduled, entry_path)
+      let mut work_len = 1
+      let mut work_i = 0
+      loop {
+        if work_i >= work_len {
+          break
+        }
+        let current = Array::get(worklist, work_i)
+        if !(contains_str(needed_paths, current)) {
+          Array::push(needed_paths, current)
+          let deps = match manifest_header_deps_lookup(header_rows, current) {
+            Some(found) => found,
+            None => {
+              let source = match source_lookup(preloaded_sources, current) {
+                Some(preloaded) => preloaded,
+                None => Fs::read_file(current)
+              }
+              let (fallback_deps, _, _) = load_or_parse_module_header_fs(current, source, 0)
+              fallback_deps
+            }
+          }
+          let mut dep_i = 0
+          while dep_i < Array::length(deps) {
+            let dep_path = Array::get(deps, dep_i)
+            if !(contains_str(scheduled, dep_path)) {
+              Array::push(worklist, dep_path)
+              Array::push(scheduled, dep_path)
+              work_len = work_len + 1
+            }
+            dep_i = dep_i + 1
+          }
+        }
+        work_i = work_i + 1
+      }
       let sources = Array::slice([("", "")], 0, 0)
       let mut j = 0
       while j < Array::length(preloaded_sources) {
@@ -1353,13 +1547,94 @@ let try_collect_manifest_source_groups_fs = (entry_path: String) -> Option[(Stri
         None => {
           let built_rows = empty_manifest_header_cache_rows()
           let visited = Array::slice([""], 0, 0)
-          collect_needed_paths_and_manifest_headers(entry_path, preloaded_sources, built_rows, visited)
+          let worklist = Array::slice([""], 0, 0)
+          let scheduled = Array::slice([""], 0, 0)
+          Array::push(worklist, entry_path)
+          Array::push(scheduled, entry_path)
+          let mut work_len = 1
+          let mut work_i = 0
+          loop {
+            if work_i >= work_len {
+              break
+            }
+            let current = Array::get(worklist, work_i)
+            if !(contains_str(visited, current)) {
+              Array::push(visited, current)
+              let source = match source_lookup(preloaded_sources, current) {
+                Some(preloaded) => preloaded,
+                None => Fs::read_file(current)
+              }
+              let deps = match manifest_header_deps_lookup(built_rows, current) {
+                Some(found) => found,
+                None => {
+                  let (parsed_deps, _, _) = load_or_parse_module_header_fs(current, source, 0)
+                  append_manifest_header_row_if_missing(
+                    built_rows,
+                    (
+                      current,
+                      __to_string(Fs::stat_token(current)),
+                      compact_string_fingerprint(source),
+                      join_header_values(parsed_deps)
+                    )
+                  )
+                  parsed_deps
+                }
+              }
+              let mut dep_i = 0
+              while dep_i < Array::length(deps) {
+                let dep_path = Array::get(deps, dep_i)
+                if !(contains_str(scheduled, dep_path)) {
+                  Array::push(worklist, dep_path)
+                  Array::push(scheduled, dep_path)
+                  work_len = work_len + 1
+                }
+                dep_i = dep_i + 1
+              }
+            }
+            work_i = work_i + 1
+          }
           store_persistent_manifest_header_cache(entry_path, manifest_path, built_rows)
           built_rows
         }
       }
       let needed_paths = Array::slice([""], 0, 0)
-      collect_needed_paths_from_manifest_headers(entry_path, preloaded_sources, header_rows, needed_paths)
+      let worklist = Array::slice([""], 0, 0)
+      let scheduled = Array::slice([""], 0, 0)
+      Array::push(worklist, entry_path)
+      Array::push(scheduled, entry_path)
+      let mut work_len = 1
+      let mut work_i = 0
+      loop {
+        if work_i >= work_len {
+          break
+        }
+        let current = Array::get(worklist, work_i)
+        if !(contains_str(needed_paths, current)) {
+          Array::push(needed_paths, current)
+          let deps = match manifest_header_deps_lookup(header_rows, current) {
+            Some(found) => found,
+            None => {
+              let source = match source_lookup(preloaded_sources, current) {
+                Some(preloaded) => preloaded,
+                None => Fs::read_file(current)
+              }
+              let (fallback_deps, _, _) = load_or_parse_module_header_fs(current, source, 0)
+              fallback_deps
+            }
+          }
+          let mut dep_i = 0
+          while dep_i < Array::length(deps) {
+            let dep_path = Array::get(deps, dep_i)
+            if !(contains_str(scheduled, dep_path)) {
+              Array::push(worklist, dep_path)
+              Array::push(scheduled, dep_path)
+              work_len = work_len + 1
+            }
+            dep_i = dep_i + 1
+          }
+        }
+        work_i = work_i + 1
+      }
       let groups = empty_grouped_sources()
       let mut j = 0
       while j < Array::length(rows) {
@@ -1547,10 +1822,12 @@ export let collect_all_sources_fs = (entry_path: String) -> Array[(String, Strin
           sources
         },
         None =>
-      match try_collect_manifest_sources_fs(entry_path) {
-        Some((manifest_path, sources)) => {
-          store_persistent_sources_cache(entry_path, Some(manifest_path), sources)
-          sources
+      match try_load_manifest_rows(entry_path) {
+        Some((base_dir, rows)) => {
+          let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
+          let preloaded_sources = load_manifest_full_sources(base_dir, rows)
+          store_persistent_sources_cache(entry_path, Some(manifest_path), preloaded_sources)
+          preloaded_sources
         },
         None => {
           let sources = Array::slice([("", "")], 0, 0)
@@ -1574,8 +1851,21 @@ export let collect_source_groups_fs = (entry_path: String) -> Array[(String, Arr
           groups
         },
         None =>
-      match try_collect_manifest_source_groups_fs(entry_path) {
-        Some((manifest_path, groups)) => {
+      match try_load_manifest_rows(entry_path) {
+        Some((base_dir, rows)) => {
+          let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
+          let preloaded_sources = load_manifest_full_sources(base_dir, rows)
+          let groups = empty_grouped_sources()
+          let mut j = 0
+          while j < Array::length(rows) {
+            let (group_name, rel_path) = Array::get(rows, j)
+            let path = join_path(base_dir, rel_path)
+            match source_lookup(preloaded_sources, path) {
+              Some(source) => push_grouped_source(groups, group_name, path, source),
+              None => ()
+            }
+            j = j + 1
+          }
           store_persistent_source_groups_cache(entry_path, Some(manifest_path), groups)
           groups
         },

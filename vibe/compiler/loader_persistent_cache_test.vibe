@@ -171,6 +171,26 @@ test "collect_all_sources_fs: reuses aggregated manifest headers when source cac
   }
 }
 
+test "collect_all_sources_fs: resolves ../../../ imports from nested entry" {
+  let base_dir = "/tmp/vibe_compiler_loader_nested_relative"
+  let helper_path = String::concat(base_dir, "/helper.vibe")
+  let entry_dir = String::concat(base_dir, "/a/b/c")
+  let main_path = String::concat(entry_dir, "/main.vibe")
+  Fs::mkdir_p(entry_dir)
+  Fs::write_bytes(helper_path, string_to_bytes("export let add = () -> Int { 1 }"))
+  Fs::write_bytes(
+    main_path,
+    string_to_bytes("import ../../../helper.vibe { add }\nlet run = () -> Int { add() }")
+  )
+
+  let sources = collect_all_sources_fs(main_path)
+  assert(eq(Array::length(sources), 2))
+  match lookup_group_source([("recursive", sources)], helper_path) {
+    Some(source) => assert(String::equals(source, "export let add = () -> Int { 1 }")),
+    None => assert(false)
+  }
+}
+
 test "load_or_parse_module_header_fs: warm cache reuses deps and exports" {
   let base_dir = "/tmp/vibe_compiler_persistent_module_header"
   let helper_path = String::concat(base_dir, "/helper.vibe")
@@ -197,6 +217,33 @@ test "load_or_parse_module_header_fs: warm cache reuses deps and exports" {
   assert(String::equals(Array::get(deps2, 0), helper_path))
   assert(eq(Array::length(exports2), 1))
   assert(String::equals(Array::get(exports2, 0), "run"))
+}
+
+test "load_or_parse_module_header_fs: selfhost source bundle uses cheap header scan" {
+  let base_dir = "/tmp/vibe_compiler_generated_bundle_header"
+  let bundle_path = String::concat(base_dir, "/selfhost_sources_bundle.vibe")
+  let bundle_source = String::concat(
+    "// AUTO-GENERATED\n",
+    String::concat(
+      "let source_0 = (\"x\", \"y\")\n",
+      String::concat(
+        "export let selfhost_sources = () -> Array[(String, String)] { [] }\n",
+        "export let selfhost_source_groups = () -> Array[(String, Array[(String, String)])] { [] }\n"
+      )
+    )
+  )
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(bundle_path, string_to_bytes(bundle_source))
+  remove_file_if_exists(
+    persistent_module_header_cache_path(bundle_path, compact_string_fingerprint(bundle_source))
+  )
+
+  let (deps1, exports1, parse1) = load_or_parse_module_header_fs(bundle_path, bundle_source, 0)
+  assert(eq(Array::length(deps1), 0))
+  assert(eq(Array::length(exports1), 2))
+  assert(String::equals(Array::get(exports1, 0), "selfhost_sources"))
+  assert(String::equals(Array::get(exports1, 1), "selfhost_source_groups"))
+  assert(eq(parse1, 0))
 }
 
 test "persistent_module_header_cache_path: uses compiled-safe filename" {
