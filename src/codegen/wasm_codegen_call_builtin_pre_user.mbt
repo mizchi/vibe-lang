@@ -5303,18 +5303,47 @@ fn compile_call_builtin_pre_user_inner(
       }
     }
     "__slice" => {
-      // __slice(container, start, end) -> StringView/ArrayView
-      // In WASM codegen, emit as String::substring for now (materialized string)
-      // This loses the zero-copy property but maintains compatibility with
-      // the existing __eq string comparison path.
-      // TODO: implement proper Record-based StringView in WASM
-      let _ = compile_call_builtin_pre_user(
-        ctx,
-        buf,
-        "String::substring",
-        args,
-        false,
-      )
+      // __slice(container, start, end) -> StringView (zero-copy)
+      // Layout: [obj_string_view(4), source_ptr_i32(4), start_raw(4), end_raw(4)]
+      let pos_args = extract_positional_exprs_with_arity(args, "__slice", 3)
+      require_heap(ctx)
+      let source_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+      let obj_local = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_local_set(buf, source_local)
+      // Allocate 16 bytes for StringView
+      let size = 16
+      emit_heap_alloc(ctx, buf, size, obj_local)
+      // offset 0: obj_string_view type tag
+      emit_local_get(buf, obj_local)
+      emit_i32_const_raw(buf, obj_string_view)
+      emit_i32_store(buf, 0)
+      // offset 4: source pointer (untagged i32)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, source_local)
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_store(buf, 4)
+      // offset 8: start (untagged i32, from tagged int >> 2)
+      emit_local_get(buf, obj_local)
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_store(buf, 8)
+      // offset 12: end (untagged i32, from tagged int >> 2)
+      emit_local_get(buf, obj_local)
+      compile_expr_i32(ctx, buf, pos_args[2])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_store(buf, 12)
+      // Return tagged pointer
+      emit_local_get(buf, obj_local)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
     }
     "__set_index" => {
       // __set_index(arr, idx, value) -> arr[idx] = value; return value

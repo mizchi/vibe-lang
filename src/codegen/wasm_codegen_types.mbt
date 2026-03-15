@@ -141,6 +141,9 @@ let obj_double = 9
 let obj_enum = 10
 
 ///|
+let obj_string_view = 11
+
+///|
 enum ValueKind {
   I32
   I64

@@ -540,9 +540,59 @@ fn compile_binary_cmp_op(
         emit_f64_load(buf, 4)
         emit_f64(buf)
         buf.push((5).to_byte()) // else
+        // Check for StringView: obj_string_view(11) on either side
+        emit_local_get(buf, left_type_local)
+        emit_i32_const_raw(buf, obj_string_view)
+        emit_i32_eq(buf)
+        emit_local_get(buf, right_type_local)
+        emit_i32_const_raw(buf, obj_string)
+        emit_i32_eq(buf)
+        emit_i32_and(buf)
+        buf.push((4).to_byte()) // if (left=StringView, right=String)
+        buf.push((127).to_byte()) // result i32
+        // StringView: source_ptr at +4, start at +8, end at +12
+        // String: length at +4, data at +8
+        emit_string_view_eq(
+          buf, left_ptr_local, right_ptr_local, left_len_local, right_len_local,
+          loop_i_local, eq_local,
+        )
+        buf.push((5).to_byte()) // else
+        // Check reverse: left=String, right=StringView
+        emit_local_get(buf, left_type_local)
+        emit_i32_const_raw(buf, obj_string)
+        emit_i32_eq(buf)
+        emit_local_get(buf, right_type_local)
+        emit_i32_const_raw(buf, obj_string_view)
+        emit_i32_eq(buf)
+        emit_i32_and(buf)
+        buf.push((4).to_byte()) // if (left=String, right=StringView)
+        buf.push((127).to_byte()) // result i32
+        emit_string_view_eq(
+          buf, right_ptr_local, left_ptr_local, left_len_local, right_len_local,
+          loop_i_local, eq_local,
+        )
+        buf.push((5).to_byte()) // else
+        // Check both StringView
+        emit_local_get(buf, left_type_local)
+        emit_i32_const_raw(buf, obj_string_view)
+        emit_i32_eq(buf)
+        emit_local_get(buf, right_type_local)
+        emit_i32_const_raw(buf, obj_string_view)
+        emit_i32_eq(buf)
+        emit_i32_and(buf)
+        buf.push((4).to_byte()) // if (both StringView)
+        buf.push((127).to_byte()) // result i32
+        emit_string_view_view_eq(
+          buf, left_ptr_local, right_ptr_local, left_len_local, right_len_local,
+          loop_i_local, eq_local,
+        )
+        buf.push((5).to_byte()) // else
         emit_local_get(buf, left_local)
         emit_local_get(buf, right_local)
         emit_i64_cmp(buf)
+        buf.push((11).to_byte()) // end if (both SV)
+        buf.push((11).to_byte()) // end if (S, SV)
+        buf.push((11).to_byte()) // end if (SV, S)
         buf.push((11).to_byte()) // end if
         buf.push((11).to_byte()) // end if
         buf.push((11).to_byte()) // end if
@@ -912,4 +962,163 @@ fn compile_call_by_name(
     return ()
   }
   compile_call_by_name_unresolved(ctx, buf, name)
+}
+
+///|
+/// Emit StringView == String comparison.
+/// sv_ptr: untagged ptr to StringView (obj_string_view)
+/// str_ptr: untagged ptr to String (obj_string)
+fn emit_string_view_eq(
+  buf : ByteBuf,
+  sv_ptr : Int,
+  str_ptr : Int,
+  len_a : Int,
+  len_b : Int,
+  loop_i : Int,
+  eq_result : Int,
+) -> Unit {
+  // sv_len = sv.end - sv.start
+  emit_local_get(buf, sv_ptr)
+  emit_i32_load(buf, 12) // end
+  emit_local_get(buf, sv_ptr)
+  emit_i32_load(buf, 8) // start
+  emit_i32_sub(buf)
+  emit_local_set(buf, len_a)
+  // str_len = str.length
+  emit_local_get(buf, str_ptr)
+  emit_i32_load(buf, 4) // length
+  emit_local_set(buf, len_b)
+  // if sv_len != str_len → 0
+  emit_local_get(buf, len_a)
+  emit_local_get(buf, len_b)
+  emit_i32_eq(buf)
+  buf.push((4).to_byte()) // if lengths match
+  buf.push((127).to_byte()) // result i32
+  // byte-by-byte compare: sv.source[sv.start + i] vs str[8 + i]
+  emit_i32_const_raw(buf, 1)
+  emit_local_set(buf, eq_result)
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, loop_i)
+  emit_block(buf)
+  emit_loop(buf)
+  emit_local_get(buf, loop_i)
+  emit_local_get(buf, len_a)
+  emit_i32_lt_s(buf)
+  emit_i32_eqz(buf)
+  emit_br_if(buf, 1) // exit if i >= len
+  // sv.source + sv.start + i
+  emit_local_get(buf, sv_ptr)
+  emit_i32_load(buf, 4) // source_ptr
+  emit_local_get(buf, sv_ptr)
+  emit_i32_load(buf, 8) // start
+  emit_i32_add(buf)
+  emit_local_get(buf, loop_i)
+  emit_i32_add(buf)
+  emit_i32_load8_u(buf, 8) // load byte at source_data + start + i
+  // str + i
+  emit_local_get(buf, str_ptr)
+  emit_local_get(buf, loop_i)
+  emit_i32_add(buf)
+  emit_i32_load8_u(buf, 8) // load byte at str_data + i
+  emit_i32_eq(buf)
+  emit_i32_eqz(buf)
+  buf.push((4).to_byte()) // if not equal
+  buf.push((64).to_byte()) // void
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, eq_result)
+  emit_local_get(buf, len_a)
+  emit_local_set(buf, loop_i) // break loop
+  buf.push((5).to_byte()) // else
+  emit_local_get(buf, loop_i)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, loop_i)
+  buf.push((11).to_byte()) // end if
+  emit_br(buf, 0) // continue loop
+  emit_end(buf) // end loop
+  emit_end(buf) // end block
+  emit_local_get(buf, eq_result)
+  buf.push((5).to_byte()) // else (lengths differ)
+  emit_i32_const_raw(buf, 0)
+  buf.push((11).to_byte()) // end if
+}
+
+///|
+/// Emit StringView == StringView comparison.
+fn emit_string_view_view_eq(
+  buf : ByteBuf,
+  left_ptr : Int,
+  right_ptr : Int,
+  len_a : Int,
+  len_b : Int,
+  loop_i : Int,
+  eq_result : Int,
+) -> Unit {
+  // left_len = left.end - left.start
+  emit_local_get(buf, left_ptr)
+  emit_i32_load(buf, 12)
+  emit_local_get(buf, left_ptr)
+  emit_i32_load(buf, 8)
+  emit_i32_sub(buf)
+  emit_local_set(buf, len_a)
+  // right_len = right.end - right.start
+  emit_local_get(buf, right_ptr)
+  emit_i32_load(buf, 12)
+  emit_local_get(buf, right_ptr)
+  emit_i32_load(buf, 8)
+  emit_i32_sub(buf)
+  emit_local_set(buf, len_b)
+  emit_local_get(buf, len_a)
+  emit_local_get(buf, len_b)
+  emit_i32_eq(buf)
+  buf.push((4).to_byte())
+  buf.push((127).to_byte())
+  emit_i32_const_raw(buf, 1)
+  emit_local_set(buf, eq_result)
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, loop_i)
+  emit_block(buf)
+  emit_loop(buf)
+  emit_local_get(buf, loop_i)
+  emit_local_get(buf, len_a)
+  emit_i32_lt_s(buf)
+  emit_i32_eqz(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, left_ptr)
+  emit_i32_load(buf, 4)
+  emit_local_get(buf, left_ptr)
+  emit_i32_load(buf, 8)
+  emit_i32_add(buf)
+  emit_local_get(buf, loop_i)
+  emit_i32_add(buf)
+  emit_i32_load8_u(buf, 8)
+  emit_local_get(buf, right_ptr)
+  emit_i32_load(buf, 4)
+  emit_local_get(buf, right_ptr)
+  emit_i32_load(buf, 8)
+  emit_i32_add(buf)
+  emit_local_get(buf, loop_i)
+  emit_i32_add(buf)
+  emit_i32_load8_u(buf, 8)
+  emit_i32_eq(buf)
+  emit_i32_eqz(buf)
+  buf.push((4).to_byte())
+  buf.push((64).to_byte())
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, eq_result)
+  emit_local_get(buf, len_a)
+  emit_local_set(buf, loop_i)
+  buf.push((5).to_byte())
+  emit_local_get(buf, loop_i)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, loop_i)
+  buf.push((11).to_byte())
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+  emit_local_get(buf, eq_result)
+  buf.push((5).to_byte())
+  emit_i32_const_raw(buf, 0)
+  buf.push((11).to_byte())
 }
