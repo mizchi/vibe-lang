@@ -1089,6 +1089,7 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "Stdout::write_stream" ||
         name == "Stdin::read_char" ||
         name == "Stdin::read_stream" ||
+        name == "__slice" ||
         name == "String::substring" ||
         name == "String::concat" ||
         name == "__to_string" ||

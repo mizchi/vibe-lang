@@ -5302,6 +5302,20 @@ fn compile_call_builtin_pre_user_inner(
         }
       }
     }
+    "__slice" => {
+      // __slice(container, start, end) -> StringView/ArrayView
+      // In WASM codegen, emit as String::substring for now (materialized string)
+      // This loses the zero-copy property but maintains compatibility with
+      // the existing __eq string comparison path.
+      // TODO: implement proper Record-based StringView in WASM
+      let _ = compile_call_builtin_pre_user(
+        ctx,
+        buf,
+        "String::substring",
+        args,
+        false,
+      )
+    }
     "__set_index" => {
       // __set_index(arr, idx, value) -> arr[idx] = value; return value
       // This is used by index-assignment desugaring (e.g. cursor[0] = x).
