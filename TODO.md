@@ -254,8 +254,8 @@ Phase 4 (応用):
 - [x] String index / slice 構文 `s[i]`, `s[i..j]`, `s[..j]`, `s[i..]`
   - `s[i]` → checker/eval/codegen 対応済み。`s[i..j]` は既存 (パーサーで `String::substring` にデシュガー)
   - `vibe/x/url`, `vibe/x/toml`, `vibe/x/regexp` で `String::substring(s, i, i + 1)` → `s[i]` へ置換可能
-- [ ] raw string / multiline string（`r"..."`, `"""..."""`）
-  - `vibe/x/regexp`, `vibe/x/toml` のエスケープ負荷を下げる
+- [x] multiline string（MoonBit 互換 `#|` 構文）— 実装済み・テスト済み
+  - `#|line1` + `#|line2` → `"line1\nline2"`。インデントの `#|` は縦アラインで揃える
 - [ ] 軽量 struct リテラル sugar `Type { ... }`
   - `Type::{ ... }` の冗長さで single-constructor enum に逃げている箇所を減らす
 - [ ] `String` を `for-in` 対象にする（`for c in s`, `for i, c in s`）
