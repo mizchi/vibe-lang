@@ -938,6 +938,30 @@ fn eval_pure_builtin(
           @core.Value::Bool(a.to_int().to_int64() == b)
         (@core.Value::String(a), @core.Value::String(b)) =>
           @core.Value::Bool(a == b)
+        (@core.Value::Record(rec), @core.Value::String(s)) =>
+          match (rec.get("source"), rec.get("start"), rec.get("end")) {
+            (
+              Some(@core.Value::String(src)),
+              Some(@core.Value::Int(start)),
+              Some(@core.Value::Int(end_)),
+            ) =>
+              @core.Value::Bool(
+                src.substring(start=start.to_int(), end=end_.to_int()) == s,
+              )
+            _ => @core.Value::Bool(false)
+          }
+        (@core.Value::String(s), @core.Value::Record(rec)) =>
+          match (rec.get("source"), rec.get("start"), rec.get("end")) {
+            (
+              Some(@core.Value::String(src)),
+              Some(@core.Value::Int(start)),
+              Some(@core.Value::Int(end_)),
+            ) =>
+              @core.Value::Bool(
+                s == src.substring(start=start.to_int(), end=end_.to_int()),
+              )
+            _ => @core.Value::Bool(false)
+          }
         (a, b) => @core.Value::Bool(a == b)
       }
     }
