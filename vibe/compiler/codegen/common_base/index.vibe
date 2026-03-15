@@ -48,6 +48,7 @@ export struct CtorTable {
 // Compilation context: all shared state for compile_expr
 export struct CompileCtx {
   func_table: FuncTable;
+  func_name_map: Map[String, Int];
   str_table: StrTable;
   lambda_table: LambdaTable;
   num_user_funcs: Int;
@@ -282,7 +283,18 @@ export let get_elet_val = (expr: Expr) -> Expr with { Error } {
 }
 
 // Resolve function: returns (func_index, param_count, has_return)
-export let resolve_func = (ft: FuncTable, name: String) -> (Int, Int, Int)with { Error } {
+export let build_func_name_map = (ft: FuncTable) -> Map[String, Int] {
+  let b = MapBuilder::new()
+  let len = Array::length(ft.names)
+  let mut i = 0
+  while i < len {
+    MapBuilder::set(b, Array::get(ft.names, i), i)
+    i = i + 1
+  }
+  MapBuilder::freeze(b)
+}
+
+export let resolve_func = (ft: FuncTable, name: String) -> (Int, Int, Int) with { Error } {
   let len = Array::length(ft.names)
   let mut i = 0
   let mut found = -1
@@ -298,6 +310,15 @@ export let resolve_func = (ft: FuncTable, name: String) -> (Int, Int, Int)with {
     throw("undefined function: \{name}")
   };
   (Array::get(ft.indices, found), Array::get(ft.params, found), Array::get(ft.returns, found))
+}
+
+export let resolve_func_fast = (ft: FuncTable, name_map: Map[String, Int], name: String) -> (Int, Int, Int) with { Error } {
+  if map_has(name_map, name) {
+    let found = Map::get(name_map, name)
+    (Array::get(ft.indices, found), Array::get(ft.params, found), Array::get(ft.returns, found))
+  } else {
+    throw("undefined function: \{name}")
+  }
 }
 
 // Emit WASM instruction for a binary operator
