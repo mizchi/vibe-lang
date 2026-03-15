@@ -60,7 +60,7 @@ export let pp = (src: String) -> String {
     let stmts = parse_program(tokens)
     print_program(stmts)
   } {
-    Error(msg) => String::concat("ERROR: ", msg)
+    Error(msg) => "ERROR: \{msg}"
   }
 }
 
@@ -87,7 +87,7 @@ let join_lines = (lines: Array[String]) -> String {
       let merged = if i == 0 {
         next
       } else {
-        String::concat(String::concat(acc, "\n"), next)
+        "\{acc}\n\{next}"
       }
       go(i + 1, merged)
     }
@@ -169,7 +169,7 @@ let split_fixture = (source: String, path: String) -> (String, String)with { Err
   if in_data {
     (join_lines(ArrayBuilder::freeze(script_lines)), join_lines(ArrayBuilder::freeze(data_lines)))
   } else {
-    throw(String::concat(String::concat("[", path), "] missing __DATA__ section"))
+    throw("[\{path}] missing __DATA__ section")
   }
 }
 
@@ -279,14 +279,14 @@ let source_pairs_has_path = (pairs: Array[(String, String)], path: String) -> Bo
 }
 
 let resolve_import_fs_path = (from_path: String, raw_path: String) -> Option[String] with { Fs } {
-  let raw_index = String::concat(raw_path, "/index.vibe")
+  let raw_index = "\{raw_path}/index.vibe"
   if Fs::is_file(raw_path) {
     Some(raw_path)
   } else if Fs::is_file(raw_index) {
     Some(raw_index)
   } else {
     let resolved = resolve_path(dir_of(from_path), raw_path)
-    let resolved_index = String::concat(resolved, "/index.vibe")
+    let resolved_index = "\{resolved}/index.vibe"
     if Fs::is_file(resolved) {
       Some(resolved)
     } else if Fs::is_file(resolved_index) {
@@ -298,7 +298,7 @@ let resolve_import_fs_path = (from_path: String, raw_path: String) -> Option[Str
       } else {
         raw_path
       }
-      let root_index = String::concat(root_raw, "/index.vibe")
+      let root_index = "\{root_raw}/index.vibe"
       if Fs::is_file(root_raw) {
         Some(root_raw)
       } else if Fs::is_file(root_index) {
@@ -349,7 +349,7 @@ export let list_root_fixture_paths = (fixture_dir: String) -> Array[String] with
   let mut i = 0
   while i < Array::length(names) {
     let name = Array::get(names, i)
-    let path = String::concat(String::concat(fixture_dir, "/"), name)
+    let path = "\{fixture_dir}/\{name}"
     if Fs::is_file(path) && String::ends_with(path, ".vibe") {
       ArrayBuilder::push(files, path)
     }
@@ -366,20 +366,20 @@ let resolve_ref_import_path = (current_path: String, raw_path: String, spec: Fix
       let target = Map::get(spec.version_refs, name)
       match resolve_import_fs_path(current_path, target) {
         Some(path) => path,
-        None => throw(String::concat("unresolved version ref target: ", target))
+        None => throw("unresolved version ref target: \{target}")
       }
     } else {
-      throw(String::concat("missing version ref: ", name))
+      throw("missing version ref: \{name}")
     },
     None => match import_ref_name(raw_path, "symbol@") {
       Some(name) => if Map::has_key(spec.symbol_refs, name) {
         let target = Map::get(spec.symbol_refs, name)
         match resolve_import_fs_path(current_path, target) {
           Some(path) => path,
-          None => throw(String::concat("unresolved symbol ref target: ", target))
+          None => throw("unresolved symbol ref target: \{target}")
         }
       } else {
-        throw(String::concat("missing symbol ref: ", name))
+        throw("missing symbol ref: \{name}")
       },
       None => raw_path
     }
@@ -425,11 +425,11 @@ let rewrite_ref_import_line = (line: String, current_path: String, spec: Fixture
       line
     } else {
       let ref_name = trim(String::substring(rest, 0, brace_idx))
-      let raw_path = String::concat(marker, ref_name)
+      let raw_path = "\{marker}\{ref_name}"
       let resolved = resolve_ref_import_path(current_path, raw_path, spec)
       let before = String::substring(line, 0, marker_idx)
       let after = String::substring(rest, brace_idx, String::length(rest))
-      String::concat(before, String::concat(resolved, after))
+      "\{before}\{resolved}\{after}"
     }
   }
 }
@@ -533,7 +533,7 @@ let rec collect_expr_shell_effects = (expr: Expr) -> Array[String] {
         EIdent(name) => if name == "sh" && Array::length(args) == 1 {
           match Array::get(args, 0) {
             EString(cmd) => [
-              String::concat(String::concat("ShellExec(\"", cmd), "\")")
+              "ShellExec(\"\{cmd}\")"
             ],
             _ => empty_strings()
           }
@@ -668,7 +668,7 @@ export let eval_real_fixture_last = (path: String) -> String with { Fs, Error } 
   let _checked = db_typecheck(seed_type_db(sources), path)
   let main_source = match source_lookup(sources, path) {
     Some(src) => src,
-    None => throw(String::concat("missing main source: ", path))
+    None => throw("missing main source: \{path}")
   }
   let lookup_name = "__fixture_last"
   let stmts = parse_program(lex(main_source))
@@ -687,21 +687,21 @@ export let run_real_fixture_selfhost = (path: String) -> Unit with { Fs, Error }
       let _checked = db_typecheck(seed_type_db(sources), path)
       let main_source = match source_lookup(sources, path) {
         Some(src) => src,
-        None => throw(String::concat("missing main source: ", path))
+        None => throw("missing main source: \{path}")
       }
       let stmts = parse_program(lex(main_source))
       let actual_effects = collect_stmt_shell_effects(stmts)
       let lookup_name = "__fixture_last"
       let actual_last = eval_with_imports_lookup(rewrite_last_stmt_binding(stmts, lookup_name), sources, dir_of(path), lookup_name)
       match spec.error_contains {
-        Some(expect) => throw(String::concat("expected error containing: ", expect)),
+        Some(expect) => throw("expected error containing: \{expect}"),
         None => ()
       }
       match spec.last {
         Some(expect) => if actual_last == expect {
           ()
         } else {
-          throw(String::concat(String::concat("last mismatch: expected ", expect), String::concat(", got ", actual_last)))
+          throw("last mismatch: expected \{expect}, got \{actual_last}")
         },
         None => ()
       }
@@ -709,7 +709,7 @@ export let run_real_fixture_selfhost = (path: String) -> Unit with { Fs, Error }
         Some(expect) => if string_array_eq(expect, actual_effects) {
           ()
         } else {
-          throw(String::concat("effects mismatch in ", path))
+          throw("effects mismatch in \{path}")
         },
         None => ()
       }
@@ -720,16 +720,16 @@ export let run_real_fixture_selfhost = (path: String) -> Unit with { Fs, Error }
   }
   if spec.todo {
     if error_text == "" {
-      throw(String::concat(String::concat("[", path), "] TODO fixture passed (remove TODO flag)"))
+      throw("[\{path}] TODO fixture passed (remove TODO flag)")
     }
   } else if String::length(error_text) > 0 {
     match spec.error_contains {
       Some(expect) => if String::contains(error_text, expect) {
         ()
       } else {
-        throw(String::concat(String::concat("error mismatch in ", path), String::concat(": ", error_text)))
+        throw("error mismatch in \{path}: \{error_text}")
       },
-      None => throw(String::concat(String::concat("unexpected error in ", path), String::concat(": ", error_text)))
+      None => throw("unexpected error in \{path}: \{error_text}")
     }
   }
 }
@@ -747,21 +747,21 @@ export let run_preloaded_fixture_selfhost = (path: String, spec_data: String, so
     let _checked = db_typecheck(seed_type_db(sources), path)
     let main_source = match source_lookup(sources, path) {
       Some(src) => src,
-      None => throw(String::concat("missing main source: ", path))
+      None => throw("missing main source: \{path}")
     }
     let stmts = parse_program(lex(main_source))
     let actual_effects = collect_stmt_shell_effects(stmts)
     let lookup_name = "__fixture_last"
     let actual_last = eval_with_imports_lookup(rewrite_last_stmt_binding(stmts, lookup_name), sources, dir_of(path), lookup_name)
     match spec.error_contains {
-      Some(expect) => throw(String::concat("expected error containing: ", expect)),
+      Some(expect) => throw("expected error containing: \{expect}"),
       None => ()
     }
     match spec.last {
       Some(expect) => if actual_last == expect {
         ()
       } else {
-        throw(String::concat(String::concat("last mismatch: expected ", expect), String::concat(", got ", actual_last)))
+        throw("last mismatch: expected \{expect}, got \{actual_last}")
       },
       None => ()
     }
@@ -769,7 +769,7 @@ export let run_preloaded_fixture_selfhost = (path: String, spec_data: String, so
       Some(expect) => if string_array_eq(expect, actual_effects) {
         ()
       } else {
-        throw(String::concat("effects mismatch in ", path))
+        throw("effects mismatch in \{path}")
       },
       None => ()
     }
@@ -779,16 +779,16 @@ export let run_preloaded_fixture_selfhost = (path: String, spec_data: String, so
   }
   if spec.todo {
     if error_text == "" {
-      throw(String::concat(String::concat("[", path), "] TODO fixture passed (remove TODO flag)"))
+      throw("[\{path}] TODO fixture passed (remove TODO flag)")
     }
   } else if String::length(error_text) > 0 {
     match spec.error_contains {
       Some(expect) => if String::contains(error_text, expect) {
         ()
       } else {
-        throw(String::concat(String::concat("error mismatch in ", path), String::concat(": ", error_text)))
+        throw("error mismatch in \{path}: \{error_text}")
       },
-      None => throw(String::concat(String::concat("unexpected error in ", path), String::concat(": ", error_text)))
+      None => throw("unexpected error in \{path}: \{error_text}")
     }
   }
 }

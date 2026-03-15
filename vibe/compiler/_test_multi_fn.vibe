@@ -13,7 +13,7 @@ let join = (arr: Array[String], sep: String) -> String {
       acc
     } else {
       let s = if i > 0 {
-        String::concat(String::concat(acc, sep), Array::get(arr, i))
+        "\{acc}\{sep}\{Array::get(arr, i)}"
       } else Array::get(arr, i)
       go(i + 1, s)
     }
@@ -26,7 +26,7 @@ export let rec print_pat = (p: Pat) -> String {
     PWild => "_",
     PBind(name) => name,
     PInt(n) => __to_string(n),
-    PString(s) => String::concat("\"", String::concat(s, "\"")),
+    PString(s) => "\"\{s}\"",
     PBool(b) => if b {
       "true"
     } else "false",
@@ -36,15 +36,15 @@ export let rec print_pat = (p: Pat) -> String {
       let parts = for arg in args {
         print_pat(arg)
       }
-      String::concat(name, String::concat("(", String::concat(join(parts, ", "), ")")))
+      "\{name}(\{join(parts, ", ")})"
     },
     PTuple(elems) => {
       let parts = for elem in elems {
         print_pat(elem)
       }
-      String::concat("(", String::concat(join(parts, ", "), ")"))
+      "(\{join(parts, ", ")})"
     },
-    POr(left, right) => String::concat(print_pat(left), String::concat(" | ", print_pat(right)))
+    POr(left, right) => "\{print_pat(left)} | \{print_pat(right)}"
   }
 }
 
@@ -62,19 +62,19 @@ export let rec print_type_expr = (ty: TypeExpr) -> String {
       let parts = for arg in args {
         print_type_expr(arg)
       }
-      String::concat(name, String::concat("[", String::concat(join(parts, ", "), "]")))
+      "\{name}[\{join(parts, ", ")}]"
     },
     TyFn(params, ret) => {
       let parts = for param in params {
         print_type_expr(param)
       }
-      String::concat("(", String::concat(join(parts, ", "), String::concat(") -> ", print_type_expr(ret))))
+      "(\{join(parts, ", ")}) -> \{print_type_expr(ret)}"
     },
     TyTuple(elems) => {
       let parts = for elem in elems {
         print_type_expr(elem)
       }
-      String::concat("(", String::concat(join(parts, ", "), ")"))
+      "(\{join(parts, ", ")})"
     }
   }
 }
@@ -83,81 +83,80 @@ export let rec print_expr = (e: Expr) -> String {
   match e {
     EInt(n) => __to_string(n),
     EFloat(n) => __to_string(n),
-    EString(s) => String::concat("\"", String::concat(s, "\"")),
+    EString(s) => "\"\{s}\"",
     EBool(b) => if b {
       "true"
     } else "false",
     EIdent(name) => name,
     EUnit => "()",
-    ETuple(elems) => String::concat("(", String::concat(join(map_to_strings(elems, print_expr), ", "), ")")),
-    EArray(elems) => String::concat("[", String::concat(join(map_to_strings(elems, print_expr), ", "), "]")),
+    ETuple(elems) => "(\{join(map_to_strings(elems, print_expr), ", ")})",
+    EArray(elems) => "[\{join(map_to_strings(elems, print_expr), ", ")}]",
     ERecord(fields) => {
       let parts = for field in fields {
         let (name, val) = field
-        String::concat(name, String::concat(": ", print_expr(val)))
+        "\{name}: \{print_expr(val)}"
       }
-      String::concat("{ ", String::concat(join(parts, ", "), " }"))
+      "{ \{join(parts, ", ")} }"
     },
-    EIf(cond, then_e, else_e) => String::concat("if ", String::concat(print_expr(cond), String::concat(" { ", String::concat(print_expr(then_e), String::concat(" } else { ", String::concat(print_expr(else_e), " }")))))),
-    ELet(name, val, body) => String::concat("let ", String::concat(name, String::concat(" = ", String::concat(print_expr(val), String::concat("; ", print_expr(body)))))),
-    ELetRec(name, val, body) => String::concat("let rec ", String::concat(name, String::concat(" = ", String::concat(print_expr(val), String::concat("; ", print_expr(body)))))),
-    ELetMut(name, val, body) => String::concat("let mut ", String::concat(name, String::concat(" = ", String::concat(print_expr(val), String::concat("; ", print_expr(body)))))),
-    EAssign(name, val, body) => String::concat(name, String::concat(" = ", String::concat(print_expr(val), String::concat("; ", print_expr(body))))),
-    EAssignOp(name, op, val, body) => String::concat(name, String::concat(" ", String::concat(op, String::concat("= ", String::concat(print_expr(val), String::concat("; ", print_expr(body))))))),
-    ESeq(a, b) => String::concat(print_expr(a), String::concat("; ", print_expr(b))),
+    EIf(cond, then_e, else_e) => "if \{print_expr(cond)} { \{print_expr(then_e)} } else { \{print_expr(else_e)} }",
+    ELet(name, val, body) => "let \{name} = \{print_expr(val)}; \{print_expr(body)}",
+    ELetRec(name, val, body) => "let rec \{name} = \{print_expr(val)}; \{print_expr(body)}",
+    ELetMut(name, val, body) => "let mut \{name} = \{print_expr(val)}; \{print_expr(body)}",
+    EAssign(name, val, body) => "\{name} = \{print_expr(val)}; \{print_expr(body)}",
+    EAssignOp(name, op, val, body) => "\{name} \{op}= \{print_expr(val)}; \{print_expr(body)}",
+    ESeq(a, b) => "\{print_expr(a)}; \{print_expr(b)}",
     EMatch(scrutinee, arms) => {
       let parts = for arm in arms {
         let (pat, expr) = arm
-        String::concat(print_pat(pat), String::concat(" => ", print_expr(expr)))
+        "\{print_pat(pat)} => \{print_expr(expr)}"
       }
-      String::concat("match ", String::concat(print_expr(scrutinee), String::concat(" { ", String::concat(join(parts, ", "), " }"))))
+      "match \{print_expr(scrutinee)} { \{join(parts, ", ")} }"
     },
     EHandle(body, arms) => {
       let parts = for arm in arms {
         let (pat, expr) = arm
-        String::concat(print_pat(pat), String::concat(" => ", print_expr(expr)))
+        "\{print_pat(pat)} => \{print_expr(expr)}"
       }
-      String::concat("handle { ", String::concat(print_expr(body), String::concat(" } { ", String::concat(join(parts, ", "), " }"))))
+      "handle { \{print_expr(body)} } { \{join(parts, ", ")} }"
     },
-    EWhile(cond, body) => String::concat("while ", String::concat(print_expr(cond), String::concat(" { ", String::concat(print_expr(body), " }")))),
-    EForIn(name, index_name, iterable, body) => String::concat("for ", String::concat(match index_name {
-      Some(index_name) => String::concat(index_name, String::concat(", ", name)),
-      None => name
-    }, String::concat(" in ", String::concat(print_expr(iterable), String::concat(" { ", String::concat(print_expr(body), " }")))))),
-    ECall(callee, args) => String::concat(print_expr(callee), String::concat("(", String::concat(join(map_to_strings(args, print_expr), ", "), ")"))),
-    EBinOp(op, left, right) => String::concat("(", String::concat(print_expr(left), String::concat(" ", String::concat(op, String::concat(" ", String::concat(print_expr(right), ")")))))),
-    EUnaryOp(op, expr) => String::concat("(", String::concat(op, String::concat(print_expr(expr), ")"))),
+    EWhile(cond, body) => "while \{print_expr(cond)} { \{print_expr(body)} }",
+    EForIn(name, index_name, iterable, body) => "for \{match index_name {
+      Some(index_name) => String::concat(index_name, String::concat(", ", name))}\{None => name
+    }, String::concat(" in ", String::concat(print_expr(iterable), String::concat(" { ", String::concat(print_expr(body), " }"))))}",
+    ECall(callee, args) => "\{print_expr(callee)}(\{join(map_to_strings(args, print_expr), ", ")})",
+    EBinOp(op, left, right) => "(\{print_expr(left)} \{op} \{print_expr(right)})",
+    EUnaryOp(op, expr) => "(\{op}\{print_expr(expr)})",
     EFn(_, _, params, ret_ty, effect, body) => {
       let parts = for param in params {
         let (name, ty_opt) = param
         match ty_opt {
-          Some(ty) => String::concat(name, String::concat(": ", print_type_expr(ty))),
+          Some(ty) => "\{name}: \{print_type_expr(ty)}",
           None => name
         }
       }
       let ret_str = match ret_ty {
         Some(rt) => {
           let eff_str = match effect {
-            Some(e) => String::concat(" with {", String::concat(e, "}")),
+            Some(e) => " with {\{e}}",
             None => ""
           }
-          String::concat(") -> ", String::concat(print_type_expr(rt), String::concat(eff_str, String::concat(" { ", String::concat(print_expr(body), " }")))))
+          ") -> \{print_type_expr(rt)}\{eff_str} { \{print_expr(body)} }"
         },
-        None => String::concat(") -> ", print_expr(body))
+        None => ") -> \{print_expr(body)}"
       }
-      String::concat("(", String::concat(join(parts, ", "), ret_str))
+      "(\{join(parts, ", ")}\{ret_str}"
     },
-    EDot(expr, field) => String::concat(print_expr(expr), String::concat(".", field)),
-    ELabeledArg(name, modifier, val) => String::concat(name, String::concat("=", print_expr(val))),
+    EDot(expr, field) => "\{print_expr(expr)}.\{field}",
+    ELabeledArg(name, modifier, val) => "\{name}=\{print_expr(val)}",
     EMap(fields) => {
       let parts = for field in fields {
         let (name, val) = field
-        String::concat(name, String::concat(": ", print_expr(val)))
+        "\{name}: \{print_expr(val)}"
       }
-      String::concat("Map { ", String::concat(join(parts, ", "), " }"))
+      "Map { \{join(parts, ", ")} }"
     },
-    ESpread(e) => String::concat("...", print_expr(e)),
-    EStringInterp(parts) => String::concat("\"", String::concat(join(parts, ""), "\""))
+    ESpread(e) => "...\{print_expr(e)}",
+    EStringInterp(parts) => "\"\{join(parts, "")}\""
   }
 }
 
@@ -174,28 +173,28 @@ export let rec print_stmt = (s: Stmt) -> String {
         "let rec "
       } else "let "
       let t = match ty_opt {
-        Some(ty) => String::concat(": ", print_type_expr(ty)),
+        Some(ty) => ": \{print_type_expr(ty)}",
         None => ""
       }
-      String::concat(p, String::concat(r, String::concat(name, String::concat(t, String::concat(" = ", print_expr(val))))))
+      "\{p}\{r}\{name}\{t} = \{print_expr(val)}"
     },
     SLetMut(name, ty_opt, val) => {
       let t = match ty_opt {
-        Some(ty) => String::concat(": ", print_type_expr(ty)),
+        Some(ty) => ": \{print_type_expr(ty)}",
         None => ""
       }
-      String::concat("let mut ", String::concat(name, String::concat(t, String::concat(" = ", print_expr(val)))))
+      "let mut \{name}\{t} = \{print_expr(val)}"
     },
     SEnum(exported, name, ctors) => "enum",
     SSuberror(exported, name, ctors) => "suberror",
     SStruct(exported, name, fields) => "struct",
     STypeAlias(exported, name, ty) => "type",
-    STrait(exported, name, _) => String::concat(prefix(exported), String::concat("trait ", name)),
-    SImpl(_, _, trait_name, type_name) => String::concat("impl ", String::concat(trait_name, String::concat(" for ", type_name))),
-    SExternLet(name, ty) => String::concat("extern let ", String::concat(name, String::concat(": ", print_type_expr(ty)))),
+    STrait(exported, name, _) => "\{prefix(exported)}trait \{name}",
+    SImpl(_, _, trait_name, type_name) => "impl \{trait_name} for \{type_name}",
+    SExternLet(name, ty) => "extern let \{name}: \{print_type_expr(ty)}",
     SImport(path, items) => "import",
-    STest(name, body) => String::concat("test \"", String::concat(name, String::concat("\" { ", String::concat(print_expr(body), " }")))),
-    SBench(name, body) => String::concat("bench \"", String::concat(name, String::concat("\" { ", String::concat(print_expr(body), " }")))),
+    STest(name, body) => "test \"\{name}\" { \{print_expr(body)} }",
+    SBench(name, body) => "bench \"\{name}\" { \{print_expr(body)} }",
     SExpr(e) => print_expr(e),
     SExport(names) => "export",
     SReExport(path, items) => "re-export",
@@ -206,7 +205,7 @@ export let rec print_stmt = (s: Stmt) -> String {
       let p = if exported {
         "export "
       } else ""
-      String::concat(p, String::concat("module ", String::concat(name, String::concat(" { ", String::concat(join(parts, "\n"), " }")))))
+      "\{p}module \{name} { \{join(parts, "\n")} }"
     }
   }
 }
