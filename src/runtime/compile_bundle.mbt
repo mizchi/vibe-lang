@@ -93,6 +93,15 @@ fn bundle_for_wasm_impl(
   // These are defined as user-level .vibe code using primitive builtins
   // (array_builder, array_builder_push, etc.) that the WASM backend handles.
   // DCE will remove any prelude definitions that aren't actually used.
+  // Snapshot non-prelude names before adding prelude stmts.
+  // Used for surgical prelude DCE in --no-dce mode.
+  let non_prelude_names : Array[String] = []
+  for stmt in bundled_stmts {
+    match bundle_stmt_value_name(stmt) {
+      Some(name) => non_prelude_names.push(name)
+      None => ()
+    }
+  }
   let prelude = @checker.prelude_ast()
   for stmt in prelude.stmts {
     match stmt {
@@ -116,7 +125,13 @@ fn bundle_for_wasm_impl(
         collect_reexport_defs(
           db, base_dir, spec, source, bundled_stmts, visited,
         )
-      _ => bundled_stmts.push(stmt)
+      _ => {
+        match bundle_stmt_value_name(stmt) {
+          Some(name) => non_prelude_names.push(name)
+          None => ()
+        }
+        bundled_stmts.push(stmt)
+      }
     }
   }
   let bundled = @core.Module::{ stmts: bundled_stmts }
@@ -129,7 +144,10 @@ fn bundle_for_wasm_impl(
       @pipeline.dce_module_gc(bundled)
     }
   } else {
-    bundled
+    // Without full DCE, still remove unused prelude functions to avoid
+    // compiling ~30+ unused standard library functions per module.
+    // All user/dependency names are kept as roots so only prelude is affected.
+    @pipeline.dce_module_with_entry_names(bundled, non_prelude_names)
   }
   demote_unused_let_mut(after_dce)
 }

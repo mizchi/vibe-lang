@@ -211,6 +211,33 @@ fn Lexer::lex_string(self : Lexer) -> Token {
 }
 
 ///|
+/// Lex a raw string literal r"..." — no escape processing
+fn Lexer::lex_raw_string(self : Lexer) -> Token {
+  let start = self.pos
+  let _ = self.advance() // skip 'r'
+  let _ = self.advance() // skip opening '"'
+  let buf = StringBuilder::new()
+  while (match self.peek() {
+          Some('"') => false
+          Some(_) => true
+          None => false
+        }) {
+    match self.advance() {
+      Some(c) => buf.write_char(c)
+      None => ()
+    }
+  }
+  match self.peek() {
+    Some('"') => {
+      let _ = self.advance()
+      let width = self.pos - start
+      Token::new_with_width(string_lit(), buf.to_string(), width)
+    }
+    _ => Token::new_with_width(error_kind(), buf.to_string(), self.pos - start)
+  }
+}
+
+///|
 /// Lex a char literal ('a') with simple escapes
 fn Lexer::lex_char(self : Lexer) -> Token {
   let start = self.pos
@@ -283,6 +310,11 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
       }
       if c == '\'' {
         return self.lex_char()
+      }
+      if c == 'r' &&
+        self.pos + 1 < self.input.length() &&
+        self.input[self.pos + 1].to_int().unsafe_to_char() == '"' {
+        return self.lex_raw_string()
       }
       if is_alpha(c) {
         let text = self.lex_ident()
@@ -362,7 +394,13 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           let _ = self.advance()
         }
         let mut is_float = false
-        if self.peek() == Some('.') {
+        // Only consume '.' as decimal point if the next char is NOT '.'
+        // (to avoid consuming '..' range operator)
+        if self.peek() == Some('.') &&
+          not(
+            self.pos + 1 < self.input.length() &&
+            self.input[self.pos + 1].to_int().unsafe_to_char() == '.',
+          ) {
           is_float = true
           let _ = self.advance()
           while (match self.peek() {
@@ -548,6 +586,10 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
             let _ = self.advance()
             let _ = self.advance()
             Token::new(dotdotdot(), "...")
+          } else if self.pos < self.input.length() &&
+            self.input[self.pos].to_int().unsafe_to_char() == '.' {
+            let _ = self.advance()
+            Token::new(dotdot(), "..")
           } else {
             Token::new(dot(), ".")
           }

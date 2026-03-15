@@ -7,6 +7,10 @@ fn compile_expr_call(
   args : Array[@core.CallArg],
 ) -> Unit raise WasmGenError {
   let name = @core.lower_wasm_intrinsic_name(name)
+  // Save and reset tail position — sub-expressions (args) are not in tail position
+  // The actual call will check is_tail_position
+  let saved_tail = ctx.is_tail_position
+  ctx.is_tail_position = false
   // Optimization: if name refers to a known module-level function with matching
   // arity, use direct `call` instead of `call_indirect`. This avoids the
   // overhead of table lookup, tag check (bare fn vs closure), and branch.
@@ -16,6 +20,7 @@ fn compile_expr_call(
       None => false
     }
     if direct_arity_match {
+      ctx.is_tail_position = saved_tail // restore for call dispatch
       compile_call_by_name(ctx, buf, name, args)
       return ()
     }
@@ -44,6 +49,7 @@ fn compile_expr_call(
       Some(idx) => idx
       None => raise WasmGenError::UnknownName(name)
     }
+    ctx.is_tail_position = saved_tail // restore for call dispatch
     compile_indirect_call(ctx, buf, name, sig, pos_args, fn_value_idx)
     // Multi-value re-boxing: only needed when the sig used for
     // call_indirect actually returns multiple values.
@@ -103,6 +109,7 @@ fn compile_expr_call(
       Some(idx) => idx
       None => raise WasmGenError::UnknownName(name)
     }
+    ctx.is_tail_position = saved_tail // restore for call dispatch
     compile_indirect_call_guessed(ctx, buf, sig, pos_args, fn_value_idx)
     // Multi-value re-boxing: only when the guessed sig actually returns multi-value
     if sig.results.length() > 1 {
@@ -112,6 +119,7 @@ fn compile_expr_call(
       }
     }
   } else {
+    ctx.is_tail_position = saved_tail // restore for call dispatch
     compile_call_by_name(ctx, buf, name, args)
   }
 }
@@ -154,11 +162,13 @@ fn compile_indirect_call(
   buf.push((5).to_byte())
   // Closure: untag ptr, load func index from memory
   emit_untag_ptr(buf, fn_value_idx)
-  emit_local_set(buf, env_idx)
-  emit_local_get(buf, env_idx)
+  emit_local_tee(buf, env_idx)
   emit_i32_load(buf, 4)
   emit_local_set(buf, func_idx)
   buf.push((11).to_byte())
+  // Args are not in tail position
+  let saved_tail = ctx.is_tail_position
+  ctx.is_tail_position = false
   for i in 0..<sig_param_len {
     let kind = sig.params[i]
     if ctx.use_js_strings && kind == ValueKind::ExternRef {
@@ -167,6 +177,7 @@ fn compile_indirect_call(
       compile_expr_i32(ctx, buf, pos_args[i])
     }
   }
+  ctx.is_tail_position = saved_tail
   emit_local_get(buf, env_idx)
   emit_local_get(buf, func_idx)
   let type_idx = match ctx.fn_sig_type_indices.get(func_sig_key(sig)) {
@@ -174,16 +185,13 @@ fn compile_indirect_call(
     None =>
       raise WasmGenError::BackendLimit(backend="wasm", feature="call: " + name)
   }
-  // Sync heap pointer to global before call so callee sees current heap
-  if ctx.heap_local >= 0 && ctx.use_heap_global {
-    emit_local_get(buf, ctx.heap_local)
-    emit_global_set(buf, ctx.heap_global)
-  }
-  emit_call_indirect(buf, type_idx)
-  // Reload heap pointer from global after call (callee may have bumped it)
-  if ctx.heap_local >= 0 && ctx.use_heap_global {
-    emit_global_get(buf, ctx.heap_global)
-    emit_local_set(buf, ctx.heap_local)
+  // S8: sync heap before indirect call
+  emit_heap_pre_call_sync(ctx, buf)
+  if ctx.is_tail_position {
+    emit_return_call_indirect(buf, type_idx)
+  } else {
+    emit_call_indirect(buf, type_idx)
+    emit_heap_post_call_sync(ctx, buf)
   }
 }
 
@@ -224,11 +232,13 @@ fn compile_indirect_call_guessed(
   buf.push((5).to_byte())
   // Closure: untag ptr, load func index from memory
   emit_untag_ptr(buf, fn_value_idx)
-  emit_local_set(buf, env_idx)
-  emit_local_get(buf, env_idx)
+  emit_local_tee(buf, env_idx)
   emit_i32_load(buf, 4)
   emit_local_set(buf, func_idx)
   buf.push((11).to_byte())
+  // Args are not in tail position
+  let saved_tail = ctx.is_tail_position
+  ctx.is_tail_position = false
   for i in 0..<sig_param_len {
     let kind = sig.params[i]
     if ctx.use_js_strings && kind == ValueKind::ExternRef {
@@ -237,6 +247,7 @@ fn compile_indirect_call_guessed(
       compile_expr_i32(ctx, buf, pos_args[i])
     }
   }
+  ctx.is_tail_position = saved_tail
   emit_local_get(buf, env_idx)
   emit_local_get(buf, func_idx)
   let type_idx = match ctx.fn_sig_type_indices.get(func_sig_key(sig)) {
@@ -247,13 +258,12 @@ fn compile_indirect_call_guessed(
       new_idx
     }
   }
-  if ctx.heap_local >= 0 && ctx.use_heap_global {
-    emit_local_get(buf, ctx.heap_local)
-    emit_global_set(buf, ctx.heap_global)
-  }
-  emit_call_indirect(buf, type_idx)
-  if ctx.heap_local >= 0 && ctx.use_heap_global {
-    emit_global_get(buf, ctx.heap_global)
-    emit_local_set(buf, ctx.heap_local)
+  // S8: sync heap before indirect call
+  emit_heap_pre_call_sync(ctx, buf)
+  if ctx.is_tail_position {
+    emit_return_call_indirect(buf, type_idx)
+  } else {
+    emit_call_indirect(buf, type_idx)
+    emit_heap_post_call_sync(ctx, buf)
   }
 }

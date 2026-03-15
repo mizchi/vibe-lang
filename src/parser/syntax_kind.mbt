@@ -595,6 +595,11 @@ pub fn double_colon() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn dotdot() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(98)
+}
+
+///|
 pub fn dotdotdot() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(87)
 }

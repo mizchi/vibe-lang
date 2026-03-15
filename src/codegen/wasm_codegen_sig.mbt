@@ -1025,11 +1025,13 @@ fn has_float_operand(expr : @core.Expr) -> Bool {
 ///|
 fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
   match expr {
-    @core.Expr::String(..) => true
+    // S7: string literals use pre-interned data segment, no heap alloc
+    @core.Expr::String(..) => false
     @core.Expr::Float(..) => true
     @core.Expr::Double(..) => true
     @core.Expr::Tuple(..) => true
-    @core.Expr::TupleIndex(..) => true
+    // S7: tuple index is just memory load, recurse into inner expression
+    @core.Expr::TupleIndex(expr=inner, ..) => needs_heap_expr(ctx, inner)
     @core.Expr::Record(..) => true
     @core.Expr::StructLit(..) => true
     @core.Expr::Array(..) => true
@@ -1156,6 +1158,12 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
       // Enum constructor call needs heap
       if ctx.enum_ctor_tags.contains(name) {
         return true
+      }
+      // S8: If the callee is known to use heap, the caller must also
+      // set up heap_local so that the pre/post call sync works correctly.
+      match ctx.fn_needs_heap.get(name) {
+        Some(true) => return true
+        _ => ()
       }
       for arg in args {
         if needs_heap_expr(ctx, arg.expr) {

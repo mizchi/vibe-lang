@@ -40,6 +40,9 @@ fn compile_expr(
   buf : ByteBuf,
   expr : @core.Expr,
 ) -> Unit raise WasmGenError {
+  // Save and reset tail position. Only Call, If, Match, Block will restore it.
+  let saved_tail = ctx.is_tail_position
+  ctx.is_tail_position = false
   match expr {
     @core.Expr::Int(value=n, span~) => {
       let _ = span
@@ -73,6 +76,7 @@ fn compile_expr(
       raise WasmGenError::Unsupported("placeholder in codegen")
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
+      ctx.is_tail_position = saved_tail // restore for tail call optimization
       compile_expr_call(ctx, buf, expr, name, args)
     }
     @core.Expr::Tuple(items~, span~) => {
@@ -95,14 +99,18 @@ fn compile_expr(
       let _ = span
       compile_map_expr(ctx, buf, fields)
     }
-    @core.Expr::If(cond~, then_body~, else_body~, span~) =>
+    @core.Expr::If(cond~, then_body~, else_body~, span~) => {
+      ctx.is_tail_position = saved_tail // propagate to branches
       compile_expr_if(ctx, buf, expr, cond, then_body, else_body, span)
+    }
     @core.Expr::Block(body~, span~) => {
       let _ = span
+      ctx.is_tail_position = saved_tail // propagate to last expression
       compile_block_expr(ctx, buf, body)
     }
     @core.Expr::Match(scrutinee~, arms~, span~) => {
       let _ = span
+      ctx.is_tail_position = saved_tail // propagate to arms
       compile_expr_match(ctx, buf, scrutinee, arms)
     }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {

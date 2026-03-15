@@ -1367,7 +1367,7 @@ fn generate_string_trampoline_module(
     type_sec.push(b'\x01')
     type_sec.push(b'\x7e') // result: i64
   }
-  write_section(body, 1, type_sec.data)
+  write_section(body, 1, type_sec.to_array())
 
   // Import section (id=2): target_func, cabi_realloc, run_init?, memory, target_env?
   let import_sec = ByteBuf::new()
@@ -1401,13 +1401,13 @@ fn generate_string_trampoline_module(
     import_sec.push(b'\x7f') // i32
     import_sec.push(b'\x01') // mutable
   }
-  write_section(body, 2, import_sec.data)
+  write_section(body, 2, import_sec.to_array())
 
   // Function section (id=3): 1 function
   let func_sec = ByteBuf::new()
   write_u32_leb(func_sec, 1) // 1 function
   write_u32_leb(func_sec, 2) // uses type 2 (canon func)
-  write_section(body, 3, func_sec.data)
+  write_section(body, 3, func_sec.to_array())
 
   // Export section (id=7): export the canon func
   let export_sec = ByteBuf::new()
@@ -1415,7 +1415,7 @@ fn generate_string_trampoline_module(
   write_name(export_sec, "canon_func")
   export_sec.push(b'\x00') // func export
   write_u32_leb(export_sec, canon_func_export_idx)
-  write_section(body, 7, export_sec.data)
+  write_section(body, 7, export_sec.to_array())
 
   // Code section (id=10): trampoline body
   let code_sec = ByteBuf::new()
@@ -1532,13 +1532,11 @@ fn generate_string_trampoline_module(
   func_body.push(b'\x0b') // end
 
   // Write function body with length prefix
-  write_u32_leb(code_sec, func_body.data.length())
-  for b in func_body.data {
-    code_sec.push(b)
-  }
-  write_section(body, 10, code_sec.data)
+  write_u32_leb(code_sec, func_body.len())
+  code_sec.extend_buf(func_body)
+  write_section(body, 10, code_sec.to_array())
 
-  for b in body.data {
+  for b in body.to_array() {
     buf.push(b)
   }
   Bytes::from_iter(buf.iter())

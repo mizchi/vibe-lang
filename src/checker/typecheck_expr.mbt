@@ -1011,39 +1011,59 @@ fn type_expr_eff(
       let fn_scope = effect_scope_from_list(normalized_effects)
       // Allow effects in function body if function declares effects
       let fn_allow_effect = allow_effect || normalized_effects.length() > 0
-      let body_ty = type_block(
-        scope_env, body, aliases, fn_scope, fn_allow_effect,
-      )
       let resolved_effects = effect_set_to_atoms(
         effect_set_from_atoms(scope_env, normalized_effects),
       )
-      let final_ret = match ret {
-        Some(r) => {
-          let ret_ty_with_num = match num_var {
-            Some(n) => replace_num_type(r, n)
-            None => r
-          }
-          // Replace type parameters with their type variables
-          let ret_ty = substitute_type_params(ret_ty_with_num, type_param_vars)
-          let resolved = normalize_type(env, ret_ty)
-          if not(type_equal(env, resolved, body_ty)) {
-            raise TypeError::Mismatch(
-              expected=resolved,
-              actual=body_ty,
-              span~,
-              context=Some("fn return"),
-            )
-          }
-          resolved
+      // In skip_fn_body_check mode, skip body type checking when return type is explicit
+      if env.session_state.skip_fn_body_check && ret is Some(_) {
+        let r = match ret {
+          Some(r) => r
+          None => abort("unreachable")
         }
-        None => body_ty
+        let ret_ty_with_num = match num_var {
+          Some(n) => replace_num_type(r, n)
+          None => r
+        }
+        let ret_ty = substitute_type_params(ret_ty_with_num, type_param_vars)
+        let resolved = normalize_type(env, ret_ty)
+        ensure_no_scoped_ref_return_escape(env, resolved, span)
+        @core.Type::Func(
+          params=resolved_params,
+          ret=resolved,
+          effects=resolved_effects,
+        )
+      } else {
+        let body_ty = type_block(
+          scope_env, body, aliases, fn_scope, fn_allow_effect,
+        )
+        let final_ret = match ret {
+          Some(r) => {
+            let ret_ty_with_num = match num_var {
+              Some(n) => replace_num_type(r, n)
+              None => r
+            }
+            // Replace type parameters with their type variables
+            let ret_ty = substitute_type_params(ret_ty_with_num, type_param_vars)
+            let resolved = normalize_type(env, ret_ty)
+            if not(type_equal(env, resolved, body_ty)) {
+              raise TypeError::Mismatch(
+                expected=resolved,
+                actual=body_ty,
+                span~,
+                context=Some("fn return"),
+              )
+            }
+            resolved
+          }
+          None => body_ty
+        }
+        ensure_no_scoped_ref_return_escape(env, final_ret, span)
+        @core.Type::Func(
+          params=resolved_params,
+          ret=final_ret,
+          effects=resolved_effects,
+        )
       }
-      ensure_no_scoped_ref_return_escape(env, final_ret, span)
-      @core.Type::Func(
-        params=resolved_params,
-        ret=final_ret,
-        effects=resolved_effects,
-      )
     }
     @core.Expr::While(cond~, body~, span~) => {
       let _ = span
@@ -1883,16 +1903,18 @@ fn type_let_expr(
             let fn_scope = effect_scope_from_list(normalized_effects)
             let fn_allow_effect = allow_effect ||
               normalized_effects.length() > 0
-            let body_ty = type_block(
-              scope_env, body, aliases, fn_scope, fn_allow_effect,
-            )
-            if not(type_equal(scope_env, resolved_ret, body_ty)) {
-              raise TypeError::Mismatch(
-                expected=resolved_ret,
-                actual=body_ty,
-                span=fn_span,
-                context=Some("fn return"),
+            if not(env.session_state.skip_fn_body_check) {
+              let body_ty = type_block(
+                scope_env, body, aliases, fn_scope, fn_allow_effect,
               )
+              if not(type_equal(scope_env, resolved_ret, body_ty)) {
+                raise TypeError::Mismatch(
+                  expected=resolved_ret,
+                  actual=body_ty,
+                  span=fn_span,
+                  context=Some("fn return"),
+                )
+              }
             }
             let resolved_effects = effect_set_to_atoms(
               effect_set_from_atoms(scope_env, normalized_effects),

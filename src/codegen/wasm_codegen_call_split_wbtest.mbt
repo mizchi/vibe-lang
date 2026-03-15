@@ -226,9 +226,9 @@ test "needs_heap_expr returns true for String::join call" {
 }
 
 ///|
-test "needs_heap_expr returns true for string literal" {
+test "needs_heap_expr returns false for string literal (S7: pre-interned)" {
   let ctx = CodegenCtx::new(false)
-  assert_true(needs_heap_expr(ctx, call_split_test_string("x")))
+  assert_false(needs_heap_expr(ctx, call_split_test_string("x")))
 }
 
 ///|

@@ -210,6 +210,30 @@ fn tag_ptr64(ptr : Int, tag : Int) -> Int64 {
 }
 
 ///|
+/// Allocate a nullary enum constructor singleton in the data section.
+/// Returns the offset where the 8-byte object [obj_type, ctor_tag] is placed.
+fn StringTable::intern_enum_singleton(
+  self : StringTable,
+  ctor_name : String,
+  ctor_tag : Int,
+) -> Int {
+  let key = "__enum__" + ctor_name
+  match self.map.get(key) {
+    Some(offset) => offset
+    None => {
+      let data : Array[Byte] = []
+      write_u32_le_bytes(data, obj_enum) // offset 0: obj_type
+      write_u32_le_bytes(data, ctor_tag) // offset 4: ctor_tag
+      let offset = self.next_offset
+      self.map[key] = offset
+      self.segments.push(StringSegment::{ offset, bytes: data })
+      self.next_offset = align4(offset + data.length())
+      offset
+    }
+  }
+}
+
+///|
 fn StringTable::intern(self : StringTable, s : String) -> Int {
   match self.map.get(s) {
     Some(offset) => offset

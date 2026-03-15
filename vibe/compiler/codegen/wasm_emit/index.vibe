@@ -4,21 +4,20 @@
 import ../../core/index.vibe {
   bytebuf_new, bytebuf_push, bytebuf_length, bytebuf_to_bytes,
   bytebuf_push_array, bytebuf_push_section, bytebuf_push_vec_header,
-  leb128_encode_u32, leb128_encode_s64
+  leb128_encode_u32, leb128_encode_s64,
+  bytebuf_push2, bytebuf_push3, bytebuf_push9,
+  bytebuf_push_opcode_u32, bytebuf_push_opcode_s64, bytebuf_push_opcode_u32_u32,
+  bytebuf_push_string
 }
 
 // === Emit helpers ===
 
 // Emit WASM magic number and version
 export let emit_header = (buf: Array[Int]) -> Unit {
-  bytebuf_push(buf, 0)
-  bytebuf_push(buf, 97)   // 'a'
-  bytebuf_push(buf, 115)  // 's'
-  bytebuf_push(buf, 109)  // 'm'
-  bytebuf_push(buf, 1)
-  bytebuf_push(buf, 0)
-  bytebuf_push(buf, 0)
-  bytebuf_push(buf, 0)
+  // \0asm + version 1 (8 bytes via two push3 + push2)
+  bytebuf_push3(buf, 0, 97, 115)
+  bytebuf_push3(buf, 109, 1, 0)
+  bytebuf_push2(buf, 0, 0)
 }
 
 // Encode a function type: (i64 x param_count) -> (i64 x result_count)
@@ -71,13 +70,7 @@ export let emit_function_section = (out: Array[Int], type_indices: Array[Int]) -
 
 // Helper: emit a name string (length-prefixed ASCII)
 export let emit_name = (buf: Array[Int], name: String) -> Unit {
-  let name_len = String::length(name)
-  leb128_encode_u32(buf, name_len)
-  let mut i = 0
-  while i < name_len {
-    bytebuf_push(buf, String::char_code_at(name, i))
-    i = i + 1
-  }
+  bytebuf_push_string(buf, name)
 }
 
 // Emit export section with multiple exports
@@ -159,23 +152,19 @@ export let emit_code_section_with_locals = (out: Array[Int], bodies: Array[Array
 // === Instruction emitters ===
 
 export let emit_local_get = (buf: Array[Int], idx: Int) -> Unit {
-  bytebuf_push(buf, 32)  // local.get
-  leb128_encode_u32(buf, idx)
+  bytebuf_push_opcode_u32(buf, 32, idx)
 }
 
 export let emit_local_set = (buf: Array[Int], idx: Int) -> Unit {
-  bytebuf_push(buf, 33)  // local.set
-  leb128_encode_u32(buf, idx)
+  bytebuf_push_opcode_u32(buf, 33, idx)
 }
 
 export let emit_local_tee = (buf: Array[Int], idx: Int) -> Unit {
-  bytebuf_push(buf, 34)  // local.tee
-  leb128_encode_u32(buf, idx)
+  bytebuf_push_opcode_u32(buf, 34, idx)
 }
 
 export let emit_i64_const = (buf: Array[Int], value: Int) -> Unit {
-  bytebuf_push(buf, 66)  // i64.const
-  leb128_encode_s64(buf, value)
+  bytebuf_push_opcode_s64(buf, 66, value)
 }
 
 export let emit_i64_add = (buf: Array[Int]) -> Unit {
@@ -247,8 +236,7 @@ export let emit_i64_eqz = (buf: Array[Int]) -> Unit {
 }
 
 export let emit_call = (buf: Array[Int], func_idx: Int) -> Unit {
-  bytebuf_push(buf, 16)  // call
-  leb128_encode_u32(buf, func_idx)
+  bytebuf_push_opcode_u32(buf, 16, func_idx)
 }
 
 export let emit_drop = (buf: Array[Int]) -> Unit {
@@ -262,28 +250,23 @@ export let emit_return = (buf: Array[Int]) -> Unit {
 // Control flow: block types
 // 0x40 = void block, 0x7E = i64 block
 export let emit_block_void = (buf: Array[Int]) -> Unit {
-  bytebuf_push(buf, 2)   // block
-  bytebuf_push(buf, 64)  // 0x40 = void
+  bytebuf_push2(buf, 2, 64)
 }
 
 export let emit_block_i64 = (buf: Array[Int]) -> Unit {
-  bytebuf_push(buf, 2)   // block
-  bytebuf_push(buf, 126) // 0x7E = i64
+  bytebuf_push2(buf, 2, 126)
 }
 
 export let emit_loop_void = (buf: Array[Int]) -> Unit {
-  bytebuf_push(buf, 3)   // loop
-  bytebuf_push(buf, 64)  // void
+  bytebuf_push2(buf, 3, 64)
 }
 
 export let emit_if_void = (buf: Array[Int]) -> Unit {
-  bytebuf_push(buf, 4)   // if
-  bytebuf_push(buf, 64)  // void
+  bytebuf_push2(buf, 4, 64)
 }
 
 export let emit_if_i64 = (buf: Array[Int]) -> Unit {
-  bytebuf_push(buf, 4)   // if
-  bytebuf_push(buf, 126) // i64
+  bytebuf_push2(buf, 4, 126)
 }
 
 export let emit_else = (buf: Array[Int]) -> Unit {
@@ -295,13 +278,11 @@ export let emit_end = (buf: Array[Int]) -> Unit {
 }
 
 export let emit_br = (buf: Array[Int], label: Int) -> Unit {
-  bytebuf_push(buf, 12)  // br
-  leb128_encode_u32(buf, label)
+  bytebuf_push_opcode_u32(buf, 12, label)
 }
 
 export let emit_br_if = (buf: Array[Int], label: Int) -> Unit {
-  bytebuf_push(buf, 13)  // br_if
-  leb128_encode_u32(buf, label)
+  bytebuf_push_opcode_u32(buf, 13, label)
 }
 
 // i64.extend_i32_s — extend i32 comparison result to i64
@@ -317,8 +298,7 @@ export let emit_i32_wrap_i64 = (buf: Array[Int]) -> Unit {
 // === i32 instructions (needed for WASI APIs) ===
 
 export let emit_i32_const = (buf: Array[Int], value: Int) -> Unit {
-  bytebuf_push(buf, 65)  // i32.const
-  leb128_encode_s64(buf, value)  // sleb128 works for i32 too
+  bytebuf_push_opcode_s64(buf, 65, value)
 }
 
 export let emit_i32_add = (buf: Array[Int]) -> Unit {
@@ -326,27 +306,19 @@ export let emit_i32_add = (buf: Array[Int]) -> Unit {
 }
 
 export let emit_i32_store = (buf: Array[Int], align: Int, offset: Int) -> Unit {
-  bytebuf_push(buf, 54)  // 0x36 i32.store
-  leb128_encode_u32(buf, align)
-  leb128_encode_u32(buf, offset)
+  bytebuf_push_opcode_u32_u32(buf, 54, align, offset)
 }
 
 export let emit_i32_load = (buf: Array[Int], align: Int, offset: Int) -> Unit {
-  bytebuf_push(buf, 40)  // 0x28 i32.load
-  leb128_encode_u32(buf, align)
-  leb128_encode_u32(buf, offset)
+  bytebuf_push_opcode_u32_u32(buf, 40, align, offset)
 }
 
 export let emit_i32_store8 = (buf: Array[Int], align: Int, offset: Int) -> Unit {
-  bytebuf_push(buf, 58)  // 0x3A i32.store8
-  leb128_encode_u32(buf, align)
-  leb128_encode_u32(buf, offset)
+  bytebuf_push_opcode_u32_u32(buf, 58, align, offset)
 }
 
 export let emit_i32_load8_u = (buf: Array[Int], align: Int, offset: Int) -> Unit {
-  bytebuf_push(buf, 45)  // 0x2D i32.load8_u
-  leb128_encode_u32(buf, align)
-  leb128_encode_u32(buf, offset)
+  bytebuf_push_opcode_u32_u32(buf, 45, align, offset)
 }
 
 // === Section emitters: Import, Data, Global ===
@@ -401,21 +373,18 @@ export let emit_data_section = (out: Array[Int], offset: Int, data: Array[Int]) 
 export let emit_global_section_i32_mut = (out: Array[Int], init_value: Int) -> Unit {
   let content = bytebuf_new()
   bytebuf_push_vec_header(content, 1)  // 1 global
-  bytebuf_push(content, 127)  // i32
-  bytebuf_push(content, 1)    // mutable
+  bytebuf_push2(content, 127, 1)  // i32, mutable
   emit_i32_const(content, init_value)
   emit_end(content)
   bytebuf_push_section(out, 6, content)  // section id 6 = global
 }
 
 export let emit_global_get = (buf: Array[Int], idx: Int) -> Unit {
-  bytebuf_push(buf, 35)  // global.get
-  leb128_encode_u32(buf, idx)
+  bytebuf_push_opcode_u32(buf, 35, idx)
 }
 
 export let emit_global_set = (buf: Array[Int], idx: Int) -> Unit {
-  bytebuf_push(buf, 36)  // global.set
-  leb128_encode_u32(buf, idx)
+  bytebuf_push_opcode_u32(buf, 36, idx)
 }
 
 // Emit export for memory
@@ -824,16 +793,9 @@ export let build_print_string_module = (msg: String) -> Bytes {
 // f64.const — emit raw i64 bits as f64 constant
 // Caller provides the raw i64 bits (from Double::to_i64_bits builtin)
 export let emit_f64_const_bits = (buf: Array[Int], bits: Int) -> Unit {
-  bytebuf_push(buf, 68)  // 0x44 f64.const
-  // Emit 8 bytes in little-endian
-  bytebuf_push(buf, bits & 255)
-  bytebuf_push(buf, (bits >> 8) & 255)
-  bytebuf_push(buf, (bits >> 16) & 255)
-  bytebuf_push(buf, (bits >> 24) & 255)
-  bytebuf_push(buf, (bits >> 32) & 255)
-  bytebuf_push(buf, (bits >> 40) & 255)
-  bytebuf_push(buf, (bits >> 48) & 255)
-  bytebuf_push(buf, (bits >> 56) & 255)
+  bytebuf_push9(buf, 68,
+    bits & 255, (bits >> 8) & 255, (bits >> 16) & 255, (bits >> 24) & 255,
+    (bits >> 32) & 255, (bits >> 40) & 255, (bits >> 48) & 255, (bits >> 56) & 255)
 }
 
 export let emit_f64_add = (buf: Array[Int]) -> Unit {
@@ -904,8 +866,7 @@ export let emit_f64_convert_i64_s = (buf: Array[Int]) -> Unit {
 
 // call_indirect: opcode 0x11 + type_idx (LEB128) + table 0x00
 export let emit_call_indirect = (buf: Array[Int], type_idx: Int) -> Unit {
-  bytebuf_push(buf, 17)  // 0x11
-  leb128_encode_u32(buf, type_idx)
+  bytebuf_push_opcode_u32(buf, 17, type_idx)
   bytebuf_push(buf, 0)   // table index 0
 }
 
@@ -913,8 +874,7 @@ export let emit_call_indirect = (buf: Array[Int], type_idx: Int) -> Unit {
 export let emit_table_section_funcref = (out: Array[Int], num_entries: Int) -> Unit {
   let content = bytebuf_new()
   bytebuf_push_vec_header(content, 1)  // 1 table
-  bytebuf_push(content, 112)  // 0x70 = funcref
-  bytebuf_push(content, 0)    // limits: no max
+  bytebuf_push2(content, 112, 0)  // 0x70 = funcref, limits: no max
   leb128_encode_u32(content, num_entries)
   bytebuf_push_section(out, 4, content)
 }
@@ -944,53 +904,42 @@ export let emit_element_section_active = (out: Array[Int], func_indices: Array[I
 // field_types: valtype bytes (0x7E=i64, 0x7F=i32, etc.)
 // field_muts: 0x00=const, 0x01=mut
 export let emit_struct_type_raw = (buf: Array[Int], field_types: Array[Int], field_muts: Array[Int]) -> Unit {
-  bytebuf_push(buf, 95)  // 0x5F = struct
-  leb128_encode_u32(buf, Array::length(field_types))
+  bytebuf_push_opcode_u32(buf, 95, Array::length(field_types))
   let mut i = 0
   while i < Array::length(field_types) {
-    bytebuf_push(buf, Array::get(field_types, i))
-    bytebuf_push(buf, Array::get(field_muts, i))
+    bytebuf_push2(buf, Array::get(field_types, i), Array::get(field_muts, i))
     i = i + 1
   }
 }
 
 // struct.new $type — create a new struct (values on stack)
 export let emit_struct_new = (buf: Array[Int], type_idx: Int) -> Unit {
-  bytebuf_push(buf, 251)  // 0xFB GC prefix
-  leb128_encode_u32(buf, 0)  // struct.new
-  leb128_encode_u32(buf, type_idx)
+  bytebuf_push_opcode_u32_u32(buf, 251, 0, type_idx)
 }
 
 // struct.get $type $field — read a struct field
 export let emit_struct_get = (buf: Array[Int], type_idx: Int, field_idx: Int) -> Unit {
-  bytebuf_push(buf, 251)  // 0xFB
-  leb128_encode_u32(buf, 2)  // struct.get
-  leb128_encode_u32(buf, type_idx)
+  bytebuf_push_opcode_u32_u32(buf, 251, 2, type_idx)
   leb128_encode_u32(buf, field_idx)
 }
 
 // struct.set $type $field — write a struct field
 export let emit_struct_set = (buf: Array[Int], type_idx: Int, field_idx: Int) -> Unit {
-  bytebuf_push(buf, 251)  // 0xFB
-  leb128_encode_u32(buf, 5)  // struct.set
-  leb128_encode_u32(buf, type_idx)
+  bytebuf_push_opcode_u32_u32(buf, 251, 5, type_idx)
   leb128_encode_u32(buf, field_idx)
 }
 
 // ref.func $func — get a typed function reference
 export let emit_ref_func = (buf: Array[Int], func_idx: Int) -> Unit {
-  bytebuf_push(buf, 210)  // 0xD2
-  leb128_encode_u32(buf, func_idx)
+  bytebuf_push_opcode_u32(buf, 210, func_idx)
 }
 
 // call_ref $type — call a function reference
 export let emit_call_ref = (buf: Array[Int], type_idx: Int) -> Unit {
-  bytebuf_push(buf, 20)  // 0x14
-  leb128_encode_u32(buf, type_idx)
+  bytebuf_push_opcode_u32(buf, 20, type_idx)
 }
 
 // ref.null $heaptype — push a null reference
 export let emit_ref_null = (buf: Array[Int], heap_type_byte: Int) -> Unit {
-  bytebuf_push(buf, 208)  // 0xD0
-  bytebuf_push(buf, heap_type_byte)
+  bytebuf_push2(buf, 208, heap_type_byte)
 }

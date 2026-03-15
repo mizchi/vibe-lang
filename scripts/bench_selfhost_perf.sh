@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Kill child processes on interrupt to prevent orphans
+trap 'trap - EXIT; kill -- -$$ 2>/dev/null || true' INT TERM
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 

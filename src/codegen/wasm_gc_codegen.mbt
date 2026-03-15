@@ -1,67 +1,126 @@
 ///|
 priv struct GcByteBuf {
-  data : Array[Byte]
+  mut data : FixedArray[Byte]
+  mut len : Int
 }
 
 ///|
 fn GcByteBuf::new() -> GcByteBuf {
-  { data: [] }
+  { data: FixedArray::make(4096, b'\x00'), len: 0 }
+}
+
+///|
+fn GcByteBuf::grow_to(self : GcByteBuf, needed : Int) -> Unit {
+  let new_cap = if self.data.length() * 2 > needed {
+    self.data.length() * 2
+  } else {
+    needed
+  }
+  let new_data = FixedArray::make(new_cap, b'\x00')
+  FixedArray::unsafe_blit(new_data, 0, self.data, 0, self.len)
+  self.data = new_data
+}
+
+///|
+fn GcByteBuf::ensure(self : GcByteBuf, additional : Int) -> Unit {
+  let needed = self.len + additional
+  if needed > self.data.length() {
+    self.grow_to(needed)
+  }
 }
 
 ///|
 fn GcByteBuf::push(self : GcByteBuf, b : Int) -> Unit {
-  self.data.push(b.to_byte())
+  if self.len == self.data.length() {
+    self.grow_to(self.data.length() * 2)
+  }
+  self.data.unsafe_set(self.len, b.to_byte())
+  self.len += 1
 }
 
 ///|
 fn GcByteBuf::extend(self : GcByteBuf, bytes : Array[Byte]) -> Unit {
-  for b in bytes {
-    self.data.push(b)
+  self.ensure(bytes.length())
+  for i in 0..<bytes.length() {
+    self.data.unsafe_set(self.len + i, bytes[i])
   }
+  self.len += bytes.length()
+}
+
+///|
+fn GcByteBuf::extend_buf(self : GcByteBuf, other : GcByteBuf) -> Unit {
+  self.ensure(other.len)
+  FixedArray::unsafe_blit(self.data, self.len, other.data, 0, other.len)
+  self.len += other.len
 }
 
 ///|
 fn GcByteBuf::len(self : GcByteBuf) -> Int {
-  self.data.length()
+  self.len
+}
+
+///|
+fn GcByteBuf::to_array(self : GcByteBuf) -> Array[Byte] {
+  Array::makei(self.len, fn(i) { self.data[i] })
 }
 
 ///|
 fn GcByteBuf::to_bytes(self : GcByteBuf) -> Bytes {
-  Bytes::from_array(self.data)
+  Bytes::from_array(self.to_array())
 }
 
 ///|
 fn write_u32_leb_gc(buf : GcByteBuf, n : Int) -> Unit {
-  let mut value = n
-  while true {
-    let mut byte = value & 0x7f
-    value = value >> 7
-    if value != 0 {
-      byte = byte | 0x80
-    }
-    buf.push(byte)
-    if value == 0 {
-      break
-    }
+  let u = n.reinterpret_as_uint()
+  let v0 = (u & 0x7fU).reinterpret_as_int()
+  let r0 = u >> 7
+  if r0 == 0U {
+    buf.push(v0)
+    return
   }
+  buf.push(v0 | 0x80)
+  let v1 = (r0 & 0x7fU).reinterpret_as_int()
+  let r1 = r0 >> 7
+  if r1 == 0U {
+    buf.push(v1)
+    return
+  }
+  buf.push(v1 | 0x80)
+  let v2 = (r1 & 0x7fU).reinterpret_as_int()
+  let r2 = r1 >> 7
+  if r2 == 0U {
+    buf.push(v2)
+    return
+  }
+  buf.push(v2 | 0x80)
+  let v3 = (r2 & 0x7fU).reinterpret_as_int()
+  let r3 = r2 >> 7
+  if r3 == 0U {
+    buf.push(v3)
+    return
+  }
+  buf.push(v3 | 0x80)
+  buf.push((r3 & 0x7fU).reinterpret_as_int())
 }
 
 ///|
 fn write_i32_leb_gc(buf : GcByteBuf, n : Int) -> Unit {
-  let mut value = n
-  while true {
-    let mut byte = value & 0x7f
-    value = value >> 7
-    let sign_bit_set = (byte & 0x40) != 0
-    let done = (value == 0 && not(sign_bit_set)) ||
-      (value == -1 && sign_bit_set)
-    if not(done) {
-      byte = byte | 0x80
-    }
+  write_i32_leb_gc_inner(buf, n, 0)
+}
+
+///|
+fn write_i32_leb_gc_inner(buf : GcByteBuf, value : Int, depth : Int) -> Unit {
+  let byte = value & 0x7f
+  let rest = value >> 7
+  let sign_bit_set = (byte & 0x40) != 0
+  let done = (rest == 0 && not(sign_bit_set)) || (rest == -1 && sign_bit_set)
+  if done {
     buf.push(byte)
-    if done {
-      break
-    }
+  } else if depth < 4 {
+    buf.push(byte | 0x80)
+    write_i32_leb_gc_inner(buf, rest, depth + 1)
+  } else {
+    buf.push(byte)
   }
 }
 
@@ -2239,7 +2298,7 @@ fn compile_function_gc(
   }
   let buf = GcByteBuf::new()
   compile_block_expr_gc(ctx, fctx, buf, def.body)
-  { sig, locals: fctx.local_kinds, body: buf.data }
+  { sig, locals: fctx.local_kinds, body: buf.to_array() }
 }
 
 ///|
@@ -2252,7 +2311,7 @@ fn compile_run_gc(
   let sig = GcFuncSig::{ params: [], result: result_kind }
   let buf = GcByteBuf::new()
   compile_block_expr_gc(ctx, fctx, buf, body)
-  { sig, locals: fctx.local_kinds, body: buf.data }
+  { sig, locals: fctx.local_kinds, body: buf.to_array() }
 }
 
 ///|
@@ -2329,14 +2388,14 @@ fn build_module_gc(
   for f in funcs {
     write_func_type_gc(type_sec, f.sig)
   }
-  write_section_gc(buf, 1, type_sec.data)
+  write_section_gc(buf, 1, type_sec.to_array())
   let func_sec = GcByteBuf::new()
   write_u32_leb_gc(func_sec, funcs.length())
   let type_offset = ctx.types.length()
   for i in 0..<funcs.length() {
     write_u32_leb_gc(func_sec, type_offset + i)
   }
-  write_section_gc(buf, 3, func_sec.data)
+  write_section_gc(buf, 3, func_sec.to_array())
   let export_sec = GcByteBuf::new()
   write_u32_leb_gc(export_sec, 1)
   let name = "run"
@@ -2346,7 +2405,7 @@ fn build_module_gc(
   }
   export_sec.push(0x00)
   write_u32_leb_gc(export_sec, run_index)
-  write_section_gc(buf, 7, export_sec.data)
+  write_section_gc(buf, 7, export_sec.to_array())
   let code_sec = GcByteBuf::new()
   write_u32_leb_gc(code_sec, funcs.length())
   for f in funcs {
@@ -2355,9 +2414,9 @@ fn build_module_gc(
     func_body.extend(f.body)
     func_body.push(0x0b)
     write_u32_leb_gc(code_sec, func_body.len())
-    code_sec.extend(func_body.data)
+    code_sec.extend_buf(func_body)
   }
-  write_section_gc(buf, 10, code_sec.data)
+  write_section_gc(buf, 10, code_sec.to_array())
   buf.to_bytes()
 }
 

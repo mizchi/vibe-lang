@@ -74,12 +74,7 @@ fn compile_i32_cmp_tagged(
   compile_expr_i32(ctx, buf, left)
   compile_expr_i32(ctx, buf, right)
   emit_cmp(buf)
-  // Convert i32 comparison result to tagged i64 bool
-  emit_i64_extend_i32_s(buf)
-  emit_i64_const_raw(buf, 2L)
-  emit_i64_shl(buf)
-  emit_i64_const_raw(buf, tag_bool.to_int64())
-  emit_i64_or(buf)
+  emit_tag_bool_from_i32(buf)
 }
 
 ///|
@@ -595,34 +590,19 @@ fn compile_binary_cmp_op(
       emit_local_get(buf, right_local)
       emit_i64_cmp(buf)
       buf.push((11).to_byte()) // end if
-      // Convert i32 comparison result to tagged i64 bool
-      emit_i64_extend_i32_s(buf)
-      emit_i64_const_raw(buf, 2L)
-      emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_bool.to_int64())
-      emit_i64_or(buf)
+      emit_tag_bool_from_i32(buf)
     }
     ValueKind::BoxedF32 => {
       emit_unbox_f32_expr(ctx, buf, pos_args[0])
       emit_unbox_f32_expr(ctx, buf, pos_args[1])
       emit_f32(buf)
-      // Convert i32 comparison result to tagged i64 bool
-      emit_i64_extend_i32_s(buf)
-      emit_i64_const_raw(buf, 2L)
-      emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_bool.to_int64())
-      emit_i64_or(buf)
+      emit_tag_bool_from_i32(buf)
     }
     ValueKind::BoxedF64 => {
       emit_unbox_f64_expr(ctx, buf, pos_args[0])
       emit_unbox_f64_expr(ctx, buf, pos_args[1])
       emit_f64(buf)
-      // Convert i32 comparison result to tagged i64 bool
-      emit_i64_extend_i32_s(buf)
-      emit_i64_const_raw(buf, 2L)
-      emit_i64_shl(buf)
-      emit_i64_const_raw(buf, tag_bool.to_int64())
-      emit_i64_or(buf)
+      emit_tag_bool_from_i32(buf)
     }
     _ => raise WasmGenError::Unsupported("numeric kind")
   }
@@ -816,6 +796,9 @@ fn compile_call_user_fn(
   if pos_args.length() != param_kinds.length() {
     raise WasmGenError::Unsupported("arity: " + name)
   }
+  // Save tail position — args are not in tail position
+  let saved_tail = ctx.is_tail_position
+  ctx.is_tail_position = false
   for i in 0..<pos_args.length() {
     let kind = param_kinds[i]
     if ctx.use_js_strings && kind == ValueKind::ExternRef {
@@ -824,6 +807,7 @@ fn compile_call_user_fn(
       compile_expr_i32(ctx, buf, pos_args[i])
     }
   }
+  ctx.is_tail_position = saved_tail
   let fn_idx = match ctx.fn_indices.get(name) {
     Some(i) => i
     None => 0
@@ -867,21 +851,28 @@ fn compile_call_user_fn(
     Some(false) => false
     _ => true // conservative: unknown or true
   }
-  if ctx.heap_local >= 0 && ctx.use_heap_global && callee_heap {
-    emit_local_get(buf, ctx.heap_local)
-    emit_global_set(buf, ctx.heap_global)
+  // S8: skip pre-call sync if heap_local already matches heap_global
+  if callee_heap {
+    emit_heap_pre_call_sync(ctx, buf)
   }
   let idx = func_import_count(ctx) + fn_idx
-  emit_call(buf, idx)
-  if ctx.heap_local >= 0 && ctx.use_heap_global && callee_heap {
-    emit_global_get(buf, ctx.heap_global)
-    emit_local_set(buf, ctx.heap_local)
+  // Tail call optimization: use return_call when in tail position
+  // and no multi-value re-boxing is needed
+  let has_multivalue = match ctx.fn_multivalue_results.get(name) {
+    Some(_) => true
+    None => false
   }
-  // Multi-value re-boxing: if function returns multiple values,
-  // re-pack them into a heap-allocated tuple for general use.
-  match ctx.fn_multivalue_results.get(name) {
-    Some(mv_kinds) => emit_rebox_multivalue(ctx, buf, mv_kinds)
-    None => ()
+  if ctx.is_tail_position && not(has_multivalue) {
+    emit_return_call(buf, idx)
+  } else {
+    emit_call(buf, idx)
+    if callee_heap {
+      emit_heap_post_call_sync(ctx, buf)
+    }
+    match ctx.fn_multivalue_results.get(name) {
+      Some(mv_kinds) => emit_rebox_multivalue(ctx, buf, mv_kinds)
+      None => ()
+    }
   }
 }
 

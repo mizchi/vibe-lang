@@ -490,7 +490,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     type_sec.push((0x5d).to_byte()) // cont type (0x5d per stack-switching spec)
     write_u32_leb(type_sec, ctx.run_func_type_index) // function type index
   }
-  write_section(buf, 1, type_sec.data)
+  write_section(buf, 1, type_sec.to_array())
 
   // import section
   let mut func_import_count = 0
@@ -801,7 +801,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
         import_sec.push((0).to_byte())
       }
     }
-    write_section(buf, 2, import_sec.data)
+    write_section(buf, 2, import_sec.to_array())
   }
 
   // function section
@@ -810,7 +810,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   for idx in func_type_indices {
     write_u32_leb(func_sec, idx)
   }
-  write_section(buf, 3, func_sec.data)
+  write_section(buf, 3, func_sec.to_array())
 
   // table section (for function values + optional externref table)
   let funcref_slot_count = ctx.fn_table_order.length()
@@ -837,7 +837,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       table_sec.push((0).to_byte()) // limits: min only
       write_u32_leb(table_sec, ctx.extern_table_next_slot)
     }
-    write_section(buf, 4, table_sec.data)
+    write_section(buf, 4, table_sec.to_array())
   }
 
   // memory section
@@ -846,7 +846,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   mem_sec.push((0).to_byte())
   // Reserve enough linear memory for selfhost compile and bench loops.
   write_u32_leb(mem_sec, 1024)
-  write_section(buf, 5, mem_sec.data)
+  write_section(buf, 5, mem_sec.to_array())
 
   // tag section (section ID 13, placed between memory and global per spec)
   let tag_count = (if ctx.need_exceptions { 1 } else { 0 }) +
@@ -868,7 +868,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       tag_sec.push((0).to_byte()) // attribute: 0x00
       write_u32_leb(tag_sec, ctx.await_tag_type_index) // same type as await
     }
-    write_section(buf, 13, tag_sec.data)
+    write_section(buf, 13, tag_sec.to_array())
   }
 
   // global section
@@ -952,7 +952,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
         env_global_idx = env_global_idx + 1
       }
     }
-    write_section(buf, 6, global_sec.data)
+    write_section(buf, 6, global_sec.to_array())
   }
 
   // export section
@@ -1054,7 +1054,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     export_sec.push((3).to_byte()) // global export
     write_u32_leb(export_sec, fs_root_descriptor_global_index(ctx))
   }
-  write_section(buf, 7, export_sec.data)
+  write_section(buf, 7, export_sec.to_array())
 
   // element section
   let need_elem = funcref_slot_count > 0 || ctx.need_stack_switching
@@ -1081,7 +1081,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       write_u32_leb(elem_sec, 1) // 1 function
       write_u32_leb(elem_sec, run_index) // run function index
     }
-    write_section(buf, 9, elem_sec.data)
+    write_section(buf, 9, elem_sec.to_array())
   }
 
   // code section
@@ -1112,9 +1112,9 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     }
     func_body.extend(func.body)
     write_u32_leb(code_sec, func_body.len())
-    code_sec.extend(func_body.data)
+    code_sec.extend_buf(func_body)
   }
-  write_section(buf, 10, code_sec.data)
+  write_section(buf, 10, code_sec.to_array())
 
   // data section
   let seg_count = ctx.strings.segments.length()
@@ -1144,7 +1144,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
         data_sec.extend(seg.bytes)
       }
     }
-    write_section(buf, 11, data_sec.data)
+    write_section(buf, 11, data_sec.to_array())
   }
   // debug-only error map section: code -> original literal message.
   if ctx.embed_error_strings && ctx.error_codes.names.length() > 0 {
@@ -1173,7 +1173,7 @@ fn write_custom_section(
   let sec = ByteBuf::new()
   write_name(sec, name)
   sec.extend(content)
-  write_section(buf, 0, sec.data)
+  write_section(buf, 0, sec.to_array())
 }
 
 ///|
@@ -1186,7 +1186,7 @@ fn build_error_map_custom_content(ctx : CodegenCtx) -> Array[Byte] {
     write_u32_leb(out, i + 1)
     write_name(out, ctx.error_codes.names[i])
   }
-  out.data
+  out.to_array()
 }
 
 ///|
@@ -1682,6 +1682,27 @@ fn emit_module_with_coverage(
     match funcs[i].name {
       Some(name) => ctx.fn_needs_heap[name] = func_needs_heap[i]
       None => ()
+    }
+  }
+  // S8: Transitive propagation — if a function calls a heap-needing function,
+  // it also needs heap (for pre/post call sync). Iterate until convergence.
+  for _pass = 0; _pass < 10; _pass = _pass + 1 {
+    let mut changed = false
+    for i in 0..<funcs.length() {
+      if not(func_needs_heap[i]) {
+        if needs_heap_block(ctx, funcs[i].body) {
+          func_needs_heap[i] = true
+          any_user_heap = true
+          changed = true
+          match funcs[i].name {
+            Some(name) => ctx.fn_needs_heap[name] = true
+            None => ()
+          }
+        }
+      }
+    }
+    if not(changed) {
+      break
     }
   }
   let mut run_need_heap = needs_heap_block(ctx, run_ast)

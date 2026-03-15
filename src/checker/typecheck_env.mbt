@@ -2,6 +2,7 @@
 pub struct SessionState {
   mut type_var_counter : Int
   mut lenient_mode : Bool
+  mut skip_fn_body_check : Bool
 } derive(Show, Eq)
 
 ///|
@@ -14,7 +15,11 @@ pub struct TypecheckSession {
 ///|
 pub fn TypecheckSession::new() -> TypecheckSession {
   {
-    state: SessionState::{ type_var_counter: 0, lenient_mode: false },
+    state: SessionState::{
+      type_var_counter: 0,
+      lenient_mode: false,
+      skip_fn_body_check: false,
+    },
     cached_prelude_env: @ref.new(None),
     cached_builtins_env: @ref.new(None),
   }
@@ -24,6 +29,7 @@ pub fn TypecheckSession::new() -> TypecheckSession {
 pub fn TypecheckSession::reset(self : TypecheckSession) -> Unit {
   self.state.type_var_counter = 0
   self.state.lenient_mode = false
+  self.state.skip_fn_body_check = false
   self.cached_prelude_env.val = None
   self.cached_builtins_env.val = None
 }
@@ -171,7 +177,11 @@ pub fn TypeEnv::new() -> TypeEnv {
     subs_version: 0,
     subs: {},
     effect_subs: {},
-    session_state: SessionState::{ type_var_counter: 0, lenient_mode: false },
+    session_state: SessionState::{
+      type_var_counter: 0,
+      lenient_mode: false,
+      skip_fn_body_check: false,
+    },
   }
 }
 

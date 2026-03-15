@@ -1590,10 +1590,15 @@ fn AstParser::parse_module_ref(
     }
     while true {
       self.skip_trivia()
-      if self.peek_kind() != dot() && self.peek_kind() != slash() {
+      if self.peek_kind() != dot() &&
+        self.peek_kind() != dotdot() &&
+        self.peek_kind() != slash() {
         break
       }
-      if self.peek_kind() == dot() {
+      if self.peek_kind() == dotdot() {
+        let _ = self.bump()
+        buf.write_string("..")
+      } else if self.peek_kind() == dot() {
         let _ = self.bump()
         buf.write_char('.')
       } else {
@@ -1632,14 +1637,20 @@ fn AstParser::parse_module_ref(
       let buf = StringBuilder::new()
       // Handle leading ./ or ../
       self.skip_trivia()
-      while self.peek_kind() == dot() {
-        let _ = self.bump()
-        buf.write_char('.')
-        self.skip_trivia()
-        if self.peek_kind() == dot() {
+      while self.peek_kind() == dot() || self.peek_kind() == dotdot() {
+        if self.peek_kind() == dotdot() {
+          let _ = self.bump()
+          buf.write_string("..")
+          self.skip_trivia()
+        } else {
           let _ = self.bump()
           buf.write_char('.')
           self.skip_trivia()
+          if self.peek_kind() == dot() {
+            let _ = self.bump()
+            buf.write_char('.')
+            self.skip_trivia()
+          }
         }
         if self.peek_kind() == slash() {
           let _ = self.bump()
@@ -1656,10 +1667,15 @@ fn AstParser::parse_module_ref(
       }
       while true {
         self.skip_trivia()
-        if self.peek_kind() != dot() && self.peek_kind() != slash() {
+        if self.peek_kind() != dot() &&
+          self.peek_kind() != dotdot() &&
+          self.peek_kind() != slash() {
           break
         }
-        if self.peek_kind() == dot() {
+        if self.peek_kind() == dotdot() {
+          let _ = self.bump()
+          buf.write_string("..")
+        } else if self.peek_kind() == dot() {
           let _ = self.bump()
           buf.write_char('.')
         } else {
@@ -1677,17 +1693,23 @@ fn AstParser::parse_module_ref(
     }
   } else {
     let tok = self.peek()
-    if tok.kind() == dot() {
+    if tok.kind() == dot() || tok.kind() == dotdot() {
       let buf = StringBuilder::new()
       self.skip_trivia()
-      while self.peek_kind() == dot() {
-        let _ = self.bump()
-        buf.write_char('.')
-        self.skip_trivia()
-        if self.peek_kind() == dot() {
+      while self.peek_kind() == dot() || self.peek_kind() == dotdot() {
+        if self.peek_kind() == dotdot() {
+          let _ = self.bump()
+          buf.write_string("..")
+          self.skip_trivia()
+        } else {
           let _ = self.bump()
           buf.write_char('.')
           self.skip_trivia()
+          if self.peek_kind() == dot() {
+            let _ = self.bump()
+            buf.write_char('.')
+            self.skip_trivia()
+          }
         }
         if self.peek_kind() == slash() {
           let _ = self.bump()
@@ -1703,10 +1725,15 @@ fn AstParser::parse_module_ref(
       }
       while true {
         self.skip_trivia()
-        if self.peek_kind() != dot() && self.peek_kind() != slash() {
+        if self.peek_kind() != dot() &&
+          self.peek_kind() != dotdot() &&
+          self.peek_kind() != slash() {
           break
         }
-        if self.peek_kind() == dot() {
+        if self.peek_kind() == dotdot() {
+          let _ = self.bump()
+          buf.write_string("..")
+        } else if self.peek_kind() == dot() {
           let _ = self.bump()
           buf.write_char('.')
         } else {

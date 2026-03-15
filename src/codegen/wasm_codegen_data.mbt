@@ -356,6 +356,14 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
           arg_kinds.push(value_kind_from_type(ctx, arg))
         }
         ctx.enum_ctor_arg_kinds[ctor.name] = arg_kinds
+        // Register singleton for 0-arg enum constructors
+        if ctor.args.length() == 0 {
+          let offset = ctx.strings.intern_enum_singleton(
+            ctor.name,
+            ctx.enum_ctor_tags[ctor.name],
+          )
+          ctx.enum_ctor_singletons[ctor.name] = tag_ptr64(offset, tag_obj)
+        }
       }
     }
     @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
@@ -1078,10 +1086,16 @@ fn compile_func_body(
     ctx.local_types.push(ValueKind::I32)
     ctx.heap_synced = true
   }
+  // Tail call optimization: only enabled when explicitly requested
+  // (wite optimizer and some wasm-opt versions don't support return_call)
+  if ctx.enable_tail_call {
+    ctx.is_tail_position = true
+  }
   match multivalue_kinds {
     Some(kinds) => compile_block_multivalue(ctx, instr, ast, kinds)
     None => compile_block_expr(ctx, instr, ast)
   }
+  ctx.is_tail_position = false
   if ctx.need_heap && ctx.use_heap_global {
     emit_local_get(instr, ctx.heap_local)
     emit_global_set(instr, ctx.heap_global)
@@ -1107,10 +1121,10 @@ fn compile_func_body(
     if prelude.length() > 0 {
       prologue.extend(prelude)
     }
-    prologue.extend(instr.data)
-    prologue.data
+    prologue.extend_buf(instr)
+    prologue.to_array()
   } else {
-    instr.data
+    instr.to_array()
   }
 }
 
@@ -1139,9 +1153,11 @@ fn compile_function(
   let saved_fn_locals = ctx.fn_local_sigs
   let saved_mut_captured = ctx.mut_captured_vars
   let saved_cached_untag_ptrs = ctx.cached_untag_ptrs
+  let saved_cached_obj_types = ctx.cached_obj_types
   let saved_const_i64 = ctx.const_i64_values
   ctx.locals = {}
   ctx.cached_untag_ptrs = {}
+  ctx.cached_obj_types = {}
   ctx.local_kinds = {}
   ctx.local_types = []
   ctx.local_count = 0
@@ -1314,7 +1330,7 @@ fn compile_function(
     body,
     result_kind,
     need_heap,
-    prelude.data,
+    prelude.to_array(),
     multivalue_kinds=mv_kinds,
   )
   let locals = ctx.local_types
@@ -1345,10 +1361,12 @@ fn compile_function(
   ctx.local_count = saved_count
   ctx.need_heap = saved_need_heap
   ctx.heap_local = saved_heap_local
+  ctx.heap_synced = saved_heap_synced
   ctx.current_env_idx = saved_current_env_idx
   ctx.fn_local_sigs = saved_fn_locals
   ctx.mut_captured_vars = saved_mut_captured
   ctx.cached_untag_ptrs = saved_cached_untag_ptrs
+  ctx.cached_obj_types = saved_cached_obj_types
   ctx.const_i64_values = saved_const_i64
   func
 }
@@ -1406,7 +1424,7 @@ fn compile_cabi_realloc_function(
     params: [ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32],
     locals: [ValueKind::I32, ValueKind::I32],
     results: [ValueKind::I32],
-    body: body.data,
+    body: body.to_array(),
   }
 }
 
@@ -1463,6 +1481,6 @@ fn compile_http_host_string_new_function(
     params: [ValueKind::I32],
     locals: [ValueKind::I32, ValueKind::I32],
     results: [ValueKind::I64],
-    body: body.data,
+    body: body.to_array(),
   }
 }
