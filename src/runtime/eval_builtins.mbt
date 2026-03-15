@@ -852,23 +852,19 @@ fn eval_pure_builtin(
           let len = s.length().to_int64()
           let s0 = if start < 0L { 0L } else if start > len { len } else { start }
           let e0 = if end_ < 0L { 0L } else if end_ > len { len } else { end_ }
-          let fields : Map[String, @core.Value] = {
-            "source": @core.Value::String(s),
-            "start": @core.Value::Int(s0),
-            "end": @core.Value::Int(e0),
-          }
-          @core.Value::Record(fields)
+          @core.Value::String(
+            s.substring(start=s0.to_int(), end=e0.to_int()),
+          )
         }
         (@core.Value::Array(arr), @core.Value::Int(start), @core.Value::Int(end_)) => {
           let len = arr.length().to_int64()
           let s0 = if start < 0L { 0L } else if start > len { len } else { start }
           let e0 = if end_ < 0L { 0L } else if end_ > len { len } else { end_ }
-          let fields : Map[String, @core.Value] = {
-            "source": @core.Value::Array(arr),
-            "start": @core.Value::Int(s0),
-            "end": @core.Value::Int(e0),
+          let result : Array[@core.Value] = []
+          for i in s0.to_int()..<e0.to_int() {
+            result.push(arr[i])
           }
-          @core.Value::Record(fields)
+          @core.Value::Array(result)
         }
         _ =>
           raise EvalError::BadCall(

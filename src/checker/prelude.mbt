@@ -346,8 +346,6 @@ let prelude_source : String =
   #|    ArrayBuilder::freeze(b)
   #|  }
   #|}
-  #|
-  #|struct StringView { source: String; start: Int; end: Int }
 
 ///|
 let cached_prelude_ast : Ref[@core.Module?] = @ref.new(None)
