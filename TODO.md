@@ -6,16 +6,22 @@ Completed items are archived in `docs/DONE.md`.
 ## vibe/x 準公式ライブラリ拡充
 
 Phase 1 (基盤):
-- [ ] x/fmt — printf 風文字列フォーマット (`format("{} is {}", [s("hello"), i(42)])`)
-- [ ] x/url — URL パース・クエリ文字列エンコード/デコード
-- [ ] x/uuid — UUID v4 生成 (random ベース)
+- [x] x/fmt — printf 風文字列フォーマット: 実装済み (24/24 pass)
+- [ ] x/url — URL パース: 実装済みだが compiled test で `../regexp` import がルート外エラー
+  - `pattern.vibe` が `import ../regexp` で兄弟モジュールを参照。テストランナーの root 制約を緩和するか、regexp を url 内にコピーする必要あり
+- [x] x/uuid — UUID v4 生成: 実装済み (11/11 pass)
 
 Phase 2 (DX):
-- [ ] x/color — ANSI カラー出力 (red, green, bold 等)
+- [x] x/color — ANSI カラー出力: 実装済み (15/15 pass)
 
 Phase 3 (機能):
-- [ ] x/regexp — 正規表現 (NFA ベース)
-- [ ] x/toml — TOML パーサー
+- [ ] x/regexp — 正規表現: 実装済み、compiled backend で 72/91 pass (19 fail)
+  - 失敗: character class (`[abc]`)、capture group、find_all/replace_all/split 関連
+  - 原因: `compile("[a]")` の結果を cross-module で destructure すると tuple 中身が破壊される
+  - interp mode では全 pass。compiled backend のヒープ管理バグ（if/else heap_synced leak と同根）
+- [ ] x/toml — TOML パーサー: 実装済み、compiled backend で 14/28 pass (14 fail)
+  - `[]` 型推論エラーは修正済み (0/28 → 14/28)
+  - 残り 14 件は x/regexp と同根の compiled backend バグ
 
 Phase 4 (応用):
 - [ ] x/template — 簡易テンプレートエンジン (`{{variable}}` 置換)
