@@ -5,7 +5,7 @@
   (export "memory" (memory 0))
   (func (;0;) (type 0) (result i64)
     (local i32 i64 i32 i32 i32 i32 i64 i64)
-    i32.const 0
+    i32.const 8
     local.tee 0
     i32.const 12
     i32.add
@@ -54,6 +54,8 @@
     i32.wrap_i64
     i32.load offset=8
     i64.extend_i32_s
-    local.tee 7
+    local.set 7
+    i64.const 0
   )
+  (data (;0;) (i32.const 0) "\0a\00\00\00\00\00\00\00")
 )

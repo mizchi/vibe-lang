@@ -225,11 +225,18 @@ fn compile_expr_if(
   buf.push((4).to_byte()) // if
   buf.push(valtype_byte(if_kind))
   adjust_loop_offsets(ctx, 1)
+  let saved_heap_synced = ctx.heap_synced
   emit_coverage(ctx, buf, WasmCoveragePointKind::BranchIfThen, span)
   compile_block_expr(ctx, buf, then_body)
+  // Restore heap_synced for the else branch so it doesn't inherit
+  // the then-branch's sync state (they are mutually exclusive at runtime).
+  ctx.heap_synced = saved_heap_synced
   buf.push((5).to_byte()) // else
   emit_coverage(ctx, buf, WasmCoveragePointKind::BranchIfElse, span)
   compile_block_expr(ctx, buf, else_body)
+  // After both branches, mark heap as unsynced since either branch
+  // may have advanced the heap pointer.
+  ctx.heap_synced = false
   buf.push((11).to_byte()) // end
   adjust_loop_offsets(ctx, -1)
 }

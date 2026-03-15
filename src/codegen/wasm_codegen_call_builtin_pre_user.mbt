@@ -549,72 +549,74 @@ fn compile_call_builtin_pre_user_inner(
       compile_expr(ctx, buf, pos_args[0])
       emit_call(buf, import_index_env_args_get(ctx))
     }
-    "add" if not(is_user_fn) => {
+    "add" if not(is_user_fn) || args.length() == 2 => {
       let pos_args = extract_positional_exprs_with_arity(args, "add", 2)
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
       match resolved_kind {
         ValueKind::I32 | ValueKind::I64 =>
-          compile_i32_add_tagged(ctx, buf, pos_args[0], pos_args[1])
+          if is_user_fn {
+            raise WasmGenError::Unsupported(pre_user_builtin_unhandled_marker)
+          } else {
+            compile_i32_add_tagged(ctx, buf, pos_args[0], pos_args[1])
+          }
         _ =>
           compile_binary_arith_op(
             ctx, buf, "add", args, emit_f32_add, emit_f64_add,
           )
       }
     }
-    "sub" if not(is_user_fn) => {
+    "sub" if not(is_user_fn) || args.length() == 2 => {
       let pos_args = extract_positional_exprs_with_arity(args, "sub", 2)
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
       match resolved_kind {
         ValueKind::I32 | ValueKind::I64 =>
-          compile_i32_sub_tagged(ctx, buf, pos_args[0], pos_args[1])
+          if is_user_fn {
+            raise WasmGenError::Unsupported(pre_user_builtin_unhandled_marker)
+          } else {
+            compile_i32_sub_tagged(ctx, buf, pos_args[0], pos_args[1])
+          }
         _ =>
           compile_binary_arith_op(
             ctx, buf, "sub", args, emit_f32_sub, emit_f64_sub,
           )
       }
     }
-    "mul" if not(is_user_fn) => {
+    "mul" if not(is_user_fn) || args.length() == 2 => {
       let pos_args = extract_positional_exprs_with_arity(args, "mul", 2)
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
       match resolved_kind {
         ValueKind::I32 | ValueKind::I64 =>
-          compile_i32_mul_tagged(ctx, buf, pos_args[0], pos_args[1])
+          if is_user_fn {
+            raise WasmGenError::Unsupported(pre_user_builtin_unhandled_marker)
+          } else {
+            compile_i32_mul_tagged(ctx, buf, pos_args[0], pos_args[1])
+          }
         _ =>
           compile_binary_arith_op(
             ctx, buf, "mul", args, emit_f32_mul, emit_f64_mul,
           )
       }
     }
-    "div" if not(is_user_fn) => {
+    "div" if not(is_user_fn) || args.length() == 2 => {
       let pos_args = extract_positional_exprs_with_arity(args, "div", 2)
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
       match resolved_kind {
         ValueKind::I32 | ValueKind::I64 =>
-          compile_i32_div_tagged(ctx, buf, pos_args[0], pos_args[1])
+          if is_user_fn {
+            raise WasmGenError::Unsupported(pre_user_builtin_unhandled_marker)
+          } else {
+            compile_i32_div_tagged(ctx, buf, pos_args[0], pos_args[1])
+          }
         _ =>
           compile_binary_arith_op(
             ctx, buf, "div", args, emit_f32_div, emit_f64_div,
           )
       }
     }
-    "eq" if not(is_user_fn) => {
-      let pos_args = extract_positional_exprs_with_arity(args, "eq", 2)
-      let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
-      match resolved_kind {
-        ValueKind::I32 | ValueKind::I64 =>
-          compile_i32_cmp_tagged(
-            ctx,
-            buf,
-            pos_args[0],
-            pos_args[1],
-            emit_i64_eq,
-          )
-        _ =>
-          compile_binary_cmp_op(
-            ctx, buf, "eq", args, emit_i64_eq, emit_f32_eq, emit_f64_eq,
-          )
-      }
-    }
+    "eq" if not(is_user_fn) =>
+      compile_binary_cmp_op(
+        ctx, buf, "eq", args, emit_i64_eq, emit_f32_eq, emit_f64_eq,
+      )
     "lt" if not(is_user_fn) => {
       let pos_args = extract_positional_exprs_with_arity(args, "lt", 2)
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
