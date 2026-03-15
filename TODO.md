@@ -32,8 +32,7 @@ Phase 4 (応用):
 
 - [ ] language: tolerant parser（壊れた途中コードを AST 化して保持）
   - vibe shell での書き散らしを最後に normalize 可能にする
-- [ ] language: AST rewriter / macro API（構文正規化パスを定義可能にする）
-  - desugar/normalize を言語内で記述し、自己ホスト実装を縮小
+- [-] ~~language: AST rewriter / macro API~~ — 言語側で強めの正規化を行う方針のためスキップ
 
 ## Vibe 言語仕様の整合性
 
