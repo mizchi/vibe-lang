@@ -190,11 +190,7 @@ pub fn VibeDb::set_preparsed_ast(
 ) -> Unit {
   let hash = @core.content_address_hash_string(content)
   let _ = self.inputs.preparsed_ast_hashes.set(self.rt, path, hash)
-  let _ = self.inputs.preparsed_asts.set(
-    self.rt,
-    path,
-    HashedModule::new(ast),
-  )
+  let _ = self.inputs.preparsed_asts.set(self.rt, path, HashedModule::new(ast))
 }
 
 ///|

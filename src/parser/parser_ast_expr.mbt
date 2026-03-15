@@ -2220,19 +2220,23 @@ fn desugar_string_interp(
   let mut i = 0
   let buf = StringBuilder::new()
   while i < len {
-    if i + 1 < len && chars[i] == '\\' && chars[i + 1] == '{' {
+    if i + 1 < len &&
+      chars[i] == '\\' &&
+      (chars[i + 1] == '{' || chars[i + 1] == '(') {
       if buf.to_string().length() > 0 {
         parts.push(@core.Expr::String(value=buf.to_string(), span~))
         buf.reset()
       }
+      let open_char = chars[i + 1]
+      let close_char = if open_char == '(' { ')' } else { '}' }
       i += 2
       let expr_buf = StringBuilder::new()
       let mut depth = 1
       while i < len && depth > 0 {
-        if chars[i] == '{' {
+        if chars[i] == open_char {
           depth += 1
           expr_buf.write_char(chars[i])
-        } else if chars[i] == '}' {
+        } else if chars[i] == close_char {
           depth -= 1
           if depth > 0 {
             expr_buf.write_char(chars[i])

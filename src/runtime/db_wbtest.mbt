@@ -382,10 +382,7 @@ test "type query re-exported enum type imports constructors" {
   let db = VibeDb::new()
   db.set_source(
     "./types_impl.vibe",
-    "export enum Type {\n" +
-    "  CtInt;\n" +
-    "  CtArray(Type)\n" +
-    "}\n",
+    "export enum Type {\n" + "  CtInt;\n" + "  CtArray(Type)\n" + "}\n",
   )
   db.set_source(
     "./types.vibe",
@@ -410,8 +407,7 @@ test "type query re-exported enum type imports constructors" {
   match env.get_scheme("value") {
     Some(scheme) =>
       match scheme.ty {
-        @core.Type::Named(name~, ..) =>
-          assert_eq(name, "Type")
+        @core.Type::Named(name~, ..) => assert_eq(name, "Type")
         _ => fail("expected Type scheme for value")
       }
     None => fail("expected scheme for value")
@@ -641,6 +637,26 @@ test "module-level cycle detection: A -> B -> A directories via import" {
 }
 
 ///|
+test "module-level cycle detection ignores direct implementation imports" {
+  let db = VibeDb::new()
+  db.set_source(
+    "/project/compiler/type_db.vibe", "export ./runtime { db_new }\n",
+  )
+  db.set_source(
+    "/project/compiler/runtime/index.vibe", "import ../helper.vibe { helper }\nexport let db_new = () -> Int { helper() }\nexport { db_new }\n",
+  )
+  db.set_source(
+    "/project/compiler/helper.vibe", "export let helper = () -> Int { 1 }\nexport { helper }\n",
+  )
+  let _imports = db.imports("/project/compiler/type_db.vibe")
+  let diags = db.import_diagnostics("/project/compiler/type_db.vibe")
+  let has_module_cycle = diags
+    .iter()
+    .any(fn(d) { d.message.contains("module cycle") })
+  assert_false(has_module_cycle)
+}
+
+///|
 test "cross-package re-export is rejected and not shared with siblings" {
   let db = VibeDb::new()
   // External module in /project/lib/
@@ -757,10 +773,8 @@ test "preparsed import cache seeds imports query" {
   let db = VibeDb::new()
   let source = "import ./lib/dep.vibe { dep }\nlet x = dep\n"
   db.set_source("/project/main.vibe", source)
-  db.set_preparsed_imports(
-    "/project/main.vibe",
-    source,
-    [ImportSpec::{
+  db.set_preparsed_imports("/project/main.vibe", source, [
+    ImportSpec::{
       path: "/project/lib/dep.vibe",
       alias_name: @core.import_alias_name("./lib/dep.vibe"),
       hash: Some("abc"),
@@ -769,8 +783,8 @@ test "preparsed import cache seeds imports query" {
       source_hash: Some("abc"),
       source_version: None,
       source_symbol: None,
-    }],
-  )
+    },
+  ])
   let imports = db.imports("/project/main.vibe")
   assert_eq(imports.length(), 1)
   assert_eq(imports[0].path, "/project/lib/dep.vibe")
@@ -783,10 +797,8 @@ test "preparsed import cache is ignored after source changes" {
   db.set_source("/project/main.vibe", source1)
   db.set_source("/project/lib/a.vibe", "export let a = 1\nexport { a }\n")
   db.set_source("/project/lib/b.vibe", "export let b = 2\nexport { b }\n")
-  db.set_preparsed_imports(
-    "/project/main.vibe",
-    source1,
-    [ImportSpec::{
+  db.set_preparsed_imports("/project/main.vibe", source1, [
+    ImportSpec::{
       path: "/project/lib/a.vibe",
       alias_name: @core.import_alias_name("./lib/a.vibe"),
       hash: Some("abc"),
@@ -795,8 +807,8 @@ test "preparsed import cache is ignored after source changes" {
       source_hash: Some("abc"),
       source_version: None,
       source_symbol: None,
-    }],
-  )
+    },
+  ])
   let source2 = "import ./lib/b.vibe { b }\n"
   db.set_source("/project/main.vibe", source2)
   let imports = db.imports("/project/main.vibe")

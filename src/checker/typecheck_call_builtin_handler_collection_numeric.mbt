@@ -391,7 +391,9 @@ fn type_call_builtin_handler_collection_numeric(
       elem_ty
     }
     "FixedArray::make" => {
-      let pos_args = check_positional_arity(args, "FixedArray::make", 2, call_span)
+      let pos_args = check_positional_arity(
+        args, "FixedArray::make", 2, call_span,
+      )
       let _ = check_arg_type(
         env,
         pos_args[0],
@@ -479,7 +481,9 @@ fn type_call_builtin_handler_collection_numeric(
       @core.Type::Unit
     }
     "FixedArray::blit" => {
-      let pos_args = check_positional_arity(args, "FixedArray::blit", 5, call_span)
+      let pos_args = check_positional_arity(
+        args, "FixedArray::blit", 5, call_span,
+      )
       let dst_ty = type_expr_eff(
         env,
         pos_args[0],

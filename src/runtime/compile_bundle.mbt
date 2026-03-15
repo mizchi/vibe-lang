@@ -131,7 +131,9 @@ fn bundle_for_wasm_impl(
       }
     }
   }
-  let bundled = @core.Module::{ stmts: dedupe_bundle_structural_defs(bundled_stmts) }
+  let bundled = @core.Module::{
+    stmts: dedupe_bundle_structural_defs(bundled_stmts),
+  }
   let after_dce = if apply_dce {
     if include_test_entries {
       @pipeline.dce_module_for_tests(bundled)

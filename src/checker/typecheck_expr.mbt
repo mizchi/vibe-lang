@@ -1043,7 +1043,9 @@ fn type_expr_eff(
               None => r
             }
             // Replace type parameters with their type variables
-            let ret_ty = substitute_type_params(ret_ty_with_num, type_param_vars)
+            let ret_ty = substitute_type_params(
+              ret_ty_with_num, type_param_vars,
+            )
             let resolved = normalize_type(env, ret_ty)
             if not(type_equal(env, resolved, body_ty)) {
               raise TypeError::Mismatch(

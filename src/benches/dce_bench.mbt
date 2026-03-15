@@ -99,7 +99,6 @@ test "bench: dce.many_unused" {
     result,
     content=(
       #|{name: "many_unused", stmts_before: 18, stmts_after: 3, wasm_no_dce: Some(187), wasm_with_dce: Some(97), reduction_percent: Some(48.1283422459893)}
-
     ),
   )
 }
@@ -122,7 +121,6 @@ test "bench: dce.single_module" {
     result,
     content=(
       #|{name: "single_module", stmts_before: 6, stmts_after: 3, wasm_no_dce: Some(96), wasm_with_dce: Some(96), reduction_percent: Some(0)}
-
     ),
   )
 }
@@ -150,7 +148,6 @@ test "bench: dce.dependency_chain" {
     result,
     content=(
       #|{name: "dependency_chain", stmts_before: 6, stmts_after: 5, wasm_no_dce: Some(144), wasm_with_dce: Some(125), reduction_percent: Some(13.194444444444445)}
-
     ),
   )
 }
@@ -174,7 +171,6 @@ test "bench: dce.all_used" {
     result,
     content=(
       #|{name: "all_used", stmts_before: 3, stmts_after: 3, wasm_no_dce: Some(102), wasm_with_dce: Some(102), reduction_percent: Some(0)}
-
     ),
   )
 }

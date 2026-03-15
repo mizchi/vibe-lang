@@ -12,4 +12,5 @@
   (memory (;0;) 1024)
   (export "run" (func 0))
   (export "memory" (memory 0))
+  (data (i32.const 0) "\0a\00\00\00\00\00\00\00")
 )

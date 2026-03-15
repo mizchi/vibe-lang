@@ -1936,7 +1936,7 @@ fn try_eval_hot_builtin_call(
               value_type_name(values[1]) +
               ")",
             ),
-        )
+          )
       }
     }
     "FixedArray::make" => {
@@ -3941,14 +3941,13 @@ fn eval_builtin_call(
           let d0 = dst_off.to_int()
           let s0 = src_off.to_int()
           let n = len.to_int()
-          if d0 < 0 || s0 < 0 || n < 0 ||
-             d0 + n > dst.length() ||
-             s0 + n > src.length() {
+          if d0 < 0 ||
+            s0 < 0 ||
+            n < 0 ||
+            d0 + n > dst.length() ||
+            s0 + n > src.length() {
             raise EvalError::BadCall(
-              BuiltinDetail(
-                fn_name="FixedArray::blit",
-                detail="out of bounds",
-              ),
+              BuiltinDetail(fn_name="FixedArray::blit", detail="out of bounds"),
             )
           }
           for i in 0..<n {

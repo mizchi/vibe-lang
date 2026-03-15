@@ -36,6 +36,12 @@ fn render_import_cycle(cycle : Array[String]) -> String {
 }
 
 ///|
+fn is_module_facade_path(path : String) -> Bool {
+  let basename = @path.Path(path).basename().to_string()
+  basename == "index.vibe" || basename == "index.xm"
+}
+
+///|
 fn detect_import_cycle_from(
   rt : @ripple.Runtime,
   sources : @ripple.Input[String, String],
@@ -174,7 +180,7 @@ fn detect_module_cycle(
               match next_path {
                 Some(next) => {
                   let next_dir = @path.Path(next).dirname().to_string()
-                  if file_dir != next_dir {
+                  if file_dir != next_dir && is_module_facade_path(next) {
                     let edges = match dir_edges.get(file_dir) {
                       Some(arr) => arr
                       None => {

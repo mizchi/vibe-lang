@@ -175,12 +175,10 @@ test "loader load_db_with_paths keeps transitive import diagnostics clean" {
   let lib = root + "/lib.vibe"
   let dep = root + "/dep.vibe"
   write_file(
-    entry,
-    "import ./lib.vibe { value }\nlet main = value\nexport { main }\n",
+    entry, "import ./lib.vibe { value }\nlet main = value\nexport { main }\n",
   )
   write_file(
-    lib,
-    "import ./dep.vibe { dep }\nlet value = dep\nexport { value }\n",
+    lib, "import ./dep.vibe { dep }\nlet value = dep\nexport { value }\n",
   )
   write_file(dep, "let dep = 1\nexport { dep }\n")
   let loaded = match load_db_with_paths(entry) {

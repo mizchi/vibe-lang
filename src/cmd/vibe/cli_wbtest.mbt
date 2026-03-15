@@ -2849,6 +2849,82 @@ test "compiled test wrapper executes top-level computed let bindings" {
 }
 
 ///|
+test "compiled test wrapper executes closure-captured string condition" {
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_compiled_closure_captured_string_eq.vibe",
+  )
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "let mk = (expected: String) -> ((String, Int) -> Int) {\n" +
+    "  (input: String, pos: Int) -> Int {\n" +
+    "    let got = String::substring(input, pos, pos + 1)\n" +
+    "    if got == expected { 1 } else { 0 }\n" +
+    "  }\n" +
+    "}\n" +
+    "let p = mk(\"a\")\n" +
+    "test \"closure captured string eq\" {\n" +
+    "  assert(p(\"a\", 0) == 1)\n" +
+    "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+  match run_test_file_compiled(source_path, false) {
+    CompiledTestAttempt::Success(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    CompiledTestAttempt::Unsupported(err) =>
+      fail("compiled test unexpectedly unsupported: " + err)
+    CompiledTestAttempt::Error(err) =>
+      fail("compiled test unexpectedly errored: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
+test "compiled test wrapper supports paren string interpolation syntax" {
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_compiled_string_interp_paren.vibe",
+  )
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "let name = \"vibe\"\n" +
+    "let msg = \"hello \\(name)\"\n" +
+    "test \"paren string interpolation\" {\n" +
+    "  assert(msg == \"hello vibe\")\n" +
+    "  assert(String::length(msg) == 10)\n" +
+    "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+  match run_test_file_compiled(source_path, false) {
+    CompiledTestAttempt::Success(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    CompiledTestAttempt::Unsupported(err) =>
+      fail("compiled test unexpectedly unsupported: " + err)
+    CompiledTestAttempt::Error(err) =>
+      fail("compiled test unexpectedly errored: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
 test "compiled test wrapper executes imported let aliases" {
   let cwd = @io.current_dir_or_root()
   let source_path = @vibe_fs.normalize_path(

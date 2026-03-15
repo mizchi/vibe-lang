@@ -765,24 +765,10 @@ fn compile_call_builtin_pre_user_inner(
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_i64_xor(buf)
     }
-    "__eq" => {
-      let pos_args = extract_positional_exprs_with_arity(args, "__eq", 2)
-      let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
-      match resolved_kind {
-        ValueKind::I32 | ValueKind::I64 =>
-          compile_i32_cmp_tagged(
-            ctx,
-            buf,
-            pos_args[0],
-            pos_args[1],
-            emit_i64_eq,
-          )
-        _ =>
-          compile_binary_cmp_op(
-            ctx, buf, "__eq", args, emit_i64_eq, emit_f32_eq, emit_f64_eq,
-          )
-      }
-    }
+    "__eq" =>
+      compile_binary_cmp_op(
+        ctx, buf, "__eq", args, emit_i64_eq, emit_f32_eq, emit_f64_eq,
+      )
     "__lt" => {
       let pos_args = extract_positional_exprs_with_arity(args, "__lt", 2)
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])

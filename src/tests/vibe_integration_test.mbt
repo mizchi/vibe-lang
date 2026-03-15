@@ -1083,6 +1083,18 @@ fn eval_selfhost_module(
 }
 
 ///|
+fn compiler_compile_files() -> Array[String] {
+  [
+    "vibe/compiler/token.vibe", "vibe/compiler/ast.vibe", "vibe/compiler/lexer.vibe",
+    "vibe/compiler/parser.vibe", "vibe/compiler/printer.vibe", "vibe/compiler/values.vibe",
+    "vibe/compiler/builtins.vibe", "vibe/compiler/types.vibe", "vibe/compiler/checker_resolve.vibe",
+    "vibe/compiler/checker.vibe", "vibe/compiler/checker_stmt.vibe", "vibe/compiler/eval_builtins.vibe",
+    "vibe/compiler/eval.vibe", "vibe/compiler/eval_loader.vibe", "vibe/compiler/eval_stmt.vibe",
+    "vibe/compiler/eval_e2e_helpers.vibe", "vibe/compiler/type_db.vibe", "vibe/compiler/index.vibe",
+  ]
+}
+
+///|
 test "selfhost gate5: token.vibe enum import" {
   let db = VibeDb::new()
   let visited : Map[String, Bool] = {}
@@ -1416,17 +1428,24 @@ test "probe: selfhost roundtrip all compiler sources" {
 }
 
 ///|
+test "native compile: token.vibe survives compiler preload" {
+  let db = VibeDb::new()
+  let visited : Map[String, Bool] = {}
+  let files = compiler_compile_files()
+  for file in files {
+    load_compiler_source(db, file, visited)
+  }
+  let compiled = compile_module(db, "vibe/compiler/token.vibe") catch {
+    e => fail("token.vibe compile failed after preload: \{e}")
+  }
+  assert_true(compiled.ast.stmts.length() > 0)
+}
+
+///|
 test "native compile: all compiler sources pass compile_module" {
   let db = VibeDb::new()
   let visited : Map[String, Bool] = {}
-  let files : Array[String] = [
-    "vibe/compiler/token.vibe", "vibe/compiler/ast.vibe", "vibe/compiler/lexer.vibe",
-    "vibe/compiler/parser.vibe", "vibe/compiler/printer.vibe", "vibe/compiler/values.vibe",
-    "vibe/compiler/builtins.vibe", "vibe/compiler/types.vibe", "vibe/compiler/checker_resolve.vibe",
-    "vibe/compiler/checker.vibe", "vibe/compiler/checker_stmt.vibe", "vibe/compiler/eval_builtins.vibe",
-    "vibe/compiler/eval.vibe", "vibe/compiler/eval_loader.vibe", "vibe/compiler/eval_stmt.vibe",
-    "vibe/compiler/eval_e2e_helpers.vibe", "vibe/compiler/type_db.vibe", "vibe/compiler/index.vibe",
-  ]
+  let files = compiler_compile_files()
   // Phase 1: load all sources into VibeDb (resolves transitive imports)
   for file in files {
     load_compiler_source(db, file, visited)

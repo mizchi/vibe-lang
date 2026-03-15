@@ -196,8 +196,10 @@ fn load_sources_recursive_impl(
       _ => ()
     }
   }
-  match build_preparsed_path_import_specs(db, norm, ast, root, registry_modules) {
-    Some(preparsed_imports) => db.set_preparsed_imports(norm, source, preparsed_imports)
+  match
+    build_preparsed_path_import_specs(db, norm, ast, root, registry_modules) {
+    Some(preparsed_imports) =>
+      db.set_preparsed_imports(norm, source, preparsed_imports)
     None => ()
   }
   let _ = stack.pop()
@@ -234,7 +236,8 @@ fn build_preparsed_path_import_specs(
               None
             } else {
               match db.get_source(resolved) {
-                Some(content) => Some(@vibe_core.content_address_hash_string(content))
+                Some(content) =>
+                  Some(@vibe_core.content_address_hash_string(content))
                 None => None
               }
             }
@@ -273,7 +276,8 @@ fn build_preparsed_path_import_specs(
               None
             } else {
               match db.get_source(resolved) {
-                Some(content) => Some(@vibe_core.content_address_hash_string(content))
+                Some(content) =>
+                  Some(@vibe_core.content_address_hash_string(content))
                 None => None
               }
             }

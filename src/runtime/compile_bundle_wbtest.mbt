@@ -3,10 +3,7 @@ test "bundle_for_wasm keeps enum defs from re-exported directory wrapper" {
   let db = VibeDb::new()
   db.set_source(
     "/project/core/types_impl.vibe",
-    "export enum Type {\n" +
-    "  CtInt;\n" +
-    "  CtArray(Type)\n" +
-    "}\n",
+    "export enum Type {\n" + "  CtInt;\n" + "  CtArray(Type)\n" + "}\n",
   )
   db.set_source(
     "/project/core/index.vibe",
@@ -45,10 +42,7 @@ test "bundle_for_wasm keeps enum defs through nested wrapper re-exports" {
   let db = VibeDb::new()
   db.set_source(
     "/project/core/types_impl.vibe",
-    "export enum Type {\n" +
-    "  CtInt;\n" +
-    "  CtArray(Type)\n" +
-    "}\n",
+    "export enum Type {\n" + "  CtInt;\n" + "  CtArray(Type)\n" + "}\n",
   )
   db.set_source(
     "/project/core/index.vibe",

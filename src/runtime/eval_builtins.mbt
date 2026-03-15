@@ -144,10 +144,7 @@ fn eval_pure_builtin(
     "array_new" => {
       if args.length() != 0 {
         raise EvalError::BadCall(
-          E(
-            "array_new: expected 0 arguments, got " +
-            args.length().to_string(),
-          ),
+          E("array_new: expected 0 arguments, got " + args.length().to_string()),
         )
       }
       @core.Value::Array([])
@@ -292,9 +289,11 @@ fn eval_pure_builtin(
           let d0 = dst_off.to_int()
           let s0 = src_off.to_int()
           let n = len.to_int()
-          if d0 < 0 || s0 < 0 || n < 0 ||
-             d0 + n > dst.length() ||
-             s0 + n > src.length() {
+          if d0 < 0 ||
+            s0 < 0 ||
+            n < 0 ||
+            d0 + n > dst.length() ||
+            s0 + n > src.length() {
             raise EvalError::BadCall(E("FixedArray::blit"))
           }
           for i in 0..<n {

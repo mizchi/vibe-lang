@@ -122,19 +122,6 @@ fn can_compile_cond_i32(
     @core.Expr::Call(name~, args~, ..) => {
       let name = @core.lower_wasm_intrinsic_name(name)
       match name {
-        "eq" | "__eq" | "lt" | "__lt" => {
-          let pos_args = extract_positional_exprs(args, name)
-          if pos_args.length() == 2 {
-            let resolved_kind = resolve_numeric_kind(
-              ctx,
-              pos_args[0],
-              pos_args[1],
-            )
-            resolved_kind == ValueKind::I32 || resolved_kind == ValueKind::I64
-          } else {
-            false
-          }
-        }
         "not" => {
           let pos_args = extract_positional_exprs(args, name)
           pos_args.length() == 1 && can_compile_cond_i32(ctx, pos_args[0])
@@ -169,30 +156,6 @@ fn try_compile_cond_i32(
     @core.Expr::Call(name~, args~, ..) => {
       let name = @core.lower_wasm_intrinsic_name(name)
       match name {
-        "eq" | "__eq" | "lt" | "__lt" => {
-          let pos_args = extract_positional_exprs(args, name)
-          if pos_args.length() == 2 {
-            let resolved_kind = resolve_numeric_kind(
-              ctx,
-              pos_args[0],
-              pos_args[1],
-            )
-            match resolved_kind {
-              ValueKind::I32 | ValueKind::I64 => {
-                compile_expr_i32(ctx, buf, pos_args[0])
-                compile_expr_i32(ctx, buf, pos_args[1])
-                match name {
-                  "eq" | "__eq" => emit_i64_eq(buf)
-                  _ => emit_i64_lt_s(buf)
-                }
-                true
-              }
-              _ => false
-            }
-          } else {
-            false
-          }
-        }
         "not" => {
           let pos_args = extract_positional_exprs(args, name)
           if pos_args.length() == 1 &&
