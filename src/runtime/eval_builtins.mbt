@@ -830,6 +830,22 @@ fn eval_pure_builtin(
             )
           }
         }
+        (@core.Value::Bytes(data), @core.Value::Int(i)) => {
+          let idx = i.to_int()
+          if idx >= 0 && idx < data.length() {
+            @core.Value::Int(data[idx].to_int().to_int64())
+          } else {
+            raise EvalError::BadCall(
+              E(
+                "[]: bytes index " +
+                i.to_string() +
+                " out of bounds (length " +
+                data.length().to_string() +
+                ")",
+              ),
+            )
+          }
+        }
         _ =>
           raise EvalError::BadCall(
             E(
@@ -865,6 +881,16 @@ fn eval_pure_builtin(
             result.push(arr[i])
           }
           @core.Value::Array(result)
+        }
+        (@core.Value::Bytes(data), @core.Value::Int(start), @core.Value::Int(end_)) => {
+          let len = data.length().to_int64()
+          let s0 = if start < 0L { 0L } else if start > len { len } else { start }
+          let e0 = if end_ < 0L { 0L } else if end_ > len { len } else { end_ }
+          let result : Array[Byte] = []
+          for i in s0.to_int()..<e0.to_int() {
+            result.push(data[i])
+          }
+          @core.Value::Bytes(result)
         }
         _ =>
           raise EvalError::BadCall(

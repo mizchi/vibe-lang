@@ -147,6 +147,9 @@ let obj_string_view = 11
 let obj_array_view = 12
 
 ///|
+let obj_bytes_view = 13
+
+///|
 enum ValueKind {
   I32
   I64

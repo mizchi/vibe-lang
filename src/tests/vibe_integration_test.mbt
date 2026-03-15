@@ -1570,3 +1570,24 @@ test "is expression: 0-ary constructor" {
   let result = rt.eval_script(script)
   assert_eq(result.last, Some(@core.Value::Bool(true)))
 }
+
+///|
+test "bytes index b[i]" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let b = Bytes::from_array([65, 66, 67])
+    #|b[1]
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Int(66)))
+}
+
+///|
+test "bytes slice b[i:j]" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let b = Bytes::from_array([10, 20, 30, 40, 50])
+    #|let s = b[1:3]
+    #|Bytes::length(s)
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Int(2)))
+}

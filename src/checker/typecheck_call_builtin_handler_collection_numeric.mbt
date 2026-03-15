@@ -1197,6 +1197,17 @@ fn type_call_builtin_handler_collection_numeric(
           }
           @core.Type::String
         }
+        @core.Type::Bytes => {
+          if not(type_equal(env, index_ty, @core.Type::Int)) {
+            raise TypeError::Mismatch(
+              expected=@core.Type::Int,
+              actual=index_ty,
+              span=pos_args[1].span(),
+              context=Some("bytes index"),
+            )
+          }
+          @core.Type::Int
+        }
         _ => {
           let _ = index_ty
           let _ = elem_ty
@@ -1225,6 +1236,7 @@ fn type_call_builtin_handler_collection_numeric(
       match resolved_container {
         @core.Type::String => @core.Type::String
         @core.Type::Array(elem_ty) => @core.Type::Array(elem_ty)
+        @core.Type::Bytes => @core.Type::Bytes
         _ =>
           raise TypeError::BadCall(
             message="__slice: not sliceable",

@@ -6280,23 +6280,11 @@ fn compile_call_builtin_pre_user_inner(
     }
     "Bytes::length" => {
       // bytes_length(bytes) -> Int (tagged)
-      // Same as array_length - read len field from obj header
+      // Supports both raw Bytes (obj_array, len at offset 4) and
+      // BytesView/ArrayView (end - start, offsets 12 and 8)
       let pos_args = extract_positional_exprs_with_arity(
         args, "Bytes::length", 1,
       )
-      compile_expr_i32(ctx, buf, pos_args[0])
-      emit_i64_const_raw(buf, (-4).to_int64())
-      emit_i64_and(buf)
-      emit_i32_wrap_i64(buf)
-      emit_i32_load(buf, 4) // len
-      emit_i64_extend_i32_u(buf)
-      emit_i64_const_raw(buf, 2L)
-      emit_i64_shl(buf) // tag as int
-    }
-    "Bytes::get" => {
-      // bytes_get(bytes, idx) -> Int (tagged byte value)
-      // Same as array_get
-      let pos_args = extract_positional_exprs_with_arity(args, "Bytes::get", 2)
       let ptr_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, (-4).to_int64())
@@ -6304,15 +6292,71 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, ptr_local)
       emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 0) // obj_type
+      emit_i32_const_raw(buf, obj_array_view)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte()) // if (array_view)
+      buf.push((126).to_byte()) // result i64
+      // BytesView/ArrayView: length = end - start
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 12) // end
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 8) // start
+      emit_i32_sub(buf)
+      emit_i64_extend_i32_s(buf)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf)
+      buf.push((5).to_byte()) // else (regular bytes)
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 4) // len
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf) // tag as int
+      buf.push((11).to_byte()) // end if
+    }
+    "Bytes::get" => {
+      // bytes_get(bytes, idx) -> Int (tagged byte value)
+      // Supports both raw Bytes (obj_array) and BytesView/ArrayView
+      let pos_args = extract_positional_exprs_with_arity(args, "Bytes::get", 2)
+      let ptr_local = alloc_temp_local(ctx)
+      let idx_local = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, ptr_local)
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_i64_const_raw(buf, 2L)
       emit_i64_shr_s(buf) // untag index
       emit_i32_wrap_i64(buf)
+      emit_local_set(buf, idx_local)
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 0) // obj_type
+      emit_i32_const_raw(buf, obj_array_view)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte()) // if (array_view)
+      buf.push((126).to_byte()) // result i64
+      // BytesView: source[start + idx]
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 4) // source_ptr
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 8) // start
+      emit_local_get(buf, idx_local)
+      emit_i32_add(buf)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i32_load(buf, 8)
+      emit_i64_extend_i32_u(buf)
+      buf.push((5).to_byte()) // else (regular bytes)
+      emit_local_get(buf, ptr_local)
+      emit_local_get(buf, idx_local)
       emit_i32_const_raw(buf, 4)
       emit_i32_mul(buf)
       emit_i32_add(buf)
       emit_i32_load(buf, 8) // load element at [ptr + 8 + idx*4]
       emit_i64_extend_i32_u(buf)
+      buf.push((11).to_byte()) // end if
     }
     "Fs::write_bytes" => {
       // fs_write_bytes(path, byte_array) -> Unit
