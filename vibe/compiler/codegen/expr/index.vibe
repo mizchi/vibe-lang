@@ -10,7 +10,7 @@ import ../common_base/index.vibe {
 }
 
 import ../common_extractors/index.vibe {
-  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_earray_elems, get_eassign_body, get_eassign_name, get_eassign_val, get_eassignop_body, get_eassignop_name, get_eassignop_op, get_eassignop_val, get_ebinop_lhs, get_ebinop_rhs, get_ebool_value, get_ecall_args, get_ecall_callee, get_efloat_value, get_efn_params, get_eforin_body, get_eforin_iter, get_eforin_name, get_eident_name, get_eint_value, get_eletmut_body, get_eletmut_name, get_eletmut_val, get_eletrec_body, get_eletrec_name, get_eletrec_val, get_eseq_first, get_eseq_second, get_estring_value, get_ethrow_expr, get_etuple_elems, get_eunaryop_expr, get_eunaryop_op, get_ewhile_body, get_ewhile_cond, get_match_arms, get_match_scrutinee, get_pbind_name, get_pbool_value, get_pctor_args, get_pctor_name, get_pint_value, get_pstring_value, get_ptuple_pats, get_slet_export, str_table_lookup, str_table_lookup_map
+  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_earray_elems, get_eassign_body, get_eassign_name, get_eassign_val, get_eassignop_body, get_eassignop_name, get_eassignop_op, get_eassignop_val, get_ebinop_lhs, get_ebinop_rhs, get_ebool_value, get_ecall_args, get_ecall_callee, get_efloat_value, get_efn_params, get_eforin_body, get_eforin_iter, get_eforin_name, get_eident_name, get_eint_value, get_eletmut_body, get_eletmut_name, get_eletmut_val, get_eletrec_body, get_eletrec_name, get_eletrec_val, get_eseq_first, get_eseq_second, get_estring_value, get_ethrow_expr, get_etuple_elems, get_eunaryop_expr, get_eunaryop_op, get_ewhile_body, get_ewhile_cond, get_match_arms, get_match_scrutinee, get_pbind_name, get_pbool_value, get_pctor_args, get_pctor_name, get_pint_value, get_pstring_value, get_ptuple_pats, get_slet_export, str_table_lookup
 }
 
 import ../common_analysis/index.vibe {
@@ -157,11 +157,18 @@ let compile_call = (buf: Array[Int], callee: Expr, args: Array[Expr], local_name
       nl
     }
     else {
-      let fn_idx_in_list = if map_has(ctx.func_name_map, fname) {
-        Map::get(ctx.func_name_map, fname)
-      } else {
-        -1
+      let fn_len2 = Array::length(ctx.func_table.names)
+      let mut __tr_j = 0
+      let mut __tr_result = -1
+      while __tr_j < fn_len2 {
+        if Array::get(ctx.func_table.names, __tr_j) == fname {
+          __tr_result = __tr_j
+          __tr_j = fn_len2
+        } else {
+          __tr_j = __tr_j + 1
+        }
       }
+      let fn_idx_in_list = __tr_result
       if fn_idx_in_list >= 0 {
         let fidx = Array::get(ctx.func_table.indices, fn_idx_in_list)
         let has_ret = Array::get(ctx.func_table.returns, fn_idx_in_list)
@@ -280,7 +287,7 @@ let compile_match = (buf: Array[Int], expr: Expr, local_names: Array[String], ne
         } else {
           if is_pstring(__cond_p) {
             let sval = get_pstring_value(__cond_p)
-            let str_idx = str_table_lookup_map(ctx.str_table.str_index_map, sval)
+            let str_idx = str_table_lookup(ctx.str_table.strs, sval)
             if str_idx >= 0 {
               emit_local_get(buf, scrut_local)
               emit_str_ref(buf, Array::get(ctx.str_table.offsets, str_idx), Array::get(ctx.str_table.lengths, str_idx))
@@ -467,8 +474,7 @@ let compile_lambda = (buf: Array[Int], params: Array[(String, Option[TypeExpr])]
     ci3 = ci3 + 1
   }
   let lam_ctx = CompileCtx::{
-    func_table: ctx.func_table, func_name_map: ctx.func_name_map,
-    str_table: ctx.str_table,
+    func_table: ctx.func_table, str_table: ctx.str_table,
     lambda_table: ctx.lambda_table,
     num_user_funcs: ctx.num_user_funcs, func_offset: ctx.func_offset,
     ref_cell_names: lam_ref_cells, ctor_table: ctx.ctor_table,
@@ -565,7 +571,7 @@ export let rec compile_expr = (buf: Array[Int], expr: Expr, local_names: Array[S
     next_local
   } else if __tag == 3 {
     let s = get_estring_value(expr)
-    let idx = str_table_lookup_map(ctx.str_table.str_index_map, s)
+    let idx = str_table_lookup(ctx.str_table.strs, s)
     emit_str_ref(buf, Array::get(ctx.str_table.offsets, idx), Array::get(ctx.str_table.lengths, idx))
     next_local
   } else if __tag == 4 {
@@ -631,17 +637,17 @@ export let rec compile_expr = (buf: Array[Int], expr: Expr, local_names: Array[S
           }
         }
         if __tf_result < 0 {
-          let mut diag = "undefined variable (ident): \{name}"
-          diag = "\{diag} | locals=["
+          let mut diag = String::concat("undefined variable (ident): ", name)
+          diag = String::concat(diag, " | locals=[")
           let mut di = 0
           while di < len {
             if di > 0 {
-              diag = "\{diag},"
+              diag = String::concat(diag, ",")
             }
-            diag = "\{diag}\{Array::get(local_names, di)}"
+            diag = String::concat(diag, Array::get(local_names, di))
             di = di + 1
           }
-          diag = "\{diag}]"
+          diag = String::concat(diag, "]")
           throw(diag)
         }
         let fni = __tf_result
@@ -680,7 +686,7 @@ export let rec compile_expr = (buf: Array[Int], expr: Expr, local_names: Array[S
       emit_i64_extend_i32_s(buf)
       nl
     } else {
-      throw("unsupported unary op: \{op}")
+      throw(String::concat("unsupported unary op: ", op))
     }
   } else if __tag == 7 {
     let cond = get_eif_cond(expr)
@@ -1076,7 +1082,7 @@ export let rec compile_expr = (buf: Array[Int], expr: Expr, local_names: Array[S
           }
         }
         if field_idx < 0 {
-          throw("unknown struct field: \{field}")
+          throw(String::concat("unknown struct field: ", field))
         }
         let nl1 = compile_expr(buf, obj, local_names, next_local, ctx, ld)
         emit_i64_const(buf, -2)
@@ -1256,15 +1262,12 @@ export let compile_module_expr = (stmts: Array[Stmt]) -> Bytes with { Error } {
       let empty_ctor_struct_names = fresh_string_array()
       let empty_ctor_struct_field_names = fresh_string_matrix()
       let empty_thunk_names = fresh_string_array()
-      let _ft = FuncTable::{
-        names: fn_names_list, indices: fn_indices_list, params: fn_param_counts, returns: fn_returns_list
-      }
       let compile_ctx = CompileCtx::{
-        func_table: _ft,
-        func_name_map: build_func_name_map(_ft),
+        func_table: FuncTable::{
+          names: fn_names_list, indices: fn_indices_list, params: fn_param_counts, returns: fn_returns_list
+        },
         str_table: StrTable::{
-          strs: empty_strs, offsets: empty_offs, lengths: empty_lens,
-          str_index_map: build_str_index_map(empty_strs)
+          strs: empty_strs, offsets: empty_offs, lengths: empty_lens
         },
         lambda_table: lt_m,
         num_user_funcs: num_funcs, func_offset: 0,

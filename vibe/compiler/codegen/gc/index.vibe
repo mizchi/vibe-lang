@@ -260,7 +260,7 @@ let compile_match_gc = (
         0
       },
       PString(sval) => {
-        let str_idx = str_table_lookup_map(ctx.str_table.str_index_map, sval)
+        let str_idx = str_table_lookup(ctx.str_table.strs, sval)
         if str_idx >= 0 {
           emit_local_get(buf, scrut_local)
           emit_str_ref(buf, Array::get(ctx.str_table.offsets, str_idx), Array::get(ctx.str_table.lengths, str_idx))
@@ -538,7 +538,7 @@ let rec compile_expr_gc = (
       next_local
     },
     EString(s) => {
-      let idx = str_table_lookup_map(ctx.str_table.str_index_map, s)
+      let idx = str_table_lookup(ctx.str_table.strs, s)
       emit_str_ref(buf, Array::get(ctx.str_table.offsets, idx), Array::get(ctx.str_table.lengths, idx))
       next_local
     },
@@ -590,7 +590,7 @@ let rec compile_expr_gc = (
         // Check if it's a top-level function — emit as bare fn value
         let fn_len = Array::length(ctx.func_table.names)
         let rec try_fn = (j: Int) -> Int with { Error } {
-          if j >= fn_len { throw("undefined variable: \{name}") }
+          if j >= fn_len { throw(String::concat("undefined variable: ", name)) }
           else if Array::get(ctx.func_table.names, j) == name { j }
           else try_fn(j + 1)
         }
@@ -621,7 +621,7 @@ let rec compile_expr_gc = (
         emit_i64_extend_i32_s(buf)
         nl
       } else {
-        throw("unsupported unary op: \{op}")
+        throw(String::concat("unsupported unary op: ", op))
       }
     },
     EIf(cond, then_e, else_e) => {
@@ -942,7 +942,7 @@ let rec compile_expr_gc = (
       }
       let field_idx = find_struct_field_idx(0)
       if field_idx < 0 {
-        throw("unknown struct field: \{field}")
+        throw(String::concat("unknown struct field: ", field))
       }
       let nl1 = ce(buf, obj, local_names, next_local, ld)
       // Untag: ptr & ~1
@@ -1547,7 +1547,7 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
     ei = ei + 1
   }
   if entry_user_idx < 0 {
-    throw("entry function not found: \{entry_name}")
+    throw(String::concat("entry function not found: ", entry_name))
   }
 
   // String table
@@ -1749,7 +1749,7 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
             let ref_cell_names_f = Array::slice([""], 0, 0)
             let ref_local_indices_f = Array::slice([0], 0, 0)
             let ft = FuncTable::{ names: fn_names_list, indices: fn_indices_list, params: fn_param_counts, returns: fn_returns_list }
-            let st = StrTable::{ strs: str_strs, offsets: str_offsets, lengths: str_lengths, str_index_map: build_str_index_map(str_strs) }
+            let st = StrTable::{ strs: str_strs, offsets: str_offsets, lengths: str_lengths }
             let ct = CtorTable::{ names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names }
             let func_ctx = CompileCtxGc::{
               func_table: ft, str_table: st, lambda_table: lt_w,

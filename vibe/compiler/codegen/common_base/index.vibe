@@ -23,8 +23,7 @@ export struct FuncTable {
 export struct StrTable {
   strs: Array[String];
   offsets: Array[Int];
-  lengths: Array[Int];
-  str_index_map: Map[String, Int]
+  lengths: Array[Int]
 }
 
 // Lambda accumulator: collects compiled lambda bodies and metadata
@@ -49,7 +48,6 @@ export struct CtorTable {
 // Compilation context: all shared state for compile_expr
 export struct CompileCtx {
   func_table: FuncTable;
-  func_name_map: Map[String, Int];
   str_table: StrTable;
   lambda_table: LambdaTable;
   num_user_funcs: Int;
@@ -284,29 +282,7 @@ export let get_elet_val = (expr: Expr) -> Expr with { Error } {
 }
 
 // Resolve function: returns (func_index, param_count, has_return)
-export let build_func_name_map = (ft: FuncTable) -> Map[String, Int] {
-  let b = MapBuilder::new()
-  let len = Array::length(ft.names)
-  let mut i = 0
-  while i < len {
-    MapBuilder::set(b, Array::get(ft.names, i), i)
-    i = i + 1
-  }
-  MapBuilder::freeze(b)
-}
-
-export let build_str_index_map = (strs: Array[String]) -> Map[String, Int] {
-  let b = MapBuilder::new()
-  let len = Array::length(strs)
-  let mut i = 0
-  while i < len {
-    MapBuilder::set(b, Array::get(strs, i), i)
-    i = i + 1
-  }
-  MapBuilder::freeze(b)
-}
-
-export let resolve_func = (ft: FuncTable, name: String) -> (Int, Int, Int) with { Error } {
+export let resolve_func = (ft: FuncTable, name: String) -> (Int, Int, Int)with { Error } {
   let len = Array::length(ft.names)
   let mut i = 0
   let mut found = -1
@@ -319,18 +295,9 @@ export let resolve_func = (ft: FuncTable, name: String) -> (Int, Int, Int) with 
     }
   }
   if found < 0 {
-    throw("undefined function: \{name}")
+    throw(String::concat("undefined function: ", name))
   };
   (Array::get(ft.indices, found), Array::get(ft.params, found), Array::get(ft.returns, found))
-}
-
-export let resolve_func_fast = (ft: FuncTable, name_map: Map[String, Int], name: String) -> (Int, Int, Int) with { Error } {
-  if map_has(name_map, name) {
-    let found = Map::get(name_map, name)
-    (Array::get(ft.indices, found), Array::get(ft.params, found), Array::get(ft.returns, found))
-  } else {
-    throw("undefined function: \{name}")
-  }
 }
 
 // Emit WASM instruction for a binary operator
@@ -390,7 +357,7 @@ export let emit_binop_op = (buf: Array[Int], op: String) -> Unit with { Error } 
     emit_i64_or(buf)
   }
   else {
-    throw("unsupported binop: \{op}")
+    throw(String::concat("unsupported binop: ", op))
   }
 }
 
@@ -469,20 +436,20 @@ export let resolve_local = (names: Array[String], name: String, tag: String) -> 
     }
   }
   if result < 0 {
-    let mut dbg = "undefined variable (local): \{name}"
-    dbg = "\{dbg} [locals: "
+    let mut dbg = String::concat("undefined variable (local): ", name)
+    dbg = String::concat(dbg, " [locals: ")
     let mut di = 0
     let dlen = Array::length(names)
     while di < dlen {
       if di > 0 {
-        dbg = "\{dbg}, "
+        dbg = String::concat(dbg, ", ")
       }
-      dbg = "\{dbg}\{Array::get(names, di)}"
+      dbg = String::concat(dbg, Array::get(names, di))
       di = di + 1
     }
-    dbg = "\{dbg}]"
-    dbg = "\{dbg} @"
-    dbg = "\{dbg}\{tag}"
+    dbg = String::concat(dbg, "]")
+    dbg = String::concat(dbg, " @")
+    dbg = String::concat(dbg, tag)
     throw(dbg)
   }
   result
@@ -515,7 +482,7 @@ export let find_func_stmt = (stmts: Array[Stmt], name: String) -> Stmt with { Er
     }
   }
   if found < 0 {
-    throw("function not found: \{name}")
+    throw(String::concat("function not found: ", name))
   }
   Array::get(stmts, found)
 }

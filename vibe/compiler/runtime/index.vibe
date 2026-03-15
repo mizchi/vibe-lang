@@ -112,24 +112,24 @@ let resolve_path = (base_dir: String, raw_path: String) -> String {
       let resolved = if String::ends_with(rest, ".vibe") {
         rest
       } else {
-        "\{rest}.vibe"
+        String::concat(rest, ".vibe")
       }
       if parent == "" {
         resolved
       } else {
-        "\{parent}/\{resolved}"
+        String::concat(parent, String::concat("/", resolved))
       }
     } else if String::substring(raw_path, 0, 2) == "./" {
       let rest = String::substring(raw_path, 2, len)
       let resolved = if String::ends_with(rest, ".vibe") {
         rest
       } else {
-        "\{rest}.vibe"
+        String::concat(rest, ".vibe")
       }
       if base_dir == "" {
         resolved
       } else {
-        "\{base_dir}/\{resolved}"
+        String::concat(base_dir, String::concat("/", resolved))
       }
     } else {
       raw_path
@@ -140,12 +140,12 @@ let resolve_path = (base_dir: String, raw_path: String) -> String {
       let resolved = if String::ends_with(rest, ".vibe") {
         rest
       } else {
-        "\{rest}.vibe"
+        String::concat(rest, ".vibe")
       }
       if base_dir == "" {
         resolved
       } else {
-        "\{base_dir}/\{resolved}"
+        String::concat(base_dir, String::concat("/", resolved))
       }
     } else {
       raw_path
@@ -159,7 +159,7 @@ let parse_program_with_path = (path: String, source: String) -> Array[Stmt] with
   handle {
     parse_program(lex(source))
   } {
-    Error(msg) => throw("\{path}: \{msg}")
+    Error(msg) => throw(String::concat(String::concat(path, ": "), msg))
   }
 }
 
@@ -452,11 +452,14 @@ let compact_string_fingerprint = (source: String) -> String {
     h2 = (h2 * step2 + c + i + 1) % mod2
     i = i + 1
   }
-  "\{__to_string(len)}:\{__to_string(h1)}:\{__to_string(h2)}"
+  String::concat(
+    __to_string(len),
+    String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2))))
+  )
 }
 
 let serialize_segment = (text: String) -> String {
-  "\{__to_string(String::length(text))}:\{text}"
+  String::concat(__to_string(String::length(text)), String::concat(":", text))
 }
 
 let parse_count_header = (text: String, pos: Int, terminator: Int) -> (Int, Int) with { Error } {
@@ -483,13 +486,13 @@ let parse_segment = (text: String, pos: Int) -> (String, Int) with { Error } {
 }
 
 let serialize_string_array = (items: Array[String]) -> String {
-  let mut out = "\{__to_string(Array::length(items))}["
+  let mut out = String::concat(__to_string(Array::length(items)), "[")
   let mut i = 0
   while i < Array::length(items) {
-    out = "\{out}\{serialize_segment(Array::get(items, i))}"
+    out = String::concat(out, serialize_segment(Array::get(items, i)))
     i = i + 1
   }
-  "\{out}]"
+  String::concat(out, "]")
 }
 
 let parse_string_array = (text: String, pos: Int) -> (Array[String], Int) with { Error } {
@@ -511,13 +514,13 @@ let parse_string_array = (text: String, pos: Int) -> (Array[String], Int) with {
 }
 
 let serialize_int_array = (items: Array[Int]) -> String {
-  let mut out = "\{__to_string(Array::length(items))}["
+  let mut out = String::concat(__to_string(Array::length(items)), "[")
   let mut i = 0
   while i < Array::length(items) {
-    out = "\{out}\{serialize_segment(__to_string(Array::get(items, i)))}"
+    out = String::concat(out, serialize_segment(__to_string(Array::get(items, i))))
     i = i + 1
   }
-  "\{out}]"
+  String::concat(out, "]")
 }
 
 let parse_int_array = (text: String, pos: Int) -> (Array[Int], Int) with { Error } {
@@ -539,15 +542,15 @@ let parse_int_array = (text: String, pos: Int) -> (Array[Int], Int) with { Error
 }
 
 let serialize_bounds_array = (items: Array[(Int, Array[String])]) -> String {
-  let mut out = "\{__to_string(Array::length(items))}["
+  let mut out = String::concat(__to_string(Array::length(items)), "[")
   let mut i = 0
   while i < Array::length(items) {
     let (id, bounds) = Array::get(items, i)
-    out = "\{out}\{serialize_segment(__to_string(id))}"
-    out = "\{out}\{serialize_string_array(bounds)}"
+    out = String::concat(out, serialize_segment(__to_string(id)))
+    out = String::concat(out, serialize_string_array(bounds))
     i = i + 1
   }
-  "\{out}]"
+  String::concat(out, "]")
 }
 
 let parse_bounds_array = (text: String, pos: Int) -> (Array[(Int, Array[String])], Int) with { Error } {
@@ -579,29 +582,41 @@ let rec serialize_type = (ty: Type) -> String {
     CtUnit => "U",
     CtBytes => "Y",
     CtUnknown => "X",
-    CtVar(id) => "V\{serialize_segment(__to_string(id))}",
-    CtEnum(name) => "E\{serialize_segment(name)}",
-    CtStruct(name) => "R\{serialize_segment(name)}",
-    CtArray(elem) => "A\{serialize_type(elem)}",
-    CtOption(elem) => "O\{serialize_type(elem)}",
-    CtTuple(elems) => "T\{serialize_type_array(elems)}",
+    CtVar(id) => String::concat("V", serialize_segment(__to_string(id))),
+    CtEnum(name) => String::concat("E", serialize_segment(name)),
+    CtStruct(name) => String::concat("R", serialize_segment(name)),
+    CtArray(elem) => String::concat("A", serialize_type(elem)),
+    CtOption(elem) => String::concat("O", serialize_type(elem)),
+    CtTuple(elems) => String::concat("T", serialize_type_array(elems)),
     CtFn(params, ret, has_error) =>
-      "F\{serialize_segment(if has_error { "1" } else { "0" })}\{serialize_type_array(params)}\{serialize_type(ret)}",
+      String::concat(
+        "F",
+        String::concat(
+          serialize_segment(if has_error { "1" } else { "0" }),
+          String::concat(serialize_type_array(params), serialize_type(ret))
+        )
+      ),
     CtNamed(name, args) =>
-      "N\{serialize_segment(name)}\{serialize_type_array(args)}",
+      String::concat("N", String::concat(serialize_segment(name), serialize_type_array(args))),
     CtForAll(vars, bounds, body) =>
-      "Q\{serialize_int_array(vars)}\{serialize_bounds_array(bounds)}\{serialize_type(body)}"
+      String::concat(
+        "Q",
+        String::concat(
+          serialize_int_array(vars),
+          String::concat(serialize_bounds_array(bounds), serialize_type(body))
+        )
+      )
   }
 }
 
 let serialize_type_array = (items: Array[Type]) -> String {
-  let mut out = "\{__to_string(Array::length(items))}["
+  let mut out = String::concat(__to_string(Array::length(items)), "[")
   let mut i = 0
   while i < Array::length(items) {
-    out = "\{out}\{serialize_segment(serialize_type(Array::get(items, i)))}"
+    out = String::concat(out, serialize_segment(serialize_type(Array::get(items, i))))
     i = i + 1
   }
-  "\{out}]"
+  String::concat(out, "]")
 }
 
 let parse_type_array = (text: String, pos: Int) -> (Array[Type], Int) with { Error } {
@@ -633,7 +648,13 @@ let persistent_type_env_cache_text = (env: TypeEnv) -> String {
   let mut i = 0
   while i < Array::length(bindings) {
     let (name, ty) = Array::get(bindings, i)
-    out = "\{out}bind\t\{name}\t\{serialize_type(ty)}\n"
+    out = String::concat(
+      out,
+      String::concat(
+        "bind\t",
+        String::concat(name, String::concat("\t", String::concat(serialize_type(ty), "\n")))
+      )
+    )
     i = i + 1
   }
   out
@@ -720,17 +741,17 @@ let load_persistent_type_env = (fingerprint: String) -> Option[TypeEnv] with { E
             Array::get(parts, 1) == "1" {
             version_ok = true
           } else {
-            throw("invalid persistent type env header: \{line}")
+            throw(String::concat("invalid persistent type env header: ", line))
           }
         } else if Array::length(parts) == 3 && Array::get(parts, 0) == "bind" {
           let raw_type = Array::get(parts, 2)
           let (ty, end_pos) = parse_cached_type(raw_type, 0)
           if end_pos != String::length(raw_type) {
-            throw("invalid persistent type env row: \{line}")
+            throw(String::concat("invalid persistent type env row: ", line))
           }
           Array::push(bindings, (Array::get(parts, 1), ty))
         } else {
-          throw("invalid persistent type env row: \{line}")
+          throw(String::concat("invalid persistent type env row: ", line))
         }
       }
       i = i + 1
@@ -763,14 +784,14 @@ let persistent_dep_list_text = (deps: Array[String]) -> String {
   if Array::length(deps) == 0 {
     ""
   } else if Array::length(deps) == 1 {
-    "version\t3\n\{Array::get(deps, 0)}"
+    String::concat("version\t3\n", Array::get(deps, 0))
   } else {
-    "version\t2\n\{serialize_string_array(deps)}"
+    String::concat("version\t2\n", serialize_string_array(deps))
   }
 }
 
 let persistent_leaf_fingerprint_text = (fingerprint: String) -> String {
-  "version\t1\n\{fingerprint}\n"
+  String::concat("version\t1\n", String::concat(fingerprint, "\n"))
 }
 
 let load_persistent_leaf_fingerprint = (path: String, source: String) -> Option[String] with { Fs } {
@@ -845,7 +866,10 @@ let build_fingerprint = (source: String, dep_fps: Array[(String, String)]) -> St
   let mut i = 0
   while i < Array::length(dep_fps) {
     let (dep_path, dep_fp) = Array::get(dep_fps, i)
-    let next = "\{acc}|\{dep_path}=\{dep_fp}"
+    let next = String::concat(
+      acc,
+      String::concat("|", String::concat(dep_path, String::concat("=", dep_fp)))
+    )
     acc = compact_string_fingerprint(next)
     i = i + 1
   }
@@ -972,10 +996,10 @@ let rec ensure_fingerprint = (
   stack: Array[String]
 ) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error } {
   if contains_str(stack, path) {
-    throw("type_db: import cycle detected at \{path}")
+    throw(String::concat("type_db: import cycle detected at ", path))
   } else {
     match ripple_get_source(rdb, path) {
-      None => ("missing:\{path}", rdb, env_cache, dep_source_cache, parse_count),
+      None => (String::concat("missing:", path), rdb, env_cache, dep_source_cache, parse_count),
       Some(source) => {
         let (deps, next_dep_source_cache, initial_parse_count) = resolve_deps_for_source(
           rdb,
@@ -1131,10 +1155,10 @@ let rec ensure_fingerprint_fs = (
   stack: Array[String]
 ) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
   if contains_str(stack, path) {
-    throw("type_db: import cycle detected at \{path}")
+    throw(String::concat("type_db: import cycle detected at ", path))
   } else {
     match ripple_get_source(rdb, path) {
-      None => ("missing:\{path}", rdb, env_cache, dep_source_cache, parse_count),
+      None => (String::concat("missing:", path), rdb, env_cache, dep_source_cache, parse_count),
       Some(source) => {
         match load_persistent_leaf_fingerprint(path, source) {
           Some(leaf_fingerprint) =>
@@ -1332,7 +1356,7 @@ export let db_program_source = (db: TypeDb, path: String) -> (String, String, Ty
   match unwrap_db(checked) {
     TypeDbState(rdb, _, _, _, _, _, _, _, _, _) =>
       match ripple_get_source(rdb, path) {
-        None => throw("missing:\{path}"),
+        None => throw(String::concat("missing:", path)),
         Some(source) =>
           match ripple_get_fingerprint(rdb, path) {
             Some(fingerprint) => (source, fingerprint, checked),
@@ -1347,7 +1371,10 @@ let build_merge_fingerprint = (sources: Array[(String, String)]) -> String {
   let mut i = 0
   while i < Array::length(sources) {
     let (_, source) = Array::get(sources, i)
-    let next = "\{acc}|\{compact_string_fingerprint(source)}"
+    let next = String::concat(
+      acc,
+      String::concat("|", compact_string_fingerprint(source))
+    )
     acc = compact_string_fingerprint(next)
     i = i + 1
   }
@@ -1359,7 +1386,10 @@ let build_grouped_merge_fingerprint = (group_fingerprints: Array[(String, String
   let mut i = 0
   while i < Array::length(group_fingerprints) {
     let (group_name, fingerprint) = Array::get(group_fingerprints, i)
-    let next = "\{acc}|\{group_name}=\{fingerprint}"
+    let next = String::concat(
+      acc,
+      String::concat("|", String::concat(group_name, String::concat("=", fingerprint)))
+    )
     acc = compact_string_fingerprint(next)
     i = i + 1
   }
@@ -1397,7 +1427,7 @@ let join_group_sources = (group_sources: Array[(String, String)]) -> String {
       let next = if acc == "" {
         source
       } else {
-        "\{acc}\n\{source}"
+        String::concat(acc, String::concat("\n", source))
       }
       go(i + 1, next)
     }
@@ -1466,7 +1496,7 @@ export let db_grouped_merged_source = (
         } else {
           let (group_name, sources) = Array::get(groups, i)
           let fingerprint = build_merge_fingerprint(sources)
-          let cache_key = "merged-group|\{group_name}"
+          let cache_key = String::concat("merged-group|", group_name)
           match lookup_source_cache(cache_acc, cache_key, fingerprint) {
             Some(source) =>
               load_groups(
@@ -1612,7 +1642,7 @@ export let db_module_source = (db: TypeDb, fingerprint: String, source: String) 
 }
 
 let artifact_cache_key = (kind: String, entry_name: String) -> String {
-  "\{kind}|\{entry_name}"
+  String::concat(kind, String::concat("|", entry_name))
 }
 
 let bytes_to_hex_digit = (n: Int) -> String {
@@ -1653,8 +1683,8 @@ let bytes_to_hex = (bytes: Bytes) -> String {
     let byte = Bytes::get(bytes, i)
     let hi = byte / 16
     let lo = byte % 16
-    out = "\{out}\{bytes_to_hex_digit(hi)}"
-    out = "\{out}\{bytes_to_hex_digit(lo)}"
+    out = String::concat(out, bytes_to_hex_digit(hi))
+    out = String::concat(out, bytes_to_hex_digit(lo))
     i = i + 1
   }
   out
