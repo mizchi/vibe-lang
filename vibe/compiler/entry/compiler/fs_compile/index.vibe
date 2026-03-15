@@ -46,198 +46,11 @@ import ../../../cache/persistent/index.vibe {
   store_persistent_artifact
 }
 
+import ./closure_order.vibe {
+  collect_inline_sources_ordered, source_lookup_or_throw
+}
+
 //# Functions
-
-let contains_str = (arr: Array[String], target: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(arr) && !found {
-    if String::equals(Array::get(arr, i), target) {
-      found = true
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
-let source_lookup = (sources: Array[(String, String)], path_key: String) -> Option[String] {
-  let mut i = 0
-  let mut found = None
-  while i < Array::length(sources) {
-    let (path, source) = Array::get(sources, i)
-    if String::equals(path, path_key) {
-      found = Some(source)
-      i = Array::length(sources)
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
-let dir_of = (file_path: String) -> String {
-  let idx = String::last_index_of(file_path, "/")
-  if idx < 0 {
-    ""
-  } else {
-    String::substring(file_path, 0, idx)
-  }
-}
-
-let split_path_segments = (path: String) -> Array[String] {
-  let segments = Array::slice([""], 0, 0)
-  let len = String::length(path)
-  let mut start = 0
-  let mut i = 0
-  while i <= len {
-    if i == len || String::char_code_at(path, i) == 47 {
-      Array::push(segments, String::substring(path, start, i))
-      start = i + 1
-    }
-    i = i + 1
-  }
-  segments
-}
-
-let join_path_segments = (segments: Array[String]) -> String {
-  let mut out = ""
-  let mut i = 0
-  while i < Array::length(segments) {
-    let seg = Array::get(segments, i)
-    if String::length(seg) > 0 {
-      out = if String::equals(out, "") {
-        seg
-      } else {
-        String::concat(out, String::concat("/", seg))
-      }
-    }
-    i = i + 1
-  }
-  out
-}
-
-let normalize_path = (path: String) -> String {
-  let raw_segments = split_path_segments(path)
-  let normalized = Array::slice([""], 0, 0)
-  let mut i = 0
-  while i < Array::length(raw_segments) {
-    let seg = Array::get(raw_segments, i)
-    if String::length(seg) == 0 || String::equals(seg, ".") {
-      ()
-    } else if String::equals(seg, "..") {
-      let norm_len = Array::length(normalized)
-      if norm_len > 0 {
-        Array::truncate(normalized, norm_len - 1)
-      }
-    } else {
-      Array::push(normalized, seg)
-    }
-    i = i + 1
-  }
-  join_path_segments(normalized)
-}
-
-let resolve_path = (base_dir: String, raw_path: String) -> String {
-  let len = String::length(raw_path)
-  if len >= 3 {
-    if String::equals(String::substring(raw_path, 0, 3), "../") {
-      let rest = String::substring(raw_path, 3, len)
-      let parent = dir_of(base_dir)
-      let resolved = if String::ends_with(rest, ".vibe") {
-        rest
-      } else {
-        String::concat(rest, ".vibe")
-      }
-      if String::equals(parent, "") {
-        normalize_path(resolved)
-      } else {
-        normalize_path(String::concat(parent, String::concat("/", resolved)))
-      }
-    } else if String::equals(String::substring(raw_path, 0, 2), "./") {
-      let rest = String::substring(raw_path, 2, len)
-      let resolved = if String::ends_with(rest, ".vibe") {
-        rest
-      } else {
-        String::concat(rest, ".vibe")
-      }
-      if String::equals(base_dir, "") {
-        normalize_path(resolved)
-      } else {
-        normalize_path(String::concat(base_dir, String::concat("/", resolved)))
-      }
-    } else {
-      normalize_path(raw_path)
-    }
-  } else if len >= 2 {
-    if String::equals(String::substring(raw_path, 0, 2), "./") {
-      let rest = String::substring(raw_path, 2, len)
-      let resolved = if String::ends_with(rest, ".vibe") {
-        rest
-      } else {
-        String::concat(rest, ".vibe")
-      }
-      if String::equals(base_dir, "") {
-        normalize_path(resolved)
-      } else {
-        normalize_path(String::concat(base_dir, String::concat("/", resolved)))
-      }
-    } else {
-      normalize_path(raw_path)
-    }
-  } else {
-    normalize_path(raw_path)
-  }
-}
-
-let rec collect_inline_sources = (
-  path: String,
-  source: String,
-  sources: Array[(String, String)],
-  ordered: Array[(String, String)],
-  visited: Array[String]
-) -> Unit with { Error } {
-  if contains_str(visited, path) {
-    ()
-  } else {
-    Array::push(visited, path)
-    let stmts = parse_program(lex(source))
-    let base_dir = dir_of(path)
-    let mut i = 0
-    while i < Array::length(stmts) {
-      match Array::get(stmts, i) {
-        SImport(raw_path, _) => {
-          let resolved = resolve_path(base_dir, raw_path)
-          match source_lookup(sources, resolved) {
-            Some(dep_source) => collect_inline_sources(resolved, dep_source, sources, ordered, visited),
-            None => throw(String::concat("module not found: ", resolved))
-          }
-        },
-        SReExport(raw_path, _) => {
-          let resolved = resolve_path(base_dir, raw_path)
-          match source_lookup(sources, resolved) {
-            Some(dep_source) => collect_inline_sources(resolved, dep_source, sources, ordered, visited),
-            None => throw(String::concat("module not found: ", resolved))
-          }
-        },
-        _ => ()
-      }
-      i = i + 1
-    }
-    Array::push(ordered, (path, source))
-  }
-}
-
-let collect_inline_sources_ordered = (
-  main_path: String,
-  main_source: String,
-  sources: Array[(String, String)]
-) -> Array[(String, String)] with { Error } {
-  let ordered = Array::slice([("", "")], 0, 0)
-  let visited = Array::slice([""], 0, 0)
-  collect_inline_sources(main_path, main_source, sources, ordered, visited)
-  ordered
-}
 
 let empty_stmt_array = () -> Array[Stmt] {
   Array::slice([
@@ -784,7 +597,7 @@ export let compile_with_source_groups_via_module_source_wasi_unchecked_cached = 
     None => {
       let module_stmts = parse_program(lex(module_source))
       let pruned_stmts = prune_entry_stmts(module_stmts, entry_name)
-      let bytes = compile_wasi_module(pruned_stmts, entry_name)
+      let bytes = compile_wasi_module_impl(pruned_stmts, entry_name)
       (bytes, db_store_artifact(codegen_db, main_path, "wasi-module-source", entry_name, artifact_fingerprint, bytes))
     }
   }
@@ -811,10 +624,7 @@ let prepare_file_fs_from_source_groups_cached = (
   source_groups: Array[(String, Array[(String, String)])]
 ) -> TypeDb with { Error } {
   let sources = flatten_source_groups(source_groups)
-  let main_source = match source_lookup(sources, entry_path) {
-    Some(source) => source,
-    None => throw(String::concat("module not found: ", entry_path))
-  }
+  let main_source = source_lookup_or_throw(sources, entry_path)
   prepare_modules_cached(db, entry_path, main_source, sources)
 }
 
@@ -824,10 +634,7 @@ let prepare_file_fs_from_source_groups_persistent_cached = (
   source_groups: Array[(String, Array[(String, String)])]
 ) -> TypeDb with { Error, Fs } {
   let sources = flatten_source_groups(source_groups)
-  let main_source = match source_lookup(sources, entry_path) {
-    Some(source) => source,
-    None => throw(String::concat("module not found: ", entry_path))
-  }
+  let main_source = source_lookup_or_throw(sources, entry_path)
   prepare_modules_persistent_fs_cached(db, entry_path, main_source, sources)
 }
 
