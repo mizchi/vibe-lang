@@ -634,6 +634,7 @@ fn compile_match_chain(
   let arm = arms[start]
   let saved = ctx.locals.copy()
   let saved_kinds = ctx.local_kinds.copy()
+  let saved_heap_synced = ctx.heap_synced
   let bindings : Map[String, Int] = {}
   compile_pat_match(
     ctx,
@@ -649,6 +650,7 @@ fn compile_match_chain(
   )
   restore_locals(ctx, saved)
   restore_local_kinds(ctx, saved_kinds)
+  ctx.heap_synced = saved_heap_synced
 }
 
 ///|
@@ -888,15 +890,18 @@ fn compile_guarded_arm_with_bindings(
       emit_i64_const_raw(buf, 2L)
       emit_i64_shr_u(buf)
       emit_i32_wrap_i64(buf)
+      let guard_heap_synced = ctx.heap_synced
       buf.push((4).to_byte())
       buf.push((126).to_byte())
       adjust_loop_offsets(ctx, 1)
       emit_coverage(ctx, buf, WasmCoveragePointKind::BranchMatchArm, arm.span)
       compile_expr(ctx, buf, arm.expr)
+      ctx.heap_synced = guard_heap_synced
       buf.push((5).to_byte())
       restore_locals(ctx, saved)
       restore_local_kinds(ctx, saved_kinds)
       compile_match_chain(ctx, buf, scrut_idx, arms, index + 1)
+      ctx.heap_synced = false
       buf.push((11).to_byte())
       adjust_loop_offsets(ctx, -1)
       restore_locals(ctx, saved)
