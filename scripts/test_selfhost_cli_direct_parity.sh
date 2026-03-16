@@ -56,9 +56,9 @@ run_case() {
   wasm-tools validate "$selfhost_out" >/dev/null
 
   env VIBE_WASMTIME_WASM_FLAGS="$WASMTIME_WASM_FLAGS" \
-    "$WASMTIME_RUN" --invoke run "$host_out" >"$host_run_log"
+    "$WASMTIME_RUN" --invoke _start "$host_out" >"$host_run_log"
   env VIBE_WASMTIME_WASM_FLAGS="$WASMTIME_WASM_FLAGS" \
-    "$WASMTIME_RUN" --invoke run "$selfhost_out" >"$selfhost_run_log"
+    "$WASMTIME_RUN" --invoke _start "$selfhost_out" >"$selfhost_run_log"
 
   local host_result
   local selfhost_result
@@ -115,9 +115,9 @@ bash "$SCRIPT_DIR/run_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$impo
 wasm-tools validate "$host_import_out" >/dev/null
 wasm-tools validate "$selfhost_import_out" >/dev/null
 env VIBE_WASMTIME_WASM_FLAGS="$WASMTIME_WASM_FLAGS" \
-  "$WASMTIME_RUN" --invoke run "$host_import_out" >"$host_import_log"
+  "$WASMTIME_RUN" --invoke _start "$host_import_out" >"$host_import_log"
 env VIBE_WASMTIME_WASM_FLAGS="$WASMTIME_WASM_FLAGS" \
-  "$WASMTIME_RUN" --invoke run "$selfhost_import_out" >"$selfhost_import_log"
+  "$WASMTIME_RUN" --invoke _start "$selfhost_import_out" >"$selfhost_import_log"
 host_import_result="$(grep -E '^-?[0-9]+$' "$host_import_log" | tail -n 1 || true)"
 selfhost_import_result="$(grep -E '^-?[0-9]+$' "$selfhost_import_log" | tail -n 1 || true)"
 if [ "$host_import_result" != "42" ] || [ "$selfhost_import_result" != "42" ]; then

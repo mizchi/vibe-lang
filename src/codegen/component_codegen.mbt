@@ -219,7 +219,7 @@ fn emit_alias_section_run_and_memory(
   content.push(core_sort_func) // sort: func (0x00)
   content.push(b'\x01') // aliaskind marker
   component_write_uleb128(content, core_instance_idx)
-  component_write_name(content, "run") // export name
+  component_write_name(content, "_start") // export name
 
   // Alias 1: memory from the core instance
   content.push(b'\x00') // core export from instance
@@ -1702,7 +1702,7 @@ pub fn emit_component_wasm_with_string_lift(
   let mut call_run_init = false
   let mut needs_target_env = false
   for export_func in export_funcs {
-    if export_func.name == "run" {
+    if export_func.name == "_start" {
       call_run_init = true
     }
     if export_func.name == target_func_name {
@@ -1713,7 +1713,7 @@ pub fn emit_component_wasm_with_string_lift(
       }
     }
   }
-  let has_distinct_run_alias = call_run_init && target_func_name != "run"
+  let has_distinct_run_alias = call_run_init && target_func_name != "_start"
   let run_init_import_count = if call_run_init { 1 } else { 0 }
   let run_alias_func_count = if has_distinct_run_alias { 1 } else { 0 }
   let target_env_alias_count = if needs_target_env { 1 } else { 0 }
@@ -1757,7 +1757,7 @@ pub fn emit_component_wasm_with_string_lift(
     ("cabi_realloc", core_sort_func),
   ]
   if has_distinct_run_alias {
-    alias_entries.push(("run", core_sort_func))
+    alias_entries.push(("_start", core_sort_func))
   }
   if needs_target_env {
     alias_entries.push(

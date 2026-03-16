@@ -48,7 +48,7 @@ run_case() {
   fi
 
   local wasm_tagged
-  wasm_tagged="$(VIBE_WASMTIME_WASM_FLAGS='exceptions=y' "$WASMTIME_RUN" --invoke run "$wasm" 2>/dev/null | grep -E '^-?[0-9]+$' | tail -n 1 || true)"
+  wasm_tagged="$(VIBE_WASMTIME_WASM_FLAGS='exceptions=y' "$WASMTIME_RUN" --invoke _start "$wasm" 2>/dev/null | grep -E '^-?[0-9]+$' | tail -n 1 || true)"
   if [ -z "$wasm_tagged" ]; then
     echo "FAIL: $name (wasmtime output missing)"
     failed=$((failed + 1))

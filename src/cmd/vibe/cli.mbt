@@ -1320,7 +1320,7 @@ fn build_http_host_run_command(
   shell_quote_command_arg(runner.node_bin) +
   " " +
   shell_quote_command_arg(runner.runner_script) +
-  " --invoke run " +
+  " --invoke _start " +
   shell_quote_command_arg(wasm_path)
 }
 

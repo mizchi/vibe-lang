@@ -47,7 +47,7 @@ wasm-tools validate "$OUTPUT_WASM" >/dev/null
 
 env VIBE_WASMTIME_WASM_FLAGS="$WASMTIME_WASM_FLAGS" \
   VIBE_WASMTIME_WASI_FLAGS="$WASMTIME_WASI_FLAGS" \
-  "$WASMTIME_RUN" --invoke run "$OUTPUT_WASM" >"$OUTPUT_RUN_LOG"
+  "$WASMTIME_RUN" --invoke _start "$OUTPUT_WASM" >"$OUTPUT_RUN_LOG"
 
 sample_result="$(grep -E '^-?[0-9]+$' "$OUTPUT_RUN_LOG" | tail -n 1 || true)"
 if [ -z "$sample_result" ]; then

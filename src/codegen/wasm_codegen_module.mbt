@@ -957,7 +957,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
 
   // export section
   let user_export_count = ctx.exported_fns.length() -
-    (if ctx.exported_fns.contains("run") { 1 } else { 0 })
+    (if ctx.exported_fns.contains("_start") { 1 } else { 0 })
   let need_cabi_realloc_export = ctx.need_stdin_read_char ||
     ctx.need_socket ||
     ctx.need_http ||
@@ -976,7 +976,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     (if ctx.use_heap_global { 1 } else { 0 }) // __heap_ptr global
   let export_sec = ByteBuf::new()
   write_u32_leb(export_sec, export_count)
-  write_name(export_sec, "run")
+  write_name(export_sec, "_start")
   export_sec.push((0).to_byte()) // func export
   let run_index = func_import_count + funcs.length() - 1
   write_u32_leb(export_sec, run_index)
@@ -999,9 +999,9 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   export_sec.push((2).to_byte()) // memory export
   write_u32_leb(export_sec, 0)
   // Export user functions (export let ...)
-  // Skip "run" here; handled above to avoid duplicate export.
+  // Skip "_start" here; handled above to avoid duplicate export.
   for name, _ in ctx.exported_fns {
-    if name == "run" {
+    if name == "_start" {
       continue
     }
     match ctx.fn_indices.get(name) {

@@ -34,9 +34,9 @@ cargo build --release --manifest-path "$ROOT_DIR/tools/wasmtime_bench/Cargo.toml
 echo "[wasmtime-cli one-shot]"
 if command -v hyperfine >/dev/null 2>&1; then
   hyperfine --warmup 3 --runs "$RUNS" \
-    "WASMTIME_BIN=\"$WASMTIME_BIN\" \"$WASMTIME_RUN\" --invoke run \"$WASM_PATH\" >/dev/null"
+    "WASMTIME_BIN=\"$WASMTIME_BIN\" \"$WASMTIME_RUN\" --invoke _start \"$WASM_PATH\" >/dev/null"
 else
-  /usr/bin/time -p env WASMTIME_BIN="$WASMTIME_BIN" "$WASMTIME_RUN" --invoke run "$WASM_PATH" >/dev/null
+  /usr/bin/time -p env WASMTIME_BIN="$WASMTIME_BIN" "$WASMTIME_RUN" --invoke _start "$WASM_PATH" >/dev/null
 fi
 
 echo

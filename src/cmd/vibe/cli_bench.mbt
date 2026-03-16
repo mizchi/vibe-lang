@@ -1019,7 +1019,7 @@ fn build_wasmtime_bench_command(
     cmd.write_string(" -S ")
     cmd.write_string(shell_quote_command_arg(flag))
   }
-  cmd.write_string(" --invoke run ")
+  cmd.write_string(" --invoke _start ")
   cmd.write_string(shell_quote_command_arg(wasm_path))
   cmd.to_string()
 }

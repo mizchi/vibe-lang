@@ -2398,7 +2398,7 @@ fn build_module_gc(
   write_section_gc(buf, 3, func_sec.to_array())
   let export_sec = GcByteBuf::new()
   write_u32_leb_gc(export_sec, 1)
-  let name = "run"
+  let name = "_start"
   write_u32_leb_gc(export_sec, name.length())
   for c in name {
     export_sec.push(c.to_int())

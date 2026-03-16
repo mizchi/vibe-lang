@@ -24,7 +24,7 @@ fi
 
 wasm-tools validate "$OUTPUT_PATH" >/dev/null
 env VIBE_WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y}" \
-  "$SCRIPT_DIR/wasmtime_run.sh" --invoke run "$OUTPUT_PATH" >"$RUN_LOG"
+  "$SCRIPT_DIR/wasmtime_run.sh" --invoke _start "$OUTPUT_PATH" >"$RUN_LOG"
 
 RESULT="$(grep -E '^-?[0-9]+$' "$RUN_LOG" | tail -n 1 || true)"
 if [ "$RESULT" != "42" ]; then
@@ -46,7 +46,7 @@ rm -f "$IMPORT_OUTPUT"
 bash "$SCRIPT_DIR/run_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$OUT_DIR/import_main.vibe" "$IMPORT_OUTPUT" answer mvp
 wasm-tools validate "$IMPORT_OUTPUT" >/dev/null
 env VIBE_WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y}" \
-  "$SCRIPT_DIR/wasmtime_run.sh" --invoke run "$IMPORT_OUTPUT" >"$RUN_LOG"
+  "$SCRIPT_DIR/wasmtime_run.sh" --invoke _start "$IMPORT_OUTPUT" >"$RUN_LOG"
 if ! grep -q '^42$' "$RUN_LOG"; then
   echo "selfhost cli direct component gate failed: import case did not run to 42" >&2
   exit 1

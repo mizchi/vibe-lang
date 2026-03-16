@@ -18,7 +18,7 @@ moon build --target native --release src/cmd/vibe
 "$CLI_BIN" compile --wasm -o "$WASM_OUT" "$SCRIPT_PATH"
 
 INTERP_CMD="\"$CLI_BIN\" run \"$SCRIPT_PATH\" >/dev/null"
-WASM_CMD="WASMTIME_BIN=\"$WASMTIME_BIN\" \"$WASMTIME_RUN\" --invoke run \"$WASM_OUT\" >/dev/null"
+WASM_CMD="WASMTIME_BIN=\"$WASMTIME_BIN\" \"$WASMTIME_RUN\" --invoke _start \"$WASM_OUT\" >/dev/null"
 
 if command -v hyperfine >/dev/null 2>&1; then
   hyperfine --warmup 3 "$INTERP_CMD" "$WASM_CMD"

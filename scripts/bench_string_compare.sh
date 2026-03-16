@@ -24,7 +24,7 @@ if ! "$CLI_BIN" compile --wasm-gc -o "$GC_WASM_OUT" "$SCRIPT_PATH"; then
 fi
 
 JS_CMD="node $ROOT_DIR/scripts/run_wasm_js_string_file.mjs $JS_WASM_OUT >/dev/null"
-GC_CMD="WASMTIME_BIN=\"$WASMTIME_BIN\" \"$WASMTIME_RUN\" -W gc --invoke run \"$GC_WASM_OUT\" >/dev/null"
+GC_CMD="WASMTIME_BIN=\"$WASMTIME_BIN\" \"$WASMTIME_RUN\" -W gc --invoke _start \"$GC_WASM_OUT\" >/dev/null"
 ONLY_GC=0
 
 if ! bash -c "$JS_CMD"; then

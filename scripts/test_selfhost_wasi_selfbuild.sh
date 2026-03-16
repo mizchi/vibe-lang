@@ -381,15 +381,15 @@ if [ "$HASH_STAGE1" != "$HASH_STAGE2" ]; then
   fi
 fi
 
-run_stage_capture_stdout "run stage1 wasm via wasmtime (--invoke run)" \
+run_stage_capture_stdout "run stage1 wasm via wasmtime (--invoke _start)" \
   "$OUT_DIR/stage1_run.out" \
   env VIBE_WASMTIME_WASM_FLAGS="unknown-imports-default=y exceptions=y" \
-  "$PROJECT_ROOT/scripts/wasmtime_run.sh" --invoke run "$STAGE1_WASM"
+  "$PROJECT_ROOT/scripts/wasmtime_run.sh" --invoke _start "$STAGE1_WASM"
 
-run_stage_capture_stdout "run stage2 wasm via wasmtime (--invoke run)" \
+run_stage_capture_stdout "run stage2 wasm via wasmtime (--invoke _start)" \
   "$OUT_DIR/stage2_run.out" \
   env VIBE_WASMTIME_WASM_FLAGS="unknown-imports-default=y exceptions=y" \
-  "$PROJECT_ROOT/scripts/wasmtime_run.sh" --invoke run "$STAGE2_WASM"
+  "$PROJECT_ROOT/scripts/wasmtime_run.sh" --invoke _start "$STAGE2_WASM"
 
 RUN_STAGE1="$(rg -v '^warning' "$OUT_DIR/stage1_run.out" | tail -n 1)"
 RUN_STAGE2="$(rg -v '^warning' "$OUT_DIR/stage2_run.out" | tail -n 1)"

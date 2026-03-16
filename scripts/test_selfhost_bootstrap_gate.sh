@@ -144,7 +144,7 @@ run_wasm_and_expect_zero() {
   echo "[bootstrap] $label"
   set +e
   run_with_timeout "$STAGE_TIMEOUT_SEC" env VIBE_WASMTIME_WASM_FLAGS="unknown-imports-default=y exceptions=y" \
-    "$PROJECT_ROOT/scripts/wasmtime_run.sh" --invoke run "$wasm_path" >"$out_path"
+    "$PROJECT_ROOT/scripts/wasmtime_run.sh" --invoke _start "$wasm_path" >"$out_path"
   status=$?
   set -e
   if [ "$status" -eq 124 ]; then
@@ -446,11 +446,11 @@ else
 fi
 
 run_wasm_and_expect_zero \
-  "run stage1 wasm via wasmtime (--invoke run)" \
+  "run stage1 wasm via wasmtime (--invoke _start)" \
   "$STAGE1_WASM" \
   "$OUT_DIR/stage1_run.out"
 run_wasm_and_expect_zero \
-  "run stage2 wasm via wasmtime (--invoke run)" \
+  "run stage2 wasm via wasmtime (--invoke _start)" \
   "$STAGE2_WASM" \
   "$OUT_DIR/stage2_run.out"
 

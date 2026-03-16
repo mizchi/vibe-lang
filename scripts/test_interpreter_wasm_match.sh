@@ -192,7 +192,7 @@ for expr in "${test_cases[@]}"; do
   # Compile and run WASM
   if $VIBE compile --wasm "$TEMP_DIR/test.vibe" -o "$TEMP_DIR/test.wasm" 2>/dev/null; then
     # Run with --invoke to get return value, untag integer (divide by 4)
-    wasm_tagged=$(WASMTIME_BIN="$WASMTIME_BIN" "$WASMTIME_RUN" --invoke run "$TEMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning")
+    wasm_tagged=$(WASMTIME_BIN="$WASMTIME_BIN" "$WASMTIME_RUN" --invoke _start "$TEMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning")
     if [ -n "$wasm_tagged" ]; then
       # Untag: shift right 2 bits (divide by 4)
       wasm_result=$((wasm_tagged >> 2))

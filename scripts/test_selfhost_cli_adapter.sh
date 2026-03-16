@@ -139,7 +139,7 @@ fi
 
 run_stage_capture_stdout "run sample wasm produced by selfhost cli" \
   "$OUTPUT_RUN_LOG" \
-  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke run "$OUTPUT_WASM"
+  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke _start "$OUTPUT_WASM"
 
 sample_tagged="$(grep -E '^-?[0-9]+$' "$OUTPUT_RUN_LOG" | tail -n 1 || true)"
 if [ -z "$sample_tagged" ]; then

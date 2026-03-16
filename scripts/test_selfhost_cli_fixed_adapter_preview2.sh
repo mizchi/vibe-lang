@@ -110,7 +110,7 @@ fi
 run_stage_capture_stdout "run sample wasm produced by fixed preview2 adapter" \
   "$OUTPUT_RUN_LOG" \
   env VIBE_WASMTIME_WASM_FLAGS="$WASMTIME_WASM_FLAGS" \
-    "$WASMTIME_RUN" --invoke run "$OUTPUT_WASM"
+    "$WASMTIME_RUN" --invoke _start "$OUTPUT_WASM"
 
 sample_tagged="$(grep -E '^-?[0-9]+$' "$OUTPUT_RUN_LOG" | tail -n 1 || true)"
 if [ -z "$sample_tagged" ]; then

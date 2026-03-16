@@ -19,7 +19,7 @@ function usage() {
 }
 
 function parseArgs(argv) {
-  let invoke = "run";
+  let invoke = "_start";
   let wasmPath = null;
   const passthroughArgs = [];
   for (let i = 0; i < argv.length; i += 1) {
@@ -857,12 +857,12 @@ async function main() {
     invoke.startsWith("selfbuild_") ||
     process.env.VIBE_PREFER_ZERO_ENV_FIRST === "1";
   const skipRunInit = process.env.VIBE_SKIP_RUN_INIT === "1";
-  if (!skipRunInit && invoke !== "run" && typeof instance.exports.run === "function") {
+  if (!skipRunInit && invoke !== "_start" && typeof instance.exports._start === "function") {
     const initHeap =
       instance.exports.__heap_ptr instanceof WebAssembly.Global
         ? instance.exports.__heap_ptr.value
         : 0;
-    instance.exports.run();
+    instance.exports._start();
     const fsRootDescriptor = instance.exports.__fs_root_descriptor;
     if (fsRootDescriptor instanceof WebAssembly.Global) {
       fsRootDescriptor.value = -1;
@@ -877,7 +877,7 @@ async function main() {
   let result;
   let isSelfhost = false;
   const invokeWithEnv = (envValue) => {
-    if (invoke === "run") {
+    if (invoke === "_start") {
       return { result: fn(), isSelfhost: false };
     }
     try {
@@ -891,7 +891,7 @@ async function main() {
   };
   try {
     const envCandidates =
-      invoke === "run"
+      invoke === "_start"
         ? [0]
         : resolvedEnv !== 0
           ? (prefersZeroEnvFirst ? [0, resolvedEnv] : [resolvedEnv, 0])

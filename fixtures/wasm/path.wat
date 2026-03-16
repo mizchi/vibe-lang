@@ -11,7 +11,7 @@
     end
   )
   (memory (;0;) 1024)
-  (export "run" (func 1))
+  (export "_start" (func 1))
   (export "memory" (memory 0))
   (data (i32.const 0) "\0a\00\00\00\00\00\00\00\01\00\00\00\06\00\00\00a/../b\00\00")
 )

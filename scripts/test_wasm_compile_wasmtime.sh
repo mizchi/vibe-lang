@@ -66,7 +66,7 @@ expect_wasmtime_result() {
   fi
 
   local wasm_tagged
-  wasm_tagged=$("$WASMTIME_RUN" --invoke run "$TMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning") || true
+  wasm_tagged=$("$WASMTIME_RUN" --invoke _start "$TMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning") || true
 
   if [ -z "$wasm_tagged" ]; then
     log_fail "$test_name - wasmtime returned no output"
@@ -1809,7 +1809,7 @@ expect_wasmtime_result_exceptions() {
   fi
 
   local wasm_tagged
-  wasm_tagged=$(VIBE_WASMTIME_WASM_FLAGS="exceptions=y" "$WASMTIME_RUN" --invoke run "$TMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning") || true
+  wasm_tagged=$(VIBE_WASMTIME_WASM_FLAGS="exceptions=y" "$WASMTIME_RUN" --invoke _start "$TMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning") || true
 
   if [ -z "$wasm_tagged" ]; then
     log_fail "$test_name - wasmtime returned no output"

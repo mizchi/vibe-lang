@@ -18,10 +18,10 @@ moon build --target native --release src/cmd/vibe
 "$CLI_BIN" compile --wasm -o "$WASM_OUT" "$SCRIPT_PATH"
 
 if command -v hyperfine >/dev/null 2>&1; then
-  hyperfine --warmup 3 "WASMTIME_BIN=\"$WASMTIME_BIN\" \"$WASMTIME_RUN\" --invoke run \"$WASM_OUT\" >/dev/null"
+  hyperfine --warmup 3 "WASMTIME_BIN=\"$WASMTIME_BIN\" \"$WASMTIME_RUN\" --invoke _start \"$WASM_OUT\" >/dev/null"
 else
   echo "hyperfine not found; using /usr/bin/time (10 runs)"
   for _ in $(seq 1 10); do
-    /usr/bin/time -p env WASMTIME_BIN="$WASMTIME_BIN" "$WASMTIME_RUN" --invoke run "$WASM_OUT" >/dev/null
+    /usr/bin/time -p env WASMTIME_BIN="$WASMTIME_BIN" "$WASMTIME_RUN" --invoke _start "$WASM_OUT" >/dev/null
   done
 fi

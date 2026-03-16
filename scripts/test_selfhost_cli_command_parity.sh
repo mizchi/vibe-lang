@@ -55,9 +55,9 @@ run_case() {
   wasm-tools validate "$selfhost_out" >/dev/null
 
   env VIBE_WASMTIME_WASM_FLAGS="$WASMTIME_WASM_FLAGS" \
-    "$WASMTIME_RUN" --invoke run "$host_out" >"$host_run_log"
+    "$WASMTIME_RUN" --invoke _start "$host_out" >"$host_run_log"
   env VIBE_WASMTIME_WASM_FLAGS="$WASMTIME_WASM_FLAGS" \
-    "$WASMTIME_RUN" --invoke run "$selfhost_out" >"$selfhost_run_log"
+    "$WASMTIME_RUN" --invoke _start "$selfhost_out" >"$selfhost_run_log"
 
   local host_result
   local selfhost_result

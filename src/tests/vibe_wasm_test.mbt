@@ -68,7 +68,7 @@ test "vibe wasm export run" {
   } noraise {
     b => b
   }
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
 }
 
 ///|
@@ -519,7 +519,7 @@ test "vibe wasm compiles handle arm bind patterns" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
 }
 
 ///|
@@ -552,7 +552,7 @@ test "vibe wasm enum and match" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
   assert_true(bytes_contains_ascii(wasm, "memory"))
 }
 
@@ -579,7 +579,7 @@ test "vibe wasm enum import and match" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
   assert_true(bytes_contains_ascii(wasm, "memory"))
 }
 
@@ -598,7 +598,7 @@ test "vibe wasm export user functions" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
   assert_true(bytes_contains_ascii(wasm, "memory"))
   // Exported functions should be in the export section
   assert_true(bytes_contains_ascii(wasm, "add"))
@@ -623,7 +623,7 @@ test "vibe wasm accepts i32/f32/f64 type aliases" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
   assert_true(bytes_contains_ascii(wasm, "memory"))
 }
 
@@ -643,7 +643,7 @@ test "vibe wasm supports direct vibe/wasm type member calls" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
   assert_true(bytes_contains_ascii(wasm, "memory"))
 }
 
@@ -666,7 +666,7 @@ test "vibe wasm-gc supports direct ref type member eq calls" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
 }
 
 ///|
@@ -684,7 +684,7 @@ test "vibe wasm-gc compiles for-in expressions" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
 }
 
 ///|
@@ -702,7 +702,7 @@ test "vibe wasm compiles for-in expressions" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
 }
 
 ///|
@@ -725,7 +725,7 @@ test "vibe wasm compiles opcode-style helper module source" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
   assert_true(bytes_contains_ascii(wasm, "memory"))
 }
 
@@ -754,7 +754,7 @@ test "vibe wasm compiles multiple local recursive `go` helpers" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
   assert_true(bytes_contains_ascii(wasm, "memory"))
 }
 
@@ -776,7 +776,7 @@ test "vibe wasm compiles numeric conversion builtins" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
   assert_true(bytes_contains_ascii(wasm, "memory"))
 }
 
@@ -813,7 +813,7 @@ test "vibe wasm compiles function alias calls" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
 }
 
 ///|
@@ -834,7 +834,7 @@ test "vibe wasm compiles local recursive helper calls" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
 }
 
 ///|
@@ -855,7 +855,7 @@ test "vibe wasm compiles recursive helper with captured function param" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
 }
 
 ///|
@@ -872,7 +872,7 @@ test "vibe wasm compiles Int pipe-style to_double call" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
 }
 
 ///|
@@ -1033,7 +1033,7 @@ test "vibe wasm compiles String::from_char_code builtin" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
 }
 
 ///|
@@ -1053,7 +1053,7 @@ test "vibe wasm compiles non-js string builtins" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
 }
 
 ///|
@@ -1070,7 +1070,7 @@ test "vibe wasm compiles __to_string builtin" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
 }
 
 ///|
@@ -1091,7 +1091,7 @@ test "vibe wasm compiles threads builtin thunks" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
 }
 
 ///|
@@ -1136,6 +1136,6 @@ test "vibe wasm compiles wasm primitive memory and conversion builtins" {
     b => b
   }
   assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "_start"))
   assert_true(bytes_contains_ascii(wasm, "memory"))
 }
