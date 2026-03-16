@@ -1,0 +1,264 @@
+//# Imports
+
+import ./index.vibe {
+  tokenize, token_text, filter_tokens,
+  parse_module_sections, is_instruction,
+  parse_int, decode_string,
+  tok_type_lparen, tok_type_rparen, tok_type_keyword,
+  tok_type_ident, tok_type_int, tok_type_string,
+  wat_section_names, wat_type_sigs, wat_exports, wat_imports,
+  wat_func_count, wat_summary
+}
+
+//# Misc
+
+// === Tokenizer tests ===
+
+test "tokenize empty" {
+  let tokens = tokenize("")
+  assert(Array::length(tokens) == 1)
+  let (ty, _, _) = Array::get(tokens, 0)
+  assert(ty == 9)
+}
+
+test "tokenize parens" {
+  let tokens = filter_tokens(tokenize("()"))
+  assert(Array::length(tokens) == 2)
+  let (t0, _, _) = Array::get(tokens, 0)
+  let (t1, _, _) = Array::get(tokens, 1)
+  assert(t0 == tok_type_lparen())
+  assert(t1 == tok_type_rparen())
+}
+
+test "tokenize keyword" {
+  let src = "module"
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 1)
+  let (ty, _, _) = Array::get(tokens, 0)
+  assert(ty == tok_type_keyword())
+  assert(token_text(src, Array::get(tokens, 0)) == "module")
+}
+
+test "tokenize ident" {
+  let src = "$foo"
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 1)
+  let (ty, _, _) = Array::get(tokens, 0)
+  assert(ty == tok_type_ident())
+  assert(token_text(src, Array::get(tokens, 0)) == "$foo")
+}
+
+test "tokenize int" {
+  let src = "42"
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 1)
+  let (ty, _, _) = Array::get(tokens, 0)
+  assert(ty == tok_type_int())
+  assert(token_text(src, Array::get(tokens, 0)) == "42")
+}
+
+test "tokenize negative int" {
+  let src = "-1"
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 1)
+  let (ty, _, _) = Array::get(tokens, 0)
+  assert(ty == tok_type_int())
+}
+
+test "tokenize hex int" {
+  let src = "0xFF"
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 1)
+  let (ty, _, _) = Array::get(tokens, 0)
+  assert(ty == tok_type_int())
+}
+
+test "tokenize string" {
+  let src = "\"hello\""
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 1)
+  let (ty, _, _) = Array::get(tokens, 0)
+  assert(ty == tok_type_string())
+}
+
+test "tokenize line comment" {
+  let src = ";; comment\nmodule"
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 1)
+  assert(token_text(src, Array::get(tokens, 0)) == "module")
+}
+
+test "tokenize block comment" {
+  let src = "(; block ;) module"
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 1)
+  assert(token_text(src, Array::get(tokens, 0)) == "module")
+}
+
+test "tokenize type section" {
+  let src = "(type (;0;) (func (param i64) (result i64)))"
+  let tokens = filter_tokens(tokenize(src))
+  // ( type ( func ( param i64 ) ( result i64 ) ) )
+  assert(Array::length(tokens) > 5)
+  let (t0, _, _) = Array::get(tokens, 0)
+  assert(t0 == tok_type_lparen())
+  assert(token_text(src, Array::get(tokens, 1)) == "type")
+}
+
+// === parse_int ===
+
+test "parse_int decimal" {
+  assert(parse_int("42") == 42)
+  assert(parse_int("0") == 0)
+  assert(parse_int("-1") == -1)
+  assert(parse_int("+5") == 5)
+}
+
+test "parse_int hex" {
+  assert(parse_int("0xFF") == 255)
+  assert(parse_int("0x10") == 16)
+}
+
+// === decode_string ===
+
+test "decode_string simple" {
+  assert(decode_string("\"hello\"") == "hello")
+  assert(decode_string("\"\"") == "")
+}
+
+test "decode_string escape" {
+  assert(decode_string("\"a\\nb\"") == "a\nb")
+}
+
+test "decode_string hex escape" {
+  // \0a -> newline (0x0a = 10)
+  let s = decode_string("\"\\0a\\00\"")
+  assert(String::length(s) == 2)
+}
+
+// === is_instruction ===
+
+test "is_instruction" {
+  assert(is_instruction("i32.const") == true)
+  assert(is_instruction("i64.add") == true)
+  assert(is_instruction("call") == true)
+  assert(is_instruction("local.get") == true)
+  assert(is_instruction("end") == true)
+  assert(is_instruction("drop") == true)
+  assert(is_instruction("module") == false)
+  assert(is_instruction("func") == false)
+  assert(is_instruction("param") == false)
+}
+
+// === Module section parsing ===
+
+test "parse_module_sections minimal" {
+  let src = "(module)"
+  let tokens = filter_tokens(tokenize(src))
+  let sections = parse_module_sections(src, tokens)
+  assert(Array::length(sections) == 0)
+}
+
+test "parse_module_sections with type" {
+  let src = "(module (type (func)) (func (type 0)))"
+  let tokens = filter_tokens(tokenize(src))
+  let sections = parse_module_sections(src, tokens)
+  assert(Array::length(sections) == 2)
+  let (kw0, _, _) = Array::get(sections, 0)
+  let (kw1, _, _) = Array::get(sections, 1)
+  assert(kw0 == "type")
+  assert(kw1 == "func")
+}
+
+test "parse_module_sections complex" {
+  let src = "(module (type (func (param i64 i64 i32) (result i64))) (func (type 0) local.get 0 local.get 1 i64.add end) (memory 1024) (export \"_start\" (func 0)))"
+  let tokens = filter_tokens(tokenize(src))
+  let sections = parse_module_sections(src, tokens)
+  assert(Array::length(sections) == 4)
+  let (kw0, _, _) = Array::get(sections, 0)
+  let (kw1, _, _) = Array::get(sections, 1)
+  let (kw2, _, _) = Array::get(sections, 2)
+  let (kw3, _, _) = Array::get(sections, 3)
+  assert(kw0 == "type")
+  assert(kw1 == "func")
+  assert(kw2 == "memory")
+  assert(kw3 == "export")
+}
+
+// ============================================================
+// High-level API tests
+// ============================================================
+
+test "wat_section_names" {
+  let names = wat_section_names("(module (type (func)) (func (type 0)) (memory 1) (export \"f\" (func 0)))")
+  assert(Array::length(names) == 4)
+  assert(Array::get(names, 0) == "type")
+  assert(Array::get(names, 1) == "func")
+  assert(Array::get(names, 2) == "memory")
+  assert(Array::get(names, 3) == "export")
+}
+
+test "wat_section_names empty" {
+  let names = wat_section_names("(module)")
+  assert(Array::length(names) == 0)
+}
+
+test "wat_exports" {
+  let exports = wat_exports("(module (export \"_start\" (func 0)) (export \"memory\" (memory 0)))")
+  assert(Array::length(exports) == 2)
+  let (n0, k0) = Array::get(exports, 0)
+  assert(n0 == "_start")
+  assert(k0 == "func")
+  let (n1, k1) = Array::get(exports, 1)
+  assert(n1 == "memory")
+  assert(k1 == "memory")
+}
+
+test "wat_imports" {
+  let imports = wat_imports("(module (import \"env\" \"log\" (func (param i32))))")
+  assert(Array::length(imports) == 1)
+  let (m, f, k) = Array::get(imports, 0)
+  assert(m == "env")
+  assert(f == "log")
+  assert(k == "func")
+}
+
+test "wat_func_count" {
+  assert(wat_func_count("(module (func) (func) (func))") == 3)
+  assert(wat_func_count("(module)") == 0)
+}
+
+test "wat_type_sigs" {
+  let sigs = wat_type_sigs("(module (type (func (param i32 i32) (result i64))))")
+  assert(Array::length(sigs) == 1)
+  let sig = Array::get(sigs, 0)
+  assert(String::contains(sig, "i32"))
+  assert(String::contains(sig, "i64"))
+  assert(String::contains(sig, "->"))
+}
+
+test "wat_type_sigs void" {
+  let sigs = wat_type_sigs("(module (type (func)))")
+  assert(Array::length(sigs) == 1)
+  let sig = Array::get(sigs, 0)
+  assert(String::contains(sig, "->"))
+}
+
+test "wat_summary" {
+  let s = wat_summary("(module (type (func (param i32) (result i32))) (func (type 0) local.get 0) (memory 1024) (export \"_start\" (func 0)) (data (i32.const 0) \"hi\"))")
+  assert(String::contains(s, "sections: 5"))
+  assert(String::contains(s, "types: 1"))
+  assert(String::contains(s, "funcs: 1"))
+  assert(String::contains(s, "exports: 1"))
+  assert(String::contains(s, "memories: 1"))
+  assert(String::contains(s, "data: 1"))
+}
+
+test "wat_summary complex" {
+  let src = "(module\n  (type (;0;) (func (param i64 i64 i32) (result i64)))\n  (type (;1;) (func (result i64)))\n  (import \"vibe\" \"path\" (func (;0;) (type 0)))\n  (func (;1;) (type 1)\n    i64.const 9\n    i64.const -4\n    i64.and\n    i32.wrap_i64\n    call 0\n    end\n  )\n  (memory (;0;) 1024)\n  (export \"_start\" (func 1))\n  (export \"memory\" (memory 0))\n  (data (i32.const 0) \"\\0a\\00\\00\\00\")\n)"
+  let s = wat_summary(src)
+  assert(String::contains(s, "types: 2"))
+  assert(String::contains(s, "funcs: 1"))
+  assert(String::contains(s, "imports: 1"))
+  assert(String::contains(s, "exports: 2"))
+}

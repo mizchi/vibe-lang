@@ -1,0 +1,681 @@
+// Minimal WASM Runtime / Interpreter
+// Executes core WASM i32/i64 instructions on a stack machine
+
+//# Functions
+
+let read_uleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
+  let len = Bytes::length(buf)
+  let mut i = offset
+  let mut result = 0
+  let mut shift = 0
+  let mut done = false
+  while (i < len) && (done == false) {
+    let byte = buf[i]
+    result = result | ((byte & 0x7F) << shift)
+    i = i + 1
+    if (byte & 0x80) == 0 { done = true } else { shift = shift + 7 }
+  }
+  (result, i)
+}
+
+let read_sleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
+  let len = Bytes::length(buf)
+  let mut i = offset
+  let mut result = 0
+  let mut shift = 0
+  let mut done = false
+  while (i < len) && (done == false) {
+    let byte = buf[i]
+    result = result | ((byte & 0x7F) << shift)
+    shift = shift + 7
+    i = i + 1
+    if (byte & 0x80) == 0 {
+      if (byte & 0x40) > 0 { result = result | ((-1) << shift) }
+      done = true
+    }
+  }
+  (result, i)
+}
+
+let stack_push = (s: Array[Int], v: Int) -> Unit { Array::push(s, v) }
+let stack_pop = (s: Array[Int]) -> Int {
+  let n = Array::length(s)
+  if n == 0 { 0 } else { let v = Array::get(s, n - 1); Array::truncate(s, n - 1); v }
+}
+let stack_peek = (s: Array[Int]) -> Int {
+  let n = Array::length(s)
+  if n == 0 { 0 } else { Array::get(s, n - 1) }
+}
+
+let mem_load_i32 = (m: Bytes, a: Int) -> Int {
+  if (a + 4) > Bytes::length(m) { 0 } else { m[a] | (m[a+1]<<8) | (m[a+2]<<16) | (m[a+3]<<24) }
+}
+let mem_store_i32 = (m: Bytes, a: Int, v: Int) -> Unit {
+  if (a + 4) <= Bytes::length(m) {
+    Bytes::set(m, a, v & 0xFF); Bytes::set(m, a+1, (v>>8)&0xFF); Bytes::set(m, a+2, (v>>16)&0xFF); Bytes::set(m, a+3, (v>>24)&0xFF)
+  }
+}
+let mem_load_i64 = (m: Bytes, a: Int) -> Int { mem_load_i32(m, a) | (mem_load_i32(m, a+4) << 32) }
+let mem_store_i64 = (m: Bytes, a: Int, v: Int) -> Unit { mem_store_i32(m, a, v & 0xFFFFFFFF); mem_store_i32(m, a+4, (v>>32) & 0xFFFFFFFF) }
+
+export let make_memory = (pages: Int) -> Bytes {
+  let size = pages * 65536
+  let mem = Bytes::new()
+  let mut i = 0
+  while i < size { Bytes::push(mem, 0); i = i + 1 }
+  mem
+}
+
+// Block stack branch helper
+// For block (kind=0): jump to end, pop block from stack
+// For loop (kind=1): jump to start, keep loop on stack
+let br_to = (block_stack: Array[(Int, Int)], depth: Int) -> Int {
+  let blen = Array::length(block_stack)
+  let target_idx = blen - 1 - depth
+  if target_idx >= 0 {
+    let (target, kind) = Array::get(block_stack, target_idx)
+    if kind == 1 {
+      // loop: keep the loop entry, pop everything above
+      Array::truncate(block_stack, target_idx + 1)
+    } else {
+      // block/if: pop the target block too
+      Array::truncate(block_stack, target_idx)
+    }
+    target
+  } else { -1 }
+}
+
+// Skip one opcode's immediates (used by find_end, find_else, disassemble)
+let skip_opcode_immediates = (code: Bytes, op: Int, pos: Int) -> Int {
+  if (op == 0x0C) || (op == 0x0D) || (op == 0x10) || (op == 0x20) || (op == 0x21) || (op == 0x22) || (op == 0x23) || (op == 0x24) {
+    let (_, np) = read_uleb128(code, pos)
+    np
+  }
+  else if (op == 0x41) || (op == 0x42) {
+    let (_, np) = read_sleb128(code, pos)
+    np
+  }
+  else if (op == 0x28) || (op == 0x29) || (op == 0x36) || (op == 0x37) || (op == 0x2D) || (op == 0x3A) {
+    // memarg: align + offset
+    let (_, np) = read_uleb128(code, pos)
+    let (_, np2) = read_uleb128(code, np)
+    np2
+  }
+  else if (op == 0x3F) || (op == 0x40) {
+    // memory.size / memory.grow: 1 byte immediate (0x00)
+    pos + 1
+  }
+  else if op == 0x0E {
+    // br_table: count + count labels + default
+    let (count, np) = read_uleb128(code, pos)
+    let mut p = np
+    let mut j = 0
+    while j <= count {
+      let (_, np2) = read_uleb128(code, p)
+      p = np2
+      j = j + 1
+    }
+    p
+  }
+  else { pos }
+}
+
+// Execute function body. Returns (exit_code, result_value).
+// exit_code: 0=normal, 1=trap, 2=return
+export let exec_body = (
+  code: Bytes, pc_start: Int, pc_end: Int,
+  locals: Array[Int], stack: Array[Int],
+  memory: Bytes, globals: Array[Int],
+  func_bodies: Array[(Int, Int, Int, Int)]
+) -> (Int, Int) {
+  let mut pc = pc_start
+  let mut exit_code = 0
+  let block_stack = Array::slice([(0, 0)], 0, 0)
+  Array::push(block_stack, (pc_end, 0))
+  let mut ret_val = 0
+  let mem_page_size = 65536
+
+  while (pc >= 0) && (pc < pc_end) && (exit_code == 0) {
+    let op = code[pc]
+    pc = pc + 1
+    // i32.const
+    if op == 0x41 { let (v, np) = read_sleb128(code, pc); pc = np; stack_push(stack, v) }
+    // i64.const
+    else if op == 0x42 { let (v, np) = read_sleb128(code, pc); pc = np; stack_push(stack, v) }
+    // local.get/set/tee
+    else if op == 0x20 { let (i, np) = read_uleb128(code, pc); pc = np; stack_push(stack, Array::get(locals, i)) }
+    else if op == 0x21 { let (i, np) = read_uleb128(code, pc); pc = np; Array::set(locals, i, stack_pop(stack)) }
+    else if op == 0x22 { let (i, np) = read_uleb128(code, pc); pc = np; Array::set(locals, i, stack_peek(stack)) }
+    // global.get/set
+    else if op == 0x23 { let (i, np) = read_uleb128(code, pc); pc = np; stack_push(stack, if i < Array::length(globals) { Array::get(globals, i) } else { 0 }) }
+    else if op == 0x24 { let (i, np) = read_uleb128(code, pc); pc = np; let v = stack_pop(stack); if i < Array::length(globals) { Array::set(globals, i, v) } else { () } }
+    // nop/unreachable/drop/select
+    else if op == 0x01 { () }
+    else if op == 0x00 { exit_code = 1 }
+    else if op == 0x1A { let _ = stack_pop(stack); () }
+    else if op == 0x1B { let c = stack_pop(stack); let b = stack_pop(stack); let a = stack_pop(stack); stack_push(stack, if c != 0 { a } else { b }) }
+    // i32 arith
+    else if op == 0x6A { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) + b) }
+    else if op == 0x6B { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) - b) }
+    else if op == 0x6C { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) * b) }
+    else if op == 0x6D { let b = stack_pop(stack); let a = stack_pop(stack); if b == 0 { exit_code = 1 } else { stack_push(stack, a / b) } }
+    else if op == 0x6F { let b = stack_pop(stack); let a = stack_pop(stack); if b == 0 { exit_code = 1 } else { stack_push(stack, a - ((a / b) * b)) } }
+    else if op == 0x71 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) & b) }
+    else if op == 0x72 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) | b) }
+    else if op == 0x73 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) ^ b) }
+    else if op == 0x74 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) << (b & 31)) }
+    else if op == 0x75 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) >> (b & 31)) }
+    // i32 cmp
+    else if op == 0x45 { stack_push(stack, if stack_pop(stack) == 0 { 1 } else { 0 }) }
+    else if op == 0x46 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) == b { 1 } else { 0 }) }
+    else if op == 0x47 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) != b { 1 } else { 0 }) }
+    else if op == 0x48 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) < b { 1 } else { 0 }) }
+    else if op == 0x4A { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) > b { 1 } else { 0 }) }
+    else if op == 0x4C { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) <= b { 1 } else { 0 }) }
+    else if op == 0x4E { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) >= b { 1 } else { 0 }) }
+    // i64 arith
+    else if op == 0x7C { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) + b) }
+    else if op == 0x7D { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) - b) }
+    else if op == 0x7E { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) * b) }
+    else if op == 0x7F { let b = stack_pop(stack); let a = stack_pop(stack); if b == 0 { exit_code = 1 } else { stack_push(stack, a / b) } }
+    else if op == 0x81 { let b = stack_pop(stack); let a = stack_pop(stack); if b == 0 { exit_code = 1 } else { stack_push(stack, a - ((a / b) * b)) } }
+    else if op == 0x83 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) & b) }
+    else if op == 0x84 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) | b) }
+    else if op == 0x85 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) ^ b) }
+    else if op == 0x86 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) << (b & 63)) }
+    else if op == 0x87 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) >> (b & 63)) }
+    // i64 cmp
+    else if op == 0x50 { stack_push(stack, if stack_pop(stack) == 0 { 1 } else { 0 }) }
+    else if op == 0x51 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) == b { 1 } else { 0 }) }
+    else if op == 0x52 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) != b { 1 } else { 0 }) }
+    else if op == 0x53 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) < b { 1 } else { 0 }) }
+    else if op == 0x55 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) > b { 1 } else { 0 }) }
+    else if op == 0x57 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) <= b { 1 } else { 0 }) }
+    else if op == 0x59 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) >= b { 1 } else { 0 }) }
+    // conversions
+    else if op == 0xA7 { stack_push(stack, stack_pop(stack) & 0xFFFFFFFF) }
+    else if op == 0xAC { () }  // i64.extend_i32_s - noop for our unified int
+    else if op == 0xAD { stack_push(stack, stack_pop(stack) & 0xFFFFFFFF) }
+    // memory load/store i32/i64
+    else if op == 0x28 { let (_, np) = read_uleb128(code, pc); let (off, np2) = read_uleb128(code, np); pc = np2; stack_push(stack, mem_load_i32(memory, stack_pop(stack) + off)) }
+    else if op == 0x29 { let (_, np) = read_uleb128(code, pc); let (off, np2) = read_uleb128(code, np); pc = np2; stack_push(stack, mem_load_i64(memory, stack_pop(stack) + off)) }
+    else if op == 0x36 { let (_, np) = read_uleb128(code, pc); let (off, np2) = read_uleb128(code, np); pc = np2; let v = stack_pop(stack); mem_store_i32(memory, stack_pop(stack) + off, v) }
+    else if op == 0x37 { let (_, np) = read_uleb128(code, pc); let (off, np2) = read_uleb128(code, np); pc = np2; let v = stack_pop(stack); mem_store_i64(memory, stack_pop(stack) + off, v) }
+    // i32.load8_u
+    else if op == 0x2D {
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let addr = stack_pop(stack) + off
+      stack_push(stack, if addr < Bytes::length(memory) { memory[addr] } else { 0 })
+    }
+    // i32.store8
+    else if op == 0x3A {
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let v = stack_pop(stack)
+      let addr = stack_pop(stack) + off
+      if addr < Bytes::length(memory) { Bytes::set(memory, addr, v & 0xFF) } else { () }
+    }
+    // memory.size
+    else if op == 0x3F {
+      pc = pc + 1  // skip 0x00
+      stack_push(stack, Bytes::length(memory) / mem_page_size)
+    }
+    // memory.grow
+    else if op == 0x40 {
+      pc = pc + 1  // skip 0x00
+      let delta = stack_pop(stack)
+      let cur_pages = Bytes::length(memory) / mem_page_size
+      let new_bytes = delta * mem_page_size
+      let mut gi = 0
+      while gi < new_bytes { Bytes::push(memory, 0); gi = gi + 1 }
+      stack_push(stack, cur_pages)
+    }
+    // block/loop
+    else if op == 0x02 { let (_, np) = read_sleb128(code, pc); pc = np; Array::push(block_stack, (find_end(code, pc, pc_end), 0)) }
+    else if op == 0x03 { let (_, np) = read_sleb128(code, pc); pc = np; Array::push(block_stack, (pc, 1)) }
+    // if
+    else if op == 0x04 {
+      let (_, np) = read_sleb128(code, pc); pc = np
+      let cond = stack_pop(stack)
+      let epc = find_end(code, pc, pc_end)
+      let elpc = find_else(code, pc, epc)
+      if cond != 0 { Array::push(block_stack, (epc, 0)) }
+      else { if elpc > 0 { pc = elpc; Array::push(block_stack, (epc, 0)) } else { pc = epc } }
+    }
+    // else
+    else if op == 0x05 {
+      let blen = Array::length(block_stack)
+      if blen > 0 { let (t, _) = Array::get(block_stack, blen - 1); pc = t } else { () }
+    }
+    // end
+    else if op == 0x0B {
+      let blen = Array::length(block_stack)
+      if blen > 1 { Array::truncate(block_stack, blen - 1) } else { () }
+    }
+    // br
+    else if op == 0x0C { let (d, np) = read_uleb128(code, pc); pc = np; pc = br_to(block_stack, d) }
+    // br_if
+    else if op == 0x0D {
+      let (d, np) = read_uleb128(code, pc); pc = np
+      let cond = stack_pop(stack)
+      if cond != 0 { pc = br_to(block_stack, d) } else { () }
+    }
+    // br_table
+    else if op == 0x0E {
+      let (count, np) = read_uleb128(code, pc)
+      pc = np
+      // Read all labels into array
+      let labels = Array::slice([0], 0, 0)
+      let mut li = 0
+      while li <= count {
+        let (lbl, np2) = read_uleb128(code, pc)
+        pc = np2
+        Array::push(labels, lbl)
+        li = li + 1
+      }
+      let idx = stack_pop(stack)
+      let target_depth = if idx < count { Array::get(labels, idx) } else { Array::get(labels, count) }
+      pc = br_to(block_stack, target_depth)
+    }
+    // return
+    else if op == 0x0F {
+      ret_val = if Array::length(stack) > 0 { stack_pop(stack) } else { 0 }
+      exit_code = 2
+    }
+    // call
+    else if op == 0x10 {
+      let (fi, np) = read_uleb128(code, pc); pc = np
+      if fi < Array::length(func_bodies) {
+        let (fs, fe, fp, fl) = Array::get(func_bodies, fi)
+        let cl = Array::slice([0], 0, 0)
+        let mut li = 0
+        while li < (fp + fl) { Array::push(cl, 0); li = li + 1 }
+        let mut pi = fp - 1
+        while pi >= 0 { Array::set(cl, pi, stack_pop(stack)); pi = pi - 1 }
+        let cs = Array::slice([0], 0, 0)
+        let (ce, cv) = exec_body(code, fs, fe, cl, cs, memory, globals, func_bodies)
+        if ce == 1 { exit_code = 1 } else { stack_push(stack, cv) }
+      } else { () }
+    }
+    else { () }
+  }
+
+  if exit_code != 2 {
+    ret_val = if Array::length(stack) > 0 { stack_pop(stack) } else { 0 }
+  }
+  (exit_code, ret_val)
+}
+
+let find_end = (code: Bytes, start: Int, limit: Int) -> Int {
+  let mut pc = start
+  let mut depth = 1
+  while (pc < limit) && (depth > 0) {
+    let op = code[pc]; pc = pc + 1
+    if (op == 0x02) || (op == 0x03) || (op == 0x04) { let (_, np) = read_sleb128(code, pc); pc = np; depth = depth + 1 }
+    else if op == 0x0B { depth = depth - 1 }
+    else { pc = skip_opcode_immediates(code, op, pc) }
+  }
+  pc
+}
+
+let find_else = (code: Bytes, start: Int, limit: Int) -> Int {
+  let mut pc = start
+  let mut depth = 0
+  let mut result = 0
+  while (pc < limit) && (result == 0) {
+    let op = code[pc]; pc = pc + 1
+    if (op == 0x02) || (op == 0x03) || (op == 0x04) { let (_, np) = read_sleb128(code, pc); pc = np; depth = depth + 1 }
+    else if op == 0x0B { if depth > 0 { depth = depth - 1 } else { () } }
+    else if op == 0x05 { if depth == 0 { result = pc } else { () } }
+    else { pc = skip_opcode_immediates(code, op, pc) }
+  }
+  result
+}
+
+// Helper: convert Int to String
+let int_to_string = (n: Int) -> String {
+  if n == 0 { "0" }
+  else {
+    let mut result = ""
+    let mut v = n
+    let is_neg = n < 0
+    if is_neg { v = 0 - v }
+    while v > 0 {
+      let digit = v % 10
+      let ch = match digit {
+        0 => "0", 1 => "1", 2 => "2", 3 => "3", 4 => "4",
+        5 => "5", 6 => "6", 7 => "7", 8 => "8", _ => "9"
+      }
+      result = "\{ch}\{result}"
+      v = v / 10
+    }
+    if is_neg { "-\{result}" } else { result }
+  }
+}
+
+export let opcode_name = (op: Int) -> String {
+  if op == 0x00 { "unreachable" } else if op == 0x01 { "nop" }
+  else if op == 0x02 { "block" } else if op == 0x03 { "loop" }
+  else if op == 0x04 { "if" } else if op == 0x05 { "else" }
+  else if op == 0x0B { "end" } else if op == 0x0C { "br" }
+  else if op == 0x0D { "br_if" } else if op == 0x0E { "br_table" }
+  else if op == 0x0F { "return" }
+  else if op == 0x10 { "call" } else if op == 0x1A { "drop" }
+  else if op == 0x1B { "select" }
+  else if op == 0x20 { "local.get" } else if op == 0x21 { "local.set" }
+  else if op == 0x22 { "local.tee" }
+  else if op == 0x23 { "global.get" } else if op == 0x24 { "global.set" }
+  else if op == 0x28 { "i32.load" } else if op == 0x29 { "i64.load" }
+  else if op == 0x2D { "i32.load8_u" }
+  else if op == 0x36 { "i32.store" } else if op == 0x37 { "i64.store" }
+  else if op == 0x3A { "i32.store8" }
+  else if op == 0x3F { "memory.size" } else if op == 0x40 { "memory.grow" }
+  else if op == 0x41 { "i32.const" } else if op == 0x42 { "i64.const" }
+  else if op == 0x45 { "i32.eqz" } else if op == 0x46 { "i32.eq" }
+  else if op == 0x47 { "i32.ne" } else if op == 0x48 { "i32.lt_s" }
+  else if op == 0x4A { "i32.gt_s" } else if op == 0x4C { "i32.le_s" }
+  else if op == 0x4E { "i32.ge_s" }
+  else if op == 0x50 { "i64.eqz" } else if op == 0x51 { "i64.eq" }
+  else if op == 0x52 { "i64.ne" } else if op == 0x53 { "i64.lt_s" }
+  else if op == 0x55 { "i64.gt_s" } else if op == 0x57 { "i64.le_s" }
+  else if op == 0x59 { "i64.ge_s" }
+  else if op == 0x6A { "i32.add" } else if op == 0x6B { "i32.sub" }
+  else if op == 0x6C { "i32.mul" } else if op == 0x6D { "i32.div_s" }
+  else if op == 0x6F { "i32.rem_s" }
+  else if op == 0x71 { "i32.and" } else if op == 0x72 { "i32.or" }
+  else if op == 0x73 { "i32.xor" } else if op == 0x74 { "i32.shl" }
+  else if op == 0x75 { "i32.shr_s" }
+  else if op == 0x7C { "i64.add" } else if op == 0x7D { "i64.sub" }
+  else if op == 0x7E { "i64.mul" } else if op == 0x7F { "i64.div_s" }
+  else if op == 0x81 { "i64.rem_s" }
+  else if op == 0x83 { "i64.and" } else if op == 0x84 { "i64.or" }
+  else if op == 0x85 { "i64.xor" } else if op == 0x86 { "i64.shl" }
+  else if op == 0x87 { "i64.shr_s" }
+  else if op == 0xA7 { "i32.wrap_i64" } else if op == 0xAC { "i64.extend_i32_s" }
+  else if op == 0xAD { "i64.extend_i32_u" }
+  else { "unknown" }
+}
+
+// Disassemble code bytes into human-readable instruction strings
+export let disassemble = (code: Bytes, start: Int, end_pos: Int) -> Array[String] {
+  let result = Array::slice([""], 0, 0)
+  let mut pc = start
+  while pc < end_pos {
+    let op = code[pc]
+    pc = pc + 1
+    let name = opcode_name(op)
+    // Opcodes with LEB128 immediate
+    if (op == 0x0C) || (op == 0x0D) || (op == 0x10) || (op == 0x20) || (op == 0x21) || (op == 0x22) || (op == 0x23) || (op == 0x24) {
+      let (v, np) = read_uleb128(code, pc)
+      pc = np
+      Array::push(result, "\{name} \{int_to_string(v)}")
+    }
+    else if (op == 0x41) || (op == 0x42) {
+      let (v, np) = read_sleb128(code, pc)
+      pc = np
+      Array::push(result, "\{name} \{int_to_string(v)}")
+    }
+    else if op == 0x02 || op == 0x03 || op == 0x04 {
+      // block/loop/if: blocktype
+      let (bt, np) = read_sleb128(code, pc)
+      pc = np
+      Array::push(result, "\{name} \{int_to_string(bt)}")
+    }
+    else if (op == 0x28) || (op == 0x29) || (op == 0x36) || (op == 0x37) || (op == 0x2D) || (op == 0x3A) {
+      // memarg: align + offset
+      let (align, np) = read_uleb128(code, pc)
+      let (offset, np2) = read_uleb128(code, np)
+      pc = np2
+      Array::push(result, "\{name} align=\{int_to_string(align)} offset=\{int_to_string(offset)}")
+    }
+    else if (op == 0x3F) || (op == 0x40) {
+      pc = pc + 1  // skip 0x00
+      Array::push(result, name)
+    }
+    else if op == 0x0E {
+      // br_table
+      let (count, np) = read_uleb128(code, pc)
+      pc = np
+      let mut s = "\{name} \{int_to_string(count)}"
+      let mut j = 0
+      while j <= count {
+        let (lbl, np2) = read_uleb128(code, pc)
+        pc = np2
+        s = "\{s} \{int_to_string(lbl)}"
+        j = j + 1
+      }
+      Array::push(result, s)
+    }
+    else {
+      Array::push(result, name)
+    }
+  }
+  result
+}
+
+// Read a UTF-8 name from bytes (length-prefixed)
+let read_name = (buf: Bytes, offset: Int) -> (String, Int) {
+  let (name_len, np) = read_uleb128(buf, offset)
+  let mut s = ""
+  let mut i = 0
+  while i < name_len {
+    s = String::concat(s, String::from_char_code(buf[np + i]))
+    i = i + 1
+  }
+  (s, np + name_len)
+}
+
+// Parse a WASM module binary, find export by name, execute it.
+// Returns (exit_code, result). exit_code: 0=ok, 1=trap, -1=parse error, -2=export not found
+export let exec_module = (wasm_bytes: Bytes, export_name: String) -> (Int, Int) {
+  exec_module_with_args(wasm_bytes, export_name, Array::slice([0], 0, 0))
+}
+
+export let exec_module_with_args = (wasm_bytes: Bytes, export_name: String, args: Array[Int]) -> (Int, Int) {
+  let len = Bytes::length(wasm_bytes)
+  // Validate magic + version (8 bytes)
+  if len < 8 { (-1, 0) }
+  else if (wasm_bytes[0] != 0x00) || (wasm_bytes[1] != 0x61) || (wasm_bytes[2] != 0x73) || (wasm_bytes[3] != 0x6D) { (-1, 0) }
+  else {
+    // Parse sections
+    // type_section: array of (param_count, result_count) for simplicity
+    let type_param_counts = Array::slice([0], 0, 0)
+    let type_result_counts = Array::slice([0], 0, 0)
+    // function section: maps func_idx -> type_idx
+    let func_type_indices = Array::slice([0], 0, 0)
+    // code section: array of (body_start, body_end) in wasm_bytes
+    let code_starts = Array::slice([0], 0, 0)
+    let code_ends = Array::slice([0], 0, 0)
+    let code_local_counts = Array::slice([0], 0, 0)
+    // export section: we search for the target name
+    let mut export_func_idx = -1
+    // memory
+    let mut mem_pages = 0
+    // globals
+    let globals = Array::slice([0], 0, 0)
+
+    let mut pos = 8  // skip magic + version
+    let mut parse_ok = true
+
+    while (pos < len) && parse_ok {
+      let section_id = wasm_bytes[pos]
+      pos = pos + 1
+      let (section_size, np) = read_uleb128(wasm_bytes, pos)
+      pos = np
+      let section_end = pos + section_size
+
+      // Type section (id=1)
+      if section_id == 1 {
+        let (type_count, tp) = read_uleb128(wasm_bytes, pos)
+        let mut tpos = tp
+        let mut ti = 0
+        while ti < type_count {
+          // Each type starts with 0x60 (func type)
+          tpos = tpos + 1  // skip 0x60
+          let (param_count, pp) = read_uleb128(wasm_bytes, tpos)
+          tpos = pp + param_count  // skip param types
+          let (result_count, rp) = read_uleb128(wasm_bytes, tpos)
+          tpos = rp + result_count  // skip result types
+          Array::push(type_param_counts, param_count)
+          Array::push(type_result_counts, result_count)
+          ti = ti + 1
+        }
+        pos = section_end
+      }
+      // Function section (id=3)
+      else if section_id == 3 {
+        let (func_count, fp) = read_uleb128(wasm_bytes, pos)
+        let mut fpos = fp
+        let mut fi = 0
+        while fi < func_count {
+          let (type_idx, np2) = read_uleb128(wasm_bytes, fpos)
+          fpos = np2
+          Array::push(func_type_indices, type_idx)
+          fi = fi + 1
+        }
+        pos = section_end
+      }
+      // Memory section (id=5)
+      else if section_id == 5 {
+        let (mem_count, mp) = read_uleb128(wasm_bytes, pos)
+        if mem_count > 0 {
+          let flags = wasm_bytes[mp]
+          let (min_pages, mp2) = read_uleb128(wasm_bytes, mp + 1)
+          mem_pages = min_pages
+          if (flags & 1) == 1 {
+            // has max, skip it
+            let (_, _mp3) = read_uleb128(wasm_bytes, mp2)
+            ()
+          }
+        }
+        pos = section_end
+      }
+      // Global section (id=6)
+      else if section_id == 6 {
+        let (global_count, gp) = read_uleb128(wasm_bytes, pos)
+        let mut gpos = gp
+        let mut gi = 0
+        while gi < global_count {
+          // global type: valtype + mut
+          gpos = gpos + 2  // skip valtype + mutability
+          // init expr: evaluate simple const expr
+          let init_op = wasm_bytes[gpos]
+          gpos = gpos + 1
+          if (init_op == 0x41) || (init_op == 0x42) {
+            let (val, gnp) = read_sleb128(wasm_bytes, gpos)
+            gpos = gnp
+            Array::push(globals, val)
+          } else {
+            Array::push(globals, 0)
+          }
+          // skip to end opcode (0x0B)
+          while (gpos < section_end) && (wasm_bytes[gpos] != 0x0B) { gpos = gpos + 1 }
+          if gpos < section_end { gpos = gpos + 1 }  // skip 0x0B
+          gi = gi + 1
+        }
+        pos = section_end
+      }
+      // Export section (id=7)
+      else if section_id == 7 {
+        let (export_count, ep) = read_uleb128(wasm_bytes, pos)
+        let mut epos = ep
+        let mut ei = 0
+        while ei < export_count {
+          let (ename, enp) = read_name(wasm_bytes, epos)
+          epos = enp
+          let kind = wasm_bytes[epos]
+          epos = epos + 1
+          let (eidx, enp2) = read_uleb128(wasm_bytes, epos)
+          epos = enp2
+          if (kind == 0) && (ename == export_name) { export_func_idx = eidx } else { () }
+          ei = ei + 1
+        }
+        pos = section_end
+      }
+      // Code section (id=10)
+      else if section_id == 10 {
+        let (code_count, cp) = read_uleb128(wasm_bytes, pos)
+        let mut cpos = cp
+        let mut ci = 0
+        while ci < code_count {
+          let (body_size, cnp) = read_uleb128(wasm_bytes, cpos)
+          cpos = cnp
+          let body_end = cpos + body_size
+          // Parse local declarations
+          let (local_decl_count, lp) = read_uleb128(wasm_bytes, cpos)
+          let mut lpos = lp
+          let mut total_locals = 0
+          let mut ldi = 0
+          while ldi < local_decl_count {
+            let (lcount, lnp) = read_uleb128(wasm_bytes, lpos)
+            lpos = lnp + 1  // skip type byte
+            total_locals = total_locals + lcount
+            ldi = ldi + 1
+          }
+          // body_start is after local declarations, body_end is at end of body (includes final 0x0B)
+          Array::push(code_starts, lpos)
+          Array::push(code_ends, body_end - 1)  // exclude trailing 0x0B
+          Array::push(code_local_counts, total_locals)
+          cpos = body_end
+          ci = ci + 1
+        }
+        pos = section_end
+      }
+      // Data section (id=11)
+      else if section_id == 11 {
+        // We handle active data segments (mode 0) that init memory
+        // We'll parse after memory is created, so just record pos
+        // Actually, we parse now and will apply after memory creation
+        // For simplicity, skip - data section handling is a TODO
+        pos = section_end
+      }
+      else {
+        // Skip unknown section
+        pos = section_end
+      }
+    }
+
+    if export_func_idx < 0 { (-2, 0) }
+    else {
+      // Build func_bodies array: (start, end, param_count, local_count)
+      let func_bodies = Array::slice([(0, 0, 0, 0)], 0, 0)
+      let num_funcs = Array::length(code_starts)
+      let mut fi = 0
+      while fi < num_funcs {
+        let cs = Array::get(code_starts, fi)
+        let ce = Array::get(code_ends, fi)
+        let lc = Array::get(code_local_counts, fi)
+        let pc = if fi < Array::length(func_type_indices) {
+          let tidx = Array::get(func_type_indices, fi)
+          if tidx < Array::length(type_param_counts) { Array::get(type_param_counts, tidx) } else { 0 }
+        } else { 0 }
+        Array::push(func_bodies, (cs, ce, pc, lc))
+        fi = fi + 1
+      }
+
+      // Create memory
+      let memory = make_memory(if mem_pages > 0 { mem_pages } else { 1 })
+
+      // Set up locals for the target function
+      if export_func_idx < Array::length(func_bodies) {
+        let (fs, fe, fp, fl) = Array::get(func_bodies, export_func_idx)
+        let call_locals = Array::slice([0], 0, 0)
+        let mut li = 0
+        while li < (fp + fl) { Array::push(call_locals, 0); li = li + 1 }
+        // Fill params from args
+        let mut ai = 0
+        while ai < fp {
+          if ai < Array::length(args) { Array::set(call_locals, ai, Array::get(args, ai)) } else { () }
+          ai = ai + 1
+        }
+        let call_stack = Array::slice([0], 0, 0)
+        let (ec, rv) = exec_body(wasm_bytes, fs, fe, call_locals, call_stack, memory, globals, func_bodies)
+        let final_ec = if ec == 2 { 0 } else { ec }
+        (final_ec, rv)
+      } else { (-2, 0) }
+    }
+  }
+}

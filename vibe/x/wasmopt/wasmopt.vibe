@@ -1,0 +1,1058 @@
+// WASM Binary Optimizer
+// Performs binary-level optimizations on WASM modules
+// Includes peephole optimizations, call graph DCE, and more.
+
+//# Functions
+
+// === LEB128 ===
+
+let read_uleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
+  let len = Bytes::length(buf)
+  let mut i = offset
+  let mut result = 0
+  let mut shift = 0
+  let mut done = false
+  while (i < len) && (done == false) {
+    let byte = buf[i]
+    result = result | ((byte & 0x7F) << shift)
+    i = i + 1
+    if (byte & 0x80) == 0 { done = true }
+    else { shift = shift + 7 }
+  }
+  (result, i)
+}
+
+let write_uleb128 = (buf: Bytes, n: Int) -> Unit {
+  let mut val = n
+  let mut more = true
+  while more {
+    let byte = val & 0x7F
+    val = (val >> 7) & ((1 << 25) - 1)
+    if val == 0 {
+      Bytes::push(buf, byte)
+      more = false
+    } else {
+      Bytes::push(buf, byte | 0x80)
+    }
+  }
+}
+
+let read_sleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
+  let len = Bytes::length(buf)
+  let mut i = offset
+  let mut result = 0
+  let mut shift = 0
+  let mut done = false
+  while (i < len) && (done == false) {
+    let byte = buf[i]
+    result = result | ((byte & 0x7F) << shift)
+    shift = shift + 7
+    i = i + 1
+    if (byte & 0x80) == 0 {
+      if (byte & 0x40) > 0 { result = result | ((-1) << shift) }
+      done = true
+    }
+  }
+  (result, i)
+}
+
+let write_sleb128 = (buf: Bytes, n: Int) -> Unit {
+  let mut val = n
+  let mut more = true
+  while more {
+    let byte = val & 0x7F
+    val = val >> 7
+    if ((val == 0) && ((byte & 0x40) == 0)) || ((val == (-1)) && ((byte & 0x40) > 0)) {
+      Bytes::push(buf, byte)
+      more = false
+    } else {
+      Bytes::push(buf, byte | 0x80)
+    }
+  }
+}
+
+// Read name string
+let read_name = (bytes: Bytes, offset: Int) -> (String, Int) {
+  let (name_len, pos) = read_uleb128(bytes, offset)
+  let mut s = ""
+  let mut i = 0
+  while i < name_len {
+    s = String::concat(s, String::from_char_code(bytes[pos + i]))
+    i = i + 1
+  }
+  (s, pos + name_len)
+}
+
+// === Section helpers ===
+
+// List sections: (id, content_offset, content_size)
+let list_sections = (bytes: Bytes) -> Array[(Int, Int, Int)] {
+  let len = Bytes::length(bytes)
+  let result = Array::slice([(0, 0, 0)], 0, 0)
+  if len < 8 { result }
+  else {
+    let mut i = 8
+    while i < len {
+      let sec_id = bytes[i]
+      i = i + 1
+      let (sec_size, content_start) = read_uleb128(bytes, i)
+      let sec_end = content_start + sec_size
+      if sec_end > len { i = len }
+      else {
+        Array::push(result, (sec_id, content_start, sec_size))
+        i = sec_end
+      }
+    }
+    result
+  }
+}
+
+// Copy bytes range
+let copy_bytes = (src: Bytes, start: Int, end_pos: Int) -> Bytes {
+  let result = Bytes::new()
+  let mut i = start
+  while i < end_pos {
+    Bytes::push(result, src[i])
+    i = i + 1
+  }
+  result
+}
+
+// Write section to output buffer
+let emit_section = (out: Bytes, sec_id: Int, content: Bytes) -> Unit {
+  Bytes::push(out, sec_id)
+  write_uleb128(out, Bytes::length(content))
+  let mut i = 0
+  while i < Bytes::length(content) {
+    Bytes::push(out, content[i])
+    i = i + 1
+  }
+}
+
+// === Strip custom sections ===
+
+// Remove all custom sections (id=0) from a WASM binary.
+// Useful for reducing binary size.
+export let strip_custom_sections = (bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 { copy_bytes(bytes, 0, len) }
+  else {
+    let out = Bytes::new()
+    // Copy header
+    let mut i = 0
+    while i < 8 { Bytes::push(out, bytes[i]); i = i + 1 }
+    // Copy non-custom sections
+    let sections = list_sections(bytes)
+    let mut s = 0
+    while s < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, s)
+      if sid != 0 {
+        // Find raw section start (section id byte)
+        // We need to reconstruct: id + size_leb + content
+        let content = copy_bytes(bytes, off, off + sz)
+        emit_section(out, sid, content)
+      }
+      s = s + 1
+    }
+    out
+  }
+}
+
+// === Strip specific named custom section ===
+
+export let strip_named_section = (bytes: Bytes, name: String) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 { copy_bytes(bytes, 0, len) }
+  else {
+    let out = Bytes::new()
+    let mut i = 0
+    while i < 8 { Bytes::push(out, bytes[i]); i = i + 1 }
+    let sections = list_sections(bytes)
+    let mut s = 0
+    while s < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, s)
+      let mut keep = true
+      if sid == 0 {
+        // Check name
+        let (sec_name, _) = read_name(bytes, off)
+        if sec_name == name { keep = false }
+      }
+      if keep {
+        let content = copy_bytes(bytes, off, off + sz)
+        emit_section(out, sid, content)
+      }
+      s = s + 1
+    }
+    out
+  }
+}
+
+// === Remove unused exports ===
+
+// Keep only the specified export names. Rewrites the export section.
+export let filter_exports = (bytes: Bytes, keep_names: Array[String]) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 { copy_bytes(bytes, 0, len) }
+  else {
+    let out = Bytes::new()
+    let mut i = 0
+    while i < 8 { Bytes::push(out, bytes[i]); i = i + 1 }
+    let sections = list_sections(bytes)
+    let mut s = 0
+    while s < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, s)
+      if sid == 7 {
+        // Rewrite export section
+        let new_content = rewrite_exports(bytes, off, sz, keep_names)
+        emit_section(out, 7, new_content)
+      } else {
+        let content = copy_bytes(bytes, off, off + sz)
+        emit_section(out, sid, content)
+      }
+      s = s + 1
+    }
+    out
+  }
+}
+
+let rewrite_exports = (bytes: Bytes, offset: Int, size: Int, keep_names: Array[String]) -> Bytes {
+  let end_pos = offset + size
+  let kept = Array::slice([("", 0, 0)], 0, 0)
+  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let mut i = 0
+  while (i < cnt) && (pos < end_pos) {
+    let (name, np) = read_name(bytes, pos)
+    pos = np
+    if pos < end_pos {
+      let kind = bytes[pos]
+      pos = pos + 1
+      let (index, np2) = read_uleb128(bytes, pos)
+      pos = np2
+      // Check if name is in keep list
+      if array_contains_str(keep_names, name) {
+        Array::push(kept, (name, kind, index))
+      }
+    }
+    i = i + 1
+  }
+  // Emit new export section content
+  let out = Bytes::new()
+  write_uleb128(out, Array::length(kept))
+  let mut k = 0
+  while k < Array::length(kept) {
+    let (name, kind, index) = Array::get(kept, k)
+    write_uleb128(out, String::length(name))
+    let mut ci = 0
+    while ci < String::length(name) {
+      Bytes::push(out, String::char_code_at(name, ci))
+      ci = ci + 1
+    }
+    Bytes::push(out, kind)
+    write_uleb128(out, index)
+    k = k + 1
+  }
+  out
+}
+
+let array_contains_str = (arr: Array[String], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while (i < Array::length(arr)) && (found == false) {
+    if Array::get(arr, i) == target { found = true }
+    i = i + 1
+  }
+  found
+}
+
+// === Remove empty data segments ===
+
+// Removes data segments with zero-length data.
+export let strip_empty_data = (bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 { copy_bytes(bytes, 0, len) }
+  else {
+    let out = Bytes::new()
+    let mut i = 0
+    while i < 8 { Bytes::push(out, bytes[i]); i = i + 1 }
+    let sections = list_sections(bytes)
+    let mut s = 0
+    while s < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, s)
+      if (sid == 11) && (sz > 0) {
+        // Data section: check for empty segments
+        let new_content = filter_data_segments(bytes, off, sz)
+        if Bytes::length(new_content) > 1 {
+          emit_section(out, 11, new_content)
+        }
+      } else {
+        let content = copy_bytes(bytes, off, off + sz)
+        emit_section(out, sid, content)
+      }
+      s = s + 1
+    }
+    out
+  }
+}
+
+let filter_data_segments = (bytes: Bytes, offset: Int, size: Int) -> Bytes {
+  let end_pos = offset + size
+  // Parse segments, keep non-empty ones
+  let segments = Array::slice([(0, 0, 0)], 0, 0)  // (seg_start, seg_end, data_len)
+  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let mut i = 0
+  while (i < cnt) && (pos < end_pos) {
+    let seg_start = pos
+    let mode = bytes[pos]
+    pos = pos + 1
+    if mode == 0 {
+      // active: skip init expr
+      while (pos < end_pos) && (bytes[pos] != 0x0B) { pos = pos + 1 }
+      if pos < end_pos { pos = pos + 1 }
+      let (data_len, dp) = read_uleb128(bytes, pos)
+      pos = dp + data_len
+      Array::push(segments, (seg_start, pos, data_len))
+    } else {
+      if mode == 1 {
+        let (data_len, dp) = read_uleb128(bytes, pos)
+        pos = dp + data_len
+        Array::push(segments, (seg_start, pos, data_len))
+      } else {
+        // mode 2 or unknown
+        pos = end_pos
+      }
+    }
+    i = i + 1
+  }
+  // Rebuild with non-empty segments
+  let out = Bytes::new()
+  let mut kept_count = 0
+  let mut si = 0
+  while si < Array::length(segments) {
+    let (_, _, data_len) = Array::get(segments, si)
+    if data_len > 0 { kept_count = kept_count + 1 }
+    si = si + 1
+  }
+  write_uleb128(out, kept_count)
+  si = 0
+  while si < Array::length(segments) {
+    let (seg_start, seg_end, data_len) = Array::get(segments, si)
+    if data_len > 0 {
+      let mut j = seg_start
+      while j < seg_end { Bytes::push(out, bytes[j]); j = j + 1 }
+    }
+    si = si + 1
+  }
+  out
+}
+
+// === Merge consecutive data segments ===
+
+// Count exported functions
+export let count_exports = (bytes: Bytes) -> Int {
+  let sections = list_sections(bytes)
+  let mut count = 0
+  let mut s = 0
+  while s < Array::length(sections) {
+    let (sid, off, sz) = Array::get(sections, s)
+    if sid == 7 {
+      let (cnt, _) = read_uleb128(bytes, off)
+      count = cnt
+    }
+    s = s + 1
+  }
+  count
+}
+
+// Count functions (imported + defined)
+export let count_functions = (bytes: Bytes) -> Int {
+  let sections = list_sections(bytes)
+  let mut import_funcs = 0
+  let mut defined_funcs = 0
+  let mut s = 0
+  while s < Array::length(sections) {
+    let (sid, off, sz) = Array::get(sections, s)
+    if sid == 2 {
+      // Import section: count func imports
+      let end_pos = off + sz
+      let (cnt, pos0) = read_uleb128(bytes, off)
+      let mut pos = pos0
+      let mut i = 0
+      while (i < cnt) && (pos < end_pos) {
+        // skip module name
+        let (mlen, mp) = read_uleb128(bytes, pos); pos = mp + mlen
+        // skip field name
+        let (flen, fp) = read_uleb128(bytes, pos); pos = fp + flen
+        if pos < end_pos {
+          let kind = bytes[pos]; pos = pos + 1
+          if kind == 0 {
+            let (_, np) = read_uleb128(bytes, pos); pos = np
+            import_funcs = import_funcs + 1
+          } else {
+            // skip other import types
+            pos = end_pos
+          }
+        }
+        i = i + 1
+      }
+    } else {
+      if sid == 3 {
+        // Function section
+        let (cnt, _) = read_uleb128(bytes, off)
+        defined_funcs = cnt
+      }
+    }
+    s = s + 1
+  }
+  import_funcs + defined_funcs
+}
+
+// Count types
+export let count_types = (bytes: Bytes) -> Int {
+  let sections = list_sections(bytes)
+  let mut count = 0
+  let mut s = 0
+  while s < Array::length(sections) {
+    let (sid, off, _) = Array::get(sections, s)
+    if sid == 1 {
+      let (cnt, _) = read_uleb128(bytes, off)
+      count = cnt
+    }
+    s = s + 1
+  }
+  count
+}
+
+// Binary size
+export let binary_size = (bytes: Bytes) -> Int {
+  Bytes::length(bytes)
+}
+
+// Section sizes: array of (section_id, size)
+export let section_sizes = (bytes: Bytes) -> Array[(Int, Int)] {
+  let sections = list_sections(bytes)
+  let result = Array::slice([(0, 0)], 0, 0)
+  let mut s = 0
+  while s < Array::length(sections) {
+    let (sid, _, sz) = Array::get(sections, s)
+    Array::push(result, (sid, sz))
+    s = s + 1
+  }
+  result
+}
+
+// === Peephole Optimization ===
+
+// WASM opcodes
+// i32.const = 0x41, i64.const = 0x42
+// i32.add = 0x6A, i32.sub = 0x6B, i32.mul = 0x6C
+// i32.and = 0x71, i32.or = 0x72, i32.xor = 0x73
+// local.get = 0x20
+// drop = 0x1A
+
+// Decode a single instruction starting at pos in body.
+// Returns (opcode, immediate_value, next_pos).
+// For i32.const: opcode=0x41, immediate=the const value.
+// For local.get: opcode=0x20, immediate=local index.
+// For others: opcode=byte, immediate=0.
+let decode_instr = (body: Bytes, pos: Int) -> (Int, Int, Int) {
+  let op = body[pos]
+  if op == 0x41 {
+    // i32.const: signed LEB128 immediate
+    let (val, next) = read_sleb128(body, pos + 1)
+    (0x41, val, next)
+  } else {
+    if op == 0x42 {
+      // i64.const: signed LEB128 immediate
+      let (val, next) = read_sleb128(body, pos + 1)
+      (0x42, val, next)
+    } else {
+      if op == 0x20 {
+        // local.get: unsigned LEB128 immediate
+        let (val, next) = read_uleb128(body, pos + 1)
+        (0x20, val, next)
+      } else {
+        if op == 0x21 {
+          // local.set: unsigned LEB128 immediate
+          let (val, next) = read_uleb128(body, pos + 1)
+          (0x21, val, next)
+        } else {
+          if op == 0x22 {
+            // local.tee: unsigned LEB128 immediate
+            let (val, next) = read_uleb128(body, pos + 1)
+            (0x22, val, next)
+          } else {
+            if op == 0x23 {
+              // global.get: unsigned LEB128 immediate
+              let (val, next) = read_uleb128(body, pos + 1)
+              (0x23, val, next)
+            } else {
+              if op == 0x24 {
+                // global.set: unsigned LEB128 immediate
+                let (val, next) = read_uleb128(body, pos + 1)
+                (0x24, val, next)
+              } else {
+                if op == 0x10 {
+                  // call: unsigned LEB128 immediate
+                  let (val, next) = read_uleb128(body, pos + 1)
+                  (0x10, val, next)
+                } else {
+                  if op == 0x0C {
+                    // br: unsigned LEB128 immediate
+                    let (val, next) = read_uleb128(body, pos + 1)
+                    (0x0C, val, next)
+                  } else {
+                    if op == 0x0D {
+                      // br_if: unsigned LEB128 immediate
+                      let (val, next) = read_uleb128(body, pos + 1)
+                      (0x0D, val, next)
+                    } else {
+                      // Single-byte instruction
+                      (op, 0, pos + 1)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// Emit an instruction to a Bytes buffer.
+let emit_instr = (out: Bytes, op: Int, imm: Int) -> Unit {
+  if op == 0x41 {
+    Bytes::push(out, 0x41)
+    write_sleb128(out, imm)
+  } else {
+    if op == 0x42 {
+      Bytes::push(out, 0x42)
+      write_sleb128(out, imm)
+    } else {
+      if (op == 0x20) || (op == 0x21) || (op == 0x22) || (op == 0x23) || (op == 0x24) || (op == 0x10) || (op == 0x0C) || (op == 0x0D) {
+        Bytes::push(out, op)
+        write_uleb128(out, imm)
+      } else {
+        Bytes::push(out, op)
+      }
+    }
+  }
+}
+
+// Check if an opcode is an i32 binary arithmetic/logic op
+let is_i32_binop = (op: Int) -> Bool {
+  (op == 0x6A) || (op == 0x6B) || (op == 0x6C) || (op == 0x71) || (op == 0x72) || (op == 0x73)
+}
+
+// Apply i32 binary op to two constants
+let apply_i32_binop = (op: Int, a: Int, b: Int) -> Int {
+  if op == 0x6A { a + b }
+  else {
+    if op == 0x6B { a - b }
+    else {
+      if op == 0x6C { a * b }
+      else {
+        if op == 0x71 { a & b }
+        else {
+          if op == 0x72 { a | b }
+          else { a ^ b }
+        }
+      }
+    }
+  }
+}
+
+// Check if op+immediate is an identity operation (x op imm = x).
+// i32.add 0, i32.sub 0, i32.mul 1, i32.or 0, i32.xor 0 are identities.
+// i32.and with all-1s would also be identity but we skip that for simplicity.
+let is_identity_op = (op: Int, imm: Int) -> Bool {
+  if op == 0x6A { imm == 0 }
+  else {
+    if op == 0x6B { imm == 0 }
+    else {
+      if op == 0x6C { imm == 1 }
+      else {
+        if op == 0x72 { imm == 0 }
+        else {
+          if op == 0x73 { imm == 0 }
+          else { false }
+        }
+      }
+    }
+  }
+}
+
+// Parse a function body into array of (opcode, immediate) pairs
+let parse_body_instrs = (body: Bytes, start: Int, end_pos: Int) -> Array[(Int, Int)] {
+  let instrs = Array::slice([(0, 0)], 0, 0)
+  let mut pos = start
+  while pos < end_pos {
+    let (op, imm, next) = decode_instr(body, pos)
+    Array::push(instrs, (op, imm))
+    pos = next
+  }
+  instrs
+}
+
+// Peephole optimize an instruction stream.
+// Returns optimized array of (opcode, immediate) pairs.
+let peephole_instrs = (instrs: Array[(Int, Int)]) -> Array[(Int, Int)] {
+  let mut changed = true
+  let mut current = instrs
+  while changed {
+    changed = false
+    let n = Array::length(current)
+    let result = Array::slice([(0, 0)], 0, 0)
+    let mut i = 0
+    while i < n {
+      let (op_i, imm_i) = Array::get(current, i)
+      if (i + 2) < n {
+        // Check for constant folding: i32.const A, i32.const B, binop
+        let (op_j, imm_j) = Array::get(current, i + 1)
+        let (op_k, _) = Array::get(current, i + 2)
+        if (op_i == 0x41) && (op_j == 0x41) && (is_i32_binop(op_k)) {
+          // Fold: replace with single i32.const
+          let folded = apply_i32_binop(op_k, imm_i, imm_j)
+          Array::push(result, (0x41, folded))
+          i = i + 3
+          changed = true
+        } else {
+          // Check identity elimination: x, i32.const IMM, binop
+          if (op_j == 0x41) && (is_i32_binop(op_k)) && (is_identity_op(op_k, imm_j)) {
+            // Drop the const and the binop, keep x
+            Array::push(result, (op_i, imm_i))
+            i = i + 3
+            changed = true
+          } else {
+            // No 3-instr pattern
+            if (i + 1) < n {
+              // Check dead drop elimination: i32.const X, drop OR local.get N, drop
+              let (op_next, _) = Array::get(current, i + 1)
+              if ((op_i == 0x41) || (op_i == 0x20)) && (op_next == 0x1A) {
+                // Remove both instructions
+                i = i + 2
+                changed = true
+              } else {
+                Array::push(result, (op_i, imm_i))
+                i = i + 1
+              }
+            } else {
+              Array::push(result, (op_i, imm_i))
+              i = i + 1
+            }
+          }
+        }
+      } else {
+        if (i + 1) < n {
+          // Check dead drop elimination: i32.const X, drop OR local.get N, drop
+          let (op_next, _) = Array::get(current, i + 1)
+          if ((op_i == 0x41) || (op_i == 0x20)) && (op_next == 0x1A) {
+            i = i + 2
+            changed = true
+          } else {
+            Array::push(result, (op_i, imm_i))
+            i = i + 1
+          }
+        } else {
+          Array::push(result, (op_i, imm_i))
+          i = i + 1
+        }
+      }
+    }
+    current = result
+  }
+  current
+}
+
+// Peephole optimize a single function body (raw bytes).
+// Input: the body bytes (locals + code, ending with 0x0B).
+// Returns optimized body bytes.
+let peephole_body = (body: Bytes) -> Bytes {
+  let body_len = Bytes::length(body)
+  if body_len < 2 { copy_bytes(body, 0, body_len) }
+  else {
+    // Skip locals declaration
+    let mut pos = 0
+    let (local_count, lp) = read_uleb128(body, 0)
+    pos = lp
+    let mut lc = 0
+    while lc < local_count {
+      let (_, tp) = read_uleb128(body, pos)
+      // skip the type byte
+      pos = tp + 1
+      lc = lc + 1
+    }
+    let code_start = pos
+    // The last byte should be 0x0B (end)
+    let code_end = body_len - 1
+
+    if code_start >= code_end {
+      // No code to optimize
+      copy_bytes(body, 0, body_len)
+    } else {
+      // Parse instructions
+      let instrs = parse_body_instrs(body, code_start, code_end)
+      // Optimize
+      let optimized = peephole_instrs(instrs)
+      // Rebuild body
+      let out = Bytes::new()
+      // Copy locals declaration
+      let mut i = 0
+      while i < code_start {
+        Bytes::push(out, body[i])
+        i = i + 1
+      }
+      // Emit optimized instructions
+      let mut j = 0
+      while j < Array::length(optimized) {
+        let (op, imm) = Array::get(optimized, j)
+        emit_instr(out, op, imm)
+        j = j + 1
+      }
+      // End byte
+      Bytes::push(out, 0x0B)
+      out
+    }
+  }
+}
+
+// === Optimize code section ===
+
+// Apply peephole optimizations to all function bodies in the code section.
+export let optimize_code_section = (bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 { copy_bytes(bytes, 0, len) }
+  else {
+    let out = Bytes::new()
+    let mut i = 0
+    while i < 8 { Bytes::push(out, bytes[i]); i = i + 1 }
+    let sections = list_sections(bytes)
+    let mut s = 0
+    while s < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, s)
+      if sid == 10 {
+        // Code section: optimize each function body
+        let new_content = optimize_code_section_content(bytes, off, sz)
+        emit_section(out, 10, new_content)
+      } else {
+        let content = copy_bytes(bytes, off, off + sz)
+        emit_section(out, sid, content)
+      }
+      s = s + 1
+    }
+    out
+  }
+}
+
+let optimize_code_section_content = (bytes: Bytes, offset: Int, size: Int) -> Bytes {
+  let end_pos = offset + size
+  let (func_count, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  // Parse all function bodies
+  let bodies = Array::slice([(Bytes::new())], 0, 0)
+  let mut fi = 0
+  while (fi < func_count) && (pos < end_pos) {
+    let (body_size, bp) = read_uleb128(bytes, pos)
+    let body = copy_bytes(bytes, bp, bp + body_size)
+    let optimized = peephole_body(body)
+    Array::push(bodies, optimized)
+    pos = bp + body_size
+    fi = fi + 1
+  }
+  // Rebuild code section content
+  let out = Bytes::new()
+  write_uleb128(out, Array::length(bodies))
+  let mut bi = 0
+  while bi < Array::length(bodies) {
+    let body = Array::get(bodies, bi)
+    write_uleb128(out, Bytes::length(body))
+    let mut j = 0
+    while j < Bytes::length(body) {
+      Bytes::push(out, body[j])
+      j = j + 1
+    }
+    bi = bi + 1
+  }
+  out
+}
+
+// === Call Graph DCE ===
+
+// Count imported functions
+let count_import_funcs = (bytes: Bytes) -> Int {
+  let sections = list_sections(bytes)
+  let mut import_funcs = 0
+  let mut s = 0
+  while s < Array::length(sections) {
+    let (sid, off, sz) = Array::get(sections, s)
+    if sid == 2 {
+      let end_pos = off + sz
+      let (cnt, pos0) = read_uleb128(bytes, off)
+      let mut pos = pos0
+      let mut i = 0
+      while (i < cnt) && (pos < end_pos) {
+        let (mlen, mp) = read_uleb128(bytes, pos); pos = mp + mlen
+        let (flen, fp) = read_uleb128(bytes, pos); pos = fp + flen
+        if pos < end_pos {
+          let kind = bytes[pos]; pos = pos + 1
+          if kind == 0 {
+            let (_, np) = read_uleb128(bytes, pos); pos = np
+            import_funcs = import_funcs + 1
+          } else {
+            if kind == 1 {
+              // table import: skip limits
+              let (_, np) = read_uleb128(bytes, pos); pos = np
+              let flag = bytes[pos]; pos = pos + 1
+              let (_, np2) = read_uleb128(bytes, pos); pos = np2
+              if flag == 1 {
+                let (_, np3) = read_uleb128(bytes, pos); pos = np3
+              }
+            } else {
+              if kind == 2 {
+                // memory import: skip limits
+                let flag = bytes[pos]; pos = pos + 1
+                let (_, np2) = read_uleb128(bytes, pos); pos = np2
+                if flag == 1 {
+                  let (_, np3) = read_uleb128(bytes, pos); pos = np3
+                }
+              } else {
+                if kind == 3 {
+                  // global import: skip type + mutability
+                  pos = pos + 2
+                } else {
+                  pos = end_pos
+                }
+              }
+            }
+          }
+        }
+        i = i + 1
+      }
+    }
+    s = s + 1
+  }
+  import_funcs
+}
+
+// Build call graph from code section.
+// Returns Array[(Int, Array[Int])]: (func_index, callees).
+// func_index is the absolute function index (import_count + local_index).
+export let build_call_graph = (bytes: Bytes) -> Array[(Int, Array[Int])] {
+  let result = Array::slice([(0, Array::slice([(0)], 0, 0))], 0, 0)
+  let import_count = count_import_funcs(bytes)
+  let sections = list_sections(bytes)
+  let mut s = 0
+  while s < Array::length(sections) {
+    let (sid, off, sz) = Array::get(sections, s)
+    if sid == 10 {
+      let end_pos = off + sz
+      let (func_count, pos0) = read_uleb128(bytes, off)
+      let mut pos = pos0
+      let mut fi = 0
+      while (fi < func_count) && (pos < end_pos) {
+        let func_idx = import_count + fi
+        let (body_size, bp) = read_uleb128(bytes, pos)
+        let body_end = bp + body_size
+        // Scan body for call instructions
+        let callees = Array::slice([(0)], 0, 0)
+        let body = copy_bytes(bytes, bp, body_end)
+        let body_len = Bytes::length(body)
+        let mut bpos = 0
+        // Skip locals
+        let (local_count, lp) = read_uleb128(body, 0)
+        bpos = lp
+        let mut lc = 0
+        while lc < local_count {
+          let (_, tp) = read_uleb128(body, bpos)
+          bpos = tp + 1
+          lc = lc + 1
+        }
+        // Scan instructions
+        while bpos < body_len {
+          let (op, imm, next) = decode_instr(body, bpos)
+          if op == 0x10 {
+            // call instruction: imm is the callee index
+            let mut already = false
+            let mut ci = 0
+            while ci < Array::length(callees) {
+              if Array::get(callees, ci) == imm { already = true }
+              ci = ci + 1
+            }
+            if already == false {
+              Array::push(callees, imm)
+            }
+          }
+          bpos = next
+        }
+        Array::push(result, (func_idx, callees))
+        pos = body_end
+        fi = fi + 1
+      }
+    }
+    s = s + 1
+  }
+  result
+}
+
+// Get export function indices from export section
+let get_export_func_indices = (bytes: Bytes) -> Array[Int] {
+  let result = Array::slice([(0)], 0, 0)
+  let sections = list_sections(bytes)
+  let mut s = 0
+  while s < Array::length(sections) {
+    let (sid, off, sz) = Array::get(sections, s)
+    if sid == 7 {
+      let end_pos = off + sz
+      let (cnt, pos0) = read_uleb128(bytes, off)
+      let mut pos = pos0
+      let mut i = 0
+      while (i < cnt) && (pos < end_pos) {
+        let (_, np) = read_name(bytes, pos)
+        pos = np
+        if pos < end_pos {
+          let kind = bytes[pos]
+          pos = pos + 1
+          let (index, np2) = read_uleb128(bytes, pos)
+          pos = np2
+          if kind == 0 {
+            // Function export
+            Array::push(result, index)
+          }
+        }
+        i = i + 1
+      }
+    }
+    s = s + 1
+  }
+  result
+}
+
+let array_contains_int = (arr: Array[Int], target: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while (i < Array::length(arr)) && (found == false) {
+    if Array::get(arr, i) == target { found = true }
+    i = i + 1
+  }
+  found
+}
+
+// Find all reachable function indices from a set of root indices via BFS.
+export let find_reachable = (bytes: Bytes) -> Array[Int] {
+  let graph = build_call_graph(bytes)
+  let roots = get_export_func_indices(bytes)
+  let reachable = Array::slice([(0)], 0, 0)
+  // BFS queue: start from roots
+  let queue = Array::slice([(0)], 0, 0)
+  let mut ri = 0
+  while ri < Array::length(roots) {
+    let root = Array::get(roots, ri)
+    Array::push(queue, root)
+    Array::push(reachable, root)
+    ri = ri + 1
+  }
+  let mut qi = 0
+  while qi < Array::length(queue) {
+    let current = Array::get(queue, qi)
+    // Find callees in graph
+    let mut gi = 0
+    while gi < Array::length(graph) {
+      let (func_idx, callees) = Array::get(graph, gi)
+      if func_idx == current {
+        let mut ci = 0
+        while ci < Array::length(callees) {
+          let callee = Array::get(callees, ci)
+          if array_contains_int(reachable, callee) == false {
+            Array::push(reachable, callee)
+            Array::push(queue, callee)
+          }
+          ci = ci + 1
+        }
+      }
+      gi = gi + 1
+    }
+    qi = qi + 1
+  }
+  reachable
+}
+
+// Dead code elimination: replace unreachable function bodies with `unreachable; end`.
+export let dce = (bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 { copy_bytes(bytes, 0, len) }
+  else {
+    let reachable = find_reachable(bytes)
+    let import_count = count_import_funcs(bytes)
+    let out = Bytes::new()
+    let mut i = 0
+    while i < 8 { Bytes::push(out, bytes[i]); i = i + 1 }
+    let sections = list_sections(bytes)
+    let mut s = 0
+    while s < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, s)
+      if sid == 10 {
+        let new_content = dce_code_section(bytes, off, sz, reachable, import_count)
+        emit_section(out, 10, new_content)
+      } else {
+        let content = copy_bytes(bytes, off, off + sz)
+        emit_section(out, sid, content)
+      }
+      s = s + 1
+    }
+    out
+  }
+}
+
+let dce_code_section = (bytes: Bytes, offset: Int, size: Int, reachable: Array[Int], import_count: Int) -> Bytes {
+  let end_pos = offset + size
+  let (func_count, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let bodies = Array::slice([(Bytes::new())], 0, 0)
+  let mut fi = 0
+  while (fi < func_count) && (pos < end_pos) {
+    let func_idx = import_count + fi
+    let (body_size, bp) = read_uleb128(bytes, pos)
+    if array_contains_int(reachable, func_idx) {
+      // Keep the body as-is
+      let body = copy_bytes(bytes, bp, bp + body_size)
+      Array::push(bodies, body)
+    } else {
+      // Replace with: 0 locals, unreachable, end
+      let stub = Bytes::new()
+      Bytes::push(stub, 0x00)  // 0 locals
+      Bytes::push(stub, 0x00)  // unreachable
+      Bytes::push(stub, 0x0B)  // end
+      Array::push(bodies, stub)
+    }
+    pos = bp + body_size
+    fi = fi + 1
+  }
+  // Rebuild code section content
+  let out = Bytes::new()
+  write_uleb128(out, Array::length(bodies))
+  let mut bi = 0
+  while bi < Array::length(bodies) {
+    let body = Array::get(bodies, bi)
+    write_uleb128(out, Bytes::length(body))
+    let mut j = 0
+    while j < Bytes::length(body) {
+      Bytes::push(out, body[j])
+      j = j + 1
+    }
+    bi = bi + 1
+  }
+  out
+}
+
+// === Full optimization pipeline ===
+
+// Run all optimization passes: strip_custom -> peephole -> DCE.
+export let optimize = (bytes: Bytes) -> Bytes {
+  let step1 = strip_custom_sections(bytes)
+  let step2 = optimize_code_section(step1)
+  let step3 = dce(step2)
+  step3
+}

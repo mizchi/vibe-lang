@@ -1,0 +1,322 @@
+//# Imports
+
+import ./index.vibe {
+  is_component, is_core_wasm,
+  comp_section_name, list_sections,
+  extract_core_module, extract_all_core_modules,
+  count_core_modules,
+  find_section,
+  get_custom_section_name,
+  count_imports, count_exports,
+  parse_canon_options,
+  parse_core_type_section, parse_component_type_section,
+  comp_valtype_name, extern_kind_name
+}
+
+//# Functions
+
+let make_bytes = (values: Array[Int]) -> Bytes {
+  let buf = Bytes::new()
+  let mut i = 0
+  while i < Array::length(values) {
+    Bytes::push(buf, Array::get(values, i))
+    i = i + 1
+  }
+  buf
+}
+
+//# Misc
+
+// === Header tests ===
+
+test "is_component valid" {
+  let bytes = make_bytes([0, 97, 115, 109, 13, 0, 1, 0])
+  assert(is_component(bytes) == true)
+  assert(is_core_wasm(bytes) == false)
+}
+
+test "is_core_wasm valid" {
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0])
+  assert(is_core_wasm(bytes) == true)
+  assert(is_component(bytes) == false)
+}
+
+test "is_component too short" {
+  let bytes = make_bytes([0, 97, 115])
+  assert(is_component(bytes) == false)
+  assert(is_core_wasm(bytes) == false)
+}
+
+// === Section listing ===
+
+test "list_sections empty component" {
+  let bytes = make_bytes([0, 97, 115, 109, 13, 0, 1, 0])
+  let sections = list_sections(bytes)
+  assert(Array::length(sections) == 0)
+}
+
+test "list_sections with core module" {
+  // Component header + core module section (id=1)
+  // Core module: just header (8 bytes)
+  let bytes = make_bytes([
+    0, 97, 115, 109, 13, 0, 1, 0,
+    1, 8,
+    0, 97, 115, 109, 1, 0, 0, 0
+  ])
+  let sections = list_sections(bytes)
+  assert(Array::length(sections) == 1)
+  let (sid, _, sz) = Array::get(sections, 0)
+  assert(sid == 1)
+  assert(sz == 8)
+}
+
+test "list_sections multiple" {
+  // Component with core-module (id=1) + alias (id=6)
+  let bytes = make_bytes([
+    0, 97, 115, 109, 13, 0, 1, 0,
+    1, 8, 0, 97, 115, 109, 1, 0, 0, 0,
+    6, 2, 1, 0
+  ])
+  let sections = list_sections(bytes)
+  assert(Array::length(sections) == 2)
+  let (s0, _, _) = Array::get(sections, 0)
+  let (s1, _, _) = Array::get(sections, 1)
+  assert(s0 == 1)
+  assert(s1 == 6)
+}
+
+// === Core module extraction ===
+
+test "extract_core_module" {
+  // Core module section containing a minimal WASM module
+  let core = make_bytes([0, 97, 115, 109, 1, 0, 0, 0])
+  let component = make_bytes([
+    0, 97, 115, 109, 13, 0, 1, 0,
+    1, 8, 0, 97, 115, 109, 1, 0, 0, 0
+  ])
+  let sections = list_sections(component)
+  let (_, off, sz) = Array::get(sections, 0)
+  let extracted = extract_core_module(component, off, sz)
+  assert(Bytes::length(extracted) == 8)
+  assert(extracted[0] == 0)
+  assert(extracted[1] == 97)
+  assert(extracted[4] == 1)
+}
+
+// === extract_all_core_modules ===
+
+test "extract_all_core_modules two modules" {
+  // Component with two core module sections
+  let bytes = make_bytes([
+    0, 97, 115, 109, 13, 0, 1, 0,
+    1, 8, 0, 97, 115, 109, 1, 0, 0, 0,
+    1, 8, 0, 97, 115, 109, 1, 0, 0, 0
+  ])
+  let modules = extract_all_core_modules(bytes)
+  assert(Array::length(modules) == 2)
+  let (idx0, m0) = Array::get(modules, 0)
+  let (idx1, m1) = Array::get(modules, 1)
+  assert(idx0 == 0)
+  assert(idx1 == 1)
+  assert(Bytes::length(m0) == 8)
+  assert(Bytes::length(m1) == 8)
+  assert(m0[4] == 1)
+  assert(m1[4] == 1)
+}
+
+test "extract_all_core_modules empty" {
+  let bytes = make_bytes([0, 97, 115, 109, 13, 0, 1, 0])
+  let modules = extract_all_core_modules(bytes)
+  assert(Array::length(modules) == 0)
+}
+
+// === count_core_modules ===
+
+test "count_core_modules" {
+  let bytes = make_bytes([
+    0, 97, 115, 109, 13, 0, 1, 0,
+    1, 8, 0, 97, 115, 109, 1, 0, 0, 0,
+    1, 8, 0, 97, 115, 109, 1, 0, 0, 0
+  ])
+  assert(count_core_modules(bytes) == 2)
+}
+
+test "count_core_modules none" {
+  let bytes = make_bytes([0, 97, 115, 109, 13, 0, 1, 0])
+  assert(count_core_modules(bytes) == 0)
+}
+
+// === find_section ===
+
+test "find_section found" {
+  let bytes = make_bytes([
+    0, 97, 115, 109, 13, 0, 1, 0,
+    1, 8, 0, 97, 115, 109, 1, 0, 0, 0,
+    6, 2, 1, 0
+  ])
+  let (found, off, sz) = find_section(bytes, 6)
+  assert(found == 1)
+  assert(sz == 2)
+}
+
+test "find_section not found" {
+  let bytes = make_bytes([
+    0, 97, 115, 109, 13, 0, 1, 0,
+    1, 8, 0, 97, 115, 109, 1, 0, 0, 0
+  ])
+  let (found, _, _) = find_section(bytes, 7)
+  assert(found == 0)
+}
+
+// === get_custom_section_name ===
+
+test "get_custom_section_name" {
+  // Custom section: id=0, size=7, name="hello" (len=5, then 'h','e','l','l','o'), data=0x42,0x43
+  let bytes = make_bytes([
+    0, 97, 115, 109, 13, 0, 1, 0,
+    0, 7, 5, 104, 101, 108, 108, 111, 42
+  ])
+  let sections = list_sections(bytes)
+  let (sid, off, sz) = Array::get(sections, 0)
+  assert(sid == 0)
+  let name = get_custom_section_name(bytes, off, sz)
+  assert(name == "hello")
+}
+
+// === count_imports / count_exports ===
+
+test "count_imports" {
+  // Import section: id=10, size=9, count=2, two minimal entries
+  // entry: name_len=1, "a", kind=1(func), type_idx=0
+  // entry: name_len=1, "b", kind=1(func), type_idx=0
+  let bytes = make_bytes([
+    0, 97, 115, 109, 13, 0, 1, 0,
+    10, 9, 2,
+    1, 97, 1, 0,
+    1, 98, 1, 0
+  ])
+  let sections = list_sections(bytes)
+  let (_, off, sz) = Array::get(sections, 0)
+  assert(count_imports(bytes, off, sz) == 2)
+}
+
+test "count_exports" {
+  // Export section: id=11, count=3
+  let bytes = make_bytes([
+    0, 97, 115, 109, 13, 0, 1, 0,
+    11, 15, 3,
+    1, 120, 1, 0, 0,
+    1, 121, 1, 1, 0,
+    1, 122, 1, 2, 0
+  ])
+  let sections = list_sections(bytes)
+  let (_, off, sz) = Array::get(sections, 0)
+  assert(count_exports(bytes, off, sz) == 3)
+}
+
+// === parse_core_type_section ===
+
+test "parse_core_type_section" {
+  // Core type section: id=3
+  // 1 type: (i32, i32) -> (i32)
+  // 0x60 = functype, 2 params [0x7F, 0x7F], 1 result [0x7F]
+  let bytes = make_bytes([
+    0, 97, 115, 109, 13, 0, 1, 0,
+    3, 7, 1, 0x60, 2, 0x7F, 0x7F, 1, 0x7F
+  ])
+  let sections = list_sections(bytes)
+  let (sid, off, sz) = Array::get(sections, 0)
+  assert(sid == 3)
+  let types = parse_core_type_section(bytes, off, sz)
+  assert(Array::length(types) == 1)
+  let (params, results) = Array::get(types, 0)
+  assert(Array::length(params) == 2)
+  assert(Array::get(params, 0) == 0x7F)
+  assert(Array::get(params, 1) == 0x7F)
+  assert(Array::length(results) == 1)
+  assert(Array::get(results, 0) == 0x7F)
+}
+
+test "parse_core_type_section multiple" {
+  // 2 types: () -> () and (i64) -> (i64, i32)
+  let bytes = make_bytes([
+    0, 97, 115, 109, 13, 0, 1, 0,
+    3, 10, 2,
+    0x60, 0, 0,
+    0x60, 1, 0x7E, 2, 0x7E, 0x7F
+  ])
+  let sections = list_sections(bytes)
+  let (_, off, sz) = Array::get(sections, 0)
+  let types = parse_core_type_section(bytes, off, sz)
+  assert(Array::length(types) == 2)
+  let (p0, r0) = Array::get(types, 0)
+  assert(Array::length(p0) == 0)
+  assert(Array::length(r0) == 0)
+  let (p1, r1) = Array::get(types, 1)
+  assert(Array::length(p1) == 1)
+  assert(Array::get(p1, 0) == 0x7E)
+  assert(Array::length(r1) == 2)
+  assert(Array::get(r1, 0) == 0x7E)
+  assert(Array::get(r1, 1) == 0x7F)
+}
+
+// === parse_canon_options ===
+
+test "parse_canon_options lift with utf8 and memory" {
+  // Canon section: id=8
+  // 1 entry: lift (0x00), core func 0, 2 options [utf8(0), memory(3) idx 0], type idx 0
+  let bytes = make_bytes([
+    0, 97, 115, 109, 13, 0, 1, 0,
+    8, 8, 1,
+    0, 0, 2, 0, 3, 0, 0
+  ])
+  let sections = list_sections(bytes)
+  let (sid, off, sz) = Array::get(sections, 0)
+  assert(sid == 8)
+  let canons = parse_canon_options(bytes, off, sz)
+  assert(Array::length(canons) == 1)
+  let (op, fidx, opts) = Array::get(canons, 0)
+  assert(op == 0)
+  assert(fidx == 0)
+  assert(Array::length(opts) == 2)
+  let (ok0, ov0) = Array::get(opts, 0)
+  assert(ok0 == 0)
+  assert(ov0 == 0)
+  let (ok1, ov1) = Array::get(opts, 1)
+  assert(ok1 == 3)
+  assert(ov1 == 0)
+}
+
+// === Section name ===
+
+test "comp_section_name" {
+  assert(comp_section_name(0) == "custom")
+  assert(comp_section_name(1) == "core-module")
+  assert(comp_section_name(2) == "core-instance")
+  assert(comp_section_name(6) == "alias")
+  assert(comp_section_name(7) == "type")
+  assert(comp_section_name(8) == "canon")
+  assert(comp_section_name(10) == "import")
+  assert(comp_section_name(11) == "export")
+  assert(comp_section_name(99) == "unknown")
+}
+
+// === Valtype name ===
+
+test "comp_valtype_name" {
+  assert(comp_valtype_name(122) == "s32")
+  assert(comp_valtype_name(120) == "s64")
+  assert(comp_valtype_name(115) == "string")
+  assert(comp_valtype_name(118) == "f32")
+  assert(comp_valtype_name(0) == "unknown")
+}
+
+// === Extern kind name ===
+
+test "extern_kind_name" {
+  assert(extern_kind_name(0) == "module")
+  assert(extern_kind_name(1) == "func")
+  assert(extern_kind_name(3) == "type")
+  assert(extern_kind_name(5) == "instance")
+  assert(extern_kind_name(99) == "unknown")
+}
