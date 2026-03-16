@@ -1184,33 +1184,55 @@ export let rec compile_expr = (buf: Array[Int], expr: Expr, local_names: Array[S
   } else {
     match expr {
       EDot(obj, field) => {
-        let mut si_search = 0
-        let mut field_idx = -1
-        while si_search < Array::length(ctx.ctor_table.struct_names) {
-          let fnames = Array::get(ctx.ctor_table.struct_field_names, si_search)
-          let mut fi = 0
-          while fi < Array::length(fnames) {
-            if Array::get(fnames, fi) == field {
-              field_idx = fi
-              fi = Array::length(fnames)
+        // Check if field is a numeric index (tuple access: p.0, p.1)
+        let fc = String::char_code_at(field, 0)
+        let mut field_idx = if fc >= 48 && fc <= 57 {
+          // Numeric: parse as int
+          let mut vi = 0
+          let mut vp = 0
+          while vp < String::length(field) {
+            vi = vi * 10 + (String::char_code_at(field, vp) - 48)
+            vp = vp + 1
+          }
+          vi
+        } else {
+          // Named field: search struct field names
+          let mut si_search = 0
+          let mut found = -1
+          while si_search < Array::length(ctx.ctor_table.struct_names) {
+            let fnames = Array::get(ctx.ctor_table.struct_field_names, si_search)
+            let mut fi = 0
+            while fi < Array::length(fnames) {
+              if Array::get(fnames, fi) == field {
+                found = fi
+                fi = Array::length(fnames)
+              } else {
+                fi = fi + 1
+              }
+            }
+            if found >= 0 {
+              si_search = Array::length(ctx.ctor_table.struct_names)
             } else {
-              fi = fi + 1
+              si_search = si_search + 1
             }
           }
-          if field_idx >= 0 {
-            si_search = Array::length(ctx.ctor_table.struct_names)
-          } else {
-            si_search = si_search + 1
+          if found < 0 {
+            throw(String::concat("unknown struct field: ", field))
           }
-        }
-        if field_idx < 0 {
-          throw(String::concat("unknown struct field: ", field))
+          found
         }
         let nl1 = compile_expr(buf, obj, local_names, next_local, ctx, ld)
-        emit_i64_const(buf, -2)
-        emit_i64_and(buf)
-        emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, 8 + field_idx * 8)
+        if fc >= 48 && fc <= 57 {
+          // Tuple access: no header, offset = idx * 8
+          emit_i32_wrap_i64(buf)
+          emit_i64_load(buf, 3, field_idx * 8)
+        } else {
+          // Struct access: has tag+count header, offset = 8 + idx * 8
+          emit_i64_const(buf, -2)
+          emit_i64_and(buf)
+          emit_i32_wrap_i64(buf)
+          emit_i64_load(buf, 3, 8 + field_idx * 8)
+        }
         nl1
       },
       ERecord(fields) => {
