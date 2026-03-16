@@ -98,6 +98,10 @@ build-selfhost-dist:
 build-selfhost-dist-raw:
     VIBE_DIST_SKIP_OPT=1 bash scripts/build_selfhost_dist.sh
 
+# Build distributable selfhost GC compiler wasm (with wasm-opt)
+build-selfhost-dist-gc:
+    VIBE_DIST_ENTRY_PATH={{justfile_directory()}}/vibe/compiler/selfhost_cli_gc_entry.vibe bash scripts/build_selfhost_dist.sh
+
 # Smoke test `wasm/vibe/vibe.wasm` with wasmtime invoke
 test-wasm-vibe-wasmtime: build-wasm-vibe
     scripts/test_wasm_vibe_wasmtime.sh wasm/vibe/vibe.wasm

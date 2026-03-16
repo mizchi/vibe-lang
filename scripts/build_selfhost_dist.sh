@@ -93,10 +93,16 @@ if [ "$sample_magic" != "0061736d" ]; then
   exit 1
 fi
 
-# Run sample
+# Run sample: try --invoke run first, then _start (for GC WASM)
 sample_result="$(VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
   bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
     --invoke run "$SAMPLE_DIR/sample.wasm" 2>/dev/null | grep -E '^-?[0-9]+$' | tail -n 1 || true)"
+
+if [ -z "$sample_result" ]; then
+  # GC codegen outputs _start instead of run
+  sample_result="$("$PROJECT_ROOT/scripts/wasmtime_run.sh" \
+    -W gc "$SAMPLE_DIR/sample.wasm" 2>/dev/null | grep -E '^-?[0-9]+$' | tail -n 1 || true)"
+fi
 
 if [ "$sample_result" != "42" ]; then
   echo "[dist] FAIL: sample returned '$sample_result' (expected 42)" >&2
