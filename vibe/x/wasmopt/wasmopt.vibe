@@ -508,8 +508,62 @@ let decode_instr = (body: Bytes, pos: Int) -> (Int, Int, Int) {
                       let (val, next) = read_uleb128(body, pos + 1)
                       (0x0D, val, next)
                     } else {
-                      // Single-byte instruction
-                      (op, 0, pos + 1)
+                      if (op == 0x02) || (op == 0x03) || (op == 0x04) {
+                        // block/loop/if: blocktype (sleb128)
+                        let (val, next) = read_sleb128(body, pos + 1)
+                        (op, val, next)
+                      } else {
+                        if (op == 0x28) || (op == 0x29) || (op == 0x2A) || (op == 0x2B) ||
+                           (op == 0x2C) || (op == 0x2D) || (op == 0x2E) || (op == 0x2F) ||
+                           (op == 0x30) || (op == 0x31) || (op == 0x32) || (op == 0x33) ||
+                           (op == 0x34) || (op == 0x35) ||
+                           (op == 0x36) || (op == 0x37) || (op == 0x38) || (op == 0x39) ||
+                           (op == 0x3A) || (op == 0x3B) || (op == 0x3C) || (op == 0x3D) || (op == 0x3E) {
+                          // memory load/store: memarg = align(uleb) + offset(uleb)
+                          let (_, p1) = read_uleb128(body, pos + 1)
+                          let (_, next) = read_uleb128(body, p1)
+                          (op, 0, next)
+                        } else {
+                          if op == 0x11 {
+                            // call_indirect: type_idx(uleb) + table_idx(uleb)
+                            let (_, p1) = read_uleb128(body, pos + 1)
+                            let (_, next) = read_uleb128(body, p1)
+                            (op, 0, next)
+                          } else {
+                            if op == 0x0E {
+                              // br_table: count(uleb) + count labels(uleb each) + default(uleb)
+                              let (cnt, p1) = read_uleb128(body, pos + 1)
+                              let mut pp = p1
+                              let mut bi = 0
+                              while bi <= cnt {
+                                let (_, np) = read_uleb128(body, pp)
+                                pp = np
+                                bi = bi + 1
+                              }
+                              (op, 0, pp)
+                            } else {
+                              if (op == 0x3F) || (op == 0x40) {
+                                // memory.size / memory.grow: 1 byte index (0x00)
+                                (op, 0, pos + 2)
+                              } else {
+                                if op == 0xFC {
+                                  // multi-byte prefix (memory.copy etc): skip next uleb
+                                  let (sub_op, p1) = read_uleb128(body, pos + 1)
+                                  if (sub_op == 10) || (sub_op == 11) {
+                                    // memory.copy / memory.fill: 2 index bytes
+                                    (op, 0, p1 + 2)
+                                  } else {
+                                    (op, 0, p1)
+                                  }
+                                } else {
+                                  // Single-byte instruction
+                                  (op, 0, pos + 1)
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
                     }
                   }
                 }
@@ -523,6 +577,8 @@ let decode_instr = (body: Bytes, pos: Int) -> (Int, Int, Int) {
 }
 
 // Emit an instruction to a Bytes buffer.
+// NOTE: for complex opcodes (memarg, br_table, call_indirect, block/loop/if)
+// we use the raw-copy path in peephole_body, not this function.
 let emit_instr = (out: Bytes, op: Int, imm: Int) -> Unit {
   if op == 0x41 {
     Bytes::push(out, 0x41)
@@ -536,7 +592,13 @@ let emit_instr = (out: Bytes, op: Int, imm: Int) -> Unit {
         Bytes::push(out, op)
         write_uleb128(out, imm)
       } else {
-        Bytes::push(out, op)
+        if (op == 0x02) || (op == 0x03) || (op == 0x04) {
+          // block/loop/if: blocktype (sleb128)
+          Bytes::push(out, op)
+          write_sleb128(out, imm)
+        } else {
+          Bytes::push(out, op)
+        }
       }
     }
   }
@@ -597,7 +659,144 @@ let parse_body_instrs = (body: Bytes, start: Int, end_pos: Int) -> Array[(Int, I
   instrs
 }
 
-// Peephole optimize an instruction stream.
+// Parse a function body into array of (start_offset, end_offset, opcode) spans.
+// Each span points to the raw bytes of the instruction in the body.
+let parse_body_spans = (body: Bytes, start: Int, end_pos: Int) -> Array[(Int, Int, Int)] {
+  let spans = Array::slice([(0, 0, 0)], 0, 0)
+  let mut pos = start
+  while pos < end_pos {
+    let (op, _, next) = decode_instr(body, pos)
+    Array::push(spans, (pos, next, op))
+    pos = next
+  }
+  spans
+}
+
+// Read the signed LEB128 immediate from an i32.const span
+let span_read_sleb_imm = (body: Bytes, span_start: Int) -> Int {
+  let (val, _) = read_sleb128(body, span_start + 1)
+  val
+}
+
+// Read the unsigned LEB128 immediate from an instruction span
+let span_read_uleb_imm = (body: Bytes, span_start: Int) -> Int {
+  let (val, _) = read_uleb128(body, span_start + 1)
+  val
+}
+
+// Copy raw bytes from body[start..end) to output
+let copy_span_bytes = (out: Bytes, body: Bytes, start: Int, end_pos: Int) -> Unit {
+  let mut k = start
+  while k < end_pos {
+    Bytes::push(out, body[k])
+    k = k + 1
+  }
+}
+
+// Try 2-instruction peephole patterns at position i.
+// Returns true and emits replacement to out if matched, false otherwise.
+let peephole_try2 = (out: Bytes, body: Bytes, spans: Array[(Int, Int, Int)], i: Int, n: Int) -> Bool {
+  if (i + 1) >= n { false }
+  else {
+    let (s_i, _, op_i) = Array::get(spans, i)
+    let (s_next, _, op_next) = Array::get(spans, i + 1)
+    // local.set X, local.get X -> local.tee X
+    if (op_i == 0x21) && (op_next == 0x20) {
+      let imm_i = span_read_uleb_imm(body, s_i)
+      let imm_next = span_read_uleb_imm(body, s_next)
+      if imm_i == imm_next {
+        Bytes::push(out, 0x22)
+        write_uleb128(out, imm_i)
+        true
+      } else { false }
+    } else {
+      // const 0, br_if -> remove (never-taken branch)
+      if (op_i == 0x41) && (op_next == 0x0D) {
+        let imm_i = span_read_sleb_imm(body, s_i)
+        if imm_i == 0 { true }
+        else { false }
+      } else {
+        // eqz, eqz -> remove (double negation)
+        if (op_i == 0x45) && (op_next == 0x45) { true }
+        else {
+          // dead drop elimination: i32.const X, drop OR local.get N, drop
+          if ((op_i == 0x41) || (op_i == 0x20)) && (op_next == 0x1A) { true }
+          else { false }
+        }
+      }
+    }
+  }
+}
+
+// Peephole optimize using byte spans.
+// Takes spans and raw body bytes. Returns optimized bytes (code portion only, no locals prefix, no end byte).
+let peephole_spans = (body: Bytes, spans: Array[(Int, Int, Int)]) -> (Bytes, Bool) {
+  let n = Array::length(spans)
+  let out = Bytes::new()
+  let mut changed = false
+  let mut i = 0
+  while i < n {
+    let (s_i, e_i, op_i) = Array::get(spans, i)
+    if (i + 2) < n {
+      let (s_j, _, op_j) = Array::get(spans, i + 1)
+      let (_, _, op_k) = Array::get(spans, i + 2)
+      // Constant folding: i32.const A, i32.const B, binop
+      if (op_i == 0x41) && (op_j == 0x41) && (is_i32_binop(op_k)) {
+        let imm_i = span_read_sleb_imm(body, s_i)
+        let imm_j = span_read_sleb_imm(body, s_j)
+        let folded = apply_i32_binop(op_k, imm_i, imm_j)
+        Bytes::push(out, 0x41)
+        write_sleb128(out, folded)
+        i = i + 3
+        changed = true
+      } else {
+        // Identity elimination: x, i32.const IMM, binop
+        if (op_j == 0x41) && (is_i32_binop(op_k)) {
+          let imm_j = span_read_sleb_imm(body, s_j)
+          if is_identity_op(op_k, imm_j) {
+            // Keep only span i (raw copy)
+            copy_span_bytes(out, body, s_i, e_i)
+            i = i + 3
+            changed = true
+          } else {
+            // No 3-instr pattern; try 2-instr
+            let matched2 = peephole_try2(out, body, spans, i, n)
+            if matched2 {
+              i = i + 2
+              changed = true
+            } else {
+              copy_span_bytes(out, body, s_i, e_i)
+              i = i + 1
+            }
+          }
+        } else {
+          // No 3-instr pattern; try 2-instr
+          let matched2 = peephole_try2(out, body, spans, i, n)
+          if matched2 {
+            i = i + 2
+            changed = true
+          } else {
+            copy_span_bytes(out, body, s_i, e_i)
+            i = i + 1
+          }
+        }
+      }
+    } else {
+      // Less than 3 instructions remaining; try 2-instr
+      let matched2 = peephole_try2(out, body, spans, i, n)
+      if matched2 {
+        i = i + 2
+        changed = true
+      } else {
+        copy_span_bytes(out, body, s_i, e_i)
+        i = i + 1
+      }
+    }
+  }
+  (out, changed)
+}
+
+// Peephole optimize an instruction stream (legacy, kept for compatibility).
 // Returns optimized array of (opcode, immediate) pairs.
 let peephole_instrs = (instrs: Array[(Int, Int)]) -> Array[(Int, Int)] {
   let mut changed = true
@@ -710,6 +909,8 @@ let peephole_instrs = (instrs: Array[(Int, Int)]) -> Array[(Int, Int)] {
 // Peephole optimize a single function body (raw bytes).
 // Input: the body bytes (locals + code, ending with 0x0B).
 // Returns optimized body bytes.
+// Uses byte-span approach: instructions are represented as spans into the raw
+// bytes, and unmatched instructions are raw-copied rather than reconstructed.
 let peephole_body = (body: Bytes) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 { copy_bytes(body, 0, body_len) }
@@ -733,28 +934,39 @@ let peephole_body = (body: Bytes) -> Bytes {
       // No code to optimize
       copy_bytes(body, 0, body_len)
     } else {
-      // Parse instructions
-      let instrs = parse_body_instrs(body, code_start, code_end)
-      // Optimize
-      let optimized = peephole_instrs(instrs)
-      // Rebuild body
-      let out = Bytes::new()
-      // Copy locals declaration
-      let mut i = 0
-      while i < code_start {
-        Bytes::push(out, body[i])
-        i = i + 1
+      // Multi-pass: keep optimizing until no changes (max 10 passes)
+      let mut current_body = body
+      let mut current_start = code_start
+      let mut current_end = code_end
+      let mut keep_going = true
+      let mut pass_count = 0
+      while keep_going && (pass_count < 3) {
+        pass_count = pass_count + 1
+        let spans = parse_body_spans(current_body, current_start, current_end)
+        let (optimized_code, did_change) = peephole_spans(current_body, spans)
+        if did_change {
+          // Build new body: locals prefix + optimized code + end byte
+          let new_body = Bytes::new()
+          let mut ci = 0
+          while ci < current_start {
+            Bytes::push(new_body, current_body[ci])
+            ci = ci + 1
+          }
+          let opt_len = Bytes::length(optimized_code)
+          let mut oi = 0
+          while oi < opt_len {
+            Bytes::push(new_body, optimized_code[oi])
+            oi = oi + 1
+          }
+          Bytes::push(new_body, 0x0B)
+          // For next iteration, code_start stays the same (locals prefix unchanged)
+          current_body = new_body
+          current_end = Bytes::length(new_body) - 1
+        } else {
+          keep_going = false
+        }
       }
-      // Emit optimized instructions
-      let mut j = 0
-      while j < Array::length(optimized) {
-        let (op, imm) = Array::get(optimized, j)
-        emit_instr(out, op, imm)
-        j = j + 1
-      }
-      // End byte
-      Bytes::push(out, 0x0B)
-      out
+      current_body
     }
   }
 }
@@ -1659,13 +1871,12 @@ export let minify = (bytes: Bytes) -> Bytes {
   let mut current = bytes
   let mut round = 0
   let mut done = false
-  while (round < 3) && (done == false) {
+  while (round < 1) && (done == false) {
     let prev_size = Bytes::length(current)
     let s1 = strip_custom_sections(current)
     let s2 = optimize_code_section(s1)
     let s3 = dce(s2)
-    let s4 = coalesce_locals(s3)
-    let s5 = remove_unused_types(s4)
+    let s5 = remove_unused_types(s3)
     let s6 = remove_empty_sections(s5)
     current = s6
     let new_size = Bytes::length(current)
