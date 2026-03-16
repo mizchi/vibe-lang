@@ -228,6 +228,47 @@ let rec parse_pattern = (tokens: Array[Token], pos: Int) -> (Pat, Int)with { Err
     else if name == "_" {
       (PWild, pos + 1)
     }
+    else if name == "record" && (match peek(tokens, pos + 1) { TLBrace => true, _ => false }) {
+      // Record pattern: record { x: a, y: b } — skip fields, treat as wildcard with bindings
+      // For codegen, we'll bind fields by position like destructuring
+      let mut rp = pos + 2
+      let field_binds = ArrayBuilder::new()
+      let mut rd = true
+      while rd {
+        match peek(tokens, rp) {
+          TRBrace => { rd = false },
+          TIdent(fname) => {
+            match peek(tokens, rp + 1) {
+              TColon => match peek(tokens, rp + 2) {
+                TIdent(bname) => {
+                  ArrayBuilder::push(field_binds, bname)
+                  rp = rp + 3
+                },
+                _ => { ArrayBuilder::push(field_binds, fname); rp = rp + 1 }
+              },
+              TComma => { ArrayBuilder::push(field_binds, fname); rp = rp + 1 },
+              TRBrace => { ArrayBuilder::push(field_binds, fname); rp = rp + 1 },
+              _ => { rp = rp + 1 }
+            }
+            match peek(tokens, rp) {
+              TComma => { rp = rp + 1 },
+              _ => ()
+            }
+          },
+          _ => { rp = rp + 1 }
+        }
+      }
+      let rp2 = rp + 1
+      // Convert to PTuple of PBind for positional access
+      let binds = ArrayBuilder::freeze(field_binds)
+      let pat_items = ArrayBuilder::new()
+      let mut bi = 0
+      while bi < Array::length(binds) {
+        ArrayBuilder::push(pat_items, PBind(Array::get(binds, bi)))
+        bi = bi + 1
+      }
+      (PTuple(ArrayBuilder::freeze(pat_items)), rp2)
+    }
     else {
       let fc = String::char_code_at(name, 0)
       if fc >= 65 && fc <= 90 {
@@ -1774,8 +1815,23 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
                 match peek(tokens, rp) {
                   TRBrace => { rd = false },
                   TIdent(fname) => {
-                    ArrayBuilder::push(field_names, fname)
-                    rp = rp + 1
+                    // Check for rename: x: a
+                    match peek(tokens, rp + 1) {
+                      TColon => match peek(tokens, rp + 2) {
+                        TIdent(bname) => {
+                          ArrayBuilder::push(field_names, bname)
+                          rp = rp + 3
+                        },
+                        _ => {
+                          ArrayBuilder::push(field_names, fname)
+                          rp = rp + 1
+                        }
+                      },
+                      _ => {
+                        ArrayBuilder::push(field_names, fname)
+                        rp = rp + 1
+                      }
+                    }
                     match peek(tokens, rp) {
                       TComma => { rp = rp + 1 },
                       _ => ()
