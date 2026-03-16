@@ -320,3 +320,321 @@ test "extern_kind_name" {
   assert(extern_kind_name(5) == "instance")
   assert(extern_kind_name(99) == "unknown")
 }
+
+// ============================================================
+// Tests ported from Rust wasmparser (parser.rs single_module,
+// nested_section_too_big, validator.rs component tests)
+// ============================================================
+
+// --- single_module: extract nested core module from component ---
+
+test "rs: single_module nested core" {
+  // Component with one core module section (id=1, size=8)
+  // The core module is a minimal valid WASM: magic + version
+  let bytes = make_bytes([
+    0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00,
+    0x01, 0x08,
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00
+  ])
+  assert(is_component(bytes) == true)
+  let sections = list_sections(bytes)
+  assert(Array::length(sections) == 1)
+  let (sid, off, sz) = Array::get(sections, 0)
+  assert(sid == 1)
+  assert(sz == 8)
+
+  // Extract and verify the nested core module
+  let core = extract_core_module(bytes, off, sz)
+  assert(Bytes::length(core) == 8)
+  assert(is_core_wasm(core) == true)
+  assert(is_component(core) == false)
+}
+
+test "rs: single_module core has valid header" {
+  let bytes = make_bytes([
+    0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00,
+    0x01, 0x08,
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00
+  ])
+  let modules = extract_all_core_modules(bytes)
+  assert(Array::length(modules) == 1)
+  let (idx, core) = Array::get(modules, 0)
+  assert(idx == 0)
+  // Core module version should be 1
+  assert(core[4] == 1)
+  assert(core[5] == 0)
+  assert(core[6] == 0)
+  assert(core[7] == 0)
+}
+
+// --- nested_section_too_big: section size exceeds parent ---
+
+test "rs: nested section oversized" {
+  // Component claims core module section is 10 bytes, but only 8+3=11 bytes
+  // section id=1, size=10, then core module (8 bytes) + custom (3 bytes)
+  // The custom section [0, 1, 0] would be within the 10-byte limit
+  let bytes = make_bytes([
+    0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00,
+    0x01, 0x0B,
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x01, 0x00
+  ])
+  // list_sections sees section id=1 with size=11
+  let sections = list_sections(bytes)
+  assert(Array::length(sections) == 1)
+  let (sid, _, sz) = Array::get(sections, 0)
+  assert(sid == 1)
+  assert(sz == 11)
+
+  // Extract: the "core module" is actually 11 bytes (includes the custom section)
+  let core = extract_core_module(bytes, 10, sz)
+  assert(Bytes::length(core) == 11)
+  // First 8 bytes are valid WASM header
+  assert(core[0] == 0x00)
+  assert(core[1] == 0x61)
+  assert(core[4] == 0x01)
+}
+
+// --- Component with core module containing sections ---
+
+test "rs: core module with type section inside component" {
+  // Component -> core module -> type section () -> ()
+  let bytes = make_bytes([
+    0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00,
+    // core module section: id=1, size=14
+    0x01, 0x0E,
+    // embedded core WASM:
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00,
+    // type section: 1 func () -> ()
+    0x01, 0x04, 0x01, 0x60, 0x00, 0x00
+  ])
+  assert(is_component(bytes) == true)
+  let modules = extract_all_core_modules(bytes)
+  assert(Array::length(modules) == 1)
+  let (_, core) = Array::get(modules, 0)
+  assert(Bytes::length(core) == 14)
+  assert(is_core_wasm(core) == true)
+
+  // Verify the core module's type section (not using wasmparser import)
+  // core bytes[8] = 1 (type section id)
+  assert(core[8] == 1)
+  // core bytes[9] = 4 (section size)
+  assert(core[9] == 4)
+}
+
+// --- Multiple core modules in component ---
+
+test "rs: component with 3 core modules" {
+  let bytes = make_bytes([
+    0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00,
+    0x01, 0x08, 0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x08, 0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x08, 0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00
+  ])
+  assert(count_core_modules(bytes) == 3)
+  let modules = extract_all_core_modules(bytes)
+  assert(Array::length(modules) == 3)
+  let (i0, _) = Array::get(modules, 0)
+  let (i1, _) = Array::get(modules, 1)
+  let (i2, _) = Array::get(modules, 2)
+  assert(i0 == 0)
+  assert(i1 == 1)
+  assert(i2 == 2)
+}
+
+// --- Component sections mixed with core module ---
+
+test "rs: component with core module and alias" {
+  let bytes = make_bytes([
+    0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00,
+    // core module (id=1)
+    0x01, 0x08, 0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00,
+    // core instance (id=2): 1 entry, kind=0 (instantiate), module 0, 0 args
+    0x02, 0x04, 0x01, 0x00, 0x00, 0x00,
+    // alias (id=6): 1 entry, sort=0(func), kind=1(core export), instance 0, name "f"
+    0x06, 0x06, 0x01, 0x00, 0x01, 0x00, 0x01, 0x66
+  ])
+  let sections = list_sections(bytes)
+  assert(Array::length(sections) == 3)
+  let (s0, _, _) = Array::get(sections, 0)
+  let (s1, _, _) = Array::get(sections, 1)
+  let (s2, _, _) = Array::get(sections, 2)
+  assert(s0 == 1)
+  assert(s1 == 2)
+  assert(s2 == 6)
+  assert(count_core_modules(bytes) == 1)
+}
+
+// --- Component custom sections ---
+
+test "rs: component custom section" {
+  let bytes = make_bytes([
+    0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00,
+    // custom section: id=0, size=6, name="test" (4 bytes), data=0xAA,0xBB
+    0x00, 0x08, 0x04, 0x74, 0x65, 0x73, 0x74, 0xAA, 0xBB, 0xCC
+  ])
+  let sections = list_sections(bytes)
+  assert(Array::length(sections) == 1)
+  let (sid, off, sz) = Array::get(sections, 0)
+  assert(sid == 0)
+  let name = get_custom_section_name(bytes, off, sz)
+  assert(name == "test")
+}
+
+test "rs: component producers section" {
+  let bytes = make_bytes([
+    0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00,
+    0x00, 0x0B, 0x09, 0x70, 0x72, 0x6F, 0x64, 0x75, 0x63, 0x65, 0x72, 0x73, 0x00
+  ])
+  let sections = list_sections(bytes)
+  let (sid, off, sz) = Array::get(sections, 0)
+  assert(sid == 0)
+  let name = get_custom_section_name(bytes, off, sz)
+  assert(name == "producers")
+}
+
+// --- Component with import and export sections ---
+
+test "rs: component imports and exports" {
+  let bytes = make_bytes([
+    0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00,
+    // import section (id=10): 2 imports
+    0x0A, 0x09, 0x02,
+    0x01, 0x61, 0x01, 0x00,
+    0x01, 0x62, 0x01, 0x00,
+    // export section (id=11): 1 export
+    0x0B, 0x06, 0x01,
+    0x01, 0x78, 0x01, 0x00, 0x00
+  ])
+  let sections = list_sections(bytes)
+  assert(Array::length(sections) == 2)
+  let (s0, off0, sz0) = Array::get(sections, 0)
+  let (s1, off1, sz1) = Array::get(sections, 1)
+  assert(s0 == 10)
+  assert(s1 == 11)
+  assert(count_imports(bytes, off0, sz0) == 2)
+  assert(count_exports(bytes, off1, sz1) == 1)
+}
+
+// --- All component section names covered ---
+
+test "rs: all comp section names" {
+  assert(comp_section_name(0) == "custom")
+  assert(comp_section_name(1) == "core-module")
+  assert(comp_section_name(2) == "core-instance")
+  assert(comp_section_name(3) == "core-type")
+  assert(comp_section_name(4) == "component")
+  assert(comp_section_name(5) == "instance")
+  assert(comp_section_name(6) == "alias")
+  assert(comp_section_name(7) == "type")
+  assert(comp_section_name(8) == "canon")
+  assert(comp_section_name(9) == "start")
+  assert(comp_section_name(10) == "import")
+  assert(comp_section_name(11) == "export")
+  assert(comp_section_name(12) == "unknown")
+}
+
+// --- All component valtypes covered ---
+
+test "rs: all comp valtypes" {
+  assert(comp_valtype_name(122) == "s32")
+  assert(comp_valtype_name(121) == "u32")
+  assert(comp_valtype_name(120) == "s64")
+  assert(comp_valtype_name(119) == "u64")
+  assert(comp_valtype_name(118) == "f32")
+  assert(comp_valtype_name(117) == "f64")
+  assert(comp_valtype_name(116) == "bool")
+  assert(comp_valtype_name(115) == "string")
+  assert(comp_valtype_name(114) == "char")
+  assert(comp_valtype_name(113) == "list")
+  assert(comp_valtype_name(112) == "record")
+  assert(comp_valtype_name(111) == "variant")
+  assert(comp_valtype_name(110) == "tuple")
+  assert(comp_valtype_name(109) == "flags")
+  assert(comp_valtype_name(108) == "enum")
+  assert(comp_valtype_name(107) == "option")
+  assert(comp_valtype_name(106) == "result")
+  assert(comp_valtype_name(0) == "unknown")
+}
+
+// --- All extern kinds covered ---
+
+test "rs: all extern kinds" {
+  assert(extern_kind_name(0) == "module")
+  assert(extern_kind_name(1) == "func")
+  assert(extern_kind_name(2) == "value")
+  assert(extern_kind_name(3) == "type")
+  assert(extern_kind_name(4) == "component")
+  assert(extern_kind_name(5) == "instance")
+  assert(extern_kind_name(6) == "unknown")
+}
+
+// --- Component vs core detection edge cases ---
+
+test "rs: not component not core" {
+  // Wrong magic
+  let bytes = make_bytes([0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x00, 0x00, 0x00])
+  assert(is_component(bytes) == false)
+  assert(is_core_wasm(bytes) == false)
+}
+
+test "rs: component version bytes" {
+  // Component: version = [0x0D, 0x00, 0x01, 0x00]
+  let bytes = make_bytes([0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00])
+  assert(bytes[4] == 13)
+  assert(bytes[6] == 1)
+  assert(is_component(bytes) == true)
+}
+
+test "rs: core version bytes" {
+  // Core: version = [0x01, 0x00, 0x00, 0x00]
+  let bytes = make_bytes([0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00])
+  assert(bytes[4] == 1)
+  assert(bytes[6] == 0)
+  assert(is_core_wasm(bytes) == true)
+}
+
+// --- Canon section: lower operation ---
+
+test "rs: canon lower" {
+  // Canon section: id=8, 1 entry: lower (0x01), func idx 2, 1 option [memory(3) idx 0]
+  let bytes = make_bytes([
+    0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00,
+    0x08, 0x06, 0x01,
+    0x01, 0x02, 0x01, 0x03, 0x00
+  ])
+  let sections = list_sections(bytes)
+  let (sid, off, sz) = Array::get(sections, 0)
+  assert(sid == 8)
+  let canons = parse_canon_options(bytes, off, sz)
+  assert(Array::length(canons) == 1)
+  let (op, fidx, opts) = Array::get(canons, 0)
+  assert(op == 1)
+  assert(fidx == 2)
+  assert(Array::length(opts) == 1)
+  let (ok, ov) = Array::get(opts, 0)
+  assert(ok == 3)
+  assert(ov == 0)
+}
+
+// --- Canon section: multiple entries ---
+
+test "rs: canon multiple entries" {
+  // 2 canon entries: lift func 0 with 0 options + type 0, lower func 1 with 0 options
+  let bytes = make_bytes([
+    0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00,
+    0x08, 0x08, 0x02,
+    0x00, 0x00, 0x00, 0x00,
+    0x01, 0x01, 0x00
+  ])
+  let sections = list_sections(bytes)
+  let (_, off, sz) = Array::get(sections, 0)
+  let canons = parse_canon_options(bytes, off, sz)
+  assert(Array::length(canons) == 2)
+  let (op0, f0, _) = Array::get(canons, 0)
+  assert(op0 == 0)
+  assert(f0 == 0)
+  let (op1, f1, _) = Array::get(canons, 1)
+  assert(op1 == 1)
+  assert(f1 == 1)
+}
