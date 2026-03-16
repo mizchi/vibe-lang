@@ -236,14 +236,29 @@ let rec scan_ident_end = (s: String, len: Int, i: Int) -> Int {
   } else i
 }
 
-let lex_ident = (s: String, len: Int, i: Int) -> (Token, Int) {
+let lex_ident = (s: String, len: Int, i: Int) -> (Token, Int) with { Error } {
   let end = scan_ident_end(s, len, i)
   let word = s[i:end]
-  match keyword_lookup(word) {
-    Some(tok) => if word == "true" || word == "false" {
-      (TIdent(word), end)
-    } else (tok, end),
-    None => (TIdent(word), end)
+  // Raw string: r"..." → lex as regular string but without escape processing
+  if word == "r" && end < len && String::char_code_at(s, end) == '"' {
+    // Scan to closing quote without escape processing
+    let mut ri = end + 1
+    let mut raw_acc = ""
+    while ri < len && String::char_code_at(s, ri) != '"' {
+      raw_acc = String::concat(raw_acc, String::from_char_code(String::char_code_at(s, ri)))
+      ri = ri + 1
+    }
+    if ri >= len {
+      throw("unterminated raw string")
+    }
+    (TString(raw_acc), ri + 1)
+  } else {
+    match keyword_lookup(word) {
+      Some(tok) => if word == "true" || word == "false" {
+        (TIdent(word), end)
+      } else (tok, end),
+      None => (TIdent(word), end)
+    }
   }
 }
 

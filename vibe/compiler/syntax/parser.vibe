@@ -952,6 +952,83 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         }
       },
       TLBracket => {
+        // Check if this is generic function type params [T] or [K: Show]
+        // Heuristic: [Ident(:]|,|]) ... ](
+        let is_type_params = match peek(tokens, pos + 1) {
+          TIdent(_) => match peek(tokens, pos + 2) {
+            TRBracket => match peek(tokens, pos + 3) { TLParen => true, _ => false },
+            TColon => true,
+            TComma => match peek(tokens, pos + 3) { TIdent(_) => true, _ => false },
+            _ => false
+          },
+          _ => false
+        }
+        if is_type_params {
+          // Skip type params: scan to matching ]
+          let mut skip_pos = pos + 1
+          let mut depth = 1
+          let tp_names = ArrayBuilder::new()
+          let tp_bounds = ArrayBuilder::new()
+          while depth > 0 {
+            match peek(tokens, skip_pos) {
+              TLBracket => { depth = depth + 1; skip_pos = skip_pos + 1 },
+              TRBracket => { depth = depth - 1; skip_pos = skip_pos + 1 },
+              TIdent(tname) => {
+                ArrayBuilder::push(tp_names, tname)
+                // Check for : Bound + Bound
+                let tp_bound_names = ArrayBuilder::new()
+                let mut bp = skip_pos + 1
+                match peek(tokens, bp) {
+                  TColon => {
+                    bp = bp + 1
+                    let mut bd = true
+                    while bd {
+                      match peek(tokens, bp) {
+                        TIdent(bname) => {
+                          ArrayBuilder::push(tp_bound_names, bname)
+                          bp = bp + 1
+                          match peek(tokens, bp) {
+                            TPlus => { bp = bp + 1 },
+                            _ => { bd = false }
+                          }
+                        },
+                        _ => { bd = false }
+                      }
+                    }
+                  },
+                  _ => ()
+                }
+                ArrayBuilder::push(tp_bounds, (tname, ArrayBuilder::freeze(tp_bound_names)))
+                skip_pos = bp
+              },
+              TComma => { skip_pos = skip_pos + 1 },
+              _ => { skip_pos = skip_pos + 1 }
+            }
+          }
+          // Now parse as lambda: (params) -> Type { body }
+          let (params, ap) = parse_param_list(tokens, skip_pos)
+          let parse_lambda_body = (saved_params: Array[(String, Option[TypeExpr])], saved_ret_ty: Option[TypeExpr], saved_effect: Option[String], body_pos: Int, body_mode: Int) -> (Expr, Int)with { Error } {
+            let (body, end) = parse_impl(tokens, body_pos, body_mode);
+            (EFn(ArrayBuilder::freeze(tp_names), ArrayBuilder::freeze(tp_bounds), saved_params, saved_ret_ty, saved_effect, body), end)
+          }
+          match peek(tokens, ap) {
+            TThinArrow => {
+              let (ret_ty, rtp) = parse_type_impl(tokens, ap + 1, 0)
+              let (effect, ep) = match peek(tokens, rtp) {
+                TWith => {
+                  let lb = expect_tk(tokens, rtp + 1, "{")
+                  let (eff_name, en) = collect_effect_names(tokens, lb, "")
+                  (Some(eff_name), en)
+                },
+                _ => (None, rtp)
+              }
+              let bp = expect_tk(tokens, ep, "{")
+              parse_lambda_body(params, Some(ret_ty), effect, bp, mode_block)
+            },
+            TLBrace => parse_lambda_body(params, None, None, ap + 1, mode_block),
+            _ => throw("expected '->' or '{' after generic function params")
+          }
+        } else {
         let rec parse_array_elems_rest = (toks: Array[Token], p: Int, b: ArrayBuilder[Expr]) -> (Array[Expr], Int)with { Error } {
           match peek(toks, p) {
             TComma => {
@@ -990,6 +1067,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
             let en = expect_tk(tokens, end, "]");
             (EArray(arr), en)
           }
+        }
         }
       },
       TLBrace => parse_impl(tokens, pos + 1, mode_block),
