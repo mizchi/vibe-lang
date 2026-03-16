@@ -103,12 +103,14 @@ Phase 4 (応用):
   - GC codegen にビルトイン追加済み: `Array::slice`, `Array::concat`, `Bytes::*`, `eq`, `__to_string` 等
   - `EHandle`, `EStringInterp`, `PTuple` match arm, `ESeq`/`ELet`/`ELetRec`/`EIf` フラット化済み
   - `try_resolve` 再帰 → while ループ化済み
-  - ブロッカー: GC compiler (MoonBit host compiled WASM, Node.js 上) が 300KB ソースの codegen 中に `tagged int 31` を throw
-    - 小さいケース (< 2762 行) は OK、`parse_pattern` (73行, 大きな match + nested let rec) を含むと失敗
-    - `let (pat, next) = match ...` の PTuple destructure は修正済み (小さいケースで動作確認)
-    - V8 WASM stack limit (~15,500 frames) ではなく、GC codegen 内部の確定的エラー
-    - heap_ptr が毎回同じ値で停止 → 同じコードパスで落ちている
-    - 次: `compile_match_gc` にデバッグ出力を追加して int 31 直前の func_table/local 状態を観察
+  - ブロッカー: GC compiler (MoonBit host compiled WASM, 947KB) が `run` 初期化で `tagged int 31` を throw
+    - 小さいソースの GC コンパイルは正常動作 (fib, enum, match, tuple destructure 等)
+    - GC compiler の初期化だけで heap_ptr=66MB を消費（memory.grow は動作するが同じ地点で停止）
+    - 1024ページ (64MB) でも 8192ページ (512MB) でも同じ heap_ptr で crash = OOM ではなく初期化時の内部エラー
+    - cli_main() に到達する前に crash（println/throw デバッグで確認）
+    - MoonBit host codegen が 947KB WASM を生成する際の初期化コスト (66MB) が MoonBit runtime の内部制限に到達
+    - 文字列補間展開 (Python expand_interp) は完了し、フラットソースは host compile 通過
+    - 次: MoonBit compiler の `--wasm` target の初期化メモリ使用量を削減するか、GC codegen のモジュール分割で import チェーンを小さくする
 
 - [ ] selfhost perf gap を cutover 可能な水準まで詰める
   - stable 5-case set の debug selfhost wasm baseline では host 比 compile 約5x、check 約2-4x 遅い
