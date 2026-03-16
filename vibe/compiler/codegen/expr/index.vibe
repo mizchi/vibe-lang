@@ -170,6 +170,10 @@ let compile_call = (buf: Array[Int], callee: Expr, args: Array[Expr], local_name
       // Stub: perform returns its argument (effect not actually dispatched)
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     }
+    else if fname == "resume" {
+      // Stub: resume returns its argument
+      ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    }
     else if fname == "assert" {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       emit_i32_wrap_i64(buf)
@@ -202,6 +206,13 @@ let compile_call = (buf: Array[Int], callee: Expr, args: Array[Expr], local_name
       nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
       let (ss_idx, _, _) = resolve_func(ctx.func_table, "String::substring")
       emit_call(buf, ss_idx)
+      nl
+    }
+    else if fname == "__len" {
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      // Try String::length (works for both string and array in practice)
+      let (sl_idx, _, _) = resolve_func(ctx.func_table, "String::length")
+      emit_call(buf, sl_idx)
       nl
     }
     else if fname == "__index" {
@@ -1242,7 +1253,50 @@ export let rec compile_expr = (buf: Array[Int], expr: Expr, local_names: Array[S
         nl_r
       },
       EForIn(_, _, _, _) => throw("unsupported expression in codegen: EForIn"),
-      EHandle(body, _) => compile_expr(buf, body, local_names, next_local, ctx, ld)
+      EHandle(body, arms) => {
+        // Simple try-catch: try { body } catch { Error(_) => fallback }
+        // WASM: block $outer (result i64) { try_table (catch tag_0 $outer) { body } }
+        // For simplicity, compile as: block $catch { block $try { body; br $catch } } fallback
+        // Actually use try_table instruction for proper exception handling
+        if Array::length(arms) > 0 {
+          let (_, fallback_expr) = Array::get(arms, 0)
+          // block $result (result i64)
+          emit_block_i64(buf)
+          // block $catch (result i64)
+          emit_block_i64(buf)
+          // try_table (result i64) (catch_ref 0 1)
+          bytebuf_push(buf, 31)
+          // try_table opcode
+          bytebuf_push(buf, 126)
+          // result type i64
+          bytebuf_push(buf, 1)
+          // 1 catch clause
+          bytebuf_push(buf, 1)
+          // catch_ref
+          bytebuf_push(buf, 0)
+          // tag index 0
+          bytebuf_push(buf, 1)
+          // target label 1 (the outer block)
+          let nl1 = compile_expr(buf, body, local_names, next_local, ctx, ld)
+          emit_end(buf)
+          // end try_table
+          emit_br(buf, 1)
+          // br past catch to result block
+          emit_end(buf)
+          // end inner block
+          // catch handler: drop exception ref, evaluate fallback
+          emit_drop(buf)
+          // drop exnref
+          emit_drop(buf)
+          // drop payload
+          let nl2 = compile_expr(buf, fallback_expr, local_names, nl1, ctx, ld)
+          emit_end(buf)
+          // end outer block
+          nl2
+        } else {
+          compile_expr(buf, body, local_names, next_local, ctx, ld)
+        }
+      }
       ,
       ELabeledArg(_, _, _) => throw("unsupported expression in codegen: ELabeledArg"),
       _ => throw("unsupported expression in codegen: unknown")
