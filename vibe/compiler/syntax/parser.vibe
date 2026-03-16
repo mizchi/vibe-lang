@@ -275,7 +275,46 @@ let parse_impl_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Erro
     ("_", empty_strings)
   ], 0, 0)
   match peek(tokens, pos) {
-    TLBracket => throw("impl type parameters are not supported yet"),
+    TLBracket => {
+      // Skip generic type params: impl [T: Eq] Trait for Type
+      let mut skip = pos + 1
+      let mut depth = 1
+      while depth > 0 {
+        match peek(tokens, skip) {
+          TLBracket => { depth = depth + 1; skip = skip + 1 },
+          TRBracket => { depth = depth - 1; skip = skip + 1 },
+          _ => { skip = skip + 1 }
+        }
+      }
+      match peek(tokens, skip) {
+        TIdent(trait_name) => {
+          let fp = expect_tk(tokens, skip + 1, "for")
+          match peek(tokens, fp) {
+            TIdent(type_name) => {
+              // Skip optional [T] after type name
+              let end = match peek(tokens, fp + 1) {
+                TLBracket => {
+                  let mut s2 = fp + 2
+                  let mut d2 = 1
+                  while d2 > 0 {
+                    match peek(tokens, s2) {
+                      TLBracket => { d2 = d2 + 1; s2 = s2 + 1 },
+                      TRBracket => { d2 = d2 - 1; s2 = s2 + 1 },
+                      _ => { s2 = s2 + 1 }
+                    }
+                  }
+                  s2
+                },
+                _ => fp + 1
+              }
+              (SImpl(empty_strings, empty_bounds, trait_name, type_name), end)
+            },
+            _ => throw("expected type name after 'for'")
+          }
+        },
+        _ => throw("expected trait name after impl type params")
+      }
+    },
     TIdent(trait_name) => {
       let fp = expect_tk(tokens, pos + 1, "for")
       match peek(tokens, fp) {
