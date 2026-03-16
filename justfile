@@ -79,7 +79,7 @@ test:
     moon test -p mizchi/vibe/cmd/vibe_check_wasi --target wasm --warn-list '{{moon_warn_list}}'
     moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
     bash scripts/test_parallel_cleanup_e2e.sh _build/native/debug/build/cmd/vibe/vibe.exe
-    ulimit -n {{vibe_test_ulimit_n}} && _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async --jobs {{vibe_test_jobs}} examples vibe/prelude vibe/path vibe/io vibe/fs vibe/time vibe/random vibe/process vibe/shell vibe/x/rlm vibe/socket/socket_test.vibe vibe/http/http_test.vibe vibe/http/high_level_test.vibe vibe/collection vibe/json vibe/sha1 vibe/x vibe/x/args vibe/x/jsonschema
+    ulimit -n {{vibe_test_ulimit_n}} && _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async --jobs {{vibe_test_jobs}} examples vibe/prelude vibe/path vibe/io vibe/fs vibe/time vibe/random vibe/process vibe/shell vibe/x/rlm vibe/socket/socket_test.vibe vibe/http/http_test.vibe vibe/http/high_level_test.vibe vibe/collection vibe/json vibe/sha1 vibe/x vibe/x/args vibe/x/jsonschema vibe/x/wasmparser vibe/x/watparser vibe/x/component vibe/x/wasm_runtime vibe/x/wasmopt
 
 # Build wasm artifact used by Deno integration tests
 build-integration-deno-wasm:
