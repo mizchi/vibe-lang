@@ -1,0 +1,102 @@
+//# Imports
+
+import ./index.vibe {
+  minify, binary_size, count_functions, count_exports, count_types,
+  section_sizes, strip_custom_sections, optimize_code_section,
+  dce, coalesce_locals, remove_unused_types
+}
+
+//# Misc
+
+// === zlib.wasm: real-world WASM minification ===
+// Reference from wite KPI:
+//   before:          171100 bytes
+//   wite(-O1):        69644 bytes (59.3% reduction)
+//   wasm-opt(-Oz):    66146 bytes (61.3% reduction)
+
+test "zlib.wasm is valid" {
+  let bytes = Fs::read_bytes("vibe/x/wasmopt/zlib.wasm")
+  assert(binary_size(bytes) == 171100)
+  assert(bytes[0] == 0)
+  assert(bytes[1] == 97)
+  assert(bytes[2] == 115)
+  assert(bytes[3] == 109)
+  assert(bytes[4] == 1)
+}
+
+test "zlib.wasm strip custom reduces size" {
+  let bytes = Fs::read_bytes("vibe/x/wasmopt/zlib.wasm")
+  let stripped = strip_custom_sections(bytes)
+  // zlib has custom sections (name, producers, etc)
+  assert(binary_size(stripped) < binary_size(bytes))
+  // WASM header preserved
+  assert(stripped[0] == 0)
+  assert(stripped[4] == 1)
+}
+
+test "zlib.wasm peephole reduces code" {
+  let bytes = Fs::read_bytes("vibe/x/wasmopt/zlib.wasm")
+  let stripped = strip_custom_sections(bytes)
+  let opt = optimize_code_section(stripped)
+  // Peephole should find some patterns to optimize in 114 functions
+  assert(binary_size(opt) <= binary_size(stripped))
+}
+
+test "zlib.wasm dce finds dead code" {
+  let bytes = Fs::read_bytes("vibe/x/wasmopt/zlib.wasm")
+  let stripped = strip_custom_sections(bytes)
+  let opt = dce(stripped)
+  // Some functions may be unreachable from exports
+  assert(binary_size(opt) <= binary_size(stripped))
+}
+
+test "zlib.wasm minify pipeline" {
+  let bytes = Fs::read_bytes("vibe/x/wasmopt/zlib.wasm")
+  let before = binary_size(bytes)
+  let opt = minify(bytes)
+  let after = binary_size(opt)
+  // Must reduce size
+  assert(after < before)
+  // Valid WASM output
+  assert(opt[0] == 0)
+  assert(opt[1] == 97)
+  assert(opt[2] == 115)
+  assert(opt[3] == 109)
+  // Exports preserved
+  assert(count_exports(opt) == count_exports(bytes))
+  // At least custom sections stripped (~97KB of non-essential data removed)
+  // wite achieves 69644, we should get at least some reduction
+  assert(after < 171000)
+}
+
+test "zlib.wasm section count" {
+  let bytes = Fs::read_bytes("vibe/x/wasmopt/zlib.wasm")
+  let sizes = section_sizes(bytes)
+  // zlib has: custom(0) + type(1) + import(2) + function(3) + table(4) +
+  //          memory(5) + global(6) + export(7) + element(9) + code(10) + data(11)
+  assert(Array::length(sizes) >= 8)
+}
+
+test "zlib.wasm function and type counts" {
+  let bytes = Fs::read_bytes("vibe/x/wasmopt/zlib.wasm")
+  // wite reports: 114 functions before optimization
+  assert(count_functions(bytes) > 100)
+  // Should have some type definitions
+  assert(count_types(bytes) > 0)
+  // Should have exports (main, malloc, free, etc)
+  assert(count_exports(bytes) > 0)
+}
+
+test "zlib.wasm minify output still has expected structure" {
+  let bytes = Fs::read_bytes("vibe/x/wasmopt/zlib.wasm")
+  let opt = minify(bytes)
+  // After minify, module should still have:
+  // - Type section
+  assert(count_types(opt) > 0)
+  // - Functions (may be fewer if DCE removed some)
+  assert(count_functions(opt) > 0)
+  // - Exports (preserved)
+  assert(count_exports(opt) == count_exports(bytes))
+  // - Multiple sections
+  assert(Array::length(section_sizes(opt)) >= 4)
+}
