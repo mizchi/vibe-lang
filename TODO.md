@@ -103,14 +103,14 @@ Phase 4 (応用):
   - GC codegen にビルトイン追加済み: `Array::slice`, `Array::concat`, `Bytes::*`, `eq`, `__to_string` 等
   - `EHandle`, `EStringInterp`, `PTuple` match arm, `ESeq`/`ELet`/`ELetRec`/`EIf` フラット化済み
   - `try_resolve` 再帰 → while ループ化済み
-  - ブロッカー: GC compiler (MoonBit host compiled WASM, 947KB) が `run` 初期化で `tagged int 31` を throw
+  - ブロッカー: MoonBit compiled パーサー (WASM) の再帰降下が V8 WASM stack limit を超える
+    - Variant A (lex のみ): 300KB ソースの lex は成功 (68K トークン)
+    - Variant B (lex+parse): 44KB ソースのパースで V8 stack overflow / wasmtime タイムアウト
     - 小さいソースの GC コンパイルは正常動作 (fib, enum, match, tuple destructure 等)
-    - GC compiler の初期化だけで heap_ptr=66MB を消費（memory.grow は動作するが同じ地点で停止）
-    - 1024ページ (64MB) でも 8192ページ (512MB) でも同じ heap_ptr で crash = OOM ではなく初期化時の内部エラー
-    - cli_main() に到達する前に crash（println/throw デバッグで確認）
-    - MoonBit host codegen が 947KB WASM を生成する際の初期化コスト (66MB) が MoonBit runtime の内部制限に到達
-    - 文字列補間展開 (Python expand_interp) は完了し、フラットソースは host compile 通過
-    - 次: MoonBit compiler の `--wasm` target の初期化メモリ使用量を削減するか、GC codegen のモジュール分割で import チェーンを小さくする
+    - OOM ではない (1GB メモリでも同じ crash)。V8 WASM stack は固定 ~15K frames
+    - GC codegen 自体のバグではなく、パーサー段階で crash
+    - 文字列補間展開 (Python expand_interp, inner string 対応) 完了、フラットソースは host compile 通過
+    - 解決策候補: (a) vibe パーサーの再帰を反復化、(b) MoonBit compiled WASM の stack frame 効率改善
 
 - [ ] selfhost perf gap を cutover 可能な水準まで詰める
   - stable 5-case set の debug selfhost wasm baseline では host 比 compile 約5x、check 約2-4x 遅い
