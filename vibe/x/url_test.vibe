@@ -1,0 +1,94 @@
+//# Imports
+// Wrapper test that runs url tests from vibe/x/ root (needed because
+// url/pattern.vibe imports ../regexp which is outside url/ root).
+
+import ./url/url.vibe {
+  Url, Url::scheme, Url::host, Url::port, Url::path, Url::query, Url::fragment,
+  decode, decode_query, encode, encode_query, parse
+}
+
+import ./url/pattern.vibe {
+  compile_pattern, exec_pattern, get_param, pattern_has_match, test_pattern
+}
+
+//# Functions
+
+let empty_pairs = () -> Array[(String, String)] {
+  Array::slice([
+    ("", "")
+  ], 0, 0)
+}
+
+//# Tests — URL parsing
+
+test "parse simple URL" {
+  let url = parse("https://example.com/path?q=1#frag")
+  assert(Url::scheme(url) == "https")
+  assert(Url::host(url) == "example.com")
+  assert(Url::path(url) == "/path")
+  assert(Url::query(url) == "q=1")
+  assert(Url::fragment(url) == "frag")
+}
+
+test "parse URL without scheme" {
+  let url = parse("example.com/path")
+  assert(Url::scheme(url) == "")
+  assert(Url::host(url) == "")
+  assert(Url::path(url) == "example.com/path")
+}
+
+test "parse URL with port" {
+  let url = parse("http://localhost:8080/api")
+  assert(Url::host(url) == "localhost")
+  assert(Url::port(url) == 8080)
+  assert(Url::path(url) == "/api")
+}
+
+test "encode special chars" {
+  assert(encode("hello world") == "hello%20world")
+  assert(encode("a&b=c") == "a%26b%3Dc")
+}
+
+test "decode percent encoding" {
+  assert(decode("hello%20world") == "hello world")
+  assert(decode("a%26b%3Dc") == "a&b=c")
+}
+
+test "encode_query pairs" {
+  assert(encode_query([("a", "1"), ("b", "2")]) == "a=1&b=2")
+}
+
+test "decode_query single param" {
+  let pairs = decode_query("a=1")
+  assert(Array::length(pairs) == 1)
+}
+
+test "decode_query empty string" {
+  let pairs = decode_query("")
+  assert(Array::length(pairs) == 0)
+}
+
+test "decode_query no value" {
+  let pairs = decode_query("key")
+  assert(Array::length(pairs) == 1)
+}
+
+test "pattern basic" {
+  let p = compile_pattern("/users/:id")
+  assert(test_pattern(p, "/users/42"))
+  assert(not(test_pattern(p, "/users")))
+}
+
+test "pattern exec" {
+  let p = compile_pattern("/users/:id")
+  let m = exec_pattern(p, "/users/42")
+  assert(pattern_has_match(m))
+  assert(get_param(m, "id") == "42")
+}
+
+test "pattern wildcard" {
+  let p = compile_pattern("/files/*path")
+  assert(test_pattern(p, "/files/a/b/c"))
+  let m = exec_pattern(p, "/files/a/b/c")
+  assert(get_param(m, "path") == "a/b/c")
+}
