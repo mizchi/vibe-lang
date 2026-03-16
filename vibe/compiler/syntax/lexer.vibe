@@ -236,12 +236,11 @@ let rec scan_ident_end = (s: String, len: Int, i: Int) -> Int {
   } else i
 }
 
-let lex_ident = (s: String, len: Int, i: Int) -> (Token, Int) with { Error } {
+let lex_ident = (s: String, len: Int, i: Int) -> (Token, Int) {
   let end = scan_ident_end(s, len, i)
   let word = s[i:end]
   // Raw string: r"..." → lex as regular string but without escape processing
   if word == "r" && end < len && String::char_code_at(s, end) == '"' {
-    // Scan to closing quote without escape processing
     let mut ri = end + 1
     let mut raw_acc = ""
     while ri < len && String::char_code_at(s, ri) != '"' {
@@ -249,9 +248,10 @@ let lex_ident = (s: String, len: Int, i: Int) -> (Token, Int) with { Error } {
       ri = ri + 1
     }
     if ri >= len {
-      throw("unterminated raw string")
+      (TString(raw_acc), ri)
+    } else {
+      (TString(raw_acc), ri + 1)
     }
-    (TString(raw_acc), ri + 1)
   } else {
     match keyword_lookup(word) {
       Some(tok) => if word == "true" || word == "false" {
@@ -432,7 +432,11 @@ let lex_decimal = (s: String, len: Int, i: Int) -> (Token, Int)with { Error } {
       let int_str = s[i:int_end]
       let int_val = Int::to_double(parse_int_from_string(int_str))
       let (frac_val, frac_end) = parse_frac_digits(s, len, int_end + 1, 0.0, 10.0);
-      (TFloat(int_val + frac_val), frac_end)
+      if frac_end < len && String::char_code_at(s, frac_end) == 'f' {
+        (TFloat(int_val + frac_val), frac_end + 1)
+      } else {
+        (TFloat(int_val + frac_val), frac_end)
+      }
     } else {
       let int_str = s[i:int_end];
       (TInt(parse_int_from_string(int_str)), int_end)
