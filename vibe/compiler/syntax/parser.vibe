@@ -1649,12 +1649,47 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
             _ => throw("expected identifier after 'let mut'")
           },
           TIdent(name) => {
-            // Check if this is a constructor pattern: let Some(x) = expr
-            let is_ctor_pat = match peek(tokens, next + 1) {
-              TLParen => true,
-              _ => false
+            // Record destructuring: let record { x, y } = expr
+            if name == "record" && (match peek(tokens, next + 1) { TLBrace => true, _ => false }) {
+              let mut rp = next + 2
+              let field_names = ArrayBuilder::new()
+              let mut rd = true
+              while rd {
+                match peek(tokens, rp) {
+                  TRBrace => { rd = false },
+                  TIdent(fname) => {
+                    ArrayBuilder::push(field_names, fname)
+                    rp = rp + 1
+                    match peek(tokens, rp) {
+                      TComma => { rp = rp + 1 },
+                      _ => ()
+                    }
+                  },
+                  _ => { rd = false }
+                }
+              }
+              let rp2 = rp + 1
+              let eq = expect_tk(tokens, rp2, "=")
+              let (val, vn) = parse_impl(tokens, eq, 0)
+              let a = skip_semi(tokens, vn)
+              let (body, end) = parse_impl(tokens, a, mode_block)
+              let fnames = ArrayBuilder::freeze(field_names)
+              // Desugar using tuple-style index access (record layout: tag+count header = 8 bytes, then fields)
+              // EDot with numeric index uses tuple layout (no header), so we use __index for record fields
+              let val_name = "__rec_destr"
+              let mut desugar = body
+              let mut di = Array::length(fnames) - 1
+              while di >= 0 {
+                let fn_name = Array::get(fnames, di)
+                // Access field at offset 8 + di * 8 via __rec_field helper
+                desugar = ELet(fn_name, ECall(EIdent("__rec_field"), [EIdent(val_name), EInt(di)]), desugar)
+                di = di - 1
+              }
+              desugar = ELet(val_name, val, desugar)
+              (desugar, end)
             }
-            if is_ctor_pat {
+            // Check if this is a constructor pattern: let Some(x) = expr
+            else if (match peek(tokens, next + 1) { TLParen => true, _ => false }) {
               let (pat, pn) = parse_pattern(tokens, next)
               let eq = expect_tk(tokens, pn, "=")
               let (val, vn) = parse_impl(tokens, eq, 0)
