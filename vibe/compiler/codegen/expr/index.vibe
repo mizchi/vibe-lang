@@ -208,6 +208,122 @@ let compile_call = (buf: Array[Int], callee: Expr, args: Array[Expr], local_name
       emit_call(buf, ss_idx)
       nl
     }
+    else if fname == "Array::map" || fname == "map" {
+      // Array::map(arr, fn) → new array with fn applied to each element
+      let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
+      let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
+      let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
+      let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      let arr_l = nl
+      let fn_l = nl + 1
+      let res_l = nl + 2
+      let len_l = nl + 3
+      let i_l = nl + 4
+      let slot_l = nl + 5
+      let env_l = nl + 6
+      let elem_l = nl + 7
+      Array::push(local_names, "__map_arr")
+      Array::push(local_names, "__map_fn")
+      Array::push(local_names, "__map_res")
+      Array::push(local_names, "__map_len")
+      Array::push(local_names, "__map_i")
+      Array::push(local_names, "__map_slot")
+      Array::push(local_names, "__map_env")
+      Array::push(local_names, "__map_elem")
+      emit_local_set(buf, fn_l)
+      emit_local_set(buf, arr_l)
+      emit_call(buf, arr_new_fi)
+      emit_local_set(buf, res_l)
+      emit_local_get(buf, arr_l)
+      emit_call(buf, arr_len_fi)
+      emit_local_set(buf, len_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, i_l)
+      emit_closure_resolve(buf, fn_l, slot_l, env_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, i_l)
+      emit_local_get(buf, len_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      // elem = arr[i]
+      emit_local_get(buf, arr_l)
+      emit_local_get(buf, i_l)
+      emit_call(buf, arr_get_fi)
+      emit_local_set(buf, elem_l)
+      // result = fn(elem)
+      emit_local_get(buf, elem_l)
+      emit_closure_call_tail(buf, env_l, slot_l, 9, 1)
+      emit_local_set(buf, elem_l)
+      // push result
+      emit_local_get(buf, res_l)
+      emit_local_get(buf, elem_l)
+      emit_call(buf, arr_push_fi)
+      emit_local_get(buf, i_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, i_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, res_l)
+      nl + 8
+    }
+    else if fname == "Array::fold" {
+      // Array::fold(arr, init, fn) → fold left
+      let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
+      let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+      let arr_l = nl
+      let acc_l = nl + 1
+      let fn_l = nl + 2
+      let len_l = nl + 3
+      let i_l = nl + 4
+      let slot_l = nl + 5
+      let env_l = nl + 6
+      Array::push(local_names, "__fold_arr")
+      Array::push(local_names, "__fold_acc")
+      Array::push(local_names, "__fold_fn")
+      Array::push(local_names, "__fold_len")
+      Array::push(local_names, "__fold_i")
+      Array::push(local_names, "__fold_slot")
+      Array::push(local_names, "__fold_env")
+      emit_local_set(buf, fn_l)
+      emit_local_set(buf, acc_l)
+      emit_local_set(buf, arr_l)
+      emit_local_get(buf, arr_l)
+      emit_call(buf, arr_len_fi)
+      emit_local_set(buf, len_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, i_l)
+      emit_closure_resolve(buf, fn_l, slot_l, env_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, i_l)
+      emit_local_get(buf, len_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      // acc = fn(acc, arr[i])
+      emit_local_get(buf, acc_l)
+      emit_local_get(buf, arr_l)
+      emit_local_get(buf, i_l)
+      emit_call(buf, arr_get_fi)
+      emit_closure_call_tail(buf, env_l, slot_l, 9, 2)
+      emit_local_set(buf, acc_l)
+      emit_local_get(buf, i_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, i_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, acc_l)
+      nl + 7
+    }
     else if fname == "Map::get" {
       // Map::get(map, key) — linear search by key string equality
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
@@ -1455,6 +1571,11 @@ export let rec compile_expr = (buf: Array[Int], expr: Expr, local_names: Array[S
         }
       }
       ,
+      EStringInterp(_) => {
+        // Should be desugared in preprocessing. Fallback: emit empty string.
+        emit_i64_const(buf, 0)
+        next_local
+      },
       ELabeledArg(_, _, _) => throw("unsupported expression in codegen: ELabeledArg"),
       _ => throw("unsupported expression in codegen: unknown")
     }
