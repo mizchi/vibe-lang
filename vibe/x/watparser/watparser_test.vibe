@@ -262,3 +262,412 @@ test "wat_summary complex" {
   assert(String::contains(s, "imports: 1"))
   assert(String::contains(s, "exports: 2"))
 }
+
+// ============================================================
+// Tests ported from Rust wasm-tools/wast lexer.rs
+// ============================================================
+
+// --- lparen / rparen ---
+
+test "rs: lparen" {
+  let tokens = filter_tokens(tokenize("(("))
+  assert(Array::length(tokens) == 2)
+  let (t0, _, _) = Array::get(tokens, 0)
+  let (t1, _, _) = Array::get(tokens, 1)
+  assert(t0 == tok_type_lparen())
+  assert(t1 == tok_type_lparen())
+}
+
+test "rs: rparen" {
+  let tokens = filter_tokens(tokenize(")("))
+  assert(Array::length(tokens) == 2)
+  let (t0, _, _) = Array::get(tokens, 0)
+  let (t1, _, _) = Array::get(tokens, 1)
+  assert(t0 == tok_type_rparen())
+  assert(t1 == tok_type_lparen())
+}
+
+// --- whitespace ---
+
+test "rs: ws single space" {
+  let tokens = filter_tokens(tokenize(" "))
+  assert(Array::length(tokens) == 0)
+}
+
+test "rs: ws multiple spaces" {
+  let tokens = filter_tokens(tokenize("   "))
+  assert(Array::length(tokens) == 0)
+}
+
+test "rs: ws newline" {
+  let tokens = filter_tokens(tokenize("  \n "))
+  assert(Array::length(tokens) == 0)
+}
+
+test "rs: ws before token" {
+  let src = "  x"
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 1)
+  assert(token_text(src, Array::get(tokens, 0)) == "x")
+}
+
+// --- line comments ---
+
+test "rs: line comment basic" {
+  let tokens = filter_tokens(tokenize(";;"))
+  assert(Array::length(tokens) == 0)
+}
+
+test "rs: line comment with text" {
+  let tokens = filter_tokens(tokenize(";; xyz"))
+  assert(Array::length(tokens) == 0)
+}
+
+test "rs: line comment stops at newline" {
+  let src = ";; xyz\nabc"
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 1)
+  assert(token_text(src, Array::get(tokens, 0)) == "abc")
+}
+
+test "rs: line comment empty" {
+  let src = ";;\nabc"
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 1)
+  assert(token_text(src, Array::get(tokens, 0)) == "abc")
+}
+
+// --- block comments ---
+
+test "rs: block comment simple" {
+  let tokens = filter_tokens(tokenize("(;;)"))
+  assert(Array::length(tokens) == 0)
+}
+
+test "rs: block comment with space" {
+  let tokens = filter_tokens(tokenize("(; ;)"))
+  assert(Array::length(tokens) == 0)
+}
+
+test "rs: block comment nested" {
+  let tokens = filter_tokens(tokenize("(; (;;) ;)"))
+  assert(Array::length(tokens) == 0)
+}
+
+test "rs: block comment before token" {
+  let src = "(; comment ;) module"
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 1)
+  assert(token_text(src, Array::get(tokens, 0)) == "module")
+}
+
+// --- strings ---
+
+test "rs: string empty" {
+  let src = "\"\""
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 1)
+  let (ty, _, _) = Array::get(tokens, 0)
+  assert(ty == tok_type_string())
+  assert(decode_string(token_text(src, Array::get(tokens, 0))) == "")
+}
+
+test "rs: string simple" {
+  let src = "\"a\""
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 1)
+  assert(decode_string(token_text(src, Array::get(tokens, 0))) == "a")
+}
+
+test "rs: string with spaces" {
+  let src = "\"a b c d\""
+  let tokens = filter_tokens(tokenize(src))
+  assert(decode_string(token_text(src, Array::get(tokens, 0))) == "a b c d")
+}
+
+test "rs: string escape newline" {
+  let src = "\"a\\nb\""
+  let tokens = filter_tokens(tokenize(src))
+  let decoded = decode_string(token_text(src, Array::get(tokens, 0)))
+  assert(String::length(decoded) == 3)
+}
+
+test "rs: string escape tab" {
+  let src = "\"a\\tb\""
+  let decoded = decode_string(token_text(src, Array::get(filter_tokens(tokenize(src)), 0)))
+  assert(String::length(decoded) == 3)
+}
+
+test "rs: string escape backslash" {
+  let src = "\"a\\\\b\""
+  let decoded = decode_string(token_text(src, Array::get(filter_tokens(tokenize(src)), 0)))
+  assert(String::length(decoded) == 3)
+}
+
+test "rs: string escape quote" {
+  let src = "\"a\\\"b\""
+  let decoded = decode_string(token_text(src, Array::get(filter_tokens(tokenize(src)), 0)))
+  assert(String::length(decoded) == 3)
+}
+
+test "rs: string hex escape" {
+  // \01 = byte 1
+  let src = "\"\\01\""
+  let decoded = decode_string(token_text(src, Array::get(filter_tokens(tokenize(src)), 0)))
+  assert(String::length(decoded) == 1)
+}
+
+test "rs: string hex escape ff" {
+  // \ff = byte 255
+  let src = "\"\\ff\""
+  let decoded = decode_string(token_text(src, Array::get(filter_tokens(tokenize(src)), 0)))
+  assert(String::length(decoded) == 1)
+}
+
+// --- identifiers ---
+
+test "rs: id simple" {
+  let src = "$x"
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 1)
+  let (ty, _, _) = Array::get(tokens, 0)
+  assert(ty == tok_type_ident())
+  assert(token_text(src, Array::get(tokens, 0)) == "$x")
+}
+
+test "rs: id long" {
+  let src = "$xyz"
+  let tokens = filter_tokens(tokenize(src))
+  assert(token_text(src, Array::get(tokens, 0)) == "$xyz")
+}
+
+test "rs: id with underscore" {
+  let src = "$x_z"
+  let tokens = filter_tokens(tokenize(src))
+  assert(token_text(src, Array::get(tokens, 0)) == "$x_z")
+}
+
+test "rs: id stops at space" {
+  let src = "$foo bar"
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 2)
+  assert(token_text(src, Array::get(tokens, 0)) == "$foo")
+}
+
+test "rs: id stops at comment" {
+  let src = "$foo;; comment"
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 1)
+  assert(token_text(src, Array::get(tokens, 0)) == "$foo")
+}
+
+// --- keywords ---
+
+test "rs: keyword simple" {
+  let src = "x"
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 1)
+  let (ty, _, _) = Array::get(tokens, 0)
+  assert(ty == tok_type_keyword())
+  assert(token_text(src, Array::get(tokens, 0)) == "x")
+}
+
+test "rs: keyword long" {
+  let src = "xyz"
+  let tokens = filter_tokens(tokenize(src))
+  assert(token_text(src, Array::get(tokens, 0)) == "xyz")
+}
+
+test "rs: keyword with underscore" {
+  let src = "x_z"
+  let tokens = filter_tokens(tokenize(src))
+  assert(token_text(src, Array::get(tokens, 0)) == "x_z")
+}
+
+test "rs: keyword stops at space" {
+  let src = "x_z foo"
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 2)
+  assert(token_text(src, Array::get(tokens, 0)) == "x_z")
+}
+
+test "rs: keyword i32.const" {
+  let src = "i32.const"
+  let tokens = filter_tokens(tokenize(src))
+  assert(Array::length(tokens) == 1)
+  assert(token_text(src, Array::get(tokens, 0)) == "i32.const")
+}
+
+test "rs: keyword memory.grow" {
+  let src = "memory.grow"
+  let tokens = filter_tokens(tokenize(src))
+  assert(token_text(src, Array::get(tokens, 0)) == "memory.grow")
+}
+
+// --- integers ---
+
+test "rs: integer 1" {
+  assert(parse_int("1") == 1)
+}
+
+test "rs: integer 0" {
+  assert(parse_int("0") == 0)
+}
+
+test "rs: integer negative" {
+  assert(parse_int("-1") == -1)
+}
+
+test "rs: integer positive sign" {
+  assert(parse_int("+1") == 1)
+}
+
+test "rs: integer hex" {
+  assert(parse_int("0x10") == 16)
+}
+
+test "rs: integer hex negative" {
+  assert(parse_int("-0x10") == -16)
+}
+
+test "rs: integer hex uppercase" {
+  assert(parse_int("0xFF") == 255)
+}
+
+test "rs: integer large" {
+  assert(parse_int("12345") == 12345)
+}
+
+// --- decode_string edge cases ---
+
+test "rs: decode_string empty quotes" {
+  assert(decode_string("\"\"") == "")
+}
+
+test "rs: decode_string no quotes" {
+  assert(decode_string("") == "")
+}
+
+test "rs: decode_string multiple escapes" {
+  let s = decode_string("\"\\n\\t\\\\\"")
+  assert(String::length(s) == 3)
+}
+
+// --- mixed tokens ---
+
+test "rs: mixed token sequence" {
+  let src = "(module $m (func $f (param i32) (result i64) local.get 0))"
+  let tokens = filter_tokens(tokenize(src))
+  // ( module $m ( func $f ( param i32 ) ( result i64 ) local.get 0 ) )
+  assert(Array::length(tokens) > 10)
+  let (t0, _, _) = Array::get(tokens, 0)
+  assert(t0 == tok_type_lparen())
+  assert(token_text(src, Array::get(tokens, 1)) == "module")
+  let (t2, _, _) = Array::get(tokens, 2)
+  assert(t2 == tok_type_ident())
+  assert(token_text(src, Array::get(tokens, 2)) == "$m")
+}
+
+test "rs: inline data string" {
+  let src = "(data (i32.const 0) \"\\00\\01\\02\\03\")"
+  let tokens = filter_tokens(tokenize(src))
+  // Find the string token
+  let cnt = Array::length(tokens)
+  let mut found = false
+  let mut si = 0
+  while si < cnt {
+    let (ty, _, _) = Array::get(tokens, si)
+    if ty == tok_type_string() {
+      let decoded = decode_string(token_text(src, Array::get(tokens, si)))
+      assert(String::length(decoded) == 4)
+      found = true
+    } else { () }
+    si = si + 1
+  }
+  assert(found == true)
+}
+
+// --- instruction recognition ---
+
+test "rs: is_instruction comprehensive" {
+  // True cases
+  assert(is_instruction("i32.const") == true)
+  assert(is_instruction("i64.add") == true)
+  assert(is_instruction("f32.mul") == true)
+  assert(is_instruction("f64.div") == true)
+  assert(is_instruction("local.get") == true)
+  assert(is_instruction("local.set") == true)
+  assert(is_instruction("local.tee") == true)
+  assert(is_instruction("global.get") == true)
+  assert(is_instruction("global.set") == true)
+  assert(is_instruction("memory.size") == true)
+  assert(is_instruction("memory.grow") == true)
+  assert(is_instruction("call") == true)
+  assert(is_instruction("call_indirect") == true)
+  assert(is_instruction("block") == true)
+  assert(is_instruction("loop") == true)
+  assert(is_instruction("if") == true)
+  assert(is_instruction("else") == true)
+  assert(is_instruction("end") == true)
+  assert(is_instruction("br") == true)
+  assert(is_instruction("br_if") == true)
+  assert(is_instruction("br_table") == true)
+  assert(is_instruction("return") == true)
+  assert(is_instruction("drop") == true)
+  assert(is_instruction("select") == true)
+  assert(is_instruction("unreachable") == true)
+  assert(is_instruction("nop") == true)
+  // False cases
+  assert(is_instruction("module") == false)
+  assert(is_instruction("func") == false)
+  assert(is_instruction("type") == false)
+  assert(is_instruction("param") == false)
+  assert(is_instruction("result") == false)
+  assert(is_instruction("export") == false)
+  assert(is_instruction("import") == false)
+  assert(is_instruction("table") == false)
+  assert(is_instruction("memory") == false)
+  assert(is_instruction("data") == false)
+  assert(is_instruction("elem") == false)
+}
+
+// --- WAT file patterns ---
+
+test "rs: multiline wat" {
+  let src = "(module\n  (type (func))\n  (func (type 0)\n    nop\n  )\n)"
+  let names = wat_section_names(src)
+  assert(Array::length(names) == 2)
+  assert(Array::get(names, 0) == "type")
+  assert(Array::get(names, 1) == "func")
+}
+
+test "rs: wat with comments" {
+  let src = "(module\n  ;; type section\n  (type (func))\n  (; block comment ;)\n  (func (type 0))\n)"
+  let names = wat_section_names(src)
+  assert(Array::length(names) == 2)
+}
+
+test "rs: wat empty module" {
+  assert(Array::length(wat_section_names("(module)")) == 0)
+  assert(wat_func_count("(module)") == 0)
+}
+
+test "rs: wat multiple imports" {
+  let src = "(module (import \"a\" \"b\" (func)) (import \"c\" \"d\" (memory 1)))"
+  let imports = wat_imports(src)
+  assert(Array::length(imports) == 2)
+  let (m0, f0, k0) = Array::get(imports, 0)
+  assert(m0 == "a")
+  assert(f0 == "b")
+  assert(k0 == "func")
+  let (m1, f1, k1) = Array::get(imports, 1)
+  assert(m1 == "c")
+  assert(f1 == "d")
+  assert(k1 == "memory")
+}
+
+test "rs: wat globals and tables" {
+  let s = wat_summary("(module (global (mut i32) (i32.const 0)) (table 10 funcref))")
+  assert(String::contains(s, "globals: 1"))
+  assert(String::contains(s, "tables: 1"))
+}
