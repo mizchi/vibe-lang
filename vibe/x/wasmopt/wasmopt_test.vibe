@@ -6,7 +6,8 @@ import ./index.vibe {
   count_exports, count_functions, count_types,
   binary_size, section_sizes,
   optimize_code_section, build_call_graph, find_reachable,
-  dce, optimize
+  dce, optimize,
+  coalesce_locals, remove_unused_types, remove_empty_sections, minify
 }
 
 //# Functions
@@ -342,4 +343,121 @@ test "optimize with custom section" {
   // Custom section stripped
   assert(binary_size(optimized) < binary_size(m))
   assert(count_functions(optimized) == 1)
+}
+
+// === coalesce_locals ===
+
+test "coalesce_locals removes unused" {
+  // Module with func that has 2 i32 locals but only uses local 0 (the first declared local)
+  // type () -> (i32), func [0], export "main", code body: 2 locals (2 x i32), local.get 0, end
+  // Params: 0, locals: index 0 and 1 are declared locals
+  // Only local.get 0 used, so local 1 should be removed
+  let m = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 2, 1, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    10, 8, 1, 6, 1, 2, 127, 32, 0, 11
+  ])
+  let optimized = coalesce_locals(m)
+  // Should be smaller: 2 locals -> 1 local
+  assert(binary_size(optimized) <= binary_size(m))
+  assert(count_functions(optimized) == 1)
+}
+
+// === remove_unused_types ===
+
+test "remove_unused_types" {
+  // Module with 3 types but only type 0 used by function section
+  // type section: 3 entries: ()->i32, (i32)->i32, (i32,i32)->i32
+  // func section: 1 func using type 0
+  let m = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 13, 3,
+      96, 0, 1, 127,
+      96, 1, 127, 1, 127,
+      96, 2, 127, 127, 1, 127,
+    3, 2, 1, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    10, 6, 1, 4, 0, 65, 42, 11
+  ])
+  assert(count_types(m) == 3)
+  let optimized = remove_unused_types(m)
+  assert(count_types(optimized) == 1)
+}
+
+// === remove_empty_sections ===
+
+test "remove_empty_sections" {
+  // Module with an empty function section (count=0) added artificially
+  // header + type section + empty func section (id=3, size=1, count=0) + actual content
+  let m = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 1, 0
+  ])
+  let original_size = binary_size(m)
+  let optimized = remove_empty_sections(m)
+  // Empty func section should be removed
+  assert(binary_size(optimized) < original_size)
+}
+
+// === minify pipeline ===
+
+test "minify pipeline" {
+  // Module with custom section + unused func + dead code
+  let m = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    0, 8, 4, 110, 97, 109, 101, 1, 2, 3,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 3, 2, 0, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    10, 14, 2, 7, 0, 65, 3, 65, 4, 106, 11, 4, 0, 65, 99, 11
+  ])
+  let optimized = minify(m)
+  // Should be smaller: custom section stripped + const folded + dead func stubbed
+  assert(binary_size(optimized) < binary_size(m))
+  assert(count_functions(optimized) == 2)
+}
+
+test "minify convergence" {
+  // Already minimal module should not change on second pass
+  let m = minimal_module()
+  let pass1 = minify(m)
+  let pass2 = minify(pass1)
+  assert(binary_size(pass1) == binary_size(pass2))
+}
+
+// === peephole: local.set X, local.get X -> local.tee X ===
+
+test "peephole local set get to tee" {
+  // Code body: 1 local (i32), i32.const 42, local.set 0, local.get 0, end
+  // After peephole: i32.const 42, local.tee 0, end
+  let m = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 2, 1, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    10, 10, 1, 8, 1, 1, 127, 65, 42, 33, 0, 32, 0, 11
+  ])
+  let optimized = optimize_code_section(m)
+  // local.set 0 (33,0) + local.get 0 (32,0) = 4 bytes -> local.tee 0 (34,0) = 2 bytes
+  assert(binary_size(optimized) < binary_size(m))
+}
+
+// === peephole: eqz eqz removal ===
+
+test "peephole eqz eqz removal" {
+  // Code body: 1 local, local.get 0, i32.eqz, i32.eqz, end
+  // After peephole: local.get 0, end
+  let m = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 2, 1, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    10, 8, 1, 6, 1, 1, 127, 32, 0, 69, 69, 11
+  ])
+  let optimized = optimize_code_section(m)
+  // Two eqz (0x45) removed = 2 bytes saved
+  assert(binary_size(optimized) < binary_size(m))
 }

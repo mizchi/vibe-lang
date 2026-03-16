@@ -627,34 +627,74 @@ let peephole_instrs = (instrs: Array[(Int, Int)]) -> Array[(Int, Int)] {
             i = i + 3
             changed = true
           } else {
-            // No 3-instr pattern
+            // No 3-instr pattern; check 2-instr patterns
+            let mut matched2 = false
             if (i + 1) < n {
-              // Check dead drop elimination: i32.const X, drop OR local.get N, drop
-              let (op_next, _) = Array::get(current, i + 1)
-              if ((op_i == 0x41) || (op_i == 0x20)) && (op_next == 0x1A) {
-                // Remove both instructions
+              let (op_next, imm_next) = Array::get(current, i + 1)
+              // local.set X, local.get X -> local.tee X
+              if (op_i == 0x21) && (op_next == 0x20) && (imm_i == imm_next) {
+                Array::push(result, (0x22, imm_i))
                 i = i + 2
                 changed = true
+                matched2 = true
               } else {
-                Array::push(result, (op_i, imm_i))
-                i = i + 1
+                // const 0, br_if -> remove (never-taken branch)
+                if (op_i == 0x41) && (imm_i == 0) && (op_next == 0x0D) {
+                  i = i + 2
+                  changed = true
+                  matched2 = true
+                } else {
+                  // eqz, eqz -> remove (double negation)
+                  if (op_i == 0x45) && (op_next == 0x45) {
+                    i = i + 2
+                    changed = true
+                    matched2 = true
+                  } else {
+                    // dead drop elimination: i32.const X, drop OR local.get N, drop
+                    if ((op_i == 0x41) || (op_i == 0x20)) && (op_next == 0x1A) {
+                      i = i + 2
+                      changed = true
+                      matched2 = true
+                    } else { () }
+                  }
+                }
               }
-            } else {
+            } else { () }
+            if matched2 == false {
               Array::push(result, (op_i, imm_i))
               i = i + 1
-            }
+            } else { () }
           }
         }
       } else {
         if (i + 1) < n {
-          // Check dead drop elimination: i32.const X, drop OR local.get N, drop
-          let (op_next, _) = Array::get(current, i + 1)
-          if ((op_i == 0x41) || (op_i == 0x20)) && (op_next == 0x1A) {
+          let (op_next, imm_next) = Array::get(current, i + 1)
+          // local.set X, local.get X -> local.tee X
+          if (op_i == 0x21) && (op_next == 0x20) && (imm_i == imm_next) {
+            Array::push(result, (0x22, imm_i))
             i = i + 2
             changed = true
           } else {
-            Array::push(result, (op_i, imm_i))
-            i = i + 1
+            // const 0, br_if -> remove
+            if (op_i == 0x41) && (imm_i == 0) && (op_next == 0x0D) {
+              i = i + 2
+              changed = true
+            } else {
+              // eqz, eqz -> remove
+              if (op_i == 0x45) && (op_next == 0x45) {
+                i = i + 2
+                changed = true
+              } else {
+                // dead drop elimination
+                if ((op_i == 0x41) || (op_i == 0x20)) && (op_next == 0x1A) {
+                  i = i + 2
+                  changed = true
+                } else {
+                  Array::push(result, (op_i, imm_i))
+                  i = i + 1
+                }
+              }
+            }
           }
         } else {
           Array::push(result, (op_i, imm_i))
@@ -1055,4 +1095,582 @@ export let optimize = (bytes: Bytes) -> Bytes {
   let step2 = optimize_code_section(step1)
   let step3 = dce(step2)
   step3
+}
+
+// === Coalesce locals ===
+
+// Get param count for a function type at the given type section offset.
+// Type entry format: 0x60 param_count param_types... result_count result_types...
+let get_type_param_count = (bytes: Bytes, type_sec_off: Int, type_sec_sz: Int, type_idx: Int) -> Int {
+  let end_pos = type_sec_off + type_sec_sz
+  let (type_count, pos0) = read_uleb128(bytes, type_sec_off)
+  let mut pos = pos0
+  let mut ti = 0
+  let mut result = 0
+  while (ti < type_count) && (pos < end_pos) {
+    // 0x60 = func type
+    pos = pos + 1
+    let (param_count, pp) = read_uleb128(bytes, pos)
+    pos = pp + param_count
+    let (result_count, rp) = read_uleb128(bytes, pos)
+    pos = rp + result_count
+    if ti == type_idx { result = param_count }
+    else { () }
+    ti = ti + 1
+  }
+  result
+}
+
+// Parse function section to get type indices for each function
+let parse_func_type_indices = (bytes: Bytes) -> Array[Int] {
+  let result = Array::slice([(0)], 0, 0)
+  let sections = list_sections(bytes)
+  let mut s = 0
+  while s < Array::length(sections) {
+    let (sid, off, sz) = Array::get(sections, s)
+    if sid == 3 {
+      let end_pos = off + sz
+      let (cnt, pos0) = read_uleb128(bytes, off)
+      let mut pos = pos0
+      let mut i = 0
+      while (i < cnt) && (pos < end_pos) {
+        let (tidx, np) = read_uleb128(bytes, pos)
+        Array::push(result, tidx)
+        pos = np
+        i = i + 1
+      }
+    } else { () }
+    s = s + 1
+  }
+  result
+}
+
+// Coalesce locals: remove unused local declarations and remap indices.
+export let coalesce_locals = (bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 { copy_bytes(bytes, 0, len) }
+  else {
+    // Find type section info
+    let sections = list_sections(bytes)
+    let mut type_sec_off = 0
+    let mut type_sec_sz = 0
+    let mut si = 0
+    while si < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, si)
+      if sid == 1 { type_sec_off = off; type_sec_sz = sz }
+      else { () }
+      si = si + 1
+    }
+    let func_type_indices = parse_func_type_indices(bytes)
+
+    let out = Bytes::new()
+    let mut i = 0
+    while i < 8 { Bytes::push(out, bytes[i]); i = i + 1 }
+    si = 0
+    while si < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, si)
+      if sid == 10 {
+        let new_content = coalesce_code_section(bytes, off, sz, type_sec_off, type_sec_sz, func_type_indices)
+        emit_section(out, 10, new_content)
+      } else {
+        let content = copy_bytes(bytes, off, off + sz)
+        emit_section(out, sid, content)
+      }
+      si = si + 1
+    }
+    out
+  }
+}
+
+let coalesce_code_section = (bytes: Bytes, offset: Int, size: Int, type_sec_off: Int, type_sec_sz: Int, func_type_indices: Array[Int]) -> Bytes {
+  let end_pos = offset + size
+  let (func_count, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let bodies = Array::slice([(Bytes::new())], 0, 0)
+  let mut fi = 0
+  while (fi < func_count) && (pos < end_pos) {
+    let (body_size, bp) = read_uleb128(bytes, pos)
+    let body = copy_bytes(bytes, bp, bp + body_size)
+    // Get param count for this function
+    let param_count = if fi < Array::length(func_type_indices) {
+      let tidx = Array::get(func_type_indices, fi)
+      get_type_param_count(bytes, type_sec_off, type_sec_sz, tidx)
+    } else { 0 }
+    let optimized = coalesce_body(body, param_count)
+    Array::push(bodies, optimized)
+    pos = bp + body_size
+    fi = fi + 1
+  }
+  // Rebuild
+  let out = Bytes::new()
+  write_uleb128(out, Array::length(bodies))
+  let mut bi = 0
+  while bi < Array::length(bodies) {
+    let body = Array::get(bodies, bi)
+    write_uleb128(out, Bytes::length(body))
+    let mut j = 0
+    while j < Bytes::length(body) {
+      Bytes::push(out, body[j])
+      j = j + 1
+    }
+    bi = bi + 1
+  }
+  out
+}
+
+let coalesce_body = (body: Bytes, param_count: Int) -> Bytes {
+  let body_len = Bytes::length(body)
+  if body_len < 2 { copy_bytes(body, 0, body_len) }
+  else {
+    // Parse locals declaration
+    let mut pos = 0
+    let (local_decl_count, lp) = read_uleb128(body, 0)
+    pos = lp
+    // Collect local types: each entry is (count, type)
+    let local_types = Array::slice([(0, 0)], 0, 0)
+    let mut lc = 0
+    while lc < local_decl_count {
+      let (cnt, tp) = read_uleb128(body, pos)
+      let ltype = body[tp]
+      Array::push(local_types, (cnt, ltype))
+      pos = tp + 1
+      lc = lc + 1
+    }
+    let code_start = pos
+    let code_end = body_len - 1
+
+    // Expand local types to per-index type array
+    // Index 0..param_count-1 are params, param_count..total-1 are locals
+    let total_locals = param_count + expand_local_count(local_types)
+    let local_type_arr = Array::slice([(0)], 0, 0)
+    let mut li = 0
+    // params (type doesn't matter for remapping, use placeholder)
+    while li < param_count {
+      Array::push(local_type_arr, (-1))
+      li = li + 1
+    }
+    // declared locals
+    let mut di = 0
+    while di < Array::length(local_types) {
+      let (cnt, ltype) = Array::get(local_types, di)
+      let mut ci = 0
+      while ci < cnt {
+        Array::push(local_type_arr, ltype)
+        ci = ci + 1
+      }
+      di = di + 1
+    }
+
+    // Scan code for used local indices
+    let used = Array::slice([(0)], 0, 0)
+    // Params are always used
+    let mut pi = 0
+    while pi < param_count {
+      Array::push(used, pi)
+      pi = pi + 1
+    }
+    if code_start < code_end {
+      let instrs = parse_body_instrs(body, code_start, code_end)
+      let mut ii = 0
+      while ii < Array::length(instrs) {
+        let (op, imm) = Array::get(instrs, ii)
+        if (op == 0x20) || (op == 0x21) || (op == 0x22) {
+          if array_contains_int(used, imm) == false {
+            Array::push(used, imm)
+          } else { () }
+        } else { () }
+        ii = ii + 1
+      }
+    } else { () }
+
+    // Build old->new index map
+    let index_map = Array::slice([(0)], 0, 0)
+    let mut new_idx = 0
+    let mut oi = 0
+    while oi < total_locals {
+      if array_contains_int(used, oi) {
+        Array::push(index_map, new_idx)
+        new_idx = new_idx + 1
+      } else {
+        Array::push(index_map, (-1))
+      }
+      oi = oi + 1
+    }
+
+    // Build new local declarations (only used non-param locals)
+    // Group consecutive same-type locals
+    let new_local_entries = Array::slice([(0, 0)], 0, 0)
+    let mut nli = param_count
+    while nli < total_locals {
+      if array_contains_int(used, nli) {
+        let ltype = Array::get(local_type_arr, nli)
+        let nle_len = Array::length(new_local_entries)
+        if nle_len > 0 {
+          let (prev_cnt, prev_type) = Array::get(new_local_entries, nle_len - 1)
+          if prev_type == ltype {
+            Array::set(new_local_entries, nle_len - 1, (prev_cnt + 1, prev_type))
+          } else {
+            Array::push(new_local_entries, (1, ltype))
+          }
+        } else {
+          Array::push(new_local_entries, (1, ltype))
+        }
+      } else { () }
+      nli = nli + 1
+    }
+
+    // Rebuild body
+    let out = Bytes::new()
+    write_uleb128(out, Array::length(new_local_entries))
+    let mut ei = 0
+    while ei < Array::length(new_local_entries) {
+      let (cnt, ltype) = Array::get(new_local_entries, ei)
+      write_uleb128(out, cnt)
+      Bytes::push(out, ltype)
+      ei = ei + 1
+    }
+
+    // Rewrite instructions with remapped indices
+    if code_start < code_end {
+      let instrs = parse_body_instrs(body, code_start, code_end)
+      let mut ii = 0
+      while ii < Array::length(instrs) {
+        let (op, imm) = Array::get(instrs, ii)
+        if (op == 0x20) || (op == 0x21) || (op == 0x22) {
+          let new_imm = if imm < Array::length(index_map) { Array::get(index_map, imm) } else { imm }
+          emit_instr(out, op, new_imm)
+        } else {
+          emit_instr(out, op, imm)
+        }
+        ii = ii + 1
+      }
+    } else { () }
+    Bytes::push(out, 0x0B)
+    out
+  }
+}
+
+let expand_local_count = (local_types: Array[(Int, Int)]) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(local_types) {
+    let (cnt, _) = Array::get(local_types, i)
+    total = total + cnt
+    i = i + 1
+  }
+  total
+}
+
+// === Remove unused types ===
+
+// Collect used type indices from function section and import section
+let collect_used_type_indices = (bytes: Bytes) -> Array[Int] {
+  let used = Array::slice([(0)], 0, 0)
+  let sections = list_sections(bytes)
+  let mut s = 0
+  while s < Array::length(sections) {
+    let (sid, off, sz) = Array::get(sections, s)
+    if sid == 3 {
+      // Function section
+      let end_pos = off + sz
+      let (cnt, pos0) = read_uleb128(bytes, off)
+      let mut pos = pos0
+      let mut i = 0
+      while (i < cnt) && (pos < end_pos) {
+        let (tidx, np) = read_uleb128(bytes, pos)
+        if array_contains_int(used, tidx) == false {
+          Array::push(used, tidx)
+        } else { () }
+        pos = np
+        i = i + 1
+      }
+    } else {
+      if sid == 2 {
+        // Import section: collect func import type indices
+        let end_pos = off + sz
+        let (cnt, pos0) = read_uleb128(bytes, off)
+        let mut pos = pos0
+        let mut i = 0
+        while (i < cnt) && (pos < end_pos) {
+          let (mlen, mp) = read_uleb128(bytes, pos); pos = mp + mlen
+          let (flen, fp) = read_uleb128(bytes, pos); pos = fp + flen
+          if pos < end_pos {
+            let kind = bytes[pos]; pos = pos + 1
+            if kind == 0 {
+              let (tidx, np) = read_uleb128(bytes, pos); pos = np
+              if array_contains_int(used, tidx) == false {
+                Array::push(used, tidx)
+              } else { () }
+            } else {
+              if kind == 1 {
+                // table: skip reftype + limits
+                let (_, np) = read_uleb128(bytes, pos); pos = np
+                let flag = bytes[pos]; pos = pos + 1
+                let (_, np2) = read_uleb128(bytes, pos); pos = np2
+                if flag == 1 { let (_, np3) = read_uleb128(bytes, pos); pos = np3 }
+                else { () }
+              } else {
+                if kind == 2 {
+                  let flag = bytes[pos]; pos = pos + 1
+                  let (_, np2) = read_uleb128(bytes, pos); pos = np2
+                  if flag == 1 { let (_, np3) = read_uleb128(bytes, pos); pos = np3 }
+                  else { () }
+                } else {
+                  if kind == 3 { pos = pos + 2 }
+                  else { pos = end_pos }
+                }
+              }
+            }
+          } else { () }
+          i = i + 1
+        }
+      } else { () }
+    }
+    s = s + 1
+  }
+  used
+}
+
+export let remove_unused_types = (bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 { copy_bytes(bytes, 0, len) }
+  else {
+    let used = collect_used_type_indices(bytes)
+    let sections = list_sections(bytes)
+
+    // Parse type section to get count
+    let mut type_count = 0
+    let mut ts = 0
+    while ts < Array::length(sections) {
+      let (sid, off, _) = Array::get(sections, ts)
+      if sid == 1 { let (cnt, _) = read_uleb128(bytes, off); type_count = cnt }
+      else { () }
+      ts = ts + 1
+    }
+
+    // Build old->new type index map
+    let type_map = Array::slice([(0)], 0, 0)
+    let mut new_idx = 0
+    let mut ti = 0
+    while ti < type_count {
+      if array_contains_int(used, ti) {
+        Array::push(type_map, new_idx)
+        new_idx = new_idx + 1
+      } else {
+        Array::push(type_map, (-1))
+      }
+      ti = ti + 1
+    }
+
+    let out = Bytes::new()
+    let mut i = 0
+    while i < 8 { Bytes::push(out, bytes[i]); i = i + 1 }
+
+    let mut si = 0
+    while si < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, si)
+      if sid == 1 {
+        // Rewrite type section: only include used types
+        let new_content = rewrite_type_section(bytes, off, sz, used)
+        emit_section(out, 1, new_content)
+      } else {
+        if sid == 3 {
+          // Rewrite function section: remap type indices
+          let new_content = remap_func_section(bytes, off, sz, type_map)
+          emit_section(out, 3, new_content)
+        } else {
+          if sid == 2 {
+            // Rewrite import section: remap func import type indices
+            let new_content = remap_import_section(bytes, off, sz, type_map)
+            emit_section(out, 2, new_content)
+          } else {
+            let content = copy_bytes(bytes, off, off + sz)
+            emit_section(out, sid, content)
+          }
+        }
+      }
+      si = si + 1
+    }
+    out
+  }
+}
+
+let rewrite_type_section = (bytes: Bytes, offset: Int, size: Int, used: Array[Int]) -> Bytes {
+  let end_pos = offset + size
+  let (type_count, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  // Collect type entries as raw bytes
+  let entries = Array::slice([(0, Bytes::new())], 0, 0)
+  let mut ti = 0
+  while (ti < type_count) && (pos < end_pos) {
+    let entry_start = pos
+    // 0x60 func type marker
+    pos = pos + 1
+    let (param_count, pp) = read_uleb128(bytes, pos)
+    pos = pp + param_count
+    let (result_count, rp) = read_uleb128(bytes, pos)
+    pos = rp + result_count
+    if array_contains_int(used, ti) {
+      let entry = copy_bytes(bytes, entry_start, pos)
+      Array::push(entries, (ti, entry))
+    } else { () }
+    ti = ti + 1
+  }
+  let out = Bytes::new()
+  write_uleb128(out, Array::length(entries))
+  let mut ei = 0
+  while ei < Array::length(entries) {
+    let (_, entry) = Array::get(entries, ei)
+    let mut j = 0
+    while j < Bytes::length(entry) {
+      Bytes::push(out, entry[j])
+      j = j + 1
+    }
+    ei = ei + 1
+  }
+  out
+}
+
+let remap_func_section = (bytes: Bytes, offset: Int, size: Int, type_map: Array[Int]) -> Bytes {
+  let end_pos = offset + size
+  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let out = Bytes::new()
+  write_uleb128(out, cnt)
+  let mut i = 0
+  while (i < cnt) && (pos < end_pos) {
+    let (tidx, np) = read_uleb128(bytes, pos)
+    let new_tidx = if tidx < Array::length(type_map) { Array::get(type_map, tidx) } else { tidx }
+    write_uleb128(out, new_tidx)
+    pos = np
+    i = i + 1
+  }
+  out
+}
+
+let remap_import_section = (bytes: Bytes, offset: Int, size: Int, type_map: Array[Int]) -> Bytes {
+  let end_pos = offset + size
+  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let out = Bytes::new()
+  write_uleb128(out, cnt)
+  let mut i = 0
+  while (i < cnt) && (pos < end_pos) {
+    // Copy module name
+    let (mlen, mp) = read_uleb128(bytes, pos)
+    write_uleb128(out, mlen)
+    let mut mi = 0
+    while mi < mlen { Bytes::push(out, bytes[mp + mi]); mi = mi + 1 }
+    pos = mp + mlen
+    // Copy field name
+    let (flen, fp) = read_uleb128(bytes, pos)
+    write_uleb128(out, flen)
+    let mut fi2 = 0
+    while fi2 < flen { Bytes::push(out, bytes[fp + fi2]); fi2 = fi2 + 1 }
+    pos = fp + flen
+    if pos < end_pos {
+      let kind = bytes[pos]; pos = pos + 1
+      Bytes::push(out, kind)
+      if kind == 0 {
+        // func import: remap type index
+        let (tidx, np) = read_uleb128(bytes, pos); pos = np
+        let new_tidx = if tidx < Array::length(type_map) { Array::get(type_map, tidx) } else { tidx }
+        write_uleb128(out, new_tidx)
+      } else {
+        if kind == 1 {
+          // table
+          let (reftype, np) = read_uleb128(bytes, pos); pos = np
+          write_uleb128(out, reftype)
+          let flag = bytes[pos]; pos = pos + 1
+          Bytes::push(out, flag)
+          let (lim_min, np2) = read_uleb128(bytes, pos); pos = np2
+          write_uleb128(out, lim_min)
+          if flag == 1 {
+            let (lim_max, np3) = read_uleb128(bytes, pos); pos = np3
+            write_uleb128(out, lim_max)
+          } else { () }
+        } else {
+          if kind == 2 {
+            // memory
+            let flag = bytes[pos]; pos = pos + 1
+            Bytes::push(out, flag)
+            let (lim_min, np2) = read_uleb128(bytes, pos); pos = np2
+            write_uleb128(out, lim_min)
+            if flag == 1 {
+              let (lim_max, np3) = read_uleb128(bytes, pos); pos = np3
+              write_uleb128(out, lim_max)
+            } else { () }
+          } else {
+            if kind == 3 {
+              // global: type + mutability
+              Bytes::push(out, bytes[pos])
+              Bytes::push(out, bytes[pos + 1])
+              pos = pos + 2
+            } else {
+              pos = end_pos
+            }
+          }
+        }
+      }
+    } else { () }
+    i = i + 1
+  }
+  out
+}
+
+// === Remove empty sections ===
+
+export let remove_empty_sections = (bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 { copy_bytes(bytes, 0, len) }
+  else {
+    let out = Bytes::new()
+    let mut i = 0
+    while i < 8 { Bytes::push(out, bytes[i]); i = i + 1 }
+    let sections = list_sections(bytes)
+    let mut si = 0
+    while si < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, si)
+      // For counted sections (1-12 except 0 custom, 5 memory, 8 start), check if count == 0
+      let mut keep = true
+      // Sections with count: type(1), import(2), func(3), table(4), global(6), export(7), elem(9), code(10), data(11), datacount(12)
+      if (sid >= 1) && (sid <= 12) && (sid != 5) && (sid != 8) {
+        if sz > 0 {
+          let (cnt, _) = read_uleb128(bytes, off)
+          if cnt == 0 { keep = false } else { () }
+        } else {
+          keep = false
+        }
+      } else { () }
+      if keep {
+        let content = copy_bytes(bytes, off, off + sz)
+        emit_section(out, sid, content)
+      } else { () }
+      si = si + 1
+    }
+    out
+  }
+}
+
+// === Minify ===
+
+// Comprehensive WASM minifier: applies all optimizations in sequence with multi-round convergence.
+export let minify = (bytes: Bytes) -> Bytes {
+  let mut current = bytes
+  let mut round = 0
+  let mut done = false
+  while (round < 3) && (done == false) {
+    let prev_size = Bytes::length(current)
+    let s1 = strip_custom_sections(current)
+    let s2 = optimize_code_section(s1)
+    let s3 = dce(s2)
+    let s4 = coalesce_locals(s3)
+    let s5 = remove_unused_types(s4)
+    let s6 = remove_empty_sections(s5)
+    current = s6
+    let new_size = Bytes::length(current)
+    if new_size == prev_size { done = true } else { () }
+    round = round + 1
+  }
+  current
 }
