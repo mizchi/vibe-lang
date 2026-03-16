@@ -17,20 +17,29 @@ export let bytebuf_to_bytes = (buf: Array[Int]) -> Bytes {
 }
 
 export let leb128_encode_s32 = (buf: Array[Int], value: Int) -> Unit {
-  let mut v = value
-  let mut more = true
-  while more {
-    let byte = v&127
-    v = v>>7
-    if (v == 0) && ((byte&64) == 0) {
-      Array::push(buf, byte)
-      more = false
+  if value >= (0 - 64) && value < 64 {
+    Array::push(buf, value&127)
+  } else {
+    if value >= (0 - 8192) && value < 8192 {
+      Array::push(buf, (value&127)|128)
+      Array::push(buf, (value>>7)&127)
     } else {
-      if (v == 0 - 1) && ((byte&64) != 0) {
-        Array::push(buf, byte)
-        more = false
-      } else {
-        Array::push(buf, byte|128)
+      let mut v = value
+      let mut more = true
+      while more {
+        let byte = v&127
+        v = v>>7
+        if (v == 0) && ((byte&64) == 0) {
+          Array::push(buf, byte)
+          more = false
+        } else {
+          if (v == 0 - 1) && ((byte&64) != 0) {
+            Array::push(buf, byte)
+            more = false
+          } else {
+            Array::push(buf, byte|128)
+          }
+        }
       }
     }
   }
@@ -41,16 +50,25 @@ export let leb128_encode_s64 = (buf: Array[Int], value: Int) -> Unit {
 }
 
 export let leb128_encode_u32 = (buf: Array[Int], value: Int) -> Unit {
-  let mut v = value
-  let mut more = true
-  while more {
-    let byte = v&127
-    v = (v>>7)&((1<<25) - 1)
-    if v == 0 {
-      Array::push(buf, byte)
-      more = false
+  if value >= 0 && value < 128 {
+    Array::push(buf, value)
+  } else {
+    if value >= 128 && value < 16384 {
+      Array::push(buf, (value&127)|128)
+      Array::push(buf, (value>>7)&127)
     } else {
-      Array::push(buf, byte|128)
+      let mut v = value
+      let mut more = true
+      while more {
+        let byte = v&127
+        v = (v>>7)&((1<<25) - 1)
+        if v == 0 {
+          Array::push(buf, byte)
+          more = false
+        } else {
+          Array::push(buf, byte|128)
+        }
+      }
     }
   }
 }
@@ -94,8 +112,19 @@ export let bytebuf_push3 = (buf: Array[Int], b1: Int, b2: Int, b3: Int) -> Unit 
 }
 
 export let bytebuf_push_opcode_u32 = (buf: Array[Int], opcode: Int, value: Int) -> Unit {
-  bytebuf_push(buf, opcode)
-  leb128_encode_u32(buf, value)
+  if value >= 0 && value < 128 {
+    Array::push(buf, opcode)
+    Array::push(buf, value)
+  } else {
+    if value >= 128 && value < 16384 {
+      Array::push(buf, opcode)
+      Array::push(buf, (value&127)|128)
+      Array::push(buf, (value>>7)&127)
+    } else {
+      Array::push(buf, opcode)
+      leb128_encode_u32(buf, value)
+    }
+  }
 }
 
 export let bytebuf_push_opcode_s64 = (buf: Array[Int], opcode: Int, value: Int) -> Unit {
