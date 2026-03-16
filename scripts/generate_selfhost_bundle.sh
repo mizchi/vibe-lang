@@ -63,7 +63,7 @@ for _, rel in rows:
         with open(full, "r", encoding="utf-8") as f:
             source_by_rel[rel] = f.read()
 
-dep_pattern = re.compile(r'^\s*(?:import|export)\s+([.][^\s{]+)', re.MULTILINE)
+dep_pattern = re.compile(r'^\s*(?:import|export)\s+(\.[\w./\s-]+?)(?:\.vibe)?\s*\{', re.MULTILINE)
 
 def normalize_path(path: str) -> str:
     parts = []
@@ -79,12 +79,22 @@ def normalize_path(path: str) -> str:
 
 def resolve_path(base_rel: str, raw_path: str) -> str:
     base_dir = os.path.dirname(base_rel)
+    raw_path = re.sub(r'\s*/\s*', '/', raw_path.strip())
     path = raw_path if raw_path.endswith(".vibe") else raw_path + ".vibe"
     if path.startswith("./") or path.startswith("../"):
         if base_dir:
-            return normalize_path(base_dir + "/" + path)
-        return normalize_path(path)
-    return normalize_path(path)
+            candidate = normalize_path(base_dir + "/" + path)
+        else:
+            candidate = normalize_path(path)
+    else:
+        candidate = normalize_path(path)
+    if candidate in source_by_rel:
+        return candidate
+    # Try index.vibe fallback for directory-style imports
+    idx_candidate = candidate.replace(".vibe", "/index.vibe")
+    if idx_candidate in source_by_rel:
+        return idx_candidate
+    return candidate
 
 reachable = set()
 
@@ -445,7 +455,7 @@ for _, rel in rows:
         with open(full, "r", encoding="utf-8") as f:
             source_by_rel[rel] = f.read()
 
-dep_pattern = re.compile(r'^\s*(?:import|export)\s+([.][^\s{]+)', re.MULTILINE)
+dep_pattern = re.compile(r'^\s*(?:import|export)\s+(\.[\w./\s-]+?)(?:\.vibe)?\s*\{', re.MULTILINE)
 drop_pattern = re.compile(r'^\s*(?:import|export)\s+[.][^\s{]+')
 
 def normalize_path(path: str) -> str:
@@ -462,6 +472,7 @@ def normalize_path(path: str) -> str:
 
 def resolve_path(base_rel: str, raw_path: str) -> str:
     base_dir = os.path.dirname(base_rel)
+    raw_path = re.sub(r'\s*/\s*', '/', raw_path.strip())
     path = raw_path if raw_path.endswith(".vibe") else raw_path + ".vibe"
     if path.startswith("./") or path.startswith("../"):
       if base_dir:
@@ -588,9 +599,28 @@ write_runtime_entry_bundle
     # Escape the source code for embedding in a vibe string literal
     # Need to escape: backslash -> \\, double quote -> \", newline -> \n
     python3 -c "
-import sys
+import sys, re
 with open('$filepath', 'r') as f:
     content = f.read()
+# Strip relative import/export statements (they are resolved by collect_merged_stmts)
+drop_pattern = re.compile(r'^\s*(?:import|export)\s+\.[\w./\s-]+')
+lines = content.splitlines(True)
+out = []
+skipping = False
+depth = 0
+for line in lines:
+    stripped = line.lstrip()
+    if stripped.startswith('//'): continue
+    if not skipping and drop_pattern.match(line):
+        depth = line.count('{') - line.count('}')
+        if depth > 0: skipping = True
+        continue
+    if skipping:
+        depth += line.count('{') - line.count('}')
+        if depth <= 0: skipping = False
+        continue
+    out.append(line)
+content = ''.join(out)
 # Escape for vibe string literal
 content = content.replace('\\\\', '\\\\\\\\')
 content = content.replace('\"', '\\\\\"')
