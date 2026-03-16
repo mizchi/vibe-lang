@@ -94,6 +94,22 @@ Phase 4 (応用):
   - `release-selfhost-bootstrap-gates` を追加し、stage1/stage2 artifact health と full checker parity の入口を bootstrap 専用 bundle に分離した
   - full diagnostic parity 自体はまだ `moonrun "$STAGE1_CHECKER_WASM"` に依存するので、将来的に component 側で type diagnostics を返せるようになった段階で置き換える
 
+- [x] selfhost バンドルサイズ削減 + 配布ビルド (`just build-selfhost-dist`)
+  - ソースバンドル: 715 KB → 185 KB (-74%)、エントリからの到達可能性フィルタ適用
+  - slim エントリ (`selfhost_slim_entry.vibe`): selfbuild 専用の最小 24 ファイル
+  - wasm-opt 統合: host-compiled 935 KB → **519 KB** (-44%)
+  - `scripts/build_selfhost_dist.sh`: 配布ビルド + バリデーション (sample compile → run=42)
+- [ ] GC backend セルフコンパイルで ~350KB 配布形を実現する
+  - GC codegen にビルトイン追加済み: `Array::slice`, `Array::concat`, `Bytes::*`, `eq`, `__to_string` 等
+  - `EHandle`, `EStringInterp`, `PTuple` match arm, `ESeq`/`ELet`/`ELetRec`/`EIf` フラット化済み
+  - `try_resolve` 再帰 → while ループ化済み
+  - ブロッカー: GC compiler (MoonBit host compiled WASM, Node.js 上) が 300KB ソースの codegen 中に `tagged int 31` を throw
+    - 小さいケース (< 2762 行) は OK、`parse_pattern` (73行, 大きな match + nested let rec) を含むと失敗
+    - `let (pat, next) = match ...` の PTuple destructure は修正済み (小さいケースで動作確認)
+    - V8 WASM stack limit (~15,500 frames) ではなく、GC codegen 内部の確定的エラー
+    - heap_ptr が毎回同じ値で停止 → 同じコードパスで落ちている
+    - 次: `compile_match_gc` にデバッグ出力を追加して int 31 直前の func_table/local 状態を観察
+
 - [ ] selfhost perf gap を cutover 可能な水準まで詰める
   - stable 5-case set の debug selfhost wasm baseline では host 比 compile 約5x、check 約2-4x 遅い
   - `compile-lite --profile-tsv` は `compile_module` / `bundle` / `emit` / `optimize` まで細粒度で出すようにした
