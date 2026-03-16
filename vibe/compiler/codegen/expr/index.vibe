@@ -141,6 +141,10 @@ let compile_call = (buf: Array[Int], callee: Expr, args: Array[Expr], local_name
       emit_i64_extend_i32_s(buf)
       nl
     }
+    else if fname == "perform" {
+      // Stub: perform returns its argument (effect not actually dispatched)
+      ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    }
     else if fname == "assert" {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       emit_i32_wrap_i64(buf)
@@ -351,6 +355,30 @@ let compile_match = (buf: Array[Int], expr: Expr, local_names: Array[String], ne
           emit_i64_load(buf, 3, 8 + cbi * 8)
           emit_local_set(buf, fl)
           Array::push(local_names, pname)
+        } else if is_ptuple(__sub_p) {
+          let tpats = get_ptuple_pats(__sub_p)
+          let tup_local = Array::length(local_names)
+          emit_local_get(buf, scrut_local)
+          emit_i64_const(buf, -2)
+          emit_i64_and(buf)
+          emit_i32_wrap_i64(buf)
+          emit_i64_load(buf, 3, 8 + cbi * 8)
+          emit_local_set(buf, tup_local)
+          Array::push(local_names, "__ctor_tup")
+          let mut ti = 0
+          while ti < Array::length(tpats) {
+            let tp = Array::get(tpats, ti)
+            if is_pbind(tp) {
+              let tpname = get_pbind_name(tp)
+              let tfl = Array::length(local_names)
+              emit_local_get(buf, tup_local)
+              emit_i32_wrap_i64(buf)
+              emit_i64_load(buf, 3, ti * 8)
+              emit_local_set(buf, tfl)
+              Array::push(local_names, tpname)
+            }
+            ti = ti + 1
+          }
         }
         cbi = cbi + 1
       }
