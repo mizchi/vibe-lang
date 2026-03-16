@@ -1174,9 +1174,10 @@ export let rec compile_expr = (buf: Array[Int], expr: Expr, local_names: Array[S
   } else if __tag == 23 {
     let msg_expr = get_ethrow_expr(expr)
     let nl = compile_expr(buf, msg_expr, local_names, next_local, ctx, ld)
-    emit_drop(buf)
+    // throw tag_0 (exception with i64 payload)
+    bytebuf_push(buf, 8)
     bytebuf_push(buf, 0)
-    // unreachable
+    // tag index 0
     nl
   } else if __tag == 24 {
     compile_lambda(buf, get_efn_params(expr), get_efn_body(expr), local_names, next_local, ctx, ld, compile_expr)
@@ -1256,29 +1257,25 @@ export let rec compile_expr = (buf: Array[Int], expr: Expr, local_names: Array[S
       EHandle(body, arms) => {
         if Array::length(arms) > 0 {
           let (catch_pat, fallback_expr) = Array::get(arms, 0)
-          // block $catch_handler (result i64)
+          // block $result (result i64)
           emit_block_i64(buf)
-          // block $no_catch (result i64) — body result flows here
+          // block $catch_land (i64) — catch jumps here with payload
           emit_block_i64(buf)
-          // try_table (result i64) (catch 0 1)
+          // try_table (result i64) (catch 0 0)
           bytebuf_push(buf, 31)
           bytebuf_push(buf, 126)
-          // block type: i64
           bytebuf_push(buf, 1)
-          // 1 catch clause
           bytebuf_push(buf, 0)
-          // catch (not catch_ref)
           bytebuf_push(buf, 0)
-          // tag index 0
-          bytebuf_push(buf, 1)
-          // label 1 = $catch_handler
+          bytebuf_push(buf, 0)
+          // catch tag 0 → label 0 ($catch_land)
           let nl1 = compile_expr(buf, body, local_names, next_local, ctx, ld)
           emit_end(buf)
-          // end try_table
+          // end try_table — normal: i64 on stack
           emit_br(buf, 1)
-          // br past catch_handler
+          // br $result with body value
           emit_end(buf)
-          // end $no_catch — catch lands here with i64 payload on stack
+          // end $catch_land — catch payload (i64) on stack
           // Bind catch payload to pattern variable if PBind or PCtor(Error, [PBind])
           let nl_catch = if is_pctor(catch_pat) {
             let cargs = get_pctor_args(catch_pat)
