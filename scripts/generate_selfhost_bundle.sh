@@ -35,6 +35,11 @@ while IFS=$'\t' read -r group relpath; do
 done < "$MANIFEST"
 
 cli_adapter_index_rows_file="$(mktemp)"
+# Reachability analysis: adapter entry + GC backend as additional entry
+# Outputs:
+#   reachable\t<idx>        — files reachable from adapter entry
+#   ordered\t<idx>          — dependency-ordered files from adapter entry
+#   bundle_reachable\t<idx> — files reachable from adapter entry + GC backend (for main bundle)
 python3 - "$COMPILER_DIR" "$MANIFEST" "selfhost_cli_adapter.vibe" >"$cli_adapter_index_rows_file" <<'PY'
 import os
 import re
@@ -120,9 +125,34 @@ for rel in ordered:
     idx = index_by_rel.get(rel)
     if idx is not None:
         print("ordered\t" + str(idx))
+
+# Bundle reachability: adapter entry + GC backend
+bundle_reachable = set(reachable)
+
+def visit_bundle(rel: str):
+    if rel in bundle_reachable:
+        return
+    source = source_by_rel.get(rel)
+    if source is None:
+        return
+    bundle_reachable.add(rel)
+    for dep in dep_pattern.findall(source):
+        visit_bundle(resolve_path(rel, dep))
+
+# Additional entry points for the main bundle
+bundle_extra_entries = os.environ.get("VIBE_SELFHOST_BUNDLE_EXTRA_ENTRIES", "codegen/gc/index.vibe")
+for entry in bundle_extra_entries.split(","):
+    entry = entry.strip()
+    if entry:
+        visit_bundle(entry)
+
+for idx, (_, rel) in enumerate(rows):
+    if rel in bundle_reachable:
+        print("bundle_reachable\t" + str(idx))
 PY
 CLI_ADAPTER_INDEXES=()
 CLI_ADAPTER_ORDERED_INDEXES=()
+BUNDLE_REACHABLE_INDEXES=()
 while IFS=$'\t' read -r kind idx; do
   if [ -z "${kind}${idx}" ]; then
     continue
@@ -131,9 +161,23 @@ while IFS=$'\t' read -r kind idx; do
     CLI_ADAPTER_INDEXES+=("$idx")
   elif [ "$kind" = "ordered" ]; then
     CLI_ADAPTER_ORDERED_INDEXES+=("$idx")
+  elif [ "$kind" = "bundle_reachable" ]; then
+    BUNDLE_REACHABLE_INDEXES+=("$idx")
   fi
 done < "$cli_adapter_index_rows_file"
 rm -f "$cli_adapter_index_rows_file"
+
+# Build lookup set for bundle reachability filter
+is_bundle_reachable() {
+  local target="$1"
+  local idx
+  for idx in "${BUNDLE_REACHABLE_INDEXES[@]}"; do
+    if [ "$idx" = "$target" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 if [ "${#FILES[@]}" -eq 0 ]; then
   echo "error: manifest contains no compiler sources: $MANIFEST" >&2
@@ -519,8 +563,15 @@ write_runtime_entry_bundle
   echo "  }"
   echo "}"
   echo ""
+  # Only include files reachable from entry points (adapter + GC backend)
+  BUNDLE_SOURCE_INDEXES=()
+  bundle_local_idx=0
   idx=0
   for f in "${FILES[@]}"; do
+    if ! is_bundle_reachable "$idx"; then
+      idx=$((idx + 1))
+      continue
+    fi
     if [ "$f" = "selfhost_cli_adapter_bundle.vibe" ]; then
       filepath="$OUT_ADAPTER"
     elif [ "$f" = "selfbuild_runtime_entry_bundle.vibe" ]; then
@@ -533,7 +584,7 @@ write_runtime_entry_bundle
       exit 1
     fi
     relpath="vibe/compiler/$f"
-    echo "  let source_$idx = (\"$relpath\","
+    echo "  let source_$bundle_local_idx = (\"$relpath\","
     # Escape the source code for embedding in a vibe string literal
     # Need to escape: backslash -> \\, double quote -> \", newline -> \n
     python3 -c "
@@ -548,6 +599,8 @@ sys.stdout.write('\"' + content + '\"')
 "
     echo ")"
     echo ""
+    BUNDLE_SOURCE_INDEXES+=("$idx:$bundle_local_idx")
+    bundle_local_idx=$((bundle_local_idx + 1))
     idx=$((idx + 1))
   done
 
@@ -555,10 +608,9 @@ sys.stdout.write('\"' + content + '\"')
   echo "  let sources = Array::slice([(\"\", \"\")], 0, 0)"
   echo ""
 
-  idx=0
-  for _f in "${FILES[@]}"; do
-    echo "  Array::push(sources, source_$idx)"
-    idx=$((idx + 1))
+  for pair in "${BUNDLE_SOURCE_INDEXES[@]}"; do
+    local_idx="${pair#*:}"
+    echo "  Array::push(sources, source_$local_idx)"
   done
 
   echo "  sources"
@@ -568,10 +620,11 @@ sys.stdout.write('\"' + content + '\"')
   echo "  let groups = empty_grouped_sources()"
   echo ""
 
-  idx=0
-  for group in "${MANIFEST_GROUPS[@]}"; do
-    echo "  push_grouped_source_pair(groups, \"$group\", source_$idx)"
-    idx=$((idx + 1))
+  for pair in "${BUNDLE_SOURCE_INDEXES[@]}"; do
+    manifest_idx="${pair%%:*}"
+    local_idx="${pair#*:}"
+    group="${MANIFEST_GROUPS[$manifest_idx]}"
+    echo "  push_grouped_source_pair(groups, \"$group\", source_$local_idx)"
   done
 
   echo ""

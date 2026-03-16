@@ -153,14 +153,379 @@ let compile_call_gc = (
         emit_call(buf, ag_idx)
         nl
       }
+      else if fname == "Array::slice" {
+        // Array::slice(arr, start, end) → new array with elements [start..end)
+        let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+        let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+        let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+        let arr_local = next_local
+        let start_local = next_local + 1
+        let end_local = next_local + 2
+        let new_arr_local = next_local + 3
+        let i_local = next_local + 4
+        Array::push(local_names, "__slice_arr")
+        Array::push(local_names, "__slice_start")
+        Array::push(local_names, "__slice_end")
+        Array::push(local_names, "__slice_new")
+        Array::push(local_names, "__slice_i")
+        let mut nl = next_local + 5
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+        emit_local_set(buf, arr_local)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        emit_local_set(buf, start_local)
+        nl = ce(buf, Array::get(args, 2), local_names, nl, ld)
+        emit_local_set(buf, end_local)
+        emit_call(buf, an_idx)
+        emit_local_set(buf, new_arr_local)
+        emit_local_get(buf, start_local)
+        emit_local_set(buf, i_local)
+        // while (i < end) { Array::push(new, Array::get(arr, i)); i = i + 1 }
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, i_local)
+        emit_local_get(buf, end_local)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, new_arr_local)
+        emit_local_get(buf, arr_local)
+        emit_local_get(buf, i_local)
+        emit_call(buf, ag_idx)
+        emit_call(buf, ap_idx)
+        emit_local_get(buf, i_local)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, new_arr_local)
+        nl
+      }
+      else if fname == "Array::concat" {
+        // Array::concat(a, b) → new array with a's elements then b's
+        let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+        let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+        let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+        let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+        let a_local = next_local
+        let b_local = next_local + 1
+        let new_arr_local = next_local + 2
+        let i_local = next_local + 3
+        let len_local = next_local + 4
+        Array::push(local_names, "__concat_a")
+        Array::push(local_names, "__concat_b")
+        Array::push(local_names, "__concat_new")
+        Array::push(local_names, "__concat_i")
+        Array::push(local_names, "__concat_len")
+        let mut nl = next_local + 5
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+        emit_local_set(buf, a_local)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        emit_local_set(buf, b_local)
+        emit_call(buf, an_idx)
+        emit_local_set(buf, new_arr_local)
+        // Copy a
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, i_local)
+        emit_local_get(buf, a_local)
+        emit_call(buf, al_idx)
+        emit_local_set(buf, len_local)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, i_local)
+        emit_local_get(buf, len_local)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, new_arr_local)
+        emit_local_get(buf, a_local)
+        emit_local_get(buf, i_local)
+        emit_call(buf, ag_idx)
+        emit_call(buf, ap_idx)
+        emit_local_get(buf, i_local)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        // Copy b
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, i_local)
+        emit_local_get(buf, b_local)
+        emit_call(buf, al_idx)
+        emit_local_set(buf, len_local)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, i_local)
+        emit_local_get(buf, len_local)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, new_arr_local)
+        emit_local_get(buf, b_local)
+        emit_local_get(buf, i_local)
+        emit_call(buf, ag_idx)
+        emit_call(buf, ap_idx)
+        emit_local_get(buf, i_local)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, new_arr_local)
+        nl
+      }
+      else if fname == "Array::truncate" {
+        // Array::truncate(arr, len) → sets arr.length = len (void)
+        // In GC backend, truncate is a no-op approximation: just return 0
+        let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        emit_drop(buf)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        emit_drop(buf)
+        emit_i64_const(buf, 0)
+        nl
+      }
+      else if fname == "Array::push_all" {
+        // Array::push_all(dst, src) → push all src elements to dst
+        let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+        let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+        let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+        let dst_local = next_local
+        let src_local = next_local + 1
+        let i_local = next_local + 2
+        let len_local = next_local + 3
+        Array::push(local_names, "__pushall_dst")
+        Array::push(local_names, "__pushall_src")
+        Array::push(local_names, "__pushall_i")
+        Array::push(local_names, "__pushall_len")
+        let mut nl = next_local + 4
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+        emit_local_set(buf, dst_local)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        emit_local_set(buf, src_local)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, i_local)
+        emit_local_get(buf, src_local)
+        emit_call(buf, al_idx)
+        emit_local_set(buf, len_local)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, i_local)
+        emit_local_get(buf, len_local)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, dst_local)
+        emit_local_get(buf, src_local)
+        emit_local_get(buf, i_local)
+        emit_call(buf, ag_idx)
+        emit_call(buf, ap_idx)
+        emit_local_get(buf, i_local)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_i64_const(buf, 0)
+        nl
+      }
+      else if fname == "eq" {
+        let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        emit_i64_eq(buf)
+        emit_i64_extend_i32_u(buf)
+        nl
+      }
+      else if fname == "not" {
+        let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        emit_i64_eqz(buf)
+        emit_i64_extend_i32_u(buf)
+        nl
+      }
+      else if fname == "Bytes::from_array" || fname == "Bytes::to_array" || fname == "Double::to_i64_bits" || fname == "Double::from_i64_bits" {
+        // Identity functions: Bytes = Array[Int], Double bits = i64
+        let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        nl
+      }
+      else if fname == "Bytes::length" {
+        let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+        let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        emit_call(buf, al_idx)
+        nl
+      }
+      else if fname == "Bytes::get" {
+        let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+        let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        emit_call(buf, ag_idx)
+        nl
+      }
+      else if fname == "Bytes::set" {
+        let (as_idx, _, _) = resolve_func(ctx.func_table, "Array::set")
+        let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        nl = ce(buf, Array::get(args, 2), local_names, nl, ld)
+        emit_call(buf, as_idx)
+        emit_i64_const(buf, 0)
+        nl
+      }
+      else if fname == "Bytes::push" {
+        let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+        let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        emit_call(buf, ap_idx)
+        emit_i64_const(buf, 0)
+        nl
+      }
+      else if fname == "Bytes::new" {
+        let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+        emit_call(buf, an_idx)
+        next_local
+      }
+      else if fname == "Bytes::concat" {
+        // Same as Array::concat - reuse the inline expansion
+        let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+        let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+        let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+        let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+        let a_local = next_local
+        let b_local = next_local + 1
+        let new_arr_local = next_local + 2
+        let i_local = next_local + 3
+        let len_local = next_local + 4
+        Array::push(local_names, "__bconcat_a")
+        Array::push(local_names, "__bconcat_b")
+        Array::push(local_names, "__bconcat_new")
+        Array::push(local_names, "__bconcat_i")
+        Array::push(local_names, "__bconcat_len")
+        let mut nl = next_local + 5
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+        emit_local_set(buf, a_local)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        emit_local_set(buf, b_local)
+        emit_call(buf, an_idx)
+        emit_local_set(buf, new_arr_local)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, i_local)
+        emit_local_get(buf, a_local)
+        emit_call(buf, al_idx)
+        emit_local_set(buf, len_local)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, i_local)
+        emit_local_get(buf, len_local)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, new_arr_local)
+        emit_local_get(buf, a_local)
+        emit_local_get(buf, i_local)
+        emit_call(buf, ag_idx)
+        emit_call(buf, ap_idx)
+        emit_local_get(buf, i_local)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, i_local)
+        emit_local_get(buf, b_local)
+        emit_call(buf, al_idx)
+        emit_local_set(buf, len_local)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, i_local)
+        emit_local_get(buf, len_local)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, new_arr_local)
+        emit_local_get(buf, b_local)
+        emit_local_get(buf, i_local)
+        emit_call(buf, ag_idx)
+        emit_call(buf, ap_idx)
+        emit_local_get(buf, i_local)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, new_arr_local)
+        nl
+      }
+      else if fname == "Bytes::slice" {
+        // Same as Array::slice
+        let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+        let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+        let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+        let arr_local = next_local
+        let start_local = next_local + 1
+        let end_local = next_local + 2
+        let new_arr_local = next_local + 3
+        let i_local = next_local + 4
+        Array::push(local_names, "__bslice_arr")
+        Array::push(local_names, "__bslice_start")
+        Array::push(local_names, "__bslice_end")
+        Array::push(local_names, "__bslice_new")
+        Array::push(local_names, "__bslice_i")
+        let mut nl = next_local + 5
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+        emit_local_set(buf, arr_local)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        emit_local_set(buf, start_local)
+        nl = ce(buf, Array::get(args, 2), local_names, nl, ld)
+        emit_local_set(buf, end_local)
+        emit_call(buf, an_idx)
+        emit_local_set(buf, new_arr_local)
+        emit_local_get(buf, start_local)
+        emit_local_set(buf, i_local)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, i_local)
+        emit_local_get(buf, end_local)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, new_arr_local)
+        emit_local_get(buf, arr_local)
+        emit_local_get(buf, i_local)
+        emit_call(buf, ag_idx)
+        emit_call(buf, ap_idx)
+        emit_local_get(buf, i_local)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, new_arr_local)
+        nl
+      }
+      else if fname == "__to_string" {
+        // __to_string in GC backend: for String values, identity.
+        // For Int values, calls the generated __to_string builtin function.
+        let (ts_idx, _, _) = resolve_func(ctx.func_table, "__to_string")
+        let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        emit_call(buf, ts_idx)
+        nl
+      }
+      else if fname == "String::join" || fname == "String::ends_with" || fname == "String::last_index_of" || fname == "String::starts_with" || fname == "String::contains" || fname == "String::index_of" || fname == "FixedArray::make" || fname == "FixedArray::length" || fname == "FixedArray::get" || fname == "FixedArray::set" || fname == "FixedArray::unsafe_set" || fname == "FixedArray::blit" || fname == "StringBuilder::new" || fname == "StringBuilder::push" || fname == "StringBuilder::freeze" || fname == "Map::get" || fname == "Map::keys" || fname == "MapBuilder::new" || fname == "MapBuilder::set" || fname == "MapBuilder::freeze" || fname == "assert" || fname == "println" || fname == "print" || fname == "map_has" {
+        // These builtins are not yet implemented in GC backend.
+        // Registered in fn_names to prevent free-var capture errors.
+        throw(String::concat("GC codegen: unimplemented builtin: ", fname))
+      }
       else {
       let fn_len2 = Array::length(ctx.func_table.names)
-      let rec try_resolve = (j: Int) -> Int {
-        if j >= fn_len2 { -1 }
-        else if Array::get(ctx.func_table.names, j) == fname { j }
-        else try_resolve(j + 1)
+      let mut fn_idx_in_list = -1
+      let mut __fi = 0
+      while __fi < fn_len2 {
+        if Array::get(ctx.func_table.names, __fi) == fname {
+          fn_idx_in_list = __fi
+          __fi = fn_len2
+        } else {
+          __fi = __fi + 1
+        }
       }
-      let fn_idx_in_list = try_resolve(0)
       if fn_idx_in_list >= 0 {
         // Direct call to known function
         let fidx = Array::get(ctx.func_table.indices, fn_idx_in_list)
@@ -313,6 +678,42 @@ let compile_match_gc = (
           }
           cbi = cbi + 1
         }
+        let arm_nl = ce(buf, arm_body, local_names, Array::length(local_names), ld_arm)
+        if arm_nl > max_nl { max_nl = arm_nl }
+        0
+      },
+      PTuple(tpats) => {
+        // Destructure tuple: scrutinee is a heap-allocated tuple (ptr | 1)
+        // Fields at offset 8 + i * 8
+        let mut tbi = 0
+        while tbi < Array::length(tpats) {
+          match Array::get(tpats, tbi) {
+            PBind(tname) => {
+              let tl = Array::length(local_names)
+              emit_local_get(buf, scrut_local)
+              emit_i64_const(buf, -2)
+              emit_i64_and(buf)
+              emit_i32_wrap_i64(buf)
+              emit_i64_load(buf, 3, 8 + tbi * 8)
+              emit_local_set(buf, tl)
+              Array::push(local_names, tname)
+              0
+            },
+            PWild => 0,
+            _ => 0
+          }
+          tbi = tbi + 1
+        }
+        let arm_nl = ce(buf, arm_body, local_names, Array::length(local_names), ld_arm)
+        if arm_nl > max_nl { max_nl = arm_nl }
+        0
+      },
+      PBind(bname_arm) => {
+        // Bind whole scrutinee to a name
+        let bl = Array::length(local_names)
+        emit_local_get(buf, scrut_local)
+        emit_local_set(buf, bl)
+        Array::push(local_names, bname_arm)
         let arm_nl = ce(buf, arm_body, local_names, Array::length(local_names), ld_arm)
         if arm_nl > max_nl { max_nl = arm_nl }
         0
@@ -605,12 +1006,17 @@ let rec compile_expr_gc = (
         } else {
         // Check if it's a top-level function — emit as bare fn value
         let fn_len = Array::length(ctx.func_table.names)
-        let rec try_fn = (j: Int) -> Int with { Error } {
-          if j >= fn_len { throw(String::concat("undefined variable: ", name)) }
-          else if Array::get(ctx.func_table.names, j) == name { j }
-          else try_fn(j + 1)
+        let mut fni = -1
+        let mut __fj = 0
+        while __fj < fn_len {
+          if Array::get(ctx.func_table.names, __fj) == name {
+            fni = __fj
+            __fj = fn_len
+          } else {
+            __fj = __fj + 1
+          }
         }
-        let fni = try_fn(0)
+        if fni < 0 { throw(String::concat("undefined variable: ", name)) }
         let fidx = Array::get(ctx.func_table.indices, fni)
         let table_slot = fidx - ctx.func_offset
         emit_i64_const(buf, (table_slot << 2) | 2)
@@ -641,95 +1047,155 @@ let rec compile_expr_gc = (
       }
     },
     EIf(cond, then_e, else_e) => {
-      // S1b: skip extend+wrap roundtrip for comparison conditions
-      let nl1 = match cond {
-        EBinOp(cop, clhs, crhs) => if cop == "==" || cop == "!=" || cop == "<" || cop == ">" || cop == "<=" || cop == ">=" {
-          let cnl1 = ce(buf, clhs, local_names, next_local, ld)
-          let cnl2 = ce(buf, crhs, local_names, cnl1, ld)
-          if cop == "==" { emit_i64_eq(buf) }
-          else if cop == "!=" { emit_i64_ne(buf) }
-          else if cop == "<" { emit_i64_lt_s(buf) }
-          else if cop == ">" { emit_i64_gt_s(buf) }
-          else if cop == "<=" { emit_i64_le_s(buf) }
-          else { emit_i64_ge_s(buf) }
-          cnl2
-        } else {
-          let cnl = ce(buf, cond, local_names, next_local, ld)
-          emit_i32_wrap_i64(buf)
-          cnl
-        },
-        EBool(b_val) => {
-          emit_i32_const(buf, if b_val { 1 } else { 0 })
-          next_local
-        },
-        _ => {
-          let cnl = ce(buf, cond, local_names, next_local, ld)
-          emit_i32_wrap_i64(buf)
-          cnl
+      // Flatten if/else-if chains iteratively to reduce recursion depth
+      let mut cur_cond = cond
+      let mut cur_then = then_e
+      let mut cur_else = else_e
+      let mut if_depth = 0
+      let mut max_nl_chain = next_local
+      let mut cont_if = true
+      while cont_if {
+        let nl1 = match cur_cond {
+          EBinOp(cop, clhs, crhs) => if cop == "==" || cop == "!=" || cop == "<" || cop == ">" || cop == "<=" || cop == ">=" {
+            let cnl1 = ce(buf, clhs, local_names, max_nl_chain, ld)
+            let cnl2 = ce(buf, crhs, local_names, cnl1, ld)
+            if cop == "==" { emit_i64_eq(buf) }
+            else if cop == "!=" { emit_i64_ne(buf) }
+            else if cop == "<" { emit_i64_lt_s(buf) }
+            else if cop == ">" { emit_i64_gt_s(buf) }
+            else if cop == "<=" { emit_i64_le_s(buf) }
+            else { emit_i64_ge_s(buf) }
+            cnl2
+          } else {
+            let cnl = ce(buf, cur_cond, local_names, max_nl_chain, ld)
+            emit_i32_wrap_i64(buf)
+            cnl
+          },
+          EBool(b_val) => {
+            emit_i32_const(buf, if b_val { 1 } else { 0 })
+            max_nl_chain
+          },
+          _ => {
+            let cnl = ce(buf, cur_cond, local_names, max_nl_chain, ld)
+            emit_i32_wrap_i64(buf)
+            cnl
+          }
+        }
+        emit_if_i64(buf)
+        if_depth = if_depth + 1
+        let ld_inner = if ld >= 0 { ld + if_depth } else { -1 }
+        let names_len_before = Array::length(local_names)
+        let nl_then = ce(buf, cur_then, local_names, nl1, ld_inner)
+        if nl_then > max_nl_chain { max_nl_chain = nl_then }
+        emit_else(buf)
+        Array::truncate(local_names, names_len_before)
+        match cur_else {
+          EIf(next_cond, next_then, next_else) => {
+            cur_cond = next_cond
+            cur_then = next_then
+            cur_else = next_else
+          },
+          _ => {
+            let nl_else = ce(buf, cur_else, local_names, nl1, ld_inner)
+            if nl_else > max_nl_chain { max_nl_chain = nl_else }
+            cont_if = false
+          }
         }
       }
-      emit_if_i64(buf)
-      let ld_inner = if ld >= 0 { ld + 1 } else { -1 }
-      let names_len_before = Array::length(local_names)
-      let nl2 = ce(buf, then_e, local_names, nl1, ld_inner)
-      emit_else(buf)
-      Array::truncate(local_names, names_len_before)
-      let nl3 = ce(buf, else_e, local_names, nl1, ld_inner)
-      emit_end(buf)
-      let max_nl_if = if nl2 > nl3 { nl2 } else { nl3 }
-      // Pad local_names to stay in sync with max next_local
-      while Array::length(local_names) < max_nl_if {
+      // Close all if/else blocks
+      let mut ci = 0
+      while ci < if_depth {
+        emit_end(buf)
+        ci = ci + 1
+      }
+      while Array::length(local_names) < max_nl_chain {
         Array::push(local_names, "")
       }
-      max_nl_if
+      max_nl_chain
     },
     ECall(callee, args) => compile_call_gc(buf, callee, args, local_names, next_local, ctx, ld, ce),
     ELet(name, value, body) => {
-      let local_idx = next_local
-      Array::push(local_names, name)
-      let nl = ce(buf, value, local_names, next_local + 1, ld)
-      emit_local_set(buf, local_idx)
-      let nl2 = ce(buf, body, local_names, nl, ld)
-      nl2
+      // Flatten ELet chains iteratively
+      let mut cur_name = name
+      let mut cur_value = value
+      let mut cur_body = body
+      let mut nl_let = next_local
+      let mut cont_let = true
+      while cont_let {
+        let local_idx = nl_let
+        Array::push(local_names, cur_name)
+        nl_let = ce(buf, cur_value, local_names, nl_let + 1, ld)
+        emit_local_set(buf, local_idx)
+        match cur_body {
+          ELet(next_name, next_value, next_body) => {
+            cur_name = next_name
+            cur_value = next_value
+            cur_body = next_body
+          },
+          _ => {
+            nl_let = ce(buf, cur_body, local_names, nl_let, ld)
+            cont_let = false
+          }
+        }
+      }
+      nl_let
     },
     ELetRec(name, value, body) => {
-      let local_idx = next_local
-      Array::push(local_names, name)
-      let nl = ce(buf, value, local_names, next_local + 1, ld)
-      emit_local_set(buf, local_idx)
-      // Backpatch self-reference in closure for recursive let rec
-      match value {
-        EFn(_, _, params, _, _, fn_body) => {
-          let param_names_bp = Array::slice([""], 0, 0)
-          let mut bpi = 0
-          while bpi < Array::length(params) {
-            let (pn, _) = Array::get(params, bpi)
-            Array::push(param_names_bp, pn)
-            bpi = bpi + 1
-          }
-          let caps = collect_free_vars(fn_body, param_names_bp, Array::concat(ctx.func_table.names, ctx.ctor_table.names))
-          let mut self_cap_idx = -1
-          let mut bci = 0
-          while bci < Array::length(caps) {
-            if Array::get(caps, bci) == name {
-              self_cap_idx = bci
+      // Flatten ELetRec chains iteratively
+      let mut cur_name = name
+      let mut cur_value = value
+      let mut cur_body = body
+      let mut nl_rec = next_local
+      let mut cont_rec = true
+      while cont_rec {
+        let local_idx = nl_rec
+        Array::push(local_names, cur_name)
+        nl_rec = ce(buf, cur_value, local_names, nl_rec + 1, ld)
+        emit_local_set(buf, local_idx)
+        // Backpatch self-reference in closure for recursive let rec
+        match cur_value {
+          EFn(_, _, params, _, _, fn_body) => {
+            let param_names_bp = Array::slice([""], 0, 0)
+            let mut bpi = 0
+            while bpi < Array::length(params) {
+              let (pn, _) = Array::get(params, bpi)
+              Array::push(param_names_bp, pn)
+              bpi = bpi + 1
             }
-            bci = bci + 1
+            let caps = collect_free_vars(fn_body, param_names_bp, Array::concat(ctx.func_table.names, ctx.ctor_table.names))
+            let mut self_cap_idx = -1
+            let mut bci = 0
+            while bci < Array::length(caps) {
+              if Array::get(caps, bci) == cur_name {
+                self_cap_idx = bci
+              }
+              bci = bci + 1
+            }
+            if self_cap_idx >= 0 {
+              emit_local_get(buf, local_idx)
+              emit_i64_const(buf, -4)
+              emit_i64_and(buf)
+              emit_i32_wrap_i64(buf)
+              emit_local_get(buf, local_idx)
+              emit_i64_store(buf, 3, 8 + self_cap_idx * 8)
+            }
+            0
+          },
+          _ => 0
+        }
+        match cur_body {
+          ELetRec(next_name, next_value, next_body) => {
+            cur_name = next_name
+            cur_value = next_value
+            cur_body = next_body
+          },
+          _ => {
+            nl_rec = ce(buf, cur_body, local_names, nl_rec, ld)
+            cont_rec = false
           }
-          if self_cap_idx >= 0 {
-            emit_local_get(buf, local_idx)
-            emit_i64_const(buf, -4)
-            emit_i64_and(buf)
-            emit_i32_wrap_i64(buf)
-            emit_local_get(buf, local_idx)
-            emit_i64_store(buf, 3, 8 + self_cap_idx * 8)
-          }
-          0
-        },
-        _ => 0
+        }
       }
-      let nl2 = ce(buf, body, local_names, nl, ld)
-      nl2
+      nl_rec
     },
     ELetMut(name, value, body) => {
       let local_idx = next_local
@@ -784,9 +1250,25 @@ let rec compile_expr_gc = (
       }
     },
     ESeq(first, second) => {
-      let nl = ce(buf, first, local_names, next_local, ld)
+      // Flatten ESeq chain iteratively to avoid deep recursion
+      let mut nl_s = ce(buf, first, local_names, next_local, ld)
       emit_drop(buf)
-      ce(buf, second, local_names, nl, ld)
+      let mut cur = second
+      let mut cont = true
+      while cont {
+        match cur {
+          ESeq(a, b) => {
+            nl_s = ce(buf, a, local_names, nl_s, ld)
+            emit_drop(buf)
+            cur = b
+          },
+          _ => {
+            nl_s = ce(buf, cur, local_names, nl_s, ld)
+            cont = false
+          }
+        }
+      }
+      nl_s
     },
     ETuple(elems) => {
       // Allocate N*8 bytes on heap, store each element as i64
@@ -1010,9 +1492,12 @@ let rec compile_expr_gc = (
       emit_i64_or(buf)
       nl_r
     },
+    EHandle(body, _) => ce(buf, body, local_names, next_local, ld),
+    EStringInterp(_) => throw("GC codegen: EStringInterp must be resolved before codegen (call resolve_interp_stmts first)"),
     _ => throw("unsupported expression in gc codegen")
   }
 }
+
 
 // === Builtin generators (copied from codegen.vibe) ===
 
@@ -1586,11 +2071,11 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
 
   // Function layout:
   // func 0: fd_write (import)
-  // func 1-16: generated builtins (16 funcs)
-  // func 17..17+N-1: user functions
-  // func 17+N: _start
-  let num_generated = 16
-  let func_offset = 1 + num_generated  // = 17
+  // func 1-17: generated builtins (17 funcs)
+  // func 18..18+N-1: user functions
+  // func 18+N: _start
+  let num_generated = 17
+  let func_offset = 1 + num_generated  // = 18
 
   // Builtin table: (name, param_count, wasm_func_idx, has_return)
   let builtin_defs = [
@@ -1612,7 +2097,51 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
     // Aliases
     ("ArrayBuilder::new",       0, 6,  1),
     ("ArrayBuilder::push",  2, 9,  0),
-    ("ArrayBuilder::freeze", 1, 16, 1)
+    ("ArrayBuilder::freeze", 1, 16, 1),
+    // Inline-expanded builtins (handled in compile_call_gc)
+    ("Array::slice",        3, 6,  1),
+    ("Array::concat",       2, 6,  1),
+    ("Array::truncate",     2, 6,  0),
+    ("Array::push_all",     2, 6,  0),
+    ("eq",                  2, 6,  1),
+    ("not",                 1, 6,  1),
+    // Stub-registered builtins (prevent free-var capture; trap if called)
+    ("String::join",        2, 6,  1),
+    ("String::ends_with",   2, 6,  1),
+    ("String::last_index_of", 2, 6, 1),
+    ("String::starts_with", 2, 6,  1),
+    ("String::contains",    2, 6,  1),
+    ("String::index_of",    2, 6,  1),
+    ("Bytes::new",          0, 6,  1),
+    ("Bytes::length",       1, 6,  1),
+    ("Bytes::get",          2, 6,  1),
+    ("Bytes::set",          3, 6,  0),
+    ("Bytes::push",         2, 6,  0),
+    ("Bytes::concat",       2, 6,  1),
+    ("Bytes::slice",        3, 6,  1),
+    ("Bytes::from_array",   1, 6,  1),
+    ("Bytes::to_array",     1, 6,  1),
+    ("Double::to_i64_bits", 1, 6,  1),
+    ("Double::from_i64_bits", 1, 6, 1),
+    ("FixedArray::make",    2, 6,  1),
+    ("FixedArray::length",  1, 6,  1),
+    ("FixedArray::get",     2, 6,  1),
+    ("FixedArray::set",     3, 6,  0),
+    ("FixedArray::unsafe_set", 3, 6, 0),
+    ("FixedArray::blit",    5, 6,  0),
+    ("StringBuilder::new",  0, 6,  1),
+    ("StringBuilder::push", 2, 6,  0),
+    ("StringBuilder::freeze", 1, 6, 1),
+    ("Map::get",            2, 6,  1),
+    ("Map::keys",           1, 6,  1),
+    ("MapBuilder::new",     0, 6,  1),
+    ("MapBuilder::set",     3, 6,  0),
+    ("MapBuilder::freeze",  1, 6,  1),
+    ("__to_string",         1, 17, 1),
+    ("assert",              1, 6,  0),
+    ("println",             1, 6,  0),
+    ("print",               1, 6,  0),
+    ("map_has",             2, 6,  1)
   ]
   let mut __bi = 0
   while __bi < Array::length(builtin_defs) {
@@ -1739,6 +2268,16 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
   Array::push(meta_i64, 0)
   Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
 
+  Array::push(bodies, gen_identity_body())
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  // __to_string: identity (returns argument as-is)
+  // For String values this is correct. For Int values the caller gets
+  // the tagged int back, which String::concat will treat as a string pointer.
+  // This is sufficient for self-compilation where interpolated values are
+  // predominantly strings.
   Array::push(bodies, gen_identity_body())
   Array::push(meta_i32, 0)
   Array::push(meta_i64, 0)
@@ -1897,6 +2436,7 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
   Array::push(func_type_indices, 3)  // __str_from_char_code
   Array::push(func_type_indices, 8)  // __str_substring
   Array::push(func_type_indices, 3)  // __identity (ArrayBuilder::freeze)
+  Array::push(func_type_indices, 3)  // __to_string (identity)
   // User funcs: type = closure call type for their arity (includes env)
   let mut fti = 0
   while fti < num_user_funcs {

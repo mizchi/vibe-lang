@@ -58,7 +58,11 @@ if [ ! -f "$OUT_ADAPTER" ]; then
   exit 1
 fi
 
-for path in polyfill token index selfhost_cli_adapter_bundle; do
+# Main bundle should contain only files reachable from selfhost_cli_adapter.vibe
+# (+ any extra entries specified via VIBE_SELFHOST_BUNDLE_EXTRA_ENTRIES)
+# In this test: polyfill, token, selfhost_cli_adapter are reachable.
+# index.vibe is NOT reachable from adapter (it imports adapter_bundle, not adapter).
+for path in polyfill token selfhost_cli_adapter; do
   if ! rg -q "\"vibe/compiler/${path}\\.vibe\"" "$OUT"; then
     echo "generate-selfhost-bundle self-test: missing ${path}.vibe entry" >&2
     cat "$OUT" >&2
@@ -66,12 +70,18 @@ for path in polyfill token index selfhost_cli_adapter_bundle; do
   fi
 done
 
+# index.vibe should NOT be in the main bundle (unreachable from adapter)
+if rg -q '"vibe/compiler/index\.vibe"' "$OUT"; then
+  echo "generate-selfhost-bundle self-test: index.vibe should be filtered out (unreachable)" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+
 polyfill_line="$(rg -n '"vibe/compiler/polyfill\.vibe"' "$OUT" | cut -d: -f1)"
 token_line="$(rg -n '"vibe/compiler/token\.vibe"' "$OUT" | cut -d: -f1)"
-index_line="$(rg -n '"vibe/compiler/index\.vibe"' "$OUT" | cut -d: -f1)"
-adapter_bundle_line="$(rg -n '"vibe/compiler/selfhost_cli_adapter_bundle\.vibe"' "$OUT" | cut -d: -f1)"
+adapter_line="$(rg -n '"vibe/compiler/selfhost_cli_adapter\.vibe"' "$OUT" | cut -d: -f1)"
 
-if [ "$polyfill_line" -ge "$token_line" ] || [ "$token_line" -ge "$index_line" ] || [ "$index_line" -ge "$adapter_bundle_line" ]; then
+if [ "$polyfill_line" -ge "$token_line" ] || [ "$token_line" -ge "$adapter_line" ]; then
   echo "generate-selfhost-bundle self-test: manifest order was not preserved" >&2
   cat "$OUT" >&2
   exit 1
@@ -131,6 +141,7 @@ if ! rg -Fq 'push_grouped_source_pair(groups, "syntax", source_1)' "$OUT"; then
   exit 1
 fi
 
+# source_2 is selfhost_cli_adapter.vibe (entry group)
 if ! rg -Fq 'push_grouped_source_pair(groups, "entry", source_2)' "$OUT"; then
   echo "generate-selfhost-bundle self-test: missing entry group mapping" >&2
   cat "$OUT" >&2

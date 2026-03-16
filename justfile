@@ -90,6 +90,14 @@ build-wasm-vibe: build-integration-deno-wasm
     mkdir -p wasm/vibe
     cp _build/wasm-gc/release/build/lib/lib.wasm wasm/vibe/vibe.wasm
 
+# Build distributable selfhost compiler wasm (with wasm-opt)
+build-selfhost-dist:
+    bash scripts/build_selfhost_dist.sh
+
+# Build distributable selfhost compiler wasm (without wasm-opt)
+build-selfhost-dist-raw:
+    VIBE_DIST_SKIP_OPT=1 bash scripts/build_selfhost_dist.sh
+
 # Smoke test `wasm/vibe/vibe.wasm` with wasmtime invoke
 test-wasm-vibe-wasmtime: build-wasm-vibe
     scripts/test_wasm_vibe_wasmtime.sh wasm/vibe/vibe.wasm
