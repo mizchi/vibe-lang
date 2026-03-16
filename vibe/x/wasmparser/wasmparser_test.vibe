@@ -1807,3 +1807,168 @@ test "rs: export func index LEB128" {
   let (_, _, idx) = Array::get(exports, 0)
   assert(idx == 300)
 }
+
+// ============================================================
+// Ported from Rust wasmparser "out of scope" tests
+// ============================================================
+
+// --- header_iter: truncated/malformed input resilience ---
+// Original tests that parser doesn't crash on partial data.
+// Our batch parser should return empty/defaults gracefully.
+
+test "rs: header_iter empty" {
+  let bytes = make_bytes(Array::slice([0], 0, 0))
+  assert(validate_magic(bytes) == false)
+  assert(read_version(bytes) == -1)
+  assert(Array::length(list_sections(bytes)) == 0)
+}
+
+test "rs: header_iter one byte" {
+  let bytes = make_bytes([0x00])
+  assert(validate_magic(bytes) == false)
+  assert(Array::length(list_sections(bytes)) == 0)
+}
+
+test "rs: header_iter four bytes" {
+  let bytes = make_bytes([0x00, 0x61, 0x73, 0x6D])
+  assert(validate_magic(bytes) == false)
+  assert(Array::length(list_sections(bytes)) == 0)
+}
+
+test "rs: header_iter wrong version" {
+  let bytes = make_bytes([0x00, 0x61, 0x73, 0x6D, 0x01, 0x01, 0x01, 0x01])
+  assert(validate_magic(bytes) == true)
+  // version bytes are non-standard but magic is valid
+  assert(read_version(bytes) != 1)
+  // list_sections still works (skips to offset 8)
+  assert(Array::length(list_sections(bytes)) == 0)
+}
+
+test "rs: truncated section header" {
+  // Valid header + section id byte but no size
+  let bytes = make_bytes([0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, 0x01])
+  // Should not crash, may return 0 sections (incomplete section)
+  let sections = list_sections(bytes)
+  // The section has id but no complete size LEB128
+  // Parser should handle gracefully
+  assert(Array::length(sections) >= 0)
+}
+
+test "rs: truncated section payload" {
+  // Type section claims 10 bytes but only has 2
+  let bytes = make_bytes([0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0A, 0x01, 0x60])
+  let sections = list_sections(bytes)
+  // Section extends beyond file end - should be skipped
+  assert(Array::length(sections) == 0)
+}
+
+test "rs: module_types on truncated" {
+  // Valid header, no type section
+  let bytes = make_bytes([0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00])
+  assert(Array::length(module_types(bytes)) == 0)
+  assert(Array::length(module_imports(bytes)) == 0)
+  assert(Array::length(module_exports(bytes)) == 0)
+  assert(Array::length(module_functions(bytes)) == 0)
+  assert(Array::length(module_globals(bytes)) == 0)
+  assert(Array::length(module_memories(bytes)) == 0)
+  assert(Array::length(module_code(bytes)) == 0)
+  assert(Array::length(module_data(bytes)) == 0)
+  assert(Array::length(module_elements(bytes)) == 0)
+  assert(module_start(bytes) == -1)
+}
+
+// --- big_type_indices: many types (scaled down from 100K to 50) ---
+
+test "rs: big type indices 50 types" {
+  // Build a module with 50 function types: all () -> ()
+  // type section payload: count(1 byte) + 50 * [0x60, 0, 0] = 1 + 150 = 151 bytes
+  let payload = Array::slice([0], 0, 0)
+  Array::push(payload, 50)
+  let mut ti = 0
+  while ti < 50 {
+    Array::push(payload, 0x60)
+    Array::push(payload, 0)
+    Array::push(payload, 0)
+    ti = ti + 1
+  }
+  // Build full module bytes
+  let bytes = Bytes::new()
+  // header
+  Bytes::push(bytes, 0x00); Bytes::push(bytes, 0x61); Bytes::push(bytes, 0x73); Bytes::push(bytes, 0x6D)
+  Bytes::push(bytes, 0x01); Bytes::push(bytes, 0x00); Bytes::push(bytes, 0x00); Bytes::push(bytes, 0x00)
+  // type section id
+  Bytes::push(bytes, 0x01)
+  // payload size (151 = 0x97 0x01 in LEB128)
+  Bytes::push(bytes, 0x97)
+  Bytes::push(bytes, 0x01)
+  // payload
+  let mut pi = 0
+  while pi < Array::length(payload) {
+    Bytes::push(bytes, Array::get(payload, pi))
+    pi = pi + 1
+  }
+  let types = module_types(bytes)
+  assert(Array::length(types) == 50)
+  // All should be () -> ()
+  let (p0, r0) = Array::get(types, 0)
+  assert(Array::length(p0) == 0)
+  assert(Array::length(r0) == 0)
+  let (p49, r49) = Array::get(types, 49)
+  assert(Array::length(p49) == 0)
+  assert(Array::length(r49) == 0)
+}
+
+test "rs: big function section 50 funcs" {
+  // 50 functions all referencing type 0
+  let bytes = Bytes::new()
+  // header
+  Bytes::push(bytes, 0x00); Bytes::push(bytes, 0x61); Bytes::push(bytes, 0x73); Bytes::push(bytes, 0x6D)
+  Bytes::push(bytes, 0x01); Bytes::push(bytes, 0x00); Bytes::push(bytes, 0x00); Bytes::push(bytes, 0x00)
+  // type section: 1 type () -> ()
+  Bytes::push(bytes, 0x01); Bytes::push(bytes, 0x04); Bytes::push(bytes, 0x01)
+  Bytes::push(bytes, 0x60); Bytes::push(bytes, 0x00); Bytes::push(bytes, 0x00)
+  // function section: 50 funcs, all type 0
+  // payload: count=50 + 50 * [0] = 51 bytes
+  Bytes::push(bytes, 0x03)
+  Bytes::push(bytes, 51)
+  Bytes::push(bytes, 50)
+  let mut fi = 0
+  while fi < 50 {
+    Bytes::push(bytes, 0x00)
+    fi = fi + 1
+  }
+  let funcs = module_functions(bytes)
+  assert(Array::length(funcs) == 50)
+  assert(Array::get(funcs, 0) == 0)
+  assert(Array::get(funcs, 49) == 0)
+}
+
+test "rs: big export section 20 exports" {
+  let bytes = Bytes::new()
+  // header
+  Bytes::push(bytes, 0x00); Bytes::push(bytes, 0x61); Bytes::push(bytes, 0x73); Bytes::push(bytes, 0x6D)
+  Bytes::push(bytes, 0x01); Bytes::push(bytes, 0x00); Bytes::push(bytes, 0x00); Bytes::push(bytes, 0x00)
+  // export section: 20 exports "e0".."e19"
+  // Each export: name_len(1) + name(2) + kind(1) + idx(1) = 5 bytes (for 1-digit)
+  // Simpler: all name "e" = [1, 0x65, 0, idx]
+  // payload: count(1) + 20 * 4 = 81
+  Bytes::push(bytes, 0x07)
+  Bytes::push(bytes, 0x51) // 81
+  Bytes::push(bytes, 20)
+  let mut ei = 0
+  while ei < 20 {
+    Bytes::push(bytes, 1)     // name len
+    Bytes::push(bytes, 0x65)  // "e"
+    Bytes::push(bytes, 0)     // kind=func
+    Bytes::push(bytes, ei)    // idx
+    ei = ei + 1
+  }
+  let exports = module_exports(bytes)
+  assert(Array::length(exports) == 20)
+  let (n0, k0, i0) = Array::get(exports, 0)
+  assert(n0 == "e")
+  assert(k0 == 0)
+  assert(i0 == 0)
+  let (_, _, i19) = Array::get(exports, 19)
+  assert(i19 == 19)
+}

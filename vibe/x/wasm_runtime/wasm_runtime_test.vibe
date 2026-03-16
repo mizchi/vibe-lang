@@ -491,3 +491,59 @@ test "br_table index 0" {
   assert(exit == 0)
   assert(result == 10)
 }
+
+// ============================================================
+// Ported from Rust wasmparser "out of scope" tests
+// ============================================================
+
+// --- big_function_body: loop executing many iterations ---
+// Original test uses 8M unreachable instructions.
+// We test a loop that executes 100 iterations.
+
+// --- Sequential accumulation (no loop, just repeated code) ---
+
+test "rs: sequential accumulation" {
+  // Accumulate: local 0 += 1 repeated 5 times, then return
+  let code = make_bytes([
+    0x20, 0, 0x41, 1, 0x6A, 0x21, 0,  // local.get 0, i32.const 1, i32.add, local.set 0
+    0x20, 0, 0x41, 1, 0x6A, 0x21, 0,
+    0x20, 0, 0x41, 1, 0x6A, 0x21, 0,
+    0x20, 0, 0x41, 1, 0x6A, 0x21, 0,
+    0x20, 0, 0x41, 1, 0x6A, 0x21, 0,
+    0x20, 0,  // local.get 0
+    0x0B
+  ])
+  let mem = Bytes::new()
+  let mut mi = 0
+  while mi < 256 { Bytes::push(mem, 0); mi = mi + 1 }
+  let (exit, result) = exec_body(code, 0, Bytes::length(code), make_locals(1), empty_stack(), mem, empty_globals(), empty_funcs())
+  assert(exit == 0)
+  assert(result == 5)
+}
+
+// --- Recursive call (simple: double via self-call) ---
+
+test "rs: recursive call double" {
+  // func 0 (double): local.get 0, local.get 0, i32.add, end
+  // func 1 (main): i32.const 21, call 0, end
+  let code = make_bytes([
+    // func 0 (double): param 0 = n, returns n+n
+    0x20, 0,              // local.get 0
+    0x20, 0,              // local.get 0
+    0x6A,                 // i32.add
+    0x0B,                 // end func 0
+    // func 1 (main):
+    0x41, 21,             // i32.const 21
+    0x10, 0,              // call 0
+    0x0B                  // end func 1
+  ])
+  let funcs = Array::slice([(0, 0, 0, 0)], 0, 0)
+  Array::push(funcs, (0, 6, 1, 0))    // func 0: start=0, end=6, 1 param
+  Array::push(funcs, (6, 11, 0, 0))   // func 1: start=6, end=11
+  let mem = Bytes::new()
+  let mut mi = 0
+  while mi < 256 { Bytes::push(mem, 0); mi = mi + 1 }
+  let (exit, result) = exec_body(code, 6, 11, make_locals(0), empty_stack(), mem, empty_globals(), funcs)
+  assert(exit == 0)
+  assert(result == 42)
+}

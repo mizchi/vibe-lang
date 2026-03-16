@@ -638,3 +638,189 @@ test "rs: canon multiple entries" {
   assert(op1 == 1)
   assert(f1 == 1)
 }
+
+// ============================================================
+// Ported from Rust wasmparser "out of scope" tests
+// ============================================================
+
+// --- test_type_id_aliasing: component type alias structure ---
+// Original test verifies aliased types share identity.
+// We test that the component type section can be parsed when it
+// contains type definitions that would be aliased.
+
+test "rs: component type section functype" {
+  // Component type section (id=7) with 1 functype:
+  // 0x40 = functype, 1 param named "x" (s32), 0 result (named, count=0)
+  let bytes = make_bytes([
+    0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00,
+    // type section id=7, payload size=9
+    0x07, 0x09, 0x01,
+    0x40,                      // functype
+    0x01,                      // params_tag = 1 (named)
+    0x01,                      // 1 param
+    0x01, 0x78,                // name "x"
+    0x7A,                      // s32
+    0x00,                      // result_tag = 0 (named results)
+    0x00                       // 0 results
+  ])
+  let sections = list_sections(bytes)
+  assert(Array::length(sections) == 1)
+  let (sid, off, sz) = Array::get(sections, 0)
+  assert(sid == 7)
+  let ftypes = parse_component_type_section(bytes, off, sz)
+  assert(Array::length(ftypes) == 1)
+  let (param_names, param_types, result_types) = Array::get(ftypes, 0)
+  assert(Array::length(param_names) == 1)
+  assert(Array::get(param_names, 0) == "x")
+  assert(Array::length(param_types) == 1)
+  assert(Array::get(param_types, 0) == 0x7A)
+  assert(Array::length(result_types) == 0)
+}
+
+test "rs: component type section multiple" {
+  // 2 func types in component type section
+  let bytes = make_bytes([
+    0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00,
+    0x07, 0x11, 0x02,
+    // type 0: (a: s32) -> () — tag=1, 1p, "a", s32; res_tag=0, 0 results
+    0x40, 0x01, 0x01, 0x01, 0x61, 0x7A, 0x00, 0x00,
+    // type 1: (b: string) -> (s64) — tag=1, 1p, "b", string; res_tag=1 (single), s64
+    0x40, 0x01, 0x01, 0x01, 0x62, 0x73, 0x01, 0x78
+  ])
+  let sections = list_sections(bytes)
+  let (_, off, sz) = Array::get(sections, 0)
+  let ftypes = parse_component_type_section(bytes, off, sz)
+  assert(Array::length(ftypes) == 2)
+  let (pn0, pt0, _) = Array::get(ftypes, 0)
+  assert(Array::get(pn0, 0) == "a")
+  assert(Array::get(pt0, 0) == 0x7A)
+  let (pn1, pt1, rt1) = Array::get(ftypes, 1)
+  assert(Array::get(pn1, 0) == "b")
+  assert(Array::get(pt1, 0) == 0x73)
+  assert(Array::length(rt1) == 1)
+  assert(Array::get(rt1, 0) == 0x78)
+}
+
+// --- test_type_id_exports: component with type exports ---
+// Original test verifies exported types get distinct IDs.
+// We test the structural parsing of export section referencing types.
+
+test "rs: component export type" {
+  // Component with export section: export "T" as type index 0
+  let bytes = make_bytes([
+    0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00,
+    // export section id=11
+    0x0B, 0x06, 0x01,
+    0x01, 0x54,     // name "T"
+    0x05,           // sort = type (for component: sort byte)
+    0x00,           // index = 0
+    0x00            // no type annotation
+  ])
+  let sections = list_sections(bytes)
+  assert(Array::length(sections) == 1)
+  let (sid, off, sz) = Array::get(sections, 0)
+  assert(sid == 11)
+  assert(count_exports(bytes, off, sz) == 1)
+}
+
+test "rs: component multiple type exports" {
+  // 3 exports: "A1", "A2", "B" all type kind
+  let bytes = make_bytes([
+    0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00,
+    0x0B, 0x12, 0x03,
+    0x02, 0x41, 0x31, 0x05, 0x00, 0x00,
+    0x02, 0x41, 0x32, 0x05, 0x00, 0x00,
+    0x01, 0x42, 0x05, 0x01, 0x00
+  ])
+  let sections = list_sections(bytes)
+  let (_, off, sz) = Array::get(sections, 0)
+  assert(count_exports(bytes, off, sz) == 3)
+}
+
+// --- Nested component (component section id=4) ---
+
+test "rs: nested component" {
+  // Component containing a nested component (section id=4)
+  // Nested component is just a header
+  let bytes = make_bytes([
+    0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00,
+    // component section id=4, size=8
+    0x04, 0x08,
+    0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00
+  ])
+  assert(is_component(bytes) == true)
+  let sections = list_sections(bytes)
+  assert(Array::length(sections) == 1)
+  let (sid, off, sz) = Array::get(sections, 0)
+  assert(sid == 4)
+  assert(sz == 8)
+  // The nested component bytes
+  assert(bytes[off] == 0x00)
+  assert(bytes[off + 4] == 0x0D)
+}
+
+// --- Component with all section types ---
+
+test "rs: component all section types" {
+  let bytes = make_bytes([
+    0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00,
+    // custom (id=0)
+    0x00, 0x03, 0x01, 0x78, 0xFF,
+    // core module (id=1)
+    0x01, 0x08, 0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00,
+    // core instance (id=2)
+    0x02, 0x04, 0x01, 0x00, 0x00, 0x00,
+    // alias (id=6)
+    0x06, 0x06, 0x01, 0x00, 0x01, 0x00, 0x01, 0x66,
+    // type (id=7)
+    0x07, 0x05, 0x01, 0x40, 0x00, 0x01, 0x00,
+    // canon (id=8)
+    0x08, 0x04, 0x01, 0x01, 0x00, 0x00,
+    // import (id=10)
+    0x0A, 0x05, 0x01, 0x01, 0x61, 0x01, 0x00,
+    // export (id=11)
+    0x0B, 0x06, 0x01, 0x01, 0x62, 0x01, 0x00, 0x00
+  ])
+  let sections = list_sections(bytes)
+  assert(Array::length(sections) == 8)
+  // Verify section IDs in order
+  let (s0, _, _) = Array::get(sections, 0)
+  let (s1, _, _) = Array::get(sections, 1)
+  let (s2, _, _) = Array::get(sections, 2)
+  let (s3, _, _) = Array::get(sections, 3)
+  let (s4, _, _) = Array::get(sections, 4)
+  let (s5, _, _) = Array::get(sections, 5)
+  let (s6, _, _) = Array::get(sections, 6)
+  let (s7, _, _) = Array::get(sections, 7)
+  assert(s0 == 0)   // custom
+  assert(s1 == 1)   // core-module
+  assert(s2 == 2)   // core-instance
+  assert(s3 == 6)   // alias
+  assert(s4 == 7)   // type
+  assert(s5 == 8)   // canon
+  assert(s6 == 10)  // import
+  assert(s7 == 11)  // export
+}
+
+// --- Truncated component resilience ---
+
+test "rs: component truncated header" {
+  let bytes = make_bytes([0x00, 0x61, 0x73, 0x6D, 0x0D])
+  assert(is_component(bytes) == false)
+  assert(Array::length(list_sections(bytes)) == 0)
+}
+
+test "rs: component empty" {
+  let bytes = make_bytes([0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00])
+  assert(is_component(bytes) == true)
+  assert(Array::length(list_sections(bytes)) == 0)
+  assert(count_core_modules(bytes) == 0)
+}
+
+test "rs: component truncated section" {
+  // Section claims size=100 but only 2 bytes available
+  let bytes = make_bytes([0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00, 0x01, 100, 0x00, 0x61])
+  let sections = list_sections(bytes)
+  // Should skip oversized section
+  assert(Array::length(sections) == 0)
+}
