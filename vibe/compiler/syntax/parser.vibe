@@ -1239,47 +1239,57 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
                 hp
               }
               if has_placeholder {
-                // Count _ occurrences and replace with param names
-                let mut pc = 0
+                // Wrap only placeholder-containing args in lambda
                 let mut dargs = Array::slice([EUnit], 0, 0)
-                let mut params = Array::slice([("", None)], 0, 0)
                 let mut dai = 0
                 while dai < Array::length(args) {
                   let arg = Array::get(args, dai)
-                  let replaced = match arg {
-                    EIdent(n) => if n == "_" {
-                      let pn = String::concat("__ph", __to_string(pc))
-                      Array::push(params, (pn, None))
-                      pc = pc + 1
-                      EIdent(pn)
-                    } else arg,
-                    EBinOp(op, l, r) => {
-                      let nl = match l {
-                        EIdent(n) => if n == "_" {
-                          let pn = String::concat("__ph", __to_string(pc))
-                          Array::push(params, (pn, None))
-                          pc = pc + 1
-                          EIdent(pn)
-                        } else l,
-                        _ => l
-                      }
-                      let nr = match r {
-                        EIdent(n) => if n == "_" {
-                          let pn = String::concat("__ph", __to_string(pc))
-                          Array::push(params, (pn, None))
-                          pc = pc + 1
-                          EIdent(pn)
-                        } else r,
-                        _ => r
-                      }
-                      EBinOp(op, nl, nr)
+                  let arg_has_ph = match arg {
+                    EIdent(n) => n == "_",
+                    EBinOp(_, l, r) => {
+                      let lh = match l { EIdent(n) => n == "_", _ => false }
+                      let rh = match r { EIdent(n) => n == "_", _ => false }
+                      lh || rh
                     },
-                    _ => arg
+                    _ => false
                   }
-                  Array::push(dargs, replaced)
+                  if arg_has_ph {
+                    let mut pc = 0
+                    let mut params = Array::slice([("", None)], 0, 0)
+                    let replaced = match arg {
+                      EIdent(n) => if n == "_" {
+                        let pn = "__ph0"
+                        Array::push(params, (pn, None))
+                        EIdent(pn)
+                      } else arg,
+                      EBinOp(op, l, r) => {
+                        let nl = match l {
+                          EIdent(n) => if n == "_" {
+                            let pn = String::concat("__ph", __to_string(pc))
+                            Array::push(params, (pn, None))
+                            pc = pc + 1
+                            EIdent(pn)
+                          } else l, _ => l
+                        }
+                        let nr = match r {
+                          EIdent(n) => if n == "_" {
+                            let pn = String::concat("__ph", __to_string(pc))
+                            Array::push(params, (pn, None))
+                            pc = pc + 1
+                            EIdent(pn)
+                          } else r, _ => r
+                        }
+                        EBinOp(op, nl, nr)
+                      },
+                      _ => arg
+                    }
+                    Array::push(dargs, EFn(_no_tp(), _no_tb(), params, None, None, replaced))
+                  } else {
+                    Array::push(dargs, arg)
+                  }
                   dai = dai + 1
                 }
-                cur_expr = EFn(_no_tp(), _no_tb(), params, None, None, ECall(cur_expr, dargs))
+                cur_expr = ECall(cur_expr, dargs)
               } else {
                 cur_expr = ECall(cur_expr, args)
               }
