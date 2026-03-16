@@ -208,6 +208,72 @@ let compile_call = (buf: Array[Int], callee: Expr, args: Array[Expr], local_name
       emit_call(buf, ss_idx)
       nl
     }
+    else if fname == "Map::get" {
+      // Map::get(map, key) — linear search by key string equality
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      let (map_get_eq_idx, _, _) = resolve_func(ctx.func_table, "eq")
+      let map_local = nl
+      let key_local = nl + 1
+      let count_local = nl + 2
+      let idx_local = nl + 3
+      Array::push(local_names, "__map_ref")
+      Array::push(local_names, "__map_key")
+      Array::push(local_names, "__map_cnt")
+      Array::push(local_names, "__map_i")
+      emit_local_set(buf, key_local)
+      emit_local_set(buf, map_local)
+      // count = map[0] (i32 → extend to i64)
+      emit_local_get(buf, map_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_load(buf, 2, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, count_local)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, idx_local)
+      emit_block_i64(buf)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, idx_local)
+      emit_local_get(buf, count_local)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      // load key at map_ptr + 8 + i*16
+      emit_local_get(buf, map_local)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, idx_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 8)
+      emit_local_get(buf, key_local)
+      emit_call(buf, map_get_eq_idx)
+      emit_i32_wrap_i64(buf)
+      emit_if_void(buf)
+      // found: return value at offset 8 + i*16 + 8
+      emit_local_get(buf, map_local)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, idx_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 16)
+      emit_br(buf, 3)
+      emit_end(buf)
+      emit_local_get(buf, idx_local)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, idx_local)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_i64_const(buf, 0)
+      // not found: return 0
+      emit_end(buf)
+      nl + 4
+    }
     else if fname == "__rec_field" {
       // Record field access by index: __rec_field(record, idx)
       // Record layout: [tag:i32][count:i32][field0:i64][field1:i64]...
