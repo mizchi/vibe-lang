@@ -1279,37 +1279,55 @@ export let rec compile_expr = (buf: Array[Int], expr: Expr, local_names: Array[S
     emit_local_get(buf, arr_local)
     nl
   } else if __tag == 18 {
+    // For-in comprehension: for x in arr { body } → new array with body results
     let var_name = get_eforin_name(expr)
     let iter_expr = get_eforin_iter(expr)
     let body = get_eforin_body(expr)
-    let (arr_len_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
-    let (arr_get_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
-    let arr_local = next_local
-    let nl1 = compile_expr(buf, iter_expr, local_names, next_local + 1, ctx, ld)
+    let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
+    let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
+    let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
+    let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
+    let result_local = next_local
+    let arr_local = next_local + 1
+    let i_local = next_local + 2
+    Array::push(local_names, "__forin_res")
+    Array::push(local_names, "__forin_arr")
+    Array::push(local_names, "__forin_i")
+    // result = array_new()
+    emit_call(buf, arr_new_fi)
+    emit_local_set(buf, result_local)
+    // arr = iter_expr
+    let nl1 = compile_expr(buf, iter_expr, local_names, next_local + 3, ctx, ld)
     emit_local_set(buf, arr_local)
-    Array::push(local_names, "__for_arr")
-    let i_local = nl1
+    // i = 0
     emit_i64_const(buf, 0)
     emit_local_set(buf, i_local)
-    Array::push(local_names, "__for_i")
-    let nl2 = nl1 + 1
+    // loop
     emit_block_void(buf)
     emit_loop_void(buf)
     emit_local_get(buf, i_local)
     emit_local_get(buf, arr_local)
-    emit_call(buf, arr_len_idx)
+    emit_call(buf, arr_len_fi)
     emit_i64_ge_s(buf)
-    // S1b: i64_ge_s already leaves i32, skip extend+wrap
     emit_br_if(buf, 1)
-    let var_local = nl2
+    // var = arr[i]
+    let var_local = nl1
     emit_local_get(buf, arr_local)
     emit_local_get(buf, i_local)
-    emit_call(buf, arr_get_idx)
+    emit_call(buf, arr_get_fi)
     emit_local_set(buf, var_local)
     Array::push(local_names, var_name)
-    let nl3 = nl2 + 1
-    let nl4 = compile_expr(buf, body, local_names, nl3, ctx, ld + 1)
-    emit_drop(buf)
+    let nl2 = nl1 + 1
+    // body_result = body
+    let nl3 = compile_expr(buf, body, local_names, nl2, ctx, ld + 1)
+    // push body_result to result array
+    let body_val = nl3
+    Array::push(local_names, "__forin_val")
+    emit_local_set(buf, body_val)
+    emit_local_get(buf, result_local)
+    emit_local_get(buf, body_val)
+    emit_call(buf, arr_push_fi)
+    // i++
     emit_local_get(buf, i_local)
     emit_i64_const(buf, 1)
     emit_i64_add(buf)
@@ -1317,8 +1335,9 @@ export let rec compile_expr = (buf: Array[Int], expr: Expr, local_names: Array[S
     emit_br(buf, 0)
     emit_end(buf)
     emit_end(buf)
-    emit_i64_const(buf, 0)
-    nl4
+    // return result array
+    emit_local_get(buf, result_local)
+    nl3 + 1
   } else if __tag == 19 {
     let cond = get_ewhile_cond(expr)
     let body = get_ewhile_body(expr)
