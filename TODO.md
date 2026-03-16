@@ -117,10 +117,11 @@ Phase 4 (応用):
   - 代替案: wasmtime `-W max-wasm-stack=N` で compiled backend のスタックを拡大
 
 - [ ] selfhost perf gap を cutover 可能な水準まで詰める
-  - **最大ボトルネック: compile/emit = 85-189x** (selfhost 70-79ms vs host 0.3-2.2ms)
-    - emit は出力サイズに関係なく固定 ~70ms → ビルトイン body 生成 (702 emit calls) が支配的
-    - `emit_local_get` が 266 回、全 emit で 2000+ 回の `Array::push`
-    - 最適化候補: (a) bytebuf を Bytes/FixedArray ベースに変更、(b) ビルトイン body を静的バイト配列化、(c) batch push
+  - compile/emit: 68-79ms → **45-50ms (-32~39%)** (static builtin bodies + batch push + leb128 fast paths)
+    - 残り ~48ms は compile_expr の関数呼び出しチェーンで vibe レベルでは floor
+  - check/type: 10-41x (型チェッカーの再帰 walk + unify + env_lookup)
+  - compile/compile: 49-56x (codegen の AST walk)
+  - 残りの改善は MoonBit compiler 側の最適化 (インライン化、tail call) 依存
   - stable 5-case set の debug selfhost wasm baseline では host 比 compile 約5x、check 約2-4x 遅い
   - `compile-lite --profile-tsv` は `compile_module` / `bundle` / `emit` / `optimize` まで細粒度で出すようにした
   - 直近の stable 5-case run では TOTAL が compile `3.20x`, check `5.07x`。特に `module_import.vibe` の `check/type`、`module_export.vibe` の `check/type`、`base64.vibe` の `compile/optimize` が突出している
