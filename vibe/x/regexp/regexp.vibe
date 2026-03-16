@@ -778,61 +778,68 @@ let in_ranges_with_flags = (c: Int, ranges: Array[(Int, Int)], flags: Int) -> Bo
   (flag_enabled(flags, flag_ignore_case) && (in_ranges(lower_ascii(c), ranges) || in_ranges(upper_ascii(c), ranges)))
 }
 
+let rec repeat_impl = (
+  mc: (Re, String, Int, Int, Array[Int]) -> Array[(Int, Array[Int])],
+  inner: Re, s: String, flags: Int,
+  min_n: Int, max_n: Int, lazy: Bool,
+  count: Int, cur: Int, cur_collector: Array[Int]
+) -> Array[(Int, Array[Int])] {
+  let stop_states = if count >= min_n {
+    single_state(cur, cur_collector)
+  } else {
+    empty_states()
+  }
+  if count >= max_n {
+    stop_states
+  } else {
+    let next_states = mc(inner, s, cur, flags, cur_collector)
+    let advanced_states = empty_states()
+    let n_next = Array::length(next_states)
+    let mut i = 0
+    while i < n_next {
+      let (next_pos, next_collector) = Array::get(next_states, i)
+      if next_pos > cur {
+        append_states(advanced_states, repeat_impl(mc, inner, s, flags, min_n, max_n, lazy, count + 1, next_pos, next_collector))
+      }
+      i = i + 1
+    }
+    let results = empty_states()
+    if lazy {
+      append_states(results, stop_states)
+      append_states(results, advanced_states)
+    } else {
+      append_states(results, advanced_states)
+      append_states(results, stop_states)
+    }
+    results
+  }
+}
+
 let rec match_candidates = (re: Re, s: String, pos: Int, flags: Int, collector: Array[Int]) -> Array[(Int, Array[Int])] {
   let len = String::length(s)
-  let match_seq = (parts: Array[Re]) -> Array[(Int, Array[Int])] {
-    let rec r#loop = (idx: Int, cur: Int, cur_collector: Array[Int]) -> Array[(Int, Array[Int])] {
-      let part_count = Array::length(parts)
-      if idx >= part_count {
-        single_state(cur, cur_collector)
-      } else {
-        let part_states = match_candidates(Array::get(parts, idx), s, cur, flags, cur_collector)
-        let results = empty_states()
-        let len = Array::length(part_states)
-        let mut i = 0
-        while i < len {
-          let (next_pos, next_collector) = Array::get(part_states, i)
-          append_states(results, r#loop(idx + 1, next_pos, next_collector))
-          i = i + 1
-        }
-        results
+  let match_seq_impl = (parts: Array[Re], seq_pos: Int, seq_collector: Array[Int]) -> Array[(Int, Array[Int])] {
+    // Iterative implementation: process parts left-to-right, collecting all possible states
+    let part_count = Array::length(parts)
+    // current_states holds (idx, pos, collector) triples being processed
+    let mut states = [(seq_pos, seq_collector)]
+    let mut idx = 0
+    while idx < part_count {
+      let next_states = empty_states()
+      let n_states = Array::length(states)
+      let mut si = 0
+      while si < n_states {
+        let (cur_pos, cur_coll) = Array::get(states, si)
+        let part_results = match_candidates(Array::get(parts, idx), s, cur_pos, flags, cur_coll)
+        append_states(next_states, part_results)
+        si = si + 1
       }
+      states = next_states
+      idx = idx + 1
     }
-    r#loop(0, pos, collector)
+    states
   }
   let match_repeat = (inner: Re, min_n: Int, max_n: Int, lazy: Bool) -> Array[(Int, Array[Int])] {
-    let rec r#loop = (count: Int, cur: Int, cur_collector: Array[Int]) -> Array[(Int, Array[Int])] {
-      let stop_states = if count >= min_n {
-        single_state(cur, cur_collector)
-      } else {
-        empty_states()
-      }
-      if count >= max_n {
-        stop_states
-      } else {
-        let next_states = match_candidates(inner, s, cur, flags, cur_collector)
-        let advanced_states = empty_states()
-        let len = Array::length(next_states)
-        let mut i = 0
-        while i < len {
-          let (next_pos, next_collector) = Array::get(next_states, i)
-          if next_pos > cur {
-            append_states(advanced_states, r#loop(count + 1, next_pos, next_collector))
-          }
-          i = i + 1
-        }
-        let results = empty_states()
-        if lazy {
-          append_states(results, stop_states)
-          append_states(results, advanced_states)
-        } else {
-          append_states(results, advanced_states)
-          append_states(results, stop_states)
-        }
-        results
-      }
-    }
-    r#loop(0, pos, collector)
+    repeat_impl(match_candidates, inner, s, flags, min_n, max_n, lazy, 0, pos, collector)
   }
   match re {
     RChar(c) => if pos < len && chars_equal(c, char_at_code(s, pos), flags) {
@@ -911,7 +918,7 @@ let rec match_candidates = (re: Re, s: String, pos: Int, flags: Int, collector: 
         }
       }
     },
-    RSeq(seq_parts) => match_seq(seq_parts),
+    RSeq(seq_parts) => match_seq_impl(seq_parts, pos, collector),
     RAlt(a, b) => {
       let results = empty_states()
       append_states(results, match_candidates(a, s, pos, flags, collector))
@@ -1099,6 +1106,10 @@ export let find_match = (re: Re, s: String) -> String {
     }
   }
   try_pos(0)
+}
+
+export let debug_match_pos = (re: Re, s: String) -> Int {
+  do_match(re, s, 0)
 }
 
 export let test_match = (re: Re, s: String) -> Bool {
