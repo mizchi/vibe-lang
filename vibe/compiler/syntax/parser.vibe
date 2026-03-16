@@ -1298,7 +1298,14 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         }
       },
       TRBrace => (EMatch(scrutinee, ArrayBuilder::freeze(b)), pos + 1),
-      _ => throw("expected ',' or '}' in match")
+      _ => {
+        // Allow newline-separated arms (no comma required)
+        let (pa, paa) = parse_pattern(tokens, pos)
+        let a2 = expect_tk(tokens, paa, "=>")
+        let (ea, en) = parse_impl(tokens, a2, 0)
+        ArrayBuilder::push(b, (pa, ea))
+        parse_match_rest(tokens, en, scrutinee, b)
+      }
     }
   }
   let rec parse_handle_rest = (tokens: Array[Token], pos: Int, body: Expr, b: ArrayBuilder[(Pat, Expr)]) -> (Expr, Int)with { Error } {
@@ -1314,7 +1321,13 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         }
       },
       TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 1),
-      _ => throw("expected ',' or '}' in handle")
+      _ => {
+        let (pa, paa) = parse_pattern(tokens, pos)
+        let a2 = expect_tk(tokens, paa, "=>")
+        let (ea, en) = parse_impl(tokens, a2, 0)
+        ArrayBuilder::push(b, (pa, ea))
+        parse_handle_rest(tokens, en, body, b)
+      }
     }
   }
   let rec parse_block_after_expr = (tokens: Array[Token], pos: Int, e: Expr) -> (Expr, Int)with { Error } {
@@ -1512,20 +1525,38 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
             _ => throw("expected identifier after 'let mut'")
           },
           TIdent(name) => {
-            let eq_pos = match peek(tokens, next + 1) {
-              TColon => {
-                let (_, tp) = parse_type_impl(tokens, next + 2, 0)
-                tp
-              },
-              _ => next + 1
+            // Check if this is a constructor pattern: let Some(x) = expr
+            let is_ctor_pat = match peek(tokens, next + 1) {
+              TLParen => true,
+              _ => false
             }
-            let eq = expect_tk(tokens, eq_pos, "=")
-            let (val, vn) = parse_impl(tokens, eq, 0)
-            let a = skip_semi(tokens, vn)
-            let (body, end) = parse_impl(tokens, a, mode_block)
-            if end <= a {
-              throw("internal parser error: block let parser did not advance")
-            } else (ELet(name, val, body), end)
+            if is_ctor_pat {
+              let (pat, pn) = parse_pattern(tokens, next)
+              let eq = expect_tk(tokens, pn, "=")
+              let (val, vn) = parse_impl(tokens, eq, 0)
+              let a = skip_semi(tokens, vn)
+              let (body, end) = parse_impl(tokens, a, mode_block)
+              if end <= a {
+                throw("internal parser error: block let-ctor-pat parser did not advance")
+              } else {
+                (EMatch(val, [(pat, body)]), end)
+              }
+            } else {
+              let eq_pos = match peek(tokens, next + 1) {
+                TColon => {
+                  let (_, tp) = parse_type_impl(tokens, next + 2, 0)
+                  tp
+                },
+                _ => next + 1
+              }
+              let eq = expect_tk(tokens, eq_pos, "=")
+              let (val, vn) = parse_impl(tokens, eq, 0)
+              let a = skip_semi(tokens, vn)
+              let (body, end) = parse_impl(tokens, a, mode_block)
+              if end <= a {
+                throw("internal parser error: block let parser did not advance")
+              } else (ELet(name, val, body), end)
+            }
           },
           TLParen => {
             let (pat, pn) = parse_pattern(tokens, next)
