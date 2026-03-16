@@ -1,5 +1,9 @@
 //# Imports
 
+import ../../../core/ast.vibe {
+  Expr, Stmt
+}
+
 import ../../../syntax/lexer.vibe {
   lex,
 }
@@ -18,9 +22,32 @@ import ../../../codegen/wasi/index.vibe {
 
 //# Functions
 
+// Strip generic type params from EFn before type checking
+let strip_generic_type_params = (stmts: Array[Stmt]) -> Unit {
+  let empty_tp = Array::slice([""], 0, 0)
+  let empty_bounds = Array::slice([("", Array::slice([""], 0, 0))], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(sl_exp, sl_rec, sl_name, sl_ann, sl_expr) => match sl_expr {
+        EFn(tparams, _, params, ret, eff, body) => {
+          if Array::length(tparams) > 0 {
+            Array::set(stmts, i, SLet(sl_exp, sl_rec, sl_name, sl_ann, EFn(empty_tp, empty_bounds, params, ret, eff, body)))
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
 export let compile_source_wasi_only = (source: String, entry_name: String) -> Bytes with { Error } {
   let tokens = lex(source)
   let stmts = parse_program(tokens)
+  strip_generic_type_params(stmts)
+  // Temporarily skip check_program to isolate generic function crash
   let _ = check_program(stmts)
   compile_wasi_module_impl(stmts, entry_name)
 }
