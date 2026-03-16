@@ -1453,26 +1453,17 @@ export let selfbuild_probe_type_db_parse_counts = () -> Int with { Error } {
 }
 
 export let selfbuild_probe_type_db_fs_parse_counts = () -> Int with { Error, Fs } {
-  let helper_path = "_build/persistent_type_env_probe_helper.vibe"
-  let main_path = "_build/persistent_type_env_probe_main.vibe"
+  // Use unique paths with stat_token to avoid stale persistent caches.
+  // (Fs::remove is not available in WASI P2 codegen; using fresh paths instead.)
+  let token = Fs::stat_token("_build")
+  let suffix = to_string(token)
+  let helper_path = String::concat("_build/persistent_type_env_probe_helper_", String::concat(suffix, ".vibe"))
+  let main_path = String::concat("_build/persistent_type_env_probe_main_", String::concat(suffix, ".vibe"))
   let helper_source = "export let add = () -> Int { 1 }"
-  let main_source = "import ./persistent_type_env_probe_helper.vibe { add }\nlet run = () -> Int { add() }"
+  let helper_filename = String::concat("persistent_type_env_probe_helper_", String::concat(suffix, ".vibe"))
+  let main_source = String::concat("import ./", String::concat(helper_filename, " { add }\nlet run = () -> Int { add() }"))
   Fs::write_bytes(helper_path, string_to_bytes(helper_source))
   Fs::write_bytes(main_path, string_to_bytes(main_source))
-  let helper_fp = build_type_db_fingerprint(helper_source, Array::slice([("", "")], 0, 0))
-  let main_fp = build_type_db_fingerprint(main_source, [(helper_path, helper_fp)])
-  let helper_dep_cache = persistent_dep_list_cache_path(
-    helper_path,
-    compact_string_fingerprint(helper_source)
-  )
-  let main_dep_cache = persistent_dep_list_cache_path(
-    main_path,
-    compact_string_fingerprint(main_source)
-  )
-  remove_file_if_exists(helper_dep_cache)
-  remove_file_if_exists(main_dep_cache)
-  remove_file_if_exists(persistent_type_env_cache_path(helper_fp))
-  remove_file_if_exists(persistent_type_env_cache_path(main_fp))
   let db1 = db_typecheck_fs(
     db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source),
     main_path
