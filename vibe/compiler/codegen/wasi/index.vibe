@@ -32,6 +32,38 @@ import ../builtin_bodies/index.vibe {
 
 //# Functions
 
+// desugar_interp: expand a single EStringInterp to String::concat chain
+// Non-recursive — only handles the immediate EStringInterp node
+let expand_string_interp = (parts: Array[String]) -> Expr {
+  let plen = Array::length(parts)
+  let mut result = EString("")
+  let mut has = false
+  let mut di = 0
+  while di < plen {
+    let part = Array::get(parts, di)
+    if di % 2 == 0 {
+      if String::length(part) > 0 {
+        if has {
+          result = ECall(EIdent("String::concat"), [result, EString(part)])
+        } else {
+          result = EString(part)
+          has = true
+        }
+      }
+    } else {
+      let expr_part = ECall(EIdent("__to_string"), [EIdent(part)])
+      if has {
+        result = ECall(EIdent("String::concat"), [result, expr_part])
+      } else {
+        result = expr_part
+        has = true
+      }
+    }
+    di = di + 1
+  }
+  result
+}
+
 let expr_uses_builtin = (expr: Expr, fn_names: Array[String], target: String) -> Bool {
   let free_vars = collect_free_vars(expr, Array::slice([
     ""
@@ -82,8 +114,7 @@ export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_na
   let export_fn_user_indices = Array::slice([
     0
   ], 0, 0)
-  // Note: EStringInterp desugar is handled in codegen fallback (emits i64.const 0).
-  // Full desugar requires recursive AST walk which causes MoonBit host parser issues.
+  // EStringInterp is handled inline in compile_expr (codegen/expr/index.vibe)
   // Preprocess: convert STest to SLet with EFn wrapper
   let test_fn_names = Array::slice([
     ""

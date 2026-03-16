@@ -1571,10 +1571,35 @@ export let rec compile_expr = (buf: Array[Int], expr: Expr, local_names: Array[S
         }
       }
       ,
-      EStringInterp(_) => {
-        // Should be desugared in preprocessing. Fallback: emit empty string.
-        emit_i64_const(buf, 0)
-        next_local
+      EStringInterp(parts) => {
+        // Desugar inline to String::concat chain
+        let plen = Array::length(parts)
+        let mut result = EString("")
+        let mut has_val = false
+        let mut si2 = 0
+        while si2 < plen {
+          let part = Array::get(parts, si2)
+          if si2 % 2 == 0 {
+            if String::length(part) > 0 {
+              if has_val {
+                result = ECall(EIdent("String::concat"), [result, EString(part)])
+              } else {
+                result = EString(part)
+                has_val = true
+              }
+            }
+          } else {
+            let ep = ECall(EIdent("__to_string"), [EIdent(part)])
+            if has_val {
+              result = ECall(EIdent("String::concat"), [result, ep])
+            } else {
+              result = ep
+              has_val = true
+            }
+          }
+          si2 = si2 + 1
+        }
+        compile_expr(buf, result, local_names, next_local, ctx, ld)
       },
       ELabeledArg(_, _, _) => throw("unsupported expression in codegen: ELabeledArg"),
       _ => throw("unsupported expression in codegen: unknown")
