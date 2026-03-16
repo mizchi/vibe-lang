@@ -100,17 +100,21 @@ Phase 4 (応用):
   - wasm-opt 統合: host-compiled 935 KB → **519 KB** (-44%)
   - `scripts/build_selfhost_dist.sh`: 配布ビルド + バリデーション (sample compile → run=42)
 - [ ] GC backend セルフコンパイルで ~350KB 配布形を実現する
-  - GC codegen にビルトイン追加済み: `Array::slice`, `Array::concat`, `Bytes::*`, `eq`, `__to_string` 等
-  - `EHandle`, `EStringInterp`, `PTuple` match arm, `ESeq`/`ELet`/`ELetRec`/`EIf` フラット化済み
-  - `try_resolve` 再帰 → while ループ化済み
-  - ブロッカー: MoonBit compiled パーサー (WASM) の再帰降下が V8 WASM stack limit を超える
-    - Variant A (lex のみ): 300KB ソースの lex は成功 (68K トークン)
-    - Variant B (lex+parse): 44KB ソースのパースで V8 stack overflow / wasmtime タイムアウト
-    - 小さいソースの GC コンパイルは正常動作 (fib, enum, match, tuple destructure 等)
-    - OOM ではない (1GB メモリでも同じ crash)。V8 WASM stack は固定 ~15K frames
-    - GC codegen 自体のバグではなく、パーサー段階で crash
-    - 文字列補間展開 (Python expand_interp, inner string 対応) 完了、フラットソースは host compile 通過
-    - 解決策候補: (a) vibe パーサーの再帰を反復化、(b) MoonBit compiled WASM の stack frame 効率改善
+  - **完了**: GC codegen ビルトイン追加 (`Array::slice/concat`, `Bytes::*`, `eq`, `__to_string` 等)
+  - **完了**: `EHandle`, `PTuple` match arm, `ESeq`/`ELet`/`ELetRec`/`EIf` フラット化
+  - **完了**: `try_resolve` 再帰 → while ループ化
+  - **完了**: `parse_program` を `let rec go` → while ループに変換 (V8 WASM stack overflow 回避)
+  - **完了**: `generate_selfhost_bundle.sh` の dep_pattern 修正 (spaced import, index.vibe fallback, import stripping)
+  - **完了**: `selfbuild_compile_gc_file()` で単一ファイル → GC WASM 生成動作確認 (940B, run=42)
+  - **完了**: 文字列補間展開 (Python expand_interp, inner string/char literal 対応)
+  - 残: `selfbuild_compile_gc_file` に import 解決付き multi-file GC compile を追加
+    - 単一ファイル (import なし) は動作確認済み
+    - `collect_merged_stmts(sources)` 経由の全量コンパイルは 3.3GB OOM (WASM 4GB 限界)
+    - host runner 経由の multi-source GC compile は個別ファイルパースで stack 問題なし
+    - 次: `selfbuild_compile_gc_file` を import 解決対応にする (`@loader.load_db` 的なパス)
+    - 次: `build_selfhost_dist.sh` に GC 配布形を追加 (`--gc` フラグ)
+  - 代替案: MoonBit .mbt に `compile-gc` コマンドをネイティブ実装 (WASM 不要、GC あり)
+  - 代替案: wasmtime `-W max-wasm-stack=N` で compiled backend のスタックを拡大
 
 - [ ] selfhost perf gap を cutover 可能な水準まで詰める
   - stable 5-case set の debug selfhost wasm baseline では host 比 compile 約5x、check 約2-4x 遅い
