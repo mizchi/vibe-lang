@@ -82,6 +82,47 @@ export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_na
   let export_fn_user_indices = Array::slice([
     0
   ], 0, 0)
+  // Preprocess: convert STest to SLet with EFn wrapper
+  let test_fn_names = Array::slice([
+    ""
+  ], 0, 0)
+  let empty_tp = Array::slice([""], 0, 0)
+  let empty_bounds = Array::slice([("", Array::slice([""], 0, 0))], 0, 0)
+  let empty_params = Array::slice([("", None)], 0, 0)
+  let mut pi = 0
+  while pi < Array::length(stmts) {
+    match Array::get(stmts, pi) {
+      STest(tname, tbody) => {
+        let test_fn = String::concat("__test_", tname)
+        Array::push(test_fn_names, test_fn)
+        Array::set(stmts, pi, SLet(false, false, test_fn, None, EFn(empty_tp, empty_bounds, empty_params, None, None, ESeq(tbody, EInt(0)))))
+      },
+      _ => ()
+    }
+    pi = pi + 1
+  }
+  // If tests exist and no explicit entry, generate a run function calling all tests
+  if Array::length(test_fn_names) > 0 {
+    let mut has_entry = false
+    let mut ei = 0
+    while ei < Array::length(stmts) {
+      match Array::get(stmts, ei) {
+        SLet(is_exp, _, name, _, _) => if is_exp && name == entry_name { has_entry = true },
+        _ => ()
+      }
+      ei = ei + 1
+    }
+    if !has_entry {
+      let mut test_body = EInt(0)
+      let mut ti = Array::length(test_fn_names) - 1
+      while ti >= 0 {
+        let tname = Array::get(test_fn_names, ti)
+        test_body = ESeq(ECall(EIdent(tname), Array::slice([EUnit], 0, 0)), test_body)
+        ti = ti - 1
+      }
+      Array::push(stmts, SLet(true, false, entry_name, None, EFn(empty_tp, empty_bounds, empty_params, None, None, test_body)))
+    }
+  }
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
