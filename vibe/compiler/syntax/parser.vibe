@@ -1161,6 +1161,11 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
   let parse_call_arg = (tokens: Array[Token], pos: Int) -> (Expr, Int)with { Error } {
     match peek(tokens, pos) {
       TIdent(name) => match peek(tokens, pos + 1) {
+        TThinArrow => {
+          // Single-param lambda: x -> body
+          let (body, end) = parse_impl(tokens, pos + 2, 0);
+          (EFn(_no_tp(), _no_tb(), [(name, None)], None, None, body), end)
+        },
         TTilde => match peek(tokens, pos + 2) {
           TEq => {
             let (val, end) = parse_impl(tokens, pos + 3, 0);
@@ -1215,7 +1220,69 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
               ArrayBuilder::push(b, f)
               let (args, end) = parse_call_args_rest(tokens, n1, b)
               let en = expect_tk(tokens, end, ")")
-              cur_expr = ECall(cur_expr, args)
+              // Desugar placeholder args: if any arg contains _, wrap in lambda
+              let has_placeholder = {
+                let mut hp = false
+                let mut hpi = 0
+                while hpi < Array::length(args) {
+                  let arg = Array::get(args, hpi)
+                  match arg {
+                    EIdent(n) => if n == "_" { hp = true },
+                    EBinOp(_, l, r) => {
+                      match l { EIdent(n) => if n == "_" { hp = true }, _ => () }
+                      match r { EIdent(n) => if n == "_" { hp = true }, _ => () }
+                    },
+                    _ => ()
+                  }
+                  hpi = hpi + 1
+                }
+                hp
+              }
+              if has_placeholder {
+                // Count _ occurrences and replace with param names
+                let mut pc = 0
+                let mut dargs = Array::slice([EUnit], 0, 0)
+                let mut params = Array::slice([("", None)], 0, 0)
+                let mut dai = 0
+                while dai < Array::length(args) {
+                  let arg = Array::get(args, dai)
+                  let replaced = match arg {
+                    EIdent(n) => if n == "_" {
+                      let pn = String::concat("__ph", __to_string(pc))
+                      Array::push(params, (pn, None))
+                      pc = pc + 1
+                      EIdent(pn)
+                    } else arg,
+                    EBinOp(op, l, r) => {
+                      let nl = match l {
+                        EIdent(n) => if n == "_" {
+                          let pn = String::concat("__ph", __to_string(pc))
+                          Array::push(params, (pn, None))
+                          pc = pc + 1
+                          EIdent(pn)
+                        } else l,
+                        _ => l
+                      }
+                      let nr = match r {
+                        EIdent(n) => if n == "_" {
+                          let pn = String::concat("__ph", __to_string(pc))
+                          Array::push(params, (pn, None))
+                          pc = pc + 1
+                          EIdent(pn)
+                        } else r,
+                        _ => r
+                      }
+                      EBinOp(op, nl, nr)
+                    },
+                    _ => arg
+                  }
+                  Array::push(dargs, replaced)
+                  dai = dai + 1
+                }
+                cur_expr = EFn(_no_tp(), _no_tb(), params, None, None, ECall(cur_expr, dargs))
+              } else {
+                cur_expr = ECall(cur_expr, args)
+              }
               cur_pos = en
             }
           }
