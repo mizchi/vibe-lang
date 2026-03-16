@@ -11,8 +11,8 @@ import ./index.vibe {
   parse_data_segments, extract_data_bytes,
   parse_custom_section,
   section_name, valtype_name, count_locals,
-  module_types, module_imports, module_functions,
-  module_memories, module_exports, module_globals,
+  module_types, module_imports, module_imports_full, module_functions,
+  module_tables, module_memories, module_exports, module_globals,
   module_code, module_data, module_elements,
   module_start, module_custom_sections,
   module_summary
@@ -658,4 +658,705 @@ test "module_summary with globals" {
   let s = module_summary(bytes)
   assert(String::contains(s, "globals: 1"))
   assert(String::contains(s, "i32 mut"))
+}
+
+// ============================================================
+// Tests ported from Rust bytecodealliance/wasm-tools wasmparser
+// ============================================================
+
+// --- Header validation (from parser.rs: header test) ---
+
+test "rs: valid header" {
+  assert(validate_magic(make_bytes([0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00])) == true)
+  assert(read_version(make_bytes([0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00])) == 1)
+}
+
+test "rs: invalid version" {
+  // version 2 is not valid WASM 1.0, but magic is still correct
+  let bytes = make_bytes([0x00, 0x61, 0x73, 0x6D, 0x02, 0x00, 0x00, 0x00])
+  assert(validate_magic(bytes) == true)
+  assert(read_version(bytes) == 2)
+}
+
+test "rs: empty bytes" {
+  assert(validate_magic(make_bytes(Array::slice([0], 0, 0))) == false)
+  assert(read_version(make_bytes(Array::slice([0], 0, 0))) == -1)
+}
+
+test "rs: incomplete magic 1 byte" {
+  assert(validate_magic(make_bytes([0x00])) == false)
+}
+
+test "rs: incomplete magic 4 bytes" {
+  assert(validate_magic(make_bytes([0x00, 0x61, 0x73, 0x6D])) == false)
+}
+
+// --- Start section (from parser.rs: start_section test) ---
+
+test "rs: start section func 1" {
+  // section id=8, size=1, func_idx=1
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 8, 1, 1])
+  assert(module_start(bytes) == 1)
+}
+
+test "rs: start section func 0" {
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 8, 1, 0])
+  assert(module_start(bytes) == 0)
+}
+
+test "rs: no start section" {
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0])
+  assert(module_start(bytes) == -1)
+}
+
+// --- Type section (from parser.rs: type_section test) ---
+
+test "rs: type section empty" {
+  // section id=1, size=1, count=0
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 1, 1, 0])
+  let types = module_types(bytes)
+  assert(Array::length(types) == 0)
+}
+
+test "rs: type section one func void" {
+  // 1 type: () -> ()
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0])
+  let types = module_types(bytes)
+  assert(Array::length(types) == 1)
+  let (params, results) = Array::get(types, 0)
+  assert(Array::length(params) == 0)
+  assert(Array::length(results) == 0)
+}
+
+test "rs: type section func with params and results" {
+  // (i32, i64) -> (i32)
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 1, 7, 1, 0x60, 2, 0x7F, 0x7E, 1, 0x7F])
+  let types = module_types(bytes)
+  assert(Array::length(types) == 1)
+  let (params, results) = Array::get(types, 0)
+  assert(Array::length(params) == 2)
+  assert(Array::get(params, 0) == 0x7F)
+  assert(Array::get(params, 1) == 0x7E)
+  assert(Array::length(results) == 1)
+  assert(Array::get(results, 0) == 0x7F)
+}
+
+test "rs: type section multiple types" {
+  // 3 types: () -> (), (i32) -> (i32), () -> (i64)
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 13, 3,
+    0x60, 0, 0,
+    0x60, 1, 0x7F, 1, 0x7F,
+    0x60, 0, 1, 0x7E
+  ])
+  let types = module_types(bytes)
+  assert(Array::length(types) == 3)
+  let (p0, r0) = Array::get(types, 0)
+  assert(Array::length(p0) == 0)
+  assert(Array::length(r0) == 0)
+  let (p1, r1) = Array::get(types, 1)
+  assert(Array::length(p1) == 1)
+  assert(Array::length(r1) == 1)
+  let (p2, r2) = Array::get(types, 2)
+  assert(Array::length(p2) == 0)
+  assert(Array::length(r2) == 1)
+  assert(Array::get(r2, 0) == 0x7E)
+}
+
+// --- Custom section (from parser.rs: custom_section test) ---
+
+test "rs: custom section empty name" {
+  // custom section: id=0, size=1, name_len=0
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 0, 1, 0])
+  let customs = module_custom_sections(bytes)
+  assert(Array::length(customs) == 1)
+  let (name, _, _) = Array::get(customs, 0)
+  assert(name == "")
+}
+
+test "rs: custom section with name" {
+  // custom section: name = "a", data = [0x61]
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 0, 3, 1, 0x61, 0x61])
+  let customs = module_custom_sections(bytes)
+  assert(Array::length(customs) == 1)
+  let (name, _, payload_sz) = Array::get(customs, 0)
+  assert(name == "a")
+  assert(payload_sz == 1)
+}
+
+test "rs: custom section name producers" {
+  // "producers" section (common in toolchain-generated modules)
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    0, 12, 9, 112, 114, 111, 100, 117, 99, 101, 114, 115, 1, 2
+  ])
+  let customs = module_custom_sections(bytes)
+  assert(Array::length(customs) == 1)
+  let (name, _, _) = Array::get(customs, 0)
+  assert(name == "producers")
+}
+
+test "rs: multiple custom sections" {
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    0, 3, 1, 0x61, 0xFF,
+    0, 3, 1, 0x62, 0xFE
+  ])
+  let customs = module_custom_sections(bytes)
+  assert(Array::length(customs) == 2)
+  let (n0, _, _) = Array::get(customs, 0)
+  let (n1, _, _) = Array::get(customs, 1)
+  assert(n0 == "a")
+  assert(n1 == "b")
+}
+
+// --- Import section (from validator.rs: test_module_type_information) ---
+
+test "rs: import func" {
+  // import "m"."f" func type 0
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 4, 1, 0x60, 0, 0,
+    2, 7, 1, 1, 109, 1, 102, 0, 0
+  ])
+  let imports = module_imports(bytes)
+  assert(Array::length(imports) == 1)
+  let (m, f, k, idx) = Array::get(imports, 0)
+  assert(m == "m")
+  assert(f == "f")
+  assert(k == 0)
+  assert(idx == 0)
+}
+
+test "rs: import memory" {
+  // import "m"."mem" memory min=1 max=5
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    2, 10, 1, 1, 109, 3, 109, 101, 109, 2, 1, 1, 5
+  ])
+  let imports = module_imports_full(bytes)
+  assert(Array::length(imports) == 1)
+  let (_, _, k, _, min_v, max_v) = Array::get(imports, 0)
+  assert(k == 2)
+  assert(min_v == 1)
+  assert(max_v == 5)
+}
+
+test "rs: import table" {
+  // import "m"."t" table funcref min=10
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    2, 9, 1, 1, 109, 1, 116, 1, 0x70, 0, 10
+  ])
+  let imports = module_imports_full(bytes)
+  assert(Array::length(imports) == 1)
+  let (_, _, k, _, reftype, min_v) = Array::get(imports, 0)
+  assert(k == 1)
+  assert(reftype == 0x70)
+  assert(min_v == 10)
+}
+
+test "rs: import global" {
+  // import "m"."g" global i32 mutable
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    2, 8, 1, 1, 109, 1, 103, 3, 0x7F, 1
+  ])
+  let imports = module_imports_full(bytes)
+  assert(Array::length(imports) == 1)
+  let (_, _, k, _, valtype, mutability) = Array::get(imports, 0)
+  assert(k == 3)
+  assert(valtype == 0x7F)
+  assert(mutability == 1)
+}
+
+test "rs: multiple imports" {
+  // 2 imports: func + memory
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 4, 1, 0x60, 0, 0,
+    2, 14, 2,
+      1, 109, 1, 102, 0, 0,
+      1, 109, 1, 109, 2, 0, 1
+  ])
+  let imports = module_imports(bytes)
+  assert(Array::length(imports) == 2)
+  let (_, _, k0, _) = Array::get(imports, 0)
+  let (_, _, k1, _) = Array::get(imports, 1)
+  assert(k0 == 0)
+  assert(k1 == 2)
+}
+
+// --- Function section (from parser.rs: function_section test) ---
+
+test "rs: function section empty" {
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 3, 1, 0])
+  let funcs = module_functions(bytes)
+  assert(Array::length(funcs) == 0)
+}
+
+test "rs: function section one" {
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 3, 2, 1, 0])
+  let funcs = module_functions(bytes)
+  assert(Array::length(funcs) == 1)
+  assert(Array::get(funcs, 0) == 0)
+}
+
+test "rs: function section multiple" {
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 3, 4, 3, 0, 1, 2])
+  let funcs = module_functions(bytes)
+  assert(Array::length(funcs) == 3)
+  assert(Array::get(funcs, 0) == 0)
+  assert(Array::get(funcs, 1) == 1)
+  assert(Array::get(funcs, 2) == 2)
+}
+
+// --- Memory section ---
+
+test "rs: memory min only" {
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 5, 3, 1, 0, 1])
+  let mems = module_memories(bytes)
+  assert(Array::length(mems) == 1)
+  let (min_p, max_p) = Array::get(mems, 0)
+  assert(min_p == 1)
+  assert(max_p == -1)
+}
+
+test "rs: memory min and max" {
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 5, 4, 1, 1, 1, 5])
+  let mems = module_memories(bytes)
+  assert(Array::length(mems) == 1)
+  let (min_p, max_p) = Array::get(mems, 0)
+  assert(min_p == 1)
+  assert(max_p == 5)
+}
+
+// --- Table section ---
+
+test "rs: table funcref" {
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 4, 4, 1, 0x70, 0, 10])
+  let tables = module_tables(bytes)
+  assert(Array::length(tables) == 1)
+  let (reftype, min_v, max_v) = Array::get(tables, 0)
+  assert(reftype == 0x70)
+  assert(min_v == 10)
+  assert(max_v == -1)
+}
+
+test "rs: table with max" {
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 4, 5, 1, 0x70, 1, 10, 50])
+  let tables = module_tables(bytes)
+  let (_, min_v, max_v) = Array::get(tables, 0)
+  assert(min_v == 10)
+  assert(max_v == 50)
+}
+
+// --- Global section ---
+
+test "rs: global i32 immutable" {
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 6, 6, 1, 0x7F, 0, 0x41, 0, 0x0B])
+  let globals = module_globals(bytes)
+  assert(Array::length(globals) == 1)
+  let (vt, mut_f, init_op, init_val) = Array::get(globals, 0)
+  assert(vt == 0x7F)
+  assert(mut_f == 0)
+  assert(init_op == 0x41)
+  assert(init_val == 0)
+}
+
+test "rs: global i32 mutable" {
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 6, 6, 1, 0x7F, 1, 0x41, 42, 0x0B])
+  let globals = module_globals(bytes)
+  let (_, mut_f, _, val) = Array::get(globals, 0)
+  assert(mut_f == 1)
+  assert(val == 42)
+}
+
+test "rs: global i64" {
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 6, 6, 1, 0x7E, 0, 0x42, 10, 0x0B])
+  let globals = module_globals(bytes)
+  let (vt, _, init_op, val) = Array::get(globals, 0)
+  assert(vt == 0x7E)
+  assert(init_op == 0x42)
+  assert(val == 10)
+}
+
+test "rs: multiple globals" {
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    6, 11, 2,
+    0x7F, 0, 0x41, 1, 0x0B,
+    0x7F, 1, 0x41, 2, 0x0B
+  ])
+  let globals = module_globals(bytes)
+  assert(Array::length(globals) == 2)
+  let (_, _, _, v0) = Array::get(globals, 0)
+  let (_, m1, _, v1) = Array::get(globals, 1)
+  assert(v0 == 1)
+  assert(v1 == 2)
+  assert(m1 == 1)
+}
+
+// --- Export section ---
+
+test "rs: export func" {
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 7, 7, 1, 3, 0x66, 0x6F, 0x6F, 0, 0])
+  let exports = module_exports(bytes)
+  assert(Array::length(exports) == 1)
+  let (name, kind, idx) = Array::get(exports, 0)
+  assert(name == "foo")
+  assert(kind == 0)
+  assert(idx == 0)
+}
+
+test "rs: export memory" {
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 7, 10, 1, 6, 0x6D, 0x65, 0x6D, 0x6F, 0x72, 0x79, 2, 0])
+  let exports = module_exports(bytes)
+  assert(Array::length(exports) == 1)
+  let (name, kind, _) = Array::get(exports, 0)
+  assert(name == "memory")
+  assert(kind == 2)
+}
+
+test "rs: export table" {
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 7, 7, 1, 3, 0x74, 0x62, 0x6C, 1, 0])
+  let exports = module_exports(bytes)
+  let (name, kind, _) = Array::get(exports, 0)
+  assert(name == "tbl")
+  assert(kind == 1)
+}
+
+test "rs: export global" {
+  let bytes = make_bytes([0, 97, 115, 109, 1, 0, 0, 0, 7, 5, 1, 1, 0x67, 3, 0])
+  let exports = module_exports(bytes)
+  let (name, kind, _) = Array::get(exports, 0)
+  assert(name == "g")
+  assert(kind == 3)
+}
+
+test "rs: multiple exports" {
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    7, 13, 3,
+    1, 0x61, 0, 0,
+    1, 0x62, 0, 1,
+    1, 0x63, 2, 0
+  ])
+  let exports = module_exports(bytes)
+  assert(Array::length(exports) == 3)
+  let (n0, k0, i0) = Array::get(exports, 0)
+  assert(n0 == "a")
+  assert(k0 == 0)
+  assert(i0 == 0)
+  let (n1, _, i1) = Array::get(exports, 1)
+  assert(n1 == "b")
+  assert(i1 == 1)
+  let (n2, k2, _) = Array::get(exports, 2)
+  assert(n2 == "c")
+  assert(k2 == 2)
+}
+
+// --- Element section ---
+
+test "rs: element active table 0" {
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    9, 8, 1, 0, 0x41, 0, 0x0B, 2, 0, 1
+  ])
+  let elems = module_elements(bytes)
+  assert(Array::length(elems) == 1)
+  let (table_idx, init_op, _, indices) = Array::get(elems, 0)
+  assert(table_idx == 0)
+  assert(init_op == 0x41)
+  assert(Array::length(indices) == 2)
+  assert(Array::get(indices, 0) == 0)
+  assert(Array::get(indices, 1) == 1)
+}
+
+test "rs: element with nonzero offset" {
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    9, 7, 1, 0, 0x41, 5, 0x0B, 1, 3
+  ])
+  let elems = module_elements(bytes)
+  let (_, _, init_val, indices) = Array::get(elems, 0)
+  assert(init_val == 5)
+  assert(Array::length(indices) == 1)
+  assert(Array::get(indices, 0) == 3)
+}
+
+test "rs: element empty" {
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    9, 5, 1, 0, 0x41, 0, 0x0B, 0
+  ])
+  let elems = module_elements(bytes)
+  assert(Array::length(elems) == 1)
+  let (_, _, _, indices) = Array::get(elems, 0)
+  assert(Array::length(indices) == 0)
+}
+
+// --- Code section ---
+
+test "rs: code section one body no locals" {
+  // code section: 1 body, size=4, 0 locals, i32.const 42, end
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    10, 6, 1, 4, 0, 0x41, 42, 0x0B
+  ])
+  let code = module_code(bytes)
+  assert(Array::length(code) == 1)
+  let (_, body_size, locals) = Array::get(code, 0)
+  assert(body_size == 4)
+  assert(Array::length(locals) == 0)
+  assert(count_locals(locals) == 0)
+}
+
+test "rs: code section with locals" {
+  // 1 body: 2 local decl groups (3 x i32, 1 x i64)
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    10, 10, 1, 8, 2, 3, 0x7F, 1, 0x7E, 0x41, 0, 0x0B
+  ])
+  let code = module_code(bytes)
+  let (_, _, locals) = Array::get(code, 0)
+  assert(Array::length(locals) == 2)
+  let (c0, t0) = Array::get(locals, 0)
+  assert(c0 == 3)
+  assert(t0 == 0x7F)
+  let (c1, t1) = Array::get(locals, 1)
+  assert(c1 == 1)
+  assert(t1 == 0x7E)
+  assert(count_locals(locals) == 4)
+}
+
+test "rs: code section multiple bodies" {
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    10, 11, 2,
+    4, 0, 0x41, 1, 0x0B,
+    4, 0, 0x41, 2, 0x0B
+  ])
+  let code = module_code(bytes)
+  assert(Array::length(code) == 2)
+}
+
+test "rs: code body extraction" {
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    10, 8, 1, 6, 1, 1, 0x7F, 0x41, 42, 0x0B
+  ])
+  let code = module_code(bytes)
+  let (boff, bsz, _) = Array::get(code, 0)
+  let body = extract_code_body(bytes, boff, bsz)
+  // should skip local decl (1 group: 1 x i32 = 3 bytes), leaving: i32.const 42, end
+  assert(Bytes::length(body) == 3)
+  assert(body[0] == 0x41)
+  assert(body[1] == 42)
+  assert(body[2] == 0x0B)
+}
+
+// --- Data section ---
+
+test "rs: data active" {
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    11, 10, 1, 0, 0x41, 0, 0x0B, 5, 0x48, 0x65, 0x6C, 0x6C, 0x6F
+  ])
+  let data = module_data(bytes)
+  assert(Array::length(data) == 1)
+  let (mode, _, init_op, _, _, data_len) = Array::get(data, 0)
+  assert(mode == 0)
+  assert(init_op == 0x41)
+  assert(data_len == 5)
+}
+
+test "rs: data extract bytes" {
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    11, 10, 1, 0, 0x41, 0, 0x0B, 5, 0x48, 0x65, 0x6C, 0x6C, 0x6F
+  ])
+  let data = module_data(bytes)
+  let (_, _, _, _, doff, dlen) = Array::get(data, 0)
+  let extracted = extract_data_bytes(bytes, doff, dlen)
+  assert(Bytes::length(extracted) == 5)
+  assert(extracted[0] == 0x48)
+  assert(extracted[1] == 0x65)
+  assert(extracted[4] == 0x6F)
+}
+
+test "rs: data passive" {
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    11, 5, 1, 1, 3, 0x41, 0x42, 0x43
+  ])
+  let data = module_data(bytes)
+  assert(Array::length(data) == 1)
+  let (mode, _, _, _, _, data_len) = Array::get(data, 0)
+  assert(mode == 1)
+  assert(data_len == 3)
+}
+
+test "rs: data multiple segments" {
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    11, 14, 2,
+    0, 0x41, 0, 0x0B, 2, 0x41, 0x42,
+    0, 0x41, 10, 0x0B, 1, 0x43
+  ])
+  let data = module_data(bytes)
+  assert(Array::length(data) == 2)
+  let (_, _, _, v0, _, l0) = Array::get(data, 0)
+  assert(v0 == 0)
+  assert(l0 == 2)
+  let (_, _, _, v1, _, l1) = Array::get(data, 1)
+  assert(v1 == 10)
+  assert(l1 == 1)
+}
+
+// --- Section ordering ---
+
+test "rs: section order correct" {
+  // type (1) < import (2) < function (3) < export (7) < code (10)
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 4, 1, 0x60, 0, 0,
+    3, 2, 1, 0,
+    7, 5, 1, 1, 0x66, 0, 0,
+    10, 5, 1, 3, 0, 0x01, 0x0B
+  ])
+  let sections = list_sections(bytes)
+  assert(Array::length(sections) == 4)
+  let (s0, _, _) = Array::get(sections, 0)
+  let (s1, _, _) = Array::get(sections, 1)
+  let (s2, _, _) = Array::get(sections, 2)
+  let (s3, _, _) = Array::get(sections, 3)
+  assert(s0 == 1)
+  assert(s1 == 3)
+  assert(s2 == 7)
+  assert(s3 == 10)
+}
+
+// --- Complete module (inspired by test_module_type_information) ---
+
+test "rs: complete module all sections" {
+  let bytes = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    // type: (i32, i64) -> (i32)
+    1, 7, 1, 0x60, 2, 0x7F, 0x7E, 1, 0x7F,
+    // import: "e"."f" func type 0
+    2, 7, 1, 1, 0x65, 1, 0x66, 0, 0,
+    // function: 1 local func type 0
+    3, 2, 1, 0,
+    // table: funcref min=1
+    4, 4, 1, 0x70, 0, 1,
+    // memory: min=1 max=5
+    5, 4, 1, 1, 1, 5,
+    // global: i32 mut init=0
+    6, 6, 1, 0x7F, 1, 0x41, 0, 0x0B,
+    // export: "g" func 1
+    7, 5, 1, 1, 0x67, 0, 1,
+    // element: table 0, offset 0, [1]
+    9, 7, 1, 0, 0x41, 0, 0x0B, 1, 1,
+    // code: local.get 0, local.get 1, i32.add, end (after wrapping)
+    10, 8, 1, 6, 0, 0x20, 0, 0x20, 1, 0x0B,
+    // data: offset 0, "AB"
+    11, 8, 1, 0, 0x41, 0, 0x0B, 2, 0x41, 0x42
+  ])
+
+  assert(validate_magic(bytes) == true)
+
+  // types
+  let types = module_types(bytes)
+  assert(Array::length(types) == 1)
+  let (params, results) = Array::get(types, 0)
+  assert(Array::length(params) == 2)
+  assert(Array::length(results) == 1)
+
+  // imports
+  let imports = module_imports(bytes)
+  assert(Array::length(imports) == 1)
+  let (m, f, k, _) = Array::get(imports, 0)
+  assert(m == "e")
+  assert(f == "f")
+  assert(k == 0)
+
+  // functions
+  let funcs = module_functions(bytes)
+  assert(Array::length(funcs) == 1)
+
+  // tables
+  let tables = module_tables(bytes)
+  assert(Array::length(tables) == 1)
+  let (rt, _, _) = Array::get(tables, 0)
+  assert(rt == 0x70)
+
+  // memories
+  let mems = module_memories(bytes)
+  assert(Array::length(mems) == 1)
+  let (min_p, max_p) = Array::get(mems, 0)
+  assert(min_p == 1)
+  assert(max_p == 5)
+
+  // globals
+  let globals = module_globals(bytes)
+  assert(Array::length(globals) == 1)
+  let (vt, mut_f, _, _) = Array::get(globals, 0)
+  assert(vt == 0x7F)
+  assert(mut_f == 1)
+
+  // exports
+  let exports = module_exports(bytes)
+  assert(Array::length(exports) == 1)
+  let (en, ek, ei) = Array::get(exports, 0)
+  assert(en == "g")
+  assert(ek == 0)
+  assert(ei == 1)
+
+  // elements
+  let elems = module_elements(bytes)
+  assert(Array::length(elems) == 1)
+
+  // code
+  let code = module_code(bytes)
+  assert(Array::length(code) == 1)
+
+  // data
+  let data = module_data(bytes)
+  assert(Array::length(data) == 1)
+  let (_, _, _, _, doff, dlen) = Array::get(data, 0)
+  let extracted = extract_data_bytes(bytes, doff, dlen)
+  assert(Bytes::length(extracted) == 2)
+  assert(extracted[0] == 0x41)
+  assert(extracted[1] == 0x42)
+}
+
+// --- Valtype/section name coverage ---
+
+test "rs: all valtype names" {
+  assert(valtype_name(0x7F) == "i32")
+  assert(valtype_name(0x7E) == "i64")
+  assert(valtype_name(0x7D) == "f32")
+  assert(valtype_name(0x7C) == "f64")
+  assert(valtype_name(0x7B) == "v128")
+  assert(valtype_name(0x70) == "funcref")
+  assert(valtype_name(0x6F) == "externref")
+  assert(valtype_name(0x00) == "unknown")
+}
+
+test "rs: all section names" {
+  assert(section_name(0) == "custom")
+  assert(section_name(1) == "type")
+  assert(section_name(2) == "import")
+  assert(section_name(3) == "function")
+  assert(section_name(4) == "table")
+  assert(section_name(5) == "memory")
+  assert(section_name(6) == "global")
+  assert(section_name(7) == "export")
+  assert(section_name(8) == "start")
+  assert(section_name(9) == "element")
+  assert(section_name(10) == "code")
+  assert(section_name(11) == "data")
+  assert(section_name(12) == "datacount")
 }
