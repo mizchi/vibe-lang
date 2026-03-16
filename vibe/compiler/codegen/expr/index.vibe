@@ -1254,44 +1254,57 @@ export let rec compile_expr = (buf: Array[Int], expr: Expr, local_names: Array[S
       },
       EForIn(_, _, _, _) => throw("unsupported expression in codegen: EForIn"),
       EHandle(body, arms) => {
-        // Simple try-catch: try { body } catch { Error(_) => fallback }
-        // WASM: block $outer (result i64) { try_table (catch tag_0 $outer) { body } }
-        // For simplicity, compile as: block $catch { block $try { body; br $catch } } fallback
-        // Actually use try_table instruction for proper exception handling
         if Array::length(arms) > 0 {
-          let (_, fallback_expr) = Array::get(arms, 0)
-          // block $result (result i64)
+          let (catch_pat, fallback_expr) = Array::get(arms, 0)
+          // block $catch_handler (result i64)
           emit_block_i64(buf)
-          // block $catch (result i64)
+          // block $no_catch (result i64) — body result flows here
           emit_block_i64(buf)
-          // try_table (result i64) (catch_ref 0 1)
+          // try_table (result i64) (catch 0 1)
           bytebuf_push(buf, 31)
-          // try_table opcode
           bytebuf_push(buf, 126)
-          // result type i64
+          // block type: i64
           bytebuf_push(buf, 1)
           // 1 catch clause
-          bytebuf_push(buf, 1)
-          // catch_ref
+          bytebuf_push(buf, 0)
+          // catch (not catch_ref)
           bytebuf_push(buf, 0)
           // tag index 0
           bytebuf_push(buf, 1)
-          // target label 1 (the outer block)
+          // label 1 = $catch_handler
           let nl1 = compile_expr(buf, body, local_names, next_local, ctx, ld)
           emit_end(buf)
           // end try_table
           emit_br(buf, 1)
-          // br past catch to result block
+          // br past catch_handler
           emit_end(buf)
-          // end inner block
-          // catch handler: drop exception ref, evaluate fallback
-          emit_drop(buf)
-          // drop exnref
-          emit_drop(buf)
-          // drop payload
-          let nl2 = compile_expr(buf, fallback_expr, local_names, nl1, ctx, ld)
+          // end $no_catch — catch lands here with i64 payload on stack
+          // Bind catch payload to pattern variable if PBind or PCtor(Error, [PBind])
+          let nl_catch = if is_pctor(catch_pat) {
+            let cargs = get_pctor_args(catch_pat)
+            if Array::length(cargs) > 0 && is_pbind(Array::get(cargs, 0)) {
+              let pname = get_pbind_name(Array::get(cargs, 0))
+              let bl = Array::length(local_names)
+              emit_local_set(buf, bl)
+              Array::push(local_names, pname)
+              nl1
+            } else {
+              emit_drop(buf)
+              nl1
+            }
+          } else if is_pbind(catch_pat) {
+            let pname = get_pbind_name(catch_pat)
+            let bl = Array::length(local_names)
+            emit_local_set(buf, bl)
+            Array::push(local_names, pname)
+            nl1
+          } else {
+            emit_drop(buf)
+            nl1
+          }
+          let nl2 = compile_expr(buf, fallback_expr, local_names, Array::length(local_names), ctx, ld)
           emit_end(buf)
-          // end outer block
+          // end $catch_handler
           nl2
         } else {
           compile_expr(buf, body, local_names, next_local, ctx, ld)

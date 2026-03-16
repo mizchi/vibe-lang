@@ -946,6 +946,14 @@ export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_na
     emit_table_section_funcref(out, total_table_entries)
   }
   emit_memory_section(out, 8192)
+  // Tag section (section ID 13): exception tag with type (i64)->()
+  let tag_content = bytebuf_new()
+  bytebuf_push_vec_header(tag_content, 1)
+  bytebuf_push(tag_content, 0)
+  // attribute: exception
+  leb128_encode_u32(tag_content, 1)
+  // type index 1 = (i64)->()
+  bytebuf_push_section(out, 13, tag_content)
   emit_global_section_i32_mut(out, heap_start)
   let start_func_idx = func_offset + num_user_funcs
   let run_func_idx = start_func_idx + 1
@@ -972,11 +980,29 @@ export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_na
     }
     exi = exi + 1
   }
-  emit_exports_full(out, all_export_names, all_export_indices, "memory", 0, [
-    "__heap_ptr"
-  ], [
-    0
-  ])
+  // Export section: functions + memory + globals + error tag
+  let export_content = bytebuf_new()
+  let export_count = Array::length(all_export_names) + 1 + 1 + 1
+  // funcs + memory + __heap_ptr global + error tag
+  bytebuf_push_vec_header(export_content, export_count)
+  let mut efi = 0
+  while efi < Array::length(all_export_names) {
+    emit_name(export_content, Array::get(all_export_names, efi))
+    bytebuf_push(export_content, 0)
+    leb128_encode_u32(export_content, Array::get(all_export_indices, efi))
+    efi = efi + 1
+  }
+  emit_name(export_content, "memory")
+  bytebuf_push(export_content, 2)
+  leb128_encode_u32(export_content, 0)
+  emit_name(export_content, "__heap_ptr")
+  bytebuf_push(export_content, 3)
+  leb128_encode_u32(export_content, 0)
+  emit_name(export_content, "error")
+  bytebuf_push(export_content, 4)
+  // tag export
+  leb128_encode_u32(export_content, 0)
+  bytebuf_push_section(out, 7, export_content)
   if total_table_entries > 0 {
     let table_func_indices = Array::slice([
       0
