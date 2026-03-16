@@ -956,7 +956,8 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   }
 
   // export section
-  let user_export_count = ctx.exported_fns.length()
+  let user_export_count = ctx.exported_fns.length() -
+    (if ctx.exported_fns.contains("run") { 1 } else { 0 })
   let need_cabi_realloc_export = ctx.need_stdin_read_char ||
     ctx.need_socket ||
     ctx.need_http ||
@@ -998,7 +999,11 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   export_sec.push((2).to_byte()) // memory export
   write_u32_leb(export_sec, 0)
   // Export user functions (export let ...)
+  // Skip "run" here; handled above to avoid duplicate export.
   for name, _ in ctx.exported_fns {
+    if name == "run" {
+      continue
+    }
     match ctx.fn_indices.get(name) {
       Some(idx) => {
         write_name(export_sec, name)
@@ -1436,13 +1441,25 @@ fn strip_type_assert_module(ast : @core.Module) -> @core.Module {
 }
 
 ///|
-fn ensure_run_ast_result(ast : @core.Module) -> @core.Module {
+fn ensure_run_ast_result(
+  ast : @core.Module,
+  exported_fns : Map[String, Bool],
+) -> @core.Module {
   let stmts : Array[@core.Stmt] = []
   for stmt in ast.stmts {
     stmts.push(stmt)
   }
   let span = @core.Span::empty(0)
-  if stmts.length() == 0 {
+  // If user defined `export let run`, append a call to it so the
+  // auto-generated top-level function returns run()'s result.
+  if exported_fns.contains("run") {
+    stmts.push(
+      @core.Stmt::Expr(
+        expr=@core.Expr::Call(name="run", type_args=[], args=[], span~),
+        span~,
+      ),
+    )
+  } else if stmts.length() == 0 {
     stmts.push(@core.Stmt::Expr(expr=@core.Expr::Int(value=0L, span~), span~))
   } else {
     match stmts[stmts.length() - 1] {
@@ -1656,7 +1673,10 @@ fn emit_module_with_coverage(
   }
   let run_sig = FuncSig::{ params: [], results: [ValueKind::I64] }
   let _ = ensure_sig_index(ctx, run_sig)
-  let run_ast = ensure_run_ast_result(filter_top_level_funcs(ctx, ast))
+  let run_ast = ensure_run_ast_result(
+    filter_top_level_funcs(ctx, ast),
+    ctx.exported_fns,
+  )
   let func_needs_heap : Array[Bool] = []
   let mut any_user_heap = false
   for f in funcs {
