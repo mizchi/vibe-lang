@@ -1275,6 +1275,53 @@ export let rec compile_expr = (buf: Array[Int], expr: Expr, local_names: Array[S
         emit_i64_or(buf)
         nl_r
       },
+      EMap(fields) => {
+        // Map literal: same layout as record (tag=0, count, fields...)
+        let flen = Array::length(fields)
+        let obj_size = 8 + flen * 2 * 8
+        let ptr_local = next_local
+        Array::push(local_names, "__map_ptr")
+        emit_global_get(buf, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, ptr_local)
+        emit_global_get(buf, 0)
+        emit_i32_const(buf, obj_size)
+        emit_i32_add(buf)
+        emit_global_set(buf, 0)
+        // Store entry count at offset 0
+        emit_local_get(buf, ptr_local)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, flen)
+        emit_i32_store(buf, 2, 0)
+        let mut nl_m = next_local + 1
+        let mut mi = 0
+        while mi < flen {
+          let (key, val_expr) = Array::get(fields, mi)
+          // Store key string at offset 8 + mi*16
+          emit_local_get(buf, ptr_local)
+          emit_i32_wrap_i64(buf)
+          let key_idx = str_table_lookup(ctx.str_table.strs, key)
+          if key_idx >= 0 {
+            emit_str_ref(buf, Array::get(ctx.str_table.offsets, key_idx), Array::get(ctx.str_table.lengths, key_idx))
+          } else {
+            emit_i64_const(buf, 0)
+          }
+          emit_i64_store(buf, 3, 8 + mi * 16)
+          // Store value at offset 8 + mi*16 + 8
+          emit_local_get(buf, ptr_local)
+          emit_i32_wrap_i64(buf)
+          nl_m = compile_expr(buf, val_expr, local_names, nl_m, ctx, ld)
+          let val_local = nl_m
+          Array::push(local_names, "__map_val")
+          emit_local_set(buf, val_local)
+          nl_m = nl_m + 1
+          emit_local_get(buf, val_local)
+          emit_i64_store(buf, 3, 8 + mi * 16 + 8)
+          mi = mi + 1
+        }
+        emit_local_get(buf, ptr_local)
+        nl_m
+      },
       EForIn(_, _, _, _) => throw("unsupported expression in codegen: EForIn"),
       EHandle(body, arms) => {
         if Array::length(arms) > 0 {

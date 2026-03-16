@@ -250,6 +250,41 @@ export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_na
     throw(String::concat("entry function not found: ", entry_name))
   }
   let str_strs = collect_strings_stmts(stmts)
+  // Add map keys to string table (collect_strings_stmts doesn't traverse EMap keys)
+  let rec add_map_keys_expr = (e: Expr) -> Unit {
+    match e {
+      EMap(fields) => {
+        let mut mi = 0
+        while mi < Array::length(fields) {
+          let (key, val) = Array::get(fields, mi)
+          if !array_contains_str(str_strs, key) {
+            Array::push(str_strs, key)
+          }
+          add_map_keys_expr(val)
+          mi = mi + 1
+        }
+      },
+      ELet(_, val, body) => { add_map_keys_expr(val); add_map_keys_expr(body) },
+      ESeq(a, b) => { add_map_keys_expr(a); add_map_keys_expr(b) },
+      ECall(callee, args) => {
+        add_map_keys_expr(callee)
+        let mut ai = 0
+        while ai < Array::length(args) {
+          add_map_keys_expr(Array::get(args, ai))
+          ai = ai + 1
+        }
+      },
+      _ => ()
+    }
+  }
+  let mut __mk = 0
+  while __mk < Array::length(stmts) {
+    match Array::get(stmts, __mk) {
+      SLet(_, _, _, _, expr) => add_map_keys_expr(expr),
+      _ => ()
+    }
+    __mk = __mk + 1
+  }
   let src_str_base = Array::length(str_strs)
   let num_src_pairs = Array::length(selfhost_srcs)
   let mut __src_i = 0
