@@ -15,13 +15,9 @@ Phase 2 (DX):
 - [x] x/color — ANSI カラー出力: 実装済み (15/15 pass)
 
 Phase 3 (機能):
-- [ ] x/regexp — 正規表現: 実装済み、compiled backend で 72/91 pass (19 fail)
-  - 失敗: character class (`[abc]`)、capture group、find_all/replace_all/split 関連
-  - 原因: `compile("[a]")` の結果を cross-module で destructure すると tuple 中身が破壊される
-  - interp mode では全 pass。compiled backend のヒープ管理バグ（if/else heap_synced leak と同根）
-- [ ] x/toml — TOML パーサー: 実装済み、compiled backend で 14/28 pass (14 fail)
-  - `[]` 型推論エラーは修正済み (0/28 → 14/28)
-  - 残り 14 件は x/regexp と同根の compiled backend バグ
+- [x] x/regexp — 正規表現: 実装済み (91/91 pass, compiled + interpreter)
+  - 修正: let rec クロージャのスコープ汚染 → match_seq を反復化、match_repeat を高階関数に抽出
+- [x] x/toml — TOML パーサー: 実装済み (28/28 pass, compiled + interpreter)
 
 Phase 4 (応用):
 - [ ] x/template — 簡易テンプレートエンジン (`{{variable}}` 置換)
