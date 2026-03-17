@@ -17,160 +17,11 @@ pub struct EvalTypeAssertion {
 } derive(Show, Eq)
 
 ///|
-fn is_named_vbundle_alias(spec : String) -> Bool {
-  if not(spec.has_suffix(".vbundle")) {
-    return false
-  }
-  if spec.has_prefix("/") || spec.has_prefix("./") || spec.has_prefix("../") {
-    return false
-  }
-  spec.contains("/")
-}
-
-///|
-fn parse_semver_digits(text : String) -> Int? {
-  if text.length() == 0 {
-    return None
-  }
-  let mut value = 0
-  for _, c in text {
-    if c < '0' || c > '9' {
-      return None
-    }
-    value = value * 10 + c.to_int() - '0'.to_int()
-  }
-  Some(value)
-}
-
-///|
-fn parse_simple_semver(text : String) -> (Int, Int, Int)? {
-  let parts : Array[String] = []
-  for part in text.split(".") {
-    parts.push(part.to_string())
-  }
-  if parts.length() != 3 {
-    return None
-  }
-  let major = match parse_semver_digits(parts[0]) {
-    Some(v) => v
-    None => return None
-  }
-  let minor = match parse_semver_digits(parts[1]) {
-    Some(v) => v
-    None => return None
-  }
-  let patch = match parse_semver_digits(parts[2]) {
-    Some(v) => v
-    None => return None
-  }
-  Some((major, minor, patch))
-}
-
-///|
-fn compare_simple_semver(a : (Int, Int, Int), b : (Int, Int, Int)) -> Int {
-  let (a_major, a_minor, a_patch) = a
-  let (b_major, b_minor, b_patch) = b
-  if a_major < b_major {
-    -1
-  } else if a_major > b_major {
-    1
-  } else if a_minor < b_minor {
-    -1
-  } else if a_minor > b_minor {
-    1
-  } else if a_patch < b_patch {
-    -1
-  } else if a_patch > b_patch {
-    1
-  } else {
-    0
-  }
-}
-
-///|
 fn resolve_eval_path(path : String) -> String {
   if path.has_prefix("/") {
     @vibe_fs.normalize_path(path)
   } else {
     @vibe_fs.normalize_path(@io.current_dir_or_root() + "/" + path)
-  }
-}
-
-///|
-fn scope_parent_and_name(scope : String) -> (String, String) {
-  let mut last_slash : Int? = None
-  for i, c in scope {
-    if c == '/' {
-      last_slash = Some(i)
-    }
-  }
-  match last_slash {
-    Some(i) =>
-      (
-        scope.unsafe_substring(start=0, end=i),
-        scope.unsafe_substring(start=i + 1, end=scope.length()),
-      )
-    None => ("", scope)
-  }
-}
-
-///|
-fn resolve_latest_named_vbundle_alias(
-  include_lib_dir : String,
-  spec : String,
-) -> String? {
-  if spec.contains("@") || not(spec.has_suffix(".vbundle")) {
-    return None
-  }
-  let scope = spec.unsafe_substring(start=0, end=spec.length() - 8)
-  let (parent, leaf) = scope_parent_and_name(scope)
-  if leaf.length() == 0 {
-    return None
-  }
-  let dir = if parent.length() == 0 {
-    include_lib_dir
-  } else {
-    include_lib_dir + "/" + parent
-  }
-  let entries = @os_fs.read_dir(dir) catch { _ => return None }
-  let prefix = leaf + "@"
-  let suffix = ".vbundle"
-  let mut best_version : String? = None
-  let mut best_semver : (Int, Int, Int)? = None
-  for entry in entries {
-    if not(entry.has_prefix(prefix)) || not(entry.has_suffix(suffix)) {
-      continue
-    }
-    let ver_start = prefix.length()
-    let ver_end = entry.length() - suffix.length()
-    if ver_end <= ver_start {
-      continue
-    }
-    let version = entry.unsafe_substring(start=ver_start, end=ver_end)
-    match parse_simple_semver(version) {
-      Some(semver) =>
-        match best_semver {
-          Some(prev) =>
-            if compare_simple_semver(semver, prev) > 0 {
-              best_semver = Some(semver)
-              best_version = Some(version)
-            }
-          None => {
-            best_semver = Some(semver)
-            best_version = Some(version)
-          }
-        }
-      None => ()
-    }
-  }
-  match best_version {
-    Some(version) =>
-      Some(
-        @vibe_fs.normalize_path(
-          include_lib_dir + "/" + scope + "@" + version + ".vbundle",
-        ),
-      )
-    None => None
   }
 }
 
@@ -248,7 +99,7 @@ pub fn resolve_vibe_lib_dir(base_dir : String) -> String {
 pub fn resolve_eval_include_path(
   base_dir : String,
   include_spec : String,
-  include_lib_dir : String,
+  _include_lib_dir : String,
 ) -> String {
   let resolved_base_dir = resolve_eval_path(base_dir)
   let spec = if include_spec.has_prefix("bit:") {
@@ -256,16 +107,7 @@ pub fn resolve_eval_include_path(
   } else {
     include_spec
   }
-  if is_named_vbundle_alias(spec) {
-    if spec.contains("@") {
-      @vibe_fs.normalize_path(include_lib_dir + "/" + spec)
-    } else {
-      match resolve_latest_named_vbundle_alias(include_lib_dir, spec) {
-        Some(path) => path
-        None => @vibe_fs.normalize_path(include_lib_dir + "/" + spec)
-      }
-    }
-  } else if spec.has_prefix("/") {
+  if spec.has_prefix("/") {
     @vibe_fs.normalize_path(spec)
   } else {
     @vibe_fs.normalize_path(resolved_base_dir + "/" + spec)

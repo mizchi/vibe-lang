@@ -452,53 +452,6 @@ fn parse_include_hash_alias(source : String) -> String? {
 }
 
 ///|
-fn parse_include_vbundle_entry_source(source : String) -> String? {
-  let trimmed = source.trim().to_string()
-  if trimmed.length() == 0 {
-    return None
-  }
-  let parsed : Json = @json.parse(trimmed) catch { _ => return None }
-  let root = match parsed {
-    Json::Object(obj) => obj
-    _ => return None
-  }
-  let is_vbundle = match root.get("format") {
-    Some(Json::String(format)) => format == "vbundle-1"
-    _ => false
-  }
-  if not(is_vbundle) {
-    return None
-  }
-  let entry_hash = match root.get("meta") {
-    Some(Json::Object(meta)) =>
-      match meta.get("entry_hash") {
-        Some(Json::String(hash)) => bundle_normalize_hash(hash)
-        _ => ""
-      }
-    _ => ""
-  }
-  let objects = match root.get("objects") {
-    Some(Json::Object(obj)) => obj
-    _ => return None
-  }
-  if entry_hash.length() > 0 {
-    match objects.get(entry_hash) {
-      Some(Json::String(content)) => return Some(content)
-      _ => ()
-    }
-  }
-  if objects.length() == 1 {
-    for _, value in objects {
-      match value {
-        Json::String(content) => return Some(content)
-        _ => return None
-      }
-    }
-  }
-  None
-}
-
-///|
 fn load_git_blob_source_from_objects_dir(
   objects_dir : String,
   hash : String,
@@ -597,11 +550,7 @@ fn load_eval_include_source(
       }
       for root in roots {
         match try_load_hash_source_from_root(root, hash) {
-          Some(content) =>
-            match parse_include_vbundle_entry_source(content) {
-              Some(entry_source) => return Ok(entry_source)
-              None => return Ok(content)
-            }
+          Some(content) => return Ok(content)
           None => ()
         }
       }
@@ -613,11 +562,7 @@ fn load_eval_include_source(
         "` not found in local stores",
       )
     }
-    None =>
-      match parse_include_vbundle_entry_source(source) {
-        Some(entry_source) => Ok(entry_source)
-        None => Ok(source)
-      }
+    None => Ok(source)
   }
 }
 
