@@ -139,8 +139,7 @@ fn resolve_import_module_entry(path : String) -> String {
     normalized.has_suffix(".xm") ||
     normalized.has_suffix(".wasm") ||
     normalized.has_suffix(".db") ||
-    normalized.has_suffix(".lock") ||
-    normalized.has_suffix(".vbundle") {
+    normalized.has_suffix(".lock") {
     normalized
   } else {
     @vibe_fs.normalize_path(normalized + "/index.vibe")

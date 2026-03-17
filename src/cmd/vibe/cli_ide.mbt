@@ -1132,16 +1132,15 @@ fn print_graph_def_entry(def : @x_exp.AdvancedGraphDef) -> Unit {
 }
 
 ///|
-fn write_index_vbundle_graph_head(
+fn write_cache_graph_head(
   index_root : String,
   graph_head : String,
   function_tracking : Json,
 ) -> Result[Unit, String] {
-  let index_vbundle_path = index_root + "/index.vbundle"
-  let vbundle_obj = load_index_vbundle_object(index_vbundle_path)
-  vbundle_obj["graph_head"] = Json::string(graph_head)
-  vbundle_obj["function_tracking"] = function_tracking
-  write_index_vbundle_object(index_vbundle_path, vbundle_obj)
+  let cache_obj = load_vibe_cache_object(index_root)
+  cache_obj["graph_head"] = Json::string(graph_head)
+  cache_obj["function_tracking"] = function_tracking
+  write_vibe_cache_object(index_root, cache_obj)
 }
 
 ///|
@@ -1167,16 +1166,15 @@ fn sync_graph_head_for_loaded_db(
   let _ = codebase.write_object(graph_head, index_json) catch {
     e => return Err("sync graph snapshot object: " + e.to_string())
   }
-  let index_vbundle_path = index_root + "/index.vbundle"
-  let vbundle_obj = load_index_vbundle_object(index_vbundle_path)
+  let cache_obj = load_vibe_cache_object(index_root)
   let function_tracking = if skip_types {
     let empty : Map[String, Json] = {}
     Json::object(empty)
   } else {
-    compute_function_tracking_json(db, paths, index, vbundle_obj)
+    compute_function_tracking_json(db, paths, index, cache_obj)
   }
   match
-    write_index_vbundle_graph_head(index_root, graph_head, function_tracking) {
+    write_cache_graph_head(index_root, graph_head, function_tracking) {
     Ok(_) => ()
     Err(err) => return Err(err)
   }
@@ -2008,12 +2006,7 @@ fn bundle_pack_cmd(args : Array[String]) -> Unit {
     Err(err) => abort("bundle pack: " + err)
   }
   let index_root = @codebase.resolve_index_root(entry)
-  let index_vbundle_path = index_root + "/index.vbundle"
-  let refs_obj = load_index_vbundle_object(index_vbundle_path)
-  let lock_obj = match refs_obj.get("lock") {
-    Some(Json::Object(obj)) => obj
-    _ => {}
-  }
+  let lock_obj : Map[String, Json] = {}
   let path_hash_contents : Map[String, String] = {}
   for path, hash in lock.path_refs {
     let source = @os_fs.read_file_to_string(path) catch { _ => continue }

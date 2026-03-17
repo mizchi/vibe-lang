@@ -5334,9 +5334,9 @@ fn apply_cmd(args : Array[String]) -> Unit {
         short_hash(graph_head) +
         " defs=" +
         index.defs.length().to_string() +
-        " index_vbundle=" +
+        " cache=" +
         index_root +
-        "/index.vbundle",
+        "/.vibe/cache.json",
       )
     }
   }
@@ -5859,10 +5859,9 @@ fn history_cmd(args : Array[String]) -> Unit {
       }
       if hard {
         let index_root = current_workspace_index_root()
-        let index_vbundle_path = index_root + "/index.vbundle"
-        let vbundle = load_index_vbundle_object(index_vbundle_path)
-        let next_vbundle = clone_json_map(vbundle)
-        let namespaces = match vbundle.get("namespaces") {
+        let cache = load_vibe_cache_object(index_root)
+        let next_cache = clone_json_map(cache)
+        let namespaces = match cache.get("namespaces") {
           Some(Json::Object(current)) => clone_json_map(current)
           _ => {}
         }
@@ -5874,9 +5873,9 @@ fn history_cmd(args : Array[String]) -> Unit {
         ns_obj["history_head"] = Json::string("")
         ns_obj["updated_at"] = Json::string(@env.now().to_string())
         namespaces[namespace_name] = Json::object(ns_obj)
-        next_vbundle["active_namespace"] = Json::string(namespace_name)
-        next_vbundle["namespaces"] = Json::object(namespaces)
-        match write_index_vbundle_object(index_vbundle_path, next_vbundle) {
+        next_cache["active_namespace"] = Json::string(namespace_name)
+        next_cache["namespaces"] = Json::object(namespaces)
+        match write_vibe_cache_object(index_root, next_cache) {
           Ok(_) => ()
           Err(err) => abort("history reset: " + err)
         }
