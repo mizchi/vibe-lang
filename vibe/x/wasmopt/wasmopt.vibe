@@ -1565,19 +1565,23 @@ let coalesce_body = (body: Bytes, param_count: Int) -> Bytes {
       ei = ei + 1
     }
 
-    // Rewrite instructions with remapped indices
+    // Rewrite instructions: use byte-span approach (raw copy for non-local ops)
     if code_start < code_end {
-      let instrs = parse_body_instrs(body, code_start, code_end)
-      let mut ii = 0
-      while ii < Array::length(instrs) {
-        let (op, imm) = Array::get(instrs, ii)
+      let spans = parse_body_spans(body, code_start, code_end)
+      let mut si = 0
+      while si < Array::length(spans) {
+        let (s_start, s_end, op) = Array::get(spans, si)
         if (op == 0x20) || (op == 0x21) || (op == 0x22) {
+          // local.get/set/tee: remap index
+          let imm = span_read_uleb_imm(body, s_start)
           let new_imm = if imm < Array::length(index_map) { Array::get(index_map, imm) } else { imm }
-          emit_instr(out, op, new_imm)
+          Bytes::push(out, op)
+          write_uleb128(out, new_imm)
         } else {
-          emit_instr(out, op, imm)
+          // All other instructions: raw copy (preserves memarg, blocktype, etc.)
+          copy_span_bytes(out, body, s_start, s_end)
         }
-        ii = ii + 1
+        si = si + 1
       }
     } else { () }
     Bytes::push(out, 0x0B)
