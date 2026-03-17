@@ -115,16 +115,15 @@ export let env_lookup = (env: TypeEnv, name: String) -> Option[Type] {
 }
 
 export let env_cache = (env: TypeEnv) -> TypeEnv {
-  let cache = MapBuilder::new()
+  // Collect all bindings (innermost first due to linked list order)
+  let bindings = ArrayBuilder::new()
   let mut cur = env
   let mut done = false
   while !done {
     match cur {
       EnvEmpty => { done = true },
       EnvBind(n, ty, rest) => {
-        if !Map::has_key(MapBuilder::freeze(cache), n) {
-          MapBuilder::set(cache, n, ty)
-        }
+        ArrayBuilder::push(bindings, (n, ty))
         cur = rest
       },
       EnvTraitDef(_, _, _, rest) => { cur = rest },
@@ -132,6 +131,16 @@ export let env_cache = (env: TypeEnv) -> TypeEnv {
       EnvTraitImplGen(_, _, _, _, rest) => { cur = rest },
       EnvCached(_, rest) => { cur = rest }
     }
+  }
+  // Build map: iterate from outermost (last) to innermost (first)
+  // so innermost bindings overwrite outer ones (correct shadowing)
+  let arr = ArrayBuilder::freeze(bindings)
+  let cache = MapBuilder::new()
+  let mut i = Array::length(arr) - 1
+  while i >= 0 {
+    let (n, ty) = Array::get(arr, i)
+    MapBuilder::set(cache, n, ty)
+    i = i - 1
   }
   EnvCached(MapBuilder::freeze(cache), env)
 }
