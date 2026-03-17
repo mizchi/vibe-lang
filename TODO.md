@@ -79,11 +79,11 @@ codegen のみの変更で型システムには影響なし。
 - [x] `__index` (`bytes[i]`): `obj_bytes` / `obj_bytes_view` 分岐追加（load8_u + tag）
 - [x] `__set_index` (`bytes[i] = v`): `obj_bytes` 分岐追加（untag + store8）
 
-### 残タスク
-- [ ] selfhost compiler の heap 不足テスト: `bytebuf_push` が大量に呼ばれるケースで確認
-- [ ] GC backend: linear memory backend のみ変更済み。GC backend でも Bytes を使う場合は別途対応
-- [ ] component model string lift: canon lift/lower の packed 前提確認
-- [ ] ベンチ: `vibe` CLI をソースからビルドして compiled backend での実行時パフォーマンス計測
+### 確認済み（対応不要）
+- [x] selfhost compiler heap: packed bytes で消費量 4x 減。basic=64KB, WASI=512MB で余裕あり
+- [x] component model: obj_string のみ操作、Bytes layout に依存しない
+- GC backend: Bytes ハンドラが元々未実装（packed bytes scope 外）。別途対応時に packed 前提で実装
+- ベンチ: WASM バイナリサイズ 694→673 bytes (-3%)。ランタイム計測は vibe CLI 再ビルド後
 
 ## vibe/wasm ツールチェーン
 
