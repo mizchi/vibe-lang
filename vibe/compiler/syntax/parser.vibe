@@ -277,6 +277,27 @@ let rec parse_pattern = (tokens: Array[Token], pos: Int) -> (Pat, Int)with { Err
             let (args, end) = parse_pats_until_rparen(tokens, pos + 2);
             (PCtor(name, args), end)
           },
+          TDoubleColon => match peek(tokens, pos + 2) {
+            TLBrace => {
+              // Struct pattern: Point::{ x, y } → bind fields positionally
+              let mut sp = pos + 3
+              let field_pats = ArrayBuilder::new()
+              let mut sd = true
+              while sd {
+                match peek(tokens, sp) {
+                  TRBrace => { sd = false },
+                  TIdent(fname) => {
+                    ArrayBuilder::push(field_pats, PBind(fname))
+                    sp = sp + 1
+                    match peek(tokens, sp) { TComma => { sp = sp + 1 }, _ => () }
+                  },
+                  _ => { sd = false }
+                }
+              }
+              (PTuple(ArrayBuilder::freeze(field_pats)), sp + 1)
+            },
+            _ => (PCtor(name, empty_pats()), pos + 1)
+          },
           _ => (PCtor(name, empty_pats()), pos + 1)
         }
       } else (PBind(name), pos + 1)
@@ -1978,7 +1999,23 @@ let parse_let_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, 
         _ => (None, name_next)
       }
       let ep = expect_tk(tokens, eq_pos, "=")
-      let (val, vn) = parse_impl(tokens, ep, 0);
+      // Skip generic type params
+      let val_start_r = match peek(tokens, ep) {
+        TLBracket => match peek(tokens, ep + 1) {
+          TIdent(_) => {
+            let mg = match peek(tokens, ep + 2) {
+              TRBracket => match peek(tokens, ep + 3) { TLParen => true, _ => false },
+              TColon => true, TComma => true, _ => false
+            }
+            if mg {
+              let mut sp = ep + 1; let mut sd = 1
+              while sd > 0 { match peek(tokens, sp) { TLBracket => { sd = sd + 1 }, TRBracket => { sd = sd - 1 }, _ => () }; sp = sp + 1 }
+              sp
+            } else ep
+          }, _ => ep
+        }, _ => ep
+      }
+      let (val, vn) = parse_impl(tokens, val_start_r, 0);
       (SLet(exported, true, name, ty_opt, val), vn)
     },
     TMut => match peek(tokens, pos + 1) {
@@ -2006,7 +2043,36 @@ let parse_let_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, 
         _ => (None, name_next)
       }
       let ep = expect_tk(tokens, eq_pos, "=")
-      let (val, vn) = parse_impl(tokens, ep, 0);
+      // Skip generic type params [T] or [K: Show] before value expression
+      let val_start = match peek(tokens, ep) {
+        TLBracket => match peek(tokens, ep + 1) {
+          TIdent(_) => {
+            // Check if [Ident](... or [Ident:... pattern
+            let maybe_gen = match peek(tokens, ep + 2) {
+              TRBracket => match peek(tokens, ep + 3) { TLParen => true, _ => false },
+              TColon => true,
+              TComma => true,
+              _ => false
+            }
+            if maybe_gen {
+              let mut sp = ep + 1
+              let mut sd = 1
+              while sd > 0 {
+                match peek(tokens, sp) {
+                  TLBracket => { sd = sd + 1 },
+                  TRBracket => { sd = sd - 1 },
+                  _ => ()
+                }
+                sp = sp + 1
+              }
+              sp
+            } else ep
+          },
+          _ => ep
+        },
+        _ => ep
+      }
+      let (val, vn) = parse_impl(tokens, val_start, 0);
       (SLet(exported, false, name, ty_opt, val), vn)
     },
     _ => throw("expected name after 'let'")
