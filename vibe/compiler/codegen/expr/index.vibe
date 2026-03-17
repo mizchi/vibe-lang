@@ -1355,6 +1355,38 @@ let compile_match = (buf: Array[Int], expr: Expr, local_names: Array[String], ne
             }
             0
           } else {
+            // POr or unknown: flatten POr into multiple i64_eq checks with i32.or
+            // POr(PInt(1), POr(PInt(2), PInt(3))) → scrut==1 || scrut==2 || scrut==3
+            let rec emit_or_check = (pat: Pat) -> Unit {
+              match pat {
+                POr(left, right) => {
+                  emit_or_check(left)
+                  emit_or_check(right)
+                  bytebuf_push(buf, 114)
+                },
+                PInt(n) => {
+                  emit_local_get(buf, scrut_local)
+                  emit_i64_const(buf, n)
+                  emit_i64_eq(buf)
+                },
+                PCtor(cname, _) => {
+                  let ci = lookup_ctor(ctx.ctor_table.names, cname, 0)
+                  let ctag = if ci >= 0 { Array::get(ctx.ctor_table.tags, ci) } else { -1 }
+                  emit_local_get(buf, scrut_local)
+                  emit_i64_const(buf, -2)
+                  emit_i64_and(buf)
+                  emit_i32_wrap_i64(buf)
+                  emit_i32_load(buf, 2, 0)
+                  emit_i32_const(buf, ctag)
+                  emit_i32_eq(buf)
+                },
+                _ => {
+                  emit_i32_const(buf, 1)
+                }
+              }
+            }
+            emit_or_check(__cond_p)
+            emit_if_i64(buf)
             0
           }
         }
