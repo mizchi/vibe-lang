@@ -1885,3 +1885,37 @@ export let minify = (bytes: Bytes) -> Bytes {
   }
   current
 }
+
+// Fast minify: single-pass section filtering only.
+// Strips custom sections + empty sections in one pass (no peephole/DCE).
+export let minify_fast = (bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 { copy_bytes(bytes, 0, len) }
+  else {
+    let out = Bytes::new()
+    let mut i = 0
+    while i < 8 { Bytes::push(out, bytes[i]); i = i + 1 }
+    let sections = list_sections(bytes)
+    let mut s = 0
+    while s < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, s)
+      if sid != 0 {
+        // Skip custom sections; check non-empty
+        if sz > 0 {
+          // Check if section has count > 0 (for vector sections)
+          let should_keep = if (sid >= 1) && (sid <= 11) && (sid != 8) {
+            // Sections with a count prefix
+            let (cnt, _) = read_uleb128(bytes, off)
+            cnt > 0
+          } else { true }
+          if should_keep {
+            let content = copy_bytes(bytes, off, off + sz)
+            emit_section(out, sid, content)
+          } else { () }
+        } else { () }
+      } else { () }
+      s = s + 1
+    }
+    out
+  }
+}
