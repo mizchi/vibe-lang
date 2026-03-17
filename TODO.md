@@ -73,6 +73,15 @@ Completed items are archived in `docs/DONE.md`.
 - [ ] `loop` / `continue` の状態受け渡しを positional から named へ寄せる
 - [ ] generic `impl` を AST だけ先行させる状態を解消する
 
+## モジュール分離 (ルート制約ブロッカー)
+
+- [ ] ルート制約の緩和: `vibe test` のルート判定を緩和し、兄弟ディレクトリからの import を許可
+  - 現状: `vibe test vibe/parser/test.vibe` のルート = `vibe/parser/`、`../types/` はルート外エラー
+  - 必要: `vibe/` 全体をルートとして認識するか、明示的なルート指定 (`--root vibe/`)
+- [ ] ルート制約解消後: `vibe/types/` (ast.vibe, types.vibe) を分離
+- [ ] ルート制約解消後: `vibe/parser/` (token, lexer, parser, printer) を分離
+- [ ] 現状の論理分離 (`vibe/compiler/core/`, `vibe/compiler/syntax/`) は維持
+
 ## Self-Host Compiler
 
 - [ ] MoonBit host CLI を bootstrap 専用へ縮退する
