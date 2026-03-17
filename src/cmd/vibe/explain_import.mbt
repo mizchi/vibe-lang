@@ -386,6 +386,21 @@ fn explain_import_collect_module(
             explain_import_version_item(norm, line, name, lock, codebase)
           @vibe_core.ModuleRef::Symbol(name~) =>
             explain_import_symbol_item(norm, line, name, lock, codebase)
+          @vibe_core.ModuleRef::Alias(name~) =>
+            {
+              module_path: norm,
+              line,
+              source: "@" + name,
+              ref_kind: "AliasRef",
+              normalized: None,
+              lock_lookup_key: None,
+              lock_lookup_status: "unresolved",
+              lock_hash: None,
+              actual_hash: None,
+              resolved_hash: None,
+              module_ref: None,
+              reason: Some("alias import not yet resolved"),
+            }
         }
         out.push(item)
       }

@@ -20,8 +20,9 @@ fn normalize_stmt_def_name(stmt : @vibe_core.Stmt) -> String? {
 ///|
 fn normalize_stmt_group(stmt : @vibe_core.Stmt) -> NormalizeStmtGroup {
   match stmt {
-    @vibe_core.Stmt::Import(..) | @vibe_core.Stmt::ReExport(..) =>
-      NormalizeStmtGroup::Use
+    @vibe_core.Stmt::Import(..)
+    | @vibe_core.Stmt::ReExport(..)
+    | @vibe_core.Stmt::AliasDecl(..) => NormalizeStmtGroup::Use
     @vibe_core.Stmt::TypeAlias(..)
     | @vibe_core.Stmt::ExportTypeAlias(..)
     | @vibe_core.Stmt::InternalExportTypeAlias(..)

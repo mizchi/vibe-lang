@@ -1442,9 +1442,30 @@ fn AstParser::parse_import_stmt(
   self.skip_trivia()
   let source = self.parse_module_ref()
   self.skip_trivia()
+  // Check for alias declaration: `import ./path @alias_name`
+  if self.peek_kind() == name() && self.peek().text().has_prefix("@") {
+    match source {
+      @core.ModuleRef::Alias(_) =>
+        raise ParseError::UnexpectedToken(
+          expected="path or hash before alias (not another alias)",
+          got=self.peek().text(),
+          span=self.token_span(),
+        )
+      _ => ()
+    }
+    let alias_tok = self.bump()
+    let alias_text = alias_tok.text()
+    let alias_name = alias_text.unsafe_substring(
+      start=1,
+      end=alias_text.length(),
+    )
+    let _ = self.eat(semicolon())
+    let span = self.span_from(start)
+    return @core.Stmt::AliasDecl(alias_name~, source~, span~)
+  }
   if self.peek_kind() != lbrace() {
     raise ParseError::UnexpectedToken(
-      expected="`{` after import source",
+      expected="`{` after import source or `@alias` for alias declaration",
       got=self.peek().text(),
       span=self.token_span(),
     )
@@ -1557,6 +1578,13 @@ fn AstParser::parse_import_item_kind(self : AstParser) -> @core.ImportKind {
 fn AstParser::parse_module_ref(
   self : AstParser,
 ) -> @core.ModuleRef raise ParseError {
+  // Check for alias reference: @name
+  if self.peek_kind() == name() && self.peek().text().has_prefix("@") {
+    let tok = self.bump()
+    let text = tok.text()
+    let alias_name = text.unsafe_substring(start=1, end=text.length())
+    return @core.ModuleRef::Alias(name=alias_name)
+  }
   if self.peek_kind() == string_lit() {
     let tok = self.peek()
     raise ParseError::UnexpectedToken(

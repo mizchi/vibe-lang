@@ -1957,7 +1957,8 @@ fn run_cmd(
                   }
                   @vibe_core.ModuleRef::Hash(_)
                   | @vibe_core.ModuleRef::Version(_)
-                  | @vibe_core.ModuleRef::Symbol(_) => ()
+                  | @vibe_core.ModuleRef::Symbol(_)
+                  | @vibe_core.ModuleRef::Alias(_) => ()
                 }
               _ => ()
             }
@@ -2325,6 +2326,7 @@ fn finalize_render_module_ref(source : @vibe_core.ModuleRef) -> String {
     @vibe_core.ModuleRef::Hash(hash~) => "#" + hash
     @vibe_core.ModuleRef::Version(name~) => "version@" + name
     @vibe_core.ModuleRef::Symbol(name~) => "symbol@" + name
+    @vibe_core.ModuleRef::Alias(name~) => "@" + name
   }
 }
 
@@ -2995,7 +2997,8 @@ fn run_test_file_interpreter_with_cache(
           }
           @vibe_core.ModuleRef::Hash(_)
           | @vibe_core.ModuleRef::Version(_)
-          | @vibe_core.ModuleRef::Symbol(_) => ()
+          | @vibe_core.ModuleRef::Symbol(_)
+          | @vibe_core.ModuleRef::Alias(_) => ()
         }
       _ => ()
     }

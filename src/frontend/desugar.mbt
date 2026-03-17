@@ -667,6 +667,7 @@ fn desugar_stmt(
     | @core.Stmt::StructDef(..)
     | @core.Stmt::ExportStructDef(..)
     | @core.Stmt::InternalExportStructDef(..)
+    | @core.Stmt::AliasDecl(..)
     | @core.Stmt::Export(..)
     | @core.Stmt::ReExport(..) => stmt
     @core.Stmt::LetMut(name~, expr~, span~) =>

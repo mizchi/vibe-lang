@@ -864,17 +864,32 @@ fn eval_pure_builtin(
         )
       }
       match (args[0], args[1], args[2]) {
-        (@core.Value::String(s), @core.Value::Int(start), @core.Value::Int(end_)) => {
+        (@core.Value::String(s), @core.Value::Int(start), @core.Value::Int(end_)
+        ) => {
           let len = s.length().to_int64()
-          let s0 = if start < 0L { 0L } else if start > len { len } else { start }
+          let s0 = if start < 0L {
+            0L
+          } else if start > len {
+            len
+          } else {
+            start
+          }
           let e0 = if end_ < 0L { 0L } else if end_ > len { len } else { end_ }
-          @core.Value::String(
-            s.substring(start=s0.to_int(), end=e0.to_int()),
-          )
+          @core.Value::String(s.substring(start=s0.to_int(), end=e0.to_int()))
         }
-        (@core.Value::Array(arr), @core.Value::Int(start), @core.Value::Int(end_)) => {
+        (
+          @core.Value::Array(arr),
+          @core.Value::Int(start),
+          @core.Value::Int(end_),
+        ) => {
           let len = arr.length().to_int64()
-          let s0 = if start < 0L { 0L } else if start > len { len } else { start }
+          let s0 = if start < 0L {
+            0L
+          } else if start > len {
+            len
+          } else {
+            start
+          }
           let e0 = if end_ < 0L { 0L } else if end_ > len { len } else { end_ }
           let result : Array[@core.Value] = []
           for i in s0.to_int()..<e0.to_int() {
@@ -882,9 +897,19 @@ fn eval_pure_builtin(
           }
           @core.Value::Array(result)
         }
-        (@core.Value::Bytes(data), @core.Value::Int(start), @core.Value::Int(end_)) => {
+        (
+          @core.Value::Bytes(data),
+          @core.Value::Int(start),
+          @core.Value::Int(end_),
+        ) => {
           let len = data.length().to_int64()
-          let s0 = if start < 0L { 0L } else if start > len { len } else { start }
+          let s0 = if start < 0L {
+            0L
+          } else if start > len {
+            len
+          } else {
+            start
+          }
           let e0 = if end_ < 0L { 0L } else if end_ > len { len } else { end_ }
           let result : Array[Byte] = []
           for i in s0.to_int()..<e0.to_int() {

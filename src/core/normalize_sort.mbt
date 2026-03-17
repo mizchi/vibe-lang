@@ -92,6 +92,7 @@ fn canonical_module_ref_key(source : ModuleRef) -> String {
     ModuleRef::Hash(hash~) => "hash:" + hash
     ModuleRef::Version(name~) => "version:" + name
     ModuleRef::Symbol(name~) => "symbol:" + name
+    ModuleRef::Alias(name~) => "alias:" + name
   }
 }
 
@@ -140,7 +141,8 @@ fn canonical_use_stmt_key(stmt : Stmt) -> String {
 ///|
 fn canonical_group(stmt : Stmt) -> CanonicalGroup {
   match stmt {
-    Stmt::Import(..) | Stmt::ReExport(..) => CanonicalGroup::Use
+    Stmt::Import(..) | Stmt::ReExport(..) | Stmt::AliasDecl(..) =>
+      CanonicalGroup::Use
     Stmt::TypeAlias(..)
     | Stmt::ExportTypeAlias(..)
     | Stmt::InternalExportTypeAlias(..)

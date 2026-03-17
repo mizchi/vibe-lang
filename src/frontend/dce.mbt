@@ -235,6 +235,7 @@ fn collect_stmt_info(
     // Non-definition statements
     @core.Stmt::Expr(..)
     | @core.Stmt::Import(..)
+    | @core.Stmt::AliasDecl(..)
     | @core.Stmt::Test(..)
     | @core.Stmt::Bench(..)
     | @core.Stmt::TraitDef(..)
@@ -384,6 +385,7 @@ fn collect_entry_points(
       | @core.Stmt::InternalExportStructDef(..)
       | @core.Stmt::ExternLet(..)
       | @core.Stmt::Import(..)
+      | @core.Stmt::AliasDecl(..)
       | @core.Stmt::TraitDef(..)
       | @core.Stmt::InternalTraitDef(..)
       | @core.Stmt::TraitImpl(..)
@@ -538,6 +540,7 @@ fn filter_reachable_stmts(
       // Non-definition statements are always kept
       @core.Stmt::Expr(..)
       | @core.Stmt::Import(..)
+      | @core.Stmt::AliasDecl(..)
       | @core.Stmt::Test(..)
       | @core.Stmt::Bench(..)
       | @core.Stmt::TraitDef(..)
@@ -730,6 +733,7 @@ fn collect_for_in_helper_refs_stmt(
     | @core.Stmt::InternalExportStructDef(name~, ..) =>
       scope.bindings[name] = true
     @core.Stmt::Import(..)
+    | @core.Stmt::AliasDecl(..)
     | @core.Stmt::TraitDef(..)
     | @core.Stmt::InternalTraitDef(..)
     | @core.Stmt::TraitImpl(..)

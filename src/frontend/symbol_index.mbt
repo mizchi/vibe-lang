@@ -671,6 +671,7 @@ pub fn build_symbol_index_for_module(
         )
       @core.Stmt::Expr(..)
       | @core.Stmt::Import(..)
+      | @core.Stmt::AliasDecl(..)
       | @core.Stmt::Test(..)
       | @core.Stmt::Bench(..)
       | @core.Stmt::Assign(..)

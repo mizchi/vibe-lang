@@ -355,6 +355,8 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
     Stmt::Export(names~, ..) => Stmt::Export(names~, span=zero_span)
     Stmt::ReExport(spec~, source~, ..) =>
       Stmt::ReExport(spec~, source~, span=zero_span)
+    Stmt::AliasDecl(alias_name~, source~, ..) =>
+      Stmt::AliasDecl(alias_name~, source~, span=zero_span)
     Stmt::StructDef(name~, params~, fields~, ..) =>
       Stmt::StructDef(
         name~,
@@ -763,8 +765,10 @@ fn collect_and_normalize_imports(
                 None => ()
               }
             }
-          ModuleRef::Hash(_) | ModuleRef::Version(_) | ModuleRef::Symbol(_) =>
-            ()
+          ModuleRef::Hash(_)
+          | ModuleRef::Version(_)
+          | ModuleRef::Symbol(_)
+          | ModuleRef::Alias(_) => ()
         }
       _ => ()
     }
@@ -789,8 +793,10 @@ pub fn collect_import_hashes(m : Module) -> Array[String] {
       Stmt::Import(source~, ..) | Stmt::ReExport(source~, ..) =>
         match source {
           ModuleRef::Hash(hash~) => hashes.push(hash)
-          ModuleRef::Path(_) | ModuleRef::Version(_) | ModuleRef::Symbol(_) =>
-            ()
+          ModuleRef::Path(_)
+          | ModuleRef::Version(_)
+          | ModuleRef::Symbol(_)
+          | ModuleRef::Alias(_) => ()
         }
       _ => ()
     }

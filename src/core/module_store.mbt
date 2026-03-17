@@ -220,8 +220,10 @@ pub fn resolve_import_hashes(
               Some(hash) => results.push((path, hash))
               None => ()
             }
-          ModuleRef::Hash(_) | ModuleRef::Version(_) | ModuleRef::Symbol(_) =>
-            ()
+          ModuleRef::Hash(_)
+          | ModuleRef::Version(_)
+          | ModuleRef::Symbol(_)
+          | ModuleRef::Alias(_) => ()
         }
       _ => ()
     }
@@ -248,8 +250,10 @@ pub fn convert_imports_to_hash(
                 )
               None => new_stmts.push(stmt)
             }
-          ModuleRef::Hash(_) | ModuleRef::Version(_) | ModuleRef::Symbol(_) =>
-            new_stmts.push(stmt)
+          ModuleRef::Hash(_)
+          | ModuleRef::Version(_)
+          | ModuleRef::Symbol(_)
+          | ModuleRef::Alias(_) => new_stmts.push(stmt)
         }
       Stmt::ReExport(spec~, source~, span~) =>
         match source {
@@ -261,8 +265,10 @@ pub fn convert_imports_to_hash(
                 )
               None => new_stmts.push(stmt)
             }
-          ModuleRef::Hash(_) | ModuleRef::Version(_) | ModuleRef::Symbol(_) =>
-            new_stmts.push(stmt)
+          ModuleRef::Hash(_)
+          | ModuleRef::Version(_)
+          | ModuleRef::Symbol(_)
+          | ModuleRef::Alias(_) => new_stmts.push(stmt)
         }
       _ => new_stmts.push(stmt)
     }

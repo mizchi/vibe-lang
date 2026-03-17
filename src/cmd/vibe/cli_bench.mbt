@@ -666,7 +666,8 @@ fn run_bench_blocks_interpreter_entry(
           }
           @vibe_core.ModuleRef::Hash(_)
           | @vibe_core.ModuleRef::Version(_)
-          | @vibe_core.ModuleRef::Symbol(_) => ()
+          | @vibe_core.ModuleRef::Symbol(_)
+          | @vibe_core.ModuleRef::Alias(_) => ()
         }
       _ => ()
     }
@@ -718,7 +719,8 @@ fn run_bench_blocks_interpreter_statistical_entry(
           }
           @vibe_core.ModuleRef::Hash(_)
           | @vibe_core.ModuleRef::Version(_)
-          | @vibe_core.ModuleRef::Symbol(_) => ()
+          | @vibe_core.ModuleRef::Symbol(_)
+          | @vibe_core.ModuleRef::Alias(_) => ()
         }
       _ => ()
     }

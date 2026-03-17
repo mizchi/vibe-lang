@@ -614,6 +614,22 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
             let text = self.input.unsafe_substring(start~, end=self.pos)
             Token::new(hash_ref(), text)
           }
+        '@' =>
+          // @name alias reference (e.g. @types, @parser)
+          if self.pos < self.input.length() &&
+            is_alpha(self.input[self.pos].to_int().unsafe_to_char()) {
+            let start = self.pos - 1 // include the '@'
+            while (match self.peek() {
+                    Some(ch) => is_alnum(ch) || ch == '_'
+                    None => false
+                  }) {
+              let _ = self.advance()
+            }
+            let text = self.input.unsafe_substring(start~, end=self.pos)
+            Token::new(name(), text)
+          } else {
+            Token::new(error_kind(), c.to_string())
+          }
         _ => Token::new(error_kind(), c.to_string())
       }
     }

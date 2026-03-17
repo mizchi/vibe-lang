@@ -191,7 +191,8 @@ fn stmt_may_use_scoped_ref(stmt : @core.Stmt) -> Bool {
     | @core.Stmt::InternalTraitDef(..)
     | @core.Stmt::Import(..)
     | @core.Stmt::Export(..)
-    | @core.Stmt::ReExport(..) => false
+    | @core.Stmt::ReExport(..)
+    | @core.Stmt::AliasDecl(..) => false
   }
 }
 
@@ -546,7 +547,9 @@ fn type_check_stmts(
         register_type_alias(env, name, params, target, span)
       @core.Stmt::InternalExportTypeAlias(name~, params~, target~, span~) =>
         register_type_alias(env, name, params, target, span)
-      @core.Stmt::Export(..) | @core.Stmt::ReExport(..) => ()
+      @core.Stmt::Export(..)
+      | @core.Stmt::ReExport(..)
+      | @core.Stmt::AliasDecl(..) => ()
       @core.Stmt::Test(name~, body~, span~) => {
         let _ = span
         let _ = name

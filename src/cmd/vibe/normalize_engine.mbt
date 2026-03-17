@@ -905,6 +905,7 @@ fn merge_render_stmt_fallback(stmt : @vibe_core.Stmt) -> String? {
         @vibe_core.ModuleRef::Hash(hash~) => "#" + hash
         @vibe_core.ModuleRef::Version(name~) => "version@" + name
         @vibe_core.ModuleRef::Symbol(name~) => "symbol@" + name
+        @vibe_core.ModuleRef::Alias(name~) => "@" + name
       }
       let rendered_items : Array[String] = []
       for item in canonical_spec.items {

@@ -577,9 +577,10 @@ fn compile_stmt(
     | @core.Stmt::TraitImpl(..)
     | @core.Stmt::StructDef(..)
     | @core.Stmt::ExportStructDef(..)
-    | @core.Stmt::InternalExportStructDef(..) =>
-      // export { ... } statements and struct definitions are handled during bundling/typechecking
-      // At codegen time, they are no-ops
+    | @core.Stmt::InternalExportStructDef(..)
+    | @core.Stmt::AliasDecl(..) =>
+      // export { ... } statements, struct definitions, and alias declarations
+      // are handled during bundling/typechecking. At codegen time, they are no-ops
       if is_last {
         emit_i64_const_tagged(buf, 0L)
       }

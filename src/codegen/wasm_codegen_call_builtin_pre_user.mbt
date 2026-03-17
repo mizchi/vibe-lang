@@ -5317,10 +5317,7 @@ fn compile_call_builtin_pre_user_inner(
                     },
                     @core.CallArg::{
                       label: None,
-                      expr: @core.Expr::Int(
-                        value=1L,
-                        span=pos_args[1].span(),
-                      ),
+                      expr: @core.Expr::Int(value=1L, span=pos_args[1].span()),
                       span: pos_args[1].span(),
                     },
                   ],
@@ -5400,11 +5397,7 @@ fn compile_call_builtin_pre_user_inner(
       buf.push((126).to_byte()) // result i64
       // String path: emit String::substring inline (materialized copy)
       let _ = compile_call_builtin_pre_user(
-        ctx,
-        buf,
-        "String::substring",
-        args,
-        false,
+        ctx, buf, "String::substring", args, false,
       )
       buf.push((5).to_byte()) // else (array → ArrayView zero-copy)
       let size = 16
@@ -6433,7 +6426,9 @@ fn compile_call_builtin_pre_user_inner(
     "Bytes::slice" => {
       // Bytes::slice(bytes, start, end) -> new array with copied elements
       // Same as Array::slice
-      let pos_args = extract_positional_exprs_with_arity(args, "Bytes::slice", 3)
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Bytes::slice", 3,
+      )
       require_heap(ctx)
       let src_local = alloc_temp_local(ctx)
       let start_local = alloc_temp_local(ctx)
@@ -6507,7 +6502,9 @@ fn compile_call_builtin_pre_user_inner(
     }
     "Bytes::concat" => {
       // Bytes::concat(a, b) -> new array with a's elements followed by b's
-      let pos_args = extract_positional_exprs_with_arity(args, "Bytes::concat", 2)
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Bytes::concat", 2,
+      )
       require_heap(ctx)
       let a_local = alloc_temp_local(ctx)
       let b_local = alloc_temp_local(ctx)
@@ -6597,7 +6594,9 @@ fn compile_call_builtin_pre_user_inner(
     }
     "Bytes::to_array" => {
       // Bytes::to_array(bytes) -> same object (Bytes = Array[Int] internally)
-      let pos_args = extract_positional_exprs_with_arity(args, "Bytes::to_array", 1)
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Bytes::to_array", 1,
+      )
       compile_expr_i32(ctx, buf, pos_args[0])
     }
     "Fs::write_bytes" => {

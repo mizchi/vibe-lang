@@ -218,6 +218,12 @@ pub fn Stmt::structural_hash(self : Stmt) -> Int {
       h = combine_hash(h, source.structural_hash())
       h
     }
+    Stmt::AliasDecl(alias_name~, source~, ..) => {
+      let mut h = 0x416c4463 // "AlDc"
+      h = combine_hash(h, alias_name.hash())
+      h = combine_hash(h, source.structural_hash())
+      h
+    }
     Stmt::StructDef(name~, params~, fields~, ..) => {
       let mut h = 0x53747275 // "Stru"
       h = combine_hash(h, name.hash())
@@ -678,6 +684,7 @@ fn ModuleRef::structural_hash(self : ModuleRef) -> Int {
     ModuleRef::Hash(hash~) => combine_hash(0x48617368, hash.hash())
     ModuleRef::Version(name~) => combine_hash(0x56657273, name.hash())
     ModuleRef::Symbol(name~) => combine_hash(0x53796d62, name.hash())
+    ModuleRef::Alias(name~) => combine_hash(0x416c6961, name.hash())
   }
 }
 

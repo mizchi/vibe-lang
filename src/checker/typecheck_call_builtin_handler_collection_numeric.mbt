@@ -1224,13 +1224,25 @@ fn type_call_builtin_handler_collection_numeric(
         raise TypeError::BadCall(message="__slice", span=call_span)
       }
       let container_ty = type_expr_eff(
-        env, pos_args[0], aliases, effects, allow_effect,
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
       )
       let _start_ty = type_expr_eff(
-        env, pos_args[1], aliases, effects, allow_effect,
+        env,
+        pos_args[1],
+        aliases,
+        effects,
+        allow_effect,
       )
       let _end_ty = type_expr_eff(
-        env, pos_args[2], aliases, effects, allow_effect,
+        env,
+        pos_args[2],
+        aliases,
+        effects,
+        allow_effect,
       )
       let resolved_container = resolve_type(env, container_ty)
       match resolved_container {

@@ -1283,8 +1283,9 @@ fn type_block(
         register_type_alias(scope_env, name, params, target, span)
         last = @core.Type::Unit
       }
-      @core.Stmt::Export(..) | @core.Stmt::ReExport(..) =>
-        last = @core.Type::Unit
+      @core.Stmt::Export(..)
+      | @core.Stmt::ReExport(..)
+      | @core.Stmt::AliasDecl(..) => last = @core.Type::Unit
       @core.Stmt::Test(name~, body~, span~) => {
         let _ = span
         let _ = name
@@ -1546,10 +1547,7 @@ fn is_string_type(ty : @core.Type) -> Bool {
 }
 
 ///|
-fn string_view_comparable_pair(
-  left : @core.Type,
-  right : @core.Type,
-) -> Bool {
+fn string_view_comparable_pair(left : @core.Type, right : @core.Type) -> Bool {
   (is_string_view_type(left) && is_string_type(right)) ||
   (is_string_type(left) && is_string_view_type(right)) ||
   (is_string_view_type(left) && is_string_view_type(right))

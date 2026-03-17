@@ -453,6 +453,7 @@ pub fn walk_stmt_refs(
     | Stmt::InternalTraitDef(..)
     | Stmt::TraitImpl(..)
     | Stmt::Export(..)
-    | Stmt::ReExport(..) => ()
+    | Stmt::ReExport(..)
+    | Stmt::AliasDecl(..) => ()
   }
 }

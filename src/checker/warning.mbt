@@ -381,6 +381,7 @@ fn walk_stmt(
     | @core.Stmt::ExportTypeAlias(..)
     | @core.Stmt::InternalExportTypeAlias(..)
     | @core.Stmt::ReExport(..)
+    | @core.Stmt::AliasDecl(..)
     | @core.Stmt::StructDef(..)
     | @core.Stmt::ExportStructDef(..)
     | @core.Stmt::InternalExportStructDef(..) => ()

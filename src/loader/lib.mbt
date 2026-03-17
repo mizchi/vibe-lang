@@ -59,6 +59,47 @@ fn load_sources_recursive(
 }
 
 ///|
+/// Resolve an alias name to its source ModuleRef by reading index.vibe in the given directory.
+fn resolve_alias_to_source(
+  dir : String,
+  alias_name : String,
+  fs : &@io.FileSystemAdapter,
+) -> Result[@vibe_core.ModuleRef, String] {
+  let index_path = dir + "/index.vibe"
+  if not(@io.path_exists_with(fs, index_path)) {
+    return Err("alias @" + alias_name + ": no index.vibe found in " + dir)
+  }
+  let source = match @io.read_string_with(fs, index_path) {
+    Ok(v) => v
+    Err(err) => return Err("alias @" + alias_name + ": " + err)
+  }
+  let ast = @parser.parse_ast(source) catch {
+    e =>
+      return Err(
+        "alias @" + alias_name + ": parse error in index.vibe: " + e.to_string(),
+      )
+  }
+  for stmt in ast.stmts {
+    match stmt {
+      @vibe_core.Stmt::AliasDecl(alias_name=decl_name, source~, ..) =>
+        if decl_name == alias_name {
+          return Ok(source)
+        }
+      _ => ()
+    }
+  }
+  Err(
+    "alias @" +
+    alias_name +
+    " not found in " +
+    index_path +
+    " (add `import <path> @" +
+    alias_name +
+    "` to index.vibe)",
+  )
+}
+
+///|
 fn load_sources_recursive_impl(
   db : @runtime.VibeDb,
   path : String,
@@ -144,6 +185,40 @@ fn load_sources_recursive_impl(
               }
             }
           }
+          @vibe_core.ModuleRef::Alias(name~) => {
+            let alias_source = match resolve_alias_to_source(base, name, fs) {
+              Ok(resolved_source) => resolved_source
+              Err(err) => {
+                let _ = stack.pop()
+                return Err(err)
+              }
+            }
+            match alias_source {
+              @vibe_core.ModuleRef::Path(path~) => {
+                let resolved = match
+                  @codebase.resolve_import_path_with_registry(
+                    base, path, root, registry_modules,
+                  ) {
+                  Ok(v) => v
+                  Err(err) => {
+                    let _ = stack.pop()
+                    return Err(err)
+                  }
+                }
+                match
+                  load_sources_recursive_impl(
+                    db, resolved, visited, stack, fs, root, registry_modules,
+                  ) {
+                  Ok(_) => ()
+                  Err(err) => {
+                    let _ = stack.pop()
+                    return Err(err)
+                  }
+                }
+              }
+              _ => ()
+            }
+          }
           @vibe_core.ModuleRef::Hash(..)
           | @vibe_core.ModuleRef::Version(..)
           | @vibe_core.ModuleRef::Symbol(..) => ()
@@ -191,6 +266,7 @@ fn load_sources_recursive_impl(
           @vibe_core.ModuleRef::Hash(..)
           | @vibe_core.ModuleRef::Version(..)
           | @vibe_core.ModuleRef::Symbol(..) => ()
+          @vibe_core.ModuleRef::Alias(..) => ()
         }
       }
       _ => ()

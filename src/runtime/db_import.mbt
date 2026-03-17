@@ -358,6 +358,7 @@ fn import_stmt_matches_spec(
         Some(source_symbol) => source_symbol == name
         None => false
       }
+    @core.ModuleRef::Alias(_) => false
   }
 }
 

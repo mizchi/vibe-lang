@@ -199,6 +199,8 @@ fn default_registry_modules(root : String) -> Map[String, String] {
   out["types"] = @vibe_fs.normalize_path(root + "/vibe/types")
   out["parser"] = @vibe_fs.normalize_path(root + "/vibe/parser")
   out["wasm"] = @vibe_fs.normalize_path(root + "/vibe/wasm")
+  out["module"] = @vibe_fs.normalize_path(root + "/vibe/module")
+  out["shell"] = @vibe_fs.normalize_path(root + "/vibe/shell")
   out
 }
 
@@ -289,12 +291,9 @@ fn find_named_ancestor_dir(start_dir : String, name : String) -> String? {
 fn is_repo_vibe_root_with_fs(dir : String, fs : &@io.FileSystemAdapter) -> Bool {
   let prelude_lock = @vibe_fs.normalize_path(dir + "/prelude/index.lock")
   let json_lock = @vibe_fs.normalize_path(dir + "/json/index.lock")
-  let base64_lock = @vibe_fs.normalize_path(dir + "/base64/index.lock")
-  let sha1_lock = @vibe_fs.normalize_path(dir + "/sha1/index.lock")
+  // Require at least prelude + json lock files to identify the vibe/ root
   @io.path_exists_with(fs, prelude_lock) &&
-  @io.path_exists_with(fs, json_lock) &&
-  @io.path_exists_with(fs, base64_lock) &&
-  @io.path_exists_with(fs, sha1_lock)
+  @io.path_exists_with(fs, json_lock)
 }
 
 ///|
@@ -1204,7 +1203,8 @@ fn collect_path_refs_impl(
           }
           @core.ModuleRef::Hash(..)
           | @core.ModuleRef::Version(..)
-          | @core.ModuleRef::Symbol(..) => ()
+          | @core.ModuleRef::Symbol(..)
+          | @core.ModuleRef::Alias(..) => ()
         }
       }
       @core.Stmt::ReExport(source~, ..) =>
@@ -1234,7 +1234,8 @@ fn collect_path_refs_impl(
           }
           @core.ModuleRef::Hash(..)
           | @core.ModuleRef::Version(..)
-          | @core.ModuleRef::Symbol(..) => ()
+          | @core.ModuleRef::Symbol(..)
+          | @core.ModuleRef::Alias(..) => ()
         }
       _ => ()
     }

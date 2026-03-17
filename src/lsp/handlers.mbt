@@ -335,7 +335,8 @@ fn is_trait_imported(
           @core.ModuleRef::Path(path~) => Some(path)
           @core.ModuleRef::Hash(_)
           | @core.ModuleRef::Version(_)
-          | @core.ModuleRef::Symbol(_) => None
+          | @core.ModuleRef::Symbol(_)
+          | @core.ModuleRef::Alias(_) => None
         }
         for item in spec.items {
           let trait_compatible = item.kind == @core.ImportKind::Value ||

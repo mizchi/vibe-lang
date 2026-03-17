@@ -102,6 +102,7 @@ pub(all) enum ModuleRef {
   Hash(hash~ : String) // #abc12345
   Version(name~ : String) // version@main
   Symbol(name~ : String) // symbol@std/math
+  Alias(name~ : String) // @types → Alias(name="types")
 } derive(Show, Eq)
 
 ///|
@@ -178,6 +179,7 @@ pub(all) enum Stmt {
   )
   Export(names~ : Array[String], span~ : Span)
   ReExport(spec~ : ImportSpec, source~ : ModuleRef, span~ : Span)
+  AliasDecl(alias_name~ : String, source~ : ModuleRef, span~ : Span)
   StructDef(
     name~ : String,
     params~ : Array[String],
@@ -373,6 +375,7 @@ pub fn Stmt::span(self : Stmt) -> Span {
     | Stmt::InternalTraitDef(span~, ..)
     | Stmt::Export(span~, ..)
     | Stmt::ReExport(span~, ..)
+    | Stmt::AliasDecl(span~, ..)
     | Stmt::StructDef(span~, ..)
     | Stmt::ExportStructDef(span~, ..)
     | Stmt::InternalExportStructDef(span~, ..) => span

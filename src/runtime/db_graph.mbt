@@ -1,4 +1,32 @@
 ///|
+/// Resolve an alias name by looking up AliasDecl in the directory's index.vibe.
+fn resolve_alias_in_index(
+  rt : @ripple.Runtime,
+  sources : @ripple.Input[String, String],
+  ast_query : @ripple.Query[String, HashedModule],
+  base_dir : String,
+  alias_name : String,
+) -> @core.ModuleRef? {
+  let index_path = base_dir + "/index.vibe"
+  match sources.get(rt, index_path) {
+    Some(_) => {
+      let index_ast = ast_query.fetch(rt, index_path).unwrap()
+      for stmt in index_ast.stmts {
+        match stmt {
+          @core.Stmt::AliasDecl(alias_name=decl_name, source~, ..) =>
+            if decl_name == alias_name {
+              return Some(source)
+            }
+          _ => ()
+        }
+      }
+      None
+    }
+    None => None
+  }
+}
+
+///|
 fn stack_index_of_path(stack : Array[String], path : String) -> Int? {
   for i, p in stack {
     if p == path {
@@ -62,7 +90,39 @@ fn detect_import_cycle_from(
   let base_dir = @path.Path(path).dirname().to_string()
   for stmt in ast.stmts {
     match stmt {
-      @core.Stmt::Import(source~, ..) | @core.Stmt::ReExport(source~, ..) =>
+      @core.Stmt::Import(source~, ..) | @core.Stmt::ReExport(source~, ..) => {
+        let resolved_source = match source {
+          @core.ModuleRef::Alias(name~) =>
+            resolve_alias_in_index(rt, sources, ast_query, base_dir, name)
+          other => Some(other)
+        }
+        match resolved_source {
+          Some(@core.ModuleRef::Path(path=raw_path)) => {
+            let path_obj = normalize_path_obj(base_dir, raw_path)
+            let next_path = match sources.get(rt, path_obj.normalized) {
+              Some(_) => Some(path_obj.normalized)
+              None =>
+                match sources.get(rt, raw_path) {
+                  Some(_) => Some(raw_path)
+                  None => None
+                }
+            }
+            match next_path {
+              Some(next) =>
+                match
+                  detect_import_cycle_from(
+                    rt, sources, ast_query, next, stack, done,
+                  ) {
+                  Some(cycle) => return Some(cycle)
+                  None => ()
+                }
+              None => ()
+            }
+          }
+          _ => ()
+        }
+      }
+      @core.Stmt::AliasDecl(source~, ..) =>
         match source {
           @core.ModuleRef::Path(path=raw_path) => {
             let path_obj = normalize_path_obj(base_dir, raw_path)

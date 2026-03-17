@@ -229,6 +229,13 @@ fn serialize_stmt_to(stmt : Stmt, buf : StringBuilder) -> Unit {
       serialize_module_ref_to(source, buf)
       buf.write_string("}}")
     }
+    Stmt::AliasDecl(alias_name~, source~, ..) => {
+      buf.write_string("{\"AliasDecl\":{\"alias_name\":")
+      serialize_string_to(alias_name, buf)
+      buf.write_string(",\"source\":")
+      serialize_module_ref_to(source, buf)
+      buf.write_string("}}")
+    }
     Stmt::StructDef(name~, params~, fields~, ..) => {
       buf.write_string("{\"StructDef\":{\"fields\":")
       serialize_struct_fields_to(fields, buf)
@@ -987,6 +994,11 @@ fn serialize_module_ref_to(r : ModuleRef, buf : StringBuilder) -> Unit {
     }
     ModuleRef::Symbol(name~) => {
       buf.write_string("{\"Symbol\":")
+      serialize_string_to(name, buf)
+      buf.write_char('}')
+    }
+    ModuleRef::Alias(name~) => {
+      buf.write_string("{\"Alias\":")
       serialize_string_to(name, buf)
       buf.write_char('}')
     }

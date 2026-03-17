@@ -255,7 +255,8 @@ fn preload_module_sources(
           }
           @core.ModuleRef::Hash(_)
           | @core.ModuleRef::Version(_)
-          | @core.ModuleRef::Symbol(_) => ()
+          | @core.ModuleRef::Symbol(_)
+          | @core.ModuleRef::Alias(_) => ()
         }
       _ => ()
     }

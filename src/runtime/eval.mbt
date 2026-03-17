@@ -491,6 +491,10 @@ pub fn Runtime::eval_module(
             raise EvalError::ImportError(
               "Import symbol ref not resolved to hash: " + name,
             )
+          @core.ModuleRef::Alias(name~) =>
+            raise EvalError::ImportError(
+              "Import alias ref not resolved to hash: " + name,
+            )
         }
         match self.get_module(hash) {
           None =>
@@ -546,6 +550,10 @@ pub fn Runtime::eval_module(
           @core.ModuleRef::Symbol(name~) =>
             raise EvalError::ImportError(
               "Import symbol ref not resolved to hash: " + name,
+            )
+          @core.ModuleRef::Alias(name~) =>
+            raise EvalError::ImportError(
+              "Import alias ref not resolved to hash: " + name,
             )
         }
         // Look up module in cache
@@ -856,6 +864,7 @@ pub fn Runtime::eval_module(
       @core.Stmt::StructDef(..) => last = Some(@core.Value::Unit)
       @core.Stmt::ExportStructDef(..) => last = Some(@core.Value::Unit)
       @core.Stmt::InternalExportStructDef(..) => last = Some(@core.Value::Unit)
+      @core.Stmt::AliasDecl(..) => last = Some(@core.Value::Unit)
     })
     match stmt_result {
       Ok(_) => ()

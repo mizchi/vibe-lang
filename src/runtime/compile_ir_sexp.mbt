@@ -173,7 +173,9 @@ fn stmts_to_sexp(
         buf.write_string(type_to_sexp(target))
         buf.write_char(')')
       }
-      @core.Stmt::Export(..) | @core.Stmt::ReExport(..) => ()
+      @core.Stmt::Export(..)
+      | @core.Stmt::ReExport(..)
+      | @core.Stmt::AliasDecl(..) => ()
       @core.Stmt::Test(name~, body~, span~) => {
         let _ = name
         let _ = body

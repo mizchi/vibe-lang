@@ -247,6 +247,12 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
         let source = parse_module_ref(get_field(inner, "source"))
         return Stmt::ReExport(spec~, source~, span=zero)
       }
+      "AliasDecl" => {
+        let inner = expect_object(value)
+        let alias_name = get_string(inner, "alias_name")
+        let source = parse_module_ref(get_field(inner, "source"))
+        return Stmt::AliasDecl(alias_name~, source~, span=zero)
+      }
       "StructDef" => {
         let inner = expect_object(value)
         let name = get_string(inner, "name")
@@ -893,6 +899,10 @@ fn parse_module_ref(json : Json) -> ModuleRef raise DeserializeError {
       "Symbol" => {
         let name = expect_string(value)
         return ModuleRef::Symbol(name~)
+      }
+      "Alias" => {
+        let name = expect_string(value)
+        return ModuleRef::Alias(name~)
       }
       _ => ()
     }
