@@ -260,7 +260,7 @@ fn write_vibe_cache_object(
   let path = vibe_cache_json_path(index_root)
   let dir = @vibe_fs.parent_path(path)
   if not(@os_fs.path_exists(dir)) {
-    @os_fs.mkdir(dir) catch {
+    @os_fs.create_dir(dir) catch {
       e => return Err("mkdir .vibe: " + e.to_string())
     }
   }

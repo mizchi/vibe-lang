@@ -2016,6 +2016,8 @@ fn bundle_pack_cmd(args : Array[String]) -> Unit {
       path_hash_contents[normalized_hash] = source
     }
   }
+  let refs_obj : Map[String, Json] = {}
+  refs_obj["lock"] = Json::object(lock_obj)
   let object_hashes : Array[String] = []
   let push_hash = fn(hash : String) {
     let normalized = bundle_normalize_hash(hash)

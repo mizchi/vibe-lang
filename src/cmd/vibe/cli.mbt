@@ -1958,7 +1958,8 @@ fn run_cmd(
                   @vibe_core.ModuleRef::Hash(_)
                   | @vibe_core.ModuleRef::Version(_)
                   | @vibe_core.ModuleRef::Symbol(_)
-                  | @vibe_core.ModuleRef::Alias(_) => ()
+                  | @vibe_core.ModuleRef::Alias(_)
+                  | @vibe_core.ModuleRef::PinnedPath(..) => ()
                 }
               _ => ()
             }
@@ -3002,7 +3003,8 @@ fn run_test_file_interpreter_with_cache(
           @vibe_core.ModuleRef::Hash(_)
           | @vibe_core.ModuleRef::Version(_)
           | @vibe_core.ModuleRef::Symbol(_)
-          | @vibe_core.ModuleRef::Alias(_) => ()
+          | @vibe_core.ModuleRef::Alias(_)
+          | @vibe_core.ModuleRef::PinnedPath(..) => ()
         }
       _ => ()
     }
