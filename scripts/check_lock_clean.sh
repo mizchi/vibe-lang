@@ -40,9 +40,6 @@ fi
 
 echo "lock-check: scanned ${#LOCK_FILES[@]} index.lock files"
 
-missing_vbundle=()
-invalid_vbundle=()
-mismatch_vbundle=()
 missing_manifest=()
 invalid_manifest=()
 
@@ -53,22 +50,7 @@ for lock_path in "${LOCK_FILES[@]}"; do
   esac
 
   lock_dir="$(dirname "$lock_path")"
-  vbundle_path="$lock_dir/index.vbundle"
   manifest_path="$lock_dir/index.vibe"
-
-  if [ ! -f "$vbundle_path" ]; then
-    missing_vbundle+=("$vbundle_path")
-  else
-    if ! jq -e '.lock and (.lock | type == "object")' "$vbundle_path" >/dev/null 2>&1; then
-      invalid_vbundle+=("$vbundle_path")
-    else
-      lock_norm="$(jq -cS . "$lock_path")"
-      vbundle_lock_norm="$(jq -cS .lock "$vbundle_path")"
-      if [ "$lock_norm" != "$vbundle_lock_norm" ]; then
-        mismatch_vbundle+=("$vbundle_path")
-      fi
-    fi
-  fi
 
   if [ ! -f "$manifest_path" ]; then
     missing_manifest+=("$manifest_path")
@@ -78,24 +60,6 @@ for lock_path in "${LOCK_FILES[@]}"; do
     fi
   fi
 done
-
-if [ "${#missing_vbundle[@]}" -gt 0 ]; then
-  printf '%s\n' "${missing_vbundle[@]}" >&2
-  echo "lock-check: missing index.vbundle for vibe modules" >&2
-  exit 1
-fi
-
-if [ "${#invalid_vbundle[@]}" -gt 0 ]; then
-  printf '%s\n' "${invalid_vbundle[@]}" >&2
-  echo "lock-check: index.vbundle must include lock object" >&2
-  exit 1
-fi
-
-if [ "${#mismatch_vbundle[@]}" -gt 0 ]; then
-  printf '%s\n' "${mismatch_vbundle[@]}" >&2
-  echo "lock-check: index.vbundle lock payload mismatch (run sync/generate step)" >&2
-  exit 1
-fi
 
 if [ "${#missing_manifest[@]}" -gt 0 ]; then
   printf '%s\n' "${missing_manifest[@]}" >&2

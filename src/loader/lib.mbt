@@ -397,8 +397,7 @@ pub fn resolve_entry_path_with_fs(
     resolved.has_suffix(".xm") ||
     resolved.has_suffix(".wasm") ||
     resolved.has_suffix(".db") ||
-    resolved.has_suffix(".lock") ||
-    resolved.has_suffix(".vbundle") {
+    resolved.has_suffix(".lock") {
     return resolved
   }
   let index_entry = @vibe_fs.normalize_path(resolved + "/index.vibe")

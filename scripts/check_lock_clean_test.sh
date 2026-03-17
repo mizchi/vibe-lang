@@ -14,10 +14,6 @@ cat > "$TMP_ROOT/vibe/pkg/index.lock" <<'EOF'
 {"path":{"./main.vibe":"#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
 EOF
 
-cat > "$TMP_ROOT/vibe/pkg/index.vbundle" <<'EOF'
-{"lock":{"path":{"./main.vibe":"#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}
-EOF
-
 cat > "$TMP_ROOT/vibe/pkg/index.vibe" <<'EOF'
 export let version = "0.1.0"
 EOF
@@ -26,10 +22,6 @@ VIBE_LOCK_CHECK_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >/dev/null
 
 cat > "$TMP_ROOT/vibe/pkg/index.lock" <<'EOF'
 {"path":{"./_probe/main.vibe":"#bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}
-EOF
-
-cat > "$TMP_ROOT/vibe/pkg/index.vbundle" <<'EOF'
-{"lock":{"path":{"./_probe/main.vibe":"#bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}
 EOF
 
 FAIL_LOG="$(mktemp "${TMPDIR:-/tmp}/vibe_lock_clean_fail.XXXXXX")"
@@ -50,10 +42,6 @@ cat > "$TMP_ROOT/vibe/pkg/index.lock" <<'EOF'
 {"path":{"./.vibe_test_wasm_12345_1_0.vibe":"#cccccccccccccccccccccccccccccccccccccccc"}}
 EOF
 
-cat > "$TMP_ROOT/vibe/pkg/index.vbundle" <<'EOF'
-{"lock":{"path":{"./.vibe_test_wasm_12345_1_0.vibe":"#cccccccccccccccccccccccccccccccccccccccc"}}}
-EOF
-
 if VIBE_LOCK_CHECK_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >"$FAIL_LOG" 2>&1; then
   echo "lock-check self-test: expected failure for .vibe_test_wasm contamination" >&2
   exit 1
@@ -67,22 +55,6 @@ fi
 
 cat > "$TMP_ROOT/vibe/pkg/index.lock" <<'EOF'
 {"path":{"./main.vibe":"#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
-EOF
-
-rm -f "$TMP_ROOT/vibe/pkg/index.vbundle"
-if VIBE_LOCK_CHECK_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >"$FAIL_LOG" 2>&1; then
-  echo "lock-check self-test: expected failure for missing index.vbundle" >&2
-  exit 1
-fi
-
-if ! rg -q "lock-check: missing index.vbundle for vibe modules" "$FAIL_LOG"; then
-  echo "lock-check self-test: missing expected vbundle failure message" >&2
-  cat "$FAIL_LOG" >&2
-  exit 1
-fi
-
-cat > "$TMP_ROOT/vibe/pkg/index.vbundle" <<'EOF'
-{"lock":{"path":{"./main.vibe":"#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}
 EOF
 
 cat > "$TMP_ROOT/vibe/pkg/index.vibe" <<'EOF'

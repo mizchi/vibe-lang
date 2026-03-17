@@ -275,9 +275,9 @@ fn write_vibe_cache_object(
 
 ///|
 fn resolve_active_ns_name_from_cache(
-  vbundle : Map[String, Json],
+  cache : Map[String, Json],
 ) -> String {
-  match vbundle.get("active_namespace") {
+  match cache.get("active_namespace") {
     Some(Json::String(name)) =>
       if name.trim().to_string().length() > 0 {
         name.trim().to_string()
@@ -290,10 +290,10 @@ fn resolve_active_ns_name_from_cache(
 
 ///|
 fn resolve_ns_db_rel_path_from_cache(
-  vbundle : Map[String, Json],
+  cache : Map[String, Json],
   ns_name : String,
 ) -> String {
-  match vbundle.get("namespaces") {
+  match cache.get("namespaces") {
     Some(Json::Object(namespaces)) =>
       match namespaces.get(ns_name) {
         Some(Json::Object(ns_obj)) =>
