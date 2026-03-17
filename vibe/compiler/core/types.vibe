@@ -38,7 +38,8 @@ export enum TypeEnv {
 export enum Subst {
   SubstEmpty;
   SubstBind(Int, Type, Subst);
-  SubstBound(Int, Array[String], Subst)
+  SubstBound(Int, Array[String], Subst);
+  SubstCached(Map[String, Type], Map[String, Array[String]], Subst)
 }
 
 //# Functions
@@ -512,6 +513,15 @@ let subst_bounds = (s: Subst, id: Int) -> Array[String] {
         } else {
           cur = rest
         }
+      },
+      SubstCached(_, bounds_cache, rest) => {
+        let key = __to_string(id)
+        if Map::has_key(bounds_cache, key) {
+          out = Map::get(bounds_cache, key)
+          done = true
+        } else {
+          cur = rest
+        }
       }
     }
   }
@@ -567,6 +577,9 @@ let collect_subst_bounds_pairs = (s: Subst) -> Array[(Int, Array[String])] {
           Array::push(out, (id, bounds))
         }
         cur = rest
+      },
+      SubstCached(_, _, rest) => {
+        cur = rest
       }
     }
   }
@@ -590,6 +603,7 @@ export let subst_lookup = (s: Subst, id: Int) -> Option[Type] {
   let mut cur = s
   let mut out = None
   let mut done = false
+  let key = __to_string(id)
   while (!(done)) {
     match cur {
       SubstEmpty => {
@@ -604,6 +618,12 @@ export let subst_lookup = (s: Subst, id: Int) -> Option[Type] {
         }
       },
       SubstBound(_, _, rest) => {
+        cur = rest
+      },
+      SubstCached(cache, _, rest) => if Map::has_key(cache, key) {
+        out = Some(Map::get(cache, key))
+        done = true
+      } else {
         cur = rest
       }
     }
