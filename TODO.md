@@ -1,7 +1,38 @@
 # TODO
 
-Spec-locked decisions are tracked in `spec/decisions.md`.
+Spec-locked decisions are tracked in `docs/spec/decisions.md`.
 Completed items are archived in `docs/DONE.md`.
+
+## vbundle 廃止 → index.lock + .vibe/cache.json 統合
+
+index.vbundle を廃止し、lock 情報は index.lock に一本化、キャッシュは .vibe/ に移動する。
+
+### Phase 1: index.lock にフィールド統合
+- [ ] index.lock に `module` と `annotation` フィールドを追加（現在 vbundle の lock にしかないもの）
+- [ ] `src/codebase/lib.mbt`: lock 読み込みを index.lock のみに変更（vbundle 優先ロジック削除）
+- [ ] `src/codebase/lib.mbt`: lock 書き込みから vbundle ミラーを削除
+- [ ] `src/codebase/codebase_test.mbt`: 3テストを index.lock ベースに書き換え
+
+### Phase 2: .vibe/cache.json にキャッシュ移行
+- [ ] `graph_head` の読み書きを `.vibe/cache.json` に変更
+  - `src/loader/lib.mbt`: `graph_head_from_index_vbundle` → `.vibe/cache.json`
+  - `src/cmd/vibe/cli_write_file.mbt`: graph_head 書き込み先変更
+  - `src/cmd/vibe/cli_ide.mbt`: `write_index_vbundle_graph_head` → cache.json
+- [ ] `active_namespace` / `namespaces` を `.vibe/cache.json` に変更
+  - `src/cmd/vibe/cli_eval_helpers.mbt`: namespace 管理
+  - `src/cmd/vibe/cli.mbt`: namespace set コマンド
+
+### Phase 3: vbundle コード・テスト・スクリプト削除
+- [ ] `src/codebase/lib.mbt`: vbundle 読み書き関数群を削除
+  - `parse_lock_data_from_index_vbundle`, `read_index_vbundle_object_with_fs`, `write_index_vbundle_object_with_fs`
+- [ ] `src/cmd/vibe/cli_eval_helpers.mbt`: `load_index_vbundle_object`, `write_index_vbundle_object` 等
+- [ ] `src/cmd/vibe/cli_ide.mbt`: `bundle migrate` コマンド削除
+- [ ] `src/runtime/db_import.mbt`, `src/runtime/db_query.mbt`: `.vbundle` 拡張子チェック削除
+- [ ] `src/benches/vbundle_read_bench.mbt`: 削除 or index.lock ベースに書き換え
+- [ ] テスト書き換え: `cli_e2e_wbtest.mbt`, `cli_wbtest.mbt`, `loader_test.mbt`
+- [ ] `scripts/sync_vibe_index_vbundle.sh`, `scripts/sync_vibe_index_vbundle_test.sh` 削除
+- [ ] `justfile`: `sync-vbundle` / `test-sync-vbundle` タスク削除
+- [ ] ローカルの `*.vbundle` ファイルを一括削除
 
 ## カバレッジ計測
 
