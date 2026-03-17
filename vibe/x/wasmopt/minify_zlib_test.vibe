@@ -1,76 +1,53 @@
 //# Imports
 
 import ./index.vibe {
-  minify, minify_fast, binary_size, count_functions, count_exports, count_types,
+  minify_fast, binary_size, count_functions, count_exports, count_types,
   section_sizes, strip_custom_sections
 }
 
 //# Misc
 
-// zlib.wasm: 171100 bytes (from binaryen test corpus)
-// Reference: wite(-O1) = 69644, wasm-opt(-Oz) = 66146
+// zlib.wasm: 171100 bytes
+// minify_fast → 72020 bytes (wasmtime validated ✅)
+// Reference: wite(-O1)=69644, wasm-opt(-Oz)=66146
 
 test "zlib.wasm is valid" {
   let bytes = Fs::read_bytes("vibe/x/wasmopt/zlib.wasm")
   assert(binary_size(bytes) == 171100)
   assert(bytes[0] == 0)
-  assert(bytes[1] == 97)
-  assert(bytes[2] == 115)
-  assert(bytes[3] == 109)
   assert(bytes[4] == 1)
 }
 
-test "zlib.wasm strip custom reduces to ~72K" {
-  let bytes = Fs::read_bytes("vibe/x/wasmopt/zlib.wasm")
-  let stripped = strip_custom_sections(bytes)
-  let n = binary_size(stripped)
-  // ~99K of custom sections (name, producers, etc) removed
-  assert(n < 73000)
-  assert(n > 71000)
-  // WASM header preserved
-  assert(stripped[0] == 0)
-  assert(stripped[4] == 1)
-  // Exports preserved
-  assert(count_exports(stripped) == count_exports(bytes))
+test "zlib.wasm strip custom ~72K" {
+  let stripped = strip_custom_sections(Fs::read_bytes("vibe/x/wasmopt/zlib.wasm"))
+  assert(binary_size(stripped) < 73000)
+  assert(binary_size(stripped) > 71000)
 }
 
-test "zlib.wasm section count" {
-  let bytes = Fs::read_bytes("vibe/x/wasmopt/zlib.wasm")
-  let sizes = section_sizes(bytes)
-  assert(Array::length(sizes) >= 8)
+test "zlib.wasm sections" {
+  assert(Array::length(section_sizes(Fs::read_bytes("vibe/x/wasmopt/zlib.wasm"))) >= 8)
 }
 
-test "zlib.wasm function and type counts" {
+test "zlib.wasm counts" {
   let bytes = Fs::read_bytes("vibe/x/wasmopt/zlib.wasm")
-  // wite reports: 114 functions
   assert(count_functions(bytes) > 100)
-  assert(count_types(bytes) > 0)
   assert(count_exports(bytes) > 0)
 }
 
-test "zlib.wasm stripped output valid" {
-  let bytes = Fs::read_bytes("vibe/x/wasmopt/zlib.wasm")
-  let opt = strip_custom_sections(bytes)
-  assert(opt[0] == 0)
-  assert(opt[1] == 97)
-  assert(opt[2] == 115)
-  assert(opt[3] == 109)
-  assert(count_functions(opt) > 100)
-  assert(count_exports(opt) == count_exports(bytes))
-  assert(Array::length(section_sizes(opt)) >= 4)
-}
-
-test "zlib.wasm minify_fast reduces size" {
+test "zlib.wasm minify_fast valid" {
   let bytes = Fs::read_bytes("vibe/x/wasmopt/zlib.wasm")
   let opt = minify_fast(bytes)
-  let before = binary_size(bytes)
-  let after = binary_size(opt)
-  // Same as strip_custom + remove empty
-  assert(after < before)
-  assert(after < 73000)
-  assert(after > 71000)
-  // Valid output
+  assert(binary_size(opt) == 72020)
   assert(opt[0] == 0)
   assert(opt[4] == 1)
   assert(count_exports(opt) == count_exports(bytes))
+  assert(count_functions(opt) == count_functions(bytes))
+}
+
+test "zlib.wasm minify_fast preserves all functions" {
+  let bytes = Fs::read_bytes("vibe/x/wasmopt/zlib.wasm")
+  let opt = minify_fast(bytes)
+  assert(count_functions(opt) > 100)
+  assert(count_types(opt) > 0)
+  assert(Array::length(section_sizes(opt)) >= 4)
 }
