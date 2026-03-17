@@ -559,7 +559,22 @@ let parse_one_param = (tokens: Array[Token], pos: Int) -> ((String, Option[TypeE
       },
       TColon => {
         let (ty, tp) = parse_type_impl(tokens, pos + 2, 0);
-        ((name, Some(ty)), tp)
+        // Skip optional trait bound: x: T: Eq or x: T: Eq + Show
+        let tp2 = match peek(tokens, tp) {
+          TColon => {
+            let mut bp = tp + 1
+            let mut bd = true
+            while bd {
+              match peek(tokens, bp) {
+                TIdent(_) => { bp = bp + 1; match peek(tokens, bp) { TPlus => { bp = bp + 1 }, _ => { bd = false } } },
+                _ => { bd = false }
+              }
+            }
+            bp
+          },
+          _ => tp
+        }
+        ((name, Some(ty)), tp2)
       },
       _ => ((name, None), pos + 1)
     },
@@ -1620,7 +1635,10 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         TRBrace => (EMatch(scrutinee, ArrayBuilder::freeze(b)), pos + 2),
         _ => {
           let (pa, paa) = parse_pattern(tokens, pos + 1)
-          let a2 = expect_tk(tokens, paa, "=>")
+          let a2 = match peek(tokens, paa) {
+            TIf => { let (_, ga) = parse_impl(tokens, paa + 1, 0); expect_tk(tokens, ga, "=>") },
+            _ => expect_tk(tokens, paa, "=>")
+          }
           let (ea, en) = parse_impl(tokens, a2, 0)
           ArrayBuilder::push(b, (pa, ea))
           parse_match_rest(tokens, en, scrutinee, b)
@@ -1628,9 +1646,11 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       },
       TRBrace => (EMatch(scrutinee, ArrayBuilder::freeze(b)), pos + 1),
       _ => {
-        // Allow newline-separated arms (no comma required)
         let (pa, paa) = parse_pattern(tokens, pos)
-        let a2 = expect_tk(tokens, paa, "=>")
+        let a2 = match peek(tokens, paa) {
+          TIf => { let (_, ga) = parse_impl(tokens, paa + 1, 0); expect_tk(tokens, ga, "=>") },
+          _ => expect_tk(tokens, paa, "=>")
+        }
         let (ea, en) = parse_impl(tokens, a2, 0)
         ArrayBuilder::push(b, (pa, ea))
         parse_match_rest(tokens, en, scrutinee, b)
@@ -1736,7 +1756,15 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       _ => {
         let b = ArrayBuilder::new()
         let (fp, fa) = parse_pattern(tokens, br)
-        let aa = expect_tk(tokens, fa, "=>")
+        // Check for guard: pat if cond => body
+        let aa = match peek(tokens, fa) {
+          TIf => {
+            let (guard_cond, ga) = parse_impl(tokens, fa + 1, 0)
+            // Guard is ignored for now (always true) — just skip to =>
+            expect_tk(tokens, ga, "=>")
+          },
+          _ => expect_tk(tokens, fa, "=>")
+        }
         let (fe, fn1) = parse_impl(tokens, aa, 0)
         ArrayBuilder::push(b, (fp, fe))
         parse_match_rest(tokens, fn1, scrutinee, b)
