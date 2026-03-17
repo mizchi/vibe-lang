@@ -259,20 +259,16 @@ test("buildSourceDepSignature: follows relative and root imports with lock sidec
   );
   write("workspace/dep.vibe", "export let dep = 1\n");
   write("workspace/index.lock", "{}\n");
-  write("workspace/index.vbundle", "{\"lock\":{}}\n");
   write("vibe/prelude/option.vibe", "export let unwrap_or = (x, y) -> x\n");
   write("vibe/prelude/index.lock", "{}\n");
-  write("vibe/prelude/index.vbundle", "{\"lock\":{}}\n");
 
   const signature = buildSourceDepSignature(entryPath, { projectRoot: tmpRoot });
 
   assert.match(signature, /workspace\/main\.vibe\t/);
   assert.match(signature, /workspace\/dep\.vibe\t/);
   assert.match(signature, /workspace\/index\.lock\t/);
-  assert.match(signature, /workspace\/index\.vbundle\t/);
   assert.match(signature, /vibe\/prelude\/option\.vibe\t/);
   assert.match(signature, /vibe\/prelude\/index\.lock\t/);
-  assert.match(signature, /vibe\/prelude\/index\.vbundle\t/);
   assert.doesNotMatch(signature, /ignored\.vibe/);
   assert.doesNotMatch(signature, /comment_only\.vibe/);
 });

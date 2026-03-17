@@ -179,7 +179,7 @@ test "repl parser mode hint removed with do keyword" {
 ///|
 test "eval cmd options parse db and expression" {
   let parsed = parse_eval_cmd_options(
-    ["--db=tmp1.db", "--include=index.vbundle", "let", "value", "=", "1"],
+    ["--db=tmp1.db", "--include=index.lock", "let", "value", "=", "1"],
     "eval",
   )
   match parsed {
@@ -192,7 +192,7 @@ test "eval cmd options parse db and expression" {
         Some(_) => fail("unexpected export path")
         None => ()
       }
-      assert_eq(opts.include_paths, ["index.vbundle"])
+      assert_eq(opts.include_paths, ["index.lock"])
       match opts.expr {
         Some(expr) => assert_eq(expr, "let value = 1")
         None => fail("expected expression")
@@ -205,7 +205,7 @@ test "eval cmd options parse db and expression" {
 ///|
 test "eval cmd options parse export only" {
   let parsed = parse_eval_cmd_options(
-    ["--db", "tmp1.db", "--include", "index.vbundle", "--export", "out.vibe"],
+    ["--db", "tmp1.db", "--include", "index.lock", "--export", "out.vibe"],
     "eval",
   )
   match parsed {
@@ -218,7 +218,7 @@ test "eval cmd options parse export only" {
         Some(path) => assert_eq(path, "out.vibe")
         None => fail("expected export path")
       }
-      assert_eq(opts.include_paths, ["index.vbundle"])
+      assert_eq(opts.include_paths, ["index.lock"])
       match opts.expr {
         Some(_) => fail("unexpected expression")
         None => ()
@@ -254,14 +254,14 @@ test "eval cmd options allows export without db" {
 test "eval cmd options parse multiple includes" {
   let parsed = parse_eval_cmd_options(
     [
-      "--db", "tmp1.db", "--include", "index.vbundle", "--include=bit:/tmp/std.vbundle",
+      "--db", "tmp1.db", "--include", "index.lock", "--include=bit:/tmp/std.lock",
       "let", "x", "=", "1",
     ],
     "eval",
   )
   match parsed {
     Ok(opts) => {
-      assert_eq(opts.include_paths, ["index.vbundle", "bit:/tmp/std.vbundle"])
+      assert_eq(opts.include_paths, ["index.lock", "bit:/tmp/std.lock"])
       match opts.expr {
         Some(expr) => assert_eq(expr, "let x = 1")
         None => fail("expected expression")
@@ -403,33 +403,9 @@ test "eval cmd options reject missing include value" {
   }
 }
 
-///|
-test "eval include path resolves named vbundle alias from lib dir" {
-  let resolved = resolve_eval_include_path(
-    "/work/project", "vibe/prelude@0.1.0.vbundle", "/home/test/.vibe/lib",
-  )
-  assert_eq(resolved, "/home/test/.vibe/lib/vibe/prelude@0.1.0.vbundle")
-}
 
-///|
-test "eval include path resolves latest named vbundle alias when version omitted" {
-  let root = wbtest_make_temp_dir("eval_include_latest_alias")
-  let vibe_dir = root + "/vibe"
-  @os_fs.create_dir(vibe_dir) catch {
-    e => fail("create vibe dir failed: " + e.to_string())
-  }
-  @os_fs.write_string_to_file(vibe_dir + "/prelude@0.1.0.vbundle", "hash:a\n") catch {
-    e => fail("write prelude@0.1.0 alias failed: " + e.to_string())
-  }
-  @os_fs.write_string_to_file(vibe_dir + "/prelude@1.2.0.vbundle", "hash:b\n") catch {
-    e => fail("write prelude@1.2.0 alias failed: " + e.to_string())
-  }
-  let resolved = resolve_eval_include_path(
-    "/work/project", "vibe/prelude.vbundle", root,
-  )
-  assert_eq(resolved, root + "/vibe/prelude@1.2.0.vbundle")
-  wbtest_remove_if_exists(root)
-}
+
+
 
 ///|
 test "eval include path resolves relative base dir from current directory" {

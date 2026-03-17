@@ -59,7 +59,7 @@ pub fn run(args : Array[String]) -> Unit {
     "ide" => ide_cmd(cmd_args)
     "lsif" => lsif_cmd(cmd_args)
     "index" => index_cmd(cmd_args)
-    "bundle" => bundle_cmd(cmd_args)
+    "bundle" => abort("bundle commands have been removed")
     "lsp" => lsp_cmd(cmd_args)
     "help" => print_usage()
     _ => {
@@ -208,7 +208,6 @@ fn print_usage() -> Unit {
     "    ref: push|pull|push-delta|pull-delta <scope> <file>  git/bit distributed refs",
   )
   println(
-    "  bundle <pack|verify|inspect|cat|migrate|sync> ...  vbundle distribution utilities",
   )
   println("  lsp                         start LSP server (stdin/stdout)")
   println(
@@ -4463,7 +4462,7 @@ fn normalize_resolve_latest_scope_version(
   }
   let entries = @os_fs.read_dir(dir) catch { _ => return None }
   let prefix = leaf + "@"
-  let suffix = ".vbundle"
+  let suffix = ".lock"
   let mut best_version : String? = None
   let mut best_semver : (Int, Int, Int)? = None
   for entry in entries {
@@ -4546,7 +4545,6 @@ fn normalize_is_unversioned_scope_import_target(scope : String) -> Bool {
     scope.has_suffix(".vibe") ||
     scope.has_suffix(".xm") ||
     scope.has_suffix(".wasm") ||
-    scope.has_suffix(".vbundle") ||
     not(scope.contains("/")) {
     false
   } else {

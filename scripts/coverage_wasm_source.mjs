@@ -198,7 +198,6 @@ export function buildSourceDepSignature(entryPath, options = {}) {
     seenSourcePaths.add(absPath);
     addTrackedPath(trackedPaths, absPath);
     addTrackedPath(trackedPaths, path.join(path.dirname(absPath), "index.lock"));
-    addTrackedPath(trackedPaths, path.join(path.dirname(absPath), "index.vbundle"));
 
     const scanSource = stripStringsAndComments(source);
     const baseDir = path.dirname(absPath);
