@@ -31,7 +31,8 @@ export enum TypeEnv {
   EnvBind(String, Type, TypeEnv);
   EnvTraitDef(String, Array[String], Bool, TypeEnv);
   EnvTraitImpl(String, Type, TypeEnv);
-  EnvTraitImplGen(String, Array[String], Array[(String, Array[String])], Type, TypeEnv)
+  EnvTraitImplGen(String, Array[String], Array[(String, Array[String])], Type, TypeEnv);
+  EnvCached(Map[String, Type], TypeEnv)
 }
 
 export enum Subst {
@@ -101,10 +102,38 @@ export let env_lookup = (env: TypeEnv, name: String) -> Option[Type] {
       },
       EnvTraitDef(_, _, _, rest) => { cur = rest },
       EnvTraitImpl(_, _, rest) => { cur = rest },
-      EnvTraitImplGen(_, _, _, _, rest) => { cur = rest }
+      EnvTraitImplGen(_, _, _, _, rest) => { cur = rest },
+      EnvCached(cache, rest) => if Map::has_key(cache, name) {
+        result = Some(Map::get(cache, name))
+        done = true
+      } else {
+        cur = rest
+      }
     }
   }
   result
+}
+
+export let env_cache = (env: TypeEnv) -> TypeEnv {
+  let cache = MapBuilder::new()
+  let mut cur = env
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => { done = true },
+      EnvBind(n, ty, rest) => {
+        if !Map::has_key(MapBuilder::freeze(cache), n) {
+          MapBuilder::set(cache, n, ty)
+        }
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, rest) => { cur = rest },
+      EnvTraitImpl(_, _, rest) => { cur = rest },
+      EnvTraitImplGen(_, _, _, _, rest) => { cur = rest },
+      EnvCached(_, rest) => { cur = rest }
+    }
+  }
+  EnvCached(MapBuilder::freeze(cache), env)
 }
 
 let empty_env_bindings = () -> Array[(String, Type)] {
@@ -133,6 +162,9 @@ export let env_flat_bindings = (env: TypeEnv) -> Array[(String, Type)] {
         cur = rest
       },
       EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvCached(_, rest) => {
         cur = rest
       }
     }
@@ -818,7 +850,8 @@ export let rec trait_supers = (env: TypeEnv, name: String) -> Array[String] {
       supers
     } else trait_supers(rest, name),
     EnvTraitImpl(_, _, rest) => trait_supers(rest, name),
-    EnvTraitImplGen(_, _, _, _, rest) => trait_supers(rest, name)
+    EnvTraitImplGen(_, _, _, _, rest) => trait_supers(rest, name),
+    EnvCached(_, rest) => trait_supers(rest, name)
   }
 }
 
@@ -898,7 +931,8 @@ export let rec trait_defined = (env: TypeEnv, name: String) -> Bool {
       true
     } else trait_defined(rest, name),
     EnvTraitImpl(_, _, rest) => trait_defined(rest, name),
-    EnvTraitImplGen(_, _, _, _, rest) => trait_defined(rest, name)
+    EnvTraitImplGen(_, _, _, _, rest) => trait_defined(rest, name),
+    EnvCached(_, rest) => trait_defined(rest, name)
   }
 }
 
@@ -1054,7 +1088,8 @@ export let rec impls_overlap_for = (env: TypeEnv, trait_name: String, new_target
       else impls_overlap_for(rest, trait_name, new_target)
     } else impls_overlap_for(rest, trait_name, new_target)
     ,
-    EnvTraitImplGen(_, _, _, _, rest) => impls_overlap_for(rest, trait_name, new_target)
+    EnvTraitImplGen(_, _, _, _, rest) => impls_overlap_for(rest, trait_name, new_target),
+    EnvCached(_, rest) => impls_overlap_for(rest, trait_name, new_target)
   }
 }
 
@@ -1101,7 +1136,8 @@ let rec type_implements_check_super = (e2: TypeEnv, full_env: TypeEnv, trait_nam
       else type_implements_check_super(rest, full_env, trait_name, resolved)
     } else type_implements_check_super(rest, full_env, trait_name, resolved)
     ,
-    EnvTraitImplGen(_, _, _, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved)
+    EnvTraitImplGen(_, _, _, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
+    EnvCached(_, rest) => type_implements_check_super(rest, full_env, trait_name, resolved)
   }
 }
 
@@ -1117,7 +1153,8 @@ let rec type_implements_check_env = (e: TypeEnv, trait_name: String, resolved: T
       else type_implements_check_env(rest, trait_name, resolved)
     } else type_implements_check_env(rest, trait_name, resolved)
     ,
-    EnvTraitImplGen(_, _, _, _, rest) => type_implements_check_env(rest, trait_name, resolved)
+    EnvTraitImplGen(_, _, _, _, rest) => type_implements_check_env(rest, trait_name, resolved),
+    EnvCached(_, rest) => type_implements_check_env(rest, trait_name, resolved)
   }
 }
 
