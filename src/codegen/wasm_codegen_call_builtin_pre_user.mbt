@@ -1969,7 +1969,7 @@ fn compile_call_builtin_pre_user_inner(
 
         // Build f64 result: (int_part + frac_part / frac_div) * sign
         // Use emit_boxed_f64_raise to box the result
-        emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
+        emit_boxed_f64_raise(ctx, buf, fn() {
           // f64(int_part)
           emit_local_get(buf, int_part_local)
           emit_i64_extend_i32_s(buf)

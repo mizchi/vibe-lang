@@ -411,7 +411,7 @@ fn emit_br_if(buf : ByteBuf, label_idx : Int) -> Unit {
 /// Emit br_table instruction (multi-way branch)
 /// labels: target label indices for each case (0..N-1)
 /// default_label: fallback label index
-fn emit_br_table(
+fn _emit_br_table(
   buf : ByteBuf,
   labels : Array[Int],
   default_label : Int,

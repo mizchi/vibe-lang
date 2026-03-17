@@ -192,7 +192,7 @@ fn StringConstTable::intern(self : StringConstTable, s : String) -> Int {
 }
 
 ///|
-fn tag_ptr(ptr : Int, tag : Int) -> Int {
+fn _tag_ptr(ptr : Int, tag : Int) -> Int {
   ptr | (tag & tag_mask)
 }
 

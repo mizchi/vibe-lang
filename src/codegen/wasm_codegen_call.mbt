@@ -32,7 +32,7 @@ fn try_fold_int_arith(
 ///|
 /// S5: Try to fold a binary integer comparison at compile time.
 /// Returns true if folding succeeded (result emitted), false otherwise.
-fn try_fold_int_cmp(
+fn _try_fold_int_cmp(
   buf : ByteBuf,
   name : String,
   left : @core.Expr,
@@ -229,7 +229,7 @@ fn emit_tagged_i64_arith_from_locals(
 }
 
 ///|
-fn compile_dynamic_numeric_arith_op(
+fn _compile_dynamic_numeric_arith_op(
   ctx : CodegenCtx,
   buf : ByteBuf,
   name : String,
@@ -294,7 +294,7 @@ fn compile_dynamic_numeric_arith_op(
   emit_i32_and(buf)
   buf.push((4).to_byte()) // if
   buf.push((126).to_byte()) // result i64
-  emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
+  emit_boxed_f32_raise(ctx, buf, fn() {
     emit_local_get(buf, left_ptr_local)
     emit_f32_load(buf, 4)
     emit_local_get(buf, right_ptr_local)
@@ -311,7 +311,7 @@ fn compile_dynamic_numeric_arith_op(
   emit_i32_and(buf)
   buf.push((4).to_byte()) // if
   buf.push((126).to_byte()) // result i64
-  emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
+  emit_boxed_f64_raise(ctx, buf, fn() {
     emit_local_get(buf, left_ptr_local)
     emit_f64_load(buf, 4)
     emit_local_get(buf, right_ptr_local)

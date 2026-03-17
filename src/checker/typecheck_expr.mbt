@@ -1531,29 +1531,6 @@ fn int_char_comparable_pair(
 }
 
 ///|
-fn is_string_view_type(ty : @core.Type) -> Bool {
-  match ty {
-    @core.Type::Named(name="StringView", ..) => true
-    _ => false
-  }
-}
-
-///|
-fn is_string_type(ty : @core.Type) -> Bool {
-  match ty {
-    @core.Type::String => true
-    _ => false
-  }
-}
-
-///|
-fn string_view_comparable_pair(left : @core.Type, right : @core.Type) -> Bool {
-  (is_string_view_type(left) && is_string_type(right)) ||
-  (is_string_type(left) && is_string_view_type(right)) ||
-  (is_string_view_type(left) && is_string_view_type(right))
-}
-
-///|
 fn parse_type_member_decl(name : String) -> (String, String)? {
   if not(name.contains("::")) {
     return None

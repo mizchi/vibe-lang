@@ -817,7 +817,7 @@ fn eval_pure_builtin(
         (@core.Value::String(s), @core.Value::Int(i)) => {
           let idx = i.to_int()
           if idx >= 0 && idx < s.length() {
-            @core.Value::String(s.substring(start=idx, end=idx + 1))
+            @core.Value::String(s[idx:idx + 1].to_string())
           } else {
             raise EvalError::BadCall(
               E(
@@ -875,7 +875,7 @@ fn eval_pure_builtin(
             start
           }
           let e0 = if end_ < 0L { 0L } else if end_ > len { len } else { end_ }
-          @core.Value::String(s.substring(start=s0.to_int(), end=e0.to_int()))
+          @core.Value::String(s[s0.to_int():e0.to_int()].to_string())
         }
         (
           @core.Value::Array(arr),
@@ -993,7 +993,7 @@ fn eval_pure_builtin(
               Some(@core.Value::Int(end_)),
             ) =>
               @core.Value::Bool(
-                src.substring(start=start.to_int(), end=end_.to_int()) == s,
+                src[start.to_int():end_.to_int()].to_string() == s,
               )
             _ => @core.Value::Bool(false)
           }
@@ -1005,7 +1005,7 @@ fn eval_pure_builtin(
               Some(@core.Value::Int(end_)),
             ) =>
               @core.Value::Bool(
-                s == src.substring(start=start.to_int(), end=end_.to_int()),
+                s == src[start.to_int():end_.to_int()].to_string(),
               )
             _ => @core.Value::Bool(false)
           }

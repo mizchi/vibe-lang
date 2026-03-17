@@ -448,7 +448,7 @@ fn parse_core_import_funcs(core_wasm : Bytes) -> Array[CoreImportFunc] {
 ///|
 priv struct CoreExportFunc {
   name : String
-  func_idx : Int
+  _func_idx : Int
   sig : CoreFuncSig
 }
 
@@ -587,7 +587,7 @@ fn parse_core_export_funcs(core_wasm : Bytes) -> Array[CoreExportFunc] {
             if type_idx >= 0 && type_idx < type_sigs.length() {
               exports.push(CoreExportFunc::{
                 name,
-                func_idx: index,
+                _func_idx: index,
                 sig: type_sigs[type_idx],
               })
             }
