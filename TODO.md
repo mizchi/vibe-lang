@@ -44,13 +44,6 @@ index.vbundle を廃止し、lock 情報は index.lock に一本化、キャッ�
 | vibe/compiler (selfhost) | 100% | 15.54% | `VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS=1 scripts/coverage_wasm_source.sh vibe/compiler/selfhost_coverage_run.vibe` |
 | vibe/compiler (suite) | — | — | `just coverage-selfhost-suite` (root 外 import で一部失敗) |
 
-### 完了済み
-- [x] Bytes codegen を --wasm backend に追加 (new/push/set/slice/concat/to_array)
-- [x] coverage_enabled → need_heap 自動初期化
-- [x] coverage script が `_start` export に対応
-- [x] `compile_module_wasm_for_exec_with_coverage` 追加
-- [x] vibe/wasm/coverage_test.vibe 作成 (31 tests, 6 coverage tests)
-
 ### 次のステップ
 - [ ] vibe/wasm: branches 28% → 50% (parse_* 関数のカバレッジ追加 — ヒープ制約回避が必要)
 - [ ] vibe/compiler: branches 15% → 30% (eval_e2e テストの branch gap)
@@ -66,39 +59,11 @@ index.vbundle を廃止し、lock 情報は index.lock に一本化、キャッ�
 `Bytes` の WASM メモリレイアウトを `obj_array` (4byte/elem) から `obj_bytes` (1byte/elem) に変更済み。
 codegen のみの変更で型システムには影響なし。
 
-### 完了
-- [x] `obj_bytes = 13`, `obj_bytes_view = 14` 定数追加
-- [x] `Bytes::new/push/get/set/length` — packed store8/load8_u
-- [x] `Bytes::slice/concat` — byte-level memory.copy
-- [x] `Bytes::from_array/to_array` — 変換ループ
-- [x] `Fs::write_bytes` — 変換ループ削除（データが既に contiguous）
-- [x] `__slice` — `obj_bytes → obj_bytes_view` 分岐追加
-- [x] `Bytes::new()` ヘッダ: `obj_array` → `obj_bytes` 修正
-
-- [x] `Bytes::from_string` / `Bytes::to_string` の compiled backend codegen 実装
-- [x] `__index` (`bytes[i]`): `obj_bytes` / `obj_bytes_view` 分岐追加（load8_u + tag）
-- [x] `__set_index` (`bytes[i] = v`): `obj_bytes` 分岐追加（untag + store8）
-
-### 確認済み（対応不要）
-- [x] selfhost compiler heap: packed bytes で消費量 4x 減。basic=64KB, WASI=512MB で余裕あり
-- [x] component model: obj_string のみ操作、Bytes layout に依存しない
+### 残タスク
 - GC backend: Bytes ハンドラが元々未実装（packed bytes scope 外）。別途対応時に packed 前提で実装
 - ベンチ: WASM バイナリサイズ 694→673 bytes (-3%)。ランタイム計測は vibe CLI 再ビルド後
 
 ## vibe/wasm ツールチェーン
-
-### 完了 (2026-03-17)
-- [x] wasm_parser — WASM 1.0 全セクション + GC 型対応 (148 tests)
-- [x] wat_parser — WAT テキストトークナイザー/パーサー (82 tests)
-- [x] wat_encoder — WAT → WASM コンパイラ, S 式対応 (10 tests)
-- [x] component_parser — Component Model バイナリパーサー (48 tests)
-- [x] wasm_runtime — WASM インタプリタ, GC 対応, 94+ opcodes (64 tests)
-- [x] wasm_opt — WASM 最適化, peephole/DCE/coalesce/minify (75 tests)
-- [x] WebAssembly spec tests — i32 + control flow (65 tests)
-- [x] zlib.wasm 最適化: 171,100 → 57,878 bytes (66.2% 削減, wasmtime OK)
-- [x] wite テストフィクスチャ移植 (6 fixtures, 21 tests)
-
-### 残タスク
 - [ ] wasm_opt: directize (call_indirect → call 変換)
 - [ ] wasm_opt: call forwarding propagation
 - [ ] wasm_opt: signature pruning (未使用パラメータ削除)
@@ -108,12 +73,7 @@ codegen のみの変更で型システムには影響なし。
 
 ## vibe/x 準公式ライブラリ
 
-- [x] x/fmt — printf 風文字列フォーマット (24/24 pass)
 - [ ] x/url — compiled test で `../regexp` import がルート外エラー
-- [x] x/uuid — UUID v4 生成 (11/11 pass)
-- [x] x/color — ANSI カラー出力 (15/15 pass)
-- [x] x/regexp — 正規表現 (91/91 pass)
-- [x] x/toml — TOML パーサー (28/28 pass)
 - [ ] x/template — 簡易テンプレートエンジン
 - [ ] x/diff — テキスト差分 (Myers diff)
 

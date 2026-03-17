@@ -2,6 +2,48 @@
 
 Completed items archived from `TODO.md`.
 
+## 2026-03-18
+
+- **Packed Bytes (obj_bytes) — WASM codegen メモリレイアウト最適化**
+  - `Bytes` の WASM メモリレイアウトを `obj_array` (4byte/elem) から `obj_bytes` (1byte/elem) に変更。ランタイムメモリ使用量 4x 削減
+  - `obj_bytes = 13`, `obj_bytes_view = 14` 定数追加
+  - `Bytes::new/push/get/set/length` — packed store8/load8_u
+  - `Bytes::slice/concat` — byte-level memory.copy
+  - `Bytes::from_array/to_array` — Array[Int] ↔ packed bytes 変換ループ
+  - `Bytes::from_string/to_string` — compiled backend codegen 実装（memory.copy）
+  - `__index` (`bytes[i]`): `obj_bytes` / `obj_bytes_view` 分岐追加（load8_u + tag）
+  - `__set_index` (`bytes[i] = v`): `obj_bytes` 分岐追加（untag + store8）
+  - `__slice` — `obj_bytes → obj_bytes_view` 分岐追加
+  - `Fs::write_bytes` — 変換ループ削除（packed bytes データは既に contiguous）
+  - selfhost heap 確認済み（4x 削減で余裕あり）、component model 確認済み（Bytes layout に依存しない）
+  - WASM バイナリサイズ: 694→673 bytes (-3%)
+- **Fixture エラーメッセージ改善**
+  - `error_contains` → `compile_error` キーに統一（~120 fixture ファイル）
+  - 内部 variant 名（`Mismatch`, `BadCall` 等）→ 人間向けメッセージ（`type mismatch`, `unknown function:` 等）
+  - `format_vibe_error()`, `format_compile_error()` ヘルパー関数追加
+- **カバレッジ計測基盤**
+  - Bytes codegen を --wasm backend に追加 (new/push/set/slice/concat/to_array)
+  - coverage_enabled → need_heap 自動初期化
+  - coverage script が `_start` export に対応
+  - `compile_module_wasm_for_exec_with_coverage` 追加
+  - vibe/wasm/coverage_test.vibe 作成 (31 tests, 6 coverage tests)
+- **vibe/wasm ツールチェーン完了**
+  - wasm_parser — WASM 1.0 全セクション + GC 型対応 (148 tests)
+  - wat_parser — WAT テキストトークナイザー/パーサー (82 tests)
+  - wat_encoder — WAT → WASM コンパイラ, S 式対応 (10 tests)
+  - component_parser — Component Model バイナリパーサー (48 tests)
+  - wasm_runtime — WASM インタプリタ, GC 対応, 94+ opcodes (64 tests)
+  - wasm_opt — WASM 最適化, peephole/DCE/coalesce/minify (75 tests)
+  - WebAssembly spec tests — i32 + control flow (65 tests)
+  - zlib.wasm 最適化: 171,100 → 57,878 bytes (66.2% 削減, wasmtime OK)
+  - wite テストフィクスチャ移植 (6 fixtures, 21 tests)
+- **vibe/x 準公式ライブラリ完了分**
+  - x/fmt — printf 風文字列フォーマット (24/24 pass)
+  - x/uuid — UUID v4 生成 (11/11 pass)
+  - x/color — ANSI カラー出力 (15/15 pass)
+  - x/regexp — 正規表現 (91/91 pass)
+  - x/toml — TOML パーサー (28/28 pass)
+
 ## 2026-03-10
 
 - **Selfhost compiler を manifest / cache 前提へ再編**
