@@ -22,7 +22,7 @@ fi
 
 mkdir -p "$REPORT_DIR" "$OUT_DIR"
 
-moon build --target native --release src/cmd/vibe >/dev/null
+moon build --target native --release src/cmd/vibe --warn-list '-29' >/dev/null
 
 printf 'group\tpath\tmode\tbytes\n' > "$REPORT_FILE"
 
