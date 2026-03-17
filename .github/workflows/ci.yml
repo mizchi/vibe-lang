@@ -7,26 +7,28 @@ on:
   pull_request:
 
 jobs:
-  test:
+  # Fast checks — run in parallel
+  moonbit-check:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Install MoonBit CLI
         run: |
           curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - run: moon update
+      - run: moon check --target js
+      - run: moon test --target js
 
-      - name: Moon update
-        run: moon update
-
-      - name: Moon check
-        run: moon check --target js
-
-      - name: Moon test
-        run: moon test --target js
-
+  normalize-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MoonBit CLI
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - run: moon update
       - name: Vibe normalize check
         run: |
           moon build --target native src/cmd/vibe --warn-list '-29'
@@ -45,184 +47,166 @@ jobs:
             echo "| Per-file avg | ${avg_us}us |" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-  bundle-size-compiler:
+  bundle-size:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [compiler, product]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Install MoonBit CLI
         run: |
           curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
-
-      - name: Moon update
-        run: moon update
-
-      - name: Compiler bundle-size golden
-        run: scripts/bench_compiler_bundle_size.sh
-
-  bundle-size-product-gate:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install MoonBit CLI
+      - run: moon update
+      - name: Bundle size gate (${{ matrix.target }})
+        id: bundle_size
         run: |
-          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
-          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
-
-      - name: Moon update
-        run: moon update
-
-      - name: Product bundle-size gate
-        id: product_bundle_size
-        run: scripts/bench_bundle_size.sh
-
-      - name: Product bundle-size summary
-        if: always()
-        run: |
-          echo "### Product WASM Bundle Size" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${{ steps.product_bundle_size.outcome }}" = "success" ]; then
-            echo "- Status: within budget" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ matrix.target }}" = "compiler" ]; then
+            scripts/bench_compiler_bundle_size.sh
           else
-            echo "- Status: regression detected (blocking gate)" >> "$GITHUB_STEP_SUMMARY"
+            scripts/bench_bundle_size.sh
           fi
-          if [ -f dist/bundle_size/current.tsv ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Current report: \`dist/bundle_size/current.tsv\`" >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Upload product bundle-size report
+      - name: Summary
         if: always()
+        run: |
+          echo "### ${{ matrix.target }} WASM Bundle Size" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Status: ${{ steps.bundle_size.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload report
+        if: always() && matrix.target == 'product'
         uses: actions/upload-artifact@v4
         with:
           name: bundle-size-product-report
           path: dist/bundle_size/current.tsv
           if-no-files-found: ignore
 
+  # WASM smoke tests
   wasm-vibe-smoke:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Install MoonBit CLI
         run: |
           curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
-
-      - name: Moon update
-        run: moon update
-
+      - run: moon update
       - name: Build wasm/vibe artifact
         run: |
           moon build --target wasm-gc --release src/lib
           mkdir -p wasm/vibe
           cp _build/wasm-gc/release/build/lib/lib.wasm wasm/vibe/vibe.wasm
-
       - name: Install wasmtime
         run: |
           curl -fsSL https://wasmtime.dev/install.sh | bash
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
-          "$HOME/.wasmtime/bin/wasmtime" --version
-
-      - name: Smoke test wasm/vibe with wasmtime
+      - name: Smoke test
         run: ./scripts/test_wasm_vibe_wasmtime.sh wasm/vibe/vibe.wasm
 
-  wasm-codegen-integrity:
+  # WASM codegen — split into focused jobs
+  wasm-codegen-core:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Install MoonBit CLI
         run: |
           curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '24'
-
-      - name: Moon update
-        run: moon update
-
-      - name: Check moon info regen cycle (idempotent + deny-warn check)
-        run: bash scripts/test_moon_info_regen.sh
-
-      - name: Install wasm-tools
+      - run: moon update
+      - name: Install wasm-tools + wasmtime
         run: |
           curl -LO https://github.com/bytecodealliance/wasm-tools/releases/download/v1.219.1/wasm-tools-1.219.1-x86_64-linux.tar.gz
           tar xzf wasm-tools-1.219.1-x86_64-linux.tar.gz
           sudo mv wasm-tools-1.219.1-x86_64-linux/wasm-tools /usr/local/bin/
-          wasm-tools --version
-
-      - name: Install wasmtime
-        run: |
           curl -fsSL https://wasmtime.dev/install.sh | bash
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
-          "$HOME/.wasmtime/bin/wasmtime" --version
+      - name: Check moon info regen
+        run: bash scripts/test_moon_info_regen.sh
+      - name: Build vibe CLI (native release)
+        run: moon build --target native --release src/cmd/vibe --warn-list '-29'
+      - name: WASM compile E2E
+        run: |
+          VIBE_BIN=target/native/release/build/cmd/vibe/vibe.exe \
+          ./scripts/test_wasm_compile_wasmtime.sh
+      - name: Golden WAT snapshots
+        run: |
+          VIBE_BIN=target/native/release/build/cmd/vibe/vibe.exe \
+          ./scripts/test_golden_wat.sh
+      - name: Handle/exception parity
+        run: ./scripts/test_handle_exception_wasm_match.sh
+      - name: Interpreter vs wasm parity
+        run: |
+          VIBE_BIN=target/native/release/build/cmd/vibe/vibe.exe \
+          ./scripts/test_interpreter_wasm_match.sh
+      - name: Vibe vs wasm compare parity
+        run: ./scripts/test_vibe_wasm_compare.sh
 
-      - name: WASI HTTP P3 blocked gate (monitor-only)
+  wasm-codegen-http:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MoonBit CLI
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: moon update
+      - name: Install wasm-tools + wasmtime
+        run: |
+          curl -LO https://github.com/bytecodealliance/wasm-tools/releases/download/v1.219.1/wasm-tools-1.219.1-x86_64-linux.tar.gz
+          tar xzf wasm-tools-1.219.1-x86_64-linux.tar.gz
+          sudo mv wasm-tools-1.219.1-x86_64-linux/wasm-tools /usr/local/bin/
+          curl -fsSL https://wasmtime.dev/install.sh | bash
+          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+      - run: moon build --target native --release src/cmd/vibe --warn-list '-29'
+      - name: WASI HTTP P3 blocked gate
         run: |
           VIBE_WASI_HTTP_P3_REQUIRE_READY=0 \
           VIBE_WASI_HTTP_P3_RUN_COMPOSE=0 \
           ./scripts/test_wasi_http_p3_blocked_gate.sh
-
-      - name: Build vibe CLI (native release)
-        run: moon build --target native --release src/cmd/vibe --warn-list '-29'
-
-      - name: Validate selfhost probe wasm fixture
-        run: ./scripts/test_selfhost_probe_wasm_validate.sh
-
-      - name: Check handle/exception interpreter vs wasm parity
-        run: ./scripts/test_handle_exception_wasm_match.sh
-
-      - name: Check interpreter vs wasm pattern match parity
-        run: |
-          VIBE_BIN=target/native/release/build/cmd/vibe/vibe.exe \
-          ./scripts/test_interpreter_wasm_match.sh
-
-      - name: WASM compile E2E (arithmetic, closures, patterns, recursion)
-        run: |
-          VIBE_BIN=target/native/release/build/cmd/vibe/vibe.exe \
-          ./scripts/test_wasm_compile_wasmtime.sh
-
-      - name: Golden WAT snapshot tests
-        run: |
-          VIBE_BIN=target/native/release/build/cmd/vibe/vibe.exe \
-          ./scripts/test_golden_wat.sh
-
-      - name: Check vibe vs vibe_wasm compare parity
-        run: ./scripts/test_vibe_wasm_compare.sh
-
-      - name: Check HTTP builtin wasm fallback (validate + catchable throw)
+      - name: HTTP wasm fallback
         run: ./scripts/test_http_wasm_fallback.sh
-
-      - name: Check HTTP builtin wasm host-import path (capability + e2e)
+      - name: HTTP wasm host-imports
         run: ./scripts/test_http_wasm_host_imports.sh
-
-      - name: Check compiled backend HTTP policy (auto fallback / forced reject)
+      - name: Compiled backend HTTP policy
         run: ./scripts/test_compiled_backend_http_policy.sh
-
-      - name: Check component import contract (stable func imports)
-        run: ./scripts/test_component_import_contract.sh
-
-      - name: HTTP P3 handler gate (component + validate + rejection)
+      - name: HTTP P3 handler gate
         run: ./scripts/test_http_p3_handler_gate.sh
 
-      - name: Selfhost bootstrap gate (compiled + probe + deterministic compile)
+  selfhost-bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MoonBit CLI
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: moon update
+      - name: Install wasm-tools + wasmtime
+        run: |
+          curl -LO https://github.com/bytecodealliance/wasm-tools/releases/download/v1.219.1/wasm-tools-1.219.1-x86_64-linux.tar.gz
+          tar xzf wasm-tools-1.219.1-x86_64-linux.tar.gz
+          sudo mv wasm-tools-1.219.1-x86_64-linux/wasm-tools /usr/local/bin/
+          curl -fsSL https://wasmtime.dev/install.sh | bash
+          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+      - run: moon build --target native --release src/cmd/vibe --warn-list '-29'
+      - name: Selfhost probe wasm validate
+        run: ./scripts/test_selfhost_probe_wasm_validate.sh
+      - name: Selfhost bootstrap gate
         run: |
           VIBE_BIN=target/native/release/build/cmd/vibe/vibe.exe \
           VIBE_SELFHOST_BOOTSTRAP_BASELINE_SEC=180 \
           VIBE_SELFHOST_BOOTSTRAP_REDUCTION_PCT=30 \
           VIBE_SELFHOST_BOOTSTRAP_STAGE_TIMEOUT_SEC=900 \
           ./scripts/test_selfhost_bootstrap_gate.sh
-
-      - name: Selfhost WASI selfbuild gate (stage0 -> stage1 -> stage2)
+      - name: Selfhost WASI selfbuild gate
         run: |
           VIBE_SELFHOST_SELFBUILD_STRICT_RECURSIVE=1 \
           VIBE_SELFHOST_SELFBUILD_REQUIRE_TRUE_RECURSIVE=1 \
@@ -230,24 +214,43 @@ jobs:
           VIBE_SELFHOST_SELFBUILD_MAX_TOTAL_SEC=300 \
           ./scripts/test_selfhost_wasi_selfbuild.sh
 
-      - name: Selfhost WASI HTTP boundary gate (component WIT imports)
+  selfhost-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MoonBit CLI
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: moon update
+      - name: Install wasm-tools + wasmtime
+        run: |
+          curl -LO https://github.com/bytecodealliance/wasm-tools/releases/download/v1.219.1/wasm-tools-1.219.1-x86_64-linux.tar.gz
+          tar xzf wasm-tools-1.219.1-x86_64-linux.tar.gz
+          sudo mv wasm-tools-1.219.1-x86_64-linux/wasm-tools /usr/local/bin/
+          curl -fsSL https://wasmtime.dev/install.sh | bash
+          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+      - run: moon build --target native --release src/cmd/vibe --warn-list '-29'
+      - name: Component import contract
+        run: ./scripts/test_component_import_contract.sh
+      - name: WASI HTTP boundary gate
         run: ./scripts/test_selfhost_wasi_http_boundary.sh
-
-      - name: Selfhost check parity snapshot gate (diagnostic JSON diff)
+      - name: Check parity snapshot
         run: |
           VIBE_BIN=target/native/release/build/cmd/vibe/vibe.exe \
           VIBE_CHECK_PARITY_REQUIRE_PARITY=1 \
           ./scripts/test_selfhost_check_parity.sh
-
-      - name: Selfhost perf KPI gate (compile/check ratio)
+      - name: Selfhost perf KPI
         run: |
           VIBE_SELFHOST_PERF_RUNS=1 \
           VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt \
           VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=2.5 \
           VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=0.8 \
           ./scripts/bench_selfhost_perf.sh
-
-      - name: Selfhost cutover gate (CLI contract + artifact parity)
+      - name: Selfhost cutover gate
         run: |
           VIBE_BIN=target/native/release/build/cmd/vibe/vibe.exe \
           VIBE_CUTOVER_REQUIRE_PARITY=1 \
@@ -257,38 +260,79 @@ jobs:
           VIBE_CUTOVER_MODES=mvp,no-dce,debug-errors \
           VIBE_CUTOVER_STAGE_TIMEOUT_SEC=300 \
           ./scripts/test_selfhost_cutover_gate.sh
-
-      - name: Selfhost suite coverage gate (workload + index invoke)
+      - name: Selfhost suite coverage
         run: just coverage-selfhost-suite-gate
 
   e2e-component:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '24'
-
       - name: Install MoonBit CLI
         run: |
           curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
-
-      - name: Moon update
-        run: moon update
-
+      - run: moon update
       - name: Install wasm-tools
         run: |
           curl -LO https://github.com/bytecodealliance/wasm-tools/releases/download/v1.219.1/wasm-tools-1.219.1-x86_64-linux.tar.gz
           tar xzf wasm-tools-1.219.1-x86_64-linux.tar.gz
           sudo mv wasm-tools-1.219.1-x86_64-linux/wasm-tools /usr/local/bin/
-          wasm-tools --version
-
-      - name: Run Component E2E tests
+      - name: Component E2E
         run: ./scripts/test_component_e2e.sh
-
-      - name: Run Codegen Unsupported Syntax tests
+      - name: Codegen unsupported syntax
         run: ./scripts/test_codegen_unsupported.sh
+
+  # Selfhost examples E2E (new)
+  selfhost-examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install MoonBit CLI
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - run: moon update
+      - name: Install wasmtime
+        run: |
+          curl -fsSL https://wasmtime.dev/install.sh | bash
+          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+      - name: Build selfhost compiler
+        run: just build-selfhost-dist-raw
+      - name: Selfhost examples compile+run
+        run: |
+          SELFHOST_WASM=_build/dist/selfhost_compiler.wasm
+          ok=0; fail=0; total=0
+          for f in examples/*.vibe; do
+            name=$(basename "$f" .vibe)
+            total=$((total + 1))
+            rm -f "/tmp/s1_${name}.wasm"
+            VIBE_PREOPEN_DIR="$(pwd)" bash scripts/run_wasm_vibe_host_runner.sh \
+              "$SELFHOST_WASM" "$f" "/tmp/s1_${name}.wasm" "run" 2>/dev/null
+            if [ -f "/tmp/s1_${name}.wasm" ] && [ $(wc -c < "/tmp/s1_${name}.wasm") -gt 100 ]; then
+              run_result=$(wasmtime run -W exceptions=y --invoke run "/tmp/s1_${name}.wasm" 2>&1)
+              if echo "$run_result" | grep -q "^0$\|^warning"; then
+                ok=$((ok + 1))
+              else
+                fail=$((fail + 1))
+                echo "::error::$name: run failed"
+              fi
+            else
+              fail=$((fail + 1))
+              echo "::error::$name: compile failed"
+            fi
+          done
+          echo "### Selfhost Examples" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Total | $total |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Pass | $ok |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Fail | $fail |" >> "$GITHUB_STEP_SUMMARY"
+          [ "$fail" -eq 0 ] || exit 1
+      - name: Selfhost runtime fixtures
+        run: just test-selfhost-runtime-fixtures || true
