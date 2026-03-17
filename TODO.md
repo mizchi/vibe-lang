@@ -61,6 +61,30 @@ index.vbundle を廃止し、lock 情報は index.lock に一本化、キャッ�
 - [ ] selfhost suite coverage の root 外 import エラー修正
 - [ ] CI にカバレッジ gate を組み込み (point/line/branch 最低率)
 
+## Packed Bytes (obj_bytes) 残作業
+
+`Bytes` の WASM メモリレイアウトを `obj_array` (4byte/elem) から `obj_bytes` (1byte/elem) に変更済み。
+codegen のみの変更で型システムには影響なし。
+
+### 完了
+- [x] `obj_bytes = 13`, `obj_bytes_view = 14` 定数追加
+- [x] `Bytes::new/push/get/set/length` — packed store8/load8_u
+- [x] `Bytes::slice/concat` — byte-level memory.copy
+- [x] `Bytes::from_array/to_array` — 変換ループ
+- [x] `Fs::write_bytes` — 変換ループ削除（データが既に contiguous）
+- [x] `__slice` — `obj_bytes → obj_bytes_view` 分岐追加
+- [x] `Bytes::new()` ヘッダ: `obj_array` → `obj_bytes` 修正
+
+- [x] `Bytes::from_string` / `Bytes::to_string` の compiled backend codegen 実装
+- [x] `__index` (`bytes[i]`): `obj_bytes` / `obj_bytes_view` 分岐追加（load8_u + tag）
+- [x] `__set_index` (`bytes[i] = v`): `obj_bytes` 分岐追加（untag + store8）
+
+### 残タスク
+- [ ] selfhost compiler の heap 不足テスト: `bytebuf_push` が大量に呼ばれるケースで確認
+- [ ] GC backend: linear memory backend のみ変更済み。GC backend でも Bytes を使う場合は別途対応
+- [ ] component model string lift: canon lift/lower の packed 前提確認
+- [ ] ベンチ: `vibe` CLI をソースからビルドして compiled backend での実行時パフォーマンス計測
+
 ## vibe/wasm ツールチェーン
 
 ### 完了 (2026-03-17)

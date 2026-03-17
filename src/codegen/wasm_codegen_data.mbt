@@ -162,7 +162,9 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         | "Bytes::new"
         | "Bytes::push"
         | "Bytes::slice"
-        | "Bytes::concat" => ctx.need_heap = true
+        | "Bytes::concat"
+        | "Bytes::from_string"
+        | "Bytes::to_string" => ctx.need_heap = true
         "sleep" => ctx.need_sleep = true
         "Stdout::write_char" | "Stdout::write_stream" =>
           ctx.need_stdout_write_char = true

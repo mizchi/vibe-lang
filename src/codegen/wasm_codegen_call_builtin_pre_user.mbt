@@ -5329,6 +5329,51 @@ fn compile_call_builtin_pre_user_inner(
             false,
           )
           buf.push((5).to_byte()) // else
+          // Check for obj_bytes_view
+          emit_local_get(buf, ptr_local)
+          emit_i32_load(buf, 0)
+          emit_i32_const_raw(buf, obj_bytes_view)
+          emit_i32_eq(buf)
+          buf.push((4).to_byte()) // if (bytes_view)
+          buf.push((126).to_byte()) // result i64
+          // BytesView: source[start + idx] load8_u, tag
+          let bv_idx = alloc_temp_local(ctx)
+          compile_expr_i32(ctx, buf, pos_args[1])
+          emit_i64_const_raw(buf, 2L)
+          emit_i64_shr_s(buf)
+          emit_i32_wrap_i64(buf)
+          emit_local_set(buf, bv_idx)
+          emit_local_get(buf, ptr_local)
+          emit_i32_load(buf, 4) // source_ptr
+          emit_local_get(buf, ptr_local)
+          emit_i32_load(buf, 8) // start
+          emit_local_get(buf, bv_idx)
+          emit_i32_add(buf)
+          emit_i32_add(buf)
+          emit_i32_load8_u(buf, 8) // load byte
+          emit_i64_extend_i32_u(buf)
+          emit_i64_const_raw(buf, 2L)
+          emit_i64_shl(buf) // tag as int
+          buf.push((5).to_byte()) // else (not bytes_view)
+          // Check for obj_bytes
+          emit_local_get(buf, ptr_local)
+          emit_i32_load(buf, 0)
+          emit_i32_const_raw(buf, obj_bytes)
+          emit_i32_eq(buf)
+          buf.push((4).to_byte()) // if (bytes)
+          buf.push((126).to_byte()) // result i64
+          // Bytes: ptr[8+idx] load8_u, tag
+          emit_local_get(buf, ptr_local)
+          compile_expr_i32(ctx, buf, pos_args[1])
+          emit_i64_const_raw(buf, 2L)
+          emit_i64_shr_s(buf)
+          emit_i32_wrap_i64(buf)
+          emit_i32_add(buf)
+          emit_i32_load8_u(buf, 8) // load byte at [ptr + 8 + idx]
+          emit_i64_extend_i32_u(buf)
+          emit_i64_const_raw(buf, 2L)
+          emit_i64_shl(buf) // tag as int
+          buf.push((5).to_byte()) // else (not bytes)
           // Check for array_view
           emit_local_get(buf, ptr_local)
           emit_i32_load(buf, 0)
@@ -5367,6 +5412,8 @@ fn compile_call_builtin_pre_user_inner(
           emit_i32_load(buf, 8)
           emit_i64_extend_i32_s(buf)
           buf.push((11).to_byte()) // end if (array_view)
+          buf.push((11).to_byte()) // end if (bytes)
+          buf.push((11).to_byte()) // end if (bytes_view)
           buf.push((11).to_byte()) // end if (string)
         }
       }
@@ -5399,11 +5446,24 @@ fn compile_call_builtin_pre_user_inner(
       let _ = compile_call_builtin_pre_user(
         ctx, buf, "String::substring", args, false,
       )
-      buf.push((5).to_byte()) // else (array → ArrayView zero-copy)
+      buf.push((5).to_byte()) // else (array or bytes → view zero-copy)
+      // Determine view type: obj_bytes -> obj_bytes_view, else obj_array_view
+      let view_type_local = alloc_temp_local(ctx)
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 0) // source obj_type
+      emit_i32_const_raw(buf, obj_bytes)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte()) // if (bytes)
+      buf.push((127).to_byte()) // result i32
+      emit_i32_const_raw(buf, obj_bytes_view)
+      buf.push((5).to_byte()) // else (array)
+      emit_i32_const_raw(buf, obj_array_view)
+      buf.push((11).to_byte()) // end if
+      emit_local_set(buf, view_type_local)
       let size = 16
       emit_heap_alloc(ctx, buf, size, obj_local)
       emit_local_get(buf, obj_local)
-      emit_i32_const_raw(buf, obj_array_view)
+      emit_local_get(buf, view_type_local)
       emit_i32_store(buf, 0)
       emit_local_get(buf, obj_local)
       emit_local_get(buf, ptr_local)
@@ -5445,6 +5505,25 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_set(buf, idx_local)
       compile_expr_i32(ctx, buf, pos_args[2])
       emit_local_set(buf, value_local)
+      // Check if target is Bytes (packed) or Array (4-byte stride)
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 0)
+      emit_i32_const_raw(buf, obj_bytes)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte()) // if (bytes)
+      buf.push((64).to_byte()) // void
+      // Bytes: store8 at [ptr + 8 + idx], untag value
+      emit_local_get(buf, ptr_local)
+      emit_local_get(buf, idx_local)
+      emit_i32_add(buf)
+      emit_local_get(buf, value_local)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_u(buf) // untag byte value
+      emit_i32_wrap_i64(buf)
+      emit_i32_store8(buf, 8)
+      buf.push((5).to_byte()) // else (array)
+      buf.push((64).to_byte()) // void
+      // Array: store i32 at [ptr + 8 + idx*4]
       emit_local_get(buf, ptr_local)
       emit_local_get(buf, idx_local)
       emit_i32_const_raw(buf, 4)
@@ -5453,6 +5532,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, value_local)
       emit_i32_wrap_i64(buf)
       emit_i32_store(buf, 8)
+      buf.push((11).to_byte()) // end if
       emit_local_get(buf, value_local)
     }
     "Map::get" => {
@@ -6264,16 +6344,199 @@ fn compile_call_builtin_pre_user_inner(
       buf.push((11).to_byte()) // end if
     }
     "Bytes::from_array" => {
-      // bytes_from_array(arr) -> Bytes (same representation as array in WASM)
-      // In linear memory backend, Bytes = Array[Int] with same layout, so just return as-is
+      // bytes_from_array(arr) -> Bytes (packed: Array[Int] -> packed Bytes)
       let pos_args = extract_positional_exprs_with_arity(
         args, "Bytes::from_array", 1,
       )
+      require_heap(ctx)
+      let src_local = alloc_temp_local(ctx)
+      let len_local = alloc_temp_local(ctx)
+      let dst_local = alloc_temp_local(ctx)
+      let idx_local = alloc_temp_local(ctx)
+      // Get source array ptr and length
       compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, src_local)
+      emit_local_get(buf, src_local)
+      emit_i32_load(buf, 4) // len
+      emit_local_set(buf, len_local)
+      // Alloc packed bytes: align4(8 + len)
+      emit_local_get(buf, len_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf)
+      emit_i32_const_raw(buf, 3)
+      emit_i32_add(buf)
+      emit_i32_const_raw(buf, -4)
+      emit_i32_and(buf)
+      let alloc_size_local = alloc_temp_local(ctx)
+      emit_local_set(buf, alloc_size_local)
+      emit_global_get(buf, ctx.heap_global)
+      emit_local_tee(buf, dst_local)
+      emit_local_get(buf, alloc_size_local)
+      emit_i32_add(buf)
+      emit_global_set(buf, ctx.heap_global)
+      ctx.heap_synced = false
+      // header: obj_bytes, len
+      emit_local_get(buf, dst_local)
+      emit_i32_const_raw(buf, obj_bytes)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, dst_local)
+      emit_local_get(buf, len_local)
+      emit_i32_store(buf, 4)
+      // Loop: load i32 from src[8+idx*4], >>2, store8 to dst[8+idx]
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, idx_local)
+      emit_block(buf)
+      emit_loop(buf)
+      emit_local_get(buf, idx_local)
+      emit_local_get(buf, len_local)
+      emit_i32_ge_s(buf)
+      emit_br_if(buf, 1)
+      // dst[8+idx] = (src[8+idx*4] >> 2) as u8
+      emit_local_get(buf, dst_local)
+      emit_local_get(buf, idx_local)
+      emit_i32_add(buf)
+      emit_local_get(buf, src_local)
+      emit_local_get(buf, idx_local)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i32_load(buf, 8) // load tagged int from array
+      emit_i32_const_raw(buf, 2)
+      emit_i32_shr_u(buf) // untag
+      emit_i32_store8(buf, 8) // store byte
+      emit_local_get(buf, idx_local)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_add(buf)
+      emit_local_set(buf, idx_local)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      // Return tagged obj
+      emit_local_get(buf, dst_local)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
+    }
+    "Bytes::from_string" => {
+      // Bytes::from_string(str) -> packed Bytes (copy string data)
+      // String layout: [obj_string:i32][len:i32][data...]
+      // Bytes layout:  [obj_bytes:i32][len:i32][data...]
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Bytes::from_string", 1,
+      )
+      require_heap(ctx)
+      let src_local = alloc_temp_local(ctx)
+      let len_local = alloc_temp_local(ctx)
+      let obj_local = alloc_temp_local(ctx)
+      // src ptr (string)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, src_local)
+      emit_local_get(buf, src_local)
+      emit_i32_load(buf, 4) // len
+      emit_local_set(buf, len_local)
+      // Alloc: align4(8 + len)
+      emit_local_get(buf, len_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf)
+      emit_i32_const_raw(buf, 3)
+      emit_i32_add(buf)
+      emit_i32_const_raw(buf, -4)
+      emit_i32_and(buf)
+      let alloc_size_local = alloc_temp_local(ctx)
+      emit_local_set(buf, alloc_size_local)
+      emit_global_get(buf, ctx.heap_global)
+      emit_local_tee(buf, obj_local)
+      emit_local_get(buf, alloc_size_local)
+      emit_i32_add(buf)
+      emit_global_set(buf, ctx.heap_global)
+      ctx.heap_synced = false
+      // header: obj_bytes, len
+      emit_local_get(buf, obj_local)
+      emit_i32_const_raw(buf, obj_bytes)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, len_local)
+      emit_i32_store(buf, 4)
+      // memory.copy(dst+8, src+8, len)
+      emit_local_get(buf, obj_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf)
+      emit_local_get(buf, src_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf)
+      emit_local_get(buf, len_local)
+      emit_memory_copy(buf)
+      // Return tagged obj
+      emit_local_get(buf, obj_local)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
+    }
+    "Bytes::to_string" => {
+      // Bytes::to_string(bytes) -> String (copy byte data)
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Bytes::to_string", 1,
+      )
+      require_heap(ctx)
+      let src_local = alloc_temp_local(ctx)
+      let len_local = alloc_temp_local(ctx)
+      let obj_local = alloc_temp_local(ctx)
+      // src ptr (bytes)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, src_local)
+      emit_local_get(buf, src_local)
+      emit_i32_load(buf, 4) // len
+      emit_local_set(buf, len_local)
+      // Alloc: align4(8 + len)
+      emit_local_get(buf, len_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf)
+      emit_i32_const_raw(buf, 3)
+      emit_i32_add(buf)
+      emit_i32_const_raw(buf, -4)
+      emit_i32_and(buf)
+      let alloc_size_local = alloc_temp_local(ctx)
+      emit_local_set(buf, alloc_size_local)
+      emit_global_get(buf, ctx.heap_global)
+      emit_local_tee(buf, obj_local)
+      emit_local_get(buf, alloc_size_local)
+      emit_i32_add(buf)
+      emit_global_set(buf, ctx.heap_global)
+      ctx.heap_synced = false
+      // header: obj_string, len
+      emit_local_get(buf, obj_local)
+      emit_i32_const_raw(buf, obj_string)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, len_local)
+      emit_i32_store(buf, 4)
+      // memory.copy(dst+8, src+8, len)
+      emit_local_get(buf, obj_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf)
+      emit_local_get(buf, src_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf)
+      emit_local_get(buf, len_local)
+      emit_memory_copy(buf)
+      // Return tagged obj
+      emit_local_get(buf, obj_local)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
     }
     "Bytes::length" => {
       // bytes_length(bytes) -> Int (tagged)
-      // Supports both raw Bytes (obj_array, len at offset 4) and
+      // Supports both raw Bytes (obj_bytes, len at offset 4) and
       // BytesView/ArrayView (end - start, offsets 12 and 8)
       let pos_args = extract_positional_exprs_with_arity(
         args, "Bytes::length", 1,
@@ -6286,7 +6549,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_set(buf, ptr_local)
       emit_local_get(buf, ptr_local)
       emit_i32_load(buf, 0) // obj_type
-      emit_i32_const_raw(buf, obj_array_view)
+      emit_i32_const_raw(buf, obj_bytes_view)
       emit_i32_eq(buf)
       buf.push((4).to_byte()) // if (array_view)
       buf.push((126).to_byte()) // result i64
@@ -6309,7 +6572,7 @@ fn compile_call_builtin_pre_user_inner(
     }
     "Bytes::get" => {
       // bytes_get(bytes, idx) -> Int (tagged byte value)
-      // Supports both raw Bytes (obj_array) and BytesView/ArrayView
+      // Supports both raw Bytes (obj_bytes) and BytesView (obj_bytes_view)
       let pos_args = extract_positional_exprs_with_arity(args, "Bytes::get", 2)
       let ptr_local = alloc_temp_local(ctx)
       let idx_local = alloc_temp_local(ctx)
@@ -6325,7 +6588,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_set(buf, idx_local)
       emit_local_get(buf, ptr_local)
       emit_i32_load(buf, 0) // obj_type
-      emit_i32_const_raw(buf, obj_array_view)
+      emit_i32_const_raw(buf, obj_bytes_view)
       emit_i32_eq(buf)
       buf.push((4).to_byte()) // if (array_view)
       buf.push((126).to_byte()) // result i64
@@ -6333,26 +6596,30 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, ptr_local)
       emit_i32_load(buf, 4) // source_ptr
       emit_local_get(buf, ptr_local)
-      emit_i32_load(buf, 8) // start
+      emit_i32_load8_u(buf, 8) // start
       emit_local_get(buf, idx_local)
       emit_i32_add(buf)
-      emit_i32_const_raw(buf, 4)
-      emit_i32_mul(buf)
+      // (packed: no *4 multiply)
+
       emit_i32_add(buf)
-      emit_i32_load(buf, 8)
+      emit_i32_load8_u(buf, 8)
       emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf) // tag as int
       buf.push((5).to_byte()) // else (regular bytes)
       emit_local_get(buf, ptr_local)
       emit_local_get(buf, idx_local)
-      emit_i32_const_raw(buf, 4)
-      emit_i32_mul(buf)
+      // (packed: no *4 multiply)
+
       emit_i32_add(buf)
-      emit_i32_load(buf, 8) // load element at [ptr + 8 + idx*4]
+      emit_i32_load8_u(buf, 8) // load element at [ptr + 8 + idx*4]
       emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf) // tag as int
       buf.push((11).to_byte()) // end if
     }
     "Bytes::new" => {
-      // Bytes::new() -> empty array (same layout as Array: [obj_array, 0])
+      // Bytes::new() -> empty packed bytes [obj_bytes, 0]
       require_heap(ctx)
       let obj_local = alloc_temp_local(ctx)
       // Alloc 8 bytes (header only: obj_type + len)
@@ -6362,9 +6629,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_add(buf)
       emit_global_set(buf, ctx.heap_global)
       ctx.heap_synced = false
-      // header: obj_type = obj_array, len = 0
+      // header: obj_type = obj_bytes, len = 0
       emit_local_get(buf, obj_local)
-      emit_i32_const_raw(buf, obj_array)
+      emit_i32_const_raw(buf, obj_bytes)
       emit_i32_store(buf, 0)
       emit_local_get(buf, obj_local)
       emit_i32_const_raw(buf, 0)
@@ -6387,12 +6654,14 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, ptr_local)
       emit_local_get(buf, ptr_local)
       emit_i32_load(buf, 4) // len
-      emit_i32_const_raw(buf, 4)
-      emit_i32_mul(buf)
+      // (packed: no *4 multiply)
+
       emit_i32_add(buf)
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_i32_wrap_i64(buf)
-      emit_i32_store(buf, 8) // store at [ptr + 8 + len*4]
+      emit_i32_const_raw(buf, 2)
+      emit_i32_shr_u(buf) // untag byte value
+      emit_i32_store8(buf, 8) // store byte at [ptr + 8 + len]
       emit_local_get(buf, ptr_local)
       emit_local_get(buf, ptr_local)
       emit_i32_load(buf, 4)
@@ -6415,12 +6684,14 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, 2L)
       emit_i64_shr_s(buf) // untag index
       emit_i32_wrap_i64(buf)
-      emit_i32_const_raw(buf, 4)
-      emit_i32_mul(buf)
+      // (packed: no *4 multiply)
+
       emit_i32_add(buf)
       compile_expr_i32(ctx, buf, pos_args[2])
       emit_i32_wrap_i64(buf)
-      emit_i32_store(buf, 8) // store at [ptr + 8 + idx*4]
+      emit_i32_const_raw(buf, 2)
+      emit_i32_shr_u(buf) // untag byte value
+      emit_i32_store8(buf, 8) // store byte at [ptr + 8 + idx]
       emit_i64_const_tagged(buf, 0L) // return Unit
     }
     "Bytes::slice" => {
@@ -6456,8 +6727,8 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_set(buf, len_local)
       // Alloc: header(8) + len*4
       emit_local_get(buf, len_local)
-      emit_i32_const_raw(buf, 4)
-      emit_i32_mul(buf)
+      // (packed: no *4 multiply)
+
       emit_i32_const_raw(buf, 8)
       emit_i32_add(buf)
       emit_i32_const_raw(buf, 3)
@@ -6474,7 +6745,7 @@ fn compile_call_builtin_pre_user_inner(
       ctx.heap_synced = false
       // header
       emit_local_get(buf, obj_local)
-      emit_i32_const_raw(buf, obj_array)
+      emit_i32_const_raw(buf, obj_bytes)
       emit_i32_store(buf, 0)
       emit_local_get(buf, obj_local)
       emit_local_get(buf, len_local)
@@ -6487,12 +6758,12 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_const_raw(buf, 8)
       emit_i32_add(buf)
       emit_local_get(buf, start_local)
-      emit_i32_const_raw(buf, 4)
-      emit_i32_mul(buf)
+      // (packed: no *4 multiply)
+
       emit_i32_add(buf) // src
       emit_local_get(buf, len_local)
-      emit_i32_const_raw(buf, 4)
-      emit_i32_mul(buf) // size
+      // (packed: no *4 multiply)
+
       emit_memory_copy(buf)
       // Return tagged obj
       emit_local_get(buf, obj_local)
@@ -6537,8 +6808,8 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_set(buf, total_len_local)
       // Alloc: header(8) + total_len*4
       emit_local_get(buf, total_len_local)
-      emit_i32_const_raw(buf, 4)
-      emit_i32_mul(buf)
+      // (packed: no *4 multiply)
+
       emit_i32_const_raw(buf, 8)
       emit_i32_add(buf)
       emit_i32_const_raw(buf, 3)
@@ -6555,7 +6826,7 @@ fn compile_call_builtin_pre_user_inner(
       ctx.heap_synced = false
       // header
       emit_local_get(buf, obj_local)
-      emit_i32_const_raw(buf, obj_array)
+      emit_i32_const_raw(buf, obj_bytes)
       emit_i32_store(buf, 0)
       emit_local_get(buf, obj_local)
       emit_local_get(buf, total_len_local)
@@ -6568,23 +6839,23 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_const_raw(buf, 8)
       emit_i32_add(buf)
       emit_local_get(buf, a_len_local)
-      emit_i32_const_raw(buf, 4)
-      emit_i32_mul(buf)
+      // (packed: no *4 multiply)
+
       emit_memory_copy(buf)
       // Copy b: memory.copy(dst+8+a_len*4, b+8, b_len*4)
       emit_local_get(buf, obj_local)
       emit_i32_const_raw(buf, 8)
       emit_i32_add(buf)
       emit_local_get(buf, a_len_local)
-      emit_i32_const_raw(buf, 4)
-      emit_i32_mul(buf)
+      // (packed: no *4 multiply)
+
       emit_i32_add(buf)
       emit_local_get(buf, b_local)
       emit_i32_const_raw(buf, 8)
       emit_i32_add(buf)
       emit_local_get(buf, b_len_local)
-      emit_i32_const_raw(buf, 4)
-      emit_i32_mul(buf)
+      // (packed: no *4 multiply)
+
       emit_memory_copy(buf)
       // Return tagged obj
       emit_local_get(buf, obj_local)
@@ -6593,11 +6864,83 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_or(buf)
     }
     "Bytes::to_array" => {
-      // Bytes::to_array(bytes) -> same object (Bytes = Array[Int] internally)
+      // Bytes::to_array(bytes) -> Array[Int] (unpack: load8_u, <<2, store i32)
       let pos_args = extract_positional_exprs_with_arity(
         args, "Bytes::to_array", 1,
       )
+      require_heap(ctx)
+      let src_local = alloc_temp_local(ctx)
+      let len_local = alloc_temp_local(ctx)
+      let dst_local = alloc_temp_local(ctx)
+      let idx_local = alloc_temp_local(ctx)
+      // Get source bytes ptr and length
       compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, src_local)
+      emit_local_get(buf, src_local)
+      emit_i32_load(buf, 4) // len
+      emit_local_set(buf, len_local)
+      // Alloc array: align4(8 + len*4)
+      emit_local_get(buf, len_local)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf)
+      emit_i32_const_raw(buf, 3)
+      emit_i32_add(buf)
+      emit_i32_const_raw(buf, -4)
+      emit_i32_and(buf)
+      let alloc_size_local = alloc_temp_local(ctx)
+      emit_local_set(buf, alloc_size_local)
+      emit_global_get(buf, ctx.heap_global)
+      emit_local_tee(buf, dst_local)
+      emit_local_get(buf, alloc_size_local)
+      emit_i32_add(buf)
+      emit_global_set(buf, ctx.heap_global)
+      ctx.heap_synced = false
+      // header: obj_array (target Array), len
+      emit_local_get(buf, dst_local)
+      emit_i32_const_raw(buf, obj_array)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, dst_local)
+      emit_local_get(buf, len_local)
+      emit_i32_store(buf, 4)
+      // Loop: load8_u from src[8+idx], <<2, store i32 to dst[8+idx*4]
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, idx_local)
+      emit_block(buf)
+      emit_loop(buf)
+      emit_local_get(buf, idx_local)
+      emit_local_get(buf, len_local)
+      emit_i32_ge_s(buf)
+      emit_br_if(buf, 1)
+      // dst[8+idx*4] = (src[8+idx] as u8) << 2
+      emit_local_get(buf, dst_local)
+      emit_local_get(buf, idx_local)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, src_local)
+      emit_local_get(buf, idx_local)
+      emit_i32_add(buf)
+      emit_i32_load8_u(buf, 8) // load byte
+      emit_i32_const_raw(buf, 2)
+      emit_i32_shl(buf) // tag as int
+      emit_i32_store(buf, 8) // store tagged int to array
+      emit_local_get(buf, idx_local)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_add(buf)
+      emit_local_set(buf, idx_local)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      // Return tagged obj
+      emit_local_get(buf, dst_local)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
     }
     "Fs::write_bytes" => {
       // fs_write_bytes(path, byte_array) -> Unit
@@ -6620,7 +6963,7 @@ fn compile_call_builtin_pre_user_inner(
       let ret_area_local = alloc_temp_local(ctx)
       let root_desc_local = alloc_temp_local(ctx)
       let opened_desc_local = alloc_temp_local(ctx)
-      let idx_local = alloc_temp_local(ctx)
+      let _idx_local = alloc_temp_local(ctx) // reserved (packed bytes removed conversion loop)
       let fs_global = fs_root_descriptor_global_index(ctx)
       // Initialize root descriptor if needed
       emit_global_get(buf, fs_global)
@@ -6656,43 +6999,13 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, arr_ptr_local)
       emit_i32_load(buf, 4)
       emit_local_set(buf, arr_len_local)
-      // Allocate contiguous byte buffer on heap for the data
-      emit_local_get(buf, arr_len_local)
-      emit_i32_const_raw(buf, 3)
-      emit_i32_add(buf)
-      emit_i32_const_raw(buf, -4)
-      emit_i32_and(buf)
-      emit_local_set(buf, data_size_local)
-      emit_heap_alloc_local(ctx, buf, data_size_local, data_ptr_local)
-      // Copy array elements (tagged ints) to contiguous bytes
-      emit_i32_const_raw(buf, 0)
-      emit_local_set(buf, idx_local)
-      emit_block(buf)
-      emit_loop(buf)
-      emit_local_get(buf, idx_local)
-      emit_local_get(buf, arr_len_local)
-      emit_i32_ge_s(buf)
-      emit_br_if(buf, 1)
-      // data_ptr[idx] = (arr[idx] >> 2) as u8
-      emit_local_get(buf, data_ptr_local)
-      emit_local_get(buf, idx_local)
-      emit_i32_add(buf)
+      // Packed bytes: data is already contiguous at arr_ptr + 8
       emit_local_get(buf, arr_ptr_local)
-      emit_local_get(buf, idx_local)
-      emit_i32_const_raw(buf, 4)
-      emit_i32_mul(buf)
+      emit_i32_const_raw(buf, 8)
       emit_i32_add(buf)
-      emit_i32_load(buf, 8) // load tagged int
-      emit_i32_const_raw(buf, 2)
-      emit_i32_shr_u(buf) // untag: >> 2
-      emit_i32_store8(buf, 0)
-      emit_local_get(buf, idx_local)
-      emit_i32_const_raw(buf, 1)
-      emit_i32_add(buf)
-      emit_local_set(buf, idx_local)
-      emit_br(buf, 0)
-      emit_end(buf)
-      emit_end(buf)
+      emit_local_set(buf, data_ptr_local)
+      emit_local_get(buf, arr_len_local)
+      emit_local_set(buf, data_size_local)
       // Allocate retptr for open-at result
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
       // Sync heap

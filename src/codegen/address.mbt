@@ -956,6 +956,8 @@ fn is_builtin(name : String) -> Bool {
   name == "string_to_data" ||
   name == "Fs::write_bytes" ||
   name == "Bytes::from_array" ||
+  name == "Bytes::from_string" ||
+  name == "Bytes::to_string" ||
   name == "Bytes::length" ||
   name == "Bytes::get" ||
   name == "MapBuilder::new" ||
