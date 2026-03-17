@@ -658,8 +658,9 @@ async function main() {
   if (!exports || typeof exports !== "object") {
     throw new Error("missing wasm exports");
   }
-  if (typeof exports.run !== "function") {
-    throw new Error('missing export "run"');
+  const runFn = exports.run || exports._start;
+  if (typeof runFn !== "function") {
+    throw new Error('missing export "run" or "_start"');
   }
   if (!(exports.memory instanceof WebAssembly.Memory)) {
     throw new Error('missing export "memory"');
@@ -684,7 +685,7 @@ async function main() {
       }
       invokeTarget();
     }
-    exports.run();
+    runFn();
   } catch (error) {
     runError = error instanceof Error ? error.message : String(error);
   }
