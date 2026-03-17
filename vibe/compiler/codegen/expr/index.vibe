@@ -944,8 +944,8 @@ let compile_call = (buf: Array[Int], callee: Expr, args: Array[Expr], local_name
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     }
     else if fname == "Map::set" {
-      // Map::set(map, key, value) → update existing key or append
-      // Map layout: [count:i32][pad:i32][k0:i64][v0:i64]...
+      // Map::set(map, key, value) → new map (immutable update)
+      // Copy old entries, update or append key-value pair
       let (eq_fi_ms, _, _) = resolve_func(ctx.func_table, "eq")
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
@@ -954,12 +954,16 @@ let compile_call = (buf: Array[Int], callee: Expr, args: Array[Expr], local_name
       let key_l = nl + 1
       let val_l = nl + 2
       let cnt_l = nl + 3
-      let idx_l = nl + 4
+      let new_l = nl + 4
+      let idx_l = nl + 5
+      let found_l = nl + 6
       Array::push(local_names, "__ms_map")
       Array::push(local_names, "__ms_key")
       Array::push(local_names, "__ms_val")
       Array::push(local_names, "__ms_cnt")
+      Array::push(local_names, "__ms_new")
       Array::push(local_names, "__ms_idx")
+      Array::push(local_names, "__ms_found")
       emit_local_set(buf, val_l)
       emit_local_set(buf, key_l)
       emit_local_set(buf, map_l)
@@ -969,16 +973,50 @@ let compile_call = (buf: Array[Int], callee: Expr, args: Array[Expr], local_name
       emit_i32_load(buf, 2, 0)
       emit_i64_extend_i32_u(buf)
       emit_local_set(buf, cnt_l)
-      // Search for existing key
+      // Alloc new map: 8 + (count+1)*16
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, new_l)
+      emit_global_get(buf, 0)
+      emit_local_get(buf, cnt_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_const(buf, 8)
+      emit_i32_add(buf)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      // Copy entries, replacing matching key
       emit_i64_const(buf, 0)
       emit_local_set(buf, idx_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, found_l)
       emit_block_void(buf)
       emit_loop_void(buf)
       emit_local_get(buf, idx_l)
       emit_local_get(buf, cnt_l)
       emit_i64_ge_s(buf)
       emit_br_if(buf, 1)
-      // compare keys[idx] with key
+      // Copy key
+      emit_local_get(buf, new_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, idx_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, map_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, idx_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 8)
+      emit_i64_store(buf, 3, 8)
+      // Check if key matches
       emit_local_get(buf, map_l)
       emit_i32_wrap_i64(buf)
       emit_local_get(buf, idx_l)
@@ -991,8 +1029,8 @@ let compile_call = (buf: Array[Int], callee: Expr, args: Array[Expr], local_name
       emit_call(buf, eq_fi_ms)
       emit_i32_wrap_i64(buf)
       emit_if_void(buf)
-      // Found: update value at offset 8 + idx*16 + 8
-      emit_local_get(buf, map_l)
+      // Match: use new value
+      emit_local_get(buf, new_l)
       emit_i32_wrap_i64(buf)
       emit_local_get(buf, idx_l)
       emit_i32_wrap_i64(buf)
@@ -1001,9 +1039,26 @@ let compile_call = (buf: Array[Int], callee: Expr, args: Array[Expr], local_name
       emit_i32_add(buf)
       emit_local_get(buf, val_l)
       emit_i64_store(buf, 3, 16)
-      // return map (no count change)
+      emit_i64_const(buf, 1)
+      emit_local_set(buf, found_l)
+      emit_else(buf)
+      // No match: copy old value
+      emit_local_get(buf, new_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, idx_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
       emit_local_get(buf, map_l)
-      emit_return(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, idx_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 16)
+      emit_i64_store(buf, 3, 16)
       emit_end(buf)
       emit_local_get(buf, idx_l)
       emit_i64_const(buf, 1)
@@ -1012,8 +1067,11 @@ let compile_call = (buf: Array[Int], callee: Expr, args: Array[Expr], local_name
       emit_br(buf, 0)
       emit_end(buf)
       emit_end(buf)
-      // Not found: append at 8 + count*16
-      emit_local_get(buf, map_l)
+      // If key not found, append
+      emit_local_get(buf, found_l)
+      emit_i64_eqz(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, new_l)
       emit_i32_wrap_i64(buf)
       emit_local_get(buf, cnt_l)
       emit_i32_wrap_i64(buf)
@@ -1022,7 +1080,7 @@ let compile_call = (buf: Array[Int], callee: Expr, args: Array[Expr], local_name
       emit_i32_add(buf)
       emit_local_get(buf, key_l)
       emit_i64_store(buf, 3, 8)
-      emit_local_get(buf, map_l)
+      emit_local_get(buf, new_l)
       emit_i32_wrap_i64(buf)
       emit_local_get(buf, cnt_l)
       emit_i32_wrap_i64(buf)
@@ -1031,16 +1089,24 @@ let compile_call = (buf: Array[Int], callee: Expr, args: Array[Expr], local_name
       emit_i32_add(buf)
       emit_local_get(buf, val_l)
       emit_i64_store(buf, 3, 16)
-      // count++
-      emit_local_get(buf, map_l)
+      // new count = count + 1
+      emit_local_get(buf, new_l)
       emit_i32_wrap_i64(buf)
       emit_local_get(buf, cnt_l)
       emit_i64_const(buf, 1)
       emit_i64_add(buf)
       emit_i32_wrap_i64(buf)
       emit_i32_store(buf, 2, 0)
-      emit_local_get(buf, map_l)
-      nl + 5
+      emit_else(buf)
+      // Key replaced: new count = count (same)
+      emit_local_get(buf, new_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, cnt_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_store(buf, 2, 0)
+      emit_end(buf)
+      emit_local_get(buf, new_l)
+      nl + 7
     }
     else if fname == "MapBuilder::new" {
       // Allocate empty map on heap: [count=0:i32][pad:i32] + room for entries
