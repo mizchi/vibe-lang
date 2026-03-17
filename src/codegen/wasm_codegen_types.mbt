@@ -146,8 +146,7 @@ let obj_string_view = 11
 ///|
 let obj_array_view = 12
 
-///|
-let obj_bytes_view = 13
+// obj_bytes_view removed (unused)
 
 ///|
 enum ValueKind {
