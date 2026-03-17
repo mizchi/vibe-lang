@@ -1,20 +1,17 @@
-// Coverage entry for vibe/wasm — parser-only (no Bytes allocation)
-// Run: VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS=1 VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP=1 scripts/coverage_wasm_source.sh vibe/wasm/coverage_test.vibe
+// Coverage entry for vibe/wasm — pure functions only
+// No heap-heavy operations (compatible with --wasm backend's fixed heap)
+// Run: VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS=1 scripts/coverage_wasm_source.sh vibe/wasm/coverage_test.vibe
 
 //# Imports
 
 import ./wasm_parser/index.vibe {
-  validate_magic, read_version, section_name, valtype_name,
-  read_init_expr, count_locals
+  validate_magic, read_version, section_name, valtype_name, count_locals
 }
 import ./wasm_runtime/index.vibe { opcode_name }
 
 //# Misc
 
-// Pure function tests — no heap allocation needed
-
-test "cov: validate_magic true" {
-  // Inline header bytes (no make_bytes, no Bytes::new)
+test "cov: section_name" {
   assert(section_name(0) == "custom")
   assert(section_name(1) == "type")
   assert(section_name(2) == "import")
@@ -31,7 +28,7 @@ test "cov: validate_magic true" {
   assert(section_name(99) == "unknown")
 }
 
-test "cov: valtype_name all" {
+test "cov: valtype_name" {
   assert(valtype_name(127) == "i32")
   assert(valtype_name(126) == "i64")
   assert(valtype_name(125) == "f32")
@@ -46,7 +43,7 @@ test "cov: valtype_name all" {
   assert(valtype_name(0) == "unknown")
 }
 
-test "cov: opcode_name coverage" {
+test "cov: opcode_name" {
   assert(opcode_name(0x00) == "unreachable")
   assert(opcode_name(0x01) == "nop")
   assert(opcode_name(0x02) == "block")
@@ -67,25 +64,88 @@ test "cov: opcode_name coverage" {
   assert(opcode_name(0x22) == "local.tee")
   assert(opcode_name(0x23) == "global.get")
   assert(opcode_name(0x24) == "global.set")
+  assert(opcode_name(0x28) == "i32.load")
+  assert(opcode_name(0x29) == "i64.load")
+  assert(opcode_name(0x2C) == "i32.load8_s")
+  assert(opcode_name(0x2D) == "i32.load8_u")
+  assert(opcode_name(0x2E) == "i32.load16_s")
+  assert(opcode_name(0x2F) == "i32.load16_u")
+  assert(opcode_name(0x36) == "i32.store")
+  assert(opcode_name(0x37) == "i64.store")
+  assert(opcode_name(0x3A) == "i32.store8")
+  assert(opcode_name(0x3B) == "i32.store16")
+  assert(opcode_name(0x3F) == "memory.size")
+  assert(opcode_name(0x40) == "memory.grow")
   assert(opcode_name(0x41) == "i32.const")
   assert(opcode_name(0x42) == "i64.const")
+  assert(opcode_name(0x45) == "i32.eqz")
+  assert(opcode_name(0x46) == "i32.eq")
+  assert(opcode_name(0x47) == "i32.ne")
+  assert(opcode_name(0x48) == "i32.lt_s")
+  assert(opcode_name(0x49) == "i32.lt_u")
+  assert(opcode_name(0x4A) == "i32.gt_s")
+  assert(opcode_name(0x4B) == "i32.gt_u")
   assert(opcode_name(0x6A) == "i32.add")
   assert(opcode_name(0x6B) == "i32.sub")
   assert(opcode_name(0x6C) == "i32.mul")
+  assert(opcode_name(0x6D) == "i32.div_s")
+  assert(opcode_name(0x6E) == "i32.div_u")
+  assert(opcode_name(0x6F) == "i32.rem_s")
+  assert(opcode_name(0x70) == "i32.rem_u")
+  assert(opcode_name(0x67) == "i32.clz")
+  assert(opcode_name(0x68) == "i32.ctz")
+  assert(opcode_name(0x69) == "i32.popcnt")
+  assert(opcode_name(0x71) == "i32.and")
+  assert(opcode_name(0x74) == "i32.shl")
+  assert(opcode_name(0x76) == "i32.shr_u")
+  assert(opcode_name(0x77) == "i32.rotl")
+  assert(opcode_name(0x78) == "i32.rotr")
   assert(opcode_name(0x7C) == "i64.add")
+  assert(opcode_name(0x79) == "i64.clz")
+  assert(opcode_name(0x80) == "i64.div_u")
+  assert(opcode_name(0x89) == "i64.rotl")
   assert(opcode_name(0xA7) == "i32.wrap_i64")
   assert(opcode_name(0xAC) == "i64.extend_i32_s")
+  assert(opcode_name(0xAD) == "i64.extend_i32_u")
   assert(opcode_name(0xFF) == "unknown")
 }
 
-test "cov: count_locals empty" {
-  let locals = Array::slice([(0, 0)], 0, 0)
-  assert(count_locals(locals) == 0)
+test "cov: count_locals" {
+  let e = Array::slice([(0, 0)], 0, 0)
+  assert(count_locals(e) == 0)
+  Array::push(e, (3, 127))
+  assert(count_locals(e) == 3)
+  Array::push(e, (2, 126))
+  assert(count_locals(e) == 5)
 }
 
-test "cov: count_locals with entries" {
-  let locals = Array::slice([(0, 0)], 0, 0)
-  Array::push(locals, (3, 127))
-  Array::push(locals, (2, 126))
-  assert(count_locals(locals) == 5)
+test "cov: validate_magic" {
+  let b = Bytes::new()
+  Bytes::push(b, 0)
+  Bytes::push(b, 97)
+  Bytes::push(b, 115)
+  Bytes::push(b, 109)
+  Bytes::push(b, 1)
+  Bytes::push(b, 0)
+  Bytes::push(b, 0)
+  Bytes::push(b, 0)
+  assert(validate_magic(b) == true)
+  let c = Bytes::new()
+  Bytes::push(c, 0)
+  Bytes::push(c, 0)
+  assert(validate_magic(c) == false)
+}
+
+test "cov: read_version" {
+  let b = Bytes::new()
+  Bytes::push(b, 0)
+  Bytes::push(b, 97)
+  Bytes::push(b, 115)
+  Bytes::push(b, 109)
+  Bytes::push(b, 1)
+  Bytes::push(b, 0)
+  Bytes::push(b, 0)
+  Bytes::push(b, 0)
+  assert(read_version(b) == 1)
+  assert(read_version(Bytes::new()) == -1)
 }
