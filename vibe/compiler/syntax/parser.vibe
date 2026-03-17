@@ -377,7 +377,17 @@ let rec parse_type_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (TypeEx
   let rec type_list_rest = (tokens: Array[Token], pos: Int, b: ArrayBuilder[TypeExpr]) -> (Array[TypeExpr], Int)with { Error } {
     match peek(tokens, pos) {
       TComma => {
-        let (ty, next) = parse_type_impl(tokens, pos + 1, 0)
+        // Skip optional label
+        let ts = match peek(tokens, pos + 1) {
+          TIdent(_) => match peek(tokens, pos + 2) {
+            TColon => pos + 3,
+            TTilde => match peek(tokens, pos + 3) { TColon => pos + 4, _ => pos + 1 },
+            TQuestion => match peek(tokens, pos + 3) { TColon => pos + 4, _ => pos + 1 },
+            _ => pos + 1
+          },
+          _ => pos + 1
+        }
+        let (ty, next) = parse_type_impl(tokens, ts, 0)
         ArrayBuilder::push(b, ty)
         type_list_rest(tokens, next, b)
       },
@@ -420,7 +430,31 @@ let rec parse_type_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (TypeEx
           },
           _ => rn
         };
-        (TyFn(params, ret), rn2)
+        // Skip optional `with { Effect }` after function return type
+        let fn_end = match peek(tokens, rn2) {
+          TWith => {
+            // Skip { ... } block
+            let mut wp = rn2 + 1
+            match peek(tokens, wp) {
+              TLBrace => {
+                wp = wp + 1
+                let mut wd = 1
+                while wd > 0 {
+                  match peek(tokens, wp) {
+                    TLBrace => { wd = wd + 1 },
+                    TRBrace => { wd = wd - 1 },
+                    _ => ()
+                  }
+                  wp = wp + 1
+                }
+                wp
+              },
+              _ => rn2
+            }
+          },
+          _ => rn2
+        }
+        (TyFn(params, ret), fn_end)
       },
       _ => (atom_ty, atom_next)
     }
@@ -428,7 +462,17 @@ let rec parse_type_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (TypeEx
     TLParen => match peek(tokens, pos + 1) {
       TRParen => (TyUnit, pos + 2),
       _ => {
-        let (first, n1) = parse_type_impl(tokens, pos + 1, 0)
+        // Skip optional label: (name: Type, ...) or (name~: Type, ...)
+        let ty_start = match peek(tokens, pos + 1) {
+          TIdent(_) => match peek(tokens, pos + 2) {
+            TColon => pos + 3,
+            TTilde => match peek(tokens, pos + 3) { TColon => pos + 4, _ => pos + 1 },
+            TQuestion => match peek(tokens, pos + 3) { TColon => pos + 4, _ => pos + 1 },
+            _ => pos + 1
+          },
+          _ => pos + 1
+        }
+        let (first, n1) = parse_type_impl(tokens, ty_start, 0)
         match peek(tokens, n1) {
           TRParen => (first, n1 + 1),
           TComma => {
