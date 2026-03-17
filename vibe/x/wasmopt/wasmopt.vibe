@@ -109,13 +109,7 @@ let list_sections = (bytes: Bytes) -> Array[(Int, Int, Int)] {
 
 // Copy bytes range
 let copy_bytes = (src: Bytes, start: Int, end_pos: Int) -> Bytes {
-  let result = Bytes::new()
-  let mut i = start
-  while i < end_pos {
-    Bytes::push(result, src[i])
-    i = i + 1
-  }
-  result
+  Bytes::slice(src, start, end_pos)
 }
 
 // Write section to output buffer
@@ -1095,6 +1089,8 @@ let count_import_funcs = (bytes: Bytes) -> Int {
 export let build_call_graph = (bytes: Bytes) -> Array[(Int, Array[Int])] {
   let result = Array::slice([(0, Array::slice([(0)], 0, 0))], 0, 0)
   let import_count = count_import_funcs(bytes)
+  // Compute total function count for bitset sizing
+  let total_funcs = count_functions(bytes)
   let sections = list_sections(bytes)
   let mut s = 0
   while s < Array::length(sections) {
@@ -1110,6 +1106,7 @@ export let build_call_graph = (bytes: Bytes) -> Array[(Int, Array[Int])] {
         let body_end = bp + body_size
         // Scan body for call instructions
         let callees = Array::slice([(0)], 0, 0)
+        let callee_seen = FixedArray::make(total_funcs + 1, 0)
         let body = copy_bytes(bytes, bp, body_end)
         let body_len = Bytes::length(body)
         let mut bpos = 0
@@ -1127,14 +1124,16 @@ export let build_call_graph = (bytes: Bytes) -> Array[(Int, Array[Int])] {
           let (op, imm, next) = decode_instr(body, bpos)
           if op == 0x10 {
             // call instruction: imm is the callee index
-            let mut already = false
-            let mut ci = 0
-            while ci < Array::length(callees) {
-              if Array::get(callees, ci) == imm { already = true }
-              ci = ci + 1
-            }
-            if already == false {
-              Array::push(callees, imm)
+            if (imm >= 0) && (imm <= total_funcs) {
+              if FixedArray::get(callee_seen, imm) == 0 {
+                FixedArray::set(callee_seen, imm, 1)
+                Array::push(callees, imm)
+              }
+            } else {
+              // Out-of-range callee, keep with linear check
+              if array_contains_int(callees, imm) == false {
+                Array::push(callees, imm)
+              }
             }
           }
           bpos = next
@@ -1196,14 +1195,33 @@ let array_contains_int = (arr: Array[Int], target: Int) -> Bool {
 export let find_reachable = (bytes: Bytes) -> Array[Int] {
   let graph = build_call_graph(bytes)
   let roots = get_export_func_indices(bytes)
+  // Compute max function index for bitset sizing
+  let import_count = count_import_funcs(bytes)
+  let mut max_func_idx = import_count
+  let mut gi2 = 0
+  while gi2 < Array::length(graph) {
+    let (func_idx, callees) = Array::get(graph, gi2)
+    if func_idx >= max_func_idx { max_func_idx = func_idx + 1 }
+    let mut ci2 = 0
+    while ci2 < Array::length(callees) {
+      let callee = Array::get(callees, ci2)
+      if callee >= max_func_idx { max_func_idx = callee + 1 }
+      ci2 = ci2 + 1
+    }
+    gi2 = gi2 + 1
+  }
+  let visited = FixedArray::make(max_func_idx + 1, 0)
   let reachable = Array::slice([(0)], 0, 0)
   // BFS queue: start from roots
   let queue = Array::slice([(0)], 0, 0)
   let mut ri = 0
   while ri < Array::length(roots) {
     let root = Array::get(roots, ri)
-    Array::push(queue, root)
-    Array::push(reachable, root)
+    if (root >= 0) && (root <= max_func_idx) && (FixedArray::get(visited, root) == 0) {
+      FixedArray::set(visited, root, 1)
+      Array::push(queue, root)
+      Array::push(reachable, root)
+    }
     ri = ri + 1
   }
   let mut qi = 0
@@ -1217,7 +1235,8 @@ export let find_reachable = (bytes: Bytes) -> Array[Int] {
         let mut ci = 0
         while ci < Array::length(callees) {
           let callee = Array::get(callees, ci)
-          if array_contains_int(reachable, callee) == false {
+          if (callee >= 0) && (callee <= max_func_idx) && (FixedArray::get(visited, callee) == 0) {
+            FixedArray::set(visited, callee, 1)
             Array::push(reachable, callee)
             Array::push(queue, callee)
           }
@@ -1238,6 +1257,17 @@ export let dce = (bytes: Bytes) -> Bytes {
   else {
     let reachable = find_reachable(bytes)
     let import_count = count_import_funcs(bytes)
+    // Build reachable bitset for O(1) lookup
+    let total_funcs = count_functions(bytes)
+    let reachable_flags = FixedArray::make(total_funcs + 1, 0)
+    let mut ri = 0
+    while ri < Array::length(reachable) {
+      let idx = Array::get(reachable, ri)
+      if (idx >= 0) && (idx <= total_funcs) {
+        FixedArray::set(reachable_flags, idx, 1)
+      }
+      ri = ri + 1
+    }
     let out = Bytes::new()
     let mut i = 0
     while i < 8 { Bytes::push(out, bytes[i]); i = i + 1 }
@@ -1246,7 +1276,41 @@ export let dce = (bytes: Bytes) -> Bytes {
     while s < Array::length(sections) {
       let (sid, off, sz) = Array::get(sections, s)
       if sid == 10 {
-        let new_content = dce_code_section(bytes, off, sz, reachable, import_count)
+        // DCE code section inline to avoid forward reference issue
+        let end_pos2 = off + sz
+        let (func_count2, pos02) = read_uleb128(bytes, off)
+        let mut pos2 = pos02
+        let bodies2 = Array::slice([(Bytes::new())], 0, 0)
+        let mut fi2 = 0
+        while (fi2 < func_count2) && (pos2 < end_pos2) {
+          let func_idx2 = import_count + fi2
+          let (body_size2, bp2) = read_uleb128(bytes, pos2)
+          if (func_idx2 >= 0) && (func_idx2 <= total_funcs) && (FixedArray::get(reachable_flags, func_idx2) == 1) {
+            let body2 = copy_bytes(bytes, bp2, bp2 + body_size2)
+            Array::push(bodies2, body2)
+          } else {
+            let stub = Bytes::new()
+            Bytes::push(stub, 0x00)
+            Bytes::push(stub, 0x00)
+            Bytes::push(stub, 0x0B)
+            Array::push(bodies2, stub)
+          }
+          pos2 = bp2 + body_size2
+          fi2 = fi2 + 1
+        }
+        let new_content = Bytes::new()
+        write_uleb128(new_content, Array::length(bodies2))
+        let mut bi2 = 0
+        while bi2 < Array::length(bodies2) {
+          let body2 = Array::get(bodies2, bi2)
+          write_uleb128(new_content, Bytes::length(body2))
+          let mut j2 = 0
+          while j2 < Bytes::length(body2) {
+            Bytes::push(new_content, body2[j2])
+            j2 = j2 + 1
+          }
+          bi2 = bi2 + 1
+        }
         emit_section(out, 10, new_content)
       } else {
         let content = copy_bytes(bytes, off, off + sz)
@@ -1256,47 +1320,6 @@ export let dce = (bytes: Bytes) -> Bytes {
     }
     out
   }
-}
-
-let dce_code_section = (bytes: Bytes, offset: Int, size: Int, reachable: Array[Int], import_count: Int) -> Bytes {
-  let end_pos = offset + size
-  let (func_count, pos0) = read_uleb128(bytes, offset)
-  let mut pos = pos0
-  let bodies = Array::slice([(Bytes::new())], 0, 0)
-  let mut fi = 0
-  while (fi < func_count) && (pos < end_pos) {
-    let func_idx = import_count + fi
-    let (body_size, bp) = read_uleb128(bytes, pos)
-    if array_contains_int(reachable, func_idx) {
-      // Keep the body as-is
-      let body = copy_bytes(bytes, bp, bp + body_size)
-      Array::push(bodies, body)
-    } else {
-      // Replace with: 0 locals, unreachable, end
-      let stub = Bytes::new()
-      Bytes::push(stub, 0x00)  // 0 locals
-      Bytes::push(stub, 0x00)  // unreachable
-      Bytes::push(stub, 0x0B)  // end
-      Array::push(bodies, stub)
-    }
-    pos = bp + body_size
-    fi = fi + 1
-  }
-  // Rebuild code section content
-  let out = Bytes::new()
-  write_uleb128(out, Array::length(bodies))
-  let mut bi = 0
-  while bi < Array::length(bodies) {
-    let body = Array::get(bodies, bi)
-    write_uleb128(out, Bytes::length(body))
-    let mut j = 0
-    while j < Bytes::length(body) {
-      Bytes::push(out, body[j])
-      j = j + 1
-    }
-    bi = bi + 1
-  }
-  out
 }
 
 // === Full optimization pipeline ===
@@ -1473,12 +1496,12 @@ let coalesce_body = (body: Bytes, param_count: Int) -> Bytes {
       di = di + 1
     }
 
-    // Scan code for used local indices
-    let used = Array::slice([(0)], 0, 0)
+    // Scan code for used local indices (FixedArray bitset for O(1) lookup)
+    let used_flags = FixedArray::make(total_locals + 1, 0)
     // Params are always used
     let mut pi = 0
     while pi < param_count {
-      Array::push(used, pi)
+      FixedArray::set(used_flags, pi, 1)
       pi = pi + 1
     }
     if code_start < code_end {
@@ -1487,8 +1510,8 @@ let coalesce_body = (body: Bytes, param_count: Int) -> Bytes {
       while ii < Array::length(instrs) {
         let (op, imm) = Array::get(instrs, ii)
         if (op == 0x20) || (op == 0x21) || (op == 0x22) {
-          if array_contains_int(used, imm) == false {
-            Array::push(used, imm)
+          if (imm >= 0) && (imm < total_locals) {
+            FixedArray::set(used_flags, imm, 1)
           } else { () }
         } else { () }
         ii = ii + 1
@@ -1500,7 +1523,7 @@ let coalesce_body = (body: Bytes, param_count: Int) -> Bytes {
     let mut new_idx = 0
     let mut oi = 0
     while oi < total_locals {
-      if array_contains_int(used, oi) {
+      if FixedArray::get(used_flags, oi) == 1 {
         Array::push(index_map, new_idx)
         new_idx = new_idx + 1
       } else {
@@ -1514,7 +1537,7 @@ let coalesce_body = (body: Bytes, param_count: Int) -> Bytes {
     let new_local_entries = Array::slice([(0, 0)], 0, 0)
     let mut nli = param_count
     while nli < total_locals {
-      if array_contains_int(used, nli) {
+      if FixedArray::get(used_flags, nli) == 1 {
         let ltype = Array::get(local_type_arr, nli)
         let nle_len = Array::length(new_local_entries)
         if nle_len > 0 {
@@ -1660,12 +1683,23 @@ export let remove_unused_types = (bytes: Bytes) -> Bytes {
       ts = ts + 1
     }
 
+    // Build used bitset for O(1) lookup
+    let used_bitset = FixedArray::make(type_count + 1, 0)
+    let mut ui = 0
+    while ui < Array::length(used) {
+      let tidx = Array::get(used, ui)
+      if (tidx >= 0) && (tidx < type_count) {
+        FixedArray::set(used_bitset, tidx, 1)
+      }
+      ui = ui + 1
+    }
+
     // Build old->new type index map
     let type_map = Array::slice([(0)], 0, 0)
     let mut new_idx = 0
     let mut ti = 0
     while ti < type_count {
-      if array_contains_int(used, ti) {
+      if FixedArray::get(used_bitset, ti) == 1 {
         Array::push(type_map, new_idx)
         new_idx = new_idx + 1
       } else {
@@ -1868,22 +1902,34 @@ export let remove_empty_sections = (bytes: Bytes) -> Bytes {
 
 // Comprehensive WASM minifier: applies all optimizations in sequence with multi-round convergence.
 export let minify = (bytes: Bytes) -> Bytes {
-  let mut current = bytes
-  let mut round = 0
-  let mut done = false
-  while (round < 1) && (done == false) {
-    let prev_size = Bytes::length(current)
-    let s1 = strip_custom_sections(current)
-    let s2 = optimize_code_section(s1)
+  let len = Bytes::length(bytes)
+  if len < 8 { copy_bytes(bytes, 0, len) }
+  else {
+    // Step 1: strip custom sections inline (avoids separate list_sections call)
+    let sections = list_sections(bytes)
+    let stripped = Bytes::new()
+    let mut i = 0
+    while i < 8 { Bytes::push(stripped, bytes[i]); i = i + 1 }
+    let mut s = 0
+    while s < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, s)
+      if sid != 0 {
+        let content = copy_bytes(bytes, off, off + sz)
+        emit_section(stripped, sid, content)
+      }
+      s = s + 1
+    }
+    // Step 2: peephole optimize
+    let s2 = optimize_code_section(stripped)
+    // Step 3: DCE
     let s3 = dce(s2)
-    let s5 = remove_unused_types(s3)
-    let s6 = remove_empty_sections(s5)
-    current = s6
-    let new_size = Bytes::length(current)
-    if new_size == prev_size { done = true } else { () }
-    round = round + 1
+    // Step 4: coalesce locals (now O(n) with FixedArray bitset)
+    let s4 = coalesce_locals(s3)
+    // Step 5: remove unused types
+    let s5 = remove_unused_types(s4)
+    // Step 6: remove empty sections
+    remove_empty_sections(s5)
   }
-  current
 }
 
 // Fast minify: single-pass section filtering only.
