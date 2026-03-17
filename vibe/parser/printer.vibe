@@ -1,0 +1,368 @@
+//# Imports
+
+import types/index.vibe {
+  Expr, Pat, Stmt, TypeExpr, __to_string
+}
+
+import ./float_format.vibe {
+  double_to_string_compiler
+}
+
+//# Functions
+
+let join = (arr: Array[String], sep: String) -> String {
+  let len = Array::length(arr)
+  if len == 0 {
+    ""
+  } else {
+    let b = ArrayBuilder::new()
+    let mut i = 0
+    while i < len {
+      if i > 0 {
+        ArrayBuilder::push(b, sep)
+      }
+      ArrayBuilder::push(b, Array::get(arr, i))
+      i = i + 1
+    }
+    String::join(ArrayBuilder::freeze(b), "")
+  }
+}
+
+let escape_string = (s: String) -> String {
+  let len = String::length(s)
+  let b = ArrayBuilder::new()
+  let push_chunk = (start: Int, end: Int) -> Unit {
+    if end > start {
+      ArrayBuilder::push(b, s[start:end])
+    }
+  }
+  let mut i = 0
+  let mut start = 0
+  while i < len {
+    let c = String::char_code_at(s, i)
+    if c == '"' {
+      push_chunk(start, i)
+      ArrayBuilder::push(b, "\\\"")
+      i = i + 1
+      start = i
+    } else if c == '\\' {
+      push_chunk(start, i)
+      ArrayBuilder::push(b, "\\\\")
+      i = i + 1
+      start = i
+    } else if c == '\n' {
+      push_chunk(start, i)
+      ArrayBuilder::push(b, "\\n")
+      i = i + 1
+      start = i
+    } else if c == '\t' {
+      push_chunk(start, i)
+      ArrayBuilder::push(b, "\\t")
+      i = i + 1
+      start = i
+    } else if c == 13 {
+      push_chunk(start, i)
+      ArrayBuilder::push(b, "\\r")
+      i = i + 1
+      start = i
+    } else if c == 0 {
+      push_chunk(start, i)
+      ArrayBuilder::push(b, "\\0")
+      i = i + 1
+      start = i
+    } else {
+      i = i + 1
+    }
+  }
+  push_chunk(start, len)
+  String::join(ArrayBuilder::freeze(b), "")
+}
+
+export let rec print_pat = (p: Pat) -> String {
+  match p {
+    PWild => "_",
+    PBind(name) => name,
+    PInt(n) => __to_string(n),
+    PString(s) => String::concat("\"", String::concat(escape_string(s), "\"")),
+    PBool(b) => if b {
+      "true"
+    } else "false",
+    PCtor(name, args) => if Array::length(args) == 0 {
+      name
+    } else {
+      let parts = for arg in args {
+        print_pat(arg)
+      }
+      String::concat(name, String::concat("(", String::concat(join(parts, ", "), ")")))
+    },
+    PTuple(elems) => {
+      let parts = for elem in elems {
+        print_pat(elem)
+      }
+      String::concat("(", String::concat(join(parts, ", "), ")"))
+    },
+    POr(left, right) => String::concat(print_pat(left), String::concat(" | ", print_pat(right)))
+  }
+}
+
+let map_to_strings = (exprs: Array[Expr], f: (Expr) -> String) -> Array[String] {
+  for expr in exprs {
+    f(expr)
+  }
+}
+
+export let rec print_type_expr = (ty: TypeExpr) -> String {
+  match ty {
+    TyName(name) => name,
+    TyUnit => "()",
+    TyApp(name, args) => {
+      let parts = for arg in args {
+        print_type_expr(arg)
+      }
+      String::concat(name, String::concat("[", String::concat(join(parts, ", "), "]")))
+    },
+    TyFn(params, ret) => {
+      let parts = for param in params {
+        print_type_expr(param)
+      }
+      String::concat("(", String::concat(join(parts, ", "), String::concat(") -> ", print_type_expr(ret))))
+    },
+    TyTuple(elems) => {
+      let parts = for elem in elems {
+        print_type_expr(elem)
+      }
+      String::concat("(", String::concat(join(parts, ", "), ")"))
+    }
+  }
+}
+
+let print_ctor = (ctor: (String, Array[TypeExpr])) -> String {
+  let (name, args) = ctor
+  if eq(Array::length(args), 0) {
+    name
+  }
+  else {
+    let parts = for arg in args {
+      print_type_expr(arg)
+    }
+    String::concat(name, String::concat("(", String::concat(join(parts, ", "), ")")))
+  }
+}
+
+export let rec print_expr = (e: Expr) -> String {
+  match e {
+    EInt(n) => __to_string(n),
+    EFloat(n) => double_to_string_compiler(n),
+    EString(s) => String::concat("\"", String::concat(escape_string(s), "\"")),
+    EBool(b) => if b {
+      "true"
+    } else "false",
+    EIdent(name) => name,
+    EUnit => "()",
+    ETuple(elems) => String::concat("(", String::concat(join(map_to_strings(elems, print_expr), ", "), ")")),
+    EArray(elems) => String::concat("[", String::concat(join(map_to_strings(elems, print_expr), ", "), "]")),
+    ERecord(fields) => {
+      let parts = for field in fields {
+        let (name, val) = field
+        String::concat(name, String::concat(": ", print_expr(val)))
+      }
+      String::concat("{ ", String::concat(join(parts, ", "), " }"))
+    },
+    EIf(cond, then_e, else_e) => match else_e {
+      EUnit => String::concat("if ", String::concat(print_expr(cond), String::concat(" { ", String::concat(print_expr(then_e), " }")))),
+      _ => String::concat("if ", String::concat(print_expr(cond), String::concat(" { ", String::concat(print_expr(then_e), String::concat(" } else { ", String::concat(print_expr(else_e), " }"))))))
+    },
+    ELet(name, val, body) => String::concat("{ let ", String::concat(name, String::concat(" = ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))),
+    ELetRec(name, val, body) => String::concat("{ let rec ", String::concat(name, String::concat(" = ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))),
+    ELetMut(name, val, body) => String::concat("{ let mut ", String::concat(name, String::concat(" = ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))),
+    EAssign(name, val, body) => String::concat("{ ", String::concat(name, String::concat(" = ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))),
+    EAssignOp(name, op, val, body) => String::concat("{ ", String::concat(name, String::concat(" ", String::concat(op, String::concat("= ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))))),
+    ESeq(a, b) => String::concat("{ ", String::concat(print_expr(a), String::concat("; ", String::concat(print_expr(b), " }")))),
+    EMatch(scrutinee, arms) => {
+      let parts = for arm in arms {
+        let (pat, expr) = arm
+        String::concat(print_pat(pat), String::concat(" => ", print_expr(expr)))
+      }
+      String::concat("match ", String::concat(print_expr(scrutinee), String::concat(" { ", String::concat(join(parts, ", "), " }"))))
+    },
+    EHandle(body, arms) => {
+      let parts = for arm in arms {
+        let (pat, expr) = arm
+        String::concat(print_pat(pat), String::concat(" => ", print_expr(expr)))
+      }
+      String::concat("handle { ", String::concat(print_expr(body), String::concat(" } { ", String::concat(join(parts, ", "), " }"))))
+    },
+    EWhile(cond, body) => String::concat("while ", String::concat(print_expr(cond), String::concat(" { ", String::concat(print_expr(body), " }")))),
+    ELoop(params, body) => {
+      let parts = for param in params {
+        let (name, init) = param
+        String::concat(name, String::concat(" = ", print_expr(init)))
+      }
+      String::concat("loop (", String::concat(join(parts, ", "), String::concat(") { ", String::concat(print_expr(body), " }"))))
+    },
+    EForIn(value_name, index_name, iterable, body) => {
+      let binding = match index_name {
+        Some(index_name) => String::concat(index_name, String::concat(", ", value_name)),
+        None => value_name
+      }
+      String::concat("for ", String::concat(binding, String::concat(" in ", String::concat(print_expr(iterable), String::concat(" { ", String::concat(print_expr(body), " }"))))))
+    },
+    ECall(callee, args) => String::concat(print_expr(callee), String::concat("(", String::concat(join(map_to_strings(args, print_expr), ", "), ")"))),
+    EBinOp(op, left, right) => String::concat("(", String::concat(print_expr(left), String::concat(" ", String::concat(op, String::concat(" ", String::concat(print_expr(right), ")")))))),
+    EUnaryOp(op, expr) => String::concat("(", String::concat(op, String::concat(print_expr(expr), ")"))),
+    EFn(_, _, params, ret_ty, effect, body) => {
+      let parts = for param in params {
+        let (name, ty_opt) = param
+        match ty_opt {
+          Some(ty) => String::concat(name, String::concat(": ", print_type_expr(ty))),
+          None => name
+        }
+      }
+      let ret_str = match ret_ty {
+        Some(rt) => {
+          let eff_str = match effect {
+            Some(e) => String::concat(" with {", String::concat(e, "}")),
+            None => ""
+          }
+          String::concat(") -> ", String::concat(print_type_expr(rt), String::concat(eff_str, String::concat(" { ", String::concat(print_expr(body), " }")))))
+        },
+        None => String::concat(") -> ", print_expr(body))
+      }
+      String::concat("(", String::concat(join(parts, ", "), ret_str))
+    },
+    EDot(expr, field) => String::concat(print_expr(expr), String::concat(".", field)),
+    EThrow(e) => String::concat("throw(", String::concat(print_expr(e), ")")),
+    EBreak(opt) => match opt {
+      None => "break",
+      Some(v) => String::concat("break ", print_expr(v))
+    },
+    EContinue(args) => if eq(Array::length(args), 0) {
+      "continue"
+    } else String::concat("continue(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")),
+    ELabeledArg(name, _modifier, val) => String::concat(name, String::concat("=", print_expr(val))),
+    EMap(fields) => if eq(Array::length(fields), 0) {
+      "map {}"
+    } else {
+      let parts = for field in fields {
+        let (k, v) = field
+        String::concat(k, String::concat(": ", print_expr(v)))
+      }
+      String::concat("map { ", String::concat(join(parts, ", "), " }"))
+    }
+    ,
+    ESpread(inner) => String::concat("...", print_expr(inner)),
+    EStringInterp(parts) => String::concat("\"", String::concat(join(parts, ""), "\""))
+  }
+}
+
+let print_ctor_list = (ctors: Array[(String, Array[TypeExpr])]) -> String {
+  let parts = for ctor in ctors {
+    print_ctor(ctor)
+  }
+  join(parts, "; ")
+}
+
+export let rec print_stmt = (s: Stmt) -> String {
+  let prefix = (exported: Bool) -> String {
+    if exported {
+      "export "
+    } else ""
+  }
+  match s {
+    SLet(exported, is_rec, name, ty_opt, val) => {
+      let p = prefix(exported)
+      let r = if is_rec {
+        "let rec "
+      } else "let "
+      let t = match ty_opt {
+        Some(ty) => String::concat(": ", print_type_expr(ty)),
+        None => ""
+      }
+      String::concat(p, String::concat(r, String::concat(name, String::concat(t, String::concat(" = ", print_expr(val))))))
+    },
+    SLetMut(name, ty_opt, val) => {
+      let t = match ty_opt {
+        Some(ty) => String::concat(": ", print_type_expr(ty)),
+        None => ""
+      }
+      String::concat("let mut ", String::concat(name, String::concat(t, String::concat(" = ", print_expr(val)))))
+    },
+    SEnum(exported, name, ctors) => String::concat(prefix(exported), String::concat("enum ", String::concat(name, String::concat(" { ", String::concat(print_ctor_list(ctors), " }"))))),
+    SSuberror(exported, name, ctors) => {
+      let p = prefix(exported)
+      if eq(Array::length(ctors), 1) {
+        let (ctor_name, ctor_args) = Array::get(ctors, 0)
+        if ctor_name == name {
+          let parts = for arg in ctor_args {
+            print_type_expr(arg)
+          }
+          String::concat(p, String::concat("suberror ", String::concat(name, String::concat("(", String::concat(join(parts, ", "), ")")))))
+        }
+        else String::concat(p, String::concat("suberror ", String::concat(name, String::concat(" { ", String::concat(print_ctor_list(ctors), " }")))))
+      } else String::concat(p, String::concat("suberror ", String::concat(name, String::concat(" { ", String::concat(print_ctor_list(ctors), " }")))))
+    },
+    SStruct(exported, name, fields) => {
+      let parts = for field in fields {
+        let (fn1, ty) = field
+        String::concat(fn1, String::concat(": ", print_type_expr(ty)))
+      }
+      String::concat(prefix(exported), String::concat("struct ", String::concat(name, String::concat(" { ", String::concat(join(parts, "; "), " }")))))
+    },
+    STypeAlias(exported, name, ty) => String::concat(prefix(exported), String::concat("type ", String::concat(name, String::concat(" = ", print_type_expr(ty))))),
+    STrait(exported, name, supers) => {
+      let base = String::concat(prefix(exported), String::concat("trait ", name))
+      if eq(Array::length(supers), 0) {
+        base
+      }
+      else String::concat(base, String::concat(": ", join(supers, " + ")))
+    },
+    SImpl(tparams, _, trait_name, type_name) => {
+      let base = String::concat("impl ", String::concat(trait_name, String::concat(" for ", type_name)))
+      if eq(Array::length(tparams), 0) {
+        base
+      }
+      else String::concat("[", String::concat(join(tparams, ", "), String::concat("] ", base)))
+    },
+    SExternLet(name, ty) => String::concat("extern let ", String::concat(name, String::concat(": ", print_type_expr(ty)))),
+    SImport(path, items) => {
+      let parts = for item in items {
+        let (name, alias) = item
+        match alias {
+          Some(a) => String::concat(name, String::concat(" as ", a)),
+          None => name
+        }
+      }
+      String::concat("import ", String::concat(path, String::concat(" { ", String::concat(join(parts, ", "), " }"))))
+    },
+    STest(name, body) => String::concat("test \"", String::concat(name, String::concat("\" { ", String::concat(print_expr(body), " }")))),
+    SBench(name, body) => String::concat("bench \"", String::concat(name, String::concat("\" { ", String::concat(print_expr(body), " }")))),
+    SExpr(e) => print_expr(e),
+    SExport(names) => String::concat("export { ", String::concat(join(names, ", "), " }")),
+    SReExport(path, items) => {
+      let parts = for item in items {
+        let (name, alias) = item
+        match alias {
+          Some(a) => String::concat(name, String::concat(" as ", a)),
+          None => name
+        }
+      }
+      String::concat("export ", String::concat(path, String::concat(" { ", String::concat(join(parts, ", "), " }"))))
+    },
+    SModule(exported, name, stmts) => {
+      let parts = for s in stmts {
+        print_stmt(s)
+      }
+      let p = if exported {
+        "export "
+      } else ""
+      String::concat(p, String::concat("module ", String::concat(name, String::concat(" { ", String::concat(join(parts, "\n"), " }")))))
+    }
+  }
+}
+
+export let print_program = (stmts: Array[Stmt]) -> String {
+  let parts = for s in stmts {
+    print_stmt(s)
+  }
+  join(parts, "\n")
+}

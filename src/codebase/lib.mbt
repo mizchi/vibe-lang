@@ -597,6 +597,7 @@ pub fn resolve_import_path_with_registry(
   root : String,
   registry_modules : Map[String, String],
 ) -> Result[String, String] {
+  let mut from_registry = false
   let resolved_raw = if import_path.has_prefix("/") {
     @vibe_fs.normalize_path(import_path)
   } else if import_path.has_prefix("./") || import_path.has_prefix("../") {
@@ -605,7 +606,10 @@ pub fn resolve_import_path_with_registry(
     match split_registry_import_path(import_path) {
       Some((ns, rest)) =>
         match registry_modules.get(ns) {
-          Some(ns_root) => @vibe_fs.normalize_path(ns_root + "/" + rest)
+          Some(ns_root) => {
+            from_registry = true
+            @vibe_fs.normalize_path(ns_root + "/" + rest)
+          }
           None =>
             return Err(
               "unknown namespace: " +
@@ -619,7 +623,8 @@ pub fn resolve_import_path_with_registry(
     }
   }
   let resolved = resolve_import_module_entry(resolved_raw)
-  if not(is_within_root(root, resolved)) {
+  // Registry-resolved paths are trusted (they point to well-known module locations)
+  if not(from_registry) && not(is_within_root(root, resolved)) {
     return Err(
       "import path outside root: " + resolved + " (root: " + root + ")",
     )
