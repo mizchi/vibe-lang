@@ -1048,15 +1048,32 @@ export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_na
     emit_table_section_funcref(out, total_table_entries)
   }
   emit_memory_section(out, 8192)
-  // Tag section (section ID 13): exception tag with type (i64)->()
+  // Tag section (section ID 13): 2 tags
+  // tag 0: error/perform exception (i64)->()
+  // tag 1: resume exception (i64)->()
   let tag_content = bytebuf_new()
-  bytebuf_push_vec_header(tag_content, 1)
+  bytebuf_push_vec_header(tag_content, 2)
   bytebuf_push(tag_content, 0)
-  // attribute: exception
   leb128_encode_u32(tag_content, 1)
-  // type index 1 = (i64)->()
+  bytebuf_push(tag_content, 0)
+  leb128_encode_u32(tag_content, 1)
   bytebuf_push_section(out, 13, tag_content)
-  emit_global_section_i32_mut(out, heap_start)
+  // Global section: 2 globals
+  // global 0: heap_ptr (i32 mut)
+  // global 1: __resume_value (i64 mut, init 0)
+  let global_content = bytebuf_new()
+  bytebuf_push_vec_header(global_content, 2)
+  // global 0: i32 mut
+  bytebuf_push(global_content, 127)
+  bytebuf_push(global_content, 1)
+  emit_i32_const(global_content, heap_start)
+  emit_end(global_content)
+  // global 1: i64 mut
+  bytebuf_push(global_content, 126)
+  bytebuf_push(global_content, 1)
+  emit_i64_const(global_content, 0)
+  emit_end(global_content)
+  bytebuf_push_section(out, 6, global_content)
   let start_func_idx = func_offset + num_user_funcs
   let run_func_idx = start_func_idx + 1
   let all_export_names = Array::slice([
