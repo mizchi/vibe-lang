@@ -1906,56 +1906,47 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
             _ => throw("expected identifier after 'let mut'")
           },
           TIdent(name) => {
-            // Record destructuring: let record { x, y } = expr
+            // Record destructuring: let record { x, y: (a, b) } = expr
+            // Desugar to __rec_field access chain with nested tuple desugar
             if name == "record" && (match peek(tokens, next + 1) { TLBrace => true, _ => false }) {
-              let mut rp = next + 2
-              let field_names = ArrayBuilder::new()
-              let mut rd = true
-              while rd {
-                match peek(tokens, rp) {
-                  TRBrace => { rd = false },
-                  TIdent(fname) => {
-                    // Check for rename: x: a
-                    match peek(tokens, rp + 1) {
-                      TColon => match peek(tokens, rp + 2) {
-                        TIdent(bname) => {
-                          ArrayBuilder::push(field_names, bname)
-                          rp = rp + 3
-                        },
-                        _ => {
-                          ArrayBuilder::push(field_names, fname)
-                          rp = rp + 1
-                        }
-                      },
-                      _ => {
-                        ArrayBuilder::push(field_names, fname)
-                        rp = rp + 1
-                      }
-                    }
-                    match peek(tokens, rp) {
-                      TComma => { rp = rp + 1 },
-                      _ => ()
-                    }
-                  },
-                  _ => { rd = false }
-                }
-              }
-              let rp2 = rp + 1
-              let eq = expect_tk(tokens, rp2, "=")
+              let (pat, pn) = parse_pattern(tokens, next)
+              let eq = expect_tk(tokens, pn, "=")
               let (val, vn) = parse_impl(tokens, eq, 0)
               let a = skip_semi(tokens, vn)
               let (body, end) = parse_impl(tokens, a, mode_block)
-              let fnames = ArrayBuilder::freeze(field_names)
-              // Desugar using tuple-style index access (record layout: tag+count header = 8 bytes, then fields)
-              // EDot with numeric index uses tuple layout (no header), so we use __index for record fields
+              // Extract field patterns from PTuple
               let val_name = "__rec_destr"
               let mut desugar = body
-              let mut di = Array::length(fnames) - 1
-              while di >= 0 {
-                let fn_name = Array::get(fnames, di)
-                // Access field at offset 8 + di * 8 via __rec_field helper
-                desugar = ELet(fn_name, ECall(EIdent("__rec_field"), [EIdent(val_name), EInt(di)]), desugar)
-                di = di - 1
+              match pat {
+                PTuple(field_pats) => {
+                  let mut di = Array::length(field_pats) - 1
+                  while di >= 0 {
+                    let fp = Array::get(field_pats, di)
+                    match fp {
+                      PBind(bname) => {
+                        desugar = ELet(bname, ECall(EIdent("__rec_field"), [EIdent(val_name), EInt(di)]), desugar)
+                      },
+                      PTuple(sub_pats) => {
+                        // Nested tuple: let __sub = __rec_field(val, di); let (a, b) = __sub
+                        let sub_name = String::concat("__rec_sub_", __to_string(di))
+                        let mut si = Array::length(sub_pats) - 1
+                        while si >= 0 {
+                          match Array::get(sub_pats, si) {
+                            PBind(sname) => {
+                              desugar = ELet(sname, EDot(EIdent(sub_name), __to_string(si)), desugar)
+                            },
+                            _ => ()
+                          }
+                          si = si - 1
+                        }
+                        desugar = ELet(sub_name, ECall(EIdent("__rec_field"), [EIdent(val_name), EInt(di)]), desugar)
+                      },
+                      _ => ()
+                    }
+                    di = di - 1
+                  }
+                },
+                _ => ()
               }
               desugar = ELet(val_name, val, desugar)
               (desugar, end)
@@ -1998,10 +1989,55 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
             if end <= a {
               throw("internal parser error: block let-pat parser did not advance")
             } else {
-              let arms = [
-                (pat, body)
-              ]
-              (EMatch(val, arms), end)
+              // Desugar tuple pattern to ELet + EDot chain
+              let desugar_tuple_pat = (base_name: String, base_expr: Expr, tpats: Array[Pat], cont: Expr) -> Expr {
+                let mut result = cont
+                let mut ti = Array::length(tpats) - 1
+                while ti >= 0 {
+                  let tp = Array::get(tpats, ti)
+                  match tp {
+                    PBind(bname) => {
+                      result = ELet(bname, EDot(EIdent(base_name), __to_string(ti)), result)
+                    },
+                    PTuple(sub_pats) => {
+                      let sub_name = String::concat(base_name, String::concat("_", __to_string(ti)))
+                      // Recursively desugar nested tuple
+                      let mut si = Array::length(sub_pats) - 1
+                      while si >= 0 {
+                        match Array::get(sub_pats, si) {
+                          PBind(sname) => {
+                            result = ELet(sname, EDot(EIdent(sub_name), __to_string(si)), result)
+                          },
+                          PTuple(deep_pats) => {
+                            let deep_name = String::concat(sub_name, String::concat("_", __to_string(si)))
+                            let mut di2 = Array::length(deep_pats) - 1
+                            while di2 >= 0 {
+                              match Array::get(deep_pats, di2) {
+                                PBind(dname) => {
+                                  result = ELet(dname, EDot(EIdent(deep_name), __to_string(di2)), result)
+                                },
+                                _ => ()
+                              }
+                              di2 = di2 - 1
+                            }
+                            result = ELet(deep_name, EDot(EIdent(sub_name), __to_string(si)), result)
+                          },
+                          _ => ()
+                        }
+                        si = si - 1
+                      }
+                      result = ELet(sub_name, EDot(EIdent(base_name), __to_string(ti)), result)
+                    },
+                    _ => ()
+                  }
+                  ti = ti - 1
+                }
+                ELet(base_name, base_expr, result)
+              }
+              match pat {
+                PTuple(tpats) => (desugar_tuple_pat("__tup", val, tpats, body), end),
+                _ => (EMatch(val, [(pat, body)]), end)
+              }
             }
           },
           _ => throw("expected identifier after 'let'")
