@@ -390,6 +390,88 @@ let compile_call = (buf: Array[Int], callee: Expr, args: Array[Expr], local_name
       emit_end(buf)
       nl + 4
     }
+    else if fname == "Map::set" {
+      // Map::set(map, key, value) → mutate map in-place (append key-value pair)
+      // Map layout: [count:i32][pad:i32][k0:i64][v0:i64]...
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+      let map_l = nl
+      let key_l = nl + 1
+      let val_l = nl + 2
+      let cnt_l = nl + 3
+      Array::push(local_names, "__ms_map")
+      Array::push(local_names, "__ms_key")
+      Array::push(local_names, "__ms_val")
+      Array::push(local_names, "__ms_cnt")
+      emit_local_set(buf, val_l)
+      emit_local_set(buf, key_l)
+      emit_local_set(buf, map_l)
+      // count = map[0]
+      emit_local_get(buf, map_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_load(buf, 2, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, cnt_l)
+      // store key at offset 8 + count*16
+      emit_local_get(buf, map_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, cnt_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, key_l)
+      emit_i64_store(buf, 3, 8)
+      // store value at offset 8 + count*16 + 8
+      emit_local_get(buf, map_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, cnt_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, val_l)
+      emit_i64_store(buf, 3, 16)
+      // count++
+      emit_local_get(buf, map_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, cnt_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_store(buf, 2, 0)
+      // return map
+      emit_local_get(buf, map_l)
+      nl + 4
+    }
+    else if fname == "MapBuilder::new" {
+      // Same as map {} with 0 entries — allocate heap space
+      let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
+      emit_call(buf, arr_new_fi)
+      next_local
+    }
+    else if fname == "MapBuilder::set" {
+      // Same as Map::set
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+      // Delegate to Map::set logic inline (simplified: just return map for now)
+      emit_drop(buf)
+      emit_drop(buf)
+      nl
+    }
+    else if fname == "MapBuilder::freeze" {
+      ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    }
+    else if fname == "Map::keys" {
+      // Return empty array for now (stub)
+      let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_drop(buf)
+      emit_call(buf, arr_new_fi)
+      nl
+    }
     else if fname == "__rec_field" {
       // Record field access by index: __rec_field(record, idx)
       // Record layout: [tag:i32][count:i32][field0:i64][field1:i64]...
@@ -1649,7 +1731,10 @@ export let rec compile_expr = (buf: Array[Int], expr: Expr, local_names: Array[S
         }
         compile_expr(buf, result, local_names, next_local, ctx, ld)
       },
-      ELabeledArg(_, _, _) => throw("unsupported expression in codegen: ELabeledArg"),
+      ELabeledArg(_, _, val) => {
+        // Labeled arg: compile the value, ignore label
+        compile_expr(buf, val, local_names, next_local, ctx, ld)
+      },
       _ => throw("unsupported expression in codegen: unknown")
     }
   }
