@@ -1369,9 +1369,10 @@ let compile_match = (buf: Array[Int], expr: Expr, local_names: Array[String], ne
                   emit_i64_const(buf, n)
                   emit_i64_eq(buf)
                 },
-                PCtor(cname, _) => {
+                PCtor(cname, cargs) => {
                   let ci = lookup_ctor(ctx.ctor_table.names, cname, 0)
                   let ctag = if ci >= 0 { Array::get(ctx.ctor_table.tags, ci) } else { -1 }
+                  // Tag check
                   emit_local_get(buf, scrut_local)
                   emit_i64_const(buf, -2)
                   emit_i64_and(buf)
@@ -1379,6 +1380,22 @@ let compile_match = (buf: Array[Int], expr: Expr, local_names: Array[String], ne
                   emit_i32_load(buf, 2, 0)
                   emit_i32_const(buf, ctag)
                   emit_i32_eq(buf)
+                  // If has PInt arg, also check field value
+                  if Array::length(cargs) == 1 {
+                    match Array::get(cargs, 0) {
+                      PInt(n) => {
+                        emit_local_get(buf, scrut_local)
+                        emit_i64_const(buf, -2)
+                        emit_i64_and(buf)
+                        emit_i32_wrap_i64(buf)
+                        emit_i64_load(buf, 3, 8)
+                        emit_i64_const(buf, n)
+                        emit_i64_eq(buf)
+                        bytebuf_push(buf, 113)
+                      },
+                      _ => ()
+                    }
+                  }
                 },
                 _ => {
                   emit_i32_const(buf, 1)
