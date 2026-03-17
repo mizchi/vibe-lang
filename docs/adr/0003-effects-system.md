@@ -47,6 +47,30 @@ ADR-0021 でユーザー定義エフェクト（`effect Mut<T> { ... }`）と `p
 - `handle ... with EffectName { ... }` でエフェクトを消去
 - 既存の `handle { } { Error(_) => ... }` はそのまま維持（後方互換）
 
+## Diagnostic Unification (2026-02-10)
+
+`TypeError::EffectNotAllowed` を廃止し `TypeError::EffectGuardNotSatisfied` に統合。effect-set 不一致と do 境界不一致を同一の診断形式で報告する。
+
+- `EffectGuardNotSatisfied` バリアント: `operation~`, `missing_effect~`, `missing_do_boundary~` フィールド
+- 実装: `src/checker/typecheck_errors.mbt`
+- テスト: `fixtures/typecheck/effect_guard_missing_*`, `fixtures/typecheck/generic_effect_missing_*`, `fixtures/typecheck/generic_effect_wrapper_*`
+
+## Generics + Effects Test Matrix (2026-02-10)
+
+ジェネリクスとエフェクトの組み合わせを網羅するフィクスチャマトリクス。
+
+成功ケース:
+- `generic_effect_matrix_ok_with_e_try_catch_localized`
+- `generic_effect_matrix_ok_trait_and_effect_bound`
+- `generic_effect_matrix_ok_passthrough_pure`
+
+失敗ケース:
+- `generic_effect_matrix_fail_missing_effect_at_caller`
+- `generic_effect_matrix_fail_trait_and_effect_mixed`
+- `generic_effect_matrix_fail_missing_wrapper_effect`
+
+(すべて `fixtures/typecheck/` 以下、`.vibe` + `.diag` ペア)
+
 ## Consequences
 
 - 純粋関数とエフェクトフル関数の区別が型シグネチャに表れ、コードの意図が明確になる

@@ -12,7 +12,7 @@ std リファクタリングとテスト分割から発見された文法・言�
 1. **Import リスト末尾カンマ**: `import { a, b, } from "./m.vibe"` を許容。parser が named import リスト内の trailing comma + trivia/newlines を受理
 2. **ローカル let 型注釈**: `let x: T = expr` 形式を parser が受理。型不一致時の診断もカバー
 3. **非引用テスト名**: `test smoke_case { ... }` を受理（引用形式も引き続きサポート）
-4. **loop 式**: `loop { ... }` を `while true` へのデシュガーとして実装（`loop` はコンテキスト依存キーワード）
+4. **コンテキスト依存キーワード**: `map` と `loop` をコンテキスト依存キーワード化。`map { ... }` はマップリテラル (`map_kw`)、`let map = ...` / `map(...)` は識別子 (`name`)。`loop { ... }` は `while true` へのデシュガー。lexer が次トークンを見て判定
 5. **負リテラル境界 UX**: `Int` 最小値 (`-2147483648`) に対して `IntMinLiteralBoundary` 専用診断とリライトヒントを出力
 6. **Import パース診断**: `from` キーワード欠落、リストセパレータ不正、余分なカンマを区別する診断ヒントを追加
 7. **Formatter 安定性**: `trait Eq` / `impl Eq for Int` のスペーシング、引用 `test "name"`、文字列/文字リテラル引用符保持、import join スペーシングの parse-stability バグを修正
@@ -46,3 +46,4 @@ std ポートおよびテスト分割の過程で、パーサーやフォーマ�
 - `fixtures/trait_import_chain.vibe` - trait import chain
 - `fixtures/typecheck/polymorphic_recursion_unsupported.vibe` / `.diag` - 多相再帰診断
 - `src/parser/format_test.mbt` - フォーマッタ回帰テスト
+- `src/parser/syntax_kind_test.mbt` - コンテキスト依存キーワードテスト (`map { a: 1 }` → `map_kw`, `let map = 1` → `name`, `map(1)` → `name`)
