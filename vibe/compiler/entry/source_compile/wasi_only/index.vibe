@@ -9,7 +9,8 @@ import ../../../syntax/lexer.vibe {
 }
 
 import ../../../syntax/parser.vibe {
-  parse_program
+  parse_program,
+  parse
 }
 
 import ../../../checker/checker_stmt.vibe {
@@ -43,10 +44,85 @@ let strip_generic_type_params = (stmts: Array[Stmt]) -> Unit {
   }
 }
 
+// Expand EStringInterp: replace expr parts (odd indices) with parsed Expr
+let rec rewrite_interp = (e: Expr) -> Expr with { Error } {
+  match e {
+    EStringInterp(parts) => {
+      let plen = Array::length(parts)
+      let mut result = EString("")
+      let mut has = false
+      let mut i = 0
+      while i < plen {
+        let part = Array::get(parts, i)
+        if i % 2 == 0 {
+          if String::length(part) > 0 {
+            if has { result = ECall(EIdent("String::concat"), [result, EString(part)]) }
+            else { result = EString(part); has = true }
+          }
+        } else {
+          let part_tokens = lex(part)
+          let part_expr = parse(part_tokens)
+          let ep = ECall(EIdent("__to_string"), [part_expr])
+          if has { result = ECall(EIdent("String::concat"), [result, ep]) }
+          else { result = ep; has = true }
+        }
+        i = i + 1
+      }
+      result
+    },
+    ELet(name, val, body) => ELet(name, rewrite_interp(val), rewrite_interp(body)),
+    ELetMut(name, val, body) => ELetMut(name, rewrite_interp(val), rewrite_interp(body)),
+    ELetRec(name, val, body) => ELetRec(name, rewrite_interp(val), rewrite_interp(body)),
+    ESeq(a, b) => ESeq(rewrite_interp(a), rewrite_interp(b)),
+    ECall(callee, args) => {
+      let new_args = ArrayBuilder::new()
+      let mut i = 0
+      while i < Array::length(args) {
+        ArrayBuilder::push(new_args, rewrite_interp(Array::get(args, i)))
+        i = i + 1
+      }
+      ECall(rewrite_interp(callee), ArrayBuilder::freeze(new_args))
+    },
+    EIf(c, t, e) => EIf(rewrite_interp(c), rewrite_interp(t), rewrite_interp(e)),
+    EFn(tp, tb, params, ret, eff, body) => EFn(tp, tb, params, ret, eff, rewrite_interp(body)),
+    EMatch(scrut, arms) => {
+      let new_arms = ArrayBuilder::new()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, body) = Array::get(arms, i)
+        ArrayBuilder::push(new_arms, (pat, rewrite_interp(body)))
+        i = i + 1
+      }
+      EMatch(rewrite_interp(scrut), ArrayBuilder::freeze(new_arms))
+    },
+    _ => e
+  }
+}
+
+let expand_interp_stmts = (stmts: Array[Stmt]) -> Unit with { Error } {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exp, is_rec, name, ann, expr) => {
+        Array::set(stmts, i, SLet(exp, is_rec, name, ann, rewrite_interp(expr)))
+      },
+      STest(name, expr) => {
+        Array::set(stmts, i, STest(name, rewrite_interp(expr)))
+      },
+      SBench(name, expr) => {
+        Array::set(stmts, i, SBench(name, rewrite_interp(expr)))
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
 export let compile_source_wasi_only = (source: String, entry_name: String) -> Bytes with { Error } {
   let tokens = lex(source)
   let stmts = parse_program(tokens)
   strip_generic_type_params(stmts)
+  expand_interp_stmts(stmts)
   let _ = check_program(stmts)
   compile_wasi_module_impl(stmts, entry_name)
 }
@@ -171,6 +247,7 @@ export let compile_file_wasi_only = (entry_path: String, entry_name: String) -> 
   collect_sources(entry_path, sources, visited)
   let stmts = merge_sources(sources)
   strip_generic_type_params(stmts)
+  expand_interp_stmts(stmts)
   let _ = check_program(stmts)
   compile_wasi_module_impl(stmts, entry_name)
 }
