@@ -158,7 +158,11 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         | "String::to_lower"
         | "String::replace"
         | "String::replace_all"
-        | "String::split" => ctx.need_heap = true
+        | "String::split"
+        | "Bytes::new"
+        | "Bytes::push"
+        | "Bytes::slice"
+        | "Bytes::concat" => ctx.need_heap = true
         "sleep" => ctx.need_sleep = true
         "Stdout::write_char" | "Stdout::write_stream" =>
           ctx.need_stdout_write_char = true
@@ -1084,7 +1088,7 @@ fn compile_func_body(
       )
     }
   }
-  ctx.need_heap = need_heap
+  ctx.need_heap = need_heap || ctx.coverage_enabled
   if ctx.need_heap {
     ctx.heap_local = ctx.local_count
     ctx.local_count += 1
