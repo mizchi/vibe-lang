@@ -435,38 +435,51 @@ let emit_instruction = (
       else if kw == "nop" { Bytes::push(buf, 0x01); pos + 1 }
       else if kw == "block" {
         Bytes::push(buf, 0x02)
-        let next = pos + 1
-        // Check for label and block type
+        let mut next = pos + 1
+        // Check for label
         if (next < end_pos) && (tok_type(tokens, next) == tok_ident) {
           let lbl = tok_text(src, tokens, next)
           map_set(label_names, label_indices, lbl, label_depth)
-          // Check for result type after label
-          let next2 = next + 1
-          if (next2 < end_pos) && (tok_type(tokens, next2) == tok_lparen) {
-            // skip (result i32) form - peek ahead
-            Bytes::push(buf, 0x40)
+          next = next + 1
+        }
+        // Check for (result type)
+        if (next < end_pos) && (tok_type(tokens, next) == tok_lparen) && ((next + 1) < end_pos) && (tok_text(src, tokens, next + 1) == "result") {
+          let rpos = next + 2
+          if (rpos < end_pos) && (tok_type(tokens, rpos) == tok_keyword) {
+            Bytes::push(buf, valtype_code(tok_text(src, tokens, rpos)))
+            // skip past (result type)
+            let mut skip = rpos + 1
+            if (skip < end_pos) && (tok_type(tokens, skip) == tok_rparen) { skip = skip + 1 }
+            skip
           } else {
             Bytes::push(buf, 0x40)
+            next
           }
-          next + 1
         } else {
-          // Check for (result ...) inline
-          if (next < end_pos) && (tok_type(tokens, next) == tok_lparen) {
-            Bytes::push(buf, 0x40)
-          } else {
-            Bytes::push(buf, 0x40)
-          }
+          Bytes::push(buf, 0x40)
           next
         }
       }
       else if kw == "loop" {
         Bytes::push(buf, 0x03)
-        let next = pos + 1
+        let mut next = pos + 1
         if (next < end_pos) && (tok_type(tokens, next) == tok_ident) {
           let lbl = tok_text(src, tokens, next)
           map_set(label_names, label_indices, lbl, label_depth)
-          Bytes::push(buf, 0x40)
-          next + 1
+          next = next + 1
+        }
+        // Check for (result type)
+        if (next < end_pos) && (tok_type(tokens, next) == tok_lparen) && ((next + 1) < end_pos) && (tok_text(src, tokens, next + 1) == "result") {
+          let rpos = next + 2
+          if (rpos < end_pos) && (tok_type(tokens, rpos) == tok_keyword) {
+            Bytes::push(buf, valtype_code(tok_text(src, tokens, rpos)))
+            let mut skip = rpos + 1
+            if (skip < end_pos) && (tok_type(tokens, skip) == tok_rparen) { skip = skip + 1 }
+            skip
+          } else {
+            Bytes::push(buf, 0x40)
+            next
+          }
         } else {
           Bytes::push(buf, 0x40)
           next
@@ -474,11 +487,27 @@ let emit_instruction = (
       }
       else if kw == "if" {
         Bytes::push(buf, 0x04)
-        Bytes::push(buf, 0x40)
-        pos + 1
+        let mut next = pos + 1
+        // Check for (result type)
+        if (next < end_pos) && (tok_type(tokens, next) == tok_lparen) && ((next + 1) < end_pos) && (tok_text(src, tokens, next + 1) == "result") {
+          let rpos = next + 2
+          if (rpos < end_pos) && (tok_type(tokens, rpos) == tok_keyword) {
+            Bytes::push(buf, valtype_code(tok_text(src, tokens, rpos)))
+            let mut skip = rpos + 1
+            if (skip < end_pos) && (tok_type(tokens, skip) == tok_rparen) { skip = skip + 1 }
+            skip
+          } else {
+            Bytes::push(buf, 0x40)
+            next
+          }
+        } else {
+          Bytes::push(buf, 0x40)
+          next
+        }
       }
       else if kw == "else" { Bytes::push(buf, 0x05); pos + 1 }
       else if kw == "end" { Bytes::push(buf, 0x0B); pos + 1 }
+      else if kw == "then" { pos + 1 }
       else if kw == "br" {
         Bytes::push(buf, 0x0C)
         let next = pos + 1
@@ -630,6 +659,54 @@ let emit_instruction = (
         write_uleb128(buf, offset0)
         next2
       }
+      else if kw == "i32.store8" {
+        Bytes::push(buf, 0x3A)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 0)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.store16" {
+        Bytes::push(buf, 0x3B)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 1)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.load8_s" {
+        Bytes::push(buf, 0x2C)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 0)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.load8_u" {
+        Bytes::push(buf, 0x2D)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 0)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.load16_s" {
+        Bytes::push(buf, 0x2E)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 1)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.load16_u" {
+        Bytes::push(buf, 0x2F)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 1)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
       else if kw == "memory.size" {
         Bytes::push(buf, 0x3F)
         Bytes::push(buf, 0x00)
@@ -680,6 +757,7 @@ let emit_instruction = (
       // i32 arithmetic
       else if kw == "i32.clz" { Bytes::push(buf, 0x67); pos + 1 }
       else if kw == "i32.ctz" { Bytes::push(buf, 0x68); pos + 1 }
+      else if kw == "i32.popcnt" { Bytes::push(buf, 0x69); pos + 1 }
       else if kw == "i32.add" { Bytes::push(buf, 0x6A); pos + 1 }
       else if kw == "i32.sub" { Bytes::push(buf, 0x6B); pos + 1 }
       else if kw == "i32.mul" { Bytes::push(buf, 0x6C); pos + 1 }
@@ -699,13 +777,21 @@ let emit_instruction = (
       else if kw == "i64.add" { Bytes::push(buf, 0x7C); pos + 1 }
       else if kw == "i64.sub" { Bytes::push(buf, 0x7D); pos + 1 }
       else if kw == "i64.mul" { Bytes::push(buf, 0x7E); pos + 1 }
+      else if kw == "i64.clz" { Bytes::push(buf, 0x79); pos + 1 }
+      else if kw == "i64.ctz" { Bytes::push(buf, 0x7A); pos + 1 }
+      else if kw == "i64.popcnt" { Bytes::push(buf, 0x7B); pos + 1 }
       else if kw == "i64.div_s" { Bytes::push(buf, 0x7F); pos + 1 }
+      else if kw == "i64.div_u" { Bytes::push(buf, 0x80); pos + 1 }
       else if kw == "i64.rem_s" { Bytes::push(buf, 0x81); pos + 1 }
+      else if kw == "i64.rem_u" { Bytes::push(buf, 0x82); pos + 1 }
       else if kw == "i64.and" { Bytes::push(buf, 0x83); pos + 1 }
       else if kw == "i64.or" { Bytes::push(buf, 0x84); pos + 1 }
       else if kw == "i64.xor" { Bytes::push(buf, 0x85); pos + 1 }
       else if kw == "i64.shl" { Bytes::push(buf, 0x86); pos + 1 }
       else if kw == "i64.shr_s" { Bytes::push(buf, 0x87); pos + 1 }
+      else if kw == "i64.shr_u" { Bytes::push(buf, 0x88); pos + 1 }
+      else if kw == "i64.rotl" { Bytes::push(buf, 0x89); pos + 1 }
+      else if kw == "i64.rotr" { Bytes::push(buf, 0x8A); pos + 1 }
       // Conversions
       else if kw == "i32.wrap_i64" { Bytes::push(buf, 0xA7); pos + 1 }
       else if kw == "i64.extend_i32_s" { Bytes::push(buf, 0xAC); pos + 1 }
@@ -818,11 +904,50 @@ let compile_func_body = (
   }
 
   // Emit instructions
+  // Track paren-block context for S-expression form: (block ...), (loop ...), (if ...)
+  // paren_stack tracks nesting of '(' tokens; paren_is_block marks which are block-level
+  let paren_is_block = Array::slice([0], 0, 0) // stack of 0/1; 1 = this paren opened a block/loop/if
   let mut ip = body_start
   while ip < body_end {
-    ip = emit_instruction(code, src, tokens, ip, body_end,
-      func_names, func_indices, ln, li,
-      global_names, global_indices, lbl_names, lbl_indices, 0)
+    let cur_ty = tok_type(tokens, ip)
+    if cur_ty == tok_lparen {
+      // Check if next token is block/loop/if keyword
+      let nxt = ip + 1
+      if (nxt < body_end) && (tok_type(tokens, nxt) == tok_keyword) {
+        let nkw = tok_text(src, tokens, nxt)
+        if (nkw == "block") || (nkw == "loop") || (nkw == "if") {
+          // Mark this paren as block-level; skip the '(' and let emit_instruction handle the keyword
+          Array::push(paren_is_block, 1)
+          ip = ip + 1
+        } else if (nkw == "result") || (nkw == "then") || (nkw == "else") {
+          // These are sub-forms inside blocks, not block-level parens
+          Array::push(paren_is_block, 0)
+          ip = ip + 1
+        } else {
+          // Regular paren group (e.g. (local.get 0)) - just skip
+          Array::push(paren_is_block, 0)
+          ip = ip + 1
+        }
+      } else {
+        Array::push(paren_is_block, 0)
+        ip = ip + 1
+      }
+    } else if cur_ty == tok_rparen {
+      let plen = Array::length(paren_is_block)
+      if plen > 0 {
+        let is_block = Array::get(paren_is_block, plen - 1)
+        Array::truncate(paren_is_block, plen - 1)
+        if is_block == 1 {
+          // Closing a block/loop/if S-expression - emit end
+          Bytes::push(code, 0x0B)
+        }
+      }
+      ip = ip + 1
+    } else {
+      ip = emit_instruction(code, src, tokens, ip, body_end,
+        func_names, func_indices, ln, li,
+        global_names, global_indices, lbl_names, lbl_indices, 0)
+    }
   }
 
   // End opcode
