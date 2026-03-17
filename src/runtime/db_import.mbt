@@ -45,8 +45,7 @@ fn normalize_module_entry_path(path : String) -> String {
     path.has_suffix(".xm") ||
     path.has_suffix(".wasm") ||
     path.has_suffix(".db") ||
-    path.has_suffix(".lock") ||
-    path.has_suffix(".vbundle") {
+    path.has_suffix(".lock") {
     path
   } else {
     @path.Path(path).join(@path.Path("index.vibe")).normalize().to_string()

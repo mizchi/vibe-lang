@@ -9,10 +9,8 @@ fn apply_lock_to_db_with_fs(
   let lock_path = @codebase.lock_file_path_with_fs(entry, fs)
   let lock_root = @vibe_fs.parent_path(lock_path)
   let legacy_lock_path = lock_root + "/vibe.lock"
-  let index_vbundle_path = lock_root + "/index.vbundle"
   let has_lock_source = @io.path_exists_with(fs, lock_path) ||
-    @io.path_exists_with(fs, legacy_lock_path) ||
-    @io.path_exists_with(fs, index_vbundle_path)
+    @io.path_exists_with(fs, legacy_lock_path)
   let lock = if has_lock_source {
     if persist_lock_updates {
       match @codebase.update_lock_path_refs_with_fs(entry, fs) {
@@ -417,7 +415,7 @@ pub fn resolve_entry_path(path : String) -> String {
 }
 
 ///|
-fn graph_head_from_index_vbundle(source : String) -> String? {
+fn graph_head_from_cache_json(source : String) -> String? {
   let parsed : Json = @json.parse(source) catch { _ => return None }
   match parsed {
     Json::Object(obj) =>
@@ -435,13 +433,13 @@ pub fn resolve_entry_graph_head_with_fs(
   fs : &@io.FileSystemAdapter,
 ) -> String? {
   let resolved = resolve_entry_path_with_fs(entry_path, fs)
-  let index_root = @codebase.resolve_index_root_with_fs(resolved, fs)
-  let index_vbundle_path = index_root + "/index.vbundle"
-  let source = match @io.read_string_with(fs, index_vbundle_path) {
+  let vibe_dir = @codebase.vibe_dir_path_with_fs(resolved, fs)
+  let cache_path = vibe_dir + "/cache.json"
+  let source = match @io.read_string_with(fs, cache_path) {
     Ok(v) => v
     Err(_) => return None
   }
-  graph_head_from_index_vbundle(source)
+  graph_head_from_cache_json(source)
 }
 
 ///|
@@ -456,8 +454,7 @@ fn resolve_import_module_entry(path : String) -> String {
     normalized.has_suffix(".xm") ||
     normalized.has_suffix(".wasm") ||
     normalized.has_suffix(".db") ||
-    normalized.has_suffix(".lock") ||
-    normalized.has_suffix(".vbundle") {
+    normalized.has_suffix(".lock") {
     normalized
   } else {
     @vibe_fs.normalize_path(normalized + "/index.vibe")

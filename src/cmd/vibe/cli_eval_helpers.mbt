@@ -227,7 +227,14 @@ fn default_ns_db_rel_path(ns_name : String) -> String {
 }
 
 ///|
-fn load_index_vbundle_object(path : String) -> Map[String, Json] {
+fn vibe_cache_json_path(index_root : String) -> String {
+  let vibe_dir = find_vibe_dir(index_root + "/index.vibe")
+  vibe_dir + "/cache.json"
+}
+
+///|
+fn load_vibe_cache_object(index_root : String) -> Map[String, Json] {
+  let path = vibe_cache_json_path(index_root)
   let obj : Map[String, Json] = {}
   if not(@os_fs.path_exists(path)) {
     return obj
@@ -246,21 +253,28 @@ fn load_index_vbundle_object(path : String) -> Map[String, Json] {
 }
 
 ///|
-fn write_index_vbundle_object(
-  index_vbundle_path : String,
+fn write_vibe_cache_object(
+  index_root : String,
   obj : Map[String, Json],
 ) -> Result[Unit, String] {
+  let path = vibe_cache_json_path(index_root)
+  let dir = @vibe_fs.parent_path(path)
+  if not(@os_fs.path_exists(dir)) {
+    @os_fs.mkdir(dir) catch {
+      e => return Err("mkdir .vibe: " + e.to_string())
+    }
+  }
   @os_fs.write_string_to_file(
-    index_vbundle_path,
+    path,
     Json::object(obj).stringify() + "\n",
   ) catch {
-    e => return Err("write index.vbundle: " + e.to_string())
+    e => return Err("write .vibe/cache.json: " + e.to_string())
   }
   Ok(())
 }
 
 ///|
-fn resolve_active_ns_name_from_index_vbundle(
+fn resolve_active_ns_name_from_cache(
   vbundle : Map[String, Json],
 ) -> String {
   match vbundle.get("active_namespace") {
@@ -275,7 +289,7 @@ fn resolve_active_ns_name_from_index_vbundle(
 }
 
 ///|
-fn resolve_ns_db_rel_path_from_index_vbundle(
+fn resolve_ns_db_rel_path_from_cache(
   vbundle : Map[String, Json],
   ns_name : String,
 ) -> String {
@@ -320,14 +334,13 @@ fn resolve_scratch_db_path_for_index_root(
       }
     None => {
       let vibe_dir = find_vibe_dir(index_root + "/index.vibe")
-      let index_vbundle_path = index_root + "/index.vbundle"
-      let vbundle = load_index_vbundle_object(index_vbundle_path)
-      let ns_name = resolve_active_ns_name_from_index_vbundle(vbundle)
-      let db_rel = resolve_ns_db_rel_path_from_index_vbundle(vbundle, ns_name)
+      let cache = load_vibe_cache_object(index_root)
+      let ns_name = resolve_active_ns_name_from_cache(cache)
+      let db_rel = resolve_ns_db_rel_path_from_cache(cache, ns_name)
       let db_path = to_absolute_db_path(index_root, db_rel)
-      let next_vbundle = clone_json_map(vbundle)
-      next_vbundle["active_namespace"] = Json::string(ns_name)
-      let namespaces = match vbundle.get("namespaces") {
+      let next_cache = clone_json_map(cache)
+      next_cache["active_namespace"] = Json::string(ns_name)
+      let namespaces = match cache.get("namespaces") {
         Some(Json::Object(current)) => clone_json_map(current)
         _ => {}
       }
@@ -335,16 +348,16 @@ fn resolve_scratch_db_path_for_index_root(
         Some(Json::Object(current)) => clone_json_map(current)
         _ => {}
       }
-      let db_path_in_vbundle = if db_path.has_prefix(vibe_dir) {
+      let db_path_in_cache = if db_path.has_prefix(vibe_dir) {
         default_ns_db_rel_path(ns_name)
       } else {
         db_path
       }
-      ns_obj["db_path"] = Json::string(db_path_in_vbundle)
+      ns_obj["db_path"] = Json::string(db_path_in_cache)
       ns_obj["updated_at"] = Json::string(@env.now().to_string())
       namespaces[ns_name] = Json::object(ns_obj)
-      next_vbundle["namespaces"] = Json::object(namespaces)
-      match write_index_vbundle_object(index_vbundle_path, next_vbundle) {
+      next_cache["namespaces"] = Json::object(namespaces)
+      match write_vibe_cache_object(index_root, next_cache) {
         Ok(_) => ()
         Err(err) => return Err(err)
       }

@@ -368,8 +368,8 @@ fn write_file_resolve_candidate(
 }
 
 ///|
-fn graph_head_from_index_vbundle(vbundle : Map[String, Json]) -> String? {
-  match vbundle.get("graph_head") {
+fn graph_head_from_cache(cache : Map[String, Json]) -> String? {
+  match cache.get("graph_head") {
     Some(Json::String(hash)) => {
       let normalized = hash.trim().to_string()
       if normalized.length() == 0 {
@@ -386,9 +386,8 @@ fn graph_head_from_index_vbundle(vbundle : Map[String, Json]) -> String? {
 fn load_graph_index_from_index_root(
   index_root : String,
 ) -> Result[@x_exp.AdvancedGraphIndex?, String] {
-  let index_vbundle_path = index_root + "/index.vbundle"
-  let vbundle = load_index_vbundle_object(index_vbundle_path)
-  let graph_head = match graph_head_from_index_vbundle(vbundle) {
+  let cache = load_vibe_cache_object(index_root)
+  let graph_head = match graph_head_from_cache(cache) {
     Some(hash) => hash
     None => return Ok(None)
   }

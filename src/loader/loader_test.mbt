@@ -227,7 +227,7 @@ test "loader resolve_entry_path_with_fs uses index.vibe for directory" {
 }
 
 ///|
-test "loader resolve_entry_graph_head_with_fs reads graph_head from index.vbundle" {
+test "loader resolve_entry_graph_head_with_fs reads graph_head from .vibe/cache.json" {
   let root = "/workspace"
   let pkg = root + "/pkg"
   let fs = MemIoAdapter::new(root)
@@ -239,9 +239,13 @@ test "loader resolve_entry_graph_head_with_fs reads graph_head from index.vbundl
     Ok(_) => ()
     Err(err) => fail(err)
   }
+  match fs.create_dir(pkg + "/.vibe") {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
   match
     fs.write_string(
-      pkg + "/index.vbundle",
+      pkg + "/.vibe/cache.json",
       "{\"graph_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
     ) {
     Ok(_) => ()
@@ -266,7 +270,11 @@ test "loader resolve_entry_graph_head_with_fs returns None without graph_head" {
     Ok(_) => ()
     Err(err) => fail(err)
   }
-  match fs.write_string(pkg + "/index.vbundle", "{\"lock\":{}}") {
+  match fs.create_dir(pkg + "/.vibe") {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match fs.write_string(pkg + "/.vibe/cache.json", "{\"lock\":{}}") {
     Ok(_) => ()
     Err(err) => fail(err)
   }
