@@ -1005,5 +1005,12 @@ fn serialize_module_ref_to(r : ModuleRef, buf : StringBuilder) -> Unit {
       serialize_string_to(name, buf)
       buf.write_char('}')
     }
+    ModuleRef::PinnedPath(path~, hash~) => {
+      buf.write_string("{\"PinnedPath\":{\"hash\":")
+      serialize_string_to(hash, buf)
+      buf.write_string(",\"path\":")
+      serialize_string_to(path, buf)
+      buf.write_string("}}")
+    }
   }
 }

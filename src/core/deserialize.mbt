@@ -904,6 +904,12 @@ fn parse_module_ref(json : Json) -> ModuleRef raise DeserializeError {
         let name = expect_string(value)
         return ModuleRef::Alias(name~)
       }
+      "PinnedPath" => {
+        let obj2 = expect_object(value)
+        let path = expect_string(get_field(obj2, "path"))
+        let hash = expect_string(get_field(obj2, "hash"))
+        return ModuleRef::PinnedPath(path~, hash~)
+      }
       _ => ()
     }
   }

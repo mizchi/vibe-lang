@@ -223,7 +223,8 @@ pub fn resolve_import_hashes(
           ModuleRef::Hash(_)
           | ModuleRef::Version(_)
           | ModuleRef::Symbol(_)
-          | ModuleRef::Alias(_) => ()
+          | ModuleRef::Alias(_)
+          | ModuleRef::PinnedPath(..) => ()
         }
       _ => ()
     }
@@ -250,6 +251,10 @@ pub fn convert_imports_to_hash(
                 )
               None => new_stmts.push(stmt)
             }
+          ModuleRef::PinnedPath(path=_, hash~) =>
+            new_stmts.push(
+              Stmt::Import(spec~, source=ModuleRef::Hash(hash~), span~),
+            )
           ModuleRef::Hash(_)
           | ModuleRef::Version(_)
           | ModuleRef::Symbol(_)
@@ -265,6 +270,10 @@ pub fn convert_imports_to_hash(
                 )
               None => new_stmts.push(stmt)
             }
+          ModuleRef::PinnedPath(path=_, hash~) =>
+            new_stmts.push(
+              Stmt::ReExport(spec~, source=ModuleRef::Hash(hash~), span~),
+            )
           ModuleRef::Hash(_)
           | ModuleRef::Version(_)
           | ModuleRef::Symbol(_)

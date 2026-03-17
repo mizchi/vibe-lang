@@ -299,6 +299,8 @@ fn collect_reexport_defs(
         None => "__missing__/symbol/" + name
       }
     @core.ModuleRef::Alias(name~) => "__alias__/" + name
+    @core.ModuleRef::PinnedPath(path=_, hash~) =>
+      "__hash__/" + normalize_hash_ref(hash)
   }
   // Recursively process the source module's dependencies first
   collect_dependency_defs(db, source_path, out, visited)

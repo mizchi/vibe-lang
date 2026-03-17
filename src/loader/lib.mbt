@@ -219,7 +219,8 @@ fn load_sources_recursive_impl(
           }
           @vibe_core.ModuleRef::Hash(..)
           | @vibe_core.ModuleRef::Version(..)
-          | @vibe_core.ModuleRef::Symbol(..) => ()
+          | @vibe_core.ModuleRef::Symbol(..)
+          | @vibe_core.ModuleRef::PinnedPath(..) => ()
         }
       }
       @vibe_core.Stmt::ReExport(spec~, source~, ..) => {
@@ -263,7 +264,8 @@ fn load_sources_recursive_impl(
           }
           @vibe_core.ModuleRef::Hash(..)
           | @vibe_core.ModuleRef::Version(..)
-          | @vibe_core.ModuleRef::Symbol(..) => ()
+          | @vibe_core.ModuleRef::Symbol(..)
+          | @vibe_core.ModuleRef::PinnedPath(..) => ()
           @vibe_core.ModuleRef::Alias(..) => ()
         }
       }

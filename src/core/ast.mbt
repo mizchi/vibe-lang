@@ -106,6 +106,7 @@ pub(all) enum ModuleRef {
   Version(name~ : String) // version@main
   Symbol(name~ : String) // symbol@std/math
   Alias(name~ : String) // @types → Alias(name="types")
+  PinnedPath(path~ : String, hash~ : String) // ./types#abc123 — path with hash pin
 } derive(Show, Eq)
 
 ///|

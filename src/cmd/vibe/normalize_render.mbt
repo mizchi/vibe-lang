@@ -209,6 +209,7 @@ fn normalize_render_module_ref(source : @vibe_core.ModuleRef) -> String {
     @vibe_core.ModuleRef::Version(name~) => "version@" + name
     @vibe_core.ModuleRef::Symbol(name~) => "symbol@" + name
     @vibe_core.ModuleRef::Alias(name~) => "@" + name
+    @vibe_core.ModuleRef::PinnedPath(path~, hash~) => path + "#" + hash
   }
 }
 

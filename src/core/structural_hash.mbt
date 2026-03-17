@@ -688,6 +688,8 @@ fn ModuleRef::structural_hash(self : ModuleRef) -> Int {
     ModuleRef::Version(name~) => combine_hash(0x56657273, name.hash())
     ModuleRef::Symbol(name~) => combine_hash(0x53796d62, name.hash())
     ModuleRef::Alias(name~) => combine_hash(0x416c6961, name.hash())
+    ModuleRef::PinnedPath(path~, hash~) =>
+      combine_hash(0x50696e50, combine_hash(path.hash(), hash.hash()))
   }
 }
 

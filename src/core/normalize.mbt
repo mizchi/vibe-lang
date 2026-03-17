@@ -768,7 +768,8 @@ fn collect_and_normalize_imports(
           ModuleRef::Hash(_)
           | ModuleRef::Version(_)
           | ModuleRef::Symbol(_)
-          | ModuleRef::Alias(_) => ()
+          | ModuleRef::Alias(_)
+          | ModuleRef::PinnedPath(..) => ()
         }
       _ => ()
     }
@@ -796,7 +797,8 @@ pub fn collect_import_hashes(m : Module) -> Array[String] {
           ModuleRef::Path(_)
           | ModuleRef::Version(_)
           | ModuleRef::Symbol(_)
-          | ModuleRef::Alias(_) => ()
+          | ModuleRef::Alias(_)
+          | ModuleRef::PinnedPath(..) => ()
         }
       _ => ()
     }

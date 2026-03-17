@@ -1583,8 +1583,52 @@ fn AstParser::parse_import_item_kind(self : AstParser) -> @core.ImportKind {
 }
 
 ///|
+/// Find the position of '#' in a path string for hash pinning.
+/// Returns -1 if not found. Skips '#' at position 0 (hash refs like #abc).
+fn find_hash_in_path(path : String) -> Int {
+  let mut i = 1 // skip position 0 to avoid matching hash_ref (#abc)
+  while i < path.length() {
+    if path[i].to_int() == '#'.to_int() {
+      return i
+    }
+    i += 1
+  }
+  -1
+}
+
 /// Parse a module reference: path, hash, version ref, or symbol ref.
+/// After parsing a Path, checks for trailing #hash to produce PinnedPath.
 fn AstParser::parse_module_ref(
+  self : AstParser,
+) -> @core.ModuleRef raise ParseError {
+  let result = self.parse_module_ref_inner()
+  // Check for path#hash pin: ./types#abc123 → PinnedPath("./types", "abc123")
+  match result {
+    @core.ModuleRef::Path(path~) => {
+      let hash_idx = find_hash_in_path(path)
+      if hash_idx >= 0 {
+        let clean_path = path.unsafe_substring(start=0, end=hash_idx)
+        let hash = path.unsafe_substring(start=hash_idx + 1, end=path.length())
+        @core.ModuleRef::PinnedPath(path=clean_path, hash~)
+      } else if self.peek_kind() == hash_ref() {
+        let hash_tok = self.bump()
+        let hash_text = hash_tok.text()
+        let hash = if hash_text.length() > 1 {
+          hash_text.unsafe_substring(start=1, end=hash_text.length())
+        } else {
+          ""
+        }
+        @core.ModuleRef::PinnedPath(path~, hash~)
+      } else {
+        result
+      }
+    }
+    _ => result
+  }
+}
+
+///|
+fn AstParser::parse_module_ref_inner(
   self : AstParser,
 ) -> @core.ModuleRef raise ParseError {
   // Check for alias reference: @name

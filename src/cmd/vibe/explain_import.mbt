@@ -401,6 +401,8 @@ fn explain_import_collect_module(
               module_ref: None,
               reason: Some("alias import not yet resolved"),
             }
+          @vibe_core.ModuleRef::PinnedPath(path=_, hash~) =>
+            explain_import_hash_item(norm, line, hash, codebase)
         }
         out.push(item)
       }

@@ -93,6 +93,7 @@ fn canonical_module_ref_key(source : ModuleRef) -> String {
     ModuleRef::Version(name~) => "version:" + name
     ModuleRef::Symbol(name~) => "symbol:" + name
     ModuleRef::Alias(name~) => "alias:" + name
+    ModuleRef::PinnedPath(path~, hash~) => "pinned:" + path + "#" + hash
   }
 }
 

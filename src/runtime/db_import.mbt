@@ -358,6 +358,18 @@ fn import_stmt_matches_spec(
         None => false
       }
     @core.ModuleRef::Alias(_) => false
+    @core.ModuleRef::PinnedPath(path~, hash~) =>
+      match imp.source_hash {
+        Some(source_hash) => source_hash == hash
+        None => {
+          let path_obj = normalize_path_obj(base_dir, path)
+          let source_norm = path_obj.normalized
+          let imp_base = strip_module_ext(imp.path)
+          source_norm == imp.path ||
+          path == imp.path ||
+          strip_module_ext(source_norm) == imp_base
+        }
+      }
   }
 }
 

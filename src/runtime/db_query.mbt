@@ -499,6 +499,18 @@ pub fn VibeDb::new() -> VibeDb {
                 }
               }
             }
+            @core.ModuleRef::PinnedPath(path~, hash~) => {
+              out.push(ImportSpec::{
+                path,
+                alias_name: @core.import_alias_name(path),
+                hash: Some(hash),
+                module_ref: Some(@core.module_ref_from_hash(hash)),
+                path_obj: None,
+                source_hash: Some(hash),
+                source_version: None,
+                source_symbol: None,
+              })
+            }
             @core.ModuleRef::Alias(name~) => {
               // Resolve alias by looking up index.vibe in same directory
               let index_path = base_dir + "/index.vibe"

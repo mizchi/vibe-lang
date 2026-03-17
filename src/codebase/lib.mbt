@@ -1203,7 +1203,8 @@ fn collect_path_refs_impl(
           @core.ModuleRef::Hash(..)
           | @core.ModuleRef::Version(..)
           | @core.ModuleRef::Symbol(..)
-          | @core.ModuleRef::Alias(..) => ()
+          | @core.ModuleRef::Alias(..)
+          | @core.ModuleRef::PinnedPath(..) => ()
         }
       }
       @core.Stmt::ReExport(source~, ..) =>
@@ -1234,7 +1235,8 @@ fn collect_path_refs_impl(
           @core.ModuleRef::Hash(..)
           | @core.ModuleRef::Version(..)
           | @core.ModuleRef::Symbol(..)
-          | @core.ModuleRef::Alias(..) => ()
+          | @core.ModuleRef::Alias(..)
+          | @core.ModuleRef::PinnedPath(..) => ()
         }
       _ => ()
     }

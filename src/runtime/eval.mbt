@@ -479,6 +479,7 @@ pub fn Runtime::eval_module(
       @core.Stmt::ReExport(spec~, source~, ..) => {
         let hash = match source {
           @core.ModuleRef::Hash(hash~) => hash
+          @core.ModuleRef::PinnedPath(path=_, hash~) => hash
           @core.ModuleRef::Path(path~) =>
             raise EvalError::ImportError(
               "Import path not resolved to hash: " + path,
@@ -538,6 +539,7 @@ pub fn Runtime::eval_module(
         // Get the module hash
         let hash = match source {
           @core.ModuleRef::Hash(hash~) => hash
+          @core.ModuleRef::PinnedPath(path=_, hash~) => hash
           @core.ModuleRef::Path(path~) =>
             // Path should be resolved to hash before evaluation
             raise EvalError::ImportError(

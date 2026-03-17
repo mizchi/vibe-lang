@@ -255,6 +255,48 @@ test "import struct/effect/suberror kinds parse correctly" {
 }
 
 ///|
+test "pinned path: import ./types#abc123 { Expr } parses to PinnedPath" {
+  let input = "import ./types#abc123 { Expr }"
+  let ast = parse_ast(input) catch {
+    e => fail("[parse] pinned path import failed: \{e.to_string()}")
+  }
+  match ast.stmts[0] {
+    @core.Stmt::Import(source~, spec~, ..) => {
+      match source {
+        @core.ModuleRef::PinnedPath(path~, hash~) => {
+          assert_eq(path, "./types")
+          assert_eq(hash, "abc123")
+        }
+        _ => fail("expected PinnedPath, got: \{source}")
+      }
+      assert_eq(spec.items[0].name, "Expr")
+    }
+    _ => fail("expected Import")
+  }
+}
+
+///|
+test "pinned path alias: import ./types#abc123 @types parses to AliasDecl with PinnedPath" {
+  let input = "import ./types#abc123 @types"
+  let ast = parse_ast(input) catch {
+    e => fail("[parse] pinned path alias failed: \{e.to_string()}")
+  }
+  match ast.stmts[0] {
+    @core.Stmt::AliasDecl(alias_name~, source~, ..) => {
+      assert_eq(alias_name, "types")
+      match source {
+        @core.ModuleRef::PinnedPath(path~, hash~) => {
+          assert_eq(path, "./types")
+          assert_eq(hash, "abc123")
+        }
+        _ => fail("expected PinnedPath source, got: \{source}")
+      }
+    }
+    _ => fail("expected AliasDecl")
+  }
+}
+
+///|
 test "extern let with percent-prefixed symbol parses" {
   let input = "extern let %add: (Int, Int) -> Int"
   let ast = parse_ast(input) catch {
