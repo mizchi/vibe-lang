@@ -1,0 +1,111 @@
+// WebAssembly spec test: control flow
+// Ported from WebAssembly/spec/test/core/
+
+//# Imports
+
+import ./wasm_runtime/index.vibe { exec_module_with_args, exec_module }
+import ./wat2wasm/index.vibe { compile }
+
+//# Functions
+
+let call0 = (wasm: Bytes, name: String) -> Int {
+  let (ec, result) = exec_module(wasm, name)
+  if ec != 0 { -99999 } else { result }
+}
+
+let call1 = (wasm: Bytes, name: String, a: Int) -> Int {
+  let args = Array::slice([0], 0, 0)
+  Array::push(args, a)
+  let (ec, result) = exec_module_with_args(wasm, name, args)
+  if ec != 0 { -99999 } else { result }
+}
+
+let call2 = (wasm: Bytes, name: String, a: Int, b: Int) -> Int {
+  let args = Array::slice([0], 0, 0)
+  Array::push(args, a)
+  Array::push(args, b)
+  let (ec, result) = exec_module_with_args(wasm, name, args)
+  if ec != 0 { -99999 } else { result }
+}
+
+//# Misc
+
+test "spec block: singular" {
+  assert(call0(compile("(module (func (export \"f\") (result i32) (block (result i32) i32.const 7)))"), "f") == 7)
+}
+
+test "spec block: br" {
+  assert(call0(compile("(module (func (export \"f\") (result i32) (block (result i32) i32.const 42 br 0)))"), "f") == 42)
+}
+
+test "spec if: then else" {
+  let m = compile("(module (func (export \"f\") (param i32) (result i32)
+    local.get 0 if (result i32) i32.const 1 else i32.const 2 end))")
+  assert(call1(m, "f", 1) == 1)
+  assert(call1(m, "f", 0) == 2)
+}
+
+test "spec br_if: taken" {
+  let m = compile("(module (func (export \"f\") (param i32) (result i32)
+    (block (result i32) i32.const 1 local.get 0 br_if 0 drop i32.const 0)))")
+  assert(call1(m, "f", 1) == 1)
+  assert(call1(m, "f", 0) == 0)
+}
+
+test "spec call: basic" {
+  let m = compile("(module
+    (func (export \"f\") (result i32) call 1)
+    (func (result i32) i32.const 42))")
+  assert(call0(m, "f") == 42)
+}
+
+test "spec call: params" {
+  let m = compile("(module
+    (func (export \"f\") (param i32 i32) (result i32) local.get 0 local.get 1 call 1)
+    (func (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))")
+  assert(call2(m, "f", 3, 5) == 8)
+}
+
+test "spec return: value" {
+  assert(call0(compile("(module (func (export \"f\") (result i32) i32.const 42 return i32.const 0))"), "f") == 42)
+}
+
+test "spec nop" {
+  assert(call0(compile("(module (func (export \"f\") (result i32) nop nop i32.const 42))"), "f") == 42)
+}
+
+test "spec select: true" {
+  assert(call0(compile("(module (func (export \"f\") (result i32) i32.const 10 i32.const 20 i32.const 1 select))"), "f") == 10)
+}
+
+test "spec select: false" {
+  assert(call0(compile("(module (func (export \"f\") (result i32) i32.const 10 i32.const 20 i32.const 0 select))"), "f") == 20)
+}
+
+test "spec local: set get" {
+  assert(call1(compile("(module (func (export \"f\") (param i32) (result i32) local.get 0 i32.const 10 i32.add local.set 0 local.get 0))"), "f", 32) == 42)
+}
+
+test "spec local: tee" {
+  assert(call1(compile("(module (func (export \"f\") (param i32) (result i32) i32.const 42 local.tee 0))"), "f", 0) == 42)
+}
+
+test "spec global: get" {
+  assert(call0(compile("(module (global i32 (i32.const 42)) (func (export \"f\") (result i32) global.get 0))"), "f") == 42)
+}
+
+test "spec global: set" {
+  assert(call0(compile("(module (global (mut i32) (i32.const 0)) (func (export \"f\") (result i32) i32.const 42 global.set 0 global.get 0))"), "f") == 42)
+}
+
+test "spec memory: store load" {
+  assert(call0(compile("(module (memory 1) (func (export \"f\") (result i32) i32.const 0 i32.const 42 i32.store i32.const 0 i32.load))"), "f") == 42)
+}
+
+test "spec memory: size" {
+  assert(call0(compile("(module (memory 1) (func (export \"f\") (result i32) memory.size))"), "f") == 1)
+}
+
+test "spec loop: singular" {
+  assert(call0(compile("(module (func (export \"f\") (result i32) (loop (result i32) i32.const 7)))"), "f") == 7)
+}
