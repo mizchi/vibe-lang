@@ -2202,10 +2202,39 @@ let parse_import_items = (tokens: Array[Token], pos: Int) -> (Array[(String, Opt
 }
 
 let parse_import_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Error } {
-  let (path, bp) = collect_import_path(tokens, pos, "")
-  let br = expect_tk(tokens, bp, "{")
-  let (items, end) = parse_import_items(tokens, br);
-  (SImport(path, items), end)
+  // Check for alias import: import @alias { items }
+  match peek(tokens, pos) {
+    TIdent(name) => if String::length(name) > 1 && String::char_code_at(name, 0) == '@' {
+      // import @alias { items }
+      let br = expect_tk(tokens, pos + 1, "{")
+      let (items, end) = parse_import_items(tokens, br);
+      (SImport(name, items), end)
+    } else {
+      let (path, bp) = collect_import_path(tokens, pos, "")
+      // Check for alias declaration: import path @alias
+      match peek(tokens, bp) {
+        TIdent(alias_name) => if String::length(alias_name) > 1 && String::char_code_at(alias_name, 0) == '@' {
+          let alias_str = String::substring(alias_name, 1, String::length(alias_name))
+          (SAliasDecl(alias_str, path), bp + 1)
+        } else {
+          let br = expect_tk(tokens, bp, "{")
+          let (items, end) = parse_import_items(tokens, br);
+          (SImport(path, items), end)
+        },
+        _ => {
+          let br = expect_tk(tokens, bp, "{")
+          let (items, end) = parse_import_items(tokens, br);
+          (SImport(path, items), end)
+        }
+      }
+    },
+    _ => {
+      let (path, bp) = collect_import_path(tokens, pos, "")
+      let br = expect_tk(tokens, bp, "{")
+      let (items, end) = parse_import_items(tokens, br);
+      (SImport(path, items), end)
+    }
+  }
 }
 
 let parse_impl_stmt_dispatch = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Error } {
