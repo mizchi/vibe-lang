@@ -1747,6 +1747,23 @@ fn compile_module_wasm_for_exec(
 }
 
 ///|
+fn compile_module_wasm_for_exec_with_coverage(
+  db : @runtime.VibeDb,
+  entry : String,
+  http_host_imports? : Bool = false,
+  run_tests? : Bool = false,
+) -> @runtime_compile.WasmCoverageArtifact raise @runtime_compile.WasmCompileError {
+  @runtime_compile.compile_module_wasm_with_coverage(
+    db,
+    entry,
+    no_dce=false,
+    run_tests~,
+    debug_errors=true,
+    http_host_imports~,
+  )
+}
+
+///|
 fn emit_module_source_cmd(args : Array[String]) -> Unit {
   if args.length() != 3 {
     abort("emit-module-source: expected <in> <out> <entry>")
