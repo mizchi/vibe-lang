@@ -1565,9 +1565,18 @@ fn AstParser::parse_import_item_kind(self : AstParser) -> @core.ImportKind {
   } else if self.peek_kind() == trait_kw() {
     let _ = self.bump()
     @core.ImportKind::Trait
+  } else if self.peek_kind() == struct_kw() {
+    let _ = self.bump()
+    @core.ImportKind::Struct
   } else if self.peek_kind() == name() && self.peek().text() == "module" {
     let _ = self.bump()
     @core.ImportKind::Module
+  } else if self.peek_kind() == name() && self.peek().text() == "effect" {
+    let _ = self.bump()
+    @core.ImportKind::Effect
+  } else if self.peek_kind() == name() && self.peek().text() == "suberror" {
+    let _ = self.bump()
+    @core.ImportKind::Suberror
   } else {
     @core.ImportKind::Value
   }

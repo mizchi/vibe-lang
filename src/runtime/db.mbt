@@ -85,6 +85,9 @@ fn import_kind_expected_label(kind : @core.ImportKind) -> String {
     @core.ImportKind::Type => "type"
     @core.ImportKind::Trait => "trait"
     @core.ImportKind::Module => "module namespace"
+    @core.ImportKind::Struct => "struct"
+    @core.ImportKind::Effect => "effect"
+    @core.ImportKind::Suberror => "suberror"
   }
 }
 

@@ -437,6 +437,45 @@ fn analyze_module(
                       )
                   }
                 }
+                @core.ImportKind::Struct => {
+                  if not(imported.exports.contains(source_name)) {
+                    local_diags.push(
+                      missing_export_diagnostic(
+                        resolved_path, source_name, span,
+                      ),
+                    )
+                    continue
+                  }
+                  match imported.env.get_struct(source_name) {
+                    Some(struct_def) =>
+                      env.set_struct(target_name, struct_def)
+                    None =>
+                      local_diags.push(
+                        missing_export_diagnostic(
+                          resolved_path, source_name, span,
+                        ),
+                      )
+                  }
+                }
+                @core.ImportKind::Effect | @core.ImportKind::Suberror => {
+                  if not(imported.exports.contains(source_name)) {
+                    local_diags.push(
+                      missing_export_diagnostic(
+                        resolved_path, source_name, span,
+                      ),
+                    )
+                    continue
+                  }
+                  match imported.env.get_scheme(source_name) {
+                    Some(scheme) => env.set_scheme(target_name, scheme)
+                    None =>
+                      local_diags.push(
+                        missing_export_diagnostic(
+                          resolved_path, source_name, span,
+                        ),
+                      )
+                  }
+                }
               }
             }
           }

@@ -674,6 +674,9 @@ fn ImportKind::structural_hash(self : ImportKind) -> Int {
     ImportKind::Type => 1
     ImportKind::Trait => 2
     ImportKind::Module => 3
+    ImportKind::Struct => 4
+    ImportKind::Effect => 5
+    ImportKind::Suberror => 6
   }
 }
 

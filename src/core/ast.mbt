@@ -76,7 +76,10 @@ pub(all) struct StructField {
 pub(all) enum ImportKind {
   Value
   Type
+  Struct
   Trait
+  Effect
+  Suberror
   Module
 } derive(Show, Eq)
 

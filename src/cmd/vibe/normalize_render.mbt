@@ -220,6 +220,9 @@ fn normalize_render_import_item(item : @vibe_core.ImportItem) -> String {
     @vibe_core.ImportKind::Type => out.write_string("type ")
     @vibe_core.ImportKind::Trait => out.write_string("trait ")
     @vibe_core.ImportKind::Module => out.write_string("module ")
+    @vibe_core.ImportKind::Struct => out.write_string("struct ")
+    @vibe_core.ImportKind::Effect => out.write_string("effect ")
+    @vibe_core.ImportKind::Suberror => out.write_string("suberror ")
   }
   out.write_string(item.name)
   match item.rename {

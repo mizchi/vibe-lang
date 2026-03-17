@@ -719,6 +719,9 @@ fn normalize_import_kind_rank(kind : @vibe_core.ImportKind) -> Int {
     @vibe_core.ImportKind::Type => 1
     @vibe_core.ImportKind::Trait => 2
     @vibe_core.ImportKind::Module => 3
+    @vibe_core.ImportKind::Struct => 4
+    @vibe_core.ImportKind::Effect => 5
+    @vibe_core.ImportKind::Suberror => 6
   }
 }
 
@@ -915,6 +918,9 @@ fn merge_render_stmt_fallback(stmt : @vibe_core.Stmt) -> String? {
           @vibe_core.ImportKind::Type => rendered.write_string("type ")
           @vibe_core.ImportKind::Trait => rendered.write_string("trait ")
           @vibe_core.ImportKind::Module => rendered.write_string("module ")
+          @vibe_core.ImportKind::Struct => rendered.write_string("struct ")
+          @vibe_core.ImportKind::Effect => rendered.write_string("effect ")
+          @vibe_core.ImportKind::Suberror => rendered.write_string("suberror ")
         }
         rendered.write_string(item.name)
         match item.rename {

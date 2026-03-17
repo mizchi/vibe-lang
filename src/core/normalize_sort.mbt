@@ -103,6 +103,9 @@ fn canonical_import_item_key(item : ImportItem) -> String {
     ImportKind::Type => "1"
     ImportKind::Trait => "2"
     ImportKind::Module => "3"
+    ImportKind::Struct => "4"
+    ImportKind::Effect => "5"
+    ImportKind::Suberror => "6"
   }
   let local_name = match item.rename {
     Some(name) => name

@@ -932,6 +932,9 @@ fn parse_import_kind(kind : String?) -> ImportKind raise DeserializeError {
     Some("type") => ImportKind::Type
     Some("trait") => ImportKind::Trait
     Some("module") => ImportKind::Module
+    Some("struct") => ImportKind::Struct
+    Some("effect") => ImportKind::Effect
+    Some("suberror") => ImportKind::Suberror
     Some(other) => raise DeserializeError("Unknown import kind: " + other)
   }
 }
