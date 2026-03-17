@@ -348,12 +348,12 @@ fn resolve_scratch_db_path_for_index_root(
         Some(Json::Object(current)) => clone_json_map(current)
         _ => {}
       }
-      let db_path_in_vbundle = if db_path.has_prefix(vibe_dir) {
+      let db_path_in_cache = if db_path.has_prefix(vibe_dir) {
         default_ns_db_rel_path(ns_name)
       } else {
         db_path
       }
-      ns_obj["db_path"] = Json::string(db_path_in_vbundle)
+      ns_obj["db_path"] = Json::string(db_path_in_cache)
       ns_obj["updated_at"] = Json::string(@env.now().to_string())
       namespaces[ns_name] = Json::object(ns_obj)
       next_cache["namespaces"] = Json::object(namespaces)

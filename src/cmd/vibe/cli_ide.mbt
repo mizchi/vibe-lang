@@ -1265,7 +1265,7 @@ fn index_build_cmd(args : Array[String]) -> Unit {
             out_path +
             " (" +
             index.defs.length().to_string() +
-            " defs), index.vbundle graph_head=" +
+            " defs), graph_head=" +
             short_hash(graph_head),
           )
         Err(err) => abort("index build: " + err)

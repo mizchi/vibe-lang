@@ -933,8 +933,8 @@ test "cli compile coverage guard allows test mode" {
 }
 
 ///|
-test "cli index build writes index.vbundle graph head" {
-  let root = wbtest_make_temp_dir("index_build_vdb")
+test "cli index build writes cache.json graph head" {
+  let root = wbtest_make_temp_dir("index_build_cache")
   let entry = root + "/main.vibe"
   let out_path = root + "/advanced-graph-index.json"
   @os_fs.write_string_to_file(entry, "let value = 1\nexport { value }\n") catch {
@@ -942,21 +942,21 @@ test "cli index build writes index.vbundle graph head" {
   }
   index_build_cmd(["-o", out_path, entry])
   assert_true(@os_fs.path_exists(out_path))
-  let vdb_path = root + "/index.vbundle"
-  assert_true(@os_fs.path_exists(vdb_path))
-  let vdb_source = @os_fs.read_file_to_string(vdb_path) catch {
-    e => fail("read index.vbundle failed: " + e.to_string())
+  let cache_path = find_vibe_dir(entry) + "/cache.json"
+  assert_true(@os_fs.path_exists(cache_path))
+  let cache_source = @os_fs.read_file_to_string(cache_path) catch {
+    e => fail("read cache.json failed: " + e.to_string())
   }
-  let vdb_json : Json = @json.parse(vdb_source) catch {
-    e => fail("parse index.vbundle failed: " + e.to_string())
+  let cache_json : Json = @json.parse(cache_source) catch {
+    e => fail("parse cache.json failed: " + e.to_string())
   }
-  let graph_head = match vdb_json {
+  let graph_head = match cache_json {
     Json::Object(obj) =>
       match obj.get("graph_head") {
         Some(Json::String(hash)) => hash
-        _ => fail("index.vbundle must include graph_head")
+        _ => fail("cache.json must include graph_head")
       }
-    _ => fail("index.vbundle must be object")
+    _ => fail("cache.json must be object")
   }
   assert_eq(graph_head.length(), 40)
   let codebase = @codebase.Codebase::new(find_vibe_dir(entry))
@@ -1444,21 +1444,21 @@ test "cli check resolves lock and graph artifacts" {
   let lib_norm = @loader.resolve_import_path(root, "./lib.vibe")
   assert_true(lock.path_refs.contains(entry_norm))
   assert_true(lock.path_refs.contains(lib_norm))
-  let vdb_path = root + "/index.vbundle"
-  assert_true(@os_fs.path_exists(vdb_path))
-  let vdb_source = @os_fs.read_file_to_string(vdb_path) catch {
-    e => fail("read index.vbundle failed: " + e.to_string())
+  let cache_path = find_vibe_dir(entry) + "/cache.json"
+  assert_true(@os_fs.path_exists(cache_path))
+  let cache_source = @os_fs.read_file_to_string(cache_path) catch {
+    e => fail("read cache.json failed: " + e.to_string())
   }
-  let vdb_json : Json = @json.parse(vdb_source) catch {
-    e => fail("parse index.vbundle failed: " + e.to_string())
+  let cache_json : Json = @json.parse(cache_source) catch {
+    e => fail("parse cache.json failed: " + e.to_string())
   }
-  let graph_head = match vdb_json {
+  let graph_head = match cache_json {
     Json::Object(obj) =>
       match obj.get("graph_head") {
         Some(Json::String(hash)) => hash
-        _ => fail("index.vbundle must include graph_head")
+        _ => fail("cache.json must include graph_head")
       }
-    _ => fail("index.vbundle must be object")
+    _ => fail("cache.json must be object")
   }
   let codebase = @codebase.Codebase::new(find_vibe_dir(entry))
   match codebase.read_object(graph_head) {
@@ -1485,21 +1485,21 @@ test "cli apply resolves lock and graph artifacts" {
   }
   let resolved = @loader.resolve_entry_path(entry)
   assert_true(lock.path_refs.contains(resolved))
-  let vdb_path = root + "/index.vbundle"
-  assert_true(@os_fs.path_exists(vdb_path))
-  let vdb_source = @os_fs.read_file_to_string(vdb_path) catch {
-    e => fail("read index.vbundle failed: " + e.to_string())
+  let cache_path = find_vibe_dir(entry) + "/cache.json"
+  assert_true(@os_fs.path_exists(cache_path))
+  let cache_source = @os_fs.read_file_to_string(cache_path) catch {
+    e => fail("read cache.json failed: " + e.to_string())
   }
-  let vdb_json : Json = @json.parse(vdb_source) catch {
-    e => fail("parse index.vbundle failed: " + e.to_string())
+  let cache_json : Json = @json.parse(cache_source) catch {
+    e => fail("parse cache.json failed: " + e.to_string())
   }
-  let graph_head = match vdb_json {
+  let graph_head = match cache_json {
     Json::Object(obj) =>
       match obj.get("graph_head") {
         Some(Json::String(hash)) => hash
-        _ => fail("index.vbundle must include graph_head")
+        _ => fail("cache.json must include graph_head")
       }
-    _ => fail("index.vbundle must be object")
+    _ => fail("cache.json must be object")
   }
   let codebase = @codebase.Codebase::new(find_vibe_dir(entry))
   match codebase.read_object(graph_head) {
@@ -1898,10 +1898,9 @@ test "cli eval finalize normalize apply workflow with relative paths" {
   let rel_root = "tmp_probe/e2e_eval_finalize_apply_" + @env.now().to_string()
   let abs_root = @vibe_fs.normalize_path(cwd + "/" + rel_root)
   let local_lock_path = abs_root + "/index.lock"
-  let local_index_vbundle_path = abs_root + "/index.vbundle"
   let local_vibe_dir = abs_root + "/.vibe"
-  let include_abs = abs_root + "/include/index.vbundle"
-  let include_rel = "./" + rel_root + "/include/index.vbundle"
+  let include_abs = abs_root + "/include/index.vibe"
+  let include_rel = "./" + rel_root + "/include/index.vibe"
   let db_rel = rel_root + "/scratch/workflow.db"
   let out_rel = rel_root + "/dist/main.vibe"
   let out_abs = @vibe_fs.normalize_path(cwd + "/" + out_rel)
@@ -1917,12 +1916,6 @@ test "cli eval finalize normalize apply workflow with relative paths" {
   }
   @os_fs.write_string_to_file(local_lock_path, lock_seed) catch {
     e => fail("write local lock seed failed: " + e.to_string())
-  }
-  @os_fs.write_string_to_file(
-    local_index_vbundle_path,
-    "{\"lock\":" + lock_seed.trim().to_string() + "}\n",
-  ) catch {
-    e => fail("write local index.vbundle seed failed: " + e.to_string())
   }
   @os_fs.write_string_to_file(
     include_abs,
@@ -2996,20 +2989,21 @@ fn read_function_tracking_record(
   index_root : String,
   key : String,
 ) -> FunctionTrackingRecord {
-  let path = index_root + "/index.vbundle"
+  let vibe_dir = find_vibe_dir(index_root + "/index.vibe")
+  let path = vibe_dir + "/cache.json"
   let source = @os_fs.read_file_to_string(path) catch {
-    e => abort("read index.vbundle failed: " + e.to_string())
+    e => abort("read cache.json failed: " + e.to_string())
   }
   let json : Json = @json.parse(source) catch {
-    e => abort("parse index.vbundle failed: " + e.to_string())
+    e => abort("parse cache.json failed: " + e.to_string())
   }
   let obj = match json {
     Json::Object(map) => map
-    _ => abort("index.vbundle must be object")
+    _ => abort("cache.json must be object")
   }
   let tracking = match obj.get("function_tracking") {
     Some(Json::Object(value)) => value
-    _ => abort("index.vbundle must include function_tracking object")
+    _ => abort("cache.json must include function_tracking object")
   }
   let records = match tracking.get("records") {
     Some(Json::Object(value)) => value

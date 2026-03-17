@@ -2699,12 +2699,6 @@ test "compiled test case db load does not persist temporary lock refs" {
     e => fail("write seed lock failed: " + e.to_string())
   }
   @os_fs.write_string_to_file(
-    root + "/index.vbundle",
-    "{\"lock\":" + lock_seed.trim().to_string() + "}\n",
-  ) catch {
-    e => fail("write seed vbundle failed: " + e.to_string())
-  }
-  @os_fs.write_string_to_file(
     root + "/index.vibe",
     "export let version = \"0.1.0\"\n",
   ) catch {
@@ -2725,7 +2719,6 @@ test "compiled test case db load does not persist temporary lock refs" {
     }
     assert_false(lock_source.contains(".vibe_test_wasm_"))
   }
-  wbtest_remove_if_exists(root + "/index.vbundle")
   wbtest_remove_if_exists(lock_path)
   wbtest_remove_if_exists(source_path)
   wbtest_remove_if_exists(root)

@@ -189,7 +189,7 @@ fn print_usage() -> Unit {
     "  save <file>                 save module to content-addressed store",
   )
   println(
-    "  fetch <file>                resolve imports and sync lock payload (index.lock + index.vbundle)",
+    "  fetch <file>                resolve imports and sync lock payload (index.lock)",
   )
   println("  update-lock <file>          alias for fetch")
   println(
@@ -5305,9 +5305,7 @@ fn fetch_cmd(args : Array[String]) -> Unit {
   println(
     "updated lock refs: " +
     lock_path +
-    " + " +
-    @codebase.resolve_index_root(entry) +
-    "/index.vbundle (lock payload, " +
+    " (" +
     updated_lock.path_refs.length().to_string() +
     " path refs)",
   )

@@ -33,17 +33,9 @@ check:
 check-lock-clean:
     scripts/check_lock_clean.sh
 
-# Sync vibe/* module lock payloads into index.vbundle
-sync-vbundle:
-    bash scripts/sync_vibe_index_vbundle.sh
-
 # Self-test lock contamination checker patterns
 test-lock-clean:
     scripts/check_lock_clean_test.sh
-
-# Self-test vibe index.vbundle sync helper
-test-sync-vbundle:
-    bash scripts/sync_vibe_index_vbundle_test.sh
 
 # Verify selfhost bundle matches manifest/source inputs
 check-selfhost-bundle-sync:
@@ -819,7 +811,7 @@ vibe-normalize-check:
     scripts/vibe_normalize_all.sh --check
 
 # Pre-release selfhost gate bundle
-release-selfhost-gates: sync-vbundle check-selfhost-bundle-sync test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cli-core test-selfhost-cli-component-preview2 test-selfhost-cli-preview2-package test-selfhost-cli-command-component test-selfhost-cli-command-parity test-selfhost-cli-direct-component test-selfhost-cli-direct-parity test-selfhost-check-preview2-package test-selfhost-check-command-component test-selfhost-check-command-parity test-selfhost-check-direct-component test-selfhost-check-direct-parity test-selfhost-cutover test-golden-wat
+release-selfhost-gates: check-selfhost-bundle-sync test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cli-core test-selfhost-cli-component-preview2 test-selfhost-cli-preview2-package test-selfhost-cli-command-component test-selfhost-cli-command-parity test-selfhost-cli-direct-component test-selfhost-cli-direct-parity test-selfhost-check-preview2-package test-selfhost-check-command-component test-selfhost-check-command-parity test-selfhost-check-direct-component test-selfhost-check-direct-parity test-selfhost-cutover test-golden-wat
 
 # Pre-release check (includes selfhost gates + wasm bundle-size monitor)
 release-check: fmt info check test vibe-normalize bench-bundle-size-monitor release-selfhost-gates
