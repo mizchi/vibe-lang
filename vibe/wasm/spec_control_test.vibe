@@ -45,6 +45,9 @@ test "spec if: then else" {
   assert(call1(m, "f", 0) == 2)
 }
 
+// TODO: nested if hangs — exec_module find_else issue with nested if blocks
+// test "spec if: nested" { ... }
+
 test "spec br_if: taken" {
   let m = compile("(module (func (export \"f\") (param i32) (result i32)
     (block (result i32) i32.const 1 local.get 0 br_if 0 drop i32.const 0)))")
@@ -110,12 +113,44 @@ test "spec loop: singular" {
   assert(call0(compile("(module (func (export \"f\") (result i32) (loop (result i32) i32.const 7)))"), "f") == 7)
 }
 
-// TODO: block+loop+br flat form hangs — needs exec_module loop fix
+test "spec loop: counter" {
+  let m = compile("(module (func (export \"f\") (param i32) (result i32)
+    (local i32)
+    local.get 0 local.set 1
+    block
+      loop
+        local.get 1 i32.const 1 i32.sub local.set 1
+        local.get 1 i32.eqz br_if 1
+        br 0
+      end
+    end
+    local.get 1))")
+  assert(call1(m, "f", 10) == 0)
+}
 
-// S-expr (if (then) (else)) needs proper folded-instruction support.
-// Using flat form equivalents:
+test "spec fac: iterative" {
+  let m = compile("(module (func (export \"fac\") (param i32) (result i32)
+    (local i32)
+    i32.const 1 local.set 1
+    block
+      loop
+        local.get 0 i32.eqz br_if 1
+        local.get 1 local.get 0 i32.mul local.set 1
+        local.get 0 i32.const 1 i32.sub local.set 0
+        br 0
+      end
+    end
+    local.get 1))")
+  assert(call1(m, "fac", 1) == 1)
+  assert(call1(m, "fac", 5) == 120)
+  assert(call1(m, "fac", 10) == 3628800)
+}
 
-// TODO: nested if with result type hangs — needs exec_module if/else fix
-// test "spec if: flat nested" { ... }
+test "spec drop" {
+  assert(call0(compile("(module (func (export \"f\") (result i32) i32.const 42 i32.const 99 drop))"), "f") == 42)
+}
 
-// TODO: fac via block+loop+br hangs — needs exec_module loop fix
+test "spec unreachable" {
+  let (ec, _) = exec_module(compile("(module (func (export \"f\") unreachable))"), "f")
+  assert(ec == 1)
+}
