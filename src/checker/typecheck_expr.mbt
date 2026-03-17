@@ -586,7 +586,7 @@ fn type_expr_eff(
     @core.Expr::Array(items~, span~) => {
       let _ = span
       if items.is_empty() {
-        @core.Type::Array(fresh_type_var(env))
+        @core.Type::Array(@core.Type::Unit)
       } else {
         // Find first element type (handle Spread extracting inner type)
         let first_item = items[0]
