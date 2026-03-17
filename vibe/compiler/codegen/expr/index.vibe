@@ -390,6 +390,39 @@ let compile_call = (buf: Array[Int], callee: Expr, args: Array[Expr], local_name
       emit_end(buf)
       nl + 4
     }
+    else if fname == "Map::has_key" {
+      // Map::has_key(map, key) → Bool (delegates to Map::get, check != 0 conceptually)
+      // Actually: linear search, return 1 if found else 0
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      let (eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
+      let map_l = nl; let key_l = nl + 1; let cnt_l = nl + 2; let i_l = nl + 3
+      Array::push(local_names, "__hk_map"); Array::push(local_names, "__hk_key")
+      Array::push(local_names, "__hk_cnt"); Array::push(local_names, "__hk_i")
+      emit_local_set(buf, key_l); emit_local_set(buf, map_l)
+      emit_local_get(buf, map_l); emit_i32_wrap_i64(buf)
+      emit_i32_load(buf, 2, 0); emit_i64_extend_i32_u(buf); emit_local_set(buf, cnt_l)
+      emit_i64_const(buf, 0); emit_local_set(buf, i_l)
+      emit_block_i64(buf); emit_block_void(buf); emit_loop_void(buf)
+      emit_local_get(buf, i_l); emit_local_get(buf, cnt_l)
+      emit_i64_ge_s(buf); emit_br_if(buf, 1)
+      emit_local_get(buf, map_l); emit_i32_wrap_i64(buf)
+      emit_local_get(buf, i_l); emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16); emit_i32_mul(buf); emit_i32_add(buf)
+      emit_i64_load(buf, 3, 8)
+      emit_local_get(buf, key_l); emit_call(buf, eq_fi)
+      emit_i32_wrap_i64(buf); emit_if_void(buf)
+      emit_i64_const(buf, 1); emit_br(buf, 3); emit_end(buf)
+      emit_local_get(buf, i_l); emit_i64_const(buf, 1); emit_i64_add(buf)
+      emit_local_set(buf, i_l); emit_br(buf, 0)
+      emit_end(buf); emit_end(buf)
+      emit_i64_const(buf, 0); emit_end(buf)
+      nl + 4
+    }
+    else if fname == "Map::remove" {
+      // Stub: return map unchanged
+      ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    }
     else if fname == "Map::set" {
       // Map::set(map, key, value) → mutate map in-place (append key-value pair)
       // Map layout: [count:i32][pad:i32][k0:i64][v0:i64]...
