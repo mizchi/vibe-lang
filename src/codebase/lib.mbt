@@ -196,6 +196,9 @@ fn default_registry_modules(root : String) -> Map[String, String] {
   out["path"] = @vibe_fs.normalize_path(root + "/vibe/path")
   out["collection"] = @vibe_fs.normalize_path(root + "/vibe/collection")
   out["rlm"] = @vibe_fs.normalize_path(root + "/vibe/x/rlm")
+  out["types"] = @vibe_fs.normalize_path(root + "/vibe/types")
+  out["parser"] = @vibe_fs.normalize_path(root + "/vibe/parser")
+  out["wasm"] = @vibe_fs.normalize_path(root + "/vibe/wasm")
   out
 }
 
