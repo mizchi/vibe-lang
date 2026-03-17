@@ -123,6 +123,15 @@ let emit_section = (out: Bytes, sec_id: Int, content: Bytes) -> Unit {
   }
 }
 
+// Write a raw section from source bytes (avoids copy for large sections)
+let emit_section_raw = (out: Bytes, src: Bytes, sec_start: Int, sec_end: Int) -> Unit {
+  let mut i = sec_start
+  while i < sec_end {
+    Bytes::push(out, src[i])
+    i = i + 1
+  }
+}
+
 // === Strip custom sections ===
 
 // Remove all custom sections (id=0) from a WASM binary.
@@ -131,22 +140,28 @@ export let strip_custom_sections = (bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 { copy_bytes(bytes, 0, len) }
   else {
+    // Walk sections directly, copying raw bytes for non-custom sections
     let out = Bytes::new()
-    // Copy header
     let mut i = 0
     while i < 8 { Bytes::push(out, bytes[i]); i = i + 1 }
-    // Copy non-custom sections
-    let sections = list_sections(bytes)
-    let mut s = 0
-    while s < Array::length(sections) {
-      let (sid, off, sz) = Array::get(sections, s)
-      if sid != 0 {
-        // Find raw section start (section id byte)
-        // We need to reconstruct: id + size_leb + content
-        let content = copy_bytes(bytes, off, off + sz)
-        emit_section(out, sid, content)
+    while i < len {
+      let sec_id = bytes[i]
+      let raw_start = i
+      i = i + 1
+      let (sec_size, content_start) = read_uleb128(bytes, i)
+      let sec_end = content_start + sec_size
+      if sec_end > len { i = len }
+      else {
+        if sec_id != 0 {
+          // Non-custom: copy raw bytes (id + size_leb + content)
+          let mut j = raw_start
+          while j < sec_end {
+            Bytes::push(out, bytes[j])
+            j = j + 1
+          }
+        } else { () }
+        i = sec_end
       }
-      s = s + 1
     }
     out
   }
@@ -1945,26 +1960,32 @@ export let minify_fast = (bytes: Bytes) -> Bytes {
     let out = Bytes::new()
     let mut i = 0
     while i < 8 { Bytes::push(out, bytes[i]); i = i + 1 }
-    let sections = list_sections(bytes)
-    let mut s = 0
-    while s < Array::length(sections) {
-      let (sid, off, sz) = Array::get(sections, s)
-      if sid != 0 {
-        // Skip custom sections; check non-empty
-        if sz > 0 {
-          // Check if section has count > 0 (for vector sections)
-          let should_keep = if (sid >= 1) && (sid <= 11) && (sid != 8) {
-            // Sections with a count prefix
-            let (cnt, _) = read_uleb128(bytes, off)
+    // Walk sections directly (no list_sections + copy overhead)
+    while i < len {
+      let sec_id = bytes[i]
+      let raw_start = i
+      i = i + 1
+      let (sec_size, content_start) = read_uleb128(bytes, i)
+      let sec_end = content_start + sec_size
+      if sec_end > len { i = len }
+      else {
+        if (sec_id != 0) && (sec_size > 0) {
+          // Check count for vector sections
+          let should_keep = if (sec_id >= 1) && (sec_id <= 11) && (sec_id != 8) {
+            let (cnt, _) = read_uleb128(bytes, content_start)
             cnt > 0
           } else { true }
           if should_keep {
-            let content = copy_bytes(bytes, off, off + sz)
-            emit_section(out, sid, content)
+            // Raw copy entire section (id + size_leb + content)
+            let mut j = raw_start
+            while j < sec_end {
+              Bytes::push(out, bytes[j])
+              j = j + 1
+            }
           } else { () }
         } else { () }
-      } else { () }
-      s = s + 1
+        i = sec_end
+      }
     }
     out
   }
