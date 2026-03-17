@@ -160,14 +160,9 @@ export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_na
       ei = ei + 1
     }
     if !has_entry {
-      let mut test_body = EInt(0)
-      let mut ti = Array::length(test_fn_names) - 1
-      while ti >= 0 {
-        let tname = Array::get(test_fn_names, ti)
-        test_body = ESeq(ECall(EIdent(tname), Array::slice([EUnit], 0, 0)), test_body)
-        ti = ti - 1
-      }
-      Array::push(stmts, SLet(true, false, entry_name, None, EFn(empty_tp, empty_bounds, empty_params, None, None, test_body)))
+      // Build test runner body directly in run_func (avoid double-counting as user func)
+      // test_fn_names stored for run body generation below
+      ()
     }
   }
   let mut i = 0
@@ -288,9 +283,7 @@ export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_na
     }
     ei = ei + 1
   }
-  if entry_user_idx < 0 {
-    throw(String::concat("entry function not found: ", entry_name))
-  }
+  // entry_user_idx may be -1 if no explicit entry (test/bench only files)
   let str_strs = collect_strings_stmts(stmts)
   // Add map keys to string table (collect_strings_stmts doesn't traverse EMap keys)
   let rec add_map_keys_expr = (e: Expr) -> Unit {
@@ -771,23 +764,62 @@ export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_na
   }
   let num_lambdas = Array::length(lt_w.bodies)
   let start_body = bytebuf_new()
-  let entry_func_idx = entry_user_idx + func_offset
-  let entry_params = Array::get(fn_param_counts, entry_user_idx)
-  if entry_params != 0 {
-    throw("WASI entry function must take 0 parameters")
+  let entry_func_idx = if entry_user_idx >= 0 { entry_user_idx + func_offset } else { -1 }
+  if entry_user_idx >= 0 {
+    let entry_params = Array::get(fn_param_counts, entry_user_idx)
+    if entry_params != 0 {
+      throw("WASI entry function must take 0 parameters")
+    }
+    emit_i64_const(start_body, 0)
+    emit_call(start_body, entry_func_idx)
+    emit_call(start_body, print_int_idx)
+  } else {
+    // No entry: _start calls test funcs directly
+    let mut sti = 0
+    while sti < Array::length(test_fn_names) {
+      let stname = Array::get(test_fn_names, sti)
+      let mut __stj = 0
+      let mut __stf = -1
+      while __stj < Array::length(fn_names_list) {
+        if Array::get(fn_names_list, __stj) == stname { __stf = __stj }
+        __stj = __stj + 1
+      }
+      if __stf >= 0 {
+        emit_i64_const(start_body, 0)
+        emit_call(start_body, func_offset + __stf)
+        emit_drop(start_body)
+      }
+      sti = sti + 1
+    }
   }
-  emit_i64_const(start_body, 0)
-  // env=0 for user func
-  emit_call(start_body, entry_func_idx)
-  emit_call(start_body, print_int_idx)
   // __print_i64
   Array::push(bodies, start_body)
   Array::push(meta_i32, 0)
   Array::push(meta_i64, 0)
   let run_body = bytebuf_new()
-  emit_i64_const(run_body, 0)
-  // env=0 for user func; run returns the entry result for host-driven execution.
-  emit_call(run_body, entry_func_idx)
+  if entry_func_idx >= 0 {
+    emit_i64_const(run_body, 0)
+    emit_call(run_body, entry_func_idx)
+  } else {
+    // No explicit entry: call test functions directly
+    let mut rti = 0
+    while rti < Array::length(test_fn_names) {
+      let tname = Array::get(test_fn_names, rti)
+      let mut __rtj = 0
+      let mut __rtf = -1
+      while __rtj < Array::length(fn_names_list) {
+        if Array::get(fn_names_list, __rtj) == tname { __rtf = __rtj }
+        __rtj = __rtj + 1
+      }
+      if __rtf >= 0 {
+        emit_i64_const(run_body, 0)
+        emit_call(run_body, func_offset + __rtf)
+        emit_drop(run_body)
+      }
+      rti = rti + 1
+    }
+    emit_i64_const(run_body, 0)
+  }
   Array::push(bodies, run_body)
   Array::push(meta_i32, 0)
   Array::push(meta_i64, 0)
