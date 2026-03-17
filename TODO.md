@@ -3,30 +3,32 @@
 Spec-locked decisions are tracked in `spec/decisions.md`.
 Completed items are archived in `docs/DONE.md`.
 
-## Compiled Backend カバレッジ計装 (最優先)
+## カバレッジ計測
 
-compiled (WASI) backend で vibe ソースの分岐カバレッジを計測可能にする。
-現状は `--wasm` backend のみカバレッジ計装があり、`Bytes` 等 WASI 依存の vibe/wasm モジュールは計測不可。
+### 現在の計測結果 (2026-03-17)
 
-### Phase 1: compile_module_wasm_for_exec に coverage オプション追加
-- [ ] `src/runtime_compile/compile.mbt`: `compile_module_wasm_for_exec` に `coverage?: Bool` 引数追加
-- [ ] `compile_module_wasm_with_coverage` と同等のカウンタ挿入を WASI compile パスに適用
-- [ ] `__vibe_cov_base` / `__vibe_cov_count` グローバルを WASI module にも export
+| 対象 | lines | branches | コマンド |
+|------|-------|----------|---------|
+| vibe/wasm (純関数のみ) | 100% | 28.63% | `VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS=1 scripts/coverage_wasm_source.sh vibe/wasm/coverage_test.vibe` |
+| vibe/compiler (selfhost) | 100% | 15.54% | `VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS=1 scripts/coverage_wasm_source.sh vibe/compiler/selfhost_coverage_run.vibe` |
+| vibe/compiler (suite) | — | — | `just coverage-selfhost-suite` (root 外 import で一部失敗) |
 
-### Phase 2: test_cmd でカバレッジ読み取り
-- [ ] `src/cmd/vibe/cli.mbt`: `test_cmd_sequential` でカバレッジモード時に wasmtime 実行後のメモリからカウンタ読み取り
-- [ ] `VIBE_TEST_COVERAGE=1` 環境変数で test 実行時にカバレッジ計装を有効化
-- [ ] カウンタ読み取り方法: wasmtime の `--invoke` 後に memory export から i32 配列を読む or sidecar file 経由
+### 完了済み
+- [x] Bytes codegen を --wasm backend に追加 (new/push/set/slice/concat/to_array)
+- [x] coverage_enabled → need_heap 自動初期化
+- [x] coverage script が `_start` export に対応
+- [x] `compile_module_wasm_for_exec_with_coverage` 追加
+- [x] vibe/wasm/coverage_test.vibe 作成 (31 tests, 6 coverage tests)
 
-### Phase 3: レポート生成
-- [ ] 既存の `coverage_wasm_source.mjs` のレポート生成ロジックを再利用
-- [ ] `vibe test --coverage` で point/line/branch のサマリーを出力
-- [ ] `justfile` に `coverage-vibe-wasm` レシピ追加
-
-### Phase 4: vibe/wasm モジュールのカバレッジ計測
-- [ ] vibe/wasm の各モジュールに対してカバレッジ計測を実行
-- [ ] 分岐カバレッジ gate (BranchIfThen/BranchIfElse/BranchMatchArm) を設定
-- [ ] CI に組み込み
+### 次のステップ
+- [ ] vibe/wasm: branches 28% → 50% (parse_* 関数のカバレッジ追加 — ヒープ制約回避が必要)
+- [ ] vibe/compiler: branches 15% → 30% (eval_e2e テストの branch gap)
+- [ ] compiled backend カバレッジ: Bytes/Fs 使用モジュールも計測可能に
+  - `src/runtime_compile/compile.mbt`: WASI compile パスにカバレッジ計装
+  - `src/cmd/vibe/cli.mbt`: test_cmd でカウンタ読み取り
+  - wasmtime メモリダンプ or sidecar 経由
+- [ ] selfhost suite coverage の root 外 import エラー修正
+- [ ] CI にカバレッジ gate を組み込み (point/line/branch 最低率)
 
 ## vibe/wasm ツールチェーン
 
