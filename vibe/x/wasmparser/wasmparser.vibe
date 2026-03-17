@@ -209,6 +209,7 @@ export let parse_types = (bytes: Bytes, offset: Int, size: Int) -> Array[(Array[
     let form = bytes[pos]
     pos = pos + 1
     if form == 96 {
+      // 0x60 = func type
       let (param_count, pp) = read_uleb128(bytes, pos)
       pos = pp
       let params = Array::slice([0], 0, 0)
@@ -228,7 +229,93 @@ export let parse_types = (bytes: Bytes, offset: Int, size: Int) -> Array[(Array[
         r = r + 1
       }
       Array::push(result, (params, results))
-    } else { () }
+    }
+    else if form == 0x5F {
+      // 0x5F = struct type: field_count, [field_type, mutability]...
+      let (field_count, fp) = read_uleb128(bytes, pos)
+      pos = fp
+      let mut f = 0
+      while (f < field_count) && (pos < end_pos) {
+        // skip field type (may be encoded valtype or ref type)
+        let ft = bytes[pos]
+        pos = pos + 1
+        // handle ref types that have an additional heap type byte
+        if (ft == 0x63) || (ft == 0x64) {
+          // ref / ref null: skip heap type (sleb128)
+          let (_, np) = read_sleb128(bytes, pos)
+          pos = np
+        } else { () }
+        // skip mutability byte
+        if pos < end_pos { pos = pos + 1 } else { () }
+        f = f + 1
+      }
+      // Return empty params/results for struct types
+      Array::push(result, (Array::slice([0], 0, 0), Array::slice([0], 0, 0)))
+    }
+    else if form == 0x5E {
+      // 0x5E = array type: element_type, mutability
+      let et = bytes[pos]
+      pos = pos + 1
+      if (et == 0x63) || (et == 0x64) {
+        let (_, np) = read_sleb128(bytes, pos)
+        pos = np
+      } else { () }
+      if pos < end_pos { pos = pos + 1 } else { () }
+      Array::push(result, (Array::slice([0], 0, 0), Array::slice([0], 0, 0)))
+    }
+    else if form == 0x50 {
+      // 0x50 = sub type: skip to next type entry
+      // sub type has: is_final flag, supertype count, supertypes, then the actual type
+      // For simplicity: skip all bytes until we find the next type boundary
+      // The sub type encoding: 0x50 type_count supertype_indices... composite_type
+      let (super_count, sp) = read_uleb128(bytes, pos)
+      pos = sp
+      let mut si = 0
+      while (si < super_count) && (pos < end_pos) {
+        let (_, np) = read_uleb128(bytes, pos)
+        pos = np
+        si = si + 1
+      }
+      // Now read the composite type (recursive call logic - just skip it)
+      if pos < end_pos {
+        let inner_form = bytes[pos]
+        pos = pos + 1
+        if inner_form == 0x60 {
+          // func type inside sub
+          let (pc2, pp2) = read_uleb128(bytes, pos)
+          pos = pp2 + pc2
+          let (rc2, rp2) = read_uleb128(bytes, pos)
+          pos = rp2 + rc2
+        }
+        else if inner_form == 0x5F {
+          let (fc2, fp2) = read_uleb128(bytes, pos)
+          pos = fp2
+          let mut f2 = 0
+          while (f2 < fc2) && (pos < end_pos) {
+            let ft2 = bytes[pos]
+            pos = pos + 1
+            if (ft2 == 0x63) || (ft2 == 0x64) {
+              let (_, np2) = read_sleb128(bytes, pos)
+              pos = np2
+            } else { () }
+            if pos < end_pos { pos = pos + 1 } else { () }
+            f2 = f2 + 1
+          }
+        }
+        else if inner_form == 0x5E {
+          let et2 = bytes[pos]
+          pos = pos + 1
+          if (et2 == 0x63) || (et2 == 0x64) {
+            let (_, np2) = read_sleb128(bytes, pos)
+            pos = np2
+          } else { () }
+          if pos < end_pos { pos = pos + 1 } else { () }
+        }
+        else { () }
+      } else { () }
+      Array::push(result, (Array::slice([0], 0, 0), Array::slice([0], 0, 0)))
+    }
+    else { () }
     t = t + 1
   }
   result
@@ -675,6 +762,10 @@ export let valtype_name = (vt: Int) -> String {
   else if vt == 123 { "v128" }
   else if vt == 112 { "funcref" }
   else if vt == 111 { "externref" }
+  else if vt == 110 { "ref_null_func" }
+  else if vt == 109 { "ref_null_extern" }
+  else if vt == 99 { "ref" }
+  else if vt == 100 { "ref_null" }
   else { "unknown" }
 }
 

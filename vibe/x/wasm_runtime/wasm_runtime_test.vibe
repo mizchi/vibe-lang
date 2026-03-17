@@ -1,6 +1,6 @@
 //# Imports
 
-import ./index.vibe { exec_body, make_memory, opcode_name, disassemble, exec_module, exec_module_with_args }
+import ./index.vibe { exec_body, exec_body_gc, make_memory, opcode_name, disassemble, exec_module, exec_module_with_args }
 
 //# Functions
 
@@ -803,4 +803,208 @@ test "opcode_name new opcodes" {
   assert(opcode_name(0x88) == "i64.shr_u")
   assert(opcode_name(0x89) == "i64.rotl")
   assert(opcode_name(0x8A) == "i64.rotr")
+}
+
+// === GC tests ===
+
+let empty_gc_heap = () -> Array[Array[Int]] { Array::slice([Array::slice([0], 0, 0)], 0, 0) }
+
+test "gc struct new get set" {
+  // gc_heap[0] = type descriptor for type 0 with 2 fields: [2]
+  let gc_heap = Array::slice([Array::slice([0], 0, 0)], 0, 0)
+  Array::push(gc_heap, Array::slice([2], 0, 1))  // type 0 has 2 fields
+
+  // Code:
+  // i64.const 42           (0x42, 42)
+  // i64.const 99           (0x42, 99)
+  // struct.new 0           (0xFB, 0x00, 0x00)
+  // local.set 0            (0x21, 0x00)
+  // local.get 0            (0x20, 0x00)
+  // struct.get 0 0         (0xFB, 0x02, 0x00, 0x00) -> should be 42
+  // local.get 0            (0x20, 0x00)
+  // i64.const 100          (0x42, 0x64)
+  // struct.set 0 1         (0xFB, 0x05, 0x00, 0x01)
+  // local.get 0            (0x20, 0x00)
+  // struct.get 0 1         (0xFB, 0x02, 0x00, 0x01) -> should be 100
+  // end                    (0x0B)
+  let code = make_bytes([
+    0x42, 42,
+    0x42, 0xE3, 0x00,
+    0xFB, 0x00, 0x00,
+    0x21, 0x00,
+    0x20, 0x00,
+    0xFB, 0x02, 0x00, 0x00,
+    0x1A,
+    0x20, 0x00,
+    0x42, 0xE4, 0x00,
+    0xFB, 0x05, 0x00, 0x01,
+    0x20, 0x00,
+    0xFB, 0x02, 0x00, 0x01,
+    0x0B
+  ])
+  let locals = make_locals(1)
+  let stack = empty_stack()
+  let mem = make_memory(1)
+  let (exit, result) = exec_body_gc(code, 0, Bytes::length(code), locals, stack, mem, empty_globals(), empty_funcs(), gc_heap)
+  assert(exit == 0)
+  assert(result == 100)  // struct.set wrote 100 to field 1, then struct.get reads it back
+
+  // Also verify first field was 42
+  let code2 = make_bytes([
+    0x42, 42,
+    0x42, 0xE3, 0x00,
+    0xFB, 0x00, 0x00,
+    0x21, 0x00,
+    0x20, 0x00,
+    0xFB, 0x02, 0x00, 0x00,
+    0x0B
+  ])
+  let gc_heap2 = Array::slice([Array::slice([0], 0, 0)], 0, 0)
+  Array::push(gc_heap2, Array::slice([2], 0, 1))
+  let (exit2, result2) = exec_body_gc(code2, 0, Bytes::length(code2), make_locals(1), empty_stack(), make_memory(1), empty_globals(), empty_funcs(), gc_heap2)
+  assert(exit2 == 0)
+  assert(result2 == 42)
+}
+
+test "gc array new get set len" {
+  let gc_heap = empty_gc_heap()
+
+  // Code:
+  // i64.const 7                  (0x42, 7)   - fill value
+  // i64.const 3                  (0x42, 3)   - length
+  // array.new 0                  (0xFB, 0x06, 0x00)
+  // local.set 0                  (0x21, 0x00)
+  //
+  // Test array.len:
+  // local.get 0                  (0x20, 0x00)
+  // array.len                    (0xFB, 0x0F)  -> 3
+  // drop                         (0x1A)
+  //
+  // Test array.get:
+  // local.get 0                  (0x20, 0x00)
+  // i64.const 1                  (0x42, 1)
+  // array.get 0                  (0xFB, 0x0B, 0x00) -> 7
+  // drop                         (0x1A)
+  //
+  // Test array.set + get:
+  // local.get 0                  (0x20, 0x00)
+  // i64.const 2                  (0x42, 2)   - index
+  // i64.const 55                 (0x42, 55)  - value
+  // array.set 0                  (0xFB, 0x0E, 0x00)
+  // local.get 0                  (0x20, 0x00)
+  // i64.const 2                  (0x42, 2)
+  // array.get 0                  (0xFB, 0x0B, 0x00) -> 55
+  // end                          (0x0B)
+  let code = make_bytes([
+    0x42, 7,
+    0x42, 3,
+    0xFB, 0x06, 0x00,
+    0x21, 0x00,
+    0x20, 0x00,
+    0xFB, 0x0F,
+    0x1A,
+    0x20, 0x00,
+    0x42, 1,
+    0xFB, 0x0B, 0x00,
+    0x1A,
+    0x20, 0x00,
+    0x42, 2,
+    0x42, 55,
+    0xFB, 0x0E, 0x00,
+    0x20, 0x00,
+    0x42, 2,
+    0xFB, 0x0B, 0x00,
+    0x0B
+  ])
+  let (exit, result) = exec_body_gc(code, 0, Bytes::length(code), make_locals(1), empty_stack(), make_memory(1), empty_globals(), empty_funcs(), gc_heap)
+  assert(exit == 0)
+  assert(result == 55)
+}
+
+test "gc array len" {
+  let gc_heap = empty_gc_heap()
+  // Create array of length 5 and check its length
+  let code = make_bytes([
+    0x42, 0,
+    0x42, 5,
+    0xFB, 0x06, 0x00,
+    0xFB, 0x0F,
+    0x0B
+  ])
+  let (exit, result) = exec_body_gc(code, 0, Bytes::length(code), make_locals(0), empty_stack(), make_memory(1), empty_globals(), empty_funcs(), gc_heap)
+  assert(exit == 0)
+  assert(result == 5)
+}
+
+test "gc ref null and is_null" {
+  let gc_heap = Array::slice([Array::slice([0], 0, 0)], 0, 0)
+  Array::push(gc_heap, Array::slice([1], 0, 1))  // type 0 has 1 field
+
+  // ref.null 0, ref.is_null -> 1
+  let code = make_bytes([
+    0xD0, 0x00,
+    0xD1,
+    0x0B
+  ])
+  let (exit, result) = exec_body_gc(code, 0, Bytes::length(code), make_locals(0), empty_stack(), make_memory(1), empty_globals(), empty_funcs(), gc_heap)
+  assert(exit == 0)
+  assert(result == 1)
+
+  // struct.new then ref.is_null -> 0
+  let gc_heap2 = Array::slice([Array::slice([0], 0, 0)], 0, 0)
+  Array::push(gc_heap2, Array::slice([1], 0, 1))
+  let code2 = make_bytes([
+    0x42, 42,
+    0xFB, 0x00, 0x00,
+    0xD1,
+    0x0B
+  ])
+  let (exit2, result2) = exec_body_gc(code2, 0, Bytes::length(code2), make_locals(0), empty_stack(), make_memory(1), empty_globals(), empty_funcs(), gc_heap2)
+  assert(exit2 == 0)
+  assert(result2 == 0)
+}
+
+test "gc ref func" {
+  let gc_heap = empty_gc_heap()
+  // ref.func 3 -> pushes 3
+  let code = make_bytes([
+    0xD2, 0x03,
+    0x0B
+  ])
+  let (exit, result) = exec_body_gc(code, 0, Bytes::length(code), make_locals(0), empty_stack(), make_memory(1), empty_globals(), empty_funcs(), gc_heap)
+  assert(exit == 0)
+  assert(result == 3)
+}
+
+test "gc array new fixed" {
+  let gc_heap = empty_gc_heap()
+  // Push 3 values, array.new_fixed type=0 count=3
+  let code = make_bytes([
+    0x42, 10,
+    0x42, 20,
+    0x42, 30,
+    0xFB, 0x12, 0x00, 0x03,
+    0x21, 0x00,
+    0x20, 0x00,
+    0x42, 1,
+    0xFB, 0x0B, 0x00,
+    0x0B
+  ])
+  let (exit, result) = exec_body_gc(code, 0, Bytes::length(code), make_locals(1), empty_stack(), make_memory(1), empty_globals(), empty_funcs(), gc_heap)
+  assert(exit == 0)
+  assert(result == 20)
+}
+
+test "gc struct new default" {
+  let gc_heap = Array::slice([Array::slice([0], 0, 0)], 0, 0)
+  Array::push(gc_heap, Array::slice([3], 0, 1))  // type 0 has 3 fields
+  // struct.new_default 0, struct.get 0 2 -> should be 0
+  let code = make_bytes([
+    0xFB, 0x01, 0x00,
+    0xFB, 0x02, 0x00, 0x02,
+    0x0B
+  ])
+  let (exit, result) = exec_body_gc(code, 0, Bytes::length(code), make_locals(0), empty_stack(), make_memory(1), empty_globals(), empty_funcs(), gc_heap)
+  assert(exit == 0)
+  assert(result == 0)
 }

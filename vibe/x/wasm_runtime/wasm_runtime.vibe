@@ -205,6 +205,47 @@ let skip_opcode_immediates = (code: Bytes, op: Int, pos: Int) -> Int {
     // memory.size / memory.grow: 1 byte immediate (0x00)
     pos + 1
   }
+  else if (op == 0xD0) || (op == 0xD2) {
+    // ref.null / ref.func: 1 uleb128 immediate
+    let (_, np) = read_uleb128(code, pos)
+    np
+  }
+  else if op == 0xFB {
+    // GC prefix: sub_op + varying immediates
+    let (sub_op, np) = read_uleb128(code, pos)
+    if (sub_op == 0) || (sub_op == 1) || (sub_op == 6) || (sub_op == 7) {
+      // struct.new, struct.new_default, array.new, array.new_default: type_idx
+      let (_, np2) = read_uleb128(code, np)
+      np2
+    }
+    else if (sub_op == 2) || (sub_op == 3) || (sub_op == 4) || (sub_op == 5) {
+      // struct.get/get_s/get_u/set: type_idx + field_idx
+      let (_, np2) = read_uleb128(code, np)
+      let (_, np3) = read_uleb128(code, np2)
+      np3
+    }
+    else if (sub_op == 0x0B) || (sub_op == 0x0C) || (sub_op == 0x0D) || (sub_op == 0x0E) {
+      // array.get/get_s/get_u/set: type_idx
+      let (_, np2) = read_uleb128(code, np)
+      np2
+    }
+    else if sub_op == 0x0F {
+      // array.len: no immediates
+      np
+    }
+    else if sub_op == 0x12 {
+      // array.new_fixed: type_idx + count
+      let (_, np2) = read_uleb128(code, np)
+      let (_, np3) = read_uleb128(code, np2)
+      np3
+    }
+    else if (sub_op == 0x1A) || (sub_op == 0x1B) {
+      // ref.test/ref.cast: heap_type
+      let (_, np2) = read_uleb128(code, np)
+      np2
+    }
+    else { np }
+  }
   else if op == 0x0E {
     // br_table: count + count labels + default
     let (count, np) = read_uleb128(code, pos)
@@ -662,6 +703,516 @@ let read_name = (buf: Bytes, offset: Int) -> (String, Int) {
     i = i + 1
   }
   (s, np + name_len)
+}
+
+// GC-aware instruction executor.
+// gc_heap is an Array of Arrays. Each entry is a GC object.
+// Struct: [type_idx, field0, field1, ...]
+// Array:  [type_idx, length, elem0, elem1, ...]
+// Null reference = -1, valid reference = index into gc_heap.
+export let exec_body_gc = (
+  code: Bytes, pc_start: Int, pc_end: Int,
+  locals: Array[Int], stack: Array[Int],
+  memory: Bytes, globals: Array[Int],
+  func_bodies: Array[(Int, Int, Int, Int)],
+  gc_heap: Array[Array[Int]]
+) -> (Int, Int) {
+  let mut pc = pc_start
+  let mut exit_code = 0
+  let block_stack = Array::slice([(0, 0)], 0, 0)
+  Array::push(block_stack, (pc_end, 0))
+  let mut ret_val = 0
+  let mem_page_size = 65536
+
+  while (pc >= 0) && (pc < pc_end) && (exit_code == 0) {
+    let op = code[pc]
+    pc = pc + 1
+    // i32.const
+    if op == 0x41 { let (v, np) = read_sleb128(code, pc); pc = np; stack_push(stack, v) }
+    // i64.const
+    else if op == 0x42 { let (v, np) = read_sleb128(code, pc); pc = np; stack_push(stack, v) }
+    // local.get/set/tee
+    else if op == 0x20 { let (i, np) = read_uleb128(code, pc); pc = np; stack_push(stack, Array::get(locals, i)) }
+    else if op == 0x21 { let (i, np) = read_uleb128(code, pc); pc = np; Array::set(locals, i, stack_pop(stack)) }
+    else if op == 0x22 { let (i, np) = read_uleb128(code, pc); pc = np; Array::set(locals, i, stack_peek(stack)) }
+    // global.get/set
+    else if op == 0x23 { let (i, np) = read_uleb128(code, pc); pc = np; stack_push(stack, if i < Array::length(globals) { Array::get(globals, i) } else { 0 }) }
+    else if op == 0x24 { let (i, np) = read_uleb128(code, pc); pc = np; let v = stack_pop(stack); if i < Array::length(globals) { Array::set(globals, i, v) } else { () } }
+    // nop/unreachable/drop/select
+    else if op == 0x01 { () }
+    else if op == 0x00 { exit_code = 1 }
+    else if op == 0x1A { let _ = stack_pop(stack); () }
+    else if op == 0x1B { let c = stack_pop(stack); let b = stack_pop(stack); let a = stack_pop(stack); stack_push(stack, if c != 0 { a } else { b }) }
+    // ref.null
+    else if op == 0xD0 { let (_, np) = read_uleb128(code, pc); pc = np; stack_push(stack, -1) }
+    // ref.is_null
+    else if op == 0xD1 { let r = stack_pop(stack); stack_push(stack, if r == -1 { 1 } else { 0 }) }
+    // ref.func
+    else if op == 0xD2 { let (fi, np) = read_uleb128(code, pc); pc = np; stack_push(stack, fi) }
+    // i32 arith
+    else if op == 0x6A { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) + b) }
+    else if op == 0x6B { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) - b) }
+    else if op == 0x6C { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) * b) }
+    else if op == 0x6D { let b = stack_pop(stack); let a = stack_pop(stack); if b == 0 { exit_code = 1 } else { stack_push(stack, a / b) } }
+    else if op == 0x6F { let b = stack_pop(stack); let a = stack_pop(stack); if b == 0 { exit_code = 1 } else { stack_push(stack, a - ((a / b) * b)) } }
+    else if op == 0x71 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) & b) }
+    else if op == 0x72 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) | b) }
+    else if op == 0x73 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) ^ b) }
+    else if op == 0x74 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) << (b & 31)) }
+    else if op == 0x75 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) >> (b & 31)) }
+    // i32 unsigned arith
+    else if op == 0x6E { let b = stack_pop(stack); let a = stack_pop(stack); if b == 0 { exit_code = 1 } else { let ua = a & 0xFFFFFFFF; let ub = b & 0xFFFFFFFF; stack_push(stack, ua / ub) } }
+    else if op == 0x70 { let b = stack_pop(stack); let a = stack_pop(stack); if b == 0 { exit_code = 1 } else { let ua = a & 0xFFFFFFFF; let ub = b & 0xFFFFFFFF; stack_push(stack, ua - ((ua / ub) * ub)) } }
+    // i32 bit counting
+    else if op == 0x67 { stack_push(stack, clz32(stack_pop(stack))) }
+    else if op == 0x68 { stack_push(stack, ctz32(stack_pop(stack))) }
+    else if op == 0x69 { stack_push(stack, popcnt32(stack_pop(stack))) }
+    // i32 rotation
+    else if op == 0x77 { let b = stack_pop(stack); stack_push(stack, rotl32(stack_pop(stack), b)) }
+    else if op == 0x78 { let b = stack_pop(stack); stack_push(stack, rotr32(stack_pop(stack), b)) }
+    // i32 unsigned shr
+    else if op == 0x76 { let b = stack_pop(stack); let a = stack_pop(stack) & 0xFFFFFFFF; stack_push(stack, (a >> (b & 31)) & ((1 << (32 - (b & 31))) - 1)) }
+    // i32 cmp
+    else if op == 0x45 { stack_push(stack, if stack_pop(stack) == 0 { 1 } else { 0 }) }
+    else if op == 0x46 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) == b { 1 } else { 0 }) }
+    else if op == 0x47 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) != b { 1 } else { 0 }) }
+    else if op == 0x48 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) < b { 1 } else { 0 }) }
+    else if op == 0x4A { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) > b { 1 } else { 0 }) }
+    else if op == 0x4C { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) <= b { 1 } else { 0 }) }
+    else if op == 0x4E { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) >= b { 1 } else { 0 }) }
+    // i32 unsigned cmp
+    else if op == 0x49 { let b = stack_pop(stack); let ub = b & 0xFFFFFFFF; let ua = stack_pop(stack) & 0xFFFFFFFF; stack_push(stack, if ua < ub { 1 } else { 0 }) }
+    else if op == 0x4B { let b = stack_pop(stack); let ub = b & 0xFFFFFFFF; let ua = stack_pop(stack) & 0xFFFFFFFF; stack_push(stack, if ua > ub { 1 } else { 0 }) }
+    else if op == 0x4D { let b = stack_pop(stack); let ub = b & 0xFFFFFFFF; let ua = stack_pop(stack) & 0xFFFFFFFF; stack_push(stack, if ua <= ub { 1 } else { 0 }) }
+    else if op == 0x4F { let b = stack_pop(stack); let ub = b & 0xFFFFFFFF; let ua = stack_pop(stack) & 0xFFFFFFFF; stack_push(stack, if ua >= ub { 1 } else { 0 }) }
+    // i64 arith
+    else if op == 0x7C { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) + b) }
+    else if op == 0x7D { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) - b) }
+    else if op == 0x7E { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) * b) }
+    else if op == 0x7F { let b = stack_pop(stack); let a = stack_pop(stack); if b == 0 { exit_code = 1 } else { stack_push(stack, a / b) } }
+    else if op == 0x81 { let b = stack_pop(stack); let a = stack_pop(stack); if b == 0 { exit_code = 1 } else { stack_push(stack, a - ((a / b) * b)) } }
+    else if op == 0x83 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) & b) }
+    else if op == 0x84 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) | b) }
+    else if op == 0x85 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) ^ b) }
+    else if op == 0x86 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) << (b & 63)) }
+    else if op == 0x87 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) >> (b & 63)) }
+    // i64 unsigned arith
+    else if op == 0x80 { let b = stack_pop(stack); let a = stack_pop(stack); if b == 0 { exit_code = 1 } else { stack_push(stack, a / b) } }
+    else if op == 0x82 { let b = stack_pop(stack); let a = stack_pop(stack); if b == 0 { exit_code = 1 } else { stack_push(stack, a - ((a / b) * b)) } }
+    // i64 bit counting
+    else if op == 0x79 { stack_push(stack, clz64(stack_pop(stack))) }
+    else if op == 0x7A { stack_push(stack, ctz64(stack_pop(stack))) }
+    else if op == 0x7B { stack_push(stack, popcnt64(stack_pop(stack))) }
+    // i64 rotation
+    else if op == 0x89 { let b = stack_pop(stack); let a = stack_pop(stack); let shift = b & 63; stack_push(stack, if shift == 0 { a } else { (a << shift) | ((a >> (64 - shift)) & ((1 << shift) - 1)) }) }
+    else if op == 0x8A { let b = stack_pop(stack); let a = stack_pop(stack); let shift = b & 63; stack_push(stack, if shift == 0 { a } else { ((a >> shift) & ((1 << (64 - shift)) - 1)) | (a << (64 - shift)) }) }
+    // i64 unsigned shr
+    else if op == 0x88 { let b = stack_pop(stack); let a = stack_pop(stack); let shift = b & 63; stack_push(stack, if shift == 0 { a } else { (a >> shift) & ((1 << (64 - shift)) - 1) }) }
+    // i64 cmp
+    else if op == 0x50 { stack_push(stack, if stack_pop(stack) == 0 { 1 } else { 0 }) }
+    else if op == 0x51 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) == b { 1 } else { 0 }) }
+    else if op == 0x52 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) != b { 1 } else { 0 }) }
+    else if op == 0x53 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) < b { 1 } else { 0 }) }
+    else if op == 0x55 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) > b { 1 } else { 0 }) }
+    else if op == 0x57 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) <= b { 1 } else { 0 }) }
+    else if op == 0x59 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) >= b { 1 } else { 0 }) }
+    // i64 unsigned cmp
+    else if op == 0x54 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) < b { 1 } else { 0 }) }
+    else if op == 0x56 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) > b { 1 } else { 0 }) }
+    else if op == 0x58 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) <= b { 1 } else { 0 }) }
+    else if op == 0x5A { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) >= b { 1 } else { 0 }) }
+    // conversions
+    else if op == 0xA7 { stack_push(stack, stack_pop(stack) & 0xFFFFFFFF) }
+    else if op == 0xAC { () }
+    else if op == 0xAD { stack_push(stack, stack_pop(stack) & 0xFFFFFFFF) }
+    // memory load/store i32/i64
+    else if op == 0x28 { let (_, np) = read_uleb128(code, pc); let (off, np2) = read_uleb128(code, np); pc = np2; stack_push(stack, mem_load_i32(memory, stack_pop(stack) + off)) }
+    else if op == 0x29 { let (_, np) = read_uleb128(code, pc); let (off, np2) = read_uleb128(code, np); pc = np2; stack_push(stack, mem_load_i64(memory, stack_pop(stack) + off)) }
+    else if op == 0x36 { let (_, np) = read_uleb128(code, pc); let (off, np2) = read_uleb128(code, np); pc = np2; let v = stack_pop(stack); mem_store_i32(memory, stack_pop(stack) + off, v) }
+    else if op == 0x37 { let (_, np) = read_uleb128(code, pc); let (off, np2) = read_uleb128(code, np); pc = np2; let v = stack_pop(stack); mem_store_i64(memory, stack_pop(stack) + off, v) }
+    // i32.load8_u
+    else if op == 0x2D {
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let addr = stack_pop(stack) + off
+      stack_push(stack, if addr < Bytes::length(memory) { memory[addr] } else { 0 })
+    }
+    // i32.store8
+    else if op == 0x3A {
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let v = stack_pop(stack)
+      let addr = stack_pop(stack) + off
+      if addr < Bytes::length(memory) { Bytes::set(memory, addr, v & 0xFF) } else { () }
+    }
+    // i32.load8_s
+    else if op == 0x2C {
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let addr = stack_pop(stack) + off
+      stack_push(stack, mem_load_i8_s(memory, addr))
+    }
+    // i32.load16_s
+    else if op == 0x2E {
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let addr = stack_pop(stack) + off
+      stack_push(stack, mem_load_i16_s(memory, addr))
+    }
+    // i32.load16_u
+    else if op == 0x2F {
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let addr = stack_pop(stack) + off
+      stack_push(stack, mem_load_i16_u(memory, addr))
+    }
+    // i32.store16
+    else if op == 0x3B {
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let v = stack_pop(stack)
+      let addr = stack_pop(stack) + off
+      mem_store_i16(memory, addr, v)
+    }
+    // call_indirect (trap for now)
+    else if op == 0x11 {
+      let (_, np) = read_uleb128(code, pc)
+      let (_, np2) = read_uleb128(code, np)
+      pc = np2
+      exit_code = 1
+    }
+    // memory.size
+    else if op == 0x3F {
+      pc = pc + 1
+      stack_push(stack, Bytes::length(memory) / mem_page_size)
+    }
+    // memory.grow
+    else if op == 0x40 {
+      pc = pc + 1
+      let delta = stack_pop(stack)
+      let cur_pages = Bytes::length(memory) / mem_page_size
+      let new_bytes = delta * mem_page_size
+      let mut gi = 0
+      while gi < new_bytes { Bytes::push(memory, 0); gi = gi + 1 }
+      stack_push(stack, cur_pages)
+    }
+    // block/loop
+    else if op == 0x02 { let (_, np) = read_sleb128(code, pc); pc = np; Array::push(block_stack, (find_end(code, pc, pc_end), 0)) }
+    else if op == 0x03 { let (_, np) = read_sleb128(code, pc); pc = np; Array::push(block_stack, (pc, 1)) }
+    // if
+    else if op == 0x04 {
+      let (_, np) = read_sleb128(code, pc); pc = np
+      let cond = stack_pop(stack)
+      let epc = find_end(code, pc, pc_end)
+      let elpc = find_else(code, pc, epc)
+      if cond != 0 { Array::push(block_stack, (epc, 0)) }
+      else { if elpc > 0 { pc = elpc; Array::push(block_stack, (epc, 0)) } else { pc = epc } }
+    }
+    // else
+    else if op == 0x05 {
+      let blen = Array::length(block_stack)
+      if blen > 0 { let (t, _) = Array::get(block_stack, blen - 1); pc = t } else { () }
+    }
+    // end
+    else if op == 0x0B {
+      let blen = Array::length(block_stack)
+      if blen > 1 { Array::truncate(block_stack, blen - 1) } else { () }
+    }
+    // br
+    else if op == 0x0C { let (d, np) = read_uleb128(code, pc); pc = np; pc = br_to(block_stack, d) }
+    // br_if
+    else if op == 0x0D {
+      let (d, np) = read_uleb128(code, pc); pc = np
+      let cond = stack_pop(stack)
+      if cond != 0 { pc = br_to(block_stack, d) } else { () }
+    }
+    // br_table
+    else if op == 0x0E {
+      let (count, np) = read_uleb128(code, pc)
+      pc = np
+      let labels = Array::slice([0], 0, 0)
+      let mut li = 0
+      while li <= count {
+        let (lbl, np2) = read_uleb128(code, pc)
+        pc = np2
+        Array::push(labels, lbl)
+        li = li + 1
+      }
+      let idx = stack_pop(stack)
+      let target_depth = if idx < count { Array::get(labels, idx) } else { Array::get(labels, count) }
+      pc = br_to(block_stack, target_depth)
+    }
+    // return
+    else if op == 0x0F {
+      ret_val = if Array::length(stack) > 0 { stack_pop(stack) } else { 0 }
+      exit_code = 2
+    }
+    // call
+    else if op == 0x10 {
+      let (fi, np) = read_uleb128(code, pc); pc = np
+      if fi < Array::length(func_bodies) {
+        let (fs, fe, fp, fl) = Array::get(func_bodies, fi)
+        let cl = Array::slice([0], 0, 0)
+        let mut li = 0
+        while li < (fp + fl) { Array::push(cl, 0); li = li + 1 }
+        let mut pi = fp - 1
+        while pi >= 0 { Array::set(cl, pi, stack_pop(stack)); pi = pi - 1 }
+        let cs = Array::slice([0], 0, 0)
+        let (ce, cv) = exec_body_gc(code, fs, fe, cl, cs, memory, globals, func_bodies, gc_heap)
+        if ce == 1 { exit_code = 1 } else { stack_push(stack, cv) }
+      } else { () }
+    }
+    // GC prefix (0xFB)
+    else if op == 0xFB {
+      let (sub_op, np) = read_uleb128(code, pc)
+      pc = np
+      // struct.new (0x00)
+      if sub_op == 0 {
+        let (type_idx, np2) = read_uleb128(code, pc)
+        pc = np2
+        // We need to know the number of fields. For simplicity, use a heuristic:
+        // count how many values are on the stack (we pop until we can't).
+        // Actually, the type section should tell us, but we don't have it here.
+        // Instead, we use the convention: the caller knows how many fields to push.
+        // We'll use the stack: pop values until we find none, but that's wrong.
+        // Better approach: encode field count into the type. Since we don't have types,
+        // we'll use the stack length before/after approach.
+        // For now: we need the field count from type_idx. Since the interpreter doesn't
+        // have access to type info, we'll use a simple approach: the struct.new opcode
+        // in the GC spec requires the number of fields to match the type definition.
+        // We'll store the field count in gc_heap as we encounter struct definitions.
+        // SIMPLEST: just pop all values on the stack as fields (usually correct for
+        // generated code). Actually no, let's just look at what the spec says:
+        // struct.new pops N values where N = number of fields in the struct type.
+        // Since we can't know N without the type section, and we're interpreting raw
+        // bytecode, we'll need a type info array. For simplicity in this interpreter,
+        // assume each struct type has been registered in gc_heap at index type_idx
+        // with its field count stored somehow. OR, we just say: the field count is
+        // determined by a separate mechanism. For now, let's just take the approach
+        // of making struct.new always take the values that are on the stack.
+        // Actually the simplest correct approach: read field_count from the gc_heap metadata.
+        // For this minimal implementation: push all stack values as a new struct.
+        // Real approach: we store type metadata in globals or a separate array.
+        // For this interpreter, we'll just pop values from the stack until we find a marker.
+        // PRAGMATIC: the test code will know how many fields to push. Let's just use
+        // the stack size as-is and pop all of them. No -- that breaks multi-instruction sequences.
+        // Let's use a different approach: store gc type info in the gc_heap itself.
+        // Type info entries: gc_heap[type_idx] = [field_count] (pre-populated by caller).
+        // If gc_heap[type_idx] exists and has length 1, it's a type descriptor.
+        // FINAL SIMPLE APPROACH: The GC spec says struct.new type_idx pops N fields
+        // where N is known from the type. We'll read N from gc_heap[type_idx][0] if it exists.
+        // If not, we assume 0 fields.
+        let field_count = if type_idx < Array::length(gc_heap) {
+          let type_info = Array::get(gc_heap, type_idx)
+          if Array::length(type_info) > 0 { Array::get(type_info, 0) } else { 0 }
+        } else { 0 }
+        let obj = Array::slice([0], 0, 0)
+        Array::push(obj, type_idx)
+        // Pop fields in reverse order (last field pushed first)
+        let fields_tmp = Array::slice([0], 0, 0)
+        let mut fi = 0
+        while fi < field_count { Array::push(fields_tmp, stack_pop(stack)); fi = fi + 1 }
+        // Reverse the fields
+        let mut ri = field_count - 1
+        while ri >= 0 { Array::push(obj, Array::get(fields_tmp, ri)); ri = ri - 1 }
+        let ref_idx = Array::length(gc_heap)
+        Array::push(gc_heap, obj)
+        stack_push(stack, ref_idx)
+      }
+      // struct.new_default (0x01)
+      else if sub_op == 1 {
+        let (type_idx, np2) = read_uleb128(code, pc)
+        pc = np2
+        let field_count = if type_idx < Array::length(gc_heap) {
+          let type_info = Array::get(gc_heap, type_idx)
+          if Array::length(type_info) > 0 { Array::get(type_info, 0) } else { 0 }
+        } else { 0 }
+        let obj = Array::slice([0], 0, 0)
+        Array::push(obj, type_idx)
+        let mut fi = 0
+        while fi < field_count { Array::push(obj, 0); fi = fi + 1 }
+        let ref_idx = Array::length(gc_heap)
+        Array::push(gc_heap, obj)
+        stack_push(stack, ref_idx)
+      }
+      // struct.get (0x02)
+      else if sub_op == 2 {
+        let (_, np2) = read_uleb128(code, pc)
+        pc = np2
+        let (field_idx, np3) = read_uleb128(code, pc)
+        pc = np3
+        let ref_val = stack_pop(stack)
+        if (ref_val >= 0) && (ref_val < Array::length(gc_heap)) {
+          let obj = Array::get(gc_heap, ref_val)
+          stack_push(stack, Array::get(obj, field_idx + 1))
+        } else { exit_code = 1 }
+      }
+      // struct.get_s (0x03) - same as struct.get for our int representation
+      else if sub_op == 3 {
+        let (_, np2) = read_uleb128(code, pc)
+        pc = np2
+        let (field_idx, np3) = read_uleb128(code, pc)
+        pc = np3
+        let ref_val = stack_pop(stack)
+        if (ref_val >= 0) && (ref_val < Array::length(gc_heap)) {
+          let obj = Array::get(gc_heap, ref_val)
+          stack_push(stack, Array::get(obj, field_idx + 1))
+        } else { exit_code = 1 }
+      }
+      // struct.get_u (0x04) - same as struct.get for our int representation
+      else if sub_op == 4 {
+        let (_, np2) = read_uleb128(code, pc)
+        pc = np2
+        let (field_idx, np3) = read_uleb128(code, pc)
+        pc = np3
+        let ref_val = stack_pop(stack)
+        if (ref_val >= 0) && (ref_val < Array::length(gc_heap)) {
+          let obj = Array::get(gc_heap, ref_val)
+          stack_push(stack, Array::get(obj, field_idx + 1))
+        } else { exit_code = 1 }
+      }
+      // struct.set (0x05)
+      else if sub_op == 5 {
+        let (_, np2) = read_uleb128(code, pc)
+        pc = np2
+        let (field_idx, np3) = read_uleb128(code, pc)
+        pc = np3
+        let val = stack_pop(stack)
+        let ref_val = stack_pop(stack)
+        if (ref_val >= 0) && (ref_val < Array::length(gc_heap)) {
+          let obj = Array::get(gc_heap, ref_val)
+          Array::set(obj, field_idx + 1, val)
+        } else { exit_code = 1 }
+      }
+      // array.new (0x06)
+      else if sub_op == 6 {
+        let (type_idx, np2) = read_uleb128(code, pc)
+        pc = np2
+        let length = stack_pop(stack)
+        let val = stack_pop(stack)
+        let obj = Array::slice([0], 0, 0)
+        Array::push(obj, type_idx)
+        Array::push(obj, length)
+        let mut ai = 0
+        while ai < length { Array::push(obj, val); ai = ai + 1 }
+        let ref_idx = Array::length(gc_heap)
+        Array::push(gc_heap, obj)
+        stack_push(stack, ref_idx)
+      }
+      // array.new_default (0x07)
+      else if sub_op == 7 {
+        let (type_idx, np2) = read_uleb128(code, pc)
+        pc = np2
+        let length = stack_pop(stack)
+        let obj = Array::slice([0], 0, 0)
+        Array::push(obj, type_idx)
+        Array::push(obj, length)
+        let mut ai = 0
+        while ai < length { Array::push(obj, 0); ai = ai + 1 }
+        let ref_idx = Array::length(gc_heap)
+        Array::push(gc_heap, obj)
+        stack_push(stack, ref_idx)
+      }
+      // array.get (0x0B)
+      else if sub_op == 0x0B {
+        let (_, np2) = read_uleb128(code, pc)
+        pc = np2
+        let idx = stack_pop(stack)
+        let ref_val = stack_pop(stack)
+        if (ref_val >= 0) && (ref_val < Array::length(gc_heap)) {
+          let obj = Array::get(gc_heap, ref_val)
+          stack_push(stack, Array::get(obj, idx + 2))
+        } else { exit_code = 1 }
+      }
+      // array.get_s (0x0C)
+      else if sub_op == 0x0C {
+        let (_, np2) = read_uleb128(code, pc)
+        pc = np2
+        let idx = stack_pop(stack)
+        let ref_val = stack_pop(stack)
+        if (ref_val >= 0) && (ref_val < Array::length(gc_heap)) {
+          let obj = Array::get(gc_heap, ref_val)
+          stack_push(stack, Array::get(obj, idx + 2))
+        } else { exit_code = 1 }
+      }
+      // array.get_u (0x0D)
+      else if sub_op == 0x0D {
+        let (_, np2) = read_uleb128(code, pc)
+        pc = np2
+        let idx = stack_pop(stack)
+        let ref_val = stack_pop(stack)
+        if (ref_val >= 0) && (ref_val < Array::length(gc_heap)) {
+          let obj = Array::get(gc_heap, ref_val)
+          stack_push(stack, Array::get(obj, idx + 2))
+        } else { exit_code = 1 }
+      }
+      // array.set (0x0E)
+      else if sub_op == 0x0E {
+        let (_, np2) = read_uleb128(code, pc)
+        pc = np2
+        let val = stack_pop(stack)
+        let idx = stack_pop(stack)
+        let ref_val = stack_pop(stack)
+        if (ref_val >= 0) && (ref_val < Array::length(gc_heap)) {
+          let obj = Array::get(gc_heap, ref_val)
+          Array::set(obj, idx + 2, val)
+        } else { exit_code = 1 }
+      }
+      // array.len (0x0F)
+      else if sub_op == 0x0F {
+        let ref_val = stack_pop(stack)
+        if (ref_val >= 0) && (ref_val < Array::length(gc_heap)) {
+          let obj = Array::get(gc_heap, ref_val)
+          stack_push(stack, Array::get(obj, 1))
+        } else { exit_code = 1 }
+      }
+      // array.new_fixed (0x12)
+      else if sub_op == 0x12 {
+        let (type_idx, np2) = read_uleb128(code, pc)
+        pc = np2
+        let (count, np3) = read_uleb128(code, pc)
+        pc = np3
+        let obj = Array::slice([0], 0, 0)
+        Array::push(obj, type_idx)
+        Array::push(obj, count)
+        // Pop values in reverse order
+        let vals_tmp = Array::slice([0], 0, 0)
+        let mut vi = 0
+        while vi < count { Array::push(vals_tmp, stack_pop(stack)); vi = vi + 1 }
+        let mut ri = count - 1
+        while ri >= 0 { Array::push(obj, Array::get(vals_tmp, ri)); ri = ri - 1 }
+        let ref_idx = Array::length(gc_heap)
+        Array::push(gc_heap, obj)
+        stack_push(stack, ref_idx)
+      }
+      // ref.test (0x1A)
+      else if sub_op == 0x1A {
+        let (_, np2) = read_uleb128(code, pc)
+        pc = np2
+        let ref_val = stack_pop(stack)
+        stack_push(stack, if (ref_val >= 0) && (ref_val < Array::length(gc_heap)) { 1 } else { 0 })
+      }
+      // ref.cast (0x1B)
+      else if sub_op == 0x1B {
+        let (_, np2) = read_uleb128(code, pc)
+        pc = np2
+        // Just leave the ref on the stack (no-op cast for our interpreter)
+      }
+      else { () }
+    }
+    else { () }
+  }
+
+  if exit_code != 2 {
+    ret_val = if Array::length(stack) > 0 { stack_pop(stack) } else { 0 }
+  }
+  (exit_code, ret_val)
 }
 
 // Parse a WASM module binary, find export by name, execute it.
