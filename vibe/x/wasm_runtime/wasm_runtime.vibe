@@ -57,6 +57,100 @@ let mem_store_i32 = (m: Bytes, a: Int, v: Int) -> Unit {
 }
 let mem_load_i64 = (m: Bytes, a: Int) -> Int { mem_load_i32(m, a) | (mem_load_i32(m, a+4) << 32) }
 let mem_store_i64 = (m: Bytes, a: Int, v: Int) -> Unit { mem_store_i32(m, a, v & 0xFFFFFFFF); mem_store_i32(m, a+4, (v>>32) & 0xFFFFFFFF) }
+let mem_load_i8_s = (m: Bytes, a: Int) -> Int {
+  if a >= Bytes::length(m) { 0 }
+  else {
+    let b = m[a]
+    if (b & 0x80) != 0 { b | ((-1) ^ 0xFF) } else { b }
+  }
+}
+let mem_load_i16_u = (m: Bytes, a: Int) -> Int {
+  if (a + 2) > Bytes::length(m) { 0 } else { m[a] | (m[a+1] << 8) }
+}
+let mem_load_i16_s = (m: Bytes, a: Int) -> Int {
+  if (a + 2) > Bytes::length(m) { 0 }
+  else {
+    let v = m[a] | (m[a+1] << 8)
+    if (v & 0x8000) != 0 { v | ((-1) ^ 0xFFFF) } else { v }
+  }
+}
+let mem_store_i16 = (m: Bytes, a: Int, v: Int) -> Unit {
+  if (a + 2) <= Bytes::length(m) {
+    Bytes::set(m, a, v & 0xFF); Bytes::set(m, a+1, (v >> 8) & 0xFF)
+  }
+}
+
+// Bit counting helpers
+let clz32 = (n: Int) -> Int {
+  let v = n & 0xFFFFFFFF
+  if v == 0 { 32 }
+  else {
+    let mut count = 0
+    let mut x = v
+    while (x & 0x80000000) == 0 { x = x << 1; count = count + 1 }
+    count
+  }
+}
+let ctz32 = (n: Int) -> Int {
+  let v = n & 0xFFFFFFFF
+  if v == 0 { 32 }
+  else {
+    let mut count = 0
+    let mut x = v
+    while (x & 1) == 0 { x = (x >> 1) & 0x7FFFFFFF; count = count + 1 }
+    count
+  }
+}
+let popcnt32 = (n: Int) -> Int {
+  let mut count = 0
+  let mut x = n & 0xFFFFFFFF
+  while x != 0 { count = count + (x & 1); x = (x >> 1) & 0x7FFFFFFF }
+  count
+}
+let clz64 = (n: Int) -> Int {
+  if n == 0 { 64 }
+  else {
+    let mut count = 0
+    let mut done = false
+    while (count < 64) && (done == false) {
+      if (n & (1 << (63 - count))) != 0 { done = true } else { count = count + 1 }
+    }
+    count
+  }
+}
+let ctz64 = (n: Int) -> Int {
+  if n == 0 { 64 }
+  else {
+    let mut count = 0
+    let mut x = n
+    let mut done = false
+    while (done == false) && (count < 64) {
+      if (x & 1) == 0 { x = x >> 1; count = count + 1 } else { done = true }
+    }
+    count
+  }
+}
+let popcnt64 = (n: Int) -> Int {
+  let mut count = 0
+  let mut x = n
+  let mut i = 0
+  while i < 64 { count = count + (x & 1); x = x >> 1; i = i + 1 }
+  count
+}
+
+// Rotation helpers
+let rotl32 = (a: Int, b: Int) -> Int {
+  let v = a & 0xFFFFFFFF
+  let shift = b & 31
+  if shift == 0 { v }
+  else { ((v << shift) | (((v >> (32 - shift))) & ((1 << shift) - 1))) & 0xFFFFFFFF }
+}
+let rotr32 = (a: Int, b: Int) -> Int {
+  let v = a & 0xFFFFFFFF
+  let shift = b & 31
+  if shift == 0 { v }
+  else { ((((v >> shift)) & ((1 << (32 - shift)) - 1)) | (v << (32 - shift))) & 0xFFFFFFFF }
+}
 
 export let make_memory = (pages: Int) -> Bytes {
   let size = pages * 65536
@@ -95,7 +189,13 @@ let skip_opcode_immediates = (code: Bytes, op: Int, pos: Int) -> Int {
     let (_, np) = read_sleb128(code, pos)
     np
   }
-  else if (op == 0x28) || (op == 0x29) || (op == 0x36) || (op == 0x37) || (op == 0x2D) || (op == 0x3A) {
+  else if (op == 0x11) {
+    // call_indirect: type_idx + table_idx
+    let (_, np) = read_uleb128(code, pos)
+    let (_, np2) = read_uleb128(code, np)
+    np2
+  }
+  else if (op == 0x28) || (op == 0x29) || (op == 0x36) || (op == 0x37) || (op == 0x2D) || (op == 0x3A) || (op == 0x2C) || (op == 0x2E) || (op == 0x2F) || (op == 0x3B) {
     // memarg: align + offset
     let (_, np) = read_uleb128(code, pos)
     let (_, np2) = read_uleb128(code, np)
@@ -165,6 +265,18 @@ export let exec_body = (
     else if op == 0x73 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) ^ b) }
     else if op == 0x74 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) << (b & 31)) }
     else if op == 0x75 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) >> (b & 31)) }
+    // i32 unsigned arith
+    else if op == 0x6E { let b = stack_pop(stack); let a = stack_pop(stack); if b == 0 { exit_code = 1 } else { let ua = a & 0xFFFFFFFF; let ub = b & 0xFFFFFFFF; stack_push(stack, ua / ub) } }
+    else if op == 0x70 { let b = stack_pop(stack); let a = stack_pop(stack); if b == 0 { exit_code = 1 } else { let ua = a & 0xFFFFFFFF; let ub = b & 0xFFFFFFFF; stack_push(stack, ua - ((ua / ub) * ub)) } }
+    // i32 bit counting
+    else if op == 0x67 { stack_push(stack, clz32(stack_pop(stack))) }
+    else if op == 0x68 { stack_push(stack, ctz32(stack_pop(stack))) }
+    else if op == 0x69 { stack_push(stack, popcnt32(stack_pop(stack))) }
+    // i32 rotation
+    else if op == 0x77 { let b = stack_pop(stack); stack_push(stack, rotl32(stack_pop(stack), b)) }
+    else if op == 0x78 { let b = stack_pop(stack); stack_push(stack, rotr32(stack_pop(stack), b)) }
+    // i32 unsigned shr
+    else if op == 0x76 { let b = stack_pop(stack); let a = stack_pop(stack) & 0xFFFFFFFF; stack_push(stack, (a >> (b & 31)) & ((1 << (32 - (b & 31))) - 1)) }
     // i32 cmp
     else if op == 0x45 { stack_push(stack, if stack_pop(stack) == 0 { 1 } else { 0 }) }
     else if op == 0x46 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) == b { 1 } else { 0 }) }
@@ -173,6 +285,11 @@ export let exec_body = (
     else if op == 0x4A { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) > b { 1 } else { 0 }) }
     else if op == 0x4C { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) <= b { 1 } else { 0 }) }
     else if op == 0x4E { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) >= b { 1 } else { 0 }) }
+    // i32 unsigned cmp
+    else if op == 0x49 { let b = stack_pop(stack); let ub = b & 0xFFFFFFFF; let ua = stack_pop(stack) & 0xFFFFFFFF; stack_push(stack, if ua < ub { 1 } else { 0 }) }
+    else if op == 0x4B { let b = stack_pop(stack); let ub = b & 0xFFFFFFFF; let ua = stack_pop(stack) & 0xFFFFFFFF; stack_push(stack, if ua > ub { 1 } else { 0 }) }
+    else if op == 0x4D { let b = stack_pop(stack); let ub = b & 0xFFFFFFFF; let ua = stack_pop(stack) & 0xFFFFFFFF; stack_push(stack, if ua <= ub { 1 } else { 0 }) }
+    else if op == 0x4F { let b = stack_pop(stack); let ub = b & 0xFFFFFFFF; let ua = stack_pop(stack) & 0xFFFFFFFF; stack_push(stack, if ua >= ub { 1 } else { 0 }) }
     // i64 arith
     else if op == 0x7C { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) + b) }
     else if op == 0x7D { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) - b) }
@@ -184,6 +301,18 @@ export let exec_body = (
     else if op == 0x85 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) ^ b) }
     else if op == 0x86 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) << (b & 63)) }
     else if op == 0x87 { let b = stack_pop(stack); stack_push(stack, stack_pop(stack) >> (b & 63)) }
+    // i64 unsigned arith
+    else if op == 0x80 { let b = stack_pop(stack); let a = stack_pop(stack); if b == 0 { exit_code = 1 } else { stack_push(stack, a / b) } }
+    else if op == 0x82 { let b = stack_pop(stack); let a = stack_pop(stack); if b == 0 { exit_code = 1 } else { stack_push(stack, a - ((a / b) * b)) } }
+    // i64 bit counting
+    else if op == 0x79 { stack_push(stack, clz64(stack_pop(stack))) }
+    else if op == 0x7A { stack_push(stack, ctz64(stack_pop(stack))) }
+    else if op == 0x7B { stack_push(stack, popcnt64(stack_pop(stack))) }
+    // i64 rotation
+    else if op == 0x89 { let b = stack_pop(stack); let a = stack_pop(stack); let shift = b & 63; stack_push(stack, if shift == 0 { a } else { (a << shift) | ((a >> (64 - shift)) & ((1 << shift) - 1)) }) }
+    else if op == 0x8A { let b = stack_pop(stack); let a = stack_pop(stack); let shift = b & 63; stack_push(stack, if shift == 0 { a } else { ((a >> shift) & ((1 << (64 - shift)) - 1)) | (a << (64 - shift)) }) }
+    // i64 unsigned shr
+    else if op == 0x88 { let b = stack_pop(stack); let a = stack_pop(stack); let shift = b & 63; stack_push(stack, if shift == 0 { a } else { (a >> shift) & ((1 << (64 - shift)) - 1) }) }
     // i64 cmp
     else if op == 0x50 { stack_push(stack, if stack_pop(stack) == 0 { 1 } else { 0 }) }
     else if op == 0x51 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) == b { 1 } else { 0 }) }
@@ -192,6 +321,11 @@ export let exec_body = (
     else if op == 0x55 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) > b { 1 } else { 0 }) }
     else if op == 0x57 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) <= b { 1 } else { 0 }) }
     else if op == 0x59 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) >= b { 1 } else { 0 }) }
+    // i64 unsigned cmp (for vibe's 62-bit int, treat values as-is since they fit)
+    else if op == 0x54 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) < b { 1 } else { 0 }) }
+    else if op == 0x56 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) > b { 1 } else { 0 }) }
+    else if op == 0x58 { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) <= b { 1 } else { 0 }) }
+    else if op == 0x5A { let b = stack_pop(stack); stack_push(stack, if stack_pop(stack) >= b { 1 } else { 0 }) }
     // conversions
     else if op == 0xA7 { stack_push(stack, stack_pop(stack) & 0xFFFFFFFF) }
     else if op == 0xAC { () }  // i64.extend_i32_s - noop for our unified int
@@ -217,6 +351,46 @@ export let exec_body = (
       let v = stack_pop(stack)
       let addr = stack_pop(stack) + off
       if addr < Bytes::length(memory) { Bytes::set(memory, addr, v & 0xFF) } else { () }
+    }
+    // i32.load8_s
+    else if op == 0x2C {
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let addr = stack_pop(stack) + off
+      stack_push(stack, mem_load_i8_s(memory, addr))
+    }
+    // i32.load16_s
+    else if op == 0x2E {
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let addr = stack_pop(stack) + off
+      stack_push(stack, mem_load_i16_s(memory, addr))
+    }
+    // i32.load16_u
+    else if op == 0x2F {
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let addr = stack_pop(stack) + off
+      stack_push(stack, mem_load_i16_u(memory, addr))
+    }
+    // i32.store16
+    else if op == 0x3B {
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let v = stack_pop(stack)
+      let addr = stack_pop(stack) + off
+      mem_store_i16(memory, addr, v)
+    }
+    // call_indirect (trap for now - no table support)
+    else if op == 0x11 {
+      let (_, np) = read_uleb128(code, pc)
+      let (_, np2) = read_uleb128(code, np)
+      pc = np2
+      exit_code = 1
     }
     // memory.size
     else if op == 0x3F {
@@ -363,37 +537,52 @@ export let opcode_name = (op: Int) -> String {
   else if op == 0x0B { "end" } else if op == 0x0C { "br" }
   else if op == 0x0D { "br_if" } else if op == 0x0E { "br_table" }
   else if op == 0x0F { "return" }
-  else if op == 0x10 { "call" } else if op == 0x1A { "drop" }
+  else if op == 0x10 { "call" } else if op == 0x11 { "call_indirect" }
+  else if op == 0x1A { "drop" }
   else if op == 0x1B { "select" }
   else if op == 0x20 { "local.get" } else if op == 0x21 { "local.set" }
   else if op == 0x22 { "local.tee" }
   else if op == 0x23 { "global.get" } else if op == 0x24 { "global.set" }
   else if op == 0x28 { "i32.load" } else if op == 0x29 { "i64.load" }
+  else if op == 0x2C { "i32.load8_s" }
   else if op == 0x2D { "i32.load8_u" }
+  else if op == 0x2E { "i32.load16_s" } else if op == 0x2F { "i32.load16_u" }
   else if op == 0x36 { "i32.store" } else if op == 0x37 { "i64.store" }
-  else if op == 0x3A { "i32.store8" }
+  else if op == 0x3A { "i32.store8" } else if op == 0x3B { "i32.store16" }
   else if op == 0x3F { "memory.size" } else if op == 0x40 { "memory.grow" }
   else if op == 0x41 { "i32.const" } else if op == 0x42 { "i64.const" }
   else if op == 0x45 { "i32.eqz" } else if op == 0x46 { "i32.eq" }
   else if op == 0x47 { "i32.ne" } else if op == 0x48 { "i32.lt_s" }
-  else if op == 0x4A { "i32.gt_s" } else if op == 0x4C { "i32.le_s" }
-  else if op == 0x4E { "i32.ge_s" }
+  else if op == 0x49 { "i32.lt_u" }
+  else if op == 0x4A { "i32.gt_s" } else if op == 0x4B { "i32.gt_u" }
+  else if op == 0x4C { "i32.le_s" } else if op == 0x4D { "i32.le_u" }
+  else if op == 0x4E { "i32.ge_s" } else if op == 0x4F { "i32.ge_u" }
   else if op == 0x50 { "i64.eqz" } else if op == 0x51 { "i64.eq" }
   else if op == 0x52 { "i64.ne" } else if op == 0x53 { "i64.lt_s" }
-  else if op == 0x55 { "i64.gt_s" } else if op == 0x57 { "i64.le_s" }
-  else if op == 0x59 { "i64.ge_s" }
+  else if op == 0x54 { "i64.lt_u" }
+  else if op == 0x55 { "i64.gt_s" } else if op == 0x56 { "i64.gt_u" }
+  else if op == 0x57 { "i64.le_s" } else if op == 0x58 { "i64.le_u" }
+  else if op == 0x59 { "i64.ge_s" } else if op == 0x5A { "i64.ge_u" }
+  else if op == 0x67 { "i32.clz" } else if op == 0x68 { "i32.ctz" }
+  else if op == 0x69 { "i32.popcnt" }
   else if op == 0x6A { "i32.add" } else if op == 0x6B { "i32.sub" }
   else if op == 0x6C { "i32.mul" } else if op == 0x6D { "i32.div_s" }
-  else if op == 0x6F { "i32.rem_s" }
+  else if op == 0x6E { "i32.div_u" }
+  else if op == 0x6F { "i32.rem_s" } else if op == 0x70 { "i32.rem_u" }
   else if op == 0x71 { "i32.and" } else if op == 0x72 { "i32.or" }
   else if op == 0x73 { "i32.xor" } else if op == 0x74 { "i32.shl" }
-  else if op == 0x75 { "i32.shr_s" }
+  else if op == 0x75 { "i32.shr_s" } else if op == 0x76 { "i32.shr_u" }
+  else if op == 0x77 { "i32.rotl" } else if op == 0x78 { "i32.rotr" }
+  else if op == 0x79 { "i64.clz" } else if op == 0x7A { "i64.ctz" }
+  else if op == 0x7B { "i64.popcnt" }
   else if op == 0x7C { "i64.add" } else if op == 0x7D { "i64.sub" }
   else if op == 0x7E { "i64.mul" } else if op == 0x7F { "i64.div_s" }
-  else if op == 0x81 { "i64.rem_s" }
+  else if op == 0x80 { "i64.div_u" }
+  else if op == 0x81 { "i64.rem_s" } else if op == 0x82 { "i64.rem_u" }
   else if op == 0x83 { "i64.and" } else if op == 0x84 { "i64.or" }
   else if op == 0x85 { "i64.xor" } else if op == 0x86 { "i64.shl" }
-  else if op == 0x87 { "i64.shr_s" }
+  else if op == 0x87 { "i64.shr_s" } else if op == 0x88 { "i64.shr_u" }
+  else if op == 0x89 { "i64.rotl" } else if op == 0x8A { "i64.rotr" }
   else if op == 0xA7 { "i32.wrap_i64" } else if op == 0xAC { "i64.extend_i32_s" }
   else if op == 0xAD { "i64.extend_i32_u" }
   else { "unknown" }
@@ -413,6 +602,13 @@ export let disassemble = (code: Bytes, start: Int, end_pos: Int) -> Array[String
       pc = np
       Array::push(result, "\{name} \{int_to_string(v)}")
     }
+    else if op == 0x11 {
+      // call_indirect: type_idx + table_idx
+      let (ti, np) = read_uleb128(code, pc)
+      let (tab, np2) = read_uleb128(code, np)
+      pc = np2
+      Array::push(result, "\{name} \{int_to_string(ti)} \{int_to_string(tab)}")
+    }
     else if (op == 0x41) || (op == 0x42) {
       let (v, np) = read_sleb128(code, pc)
       pc = np
@@ -424,7 +620,7 @@ export let disassemble = (code: Bytes, start: Int, end_pos: Int) -> Array[String
       pc = np
       Array::push(result, "\{name} \{int_to_string(bt)}")
     }
-    else if (op == 0x28) || (op == 0x29) || (op == 0x36) || (op == 0x37) || (op == 0x2D) || (op == 0x3A) {
+    else if (op == 0x28) || (op == 0x29) || (op == 0x36) || (op == 0x37) || (op == 0x2D) || (op == 0x3A) || (op == 0x2C) || (op == 0x2E) || (op == 0x2F) || (op == 0x3B) {
       // memarg: align + offset
       let (align, np) = read_uleb128(code, pc)
       let (offset, np2) = read_uleb128(code, np)

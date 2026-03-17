@@ -547,3 +547,260 @@ test "rs: recursive call double" {
   assert(exit == 0)
   assert(result == 42)
 }
+
+// === Loop tests ===
+
+test "loop counter" {
+  // Loop from 0 to 10:
+  // local 0 = counter (starts at 0)
+  // loop $L
+  //   local.get 0          ; get counter
+  //   i32.const 1          ; add 1
+  //   i32.add
+  //   local.set 0          ; save counter
+  //   local.get 0          ; check counter
+  //   i32.const 10
+  //   i32.lt_s             ; counter < 10?
+  //   br_if 0              ; jump back to loop start
+  // end
+  // local.get 0            ; return counter
+  // end
+  let code = make_bytes([
+    0x03, 0x40,           // loop (void)
+      0x20, 0,            //   local.get 0
+      0x41, 1,            //   i32.const 1
+      0x6A,               //   i32.add
+      0x21, 0,            //   local.set 0
+      0x20, 0,            //   local.get 0
+      0x41, 10,           //   i32.const 10
+      0x48,               //   i32.lt_s
+      0x0D, 0,            //   br_if 0
+    0x0B,                 // end loop
+    0x20, 0,              // local.get 0
+    0x0B                  // end
+  ])
+  let (exit, result) = exec_body(code, 0, 19, make_locals(1), empty_stack(), make_memory(1), empty_globals(), empty_funcs())
+  assert(exit == 0)
+  assert(result == 10)
+}
+
+test "nested loop" {
+  // outer loop: i from 0 to 3
+  // inner loop: j from 0 to 4
+  // result = i * 4 + j = 3*4 + 4 = ... but actually we just count total iterations
+  // local 0 = outer counter, local 1 = inner counter, local 2 = total
+  let code = make_bytes([
+    0x03, 0x40,           // loop $outer
+      0x41, 0,            //   i32.const 0
+      0x21, 1,            //   local.set 1 (reset inner counter)
+      0x03, 0x40,         //   loop $inner
+        0x20, 2,          //     local.get 2 (total)
+        0x41, 1,          //     i32.const 1
+        0x6A,             //     i32.add
+        0x21, 2,          //     local.set 2
+        0x20, 1,          //     local.get 1
+        0x41, 1,          //     i32.const 1
+        0x6A,             //     i32.add
+        0x21, 1,          //     local.set 1
+        0x20, 1,          //     local.get 1
+        0x41, 4,          //     i32.const 4
+        0x48,             //     i32.lt_s
+        0x0D, 0,          //     br_if 0 (back to inner)
+      0x0B,               //   end inner
+      0x20, 0,            //   local.get 0
+      0x41, 1,            //   i32.const 1
+      0x6A,               //   i32.add
+      0x21, 0,            //   local.set 0
+      0x20, 0,            //   local.get 0
+      0x41, 3,            //   i32.const 3
+      0x48,               //   i32.lt_s
+      0x0D, 0,            //   br_if 0 (back to outer)
+    0x0B,                 // end outer
+    0x20, 2,              // local.get 2 (total)
+    0x0B                  // end
+  ])
+  let (exit, result) = exec_body(code, 0, 46, make_locals(3), empty_stack(), make_memory(1), empty_globals(), empty_funcs())
+  assert(exit == 0)
+  assert(result == 12)  // 3 * 4 = 12 iterations
+}
+
+test "loop with if inside" {
+  // Loop counting even numbers from 0 to 9
+  // local 0 = counter, local 1 = even_count
+  // loop: counter++; if counter % 2 == 0 then even_count++; if counter < 10 br 1 (to loop)
+  let code = make_bytes([
+    0x03, 0x40,           // loop
+      0x20, 0,            //   local.get 0
+      0x41, 1,            //   i32.const 1
+      0x6A,               //   i32.add
+      0x21, 0,            //   local.set 0
+      // if (counter & 1) == 0 then even_count++
+      0x20, 0,            //   local.get 0
+      0x41, 1,            //   i32.const 1
+      0x71,               //   i32.and
+      0x45,               //   i32.eqz (== 0 means even)
+      0x04, 0x40,         //   if (void)
+        0x20, 1,          //     local.get 1
+        0x41, 1,          //     i32.const 1
+        0x6A,             //     i32.add
+        0x21, 1,          //     local.set 1
+      0x0B,               //   end if
+      0x20, 0,            //   local.get 0
+      0x41, 10,           //   i32.const 10
+      0x48,               //   i32.lt_s
+      0x0D, 0,            //   br_if 0
+    0x0B,                 // end loop
+    0x20, 1,              // local.get 1 (even_count)
+    0x0B                  // end
+  ])
+  let (exit, result) = exec_body(code, 0, 36, make_locals(2), empty_stack(), make_memory(1), empty_globals(), empty_funcs())
+  assert(exit == 0)
+  assert(result == 5)  // 2, 4, 6, 8, 10 = 5 even numbers
+}
+
+// === Unsigned comparison tests ===
+
+test "unsigned comparison i32.lt_u" {
+  // -1 (0xFFFFFFFF unsigned) should be > 1 when unsigned
+  // i32.const -1, i32.const 1, i32.lt_u -> 0 (false, -1 unsigned is large)
+  let code = make_bytes([0x41, 0x7F, 0x41, 1, 0x49, 0x0B])
+  let (exit, result) = exec_body(code, 0, 6, make_locals(0), empty_stack(), make_memory(1), empty_globals(), empty_funcs())
+  assert(exit == 0)
+  assert(result == 0)  // 0xFFFFFFFF is NOT less than 1 unsigned
+}
+
+test "unsigned comparison i32.gt_u" {
+  // -1 (0xFFFFFFFF unsigned) > 1 unsigned
+  let code = make_bytes([0x41, 0x7F, 0x41, 1, 0x4B, 0x0B])
+  let (exit, result) = exec_body(code, 0, 6, make_locals(0), empty_stack(), make_memory(1), empty_globals(), empty_funcs())
+  assert(exit == 0)
+  assert(result == 1)  // 0xFFFFFFFF IS greater than 1 unsigned
+}
+
+// === Bit counting tests ===
+
+test "i32.clz" {
+  // clz(1) = 31 (only bit 0 set)
+  let code = make_bytes([0x41, 1, 0x67, 0x0B])
+  let (exit, result) = exec_body(code, 0, 4, make_locals(0), empty_stack(), make_memory(1), empty_globals(), empty_funcs())
+  assert(exit == 0)
+  assert(result == 31)
+}
+
+test "i32.ctz" {
+  // ctz(0x80) = 7 (bit 7 is lowest set bit)
+  let code = make_bytes([0x41, 0x80, 0x01, 0x68, 0x0B])
+  let (exit, result) = exec_body(code, 0, 5, make_locals(0), empty_stack(), make_memory(1), empty_globals(), empty_funcs())
+  assert(exit == 0)
+  assert(result == 7)
+}
+
+test "i32.popcnt" {
+  // popcnt(0xFF) = 8
+  let code = make_bytes([0x41, 0xFF, 0x01, 0x69, 0x0B])
+  let (exit, result) = exec_body(code, 0, 5, make_locals(0), empty_stack(), make_memory(1), empty_globals(), empty_funcs())
+  assert(exit == 0)
+  assert(result == 8)
+}
+
+// === Rotation tests ===
+
+test "i32.rotl" {
+  // rotl(1, 4) = 16 (0x10)
+  let code = make_bytes([0x41, 1, 0x41, 4, 0x77, 0x0B])
+  let (exit, result) = exec_body(code, 0, 6, make_locals(0), empty_stack(), make_memory(1), empty_globals(), empty_funcs())
+  assert(exit == 0)
+  assert(result == 16)
+}
+
+test "i32.rotr" {
+  // rotr(16, 4) = 1
+  let code = make_bytes([0x41, 16, 0x41, 4, 0x78, 0x0B])
+  let (exit, result) = exec_body(code, 0, 6, make_locals(0), empty_stack(), make_memory(1), empty_globals(), empty_funcs())
+  assert(exit == 0)
+  assert(result == 1)
+}
+
+// === Unsigned arithmetic tests ===
+
+test "i32.div_u" {
+  // div_u(100, 7) = 14
+  let code = make_bytes([0x41, 0xE4, 0x00, 0x41, 7, 0x6E, 0x0B])
+  let (exit, result) = exec_body(code, 0, 7, make_locals(0), empty_stack(), make_memory(1), empty_globals(), empty_funcs())
+  assert(exit == 0)
+  assert(result == 14)
+}
+
+test "i32.rem_u" {
+  // rem_u(100, 7) = 2
+  let code = make_bytes([0x41, 0xE4, 0x00, 0x41, 7, 0x70, 0x0B])
+  let (exit, result) = exec_body(code, 0, 7, make_locals(0), empty_stack(), make_memory(1), empty_globals(), empty_funcs())
+  assert(exit == 0)
+  assert(result == 2)
+}
+
+// === Memory load/store 16-bit tests ===
+
+test "i32.load16_u and i32.store16" {
+  // Store 0x1234 as 16-bit at addr 0, then load it back
+  let code = make_bytes([
+    0x41, 0,                      // i32.const 0 (addr)
+    0x41, 0xB4, 0x24,             // i32.const 0x1234 (4660 in sleb128)
+    0x3B, 1, 0,                   // i32.store16 align=1 offset=0
+    0x41, 0,                      // i32.const 0 (addr)
+    0x2F, 1, 0,                   // i32.load16_u align=1 offset=0
+    0x0B                          // end
+  ])
+  let (exit, result) = exec_body(code, 0, 14, make_locals(0), empty_stack(), make_memory(1), empty_globals(), empty_funcs())
+  assert(exit == 0)
+  assert(result == 0x1234)
+}
+
+test "i32.load8_s sign extension" {
+  // Store 0xFF (255) at addr 0, load as signed byte -> -1
+  let code = make_bytes([
+    0x41, 0,                      // i32.const 0 (addr)
+    0x41, 0xFF, 0x01,             // i32.const 255
+    0x3A, 0, 0,                   // i32.store8 align=0 offset=0
+    0x41, 0,                      // i32.const 0 (addr)
+    0x2C, 0, 0,                   // i32.load8_s align=0 offset=0
+    0x0B                          // end
+  ])
+  let (exit, result) = exec_body(code, 0, 14, make_locals(0), empty_stack(), make_memory(1), empty_globals(), empty_funcs())
+  assert(exit == 0)
+  assert(result == -1)
+}
+
+// === Opcode name tests for new opcodes ===
+
+test "opcode_name new opcodes" {
+  assert(opcode_name(0x11) == "call_indirect")
+  assert(opcode_name(0x2C) == "i32.load8_s")
+  assert(opcode_name(0x2E) == "i32.load16_s")
+  assert(opcode_name(0x2F) == "i32.load16_u")
+  assert(opcode_name(0x3B) == "i32.store16")
+  assert(opcode_name(0x49) == "i32.lt_u")
+  assert(opcode_name(0x4B) == "i32.gt_u")
+  assert(opcode_name(0x4D) == "i32.le_u")
+  assert(opcode_name(0x4F) == "i32.ge_u")
+  assert(opcode_name(0x54) == "i64.lt_u")
+  assert(opcode_name(0x56) == "i64.gt_u")
+  assert(opcode_name(0x58) == "i64.le_u")
+  assert(opcode_name(0x5A) == "i64.ge_u")
+  assert(opcode_name(0x67) == "i32.clz")
+  assert(opcode_name(0x68) == "i32.ctz")
+  assert(opcode_name(0x69) == "i32.popcnt")
+  assert(opcode_name(0x6E) == "i32.div_u")
+  assert(opcode_name(0x70) == "i32.rem_u")
+  assert(opcode_name(0x76) == "i32.shr_u")
+  assert(opcode_name(0x77) == "i32.rotl")
+  assert(opcode_name(0x78) == "i32.rotr")
+  assert(opcode_name(0x79) == "i64.clz")
+  assert(opcode_name(0x7A) == "i64.ctz")
+  assert(opcode_name(0x7B) == "i64.popcnt")
+  assert(opcode_name(0x80) == "i64.div_u")
+  assert(opcode_name(0x82) == "i64.rem_u")
+  assert(opcode_name(0x88) == "i64.shr_u")
+  assert(opcode_name(0x89) == "i64.rotl")
+  assert(opcode_name(0x8A) == "i64.rotr")
+}
