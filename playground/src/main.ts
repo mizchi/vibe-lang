@@ -374,6 +374,7 @@ async function resetSession() {
   if (!service) return;
   await service.evalReset();
   output.textContent = "";
+  replOutput.textContent = "";
   const span = document.createElement("span");
   span.className = "result-type";
   span.textContent = "Session reset.";
@@ -404,6 +405,73 @@ async function shareCurrentUrl() {
   window.prompt("Copy this URL:", url);
   flashShareButton("URL Ready");
 }
+
+// ── REPL ──────────────────────────────────────────────────────
+
+const replOutput = document.getElementById("repl-output") as HTMLDivElement;
+const replInput = document.getElementById("repl-input") as HTMLInputElement;
+const replHistory: string[] = [];
+let replHistoryIndex = -1;
+
+function appendReplLine(cls: string, text: string) {
+  const div = document.createElement("div");
+  div.className = "repl-line";
+  const span = document.createElement("span");
+  span.className = cls;
+  span.textContent = text;
+  div.appendChild(span);
+  replOutput.appendChild(div);
+  replOutput.scrollTop = replOutput.scrollHeight;
+}
+
+async function replEval(input: string) {
+  if (!service) return;
+  const trimmed = input.trim();
+  if (!trimmed) return;
+
+  replHistory.push(trimmed);
+  replHistoryIndex = replHistory.length;
+  appendReplLine("repl-prompt", "> " + trimmed);
+
+  try {
+    const result = await service.eval({ source: trimmed });
+    if (result.ok) {
+      if (result.value !== null) {
+        appendReplLine("repl-value", result.value + " : " + result.value_type);
+      }
+    } else {
+      for (const d of result.diagnostics) {
+        appendReplLine("repl-error", d.message);
+      }
+    }
+  } catch (e) {
+    appendReplLine("repl-error", `Error: ${e}`);
+  }
+}
+
+replInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    const value = replInput.value;
+    replInput.value = "";
+    void replEval(value);
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    if (replHistoryIndex > 0) {
+      replHistoryIndex--;
+      replInput.value = replHistory[replHistoryIndex];
+    }
+  } else if (e.key === "ArrowDown") {
+    e.preventDefault();
+    if (replHistoryIndex < replHistory.length - 1) {
+      replHistoryIndex++;
+      replInput.value = replHistory[replHistoryIndex];
+    } else {
+      replHistoryIndex = replHistory.length;
+      replInput.value = "";
+    }
+  }
+});
 
 // ── Event handlers ────────────────────────────────────────────
 
@@ -475,6 +543,7 @@ async function init() {
     statusEl.className = "ready";
     btnRun.disabled = false;
     btnReset.disabled = false;
+    replInput.disabled = false;
     scheduleCheck(0);
   } catch (e) {
     console.warn("Vibe runtime not available:", e);
