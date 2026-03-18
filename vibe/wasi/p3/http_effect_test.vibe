@@ -1,0 +1,125 @@
+import ./http_effect.vibe {
+  HttpRequest, HttpResponse, HttpError, NotFound, MethodNotAllowed, BadRequest,
+  text, json, html, empty, redirect,
+  error_to_response, serialize_response, harness
+}
+
+//# Response builder tests
+
+test "text response" {
+  let r = text(200, "hello")
+  assert(r.status == 200)
+  assert(String::equals(r.body, "hello"))
+}
+
+test "json response" {
+  let r = json(200, "{\"ok\":true}")
+  assert(r.status == 200)
+  assert(String::contains(r.body, "ok"))
+}
+
+test "html response" {
+  let r = html(200, "<h1>hi</h1>")
+  assert(r.status == 200)
+}
+
+test "empty response" {
+  let r = empty(204)
+  assert(r.status == 204)
+  assert(String::equals(r.body, ""))
+}
+
+test "redirect response" {
+  let r = redirect("/new")
+  assert(r.status == 302)
+}
+
+//# Serialization tests
+
+test "serialize simple" {
+  let r = text(200, "hello")
+  let wire = serialize_response(r)
+  assert(String::starts_with(wire, "200"))
+  assert(String::contains(wire, "content-type: text/plain"))
+  assert(String::ends_with(wire, "hello"))
+}
+
+test "serialize json" {
+  let r = json(404, "not found")
+  let wire = serialize_response(r)
+  assert(String::starts_with(wire, "404"))
+  assert(String::contains(wire, "application/json"))
+}
+
+test "serialize empty body" {
+  let r = empty(204)
+  let wire = serialize_response(r)
+  assert(String::starts_with(wire, "204"))
+}
+
+//# Error conversion tests
+
+test "error NotFound" {
+  let r = error_to_response("NotFound")
+  assert(r.status == 404)
+}
+
+test "error MethodNotAllowed" {
+  let r = error_to_response("MethodNotAllowed")
+  assert(r.status == 405)
+}
+
+test "error BadRequest" {
+  let r = error_to_response("BadRequest(invalid input)")
+  assert(r.status == 400)
+}
+
+test "error InternalError" {
+  let r = error_to_response("InternalError(db failed)")
+  assert(r.status == 500)
+}
+
+test "error unknown" {
+  let r = error_to_response("something unexpected")
+  assert(r.status == 500)
+}
+
+//# Harness tests
+
+test "harness happy path" {
+  let my_handler = (req: HttpRequest) -> HttpResponse with { Error } {
+    if String::equals(req.url, "/") {
+      text(200, "home")
+    } else {
+      throw("NotFound")
+    }
+  }
+  let h = harness(my_handler)
+  let wire = h("GET", "/")
+  assert(String::starts_with(wire, "200"))
+  assert(String::contains(wire, "home"))
+}
+
+test "harness error path" {
+  let my_handler = (req: HttpRequest) -> HttpResponse with { Error } {
+    throw("NotFound")
+  }
+  let h = harness(my_handler)
+  let wire = h("GET", "/missing")
+  assert(String::starts_with(wire, "404"))
+}
+
+test "harness method not allowed" {
+  let my_handler = (req: HttpRequest) -> HttpResponse with { Error } {
+    if String::equals(req.method, "GET") {
+      json(200, "{\"ok\":true}")
+    } else {
+      throw("MethodNotAllowed")
+    }
+  }
+  let h = harness(my_handler)
+  let get_wire = h("GET", "/api")
+  assert(String::starts_with(get_wire, "200"))
+  let post_wire = h("POST", "/api")
+  assert(String::starts_with(post_wire, "405"))
+}

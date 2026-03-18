@@ -1,0 +1,154 @@
+// HttpEffect: Type-safe HTTP handler design for P3
+//
+// Design goals:
+// 1. Handler is a pure function: (HttpRequest) -> HttpResponse
+// 2. Errors are modeled via suberror + effect system (throw/handle)
+// 3. Compiles to: export handler: func(method: string, url: string) -> string
+// 4. Wire format: "STATUS\nHeader: Value\n\nBody" (adapter v2 protocol)
+//
+// Architecture:
+//   vibe source code          compile            adapter (Rust)            wasmtime
+//   ┌──────────────┐   ──────────────>   ┌────────────────────┐   ──────────────>
+//   │ HttpHandler   │   component-string  │ adapter v2          │   serve -Sp3
+//   │ (req)->resp   │   -lift + compose   │ parse wire format   │
+//   │ with {HttpErr}│                     │ → HTTP response     │
+//   └──────────────┘                     └────────────────────┘
+
+//# Error types
+
+// HTTP errors — throwable from handlers, caught by the runtime harness.
+// The harness converts thrown errors to appropriate HTTP error responses.
+suberror HttpError {
+  BadRequest(String);
+  NotFound;
+  MethodNotAllowed;
+  Forbidden;
+  InternalError(String)
+}
+
+//# Request / Response types
+
+export struct HttpRequest {
+  method: String;
+  url: String;
+  headers: Map[String, String];
+  body: String
+}
+
+export struct HttpResponse {
+  status: Int;
+  headers: Map[String, String];
+  body: String
+}
+
+//# Response builders
+
+export let text = (status: Int, body: String) -> HttpResponse {
+  let h = MapBuilder::new()
+  MapBuilder::set(h, "content-type", "text/plain; charset=utf-8")
+  HttpResponse::{ status: status, headers: MapBuilder::freeze(h), body: body }
+}
+
+export let json = (status: Int, body: String) -> HttpResponse {
+  let h = MapBuilder::new()
+  MapBuilder::set(h, "content-type", "application/json; charset=utf-8")
+  HttpResponse::{ status: status, headers: MapBuilder::freeze(h), body: body }
+}
+
+export let html = (status: Int, body: String) -> HttpResponse {
+  let h = MapBuilder::new()
+  MapBuilder::set(h, "content-type", "text/html; charset=utf-8")
+  HttpResponse::{ status: status, headers: MapBuilder::freeze(h), body: body }
+}
+
+export let empty = (status: Int) -> HttpResponse {
+  HttpResponse::{ status: status, headers: MapBuilder::freeze(MapBuilder::new()), body: "" }
+}
+
+export let redirect = (url: String) -> HttpResponse {
+  let h = MapBuilder::new()
+  MapBuilder::set(h, "location", url)
+  HttpResponse::{ status: 302, headers: MapBuilder::freeze(h), body: "" }
+}
+
+//# Error → Response conversion
+
+// Convert HttpError to an appropriate HttpResponse.
+// Used by the harness to turn uncaught errors into HTTP error responses.
+export let error_to_response = (err: String) -> HttpResponse {
+  // err is the string representation of the thrown error
+  if String::starts_with(err, "BadRequest") {
+    text(400, err)
+  } else if String::starts_with(err, "NotFound") {
+    text(404, "Not Found")
+  } else if String::starts_with(err, "MethodNotAllowed") {
+    text(405, "Method Not Allowed")
+  } else if String::starts_with(err, "Forbidden") {
+    text(403, "Forbidden")
+  } else if String::starts_with(err, "InternalError") {
+    text(500, err)
+  } else {
+    text(500, String::concat("Internal Server Error: ", err))
+  }
+}
+
+//# Response serialization (→ adapter v2 wire format)
+
+// Serialize HttpResponse to adapter v2 wire format: "STATUS\nHeaders\n\nBody"
+export let serialize_response = (resp: HttpResponse) -> String {
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, __to_string(resp.status))
+  // Append headers
+  let keys = Map::keys(resp.headers)
+  let len = Array::length(keys)
+  let mut i = 0
+  while i < len {
+    let key = Array::get(keys, i)
+    StringBuilder::push(sb, "\n")
+    StringBuilder::push(sb, key)
+    StringBuilder::push(sb, ": ")
+    StringBuilder::push(sb, Map::get(resp.headers, key))
+    i = i + 1
+  }
+  // Header/body separator
+  StringBuilder::push(sb, "\n\n")
+  StringBuilder::push(sb, resp.body)
+  StringBuilder::freeze(sb)
+}
+
+//# Harness: wrap user handler into export-compatible function
+
+// Create the exported handler function from a user-defined handler.
+// This wraps the handler with error handling: thrown HttpErrors become
+// appropriate HTTP error responses.
+//
+// Usage:
+//   import vibe/wasi/p3/http_effect { HttpRequest, HttpResponse, harness, text, json, HttpError, NotFound }
+//
+//   let my_handler = (req: HttpRequest) -> HttpResponse with { Error } {
+//     if String::equals(req.url, "/") {
+//       text(200, "hello")
+//     } else {
+//       throw(NotFound)
+//     }
+//   }
+//
+//   export let handler = harness(my_handler)
+//   handler("GET", "/")
+export let harness = (
+  user_handler: (HttpRequest) -> HttpResponse with { Error }
+) -> (String, String) -> String {
+  (method: String, url: String) -> String {
+    let resp = handle {
+      user_handler(HttpRequest::{
+        method: method,
+        url: url,
+        headers: MapBuilder::freeze(MapBuilder::new()),
+        body: ""
+      })
+    } {
+      Error(err) => error_to_response(err)
+    }
+    serialize_response(resp)
+  }
+}
