@@ -512,23 +512,23 @@ pub fn VibeDb::new() -> VibeDb {
               })
             }
             @core.ModuleRef::Alias(name~) => {
-              // Resolve alias by looking up index.vibe in same directory
+              // Resolve alias by looking up AliasDecl in index.vibe
               let index_path = base_dir + "/index.vibe"
-              let alias_resolved = match sources.get(rt, index_path) {
+              let alias_path : String? = match sources.get(rt, index_path) {
                 Some(index_source) => {
                   let index_ast = @parser.parse_ast(index_source) catch {
                     _ => @core.Module::{ stmts: [] }
                   }
-                  let mut found : @core.ModuleRef? = None
+                  let mut found : String? = None
                   for index_stmt in index_ast.stmts {
                     match index_stmt {
                       @core.Stmt::AliasDecl(
                         alias_name=decl_name,
-                        source=decl_source,
+                        source=@core.ModuleRef::Path(path~),
                         ..
                       ) =>
                         if decl_name == name {
-                          found = Some(decl_source)
+                          found = Some(path)
                           break
                         }
                       _ => ()
@@ -538,23 +538,41 @@ pub fn VibeDb::new() -> VibeDb {
                 }
                 None => None
               }
-              match alias_resolved {
-                Some(@core.ModuleRef::Path(path~)) => {
-                  // Re-resolve as a path import
+              match alias_path {
+                Some(path) => {
+                  // Delegate to the same Path resolution logic used above
                   let path_obj = normalize_path_obj(base_dir, path)
+                  let alias_name_str = "@" + name
                   let candidates : Array[String] = []
-                  candidates.push(path_obj.normalized)
+                  let push_candidate = fn(candidate : String) {
+                    if not(array_has_string(candidates, candidate)) {
+                      candidates.push(candidate)
+                    }
+                  }
+                  push_candidate(path_obj.normalized)
                   match raw_relative_candidate(base_dir, path) {
-                    Some(candidate) => candidates.push(candidate)
+                    Some(candidate) => push_candidate(candidate)
                     None => ()
                   }
                   if not(path_obj.normalized.has_suffix(".vibe")) {
-                    candidates.push(path_obj.normalized + ".vibe")
+                    push_candidate(path_obj.normalized + ".vibe")
                   }
-                  candidates.push(path)
+                  if not(path_obj.normalized.has_suffix(".xm")) {
+                    push_candidate(path_obj.normalized + ".xm")
+                  }
+                  push_candidate(path)
                   if not(path.has_suffix(".vibe")) &&
+                    not(path.has_suffix(".xm")) &&
+                    not(path.has_suffix(".wasm")) &&
+                    not(path.has_suffix(".db")) &&
+                    not(path.has_suffix(".lock")) &&
+                    not(path.has_suffix(".vbundle")) &&
                     not(path.has_suffix("/index.vibe")) {
-                    candidates.push(path + "/index.vibe")
+                    push_candidate(path + "/index.vibe")
+                    push_candidate(path_obj.normalized + "/index.vibe")
+                  }
+                  if not(path.has_suffix(".vibe")) {
+                    push_candidate(path + ".vibe")
                   }
                   let mut final_path = path_obj.normalized
                   let mut text_opt : String? = None
@@ -568,19 +586,18 @@ pub fn VibeDb::new() -> VibeDb {
                       None => ()
                     }
                   }
+                  let resolved_path_obj = path_obj_from_resolved_path(
+                    base_dir, path, final_path,
+                  )
                   match text_opt {
                     Some(content) => {
                       let hash = @core.content_address_hash_string(content)
                       out.push(ImportSpec::{
                         path: final_path,
-                        alias_name: "@" + name,
+                        alias_name: alias_name_str,
                         hash: Some(hash),
                         module_ref: Some(@core.module_ref_from_hash(hash)),
-                        path_obj: Some(
-                          path_obj_from_resolved_path(
-                            base_dir, path, final_path,
-                          ),
-                        ),
+                        path_obj: Some(resolved_path_obj),
                         source_hash: None,
                         source_version: None,
                         source_symbol: None,
@@ -600,7 +617,6 @@ pub fn VibeDb::new() -> VibeDb {
                       })
                   }
                 }
-                Some(_) => ()
                 None =>
                   diags.push(rt, @core.Diagnostic::{
                     stage: "import",
