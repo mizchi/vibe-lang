@@ -10,23 +10,79 @@ vbundle 形式を廃止し、`.vibe/cache.json` + `index.lock` に完全移行�
 
 ## カバレッジ計測
 
-### 現在の計測結果 (2026-03-17)
+### 現在の計測結果 (2026-03-18)
 
 | 対象 | lines | branches | コマンド |
 |------|-------|----------|---------|
-| vibe/wasm (純関数のみ) | 100% | 28.63% | `VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS=1 scripts/coverage_wasm_source.sh vibe/wasm/coverage_test.vibe` |
-| vibe/compiler (selfhost) | 100% | 15.54% | `VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS=1 scripts/coverage_wasm_source.sh vibe/compiler/selfhost_coverage_run.vibe` |
-| vibe/compiler (suite) | — | — | `just coverage-selfhost-suite` (root 外 import で一部失敗) |
+| vibe/wasm (純関数のみ) | 100% | 28.63% | `scripts/coverage_wasm_source.sh vibe/wasm/coverage_test.vibe` |
+| vibe/compiler (selfhost suite) | 99% | **45.34%** | `just coverage-selfhost-suite` |
+| vibe/compiler (checker_parity 単体) | 99% | 28.25% | 120 parity tests |
 
-### 次のステップ
-- [ ] vibe/wasm: branches 28% → 50% (parse_* 関数のカバレッジ追加 — ヒープ制約回避が必要)
-- [ ] vibe/compiler: branches 15% → 30% (eval_e2e テストの branch gap)
-- [ ] compiled backend カバレッジ: Bytes/Fs 使用モジュールも計測可能に
-  - `src/runtime_compile/compile.mbt`: WASI compile パスにカバレッジ計装
-  - `src/cmd/vibe/cli.mbt`: test_cmd でカウンタ読み取り
-  - wasmtime メモリダンプ or sidecar 経由
-- [ ] selfhost suite coverage の root 外 import エラー修正
-- [ ] CI にカバレッジ gate を組み込み (point/line/branch 最低率)
+suite 計測コマンド:
+```bash
+VIBE_BIN=_build/native/release/build/cmd/vibe/vibe.exe \
+VIBE_SELFHOST_SUITE_EXTRA_ENTRIES="vibe/compiler/fixture_test.vibe,vibe/compiler/checker_parity_test.vibe" \
+just coverage-selfhost-suite
+```
+
+### 目標: branch coverage 70%
+
+#### 足りていないテスト領域
+
+**1. Selfhost checker (checker.vibe, checker_stmt.vibe)**
+- [ ] `check_expr` の全 Expr variant カバー (EMap, ESpread, EStringInterp が未テスト)
+- [ ] `check_stmts` の全 Stmt variant カバー (SModule, STraitDef, SImpl が未テスト)
+- [ ] unify のエッジケース (CtForAll, CtNamed with args, recursive types)
+- [ ] generalize / instantiate の境界ケース
+- [ ] type_implements_trait の trait hierarchy テスト
+
+**2. Selfhost parser (parser.vibe)**
+- [ ] 全 Token 種別のパース (THash, TQuestion, TDotDotDot が未テスト)
+- [ ] エラーリカバリパス (throw するケース全種)
+- [ ] multiline string, raw string, string interpolation
+- [ ] labeled/optional パラメータのパース
+- [ ] `impl` 文のパース
+
+**3. Selfhost printer (printer.vibe)**
+- [ ] 全 Stmt/Expr variant の print 往復テスト (roundtrip)
+- [ ] 特殊文字エスケープ (string, char)
+- [ ] nested match/if/while の indent
+
+**4. Selfhost lexer (lexer.vibe)**
+- [ ] hex literal, char escape sequences
+- [ ] multiline string (`#|`)
+- [ ] comment skip
+- [ ] edge cases: empty input, single char, max int
+
+**5. Selfhost builtins (builtins.vibe)**
+- [ ] 全 builtin 関数の型チェック (92 builtins, ~30 未テスト)
+- [ ] Fs/Process/Net/Socket 系 builtin の型
+
+**6. Normalize / DCE (normalize.vibe, dce.vibe)**
+- [ ] normalize の各 variant テスト (ユニットテスト追加)
+- [ ] DCE: re-export chain の dead code 除去
+- [ ] DCE: qualified enum ctor の reachability
+
+**7. Loader (loader/index.vibe)**
+- [ ] cross-module import の merge 順序テスト
+- [ ] circular import 検出テスト
+- [ ] version/symbol ref 解決テスト
+
+#### 追加すべきテストファイル
+
+| ファイル | 内容 | 想定 branch 貢献 |
+|---------|------|-----------------|
+| `checker_parity_test.vibe` | OK/ERR パリティ追加 | +5% |
+| `checker_expr_test.vibe` (新規) | check_expr の全 variant ユニットテスト | +10% |
+| `parser_roundtrip_test.vibe` (新規) | parse→print→reparse 一致テスト | +5% |
+| `lexer_edge_test.vibe` (新規) | lexer のエッジケーステスト | +3% |
+| `builtins_type_test.vibe` (新規) | 全 builtin の型チェック | +5% |
+| `normalize_test.vibe` (拡充) | normalize ユニットテスト | +3% |
+
+### 他のカバレッジ改善
+- [ ] vibe/wasm: branches 28% → 50% (parse_* のカバレッジ)
+- [ ] eval_e2e_test の trap 修正 (coverage suite で collect failed の原因)
+- [ ] CI にカバレッジ gate を組み込み (branch 最低率)
 
 ## Packed Bytes (obj_bytes) 残作業
 
