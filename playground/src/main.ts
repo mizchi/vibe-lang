@@ -73,11 +73,10 @@ export let _start = () -> Int {
   },
   {
     id: "map-filter",
-    source: `let values = [1, 2, 3, 4, 5]
-let doubled = Array::map(values, (x: Int) -> Int { x * 2 })
-let evens = Array::filter(doubled, (x: Int) -> Bool { x % 2 == 0 })
-
-export let _start = () -> Int {
+    source: `export let _start = () -> Int {
+  let values = [1, 2, 3, 4, 5]
+  let doubled = Array::map(values, (x: Int) -> Int { x * 2 })
+  let evens = Array::filter(doubled, (x: Int) -> Bool { x % 2 == 0 })
   Array::fold(evens, 0, (acc: Int, x: Int) -> Int { acc + x })
 }`,
   },
