@@ -1,4 +1,17 @@
 ///|
+/// Generate a deterministic tag for an enum constructor based on name hash.
+/// Same enum+ctor always gets the same tag across compilation units.
+fn deterministic_ctor_tag(key : String) -> Int {
+  let mut h = 0x811c9dc5 // FNV-1a offset basis
+  for c in key {
+    h = h.lxor(c.to_int())
+    h = h * 0x01000193 // FNV-1a prime (truncated)
+  }
+  // Keep in range [2, 65536) — 0 and 1 are reserved for None/Some
+  (h.land(0x7FFFFFFF) % 65534) + 2
+}
+
+///|
 /// Check if a Fn expression is a simple forwarding call:
 ///   (x, y) => { g(x, y) }
 /// Returns Some(target_name) if the body is a single Call expression
@@ -455,8 +468,14 @@ fn compile_stmt(
       for i in 0..<ctors.length() {
         let ctor = ctors[i]
         if not(ctx.enum_ctor_tags.contains(ctor.name)) {
-          ctx.enum_ctor_tags[ctor.name] = ctx.next_ctor_tag
-          ctx.next_ctor_tag += 1
+          // Deterministic tag based on enum+ctor name hash
+          // so cross-module imports get consistent tags
+          let tag_key = name + "::" + ctor.name
+          let tag = deterministic_ctor_tag(tag_key)
+          ctx.enum_ctor_tags[ctor.name] = tag
+          if tag >= ctx.next_ctor_tag {
+            ctx.next_ctor_tag = tag + 1
+          }
         }
         ctx.enum_ctor_arities[ctor.name] = ctor.args.length()
         if not(ctx.enum_ctor_arg_kinds.contains(ctor.name)) {
