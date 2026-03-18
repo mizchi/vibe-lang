@@ -608,6 +608,36 @@ pub fn build_symbol_index_for_module(
           )
         }
       }
+      @core.Stmt::EffectDef(name~, params~, ops~, span~)
+      | @core.Stmt::ExportEffectDef(name~, params~, ops~, span~) => {
+        let op_parts : Array[String] = []
+        for op in ops {
+          let param_strs : Array[String] = []
+          for p in op.params {
+            param_strs.push(render_type(p))
+          }
+          op_parts.push(
+            op.name +
+            "(" +
+            join_with(param_strs, ", ") +
+            ") -> " +
+            render_type(op.ret),
+          )
+        }
+        push_symbol(
+          entries,
+          name,
+          SymbolKind::TypeAliasSym,
+          "effect " +
+          name +
+          render_type_params(params) +
+          " { " +
+          join_with(op_parts, "; ") +
+          " }",
+          path,
+          span,
+        )
+      }
       @core.Stmt::StructDef(name~, params~, fields~, span~)
       | @core.Stmt::ExportStructDef(name~, params~, fields~, span~)
       | @core.Stmt::InternalExportStructDef(name~, params~, fields~, span~) => {

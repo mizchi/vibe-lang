@@ -587,6 +587,8 @@ fn compile_stmt(
     | @core.Stmt::StructDef(..)
     | @core.Stmt::ExportStructDef(..)
     | @core.Stmt::InternalExportStructDef(..)
+    | @core.Stmt::EffectDef(..)
+    | @core.Stmt::ExportEffectDef(..)
     | @core.Stmt::AliasDecl(..) =>
       // export { ... } statements, struct definitions, and alias declarations
       // are handled during bundling/typechecking. At codegen time, they are no-ops

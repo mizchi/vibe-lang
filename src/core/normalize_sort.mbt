@@ -155,7 +155,9 @@ fn canonical_group(stmt : Stmt) -> CanonicalGroup {
     | Stmt::InternalExportEnumDef(..)
     | Stmt::StructDef(..)
     | Stmt::ExportStructDef(..)
-    | Stmt::InternalExportStructDef(..) => CanonicalGroup::TypeDecl
+    | Stmt::InternalExportStructDef(..)
+    | Stmt::EffectDef(..)
+    | Stmt::ExportEffectDef(..) => CanonicalGroup::TypeDecl
     Stmt::TraitDef(..) | Stmt::InternalTraitDef(..) | Stmt::TraitImpl(..) =>
       CanonicalGroup::TraitDecl
     Stmt::Let(..)

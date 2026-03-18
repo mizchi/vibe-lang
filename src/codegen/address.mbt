@@ -404,6 +404,8 @@ fn block_to_addr_sexp(ctx : AddrCtx, body : @core.Module) -> String {
       | @core.Stmt::StructDef(..)
       | @core.Stmt::ExportStructDef(..)
       | @core.Stmt::InternalExportStructDef(..)
+      | @core.Stmt::EffectDef(..)
+      | @core.Stmt::ExportEffectDef(..)
       | @core.Stmt::AliasDecl(..) => buf.write_string(" (export)")
       @core.Stmt::Test(name~, body~, span~) => {
         let _ = name

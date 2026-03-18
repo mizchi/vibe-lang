@@ -2666,6 +2666,8 @@ fn desugar_stmt(stmt : @core.Stmt) -> @core.Stmt {
     | @core.Stmt::StructDef(..)
     | @core.Stmt::ExportStructDef(..)
     | @core.Stmt::InternalExportStructDef(..)
+    | @core.Stmt::EffectDef(..)
+    | @core.Stmt::ExportEffectDef(..)
     | @core.Stmt::ExternLet(..)
     | @core.Stmt::AliasDecl(..) => stmt
   }

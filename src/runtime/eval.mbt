@@ -898,6 +898,8 @@ pub fn Runtime::eval_module(
       @core.Stmt::StructDef(..) => last = Some(@core.Value::Unit)
       @core.Stmt::ExportStructDef(..) => last = Some(@core.Value::Unit)
       @core.Stmt::InternalExportStructDef(..) => last = Some(@core.Value::Unit)
+      @core.Stmt::EffectDef(..) => last = Some(@core.Value::Unit)
+      @core.Stmt::ExportEffectDef(..) => last = Some(@core.Value::Unit)
       @core.Stmt::AliasDecl(..) => last = Some(@core.Value::Unit)
     })
     match stmt_result {

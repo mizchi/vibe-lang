@@ -227,6 +227,28 @@ fn collect_stmt_info(
       }
       (Some(name), refs)
     }
+    @core.Stmt::EffectDef(name~, params~, ops~, span~) => {
+      let _ = params
+      let _ = span
+      for op in ops {
+        for p in op.params {
+          collect_refs_type(p, refs)
+        }
+        collect_refs_type(op.ret, refs)
+      }
+      (Some(name), refs)
+    }
+    @core.Stmt::ExportEffectDef(name~, params~, ops~, span~) => {
+      let _ = params
+      let _ = span
+      for op in ops {
+        for p in op.params {
+          collect_refs_type(p, refs)
+        }
+        collect_refs_type(op.ret, refs)
+      }
+      (Some(name), refs)
+    }
     @core.Stmt::ExternLet(name~, ty~, span~) => {
       let _ = span
       collect_refs_type(ty, refs)
@@ -383,6 +405,7 @@ fn collect_entry_points(
       | @core.Stmt::InternalExportTypeAlias(..)
       | @core.Stmt::StructDef(..)
       | @core.Stmt::InternalExportStructDef(..)
+      | @core.Stmt::EffectDef(..)
       | @core.Stmt::ExternLet(..)
       | @core.Stmt::Import(..)
       | @core.Stmt::AliasDecl(..)
@@ -393,6 +416,7 @@ fn collect_entry_points(
       | @core.Stmt::Export(..)
       | @core.Stmt::ReExport(..) => ()
       @core.Stmt::ExportStructDef(name~, ..) => entries[name] = true
+      @core.Stmt::ExportEffectDef(name~, ..) => entries[name] = true
     }
   }
   entries
@@ -533,6 +557,14 @@ fn filter_reachable_stmts(
           out.push(stmt)
         }
       @core.Stmt::InternalExportStructDef(name~, ..) =>
+        if reachable.contains(name) {
+          out.push(stmt)
+        }
+      @core.Stmt::EffectDef(name~, ..) =>
+        if reachable.contains(name) {
+          out.push(stmt)
+        }
+      @core.Stmt::ExportEffectDef(name~, ..) =>
         if reachable.contains(name) {
           out.push(stmt)
         }
@@ -733,8 +765,9 @@ fn collect_for_in_helper_refs_stmt(
     | @core.Stmt::InternalExportTypeAlias(name~, ..)
     | @core.Stmt::StructDef(name~, ..)
     | @core.Stmt::ExportStructDef(name~, ..)
-    | @core.Stmt::InternalExportStructDef(name~, ..) =>
-      scope.bindings[name] = true
+    | @core.Stmt::InternalExportStructDef(name~, ..)
+    | @core.Stmt::EffectDef(name~, ..)
+    | @core.Stmt::ExportEffectDef(name~, ..) => scope.bindings[name] = true
     @core.Stmt::Import(..)
     | @core.Stmt::AliasDecl(..)
     | @core.Stmt::TraitDef(..)

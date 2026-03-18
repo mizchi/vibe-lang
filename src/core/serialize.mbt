@@ -263,6 +263,24 @@ fn serialize_stmt_to(stmt : Stmt, buf : StringBuilder) -> Unit {
       serialize_strings_to(params, buf)
       buf.write_string("}}")
     }
+    Stmt::EffectDef(name~, params~, ops~, ..) => {
+      buf.write_string("{\"EffectDef\":{\"name\":")
+      serialize_string_to(name, buf)
+      buf.write_string(",\"ops\":")
+      serialize_effect_ops_to(ops, buf)
+      buf.write_string(",\"params\":")
+      serialize_strings_to(params, buf)
+      buf.write_string("}}")
+    }
+    Stmt::ExportEffectDef(name~, params~, ops~, ..) => {
+      buf.write_string("{\"ExportEffectDef\":{\"name\":")
+      serialize_string_to(name, buf)
+      buf.write_string(",\"ops\":")
+      serialize_effect_ops_to(ops, buf)
+      buf.write_string(",\"params\":")
+      serialize_strings_to(params, buf)
+      buf.write_string("}}")
+    }
   }
 }
 
@@ -919,6 +937,29 @@ fn serialize_ctors_to(ctors : Array[TypeCtor], buf : StringBuilder) -> Unit {
     serialize_types_to(c.args, buf)
     buf.write_string(",\"name\":")
     serialize_string_to(c.name, buf)
+    buf.write_char('}')
+  }
+  buf.write_char(']')
+}
+
+///|
+fn serialize_effect_ops_to(ops : Array[EffectOp], buf : StringBuilder) -> Unit {
+  buf.write_char('[')
+  for i, op in ops {
+    if i > 0 {
+      buf.write_char(',')
+    }
+    buf.write_string("{\"name\":")
+    serialize_string_to(op.name, buf)
+    buf.write_string(",\"params\":[")
+    for j, p in op.params {
+      if j > 0 {
+        buf.write_char(',')
+      }
+      serialize_type_to(p, buf)
+    }
+    buf.write_string("],\"ret\":")
+    serialize_type_to(op.ret, buf)
     buf.write_char('}')
   }
   buf.write_char(']')

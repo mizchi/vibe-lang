@@ -90,6 +90,15 @@ pub(all) struct StructField {
 } derive(Show, Eq)
 
 ///|
+/// Effect operation: `Op(Args) -> ReturnType`
+pub(all) struct EffectOp {
+  name : String
+  params : Array[Type]
+  ret : Type
+  span : Span
+} derive(Show, Eq)
+
+///|
 /// Import item kind for explicit import namespaces.
 pub(all) enum ImportKind {
   Value
@@ -218,6 +227,18 @@ pub(all) enum Stmt {
     name~ : String,
     params~ : Array[String],
     fields~ : Array[StructField],
+    span~ : Span
+  )
+  EffectDef(
+    name~ : String,
+    params~ : Array[String],
+    ops~ : Array[EffectOp],
+    span~ : Span
+  )
+  ExportEffectDef(
+    name~ : String,
+    params~ : Array[String],
+    ops~ : Array[EffectOp],
     span~ : Span
   )
 } derive(Show, Eq)
@@ -400,7 +421,9 @@ pub fn Stmt::span(self : Stmt) -> Span {
     | Stmt::AliasDecl(span~, ..)
     | Stmt::StructDef(span~, ..)
     | Stmt::ExportStructDef(span~, ..)
-    | Stmt::InternalExportStructDef(span~, ..) => span
+    | Stmt::InternalExportStructDef(span~, ..)
+    | Stmt::EffectDef(span~, ..)
+    | Stmt::ExportEffectDef(span~, ..) => span
   }
 }
 

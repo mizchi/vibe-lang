@@ -188,6 +188,7 @@ fn stmt_may_use_scoped_ref(stmt : @core.Stmt) -> Bool {
       }
       false
     }
+    @core.Stmt::EffectDef(..) | @core.Stmt::ExportEffectDef(..) => false
     @core.Stmt::Test(body~, ..) | @core.Stmt::Bench(body~, ..) =>
       module_may_use_scoped_ref(body)
     @core.Stmt::TraitDef(..)
@@ -365,9 +366,7 @@ fn type_check_stmts(
   // The parser wraps `let x: T = expr` into:
   //   Block { Let(__vibe_local_type_assert_N, Fn(v: T) -> T { v }); Call(...) }
   // We extract T from the helper Fn's ret type.
-  let extract_let_annotation_type = fn(
-    expr : @core.Expr,
-  ) -> @core.Type? {
+  let extract_let_annotation_type = fn(expr : @core.Expr) -> @core.Type? {
     match expr {
       @core.Expr::Block(body~, ..) =>
         if body.stmts.length() == 2 {
@@ -451,7 +450,7 @@ fn type_check_stmts(
               // Check for type-annotated let: `let x: T = expr`
               match extract_let_annotation_type(expr) {
                 Some(ann_ty) => {
-                  let result : Result[TypeScheme, TypeError] = try? {
+                  let result : Result[TypeScheme, TypeError] = try? ({
                     let ty = normalize_type(env, ann_ty)
                     TypeScheme::{
                       vars: [],
@@ -460,7 +459,7 @@ fn type_check_stmts(
                       trait_bounds: {},
                       ty,
                     }
-                  }
+                  })
                   match result {
                     Ok(scheme) => {
                       env.set_scheme(name, scheme)
@@ -607,7 +606,9 @@ fn type_check_stmts(
         register_type_alias(env, name, params, target, span)
       @core.Stmt::Export(..)
       | @core.Stmt::ReExport(..)
-      | @core.Stmt::AliasDecl(..) => ()
+      | @core.Stmt::AliasDecl(..)
+      | @core.Stmt::EffectDef(..)
+      | @core.Stmt::ExportEffectDef(..) => ()
       @core.Stmt::Test(name~, body~, span~) => {
         let _ = span
         let _ = name

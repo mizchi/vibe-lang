@@ -102,10 +102,12 @@ fn collect_export_targets(stmts : Array[Stmt]) -> Map[String, Bool] {
       Stmt::TypeAlias(name~, ..) => names[name] = true
       Stmt::TraitDef(name~, ..) => names[name] = true
       Stmt::StructDef(name~, ..) => names[name] = true
+      Stmt::EffectDef(name~, ..) => names[name] = true
       Stmt::ExportLet(name~, ..) => names[name] = true
       Stmt::ExportEnumDef(name~, ..) => names[name] = true
       Stmt::ExportTypeAlias(name~, ..) => names[name] = true
       Stmt::ExportStructDef(name~, ..) => names[name] = true
+      Stmt::ExportEffectDef(name~, ..) => names[name] = true
       _ => ()
     }
   }
@@ -143,6 +145,12 @@ fn canonicalize_export_list_stmts(stmts : Array[Stmt]) -> Array[Stmt] {
       Stmt::StructDef(name~, params~, fields~, span~) =>
         if export_list_names.contains(name) {
           out.push(Stmt::ExportStructDef(name~, params~, fields~, span~))
+        } else {
+          out.push(stmt)
+        }
+      Stmt::EffectDef(name~, params~, ops~, span~) =>
+        if export_list_names.contains(name) {
+          out.push(Stmt::ExportEffectDef(name~, params~, ops~, span~))
         } else {
           out.push(stmt)
         }
@@ -378,6 +386,20 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
         fields=normalize_struct_fields(fields),
         span=zero_span,
       )
+    Stmt::EffectDef(name~, params~, ops~, ..) =>
+      Stmt::EffectDef(
+        name~,
+        params~,
+        ops=normalize_effect_ops(ops),
+        span=zero_span,
+      )
+    Stmt::ExportEffectDef(name~, params~, ops~, ..) =>
+      Stmt::ExportEffectDef(
+        name~,
+        params~,
+        ops=normalize_effect_ops(ops),
+        span=zero_span,
+      )
   }
 }
 
@@ -402,6 +424,21 @@ fn normalize_struct_fields(fields : Array[StructField]) -> Array[StructField] {
   let zero_span = Span::{ start: 0, end: 0 }
   for field in fields {
     out.push(StructField::{ name: field.name, ty: field.ty, span: zero_span })
+  }
+  out
+}
+
+///|
+fn normalize_effect_ops(ops : Array[EffectOp]) -> Array[EffectOp] {
+  let out : Array[EffectOp] = []
+  let zero_span = Span::{ start: 0, end: 0 }
+  for op in ops {
+    out.push(EffectOp::{
+      name: op.name,
+      params: op.params,
+      ret: op.ret,
+      span: zero_span,
+    })
   }
   out
 }

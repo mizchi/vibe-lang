@@ -384,7 +384,9 @@ fn walk_stmt(
     | @core.Stmt::AliasDecl(..)
     | @core.Stmt::StructDef(..)
     | @core.Stmt::ExportStructDef(..)
-    | @core.Stmt::InternalExportStructDef(..) => ()
+    | @core.Stmt::InternalExportStructDef(..)
+    | @core.Stmt::EffectDef(..)
+    | @core.Stmt::ExportEffectDef(..) => ()
   }
 }
 

@@ -447,7 +447,9 @@ pub fn walk_stmt_refs(
     | Stmt::InternalExportTypeAlias(name~, ..)
     | Stmt::StructDef(name~, ..)
     | Stmt::ExportStructDef(name~, ..)
-    | Stmt::InternalExportStructDef(name~, ..) => scope.bindings[name] = true
+    | Stmt::InternalExportStructDef(name~, ..)
+    | Stmt::EffectDef(name~, ..)
+    | Stmt::ExportEffectDef(name~, ..) => scope.bindings[name] = true
     Stmt::Import(..)
     | Stmt::TraitDef(..)
     | Stmt::InternalTraitDef(..)

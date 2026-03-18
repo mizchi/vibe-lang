@@ -31,8 +31,9 @@ fn normalize_stmt_group(stmt : @vibe_core.Stmt) -> NormalizeStmtGroup {
     | @vibe_core.Stmt::InternalExportEnumDef(..)
     | @vibe_core.Stmt::StructDef(..)
     | @vibe_core.Stmt::ExportStructDef(..)
-    | @vibe_core.Stmt::InternalExportStructDef(..) =>
-      NormalizeStmtGroup::TypeDecl
+    | @vibe_core.Stmt::InternalExportStructDef(..)
+    | @vibe_core.Stmt::EffectDef(..)
+    | @vibe_core.Stmt::ExportEffectDef(..) => NormalizeStmtGroup::TypeDecl
     @vibe_core.Stmt::TraitDef(..)
     | @vibe_core.Stmt::InternalTraitDef(..)
     | @vibe_core.Stmt::TraitImpl(..) => NormalizeStmtGroup::TraitDecl

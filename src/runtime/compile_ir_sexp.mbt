@@ -287,6 +287,16 @@ fn stmts_to_sexp(
         }
         buf.write_string("))")
       }
+      @core.Stmt::EffectDef(name~, ..) => {
+        buf.write_string(" (effect ")
+        buf.write_string(escape_atom(name))
+        buf.write_char(')')
+      }
+      @core.Stmt::ExportEffectDef(name~, ..) => {
+        buf.write_string(" (export-effect ")
+        buf.write_string(escape_atom(name))
+        buf.write_char(')')
+      }
     }
   }
   buf.write_char(')')

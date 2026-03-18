@@ -257,6 +257,28 @@ pub fn Stmt::structural_hash(self : Stmt) -> Int {
       }
       h
     }
+    Stmt::EffectDef(name~, params~, ops~, ..) => {
+      let mut h = 0x45666644 // "EffD"
+      h = combine_hash(h, name.hash())
+      for p in params {
+        h = combine_hash(h, p.hash())
+      }
+      for op in ops {
+        h = combine_hash(h, op.structural_hash())
+      }
+      h
+    }
+    Stmt::ExportEffectDef(name~, params~, ops~, ..) => {
+      let mut h = 0x45784566 // "ExEf"
+      h = combine_hash(h, name.hash())
+      for p in params {
+        h = combine_hash(h, p.hash())
+      }
+      for op in ops {
+        h = combine_hash(h, op.structural_hash())
+      }
+      h
+    }
   }
 }
 
@@ -618,6 +640,16 @@ fn LoopParam::structural_hash(self : LoopParam) -> Int {
 fn StructField::structural_hash(self : StructField) -> Int {
   let mut h = self.name.hash()
   h = combine_hash(h, self.ty.structural_hash())
+  h
+}
+
+///|
+fn EffectOp::structural_hash(self : EffectOp) -> Int {
+  let mut h = self.name.hash()
+  for p in self.params {
+    h = combine_hash(h, p.structural_hash())
+  }
+  h = combine_hash(h, self.ret.structural_hash())
   h
 }
 

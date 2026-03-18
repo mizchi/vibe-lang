@@ -36,6 +36,8 @@ fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt? raise ParseError {
         Some(self.parse_module_stmt(false))
       } else if tok.text() == "suberror" {
         Some(self.parse_suberror_stmt())
+      } else if tok.text() == "effect" {
+        Some(self.parse_effect_stmt(false))
       } else {
         if tok.text() == "open" && next == trait_kw() {
           raise ParseError::UnexpectedToken(
@@ -447,6 +449,80 @@ fn AstParser::parse_suberror_stmt(
 }
 
 ///|
+/// Parse effect declaration:
+///   effect Name[T] { Op(ArgType) -> RetType; Op2 -> RetType }
+fn AstParser::parse_effect_stmt(
+  self : AstParser,
+  _exported : Bool,
+) -> @core.Stmt raise ParseError {
+  let start = self.pos
+  let _ = self.expect(name(), "effect")
+  self.skip_trivia()
+  let name_tok = self.expect(name(), "effect name")
+  let params = self.parse_type_params()
+  let param_set = param_set_from_params(params)
+  self.skip_trivia()
+  let _ = self.expect(lbrace(), "{")
+  let ops : Array[@core.EffectOp] = []
+  while ({
+          self.skip_trivia()
+          self.peek_kind() != rbrace()
+        }) {
+    if self.peek_kind() == eof() {
+      raise ParseError::UnexpectedEof(span=self.token_span())
+    }
+    ops.push(self.parse_effect_op(param_set))
+    self.expect_decl_separator("effect operation separator")
+  }
+  let _ = self.expect(rbrace(), "}")
+  let span = self.span_from(start)
+  @core.Stmt::EffectDef(name=name_tok.text(), params~, ops~, span~)
+}
+
+///|
+/// Parse a single effect operation:
+///   OpName(ArgType, ...) -> RetType
+///   OpName -> RetType
+fn AstParser::parse_effect_op(
+  self : AstParser,
+  param_set : Map[String, Bool],
+) -> @core.EffectOp raise ParseError {
+  let op_start = self.pos
+  let op_name_tok = self.expect(name(), "effect operation name")
+  self.skip_trivia()
+  let op_params : Array[@core.Type] = []
+  if self.peek_kind() == lparen() {
+    let _ = self.bump()
+    self.skip_trivia()
+    if self.peek_kind() != rparen() {
+      op_params.push(self.parse_type_with_params(param_set))
+      while ({
+              self.skip_trivia()
+              self.peek_kind() == comma()
+            }) {
+        let _ = self.bump()
+        self.skip_trivia()
+        if self.peek_kind() == rparen() {
+          break
+        }
+        op_params.push(self.parse_type_with_params(param_set))
+      }
+    }
+    let _ = self.expect(rparen(), ")")
+    self.skip_trivia()
+  }
+  let _ = self.expect(thin_arrow(), "->")
+  self.skip_trivia()
+  let ret = self.parse_type_with_params(param_set)
+  @core.EffectOp::{
+    name: op_name_tok.text(),
+    params: op_params,
+    ret,
+    span: self.span_from(op_start),
+  }
+}
+
+///|
 fn AstParser::parse_struct_stmt(
   self : AstParser,
 ) -> @core.Stmt raise ParseError {
@@ -815,6 +891,23 @@ fn AstParser::parse_internal_export_stmt(
         let span = self.span_from(start)
         raise ParseError::UnexpectedToken(
           expected="suberror definition",
+          got="other statement",
+          span~,
+        )
+      }
+    }
+  } else if self.peek_kind() == name() && self.peek().text() == "effect" {
+    let effect_stmt = self.parse_effect_stmt(false)
+    match effect_stmt {
+      @core.Stmt::EffectDef(name~, params~, ops~, ..) => {
+        let span = self.span_from(start)
+        // internal export effects are not yet supported; treat as non-exported
+        @core.Stmt::EffectDef(name~, params~, ops~, span~)
+      }
+      _ => {
+        let span = self.span_from(start)
+        raise ParseError::UnexpectedToken(
+          expected="effect definition",
           got="other statement",
           span~,
         )
@@ -1874,6 +1967,22 @@ fn AstParser::parse_export_stmt(
         let span = self.span_from(start)
         raise ParseError::UnexpectedToken(
           expected="suberror definition",
+          got="other statement",
+          span~,
+        )
+      }
+    }
+  } else if self.peek_kind() == name() && self.peek().text() == "effect" {
+    let effect_stmt = self.parse_effect_stmt(false)
+    match effect_stmt {
+      @core.Stmt::EffectDef(name~, params~, ops~, ..) => {
+        let span = self.span_from(start)
+        @core.Stmt::ExportEffectDef(name~, params~, ops~, span~)
+      }
+      _ => {
+        let span = self.span_from(start)
+        raise ParseError::UnexpectedToken(
+          expected="effect definition",
           got="other statement",
           span~,
         )
