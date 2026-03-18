@@ -230,7 +230,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     }
     effect_arities_seen[arity] = true
   }
-  let effect_type_count = effect_arities_seen.size()
+  let effect_type_count = effect_arities_seen.length()
   let total_type_count = builtin_count +
     ctx.fn_sig_order.length() +
     exception_type_count +
@@ -1894,7 +1894,7 @@ fn emit_module_with_coverage(
   // Assign effect operation import indices before compile loop.
   // func_import_count(ctx) already includes effect ops count.
   {
-    let base = func_import_count(ctx) - ctx.effect_op_imports.size()
+    let base = func_import_count(ctx) - ctx.effect_op_imports.length()
     let mut eidx = 0
     for key, _ in ctx.effect_op_imports {
       ctx.effect_op_imports[key] = base + eidx

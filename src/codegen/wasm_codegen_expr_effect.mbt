@@ -159,18 +159,12 @@ fn compile_expr_raise(
   buf : ByteBuf,
   value : @core.Expr,
 ) -> Unit raise WasmGenError {
-  if not(ctx.use_js_strings) && not(ctx.embed_error_strings) {
-    match value {
-      @core.Expr::String(value=message, span~) => {
-        let _ = span
-        emit_i64_const_tagged(buf, intern_error_code(ctx, message).to_int64())
-      }
-      _ => compile_expr_i32(ctx, buf, value)
-    }
-  } else if ctx.use_js_strings {
+  if ctx.use_js_strings {
     compile_expr(ctx, buf, value) // externref string on stack
   } else {
-    compile_expr_i32(ctx, buf, value) // tagged i32 string on stack
+    // Always emit the full tagged string value so catch handlers
+    // can inspect/compare the error payload as a real string.
+    compile_expr(ctx, buf, value)
   }
   buf.push((8).to_byte()) // throw opcode = 0x08
   write_u32_leb(buf, ctx.error_tag_index) // tag index

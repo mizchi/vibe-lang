@@ -465,7 +465,9 @@ test "vibe wasm keeps table/element when function values are used" {
 }
 
 ///|
-test "vibe wasm strips throw string literal in default build" {
+test "vibe wasm preserves throw string literal in default build" {
+  // throw string payloads are always embedded so catch handlers can
+  // inspect the error string at runtime.
   let db = VibeDb::new()
   let needle = "ERR_LITERAL_ONLY_FOR_DEBUG_9f0d5c2a"
   db.set_source("main", throw_literal_source(needle))
@@ -474,8 +476,7 @@ test "vibe wasm strips throw string literal in default build" {
   } noraise {
     b => b
   }
-  assert_false(bytes_contains_ascii(wasm, needle))
-  assert_false(wasm_has_custom_section_named(wasm, "vibe.error_map"))
+  assert_true(bytes_contains_ascii(wasm, needle))
 }
 
 ///|

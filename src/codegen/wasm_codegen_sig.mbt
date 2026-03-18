@@ -318,7 +318,7 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
     // listen/accept/request_* + respond
     count += 12
   }
-  count += ctx.effect_op_imports.size()
+  count += ctx.effect_op_imports.length()
   count
 }
 
