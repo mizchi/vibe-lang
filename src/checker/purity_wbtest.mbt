@@ -32,20 +32,13 @@ test "check_toplevel_purity: pure fn passes" {
 }
 
 ///|
-test "check_toplevel_purity: let mut rejected" {
+test "check_toplevel_purity: let mut rejected at type_check" {
   let ast = parse_for_purity("let mut x = 0")
-  let env = type_check(ast) catch {
-    err => fail("type error: \{err.to_string()}")
-  }
-  let result : Result[Unit, TypeError] = try? check_toplevel_purity(
-    env,
-    ast.stmts,
-  )
+  let result : Result[TypeEnv, TypeError] = try? type_check(ast)
   match result {
     Ok(_) => fail("should have failed")
-    Err(TypeError::TopLevelImpure(name~, tier~, ..)) => {
+    Err(TypeError::TopLevelLetMut(name~, ..)) => {
       assert_eq(name, "x")
-      assert_eq(tier, TopLevelPurityTier::StateLocal)
     }
     Err(other) => fail("wrong error: \{other.to_string()}")
   }

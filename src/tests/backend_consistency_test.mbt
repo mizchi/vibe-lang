@@ -91,23 +91,29 @@ test "interp vs compiled: string interpolation" {
 ///|
 test "interp vs compiled: mutable variables" {
   let script =
-    #|let mut x = 0
-    #|x = add(x, 1)
-    #|x = add(x, 2)
-    #|x
+    #|let _start = () -> {
+    #|  let mut x = 0
+    #|  x = add(x, 1)
+    #|  x = add(x, 2)
+    #|  x
+    #|}
+    #|_start()
   assert_interp_compiled_same(script)
 }
 
 ///|
 test "interp vs compiled: while loop" {
   let script =
-    #|let mut i = 0
-    #|let mut acc = 0
-    #|while lt(i, 5) {
-    #|  acc = add(acc, i)
-    #|  i = add(i, 1)
+    #|let _start = () -> {
+    #|  let mut i = 0
+    #|  let mut acc = 0
+    #|  while lt(i, 5) {
+    #|    acc = add(acc, i)
+    #|    i = add(i, 1)
+    #|  }
+    #|  acc
     #|}
-    #|acc
+    #|_start()
   assert_interp_compiled_same(script)
 }
 

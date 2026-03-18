@@ -38,13 +38,18 @@ test "check_document/warning" {
 
 ///|
 test "check_document/warning_unnecessary_mut" {
-  let source = "let mut value = 1\nvalue"
+  let source = "let f = () -> {\n  let mut value = 1\n  value\n}\nlet _ = f()"
   let (diagnostics, ok) = check_document("file://test.vibe", source)
   assert_true(ok)
-  assert_eq(diagnostics.length(), 1)
-  let diag = diagnostics[0]
-  assert_eq(diag.severity, Some(2))
-  assert_true(diag.message.contains("unnecessary `mut` binding: value"))
+  // Find the unnecessary mut warning among diagnostics
+  let mut found = false
+  for diag in diagnostics {
+    if diag.message.contains("unnecessary `mut` binding: value") {
+      assert_eq(diag.severity, Some(2))
+      found = true
+    }
+  }
+  assert_true(found)
 }
 
 ///|
