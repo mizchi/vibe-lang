@@ -858,6 +858,103 @@ let parse_suberror_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (S
   }
 }
 
+// Parse effect declaration: effect Name[T] { Op(Args) -> Ret; ... }
+let parse_effect_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with { Error } {
+  match peek(tokens, pos) {
+    TIdent(name) => {
+      // Parse optional type parameters [T, S]
+      let (type_params, after_params) = match peek(tokens, pos + 1) {
+        TLBracket => parse_type_params_list(tokens, pos + 2),
+        _ => (ArrayBuilder::freeze(ArrayBuilder::new()), pos + 1)
+      }
+      let br = expect_tk(tokens, after_params, "{")
+      let ops_b = ArrayBuilder::new()
+      let mut p = br
+      while true {
+        match peek(tokens, p) {
+          TRBrace => {
+            p = p + 1
+            break
+          },
+          TIdent(op_name) => {
+            // Parse optional params: Op(Type, ...) or just Op
+            let (params, after_op_params) = match peek(tokens, p + 1) {
+              TLParen => {
+                let params_b = ArrayBuilder::new()
+                let mut pp = p + 2
+                match peek(tokens, pp) {
+                  TRParen => (ArrayBuilder::freeze(params_b), pp + 1),
+                  _ => {
+                    let (first_type, n1) = parse_type_impl(tokens, pp, 0)
+                    ArrayBuilder::push(params_b, first_type)
+                    pp = n1
+                    while true {
+                      match peek(tokens, pp) {
+                        TComma => {
+                          let (next_type, n2) = parse_type_impl(tokens, pp + 1, 0)
+                          ArrayBuilder::push(params_b, next_type)
+                          pp = n2
+                        },
+                        TRParen => {
+                          pp = pp + 1
+                          break
+                        },
+                        _ => throw("expected ',' or ')' in effect op params")
+                      }
+                    }
+                    (ArrayBuilder::freeze(params_b), pp)
+                  }
+                }
+              },
+              _ => (ArrayBuilder::freeze(ArrayBuilder::new()), p + 1)
+            }
+            // Expect -> RetType
+            let arrow_pos = expect_tk(tokens, after_op_params, "->")
+            let (ret_type, after_ret) = parse_type_impl(tokens, arrow_pos, 0)
+            ArrayBuilder::push(ops_b, (op_name, params, ret_type))
+            // Skip optional semicolons
+            p = match peek(tokens, after_ret) {
+              TSemicolon => after_ret + 1,
+              _ => after_ret
+            }
+          },
+          _ => throw("expected effect operation name or '}'")
+        }
+      }
+      (SEffectDef(exported, name, type_params, ArrayBuilder::freeze(ops_b)), p)
+    },
+    _ => throw("expected effect name")
+  }
+}
+
+// Parse type parameter list: T, S] (after opening [)
+let parse_type_params_list = (tokens: Array[Token], pos: Int) -> (Array[String], Int) with { Error } {
+  let b = ArrayBuilder::new()
+  let mut p = pos
+  while true {
+    match peek(tokens, p) {
+      TRBracket => {
+        p = p + 1
+        break
+      },
+      TIdent(name) => {
+        ArrayBuilder::push(b, name)
+        p = p + 1
+        match peek(tokens, p) {
+          TComma => { p = p + 1 },
+          TRBracket => {
+            p = p + 1
+            break
+          },
+          _ => throw("expected ',' or ']' in type params")
+        }
+      },
+      _ => throw("expected type parameter name or ']'")
+    }
+  }
+  (ArrayBuilder::freeze(b), p)
+}
+
 let parse_type_alias_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int)with { Error } {
   match peek(tokens, pos) {
     TIdent(name) => {
@@ -2296,6 +2393,11 @@ let parse_export_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Er
     TEnum => parse_enum_stmt(tokens, pos + 1, true),
     TSuberror => parse_suberror_stmt(tokens, pos + 1, true),
     TStruct => parse_struct_stmt(tokens, pos + 1, true),
+    TIdent(ident_name) => if ident_name == "effect" {
+      parse_effect_stmt(tokens, pos + 1, true)
+    } else {
+      throw(String::concat("unexpected token in export: ", ident_name))
+    },
     TType => parse_type_alias_stmt(tokens, pos + 1, true),
     TTrait => parse_trait_stmt(tokens, pos + 1, true),
     TOpen => match peek(tokens, pos + 1) {
@@ -2383,7 +2485,9 @@ export let rec parse_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with 
     TTest => parse_test_stmt(tokens, pos + 1),
     TBench => parse_bench_stmt(tokens, pos + 1),
     TImport => parse_import_stmt(tokens, pos + 1),
-    TIdent(name) => if name == "extern" {
+    TIdent(name) => if name == "effect" {
+      parse_effect_stmt(tokens, pos + 1, false)
+    } else if name == "extern" {
       parse_extern_let_stmt(tokens, pos + 1)
     } else if name == "use" {
       throw("'use' syntax is removed; use 'import <module-ref> { ... }'")

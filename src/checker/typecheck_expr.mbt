@@ -1394,6 +1394,8 @@ fn type_block(
         register_struct_def(scope_env, name, params, fields, span)
         last = @core.Type::Unit
       }
+      @core.Stmt::EffectDef(..) | @core.Stmt::ExportEffectDef(..) =>
+        last = @core.Type::Unit
     }
   }
   if env.handle_resume_types_active {

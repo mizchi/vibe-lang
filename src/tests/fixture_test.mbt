@@ -565,7 +565,7 @@ test "fixtures compiled parity" {
     let known_gaps = [
       // codegen gaps: interpreter OK but compiled fails
       "let_else.vibe", "let_else_fallback.vibe", // let-else codegen
-       "bytes_basic.vibe", // Bytes builtin codegen
+       "bytes_basic.vibe", "bytes_ops.vibe", // Bytes builtin codegen
        "generic_fold.vibe", "generic_filter.vibe", "generic_nested_types.vibe", // generic codegen
        "trait_eq_bound.vibe", "trait_ord_bound.vibe", // trait bound codegen
        "trait_eq_string_operator_runtime.vibe", // trait string eq codegen

@@ -749,9 +749,7 @@ test "vibe threads send returns false when channel is full" {
     RuntimeFeatureFlags::unstable_threads_only(),
   )
   // Step 1: create channel with capacity 1
-  let _ = try? rt.eval_script(
-    "let ch = Threads::channel_new(1)",
-  )
+  let _ = try? rt.eval_script("let ch = Threads::channel_new(1)")
   // Step 2: first send should succeed
   let r1 : Result[EvalResult, VibeError] = try? rt.eval_script(
     "Threads::send(ch, \"a\")",

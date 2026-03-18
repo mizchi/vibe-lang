@@ -37,9 +37,7 @@ test "check_toplevel_purity: let mut rejected at type_check" {
   let result : Result[TypeEnv, TypeError] = try? type_check(ast)
   match result {
     Ok(_) => fail("should have failed")
-    Err(TypeError::TopLevelLetMut(name~, ..)) => {
-      assert_eq(name, "x")
-    }
+    Err(TypeError::TopLevelLetMut(name~, ..)) => assert_eq(name, "x")
     Err(other) => fail("wrong error: \{other.to_string()}")
   }
 }
