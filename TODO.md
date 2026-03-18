@@ -107,43 +107,83 @@ WASI P3 HTTP handler の effect-based エラーハンドリングに必要。
 - [ ] pattern match での suberror ctor 判定 (`Error(NotFound) => ...`)
 - [ ] テスト: suberror throw → catch → pattern match を compiled backend で検証
 
-### Algebraic Effect `Http` の設計
+### Algebraic Effect (Model 1: Full Effect)
 
-P3 HTTP handler を vibe の代数的エフェクトとして自然に記述する。
+**設計決定**: Request/Response ともに effect（capability ベース）。
+データ受け渡しではなく、handler が必要な capability を `with` で宣言し、`perform` で operation を呼ぶ。
+詳細: `docs/report/support-wasip3.md`
+
+**理由**: 最小権限、テスト容易性 (全 operation mock 可)、streaming 自然、WIT 1:1 マッピング
 
 目標の syntax:
 
 ```vibe
-effect Http {
-  method: () -> String;
-  url: () -> String;
-  header: (String) -> Option[String];
-  body: () -> String;
-  set_status: (Int) -> Unit;
-  set_header: (String, String) -> Unit
+// Effect 定義 = capability の宣言
+effect HttpRequest {
+  Method -> String;
+  Url -> String;
+  Header(String) -> Option[String];
+  Body -> String
 }
 
-let my_handler = () -> String with { Http } {
-  let m = Http::method()
-  let u = Http::url()
-  if String::equals(u, "/health") {
-    Http::set_status(200)
-    Http::set_header("content-type", "application/json")
-    "{\"ok\":true}"
+effect HttpResponse {
+  Status(Int) -> Unit;
+  Header(String, String) -> Unit;
+  Write(String) -> Unit
+}
+
+effect HttpClient {
+  Fetch(String, String, String) -> (Int, String)
+}
+
+// Handler = 必要な capability を宣言
+let handler = () -> Unit with { HttpRequest, HttpResponse } {
+  let url = perform HttpRequest::Url
+  if String::equals(url, "/health") {
+    perform HttpResponse::Status(200)
+    perform HttpResponse::Header("content-type", "application/json")
+    perform HttpResponse::Write("{\"ok\":true}")
   } else {
-    Http::set_status(404)
-    "Not Found"
+    perform HttpResponse::Status(404)
+    perform HttpResponse::Write("Not Found")
   }
+}
+
+// Middleware = 一部の capability だけ要求 (最小権限)
+let auth = [A](inner: () -> A with { HttpRequest, HttpResponse })
+  -> A with { HttpRequest, HttpResponse, Error } {
+  match perform HttpRequest::Header("authorization") {
+    None => { perform HttpResponse::Status(401); throw("Unauthorized") }
+    Some(_) => inner()
+  }
+}
+
+// Test = effect handler で mock
+handle { handler() } {
+  HttpRequest::Method => resume("GET"),
+  HttpRequest::Url => resume("/health"),
+  HttpRequest::Header(_) => resume(None),
+  HttpRequest::Body => resume(""),
+  HttpResponse::Status(code) => ...,
+  HttpResponse::Write(body) => ...
 }
 ```
 
-設計タスク:
-- [ ] `effect` 宣言の AST / parser / checker 対応（現在は suberror + builtin effect のみ）
-- [ ] effect operation の呼び出し構文 (`Http::method()`)
-- [ ] effect handler の構文 (`handle { body } { Http.method() => resume("GET") }`)
-- [ ] P3 adapter が effect handler として機能する codegen パス
-- [ ] effect → WIT import/export の自動マッピング仕様
-- [ ] 既存の `with { Error }` / `with { Net }` との共存設計
+WIT マッピング: `effect HttpRequest` → `interface http-request`, `effect HttpResponse` → `interface http-response`
+
+Phase 2 タスク:
+- [ ] `effect Name { Op(Args) -> Ret; ... }` 宣言 — AST / parser / checker
+- [ ] `perform Effect::Op(args)` 式 — AST / parser / checker / codegen
+- [ ] `handle { body } { Effect::Op(args) => resume(value) }` handler 構文
+- [ ] `resume(value)` — continuation で中断した計算を再開
+- [ ] `with { Effect }` — 既存の `with { Error }` を一般化
+- [ ] 既存 effect (`Error`, `Net`) をこの framework に統合
+
+Phase 3 タスク (Http 実装):
+- [ ] `effect HttpRequest`, `effect HttpResponse`, `effect HttpClient` 定義
+- [ ] P3 adapter が effect handler として resume を提供する codegen パス
+- [ ] `vibe serve handler.vibe` コマンド
+- [ ] streaming response (`HttpResponse::Write` 複数回呼び出し)
 
 前提:
 - WASM Exceptions 修正が先 (throw/catch の基盤)
