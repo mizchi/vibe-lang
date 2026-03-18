@@ -1591,3 +1591,64 @@ test "bytes slice b[i:j]" {
   let result = rt.eval_script(script)
   assert_eq(result.last, Some(@core.Value::Int(2)))
 }
+
+///|
+/// Stage0 checker vs WASM compile parity for type error detection.
+/// Verifies host checker errors also prevent WASM compilation,
+/// and valid sources compile to valid WASM.
+test "stage0 checker vs wasm compile: error parity" {
+  let test_cases : Array[(String, String, Bool)] = [
+    // (name, source, expect_ok)
+    ("int_add", "1 + 2", true),
+    ("let_basic", "let x = 42\nx", true),
+    ("fn_call", "let f = (x: Int) -> Int { x + 1 }\nf(5)", true),
+    ("if_expr", "if true { 1 } else { 0 }", true),
+    ("match_int", "match 1 { 0 => 10, _ => 20 }", true),
+    ("err_throw_pure", "let f = () -> Int { throw(\"x\")\n0 }", false),
+    ("err_call_effectful",
+      "let g = () -> Int with { Error } { throw(\"x\")\n0 }\nlet f = () -> Int { g() }",
+      false),
+    ("err_throw_type", "let f = () -> Int with { Error } { throw(42)\n0 }", false),
+    ("err_type_mismatch", "let x: Int = \"hello\"", false),
+    ("err_unknown_name", "foo", false),
+  ]
+  let mut ok = 0
+  let failures : Array[String] = []
+  for entry in test_cases {
+    let (name, source, expect_ok) = entry
+    let db = VibeDb::new()
+    let path = "parity_\{name}.vibe"
+    db.set_source(path, source)
+    let checker_ok : Bool = match (try? compile_module(db, path) : Result[_, _]) {
+      Ok(_) => true
+      Err(_) => false
+    }
+    let wasm_ok : Bool = match (try? compile_module_wasm(db, path) : Result[
+      Bytes,
+      _,
+    ]) {
+      Ok(bytes) => bytes.length() > 4
+      Err(_) => false
+    }
+    // Both should agree on success/failure
+    if checker_ok != wasm_ok {
+      let c = if checker_ok { "OK" } else { "ERR" }
+      let w = if wasm_ok { "OK" } else { "ERR" }
+      failures.push("\{name}: checker=\{c} wasm=\{w}")
+    } else if checker_ok != expect_ok {
+      let actual = if checker_ok { "OK" } else { "ERR" }
+      let expected = if expect_ok { "OK" } else { "ERR" }
+      failures.push("\{name}: expected \{expected} but got \{actual}")
+    } else {
+      ok += 1
+    }
+  }
+  if failures.length() > 0 {
+    let detail = failures.iter().fold(init="", fn(acc, f) {
+      acc + "  " + f + "\n"
+    })
+    fail(
+      "stage0 error parity: \{ok} ok, \{failures.length()} fail:\n\{detail}",
+    )
+  }
+}
