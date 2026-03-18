@@ -507,6 +507,129 @@ test "fixtures" {
 }
 
 ///|
+/// Test that interpreter and compiled backends agree on fixture outcomes.
+/// For each fixture with a `last` value:
+///   - interpreter eval succeeds → compiled (WASM) should also succeed
+///   - interpreter eval fails → compiled should also fail
+/// For each fixture with an `error_contains`:
+///   - both backends should produce an error
+test "fixtures compiled parity" {
+  let fixture_dir = "fixtures"
+  let entries = @os_fs.read_dir(fixture_dir) catch {
+    e => fail("[compiled-parity] read_dir failed: \{e.to_string()}")
+  }
+  let files : Array[String] = []
+  for entry in entries {
+    let path = if entry.has_prefix(fixture_dir) {
+      entry
+    } else {
+      fixture_dir + "/" + entry
+    }
+    let is_file = @os_fs.is_file(path) catch { _ => false }
+    if is_file && path.has_suffix(".vibe") {
+      files.push(path)
+    }
+  }
+  sort_strings(files)
+  let mut parity_ok = 0
+  let mut parity_skip = 0
+  let mismatches : Array[String] = []
+  for path in files {
+    let source = @os_fs.read_file_to_string(path) catch { _ => continue }
+    if not(source.contains("__DATA__")) {
+      continue
+    }
+    let (script, data) = split_fixture(source, path) catch { _ => continue }
+    let spec = parse_spec(data, path) catch { _ => continue }
+    if spec.skip || spec.todo {
+      parity_skip += 1
+      continue
+    }
+    // Skip fixtures that use imports (compiled mode may not resolve them)
+    if script.contains("import ") {
+      parity_skip += 1
+      continue
+    }
+    // Skip effect/shell fixtures (side effects)
+    match spec.effects {
+      Some(_) => {
+        parity_skip += 1
+        continue
+      }
+      None => ()
+    }
+    // Skip known parity gaps (tracked for future fixing)
+    let basename = path.split("/").fold(init="", fn(_acc, part) {
+      part.to_string()
+    })
+    let known_gaps = [
+      // codegen gaps: interpreter OK but compiled fails
+      "let_else.vibe", "let_else_fallback.vibe", // let-else codegen
+      "bytes_basic.vibe", // Bytes builtin codegen
+      "generic_fold.vibe", "generic_filter.vibe", "generic_nested_types.vibe", // generic codegen
+      "trait_eq_bound.vibe", "trait_ord_bound.vibe", // trait bound codegen
+      "trait_eq_string_operator_runtime.vibe", // trait string eq codegen
+      "trait_eq_operator_accepts_eq_bound_type_parameter.vibe",
+      "trait_ord_operator_accepts_ord_bound_type_parameter.vibe",
+      "labeled_arg_basic.vibe", // labeled arg codegen
+      "labeled_arg_optional.vibe", // labeled arg codegen
+      "let_pat_option.vibe", // let-pat-else codegen
+      // runtime gaps: interpreter errors but compiled succeeds
+      "http_p3_client_test.vibe", // HTTP capability
+      "err_type_map_key_type.vibe", // runtime-only error
+      "err_type_divide_by_zero.vibe", // runtime-only error
+      "err_type_negative_index.vibe", // runtime-only error
+      "err_type_array_index_out_of_range.vibe", // runtime-only error
+    ]
+    let mut is_known_gap = false
+    for gap in known_gaps {
+      if basename == gap {
+        is_known_gap = true
+        break
+      }
+    }
+    if is_known_gap {
+      parity_skip += 1
+      continue
+    }
+    let interp_result = eval_fixture(path, script, spec)
+    let interp_ok = match interp_result {
+      Ok(_) => true
+      Err(_) => false
+    }
+    let db = VibeDb::new()
+    db.set_source(path, script)
+    let compile_result : Result[Bytes, _] = try? compile_module_wasm(db, path)
+    let compiled_ok = match compile_result {
+      Ok(wasm_bytes) =>
+        wasm_bytes.length() > 4 &&
+        wasm_bytes[0] == 0 &&
+        wasm_bytes[1] == b'a' &&
+        wasm_bytes[2] == b's' &&
+        wasm_bytes[3] == b'm'
+      Err(_) => false
+    }
+    if interp_ok == compiled_ok {
+      parity_ok += 1
+    } else {
+      let interp_label = if interp_ok { "OK" } else { "ERROR" }
+      let compiled_label = if compiled_ok { "OK" } else { "ERROR" }
+      mismatches.push(
+        "\{path}: interp=\{interp_label} compiled=\{compiled_label}",
+      )
+    }
+  }
+  if mismatches.length() > 0 {
+    let detail = mismatches.iter().fold(init="", fn(acc, m) {
+      acc + "  " + m + "\n"
+    })
+    fail(
+      "compiled parity: \{parity_ok} ok, \{mismatches.length()} mismatch, \{parity_skip} skip:\n\{detail}",
+    )
+  }
+}
+
+///|
 test "fixtures has no stale todo files" {
   let fixture_dir = "fixtures"
   let entries = @os_fs.read_dir(fixture_dir) catch {
