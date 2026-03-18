@@ -459,10 +459,12 @@ fn filter_reachable_stmts(
         let _ = params
         let _ = span
         // Keep if type name is reachable OR any constructor is reachable
+        // (including qualified form: EnumName::CtorName)
         let mut keep = reachable.contains(name)
         if not(keep) {
           for ctor in ctors {
-            if reachable.contains(ctor.name) {
+            if reachable.contains(ctor.name) ||
+              reachable.contains(name + "::" + ctor.name) {
               keep = true
               break
             }
@@ -475,11 +477,11 @@ fn filter_reachable_stmts(
       @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) => {
         let _ = params
         let _ = span
-        // Keep if type name is reachable OR any constructor is reachable
         let mut keep = reachable.contains(name)
         if not(keep) {
           for ctor in ctors {
-            if reachable.contains(ctor.name) {
+            if reachable.contains(ctor.name) ||
+              reachable.contains(name + "::" + ctor.name) {
               keep = true
               break
             }
@@ -495,7 +497,8 @@ fn filter_reachable_stmts(
         let mut keep = reachable.contains(name)
         if not(keep) {
           for ctor in ctors {
-            if reachable.contains(ctor.name) {
+            if reachable.contains(ctor.name) ||
+              reachable.contains(name + "::" + ctor.name) {
               keep = true
               break
             }

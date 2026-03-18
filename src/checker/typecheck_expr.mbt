@@ -8,12 +8,13 @@ fn bind_handle_arm_pat(
   pat : @core.Pat,
 ) -> Unit raise TypeError {
   match pat {
-    @core.Pat::Ctor(name~, args~, ..) =>
-      match env.get_ctor(name) {
+    @core.Pat::Ctor(name~, args~, ..) => {
+      let ctor_key = @core.strip_ctor_qualifier(name)
+      match env.get_ctor(ctor_key) {
         Some(info) => {
           let inst = instantiate_ctor(arm_env, info)
           let effect_row : Map[String, @core.Type] = {}
-          effect_row[name] = inst.payload
+          effect_row[ctor_key] = inst.payload
           let bindings = collect_pattern_bindings(
             arm_env,
             pat,
@@ -30,6 +31,7 @@ fn bind_handle_arm_pat(
             }
           }
       }
+    }
     _ => {
       let bindings = collect_pattern_bindings(env, pat, @core.Type::String)
       for name, ty in bindings {
@@ -806,14 +808,14 @@ fn type_expr_eff(
         match arm.pat {
           @core.Pat::Ctor(name~, ..) => {
             has_ctor = true
-            covered[name] = true
+            covered[@core.strip_ctor_qualifier(name)] = true
           }
           @core.Pat::Or(pats~, ..) =>
             for p in pats {
               match p {
                 @core.Pat::Ctor(name~, ..) => {
                   has_ctor = true
-                  covered[name] = true
+                  covered[@core.strip_ctor_qualifier(name)] = true
                 }
                 @core.Pat::Bool(value~, ..) => {
                   has_bool_pat = true

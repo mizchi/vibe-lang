@@ -348,8 +348,7 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
       let _ = name
       scan_needs_expr(ctx, expr)
     }
-    @core.Stmt::EnumDef(name~, params~, ctors~, span~) => {
-      let _ = name
+    @core.Stmt::EnumDef(name=enum_name, params~, ctors~, span~) => {
       let _ = params
       let _ = span
       for i in 0..<ctors.length() {
@@ -364,6 +363,13 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
           arg_kinds.push(value_kind_from_type(ctx, arg))
         }
         ctx.enum_ctor_arg_kinds[ctor.name] = arg_kinds
+        // Register qualified form: EnumName::CtorName
+        let qualified_ctor = enum_name + "::" + ctor.name
+        if not(ctx.enum_ctor_tags.contains(qualified_ctor)) {
+          ctx.enum_ctor_tags[qualified_ctor] = ctx.enum_ctor_tags[ctor.name]
+          ctx.enum_ctor_arities[qualified_ctor] = ctor.args.length()
+          ctx.enum_ctor_arg_kinds[qualified_ctor] = arg_kinds
+        }
         // Register singleton for 0-arg enum constructors
         if ctor.args.length() == 0 {
           let offset = ctx.strings.intern_enum_singleton(
@@ -371,6 +377,7 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
             ctx.enum_ctor_tags[ctor.name],
           )
           ctx.enum_ctor_singletons[ctor.name] = tag_ptr64(offset, tag_obj)
+          ctx.enum_ctor_singletons[qualified_ctor] = tag_ptr64(offset, tag_obj)
         }
       }
     }

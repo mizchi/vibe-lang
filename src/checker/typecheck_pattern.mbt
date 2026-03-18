@@ -49,10 +49,12 @@ fn collect_pattern_bindings_inner(
       }
       out[name] = scrutinee_ty
     }
-    @core.Pat::Ctor(name~, args~, span~) =>
+    @core.Pat::Ctor(name~, args~, span~) => {
+      // Strip qualified prefix for variant lookup: Color::Red → Red
+      let ctor_key = @core.strip_ctor_qualifier(name)
       match scrutinee_ty {
         @core.Type::Variant(types) =>
-          match types.get(name) {
+          match types.get(ctor_key) {
             Some(field_ty) =>
               if args.length() == 0 {
                 ()
@@ -136,6 +138,7 @@ fn collect_pattern_bindings_inner(
           }
         _ => raise TypeError::BadMatch(message="expected ctor variant", span~)
       }
+    }
     @core.Pat::Int(value~, span~) => {
       let _ = value
       if not(type_equal(env, scrutinee_ty, @core.Type::Int)) {

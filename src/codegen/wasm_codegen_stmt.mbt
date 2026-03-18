@@ -448,8 +448,7 @@ fn compile_stmt(
         }
       }
     }
-    @core.Stmt::EnumDef(name~, params~, ctors~, span~) => {
-      let _ = name
+    @core.Stmt::EnumDef(name=enum_name, params~, ctors~, span~) => {
       let _ = params
       let _ = span
       for i in 0..<ctors.length() {
@@ -467,7 +466,7 @@ fn compile_stmt(
           ctx.enum_ctor_arg_kinds[ctor.name] = arg_kinds
         }
         // Also register qualified form: EnumName::CtorName
-        let qualified_ctor = name + "::" + ctor.name
+        let qualified_ctor = enum_name + "::" + ctor.name
         if not(ctx.enum_ctor_tags.contains(qualified_ctor)) {
           ctx.enum_ctor_tags[qualified_ctor] = ctx.enum_ctor_tags[ctor.name]
           ctx.enum_ctor_arities[qualified_ctor] = ctor.args.length()
@@ -653,7 +652,7 @@ fn compile_stmt(
               emit_local_set(buf, idx)
             }
           }
-        None => raise UnknownName(name)
+        None => raise UnknownName("" + name)
       }
     }
     @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
