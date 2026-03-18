@@ -501,11 +501,21 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     type_sec.push((0x5d).to_byte()) // cont type (0x5d per stack-switching spec)
     write_u32_leb(type_sec, ctx.run_func_type_index) // function type index
   }
+  // Collect effect op keys in stable order (used for both type and import sections)
+  let effect_op_keys : Array[String] = []
+  for key, _ in ctx.effect_op_imports {
+    effect_op_keys.push(key)
+  }
   // Effect operation types: (i64^N, i32) -> i64 for each unique param count
-  // The i32 is the closure env param (always present in vibe ABI)
+  // type_count at this point is builtin_count; add fn_sig + exception + stack_switching offset
+  let effect_type_base = builtin_count +
+    ctx.fn_sig_order.length() +
+    exception_type_count +
+    stack_switching_type_count
+  let mut effect_type_next = effect_type_base
   let effect_op_type_indices : Map[String, Int] = {}
   let effect_op_type_by_arity : Map[Int, Int] = {}
-  for key, _ in ctx.effect_op_imports {
+  for key in effect_op_keys {
     let arity = match ctx.effect_op_param_counts.get(key) {
       Some(n) => n
       None => 0
@@ -513,8 +523,8 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     match effect_op_type_by_arity.get(arity) {
       Some(idx) => effect_op_type_indices[key] = idx
       None => {
-        let idx = type_count
-        type_count += 1
+        let idx = effect_type_next
+        effect_type_next += 1
         effect_op_type_by_arity[arity] = idx
         effect_op_type_indices[key] = idx
         // Write: (func (param i64*arity i32) (result i64))
@@ -586,10 +596,6 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     func_import_count += 12
   }
   // Effect operation imports: each operation becomes one import
-  let effect_op_keys : Array[String] = []
-  for key, _ in ctx.effect_op_imports {
-    effect_op_keys.push(key)
-  }
   for key in effect_op_keys {
     ctx.effect_op_imports[key] = func_import_count
     func_import_count += 1
@@ -1885,6 +1891,16 @@ fn emit_module_with_coverage(
   // Pre-compute extern_table_index for externref captures.
   // Table 0 is reserved for funcref table when extern table exists.
   ctx.extern_table_index = 1
+  // Assign effect operation import indices before compile loop.
+  // func_import_count(ctx) already includes effect ops count.
+  {
+    let base = func_import_count(ctx) - ctx.effect_op_imports.size()
+    let mut eidx = 0
+    for key, _ in ctx.effect_op_imports {
+      ctx.effect_op_imports[key] = base + eidx
+      eidx += 1
+    }
+  }
   // Pre-compute ref cell capture flags for ALL functions before compile loop.
   // This is needed because compile_function runs before compile_expr_fn.
   precompute_ref_cell_captures_block(ctx, ast.stmts, top_mut_captured)
