@@ -93,19 +93,15 @@ WASI P3 HTTP handler の effect-based エラーハンドリングに必要。
 
 `throw("NotFound")` → `handle { } { Error(err) => }` で `err` が破損する。
 
-- [ ] `throw(string)` の tagged value が WASM exception payload に正しくエンコードされるか調査
-- [ ] `catch` 側の payload デコードが tagged string を正しく復元するか調査
-- [ ] codegen の `try_table` / `throw` / `catch` の string payload 伝搬を修正
-- [ ] テスト: `throw("hello")` → `Error(msg)` → `msg == "hello"` を compiled backend で検証
+- [x] throw は常に tagged string object を投げるように変更 (エラーコード intern 廃止)
+- [x] catch 側で tagged string が正しく復元される
+- [x] `throw("hello")` → `Error(msg)` → `String::equals(msg, "hello")` = true
 
-### suberror の compiled backend 対応
+### suberror の compiled backend 対応 (完了 2026-03-18)
 
-`suberror HttpError { NotFound; BadRequest(String) }` + `throw(NotFound)` が型エラー。
-
-- [ ] suberror constructor → Error 型への自動変換を WASM codegen に実装
-- [ ] suberror payload (e.g. `BadRequest("invalid")`) の serialization/deserialization
-- [ ] pattern match での suberror ctor 判定 (`Error(NotFound) => ...`)
-- [ ] テスト: suberror throw → catch → pattern match を compiled backend で検証
+- [x] suberror constructor → Error 型への自動変換: 動作確認
+- [x] suberror payload (`BadInput("invalid")`): 動作確認
+- [x] pattern match (`Error(NotFound) => 404`): 動作確認
 
 ### Algebraic Effect (Model 1: Full Effect)
 
@@ -172,8 +168,8 @@ handle { handler() } {
 WIT マッピング: `effect HttpRequest` → `interface http-request`, `effect HttpResponse` → `interface http-response`
 
 Phase 2 タスク:
-- [ ] `effect Name { Op(Args) -> Ret; ... }` 宣言 — AST / parser / checker
-- [ ] `perform Effect::Op(args)` 式 — AST / parser / checker / codegen
+- [x] `effect Name { Op(Args) -> Ret; ... }` 宣言 — AST / parser / checker (host + selfhost)
+- [x] `perform Effect::Op(args)` 式 — AST / parser / checker / codegen (WASM import)
 - [ ] `handle { body } { Effect::Op(args) => resume(value) }` handler 構文
 - [ ] `resume(value)` — continuation で中断した計算を再開
 - [ ] `with { Effect }` — 既存の `with { Error }` を一般化
