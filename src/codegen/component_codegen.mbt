@@ -453,6 +453,56 @@ priv struct CoreExportFunc {
 }
 
 ///|
+/// Check if a core WASM module has an export with the given name and kind.
+/// kind: 0=func, 1=table, 2=memory, 3=global
+fn core_has_named_export(
+  core_wasm : Bytes,
+  target_name : String,
+  target_kind : Int,
+) -> Bool {
+  let bytes = core_wasm.to_array()
+  if bytes.length() < 8 {
+    return false
+  }
+  let mut i = 8
+  while i < bytes.length() {
+    let section_id = bytes[i].to_int()
+    i += 1
+    let (section_size, after_size) = core_read_uleb_u32(bytes, i)
+    i = after_size
+    let section_end = i + section_size
+    if section_end > bytes.length() {
+      break
+    }
+    if section_id == 7 {
+      let mut j = i
+      let (export_count, after_count) = core_read_uleb_u32(bytes, j)
+      j = after_count
+      for _ in 0..<export_count {
+        if j >= section_end {
+          break
+        }
+        let (name, after_name) = core_read_name(bytes, j)
+        j = after_name
+        if j >= section_end {
+          break
+        }
+        let kind = bytes[j].to_int()
+        j += 1
+        let (_, after_index) = core_read_uleb_u32(bytes, j)
+        j = after_index
+        if name == target_name && kind == target_kind {
+          return true
+        }
+      }
+      return false
+    }
+    i = section_end
+  }
+  false
+}
+
+///|
 fn parse_core_export_funcs(core_wasm : Bytes) -> Array[CoreExportFunc] {
   let bytes = core_wasm.to_array()
   let exports : Array[CoreExportFunc] = []
@@ -1296,6 +1346,7 @@ fn emit_alias_section(
 fn generate_string_trampoline_module(
   string_param_count : Int,
   needs_target_env? : Bool = true,
+  has_env_param? : Bool = true,
   call_run_init? : Bool = false,
   result_kind? : ComponentStringLiftResult = ComponentStringLiftResult::S64,
 ) -> Bytes {
@@ -1308,7 +1359,9 @@ fn generate_string_trampoline_module(
     buf.push(b)
   }
   let body = ByteBuf::new()
-  let target_env_param_count = if needs_target_env { 1 } else { 0 }
+  // has_env_param: function signature has i32 env param (always in vibe closure ABI)
+  // needs_target_env: env global import exists (only when function captures variables)
+  let target_env_param_count = if has_env_param { 1 } else { 0 }
   let run_init_type_count = if call_run_init { 1 } else { 0 }
   let run_init_import_count = if call_run_init { 1 } else { 0 }
   let target_env_import_count = if needs_target_env { 1 } else { 0 }
@@ -1332,7 +1385,7 @@ fn generate_string_trampoline_module(
   for _ in 0..<string_param_count {
     type_sec.push(b'\x7e') // i64
   }
-  if needs_target_env {
+  if has_env_param {
     type_sec.push(b'\x7f') // i32 closure env
   }
   type_sec.push(b'\x01')
@@ -1495,9 +1548,14 @@ fn generate_string_trampoline_module(
   for i in 0..<string_param_count {
     emit_local_get(func_body, tagged_base + i)
   }
-  if needs_target_env {
-    func_body.push(b'\x23') // global.get
-    write_u32_leb(func_body, 0) // global 0 = target_env
+  if has_env_param {
+    if needs_target_env {
+      func_body.push(b'\x23') // global.get
+      write_u32_leb(func_body, 0) // global 0 = target_env
+    } else {
+      func_body.push(b'\x41') // i32.const
+      write_u32_leb(func_body, 0) // env = 0 (no captures)
+    }
   }
   func_body.push(b'\x10') // call
   write_u32_leb(func_body, 0) // func 0 = target_func
@@ -1713,6 +1771,17 @@ pub fn emit_component_wasm_with_string_lift(
       }
     }
   }
+  // Check if the function has an env param but no corresponding env global.
+  // Non-capturing exported functions have the extra i32 env param (closure ABI)
+  // but no __export_env_* global. In this case, the trampoline should still
+  // pass the env param (i32.const 0) but not alias the global.
+  let has_env_param = needs_target_env
+  if needs_target_env {
+    let env_global_name = exported_env_global_export_name(target_func_name)
+    if not(core_has_named_export(core_wasm, env_global_name, 3)) {
+      needs_target_env = false
+    }
+  }
   let has_distinct_run_alias = call_run_init && target_func_name != "_start"
   let run_init_import_count = if call_run_init { 1 } else { 0 }
   let run_alias_func_count = if has_distinct_run_alias { 1 } else { 0 }
@@ -1726,6 +1795,7 @@ pub fn emit_component_wasm_with_string_lift(
   let trampoline_wasm = generate_string_trampoline_module(
     string_param_count,
     needs_target_env~,
+    has_env_param~,
     call_run_init~,
     result_kind~,
   )
