@@ -61,7 +61,7 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-wit-bindgen = { version = "0.53.1", default-features = false, features = ["macros", "realloc", "bitflags"] }
+wit-bindgen = { version = "0.54.0", default-features = false, features = ["macros", "realloc", "bitflags"] }
 EOF
 
 cat >"$TMP_DIR/src/lib.rs" <<EOF

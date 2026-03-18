@@ -54,7 +54,7 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-wit-bindgen = { version = "0.53.1", default-features = false, features = ["macros", "realloc", "bitflags", "async", "async-spawn"] }
+wit-bindgen = { version = "0.54.0", default-features = false, features = ["macros", "realloc", "bitflags", "async", "async-spawn"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 EOF
 
@@ -67,9 +67,9 @@ wit_bindgen::generate!({
         /// vibe handler: (method, url) -> tagged status code.
         /// Positive = direct response. -1 = proxy GET, -2 = proxy POST.
         import handler: func(method: string, url: string) -> s64;
-        import wasi:http/types@0.3.0-rc-2026-01-06;
-        import wasi:http/client@0.3.0-rc-2026-01-06;
-        include wasi:http/service@0.3.0-rc-2026-01-06;
+        import wasi:http/types@0.3.0-rc-2026-02-09;
+        import wasi:http/client@0.3.0-rc-2026-02-09;
+        include wasi:http/service@0.3.0-rc-2026-02-09;
       }
     "#,
     path: "$PROJECT_ROOT/deps/wasmtime/crates/wasi-http/src/p3/wit",

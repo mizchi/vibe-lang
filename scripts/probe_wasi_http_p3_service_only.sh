@@ -61,7 +61,7 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-wit-bindgen = { version = "0.53.1", default-features = false, features = ["macros", "realloc", "bitflags", "async", "async-spawn"] }
+wit-bindgen = { version = "0.54.0", default-features = false, features = ["macros", "realloc", "bitflags", "async", "async-spawn"] }
 EOF
 
 cat >"$TMP_DIR/src/lib.rs" <<EOF
@@ -70,7 +70,7 @@ wit_bindgen::generate!({
       package vibe:http-adapter;
 
       world serviceonly {
-        include wasi:http/service@0.3.0-rc-2026-01-06;
+        include wasi:http/service@0.3.0-rc-2026-02-09;
       }
     "#,
     path: "$PROJECT_ROOT/deps/wasmtime/crates/wasi-http/src/p3/wit",
