@@ -422,14 +422,9 @@ async function init() {
   const tsPromise = setupSemanticTokens();
 
   try {
-    const vibeServicePath = "../../js/vibe/index.js";
-    const vibeWasmPath = "../../_build/wasm-gc/release/build/lib/lib.wasm?url";
-    const [vibeModule, wasmUrlModule] = await Promise.all([
-      import(/* @vite-ignore */ vibeServicePath),
-      import(/* @vite-ignore */ vibeWasmPath),
-    ]);
-    const wasmModule = await loadWasmModule(wasmUrlModule.default);
-    service = await vibeModule.createVibeService({ wasmModule });
+    const { createVibeService } = await import("../../js/vibe/index.js");
+    const wasmModule = await loadWasmModule("/vibe-runtime.wasm");
+    service = await createVibeService({ wasmModule });
     statusEl.textContent = "Ready";
     statusEl.className = "ready";
     btnRun.disabled = false;

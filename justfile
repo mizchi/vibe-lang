@@ -821,8 +821,10 @@ check-release: release-check
 
 # Start playground dev server (builds wasm first)
 playground-dev: build-integration-deno-wasm
+    cp _build/wasm-gc/release/build/lib/lib.wasm playground/public/vibe-runtime.wasm
     cd playground && pnpm dev
 
 # Build playground for GitHub Pages
 playground-build: build-integration-deno-wasm
+    cp _build/wasm-gc/release/build/lib/lib.wasm playground/public/vibe-runtime.wasm
     cd playground && VITE_BASE=/vibe-lang/ pnpm build
