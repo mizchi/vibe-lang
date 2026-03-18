@@ -235,7 +235,8 @@ pub fn compile_module(
   }
   let raw_ast = db.ast(path)
   let aliases = build_alias_map(raw_ast, compile_module_import_aliases(imports))
-  let ast = @frontend.desugar_method_calls(raw_ast, aliases)
+  let desugared = @frontend.desugar_method_calls(raw_ast, aliases)
+  let ast = @frontend.rewrite_effect_handles(desugared)
   let mono = @frontend.monoify_module(ast, env)
   let resolved_ast = db.rewrite_imports_to_hash(path, mono.ast)
   let ir = @runtime.module_to_sexp(resolved_ast, aliases)

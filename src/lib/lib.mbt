@@ -483,7 +483,9 @@ fn analyze_module(
       _ => ()
     }
   }
-  let desugared = @frontend.desugar_method_calls(ast, aliases)
+  let desugared = @frontend.rewrite_effect_handles(
+    @frontend.desugar_method_calls(ast, aliases),
+  )
   let typed_env = @checker.type_check_with_env(env, desugared, aliases) catch {
     err => {
       local_diags.push(err.diagnostic())
