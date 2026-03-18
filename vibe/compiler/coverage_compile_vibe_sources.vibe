@@ -1,0 +1,157 @@
+//# Imports
+
+import ./syntax/lexer.vibe { lex }
+import ./syntax/parser.vibe { parse_program }
+import ./syntax/printer.vibe { print_program }
+import ./checker_stmt.vibe { check_program }
+
+//# Functions
+
+let check_source = (source: String) -> String {
+  handle {
+    let tokens = lex(source)
+    let stmts = parse_program(tokens)
+    let _env = check_program(stmts)
+    let _printed = print_program(stmts)
+    "ok"
+  } {
+    Error(msg) => String::concat("err:", msg)
+  }
+}
+
+let roundtrip = (source: String) -> Bool {
+  handle {
+    let tokens = lex(source)
+    let stmts = parse_program(tokens)
+    let printed = print_program(stmts)
+    let tokens2 = lex(printed)
+    let stmts2 = parse_program(tokens2)
+    let printed2 = print_program(stmts2)
+    String::equals(printed, printed2)
+  } {
+    Error(_) => false
+  }
+}
+
+//# Misc — Compile diverse vibe sources through selfhost pipeline
+
+// Prelude sources
+let _p1 = check_source("let abs = (n: Int) -> Int { if n < 0 { 0 - n } else { n } }\nabs(-5)")
+let _p2 = check_source("let max = (a: Int, b: Int) -> Int { if a > b { a } else { b } }\nmax(3, 7)")
+let _p3 = check_source("let clamp = (n: Int, lo: Int, hi: Int) -> Int { if n < lo { lo } else if n > hi { hi } else { n } }\nclamp(15, 0, 10)")
+
+// Array operations
+let _a1 = check_source("let arr = [1, 2, 3, 4, 5]\nArray::length(arr)")
+let _a2 = check_source("let b = ArrayBuilder::new()\nArrayBuilder::push(b, 10)\nArrayBuilder::push(b, 20)\nArray::length(ArrayBuilder::freeze(b))")
+let _a3 = check_source("let arr = [1, 2, 3]\nArray::push(arr, 4)\nArray::get(arr, 3)")
+let _a4 = check_source("let arr = [1, 2, 3, 4, 5]\nlet s = Array::slice(arr, 1, 3)\nArray::length(s)")
+let _a5 = check_source("let a = [1, 2]\nlet b = [3, 4]\nArray::length(Array::concat(a, b))")
+
+// String operations
+let _s1 = check_source("String::length(\"hello world\")")
+let _s2 = check_source("String::concat(\"hello\", \" world\")")
+let _s3 = check_source("String::contains(\"hello world\", \"world\")")
+let _s4 = check_source("String::starts_with(\"hello\", \"hel\")")
+let _s5 = check_source("String::ends_with(\"hello.vibe\", \".vibe\")")
+let _s6 = check_source("String::index_of(\"abcdef\", \"cd\")")
+let _s7 = check_source("String::char_code_at(\"abc\", 1)")
+let _s8 = check_source("String::from_char_code(65)")
+
+// Map operations
+let _m1 = check_source("let m = map { \"a\": 1, \"b\": 2 }\nMap::get(m, \"a\")")
+let _m2 = check_source("let b = MapBuilder::new()\nMapBuilder::set(b, \"x\", 42)\nMap::get(MapBuilder::freeze(b), \"x\")")
+let _m3 = check_source("let m = map { \"k\": 1 }\nMap::keys(m)")
+
+// Bytes operations
+let _b1 = check_source("let b = Bytes::new()\nBytes::push(b, 65)\nArray::length(Bytes::to_array(b))")
+let _b2 = check_source("let b = Bytes::from_array([1, 2, 3])\nArray::length(Bytes::to_array(b))")
+
+// Enum definitions and pattern matching
+let _e1 = check_source("enum Color { Red; Green; Blue }\nmatch Red { Red => 1, Green => 2, Blue => 3 }")
+let _e2 = check_source("enum Shape { Circle(Int); Rect(Int, Int) }\nlet area = (s: Shape) -> Int { match s { Circle(r) => r * r, Rect(w, h) => w * h } }\narea(Circle(5))")
+let _e3 = check_source("enum List { Nil; Cons(Int, List) }\nlet rec len = (l: List) -> Int { match l { Nil => 0, Cons(_, t) => 1 + len(t) } }\nlen(Cons(1, Cons(2, Nil)))")
+let _e4 = check_source("enum Expr { Num(Int); Add(Expr, Expr) }\nlet rec eval_e = (e: Expr) -> Int { match e { Num(n) => n, Add(a, b) => eval_e(a) + eval_e(b) } }\neval_e(Add(Num(1), Num(2)))")
+
+// Struct definitions
+let _st1 = check_source("struct Point { x: Int; y: Int }\nlet p = Point::{ x: 3, y: 4 }\np.x + p.y")
+let _st2 = check_source("struct Pair { fst: Int; snd: String }\nlet p = Pair::{ fst: 1, snd: \"hi\" }\np.fst")
+
+// Closures and higher-order functions
+let _c1 = check_source("let apply = (f: (Int) -> Int, x: Int) -> Int { f(x) }\nlet double = (x: Int) -> Int { x * 2 }\napply(double, 5)")
+let _c2 = check_source("let make_adder = (n: Int) -> (Int) -> Int { (x: Int) -> Int { x + n } }\nlet add5 = make_adder(5)\nadd5(10)")
+let _c3 = check_source("let compose = (f: (Int) -> Int, g: (Int) -> Int) -> (Int) -> Int { (x: Int) -> Int { f(g(x)) } }\ncompose((x: Int) -> Int { x + 1 }, (x: Int) -> Int { x * 2 })(3)")
+
+// Generic functions
+let _g1 = check_source("let id = [T](x: T) -> T { x }\nid(42)")
+let _g2 = check_source("let fst = [A, B](a: A, b: B) -> A { a }\nfst(1, \"hi\")")
+let _g3 = check_source("let opt_map = [A, B](opt: Option[A], f: (A) -> B) -> Option[B] { match opt { Some(v) => Some(f(v)), None => None } }\nmatch opt_map(Some(5), (x: Int) -> Int { x * 10 }) { Some(n) => n, None => 0 }")
+
+// Control flow
+let _cf1 = check_source("let mut s = 0\nlet mut i = 0\nwhile i < 10 { s = s + i\ni = i + 1 }\ns")
+let _cf2 = check_source("let mut s = 0\nfor x in [1, 2, 3, 4, 5] { s = s + x }\ns")
+let _cf3 = check_source("loop (i = 0, acc = 0) { if i >= 5 { break(acc) } else { continue(i + 1, acc + i) } }")
+let _cf4 = check_source("let mut sum = 0\nlet mut i = 0\nwhile i < 100 { if i >= 10 { break }\nsum = sum + i\ni = i + 1 }\nsum")
+
+// Handle/effect
+let _h1 = check_source("handle { 42 } { Error(_) => -1 }")
+let _h2 = check_source("handle { throw(\"oops\")\n0 } { Error(msg) => String::length(msg) }")
+let _h3 = check_source("let risky = () -> Int with { Error } { throw(\"fail\")\n0 }\nhandle { risky() } { Error(_) => 99 }")
+let _h4 = check_source("let inner = () -> Int with { Error } { throw(\"err\")\n0 }\nlet outer = () -> Int with { Error } { inner() + 1 }\nhandle { outer() } { Error(_) => -1 }")
+
+// Suberror
+let _se1 = check_source("suberror AppError { NotFound; BadInput(String) }\nlet f = () -> Int with { Error } { throw(NotFound)\n0 }\nhandle { f() } { Error(_) => 42 }")
+
+// Type alias
+let _ta1 = check_source("type Pair = (Int, Int)\nlet sum = (p: Pair) -> Int { let (a, b) = p\na + b }\nsum((3, 7))")
+
+// Labeled arguments
+let _la1 = check_source("let add = (x~: Int, y~: Int) -> Int { x + y }\nadd(x=1, y=2)")
+
+// Pipe operator
+let _po1 = check_source("let double = (x: Int) -> Int { x * 2 }\n5 |> double")
+
+// Spread operator
+let _sp1 = check_source("let a = [1, 2]\nlet b = [...a, 3]\nArray::length(b)")
+
+// String interpolation
+let _si1 = check_source("let name = \"world\"\nlet s = \"hello \\{name}\"\nString::length(s)")
+
+// Tuple
+let _t1 = check_source("let p = (1, 2, 3)\nlet (a, b, c) = p\na + b + c")
+
+// Record
+let _r1 = check_source("let p = record { x: 3, y: 4 }\np.x + p.y")
+
+// Match patterns
+let _mp1 = check_source("match 42 { 0 => 100, _ => 200 }")
+let _mp2 = check_source("match \"hi\" { \"hi\" => 1, _ => 0 }")
+let _mp3 = check_source("match true { true => 1, false => 0 }")
+let _mp4 = check_source("match Some(Some(42)) { Some(Some(n)) => n, _ => 0 }")
+
+// Roundtrip tests
+let _rt1 = roundtrip("let x = 1 + 2\nx")
+let _rt2 = roundtrip("let f = (x: Int) -> Int { x * 2 }\nf(5)")
+let _rt3 = roundtrip("enum Color { Red; Green; Blue }\nmatch Red { Red => 1, _ => 0 }")
+let _rt4 = roundtrip("struct Point { x: Int; y: Int }\nlet p = Point::{ x: 1, y: 2 }\np.x")
+let _rt5 = roundtrip("let mut s = 0\nfor x in [1, 2, 3] { s = s + x }\ns")
+
+// Assign
+let _as1 = check_source("let mut x = 0\nx = x + 1\nx")
+let _as2 = check_source("let mut x = 10\nx += 5\nx -= 2\nx *= 3\nx")
+
+// Conversion builtins
+let _cv1 = check_source("Int::to_double(42)")
+let _cv2 = check_source("__to_string(42)")
+let _cv3 = check_source("Char::to_int('A')")
+
+// Boolean and comparison
+let _bc1 = check_source("1 < 2 && 3 >= 2 && 4 != 5")
+let _bc2 = check_source("!false")
+let _bc3 = check_source("let x = -5\n0 - x")
+
+// Bitwise
+let _bw1 = check_source("0xFF & 0x0F")
+let _bw2 = check_source("1 << 8")
+let _bw3 = check_source("0xFF ^ 0x0F")
+
+0
