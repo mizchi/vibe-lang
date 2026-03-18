@@ -390,7 +390,7 @@ editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
 
 async function setupSemanticTokens() {
   try {
-    await initTreeSitter("/tree-sitter-vibe.wasm");
+    await initTreeSitter(`${import.meta.env.BASE_URL}tree-sitter-vibe.wasm`);
 
     const legend = getSemanticTokensLegend();
     monaco.languages.registerDocumentSemanticTokensProvider("vibe", {
@@ -423,7 +423,7 @@ async function init() {
 
   try {
     const { createVibeService } = await import("../../js/vibe/index.js");
-    const wasmModule = await loadWasmModule("/vibe-runtime.wasm");
+    const wasmModule = await loadWasmModule(`${import.meta.env.BASE_URL}vibe-runtime.wasm`);
     service = await createVibeService({ wasmModule });
     statusEl.textContent = "Ready";
     statusEl.className = "ready";

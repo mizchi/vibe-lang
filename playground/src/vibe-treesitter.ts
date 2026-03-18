@@ -48,7 +48,7 @@ export async function initTreeSitter(wasmPath: string): Promise<void> {
   parserInstance.setLanguage(vibeLanguage);
 
   const highlightsSrc = await fetch(
-    new URL("../treesitter-queries/highlights.scm", import.meta.url).href,
+    `${wasmPath.substring(0, wasmPath.lastIndexOf("/") + 1)}highlights.scm`,
   ).then((r: Response) => r.text());
   highlightQuery = new Query(vibeLanguage, highlightsSrc);
 }
