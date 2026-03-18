@@ -66,18 +66,26 @@ const PRESETS: Preset[] = [
     _ => fib(n - 1) + fib(n - 2),
   }
 }
-fib(10)`,
+
+export let _start = () -> Int {
+  fib(10)
+}`,
   },
   {
     id: "map-filter",
     source: `let values = [1, 2, 3, 4, 5]
 let doubled = array_map(values, (x: Int) -> Int { x * 2 })
 let evens = array_filter(doubled, (x: Int) -> Bool { x % 2 == 0 })
-array_fold(evens, 0, (acc: Int, x: Int) -> Int { acc + x })`,
+
+export let _start = () -> Int {
+  array_fold(evens, 0, (acc: Int, x: Int) -> Int { acc + x })
+}`,
   },
   {
     id: "parse-double",
-    source: `double_to_int(parse_double("1.5") + parse_double("2.5"))`,
+    source: `export let _start = () -> Int {
+  double_to_int(parse_double("1.5") + parse_double("2.5"))
+}`,
   },
 ];
 
@@ -311,7 +319,8 @@ async function runEval() {
 
   btnRun.disabled = true;
   try {
-    const result = await service.eval({ source });
+    const evalSource = source + "\n_start()";
+    const result = await service.eval({ source: evalSource });
     renderResult(result);
   } catch (e) {
     output.textContent = "";
