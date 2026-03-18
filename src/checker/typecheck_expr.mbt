@@ -52,7 +52,36 @@ fn extract_effect_name(qualified : String) -> String {
   qualified
 }
 
-///| Resolve effect operation param types from "Effect::Op" pattern name.
+///|
+/// Resolve effect operation return type from "Effect::Op" pattern name.
+fn reh_resolve_effect_op_ret(
+  env : TypeEnv,
+  qualified_name : String,
+) -> @core.Type? {
+  let mut sep = -1
+  for i = 0; i + 1 < qualified_name.length(); i = i + 1 {
+    if qualified_name[i] == ':' && qualified_name[i + 1] == ':' {
+      sep = i
+      break
+    }
+  }
+  if sep < 0 {
+    return None
+  }
+  let effect_name = qualified_name[0:sep].to_string()
+  let op_name = qualified_name[sep + 2:qualified_name.length()].to_string()
+  match env.effect_defs.get(effect_name) {
+    Some(effect_def) =>
+      match effect_def.ops.get(op_name) {
+        Some(op_sig) => Some(op_sig.ret)
+        None => None
+      }
+    None => None
+  }
+}
+
+///|
+/// Resolve effect operation param types from "Effect::Op" pattern name.
 fn reh_resolve_effect_op_params(
   env : TypeEnv,
   qualified_name : String,
@@ -107,7 +136,7 @@ fn bind_handle_arm_pat(
           // Check if this is an effect operation pattern (Effect::Op)
           if name.contains("::") {
             match reh_resolve_effect_op_params(arm_env, name) {
-              Some(op_params) =>
+              Some(op_params) => {
                 for i = 0
                     i < args.length() && i < op_params.length()
                     i = i + 1 {
@@ -115,6 +144,30 @@ fn bind_handle_arm_pat(
                     arm_env.set(bind_name, op_params[i])
                   }
                 }
+                // Extra arg after op params = continuation (k)
+                // k: (op_return_type) -> result_type
+                if args.length() > op_params.length() {
+                  let k_idx = op_params.length()
+                  if args[k_idx] is @core.Pat::Bind(name=k_name, ..) {
+                    // k: (a) -> b — fully polymorphic, resolved by unification
+                    let k_param = fresh_type_var(arm_env)
+                    let k_ret = fresh_type_var(arm_env)
+                    let k_ty = @core.Type::Func(
+                      params=[
+                        @core.FuncParam::{
+                          name: "v",
+                          label: @core.ParamLabel::Positional,
+                          ty: k_param,
+                          bounds: [],
+                        },
+                      ],
+                      ret=k_ret,
+                      effects=[],
+                    )
+                    arm_env.set(k_name, k_ty)
+                  }
+                }
+              }
               None =>
                 for arg in args {
                   if arg is @core.Pat::Bind(name=bind_name, ..) {

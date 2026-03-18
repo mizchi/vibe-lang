@@ -596,6 +596,9 @@ test "fixtures compiled parity" {
        "effect_handle_resume.vibe", // effect interp gap
        "effect_perform_basic.vibe", // effect interp gap
        "effect_perform_generic.vibe", // effect interp gap
+       "effect_multishot.vibe", // effect interp gap
+       "effect_cps_collect_array.vibe", // effect interp gap
+       "effect_row_poly.vibe", // effect interp gap
     ]
     let mut is_known_gap = false
     for gap in known_gaps {

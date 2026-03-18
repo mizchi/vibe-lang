@@ -199,16 +199,14 @@ fn reh_parse_effect_arm(arm : @core.MatchArm) -> EffectHandler? {
       }
     other => other
   }
-  Some(
-    EffectHandler::{
-      key,
-      param_names: effective_params,
-      resume_expr,
-      has_continuation,
-      continuation_name: cont_name,
-      raw_expr: arm.expr,
-    },
-  )
+  Some(EffectHandler::{
+    key,
+    param_names: effective_params,
+    resume_expr,
+    has_continuation,
+    continuation_name: cont_name,
+    raw_expr: arm.expr,
+  })
 }
 
 ///|
@@ -220,7 +218,7 @@ fn reh_rewrite_handle(
   span : @core.Span,
 ) -> @core.Expr {
   let (effect_handlers, error_arms) = reh_extract_effect_handlers(arms)
-  if effect_handlers.size() == 0 {
+  if effect_handlers.length() == 0 {
     // No effect handlers — keep as normal handle (Error only)
     return @core.Expr::Handle(
       body=reh_rewrite_module(body),
@@ -241,9 +239,7 @@ fn reh_rewrite_handle(
     let cps_expr = reh_cps_transform(body.stmts, effect_handlers, span)
     if error_arms.length() > 0 {
       @core.Expr::Handle(
-        body=@core.Module::{
-          stmts: [@core.Stmt::Expr(expr=cps_expr, span~)],
-        },
+        body=@core.Module::{ stmts: [@core.Stmt::Expr(expr=cps_expr, span~)] },
         arms=error_arms,
         span~,
       )
@@ -256,8 +252,9 @@ fn reh_rewrite_handle(
     if error_arms.length() > 0 {
       @core.Expr::Handle(body=rewritten_body, arms=error_arms, span~)
     } else {
-    // Pure effect handling — just a block
-    @core.Expr::Block(body=rewritten_body, span~)
+      // Pure effect handling — just a block
+      @core.Expr::Block(body=rewritten_body, span~)
+    }
   }
 }
 
@@ -391,11 +388,258 @@ fn reh_replace_performs_expr(
         span~,
       )
     @core.Expr::Handle(body~, arms~, span~) => {
-      // Nested handle: first rewrite inner handle (may inline its own effects),
-      // then continue replacing outer performs in the rewritten result
       let inner_rewritten = reh_rewrite_handle(body, arms, span)
       reh_replace_performs_expr(inner_rewritten, handlers)
     }
     _ => expr
   }
+}
+
+///|
+/// CPS transform: convert a list of statements into nested continuation calls.
+fn reh_cps_transform(
+  stmts : Array[@core.Stmt],
+  handlers : Map[String, EffectHandler],
+  span : @core.Span,
+) -> @core.Expr {
+  reh_cps_stmts(stmts, 0, handlers, span)
+}
+
+///|
+fn reh_cps_stmts(
+  stmts : Array[@core.Stmt],
+  idx : Int,
+  handlers : Map[String, EffectHandler],
+  span : @core.Span,
+) -> @core.Expr {
+  if idx >= stmts.length() {
+    @core.Expr::Int(value=0L, span~)
+  } else {
+    match stmts[idx] {
+      @core.Stmt::Expr(expr~, ..) =>
+        reh_cps_expr(expr, stmts, idx + 1, handlers, span)
+      @core.Stmt::Let(name~, expr~, ..) =>
+        reh_cps_let(name, expr, stmts, idx + 1, handlers, span)
+      _ => reh_cps_stmts(stmts, idx + 1, handlers, span)
+    }
+  }
+}
+
+///|
+fn reh_cps_expr(
+  expr : @core.Expr,
+  stmts : Array[@core.Stmt],
+  next_idx : Int,
+  handlers : Map[String, EffectHandler],
+  span : @core.Span,
+) -> @core.Expr {
+  match expr {
+    @core.Expr::Perform(effect_name~, op_name~, args~, ..) => {
+      let key = effect_name + "::" + op_name
+      match handlers.get(key) {
+        Some(handler) =>
+          if handler.has_continuation {
+            let rest = reh_cps_stmts(stmts, next_idx, handlers, span)
+            let k_fn = @core.Expr::Fn(
+              type_params=[],
+              type_bounds={},
+              params=[
+                @core.FuncParam::{
+                  name: "__cps_arg",
+                  label: @core.ParamLabel::Positional,
+                  ty: @core.Type::Unit,
+                  bounds: [],
+                },
+              ],
+              ret=None,
+              effects=[],
+              body=@core.Module::{ stmts: [@core.Stmt::Expr(expr=rest, span~)] },
+              span~,
+            )
+            reh_build_cps_call(handler, args, k_fn, span)
+          } else {
+            let inlined = reh_inline_handler(handler, args, span)
+            if next_idx >= stmts.length() {
+              inlined
+            } else {
+              let rest = reh_cps_stmts(stmts, next_idx, handlers, span)
+              @core.Expr::Block(
+                body=@core.Module::{
+                  stmts: [
+                    @core.Stmt::Expr(expr=inlined, span~),
+                    @core.Stmt::Expr(expr=rest, span~),
+                  ],
+                },
+                span~,
+              )
+            }
+          }
+        None =>
+          if next_idx >= stmts.length() {
+            expr
+          } else {
+            let rest = reh_cps_stmts(stmts, next_idx, handlers, span)
+            @core.Expr::Block(
+              body=@core.Module::{
+                stmts: [
+                  @core.Stmt::Expr(expr~, span~),
+                  @core.Stmt::Expr(expr=rest, span~),
+                ],
+              },
+              span~,
+            )
+          }
+      }
+    }
+    _ =>
+      if next_idx >= stmts.length() {
+        expr
+      } else {
+        let rest = reh_cps_stmts(stmts, next_idx, handlers, span)
+        @core.Expr::Block(
+          body=@core.Module::{
+            stmts: [
+              @core.Stmt::Expr(expr~, span~),
+              @core.Stmt::Expr(expr=rest, span~),
+            ],
+          },
+          span~,
+        )
+      }
+  }
+}
+
+///|
+fn reh_cps_let(
+  name : String,
+  expr : @core.Expr,
+  stmts : Array[@core.Stmt],
+  next_idx : Int,
+  handlers : Map[String, EffectHandler],
+  span : @core.Span,
+) -> @core.Expr {
+  match expr {
+    @core.Expr::Perform(effect_name~, op_name~, args~, ..) => {
+      let key = effect_name + "::" + op_name
+      match handlers.get(key) {
+        Some(handler) =>
+          if handler.has_continuation {
+            let rest = reh_cps_stmts(stmts, next_idx, handlers, span)
+            let k_fn = @core.Expr::Fn(
+              type_params=[],
+              type_bounds={},
+              params=[
+                @core.FuncParam::{
+                  name,
+                  label: @core.ParamLabel::Positional,
+                  ty: @core.Type::Unit,
+                  bounds: [],
+                },
+              ],
+              ret=None,
+              effects=[],
+              body=@core.Module::{ stmts: [@core.Stmt::Expr(expr=rest, span~)] },
+              span~,
+            )
+            reh_build_cps_call(handler, args, k_fn, span)
+          } else {
+            let rest = reh_cps_stmts(stmts, next_idx, handlers, span)
+            @core.Expr::Block(
+              body=@core.Module::{
+                stmts: [
+                  @core.Stmt::Let(
+                    rec=false,
+                    name~,
+                    expr=reh_inline_handler(handler, args, span),
+                    span~,
+                  ),
+                  @core.Stmt::Expr(expr=rest, span~),
+                ],
+              },
+              span~,
+            )
+          }
+        None => {
+          let rest = reh_cps_stmts(stmts, next_idx, handlers, span)
+          @core.Expr::Block(
+            body=@core.Module::{
+              stmts: [
+                @core.Stmt::Let(rec=false, name~, expr~, span~),
+                @core.Stmt::Expr(expr=rest, span~),
+              ],
+            },
+            span~,
+          )
+        }
+      }
+    }
+    _ => {
+      let rest = reh_cps_stmts(stmts, next_idx, handlers, span)
+      @core.Expr::Block(
+        body=@core.Module::{
+          stmts: [
+            @core.Stmt::Let(rec=false, name~, expr~, span~),
+            @core.Stmt::Expr(expr=rest, span~),
+          ],
+        },
+        span~,
+      )
+    }
+  }
+}
+
+///|
+fn reh_build_cps_call(
+  handler : EffectHandler,
+  args : Array[@core.CallArg],
+  k_fn : @core.Expr,
+  span : @core.Span,
+) -> @core.Expr {
+  let bindings : Array[@core.Stmt] = []
+  for i = 0; i < handler.param_names.length() && i < args.length(); i = i + 1 {
+    if handler.param_names[i] != "_" {
+      bindings.push(
+        @core.Stmt::Let(
+          rec=false,
+          name=handler.param_names[i],
+          expr=args[i].expr,
+          span~,
+        ),
+      )
+    }
+  }
+  bindings.push(
+    @core.Stmt::Let(rec=false, name=handler.continuation_name, expr=k_fn, span~),
+  )
+  bindings.push(@core.Stmt::Expr(expr=handler.raw_expr, span~))
+  @core.Expr::Block(body=@core.Module::{ stmts: bindings }, span~)
+}
+
+///|
+fn reh_inline_handler(
+  handler : EffectHandler,
+  args : Array[@core.CallArg],
+  span : @core.Span,
+) -> @core.Expr {
+  let mut result = handler.resume_expr
+  for i = 0; i < handler.param_names.length() && i < args.length(); i = i + 1 {
+    let param_name = handler.param_names[i]
+    if param_name != "_" {
+      result = @core.Expr::Block(
+        body=@core.Module::{
+          stmts: [
+            @core.Stmt::Let(
+              rec=false,
+              name=param_name,
+              expr=args[i].expr,
+              span~,
+            ),
+            @core.Stmt::Expr(expr=result, span~),
+          ],
+        },
+        span~,
+      )
+    }
+  }
+  result
 }
