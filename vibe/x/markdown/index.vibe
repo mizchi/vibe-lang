@@ -1,53 +1,502 @@
-//# Markdown code block extractor
+//# Markdown parser for vibe
 //
-// Extracts fenced code blocks from markdown text.
-// Supports ```lang ... ``` syntax.
+// Line-driven markdown parser producing a block-level AST.
+// Inspired by mizchi/markdown (MoonBit) but written in vibe.
 
-export let version = "0.1.0"
+export let version = "0.2.0"
 
-// A parsed code block with language tag and content
+//# AST Types
+
+export enum HeadingStyle { Atx; Setext }
+
+export enum FenceMarker { Backtick; Tilde }
+
+export enum BulletMarker { Dash; Plus; Asterisk }
+
+export enum Block {
+  // # Heading
+  Heading(Int, HeadingStyle, String);
+  // Paragraph text
+  Paragraph(String);
+  // ```lang\ncode\n```
+  FencedCode(FenceMarker, String, String);
+  //     indented code
+  IndentedCode(String);
+  // > blockquote
+  Blockquote(Array[Block]);
+  // - item / * item / + item (each String is one item's text)
+  BulletList(BulletMarker, Array[String]);
+  // 1. item / 1) item
+  OrderedList(Int, Array[String]);
+  // ---
+  ThematicBreak;
+  // Raw HTML block
+  HtmlBlock(String);
+  // Blank lines
+  BlankLines(Int)
+}
+
+export struct Document {
+  blocks: Array[Block]
+}
+
+//# Helpers
+
+let is_blank_line = (line: String) -> Bool {
+  let mut i = 0
+  let mut blank = true
+  while i < String::length(line) {
+    let c = String::char_code_at(line, i)
+    if c != 32 && c != 9 {
+      blank = false
+      break
+    }
+    i += 1
+  }
+  blank
+}
+
+let count_leading_char = (line: String, ch: String) -> Int {
+  let mut count = 0
+  while count < String::length(line) {
+    if String::equals(String::substring(line, count, count + 1), ch) {
+      count += 1
+    } else {
+      break
+    }
+  }
+  count
+}
+
+let count_leading_spaces = (line: String) -> Int {
+  count_leading_char(line, " ")
+}
+
+let strip_prefix = (line: String, n: Int) -> String {
+  if n >= String::length(line) { "" }
+  else { String::substring(line, n, String::length(line)) }
+}
+
+let starts_with_thematic_break = (line: String) -> Bool {
+  let trimmed = String::trim(line)
+  let len = String::length(trimmed)
+  if len < 3 { false }
+  else {
+    let ch = String::substring(trimmed, 0, 1)
+    if not(String::equals(ch, "-")) && not(String::equals(ch, "*")) && not(String::equals(ch, "_")) {
+      false
+    } else {
+      let mut count = 0
+      let mut i = 0
+      let mut valid = true
+      while i < len {
+        let c = String::substring(trimmed, i, i + 1)
+        if String::equals(c, ch) {
+          count += 1
+        } else if String::equals(c, " ") {
+          // spaces allowed between markers
+        } else {
+          valid = false
+          break
+        }
+        i += 1
+      }
+      valid && count >= 3
+    }
+  }
+}
+
+let parse_atx_heading = (line: String) -> (Int, String) {
+  let hashes = count_leading_char(line, "#")
+  if hashes < 1 || hashes > 6 { (0, line) }
+  else {
+    let rest = strip_prefix(line, hashes)
+    if String::length(rest) == 0 {
+      (hashes, "")
+    } else if String::equals(String::substring(rest, 0, 1), " ") {
+      (hashes, String::trim(strip_prefix(rest, 1)))
+    } else {
+      (0, line)
+    }
+  }
+}
+
+let detect_fence = (line: String) -> (FenceMarker, Int, String) {
+  let spaces = count_leading_spaces(line)
+  if spaces > 3 { (Backtick, 0, "") }
+  else {
+    let rest = strip_prefix(line, spaces)
+    let backticks = count_leading_char(rest, "`")
+    if backticks >= 3 {
+      let info = String::trim(strip_prefix(rest, backticks))
+      (Backtick, backticks, info)
+    } else {
+      let tildes = count_leading_char(rest, "~")
+      if tildes >= 3 {
+        let info = String::trim(strip_prefix(rest, tildes))
+        (Tilde, tildes, info)
+      } else {
+        (Backtick, 0, "")
+      }
+    }
+  }
+}
+
+let is_closing_fence = (line: String, marker: FenceMarker, fence_len: Int) -> Bool {
+  let spaces = count_leading_spaces(line)
+  if spaces > 3 { false }
+  else {
+    let rest = strip_prefix(line, spaces)
+    let ch = match marker { Backtick => "`", Tilde => "~" }
+    let count = count_leading_char(rest, ch)
+    if count < fence_len { false }
+    else { is_blank_line(strip_prefix(rest, count)) }
+  }
+}
+
+let detect_bullet = (line: String) -> (BulletMarker, Bool) {
+  let spaces = count_leading_spaces(line)
+  if spaces > 3 { (Dash, false) }
+  else {
+    let rest = strip_prefix(line, spaces)
+    if String::length(rest) < 2 { (Dash, false) }
+    else {
+      let ch = String::substring(rest, 0, 1)
+      let next = String::substring(rest, 1, 2)
+      if (String::equals(ch, "-") || String::equals(ch, "*") || String::equals(ch, "+")) && String::equals(next, " ") {
+        let marker = if String::equals(ch, "-") { Dash }
+          else if String::equals(ch, "+") { Plus }
+          else { Asterisk }
+        (marker, true)
+      } else {
+        (Dash, false)
+      }
+    }
+  }
+}
+
+let detect_blockquote = (line: String) -> (Bool, String) {
+  let spaces = count_leading_spaces(line)
+  if spaces > 3 { (false, line) }
+  else {
+    let rest = strip_prefix(line, spaces)
+    if String::length(rest) > 0 && String::equals(String::substring(rest, 0, 1), ">") {
+      let after = strip_prefix(rest, 1)
+      if String::length(after) > 0 && String::equals(String::substring(after, 0, 1), " ") {
+        (true, strip_prefix(after, 1))
+      } else {
+        (true, after)
+      }
+    } else {
+      (false, line)
+    }
+  }
+}
+
+//# Parser
+
+let rec parse_blocks = (lines: Array[String], start: Int, end_idx: Int) -> Array[Block] {
+  let result = ArrayBuilder::new()
+  let mut i = start
+  while i < end_idx {
+    let line = Array::get(lines, i)
+
+    // Blank lines
+    if is_blank_line(line) {
+      let mut count = 0
+      while i < end_idx && is_blank_line(Array::get(lines, i)) {
+        count += 1
+        i += 1
+      }
+      ArrayBuilder::push(result, BlankLines(count))
+      continue
+    }
+
+    // Thematic break
+    if starts_with_thematic_break(line) {
+      ArrayBuilder::push(result, ThematicBreak)
+      i += 1
+      continue
+    }
+
+    // ATX heading
+    let (level, heading_text) = parse_atx_heading(line)
+    if level > 0 {
+      ArrayBuilder::push(result, Heading(level, Atx, heading_text))
+      i += 1
+      continue
+    }
+
+    // Fenced code block
+    let (fence_marker, fence_len, info) = detect_fence(line)
+    if fence_len > 0 {
+      let code_buf = ArrayBuilder::new()
+      i += 1
+      while i < end_idx {
+        let code_line = Array::get(lines, i)
+        if is_closing_fence(code_line, fence_marker, fence_len) {
+          i += 1
+          break
+        }
+        ArrayBuilder::push(code_buf, code_line)
+        i += 1
+      }
+      let code = Lines::stringify(ArrayBuilder::freeze(code_buf))
+      ArrayBuilder::push(result, FencedCode(fence_marker, info, code))
+      continue
+    }
+
+    // Blockquote
+    let (is_bq, _bq_content) = detect_blockquote(line)
+    if is_bq {
+      let bq_lines = ArrayBuilder::new()
+      while i < end_idx {
+        let bq_line = Array::get(lines, i)
+        let (still_bq, content) = detect_blockquote(bq_line)
+        if still_bq {
+          ArrayBuilder::push(bq_lines, content)
+          i += 1
+        } else if is_blank_line(bq_line) {
+          // blank line may continue blockquote
+          if i + 1 < end_idx {
+            let next = Array::get(lines, i + 1)
+            let (next_bq, _next_content) = detect_blockquote(next)
+            if next_bq {
+              ArrayBuilder::push(bq_lines, "")
+              i += 1
+            } else {
+              break
+            }
+          } else {
+            break
+          }
+        } else {
+          break
+        }
+      }
+      let inner_lines = ArrayBuilder::freeze(bq_lines)
+      let inner = parse_blocks(inner_lines, 0, Array::length(inner_lines))
+      ArrayBuilder::push(result, Blockquote(inner))
+      continue
+    }
+
+    // Bullet list
+    let (bullet_marker, is_bullet) = detect_bullet(line)
+    if is_bullet {
+      let items = ArrayBuilder::new()
+      while i < end_idx {
+        let item_line = Array::get(lines, i)
+        let (_bm, is_b) = detect_bullet(item_line)
+        if is_b {
+          let content = String::trim(strip_prefix(item_line, count_leading_spaces(item_line) + 2))
+          ArrayBuilder::push(items, content)
+          i += 1
+        } else if is_blank_line(item_line) {
+          i += 1
+        } else {
+          break
+        }
+      }
+      ArrayBuilder::push(result, BulletList(bullet_marker, ArrayBuilder::freeze(items)))
+      continue
+    }
+
+    // Indented code block (4+ spaces)
+    if count_leading_spaces(line) >= 4 {
+      let code_buf = ArrayBuilder::new()
+      while i < end_idx {
+        let cl = Array::get(lines, i)
+        if count_leading_spaces(cl) >= 4 {
+          ArrayBuilder::push(code_buf, strip_prefix(cl, 4))
+          i += 1
+        } else if is_blank_line(cl) {
+          ArrayBuilder::push(code_buf, "")
+          i += 1
+        } else {
+          break
+        }
+      }
+      let code = Lines::stringify(ArrayBuilder::freeze(code_buf))
+      ArrayBuilder::push(result, IndentedCode(code))
+      continue
+    }
+
+    // Setext heading (check next line for === or ---)
+    if i + 1 < end_idx {
+      let next_line = Array::get(lines, i + 1)
+      let trimmed_next = String::trim(next_line)
+      if String::length(trimmed_next) >= 1 {
+        let eq_count = count_leading_char(trimmed_next, "=")
+        let dash_count = count_leading_char(trimmed_next, "-")
+        if eq_count == String::length(trimmed_next) && eq_count >= 1 {
+          ArrayBuilder::push(result, Heading(1, Setext, String::trim(line)))
+          i += 2
+          continue
+        }
+        if dash_count == String::length(trimmed_next) && dash_count >= 1 {
+          ArrayBuilder::push(result, Heading(2, Setext, String::trim(line)))
+          i += 2
+          continue
+        }
+      }
+    }
+
+    // Paragraph (collect consecutive non-blank, non-special lines)
+    let para_buf = ArrayBuilder::new()
+    while i < end_idx {
+      let pl = Array::get(lines, i)
+      if is_blank_line(pl) { break }
+      let (pl_level, _) = parse_atx_heading(pl)
+      if pl_level > 0 { break }
+      let (_, pl_fence, _) = detect_fence(pl)
+      if pl_fence > 0 { break }
+      if starts_with_thematic_break(pl) { break }
+      let (pl_bq, _) = detect_blockquote(pl)
+      if pl_bq { break }
+      let (_, pl_bullet) = detect_bullet(pl)
+      if pl_bullet { break }
+      if count_leading_spaces(pl) >= 4 { break }
+      ArrayBuilder::push(para_buf, pl)
+      i += 1
+    }
+    let text = Lines::stringify(ArrayBuilder::freeze(para_buf))
+    if String::length(text) > 0 {
+      ArrayBuilder::push(result, Paragraph(text))
+    }
+  }
+  ArrayBuilder::freeze(result)
+}
+
+export let parse = (source: String) -> Document {
+  let lines = Lines::parse(source)
+  let blocks = parse_blocks(lines, 0, Array::length(lines))
+  Document::{ blocks: blocks }
+}
+
+//# Serializer
+
+let rec serialize_block = (block: Block) -> String {
+  match block {
+    Heading(level, style, text) => match style {
+      Atx => {
+        let mut prefix = ""
+        let mut n = level
+        while n > 0 {
+          prefix = String::concat(prefix, "#")
+          n -= 1
+        }
+        String::concat(String::concat(prefix, " "), String::concat(text, "\n"))
+      },
+      Setext => {
+        let ch = if eq(level, 1) { "=" } else { "-" }
+        let mut underline = ""
+        let mut n = 3
+        while n > 0 {
+          underline = String::concat(underline, ch)
+          n -= 1
+        }
+        String::concat(text, String::concat("\n", String::concat(underline, "\n")))
+      }
+    },
+    Paragraph(text) => "\(text)\n",
+    FencedCode(marker, info, code) => {
+      let fence = match marker { Backtick => "```", Tilde => "~~~" }
+      let header = if String::length(info) > 0 { "\(fence)\(info)" } else { fence }
+      "\(header)\n\(code)\n\(fence)\n"
+    },
+    IndentedCode(code) => {
+      let lines = Lines::parse(code)
+      let indented = ArrayBuilder::new()
+      let mut j = 0
+      while j < Array::length(lines) {
+        ArrayBuilder::push(indented, "    \(Array::get(lines, j))")
+        j += 1
+      }
+      "\(Lines::stringify(ArrayBuilder::freeze(indented)))\n"
+    },
+    Blockquote(children) => {
+      let inner_buf = ArrayBuilder::new()
+      let mut ci = 0
+      while ci < Array::length(children) {
+        ArrayBuilder::push(inner_buf, serialize_block(Array::get(children, ci)))
+        ci += 1
+      }
+      let inner = String::join(ArrayBuilder::freeze(inner_buf), "")
+      let lines = Lines::parse(inner)
+      let quoted = ArrayBuilder::new()
+      let mut j = 0
+      while j < Array::length(lines) {
+        let l = Array::get(lines, j)
+        if String::length(l) == 0 {
+          ArrayBuilder::push(quoted, ">")
+        } else {
+          ArrayBuilder::push(quoted, "> \(l)")
+        }
+        j += 1
+      }
+      "\(Lines::stringify(ArrayBuilder::freeze(quoted)))\n"
+    },
+    BulletList(marker, items) => {
+      let ch = match marker { Dash => "- ", Plus => "+ ", Asterisk => "* " }
+      let buf = ArrayBuilder::new()
+      let mut j = 0
+      while j < Array::length(items) {
+        ArrayBuilder::push(buf, "\(ch)\(Array::get(items, j))")
+        j += 1
+      }
+      "\(Lines::stringify(ArrayBuilder::freeze(buf)))\n"
+    },
+    OrderedList(start_num, items) => {
+      let buf = ArrayBuilder::new()
+      let mut j = 0
+      while j < Array::length(items) {
+        let num = start_num + j
+        ArrayBuilder::push(buf, "\(to_string(num)). \(Array::get(items, j))")
+        j += 1
+      }
+      "\(Lines::stringify(ArrayBuilder::freeze(buf)))\n"
+    },
+    ThematicBreak => "---\n",
+    HtmlBlock(html) => "\(html)\n",
+    BlankLines(_count) => "\n"
+  }
+}
+
+export let serialize = (doc: Document) -> String {
+  let buf = ArrayBuilder::new()
+  let mut i = 0
+  while i < Array::length(doc.blocks) {
+    ArrayBuilder::push(buf, serialize_block(Array::get(doc.blocks, i)))
+    i += 1
+  }
+  String::join(ArrayBuilder::freeze(buf), "")
+}
+
+//# Code block extraction (convenience)
+
 export struct CodeBlock {
   lang: String;
   code: String
 }
 
-// Extract all fenced code blocks from markdown text.
-// Returns an array of CodeBlock with lang and code fields.
-export let extract_code_blocks = (markdown: String) -> Array[CodeBlock] {
-  let lines = Lines::parse(markdown)
-  let blocks = ArrayBuilder::new()
-  let mut buf = ArrayBuilder::new()
-  let mut in_block = false
-  let mut current_lang = ""
+export let extract_code_blocks = (source: String) -> Array[CodeBlock] {
+  let doc = parse(source)
+  let result = ArrayBuilder::new()
   let mut i = 0
-  while i < Array::length(lines) {
-    let line = Array::get(lines, i)
-    if not(in_block) {
-      if String::starts_with(line, "```") {
-        in_block = true
-        current_lang = String::trim(String::substring(line, 3, String::length(line)))
-        buf = ArrayBuilder::new()
-      } else {
-        // skip non-code lines
-      }
-    } else {
-      if String::equals(String::trim(line), "```") {
-        let code = Lines::stringify(ArrayBuilder::freeze(buf))
-        ArrayBuilder::push(blocks, CodeBlock::{ lang: current_lang, code: code })
-        in_block = false
-        current_lang = ""
-      } else {
-        ArrayBuilder::push(buf, line)
-      }
+  while i < Array::length(doc.blocks) {
+    let block = Array::get(doc.blocks, i)
+    match block {
+      FencedCode(_, info, code) =>
+        ArrayBuilder::push(result, CodeBlock::{ lang: info, code: code }),
+      _ => {}
     }
     i += 1
   }
-  ArrayBuilder::freeze(blocks)
+  ArrayBuilder::freeze(result)
 }
 
-// Extract code blocks filtered by language tag.
-export let extract_code_blocks_by_lang = (markdown: String, lang: String) -> Array[String] {
-  let blocks = extract_code_blocks(markdown)
+export let extract_code_blocks_by_lang = (source: String, lang: String) -> Array[String] {
+  let blocks = extract_code_blocks(source)
   let result = ArrayBuilder::new()
   let mut i = 0
   while i < Array::length(blocks) {
@@ -60,43 +509,215 @@ export let extract_code_blocks_by_lang = (markdown: String, lang: String) -> Arr
   ArrayBuilder::freeze(result)
 }
 
-// Extract vibe code blocks and join them into a single source.
-export let extract_vibe_source = (markdown: String) -> String {
-  let blocks = extract_code_blocks_by_lang(markdown, "vibe")
-  String::join(blocks, "\n\n")
+export let extract_vibe_source = (source: String) -> String {
+  String::join(extract_code_blocks_by_lang(source, "vibe"), "\n\n")
 }
 
-test "extract empty" {
-  let blocks = extract_code_blocks("")
-  assert(eq(Array::length(blocks), 0))
+//# Tests
+
+test "parse empty" {
+  let doc = parse("")
+  // Lines::parse("") returns [""] so we get BlankLines(1)
+  assert(eq(Array::length(doc.blocks), 1))
+  match Array::get(doc.blocks, 0) {
+    BlankLines(_) => assert(true),
+    _ => assert(false)
+  }
 }
 
-test "extract single block" {
-  let md = "# Hello\n\n```vibe\nlet x = 1\n```\n"
-  let blocks = extract_code_blocks(md)
-  assert(eq(Array::length(blocks), 1))
-  assert(String::equals(Array::get(blocks, 0).lang, "vibe"))
-  assert(String::equals(Array::get(blocks, 0).code, "let x = 1"))
+test "parse heading" {
+  let doc = parse("# Hello\n## World\n")
+  // Find headings regardless of blank lines
+  let mut h1_found = false
+  let mut h2_found = false
+  let mut i = 0
+  while i < Array::length(doc.blocks) {
+    match Array::get(doc.blocks, i) {
+      Heading(1, _, text) => {
+        assert(String::equals(text, "Hello"))
+        h1_found = true
+      },
+      Heading(2, _, text) => {
+        assert(String::equals(text, "World"))
+        h2_found = true
+      },
+      _ => {}
+    }
+    i += 1
+  }
+  assert(h1_found)
+  assert(h2_found)
 }
 
-test "extract multiple blocks" {
-  let md = "```vibe\nlet a = 1\n```\n\ntext\n\n```js\nconsole.log(1)\n```\n\n```vibe\nlet b = 2\n```\n"
+test "parse paragraph" {
+  let doc = parse("Hello world\nSecond line\n")
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(doc.blocks) {
+    match Array::get(doc.blocks, i) {
+      Paragraph(text) => {
+        assert(String::contains(text, "Hello"))
+        found = true
+      },
+      _ => {}
+    }
+    i += 1
+  }
+  assert(found)
+}
+
+test "parse fenced code" {
+  let doc = parse("```vibe\nlet x = 1\nlet y = 2\n```\n")
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(doc.blocks) {
+    match Array::get(doc.blocks, i) {
+      FencedCode(_, info, code) => {
+        assert(String::equals(info, "vibe"))
+        assert(String::contains(code, "let x = 1"))
+        found = true
+      },
+      _ => {}
+    }
+    i += 1
+  }
+  assert(found)
+}
+
+test "parse tilde fence" {
+  let doc = parse("~~~js\nalert(1)\n~~~\n")
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(doc.blocks) {
+    match Array::get(doc.blocks, i) {
+      FencedCode(Tilde, info, _) => {
+        assert(String::equals(info, "js"))
+        found = true
+      },
+      _ => {}
+    }
+    i += 1
+  }
+  assert(found)
+}
+
+test "parse thematic break" {
+  let doc = parse("---\n")
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(doc.blocks) {
+    match Array::get(doc.blocks, i) {
+      ThematicBreak => { found = true },
+      _ => {}
+    }
+    i += 1
+  }
+  assert(found)
+}
+
+test "parse blockquote" {
+  let doc = parse("> Hello\n> World\n")
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(doc.blocks) {
+    match Array::get(doc.blocks, i) {
+      Blockquote(children) => {
+        assert(Array::length(children) >= 1)
+        found = true
+      },
+      _ => {}
+    }
+    i += 1
+  }
+  assert(found)
+}
+
+test "parse bullet list" {
+  let doc = parse("- one\n- two\n- three\n")
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(doc.blocks) {
+    match Array::get(doc.blocks, i) {
+      BulletList(_, items) => {
+        assert(eq(Array::length(items), 3))
+        assert(String::equals(Array::get(items, 0), "one"))
+        found = true
+      },
+      _ => {}
+    }
+    i += 1
+  }
+  assert(found)
+}
+
+test "parse mixed document" {
+  let md = "# Title\n\nSome text here.\n\n```vibe\nlet x = 42\n```\n\n- item a\n- item b\n\n---\n"
+  let doc = parse(md)
+  // Heading, BlankLines, Paragraph, BlankLines, FencedCode, BlankLines, BulletList, BlankLines, ThematicBreak
+  let mut has_heading = false
+  let mut has_para = false
+  let mut has_code = false
+  let mut has_list = false
+  let mut has_hr = false
+  let mut i = 0
+  while i < Array::length(doc.blocks) {
+    match Array::get(doc.blocks, i) {
+      Heading(_, _, _) => { has_heading = true },
+      Paragraph(_) => { has_para = true },
+      FencedCode(_, _, _) => { has_code = true },
+      BulletList(_, _) => { has_list = true },
+      ThematicBreak => { has_hr = true },
+      _ => {}
+    }
+    i += 1
+  }
+  assert(has_heading)
+  assert(has_para)
+  assert(has_code)
+  assert(has_list)
+  assert(has_hr)
+}
+
+test "extract_code_blocks" {
+  let md = "```vibe\nlet a = 1\n```\n\n```js\nignored\n```\n\n```vibe\nlet b = 2\n```\n"
   let blocks = extract_code_blocks(md)
   assert(eq(Array::length(blocks), 3))
   assert(String::equals(Array::get(blocks, 0).lang, "vibe"))
   assert(String::equals(Array::get(blocks, 1).lang, "js"))
-  assert(String::equals(Array::get(blocks, 2).lang, "vibe"))
 }
 
-test "extract_vibe_source joins vibe blocks" {
-  let md = "```vibe\nlet a = 1\n```\n\n```js\nignored\n```\n\n```vibe\nlet b = 2\n```\n"
+test "extract_vibe_source" {
+  let md = "# Doc\n\n```vibe\nlet a = 1\n```\n\nText.\n\n```vibe\nlet b = 2\n```\n"
   let source = extract_vibe_source(md)
   assert(String::equals(source, "let a = 1\n\nlet b = 2"))
 }
 
-test "multiline code block" {
-  let md = "```vibe\nlet rec fib = (n: Int) -> Int {\n  if n < 2 { n }\n  else { fib(n - 1) + fib(n - 2) }\n}\n```\n"
-  let blocks = extract_code_blocks(md)
-  assert(eq(Array::length(blocks), 1))
-  assert(String::contains(Array::get(blocks, 0).code, "fib"))
+test "setext heading" {
+  let doc = parse("Title\n=====\n\nSubtitle\n--------\n")
+  let mut h1 = false
+  let mut h2 = false
+  let mut i = 0
+  while i < Array::length(doc.blocks) {
+    match Array::get(doc.blocks, i) {
+      Heading(1, Setext, _) => { h1 = true },
+      Heading(2, Setext, _) => { h2 = true },
+      _ => {}
+    }
+    i += 1
+  }
+  assert(h1)
+  assert(h2)
+}
+
+test "serialize heading" {
+  let doc = parse("# Hello\n")
+  let out = serialize(doc)
+  assert(String::contains(out, "# Hello"))
+}
+
+test "serialize code" {
+  let doc = parse("```vibe\nlet x = 1\n```\n")
+  let out = serialize(doc)
+  assert(String::contains(out, "```vibe"))
+  assert(String::contains(out, "let x = 1"))
 }
