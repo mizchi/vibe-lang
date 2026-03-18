@@ -58,7 +58,9 @@ module math {
   export let inc = (x: Int) -> Int { x + 1 }
 }
 
-math::inc(41)  // => 42
+test "module" {
+  assert(eq(math::inc(41), 42))
+}
 ```
 
 Export a module for use from other files:
@@ -73,15 +75,32 @@ export module math {
 ```vibe
 // main.vibe
 import ./lib.xm { module math }
-math::inc(41)  // => 42
+
+export let _start = () -> Int {
+  math::inc(41)  // => 42
+}
 ```
 
 ### Module with alias
 
 ```vibe
 import ./lib.xm { module math as m }
-m::inc(41)
+
+export let _start = () -> Int {
+  m::inc(41)
+}
 ```
+
+## PinnedPath imports
+
+Pin imports to a specific content hash for reproducible builds:
+
+```vibe
+import ./dep.vibe#a1b2c3d { helper }
+```
+
+The `#hash` suffix ensures the import resolves to a known version,
+independent of lock files.
 
 ## extern (FFI)
 
@@ -98,4 +117,5 @@ extern let %parse_json: (String) -> Json with { Error }
 - `.vibe` -- standard source files
 - `.xm` -- module-oriented files (for `module` exports)
 - Each directory uses `index.vibe` as the public endpoint
-- `index.vibe` should include `export let version = "..."` for package identity
+- `index.lock` -- dependency lock file per directory
+- `.vibe/cache.json` -- namespace/graph cache

@@ -67,19 +67,14 @@ let rec fact = (n: Int) -> Int {
   if n < 2 { 1 } else { n * fact(n - 1) }
 }
 
-// Lambda (single param, arrow)
-Array::map([1, 2, 3], x -> x * 2)
+// Lambda — used inside functions or tests
+// Array::map([1, 2, 3], (x: Int) -> Int { x * 2 })
+// Array::fold([1, 2, 3], 0, (acc: Int, x: Int) -> Int { acc + x })
 
-// Lambda (multi param)
-Array::fold([1, 2, 3], 0, (acc, x) -> acc + x)
-
-// Lambda (block body)
-Array::map([1, 2, 3], (x) { x + 1 })
-
-// Placeholder shorthand
-Array::map([1, 2, 3], _ * 2)
-Array::fold([1, 2, 3], 0, _ + _)
-Array::map([1, 2, 3], add(_, 10))
+// Short lambda / placeholder (may need explicit types)
+// Array::map([1, 2, 3], x -> x * 2)
+// Array::map([1, 2, 3], _ * 2)
+// Array::fold([1, 2, 3], 0, _ + _)
 ```
 
 ## Generics
@@ -99,13 +94,13 @@ let f = (x: Int, y~: String, z?: Int) -> String {
   let suffix = match z { Some(v) => to_string(v), None => "none" }
   "\(y)-\(suffix)"
 }
-f(1, y = "ok")          // => "ok-none"
-f(1, y = "ok", z = 10)  // => "ok-10"
+// f(1, y = "ok")          => "ok-none"
+// f(1, y = "ok", z = 10)  => "ok-10"
 
 // Default value for optional
 let g = (x: Int, y?: Int = 0) -> Int { x + y }
-g(1)         // => 1
-g(1, y = 5)  // => 6
+// g(1)         => 1
+// g(1, y = 5)  => 6
 ```
 
 ## Control Flow
@@ -217,16 +212,13 @@ let sum = "result: \(add(1, 2))" // => "result: 3"
 ## Pipe Operator
 
 ```vibe
-let result = 1 |> add(2) |> mul(3)   // => 9
-let len = "hello" |> String::length   // => 5
-```
+// Pipe inserts the left value as the first argument
+// 1 |> add(2)          => add(1, 2)
+// "hello" |> String::length  => String::length("hello")
 
-## Pipe-First Call Style
-
-```vibe
-let s = "hello world"
-let sub = s |> String::substring(0, 5)
-sub |> String::length  // => 5
+export let _start = () -> Int {
+  1 |> add(2) |> mul(3)   // => 9
+}
 ```
 
 ## Type Definitions
@@ -370,7 +362,10 @@ Effect-polymorphic functions propagate callee effects via `{ e }`.
 
 ```vibe
 let apply = [T, U](f: (T) -> U with { e }, x: T) -> U with { e } { f(x) }
-apply((x: Int) -> Int { x + 1 }, 41)  // => 42
+
+test "effect row" {
+  assert(eq(apply((x: Int) -> Int { x + 1 }, 41), 42))
+}
 ```
 
 ### suberror
