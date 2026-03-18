@@ -42,7 +42,17 @@ fn substitute_param_names(
 /// Fallback to String binding for unknown constructors (`Error(...)` etc).
 
 ///|
-/// Resolve effect operation param types from "Effect::Op" pattern name.
+/// Extract effect name from qualified "Effect::Op" → "Effect"
+fn extract_effect_name(qualified : String) -> String {
+  for i = 0; i + 1 < qualified.length(); i = i + 1 {
+    if qualified[i] == ':' && qualified[i + 1] == ':' {
+      return qualified[0:i].to_string()
+    }
+  }
+  qualified
+}
+
+///| Resolve effect operation param types from "Effect::Op" pattern name.
 fn reh_resolve_effect_op_params(
   env : TypeEnv,
   qualified_name : String,
@@ -786,6 +796,13 @@ fn type_expr_eff(
           @core.Pat::Ctor(name~, ..) => {
             handle_effects.push(@core.EffectAtom::Const(name))
             handled_effect_names[name] = true
+            // For qualified effect ops (E::Op), also add the effect name (E)
+            // so that `with { E }` functions can be called in handle body
+            if name.contains("::") {
+              let effect_name = extract_effect_name(name)
+              handle_effects.push(@core.EffectAtom::Const(effect_name))
+              handled_effect_names[effect_name] = true
+            }
           }
           @core.Pat::Wildcard(..) | @core.Pat::Bind(..) => {
             handle_effects.push(@core.EffectAtom::Const("Error"))
