@@ -102,9 +102,29 @@ effect HttpResponse {   // response の書き込み capability
 ```
 
 実装ロードマップ:
-1. WASM Exceptions の string throw/catch 修正
-2. `effect` 宣言 / `perform` / `resume` / effect handler の言語サポート
-3. Http effect 定義 + P3 adapter 統合
-4. ADR-0027 capability-based DCE との連携
+1. ~~WASM Exceptions の string throw/catch 修正~~ ✅
+2. ~~`effect` 宣言 / `perform` / `resume` / effect handler の言語サポート~~ ✅
+3. builtin effect の統合 (Error → suberror ベース、Net → fine-grained capabilities)
+4. Http effect 定義 + P3 adapter 統合
+5. ADR-0027 capability-based DCE との連携
+
+## builtin effect 統合方針 (2026-03-18)
+
+**Error**: `throw(x)` は `perform Error::Throw(x)` の sugar として扱う。
+`handle { } { Error(msg) => }` の既存構文は後方互換で維持。
+suberror は Error effect の sub-type。
+
+**Net**: fine-grained capability effects に分解。
+
+| 現在 | 移行先 |
+|------|--------|
+| `with { Error }` + `throw(x)` | `with { Error }` 維持 (sugar) |
+| `with { Net }` + `Http::listen(p)` | `with { HttpServer }` + `perform HttpServer::Listen(p)` |
+| `with { Net }` + `Http::request(...)` | `with { HttpClient }` + `perform HttpClient::Request(...)` |
+| `with { Net }` + `Socket::tcp_connect(...)` | `with { Socket }` + `perform Socket::Connect(...)` |
+| builtin `sh(cmd)` | `with { Process }` + `perform Process::Exec(cmd)` |
+| builtin `stdout_write_char(c)` | `with { Stdout }` + `perform Stdout::WriteChar(c)` |
+
+`with { Net }` は `with { HttpServer, HttpClient, Socket, ... }` の sugar として残す。
 
 詳細: ADR-0021 の「WASI P3 HTTP の具体例」セクション、`docs/report/support-wasip3.md`

@@ -174,18 +174,75 @@ Phase 2 タスク:
 - [x] `resume(value)` — inline expansion (body 直下の perform のみ、関数越えは Phase 3)
 - [x] handle body の effect scope を自動有効化
 - [x] `with { Effect }` — 名前付き effect set 追跡 (`with { Console }` で `State` は使えない)
-- [ ] 既存 effect (`Error`, `Net`) をこの framework に統合
 - [ ] 関数呼び出しを跨ぐ perform の handler dispatch (CPS or stack switching)
 
-Phase 3 タスク (Http 実装):
-- [ ] `effect HttpRequest`, `effect HttpResponse`, `effect HttpClient` 定義
+### builtin effect の統合計画
+
+**設計決定**: `Error` と `Net` を user-defined effect framework に統合する。
+
+#### Error → suberror ベース統合
+
+現状: `throw(x)` / `handle { } { Error(msg) => }` が特別構文。
+目標: `Error` を通常の effect として扱う。`throw` は `perform Error::Throw` の sugar。
+
+```vibe
+// Error は言語組み込みだが、意味的には以下と等価:
+// effect Error { Throw(String) -> Never }
+//
+// throw("msg")  →  perform Error::Throw("msg")
+// handle { body } { Error(msg) => expr }  →  既存構文を維持
+
+// suberror は Error の sub-type:
+suberror AppError { NotFound; BadInput(String) }
+// throw(NotFound) → perform Error::Throw(NotFound)
+```
+
+タスク:
+- [ ] `throw(x)` を内部的に `Perform("Error", "Throw", [x])` に desugar
+- [ ] `Error` effect を暗黙定義として TypeEnv に登録
+- [ ] `handle { } { Error(msg) => }` の既存構文は維持（後方互換）
+- [ ] suberror の throw は Error effect 経由に統一
+
+#### Net → fine-grained capability effects
+
+現状: `with { Net }` で Http/Socket/Process 全 builtin を許可（粗い粒度）。
+目標: capability ごとに独立した effect に分解。
+
+```vibe
+// 現在
+let f = () -> Int with { Net } {
+  Http::listen(8080)  // Net で全許可
+}
+
+// 将来
+let f = () -> Int with { HttpServer } {
+  perform HttpServer::Listen(8080)  // 明示的な capability
+}
+```
+
+マッピング:
+| 現在の builtin | 目標 effect | operations |
+|--------------|------------|-----------|
+| `Http::listen/accept/respond` | `effect HttpServer` | Listen, Accept, Respond |
+| `Http::request/response_*` | `effect HttpClient` | Request, ResponseStatus, ... |
+| `Socket::tcp_*` | `effect Socket` | Connect, Read, Write, Close |
+| `Fs::*` | `effect Fs` | ReadFile, WriteFile, Stat |
+| `sh` | `effect Process` | Exec |
+| `stdout_write_char` | `effect Stdout` | WriteChar |
+| `stdin_read_char` | `effect Stdin` | ReadChar |
+
+タスク:
+- [ ] 各 capability を effect として定義（prelude or std）
+- [ ] builtin 関数呼び出しを `perform Effect::Op` に desugar
+- [ ] `with { Net }` を `with { HttpServer, HttpClient, Socket, ... }` の sugar として維持
+- [ ] codegen: effect op → 既存の WASM builtin import にマッピング
+- [ ] ADR-0027 capability-based DCE との統合
+
+Phase 3 タスク (Http P3 実装):
+- [ ] `effect HttpRequest`, `effect HttpResponse`, `effect HttpClient` を P3 WIT にマッピング
 - [ ] P3 adapter が effect handler として resume を提供する codegen パス
 - [ ] `vibe serve handler.vibe` コマンド
 - [ ] streaming response (`HttpResponse::Write` 複数回呼び出し)
-
-前提:
-- WASM Exceptions 修正が先 (throw/catch の基盤)
-- suberror compiled 対応が先 (variant payload の伝搬)
 
 ## Packed Bytes (obj_bytes) 残作業
 
