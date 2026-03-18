@@ -218,6 +218,13 @@ fn canonical_add_ref(
 }
 
 ///|
+/// Topologically sort let-binding statements by dependency.
+/// Non-let statements retain their relative positions.
+pub fn topo_sort_let_stmts(stmts : Array[Stmt]) -> Array[Stmt] {
+  canonical_sort_fns_topo_alpha(stmts)
+}
+
+///|
 fn canonical_sort_fns_topo_alpha(stmts : Array[Stmt]) -> Array[Stmt] {
   let defs : Array[(String, Stmt, Map[String, Bool])] = []
   for stmt in stmts {

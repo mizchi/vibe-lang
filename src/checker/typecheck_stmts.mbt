@@ -360,11 +360,40 @@ fn type_check_stmts(
     }
     declared_in_scope[name] = true
   }
-  // ── Pre-scan: register provisional types for forward-declarable functions ──
+  // ── Pre-scan: register provisional types for forward-declarable bindings ──
+  // Extract annotation type from `let x: T = expr` desugared Block pattern.
+  // The parser wraps `let x: T = expr` into:
+  //   Block { Let(__vibe_local_type_assert_N, Fn(v: T) -> T { v }); Call(...) }
+  // We extract T from the helper Fn's ret type.
+  let extract_let_annotation_type = fn(
+    expr : @core.Expr,
+  ) -> @core.Type? {
+    match expr {
+      @core.Expr::Block(body~, ..) =>
+        if body.stmts.length() == 2 {
+          match body.stmts[0] {
+            @core.Stmt::Let(name~, expr=inner_expr, ..) =>
+              if name.has_prefix("__vibe_local_type_assert_") {
+                match inner_expr {
+                  @core.Expr::Fn(ret=Some(r), ..) => Some(r)
+                  _ => None
+                }
+              } else {
+                None
+              }
+            _ => None
+          }
+        } else {
+          None
+        }
+      _ => None
+    }
+  }
   // Save type var counter before pre-scan to restore afterwards.
   // Pre-scan type vars are only used inside generalized schemes (replaced on
   // instantiation), so reusing the same IDs in the main loop is safe.
   let forward_fns : Map[String, Bool] = {}
+  let forward_annotated_values : Map[String, Bool] = {}
   let saved_next_type_var = env.session_state.type_var_counter
   let saved_env_next_var = env.next_var
   for stmt in stmts {
@@ -418,7 +447,31 @@ fn type_check_stmts(
                 Err(_) => ()
               }
             }
-            _ => ()
+            _ =>
+              // Check for type-annotated let: `let x: T = expr`
+              match extract_let_annotation_type(expr) {
+                Some(ann_ty) => {
+                  let result : Result[TypeScheme, TypeError] = try? {
+                    let ty = normalize_type(env, ann_ty)
+                    TypeScheme::{
+                      vars: [],
+                      num_vars: [],
+                      effect_vars: [],
+                      trait_bounds: {},
+                      ty,
+                    }
+                  }
+                  match result {
+                    Ok(scheme) => {
+                      env.set_scheme(name, scheme)
+                      env.set_purity_tier(name, TopLevelPurityTier::Pure)
+                      forward_annotated_values[name] = true
+                    }
+                    Err(_) => ()
+                  }
+                }
+                None => ()
+              }
           }
         }
       None => ()

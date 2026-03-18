@@ -579,6 +579,7 @@ test "fixtures compiled parity" {
        "err_type_divide_by_zero.vibe", // runtime-only error
        "err_type_negative_index.vibe", // runtime-only error
        "err_type_array_index_out_of_range.vibe", // runtime-only error
+       "forward_reference_annotated_let.vibe", // forward ref: interp-only (topo sort)
     ]
     let mut is_known_gap = false
     for gap in known_gaps {

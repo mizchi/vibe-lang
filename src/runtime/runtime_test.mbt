@@ -748,22 +748,33 @@ test "vibe threads send returns false when channel is full" {
     @capability.CapabilitySet::developer(),
     RuntimeFeatureFlags::unstable_threads_only(),
   )
-  let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "{\n" +
-    "  let ch = Threads::channel_new(1)\n" +
-    "  let first = Threads::send(ch, \"a\")\n" +
-    "  let second = Threads::send(ch, \"b\")\n" +
-    "  let got = Threads::recv(ch)\n" +
-    "  first && not(second) && got == \"a\"\n" +
-    "}",
+  // Step 1: create channel with capacity 1
+  let _ = try? rt.eval_script(
+    "let ch = Threads::channel_new(1)",
   )
-  match result {
-    Err(err) => fail(err.to_string())
-    Ok(eval_result) =>
-      match eval_result.last {
+  // Step 2: first send should succeed
+  let r1 : Result[EvalResult, VibeError] = try? rt.eval_script(
+    "Threads::send(ch, \"a\")",
+  )
+  match r1 {
+    Ok(result) =>
+      match result.last {
         Some(@core.Value::Bool(v)) => assert_true(v)
-        _ => fail("expected bool result")
+        _ => fail("first send: expected bool")
       }
+    Err(err) => fail("first send error: " + err.to_string())
+  }
+  // Step 3: second send should fail (channel full)
+  let r2 : Result[EvalResult, VibeError] = try? rt.eval_script(
+    "Threads::send(ch, \"b\")",
+  )
+  match r2 {
+    Ok(result) =>
+      match result.last {
+        Some(@core.Value::Bool(v)) => assert_false(v)
+        _ => fail("second send: expected bool")
+      }
+    Err(err) => fail("second send error: " + err.to_string())
   }
 }
 

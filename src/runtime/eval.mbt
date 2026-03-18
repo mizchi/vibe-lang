@@ -375,10 +375,42 @@ pub fn Runtime::eval_module(
   self : Runtime,
   ast : @core.Module,
 ) -> EvalResult raise EvalError {
+  // Topologically sort let-binding statements so that forward references
+  // to type-annotated values are resolved before use.
+  // Only apply when there are no interleaved side-effect statements,
+  // because reordering let-bindings can change the meaning of interleaved effects.
+  // Topologically sort let-binding statements so that forward references
+  // to type-annotated values are resolved before use.
+  // Only apply when there are no interleaved side-effect statements.
+  let sorted_ast = {
+    let mut has_side_effects = false
+    let len = ast.stmts.length()
+    for idx = 0; idx < len; idx = idx + 1 {
+      match ast.stmts[idx] {
+        @core.Stmt::LetMut(..)
+        | @core.Stmt::Assign(..)
+        | @core.Stmt::IndexAssign(..) => {
+          has_side_effects = true
+          break
+        }
+        @core.Stmt::Expr(..) =>
+          if idx < len - 1 {
+            has_side_effects = true
+            break
+          }
+        _ => ()
+      }
+    }
+    if has_side_effects {
+      ast
+    } else {
+      @core.Module::{ stmts: @core.topo_sort_let_stmts(ast.stmts) }
+    }
+  }
   let effects : Array[Effect] = []
   let mut last : @core.Value? = None
   let local_value_decl_names : Map[String, Bool] = {}
-  for stmt in ast.stmts {
+  for stmt in sorted_ast.stmts {
     match stmt {
       @core.Stmt::Let(name~, ..)
       | @core.Stmt::ExportLet(name~, ..)
@@ -394,7 +426,7 @@ pub fn Runtime::eval_module(
   // addresses. All forward function addresses are computed here so that
   // closures capture a consistent addr_env for mutual references.
   let forward_fn_addrs : Map[String, String] = {} // name → pre-computed addr
-  for stmt in ast.stmts {
+  for stmt in sorted_ast.stmts {
     match stmt {
       @core.Stmt::Let(rec=false, name~, expr~, ..)
       | @core.Stmt::ExportLet(rec=false, name~, expr~, ..)
@@ -413,7 +445,7 @@ pub fn Runtime::eval_module(
       _ => ()
     }
   }
-  for stmt in ast.stmts {
+  for stmt in sorted_ast.stmts {
     let stmt_result : Result[Unit, EvalError] = try? (match stmt {
       @core.Stmt::Let(rec~, name~, expr~, ..) =>
         if name == "_" {
