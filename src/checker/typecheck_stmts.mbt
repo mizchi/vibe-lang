@@ -350,7 +350,25 @@ fn register_effect_def(env : TypeEnv, stmt : @core.Stmt) -> Unit {
   }
   let ops_map : Map[String, @core.EffectOpSig] = {}
   for op in ops {
-    ops_map[op.name] = @core.EffectOpSig::{ params: op.params, ret: op.ret }
+    let resolved_params : Array[@core.Type] = []
+    for p in op.params {
+      let normalized = try? normalize_type(env, p)
+      resolved_params.push(
+        match normalized {
+          Ok(t) => t
+          Err(_) => p
+        },
+      )
+    }
+    let normalized_ret = try? normalize_type(env, op.ret)
+    let ret_resolved = match normalized_ret {
+      Ok(t) => t
+      Err(_) => op.ret
+    }
+    ops_map[op.name] = @core.EffectOpSig::{
+      params: resolved_params,
+      ret: ret_resolved,
+    }
   }
   env.effect_defs[name] = @core.EffectDef_::{ name, params, ops: ops_map }
 }

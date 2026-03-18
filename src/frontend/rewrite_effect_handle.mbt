@@ -1,14 +1,25 @@
 ///| Rewrite `handle { body } { Effect::Op(x) => resume(val), ... }` into
+
 ///| inline calls. This implements tail-resumptive effect handler inlining.
+
 ///|
+
 ///| Before:
+
 ///|   handle { perform Console::ReadLine } { Console::ReadLine => resume("Alice") }
+
 ///|
+
 ///| After:
+
 ///|   { let __Console__ReadLine = () { "Alice" }; __Console__ReadLine() }
+
 ///|
+
 ///| Only tail-resumptive handlers (where each arm is `resume(expr)`) are inlined.
-///| Non-effect arms (Error, etc.) are kept as-is.
+
+///|
+/// Non-effect arms (Error, etc.) are kept as-is.
 pub fn rewrite_effect_handles(ast : @core.Module) -> @core.Module {
   reh_rewrite_module(ast)
 }
@@ -62,7 +73,7 @@ fn reh_rewrite_expr(expr : @core.Expr) -> @core.Expr {
       ret~,
       effects~,
       body~,
-      span~,
+      span~
     ) =>
       @core.Expr::Fn(
         type_params~,
@@ -111,10 +122,15 @@ fn reh_rewrite_expr(expr : @core.Expr) -> @core.Expr {
 }
 
 ///| Extract effect operation handlers from match arms.
+
 ///| Returns: (effect_handlers, remaining_error_arms)
+
 ///| An effect handler arm pattern looks like: Ctor("Console::ReadLine", []) or
+
 ///| Ctor("Console::Print", [Bind("msg")])
-///| and the expr must be Call("__resume", [val]).
+
+///|
+/// and the expr must be Call("__resume", [val]).
 fn reh_extract_effect_handlers(
   arms : Array[@core.MatchArm],
 ) -> (Map[String, EffectHandler], Array[@core.MatchArm]) {
@@ -217,17 +233,25 @@ fn reh_replace_performs_stmt(
   match stmt {
     @core.Stmt::Let(rec~, name~, expr~, span~) =>
       @core.Stmt::Let(
-        rec~, name~, expr=reh_replace_performs_expr(expr, handlers), span~,
+        rec~,
+        name~,
+        expr=reh_replace_performs_expr(expr, handlers),
+        span~,
       )
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
       @core.Stmt::ExportLet(
-        rec~, name~, expr=reh_replace_performs_expr(expr, handlers), span~,
+        rec~,
+        name~,
+        expr=reh_replace_performs_expr(expr, handlers),
+        span~,
       )
     @core.Stmt::Expr(expr~, span~) =>
       @core.Stmt::Expr(expr=reh_replace_performs_expr(expr, handlers), span~)
     @core.Stmt::LetMut(name~, expr~, span~) =>
       @core.Stmt::LetMut(
-        name~, expr=reh_replace_performs_expr(expr, handlers), span~,
+        name~,
+        expr=reh_replace_performs_expr(expr, handlers),
+        span~,
       )
     _ => stmt
   }
@@ -245,8 +269,9 @@ fn reh_replace_performs_expr(
         Some(handler) => {
           // Inline the handler: substitute param_names with args
           let mut result = handler.resume_expr
-          for i = 0; i < handler.param_names.length() && i < args.length(); i =
-            i + 1 {
+          for i = 0
+              i < handler.param_names.length() && i < args.length()
+              i = i + 1 {
             let param_name = handler.param_names[i]
             if param_name != "_" {
               // Wrap in let binding: let param_name = arg; result
@@ -300,7 +325,7 @@ fn reh_replace_performs_expr(
       ret~,
       effects~,
       body~,
-      span~,
+      span~
     ) =>
       @core.Expr::Fn(
         type_params~,

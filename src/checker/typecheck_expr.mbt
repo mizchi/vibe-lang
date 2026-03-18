@@ -749,8 +749,10 @@ fn type_expr_eff(
       body_env.handle_resume_types_active = true
       body_env.handle_arm_effect_name = None
       body_env.handle_arm_resume_expected = None
+      // handle body is always in effect scope (the handle provides the handler)
+      let body_allow_effect = allow_effect || handle_effects.length() > 0
       let body_ty = type_block(
-        body_env, body, aliases, body_scope, allow_effect,
+        body_env, body, aliases, body_scope, body_allow_effect,
       )
       let body_resume_types : Map[String, @core.Type] = body_env.handle_resume_types.copy()
       let inferred_resume_types = body_resume_types.copy()
