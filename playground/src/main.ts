@@ -227,6 +227,23 @@ function renderResult(result: any) {
   }
 }
 
+function offsetToPosition(
+  source: string,
+  offset: number,
+): { line: number; column: number } {
+  let line = 1;
+  let column = 1;
+  for (let i = 0; i < offset && i < source.length; i++) {
+    if (source[i] === "\n") {
+      line++;
+      column = 1;
+    } else {
+      column++;
+    }
+  }
+  return { line, column };
+}
+
 function renderDiagnostics(
   result: any | null,
   runtimeError?: string,
@@ -276,19 +293,27 @@ function renderDiagnostics(
   // Push diagnostics to Monaco markers
   const model = editor.getModel();
   if (model && result) {
-    const markers: monaco.editor.IMarkerData[] = result.diagnostics.map(
-      (diag: any, index: number) => ({
-        severity:
-          index < result.error_count
-            ? monaco.MarkerSeverity.Error
-            : monaco.MarkerSeverity.Warning,
-        message: diag.message + (diag.note ? `\n${diag.note}` : ""),
-        startLineNumber: 1,
-        startColumn: 1,
-        endLineNumber: 1,
-        endColumn: 1,
-      }),
-    );
+    const source = model.getValue();
+    const markers: monaco.editor.IMarkerData[] = result.diagnostics
+      .filter((diag: any) => diag.span)
+      .map((diag: any, index: number) => {
+        const start = offsetToPosition(source, diag.span.start);
+        const end = offsetToPosition(source, diag.span.end);
+        return {
+          severity:
+            index < result.error_count
+              ? monaco.MarkerSeverity.Error
+              : monaco.MarkerSeverity.Warning,
+          message:
+            diag.message +
+            (diag.hint ? `\nhint: ${diag.hint}` : "") +
+            (diag.note ? `\nnote: ${diag.note}` : ""),
+          startLineNumber: start.line,
+          startColumn: start.column,
+          endLineNumber: end.line,
+          endColumn: end.column,
+        };
+      });
     monaco.editor.setModelMarkers(model, "vibe", markers);
   }
 }
