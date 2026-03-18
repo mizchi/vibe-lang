@@ -1,4 +1,42 @@
 ///|
+/// Replace Param("name") with mapped types (for effect type parameter instantiation).
+fn substitute_param_names(
+  ty : @core.Type,
+  mapping : Map[String, @core.Type],
+) -> @core.Type {
+  match ty {
+    @core.Type::Param(name) =>
+      match mapping.get(name) {
+        Some(replacement) => replacement
+        None => ty
+      }
+    @core.Type::Tuple(elems) =>
+      @core.Type::Tuple(elems.map(fn(t) { substitute_param_names(t, mapping) }))
+    @core.Type::Array(elem) =>
+      @core.Type::Array(substitute_param_names(elem, mapping))
+    @core.Type::Map(k, v) =>
+      @core.Type::Map(
+        substitute_param_names(k, mapping),
+        substitute_param_names(v, mapping),
+      )
+    @core.Type::Named(name~, args~) =>
+      @core.Type::Named(
+        name~,
+        args=args.map(fn(t) { substitute_param_names(t, mapping) }),
+      )
+    @core.Type::Func(params~, ret~, effects~) =>
+      @core.Type::Func(
+        params=params.map(fn(p) {
+          @core.FuncParam::{ ..p, ty: substitute_param_names(p.ty, mapping) }
+        }),
+        ret=substitute_param_names(ret, mapping),
+        effects~,
+      )
+    _ => ty
+  }
+}
+
+///|
 /// Bind handle arm pattern variables into the arm environment.
 /// For known constructors, bind with the ctor payload type.
 /// Fallback to String binding for unknown constructors (`Error(...)` etc).
@@ -1177,14 +1215,31 @@ fn type_expr_eff(
         message="spread operator is only allowed inside array literals",
         span~,
       )
-    @core.Expr::Perform(effect_name~, op_name~, args~, span~) =>
+    @core.Expr::Perform(effect_name~, op_name~, args~, span~) => {
+      // --- effect scope check ---
+      if not(allow_effect) {
+        raise TypeError::EffectGuardNotSatisfied(
+          operation="perform " + effect_name + "::" + op_name,
+          missing_effect=Some(effect_name),
+          span~,
+        )
+      }
       match env.effect_defs.get(effect_name) {
         Some(effect_def) =>
           match effect_def.ops.get(op_name) {
             Some(op_sig) => {
-              // Type-check arguments
+              // Instantiate type parameters: Param("S") → fresh Var
+              let param_mapping : Map[String, @core.Type] = {}
+              for p in effect_def.params {
+                param_mapping[p] = fresh_type_var(env)
+              }
+              let inst_params = op_sig.params.map(fn(t) {
+                substitute_param_names(t, param_mapping)
+              })
+              let inst_ret = substitute_param_names(op_sig.ret, param_mapping)
+              // Type-check arguments against instantiated param types
               for i = 0; i < args.length(); i = i + 1 {
-                if i < op_sig.params.length() {
+                if i < inst_params.length() {
                   let arg_ty = type_expr_eff(
                     env,
                     args[i].expr,
@@ -1192,10 +1247,10 @@ fn type_expr_eff(
                     effects,
                     allow_effect,
                   )
-                  let _ = unify_types(env, arg_ty, op_sig.params[i])
+                  let _ = unify_types(env, arg_ty, inst_params[i])
                 }
               }
-              op_sig.ret
+              resolve_type(env, inst_ret)
             }
             None =>
               raise TypeError::BadTypeDef(
@@ -1212,6 +1267,7 @@ fn type_expr_eff(
             span~,
           )
       }
+    }
   }
   record_expr_type(env, expr.span(), ty)
   ty
