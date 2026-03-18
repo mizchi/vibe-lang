@@ -170,10 +170,12 @@ WIT マッピング: `effect HttpRequest` → `interface http-request`, `effect 
 Phase 2 タスク:
 - [x] `effect Name { Op(Args) -> Ret; ... }` 宣言 — AST / parser / checker (host + selfhost)
 - [x] `perform Effect::Op(args)` 式 — AST / parser / checker / codegen (WASM import)
-- [ ] `handle { body } { Effect::Op(args) => resume(value) }` handler 構文
-- [ ] `resume(value)` — continuation で中断した計算を再開
-- [ ] `with { Effect }` — 既存の `with { Error }` を一般化
+- [x] `handle { body } { Effect::Op(args) => resume(value) }` tail-resumptive inline
+- [x] `resume(value)` — inline expansion (body 直下の perform のみ、関数越えは Phase 3)
+- [x] handle body の effect scope を自動有効化
+- [ ] `with { Effect }` — 名前付き effect set 追跡 (`in_effect: Bool` → `EffectSet`)
 - [ ] 既存 effect (`Error`, `Net`) をこの framework に統合
+- [ ] 関数呼び出しを跨ぐ perform の handler dispatch (CPS or stack switching)
 
 Phase 3 タスク (Http 実装):
 - [ ] `effect HttpRequest`, `effect HttpResponse`, `effect HttpClient` 定義
