@@ -232,6 +232,16 @@ fn effect_scope_extend(
 }
 
 ///|
+/// Check if a specific effect name is allowed by the scope.
+fn effect_scope_allows(scope : EffectScope, effect_name : String) -> Bool {
+  if scope.allow_all {
+    true
+  } else {
+    scope.allowed.contains(effect_name) || scope.rest is Some(_)
+  }
+}
+
+///|
 fn effect_set_empty() -> EffectSet {
   EffectSet::{ consts: {}, rest: None }
 }

@@ -1218,8 +1218,11 @@ fn type_expr_eff(
         span~,
       )
     @core.Expr::Perform(effect_name~, op_name~, args~, span~) => {
-      // --- effect scope check ---
-      if not(allow_effect) {
+      // --- effect scope check: verify the specific effect is in scope ---
+      // User-defined effects require explicit `with { EffectName }` declaration.
+      // The generic `allow_effect` flag (from `with { Error }` etc.) does NOT
+      // grant access to user-defined effects — only named scope does.
+      if not(effect_scope_allows(effects, effect_name)) {
         raise TypeError::EffectGuardNotSatisfied(
           operation="perform " + effect_name + "::" + op_name,
           missing_effect=Some(effect_name),
