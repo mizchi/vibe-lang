@@ -352,10 +352,8 @@ fn emit_block(buf : ByteBuf) -> Unit {
 ///|
 /// Emit if instruction (consumes i32 condition from stack)
 fn emit_if(buf : ByteBuf) -> Unit {
-  buf.ensure(2)
-  buf.data.unsafe_set(buf.len, b'\x04')
-  buf.data.unsafe_set(buf.len + 1, b'\x40')
-  buf.len += 2
+  buf.push(b'\x04')
+  buf.push(b'\x40')
 }
 
 ///|

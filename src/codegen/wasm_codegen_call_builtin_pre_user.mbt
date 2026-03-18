@@ -5522,7 +5522,6 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_wrap_i64(buf)
       emit_i32_store8(buf, 8)
       buf.push((5).to_byte()) // else (array)
-      buf.push((64).to_byte()) // void
       // Array: store i32 at [ptr + 8 + idx*4]
       emit_local_get(buf, ptr_local)
       emit_local_get(buf, idx_local)
