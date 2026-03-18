@@ -1,0 +1,102 @@
+//# Imports
+
+import ./syntax/lexer.vibe { lex }
+import ./syntax/parser.vibe { parse_program }
+import ./syntax/printer.vibe { print_program }
+
+//# Functions
+
+let roundtrip = (source: String) -> Bool {
+  handle {
+    let s1 = print_program(parse_program(lex(source)))
+    let s2 = print_program(parse_program(lex(s1)))
+    String::equals(s1, s2)
+  } {
+    Error(_) => false
+  }
+}
+
+//# Misc — Literals
+
+test "int" { assert(roundtrip("42")) }
+test "float" { assert(roundtrip("3.14")) }
+test "string" { assert(roundtrip("\"hello\"")) }
+test "bool true" { assert(roundtrip("true")) }
+test "bool false" { assert(roundtrip("false")) }
+test "char" { assert(roundtrip("'a'")) }
+
+//# Misc — Expressions
+
+test "binop" { assert(roundtrip("1 + 2 * 3")) }
+test "unary minus" { assert(roundtrip("-5")) }
+test "unary not" { assert(roundtrip("!true")) }
+test "comparison" { assert(roundtrip("1 < 2")) }
+test "logic" { assert(roundtrip("true && false || true")) }
+test "call" { assert(roundtrip("f(1, 2)")) }
+test "qualified call" { assert(roundtrip("String::length(\"hi\")")) }
+test "array" { assert(roundtrip("[1, 2, 3]")) }
+test "tuple" { assert(roundtrip("(1, 2, 3)")) }
+test "record" { assert(roundtrip("record { x: 1, y: 2 }")) }
+test "map" { assert(roundtrip("map { \"a\": 1 }")) }
+test "if" { assert(roundtrip("if true { 1 } else { 0 }")) }
+test "block" { assert(roundtrip("{ let x = 1\nx }")) }
+test "match int" { assert(roundtrip("match 1 { 0 => 10, _ => 20 }")) }
+test "match string" { assert(roundtrip("match \"a\" { \"a\" => 1, _ => 0 }")) }
+test "pipe" { assert(roundtrip("5 |> f")) }
+
+//# Misc — Statements
+
+test "let" { assert(roundtrip("let x = 42\nx")) }
+test "let mut" { assert(roundtrip("let mut x = 0\nx")) }
+test "let rec" { assert(roundtrip("let rec f = (n: Int) -> Int { if n <= 0 { 0 } else { f(n - 1) } }\nf(5)")) }
+test "let with type" { assert(roundtrip("let x: Int = 42\nx")) }
+test "assign" { assert(roundtrip("let mut x = 0\nx = 1\nx")) }
+test "assign add" { assert(roundtrip("let mut x = 0\nx += 1\nx")) }
+
+//# Misc — Functions
+
+test "fn basic" { assert(roundtrip("let f = (x: Int) -> Int { x + 1 }\nf(5)")) }
+test "fn multi param" { assert(roundtrip("let add = (a: Int, b: Int) -> Int { a + b }\nadd(1, 2)")) }
+test "fn no return type" { assert(roundtrip("let f = (x: Int) { x }")) }
+test "fn labeled" { assert(roundtrip("let f = (x~: Int) -> Int { x }\nf(x=1)")) }
+test "fn generic" { assert(roundtrip("let id = [T](x: T) -> T { x }\nid(42)")) }
+
+//# Misc — Control flow
+
+test "while" { assert(roundtrip("let mut i = 0\nwhile i < 10 { i = i + 1 }\ni")) }
+test "for in" { assert(roundtrip("for x in [1, 2, 3] { x * 2 }")) }
+test "for in with index" { assert(roundtrip("let mut s = 0\nfor x, i in [1, 2, 3] { s = s + i }\ns")) }
+test "break" { assert(roundtrip("let mut i = 0\nwhile true { if i >= 5 { break }\ni = i + 1 }\ni")) }
+test "loop" { assert(roundtrip("loop (i = 0, acc = 0) { if i >= 5 { break(acc) } else { continue(i + 1, acc + i) } }")) }
+
+//# Misc — Data types
+
+test "enum" { assert(roundtrip("enum Color { Red; Green; Blue }\nmatch Red { Red => 1, _ => 0 }")) }
+test "enum with payload" { assert(roundtrip("enum Opt { None; Some(Int) }\nmatch Some(42) { Some(n) => n, None => 0 }")) }
+test "struct" { assert(roundtrip("struct Point { x: Int; y: Int }\nlet p = Point::{ x: 1, y: 2 }\np.x")) }
+test "type alias" { assert(roundtrip("type Pair = (Int, Int)\nlet p: Pair = (1, 2)\np")) }
+test "suberror" { assert(roundtrip("suberror AppError { NotFound; BadInput(String) }")) }
+test "trait" { assert(roundtrip("trait Eq")) }
+
+//# Misc — Effects
+
+test "handle" { assert(roundtrip("handle { 42 } { Error(_) => -1 }")) }
+test "handle throw" { assert(roundtrip("handle { throw(\"x\")\n0 } { Error(msg) => String::length(msg) }")) }
+test "effectful fn" { assert(roundtrip("let f = () -> Int with { Error } { throw(\"x\")\n0 }\nhandle { f() } { Error(_) => 99 }")) }
+
+//# Misc — Patterns
+
+test "pat wildcard" { assert(roundtrip("match 1 { _ => 0 }")) }
+test "pat bind" { assert(roundtrip("match 1 { x => x }")) }
+test "pat int" { assert(roundtrip("match 1 { 0 => 10, 1 => 20, _ => 30 }")) }
+test "pat string" { assert(roundtrip("match \"a\" { \"a\" => 1, _ => 0 }")) }
+test "pat bool" { assert(roundtrip("match true { true => 1, false => 0 }")) }
+test "pat tuple" { assert(roundtrip("let (a, b) = (1, 2)\na + b")) }
+test "pat ctor" { assert(roundtrip("enum Opt { None; Some(Int) }\nmatch Some(42) { Some(n) => n, None => 0 }")) }
+
+//# Misc — Imports/Exports
+
+test "import" { assert(roundtrip("import ./foo.vibe { bar }")) }
+test "export" { assert(roundtrip("export { foo, bar }")) }
+test "export let" { assert(roundtrip("export let x = 42")) }
+test "export enum" { assert(roundtrip("export enum Color { Red; Blue }")) }
