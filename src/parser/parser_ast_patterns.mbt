@@ -262,15 +262,47 @@ fn AstParser::parse_pattern(self : AstParser) -> @core.Pat raise ParseError {
         @core.Pat::Wildcard(span~)
       } else if @core.is_ctor_name(tok.text()) {
         self.skip_trivia()
-        // Check for struct pattern: Name::{ x, y }
+        // Check for struct pattern: Name::{ x, y } or qualified ctor: Name::Ctor(args)
         if self.peek_kind() == double_colon() {
           let _ = self.bump() // consume ::
           self.skip_trivia()
-          let _ = self.expect(lbrace(), "{")
-          let fields = self.parse_struct_pat_fields()
-          let _ = self.expect(rbrace(), "}")
-          let span = self.span_from(start)
-          @core.Pat::Struct(name=tok.text(), fields~, span~)
+          if self.peek_kind() == lbrace() {
+            // Struct pattern: Name::{ x, y }
+            let _ = self.bump() // consume {
+            let fields = self.parse_struct_pat_fields()
+            let _ = self.expect(rbrace(), "}")
+            let span = self.span_from(start)
+            @core.Pat::Struct(name=tok.text(), fields~, span~)
+          } else if self.peek_kind() == name() {
+            // Qualified enum ctor: Enum::Ctor or Enum::Ctor(args)
+            let ctor_tok = self.bump()
+            let qualified = tok.text() + "::" + ctor_tok.text()
+            let args : Array[@core.Pat] = []
+            self.skip_trivia()
+            if self.peek_kind() == lparen() {
+              let _ = self.bump()
+              self.skip_trivia()
+              if self.peek_kind() != rparen() {
+                args.push(self.parse_pattern())
+                while ({
+                        self.skip_trivia()
+                        self.peek_kind() == comma()
+                      }) {
+                  let _ = self.bump()
+                  args.push(self.parse_pattern())
+                }
+              }
+              let _ = self.expect(rparen(), ")")
+            }
+            let span = self.span_from(start)
+            @core.Pat::Ctor(name=qualified, args~, span~)
+          } else {
+            raise ParseError::UnexpectedToken(
+              expected="struct pattern or qualified constructor",
+              got=self.peek().text(),
+              span=self.token_span(),
+            )
+          }
         } else {
           // Enum constructor pattern: Name(args)
           let args : Array[@core.Pat] = []

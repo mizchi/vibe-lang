@@ -466,6 +466,15 @@ fn compile_stmt(
           }
           ctx.enum_ctor_arg_kinds[ctor.name] = arg_kinds
         }
+        // Also register qualified form: EnumName::CtorName
+        let qualified_ctor = name + "::" + ctor.name
+        if not(ctx.enum_ctor_tags.contains(qualified_ctor)) {
+          ctx.enum_ctor_tags[qualified_ctor] = ctx.enum_ctor_tags[ctor.name]
+          ctx.enum_ctor_arities[qualified_ctor] = ctor.args.length()
+          if ctx.enum_ctor_arg_kinds.contains(ctor.name) {
+            ctx.enum_ctor_arg_kinds[qualified_ctor] = ctx.enum_ctor_arg_kinds[ctor.name]
+          }
+        }
         // Register singleton for 0-arg enum constructors
         if ctor.args.length() == 0 &&
           not(ctx.enum_ctor_singletons.contains(ctor.name)) {
@@ -474,6 +483,7 @@ fn compile_stmt(
             ctx.enum_ctor_tags[ctor.name],
           )
           ctx.enum_ctor_singletons[ctor.name] = tag_ptr64(offset, tag_obj)
+          ctx.enum_ctor_singletons[qualified_ctor] = tag_ptr64(offset, tag_obj)
         }
       }
       if is_last {

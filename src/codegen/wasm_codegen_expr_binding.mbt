@@ -16,6 +16,27 @@ fn compile_expr_ident(
   name : String,
 ) -> Unit raise WasmGenError {
   if is_qualified_name(name) {
+    // Try qualified enum ctor lookup first
+    if ctx.enum_ctor_tags.contains(name) {
+      match ctx.enum_ctor_singletons.get(name) {
+        Some(tagged_ptr) => {
+          emit_i64_const_raw(buf, tagged_ptr)
+          return ()
+        }
+        None => ()
+      }
+    }
+    // Try stripping qualifier: Color::Red → Red
+    let stripped = @core.strip_ctor_qualifier(name)
+    if stripped != name && ctx.enum_ctor_tags.contains(stripped) {
+      match ctx.enum_ctor_singletons.get(stripped) {
+        Some(tagged_ptr) => {
+          emit_i64_const_raw(buf, tagged_ptr)
+          return ()
+        }
+        None => ()
+      }
+    }
     raise WasmGenError::BackendLimit(
       backend="wasm",
       feature="qualified name: " + name,

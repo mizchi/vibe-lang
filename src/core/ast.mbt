@@ -28,13 +28,29 @@ pub(all) enum Pat {
 } derive(Show, Eq)
 
 ///|
+///|
+/// Strip qualified prefix: "Color::Red" → "Red", "Red" → "Red"
+pub fn strip_ctor_qualifier(name : String) -> String {
+  for i = name.length() - 1; i >= 1; i = i - 1 {
+    if name[i - 1].to_int() == ':'.to_int() && name[i].to_int() == ':'.to_int() {
+      return name.unsafe_substring(start=i + 1, end=name.length())
+    }
+  }
+  name
+}
+
+///|
 pub fn is_ctor_name(name : String) -> Bool {
   if name.length() == 0 {
     false
   } else {
-    // Type::method qualified names are NOT constructors
+    // Type::method qualified names — check if the part after :: is uppercase
     if name.contains("::") {
-      return false
+      let stripped = strip_ctor_qualifier(name)
+      return stripped.length() > 0 && {
+        let c = stripped.to_array()[0]
+        c >= 'A' && c <= 'Z'
+      }
     }
     let chars = name.to_array()
     let c = chars[0]

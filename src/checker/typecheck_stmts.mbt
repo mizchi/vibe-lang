@@ -1470,6 +1470,11 @@ fn register_enum_def(
       )
     }
     env.set_ctor(ctor_name, CtorInfo::{ type_name: name, params, payload })
+    // Also register qualified form: EnumName::CtorName
+    let qualified_ctor = name + "::" + ctor_name
+    env.set_ctor(
+      qualified_ctor, CtorInfo::{ type_name: name, params, payload },
+    )
   }
 }
 
