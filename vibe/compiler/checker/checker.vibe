@@ -129,6 +129,12 @@ let infer_binop_type = (op: String, left_ty: Type, right_ty: Type, s: Subst) -> 
       None => throw("type mismatch in '%': operands must be Int")
     }
   }
+  else if op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" {
+    match unify_binop_candidate(left_ty, right_ty, CtInt, s) {
+      Some(s1) => (CtInt, s1),
+      None => throw(String::concat("type mismatch in '", String::concat(op, "': operands must be Int")))
+    }
+  }
   else throw(String::concat("unknown operator: ", op))
 }
 
@@ -249,10 +255,14 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
         }
         match subst_apply(s3, mt) {
           CtFn(param_tys, ret, _) => {
+            let plen = Array::length(param_tys)
+            let alen2 = Array::length(arg_tys)
+            if alen2 != plen {
+              throw(String::concat("function arity mismatch: expected ", String::concat(__to_string(plen), String::concat(" args, got ", __to_string(alen2)))))
+            }
             let mut s4 = s3
             let mut ui = 0
-            let ul = min_int(Array::length(arg_tys), Array::length(param_tys))
-            while ui < ul {
+            while ui < plen {
               s4 = match unify(Array::get(param_tys, ui), Array::get(arg_tys, ui), s4) {
                 Some(su) => su,
                 None => s4
@@ -282,9 +292,14 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
         }
         match subst_apply(s2, ct) {
           CtFn(param_tys, ret, _) => {
+            let plen2 = Array::length(param_tys)
+            let alen3 = Array::length(arg_tys)
+            if alen3 != plen2 {
+              throw(String::concat("function arity mismatch: expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))
+            }
             let mut s3 = s2
             let mut ui = 0
-            let ul = min_int(Array::length(arg_tys), Array::length(param_tys))
+            let ul = min_int(alen3, plen2)
             while ui < ul {
               s3 = match unify(Array::get(param_tys, ui), Array::get(arg_tys, ui), s3) {
                 Some(su) => su,
@@ -528,7 +543,7 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
           }
           match unify(bt, resolved_ret, s2) {
             Some(ns) => (subst_apply(ns, resolved_ret), ns),
-            None => (CtUnknown, s2)
+            None => throw(String::concat("return type mismatch: expected ", String::concat(type_to_string(resolved_ret), String::concat(", got ", type_to_string(bt)))))
           }
         },
         None => (subst_apply(s2, bt), s2)
