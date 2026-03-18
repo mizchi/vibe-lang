@@ -4,28 +4,42 @@ VSCode extension for the [Vibe programming language](https://github.com/mizchi/v
 
 ## Features
 
-- Syntax highlighting for `.vibe` files
+- Syntax highlighting for `.vibe` files (TextMate grammar)
 - Bracket matching and auto-closing
 - Comment toggling (`//`)
-- String interpolation highlighting (`\(expr)` and `\{expr}`)
+- String interpolation highlighting (`\(expr)`)
 
-## Install (development)
+## Install
+
+### From VSIX (recommended)
 
 ```bash
-# From the extension directory
 cd integrations/vscode-vibe
-code --install-extension .
-```
-
-Or use "Extensions: Install from VSIX" in VSCode after packaging:
-
-```bash
 npx @vscode/vsce package
 code --install-extension vscode-vibe-0.1.0.vsix
 ```
 
-## Roadmap
+### From source directory
 
-- [ ] LSP integration (diagnostics, completion, go-to-definition)
-- [ ] Snippet support
-- [ ] Formatter integration
+```bash
+cd integrations/vscode-vibe
+pnpm install --ignore-scripts
+npx @vscode/vsce package
+code --install-extension vscode-vibe-0.1.0.vsix
+```
+
+## Uninstall
+
+```bash
+code --uninstall-extension mizchi.vscode-vibe
+```
+
+## Structure
+
+```
+vscode-vibe/
+├── package.json                 # Extension manifest
+├── language-configuration.json  # Brackets, comments, indentation
+└── syntaxes/
+    └── vibe.tmLanguage.json     # TextMate grammar
+```

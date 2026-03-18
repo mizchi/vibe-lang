@@ -10,4 +10,7 @@ export default defineConfig({
   build: {
     target: "esnext",
   },
+  optimizeDeps: {
+    exclude: ["web-tree-sitter"],
+  },
 });
