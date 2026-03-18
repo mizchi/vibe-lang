@@ -1,4 +1,5 @@
-///| Rewrite `__add(a, b)` to `String::concat(a, b)` when operands are String typed.
+///|
+/// Rewrite `__add(a, b)` to `String::concat(a, b)` when operands are String typed.
 pub fn rewrite_string_add(
   ast : @core.Module,
   env : @checker.TypeEnv,
@@ -7,10 +8,7 @@ pub fn rewrite_string_add(
 }
 
 ///|
-fn rsa_rewrite_module(
-  m : @core.Module,
-  env : @checker.TypeEnv,
-) -> @core.Module {
+fn rsa_rewrite_module(m : @core.Module, env : @checker.TypeEnv) -> @core.Module {
   let next : Array[@core.Stmt] = []
   for stmt in m.stmts {
     next.push(rsa_rewrite_stmt(stmt, env))
@@ -19,20 +17,23 @@ fn rsa_rewrite_module(
 }
 
 ///|
-fn rsa_rewrite_stmt(
-  stmt : @core.Stmt,
-  env : @checker.TypeEnv,
-) -> @core.Stmt {
+fn rsa_rewrite_stmt(stmt : @core.Stmt, env : @checker.TypeEnv) -> @core.Stmt {
   match stmt {
     @core.Stmt::Let(rec~, name~, expr~, span~) =>
       @core.Stmt::Let(rec~, name~, expr=rsa_rewrite_expr(expr, env), span~)
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
       @core.Stmt::ExportLet(
-        rec~, name~, expr=rsa_rewrite_expr(expr, env), span~,
+        rec~,
+        name~,
+        expr=rsa_rewrite_expr(expr, env),
+        span~,
       )
     @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) =>
       @core.Stmt::InternalExportLet(
-        rec~, name~, expr=rsa_rewrite_expr(expr, env), span~,
+        rec~,
+        name~,
+        expr=rsa_rewrite_expr(expr, env),
+        span~,
       )
     @core.Stmt::LetMut(name~, expr~, span~) =>
       @core.Stmt::LetMut(name~, expr=rsa_rewrite_expr(expr, env), span~)
@@ -47,10 +48,7 @@ fn rsa_rewrite_stmt(
 }
 
 ///|
-fn rsa_is_string_valued(
-  expr : @core.Expr,
-  env : @checker.TypeEnv,
-) -> Bool {
+fn rsa_is_string_valued(expr : @core.Expr, env : @checker.TypeEnv) -> Bool {
   match expr {
     @core.Expr::String(..) => true
     @core.Expr::Ident(..) =>
@@ -60,10 +58,16 @@ fn rsa_is_string_valued(
       }
     @core.Expr::Call(name~, ..) =>
       match name {
-        "String::concat" | "String::substring" | "String::trim" |
-        "String::replace" | "String::replace_all" | "String::join" |
-        "String::to_upper" | "String::to_lower" | "to_string" |
-        "__to_string" => true
+        "String::concat"
+        | "String::substring"
+        | "String::trim"
+        | "String::replace"
+        | "String::replace_all"
+        | "String::join"
+        | "String::to_upper"
+        | "String::to_lower"
+        | "to_string"
+        | "__to_string" => true
         _ =>
           match env.get_expr_type(expr.span()) {
             Some(@core.Type::String) => true
@@ -79,10 +83,7 @@ fn rsa_is_string_valued(
 }
 
 ///|
-fn rsa_rewrite_expr(
-  expr : @core.Expr,
-  env : @checker.TypeEnv,
-) -> @core.Expr {
+fn rsa_rewrite_expr(expr : @core.Expr, env : @checker.TypeEnv) -> @core.Expr {
   match expr {
     @core.Expr::Call(name~, type_args~, args~, span~) => {
       let next_args : Array[@core.CallArg] = []
@@ -102,9 +103,7 @@ fn rsa_rewrite_expr(
       } else {
         name
       }
-      @core.Expr::Call(
-        name=effective_name, type_args~, args=next_args, span~,
-      )
+      @core.Expr::Call(name=effective_name, type_args~, args=next_args, span~)
     }
     @core.Expr::If(cond~, then_body~, else_body~, span~) =>
       @core.Expr::If(
@@ -155,7 +154,7 @@ fn rsa_rewrite_expr(
       ret~,
       effects~,
       body~,
-      span~,
+      span~
     ) =>
       @core.Expr::Fn(
         type_params~,
@@ -174,13 +173,7 @@ fn rsa_rewrite_expr(
         body=rsa_rewrite_module(body, env),
         span~,
       )
-    @core.Expr::ForIn(
-      value_name~,
-      index_name~,
-      iterable~,
-      body~,
-      span~,
-    ) =>
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) =>
       @core.Expr::ForIn(
         value_name~,
         index_name~,

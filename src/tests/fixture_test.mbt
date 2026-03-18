@@ -559,27 +559,26 @@ test "fixtures compiled parity" {
       None => ()
     }
     // Skip known parity gaps (tracked for future fixing)
-    let basename = path.split("/").fold(init="", fn(_acc, part) {
-      part.to_string()
-    })
+    let basename = path
+      .split("/")
+      .fold(init="", fn(_acc, part) { part.to_string() })
     let known_gaps = [
       // codegen gaps: interpreter OK but compiled fails
       "let_else.vibe", "let_else_fallback.vibe", // let-else codegen
-      "bytes_basic.vibe", // Bytes builtin codegen
-      "generic_fold.vibe", "generic_filter.vibe", "generic_nested_types.vibe", // generic codegen
-      "trait_eq_bound.vibe", "trait_ord_bound.vibe", // trait bound codegen
-      "trait_eq_string_operator_runtime.vibe", // trait string eq codegen
-      "trait_eq_operator_accepts_eq_bound_type_parameter.vibe",
-      "trait_ord_operator_accepts_ord_bound_type_parameter.vibe",
+       "bytes_basic.vibe", // Bytes builtin codegen
+       "generic_fold.vibe", "generic_filter.vibe", "generic_nested_types.vibe", // generic codegen
+       "trait_eq_bound.vibe", "trait_ord_bound.vibe", // trait bound codegen
+       "trait_eq_string_operator_runtime.vibe", // trait string eq codegen
+       "trait_eq_operator_accepts_eq_bound_type_parameter.vibe", "trait_ord_operator_accepts_ord_bound_type_parameter.vibe",
       "labeled_arg_basic.vibe", // labeled arg codegen
-      "labeled_arg_optional.vibe", // labeled arg codegen
-      "let_pat_option.vibe", // let-pat-else codegen
+       "labeled_arg_optional.vibe", // labeled arg codegen
+       "let_pat_option.vibe", // let-pat-else codegen
       // runtime gaps: interpreter errors but compiled succeeds
-      "http_p3_client_test.vibe", // HTTP capability
-      "err_type_map_key_type.vibe", // runtime-only error
-      "err_type_divide_by_zero.vibe", // runtime-only error
-      "err_type_negative_index.vibe", // runtime-only error
-      "err_type_array_index_out_of_range.vibe", // runtime-only error
+       "http_p3_client_test.vibe", // HTTP capability
+       "err_type_map_key_type.vibe", // runtime-only error
+       "err_type_divide_by_zero.vibe", // runtime-only error
+       "err_type_negative_index.vibe", // runtime-only error
+       "err_type_array_index_out_of_range.vibe", // runtime-only error
     ]
     let mut is_known_gap = false
     for gap in known_gaps {
@@ -620,9 +619,9 @@ test "fixtures compiled parity" {
     }
   }
   if mismatches.length() > 0 {
-    let detail = mismatches.iter().fold(init="", fn(acc, m) {
-      acc + "  " + m + "\n"
-    })
+    let detail = mismatches
+      .iter()
+      .fold(init="", fn(acc, m) { acc + "  " + m + "\n" })
     fail(
       "compiled parity: \{parity_ok} ok, \{mismatches.length()} mismatch, \{parity_skip} skip:\n\{detail}",
     )

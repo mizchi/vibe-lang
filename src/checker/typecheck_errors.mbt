@@ -38,6 +38,7 @@ suberror TypeError {
   )
   ScopedRefEscape(context~ : String, span~ : @core.Span)
   TopLevelImpure(name~ : String, tier~ : TopLevelPurityTier, span~ : @core.Span)
+  TopLevelLetMut(name~ : String, span~ : @core.Span)
 } derive(Show, Eq)
 
 ///|
@@ -288,6 +289,14 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         span: Some(span),
         hint: Some(top_level_impure_hint(tier)),
         note: Some("detected purity tier: " + top_level_purity_tier_name(tier)),
+      }
+    TypeError::TopLevelLetMut(name~, span~) =>
+      @core.Diagnostic::{
+        stage: "type",
+        message: "`let mut` is not allowed at the top level",
+        span: Some(span),
+        hint: Some("use `let` instead, or move mutable state into a function"),
+        note: Some("top-level bindings must be immutable: `" + name + "`"),
       }
   }
 }

@@ -28,6 +28,7 @@ pub(all) enum Pat {
 } derive(Show, Eq)
 
 ///|
+
 ///|
 /// Strip qualified prefix: "Color::Red" → "Red", "Red" → "Red"
 pub fn strip_ctor_qualifier(name : String) -> String {
@@ -47,10 +48,11 @@ pub fn is_ctor_name(name : String) -> Bool {
     // Type::method qualified names — check if the part after :: is uppercase
     if name.contains("::") {
       let stripped = strip_ctor_qualifier(name)
-      return stripped.length() > 0 && {
-        let c = stripped.to_array()[0]
-        c >= 'A' && c <= 'Z'
-      }
+      return stripped.length() > 0 &&
+        ({
+          let c = stripped.to_array()[0]
+          c >= 'A' && c <= 'Z'
+        })
     }
     let chars = name.to_array()
     let c = chars[0]

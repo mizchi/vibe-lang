@@ -371,14 +371,12 @@ fn collect_reexport_defs(
           append_value_aliases(name, span)
         }
       @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
-        if requested_items.contains(name) &&
-          not(emitted_types.contains(name)) {
+        if requested_items.contains(name) && not(emitted_types.contains(name)) {
           out.push(@core.Stmt::EnumDef(name~, params~, ctors~, span~))
           emitted_types[name] = true
         }
       @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) =>
-        if requested_items.contains(name) &&
-          not(emitted_types.contains(name)) {
+        if requested_items.contains(name) && not(emitted_types.contains(name)) {
           out.push(@core.Stmt::TypeAlias(name~, params~, target~, span~))
           emitted_types[name] = true
         }
@@ -388,26 +386,22 @@ fn collect_reexport_defs(
           append_value_aliases(name, span)
         }
       @core.Stmt::EnumDef(name~, params~, ctors~, span~) =>
-        if requested_items.contains(name) &&
-          not(emitted_types.contains(name)) {
+        if requested_items.contains(name) && not(emitted_types.contains(name)) {
           out.push(@core.Stmt::EnumDef(name~, params~, ctors~, span~))
           emitted_types[name] = true
         }
       @core.Stmt::TypeAlias(name~, params~, target~, span~) =>
-        if requested_items.contains(name) &&
-          not(emitted_types.contains(name)) {
+        if requested_items.contains(name) && not(emitted_types.contains(name)) {
           out.push(@core.Stmt::TypeAlias(name~, params~, target~, span~))
           emitted_types[name] = true
         }
       @core.Stmt::ExportStructDef(name~, params~, fields~, span~) =>
-        if requested_items.contains(name) &&
-          not(emitted_types.contains(name)) {
+        if requested_items.contains(name) && not(emitted_types.contains(name)) {
           out.push(@core.Stmt::StructDef(name~, params~, fields~, span~))
           emitted_types[name] = true
         }
       @core.Stmt::StructDef(name~, params~, fields~, span~) =>
-        if requested_items.contains(name) &&
-          not(emitted_types.contains(name)) {
+        if requested_items.contains(name) && not(emitted_types.contains(name)) {
           out.push(@core.Stmt::StructDef(name~, params~, fields~, span~))
           emitted_types[name] = true
         }

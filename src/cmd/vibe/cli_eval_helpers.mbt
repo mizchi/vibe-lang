@@ -264,19 +264,14 @@ fn write_vibe_cache_object(
       e => return Err("mkdir .vibe: " + e.to_string())
     }
   }
-  @os_fs.write_string_to_file(
-    path,
-    Json::object(obj).stringify() + "\n",
-  ) catch {
+  @os_fs.write_string_to_file(path, Json::object(obj).stringify() + "\n") catch {
     e => return Err("write .vibe/cache.json: " + e.to_string())
   }
   Ok(())
 }
 
 ///|
-fn resolve_active_ns_name_from_cache(
-  cache : Map[String, Json],
-) -> String {
+fn resolve_active_ns_name_from_cache(cache : Map[String, Json]) -> String {
   match cache.get("active_namespace") {
     Some(Json::String(name)) =>
       if name.trim().to_string().length() > 0 {
@@ -384,11 +379,15 @@ fn eval_include_candidate_paths(
   let base_path = resolve_eval_include_path(
     base_dir, include_spec, include_lib_dir,
   )
-  if base_path == cwd_path {
-    [cwd_path]
-  } else {
-    [cwd_path, base_path]
+  let lib_path = @vibe_fs.normalize_path(include_lib_dir + "/" + include_spec)
+  let result : Array[String] = [cwd_path]
+  if base_path != cwd_path {
+    result.push(base_path)
   }
+  if lib_path != cwd_path && lib_path != base_path {
+    result.push(lib_path)
+  }
+  result
 }
 
 ///|
@@ -495,6 +494,42 @@ fn try_load_hash_source_from_root(root : String, hash : String) -> String? {
 }
 
 ///|
+/// Resolve version-less lock spec: `vibe/prelude.lock` → find `vibe/prelude@*.lock`
+/// in `lib_dir` and pick the latest by semver string sort.
+fn resolve_versionless_lock(include_spec : String, lib_dir : String) -> String? {
+  if not(include_spec.has_suffix(".lock")) {
+    return None
+  }
+  // Extract base name: "vibe/prelude.lock" → prefix="vibe/prelude", dir_part="vibe"
+  let base = include_spec[0:include_spec.length() - 5].to_string() // strip ".lock"
+  let search_dir = @vibe_fs.normalize_path(
+    lib_dir + "/" + @vibe_fs.parent_path(include_spec),
+  )
+  if not(@os_fs.path_exists(search_dir)) {
+    return None
+  }
+  let entries = @os_fs.read_dir(search_dir) catch { _ => return None }
+  let base_name = path_last_segment(base) // "prelude"
+  let mut best_path : String? = None
+  let mut best_version = ""
+  for entry in entries {
+    // Match pattern: prelude@x.y.z.lock
+    if not(entry.has_suffix(".lock")) {
+      continue
+    }
+    if not(entry.has_prefix(base_name + "@")) {
+      continue
+    }
+    let version = entry[base_name.length() + 1:entry.length() - 5].to_string()
+    if best_path is None || version > best_version {
+      best_path = Some(search_dir + "/" + entry)
+      best_version = version
+    }
+  }
+  best_path
+}
+
+///|
 fn load_eval_include_source(
   include_spec : String,
   base_dir : String,
@@ -520,12 +555,17 @@ fn load_eval_include_source(
   let resolved_path = match path {
     Some(v) => v
     None =>
-      return Err(
-        "include not found: " +
-        include_spec +
-        " -> " +
-        render_eval_include_candidates(candidates),
-      )
+      // Try version-less lock resolution: vibe/foo.lock → vibe/foo@*.lock
+      match resolve_versionless_lock(include_spec, include_lib_dir) {
+        Some(v) => v
+        None =>
+          return Err(
+            "include not found: " +
+            include_spec +
+            " -> " +
+            render_eval_include_candidates(candidates),
+          )
+      }
   }
   let source = @os_fs.read_file_to_string(resolved_path) catch {
     e =>

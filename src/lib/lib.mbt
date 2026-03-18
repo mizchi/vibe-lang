@@ -447,8 +447,7 @@ fn analyze_module(
                     continue
                   }
                   match imported.env.get_struct(source_name) {
-                    Some(struct_def) =>
-                      env.set_struct(target_name, struct_def)
+                    Some(struct_def) => env.set_struct(target_name, struct_def)
                     None =>
                       local_diags.push(
                         missing_export_diagnostic(

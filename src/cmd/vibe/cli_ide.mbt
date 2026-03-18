@@ -1173,8 +1173,7 @@ fn sync_graph_head_for_loaded_db(
   } else {
     compute_function_tracking_json(db, paths, index, cache_obj)
   }
-  match
-    write_cache_graph_head(index_root, graph_head, function_tracking) {
+  match write_cache_graph_head(index_root, graph_head, function_tracking) {
     Ok(_) => ()
     Err(err) => return Err(err)
   }
@@ -1321,7 +1320,6 @@ fn index_verify_cmd(args : Array[String]) -> Unit {
   }
   abort("index verify: failed (" + issues.length().to_string() + " issues)")
 }
-
 
 ///|
 fn index_cmd(args : Array[String]) -> Unit {

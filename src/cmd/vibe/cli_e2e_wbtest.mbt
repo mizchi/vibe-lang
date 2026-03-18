@@ -1660,11 +1660,7 @@ test "cli eval include resolves latest named alias when version omitted" {
     features,
   )
   eval_cmd(
-    [
-      "--db=" + db_path,
-      "--include=vibe/prelude.lock",
-      "--export=" + out_path,
-    ],
+    ["--db=" + db_path, "--include=vibe/prelude.lock", "--export=" + out_path],
     @runtime.ParserMode::VibeMode,
     features,
   )

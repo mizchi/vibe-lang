@@ -1,4 +1,5 @@
-///| Extract ```vibe code blocks from markdown and join them.
+///|
+/// Extract ```vibe code blocks from markdown and join them.
 fn extract_vibe_from_markdown(markdown : String) -> String {
   let lines : Array[String] = markdown
     .split("\n")

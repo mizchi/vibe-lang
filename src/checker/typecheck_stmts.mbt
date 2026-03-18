@@ -26,6 +26,7 @@ pub fn type_check_with_aliases_profile(
     effect_scope_all(),
     false,
     exported_names,
+    is_top_level=true,
   ) catch {
     e => raise e.resolve_vars(env)
   }
@@ -49,6 +50,7 @@ pub fn type_check_with_aliases(
     effect_scope_all(),
     false,
     exported_names,
+    is_top_level=true,
   ) catch {
     e => {
       @profiler.profiler_leave()
@@ -123,6 +125,7 @@ pub fn type_check_with_env(
     effect_scope_all(),
     false,
     exported_names,
+    is_top_level=true,
   ) catch {
     e => {
       @profiler.profiler_leave()
@@ -335,7 +338,9 @@ fn type_check_stmts(
   effects : EffectScope,
   allow_effect : Bool,
   exported_names : Map[String, Bool],
+  is_top_level? : Bool,
 ) -> TypeEnv raise TypeError {
+  let is_top_level = is_top_level.unwrap_or(false)
   let declared_in_scope : Map[String, Bool] = {}
   let has_exports = not(exported_names.is_empty())
   let ensure_fresh_value_binding = fn(
@@ -575,6 +580,9 @@ fn type_check_stmts(
         )
       }
       @core.Stmt::LetMut(name~, expr~, span~) => {
+        if is_top_level {
+          raise TypeError::TopLevelLetMut(name~, span~)
+        }
         ensure_fresh_value_binding(name, span)
         let ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
         ensure_no_toplevel_scoped_ref_escape(env, ty, span)
@@ -1472,9 +1480,7 @@ fn register_enum_def(
     env.set_ctor(ctor_name, CtorInfo::{ type_name: name, params, payload })
     // Also register qualified form: EnumName::CtorName
     let qualified_ctor = name + "::" + ctor_name
-    env.set_ctor(
-      qualified_ctor, CtorInfo::{ type_name: name, params, payload },
-    )
+    env.set_ctor(qualified_ctor, CtorInfo::{ type_name: name, params, payload })
   }
 }
 

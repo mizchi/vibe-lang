@@ -1596,6 +1596,7 @@ fn find_hash_in_path(path : String) -> Int {
   -1
 }
 
+///|
 /// Parse a module reference: path, hash, version ref, or symbol ref.
 /// After parsing a Path, checks for trailing #hash to produce PinnedPath.
 fn AstParser::parse_module_ref(
