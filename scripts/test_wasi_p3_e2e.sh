@@ -54,7 +54,14 @@ echo "WASI P3 E2E Tests"
 echo "========================================"
 
 # Check prerequisites
-if ! require_cmd wasmtime; then log_skip "wasmtime not found"; exit 0; fi
+WASMTIME="${WASMTIME_BIN:-}"
+if [ -z "$WASMTIME" ]; then
+  WASMTIME="$("$SCRIPT_DIR/wasmtime_bin.sh" 2>/dev/null || true)"
+fi
+if [ -z "$WASMTIME" ] || [ ! -x "$WASMTIME" ]; then
+  log_skip "wasmtime not found"; exit 0
+fi
+log_info "Using wasmtime: $WASMTIME ($($WASMTIME --version 2>/dev/null || echo unknown))"
 if ! require_cmd wasm-tools; then log_skip "wasm-tools not found"; exit 0; fi
 if ! require_cmd cargo; then log_skip "cargo not found (needed for Rust adapter build)"; exit 0; fi
 
@@ -107,8 +114,8 @@ VIBE
   # Serve and test
   log_info "Starting wasmtime serve on $SERVE_ADDR..."
   cleanup_serve
-  ( wasmtime serve \
-      -Sp3 \
+  ( "$WASMTIME" serve \
+      -Sp3 -Shttp \
       -W component-model-async=y \
       -W component-model-async-builtins=y \
       --addr "$SERVE_ADDR" \

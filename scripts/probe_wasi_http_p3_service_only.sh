@@ -117,7 +117,7 @@ SERVE_ADDR="127.0.0.1:$SERVE_PORT"
 
 echo "[probe] serve smoke on $SERVE_ADDR"
 ( wasmtime serve \
-    -Sp3 \
+    -Sp3 -Shttp \
     -W component-model-async=y \
     -W component-model-async-builtins=y \
     --addr "$SERVE_ADDR" \

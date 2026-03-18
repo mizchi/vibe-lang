@@ -61,7 +61,7 @@ wasm-tools validate --features all "$COMPOSED_COMPONENT"
 
 echo "[probe] serve on $SERVE_ADDR"
 ( wasmtime serve \
-    -Sp3 \
+    -Sp3 -Shttp \
     -W component-model-async=y \
     -W component-model-async-builtins=y \
     --addr "$SERVE_ADDR" \
