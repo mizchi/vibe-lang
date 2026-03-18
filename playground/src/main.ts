@@ -356,6 +356,7 @@ async function runEval() {
 
   btnRun.disabled = true;
   try {
+    await service.evalReset();
     const evalSource = source + "\n_start()";
     const result = await service.eval({ source: evalSource });
     renderResult(result);
