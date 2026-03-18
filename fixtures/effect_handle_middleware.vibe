@@ -1,0 +1,32 @@
+// Middleware pattern: chain of effect handlers
+// Each layer handles one concern, passes through the rest
+
+effect Auth {
+  GetUser -> String
+}
+
+effect Metrics {
+  RecordLatency(Int) -> Unit
+}
+
+// Inner: business logic uses Auth
+// Outer: metrics wrapper
+let result = handle {
+  // Metrics layer
+  perform Metrics::RecordLatency(42)
+
+  // Auth + business logic layer
+  let user = handle {
+    perform Auth::GetUser
+  } {
+    Auth::GetUser => resume("admin")
+  }
+  String::length(user)
+} {
+  Metrics::RecordLatency(_ms) => resume(0)
+}
+// "admin" → length 5
+result
+
+__DATA__
+{"error_contains": "Unit"}
