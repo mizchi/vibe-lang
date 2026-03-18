@@ -173,7 +173,7 @@ Phase 2 タスク:
 - [x] `handle { body } { Effect::Op(args) => resume(value) }` tail-resumptive inline
 - [x] `resume(value)` — inline expansion (body 直下の perform のみ、関数越えは Phase 3)
 - [x] handle body の effect scope を自動有効化
-- [ ] `with { Effect }` — 名前付き effect set 追跡 (`in_effect: Bool` → `EffectSet`)
+- [x] `with { Effect }` — 名前付き effect set 追跡 (`with { Console }` で `State` は使えない)
 - [ ] 既存 effect (`Error`, `Net`) をこの framework に統合
 - [ ] 関数呼び出しを跨ぐ perform の handler dispatch (CPS or stack switching)
 
