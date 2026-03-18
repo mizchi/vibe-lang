@@ -1,0 +1,100 @@
+import ./handler.vibe {
+  Handler, Request, Response,
+  respond_text, respond_json, respond_empty,
+  request_method, request_url, request_header, request_body,
+  status_ok, status_not_found, status_internal_server_error
+}
+
+// Test: basic text response
+test "respond_text" {
+  let resp = respond_text(200, "hello")
+  assert(resp.status == 200)
+  assert(String::equals(resp.body, "hello"))
+}
+
+// Test: json response
+test "respond_json" {
+  let resp = respond_json(200, "{\"ok\":true}")
+  assert(resp.status == 200)
+  assert(String::contains(resp.body, "ok"))
+}
+
+// Test: empty response
+test "respond_empty" {
+  let resp = respond_empty(204)
+  assert(resp.status == 204)
+  assert(String::equals(resp.body, ""))
+}
+
+// Test: request accessors
+test "request accessors" {
+  let headers = MapBuilder::new()
+  MapBuilder::set(headers, "content-type", "text/plain")
+  let req = Request::{
+    method: "GET",
+    url: "/api/hello",
+    headers: MapBuilder::freeze(headers),
+    body: ""
+  }
+  assert(String::equals(request_method(req), "GET"))
+  assert(String::equals(request_url(req), "/api/hello"))
+  assert(String::equals(request_body(req), ""))
+}
+
+// Test: request header lookup
+test "request header" {
+  let headers = MapBuilder::new()
+  MapBuilder::set(headers, "x-custom", "foo")
+  let req = Request::{
+    method: "POST",
+    url: "/",
+    headers: MapBuilder::freeze(headers),
+    body: "data"
+  }
+  match request_header(req, "x-custom") {
+    Some(v) => assert(String::equals(v, "foo")),
+    None => assert(false)
+  }
+  match request_header(req, "missing") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+// Test: handler struct
+test "handler" {
+  let h = Handler::{
+    serve: (req: Request) -> Response {
+      match request_url(req) {
+        "/hello" => respond_text(200, "world"),
+        _ => respond_empty(404)
+      }
+    }
+  }
+
+  let req_hello = Request::{
+    method: "GET",
+    url: "/hello",
+    headers: MapBuilder::freeze(MapBuilder::new()),
+    body: ""
+  }
+  let resp = (h.serve)(req_hello)
+  assert(resp.status == 200)
+  assert(String::equals(resp.body, "world"))
+
+  let req_missing = Request::{
+    method: "GET",
+    url: "/missing",
+    headers: MapBuilder::freeze(MapBuilder::new()),
+    body: ""
+  }
+  let resp2 = (h.serve)(req_missing)
+  assert(resp2.status == 404)
+}
+
+// Test: status codes
+test "status codes" {
+  assert(status_ok() == 200)
+  assert(status_not_found() == 404)
+  assert(status_internal_server_error() == 500)
+}
