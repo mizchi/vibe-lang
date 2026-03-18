@@ -40,6 +40,37 @@ fn substitute_param_names(
 /// Bind handle arm pattern variables into the arm environment.
 /// For known constructors, bind with the ctor payload type.
 /// Fallback to String binding for unknown constructors (`Error(...)` etc).
+
+///|
+/// Resolve effect operation param types from "Effect::Op" pattern name.
+fn reh_resolve_effect_op_params(
+  env : TypeEnv,
+  qualified_name : String,
+) -> Array[@core.Type]? {
+  // Split "Effect::Op" into effect_name and op_name
+  let mut sep = -1
+  for i = 0; i + 1 < qualified_name.length(); i = i + 1 {
+    if qualified_name[i] == ':' && qualified_name[i + 1] == ':' {
+      sep = i
+      break
+    }
+  }
+  if sep < 0 {
+    return None
+  }
+  let effect_name = qualified_name[0:sep].to_string()
+  let op_name = qualified_name[sep + 2:qualified_name.length()].to_string()
+  match env.effect_defs.get(effect_name) {
+    Some(effect_def) =>
+      match effect_def.ops.get(op_name) {
+        Some(op_sig) => Some(op_sig.params)
+        None => None
+      }
+    None => None
+  }
+}
+
+///|
 fn bind_handle_arm_pat(
   arm_env : TypeEnv,
   env : TypeEnv,
@@ -63,9 +94,29 @@ fn bind_handle_arm_pat(
           }
         }
         None =>
-          for arg in args {
-            if arg is @core.Pat::Bind(name~, ..) {
-              arm_env.set(name, @core.Type::String)
+          // Check if this is an effect operation pattern (Effect::Op)
+          if name.contains("::") {
+            match reh_resolve_effect_op_params(arm_env, name) {
+              Some(op_params) =>
+                for i = 0
+                    i < args.length() && i < op_params.length()
+                    i = i + 1 {
+                  if args[i] is @core.Pat::Bind(name=bind_name, ..) {
+                    arm_env.set(bind_name, op_params[i])
+                  }
+                }
+              None =>
+                for arg in args {
+                  if arg is @core.Pat::Bind(name=bind_name, ..) {
+                    arm_env.set(bind_name, @core.Type::String)
+                  }
+                }
+            }
+          } else {
+            for arg in args {
+              if arg is @core.Pat::Bind(name=bind_name, ..) {
+                arm_env.set(bind_name, @core.Type::String)
+              }
             }
           }
       }

@@ -342,13 +342,12 @@ fn reh_replace_performs_expr(
         body=reh_replace_performs(body, handlers),
         span~,
       )
-    @core.Expr::Handle(body~, arms~, span~) =>
-      // Nested handle: rewrite recursively but don't substitute in inner handlers
-      @core.Expr::Handle(
-        body=reh_replace_performs(body, handlers),
-        arms~,
-        span~,
-      )
+    @core.Expr::Handle(body~, arms~, span~) => {
+      // Nested handle: first rewrite inner handle (may inline its own effects),
+      // then continue replacing outer performs in the rewritten result
+      let inner_rewritten = reh_rewrite_handle(body, arms, span)
+      reh_replace_performs_expr(inner_rewritten, handlers)
+    }
     _ => expr
   }
 }
