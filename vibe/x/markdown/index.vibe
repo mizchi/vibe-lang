@@ -1,0 +1,102 @@
+//# Markdown code block extractor
+//
+// Extracts fenced code blocks from markdown text.
+// Supports ```lang ... ``` syntax.
+
+export let version = "0.1.0"
+
+// A parsed code block with language tag and content
+export struct CodeBlock {
+  lang: String;
+  code: String
+}
+
+// Extract all fenced code blocks from markdown text.
+// Returns an array of CodeBlock with lang and code fields.
+export let extract_code_blocks = (markdown: String) -> Array[CodeBlock] {
+  let lines = Lines::parse(markdown)
+  let blocks = ArrayBuilder::new()
+  let mut buf = ArrayBuilder::new()
+  let mut in_block = false
+  let mut current_lang = ""
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if not(in_block) {
+      if String::starts_with(line, "```") {
+        in_block = true
+        current_lang = String::trim(String::substring(line, 3, String::length(line)))
+        buf = ArrayBuilder::new()
+      } else {
+        // skip non-code lines
+      }
+    } else {
+      if String::equals(String::trim(line), "```") {
+        let code = Lines::stringify(ArrayBuilder::freeze(buf))
+        ArrayBuilder::push(blocks, CodeBlock::{ lang: current_lang, code: code })
+        in_block = false
+        current_lang = ""
+      } else {
+        ArrayBuilder::push(buf, line)
+      }
+    }
+    i += 1
+  }
+  ArrayBuilder::freeze(blocks)
+}
+
+// Extract code blocks filtered by language tag.
+export let extract_code_blocks_by_lang = (markdown: String, lang: String) -> Array[String] {
+  let blocks = extract_code_blocks(markdown)
+  let result = ArrayBuilder::new()
+  let mut i = 0
+  while i < Array::length(blocks) {
+    let block = Array::get(blocks, i)
+    if String::equals(block.lang, lang) {
+      ArrayBuilder::push(result, block.code)
+    }
+    i += 1
+  }
+  ArrayBuilder::freeze(result)
+}
+
+// Extract vibe code blocks and join them into a single source.
+export let extract_vibe_source = (markdown: String) -> String {
+  let blocks = extract_code_blocks_by_lang(markdown, "vibe")
+  String::join(blocks, "\n\n")
+}
+
+test "extract empty" {
+  let blocks = extract_code_blocks("")
+  assert(eq(Array::length(blocks), 0))
+}
+
+test "extract single block" {
+  let md = "# Hello\n\n```vibe\nlet x = 1\n```\n"
+  let blocks = extract_code_blocks(md)
+  assert(eq(Array::length(blocks), 1))
+  assert(String::equals(Array::get(blocks, 0).lang, "vibe"))
+  assert(String::equals(Array::get(blocks, 0).code, "let x = 1"))
+}
+
+test "extract multiple blocks" {
+  let md = "```vibe\nlet a = 1\n```\n\ntext\n\n```js\nconsole.log(1)\n```\n\n```vibe\nlet b = 2\n```\n"
+  let blocks = extract_code_blocks(md)
+  assert(eq(Array::length(blocks), 3))
+  assert(String::equals(Array::get(blocks, 0).lang, "vibe"))
+  assert(String::equals(Array::get(blocks, 1).lang, "js"))
+  assert(String::equals(Array::get(blocks, 2).lang, "vibe"))
+}
+
+test "extract_vibe_source joins vibe blocks" {
+  let md = "```vibe\nlet a = 1\n```\n\n```js\nignored\n```\n\n```vibe\nlet b = 2\n```\n"
+  let source = extract_vibe_source(md)
+  assert(String::equals(source, "let a = 1\n\nlet b = 2"))
+}
+
+test "multiline code block" {
+  let md = "```vibe\nlet rec fib = (n: Int) -> Int {\n  if n < 2 { n }\n  else { fib(n - 1) + fib(n - 2) }\n}\n```\n"
+  let blocks = extract_code_blocks(md)
+  assert(eq(Array::length(blocks), 1))
+  assert(String::contains(Array::get(blocks, 0).code, "fib"))
+}

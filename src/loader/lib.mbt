@@ -1,3 +1,52 @@
+///| Extract ```vibe code blocks from markdown and join them.
+fn extract_vibe_from_markdown(markdown : String) -> String {
+  let lines : Array[String] = markdown
+    .split("\n")
+    .map(StringView::to_string)
+    .collect()
+  let blocks : Array[String] = []
+  let buf : Array[String] = []
+  let mut in_vibe_block = false
+  let mut in_other_block = false
+  for i = 0; i < lines.length(); i = i + 1 {
+    let line = lines[i]
+    if not(in_vibe_block) && not(in_other_block) {
+      if line.has_prefix("```vibe") {
+        in_vibe_block = true
+      } else if line.has_prefix("```") {
+        in_other_block = true
+      }
+    } else if in_vibe_block {
+      if line.trim().to_string() == "```" {
+        let sb = StringBuilder::new()
+        for j, s in buf {
+          if j > 0 {
+            sb.write_string("\n")
+          }
+          sb.write_string(s)
+        }
+        blocks.push(sb.to_string())
+        let _ = buf.drain(0, buf.length())
+        in_vibe_block = false
+      } else {
+        buf.push(line)
+      }
+    } else if in_other_block {
+      if line.trim().to_string() == "```" {
+        in_other_block = false
+      }
+    }
+  }
+  let result = StringBuilder::new()
+  for i, block in blocks {
+    if i > 0 {
+      result.write_string("\n\n")
+    }
+    result.write_string(block)
+  }
+  result.to_string()
+}
+
 ///|
 fn apply_lock_to_db_with_fs(
   db : @runtime.VibeDb,
@@ -124,12 +173,17 @@ fn load_sources_recursive_impl(
   }
   stack.push(norm)
   visited.set(norm, true)
-  let source = match @io.read_string_with(fs, norm) {
+  let raw_source = match @io.read_string_with(fs, norm) {
     Ok(v) => v
     Err(err) => {
       let _ = stack.pop()
       return Err("io: " + err)
     }
+  }
+  let source = if norm.has_suffix(".md") {
+    extract_vibe_from_markdown(raw_source)
+  } else {
+    raw_source
   }
   db.set_source(norm, source)
   let ast = @parser.parse_ast(source) catch {
@@ -184,6 +238,14 @@ fn load_sources_recursive_impl(
             }
           }
           @vibe_core.ModuleRef::Alias(name~) => {
+            // Ensure index.vibe is loaded into db for alias resolution in db_query
+            let index_path = @vibe_fs.normalize_path(base + "/index.vibe")
+            if not(visited.contains(index_path)) {
+              match @io.read_string_with(fs, index_path) {
+                Ok(index_src) => db.set_source(index_path, index_src)
+                Err(_) => ()
+              }
+            }
             let alias_source = match resolve_alias_to_source(base, name, fs) {
               Ok(resolved_source) => resolved_source
               Err(err) => {
@@ -397,7 +459,8 @@ pub fn resolve_entry_path_with_fs(
     resolved.has_suffix(".xm") ||
     resolved.has_suffix(".wasm") ||
     resolved.has_suffix(".db") ||
-    resolved.has_suffix(".lock") {
+    resolved.has_suffix(".lock") ||
+    resolved.has_suffix(".md") {
     return resolved
   }
   let index_entry = @vibe_fs.normalize_path(resolved + "/index.vibe")
