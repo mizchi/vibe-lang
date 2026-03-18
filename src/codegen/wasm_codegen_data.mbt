@@ -328,6 +328,16 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       )
       scan_needs_block(ctx, desugared)
     }
+    @core.Expr::Perform(effect_name~, op_name~, args~, ..) => {
+      let key = effect_name + "::" + op_name
+      if not(ctx.effect_op_imports.contains(key)) {
+        ctx.effect_op_imports[key] = -1
+        ctx.effect_op_param_counts[key] = args.length()
+      }
+      for arg in args {
+        scan_needs_expr(ctx, arg.expr)
+      }
+    }
     _ => ()
   }
 }

@@ -84,6 +84,10 @@ priv struct CodegenCtx {
   mut coverage_base_offset : Int
   mut coverage_base_global_index : Int
   mut coverage_count_global_index : Int
+  // Effect operation imports: "Effect::Op" → import func index
+  effect_op_imports : Map[String, Int]
+  // Effect operation param counts: "Effect::Op" → number of i64 params
+  effect_op_param_counts : Map[String, Int]
   // Exported user functions (export let ...)
   exported_fns : Map[String, Bool]
   // Loop break/continue label offsets (-1 = not in loop)
@@ -219,6 +223,8 @@ fn CodegenCtx::new(
     coverage_base_global_index: -1,
     coverage_count_global_index: -1,
     // Exported user functions
+    effect_op_imports: {},
+    effect_op_param_counts: {},
     exported_fns: {},
     // Loop offsets
     loop_break_offset: -1,

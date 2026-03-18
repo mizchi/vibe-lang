@@ -119,7 +119,23 @@ fn compile_expr(
       )
       compile_block_expr(ctx, buf, desugared)
     }
-    @core.Expr::Perform(..) => raise WasmGenError::Unsupported("perform")
+    @core.Expr::Perform(effect_name~, op_name~, args~, ..) => {
+      let key = effect_name + "::" + op_name
+      let func_idx = match ctx.effect_op_imports.get(key) {
+        Some(idx) => idx
+        None =>
+          raise WasmGenError::Unsupported("perform " + key + ": not registered")
+      }
+      // Push arguments (tagged i64 values)
+      for arg in args {
+        compile_expr(ctx, buf, arg.expr)
+      }
+      // Push closure env (i32 const 0, no captures for imported ops)
+      buf.push((0x41).to_byte()) // i32.const
+      buf.push((0).to_byte()) // 0
+      // call imported function
+      emit_call(buf, func_idx)
+    }
     @core.Expr::Handle(body~, arms~, span~) =>
       compile_expr_handle(ctx, buf, body, arms, span)
     @core.Expr::Fn(span~, ..) => compile_expr_fn(ctx, buf, span)

@@ -616,7 +616,7 @@ fn infer_expr_kind_with(
       let _ = span
       infer_block_kind(ctx, body, locals)
     }
-    @core.Expr::Perform(..) => raise WasmGenError::Unsupported("perform")
+    @core.Expr::Perform(..) => ValueKind::I64 // effect ops return tagged i64
     @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
       let try_kind = infer_block_kind(ctx, body, locals)

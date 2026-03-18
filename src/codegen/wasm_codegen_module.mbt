@@ -221,10 +221,21 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   }
   let exception_type_count = if ctx.need_exceptions { 1 } else { 0 }
   let stack_switching_type_count = if ctx.need_stack_switching { 3 } else { 0 }
+  // Count unique effect op arities for type section
+  let effect_arities_seen : Map[Int, Bool] = {}
+  for key, _ in ctx.effect_op_imports {
+    let arity = match ctx.effect_op_param_counts.get(key) {
+      Some(n) => n
+      None => 0
+    }
+    effect_arities_seen[arity] = true
+  }
+  let effect_type_count = effect_arities_seen.size()
   let total_type_count = builtin_count +
     ctx.fn_sig_order.length() +
     exception_type_count +
-    stack_switching_type_count
+    stack_switching_type_count +
+    effect_type_count
   write_u32_leb(type_sec, total_type_count)
   if ctx.need_js_length {
     type_sec.push((96).to_byte())
@@ -490,6 +501,34 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     type_sec.push((0x5d).to_byte()) // cont type (0x5d per stack-switching spec)
     write_u32_leb(type_sec, ctx.run_func_type_index) // function type index
   }
+  // Effect operation types: (i64^N, i32) -> i64 for each unique param count
+  // The i32 is the closure env param (always present in vibe ABI)
+  let effect_op_type_indices : Map[String, Int] = {}
+  let effect_op_type_by_arity : Map[Int, Int] = {}
+  for key, _ in ctx.effect_op_imports {
+    let arity = match ctx.effect_op_param_counts.get(key) {
+      Some(n) => n
+      None => 0
+    }
+    match effect_op_type_by_arity.get(arity) {
+      Some(idx) => effect_op_type_indices[key] = idx
+      None => {
+        let idx = type_count
+        type_count += 1
+        effect_op_type_by_arity[arity] = idx
+        effect_op_type_indices[key] = idx
+        // Write: (func (param i64*arity i32) (result i64))
+        type_sec.push((96).to_byte()) // func type
+        write_u32_leb(type_sec, arity + 1) // params: N i64 + 1 i32 env
+        for _ in 0..<arity {
+          type_sec.push((126).to_byte()) // i64
+        }
+        type_sec.push((127).to_byte()) // i32 (closure env)
+        write_u32_leb(type_sec, 1) // 1 result
+        type_sec.push((126).to_byte()) // i64
+      }
+    }
+  }
   write_section(buf, 1, type_sec.to_array())
 
   // import section
@@ -545,6 +584,15 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   }
   if ctx.need_http && ctx.http_host_imports {
     func_import_count += 12
+  }
+  // Effect operation imports: each operation becomes one import
+  let effect_op_keys : Array[String] = []
+  for key, _ in ctx.effect_op_imports {
+    effect_op_keys.push(key)
+  }
+  for key in effect_op_keys {
+    ctx.effect_op_imports[key] = func_import_count
+    func_import_count += 1
   }
   let global_import_count = if ctx.use_js_strings {
     ctx.js_strings.names.length()
@@ -791,6 +839,30 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       write_http_host_import(
         import_sec, ctx, "Http::respond", http_host_arity4_type,
       )
+    }
+    // Effect operation imports
+    for key in effect_op_keys {
+      let mut sep = 0
+      let mut found = false
+      for i = 0; i + 1 < key.length(); i = i + 1 {
+        if key[i] == ':' && key[i + 1] == ':' {
+          sep = i
+          found = true
+          break
+        }
+      }
+      if found {
+        let mod_name = key[0:sep].to_string()
+        let fn_name = key[sep + 2:key.length()].to_string()
+        write_name(import_sec, mod_name)
+        write_name(import_sec, fn_name)
+        import_sec.push((0).to_byte()) // func import
+        let type_idx = match effect_op_type_indices.get(key) {
+          Some(idx) => idx
+          None => 0
+        }
+        write_u32_leb(import_sec, type_idx)
+      }
     }
     if ctx.use_js_strings {
       for name in ctx.js_strings.names {
