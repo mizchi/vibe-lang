@@ -207,8 +207,7 @@ fn print_usage() -> Unit {
   println(
     "    ref: push|pull|push-delta|pull-delta <scope> <file>  git/bit distributed refs",
   )
-  println(
-  )
+  println("")
   println("  lsp                         start LSP server (stdin/stdout)")
   println(
     "  parser commands: --syntax vibe|posix-ext|posix-strict (default: vibe; posix=posix-ext; posix profiles are shell/shell-stdin/shell-wasi only)",

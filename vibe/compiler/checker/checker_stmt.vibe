@@ -90,6 +90,45 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
         }
         (env_bind(env, name, t), ns, nc)
       },
+      SLetPat(pat, val) => {
+        let (vt, ns, nc) = check_expr(val, env, defs, s, c)
+        // Bind pattern names with appropriate types
+        let new_env = match pat {
+          PTuple(pats) => match vt {
+            CtTuple(types) => {
+              let mut e = env
+              let mut pi = 0
+              while pi < Array::length(pats) {
+                match Array::get(pats, pi) {
+                  PBind(name) => if pi < Array::length(types) {
+                    e = env_bind(e, name, Array::get(types, pi))
+                  } else {
+                    e = env_bind(e, name, CtUnknown)
+                  },
+                  _ => ()
+                }
+                pi = pi + 1
+              }
+              e
+            },
+            _ => {
+              let mut e = env
+              let mut pi = 0
+              while pi < Array::length(pats) {
+                match Array::get(pats, pi) {
+                  PBind(name) => { e = env_bind(e, name, CtUnknown) },
+                  _ => ()
+                }
+                pi = pi + 1
+              }
+              e
+            }
+          },
+          PBind(name) => env_bind(env, name, vt),
+          _ => env
+        }
+        (new_env, ns, nc)
+      },
       SEnum(_, name, variants) => {
         let resolved_variants = Array::slice([
           ("", Array::slice([
