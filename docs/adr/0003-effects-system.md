@@ -3,6 +3,7 @@
 - Date: 2026-02-16
 - Status: accepted
 - Updated: 2026-02-24 (do 境界検証の廃止)
+- Updated: 2026-03-18 (Model 1 Full Algebraic Effect 方針追加)
 
 ## Context
 
@@ -77,3 +78,33 @@ ADR-0021 でユーザー定義エフェクト（`effect Mut<T> { ... }`）と `p
 - `do {}` はランタイムで shared-mut セマンティクスを提供する（eval_block_shared_mut）ため、AST ノードとしては存続
 - 将来の `{Async}`, `{Net}` 等のエフェクト追加が自然に拡張可能（ADR-0012 参照、延期中）
 - ユーザー定義エフェクトと Component Model 統合は ADR-0021 で計画
+
+## 発展方針: Model 1 Full Algebraic Effect (2026-03-18)
+
+WASI P3 HTTP サポートを契機に、エフェクトシステムの発展方針を決定:
+
+**設計決定**: Request/Response を含むすべての外部 capability を effect として扱う (Model 1)。
+データ受け渡しではなく capability ベース。最小権限・テスト容易性・streaming を重視。
+
+```
+effect HttpRequest {    // incoming request の読み取り capability
+  Method -> String;
+  Url -> String;
+  Header(String) -> Option[String];
+  Body -> String
+}
+
+effect HttpResponse {   // response の書き込み capability
+  Status(Int) -> Unit;
+  Header(String, String) -> Unit;
+  Write(String) -> Unit
+}
+```
+
+実装ロードマップ:
+1. WASM Exceptions の string throw/catch 修正
+2. `effect` 宣言 / `perform` / `resume` / effect handler の言語サポート
+3. Http effect 定義 + P3 adapter 統合
+4. ADR-0027 capability-based DCE との連携
+
+詳細: ADR-0021 の「WASI P3 HTTP の具体例」セクション、`docs/report/support-wasip3.md`

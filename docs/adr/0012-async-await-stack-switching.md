@@ -2,8 +2,11 @@
 
 - Date: 2026-02-17
 - Status: deferred (エラー制御構文は ADR-0016 に統一。Async/Stream 機能自体は延期)
+- Updated: 2026-03-18 (P3 HTTP は ADR-0021 の algebraic effect で実現。Stack Switching は引き続き延期)
 - Note: `{Async}`, `Future[T]`, `Stream[T]` は廃止ではなく延期。
-  WASM Stack Switching の安定化後に ADR-0021 Phase 4 で再検討予定
+  WASM Stack Switching の安定化後に ADR-0021 Phase 4 で再検討予定。
+  P3 HTTP の async handler は wasmtime の component-model-async が処理するため、
+  vibe 側では同期的な effect (perform/resume) として記述可能
 
 ## Context
 

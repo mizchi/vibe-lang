@@ -1,6 +1,7 @@
 # ADR-0021: ミュータビリティを Effect Handler で表現する
 
 - Date: 2026-03-10
+- Updated: 2026-03-18 (P3 HTTP effect 具体例追加)
 - Status: proposed
 - Supersedes: ADR-0017 の Ref[T] 部分 (abandoned。Effect Handler で代替)
 - Extends: ADR-0003 (エフェクトセット検証を `Bool` → 名前付きエフェクトセットに拡張)
@@ -153,6 +154,84 @@ effect Auth {
 `#import` を持たないエフェクト（`Mut`, `State` 等）はローカルエフェクトとして
 ハンドラで消化される。`#import` を持つエフェクトは最終的に WASM import に
 解決されるか、テスト用にハンドラで差し替えられる。
+
+### WASI P3 HTTP の具体例 (2026-03-18)
+
+WASI P3 HTTP を effect + `#import` で表現する設計決定 (Model 1: Full Algebraic Effect)。
+Request/Response ともに effect (capability) として扱い、最小権限・テスト容易性・streaming を実現する。
+
+```
+// P3 incoming request の読み取り capability
+#import("wasi:http/types@0.3.0-rc-2026-02-09")
+effect HttpRequest {
+  Method -> String;
+  Url -> String;
+  Header(String) -> Option[String];
+  Body -> String
+}
+
+// P3 response の書き込み capability
+#import("wasi:http/types@0.3.0-rc-2026-02-09")
+effect HttpResponse {
+  Status(Int) -> Unit;
+  Header(String, String) -> Unit;
+  Write(String) -> Unit
+}
+
+// P3 outbound HTTP client capability
+#import("wasi:http/client@0.3.0-rc-2026-02-09")
+effect HttpClient {
+  Fetch(String, String, String) -> (Int, String)
+}
+```
+
+**Handler**: 必要な capability を `with` で宣言:
+```
+// read + write capability
+let handler = () -> Unit with { HttpRequest, HttpResponse } {
+  let url = perform HttpRequest::Url
+  perform HttpResponse::Status(200)
+  perform HttpResponse::Write("hello")
+}
+
+// middleware: read-only (最小権限)
+let logger = [A](inner: () -> A with { HttpRequest, HttpResponse })
+  -> A with { HttpRequest, HttpResponse } {
+  let url = perform HttpRequest::Url
+  // log(url)
+  inner()
+}
+```
+
+**WIT マッピング**:
+
+| vibe effect | WIT interface | direction |
+|---|---|---|
+| `effect HttpRequest` | `wasi:http/types` (request accessors) | handler が runtime に問い合わせ (import) |
+| `effect HttpResponse` | `wasi:http/types` (response builder) | handler が runtime に指示 (import) |
+| `effect HttpClient` | `wasi:http/client` | handler が runtime に要求 (import) |
+| handler function | `wasi:http/handler.handle` | runtime が handler を呼ぶ (export) |
+
+**codegen パス** (`vibe compile --compose-p3`):
+1. effect operation (`perform HttpRequest::Url`) → WASM import call
+2. handler function → WASM export (`wasi:http/handler.handle`)
+3. P3 adapter (Rust) が WASM import を実装: `HttpRequest::Url` → `request.get_path_with_query()`
+4. P3 adapter が WASM export を呼ぶ: `handle(request)` → vibe handler 実行
+
+**テスト** (effect handler で mock, 外部依存なし):
+```
+handle { handler() } {
+  HttpRequest::Method => resume("GET"),
+  HttpRequest::Url => resume("/test"),
+  HttpRequest::Header(_) => resume(None),
+  HttpRequest::Body => resume(""),
+  HttpResponse::Status(code) => assert(code == 200),
+  HttpResponse::Write(body) => assert(body == "hello")
+}
+```
+
+**ADR-0027 との連携**: `--profile edge` で `HttpClient` が利用不可なら、
+`with { HttpClient }` を使う関数が DCE される。
 
 ## Consequences
 
