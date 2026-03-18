@@ -78,17 +78,17 @@ let unify_binop_candidate = (left_ty: Type, right_ty: Type, target_ty: Type, s: 
   }
 }
 
-let infer_binop_type = (op: String, left_ty: Type, right_ty: Type, s: Subst) -> (Type, Subst) {
+let infer_binop_type = (op: String, left_ty: Type, right_ty: Type, s: Subst) -> (Type, Subst) with { Error } {
   if is_logic_binop(op) {
     match unify_binop_candidate(left_ty, right_ty, CtBool, s) {
       Some(s1) => (CtBool, s1),
-      None => (CtUnknown, s)
+      None => throw(String::concat("type mismatch in '", String::concat(op, "': operands must be Bool")))
     }
   }
   else if is_equality_binop(op) {
     match unify(left_ty, right_ty, s) {
       Some(s1) => (CtBool, s1),
-      None => (CtUnknown, s)
+      None => throw(String::concat("type mismatch in '", String::concat(op, "': operands must have same type")))
     }
   }
   else if is_order_binop(op) {
@@ -96,7 +96,7 @@ let infer_binop_type = (op: String, left_ty: Type, right_ty: Type, s: Subst) -> 
       Some(s1) => (CtBool, s1),
       None => match unify_binop_candidate(left_ty, right_ty, CtDouble, s) {
         Some(s1) => (CtBool, s1),
-        None => (CtUnknown, s)
+        None => throw(String::concat("type mismatch in '", String::concat(op, "': operands must be Int or Double")))
       }
     }
   }
@@ -107,7 +107,7 @@ let infer_binop_type = (op: String, left_ty: Type, right_ty: Type, s: Subst) -> 
         Some(s1) => (CtDouble, s1),
         None => match unify_binop_candidate(left_ty, right_ty, CtString, s) {
           Some(s1) => (CtString, s1),
-          None => (CtUnknown, s)
+          None => throw("type mismatch in '+': operands must be Int, Double, or String")
         }
       }
     }
@@ -119,17 +119,17 @@ let infer_binop_type = (op: String, left_ty: Type, right_ty: Type, s: Subst) -> 
       Some(s1) => (CtInt, s1),
       None => match unify_binop_candidate(left_ty, right_ty, CtDouble, s) {
         Some(s1) => (CtDouble, s1),
-        None => (CtUnknown, s)
+        None => throw(String::concat("type mismatch in '", String::concat(op, "': operands must be Int or Double")))
       }
     }
   }
   else if op == "%" {
     match unify_binop_candidate(left_ty, right_ty, CtInt, s) {
       Some(s1) => (CtInt, s1),
-      None => (CtUnknown, s)
+      None => throw("type mismatch in '%': operands must be Int")
     }
   }
-  else (CtUnknown, s)
+  else throw(String::concat("unknown operator: ", op))
 }
 
 let type_name_prefix = (ty: Type) -> String {
@@ -150,7 +150,7 @@ let type_name_prefix = (ty: Type) -> String {
   }
 }
 
-export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int) -> (Type, Subst, Int) {
+export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int) -> (Type, Subst, Int) with { Error } {
   match expr {
     EInt(_) => (CtInt, s, c),
     EFloat(_) => (CtDouble, s, c),
@@ -174,7 +174,7 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
       },
       None => match lookup_builtin(name) {
         Some(t) => (t, s, c),
-        None => (CtUnknown, s, c)
+        None => throw(String::concat("unknown name: ", name))
       }
     }
     ,
@@ -202,7 +202,14 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
       check_expr(body, env_bind(env, name, vt), defs, s1, c1)
     },
     EIf(cond, then_e, else_e) => {
-      let (_, s1, c1) = check_expr(cond, env, defs, s, c)
+      let (ct, s1, c1) = check_expr(cond, env, defs, s, c)
+      let resolved_ct = subst_apply(s1, ct)
+      match resolved_ct {
+        CtBool => (),
+        CtUnknown => (),
+        CtVar(_) => (),
+        _ => throw("if condition must be Bool")
+      }
       let (tt, s2, c2) = check_expr(then_e, env, defs, s1, c1)
       let (_, s3, c3) = check_expr(else_e, env, defs, s2, c2)
       (tt, s3, c3)
