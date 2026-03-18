@@ -74,17 +74,29 @@ export let _start = () -> Int {
   {
     id: "map-filter",
     source: `let values = [1, 2, 3, 4, 5]
-let doubled = array_map(values, (x: Int) -> Int { x * 2 })
-let evens = array_filter(doubled, (x: Int) -> Bool { x % 2 == 0 })
+let doubled = Array::map(values, (x: Int) -> Int { x * 2 })
+let evens = Array::filter(doubled, (x: Int) -> Bool { x % 2 == 0 })
 
 export let _start = () -> Int {
-  array_fold(evens, 0, (acc: Int, x: Int) -> Int { acc + x })
+  Array::fold(evens, 0, (acc: Int, x: Int) -> Int { acc + x })
 }`,
   },
   {
-    id: "parse-double",
-    source: `export let _start = () -> Int {
-  double_to_int(parse_double("1.5") + parse_double("2.5"))
+    id: "enum-match",
+    source: `enum Shape {
+  Circle(Int);
+  Rect(Int, Int)
+}
+
+let area = (s: Shape) -> Int {
+  match s {
+    Circle(r) => r * r * 3,
+    Rect(w, h) => w * h,
+  }
+}
+
+export let _start = () -> Int {
+  area(Circle(5)) + area(Rect(3, 4))
 }`,
   },
 ];
