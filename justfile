@@ -664,6 +664,20 @@ clean:
 test-component-e2e:
     VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/test_component_e2e.sh
 
+# WASI P3 E2E: compile .vibe → compose-p3 → validate → wasmtime serve → curl
+# Requires: wasmtime (v44+ for serve), wasm-tools, cargo (for Rust adapter build)
+# env: WASMTIME_BIN (override wasmtime binary), VIBE_P3_E2E_PORT (default 18799)
+test-wasi-p3-e2e:
+    scripts/test_wasi_p3_e2e.sh
+
+# WASI P3 E2E with submodule wasmtime v44 (full serve test)
+test-wasi-p3-e2e-v44:
+    WASMTIME_BIN=deps/wasmtime/target/release/wasmtime scripts/test_wasi_p3_e2e.sh
+
+# WASI P3 blocked gate (probe service-only component build + optional serve)
+test-wasi-p3-blocked-gate:
+    VIBE_WASI_HTTP_P3_REQUIRE_READY=0 VIBE_WASI_HTTP_P3_RUN_COMPOSE=0 scripts/test_wasi_http_p3_blocked_gate.sh
+
 # Build a Component Model artifact using wkg + wasm-tools
 component-wkg file out="":
     if [ -n "{{out}}" ]; then \
