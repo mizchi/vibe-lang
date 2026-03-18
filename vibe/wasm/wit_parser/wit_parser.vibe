@@ -1,0 +1,817 @@
+// WIT (WebAssembly Interface Types) Parser
+// Port of mizchi/wit MoonBit package to vibe
+
+//# Types
+
+// --- Tokens ---
+enum WitToken {
+  WTIdent(String);
+  WTKeyword(String);
+  WTSymbol(String);
+  WTStringLit(String);
+  WTNumber(String);
+  WTDoc(String);
+  WTEof
+}
+
+// --- AST Types ---
+enum WitTypeExpr {
+  TyBool;
+  TyU8; TyU16; TyU32; TyU64;
+  TyS8; TyS16; TyS32; TyS64;
+  TyF32; TyF64;
+  TyChar; TyString;
+  TyId(String);
+  TyList(WitTypeExpr);
+  TyOption(WitTypeExpr);
+  TyFuture(WitTypeExpr);
+  TyStream(WitTypeExpr);
+  TyResult(WitTypeExpr, Option[WitTypeExpr]);
+  TyTuple(Array[WitTypeExpr]);
+  TyOwn(String);
+  TyBorrow(String)
+}
+
+// Field: (name, type)
+// Param: (name, type)
+// VariantCase: (name, optional_type)
+
+enum WitFuncKind {
+  FKFreestanding;
+  FKConstructor(String);
+  FKMethod(String);
+  FKStatic(String)
+}
+
+// Function: (name, kind, params, result, docs)
+// Record fields: Array[(String, WitTypeExpr)]
+
+enum WitTypeDef {
+  TDRecord(String, Array[(String, WitTypeExpr)], Option[String]);
+  TDEnum(String, Array[String], Option[String]);
+  TDFlags(String, Array[String], Option[String]);
+  TDVariant(String, Array[(String, Option[WitTypeExpr])], Option[String]);
+  TDAlias(String, WitTypeExpr, Option[String]);
+  TDResource(String, Array[(String, WitFuncKind, Array[(String, WitTypeExpr)], Option[WitTypeExpr], Option[String])], Option[String])
+}
+
+// UsePath: (pkg_ns, pkg_name, pkg_version, interface_name)
+// When no package: ("", "", None, interface_name)
+
+enum WitInterfaceItem {
+  IIUse(String, String, Option[String], String, Array[String]);
+  IITypeDef(WitTypeDef);
+  IIFunction(String, WitFuncKind, Array[(String, WitTypeExpr)], Option[WitTypeExpr], Option[String])
+}
+
+enum WitWorldItem {
+  WIInterface(String, String, Option[String], String);
+  WIFunction(String, WitFuncKind, Array[(String, WitTypeExpr)], Option[WitTypeExpr], Option[String]);
+  WIInlineInterface(String, Option[String], Array[WitInterfaceItem]);
+  WIInclude(String, String, Option[String], String, Array[(String, String)])
+}
+
+// WitFile components:
+// package: (ns, name, version)
+// interfaces: Array[(name, docs, items)]
+// worlds: Array[(name, docs, types, imports, exports)]
+
+//# Functions
+
+// === Lexer ===
+
+let wit_is_ident_start = (c: Int) -> Bool {
+  (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+}
+
+let wit_is_ident_continue = (c: Int) -> Bool {
+  wit_is_ident_start(c) || (c >= 48 && c <= 57) || c == 45
+}
+
+let wit_is_whitespace = (c: Int) -> Bool {
+  c == 32 || c == 9 || c == 10 || c == 13
+}
+
+let wit_is_digit = (c: Int) -> Bool {
+  c >= 48 && c <= 57
+}
+
+let wit_is_keyword = (name: String) -> Bool {
+  name == "package" || name == "world" || name == "interface" ||
+  name == "include" || name == "as" || name == "with" || name == "from" ||
+  name == "record" || name == "enum" || name == "flags" ||
+  name == "variant" || name == "resource" || name == "func" ||
+  name == "constructor" || name == "import" || name == "export" ||
+  name == "use" || name == "type" ||
+  name == "list" || name == "option" || name == "result" ||
+  name == "tuple" || name == "future" || name == "stream" ||
+  name == "own" || name == "borrow" || name == "async" || name == "static" ||
+  name == "bool" || name == "u8" || name == "u16" || name == "u32" || name == "u64" ||
+  name == "s8" || name == "s16" || name == "s32" || name == "s64" ||
+  name == "f32" || name == "f64" || name == "char" || name == "string"
+}
+
+export let wit_tokenize = (src: String) -> Array[WitToken] with { Error } {
+  let len = String::length(src)
+  let tokens = ArrayBuilder::new()
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(src, i)
+    if wit_is_whitespace(c) {
+      i = i + 1
+    } else if c == 47 && (i + 1) < len && String::char_code_at(src, i + 1) == 47 {
+      // "//" comment
+      i = i + 2
+      if i < len && String::char_code_at(src, i) == 47 {
+        i = i + 1
+      }
+      let sb = StringBuilder::new()
+      while i < len && String::char_code_at(src, i) != 10 {
+        StringBuilder::push(sb, String::from_char_code(String::char_code_at(src, i)))
+        i = i + 1
+      }
+      let text = String::trim(StringBuilder::freeze(sb))
+      ArrayBuilder::push(tokens, WTDoc(text))
+    } else if c == 37 {
+      // "%" prefix ident
+      i = i + 1
+      if i < len && wit_is_ident_start(String::char_code_at(src, i)) {
+        let sb = StringBuilder::new()
+        while i < len && wit_is_ident_continue(String::char_code_at(src, i)) {
+          StringBuilder::push(sb, String::from_char_code(String::char_code_at(src, i)))
+          i = i + 1
+        }
+        ArrayBuilder::push(tokens, WTIdent(StringBuilder::freeze(sb)))
+      } else {
+        throw("expected identifier after %")
+      }
+    } else if wit_is_ident_start(c) {
+      let sb = StringBuilder::new()
+      while i < len && wit_is_ident_continue(String::char_code_at(src, i)) {
+        StringBuilder::push(sb, String::from_char_code(String::char_code_at(src, i)))
+        i = i + 1
+      }
+      let name = StringBuilder::freeze(sb)
+      if wit_is_keyword(name) {
+        ArrayBuilder::push(tokens, WTKeyword(name))
+      } else {
+        ArrayBuilder::push(tokens, WTIdent(name))
+      }
+    } else if wit_is_digit(c) {
+      let sb = StringBuilder::new()
+      while i < len && wit_is_digit(String::char_code_at(src, i)) {
+        StringBuilder::push(sb, String::from_char_code(String::char_code_at(src, i)))
+        i = i + 1
+      }
+      // Handle version numbers like 0.2.9
+      while i < len && String::char_code_at(src, i) == 46 && (i + 1) < len && wit_is_digit(String::char_code_at(src, i + 1)) {
+        StringBuilder::push(sb, ".")
+        i = i + 1
+        while i < len && wit_is_digit(String::char_code_at(src, i)) {
+          StringBuilder::push(sb, String::from_char_code(String::char_code_at(src, i)))
+          i = i + 1
+        }
+      }
+      ArrayBuilder::push(tokens, WTNumber(StringBuilder::freeze(sb)))
+    } else if c == 34 {
+      // string literal
+      i = i + 1
+      let sb = StringBuilder::new()
+      while i < len && String::char_code_at(src, i) != 34 {
+        if String::char_code_at(src, i) == 92 {
+          i = i + 1
+          if i >= len { throw("unterminated escape") }
+          let esc = String::char_code_at(src, i)
+          if esc == 110 { StringBuilder::push(sb, String::from_char_code(10)) }
+          else if esc == 116 { StringBuilder::push(sb, String::from_char_code(9)) }
+          else if esc == 114 { StringBuilder::push(sb, String::from_char_code(13)) }
+          else if esc == 34 { StringBuilder::push(sb, String::from_char_code(34)) }
+          else if esc == 92 { StringBuilder::push(sb, String::from_char_code(92)) }
+          else { StringBuilder::push(sb, String::from_char_code(esc)) }
+          i = i + 1
+        } else {
+          StringBuilder::push(sb, String::from_char_code(String::char_code_at(src, i)))
+          i = i + 1
+        }
+      }
+      if i >= len { throw("unterminated string") }
+      i = i + 1
+      ArrayBuilder::push(tokens, WTStringLit(StringBuilder::freeze(sb)))
+    } else if c == 45 && (i + 1) < len && String::char_code_at(src, i + 1) == 62 {
+      // "->"
+      ArrayBuilder::push(tokens, WTSymbol("->"))
+      i = i + 2
+    } else {
+      let sym = if c == 123 { "{" }
+        else if c == 125 { "}" }
+        else if c == 40 { "(" }
+        else if c == 41 { ")" }
+        else if c == 60 { "<" }
+        else if c == 62 { ">" }
+        else if c == 58 { ":" }
+        else if c == 59 { ";" }
+        else if c == 44 { "," }
+        else if c == 46 { "." }
+        else if c == 47 { "/" }
+        else if c == 64 { "@" }
+        else if c == 61 { "=" }
+        else if c == 43 { "+" }
+        else if c == 45 { "-" }
+        else { "" }
+      if sym == "" {
+        throw("unexpected character")
+      }
+      ArrayBuilder::push(tokens, WTSymbol(sym))
+      i = i + 1
+    }
+  }
+  ArrayBuilder::push(tokens, WTEof)
+  ArrayBuilder::freeze(tokens)
+}
+
+// === Parser ===
+
+let wit_tok_is_doc = (tok: WitToken) -> Bool {
+  match tok { WTDoc(_) => true, _ => false }
+}
+
+let wit_tok_is_eof = (tok: WitToken) -> Bool {
+  match tok { WTEof => true, _ => false }
+}
+
+let wit_tok_is_sym = (tok: WitToken, sym: String) -> Bool {
+  match tok { WTSymbol(s) => s == sym, _ => false }
+}
+
+let wit_tok_is_kw = (tok: WitToken, kw: String) -> Bool {
+  match tok { WTKeyword(s) => s == kw, _ => false }
+}
+
+// Parser state: (tokens, pos)
+// We pass pos as array[1] for mutation
+
+let wit_peek = (tokens: Array[WitToken], pos: Array[Int]) -> WitToken {
+  // Skip doc tokens
+  while Array::get(pos, 0) < Array::length(tokens) && wit_tok_is_doc(Array::get(tokens, Array::get(pos, 0))) {
+    pos[0] = Array::get(pos, 0) + 1
+  }
+  if Array::get(pos, 0) < Array::length(tokens) {
+    Array::get(tokens, Array::get(pos, 0))
+  } else {
+    WTEof
+  }
+}
+
+let wit_advance = (tokens: Array[WitToken], pos: Array[Int]) -> WitToken {
+  let tok = wit_peek(tokens, pos)
+  if not(wit_tok_is_eof(tok)) {
+    pos[0] = Array::get(pos, 0) + 1
+  }
+  tok
+}
+
+let wit_match_sym = (tokens: Array[WitToken], pos: Array[Int], sym: String) -> Bool {
+  if wit_tok_is_sym(wit_peek(tokens, pos), sym) {
+    let _ = wit_advance(tokens, pos)
+    true
+  } else {
+    false
+  }
+}
+
+let wit_expect_sym = (tokens: Array[WitToken], pos: Array[Int], sym: String) -> Unit with { Error } {
+  if not(wit_match_sym(tokens, pos, sym)) {
+    throw(String::concat("expected '", String::concat(sym, "'")))
+  }
+}
+
+let wit_match_kw = (tokens: Array[WitToken], pos: Array[Int], kw: String) -> Bool {
+  if wit_tok_is_kw(wit_peek(tokens, pos), kw) {
+    let _ = wit_advance(tokens, pos)
+    true
+  } else {
+    false
+  }
+}
+
+let wit_expect_kw = (tokens: Array[WitToken], pos: Array[Int], kw: String) -> Unit with { Error } {
+  if not(wit_match_kw(tokens, pos, kw)) {
+    throw(String::concat("expected '", String::concat(kw, "'")))
+  }
+}
+
+let wit_expect_ident = (tokens: Array[WitToken], pos: Array[Int]) -> String with { Error } {
+  match wit_peek(tokens, pos) {
+    WTIdent(s) => { let _ = wit_advance(tokens, pos); s },
+    _ => { throw("expected identifier"); "" }
+  }
+}
+
+let wit_take_docs = (tokens: Array[WitToken], pos: Array[Int]) -> Option[String] {
+  let sb = StringBuilder::new()
+  let mut count = 0
+  while Array::get(pos, 0) < Array::length(tokens) {
+    match Array::get(tokens, Array::get(pos, 0)) {
+      WTDoc(text) => {
+        if count > 0 { StringBuilder::push(sb, String::from_char_code(10)) }
+        let mut j = 0
+        while j < String::length(text) {
+          StringBuilder::push(sb, String::from_char_code(String::char_code_at(text, j)))
+          j = j + 1
+        }
+        pos[0] = Array::get(pos, 0) + 1
+        count = count + 1
+      },
+      _ => { break }
+    }
+  }
+  if count > 0 { Some(StringBuilder::freeze(sb)) } else { None }
+}
+
+// --- Type expression parser ---
+
+let rec wit_parse_type_expr = (tokens: Array[WitToken], pos: Array[Int]) -> WitTypeExpr with { Error } {
+  let tok = wit_peek(tokens, pos)
+  match tok {
+    WTKeyword(kw) => {
+      if kw == "bool" { let _ = wit_advance(tokens, pos); TyBool }
+      else if kw == "u8" { let _ = wit_advance(tokens, pos); TyU8 }
+      else if kw == "u16" { let _ = wit_advance(tokens, pos); TyU16 }
+      else if kw == "u32" { let _ = wit_advance(tokens, pos); TyU32 }
+      else if kw == "u64" { let _ = wit_advance(tokens, pos); TyU64 }
+      else if kw == "s8" { let _ = wit_advance(tokens, pos); TyS8 }
+      else if kw == "s16" { let _ = wit_advance(tokens, pos); TyS16 }
+      else if kw == "s32" { let _ = wit_advance(tokens, pos); TyS32 }
+      else if kw == "s64" { let _ = wit_advance(tokens, pos); TyS64 }
+      else if kw == "f32" { let _ = wit_advance(tokens, pos); TyF32 }
+      else if kw == "f64" { let _ = wit_advance(tokens, pos); TyF64 }
+      else if kw == "char" { let _ = wit_advance(tokens, pos); TyChar }
+      else if kw == "string" { let _ = wit_advance(tokens, pos); TyString }
+      else if kw == "list" {
+        let _ = wit_advance(tokens, pos)
+        wit_expect_sym(tokens, pos, "<")
+        let inner = wit_parse_type_expr(tokens, pos)
+        wit_expect_sym(tokens, pos, ">")
+        TyList(inner)
+      }
+      else if kw == "option" {
+        let _ = wit_advance(tokens, pos)
+        wit_expect_sym(tokens, pos, "<")
+        let inner = wit_parse_type_expr(tokens, pos)
+        wit_expect_sym(tokens, pos, ">")
+        TyOption(inner)
+      }
+      else if kw == "future" {
+        let _ = wit_advance(tokens, pos)
+        wit_expect_sym(tokens, pos, "<")
+        let inner = wit_parse_type_expr(tokens, pos)
+        wit_expect_sym(tokens, pos, ">")
+        TyFuture(inner)
+      }
+      else if kw == "stream" {
+        let _ = wit_advance(tokens, pos)
+        wit_expect_sym(tokens, pos, "<")
+        let inner = wit_parse_type_expr(tokens, pos)
+        wit_expect_sym(tokens, pos, ">")
+        TyStream(inner)
+      }
+      else if kw == "result" {
+        let _ = wit_advance(tokens, pos)
+        if wit_match_sym(tokens, pos, "<") {
+          let ok_ty = wit_parse_type_expr(tokens, pos)
+          let err_ty = if wit_match_sym(tokens, pos, ",") {
+            Some(wit_parse_type_expr(tokens, pos))
+          } else { None }
+          wit_expect_sym(tokens, pos, ">")
+          TyResult(ok_ty, err_ty)
+        } else {
+          TyResult(TyTuple(Array::slice([TyBool], 0, 0)), Some(TyTuple(Array::slice([TyBool], 0, 0))))
+        }
+      }
+      else if kw == "tuple" {
+        let _ = wit_advance(tokens, pos)
+        wit_expect_sym(tokens, pos, "<")
+        let items = ArrayBuilder::new()
+        if not(wit_match_sym(tokens, pos, ">")) {
+          let first = wit_parse_type_expr(tokens, pos)
+          ArrayBuilder::push(items, first)
+          while wit_match_sym(tokens, pos, ",") {
+            if wit_tok_is_sym(wit_peek(tokens, pos), ">") { break }
+            ArrayBuilder::push(items, wit_parse_type_expr(tokens, pos))
+          }
+          wit_expect_sym(tokens, pos, ">")
+        }
+        TyTuple(ArrayBuilder::freeze(items))
+      }
+      else if kw == "own" {
+        let _ = wit_advance(tokens, pos)
+        wit_expect_sym(tokens, pos, "<")
+        let name = wit_expect_ident(tokens, pos)
+        wit_expect_sym(tokens, pos, ">")
+        TyOwn(name)
+      }
+      else if kw == "borrow" {
+        let _ = wit_advance(tokens, pos)
+        wit_expect_sym(tokens, pos, "<")
+        let name = wit_expect_ident(tokens, pos)
+        wit_expect_sym(tokens, pos, ">")
+        TyBorrow(name)
+      }
+      else { throw(String::concat("unexpected keyword in type: ", kw)); TyBool }
+    },
+    WTIdent(name) => {
+      let _ = wit_advance(tokens, pos)
+      if name == "_" { TyTuple(Array::slice([TyBool], 0, 0)) } else { TyId(name) }
+    },
+    _ => { throw("expected type expression"); TyBool }
+  }
+}
+
+// --- Params parser ---
+
+let wit_parse_params = (tokens: Array[WitToken], pos: Array[Int]) -> Array[(String, WitTypeExpr)] with { Error } {
+  wit_expect_sym(tokens, pos, "(")
+  let params = ArrayBuilder::new()
+  if not(wit_match_sym(tokens, pos, ")")) {
+    let name = wit_expect_ident(tokens, pos)
+    wit_expect_sym(tokens, pos, ":")
+    let ty = wit_parse_type_expr(tokens, pos)
+    ArrayBuilder::push(params, (name, ty))
+    while wit_match_sym(tokens, pos, ",") {
+      if wit_tok_is_sym(wit_peek(tokens, pos), ")") { break }
+      let n = wit_expect_ident(tokens, pos)
+      wit_expect_sym(tokens, pos, ":")
+      let t = wit_parse_type_expr(tokens, pos)
+      ArrayBuilder::push(params, (n, t))
+    }
+    wit_expect_sym(tokens, pos, ")")
+  }
+  ArrayBuilder::freeze(params)
+}
+
+// --- Function parser ---
+
+let wit_parse_function = (tokens: Array[WitToken], pos: Array[Int], kind: WitFuncKind, docs: Option[String]) -> (String, WitFuncKind, Array[(String, WitTypeExpr)], Option[WitTypeExpr], Option[String]) with { Error } {
+  let name = wit_expect_ident(tokens, pos)
+  wit_expect_sym(tokens, pos, ":")
+  let _ = wit_match_kw(tokens, pos, "async")
+  wit_expect_kw(tokens, pos, "func")
+  let params = wit_parse_params(tokens, pos)
+  let result = if wit_match_sym(tokens, pos, "->") {
+    Some(wit_parse_type_expr(tokens, pos))
+  } else { None }
+  wit_expect_sym(tokens, pos, ";")
+  (name, kind, params, result, docs)
+}
+
+// --- Type definition parsers ---
+
+let wit_parse_record = (tokens: Array[WitToken], pos: Array[Int], name: String, docs: Option[String]) -> WitTypeDef with { Error } {
+  wit_expect_sym(tokens, pos, "{")
+  let fields = ArrayBuilder::new()
+  while not(wit_match_sym(tokens, pos, "}")) {
+    let fname = wit_expect_ident(tokens, pos)
+    wit_expect_sym(tokens, pos, ":")
+    let ty = wit_parse_type_expr(tokens, pos)
+    ArrayBuilder::push(fields, (fname, ty))
+    if not(wit_match_sym(tokens, pos, ",")) {
+      wit_expect_sym(tokens, pos, "}")
+      break
+    }
+  }
+  TDRecord(name, ArrayBuilder::freeze(fields), docs)
+}
+
+let wit_parse_enum = (tokens: Array[WitToken], pos: Array[Int], name: String, docs: Option[String]) -> WitTypeDef with { Error } {
+  wit_expect_sym(tokens, pos, "{")
+  let cases = ArrayBuilder::new()
+  while not(wit_match_sym(tokens, pos, "}")) {
+    ArrayBuilder::push(cases, wit_expect_ident(tokens, pos))
+    if not(wit_match_sym(tokens, pos, ",")) {
+      wit_expect_sym(tokens, pos, "}")
+      break
+    }
+  }
+  TDEnum(name, ArrayBuilder::freeze(cases), docs)
+}
+
+let wit_parse_flags = (tokens: Array[WitToken], pos: Array[Int], name: String, docs: Option[String]) -> WitTypeDef with { Error } {
+  wit_expect_sym(tokens, pos, "{")
+  let cases = ArrayBuilder::new()
+  while not(wit_match_sym(tokens, pos, "}")) {
+    ArrayBuilder::push(cases, wit_expect_ident(tokens, pos))
+    if not(wit_match_sym(tokens, pos, ",")) {
+      wit_expect_sym(tokens, pos, "}")
+      break
+    }
+  }
+  TDFlags(name, ArrayBuilder::freeze(cases), docs)
+}
+
+let wit_parse_variant = (tokens: Array[WitToken], pos: Array[Int], name: String, docs: Option[String]) -> WitTypeDef with { Error } {
+  wit_expect_sym(tokens, pos, "{")
+  let cases = ArrayBuilder::new()
+  while not(wit_match_sym(tokens, pos, "}")) {
+    let cname = wit_expect_ident(tokens, pos)
+    let payload = if wit_match_sym(tokens, pos, "(") {
+      let ty = wit_parse_type_expr(tokens, pos)
+      wit_expect_sym(tokens, pos, ")")
+      Some(ty)
+    } else { None }
+    ArrayBuilder::push(cases, (cname, payload))
+    if not(wit_match_sym(tokens, pos, ",")) {
+      wit_expect_sym(tokens, pos, "}")
+      break
+    }
+  }
+  TDVariant(name, ArrayBuilder::freeze(cases), docs)
+}
+
+let wit_parse_type_alias = (tokens: Array[WitToken], pos: Array[Int], name: String, docs: Option[String]) -> WitTypeDef with { Error } {
+  wit_expect_sym(tokens, pos, "=")
+  let ty = wit_parse_type_expr(tokens, pos)
+  wit_expect_sym(tokens, pos, ";")
+  TDAlias(name, ty, docs)
+}
+
+let wit_parse_resource = (tokens: Array[WitToken], pos: Array[Int], name: String, docs: Option[String]) -> WitTypeDef with { Error } {
+  if wit_match_sym(tokens, pos, ";") {
+    TDResource(name, Array::slice([("", FKFreestanding, Array::slice([("", TyBool)], 0, 0), None, None)], 0, 0), docs)
+  } else {
+    wit_expect_sym(tokens, pos, "{")
+    let funcs = ArrayBuilder::new()
+    while not(wit_match_sym(tokens, pos, "}")) {
+      let fdocs = wit_take_docs(tokens, pos)
+      if wit_match_kw(tokens, pos, "constructor") {
+        let params = wit_parse_params(tokens, pos)
+        let result = if wit_match_sym(tokens, pos, "->") {
+          Some(wit_parse_type_expr(tokens, pos))
+        } else { None }
+        wit_expect_sym(tokens, pos, ";")
+        ArrayBuilder::push(funcs, ("constructor", FKConstructor(name), params, result, fdocs))
+      } else {
+        let fname = wit_expect_ident(tokens, pos)
+        wit_expect_sym(tokens, pos, ":")
+        let mut is_static = false
+        let _ = wit_match_kw(tokens, pos, "async")
+        if wit_match_kw(tokens, pos, "static") {
+          is_static = true
+        }
+        wit_expect_kw(tokens, pos, "func")
+        let params = wit_parse_params(tokens, pos)
+        let result = if wit_match_sym(tokens, pos, "->") {
+          Some(wit_parse_type_expr(tokens, pos))
+        } else { None }
+        wit_expect_sym(tokens, pos, ";")
+        let kind = if is_static { FKStatic(name) } else { FKMethod(name) }
+        ArrayBuilder::push(funcs, (fname, kind, params, result, fdocs))
+      }
+    }
+    TDResource(name, ArrayBuilder::freeze(funcs), docs)
+  }
+}
+
+// --- Use declaration ---
+
+let wit_parse_use_path = (tokens: Array[WitToken], pos: Array[Int]) -> (String, String, Option[String], String) with { Error } {
+  let first = wit_expect_ident(tokens, pos)
+  if wit_match_sym(tokens, pos, ":") {
+    let pkg_name = wit_expect_ident(tokens, pos)
+    let mut version: Option[String] = None
+    if wit_match_sym(tokens, pos, "@") {
+      // version
+      let sb = StringBuilder::new()
+      match wit_peek(tokens, pos) {
+        WTNumber(n) => { let _ = wit_advance(tokens, pos); let mut k = 0; while k < String::length(n) { StringBuilder::push(sb, String::from_char_code(String::char_code_at(n, k))); k = k + 1 } },
+        _ => throw("expected version number")
+      }
+      version = Some(StringBuilder::freeze(sb))
+    }
+    wit_expect_sym(tokens, pos, "/")
+    let iface = wit_expect_ident(tokens, pos)
+    (first, pkg_name, version, iface)
+  } else {
+    ("", "", None, first)
+  }
+}
+
+let wit_parse_use_decl = (tokens: Array[WitToken], pos: Array[Int]) -> WitInterfaceItem with { Error } {
+  let (ns, pkg_name, version, iface) = wit_parse_use_path(tokens, pos)
+  wit_expect_sym(tokens, pos, ".")
+  wit_expect_sym(tokens, pos, "{")
+  let names = ArrayBuilder::new()
+  while not(wit_match_sym(tokens, pos, "}")) {
+    ArrayBuilder::push(names, wit_expect_ident(tokens, pos))
+    if not(wit_match_sym(tokens, pos, ",")) {
+      wit_expect_sym(tokens, pos, "}")
+      break
+    }
+  }
+  wit_expect_sym(tokens, pos, ";")
+  IIUse(ns, pkg_name, version, iface, ArrayBuilder::freeze(names))
+}
+
+// --- Interface items ---
+
+let wit_parse_interface_items = (tokens: Array[WitToken], pos: Array[Int]) -> Array[WitInterfaceItem] with { Error } {
+  wit_expect_sym(tokens, pos, "{")
+  let items = ArrayBuilder::new()
+  while not(wit_match_sym(tokens, pos, "}")) {
+    let docs = wit_take_docs(tokens, pos)
+    if wit_match_kw(tokens, pos, "use") {
+      ArrayBuilder::push(items, wit_parse_use_decl(tokens, pos))
+    } else if wit_match_kw(tokens, pos, "record") {
+      let name = wit_expect_ident(tokens, pos)
+      ArrayBuilder::push(items, IITypeDef(wit_parse_record(tokens, pos, name, docs)))
+    } else if wit_match_kw(tokens, pos, "enum") {
+      let name = wit_expect_ident(tokens, pos)
+      ArrayBuilder::push(items, IITypeDef(wit_parse_enum(tokens, pos, name, docs)))
+    } else if wit_match_kw(tokens, pos, "flags") {
+      let name = wit_expect_ident(tokens, pos)
+      ArrayBuilder::push(items, IITypeDef(wit_parse_flags(tokens, pos, name, docs)))
+    } else if wit_match_kw(tokens, pos, "variant") {
+      let name = wit_expect_ident(tokens, pos)
+      ArrayBuilder::push(items, IITypeDef(wit_parse_variant(tokens, pos, name, docs)))
+    } else if wit_match_kw(tokens, pos, "resource") {
+      let name = wit_expect_ident(tokens, pos)
+      ArrayBuilder::push(items, IITypeDef(wit_parse_resource(tokens, pos, name, docs)))
+    } else if wit_match_kw(tokens, pos, "type") {
+      let name = wit_expect_ident(tokens, pos)
+      ArrayBuilder::push(items, IITypeDef(wit_parse_type_alias(tokens, pos, name, docs)))
+    } else {
+      let (fname, kind, params, result, _) = wit_parse_function(tokens, pos, FKFreestanding, docs)
+      ArrayBuilder::push(items, IIFunction(fname, kind, params, result, docs))
+    }
+  }
+  ArrayBuilder::freeze(items)
+}
+
+// --- World parser ---
+
+let wit_parse_world = (tokens: Array[WitToken], pos: Array[Int], docs: Option[String]) -> (String, Option[String], Array[WitTypeDef], Array[WitWorldItem], Array[WitWorldItem]) with { Error } {
+  let name = wit_expect_ident(tokens, pos)
+  wit_expect_sym(tokens, pos, "{")
+  let types = ArrayBuilder::new()
+  let imports = ArrayBuilder::new()
+  let exports = ArrayBuilder::new()
+  while not(wit_match_sym(tokens, pos, "}")) {
+    let item_docs = wit_take_docs(tokens, pos)
+    if wit_match_kw(tokens, pos, "record") {
+      let tname = wit_expect_ident(tokens, pos)
+      ArrayBuilder::push(types, wit_parse_record(tokens, pos, tname, item_docs))
+    } else if wit_match_kw(tokens, pos, "enum") {
+      let tname = wit_expect_ident(tokens, pos)
+      ArrayBuilder::push(types, wit_parse_enum(tokens, pos, tname, item_docs))
+    } else if wit_match_kw(tokens, pos, "flags") {
+      let tname = wit_expect_ident(tokens, pos)
+      ArrayBuilder::push(types, wit_parse_flags(tokens, pos, tname, item_docs))
+    } else if wit_match_kw(tokens, pos, "variant") {
+      let tname = wit_expect_ident(tokens, pos)
+      ArrayBuilder::push(types, wit_parse_variant(tokens, pos, tname, item_docs))
+    } else if wit_match_kw(tokens, pos, "resource") {
+      let tname = wit_expect_ident(tokens, pos)
+      ArrayBuilder::push(types, wit_parse_resource(tokens, pos, tname, item_docs))
+    } else if wit_match_kw(tokens, pos, "type") {
+      let tname = wit_expect_ident(tokens, pos)
+      ArrayBuilder::push(types, wit_parse_type_alias(tokens, pos, tname, item_docs))
+    } else if wit_match_kw(tokens, pos, "import") {
+      // Check if func decl or interface reference
+      match wit_peek(tokens, pos) {
+        WTIdent(_) => {
+          // peek ahead: ident ":" "func" => function decl
+          // ident ":" "interface" => inline interface
+          // otherwise => use path
+          let iname = wit_expect_ident(tokens, pos)
+          if wit_match_sym(tokens, pos, ":") {
+            if wit_match_kw(tokens, pos, "func") {
+              let params = wit_parse_params(tokens, pos)
+              let result = if wit_match_sym(tokens, pos, "->") { Some(wit_parse_type_expr(tokens, pos)) } else { None }
+              wit_expect_sym(tokens, pos, ";")
+              ArrayBuilder::push(imports, WIFunction(iname, FKFreestanding, params, result, item_docs))
+            } else if wit_match_kw(tokens, pos, "interface") {
+              let items = wit_parse_interface_items(tokens, pos)
+              ArrayBuilder::push(imports, WIInlineInterface(iname, item_docs, items))
+            } else {
+              throw("expected 'func' or 'interface' after ':'")
+            }
+          } else {
+            // simple interface ref: must be ns:pkg/iface or just iface
+            // We already consumed the first ident. Need to handle use path.
+            // Since we consumed one ident, check for ":"
+            // Actually we need to reconstruct. The simplest is to just use it as local iface.
+            wit_expect_sym(tokens, pos, ";")
+            ArrayBuilder::push(imports, WIInterface("", "", None, iname))
+          }
+        },
+        _ => {
+          throw("expected import item")
+        }
+      }
+    } else if wit_match_kw(tokens, pos, "export") {
+      match wit_peek(tokens, pos) {
+        WTIdent(_) => {
+          let iname = wit_expect_ident(tokens, pos)
+          if wit_match_sym(tokens, pos, ":") {
+            if wit_match_kw(tokens, pos, "func") {
+              let params = wit_parse_params(tokens, pos)
+              let result = if wit_match_sym(tokens, pos, "->") { Some(wit_parse_type_expr(tokens, pos)) } else { None }
+              wit_expect_sym(tokens, pos, ";")
+              ArrayBuilder::push(exports, WIFunction(iname, FKFreestanding, params, result, item_docs))
+            } else if wit_match_kw(tokens, pos, "interface") {
+              let items = wit_parse_interface_items(tokens, pos)
+              ArrayBuilder::push(exports, WIInlineInterface(iname, item_docs, items))
+            } else {
+              throw("expected 'func' or 'interface' after ':'")
+            }
+          } else {
+            wit_expect_sym(tokens, pos, ";")
+            ArrayBuilder::push(exports, WIInterface("", "", None, iname))
+          }
+        },
+        _ => {
+          throw("expected export item")
+        }
+      }
+    } else if wit_match_kw(tokens, pos, "include") {
+      let (ns, pkg, ver, iface) = wit_parse_use_path(tokens, pos)
+      let renames = ArrayBuilder::new()
+      if wit_match_kw(tokens, pos, "with") {
+        wit_expect_sym(tokens, pos, "{")
+        while not(wit_match_sym(tokens, pos, "}")) {
+          let from_name = wit_expect_ident(tokens, pos)
+          wit_expect_kw(tokens, pos, "as")
+          let to_name = wit_expect_ident(tokens, pos)
+          ArrayBuilder::push(renames, (from_name, to_name))
+          if not(wit_match_sym(tokens, pos, ",")) {
+            wit_expect_sym(tokens, pos, "}")
+            break
+          }
+        }
+      }
+      wit_expect_sym(tokens, pos, ";")
+      ArrayBuilder::push(imports, WIInclude(ns, pkg, ver, iface, ArrayBuilder::freeze(renames)))
+    } else {
+      throw("unexpected world item")
+    }
+  }
+  (name, docs, ArrayBuilder::freeze(types), ArrayBuilder::freeze(imports), ArrayBuilder::freeze(exports))
+}
+
+// --- Top-level parser ---
+
+// Returns: (package, interfaces, worlds)
+// package: Option[(ns, name, version)]
+// interfaces: Array[(name, docs, items)]
+// worlds: Array[(name, docs, types, imports, exports)]
+export let wit_parse = (source: String) -> (
+  Option[(String, String, Option[String])],
+  Array[(String, Option[String], Array[WitInterfaceItem])],
+  Array[(String, Option[String], Array[WitTypeDef], Array[WitWorldItem], Array[WitWorldItem])]
+) with { Error } {
+  let tokens = wit_tokenize(source)
+  let pos = [0]
+  let mut pkg: Option[(String, String, Option[String])] = None
+  let interfaces = ArrayBuilder::new()
+  let worlds = ArrayBuilder::new()
+  while not(wit_tok_is_eof(wit_peek(tokens, pos))) {
+    let docs = wit_take_docs(tokens, pos)
+    if wit_match_kw(tokens, pos, "package") {
+      let ns = wit_expect_ident(tokens, pos)
+      wit_expect_sym(tokens, pos, ":")
+      let name = wit_expect_ident(tokens, pos)
+      let mut version: Option[String] = None
+      if wit_match_sym(tokens, pos, "@") {
+        match wit_peek(tokens, pos) {
+          WTNumber(n) => { let _ = wit_advance(tokens, pos); version = Some(n) },
+          _ => throw("expected version")
+        }
+      }
+      wit_expect_sym(tokens, pos, ";")
+      pkg = Some((ns, name, version))
+    } else if wit_match_kw(tokens, pos, "interface") {
+      let name = wit_expect_ident(tokens, pos)
+      let items = wit_parse_interface_items(tokens, pos)
+      ArrayBuilder::push(interfaces, (name, docs, items))
+    } else if wit_match_kw(tokens, pos, "world") {
+      let w = wit_parse_world(tokens, pos, docs)
+      ArrayBuilder::push(worlds, w)
+    } else {
+      throw("unexpected top-level item")
+    }
+  }
+  (pkg, ArrayBuilder::freeze(interfaces), ArrayBuilder::freeze(worlds))
+}
+
+//# Misc
+
+export {
+  WitToken, WTIdent, WTKeyword, WTSymbol, WTStringLit, WTNumber, WTDoc, WTEof,
+  WitTypeExpr, TyBool, TyU8, TyU16, TyU32, TyU64, TyS8, TyS16, TyS32, TyS64,
+  TyF32, TyF64, TyChar, TyString, TyId, TyList, TyOption, TyFuture, TyStream,
+  TyResult, TyTuple, TyOwn, TyBorrow,
+  WitFuncKind, FKFreestanding, FKConstructor, FKMethod, FKStatic,
+  WitTypeDef, TDRecord, TDEnum, TDFlags, TDVariant, TDAlias, TDResource,
+  WitInterfaceItem, IIUse, IITypeDef, IIFunction,
+  WitWorldItem, WIInterface, WIFunction, WIInlineInterface, WIInclude,
+  wit_tokenize, wit_parse
+}

@@ -1,0 +1,291 @@
+import ./wit_parser.vibe {
+  wit_tokenize, wit_parse,
+  WitToken, WTIdent, WTKeyword, WTSymbol, WTEof, WTDoc,
+  WitTypeExpr, TyBool, TyU32, TyString, TyId, TyList, TyOption, TyResult, TyTuple,
+  WitTypeDef, TDRecord, TDEnum, TDFlags, TDVariant, TDAlias, TDResource,
+  WitInterfaceItem, IIUse, IITypeDef, IIFunction,
+  WitWorldItem, WIInterface, WIFunction, WIInlineInterface,
+  WitFuncKind, FKFreestanding
+}
+
+//# Functions
+
+let tok_count = (source: String) -> Int with { Error } {
+  Array::length(wit_tokenize(source))
+}
+
+let parse_ok = (source: String) -> Bool {
+  handle {
+    let _ = wit_parse(source)
+    true
+  } { Error(_) => false }
+}
+
+//# Misc
+
+// --- Lexer tests ---
+
+test "tokenize empty" {
+  assert(eq(tok_count(""), 1))
+}
+
+test "tokenize keywords" {
+  let tokens = wit_tokenize("interface world func")
+  assert(eq(Array::length(tokens), 4))
+  match Array::get(tokens, 0) {
+    WTKeyword(k) => assert(k == "interface"),
+    _ => assert(false)
+  }
+  match Array::get(tokens, 1) {
+    WTKeyword(k) => assert(k == "world"),
+    _ => assert(false)
+  }
+  match Array::get(tokens, 2) {
+    WTKeyword(k) => assert(k == "func"),
+    _ => assert(false)
+  }
+}
+
+test "tokenize idents" {
+  let tokens = wit_tokenize("my-name foo-bar")
+  assert(eq(Array::length(tokens), 3))
+  match Array::get(tokens, 0) {
+    WTIdent(s) => assert(s == "my-name"),
+    _ => assert(false)
+  }
+}
+
+test "tokenize symbols" {
+  let tokens = wit_tokenize("{ } ( ) < > : ; , . / -> =")
+  assert(eq(Array::length(tokens), 14))
+}
+
+test "tokenize doc comment" {
+  let tokens = wit_tokenize("/// hello world\ninterface")
+  // Doc token + Keyword + Eof
+  assert(eq(Array::length(tokens), 3))
+  match Array::get(tokens, 0) {
+    WTDoc(text) => assert(text == "hello world"),
+    _ => assert(false)
+  }
+}
+
+test "tokenize version number" {
+  let tokens = wit_tokenize("0.2.9")
+  assert(eq(Array::length(tokens), 2))
+  match Array::get(tokens, 0) {
+    WTNumber(n) => assert(n == "0.2.9"),
+    _ => assert(false)
+  }
+}
+
+// --- Parser tests ---
+
+test "parse empty interface" {
+  let (pkg, ifaces, worlds) = wit_parse("interface empty {}")
+  assert(eq(Array::length(ifaces), 1))
+  assert(eq(Array::length(worlds), 0))
+  let (name, _, items) = Array::get(ifaces, 0)
+  assert(name == "empty")
+  assert(eq(Array::length(items), 0))
+}
+
+test "parse interface with func" {
+  let src = "interface greet {\n  greet: func(name: string) -> string;\n}"
+  let (_, ifaces, _) = wit_parse(src)
+  assert(eq(Array::length(ifaces), 1))
+  let (name, _, items) = Array::get(ifaces, 0)
+  assert(name == "greet")
+  assert(eq(Array::length(items), 1))
+  match Array::get(items, 0) {
+    IIFunction(fname, _, params, result, _) => {
+      assert(fname == "greet")
+      assert(eq(Array::length(params), 1))
+      let (pname, pty) = Array::get(params, 0)
+      assert(pname == "name")
+      match pty { TyString => assert(true), _ => assert(false) }
+      match result {
+        Some(rty) => match rty { TyString => assert(true), _ => assert(false) },
+        None => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+}
+
+test "parse record type" {
+  let src = "interface types {\n  record point {\n    x: u32,\n    y: u32,\n  }\n}"
+  let (_, ifaces, _) = wit_parse(src)
+  let (_, _, items) = Array::get(ifaces, 0)
+  assert(eq(Array::length(items), 1))
+  match Array::get(items, 0) {
+    IITypeDef(TDRecord(name, fields, _)) => {
+      assert(name == "point")
+      assert(eq(Array::length(fields), 2))
+      let (f1name, _) = Array::get(fields, 0)
+      assert(f1name == "x")
+    },
+    _ => assert(false)
+  }
+}
+
+test "parse enum type" {
+  let src = "interface types {\n  enum color {\n    red,\n    green,\n    blue,\n  }\n}"
+  let (_, ifaces, _) = wit_parse(src)
+  let (_, _, items) = Array::get(ifaces, 0)
+  match Array::get(items, 0) {
+    IITypeDef(TDEnum(name, cases, _)) => {
+      assert(name == "color")
+      assert(eq(Array::length(cases), 3))
+      assert(Array::get(cases, 0) == "red")
+    },
+    _ => assert(false)
+  }
+}
+
+test "parse variant type" {
+  let src = "interface types {\n  variant val {\n    num(u32),\n    text(string),\n    none,\n  }\n}"
+  let (_, ifaces, _) = wit_parse(src)
+  let (_, _, items) = Array::get(ifaces, 0)
+  match Array::get(items, 0) {
+    IITypeDef(TDVariant(name, cases, _)) => {
+      assert(name == "val")
+      assert(eq(Array::length(cases), 3))
+      let (c1name, c1ty) = Array::get(cases, 0)
+      assert(c1name == "num")
+      match c1ty { Some(_) => assert(true), None => assert(false) }
+      let (c3name, c3ty) = Array::get(cases, 2)
+      assert(c3name == "none")
+      match c3ty { None => assert(true), _ => assert(false) }
+    },
+    _ => assert(false)
+  }
+}
+
+test "parse type alias" {
+  let src = "interface types {\n  type my-list = list<u32>;\n}"
+  let (_, ifaces, _) = wit_parse(src)
+  let (_, _, items) = Array::get(ifaces, 0)
+  match Array::get(items, 0) {
+    IITypeDef(TDAlias(name, ty, _)) => {
+      assert(name == "my-list")
+      match ty {
+        TyList(inner) => match inner { TyU32 => assert(true), _ => assert(false) },
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+}
+
+test "parse package declaration" {
+  let src = "package wasi:http@0.2.0;\n\ninterface types {}"
+  let (pkg, ifaces, _) = wit_parse(src)
+  match pkg {
+    Some((ns, name, ver)) => {
+      assert(ns == "wasi")
+      assert(name == "http")
+      match ver { Some(v) => assert(v == "0.2.0"), None => assert(false) }
+    },
+    None => assert(false)
+  }
+  assert(eq(Array::length(ifaces), 1))
+}
+
+test "parse world with imports/exports" {
+  let src = "world my-world {\n  import log: func(msg: string);\n  export run: func() -> u32;\n}"
+  let (_, _, worlds) = wit_parse(src)
+  assert(eq(Array::length(worlds), 1))
+  let (name, _, types, imports, exports) = Array::get(worlds, 0)
+  assert(name == "my-world")
+  assert(eq(Array::length(types), 0))
+  assert(eq(Array::length(imports), 1))
+  assert(eq(Array::length(exports), 1))
+  match Array::get(imports, 0) {
+    WIFunction(fname, _, _, _, _) => assert(fname == "log"),
+    _ => assert(false)
+  }
+  match Array::get(exports, 0) {
+    WIFunction(fname, _, _, result, _) => {
+      assert(fname == "run")
+      match result { Some(TyU32) => assert(true), _ => assert(false) }
+    },
+    _ => assert(false)
+  }
+}
+
+test "parse flags type" {
+  let src = "interface types {\n  flags perms {\n    read,\n    write,\n    exec,\n  }\n}"
+  let (_, ifaces, _) = wit_parse(src)
+  let (_, _, items) = Array::get(ifaces, 0)
+  match Array::get(items, 0) {
+    IITypeDef(TDFlags(name, cases, _)) => {
+      assert(name == "perms")
+      assert(eq(Array::length(cases), 3))
+    },
+    _ => assert(false)
+  }
+}
+
+test "parse result type" {
+  let src = "interface types {\n  fallible: func() -> result<string, u32>;\n}"
+  let (_, ifaces, _) = wit_parse(src)
+  let (_, _, items) = Array::get(ifaces, 0)
+  match Array::get(items, 0) {
+    IIFunction(_, _, _, result, _) => {
+      match result {
+        Some(TyResult(ok, err)) => {
+          match ok { TyString => assert(true), _ => assert(false) }
+          match err { Some(TyU32) => assert(true), _ => assert(false) }
+        },
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+}
+
+test "parse tuple type" {
+  let src = "interface types {\n  get-pair: func() -> tuple<string, u32>;\n}"
+  let (_, ifaces, _) = wit_parse(src)
+  let (_, _, items) = Array::get(ifaces, 0)
+  match Array::get(items, 0) {
+    IIFunction(_, _, _, result, _) => {
+      match result {
+        Some(TyTuple(items)) => assert(eq(Array::length(items), 2)),
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+}
+
+test "parse option type" {
+  let src = "interface types {\n  find: func(key: string) -> option<u32>;\n}"
+  let (_, ifaces, _) = wit_parse(src)
+  let (_, _, items) = Array::get(ifaces, 0)
+  match Array::get(items, 0) {
+    IIFunction(_, _, _, result, _) => {
+      match result {
+        Some(TyOption(inner)) => match inner { TyU32 => assert(true), _ => assert(false) },
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+}
+
+test "parse use declaration" {
+  let src = "interface consumer {\n  use types.{point, color};\n}"
+  assert(parse_ok(src))
+}
+
+test "parse resource" {
+  let src = "interface res {\n  resource blob {\n    constructor(data: list<u8>);\n    size: func() -> u32;\n  }\n}"
+  assert(parse_ok(src))
+}
+
+test "parse wasi http types snippet" {
+  let src = "package wasi:http@0.2.0;\n\ninterface types {\n  type method = string;\n  type status-code = u32;\n  record header {\n    name: string,\n    value: string,\n  }\n}"
+  assert(parse_ok(src))
+}
