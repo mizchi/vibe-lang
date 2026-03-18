@@ -84,6 +84,71 @@ just coverage-selfhost-suite
 - [ ] eval_e2e_test の trap 修正 (coverage suite で collect failed の原因)
 - [ ] CI にカバレッジ gate を組み込み (branch 最低率)
 
+## WASM Exceptions 修正 + suberror compiled 対応
+
+WASI P3 HTTP handler の effect-based エラーハンドリングに必要。
+詳細: `docs/report/support-wasip3.md`
+
+### WASM Exceptions の string throw/catch 修正
+
+`throw("NotFound")` → `handle { } { Error(err) => }` で `err` が破損する。
+
+- [ ] `throw(string)` の tagged value が WASM exception payload に正しくエンコードされるか調査
+- [ ] `catch` 側の payload デコードが tagged string を正しく復元するか調査
+- [ ] codegen の `try_table` / `throw` / `catch` の string payload 伝搬を修正
+- [ ] テスト: `throw("hello")` → `Error(msg)` → `msg == "hello"` を compiled backend で検証
+
+### suberror の compiled backend 対応
+
+`suberror HttpError { NotFound; BadRequest(String) }` + `throw(NotFound)` が型エラー。
+
+- [ ] suberror constructor → Error 型への自動変換を WASM codegen に実装
+- [ ] suberror payload (e.g. `BadRequest("invalid")`) の serialization/deserialization
+- [ ] pattern match での suberror ctor 判定 (`Error(NotFound) => ...`)
+- [ ] テスト: suberror throw → catch → pattern match を compiled backend で検証
+
+### Algebraic Effect `Http` の設計
+
+P3 HTTP handler を vibe の代数的エフェクトとして自然に記述する。
+
+目標の syntax:
+
+```vibe
+effect Http {
+  method: () -> String;
+  url: () -> String;
+  header: (String) -> Option[String];
+  body: () -> String;
+  set_status: (Int) -> Unit;
+  set_header: (String, String) -> Unit
+}
+
+let my_handler = () -> String with { Http } {
+  let m = Http::method()
+  let u = Http::url()
+  if String::equals(u, "/health") {
+    Http::set_status(200)
+    Http::set_header("content-type", "application/json")
+    "{\"ok\":true}"
+  } else {
+    Http::set_status(404)
+    "Not Found"
+  }
+}
+```
+
+設計タスク:
+- [ ] `effect` 宣言の AST / parser / checker 対応（現在は suberror + builtin effect のみ）
+- [ ] effect operation の呼び出し構文 (`Http::method()`)
+- [ ] effect handler の構文 (`handle { body } { Http.method() => resume("GET") }`)
+- [ ] P3 adapter が effect handler として機能する codegen パス
+- [ ] effect → WIT import/export の自動マッピング仕様
+- [ ] 既存の `with { Error }` / `with { Net }` との共存設計
+
+前提:
+- WASM Exceptions 修正が先 (throw/catch の基盤)
+- suberror compiled 対応が先 (variant payload の伝搬)
+
 ## Packed Bytes (obj_bytes) 残作業
 
 `Bytes` の WASM メモリレイアウトを `obj_array` (4byte/elem) から `obj_bytes` (1byte/elem) に変更済み。
