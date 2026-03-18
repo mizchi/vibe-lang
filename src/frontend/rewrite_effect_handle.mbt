@@ -148,8 +148,11 @@ fn reh_extract_effect_handlers(
 ///|
 priv struct EffectHandler {
   key : String // "Console::ReadLine"
-  param_names : Array[String] // ["msg"] or []
+  param_names : Array[String] // ["msg"] or [] (excludes k)
   resume_expr : @core.Expr // the expression inside resume(...)
+  has_continuation : Bool // true if handler has k parameter (CPS mode)
+  continuation_name : String // "k" or "" — name of continuation param
+  raw_expr : @core.Expr // original handler expression (for CPS)
 }
 
 ///|
@@ -172,7 +175,21 @@ fn reh_parse_effect_arm(arm : @core.MatchArm) -> EffectHandler? {
       }
     _ => return None
   }
-  // Expr must be Call("__resume", [val]) or any expr (for simple handlers)
+  // Detect CPS mode: last param name is the continuation (not matching op arity)
+  // Convention: handler arm has one more param than the effect op = continuation
+  // E.g. Yield::Yield(v, k) where Yield has 1 param → k is continuation
+  let has_continuation = param_names.length() > 0 &&
+    param_names[param_names.length() - 1] == "k"
+  let (effective_params, cont_name) = if has_continuation {
+    let p : Array[String] = []
+    for i = 0; i < param_names.length() - 1; i = i + 1 {
+      p.push(param_names[i])
+    }
+    (p, "k")
+  } else {
+    (param_names, "")
+  }
+  // Expr must be Call("__resume", [val]) or any expr
   let resume_expr = match arm.expr {
     @core.Expr::Call(name="__resume", args~, ..) =>
       if args.length() == 1 {
@@ -182,7 +199,16 @@ fn reh_parse_effect_arm(arm : @core.MatchArm) -> EffectHandler? {
       }
     other => other
   }
-  Some(EffectHandler::{ key, param_names, resume_expr })
+  Some(
+    EffectHandler::{
+      key,
+      param_names: effective_params,
+      resume_expr,
+      has_continuation,
+      continuation_name: cont_name,
+      raw_expr: arm.expr,
+    },
+  )
 }
 
 ///|
@@ -202,12 +228,34 @@ fn reh_rewrite_handle(
       span~,
     )
   }
-  // Rewrite body: replace Perform with inline handler calls
-  let rewritten_body = reh_replace_performs(body, effect_handlers)
-  if error_arms.length() > 0 {
-    // Wrap in handle for remaining Error arms
-    @core.Expr::Handle(body=rewritten_body, arms=error_arms, span~)
+  // Check if any handler uses CPS (has_continuation)
+  let mut has_cps = false
+  for _key, handler in effect_handlers {
+    if handler.has_continuation {
+      has_cps = true
+      break
+    }
+  }
+  if has_cps {
+    // CPS transform: convert body stmts into nested continuations
+    let cps_expr = reh_cps_transform(body.stmts, effect_handlers, span)
+    if error_arms.length() > 0 {
+      @core.Expr::Handle(
+        body=@core.Module::{
+          stmts: [@core.Stmt::Expr(expr=cps_expr, span~)],
+        },
+        arms=error_arms,
+        span~,
+      )
+    } else {
+      cps_expr
+    }
   } else {
+    // Tail-resumptive: inline handler at perform sites
+    let rewritten_body = reh_replace_performs(body, effect_handlers)
+    if error_arms.length() > 0 {
+      @core.Expr::Handle(body=rewritten_body, arms=error_arms, span~)
+    } else {
     // Pure effect handling — just a block
     @core.Expr::Block(body=rewritten_body, span~)
   }
