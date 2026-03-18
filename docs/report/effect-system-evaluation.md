@@ -138,3 +138,36 @@ effect system 自体は Koka に劣るが、WASM deployment の利便性で差�
 1. **Phase 3 (高)**: 関数越え perform dispatch — handler が function call を跨いで動作
 2. **Phase 3 (中)**: stateful handler — CPS 変換 for handler-internal state
 3. **Phase 4 (低)**: stack switching — first-class continuation, async/await
+
+## 5. First-class Continuation (WIP) ⚠️
+
+CPS 変換アプローチを実装・評価:
+
+```vibe
+effect Yield { Yield(Int) -> Unit }
+handle {
+  perform Yield::Yield(1)
+  perform Yield::Yield(2)
+  perform Yield::Yield(3)
+  0
+} { Yield::Yield(v, k) => v + k(0) }
+// 期待: 1 + (2 + (3 + 0)) = 6
+```
+
+**実装状態**:
+- checker: `k` を polymorphic `(a) -> b` としてバインド ✅
+- CPS AST rewrite: handle body を nested lambda に変換 ✅
+- codegen: WASM にコンパイル成功 ✅
+- 実行結果: **不正 (1 ≠ 6)**
+
+**不正の原因**: vibe の lambda lifting が flat closure capture を前提。
+CPS で生成される nested lambda chain (`k1 captures k2 captures k3`) の
+capture 関係が lambda lifting で失われる。
+
+**解決策**:
+1. Lambda lifting の nested capture 対応（codegen 改善、中コスト）
+2. WASM stack switching（wasmtime 実験的、低コスト だが platform 依存）
+3. Defunctionalization（CPS lambda を enum + switch に変換、中コスト）
+
+**評価**: first-class continuation の型チェック・AST 変換までは動作。
+codegen の lambda lifting 改善で実現可能だが、今の scope を超える。
