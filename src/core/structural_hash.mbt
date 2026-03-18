@@ -449,6 +449,15 @@ pub fn Expr::structural_hash(self : Expr) -> Int {
       }
       h
     }
+    Expr::Perform(effect_name~, op_name~, args~, ..) => {
+      let mut h = 0x50657266 // "Perf"
+      h = combine_hash(h, effect_name.hash())
+      h = combine_hash(h, op_name.hash())
+      for a in args {
+        h = combine_hash(h, a.structural_hash())
+      }
+      h
+    }
   }
 }
 

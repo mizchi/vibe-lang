@@ -119,6 +119,7 @@ fn compile_expr(
       )
       compile_block_expr(ctx, buf, desugared)
     }
+    @core.Expr::Perform(..) => raise WasmGenError::Unsupported("perform")
     @core.Expr::Handle(body~, arms~, span~) =>
       compile_expr_handle(ctx, buf, body, arms, span)
     @core.Expr::Fn(span~, ..) => compile_expr_fn(ctx, buf, span)

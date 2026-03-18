@@ -376,6 +376,16 @@ fn purity_expr_analysis_inner(
     @core.Expr::Yield(..) => purity_analysis_impure()
     @core.Expr::Spread(expr~, ..) =>
       purity_expr_analysis_inner(env, expr, locals)
+    @core.Expr::Perform(args~, ..) => {
+      let mut out = purity_analysis_impure()
+      for arg in args {
+        out = purity_analysis_merge(
+          out,
+          purity_expr_analysis_inner(env, arg.expr, locals),
+        )
+      }
+      out
+    }
   }
 }
 

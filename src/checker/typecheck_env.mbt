@@ -67,6 +67,7 @@ pub struct TypeEnv {
   struct_defs : Map[String, StructDef]
   type_aliases : Map[String, TypeAlias]
   ctor_index : Map[String, CtorInfo]
+  effect_defs : Map[String, @core.EffectDef_]
   traits : Map[String, TraitDefInfo]
   trait_impls : Map[String, Array[TraitImplDef]]
   fn_versions : Map[String, ApiSemver]
@@ -133,6 +134,7 @@ pub fn TypeEnv::new() -> TypeEnv {
     struct_defs: {},
     type_aliases: {},
     ctor_index: {},
+    effect_defs: {},
     traits: {},
     trait_impls: {},
     fn_versions: {},
@@ -194,6 +196,7 @@ pub fn TypecheckSession::new_env(self : TypecheckSession) -> TypeEnv {
     struct_defs: {},
     type_aliases: {},
     ctor_index: {},
+    effect_defs: {},
     traits: {},
     trait_impls: {},
     fn_versions: {},

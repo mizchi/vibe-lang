@@ -31,6 +31,23 @@ pub(all) enum Pat {
 
 ///|
 /// Strip qualified prefix: "Color::Red" → "Red", "Red" → "Red"
+
+///|
+/// Resolved effect definition for type checker
+pub(all) struct EffectDef_ {
+  name : String
+  params : Array[String]
+  ops : Map[String, EffectOpSig]
+} derive(Show, Eq)
+
+///|
+/// Resolved effect operation signature
+pub(all) struct EffectOpSig {
+  params : Array[Type]
+  ret : Type
+} derive(Show, Eq)
+
+///|
 pub fn strip_ctor_qualifier(name : String) -> String {
   for i = name.length() - 1; i >= 1; i = i - 1 {
     if name[i - 1].to_int() == ':'.to_int() && name[i].to_int() == ':'.to_int() {
@@ -304,6 +321,13 @@ pub(all) enum Expr {
     span~ : Span
   )
   Spread(expr~ : Expr, span~ : Span)
+  /// perform Effect::Op(args) — algebraic effect operation invocation
+  Perform(
+    effect_name~ : String,
+    op_name~ : String,
+    args~ : Array[CallArg],
+    span~ : Span
+  )
 } derive(Show, Eq)
 
 ///|
@@ -368,7 +392,8 @@ pub fn Expr::span(self : Expr) -> Span {
     | Expr::Yield(span~, ..)
     | Expr::Handle(span~, ..)
     | Expr::StructLit(span~, ..)
-    | Expr::Spread(span~, ..) => span
+    | Expr::Spread(span~, ..)
+    | Expr::Perform(span~, ..) => span
   }
 }
 

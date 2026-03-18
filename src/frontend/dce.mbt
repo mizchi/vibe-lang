@@ -710,6 +710,10 @@ fn collect_for_in_helper_refs_expr(
       collect_for_in_helper_refs_expr(value, bound, refs, on_name)
     @core.Expr::Spread(expr~, ..) =>
       collect_for_in_helper_refs_expr(expr, bound, refs, on_name)
+    @core.Expr::Perform(args~, ..) =>
+      for arg in args {
+        collect_for_in_helper_refs_expr(arg.expr, bound, refs, on_name)
+      }
   }
 }
 

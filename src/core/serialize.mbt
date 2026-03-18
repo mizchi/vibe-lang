@@ -461,6 +461,15 @@ fn serialize_expr_to(expr : Expr, buf : StringBuilder) -> Unit {
       serialize_types_to(type_args, buf)
       buf.write_string("}}")
     }
+    Expr::Perform(effect_name~, op_name~, args~, ..) => {
+      buf.write_string("{\"Perform\":{\"effect_name\":")
+      serialize_string_to(effect_name, buf)
+      buf.write_string(",\"op_name\":")
+      serialize_string_to(op_name, buf)
+      buf.write_string(",\"args\":")
+      serialize_call_args_to(args, buf)
+      buf.write_string("}}")
+    }
   }
 }
 

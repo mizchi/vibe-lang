@@ -1177,6 +1177,41 @@ fn type_expr_eff(
         message="spread operator is only allowed inside array literals",
         span~,
       )
+    @core.Expr::Perform(effect_name~, op_name~, args~, span~) =>
+      match env.effect_defs.get(effect_name) {
+        Some(effect_def) =>
+          match effect_def.ops.get(op_name) {
+            Some(op_sig) => {
+              // Type-check arguments
+              for i = 0; i < args.length(); i = i + 1 {
+                if i < op_sig.params.length() {
+                  let arg_ty = type_expr_eff(
+                    env,
+                    args[i].expr,
+                    aliases,
+                    effects,
+                    allow_effect,
+                  )
+                  let _ = unify_types(env, arg_ty, op_sig.params[i])
+                }
+              }
+              op_sig.ret
+            }
+            None =>
+              raise TypeError::BadTypeDef(
+                message="unknown effect operation: " +
+                  effect_name +
+                  "::" +
+                  op_name,
+                span~,
+              )
+          }
+        None =>
+          raise TypeError::BadTypeDef(
+            message="unknown effect: " + effect_name,
+            span~,
+          )
+      }
   }
   record_expr_type(env, expr.span(), ty)
   ty

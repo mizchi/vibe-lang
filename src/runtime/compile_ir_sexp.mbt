@@ -473,6 +473,20 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
       buf.write_char(')')
       buf.to_string()
     }
+    @core.Expr::Perform(effect_name~, op_name~, args~, span~) => {
+      let _ = span
+      let buf = StringBuilder::new()
+      buf.write_string("(perform ")
+      buf.write_string(effect_name)
+      buf.write_char(' ')
+      buf.write_string(op_name)
+      for arg in args {
+        buf.write_char(' ')
+        buf.write_string(expr_to_sexp(arg.expr, aliases))
+      }
+      buf.write_char(')')
+      buf.to_string()
+    }
     @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
       let buf = StringBuilder::new()
@@ -547,6 +561,20 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
     @core.Expr::Spread(expr~, span~) => {
       let _ = span
       "(spread " + expr_to_sexp(expr, aliases) + ")"
+    }
+    @core.Expr::Perform(effect_name~, op_name~, args~, span~) => {
+      let _ = span
+      let buf = StringBuilder::new()
+      buf.write_string("(perform ")
+      buf.write_string(effect_name)
+      buf.write_char('.')
+      buf.write_string(op_name)
+      for arg in args {
+        buf.write_char(' ')
+        buf.write_string(expr_to_sexp(arg.expr, aliases))
+      }
+      buf.write_char(')')
+      buf.to_string()
     }
   }
 }

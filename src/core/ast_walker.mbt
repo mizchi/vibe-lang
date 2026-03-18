@@ -307,6 +307,14 @@ pub fn walk_expr_refs(
       let _ = span
       walk_expr_refs(expr, bound, refs, on_name)
     }
+    Expr::Perform(effect_name~, op_name~, args~, span~) => {
+      let _ = span
+      let _ = effect_name
+      let _ = op_name
+      for arg in args {
+        walk_expr_refs(arg.expr, bound, refs, on_name)
+      }
+    }
   }
 }
 

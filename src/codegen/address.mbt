@@ -315,6 +315,21 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       let _ = span
       "(spread)"
     }
+    @core.Expr::Perform(effect_name~, op_name~, args~, span~) => {
+      let _ = span
+      let buf = StringBuilder::new()
+      buf.write_string("(perform ")
+      buf.write_string(addr_escape_string(effect_name))
+      buf.write_char(' ')
+      buf.write_string(addr_escape_string(op_name))
+      buf.write_string(" (args")
+      for arg in args {
+        buf.write_char(' ')
+        buf.write_string(expr_to_addr_sexp(ctx, arg.expr))
+      }
+      buf.write_string("))")
+      buf.to_string()
+    }
   }
 }
 

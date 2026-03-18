@@ -568,6 +568,13 @@ fn normalize_expr(expr : Expr, scope : NormScope) -> Expr {
         fields=normalize_record_fields(fields, scope),
         span=zero_span,
       )
+    Expr::Perform(effect_name~, op_name~, args~, ..) =>
+      Expr::Perform(
+        effect_name~,
+        op_name~,
+        args=normalize_call_args(args, scope),
+        span=zero_span,
+      )
   }
 }
 

@@ -368,6 +368,23 @@ fn call3(
 }
 
 ///|
+
+///|
+/// Split "Effect::Op" into (effect_name, op_name). Returns ("", name) if no "::" found.
+fn split_qualified_effect_op(name : String) -> (String, String) {
+  let mut i = 0
+  while i + 1 < name.length() {
+    if name[i] == ':' && name[i + 1] == ':' {
+      let effect = name[0:i].to_string()
+      let op = name[i + 2:name.length()].to_string()
+      return (effect, op)
+    }
+    i += 1
+  }
+  ("", name)
+}
+
+///|
 fn call_or_throw_expr(
   name : String,
   type_args : Array[@core.Type],
@@ -1871,6 +1888,25 @@ fn AstParser::parse_call_or_primary(
       // Placeholder for lambda shorthand: _ * 2 → x -> x * 2
       let span = self.span_from(start)
       @core.Expr::Placeholder(index=0, span~)
+    } else if qualified_name == "perform" {
+      // perform Effect::Op or perform Effect::Op(args)
+      self.skip_trivia()
+      let effect_tok = self.expect(name(), "effect name")
+      let effect_name = effect_tok.text()
+      let _ = self.expect(double_colon(), "::")
+      let op_tok = self.expect(name(), "operation name")
+      let op_name = op_tok.text()
+      self.skip_trivia()
+      let args : Array[@core.CallArg] = if self.peek_kind() == lparen() {
+        let _ = self.bump()
+        let parsed = self.parse_args()
+        let _ = self.expect(rparen(), ")")
+        parsed
+      } else {
+        []
+      }
+      let span = self.span_from(start)
+      @core.Expr::Perform(effect_name~, op_name~, args~, span~)
     } else if qualified_name == "throw" {
       let span = self.span_from(start)
       raise ParseError::UnexpectedToken(

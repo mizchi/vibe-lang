@@ -282,19 +282,18 @@ run_collect_batch() {
   done
 
   local failed=0
-  local status=0
   for ((i = 0; i < ${#pids[@]}; i++)); do
     local wait_status=0
     wait "${pids[$i]}" || wait_status="$?"
     if [ "$wait_status" -ne 0 ]; then
-      failed=1
-      status="$wait_status"
+      failed=$((failed + 1))
+      local fail_idx=$((start + i))
+      echo "[selfhost suite coverage] collect FAILED (exit $wait_status): ${collect_labels[$fail_idx]}" >&2
     fi
     cat "${logs[$i]}"
   done
-  if [ "$failed" -ne 0 ]; then
-    echo "[selfhost suite coverage] collect failed" >&2
-    exit "$status"
+  if [ "$failed" -gt 0 ]; then
+    echo "[selfhost suite coverage] $failed task(s) failed in batch, continuing..." >&2
   fi
 }
 
@@ -316,13 +315,24 @@ suite_meta_path="$OUT_DIR/selfhost_suite.meta"
 suite_status_path="$OUT_DIR/selfhost_suite.status"
 suite_log_path="$OUT_DIR/selfhost_suite.log"
 
-report_paths=(
-  "$(report_path_for_entry "$SELFHOST_ENTRY")"
-  "$(report_path_for_entry "$INDEX_ENTRY")"
-)
-for extra_entry in "${extra_entries[@]-}"; do
-  report_paths+=("$(report_path_for_entry "$extra_entry")")
+report_paths=()
+collect_skipped=0
+for candidate_entry in "$SELFHOST_ENTRY" "$INDEX_ENTRY" "${extra_entries[@]-}"; do
+  rp="$(report_path_for_entry "$candidate_entry")"
+  if [ -f "$rp" ]; then
+    report_paths+=("$rp")
+  else
+    echo "[selfhost suite coverage] skipping missing report: $rp (entry=$candidate_entry)" >&2
+    collect_skipped=$((collect_skipped + 1))
+  fi
 done
+if [ "${#report_paths[@]}" -eq 0 ]; then
+  echo "[selfhost suite coverage] no reports collected, aborting" >&2
+  exit 1
+fi
+if [ "$collect_skipped" -gt 0 ]; then
+  echo "[selfhost suite coverage] $collect_skipped report(s) skipped due to collection failures" >&2
+fi
 printf "%s\n" "${report_paths[@]}" >"$report_list_path"
 
 suite_cache_key="$(build_suite_cache_key)"

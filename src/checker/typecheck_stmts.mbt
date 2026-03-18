@@ -314,6 +314,14 @@ fn expr_may_use_scoped_ref(expr : @core.Expr) -> Bool {
       false
     }
     @core.Expr::Spread(expr~, ..) => expr_may_use_scoped_ref(expr)
+    @core.Expr::Perform(args~, ..) => {
+      for arg in args {
+        if expr_may_use_scoped_ref(arg.expr) {
+          return true
+        }
+      }
+      false
+    }
   }
 }
 
@@ -329,6 +337,22 @@ fn match_arms_may_use_scoped_ref(arms : Array[@core.MatchArm]) -> Bool {
     }
   }
   false
+}
+
+///|
+
+///|
+fn register_effect_def(env : TypeEnv, stmt : @core.Stmt) -> Unit {
+  let (name, params, ops) = match stmt {
+    @core.Stmt::EffectDef(name~, params~, ops~, ..) => (name, params, ops)
+    @core.Stmt::ExportEffectDef(name~, params~, ops~, ..) => (name, params, ops)
+    _ => return
+  }
+  let ops_map : Map[String, @core.EffectOpSig] = {}
+  for op in ops {
+    ops_map[op.name] = @core.EffectOpSig::{ params: op.params, ret: op.ret }
+  }
+  env.effect_defs[name] = @core.EffectDef_::{ name, params, ops: ops_map }
 }
 
 ///|
@@ -608,7 +632,7 @@ fn type_check_stmts(
       | @core.Stmt::ReExport(..)
       | @core.Stmt::AliasDecl(..)
       | @core.Stmt::EffectDef(..)
-      | @core.Stmt::ExportEffectDef(..) => ()
+      | @core.Stmt::ExportEffectDef(..) => register_effect_def(env, stmt)
       @core.Stmt::Test(name~, body~, span~) => {
         let _ = span
         let _ = name

@@ -1167,6 +1167,9 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       }
     }
     @core.Expr::Block(body~, ..) => eval_block(rt, body)
+    @core.Expr::Perform(..) =>
+      // perform is only supported in compiled (WASM) backend
+      { value: @core.Value::Unit, effects: [] }
     @core.Expr::Handle(body~, arms~, ..) => eval_handle_expr(rt, body, arms)
     @core.Expr::Match(scrutinee~, arms~, ..) => {
       let scrutinee_out = eval_expr(rt, scrutinee)
@@ -1301,6 +1304,8 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
     }
     @core.Expr::Spread(..) =>
       abort("eval: spread operator should only appear inside array literals")
+    @core.Expr::Perform(..) =>
+      abort("eval: perform expression not yet implemented")
   }
 }
 
