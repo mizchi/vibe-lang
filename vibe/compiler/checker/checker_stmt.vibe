@@ -64,7 +64,7 @@ let bind_stmt_imports = (env: TypeEnv, names: Array[(String, Option[String])]) -
   bind_imports(0, env)
 }
 
-export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int) -> (TypeEnv, Subst, Int) with { Error } {
+export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String]) -> (TypeEnv, Subst, Int) {
   if i >= Array::length(stmts) {
     (env, s, c)
   } else {
@@ -72,9 +72,9 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
     let (new_env, s1, c1) = match stmt {
       SLet(_, is_rec, name, ann, val) => {
         let (vt, ns, nc) = if is_rec {
-          check_expr(val, env_bind(env, name, CtUnknown), defs, s, c)
+          check_expr(val, env_bind(env, name, CtUnknown), defs, s, c, errors)
         } else {
-          check_expr(val, env, defs, s, c)
+          check_expr(val, env, defs, s, c, errors)
         }
         let t = match ann {
           Some(te) => resolve_type_expr(te, defs),
@@ -83,7 +83,7 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
         (env_bind(env, name, t), ns, nc)
       },
       SLetMut(name, ann, val) => {
-        let (vt, ns, nc) = check_expr(val, env, defs, s, c)
+        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors)
         let t = match ann {
           Some(te) => resolve_type_expr(te, defs),
           None => vt
@@ -91,7 +91,7 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
         (env_bind(env, name, t), ns, nc)
       },
       SLetPat(pat, val) => {
-        let (vt, ns, nc) = check_expr(val, env, defs, s, c)
+        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors)
         // Bind pattern names with appropriate types
         let new_env = match pat {
           PTuple(pats) => match vt {
@@ -206,19 +206,19 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
         (env_bind(env, name, t), s, c)
       },
       STest(_, body) => {
-        let (_, ns, nc) = check_expr(body, env, defs, s, c)
+        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors)
         (env, ns, nc)
       },
       SBench(_, body) => {
-        let (_, ns, nc) = check_expr(body, env, defs, s, c)
+        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors)
         (env, ns, nc)
       },
       SExpr(expr) => {
-        let (_, ns, nc) = check_expr(expr, env, defs, s, c)
+        let (_, ns, nc) = check_expr(expr, env, defs, s, c, errors)
         (env, ns, nc)
       },
       SModule(_, _, body) => {
-        let _ = check_stmts(body, 0, env, defs, s, c)
+        let _ = check_stmts(body, 0, env, defs, s, c, errors)
         (env, s, c)
       },
       SImport(_, names) => {
@@ -245,7 +245,7 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
       },
       _ => (env, s, c)
     }
-    check_stmts(stmts, i + 1, new_env, defs, s1, c1)
+    check_stmts(stmts, i + 1, new_env, defs, s1, c1, errors)
   }
 }
 
@@ -253,7 +253,12 @@ export let check_program = (stmts: Array[Stmt]) -> TypeEnv with { Error } {
   let empty_defs = Array::slice([
     TDAlias("_dummy", CtUnit)
   ], 0, 0)
-  let (env, _, _) = check_stmts(stmts, 0, EnvEmpty, empty_defs, SubstEmpty, 0)
+  let errors = ArrayBuilder::new()
+  let frozen_errors = ArrayBuilder::freeze(errors)
+  let (env, _, _) = check_stmts(stmts, 0, EnvEmpty, empty_defs, SubstEmpty, 0, frozen_errors)
+  if Array::length(frozen_errors) > 0 {
+    throw(Array::get(frozen_errors, 0))
+  }
   env
 }
 
@@ -262,6 +267,11 @@ export let check_program_with_env = (stmts: Array[Stmt], initial_env: TypeEnv) -
     TDAlias("_dummy", CtUnit)
   ], 0, 0)
   let cached_env = env_cache(initial_env)
-  let (env, _, _) = check_stmts(stmts, 0, cached_env, empty_defs, SubstEmpty, 0)
+  let errors = ArrayBuilder::new()
+  let frozen_errors = ArrayBuilder::freeze(errors)
+  let (env, _, _) = check_stmts(stmts, 0, cached_env, empty_defs, SubstEmpty, 0, frozen_errors)
+  if Array::length(frozen_errors) > 0 {
+    throw(Array::get(frozen_errors, 0))
+  }
   env
 }
