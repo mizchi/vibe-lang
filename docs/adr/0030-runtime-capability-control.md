@@ -197,15 +197,93 @@ world sandbox {
 WASM Component Model では import しない capability は構造的に使えない。
 build profile (ADR-0027) で import セットを制限すれば、ランタイムチェック不要。
 
+## 多層 vs 一括: Component Model 境界での意味論
+
+### 問題
+
+Component Model で compose されたとき、capability の authority は誰か？
+
+```
+Standalone:     app.wasm → wasmtime → WASI host → real filesystem
+                app が --allow-read を宣言 → 有効
+
+Composed:       parent.wasm → plug(app.wasm)
+                parent が Fs 実装を提供 → --allow-read は無意味
+                parent が mock Fs を注入する可能性
+
+P3 HTTP:        adapter.wasm → plug(handler.wasm) → wasmtime serve
+                adapter が authority、handler は adapter 経由のみ
+```
+
+### 設計決定: Context-dependent authority
+
+**多層チェックは standalone のみ。compose 時は Component Model が一括制御。**
+
+```
+┌─────────────────────────────────────────────────┐
+│ vibe run (standalone)                            │
+│                                                  │
+│   Layer 1: Type (compile) ← 開発者が宣言        │
+│   Layer 2: Build DCE      ← profile で制限      │
+│   Layer 3: Runtime flag   ← 運用者が制限        │
+│   Layer 4: WASI host      ← wasmtime が制限     │
+│                                                  │
+│   全層が独立にチェック（defense in depth）        │
+└─────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────┐
+│ component compose (plug)                         │
+│                                                  │
+│   Layer 1: Type (compile) ← 開発者が宣言        │
+│   Layer 2: Build DCE      ← import セットで制限 │
+│   Layer 3: Runtime flag   ← 無効（parent制御）   │
+│   Layer 4: Parent import  ← parent が authority  │
+│                                                  │
+│   Component Model の import/export が唯一の真実  │
+└─────────────────────────────────────────────────┘
+```
+
+### 原則
+
+1. **Standalone**: `--allow-*` flag で runtime check。Deno と同じモデル
+2. **Composed**: Component Model の import が capability。flag は無視
+3. **型レベル**: 常に有効（compile error は context に依存しない）
+4. **Build DCE**: profile に応じて import セットを制限（composed でも有効）
+
+### なぜ compose 時に runtime flag を無効にするか
+
+- Parent が mock/proxy/sandbox を提供する場合、child の制限は不適切
+- Component Model の import/export は **構造的 capability** — import しないものは使えない
+- 二重チェックは「誰が authority か」の混乱を招く
+- Parent が trust boundary を管理する責任を持つ
+
+### CLI の区別
+
+```bash
+# Standalone: runtime flag が有効
+vibe run --allow-read=/tmp --allow-net app.vibe
+
+# Compile: build DCE が有効、runtime flag は embed しない
+vibe compile --profile edge app.vibe
+
+# Compose: Component Model が authority
+vibe compile --compose-p3 handler.vibe --adapter adapter.wasm
+# → handler の capability は adapter が決定
+
+# Component 単体テスト: mock handler で capability を注入
+vibe test --mock-fs --mock-net app.vibe
+```
+
 ## Consequences
 
 良い面:
-- 3層の防御: 型 → ビルド → ランタイム
-- Deno ユーザーに馴染みのある CLI UX
-- effect system と自然に統合
-- Plugin/user script の安全な実行
+- Context に応じた適切な authority: standalone は runtime flag、compose は CM
+- 型レベルの追跡は常に有効（開発者の意図を記録）
+- Component Model との整合: import = capability という CM の哲学と一致
+- Deno 風 UX は standalone でのみ、compose 時は Deno より安全
 
 悪い面:
-- ランタイムチェックのオーバーヘッド（毎回 path check）
-- Permission flag の管理コスト（Deno と同じ UX 問題）
+- 2つの context で挙動が異なる（ユーザーの混乱リスク）
+- standalone の runtime check にオーバーヘッド
+- Permission flag の管理コスト
 - Phase 2 (handler policy) は関数越え perform 依存
