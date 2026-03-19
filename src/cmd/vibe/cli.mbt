@@ -1931,17 +1931,58 @@ fn run_cmd_wasm_linked(
 
 ///|
 fn run_cmd_wasm_backend(entry_path : String) -> Result[WasmRunValue, String] {
-  // Try linked build if cache exists (fast path)
-  let resolved = @loader.resolve_entry_path(entry_path)
-  let parent = @vibe_fs.parent_path(resolved)
-  let cache_dir = parent + "/.vibe/debug"
-  let imports_cache = cache_dir + "/linked_imports.txt"
-  if @os_fs.path_exists(imports_cache) {
-    match run_cmd_wasm_linked(entry_path, resolved, parent, cache_dir) {
-      Ok(v) => return Ok(v)
-      Err(_) => () // fall through to monolithic
+  // Default: linked build (debug mode). Use VIBE_RUN_BACKEND=release for monolithic.
+  let force_release = match @sys.get_env_var("VIBE_RUN_BACKEND") {
+    Some("release") | Some("monolithic") => true
+    _ => false
+  }
+  if not(force_release) {
+    let resolved = @loader.resolve_entry_path(entry_path)
+    let parent = @vibe_fs.parent_path(resolved)
+    let cache_dir = parent + "/.vibe/debug"
+    let imports_cache = cache_dir + "/linked_imports.txt"
+    // If cache exists, try linked fast path
+    if @os_fs.path_exists(imports_cache) {
+      match run_cmd_wasm_linked(entry_path, resolved, parent, cache_dir) {
+        Ok(v) => return Ok(v)
+        Err(_) => () // fall through
+      }
+    }
+    // No cache yet: auto-create via build --debug path
+    match @loader.load_db(entry_path) {
+      Ok((db, resolved_entry)) => {
+        let linked_result : Result[(Bytes, Array[@runtime.LinkedImport]), _] = try? @runtime_compile.compile_module_wasm_linked(
+          db, resolved_entry, debug_errors=true,
+        )
+        match linked_result {
+          Ok((_, imports)) => {
+            if not(@os_fs.path_exists(cache_dir)) {
+              let _ = c_system(system_command_bytes(
+                "mkdir -p " + shell_quote_command_arg(cache_dir),
+              ))
+            }
+            let cache_text = serialize_linked_imports_cache(imports)
+            @os_fs.write_string_to_file(imports_cache, cache_text) catch {
+              _ => ()
+            }
+            save_library_modules(db, resolved_entry, imports, cache_dir)
+            let hash_cache = cache_dir + "/source_hashes.txt"
+            save_source_hashes(db, resolved_entry, cache_dir, hash_cache)
+            // Now run with linked cache
+            match run_cmd_wasm_linked(
+              entry_path, resolved, parent, cache_dir,
+            ) {
+              Ok(v) => return Ok(v)
+              Err(_) => () // fall through to monolithic
+            }
+          }
+          Err(_) => () // fall through to monolithic
+        }
+      }
+      Err(_) => ()
     }
   }
+  // Monolithic fallback
   let (db, entry) = match @loader.load_db(entry_path) {
     Err(err) => return Err("load error: " + err)
     Ok(v) => v
