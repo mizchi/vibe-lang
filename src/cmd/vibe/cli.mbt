@@ -38,6 +38,7 @@ pub fn run(args : Array[String]) -> Unit {
     "normalize" => normalize_cmd(cmd_args)
     "compile" => compile_cmd(cmd_args)
     "build" => build_cmd(cmd_args)
+    "clean" => clean_cmd(cmd_args)
     "emit-module-source" => emit_module_source_cmd(cmd_args)
     "emit-closure-payload" => emit_closure_payload_cmd(cmd_args)
     "compile-closure-payload" => compile_closure_payload_cmd(cmd_args)
@@ -6941,6 +6942,54 @@ fn serialize_linked_imports_cache(
 ///   - cache_key = "wasm_wasm_runtime_foo"
 ///
 /// If no .vibe found, falls back to entry's parent directory.
+///|
+/// `vibe clean [path]` — remove debug linked build cache.
+/// If path is given, clean cache for that file. Otherwise clean all debug cache.
+fn clean_cmd(args : Array[String]) -> Unit {
+  if args.length() > 0 {
+    // Clean cache for specific file
+    let entry = args[0]
+    let resolved = @loader.resolve_entry_path(entry)
+    let (vibe_root, cache_key) = find_vibe_cache_root(resolved)
+    let cache_dir = vibe_root + "/debug/" + cache_key
+    if @os_fs.path_exists(cache_dir) {
+      let _ = c_system(system_command_bytes(
+        "rm -rf " + shell_quote_command_arg(cache_dir),
+      ))
+      println("clean: removed " + cache_dir)
+    } else {
+      println("clean: no cache for " + entry)
+    }
+  } else {
+    // Clean all debug cache: find nearest .vibe with cache.json
+    let cwd = @io.current_dir_or_root()
+    let mut dir = cwd
+    for _ in 0..<20 {
+      let vibe_dir = dir + "/.vibe"
+      if @os_fs.path_exists(vibe_dir) &&
+        @os_fs.path_exists(vibe_dir + "/cache.json") {
+        let debug_dir = vibe_dir + "/debug"
+        if @os_fs.path_exists(debug_dir) {
+          let _ = c_system(system_command_bytes(
+            "rm -rf " + shell_quote_command_arg(debug_dir),
+          ))
+          println("clean: removed " + debug_dir)
+        } else {
+          println("clean: no debug cache in " + vibe_dir)
+        }
+        return
+      }
+      let parent = @vibe_fs.parent_path(dir)
+      if parent == dir || parent.length() == 0 {
+        break
+      }
+      dir = parent
+    }
+    println("clean: no .vibe directory found")
+  }
+}
+
+///|
 fn find_vibe_cache_root(entry_path : String) -> (String, String) {
   let entry_dir = @vibe_fs.parent_path(entry_path)
   // Extract basename without extension
