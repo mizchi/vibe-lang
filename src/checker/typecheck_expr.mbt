@@ -1401,23 +1401,54 @@ fn type_expr_eff(
                     effects,
                     allow_effect,
                   )
-                  let _ = unify_types(env, arg_ty, inst_params[i])
+                  if not(unify_types(env, arg_ty, inst_params[i])) {
+                    raise TypeError::Mismatch(
+                      expected=inst_params[i],
+                      actual=arg_ty,
+                      span=args[i].expr.span(),
+                      context=Some("effect operation argument"),
+                    )
+                  }
                 }
               }
               resolve_type(env, inst_ret)
             }
-            None =>
+            None => {
+              // List available operations for helpful error
+              let available : Array[String] = []
+              for op_key, _ in effect_def.ops {
+                available.push(op_key)
+              }
+              let hint = if available.length() > 0 {
+                {
+                  let mut s = "available operations: "
+                  for i = 0; i < available.length(); i = i + 1 {
+                    if i > 0 { s = s + ", " }
+                    s = s + available[i]
+                  }
+                  s
+                }
+              } else {
+                ""
+              }
               raise TypeError::BadTypeDef(
-                message="unknown effect operation: " +
+                message="unknown operation `" +
+                  op_name +
+                  "` on effect `" +
                   effect_name +
-                  "::" +
-                  op_name,
+                  "`" +
+                  (if hint.length() > 0 { ". " + hint } else { "" }),
                 span~,
               )
+            }
           }
         None =>
           raise TypeError::BadTypeDef(
-            message="unknown effect: " + effect_name,
+            message="undefined effect `" +
+              effect_name +
+              "` (not declared with `effect " +
+              effect_name +
+              " { ... }`)",
             span~,
           )
       }
