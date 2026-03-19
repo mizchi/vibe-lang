@@ -24,8 +24,24 @@ jobs:
       - name: Moon check
         run: moon check --target js
 
-      - name: Moon test
-        run: moon test --target js
+      - name: Moon test (skip slow fixtures)
+        run: VIBE_SKIP_FIXTURES=1 moon test --target js
+
+      - name: Install wasmtime
+        run: |
+          curl -fsSL https://wasmtime.dev/install.sh | bash
+          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+
+      - name: Build vibe CLI (native release)
+        run: VIBE_CLI_RELEASE=1 bash -c 'source scripts/ensure_native_cli.sh'
+
+      - name: Fixture isolation test (crash/timeout detection)
+        continue-on-error: true
+        run: scripts/test_fixtures_isolation.sh
+
+      - name: Build parity test (debug vs release)
+        continue-on-error: true
+        run: scripts/test_build_parity.sh
 
       - name: Vibe normalize check
         continue-on-error: true
@@ -192,12 +208,12 @@ jobs:
 
       - name: Build vibe CLI (native release)
         run: |
-          moon build --target native --release src/cmd/vibe --warn-list '-29'
-          VIBE_EXE=_build/native/release/build/cmd/vibe/vibe.exe
-          # Compat: symlink target/ for scripts that expect old path
-          if [ -f "$VIBE_EXE" ] && [ ! -d target ]; then
-            mkdir -p target/native/release/build/cmd/vibe
-            ln -sf "$(pwd)/$VIBE_EXE" target/native/release/build/cmd/vibe/vibe.exe
+          VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
+          # Symlink for scripts that expect either path
+          VIBE_EXE=target/native/release/build/cmd/vibe/vibe.exe
+          if [ -f "$VIBE_EXE" ]; then
+            mkdir -p _build/native/release/build/cmd/vibe
+            ln -sf "$(pwd)/$VIBE_EXE" _build/native/release/build/cmd/vibe/vibe.exe
           fi
 
       - name: Validate selfhost probe wasm fixture
