@@ -722,10 +722,10 @@ let parse_cached_type = (source: String, pos: Int) -> (Type, Int) with { Error }
 
 let load_persistent_type_env = (fingerprint: String) -> Option[TypeEnv] with { Error, Fs } {
   let path = persistent_type_env_cache_path(fingerprint)
-  if !(Fs::exists(path)) {
+  if !(perform Fs::Exists(path)) {
     None
   } else {
-    let lines = String::split(normalize_persistent_cache_text(Fs::read_file(path)), "\n")
+    let lines = String::split(normalize_persistent_cache_text(perform Fs::ReadFile(path)), "\n")
     let bindings = empty_type_bindings()
     let mut version_ok = false
     let mut i = 0
@@ -796,10 +796,10 @@ let persistent_leaf_fingerprint_text = (fingerprint: String) -> String {
 
 let load_persistent_leaf_fingerprint = (path: String, source: String) -> Option[String] with { Fs } {
   let cache_path = persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(source))
-  if !(Fs::exists(cache_path)) {
+  if !(perform Fs::Exists(cache_path)) {
     None
   } else {
-    let text = normalize_persistent_cache_text(Fs::read_file(cache_path))
+    let text = normalize_persistent_cache_text(perform Fs::ReadFile(cache_path))
     let prefix = "version\t1\n"
     if String::length(text) > String::length(prefix) &&
       text[0:String::length(prefix)] == prefix {
@@ -818,8 +818,8 @@ let load_or_parse_deps_for_source_fs = (
 ) -> (Array[String], Array[(String, String)], Int) with { Error, Fs } {
   let next_dep_source_cache = upsert_string_pair(dep_source_cache, path, source)
   let cache_path = persistent_dep_list_cache_path(path, compact_string_fingerprint(source))
-  if Fs::exists(cache_path) {
-    let text = normalize_persistent_cache_text(Fs::read_file(cache_path))
+  if perform Fs::Exists(cache_path) {
+    let text = normalize_persistent_cache_text(perform Fs::ReadFile(cache_path))
     let prefix = "version\t2\n"
     let single_prefix = "version\t3\n"
     if String::length(text) == 0 {
@@ -833,12 +833,12 @@ let load_or_parse_deps_for_source_fs = (
       (parse_persistent_dep_list_text(text), next_dep_source_cache, parse_count)
     } else {
       let (deps, _, next_parse_count) = load_or_parse_module_header_fs(path, source, parse_count)
-      Fs::write_file(cache_path, persistent_dep_list_text(deps))
+      perform Fs::WriteFile(cache_path, persistent_dep_list_text(deps))
       (deps, next_dep_source_cache, next_parse_count)
     }
   } else {
     let (deps, _, next_parse_count) = load_or_parse_module_header_fs(path, source, parse_count)
-    Fs::write_file(cache_path, persistent_dep_list_text(deps))
+    perform Fs::WriteFile(cache_path, persistent_dep_list_text(deps))
     (deps, next_dep_source_cache, next_parse_count)
   }
 }
@@ -855,7 +855,7 @@ let rebuild_persistent_type_env = (bindings: Array[(String, Type)]) -> TypeEnv {
 }
 
 let store_persistent_type_env = (fingerprint: String, env: TypeEnv) -> Unit with { Error, Fs } {
-  Fs::write_file(
+  perform Fs::WriteFile(
     persistent_type_env_cache_path(fingerprint),
     persistent_type_env_cache_text(env)
   )
@@ -1199,7 +1199,7 @@ let continue_fingerprint_fs = (
     source,
     parse_count
   )
-  Fs::write_file(
+  perform Fs::WriteFile(
     persistent_dep_list_cache_path(path, compact_string_fingerprint(source)),
     persistent_dep_list_text(deps)
   )
@@ -1296,7 +1296,7 @@ let finish_typecheck_fs = (
       let checked_env = check_program_with_env(stmts, import_env)
       store_persistent_type_env(fingerprint, checked_env)
       if Array::length(deps) == 0 {
-        Fs::write_file(
+        perform Fs::WriteFile(
           persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(source)),
           persistent_leaf_fingerprint_text(fingerprint)
         )
