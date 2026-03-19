@@ -55,6 +55,13 @@ fn reh_rewrite_stmt(stmt : @core.Stmt) -> @core.Stmt {
 ///|
 fn reh_rewrite_expr(expr : @core.Expr) -> @core.Expr {
   match expr {
+    // Desugar: perform Error::Throw(msg) → throw(msg) (Raise)
+    @core.Expr::Perform(effect_name="Error", op_name="Throw", args~, span~) =>
+      if args.length() >= 1 {
+        @core.Expr::Raise(value=reh_rewrite_expr(args[0].expr), span~)
+      } else {
+        @core.Expr::Raise(value=@core.Expr::String(value="", span~), span~)
+      }
     @core.Expr::Handle(body~, arms~, span~) =>
       reh_rewrite_handle(body, arms, span)
     @core.Expr::If(cond~, then_body~, else_body~, span~) =>

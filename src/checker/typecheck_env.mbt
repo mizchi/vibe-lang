@@ -127,7 +127,7 @@ pub struct TypeEnv {
 
 ///|
 pub fn TypeEnv::new() -> TypeEnv {
-  {
+  let env : TypeEnv = {
     bindings: ScopedMap::new(),
     addr_types: {},
     enum_defs: {},
@@ -185,11 +185,28 @@ pub fn TypeEnv::new() -> TypeEnv {
       skip_fn_body_check: false,
     },
   }
+  register_builtin_effects(env)
+  env
+}
+
+///|
+/// Register built-in effects (Error) in the environment.
+fn register_builtin_effects(env : TypeEnv) -> Unit {
+  let error_ops : Map[String, @core.EffectOpSig] = {}
+  error_ops["Throw"] = @core.EffectOpSig::{
+    params: [@core.Type::String],
+    ret: @core.Type::Never,
+  }
+  env.effect_defs["Error"] = @core.EffectDef_::{
+    name: "Error",
+    params: [],
+    ops: error_ops,
+  }
 }
 
 ///|
 pub fn TypecheckSession::new_env(self : TypecheckSession) -> TypeEnv {
-  {
+  let env : TypeEnv = {
     bindings: ScopedMap::new(),
     addr_types: {},
     enum_defs: {},
@@ -243,4 +260,6 @@ pub fn TypecheckSession::new_env(self : TypecheckSession) -> TypeEnv {
     effect_subs: {},
     session_state: self.state,
   }
+  register_builtin_effects(env)
+  env
 }
