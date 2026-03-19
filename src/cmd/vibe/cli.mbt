@@ -6819,8 +6819,10 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
     }
     let desugared = @frontend.desugar_method_calls(raw_ast, {})
     let ast = @frontend.rewrite_effect_handles(desugared)
+    // Resolve type definitions from entry's ReExport chains (standalone, no db)
+    let extra_type_stmts = collect_reexport_type_stmts_standalone(resolved, raw_ast)
     let (bundled, _) = @runtime.bundle_for_wasm_linked_with_imports(
-      ast, cached_imports,
+      ast, cached_imports, extra_type_stmts~,
     )
     let wasm = @runtime_compile.emit_wasm_with_linked_imports(
       bundled, codegen_linked,
@@ -6905,6 +6907,109 @@ fn save_library_modules(
         println("build --debug: warning: write failed for " + mod_name + ": " + e.to_string())
         continue
       }
+    }
+  }
+}
+
+///|
+/// Collect type definitions (enum, type alias, struct) from ReExport chains
+/// by reading and parsing source files directly (no VibeDb needed).
+fn collect_reexport_type_stmts_standalone(
+  entry_path : String,
+  ast : @vibe_core.Module,
+) -> Array[@vibe_core.Stmt] {
+  let result : Array[@vibe_core.Stmt] = []
+  let found : Map[String, Bool] = {}
+  for stmt in ast.stmts {
+    match stmt {
+      @vibe_core.Stmt::ReExport(spec~, source~, ..) => {
+        let wanted : Map[String, Bool] = {}
+        for item in spec.items {
+          wanted[item.name] = true
+        }
+        collect_reexport_types_recursive(
+          entry_path, source, wanted, result, found, 0,
+        )
+      }
+      _ => ()
+    }
+  }
+  result
+}
+
+///|
+fn collect_reexport_types_recursive(
+  referrer_path : String,
+  source : @vibe_core.ModuleRef,
+  wanted : Map[String, Bool],
+  result : Array[@vibe_core.Stmt],
+  found : Map[String, Bool],
+  depth : Int,
+) -> Unit {
+  if depth > 10 {
+    return
+  }
+  let base_dir = @vibe_fs.parent_path(referrer_path)
+  let source_path = match source {
+    @vibe_core.ModuleRef::Path(path~) =>
+      @loader.resolve_entry_path(
+        if path.has_prefix("/") {
+          path
+        } else {
+          base_dir + "/" + path
+        },
+      )
+    @vibe_core.ModuleRef::PinnedPath(path~, ..) =>
+      @loader.resolve_entry_path(
+        if path.has_prefix("/") {
+          path
+        } else {
+          base_dir + "/" + path
+        },
+      )
+    _ => return
+  }
+  let source_text = @os_fs.read_file_to_string(source_path) catch {
+    _ => return
+  }
+  let source_ast = @parser.parse_ast(source_text) catch {
+    _ => return
+  }
+  for stmt in source_ast.stmts {
+    match stmt {
+      @vibe_core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
+        if wanted.contains(name) && not(found.contains(name)) {
+          found[name] = true
+          result.push(@vibe_core.Stmt::EnumDef(name~, params~, ctors~, span~))
+        }
+      @vibe_core.Stmt::ExportTypeAlias(name~, params~, target~, span~) =>
+        if wanted.contains(name) && not(found.contains(name)) {
+          found[name] = true
+          result.push(
+            @vibe_core.Stmt::TypeAlias(name~, params~, target~, span~),
+          )
+        }
+      @vibe_core.Stmt::ExportStructDef(name~, params~, fields~, span~) =>
+        if wanted.contains(name) && not(found.contains(name)) {
+          found[name] = true
+          result.push(
+            @vibe_core.Stmt::StructDef(name~, params~, fields~, span~),
+          )
+        }
+      @vibe_core.Stmt::ReExport(spec=inner_spec, source=inner_source, ..) => {
+        let inner_wanted : Map[String, Bool] = {}
+        for item in inner_spec.items {
+          if wanted.contains(item.name) && not(found.contains(item.name)) {
+            inner_wanted[item.name] = true
+          }
+        }
+        if inner_wanted.size() > 0 {
+          collect_reexport_types_recursive(
+            source_path, inner_source, inner_wanted, result, found, depth + 1,
+          )
+        }
+      }
+      _ => ()
     }
   }
 }

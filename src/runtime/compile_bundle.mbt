@@ -225,9 +225,12 @@ pub fn bundle_for_wasm_linked(
 ///|
 /// Bundle for linked mode with pre-computed imports list (fast path).
 /// No VibeDb needed — just prelude + user AST.
+/// `extra_type_stmts` provides type definitions resolved from ReExport chains
+/// (since db is not available to resolve them at bundle time).
 pub fn bundle_for_wasm_linked_with_imports(
   ast : @core.Module,
   linked_imports : Array[LinkedImport],
+  extra_type_stmts~ : Array[@core.Stmt] = [],
 ) -> (@core.Module, Array[LinkedImport]) {
   let bundled_stmts : Array[@core.Stmt] = []
   let existing_value_names : Map[String, Bool] = {}
@@ -246,11 +249,15 @@ pub fn bundle_for_wasm_linked_with_imports(
       _ => ()
     }
   }
-  // Add user code (skip imports)
+  // Add extra type definitions from resolved ReExports
+  for stmt in extra_type_stmts {
+    bundled_stmts.push(stmt)
+  }
+  // Add user code (skip imports and re-exports)
   let non_prelude_names : Array[String] = []
   for stmt in ast.stmts {
     match stmt {
-      @core.Stmt::Import(..) => ()
+      @core.Stmt::Import(..) | @core.Stmt::ReExport(..) => ()
       _ => {
         match bundle_stmt_value_name(stmt) {
           Some(name) => non_prelude_names.push(name)
