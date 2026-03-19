@@ -102,8 +102,7 @@ pub fn bundle_for_wasm_linked(
   // import modules as non-entry (their ExportLet defs will be included).
   visited[path] = true
   for imp in imports {
-    // Use raw AST (not hash-rewritten) so ReExport sources keep Path refs
-    let dep_ast = db.ast(imp.path)
+    let dep_ast = db.ast_with_hash_imports(imp.path)
     let module_name = linked_module_name(imp.path)
     // Check if any export has HOF params (including through ReExport chains)
     let mut has_hof = false
@@ -310,13 +309,27 @@ priv struct ResolvedReExport {
 
 ///|
 /// Resolve the file path that a ModuleRef points to, given the directory of the
-/// referencing module. Returns None for non-Path refs (Hash, Version, etc.).
-fn resolve_module_ref_path(base_dir : String, source : @core.ModuleRef) -> String? {
+/// referencing module and the import specs for the referrer.
+fn resolve_module_ref_path(
+  base_dir : String,
+  source : @core.ModuleRef,
+  dep_imports~ : Array[ImportSpec] = [],
+) -> String? {
   match source {
     @core.ModuleRef::Path(path~) =>
       Some(normalize_path_obj(base_dir, path).normalized)
     @core.ModuleRef::PinnedPath(path~, ..) =>
       Some(normalize_path_obj(base_dir, path).normalized)
+    @core.ModuleRef::Hash(hash~) => {
+      // Resolve hash to path using pre-resolved import specs
+      for imp in dep_imports {
+        match imp.hash {
+          Some(h) => if h == hash { return Some(imp.path) }
+          None => ()
+        }
+      }
+      None
+    }
     _ => None
   }
 }
@@ -333,7 +346,6 @@ fn resolve_reexport_all(
   source : @core.ModuleRef,
 ) -> ResolvedReExport {
   let result = ResolvedReExport::{ functions: [], type_stmts: [] }
-  // Collect all wanted names: original_name -> export_name
   let wanted : Map[String, String] = {}
   for item in spec.items {
     let export_name = match item.rename {
@@ -345,8 +357,9 @@ fn resolve_reexport_all(
   if wanted.size() == 0 {
     return result
   }
+  let dep_imports = db.imports(dep_path)
   let base_dir = @path.Path(dep_path).dirname().to_string()
-  let source_path = match resolve_module_ref_path(base_dir, source) {
+  let source_path = match resolve_module_ref_path(base_dir, source, dep_imports~) {
     Some(p) => p
     None => return result
   }
@@ -362,7 +375,7 @@ fn resolve_reexport_at_path(
   wanted : Map[String, String],
   result : ResolvedReExport,
 ) -> Unit {
-  let source_ast = db.ast(source_path)
+  let source_ast = db.ast_with_hash_imports(source_path)
   for stmt in source_ast.stmts {
     match stmt {
       @core.Stmt::ExportLet(name~, expr~, ..) =>
