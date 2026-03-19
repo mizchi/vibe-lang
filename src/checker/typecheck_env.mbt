@@ -266,6 +266,59 @@ fn register_builtin_effects(env : TypeEnv) -> Unit {
     params: [],
     ops: fs_ops,
   }
+  // Http effect (requires with { Net } or with { Http })
+  let http_ops : Map[String, @core.EffectOpSig] = {}
+  for pair in [
+    ("Listen", ([@core.Type::Int], @core.Type::Int)),
+    ("Accept", ([@core.Type::Int], @core.Type::Int)),
+    ("Close", ([@core.Type::Int], @core.Type::Unit)),
+    ("RequestMethod", ([@core.Type::Int], @core.Type::String)),
+    ("RequestUrl", ([@core.Type::Int], @core.Type::String)),
+    ("RequestHeader", ([@core.Type::Int, @core.Type::String], @core.Type::String)),
+    ("RequestBody", ([@core.Type::Int], @core.Type::String)),
+    ("ResponseStatus", ([@core.Type::Int], @core.Type::Int)),
+    ("ResponseHeader", ([@core.Type::Int, @core.Type::String], @core.Type::String)),
+    ("ResponseBody", ([@core.Type::Int], @core.Type::String)),
+  ] {
+    let (name, (params, ret)) = pair
+    http_ops[name] = @core.EffectOpSig::{ params, ret }
+  }
+  http_ops["Request"] = @core.EffectOpSig::{
+    params: [@core.Type::String, @core.Type::String, @core.Type::String, @core.Type::String],
+    ret: @core.Type::Int,
+  }
+  http_ops["Respond"] = @core.EffectOpSig::{
+    params: [@core.Type::Int, @core.Type::Int, @core.Type::String, @core.Type::String],
+    ret: @core.Type::Unit,
+  }
+  env.effect_defs["Http"] = @core.EffectDef_::{
+    name: "Http",
+    params: [],
+    ops: http_ops,
+  }
+  // Socket effect (requires with { Net } or with { Socket })
+  let socket_ops : Map[String, @core.EffectOpSig] = {}
+  socket_ops["Connect"] = @core.EffectOpSig::{
+    params: [@core.Type::String, @core.Type::Int],
+    ret: @core.Type::Int,
+  }
+  socket_ops["Read"] = @core.EffectOpSig::{
+    params: [@core.Type::Int, @core.Type::Int],
+    ret: @core.Type::String,
+  }
+  socket_ops["Write"] = @core.EffectOpSig::{
+    params: [@core.Type::Int, @core.Type::String],
+    ret: @core.Type::Unit,
+  }
+  socket_ops["Close"] = @core.EffectOpSig::{
+    params: [@core.Type::Int],
+    ret: @core.Type::Unit,
+  }
+  env.effect_defs["Socket"] = @core.EffectDef_::{
+    name: "Socket",
+    params: [],
+    ops: socket_ops,
+  }
   // Process effect
   let proc_ops : Map[String, @core.EffectOpSig] = {}
   proc_ops["Exec"] = @core.EffectOpSig::{

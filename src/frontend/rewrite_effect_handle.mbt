@@ -83,7 +83,37 @@ fn reh_rewrite_expr(expr : @core.Expr) -> @core.Expr {
       }
       @core.Expr::Call(name=builtin_name, type_args=[], args~, span~)
     }
-    // Desugar: perform Process::Exec(cmd) → sh(cmd) (builtin call)
+    // Desugar: perform Http::Op → Http::builtin
+    @core.Expr::Perform(effect_name="Http", op_name~, args~, span~) => {
+      let builtin_name = match op_name {
+        "Listen" => "Http::listen"
+        "Accept" => "Http::accept"
+        "Close" => "Http::close"
+        "Request" => "Http::request"
+        "Respond" => "Http::respond"
+        "RequestMethod" => "Http::request_method"
+        "RequestUrl" => "Http::request_url"
+        "RequestHeader" => "Http::request_header"
+        "RequestBody" => "Http::request_body"
+        "ResponseStatus" => "Http::response_status"
+        "ResponseHeader" => "Http::response_header"
+        "ResponseBody" => "Http::response_body"
+        _ => "Http::" + op_name
+      }
+      @core.Expr::Call(name=builtin_name, type_args=[], args~, span~)
+    }
+    // Desugar: perform Socket::Op → Socket::builtin
+    @core.Expr::Perform(effect_name="Socket", op_name~, args~, span~) => {
+      let builtin_name = match op_name {
+        "Connect" => "Socket::tcp_connect"
+        "Read" => "Socket::tcp_read"
+        "Write" => "Socket::tcp_write"
+        "Close" => "Socket::tcp_close"
+        _ => "Socket::" + op_name
+      }
+      @core.Expr::Call(name=builtin_name, type_args=[], args~, span~)
+    }
+    // Desugar: perform Process::Exec(cmd) → sh(cmd)
     @core.Expr::Perform(effect_name="Process", op_name="Exec", args~, span~) =>
       @core.Expr::Call(name="sh", type_args=[], args~, span~)
     @core.Expr::Handle(body~, arms~, span~) =>

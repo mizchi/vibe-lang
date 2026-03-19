@@ -22,7 +22,14 @@ fn effect_scope_from_list(effects : Array[@core.EffectAtom]) -> EffectScope {
   let mut rest : String? = None
   for effect in effects {
     match effect {
-      @core.EffectAtom::Const(name) => allowed[name] = true
+      @core.EffectAtom::Const(name) => {
+        allowed[name] = true
+        // Net is a super-effect that includes Http, Socket
+        if name == "Net" {
+          allowed["Http"] = true
+          allowed["Socket"] = true
+        }
+      }
       @core.EffectAtom::Var(name) =>
         match rest {
           Some(existing) => if existing != name { () }
