@@ -190,8 +190,9 @@ pub fn TypeEnv::new() -> TypeEnv {
 }
 
 ///|
-/// Register built-in effects (Error) in the environment.
+/// Register built-in effects (Error, Fs, Net aliases) in the environment.
 fn register_builtin_effects(env : TypeEnv) -> Unit {
+  // Error effect
   let error_ops : Map[String, @core.EffectOpSig] = {}
   error_ops["Throw"] = @core.EffectOpSig::{
     params: [@core.Type::String],
@@ -201,6 +202,40 @@ fn register_builtin_effects(env : TypeEnv) -> Unit {
     name: "Error",
     params: [],
     ops: error_ops,
+  }
+  // Fs effect (maps to builtin Fs::* calls)
+  let fs_ops : Map[String, @core.EffectOpSig] = {}
+  fs_ops["ReadFile"] = @core.EffectOpSig::{
+    params: [@core.Type::String],
+    ret: @core.Type::String,
+  }
+  fs_ops["WriteFile"] = @core.EffectOpSig::{
+    params: [@core.Type::String, @core.Type::String],
+    ret: @core.Type::Unit,
+  }
+  fs_ops["Exists"] = @core.EffectOpSig::{
+    params: [@core.Type::String],
+    ret: @core.Type::Bool,
+  }
+  fs_ops["Mkdir"] = @core.EffectOpSig::{
+    params: [@core.Type::String],
+    ret: @core.Type::Unit,
+  }
+  env.effect_defs["Fs"] = @core.EffectDef_::{
+    name: "Fs",
+    params: [],
+    ops: fs_ops,
+  }
+  // Process effect
+  let proc_ops : Map[String, @core.EffectOpSig] = {}
+  proc_ops["Exec"] = @core.EffectOpSig::{
+    params: [@core.Type::String],
+    ret: @core.Type::String,
+  }
+  env.effect_defs["Process"] = @core.EffectDef_::{
+    name: "Process",
+    params: [],
+    ops: proc_ops,
   }
 }
 

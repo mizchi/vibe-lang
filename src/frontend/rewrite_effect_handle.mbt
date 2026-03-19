@@ -62,6 +62,20 @@ fn reh_rewrite_expr(expr : @core.Expr) -> @core.Expr {
       } else {
         @core.Expr::Raise(value=@core.Expr::String(value="", span~), span~)
       }
+    // Desugar: perform Fs::ReadFile(path) → Fs::read_file(path) (builtin call)
+    @core.Expr::Perform(effect_name="Fs", op_name~, args~, span~) => {
+      let builtin_name = match op_name {
+        "ReadFile" => "Fs::read_file"
+        "WriteFile" => "Fs::write_file"
+        "Exists" => "Fs::exists"
+        "Mkdir" => "Fs::mkdir"
+        _ => "Fs::" + op_name
+      }
+      @core.Expr::Call(name=builtin_name, type_args=[], args~, span~)
+    }
+    // Desugar: perform Process::Exec(cmd) → sh(cmd) (builtin call)
+    @core.Expr::Perform(effect_name="Process", op_name="Exec", args~, span~) =>
+      @core.Expr::Call(name="sh", type_args=[], args~, span~)
     @core.Expr::Handle(body~, arms~, span~) =>
       reh_rewrite_handle(body, arms, span)
     @core.Expr::If(cond~, then_body~, else_body~, span~) =>
