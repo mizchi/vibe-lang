@@ -7,23 +7,23 @@ import ./types.vibe {
 //# Functions
 
 export let cd = (path: String) -> Unit with { Fs } {
-  Fs::chdir(path)
+  perform Fs::Chdir(path)
 }
 
 export let cp = (src: String, dst: String) -> Unit with { Fs } {
-  Fs::copy(src, dst)
+  perform Fs::Copy(src, dst)
 }
 
 export let mv = (src: String, dst: String) -> Unit with { Fs } {
-  Fs::rename(src, dst)
+  perform Fs::Rename(src, dst)
 }
 
 export let rm = (path: String) -> Unit with { Fs } {
-  Fs::remove(path)
+  perform Fs::Remove(path)
 }
 
 export let cat = (path: String) -> String with { Fs } {
-  Fs::read_file(path)
+  perform Fs::ReadFile(path)
 }
 
 export let env = (name: String) -> String with { Env } {
@@ -31,11 +31,11 @@ export let env = (name: String) -> String with { Env } {
 }
 
 export let pwd = () -> String with { Fs } {
-  Fs::getcwd()
+  perform Fs::Getcwd
 }
 
 export let tee = (text: String, path: String) -> String with { Fs } {
-  Fs::write_file(path, text)
+  perform Fs::WriteFile(path, text)
   text
 }
 
@@ -44,11 +44,11 @@ export let echo = (text: String) -> String {
 }
 
 export let exec = (cmd: String) -> Unit with { Stdout } {
-  sh(cmd)
+  perform Process::Exec(cmd)
 }
 
 export let mkdir = (path: String) -> Unit with { Fs } {
-  Fs::mkdir(path)
+  perform Fs::Mkdir(path)
 }
 
 export let print = (text: String) -> Unit with { Stdout } {
@@ -56,13 +56,13 @@ export let print = (text: String) -> Unit with { Stdout } {
 }
 
 export let touch = (path: String) -> Unit with { Fs } {
-  if not(Fs::exists(path)) {
-    Fs::write_file(path, "")
+  if not(perform Fs::Exists(path)) {
+    perform Fs::WriteFile(path, "")
   }
 }
 
 export let append = (path: String, content: String) -> Unit with { Fs } {
-  Fs::append(path, content)
+  perform Fs::Append(path, content)
 }
 
 export let env_or = (name: String, fallback: String) -> String with { Env } {
@@ -73,19 +73,19 @@ export let env_or = (name: String, fallback: String) -> String with { Env } {
 }
 
 export let exists = (path: String) -> Bool with { Fs } {
-  Fs::exists(path)
+  perform Fs::Exists(path)
 }
 
 export let is_dir = (path: String) -> Bool with { Fs } {
-  Fs::is_dir(path)
+  perform Fs::IsDir(path)
 }
 
 export let is_file = (path: String) -> Bool with { Fs } {
-  Fs::is_file(path)
+  perform Fs::IsFile(path)
 }
 
 export let mkdir_p = (path: String) -> Unit with { Fs } {
-  Fs::mkdir_p(path)
+  perform Fs::MkdirP(path)
 }
 
 export let println = (text: String) -> Unit with { Stdout } {
@@ -110,53 +110,44 @@ export let exec_lines = (cmd: String) -> Array[String] with { Stdout } {
 }
 
 export let write_file = (path: String, content: String) -> Unit with { Fs } {
-  Fs::write_file(path, content)
+  perform Fs::WriteFile(path, content)
 }
 
 let to_file_entry = (name: String, path: String) -> FileEntry with { Fs } {
   FileEntry::{
     name: name,
     path: path,
-    is_dir: Fs::is_dir(path)
+    is_dir: perform Fs::IsDir(path)
   }
 }
 
 let is_navigation_entry = (name: String) -> Bool {
-  if name == "." {
-    true
-  } else name == ".."
+  if name == "." { true } else name == ".."
 }
 
 let strip_trailing_slashes = (path: String) -> String {
   let path_len = String::length(path)
-  if path_len <= 1 {
-    path
-  } else if String::ends_with(path, "/") {
-    path[0:path_len - 1]
-  } else path
+  if path_len <= 1 { path }
+  else if String::ends_with(path, "/") { path[0:path_len - 1] }
+  else path
 }
 
 let join_path = (dir: String, name: String) -> String {
   let normalized_dir = strip_trailing_slashes(dir)
-  if normalized_dir == "/" {
-    "/\{name}"
-  } else {
-    "\{normalized_dir}/\{name}"
-  }
+  if normalized_dir == "/" { "/\{name}" }
+  else { "\{normalized_dir}/\{name}" }
 }
 
 let list_entries = (dir: String, include_hidden: Bool) -> Array[FileEntry] with { Fs } {
-  let names = Fs::readdir(dir)
+  let names = perform Fs::ReadDir(dir)
   let result = ArrayBuilder::new()
   let mut i = 0
   while i < Array::length(names) {
     let name = Array::get(names, i)
-    let visible = if include_hidden {
-      true
-    } else not(String::starts_with(name, "."))
+    let visible = if include_hidden { true }
+    else not(String::starts_with(name, "."))
     if visible {
-      let entry_path = join_path(dir, name)
-      ArrayBuilder::push(result, to_file_entry(name, entry_path))
+      ArrayBuilder::push(result, to_file_entry(name, join_path(dir, name)))
     }
     i = i + 1
   }
@@ -174,16 +165,15 @@ export let ls_all = (dir: String) -> Array[FileEntry] with { Fs } {
 let path_basename = (path: String) -> String {
   let normalized_path = strip_trailing_slashes(path)
   let idx = String::last_index_of(normalized_path, "/")
-  if idx < 0 {
-    normalized_path
-  } else normalized_path[idx + 1:String::length(normalized_path)]
+  if idx < 0 { normalized_path }
+  else normalized_path[idx + 1:String::length(normalized_path)]
 }
 
 export let find = (dir: String) -> Array[FileEntry] with { Fs } {
   let root_dir = strip_trailing_slashes(dir)
   let result = ArrayBuilder::new()
   let queue_paths = ArrayBuilder::new()
-  let initial_names = Fs::readdir(root_dir)
+  let initial_names = perform Fs::ReadDir(root_dir)
   let mut k = 0
   while k < Array::length(initial_names) {
     let name = Array::get(initial_names, k)
@@ -198,12 +188,12 @@ export let find = (dir: String) -> Array[FileEntry] with { Fs } {
     let mut i = 0
     while i < Array::length(paths) {
       let p = Array::get(paths, i)
-      let is_directory = Fs::is_dir(p)
+      let is_directory = perform Fs::IsDir(p)
       ArrayBuilder::push(result, FileEntry::{
         name: path_basename(p), path: p, is_dir: is_directory
       })
       if is_directory {
-        let child_names = Fs::readdir(p)
+        let child_names = perform Fs::ReadDir(p)
         let mut j = 0
         while j < Array::length(child_names) {
           let cname = Array::get(child_names, j)

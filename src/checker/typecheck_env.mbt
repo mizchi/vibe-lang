@@ -221,6 +221,46 @@ fn register_builtin_effects(env : TypeEnv) -> Unit {
     params: [@core.Type::String],
     ret: @core.Type::Unit,
   }
+  fs_ops["MkdirP"] = @core.EffectOpSig::{
+    params: [@core.Type::String],
+    ret: @core.Type::Unit,
+  }
+  fs_ops["Remove"] = @core.EffectOpSig::{
+    params: [@core.Type::String],
+    ret: @core.Type::Unit,
+  }
+  fs_ops["Copy"] = @core.EffectOpSig::{
+    params: [@core.Type::String, @core.Type::String],
+    ret: @core.Type::Unit,
+  }
+  fs_ops["Rename"] = @core.EffectOpSig::{
+    params: [@core.Type::String, @core.Type::String],
+    ret: @core.Type::Unit,
+  }
+  fs_ops["ReadDir"] = @core.EffectOpSig::{
+    params: [@core.Type::String],
+    ret: @core.Type::Array(@core.Type::String),
+  }
+  fs_ops["IsDir"] = @core.EffectOpSig::{
+    params: [@core.Type::String],
+    ret: @core.Type::Bool,
+  }
+  fs_ops["IsFile"] = @core.EffectOpSig::{
+    params: [@core.Type::String],
+    ret: @core.Type::Bool,
+  }
+  fs_ops["Getcwd"] = @core.EffectOpSig::{
+    params: [],
+    ret: @core.Type::String,
+  }
+  fs_ops["Chdir"] = @core.EffectOpSig::{
+    params: [@core.Type::String],
+    ret: @core.Type::Unit,
+  }
+  fs_ops["Append"] = @core.EffectOpSig::{
+    params: [@core.Type::String, @core.Type::String],
+    ret: @core.Type::Unit,
+  }
   env.effect_defs["Fs"] = @core.EffectDef_::{
     name: "Fs",
     params: [],
