@@ -6738,15 +6738,25 @@ fn build_cmd_release(entry : String, out_path : String?) -> Unit {
     Ok(v) => v
     Err(err) => abort("build: " + err)
   }
-  let wasm_bytes = @runtime_compile.compile_module_wasm_with_opt_level(
-    db, resolved_entry, debug_errors=true,
-  ) catch {
-    e => abort("build: " + e.user_message())
+  // Try -Oz optimization; fall back to unoptimized if wite doesn't support
+  // the generated opcodes (e.g., exceptions/try_table).
+  let optimized : Result[Bytes, _] = try? @runtime_compile.compile_module_wasm_with_opt_level(
+    db, resolved_entry, opt_level=Some("-Oz"),
+  )
+  let wasm_bytes = match optimized {
+    Ok(bytes) => bytes
+    Err(_) =>
+      @runtime_compile.compile_module_wasm_with_opt_level(
+        db, resolved_entry,
+      ) catch {
+        e => abort("build: " + e.user_message())
+      }
   }
   @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
     e => abort("build: write failed: " + e.to_string())
   }
-  println("build --release: wrote " + resolved_out)
+  let size = wasm_bytes.length()
+  println("build --release: wrote " + resolved_out + " (" + size.to_string() + " bytes)")
 }
 
 ///|
