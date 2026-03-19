@@ -1721,6 +1721,23 @@ fn emit_module_with_coverage(
       _ => ()
     }
   }
+  // In library mode, bundled code converts ExportLet to plain Let.
+  // Export all Let+Fn so linked callers can import them.
+  if ctx.library_mode {
+    for stmt in ast.stmts {
+      match stmt {
+        @core.Stmt::Let(name~, expr~, ..) =>
+          match expr {
+            @core.Expr::Fn(..) =>
+              if not(ctx.exported_fns.contains(name)) {
+                ctx.exported_fns[name] = true
+              }
+            _ => ()
+          }
+        _ => ()
+      }
+    }
+  }
   let funcs = collect_func_defs(ast)
   let top_funcs = collect_top_level_funcs(ast)
   let top_keys : Map[String, Bool] = {}

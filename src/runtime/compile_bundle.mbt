@@ -102,9 +102,10 @@ pub fn bundle_for_wasm_linked(
   // import modules as non-entry (their ExportLet defs will be included).
   visited[path] = true
   for imp in imports {
-    let dep_ast = db.ast_with_hash_imports(imp.path)
+    // Use raw AST (not hash-rewritten) so ReExport sources keep Path refs
+    let dep_ast = db.ast(imp.path)
     let module_name = linked_module_name(imp.path)
-    // Check if any export has HOF params
+    // Check if any export has HOF params (including through ReExport chains)
     let mut has_hof = false
     for stmt in dep_ast.stmts {
       match stmt {
@@ -116,6 +117,15 @@ pub fn bundle_for_wasm_linked(
               }
             _ => ()
           }
+        @core.Stmt::ReExport(spec~, source~, ..) =>
+          if not(has_hof) {
+            let resolved = resolve_reexport_all(db, imp.path, spec, source)
+            for r in resolved.functions {
+              if linked_fn_has_func_param(r.params) {
+                has_hof = true
+              }
+            }
+          }
         _ => ()
       }
     }
@@ -123,7 +133,7 @@ pub fn bundle_for_wasm_linked(
       // Module has HOF exports: inline entire module (like monolithic)
       collect_dependency_defs(db, imp.path, bundled_stmts, visited)
     } else {
-      // Module has only scalar exports: use linked imports
+      // Module has only scalar exports: use linked imports (with ReExport resolution)
       for stmt in dep_ast.stmts {
         match stmt {
           @core.Stmt::ExportLet(name~, expr~, ..) => {
@@ -140,6 +150,21 @@ pub fn bundle_for_wasm_linked(
                 })
               }
               _ => ()
+            }
+          }
+          @core.Stmt::ReExport(spec~, source~, ..) => {
+            let resolved = resolve_reexport_all(db, imp.path, spec, source)
+            for r in resolved.functions {
+              if not(existing_value_names.contains(r.name)) {
+                existing_value_names[r.name] = true
+                linked_imports.push(LinkedImport::{
+                  module_name, func_name: r.name,
+                  param_count: r.params.length(), return_count: r.return_count,
+                })
+              }
+            }
+            for t in resolved.type_stmts {
+              bundled_stmts.push(t)
             }
           }
           @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
@@ -163,11 +188,13 @@ pub fn bundle_for_wasm_linked(
       _ => ()
     }
   }
-  // Add main module statements (excluding imports)
+  // Add main module statements (excluding imports; resolve re-exports for types)
+  let raw_entry_ast = db.ast(path)
   let non_prelude_names : Array[String] = []
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Import(..) => ()
+      @core.Stmt::ReExport(..) => ()
       _ => {
         match bundle_stmt_value_name(stmt) {
           Some(name) => non_prelude_names.push(name)
@@ -175,6 +202,18 @@ pub fn bundle_for_wasm_linked(
         }
         bundled_stmts.push(stmt)
       }
+    }
+  }
+  // Resolve type definitions from entry module's own ReExport stmts
+  for stmt in raw_entry_ast.stmts {
+    match stmt {
+      @core.Stmt::ReExport(spec~, source~, ..) => {
+        let resolved = resolve_reexport_all(db, path, spec, source)
+        for t in resolved.type_stmts {
+          bundled_stmts.push(t)
+        }
+      }
+      _ => ()
     }
   }
   let bundled = @core.Module::{ stmts: dedupe_bundle_structural_defs(bundled_stmts) }
@@ -244,6 +283,156 @@ fn linked_type_is_func(ty : @core.Type) -> Bool {
   match ty {
     @core.Type::Func(..) => true
     _ => false
+  }
+}
+
+///|
+/// Resolved function info from a ReExport chain.
+priv struct ResolvedReExportFn {
+  name : String
+  params : Array[@core.FuncParam]
+  return_count : Int
+}
+
+///|
+/// Result of resolving all items in a ReExport statement.
+priv struct ResolvedReExport {
+  functions : Array[ResolvedReExportFn]
+  type_stmts : Array[@core.Stmt]
+}
+
+///|
+/// Resolve the file path that a ModuleRef points to, given the directory of the
+/// referencing module. Returns None for non-Path refs (Hash, Version, etc.).
+fn resolve_module_ref_path(base_dir : String, source : @core.ModuleRef) -> String? {
+  match source {
+    @core.ModuleRef::Path(path~) =>
+      Some(normalize_path_obj(base_dir, path).normalized)
+    @core.ModuleRef::PinnedPath(path~, ..) =>
+      Some(normalize_path_obj(base_dir, path).normalized)
+    _ => None
+  }
+}
+
+///|
+/// Resolve all items in a ReExport: functions become LinkedImports, types become
+/// inlined definitions. Uses raw ASTs so ModuleRef::Path is preserved.
+/// All item names are treated as potential matches regardless of ImportKind,
+/// because vibe import syntax uses Value kind by default for all names.
+fn resolve_reexport_all(
+  db : VibeDb,
+  dep_path : String,
+  spec : @core.ImportSpec,
+  source : @core.ModuleRef,
+) -> ResolvedReExport {
+  let result = ResolvedReExport::{ functions: [], type_stmts: [] }
+  // Collect all wanted names: original_name -> export_name
+  let wanted : Map[String, String] = {}
+  for item in spec.items {
+    let export_name = match item.rename {
+      Some(alias) => alias
+      None => item.name
+    }
+    wanted[item.name] = export_name
+  }
+  if wanted.size() == 0 {
+    return result
+  }
+  let base_dir = @path.Path(dep_path).dirname().to_string()
+  let source_path = match resolve_module_ref_path(base_dir, source) {
+    Some(p) => p
+    None => return result
+  }
+  resolve_reexport_at_path(db, source_path, wanted, result)
+  result
+}
+
+///|
+/// Resolve ReExport items at a known source path.
+fn resolve_reexport_at_path(
+  db : VibeDb,
+  source_path : String,
+  wanted : Map[String, String],
+  result : ResolvedReExport,
+) -> Unit {
+  let source_ast = db.ast(source_path)
+  for stmt in source_ast.stmts {
+    match stmt {
+      @core.Stmt::ExportLet(name~, expr~, ..) =>
+        match wanted.get(name) {
+          Some(export_name) =>
+            match expr {
+              @core.Expr::Fn(params~, ret~, ..) => {
+                let rc = match ret {
+                  Some(@core.Type::Tuple(items)) => items.length()
+                  _ => 1
+                }
+                result.functions.push(
+                  ResolvedReExportFn::{
+                    name: export_name,
+                    params,
+                    return_count: rc,
+                  },
+                )
+              }
+              _ => ()
+            }
+          None => ()
+        }
+      @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
+        match wanted.get(name) {
+          Some(_export_name) =>
+            result.type_stmts.push(
+              @core.Stmt::EnumDef(name~, params~, ctors~, span~),
+            )
+          None => ()
+        }
+      @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) =>
+        match wanted.get(name) {
+          Some(_export_name) =>
+            result.type_stmts.push(
+              @core.Stmt::TypeAlias(name~, params~, target~, span~),
+            )
+          None => ()
+        }
+      @core.Stmt::ExportStructDef(name~, params~, fields~, span~) =>
+        match wanted.get(name) {
+          Some(_export_name) =>
+            result.type_stmts.push(
+              @core.Stmt::StructDef(name~, params~, fields~, span~),
+            )
+          None => ()
+        }
+      @core.Stmt::ReExport(spec=inner_spec, source=inner_source, ..) => {
+        // Recurse into nested ReExport chains
+        let inner = resolve_reexport_all(db, source_path, inner_spec, inner_source)
+        for r in inner.functions {
+          match wanted.get(r.name) {
+            Some(export_name) =>
+              result.functions.push(
+                ResolvedReExportFn::{ ..r, name: export_name },
+              )
+            None => ()
+          }
+        }
+        for t in inner.type_stmts {
+          let type_name = match t {
+            @core.Stmt::EnumDef(name~, ..) => Some(name)
+            @core.Stmt::TypeAlias(name~, ..) => Some(name)
+            @core.Stmt::StructDef(name~, ..) => Some(name)
+            _ => None
+          }
+          match type_name {
+            Some(n) =>
+              if wanted.contains(n) {
+                result.type_stmts.push(t)
+              }
+            None => ()
+          }
+        }
+      }
+      _ => ()
+    }
   }
 }
 

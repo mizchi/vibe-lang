@@ -305,7 +305,29 @@ fn compile_stmt(
                     return
                   }
                 }
-                None => ()
+                None =>
+                  // Check linked imports (library functions from --preload)
+                  match ctx.linked_fn_imports.get(source_name) {
+                    Some(import_idx) => {
+                      ctx.linked_fn_imports[name] = import_idx
+                      match ctx.linked_fn_return_counts.get(source_name) {
+                        Some(rc) =>
+                          ctx.linked_fn_return_counts[name] = rc
+                        None => ()
+                      }
+                      let mut is_captured = false
+                      for _key, captures in ctx.fn_closure_captures {
+                        if captures.contains(name) {
+                          is_captured = true
+                          break
+                        }
+                      }
+                      if not(is_last) && not(is_captured) {
+                        return
+                      }
+                    }
+                    None => ()
+                  }
               }
             // Forwarding function alias: let f = (x) { g(x) }
             // → treat as alias of g (skip generating a separate function)
