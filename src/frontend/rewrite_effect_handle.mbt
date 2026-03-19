@@ -480,42 +480,38 @@ fn reh_try_defunctionalize(
   }
   // Generate unrolled fold: { let mut __acc = base; __acc = vN + __acc; ...; __acc }
   let acc_name = "__defunc_acc"
-  // Detect the binary operation from the first handler (all must match)
-  let mut fold_op = "__add"
+  // Get the handler template for fold step generation
+  let mut fold_handler : EffectHandler? = None
   for _key, handler in handlers {
     if handler.has_continuation {
-      match handler.raw_expr {
-        @core.Expr::Call(name~, ..) => fold_op = name
-        _ => ()
-      }
+      fold_handler = Some(handler)
       break
     }
+  }
+  let handler = match fold_handler {
+    Some(h) => h
+    None => return None
+  }
+  let v_name = if handler.param_names.length() > 0 {
+    handler.param_names[0]
+  } else {
+    "_"
   }
   let fold_stmts : Array[@core.Stmt] = []
   fold_stmts.push(@core.Stmt::LetMut(name=acc_name, expr=base, span~))
   // Reverse order: last perform first (right fold)
   for i = performs.length() - 1; i >= 0; i = i - 1 {
     let (arg_expr, _key) = performs[i]
-    // acc = op(arg, acc)
-    fold_stmts.push(
-      @core.Stmt::Assign(
-        name=acc_name,
-        expr=@core.Expr::Call(
-          name=fold_op,
-          type_args=[],
-          args=[
-            @core.CallArg::{ label: None, expr: arg_expr, span },
-            @core.CallArg::{
-              label: None,
-              expr: @core.Expr::Ident(name=acc_name, span~),
-              span,
-            },
-          ],
-          span~,
-        ),
-        span~,
-      ),
+    // acc = template[v := arg, k(base) := acc]
+    let step_expr = reh_substitute_fold_template(
+      handler.raw_expr,
+      v_name,
+      handler.continuation_name,
+      arg_expr,
+      acc_name,
+      span,
     )
+    fold_stmts.push(@core.Stmt::Assign(name=acc_name, expr=step_expr, span~))
   }
   fold_stmts.push(
     @core.Stmt::Expr(expr=@core.Expr::Ident(name=acc_name, span~), span~),
@@ -523,30 +519,92 @@ fn reh_try_defunctionalize(
   Some(@core.Expr::Block(body=@core.Module::{ stmts: fold_stmts }, span~))
 }
 
+///| Check if a CPS handler can be defunctionalized.
+
+///| The handler body must contain exactly one call to k (the continuation).
+
 ///|
-/// Check if a CPS handler matches the accumulate pattern: v OP k(base)
-/// where v is the handler's first param (not a constant).
+/// Returns true if the handler body is a pure expression using v and k(base).
 fn reh_is_accumulate_pattern(handler : EffectHandler) -> Bool {
-  if handler.param_names.length() == 0 {
-    return false
-  }
-  let v_name = handler.param_names[0]
-  match handler.raw_expr {
-    @core.Expr::Call(name~, args~, ..) =>
-      if (name == "__add" || name == "__mul") && args.length() == 2 {
-        let first_is_v = match args[0].expr {
-          @core.Expr::Ident(name=n, ..) => n == v_name
-          _ => false
-        }
-        let second_is_k = match args[1].expr {
-          @core.Expr::Call(..) => true
-          _ => false
-        }
-        first_is_v && second_is_k
-      } else {
-        false
+  reh_count_k_calls(handler.raw_expr, handler.continuation_name) == 1
+}
+
+///|
+/// Count how many times the continuation k is called in an expression.
+fn reh_count_k_calls(expr : @core.Expr, k_name : String) -> Int {
+  match expr {
+    @core.Expr::Call(name~, args~, ..) => {
+      let mut count = 0
+      if name == k_name {
+        count += 1
       }
-    _ => false
+      for arg in args {
+        count += reh_count_k_calls(arg.expr, k_name)
+      }
+      count
+    }
+    @core.Expr::Ident(name~, ..) => if name == k_name { 1 } else { 0 }
+    _ => 0
+  }
+}
+
+///| Substitute v → arg_expr and k(base) → acc_ident in a handler body expression.
+
+///|
+/// Returns the fold step expression.
+fn reh_substitute_fold_template(
+  expr : @core.Expr,
+  v_name : String,
+  k_name : String,
+  arg_expr : @core.Expr,
+  acc_name : String,
+  span : @core.Span,
+) -> @core.Expr {
+  match expr {
+    @core.Expr::Ident(name~, ..) =>
+      if name == v_name {
+        arg_expr
+      } else if name == k_name {
+        // bare k reference (shouldn't happen in well-formed code)
+        @core.Expr::Ident(name=acc_name, span~)
+      } else {
+        expr
+      }
+    @core.Expr::Call(name~, type_args~, args~, span=call_span) =>
+      // Check if this is k(base) — Call where callee resolves to k
+      // In the parsed AST, k(0) is Call(name="k", args=[0])
+      if name == k_name {
+        // Replace k(base) with acc
+        @core.Expr::Ident(name=acc_name, span~)
+      } else {
+        // Recursively substitute in args
+        let new_args : Array[@core.CallArg] = []
+        for arg in args {
+          new_args.push(@core.CallArg::{
+            label: arg.label,
+            expr: reh_substitute_fold_template(
+              arg.expr,
+              v_name,
+              k_name,
+              arg_expr,
+              acc_name,
+              span,
+            ),
+            span: arg.span,
+          })
+        }
+        @core.Expr::Call(name~, type_args~, args=new_args, span=call_span)
+      }
+    @core.Expr::If(cond~, then_body~, else_body~, span=if_span) =>
+      @core.Expr::If(
+        cond=reh_substitute_fold_template(
+          cond, v_name, k_name, arg_expr, acc_name, span,
+        ),
+        then_body~,
+        else_body~,
+        span=if_span,
+      )
+    _ => expr
   }
 }
 
