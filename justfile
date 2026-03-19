@@ -61,12 +61,11 @@ test-rename-builtins:
 test-vibe-normalize:
     bash scripts/vibe_normalize_all_test.sh
 
-# Run tests (skips slow fixture interpreter eval and heavy wasm tests)
-# Use `just test-full` for everything including fixtures + wasm-heavy
+# Run tests (excludes heavy wasm tests; use `just test-full` for everything)
 test:
     scripts/check_lock_clean.sh
     scripts/check_lock_clean_test.sh
-    VIBE_SKIP_FIXTURES=1 moon test --target {{target}} --warn-list '{{moon_warn_list}}'
+    moon test --target {{target}} --warn-list '{{moon_warn_list}}'
     moon test -p mizchi/vibe/lib --target wasm-gc --warn-list '{{moon_warn_list}}'
     moon test -p mizchi/vibe/cmd/vibe -f cli_e2e_wbtest.mbt --target native --warn-list '{{moon_warn_list}}'
     moon test -p mizchi/vibe/cmd/vibe_check_wasi --target wasm --warn-list '{{moon_warn_list}}'
@@ -79,8 +78,8 @@ test-wasm-heavy:
     bash -c 'source scripts/ensure_native_cli.sh'
     _build/native/debug/build/cmd/vibe/vibe.exe test vibe/wasm/wasm_opt vibe/wasm/wasm_runtime
 
-# Run all tests including slow fixture tests and heavy wasm tests
-test-full: test test-fixtures test-wasm-heavy
+# Run all tests including heavy wasm tests
+test-full: test test-wasm-heavy
 
 # Build wasm artifact used by Deno integration tests
 build-integration-deno-wasm:

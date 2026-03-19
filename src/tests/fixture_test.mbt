@@ -483,7 +483,7 @@ fn run_fixture(path : String) -> Unit raise {
 
 ///|
 test "fixtures" {
-  // Skip when VIBE_SKIP_FIXTURES=1 (used by `just test` to avoid slow interpreter eval)
+  // Set VIBE_SKIP_FIXTURES=1 to skip fixture interpreter eval (for debugging)
   match @sys.get_env_var("VIBE_SKIP_FIXTURES") {
     Some("1") => return
     _ => ()
