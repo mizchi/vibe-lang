@@ -198,9 +198,10 @@ suberror AppError { NotFound; BadInput(String) }
 ```
 
 タスク:
-- [ ] `throw(x)` を内部的に `Perform("Error", "Throw", [x])` に desugar
-- [ ] `Error` effect を暗黙定義として TypeEnv に登録
-- [ ] `handle { } { Error(msg) => }` の既存構文は維持（後方互換）
+- [ ] `throw(x)` を内部的に `Perform("Error", "Throw", [x])` に desugar (逆方向は完了)
+- [x] `Error` effect を暗黙定義として TypeEnv に登録 (Throw(String) -> Never)
+- [x] `perform Error::Throw(msg)` → `Raise(msg)` desugar
+- [x] `handle { } { Error(msg) => }` 既存構文を維持（後方互換）
 - [ ] suberror の throw は Error effect 経由に統一
 
 #### Net → fine-grained capability effects
