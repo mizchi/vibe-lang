@@ -1948,39 +1948,8 @@ fn run_cmd_wasm_backend(entry_path : String) -> Result[WasmRunValue, String] {
         Err(_) => () // fall through
       }
     }
-    // No cache yet: auto-create via build --debug path
-    match @loader.load_db(entry_path) {
-      Ok((db, resolved_entry)) => {
-        let linked_result : Result[(Bytes, Array[@runtime.LinkedImport]), _] = try? @runtime_compile.compile_module_wasm_linked(
-          db, resolved_entry, debug_errors=true,
-        )
-        match linked_result {
-          Ok((_, imports)) => {
-            if not(@os_fs.path_exists(cache_dir)) {
-              let _ = c_system(system_command_bytes(
-                "mkdir -p " + shell_quote_command_arg(cache_dir),
-              ))
-            }
-            let cache_text = serialize_linked_imports_cache(imports)
-            @os_fs.write_string_to_file(imports_cache, cache_text) catch {
-              _ => ()
-            }
-            save_library_modules(db, resolved_entry, imports, cache_dir)
-            let hash_cache = cache_dir + "/source_hashes.txt"
-            save_source_hashes(db, resolved_entry, cache_dir, hash_cache)
-            // Now run with linked cache
-            match run_cmd_wasm_linked(
-              entry_path, resolved, parent, cache_dir,
-            ) {
-              Ok(v) => return Ok(v)
-              Err(_) => () // fall through to monolithic
-            }
-          }
-          Err(_) => () // fall through to monolithic
-        }
-      }
-      Err(_) => ()
-    }
+    // No cache yet: fall through to monolithic run.
+    // After execution, spawn background cache creation for next run.
   }
   // Monolithic fallback
   let (db, entry) = match @loader.load_db(entry_path) {
@@ -2094,6 +2063,8 @@ fn run_cmd(
         match run_cmd_wasm_backend(entry_path) {
           Ok(result) => {
             print_wasm_run_value(result)
+            // Create linked cache in background for next run
+            maybe_create_linked_cache_background(entry_path)
             return
           }
           Err(err) => {
@@ -6949,6 +6920,30 @@ fn serialize_linked_imports_cache(
     buf.write_char('\n')
   }
   buf.to_string()
+}
+
+///|
+///|
+/// Spawn background `vibe build --debug` to create linked cache for next run.
+/// Only spawns if no cache exists yet. The background process is fire-and-forget.
+fn maybe_create_linked_cache_background(entry_path : String) -> Unit {
+  let resolved = @loader.resolve_entry_path(entry_path)
+  let parent = @vibe_fs.parent_path(resolved)
+  let cache_dir = parent + "/.vibe/debug"
+  let imports_cache = cache_dir + "/linked_imports.txt"
+  if @os_fs.path_exists(imports_cache) {
+    return // cache already exists
+  }
+  // Find our own binary path
+  let self_bin = match @sys.get_env_var("_") {
+    Some(bin) if bin.has_suffix("vibe.exe") || bin.has_suffix("vibe") => bin
+    _ => return // can't find self
+  }
+  let cmd = shell_quote_command_arg(self_bin) +
+    " build --debug " +
+    shell_quote_command_arg(entry_path) +
+    " -o /dev/null >/dev/null 2>&1 &"
+  let _ = c_system(system_command_bytes(cmd))
 }
 
 ///|
