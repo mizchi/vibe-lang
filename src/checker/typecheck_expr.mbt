@@ -41,6 +41,60 @@ fn substitute_param_names(
 /// For known constructors, bind with the ctor payload type.
 /// Fallback to String binding for unknown constructors (`Error(...)` etc).
 
+///| Collect perform Effect::Op names from module body (shallow)
+fn collect_perform_ops(body : @core.Module) -> Array[String] {
+  let ops : Array[String] = []
+  for stmt in body.stmts {
+    match stmt {
+      @core.Stmt::Let(expr~, ..) | @core.Stmt::Expr(expr~, ..) |
+      @core.Stmt::LetMut(expr~, ..) =>
+        collect_perform_ops_expr(expr, ops)
+      _ => ()
+    }
+  }
+  ops
+}
+
+///|
+fn collect_perform_ops_expr(expr : @core.Expr, ops : Array[String]) -> Unit {
+  match expr {
+    @core.Expr::Perform(effect_name~, op_name~, args~, ..) => {
+      ops.push(effect_name + "::" + op_name)
+      for arg in args {
+        collect_perform_ops_expr(arg.expr, ops)
+      }
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      collect_perform_ops_expr(cond, ops)
+      for s in then_body.stmts {
+        match s {
+          @core.Stmt::Let(expr~, ..) | @core.Stmt::Expr(expr~, ..) =>
+            collect_perform_ops_expr(expr, ops)
+          _ => ()
+        }
+      }
+      for s in else_body.stmts {
+        match s {
+          @core.Stmt::Let(expr~, ..) | @core.Stmt::Expr(expr~, ..) =>
+            collect_perform_ops_expr(expr, ops)
+          _ => ()
+        }
+      }
+    }
+    @core.Expr::Block(body~, ..) =>
+      for s in body.stmts {
+        match s {
+          @core.Stmt::Let(expr~, ..) | @core.Stmt::Expr(expr~, ..) =>
+            collect_perform_ops_expr(expr, ops)
+          _ => ()
+        }
+      }
+    @core.Expr::Call(args~, ..) =>
+      for arg in args { collect_perform_ops_expr(arg.expr, ops) }
+    _ => ()
+  }
+}
+
 ///|
 /// Extract effect name from qualified "Effect::Op" → "Effect"
 fn extract_effect_name(qualified : String) -> String {
@@ -878,6 +932,38 @@ fn type_expr_eff(
       let body_ty = type_block(
         body_env, body, aliases, body_scope, body_allow_effect,
       )
+      // Check handler exhaustiveness: warn about unhandled effect ops
+      let handled_ops : Map[String, Bool] = {}
+      for arm in arms {
+        match arm.pat {
+          @core.Pat::Ctor(name~, ..) =>
+            if name.contains("::") {
+              handled_ops[name] = true
+            }
+          _ => ()
+        }
+      }
+      // Check handler exhaustiveness: if an effect has some ops handled,
+      // all ops of that effect should be handled
+      let body_performs = collect_perform_ops(body)
+      let handled_effect_set : Map[String, Bool] = {}
+      for op, _ in handled_ops {
+        handled_effect_set[extract_effect_name(op)] = true
+      }
+      for op_name in body_performs {
+        let eff = extract_effect_name(op_name)
+        // Only warn if the effect has at least one handler arm
+        if handled_effect_set.contains(eff) && not(handled_ops.contains(op_name)) {
+          raise TypeError::BadTypeDef(
+            message="handle is missing handler for `" +
+              op_name +
+              "` (effect `" +
+              eff +
+              "` is partially handled)",
+            span~,
+          )
+        }
+      }
       let body_resume_types : Map[String, @core.Type] = body_env.handle_resume_types.copy()
       let inferred_resume_types = body_resume_types.copy()
       let escaping_resume_types : Map[String, @core.Type] = {}
