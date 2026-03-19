@@ -1,4 +1,7 @@
 ///|
+let resolve_member_depth : Ref[Int] = Ref::new(0)
+
+///|
 fn resolve_type_member_call_name(
   env : TypeEnv,
   name : String,
@@ -11,14 +14,27 @@ fn resolve_type_member_call_name(
   if name.contains("::") || name.contains(".") {
     return None
   }
+  // Guard against infinite recursion: type_expr_eff → type_call → resolve_type_member_call_name
+  if resolve_member_depth.val >= 4 {
+    return None
+  }
   let _ = call_span
   match @core.first_positional_expr(args) {
     None => None
     Some(expr) => {
-      let recv_ty = resolve_type(
-        env,
-        type_expr_eff(env, expr, aliases, effects, allow_effect),
-      )
+      resolve_member_depth.val += 1
+      let recv_ty = try {
+        resolve_type(
+          env,
+          type_expr_eff(env, expr, aliases, effects, allow_effect),
+        )
+      } catch {
+        e => {
+          resolve_member_depth.val -= 1
+          raise e
+        }
+      }
+      resolve_member_depth.val -= 1
       match env.build_type_member_candidate(recv_ty, name) {
         Some(candidate) =>
           match env.get(candidate) {

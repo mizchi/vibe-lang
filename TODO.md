@@ -404,7 +404,7 @@ PoC で core module linking の E2E を確認:
 - [x] 型チェック + import I/O スキップ — fast path: キャッシュ済み linked imports + user code のみ parse/codegen。**485ms → 10ms (48x 高速化)**
 - [ ] funcref table 共有 — 高階関数 (クロージャ) を cross-module で渡すケース。実用上はほぼ不要 (prelude の map/filter 等はインライン展開される)。将来的には user 関数を wasm export → library が import する方式で解決可能
 - [ ] タイムスタンプベースのキャッシュ判定
-- [ ] data section のオフセット調整 — user module の string 定数が library の data と衝突する可能性
+- [x] data section のオフセット調整 — user module の string を 64KB offset に配置（衝突回避）。ただし cross-module string 受け渡しで concat 結果が不正になるケースあり（要調査: heap_ptr 初期値と allocate 位置の関係）
 
 ### 補足: wac compose のビルド時間
 
