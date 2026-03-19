@@ -552,3 +552,181 @@ test "parity: array filter collect" {
 test "parity: recursive list" {
   assert(check_source_ok("enum IntList { Nil; Cons(Int, IntList) }\nlet rec sum_list = (l: IntList) -> Int { match l { Nil => 0, Cons(h, t) => h + sum_list(t) } }\nsum_list(Cons(1, Cons(2, Cons(3, Nil))))"))
 }
+
+//# Misc — Coverage: map / record / tuple index
+
+test "parity: map literal" {
+  assert(check_source_ok("let m = map { \"x\": 1, \"y\": 2 }\nMap::get(m, \"x\")"))
+}
+
+test "parity: empty map" {
+  assert(check_source_ok("let m: Map[String, Int] = map {}\nm"))
+}
+
+test "parity: tuple index" {
+  assert(check_source_ok("let t = (10, 20, 30)\nt.0 + t.1 + t.2"))
+}
+
+test "parity: nested tuple" {
+  assert(check_source_ok("let t = ((1, 2), (3, 4))\nlet (a, b) = t\na.0 + b.1"))
+}
+
+test "parity: string interpolation" {
+  assert(check_source_ok("let x = 42\nlet s = \"value is \\{__to_string(x)}\"\nString::length(s)"))
+}
+
+//# Misc — Coverage: loop / break / continue
+
+test "parity: loop with break" {
+  assert(check_source_ok("let result = loop (i = 0) { if i >= 5 { break(i) } else { continue(i + 1) } }\nresult"))
+}
+
+test "parity: loop multi param" {
+  assert(check_source_ok("let result = loop (i = 0, sum = 0) { if i >= 3 { break(sum) } else { continue(i + 1, sum + i) } }\nresult"))
+}
+
+test "parity: while break" {
+  assert(check_source_ok("let mut i = 0\nwhile true { if i >= 10 { break }\ni = i + 1 }\ni"))
+}
+
+test "parity: for-in with map" {
+  assert(check_source_ok("let squares = for x in [1, 2, 3] { x * x }\nArray::length(squares)"))
+}
+
+test "parity: for-in with index" {
+  assert(check_source_ok("let arr = [10, 20, 30]\nlet mut sum = 0\nfor x in arr { sum = sum + x }\nsum"))
+}
+
+//# Misc — Coverage: pattern matching edge cases
+
+test "parity: match bool pattern" {
+  assert(check_source_ok("match true { true => 1, false => 0 }"))
+}
+
+test "parity: match char pattern" {
+  assert(check_source_ok("let c = 'a'\nmatch c { 97 => 1, _ => 0 }"))
+}
+
+test "parity: match nested enum" {
+  assert(check_source_ok("enum Tree { Leaf(Int); Node(Tree, Tree) }\nlet rec depth = (t: Tree) -> Int { match t { Leaf(_) => 1, Node(l, r) => { let dl = depth(l)\nlet dr = depth(r)\nif dl > dr { dl + 1 } else { dr + 1 } } } }\ndepth(Node(Leaf(1), Node(Leaf(2), Leaf(3))))"))
+}
+
+// NOTE: match tuple pattern with mixed literal+bind traps in codegen
+// test "parity: match tuple pattern" — match (1, 2) { (1, b) => b, _ => 0 }
+
+test "parity: match wildcard only" {
+  assert(check_source_ok("match 42 { _ => 0 }"))
+}
+
+//# Misc — Coverage: struct operations
+
+test "parity: struct field access" {
+  assert(check_source_ok("struct Rect { w: Int; h: Int }\nlet r = Rect::{ w: 10, h: 20 }\nr.w * r.h"))
+}
+
+test "parity: struct with multiple fields" {
+  assert(check_source_ok("struct Rect { w: Int; h: Int }\nlet r = Rect::{ w: 3, h: 4 }\nr.w + r.h"))
+}
+
+//# Misc — Coverage: bitwise operations
+
+test "parity: bitwise and" {
+  assert(check_source_ok("let x = 0xFF & 0x0F\nx"))
+}
+
+test "parity: bitwise or" {
+  assert(check_source_ok("let x = 0xF0 | 0x0F\nx"))
+}
+
+test "parity: bitwise xor" {
+  assert(check_source_ok("let x = 0xFF ^ 0x0F\nx"))
+}
+
+test "parity: bitwise shift" {
+  assert(check_source_ok("let x = 1 << 8\nlet y = x >> 4\ny"))
+}
+
+//# Misc — Coverage: error cases (extended)
+
+test "parity err: bitwise type mismatch" {
+  assert(check_source_err("1 & \"hello\""))
+}
+
+test "parity err: shift type mismatch" {
+  assert(check_source_err("\"hello\" << 1"))
+}
+
+test "parity err: xor type mismatch" {
+  assert(check_source_err("true ^ 1"))
+}
+
+// NOTE: The following error cases are not yet detected by selfhost checker (trap instead of throw)
+// - !42 (unary not on int)
+// - -"hello" (negate string)
+// - assign immutable
+// - duplicate let
+// - match non-exhaustive
+// - wrong/missing struct field
+// - tuple index type mismatch
+
+//# Misc — Coverage: let patterns
+
+test "parity: let destructure tuple" {
+  assert(check_source_ok("let (a, b, c) = (1, 2, 3)\na + b + c"))
+}
+
+// NOTE: nested tuple destructure and let-pat enum trap in codegen
+// test "parity: let destructure nested" — (1, (2, 3)) nested pat
+// test "parity: let pat enum" — let Some(x) = Some(42)
+
+//# Misc — Coverage: double/float arithmetic
+
+test "parity: double arithmetic" {
+  assert(check_source_ok("let x = 1.5 + 2.5\nlet y = x * 2.0\ny"))
+}
+
+test "parity: double comparison" {
+  assert(check_source_ok("if 3.14 > 2.71 { 1 } else { 0 }"))
+}
+
+test "parity err: double plus string" {
+  assert(check_source_err("1.5 + \"hello\""))
+}
+
+//# Misc — Coverage: closures and higher-order
+
+test "parity: closure capture" {
+  assert(check_source_ok("let x = 10\nlet f = (y: Int) -> Int { x + y }\nf(5)"))
+}
+
+test "parity: closure mut capture" {
+  assert(check_source_ok("let mut count = 0\nlet inc = () -> Unit { count = count + 1 }\ninc()\ncount"))
+}
+
+test "parity: generic pair" {
+  assert(check_source_ok("let pair = [A, B](a: A, b: B) -> (A, B) { (a, b) }\nlet (x, y) = pair(1, \"hello\")\nx"))
+}
+
+//# Misc — Coverage: effect handling
+
+test "parity: nested handle" {
+  assert(check_source_ok("let inner = () -> Int with { Error } { throw(\"inner\")\n0 }\nlet outer = () -> Int with { Error } { handle { inner() } { Error(_) => throw(\"outer\")\n-1 } }\nhandle { outer() } { Error(_) => 99 }"))
+}
+
+test "parity: effect function composition" {
+  assert(check_source_ok("let f = (x: Int) -> Int with { Error } { if x < 0 { throw(\"neg\") }\nx * 2 }\nlet g = (x: Int) -> Int with { Error } { f(x) + 1 }\nhandle { g(5) } { Error(_) => -1 }"))
+}
+
+//# Misc — Coverage: string ops
+
+test "parity: string concat" {
+  assert(check_source_ok("let a = \"hello\"\nlet b = \" world\"\nString::concat(a, b)"))
+}
+
+test "parity: string length" {
+  assert(check_source_ok("String::length(\"hello world\")"))
+}
+
+test "parity: string char_code_at" {
+  assert(check_source_ok("String::char_code_at(\"abc\", 0)"))
+}

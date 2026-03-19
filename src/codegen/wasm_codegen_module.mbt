@@ -1237,6 +1237,34 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       build_error_map_custom_content(ctx),
     )
   }
+  // Effect manifest: list required capabilities for CLI pre-flight check.
+  // Format: newline-separated capability names.
+  {
+    let caps : Array[String] = []
+    if ctx.need_fs { caps.push("Fs") }
+    if ctx.need_http && ctx.http_host_imports { caps.push("Http") }
+    if ctx.need_socket { caps.push("Socket") }
+    if ctx.need_sh { caps.push("Process") }
+    if ctx.need_env_get || ctx.need_env_args_len || ctx.need_env_args_get {
+      caps.push("Env")
+    }
+    if ctx.need_stdout_write_char { caps.push("Stdout") }
+    if ctx.need_stdin_read_char { caps.push("Stdin") }
+    if ctx.need_sleep { caps.push("Async") }
+    for key, _ in ctx.effect_op_imports {
+      caps.push(key)
+    }
+    if caps.length() > 0 {
+      let manifest = ByteBuf::new()
+      for cap in caps {
+        for i = 0; i < cap.length(); i = i + 1 {
+          manifest.push(cap[i].to_int().to_byte())
+        }
+        manifest.push((10).to_byte())
+      }
+      write_custom_section(buf, "vibe.capabilities", manifest.to_array())
+    }
+  }
   buf.to_bytes()
 }
 
