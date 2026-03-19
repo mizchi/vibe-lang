@@ -1,0 +1,45 @@
+// P3 HTTP server v2: using algebraic effects for request/response
+// Each external interaction is an effect operation.
+// Handler provides the implementation (test mock or P3 adapter).
+
+import ./http_effect.vibe {
+  HttpResponse, text, json, serialize_response
+}
+
+// Effects for HTTP request reading
+effect HttpReq {
+  Method -> String;
+  Url -> String
+}
+
+// Route logic: pure function with effects for request access
+let route = () -> HttpResponse with { HttpReq } {
+  let method = perform HttpReq::Method
+  let url = perform HttpReq::Url
+
+  if String::equals(url, "/") {
+    text(200, "Welcome to vibe P3!")
+  } else if String::equals(url, "/health") {
+    json(200, "{\"status\":\"ok\"}")
+  } else if String::equals(url, "/api/echo") {
+    if String::equals(method, "GET") {
+      json(200, String::concat("{\"method\":\"", String::concat(method, String::concat("\",\"url\":\"", String::concat(url, "\"}")))))
+    } else {
+      text(405, "Method Not Allowed")
+    }
+  } else {
+    text(404, "Not Found")
+  }
+}
+
+// Export handler: provides HttpReq implementation from P3 adapter args
+export let handler = (method: String, url: String) -> String {
+  let resp = handle {
+    route()
+  } {
+    HttpReq::Method => resume(method),
+    HttpReq::Url => resume(url)
+  }
+  serialize_response(resp)
+}
+handler("GET", "/")
