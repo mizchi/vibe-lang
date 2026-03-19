@@ -1,0 +1,30 @@
+// Least privilege: each handle provides only the needed capabilities
+effect Db { Query(String) -> String }
+effect Cache { Get(String) -> String; Set(String, String) -> Unit }
+effect Log { Info(String) -> Unit }
+
+// Outer: provides Log
+// Inner: provides Db + Cache (separate from Log)
+let result = handle {
+  perform Log::Info("start")
+  let user = handle {
+    let cached = perform Cache::Get("user:1")
+    if String::length(cached) > 0 { cached }
+    else {
+      let data = perform Db::Query("SELECT * FROM users")
+      perform Cache::Set("user:1", data)
+      data
+    }
+  } {
+    Db::Query(_sql) => resume("alice"),
+    Cache::Get(_key) => resume(""),
+    Cache::Set(_key, _val) => resume(0)
+  }
+  String::length(user)
+} {
+  Log::Info(_msg) => resume(0)
+}
+result
+
+__DATA__
+{"last": "5"}
