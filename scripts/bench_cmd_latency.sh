@@ -5,7 +5,8 @@ set -euo pipefail
 trap 'trap - EXIT; kill -- -$$ 2>/dev/null || true' INT TERM
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/vibe/vibe.exe"
+VIBE_CLI_RELEASE=1 source "$ROOT_DIR/scripts/ensure_native_cli.sh"
+CLI_BIN="$VIBE_CLI_BIN"
 SCRIPT_PATH="$ROOT_DIR/bench/bench_simple.vibe"
 WASM_OUT="$ROOT_DIR/target/bench/vibe_bench.wasm"
 
@@ -15,7 +16,7 @@ EXPR="${VIBE_BENCH_EXPR:-add(1,2)}"
 
 mkdir -p "$ROOT_DIR/target/bench"
 
-moon build --target native --release src/cmd/vibe
+
 
 "$CLI_BIN" compile --wasm -o "$WASM_OUT" "$SCRIPT_PATH"
 

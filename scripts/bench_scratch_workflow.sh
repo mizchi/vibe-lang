@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/vibe/vibe.exe"
+VIBE_CLI_RELEASE=1 source "$ROOT_DIR/scripts/ensure_native_cli.sh"
+CLI_BIN="$VIBE_CLI_BIN"
 OUT_DIR="$ROOT_DIR/target/bench"
 RUN_EVAL="$OUT_DIR/bench_scratch_eval.sh"
 RUN_FINALIZE="$OUT_DIR/bench_scratch_finalize.sh"
@@ -17,7 +18,7 @@ SCENARIOS="${VIBE_BENCH_SCENARIOS:-all}"
 EXPORT_JSON="${VIBE_BENCH_EXPORT_JSON:-$OUT_DIR/bench_scratch_workflow.hyperfine.json}"
 
 mkdir -p "$OUT_DIR"
-moon build --target native --release src/cmd/vibe
+
 
 write_seed_source() {
   local out_path="$1"

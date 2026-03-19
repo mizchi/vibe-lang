@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+source "$PROJECT_ROOT/scripts/ensure_native_cli.sh"
 TMP_DIR="$(mktemp -d "/tmp/vibe_compiled_http_policy.XXXXXX")"
 cleanup() {
   rm -rf "$TMP_DIR"
@@ -14,15 +15,7 @@ cd "$PROJECT_ROOT"
 SRC_PATH="$TMP_DIR/http_policy_probe.vibe"
 REQUEST_SRC_PATH="$TMP_DIR/http_policy_request_probe.vibe"
 LISTEN_SRC_PATH="$TMP_DIR/http_policy_listen_probe.vibe"
-VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe}"
-
-if [ ! -x "$VIBE_BIN" ]; then
-  moon build --target native src/cmd/vibe --warn-list '-29'
-fi
-if [ ! -x "$VIBE_BIN" ]; then
-  echo "compiled backend http policy failed: vibe cli binary not found: $VIBE_BIN" >&2
-  exit 1
-fi
+VIBE_BIN="${VIBE_BIN:-$VIBE_CLI_BIN}"
 
 cat >"$SRC_PATH" <<'EOF'
 let main = () -> Int with {Net} {

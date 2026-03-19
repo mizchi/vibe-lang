@@ -8,6 +8,48 @@ Completed items are archived in `docs/DONE.md`.
 vbundle 形式を廃止し、`.vibe/cache.json` + `index.lock` に完全移行済み。
 ソースコード・テスト・スクリプトから全 vbundle 参照を削除。
 
+## テスト高速化
+
+### プロファイル結果 (2026-03-19)
+
+#### `just test` ステップ別
+
+| ステップ | 時間 | テスト数 | 備考 |
+|---------|------|---------|------|
+| check_lock_clean ×2 | 0.4s | - | |
+| moon test --target js | 33s | 957 | VIBE_SKIP_FIXTURES=1 で fixture スキップ済み |
+| moon test lib wasm-gc | 2.4s | 9 | |
+| cli_e2e native | 39s | 78 | 0.5s/test |
+| check_wasi wasm | 3.5s | 17 | |
+| ensure_native_cli | 0~24s | - | キャッシュ時 20ms |
+| parallel_cleanup_e2e | 3.6s | - | |
+| vibe.exe test (wasm除く) | ~30s | - | |
+
+#### vibe/wasm/* — `just test-wasm-heavy` で分離済み
+
+| モジュール | 時間 | テスト数 | 備考 |
+|-----------|------|---------|------|
+| wasm_parser | 2s | 148 | |
+| wat_parser | 10s | 82 | |
+| component_parser | 1s | 48 | |
+| **wasm_runtime** | **68s** | 64 | prelude 再コンパイル問題 |
+| **wasm_opt (minify_zlib)** | **248s** | 6 | 171KB fixture + prelude 再コンパイル |
+| wasm_opt (他) | 10s | 69 | |
+| wat_encoder | 2s | 10 | |
+
+### 根本原因: compiled test runner の prelude 再コンパイル
+
+各テストケースで prelude (helper 関数 + import) をフルでパース → 型チェック → WASM 生成している。
+個別テスト実行は ~200ms なのに、バッチ実行は ~1s/test (wasm_runtime) や ~41s/test (minify_zlib)。
+
+該当コード: `src/cmd/vibe/cli.mbt` L2790 `run_compiled_test_case` → L2804 `load_compiled_test_case_db`
+
+### 改善タスク
+
+- [x] ~~P1: db キャッシュ導入~~ — 検証済み: `load_db_for_test_into` / `set_source` いずれも効果なし。import 解決は ripple が既にキャッシュしている。ボトルネックは型チェック + codegen 自体 (0.6s/test) と wasmtime プロセス起動 (0.5s/test)
+- [x] **P2: テストバッチ化** — 実装済み。全テストを 1 WASM にバッチコンパイル + 1 wasmtime 実行。結果: wasm_runtime 68→63s (-7%), minify_zlib 248→222s (-10%)。改善限定的 — 主因はテスト実行自体の計算コスト
+- [ ] **P3: minify_zlib 個別対策** — 6 テストで ~222s。各テストで 171KB zlib.wasm を WASM interpreter で処理する計算コストが支配的。native テスト実行やテスト粒度の見直しが有効
+
 ## カバレッジ計測
 
 ### 現在の計測結果 (2026-03-18)
@@ -253,6 +295,186 @@ codegen のみの変更で型システムには影響なし。
 ### 残タスク
 - GC backend: Bytes ハンドラが元々未実装（packed bytes scope 外）。別途対応時に packed 前提で実装
 - ベンチ: WASM バイナリサイズ 694→673 bytes (-3%)。ランタイム計測は vibe CLI 再ビルド後
+
+## ビルドパイプライン最適化 (per-package .wasm + ランタイムリンク検討)
+
+### 背景
+
+各パッケージ (index.vibe 単位) を独立に .wasm へコンパイルしておき、実行時に結合する構成を検討した。
+目的はインクリメンタルビルドの高速化: 変更パッケージだけ再コンパイルし、他はキャッシュ済み .wasm を再利用する。
+
+### 結合方式の比較 (wasmtime, 100M iterations, i32 add)
+
+| 構成 | 実行時間 | 倍率 |
+|------|---------|------|
+| Monolithic (単一 module, 直接 call) | 0.17s | 1x |
+| **Core module linking** (wasm import/export) | **0.16s** | **~1x** |
+| Component Model (canonical ABI lift/lower) | 27.7s | **163x** |
+
+- **Component Model 分離は不採用**: canonical ABI のオーバーヘッドが 163x。string/list はメモリコピーが加わりさらに劣化
+- **Core module linking はオーバーヘッドゼロ**: wasmtime が import を直接 call として解決するため monolithic と同等
+
+### prelude 事前コンパイル (core module linking)
+
+prelude (153KB, 18 modules) を core module として事前ビルドし、user code が wasm import で参照する構成は有効。
+
+```
+[事前ビルド] prelude/*.vibe → prelude.wasm (core module, export functions)
+[都度ビルド] user.vibe → user.wasm (core module, import prelude functions)
+[実行] wasmtime --preload prelude=prelude.wasm user.wasm
+```
+
+### production と incremental の結果同一性
+
+**動作 (observable behavior): 保証可能。** core module linking は wasm 仕様上、直接 call と同一のセマンティクスを持つ。
+関数呼び出し・ミュータブル global・共有メモリ・data セグメントすべてで monolithic と同一結果を確認済み。
+
+**バイナリ同一性: 不可能。** 以下の差異がある:
+
+| | production (monolithic) | debug (linked) |
+|---|---|---|
+| DCE | 全体最適化（使用関数だけ残る） | prelude は全 export を含む |
+| インライン化 | wite -Oz がクロス関数インライン | モジュール境界で不可 |
+| バイナリサイズ | 最小 | prelude 分の未使用コードを含む |
+| 性能 | 最大 | ~同等（core linking のオーバーヘッドゼロ） |
+
+つまり: **debug linked で正しく動くコードは production monolithic でも正しく動く（逆も同様）。**
+性能差は最適化の有無のみで、論理的な動作は同一。
+
+### 共有が必要な wasm 状態 (codegen 調査)
+
+現在の codegen が生成する shared state:
+
+| 状態 | 種別 | 共有方法 |
+|------|------|---------|
+| linear memory | memory | prelude が export, user が import |
+| `__heap_ptr` | mutable global | prelude が export, user が import |
+| funcref table | table | **要検討**: クロージャの table slot を両モジュールで共有する必要あり |
+| data segments (文字列定数) | data | prelude 側で配置、user 側は heap_ptr 以降を使用 |
+| `__stack_switching` global | mutable global | 必要に応じて共有 |
+| `__fs_root_descriptor` | mutable global | 必要に応じて共有 |
+
+**最大の課題は funcref table の共有。** vibe はクロージャ/高階関数を `call_indirect` + funcref table で実装している。
+prelude の関数が table slot 0..N を使い、user code が N+1..M を使う場合、user code のコンパイル時に N を知る必要がある。
+
+対策案:
+1. **prelude が table を export + table slot count を export** → user code は offset 付きで table.set
+2. **table.grow + table.set** で初期化時に動的追加 → 初期化コストのみ、per-call オーバーヘッドなし
+3. **prelude にクロージャがなければ不要** → prelude 関数は基本的に直接 call で呼ばれるので table 不要の可能性あり
+
+### 検証結果 (2026-03-19)
+
+PoC で core module linking の E2E を確認:
+- `vibe compile --wasm --no-dce prelude.vibe` → prelude.wasm (export 関数群 + memory + heap_ptr)
+- 手動 WAT で user module を作成 (import prelude functions)
+- `wasmtime --preload prelude=prelude.wasm user.wasm` → **正常動作確認**
+
+**計測結果:**
+- import 込み compile: 290ms、import なし compile: 18ms → 差 270ms がimport解決+型チェック+bundleコスト
+- wasm_runtime 64テスト: バッチコンパイル済みで63秒 → 大部分はテスト実行自体の計算コスト（WASM interpreter E2E）
+- core module linking の効果はテストランナーでは限定的。**通常の `vibe run` での高速化に有効**
+
+**実装済み:**
+- [x] `vibe compile --library` — `_start` を emit せず export のみの .wasm を生成
+- [x] codegen: linked imports — import した関数を wasm import として emit
+- [x] `bundle_for_wasm_linked` — import 先を inline せず linked imports リストを返す
+- [x] `vibe build --debug` — import 先を `.vibe/debug/` にキャッシュ、linked compile
+- [x] `vibe build --release` — 従来通り monolithic bundle
+- [x] lazy heap init — `require_heap` で遅延初期化 (library compile の heap 問題を解消)
+- [x] E2E 動作確認 (簡単なケース)
+
+**追加実装済み:**
+- [x] multivalue return 対応 — tuple 返り値の関数で linked import のシグネチャが正しく生成される
+- [x] lazy heap init — `require_heap` で遅延初期化 (library compile の heap 未初期化を解消)
+- [x] E2E 動作確認 — pure function (fib, factorial), multivalue return ともに正常
+
+**動作確認:**
+- `vibe build --debug` → linked .wasm + library .wasm → `wasmtime --preload` → 正常実行
+- pure functions: fib(10)+factorial(5) = 175 → tagged 700 ✅
+- multivalue return: exec_body の型一致 ✅ (ただし memory 共有問題で実行時エラー)
+
+**計測 (wasm_runtime import):**
+- release (monolithic): 241ms
+- debug (初回 lib compile): 354ms
+- debug (キャッシュ): **194ms** (20% 改善)
+
+**残課題:**
+- [x] memory/heap_ptr 共有 — user module が library の memory と __heap_ptr を import。exec_body E2E 動作確認済み
+- [x] multivalue return — tuple pack をlinked import呼び出し後に自動生成
+- [x] 型チェック + import I/O スキップ — fast path: キャッシュ済み linked imports + user code のみ parse/codegen。**485ms → 10ms (48x 高速化)**
+- [ ] funcref table 共有 — 高階関数 (クロージャ) を cross-module で渡すケース。実用上はほぼ不要 (prelude の map/filter 等はインライン展開される)。将来的には user 関数を wasm export → library が import する方式で解決可能
+- [ ] タイムスタンプベースのキャッシュ判定
+- [ ] data section のオフセット調整 — user module の string 定数が library の data と衝突する可能性
+
+### 補足: wac compose のビルド時間
+
+| 操作 | 時間 |
+|------|------|
+| wac compose (複数コンポーネント結合) | ~20ms |
+| wite optimize -Oz (個別コンポーネント) | 7-10s |
+| compose 後の optimize | 効果なし (コンポーネント境界を越えた最適化不可) |
+
+### 現在のコンパイルプロファイル
+
+| ステージ | 時間 | 割合 |
+|---------|------|------|
+| load | 11-16ms | 25% |
+| typecheck | 24-33ms | **50%** |
+| compile (bundle+emit) | 10-13ms | 22% |
+| total | 46-62ms | |
+
+ボトルネックは load + typecheck (75%) であり、compile/emit ではない。
+
+### WIT/CM 境界での generics と effect の欠落問題
+
+#### 問題
+
+WIT (WebAssembly Interface Types) は generics と effect を表現できない:
+
+- **generics**: `map<T>(list<T>, func(T) -> T) -> list<T>` のようなパラメトリック多相が書けない
+- **effect**: `with { Console, Error }` のような effect 追跡情報を WIT に載せられない
+
+これは **外部境界** (vibe component ↔ 他言語 component) を Component Model で公開する場合に問題になる。
+
+#### 内部境界 (prelude ↔ user code) では問題にならない理由
+
+core module linking は WIT を経由しない。wasm の raw function signature (i32, i64, ...) で直接リンクするため:
+
+- **generics**: vibe は tagged i64 ユニフォーム値表現 (`(value << 2) | tag`) を使用。generic 関数は全て `(i64, ...) -> i64` のシグネチャになり、型パラメータは不要。monoify パス (frontend/monoify.mbt) による特殊化も monolithic と同じタイミングで適用される
+- **effect**: effect operation は wasm import (`"EffectName" "OpName"`) として emit される。core module linking でも同じ import/export メカニズムで handler を渡せる
+
+つまり vibe が両側のコードを制御する限り、tagged value + wasm import/export で generics も effect も完全に表現できる。
+
+#### 外部境界 (CM export) での対策
+
+vibe の関数を WIT interface として他言語に公開する場合の対策:
+
+| 手法 | 概要 | 適用場面 |
+|------|------|---------|
+| **monomorphization** | 使用される具体型ごとに WIT 関数を生成 (`map_i32`, `map_string`) | export する generic 関数が少ない場合 |
+| **variant boxing** | `variant value { i(s64), s(string), l(list<value>), ... }` で汎用型を定義 | JSON-like なデータ交換 |
+| **resource handle** | generic コンテナを opaque resource として公開、accessor を型別に用意 | コレクション API の公開 |
+| **動的コード生成** | 呼び出し元の型情報から specialized WIT + wasm を toolchain が生成 | プラグイン SDK 等 |
+
+effect については:
+
+| 手法 | 概要 |
+|------|------|
+| **WIT interface へのマッピング** | `effect Console { Print(String) -> Unit }` → `interface console { print: func(s: string) }` (既に codegen で実装済み) |
+| **effect metadata を custom section に格納** | WIT には載らないが、vibe ツールチェーン間で effect 情報を共有できる |
+| **capability pattern** | effect set を WIT の import group として表現 (`with { Console }` → `import console`) |
+
+**結論**: 内部境界では問題なし。外部境界は monomorphization + WIT interface mapping で対応可能（vibe が既にやっている effect → wasm import のパターンを拡張）。
+
+### 最適化方針
+
+- [ ] **debug: prelude を core module として事前コンパイル** — prelude 変更時のみ再ビルド
+- [ ] **debug: user code を prelude import 付き core module として emit** — codegen に分離ビルドモード追加
+- [ ] **debug: funcref table 共有方式の決定** — prelude 関数が直接 call のみなら table 共有不要
+- [ ] **debug: -O0 で出力** — wite optimize をスキップ
+- [ ] **prod: AST インライン → 単一 module → -Oz** — 従来通り（最大性能）
+- [ ] **typecheck のインクリメンタル化** — 変更モジュールだけ再 typecheck（最大ボトルネック）
+- [ ] **bundle の差分更新** — 依存が変わってなければ AST キャッシュを再利用
 
 ## vibe/wasm ツールチェーン
 - [ ] wasm_opt: directize (call_indirect → call 変換)

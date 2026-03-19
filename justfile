@@ -61,17 +61,26 @@ test-rename-builtins:
 test-vibe-normalize:
     bash scripts/vibe_normalize_all_test.sh
 
-# Run tests (includes examples, std, io, fs, shell, socket, http, rlm, collection, json/base64/sha1, x)
+# Run tests (skips slow fixture interpreter eval and heavy wasm tests)
+# Use `just test-full` for everything including fixtures + wasm-heavy
 test:
     scripts/check_lock_clean.sh
     scripts/check_lock_clean_test.sh
-    moon test --target {{target}} --warn-list '{{moon_warn_list}}'
+    VIBE_SKIP_FIXTURES=1 moon test --target {{target}} --warn-list '{{moon_warn_list}}'
     moon test -p mizchi/vibe/lib --target wasm-gc --warn-list '{{moon_warn_list}}'
     moon test -p mizchi/vibe/cmd/vibe -f cli_e2e_wbtest.mbt --target native --warn-list '{{moon_warn_list}}'
     moon test -p mizchi/vibe/cmd/vibe_check_wasi --target wasm --warn-list '{{moon_warn_list}}'
-    moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
+    bash -c 'source scripts/ensure_native_cli.sh'
     bash scripts/test_parallel_cleanup_e2e.sh _build/native/debug/build/cmd/vibe/vibe.exe
-    ulimit -n {{vibe_test_ulimit_n}} && _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async --jobs {{vibe_test_jobs}} examples vibe/prelude vibe/path vibe/io vibe/fs vibe/time vibe/random vibe/process vibe/shell vibe/x/rlm vibe/socket/socket_test.vibe vibe/http/http_test.vibe vibe/http/high_level_test.vibe vibe/collection vibe/json vibe/sha1 vibe/x vibe/x/args vibe/x/jsonschema vibe/wasm/wasm_parser vibe/wasm/wat_parser vibe/wasm/component_parser vibe/wasm/wasm_runtime vibe/wasm/wasm_opt vibe/wasm/wat_encoder
+    ulimit -n {{vibe_test_ulimit_n}} && _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async --jobs {{vibe_test_jobs}} examples vibe/prelude vibe/path vibe/io vibe/fs vibe/time vibe/random vibe/process vibe/shell vibe/x/rlm vibe/socket/socket_test.vibe vibe/http/http_test.vibe vibe/http/high_level_test.vibe vibe/collection vibe/json vibe/sha1 vibe/x vibe/x/args vibe/x/jsonschema vibe/wasm/wasm_parser vibe/wasm/wat_parser vibe/wasm/component_parser vibe/wasm/wat_encoder
+
+# Heavy wasm tests (wasm_opt ~4min, wasm_runtime ~1min) — run separately or in CI
+test-wasm-heavy:
+    bash -c 'source scripts/ensure_native_cli.sh'
+    _build/native/debug/build/cmd/vibe/vibe.exe test vibe/wasm/wasm_opt vibe/wasm/wasm_runtime
+
+# Run all tests including slow fixture tests and heavy wasm tests
+test-full: test test-fixtures test-wasm-heavy
 
 # Build wasm artifact used by Deno integration tests
 build-integration-deno-wasm:
@@ -172,6 +181,14 @@ ide-js *args: build-integration-deno-wasm
 # Run fixture tests only
 test-fixtures:
     moon test -p tests --filter "fixtures" --target {{target}}
+
+# Verify build --debug and --release produce identical results
+test-build-parity:
+    scripts/test_build_parity.sh
+
+# Run each fixture in isolated subprocess (detects abort/crash/timeout)
+test-fixtures-isolation:
+    scripts/test_fixtures_isolation.sh
 
 # Run typecheck diagnostic fixture tests
 test-typecheck-fixtures:
@@ -298,7 +315,7 @@ bootstrap-moonix src="":
 
 # Install native CLI to $VIBE_PREFIX/bin (default: ~/.local/bin)
 install:
-    moon build --target native --release src/cmd/vibe
+    bash -c 'VIBE_CLI_RELEASE=1 source scripts/ensure_native_cli.sh'
     mkdir -p {{bindir}}
     cp {{cli_bin}} {{bindir}}/vibe
 
@@ -382,7 +399,7 @@ test-selfhost-bootstrap:
 
 # Run quick selfhost cache probe (warm TypeDb reuse smoke)
 test-selfhost-cache-probe:
-    moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
+    bash -c 'source scripts/ensure_native_cli.sh'
     _build/native/debug/build/cmd/vibe/vibe.exe test vibe/compiler/cache_probe_test.vibe
 
 # Run wasm selfbuild gate (stage0 wasm compiler -> stage1 selfhost wasm)
@@ -794,7 +811,7 @@ run-wasm-async file: build-async-host
 
 # Precompile all vibe modules to dist/**/*.wasm
 precompile:
-    moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
+    bash -c 'source scripts/ensure_native_cli.sh'
     mkdir -p dist/std dist/path dist/std/threads dist/fs dist/socket dist/http dist/collection dist/json dist/sha1 dist/x dist/x/args
     _build/native/debug/build/cmd/vibe/vibe.exe precompile vibe/prelude vibe/path vibe/prelude/threads vibe/fs vibe/socket vibe/http vibe/collection vibe/json vibe/sha1 vibe/x vibe/x/args --out-dir "$(pwd)/dist" --wasm
 
@@ -828,7 +845,7 @@ vibe-normalize-check:
 release-selfhost-gates: check-selfhost-bundle-sync test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cli-core test-selfhost-cli-component-preview2 test-selfhost-cli-preview2-package test-selfhost-cli-command-component test-selfhost-cli-command-parity test-selfhost-cli-direct-component test-selfhost-cli-direct-parity test-selfhost-check-preview2-package test-selfhost-check-command-component test-selfhost-check-command-parity test-selfhost-check-direct-component test-selfhost-check-direct-parity test-selfhost-cutover test-golden-wat
 
 # Pre-release check (includes selfhost gates + wasm bundle-size monitor)
-release-check: fmt info check test vibe-normalize bench-bundle-size-monitor release-selfhost-gates
+release-check: fmt info check test-full vibe-normalize bench-bundle-size-monitor release-selfhost-gates
 
 # Alias for teams used to `check-release`
 check-release: release-check

@@ -69,6 +69,207 @@ pub fn bundle_for_wasm_test_coverage(
 }
 
 ///|
+/// Linked import info for debug linked builds.
+pub(all) struct LinkedImport {
+  /// wasm module name (used in wasmtime --preload)
+  module_name : String
+  /// function name (wasm export name in library module)
+  func_name : String
+  /// number of i64 params (excluding i32 env)
+  param_count : Int
+  /// number of i64 return values (1 for scalar, 2+ for tuple)
+  return_count : Int
+} derive(Show, Eq)
+
+///|
+/// Bundle for linked mode: don't inline import dependencies, instead return
+/// their exported function names as linked imports. These become wasm imports
+/// that are resolved at runtime via `wasmtime --preload`.
+pub fn bundle_for_wasm_linked(
+  db : VibeDb,
+  path : String,
+  ast : @core.Module,
+) -> (@core.Module, Array[LinkedImport]) {
+  let bundled_stmts : Array[@core.Stmt] = []
+  let linked_imports : Array[LinkedImport] = []
+  let existing_value_names : Map[String, Bool] = {}
+  // Collect linked imports from dependency modules.
+  // If all exported functions have scalar params → linked import (static wasm call).
+  // If any export has Func params (HOF) → inline the entire module (monolithic).
+  let imports = db.imports(path)
+  let visited : Map[String, Bool] = {}
+  // Mark user module as visited so collect_dependency_defs treats
+  // import modules as non-entry (their ExportLet defs will be included).
+  visited[path] = true
+  for imp in imports {
+    let dep_ast = db.ast_with_hash_imports(imp.path)
+    let module_name = linked_module_name(imp.path)
+    // Check if any export has HOF params
+    let mut has_hof = false
+    for stmt in dep_ast.stmts {
+      match stmt {
+        @core.Stmt::ExportLet(expr~, ..) =>
+          match expr {
+            @core.Expr::Fn(params~, ..) =>
+              if linked_fn_has_func_param(params) {
+                has_hof = true
+              }
+            _ => ()
+          }
+        _ => ()
+      }
+    }
+    if has_hof {
+      // Module has HOF exports: inline entire module (like monolithic)
+      collect_dependency_defs(db, imp.path, bundled_stmts, visited)
+    } else {
+      // Module has only scalar exports: use linked imports
+      for stmt in dep_ast.stmts {
+        match stmt {
+          @core.Stmt::ExportLet(name~, expr~, ..) => {
+            existing_value_names[name] = true
+            match expr {
+              @core.Expr::Fn(params~, ret~, ..) => {
+                let rc = match ret {
+                  Some(@core.Type::Tuple(items)) => items.length()
+                  _ => 1
+                }
+                linked_imports.push(LinkedImport::{
+                  module_name, func_name: name,
+                  param_count: params.length(), return_count: rc,
+                })
+              }
+              _ => ()
+            }
+          }
+          @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
+            bundled_stmts.push(@core.Stmt::EnumDef(name~, params~, ctors~, span~))
+          @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) =>
+            bundled_stmts.push(@core.Stmt::TypeAlias(name~, params~, target~, span~))
+          _ => ()
+        }
+      }
+    }
+  }
+  // Add prelude (still needed for builtins like array_map etc.)
+  let prelude = @checker.prelude_ast()
+  for stmt in prelude.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, ..) =>
+        if not(existing_value_names.contains(name)) {
+          bundled_stmts.push(stmt)
+          existing_value_names[name] = true
+        }
+      _ => ()
+    }
+  }
+  // Add main module statements (excluding imports)
+  let non_prelude_names : Array[String] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Import(..) => ()
+      _ => {
+        match bundle_stmt_value_name(stmt) {
+          Some(name) => non_prelude_names.push(name)
+          None => ()
+        }
+        bundled_stmts.push(stmt)
+      }
+    }
+  }
+  let bundled = @core.Module::{ stmts: dedupe_bundle_structural_defs(bundled_stmts) }
+  let after_dce = @pipeline.dce_module_with_entry_names(bundled, non_prelude_names)
+  (demote_unused_let_mut(after_dce), linked_imports)
+}
+
+///|
+///|
+/// Bundle for linked mode with pre-computed imports list (fast path).
+/// No VibeDb needed — just prelude + user AST.
+pub fn bundle_for_wasm_linked_with_imports(
+  ast : @core.Module,
+  linked_imports : Array[LinkedImport],
+) -> (@core.Module, Array[LinkedImport]) {
+  let bundled_stmts : Array[@core.Stmt] = []
+  let existing_value_names : Map[String, Bool] = {}
+  for li in linked_imports {
+    existing_value_names[li.func_name] = true
+  }
+  // Add prelude
+  let prelude = @checker.prelude_ast()
+  for stmt in prelude.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, ..) =>
+        if not(existing_value_names.contains(name)) {
+          bundled_stmts.push(stmt)
+          existing_value_names[name] = true
+        }
+      _ => ()
+    }
+  }
+  // Add user code (skip imports)
+  let non_prelude_names : Array[String] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Import(..) => ()
+      _ => {
+        match bundle_stmt_value_name(stmt) {
+          Some(name) => non_prelude_names.push(name)
+          None => ()
+        }
+        bundled_stmts.push(stmt)
+      }
+    }
+  }
+  let bundled = @core.Module::{ stmts: dedupe_bundle_structural_defs(bundled_stmts) }
+  let after_dce = @pipeline.dce_module_with_entry_names(bundled, non_prelude_names)
+  (demote_unused_let_mut(after_dce), linked_imports)
+}
+
+///|
+///|
+/// Check if any function parameter has a Func type (higher-order function).
+/// HOF functions need funcref table sharing, so they must be inlined.
+fn linked_fn_has_func_param(params : Array[@core.FuncParam]) -> Bool {
+  for param in params {
+    if linked_type_is_func(param.ty) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn linked_type_is_func(ty : @core.Type) -> Bool {
+  match ty {
+    @core.Type::Func(..) => true
+    _ => false
+  }
+}
+
+///|
+pub fn linked_module_name(path : String) -> String {
+  // Convert path to a valid wasm module name
+  // e.g. "./wasm_runtime.vibe" -> "wasm_runtime"
+  let mut name = path
+  // Strip directory prefix
+  let mut last_slash = -1
+  for i, c in name {
+    if c == '/' {
+      last_slash = i
+    }
+  }
+  if last_slash >= 0 {
+    name = name.unsafe_substring(start=last_slash + 1, end=name.length())
+  }
+  // Strip .vibe extension
+  if name.has_suffix(".vibe") {
+    name = name.unsafe_substring(start=0, end=name.length() - 5)
+  }
+  name
+}
+
+///|
 fn bundle_for_wasm_impl(
   db : VibeDb,
   path : String,

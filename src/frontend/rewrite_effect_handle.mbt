@@ -529,8 +529,21 @@ fn reh_replace_performs_expr(
         span~,
       )
     @core.Expr::Handle(body~, arms~, span~) => {
-      let inner_rewritten = reh_rewrite_handle(body, arms, span)
-      reh_replace_performs_expr(inner_rewritten, handlers)
+      // Replace performs in the inner handle body, but do NOT re-enter
+      // reh_rewrite_handle (which would cause infinite recursion when
+      // the inner handle has error-only arms and the outer handler inlines
+      // performs inside the body).
+      let inner_body = reh_replace_performs(body, handlers)
+      let inner_arms : Array[@core.MatchArm] = []
+      for arm in arms {
+        inner_arms.push(@core.MatchArm::{
+          pat: arm.pat,
+          cond: arm.cond,
+          expr: reh_replace_performs_expr(arm.expr, handlers),
+          span: arm.span,
+        })
+      }
+      @core.Expr::Handle(body=inner_body, arms=inner_arms, span~)
     }
     _ => expr
   }

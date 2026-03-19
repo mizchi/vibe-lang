@@ -16,6 +16,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 
+source "$PROJECT_ROOT/scripts/ensure_native_cli.sh"
+
 MODE="fix"
 USE_CACHE=0
 CLI_SOURCE_ROOTS=()
@@ -35,10 +37,7 @@ if ! [[ "$NORMALIZE_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 # Build vibe CLI (reuse if already built)
-VIBE_BIN="${VIBE_NORMALIZE_BIN:-_build/native/debug/build/cmd/vibe/vibe.exe}"
-if [ "$VIBE_BIN" = "_build/native/debug/build/cmd/vibe/vibe.exe" ] && [ ! -x "$VIBE_BIN" ]; then
-  moon build --target native src/cmd/vibe --warn-list '-29'
-fi
+VIBE_BIN="${VIBE_NORMALIZE_BIN:-$VIBE_CLI_BIN}"
 
 # Source roots (bench excluded: cross-root imports)
 if [ ${#CLI_SOURCE_ROOTS[@]} -gt 0 ]; then

@@ -811,6 +811,9 @@ fn build_bench_case_loop_script(
 ) -> String {
   let out = StringBuilder::new()
   let iter_name = "vibe_bench_iter_internal"
+  // Wrap everything in a block so that prelude `let mut` bindings are not
+  // at the top level (top-level `let mut` is rejected by the type checker).
+  out.write_string("{\n")
   if prelude_source.length() > 0 {
     out.write_string(prelude_source)
     if not(prelude_source.has_suffix("\n")) {
@@ -834,6 +837,7 @@ fn build_bench_case_loop_script(
   }
   out.write_string(iter_name)
   out.write_string(" += 1\n")
+  out.write_string("}\n")
   out.write_string("}\n")
   out.write_string("}\n")
   out.write_string("0\n")
@@ -1013,6 +1017,15 @@ fn build_wasmtime_bench_command(
   runner : BenchWasmRunner,
   wasm_path : String,
 ) -> String {
+  build_wasmtime_invoke_command(runner, wasm_path, "_start")
+}
+
+///|
+fn build_wasmtime_invoke_command(
+  runner : BenchWasmRunner,
+  wasm_path : String,
+  invoke_name : String,
+) -> String {
   let cmd = StringBuilder::new()
   cmd.write_string(shell_quote_command_arg(runner.wasmtime_bin))
   for flag in runner.wasm_flags {
@@ -1023,7 +1036,9 @@ fn build_wasmtime_bench_command(
     cmd.write_string(" -S ")
     cmd.write_string(shell_quote_command_arg(flag))
   }
-  cmd.write_string(" --invoke _start ")
+  cmd.write_string(" --invoke ")
+  cmd.write_string(shell_quote_command_arg(invoke_name))
+  cmd.write_string(" ")
   cmd.write_string(shell_quote_command_arg(wasm_path))
   cmd.to_string()
 }

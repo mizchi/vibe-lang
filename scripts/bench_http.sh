@@ -5,7 +5,8 @@ set -euo pipefail
 trap 'trap - EXIT; kill -- -$$ 2>/dev/null || true' INT TERM
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/_build/native/debug/build/cmd/vibe/vibe.exe"
+source "$ROOT_DIR/scripts/ensure_native_cli.sh"
+CLI_BIN="$VIBE_CLI_BIN"
 PORT=18281
 N="${VIBE_BENCH_HTTP_N:-50}"
 WARMUP="${VIBE_BENCH_HTTP_WARMUP:-5}"
@@ -21,11 +22,6 @@ trap cleanup EXIT
 
 echo "=== HTTP Benchmark ==="
 
-# Build CLI if needed
-if [ ! -f "$CLI_BIN" ]; then
-  echo "Building vibe (debug)..."
-  (cd "$ROOT_DIR" && moon build --target native src/cmd/vibe --warn-list '-29')
-fi
 
 # Start HTTP echo server
 echo "Starting HTTP echo server on port $PORT..."

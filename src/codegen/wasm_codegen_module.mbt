@@ -221,14 +221,19 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   }
   let exception_type_count = if ctx.need_exceptions { 1 } else { 0 }
   let stack_switching_type_count = if ctx.need_stack_switching { 3 } else { 0 }
-  // Count unique effect op arities for type section
-  let effect_arities_seen : Map[Int, Bool] = {}
+  // Count unique effect op type signatures for type section
+  let effect_arities_seen : Map[String, Bool] = {}
   for key, _ in ctx.effect_op_imports {
     let arity = match ctx.effect_op_param_counts.get(key) {
       Some(n) => n
       None => 0
     }
-    effect_arities_seen[arity] = true
+    effect_arities_seen["P" + arity.to_string() + "R1"] = true
+  }
+  // Also count linked import type signatures
+  for entry in ctx.linked_fn_imports_list {
+    let (_, _, param_count, return_count) = entry
+    effect_arities_seen["P" + param_count.to_string() + "R" + return_count.to_string()] = true
   }
   let effect_type_count = effect_arities_seen.length()
   let total_type_count = builtin_count +
@@ -514,18 +519,19 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     stack_switching_type_count
   let mut effect_type_next = effect_type_base
   let effect_op_type_indices : Map[String, Int] = {}
-  let effect_op_type_by_arity : Map[Int, Int] = {}
+  let effect_op_type_by_arity : Map[String, Int] = {}
   for key in effect_op_keys {
     let arity = match ctx.effect_op_param_counts.get(key) {
       Some(n) => n
       None => 0
     }
-    match effect_op_type_by_arity.get(arity) {
+    let type_key = "P" + arity.to_string() + "R1"
+    match effect_op_type_by_arity.get(type_key) {
       Some(idx) => effect_op_type_indices[key] = idx
       None => {
         let idx = effect_type_next
         effect_type_next += 1
-        effect_op_type_by_arity[arity] = idx
+        effect_op_type_by_arity[type_key] = idx
         effect_op_type_indices[key] = idx
         // Write: (func (param i64*arity i32) (result i64))
         type_sec.push((96).to_byte()) // func type
@@ -536,6 +542,32 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
         type_sec.push((127).to_byte()) // i32 (closure env)
         write_u32_leb(type_sec, 1) // 1 result
         type_sec.push((126).to_byte()) // i64
+      }
+    }
+  }
+  // Linked function import types: reuse same arity-based type indices
+  let linked_import_type_indices : Array[Int] = []
+  for entry in ctx.linked_fn_imports_list {
+    let (_, _, param_count, return_count) = entry
+    let type_key = "P" + param_count.to_string() + "R" + return_count.to_string()
+    match effect_op_type_by_arity.get(type_key) {
+      Some(idx) => linked_import_type_indices.push(idx)
+      None => {
+        let idx = effect_type_next
+        effect_type_next += 1
+        effect_op_type_by_arity[type_key] = idx
+        linked_import_type_indices.push(idx)
+        // Write: (func (param i64*param_count i32) (result i64*return_count))
+        type_sec.push((96).to_byte()) // func type
+        write_u32_leb(type_sec, param_count + 1) // params: N i64 + 1 i32 env
+        for _ in 0..<param_count {
+          type_sec.push((126).to_byte()) // i64
+        }
+        type_sec.push((127).to_byte()) // i32 (closure env)
+        write_u32_leb(type_sec, return_count) // return_count results
+        for _ in 0..<return_count {
+          type_sec.push((126).to_byte()) // i64
+        }
       }
     }
   }
@@ -600,12 +632,29 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     ctx.effect_op_imports[key] = func_import_count
     func_import_count += 1
   }
-  let global_import_count = if ctx.use_js_strings {
-    ctx.js_strings.names.length()
+  // Linked function imports: pre-compiled library functions
+  for entry in ctx.linked_fn_imports_list {
+    let (_, func_name, param_count, return_count) = entry
+    ctx.linked_fn_imports[func_name] = func_import_count
+    ctx.linked_fn_param_counts[func_name] = param_count
+    ctx.linked_fn_return_counts[func_name] = return_count
+    func_import_count += 1
+  }
+  // Linked mode: import memory and __heap_ptr from library module
+  let has_linked_imports = ctx.linked_fn_imports_list.length() > 0
+  let linked_memory_import = if has_linked_imports { 1 } else { 0 }
+  let linked_global_import = if has_linked_imports && ctx.use_heap_global {
+    1
   } else {
     0
   }
-  let import_count = func_import_count + global_import_count
+  let global_import_count = (if ctx.use_js_strings {
+    ctx.js_strings.names.length()
+  } else {
+    0
+  }) + linked_global_import
+  let import_count = func_import_count + global_import_count +
+    linked_memory_import
   if import_count > 0 {
     let import_sec = ByteBuf::new()
     write_u32_leb(import_sec, import_count)
@@ -870,6 +919,35 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
         write_u32_leb(import_sec, type_idx)
       }
     }
+    // Linked function imports
+    let mut linked_primary_module = ""
+    for i, entry in ctx.linked_fn_imports_list {
+      let (mod_name, fn_name, _, _) = entry
+      if linked_primary_module.length() == 0 {
+        linked_primary_module = mod_name
+      }
+      write_name(import_sec, mod_name)
+      write_name(import_sec, fn_name)
+      import_sec.push((0).to_byte()) // func import
+      write_u32_leb(import_sec, linked_import_type_indices[i])
+    }
+    // Linked memory import: import memory from primary library module
+    if has_linked_imports {
+      write_name(import_sec, linked_primary_module)
+      write_name(import_sec, "memory")
+      import_sec.push((2).to_byte()) // memory import
+      import_sec.push((0).to_byte()) // limits: no max
+      write_u32_leb(import_sec, 1) // initial 1 page (library will have more)
+    }
+    // TODO: funcref table import for linked builds with closures
+    // Linked __heap_ptr global import
+    if has_linked_imports && ctx.use_heap_global {
+      write_name(import_sec, linked_primary_module)
+      write_name(import_sec, "__heap_ptr")
+      import_sec.push((3).to_byte()) // global import
+      import_sec.push((127).to_byte()) // i32
+      import_sec.push((1).to_byte()) // mutable
+    }
     if ctx.use_js_strings {
       for name in ctx.js_strings.names {
         write_name(import_sec, "string_constants")
@@ -898,8 +976,13 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let has_funcref_table = funcref_slot_count > 0 ||
     has_extern_table ||
     ctx.need_funcref_table
-  let table_count = (if has_funcref_table { 1 } else { 0 }) +
-    (if has_extern_table { 1 } else { 0 })
+  // TODO: In linked mode with closures, import funcref table from library
+  let import_funcref_table = false // not yet implemented
+  let table_count = (if has_funcref_table && not(import_funcref_table) {
+    1
+  } else {
+    0
+  }) + (if has_extern_table { 1 } else { 0 })
   if table_count > 0 {
     let table_sec = ByteBuf::new()
     write_u32_leb(table_sec, table_count)
@@ -918,13 +1001,15 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     write_section(buf, 4, table_sec.to_array())
   }
 
-  // memory section
-  let mem_sec = ByteBuf::new()
-  write_u32_leb(mem_sec, 1)
-  mem_sec.push((0).to_byte())
-  // Reserve enough linear memory for selfhost compile and bench loops.
-  write_u32_leb(mem_sec, 1024)
-  write_section(buf, 5, mem_sec.to_array())
+  // memory section (skip when importing memory from linked library)
+  if not(has_linked_imports) {
+    let mem_sec = ByteBuf::new()
+    write_u32_leb(mem_sec, 1)
+    mem_sec.push((0).to_byte())
+    // Reserve enough linear memory for selfhost compile and bench loops.
+    write_u32_leb(mem_sec, 1024)
+    write_section(buf, 5, mem_sec.to_array())
+  }
 
   // tag section (section ID 13, placed between memory and global per spec)
   let tag_count = (if ctx.need_exceptions { 1 } else { 0 }) +
@@ -959,17 +1044,19 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     ctx.need_fs ||
     ctx.need_socket ||
     exported_env_global_count > 0
+  // In linked mode, __heap_ptr is imported (not defined in global section)
+  let heap_global_in_section = ctx.use_heap_global && not(has_linked_imports)
   if need_globals {
     let global_sec = ByteBuf::new()
-    let global_count = (if ctx.use_heap_global { 1 } else { 0 }) +
+    let global_count = (if heap_global_in_section { 1 } else { 0 }) +
       (if ctx.need_stack_switching { 1 } else { 0 }) +
       (if ctx.coverage_enabled { 2 } else { 0 }) +
       (if ctx.need_fs { 1 } else { 0 }) +
       (if ctx.need_socket { 1 } else { 0 }) +
       exported_env_global_count
     write_u32_leb(global_sec, global_count)
-    // Heap pointer global
-    if ctx.use_heap_global {
+    // Heap pointer global (skip when imported from library)
+    if heap_global_in_section {
       global_sec.push((127).to_byte()) // i32
       global_sec.push((1).to_byte()) // mutable
       let heap_start = align4(ctx.strings.next_offset + coverage_bytes)
@@ -1042,7 +1129,10 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     ctx.need_fs ||
     ctx.force_cabi_realloc
   let need_http_host_string_new_export = ctx.need_http && ctx.http_host_imports
-  let export_count = 2 +
+  let emit_start = not(ctx.library_mode)
+  // Library mode: export funcref table for linked builds
+  let export_funcref_table = ctx.library_mode && has_funcref_table
+  let export_count = (if emit_start { 2 } else { 1 }) + // _start + memory, or just memory
     user_export_count +
     exported_env_global_count +
     (if need_cabi_realloc_export { 1 } else { 0 }) +
@@ -1051,13 +1141,16 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     (if ctx.need_stack_switching { 3 } else { 0 }) + // await_tag + sleep_tag + global
     (if ctx.coverage_enabled { 2 } else { 0 }) +
     (if ctx.need_fs { 1 } else { 0 }) +
-    (if ctx.use_heap_global { 1 } else { 0 }) // __heap_ptr global
+    (if ctx.use_heap_global { 1 } else { 0 }) + // __heap_ptr global
+    (if export_funcref_table { 1 } else { 0 })
   let export_sec = ByteBuf::new()
   write_u32_leb(export_sec, export_count)
-  write_name(export_sec, "_start")
-  export_sec.push((0).to_byte()) // func export
   let run_index = func_import_count + funcs.length() - 1
-  write_u32_leb(export_sec, run_index)
+  if emit_start {
+    write_name(export_sec, "_start")
+    export_sec.push((0).to_byte()) // func export
+    write_u32_leb(export_sec, run_index)
+  }
   let helper_count_before_run = (if need_cabi_realloc_export { 1 } else { 0 }) +
     (if need_http_host_string_new_export { 1 } else { 0 })
   let helper_base_func_index = run_index - helper_count_before_run
@@ -1076,6 +1169,12 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   write_name(export_sec, "memory")
   export_sec.push((2).to_byte()) // memory export
   write_u32_leb(export_sec, 0)
+  // Export funcref table for library mode
+  if export_funcref_table {
+    write_name(export_sec, "__funcref_table")
+    export_sec.push((1).to_byte()) // table export
+    write_u32_leb(export_sec, 0) // table index 0
+  }
   // Export user functions (export let ...)
   // Skip "_start" here; handled above to avoid duplicate export.
   for name, _ in ctx.exported_fns {
@@ -1647,6 +1746,38 @@ fn emit_module_with_coverage(
   }
   scan_needs(ctx, ast)
   scan_strings(ctx, ast)
+  // Pre-compute linked import indices so compile_call_by_name can emit
+  // correct call instructions. This mirrors the import count logic in
+  // build_module but only for determining linked import func indices.
+  if ctx.linked_fn_imports_list.length() > 0 {
+    let mut pre_import_count = 0
+    if ctx.need_js_length { pre_import_count += 1 }
+    if ctx.need_js_char_code_at { pre_import_count += 1 }
+    if ctx.need_js_substring { pre_import_count += 1 }
+    if ctx.need_js_concat { pre_import_count += 1 }
+    if ctx.need_js_equals { pre_import_count += 1 }
+    if ctx.need_path { pre_import_count += 1 }
+    if ctx.need_dynamic_path_resolve { pre_import_count += 1 }
+    if ctx.need_sh { pre_import_count += 1 }
+    if ctx.need_env_get { pre_import_count += 1 }
+    if ctx.need_env_args_len { pre_import_count += 1 }
+    if ctx.need_env_args_get { pre_import_count += 1 }
+    if ctx.need_sleep { pre_import_count += 1 }
+    if ctx.need_stdout_write_char { pre_import_count += 2 }
+    if ctx.need_stdin_read_char { pre_import_count += 2 }
+    if ctx.need_fs { pre_import_count += 7 }
+    if ctx.need_socket { pre_import_count += 13 }
+    if ctx.need_http && ctx.http_host_imports { pre_import_count += 12 }
+    // effect ops come before linked imports
+    pre_import_count += ctx.effect_op_imports.length()
+    for entry in ctx.linked_fn_imports_list {
+      let (_, func_name, param_count, return_count) = entry
+      ctx.linked_fn_imports[func_name] = pre_import_count
+      ctx.linked_fn_param_counts[func_name] = param_count
+      ctx.linked_fn_return_counts[func_name] = return_count
+      pre_import_count += 1
+    }
+  }
   if ctx.coverage_enabled {
     ctx.coverage_base_offset = align4(ctx.strings.next_offset)
   } else {
@@ -1855,7 +1986,9 @@ fn emit_module_with_coverage(
     run_need_heap = true
     any_user_heap = true
   }
+  // In linked mode, always enable heap_global (library provides memory/heap_ptr)
   if any_user_heap ||
+    ctx.linked_fn_imports_list.length() > 0 ||
     ctx.need_env_get ||
     ctx.need_env_args_get ||
     ctx.need_stdin_read_char ||
@@ -1864,7 +1997,11 @@ fn emit_module_with_coverage(
     ctx.need_http ||
     ctx.force_cabi_realloc {
     ctx.use_heap_global = true
-    let global_imports = if ctx.use_js_strings {
+    // In linked mode, __heap_ptr is imported as the first global (index 0).
+    // In non-linked mode, it's the first defined global (after js_string globals).
+    let global_imports = if ctx.linked_fn_imports_list.length() > 0 {
+      0 // __heap_ptr is imported global index 0
+    } else if ctx.use_js_strings {
       ctx.js_strings.names.length()
     } else {
       0
@@ -2065,7 +2202,9 @@ pub fn emit_module_wasm_with_options(
     http_host_imports=options.http_host_imports,
     http_component_wasi_shim=options.http_component_wasi_shim,
     force_cabi_realloc=options.force_cabi_realloc,
+    library_mode=options.library_mode,
   )
+  ctx.linked_fn_imports_list = options.linked_imports
   emit_module(ctx, ast)
 }
 

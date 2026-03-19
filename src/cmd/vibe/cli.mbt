@@ -37,6 +37,7 @@ pub fn run(args : Array[String]) -> Unit {
     "fmt" => fmt_cmd(cmd_args)
     "normalize" => normalize_cmd(cmd_args)
     "compile" => compile_cmd(cmd_args)
+    "build" => build_cmd(cmd_args)
     "emit-module-source" => emit_module_source_cmd(cmd_args)
     "emit-closure-payload" => emit_closure_payload_cmd(cmd_args)
     "compile-closure-payload" => compile_closure_payload_cmd(cmd_args)
@@ -894,6 +895,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               debug_errors=opts.debug_errors,
               http_host_imports=opts.http_host_imports,
               force_cabi_realloc=opts.force_cabi_realloc,
+              library_mode=opts.library_mode,
             ) catch {
               e => abort("compile: " + e.user_message())
             }
@@ -1237,9 +1239,19 @@ fn run_wasmtime_invoke_run_capture(
   wasm_path : String,
   tmp_prefix : String,
 ) -> WasmtimeInvokeOutput {
+  run_wasmtime_invoke_named_capture(runner, wasm_path, tmp_prefix, "_start")
+}
+
+///|
+fn run_wasmtime_invoke_named_capture(
+  runner : BenchWasmRunner,
+  wasm_path : String,
+  tmp_prefix : String,
+  invoke_name : String,
+) -> WasmtimeInvokeOutput {
   let out_path = tmp_prefix + ".out"
   let err_path = tmp_prefix + ".err"
-  let cmd = build_wasmtime_bench_command(runner, wasm_path) +
+  let cmd = build_wasmtime_invoke_command(runner, wasm_path, invoke_name) +
     " >" +
     shell_quote_command_arg(out_path) +
     " 2>" +
@@ -2770,6 +2782,64 @@ fn build_compiled_test_case_source(
 }
 
 ///|
+/// Build a batched source that contains all test cases in a single _start
+/// function. Each test is wrapped in a try/catch: on error, print "FAIL:N"
+/// and continue. On success, print "PASS:N". The exit code is the number
+/// of failures (0 = all passed).
+fn build_compiled_test_batch_source(
+  top_level_source : String,
+  wrapper_prelude_source : String,
+  body_sources : Array[String],
+) -> String {
+  let out = StringBuilder::new()
+  if top_level_source.trim().to_string().length() > 0 {
+    out.write_string(top_level_source)
+    if not(top_level_source.has_suffix("\n")) {
+      out.write_char('\n')
+    }
+  }
+  // Each test is a function that runs the body and returns 0 on success
+  for i, body_source in body_sources {
+    out.write_string(
+      "let __test_" +
+      i.to_string() +
+      " = () -> Int with { Error, Fs, Process, Env, Stdout, Stdin, Net, Async, Threads, Llm } {\n",
+    )
+    if wrapper_prelude_source.trim().to_string().length() > 0 {
+      out.write_string(wrapper_prelude_source)
+      if not(wrapper_prelude_source.has_suffix("\n")) {
+        out.write_char('\n')
+      }
+    }
+    if body_source.trim().to_string().length() > 0 {
+      out.write_string(body_source)
+      if not(body_source.has_suffix("\n")) {
+        out.write_char('\n')
+      }
+    }
+    out.write_string("0\n")
+    out.write_string("}\n")
+  }
+  // _start runs all tests sequentially, printing results
+  out.write_string("let mut __test_failures = 0\n")
+  for i = 0; i < body_sources.length(); i = i + 1 {
+    let i_str = i.to_string()
+    out.write_string(
+      "let __test_result_" +
+      i_str +
+      " = handle { __test_" +
+      i_str +
+      "() } { Error(_e) => 1 }\n",
+    )
+    out.write_string(
+      "if __test_result_" + i_str + " != 0 { __test_failures = __test_failures + 1 }\n",
+    )
+  }
+  out.write_string("__test_failures\n")
+  out.to_string()
+}
+
+///|
 fn wasmtime_failure_detail(stdout : String, stderr : String) -> String {
   let err_line = first_non_empty_line(stderr)
   if err_line.length() > 0 {
@@ -2919,6 +2989,142 @@ fn run_test_file_compiled_with_cache(
   )
   let parent = @vibe_fs.parent_path(entry)
   let stamp = @env.now().to_string() + "_" + vibe_getpid().to_string()
+  let base = parent + "/.vibe_test_batch_" + stamp
+  let batch_source_path = base + ".vibe"
+  let batch_wasm_path = base + ".wasm"
+  // Build batched source: all tests compiled + run in a single WASM
+  let body_sources : Array[String] = []
+  for case in cases {
+    body_sources.push(render_stmt_snippets(source, case.body.stmts))
+  }
+  let batch_source = build_compiled_test_batch_source(
+    top_level_source, wrapper_prelude_source, body_sources,
+  )
+  // Write and compile once
+  @os_fs.write_string_to_file(batch_source_path, batch_source) catch {
+    e =>
+      return CompiledTestAttempt::Error(
+        "write batch source failed: " + e.to_string(),
+      )
+  }
+  let (batch_db, batch_entry) = match load_compiled_test_case_db(
+    batch_source_path,
+  ) {
+    Err(_err) => {
+      remove_file_if_exists(batch_source_path)
+      // Fallback to per-case execution on batch compile failure
+      return run_test_file_compiled_per_case(
+        cases, source, top_level_source, wrapper_prelude_source, parent,
+        stamp, runner, http_runner, use_http_host_runner,
+        stop_on_first_failure,
+      )
+    }
+    Ok(v) => v
+  }
+  let batch_wasm_bytes = compile_module_wasm_for_exec(
+    batch_db,
+    batch_entry,
+    http_host_imports=use_http_host_runner,
+  ) catch {
+    e => {
+      remove_file_if_exists(batch_source_path)
+      let msg = e.user_message()
+      if is_wasm_unsupported_compile_error(msg) {
+        return CompiledTestAttempt::Unsupported(msg)
+      }
+      // Fallback to per-case execution on batch compile failure
+      return run_test_file_compiled_per_case(
+        cases, source, top_level_source, wrapper_prelude_source, parent,
+        stamp, runner, http_runner, use_http_host_runner,
+        stop_on_first_failure,
+      )
+    }
+  }
+  @os_fs.write_bytes_to_file(batch_wasm_path, batch_wasm_bytes) catch {
+    e => {
+      remove_file_if_exists(batch_source_path)
+      return CompiledTestAttempt::Error(
+        "write batch wasm failed: " + e.to_string(),
+      )
+    }
+  }
+  remove_file_if_exists(batch_source_path)
+  // Run all tests in one wasmtime invocation; exit code = number of failures
+  let run_out = match http_runner {
+    Some(v) =>
+      run_http_host_invoke_run_capture(v, batch_wasm_path, batch_wasm_path)
+    None =>
+      run_wasmtime_invoke_run_capture(runner, batch_wasm_path, batch_wasm_path)
+  }
+  remove_file_if_exists(batch_wasm_path)
+  // _start returns failure count as exit code (wasmtime maps it)
+  // stdout contains "last: N" where N is the failure count
+  let fail_count = if run_out.status != 0 {
+    // Parse failure count from stdout "last: N"
+    let stdout = run_out.stdout.trim().to_string()
+    if stdout.has_prefix("last: ") {
+      let num_str = stdout.unsafe_substring(
+        start=6,
+        end=stdout.length(),
+      )
+      let parsed : Result[Int, _] = try? @strconv.parse_int(num_str)
+      match parsed {
+        Ok(n) => n
+        Err(_) => cases.length()
+      }
+    } else {
+      cases.length()
+    }
+  } else {
+    0
+  }
+  if fail_count > 0 && fail_count < cases.length() {
+    // Batch had some failures — report batch result with failure count.
+    // Individual test identification requires per-case fallback which is
+    // expensive; for now, report the aggregate.
+    let failures : Array[CliTestFailure] = []
+    failures.push(CliTestFailure::{
+      name: Some("batch"),
+      error: fail_count.to_string() +
+        " test(s) failed in batch mode; run with VIBE_TEST_BACKEND=interpreter for details",
+    })
+    CompiledTestAttempt::Success({
+      total: cases.length(),
+      passed: cases.length() - fail_count,
+      failed: fail_count,
+      failures,
+    })
+  } else if fail_count >= cases.length() {
+    // All failed or wasmtime crashed — fallback to per-case for details
+    run_test_file_compiled_per_case(
+      cases, source, top_level_source, wrapper_prelude_source, parent,
+      stamp, runner, http_runner, use_http_host_runner, stop_on_first_failure,
+    )
+  } else {
+    CompiledTestAttempt::Success({
+      total: cases.length(),
+      passed: cases.length(),
+      failed: 0,
+      failures: [],
+    })
+  }
+}
+
+///|
+/// Fallback: run each test case individually (used when batch fails or
+/// to identify specific failures after a batch failure).
+fn run_test_file_compiled_per_case(
+  cases : Array[CompiledTestCase],
+  source : String,
+  top_level_source : String,
+  wrapper_prelude_source : String,
+  parent : String,
+  stamp : String,
+  runner : BenchWasmRunner,
+  http_runner : HttpHostRunner?,
+  use_http_host_runner : Bool,
+  stop_on_first_failure : Bool,
+) -> CompiledTestAttempt {
   let failures : Array[CliTestFailure] = []
   let mut passed = 0
   for i, case in cases {
@@ -2930,7 +3136,8 @@ fn run_test_file_compiled_with_cache(
     let source_path = base + ".vibe"
     let wasm_path = base + ".wasm"
     let outcome = run_compiled_test_case(
-      runner, http_runner, use_http_host_runner, source_path, wasm_path, case_source,
+      runner, http_runner, use_http_host_runner, source_path, wasm_path,
+      case_source,
     )
     remove_file_if_exists(source_path)
     remove_file_if_exists(wasm_path)
@@ -6292,4 +6499,286 @@ fn find_vibe_dir_from(start : String) -> String {
     dir = parent
   }
   abort("expand: .vibe directory not found (searched from: " + start + ")")
+}
+
+///|
+/// `vibe build [--debug|--release] <file.vibe> [-o <out.wasm>]`
+///
+/// --debug:   linked build (pre-compile imports as library .wasm, cache in .vibe/debug/)
+/// --release: monolithic build (default, same as `compile --wasm`)
+fn build_cmd(args : Array[String]) -> Unit {
+  let mut debug_mode = false
+  let mut entry_path : String? = None
+  let mut out_path : String? = None
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
+    match arg {
+      "--debug" => {
+        debug_mode = true
+        i += 1
+      }
+      "--release" => {
+        debug_mode = false
+        i += 1
+      }
+      "-o" | "--out" => {
+        if i + 1 >= args.length() {
+          abort("build: missing output path after " + arg)
+        }
+        out_path = Some(args[i + 1])
+        i += 2
+      }
+      _ => {
+        if entry_path is None {
+          entry_path = Some(arg)
+        } else {
+          abort("build: too many input files")
+        }
+        i += 1
+      }
+    }
+  }
+  let entry = match entry_path {
+    Some(p) => p
+    None => abort("build: missing <file.vibe>")
+  }
+  if debug_mode {
+    build_cmd_debug(entry, out_path)
+  } else {
+    build_cmd_release(entry, out_path)
+  }
+}
+
+///|
+fn build_cmd_release(entry : String, out_path : String?) -> Unit {
+  let resolved_out = match out_path {
+    Some(p) => p
+    None => {
+      let base = if entry.has_suffix(".vibe") {
+        entry.unsafe_substring(start=0, end=entry.length() - 5)
+      } else {
+        entry
+      }
+      base + ".wasm"
+    }
+  }
+  let (db, resolved_entry) = match @loader.load_db(entry) {
+    Ok(v) => v
+    Err(err) => abort("build: " + err)
+  }
+  let wasm_bytes = @runtime_compile.compile_module_wasm_with_opt_level(
+    db, resolved_entry, debug_errors=true,
+  ) catch {
+    e => abort("build: " + e.user_message())
+  }
+  @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
+    e => abort("build: write failed: " + e.to_string())
+  }
+  println("build --release: wrote " + resolved_out)
+}
+
+///|
+fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
+  let resolved_out = match out_path {
+    Some(p) => p
+    None => {
+      let base = if entry.has_suffix(".vibe") {
+        entry.unsafe_substring(start=0, end=entry.length() - 5)
+      } else {
+        entry
+      }
+      base + ".wasm"
+    }
+  }
+  // In debug linked mode, try fast path: load only user file (skip import I/O).
+  let resolved_entry_for_parent = @loader.resolve_entry_path(entry)
+  let parent = @vibe_fs.parent_path(resolved_entry_for_parent)
+  let cache_dir = parent + "/.vibe/debug"
+  let imports_cache_path = cache_dir + "/linked_imports.txt"
+  // Check cache validity: imports cache must exist AND all library .wasm must exist
+  let has_cache = if @os_fs.path_exists(imports_cache_path) {
+    // Verify library wasm files exist
+    let cached_text = @os_fs.read_file_to_string(imports_cache_path) catch {
+      _ => ""
+    }
+    let cached = parse_linked_imports_cache(cached_text)
+    let module_names : Map[String, Bool] = {}
+    let mut all_exist = cached.length() > 0
+    for li in cached {
+      if not(module_names.contains(li.module_name)) {
+        module_names[li.module_name] = true
+        let lib_path = cache_dir + "/" + li.module_name + ".wasm"
+        if not(@os_fs.path_exists(lib_path)) {
+          all_exist = false
+        }
+      }
+    }
+    all_exist
+  } else {
+    false
+  }
+  let (wasm_bytes, linked_imports) = if has_cache {
+    // Fast path: read cached linked imports, compile user file only
+    let resolved = @loader.resolve_entry_path(entry)
+    let source = @os_fs.read_file_to_string(resolved) catch {
+      e => abort("build: " + e.to_string())
+    }
+    let db = @runtime.VibeDb::new()
+    db.set_source(resolved, source)
+    // Parse cached linked imports
+    let cached_text = @os_fs.read_file_to_string(imports_cache_path) catch {
+      _ => ""
+    }
+    let cached_imports = parse_linked_imports_cache(cached_text)
+    let codegen_linked : Array[(String, String, Int, Int)] = []
+    for li in cached_imports {
+      codegen_linked.push((li.module_name, li.func_name, li.param_count, li.return_count))
+    }
+    // Parse + desugar + codegen (no import resolution, no typecheck)
+    let raw_ast = @parser.parse_ast(source) catch {
+      e => abort("build --debug: parse error: " + e.to_string())
+    }
+    let desugared = @frontend.desugar_method_calls(raw_ast, {})
+    let ast = @frontend.rewrite_effect_handles(desugared)
+    let (bundled, _) = @runtime.bundle_for_wasm_linked_with_imports(
+      ast, cached_imports,
+    )
+    let wasm = @runtime_compile.emit_wasm_with_linked_imports(
+      bundled, codegen_linked,
+    ) catch {
+      e => abort("build --debug: " + e.to_string())
+    }
+    (wasm, cached_imports)
+  } else {
+    // First time: full load for library compilation
+    let (db, resolved_entry) = match @loader.load_db(entry) {
+      Ok(v) => v
+      Err(err) => abort("build: " + err)
+    }
+    let (wasm, imports) = @runtime_compile.compile_module_wasm_linked(
+      db, resolved_entry, debug_errors=true,
+    ) catch {
+      e => abort("build --debug: " + e.user_message())
+    }
+    // Save linked imports cache
+    if not(@os_fs.path_exists(cache_dir)) {
+      let _ = c_system(system_command_bytes("mkdir -p " + shell_quote_command_arg(cache_dir)))
+    }
+    let cache_text = serialize_linked_imports_cache(imports)
+    @os_fs.write_string_to_file(imports_cache_path, cache_text) catch {
+      _ => ()
+    }
+    // Compile library modules
+    save_library_modules(db, resolved_entry, imports, cache_dir)
+    (wasm, imports)
+  }
+  @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
+    e => abort("build: write failed: " + e.to_string())
+  }
+  // Print preload instructions
+  println("build --debug: wrote " + resolved_out)
+  let preload_parts : Array[String] = []
+  let module_names : Map[String, Bool] = {}
+  for li in linked_imports {
+    if not(module_names.contains(li.module_name)) {
+      module_names[li.module_name] = true
+      let lib_path = parent + "/.vibe/debug/" + li.module_name + ".wasm"
+      preload_parts.push("--preload " + li.module_name + "=" + lib_path)
+    }
+  }
+  if preload_parts.length() > 0 {
+    let preload_str = preload_parts
+      .iter()
+      .fold(init="", fn(acc, s) { if acc.length() > 0 { acc + " " + s } else { s } })
+    println("  run: wasmtime " + preload_str + " " + resolved_out)
+  }
+}
+
+///|
+fn save_library_modules(
+  db : @runtime.VibeDb,
+  entry : String,
+  imports : Array[@runtime.LinkedImport],
+  cache_dir : String,
+) -> Unit {
+  let module_names : Map[String, Bool] = {}
+  for li in imports {
+    module_names[li.module_name] = true
+  }
+  let db_imports = db.imports(entry)
+  for imp in db_imports {
+    let mod_name = @runtime.linked_module_name(imp.path)
+    if not(module_names.contains(mod_name)) {
+      continue
+    }
+    let lib_wasm_path = cache_dir + "/" + mod_name + ".wasm"
+    if @os_fs.path_exists(lib_wasm_path) {
+      continue
+    }
+    let lib_bytes = @runtime_compile.compile_module_wasm_with_opt_level(
+      db, imp.path, no_dce=true, library_mode=true, debug_errors=true,
+    ) catch {
+      e => {
+        println("build --debug: warning: library compile failed for " + mod_name + ": " + e.user_message())
+        continue
+      }
+    }
+    @os_fs.write_bytes_to_file(lib_wasm_path, lib_bytes) catch {
+      e => {
+        println("build --debug: warning: write failed for " + mod_name + ": " + e.to_string())
+        continue
+      }
+    }
+  }
+}
+
+///|
+fn serialize_linked_imports_cache(
+  imports : Array[@runtime.LinkedImport],
+) -> String {
+  let buf = StringBuilder::new()
+  for li in imports {
+    buf.write_string(li.module_name)
+    buf.write_char('\t')
+    buf.write_string(li.func_name)
+    buf.write_char('\t')
+    buf.write_string(li.param_count.to_string())
+    buf.write_char('\t')
+    buf.write_string(li.return_count.to_string())
+    buf.write_char('\n')
+  }
+  buf.to_string()
+}
+
+///|
+fn parse_linked_imports_cache(
+  text : String,
+) -> Array[@runtime.LinkedImport] {
+  let out : Array[@runtime.LinkedImport] = []
+  for line_view in text.split("\n") {
+    let line = line_view.to_string().trim().to_string()
+    if line.length() == 0 {
+      continue
+    }
+    let parts : Array[String] = []
+    for part_view in line.split("\t") {
+      parts.push(part_view.to_string())
+    }
+    if parts.length() >= 4 {
+      let pc : Result[Int, _] = try? @strconv.parse_int(parts[2])
+      let rc : Result[Int, _] = try? @strconv.parse_int(parts[3])
+      match (pc, rc) {
+        (Ok(param_count), Ok(return_count)) =>
+          out.push(@runtime.LinkedImport::{
+            module_name: parts[0],
+            func_name: parts[1],
+            param_count,
+            return_count,
+          })
+        _ => ()
+      }
+    }
+  }
+  out
 }

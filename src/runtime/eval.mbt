@@ -1303,9 +1303,9 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       eval_expr(rt, expr)
     }
     @core.Expr::Spread(..) =>
-      abort("eval: spread operator should only appear inside array literals")
+      raise EvalError::UnknownName("eval: spread operator should only appear inside array literals")
     @core.Expr::Perform(..) =>
-      abort("eval: perform expression not yet implemented")
+      raise EvalError::UnknownName("eval: perform expression not yet implemented")
   }
 }
 

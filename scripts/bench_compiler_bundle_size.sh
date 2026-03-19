@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/vibe/vibe.exe"
+VIBE_CLI_RELEASE=1 source "$ROOT_DIR/scripts/ensure_native_cli.sh"
+CLI_BIN="$VIBE_CLI_BIN"
 REPORT_DIR="$ROOT_DIR/dist/bundle_size"
 REPORT_FILE="$REPORT_DIR/compiler_current.tsv"
 BUDGET_FILE="$ROOT_DIR/bench/golden/compiler_bundle_size_budget.tsv"
@@ -22,7 +23,6 @@ fi
 
 mkdir -p "$REPORT_DIR" "$OUT_DIR"
 
-moon build --target native --release src/cmd/vibe --warn-list '-29' >/dev/null
 
 printf 'group\tpath\tmode\tbytes\n' > "$REPORT_FILE"
 

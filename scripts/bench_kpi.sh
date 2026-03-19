@@ -5,7 +5,8 @@ set -euo pipefail
 trap 'trap - EXIT; kill -- -$$ 2>/dev/null || true' INT TERM
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/vibe/vibe.exe"
+VIBE_CLI_RELEASE=1 source "$ROOT_DIR/scripts/ensure_native_cli.sh"
+CLI_BIN="$VIBE_CLI_BIN"
 REPORT_DIR="${VIBE_BENCH_KPI_DIR:-$ROOT_DIR/dist/bench_kpi}"
 REPORT_FILE="${VIBE_BENCH_KPI_REPORT:-$REPORT_DIR/latest.tsv}"
 N_RAW="${VIBE_BENCH_KPI_N:-}"
@@ -42,8 +43,6 @@ else
 fi
 
 mkdir -p "$REPORT_DIR"
-
-moon build --target native --release src/cmd/vibe >/dev/null
 
 if [[ "$LEGACY_MODE" == "1" ]]; then
   bench_out="$("$CLI_BIN" bench --backend "$BACKEND" --n "$N" --warmup "$WARMUP" "${entries[@]}")"

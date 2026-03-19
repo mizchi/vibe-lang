@@ -25,12 +25,11 @@ done
 RUNS="${VIBE_BENCH_NORMALIZE_RUNS:-1}"
 
 if [ "$RELEASE" = "1" ]; then
-  moon build --target native --release src/cmd/vibe --warn-list '-29'
-  VIBE_BIN="target/native/release/build/cmd/vibe/vibe.exe"
+  VIBE_CLI_RELEASE=1 source "$PROJECT_ROOT/scripts/ensure_native_cli.sh"
 else
-  moon build --target native src/cmd/vibe --warn-list '-29'
-  VIBE_BIN="_build/native/debug/build/cmd/vibe/vibe.exe"
+  source "$PROJECT_ROOT/scripts/ensure_native_cli.sh"
 fi
+VIBE_BIN="$VIBE_CLI_BIN"
 
 SOURCE_ROOTS=(examples vibe)
 EXCLUDE_DIRS="examples/wasm"

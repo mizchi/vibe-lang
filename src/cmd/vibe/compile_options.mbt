@@ -22,6 +22,7 @@ pub struct CompileCmdOptions {
   http_host_imports : Bool
   force_cabi_realloc : Bool
   is_async : Bool
+  library_mode : Bool
   adapter_path : String?
   out_path : String?
   entry_path : String
@@ -87,6 +88,7 @@ pub fn parse_compile_cmd_args(
 ) -> Result[CompileCmdOptions, String] {
   let mut mode = CompileMode::Ir
   let mut no_dce = false
+  let mut library_mode = false
   let mut coverage = false
   let mut coverage_run_tests = false
   let mut debug_errors = false
@@ -146,6 +148,10 @@ pub fn parse_compile_cmd_args(
       }
       "--no-dce" => {
         no_dce = true
+        i += 1
+      }
+      "--library" => {
+        library_mode = true
         i += 1
       }
       "--coverage" => {
@@ -247,6 +253,7 @@ pub fn parse_compile_cmd_args(
         http_host_imports,
         force_cabi_realloc,
         is_async,
+        library_mode,
         adapter_path,
         out_path,
         entry_path: path,

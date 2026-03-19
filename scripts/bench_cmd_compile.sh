@@ -5,12 +5,13 @@ set -euo pipefail
 trap 'trap - EXIT; kill -- -$$ 2>/dev/null || true' INT TERM
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/vibe/vibe.exe"
+VIBE_CLI_RELEASE=1 source "$ROOT_DIR/scripts/ensure_native_cli.sh"
+CLI_BIN="$VIBE_CLI_BIN"
 SCRIPT_PATH="${VIBE_BENCH_FILE:-$ROOT_DIR/bench/bench_simple.vibe}"
 
 COUNT="${VIBE_BENCH_N:-1000}"
 WARMUP="${VIBE_BENCH_WARMUP:-10}"
 
-moon build --target native --release src/cmd/vibe
+
 
 "$CLI_BIN" bench-file --n "$COUNT" --warmup "$WARMUP" "$SCRIPT_PATH"

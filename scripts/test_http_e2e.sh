@@ -2,7 +2,9 @@
 set -euo pipefail
 
 PORT=18280
-VIBE="./_build/native/debug/build/cmd/vibe/vibe.exe"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT_DIR/scripts/ensure_native_cli.sh"
+VIBE="$VIBE_CLI_BIN"
 SERVER_PID=""
 
 cleanup() {
@@ -15,11 +17,6 @@ trap cleanup EXIT
 
 echo "=== HTTP E2E Tests ==="
 
-# Build vibe if needed
-if [ ! -f "$VIBE" ]; then
-  echo "Building vibe..."
-  moon build --target native src/cmd/vibe --warn-list '-29'
-fi
 
 # Start HTTP echo server
 echo "Starting HTTP echo server on port $PORT..."

@@ -7,7 +7,9 @@ set -euo pipefail
 GOLDEN_DIR="examples/golden_wat"
 TEMP_DIR="/tmp/golden_wat_test"
 UPDATE_MODE=false
-VIBE_BIN="${VIBE_BIN:-_build/native/debug/build/cmd/vibe/vibe.exe}"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT_DIR/scripts/ensure_native_cli.sh"
+VIBE_BIN="${VIBE_BIN:-$VIBE_CLI_BIN}"
 USE_WITE="${VIBE_GOLDEN_USE_WITE:-1}"
 OPT_LEVEL="${VIBE_GOLDEN_OPT_LEVEL:-}"
 
@@ -16,14 +18,6 @@ if [ "${1:-}" == "--update" ]; then
 elif [ "${1:-}" != "" ]; then
   echo "unknown arg: $1" >&2
   echo "usage: ./scripts/test_golden_wat.sh [--update]" >&2
-  exit 1
-fi
-
-if [ ! -x "$VIBE_BIN" ]; then
-  moon build --target native src/cmd/vibe --warn-list '-29'
-fi
-if [ ! -x "$VIBE_BIN" ]; then
-  echo "vibe cli binary not found: $VIBE_BIN" >&2
   exit 1
 fi
 

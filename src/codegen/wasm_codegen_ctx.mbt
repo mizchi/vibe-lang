@@ -116,6 +116,17 @@ priv struct CodegenCtx {
   mut heap_synced : Bool
   // Tail call optimization (return_call / return_call_indirect)
   enable_tail_call : Bool
+  // Library mode: skip _start, suitable for --preload linking
+  library_mode : Bool
+  // Linked function imports: func_name -> absolute import func index
+  // Used for debug linked builds where imported modules are pre-compiled .wasm
+  linked_fn_imports : Map[String, Int]
+  // Linked function param counts: func_name -> param count (for env arg)
+  linked_fn_param_counts : Map[String, Int]
+  // Linked function return counts: func_name -> return count (1=scalar, 2+=tuple)
+  linked_fn_return_counts : Map[String, Int]
+  // Linked imports list: (wasm_module_name, func_name, param_count, return_count)
+  mut linked_fn_imports_list : Array[(String, String, Int, Int)]
 }
 
 ///|
@@ -126,6 +137,7 @@ fn CodegenCtx::new(
   http_host_imports? : Bool = false,
   http_component_wasi_shim? : Bool = false,
   force_cabi_realloc? : Bool = false,
+  library_mode? : Bool = false,
 ) -> CodegenCtx {
   // Register builtin enum constructors
   let enum_ctor_tags : Map[String, Int] = {}
@@ -246,6 +258,11 @@ fn CodegenCtx::new(
     exported_fn_env_globals: {},
     heap_synced: false,
     enable_tail_call: false,
+    library_mode,
+    linked_fn_imports: {},
+    linked_fn_param_counts: {},
+    linked_fn_return_counts: {},
+    linked_fn_imports_list: [],
   }
   // Register builtin None as singleton (strings is now initialized)
   let none_offset = ctx.strings.intern_enum_singleton("None", 0)

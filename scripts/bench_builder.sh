@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/vibe/vibe.exe"
+VIBE_CLI_RELEASE=1 source "$ROOT_DIR/scripts/ensure_native_cli.sh"
+CLI_BIN="$VIBE_CLI_BIN"
 OUT_DIR="$ROOT_DIR/target/bench"
 SCRIPT_PATH="$OUT_DIR/bench_builder.vibe"
 N="${VIBE_BUILDER_N:-200}"
@@ -28,7 +29,7 @@ let result = do {
 result
 EOF_SCRIPT
 
-moon build --target native --release src/cmd/vibe
+
 
 RUN_CMD="$CLI_BIN run $SCRIPT_PATH >/dev/null"
 

@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/vibe/vibe.exe"
+VIBE_CLI_RELEASE=1 source "$ROOT_DIR/scripts/ensure_native_cli.sh"
+CLI_BIN="$VIBE_CLI_BIN"
 OUT_DIR="$ROOT_DIR/target/bench/audit"
 
 is_expected_failure() {
@@ -90,7 +91,7 @@ run_compile_check() {
 
 mkdir -p "$OUT_DIR"
 
-moon build --target native --release src/cmd/vibe
+
 
 status=0
 for src in "$ROOT_DIR"/bench/*.vibe; do

@@ -295,6 +295,68 @@ fn compile_module_wasm_with(
 }
 
 ///|
+/// Compile in linked mode: don't inline imports, emit wasm imports instead.
+/// Returns (user_wasm_bytes, linked_imports_info).
+pub fn compile_module_wasm_linked(
+  db : @runtime.VibeDb,
+  path : String,
+  debug_errors? : Bool = false,
+  skip_typecheck? : Bool = false,
+) -> (Bytes, Array[@runtime.LinkedImport]) raise WasmCompileError {
+  let compiled_ast = if skip_typecheck {
+    // Fast path: skip full type checking of imports.
+    // Parse and desugar user code with prelude-only env.
+    let raw_ast = db.ast(path)
+    let imports = db.imports(path)
+    let aliases = build_alias_map(
+      raw_ast, compile_module_import_aliases(imports),
+    )
+    let desugared = @frontend.desugar_method_calls(raw_ast, aliases)
+    @frontend.rewrite_effect_handles(desugared)
+  } else {
+    let compiled = compile_module(db, path) catch {
+      e => raise WasmCompileError::Compile(e)
+    }
+    compiled.ast
+  }
+  let (bundled, linked_imports) = @runtime.bundle_for_wasm_linked(
+    db, path, compiled_ast,
+  )
+  // Convert LinkedImport to codegen's linked_imports format
+  let codegen_linked : Array[(String, String, Int, Int)] = []
+  for li in linked_imports {
+    codegen_linked.push((li.module_name, li.func_name, li.param_count, li.return_count))
+  }
+  let wasm = @codegen.emit_module_wasm_with_options(
+    bundled,
+    @codegen.wasm_emit_options(
+      embed_error_strings=debug_errors,
+      linked_imports=codegen_linked,
+    ),
+  ) catch {
+    e => raise WasmCompileError::Gen(e)
+  }
+  (wasm, linked_imports)
+}
+
+///|
+/// Emit WASM with linked imports (used by fast path in build --debug).
+pub fn emit_wasm_with_linked_imports(
+  bundled : @core.Module,
+  linked_imports : Array[(String, String, Int, Int)],
+) -> Bytes raise WasmCompileError {
+  @codegen.emit_module_wasm_with_options(
+    bundled,
+    @codegen.wasm_emit_options(
+      embed_error_strings=true,
+      linked_imports~,
+    ),
+  ) catch {
+    e => raise WasmCompileError::Gen(e)
+  }
+}
+
+///|
 fn wasm_emit_options(
   debug_errors : Bool,
   http_host_imports? : Bool = false,
@@ -495,6 +557,7 @@ pub fn compile_module_wasm_with_opt_level(
   debug_errors? : Bool = false,
   http_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
+  library_mode? : Bool = false,
 ) -> Bytes raise WasmCompileError {
   let (wasm, _) = compile_module_wasm_with_opt_level_profiled(
     db,
@@ -504,6 +567,7 @@ pub fn compile_module_wasm_with_opt_level(
     debug_errors~,
     http_host_imports~,
     force_cabi_realloc~,
+    library_mode~,
   )
   wasm
 }
@@ -517,6 +581,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
   debug_errors? : Bool = false,
   http_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
+  library_mode? : Bool = false,
 ) -> (Bytes, WasmCompileStageProfile) raise WasmCompileError {
   if no_dce {
     compile_module_wasm_profiled_with(
@@ -530,6 +595,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
             embed_error_strings=debug_errors,
             http_host_imports~,
             force_cabi_realloc~,
+            library_mode~,
           ),
         )
       },
@@ -547,6 +613,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
             embed_error_strings=debug_errors,
             http_host_imports~,
             force_cabi_realloc~,
+            library_mode~,
           ),
         )
       },

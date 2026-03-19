@@ -13,20 +13,12 @@ CHECK_MAIN="${VIBE_SCRATCH_CHECK_MAIN:-1}"
 if [ -n "${VIBE_SCRATCH_CLI_BIN:-}" ]; then
   CLI_BIN="$VIBE_SCRATCH_CLI_BIN"
 else
-  if [ "$BUILD_MODE" = "release" ]; then
-    CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/vibe/vibe.exe"
-  else
-    CLI_BIN="$ROOT_DIR/target/native/debug/build/cmd/vibe/vibe.exe"
-  fi
-fi
-
-build_cli_if_needed() {
   case "$BUILD_MODE" in
-    debug)
-      moon build --target native src/cmd/vibe
-      ;;
     release)
-      moon build --target native --release src/cmd/vibe
+      VIBE_CLI_RELEASE=1 source "$ROOT_DIR/scripts/ensure_native_cli.sh"
+      ;;
+    debug)
+      source "$ROOT_DIR/scripts/ensure_native_cli.sh"
       ;;
     skip)
       ;;
@@ -35,6 +27,11 @@ build_cli_if_needed() {
       exit 1
       ;;
   esac
+  CLI_BIN="${VIBE_CLI_BIN:-$ROOT_DIR/_build/native/debug/build/cmd/vibe/vibe.exe}"
+fi
+
+build_cli_if_needed() {
+  : # handled by ensure_native_cli.sh above
 }
 
 run_cmd() {

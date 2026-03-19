@@ -696,7 +696,21 @@ fn scan_strings_pat(ctx : CodegenCtx, pat : @core.Pat) -> Unit {
 ///|
 fn require_heap(ctx : CodegenCtx) -> Unit raise WasmGenError {
   if ctx.heap_local < 0 {
-    raise WasmGenError::Unsupported("heap not initialized")
+    // Lazy heap initialization: allocate heap_local on first demand.
+    // This handles cases where scan_needs/needs_heap_block didn't
+    // detect the requirement (e.g., prelude builtins called transitively).
+    ctx.need_heap = true
+    ctx.heap_local = ctx.local_count
+    ctx.local_count += 1
+    ctx.local_types.push(ValueKind::I32)
+    ctx.heap_synced = false
+    // Also ensure heap_global is set (build_module needs it for global section)
+    if not(ctx.use_heap_global) {
+      ctx.use_heap_global = true
+      // In linked mode, __heap_ptr is imported global index 0.
+      // Otherwise, it'll be global index 0 in the defined globals section.
+      ctx.heap_global = 0
+    }
   }
 }
 
