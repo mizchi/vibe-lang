@@ -1,0 +1,71 @@
+// Comparison: imperative mut vs effect for business logic with external calls
+//
+// Scenario: process user registration
+// - validate input
+// - check if user exists (DB)
+// - hash password (crypto)
+// - save user (DB)
+// - send welcome email (IO)
+// - return user ID
+
+// === Original: imperative with let mut for error tracking ===
+let register_imperative = (name: String, email: String) -> Int {
+  // Simulate: all "external" calls are hardcoded
+  let mut error = ""
+  let mut user_id = 0
+
+  // validate
+  if String::length(name) == 0 {
+    error = "name required"
+  }
+
+  // check exists (simulated DB call)
+  if String::length(error) == 0 {
+    let exists = false  // hardcoded
+    if exists {
+      error = "user exists"
+    }
+  }
+
+  // save (simulated)
+  if String::length(error) == 0 {
+    user_id = 42
+  }
+
+  // result
+  if String::length(error) > 0 { -1 } else { user_id }
+}
+
+// === Effect: each external call is an effect ===
+effect Validate { CheckName(String) -> Bool }
+effect UserDb { Exists(String) -> Bool; Save(String, String) -> Int }
+
+let register_effect = () -> Int {
+  handle {
+    let name = "alice"
+    let email = "alice@example.com"
+    let valid = perform Validate::CheckName(name)
+    if valid {
+      let exists = perform UserDb::Exists(email)
+      if exists {
+        -1
+      } else {
+        perform UserDb::Save(name, email)
+      }
+    } else {
+      -1
+    }
+  } {
+    Validate::CheckName(_name) => resume(true),
+    UserDb::Exists(_email) => resume(false),
+    UserDb::Save(_name, _email) => resume(42)
+  }
+}
+
+// Both return 42
+let r1 = register_imperative("alice", "alice@example.com")
+let r2 = register_effect()
+r1 + r2
+
+__DATA__
+{"error_contains": "Bool"}
