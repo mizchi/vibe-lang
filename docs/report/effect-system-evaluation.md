@@ -8,6 +8,7 @@ vibe の代数的エフェクトシステムを4つの理論的パターンで�
 |---------|------|------|
 | Row polymorphism | **動作** | checker + codegen 両方で pass |
 | Stateful handler | **部分的** | handler 内 mutable 不可、外部 scope で workaround |
+| First-class continuation | **動作** | CPS 変換、accumulate pattern 検証済 |
 | Multi-shot continuation | **workaround** | single-shot のみ、手動で2回 handle |
 | First-class continuation | **未対応** | WASM stack switching 必要 |
 
