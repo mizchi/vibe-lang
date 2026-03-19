@@ -279,15 +279,8 @@ fn reh_parse_effect_arm(arm : @core.MatchArm) -> EffectHandler? {
     (param_names, "")
   }
   // Expr must be Call("__resume", [val]) or any expr
-  let resume_expr = match arm.expr {
-    @core.Expr::Call(name="__resume", args~, ..) =>
-      if args.length() == 1 {
-        args[0].expr
-      } else {
-        arm.expr
-      }
-    other => other
-  }
+  // Also handle Block where last stmt is resume(val)
+  let resume_expr = reh_extract_resume_expr(arm.expr)
   Some(EffectHandler::{
     key,
     param_names: effective_params,
@@ -296,6 +289,49 @@ fn reh_parse_effect_arm(arm : @core.MatchArm) -> EffectHandler? {
     continuation_name: cont_name,
     raw_expr: arm.expr,
   })
+}
+
+///|
+/// Extract resume expression from handler arm body.
+/// Handles: `resume(val)`, `{ stmts...; resume(val) }`, or returns expr as-is.
+fn reh_extract_resume_expr(expr : @core.Expr) -> @core.Expr {
+  match expr {
+    @core.Expr::Call(name="__resume", args~, ..) =>
+      if args.length() == 1 {
+        args[0].expr
+      } else {
+        expr
+      }
+    @core.Expr::Block(body~, span~) => {
+      // Check if last statement is Expr(Call("__resume", [val]))
+      let stmts = body.stmts
+      if stmts.length() > 0 {
+        let last = stmts[stmts.length() - 1]
+        match last {
+          @core.Stmt::Expr(expr=@core.Expr::Call(name="__resume", args~, ..), ..) =>
+            if args.length() == 1 {
+              // Replace last stmt with just the resume arg value
+              let new_stmts : Array[@core.Stmt] = []
+              for i = 0; i < stmts.length() - 1; i = i + 1 {
+                new_stmts.push(stmts[i])
+              }
+              let last_span = last.span()
+              new_stmts.push(@core.Stmt::Expr(expr=args[0].expr, span=last_span))
+              @core.Expr::Block(
+                body=@core.Module::{ stmts: new_stmts },
+                span~,
+              )
+            } else {
+              expr
+            }
+          _ => expr
+        }
+      } else {
+        expr
+      }
+    }
+    _ => expr
+  }
 }
 
 ///|
@@ -930,8 +966,91 @@ fn reh_build_cps_call(
   bindings.push(
     @core.Stmt::Let(rec=false, name=handler.continuation_name, expr=k_fn, span~),
   )
-  bindings.push(@core.Stmt::Expr(expr=handler.raw_expr, span~))
+  // Rewrite __resume → k (continuation name) in the handler body
+  let rewritten_raw = reh_rewrite_resume_to_k(
+    handler.raw_expr,
+    handler.continuation_name,
+  )
+  bindings.push(@core.Stmt::Expr(expr=rewritten_raw, span~))
   @core.Expr::Block(body=@core.Module::{ stmts: bindings }, span~)
+}
+
+///|
+/// Rewrite Call("__resume", [val]) → Call(k_name, [val]) in an expression tree.
+fn reh_rewrite_resume_to_k(expr : @core.Expr, k_name : String) -> @core.Expr {
+  match expr {
+    @core.Expr::Call(name="__resume", type_args~, args~, span~) =>
+      @core.Expr::Call(
+        name=k_name,
+        type_args~,
+        args=args.map(fn(a) {
+          @core.CallArg::{
+            label: a.label,
+            expr: reh_rewrite_resume_to_k(a.expr, k_name),
+            span: a.span,
+          }
+        }),
+        span~,
+      )
+    @core.Expr::Block(body~, span~) =>
+      @core.Expr::Block(
+        body=@core.Module::{
+          stmts: body.stmts.map(fn(s) {
+            reh_rewrite_resume_to_k_stmt(s, k_name)
+          }),
+        },
+        span~,
+      )
+    @core.Expr::If(cond~, then_body~, else_body~, span~) =>
+      @core.Expr::If(
+        cond=reh_rewrite_resume_to_k(cond, k_name),
+        then_body=@core.Module::{
+          stmts: then_body.stmts.map(fn(s) {
+            reh_rewrite_resume_to_k_stmt(s, k_name)
+          }),
+        },
+        else_body=@core.Module::{
+          stmts: else_body.stmts.map(fn(s) {
+            reh_rewrite_resume_to_k_stmt(s, k_name)
+          }),
+        },
+        span~,
+      )
+    @core.Expr::Call(name~, type_args~, args~, span~) =>
+      @core.Expr::Call(
+        name~,
+        type_args~,
+        args=args.map(fn(a) {
+          @core.CallArg::{
+            label: a.label,
+            expr: reh_rewrite_resume_to_k(a.expr, k_name),
+            span: a.span,
+          }
+        }),
+        span~,
+      )
+    _ => expr
+  }
+}
+
+///|
+fn reh_rewrite_resume_to_k_stmt(
+  stmt : @core.Stmt,
+  k_name : String,
+) -> @core.Stmt {
+  match stmt {
+    @core.Stmt::Let(rec~, name~, expr~, span~) =>
+      @core.Stmt::Let(rec~, name~, expr=reh_rewrite_resume_to_k(expr, k_name), span~)
+    @core.Stmt::Expr(expr~, span~) =>
+      @core.Stmt::Expr(expr=reh_rewrite_resume_to_k(expr, k_name), span~)
+    @core.Stmt::LetMut(name~, expr~, span~) =>
+      @core.Stmt::LetMut(
+        name~,
+        expr=reh_rewrite_resume_to_k(expr, k_name),
+        span~,
+      )
+    _ => stmt
+  }
 }
 
 ///|

@@ -342,14 +342,26 @@ fn match_arms_may_use_scoped_ref(arms : Array[@core.MatchArm]) -> Bool {
 ///|
 
 ///|
-fn register_effect_def(env : TypeEnv, stmt : @core.Stmt) -> Unit {
+fn register_effect_def(env : TypeEnv, stmt : @core.Stmt) -> Unit raise TypeError {
   let (name, params, ops) = match stmt {
     @core.Stmt::EffectDef(name~, params~, ops~, ..) => (name, params, ops)
     @core.Stmt::ExportEffectDef(name~, params~, ops~, ..) => (name, params, ops)
     _ => return
   }
   let ops_map : Map[String, @core.EffectOpSig] = {}
+  let seen_op_names : Map[String, Bool] = {}
   for op in ops {
+    if seen_op_names.contains(op.name) {
+      raise TypeError::BadTypeDef(
+        message="duplicate operation `" +
+          op.name +
+          "` in effect `" +
+          name +
+          "`",
+        span=op.span,
+      )
+    }
+    seen_op_names[op.name] = true
     let resolved_params : Array[@core.Type] = []
     for p in op.params {
       let normalized = try? normalize_type(env, p)

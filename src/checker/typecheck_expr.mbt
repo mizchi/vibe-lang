@@ -89,6 +89,7 @@ fn collect_perform_ops_expr(expr : @core.Expr, ops : Array[String]) -> Unit {
           _ => ()
         }
       }
+    @core.Expr::Raise(..) => ops.push("Error::Throw")
     @core.Expr::Call(args~, ..) =>
       for arg in args { collect_perform_ops_expr(arg.expr, ops) }
     _ => ()
@@ -1318,7 +1319,7 @@ fn type_expr_eff(
         }
         ensure_no_scoped_ref_return_escape(env, final_ret, span)
         // Merge inferred effects from body into the function's effect list
-        let final_effects = if scope_env.inferred_effects.size() > 0 {
+        let final_effects = if scope_env.inferred_effects.length() > 0 {
           let merged : Array[@core.EffectAtom] = []
           for e in resolved_effects {
             merged.push(e)
