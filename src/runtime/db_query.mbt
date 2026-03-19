@@ -913,6 +913,12 @@ pub fn VibeDb::new() -> VibeDb {
                             env.set_type_alias(target_name, type_alias)
                           None => ()
                         }
+                        // Import effect definition
+                        match imported_env.effect_defs.get(source_name) {
+                          Some(effect_def) =>
+                            env.effect_defs[target_name] = effect_def
+                          None => ()
+                        }
                       }
                       // Import trait
                       if import_item_accepts_trait(item) &&
@@ -1091,6 +1097,16 @@ pub fn VibeDb::new() -> VibeDb {
                               None => ()
                             }
                           }
+                        }
+                        None => ()
+                      }
+                    }
+                    // Import effect definition
+                    if import_item_accepts_type(item) {
+                      match imported_env.effect_defs.get(source_name) {
+                        Some(effect_def) => {
+                          env.effect_defs[target_name] = effect_def
+                          imported_any = true
                         }
                         None => ()
                       }

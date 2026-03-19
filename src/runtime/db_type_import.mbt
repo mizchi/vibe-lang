@@ -373,6 +373,11 @@ fn collect_exported_names(ast : @core.Module) -> Map[String, Bool] {
         defined[name] = true
         exports[name] = true
       }
+      @core.Stmt::ExportEffectDef(name~, ..) => {
+        defined[name] = true
+        exports[name] = true
+      }
+      @core.Stmt::EffectDef(name~, ..) => defined[name] = true
       @core.Stmt::Export(..) | @core.Stmt::ReExport(..) =>
         has_late_exports = true
       _ => ()

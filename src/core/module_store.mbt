@@ -322,6 +322,11 @@ pub fn extract_exports(ast : Module) -> Map[String, Stmt] {
         defined.set(name, stmt)
         exports.set(name, stmt)
       }
+      Stmt::ExportEffectDef(name~, ..) => {
+        defined.set(name, stmt)
+        exports.set(name, stmt)
+      }
+      Stmt::EffectDef(name~, ..) => defined.set(name, stmt)
       Stmt::ReExport(spec~, ..) =>
         for item in spec.items {
           exports.set(import_item_local_name(item), stmt)
