@@ -330,6 +330,55 @@ fn register_builtin_effects(env : TypeEnv) -> Unit {
     params: [],
     ops: proc_ops,
   }
+  // Env effect
+  let env_ops : Map[String, @core.EffectOpSig] = {}
+  env_ops["Get"] = @core.EffectOpSig::{
+    params: [@core.Type::String],
+    ret: @core.Type::String,
+  }
+  env_ops["ArgsLen"] = @core.EffectOpSig::{
+    params: [],
+    ret: @core.Type::Int,
+  }
+  env_ops["ArgsGet"] = @core.EffectOpSig::{
+    params: [@core.Type::Int],
+    ret: @core.Type::String,
+  }
+  env.effect_defs["Env"] = @core.EffectDef_::{
+    name: "Env",
+    params: [],
+    ops: env_ops,
+  }
+  // Stdout effect
+  let stdout_ops : Map[String, @core.EffectOpSig] = {}
+  stdout_ops["WriteChar"] = @core.EffectOpSig::{
+    params: [@core.Type::Int],
+    ret: @core.Type::Unit,
+  }
+  stdout_ops["WriteStream"] = @core.EffectOpSig::{
+    params: [@core.Type::String],
+    ret: @core.Type::Unit,
+  }
+  env.effect_defs["Stdout"] = @core.EffectDef_::{
+    name: "Stdout",
+    params: [],
+    ops: stdout_ops,
+  }
+  // Stdin effect
+  let stdin_ops : Map[String, @core.EffectOpSig] = {}
+  stdin_ops["ReadChar"] = @core.EffectOpSig::{
+    params: [],
+    ret: @core.Type::Int,
+  }
+  stdin_ops["ReadStream"] = @core.EffectOpSig::{
+    params: [@core.Type::Int],
+    ret: @core.Type::String,
+  }
+  env.effect_defs["Stdin"] = @core.EffectDef_::{
+    name: "Stdin",
+    params: [],
+    ops: stdin_ops,
+  }
 }
 
 ///|

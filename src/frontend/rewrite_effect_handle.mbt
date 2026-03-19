@@ -116,6 +116,34 @@ fn reh_rewrite_expr(expr : @core.Expr) -> @core.Expr {
     // Desugar: perform Process::Exec(cmd) → sh(cmd)
     @core.Expr::Perform(effect_name="Process", op_name="Exec", args~, span~) =>
       @core.Expr::Call(name="sh", type_args=[], args~, span~)
+    // Desugar: perform Env::Op → Env::builtin
+    @core.Expr::Perform(effect_name="Env", op_name~, args~, span~) => {
+      let builtin_name = match op_name {
+        "Get" => "Env::get"
+        "ArgsLen" => "Env::args_len"
+        "ArgsGet" => "Env::args_get"
+        _ => "Env::" + op_name
+      }
+      @core.Expr::Call(name=builtin_name, type_args=[], args~, span~)
+    }
+    // Desugar: perform Stdout::Op → builtin
+    @core.Expr::Perform(effect_name="Stdout", op_name~, args~, span~) => {
+      let builtin_name = match op_name {
+        "WriteChar" => "stdout_write_char"
+        "WriteStream" => "Stdout::write_stream"
+        _ => "Stdout::" + op_name
+      }
+      @core.Expr::Call(name=builtin_name, type_args=[], args~, span~)
+    }
+    // Desugar: perform Stdin::Op → builtin
+    @core.Expr::Perform(effect_name="Stdin", op_name~, args~, span~) => {
+      let builtin_name = match op_name {
+        "ReadChar" => "stdin_read_char"
+        "ReadStream" => "Stdin::read_stream"
+        _ => "Stdin::" + op_name
+      }
+      @core.Expr::Call(name=builtin_name, type_args=[], args~, span~)
+    }
     @core.Expr::Handle(body~, arms~, span~) =>
       reh_rewrite_handle(body, arms, span)
     @core.Expr::If(cond~, then_body~, else_body~, span~) =>
