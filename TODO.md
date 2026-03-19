@@ -82,7 +82,7 @@ debug linked build が動けば、ユーザーファイル変更時に **~10ms**
 ### 残タスク
 
 - [ ] **P3: minify_zlib 個別対策** — 6 テストで ~222s。#13 で tracked。小さな fixture で基本テスト、zlib.wasm は CI の重量ジョブのみ
-- [ ] vibe.exe test に linked build を適用 — test runner が各テストを linked compile すれば大幅高速化
+- [x] ~~vibe.exe test に linked build を適用~~ — 検証済み: batch compile は既に 1 回で済んでおり、linked build で削減できるのは compile の 270ms のみ (テスト全体 25s の 1%)。テスト時間の支配要因は wasmtime 上の WASM interpreter 実行 (~24s) であり、linked build では改善不可
 
 ## カバレッジ計測
 
