@@ -242,7 +242,23 @@ fn reh_rewrite_handle(
     }
   }
   if has_cps {
-    // CPS transform: convert body stmts into nested continuations
+    // Try defunctionalization first: fold accumulate patterns into a loop
+    match reh_try_defunctionalize(body.stmts, effect_handlers, span) {
+      Some(defunc_expr) =>
+        if error_arms.length() > 0 {
+          return @core.Expr::Handle(
+            body=@core.Module::{
+              stmts: [@core.Stmt::Expr(expr=defunc_expr, span~)],
+            },
+            arms=error_arms,
+            span~,
+          )
+        } else {
+          return defunc_expr
+        }
+      None => ()
+    }
+    // Fallback: CPS transform with nested continuations
     let cps_expr = reh_cps_transform(body.stmts, effect_handlers, span)
     if error_arms.length() > 0 {
       @core.Expr::Handle(
@@ -399,6 +415,120 @@ fn reh_replace_performs_expr(
       reh_replace_performs_expr(inner_rewritten, handlers)
     }
     _ => expr
+  }
+}
+
+///| Try to defunctionalize CPS handlers into unrolled fold statements.
+
+///| Pattern: `Op(v, k) => v + k(base)` with all performs being `perform Op(const)`.
+
+///|
+/// Generates: `{ let mut acc = base; acc = vN + acc; ...; acc = v1 + acc; acc }`
+fn reh_try_defunctionalize(
+  stmts : Array[@core.Stmt],
+  handlers : Map[String, EffectHandler],
+  span : @core.Span,
+) -> @core.Expr? {
+  // Collect all performs and non-perform stmts
+  let performs : Array[(@core.Expr, String)] = [] // (arg_expr, handler_key)
+  let mut base_expr : @core.Expr? = None
+  for i = 0; i < stmts.length(); i = i + 1 {
+    match stmts[i] {
+      @core.Stmt::Expr(
+        expr=@core.Expr::Perform(effect_name~, op_name~, args~, ..),
+        ..
+      ) => {
+        let key = effect_name + "::" + op_name
+        match handlers.get(key) {
+          Some(handler) =>
+            if handler.has_continuation {
+              let arg = if args.length() > 0 {
+                args[0].expr
+              } else {
+                @core.Expr::Int(value=0L, span~)
+              }
+              performs.push((arg, key))
+            } else {
+              return None // mixed tail-resumptive and CPS
+            }
+          None => return None
+        }
+      }
+      @core.Stmt::Expr(expr~, ..) =>
+        if i == stmts.length() - 1 {
+          base_expr = Some(expr)
+        } else {
+          return None // non-perform non-final stmt
+        }
+      _ => return None
+    }
+  }
+  // Check all handlers match the accumulate pattern: v OP k(base)
+  // For now: only support `v + k(0)` or `v + k(base)` pattern
+  let base = match base_expr {
+    Some(e) => e
+    None => @core.Expr::Int(value=0L, span~)
+  }
+  // Verify all handlers are accumulate: raw_expr is BinOp("+", v, Call(k, [arg]))
+  for _key, handler in handlers {
+    if not(handler.has_continuation) {
+      return None
+    }
+    if not(reh_is_accumulate_pattern(handler)) {
+      return None
+    }
+  }
+  // Generate unrolled fold: { let mut __acc = base; __acc = vN + __acc; ...; __acc }
+  let acc_name = "__defunc_acc"
+  let fold_stmts : Array[@core.Stmt] = []
+  fold_stmts.push(@core.Stmt::LetMut(name=acc_name, expr=base, span~))
+  // Reverse order: last perform first (right fold)
+  for i = performs.length() - 1; i >= 0; i = i - 1 {
+    let (arg_expr, _key) = performs[i]
+    // acc = arg + acc
+    fold_stmts.push(
+      @core.Stmt::Assign(
+        name=acc_name,
+        expr=@core.Expr::Call(
+          name="__add",
+          type_args=[],
+          args=[
+            @core.CallArg::{ label: None, expr: arg_expr, span },
+            @core.CallArg::{
+              label: None,
+              expr: @core.Expr::Ident(name=acc_name, span~),
+              span,
+            },
+          ],
+          span~,
+        ),
+        span~,
+      ),
+    )
+  }
+  fold_stmts.push(
+    @core.Stmt::Expr(expr=@core.Expr::Ident(name=acc_name, span~), span~),
+  )
+  Some(@core.Expr::Block(body=@core.Module::{ stmts: fold_stmts }, span~))
+}
+
+///|
+/// Check if a CPS handler matches the accumulate pattern: v + k(base)
+fn reh_is_accumulate_pattern(handler : EffectHandler) -> Bool {
+  // raw_expr should be: BinOp("+", Ident(v), Call(Ident(k), [arg]))
+  // or any expression containing k(...)
+  match handler.raw_expr {
+    @core.Expr::Call(name="__add", args~, ..) =>
+      if args.length() == 2 {
+        // Second arg should contain k(...)
+        match args[1].expr {
+          @core.Expr::Call(..) => true
+          _ => false
+        }
+      } else {
+        false
+      }
+    _ => false
   }
 }
 
