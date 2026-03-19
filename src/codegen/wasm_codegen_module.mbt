@@ -1241,16 +1241,30 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   // Format: newline-separated capability names.
   {
     let caps : Array[String] = []
-    if ctx.need_fs { caps.push("Fs") }
-    if ctx.need_http && ctx.http_host_imports { caps.push("Http") }
-    if ctx.need_socket { caps.push("Socket") }
-    if ctx.need_sh { caps.push("Process") }
+    if ctx.need_fs {
+      caps.push("Fs")
+    }
+    if ctx.need_http && ctx.http_host_imports {
+      caps.push("Http")
+    }
+    if ctx.need_socket {
+      caps.push("Socket")
+    }
+    if ctx.need_sh {
+      caps.push("Process")
+    }
     if ctx.need_env_get || ctx.need_env_args_len || ctx.need_env_args_get {
       caps.push("Env")
     }
-    if ctx.need_stdout_write_char { caps.push("Stdout") }
-    if ctx.need_stdin_read_char { caps.push("Stdin") }
-    if ctx.need_sleep { caps.push("Async") }
+    if ctx.need_stdout_write_char {
+      caps.push("Stdout")
+    }
+    if ctx.need_stdin_read_char {
+      caps.push("Stdin")
+    }
+    if ctx.need_sleep {
+      caps.push("Async")
+    }
     for key, _ in ctx.effect_op_imports {
       caps.push(key)
     }

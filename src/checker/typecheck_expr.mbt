@@ -1223,10 +1223,32 @@ fn type_expr_eff(
           None => body_ty
         }
         ensure_no_scoped_ref_return_escape(env, final_ret, span)
+        // Merge inferred effects from body into the function's effect list
+        let final_effects = if scope_env.inferred_effects.size() > 0 {
+          let merged : Array[@core.EffectAtom] = []
+          for e in resolved_effects {
+            merged.push(e)
+          }
+          for name, _ in scope_env.inferred_effects {
+            let mut already = false
+            for e in merged {
+              match e {
+                @core.EffectAtom::Const(n) => if n == name { already = true }
+                _ => ()
+              }
+            }
+            if not(already) {
+              merged.push(@core.EffectAtom::Const(name))
+            }
+          }
+          merged
+        } else {
+          resolved_effects
+        }
         @core.Type::Func(
           params=resolved_params,
           ret=final_ret,
-          effects=resolved_effects,
+          effects=final_effects,
         )
       }
     }
@@ -1339,16 +1361,21 @@ fn type_expr_eff(
         span~,
       )
     @core.Expr::Perform(effect_name~, op_name~, args~, span~) => {
-      // --- effect scope check: verify the specific effect is in scope ---
-      // User-defined effects require explicit `with { EffectName }` declaration.
-      // The generic `allow_effect` flag (from `with { Error }` etc.) does NOT
-      // grant access to user-defined effects — only named scope does.
+      // --- effect scope check with inference ---
+      // If explicit with { ... } is declared (closed scope), enforce it.
+      // If no with is declared (open/empty scope), infer the effect.
       if not(effect_scope_allows(effects, effect_name)) {
-        raise TypeError::EffectGuardNotSatisfied(
-          operation="perform " + effect_name + "::" + op_name,
-          missing_effect=Some(effect_name),
-          span~,
-        )
+        if allow_effect {
+          // Explicit with { ... } declared but this effect is not in it → error
+          raise TypeError::EffectGuardNotSatisfied(
+            operation="perform " + effect_name + "::" + op_name,
+            missing_effect=Some(effect_name),
+            span~,
+          )
+        } else {
+          // No with declared → infer the effect
+          env.inferred_effects[effect_name] = true
+        }
       }
       match env.effect_defs.get(effect_name) {
         Some(effect_def) =>

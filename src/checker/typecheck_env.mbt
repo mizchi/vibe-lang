@@ -68,6 +68,8 @@ pub struct TypeEnv {
   type_aliases : Map[String, TypeAlias]
   ctor_index : Map[String, CtorInfo]
   effect_defs : Map[String, @core.EffectDef_]
+  // Inferred effects: collected when perform is used without explicit with { }
+  inferred_effects : Map[String, Bool]
   traits : Map[String, TraitDefInfo]
   trait_impls : Map[String, Array[TraitImplDef]]
   fn_versions : Map[String, ApiSemver]
@@ -135,6 +137,7 @@ pub fn TypeEnv::new() -> TypeEnv {
     type_aliases: {},
     ctor_index: {},
     effect_defs: {},
+    inferred_effects: {},
     traits: {},
     trait_impls: {},
     fn_versions: {},
@@ -249,10 +252,7 @@ fn register_builtin_effects(env : TypeEnv) -> Unit {
     params: [@core.Type::String],
     ret: @core.Type::Bool,
   }
-  fs_ops["Getcwd"] = @core.EffectOpSig::{
-    params: [],
-    ret: @core.Type::String,
-  }
+  fs_ops["Getcwd"] = @core.EffectOpSig::{ params: [], ret: @core.Type::String }
   fs_ops["Chdir"] = @core.EffectOpSig::{
     params: [@core.Type::String],
     ret: @core.Type::Unit,
@@ -268,27 +268,44 @@ fn register_builtin_effects(env : TypeEnv) -> Unit {
   }
   // Http effect (requires with { Net } or with { Http })
   let http_ops : Map[String, @core.EffectOpSig] = {}
-  for pair in [
-    ("Listen", ([@core.Type::Int], @core.Type::Int)),
-    ("Accept", ([@core.Type::Int], @core.Type::Int)),
-    ("Close", ([@core.Type::Int], @core.Type::Unit)),
-    ("RequestMethod", ([@core.Type::Int], @core.Type::String)),
-    ("RequestUrl", ([@core.Type::Int], @core.Type::String)),
-    ("RequestHeader", ([@core.Type::Int, @core.Type::String], @core.Type::String)),
-    ("RequestBody", ([@core.Type::Int], @core.Type::String)),
-    ("ResponseStatus", ([@core.Type::Int], @core.Type::Int)),
-    ("ResponseHeader", ([@core.Type::Int, @core.Type::String], @core.Type::String)),
-    ("ResponseBody", ([@core.Type::Int], @core.Type::String)),
-  ] {
+  for
+    pair in [
+      ("Listen", ([@core.Type::Int], @core.Type::Int)),
+      ("Accept", ([@core.Type::Int], @core.Type::Int)),
+      ("Close", ([@core.Type::Int], @core.Type::Unit)),
+      ("RequestMethod", ([@core.Type::Int], @core.Type::String)),
+      ("RequestUrl", ([@core.Type::Int], @core.Type::String)),
+      (
+        "RequestHeader",
+        ([@core.Type::Int, @core.Type::String], @core.Type::String),
+      ),
+      ("RequestBody", ([@core.Type::Int], @core.Type::String)),
+      ("ResponseStatus", ([@core.Type::Int], @core.Type::Int)),
+      (
+        "ResponseHeader",
+        ([@core.Type::Int, @core.Type::String], @core.Type::String),
+      ),
+      ("ResponseBody", ([@core.Type::Int], @core.Type::String)),
+    ] {
     let (name, (params, ret)) = pair
     http_ops[name] = @core.EffectOpSig::{ params, ret }
   }
   http_ops["Request"] = @core.EffectOpSig::{
-    params: [@core.Type::String, @core.Type::String, @core.Type::String, @core.Type::String],
+    params: [
+      @core.Type::String,
+      @core.Type::String,
+      @core.Type::String,
+      @core.Type::String,
+    ],
     ret: @core.Type::Int,
   }
   http_ops["Respond"] = @core.EffectOpSig::{
-    params: [@core.Type::Int, @core.Type::Int, @core.Type::String, @core.Type::String],
+    params: [
+      @core.Type::Int,
+      @core.Type::Int,
+      @core.Type::String,
+      @core.Type::String,
+    ],
     ret: @core.Type::Unit,
   }
   env.effect_defs["Http"] = @core.EffectDef_::{
@@ -336,10 +353,7 @@ fn register_builtin_effects(env : TypeEnv) -> Unit {
     params: [@core.Type::String],
     ret: @core.Type::String,
   }
-  env_ops["ArgsLen"] = @core.EffectOpSig::{
-    params: [],
-    ret: @core.Type::Int,
-  }
+  env_ops["ArgsLen"] = @core.EffectOpSig::{ params: [], ret: @core.Type::Int }
   env_ops["ArgsGet"] = @core.EffectOpSig::{
     params: [@core.Type::Int],
     ret: @core.Type::String,
@@ -391,6 +405,7 @@ pub fn TypecheckSession::new_env(self : TypecheckSession) -> TypeEnv {
     type_aliases: {},
     ctor_index: {},
     effect_defs: {},
+    inferred_effects: {},
     traits: {},
     trait_impls: {},
     fn_versions: {},
