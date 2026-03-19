@@ -1939,7 +1939,8 @@ fn run_cmd_wasm_backend(entry_path : String) -> Result[WasmRunValue, String] {
   if not(force_release) {
     let resolved = @loader.resolve_entry_path(entry_path)
     let parent = @vibe_fs.parent_path(resolved)
-    let cache_dir = parent + "/.vibe/debug"
+    let (vibe_root, cache_key) = find_vibe_cache_root(resolved)
+    let cache_dir = vibe_root + "/debug/" + cache_key
     let imports_cache = cache_dir + "/linked_imports.txt"
     // If cache exists, try linked fast path
     if @os_fs.path_exists(imports_cache) {
@@ -6746,7 +6747,10 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
   // In debug linked mode, try fast path: load only user file (skip import I/O).
   let resolved_entry_for_parent = @loader.resolve_entry_path(entry)
   let parent = @vibe_fs.parent_path(resolved_entry_for_parent)
-  let cache_dir = parent + "/.vibe/debug"
+  // Hoist .vibe/debug cache to nearest parent .vibe directory.
+  // Cache key = relative path from .vibe root to avoid collisions.
+  let (vibe_root, cache_key) = find_vibe_cache_root(resolved_entry_for_parent)
+  let cache_dir = vibe_root + "/debug/" + cache_key
   let imports_cache_path = cache_dir + "/linked_imports.txt"
   // Check cache validity: imports cache + library .wasm + source hashes
   let hash_cache_path = cache_dir + "/source_hashes.txt"
@@ -6857,7 +6861,7 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
   for li in linked_imports {
     if not(module_names.contains(li.module_name)) {
       module_names[li.module_name] = true
-      let lib_path = parent + "/.vibe/debug/" + li.module_name + ".wasm"
+      let lib_path = cache_dir + "/" + li.module_name + ".wasm"
       preload_parts.push("--preload " + li.module_name + "=" + lib_path)
     }
   }
@@ -6926,10 +6930,80 @@ fn serialize_linked_imports_cache(
 ///|
 /// Spawn background `vibe build --debug` to create linked cache for next run.
 /// Only spawns if no cache exists yet. The background process is fire-and-forget.
+///|
+/// Find the nearest parent .vibe directory for cache hoisting.
+/// Returns (vibe_dir_path, cache_key) where cache_key is the relative path
+/// from the .vibe parent to the entry file (slug-ified for directory name).
+///
+/// Example: entry = "/repo/vibe/wasm/wasm_runtime/foo.vibe"
+///   - Found: /repo/vibe/.vibe
+///   - vibe_dir = "/repo/vibe/.vibe"
+///   - cache_key = "wasm_wasm_runtime_foo"
+///
+/// If no .vibe found, falls back to entry's parent directory.
+fn find_vibe_cache_root(entry_path : String) -> (String, String) {
+  let entry_dir = @vibe_fs.parent_path(entry_path)
+  // Extract basename without extension
+  let mut last_slash = -1
+  for i, c in entry_path {
+    if c == '/' {
+      last_slash = i
+    }
+  }
+  let file_name = if last_slash >= 0 {
+    entry_path.unsafe_substring(start=last_slash + 1, end=entry_path.length())
+  } else {
+    entry_path
+  }
+  let entry_basename = if file_name.has_suffix(".vibe") {
+    file_name.unsafe_substring(start=0, end=file_name.length() - 5)
+  } else {
+    file_name
+  }
+  // Walk up to find nearest .vibe directory with cache.json (project root).
+  // Sub-module .vibe dirs without cache.json are skipped.
+  let mut dir = entry_dir
+  for _ in 0..<20 {
+    let vibe_dir = dir + "/.vibe"
+    if @os_fs.path_exists(vibe_dir) &&
+      @os_fs.path_exists(vibe_dir + "/cache.json") {
+      // Compute relative path from dir to entry for cache key
+      let rel = if entry_dir.length() > dir.length() + 1 {
+        entry_dir.unsafe_substring(start=dir.length() + 1, end=entry_dir.length())
+      } else {
+        ""
+      }
+      // Slugify: replace / with _ and append basename
+      let mut key = ""
+      for c in rel {
+        if c == '/' {
+          key = key + "_"
+        } else {
+          key = key + Char::to_string(c)
+        }
+      }
+      if key.length() > 0 {
+        key = key + "_" + entry_basename
+      } else {
+        key = entry_basename
+      }
+      return (vibe_dir, key)
+    }
+    let parent = @vibe_fs.parent_path(dir)
+    if parent == dir || parent.length() == 0 {
+      break
+    }
+    dir = parent
+  }
+  // Fallback: use entry's parent .vibe directory
+  (entry_dir + "/.vibe", entry_basename)
+}
+
+///|
 fn maybe_create_linked_cache_background(entry_path : String) -> Unit {
   let resolved = @loader.resolve_entry_path(entry_path)
-  let parent = @vibe_fs.parent_path(resolved)
-  let cache_dir = parent + "/.vibe/debug"
+  let (vibe_root, cache_key) = find_vibe_cache_root(resolved)
+  let cache_dir = vibe_root + "/debug/" + cache_key
   let imports_cache = cache_dir + "/linked_imports.txt"
   if @os_fs.path_exists(imports_cache) {
     return // cache already exists
