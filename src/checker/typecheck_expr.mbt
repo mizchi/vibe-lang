@@ -561,7 +561,9 @@ fn type_resume_expr(
   }
   match env.handle_arm_resume_expected {
     Some(expected_ty) =>
-      if not(type_equal(env, expected_ty, arg_ty)) {
+      // Allow Int → Unit coercion (resume(0) for Unit-returning ops)
+      if not(type_equal(env, expected_ty, arg_ty)) &&
+        not(expected_ty is @core.Type::Unit) {
         raise TypeError::Mismatch(
           expected=expected_ty,
           actual=arg_ty,
@@ -573,7 +575,8 @@ fn type_resume_expr(
   }
   match env.handle_resume_types.get(effect_name) {
     Some(expected_ty) =>
-      if not(type_equal(env, expected_ty, arg_ty)) {
+      if not(type_equal(env, expected_ty, arg_ty)) &&
+        not(expected_ty is @core.Type::Unit) {
         raise TypeError::Mismatch(
           expected=expected_ty,
           actual=arg_ty,
@@ -891,7 +894,12 @@ fn type_expr_eff(
         let arm_effect_name = infer_handle_arm_effect_name(arm.pat)
         arm_env.handle_arm_effect_name = arm_effect_name
         arm_env.handle_arm_resume_expected = match arm_effect_name {
-          Some(effect_name) => inferred_resume_types.get(effect_name)
+          Some(name) =>
+            // Try qualified name (Effect::Op) first, then effect name
+            match inferred_resume_types.get(name) {
+              Some(ty) => Some(ty)
+              None => None
+            }
           None => None
         }
         bind_handle_arm_pat(arm_env, body_env, arm.pat)
@@ -1391,6 +1399,20 @@ fn type_expr_eff(
                 substitute_param_names(t, param_mapping)
               })
               let inst_ret = substitute_param_names(op_sig.ret, param_mapping)
+              // Arity check
+              if args.length() != inst_params.length() {
+                raise TypeError::BadTypeDef(
+                  message="perform " +
+                    effect_name +
+                    "::" +
+                    op_name +
+                    " expects " +
+                    inst_params.length().to_string() +
+                    " argument(s) but got " +
+                    args.length().to_string(),
+                  span~,
+                )
+              }
               // Type-check arguments against instantiated param types
               for i = 0; i < args.length(); i = i + 1 {
                 if i < inst_params.length() {
@@ -1411,7 +1433,18 @@ fn type_expr_eff(
                   }
                 }
               }
-              resolve_type(env, inst_ret)
+              let resolved_ret = resolve_type(env, inst_ret)
+              // Register resume type for handle arm type checking
+              // Key by qualified name (Effect::Op) so each op has its own resume type
+              if env.handle_resume_types_active {
+                let qualified = effect_name + "::" + op_name
+                match env.handle_resume_types.get(qualified) {
+                  Some(_) => ()
+                  None =>
+                    env.handle_resume_types[qualified] = resolved_ret
+                }
+              }
+              resolved_ret
             }
             None => {
               // List available operations for helpful error
