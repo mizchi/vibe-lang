@@ -1086,6 +1086,14 @@ fn AstParser::parse_effect_list(
         let tok = self.expect(name(), "effect")
         effects.push(effect_atom_from_name(tok.text()))
       }
+      // Check for row variable: | e
+      self.skip_trivia()
+      if self.peek_kind() == bit_or() {
+        let _ = self.bump()
+        self.skip_trivia()
+        let var_tok = self.expect(name(), "effect row variable")
+        effects.push(@core.EffectAtom::Var(var_tok.text()))
+      }
     }
     let _ = self.expect(rbrace(), "}")
   }

@@ -30,28 +30,54 @@ let tokens_match = (actual: Array[Token], expected: Array[Token]) -> Bool {
   }
 }
 
-let assert_string_interp_parts = (source: String, expected: Array[String]) -> Unit {
-  let tokens = lex(source)
-  match Array::get(tokens, 0) {
-    TStringInterp(parts) => {
-      assert(eq(Array::length(parts), Array::length(expected)))
-      let len = Array::length(expected)
-      let mut i = 0
-      while i < len {
-        assert(Array::get(parts, i) == Array::get(expected, i))
-        i = i + 1
-      }
-    },
-    _ => assert(false)
+let lex_match = (source: String, expected: Array[Token]) -> Bool {
+  handle {
+    let tokens = lex(source)
+    tokens_match(tokens, expected)
+  } {
+    Error(_) => false
+  }
+}
+
+let lex_len = (source: String) -> Int {
+  handle {
+    Array::length(lex(source))
+  } {
+    Error(_) => -1
+  }
+}
+
+let assert_string_interp_parts = (source: String, expected: Array[String]) -> Bool {
+  handle {
+    let tokens = lex(source)
+    match Array::get(tokens, 0) {
+      TStringInterp(parts) => {
+        if Array::length(parts) != Array::length(expected) {
+          false
+        } else {
+          let len = Array::length(expected)
+          let mut i = 0
+          let mut ok = true
+          while i < len {
+            if Array::get(parts, i) != Array::get(expected, i) {
+              ok = false
+            }
+            i = i + 1
+          }
+          ok
+        }
+      },
+      _ => false
+    }
+  } {
+    Error(_) => false
   }
 }
 
 //# Misc
 
 test "lex_simple_arithmetic" {
-  let tokens = lex("1 + 2 * 3")
-  assert(eq(Array::length(tokens), 6))
-  assert(tokens_match(tokens, [
+  assert(lex_match("1 + 2 * 3", [
     TInt(1),
     TPlus,
     TInt(2),
@@ -62,8 +88,7 @@ test "lex_simple_arithmetic" {
 }
 
 test "lex_identifiers_and_keywords" {
-  let tokens = lex("let x = fn y")
-  assert(tokens_match(tokens, [
+  assert(lex_match("let x = fn y", [
     TLet,
     TIdent("x"),
     TEq,
@@ -74,13 +99,11 @@ test "lex_identifiers_and_keywords" {
 }
 
 test "lex_comparison_operators" {
-  let tokens = lex("a == b != c < d <= e > f >= g")
-  assert(eq(Array::length(tokens), 14))
+  assert(eq(lex_len("a == b != c < d <= e > f >= g"), 14))
 }
 
 test "lex_logical_operators" {
-  let tokens = lex("a && b || !c")
-  assert(tokens_match(tokens, [
+  assert(lex_match("a && b || !c", [
     TIdent("a"),
     TAnd,
     TIdent("b"),
@@ -92,8 +115,7 @@ test "lex_logical_operators" {
 }
 
 test "lex_bitwise_operators" {
-  let tokens = lex("a & b | c ^ d << e >> f")
-  assert(tokens_match(tokens, [
+  assert(lex_match("a & b | c ^ d << e >> f", [
     TIdent("a"),
     TBitAnd,
     TIdent("b"),
@@ -110,8 +132,7 @@ test "lex_bitwise_operators" {
 }
 
 test "lex_arrows_and_pipe" {
-  let tokens = lex("x -> y => z |> w")
-  assert(tokens_match(tokens, [
+  assert(lex_match("x -> y => z |> w", [
     TIdent("x"),
     TThinArrow,
     TIdent("y"),
@@ -124,8 +145,7 @@ test "lex_arrows_and_pipe" {
 }
 
 test "lex_delimiters" {
-  let tokens = lex("( ) { } [ ] , ; . : ::")
-  assert(tokens_match(tokens, [
+  assert(lex_match("( ) { } [ ] , ; . : ::", [
     TLParen,
     TRParen,
     TLBrace,
@@ -142,31 +162,29 @@ test "lex_delimiters" {
 }
 
 test "lex_string_literal" {
-  let tokens = lex("\"hello world\"")
-  assert(tokens_match(tokens, [
+  assert(lex_match("\"hello world\"", [
     TString("hello world"),
     TEof
   ]))
 }
 
 test "lex_string_escape" {
-  let tokens = lex("\"a\\nb\\tc\"")
-  assert(tokens_match(tokens, [
+  assert(lex_match("\"a\\nb\\tc\"", [
     TString("a\nb\tc"),
     TEof
   ]))
 }
 
 test "lex_string_interp_basic" {
-  assert_string_interp_parts("\"hello \\{name}\"", [
+  assert(assert_string_interp_parts("\"hello \\{name}\"", [
     "hello ",
     "name",
     ""
-  ])
+  ]))
 }
 
 test "lex_string_interp_multiple" {
-  assert_string_interp_parts("\"\\{a} + \\{b} = \\{a + b}\"", [
+  assert(assert_string_interp_parts("\"\\{a} + \\{b} = \\{a + b}\"", [
     "",
     "a",
     " + ",
@@ -174,41 +192,37 @@ test "lex_string_interp_multiple" {
     " = ",
     "a + b",
     ""
-  ])
+  ]))
 }
 
 test "lex_string_interp_nested_braces" {
-  assert_string_interp_parts("\"value \\{if ok { left } else { right }}\"", [
+  assert(assert_string_interp_parts("\"value \\{if ok { left } else { right }}\"", [
     "value ",
     "if ok { left } else { right }",
     ""
-  ])
+  ]))
 }
 
 test "lex_integer" {
-  let tokens = lex("42")
-  assert(tokens_match(tokens, [
+  assert(lex_match("42", [
     TInt(42),
     TEof
   ]))
 }
 
 test "lex_hex_integer" {
-  let tokens = lex("0xFF")
-  assert(tokens_match(tokens, [
+  assert(lex_match("0xFF", [
     TInt(255),
     TEof
   ]))
 }
 
 test "lex_float" {
-  let tokens = lex("3.14")
-  assert(eq(Array::length(tokens), 2))
+  assert(eq(lex_len("3.14"), 2))
 }
 
 test "lex_comment_skip" {
-  let tokens = lex("a // comment\nb")
-  assert(tokens_match(tokens, [
+  assert(lex_match("a // comment\nb", [
     TIdent("a"),
     TIdent("b"),
     TEof
@@ -216,22 +230,19 @@ test "lex_comment_skip" {
 }
 
 test "lex_empty" {
-  let tokens = lex("")
-  assert(tokens_match(tokens, [
+  assert(lex_match("", [
     TEof
   ]))
 }
 
 test "lex_whitespace_only" {
-  let tokens = lex("   \n\t  ")
-  assert(tokens_match(tokens, [
+  assert(lex_match("   \n\t  ", [
     TEof
   ]))
 }
 
 test "lex_compound_assignment" {
-  let tokens = lex("x += 1")
-  assert(tokens_match(tokens, [
+  assert(lex_match("x += 1", [
     TIdent("x"),
     TPlusEq,
     TInt(1),
@@ -247,8 +258,7 @@ test "lex_keywords_all" {
 }
 
 test "lex_if_expression" {
-  let tokens = lex("if x > 0 { x } else { 0 }")
-  assert(eq(Array::length(tokens), 12))
+  assert(eq(lex_len("if x > 0 { x } else { 0 }"), 12))
 }
 
 test "lex_match_expression" {
@@ -256,8 +266,7 @@ test "lex_match_expression" {
 }
 
 test "lex_true_false_as_ident" {
-  let tokens = lex("true false")
-  assert(tokens_match(tokens, [
+  assert(lex_match("true false", [
     TIdent("true"),
     TIdent("false"),
     TEof
@@ -281,8 +290,7 @@ test "tokens_match_negative" {
 }
 
 test "lex_char_literal_and_escapes" {
-  let tokens = lex("'a' '\\n' '\\'' '\\\\' '\\0'")
-  assert(tokens_match(tokens, [
+  assert(lex_match("'a' '\\n' '\\'' '\\\\' '\\0'", [
     TInt(97),
     TInt(10),
     TInt(39),
@@ -298,8 +306,7 @@ test "lex_string_escape_extended" {
 }
 
 test "lex_more_operators" {
-  let tokens = lex("x -= 1 y *= 2 z /= 3 w %= 4 ~a #b ?c")
-  assert(tokens_match(tokens, [
+  assert(lex_match("x -= 1 y *= 2 z /= 3 w %= 4 ~a #b ?c", [
     TIdent("x"),
     TMinusEq,
     TInt(1),
@@ -327,8 +334,7 @@ test "lex_keyword_tail_set" {
 }
 
 test "lex_comment_eof" {
-  let tokens = lex("a // trailing comment")
-  assert(tokens_match(tokens, [
+  assert(lex_match("a // trailing comment", [
     TIdent("a"),
     TEof
   ]))
@@ -341,8 +347,7 @@ test "lex_error_paths" {
 }
 
 test "lex_dotdot" {
-  let tokens = lex("0..10")
-  assert(tokens_match(tokens, [
+  assert(lex_match("0..10", [
     TInt(0),
     TDotDot,
     TInt(10),
@@ -351,8 +356,7 @@ test "lex_dotdot" {
 }
 
 test "lex_negative_int" {
-  let tokens = lex("-42")
-  assert(tokens_match(tokens, [
+  assert(lex_match("-42", [
     TMinus,
     TInt(42),
     TEof
@@ -360,18 +364,15 @@ test "lex_negative_int" {
 }
 
 test "lex_multiline" {
-  let tokens = lex("let x = 1\nlet y = 2")
-  assert(eq(Array::length(tokens), 9))
+  assert(eq(lex_len("let x = 1\nlet y = 2"), 9))
 }
 
 test "lex_block_comment" {
-  let ok = lex_ok("/* block */ x")
-  assert(ok)
+  assert(lex_ok("/* block */ x"))
 }
 
 test "lex_double_colon_call" {
-  let tokens = lex("Foo::bar()")
-  assert(tokens_match(tokens, [
+  assert(lex_match("Foo::bar()", [
     TIdent("Foo"),
     TDoubleColon,
     TIdent("bar"),
@@ -382,81 +383,70 @@ test "lex_double_colon_call" {
 }
 
 test "lex_labeled_arg" {
-  let tokens = lex("f(~name: val)")
-  assert(eq(Array::length(tokens), 7))
+  assert(lex_ok("f(~name: val)"))
 }
 
 test "lex_spread" {
-  let ok = lex_ok("[..arr, 1]")
-  assert(ok)
+  assert(lex_ok("[..arr, 1]"))
 }
 
 test "lex_hex_upper_prefix" {
-  let tokens = lex("0X1A")
-  assert(tokens_match(tokens, [
+  assert(lex_match("0X1A", [
     TInt(26),
     TEof
   ]))
 }
 
 test "lex_zero" {
-  let tokens = lex("0")
-  assert(tokens_match(tokens, [
+  assert(lex_match("0", [
     TInt(0),
     TEof
   ]))
 }
 
 test "lex_large_int" {
-  let ok = lex_ok("2305843009213693951")
-  assert(ok)
+  assert(lex_ok("2305843009213693951"))
 }
 
 test "lex_string_interp_empty_expr" {
-  assert_string_interp_parts("\"before \\{x} after\"", [
+  assert(assert_string_interp_parts("\"before \\{x} after\"", [
     "before ",
     "x",
     " after"
-  ])
+  ]))
 }
 
 //# Misc — Lexer edge case coverage
 
 test "lex_raw_string_basic" {
-  let tokens = lex("r\"hello\\nworld\"")
-  assert(tokens_match(tokens, [
+  assert(lex_match("r\"hello\\nworld\"", [
     TString("hello\\nworld"),
     TEof
   ]))
 }
 
 test "lex_raw_string_empty" {
-  let tokens = lex("r\"\"")
-  assert(tokens_match(tokens, [
+  assert(lex_match("r\"\"", [
     TString(""),
     TEof
   ]))
 }
 
 test "lex_raw_identifier" {
-  let tokens = lex("r#match")
-  assert(tokens_match(tokens, [
+  assert(lex_match("r#match", [
     TIdent("match"),
     TEof
   ]))
 }
 
 test "lex_raw_identifier_let" {
-  let tokens = lex("r#let")
-  assert(tokens_match(tokens, [
+  assert(lex_match("r#let", [
     TIdent("let"),
     TEof
   ]))
 }
 
 test "lex_float_with_f_suffix" {
-  let tokens = lex("3.14f")
-  assert(eq(Array::length(tokens), 2))
   assert(lex_ok("3.14f"))
 }
 
@@ -465,24 +455,21 @@ test "lex_float_without_suffix" {
 }
 
 test "lex_char_null_escape" {
-  let tokens = lex("'\\0'")
-  assert(tokens_match(tokens, [
+  assert(lex_match("'\\0'", [
     TInt(0),
     TEof
   ]))
 }
 
 test "lex_char_tab_escape" {
-  let tokens = lex("'\\t'")
-  assert(tokens_match(tokens, [
+  assert(lex_match("'\\t'", [
     TInt(9),
     TEof
   ]))
 }
 
 test "lex_char_carriage_return" {
-  let tokens = lex("'\\r'")
-  assert(tokens_match(tokens, [
+  assert(lex_match("'\\r'", [
     TInt(13),
     TEof
   ]))
@@ -493,8 +480,7 @@ test "lex_string_null_escape" {
 }
 
 test "lex_hex_mixed_case" {
-  let tokens = lex("0xAbCd")
-  assert(tokens_match(tokens, [
+  assert(lex_match("0xAbCd", [
     TInt(43981),
     TEof
   ]))
@@ -505,24 +491,21 @@ test "lex_hex_error_no_digits" {
 }
 
 test "lex_consecutive_comments" {
-  let tokens = lex("// first\n// second\nx")
-  assert(tokens_match(tokens, [
+  assert(lex_match("// first\n// second\nx", [
     TIdent("x"),
     TEof
   ]))
 }
 
 test "lex_comment_before_code" {
-  let tokens = lex("// comment\n42")
-  assert(tokens_match(tokens, [
+  assert(lex_match("// comment\n42", [
     TInt(42),
     TEof
   ]))
 }
 
 test "lex_alias_identifier" {
-  let tokens = lex("@mymod")
-  assert(tokens_match(tokens, [
+  assert(lex_match("@mymod", [
     TIdent("@mymod"),
     TEof
   ]))
@@ -541,15 +524,13 @@ test "lex_string_interp_paren" {
 }
 
 test "lex_empty_input" {
-  let tokens = lex("")
-  assert(tokens_match(tokens, [
+  assert(lex_match("", [
     TEof
   ]))
 }
 
 test "lex_single_char_input" {
-  let tokens = lex("x")
-  assert(tokens_match(tokens, [
+  assert(lex_match("x", [
     TIdent("x"),
     TEof
   ]))
