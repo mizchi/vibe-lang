@@ -1811,7 +1811,137 @@ fn compile_closure_payload_cmd(args : Array[String]) -> Unit {
 }
 
 ///|
+/// Fast linked run: reuse cached library .wasm, compile only user code.
+fn run_cmd_wasm_linked(
+  entry_path : String,
+  resolved : String,
+  parent : String,
+  cache_dir : String,
+) -> Result[WasmRunValue, String] {
+  let _ = entry_path
+  // Read cached linked imports
+  let imports_cache = cache_dir + "/linked_imports.txt"
+  let cached_text = @os_fs.read_file_to_string(imports_cache) catch {
+    _ => return Err("read cache failed")
+  }
+  let cached_imports = parse_linked_imports_cache(cached_text)
+  if cached_imports.length() == 0 {
+    return Err("empty linked imports")
+  }
+  // Check source hashes
+  let hash_cache = cache_dir + "/source_hashes.txt"
+  if @os_fs.path_exists(hash_cache) {
+    let hash_text = @os_fs.read_file_to_string(hash_cache) catch { _ => "" }
+    let saved = parse_source_hash_cache(hash_text)
+    for path, saved_hash in saved {
+      let src = @os_fs.read_file_to_string(path) catch { _ => "" }
+      if src.length() > 0 {
+        let h = @vibe_core.content_address_hash_string(src)
+        if h != saved_hash {
+          return Err("source changed")
+        }
+      }
+    }
+  }
+  // Verify all library .wasm exist
+  let module_names : Map[String, Bool] = {}
+  for li in cached_imports {
+    if not(module_names.contains(li.module_name)) {
+      module_names[li.module_name] = true
+      let lib_path = cache_dir + "/" + li.module_name + ".wasm"
+      if not(@os_fs.path_exists(lib_path)) {
+        return Err("missing library")
+      }
+    }
+  }
+  // Compile user code only
+  let source = @os_fs.read_file_to_string(resolved) catch {
+    e => return Err(e.to_string())
+  }
+  let raw_ast = @parser.parse_ast(source) catch {
+    e => return Err(e.to_string())
+  }
+  let desugared = @frontend.desugar_method_calls(raw_ast, {})
+  let ast = @frontend.rewrite_effect_handles(desugared)
+  let codegen_linked : Array[(String, String, Int, Int)] = []
+  for li in cached_imports {
+    codegen_linked.push((li.module_name, li.func_name, li.param_count, li.return_count))
+  }
+  let (bundled, _) = @runtime.bundle_for_wasm_linked_with_imports(
+    ast, cached_imports,
+  )
+  let wasm_bytes = @runtime_compile.emit_wasm_with_linked_imports(
+    bundled, codegen_linked,
+  ) catch {
+    e => return Err(e.to_string())
+  }
+  // Write user wasm
+  let stamp = @env.now().to_string() + "_" + vibe_getpid().to_string()
+  let wasm_path = parent + "/.vibe_run_linked_" + stamp + ".wasm"
+  @os_fs.write_bytes_to_file(wasm_path, wasm_bytes) catch {
+    e => return Err(e.to_string())
+  }
+  // Build preload args and run
+  let runner = match resolve_bench_wasm_runner(resolved) {
+    Ok(v) => v
+    Err(err) => {
+      remove_file_if_exists(wasm_path)
+      return Err(err)
+    }
+  }
+  let mut cmd = build_wasmtime_invoke_command(runner, wasm_path, "_start")
+  let seen : Map[String, Bool] = {}
+  for li in cached_imports {
+    if not(seen.contains(li.module_name)) {
+      seen[li.module_name] = true
+      let lib_path = cache_dir + "/" + li.module_name + ".wasm"
+      cmd = shell_quote_command_arg(runner.wasmtime_bin)
+      for flag in runner.wasm_flags {
+        cmd = cmd + " -W " + shell_quote_command_arg(flag)
+      }
+      for flag in runner.wasi_flags {
+        cmd = cmd + " -S " + shell_quote_command_arg(flag)
+      }
+      cmd = cmd + " --preload " + shell_quote_command_arg(li.module_name) + "=" + shell_quote_command_arg(lib_path)
+      cmd = cmd + " --invoke _start " + shell_quote_command_arg(wasm_path)
+    }
+  }
+  let out_path = wasm_path + ".out"
+  let err_path = wasm_path + ".err"
+  let full_cmd = cmd + " >" + shell_quote_command_arg(out_path) + " 2>" + shell_quote_command_arg(err_path)
+  let status = c_system(system_command_bytes(full_cmd))
+  let stdout = @os_fs.read_file_to_string(out_path) catch { _ => "" }
+  let stderr = @os_fs.read_file_to_string(err_path) catch { _ => "" }
+  remove_file_if_exists(out_path)
+  remove_file_if_exists(err_path)
+  remove_file_if_exists(wasm_path)
+  if status != 0 {
+    let detail = wasmtime_failure_detail(stdout, stderr)
+    return Err("linked run failed: " + detail)
+  }
+  let tagged = match parse_last_numeric_line_int64(stdout) {
+    Some(v) => v
+    None => return Err("linked run: missing numeric result")
+  }
+  match decode_tagged_wasm_run_value(tagged) {
+    Some(result) => Ok(result)
+    None => Err("linked run: unsupported tag: " + tagged.to_string())
+  }
+}
+
+///|
 fn run_cmd_wasm_backend(entry_path : String) -> Result[WasmRunValue, String] {
+  // Try linked build if cache exists (fast path)
+  let resolved = @loader.resolve_entry_path(entry_path)
+  let parent = @vibe_fs.parent_path(resolved)
+  let cache_dir = parent + "/.vibe/debug"
+  let imports_cache = cache_dir + "/linked_imports.txt"
+  if @os_fs.path_exists(imports_cache) {
+    match run_cmd_wasm_linked(entry_path, resolved, parent, cache_dir) {
+      Ok(v) => return Ok(v)
+      Err(_) => () // fall through to monolithic
+    }
+  }
   let (db, entry) = match @loader.load_db(entry_path) {
     Err(err) => return Err("load error: " + err)
     Ok(v) => v
