@@ -433,6 +433,24 @@ fn reh_cps_stmts(
 }
 
 ///|
+
+///|
+/// Global counter for generating unique spans in CPS expansion
+let cps_counter : Ref[Int] = Ref::new(0)
+
+///|
+/// Generate a unique span offset for CPS expansion
+fn cps_unique_span(base : @core.Span) -> @core.Span {
+  let c = cps_counter.val
+  cps_counter.val = c + 1
+  // Offset the span slightly to make each CPS expansion unique
+  @core.Span::{
+    start: base.start + 100000 + c * 100,
+    end: base.end + 100000 + c * 100,
+  }
+}
+
+///|
 fn reh_cps_expr(
   expr : @core.Expr,
   stmts : Array[@core.Stmt],
@@ -447,6 +465,7 @@ fn reh_cps_expr(
         Some(handler) =>
           if handler.has_continuation {
             let rest = reh_cps_stmts(stmts, next_idx, handlers, span)
+            let unique_span = cps_unique_span(span)
             let k_fn = @core.Expr::Fn(
               type_params=[],
               type_bounds={},
@@ -460,10 +479,12 @@ fn reh_cps_expr(
               ],
               ret=None,
               effects=[],
-              body=@core.Module::{ stmts: [@core.Stmt::Expr(expr=rest, span~)] },
-              span~,
+              body=@core.Module::{
+                stmts: [@core.Stmt::Expr(expr=rest, span=unique_span)],
+              },
+              span=unique_span,
             )
-            reh_build_cps_call(handler, args, k_fn, span)
+            reh_build_cps_call(handler, args, k_fn, unique_span)
           } else {
             let inlined = reh_inline_handler(handler, args, span)
             if next_idx >= stmts.length() {
@@ -532,6 +553,7 @@ fn reh_cps_let(
         Some(handler) =>
           if handler.has_continuation {
             let rest = reh_cps_stmts(stmts, next_idx, handlers, span)
+            let unique_span = cps_unique_span(span)
             let k_fn = @core.Expr::Fn(
               type_params=[],
               type_bounds={},
@@ -545,10 +567,12 @@ fn reh_cps_let(
               ],
               ret=None,
               effects=[],
-              body=@core.Module::{ stmts: [@core.Stmt::Expr(expr=rest, span~)] },
-              span~,
+              body=@core.Module::{
+                stmts: [@core.Stmt::Expr(expr=rest, span=unique_span)],
+              },
+              span=unique_span,
             )
-            reh_build_cps_call(handler, args, k_fn, span)
+            reh_build_cps_call(handler, args, k_fn, unique_span)
           } else {
             let rest = reh_cps_stmts(stmts, next_idx, handlers, span)
             @core.Expr::Block(
