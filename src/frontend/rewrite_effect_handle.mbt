@@ -480,17 +480,28 @@ fn reh_try_defunctionalize(
   }
   // Generate unrolled fold: { let mut __acc = base; __acc = vN + __acc; ...; __acc }
   let acc_name = "__defunc_acc"
+  // Detect the binary operation from the first handler (all must match)
+  let mut fold_op = "__add"
+  for _key, handler in handlers {
+    if handler.has_continuation {
+      match handler.raw_expr {
+        @core.Expr::Call(name~, ..) => fold_op = name
+        _ => ()
+      }
+      break
+    }
+  }
   let fold_stmts : Array[@core.Stmt] = []
   fold_stmts.push(@core.Stmt::LetMut(name=acc_name, expr=base, span~))
   // Reverse order: last perform first (right fold)
   for i = performs.length() - 1; i >= 0; i = i - 1 {
     let (arg_expr, _key) = performs[i]
-    // acc = arg + acc
+    // acc = op(arg, acc)
     fold_stmts.push(
       @core.Stmt::Assign(
         name=acc_name,
         expr=@core.Expr::Call(
-          name="__add",
+          name=fold_op,
           type_args=[],
           args=[
             @core.CallArg::{ label: None, expr: arg_expr, span },
@@ -513,18 +524,25 @@ fn reh_try_defunctionalize(
 }
 
 ///|
-/// Check if a CPS handler matches the accumulate pattern: v + k(base)
+/// Check if a CPS handler matches the accumulate pattern: v OP k(base)
+/// where v is the handler's first param (not a constant).
 fn reh_is_accumulate_pattern(handler : EffectHandler) -> Bool {
-  // raw_expr should be: BinOp("+", Ident(v), Call(Ident(k), [arg]))
-  // or any expression containing k(...)
+  if handler.param_names.length() == 0 {
+    return false
+  }
+  let v_name = handler.param_names[0]
   match handler.raw_expr {
-    @core.Expr::Call(name="__add", args~, ..) =>
-      if args.length() == 2 {
-        // Second arg should contain k(...)
-        match args[1].expr {
+    @core.Expr::Call(name~, args~, ..) =>
+      if (name == "__add" || name == "__mul") && args.length() == 2 {
+        let first_is_v = match args[0].expr {
+          @core.Expr::Ident(name=n, ..) => n == v_name
+          _ => false
+        }
+        let second_is_k = match args[1].expr {
           @core.Expr::Call(..) => true
           _ => false
         }
+        first_is_v && second_is_k
       } else {
         false
       }
