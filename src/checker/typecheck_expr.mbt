@@ -1335,6 +1335,7 @@ fn type_expr_eff(
         span,
         "throw",
       )
+      // throw always requires explicit with { Error } declaration
       require_effects(
         env,
         effects,
