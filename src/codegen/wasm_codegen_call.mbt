@@ -937,7 +937,12 @@ fn compile_call_by_name(
   // Without the arity check, a user variable named e.g. "mul" (1-param)
   // would shadow the builtin multiply operator "mul" (2-param) when the
   // core IR desugars `a * b` into `Call(name="mul", args=[a, b])`.
-  let is_user_fn = if ctx.fn_indices.contains(name) {
+  // Linked imports take priority over builtins (user's "add" should call
+  // the library function, not the arithmetic builtin).
+  let is_linked_import = ctx.linked_fn_imports.contains(name)
+  let is_user_fn = if is_linked_import {
+    true
+  } else if ctx.fn_indices.contains(name) {
     match ctx.fn_params.get(name) {
       Some(params) => args.length() == params.length()
       None => true
@@ -948,11 +953,8 @@ fn compile_call_by_name(
   if compile_call_builtin_pre_user(ctx, buf, name, args, is_user_fn) {
     return ()
   }
-  if is_user_fn {
-    compile_call_user_fn(ctx, buf, name, args)
-    return ()
-  }
-  // Linked imports: pre-compiled library functions (wasm import)
+  if is_linked_import {
+    // Linked imports: pre-compiled library functions (wasm import)
   match ctx.linked_fn_imports.get(name) {
     Some(import_idx) => {
       let return_count = match ctx.linked_fn_return_counts.get(name) {
@@ -1021,6 +1023,10 @@ fn compile_call_by_name(
       return ()
     }
     None => ()
+  }
+  } else if is_user_fn {
+    compile_call_user_fn(ctx, buf, name, args)
+    return ()
   }
   if compile_call_builtin_post_user(ctx, buf, name, args) {
     return ()

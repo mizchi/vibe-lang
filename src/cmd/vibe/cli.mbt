@@ -6596,25 +6596,46 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
   let parent = @vibe_fs.parent_path(resolved_entry_for_parent)
   let cache_dir = parent + "/.vibe/debug"
   let imports_cache_path = cache_dir + "/linked_imports.txt"
-  // Check cache validity: imports cache must exist AND all library .wasm must exist
+  // Check cache validity: imports cache + library .wasm + source hashes
+  let hash_cache_path = cache_dir + "/source_hashes.txt"
   let has_cache = if @os_fs.path_exists(imports_cache_path) {
-    // Verify library wasm files exist
     let cached_text = @os_fs.read_file_to_string(imports_cache_path) catch {
       _ => ""
     }
     let cached = parse_linked_imports_cache(cached_text)
     let module_names : Map[String, Bool] = {}
-    let mut all_exist = cached.length() > 0
+    let mut all_valid = cached.length() > 0
+    // Check library .wasm files exist
     for li in cached {
       if not(module_names.contains(li.module_name)) {
         module_names[li.module_name] = true
         let lib_path = cache_dir + "/" + li.module_name + ".wasm"
         if not(@os_fs.path_exists(lib_path)) {
-          all_exist = false
+          all_valid = false
         }
       }
     }
-    all_exist
+    // Check source hashes haven't changed
+    if all_valid && @os_fs.path_exists(hash_cache_path) {
+      let hash_text = @os_fs.read_file_to_string(hash_cache_path) catch {
+        _ => ""
+      }
+      let saved_hashes = parse_source_hash_cache(hash_text)
+      for path, saved_hash in saved_hashes {
+        let current_source = @os_fs.read_file_to_string(path) catch {
+          _ => ""
+        }
+        if current_source.length() > 0 {
+          let current_hash = @vibe_core.content_address_hash_string(
+            current_source,
+          )
+          if current_hash != saved_hash {
+            all_valid = false
+          }
+        }
+      }
+    }
+    all_valid
   } else {
     false
   }
@@ -6669,8 +6690,9 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
     @os_fs.write_string_to_file(imports_cache_path, cache_text) catch {
       _ => ()
     }
-    // Compile library modules
+    // Compile library modules and save source hashes
     save_library_modules(db, resolved_entry, imports, cache_dir)
+    save_source_hashes(db, resolved_entry, cache_dir, hash_cache_path)
     (wasm, imports)
   }
   @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
@@ -6713,9 +6735,6 @@ fn save_library_modules(
       continue
     }
     let lib_wasm_path = cache_dir + "/" + mod_name + ".wasm"
-    if @os_fs.path_exists(lib_wasm_path) {
-      continue
-    }
     let lib_bytes = @runtime_compile.compile_module_wasm_with_opt_level(
       db, imp.path, no_dce=true, library_mode=true, debug_errors=true,
     ) catch {
@@ -6749,6 +6768,53 @@ fn serialize_linked_imports_cache(
     buf.write_char('\n')
   }
   buf.to_string()
+}
+
+///|
+fn save_source_hashes(
+  db : @runtime.VibeDb,
+  entry : String,
+  cache_dir : String,
+  hash_cache_path : String,
+) -> Unit {
+  let _ = cache_dir
+  let buf = StringBuilder::new()
+  let imports = db.imports(entry)
+  for imp in imports {
+    let source = match db.get_source(imp.path) {
+      Some(s) => s
+      None => ""
+    }
+    if source.length() > 0 {
+      let hash = @vibe_core.content_address_hash_string(source)
+      buf.write_string(imp.path)
+      buf.write_char('\t')
+      buf.write_string(hash)
+      buf.write_char('\n')
+    }
+  }
+  @os_fs.write_string_to_file(hash_cache_path, buf.to_string()) catch {
+    _ => ()
+  }
+}
+
+///|
+fn parse_source_hash_cache(text : String) -> Map[String, String] {
+  let out : Map[String, String] = {}
+  for line_view in text.split("\n") {
+    let line = line_view.to_string().trim().to_string()
+    if line.length() == 0 {
+      continue
+    }
+    let parts : Array[String] = []
+    for part_view in line.split("\t") {
+      parts.push(part_view.to_string())
+    }
+    if parts.length() >= 2 {
+      out[parts[0]] = parts[1]
+    }
+  }
+  out
 }
 
 ///|
