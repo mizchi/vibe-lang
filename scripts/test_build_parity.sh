@@ -173,6 +173,20 @@ apply(double, 10) + add_ten(5)
 EOF
   files+=("$WORK/hof/main.vibe")
 
+  # Cross-module string operations
+  mkdir -p "$WORK/str_cross"
+  cat > "$WORK/str_cross/lib.vibe" << 'EOF'
+export let greet = (name: String) -> String {
+  String::concat("Hello, ", name)
+}
+EOF
+  cat > "$WORK/str_cross/main.vibe" << 'EOF'
+import ./lib.vibe { greet }
+let msg = greet("World")
+String::length(msg)
+EOF
+  files+=("$WORK/str_cross/main.vibe")
+
   # With import (if available)
   if [[ -d "$ROOT_DIR/vibe/wasm/wasm_runtime" ]]; then
     cat > "$ROOT_DIR/vibe/wasm/wasm_runtime/.tmp_parity.vibe" << 'EOF'

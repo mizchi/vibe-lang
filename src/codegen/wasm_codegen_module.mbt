@@ -1302,9 +1302,9 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let seg_count = ctx.strings.segments.length()
   if seg_count > 0 {
     let data_sec = ByteBuf::new()
-    // In linked mode, offset data segments to avoid collision with library data.
-    // Library typically uses the first few KB; user data starts at 64KB.
-    let data_base_offset = if has_linked_imports { 65536 } else { 0 }
+    // In linked mode, ctx.strings.next_offset starts at 65536 (set before
+    // scan_strings in emit_module_with_coverage), so seg.offset values are
+    // already offset. No additional base needed.
     let use_packed = if seg_count > 1 {
       packed_data_content_len(ctx.strings) <
       segmented_data_content_len(ctx.strings)
@@ -1313,9 +1313,15 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     }
     if use_packed {
       let data = pack_string_segments(ctx.strings)
+      // Use first segment's offset (already includes linked offset)
+      let first_offset = if ctx.strings.segments.length() > 0 {
+        ctx.strings.segments[0].offset
+      } else {
+        0
+      }
       write_u32_leb(data_sec, 1)
       data_sec.push((0).to_byte())
-      emit_i32_const_raw(data_sec, data_base_offset)
+      emit_i32_const_raw(data_sec, first_offset)
       data_sec.push((11).to_byte())
       write_u32_leb(data_sec, data.length())
       data_sec.extend(data)
@@ -1323,7 +1329,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       write_u32_leb(data_sec, seg_count)
       for seg in ctx.strings.segments {
         data_sec.push((0).to_byte())
-        emit_i32_const_raw(data_sec, data_base_offset + seg.offset)
+        emit_i32_const_raw(data_sec, seg.offset)
         data_sec.push((11).to_byte())
         write_u32_leb(data_sec, seg.bytes.length())
         data_sec.extend(seg.bytes)
