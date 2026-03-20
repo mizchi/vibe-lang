@@ -45,11 +45,26 @@ ReExport チェーン解決、linked import alias re-export、func_import_count 
 
 ### 残タスク
 
-- [x] Phase 1: transitive import 対応 (ReExport チェーン解決)
+- [x] Phase 1: transitive import 対応 (ReExport チェーン解決) — MoonBit host
 - [ ] Phase 2: prelude 分離（builtin でない関数のみ library 化）
 - [ ] Phase 3: HOF 選択的 inline
+- [ ] Phase 4: selfhost codegen の linked build 対応（下記）
 - [ ] WASI dep の inline codegen バグ修正
 - [ ] wasmtime preload の WASI 解決
+
+### Phase 4: selfhost codegen の linked build 対応
+
+selfhost compiler (`vibe/compiler/`) の codegen は monolithic のみ。
+linked debug build を selfhost でも生成するには以下の移植が必要:
+
+- [ ] linked import の wasm import セクション生成 (`codegen/wasi/index.vibe`)
+- [ ] linked import の call 命令生成 (`func_import_count` にlinked分を加算)
+- [ ] linked import alias 伝搬 (`let x = linked_fn` → fn_indices 登録)
+- [ ] linked import alias の re-export (ExportLet + Ident → import re-export)
+- [ ] library mode: Let+Fn を全て export
+- [ ] linked bundler: dep を linked import vs inline に振り分け
+- [ ] ReExport チェーン解決 (型定義 inline + 関数 linked import)
+- [ ] save_library_modules 相当の CLI コマンド
 
 目標: cached `vibe run vibe/compiler/index.vibe` を ~100ms に。
 

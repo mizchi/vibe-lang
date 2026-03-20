@@ -90,6 +90,14 @@ let rec stmts_use_builtin = (stmts: Array[Stmt], fn_names: Array[String], target
 }
 
 export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_name: String, selfhost_srcs: Array[(String, String)]) -> Bytes with { Error } {
+  compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0))
+}
+
+// Core implementation with linked import support.
+// linked_imports: Array[(module_name, func_name, param_count, return_count)]
+export let compile_wasi_module_linked_impl = (stmts: Array[Stmt], entry_name: String, selfhost_srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)]) -> Bytes with { Error } {
   let fn_names_list = Array::slice([
     ""
   ], 0, 0)
@@ -424,6 +432,17 @@ export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_na
   } else {
     -1
   }
+  // Linked imports: pre-compiled library functions from other modules
+  let linked_import_indices = Array::slice([0], 0, 0)
+  let linked_import_names = Array::slice([""], 0, 0)
+  let mut li_i = 0
+  while li_i < Array::length(linked_imports) {
+    let (_, lfn_name, _, _) = Array::get(linked_imports, li_i)
+    Array::push(linked_import_indices, next_import_idx)
+    Array::push(linked_import_names, lfn_name)
+    next_import_idx = next_import_idx + 1
+    li_i = li_i + 1
+  }
   let num_imported_funcs = next_import_idx
   let print_int_idx = num_imported_funcs
   let print_str_idx = print_int_idx + 1
@@ -548,6 +567,16 @@ export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_na
     Array::push(fn_indices_list, bwasm_idx)
     Array::push(fn_returns_list, breturns)
     __bi2 = __bi2 + 1
+  }
+  // Register linked imports so resolve_func can find them
+  let mut li_reg = 0
+  while li_reg < Array::length(linked_imports) {
+    let (_, lfn_name, lparams, lreturns) = Array::get(linked_imports, li_reg)
+    Array::push(fn_names_list, lfn_name)
+    Array::push(fn_param_counts, lparams)
+    Array::push(fn_indices_list, Array::get(linked_import_indices, li_reg))
+    Array::push(fn_returns_list, lreturns)
+    li_reg = li_reg + 1
   }
   let num_base_types = 9
   let lt_w = LambdaTable::{
@@ -985,6 +1014,20 @@ export let compile_wasi_module_with_sources_impl = (stmts: Array[Stmt], entry_na
     emit_name(import_content, "fs_write_bytes")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 6)
+  }
+  // Linked imports: library functions from preloaded modules
+  let mut li_emit = 0
+  while li_emit < Array::length(linked_imports) {
+    let (lmod, lfn, lparams, _) = Array::get(linked_imports, li_emit)
+    emit_name(import_content, lmod)
+    emit_name(import_content, lfn)
+    bytebuf_push(import_content, 0)
+    // Selfhost ABI: (i64^N) -> i64 (no i32 env param)
+    // type 5 = () -> i64, type 3 = (i64) -> i64, type 4 = (i64,i64) -> i64
+    // type 7 = (i64,i64,i64) -> i64
+    let type_idx = if lparams == 0 { 5 } else if lparams == 1 { 3 } else if lparams == 2 { 4 } else { 8 }
+    leb128_encode_u32(import_content, type_idx)
+    li_emit = li_emit + 1
   }
   bytebuf_push_section(out, 2, import_content)
   let func_type_indices = Array::slice([
