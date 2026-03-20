@@ -226,19 +226,16 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     for _ in 0..<param_count {
       param_kinds.push(ValueKind::I64)
     }
-    if return_count > 1 {
+    let type_index = if return_count > 1 {
       let result_kinds : Array[ValueKind] = []
       for _ in 0..<return_count {
         result_kinds.push(ValueKind::I64)
       }
-      linked_import_type_indices.push(
-        ensure_sig_index(ctx, func_sig_with_env_multi(param_kinds, result_kinds)),
-      )
+      ensure_sig_index(ctx, func_sig_with_env_multi(param_kinds, result_kinds))
     } else {
-      linked_import_type_indices.push(
-        ensure_sig_index(ctx, func_sig_with_env(param_kinds, ValueKind::I64)),
-      )
+      ensure_sig_index(ctx, func_sig_with_env(param_kinds, ValueKind::I64))
     }
+    linked_import_type_indices.push(type_index)
   }
   let exception_type_count = if ctx.need_exceptions { 1 } else { 0 }
   let stack_switching_type_count = if ctx.need_stack_switching { 3 } else { 0 }
