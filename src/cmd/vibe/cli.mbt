@@ -1,6 +1,15 @@
 ///|
 /// CLI entry logic for vibe
 pub fn run(args : Array[String]) -> Unit {
+  let internal_parent_pid = internal_parent_pid_env()
+  match internal_parent_pid {
+    Some(parent_pid) => {
+      vibe_worker_process_group_init()
+      vibe_worker_parent_watchdog_start(parent_pid)
+    }
+    None => ()
+  }
+  defer vibe_worker_parent_watchdog_stop()
   let parsed = match parse_cli_dispatch_args(args) {
     Ok(v) => v
     Err(_) => {
@@ -3700,8 +3709,8 @@ fn parse_report_json_int(json : Json, key : String) -> Int {
 }
 
 ///|
-fn test_worker_parent_pid() -> Int? {
-  match @sys.get_env_var("VIBE_INTERNAL_TEST_PARENT_PID") {
+fn parse_internal_parent_pid_env(env_name : String) -> Int? {
+  match @sys.get_env_var(env_name) {
     Some(raw) => {
       let pid = @strconv.parse_int(raw) catch { _ => 0 }
       if pid > 1 {
@@ -3712,6 +3721,19 @@ fn test_worker_parent_pid() -> Int? {
     }
     None => None
   }
+}
+
+///|
+fn internal_parent_pid_env() -> Int? {
+  match parse_internal_parent_pid_env("VIBE_INTERNAL_PARENT_PID") {
+    Some(pid) => Some(pid)
+    None => parse_internal_parent_pid_env("VIBE_INTERNAL_TEST_PARENT_PID")
+  }
+}
+
+///|
+fn test_worker_parent_pid() -> Int? {
+  internal_parent_pid_env()
 }
 
 ///|
@@ -7280,7 +7302,10 @@ fn maybe_create_linked_cache_background(entry_path : String) -> Unit {
     Some(bin) if bin.has_suffix("vibe.exe") || bin.has_suffix("vibe") => bin
     _ => return // can't find self
   }
-  let cmd = shell_quote_command_arg(self_bin) +
+  let cmd = "VIBE_INTERNAL_PARENT_PID=" +
+    vibe_getpid().to_string() +
+    " " +
+    shell_quote_command_arg(self_bin) +
     " build --debug " +
     shell_quote_command_arg(entry_path) +
     " -o /dev/null >/dev/null 2>&1 &"

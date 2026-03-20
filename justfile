@@ -71,6 +71,7 @@ test:
     moon test -p mizchi/vibe/cmd/vibe_check_wasi --target wasm --warn-list '{{moon_warn_list}}'
     bash -c 'source scripts/ensure_native_cli.sh'
     bash scripts/test_parallel_cleanup_e2e.sh _build/native/debug/build/cmd/vibe/vibe.exe
+    bash scripts/test_internal_parent_watchdog_e2e.sh _build/native/debug/build/cmd/vibe/vibe.exe
     ulimit -n {{vibe_test_ulimit_n}} && _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async --jobs {{vibe_test_jobs}} examples vibe/prelude vibe/path vibe/io vibe/fs vibe/time vibe/random vibe/process vibe/shell vibe/x/rlm vibe/socket/socket_test.vibe vibe/http/http_test.vibe vibe/http/high_level_test.vibe vibe/collection vibe/json vibe/sha1 vibe/x vibe/x/args vibe/x/jsonschema vibe/wasm/wasm_parser vibe/wasm/wat_parser vibe/wasm/component_parser vibe/wasm/wat_encoder
 
 # Heavy wasm tests (wasm_opt ~4min, wasm_runtime ~1min) — run separately or in CI

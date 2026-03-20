@@ -2642,16 +2642,27 @@ test "normalize test jobs clamps extreme values" {
 
 ///|
 test "test worker parent pid parses env value safely" {
+  let prev_generic = @sys.get_env_var("VIBE_INTERNAL_PARENT_PID")
   let prev = @sys.get_env_var("VIBE_INTERNAL_TEST_PARENT_PID")
+  defer wbtest_restore_env_var("VIBE_INTERNAL_PARENT_PID", prev_generic)
   defer wbtest_restore_env_var("VIBE_INTERNAL_TEST_PARENT_PID", prev)
 
+  @sys.unset_env_var("VIBE_INTERNAL_PARENT_PID")
   @sys.unset_env_var("VIBE_INTERNAL_TEST_PARENT_PID")
   assert_eq(test_worker_parent_pid(), None)
 
+  @sys.set_env_var("VIBE_INTERNAL_PARENT_PID", "invalid")
+  assert_eq(test_worker_parent_pid(), None)
+
+  @sys.unset_env_var("VIBE_INTERNAL_PARENT_PID")
   @sys.set_env_var("VIBE_INTERNAL_TEST_PARENT_PID", "invalid")
   assert_eq(test_worker_parent_pid(), None)
 
   let pid = vibe_getpid()
+  @sys.set_env_var("VIBE_INTERNAL_PARENT_PID", pid.to_string())
+  assert_eq(test_worker_parent_pid(), Some(pid))
+
+  @sys.unset_env_var("VIBE_INTERNAL_PARENT_PID")
   @sys.set_env_var("VIBE_INTERNAL_TEST_PARENT_PID", pid.to_string())
   assert_eq(test_worker_parent_pid(), Some(pid))
 }
