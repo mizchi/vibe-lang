@@ -319,6 +319,7 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
     count += 12
   }
   count += ctx.effect_op_imports.length()
+  count += ctx.linked_fn_imports_list.length()
   count
 }
 
