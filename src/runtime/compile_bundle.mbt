@@ -185,16 +185,23 @@ pub fn bundle_for_wasm_linked(
       }
     }
   }
-  // Add prelude (still needed for builtins like array_map etc.)
-  let prelude = @checker.prelude_ast()
-  for stmt in prelude.stmts {
-    match stmt {
-      @core.Stmt::Let(name~, ..) =>
-        if not(existing_value_names.contains(name)) {
-          bundled_stmts.push(stmt)
-          existing_value_names[name] = true
-        }
-      _ => ()
+  // Prelude is split into core-candidate and builtin-dependent helpers.
+  // Both are still inlined for now; the split exists so core helpers can move
+  // to a precompiled module in a follow-up step without changing bundler shape.
+  for
+    prelude_stmts in [
+      @checker.prelude_core_value_stmts(),
+      @checker.prelude_builtin_value_stmts(),
+    ] {
+    for stmt in prelude_stmts {
+      match bundle_stmt_value_name(stmt) {
+        Some(name) =>
+          if not(existing_value_names.contains(name)) {
+            bundled_stmts.push(stmt)
+            existing_value_names[name] = true
+          }
+        None => ()
+      }
     }
   }
   // Add main module statements (excluding imports; resolve re-exports for types)
@@ -251,16 +258,21 @@ pub fn bundle_for_wasm_linked_with_imports(
   for li in linked_imports {
     existing_value_names[li.func_name] = true
   }
-  // Add prelude
-  let prelude = @checker.prelude_ast()
-  for stmt in prelude.stmts {
-    match stmt {
-      @core.Stmt::Let(name~, ..) =>
-        if not(existing_value_names.contains(name)) {
-          bundled_stmts.push(stmt)
-          existing_value_names[name] = true
-        }
-      _ => ()
+  // Keep bundler shape aligned with the prelude core/builtin split.
+  for
+    prelude_stmts in [
+      @checker.prelude_core_value_stmts(),
+      @checker.prelude_builtin_value_stmts(),
+    ] {
+    for stmt in prelude_stmts {
+      match bundle_stmt_value_name(stmt) {
+        Some(name) =>
+          if not(existing_value_names.contains(name)) {
+            bundled_stmts.push(stmt)
+            existing_value_names[name] = true
+          }
+        None => ()
+      }
     }
   }
   // Add extra type definitions from resolved ReExports
@@ -873,17 +885,20 @@ fn bundle_for_wasm_impl(
       None => ()
     }
   }
-  let prelude = @checker.prelude_ast()
-  for stmt in prelude.stmts {
-    match stmt {
-      // Include function definitions from prelude
-      @core.Stmt::Let(name~, ..) =>
-        if not(existing_value_names.contains(name)) {
-          bundled_stmts.push(stmt)
-          existing_value_names[name] = true
-        }
-      // Skip trait definitions and impls (not needed for codegen)
-      _ => ()
+  for
+    prelude_stmts in [
+      @checker.prelude_core_value_stmts(),
+      @checker.prelude_builtin_value_stmts(),
+    ] {
+    for stmt in prelude_stmts {
+      match bundle_stmt_value_name(stmt) {
+        Some(name) =>
+          if not(existing_value_names.contains(name)) {
+            bundled_stmts.push(stmt)
+            existing_value_names[name] = true
+          }
+        None => ()
+      }
     }
   }
   // Add main module statements (excluding imports and expanding re-exports)

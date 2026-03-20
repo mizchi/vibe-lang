@@ -348,6 +348,149 @@ let prelude_source : String =
   #|}
 
 ///|
+fn prelude_add_unbound_ref(
+  name : String,
+  bound : @core.WalkerScope,
+  refs : Map[String, Bool],
+) -> Unit {
+  if not(bound.contains(name)) {
+    refs[name] = true
+  }
+}
+
+///|
+fn prelude_backend_builtin_name(name : String) -> Bool {
+  @core.is_builtin_name(name) ||
+  name == "__add" ||
+  name == "__sub" ||
+  name == "__mul" ||
+  name == "__div" ||
+  name == "__eq" ||
+  name == "__lt" ||
+  name == "__assert" ||
+  name == "__to_string" ||
+  name == "Array::length" ||
+  name == "Array::get" ||
+  name == "Array::slice" ||
+  name == "ArrayBuilder::new" ||
+  name == "ArrayBuilder::push" ||
+  name == "ArrayBuilder::freeze" ||
+  name == "String::join" ||
+  name == "StringBuilder::new" ||
+  name == "StringBuilder::push" ||
+  name == "StringBuilder::freeze" ||
+  name == "Map::get" ||
+  name == "Map::has_key" ||
+  name == "Map::keys" ||
+  name == "MapBuilder::new" ||
+  name == "MapBuilder::set" ||
+  name == "MapBuilder::freeze"
+}
+
+///|
+fn prelude_stmt_value_name(stmt : @core.Stmt) -> String? {
+  match stmt {
+    @core.Stmt::Let(name~, ..)
+    | @core.Stmt::ExportLet(name~, ..)
+    | @core.Stmt::InternalExportLet(name~, ..)
+    | @core.Stmt::LetMut(name~, ..) => Some(name)
+    _ => None
+  }
+}
+
+///|
+fn prelude_partition_value_stmts(
+  ast : @core.Module,
+) -> (Array[@core.Stmt], Array[@core.Stmt]) {
+  let value_names : Map[String, Bool] = {}
+  let value_stmts : Array[@core.Stmt] = []
+  for stmt in ast.stmts {
+    match prelude_stmt_value_name(stmt) {
+      Some(name) => {
+        value_names[name] = true
+        value_stmts.push(stmt)
+      }
+      None => ()
+    }
+  }
+  let dep_graph : Map[String, Map[String, Bool]] = {}
+  let builtin_dependent : Map[String, Bool] = {}
+  for stmt in value_stmts {
+    match prelude_stmt_value_name(stmt) {
+      Some(name) => {
+        let refs : Map[String, Bool] = {}
+        @core.walk_stmt_refs(
+          stmt,
+          @core.WalkerScope::new(),
+          refs,
+          prelude_add_unbound_ref,
+        )
+        let deps : Map[String, Bool] = {}
+        let mut needs_builtin = false
+        for ref_name, _ in refs {
+          if value_names.contains(ref_name) {
+            deps[ref_name] = true
+          } else if prelude_backend_builtin_name(ref_name) {
+            needs_builtin = true
+          }
+        }
+        dep_graph[name] = deps
+        if needs_builtin {
+          builtin_dependent[name] = true
+        }
+      }
+      None => ()
+    }
+  }
+  let mut changed = true
+  while changed {
+    changed = false
+    for name, deps in dep_graph {
+      if builtin_dependent.contains(name) {
+        continue
+      }
+      let mut blocked = false
+      for dep_name, _ in deps {
+        if builtin_dependent.contains(dep_name) {
+          blocked = true
+          break
+        }
+      }
+      if blocked {
+        builtin_dependent[name] = true
+        changed = true
+      }
+    }
+  }
+  let core_stmts : Array[@core.Stmt] = []
+  let builtin_stmts : Array[@core.Stmt] = []
+  for stmt in value_stmts {
+    match prelude_stmt_value_name(stmt) {
+      Some(name) =>
+        if builtin_dependent.contains(name) {
+          builtin_stmts.push(stmt)
+        } else {
+          core_stmts.push(stmt)
+        }
+      None => ()
+    }
+  }
+  (core_stmts, builtin_stmts)
+}
+
+///|
+pub fn prelude_core_value_stmts() -> Array[@core.Stmt] {
+  let (core_stmts, _) = prelude_partition_value_stmts(prelude_ast())
+  core_stmts
+}
+
+///|
+pub fn prelude_builtin_value_stmts() -> Array[@core.Stmt] {
+  let (_, builtin_stmts) = prelude_partition_value_stmts(prelude_ast())
+  builtin_stmts
+}
+
+///|
 let cached_prelude_ast : Ref[@core.Module?] = @ref.new(None)
 
 ///|
