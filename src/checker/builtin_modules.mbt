@@ -84,6 +84,95 @@ let builtin_builtin_traits_source : String =
   #|
   #|impl Signed for Double
   #|
+  #|// WASM numeric primitives
+  #|impl Eq for i64
+  #|
+  #|impl Eq for u8
+  #|
+  #|impl Eq for u16
+  #|
+  #|impl Eq for u32
+  #|
+  #|impl Eq for u64
+  #|
+  #|impl Eq for i16
+  #|
+  #|impl Hash for i64
+  #|
+  #|impl Hash for u8
+  #|
+  #|impl Hash for u16
+  #|
+  #|impl Hash for u32
+  #|
+  #|impl Hash for u64
+  #|
+  #|impl Hash for i16
+  #|
+  #|impl Ord for i64
+  #|
+  #|impl Ord for u8
+  #|
+  #|impl Ord for u16
+  #|
+  #|impl Ord for u32
+  #|
+  #|impl Ord for u64
+  #|
+  #|impl Ord for i16
+  #|
+  #|impl Add for i64
+  #|
+  #|impl Add for u8
+  #|
+  #|impl Add for u16
+  #|
+  #|impl Add for u32
+  #|
+  #|impl Add for u64
+  #|
+  #|impl Add for i16
+  #|
+  #|impl Sub for i64
+  #|
+  #|impl Sub for u8
+  #|
+  #|impl Sub for u16
+  #|
+  #|impl Sub for u32
+  #|
+  #|impl Sub for u64
+  #|
+  #|impl Sub for i16
+  #|
+  #|impl Mul for i64
+  #|
+  #|impl Mul for u8
+  #|
+  #|impl Mul for u16
+  #|
+  #|impl Mul for u32
+  #|
+  #|impl Mul for u64
+  #|
+  #|impl Mul for i16
+  #|
+  #|impl Div for i64
+  #|
+  #|impl Div for u8
+  #|
+  #|impl Div for u16
+  #|
+  #|impl Div for u32
+  #|
+  #|impl Div for u64
+  #|
+  #|impl Div for i16
+  #|
+  #|impl Signed for i64
+  #|
+  #|impl Signed for i16
+  #|
   #|//# Functions
   #|
   #|export let cmp_eq = [T: Eq](a: T, b: T) -> Bool {
