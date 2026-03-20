@@ -62,9 +62,9 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 - [x] library mode: `library_mode=true` で全ユーザー関数 export
 - [x] linked bundler: `compile_file_wasi_linked` (dep 分離 + linked imports)
 - [x] library コンパイル: `compile_file_wasi_library` (dep を library .wasm に)
+- [x] ReExport チェーン解決 (`resolve_reexport_chain` — 型定義 inline + 関数 linked import)
 - [ ] linked import alias 伝搬 (`let x = linked_fn` → fn_indices 登録)
 - [ ] linked import alias の re-export (ExportLet + Ident → import re-export)
-- [ ] ReExport チェーン解決 (型定義 inline + 関数 linked import)
 - [ ] selfhost CLI で `build --debug` コマンド統合
 
 目標: cached `vibe run vibe/compiler/index.vibe` を ~100ms に。
