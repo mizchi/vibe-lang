@@ -15,7 +15,7 @@ Completed items are archived in `docs/DONE.md`.
 ### 残タスク
 
 - [ ] cross-module string concat の修正
-- [ ] `vibe build --debug` を selfhost compiler で使えるようにする（後述）
+- [x] `vibe build --debug` を selfhost compiler で使えるようにする（後述）
 - [ ] prelude を core module として事前コンパイル（builtin 関数の分離が必要）
 - [ ] typecheck のインクリメンタル化（ripple query 改修）
 
@@ -42,7 +42,7 @@ ReExport チェーン解決、linked import alias re-export、func_import_count 
 - [x] Phase 1: transitive import 対応 (ReExport チェーン解決) — MoonBit host
 - [ ] Phase 2: prelude 分離（builtin でない関数のみ library 化）
 - [ ] Phase 3: HOF 選択的 inline
-- [ ] Phase 4: selfhost codegen の linked build 対応（下記）
+- [x] Phase 4: selfhost codegen の linked build 対応（下記）
 - [x] WASI dep の inline codegen バグ修正
 - [x] wasmtime preload の WASI 解決
 
@@ -59,7 +59,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 - [x] ReExport チェーン解決 (`resolve_reexport_chain` — 型定義 inline + 関数 linked import)
 - [x] linked import alias 伝搬 (`let x = linked_fn` の capture/last 使用でも関数値化)
 - [x] linked import alias の re-export (ExportLet + Ident → import re-export)
-- [ ] selfhost CLI で `build --debug` コマンド統合
+- [x] selfhost CLI で `build --debug` コマンド統合
 
 目標: cached `vibe run vibe/compiler/index.vibe` を ~100ms に。
 

@@ -10,10 +10,18 @@ STAGE1_CORE_WASM="$OUT_DIR/index_stage1.wasm"
 INPUT_SOURCE="$OUT_DIR/core_env_input.vibe"
 OUTPUT_WASM="$OUT_DIR/core_env_output.wasm"
 OUTPUT_RUN_LOG="$OUT_DIR/core_output_run.log"
+DEBUG_LIB_SOURCE="$OUT_DIR/core_debug_lib.vibe"
+DEBUG_MAIN_SOURCE="$OUT_DIR/core_debug_main.vibe"
+DEBUG_OUTPUT_WASM="$OUT_DIR/core_debug_output.wasm"
+DEBUG_OUTPUT_RUN_LOG="$OUT_DIR/core_debug_output_run.log"
+DEBUG_OUTPUT_DIR="$OUT_DIR/core_debug_output.debug"
+DEBUG_LIB_WASM="$DEBUG_OUTPUT_DIR/core_debug_lib.wasm"
 ENTRY_NAME="answer"
 HOST_VIBE_EXE_RELEASE="$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
 HOST_VIBE_EXE_DEBUG="$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe"
 HOST_MODE="${VIBE_SELFHOST_CLI_CORE_HOST_MODE:-debug}"
+WASMTIME_RUN="$PROJECT_ROOT/scripts/wasmtime_run.sh"
+WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y}"
 
 run_with_timeout() {
   local timeout_sec="$1"
@@ -85,7 +93,9 @@ run_stage_capture_stdout() {
 }
 
 mkdir -p "$OUT_DIR"
-rm -f "$STAGE1_CORE_WASM" "$OUTPUT_WASM" "$OUTPUT_RUN_LOG"
+rm -f "$STAGE1_CORE_WASM" "$OUTPUT_WASM" "$OUTPUT_RUN_LOG" \
+  "$DEBUG_LIB_SOURCE" "$DEBUG_MAIN_SOURCE" "$DEBUG_OUTPUT_WASM" "$DEBUG_OUTPUT_RUN_LOG"
+rm -rf "$DEBUG_OUTPUT_DIR"
 
 if [ "$HOST_MODE" = "release" ] && [ -x "$HOST_VIBE_EXE_RELEASE" ]; then
   HOST_COMPILE_CMD=("$HOST_VIBE_EXE_RELEASE" compile --wasm --force-cabi-realloc)
@@ -132,6 +142,52 @@ fi
 
 if [ "$sample_result" != "42" ]; then
   echo "selfhost cli core gate failed: compiled sample returned '$sample_result' (expected 42)" >&2
+  exit 1
+fi
+
+cat >"$DEBUG_LIB_SOURCE" <<'EOF'
+export let helper = (a: Int, b: Int) -> Int { a + b }
+EOF
+
+cat >"$DEBUG_MAIN_SOURCE" <<'EOF'
+import ./core_debug_lib.vibe { helper }
+let answer = () -> Int { helper(19, 23) }
+EOF
+
+run_stage "stage1 core artifact -> linked debug wasm compile" \
+  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+  "$STAGE1_CORE_WASM" \
+  "${DEBUG_MAIN_SOURCE#$PROJECT_ROOT/}" \
+  "${DEBUG_OUTPUT_WASM#$PROJECT_ROOT/}" \
+  "$ENTRY_NAME" \
+  debug || exit $?
+
+if [ ! -f "$DEBUG_OUTPUT_WASM" ]; then
+  echo "selfhost cli core gate failed: linked debug wasm not produced" >&2
+  exit 1
+fi
+
+if [ ! -f "$DEBUG_LIB_WASM" ]; then
+  echo "selfhost cli core gate failed: linked debug library wasm not produced" >&2
+  exit 1
+fi
+
+run_stage "validate linked debug main wasm" wasm-tools validate "$DEBUG_OUTPUT_WASM" || exit $?
+run_stage "validate linked debug library wasm" wasm-tools validate "$DEBUG_LIB_WASM" || exit $?
+
+run_stage_capture_stdout "run linked debug wasm produced by selfhost core cli" \
+  "$DEBUG_OUTPUT_RUN_LOG" \
+  env VIBE_WASMTIME_WASM_FLAGS="$WASMTIME_WASM_FLAGS" \
+  "$WASMTIME_RUN" run --preload core_debug_lib="$DEBUG_LIB_WASM" --invoke _start "$DEBUG_OUTPUT_WASM" || exit $?
+
+debug_result="$(grep -E '^-?[0-9]+$' "$DEBUG_OUTPUT_RUN_LOG" | tail -n 1 || true)"
+if [ -z "$debug_result" ]; then
+  echo "selfhost cli core gate failed: linked debug sample returned no numeric result" >&2
+  exit 1
+fi
+
+if [ "$debug_result" != "42" ]; then
+  echo "selfhost cli core gate failed: linked debug sample returned '$debug_result' (expected 42)" >&2
   exit 1
 fi
 

@@ -1241,16 +1241,15 @@ let compile_call = (buf: Array[Int], callee: Expr, args: Array[Expr], local_name
       if fn_idx_in_list >= 0 {
         let fidx = Array::get(ctx.func_table.indices, fn_idx_in_list)
         let has_ret = Array::get(ctx.func_table.returns, fn_idx_in_list)
+        let needs_env = Array::get(ctx.func_table.needs_env, fn_idx_in_list)
         let mut nl = next_local
         let mut ci = 0
         while ci < Array::length(args) {
           nl = ce(buf, Array::get(args, ci), local_names, nl, ctx, ld)
           ci = ci + 1
         }
-        if ctx.func_offset > 0 {
-          if fidx >= ctx.func_offset {
-            emit_i64_const(buf, 0)
-          }
+        if needs_env {
+          emit_i64_const(buf, 0)
         }
         emit_call(buf, fidx)
         if has_ret == 0 {
@@ -2630,10 +2629,12 @@ export let compile_module_expr = (stmts: Array[Stmt]) -> Bytes with { Error } {
   } else {
     let fn_indices_list = fresh_int_array()
     let fn_returns_list = fresh_int_array()
+    let fn_needs_env_list = ArrayBuilder::freeze(ArrayBuilder::new())
     let mut fi = 0
     while fi < num_funcs {
       Array::push(fn_indices_list, fi)
       Array::push(fn_returns_list, 1)
+      Array::push(fn_needs_env_list, false)
       fi = fi + 1
     }
     let type_defs = fresh_int_array()
@@ -2683,7 +2684,11 @@ export let compile_module_expr = (stmts: Array[Stmt]) -> Bytes with { Error } {
       let empty_thunk_names = fresh_string_array()
       let compile_ctx = CompileCtx::{
         func_table: FuncTable::{
-          names: fn_names_list, indices: fn_indices_list, params: fn_param_counts, returns: fn_returns_list
+          names: fn_names_list,
+          indices: fn_indices_list,
+          params: fn_param_counts,
+          returns: fn_returns_list,
+          needs_env: fn_needs_env_list
         },
         str_table: StrTable::{
           strs: empty_strs, offsets: empty_offs, lengths: empty_lens

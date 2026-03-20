@@ -196,6 +196,10 @@ let contains_path = (visited: Array[String], path: String) -> Bool {
   found
 }
 
+let empty_stmt_array = () -> Array[Stmt] {
+  Array::slice([SExpr(EInt(0))], 0, 0)
+}
+
 // Recursively collect sources in dependency order (deps first)
 let rec collect_sources = (path: String, sources: Array[(String, String)], visited: Array[String]) -> Unit with { Error, Fs } {
   if contains_path(visited, path) { () }
@@ -221,9 +225,48 @@ let rec collect_sources = (path: String, sources: Array[(String, String)], visit
   }
 }
 
+let rec collect_merged_stmts_recursive = (
+  path: String,
+  merged: Array[Stmt],
+  visited: Array[String]
+) -> Unit with { Error, Fs } {
+  if contains_path(visited, path) { () }
+  else {
+    Array::push(visited, path)
+    let source = perform Fs::ReadFile(path)
+    let stmts = parse_program(lex(source))
+    let base_dir = dir_of_path(path)
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SImport(raw_path, _) => {
+          let resolved = resolve_import_path(base_dir, raw_path)
+          collect_merged_stmts_recursive(resolved, merged, visited)
+        },
+        SReExport(raw_path, _) => {
+          let resolved = resolve_import_path(base_dir, raw_path)
+          collect_merged_stmts_recursive(resolved, merged, visited)
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    let mut j = 0
+    while j < Array::length(stmts) {
+      match Array::get(stmts, j) {
+        SImport(_, _) => (),
+        SReExport(_, _) => (),
+        SAliasDecl(_, _) => (),
+        _ => Array::push(merged, Array::get(stmts, j))
+      }
+      j = j + 1
+    }
+  }
+}
+
 // Merge sources: parse each, strip SImport/SReExport, concatenate stmts
 let merge_sources = (sources: Array[(String, String)]) -> Array[Stmt] with { Error } {
-  let merged = ArrayBuilder::new()
+  let merged = Array::slice([SExpr(EInt(0))], 0, 0)
   let mut si = 0
   while si < Array::length(sources) {
     let (_, src) = Array::get(sources, si)
@@ -234,20 +277,19 @@ let merge_sources = (sources: Array[(String, String)]) -> Array[Stmt] with { Err
         SImport(_, _) => (),
         SReExport(_, _) => (),
         SAliasDecl(_, _) => (),
-        _ => ArrayBuilder::push(merged, Array::get(stmts, j))
+        _ => Array::push(merged, Array::get(stmts, j))
       }
       j = j + 1
     }
     si = si + 1
   }
-  ArrayBuilder::freeze(merged)
+  merged
 }
 
 export let compile_file_wasi_only = (entry_path: String, entry_name: String) -> Bytes with { Error, Fs } {
-  let sources = Array::slice([("", "")], 0, 0)
+  let stmts = empty_stmt_array()
   let visited = Array::slice([""], 0, 0)
-  collect_sources(entry_path, sources, visited)
-  let stmts = merge_sources(sources)
+  collect_merged_stmts_recursive(entry_path, stmts, visited)
   strip_generic_type_params(stmts)
   expand_interp_stmts(stmts)
   let _ = check_program(stmts)
@@ -353,13 +395,12 @@ let rec resolve_reexport_chain = (source_path: String, items: Array[(String, Opt
 }
 
 // Linked mode: direct deps become linked imports, not inlined.
-// Returns (entry_wasm, linked_imports) where linked_imports can be used
-// to compile library modules separately.
-export let compile_file_wasi_linked = (entry_path: String, entry_name: String) -> (Bytes, Array[(String, String, Int, Int)]) with { Error, Fs } {
-  // Collect all sources
-  let sources = Array::slice([("", "")], 0, 0)
-  let visited = Array::slice([""], 0, 0)
-  collect_sources(entry_path, sources, visited)
+// Returns (entry_wasm, linked_imports, linked_dep_specs) where linked_dep_specs
+// is Array[(module_name, dep_path)] and can be used to compile library modules.
+export let compile_file_wasi_linked_artifacts = (
+  entry_path: String,
+  entry_name: String
+) -> (Bytes, Array[(String, String, Int, Int)], Array[(String, String)]) with { Error, Fs } {
   // Identify direct deps of entry (first-level imports/re-exports)
   let entry_source = perform Fs::ReadFile(entry_path)
   let entry_stmts = parse_program(lex(entry_source))
@@ -389,6 +430,7 @@ export let compile_file_wasi_linked = (entry_path: String, entry_name: String) -
   // Build linked imports from dep export functions (including ReExport chains)
   let linked_imports = Array::slice([("", "", 0, 0)], 0, 0)
   let linked_dep_paths = Array::slice([""], 0, 0)
+  let linked_dep_specs = Array::slice([("", "")], 0, 0)
   let resolved_type_stmts = Array::slice([SExpr(EInt(0))], 0, 0)
   let mut di = 0
   while di < Array::length(dep_paths) {
@@ -422,53 +464,46 @@ export let compile_file_wasi_linked = (entry_path: String, entry_name: String) -
     }
     if has_linked {
       Array::push(linked_dep_paths, dep_path)
+      Array::push(linked_dep_specs, (module_name, dep_path))
     }
     di = di + 1
   }
-  // Merge only non-linked sources (exclude linked dep and their transitive deps)
-  let linked_sources = Array::slice([("", "")], 0, 0)
-  let mut si = 0
-  while si < Array::length(sources) {
-    let (spath, ssrc) = Array::get(sources, si)
-    let is_linked_dep = contains_path(linked_dep_paths, spath)
-    if !is_linked_dep && spath != entry_path {
-      // Check if this source is a transitive dep of a linked dep only
-      // For now, include all non-linked-dep sources (conservative)
-      Array::push(linked_sources, (spath, ssrc))
-    }
-    si = si + 1
-  }
-  // Add entry source last
-  Array::push(linked_sources, (entry_path, entry_source))
-  let merged_stmts = merge_sources(linked_sources)
-  // Prepend resolved type definitions from ReExport chains
-  let stmts = ArrayBuilder::new()
+  let stmts = empty_stmt_array()
   let mut rti = 0
   while rti < Array::length(resolved_type_stmts) {
-    ArrayBuilder::push(stmts, Array::get(resolved_type_stmts, rti))
+    Array::push(stmts, Array::get(resolved_type_stmts, rti))
     rti = rti + 1
   }
-  let mut msi = 0
-  while msi < Array::length(merged_stmts) {
-    ArrayBuilder::push(stmts, Array::get(merged_stmts, msi))
-    msi = msi + 1
+  let mut esi = 0
+  while esi < Array::length(entry_stmts) {
+    Array::push(stmts, Array::get(entry_stmts, esi))
+    esi = esi + 1
   }
-  let stmts = ArrayBuilder::freeze(stmts)
   strip_generic_type_params(stmts)
   expand_interp_stmts(stmts)
   let _ = check_program(stmts)
   let wasm = compile_wasi_module_linked_impl(stmts, entry_name, Array::slice([
     ("", "")
   ], 0, 0), linked_imports, false)
+  (wasm, linked_imports, linked_dep_specs)
+}
+
+export let compile_file_wasi_linked = (
+  entry_path: String,
+  entry_name: String
+) -> (Bytes, Array[(String, String, Int, Int)]) with { Error, Fs } {
+  let (wasm, linked_imports, _) = compile_file_wasi_linked_artifacts(
+    entry_path,
+    entry_name
+  )
   (wasm, linked_imports)
 }
 
 // Compile a dep module in library mode: export all user functions.
 export let compile_file_wasi_library = (dep_path: String) -> Bytes with { Error, Fs } {
-  let sources = Array::slice([("", "")], 0, 0)
+  let stmts = empty_stmt_array()
   let visited = Array::slice([""], 0, 0)
-  collect_sources(dep_path, sources, visited)
-  let stmts = merge_sources(sources)
+  collect_merged_stmts_recursive(dep_path, stmts, visited)
   strip_generic_type_params(stmts)
   expand_interp_stmts(stmts)
   let _ = check_program(stmts)
@@ -478,5 +513,3 @@ export let compile_file_wasi_library = (dep_path: String) -> Bytes with { Error,
     ("", "", 0, 0)
   ], 0, 0), true)
 }
-
-

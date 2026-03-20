@@ -4,6 +4,11 @@ import ./entry/source_compile/index.vibe {
   compile_source, compile_source_wasi
 }
 
+import ./entry / source_compile / wasi_only {
+  compile_file_wasi_linked_artifacts,
+  compile_file_wasi_library
+}
+
 //# Functions
 
 let bytes_contains = (hay: Bytes, needle: String) -> Bool {
@@ -38,6 +43,17 @@ let assert_wasm_magic = (bytes: Bytes) -> Unit {
   assert(bytes[1] == 97)
   assert(bytes[2] == 115)
   assert(bytes[3] == 109)
+}
+
+let string_to_bytes = (s: String) -> Bytes {
+  let out = Array::slice([0], 0, 0)
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
 }
 
 //# Misc
@@ -84,4 +100,35 @@ test "compile_source: nested tuple destructuring across recursive calls" {
   let source = "let rec f = (expr: Int, env: Int, defs: Int, s: Int, c: Int) -> (Int, Int, Int) {\n  let cond = expr\n  let then_e = env\n  let else_e = defs\n  let (_, s1, c1) = f(cond, env, defs, s, c)\n  let (tt, s2, c2) = f(then_e, env, defs, s1, c1)\n  let (_, s3, c3) = f(else_e, env, defs, s2, c2)\n  (tt, s3, c3)\n}"
   let bytes = compile_source(source)
   assert_wasm_magic(bytes)
+}
+
+test "compile_file_wasi_linked_artifacts: returns direct linked deps for library build" {
+  let base_dir = "/tmp/vibe_compiler_linked_artifacts"
+  let helper_path = String::concat(base_dir, "/lib.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::write_bytes(
+    helper_path,
+    string_to_bytes("export let add = (a: Int, b: Int) -> Int { a + b }\n")
+  )
+  Fs::write_bytes(
+    main_path,
+    string_to_bytes("import ./lib.vibe { add }\nlet run = () -> Int { add(1, 2) }\n")
+  )
+  let (entry_bytes, linked_imports, linked_dep_specs) = compile_file_wasi_linked_artifacts(
+    main_path,
+    "run"
+  )
+  assert_wasm_magic(entry_bytes)
+  assert(Array::length(linked_imports) == 1)
+  let (module_name, func_name, param_count, return_count) = Array::get(linked_imports, 0)
+  assert(module_name == "lib")
+  assert(func_name == "add")
+  assert(param_count == 2)
+  assert(return_count == 1)
+  assert(Array::length(linked_dep_specs) == 1)
+  let (dep_module_name, dep_path) = Array::get(linked_dep_specs, 0)
+  assert(dep_module_name == "lib")
+  assert(dep_path == helper_path)
+  let lib_bytes = compile_file_wasi_library(dep_path)
+  assert_wasm_magic(lib_bytes)
 }
