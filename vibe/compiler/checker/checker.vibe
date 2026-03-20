@@ -78,7 +78,31 @@ let unify_binop_candidate = (left_ty: Type, right_ty: Type, target_ty: Type, s: 
   }
 }
 
-let infer_binop_type = (op: String, left_ty: Type, right_ty: Type, s: Subst, errors: Array[String]) -> (Type, Subst) {
+let unify_same_binop_operands = (left_ty: Type, right_ty: Type, s: Subst) -> Option[(Type, Subst)] {
+  match unify(left_ty, right_ty, s) {
+    Some(s1) => Some((subst_apply(s1, left_ty), s1)),
+    None => None
+  }
+}
+
+let infer_named_trait_binop = (
+  env: TypeEnv,
+  left_ty: Type,
+  right_ty: Type,
+  trait_name: String,
+  s: Subst,
+) -> Option[(Type, Subst)] {
+  match unify_same_binop_operands(left_ty, right_ty, s) {
+    Some((resolved, s1)) => if type_implements_trait(env, s1, resolved, trait_name) {
+      Some((resolved, s1))
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
+let infer_binop_type = (op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: Subst, errors: Array[String]) -> (Type, Subst) {
   if is_logic_binop(op) {
     match unify_binop_candidate(left_ty, right_ty, CtBool, s) {
       Some(s1) => (CtBool, s1),
@@ -102,9 +126,12 @@ let infer_binop_type = (op: String, left_ty: Type, right_ty: Type, s: Subst, err
       Some(s1) => (CtBool, s1),
       None => match unify_binop_candidate(left_ty, right_ty, CtDouble, s) {
         Some(s1) => (CtBool, s1),
-        None => {
+        None => match infer_named_trait_binop(env, left_ty, right_ty, "Ord", s) {
+          Some((_, s1)) => (CtBool, s1),
+          None => {
           Array::push(errors, String::concat("type mismatch in '", String::concat(op, "': operands must be Int or Double")))
           (CtUnknown, s)
+          }
         }
       }
     }
@@ -116,9 +143,12 @@ let infer_binop_type = (op: String, left_ty: Type, right_ty: Type, s: Subst, err
         Some(s1) => (CtDouble, s1),
         None => match unify_binop_candidate(left_ty, right_ty, CtString, s) {
           Some(s1) => (CtString, s1),
-          None => {
+          None => match infer_named_trait_binop(env, left_ty, right_ty, "Add", s) {
+            Some((resolved, s1)) => (resolved, s1),
+            None => {
             Array::push(errors, "type mismatch in '+': operands must be Int, Double, or String")
             (CtUnknown, s)
+            }
           }
         }
       }
@@ -127,13 +157,23 @@ let infer_binop_type = (op: String, left_ty: Type, right_ty: Type, s: Subst, err
   else if op == "-"
     || op == "*"
     || op == "/" {
+    let trait_name = if op == "-" {
+      "Sub"
+    } else if op == "*" {
+      "Mul"
+    } else {
+      "Div"
+    }
     match unify_binop_candidate(left_ty, right_ty, CtInt, s) {
       Some(s1) => (CtInt, s1),
       None => match unify_binop_candidate(left_ty, right_ty, CtDouble, s) {
         Some(s1) => (CtDouble, s1),
-        None => {
+        None => match infer_named_trait_binop(env, left_ty, right_ty, trait_name, s) {
+          Some((resolved, s1)) => (resolved, s1),
+          None => {
           Array::push(errors, String::concat("type mismatch in '", String::concat(op, "': operands must be Int or Double")))
           (CtUnknown, s)
+          }
         }
       }
     }
@@ -348,6 +388,7 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
         op,
         subst_apply(s2, left_ty),
         subst_apply(s2, right_ty),
+        env,
         s2,
         errors
       )
