@@ -2076,8 +2076,13 @@ fn emit_module_with_coverage(
     run_need_heap = true
     any_user_heap = true
   }
+  // Linked library modules share their memory with dependents.
+  // Even when they only expose static string data, the consumer needs
+  // a stable heap_ptr export to reserve space after the library's segments.
+  let require_library_heap_global = ctx.library_mode && not(ctx.use_js_strings)
   // In linked mode, always enable heap_global (library provides memory/heap_ptr)
-  if any_user_heap ||
+  if require_library_heap_global ||
+    any_user_heap ||
     ctx.linked_fn_imports_list.length() > 0 ||
     ctx.need_env_get ||
     ctx.need_env_args_get ||

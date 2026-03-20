@@ -11,6 +11,9 @@ TMPDIR="${TMPDIR:-/tmp}"
 WORK="$TMPDIR/vibe_linked_debug_test_$$"
 mkdir -p "$WORK"
 trap 'rm -rf "$WORK"' EXIT
+STRING_CASE_DIR="$WORK/string_case"
+STRING_LIB_WASM="$STRING_CASE_DIR/.vibe/debug/main/lib.wasm"
+STRING_RELEASE_WASM="$STRING_CASE_DIR/main.release.wasm"
 
 echo "=== linked debug build: selfhost compiler ==="
 
@@ -72,3 +75,43 @@ for f in "$CACHE_DIR"/*.wasm; do
   fi
 done
 echo "  WASI-dependent modules: $WASI_MODULES"
+
+# Cross-module string concat should work via shared linked memory/heap state.
+mkdir -p "$STRING_CASE_DIR"
+cat >"$STRING_CASE_DIR/lib.vibe" <<'EOF'
+export let helper = () -> String { "Hello" }
+EOF
+cat >"$STRING_CASE_DIR/main.vibe" <<'EOF'
+import ./lib.vibe { helper }
+String::length(String::concat(helper(), ", world"))
+EOF
+
+echo "  [5/5] cross-module string concat..."
+if ! timeout 30 "$CLI" build --debug "$STRING_CASE_DIR/main.vibe" \
+  -o "$STRING_CASE_DIR/main.wasm" >/dev/null 2>&1; then
+  echo "FAIL: string linked debug build failed"
+  exit 1
+fi
+if ! timeout 30 "$CLI" build --release "$STRING_CASE_DIR/main.vibe" \
+  -o "$STRING_RELEASE_WASM" >/dev/null 2>&1; then
+  echo "FAIL: string release build failed"
+  exit 1
+fi
+if ! [ -f "$STRING_LIB_WASM" ]; then
+  echo "FAIL: string linked debug library wasm missing"
+  exit 1
+fi
+STRING_EXPECTED="$(env VIBE_WASMTIME_WASM_FLAGS='exceptions=y' \
+  "$ROOT_DIR/scripts/wasmtime_run.sh" run --invoke _start "$STRING_RELEASE_WASM" \
+  2>&1 || true)"
+STRING_RESULT="$(env VIBE_WASMTIME_WASM_FLAGS='exceptions=y' \
+  "$ROOT_DIR/scripts/wasmtime_run.sh" run --preload lib="$STRING_LIB_WASM" \
+  --invoke _start "$STRING_CASE_DIR/main.wasm" 2>&1 || true)"
+if ! [ "$STRING_RESULT" = "$STRING_EXPECTED" ]; then
+  echo "FAIL: cross-module string concat returned unexpected result"
+  echo "expected:"
+  echo "$STRING_EXPECTED"
+  echo "actual:"
+  echo "$STRING_RESULT"
+  exit 1
+fi

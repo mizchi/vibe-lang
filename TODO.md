@@ -7,14 +7,13 @@ Completed items are archived in `docs/DONE.md`.
 
 ### 既知の制約
 
-- cross-module string concat: library heap_ptr と user data offset の関係で一部不正
 - funcref table の cross-module 共有は未実装（HOF inline で回避済み）
 - wasmtime `--preload` 自体は library module に WASI instance を提供できない
   linked debug build では preload-unsafe な dep を自動 inline して回避済み
 
 ### 残タスク
 
-- [ ] cross-module string concat の修正
+- [x] cross-module string concat の修正
 - [x] `vibe build --debug` を selfhost compiler で使えるようにする（後述）
 - [ ] prelude を core module として事前コンパイル（builtin 関数の分離が必要）
 - [ ] typecheck のインクリメンタル化（ripple query 改修）

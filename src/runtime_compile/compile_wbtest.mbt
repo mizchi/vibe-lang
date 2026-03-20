@@ -169,6 +169,41 @@ test "compile_module_wasm_with_opt_level_profiled returns wasm and stage timings
 }
 
 ///|
+test "linked library mode exports heap ptr for static string helper" {
+  let db = @runtime.VibeDb::new()
+  db.set_source("./lib.vibe", "export let helper = () -> String { \"Hello\" }")
+  db.set_source(
+    "main", "import ./lib.vibe { helper }\nString::length(String::concat(helper(), \", world\"))",
+  )
+  let (main_wasm, linked_imports) = try
+    compile_module_wasm_linked(db, "main")
+  catch {
+    e => fail("linked compile error: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  let lib_wasm = try
+    compile_module_wasm_with_opt_level(db, "./lib.vibe", library_mode=true)
+  catch {
+    e => fail("library compile error: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  assert_eq(linked_imports.length(), 1)
+  assert_eq(linked_imports[0].module_name, "lib")
+  assert_eq(linked_imports[0].func_name, "helper")
+  assert_eq(linked_imports[0].param_count, 0)
+  assert_eq(linked_imports[0].return_count, 1)
+  assert_true(bytes_contains_ascii(main_wasm, "lib"))
+  assert_true(bytes_contains_ascii(main_wasm, "helper"))
+  assert_true(bytes_contains_ascii(main_wasm, "memory"))
+  assert_true(bytes_contains_ascii(main_wasm, "__heap_ptr"))
+  assert_true(bytes_contains_ascii(lib_wasm, "helper"))
+  assert_true(bytes_contains_ascii(lib_wasm, "memory"))
+  assert_true(bytes_contains_ascii(lib_wasm, "__heap_ptr"))
+}
+
+///|
 test "wasm_compile_profile_tsv emits compile substage rows" {
   let content = wasm_compile_profile_tsv(
     1000,
