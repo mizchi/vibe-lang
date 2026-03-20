@@ -2,13 +2,57 @@
 
 ///|
 /// Compute Git blob hash (sha1) for UTF-8 text content.
+/// Avoids intermediate Bytes allocation by computing UTF-8 byte length
+/// separately and feeding bytes directly to the hasher.
 pub fn git_blob_hash_string(content : String) -> String {
-  let bytes = @utf8.encode(content)
-  let header = "blob " + bytes.length().to_string() + "\u0000"
+  let byte_len = utf8_byte_length(content)
+  let header = "blob " + byte_len.to_string() + "\u0000"
   let hasher = @bit.Sha1State::new()
   hasher.update_string(header)
-  hasher.update(bytes)
+  sha1_update_utf8(hasher, content)
   hasher.finish().to_hex()
+}
+
+///|
+/// Compute UTF-8 byte length of a string without allocating a Bytes buffer.
+fn utf8_byte_length(s : String) -> Int {
+  let mut len = 0
+  for c in s {
+    let cp = c.to_int()
+    if cp < 0x80 {
+      len += 1
+    } else if cp < 0x800 {
+      len += 2
+    } else if cp < 0x10000 {
+      len += 3
+    } else {
+      len += 4
+    }
+  }
+  len
+}
+
+///|
+/// Feed a string's UTF-8 bytes directly to a SHA1 hasher without Bytes allocation.
+fn sha1_update_utf8(hasher : @bit.Sha1State, s : String) -> Unit {
+  for c in s {
+    let cp = c.to_int()
+    if cp < 0x80 {
+      hasher.update_byte(cp.to_byte())
+    } else if cp < 0x800 {
+      hasher.update_byte((0xC0 | (cp >> 6)).to_byte())
+      hasher.update_byte((0x80 | (cp & 0x3F)).to_byte())
+    } else if cp < 0x10000 {
+      hasher.update_byte((0xE0 | (cp >> 12)).to_byte())
+      hasher.update_byte((0x80 | ((cp >> 6) & 0x3F)).to_byte())
+      hasher.update_byte((0x80 | (cp & 0x3F)).to_byte())
+    } else {
+      hasher.update_byte((0xF0 | (cp >> 18)).to_byte())
+      hasher.update_byte((0x80 | ((cp >> 12) & 0x3F)).to_byte())
+      hasher.update_byte((0x80 | ((cp >> 6) & 0x3F)).to_byte())
+      hasher.update_byte((0x80 | (cp & 0x3F)).to_byte())
+    }
+  }
 }
 
 ///|
