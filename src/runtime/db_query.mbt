@@ -664,6 +664,52 @@ pub fn VibeDb::new() -> VibeDb {
     out
   })
   import_query.register(rt)
+  let typecheck_import_query : @ripple.Query[String, Array[ImportSpec]] = db.query(fn(
+      rt,
+      path,
+    ) {
+      let imports = import_query.fetch(rt, path)
+      let projected : Array[ImportSpec] = []
+      for imp in imports {
+        projected.push(ImportSpec::{
+          path: imp.path,
+          alias_name: imp.alias_name,
+          hash: None,
+          module_ref: Some(imp.alias_name),
+          path_obj: imp.path_obj,
+          source_hash: imp.source_hash,
+          source_version: imp.source_version,
+          source_symbol: imp.source_symbol,
+        })
+      }
+      projected
+    },
+  )
+  typecheck_import_query.register(rt)
+  let import_target_kind_query : @ripple.Query[String, Int] = db.query(fn(
+    rt,
+    path,
+  ) {
+    match sources.get(rt, path) {
+      Some(_) => 1
+      None =>
+        match binary_sources.get(rt, path) {
+          Some(_) => 2
+          None => 0
+        }
+    }
+  })
+  import_target_kind_query.register(rt)
+  let wasm_export_types_query : @ripple.Query[
+    String,
+    Result[Map[String, @core.Type], String]?,
+  ] = db.query(fn(rt, path) {
+    match binary_sources.get(rt, path) {
+      Some(wasm_bytes) => Some(parse_wasm_exported_function_types(wasm_bytes))
+      None => None
+    }
+  })
+  wasm_export_types_query.register(rt)
   let no_import_type_query : @ripple.Query[String, @checker.TypeEnv?] = db.query(fn(
       rt,
       hash,
@@ -764,12 +810,21 @@ pub fn VibeDb::new() -> VibeDb {
     project_type_import_env(full_env, ast)
   })
   type_import_query.register(rt)
+  let type_import_meta_query : @ripple.Query[String, TypeImportMeta] = db.query(fn(
+      rt,
+      path,
+    ) {
+      let ast = ast_query.fetch(rt, path).unwrap()
+      collect_type_import_meta(ast)
+    },
+  )
+  type_import_meta_query.register(rt)
   // Now create the main type query that handles imports
   let type_query : @ripple.Query[String, @checker.TypeEnv] = db.query(fn(
     rt,
     file_path,
   ) {
-    let imports = import_query.fetch(rt, file_path)
+    let imports = typecheck_import_query.fetch(rt, file_path)
     if imports.length() == 0 {
       return simple_type_query.fetch(rt, file_path)
     }
@@ -808,15 +863,12 @@ pub fn VibeDb::new() -> VibeDb {
     }
     // Import types from imported modules
     for imp in imports {
-      match sources.get(rt, imp.path) {
-        Some(_) => {
+      match import_target_kind_query.fetch(rt, imp.path) {
+        1 => {
           let imported_env = type_import_query.fetch(rt, imp.path)
-          // Get the AST of the imported module to find exports
-          let imported_ast = ast_query.fetch(rt, imp.path).unwrap()
-          let exported_names = collect_exported_names(imported_ast)
-          let internal_exported_names = collect_internal_exported_names(
-            imported_ast,
-          )
+          let imported_meta = type_import_meta_query.fetch(rt, imp.path)
+          let exported_names = imported_meta.exported_names
+          let internal_exported_names = imported_meta.internal_exported_names
           let importer_dir = @path.Path(file_path).dirname().to_string()
           let imported_dir = @path.Path(imp.path).dirname().to_string()
           let allow_internal_import = importer_dir == imported_dir
@@ -1327,31 +1379,9 @@ pub fn VibeDb::new() -> VibeDb {
             }
           }
         }
-        None =>
-          match binary_sources.get(rt, imp.path) {
-            Some(wasm_bytes) => {
-              let exported_types = match
-                parse_wasm_exported_function_types(wasm_bytes) {
-                Ok(types) => types
-                Err(msg) => {
-                  for stmt in ast.stmts {
-                    match stmt {
-                      @core.Stmt::Import(source~, span~, ..) =>
-                        if import_stmt_matches_spec(base_dir, source, imp) {
-                          diags.push(rt, @core.Diagnostic::{
-                            stage: "import",
-                            message: "failed to parse wasm import: " + imp.path,
-                            span: Some(span),
-                            hint: None,
-                            note: Some(msg),
-                          })
-                        }
-                      _ => ()
-                    }
-                  }
-                  continue
-                }
-              }
+        2 =>
+          match wasm_export_types_query.fetch(rt, imp.path) {
+            Some(Ok(exported_types)) =>
               for stmt in ast.stmts {
                 match stmt {
                   @core.Stmt::Import(spec~, source~, span~) =>
@@ -1405,9 +1435,25 @@ pub fn VibeDb::new() -> VibeDb {
                   _ => ()
                 }
               }
-            }
+            Some(Err(msg)) =>
+              for stmt in ast.stmts {
+                match stmt {
+                  @core.Stmt::Import(source~, span~, ..) =>
+                    if import_stmt_matches_spec(base_dir, source, imp) {
+                      diags.push(rt, @core.Diagnostic::{
+                        stage: "import",
+                        message: "failed to parse wasm import: " + imp.path,
+                        span: Some(span),
+                        hint: None,
+                        note: Some(msg),
+                      })
+                    }
+                  _ => ()
+                }
+              }
             None => ()
           }
+        _ => ()
       }
     }
     // Type check with the enriched environment

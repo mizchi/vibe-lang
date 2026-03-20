@@ -867,3 +867,34 @@ test "type import query backdates when dependency private impl changes" {
   assert_eq(lib_import_changed_2, lib_import_changed_1)
   assert_eq(main_type_changed_2, main_type_changed_1)
 }
+
+///|
+test "downstream type query does not re-run on dependency private impl change" {
+  let db = VibeDb::new()
+  db.set_source(
+    "/project/lib.vibe",
+    "let helper = 1\n" + "export let value = helper\n",
+  )
+  db.set_source(
+    "/project/main.vibe",
+    "import ./lib.vibe { value, value }\n" + "let x = value\n" + "x\n",
+  )
+  let _ = db.types("/project/main.vibe")
+  let duplicate_count_1 = db
+    .diagnostics("/project/main.vibe")
+    .iter()
+    .filter(fn(diag) { diag.message == "duplicate declaration: value" })
+    .count()
+  assert_eq(duplicate_count_1, 1)
+  db.set_source(
+    "/project/lib.vibe",
+    "let helper = 2 - 1\n" + "export let value = helper\n",
+  )
+  let _ = db.types("/project/main.vibe")
+  let duplicate_count_2 = db
+    .diagnostics("/project/main.vibe")
+    .iter()
+    .filter(fn(diag) { diag.message == "duplicate declaration: value" })
+    .count()
+  assert_eq(duplicate_count_2, 1)
+}

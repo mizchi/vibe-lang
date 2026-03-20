@@ -16,7 +16,7 @@ Completed items are archived in `docs/DONE.md`.
 - [x] cross-module string concat の修正
 - [x] `vibe build --debug` を selfhost compiler で使えるようにする（後述）
 - [x] prelude を core module として事前コンパイル（builtin 関数の分離が必要）
-- [ ] typecheck のインクリメンタル化（ripple query 改修）
+- [x] typecheck のインクリメンタル化（import surface query + ripple verifier 修正）
 
 ## Selfhost compiler の debug build 対応
 

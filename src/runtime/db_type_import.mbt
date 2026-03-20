@@ -1,4 +1,10 @@
 ///|
+priv struct TypeImportMeta {
+  exported_names : Map[String, Bool]
+  internal_exported_names : Map[String, Bool]
+} derive(Eq)
+
+///|
 fn collect_import_trait_aliases(
   spec : @core.ImportSpec,
   imported_env : @checker.TypeEnv,
@@ -479,8 +485,9 @@ fn project_type_import_env(
   ast : @core.Module,
 ) -> @checker.TypeEnv {
   let surface_env = try! @checker.get_prelude_only_env_for_module()
-  let exported_names = collect_exported_names(ast)
-  let internal_exported_names = collect_internal_exported_names(ast)
+  let meta = collect_type_import_meta(ast)
+  let exported_names = meta.exported_names
+  let internal_exported_names = meta.internal_exported_names
   let visible_names = merge_visible_import_names(
     exported_names, internal_exported_names,
   )
@@ -528,4 +535,12 @@ fn project_type_import_env(
     }
   }
   surface_env
+}
+
+///|
+fn collect_type_import_meta(ast : @core.Module) -> TypeImportMeta {
+  {
+    exported_names: collect_exported_names(ast),
+    internal_exported_names: collect_internal_exported_names(ast),
+  }
 }
