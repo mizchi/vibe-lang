@@ -71,21 +71,29 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 
 ## CI 最適化
 
-### 現在の `just test` プロファイル (2026-03-20)
+### CI プロファイル (2026-03-20)
 
-| ステップ | 時間 |
-|---------|------|
-| moon test --target js (957 tests) | 13s |
-| cli_e2e native (78 tests) | 21s |
-| vibe.exe test (E2E) | 65s |
-| その他 | ~8s |
-| **合計** | **~107s** |
+9 並列ジョブ、wall time ~14min。
 
-### 改善タスク
+| ジョブ | 時間 | ステータス |
+|--------|------|-----------|
+| test (moon test + build parity + linked debug) | ~3min | 全 pass |
+| wasm-compile-e2e (pattern match + WASM E2E) | ~14min | 全 pass (律速) |
+| selfhost-gates (bootstrap, cutover, perf KPI) | ~4min | 全 pass |
+| wasm-codegen-quick (probe, WAT, HTTP gates) | ~4min | 全 pass |
+| 他5ジョブ | ~1-2min each | 全 pass |
 
-- [ ] CI で `test` / `test-fixtures` / `test-wasm-heavy` を並列ジョブに分離
-- [ ] `test-build-parity` を CI に追加
-- [ ] `test-fixtures-isolation` を CI に追加（crash/timeout 検出）
+### 完了
+
+- [x] CI で wasm-codegen-integrity を3並列ジョブに分割 (16min → 14min)
+- [x] `test-build-parity` を CI に追加
+- [x] `test-fixtures-isolation` を CI に追加
+- [x] `test-linked-debug-build` を CI に追加
+
+### 残タスク
+
+- [ ] wasm-compile-e2e の高速化（律速 ~14min）
+- [ ] selfhost dist validation 修正（`no functions found to compile` バグ）
 - [ ] P3: minify_zlib 個別対策 (#13)
 
 ## カバレッジ
