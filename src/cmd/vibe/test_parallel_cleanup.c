@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <pthread.h>
+#include <sys/types.h>
 
 #define VIBE_MAX_PARALLEL_CHILDREN 256
 
@@ -27,6 +28,19 @@ static int vibe_pid_exists(int pid) {
   return 0;
 }
 
+static void vibe_kill_pid_or_group(int pid, int sig) {
+  if (pid <= 0) {
+    return;
+  }
+  if (kill(-pid, sig) != 0) {
+    if (errno != ESRCH && errno != EPERM) {
+      kill(pid, sig);
+      return;
+    }
+  }
+  kill(pid, sig);
+}
+
 static void vibe_parallel_cleanup_kill_all(int sig) {
   sig_atomic_t count = g_child_count;
   if (count > VIBE_MAX_PARALLEL_CHILDREN) {
@@ -35,7 +49,7 @@ static void vibe_parallel_cleanup_kill_all(int sig) {
   for (sig_atomic_t i = 0; i < count; i++) {
     int pid = g_child_pids[i];
     if (pid > 0) {
-      kill(pid, sig);
+      vibe_kill_pid_or_group(pid, sig);
     }
   }
 }
@@ -91,6 +105,18 @@ void vibe_parallel_cleanup_register_child_pid(int pid) {
   g_child_count = count + 1;
 }
 
+void vibe_parallel_cleanup_assign_child_process_group(int pid) {
+  if (pid <= 0) {
+    return;
+  }
+  if (setpgid(pid, pid) == 0) {
+    return;
+  }
+  if (errno == EACCES || errno == EPERM || errno == ESRCH) {
+    return;
+  }
+}
+
 void vibe_parallel_cleanup_unregister_child_pid(int pid) {
   if (pid <= 0) {
     return;
@@ -114,17 +140,40 @@ void vibe_parallel_cleanup_unregister_child_pid(int pid) {
 static void* vibe_worker_parent_watchdog_main(void* arg) {
   (void)arg;
   int worker_pid = getpid();
+  pid_t worker_pgid = getpgrp();
   while (g_worker_watchdog_running) {
     sig_atomic_t parent_pid = g_worker_watchdog_parent_pid;
     if (!vibe_pid_exists(parent_pid)) {
+      if (worker_pgid == worker_pid) {
+        kill(-worker_pgid, SIGTERM);
+      }
       kill(worker_pid, SIGTERM);
       usleep(100 * 1000);
+      if (worker_pgid == worker_pid) {
+        kill(-worker_pgid, SIGKILL);
+      }
       kill(worker_pid, SIGKILL);
       break;
     }
     usleep(100 * 1000);
   }
   return NULL;
+}
+
+void vibe_worker_process_group_init(void) {
+  pid_t pid = getpid();
+  if (pid <= 1) {
+    return;
+  }
+  if (getpgrp() == pid) {
+    return;
+  }
+  if (setpgid(0, 0) == 0) {
+    return;
+  }
+  if (errno == EACCES || errno == EPERM) {
+    return;
+  }
 }
 
 void vibe_worker_parent_watchdog_start(int parent_pid) {

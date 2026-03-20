@@ -8,16 +8,17 @@ if [[ ! -x "${BIN_PATH}" ]]; then
   exit 1
 fi
 
-tmp_dir="$(mktemp -d /tmp/vibe_test_parallel_cleanup_e2e.XXXXXX)"
+project_root="$(cd "$(dirname "$0")/.." && pwd)"
+mkdir -p "${project_root}/_build"
+tmp_dir="$(mktemp -d "${project_root}/_build/vibe_test_parallel_cleanup_e2e.XXXXXX")"
 slow_test_path="${tmp_dir}/slow_test.vibe"
 fast_test_path="${tmp_dir}/fast_test.vibe"
+fake_wasmtime_path="${tmp_dir}/fake_wasmtime.sh"
+started_marker="${tmp_dir}/started.log"
+orphan_marker="${tmp_dir}/orphan.log"
 
 cat >"${slow_test_path}" <<'EOF'
 test "slow" {
-  let run = () -> Unit with {Async} {
-    sleep(4000)
-  }
-  run()
   assert(true)
 }
 EOF
@@ -29,48 +30,49 @@ test "fast" {
 EOF
 
 parent_pid=""
-children=""
+
+cat >"${fake_wasmtime_path}" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$$" >> "${VIBE_TEST_RUNNER_STARTED}"
+(
+  sleep 2
+  printf '%s\n' "$$" >> "${VIBE_TEST_ORPHAN_MARKER}"
+) &
+sleep 30 &
+wait "$!"
+EOF
+chmod +x "${fake_wasmtime_path}"
+
+cleanup_pids_from_file() {
+  local file_path="$1"
+  [[ -f "${file_path}" ]] || return 0
+  local pid
+  while IFS= read -r pid; do
+    [[ -n "${pid}" ]] || continue
+    kill -KILL "-${pid}" >/dev/null 2>&1 || true
+    kill -KILL "${pid}" >/dev/null 2>&1 || true
+  done <"${file_path}"
+}
 
 cleanup() {
-  if [[ -d "${tmp_dir}" ]]; then
-    rm -rf "${tmp_dir}" >/dev/null 2>&1 || true
-  fi
-  if [[ -n "${parent_pid}" ]] && ps -p "${parent_pid}" >/dev/null 2>&1; then
+  if [[ -n "${parent_pid}" ]] && kill -0 "${parent_pid}" >/dev/null 2>&1; then
     kill -KILL "${parent_pid}" >/dev/null 2>&1 || true
   fi
-  if [[ -n "${children}" ]]; then
-    for pid in ${children}; do
-      if ps -p "${pid}" >/dev/null 2>&1; then
-        kill -KILL "${pid}" >/dev/null 2>&1 || true
-      fi
-    done
+  cleanup_pids_from_file "${started_marker}"
+  cleanup_pids_from_file "${orphan_marker}"
+  if [[ -d "${tmp_dir}" ]]; then
+    rm -rf "${tmp_dir}" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
 
-wait_for_children() {
-  children=""
-  for _ in $(seq 1 30); do
-    if ! ps -p "${parent_pid}" >/dev/null 2>&1; then
+wait_for_runner_start() {
+  for _ in $(seq 1 150); do
+    if [[ -n "${parent_pid}" ]] && ! kill -0 "${parent_pid}" >/dev/null 2>&1; then
       break
     fi
-    children="$(pgrep -P "${parent_pid}" || true)"
-    if [[ -n "${children}" ]]; then
-      break
-    fi
-    sleep 0.2
-  done
-}
-
-wait_for_children_exit() {
-  for _ in $(seq 1 6); do
-    alive=0
-    for pid in ${children}; do
-      if ps -p "${pid}" >/dev/null 2>&1; then
-        alive=$((alive + 1))
-      fi
-    done
-    if [[ "${alive}" -eq 0 ]]; then
+    if [[ -s "${started_marker}" ]]; then
       return 0
     fi
     sleep 0.2
@@ -79,16 +81,9 @@ wait_for_children_exit() {
 }
 
 check_orphaned() {
-  orphaned=""
-  for pid in ${children}; do
-    if ps -p "${pid}" >/dev/null 2>&1; then
-      orphaned="${orphaned} ${pid}"
-    fi
-  done
-
-  if [[ -n "${orphaned}" ]]; then
-    echo "parallel cleanup e2e: orphan workers detected:${orphaned}" >&2
-    ps -o pid=,ppid=,command= -p ${orphaned} >&2 || true
+  if [[ -s "${orphan_marker}" ]]; then
+    echo "parallel cleanup e2e: orphan descendants wrote marker" >&2
+    cat "${orphan_marker}" >&2
     return 1
   fi
   return 0
@@ -96,24 +91,23 @@ check_orphaned() {
 
 run_case() {
   local sig="$1"
-  "${BIN_PATH}" test --unstable-async --jobs 2 "${slow_test_path}" "${fast_test_path}" \
+  : >"${started_marker}"
+  : >"${orphan_marker}"
+  WASMTIME_BIN="${fake_wasmtime_path}" \
+    VIBE_TEST_RUNNER_STARTED="${started_marker}" \
+    VIBE_TEST_ORPHAN_MARKER="${orphan_marker}" \
+    "${BIN_PATH}" test --jobs 2 "${slow_test_path}" "${fast_test_path}" \
     >/tmp/vibe_test_parallel_cleanup_e2e_${sig}.log 2>&1 &
   parent_pid=$!
 
-  wait_for_children
-  if [[ -z "${children}" ]]; then
-    echo "parallel cleanup e2e: failed to observe worker children under pid=${parent_pid}" >&2
+  if ! wait_for_runner_start; then
+    echo "parallel cleanup e2e: failed to observe compiled runner start under pid=${parent_pid}" >&2
     return 1
   fi
 
-  # Let workers enter test body. The slow test should still be running when parent dies.
-  sleep 0.3
   kill -"${sig}" "${parent_pid}" >/dev/null 2>&1 || true
   wait "${parent_pid}" >/dev/null 2>&1 || true
-
-  if ! wait_for_children_exit; then
-    :
-  fi
+  sleep 3
 
   check_orphaned
 }

@@ -84,6 +84,12 @@ extern "C" fn vibe_parallel_cleanup_register_child_pid(pid : Int) = "vibe_parall
 extern "C" fn vibe_parallel_cleanup_unregister_child_pid(pid : Int) = "vibe_parallel_cleanup_unregister_child_pid"
 
 ///|
+extern "C" fn vibe_parallel_cleanup_assign_child_process_group(pid : Int) = "vibe_parallel_cleanup_assign_child_process_group"
+
+///|
+extern "C" fn vibe_worker_process_group_init() = "vibe_worker_process_group_init"
+
+///|
 extern "C" fn vibe_worker_parent_watchdog_start(parent_pid : Int) = "vibe_worker_parent_watchdog_start"
 
 ///|
@@ -3640,6 +3646,7 @@ fn test_cmd_report_json(
   entry_paths : Array[String],
   features : @runtime.RuntimeFeatureFlags,
 ) -> Unit {
+  vibe_worker_process_group_init()
   let worker_parent_pid = test_worker_parent_pid()
   match worker_parent_pid {
     Some(parent_pid) => vibe_worker_parent_watchdog_start(parent_pid)
@@ -4481,6 +4488,7 @@ fn test_cmd_parallel(
           stderr=w_err,
           cancel_handler=@async_process.hard_cancel(),
         )
+        vibe_parallel_cleanup_assign_child_process_group(child.pid)
         vibe_parallel_cleanup_register_child_pid(child.pid)
         defer vibe_parallel_cleanup_unregister_child_pid(child.pid)
         let stdout_task = group.spawn(() => {
