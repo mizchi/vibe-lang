@@ -284,6 +284,7 @@ fn linked_fn_has_func_param(params : Array[@core.FuncParam]) -> Bool {
   false
 }
 
+
 ///|
 fn linked_type_is_func(ty : @core.Type) -> Bool {
   match ty {
