@@ -354,6 +354,28 @@ fn resolve_builtin_type_name(
 }
 
 ///|
+/// Check if a type name is a WASM opaque type that should not be expanded.
+fn is_wasm_opaque_type(name : String) -> Bool {
+  match name {
+    "anyref"
+    | "eqref"
+    | "i31ref"
+    | "structref"
+    | "arrayref"
+    | "funcref"
+    | "externref"
+    | "i64"
+    | "u8"
+    | "u16"
+    | "u32"
+    | "u64"
+    | "i16"
+    | "v128" => true
+    _ => false
+  }
+}
+
+///|
 fn normalize_type_inner(
   env : TypeEnv,
   ty : @core.Type,
@@ -383,6 +405,10 @@ fn normalize_type_inner(
         env.get_type_alias(name) is None &&
         env.get_enum_def(name) is None &&
         env.get_struct(name) is None {
+        return @core.Type::Named(name~, args=normalized_args)
+      }
+      // WASM opaque types (wasm ref types + numeric primitives) - preserve as-is
+      if normalized_args.is_empty() && is_wasm_opaque_type(name) {
         return @core.Type::Named(name~, args=normalized_args)
       }
       if visiting.contains(name) {
@@ -1272,7 +1298,11 @@ fn unify_types_inner(
       } else {
         let nl = normalize_type_expand_enum(env, left)
         let nr = normalize_type_expand_enum(env, right)
-        unify_types_inner(env, nl, nr, cache)
+        // If both are still Named after expansion (opaque types), they can't unify
+        match (nl, nr) {
+          (@core.Type::Named(..), @core.Type::Named(..)) => false
+          _ => unify_types_inner(env, nl, nr, cache)
+        }
       }
     (@core.Type::Var(id), t) => bind_var(env, id, t)
     (t, @core.Type::Var(id)) => bind_var(env, id, t)
@@ -1281,11 +1311,18 @@ fn unify_types_inner(
     (_, @core.Type::Param(_)) => false
     (@core.Type::Named(..), _) => {
       let nl = normalize_type_expand_enum(env, left)
-      unify_types_inner(env, nl, right, cache)
+      // If normalization didn't change the type (opaque Named), it can't unify
+      match nl {
+        @core.Type::Named(..) => false
+        _ => unify_types_inner(env, nl, right, cache)
+      }
     }
     (_, @core.Type::Named(..)) => {
       let nr = normalize_type_expand_enum(env, right)
-      unify_types_inner(env, left, nr, cache)
+      match nr {
+        @core.Type::Named(..) => false
+        _ => unify_types_inner(env, left, nr, cache)
+      }
     }
     (@core.Type::Int, @core.Type::Int) => true
     (@core.Type::Float, @core.Type::Float) => true

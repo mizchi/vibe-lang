@@ -1846,6 +1846,17 @@ fn ensure_num_operand(
   match resolved {
     @core.Type::Int | @core.Type::Float | @core.Type::Double => ()
     @core.Type::Var(id) => mark_num_var(env, id)
+    @core.Type::Named(..) =>
+      if type_implements_trait(env, resolved, "Add") {
+        ()
+      } else {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=resolved,
+          span~,
+          context=Some("argument"),
+        )
+      }
     _ =>
       raise TypeError::Mismatch(
         expected=@core.Type::Int,
@@ -1893,6 +1904,17 @@ fn ensure_eq_operand(
             )
         }
       }
+    @core.Type::Named(..) =>
+      if type_implements_trait(env, resolved, "Eq") {
+        ()
+      } else {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Named(name="Eq", args=[]),
+          actual=resolved,
+          span~,
+          context=Some("argument"),
+        )
+      }
     _ =>
       raise TypeError::Mismatch(
         expected=@core.Type::Int,
@@ -1938,6 +1960,17 @@ fn ensure_ord_operand(
               context=Some("argument"),
             )
         }
+      }
+    @core.Type::Named(..) =>
+      if type_implements_trait(env, resolved, "Ord") {
+        ()
+      } else {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Named(name="Ord", args=[]),
+          actual=resolved,
+          span~,
+          context=Some("argument"),
+        )
       }
     _ =>
       raise TypeError::Mismatch(
