@@ -519,100 +519,38 @@ fn normalize_type_inner(
 }
 
 ///|
+/// Quick heuristic: could this type possibly contain a Ref?
+/// Returns true for user-defined Named types (aliases may hide Ref),
+/// false for builtins. Compound types recurse via type_tree_any.
 fn type_may_contain_scoped_ref_hint(ty : @core.Type) -> Bool {
-  match ty {
-    @core.Type::Named(name~, args~) => {
-      if name == "Ref" {
-        return true
-      }
-      // Builtin type names cannot contain Ref.
-      match name {
-        "Int"
-        | "i32"
-        | "Float"
-        | "f32"
-        | "Double"
-        | "f64"
-        | "Bool"
-        | "Char"
-        | "String"
-        | "@core.Path"
-        | "PromptText"
-        | "Unit"
-        | "StringBuilder"
-        | "Bytes" => return false
-        "Array" | "Map" | "ArrayBuilder" | "MapBuilder" => {
-          for arg in args {
-            if type_may_contain_scoped_ref_hint(arg) {
-              return true
-            }
-          }
-          return false
+  type_tree_any(ty, fn(t) {
+    match t {
+      @core.Type::Named(name~, ..) =>
+        match name {
+          "Ref" => true
+          "Int"
+          | "i32"
+          | "Float"
+          | "f32"
+          | "Double"
+          | "f64"
+          | "Bool"
+          | "Char"
+          | "String"
+          | "@core.Path"
+          | "PromptText"
+          | "Unit"
+          | "StringBuilder"
+          | "Bytes"
+          | "Array"
+          | "Map"
+          | "ArrayBuilder"
+          | "MapBuilder" => false
+          _ => true
         }
-        _ => ()
-      }
-      for arg in args {
-        if type_may_contain_scoped_ref_hint(arg) {
-          return true
-        }
-      }
-      // User-defined named types/aliases may hide `Ref`.
-      true
+      _ => false
     }
-    @core.Type::Tuple(items) => {
-      for item in items {
-        if type_may_contain_scoped_ref_hint(item) {
-          return true
-        }
-      }
-      false
-    }
-    @core.Type::Record(fields) => {
-      for _, value in fields {
-        if type_may_contain_scoped_ref_hint(value) {
-          return true
-        }
-      }
-      false
-    }
-    @core.Type::Array(inner) | @core.Type::ArrayBuilder(inner) =>
-      type_may_contain_scoped_ref_hint(inner)
-    @core.Type::Map(_key, inner) | @core.Type::MapBuilder(_key, inner) =>
-      type_may_contain_scoped_ref_hint(inner)
-    @core.Type::Variant(ctors) => {
-      for _, payload_ty in ctors {
-        if type_may_contain_scoped_ref_hint(payload_ty) {
-          return true
-        }
-      }
-      false
-    }
-    @core.Type::Func(params~, ret~, ..) => {
-      if type_may_contain_scoped_ref_hint(ret) {
-        return true
-      }
-      for param in params {
-        if type_may_contain_scoped_ref_hint(param.ty) {
-          return true
-        }
-      }
-      false
-    }
-    @core.Type::Int
-    | @core.Type::Float
-    | @core.Type::Double
-    | @core.Type::Bool
-    | @core.Type::Char
-    | @core.Type::String
-    | @core.Type::Path
-    | @core.Type::PromptText
-    | @core.Type::Unit
-    | @core.Type::StringBuilder
-    | @core.Type::Bytes
-    | @core.Type::Param(_)
-    | @core.Type::Var(_)
-    | @core.Type::Never => false
-  }
+  })
 }
 
 ///|
@@ -849,59 +787,40 @@ fn type_contains_scoped_ref_inner_fast(
         }
       }
     @core.Type::Tuple(items) => {
-      let mut hit = false
       for item in items {
         if type_contains_scoped_ref_inner_fast(env, item, visiting, name_cache) {
-          hit = true
-          break
+          return true
         }
       }
-      hit
+      false
     }
-    @core.Type::Record(fields) => {
-      let mut hit = false
+    @core.Type::Record(fields) | @core.Type::Variant(fields) => {
       for _, value in fields {
         if type_contains_scoped_ref_inner_fast(env, value, visiting, name_cache) {
-          hit = true
-          break
+          return true
         }
       }
-      hit
+      false
     }
     @core.Type::Array(inner) | @core.Type::ArrayBuilder(inner) =>
       type_contains_scoped_ref_inner_fast(env, inner, visiting, name_cache)
     @core.Type::Map(_key, inner) | @core.Type::MapBuilder(_key, inner) =>
       type_contains_scoped_ref_inner_fast(env, inner, visiting, name_cache)
-    @core.Type::Variant(ctors) => {
-      let mut hit = false
-      for _, payload_ty in ctors {
-        if type_contains_scoped_ref_inner_fast(
-            env, payload_ty, visiting, name_cache,
-          ) {
-          hit = true
-          break
-        }
-      }
-      hit
-    }
     @core.Type::Func(params~, ret~, ..) => {
-      let mut hit = false
       if type_contains_scoped_ref_inner_fast(env, ret, visiting, name_cache) {
-        hit = true
-      } else {
-        for param in params {
-          if type_contains_scoped_ref_inner_fast(
-              env,
-              param.ty,
-              visiting,
-              name_cache,
-            ) {
-            hit = true
-            break
-          }
+        return true
+      }
+      for param in params {
+        if type_contains_scoped_ref_inner_fast(
+            env,
+            param.ty,
+            visiting,
+            name_cache,
+          ) {
+          return true
         }
       }
-      hit
+      false
     }
   }
 }
