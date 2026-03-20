@@ -9,6 +9,8 @@ Completed items are archived in `docs/DONE.md`.
 
 - cross-module string concat: library heap_ptr と user data offset の関係で一部不正
 - funcref table の cross-module 共有は未実装（HOF inline で回避済み）
+- WASI dep の monolithic inline で codegen 不整合（後述: debug build 対応セクション）
+- wasmtime --preload が library module に WASI を提供できない（後述: debug build 対応セクション）
 
 ### 残タスク
 
@@ -19,11 +21,35 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Selfhost compiler の debug build 対応
 
-`vibe/compiler/` (~10M) で linked build を有効化する計画。
+`vibe/compiler/` で linked debug build が動作するようになった (2026-03-20)。
+ReExport チェーン解決、linked import alias re-export、func_import_count 修正済み。
 
-- [ ] Phase 1: transitive import 対応
+### 既知のバグ
+
+- [ ] **WASI dep の inline で codegen 不整合** — `cli_cache`, `module_loader`, `type_db` など
+  WASI effect (Fs, Env) を持つ dep を monolithic inline すると、bundled AST の codegen で
+  `local_set` の stack underflow が発生する (func validation error)。
+  原因: inline された dep のコードで、ローカル変数管理か closure capture が
+  linked imports 存在下で正しく機能していない。
+  回避策: WASI dep は linked import のまま、`-W unknown-imports-default=y` でスタブ化。
+
+- [ ] **wasmtime --preload が WASI import を解決できない** — wasmtime の `--preload` は
+  ライブラリモジュールに WASI instance を提供しない。WASI import を持つ library .wasm は
+  preload 時にインスタンス化できない。
+  回避策: `-W unknown-imports-default=y` で未解決 import をスタブ化。
+  WASI 関数を呼ぶパスが `_start` から到達しなければ動作する。
+  根本解決案:
+  - ライブラリの FS 呼び出しを entry module 経由のトランポリンに変換
+  - wasm-merge で全モジュールを結合してから実行
+  - component model linking を使う
+
+### 残タスク
+
+- [x] Phase 1: transitive import 対応 (ReExport チェーン解決)
 - [ ] Phase 2: prelude 分離（builtin でない関数のみ library 化）
 - [ ] Phase 3: HOF 選択的 inline
+- [ ] WASI dep の inline codegen バグ修正
+- [ ] wasmtime preload の WASI 解決
 
 目標: cached `vibe run vibe/compiler/index.vibe` を ~100ms に。
 
