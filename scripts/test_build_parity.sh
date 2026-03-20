@@ -189,21 +189,20 @@ EOF
 
   # With import (if available)
   if [[ -d "$ROOT_DIR/vibe/wasm/wasm_runtime" ]]; then
-    cat > "$ROOT_DIR/vibe/wasm/wasm_runtime/.tmp_parity.vibe" << 'EOF'
+    mkdir -p "$WORK/wasm_runtime_case"
+    cp "$ROOT_DIR/vibe/wasm/wasm_runtime/wasm_runtime.vibe" "$WORK/wasm_runtime_case/wasm_runtime.vibe"
+    cat > "$WORK/wasm_runtime_case/main.vibe" << 'EOF'
 import ./wasm_runtime.vibe { exec_body, make_memory }
 let result = 42
 result
 EOF
-    files+=("$ROOT_DIR/vibe/wasm/wasm_runtime/.tmp_parity.vibe")
+    files+=("$WORK/wasm_runtime_case/main.vibe")
   fi
 fi
 
 for f in "${files[@]}"; do
   run_parity_test "$f"
 done
-
-# Cleanup temp files
-rm -f "$ROOT_DIR/vibe/wasm/wasm_runtime/.tmp_parity.vibe"
 
 echo ""
 echo "=== build parity report ==="

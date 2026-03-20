@@ -310,10 +310,40 @@ fn compile_stmt(
                   match ctx.linked_fn_imports.get(source_name) {
                     Some(import_idx) => {
                       ctx.linked_fn_imports[name] = import_idx
-                      match ctx.linked_fn_return_counts.get(source_name) {
-                        Some(rc) =>
-                          ctx.linked_fn_return_counts[name] = rc
-                        None => ()
+                      let param_count = match ctx.linked_fn_param_counts.get(
+                        source_name,
+                      ) {
+                        Some(pc) => pc
+                        None => 0
+                      }
+                      ctx.linked_fn_param_counts[name] = param_count
+                      let return_count = match ctx.linked_fn_return_counts.get(
+                        source_name,
+                      ) {
+                        Some(rc) => rc
+                        None => 1
+                      }
+                      ctx.linked_fn_return_counts[name] = return_count
+                      let param_kinds : Array[ValueKind] = []
+                      for _ in 0..<param_count {
+                        param_kinds.push(ValueKind::I64)
+                      }
+                      if return_count > 1 {
+                        let result_kinds : Array[ValueKind] = []
+                        for _ in 0..<return_count {
+                          result_kinds.push(ValueKind::I64)
+                        }
+                        ctx.fn_local_sigs[name] = func_sig_with_env_multi(
+                          param_kinds,
+                          result_kinds,
+                        )
+                        ctx.fn_multivalue_results[name] = result_kinds
+                      } else {
+                        ctx.fn_local_sigs[name] = func_sig_with_env(
+                          param_kinds,
+                          ValueKind::I64,
+                        )
+                        ctx.fn_returns[name] = ValueKind::I64
                       }
                       let mut is_captured = false
                       for _key, captures in ctx.fn_closure_captures {
@@ -325,6 +355,22 @@ fn compile_stmt(
                       if not(is_last) && not(is_captured) {
                         return
                       }
+                      let idx = ctx.local_count
+                      ctx.local_count += 1
+                      ctx.local_types.push(ValueKind::I64)
+                      ctx.locals[name] = idx
+                      ctx.local_kinds[name] = ValueKind::I64
+                      let slot = ensure_funcref_slot(ctx, import_idx)
+                      emit_i64_const_raw(
+                        buf,
+                        tag_fn_value64(slot.to_int64()),
+                      )
+                      if is_last {
+                        emit_local_tee(buf, idx)
+                      } else {
+                        emit_local_set(buf, idx)
+                      }
+                      return
                     }
                     None => ()
                   }

@@ -20,6 +20,12 @@ EOF
 
 VIBE_LOCK_CHECK_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >/dev/null
 
+cat > "$TMP_ROOT/vibe/pkg/index.vibe" <<'EOF'
+export let version: String = "0.1.0"
+EOF
+
+VIBE_LOCK_CHECK_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >/dev/null
+
 cat > "$TMP_ROOT/vibe/pkg/index.lock" <<'EOF'
 {"path":{"./_probe/main.vibe":"#bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}
 EOF
@@ -49,6 +55,21 @@ fi
 
 if ! rg -q "lock-check: found temporary entries in index.lock" "$FAIL_LOG"; then
   echo "lock-check self-test: missing expected .vibe_test_wasm failure message" >&2
+  cat "$FAIL_LOG" >&2
+  exit 1
+fi
+
+cat > "$TMP_ROOT/vibe/pkg/index.lock" <<'EOF'
+{"path":{"./.tmp_parity.vibe":"#dddddddddddddddddddddddddddddddddddddddd"}}
+EOF
+
+if VIBE_LOCK_CHECK_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >"$FAIL_LOG" 2>&1; then
+  echo "lock-check self-test: expected failure for .tmp contamination" >&2
+  exit 1
+fi
+
+if ! rg -q "lock-check: found temporary entries in index.lock" "$FAIL_LOG"; then
+  echo "lock-check self-test: missing expected .tmp failure message" >&2
   cat "$FAIL_LOG" >&2
   exit 1
 fi

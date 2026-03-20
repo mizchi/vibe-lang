@@ -26,6 +26,7 @@ fi
 matches=$(
   rg -n --no-heading --only-matching \
     -e '"[^"]*\.vibe_test_wasm_[^"]*"' \
+    -e '"\./\.tmp[^"]*"' \
     -e '"\./_build/[^"]*"' \
     -e '"\./(_probe|_tmp|review_)[^"]*"' \
     -e '"\./tmp_probe/[^"]*"' \
@@ -34,7 +35,7 @@ matches=$(
 if [ -n "$matches" ]; then
   echo "$matches" >&2
   echo "lock-check: found temporary entries in index.lock" >&2
-  echo "lock-check: remove .vibe_test_wasm/_build/_probe/_tmp/review_ keys before commit" >&2
+  echo "lock-check: remove .tmp/.vibe_test_wasm/_build/_probe/_tmp/review_ keys before commit" >&2
   exit 1
 fi
 
@@ -55,7 +56,7 @@ for lock_path in "${LOCK_FILES[@]}"; do
   if [ ! -f "$manifest_path" ]; then
     missing_manifest+=("$manifest_path")
   else
-    if ! rg -q '^[[:space:]]*export[[:space:]]+let[[:space:]]+version[[:space:]]*=[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"[[:space:]]*$' "$manifest_path"; then
+    if ! rg -q '^[[:space:]]*export[[:space:]]+let[[:space:]]+version([[:space:]]*:[[:space:]]*[^=]+)?[[:space:]]*=[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"[[:space:]]*$' "$manifest_path"; then
       invalid_manifest+=("$manifest_path")
     fi
   fi
