@@ -9,8 +9,8 @@ Completed items are archived in `docs/DONE.md`.
 
 - cross-module string concat: library heap_ptr と user data offset の関係で一部不正
 - funcref table の cross-module 共有は未実装（HOF inline で回避済み）
-- WASI dep の monolithic inline で codegen 不整合（後述: debug build 対応セクション）
-- wasmtime --preload が library module に WASI を提供できない（後述: debug build 対応セクション）
+- wasmtime `--preload` 自体は library module に WASI instance を提供できない
+  linked debug build では preload-unsafe な dep を自動 inline して回避済み
 
 ### 残タスク
 
@@ -26,24 +26,16 @@ ReExport チェーン解決、linked import alias re-export、func_import_count 
 
 ### 既知のバグ
 
-- [ ] **WASI dep inline + linked import の codegen 不整合** —
-  `module_requires_preload_host_imports` で WASI dep を検出・inline する仕組みは実装済み。
-  しかし inline された dep のコードが linked import（別の dep の関数）を呼ぶ場合、
-  call site の引数 push が不足する codegen エラーが発生。
-  例: inline された `cli_cache` 内の関数が linked import `emit_closure_call_tail` (5 params) を
-  呼ぶが、codegen は 2 params しか push しない。
-  multivalue optimization は linked build で無効化済みだが、引数不足は別の原因。
-  回避策: WASI dep は linked import のまま、`-W unknown-imports-default=y` でスタブ化。
+- [x] **WASI dep inline + linked import の codegen 不整合** —
+  effect op import index の再計算が linked import 数を差し引いておらず、
+  inline された `perform Fs::*` が別 library 関数に誤着地していた。
+  linked build の effect import base を修正して解消。
 
-- [ ] **wasmtime --preload が WASI import を解決できない** — wasmtime の `--preload` は
-  ライブラリモジュールに WASI instance を提供しない。WASI import を持つ library .wasm は
-  preload 時にインスタンス化できない。
-  回避策: `-W unknown-imports-default=y` で未解決 import をスタブ化。
-  WASI 関数を呼ぶパスが `_start` から到達しなければ動作する。
-  根本解決案:
-  - ライブラリの FS 呼び出しを entry module 経由のトランポリンに変換
-  - wasm-merge で全モジュールを結合してから実行
-  - component model linking を使う
+- [x] **wasmtime --preload が WASI import を解決できない** —
+  preload-unsafe (`Fs`/`Env`/WASI import 持ち) dep を library 化せず inline することで
+  selfhost compiler の linked debug build は通るようになった。
+  cached fast path は cached linked imports だけで再構成できない場合があるため、
+  そのときは full compile にフォールバックする。
 
 ### 残タスク
 
@@ -51,8 +43,8 @@ ReExport チェーン解決、linked import alias re-export、func_import_count 
 - [ ] Phase 2: prelude 分離（builtin でない関数のみ library 化）
 - [ ] Phase 3: HOF 選択的 inline
 - [ ] Phase 4: selfhost codegen の linked build 対応（下記）
-- [ ] WASI dep の inline codegen バグ修正
-- [ ] wasmtime preload の WASI 解決
+- [x] WASI dep の inline codegen バグ修正
+- [x] wasmtime preload の WASI 解決
 
 ### Phase 4: selfhost codegen の linked build 対応
 

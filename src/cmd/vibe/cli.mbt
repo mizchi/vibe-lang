@@ -6824,12 +6824,36 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
     let (bundled, _) = @runtime.bundle_for_wasm_linked_with_imports(
       ast, cached_imports, extra_type_stmts~,
     )
-    let wasm = @runtime_compile.emit_wasm_with_linked_imports(
-      bundled, codegen_linked,
+    let maybe_wasm = try Some(
+      @runtime_compile.emit_wasm_with_linked_imports(
+        bundled, codegen_linked,
+      ),
     ) catch {
-      e => abort("build --debug: " + e.to_string())
+      _ => None
     }
-    (wasm, cached_imports)
+    match maybe_wasm {
+      Some(wasm) => (wasm, cached_imports)
+      None => {
+        // Some deps are intentionally inlined for linked debug builds
+        // (e.g. preload-unsafe WASI users). The cache fast path only stores
+        // linked imports, so it cannot always reconstruct those inlined defs.
+        // Fall back to the full path instead of failing the cached build.
+        let (db, resolved_entry) = match @loader.load_db(entry) {
+          Ok(v) => v
+          Err(err) => abort("build: " + err)
+        }
+        let (wasm, imports) = @runtime_compile.compile_module_wasm_linked(
+          db, resolved_entry, debug_errors=true,
+        ) catch {
+          e => abort("build --debug: " + e.user_message())
+        }
+        let cache_text = serialize_linked_imports_cache(imports)
+        @os_fs.write_string_to_file(imports_cache_path, cache_text) catch {
+          _ => ()
+        }
+        (wasm, imports)
+      }
+    }
   } else {
     // First time: full load for library compilation
     let (db, resolved_entry) = match @loader.load_db(entry) {

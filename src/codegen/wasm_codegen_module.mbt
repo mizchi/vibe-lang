@@ -2118,13 +2118,18 @@ fn emit_module_with_coverage(
   // Table 0 is reserved for funcref table when extern table exists.
   ctx.extern_table_index = 1
   // Assign effect operation import indices before compile loop.
-  // func_import_count(ctx) already includes effect ops count.
+  // func_import_count(ctx) already includes both effect ops and linked imports,
+  // so subtract both to recover the base index where effect imports start.
+  // Reuse the same key order as the import section to keep call indices aligned.
   {
-    let base = func_import_count(ctx) - ctx.effect_op_imports.length()
-    let mut eidx = 0
+    let effect_op_keys : Array[String] = []
     for key, _ in ctx.effect_op_imports {
+      effect_op_keys.push(key)
+    }
+    let base = func_import_count(ctx) - ctx.effect_op_imports.length() -
+      ctx.linked_fn_imports_list.length()
+    for eidx, key in effect_op_keys {
       ctx.effect_op_imports[key] = base + eidx
-      eidx += 1
     }
   }
   // Pre-compute ref cell capture flags for ALL functions before compile loop.
