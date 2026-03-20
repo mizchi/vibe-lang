@@ -40,7 +40,7 @@ ReExport チェーン解決、linked import alias re-export、func_import_count 
 
 - [x] Phase 1: transitive import 対応 (ReExport チェーン解決) — MoonBit host
 - [x] Phase 2: prelude 分離（builtin でない関数のみ library 化）
-- [ ] Phase 3: HOF 選択的 inline
+- [x] Phase 3: HOF 選択的 inline
 - [x] Phase 4: selfhost codegen の linked build 対応（下記）
 - [x] WASI dep の inline codegen バグ修正
 - [x] wasmtime preload の WASI 解決

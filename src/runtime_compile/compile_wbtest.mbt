@@ -260,6 +260,93 @@ test "linked compile uses prelude_core library for scalar helpers" {
 }
 
 ///|
+test "linked compile inlines HOF exports but keeps scalar exports linked" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "./lib.vibe",
+    (
+      #|export let add1 = (x : Int) -> Int { x + 1 }
+      #|export let apply_twice = (f : (Int) -> Int, x : Int) -> Int {
+      #|  f(f(x))
+      #|}
+    ),
+  )
+  db.set_source(
+    "main",
+    (
+      #|import ./lib.vibe { add1, apply_twice }
+      #|apply_twice(add1, 40)
+    ),
+  )
+  let (main_wasm, linked_imports) = try
+    compile_module_wasm_linked(db, "main")
+  catch {
+    e => fail("linked compile error: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  let mut saw_add1 = false
+  let mut saw_apply_twice = false
+  for li in linked_imports {
+    if li.module_name == "lib" && li.func_name == "add1" {
+      saw_add1 = true
+    }
+    if li.module_name == "lib" && li.func_name == "apply_twice" {
+      saw_apply_twice = true
+    }
+  }
+  assert_true(saw_add1)
+  assert_false(saw_apply_twice)
+  assert_true(bytes_contains_ascii(main_wasm, "lib"))
+  assert_true(bytes_contains_ascii(main_wasm, "add1"))
+  assert_false(bytes_contains_ascii(main_wasm, "apply_twice"))
+}
+
+///|
+test "linked compile keeps scalar re-exports linked when HOF re-exports are inlined" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "./lib.vibe",
+    (
+      #|export let add1 = (x : Int) -> Int { x + 1 }
+      #|export let apply_twice = (f : (Int) -> Int, x : Int) -> Int {
+      #|  f(f(x))
+      #|}
+    ),
+  )
+  db.set_source("./mid.vibe", "export ./lib.vibe { add1, apply_twice }")
+  db.set_source(
+    "main",
+    (
+      #|import ./mid.vibe { add1, apply_twice }
+      #|apply_twice(add1, 40)
+    ),
+  )
+  let (main_wasm, linked_imports) = try
+    compile_module_wasm_linked(db, "main")
+  catch {
+    e => fail("linked compile error: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  let mut saw_add1 = false
+  let mut saw_apply_twice = false
+  for li in linked_imports {
+    if li.module_name == "mid" && li.func_name == "add1" {
+      saw_add1 = true
+    }
+    if li.module_name == "mid" && li.func_name == "apply_twice" {
+      saw_apply_twice = true
+    }
+  }
+  assert_true(saw_add1)
+  assert_false(saw_apply_twice)
+  assert_true(bytes_contains_ascii(main_wasm, "mid"))
+  assert_true(bytes_contains_ascii(main_wasm, "add1"))
+  assert_false(bytes_contains_ascii(main_wasm, "apply_twice"))
+}
+
+///|
 test "wasm_compile_profile_tsv emits compile substage rows" {
   let content = wasm_compile_profile_tsv(
     1000,

@@ -17,6 +17,8 @@ STRING_RELEASE_WASM="$STRING_CASE_DIR/main.release.wasm"
 PRELUDE_CASE_DIR="$WORK/prelude_case"
 PRELUDE_LIB_WASM="$PRELUDE_CASE_DIR/.vibe/debug/main/prelude_core.wasm"
 PRELUDE_RELEASE_WASM="$PRELUDE_CASE_DIR/main.release.wasm"
+MIXED_HOF_CASE_DIR="$WORK/mixed_hof_case"
+MIXED_HOF_RELEASE_WASM="$MIXED_HOF_CASE_DIR/main.release.wasm"
 
 echo "=== linked debug build: selfhost compiler ==="
 
@@ -89,7 +91,7 @@ import ./lib.vibe { helper }
 String::length(String::concat(helper(), ", world"))
 EOF
 
-echo "  [5/6] cross-module string concat..."
+echo "  [5/7] cross-module string concat..."
 if ! timeout 30 "$CLI" build --debug "$STRING_CASE_DIR/main.vibe" \
   -o "$STRING_CASE_DIR/main.wasm" >/dev/null 2>&1; then
   echo "FAIL: string linked debug build failed"
@@ -133,7 +135,7 @@ cat >"$PRELUDE_CASE_DIR/main.vibe" <<'EOF'
 option_is_none(None)
 EOF
 
-echo "  [6/6] prelude core synthetic library..."
+echo "  [6/7] prelude core synthetic library..."
 if ! timeout 30 "$CLI" build --debug "$PRELUDE_CASE_DIR/main.vibe" \
   -o "$PRELUDE_CASE_DIR/main.wasm" >/dev/null 2>&1; then
   echo "FAIL: prelude core linked debug build failed"
@@ -173,5 +175,57 @@ if ! [ "$PRELUDE_RESULT" = "$PRELUDE_EXPECTED" ]; then
   echo "$PRELUDE_EXPECTED"
   echo "actual:"
   echo "$PRELUDE_RESULT"
+  exit 1
+fi
+
+# Mixed HOF deps should inline only HOF exports and keep scalar exports linked.
+mkdir -p "$MIXED_HOF_CASE_DIR"
+cat >"$MIXED_HOF_CASE_DIR/lib.vibe" <<'EOF'
+export let add1 = (x : Int) -> Int { x + 1 }
+export let apply_twice = (f : (Int) -> Int, x : Int) -> Int {
+  f(f(x))
+}
+EOF
+cat >"$MIXED_HOF_CASE_DIR/main.vibe" <<'EOF'
+import ./lib.vibe { add1, apply_twice }
+apply_twice(add1, 40)
+EOF
+
+echo "  [7/7] mixed HOF selective inline..."
+if ! timeout 30 "$CLI" build --debug "$MIXED_HOF_CASE_DIR/main.vibe" \
+  -o "$MIXED_HOF_CASE_DIR/main.wasm" >/dev/null 2>&1; then
+  echo "FAIL: mixed HOF linked debug build failed"
+  exit 1
+fi
+if ! timeout 30 "$CLI" build --debug "$MIXED_HOF_CASE_DIR/main.vibe" \
+  -o "$MIXED_HOF_CASE_DIR/main.cached.wasm" >/dev/null 2>&1; then
+  echo "FAIL: cached mixed HOF linked debug build failed"
+  exit 1
+fi
+if ! timeout 30 "$CLI" build --release "$MIXED_HOF_CASE_DIR/main.vibe" \
+  -o "$MIXED_HOF_RELEASE_WASM" >/dev/null 2>&1; then
+  echo "FAIL: mixed HOF release build failed"
+  exit 1
+fi
+MIXED_HOF_PRELOAD_ARGS=()
+for f in "$MIXED_HOF_CASE_DIR/.vibe/debug/main/"*.wasm; do
+  if ! [ -f "$f" ]; then
+    continue
+  fi
+  mod="$(basename "$f" .wasm)"
+  MIXED_HOF_PRELOAD_ARGS+=(--preload "$mod=$f")
+done
+MIXED_HOF_EXPECTED="$(env VIBE_WASMTIME_WASM_FLAGS='exceptions=y' \
+  "$ROOT_DIR/scripts/wasmtime_run.sh" run --invoke _start "$MIXED_HOF_RELEASE_WASM" \
+  2>&1 || true)"
+MIXED_HOF_RESULT="$(env VIBE_WASMTIME_WASM_FLAGS='exceptions=y' \
+  "$ROOT_DIR/scripts/wasmtime_run.sh" run "${MIXED_HOF_PRELOAD_ARGS[@]}" \
+  --invoke _start "$MIXED_HOF_CASE_DIR/main.wasm" 2>&1 || true)"
+if ! [ "$MIXED_HOF_RESULT" = "$MIXED_HOF_EXPECTED" ]; then
+  echo "FAIL: mixed HOF linked debug run returned unexpected result"
+  echo "expected:"
+  echo "$MIXED_HOF_EXPECTED"
+  echo "actual:"
+  echo "$MIXED_HOF_RESULT"
   exit 1
 fi
