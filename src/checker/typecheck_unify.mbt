@@ -1,4 +1,53 @@
 ///|
+/// Check if a type contains any Named nodes (the only nodes normalize_type_inner transforms).
+/// Used to skip normalization walks for types that cannot change.
+fn type_has_named_node(ty : @core.Type) -> Bool {
+  match ty {
+    @core.Type::Named(..) => true
+    @core.Type::Tuple(items) => {
+      for item in items {
+        if type_has_named_node(item) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Record(fields) => {
+      for _, item in fields {
+        if type_has_named_node(item) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Array(inner) | @core.Type::ArrayBuilder(inner) =>
+      type_has_named_node(inner)
+    @core.Type::Map(key, inner) | @core.Type::MapBuilder(key, inner) =>
+      type_has_named_node(key) || type_has_named_node(inner)
+    @core.Type::Variant(fields) => {
+      for _, item in fields {
+        if type_has_named_node(item) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Func(params~, ret~, ..) => {
+      if type_has_named_node(ret) {
+        return true
+      }
+      for param in params {
+        if type_has_named_node(param.ty) {
+          return true
+        }
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+///|
 fn normalize_type(env : TypeEnv, ty : @core.Type) -> @core.Type raise TypeError {
   normalize_type_with_mode(env, ty, false)
 }
@@ -444,61 +493,91 @@ fn normalize_type_inner(
         normalized
       }
     }
-    @core.Type::Tuple(items) => {
-      let out : Array[@core.Type] = []
-      for item in items {
-        out.push(normalize_type_inner(env, item, visiting, expand_enum))
+    @core.Type::Tuple(items) =>
+      if not(type_has_named_node(ty)) {
+        ty
+      } else {
+        let out : Array[@core.Type] = []
+        for item in items {
+          out.push(normalize_type_inner(env, item, visiting, expand_enum))
+        }
+        @core.Type::Tuple(out)
       }
-      @core.Type::Tuple(out)
-    }
-    @core.Type::Record(fields) => {
-      let out : Map[String, @core.Type] = {}
-      for name, item in fields {
-        out[name] = normalize_type_inner(env, item, visiting, expand_enum)
+    @core.Type::Record(fields) =>
+      if not(type_has_named_node(ty)) {
+        ty
+      } else {
+        let out : Map[String, @core.Type] = {}
+        for name, item in fields {
+          out[name] = normalize_type_inner(env, item, visiting, expand_enum)
+        }
+        @core.Type::Record(out)
       }
-      @core.Type::Record(out)
-    }
     @core.Type::Array(inner) =>
-      @core.Type::Array(normalize_type_inner(env, inner, visiting, expand_enum))
-    @core.Type::Map(key, inner) =>
-      @core.Type::Map(
-        normalize_type_inner(env, key, visiting, expand_enum),
-        normalize_type_inner(env, inner, visiting, expand_enum),
-      )
-    @core.Type::ArrayBuilder(inner) =>
-      @core.Type::ArrayBuilder(
-        normalize_type_inner(env, inner, visiting, expand_enum),
-      )
-    @core.Type::MapBuilder(key, inner) =>
-      @core.Type::MapBuilder(
-        normalize_type_inner(env, key, visiting, expand_enum),
-        normalize_type_inner(env, inner, visiting, expand_enum),
-      )
-    @core.Type::Variant(fields) => {
-      let out : Map[String, @core.Type] = {}
-      for name, item in fields {
-        out[name] = normalize_type_inner(env, item, visiting, expand_enum)
+      if not(type_has_named_node(inner)) {
+        ty
+      } else {
+        @core.Type::Array(
+          normalize_type_inner(env, inner, visiting, expand_enum),
+        )
       }
-      @core.Type::Variant(out)
-    }
+    @core.Type::Map(key, inner) =>
+      if not(type_has_named_node(key)) && not(type_has_named_node(inner)) {
+        ty
+      } else {
+        @core.Type::Map(
+          normalize_type_inner(env, key, visiting, expand_enum),
+          normalize_type_inner(env, inner, visiting, expand_enum),
+        )
+      }
+    @core.Type::ArrayBuilder(inner) =>
+      if not(type_has_named_node(inner)) {
+        ty
+      } else {
+        @core.Type::ArrayBuilder(
+          normalize_type_inner(env, inner, visiting, expand_enum),
+        )
+      }
+    @core.Type::MapBuilder(key, inner) =>
+      if not(type_has_named_node(key)) && not(type_has_named_node(inner)) {
+        ty
+      } else {
+        @core.Type::MapBuilder(
+          normalize_type_inner(env, key, visiting, expand_enum),
+          normalize_type_inner(env, inner, visiting, expand_enum),
+        )
+      }
+    @core.Type::Variant(fields) =>
+      if not(type_has_named_node(ty)) {
+        ty
+      } else {
+        let out : Map[String, @core.Type] = {}
+        for name, item in fields {
+          out[name] = normalize_type_inner(env, item, visiting, expand_enum)
+        }
+        @core.Type::Variant(out)
+      }
     @core.Type::Param(_) => ty
     @core.Type::Var(_) => ty
-    @core.Type::Func(params~, ret~, effects~) => {
-      let out : Array[@core.FuncParam] = []
-      for param in params {
-        out.push(@core.FuncParam::{
-          name: param.name,
-          label: param.label,
-          ty: normalize_type_inner(env, param.ty, visiting, expand_enum),
-          bounds: param.bounds,
-        })
+    @core.Type::Func(params~, ret~, effects~) =>
+      if not(type_has_named_node(ty)) {
+        ty
+      } else {
+        let out : Array[@core.FuncParam] = []
+        for param in params {
+          out.push(@core.FuncParam::{
+            name: param.name,
+            label: param.label,
+            ty: normalize_type_inner(env, param.ty, visiting, expand_enum),
+            bounds: param.bounds,
+          })
+        }
+        @core.Type::Func(
+          params=out,
+          ret=normalize_type_inner(env, ret, visiting, expand_enum),
+          effects~,
+        )
       }
-      @core.Type::Func(
-        params=out,
-        ret=normalize_type_inner(env, ret, visiting, expand_enum),
-        effects~,
-      )
-    }
     _ => ty
   }
 }

@@ -263,7 +263,75 @@ fn resolve_type_walk(env : TypeEnv, ty : @core.Type) -> @core.Type {
 }
 
 ///|
+/// Check if a type contains any Var nodes whose IDs are keys in the subs map.
+/// O(type_size), no allocations.
+fn type_has_var_in_map(ty : @core.Type, subs : Map[Int, @core.Type]) -> Bool {
+  match ty {
+    @core.Type::Var(id) => subs.contains(id)
+    @core.Type::Tuple(items) => {
+      for item in items {
+        if type_has_var_in_map(item, subs) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Record(fields) => {
+      for _, item in fields {
+        if type_has_var_in_map(item, subs) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Array(inner) | @core.Type::ArrayBuilder(inner) =>
+      type_has_var_in_map(inner, subs)
+    @core.Type::Map(key, inner) | @core.Type::MapBuilder(key, inner) =>
+      type_has_var_in_map(key, subs) || type_has_var_in_map(inner, subs)
+    @core.Type::Variant(fields) => {
+      for _, item in fields {
+        if type_has_var_in_map(item, subs) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Named(args~, ..) => {
+      for arg in args {
+        if type_has_var_in_map(arg, subs) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Func(params~, ret~, ..) => {
+      if type_has_var_in_map(ret, subs) {
+        return true
+      }
+      for param in params {
+        if type_has_var_in_map(param.ty, subs) {
+          return true
+        }
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+///|
 fn substitute_type_vars(
+  ty : @core.Type,
+  subs : Map[Int, @core.Type],
+) -> @core.Type {
+  if subs.is_empty() || not(type_has_var_in_map(ty, subs)) {
+    return ty
+  }
+  substitute_type_vars_walk(ty, subs)
+}
+
+///|
+fn substitute_type_vars_walk(
   ty : @core.Type,
   subs : Map[Int, @core.Type],
 ) -> @core.Type {
@@ -275,63 +343,228 @@ fn substitute_type_vars(
       }
     @core.Type::Tuple(items) => {
       let out : Array[@core.Type] = []
+      let mut changed = false
       for item in items {
-        out.push(substitute_type_vars(item, subs))
+        if not(changed) && not(type_has_var_in_map(item, subs)) {
+          out.push(item)
+        } else {
+          out.push(substitute_type_vars_walk(item, subs))
+          changed = true
+        }
       }
-      @core.Type::Tuple(out)
+      if changed {
+        @core.Type::Tuple(out)
+      } else {
+        ty
+      }
     }
     @core.Type::Record(fields) => {
-      let out : Map[String, @core.Type] = {}
+      let entries : Array[(String, @core.Type)] = []
+      let mut changed = false
       for name, item in fields {
-        out[name] = substitute_type_vars(item, subs)
+        if type_has_var_in_map(item, subs) {
+          entries.push((name, substitute_type_vars_walk(item, subs)))
+          changed = true
+        } else {
+          entries.push((name, item))
+        }
       }
-      @core.Type::Record(out)
+      if changed {
+        let out : Map[String, @core.Type] = {}
+        for entry in entries {
+          let (name, value) = entry
+          out[name] = value
+        }
+        @core.Type::Record(out)
+      } else {
+        ty
+      }
     }
     @core.Type::Array(inner) =>
-      @core.Type::Array(substitute_type_vars(inner, subs))
-    @core.Type::Map(key, inner) =>
-      @core.Type::Map(
-        substitute_type_vars(key, subs),
-        substitute_type_vars(inner, subs),
-      )
-    @core.Type::ArrayBuilder(inner) =>
-      @core.Type::ArrayBuilder(substitute_type_vars(inner, subs))
-    @core.Type::MapBuilder(key, inner) =>
-      @core.Type::MapBuilder(
-        substitute_type_vars(key, subs),
-        substitute_type_vars(inner, subs),
-      )
-    @core.Type::Variant(fields) => {
-      let out : Map[String, @core.Type] = {}
-      for name, item in fields {
-        out[name] = substitute_type_vars(item, subs)
+      if type_has_var_in_map(inner, subs) {
+        @core.Type::Array(substitute_type_vars_walk(inner, subs))
+      } else {
+        ty
       }
-      @core.Type::Variant(out)
+    @core.Type::Map(key, inner) => {
+      let key_has = type_has_var_in_map(key, subs)
+      let inner_has = type_has_var_in_map(inner, subs)
+      if key_has || inner_has {
+        @core.Type::Map(
+          if key_has {
+            substitute_type_vars_walk(key, subs)
+          } else {
+            key
+          },
+          if inner_has {
+            substitute_type_vars_walk(inner, subs)
+          } else {
+            inner
+          },
+        )
+      } else {
+        ty
+      }
+    }
+    @core.Type::ArrayBuilder(inner) =>
+      if type_has_var_in_map(inner, subs) {
+        @core.Type::ArrayBuilder(substitute_type_vars_walk(inner, subs))
+      } else {
+        ty
+      }
+    @core.Type::MapBuilder(key, inner) => {
+      let key_has = type_has_var_in_map(key, subs)
+      let inner_has = type_has_var_in_map(inner, subs)
+      if key_has || inner_has {
+        @core.Type::MapBuilder(
+          if key_has {
+            substitute_type_vars_walk(key, subs)
+          } else {
+            key
+          },
+          if inner_has {
+            substitute_type_vars_walk(inner, subs)
+          } else {
+            inner
+          },
+        )
+      } else {
+        ty
+      }
+    }
+    @core.Type::Variant(fields) => {
+      let entries : Array[(String, @core.Type)] = []
+      let mut changed = false
+      for name, item in fields {
+        if type_has_var_in_map(item, subs) {
+          entries.push((name, substitute_type_vars_walk(item, subs)))
+          changed = true
+        } else {
+          entries.push((name, item))
+        }
+      }
+      if changed {
+        let out : Map[String, @core.Type] = {}
+        for entry in entries {
+          let (name, value) = entry
+          out[name] = value
+        }
+        @core.Type::Variant(out)
+      } else {
+        ty
+      }
     }
     @core.Type::Named(name~, args~) => {
       let out : Array[@core.Type] = []
+      let mut changed = false
       for arg in args {
-        out.push(substitute_type_vars(arg, subs))
+        if not(changed) && not(type_has_var_in_map(arg, subs)) {
+          out.push(arg)
+        } else {
+          out.push(substitute_type_vars_walk(arg, subs))
+          changed = true
+        }
       }
-      @core.Type::Named(name~, args=out)
+      if changed {
+        @core.Type::Named(name~, args=out)
+      } else {
+        ty
+      }
     }
     @core.Type::Func(params~, ret~, effects~) => {
+      let ret_has = type_has_var_in_map(ret, subs)
+      let new_ret = if ret_has {
+        substitute_type_vars_walk(ret, subs)
+      } else {
+        ret
+      }
+      let mut changed = ret_has
       let out : Array[@core.FuncParam] = []
       for param in params {
-        out.push(@core.FuncParam::{
-          name: param.name,
-          label: param.label,
-          ty: substitute_type_vars(param.ty, subs),
-          bounds: param.bounds,
-        })
+        if type_has_var_in_map(param.ty, subs) {
+          changed = true
+          out.push(@core.FuncParam::{
+            name: param.name,
+            label: param.label,
+            ty: substitute_type_vars_walk(param.ty, subs),
+            bounds: param.bounds,
+          })
+        } else {
+          out.push(param)
+        }
       }
-      @core.Type::Func(
-        params=out,
-        ret=substitute_type_vars(ret, subs),
-        effects~,
-      )
+      if changed {
+        @core.Type::Func(params=out, ret=new_ret, effects~)
+      } else {
+        ty
+      }
     }
     _ => ty
+  }
+}
+
+///|
+/// Check if a type contains any Func nodes with effect Var atoms in the subs map.
+fn type_has_effect_var_in_map(
+  ty : @core.Type,
+  subs : Map[String, String],
+) -> Bool {
+  match ty {
+    @core.Type::Func(params~, ret~, effects~) => {
+      for effect in effects {
+        match effect {
+          @core.EffectAtom::Var(name) => if subs.contains(name) { return true }
+          _ => ()
+        }
+      }
+      if type_has_effect_var_in_map(ret, subs) {
+        return true
+      }
+      for param in params {
+        if type_has_effect_var_in_map(param.ty, subs) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Tuple(items) => {
+      for item in items {
+        if type_has_effect_var_in_map(item, subs) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Record(fields) => {
+      for _, item in fields {
+        if type_has_effect_var_in_map(item, subs) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Array(inner) | @core.Type::ArrayBuilder(inner) =>
+      type_has_effect_var_in_map(inner, subs)
+    @core.Type::Map(key, inner) | @core.Type::MapBuilder(key, inner) =>
+      type_has_effect_var_in_map(key, subs) ||
+      type_has_effect_var_in_map(inner, subs)
+    @core.Type::Variant(fields) => {
+      for _, item in fields {
+        if type_has_effect_var_in_map(item, subs) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Named(args~, ..) => {
+      for arg in args {
+        if type_has_effect_var_in_map(arg, subs) {
+          return true
+        }
+      }
+      false
+    }
+    _ => false
   }
 }
 
@@ -340,82 +573,271 @@ fn substitute_effect_vars(
   ty : @core.Type,
   subs : Map[String, String],
 ) -> @core.Type {
+  if subs.is_empty() || not(type_has_effect_var_in_map(ty, subs)) {
+    return ty
+  }
+  substitute_effect_vars_walk(ty, subs)
+}
+
+///|
+fn substitute_effect_vars_walk(
+  ty : @core.Type,
+  subs : Map[String, String],
+) -> @core.Type {
   match ty {
     @core.Type::Tuple(items) => {
       let out : Array[@core.Type] = []
+      let mut changed = false
       for item in items {
-        out.push(substitute_effect_vars(item, subs))
+        if not(changed) && not(type_has_effect_var_in_map(item, subs)) {
+          out.push(item)
+        } else {
+          out.push(substitute_effect_vars_walk(item, subs))
+          changed = true
+        }
       }
-      @core.Type::Tuple(out)
+      if changed {
+        @core.Type::Tuple(out)
+      } else {
+        ty
+      }
     }
     @core.Type::Record(fields) => {
-      let out : Map[String, @core.Type] = {}
+      let entries : Array[(String, @core.Type)] = []
+      let mut changed = false
       for name, item in fields {
-        out[name] = substitute_effect_vars(item, subs)
+        if type_has_effect_var_in_map(item, subs) {
+          entries.push((name, substitute_effect_vars_walk(item, subs)))
+          changed = true
+        } else {
+          entries.push((name, item))
+        }
       }
-      @core.Type::Record(out)
+      if changed {
+        let out : Map[String, @core.Type] = {}
+        for entry in entries {
+          let (name, value) = entry
+          out[name] = value
+        }
+        @core.Type::Record(out)
+      } else {
+        ty
+      }
     }
     @core.Type::Array(inner) =>
-      @core.Type::Array(substitute_effect_vars(inner, subs))
-    @core.Type::Map(key, inner) =>
-      @core.Type::Map(
-        substitute_effect_vars(key, subs),
-        substitute_effect_vars(inner, subs),
-      )
-    @core.Type::ArrayBuilder(inner) =>
-      @core.Type::ArrayBuilder(substitute_effect_vars(inner, subs))
-    @core.Type::MapBuilder(key, inner) =>
-      @core.Type::MapBuilder(
-        substitute_effect_vars(key, subs),
-        substitute_effect_vars(inner, subs),
-      )
-    @core.Type::Variant(fields) => {
-      let out : Map[String, @core.Type] = {}
-      for name, item in fields {
-        out[name] = substitute_effect_vars(item, subs)
+      if type_has_effect_var_in_map(inner, subs) {
+        @core.Type::Array(substitute_effect_vars_walk(inner, subs))
+      } else {
+        ty
       }
-      @core.Type::Variant(out)
+    @core.Type::Map(key, inner) => {
+      let key_has = type_has_effect_var_in_map(key, subs)
+      let inner_has = type_has_effect_var_in_map(inner, subs)
+      if key_has || inner_has {
+        @core.Type::Map(
+          if key_has {
+            substitute_effect_vars_walk(key, subs)
+          } else {
+            key
+          },
+          if inner_has {
+            substitute_effect_vars_walk(inner, subs)
+          } else {
+            inner
+          },
+        )
+      } else {
+        ty
+      }
+    }
+    @core.Type::ArrayBuilder(inner) =>
+      if type_has_effect_var_in_map(inner, subs) {
+        @core.Type::ArrayBuilder(substitute_effect_vars_walk(inner, subs))
+      } else {
+        ty
+      }
+    @core.Type::MapBuilder(key, inner) => {
+      let key_has = type_has_effect_var_in_map(key, subs)
+      let inner_has = type_has_effect_var_in_map(inner, subs)
+      if key_has || inner_has {
+        @core.Type::MapBuilder(
+          if key_has {
+            substitute_effect_vars_walk(key, subs)
+          } else {
+            key
+          },
+          if inner_has {
+            substitute_effect_vars_walk(inner, subs)
+          } else {
+            inner
+          },
+        )
+      } else {
+        ty
+      }
+    }
+    @core.Type::Variant(fields) => {
+      let entries : Array[(String, @core.Type)] = []
+      let mut changed = false
+      for name, item in fields {
+        if type_has_effect_var_in_map(item, subs) {
+          entries.push((name, substitute_effect_vars_walk(item, subs)))
+          changed = true
+        } else {
+          entries.push((name, item))
+        }
+      }
+      if changed {
+        let out : Map[String, @core.Type] = {}
+        for entry in entries {
+          let (name, value) = entry
+          out[name] = value
+        }
+        @core.Type::Variant(out)
+      } else {
+        ty
+      }
     }
     @core.Type::Named(name~, args~) => {
       let out : Array[@core.Type] = []
+      let mut changed = false
       for arg in args {
-        out.push(substitute_effect_vars(arg, subs))
+        if not(changed) && not(type_has_effect_var_in_map(arg, subs)) {
+          out.push(arg)
+        } else {
+          out.push(substitute_effect_vars_walk(arg, subs))
+          changed = true
+        }
       }
-      @core.Type::Named(name~, args=out)
+      if changed {
+        @core.Type::Named(name~, args=out)
+      } else {
+        ty
+      }
     }
     @core.Type::Func(params~, ret~, effects~) => {
+      let ret_has = type_has_effect_var_in_map(ret, subs)
+      let new_ret = if ret_has {
+        substitute_effect_vars_walk(ret, subs)
+      } else {
+        ret
+      }
+      let mut changed = ret_has
       let out : Array[@core.FuncParam] = []
       for param in params {
-        out.push(@core.FuncParam::{
-          name: param.name,
-          label: param.label,
-          ty: substitute_effect_vars(param.ty, subs),
-          bounds: param.bounds,
-        })
+        if type_has_effect_var_in_map(param.ty, subs) {
+          changed = true
+          out.push(@core.FuncParam::{
+            name: param.name,
+            label: param.label,
+            ty: substitute_effect_vars_walk(param.ty, subs),
+            bounds: param.bounds,
+          })
+        } else {
+          out.push(param)
+        }
       }
       let eff_out : Array[@core.EffectAtom] = []
+      let mut eff_changed = false
       for effect in effects {
         match effect {
           @core.EffectAtom::Const(_) => eff_out.push(effect)
           @core.EffectAtom::Var(name) =>
             match subs.get(name) {
-              Some(mapped) => eff_out.push(@core.EffectAtom::Var(mapped))
+              Some(mapped) => {
+                eff_out.push(@core.EffectAtom::Var(mapped))
+                eff_changed = true
+              }
               None => eff_out.push(effect)
             }
         }
       }
-      @core.Type::Func(
-        params=out,
-        ret=substitute_effect_vars(ret, subs),
-        effects=eff_out,
-      )
+      if changed || eff_changed {
+        @core.Type::Func(
+          params=out,
+          ret=new_ret,
+          effects=if eff_changed { eff_out } else { effects },
+        )
+      } else {
+        ty
+      }
     }
     _ => ty
   }
 }
 
 ///|
+/// Check if a type contains any Param nodes whose names are in the subs map.
+fn type_has_param_in_map(
+  ty : @core.Type,
+  subs : Map[String, @core.Type],
+) -> Bool {
+  match ty {
+    @core.Type::Param(name) => subs.contains(name)
+    @core.Type::Tuple(items) => {
+      for item in items {
+        if type_has_param_in_map(item, subs) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Record(fields) => {
+      for _, item in fields {
+        if type_has_param_in_map(item, subs) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Array(inner) | @core.Type::ArrayBuilder(inner) =>
+      type_has_param_in_map(inner, subs)
+    @core.Type::Map(key, inner) | @core.Type::MapBuilder(key, inner) =>
+      type_has_param_in_map(key, subs) || type_has_param_in_map(inner, subs)
+    @core.Type::Variant(fields) => {
+      for _, item in fields {
+        if type_has_param_in_map(item, subs) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Named(args~, ..) => {
+      for arg in args {
+        if type_has_param_in_map(arg, subs) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Func(params~, ret~, ..) => {
+      if type_has_param_in_map(ret, subs) {
+        return true
+      }
+      for param in params {
+        if type_has_param_in_map(param.ty, subs) {
+          return true
+        }
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+///|
 fn substitute_type(
+  ty : @core.Type,
+  subs : Map[String, @core.Type],
+) -> @core.Type {
+  if subs.is_empty() || not(type_has_param_in_map(ty, subs)) {
+    return ty
+  }
+  substitute_type_walk(ty, subs)
+}
+
+///|
+fn substitute_type_walk(
   ty : @core.Type,
   subs : Map[String, @core.Type],
 ) -> @core.Type {
@@ -427,53 +849,157 @@ fn substitute_type(
       }
     @core.Type::Tuple(items) => {
       let out : Array[@core.Type] = []
+      let mut changed = false
       for item in items {
-        out.push(substitute_type(item, subs))
+        if not(changed) && not(type_has_param_in_map(item, subs)) {
+          out.push(item)
+        } else {
+          out.push(substitute_type_walk(item, subs))
+          changed = true
+        }
       }
-      @core.Type::Tuple(out)
+      if changed {
+        @core.Type::Tuple(out)
+      } else {
+        ty
+      }
     }
     @core.Type::Record(fields) => {
-      let out : Map[String, @core.Type] = {}
+      let entries : Array[(String, @core.Type)] = []
+      let mut changed = false
       for name, item in fields {
-        out[name] = substitute_type(item, subs)
+        if type_has_param_in_map(item, subs) {
+          entries.push((name, substitute_type_walk(item, subs)))
+          changed = true
+        } else {
+          entries.push((name, item))
+        }
       }
-      @core.Type::Record(out)
+      if changed {
+        let out : Map[String, @core.Type] = {}
+        for entry in entries {
+          let (name, value) = entry
+          out[name] = value
+        }
+        @core.Type::Record(out)
+      } else {
+        ty
+      }
     }
-    @core.Type::Array(inner) => @core.Type::Array(substitute_type(inner, subs))
-    @core.Type::Map(key, inner) =>
-      @core.Type::Map(substitute_type(key, subs), substitute_type(inner, subs))
-    @core.Type::ArrayBuilder(inner) =>
-      @core.Type::ArrayBuilder(substitute_type(inner, subs))
-    @core.Type::MapBuilder(key, inner) =>
-      @core.Type::MapBuilder(
-        substitute_type(key, subs),
-        substitute_type(inner, subs),
-      )
-    @core.Type::Variant(fields) => {
-      let out : Map[String, @core.Type] = {}
-      for name, item in fields {
-        out[name] = substitute_type(item, subs)
+    @core.Type::Array(inner) =>
+      if type_has_param_in_map(inner, subs) {
+        @core.Type::Array(substitute_type_walk(inner, subs))
+      } else {
+        ty
       }
-      @core.Type::Variant(out)
+    @core.Type::Map(key, inner) => {
+      let key_has = type_has_param_in_map(key, subs)
+      let inner_has = type_has_param_in_map(inner, subs)
+      if key_has || inner_has {
+        @core.Type::Map(
+          if key_has {
+            substitute_type_walk(key, subs)
+          } else {
+            key
+          },
+          if inner_has {
+            substitute_type_walk(inner, subs)
+          } else {
+            inner
+          },
+        )
+      } else {
+        ty
+      }
+    }
+    @core.Type::ArrayBuilder(inner) =>
+      if type_has_param_in_map(inner, subs) {
+        @core.Type::ArrayBuilder(substitute_type_walk(inner, subs))
+      } else {
+        ty
+      }
+    @core.Type::MapBuilder(key, inner) => {
+      let key_has = type_has_param_in_map(key, subs)
+      let inner_has = type_has_param_in_map(inner, subs)
+      if key_has || inner_has {
+        @core.Type::MapBuilder(
+          if key_has {
+            substitute_type_walk(key, subs)
+          } else {
+            key
+          },
+          if inner_has {
+            substitute_type_walk(inner, subs)
+          } else {
+            inner
+          },
+        )
+      } else {
+        ty
+      }
+    }
+    @core.Type::Variant(fields) => {
+      let entries : Array[(String, @core.Type)] = []
+      let mut changed = false
+      for name, item in fields {
+        if type_has_param_in_map(item, subs) {
+          entries.push((name, substitute_type_walk(item, subs)))
+          changed = true
+        } else {
+          entries.push((name, item))
+        }
+      }
+      if changed {
+        let out : Map[String, @core.Type] = {}
+        for entry in entries {
+          let (name, value) = entry
+          out[name] = value
+        }
+        @core.Type::Variant(out)
+      } else {
+        ty
+      }
     }
     @core.Type::Named(name~, args~) => {
       let out : Array[@core.Type] = []
+      let mut changed = false
       for arg in args {
-        out.push(substitute_type(arg, subs))
+        if not(changed) && not(type_has_param_in_map(arg, subs)) {
+          out.push(arg)
+        } else {
+          out.push(substitute_type_walk(arg, subs))
+          changed = true
+        }
       }
-      @core.Type::Named(name~, args=out)
+      if changed {
+        @core.Type::Named(name~, args=out)
+      } else {
+        ty
+      }
     }
     @core.Type::Func(params~, ret~, effects~) => {
+      let ret_has = type_has_param_in_map(ret, subs)
+      let new_ret = if ret_has { substitute_type_walk(ret, subs) } else { ret }
+      let mut changed = ret_has
       let out : Array[@core.FuncParam] = []
       for param in params {
-        out.push(@core.FuncParam::{
-          name: param.name,
-          label: param.label,
-          ty: substitute_type(param.ty, subs),
-          bounds: param.bounds,
-        })
+        if type_has_param_in_map(param.ty, subs) {
+          changed = true
+          out.push(@core.FuncParam::{
+            name: param.name,
+            label: param.label,
+            ty: substitute_type_walk(param.ty, subs),
+            bounds: param.bounds,
+          })
+        } else {
+          out.push(param)
+        }
       }
-      @core.Type::Func(params=out, ret=substitute_type(ret, subs), effects~)
+      if changed {
+        @core.Type::Func(params=out, ret=new_ret, effects~)
+      } else {
+        ty
+      }
     }
     _ => ty
   }
