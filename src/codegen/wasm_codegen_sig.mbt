@@ -55,6 +55,20 @@ fn value_kind_from_type(ctx : CodegenCtx, ty : @core.Type) -> ValueKind {
 }
 
 ///|
+fn linked_funcref_key(import_idx : Int) -> Int {
+  -import_idx - 1
+}
+
+///|
+fn decode_funcref_func_index(func_import_count : Int, key : Int) -> Int {
+  if key < 0 {
+    -key - 1
+  } else {
+    func_import_count + key
+  }
+}
+
+///|
 fn ensure_funcref_slot(ctx : CodegenCtx, func_idx : Int) -> Int {
   match ctx.fn_table_slots.get(func_idx) {
     Some(slot) => slot

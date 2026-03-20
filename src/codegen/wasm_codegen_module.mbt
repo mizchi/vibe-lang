@@ -219,6 +219,27 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     }
     func_type_indices.push(idx)
   }
+  let linked_import_type_indices : Array[Int] = []
+  for entry in ctx.linked_fn_imports_list {
+    let (_, _, param_count, return_count) = entry
+    let param_kinds : Array[ValueKind] = []
+    for _ in 0..<param_count {
+      param_kinds.push(ValueKind::I64)
+    }
+    if return_count > 1 {
+      let result_kinds : Array[ValueKind] = []
+      for _ in 0..<return_count {
+        result_kinds.push(ValueKind::I64)
+      }
+      linked_import_type_indices.push(
+        ensure_sig_index(ctx, func_sig_with_env_multi(param_kinds, result_kinds)),
+      )
+    } else {
+      linked_import_type_indices.push(
+        ensure_sig_index(ctx, func_sig_with_env(param_kinds, ValueKind::I64)),
+      )
+    }
+  }
   let exception_type_count = if ctx.need_exceptions { 1 } else { 0 }
   let stack_switching_type_count = if ctx.need_stack_switching { 3 } else { 0 }
   // Count unique effect op type signatures for type section
@@ -229,14 +250,6 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       None => 0
     }
     effect_arities_seen["P" + arity.to_string() + "R1"] = true
-  }
-  // Also count linked import type signatures
-  for entry in ctx.linked_fn_imports_list {
-    let (_, _, param_count, return_count) = entry
-    effect_arities_seen["P" +
-    param_count.to_string() +
-    "R" +
-    return_count.to_string()] = true
   }
   let effect_type_count = effect_arities_seen.length()
   let total_type_count = builtin_count +
@@ -545,35 +558,6 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
         type_sec.push((127).to_byte()) // i32 (closure env)
         write_u32_leb(type_sec, 1) // 1 result
         type_sec.push((126).to_byte()) // i64
-      }
-    }
-  }
-  // Linked function import types: reuse same arity-based type indices
-  let linked_import_type_indices : Array[Int] = []
-  for entry in ctx.linked_fn_imports_list {
-    let (_, _, param_count, return_count) = entry
-    let type_key = "P" +
-      param_count.to_string() +
-      "R" +
-      return_count.to_string()
-    match effect_op_type_by_arity.get(type_key) {
-      Some(idx) => linked_import_type_indices.push(idx)
-      None => {
-        let idx = effect_type_next
-        effect_type_next += 1
-        effect_op_type_by_arity[type_key] = idx
-        linked_import_type_indices.push(idx)
-        // Write: (func (param i64*param_count i32) (result i64*return_count))
-        type_sec.push((96).to_byte()) // func type
-        write_u32_leb(type_sec, param_count + 1) // params: N i64 + 1 i32 env
-        for _ in 0..<param_count {
-          type_sec.push((126).to_byte()) // i64
-        }
-        type_sec.push((127).to_byte()) // i32 (closure env)
-        write_u32_leb(type_sec, return_count) // return_count results
-        for _ in 0..<return_count {
-          type_sec.push((126).to_byte()) // i64
-        }
       }
     }
   }
@@ -1269,8 +1253,11 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       emit_i32_const_raw(elem_sec, 0)
       elem_sec.push((11).to_byte())
       write_u32_leb(elem_sec, funcref_slot_count)
-      for func_idx in ctx.fn_table_order {
-        write_u32_leb(elem_sec, func_import_count + func_idx)
+      for func_key in ctx.fn_table_order {
+        write_u32_leb(
+          elem_sec,
+          decode_funcref_func_index(func_import_count, func_key),
+        )
       }
     }
     // Declarative element segment for stack switching (ref.func $run)

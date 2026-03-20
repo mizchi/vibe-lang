@@ -357,7 +357,10 @@ fn compile_stmt(
                       ctx.local_types.push(ValueKind::I64)
                       ctx.locals[name] = idx
                       ctx.local_kinds[name] = ValueKind::I64
-                      let slot = ensure_funcref_slot(ctx, import_idx)
+                      let slot = ensure_funcref_slot(
+                        ctx,
+                        linked_funcref_key(import_idx),
+                      )
                       emit_i64_const_raw(buf, tag_fn_value64(slot.to_int64()))
                       if is_last {
                         emit_local_tee(buf, idx)
