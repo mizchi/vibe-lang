@@ -23,71 +23,24 @@ fn instantiate_scheme(env : TypeEnv, scheme : TypeScheme) -> @core.Type {
       }
     }
   }
-  let effect_mapping : Map[String, String] = {}
-  for name in scheme.effect_vars {
-    effect_mapping[name] = fresh_effect_var(env)
-  }
   let substituted = substitute_type_vars(scheme.ty, mapping)
-  let replaced = substitute_effect_vars(substituted, effect_mapping)
+  let replaced = if scheme.effect_vars.is_empty() {
+    substituted
+  } else {
+    let effect_mapping : Map[String, String] = {}
+    for name in scheme.effect_vars {
+      effect_mapping[name] = fresh_effect_var(env)
+    }
+    substitute_effect_vars(substituted, effect_mapping)
+  }
   resolve_type(env, replaced)
 }
 
 ///|
 /// Check if a type contains any Var nodes that have substitutions in env.subs.
-/// This is O(type_size) but with NO allocations and NO equality comparisons,
-/// making it much cheaper than resolve_type's full walk with != checks.
+/// Delegates to type_has_var_in_map for the actual walk.
 fn type_has_substitutable_var(env : TypeEnv, ty : @core.Type) -> Bool {
-  match ty {
-    @core.Type::Var(id) => env.subs.contains(id)
-    @core.Type::Tuple(items) => {
-      for item in items {
-        if type_has_substitutable_var(env, item) {
-          return true
-        }
-      }
-      false
-    }
-    @core.Type::Record(fields) => {
-      for _, item in fields {
-        if type_has_substitutable_var(env, item) {
-          return true
-        }
-      }
-      false
-    }
-    @core.Type::Array(inner) | @core.Type::ArrayBuilder(inner) =>
-      type_has_substitutable_var(env, inner)
-    @core.Type::Map(_key, inner) | @core.Type::MapBuilder(_key, inner) =>
-      type_has_substitutable_var(env, inner)
-    @core.Type::Variant(fields) => {
-      for _, item in fields {
-        if type_has_substitutable_var(env, item) {
-          return true
-        }
-      }
-      false
-    }
-    @core.Type::Named(args~, ..) => {
-      for arg in args {
-        if type_has_substitutable_var(env, arg) {
-          return true
-        }
-      }
-      false
-    }
-    @core.Type::Func(params~, ret~, ..) => {
-      if type_has_substitutable_var(env, ret) {
-        return true
-      }
-      for param in params {
-        if type_has_substitutable_var(env, param.ty) {
-          return true
-        }
-      }
-      false
-    }
-    _ => false
-  }
+  type_has_var_in_map(ty, env.subs)
 }
 
 ///|
@@ -165,30 +118,52 @@ fn resolve_type_walk(env : TypeEnv, ty : @core.Type) -> @core.Type {
       } else {
         ty
       }
-    @core.Type::Map(key, inner) =>
-      if type_has_substitutable_var(env, inner) {
+    @core.Type::Map(key, inner) => {
+      let key_has = type_has_substitutable_var(env, key)
+      let inner_has = type_has_substitutable_var(env, inner)
+      if key_has || inner_has {
         @core.Type::Map(
-          resolve_type_walk(env, key),
-          resolve_type_walk(env, inner),
+          if key_has {
+            resolve_type_walk(env, key)
+          } else {
+            key
+          },
+          if inner_has {
+            resolve_type_walk(env, inner)
+          } else {
+            inner
+          },
         )
       } else {
         ty
       }
+    }
     @core.Type::ArrayBuilder(inner) =>
       if type_has_substitutable_var(env, inner) {
         @core.Type::ArrayBuilder(resolve_type_walk(env, inner))
       } else {
         ty
       }
-    @core.Type::MapBuilder(key, inner) =>
-      if type_has_substitutable_var(env, inner) {
+    @core.Type::MapBuilder(key, inner) => {
+      let key_has = type_has_substitutable_var(env, key)
+      let inner_has = type_has_substitutable_var(env, inner)
+      if key_has || inner_has {
         @core.Type::MapBuilder(
-          resolve_type_walk(env, key),
-          resolve_type_walk(env, inner),
+          if key_has {
+            resolve_type_walk(env, key)
+          } else {
+            key
+          },
+          if inner_has {
+            resolve_type_walk(env, inner)
+          } else {
+            inner
+          },
         )
       } else {
         ty
       }
+    }
     @core.Type::Variant(fields) => {
       let entries : Array[(String, @core.Type)] = []
       let mut changed = false
