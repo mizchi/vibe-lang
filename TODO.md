@@ -29,8 +29,11 @@ ReExport チェーン解決、linked import alias re-export、func_import_count 
 - [ ] **WASI dep の inline で codegen 不整合** — `cli_cache`, `module_loader`, `type_db` など
   WASI effect (Fs, Env) を持つ dep を monolithic inline すると、bundled AST の codegen で
   `local_set` の stack underflow が発生する (func validation error)。
-  原因: inline された dep のコードで、ローカル変数管理か closure capture が
-  linked imports 存在下で正しく機能していない。
+  **原因特定済み**: inline された dep の関数がタプル返却する場合、multivalue optimization
+  (`fn_multivalue_results`) が inline 前に存在しなかった関数を eligible と判定。
+  call site で multivalue unpack (N values) を期待するが、実際は tuple object (1 value) を返す。
+  修正方針: linked import が存在する linked build では multivalue optimization を無効化、
+  もしくは inline された dep 由来の関数を multivalue 判定から除外する。
   回避策: WASI dep は linked import のまま、`-W unknown-imports-default=y` でスタブ化。
 
 - [ ] **wasmtime --preload が WASI import を解決できない** — wasmtime の `--preload` は

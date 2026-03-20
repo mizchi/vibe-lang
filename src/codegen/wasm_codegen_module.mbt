@@ -1893,6 +1893,10 @@ fn emit_module_with_coverage(
   }
   // Multi-value return analysis: iterative fixed-point to detect functions
   // that always return tuple literals, including cross-function call chains.
+  // Skip in linked build: inlined WASI deps may expose new multivalue-eligible
+  // functions whose callers don't expect multi-value returns, causing stack
+  // underflow at local_set after call sites.
+  if ctx.linked_fn_imports_list.length() == 0 {
   // Pass 1: identify functions eligible without cross-function Call support
   for i in 0..<funcs.length() {
     let f = funcs[i]
@@ -1941,6 +1945,7 @@ fn emit_module_with_coverage(
       break
     }
   }
+  } // end linked_fn_imports_list == 0 guard
   ctx.fn_sig_type_indices = {}
   ctx.fn_sig_order = []
   ctx.fn_type_indices = {}
