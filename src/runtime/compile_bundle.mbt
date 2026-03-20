@@ -82,6 +82,101 @@ pub(all) struct LinkedImport {
 } derive(Show, Eq)
 
 ///|
+pub fn prelude_core_module_name() -> String {
+  "prelude_core"
+}
+
+///|
+fn prelude_core_linked_import(stmt : @core.Stmt) -> LinkedImport? {
+  match stmt {
+    @core.Stmt::Let(name~, expr~, ..)
+    | @core.Stmt::ExportLet(name~, expr~, ..)
+    | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
+      match expr {
+        @core.Expr::Fn(params~, ret~, ..) =>
+          if linked_fn_has_func_param(params) {
+            None
+          } else {
+            Some(LinkedImport::{
+              module_name: prelude_core_module_name(),
+              func_name: name,
+              param_count: params.length(),
+              return_count: fn_return_count(ret),
+            })
+          }
+        _ => None
+      }
+    _ => None
+  }
+}
+
+///|
+fn prelude_core_library_stmts() -> Array[@core.Stmt] {
+  let stmts : Array[@core.Stmt] = []
+  for stmt in @checker.prelude_core_value_stmts() {
+    match prelude_core_linked_import(stmt) {
+      Some(_) => stmts.push(stmt)
+      None => ()
+    }
+  }
+  stmts
+}
+
+///|
+fn prelude_linked_build_inline_stmts() -> Array[@core.Stmt] {
+  let stmts : Array[@core.Stmt] = []
+  for stmt in @checker.prelude_core_value_stmts() {
+    match prelude_core_linked_import(stmt) {
+      Some(_) => ()
+      None => stmts.push(stmt)
+    }
+  }
+  for stmt in @checker.prelude_builtin_value_stmts() {
+    stmts.push(stmt)
+  }
+  stmts
+}
+
+///|
+fn append_prelude_core_linked_imports(
+  linked_imports : Array[LinkedImport],
+  existing_value_names : Map[String, Bool],
+) -> Unit {
+  for stmt in prelude_core_library_stmts() {
+    match prelude_core_linked_import(stmt) {
+      Some(li) =>
+        if not(existing_value_names.contains(li.func_name)) {
+          existing_value_names[li.func_name] = true
+          linked_imports.push(li)
+        }
+      None => ()
+    }
+  }
+}
+
+///|
+fn append_prelude_inline_stmts_for_linked_build(
+  bundled_stmts : Array[@core.Stmt],
+  existing_value_names : Map[String, Bool],
+) -> Unit {
+  for stmt in prelude_linked_build_inline_stmts() {
+    match bundle_stmt_value_name(stmt) {
+      Some(name) =>
+        if not(existing_value_names.contains(name)) {
+          bundled_stmts.push(stmt)
+          existing_value_names[name] = true
+        }
+      None => ()
+    }
+  }
+}
+
+///|
+pub fn prelude_core_library_module() -> @core.Module {
+  @core.Module::{ stmts: prelude_core_library_stmts() }
+}
+
+///|
 /// Bundle for linked mode: don't inline import dependencies, instead return
 /// their exported function names as linked imports. These become wasm imports
 /// that are resolved at runtime via `wasmtime --preload`.
@@ -185,25 +280,10 @@ pub fn bundle_for_wasm_linked(
       }
     }
   }
-  // Prelude is split into core-candidate and builtin-dependent helpers.
-  // Both are still inlined for now; the split exists so core helpers can move
-  // to a precompiled module in a follow-up step without changing bundler shape.
-  for
-    prelude_stmts in [
-      @checker.prelude_core_value_stmts(),
-      @checker.prelude_builtin_value_stmts(),
-    ] {
-    for stmt in prelude_stmts {
-      match bundle_stmt_value_name(stmt) {
-        Some(name) =>
-          if not(existing_value_names.contains(name)) {
-            bundled_stmts.push(stmt)
-            existing_value_names[name] = true
-          }
-        None => ()
-      }
-    }
-  }
+  append_prelude_core_linked_imports(linked_imports, existing_value_names)
+  append_prelude_inline_stmts_for_linked_build(
+    bundled_stmts, existing_value_names,
+  )
   // Add main module statements (excluding imports; resolve re-exports for types)
   let raw_entry_ast = db.ast(path)
   let non_prelude_names : Array[String] = []
@@ -258,23 +338,9 @@ pub fn bundle_for_wasm_linked_with_imports(
   for li in linked_imports {
     existing_value_names[li.func_name] = true
   }
-  // Keep bundler shape aligned with the prelude core/builtin split.
-  for
-    prelude_stmts in [
-      @checker.prelude_core_value_stmts(),
-      @checker.prelude_builtin_value_stmts(),
-    ] {
-    for stmt in prelude_stmts {
-      match bundle_stmt_value_name(stmt) {
-        Some(name) =>
-          if not(existing_value_names.contains(name)) {
-            bundled_stmts.push(stmt)
-            existing_value_names[name] = true
-          }
-        None => ()
-      }
-    }
-  }
+  append_prelude_inline_stmts_for_linked_build(
+    bundled_stmts, existing_value_names,
+  )
   // Add extra type definitions from resolved ReExports
   for stmt in extra_type_stmts {
     bundled_stmts.push(stmt)

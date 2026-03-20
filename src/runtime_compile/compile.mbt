@@ -357,6 +357,22 @@ pub fn emit_wasm_with_linked_imports(
 }
 
 ///|
+pub fn emit_library_module_wasm(
+  ast : @core.Module,
+  debug_errors? : Bool = false,
+) -> Bytes raise WasmCompileError {
+  @codegen.emit_module_wasm_with_options(
+    ast,
+    @codegen.wasm_emit_options(
+      embed_error_strings=debug_errors,
+      library_mode=true,
+    ),
+  ) catch {
+    e => raise WasmCompileError::Gen(e)
+  }
+}
+
+///|
 fn wasm_emit_options(
   debug_errors : Bool,
   http_host_imports? : Bool = false,

@@ -189,11 +189,15 @@ test "linked library mode exports heap ptr for static string helper" {
   } noraise {
     v => v
   }
-  assert_eq(linked_imports.length(), 1)
-  assert_eq(linked_imports[0].module_name, "lib")
-  assert_eq(linked_imports[0].func_name, "helper")
-  assert_eq(linked_imports[0].param_count, 0)
-  assert_eq(linked_imports[0].return_count, 1)
+  let mut saw_helper = false
+  for li in linked_imports {
+    if li.module_name == "lib" && li.func_name == "helper" {
+      assert_eq(li.param_count, 0)
+      assert_eq(li.return_count, 1)
+      saw_helper = true
+    }
+  }
+  assert_true(saw_helper)
   assert_true(bytes_contains_ascii(main_wasm, "lib"))
   assert_true(bytes_contains_ascii(main_wasm, "helper"))
   assert_true(bytes_contains_ascii(main_wasm, "memory"))
@@ -201,6 +205,58 @@ test "linked library mode exports heap ptr for static string helper" {
   assert_true(bytes_contains_ascii(lib_wasm, "helper"))
   assert_true(bytes_contains_ascii(lib_wasm, "memory"))
   assert_true(bytes_contains_ascii(lib_wasm, "__heap_ptr"))
+}
+
+///|
+test "linked compile uses prelude_core library for scalar helpers" {
+  let db = @runtime.VibeDb::new()
+  db.set_source("main", "option_is_none(None)")
+  let (main_wasm, linked_imports) = try
+    compile_module_wasm_linked(db, "main")
+  catch {
+    e => fail("linked compile error: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  let mut saw_option_is_none = false
+  let mut saw_option_is_some = false
+  let mut saw_not = false
+  let mut saw_option_map = false
+  for li in linked_imports {
+    if li.module_name == @runtime.prelude_core_module_name() {
+      if li.func_name == "option_is_none" {
+        saw_option_is_none = true
+      }
+      if li.func_name == "option_is_some" {
+        saw_option_is_some = true
+      }
+      if li.func_name == "not" {
+        saw_not = true
+      }
+      if li.func_name == "option_map" {
+        saw_option_map = true
+      }
+    }
+  }
+  let prelude_lib_wasm = try
+    emit_library_module_wasm(@runtime.prelude_core_library_module())
+  catch {
+    e => fail("prelude core library compile error: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  assert_true(saw_option_is_none)
+  assert_true(saw_option_is_some)
+  assert_true(saw_not)
+  assert_false(saw_option_map)
+  assert_true(
+    bytes_contains_ascii(main_wasm, @runtime.prelude_core_module_name()),
+  )
+  assert_true(bytes_contains_ascii(prelude_lib_wasm, "option_is_none"))
+  assert_true(bytes_contains_ascii(prelude_lib_wasm, "option_is_some"))
+  assert_true(bytes_contains_ascii(prelude_lib_wasm, "not"))
+  assert_false(bytes_contains_ascii(prelude_lib_wasm, "option_map"))
+  assert_false(bytes_contains_ascii(prelude_lib_wasm, "add"))
 }
 
 ///|

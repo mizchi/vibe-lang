@@ -14,6 +14,9 @@ trap 'rm -rf "$WORK"' EXIT
 STRING_CASE_DIR="$WORK/string_case"
 STRING_LIB_WASM="$STRING_CASE_DIR/.vibe/debug/main/lib.wasm"
 STRING_RELEASE_WASM="$STRING_CASE_DIR/main.release.wasm"
+PRELUDE_CASE_DIR="$WORK/prelude_case"
+PRELUDE_LIB_WASM="$PRELUDE_CASE_DIR/.vibe/debug/main/prelude_core.wasm"
+PRELUDE_RELEASE_WASM="$PRELUDE_CASE_DIR/main.release.wasm"
 
 echo "=== linked debug build: selfhost compiler ==="
 
@@ -86,7 +89,7 @@ import ./lib.vibe { helper }
 String::length(String::concat(helper(), ", world"))
 EOF
 
-echo "  [5/5] cross-module string concat..."
+echo "  [5/6] cross-module string concat..."
 if ! timeout 30 "$CLI" build --debug "$STRING_CASE_DIR/main.vibe" \
   -o "$STRING_CASE_DIR/main.wasm" >/dev/null 2>&1; then
   echo "FAIL: string linked debug build failed"
@@ -101,11 +104,19 @@ if ! [ -f "$STRING_LIB_WASM" ]; then
   echo "FAIL: string linked debug library wasm missing"
   exit 1
 fi
+STRING_PRELOAD_ARGS=()
+for f in "$STRING_CASE_DIR/.vibe/debug/main/"*.wasm; do
+  if ! [ -f "$f" ]; then
+    continue
+  fi
+  mod="$(basename "$f" .wasm)"
+  STRING_PRELOAD_ARGS+=(--preload "$mod=$f")
+done
 STRING_EXPECTED="$(env VIBE_WASMTIME_WASM_FLAGS='exceptions=y' \
   "$ROOT_DIR/scripts/wasmtime_run.sh" run --invoke _start "$STRING_RELEASE_WASM" \
   2>&1 || true)"
 STRING_RESULT="$(env VIBE_WASMTIME_WASM_FLAGS='exceptions=y' \
-  "$ROOT_DIR/scripts/wasmtime_run.sh" run --preload lib="$STRING_LIB_WASM" \
+  "$ROOT_DIR/scripts/wasmtime_run.sh" run "${STRING_PRELOAD_ARGS[@]}" \
   --invoke _start "$STRING_CASE_DIR/main.wasm" 2>&1 || true)"
 if ! [ "$STRING_RESULT" = "$STRING_EXPECTED" ]; then
   echo "FAIL: cross-module string concat returned unexpected result"
@@ -113,5 +124,54 @@ if ! [ "$STRING_RESULT" = "$STRING_EXPECTED" ]; then
   echo "$STRING_EXPECTED"
   echo "actual:"
   echo "$STRING_RESULT"
+  exit 1
+fi
+
+# Prelude core scalar helpers should compile into a synthetic library module.
+mkdir -p "$PRELUDE_CASE_DIR"
+cat >"$PRELUDE_CASE_DIR/main.vibe" <<'EOF'
+option_is_none(None)
+EOF
+
+echo "  [6/6] prelude core synthetic library..."
+if ! timeout 30 "$CLI" build --debug "$PRELUDE_CASE_DIR/main.vibe" \
+  -o "$PRELUDE_CASE_DIR/main.wasm" >/dev/null 2>&1; then
+  echo "FAIL: prelude core linked debug build failed"
+  exit 1
+fi
+if ! timeout 30 "$CLI" build --debug "$PRELUDE_CASE_DIR/main.vibe" \
+  -o "$PRELUDE_CASE_DIR/main.cached.wasm" >/dev/null 2>&1; then
+  echo "FAIL: cached prelude core linked debug build failed"
+  exit 1
+fi
+if ! timeout 30 "$CLI" build --release "$PRELUDE_CASE_DIR/main.vibe" \
+  -o "$PRELUDE_RELEASE_WASM" >/dev/null 2>&1; then
+  echo "FAIL: prelude core release build failed"
+  exit 1
+fi
+if ! [ -f "$PRELUDE_LIB_WASM" ]; then
+  echo "FAIL: prelude core library wasm missing"
+  exit 1
+fi
+PRELUDE_PRELOAD_ARGS=()
+for f in "$PRELUDE_CASE_DIR/.vibe/debug/main/"*.wasm; do
+  if ! [ -f "$f" ]; then
+    continue
+  fi
+  mod="$(basename "$f" .wasm)"
+  PRELUDE_PRELOAD_ARGS+=(--preload "$mod=$f")
+done
+PRELUDE_EXPECTED="$(env VIBE_WASMTIME_WASM_FLAGS='exceptions=y' \
+  "$ROOT_DIR/scripts/wasmtime_run.sh" run --invoke _start "$PRELUDE_RELEASE_WASM" \
+  2>&1 || true)"
+PRELUDE_RESULT="$(env VIBE_WASMTIME_WASM_FLAGS='exceptions=y' \
+  "$ROOT_DIR/scripts/wasmtime_run.sh" run "${PRELUDE_PRELOAD_ARGS[@]}" \
+  --invoke _start "$PRELUDE_CASE_DIR/main.wasm" 2>&1 || true)"
+if ! [ "$PRELUDE_RESULT" = "$PRELUDE_EXPECTED" ]; then
+  echo "FAIL: prelude core linked debug run returned unexpected result"
+  echo "expected:"
+  echo "$PRELUDE_EXPECTED"
+  echo "actual:"
+  echo "$PRELUDE_RESULT"
   exit 1
 fi

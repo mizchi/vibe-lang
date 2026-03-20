@@ -6936,6 +6936,39 @@ fn save_library_modules(
   for li in imports {
     module_names[li.module_name] = true
   }
+  if module_names.contains(@runtime.prelude_core_module_name()) {
+    let mod_name = @runtime.prelude_core_module_name()
+    let lib_wasm_path = cache_dir + "/" + mod_name + ".wasm"
+    let maybe_lib_bytes = Some(
+      @runtime_compile.emit_library_module_wasm(
+        @runtime.prelude_core_library_module(),
+        debug_errors=true,
+      ),
+    ) catch {
+      e => {
+        println(
+          "build --debug: warning: library compile failed for " +
+          mod_name +
+          ": " +
+          e.user_message(),
+        )
+        None
+      }
+    }
+    match maybe_lib_bytes {
+      Some(lib_bytes) =>
+        @os_fs.write_bytes_to_file(lib_wasm_path, lib_bytes) catch {
+          e =>
+            println(
+              "build --debug: warning: write failed for " +
+              mod_name +
+              ": " +
+              e.to_string(),
+            )
+        }
+      None => ()
+    }
+  }
   let db_imports = db.imports(entry)
   for imp in db_imports {
     let mod_name = @runtime.linked_module_name(imp.path)
