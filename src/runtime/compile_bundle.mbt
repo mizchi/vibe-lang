@@ -142,19 +142,16 @@ pub fn bundle_for_wasm_linked(
       // Module has only scalar exports: use linked imports (with ReExport resolution)
       for stmt in dep_ast.stmts {
         match stmt {
-          @core.Stmt::ExportLet(name~, expr~, ..) => {
+          @core.Stmt::ExportLet(name~, expr=_, ..) => {
             existing_value_names[name] = true
-            match expr {
-              @core.Expr::Fn(params~, ret~, ..) => {
-                let rc = match ret {
-                  Some(@core.Type::Tuple(items)) => items.length()
-                  _ => 1
-                }
+            match resolve_bound_fn_at_path(db, imp.path, name, {}) {
+              Some(resolved) =>
                 linked_imports.push(LinkedImport::{
-                  module_name, func_name: name,
-                  param_count: params.length(), return_count: rc,
+                  module_name,
+                  func_name: name,
+                  param_count: resolved.params.length(),
+                  return_count: resolved.return_count,
                 })
-              }
               _ => ()
             }
           }
@@ -164,8 +161,10 @@ pub fn bundle_for_wasm_linked(
               if not(existing_value_names.contains(r.name)) {
                 existing_value_names[r.name] = true
                 linked_imports.push(LinkedImport::{
-                  module_name, func_name: r.name,
-                  param_count: r.params.length(), return_count: r.return_count,
+                  module_name,
+                  func_name: r.name,
+                  param_count: r.params.length(),
+                  return_count: r.return_count,
                 })
               }
             }
@@ -174,9 +173,13 @@ pub fn bundle_for_wasm_linked(
             }
           }
           @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
-            bundled_stmts.push(@core.Stmt::EnumDef(name~, params~, ctors~, span~))
+            bundled_stmts.push(
+              @core.Stmt::EnumDef(name~, params~, ctors~, span~),
+            )
           @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) =>
-            bundled_stmts.push(@core.Stmt::TypeAlias(name~, params~, target~, span~))
+            bundled_stmts.push(
+              @core.Stmt::TypeAlias(name~, params~, target~, span~),
+            )
           _ => ()
         }
       }
@@ -222,12 +225,17 @@ pub fn bundle_for_wasm_linked(
       _ => ()
     }
   }
-  let bundled = @core.Module::{ stmts: dedupe_bundle_structural_defs(bundled_stmts) }
-  let after_dce = @pipeline.dce_module_with_entry_names(bundled, non_prelude_names)
+  let bundled = @core.Module::{
+    stmts: dedupe_bundle_structural_defs(bundled_stmts),
+  }
+  let after_dce = @pipeline.dce_module_with_entry_names(
+    bundled, non_prelude_names,
+  )
   (demote_unused_let_mut(after_dce), linked_imports)
 }
 
 ///|
+
 ///|
 /// Bundle for linked mode with pre-computed imports list (fast path).
 /// No VibeDb needed — just prelude + user AST.
@@ -236,7 +244,7 @@ pub fn bundle_for_wasm_linked(
 pub fn bundle_for_wasm_linked_with_imports(
   ast : @core.Module,
   linked_imports : Array[LinkedImport],
-  extra_type_stmts~ : Array[@core.Stmt] = [],
+  extra_type_stmts? : Array[@core.Stmt] = [],
 ) -> (@core.Module, Array[LinkedImport]) {
   let bundled_stmts : Array[@core.Stmt] = []
   let existing_value_names : Map[String, Bool] = {}
@@ -273,12 +281,17 @@ pub fn bundle_for_wasm_linked_with_imports(
       }
     }
   }
-  let bundled = @core.Module::{ stmts: dedupe_bundle_structural_defs(bundled_stmts) }
-  let after_dce = @pipeline.dce_module_with_entry_names(bundled, non_prelude_names)
+  let bundled = @core.Module::{
+    stmts: dedupe_bundle_structural_defs(bundled_stmts),
+  }
+  let after_dce = @pipeline.dce_module_with_entry_names(
+    bundled, non_prelude_names,
+  )
   (demote_unused_let_mut(after_dce), linked_imports)
 }
 
 ///|
+
 ///|
 /// Check if any function parameter has a Func type (higher-order function).
 /// HOF functions need funcref table sharing, so they must be inlined.
@@ -290,7 +303,6 @@ fn linked_fn_has_func_param(params : Array[@core.FuncParam]) -> Bool {
   }
   false
 }
-
 
 ///|
 fn linked_type_is_func(ty : @core.Type) -> Bool {
@@ -323,7 +335,7 @@ fn module_requires_preload_host_imports(
   let base_dir = @path.Path(path).dirname().to_string()
   for stmt in ast.stmts {
     match stmt {
-      @core.Stmt::ReExport(source~, ..) => {
+      @core.Stmt::ReExport(source~, ..) =>
         match resolve_module_ref_path(base_dir, source, dep_imports~) {
           Some(source_path) =>
             if module_requires_preload_host_imports(db, source_path, visited) {
@@ -331,7 +343,6 @@ fn module_requires_preload_host_imports(
             }
           None => ()
         }
-      }
       _ => ()
     }
   }
@@ -351,20 +362,20 @@ fn module_stmt_list_requires_preload_host_imports(
 }
 
 ///|
-fn module_stmt_requires_preload_host_imports(
-  stmt : @core.Stmt,
-) -> Bool {
+fn module_stmt_requires_preload_host_imports(stmt : @core.Stmt) -> Bool {
   match stmt {
     @core.Stmt::Let(expr~, ..)
     | @core.Stmt::ExportLet(expr~, ..)
     | @core.Stmt::InternalExportLet(expr~, ..)
     | @core.Stmt::LetMut(expr~, ..)
     | @core.Stmt::Expr(expr~, ..)
-    | @core.Stmt::LetPat(expr~, ..) => module_expr_requires_preload_host_imports(expr)
+    | @core.Stmt::LetPat(expr~, ..) =>
+      module_expr_requires_preload_host_imports(expr)
     @core.Stmt::LetPatElse(expr~, else_body~, ..) =>
       module_expr_requires_preload_host_imports(expr) ||
       module_stmt_list_requires_preload_host_imports(else_body.stmts)
-    @core.Stmt::Assign(expr~, ..) => module_expr_requires_preload_host_imports(expr)
+    @core.Stmt::Assign(expr~, ..) =>
+      module_expr_requires_preload_host_imports(expr)
     @core.Stmt::IndexAssign(target~, index~, value~, ..) =>
       module_expr_requires_preload_host_imports(target) ||
       module_expr_requires_preload_host_imports(index) ||
@@ -375,9 +386,7 @@ fn module_stmt_requires_preload_host_imports(
 }
 
 ///|
-fn module_expr_requires_preload_host_imports(
-  expr : @core.Expr,
-) -> Bool {
+fn module_expr_requires_preload_host_imports(expr : @core.Expr) -> Bool {
   match expr {
     @core.Expr::Call(name~, args~, ..) => {
       if is_preload_unsafe_builtin_name(name) {
@@ -411,10 +420,11 @@ fn module_expr_requires_preload_host_imports(
     }
     @core.Expr::TupleIndex(expr~, ..)
     | @core.Expr::Spread(expr~, ..)
-    | @core.Expr::Yield(expr~, ..) => module_expr_requires_preload_host_imports(expr)
-    @core.Expr::Raise(value~, ..) => module_expr_requires_preload_host_imports(value)
-    @core.Expr::Record(fields~, ..)
-    | @core.Expr::StructLit(fields~, ..) => {
+    | @core.Expr::Yield(expr~, ..) =>
+      module_expr_requires_preload_host_imports(expr)
+    @core.Expr::Raise(value~, ..) =>
+      module_expr_requires_preload_host_imports(value)
+    @core.Expr::Record(fields~, ..) | @core.Expr::StructLit(fields~, ..) => {
       for field in fields {
         if module_expr_requires_preload_host_imports(field.expr) {
           return true
@@ -434,8 +444,8 @@ fn module_expr_requires_preload_host_imports(
       module_expr_requires_preload_host_imports(cond) ||
       module_stmt_list_requires_preload_host_imports(then_body.stmts) ||
       module_stmt_list_requires_preload_host_imports(else_body.stmts)
-    @core.Expr::Block(body~, ..)
-    | @core.Expr::Fn(body~, ..) => module_stmt_list_requires_preload_host_imports(body.stmts)
+    @core.Expr::Block(body~, ..) | @core.Expr::Fn(body~, ..) =>
+      module_stmt_list_requires_preload_host_imports(body.stmts)
     @core.Expr::Match(scrutinee~, arms~, ..) => {
       if module_expr_requires_preload_host_imports(scrutinee) {
         return true
@@ -573,12 +583,105 @@ priv struct ResolvedReExport {
 }
 
 ///|
+fn fn_return_count(ret : @core.Type?) -> Int {
+  match ret {
+    Some(@core.Type::Tuple(items)) => items.length()
+    _ => 1
+  }
+}
+
+///|
+fn import_local_name(item : @core.ImportItem) -> String {
+  match item.rename {
+    Some(alias_name) => alias_name
+    None => item.name
+  }
+}
+
+///|
+fn resolve_bound_fn_via_imports(
+  db : VibeDb,
+  source_path : String,
+  source_ast : @core.Module,
+  name : String,
+  visited : Map[String, Bool],
+) -> ResolvedReExportFn? {
+  let dep_imports = db.imports(source_path)
+  let base_dir = @path.Path(source_path).dirname().to_string()
+  for stmt in source_ast.stmts {
+    match stmt {
+      @core.Stmt::Import(spec~, source~, ..) =>
+        for item in spec.items {
+          if import_local_name(item) == name {
+            match resolve_module_ref_path(base_dir, source, dep_imports~) {
+              Some(import_path) =>
+                match
+                  resolve_bound_fn_at_path(db, import_path, item.name, visited) {
+                  Some(resolved) =>
+                    return Some(ResolvedReExportFn::{ ..resolved, name, })
+                  None => ()
+                }
+              None => ()
+            }
+          }
+        }
+      _ => ()
+    }
+  }
+  None
+}
+
+///|
+fn resolve_bound_fn_at_path(
+  db : VibeDb,
+  source_path : String,
+  name : String,
+  visited : Map[String, Bool],
+) -> ResolvedReExportFn? {
+  let visit_key = source_path + "#" + name
+  if visited.contains(visit_key) {
+    return None
+  }
+  visited[visit_key] = true
+  let source_ast = db.ast_with_hash_imports(source_path)
+  for stmt in source_ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name=bound_name, expr~, ..)
+      | @core.Stmt::ExportLet(name=bound_name, expr~, ..)
+      | @core.Stmt::InternalExportLet(name=bound_name, expr~, ..) =>
+        if bound_name == name {
+          match expr {
+            @core.Expr::Fn(params~, ret~, ..) =>
+              return Some(ResolvedReExportFn::{
+                name,
+                params,
+                return_count: fn_return_count(ret),
+              })
+            @core.Expr::Ident(name=target_name, ..) =>
+              match
+                resolve_bound_fn_via_imports(
+                  db, source_path, source_ast, target_name, visited,
+                ) {
+                Some(resolved) =>
+                  return Some(ResolvedReExportFn::{ ..resolved, name, })
+                None => return None
+              }
+            _ => return None
+          }
+        }
+      _ => ()
+    }
+  }
+  resolve_bound_fn_via_imports(db, source_path, source_ast, name, visited)
+}
+
+///|
 /// Resolve the file path that a ModuleRef points to, given the directory of the
 /// referencing module and the import specs for the referrer.
 fn resolve_module_ref_path(
   base_dir : String,
   source : @core.ModuleRef,
-  dep_imports~ : Array[ImportSpec] = [],
+  dep_imports? : Array[ImportSpec] = [],
 ) -> String? {
   match source {
     @core.ModuleRef::Path(path~) =>
@@ -614,17 +717,18 @@ fn resolve_reexport_all(
   let wanted : Map[String, String] = {}
   for item in spec.items {
     let export_name = match item.rename {
-      Some(alias) => alias
+      Some(alias_name) => alias_name
       None => item.name
     }
     wanted[item.name] = export_name
   }
-  if wanted.size() == 0 {
+  if wanted.length() == 0 {
     return result
   }
   let dep_imports = db.imports(dep_path)
   let base_dir = @path.Path(dep_path).dirname().to_string()
-  let source_path = match resolve_module_ref_path(base_dir, source, dep_imports~) {
+  let source_path = match
+    resolve_module_ref_path(base_dir, source, dep_imports~) {
     Some(p) => p
     None => return result
   }
@@ -643,23 +747,15 @@ fn resolve_reexport_at_path(
   let source_ast = db.ast_with_hash_imports(source_path)
   for stmt in source_ast.stmts {
     match stmt {
-      @core.Stmt::ExportLet(name~, expr~, ..) =>
+      @core.Stmt::ExportLet(name~, expr=_, ..) =>
         match wanted.get(name) {
           Some(export_name) =>
-            match expr {
-              @core.Expr::Fn(params~, ret~, ..) => {
-                let rc = match ret {
-                  Some(@core.Type::Tuple(items)) => items.length()
-                  _ => 1
-                }
-                result.functions.push(
-                  ResolvedReExportFn::{
-                    name: export_name,
-                    params,
-                    return_count: rc,
-                  },
-                )
-              }
+            match resolve_bound_fn_at_path(db, source_path, name, {}) {
+              Some(resolved) =>
+                result.functions.push(ResolvedReExportFn::{
+                  ..resolved,
+                  name: export_name,
+                })
               _ => ()
             }
           None => ()
@@ -690,13 +786,16 @@ fn resolve_reexport_at_path(
         }
       @core.Stmt::ReExport(spec=inner_spec, source=inner_source, ..) => {
         // Recurse into nested ReExport chains
-        let inner = resolve_reexport_all(db, source_path, inner_spec, inner_source)
+        let inner = resolve_reexport_all(
+          db, source_path, inner_spec, inner_source,
+        )
         for r in inner.functions {
           match wanted.get(r.name) {
             Some(export_name) =>
-              result.functions.push(
-                ResolvedReExportFn::{ ..r, name: export_name },
-              )
+              result.functions.push(ResolvedReExportFn::{
+                ..r,
+                name: export_name,
+              })
             None => ()
           }
         }
@@ -708,10 +807,7 @@ fn resolve_reexport_at_path(
             _ => None
           }
           match type_name {
-            Some(n) =>
-              if wanted.contains(n) {
-                result.type_stmts.push(t)
-              }
+            Some(n) => if wanted.contains(n) { result.type_stmts.push(t) }
             None => ()
           }
         }

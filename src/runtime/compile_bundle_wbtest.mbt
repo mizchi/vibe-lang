@@ -41,16 +41,13 @@ test "bundle_for_wasm keeps enum defs from re-exported directory wrapper" {
 test "bundle_for_wasm_linked resolves ReExport function as linked import" {
   let db = VibeDb::new()
   db.set_source(
-    "/project/adder.vibe",
-    "export let add = (a: Int, b: Int) -> Int { a + b }\n",
+    "/project/adder.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }\n",
   )
   db.set_source(
-    "/project/wrapper.vibe",
-    "export ./adder.vibe { add }\nexport { add }\n",
+    "/project/wrapper.vibe", "export ./adder.vibe { add }\nexport { add }\n",
   )
   db.set_source(
-    "/project/main.vibe",
-    "import ./wrapper.vibe { add }\nlet result = add(1, 2)\nresult\n",
+    "/project/main.vibe", "import ./wrapper.vibe { add }\nlet result = add(1, 2)\nresult\n",
   )
   let ast = db.ast_with_hash_imports("/project/main.vibe")
   let (bundled, linked) = bundle_for_wasm_linked(db, "/project/main.vibe", ast)
@@ -75,6 +72,39 @@ test "bundle_for_wasm_linked resolves ReExport function as linked import" {
 }
 
 ///|
+test "bundle_for_wasm_linked resolves export let ident alias as linked import" {
+  let db = VibeDb::new()
+  db.set_source(
+    "/project/adder.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }\n",
+  )
+  db.set_source(
+    "/project/wrapper.vibe",
+    "import ./adder.vibe { add }\n" + "export let plus = add\n",
+  )
+  db.set_source(
+    "/project/main.vibe", "import ./wrapper.vibe { plus }\nlet result = plus(1, 2)\nresult\n",
+  )
+  let ast = db.ast_with_hash_imports("/project/main.vibe")
+  let (bundled, linked) = bundle_for_wasm_linked(db, "/project/main.vibe", ast)
+  let mut has_plus_import = false
+  for li in linked {
+    if li.func_name == "plus" {
+      has_plus_import = true
+      assert_eq(li.param_count, 2)
+      assert_eq(li.return_count, 1)
+    }
+  }
+  assert_true(has_plus_import)
+  for stmt in bundled.stmts {
+    match stmt {
+      @core.Stmt::Import(..) => assert_true(false)
+      @core.Stmt::ReExport(..) => assert_true(false)
+      _ => ()
+    }
+  }
+}
+
+///|
 test "bundle_for_wasm_linked resolves ReExport enum type from chain" {
   let db = VibeDb::new()
   db.set_source(
@@ -83,8 +113,7 @@ test "bundle_for_wasm_linked resolves ReExport enum type from chain" {
     "export let token_name = (t: Token) -> Int { match t { TEof => 0, TInt(_) => 1 } }\n",
   )
   db.set_source(
-    "/project/token_wrapper.vibe",
-    "export ./token_defs.vibe { Token, token_name }\nexport { Token, token_name }\n",
+    "/project/token_wrapper.vibe", "export ./token_defs.vibe { Token, token_name }\nexport { Token, token_name }\n",
   )
   db.set_source(
     "/project/main.vibe",
@@ -120,23 +149,19 @@ test "bundle_for_wasm_linked resolves multi-level ReExport chain" {
   let db = VibeDb::new()
   // Level 2: actual definition
   db.set_source(
-    "/project/inner.vibe",
-    "export let parse = (s: String) -> Int { 42 }\n",
+    "/project/inner.vibe", "export let parse = (s: String) -> Int { 42 }\n",
   )
   // Level 1: re-export facade
   db.set_source(
-    "/project/mid.vibe",
-    "export ./inner.vibe { parse }\nexport { parse }\n",
+    "/project/mid.vibe", "export ./inner.vibe { parse }\nexport { parse }\n",
   )
   // Entry dep: re-export facade
   db.set_source(
-    "/project/wrapper.vibe",
-    "export ./mid.vibe { parse }\nexport { parse }\n",
+    "/project/wrapper.vibe", "export ./mid.vibe { parse }\nexport { parse }\n",
   )
   // Entry
   db.set_source(
-    "/project/main.vibe",
-    "import ./wrapper.vibe { parse }\nlet r = parse(\"hello\")\nr\n",
+    "/project/main.vibe", "import ./wrapper.vibe { parse }\nlet r = parse(\"hello\")\nr\n",
   )
   let ast = db.ast_with_hash_imports("/project/main.vibe")
   let (_bundled, linked) = bundle_for_wasm_linked(db, "/project/main.vibe", ast)
@@ -155,8 +180,7 @@ test "bundle_for_wasm_linked strips ReExport from entry and resolves types" {
   let db = VibeDb::new()
   db.set_source(
     "/project/defs.vibe",
-    "export enum Color { Red; Blue }\n" +
-    "export let name = () -> Int { 1 }\n",
+    "export enum Color { Red; Blue }\n" + "export let name = () -> Int { 1 }\n",
   )
   db.set_source(
     "/project/main.vibe",
@@ -172,10 +196,7 @@ test "bundle_for_wasm_linked strips ReExport from entry and resolves types" {
   for stmt in bundled.stmts {
     match stmt {
       @core.Stmt::ReExport(..) => has_reexport = true
-      @core.Stmt::EnumDef(name~, ..) =>
-        if name == "Color" {
-          has_color = true
-        }
+      @core.Stmt::EnumDef(name~, ..) => if name == "Color" { has_color = true }
       _ => ()
     }
   }
@@ -227,16 +248,15 @@ test "bundle_for_wasm_linked_with_imports skips ReExport and uses extra_type_stm
   }
   let linked : Array[LinkedImport] = []
   let (bundled, _) = bundle_for_wasm_linked_with_imports(
-    ast, linked, extra_type_stmts=extra_types,
+    ast,
+    linked,
+    extra_type_stmts=extra_types,
   )
   let mut has_token = false
   let mut has_reexport = false
   for stmt in bundled.stmts {
     match stmt {
-      @core.Stmt::EnumDef(name~, ..) =>
-        if name == "Token" {
-          has_token = true
-        }
+      @core.Stmt::EnumDef(name~, ..) => if name == "Token" { has_token = true }
       @core.Stmt::ReExport(..) => has_reexport = true
       _ => ()
     }
@@ -249,16 +269,13 @@ test "bundle_for_wasm_linked_with_imports skips ReExport and uses extra_type_stm
 test "bundle_for_wasm_linked detects HOF through ReExport chain" {
   let db = VibeDb::new()
   db.set_source(
-    "/project/hof_defs.vibe",
-    "export let map_fn = (f: (Int) -> Int, x: Int) -> Int { f(x) }\n",
+    "/project/hof_defs.vibe", "export let map_fn = (f: (Int) -> Int, x: Int) -> Int { f(x) }\n",
   )
   db.set_source(
-    "/project/hof_facade.vibe",
-    "export ./hof_defs.vibe { map_fn }\nexport { map_fn }\n",
+    "/project/hof_facade.vibe", "export ./hof_defs.vibe { map_fn }\nexport { map_fn }\n",
   )
   db.set_source(
-    "/project/main.vibe",
-    "import ./hof_facade.vibe { map_fn }\nlet r = map_fn((x) -> Int { x + 1 }, 5)\nr\n",
+    "/project/main.vibe", "import ./hof_facade.vibe { map_fn }\nlet r = map_fn((x) -> Int { x + 1 }, 5)\nr\n",
   )
   let ast = db.ast_with_hash_imports("/project/main.vibe")
   let (bundled, linked) = bundle_for_wasm_linked(db, "/project/main.vibe", ast)
@@ -288,12 +305,10 @@ test "bundle_for_wasm_linked detects HOF through ReExport chain" {
 test "bundle_for_wasm_linked inlines deps that require Fs host imports" {
   let db = VibeDb::new()
   db.set_source(
-    "/project/fs_dep.vibe",
-    "export let load = (path: String) -> String with { Error, Fs } { perform Fs::ReadFile(path) }\n",
+    "/project/fs_dep.vibe", "export let load = (path: String) -> String with { Error, Fs } { perform Fs::ReadFile(path) }\n",
   )
   db.set_source(
-    "/project/main.vibe",
-    "import ./fs_dep.vibe { load }\nlet result = load(\"/tmp/input.txt\")\nresult\n",
+    "/project/main.vibe", "import ./fs_dep.vibe { load }\nlet result = load(\"/tmp/input.txt\")\nresult\n",
   )
   let ast = db.ast_with_hash_imports("/project/main.vibe")
   let (bundled, linked) = bundle_for_wasm_linked(db, "/project/main.vibe", ast)
@@ -321,12 +336,10 @@ test "bundle_for_wasm_linked inlines deps that require Fs host imports" {
 test "bundle_for_wasm_linked inlines deps that require Env host imports" {
   let db = VibeDb::new()
   db.set_source(
-    "/project/env_dep.vibe",
-    "export let read_home = () -> String with { Env } { perform Env::Get(\"HOME\") }\n",
+    "/project/env_dep.vibe", "export let read_home = () -> String with { Env } { perform Env::Get(\"HOME\") }\n",
   )
   db.set_source(
-    "/project/main.vibe",
-    "import ./env_dep.vibe { read_home }\nlet result = read_home()\nresult\n",
+    "/project/main.vibe", "import ./env_dep.vibe { read_home }\nlet result = read_home()\nresult\n",
   )
   let ast = db.ast_with_hash_imports("/project/main.vibe")
   let (bundled, linked) = bundle_for_wasm_linked(db, "/project/main.vibe", ast)
