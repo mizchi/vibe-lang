@@ -59,8 +59,11 @@ import ./entry/source_compile/index.vibe {
 }
 
 import ./entry/source_compile/wasi_only/index.vibe {
-  compile_source_wasi_only
+  compile_source_wasi_only,
+  compile_file_wasi_linked,
+  compile_file_wasi_library
 }
+
 
 import ./entry/compiler/fs_compile/index.vibe {
   compile_with_modules, compile_with_modules_wasi,
@@ -110,7 +113,8 @@ import ./core/index.vibe {
 }
 
 import ./codegen/wasi/index.vibe {
-  compile_wasi_module_impl
+  compile_wasi_module_impl,
+  compile_wasi_module_linked_impl
 }
 
 import ./codegen_common_base.vibe {
@@ -1274,6 +1278,35 @@ export let selfbuild_probe_check = () -> Int with { Error } {
   1
 }
 
+// Debug probe: linked compile (in-memory, with mock linked imports)
+export let selfbuild_probe_linked_compile = () -> Int with { Error } {
+  let source = "let result = add(1, 2)\nresult"
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  let _ = check_program(stmts)
+  let linked = Array::slice(
+    [("lib", "add", 2, 1)], 0, 1
+  )
+  let no_srcs = Array::slice([("", "")], 0, 0)
+  let bytes = compile_wasi_module_linked_impl(stmts, "run", no_srcs, linked, false)
+  Bytes::length(bytes)
+}
+
+// Debug probe: linked compile library mode
+export let selfbuild_probe_library_compile = () -> Int with { Error } {
+  let source = String::concat(
+    "export let add = (a: Int, b: Int) -> Int { a + b }\n",
+    "export let mul = (a: Int, b: Int) -> Int { a * b }"
+  )
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  let _ = check_program(stmts)
+  let no_srcs = Array::slice([("", "")], 0, 0)
+  let no_linked = Array::slice([("", "", 0, 0)], 0, 0)
+  let bytes = compile_wasi_module_linked_impl(stmts, "_start", no_srcs, no_linked, true)
+  Bytes::length(bytes)
+}
+
 // Debug probe: compile
 export let selfbuild_probe_compile = () -> Int with { Error } {
   let bytes = compile_source("let add = (a: Int, b: Int) -> Int { a + b }")
@@ -1634,7 +1667,8 @@ export {
   selfbuild_probe_cli_args_read_len, selfbuild_probe_cli_args_compile_len,
   selfbuild_cli_args_entry,
   selfbuild_probe_lex, selfbuild_probe_parse, selfbuild_probe_check,
-  selfbuild_probe_compile, selfbuild_probe_parse_count, selfbuild_probe_token_tag,
+  selfbuild_probe_compile, selfbuild_probe_linked_compile, selfbuild_probe_library_compile,
+  selfbuild_probe_parse_count, selfbuild_probe_token_tag,
   selfbuild_probe_deep_if, selfbuild_probe_char_at, selfbuild_probe_fn_count,
   selfbuild_probe_sources_len, selfbuild_probe_merged_len,
   selfbuild_probe_compile_first_5, selfbuild_probe_compile_first_8,
