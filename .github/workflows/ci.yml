@@ -204,22 +204,18 @@ jobs:
       - name: Smoke test wasm/vibe with wasmtime
         run: ./scripts/test_wasm_vibe_wasmtime.sh wasm/vibe/vibe.wasm
 
-  wasm-codegen-integrity:
+  wasm-codegen-quick:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Install MoonBit CLI
         run: |
           curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '24'
-
       - name: Cache MoonBit build
         uses: actions/cache@v4
         with:
@@ -228,107 +224,132 @@ jobs:
             .mooncakes
           key: moonbit-${{ runner.os }}-${{ hashFiles('moon.mod.json', 'src/**/*.mbt') }}
           restore-keys: moonbit-${{ runner.os }}-
-
       - name: Moon update
         run: moon update
-
-      - name: Check moon info regen cycle (idempotent + deny-warn check)
-        continue-on-error: true
-        run: bash scripts/test_moon_info_regen.sh
-
       - name: Install wasm-tools
         run: |
           curl -LO https://github.com/bytecodealliance/wasm-tools/releases/download/v1.245.1/wasm-tools-1.245.1-x86_64-linux.tar.gz
           tar xzf wasm-tools-1.245.1-x86_64-linux.tar.gz
           sudo mv wasm-tools-1.245.1-x86_64-linux/wasm-tools /usr/local/bin/
-          wasm-tools --version
-
       - name: Install wasmtime
         run: |
           curl -fsSL https://wasmtime.dev/install.sh | bash
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
-          "$HOME/.wasmtime/bin/wasmtime" --version
-
-      - name: WASI HTTP P3 blocked gate (monitor-only)
+      - name: Check moon info regen cycle
+        continue-on-error: true
+        run: bash scripts/test_moon_info_regen.sh
+      - name: Build vibe CLI (native)
+        run: VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
+      - name: Validate selfhost probe wasm fixture
+        continue-on-error: true
+        run: ./scripts/test_selfhost_probe_wasm_validate.sh
+      - name: Golden WAT snapshot tests
+        continue-on-error: true
+        run: ./scripts/test_golden_wat.sh
+      - name: Check vibe vs vibe_wasm compare parity
+        continue-on-error: true
+        run: ./scripts/test_vibe_wasm_compare.sh
+      - name: WASI HTTP P3 blocked gate
         continue-on-error: true
         run: |
           VIBE_WASI_HTTP_P3_REQUIRE_READY=0 \
           VIBE_WASI_HTTP_P3_RUN_COMPOSE=0 \
           ./scripts/test_wasi_http_p3_blocked_gate.sh
-
-      - name: WASI P3 E2E (compile + compose + validate + serve)
+      - name: WASI P3 E2E
         continue-on-error: true
         run: ./scripts/test_wasi_p3_e2e.sh
-
-      - name: Build vibe CLI (native release)
-        run: |
-          VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
-          VIBE_EXE=target/native/release/build/cmd/vibe/vibe.exe
-          if [ -f "$VIBE_EXE" ]; then
-            mkdir -p _build/native/release/build/cmd/vibe
-            ln -sf "$(pwd)/$VIBE_EXE" _build/native/release/build/cmd/vibe/vibe.exe
-          fi
-
-      - name: Validate selfhost probe wasm fixture
-        continue-on-error: true
-        run: ./scripts/test_selfhost_probe_wasm_validate.sh
-
-      - name: Check handle/exception interpreter vs wasm parity
-        continue-on-error: true
-        run: ./scripts/test_handle_exception_wasm_match.sh
-
-      - name: Check interpreter vs wasm pattern match parity
-        continue-on-error: true
-        run: |
-          VIBE_BIN=target/native/release/build/cmd/vibe/vibe.exe \
-          ./scripts/test_interpreter_wasm_match.sh
-
-      - name: WASM compile E2E (arithmetic, closures, patterns, recursion)
-        continue-on-error: true
-        run: |
-          VIBE_BIN=target/native/release/build/cmd/vibe/vibe.exe \
-          ./scripts/test_wasm_compile_wasmtime.sh
-
-      - name: Golden WAT snapshot tests
-        continue-on-error: true
-        run: |
-          VIBE_BIN=target/native/release/build/cmd/vibe/vibe.exe \
-          ./scripts/test_golden_wat.sh
-
-      - name: Check vibe vs vibe_wasm compare parity
-        continue-on-error: true
-        run: ./scripts/test_vibe_wasm_compare.sh
-
-      - name: Check HTTP builtin wasm fallback (validate + catchable throw)
+      - name: Check HTTP builtin wasm fallback
         continue-on-error: true
         run: ./scripts/test_http_wasm_fallback.sh
-
-      - name: Check HTTP builtin wasm host-import path (capability + e2e)
+      - name: Check HTTP builtin wasm host-import path
         continue-on-error: true
         run: ./scripts/test_http_wasm_host_imports.sh
-
-      - name: Check compiled backend HTTP policy (auto fallback / forced reject)
+      - name: Check compiled backend HTTP policy
         continue-on-error: true
         run: ./scripts/test_compiled_backend_http_policy.sh
-
-      - name: Check component import contract (stable func imports)
+      - name: Check component import contract
         continue-on-error: true
         run: ./scripts/test_component_import_contract.sh
-
-      - name: HTTP P3 handler gate (component + validate + rejection)
+      - name: HTTP P3 handler gate
         continue-on-error: true
         run: ./scripts/test_http_p3_handler_gate.sh
 
-      - name: Selfhost bootstrap gate (compiled + probe + deterministic compile)
+  wasm-compile-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MoonBit CLI
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Cache MoonBit build
+        uses: actions/cache@v4
+        with:
+          path: |
+            _build
+            .mooncakes
+          key: moonbit-${{ runner.os }}-${{ hashFiles('moon.mod.json', 'src/**/*.mbt') }}
+          restore-keys: moonbit-${{ runner.os }}-
+      - name: Moon update
+        run: moon update
+      - name: Install wasmtime
+        run: |
+          curl -fsSL https://wasmtime.dev/install.sh | bash
+          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+      - name: Build vibe CLI (native)
+        run: VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
+      - name: Check handle/exception interpreter vs wasm parity
+        continue-on-error: true
+        run: ./scripts/test_handle_exception_wasm_match.sh
+      - name: Check interpreter vs wasm pattern match parity
+        continue-on-error: true
+        run: ./scripts/test_interpreter_wasm_match.sh
+      - name: WASM compile E2E (arithmetic, closures, patterns, recursion)
+        continue-on-error: true
+        run: ./scripts/test_wasm_compile_wasmtime.sh
+
+  selfhost-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MoonBit CLI
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Cache MoonBit build
+        uses: actions/cache@v4
+        with:
+          path: |
+            _build
+            .mooncakes
+          key: moonbit-${{ runner.os }}-${{ hashFiles('moon.mod.json', 'src/**/*.mbt') }}
+          restore-keys: moonbit-${{ runner.os }}-
+      - name: Moon update
+        run: moon update
+      - name: Install wasmtime
+        run: |
+          curl -fsSL https://wasmtime.dev/install.sh | bash
+          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+      - name: Install just
+        run: curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+      - name: Build vibe CLI (native)
+        run: VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
+      - name: Selfhost bootstrap gate
         continue-on-error: true
         run: |
-          VIBE_BIN=target/native/release/build/cmd/vibe/vibe.exe \
           VIBE_SELFHOST_BOOTSTRAP_BASELINE_SEC=180 \
           VIBE_SELFHOST_BOOTSTRAP_REDUCTION_PCT=30 \
           VIBE_SELFHOST_BOOTSTRAP_STAGE_TIMEOUT_SEC=900 \
           ./scripts/test_selfhost_bootstrap_gate.sh
-
-      - name: Selfhost WASI selfbuild gate (stage0 -> stage1 -> stage2)
+      - name: Selfhost WASI selfbuild gate
         continue-on-error: true
         run: |
           VIBE_SELFHOST_SELFBUILD_STRICT_RECURSIVE=1 \
@@ -336,19 +357,15 @@ jobs:
           VIBE_SELFHOST_SELFBUILD_STAGE_TIMEOUT_SEC=600 \
           VIBE_SELFHOST_SELFBUILD_MAX_TOTAL_SEC=300 \
           ./scripts/test_selfhost_wasi_selfbuild.sh
-
-      - name: Selfhost WASI HTTP boundary gate (component WIT imports)
+      - name: Selfhost WASI HTTP boundary gate
         continue-on-error: true
         run: ./scripts/test_selfhost_wasi_http_boundary.sh
-
-      - name: Selfhost check parity snapshot gate (diagnostic JSON diff)
+      - name: Selfhost check parity snapshot gate
         continue-on-error: true
         run: |
-          VIBE_BIN=target/native/release/build/cmd/vibe/vibe.exe \
           VIBE_CHECK_PARITY_REQUIRE_PARITY=1 \
           ./scripts/test_selfhost_check_parity.sh
-
-      - name: Selfhost perf KPI gate (compile/check ratio)
+      - name: Selfhost perf KPI gate
         continue-on-error: true
         run: |
           VIBE_SELFHOST_PERF_RUNS=1 \
@@ -356,11 +373,9 @@ jobs:
           VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=2.5 \
           VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=0.8 \
           ./scripts/bench_selfhost_perf.sh
-
-      - name: Selfhost cutover gate (CLI contract + artifact parity)
+      - name: Selfhost cutover gate
         continue-on-error: true
         run: |
-          VIBE_BIN=target/native/release/build/cmd/vibe/vibe.exe \
           VIBE_CUTOVER_REQUIRE_PARITY=1 \
           VIBE_CUTOVER_INCLUDE_COMPILER_SIZE=1 \
           VIBE_CUTOVER_INCLUDE_FAIL_CASES=1 \
@@ -368,8 +383,7 @@ jobs:
           VIBE_CUTOVER_MODES=mvp,no-dce,debug-errors \
           VIBE_CUTOVER_STAGE_TIMEOUT_SEC=300 \
           ./scripts/test_selfhost_cutover_gate.sh
-
-      - name: Selfhost suite coverage gate (workload + index invoke)
+      - name: Selfhost suite coverage gate
         continue-on-error: true
         run: just coverage-selfhost-suite-gate
 
