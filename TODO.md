@@ -57,14 +57,15 @@ ReExport チェーン解決、linked import alias re-export、func_import_count 
 selfhost compiler (`vibe/compiler/`) の codegen は monolithic のみ。
 linked debug build を selfhost でも生成するには以下の移植が必要:
 
-- [ ] linked import の wasm import セクション生成 (`codegen/wasi/index.vibe`)
-- [ ] linked import の call 命令生成 (`func_import_count` にlinked分を加算)
+- [x] linked import の wasm import セクション生成 (`codegen/wasi/index.vibe`)
+- [x] linked import の call 命令: fn_names/fn_indices 登録で resolve_func 対応
+- [x] library mode: `library_mode=true` で全ユーザー関数 export
+- [x] linked bundler: `compile_file_wasi_linked` (dep 分離 + linked imports)
+- [x] library コンパイル: `compile_file_wasi_library` (dep を library .wasm に)
 - [ ] linked import alias 伝搬 (`let x = linked_fn` → fn_indices 登録)
 - [ ] linked import alias の re-export (ExportLet + Ident → import re-export)
-- [ ] library mode: Let+Fn を全て export
-- [ ] linked bundler: dep を linked import vs inline に振り分け
 - [ ] ReExport チェーン解決 (型定義 inline + 関数 linked import)
-- [ ] save_library_modules 相当の CLI コマンド
+- [ ] selfhost CLI で `build --debug` コマンド統合
 
 目標: cached `vibe run vibe/compiler/index.vibe` を ~100ms に。
 
