@@ -18,7 +18,8 @@ import ../../../checker/checker_stmt.vibe {
 }
 
 import ../../../codegen/wasi/index.vibe {
-  compile_wasi_module_impl
+  compile_wasi_module_impl,
+  compile_wasi_module_linked_impl
 }
 
 //# Functions
@@ -251,4 +252,114 @@ export let compile_file_wasi_only = (entry_path: String, entry_name: String) -> 
   expand_interp_stmts(stmts)
   let _ = check_program(stmts)
   compile_wasi_module_impl(stmts, entry_name)
+}
+
+// Linked mode: direct deps become linked imports, not inlined.
+// Returns (entry_wasm, linked_imports) where linked_imports can be used
+// to compile library modules separately.
+export let compile_file_wasi_linked = (entry_path: String, entry_name: String) -> (Bytes, Array[(String, String, Int, Int)]) with { Error, Fs } {
+  // Collect all sources
+  let sources = Array::slice([("", "")], 0, 0)
+  let visited = Array::slice([""], 0, 0)
+  collect_sources(entry_path, sources, visited)
+  // Identify direct deps of entry (first-level imports/re-exports)
+  let entry_source = perform Fs::ReadFile(entry_path)
+  let entry_stmts = parse_program(lex(entry_source))
+  let entry_dir = dir_of_path(entry_path)
+  let dep_paths = Array::slice([""], 0, 0)
+  let mut ei = 0
+  while ei < Array::length(entry_stmts) {
+    match Array::get(entry_stmts, ei) {
+      SImport(raw_path, items) => {
+        if Array::length(items) > 0 {
+          let resolved = resolve_import_path(entry_dir, raw_path)
+          if !contains_path(dep_paths, resolved) {
+            Array::push(dep_paths, resolved)
+          }
+        }
+      },
+      SReExport(raw_path, _) => {
+        let resolved = resolve_import_path(entry_dir, raw_path)
+        if !contains_path(dep_paths, resolved) {
+          Array::push(dep_paths, resolved)
+        }
+      },
+      _ => ()
+    }
+    ei = ei + 1
+  }
+  // Build linked imports from dep export functions
+  let linked_imports = Array::slice([("", "", 0, 0)], 0, 0)
+  let linked_dep_paths = Array::slice([""], 0, 0)
+  let mut di = 0
+  while di < Array::length(dep_paths) {
+    let dep_path = Array::get(dep_paths, di)
+    let dep_source = perform Fs::ReadFile(dep_path)
+    let dep_stmts = parse_program(lex(dep_source))
+    let module_name = path_to_module_name(dep_path)
+    // Collect exported function signatures from this dep
+    let mut has_linked = false
+    let mut dsi = 0
+    while dsi < Array::length(dep_stmts) {
+      match Array::get(dep_stmts, dsi) {
+        SLet(true, _, name, _, EFn(_, _, params, _, _, _)) => {
+          Array::push(linked_imports, (module_name, name, Array::length(params), 1))
+          has_linked = true
+        },
+        _ => ()
+      }
+      dsi = dsi + 1
+    }
+    if has_linked {
+      Array::push(linked_dep_paths, dep_path)
+    }
+    di = di + 1
+  }
+  // Merge only non-linked sources (exclude linked dep and their transitive deps)
+  let linked_sources = Array::slice([("", "")], 0, 0)
+  let mut si = 0
+  while si < Array::length(sources) {
+    let (spath, ssrc) = Array::get(sources, si)
+    let is_linked_dep = contains_path(linked_dep_paths, spath)
+    if !is_linked_dep && spath != entry_path {
+      // Check if this source is a transitive dep of a linked dep only
+      // For now, include all non-linked-dep sources (conservative)
+      Array::push(linked_sources, (spath, ssrc))
+    }
+    si = si + 1
+  }
+  // Add entry source last
+  Array::push(linked_sources, (entry_path, entry_source))
+  let stmts = merge_sources(linked_sources)
+  strip_generic_type_params(stmts)
+  expand_interp_stmts(stmts)
+  let _ = check_program(stmts)
+  let wasm = compile_wasi_module_linked_impl(stmts, entry_name, Array::slice([
+    ("", "")
+  ], 0, 0), linked_imports)
+  (wasm, linked_imports)
+}
+
+// Convert file path to wasm module name (e.g., "/project/lib.vibe" -> "lib")
+let path_to_module_name = (path: String) -> String {
+  let len = String::length(path)
+  let mut last_slash = -1
+  let mut i = 0
+  while i < len {
+    if String::char_code_at(path, i) == 47 {
+      last_slash = i
+    }
+    i = i + 1
+  }
+  let base = if last_slash >= 0 {
+    path[last_slash + 1 : len]
+  } else {
+    path
+  }
+  let base_len = String::length(base)
+  if String::ends_with(base, ".vibe") {
+    base[0 : base_len - 5]
+  } else {
+    base
+  }
 }
