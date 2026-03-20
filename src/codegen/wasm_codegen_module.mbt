@@ -1187,7 +1187,16 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
         export_sec.push((0).to_byte()) // func export
         write_u32_leb(export_sec, func_import_count + idx)
       }
-      None => ()
+      None =>
+        // Linked import alias: export the import directly
+        match ctx.linked_fn_imports.get(name) {
+          Some(import_idx) => {
+            write_name(export_sec, name)
+            export_sec.push((0).to_byte()) // func export
+            write_u32_leb(export_sec, import_idx)
+          }
+          None => ()
+        }
     }
   }
   if exported_env_global_count > 0 {
@@ -1716,6 +1725,9 @@ fn emit_module_with_coverage(
       @core.Stmt::ExportLet(rec=_, name~, expr~, span=_) =>
         match expr {
           @core.Expr::Fn(..) => ctx.exported_fns[name] = true
+          // Alias: export let x = y — if y is a known function or linked import,
+          // x should also be exported
+          @core.Expr::Ident(..) => ctx.exported_fns[name] = true
           _ => ()
         }
       _ => ()
