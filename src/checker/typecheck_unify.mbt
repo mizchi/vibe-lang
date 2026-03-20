@@ -2,49 +2,12 @@
 /// Check if a type contains any Named nodes (the only nodes normalize_type_inner transforms).
 /// Used to skip normalization walks for types that cannot change.
 fn type_has_named_node(ty : @core.Type) -> Bool {
-  match ty {
-    @core.Type::Named(..) => true
-    @core.Type::Tuple(items) => {
-      for item in items {
-        if type_has_named_node(item) {
-          return true
-        }
-      }
-      false
+  type_tree_any(ty, fn(t) {
+    match t {
+      @core.Type::Named(..) => true
+      _ => false
     }
-    @core.Type::Record(fields) => {
-      for _, item in fields {
-        if type_has_named_node(item) {
-          return true
-        }
-      }
-      false
-    }
-    @core.Type::Array(inner) | @core.Type::ArrayBuilder(inner) =>
-      type_has_named_node(inner)
-    @core.Type::Map(key, inner) | @core.Type::MapBuilder(key, inner) =>
-      type_has_named_node(key) || type_has_named_node(inner)
-    @core.Type::Variant(fields) => {
-      for _, item in fields {
-        if type_has_named_node(item) {
-          return true
-        }
-      }
-      false
-    }
-    @core.Type::Func(params~, ret~, ..) => {
-      if type_has_named_node(ret) {
-        return true
-      }
-      for param in params {
-        if type_has_named_node(param.ty) {
-          return true
-        }
-      }
-      false
-    }
-    _ => false
-  }
+  })
 }
 
 ///|
@@ -201,38 +164,11 @@ fn normalize_type_with_mode(
   ty : @core.Type,
   expand_enum : Bool,
 ) -> @core.Type raise TypeError {
-  let resolved = resolve_type(env, ty)
-  // Fast path: ground types need no normalization
-  match resolved {
-    Int
-    | Float
-    | Double
-    | Bool
-    | Char
-    | String
-    | Path
-    | PromptText
-    | Unit
-    | StringBuilder
-    | Never
-    | Var(_)
-    | Param(_) => return resolved
-    _ => ()
-  }
-  normalize_type_cache_refresh(env)
-  match normalize_type_cache_lookup(env, resolved, expand_enum) {
-    Some(hit) => return hit
-    None => ()
-  }
-  let visiting : Map[String, Bool] = {}
-  let normalized = normalize_type_inner(env, resolved, visiting, expand_enum)
-  normalize_type_cache_store(env, resolved, normalized, expand_enum)
-  normalized
+  normalize_type_with_mode_resolved(env, resolve_type(env, ty), expand_enum)
 }
 
 ///|
-/// Like normalize_type_with_mode but skips the initial resolve_type call,
-/// assuming the caller has already resolved the type.
+/// Core normalization logic operating on an already-resolved type.
 fn normalize_type_with_mode_resolved(
   env : TypeEnv,
   resolved : @core.Type,
@@ -1576,58 +1512,41 @@ fn occurs_in(env : TypeEnv, id : Int, ty : @core.Type) -> Bool {
   match resolve_type(env, ty) {
     @core.Type::Var(other) => other == id
     @core.Type::Tuple(items) => {
-      let mut found = false
       for item in items {
         if occurs_in(env, id, item) {
-          found = true
-          break
+          return true
         }
       }
-      found
+      false
     }
-    @core.Type::Record(fields) => {
-      let mut found = false
+    @core.Type::Record(fields) | @core.Type::Variant(fields) => {
       for _, item in fields {
         if occurs_in(env, id, item) {
-          found = true
-          break
+          return true
         }
       }
-      found
+      false
     }
     @core.Type::Array(inner) => occurs_in(env, id, inner)
     @core.Type::Map(_key, inner) => occurs_in(env, id, inner)
-    @core.Type::Variant(fields) => {
-      let mut found = false
-      for _, item in fields {
-        if occurs_in(env, id, item) {
-          found = true
-          break
-        }
-      }
-      found
-    }
-    @core.Type::Named(name=_, args~) => {
-      let mut found = false
+    @core.Type::Named(args~, ..) => {
       for arg in args {
         if occurs_in(env, id, arg) {
-          found = true
-          break
+          return true
         }
       }
-      found
+      false
     }
-    @core.Type::Func(params~, ret~, effects=_) => {
-      let mut found = occurs_in(env, id, ret)
-      if not(found) {
-        for param in params {
-          if occurs_in(env, id, param.ty) {
-            found = true
-            break
-          }
+    @core.Type::Func(params~, ret~, ..) => {
+      if occurs_in(env, id, ret) {
+        return true
+      }
+      for param in params {
+        if occurs_in(env, id, param.ty) {
+          return true
         }
       }
-      found
+      false
     }
     _ => false
   }
