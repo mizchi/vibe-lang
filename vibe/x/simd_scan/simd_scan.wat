@@ -290,6 +290,384 @@
     (local.get $result)
   )
 
+  ;; === SIMD find_byte: find first occurrence of a byte ===
+  ;; Returns offset from ptr, or len if not found
+  (func $find_byte_simd (export "find_byte_simd") (param $ptr i32) (param $len i32) (param $byte i32) (result i32)
+    (local $pos i32)
+    (local $end i32)
+    (local $needle v128)
+    (local $mask i32)
+    (local $c i32)
+
+    (local.set $pos (local.get $ptr))
+    (local.set $end (i32.add (local.get $ptr) (local.get $len)))
+    ;; Splat byte to all 16 lanes
+    (local.set $needle (i8x16.splat (local.get $byte)))
+
+    (block $simd_done
+      (loop $simd_loop
+        (br_if $simd_done (i32.gt_u (i32.add (local.get $pos) (i32.const 16)) (local.get $end)))
+        (local.set $mask (i8x16.bitmask (i8x16.eq (v128.load (local.get $pos)) (local.get $needle))))
+        (if (i32.ne (local.get $mask) (i32.const 0))
+          (then (return (i32.sub (i32.add (local.get $pos) (i32.ctz (local.get $mask))) (local.get $ptr)))))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 16)))
+        (br $simd_loop)))
+
+    ;; Scalar fallback
+    (block $done
+      (loop $loop
+        (br_if $done (i32.ge_u (local.get $pos) (local.get $end)))
+        (if (i32.eq (i32.load8_u (local.get $pos)) (local.get $byte))
+          (then (return (i32.sub (local.get $pos) (local.get $ptr)))))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+        (br $loop)))
+    (local.get $len)
+  )
+
+  (func $find_byte_scalar (export "find_byte_scalar") (param $ptr i32) (param $len i32) (param $byte i32) (result i32)
+    (local $pos i32)
+    (local $end i32)
+    (local.set $pos (local.get $ptr))
+    (local.set $end (i32.add (local.get $ptr) (local.get $len)))
+    (block $done
+      (loop $loop
+        (br_if $done (i32.ge_u (local.get $pos) (local.get $end)))
+        (if (i32.eq (i32.load8_u (local.get $pos)) (local.get $byte))
+          (then (return (i32.sub (local.get $pos) (local.get $ptr)))))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+        (br $loop)))
+    (local.get $len)
+  )
+
+  ;; === SIMD find_byte2: find first of two bytes (e.g. '"' or '\') ===
+  (func $find_byte2_simd (export "find_byte2_simd")
+    (param $ptr i32) (param $len i32) (param $b1 i32) (param $b2 i32) (result i32)
+    (local $pos i32)
+    (local $end i32)
+    (local $n1 v128) (local $n2 v128)
+    (local $mask i32)
+
+    (local.set $pos (local.get $ptr))
+    (local.set $end (i32.add (local.get $ptr) (local.get $len)))
+    (local.set $n1 (i8x16.splat (local.get $b1)))
+    (local.set $n2 (i8x16.splat (local.get $b2)))
+
+    (block $simd_done
+      (loop $simd_loop
+        (br_if $simd_done (i32.gt_u (i32.add (local.get $pos) (i32.const 16)) (local.get $end)))
+        (local.set $mask (i8x16.bitmask
+          (v128.or
+            (i8x16.eq (v128.load (local.get $pos)) (local.get $n1))
+            (i8x16.eq (v128.load (local.get $pos)) (local.get $n2)))))
+        (if (i32.ne (local.get $mask) (i32.const 0))
+          (then (return (i32.sub (i32.add (local.get $pos) (i32.ctz (local.get $mask))) (local.get $ptr)))))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 16)))
+        (br $simd_loop)))
+
+    (block $done
+      (loop $loop
+        (br_if $done (i32.ge_u (local.get $pos) (local.get $end)))
+        (if (i32.or
+              (i32.eq (i32.load8_u (local.get $pos)) (local.get $b1))
+              (i32.eq (i32.load8_u (local.get $pos)) (local.get $b2)))
+          (then (return (i32.sub (local.get $pos) (local.get $ptr)))))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+        (br $loop)))
+    (local.get $len)
+  )
+
+  (func $find_byte2_scalar (export "find_byte2_scalar")
+    (param $ptr i32) (param $len i32) (param $b1 i32) (param $b2 i32) (result i32)
+    (local $pos i32)
+    (local $end i32)
+    (local.set $pos (local.get $ptr))
+    (local.set $end (i32.add (local.get $ptr) (local.get $len)))
+    (block $done
+      (loop $loop
+        (br_if $done (i32.ge_u (local.get $pos) (local.get $end)))
+        (if (i32.or
+              (i32.eq (i32.load8_u (local.get $pos)) (local.get $b1))
+              (i32.eq (i32.load8_u (local.get $pos)) (local.get $b2)))
+          (then (return (i32.sub (local.get $pos) (local.get $ptr)))))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+        (br $loop)))
+    (local.get $len)
+  )
+
+  ;; === SIMD scan_digits: scan [0-9] ===
+  (func $scan_digits_simd (export "scan_digits_simd") (param $ptr i32) (param $len i32) (result i32)
+    (local $pos i32)
+    (local $end i32)
+    (local $chunk v128)
+    (local $mask i32)
+
+    (local.set $pos (local.get $ptr))
+    (local.set $end (i32.add (local.get $ptr) (local.get $len)))
+
+    (block $simd_done
+      (loop $simd_loop
+        (br_if $simd_done (i32.gt_u (i32.add (local.get $pos) (i32.const 16)) (local.get $end)))
+        (local.set $chunk (v128.load (local.get $pos)))
+        (local.set $mask (i8x16.bitmask
+          (v128.and
+            (i8x16.ge_u (local.get $chunk) (v128.const i8x16 48 48 48 48 48 48 48 48 48 48 48 48 48 48 48 48))
+            (i8x16.le_u (local.get $chunk) (v128.const i8x16 57 57 57 57 57 57 57 57 57 57 57 57 57 57 57 57)))))
+        (if (i32.eq (local.get $mask) (i32.const 0xFFFF))
+          (then (local.set $pos (i32.add (local.get $pos) (i32.const 16))) (br $simd_loop))
+          (else
+            (if (i32.eq (local.get $mask) (i32.const 0))
+              (then (return (local.get $pos)))
+              (else (return (i32.add (local.get $pos)
+                (i32.ctz (i32.xor (local.get $mask) (i32.const 0xFFFF)))))))))))
+
+    (block $done
+      (loop $loop
+        (br_if $done (i32.ge_u (local.get $pos) (local.get $end)))
+        (if (i32.and
+              (i32.ge_u (i32.load8_u (local.get $pos)) (i32.const 48))
+              (i32.le_u (i32.load8_u (local.get $pos)) (i32.const 57)))
+          (then (local.set $pos (i32.add (local.get $pos) (i32.const 1))) (br $loop)))))
+    (local.get $pos)
+  )
+
+  (func $scan_digits_scalar (export "scan_digits_scalar") (param $ptr i32) (param $len i32) (result i32)
+    (local $pos i32)
+    (local $end i32)
+    (local.set $pos (local.get $ptr))
+    (local.set $end (i32.add (local.get $ptr) (local.get $len)))
+    (block $done
+      (loop $loop
+        (br_if $done (i32.ge_u (local.get $pos) (local.get $end)))
+        (if (i32.and
+              (i32.ge_u (i32.load8_u (local.get $pos)) (i32.const 48))
+              (i32.le_u (i32.load8_u (local.get $pos)) (i32.const 57)))
+          (then (local.set $pos (i32.add (local.get $pos) (i32.const 1))) (br $loop)))))
+    (local.get $pos)
+  )
+
+  ;; === SIMD count_newlines: count '\n' in buffer ===
+  (func $count_newlines_simd (export "count_newlines_simd") (param $ptr i32) (param $len i32) (result i32)
+    (local $pos i32)
+    (local $end i32)
+    (local $count i32)
+    (local $nl v128)
+    (local $matches v128)
+    (local $mask i32)
+
+    (local.set $pos (local.get $ptr))
+    (local.set $end (i32.add (local.get $ptr) (local.get $len)))
+    (local.set $count (i32.const 0))
+    (local.set $nl (v128.const i8x16 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10))
+
+    (block $simd_done
+      (loop $simd_loop
+        (br_if $simd_done (i32.gt_u (i32.add (local.get $pos) (i32.const 16)) (local.get $end)))
+        (local.set $mask (i8x16.bitmask (i8x16.eq (v128.load (local.get $pos)) (local.get $nl))))
+        (local.set $count (i32.add (local.get $count) (i32.popcnt (local.get $mask))))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 16)))
+        (br $simd_loop)))
+
+    (block $done
+      (loop $loop
+        (br_if $done (i32.ge_u (local.get $pos) (local.get $end)))
+        (if (i32.eq (i32.load8_u (local.get $pos)) (i32.const 10))
+          (then (local.set $count (i32.add (local.get $count) (i32.const 1)))))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+        (br $loop)))
+    (local.get $count)
+  )
+
+  (func $count_newlines_scalar (export "count_newlines_scalar") (param $ptr i32) (param $len i32) (result i32)
+    (local $pos i32)
+    (local $end i32)
+    (local $count i32)
+    (local.set $pos (local.get $ptr))
+    (local.set $end (i32.add (local.get $ptr) (local.get $len)))
+    (local.set $count (i32.const 0))
+    (block $done
+      (loop $loop
+        (br_if $done (i32.ge_u (local.get $pos) (local.get $end)))
+        (if (i32.eq (i32.load8_u (local.get $pos)) (i32.const 10))
+          (then (local.set $count (i32.add (local.get $count) (i32.const 1)))))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+        (br $loop)))
+    (local.get $count)
+  )
+
+  ;; === SIMD memcmp: compare two byte buffers ===
+  ;; Returns 1 if equal, 0 if different
+  (func $memcmp_simd (export "memcmp_simd") (param $a i32) (param $b i32) (param $len i32) (result i32)
+    (local $pos i32)
+    (local $end i32)
+    (local.set $pos (i32.const 0))
+    (local.set $end (local.get $len))
+
+    (block $simd_done
+      (loop $simd_loop
+        (br_if $simd_done (i32.gt_u (i32.add (local.get $pos) (i32.const 16)) (local.get $end)))
+        ;; XOR both chunks; if equal, result is all zeros
+        (if (v128.any_true
+              (v128.xor
+                (v128.load (i32.add (local.get $a) (local.get $pos)))
+                (v128.load (i32.add (local.get $b) (local.get $pos)))))
+          (then (return (i32.const 0))))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 16)))
+        (br $simd_loop)))
+
+    (block $done
+      (loop $loop
+        (br_if $done (i32.ge_u (local.get $pos) (local.get $end)))
+        (if (i32.ne
+              (i32.load8_u (i32.add (local.get $a) (local.get $pos)))
+              (i32.load8_u (i32.add (local.get $b) (local.get $pos))))
+          (then (return (i32.const 0))))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+        (br $loop)))
+    (i32.const 1)
+  )
+
+  (func $memcmp_scalar (export "memcmp_scalar") (param $a i32) (param $b i32) (param $len i32) (result i32)
+    (local $pos i32)
+    (local.set $pos (i32.const 0))
+    (block $done
+      (loop $loop
+        (br_if $done (i32.ge_u (local.get $pos) (local.get $len)))
+        (if (i32.ne
+              (i32.load8_u (i32.add (local.get $a) (local.get $pos)))
+              (i32.load8_u (i32.add (local.get $b) (local.get $pos))))
+          (then (return (i32.const 0))))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+        (br $loop)))
+    (i32.const 1)
+  )
+
+  ;; === Benchmark: find_byte (needle at end of 4KB) ===
+  (func $fill_find_byte (param $ptr i32) (param $len i32) (param $byte i32)
+    (local $i i32)
+    (local.set $i (i32.const 0))
+    (block $done (loop $loop
+      (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
+      (i32.store8 (i32.add (local.get $ptr) (local.get $i)) (i32.const 65))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $loop)))
+    ;; Put needle at end
+    (i32.store8 (i32.add (local.get $ptr) (i32.sub (local.get $len) (i32.const 1))) (local.get $byte))
+  )
+
+  (func (export "bench_find_byte_simd") (result i32)
+    (local $i i32) (local $r i32)
+    (call $fill_find_byte (i32.const 0) (i32.const 4096) (i32.const 10))
+    (local.set $i (i32.const 0))
+    (block $done (loop $loop
+      (br_if $done (i32.ge_u (local.get $i) (i32.const 100000)))
+      (local.set $r (call $find_byte_simd (i32.const 0) (i32.const 4096) (i32.const 10)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $loop)))
+    (local.get $r))
+
+  (func (export "bench_find_byte_scalar") (result i32)
+    (local $i i32) (local $r i32)
+    (call $fill_find_byte (i32.const 0) (i32.const 4096) (i32.const 10))
+    (local.set $i (i32.const 0))
+    (block $done (loop $loop
+      (br_if $done (i32.ge_u (local.get $i) (i32.const 100000)))
+      (local.set $r (call $find_byte_scalar (i32.const 0) (i32.const 4096) (i32.const 10)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $loop)))
+    (local.get $r))
+
+  ;; === Benchmark: count_newlines (1 newline per 40 chars in 4KB) ===
+  (func (export "bench_newlines_simd") (result i32)
+    (local $i i32) (local $r i32)
+    (call $fill_ws (i32.const 0) (i32.const 4096))
+    (local.set $i (i32.const 0))
+    (block $done (loop $loop
+      (br_if $done (i32.ge_u (local.get $i) (i32.const 100000)))
+      (local.set $r (call $count_newlines_simd (i32.const 0) (i32.const 4096)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $loop)))
+    (local.get $r))
+
+  (func (export "bench_newlines_scalar") (result i32)
+    (local $i i32) (local $r i32)
+    (call $fill_ws (i32.const 0) (i32.const 4096))
+    (local.set $i (i32.const 0))
+    (block $done (loop $loop
+      (br_if $done (i32.ge_u (local.get $i) (i32.const 100000)))
+      (local.set $r (call $count_newlines_scalar (i32.const 0) (i32.const 4096)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $loop)))
+    (local.get $r))
+
+  ;; === Benchmark: memcmp (4KB equal buffers) ===
+  (func $fill_equal_bufs (param $a i32) (param $b i32) (param $len i32)
+    (local $i i32)
+    (local.set $i (i32.const 0))
+    (block $done (loop $loop
+      (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
+      (i32.store8 (i32.add (local.get $a) (local.get $i))
+        (i32.rem_u (local.get $i) (i32.const 256)))
+      (i32.store8 (i32.add (local.get $b) (local.get $i))
+        (i32.rem_u (local.get $i) (i32.const 256)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $loop))))
+
+  (func (export "bench_memcmp_simd") (result i32)
+    (local $i i32) (local $r i32)
+    (call $fill_equal_bufs (i32.const 0) (i32.const 8192) (i32.const 4096))
+    (local.set $i (i32.const 0))
+    (block $done (loop $loop
+      (br_if $done (i32.ge_u (local.get $i) (i32.const 100000)))
+      (local.set $r (call $memcmp_simd (i32.const 0) (i32.const 8192) (i32.const 4096)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $loop)))
+    (local.get $r))
+
+  (func (export "bench_memcmp_scalar") (result i32)
+    (local $i i32) (local $r i32)
+    (call $fill_equal_bufs (i32.const 0) (i32.const 8192) (i32.const 4096))
+    (local.set $i (i32.const 0))
+    (block $done (loop $loop
+      (br_if $done (i32.ge_u (local.get $i) (i32.const 100000)))
+      (local.set $r (call $memcmp_scalar (i32.const 0) (i32.const 8192) (i32.const 4096)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $loop)))
+    (local.get $r))
+
+  ;; === Benchmark: scan_digits (4KB of digits) ===
+  (func $fill_digits (param $ptr i32) (param $len i32)
+    (local $i i32)
+    (local.set $i (i32.const 0))
+    (block $done (loop $loop
+      (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
+      (i32.store8 (i32.add (local.get $ptr) (local.get $i))
+        (i32.add (i32.const 48) (i32.rem_u (local.get $i) (i32.const 10))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $loop)))
+    (i32.store8 (i32.add (local.get $ptr) (local.get $len)) (i32.const 32)))
+
+  (func (export "bench_digits_simd") (result i32)
+    (local $i i32) (local $r i32)
+    (call $fill_digits (i32.const 0) (i32.const 4096))
+    (local.set $i (i32.const 0))
+    (block $done (loop $loop
+      (br_if $done (i32.ge_u (local.get $i) (i32.const 100000)))
+      (local.set $r (call $scan_digits_simd (i32.const 0) (i32.const 4096)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $loop)))
+    (local.get $r))
+
+  (func (export "bench_digits_scalar") (result i32)
+    (local $i i32) (local $r i32)
+    (call $fill_digits (i32.const 0) (i32.const 4096))
+    (local.set $i (i32.const 0))
+    (block $done (loop $loop
+      (br_if $done (i32.ge_u (local.get $i) (i32.const 100000)))
+      (local.set $r (call $scan_digits_scalar (i32.const 0) (i32.const 4096)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $loop)))
+    (local.get $r))
+
   ;; Correctness test
   (func (export "test_ws") (result i32)
     ;; Write "   \n  abc" at offset 8192
