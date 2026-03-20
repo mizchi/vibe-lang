@@ -41,14 +41,15 @@ fn substitute_param_names(
 /// For known constructors, bind with the ctor payload type.
 /// Fallback to String binding for unknown constructors (`Error(...)` etc).
 
-///| Collect perform Effect::Op names from module body (shallow)
+///|
+/// Collect perform Effect::Op names from module body (shallow)
 fn collect_perform_ops(body : @core.Module) -> Array[String] {
   let ops : Array[String] = []
   for stmt in body.stmts {
     match stmt {
-      @core.Stmt::Let(expr~, ..) | @core.Stmt::Expr(expr~, ..) |
-      @core.Stmt::LetMut(expr~, ..) =>
-        collect_perform_ops_expr(expr, ops)
+      @core.Stmt::Let(expr~, ..)
+      | @core.Stmt::Expr(expr~, ..)
+      | @core.Stmt::LetMut(expr~, ..) => collect_perform_ops_expr(expr, ops)
       _ => ()
     }
   }
@@ -91,7 +92,9 @@ fn collect_perform_ops_expr(expr : @core.Expr, ops : Array[String]) -> Unit {
       }
     @core.Expr::Raise(..) => ops.push("Error::Throw")
     @core.Expr::Call(args~, ..) =>
-      for arg in args { collect_perform_ops_expr(arg.expr, ops) }
+      for arg in args {
+        collect_perform_ops_expr(arg.expr, ops)
+      }
     _ => ()
   }
 }
@@ -954,7 +957,8 @@ fn type_expr_eff(
       for op_name in body_performs {
         let eff = extract_effect_name(op_name)
         // Only warn if the effect has at least one handler arm
-        if handled_effect_set.contains(eff) && not(handled_ops.contains(op_name)) {
+        if handled_effect_set.contains(eff) &&
+          not(handled_ops.contains(op_name)) {
           raise TypeError::BadTypeDef(
             message="handle is missing handler for `" +
               op_name +
@@ -1527,8 +1531,7 @@ fn type_expr_eff(
                 let qualified = effect_name + "::" + op_name
                 match env.handle_resume_types.get(qualified) {
                   Some(_) => ()
-                  None =>
-                    env.handle_resume_types[qualified] = resolved_ret
+                  None => env.handle_resume_types[qualified] = resolved_ret
                 }
               }
               resolved_ret
@@ -1540,14 +1543,14 @@ fn type_expr_eff(
                 available.push(op_key)
               }
               let hint = if available.length() > 0 {
-                {
-                  let mut s = "available operations: "
-                  for i = 0; i < available.length(); i = i + 1 {
-                    if i > 0 { s = s + ", " }
-                    s = s + available[i]
+                let mut s = "available operations: "
+                for i = 0; i < available.length(); i = i + 1 {
+                  if i > 0 {
+                    s = s + ", "
                   }
-                  s
+                  s = s + available[i]
                 }
+                s
               } else {
                 ""
               }

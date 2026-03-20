@@ -199,19 +199,19 @@ test "perform uses effect import index before linked imports" {
   )
   let ast = @core.Module::{
     stmts: [
-      effect_test_let("run", effect_test_fn([effect_test_expr_stmt(perform_expr)])),
+      effect_test_let(
+        "run",
+        effect_test_fn([effect_test_expr_stmt(perform_expr)]),
+      ),
     ],
   }
   let wasm = try
     emit_module_wasm_with_options(
       ast,
-      wasm_emit_options(
-        library_mode=true,
-        linked_imports=[
-          ("lib", "one", 1, 1),
-          ("lib", "two", 5, 1),
-        ],
-      ),
+      wasm_emit_options(library_mode=true, linked_imports=[
+        ("lib", "one", 1, 1),
+        ("lib", "two", 5, 1),
+      ]),
     )
   catch {
     err => fail(err.to_string())
@@ -220,15 +220,19 @@ test "perform uses effect import index before linked imports" {
   }
   let code_sec = effect_test_code_section_bytes(wasm)
   assert_true(
-    effect_test_bytes_contains(
-      code_sec,
-      [(0x41).to_byte(), (0x00).to_byte(), (0x10).to_byte(), (0x00).to_byte()],
-    ),
+    effect_test_bytes_contains(code_sec, [
+      (0x41).to_byte(),
+      (0x00).to_byte(),
+      (0x10).to_byte(),
+      (0x00).to_byte(),
+    ]),
   )
   assert_false(
-    effect_test_bytes_contains(
-      code_sec,
-      [(0x41).to_byte(), (0x00).to_byte(), (0x10).to_byte(), (0x02).to_byte()],
-    ),
+    effect_test_bytes_contains(code_sec, [
+      (0x41).to_byte(),
+      (0x00).to_byte(),
+      (0x10).to_byte(),
+      (0x02).to_byte(),
+    ]),
   )
 }

@@ -233,7 +233,10 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   // Also count linked import type signatures
   for entry in ctx.linked_fn_imports_list {
     let (_, _, param_count, return_count) = entry
-    effect_arities_seen["P" + param_count.to_string() + "R" + return_count.to_string()] = true
+    effect_arities_seen["P" +
+    param_count.to_string() +
+    "R" +
+    return_count.to_string()] = true
   }
   let effect_type_count = effect_arities_seen.length()
   let total_type_count = builtin_count +
@@ -549,7 +552,10 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let linked_import_type_indices : Array[Int] = []
   for entry in ctx.linked_fn_imports_list {
     let (_, _, param_count, return_count) = entry
-    let type_key = "P" + param_count.to_string() + "R" + return_count.to_string()
+    let type_key = "P" +
+      param_count.to_string() +
+      "R" +
+      return_count.to_string()
     match effect_op_type_by_arity.get(type_key) {
       Some(idx) => linked_import_type_indices.push(idx)
       None => {
@@ -649,11 +655,13 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     0
   }
   let global_import_count = (if ctx.use_js_strings {
-    ctx.js_strings.names.length()
-  } else {
-    0
-  }) + linked_global_import
-  let import_count = func_import_count + global_import_count +
+      ctx.js_strings.names.length()
+    } else {
+      0
+    }) +
+    linked_global_import
+  let import_count = func_import_count +
+    global_import_count +
     linked_memory_import
   if import_count > 0 {
     let import_sec = ByteBuf::new()
@@ -979,10 +987,11 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   // TODO: In linked mode with closures, import funcref table from library
   let import_funcref_table = false // not yet implemented
   let table_count = (if has_funcref_table && not(import_funcref_table) {
-    1
-  } else {
-    0
-  }) + (if has_extern_table { 1 } else { 0 })
+      1
+    } else {
+      0
+    }) +
+    (if has_extern_table { 1 } else { 0 })
   if table_count > 0 {
     let table_sec = ByteBuf::new()
     write_u32_leb(table_sec, table_count)
@@ -1793,23 +1802,57 @@ fn emit_module_with_coverage(
   // build_module but only for determining linked import func indices.
   if ctx.linked_fn_imports_list.length() > 0 {
     let mut pre_import_count = 0
-    if ctx.need_js_length { pre_import_count += 1 }
-    if ctx.need_js_char_code_at { pre_import_count += 1 }
-    if ctx.need_js_substring { pre_import_count += 1 }
-    if ctx.need_js_concat { pre_import_count += 1 }
-    if ctx.need_js_equals { pre_import_count += 1 }
-    if ctx.need_path { pre_import_count += 1 }
-    if ctx.need_dynamic_path_resolve { pre_import_count += 1 }
-    if ctx.need_sh { pre_import_count += 1 }
-    if ctx.need_env_get { pre_import_count += 1 }
-    if ctx.need_env_args_len { pre_import_count += 1 }
-    if ctx.need_env_args_get { pre_import_count += 1 }
-    if ctx.need_sleep { pre_import_count += 1 }
-    if ctx.need_stdout_write_char { pre_import_count += 2 }
-    if ctx.need_stdin_read_char { pre_import_count += 2 }
-    if ctx.need_fs { pre_import_count += 7 }
-    if ctx.need_socket { pre_import_count += 13 }
-    if ctx.need_http && ctx.http_host_imports { pre_import_count += 12 }
+    if ctx.need_js_length {
+      pre_import_count += 1
+    }
+    if ctx.need_js_char_code_at {
+      pre_import_count += 1
+    }
+    if ctx.need_js_substring {
+      pre_import_count += 1
+    }
+    if ctx.need_js_concat {
+      pre_import_count += 1
+    }
+    if ctx.need_js_equals {
+      pre_import_count += 1
+    }
+    if ctx.need_path {
+      pre_import_count += 1
+    }
+    if ctx.need_dynamic_path_resolve {
+      pre_import_count += 1
+    }
+    if ctx.need_sh {
+      pre_import_count += 1
+    }
+    if ctx.need_env_get {
+      pre_import_count += 1
+    }
+    if ctx.need_env_args_len {
+      pre_import_count += 1
+    }
+    if ctx.need_env_args_get {
+      pre_import_count += 1
+    }
+    if ctx.need_sleep {
+      pre_import_count += 1
+    }
+    if ctx.need_stdout_write_char {
+      pre_import_count += 2
+    }
+    if ctx.need_stdin_read_char {
+      pre_import_count += 2
+    }
+    if ctx.need_fs {
+      pre_import_count += 7
+    }
+    if ctx.need_socket {
+      pre_import_count += 13
+    }
+    if ctx.need_http && ctx.http_host_imports {
+      pre_import_count += 12
+    }
     // effect ops come before linked imports
     pre_import_count += ctx.effect_op_imports.length()
     for entry in ctx.linked_fn_imports_list {
@@ -1897,54 +1940,54 @@ fn emit_module_with_coverage(
   // functions whose callers don't expect multi-value returns, causing stack
   // underflow at local_set after call sites.
   if ctx.linked_fn_imports_list.length() == 0 {
-  // Pass 1: identify functions eligible without cross-function Call support
-  for i in 0..<funcs.length() {
-    let f = funcs[i]
-    match f.name {
-      Some(name) =>
-        match tuple_return_kinds(ctx, f.ret) {
-          Some(kinds) =>
-            if body_always_returns_tuple(f.body, kinds.length(), name) {
-              ctx.fn_multivalue_results[name] = kinds
-            }
-          None => ()
-        }
-      None => ()
-    }
-  }
-  // Iterative passes: keep finding new eligible functions until convergence
-  for pass = 0; pass < 10; pass = pass + 1 {
-    let eligible_arity : Map[String, Int] = {}
-    for entry in ctx.fn_multivalue_results {
-      eligible_arity[entry.0] = entry.1.length()
-    }
-    let mut added = 0
+    // Pass 1: identify functions eligible without cross-function Call support
     for i in 0..<funcs.length() {
       let f = funcs[i]
       match f.name {
         Some(name) =>
-          if not(ctx.fn_multivalue_results.contains(name)) {
-            match tuple_return_kinds(ctx, f.ret) {
-              Some(kinds) =>
-                if body_always_returns_tuple(
-                    f.body,
-                    kinds.length(),
-                    name,
-                    eligible_fns=Some(eligible_arity),
-                  ) {
-                  ctx.fn_multivalue_results[name] = kinds
-                  added = added + 1
-                }
-              None => ()
-            }
+          match tuple_return_kinds(ctx, f.ret) {
+            Some(kinds) =>
+              if body_always_returns_tuple(f.body, kinds.length(), name) {
+                ctx.fn_multivalue_results[name] = kinds
+              }
+            None => ()
           }
         None => ()
       }
     }
-    if added == 0 {
-      break
+    // Iterative passes: keep finding new eligible functions until convergence
+    for pass = 0; pass < 10; pass = pass + 1 {
+      let eligible_arity : Map[String, Int] = {}
+      for entry in ctx.fn_multivalue_results {
+        eligible_arity[entry.0] = entry.1.length()
+      }
+      let mut added = 0
+      for i in 0..<funcs.length() {
+        let f = funcs[i]
+        match f.name {
+          Some(name) =>
+            if not(ctx.fn_multivalue_results.contains(name)) {
+              match tuple_return_kinds(ctx, f.ret) {
+                Some(kinds) =>
+                  if body_always_returns_tuple(
+                      f.body,
+                      kinds.length(),
+                      name,
+                      eligible_fns=Some(eligible_arity),
+                    ) {
+                    ctx.fn_multivalue_results[name] = kinds
+                    added = added + 1
+                  }
+                None => ()
+              }
+            }
+          None => ()
+        }
+      }
+      if added == 0 {
+        break
+      }
     }
-  }
   } // end linked_fn_imports_list == 0 guard
   ctx.fn_sig_type_indices = {}
   ctx.fn_sig_order = []
@@ -2126,7 +2169,8 @@ fn emit_module_with_coverage(
     for key, _ in ctx.effect_op_imports {
       effect_op_keys.push(key)
     }
-    let base = func_import_count(ctx) - ctx.effect_op_imports.length() -
+    let base = func_import_count(ctx) -
+      ctx.effect_op_imports.length() -
       ctx.linked_fn_imports_list.length()
     for eidx, key in effect_op_keys {
       ctx.effect_op_imports[key] = base + eidx

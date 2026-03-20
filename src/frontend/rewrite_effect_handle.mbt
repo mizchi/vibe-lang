@@ -308,7 +308,10 @@ fn reh_extract_resume_expr(expr : @core.Expr) -> @core.Expr {
       if stmts.length() > 0 {
         let last = stmts[stmts.length() - 1]
         match last {
-          @core.Stmt::Expr(expr=@core.Expr::Call(name="__resume", args~, ..), ..) =>
+          @core.Stmt::Expr(
+            expr=@core.Expr::Call(name="__resume", args~, ..),
+            ..
+          ) =>
             if args.length() == 1 {
               // Replace last stmt with just the resume arg value
               let new_stmts : Array[@core.Stmt] = []
@@ -316,11 +319,10 @@ fn reh_extract_resume_expr(expr : @core.Expr) -> @core.Expr {
                 new_stmts.push(stmts[i])
               }
               let last_span = last.span()
-              new_stmts.push(@core.Stmt::Expr(expr=args[0].expr, span=last_span))
-              @core.Expr::Block(
-                body=@core.Module::{ stmts: new_stmts },
-                span~,
+              new_stmts.push(
+                @core.Stmt::Expr(expr=args[0].expr, span=last_span),
               )
+              @core.Expr::Block(body=@core.Module::{ stmts: new_stmts }, span~)
             } else {
               expr
             }
@@ -1053,7 +1055,12 @@ fn reh_rewrite_resume_to_k_stmt(
 ) -> @core.Stmt {
   match stmt {
     @core.Stmt::Let(rec~, name~, expr~, span~) =>
-      @core.Stmt::Let(rec~, name~, expr=reh_rewrite_resume_to_k(expr, k_name), span~)
+      @core.Stmt::Let(
+        rec~,
+        name~,
+        expr=reh_rewrite_resume_to_k(expr, k_name),
+        span~,
+      )
     @core.Stmt::Expr(expr~, span~) =>
       @core.Stmt::Expr(expr=reh_rewrite_resume_to_k(expr, k_name), span~)
     @core.Stmt::LetMut(name~, expr~, span~) =>

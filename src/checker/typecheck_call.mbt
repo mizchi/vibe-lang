@@ -23,12 +23,10 @@ fn resolve_type_member_call_name(
     None => None
     Some(expr) => {
       resolve_member_depth.val += 1
-      let recv_ty = try {
-        resolve_type(
-          env,
-          type_expr_eff(env, expr, aliases, effects, allow_effect),
-        )
-      } catch {
+      let recv_ty = resolve_type(
+        env,
+        type_expr_eff(env, expr, aliases, effects, allow_effect),
+      ) catch {
         e => {
           resolve_member_depth.val -= 1
           raise e

@@ -955,75 +955,75 @@ fn compile_call_by_name(
   }
   if is_linked_import {
     // Linked imports: pre-compiled library functions (wasm import)
-  match ctx.linked_fn_imports.get(name) {
-    Some(import_idx) => {
-      let return_count = match ctx.linked_fn_return_counts.get(name) {
-        Some(rc) => rc
-        None => 1
-      }
-      for arg in args {
-        compile_expr(ctx, buf, arg.expr)
-      }
-      // Push closure env (i32 const 0, no captures for linked imports)
-      buf.push((0x41).to_byte()) // i32.const
-      buf.push((0).to_byte()) // 0
-      emit_call(buf, import_idx)
-      // Multivalue return: pack results into a tuple on heap
-      if return_count > 1 {
-        // Results are on stack: [v0, v1, ...]. Pack into tuple object.
-        // Tuple layout: [tag:i32=6, len:i32=N, elem0:i64, elem1:i64, ...]
-        let temp_locals : Array[Int] = []
-        // Pop results into temp locals (reverse order)
-        for _ in 0..<return_count {
-          let tmp = alloc_temp_local_with_kind(ctx, ValueKind::I64)
-          temp_locals.push(tmp)
-          emit_local_set(buf, tmp)
+    match ctx.linked_fn_imports.get(name) {
+      Some(import_idx) => {
+        let return_count = match ctx.linked_fn_return_counts.get(name) {
+          Some(rc) => rc
+          None => 1
         }
-        // Allocate tuple on heap
-        require_heap(ctx)
-        let obj_size = 8 + return_count * 8
-        emit_heap_reserve(ctx, buf, obj_size)
-        let ptr_local = alloc_temp_local(ctx)
-        emit_local_get(buf, ctx.heap_local)
-        emit_local_set(buf, ptr_local)
-        // Write tag = 6 (tuple)
-        emit_local_get(buf, ptr_local)
-        emit_i32_const_raw(buf, 6)
-        buf.push((0x36).to_byte()) // i32.store
-        buf.push((2).to_byte()) // align=4
-        buf.push((0).to_byte()) // offset=0
-        // Write length
-        emit_local_get(buf, ptr_local)
-        emit_i32_const_raw(buf, return_count)
-        buf.push((0x36).to_byte()) // i32.store
-        buf.push((2).to_byte()) // align=4
-        buf.push((4).to_byte()) // offset=4
-        // Write elements (reverse temp_locals to restore original order)
-        for i = 0; i < return_count; i = i + 1 {
+        for arg in args {
+          compile_expr(ctx, buf, arg.expr)
+        }
+        // Push closure env (i32 const 0, no captures for linked imports)
+        buf.push((0x41).to_byte()) // i32.const
+        buf.push((0).to_byte()) // 0
+        emit_call(buf, import_idx)
+        // Multivalue return: pack results into a tuple on heap
+        if return_count > 1 {
+          // Results are on stack: [v0, v1, ...]. Pack into tuple object.
+          // Tuple layout: [tag:i32=6, len:i32=N, elem0:i64, elem1:i64, ...]
+          let temp_locals : Array[Int] = []
+          // Pop results into temp locals (reverse order)
+          for _ in 0..<return_count {
+            let tmp = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+            temp_locals.push(tmp)
+            emit_local_set(buf, tmp)
+          }
+          // Allocate tuple on heap
+          require_heap(ctx)
+          let obj_size = 8 + return_count * 8
+          emit_heap_reserve(ctx, buf, obj_size)
+          let ptr_local = alloc_temp_local(ctx)
+          emit_local_get(buf, ctx.heap_local)
+          emit_local_set(buf, ptr_local)
+          // Write tag = 6 (tuple)
           emit_local_get(buf, ptr_local)
-          emit_local_get(buf, temp_locals[return_count - 1 - i])
-          buf.push((0x37).to_byte()) // i64.store
-          buf.push((3).to_byte()) // align=8
-          write_u32_leb(buf, 8 + i * 8) // offset
+          emit_i32_const_raw(buf, 6)
+          buf.push((0x36).to_byte()) // i32.store
+          buf.push((2).to_byte()) // align=4
+          buf.push((0).to_byte()) // offset=0
+          // Write length
+          emit_local_get(buf, ptr_local)
+          emit_i32_const_raw(buf, return_count)
+          buf.push((0x36).to_byte()) // i32.store
+          buf.push((2).to_byte()) // align=4
+          buf.push((4).to_byte()) // offset=4
+          // Write elements (reverse temp_locals to restore original order)
+          for i = 0; i < return_count; i = i + 1 {
+            emit_local_get(buf, ptr_local)
+            emit_local_get(buf, temp_locals[return_count - 1 - i])
+            buf.push((0x37).to_byte()) // i64.store
+            buf.push((3).to_byte()) // align=8
+            write_u32_leb(buf, 8 + i * 8) // offset
+          }
+          // Advance heap
+          emit_local_get(buf, ctx.heap_local)
+          emit_i32_const_raw(buf, obj_size)
+          buf.push((0x6a).to_byte()) // i32.add
+          emit_local_set(buf, ctx.heap_local)
+          ctx.heap_synced = false
+          // Return tagged pointer: (ptr << 2) | 1
+          emit_local_get(buf, ptr_local)
+          buf.push((0xad).to_byte()) // i64.extend_i32_u
+          emit_i64_const_raw(buf, 2L)
+          buf.push((0x86).to_byte()) // i64.shl
+          emit_i64_const_raw(buf, 1L)
+          buf.push((0x84).to_byte()) // i64.or
         }
-        // Advance heap
-        emit_local_get(buf, ctx.heap_local)
-        emit_i32_const_raw(buf, obj_size)
-        buf.push((0x6a).to_byte()) // i32.add
-        emit_local_set(buf, ctx.heap_local)
-        ctx.heap_synced = false
-        // Return tagged pointer: (ptr << 2) | 1
-        emit_local_get(buf, ptr_local)
-        buf.push((0xad).to_byte()) // i64.extend_i32_u
-        emit_i64_const_raw(buf, 2L)
-        buf.push((0x86).to_byte()) // i64.shl
-        emit_i64_const_raw(buf, 1L)
-        buf.push((0x84).to_byte()) // i64.or
+        return ()
       }
-      return ()
+      None => ()
     }
-    None => ()
-  }
   } else if is_user_fn {
     compile_call_user_fn(ctx, buf, name, args)
     return ()

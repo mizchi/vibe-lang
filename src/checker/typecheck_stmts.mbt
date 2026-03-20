@@ -342,7 +342,10 @@ fn match_arms_may_use_scoped_ref(arms : Array[@core.MatchArm]) -> Bool {
 ///|
 
 ///|
-fn register_effect_def(env : TypeEnv, stmt : @core.Stmt) -> Unit raise TypeError {
+fn register_effect_def(
+  env : TypeEnv,
+  stmt : @core.Stmt,
+) -> Unit raise TypeError {
   let (name, params, ops) = match stmt {
     @core.Stmt::EffectDef(name~, params~, ops~, ..) => (name, params, ops)
     @core.Stmt::ExportEffectDef(name~, params~, ops~, ..) => (name, params, ops)
@@ -353,11 +356,7 @@ fn register_effect_def(env : TypeEnv, stmt : @core.Stmt) -> Unit raise TypeError
   for op in ops {
     if seen_op_names.contains(op.name) {
       raise TypeError::BadTypeDef(
-        message="duplicate operation `" +
-          op.name +
-          "` in effect `" +
-          name +
-          "`",
+        message="duplicate operation `" + op.name + "` in effect `" + name + "`",
         span=op.span,
       )
     }
