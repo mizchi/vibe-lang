@@ -306,6 +306,49 @@ fn resolve_builtin_type_name(
       } else {
         None
       }
+    // WASM numeric primitives (kept as Named for codegen-level use)
+    "i64" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="i64", args=[]))
+      } else {
+        None
+      }
+    "u8" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="u8", args=[]))
+      } else {
+        None
+      }
+    "u16" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="u16", args=[]))
+      } else {
+        None
+      }
+    "u32" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="u32", args=[]))
+      } else {
+        None
+      }
+    "u64" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="u64", args=[]))
+      } else {
+        None
+      }
+    "i16" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="i16", args=[]))
+      } else {
+        None
+      }
+    "v128" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="v128", args=[]))
+      } else {
+        None
+      }
     _ => None
   }
 }
@@ -545,7 +588,21 @@ fn type_may_contain_scoped_ref_hint(ty : @core.Type) -> Bool {
           | "Array"
           | "Map"
           | "ArrayBuilder"
-          | "MapBuilder" => false
+          | "MapBuilder"
+          | "i64"
+          | "u8"
+          | "u16"
+          | "u32"
+          | "u64"
+          | "i16"
+          | "v128"
+          | "anyref"
+          | "eqref"
+          | "i31ref"
+          | "structref"
+          | "arrayref"
+          | "funcref"
+          | "externref" => false
           _ => true
         }
       _ => false
