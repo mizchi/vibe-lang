@@ -285,6 +285,72 @@ test "bundle_for_wasm_linked detects HOF through ReExport chain" {
 }
 
 ///|
+test "bundle_for_wasm_linked inlines deps that require Fs host imports" {
+  let db = VibeDb::new()
+  db.set_source(
+    "/project/fs_dep.vibe",
+    "export let load = (path: String) -> String with { Error, Fs } { perform Fs::ReadFile(path) }\n",
+  )
+  db.set_source(
+    "/project/main.vibe",
+    "import ./fs_dep.vibe { load }\nlet result = load(\"/tmp/input.txt\")\nresult\n",
+  )
+  let ast = db.ast_with_hash_imports("/project/main.vibe")
+  let (bundled, linked) = bundle_for_wasm_linked(db, "/project/main.vibe", ast)
+  let mut has_load_linked = false
+  for li in linked {
+    if li.func_name == "load" {
+      has_load_linked = true
+    }
+  }
+  assert_false(has_load_linked)
+  let mut has_load_inlined = false
+  for stmt in bundled.stmts {
+    match stmt {
+      @core.Stmt::ExportLet(name~, ..) | @core.Stmt::Let(name~, ..) =>
+        if name == "load" {
+          has_load_inlined = true
+        }
+      _ => ()
+    }
+  }
+  assert_true(has_load_inlined)
+}
+
+///|
+test "bundle_for_wasm_linked inlines deps that require Env host imports" {
+  let db = VibeDb::new()
+  db.set_source(
+    "/project/env_dep.vibe",
+    "export let read_home = () -> String with { Env } { perform Env::Get(\"HOME\") }\n",
+  )
+  db.set_source(
+    "/project/main.vibe",
+    "import ./env_dep.vibe { read_home }\nlet result = read_home()\nresult\n",
+  )
+  let ast = db.ast_with_hash_imports("/project/main.vibe")
+  let (bundled, linked) = bundle_for_wasm_linked(db, "/project/main.vibe", ast)
+  let mut has_read_home_linked = false
+  for li in linked {
+    if li.func_name == "read_home" {
+      has_read_home_linked = true
+    }
+  }
+  assert_false(has_read_home_linked)
+  let mut has_read_home_inlined = false
+  for stmt in bundled.stmts {
+    match stmt {
+      @core.Stmt::ExportLet(name~, ..) | @core.Stmt::Let(name~, ..) =>
+        if name == "read_home" {
+          has_read_home_inlined = true
+        }
+      _ => ()
+    }
+  }
+  assert_true(has_read_home_inlined)
+}
+
+///|
 test "bundle_for_wasm keeps enum defs through nested wrapper re-exports" {
   let db = VibeDb::new()
   db.set_source(

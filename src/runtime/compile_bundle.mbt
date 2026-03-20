@@ -104,6 +104,12 @@ pub fn bundle_for_wasm_linked(
   for imp in imports {
     let dep_ast = db.ast_with_hash_imports(imp.path)
     let module_name = linked_module_name(imp.path)
+    let host_imports_visited : Map[String, Bool] = {}
+    let needs_host_import_inline = module_requires_preload_host_imports(
+      db,
+      imp.path,
+      host_imports_visited,
+    )
     // Check if any export has HOF params (including through ReExport chains)
     let mut has_hof = false
     for stmt in dep_ast.stmts {
@@ -128,8 +134,9 @@ pub fn bundle_for_wasm_linked(
         _ => ()
       }
     }
-    if has_hof {
-      // Module has HOF exports: inline entire module (like monolithic)
+    if has_hof || needs_host_import_inline {
+      // Inline deps that need host imports because wasmtime --preload cannot
+      // instantiate library modules that carry their own host/WASI imports.
       collect_dependency_defs(db, imp.path, bundled_stmts, visited)
     } else {
       // Module has only scalar exports: use linked imports (with ReExport resolution)
@@ -291,6 +298,263 @@ fn linked_type_is_func(ty : @core.Type) -> Bool {
     @core.Type::Func(..) => true
     _ => false
   }
+}
+
+///|
+fn module_requires_preload_host_imports(
+  db : VibeDb,
+  path : String,
+  visited : Map[String, Bool],
+) -> Bool {
+  if visited.contains(path) {
+    return false
+  }
+  visited[path] = true
+  let ast = db.ast(path)
+  if module_stmt_list_requires_preload_host_imports(ast.stmts) {
+    return true
+  }
+  let dep_imports = db.imports(path)
+  for imp in dep_imports {
+    if module_requires_preload_host_imports(db, imp.path, visited) {
+      return true
+    }
+  }
+  let base_dir = @path.Path(path).dirname().to_string()
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::ReExport(source~, ..) => {
+        match resolve_module_ref_path(base_dir, source, dep_imports~) {
+          Some(source_path) =>
+            if module_requires_preload_host_imports(db, source_path, visited) {
+              return true
+            }
+          None => ()
+        }
+      }
+      _ => ()
+    }
+  }
+  false
+}
+
+///|
+fn module_stmt_list_requires_preload_host_imports(
+  stmts : Array[@core.Stmt],
+) -> Bool {
+  for stmt in stmts {
+    if module_stmt_requires_preload_host_imports(stmt) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn module_stmt_requires_preload_host_imports(
+  stmt : @core.Stmt,
+) -> Bool {
+  match stmt {
+    @core.Stmt::Let(expr~, ..)
+    | @core.Stmt::ExportLet(expr~, ..)
+    | @core.Stmt::InternalExportLet(expr~, ..)
+    | @core.Stmt::LetMut(expr~, ..)
+    | @core.Stmt::Expr(expr~, ..)
+    | @core.Stmt::LetPat(expr~, ..) => module_expr_requires_preload_host_imports(expr)
+    @core.Stmt::LetPatElse(expr~, else_body~, ..) =>
+      module_expr_requires_preload_host_imports(expr) ||
+      module_stmt_list_requires_preload_host_imports(else_body.stmts)
+    @core.Stmt::Assign(expr~, ..) => module_expr_requires_preload_host_imports(expr)
+    @core.Stmt::IndexAssign(target~, index~, value~, ..) =>
+      module_expr_requires_preload_host_imports(target) ||
+      module_expr_requires_preload_host_imports(index) ||
+      module_expr_requires_preload_host_imports(value)
+    @core.Stmt::Test(..) | @core.Stmt::Bench(..) => false
+    _ => false
+  }
+}
+
+///|
+fn module_expr_requires_preload_host_imports(
+  expr : @core.Expr,
+) -> Bool {
+  match expr {
+    @core.Expr::Call(name~, args~, ..) => {
+      if is_preload_unsafe_builtin_name(name) {
+        return true
+      }
+      for arg in args {
+        if module_expr_requires_preload_host_imports(arg.expr) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Perform(effect_name~, args~, ..) => {
+      if is_preload_unsafe_effect_name(effect_name) {
+        return true
+      }
+      for arg in args {
+        if module_expr_requires_preload_host_imports(arg.expr) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Tuple(items~, ..) | @core.Expr::Array(items~, ..) => {
+      for item in items {
+        if module_expr_requires_preload_host_imports(item) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::TupleIndex(expr~, ..)
+    | @core.Expr::Spread(expr~, ..)
+    | @core.Expr::Yield(expr~, ..) => module_expr_requires_preload_host_imports(expr)
+    @core.Expr::Raise(value~, ..) => module_expr_requires_preload_host_imports(value)
+    @core.Expr::Record(fields~, ..)
+    | @core.Expr::StructLit(fields~, ..) => {
+      for field in fields {
+        if module_expr_requires_preload_host_imports(field.expr) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Map(fields~, ..) => {
+      for field in fields {
+        if module_expr_requires_preload_host_imports(field.expr) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) =>
+      module_expr_requires_preload_host_imports(cond) ||
+      module_stmt_list_requires_preload_host_imports(then_body.stmts) ||
+      module_stmt_list_requires_preload_host_imports(else_body.stmts)
+    @core.Expr::Block(body~, ..)
+    | @core.Expr::Fn(body~, ..) => module_stmt_list_requires_preload_host_imports(body.stmts)
+    @core.Expr::Match(scrutinee~, arms~, ..) => {
+      if module_expr_requires_preload_host_imports(scrutinee) {
+        return true
+      }
+      for arm in arms {
+        if module_expr_requires_preload_host_imports(arm.expr) {
+          return true
+        }
+        match arm.cond {
+          Some(cond) =>
+            if module_expr_requires_preload_host_imports(cond) {
+              return true
+            }
+          None => ()
+        }
+      }
+      false
+    }
+    @core.Expr::Handle(body~, arms~, ..) => {
+      if module_stmt_list_requires_preload_host_imports(body.stmts) {
+        return true
+      }
+      for arm in arms {
+        if module_expr_requires_preload_host_imports(arm.expr) {
+          return true
+        }
+        match arm.cond {
+          Some(cond) =>
+            if module_expr_requires_preload_host_imports(cond) {
+              return true
+            }
+          None => ()
+        }
+      }
+      false
+    }
+    @core.Expr::ForIn(iterable~, body~, ..) =>
+      module_expr_requires_preload_host_imports(iterable) ||
+      module_stmt_list_requires_preload_host_imports(body.stmts)
+    @core.Expr::While(cond~, body~, ..) =>
+      module_expr_requires_preload_host_imports(cond) ||
+      module_stmt_list_requires_preload_host_imports(body.stmts)
+    @core.Expr::Loop(params~, body~, ..) => {
+      for param in params {
+        if module_expr_requires_preload_host_imports(param.init) {
+          return true
+        }
+      }
+      module_stmt_list_requires_preload_host_imports(body.stmts)
+    }
+    @core.Expr::Break(value~, ..) =>
+      match value {
+        Some(inner) => module_expr_requires_preload_host_imports(inner)
+        None => false
+      }
+    @core.Expr::Continue(args~, ..) => {
+      for arg in args {
+        if module_expr_requires_preload_host_imports(arg) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Int(..)
+    | @core.Expr::Float(..)
+    | @core.Expr::Double(..)
+    | @core.Expr::Bool(..)
+    | @core.Expr::Char(..)
+    | @core.Expr::String(..)
+    | @core.Expr::Ident(..)
+    | @core.Expr::Placeholder(..) => false
+  }
+}
+
+///|
+fn is_preload_unsafe_builtin_name(name : String) -> Bool {
+  name == "sh" ||
+  name == "path" ||
+  name == "Path::resolve" ||
+  name == "sleep" ||
+  name == "Env::get" ||
+  name == "Env::args_len" ||
+  name == "Env::args_get" ||
+  name == "Stdout::write_char" ||
+  name == "Stdout::write_stream" ||
+  name == "Stdin::read_char" ||
+  name == "Stdin::read_stream" ||
+  name == "Fs::read_file" ||
+  name == "Fs::write_file" ||
+  name == "Fs::write_bytes" ||
+  name == "Fs::exists" ||
+  name == "Fs::stat_token" ||
+  name == "Socket::tcp_connect" ||
+  name == "Socket::tcp_read" ||
+  name == "Socket::tcp_write" ||
+  name == "Socket::tcp_close" ||
+  name == "Http::request" ||
+  name == "Http::response_status" ||
+  name == "Http::response_header" ||
+  name == "Http::response_body" ||
+  name == "Http::close" ||
+  name == "Http::listen" ||
+  name == "Http::accept" ||
+  name == "Http::request_method" ||
+  name == "Http::request_url" ||
+  name == "Http::request_header" ||
+  name == "Http::request_body" ||
+  name == "Http::respond"
+}
+
+///|
+fn is_preload_unsafe_effect_name(effect_name : String) -> Bool {
+  effect_name == "Fs" ||
+  effect_name == "Env" ||
+  effect_name == "Stdout" ||
+  effect_name == "Stdin" ||
+  effect_name == "Socket" ||
+  effect_name == "Http" ||
+  effect_name == "Process"
 }
 
 ///|
