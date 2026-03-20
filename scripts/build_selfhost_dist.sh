@@ -72,7 +72,7 @@ echo "[dist] validating..."
 SAMPLE_DIR="$DIST_DIR/validate"
 mkdir -p "$SAMPLE_DIR"
 cat > "$SAMPLE_DIR/sample.vibe" <<'VIBE'
-let answer = () -> Int { 40 + 2 }
+export let answer = () -> Int { 40 + 2 }
 VIBE
 
 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
