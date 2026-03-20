@@ -109,7 +109,7 @@ run_stage "stage0 host compiler -> stage1 selfhost compiler core wasm" \
   "${HOST_COMPILE_CMD[@]}" "$ENTRY_PATH" -o "$STAGE1_CORE_WASM" || exit $?
 
 cat >"$INPUT_SOURCE" <<'EOF'
-let answer = () -> Int { 40 + 2 }
+export let answer = () -> Int { 40 + 2 }
 EOF
 
 export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
