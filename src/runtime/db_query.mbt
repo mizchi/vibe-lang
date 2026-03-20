@@ -752,6 +752,18 @@ pub fn VibeDb::new() -> VibeDb {
   let type_query_ref : Ref[@ripple.Query[String, @checker.TypeEnv]?] = @ref.new(
     None,
   )
+  let type_import_query : @ripple.Query[String, @checker.TypeEnv] = db.query(fn(
+    rt,
+    path,
+  ) {
+    let full_env = match type_query_ref.val {
+      Some(q) => q.fetch(rt, path)
+      None => simple_type_query.fetch(rt, path)
+    }
+    let ast = ast_query.fetch(rt, path).unwrap()
+    project_type_import_env(full_env, ast)
+  })
+  type_import_query.register(rt)
   // Now create the main type query that handles imports
   let type_query : @ripple.Query[String, @checker.TypeEnv] = db.query(fn(
     rt,
@@ -798,12 +810,7 @@ pub fn VibeDb::new() -> VibeDb {
     for imp in imports {
       match sources.get(rt, imp.path) {
         Some(_) => {
-          // Use full type query when available so transitive imports contribute
-          // trait/type exports from dependency modules.
-          let imported_env = match type_query_ref.val {
-            Some(q) => q.fetch(rt, imp.path)
-            None => simple_type_query.fetch(rt, imp.path)
-          }
+          let imported_env = type_import_query.fetch(rt, imp.path)
           // Get the AST of the imported module to find exports
           let imported_ast = ast_query.fetch(rt, imp.path).unwrap()
           let exported_names = collect_exported_names(imported_ast)
@@ -814,11 +821,7 @@ pub fn VibeDb::new() -> VibeDb {
           let imported_dir = @path.Path(imp.path).dirname().to_string()
           let allow_internal_import = importer_dir == imported_dir
           let visible_names = if allow_internal_import {
-            let merged = exported_names.copy()
-            for internal_name, _ in internal_exported_names {
-              merged[internal_name] = true
-            }
-            merged
+            merge_visible_import_names(exported_names, internal_exported_names)
           } else {
             exported_names
           }
@@ -1432,6 +1435,7 @@ pub fn VibeDb::new() -> VibeDb {
       cst_query,
       ast_query,
       type_query,
+      type_import_query,
       simple_type_query,
       import_query,
     },
