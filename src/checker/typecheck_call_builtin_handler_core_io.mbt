@@ -9,42 +9,27 @@ fn type_call_builtin_handler_core_io(
   allow_effect : Bool,
   call_span : @core.Span,
 ) -> @core.Type raise TypeError {
+  let ctx = BuiltinCallCtx::{
+    env,
+    args,
+    aliases,
+    effects,
+    allow_effect,
+    call_span,
+  }
   match builtin_name {
     "path" | "Path::ref" =>
-      check_builtin_simple(
-        env,
-        name,
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::String],
-        @core.Type::Path,
-        false,
-      )
+      ctx.simple(name, [@core.Type::String], @core.Type::Path, false)
     "Path::to_string" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Path::to_string",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Path],
         @core.Type::String,
         false,
       )
     "Path::is_absolute" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Path::is_absolute",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Path],
         @core.Type::Bool,
         false,
@@ -63,31 +48,14 @@ fn type_call_builtin_handler_core_io(
       @core.Type::PromptText
     }
     "PromptText::to_string" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "PromptText::to_string",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::PromptText],
         @core.Type::String,
         false,
       )
     "Path::resolve" =>
-      check_builtin_simple(
-        env,
-        "Path::resolve",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::String],
-        @core.Type::Path,
-        true,
-      )
+      ctx.simple("Path::resolve", [@core.Type::String], @core.Type::Path, true)
     "addr" => {
       let pos_args = extract_positional_args(args, "addr", call_span)
       if pos_args.length() != 1 {
@@ -107,19 +75,7 @@ fn type_call_builtin_handler_core_io(
         _ => raise TypeError::BadCall(message="addr", span=call_span)
       }
     }
-    "sh" =>
-      check_builtin_simple(
-        env,
-        "sh",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::String],
-        @core.Type::Unit,
-        true,
-      )
+    "sh" => ctx.simple("sh", [@core.Type::String], @core.Type::Unit, true)
     "sh_lines" => {
       // Extract positional arg (cmd string) and optional labeled args (Bool flags)
       let pos_args : Array[@core.Expr] = []
@@ -244,32 +200,9 @@ fn type_call_builtin_handler_core_io(
           )
       }
     }
-    "sleep" =>
-      check_builtin_simple(
-        env,
-        "sleep",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::Int],
-        @core.Type::Unit,
-        true,
-      )
+    "sleep" => ctx.simple("sleep", [@core.Type::Int], @core.Type::Unit, true)
     "Threads::probe_wat" =>
-      check_builtin_simple(
-        env,
-        "Threads::probe_wat",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [],
-        @core.Type::String,
-        true,
-      )
+      ctx.simple("Threads::probe_wat", [], @core.Type::String, true)
     "Threads::runtime_hints" => {
       require_effect_guard(
         env,
@@ -296,44 +229,21 @@ fn type_call_builtin_handler_core_io(
       @core.Type::Record(fields)
     }
     "Threads::channel_new" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Threads::channel_new",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Int],
         @core.Type::Int,
         true,
       )
     "Threads::send" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Threads::send",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Int, @core.Type::String],
         @core.Type::Bool,
         true,
       )
     "Threads::recv" =>
-      check_builtin_simple(
-        env,
-        "Threads::recv",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::Int],
-        @core.Type::String,
-        true,
-      )
+      ctx.simple("Threads::recv", [@core.Type::Int], @core.Type::String, true)
     "Threads::spawn" => {
       require_effect_guard(
         env,
@@ -380,366 +290,121 @@ fn type_call_builtin_handler_core_io(
       @core.Type::Int
     }
     "Threads::wait" =>
-      check_builtin_simple(
-        env,
-        "Threads::wait",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::Int],
-        @core.Type::Int,
-        true,
-      )
+      ctx.simple("Threads::wait", [@core.Type::Int], @core.Type::Int, true)
     "Stdout::write_char" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Stdout::write_char",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Int],
         @core.Type::Unit,
         true,
       )
     "Stdin::read_char" =>
-      check_builtin_simple(
-        env,
-        "Stdin::read_char",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [],
-        @core.Type::Int,
-        true,
-      )
+      ctx.simple("Stdin::read_char", [], @core.Type::Int, true)
     "Stdout::write_stream" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Stdout::write_stream",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String],
         @core.Type::Unit,
         true,
       )
     "Stdin::read_stream" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Stdin::read_stream",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Int],
         @core.Type::String,
         true,
       )
     "Fs::read_file" | "Fs::read_string" =>
-      check_builtin_simple(
-        env,
-        name,
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::String],
-        @core.Type::String,
-        true,
-      )
+      ctx.simple(name, [@core.Type::String], @core.Type::String, true)
     "Fs::write_file" | "Fs::write_string" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         name,
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String, @core.Type::String],
         @core.Type::Unit,
         true,
       )
     "Fs::read_bytes" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Fs::read_bytes",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String],
         @core.Type::Bytes,
         true,
       )
     "Fs::write_bytes" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Fs::write_bytes",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String, @core.Type::Bytes],
         @core.Type::Unit,
         true,
       )
     "Fs::exists" =>
-      check_builtin_simple(
-        env,
-        "Fs::exists",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::String],
-        @core.Type::Bool,
-        true,
-      )
+      ctx.simple("Fs::exists", [@core.Type::String], @core.Type::Bool, true)
     "Fs::stat_token" =>
-      check_builtin_simple(
-        env,
-        "Fs::stat_token",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::String],
-        @core.Type::Int,
-        true,
-      )
+      ctx.simple("Fs::stat_token", [@core.Type::String], @core.Type::Int, true)
     "Fs::readdir" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Fs::readdir",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String],
         @core.Type::Array(@core.Type::String),
         true,
       )
     "Fs::is_dir" =>
-      check_builtin_simple(
-        env,
-        "Fs::is_dir",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::String],
-        @core.Type::Bool,
-        true,
-      )
+      ctx.simple("Fs::is_dir", [@core.Type::String], @core.Type::Bool, true)
     "Fs::mkdir" | "Fs::mkdir_p" =>
-      check_builtin_simple(
-        env,
-        name,
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::String],
-        @core.Type::Unit,
-        true,
-      )
-    "Fs::getcwd" =>
-      check_builtin_simple(
-        env,
-        "Fs::getcwd",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [],
-        @core.Type::String,
-        true,
-      )
+      ctx.simple(name, [@core.Type::String], @core.Type::Unit, true)
+    "Fs::getcwd" => ctx.simple("Fs::getcwd", [], @core.Type::String, true)
     "Fs::chdir" =>
-      check_builtin_simple(
-        env,
-        "Fs::chdir",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::String],
-        @core.Type::Unit,
-        true,
-      )
+      ctx.simple("Fs::chdir", [@core.Type::String], @core.Type::Unit, true)
     "Fs::remove" =>
-      check_builtin_simple(
-        env,
-        "Fs::remove",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::String],
-        @core.Type::Unit,
-        true,
-      )
+      ctx.simple("Fs::remove", [@core.Type::String], @core.Type::Unit, true)
     "Fs::is_file" =>
-      check_builtin_simple(
-        env,
-        "Fs::is_file",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::String],
-        @core.Type::Bool,
-        true,
-      )
+      ctx.simple("Fs::is_file", [@core.Type::String], @core.Type::Bool, true)
     "Fs::copy" | "Fs::rename" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         name,
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String, @core.Type::String],
         @core.Type::Unit,
         true,
       )
     "Fs::append" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Fs::append",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String, @core.Type::String],
         @core.Type::Unit,
         true,
       )
     "Env::get" =>
-      check_builtin_simple(
-        env,
-        "Env::get",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::String],
-        @core.Type::String,
-        true,
-      )
-    "Env::args_len" =>
-      check_builtin_simple(
-        env,
-        "Env::args_len",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [],
-        @core.Type::Int,
-        true,
-      )
+      ctx.simple("Env::get", [@core.Type::String], @core.Type::String, true)
+    "Env::args_len" => ctx.simple("Env::args_len", [], @core.Type::Int, true)
     "Env::args_get" =>
-      check_builtin_simple(
-        env,
-        "Env::args_get",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::Int],
-        @core.Type::String,
-        true,
-      )
+      ctx.simple("Env::args_get", [@core.Type::Int], @core.Type::String, true)
     "Socket::tcp_connect" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Socket::tcp_connect",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String, @core.Type::Int],
         @core.Type::Int,
         true,
       )
     "Socket::tcp_read" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Socket::tcp_read",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Int, @core.Type::Int],
         @core.Type::String,
         true,
       )
     "Socket::tcp_write" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Socket::tcp_write",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Int, @core.Type::String],
         @core.Type::Unit,
         true,
       )
     "Socket::tcp_close" =>
-      check_builtin_simple(
-        env,
-        "Socket::tcp_close",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::Int],
-        @core.Type::Unit,
-        true,
-      )
+      ctx.simple("Socket::tcp_close", [@core.Type::Int], @core.Type::Unit, true)
     // --- HTTP Client builtins ---
     "Http::request" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Http::request",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [
           @core.Type::String,
           @core.Type::String,
@@ -750,119 +415,45 @@ fn type_call_builtin_handler_core_io(
         true,
       )
     "Http::response_status" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Http::response_status",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Int],
         @core.Type::Int,
         true,
       )
     "Http::response_header" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Http::response_header",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Int, @core.Type::String],
         @core.Type::String,
         true,
       )
     "Http::response_body" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Http::response_body",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Int],
         @core.Type::String,
         true,
       )
     "Http::close" =>
-      check_builtin_simple(
-        env,
-        "Http::close",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::Int],
-        @core.Type::Unit,
-        true,
-      )
+      ctx.simple("Http::close", [@core.Type::Int], @core.Type::Unit, true)
     // --- HTTP Server builtins ---
     "Http::listen" =>
-      check_builtin_simple(
-        env,
-        "Http::listen",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::Int],
-        @core.Type::Int,
-        true,
-      )
+      ctx.simple("Http::listen", [@core.Type::Int], @core.Type::Int, true)
     "Http::accept" =>
-      check_builtin_simple(
-        env,
-        "Http::accept",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::Int],
-        @core.Type::Int,
-        true,
-      )
+      ctx.simple("Http::accept", [@core.Type::Int], @core.Type::Int, true)
     "Http::request_method" | "Http::request_url" | "Http::request_body" =>
-      check_builtin_simple(
-        env,
-        name,
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::Int],
-        @core.Type::String,
-        true,
-      )
+      ctx.simple(name, [@core.Type::Int], @core.Type::String, true)
     "Http::request_header" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Http::request_header",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Int, @core.Type::String],
         @core.Type::String,
         true,
       )
     "Http::respond" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Http::respond",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [
           @core.Type::Int,
           @core.Type::Int,
@@ -897,14 +488,8 @@ fn type_call_builtin_handler_core_io(
       @core.Type::String
     }
     "Rlm::finalize" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Rlm::finalize",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String],
         @core.Type::String,
         false,

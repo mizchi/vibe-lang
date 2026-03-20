@@ -211,6 +211,40 @@ fn check_builtin_simple(
 }
 
 ///|
+/// Bundles the common parameters passed to every builtin handler call,
+/// providing a short-hand `simple` method for the frequent check_builtin_simple pattern.
+priv struct BuiltinCallCtx {
+  env : TypeEnv
+  args : Array[@core.CallArg]
+  aliases : Map[String, @core.Ref]
+  effects : EffectScope
+  allow_effect : Bool
+  call_span : @core.Span
+}
+
+///|
+fn BuiltinCallCtx::simple(
+  self : BuiltinCallCtx,
+  name : String,
+  param_types : Array[@core.Type],
+  ret_type : @core.Type,
+  effectful : Bool,
+) -> @core.Type raise TypeError {
+  check_builtin_simple(
+    self.env,
+    name,
+    self.args,
+    self.aliases,
+    self.effects,
+    self.allow_effect,
+    self.call_span,
+    param_types,
+    ret_type,
+    effectful,
+  )
+}
+
+///|
 fn builtin_json_type() -> @core.Type {
   @core.Type::Named(name="Json", args=[])
 }
