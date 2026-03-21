@@ -3,7 +3,8 @@
 import ./index.vibe {
   minify, minify_fast, binary_size, count_functions, count_exports, count_types,
   strip_custom_sections, optimize_code_section, dce,
-  coalesce_locals, remove_unused_types, remove_empty_sections
+  coalesce_locals, remove_unused_types, remove_empty_sections,
+  directize, call_forwarding
 }
 
 //# Misc
@@ -220,4 +221,64 @@ test "wite: strip then types on directize fixture" {
   let s2 = remove_unused_types(s1)
   assert(binary_size(s2) <= binary_size(s1))
   assert(s2[0] == 0)
+}
+
+// --- Directize tests ---
+
+test "directize: no-op on module without table" {
+  let bytes = Fs::read_bytes("vibe/wasm/wasm_opt/__fixtures/empty.wasm")
+  let opt = directize(bytes)
+  assert(binary_size(opt) == binary_size(bytes))
+}
+
+test "directize: directize_gain_fixture reduces" {
+  let bytes = Fs::read_bytes("vibe/wasm/wasm_opt/__fixtures/directize_gain_fixture.wasm")
+  let opt = directize(bytes)
+  // directize should convert call_indirect to call, reducing size
+  assert(binary_size(opt) <= binary_size(bytes))
+  assert(opt[0] == 0)
+  assert(opt[4] == 1)
+}
+
+test "directize: output valid wasm" {
+  let bytes = Fs::read_bytes("vibe/wasm/wasm_opt/__fixtures/directize_gain_fixture.wasm")
+  let opt = directize(bytes)
+  assert(opt[0] == 0)
+  assert(opt[1] == 97)
+  assert(opt[2] == 115)
+  assert(opt[3] == 109)
+}
+
+// --- Call forwarding tests ---
+
+test "call_forwarding: no-op on simple module" {
+  let bytes = Fs::read_bytes("vibe/wasm/wasm_opt/__fixtures/empty.wasm")
+  let opt = call_forwarding(bytes)
+  assert(binary_size(opt) == binary_size(bytes))
+}
+
+test "call_forwarding: no-op on module without forwarders" {
+  let bytes = Fs::read_bytes("vibe/wasm/wasm_opt/__fixtures/complexBinaryNames.wasm")
+  let opt = call_forwarding(bytes)
+  // May or may not reduce, but must be valid
+  assert(binary_size(opt) <= binary_size(bytes))
+  assert(opt[0] == 0)
+}
+
+// --- Combined pipeline tests ---
+
+test "directize + call_forwarding pipeline on directize fixture" {
+  let bytes = Fs::read_bytes("vibe/wasm/wasm_opt/__fixtures/directize_gain_fixture.wasm")
+  let s1 = directize(bytes)
+  let s2 = call_forwarding(s1)
+  assert(binary_size(s2) <= binary_size(bytes))
+  assert(s2[0] == 0)
+  assert(s2[4] == 1)
+}
+
+test "minify with directize reduces directize fixture" {
+  let bytes = Fs::read_bytes("vibe/wasm/wasm_opt/__fixtures/directize_gain_fixture.wasm")
+  let opt = minify(bytes)
+  assert(binary_size(opt) < binary_size(bytes))
+  assert(opt[0] == 0)
 }
