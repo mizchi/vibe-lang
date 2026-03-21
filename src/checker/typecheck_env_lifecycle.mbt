@@ -124,6 +124,70 @@ pub fn TypeEnv::fork_for_match_arm(self : TypeEnv) -> TypeEnv {
 }
 
 ///|
+/// Lightweight fork for lambda / expression scopes.
+/// Shares definition maps that are never mutated during expression-level
+/// type checking (enum_defs, struct_defs, ctor_index, effect_defs, traits,
+/// trait_impls, fn_versions, addr_types).
+/// Copies type_aliases (written by type parameter registration in lambdas).
+pub fn TypeEnv::fork_for_expr(self : TypeEnv) -> TypeEnv {
+  {
+    bindings: self.bindings.fork(),
+    addr_types: self.addr_types,
+    enum_defs: self.enum_defs,
+    struct_defs: self.struct_defs,
+    type_aliases: self.type_aliases.copy(),
+    ctor_index: self.ctor_index,
+    effect_defs: self.effect_defs,
+    inferred_effects: {},
+    traits: self.traits,
+    trait_impls: self.trait_impls,
+    fn_versions: self.fn_versions,
+    purities: self.purities.fork(),
+    purity_tiers: self.purity_tiers.fork(),
+    expr_types: self.expr_types,
+    num_vars: self.num_vars.copy(),
+    var_trait_bounds: self.var_trait_bounds.copy(),
+    scoped_ref_contains_cache: self.scoped_ref_contains_cache,
+    scoped_ref_contains_cache_version: self.scoped_ref_contains_cache_version,
+    normalize_type_cache_expand: self.normalize_type_cache_expand,
+    normalize_type_cache_preserve: self.normalize_type_cache_preserve,
+    normalize_type_cache_subs_version: self.subs_version,
+    normalize_type_cache_expand_ground: self.normalize_type_cache_expand_ground,
+    normalize_type_cache_preserve_ground: self.normalize_type_cache_preserve_ground,
+    scoped_ref_checks_enabled: self.scoped_ref_checks_enabled,
+    has_scoped_ref_binding: self.has_scoped_ref_binding,
+    scoped_ref_binding_scan_stale: self.scoped_ref_binding_scan_stale,
+    scoped_ref_profile_enabled: self.scoped_ref_profile_enabled,
+    scoped_ref_contains_calls: self.scoped_ref_contains_calls,
+    scoped_ref_contains_cache_hits: self.scoped_ref_contains_cache_hits,
+    scoped_ref_contains_cache_misses: self.scoped_ref_contains_cache_misses,
+    scoped_ref_contains_time_us: self.scoped_ref_contains_time_us,
+    scoped_ref_capture_checks: self.scoped_ref_capture_checks,
+    scoped_ref_capture_time_us: self.scoped_ref_capture_time_us,
+    scoped_ref_call_arg_checks: self.scoped_ref_call_arg_checks,
+    scoped_ref_call_arg_time_us: self.scoped_ref_call_arg_time_us,
+    scoped_ref_return_checks: self.scoped_ref_return_checks,
+    scoped_ref_return_time_us: self.scoped_ref_return_time_us,
+    scoped_ref_toplevel_checks: self.scoped_ref_toplevel_checks,
+    scoped_ref_toplevel_time_us: self.scoped_ref_toplevel_time_us,
+    next_var: self.next_var,
+    next_effect_var: self.next_effect_var,
+    loop_depth: self.loop_depth,
+    handle_arm_depth: self.handle_arm_depth,
+    handle_resume_types: self.handle_resume_types.copy(),
+    handle_resume_types_active: self.handle_resume_types_active,
+    handle_arm_effect_name: self.handle_arm_effect_name,
+    handle_arm_resume_expected: self.handle_arm_resume_expected,
+    active_rec_fn: self.active_rec_fn,
+    active_rec_fn_has_type_params: self.active_rec_fn_has_type_params,
+    subs_version: self.subs_version,
+    subs: self.subs.copy(),
+    effect_subs: self.effect_subs.copy(),
+    session_state: self.session_state,
+  }
+}
+
+///|
 pub fn TypeEnv::fork_for_check(self : TypeEnv) -> TypeEnv {
   {
     bindings: self.bindings.fork(),
