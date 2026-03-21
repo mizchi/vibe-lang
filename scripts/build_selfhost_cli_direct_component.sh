@@ -36,7 +36,6 @@ require_cmd wac
 mkdir -p "$TMP_DIR/src" "$(dirname "$OUT_COMPONENT")" "$(dirname "$OUT_WIT")"
 
 PLUG_COMPONENT="$TMP_DIR/selfhost_cli_preview2.component.wasm"
-PLUG_WIT="$TMP_DIR/selfhost_cli_preview2.component.wit"
 ADAPTER_COMPONENT="$TMP_DIR/selfhost_cli_direct_adapter.component.wasm"
 ADAPTER_EMBEDDED_WASM="$TMP_DIR/selfhost_cli_direct_adapter.embedded.wasm"
 ADAPTER_WIT_DIR="$TMP_DIR/wit"
@@ -49,7 +48,6 @@ fi
 
 "$RELEASE_VIBE_EXE" compile --component-string-lift "$ENTRY_PATH" -o "$PLUG_COMPONENT"
 wasm-tools validate --features exceptions "$PLUG_COMPONENT" >/dev/null
-wasm-tools component wit "$PLUG_COMPONENT" >"$PLUG_WIT"
 
 cat >"$TMP_DIR/Cargo.toml" <<'EOF'
 [package]
@@ -71,7 +69,7 @@ mod bindings {
           package vibe:selfhost-cli-direct-adapter;
 
           world adapter {
-            import compile-cli-hex: func(source: string, entry-name: string, mode: string) -> string;
+            import compile-cli-request: func(source: string, request: string) -> string;
             import wasi:filesystem/types@0.2.6;
             import wasi:filesystem/preopens@0.2.6;
             export run-cli-request: func(input-path: string, output-path: string, entry-name: string, mode: string) -> s32;
@@ -84,10 +82,12 @@ mod bindings {
 }
 
 use bindings::wasi::filesystem;
-use bindings::compile_cli_hex;
+use bindings::compile_cli_request;
 use bindings::Guest;
 
 struct Component;
+
+const HEX_CHUNK_BYTES: usize = 1024;
 
 fn root_dir() -> Result<filesystem::types::Descriptor, ()> {
     filesystem::preopens::get_directories()
@@ -109,7 +109,12 @@ fn read_payload(path: &str) -> Result<String, ()> {
         .map_err(|_| ())?;
     let stat = file.stat().map_err(|_| ())?;
     let (bytes, _) = file.read(stat.size, 0).map_err(|_| ())?;
-    String::from_utf8(bytes).map_err(|_| ())
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    Ok(out)
 }
 
 fn decode_hex_digit(byte: u8) -> Result<u8, ()> {
@@ -123,7 +128,7 @@ fn decode_hex_digit(byte: u8) -> Result<u8, ()> {
 
 fn decode_hex_bytes(hex: &str) -> Result<Vec<u8>, ()> {
     let raw = hex.as_bytes();
-    if raw.is_empty() || raw.len() % 2 != 0 {
+    if raw.len() % 2 != 0 {
         return Err(());
     }
     let mut out = Vec::with_capacity(raw.len() / 2);
@@ -137,9 +142,35 @@ fn decode_hex_bytes(hex: &str) -> Result<Vec<u8>, ()> {
     Ok(out)
 }
 
+fn request_text(source: &str, request: &str) -> Result<String, ()> {
+    let out = compile_cli_request(source, request);
+    if out.is_empty() {
+        Err(())
+    } else {
+        Ok(out)
+    }
+}
+
 fn compile_bytes(payload: &str, entry_name: &str, mode: &str) -> Result<Vec<u8>, ()> {
-    let hex = compile_cli_hex(payload, entry_name, mode);
-    decode_hex_bytes(&hex)
+    let len_request = format!("len-mode:{mode}:{entry_name}");
+    let byte_len = request_text(payload, &len_request)?
+        .parse::<usize>()
+        .map_err(|_| ())?;
+    if byte_len == 0 {
+        return Err(());
+    }
+    let mut out = Vec::with_capacity(byte_len);
+    let chunk_count = byte_len.div_ceil(HEX_CHUNK_BYTES);
+    for chunk_index in 0..chunk_count {
+        let chunk_request = format!("hex-chunk-mode:{mode}:{entry_name}:{chunk_index}");
+        let mut chunk = decode_hex_bytes(&request_text(payload, &chunk_request)?)?;
+        let remaining = byte_len - out.len();
+        if chunk.len() > remaining {
+            chunk.truncate(remaining);
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
 }
 
 fn write_output(path: &str, bytes: &[u8]) -> Result<(), ()> {
@@ -187,7 +218,7 @@ cat >"$ADAPTER_WIT_DIR/world.wit" <<'EOF'
 package vibe:selfhost-cli-direct-adapter;
 
 world adapter {
-  import compile-cli-hex: func(source: string, entry-name: string, mode: string) -> string;
+  import compile-cli-request: func(source: string, request: string) -> string;
   import wasi:filesystem/types@0.2.6;
   import wasi:filesystem/preopens@0.2.6;
   export run-cli-request: func(input-path: string, output-path: string, entry-name: string, mode: string) -> s32;

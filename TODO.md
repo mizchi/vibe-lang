@@ -62,6 +62,18 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 
 目標: cached `vibe run vibe/compiler/index.vibe` を ~100ms に。
 
+## Selfhost CLI parity
+
+- [x] `selfhost_cli_command_component`
+  command-shaped component の gate は復旧済み。
+  parity は same-instance adapter ではなく preview2 export を fresh invoke する経路で確認する。
+  `scripts/test_selfhost_cli_command_parity.sh` は `no-dce` の代表ケースだけを残して runtime を抑える。
+
+- [x] `selfhost_cli_direct_component`
+  `Fs.Exists` import leak と closure payload decode/byte handling を修正済み。
+  `scripts/test_selfhost_cli_direct_component.sh` と
+  `scripts/test_selfhost_cli_direct_parity.sh` の両方が pass。
+
 ## CI 最適化
 
 ### CI プロファイル (2026-03-20)

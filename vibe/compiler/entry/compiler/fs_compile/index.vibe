@@ -510,6 +510,78 @@ export let compile_with_closure_sources_wasi_unchecked_cached = (
   }
 }
 
+export let compile_with_closure_sources_wasi_mode_unchecked_cached = (
+  db: TypeDb,
+  main_source: String,
+  main_path: String,
+  sources: Array[(String, String)],
+  entry_name: String,
+  mode: String
+) -> (Bytes, TypeDb) with { Error } {
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
+  let merge_fingerprint = build_merge_fingerprint_inline(ordered_sources)
+  let artifact_kind = if mode == "mvp" {
+    "wasi-mvp-unchecked"
+  } else if mode == "no-dce" {
+    "wasi-unchecked"
+  } else {
+    throw(String::concat("unsupported compile mode: ", mode))
+  }
+  let artifact_fingerprint = artifact_fingerprint_from_source(
+    String::concat(merge_fingerprint, String::concat("|", String::concat(entry_name, String::concat("|", mode))))
+  )
+  match db_load_artifact(db, main_path, artifact_kind, entry_name, artifact_fingerprint) {
+    Some(bytes) => (bytes, db),
+    None => {
+      let merged_stmts = build_merged_stmts_inline(ordered_sources)
+      let bytes = if mode == "mvp" {
+        let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
+        compile_wasi_module_impl(pruned_stmts, entry_name)
+      } else {
+        compile_wasi_module(merged_stmts, entry_name)
+      }
+      (bytes, db_store_artifact(db, main_path, artifact_kind, entry_name, artifact_fingerprint, bytes))
+    }
+  }
+}
+
+export let compile_with_closure_sources_wasi_mode_unchecked = (
+  main_source: String,
+  main_path: String,
+  sources: Array[(String, String)],
+  entry_name: String,
+  mode: String
+) -> Bytes with { Error } {
+  let (bytes, _) = compile_with_closure_sources_wasi_mode_unchecked_cached(
+    db_new(),
+    main_source,
+    main_path,
+    sources,
+    entry_name,
+    mode
+  )
+  bytes
+}
+
+export let compile_with_closure_sources_wasi_mode_uncached = (
+  main_source: String,
+  main_path: String,
+  sources: Array[(String, String)],
+  entry_name: String,
+  mode: String
+) -> Bytes with { Error } {
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
+  let merged_stmts = build_merged_stmts_inline(ordered_sources)
+  if mode == "mvp" {
+    let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
+    compile_wasi_module_impl(pruned_stmts, entry_name)
+  } else if mode == "no-dce" {
+    compile_wasi_module(merged_stmts, entry_name)
+  } else {
+    throw(String::concat("unsupported compile mode: ", mode))
+  }
+}
+
 export let compile_with_source_groups_wasi_cached = (
   db: TypeDb,
   main_source: String,
