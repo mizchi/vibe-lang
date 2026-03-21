@@ -2002,6 +2002,27 @@ let builtin_string_source : String =
   #|}
 
 ///|
+let builtin_bytes_source : String =
+  #|//# Functions
+  #|
+  #|export let Bytes::append = (dst: Bytes, src: Bytes) -> Unit {
+  #|  Bytes::append(dst, src)
+  #|}
+  #|
+  #|export let Bytes::blit = (
+  #|  dst: Bytes,
+  #|  src: Bytes,
+  #|  start: Int,
+  #|  end: Int,
+  #|) -> Unit {
+  #|  Bytes::blit(dst, src, start, end)
+  #|}
+  #|
+  #|export let Bytes::fill = (bytes: Bytes, value: Int, count: Int) -> Unit {
+  #|  Bytes::fill(bytes, value, count)
+  #|}
+
+///|
 let builtin_array_source : String =
   #|//# Functions
   #|
@@ -2207,5 +2228,6 @@ pub let builtin_module_sources : Array[(String, String)] = [
   ("prelude/double", builtin_double_source),
   ("prelude/char", builtin_char_source),
   ("prelude/string", builtin_string_source),
+  ("prelude/bytes", builtin_bytes_source),
   ("prelude/array", builtin_array_source),
 ]

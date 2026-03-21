@@ -3789,6 +3789,84 @@ fn eval_builtin_call(
           )
       }
     }
+    "Bytes::append" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "Bytes::append")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall(
+          BuiltinDetail(fn_name="Bytes::append", detail="bad call"),
+        )
+      }
+      match (pos_args[0], pos_args[1]) {
+        (@core.Value::Bytes(dst), @core.Value::Bytes(src)) => {
+          for i in 0..<src.length() {
+            dst.push(src[i])
+          }
+          { value: @core.Value::Unit, effects: out.effects }
+        }
+        _ =>
+          raise EvalError::BadCall(
+            BuiltinDetail(fn_name="Bytes::append", detail="bad call"),
+          )
+      }
+    }
+    "Bytes::blit" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "Bytes::blit")
+      if pos_args.length() != 4 {
+        raise EvalError::BadCall(
+          BuiltinDetail(fn_name="Bytes::blit", detail="bad call"),
+        )
+      }
+      match (pos_args[0], pos_args[1], pos_args[2], pos_args[3]) {
+        (
+          @core.Value::Bytes(dst),
+          @core.Value::Bytes(src),
+          @core.Value::Int(start),
+          @core.Value::Int(end_),
+        ) => {
+          let s = start.to_int()
+          let e = end_.to_int()
+          for i in s..<e {
+            if i >= 0 && i < src.length() {
+              dst.push(src[i])
+            }
+          }
+          { value: @core.Value::Unit, effects: out.effects }
+        }
+        _ =>
+          raise EvalError::BadCall(
+            BuiltinDetail(fn_name="Bytes::blit", detail="bad call"),
+          )
+      }
+    }
+    "Bytes::fill" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "Bytes::fill")
+      if pos_args.length() != 3 {
+        raise EvalError::BadCall(
+          BuiltinDetail(fn_name="Bytes::fill", detail="bad call"),
+        )
+      }
+      match (pos_args[0], pos_args[1], pos_args[2]) {
+        (
+          @core.Value::Bytes(dst),
+          @core.Value::Int(val),
+          @core.Value::Int(count),
+        ) => {
+          let byte = val.to_int().to_byte()
+          let n = count.to_int()
+          for _ in 0..<n {
+            dst.push(byte)
+          }
+          { value: @core.Value::Unit, effects: out.effects }
+        }
+        _ =>
+          raise EvalError::BadCall(
+            BuiltinDetail(fn_name="Bytes::fill", detail="bad call"),
+          )
+      }
+    }
     "ArrayBuilder::new" => {
       let out = eval_args(rt, args)
       let pos_args = extract_positional_values(out.args, "ArrayBuilder::new")

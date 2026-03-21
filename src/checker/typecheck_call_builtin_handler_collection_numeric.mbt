@@ -83,6 +83,27 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Bytes,
         false,
       )
+    "Bytes::append" =>
+      ctx.simple(
+        "Bytes::append",
+        [@core.Type::Bytes, @core.Type::Bytes],
+        @core.Type::Unit,
+        true,
+      )
+    "Bytes::blit" =>
+      ctx.simple(
+        "Bytes::blit",
+        [@core.Type::Bytes, @core.Type::Bytes, @core.Type::Int, @core.Type::Int],
+        @core.Type::Unit,
+        true,
+      )
+    "Bytes::fill" =>
+      ctx.simple(
+        "Bytes::fill",
+        [@core.Type::Bytes, @core.Type::Int, @core.Type::Int],
+        @core.Type::Unit,
+        true,
+      )
     "Bytes::from_array" =>
       ctx.simple(
         "Bytes::from_array",
