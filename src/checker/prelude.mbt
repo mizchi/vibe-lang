@@ -10,7 +10,8 @@ let prelude_source : String =
   #|let and = (x: Bool, y: Bool) -> Bool { if x { y } else { false } }
   #|let or = (x: Bool, y: Bool) -> Bool { if x { true } else { y } }
   #|let assert = (cond: Bool) -> Unit { __assert(cond) }
-  #|let assert_eq = (a: Num, b: Num) -> Unit { __assert(eq(a, b)) }
+  #|let assert_true = (cond: Bool) -> Unit { __assert(cond) }
+  #|let assert_eq = [T](a: T, b: T) -> Unit { __assert_eq(a, b) }
   #|trait Show
   #|trait Iterable
   #|impl Show for Int
@@ -508,7 +509,7 @@ pub fn prelude_ast() -> @core.Module {
 ///|
 pub fn prelude_names() -> Array[String] {
   [
-    "add", "sub", "mul", "div", "eq", "lt", "not", "and", "or", "assert", "to_string",
+    "add", "sub", "mul", "div", "eq", "lt", "not", "and", "or", "assert", "assert_true", "to_string",
     "iter_require", "iter_length", "iter_get", "Array::map", "Array::fold", "Array::filter",
     "Array::foreach", "Array::concat", "Array::reverse", "Array::any", "Array::all",
     "Array::find", "assert_eq", "Array::sort", "Array::contains", "Array::join",

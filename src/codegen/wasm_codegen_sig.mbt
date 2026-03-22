@@ -530,7 +530,7 @@ fn infer_expr_kind_with(
         | "arrayref_eq"
         | "funcref_eq"
         | "externref_eq" => ValueKind::I64
-        "__eq" | "__lt" => ValueKind::I64
+        "__eq" | "__lt" | "__assert_eq" => ValueKind::I64
         "__to_string" =>
           if ctx.use_js_strings {
             ValueKind::ExternRef

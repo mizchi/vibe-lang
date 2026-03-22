@@ -920,7 +920,7 @@ fn compile_call_builtin_pre_user_inner(
           )
       }
     }
-    "assert" | "__assert" if not(is_user_fn) => {
+    "assert" | "assert_true" | "__assert" if not(is_user_fn) => {
       let builtin_name = name
       let pos_args = extract_positional_exprs_with_arity(args, builtin_name, 1)
       compile_expr_i32(ctx, buf, pos_args[0])
@@ -928,6 +928,21 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_eq(buf)
       emit_i32_eqz(buf)
       buf.push((4).to_byte()) // if
+      buf.push((64).to_byte()) // empty result
+      buf.push((0).to_byte()) // unreachable (trap)
+      buf.push((11).to_byte()) // end if
+      emit_i64_const_tagged(buf, 0L)
+    }
+    "assert_eq" | "__assert_eq" if not(is_user_fn) => {
+      // assert_eq(a, b): compile __eq(a, b), then assert the result
+      compile_binary_cmp_op(
+        ctx, buf, "__eq", args, emit_i64_eq, emit_f32_eq, emit_f64_eq,
+      )
+      // compile_binary_cmp_op leaves tagged i64 bool on stack
+      emit_i64_const_raw(buf, tag_bool_value64(true))
+      emit_i64_eq(buf)
+      emit_i32_eqz(buf)
+      buf.push((4).to_byte()) // if (not equal)
       buf.push((64).to_byte()) // empty result
       buf.push((0).to_byte()) // unreachable (trap)
       buf.push((11).to_byte()) // end if

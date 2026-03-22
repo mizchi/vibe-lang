@@ -1881,29 +1881,7 @@ fn ensure_eq_operand(
     | @core.Type::Bool
     | @core.Type::Char
     | @core.Type::String => ()
-    @core.Type::Var(id) =>
-      if is_num_var(env, id) {
-        ()
-      } else {
-        match env.var_trait_bounds.get(id) {
-          Some(bounds) =>
-            if not(trait_bound_satisfied(env, bounds, "Eq")) {
-              raise TypeError::Mismatch(
-                expected=@core.Type::Named(name="Eq", args=[]),
-                actual=resolved,
-                span~,
-                context=Some("argument"),
-              )
-            }
-          None =>
-            raise TypeError::Mismatch(
-              expected=@core.Type::Named(name="Eq", args=[]),
-              actual=resolved,
-              span~,
-              context=Some("argument"),
-            )
-        }
-      }
+    @core.Type::Var(_) => ()
     @core.Type::Named(..) =>
       if type_implements_trait(env, resolved, "Eq") {
         ()

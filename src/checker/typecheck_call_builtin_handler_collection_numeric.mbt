@@ -1086,6 +1086,23 @@ fn type_call_builtin_handler_collection_numeric(
       }
       @core.Type::Bool
     }
+    "__assert_eq" => {
+      let pos_args = extract_positional_args(args, "__assert_eq", call_span)
+      if pos_args.length() != 2 {
+        raise TypeError::BadCall(message="__assert_eq", span=call_span)
+      }
+      let a = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
+      let b = type_expr_eff(env, pos_args[1], aliases, effects, allow_effect)
+      if not(type_equal(env, b, a)) && not(int_char_comparable_pair(env, a, b)) {
+        raise TypeError::Mismatch(
+          expected=a,
+          actual=b,
+          span=pos_args[1].span(),
+          context=Some("argument"),
+        )
+      }
+      @core.Type::Unit
+    }
     "__lt" => {
       let pos_args = extract_positional_args(args, "__lt", call_span)
       if pos_args.length() != 2 {
