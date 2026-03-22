@@ -112,8 +112,8 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 ## Effect System
 
 - [ ] 関数呼び出しを跨ぐ perform の handler dispatch (CPS or stack switching)
-- [ ] throw(x) → Perform("Error", "Throw", [x]) desugar
-- [ ] suberror の throw を Error effect 経由に統一
+- [x] throw(x) → Perform("Error", "Throw", [x]) desugar
+- [x] suberror の throw を Error effect 経由に統一
 - [ ] Net → fine-grained capability effects
 - [ ] WASI P3: effect → WIT マッピング、vibe serve コマンド
 
