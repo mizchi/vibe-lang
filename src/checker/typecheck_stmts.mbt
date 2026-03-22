@@ -568,8 +568,14 @@ fn type_check_stmts(
         register_enum_def(env, name, params, ctors, span)
       @core.Stmt::TypeAlias(name~, params~, target~, span~) =>
         register_type_alias(env, name, params, target, span)
-      @core.Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, span~, ..) =>
-        register_trait_def(env, name, supertraits, open_impl, exported, span)
+      @core.Stmt::TraitDef(
+        name~,
+        supertraits~,
+        open_impl~,
+        exported~,
+        span~,
+        ..
+      ) => register_trait_def(env, name, supertraits, open_impl, exported, span)
       @core.Stmt::InternalTraitDef(name~, supertraits~, open_impl~, span~, ..) =>
         register_trait_def(env, name, supertraits, open_impl, false, span)
       @core.Stmt::TraitImpl(

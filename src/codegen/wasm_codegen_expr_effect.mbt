@@ -136,13 +136,14 @@ fn compile_expr_handle(
   let error_arms : Array[@core.MatchArm] = []
   for arm in arms {
     match arm.pat {
-      @core.Pat::Ctor(name~, ..) if name.contains("::") =>
-        effect_arms.push(arm)
+      @core.Pat::Ctor(name~, ..) if name.contains("::") => effect_arms.push(arm)
       _ => error_arms.push(arm)
     }
   }
   if effect_arms.length() > 0 && ctx.need_effect_resume {
-    compile_expr_handle_with_resume(ctx, buf, body, effect_arms, error_arms, span)
+    compile_expr_handle_with_resume(
+      ctx, buf, body, effect_arms, error_arms, span,
+    )
   } else {
     compile_expr_handle_error_only(ctx, buf, body, arms, span)
   }

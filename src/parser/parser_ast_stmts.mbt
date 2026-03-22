@@ -1034,7 +1034,13 @@ fn AstParser::parse_internal_export_stmt(
     match trait_stmt {
       @core.Stmt::TraitDef(name~, supertraits~, methods~, ..) => {
         let span = self.span_from(start)
-        @core.Stmt::InternalTraitDef(name~, supertraits~, methods~, open_impl~, span~)
+        @core.Stmt::InternalTraitDef(
+          name~,
+          supertraits~,
+          methods~,
+          open_impl~,
+          span~,
+        )
       }
       _ => {
         let span = self.span_from(start)

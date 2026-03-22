@@ -904,12 +904,20 @@ fn desugar_expr(
           @core.StringInterpPart::Lit(s) =>
             exprs.push(@core.Expr::String(value=s, span~))
           @core.StringInterpPart::Expr(e) =>
-            exprs.push(@core.Expr::Call(
-              name="__to_string",
-              type_args=[],
-              args=[@core.CallArg::{ label: None, expr: desugar_expr(e, scope, aliases), span }],
-              span~,
-            ))
+            exprs.push(
+              @core.Expr::Call(
+                name="__to_string",
+                type_args=[],
+                args=[
+                  @core.CallArg::{
+                    label: None,
+                    expr: desugar_expr(e, scope, aliases),
+                    span,
+                  },
+                ],
+                span~,
+              ),
+            )
         }
       }
       let mut result = exprs[0]

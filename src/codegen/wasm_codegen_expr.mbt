@@ -140,10 +140,9 @@ fn compile_expr(
           buf.push((0).to_byte())
           emit_call(buf, idx)
         }
-        _ => {
+        _ =>
           // User-defined effect: check resume globals first, then throw.
-          if ctx.need_effect_resume &&
-            ctx.effect_resume_idx_global >= 0 {
+          if ctx.need_effect_resume && ctx.effect_resume_idx_global >= 0 {
             // if (resume_idx < resume_count) { return resume_buf[resume_idx++ * 8] }
             emit_global_get(buf, ctx.effect_resume_idx_global)
             emit_global_get(buf, ctx.effect_resume_count_global)
@@ -171,7 +170,6 @@ fn compile_expr(
             let tag_str = @core.Expr::String(value=key, span~)
             compile_expr_raise(ctx, buf, tag_str)
           }
-        }
       }
     }
     @core.Expr::Handle(body~, arms~, span~) =>

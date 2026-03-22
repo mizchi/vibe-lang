@@ -1019,10 +1019,18 @@ fn type_expr_eff(
     @core.Expr::Perform(effect_name="Error", op_name="Throw", args~, span~) => {
       if args.length() >= 1 {
         let val_ty = type_expr_eff(
-          env, args[0].expr, aliases, effects, allow_effect,
+          env,
+          args[0].expr,
+          aliases,
+          effects,
+          allow_effect,
         )
         let _ = ensure_type_satisfies_bounds(
-          env, val_ty, ["Error"], span, "throw",
+          env,
+          val_ty,
+          ["Error"],
+          span,
+          "throw",
         )
       }
       require_effects(
@@ -1648,7 +1656,14 @@ fn type_block(
         register_type_alias(scope_env, name, params, target, span)
         last = @core.Type::Unit
       }
-      @core.Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, span~, ..) => {
+      @core.Stmt::TraitDef(
+        name~,
+        supertraits~,
+        open_impl~,
+        exported~,
+        span~,
+        ..
+      ) => {
         register_trait_def(
           scope_env, name, supertraits, open_impl, exported, span,
         )

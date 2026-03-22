@@ -1372,7 +1372,14 @@ fn collect_reexport_defs(
           out.push(@core.Stmt::StructDef(name~, params~, fields~, span~))
           emitted_types[name] = true
         }
-      @core.Stmt::TraitDef(name~, supertraits~, methods~, open_impl~, exported~, span~) =>
+      @core.Stmt::TraitDef(
+        name~,
+        supertraits~,
+        methods~,
+        open_impl~,
+        exported~,
+        span~
+      ) =>
         if requested_items.contains(name) {
           out.push(
             @core.Stmt::TraitDef(

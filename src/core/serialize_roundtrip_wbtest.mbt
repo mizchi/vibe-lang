@@ -323,7 +323,8 @@ test "roundtrip: trait def and trait impl" {
       Stmt::TraitDef(
         name="Printable",
         supertraits=["Show"],
-        methods=[], open_impl=true,
+        methods=[],
+        open_impl=true,
         exported=false,
         span=zero_span(),
       ),
@@ -1510,7 +1511,8 @@ test "roundtrip: trait def with exported=true" {
       Stmt::TraitDef(
         name="Serializable",
         supertraits=[],
-        methods=[], open_impl=false,
+        methods=[],
+        open_impl=false,
         exported=true,
         span=zero_span(),
       ),

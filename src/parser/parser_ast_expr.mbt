@@ -2036,9 +2036,7 @@ fn AstParser::parse_call_or_primary(
       let span = self.span_from(start)
       let err_name = "__err$" + span.start.to_string()
       expr = @core.Expr::Handle(
-        body=@core.Module::{
-          stmts: [@core.Stmt::Expr(expr~, span~)],
-        },
+        body=@core.Module::{ stmts: [@core.Stmt::Expr(expr~, span~)] },
         arms=[
           {
             pat: @core.Pat::Ctor(

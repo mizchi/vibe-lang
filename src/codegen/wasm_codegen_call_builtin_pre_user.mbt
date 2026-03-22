@@ -6636,7 +6636,9 @@ fn compile_call_builtin_pre_user_inner(
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_untag_ptr_i32(buf)
       emit_local_set(buf, ptr_local)
-      emit_bytes_load_header(ctx, buf, ptr_local, len_local, cap_local, data_local)
+      emit_bytes_load_header(
+        ctx, buf, ptr_local, len_local, cap_local, data_local,
+      )
       emit_local_get(buf, len_local)
       emit_i64_extend_i32_u(buf)
       emit_i64_const_raw(buf, 2L)
@@ -6659,7 +6661,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_shr_s(buf) // untag index
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, idx_local)
-      emit_bytes_load_header(ctx, buf, ptr_local, len_local, cap_local, data_local)
+      emit_bytes_load_header(
+        ctx, buf, ptr_local, len_local, cap_local, data_local,
+      )
       emit_local_get(buf, data_local)
       emit_local_get(buf, idx_local)
       emit_i32_add(buf)

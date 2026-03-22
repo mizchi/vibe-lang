@@ -327,8 +327,7 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       buf.to_string()
     }
     // StringInterp is lowered in desugar; should never reach codegen
-    @core.Expr::StringInterp(..) =>
-      "(string-interp-unreachable)"
+    @core.Expr::StringInterp(..) => "(string-interp-unreachable)"
   }
 }
 
