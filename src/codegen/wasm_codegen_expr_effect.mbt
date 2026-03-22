@@ -209,33 +209,60 @@ fn compile_expr_handle_with_resume(
   emit_global_set(buf, ctx.effect_resume_count_global)
   emit_local_get(buf, resume_buf_local)
   emit_global_set(buf, ctx.effect_resume_buf_global)
+  // Structure:
+  // block $exit (result i64)                    ; depth 0
+  //   loop $retry                               ; depth 1
+  //     block $catch_target (result error_kind)  ; depth 2 — catch lands here
+  //       try_table (result i64)                 ; depth 3
+  //         (catch error_tag $catch_target)
+  //         {body}
+  //         br $exit                            ; success → exit
+  //       end try_table                         ; depth 3
+  //       br 1                                  ; skip catch → back to $exit via loop end
+  //     end $catch_target                       ; depth 2 — error value on stack
+  //     ← handler code here (error value in local)
+  //     ← store resume value, br $retry
+  //   end loop                                  ; depth 1
+  //   unreachable                               ; loop doesn't produce value
+  // end $exit                                   ; depth 0 — result on stack
+
   // block $exit (result i64)
   buf.push((2).to_byte()) // block
   buf.push((126).to_byte()) // result i64
-  adjust_loop_offsets(ctx, 1)
-  // loop $retry
+  // loop $retry (void)
   buf.push((3).to_byte()) // loop
-  buf.push((64).to_byte()) // void (loop has no result)
-  adjust_loop_offsets(ctx, 1)
-  // Reset resume idx to 0 at start of each retry
+  buf.push((64).to_byte()) // void
+  // Reset resume idx at start of each retry
   emit_i32_const_raw(buf, 0)
   emit_global_set(buf, ctx.effect_resume_idx_global)
-  // try (result i64) { body }
-  emit_handle_try_header_with_valtype(ctx, buf, ValueKind::I64, error_kind)
+  // block $catch_target (result error_kind)
+  buf.push((2).to_byte()) // block
+  buf.push(valtype_byte(error_kind)) // result error_kind
+  // try_table (result i64) (catch error_tag $catch_target)
+  buf.push((31).to_byte()) // try_table opcode
+  buf.push((126).to_byte()) // result i64
+  write_u32_leb(buf, 1) // 1 handler
+  buf.push((0).to_byte()) // catch (not catch_ref)
+  write_u32_leb(buf, ctx.error_tag_index) // tag index
+  write_u32_leb(buf, 0) // branch to $catch_target (depth 0 = immediate outer block)
+  adjust_loop_offsets(ctx, 4) // block + loop + block + try_table
+  // {body}
   compile_block_expr(ctx, buf, body)
-  // Success: br $exit (skip catch, exit block with body result)
+  // br $exit (success path — 4 levels up: try_table → catch_block → loop → exit)
   buf.push((12).to_byte()) // br
-  write_u32_leb(buf, 3) // $exit is 3 levels up: try→loop→block
-  // catch
-  buf.push((7).to_byte()) // catch
-  write_u32_leb(buf, ctx.error_tag_index)
+  write_u32_leb(buf, 3) // $exit
+  // end try_table
+  buf.push((11).to_byte())
+  // br $exit (skip catch, exit with try_table result — shouldn't reach if body succeeds)
+  buf.push((12).to_byte())
+  write_u32_leb(buf, 2) // $exit = loop(1) → exit_block(2)
+  // end $catch_target — error value now on stack
+  buf.push((11).to_byte())
+  // Handler code: error value is on stack
   let caught_local = alloc_temp_local_with_kind(ctx, error_kind)
   emit_local_set(buf, caught_local)
-  // Execute handler: evaluate the first matching effect arm's resume expr
-  // For prototype, use first effect arm's expression (evaluates to resume value)
   if effect_arms.length() > 0 {
     let arm = effect_arms[0]
-    // Extract resume value from handler body (e.g., resume(10) → compile 10)
     let resume_expr = extract_resume_value_expr(arm.expr)
     // Bind handler param if present
     match arm.pat {
@@ -253,7 +280,7 @@ fn compile_expr_handle_with_resume(
       _ => ()
     }
     compile_expr(ctx, buf, resume_expr)
-    // Store resume value in buffer: buf[count * 8] = value
+    // Store resume value: buf[count * 8] = value
     let resume_val_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
     emit_local_set(buf, resume_val_local)
     emit_global_get(buf, ctx.effect_resume_buf_global)
@@ -269,12 +296,15 @@ fn compile_expr_handle_with_resume(
     emit_i32_add(buf)
     emit_global_set(buf, ctx.effect_resume_count_global)
   }
-  // br $retry (loop back to re-execute body)
+  // br $retry (loop back — depth 0 from handler position = loop)
   buf.push((12).to_byte()) // br
-  write_u32_leb(buf, 1) // $retry is 1 level up: catch→loop
-  buf.push((11).to_byte()) // end try
-  buf.push((11).to_byte()) // end loop
-  buf.push((11).to_byte()) // end block
+  write_u32_leb(buf, 0) // $retry (loop)
+  // end loop
+  buf.push((11).to_byte())
+  // unreachable (loop doesn't produce a value for the block)
+  buf.push((0).to_byte()) // unreachable
+  // end block $exit
+  buf.push((11).to_byte())
   adjust_loop_offsets(ctx, -4)
 }
 
