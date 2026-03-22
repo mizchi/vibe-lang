@@ -115,7 +115,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 - [ ] 関数呼び出しを跨ぐ perform の handler dispatch — WASM resume loop (globals 必要)
 - [x] throw(x) → Perform("Error", "Throw", [x]) desugar
 - [x] suberror の throw を Error effect 経由に統一
-- [ ] Net → fine-grained capability effects
+- [x] Net → fine-grained capability effects (Http, Socket 個別化、Net は super-effect)
 - [ ] WASI P3: effect → WIT マッピング、vibe serve コマンド
 
 ## vibe/wasm ツールチェーン

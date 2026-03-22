@@ -268,7 +268,7 @@ fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
     "Socket::tcp_connect"
     | "Socket::tcp_read"
     | "Socket::tcp_write"
-    | "Socket::tcp_close" => [@core.EffectAtom::Const("Net")]
+    | "Socket::tcp_close" => [@core.EffectAtom::Const("Socket")]
     "Http::request"
     | "Http::response_status"
     | "Http::response_header"
@@ -280,7 +280,7 @@ fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
     | "Http::request_url"
     | "Http::request_header"
     | "Http::request_body"
-    | "Http::respond" => [@core.EffectAtom::Const("Net")]
+    | "Http::respond" => [@core.EffectAtom::Const("Http")]
     "Llm::complete" | "Rlm::run" => [@core.EffectAtom::Const("Llm")]
     _ => []
   }

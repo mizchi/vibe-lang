@@ -298,7 +298,7 @@ test "type_call_builtin: Http::listen requires Net effect" {
     Ok(_) => fail("expected effect guard error")
     Err(TypeError::EffectGuardNotSatisfied(operation~, missing_effect~, ..)) => {
       assert_eq(operation, "Http::listen")
-      assert_eq(missing_effect, Some("Net"))
+      assert_eq(missing_effect, Some("Http"))
     }
     Err(other) => fail("unexpected error: \{other.to_string()}")
   }
