@@ -262,87 +262,49 @@ let rec compile_expr_gc = (
     },
     ECall(callee, args) => compile_call_gc(buf, callee, args, local_names, next_local, ctx, ld, ce),
     ELet(name, value, body) => {
-      // Flatten ELet chains iteratively
-      let mut cur_name = name
-      let mut cur_value = value
-      let mut cur_body = body
-      let mut nl_let = next_local
-      let mut cont_let = true
-      while cont_let {
-        let local_idx = nl_let
-        Array::push(local_names, cur_name)
-        nl_let = ce(buf, cur_value, local_names, nl_let + 1, ld)
-        emit_local_set(buf, local_idx)
-        match cur_body {
-          ELet(next_name, next_value, next_body) => {
-            cur_name = next_name
-            cur_value = next_value
-            cur_body = next_body
-          },
-          _ => {
-            nl_let = ce(buf, cur_body, local_names, nl_let, ld)
-            cont_let = false
-          }
-        }
-      }
-      nl_let
+      let local_idx = next_local
+      Array::push(local_names, name)
+      let nl = ce(buf, value, local_names, next_local + 1, ld)
+      emit_local_set(buf, local_idx)
+      ce(buf, body, local_names, nl, ld)
     },
     ELetRec(name, value, body) => {
-      // Flatten ELetRec chains iteratively
-      let mut cur_name = name
-      let mut cur_value = value
-      let mut cur_body = body
-      let mut nl_rec = next_local
-      let mut cont_rec = true
-      while cont_rec {
-        let local_idx = nl_rec
-        Array::push(local_names, cur_name)
-        nl_rec = ce(buf, cur_value, local_names, nl_rec + 1, ld)
-        emit_local_set(buf, local_idx)
-        // Backpatch self-reference in closure for recursive let rec
-        match cur_value {
-          EFn(_, _, params, _, _, fn_body) => {
-            let param_names_bp = Array::slice([""], 0, 0)
-            let mut bpi = 0
-            while bpi < Array::length(params) {
-              let (pn, _) = Array::get(params, bpi)
-              Array::push(param_names_bp, pn)
-              bpi = bpi + 1
-            }
-            let caps = collect_free_vars(fn_body, param_names_bp, Array::concat(ctx.func_table.names, ctx.ctor_table.names))
-            let mut self_cap_idx = -1
-            let mut bci = 0
-            while bci < Array::length(caps) {
-              if Array::get(caps, bci) == cur_name {
-                self_cap_idx = bci
-              }
-              bci = bci + 1
-            }
-            if self_cap_idx >= 0 {
-              emit_local_get(buf, local_idx)
-              emit_i64_const(buf, -4)
-              emit_i64_and(buf)
-              emit_i32_wrap_i64(buf)
-              emit_local_get(buf, local_idx)
-              emit_i64_store(buf, 3, 8 + self_cap_idx * 8)
-            }
-            0
-          },
-          _ => 0
-        }
-        match cur_body {
-          ELetRec(next_name, next_value, next_body) => {
-            cur_name = next_name
-            cur_value = next_value
-            cur_body = next_body
-          },
-          _ => {
-            nl_rec = ce(buf, cur_body, local_names, nl_rec, ld)
-            cont_rec = false
+      let local_idx = next_local
+      Array::push(local_names, name)
+      let nl = ce(buf, value, local_names, next_local + 1, ld)
+      emit_local_set(buf, local_idx)
+      // Backpatch self-reference in closure for recursive let rec
+      match value {
+        EFn(_, _, params, _, _, fn_body) => {
+          let param_names_bp = Array::slice([""], 0, 0)
+          let mut bpi = 0
+          while bpi < Array::length(params) {
+            let (pn, _) = Array::get(params, bpi)
+            Array::push(param_names_bp, pn)
+            bpi = bpi + 1
           }
-        }
+          let caps = collect_free_vars(fn_body, param_names_bp, Array::concat(ctx.func_table.names, ctx.ctor_table.names))
+          let mut self_cap_idx = -1
+          let mut bci = 0
+          while bci < Array::length(caps) {
+            if Array::get(caps, bci) == name {
+              self_cap_idx = bci
+            }
+            bci = bci + 1
+          }
+          if self_cap_idx >= 0 {
+            emit_local_get(buf, local_idx)
+            emit_i64_const(buf, -4)
+            emit_i64_and(buf)
+            emit_i32_wrap_i64(buf)
+            emit_local_get(buf, local_idx)
+            emit_i64_store(buf, 3, 8 + self_cap_idx * 8)
+          }
+          0
+        },
+        _ => 0
       }
-      nl_rec
+      ce(buf, body, local_names, nl, ld)
     },
     ELetMut(name, value, body) => {
       let local_idx = next_local
@@ -397,25 +359,9 @@ let rec compile_expr_gc = (
       }
     },
     ESeq(first, second) => {
-      // Flatten ESeq chain iteratively to avoid deep recursion
-      let mut nl_s = ce(buf, first, local_names, next_local, ld)
+      let nl_s = ce(buf, first, local_names, next_local, ld)
       emit_drop(buf)
-      let mut cur = second
-      let mut cont = true
-      while cont {
-        match cur {
-          ESeq(a, b) => {
-            nl_s = ce(buf, a, local_names, nl_s, ld)
-            emit_drop(buf)
-            cur = b
-          },
-          _ => {
-            nl_s = ce(buf, cur, local_names, nl_s, ld)
-            cont = false
-          }
-        }
-      }
-      nl_s
+      ce(buf, second, local_names, nl_s, ld)
     },
     ETuple(elems) => {
       // Allocate N*8 bytes on heap, store each element as i64
