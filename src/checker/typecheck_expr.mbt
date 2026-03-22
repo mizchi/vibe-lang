@@ -1648,13 +1648,13 @@ fn type_block(
         register_type_alias(scope_env, name, params, target, span)
         last = @core.Type::Unit
       }
-      @core.Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, span~) => {
+      @core.Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, span~, ..) => {
         register_trait_def(
           scope_env, name, supertraits, open_impl, exported, span,
         )
         last = @core.Type::Unit
       }
-      @core.Stmt::InternalTraitDef(name~, supertraits~, open_impl~, span~) => {
+      @core.Stmt::InternalTraitDef(name~, supertraits~, open_impl~, span~, ..) => {
         register_trait_def(scope_env, name, supertraits, open_impl, false, span)
         last = @core.Type::Unit
       }

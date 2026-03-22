@@ -118,6 +118,7 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
             return Stmt::TraitDef(
               name~,
               supertraits=[],
+              methods=[],
               open_impl=false,
               exported=false,
               span=zero,
@@ -140,6 +141,7 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
             return Stmt::TraitDef(
               name~,
               supertraits~,
+              methods=[],
               open_impl~,
               exported~,
               span=zero,
@@ -219,6 +221,7 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
         return Stmt::InternalTraitDef(
           name~,
           supertraits~,
+          methods=[],
           open_impl~,
           span=zero,
         )

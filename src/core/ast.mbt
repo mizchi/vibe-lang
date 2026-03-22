@@ -99,6 +99,14 @@ pub(all) struct MatchArm {
 } derive(Show, Eq)
 
 ///|
+pub(all) struct TraitMethodSig {
+  name : String
+  params : Array[FuncParam]
+  ret : Type
+  span : Span
+} derive(Show, Eq)
+
+///|
 pub(all) struct TypeCtor {
   name : String
   args : Array[Type]
@@ -177,6 +185,7 @@ pub(all) enum Stmt {
   TraitDef(
     name~ : String,
     supertraits~ : Array[String],
+    methods~ : Array[TraitMethodSig],
     open_impl~ : Bool,
     exported~ : Bool,
     span~ : Span
@@ -228,6 +237,7 @@ pub(all) enum Stmt {
   InternalTraitDef(
     name~ : String,
     supertraits~ : Array[String],
+    methods~ : Array[TraitMethodSig],
     open_impl~ : Bool,
     span~ : Span
   )

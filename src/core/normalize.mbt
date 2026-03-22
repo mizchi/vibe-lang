@@ -154,12 +154,13 @@ fn canonicalize_export_list_stmts(stmts : Array[Stmt]) -> Array[Stmt] {
         } else {
           out.push(stmt)
         }
-      Stmt::TraitDef(name~, supertraits~, open_impl~, span~, ..) =>
+      Stmt::TraitDef(name~, supertraits~, methods~, open_impl~, span~, ..) =>
         if export_list_names.contains(name) {
           out.push(
             Stmt::TraitDef(
               name~,
               supertraits~,
+              methods~,
               open_impl~,
               exported=true,
               span~,
@@ -281,10 +282,10 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
       )
     Stmt::TypeAlias(name~, params~, target~, ..) =>
       Stmt::TypeAlias(name~, params~, target~, span=zero_span)
-    Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, ..) =>
-      Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, span=zero_span)
-    Stmt::InternalTraitDef(name~, supertraits~, open_impl~, ..) =>
-      Stmt::InternalTraitDef(name~, supertraits~, open_impl~, span=zero_span)
+    Stmt::TraitDef(name~, supertraits~, methods~, open_impl~, exported~, ..) =>
+      Stmt::TraitDef(name~, supertraits~, methods~, open_impl~, exported~, span=zero_span)
+    Stmt::InternalTraitDef(name~, supertraits~, methods~, open_impl~, ..) =>
+      Stmt::InternalTraitDef(name~, supertraits~, methods~, open_impl~, span=zero_span)
     Stmt::TraitImpl(type_params~, type_bounds~, trait_name~, target~, ..) =>
       Stmt::TraitImpl(
         type_params~,
