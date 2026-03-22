@@ -1634,8 +1634,6 @@ fn strip_type_assert_expr(expr : @core.Expr) -> @core.Expr {
     }
     @core.Expr::TupleIndex(expr=inner, index~, span~) =>
       @core.Expr::TupleIndex(expr=strip_type_assert_expr(inner), index~, span~)
-    @core.Expr::Raise(value~, span~) =>
-      @core.Expr::Raise(value=strip_type_assert_expr(value), span~)
     @core.Expr::Break(value~, span~) =>
       @core.Expr::Break(value=value.map(strip_type_assert_expr), span~)
     @core.Expr::Continue(args~, span~) => {

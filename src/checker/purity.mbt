@@ -369,10 +369,6 @@ fn purity_expr_analysis_inner(
     }
     @core.Expr::While(..) | @core.Expr::Loop(..) => purity_analysis_impure()
     @core.Expr::Break(..) | @core.Expr::Continue(..) => purity_analysis_impure()
-    @core.Expr::Raise(value~, span~) => {
-      let _ = span
-      purity_expr_analysis_inner(env, value, locals)
-    }
     @core.Expr::Yield(..) => purity_analysis_impure()
     @core.Expr::Spread(expr~, ..) =>
       purity_expr_analysis_inner(env, expr, locals)

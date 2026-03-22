@@ -555,8 +555,6 @@ fn normalize_expr(expr : Expr, scope : NormScope) -> Expr {
         arms=normalize_arms(arms, scope),
         span=zero_span,
       )
-    Expr::Raise(value~, ..) =>
-      Expr::Raise(value=normalize_expr(value, scope), span=zero_span)
     Expr::Yield(expr~, ..) =>
       Expr::Yield(expr=normalize_expr(expr, scope), span=zero_span)
     Expr::Spread(expr~, ..) =>

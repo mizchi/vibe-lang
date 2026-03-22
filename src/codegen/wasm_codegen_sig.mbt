@@ -729,11 +729,6 @@ fn infer_expr_kind_with(
       let _ = span
       ValueKind::I64
     }
-    @core.Expr::Raise(value~, span~) => {
-      let _ = value
-      let _ = span
-      ValueKind::I64
-    }
     @core.Expr::Yield(expr~, span~) => {
       let _ = expr
       let _ = span
@@ -1265,10 +1260,6 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         }
       }
       result
-    }
-    @core.Expr::Raise(value~, span~) => {
-      let _ = span
-      needs_heap_expr(ctx, value)
     }
     @core.Expr::Yield(expr~, span~) => {
       let _ = span
@@ -1989,7 +1980,6 @@ fn expr_always_returns_tuple(
       }
       true
     }
-    @core.Expr::Raise(..) => true // never returns, vacuously compatible
     @core.Expr::Call(name~, ..) =>
       // Self-recursive call or call to known multi-value function with matching arity
       name == self_name ||

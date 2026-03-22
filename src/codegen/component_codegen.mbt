@@ -1219,7 +1219,6 @@ fn scan_component_wit_imports_expr(
       }
       scan_component_wit_imports_block(body, acc)
     }
-    @core.Expr::Raise(value~, ..) => scan_component_wit_imports_expr(value, acc)
     @core.Expr::Yield(expr~, ..) => scan_component_wit_imports_expr(expr, acc)
     _ => ()
   }

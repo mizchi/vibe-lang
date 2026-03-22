@@ -563,11 +563,6 @@ fn desugar_vibe_expr(
       }
       @core.Expr::Continue(args=next_args, span~)
     }
-    @core.Expr::Raise(value~, span~) =>
-      @core.Expr::Raise(
-        value=desugar_vibe_expr(value, scope, known_non_cmd, notes),
-        span~,
-      )
     @core.Expr::Yield(expr~, span~) =>
       @core.Expr::Yield(
         expr=desugar_vibe_expr(expr, scope, known_non_cmd, notes),

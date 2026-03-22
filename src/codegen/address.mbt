@@ -286,10 +286,6 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       let _ = span
       "(continue)"
     }
-    @core.Expr::Raise(value~, span~) => {
-      let _ = span
-      "(throw " + expr_to_addr_sexp(ctx, value) + ")"
-    }
     @core.Expr::Yield(expr~, span~) => {
       let _ = span
       "(yield " + expr_to_addr_sexp(ctx, expr) + ")"

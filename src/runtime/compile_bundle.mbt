@@ -615,8 +615,6 @@ fn module_expr_requires_preload_host_imports(expr : @core.Expr) -> Bool {
     | @core.Expr::Spread(expr~, ..)
     | @core.Expr::Yield(expr~, ..) =>
       module_expr_requires_preload_host_imports(expr)
-    @core.Expr::Raise(value~, ..) =>
-      module_expr_requires_preload_host_imports(value)
     @core.Expr::Record(fields~, ..) | @core.Expr::StructLit(fields~, ..) => {
       for field in fields {
         if module_expr_requires_preload_host_imports(field.expr) {
@@ -1527,7 +1525,6 @@ fn collect_all_assign_targets_expr(
       }
       collect_all_assign_targets_block(body, out)
     }
-    @core.Expr::Raise(value~, ..) => collect_all_assign_targets_expr(value, out)
     @core.Expr::Yield(expr~, ..) => collect_all_assign_targets_expr(expr, out)
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
       let desugared = @core.desugar_for_in(

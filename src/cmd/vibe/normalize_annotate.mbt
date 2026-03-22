@@ -580,11 +580,6 @@ fn normalize_strip_local_type_assert_expr(
             span~,
           )
         }
-        @vibe_core.Expr::Raise(value~, span~) =>
-          @vibe_core.Expr::Raise(
-            value=normalize_strip_local_type_assert_expr(value),
-            span~,
-          )
         @vibe_core.Expr::Yield(expr~, span~) =>
           @vibe_core.Expr::Yield(
             expr=normalize_strip_local_type_assert_expr(expr),

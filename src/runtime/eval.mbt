@@ -1233,14 +1233,6 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       raise EvalError::LoopContinue(vals)
     }
     @core.Expr::Loop(params~, body~, ..) => eval_loop_expr(rt, params, body)
-    @core.Expr::Raise(value~, ..) => {
-      let v = eval_expr(rt, value)
-      raise EvalError::Performed(
-        wrap_error_effect(v.value),
-        "__throw",
-        v.effects.length() > 0,
-      )
-    }
     @core.Expr::Yield(expr~, ..) => {
       require_unstable_async(rt, "yield")
       // For now, yield just evaluates and returns the expression

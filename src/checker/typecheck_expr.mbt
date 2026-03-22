@@ -90,7 +90,6 @@ fn collect_perform_ops_expr(expr : @core.Expr, ops : Array[String]) -> Unit {
           _ => ()
         }
       }
-    @core.Expr::Raise(..) => ops.push("Error::Throw")
     @core.Expr::Call(args~, ..) =>
       for arg in args {
         collect_perform_ops_expr(arg.expr, ops)
@@ -1000,25 +999,6 @@ fn type_expr_eff(
         type_expr_eff(env, arg, aliases, effects, allow_effect) |> ignore
       }
       @core.Type::Unit
-    }
-    @core.Expr::Raise(value~, span~) => {
-      let val_ty = type_expr_eff(env, value, aliases, effects, allow_effect)
-      let _ = ensure_type_satisfies_bounds(
-        env,
-        val_ty,
-        ["Error"],
-        span,
-        "throw",
-      )
-      // throw always requires explicit with { Error } declaration
-      require_effects(
-        env,
-        effects,
-        [@core.EffectAtom::Const("Error")],
-        "throw",
-        span,
-      )
-      @core.Type::Never
     }
     @core.Expr::Yield(expr~, span~) => {
       let _ = type_expr_eff(env, expr, aliases, effects, allow_effect)

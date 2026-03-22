@@ -550,10 +550,6 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    @core.Expr::Raise(value~, span~) => {
-      let _ = span
-      "(throw " + expr_to_sexp(value, aliases) + ")"
-    }
     @core.Expr::Yield(expr~, span~) => {
       let _ = span
       "(yield " + expr_to_sexp(expr, aliases) + ")"

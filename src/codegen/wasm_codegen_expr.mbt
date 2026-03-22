@@ -193,10 +193,6 @@ fn compile_expr(
       let _ = span
       compile_expr_loop(ctx, buf, params, body)
     }
-    @core.Expr::Raise(value~, span~) => {
-      let _ = span
-      compile_expr_raise(ctx, buf, value)
-    }
     @core.Expr::Yield(expr=inner, span~) => {
       let _ = span
       compile_expr_yield(ctx, buf, inner)

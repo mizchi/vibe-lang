@@ -706,7 +706,7 @@ fn collect_for_in_helper_refs_expr(
       for arg in args {
         collect_for_in_helper_refs_expr(arg, bound, refs, on_name)
       }
-    @core.Expr::Raise(value~, ..) | @core.Expr::Yield(expr=value, ..) =>
+    @core.Expr::Yield(expr=value, ..) =>
       collect_for_in_helper_refs_expr(value, bound, refs, on_name)
     @core.Expr::Spread(expr~, ..) =>
       collect_for_in_helper_refs_expr(expr, bound, refs, on_name)

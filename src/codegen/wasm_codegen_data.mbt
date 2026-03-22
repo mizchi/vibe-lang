@@ -261,11 +261,6 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         }
       }
     }
-    @core.Expr::Raise(value~, span~) => {
-      let _ = span
-      ctx.need_exceptions = true
-      scan_needs_expr(ctx, value)
-    }
     @core.Expr::Match(scrutinee~, arms~, span~) => {
       let _ = span
       scan_needs_expr(ctx, scrutinee)
@@ -619,23 +614,6 @@ fn scan_strings_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       let _ = effects
       let _ = span
       scan_strings(ctx, body)
-    }
-    @core.Expr::Raise(value~, span~) => {
-      let _ = span
-      if not(ctx.use_js_strings) {
-        match value {
-          @core.Expr::String(value=message, span~) => {
-            let _ = span
-            let _ = intern_error_code(ctx, message)
-            if ctx.embed_error_strings {
-              scan_strings_expr(ctx, value)
-            }
-          }
-          _ => scan_strings_expr(ctx, value)
-        }
-      } else {
-        scan_strings_expr(ctx, value)
-      }
     }
     @core.Expr::Perform(effect_name="Error", op_name="Throw", args~, ..) => {
       let value = if args.length() >= 1 { args[0].expr } else { return }

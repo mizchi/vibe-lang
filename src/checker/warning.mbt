@@ -635,7 +635,7 @@ fn walk_expr(
       walk_module(body, scopes, out)
       warning_scope_pop(scopes, out)
     }
-    @core.Expr::Raise(value~, ..) | @core.Expr::Yield(expr=value, ..) =>
+    @core.Expr::Yield(expr=value, ..) =>
       walk_expr(value, scopes, out)
     @core.Expr::StructLit(fields~, ..) =>
       for field in fields {

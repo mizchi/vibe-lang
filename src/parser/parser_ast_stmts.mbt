@@ -1301,11 +1301,6 @@ fn rewrite_module_expr(
         body=rewrite_module_block(module_name, body, locals),
         span~,
       )
-    @core.Expr::Raise(value~, span~) =>
-      @core.Expr::Raise(
-        value=rewrite_module_expr(module_name, value, locals),
-        span~,
-      )
     @core.Expr::Yield(expr~, span~) =>
       @core.Expr::Yield(
         expr=rewrite_module_expr(module_name, expr, locals),

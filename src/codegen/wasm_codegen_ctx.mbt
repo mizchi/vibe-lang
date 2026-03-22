@@ -528,10 +528,6 @@ fn collect_captures_expr(
         }
       }
     }
-    @core.Expr::Raise(value~, span~) => {
-      let _ = span
-      collect_captures_expr(value, bound, outer_bound, captures, seen)
-    }
     @core.Expr::While(cond~, body~, span~) => {
       let _ = span
       collect_captures_expr(cond, bound, outer_bound, captures, seen)
@@ -828,10 +824,6 @@ fn collect_nested_funcs_expr(
           None => ()
         }
       }
-    }
-    @core.Expr::Raise(value~, span~) => {
-      let _ = span
-      collect_nested_funcs_expr(value, bound, funcs)
     }
     @core.Expr::While(cond~, body~, span~) => {
       let _ = span
@@ -1191,7 +1183,6 @@ fn collect_fn_span_keys_expr(expr : @core.Expr, out : Array[String]) -> Unit {
         }
       }
     }
-    @core.Expr::Raise(value~, ..) => collect_fn_span_keys_expr(value, out)
     @core.Expr::While(cond~, body~, ..) => {
       collect_fn_span_keys_expr(cond, out)
       for s in body.stmts {
@@ -1318,8 +1309,6 @@ fn precompute_ref_cell_captures_expr(
         }
       }
     }
-    @core.Expr::Raise(value~, ..) =>
-      precompute_ref_cell_captures_expr(ctx, value, scope_mcv)
     @core.Expr::While(cond~, body~, ..) => {
       precompute_ref_cell_captures_expr(ctx, cond, scope_mcv)
       precompute_ref_cell_captures_block(ctx, body.stmts, scope_mcv)

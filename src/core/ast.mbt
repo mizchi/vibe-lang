@@ -311,7 +311,6 @@ pub(all) enum Expr {
   Loop(params~ : Array[LoopParam], body~ : Module, span~ : Span)
   Break(value~ : Expr?, span~ : Span)
   Continue(args~ : Array[Expr], span~ : Span)
-  Raise(value~ : Expr, span~ : Span)
   Yield(expr~ : Expr, span~ : Span)
   Handle(body~ : Module, arms~ : Array[MatchArm], span~ : Span)
   StructLit(
@@ -388,7 +387,6 @@ pub fn Expr::span(self : Expr) -> Span {
     | Expr::Loop(span~, ..)
     | Expr::Break(span~, ..)
     | Expr::Continue(span~, ..)
-    | Expr::Raise(span~, ..)
     | Expr::Yield(span~, ..)
     | Expr::Handle(span~, ..)
     | Expr::StructLit(span~, ..)

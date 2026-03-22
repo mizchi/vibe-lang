@@ -437,11 +437,6 @@ fn serialize_expr_to(expr : Expr, buf : StringBuilder) -> Unit {
       serialize_module_to(body, buf)
       buf.write_string("}}")
     }
-    Expr::Raise(value~, ..) => {
-      buf.write_string("{\"Raise\":")
-      serialize_expr_to(value, buf)
-      buf.write_char('}')
-    }
     Expr::Yield(expr=inner, ..) => {
       buf.write_string("{\"Yield\":")
       serialize_expr_to(inner, buf)

@@ -1182,9 +1182,6 @@ fn compile_expr_multivalue(
       buf.push((11).to_byte())
       adjust_loop_offsets(ctx, -2)
     }
-    @core.Expr::Raise(..) =>
-      // Compile raise — never returns, wasm stack becomes unreachable
-      compile_expr(ctx, buf, expr)
     @core.Expr::Call(name~, ..) =>
       // Forward multi-value from another multi-value function call
       match ctx.fn_multivalue_results.get(name) {

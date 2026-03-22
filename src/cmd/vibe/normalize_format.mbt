@@ -206,10 +206,6 @@ fn railway_collect_expr_boundaries(
         railway_collect_expr_boundaries(arm.expr, stats)
       }
     }
-    @vibe_core.Expr::Raise(value=inner, ..) => {
-      stats[1] = stats[1] + 1
-      railway_collect_expr_boundaries(inner, stats)
-    }
     @vibe_core.Expr::Perform(effect_name="Error", op_name="Throw", args~, ..) => {
       stats[1] = stats[1] + 1
       for arg in args {
@@ -602,7 +598,6 @@ fn collect_rb_expr(
       }
     @vibe_core.Expr::TupleIndex(expr=inner, ..)
     | @vibe_core.Expr::Yield(expr=inner, ..) => collect_rb_expr(inner, out)
-    @vibe_core.Expr::Raise(value=inner, ..) => collect_rb_expr(inner, out)
     @vibe_core.Expr::Break(value~, ..) =>
       match value {
         Some(v) => collect_rb_expr(v, out)

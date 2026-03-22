@@ -1546,8 +1546,6 @@ fn expr_uses_wasm_runtime_fallback_builtins(expr : @vibe_core.Expr) -> Bool {
       }
       false
     }
-    @vibe_core.Expr::Raise(value~, ..) =>
-      expr_uses_wasm_runtime_fallback_builtins(value)
     @vibe_core.Expr::Yield(expr~, ..) =>
       expr_uses_wasm_runtime_fallback_builtins(expr)
     @vibe_core.Expr::Handle(body~, arms~, ..) => {
@@ -1700,7 +1698,6 @@ fn expr_uses_http_builtins(expr : @vibe_core.Expr) -> Bool {
       }
       false
     }
-    @vibe_core.Expr::Raise(value~, ..) => expr_uses_http_builtins(value)
     @vibe_core.Expr::Yield(expr~, ..) => expr_uses_http_builtins(expr)
     @vibe_core.Expr::Handle(body~, arms~, ..) => {
       if module_uses_http_builtins(body) {

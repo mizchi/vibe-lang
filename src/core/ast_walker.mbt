@@ -295,10 +295,6 @@ pub fn walk_expr_refs(
         walk_expr_refs(arg, bound, refs, on_name)
       }
     }
-    Expr::Raise(value~, span~) => {
-      let _ = span
-      walk_expr_refs(value, bound, refs, on_name)
-    }
     Expr::Yield(expr~, span~) => {
       let _ = span
       walk_expr_refs(expr, bound, refs, on_name)

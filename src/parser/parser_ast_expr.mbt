@@ -2464,7 +2464,6 @@ fn contains_placeholder(expr : @core.Expr) -> Bool {
     | @core.Expr::Handle(..)
     | @core.Expr::Fn(..)
     | @core.Expr::While(..) => false // Don't look inside blocks/lambdas
-    @core.Expr::Raise(value~, ..) => contains_placeholder(value)
     @core.Expr::Yield(expr~, ..) => contains_placeholder(expr)
     _ => false
   }
@@ -2533,8 +2532,6 @@ fn reindex_placeholders(expr : @core.Expr, counter : Ref[Int]) -> @core.Expr {
         else_body~,
         span~,
       )
-    @core.Expr::Raise(value~, span~) =>
-      @core.Expr::Raise(value=reindex_placeholders(value, counter), span~)
     @core.Expr::Yield(expr~, span~) =>
       @core.Expr::Yield(expr=reindex_placeholders(expr, counter), span~)
     _ => expr
@@ -2603,8 +2600,6 @@ fn replace_placeholders(expr : @core.Expr) -> @core.Expr {
         else_body~,
         span~,
       )
-    @core.Expr::Raise(value~, span~) =>
-      @core.Expr::Raise(value=replace_placeholders(value), span~)
     @core.Expr::Yield(expr~, span~) =>
       @core.Expr::Yield(expr=replace_placeholders(expr), span~)
     _ => expr
@@ -2850,8 +2845,6 @@ fn desugar_expr_deep(expr : @core.Expr) -> @core.Expr {
         body=desugar_module(body),
         span~,
       )
-    @core.Expr::Raise(value~, span~) =>
-      @core.Expr::Raise(value=desugar_expr_deep(value), span~)
     @core.Expr::Yield(expr=e, span~) =>
       @core.Expr::Yield(expr=desugar_expr_deep(e), span~)
     _ => expr
