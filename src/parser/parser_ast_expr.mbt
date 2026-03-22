@@ -2001,7 +2001,7 @@ fn AstParser::parse_call_or_primary(
           let temp_ref = @core.Expr::Ident(name=temp_name, span~)
           let zero = @core.Expr::Int(value=0L, span~)
           let len_call = @core.Expr::Call(
-            name="String::length",
+            name="__len",
             type_args=[],
             args=[
               @core.CallArg::{
@@ -2043,7 +2043,7 @@ fn AstParser::parse_call_or_primary(
             let span = @core.Span::merge(expr.span(), index.span())
             let temp_ref = @core.Expr::Ident(name=temp_name, span~)
             let len_call = @core.Expr::Call(
-              name="String::length",
+              name="__len",
               type_args=[],
               args=[
                 @core.CallArg::{

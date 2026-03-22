@@ -245,10 +245,15 @@ let compile_call_gc = (
       }
       else if fname == "__len" {
         let (sl_idx, _, _) = resolve_func(ctx.func_table, "String::length")
+        let (bl_idx, _, _) = resolve_func(ctx.func_table, "Bytes::length")
         let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
         let obj_local = next_local
+        let ptr_local = next_local + 1
+        let cap_local = next_local + 2
         Array::push(local_names, "__len_obj")
-        let mut nl = next_local + 1
+        Array::push(local_names, "__len_ptr")
+        Array::push(local_names, "__len_cap")
+        let mut nl = next_local + 3
         nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
         emit_local_set(buf, obj_local)
         emit_local_get(buf, obj_local)
@@ -257,7 +262,21 @@ let compile_call_gc = (
         emit_i64_eqz(buf)
         emit_if_i64(buf)
         emit_local_get(buf, obj_local)
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, ptr_local)
+        emit_local_get(buf, ptr_local)
+        emit_i32_load(buf, 2, 0)
+        emit_local_set(buf, cap_local)
+        emit_local_get(buf, cap_local)
+        emit_i32_const(buf, 2147483647)
+        emit_i32_gt_u(buf)
+        emit_if_i64(buf)
+        emit_local_get(buf, obj_local)
+        emit_call(buf, bl_idx)
+        emit_else(buf)
+        emit_local_get(buf, obj_local)
         emit_call(buf, al_idx)
+        emit_end(buf)
         emit_else(buf)
         emit_local_get(buf, obj_local)
         emit_call(buf, sl_idx)

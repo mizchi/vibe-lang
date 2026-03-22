@@ -3857,10 +3857,7 @@ fn eval_builtin_call(
         )
       }
       match (pos_args[0], pos_args[1], pos_args[2]) {
-        (
-          @core.Value::Bytes(dst),
-          @core.Value::Int(val),
-          @core.Value::Int(count),
+        (@core.Value::Bytes(dst), @core.Value::Int(val), @core.Value::Int(count)
         ) => {
           let byte = val.to_int().to_byte()
           let n = count.to_int()

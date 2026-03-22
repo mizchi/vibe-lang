@@ -419,7 +419,7 @@ fn infer_expr_kind_with(
       let pos_args = extract_positional_exprs(args, name)
       match name {
         "add" | "sub" | "mul" | "div" | "eq" | "lt" => ValueKind::I64
-        "__index" => ValueKind::I64
+        "__index" | "__len" => ValueKind::I64
         "__add" | "__sub" | "__mul" | "__div" | "__mod" => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("arity: " + name)

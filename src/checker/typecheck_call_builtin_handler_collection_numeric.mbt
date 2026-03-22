@@ -1005,6 +1005,30 @@ fn type_call_builtin_handler_collection_numeric(
         }
       }
     }
+    "__len" => {
+      let pos_args = extract_positional_args(args, "__len", call_span)
+      if pos_args.length() != 1 {
+        raise TypeError::BadCall(message="__len", span=call_span)
+      }
+      let container_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let resolved_container = resolve_type(env, container_ty)
+      match resolved_container {
+        @core.Type::String => @core.Type::Int
+        @core.Type::Array(_) => @core.Type::Int
+        @core.Type::Bytes => @core.Type::Int
+        _ =>
+          raise TypeError::BadCall(
+            message="__len: not measurable",
+            span=call_span,
+          )
+      }
+    }
     "__slice" => {
       let pos_args = extract_positional_args(args, "__slice", call_span)
       if pos_args.length() != 3 {

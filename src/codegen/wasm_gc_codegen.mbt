@@ -955,7 +955,30 @@ fn infer_expr_kind_gc(
       match name {
         "add" | "sub" | "mul" | "div" => GcValKind::I64
         "eq" | "lt" => GcValKind::I32
-        "__index" => GcValKind::I64
+        "__len" => GcValKind::I64
+        "__index" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("arity: __index")
+          }
+          let base_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          if base_kind == GcValKind::Ref(ctx.string_type) {
+            GcValKind::I64
+          } else {
+            gc_array_elem_kind_from_kind(ctx, base_kind, "__index")
+          }
+        }
+        "__slice" => {
+          if pos_args.length() != 3 {
+            raise WasmGenError::Unsupported("arity: __slice")
+          }
+          let base_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          if base_kind == GcValKind::Ref(ctx.string_type) {
+            GcValKind::Ref(ctx.string_type)
+          } else {
+            let _ = gc_array_type_idx_from_kind(ctx, base_kind, "__slice")
+            base_kind
+          }
+        }
         "__add" | "__sub" | "__mul" | "__div" | "__mod" => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("arity: " + name)
@@ -991,6 +1014,47 @@ fn infer_expr_kind_gc(
         | "funcref_eq"
         | "externref_eq" => GcValKind::I64
         "String::length" | "String::char_code_at" => GcValKind::I64
+        "Bytes::length" => GcValKind::I64
+        "Bytes::from_array" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("arity: Bytes::from_array")
+          }
+          let arg_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let _ = gc_array_type_idx_from_kind(
+            ctx, arg_kind, "Bytes::from_array",
+          )
+          arg_kind
+        }
+        "Bytes::get" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("arity: Bytes::get")
+          }
+          gc_array_elem_kind_from_kind(
+            ctx,
+            infer_expr_kind_gc(ctx, fctx, pos_args[0]),
+            "Bytes::get",
+          )
+        }
+        "Bytes::slice" => {
+          if pos_args.length() != 3 {
+            raise WasmGenError::Unsupported("arity: Bytes::slice")
+          }
+          let arg_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let _ = gc_array_type_idx_from_kind(ctx, arg_kind, "Bytes::slice")
+          arg_kind
+        }
+        "Bytes::concat" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("arity: Bytes::concat")
+          }
+          let left_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let right_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          if left_kind != right_kind {
+            raise WasmGenError::Unsupported("Bytes::concat kind mismatch")
+          }
+          let _ = gc_array_type_idx_from_kind(ctx, left_kind, "Bytes::concat")
+          left_kind
+        }
         "String::substring" | "String::concat" =>
           GcValKind::Ref(ctx.string_type)
         "record_set" => {
@@ -1427,6 +1491,206 @@ fn compile_string_equals(
   emit_end_gc(buf)
   emit_end_gc(buf)
   emit_local_get_gc(buf, ok_idx)
+}
+
+///|
+fn compile_len_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  let kind = infer_expr_kind_gc(ctx, fctx, expr)
+  match kind {
+    GcValKind::Ref(type_idx) =>
+      if type_idx == ctx.string_type {
+        compile_expr_gc(ctx, fctx, buf, expr)
+        emit_struct_get_gc(buf, ctx.string_type, 0)
+        emit_i64_extend_i32_s_gc(buf)
+      } else {
+        match ctx.types[type_idx] {
+          GcTypeDef::Array(..) => {
+            compile_expr_gc(ctx, fctx, buf, expr)
+            emit_array_len_gc(buf)
+            emit_i64_extend_i32_s_gc(buf)
+          }
+          GcTypeDef::Struct(..) => raise WasmGenError::Unsupported("__len ref")
+        }
+      }
+    _ => raise WasmGenError::Unsupported("__len kind")
+  }
+}
+
+///|
+fn gc_array_type_idx_from_kind(
+  ctx : GcCodegenCtx,
+  kind : GcValKind,
+  opname : String,
+) -> Int raise WasmGenError {
+  match kind {
+    GcValKind::Ref(type_idx) =>
+      match ctx.types[type_idx] {
+        GcTypeDef::Array(..) => type_idx
+        _ => raise WasmGenError::Unsupported(opname + " kind")
+      }
+    _ => raise WasmGenError::Unsupported(opname + " kind")
+  }
+}
+
+///|
+fn gc_array_elem_kind_from_kind(
+  ctx : GcCodegenCtx,
+  kind : GcValKind,
+  opname : String,
+) -> GcValKind raise WasmGenError {
+  let type_idx = gc_array_type_idx_from_kind(ctx, kind, opname)
+  match ctx.types[type_idx] {
+    GcTypeDef::Array(elem~) => elem
+    _ => raise WasmGenError::Unsupported(opname + " kind")
+  }
+}
+
+///|
+fn compile_array_slice_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  array_expr : @core.Expr,
+  start_expr : @core.Expr,
+  end_expr : @core.Expr,
+  opname : String,
+) -> Unit raise WasmGenError {
+  let array_kind = infer_expr_kind_gc(ctx, fctx, array_expr)
+  let type_idx = gc_array_type_idx_from_kind(ctx, array_kind, opname)
+  let arr_idx = alloc_local_gc(fctx, array_kind)
+  let start_idx = alloc_local_gc(fctx, GcValKind::I32)
+  let end_idx = alloc_local_gc(fctx, GcValKind::I32)
+  let len_idx = alloc_local_gc(fctx, GcValKind::I32)
+  let out_idx = alloc_local_gc(fctx, GcValKind::Ref(type_idx))
+  let i_idx = alloc_local_gc(fctx, GcValKind::I32)
+  compile_expr_gc(ctx, fctx, buf, array_expr)
+  emit_local_set_gc(buf, arr_idx)
+  compile_expr_gc(ctx, fctx, buf, start_expr)
+  emit_local_set_gc(buf, start_idx)
+  compile_expr_gc(ctx, fctx, buf, end_expr)
+  emit_local_set_gc(buf, end_idx)
+  emit_local_get_gc(buf, end_idx)
+  emit_local_get_gc(buf, start_idx)
+  emit_i32_sub_gc(buf)
+  emit_local_set_gc(buf, len_idx)
+  emit_local_get_gc(buf, len_idx)
+  emit_array_new_default_gc(buf, type_idx)
+  emit_local_set_gc(buf, out_idx)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, i_idx)
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, i_idx)
+  emit_local_get_gc(buf, len_idx)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  emit_local_get_gc(buf, out_idx)
+  emit_local_get_gc(buf, i_idx)
+  emit_local_get_gc(buf, arr_idx)
+  emit_local_get_gc(buf, start_idx)
+  emit_local_get_gc(buf, i_idx)
+  emit_i32_add_gc(buf)
+  emit_array_get_gc(buf, type_idx)
+  emit_array_set_gc(buf, type_idx)
+  emit_local_get_gc(buf, i_idx)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, i_idx)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  emit_local_get_gc(buf, out_idx)
+}
+
+///|
+fn compile_array_concat_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  left_expr : @core.Expr,
+  right_expr : @core.Expr,
+  opname : String,
+) -> Unit raise WasmGenError {
+  let left_kind = infer_expr_kind_gc(ctx, fctx, left_expr)
+  let right_kind = infer_expr_kind_gc(ctx, fctx, right_expr)
+  if left_kind != right_kind {
+    raise WasmGenError::Unsupported(opname + " kind mismatch")
+  }
+  let type_idx = gc_array_type_idx_from_kind(ctx, left_kind, opname)
+  let left_idx = alloc_local_gc(fctx, left_kind)
+  let right_idx = alloc_local_gc(fctx, right_kind)
+  let left_len_idx = alloc_local_gc(fctx, GcValKind::I32)
+  let right_len_idx = alloc_local_gc(fctx, GcValKind::I32)
+  let total_len_idx = alloc_local_gc(fctx, GcValKind::I32)
+  let out_idx = alloc_local_gc(fctx, GcValKind::Ref(type_idx))
+  let i_idx = alloc_local_gc(fctx, GcValKind::I32)
+  compile_expr_gc(ctx, fctx, buf, left_expr)
+  emit_local_set_gc(buf, left_idx)
+  compile_expr_gc(ctx, fctx, buf, right_expr)
+  emit_local_set_gc(buf, right_idx)
+  emit_local_get_gc(buf, left_idx)
+  emit_array_len_gc(buf)
+  emit_local_set_gc(buf, left_len_idx)
+  emit_local_get_gc(buf, right_idx)
+  emit_array_len_gc(buf)
+  emit_local_set_gc(buf, right_len_idx)
+  emit_local_get_gc(buf, left_len_idx)
+  emit_local_get_gc(buf, right_len_idx)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, total_len_idx)
+  emit_local_get_gc(buf, total_len_idx)
+  emit_array_new_default_gc(buf, type_idx)
+  emit_local_set_gc(buf, out_idx)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, i_idx)
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, i_idx)
+  emit_local_get_gc(buf, left_len_idx)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  emit_local_get_gc(buf, out_idx)
+  emit_local_get_gc(buf, i_idx)
+  emit_local_get_gc(buf, left_idx)
+  emit_local_get_gc(buf, i_idx)
+  emit_array_get_gc(buf, type_idx)
+  emit_array_set_gc(buf, type_idx)
+  emit_local_get_gc(buf, i_idx)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, i_idx)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, i_idx)
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, i_idx)
+  emit_local_get_gc(buf, right_len_idx)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  emit_local_get_gc(buf, out_idx)
+  emit_local_get_gc(buf, left_len_idx)
+  emit_local_get_gc(buf, i_idx)
+  emit_i32_add_gc(buf)
+  emit_local_get_gc(buf, right_idx)
+  emit_local_get_gc(buf, i_idx)
+  emit_array_get_gc(buf, type_idx)
+  emit_array_set_gc(buf, type_idx)
+  emit_local_get_gc(buf, i_idx)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, i_idx)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  emit_local_get_gc(buf, out_idx)
 }
 
 ///|
@@ -1992,12 +2256,120 @@ fn compile_expr_gc(
           emit_struct_set_gc(buf, type_idx, field_idx)
           emit_local_get_gc(buf, rec_idx)
         }
+        "__len" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("__len arity")
+          }
+          compile_len_gc(ctx, fctx, buf, pos_args[0])
+        }
+        "__index" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("__index arity")
+          }
+          let base_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          if base_kind == GcValKind::Ref(ctx.string_type) {
+            compile_string_char_code_at(
+              ctx,
+              fctx,
+              buf,
+              pos_args[0],
+              pos_args[1],
+            )
+          } else {
+            let type_idx = gc_array_type_idx_from_kind(
+              ctx, base_kind, "__index",
+            )
+            compile_expr_gc(ctx, fctx, buf, pos_args[0])
+            compile_expr_gc(ctx, fctx, buf, pos_args[1])
+            emit_array_get_gc(buf, type_idx)
+          }
+        }
+        "__slice" => {
+          if pos_args.length() != 3 {
+            raise WasmGenError::Unsupported("__slice arity")
+          }
+          let base_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          if base_kind == GcValKind::Ref(ctx.string_type) {
+            compile_string_substring(
+              ctx,
+              fctx,
+              buf,
+              pos_args[0],
+              pos_args[1],
+              pos_args[2],
+            )
+          } else {
+            compile_array_slice_gc(
+              ctx,
+              fctx,
+              buf,
+              pos_args[0],
+              pos_args[1],
+              pos_args[2],
+              "__slice",
+            )
+          }
+        }
         "String::length" => {
           if pos_args.length() != 1 {
             raise WasmGenError::Unsupported("String::length arity")
           }
+          compile_len_gc(ctx, fctx, buf, pos_args[0])
+        }
+        "Bytes::length" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Bytes::length arity")
+          }
+          compile_len_gc(ctx, fctx, buf, pos_args[0])
+        }
+        "Bytes::from_array" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Bytes::from_array arity")
+          }
+          let arg_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let _ = gc_array_type_idx_from_kind(
+            ctx, arg_kind, "Bytes::from_array",
+          )
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          emit_struct_get_gc(buf, ctx.string_type, 0)
+        }
+        "Bytes::get" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("Bytes::get arity")
+          }
+          let array_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let type_idx = gc_array_type_idx_from_kind(
+            ctx, array_kind, "Bytes::get",
+          )
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_array_get_gc(buf, type_idx)
+        }
+        "Bytes::slice" => {
+          if pos_args.length() != 3 {
+            raise WasmGenError::Unsupported("Bytes::slice arity")
+          }
+          compile_array_slice_gc(
+            ctx,
+            fctx,
+            buf,
+            pos_args[0],
+            pos_args[1],
+            pos_args[2],
+            "Bytes::slice",
+          )
+        }
+        "Bytes::concat" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("Bytes::concat arity")
+          }
+          compile_array_concat_gc(
+            ctx,
+            fctx,
+            buf,
+            pos_args[0],
+            pos_args[1],
+            "Bytes::concat",
+          )
         }
         "String::char_code_at" => {
           if pos_args.length() != 2 {
@@ -2223,6 +2595,42 @@ fn compile_stmt_gc(
         emit_drop_gc(buf)
       }
     }
+    @core.Stmt::ExternLet(..)
+    | @core.Stmt::Test(..)
+    | @core.Stmt::Bench(..)
+    | @core.Stmt::TypeAlias(..)
+    | @core.Stmt::ExportTypeAlias(..)
+    | @core.Stmt::InternalExportTypeAlias(..)
+    | @core.Stmt::EnumDef(..)
+    | @core.Stmt::ExportEnumDef(..)
+    | @core.Stmt::InternalExportEnumDef(..)
+    | @core.Stmt::Export(..)
+    | @core.Stmt::ReExport(..)
+    | @core.Stmt::TraitDef(..)
+    | @core.Stmt::InternalTraitDef(..)
+    | @core.Stmt::TraitImpl(..)
+    | @core.Stmt::StructDef(..)
+    | @core.Stmt::ExportStructDef(..)
+    | @core.Stmt::InternalExportStructDef(..)
+    | @core.Stmt::EffectDef(..)
+    | @core.Stmt::ExportEffectDef(..)
+    | @core.Stmt::AliasDecl(..) => if is_last { emit_i32_const_gc(buf, 0) }
+    @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
+      compile_stmt_gc(
+        ctx,
+        fctx,
+        buf,
+        @core.Stmt::Let(rec~, name~, expr~, span~),
+        is_last,
+      )
+    @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) =>
+      compile_stmt_gc(
+        ctx,
+        fctx,
+        buf,
+        @core.Stmt::Let(rec~, name~, expr~, span~),
+        is_last,
+      )
     _ => raise WasmGenError::Unsupported("stmt")
   }
 }
@@ -2258,6 +2666,22 @@ fn collect_top_level_funcs_gc(ast : @core.Module) -> Array[GcFuncDef] {
           _ => ()
         }
       }
+      @core.Stmt::ExportLet(rec~, name~, expr~, ..) => {
+        let _ = rec
+        match expr {
+          @core.Expr::Fn(params~, ret~, body~, ..) =>
+            funcs.push({ name, params, ret, body })
+          _ => ()
+        }
+      }
+      @core.Stmt::InternalExportLet(rec~, name~, expr~, ..) => {
+        let _ = rec
+        match expr {
+          @core.Expr::Fn(params~, ret~, body~, ..) =>
+            funcs.push({ name, params, ret, body })
+          _ => ()
+        }
+      }
       _ => ()
     }
   }
@@ -2270,6 +2694,20 @@ fn filter_top_level_funcs_gc(ast : @core.Module) -> @core.Module {
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Let(rec~, expr~, ..) => {
+        let _ = rec
+        match expr {
+          @core.Expr::Fn(..) => ()
+          _ => stmts.push(stmt)
+        }
+      }
+      @core.Stmt::ExportLet(rec~, expr~, ..) => {
+        let _ = rec
+        match expr {
+          @core.Expr::Fn(..) => ()
+          _ => stmts.push(stmt)
+        }
+      }
+      @core.Stmt::InternalExportLet(rec~, expr~, ..) => {
         let _ = rec
         match expr {
           @core.Expr::Fn(..) => ()

@@ -6,7 +6,7 @@ import ../../core/index.vibe {
 }
 
 import ../common_base/index.vibe {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import ../common_extractors/index.vibe {
@@ -141,22 +141,6 @@ export let compile_call = (buf: Bytes, callee: Expr, args: Array[Expr], local_na
       emit_i64_const(buf, 1)
       emit_i64_or(buf)
       nl_c
-    }
-    else if fname == "Bytes::from_array" {
-      ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-    }
-    else if fname == "Bytes::length" {
-      let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
-      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      emit_call(buf, al_idx)
-      nl
-    }
-    else if fname == "Bytes::get" {
-      let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
-      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
-      emit_call(buf, ag_idx)
-      nl
     }
     else if !prefer_bound_call && fname == "eq" {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
@@ -414,12 +398,57 @@ export let compile_call = (buf: Bytes, callee: Expr, args: Array[Expr], local_na
       nl
     }
     else if fname == "__slice" {
-      // __slice(container, start, end) → String::substring fallback
-      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
-      nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
       let (ss_idx, _, _) = resolve_func(ctx.func_table, "String::substring")
+      let (bs_idx, _, _) = resolve_func(ctx.func_table, "Bytes::slice")
+      let (as_idx, _, _) = resolve_func(ctx.func_table, "Array::slice")
+      let obj_local = next_local
+      let start_local = next_local + 1
+      let end_local = next_local + 2
+      let ptr_local = next_local + 3
+      let cap_local = next_local + 4
+      Array::push(local_names, "__slice_obj")
+      Array::push(local_names, "__slice_start")
+      Array::push(local_names, "__slice_end")
+      Array::push(local_names, "__slice_ptr")
+      Array::push(local_names, "__slice_cap")
+      let mut nl = next_local + 5
+      nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+      emit_local_set(buf, obj_local)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      emit_local_set(buf, start_local)
+      nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+      emit_local_set(buf, end_local)
+      emit_local_get(buf, obj_local)
+      emit_i64_const(buf, 32)
+      emit_i64_shr_s(buf)
+      emit_i64_eqz(buf)
+      emit_if_i64(buf)
+      emit_local_get(buf, obj_local)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, ptr_local)
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 2, 0)
+      emit_local_set(buf, cap_local)
+      emit_local_get(buf, cap_local)
+      emit_i32_const(buf, 2147483647)
+      emit_i32_gt_u(buf)
+      emit_if_i64(buf)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, start_local)
+      emit_local_get(buf, end_local)
+      emit_call(buf, bs_idx)
+      emit_else(buf)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, start_local)
+      emit_local_get(buf, end_local)
+      emit_call(buf, as_idx)
+      emit_end(buf)
+      emit_else(buf)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, start_local)
+      emit_local_get(buf, end_local)
       emit_call(buf, ss_idx)
+      emit_end(buf)
       nl
     }
     else if fname == "Array::map" || fname == "map" {
@@ -1241,18 +1270,90 @@ export let compile_call = (buf: Bytes, callee: Expr, args: Array[Expr], local_na
       nl
     }
     else if fname == "__len" {
-      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      // Try String::length (works for both string and array in practice)
       let (sl_idx, _, _) = resolve_func(ctx.func_table, "String::length")
+      let (bl_idx, _, _) = resolve_func(ctx.func_table, "Bytes::length")
+      let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+      let obj_local = next_local
+      let ptr_local = next_local + 1
+      let cap_local = next_local + 2
+      Array::push(local_names, "__len_obj")
+      Array::push(local_names, "__len_ptr")
+      Array::push(local_names, "__len_cap")
+      let mut nl = next_local + 3
+      nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+      emit_local_set(buf, obj_local)
+      emit_local_get(buf, obj_local)
+      emit_i64_const(buf, 32)
+      emit_i64_shr_s(buf)
+      emit_i64_eqz(buf)
+      emit_if_i64(buf)
+      emit_local_get(buf, obj_local)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, ptr_local)
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 2, 0)
+      emit_local_set(buf, cap_local)
+      emit_local_get(buf, cap_local)
+      emit_i32_const(buf, 2147483647)
+      emit_i32_gt_u(buf)
+      emit_if_i64(buf)
+      emit_local_get(buf, obj_local)
+      emit_call(buf, bl_idx)
+      emit_else(buf)
+      emit_local_get(buf, obj_local)
+      emit_call(buf, al_idx)
+      emit_end(buf)
+      emit_else(buf)
+      emit_local_get(buf, obj_local)
       emit_call(buf, sl_idx)
+      emit_end(buf)
       nl
     }
     else if fname == "__index" {
-      // __index(container, idx) → Array::get fallback
+      let (sg_idx, _, _) = resolve_func(ctx.func_table, "String::char_code_at")
+      let (bg_idx, _, _) = resolve_func(ctx.func_table, "Bytes::get")
       let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
-      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      let obj_local = next_local
+      let idx_local = next_local + 1
+      let ptr_local = next_local + 2
+      let cap_local = next_local + 3
+      Array::push(local_names, "__index_obj")
+      Array::push(local_names, "__index_idx")
+      Array::push(local_names, "__index_ptr")
+      Array::push(local_names, "__index_cap")
+      let mut nl = next_local + 4
+      nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+      emit_local_set(buf, obj_local)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      emit_local_set(buf, idx_local)
+      emit_local_get(buf, obj_local)
+      emit_i64_const(buf, 32)
+      emit_i64_shr_s(buf)
+      emit_i64_eqz(buf)
+      emit_if_i64(buf)
+      emit_local_get(buf, obj_local)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, ptr_local)
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 2, 0)
+      emit_local_set(buf, cap_local)
+      emit_local_get(buf, cap_local)
+      emit_i32_const(buf, 2147483647)
+      emit_i32_gt_u(buf)
+      emit_if_i64(buf)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, idx_local)
+      emit_call(buf, bg_idx)
+      emit_else(buf)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, idx_local)
       emit_call(buf, ag_idx)
+      emit_end(buf)
+      emit_else(buf)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, idx_local)
+      emit_call(buf, sg_idx)
+      emit_end(buf)
       nl
     }
     else {

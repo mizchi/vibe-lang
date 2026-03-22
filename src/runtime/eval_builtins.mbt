@@ -39,6 +39,7 @@ fn is_cheap_pure_builtin(name : String) -> Bool {
   name == "__lt" ||
   name == "__neg" ||
   name == "__index" ||
+  name == "__len" ||
   name == "__slice" ||
   name == "__set_index" ||
   name == "__assert" ||
@@ -783,6 +784,22 @@ fn eval_pure_builtin(
               " % " +
               value_type_name(args[1]),
             ),
+          )
+      }
+    }
+    "__len" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall(
+          E("__len: expected 1 argument, got " + args.length().to_string()),
+        )
+      }
+      match args[0] {
+        @core.Value::String(s) => @core.Value::Int(s.length().to_int64())
+        @core.Value::Array(arr) => @core.Value::Int(arr.length().to_int64())
+        @core.Value::Bytes(data) => @core.Value::Int(data.length().to_int64())
+        _ =>
+          raise EvalError::BadCall(
+            E("__len: cannot take length of " + value_type_name(args[0])),
           )
       }
     }

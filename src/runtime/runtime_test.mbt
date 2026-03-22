@@ -2272,6 +2272,30 @@ test "Bytes::slice + Bytes::concat" {
 }
 
 ///|
+test "Bytes slice-to-end syntax uses __len" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, VibeError] = try? rt.eval_script(
+    "let b = Bytes::from_array([10, 20, 30, 40])\n" +
+    "let s = b[1:]\n" +
+    "let len = Bytes::length(s)\n" +
+    "let v = s[2]\n" +
+    "v",
+  )
+  match result {
+    Err(e) => fail(e.to_string())
+    Ok(_) => ()
+  }
+  match rt.get("len") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
+    _ => fail("expected len=3")
+  }
+  match rt.get("v") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 40)
+    _ => fail("expected v=40")
+  }
+}
+
+///|
 test "Bytes::from_array + Bytes::to_array roundtrip" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(

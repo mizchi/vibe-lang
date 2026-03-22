@@ -689,6 +689,57 @@ test "vibe wasm-gc compiles for-in expressions" {
 }
 
 ///|
+test "vibe wasm-gc compiles exported top-level function" {
+  let db = VibeDb::new()
+  let src =
+    #|export let main = () -> Int {
+    #|  1
+    #|}
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm_gc(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "_start"))
+}
+
+///|
+test "vibe wasm-gc compiles Bytes explicit builtins" {
+  let db = VibeDb::new()
+  let src =
+    #|let bytes = Bytes::from_array([10, 20, 30, 40])
+    #|let sliced = Bytes::slice(bytes, 1, 4)
+    #|Bytes::get(sliced, 1)
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm_gc(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "_start"))
+}
+
+///|
+test "vibe wasm-gc compiles Bytes index and slice syntax" {
+  let db = VibeDb::new()
+  let src =
+    #|let bytes = Bytes::from_array([10, 20, 30, 40])
+    #|let sliced = bytes[1:]
+    #|sliced[1]
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm_gc(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "_start"))
+}
+
+///|
 test "vibe wasm compiles for-in expressions" {
   let db = VibeDb::new()
   let src =

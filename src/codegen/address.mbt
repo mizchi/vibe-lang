@@ -956,6 +956,7 @@ fn is_builtin(name : String) -> Bool {
   name == "__div" ||
   name == "__mod" ||
   name == "__index" ||
+  name == "__len" ||
   name == "__eq" ||
   name == "__lt" ||
   name == "__assert" ||

@@ -41,7 +41,7 @@ import ../wasm_emit/index.vibe {
 }
 
 import ../common_base/index.vibe {
-  emit_i32_sub, emit_i32_mul, emit_i32_ne, emit_i32_eq, emit_i32_ge_u, emit_i32_eqz, emit_i64_store, emit_i64_load, resolve_local, resolve_func, FuncTable, StrTable, LambdaTable, CtorTable, CompileCtxGc, emit_str_ref, find_func_stmt, lookup_ctor, emit_binop_op
+  emit_i32_sub, emit_i32_mul, emit_i32_ne, emit_i32_eq, emit_i32_ge_u, emit_i32_eqz, emit_i64_store, emit_i64_load, resolve_local, resolve_func, FuncTable, StrTable, LambdaTable, CtorTable, CompileCtxGc, emit_str_ref, lookup_ctor, emit_binop_op
 }
 
 import ../common_extractors/index.vibe {
@@ -75,6 +75,7 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
   let fn_names_list = Array::slice([""], 0, 0)
   let fn_param_counts = Array::slice([0], 0, 0)
   let fn_needs_env_list = Array::slice([true], 0, 0)
+  let user_func_stmts = Array::slice([SExpr(EUnit)], 0, 0)
 
   let mut i = 0
   while i < Array::length(stmts) {
@@ -86,6 +87,7 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
             Array::push(fn_names_list, name)
             Array::push(fn_param_counts, Array::length(params))
             Array::push(fn_needs_env_list, true)
+            Array::push(user_func_stmts, stmt)
             0
           },
           _ => 0
@@ -295,6 +297,21 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
     __bi2 = __bi2 + 1
   }
 
+  let ft_names = Array::slice([""], 0, 0)
+  let ft_indices = Array::slice([0], 0, 0)
+  let ft_params = Array::slice([0], 0, 0)
+  let ft_returns = Array::slice([0], 0, 0)
+  let ft_needs_env = Array::slice([true], 0, 0)
+  let mut ft_copy_i = 0
+  while ft_copy_i < Array::length(fn_names_list) {
+    Array::push(ft_names, Array::get(fn_names_list, ft_copy_i))
+    Array::push(ft_indices, Array::get(fn_indices_list, ft_copy_i))
+    Array::push(ft_params, Array::get(fn_param_counts, ft_copy_i))
+    Array::push(ft_returns, Array::get(fn_returns_list, ft_copy_i))
+    Array::push(ft_needs_env, Array::get(fn_needs_env_list, ft_copy_i))
+    ft_copy_i = ft_copy_i + 1
+  }
+
   // === Type section ===
   // type 0-9: base func types
   // type 10: struct { mut i64 } -- RefCell GC type
@@ -470,7 +487,7 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
   // Compile user function bodies (with __env param for table compatibility)
   let mut bi = 0
   while bi < num_user_funcs {
-    let stmt = find_func_stmt(stmts, Array::get(fn_names_list, bi))
+    let stmt = Array::get(user_func_stmts, bi)
     match stmt {
       SLet(_, _, _, _, expr) => {
         match expr {
@@ -488,11 +505,11 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
             let ref_cell_names_f = Array::slice([""], 0, 0)
             let ref_local_indices_f = Array::slice([0], 0, 0)
             let ft = FuncTable::{
-              names: fn_names_list,
-              indices: fn_indices_list,
-              params: fn_param_counts,
-              returns: fn_returns_list,
-              needs_env: fn_needs_env_list
+              names: ft_names,
+              indices: ft_indices,
+              params: ft_params,
+              returns: ft_returns,
+              needs_env: ft_needs_env
             }
             let st = StrTable::{ strs: str_strs, offsets: str_offsets, lengths: str_lengths }
             let ct = CtorTable::{ names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names }
@@ -527,7 +544,7 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
   // _start body
   let start_body = bytebuf_new()
   let entry_func_idx = entry_user_idx + func_offset
-  let entry_params = Array::get(fn_param_counts, entry_user_idx)
+  let entry_params = Array::get(ft_params, entry_user_idx)
   if entry_params != 0 {
     throw("WASI entry function must take 0 parameters")
   }
@@ -561,7 +578,7 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
   }
   let mut uai2 = 0
   while uai2 < num_user_funcs {
-    let upc = Array::get(fn_param_counts, uai2)
+    let upc = Array::get(ft_params, uai2)
     if upc > max_closure_arity {
       max_closure_arity = upc
     }
@@ -642,7 +659,7 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
   // User funcs: type = closure call type for their arity (includes env)
   let mut fti = 0
   while fti < num_user_funcs {
-    let upc = Array::get(fn_param_counts, fti)
+    let upc = Array::get(ft_params, fti)
     Array::push(func_type_indices, closure_type_base + upc)
     fti = fti + 1
   }
@@ -726,7 +743,7 @@ export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> 
     } else {
       // Has ref locals — emit individual local declarations
       let body_idx_in_user = ci - num_generated
-      let param_count_for_body = Array::get(fn_param_counts, body_idx_in_user) + 1  // +1 for __env
+      let param_count_for_body = Array::get(ft_params, body_idx_in_user) + 1  // +1 for __env
       let num_extra = ni64
       leb128_encode_u32(func_buf, num_extra)
       let mut rli = 0
