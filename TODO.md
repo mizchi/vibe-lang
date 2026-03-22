@@ -131,7 +131,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 
 ## 言語仕様の整合性
 
-- [ ] function type / effect 表現の AST 統一
+- [x] function type / effect 表現の AST 統一 (Raise→Perform 統一で解消)
 - [ ] method syntax の仕様固定
 - [x] 演算子型規則の checker/evaluator 一致
 - [ ] 文字列補間を typed AST 化
