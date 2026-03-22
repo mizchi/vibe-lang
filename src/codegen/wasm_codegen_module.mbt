@@ -1030,6 +1030,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let exported_env_global_count = ctx.exported_fn_env_globals.length()
   let need_globals = ctx.use_heap_global ||
     ctx.need_stack_switching ||
+    ctx.need_effect_resume ||
     ctx.coverage_enabled ||
     ctx.need_fs ||
     ctx.need_socket ||
@@ -1040,6 +1041,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     let global_sec = ByteBuf::new()
     let global_count = (if heap_global_in_section { 1 } else { 0 }) +
       (if ctx.need_stack_switching { 1 } else { 0 }) +
+      (if ctx.need_effect_resume { 3 } else { 0 }) +
       (if ctx.coverage_enabled { 2 } else { 0 }) +
       (if ctx.need_fs { 1 } else { 0 }) +
       (if ctx.need_socket { 1 } else { 0 }) +
@@ -1061,9 +1063,25 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       emit_i64_const_raw(global_sec, 0L) // initial value = 0
       global_sec.push((11).to_byte()) // end
     }
+    // Effect resume globals: idx, count, buf_ptr
+    if ctx.need_effect_resume {
+      let base_idx = (if ctx.use_heap_global { 1 } else { 0 }) +
+        (if ctx.need_stack_switching { 1 } else { 0 })
+      ctx.effect_resume_idx_global = base_idx
+      ctx.effect_resume_count_global = base_idx + 1
+      ctx.effect_resume_buf_global = base_idx + 2
+      for i in 0..<3 {
+        let _ = i
+        global_sec.push((127).to_byte()) // i32
+        global_sec.push((1).to_byte()) // mutable
+        emit_i32_const_raw(global_sec, 0)
+        global_sec.push((11).to_byte()) // end
+      }
+    }
     if ctx.coverage_enabled {
       ctx.coverage_base_global_index = (if ctx.use_heap_global { 1 } else { 0 }) +
-        (if ctx.need_stack_switching { 1 } else { 0 })
+        (if ctx.need_stack_switching { 1 } else { 0 }) +
+        (if ctx.need_effect_resume { 3 } else { 0 })
       ctx.coverage_count_global_index = ctx.coverage_base_global_index + 1
       // Coverage counter base offset (immutable)
       global_sec.push((127).to_byte()) // i32
@@ -1094,6 +1112,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     if exported_env_global_count > 0 {
       let mut env_global_idx = (if ctx.use_heap_global { 1 } else { 0 }) +
         (if ctx.need_stack_switching { 1 } else { 0 }) +
+        (if ctx.need_effect_resume { 3 } else { 0 }) +
         (if ctx.coverage_enabled { 2 } else { 0 }) +
         (if ctx.need_fs { 1 } else { 0 }) +
         (if ctx.need_socket { 1 } else { 0 })

@@ -246,6 +246,12 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       ctx.need_exceptions = true
       scan_needs_block(ctx, body)
       for arm in arms {
+        // Detect effect handler arms (Effect::Op pattern)
+        match arm.pat {
+          @core.Pat::Ctor(name~, ..) if name.contains("::") =>
+            ctx.need_effect_resume = true
+          _ => ()
+        }
         scan_needs_expr(ctx, arm.expr)
         match arm.cond {
           Some(c) => scan_needs_expr(ctx, c)

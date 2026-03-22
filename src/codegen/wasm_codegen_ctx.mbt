@@ -57,6 +57,11 @@ priv struct CodegenCtx {
   known_record_fields : Map[String, Bool]
   strings : StringTable
   js_strings : StringConstTable
+  // Effect resume globals for cross-function perform dispatch
+  mut need_effect_resume : Bool
+  mut effect_resume_idx_global : Int // i32: current read position
+  mut effect_resume_count_global : Int // i32: number of stored resume values
+  mut effect_resume_buf_global : Int // i32: pointer to resume value buffer
   // Stack switching for async
   mut need_stack_switching : Bool
   mut await_tag_type_index : Int
@@ -195,6 +200,10 @@ fn CodegenCtx::new(
     need_heap: false,
     heap_local: -1,
     current_env_idx: -1,
+    need_effect_resume: false,
+    effect_resume_idx_global: -1,
+    effect_resume_count_global: -1,
+    effect_resume_buf_global: -1,
     need_exceptions: false,
     error_tag_type_index: -1,
     error_tag_index: 0,
