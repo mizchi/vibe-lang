@@ -630,10 +630,6 @@ fn eval_pure_builtin(
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a + b)
-        (@core.Value::Int(a), @core.Value::Char(b)) =>
-          @core.Value::Int(a + b.to_int().to_int64())
-        (@core.Value::Char(a), @core.Value::Int(b)) =>
-          @core.Value::Int(a.to_int().to_int64() + b)
         (@core.Value::Float(a), @core.Value::Float(b)) =>
           @core.Value::Float(a + b)
         (@core.Value::Double(a), @core.Value::Double(b)) =>
@@ -657,10 +653,6 @@ fn eval_pure_builtin(
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a - b)
-        (@core.Value::Int(a), @core.Value::Char(b)) =>
-          @core.Value::Int(a - b.to_int().to_int64())
-        (@core.Value::Char(a), @core.Value::Int(b)) =>
-          @core.Value::Int(a.to_int().to_int64() - b)
         (@core.Value::Float(a), @core.Value::Float(b)) =>
           @core.Value::Float(a - b)
         (@core.Value::Double(a), @core.Value::Double(b)) =>
@@ -684,10 +676,6 @@ fn eval_pure_builtin(
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a * b)
-        (@core.Value::Int(a), @core.Value::Char(b)) =>
-          @core.Value::Int(a * b.to_int().to_int64())
-        (@core.Value::Char(a), @core.Value::Int(b)) =>
-          @core.Value::Int(a.to_int().to_int64() * b)
         (@core.Value::Float(a), @core.Value::Float(b)) =>
           @core.Value::Float(a * b)
         (@core.Value::Double(a), @core.Value::Double(b)) =>
@@ -716,20 +704,6 @@ fn eval_pure_builtin(
           } else {
             @core.Value::Int(a / b)
           }
-        (@core.Value::Int(a), @core.Value::Char(b)) => {
-          let bv = b.to_int().to_int64()
-          if bv == 0 {
-            raise EvalError::BadCall(E("/: division by zero"))
-          } else {
-            @core.Value::Int(a / bv)
-          }
-        }
-        (@core.Value::Char(a), @core.Value::Int(b)) =>
-          if b == 0 {
-            raise EvalError::BadCall(E("/: division by zero"))
-          } else {
-            @core.Value::Int(a.to_int().to_int64() / b)
-          }
         (@core.Value::Float(a), @core.Value::Float(b)) =>
           @core.Value::Float(a / b)
         (@core.Value::Double(a), @core.Value::Double(b)) =>
@@ -757,20 +731,6 @@ fn eval_pure_builtin(
             raise EvalError::BadCall(E("%: division by zero"))
           } else {
             @core.Value::Int(a % b)
-          }
-        (@core.Value::Int(a), @core.Value::Char(b)) => {
-          let bv = b.to_int().to_int64()
-          if bv == 0 {
-            raise EvalError::BadCall(E("%: division by zero"))
-          } else {
-            @core.Value::Int(a % bv)
-          }
-        }
-        (@core.Value::Char(a), @core.Value::Int(b)) =>
-          if b == 0 {
-            raise EvalError::BadCall(E("%: division by zero"))
-          } else {
-            @core.Value::Int(a.to_int().to_int64() % b)
           }
         (@core.Value::Float(a), @core.Value::Float(b)) =>
           @core.Value::Float(Float::mod(a, b))

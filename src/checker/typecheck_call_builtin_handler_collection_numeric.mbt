@@ -675,10 +675,7 @@ fn type_call_builtin_handler_collection_numeric(
       }
       let a = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
       let b = type_expr_eff(env, pos_args[1], aliases, effects, allow_effect)
-      let resolved_a = resolve_type(env, a)
-      if not(resolved_a == @core.Type::String) {
-        ensure_num_operand(env, a, pos_args[0].span())
-      }
+      ensure_num_operand(env, a, pos_args[0].span())
       if not(type_equal(env, b, a)) {
         raise TypeError::Mismatch(
           expected=a,
