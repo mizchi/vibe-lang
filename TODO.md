@@ -97,7 +97,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 
 ### 残タスク
 
-- [ ] wasm-compile-e2e の高速化（律速 ~14min）
+- [x] wasm-compile-e2e の高速化（3-shard 並列化で ~5min に短縮）
 - [x] selfhost dist validation 修正（`build_selfhost_dist.sh` の sample compile/run が通る）
 - [ ] P3: minify_zlib 個別対策 (#13)
 
