@@ -55,6 +55,22 @@ fn extend_effects(dest : Array[Effect], src : Array[Effect]) -> Unit {
 }
 
 ///|
+fn[T] rethrow_with_prior_effects(
+  e : EvalError,
+  has_effects : Bool,
+) -> T raise EvalError {
+  match e {
+    EvalError::Performed(performed_value, site_key, has_prior_effect) =>
+      raise EvalError::Performed(
+        performed_value,
+        site_key,
+        has_prior_effect || has_effects,
+      )
+    _ => raise e
+  }
+}
+
+///|
 fn mkdir_recursive(path : String) -> Unit {
   if @io.path_exists(path) {
     return
@@ -904,13 +920,7 @@ pub fn Runtime::eval_module(
     })
     match stmt_result {
       Ok(_) => ()
-      Err(EvalError::Performed(performed_value, site_key, has_prior_effect)) =>
-        raise EvalError::Performed(
-          performed_value,
-          site_key,
-          has_prior_effect || effects.length() > 0,
-        )
-      Err(err) => raise err
+      Err(e) => rethrow_with_prior_effects(e, effects.length() > 0)
     }
   }
   { last, effects }
@@ -983,16 +993,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       let effects : Array[Effect] = []
       for item in items {
         let out : EvalOutput = eval_expr(rt, item) catch {
-          e =>
-            match e {
-              EvalError::Performed(performed_value, site_key, has_prior_effect) =>
-                raise EvalError::Performed(
-                  performed_value,
-                  site_key,
-                  has_prior_effect || effects.length() > 0,
-                )
-              _ => raise e
-            }
+          e => rethrow_with_prior_effects(e, effects.length() > 0)
         }
         values.push(out.value)
         extend_effects(effects, out.effects)
@@ -1016,16 +1017,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       let effects : Array[Effect] = []
       for field in fields {
         let out : EvalOutput = eval_expr(rt, field.expr) catch {
-          e =>
-            match e {
-              EvalError::Performed(performed_value, site_key, has_prior_effect) =>
-                raise EvalError::Performed(
-                  performed_value,
-                  site_key,
-                  has_prior_effect || effects.length() > 0,
-                )
-              _ => raise e
-            }
+          e => rethrow_with_prior_effects(e, effects.length() > 0)
         }
         map[field.name] = out.value
         extend_effects(effects, out.effects)
@@ -1038,16 +1030,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       let effects : Array[Effect] = []
       for field in fields {
         let out : EvalOutput = eval_expr(rt, field.expr) catch {
-          e =>
-            match e {
-              EvalError::Performed(performed_value, site_key, has_prior_effect) =>
-                raise EvalError::Performed(
-                  performed_value,
-                  site_key,
-                  has_prior_effect || effects.length() > 0,
-                )
-              _ => raise e
-            }
+          e => rethrow_with_prior_effects(e, effects.length() > 0)
         }
         map[field.name] = out.value
         extend_effects(effects, out.effects)
@@ -1061,20 +1044,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
         match item {
           @core.Expr::Spread(expr~, ..) => {
             let out : EvalOutput = eval_expr(rt, expr) catch {
-              e =>
-                match e {
-                  EvalError::Performed(
-                    performed_value,
-                    site_key,
-                    has_prior_effect
-                  ) =>
-                    raise EvalError::Performed(
-                      performed_value,
-                      site_key,
-                      has_prior_effect || effects.length() > 0,
-                    )
-                  _ => raise e
-                }
+              e => rethrow_with_prior_effects(e, effects.length() > 0)
             }
             match out.value {
               @core.Value::Array(spread_items) =>
@@ -1087,20 +1057,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
           }
           _ => {
             let out : EvalOutput = eval_expr(rt, item) catch {
-              e =>
-                match e {
-                  EvalError::Performed(
-                    performed_value,
-                    site_key,
-                    has_prior_effect
-                  ) =>
-                    raise EvalError::Performed(
-                      performed_value,
-                      site_key,
-                      has_prior_effect || effects.length() > 0,
-                    )
-                  _ => raise e
-                }
+              e => rethrow_with_prior_effects(e, effects.length() > 0)
             }
             values.push(out.value)
             extend_effects(effects, out.effects)
@@ -1114,16 +1071,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       let effects : Array[Effect] = []
       for field in fields {
         let out : EvalOutput = eval_expr(rt, field.expr) catch {
-          e =>
-            match e {
-              EvalError::Performed(performed_value, site_key, has_prior_effect) =>
-                raise EvalError::Performed(
-                  performed_value,
-                  site_key,
-                  has_prior_effect || effects.length() > 0,
-                )
-              _ => raise e
-            }
+          e => rethrow_with_prior_effects(e, effects.length() > 0)
         }
         map[field.key] = out.value
         extend_effects(effects, out.effects)
@@ -1142,20 +1090,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
               eval_block_shared_mut(rt, else_body)
             }
           } catch {
-            e =>
-              match e {
-                EvalError::Performed(
-                  performed_value,
-                  site_key,
-                  has_prior_effect
-                ) =>
-                  raise EvalError::Performed(
-                    performed_value,
-                    site_key,
-                    has_prior_effect || effects.length() > 0,
-                  )
-                _ => raise e
-              }
+            e => rethrow_with_prior_effects(e, effects.length() > 0)
           }
           extend_effects(effects, branch_out.effects)
           { value: branch_out.value, effects }
@@ -1201,20 +1136,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
                 arm.expr,
                 bindings,
               ) catch {
-                e =>
-                  match e {
-                    EvalError::Performed(
-                      performed_value,
-                      site_key,
-                      has_prior_effect
-                    ) =>
-                      raise EvalError::Performed(
-                        performed_value,
-                        site_key,
-                        has_prior_effect || effects.length() > 0,
-                      )
-                    _ => raise e
-                  }
+                e => rethrow_with_prior_effects(e, effects.length() > 0)
               }
               extend_effects(effects, out.effects)
               matched = Some(out.value)
@@ -1370,13 +1292,7 @@ fn eval_while_expr(
       Ok(body_res) => extend_effects(effects, body_res.effects)
       Err(EvalError::LoopBreak(_)) => break
       Err(EvalError::LoopContinue(_)) => continue
-      Err(EvalError::Performed(performed_value, site_key, has_prior_effect)) =>
-        raise EvalError::Performed(
-          performed_value,
-          site_key,
-          has_prior_effect || effects.length() > 0,
-        )
-      Err(e) => raise e
+      Err(e) => rethrow_with_prior_effects(e, effects.length() > 0)
     }
   }
   { value: @core.Value::Unit, effects }
@@ -1425,13 +1341,7 @@ fn eval_loop_expr(
         }
         continue
       }
-      Err(EvalError::Performed(performed_value, site_key, has_prior_effect)) =>
-        raise EvalError::Performed(
-          performed_value,
-          site_key,
-          has_prior_effect || effects.length() > 0,
-        )
-      Err(e) => raise e
+      Err(e) => rethrow_with_prior_effects(e, effects.length() > 0)
     }
   }
   { value: result, effects }
@@ -1829,16 +1739,7 @@ fn try_eval_hot_builtin_call(
       None => ()
     }
     let out : EvalOutput = eval_expr(rt, arg.expr) catch {
-      e =>
-        match e {
-          EvalError::Performed(performed_value, site_key, has_prior_effect) =>
-            raise EvalError::Performed(
-              performed_value,
-              site_key,
-              has_prior_effect || effects.length() > 0,
-            )
-          _ => raise e
-        }
+      e => rethrow_with_prior_effects(e, effects.length() > 0)
     }
     values.push(out.value)
     extend_effects(effects, out.effects)
@@ -4307,16 +4208,7 @@ fn eval_args(
   let effects : Array[Effect] = []
   for arg in args {
     let out : EvalOutput = eval_expr(rt, arg.expr) catch {
-      e =>
-        match e {
-          EvalError::Performed(performed_value, site_key, has_prior_effect) =>
-            raise EvalError::Performed(
-              performed_value,
-              site_key,
-              has_prior_effect || effects.length() > 0,
-            )
-          _ => raise e
-        }
+      e => rethrow_with_prior_effects(e, effects.length() > 0)
     }
     out_args.push(EvalArgValue::{ label: arg.label, value: out.value })
     extend_effects(effects, out.effects)
@@ -4369,16 +4261,7 @@ fn eval_user_call(
     scope.bind(name, value) |> ignore
   }
   let body_out : EvalOutput = eval_block(scope, fn_val.body) catch {
-    e =>
-      match e {
-        EvalError::Performed(performed_value, site_key, has_prior_effect) =>
-          raise EvalError::Performed(
-            performed_value,
-            site_key,
-            has_prior_effect || out.effects.length() > 0,
-          )
-        _ => raise e
-      }
+    e => rethrow_with_prior_effects(e, out.effects.length() > 0)
   }
   // Propagate cwd changes back to caller (cd semantics)
   rt.cwd = scope.cwd

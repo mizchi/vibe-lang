@@ -4,20 +4,7 @@ fn emit_boxed_f32(
   buf : ByteBuf,
   emit_value : () -> Unit,
 ) -> Unit raise WasmGenError {
-  require_heap(ctx)
-  let size = align4(8)
-  let obj_local = alloc_temp_local(ctx)
-  emit_heap_alloc(ctx, buf, size, obj_local)
-  emit_local_get(buf, obj_local)
-  emit_i32_const_raw(buf, obj_float)
-  emit_i32_store(buf, 0)
-  emit_local_get(buf, obj_local)
-  emit_value()
-  emit_f32_store(buf, 4)
-  emit_local_get(buf, obj_local)
-  emit_i64_extend_i32_u(buf)
-  emit_i64_const_raw(buf, tag_obj.to_int64())
-  emit_i64_or(buf)
+  emit_boxed_float_raise(ctx, buf, align4(8), obj_float, fn() { emit_value() }, emit_f32_store)
 }
 
 ///|
@@ -26,20 +13,14 @@ fn emit_boxed_f64(
   buf : ByteBuf,
   emit_value : () -> Unit,
 ) -> Unit raise WasmGenError {
-  require_heap(ctx)
-  let size = align4(12)
-  let obj_local = alloc_temp_local(ctx)
-  emit_heap_alloc(ctx, buf, size, obj_local)
-  emit_local_get(buf, obj_local)
-  emit_i32_const_raw(buf, obj_double)
-  emit_i32_store(buf, 0)
-  emit_local_get(buf, obj_local)
-  emit_value()
-  emit_f64_store(buf, 4)
-  emit_local_get(buf, obj_local)
-  emit_i64_extend_i32_u(buf)
-  emit_i64_const_raw(buf, tag_obj.to_int64())
-  emit_i64_or(buf)
+  emit_boxed_float_raise(
+    ctx,
+    buf,
+    align4(12),
+    obj_double,
+    fn() { emit_value() },
+    emit_f64_store,
+  )
 }
 
 ///|
@@ -48,20 +29,7 @@ fn emit_boxed_f32_raise(
   buf : ByteBuf,
   emit_value : () -> Unit raise WasmGenError,
 ) -> Unit raise WasmGenError {
-  require_heap(ctx)
-  let size = align4(8)
-  let obj_local = alloc_temp_local(ctx)
-  emit_heap_alloc(ctx, buf, size, obj_local)
-  emit_local_get(buf, obj_local)
-  emit_i32_const_raw(buf, obj_float)
-  emit_i32_store(buf, 0)
-  emit_local_get(buf, obj_local)
-  emit_value()
-  emit_f32_store(buf, 4)
-  emit_local_get(buf, obj_local)
-  emit_i64_extend_i32_u(buf)
-  emit_i64_const_raw(buf, tag_obj.to_int64())
-  emit_i64_or(buf)
+  emit_boxed_float_raise(ctx, buf, align4(8), obj_float, emit_value, emit_f32_store)
 }
 
 ///|
@@ -70,16 +38,27 @@ fn emit_boxed_f64_raise(
   buf : ByteBuf,
   emit_value : () -> Unit raise WasmGenError,
 ) -> Unit raise WasmGenError {
+  emit_boxed_float_raise(ctx, buf, align4(12), obj_double, emit_value, emit_f64_store)
+}
+
+///|
+fn emit_boxed_float_raise(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  size : Int,
+  obj_type : Int,
+  emit_value : () -> Unit raise WasmGenError,
+  emit_store : (ByteBuf, Int) -> Unit,
+) -> Unit raise WasmGenError {
   require_heap(ctx)
-  let size = align4(12)
   let obj_local = alloc_temp_local(ctx)
   emit_heap_alloc(ctx, buf, size, obj_local)
   emit_local_get(buf, obj_local)
-  emit_i32_const_raw(buf, obj_double)
+  emit_i32_const_raw(buf, obj_type)
   emit_i32_store(buf, 0)
   emit_local_get(buf, obj_local)
   emit_value()
-  emit_f64_store(buf, 4)
+  emit_store(buf, 4)
   emit_local_get(buf, obj_local)
   emit_i64_extend_i32_u(buf)
   emit_i64_const_raw(buf, tag_obj.to_int64())
