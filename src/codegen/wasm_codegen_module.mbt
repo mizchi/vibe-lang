@@ -242,6 +242,9 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   // Count unique effect op type signatures for type section
   let effect_arities_seen : Map[String, Bool] = {}
   for key, _ in ctx.effect_op_imports {
+    if ctx.effect_handled_ops.contains(key) {
+      continue
+    }
     let arity = match ctx.effect_op_param_counts.get(key) {
       Some(n) => n
       None => 0
@@ -520,9 +523,12 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     write_u32_leb(type_sec, ctx.run_func_type_index) // function type index
   }
   // Collect effect op keys in stable order (used for both type and import sections)
+  // Exclude user-defined effects that are handled by throw/catch (not imports)
   let effect_op_keys : Array[String] = []
   for key, _ in ctx.effect_op_imports {
-    effect_op_keys.push(key)
+    if not(ctx.effect_handled_ops.contains(key)) {
+      effect_op_keys.push(key)
+    }
   }
   // Effect operation types: (i64^N, i32) -> i64 for each unique param count
   // type_count at this point is builtin_count; add fn_sig + exception + stack_switching offset
@@ -1395,7 +1401,9 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       caps.push("Async")
     }
     for key, _ in ctx.effect_op_imports {
-      caps.push(key)
+      if not(ctx.effect_handled_ops.contains(key)) {
+        caps.push(key)
+      }
     }
     if caps.length() > 0 {
       let manifest = ByteBuf::new()
@@ -1856,8 +1864,9 @@ fn emit_module_with_coverage(
     if ctx.need_http && ctx.http_host_imports {
       pre_import_count += 12
     }
-    // effect ops come before linked imports
-    pre_import_count += ctx.effect_op_imports.length()
+    // effect ops come before linked imports (exclude handled ops)
+    pre_import_count += ctx.effect_op_imports.length() -
+      ctx.effect_handled_ops.length()
     for entry in ctx.linked_fn_imports_list {
       let (_, func_name, param_count, return_count) = entry
       ctx.linked_fn_imports[func_name] = pre_import_count
@@ -2175,14 +2184,25 @@ fn emit_module_with_coverage(
   {
     let effect_op_keys : Array[String] = []
     for key, _ in ctx.effect_op_imports {
-      effect_op_keys.push(key)
+      if not(ctx.effect_handled_ops.contains(key)) {
+        effect_op_keys.push(key)
+      }
     }
+    let actual_effect_import_count = effect_op_keys.length()
     let base = func_import_count(ctx) -
-      ctx.effect_op_imports.length() -
+      actual_effect_import_count -
       ctx.linked_fn_imports_list.length()
     for eidx, key in effect_op_keys {
       ctx.effect_op_imports[key] = base + eidx
     }
+  }
+  // Pre-compute effect resume global indices before compile loop
+  if ctx.need_effect_resume {
+    let base = (if ctx.use_heap_global { 1 } else { 0 }) +
+      (if ctx.need_stack_switching { 1 } else { 0 })
+    ctx.effect_resume_idx_global = base
+    ctx.effect_resume_count_global = base + 1
+    ctx.effect_resume_buf_global = base + 2
   }
   // Pre-compute ref cell capture flags for ALL functions before compile loop.
   // This is needed because compile_function runs before compile_expr_fn.

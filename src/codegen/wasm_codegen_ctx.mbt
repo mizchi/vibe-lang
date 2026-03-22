@@ -58,6 +58,7 @@ priv struct CodegenCtx {
   strings : StringTable
   js_strings : StringConstTable
   // Effect resume globals for cross-function perform dispatch
+  effect_handled_ops : Map[String, Bool]
   mut need_effect_resume : Bool
   mut effect_resume_idx_global : Int // i32: current read position
   mut effect_resume_count_global : Int // i32: number of stored resume values
@@ -200,6 +201,7 @@ fn CodegenCtx::new(
     need_heap: false,
     heap_local: -1,
     current_env_idx: -1,
+    effect_handled_ops: {},
     need_effect_resume: false,
     effect_resume_idx_global: -1,
     effect_resume_count_global: -1,

@@ -248,8 +248,10 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       for arm in arms {
         // Detect effect handler arms (Effect::Op pattern)
         match arm.pat {
-          @core.Pat::Ctor(name~, ..) if name.contains("::") =>
+          @core.Pat::Ctor(name~, ..) if name.contains("::") => {
             ctx.need_effect_resume = true
+            ctx.effect_handled_ops[name] = true
+          }
           _ => ()
         }
         scan_needs_expr(ctx, arm.expr)
@@ -324,11 +326,12 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
     }
     @core.Expr::Perform(effect_name~, op_name~, args~, ..) => {
       let key = effect_name + "::" + op_name
-      if not(ctx.effect_op_imports.contains(key)) {
+      // Only register as import if not a user-defined effect (handled by throw/catch)
+      if not(ctx.effect_op_imports.contains(key)) &&
+        not(ctx.effect_handled_ops.contains(key)) {
         ctx.effect_op_imports[key] = -1
         ctx.effect_op_param_counts[key] = args.length()
       }
-      // User-defined effects use throw/catch for cross-function dispatch
       ctx.need_exceptions = true
       for arg in args {
         scan_needs_expr(ctx, arg.expr)
