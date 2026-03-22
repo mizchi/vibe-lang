@@ -1114,9 +1114,20 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
         v.effects.length() > 0,
       )
     }
-    @core.Expr::Perform(..) =>
-      // other perform operations are only supported in compiled (WASM) backend
-      { value: @core.Value::Unit, effects: [] }
+    @core.Expr::Perform(effect_name~, op_name~, args~, ..) => {
+      // Evaluate arguments
+      let arg_values : Array[@core.Value] = []
+      let effects : Array[Effect] = []
+      for arg in args {
+        let out = eval_expr(rt, arg.expr)
+        arg_values.push(out.value)
+        extend_effects(effects, out.effects)
+      }
+      // Encode as Ctor value for handle arm pattern matching
+      let key = effect_name + "::" + op_name
+      let performed_value = ctor_value_from_args(key, arg_values)
+      raise EvalError::Performed(performed_value, key, effects.length() > 0)
+    }
     @core.Expr::Handle(body~, arms~, ..) => eval_handle_expr(rt, body, arms)
     @core.Expr::Match(scrutinee~, arms~, ..) => {
       let scrutinee_out = eval_expr(rt, scrutinee)
