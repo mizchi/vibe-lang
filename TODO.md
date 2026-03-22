@@ -132,7 +132,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 ## 言語仕様の整合性
 
 - [x] function type / effect 表現の AST 統一 (Raise→Perform 統一で解消)
-- [ ] method syntax の仕様固定
+- [x] method syntax の仕様固定 (expr.field = property access, expr.method() = error, Type::method() = static call)
 - [x] 演算子型規則の checker/evaluator 一致
 - [x] 文字列補間を typed AST 化 (Expr::StringInterp)
 
