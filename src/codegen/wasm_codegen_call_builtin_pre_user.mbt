@@ -18,6 +18,205 @@ fn emit_bytes_raw_load_header(
   emit_local_get(buf, ptr_local)
   emit_i32_load(buf, 12)
   emit_local_set(buf, data_local)
+  // Negative cap means the raw bytes object is shared/frozen.
+  // Decode it back to the actual capacity for reads and COW materialization.
+  emit_local_get(buf, cap_local)
+  emit_i32_const_raw(buf, 0)
+  emit_i32_lt_s(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((127).to_byte()) // result i32
+  emit_i32_const_raw(buf, 0)
+  emit_local_get(buf, cap_local)
+  emit_i32_sub(buf)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_sub(buf)
+  buf.push((5).to_byte()) // else
+  emit_local_get(buf, cap_local)
+  buf.push((11).to_byte()) // end if
+  emit_local_set(buf, cap_local)
+}
+
+///|
+fn emit_bytes_raw_mark_shared(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  ptr_local : Int,
+) -> Unit {
+  let raw_cap_local = alloc_temp_local(ctx)
+  emit_local_get(buf, ptr_local)
+  emit_i32_load(buf, 8)
+  emit_local_set(buf, raw_cap_local)
+  emit_local_get(buf, raw_cap_local)
+  emit_i32_const_raw(buf, 0)
+  emit_i32_ge_s(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // void
+  emit_local_get(buf, ptr_local)
+  emit_i32_const_raw(buf, 0)
+  emit_local_get(buf, raw_cap_local)
+  emit_i32_sub(buf)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_sub(buf)
+  emit_i32_store(buf, 8)
+  buf.push((11).to_byte()) // end if
+}
+
+///|
+fn emit_bytes_load_header(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  ptr_local : Int,
+  len_local : Int,
+  cap_local : Int,
+  data_local : Int,
+) -> Unit {
+  let obj_ty_local = alloc_temp_local(ctx)
+  emit_local_get(buf, ptr_local)
+  emit_i32_load(buf, 0)
+  emit_local_set(buf, obj_ty_local)
+  emit_local_get(buf, obj_ty_local)
+  emit_i32_const_raw(buf, obj_bytes_view)
+  emit_i32_eq(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // void
+  let source_local = alloc_temp_local(ctx)
+  let start_local = alloc_temp_local(ctx)
+  emit_local_get(buf, ptr_local)
+  emit_i32_load(buf, 4)
+  emit_local_set(buf, source_local)
+  emit_local_get(buf, ptr_local)
+  emit_i32_load(buf, 8)
+  emit_local_set(buf, start_local)
+  emit_local_get(buf, ptr_local)
+  emit_i32_load(buf, 12)
+  emit_local_get(buf, start_local)
+  emit_i32_sub(buf)
+  emit_local_set(buf, len_local)
+  emit_local_get(buf, len_local)
+  emit_local_set(buf, cap_local)
+  emit_local_get(buf, source_local)
+  emit_i32_load(buf, 12)
+  emit_local_get(buf, start_local)
+  emit_i32_add(buf)
+  emit_local_set(buf, data_local)
+  buf.push((5).to_byte()) // else
+  emit_bytes_raw_load_header(buf, ptr_local, len_local, cap_local, data_local)
+  buf.push((11).to_byte()) // end if
+}
+
+///|
+fn emit_bytes_ensure_mutable(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  ptr_local : Int,
+  len_local : Int,
+  cap_local : Int,
+  data_local : Int,
+) -> Unit raise WasmGenError {
+  let obj_ty_local = alloc_temp_local(ctx)
+  emit_local_get(buf, ptr_local)
+  emit_i32_load(buf, 0)
+  emit_local_set(buf, obj_ty_local)
+  emit_local_get(buf, obj_ty_local)
+  emit_i32_const_raw(buf, obj_bytes_view)
+  emit_i32_eq(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // void
+  let source_local = alloc_temp_local(ctx)
+  let start_local = alloc_temp_local(ctx)
+  let alloc_size_local = alloc_temp_local(ctx)
+  emit_local_get(buf, ptr_local)
+  emit_i32_load(buf, 4)
+  emit_local_set(buf, source_local)
+  emit_local_get(buf, ptr_local)
+  emit_i32_load(buf, 8)
+  emit_local_set(buf, start_local)
+  emit_local_get(buf, ptr_local)
+  emit_i32_load(buf, 12)
+  emit_local_get(buf, start_local)
+  emit_i32_sub(buf)
+  emit_local_set(buf, len_local)
+  emit_local_get(buf, len_local)
+  emit_local_set(buf, cap_local)
+  emit_local_get(buf, cap_local)
+  emit_i32_const_raw(buf, 3)
+  emit_i32_add(buf)
+  emit_i32_const_raw(buf, -4)
+  emit_i32_and(buf)
+  emit_local_set(buf, alloc_size_local)
+  emit_heap_alloc_local(ctx, buf, alloc_size_local, data_local)
+  emit_local_get(buf, data_local)
+  emit_local_get(buf, source_local)
+  emit_i32_load(buf, 12)
+  emit_local_get(buf, start_local)
+  emit_i32_add(buf)
+  emit_local_get(buf, len_local)
+  emit_memory_copy(buf)
+  emit_local_get(buf, ptr_local)
+  emit_i32_const_raw(buf, obj_bytes)
+  emit_i32_store(buf, 0)
+  emit_local_get(buf, ptr_local)
+  emit_local_get(buf, len_local)
+  emit_i32_store(buf, 4)
+  emit_local_get(buf, ptr_local)
+  emit_local_get(buf, cap_local)
+  emit_i32_store(buf, 8)
+  emit_local_get(buf, ptr_local)
+  emit_local_get(buf, data_local)
+  emit_i32_store(buf, 12)
+  buf.push((5).to_byte()) // else
+  let raw_cap_local = alloc_temp_local(ctx)
+  emit_local_get(buf, ptr_local)
+  emit_i32_load(buf, 4)
+  emit_local_set(buf, len_local)
+  emit_local_get(buf, ptr_local)
+  emit_i32_load(buf, 8)
+  emit_local_set(buf, raw_cap_local)
+  emit_local_get(buf, ptr_local)
+  emit_i32_load(buf, 12)
+  emit_local_set(buf, data_local)
+  emit_local_get(buf, raw_cap_local)
+  emit_i32_const_raw(buf, 0)
+  emit_i32_lt_s(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((127).to_byte()) // result i32
+  emit_i32_const_raw(buf, 0)
+  emit_local_get(buf, raw_cap_local)
+  emit_i32_sub(buf)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_sub(buf)
+  buf.push((5).to_byte()) // else
+  emit_local_get(buf, raw_cap_local)
+  buf.push((11).to_byte()) // end if
+  emit_local_set(buf, cap_local)
+  emit_local_get(buf, raw_cap_local)
+  emit_i32_const_raw(buf, 0)
+  emit_i32_lt_s(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // void
+  let alloc_size_local = alloc_temp_local(ctx)
+  let new_data_local = alloc_temp_local(ctx)
+  emit_local_get(buf, cap_local)
+  emit_i32_const_raw(buf, 3)
+  emit_i32_add(buf)
+  emit_i32_const_raw(buf, -4)
+  emit_i32_and(buf)
+  emit_local_set(buf, alloc_size_local)
+  emit_heap_alloc_local(ctx, buf, alloc_size_local, new_data_local)
+  emit_local_get(buf, new_data_local)
+  emit_local_get(buf, data_local)
+  emit_local_get(buf, len_local)
+  emit_memory_copy(buf)
+  emit_local_get(buf, ptr_local)
+  emit_local_get(buf, cap_local)
+  emit_i32_store(buf, 8)
+  emit_local_get(buf, ptr_local)
+  emit_local_get(buf, new_data_local)
+  emit_i32_store(buf, 12)
+  emit_local_get(buf, new_data_local)
+  emit_local_set(buf, data_local)
+  buf.push((11).to_byte()) // end if
+  buf.push((11).to_byte()) // end if
 }
 
 ///|
@@ -6618,6 +6817,7 @@ fn compile_call_builtin_pre_user_inner(
       require_heap(ctx)
       let src_local = alloc_temp_local(ctx)
       let len_local = alloc_temp_local(ctx)
+      let cap_local = alloc_temp_local(ctx)
       let data_local = alloc_temp_local(ctx)
       let obj_local = alloc_temp_local(ctx)
       // src ptr (bytes)
@@ -6626,12 +6826,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, src_local)
-      emit_local_get(buf, src_local)
-      emit_i32_load(buf, 4) // len
-      emit_local_set(buf, len_local)
-      emit_local_get(buf, src_local)
-      emit_i32_load(buf, 12) // data_ptr
-      emit_local_set(buf, data_local)
+      emit_bytes_load_header(
+        ctx, buf, src_local, len_local, cap_local, data_local,
+      )
       // Alloc: align4(8 + len)
       emit_local_get(buf, len_local)
       emit_i32_const_raw(buf, 8)
@@ -6786,8 +6983,8 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, ptr_local)
-      emit_bytes_raw_load_header(
-        buf, ptr_local, len_local, cap_local, data_local,
+      emit_bytes_ensure_mutable(
+        ctx, buf, ptr_local, len_local, cap_local, data_local,
       )
       emit_i32_const_raw(buf, 1)
       emit_local_set(buf, add_local)
@@ -6813,15 +7010,17 @@ fn compile_call_builtin_pre_user_inner(
       // Bytes::set(bytes, idx, val) -> overwrite one packed byte
       let pos_args = extract_positional_exprs_with_arity(args, "Bytes::set", 3)
       let ptr_local = alloc_temp_local(ctx)
+      let len_local = alloc_temp_local(ctx)
+      let cap_local = alloc_temp_local(ctx)
       let data_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, (-4).to_int64())
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, ptr_local)
-      emit_local_get(buf, ptr_local)
-      emit_i32_load(buf, 12) // data_ptr
-      emit_local_set(buf, data_local)
+      emit_bytes_ensure_mutable(
+        ctx, buf, ptr_local, len_local, cap_local, data_local,
+      )
       emit_local_get(buf, data_local)
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_i64_const_raw(buf, 2L)
@@ -6855,8 +7054,8 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, dst_local)
-      emit_bytes_raw_load_header(
-        buf, dst_local, dst_len_local, dst_cap_local, dst_data_local,
+      emit_bytes_ensure_mutable(
+        ctx, buf, dst_local, dst_len_local, dst_cap_local, dst_data_local,
       )
       // src ptr
       compile_expr_i32(ctx, buf, pos_args[1])
@@ -6864,12 +7063,10 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, src_local)
-      emit_local_get(buf, src_local)
-      emit_i32_load(buf, 4)
-      emit_local_set(buf, src_len_local)
-      emit_local_get(buf, src_local)
-      emit_i32_load(buf, 12)
-      emit_local_set(buf, src_data_local)
+      let src_cap_local = alloc_temp_local(ctx)
+      emit_bytes_load_header(
+        ctx, buf, src_local, src_len_local, src_cap_local, src_data_local,
+      )
       emit_bytes_raw_ensure_capacity(
         ctx, buf, dst_local, dst_len_local, src_len_local, dst_cap_local, dst_data_local,
       )
@@ -6906,8 +7103,8 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, dst_local)
-      emit_bytes_raw_load_header(
-        buf, dst_local, dst_len_local, dst_cap_local, dst_data_local,
+      emit_bytes_ensure_mutable(
+        ctx, buf, dst_local, dst_len_local, dst_cap_local, dst_data_local,
       )
       // src ptr
       compile_expr_i32(ctx, buf, pos_args[1])
@@ -6915,9 +7112,11 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, src_local)
-      emit_local_get(buf, src_local)
-      emit_i32_load(buf, 12)
-      emit_local_set(buf, src_data_local)
+      let src_len_local = alloc_temp_local(ctx)
+      let src_cap_local = alloc_temp_local(ctx)
+      emit_bytes_load_header(
+        ctx, buf, src_local, src_len_local, src_cap_local, src_data_local,
+      )
       // start (untag)
       compile_expr_i32(ctx, buf, pos_args[2])
       emit_i64_const_raw(buf, 2L)
@@ -6968,8 +7167,8 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, ptr_local)
-      emit_bytes_raw_load_header(
-        buf, ptr_local, len_local, cap_local, data_local,
+      emit_bytes_ensure_mutable(
+        ctx, buf, ptr_local, len_local, cap_local, data_local,
       )
       // count (untag)
       compile_expr_i32(ctx, buf, pos_args[2])
@@ -6999,54 +7198,77 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_tagged(buf, 0L)
     }
     "Bytes::slice" => {
-      // Bytes::slice(bytes, start, end) -> new array with copied elements
-      // Same as Array::slice
+      // Bytes::slice(bytes, start, end) -> zero-copy BytesView.
       let pos_args = extract_positional_exprs_with_arity(
         args, "Bytes::slice", 3,
       )
       require_heap(ctx)
       let src_local = alloc_temp_local(ctx)
       let start_local = alloc_temp_local(ctx)
-      let len_local = alloc_temp_local(ctx)
-      let cap_local = alloc_temp_local(ctx)
+      let end_local = alloc_temp_local(ctx)
       let obj_local = alloc_temp_local(ctx)
-      let src_data_local = alloc_temp_local(ctx)
-      let data_local = alloc_temp_local(ctx)
+      let source_local = alloc_temp_local(ctx)
       // src ptr
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, (-4).to_int64())
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, src_local)
-      emit_local_get(buf, src_local)
-      emit_i32_load(buf, 12)
-      emit_local_set(buf, src_data_local)
       // start index (untag)
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_i64_const_raw(buf, 2L)
       emit_i64_shr_s(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, start_local)
-      // end index (untag) -> len = end - start
+      // end index (untag)
       compile_expr_i32(ctx, buf, pos_args[2])
       emit_i64_const_raw(buf, 2L)
       emit_i64_shr_s(buf)
       emit_i32_wrap_i64(buf)
-      emit_local_get(buf, start_local)
-      emit_i32_sub(buf)
-      emit_local_set(buf, len_local)
-      emit_local_get(buf, len_local)
-      emit_local_set(buf, cap_local)
-      emit_bytes_raw_alloc_with_cap_local(
-        ctx, buf, len_local, cap_local, obj_local, data_local,
-      )
-      // Copy elements: memory.copy(data_ptr, src_data + start, len)
-      emit_local_get(buf, data_local)
-      emit_local_get(buf, src_data_local)
+      emit_local_set(buf, end_local)
+      emit_heap_alloc(ctx, buf, 16, obj_local)
+      let src_ty_local = alloc_temp_local(ctx)
+      emit_local_get(buf, src_local)
+      emit_i32_load(buf, 0)
+      emit_local_set(buf, src_ty_local)
+      emit_local_get(buf, src_ty_local)
+      emit_i32_const_raw(buf, obj_bytes_view)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte()) // if
+      buf.push((64).to_byte()) // void
+      let base_start_local = alloc_temp_local(ctx)
+      emit_local_get(buf, src_local)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, source_local)
+      emit_bytes_raw_mark_shared(ctx, buf, source_local)
+      emit_local_get(buf, src_local)
+      emit_i32_load(buf, 8)
+      emit_local_set(buf, base_start_local)
+      emit_local_get(buf, base_start_local)
       emit_local_get(buf, start_local)
       emit_i32_add(buf)
-      emit_local_get(buf, len_local)
-      emit_memory_copy(buf)
+      emit_local_set(buf, start_local)
+      emit_local_get(buf, base_start_local)
+      emit_local_get(buf, end_local)
+      emit_i32_add(buf)
+      emit_local_set(buf, end_local)
+      buf.push((5).to_byte()) // else
+      emit_local_get(buf, src_local)
+      emit_local_set(buf, source_local)
+      emit_bytes_raw_mark_shared(ctx, buf, source_local)
+      buf.push((11).to_byte()) // end if
+      emit_local_get(buf, obj_local)
+      emit_i32_const_raw(buf, obj_bytes_view)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, source_local)
+      emit_i32_store(buf, 4)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, start_local)
+      emit_i32_store(buf, 8)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, end_local)
+      emit_i32_store(buf, 12)
       // Return tagged obj
       emit_local_get(buf, obj_local)
       emit_i64_extend_i32_u(buf)
@@ -7063,6 +7285,8 @@ fn compile_call_builtin_pre_user_inner(
       let b_local = alloc_temp_local(ctx)
       let a_len_local = alloc_temp_local(ctx)
       let b_len_local = alloc_temp_local(ctx)
+      let a_cap_local = alloc_temp_local(ctx)
+      let b_cap_local = alloc_temp_local(ctx)
       let a_data_local = alloc_temp_local(ctx)
       let b_data_local = alloc_temp_local(ctx)
       let cap_local = alloc_temp_local(ctx)
@@ -7074,24 +7298,18 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, a_local)
-      emit_local_get(buf, a_local)
-      emit_i32_load(buf, 4)
-      emit_local_set(buf, a_len_local)
-      emit_local_get(buf, a_local)
-      emit_i32_load(buf, 12)
-      emit_local_set(buf, a_data_local)
+      emit_bytes_load_header(
+        ctx, buf, a_local, a_len_local, a_cap_local, a_data_local,
+      )
       // b ptr + len
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_i64_const_raw(buf, (-4).to_int64())
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, b_local)
-      emit_local_get(buf, b_local)
-      emit_i32_load(buf, 4)
-      emit_local_set(buf, b_len_local)
-      emit_local_get(buf, b_local)
-      emit_i32_load(buf, 12)
-      emit_local_set(buf, b_data_local)
+      emit_bytes_load_header(
+        ctx, buf, b_local, b_len_local, b_cap_local, b_data_local,
+      )
       // total_len = a_len + b_len
       let total_len_local = alloc_temp_local(ctx)
       emit_local_get(buf, a_len_local)
@@ -7129,6 +7347,7 @@ fn compile_call_builtin_pre_user_inner(
       require_heap(ctx)
       let src_local = alloc_temp_local(ctx)
       let len_local = alloc_temp_local(ctx)
+      let cap_local = alloc_temp_local(ctx)
       let data_local = alloc_temp_local(ctx)
       let dst_local = alloc_temp_local(ctx)
       let idx_local = alloc_temp_local(ctx)
@@ -7138,12 +7357,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, src_local)
-      emit_local_get(buf, src_local)
-      emit_i32_load(buf, 4) // len
-      emit_local_set(buf, len_local)
-      emit_local_get(buf, src_local)
-      emit_i32_load(buf, 12) // data_ptr
-      emit_local_set(buf, data_local)
+      emit_bytes_load_header(
+        ctx, buf, src_local, len_local, cap_local, data_local,
+      )
       // Alloc array: align4(8 + len*4)
       emit_local_get(buf, len_local)
       emit_i32_const_raw(buf, 4)

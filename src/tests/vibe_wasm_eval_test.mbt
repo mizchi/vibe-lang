@@ -194,6 +194,12 @@ let obj_array = 5
 let obj_map = 6
 
 ///|
+let obj_bytes = 13
+
+///|
+let obj_bytes_view = 14
+
+///|
 fn untag_ptr(ptr : Int64) -> Int {
   (ptr - (ptr & tag_mask)).to_int()
 }
@@ -734,6 +740,17 @@ fn eval_loop(
         let a = stack.unsafe_pop()
         stack.push(if a.to_int() > b.to_int() { 1L } else { 0L })
       }
+      // i32.gt_u
+      75 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        let au = a.to_int().reinterpret_as_uint()
+        let bu = b.to_int().reinterpret_as_uint()
+        stack.push(if au > bu { 1L } else { 0L })
+      }
       // i32.le_s
       76 => {
         if stack.length() < 2 {
@@ -1077,6 +1094,59 @@ fn eval_loop(
         let hi = (value >> 32).to_int()
         write_u32_le(mem, addr + offset, lo)
         write_u32_le(mem, addr + offset + 4, hi)
+      }
+      // i32.store8
+      58 => {
+        let _ = code.read_leb_u32()
+        let offset = code.read_leb_u32()
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let value = stack.unsafe_pop().to_int()
+        let addr = stack.unsafe_pop().to_int()
+        mem[addr + offset] = (value & 0xff).to_byte()
+      }
+      // memory.* prefix
+      252 => {
+        let subop = code.read_leb_u32()
+        match subop {
+          // memory.copy
+          10 => {
+            let _ = code.read_u8()
+            let _ = code.read_u8()
+            if stack.length() < 3 {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let size = stack.unsafe_pop().to_int()
+            let src = stack.unsafe_pop().to_int()
+            let dst = stack.unsafe_pop().to_int()
+            if dst <= src {
+              for i in 0..<size {
+                mem[dst + i] = mem[src + i]
+              }
+            } else {
+              for step in 0..<size {
+                let back = size - step - 1
+                mem[dst + back] = mem[src + back]
+              }
+            }
+          }
+          // memory.fill
+          11 => {
+            let _ = code.read_u8()
+            if stack.length() < 3 {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let size = stack.unsafe_pop().to_int()
+            let value = stack.unsafe_pop().to_int()
+            let dst = stack.unsafe_pop().to_int()
+            for i in 0..<size {
+              mem[dst + i] = (value & 0xff).to_byte()
+            }
+          }
+          _ =>
+            raise WasmEvalError::Unsupported("memory op " + subop.to_string())
+        }
       }
       // local.get
       32 => {
@@ -1954,6 +2024,54 @@ test "vibe backends match: nested collections" {
   assert_eval_backends_same("[[1, 2], [3, 4]]")
   assert_eval_backends_same("map { a: 1, b: 2, c: 3 }")
   assert_eval_backends_same("[map { x: 1 }, map { x: 2 }]")
+}
+
+///|
+test "vibe wasm eval: Bytes::slice returns bytes view" {
+  let result = try
+    eval_run(
+      "let b = Bytes::from_array([10, 20, 30, 40])\n" + "Bytes::slice(b, 1, 3)",
+    )
+  catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(object_type(result.mem, result.value), obj_bytes_view)
+}
+
+///|
+test "vibe wasm eval: Bytes slice aliases source mutation" {
+  let result = try
+    eval_run(
+      "let b = Bytes::from_array([10, 20, 30, 40])\n" +
+      "let s = Bytes::slice(b, 1, 3)\n" +
+      "Bytes::set(b, 1, 88)\n" +
+      "Bytes::get(s, 0)",
+    )
+  catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(decode_int(result.value), 88L)
+}
+
+///|
+test "vibe wasm eval: mutating a slice materializes bytes" {
+  let result = try
+    eval_run(
+      "let b = Bytes::from_array([10, 20, 30, 40])\n" +
+      "let s = Bytes::slice(b, 1, 3)\n" +
+      "Bytes::push(s, 99)\n" +
+      "s",
+    )
+  catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(object_type(result.mem, result.value), obj_bytes)
 }
 
 ///|
