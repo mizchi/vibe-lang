@@ -119,6 +119,14 @@ fn compile_expr(
       )
       compile_block_expr(ctx, buf, desugared)
     }
+    @core.Expr::Perform(effect_name="Error", op_name="Throw", args~, span~) => {
+      let value = if args.length() >= 1 {
+        args[0].expr
+      } else {
+        @core.Expr::String(value="", span~)
+      }
+      compile_expr_raise(ctx, buf, value)
+    }
     @core.Expr::Perform(effect_name~, op_name~, args~, ..) => {
       let key = effect_name + "::" + op_name
       let func_idx = match ctx.effect_op_imports.get(key) {

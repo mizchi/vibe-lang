@@ -210,6 +210,12 @@ fn railway_collect_expr_boundaries(
       stats[1] = stats[1] + 1
       railway_collect_expr_boundaries(inner, stats)
     }
+    @vibe_core.Expr::Perform(effect_name="Error", op_name="Throw", args~, ..) => {
+      stats[1] = stats[1] + 1
+      for arg in args {
+        railway_collect_expr_boundaries(arg.expr, stats)
+      }
+    }
     @vibe_core.Expr::Call(name~, args~, ..) => {
       if railway_is_unwrap_call(name) {
         stats[2] = stats[2] + 1

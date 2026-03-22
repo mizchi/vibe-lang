@@ -310,6 +310,12 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       )
       scan_needs_block(ctx, desugared)
     }
+    @core.Expr::Perform(effect_name="Error", op_name="Throw", args~, ..) => {
+      ctx.need_exceptions = true
+      for arg in args {
+        scan_needs_expr(ctx, arg.expr)
+      }
+    }
     @core.Expr::Perform(effect_name~, op_name~, args~, ..) => {
       let key = effect_name + "::" + op_name
       if not(ctx.effect_op_imports.contains(key)) {
@@ -605,6 +611,23 @@ fn scan_strings_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
     }
     @core.Expr::Raise(value~, span~) => {
       let _ = span
+      if not(ctx.use_js_strings) {
+        match value {
+          @core.Expr::String(value=message, span~) => {
+            let _ = span
+            let _ = intern_error_code(ctx, message)
+            if ctx.embed_error_strings {
+              scan_strings_expr(ctx, value)
+            }
+          }
+          _ => scan_strings_expr(ctx, value)
+        }
+      } else {
+        scan_strings_expr(ctx, value)
+      }
+    }
+    @core.Expr::Perform(effect_name="Error", op_name="Throw", args~, ..) => {
+      let value = if args.length() >= 1 { args[0].expr } else { return }
       if not(ctx.use_js_strings) {
         match value {
           @core.Expr::String(value=message, span~) => {

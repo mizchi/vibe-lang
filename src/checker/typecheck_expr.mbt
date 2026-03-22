@@ -1036,6 +1036,24 @@ fn type_expr_eff(
         message="spread operator is only allowed inside array literals",
         span~,
       )
+    @core.Expr::Perform(effect_name="Error", op_name="Throw", args~, span~) => {
+      if args.length() >= 1 {
+        let val_ty = type_expr_eff(
+          env, args[0].expr, aliases, effects, allow_effect,
+        )
+        let _ = ensure_type_satisfies_bounds(
+          env, val_ty, ["Error"], span, "throw",
+        )
+      }
+      require_effects(
+        env,
+        effects,
+        [@core.EffectAtom::Const("Error")],
+        "throw",
+        span,
+      )
+      @core.Type::Never
+    }
     @core.Expr::Perform(effect_name~, op_name~, args~, span~) =>
       type_perform_effect(
         env, effect_name, op_name, args, span, aliases, effects, allow_effect,

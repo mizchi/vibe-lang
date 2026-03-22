@@ -416,7 +416,13 @@ fn call_or_throw_expr(
           got="throw(label=...)",
           span~,
         )
-      None => return @core.Expr::Raise(value=args[0].expr, span~)
+      None =>
+        return @core.Expr::Perform(
+          effect_name="Error",
+          op_name="Throw",
+          args~,
+          span~,
+        )
     }
   }
   if name == "perform" {

@@ -1102,8 +1102,20 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       }
     }
     @core.Expr::Block(body~, ..) => eval_block(rt, body)
+    @core.Expr::Perform(effect_name="Error", op_name="Throw", args~, ..) => {
+      let v = if args.length() >= 1 {
+        eval_expr(rt, args[0].expr)
+      } else {
+        { value: @core.Value::String(""), effects: [] }
+      }
+      raise EvalError::Performed(
+        wrap_error_effect(v.value),
+        "__throw",
+        v.effects.length() > 0,
+      )
+    }
     @core.Expr::Perform(..) =>
-      // perform is only supported in compiled (WASM) backend
+      // other perform operations are only supported in compiled (WASM) backend
       { value: @core.Value::Unit, effects: [] }
     @core.Expr::Handle(body~, arms~, ..) => eval_handle_expr(rt, body, arms)
     @core.Expr::Match(scrutinee~, arms~, ..) => {
