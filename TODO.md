@@ -122,7 +122,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 
 - [x] wasm_opt: directize, call forwarding, signature pruning (remove_unused_types で実装済み)
 - [ ] wasm_opt: duckdb-mvp.wasm 対応 (39MB)
-- [ ] wasm_runtime: テスト拡充
+- [x] wasm_runtime: テスト拡充 (64→81テスト、i64 ops + type conv + control flow)
 - [x] wat_encoder: S 式完全対応（f32/f64, table/elem, br_table, call_indirect, float tokenizer）
 - [ ] SIMD codegen: v128 命令の emit + lexer intrinsic 化
   - [x] SIMD scan primitives 実験 (skip_ws 7.7x, scan_ident 18x, find_byte 6.3x, memcmp 4.2x)
