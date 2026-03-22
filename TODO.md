@@ -153,4 +153,4 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 - [ ] 軽量 struct リテラル sugar `Type { ... }`
 - [ ] `String` を `for-in` 対象にする
 - [ ] トレイトにメソッド定義を許可
-- [ ] `?` 演算子または `try` 式
+- [x] `?` 演算子 (expr? → handle { expr } { Error(e) => throw(e) })

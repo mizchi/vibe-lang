@@ -1991,6 +1991,40 @@ fn AstParser::parse_call_or_primary(
           span~,
         )
       }
+    } else if self.peek_kind() == question() && not(saw_newline) {
+      // Error propagation: expr? → handle { expr } { Error(e) => throw(e) }
+      let _ = self.bump()
+      let span = self.span_from(start)
+      let err_name = "__err$" + span.start.to_string()
+      expr = @core.Expr::Handle(
+        body=@core.Module::{
+          stmts: [@core.Stmt::Expr(expr~, span~)],
+        },
+        arms=[
+          {
+            pat: @core.Pat::Ctor(
+              name="Error",
+              args=[@core.Pat::Bind(name=err_name, span~)],
+              span~,
+            ),
+            cond: None,
+            expr: @core.Expr::Perform(
+              effect_name="Error",
+              op_name="Throw",
+              args=[
+                @core.CallArg::{
+                  label: None,
+                  expr: @core.Expr::Ident(name=err_name, span~),
+                  span,
+                },
+              ],
+              span~,
+            ),
+            span,
+          },
+        ],
+        span~,
+      )
     } else if self.peek_kind() == lbracket() && not(saw_newline) {
       // Index/slice access: expr[index] or expr[i:j] — only on the same line.
       // A newline before [ starts a new array literal expression.

@@ -106,6 +106,7 @@ fn is_ident_delim(c : Char) -> Bool {
   c == '.' ||
   c == '|' ||
   c == '!' ||
+  c == '?' ||
   c == '<' ||
   c == '>' ||
   c == '&' ||
@@ -539,6 +540,7 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
             }
             _ => Token::new(bang(), "!")
           }
+        '?' => Token::new(question(), "?")
         '<' =>
           match self.peek() {
             Some('<') => {
