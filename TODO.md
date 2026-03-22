@@ -105,7 +105,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 
 目標: branch coverage 70%
 
-- [ ] checker/parser/printer/lexer/builtins の全 variant カバー
+- [x] checker/parser/printer/lexer/builtins の全 variant カバー (全 Expr/Stmt/Pat/Type variant が全パスで処理済み)
 - [ ] normalize/DCE/loader のテスト拡充
 - [ ] CI にカバレッジ gate を組み込み
 
