@@ -662,6 +662,14 @@ fn walk_expr(
     | @core.Expr::Char(..)
     | @core.Expr::String(..)
     | @core.Expr::Placeholder(..) => ()
+    // StringInterp is lowered in desugar; should never reach here
+    @core.Expr::StringInterp(parts~, ..) =>
+      for part in parts {
+        match part {
+          @core.StringInterpPart::Expr(e) => walk_expr(e, scopes, out)
+          @core.StringInterpPart::Lit(_) => ()
+        }
+      }
   }
 }
 

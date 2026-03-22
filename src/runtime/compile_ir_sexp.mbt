@@ -558,6 +558,8 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
       let _ = span
       "(spread " + expr_to_sexp(expr, aliases) + ")"
     }
+    // StringInterp is lowered in desugar; should never reach here
+    @core.Expr::StringInterp(..) => "(string-interp-unreachable)"
   }
 }
 

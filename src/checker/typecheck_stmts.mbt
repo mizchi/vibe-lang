@@ -321,6 +321,8 @@ fn expr_may_use_scoped_ref(expr : @core.Expr) -> Bool {
       }
       false
     }
+    // StringInterp is lowered in desugar; should never reach here
+    @core.Expr::StringInterp(..) => false
   }
 }
 

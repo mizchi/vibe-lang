@@ -382,6 +382,8 @@ fn purity_expr_analysis_inner(
       }
       out
     }
+    // StringInterp is lowered in desugar; should never reach here
+    @core.Expr::StringInterp(..) => purity_analysis_pure()
   }
 }
 

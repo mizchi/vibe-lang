@@ -744,6 +744,11 @@ fn infer_expr_kind_with(
       let _ = span
       raise WasmGenError::Unsupported("spread outside array literal")
     }
+    // StringInterp is lowered in desugar; should never reach codegen
+    @core.Expr::StringInterp(span~, ..) => {
+      let _ = span
+      raise WasmGenError::Unsupported("StringInterp should have been desugared")
+    }
   }
 }
 

@@ -205,5 +205,10 @@ fn compile_expr(
       let _ = span
       raise WasmGenError::Unsupported("spread outside array literal")
     }
+    // StringInterp is lowered in desugar; should never reach codegen
+    @core.Expr::StringInterp(span~, ..) => {
+      let _ = span
+      raise WasmGenError::Unsupported("StringInterp should have been desugared")
+    }
   }
 }

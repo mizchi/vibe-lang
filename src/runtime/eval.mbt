@@ -1243,6 +1243,24 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       raise EvalError::UnknownName(
         "eval: spread operator should only appear inside array literals",
       )
+    @core.Expr::StringInterp(parts~, ..) => {
+      let buf = StringBuilder::new()
+      let effects : Array[Effect] = []
+      for part in parts {
+        match part {
+          @core.StringInterpPart::Lit(s) => buf.write_string(s)
+          @core.StringInterpPart::Expr(e) => {
+            let out = eval_expr(rt, e)
+            extend_effects(effects, out.effects)
+            match out.value {
+              @core.Value::String(s) => buf.write_string(s)
+              v => buf.write_string(v.to_string())
+            }
+          }
+        }
+      }
+      { value: @core.Value::String(buf.to_string()), effects }
+    }
   }
 }
 

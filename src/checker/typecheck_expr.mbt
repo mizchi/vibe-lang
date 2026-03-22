@@ -1038,6 +1038,19 @@ fn type_expr_eff(
       type_perform_effect(
         env, effect_name, op_name, args, span, aliases, effects, allow_effect,
       )
+    @core.Expr::StringInterp(parts~, span~) => {
+      // Type-check each expression part; string interpolation always yields String
+      for part in parts {
+        match part {
+          @core.StringInterpPart::Expr(e) => {
+            let _ = type_expr_eff(env, e, aliases, effects, allow_effect)
+          }
+          _ => ()
+        }
+      }
+      let _ = span
+      @core.Type::String
+    }
   }
   record_expr_type(env, expr.span(), ty)
   ty

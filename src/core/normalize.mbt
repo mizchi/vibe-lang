@@ -573,6 +573,17 @@ fn normalize_expr(expr : Expr, scope : NormScope) -> Expr {
         args=normalize_call_args(args, scope),
         span=zero_span,
       )
+    Expr::StringInterp(parts~, ..) => {
+      let norm_parts : Array[StringInterpPart] = []
+      for part in parts {
+        match part {
+          StringInterpPart::Expr(e) =>
+            norm_parts.push(StringInterpPart::Expr(normalize_expr(e, scope)))
+          StringInterpPart::Lit(s) => norm_parts.push(StringInterpPart::Lit(s))
+        }
+      }
+      Expr::StringInterp(parts=norm_parts, span=zero_span)
+    }
   }
 }
 

@@ -85,6 +85,12 @@ pub(all) struct RecordFieldPat {
 } derive(Show, Eq)
 
 ///|
+pub(all) enum StringInterpPart {
+  Lit(String)
+  Expr(Expr)
+} derive(Show, Eq)
+
+///|
 pub(all) struct MatchArm {
   pat : Pat
   cond : Expr?
@@ -275,6 +281,8 @@ pub(all) enum Expr {
   Bool(value~ : Bool, span~ : Span)
   Char(value~ : Char, span~ : Span)
   String(value~ : String, span~ : Span)
+  /// String interpolation: `"hello ${name}"` → parts = [Lit("hello "), Expr(__to_string(name))]
+  StringInterp(parts~ : Array[StringInterpPart], span~ : Span)
   Ident(name~ : String, span~ : Span)
   Placeholder(index~ : Int, span~ : Span) // _ placeholder for lambda shorthand
   Call(
@@ -370,6 +378,7 @@ pub fn Expr::span(self : Expr) -> Span {
     | Expr::Bool(span~, ..)
     | Expr::Char(span~, ..)
     | Expr::String(span~, ..)
+    | Expr::StringInterp(span~, ..)
     | Expr::Ident(span~, ..)
     | Expr::Placeholder(span~, ..)
     | Expr::Call(span~, ..)

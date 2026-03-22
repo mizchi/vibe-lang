@@ -708,6 +708,8 @@ fn module_expr_requires_preload_host_imports(expr : @core.Expr) -> Bool {
     | @core.Expr::String(..)
     | @core.Expr::Ident(..)
     | @core.Expr::Placeholder(..) => false
+    // StringInterp is lowered in desugar; should never reach here
+    @core.Expr::StringInterp(..) => false
   }
 }
 

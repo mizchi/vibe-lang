@@ -2298,7 +2298,7 @@ fn desugar_string_interp(
   raw : String,
   span : @core.Span,
 ) -> @core.Expr raise ParseError {
-  let parts : Array[@core.Expr] = []
+  let parts : Array[@core.StringInterpPart] = []
   let chars = raw.to_array()
   let len = chars.length()
   let mut i = 0
@@ -2308,7 +2308,7 @@ fn desugar_string_interp(
       chars[i] == '\\' &&
       (chars[i + 1] == '{' || chars[i + 1] == '(') {
       if buf.to_string().length() > 0 {
-        parts.push(@core.Expr::String(value=buf.to_string(), span~))
+        parts.push(@core.StringInterpPart::Lit(buf.to_string()))
         buf.reset()
       }
       let open_char = chars[i + 1]
@@ -2352,14 +2352,7 @@ fn desugar_string_interp(
           span~,
         )
       }
-      parts.push(
-        @core.Expr::Call(
-          name="__to_string",
-          type_args=[],
-          args=[@core.CallArg::{ label: None, expr: inner, span }],
-          span~,
-        ),
-      )
+      parts.push(@core.StringInterpPart::Expr(inner))
     } else if chars[i] == '\\' && i + 1 < len {
       match chars[i + 1] {
         'n' => buf.write_char('\n')
@@ -2375,26 +2368,23 @@ fn desugar_string_interp(
     }
   }
   if buf.to_string().length() > 0 {
-    parts.push(@core.Expr::String(value=buf.to_string(), span~))
+    parts.push(@core.StringInterpPart::Lit(buf.to_string()))
   }
   if parts.length() == 0 {
     @core.Expr::String(value="", span~)
   } else if parts.length() == 1 {
-    parts[0]
-  } else {
-    let mut result = parts[0]
-    for j in 1..<parts.length() {
-      result = @core.Expr::Call(
-        name="String::concat",
-        type_args=[],
-        args=[
-          @core.CallArg::{ label: None, expr: result, span },
-          @core.CallArg::{ label: None, expr: parts[j], span },
-        ],
-        span~,
-      )
+    match parts[0] {
+      @core.StringInterpPart::Lit(s) => @core.Expr::String(value=s, span~)
+      @core.StringInterpPart::Expr(e) =>
+        @core.Expr::Call(
+          name="__to_string",
+          type_args=[],
+          args=[@core.CallArg::{ label: None, expr: e, span }],
+          span~,
+        )
     }
-    result
+  } else {
+    @core.Expr::StringInterp(parts~, span~)
   }
 }
 

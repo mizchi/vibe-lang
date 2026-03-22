@@ -465,6 +465,27 @@ fn serialize_expr_to(expr : Expr, buf : StringBuilder) -> Unit {
       serialize_call_args_to(args, buf)
       buf.write_string("}}")
     }
+    Expr::StringInterp(parts~, ..) => {
+      buf.write_string("{\"StringInterp\":[")
+      for i, part in parts {
+        if i > 0 {
+          buf.write_char(',')
+        }
+        match part {
+          StringInterpPart::Lit(s) => {
+            buf.write_string("{\"Lit\":")
+            serialize_string_to(s, buf)
+            buf.write_char('}')
+          }
+          StringInterpPart::Expr(e) => {
+            buf.write_string("{\"Expr\":")
+            serialize_expr_to(e, buf)
+            buf.write_char('}')
+          }
+        }
+      }
+      buf.write_string("]}")
+    }
   }
 }
 

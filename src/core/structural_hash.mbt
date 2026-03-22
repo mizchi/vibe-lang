@@ -453,6 +453,16 @@ pub fn Expr::structural_hash(self : Expr) -> Int {
       }
       h
     }
+    Expr::StringInterp(parts~, ..) => {
+      let mut h = 0x53497470 // "SItp"
+      for part in parts {
+        match part {
+          StringInterpPart::Lit(s) => h = combine_hash(h, s.hash())
+          StringInterpPart::Expr(e) => h = combine_hash(h, e.structural_hash())
+        }
+      }
+      h
+    }
   }
 }
 
