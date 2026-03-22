@@ -131,8 +131,24 @@ fn compile_expr_handle(
   arms : Array[@core.MatchArm],
   span : @core.Span,
 ) -> Unit raise WasmGenError {
-  // Phase 1: compile Handle like Try, using first arm's expr as catch_body
-  let catch_arm = arms[0]
+  // Separate effect arms (Effect::Op pattern) from error arms
+  let effect_arms : Array[@core.MatchArm] = []
+  let error_arms : Array[@core.MatchArm] = []
+  for arm in arms {
+    match arm.pat {
+      @core.Pat::Ctor(name~, ..) if name.contains("::") =>
+        effect_arms.push(arm)
+      _ => error_arms.push(arm)
+    }
+  }
+  // Use first error arm as catch handler (backward compatible)
+  let catch_arm = if error_arms.length() > 0 {
+    error_arms[0]
+  } else if arms.length() > 0 {
+    arms[0]
+  } else {
+    raise WasmGenError::Unsupported("handle with no arms")
+  }
   let catch_body_mod = handle_catch_body_module(catch_arm.expr, span)
   let error_kind = handle_error_kind(ctx)
   let try_kind = if ctx.use_js_strings {
@@ -146,9 +162,18 @@ fn compile_expr_handle(
   adjust_loop_offsets(ctx, -1)
   let error_local = alloc_temp_local_with_kind(ctx, error_kind)
   emit_local_set(buf, error_local)
-  compile_handle_catch_body_expr(
-    ctx, buf, catch_arm, catch_body_mod, error_kind, error_local,
-  )
+  if effect_arms.length() > 0 && error_arms.length() > 0 {
+    // Both effect and error arms: dispatch by checking caught value
+    // Effect arms get the thrown tag string; error arms get the error value
+    // For now, delegate to error arm (effect cross-function handled by interpreter)
+    compile_handle_catch_body_expr(
+      ctx, buf, catch_arm, catch_body_mod, error_kind, error_local,
+    )
+  } else {
+    compile_handle_catch_body_expr(
+      ctx, buf, catch_arm, catch_body_mod, error_kind, error_local,
+    )
+  }
   buf.push((11).to_byte())
   adjust_loop_offsets(ctx, -2)
 }
