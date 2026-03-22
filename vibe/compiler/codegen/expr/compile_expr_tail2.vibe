@@ -1,0 +1,157 @@
+//# Imports
+
+import ../../core/index.vibe {
+  Expr, Pat, Stmt, TypeExpr,
+  bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
+}
+
+import ../common_base/index.vibe {
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+}
+
+import ../common_extractors/index.vibe {
+  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_earray_elems, get_eassign_body, get_eassign_name, get_eassign_val, get_eassignop_body, get_eassignop_name, get_eassignop_op, get_eassignop_val, get_ebinop_lhs, get_ebinop_rhs, get_ebool_value, get_ecall_args, get_ecall_callee, get_efloat_value, get_efn_params, get_eforin_body, get_eforin_iter, get_eforin_name, get_eident_name, get_eint_value, get_eletmut_body, get_eletmut_name, get_eletmut_val, get_eletrec_body, get_eletrec_name, get_eletrec_val, get_eseq_first, get_eseq_second, get_estring_value, get_ethrow_expr, get_etuple_elems, get_eunaryop_expr, get_eunaryop_op, get_ewhile_body, get_ewhile_cond, get_match_arms, get_match_scrutinee, get_pbind_name, get_pbool_value, get_pctor_args, get_pctor_name, get_pint_value, get_pstring_value, get_ptuple_pats, get_slet_export, str_table_lookup
+}
+
+import ../common_analysis/index.vibe {
+  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in
+}
+
+import ../wasm_emit/index.vibe {
+  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_full, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data
+}
+
+import ./compile_match.vibe {
+  compile_match
+}
+
+import ./compile_lambda.vibe {
+  compile_lambda
+}
+
+import ./compile_call.vibe {
+  compile_call
+}
+
+import ./compile_expr_tail3.vibe {
+  compile_expr_tail3
+}
+
+//# Functions
+
+export let compile_expr_tail2 = (buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } {
+  let __tag = expr_tag(expr)
+  if __tag == 15 {
+    let __tuple_elems = get_etuple_elems(expr)
+    let num_elems = Array::length(__tuple_elems)
+    let alloc_size = num_elems * 8
+    let ptr_local = next_local
+    Array::push(local_names, "__tuple_ptr")
+    let mut nl = next_local + 1
+    emit_global_get(buf, 0)
+    // i32
+    emit_i64_extend_i32_u(buf)
+    // -> i64
+    emit_local_tee(buf, ptr_local)
+    // save as i64
+    emit_i32_wrap_i64(buf)
+    // back to i32 for arithmetic
+    emit_i32_const(buf, alloc_size)
+    emit_i32_add(buf)
+    emit_global_set(buf, 0)
+    let mut ti = 0
+    while ti < num_elems {
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      // ptr as i32 for store
+      nl = compile_expr(buf, Array::get(__tuple_elems, ti), local_names, nl, ctx, ld)
+      emit_i64_store(buf, 3, ti * 8)
+      ti = ti + 1
+    }
+    emit_local_get(buf, ptr_local)
+    nl
+  } else if __tag == 16 {
+    compile_match(buf, expr, local_names, next_local, ctx, ld, compile_expr)
+  } else if __tag == 17 {
+    let elems = get_earray_elems(expr)
+    let (arr_new_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+    let (arr_push_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+    let arr_local = next_local
+    emit_call(buf, arr_new_idx)
+    emit_local_set(buf, arr_local)
+    Array::push(local_names, "__arr_lit")
+    let mut nl = next_local + 1
+    let mut ei = 0
+    while ei < Array::length(elems) {
+      emit_local_get(buf, arr_local)
+      nl = compile_expr(buf, Array::get(elems, ei), local_names, nl, ctx, ld)
+      emit_call(buf, arr_push_idx)
+      ei = ei + 1
+    }
+    emit_local_get(buf, arr_local)
+    nl
+  } else if __tag == 18 {
+    // For-in comprehension: for x in arr { body } → new array with body results
+    let var_name = get_eforin_name(expr)
+    let iter_expr = get_eforin_iter(expr)
+    let body = get_eforin_body(expr)
+    let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
+    let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
+    let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
+    let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
+    let result_local = next_local
+    let arr_local = next_local + 1
+    let i_local = next_local + 2
+    Array::push(local_names, "__forin_res")
+    Array::push(local_names, "__forin_arr")
+    Array::push(local_names, "__forin_i")
+    // result = array_new()
+    emit_call(buf, arr_new_fi)
+    emit_local_set(buf, result_local)
+    // arr = iter_expr
+    let nl1 = compile_expr(buf, iter_expr, local_names, next_local + 3, ctx, ld)
+    emit_local_set(buf, arr_local)
+    // i = 0
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, i_local)
+    // loop
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, i_local)
+    emit_local_get(buf, arr_local)
+    emit_call(buf, arr_len_fi)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    // var = arr[i]
+    let var_local = nl1
+    emit_local_get(buf, arr_local)
+    emit_local_get(buf, i_local)
+    emit_call(buf, arr_get_fi)
+    emit_local_set(buf, var_local)
+    Array::push(local_names, var_name)
+    let nl2 = nl1 + 1
+    // body_result = body
+    let nl3 = compile_expr(buf, body, local_names, nl2, ctx, ld + 1)
+    // push body_result to result array
+    let body_val = nl3
+    Array::push(local_names, "__forin_val")
+    emit_local_set(buf, body_val)
+    emit_local_get(buf, result_local)
+    emit_local_get(buf, body_val)
+    emit_call(buf, arr_push_fi)
+    // i++
+    emit_local_get(buf, i_local)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, i_local)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    // return result array
+    emit_local_get(buf, result_local)
+    nl3 + 1
+
+  } else {
+    compile_expr_tail3(buf, expr, local_names, next_local, ctx, ld, compile_expr)
+  }
+}

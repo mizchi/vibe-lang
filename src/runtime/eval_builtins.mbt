@@ -353,11 +353,19 @@ fn eval_pure_builtin(
     }
     "String::length" => {
       if args.length() != 1 {
-        raise EvalError::BadCall(E("String::length"))
+        raise EvalError::BadCall(
+          E(
+            "String::length: expected 1 argument, got " +
+            args.length().to_string(),
+          ),
+        )
       }
       match args[0] {
         @core.Value::String(s) => @core.Value::Int(String::length(s).to_int64())
-        _ => raise EvalError::BadCall(E("String::length"))
+        _ as v =>
+          raise EvalError::BadCall(
+            E("String::length: got " + value_type_name(v)),
+          )
       }
     }
     "String::utf8_length" => {

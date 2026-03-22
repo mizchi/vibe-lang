@@ -1861,11 +1861,19 @@ fn try_eval_hot_builtin_call(
     }
     "String::length" => {
       if values.length() != 1 {
-        raise EvalError::BadCall(E("String::length"))
+        raise EvalError::BadCall(
+          E(
+            "String::length: expected 1 argument, got " +
+            values.length().to_string(),
+          ),
+        )
       }
       match values[0] {
         @core.Value::String(s) => @core.Value::Int(String::length(s).to_int64())
-        _ => raise EvalError::BadCall(E("String::length"))
+        _ as v =>
+          raise EvalError::BadCall(
+            E("String::length: got " + value_type_name(v)),
+          )
       }
     }
     "String::char_code_at" => {

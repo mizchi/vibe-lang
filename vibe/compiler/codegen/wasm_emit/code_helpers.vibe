@@ -1,0 +1,61 @@
+import ../../core/index.vibe {
+  bytebuf_new, bytebuf_push, bytebuf_length, bytebuf_push_buf, bytebuf_push_section, bytebuf_push_vec_header,
+  leb128_encode_u32, bytebuf_push_opcode_s64
+}
+
+export let emit_memory_section = (out: Bytes, min_pages: Int) -> Unit {
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, 1)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, min_pages)
+  bytebuf_push_section(out, 5, content)
+}
+
+export let emit_code_section = (out: Bytes, bodies: Array[Bytes]) -> Unit {
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, Array::length(bodies))
+  let mut i = 0
+  while i < Array::length(bodies) {
+    let body = Array::get(bodies, i)
+    let func_buf = bytebuf_new()
+    leb128_encode_u32(func_buf, 0)
+    bytebuf_push_buf(func_buf, body)
+    bytebuf_push(func_buf, 11)
+    leb128_encode_u32(content, bytebuf_length(func_buf))
+    bytebuf_push_buf(content, func_buf)
+    i = i + 1
+  }
+  bytebuf_push_section(out, 10, content)
+}
+
+export let emit_code_section_with_locals = (out: Bytes, bodies: Array[Bytes], local_counts: Array[Int]) -> Unit {
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, Array::length(bodies))
+  let mut i = 0
+  while i < Array::length(bodies) {
+    let body = Array::get(bodies, i)
+    let num_locals = Array::get(local_counts, i)
+    let func_buf = bytebuf_new()
+    if num_locals == 0 {
+      leb128_encode_u32(func_buf, 0)
+    } else {
+      leb128_encode_u32(func_buf, 1)
+      leb128_encode_u32(func_buf, num_locals)
+      bytebuf_push(func_buf, 126)
+    }
+    bytebuf_push_buf(func_buf, body)
+    bytebuf_push(func_buf, 11)
+    leb128_encode_u32(content, bytebuf_length(func_buf))
+    bytebuf_push_buf(content, func_buf)
+    i = i + 1
+  }
+  bytebuf_push_section(out, 10, content)
+}
+
+export let emit_i32_const = (buf: Bytes, value: Int) -> Unit {
+  bytebuf_push_opcode_s64(buf, 65, value)
+}
+
+export let emit_end = (buf: Bytes) -> Unit {
+  bytebuf_push(buf, 11)
+}

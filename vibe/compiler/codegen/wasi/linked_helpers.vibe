@@ -1,0 +1,67 @@
+import ../../core/index.vibe {
+  Expr, Stmt
+}
+
+import ../common_extractors/index.vibe {
+  array_contains_str
+}
+
+import ../common_analysis/index.vibe {
+  collect_free_vars
+}
+
+let canonical_builtin_name = (name: String) -> String {
+  match name {
+    "Fs::ReadFile" => "Fs::read_file",
+    "Fs::WriteFile" => "Fs::write_file",
+    "Fs::ReadBytes" => "Fs::read_bytes",
+    "Fs::WriteBytes" => "Fs::write_bytes",
+    "Fs::Exists" => "Fs::exists",
+    "Fs::StatToken" => "Fs::stat_token",
+    "Fs::ReadDir" => "Fs::readdir",
+    "Fs::IsDir" => "Fs::is_dir",
+    "Fs::IsFile" => "Fs::is_file",
+    "Fs::Mkdir" => "Fs::mkdir",
+    "Fs::Getcwd" => "Fs::getcwd",
+    "Fs::Chdir" => "Fs::chdir",
+    "Fs::Remove" => "Fs::remove",
+    "Fs::Copy" => "Fs::copy",
+    "Fs::Append" => "Fs::append",
+    "Env::Get" => "Env::get",
+    "Env::ArgsLen" => "Env::args_len",
+    "Env::ArgsGet" => "Env::args_get",
+    _ => name
+  }
+}
+
+let expr_uses_builtin = (expr: Expr, fn_names: Array[String], target: String) -> Bool {
+  let free_vars = collect_free_vars(expr, Array::slice([
+    ""
+  ], 0, 0), fn_names)
+  let normalized_target = canonical_builtin_name(target)
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(free_vars) && !found {
+    found = canonical_builtin_name(Array::get(free_vars, i)) == normalized_target
+    i = i + 1
+  }
+  found
+}
+
+export let rec stmts_use_builtin = (stmts: Array[Stmt], fn_names: Array[String], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    found = match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => expr_uses_builtin(expr, fn_names, target),
+      SLetMut(_, _, expr) => expr_uses_builtin(expr, fn_names, target),
+      STest(_, expr) => expr_uses_builtin(expr, fn_names, target),
+      SBench(_, expr) => expr_uses_builtin(expr, fn_names, target),
+      SExpr(expr) => expr_uses_builtin(expr, fn_names, target),
+      SModule(_, _, inner) => stmts_use_builtin(inner, fn_names, target),
+      _ => false
+    }
+    i = i + 1
+  }
+  found
+}

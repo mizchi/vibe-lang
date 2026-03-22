@@ -6,6 +6,30 @@ import ./values.vibe {
 
 //# Functions
 
+let canonical_builtin_name = (name: String) -> String {
+  match name {
+    "Fs::ReadFile" => "Fs::read_file",
+    "Fs::WriteFile" => "Fs::write_file",
+    "Fs::ReadBytes" => "Fs::read_bytes",
+    "Fs::WriteBytes" => "Fs::write_bytes",
+    "Fs::Exists" => "Fs::exists",
+    "Fs::StatToken" => "Fs::stat_token",
+    "Fs::ReadDir" => "Fs::readdir",
+    "Fs::IsDir" => "Fs::is_dir",
+    "Fs::IsFile" => "Fs::is_file",
+    "Fs::Mkdir" => "Fs::mkdir",
+    "Fs::Getcwd" => "Fs::getcwd",
+    "Fs::Chdir" => "Fs::chdir",
+    "Fs::Remove" => "Fs::remove",
+    "Fs::Copy" => "Fs::copy",
+    "Fs::Append" => "Fs::append",
+    "Env::Get" => "Env::get",
+    "Env::ArgsLen" => "Env::args_len",
+    "Env::ArgsGet" => "Env::args_get",
+    _ => name
+  }
+}
+
 let empty_values = () -> Array[Value] {
   Array::slice([
     VUnit
@@ -125,14 +149,12 @@ let eval_array = (name: String, args: Array[Value]) -> Option[Value] {
 
 let eval_bytes = (name: String, args: Array[Value]) -> Option[Value] {
   if name == "Bytes::new" {
-    Some(VBytes(Array::slice([
-      0
-    ], 0, 0)))
+    Some(VBytes(Bytes::new()))
   }
   else if name == "Bytes::length" {
     let b = Array::get(args, 0)
     match b {
-      VBytes(data) => Some(VInt(Array::length(data))),
+      VBytes(data) => Some(VInt(Bytes::length(data))),
       _ => Some(VInt(0))
     }
   }
@@ -141,29 +163,53 @@ let eval_bytes = (name: String, args: Array[Value]) -> Option[Value] {
     let idx = Array::get(args, 1)
     match b {
       VBytes(data) => match idx {
-        VInt(i) => Some(VInt(Array::get(data, i))),
+        VInt(i) => Some(VInt(Bytes::get(data, i))),
         _ => Some(VInt(0))
       },
       _ => Some(VInt(0))
     }
   }
   else if name == "Bytes::set" {
-    Some(VUnit)
+    let b = Array::get(args, 0)
+    let idx = Array::get(args, 1)
+    let value = Array::get(args, 2)
+    match b {
+      VBytes(data) => match idx {
+        VInt(i) => match value {
+          VInt(n) => {
+            Bytes::set(data, i, n)
+            Some(VUnit)
+          },
+          _ => Some(VUnit)
+        },
+        _ => Some(VUnit)
+      },
+      _ => Some(VUnit)
+    }
   }
   else if name == "Bytes::push" {
-    Some(VUnit)
+    let b = Array::get(args, 0)
+    let value = Array::get(args, 1)
+    match b {
+      VBytes(data) => match value {
+        VInt(n) => {
+          Bytes::push(data, n)
+          Some(VUnit)
+        },
+        _ => Some(VUnit)
+      },
+      _ => Some(VUnit)
+    }
   }
   else if name == "Bytes::concat" {
     let a = Array::get(args, 0)
     let b = Array::get(args, 1)
     match a {
       VBytes(da) => match b {
-        VBytes(db) => Some(VBytes(Array::concat(da, db))),
+        VBytes(db) => Some(VBytes(Bytes::concat(da, db))),
         _ => Some(VBytes(da))
       },
-      _ => Some(VBytes(Array::slice([
-        0
-      ], 0, 0)))
+      _ => Some(VBytes(Bytes::new()))
     }
   }
   else if name == "Bytes::slice" {
@@ -173,46 +219,58 @@ let eval_bytes = (name: String, args: Array[Value]) -> Option[Value] {
     match b {
       VBytes(data) => match start_v {
         VInt(s) => match end_v {
-          VInt(e) => Some(VBytes(Array::slice(data, s, e))),
+          VInt(e) => Some(VBytes(Bytes::slice(data, s, e))),
           _ => Some(VBytes(data))
         },
         _ => Some(VBytes(data))
       },
-      _ => Some(VBytes(Array::slice([
-        0
-      ], 0, 0)))
+      _ => Some(VBytes(Bytes::new()))
+    }
+  }
+  else if name == "Bytes::append" {
+    let a = Array::get(args, 0)
+    let b = Array::get(args, 1)
+    match a {
+      VBytes(da) => match b {
+        VBytes(db) => {
+          Bytes::append(da, db)
+          Some(VUnit)
+        },
+        _ => Some(VUnit)
+      },
+      _ => Some(VUnit)
     }
   }
   else if name == "Bytes::from_array" {
     let arr = Array::get(args, 0)
     match arr {
       VArray(elems) => {
-        let len = Array::length(elems)
-        let result = for elem in elems {
+        let result = Bytes::new()
+        for elem in elems {
           match elem {
-            VInt(n) => n,
-            _ => 0
+            VInt(n) => Bytes::push(result, n),
+            _ => Bytes::push(result, 0)
           }
         }
         Some(VBytes(result))
       },
-      _ => Some(VBytes(Array::slice([
-        0
-      ], 0, 0)))
+      _ => Some(VBytes(Bytes::new()))
     }
   }
   else if name == "Bytes::to_array" {
     let b = Array::get(args, 0)
     match b {
       VBytes(data) => {
-        let result = for d in data {
-          VInt(d)
+        let result = empty_values()
+        let len = Bytes::length(data)
+        let mut i = 0
+        while i < len {
+          Array::push(result, VInt(Bytes::get(data, i)))
+          i = i + 1
         }
         Some(VArray(result))
       },
-      _ => Some(VArray(Array::slice([
-        VUnit
-      ], 0, 0)))
+      _ => Some(VArray(empty_values()))
     }
   }
   else None
@@ -588,13 +646,14 @@ let eval_misc = (name: String, args: Array[Value]) -> Option[Value] {
 }
 
 export let eval_builtin_call = (name: String, args: Array[Value]) -> Option[Value] {
-  match eval_array(name, args) {
+  let normalized = canonical_builtin_name(name)
+  match eval_array(normalized, args) {
     Some(v) => Some(v),
-    None => match eval_string(name, args) {
+    None => match eval_string(normalized, args) {
       Some(v) => Some(v),
-      None => match eval_bytes(name, args) {
+      None => match eval_bytes(normalized, args) {
         Some(v) => Some(v),
-        None => eval_misc(name, args)
+        None => eval_misc(normalized, args)
       }
     }
   }

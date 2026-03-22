@@ -1,0 +1,145 @@
+//# Imports
+
+import ../../../core/ast.vibe {
+  Expr, Stmt
+}
+
+import ../../../syntax/lexer.vibe {
+  lex,
+}
+
+import ../../../syntax/parser.vibe {
+  parse_program,
+  parse
+}
+
+import ../../../checker/checker_stmt.vibe {
+  check_program
+}
+
+import ../../../codegen/wasi/index.vibe {
+  compile_wasi_module_linked_impl
+}
+
+import ./preprocess.vibe {
+  strip_generic_type_params,
+  expand_interp_stmts
+}
+
+import ./path_utils.vibe {
+  dir_of_path,
+  resolve_import_path,
+  contains_path,
+  empty_stmt_array
+}
+
+import ./merge_sources.vibe {
+  collect_merged_stmts_recursive
+}
+
+import ./linked_helpers.vibe {
+  path_to_module_name,
+  resolve_reexport_chain
+}
+
+export let compile_file_wasi_linked_artifacts = (
+  entry_path: String,
+  entry_name: String
+) -> (Bytes, Array[(String, String, Int, Int)], Array[(String, String)]) with { Error, Fs } {
+  // Identify direct deps of entry (first-level imports/re-exports)
+  let entry_source = perform Fs::ReadFile(entry_path)
+  let entry_stmts = parse_program(lex(entry_source))
+  let entry_dir = dir_of_path(entry_path)
+  let dep_paths = Array::slice([""], 0, 0)
+  let mut ei = 0
+  while ei < Array::length(entry_stmts) {
+    match Array::get(entry_stmts, ei) {
+      SImport(raw_path, items) => {
+        if Array::length(items) > 0 {
+          let resolved = resolve_import_path(entry_dir, raw_path)
+          if !contains_path(dep_paths, resolved) {
+            Array::push(dep_paths, resolved)
+          }
+        }
+      },
+      SReExport(raw_path, _) => {
+        let resolved = resolve_import_path(entry_dir, raw_path)
+        if !contains_path(dep_paths, resolved) {
+          Array::push(dep_paths, resolved)
+        }
+      },
+      _ => ()
+    }
+    ei = ei + 1
+  }
+  // Build linked imports from dep export functions (including ReExport chains)
+  let linked_imports = Array::slice([("", "", 0, 0)], 0, 0)
+  let linked_dep_paths = Array::slice([""], 0, 0)
+  let linked_dep_specs = Array::slice([("", "")], 0, 0)
+  let resolved_type_stmts = Array::slice([SExpr(EInt(0))], 0, 0)
+  let mut di = 0
+  while di < Array::length(dep_paths) {
+    let dep_path = Array::get(dep_paths, di)
+    let dep_source = perform Fs::ReadFile(dep_path)
+    let dep_stmts = parse_program(lex(dep_source))
+    let module_name = path_to_module_name(dep_path)
+    let dep_dir = dir_of_path(dep_path)
+    // Collect exported function signatures from this dep
+    let mut has_linked = false
+    let mut dsi = 0
+    while dsi < Array::length(dep_stmts) {
+      match Array::get(dep_stmts, dsi) {
+        SLet(true, _, name, _, EFn(_, _, params, _, _, _)) => {
+          Array::push(linked_imports, (module_name, name, Array::length(params), 1))
+          has_linked = true
+        },
+        SReExport(raw_path, items) => {
+          // Resolve ReExport chain: follow source to find actual definitions
+          let resolved = resolve_import_path(dep_dir, raw_path)
+          resolve_reexport_chain(resolved, items, module_name, linked_imports, resolved_type_stmts, 0)
+          has_linked = true
+        },
+        SEnum(true, _, _) => {
+          // Exported enum: inline as type definition
+          Array::push(resolved_type_stmts, Array::get(dep_stmts, dsi))
+        },
+        _ => ()
+      }
+      dsi = dsi + 1
+    }
+    if has_linked {
+      Array::push(linked_dep_paths, dep_path)
+      Array::push(linked_dep_specs, (module_name, dep_path))
+    }
+    di = di + 1
+  }
+  let stmts = empty_stmt_array()
+  let mut rti = 0
+  while rti < Array::length(resolved_type_stmts) {
+    Array::push(stmts, Array::get(resolved_type_stmts, rti))
+    rti = rti + 1
+  }
+  let mut esi = 0
+  while esi < Array::length(entry_stmts) {
+    Array::push(stmts, Array::get(entry_stmts, esi))
+    esi = esi + 1
+  }
+  strip_generic_type_params(stmts)
+  expand_interp_stmts(stmts)
+  let _ = check_program(stmts)
+  let wasm = compile_wasi_module_linked_impl(stmts, entry_name, Array::slice([
+    ("", "")
+  ], 0, 0), linked_imports, false)
+  (wasm, linked_imports, linked_dep_specs)
+}
+
+export let compile_file_wasi_linked = (
+  entry_path: String,
+  entry_name: String
+) -> (Bytes, Array[(String, String, Int, Int)]) with { Error, Fs } {
+  let (wasm, linked_imports, _) = compile_file_wasi_linked_artifacts(
+    entry_path,
+    entry_name
+  )
+  (wasm, linked_imports)
+}

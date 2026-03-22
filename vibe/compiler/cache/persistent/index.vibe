@@ -1,16 +1,14 @@
 //# Functions
 
 let string_to_bytes = (s: String) -> Bytes {
-  let out = Array::slice([
-    0
-  ], 0, 0)
+  let out = Bytes::new()
   let len = String::length(s)
   let mut i = 0
   while i < len {
-    Array::push(out, String::char_code_at(s, i))
+    Bytes::push(out, String::char_code_at(s, i))
     i = i + 1
   }
-  Bytes::from_array(out)
+  out
 }
 
 let bytes_to_hex_digit = (n: Int) -> String {
@@ -48,7 +46,7 @@ let bytes_to_hex = (bytes: Bytes) -> String {
   let mut i = 0
   let mut out = ""
   while i < len {
-    let byte = bytes[i]
+    let byte = Bytes::get(bytes, i)
     let hi = byte / 16
     let lo = byte % 16
     out = String::concat(out, bytes_to_hex_digit(hi))
@@ -63,15 +61,15 @@ let hex_to_bytes = (hex: String) -> Bytes with { Error } {
   if len % 2 != 0 {
     throw("invalid hex length")
   } else {
-    let out = Array::slice([0], 0, 0)
+    let out = Bytes::new()
     let mut i = 0
     while i < len {
       let hi = nibble_from_hex_char(String::char_code_at(hex, i))
       let lo = nibble_from_hex_char(String::char_code_at(hex, i + 1))
-      Array::push(out, hi * 16 + lo)
+      Bytes::push(out, hi * 16 + lo)
       i = i + 2
     }
-    Bytes::from_array(out)
+    out
   }
 }
 
@@ -187,13 +185,14 @@ let stable_cache_path = (prefix: String, seed: String, suffix: String) -> String
   let mut i = 0
   while i < String::length(raw) {
     let c = String::char_code_at(raw, i)
+    let piece = if c == 58 {
+      "_"
+    } else {
+      String::from_char_code(c)
+    }
     token = String::concat(
       token,
-      if c == 58 {
-        "_"
-      } else {
-        String::from_char_code(c)
-      }
+      piece
     )
     i = i + 1
   }
@@ -222,7 +221,7 @@ export let persistent_manifest_header_cache_path = (entry_path: String) -> Strin
 }
 
 export let persistent_type_env_cache_path = (fingerprint: String) -> String {
-  stable_cache_path("selfhost_type_env", fingerprint, ".tsv")
+  stable_cache_path("selfhost_type_env_v2", fingerprint, ".tsv")
 }
 
 export let persistent_dep_list_cache_path = (path: String, source_fingerprint: String) -> String {
@@ -235,7 +234,7 @@ export let persistent_dep_list_cache_path = (path: String, source_fingerprint: S
 
 export let persistent_leaf_fingerprint_cache_path = (path: String, source_fingerprint: String) -> String {
   stable_cache_path(
-    "selfhost_leaf_fp",
+    "selfhost_leaf_fp_v2",
     String::concat(path, String::concat("|", source_fingerprint)),
     ".tsv"
   )
@@ -243,7 +242,7 @@ export let persistent_leaf_fingerprint_cache_path = (path: String, source_finger
 
 export let persistent_module_header_cache_path = (path: String, source_fingerprint: String) -> String {
   stable_cache_path(
-    "selfhost_module_header",
+    "selfhost_module_header_v2",
     String::concat(path, String::concat("|", source_fingerprint)),
     ".tsv"
   )
@@ -349,10 +348,10 @@ export let load_persistent_artifact = (
   fingerprint: String
 ) -> Option[Bytes] with { Error, Fs } {
   let path = persistent_artifact_cache_path(kind, entry_name, fingerprint)
-  if !(perform Fs::Exists(path)) {
+  if !(Fs::exists(path)) {
     None
   } else {
-    Some(hex_to_bytes(normalize_persistent_cache_text(perform Fs::ReadFile(path))))
+    Some(hex_to_bytes(normalize_persistent_cache_text(Fs::read_file(path))))
   }
 }
 
@@ -363,5 +362,5 @@ export let store_persistent_artifact = (
   bytes: Bytes
 ) -> Unit with { Error, Fs } {
   let path = persistent_artifact_cache_path(kind, entry_name, fingerprint)
-  perform Fs::WriteFile(path, bytes_to_hex(bytes))
+  Fs::write_file(path, bytes_to_hex(bytes))
 }

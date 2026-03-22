@@ -17,8 +17,15 @@ import ./parser.vibe {
 test "wasi: parser.vibe import - compile and run" {
   let token_source = Fs::read_file("vibe/compiler/token.vibe")
   let ast_source = Fs::read_file("vibe/compiler/ast.vibe")
-  let lexer_source = Fs::read_file("vibe/compiler/lexer.vibe")
-  let parser_source = Fs::read_file("vibe/compiler/parser.vibe")
+  let syntax_paths = [
+    "vibe/compiler/syntax/lexer.vibe",
+    "vibe/compiler/syntax/parser_base.vibe",
+    "vibe/compiler/syntax/parser_expr_primary.vibe",
+    "vibe/compiler/syntax/parser_expr_core.vibe",
+    "vibe/compiler/syntax/parser_expr_dispatch.vibe",
+    "vibe/compiler/syntax/parser_expr.vibe",
+    "vibe/compiler/syntax/parser.vibe",
+  ]
   let main_source = "let main = () -> Int {\n  let tokens = lex(\"1 + 2\")\n  let stmts = parse_program(tokens)\n  Array::length(stmts)\n}"
   let all_stmts = ArrayBuilder::new()
   // Token enum
@@ -47,45 +54,30 @@ test "wasi: parser.vibe import - compile and run" {
     };
     ai = ai + 1
   }
-  // Lexer functions (skip imports, skip lex_ok)
-  let lx_tokens = lex(lexer_source)
-  let lx_stmts = parse_program(lx_tokens)
-  let mut li = 0
-  while li < Array::length(lx_stmts) {
-    match Array::get(lx_stmts, li) {
-      SImport(_, _) => 0,
-      SLet(_, _, name, _, _) => if name == "lex_ok" {
-        0
-      }
-      else {
-        ArrayBuilder::push(all_stmts, Array::get(lx_stmts, li)); 0
-      }
-      ,
-      _ => {
-        ArrayBuilder::push(all_stmts, Array::get(lx_stmts, li)); 0
-      }
+  // Syntax sources (skip imports and *_ok helpers)
+  let mut si = 0
+  while si < Array::length(syntax_paths) {
+    let source = Fs::read_file(Array::get(syntax_paths, si))
+    let source_tokens = lex(source)
+    let source_stmts = parse_program(source_tokens)
+    let mut sj = 0
+    while sj < Array::length(source_stmts) {
+      match Array::get(source_stmts, sj) {
+        SImport(_, _) => 0,
+        SLet(_, _, name, _, _) => if name == "lex_ok" || name == "parse_ok" {
+          0
+        }
+        else {
+          ArrayBuilder::push(all_stmts, Array::get(source_stmts, sj)); 0
+        }
+        ,
+        _ => {
+          ArrayBuilder::push(all_stmts, Array::get(source_stmts, sj)); 0
+        }
+      };
+      sj = sj + 1
     };
-    li = li + 1
-  }
-  // Parser functions (skip imports, skip parse_ok)
-  let px_tokens = lex(parser_source)
-  let px_stmts = parse_program(px_tokens)
-  let mut pi = 0
-  while pi < Array::length(px_stmts) {
-    match Array::get(px_stmts, pi) {
-      SImport(_, _) => 0,
-      SLet(_, _, name, _, _) => if name == "parse_ok" {
-        0
-      }
-      else {
-        ArrayBuilder::push(all_stmts, Array::get(px_stmts, pi)); 0
-      }
-      ,
-      _ => {
-        ArrayBuilder::push(all_stmts, Array::get(px_stmts, pi)); 0
-      }
-    };
-    pi = pi + 1
+    si = si + 1
   }
   // Main function
   let mn_tokens = lex(main_source)

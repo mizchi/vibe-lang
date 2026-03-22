@@ -9,12 +9,16 @@ import ../core/index.vibe {
   env_lookup_flat
 }
 
-import ../checker/index.vibe {
+import ../checker/checker_stmt.vibe {
   check_program_with_env
 }
 
 import ./eval_loader/index.vibe {
   contains_str
+}
+
+import ./typecheck_fs.vibe {
+  ensure_fingerprint_fs_impl
 }
 
 import ../syntax/index.vibe {
@@ -82,16 +86,14 @@ let wrap_db = (state: TypeDbState) -> TypeDb {
 }
 
 let string_to_bytes = (s: String) -> Bytes {
-  let out = Array::slice([
-    0
-  ], 0, 0)
+  let out = Bytes::new()
   let len = String::length(s)
   let mut i = 0
   while i < len {
-    Array::push(out, String::char_code_at(s, i))
+    Bytes::push(out, String::char_code_at(s, i))
     i = i + 1
   }
-  Bytes::from_array(out)
+  out
 }
 
 let dir_of = (file_path: String) -> String {
@@ -722,72 +724,95 @@ let parse_cached_type = (source: String, pos: Int) -> (Type, Int) with { Error }
 
 let load_persistent_type_env = (fingerprint: String) -> Option[TypeEnv] with { Error, Fs } {
   let path = persistent_type_env_cache_path(fingerprint)
-  if !(perform Fs::Exists(path)) {
+  if !(Fs::exists(path)) {
     None
   } else {
-    let lines = String::split(normalize_persistent_cache_text(perform Fs::ReadFile(path)), "\n")
-    let bindings = empty_type_bindings()
-    let mut version_ok = false
-    let mut i = 0
-    while i < Array::length(lines) {
-      let line = Array::get(lines, i)
-      if String::length(line) == 0 {
-        ()
+    let lines = String::split(normalize_persistent_cache_text(Fs::read_file(path)), "\n")
+    let len = Array::length(lines)
+    let rec go = (
+      index: Int,
+      version_ok: Bool,
+      bindings: Array[(String, Type)]
+    ) -> Option[TypeEnv] with { Error } {
+      if index >= len {
+        if version_ok {
+          Some(rebuild_persistent_type_env(bindings))
+        } else {
+          None
+        }
       } else {
-        let parts = String::split(line, "\t")
-        if !version_ok {
-          if Array::length(parts) == 2 &&
-            Array::get(parts, 0) == "version" &&
-            Array::get(parts, 1) == "1" {
-            version_ok = true
+        let line = Array::get(lines, index)
+        if String::length(line) == 0 {
+          go(index + 1, version_ok, bindings)
+        } else {
+          let parts = String::split(line, "\t")
+          if !version_ok {
+            if Array::length(parts) == 2 &&
+              Array::get(parts, 0) == "version" &&
+              Array::get(parts, 1) == "1" {
+              go(index + 1, true, bindings)
+            } else {
+              throw(String::concat("invalid persistent type env header: ", line))
+            }
+          } else if Array::length(parts) == 3 && Array::get(parts, 0) == "bind" {
+            let raw_type = Array::get(parts, 2)
+            let (ty, end_pos) = parse_cached_type(raw_type, 0)
+            if end_pos != String::length(raw_type) {
+              throw(String::concat("invalid persistent type env row: ", line))
+            } else {
+              Array::push(bindings, (Array::get(parts, 1), ty))
+              go(index + 1, true, bindings)
+            }
           } else {
-            throw(String::concat("invalid persistent type env header: ", line))
-          }
-        } else if Array::length(parts) == 3 && Array::get(parts, 0) == "bind" {
-          let raw_type = Array::get(parts, 2)
-          let (ty, end_pos) = parse_cached_type(raw_type, 0)
-          if end_pos != String::length(raw_type) {
             throw(String::concat("invalid persistent type env row: ", line))
           }
-          Array::push(bindings, (Array::get(parts, 1), ty))
-        } else {
-          throw(String::concat("invalid persistent type env row: ", line))
         }
       }
-      i = i + 1
     }
-    if version_ok {
-      Some(rebuild_persistent_type_env(bindings))
-    } else {
-      None
-    }
+    go(0, false, empty_type_bindings())
   }
 }
 
 let parse_persistent_dep_list_text = (text: String) -> Array[String] with { Error } {
-  let prefix = "version\t2\n"
-  if String::length(text) < String::length(prefix) ||
-    !(text[0:String::length(prefix)] == prefix) {
-    throw("invalid persistent dep cache header")
-  } else {
-    let body = String::substring(text, String::length(prefix), String::length(text))
-    let (deps, end) = parse_string_array(body, 0)
-    if end != String::length(body) {
-      throw("invalid persistent dep cache body")
+  let lines = String::split(text, "\n")
+  let deps = empty_stack()
+  let len = Array::length(lines)
+  let rec go = (index: Int, version_ok: Bool) -> Array[String] with { Error } {
+    if index >= len {
+      if version_ok {
+        deps
+      } else {
+        throw("invalid persistent dep cache header")
+      }
     } else {
-      deps
+      let line = Array::get(lines, index)
+      if String::length(line) == 0 {
+        go(index + 1, version_ok)
+      } else if !version_ok {
+        if line == "version\t4" {
+          go(index + 1, true)
+        } else {
+          throw("invalid persistent dep cache header")
+        }
+      } else if String::starts_with(line, "dep\t") {
+        Array::push(deps, line[4:String::length(line)])
+        go(index + 1, true)
+      } else {
+        throw("invalid persistent dep cache row")
+      }
     }
   }
+  go(0, false)
 }
 
 let persistent_dep_list_text = (deps: Array[String]) -> String {
-  if Array::length(deps) == 0 {
-    ""
-  } else if Array::length(deps) == 1 {
-    String::concat("version\t3\n", Array::get(deps, 0))
-  } else {
-    String::concat("version\t2\n", serialize_string_array(deps))
+  let mut out = "version\t4\n"
+  let mut i = 0
+  while i < Array::length(deps) {
+    out = String::concat(out, String::concat("dep\t", String::concat(Array::get(deps, i), "\n")))
+    i = i + 1
   }
+  out
 }
 
 let persistent_leaf_fingerprint_text = (fingerprint: String) -> String {
@@ -796,7 +821,8 @@ let persistent_leaf_fingerprint_text = (fingerprint: String) -> String {
 
 let load_persistent_leaf_fingerprint = (path: String, source: String) -> Option[String] {
   let cache_path = persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(source))
-  if !(perform Fs::Exists(cache_path)) {
+  let cache_exists = perform Fs::Exists(cache_path)
+  if !cache_exists {
     None
   } else {
     let text = normalize_persistent_cache_text(perform Fs::ReadFile(cache_path))
@@ -818,12 +844,16 @@ let load_or_parse_deps_for_source_fs = (
 ) -> (Array[String], Array[(String, String)], Int) with { Error, Fs } {
   let next_dep_source_cache = upsert_string_pair(dep_source_cache, path, source)
   let cache_path = persistent_dep_list_cache_path(path, compact_string_fingerprint(source))
-  if perform Fs::Exists(cache_path) {
-    let text = normalize_persistent_cache_text(perform Fs::ReadFile(cache_path))
+  if Fs::exists(cache_path) {
+    let text = normalize_persistent_cache_text(Fs::read_file(cache_path))
+    let line_prefix = "version\t4\n"
     let prefix = "version\t2\n"
     let single_prefix = "version\t3\n"
     if String::length(text) == 0 {
       (empty_stack(), next_dep_source_cache, parse_count)
+    } else if String::length(text) >= String::length(line_prefix) &&
+      text[0:String::length(line_prefix)] == line_prefix {
+      (parse_persistent_dep_list_text(text), next_dep_source_cache, parse_count)
     } else if String::length(text) >= String::length(single_prefix) &&
       text[0:String::length(single_prefix)] == single_prefix {
       let dep = String::substring(text, String::length(single_prefix), String::length(text))
@@ -833,29 +863,31 @@ let load_or_parse_deps_for_source_fs = (
       (parse_persistent_dep_list_text(text), next_dep_source_cache, parse_count)
     } else {
       let (deps, _, next_parse_count) = load_or_parse_module_header_fs(path, source, parse_count)
-      perform Fs::WriteFile(cache_path, persistent_dep_list_text(deps))
+      Fs::write_file(cache_path, persistent_dep_list_text(deps))
       (deps, next_dep_source_cache, next_parse_count)
     }
   } else {
     let (deps, _, next_parse_count) = load_or_parse_module_header_fs(path, source, parse_count)
-    perform Fs::WriteFile(cache_path, persistent_dep_list_text(deps))
+    Fs::write_file(cache_path, persistent_dep_list_text(deps))
     (deps, next_dep_source_cache, next_parse_count)
   }
 }
 
 let rebuild_persistent_type_env = (bindings: Array[(String, Type)]) -> TypeEnv {
   let mut env = EnvEmpty
-  let mut i = Array::length(bindings) - 1
-  while i >= 0 {
-    let (name, ty) = Array::get(bindings, i)
+  let len = Array::length(bindings)
+  let mut i = 0
+  while i < len {
+    let idx = len - i - 1
+    let (name, ty) = Array::get(bindings, idx)
     env = env_bind(env, name, ty)
-    i = i - 1
+    i = i + 1
   }
   env
 }
 
 let store_persistent_type_env = (fingerprint: String, env: TypeEnv) -> Unit with { Error, Fs } {
-  perform Fs::WriteFile(
+  Fs::write_file(
     persistent_type_env_cache_path(fingerprint),
     persistent_type_env_cache_text(env)
   )
@@ -1199,7 +1231,7 @@ let continue_fingerprint_fs = (
     source,
     parse_count
   )
-  perform Fs::WriteFile(
+  Fs::write_file(
     persistent_dep_list_cache_path(path, compact_string_fingerprint(source)),
     persistent_dep_list_text(deps)
   )
@@ -1208,34 +1240,52 @@ let continue_fingerprint_fs = (
     path
   ])
   let dep_fps = empty_dep_fps()
-  let mut db_after_deps = rdb
-  let mut env_cache_after_deps = env_cache
-  let mut dep_source_cache_after_deps = next_dep_source_cache
-  let mut parse_count_after_deps = initial_parse_count
-  let mut i = 0
-  while i < dlen {
-    let dep_path = Array::get(deps, i)
-    let (
-      dep_fp,
-      next_db,
-      next_env_cache,
-      next_dep_source_cache2,
-      next_parse_count
-    ) = ensure_fingerprint_fs(
-      db_after_deps,
-      env_cache_after_deps,
-      dep_source_cache_after_deps,
-      parse_count_after_deps,
-      dep_path,
-      next_stack
-    )
-    Array::push(dep_fps, (dep_path, dep_fp))
-    db_after_deps = next_db
-    env_cache_after_deps = next_env_cache
-    dep_source_cache_after_deps = next_dep_source_cache2
-    parse_count_after_deps = next_parse_count
-    i = i + 1
+  let rec load_deps = (
+    index: Int,
+    current_db: RippleDb,
+    current_env_cache: Array[(String, TypeEnv)],
+    current_dep_source_cache: Array[(String, String)],
+    current_parse_count: Int
+  ) -> (RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
+    if index >= dlen {
+      (
+        current_db,
+        current_env_cache,
+        current_dep_source_cache,
+        current_parse_count
+      )
+    } else {
+      let dep_path = Array::get(deps, index)
+      let (
+        dep_fp,
+        next_db,
+        next_env_cache,
+        next_dep_source_cache2,
+        next_parse_count
+      ) = ensure_fingerprint_fs(
+        current_db,
+        current_env_cache,
+        current_dep_source_cache,
+        current_parse_count,
+        dep_path,
+        next_stack
+      )
+      Array::push(dep_fps, (dep_path, dep_fp))
+      load_deps(
+        index + 1,
+        next_db,
+        next_env_cache,
+        next_dep_source_cache2,
+        next_parse_count
+      )
+    }
   }
+  let (
+    db_after_deps,
+    env_cache_after_deps,
+    dep_source_cache_after_deps,
+    parse_count_after_deps
+  ) = load_deps(0, rdb, env_cache, next_dep_source_cache, initial_parse_count)
   let fingerprint = build_fingerprint(source, dep_fps)
   match ripple_get_fingerprint(db_after_deps, path) {
     Some(cached_fp) =>
@@ -1296,7 +1346,7 @@ let finish_typecheck_fs = (
       let checked_env = check_program_with_env(stmts, import_env)
       store_persistent_type_env(fingerprint, checked_env)
       if Array::length(deps) == 0 {
-        perform Fs::WriteFile(
+        Fs::write_file(
           persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(source)),
           persistent_leaf_fingerprint_text(fingerprint)
         )
@@ -1325,7 +1375,7 @@ export let db_typecheck_fs = (db: TypeDb, path: String) -> TypeDb with { Error, 
         next_env_cache,
         next_dep_source_cache,
         next_parse_count
-      ) = ensure_fingerprint_fs(
+      ) = ensure_fingerprint_fs_impl(
         rdb,
         env_cache,
         dep_source_cache,
@@ -1681,7 +1731,7 @@ let bytes_to_hex = (bytes: Bytes) -> String {
   let mut i = 0
   let mut out = ""
   while i < len {
-    let byte = bytes[i]
+    let byte = Bytes::get(bytes, i)
     let hi = byte / 16
     let lo = byte % 16
     out = String::concat(out, bytes_to_hex_digit(hi))
@@ -1696,15 +1746,15 @@ let hex_to_bytes = (hex: String) -> Bytes with { Error } {
   if len % 2 != 0 {
     throw("invalid hex length")
   } else {
-    let out = Array::slice([0], 0, 0)
+    let out = Bytes::new()
     let mut i = 0
     while i < len {
       let hi = nibble_from_hex_char(String::char_code_at(hex, i))
       let lo = nibble_from_hex_char(String::char_code_at(hex, i + 1))
-      Array::push(out, hi * 16 + lo)
+      Bytes::push(out, hi * 16 + lo)
       i = i + 2
     }
-    Bytes::from_array(out)
+    out
   }
 }
 

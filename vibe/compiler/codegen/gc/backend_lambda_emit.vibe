@@ -1,0 +1,70 @@
+import ../../core/index.vibe {
+  bytebuf_new
+}
+
+import ../wasm_emit/index.vibe {
+  emit_local_get, emit_local_tee,
+  emit_i64_const, emit_i64_or,
+  emit_i32_wrap_i64, emit_i32_const, emit_i32_store, emit_i32_add,
+  emit_global_get, emit_global_set
+}
+
+import ../common_base/index.vibe {
+  emit_i64_store, resolve_local
+}
+
+import ../common_analysis/index.vibe {
+  emit_i64_extend_i32_u
+}
+
+let emit_lambda_closure_gc = (
+  buf: Bytes,
+  captures: Array[String],
+  num_captures: Int,
+  local_names: Array[String],
+  next_local: Int,
+  table_slot: Int
+) -> Int with { Error } {
+  if num_captures == 0 {
+    emit_i64_const(buf, (table_slot << 2) | 2)
+    next_local
+  } else {
+    let alloc_size = 8 + num_captures * 8
+    let ptr_local = next_local
+    let nl2 = next_local + 1
+    Array::push(local_names, "__closure_ptr")
+    emit_global_get(buf, 0)
+    emit_i64_extend_i32_u(buf)
+    emit_local_tee(buf, ptr_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, alloc_size)
+    emit_i32_add(buf)
+    emit_global_set(buf, 0)
+    emit_local_get(buf, ptr_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, table_slot)
+    emit_i32_store(buf, 2, 0)
+    emit_local_get(buf, ptr_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, num_captures)
+    emit_i32_store(buf, 2, 4)
+    let mut csi = 0
+    while csi < num_captures {
+      let cap_name = Array::get(captures, csi)
+      let cap_idx = resolve_local(local_names, cap_name, "gc_cap")
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, cap_idx)
+      emit_i64_store(buf, 3, 8 + csi * 8)
+      csi = csi + 1
+    }
+    emit_local_get(buf, ptr_local)
+    emit_i64_const(buf, 1)
+    emit_i64_or(buf)
+    nl2
+  }
+}
+
+export {
+  emit_lambda_closure_gc
+}

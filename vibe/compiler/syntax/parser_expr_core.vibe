@@ -1,0 +1,465 @@
+//# Imports
+
+import ../core {
+  Expr, Pat
+}
+
+import ./token.vibe {
+  Token
+}
+
+import ./parser_base.vibe {
+  _no_tb,
+  _no_tp,
+  empty_exprs,
+  expect_tk,
+  is_expr_end_token,
+  is_non_pipe_infix,
+  parse_pattern,
+  peek
+}
+
+import ./parser_expr_primary.vibe {
+  parse_primary
+}
+
+//# Functions
+
+let has_non_pipe_infix_top = (tokens: Array[Token], start: Int, end: Int) -> Bool {
+  let rec go = (i: Int, depth: Int, prev_top_end: Bool) -> Bool {
+    if i >= end {
+      false
+    } else {
+      let tok = peek(tokens, i)
+      if depth == 0 {
+        if is_non_pipe_infix(tok) {
+          if prev_top_end {
+            true
+          } else {
+            go(i + 1, 0, false)
+          }
+        } else {
+          match tok {
+            TLParen => go(i + 1, 1, false),
+            TLBracket => go(i + 1, 1, false),
+            TLBrace => go(i + 1, 1, false),
+            _ => go(i + 1, 0, is_expr_end_token(tok))
+          }
+        }
+      } else {
+        match tok {
+          TLParen => go(i + 1, depth + 1, prev_top_end),
+          TLBracket => go(i + 1, depth + 1, prev_top_end),
+          TLBrace => go(i + 1, depth + 1, prev_top_end),
+          TRParen => if depth == 1 {
+            go(i + 1, 0, true)
+          } else {
+            go(i + 1, depth - 1, prev_top_end)
+          },
+          TRBracket => if depth == 1 {
+            go(i + 1, 0, true)
+          } else {
+            go(i + 1, depth - 1, prev_top_end)
+          },
+          TRBrace => if depth == 1 {
+            go(i + 1, 0, true)
+          } else {
+            go(i + 1, depth - 1, prev_top_end)
+          },
+          _ => go(i + 1, depth, prev_top_end)
+        }
+      }
+    }
+  }
+  go(start, 0, false)
+}
+
+let has_placeholder_arg = (arg: Expr) -> Bool {
+  match arg {
+    EIdent(n) => n == "_",
+    EBinOp(_, l, r) => {
+      let left_has = match l {
+        EIdent(n) => n == "_",
+        _ => false
+      }
+      let right_has = match r {
+        EIdent(n) => n == "_",
+        _ => false
+      }
+      left_has || right_has
+    },
+    _ => false
+  }
+}
+
+let has_placeholder_args = (args: Array[Expr]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(args) {
+    if has_placeholder_arg(Array::get(args, i)) {
+      found = true
+      i = Array::length(args)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+let wrap_placeholder_arg = (arg: Expr) -> Expr {
+  let mut pc = 0
+  let mut params = Array::slice([("", None)], 0, 0)
+  let replaced = match arg {
+    EIdent(n) => {
+      if n == "_" {
+        let pn = "__ph0"
+        Array::push(params, (pn, None))
+        EIdent(pn)
+      } else {
+        arg
+      }
+    },
+    EBinOp(op, l, r) => {
+      let nl = match l {
+        EIdent(n) => {
+          if n == "_" {
+            let pn = String::concat("__ph", __to_string(pc))
+            Array::push(params, (pn, None))
+            pc = pc + 1
+            EIdent(pn)
+          } else {
+            l
+          }
+        },
+        _ => l
+      }
+      let nr = match r {
+        EIdent(n) => {
+          if n == "_" {
+            let pn = String::concat("__ph", __to_string(pc))
+            Array::push(params, (pn, None))
+            pc = pc + 1
+            EIdent(pn)
+          } else {
+            r
+          }
+        },
+        _ => r
+      }
+      EBinOp(op, nl, nr)
+    },
+    _ => arg
+  }
+  EFn(_no_tp(), _no_tb(), params, None, None, replaced)
+}
+
+let desugar_placeholder_args = (args: Array[Expr]) -> Array[Expr] {
+  let out = Array::slice([EUnit], 0, 0)
+  let mut i = 0
+  while i < Array::length(args) {
+    let arg = Array::get(args, i)
+    if has_placeholder_arg(arg) {
+      Array::push(out, wrap_placeholder_arg(arg))
+    } else {
+      Array::push(out, arg)
+    }
+    i = i + 1
+  }
+  out
+}
+
+let slice_from_zero_expr = (cur_expr: Expr, end_expr: Expr) -> Expr {
+  let args = empty_exprs()
+  Array::push(args, cur_expr)
+  Array::push(args, EInt(0))
+  Array::push(args, end_expr)
+  ECall(EIdent("__slice"), args)
+}
+
+let slice_from_idx_expr = (cur_expr: Expr, idx: Expr, end_expr: Expr) -> Expr {
+  let args = empty_exprs()
+  Array::push(args, cur_expr)
+  Array::push(args, idx)
+  Array::push(args, end_expr)
+  ECall(EIdent("__slice"), args)
+}
+
+let index_expr = (cur_expr: Expr, idx: Expr) -> Expr {
+  let args = empty_exprs()
+  Array::push(args, cur_expr)
+  Array::push(args, idx)
+  ECall(EIdent("__index"), args)
+}
+
+let parse_call_arg = (
+  tokens: Array[Token],
+  pos: Int,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  match peek(tokens, pos) {
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TThinArrow => {
+        let (body, end) = parse_recur(tokens, pos + 2, 0)
+        (EFn(_no_tp(), _no_tb(), [(name, None)], None, None, body), end)
+      },
+      TTilde => match peek(tokens, pos + 2) {
+        TEq => {
+          let (val, end) = parse_recur(tokens, pos + 3, 0)
+          (ELabeledArg(name, "~", val), end)
+        },
+        _ => parse_recur(tokens, pos, 0)
+      },
+      TQuestion => match peek(tokens, pos + 2) {
+        TEq => {
+          let (val, end) = parse_recur(tokens, pos + 3, 0)
+          (ELabeledArg(name, "?", val), end)
+        },
+        _ => parse_recur(tokens, pos, 0)
+      },
+      TEq => {
+        let (val, end) = parse_recur(tokens, pos + 2, 0)
+        (ELabeledArg(name, "~", val), end)
+      },
+      _ => parse_recur(tokens, pos, 0)
+    },
+    _ => parse_recur(tokens, pos, 0)
+  }
+}
+
+let rec parse_call_args_rest = (
+  tokens: Array[Token],
+  pos: Int,
+  b: ArrayBuilder[Expr],
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Array[Expr], Int) with { Error } {
+  match peek(tokens, pos) {
+    TComma => {
+      let (e, next) = parse_call_arg(tokens, pos + 1, parse_recur)
+      ArrayBuilder::push(b, e)
+      parse_call_args_rest(tokens, next, b, parse_recur)
+    },
+    _ => (ArrayBuilder::freeze(b), pos)
+  }
+}
+
+let rec parse_postfix = (
+  tokens: Array[Token],
+  pos: Int,
+  expr: Expr,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  match peek(tokens, pos) {
+    TLParen => match expr {
+      ECall(_, _) => (expr, pos),
+      _ => match peek(tokens, pos + 1) {
+        TRParen => parse_postfix(tokens, pos + 2, ECall(expr, empty_exprs()), parse_recur),
+        _ => {
+          let b = ArrayBuilder::new()
+          let (first_arg, next_pos) = parse_call_arg(tokens, pos + 1, parse_recur)
+          ArrayBuilder::push(b, first_arg)
+          let (args, end_pos) = parse_call_args_rest(tokens, next_pos, b, parse_recur)
+          let close_pos = expect_tk(tokens, end_pos, ")")
+          let call_args = if has_placeholder_args(args) {
+            desugar_placeholder_args(args)
+          } else {
+            args
+          }
+          parse_postfix(tokens, close_pos, ECall(expr, call_args), parse_recur)
+        }
+      },
+    },
+    TLBracket => match peek(tokens, pos + 1) {
+      TColon => match peek(tokens, pos + 2) {
+        TRBracket => {
+          let end_expr = ECall(EIdent("__len"), [expr])
+          parse_postfix(tokens, pos + 3, slice_from_zero_expr(expr, end_expr), parse_recur)
+        },
+        _ => {
+          let (end_expr, end_next) = parse_recur(tokens, pos + 2, 0)
+          let close_pos = match peek(tokens, end_next) {
+            TRBracket => end_next + 1,
+            _ => throw("expected ']'")
+          }
+          parse_postfix(tokens, close_pos, slice_from_zero_expr(expr, end_expr), parse_recur)
+        }
+      },
+      _ => {
+        let (idx, idx_next) = parse_recur(tokens, pos + 1, 0)
+        match peek(tokens, idx_next) {
+          TColon => match peek(tokens, idx_next + 1) {
+            TRBracket => {
+              let end_expr = ECall(EIdent("__len"), [expr])
+              parse_postfix(tokens, idx_next + 2, slice_from_idx_expr(expr, idx, end_expr), parse_recur)
+            },
+            _ => {
+              let (end_expr, end_next) = parse_recur(tokens, idx_next + 1, 0)
+              let close_pos = match peek(tokens, end_next) {
+                TRBracket => end_next + 1,
+                _ => throw("expected ']'")
+              }
+              parse_postfix(tokens, close_pos, slice_from_idx_expr(expr, idx, end_expr), parse_recur)
+            }
+          },
+          _ => {
+            let close_pos = match peek(tokens, idx_next) {
+              TRBracket => idx_next + 1,
+              _ => throw("expected ']'")
+            }
+            parse_postfix(tokens, close_pos, index_expr(expr, idx), parse_recur)
+          }
+        }
+      }
+    },
+    TDot => match peek(tokens, pos + 1) {
+      TIdent(field) => parse_postfix(tokens, pos + 2, EDot(expr, field), parse_recur),
+      TInt(idx) => parse_postfix(tokens, pos + 2, EDot(expr, __to_string(idx)), parse_recur),
+      _ => (expr, pos)
+    },
+    _ => (expr, pos)
+  }
+}
+
+let pipe_desugar = (lhs: Expr, rhs: Expr) -> Expr {
+  match rhs {
+    ECall(callee, args) => ECall(callee, Array::concat([lhs], args)),
+    _ => ECall(rhs, [lhs])
+  }
+}
+
+let binop_prec = (tok: Token) -> Int {
+  match tok {
+    TOr => 0,
+    TAnd => 1,
+    TPipeGt => 2,
+    TEqEq => 3,
+    TNeq => 3,
+    TLt => 3,
+    TLte => 3,
+    TGt => 3,
+    TGte => 3,
+    TBitOr => 4,
+    TBitXor => 5,
+    TBitAnd => 6,
+    TLShift => 7,
+    TRShift => 7,
+    TPlus => 8,
+    TMinus => 8,
+    TStar => 9,
+    TSlash => 9,
+    TPercent => 9,
+    _ => -1
+  }
+}
+
+let binop_op = (tok: Token) -> String with { Error } {
+  match tok {
+    TOr => "||",
+    TAnd => "&&",
+    TPipeGt => "|>",
+    TEqEq => "==",
+    TNeq => "!=",
+    TLt => "<",
+    TLte => "<=",
+    TGt => ">",
+    TGte => ">=",
+    TBitOr => "|",
+    TBitXor => "^",
+    TBitAnd => "&",
+    TLShift => "<<",
+    TRShift => ">>",
+    TPlus => "+",
+    TMinus => "-",
+    TStar => "*",
+    TSlash => "/",
+    TPercent => "%",
+    _ => throw("internal parser error: not a binary operator")
+  }
+}
+
+let rec parse_prefix = (
+  tokens: Array[Token],
+  pos: Int,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  match peek(tokens, pos) {
+    TMinus => {
+      let (e, next) = parse_prefix(tokens, pos + 1, parse_recur)
+      (EUnaryOp("-", e), next)
+    },
+    TNot => {
+      let (e, next) = parse_prefix(tokens, pos + 1, parse_recur)
+      (EUnaryOp("!", e), next)
+    },
+    _ => {
+      let (e, next) = parse_primary(tokens, pos, parse_recur)
+      parse_postfix(tokens, next, e, parse_recur)
+    }
+  }
+}
+
+let rec parse_infix_loop = (
+  tokens: Array[Token],
+  left: Expr,
+  next: Int,
+  min_prec: Int,
+  expr_start: Int,
+  cmp_locked: Bool,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  let tok = peek(tokens, next)
+  let prec = binop_prec(tok)
+  let should_stop = if prec < min_prec {
+    true
+  } else if cmp_locked {
+    prec == 3
+  } else {
+    false
+  }
+  if should_stop {
+    (left, next)
+  } else {
+    let op = binop_op(tok)
+    if op == "|>" {
+      if has_non_pipe_infix_top(tokens, expr_start, next) {
+        throw("cannot mix '|>' with other infix operators without explicit parentheses")
+      }
+    }
+    let (right0, right_next0) = parse_prefix(tokens, next + 1, parse_recur)
+    let (right, rn) = parse_infix_loop(tokens, right0, right_next0, prec + 1, next + 1, false, parse_recur)
+    if op == "|>" {
+      if has_non_pipe_infix_top(tokens, next + 1, rn) {
+        throw("cannot mix '|>' with other infix operators without explicit parentheses")
+      }
+    }
+    let mut combined = EBinOp(op, left, right)
+    if op == "|>" {
+      combined = pipe_desugar(left, right)
+    }
+    let next_cmp_locked = if prec == 3 {
+      true
+    } else {
+      cmp_locked
+    }
+    parse_infix_loop(tokens, combined, rn, min_prec, expr_start, next_cmp_locked, parse_recur)
+  }
+}
+
+export let parse_infix = (
+  tokens: Array[Token],
+  pos: Int,
+  min_prec: Int,
+  expr_start: Int,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  let (left0, next0) = parse_prefix(tokens, pos, parse_recur)
+  let (expr, en) = parse_infix_loop(tokens, left0, next0, min_prec, expr_start, false, parse_recur)
+  match peek(tokens, en) {
+    TIdent(kw) => if kw == "is" {
+      let (pat, pn) = parse_pattern(tokens, en + 1)
+      (EMatch(expr, [(pat, EBool(true)), (PWild, EBool(false))]), pn)
+    } else {
+      (expr, en)
+    },
+    _ => (expr, en)
+  }
+}

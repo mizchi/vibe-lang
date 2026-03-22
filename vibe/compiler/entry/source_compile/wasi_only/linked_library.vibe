@@ -1,0 +1,52 @@
+//# Imports
+
+import ../../../core/ast.vibe {
+  Expr, Stmt
+}
+
+import ../../../syntax/lexer.vibe {
+  lex,
+}
+
+import ../../../syntax/parser.vibe {
+  parse_program,
+  parse
+}
+
+import ../../../checker/checker_stmt.vibe {
+  check_program
+}
+
+import ../../../codegen/wasi/index.vibe {
+  compile_wasi_module_linked_impl
+}
+
+import ./preprocess.vibe {
+  strip_generic_type_params,
+  expand_interp_stmts
+}
+
+import ./path_utils.vibe {
+  dir_of_path,
+  resolve_import_path,
+  contains_path,
+  empty_stmt_array
+}
+
+import ./merge_sources.vibe {
+  collect_merged_stmts_recursive
+}
+
+export let compile_file_wasi_library = (dep_path: String) -> Bytes with { Error, Fs } {
+  let stmts = empty_stmt_array()
+  let visited = Array::slice([""], 0, 0)
+  collect_merged_stmts_recursive(dep_path, stmts, visited)
+  strip_generic_type_params(stmts)
+  expand_interp_stmts(stmts)
+  let _ = check_program(stmts)
+  compile_wasi_module_linked_impl(stmts, "_start", Array::slice([
+    ("", "")
+  ], 0, 0), Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0), true)
+}

@@ -1,0 +1,187 @@
+//# Imports
+
+import ../../core/index.vibe {
+  Expr, Stmt,
+  bytebuf_new, bytebuf_to_bytes
+}
+
+import ../common_base/index.vibe {
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable
+}
+
+import ../wasm_emit/index.vibe {
+  emit_code_section_with_locals, emit_export_section_multi, emit_function_section, emit_header, emit_type_section_multi
+}
+
+import ./compile_expr.vibe {
+  compile_expr
+}
+
+//# Functions
+
+export let compile_module_expr = (stmts: Array[Stmt]) -> Bytes with { Error } {
+  let fresh_int_array = () -> Array[Int] {
+    ArrayBuilder::freeze(ArrayBuilder::new())
+  }
+  let fresh_string_array = () -> Array[String] {
+    ArrayBuilder::freeze(ArrayBuilder::new())
+  }
+  let fresh_expr_array = () -> Array[Expr] {
+    ArrayBuilder::freeze(ArrayBuilder::new())
+  }
+  let fresh_bytes_matrix = () -> Array[Bytes] {
+    ArrayBuilder::freeze(ArrayBuilder::new())
+  }
+  let fresh_string_matrix = () -> Array[Array[String]] {
+    ArrayBuilder::freeze(ArrayBuilder::new())
+  }
+  let fn_names_list = fresh_string_array()
+  let fn_param_counts = fresh_int_array()
+  let export_names = fresh_string_array()
+  let export_indices = fresh_int_array()
+  let fn_bodies_list = fresh_expr_array()
+  let fn_param_names_list = fresh_string_matrix()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    match stmt {
+      SLet(is_export, _, name, _, expr) => match expr {
+        EFn(_, _, params, _, _, body) => {
+          let cur_idx = Array::length(fn_names_list)
+          Array::push(fn_names_list, name)
+          Array::push(fn_param_counts, Array::length(params))
+          Array::push(fn_bodies_list, body)
+          let pnames = fresh_string_array()
+          let mut pi = 0
+          while pi < Array::length(params) {
+            let (pname, _) = Array::get(params, pi)
+            Array::push(pnames, pname)
+            pi = pi + 1
+          }
+          Array::push(fn_param_names_list, pnames)
+          if is_export {
+            Array::push(export_names, name)
+            Array::push(export_indices, cur_idx)
+          }
+          0
+        },
+        _ => 0
+      }
+      ,
+      _ => 0
+    }
+    i = i + 1
+  }
+  let num_funcs = Array::length(fn_names_list)
+  if num_funcs == 0 {
+    let out = bytebuf_new()
+    let empty_type_defs = fresh_int_array()
+    let empty_type_indices = fresh_int_array()
+    let empty_body = bytebuf_new()
+    let empty_bodies = fresh_bytes_matrix()
+    Array::push(empty_bodies, empty_body)
+    let empty_local_counts = fresh_int_array()
+    Array::push(empty_local_counts, 0)
+    emit_header(out)
+    emit_type_section_multi(out, empty_type_defs)
+    emit_function_section(out, empty_type_indices)
+    emit_code_section_with_locals(out, empty_bodies, empty_local_counts)
+    bytebuf_to_bytes(out)
+  } else {
+    let fn_indices_list = fresh_int_array()
+    let fn_returns_list = fresh_int_array()
+    let fn_needs_env_list = ArrayBuilder::freeze(ArrayBuilder::new())
+    let mut fi = 0
+    while fi < num_funcs {
+      Array::push(fn_indices_list, fi)
+      Array::push(fn_returns_list, 1)
+      Array::push(fn_needs_env_list, false)
+      fi = fi + 1
+    }
+    let type_defs = fresh_int_array()
+    let mut ti = 0
+    while ti < num_funcs {
+      Array::push(type_defs, Array::get(fn_param_counts, ti))
+      Array::push(type_defs, 1)
+      ti = ti + 1
+    }
+    let type_indices = fresh_int_array()
+    let mut tii = 0
+    while tii < num_funcs {
+      Array::push(type_indices, tii)
+      tii = tii + 1
+    }
+    let lt_m = LambdaTable::{
+      bodies: fresh_bytes_matrix(),
+      param_counts: fresh_int_array(),
+      captures: fresh_string_matrix(),
+      meta_i32: fresh_int_array(),
+      meta_i64: fresh_int_array()
+    }
+    let bodies = fresh_bytes_matrix()
+    let local_counts = fresh_int_array()
+    let mut bi = 0
+    while bi < num_funcs {
+      let body = Array::get(fn_bodies_list, bi)
+      let param_names = Array::get(fn_param_names_list, bi)
+      let body_buf = bytebuf_new()
+      let local_names = fresh_string_array()
+      let mut pi = 0
+      while pi < Array::length(param_names) {
+        Array::push(local_names, Array::get(param_names, pi))
+        pi = pi + 1
+      }
+      let param_count = Array::length(param_names)
+      let empty_strs = fresh_string_array()
+      let empty_offs = fresh_int_array()
+      let empty_lens = fresh_int_array()
+      let empty_ref_cells = fresh_string_array()
+      let empty_ctor_names = fresh_string_array()
+      let empty_ctor_tags = fresh_int_array()
+      let empty_ctor_field_counts = fresh_int_array()
+      let empty_ctor_type_names = fresh_string_array()
+      let empty_ctor_struct_names = fresh_string_array()
+      let empty_ctor_struct_field_names = fresh_string_matrix()
+      let empty_thunk_names = fresh_string_array()
+      let compile_ctx = CompileCtx::{
+        func_table: FuncTable::{
+          names: fn_names_list,
+          indices: fn_indices_list,
+          params: fn_param_counts,
+          returns: fn_returns_list,
+          needs_env: fn_needs_env_list
+        },
+        str_table: StrTable::{
+          strs: empty_strs, offsets: empty_offs, lengths: empty_lens
+        },
+        lambda_table: lt_m,
+        num_user_funcs: num_funcs, func_offset: 0,
+        ref_cell_names: empty_ref_cells,
+        ctor_table: CtorTable::{
+          names: empty_ctor_names, tags: empty_ctor_tags, field_counts: empty_ctor_field_counts, type_names: empty_ctor_type_names, struct_names: empty_ctor_struct_names, struct_field_names: empty_ctor_struct_field_names
+        },
+        thunk_names: empty_thunk_names,
+        const_int_names: fresh_string_array(),
+        const_int_values: fresh_int_array()
+      }
+      let final_nl = compile_expr(body_buf, body, local_names, param_count, compile_ctx, -1)
+      Array::push(bodies, body_buf)
+      let extra = if final_nl > param_count {
+        final_nl - param_count
+      } else {
+        0
+      }
+      Array::push(local_counts, extra)
+      bi = bi + 1
+    }
+    let out = bytebuf_new()
+    emit_header(out)
+    emit_type_section_multi(out, type_defs)
+    emit_function_section(out, type_indices)
+    if Array::length(export_names) > 0 {
+      emit_export_section_multi(out, export_names, export_indices)
+    }
+    emit_code_section_with_locals(out, bodies, local_counts)
+    bytebuf_to_bytes(out)
+  }
+}

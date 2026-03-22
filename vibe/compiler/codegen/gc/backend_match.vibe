@@ -1,0 +1,278 @@
+// AST-to-WASM codegen (wasm-gc backend)
+// Uses GC struct types for ref cells instead of linear memory bump allocation.
+// Closures use table-based call_indirect (same as linear memory backend).
+
+import ../../core/index.vibe {
+  Expr, Pat, Stmt, TypeExpr,
+  bytebuf_new, bytebuf_push, bytebuf_length,
+  bytebuf_to_bytes, bytebuf_push_section, bytebuf_push_vec_header,
+  leb128_encode_u32, leb128_encode_s64
+}
+
+import ../wasm_emit/index.vibe {
+  emit_header,
+  emit_type_section, emit_type_section_multi,
+  emit_function_section, emit_export_section, emit_export_section_multi,
+  emit_code_section, emit_code_section_with_locals,
+  emit_name, emit_func_type_raw,
+  emit_import_section_func, emit_memory_section,
+  emit_exports_with_memory, emit_data_section, emit_data_section_multi,
+  emit_local_get, emit_local_set, emit_local_tee,
+  emit_i64_const, emit_i64_add, emit_i64_sub, emit_i64_mul, emit_i64_div_s,
+  emit_i64_rem_s, emit_i64_and, emit_i64_or, emit_i64_xor,
+  emit_i64_shl, emit_i64_shr_s,
+  emit_i64_eq, emit_i64_ne, emit_i64_lt_s, emit_i64_gt_s,
+  emit_i64_le_s, emit_i64_ge_s, emit_i64_eqz,
+  emit_i64_extend_i32_s, emit_i32_wrap_i64,
+  emit_i32_const, emit_i32_store, emit_i32_add, emit_i32_load,
+  emit_i32_store8, emit_i32_load8_u,
+  emit_call, emit_drop, emit_return,
+  emit_block_void, emit_block_i64, emit_loop_void,
+  emit_if_void, emit_if_i64, emit_else, emit_end,
+  emit_br, emit_br_if,
+  emit_global_section_i32_mut, emit_global_get, emit_global_set,
+  string_to_data,
+  emit_f64_const_bits, emit_f64_add, emit_f64_sub, emit_f64_mul, emit_f64_div,
+  emit_f64_eq, emit_f64_ne, emit_f64_lt, emit_f64_gt, emit_f64_le, emit_f64_ge,
+  emit_f64_neg, emit_i64_reinterpret_f64, emit_f64_reinterpret_i64,
+  emit_i64_trunc_f64_s, emit_f64_convert_i64_s,
+  emit_call_indirect, emit_table_section_funcref, emit_element_section_active,
+  emit_struct_type_raw, emit_struct_new, emit_struct_get, emit_struct_set
+}
+
+import ../common_base/index.vibe {
+  emit_i32_sub, emit_i32_mul, emit_i32_ne, emit_i32_eq, emit_i32_ge_u, emit_i32_eqz, emit_i64_store, emit_i64_load, resolve_local, resolve_func, FuncTable, StrTable, LambdaTable, CtorTable, CompileCtxGc, emit_str_ref, find_func_stmt, lookup_ctor, emit_binop_op
+}
+
+import ../common_extractors/index.vibe {
+  emit_memory_copy, array_contains_str, str_table_lookup, find_catchall_idx, emit_assignop_op
+}
+
+import ../common_analysis/index.vibe {
+  emit_i64_extend_i32_u, collect_strings_stmts, collect_free_vars, is_mut_captured_in, emit_closure_resolve, emit_closure_call_tail
+}
+
+import ./backend_builtins.vibe {
+  gen_print_i64_body, gen_print_str_body, gen_str_len_body, gen_str_eq_body,
+  gen_str_concat_body, gen_arr_new_body, gen_arr_len_body, gen_arr_get_body,
+  gen_arr_push_body, gen_arr_set_body, gen_str_char_code_at_body,
+  gen_str_from_char_code_body, gen_str_substring_body, gen_double_to_int_body,
+  gen_int_to_double_body, gen_identity_body
+}
+let compile_match_gc = (
+  buf: Bytes, scrutinee: Expr, arms: Array[(Pat, Expr)],
+  local_names: Array[String], next_local: Int,
+  ctx: CompileCtxGc, ld: Int,
+  ce: (Bytes, Expr, Array[String], Int, Int) -> Int with { Error }
+) -> Int with { Error } {
+  let scrut_local = next_local
+  Array::push(local_names, "__match_scrut")
+  let nl1 = ce(buf, scrutinee, local_names, next_local + 1, ld)
+  emit_local_set(buf, scrut_local)
+  let num_arms = Array::length(arms)
+  let catchall_idx = find_catchall_idx(arms)
+  let num_cond_arms = catchall_idx
+  let mut max_nl = nl1
+  let mut ai = 0
+  while ai < num_cond_arms {
+    let (p, _) = Array::get(arms, ai)
+    match p {
+      PInt(n) => {
+        emit_local_get(buf, scrut_local)
+        emit_i64_const(buf, n)
+        emit_i64_eq(buf)
+        emit_if_i64(buf)
+        0
+      },
+      PBool(bv) => {
+        emit_local_get(buf, scrut_local)
+        emit_i64_const(buf, if bv { 1 } else { 0 })
+        emit_i64_eq(buf)
+        emit_if_i64(buf)
+        0
+      },
+      PCtor(cname_cond, _) => {
+        let ctor_ci = lookup_ctor(ctx.ctor_table.names, cname_cond, 0)
+        let expected_tag = if ctor_ci >= 0 { Array::get(ctx.ctor_table.tags, ctor_ci) } else { -1 }
+        emit_local_get(buf, scrut_local)
+        emit_i64_const(buf, -2)
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_i32_load(buf, 2, 0)
+        emit_i32_const(buf, expected_tag)
+        emit_i32_eq(buf)
+        emit_if_i64(buf)
+        0
+      },
+      PString(sval) => {
+        let str_idx = str_table_lookup(ctx.str_table.strs, sval)
+        if str_idx >= 0 {
+          emit_local_get(buf, scrut_local)
+          emit_str_ref(buf, Array::get(ctx.str_table.offsets, str_idx), Array::get(ctx.str_table.lengths, str_idx))
+          emit_call(buf, 4)
+          emit_i64_const(buf, 1)
+          emit_i64_eq(buf)
+          emit_if_i64(buf)
+        }
+        0
+      },
+      _ => 0
+    }
+    let names_len_at_arm = Array::length(local_names)
+    let (p2, arm_body) = Array::get(arms, ai)
+    let ld_arm = if ld >= 0 { ld + ai + 1 } else { -1 }
+    match p2 {
+      PCtor(_, cargs_bind) => {
+        let mut cbi = 0
+        while cbi < Array::length(cargs_bind) {
+          match Array::get(cargs_bind, cbi) {
+            PBind(pname) => {
+              let fl = Array::length(local_names)
+              emit_local_get(buf, scrut_local)
+              emit_i64_const(buf, -2)
+              emit_i64_and(buf)
+              emit_i32_wrap_i64(buf)
+              emit_i64_load(buf, 3, 8 + cbi * 8)
+              emit_local_set(buf, fl)
+              Array::push(local_names, pname)
+              0
+            },
+            PWild => 0,
+            _ => 0
+          }
+          cbi = cbi + 1
+        }
+        let arm_nl = ce(buf, arm_body, local_names, Array::length(local_names), ld_arm)
+        if arm_nl > max_nl { max_nl = arm_nl }
+        0
+      },
+      PTuple(tpats) => {
+        // Destructure tuple: scrutinee is a heap-allocated tuple (ptr | 1)
+        // Fields at offset 8 + i * 8
+        let mut tbi = 0
+        while tbi < Array::length(tpats) {
+          match Array::get(tpats, tbi) {
+            PBind(tname) => {
+              let tl = Array::length(local_names)
+              emit_local_get(buf, scrut_local)
+              emit_i64_const(buf, -2)
+              emit_i64_and(buf)
+              emit_i32_wrap_i64(buf)
+              emit_i64_load(buf, 3, 8 + tbi * 8)
+              emit_local_set(buf, tl)
+              Array::push(local_names, tname)
+              0
+            },
+            PWild => 0,
+            _ => 0
+          }
+          tbi = tbi + 1
+        }
+        let arm_nl = ce(buf, arm_body, local_names, Array::length(local_names), ld_arm)
+        if arm_nl > max_nl { max_nl = arm_nl }
+        0
+      },
+      PBind(bname_arm) => {
+        // Bind whole scrutinee to a name
+        let bl = Array::length(local_names)
+        emit_local_get(buf, scrut_local)
+        emit_local_set(buf, bl)
+        Array::push(local_names, bname_arm)
+        let arm_nl = ce(buf, arm_body, local_names, Array::length(local_names), ld_arm)
+        if arm_nl > max_nl { max_nl = arm_nl }
+        0
+      },
+      _ => {
+        let arm_nl = ce(buf, arm_body, local_names, nl1, ld_arm)
+        if arm_nl > max_nl { max_nl = arm_nl }
+        0
+      }
+    }
+    emit_else(buf)
+    Array::truncate(local_names, names_len_at_arm)
+    ai = ai + 1
+  }
+  let ld_catch = if ld >= 0 { ld + num_cond_arms } else { -1 }
+  let _names_len_at_catch = Array::length(local_names)
+  if catchall_idx < num_arms {
+    let (cp, cbody) = Array::get(arms, catchall_idx)
+    let catch_nl = match cp {
+      PBind(bname) => {
+        let bind_local = Array::length(local_names)
+        emit_local_get(buf, scrut_local)
+        emit_local_set(buf, bind_local)
+        Array::push(local_names, bname)
+        ce(buf, cbody, local_names, Array::length(local_names), ld_catch)
+      },
+      PCtor(_cname, cargs) => {
+        let mut cbi2 = 0
+        while cbi2 < Array::length(cargs) {
+          match Array::get(cargs, cbi2) {
+            PBind(pname) => {
+              let fl2 = Array::length(local_names)
+              emit_local_get(buf, scrut_local)
+              emit_i64_const(buf, -2)
+              emit_i64_and(buf)
+              emit_i32_wrap_i64(buf)
+              emit_i64_load(buf, 3, 8 + cbi2 * 8)
+              emit_local_set(buf, fl2)
+              Array::push(local_names, pname)
+              0
+            },
+            PWild => 0,
+            _ => 0
+          }
+          cbi2 = cbi2 + 1
+        }
+        ce(buf, cbody, local_names, Array::length(local_names), ld_catch)
+      },
+      PTuple(pats) => {
+        let ptr_local2 = Array::length(local_names)
+        emit_local_get(buf, scrut_local)
+        emit_local_set(buf, ptr_local2)
+        Array::push(local_names, "__tup_ptr2")
+        let mut pi2 = 0
+        while pi2 < Array::length(pats) {
+          let tp = Array::get(pats, pi2)
+          match tp {
+            PBind(pname) => {
+              let field_l = Array::length(local_names)
+              emit_local_get(buf, ptr_local2)
+              emit_i32_wrap_i64(buf)
+              emit_i64_load(buf, 3, pi2 * 8)
+              emit_local_set(buf, field_l)
+              Array::push(local_names, pname)
+              0
+            },
+            PWild => 0,
+            _ => throw("unsupported pattern in tuple destructure")
+          }
+          pi2 = pi2 + 1
+        }
+        ce(buf, cbody, local_names, Array::length(local_names), ld_catch)
+      },
+      _ => {
+        ce(buf, cbody, local_names, Array::length(local_names), ld_catch)
+      }
+    }
+    if catch_nl > max_nl { max_nl = catch_nl }
+    0
+  } else {
+    bytebuf_push(buf, 0)  // unreachable
+    0
+  }
+  let mut ci2 = 0
+  while ci2 < num_cond_arms {
+    emit_end(buf)
+    ci2 = ci2 + 1
+  }
+  // Pad local_names to stay in sync with max_nl
+  while Array::length(local_names) < max_nl {
+    Array::push(local_names, "")
+  }
+  max_nl
+}
+
+export {
+  compile_match_gc
+}

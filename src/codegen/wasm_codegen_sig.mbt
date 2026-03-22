@@ -1144,9 +1144,20 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "Fs::read_file" ||
         name == "Fs::write_file" ||
         name == "Fs::write_bytes" ||
+        name == "Bytes::new" ||
         name == "Bytes::from_array" ||
+        name == "Bytes::from_string" ||
+        name == "Bytes::to_string" ||
         name == "Bytes::length" ||
         name == "Bytes::get" ||
+        name == "Bytes::set" ||
+        name == "Bytes::push" ||
+        name == "Bytes::append" ||
+        name == "Bytes::blit" ||
+        name == "Bytes::fill" ||
+        name == "Bytes::slice" ||
+        name == "Bytes::concat" ||
+        name == "Bytes::to_array" ||
         name == "Fs::exists" ||
         name == "Fs::stat_token" ||
         name == "Socket::tcp_connect" ||
