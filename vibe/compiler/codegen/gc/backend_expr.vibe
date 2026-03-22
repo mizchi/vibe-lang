@@ -194,71 +194,46 @@ let rec compile_expr_gc = (
       }
     },
     EIf(cond, then_e, else_e) => {
-      // Flatten if/else-if chains iteratively to reduce recursion depth
-      let mut cur_cond = cond
-      let mut cur_then = then_e
-      let mut cur_else = else_e
-      let mut if_depth = 0
-      let mut max_nl_chain = next_local
-      let mut cont_if = true
-      while cont_if {
-        let nl1 = match cur_cond {
-          EBinOp(cop, clhs, crhs) => if cop == "==" || cop == "!=" || cop == "<" || cop == ">" || cop == "<=" || cop == ">=" {
-            let cnl1 = ce(buf, clhs, local_names, max_nl_chain, ld)
-            let cnl2 = ce(buf, crhs, local_names, cnl1, ld)
-            if cop == "==" { emit_i64_eq(buf) }
-            else if cop == "!=" { emit_i64_ne(buf) }
-            else if cop == "<" { emit_i64_lt_s(buf) }
-            else if cop == ">" { emit_i64_gt_s(buf) }
-            else if cop == "<=" { emit_i64_le_s(buf) }
-            else { emit_i64_ge_s(buf) }
-            cnl2
-          } else {
-            let cnl = ce(buf, cur_cond, local_names, max_nl_chain, ld)
-            emit_i32_wrap_i64(buf)
-            cnl
-          },
-          EBool(b_val) => {
-            emit_i32_const(buf, if b_val { 1 } else { 0 })
-            max_nl_chain
-          },
-          _ => {
-            let cnl = ce(buf, cur_cond, local_names, max_nl_chain, ld)
-            emit_i32_wrap_i64(buf)
-            cnl
-          }
-        }
-        emit_if_i64(buf)
-        if_depth = if_depth + 1
-        let ld_inner = if ld >= 0 { ld + if_depth } else { -1 }
-        let names_len_before = Array::length(local_names)
-        let nl_then = ce(buf, cur_then, local_names, nl1, ld_inner)
-        if nl_then > max_nl_chain { max_nl_chain = nl_then }
-        emit_else(buf)
-        Array::truncate(local_names, names_len_before)
-        match cur_else {
-          EIf(next_cond, next_then, next_else) => {
-            cur_cond = next_cond
-            cur_then = next_then
-            cur_else = next_else
-          },
-          _ => {
-            let nl_else = ce(buf, cur_else, local_names, nl1, ld_inner)
-            if nl_else > max_nl_chain { max_nl_chain = nl_else }
-            cont_if = false
-          }
+      let nl1 = match cond {
+        EBinOp(cop, clhs, crhs) => if cop == "==" || cop == "!=" || cop == "<" || cop == ">" || cop == "<=" || cop == ">=" {
+          let cnl1 = ce(buf, clhs, local_names, next_local, ld)
+          let cnl2 = ce(buf, crhs, local_names, cnl1, ld)
+          if cop == "==" { emit_i64_eq(buf) }
+          else if cop == "!=" { emit_i64_ne(buf) }
+          else if cop == "<" { emit_i64_lt_s(buf) }
+          else if cop == ">" { emit_i64_gt_s(buf) }
+          else if cop == "<=" { emit_i64_le_s(buf) }
+          else { emit_i64_ge_s(buf) }
+          cnl2
+        } else {
+          let cnl = ce(buf, cond, local_names, next_local, ld)
+          emit_i32_wrap_i64(buf)
+          cnl
+        },
+        EBool(b_val) => {
+          emit_i32_const(buf, if b_val { 1 } else { 0 })
+          next_local
+        },
+        _ => {
+          let cnl = ce(buf, cond, local_names, next_local, ld)
+          emit_i32_wrap_i64(buf)
+          cnl
         }
       }
-      // Close all if/else blocks
-      let mut ci = 0
-      while ci < if_depth {
-        emit_end(buf)
-        ci = ci + 1
-      }
-      while Array::length(local_names) < max_nl_chain {
+      emit_if_i64(buf)
+      let ld_inner = if ld >= 0 { ld + 1 } else { -1 }
+      let names_len_before = Array::length(local_names)
+      let nl_then = ce(buf, then_e, local_names, nl1, ld_inner)
+      emit_else(buf)
+      Array::truncate(local_names, names_len_before)
+      let nl_else = ce(buf, else_e, local_names, nl1, ld_inner)
+      emit_end(buf)
+      Array::truncate(local_names, names_len_before)
+      let max_nl = if nl_then > nl_else { nl_then } else { nl_else }
+      while Array::length(local_names) < max_nl {
         Array::push(local_names, "")
       }
-      max_nl_chain
+      max_nl
     },
     ECall(callee, args) => compile_call_gc(buf, callee, args, local_names, next_local, ctx, ld, ce),
     ELet(name, value, body) => {
