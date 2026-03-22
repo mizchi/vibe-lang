@@ -7,6 +7,15 @@ on:
   pull_request:
 
 jobs:
+  lint-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -77,12 +86,14 @@ jobs:
           scripts/vibe_normalize_all.sh --check examples vibe
           end_ts=$(date +%s%N)
           elapsed_ms=$(( (end_ts - start_ts) / 1000000 ))
-          file_count=$(find examples vibe -name '*.vibe' -type f | grep -Ev '^examples/wasm/' | wc -l | tr -d ' ')
-          echo "### Normalize Benchmark" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Files | ${file_count} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Total | ${elapsed_ms}ms |" >> "$GITHUB_STEP_SUMMARY"
+          file_count=$(find examples vibe -name '*.vibe' -type f | grep -cEv '^examples/wasm/')
+          {
+            echo "### Normalize Benchmark"
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| Files | ${file_count} |"
+            echo "| Total | ${elapsed_ms}ms |"
+          } >> "$GITHUB_STEP_SUMMARY"
           if [ "$file_count" -gt 0 ]; then
             avg_us=$(( elapsed_ms * 1000 / file_count ))
             echo "| Per-file avg | ${avg_us}us |" >> "$GITHUB_STEP_SUMMARY"
@@ -492,7 +503,7 @@ jobs:
             rm -f "_build/s1test/${name}.wasm"
             compile_out=$(VIBE_PREOPEN_DIR="$(pwd)" bash scripts/run_wasm_vibe_host_runner.sh \
               "$SELFHOST_WASM" "$f" "_build/s1test/${name}.wasm" "run" 2>&1 || true)
-            if [ -f "_build/s1test/${name}.wasm" ] && [ $(wc -c < "_build/s1test/${name}.wasm") -gt 100 ]; then
+            if [ -f "_build/s1test/${name}.wasm" ] && [ "$(wc -c < "_build/s1test/${name}.wasm")" -gt 100 ]; then
               run_result=$(wasmtime run -W exceptions=y --invoke run "_build/s1test/${name}.wasm" 2>&1)
               if echo "$run_result" | grep -q "^0$\|^warning"; then
                 ok=$((ok + 1))
@@ -505,12 +516,14 @@ jobs:
               echo "::error::$name: compile failed — $(echo "$compile_out" | tail -1)"
             fi
           done
-          echo "### Selfhost Examples" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Total | $total |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Pass | $ok |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Fail | $fail |" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Selfhost Examples"
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| Total | $total |"
+            echo "| Pass | $ok |"
+            echo "| Fail | $fail |"
+          } >> "$GITHUB_STEP_SUMMARY"
           [ "$fail" -eq 0 ] || exit 1
 
       - name: Selfhost runtime fixtures
