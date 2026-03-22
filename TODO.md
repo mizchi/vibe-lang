@@ -133,7 +133,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 
 - [ ] function type / effect 表現の AST 統一
 - [ ] method syntax の仕様固定
-- [ ] 演算子型規則の checker/evaluator 一致
+- [x] 演算子型規則の checker/evaluator 一致
 - [ ] 文字列補間を typed AST 化
 
 ## モジュール分離
