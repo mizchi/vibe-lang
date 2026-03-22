@@ -112,7 +112,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 ## Effect System
 
 - [x] 関数呼び出しを跨ぐ perform の handler dispatch — インタプリタ完了
-- [x] 関数呼び出しを跨ぐ perform の handler dispatch — WASM resume loop (try_table 構造修正済み、top-level dispatch 未完)
+- [x] 関数呼び出しを跨ぐ perform の handler dispatch — インタプリタ + WASM compiled 両方で動作
 - [x] throw(x) → Perform("Error", "Throw", [x]) desugar
 - [x] suberror の throw を Error effect 経由に統一
 - [x] Net → fine-grained capability effects (Http, Socket 個別化、Net は super-effect)
