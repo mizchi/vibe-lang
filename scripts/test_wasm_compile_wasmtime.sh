@@ -16,6 +16,12 @@ NC='\033[0m'
 
 PASSED=0
 FAILED=0
+SKIPPED=0
+TEST_INDEX=0
+
+# Sharding support: set SHARD_INDEX (0-based) and SHARD_TOTAL to split tests across CI jobs
+SHARD_INDEX="${SHARD_INDEX:-0}"
+SHARD_TOTAL="${SHARD_TOTAL:-1}"
 
 cleanup() {
   rm -rf "$TMP_DIR"
@@ -54,6 +60,16 @@ fi
 
 # Helper: compile .vibe to .wasm, run with wasmtime, compare untagged result
 expect_wasmtime_result() {
+  # Shard: skip tests not assigned to this shard
+  if [ "$SHARD_TOTAL" -gt 1 ]; then
+    if [ $((TEST_INDEX % SHARD_TOTAL)) -ne "$SHARD_INDEX" ]; then
+      TEST_INDEX=$((TEST_INDEX + 1))
+      SKIPPED=$((SKIPPED + 1))
+      return
+    fi
+  fi
+  TEST_INDEX=$((TEST_INDEX + 1))
+
   local test_name="$1"
   local vibe_code="$2"
   local expected_value="$3"
@@ -1797,6 +1813,15 @@ log_info "Testing throw/handle (exceptions proposal)..."
 
 # Helper for tests that need the WASM exceptions proposal
 expect_wasmtime_result_exceptions() {
+  if [ "$SHARD_TOTAL" -gt 1 ]; then
+    if [ $((TEST_INDEX % SHARD_TOTAL)) -ne "$SHARD_INDEX" ]; then
+      TEST_INDEX=$((TEST_INDEX + 1))
+      SKIPPED=$((SKIPPED + 1))
+      return
+    fi
+  fi
+  TEST_INDEX=$((TEST_INDEX + 1))
+
   local test_name="$1"
   local vibe_code="$2"
   local expected_value="$3"
@@ -2088,3 +2113,14 @@ expect_wasmtime_result "parse_double: small fraction" \
 "1"
 
 echo ""
+echo "========================================"
+if [ "$SHARD_TOTAL" -gt 1 ]; then
+  echo "Shard $((SHARD_INDEX + 1))/$SHARD_TOTAL: Passed=$PASSED Failed=$FAILED Skipped=$SKIPPED"
+else
+  echo "Total: Passed=$PASSED Failed=$FAILED"
+fi
+echo "========================================"
+
+if [ "$FAILED" -gt 0 ]; then
+  exit 1
+fi
