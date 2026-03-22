@@ -303,7 +303,7 @@ SELFHOST_COMPILED_TEST_FILES=()
 for test_path in "$PROJECT_ROOT"/vibe/compiler/*_test.vibe; do
   test_name="$(basename "$test_path")"
   case "$test_name" in
-    selfhost_s5_test.vibe|selfhost_s5_*_test.vibe|codegen_parser_test.vibe|compiler_cache_test.vibe|cli_cache_test.vibe|cli_adapter_cache_test.vibe|codegen_enum_import_test.vibe|cache_probe_*_bench_test.vibe)
+    selfhost_s5_test.vibe|selfhost_s5_*_test.vibe|codegen_parser_test.vibe|compiler_cache_test.vibe|cli_cache_test.vibe|cli_adapter_cache_test.vibe|codegen_enum_import_test.vibe|cache_probe_*_bench_test.vibe|compiler_fs_test.vibe|module_loader_check_module_test.vibe)
       ;;
     *)
       SELFHOST_COMPILED_TEST_FILES+=("$test_path")

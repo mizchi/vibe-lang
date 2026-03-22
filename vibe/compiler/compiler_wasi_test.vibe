@@ -1,0 +1,56 @@
+//# Imports
+
+import ./entry/source_compile/index.vibe {
+  compile_source_wasi
+}
+
+//# Functions
+
+let bytes_contains = (hay: Bytes, needle: String) -> Bool {
+  let nlen = String::length(needle)
+  let hlen = Bytes::length(hay)
+  if nlen == 0 {
+    true
+  } else if nlen > hlen {
+    false
+  } else {
+    let mut found = false
+    let mut i = 0
+    while i + nlen <= hlen && !found {
+      let mut ok = true
+      let mut j = 0
+      while j < nlen && ok {
+        ok = Bytes::get(hay, i + j) == String::char_code_at(needle, j)
+        j = j + 1
+      }
+      if ok {
+        found = true
+      } else {
+        i = i + 1
+      }
+    }
+    found
+  }
+}
+
+let assert_wasm_magic = (bytes: Bytes) -> Unit {
+  assert(Bytes::get(bytes, 0) == 0)
+  assert(Bytes::get(bytes, 1) == 97)
+  assert(Bytes::get(bytes, 2) == 115)
+  assert(Bytes::get(bytes, 3) == 109)
+}
+
+//# Misc
+
+test "compile_source_wasi: produces valid WASM with entry" {
+  let bytes = compile_source_wasi("let main = () -> Int { 0 }", "main")
+  assert_wasm_magic(bytes)
+}
+
+test "compile_source_wasi: pure entry omits vibe host imports" {
+  let bytes = compile_source_wasi("let answer = () -> Int { 40 + 2 }", "answer")
+  assert(bytes_contains(bytes, "vibe") == false)
+  assert(bytes_contains(bytes, "env-get") == false)
+  assert(bytes_contains(bytes, "args-len") == false)
+  assert(bytes_contains(bytes, "fs_write_bytes") == false)
+}

@@ -526,38 +526,39 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
         None => false
       }
       let tplen = Array::length(tparams)
-      let rec alloc_tparams = (i: Int, acc_env: TypeEnv, acc_s: Subst, acc_c: Int) -> (TypeEnv, Subst, Int) {
-        if i >= tplen {
-          (acc_env, acc_s, acc_c)
-        }
-        else {
-          let tpname = Array::get(tparams, i)
-          let (tv, nc) = fresh_var(acc_c)
-          let vid = nc - 1
-          let tblen = Array::length(tbounds)
-          let rec find_bounds = (j: Int) -> Array[String] {
-            if j >= tblen {
-              Array::slice([
-                ""
-              ], 0, 0)
-            }
-            else {
-              let (bname, blist) = Array::get(tbounds, j)
-              if bname == tpname {
-                blist
+      let mut tp_env = env
+      let mut s0 = s
+      let mut c0 = c
+      let mut tpi = 0
+      while tpi < tplen {
+        let tpname = Array::get(tparams, tpi)
+        match fresh_var(c0) {
+          (tv, nc) => {
+            let vid = nc - 1
+            let tblen = Array::length(tbounds)
+            let mut bounds = Array::slice([
+              ""
+            ], 0, 0)
+            let mut tbi = 0
+            let mut found_bounds = false
+            while tbi < tblen {
+              let (bname, blist) = Array::get(tbounds, tbi)
+              if !found_bounds && bname == tpname {
+                bounds = blist
+                found_bounds = true
               }
-              else find_bounds(j + 1)
+              tbi = tbi + 1
             }
-          }
-          let bounds = find_bounds(0)
-          let ns = if eq(Array::length(bounds), 0) {
-            acc_s
-          }
-          else subst_add_bound(acc_s, vid, bounds)
-          alloc_tparams(i + 1, env_bind(acc_env, tpname, tv), ns, nc)
+            s0 = if eq(Array::length(bounds), 0) {
+              s0
+            } else subst_add_bound(s0, vid, bounds)
+            tp_env = env_bind(tp_env, tpname, tv)
+            c0 = nc
+          },
+          _ => ()
         }
+        tpi = tpi + 1
       }
-      let (tp_env, s0, c0) = alloc_tparams(0, env, s, c)
       let plen = Array::length(params)
       let mut fn_env = tp_env
       let mut s1 = s0
@@ -620,8 +621,13 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
         },
         None => (subst_apply(s2, bt), s2)
       }
-      let resolved_params = for p in param_types {
-        subst_apply(s3, p)
+      let resolved_params = Array::slice([
+        CtUnknown
+      ], 0, 0)
+      let mut rpi = 0
+      while rpi < Array::length(param_types) {
+        Array::push(resolved_params, subst_apply(s3, Array::get(param_types, rpi)))
+        rpi = rpi + 1
       }
       (CtFn(resolved_params, final_ret, he), s3, c2)
     },
