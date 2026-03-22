@@ -965,6 +965,35 @@ fn AstParser::parse_record_expr(
 }
 
 ///|
+/// Check if `{` starts a struct literal (name: value pattern) vs a block.
+fn AstParser::looks_like_struct_lit_brace(self : AstParser) -> Bool {
+  // Look ahead: { <name> : ... } means struct literal
+  let saved = self.pos
+  let mut ok = false
+  if self.peek_kind() == lbrace() {
+    self.pos += 1
+    while is_trivia(self.peek_kind()) {
+      self.pos += 1
+    }
+    if self.peek_kind() == name() {
+      self.pos += 1
+      while is_trivia(self.peek_kind()) {
+        self.pos += 1
+      }
+      if self.peek_kind() == colon() {
+        ok = true
+      }
+    }
+    // Also match empty struct: Type { }
+    if self.peek_kind() == rbrace() {
+      ok = true
+    }
+  }
+  self.pos = saved
+  ok
+}
+
+///|
 fn AstParser::parse_struct_lit_fields(
   self : AstParser,
 ) -> Array[@core.RecordFieldExpr] raise ParseError {
@@ -1862,10 +1891,20 @@ fn AstParser::parse_call_or_primary(
         let span = self.span_from(start)
         call_or_throw_expr(qualified_name, type_args, [], span)
       }
+    } else if self.peek_kind() == lbrace() &&
+      @core.is_ctor_name(base_name) &&
+      self.looks_like_struct_lit_brace() {
+      // Sugar: Type { field: value } → Type::{ field: value }
+      let type_args : Array[@core.Type] = []
+      let _ = self.bump() // consume {
+      let fields = self.parse_struct_lit_fields()
+      let _ = self.expect(rbrace(), "}")
+      let span = self.span_from(start)
+      @core.Expr::StructLit(name=base_name, type_args~, fields~, span~)
     } else if self.peek_kind() == double_colon() &&
       @core.is_ctor_name(base_name) &&
       self.peek_non_trivia_kind(self.pos + 1) == lbrace() {
-      // StructName::{ field: value } or StructName[T]::{ field: value }
+      // StructName::{ field: value } (explicit syntax)
       let type_args : Array[@core.Type] = []
       let _ = self.bump() // consume ::
       self.skip_trivia()

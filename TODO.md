@@ -150,7 +150,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 
 ## ユーザビリティ改善
 
-- [ ] 軽量 struct リテラル sugar `Type { ... }`
+- [x] 軽量 struct リテラル sugar `Type { ... }`
 - [ ] `String` を `for-in` 対象にする
 - [ ] トレイトにメソッド定義を許可
 - [x] `?` 演算子 (expr? → handle { expr } { Error(e) => throw(e) })
