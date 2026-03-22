@@ -141,10 +141,36 @@ fn compile_expr(
           emit_call(buf, idx)
         }
         _ => {
-          // User-defined effect: throw for cross-function dispatch.
-          // Encode as string "Effect::Op" + tagged argument for catch handler.
-          let tag_str = @core.Expr::String(value=key, span~)
-          compile_expr_raise(ctx, buf, tag_str)
+          // User-defined effect: check resume globals first, then throw.
+          if ctx.need_effect_resume &&
+            ctx.effect_resume_idx_global >= 0 {
+            // if (resume_idx < resume_count) { return resume_buf[resume_idx++ * 8] }
+            emit_global_get(buf, ctx.effect_resume_idx_global)
+            emit_global_get(buf, ctx.effect_resume_count_global)
+            emit_i32_lt_s(buf)
+            buf.push((4).to_byte()) // if
+            buf.push((126).to_byte()) // result i64
+            // Read resume value: buf_ptr + idx * 8
+            emit_global_get(buf, ctx.effect_resume_buf_global)
+            emit_global_get(buf, ctx.effect_resume_idx_global)
+            emit_i32_const_raw(buf, 8)
+            emit_i32_mul(buf)
+            emit_i32_add(buf)
+            emit_i64_load(buf, 0)
+            // Increment idx
+            emit_global_get(buf, ctx.effect_resume_idx_global)
+            emit_i32_const_raw(buf, 1)
+            emit_i32_add(buf)
+            emit_global_set(buf, ctx.effect_resume_idx_global)
+            buf.push((5).to_byte()) // else
+            // Throw for cross-function dispatch
+            let tag_str = @core.Expr::String(value=key, span~)
+            compile_expr_raise(ctx, buf, tag_str)
+            buf.push((11).to_byte()) // end if
+          } else {
+            let tag_str = @core.Expr::String(value=key, span~)
+            compile_expr_raise(ctx, buf, tag_str)
+          }
         }
       }
     }
