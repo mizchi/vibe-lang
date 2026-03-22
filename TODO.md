@@ -120,7 +120,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 
 ## vibe/wasm ツールチェーン
 
-- [ ] wasm_opt: directize, call forwarding, signature pruning
+- [x] wasm_opt: directize, call forwarding, signature pruning (remove_unused_types で実装済み)
 - [ ] wasm_opt: duckdb-mvp.wasm 対応 (39MB)
 - [ ] wasm_runtime: テスト拡充
 - [x] wat_encoder: S 式完全対応（f32/f64, table/elem, br_table, call_indirect, float tokenizer）
