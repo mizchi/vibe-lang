@@ -19,7 +19,7 @@ fn emit_bytes_raw_load_header(
   emit_i32_load(buf, 12)
   emit_local_set(buf, data_local)
   // Negative cap means the raw bytes object is shared/frozen.
-  // Decode it back to the actual capacity for reads and COW materialization.
+  // Decode: cap < 0 → 0 - cap - 1 (symmetric with emit_bytes_raw_mark_shared encode).
   emit_local_get(buf, cap_local)
   emit_i32_const_raw(buf, 0)
   emit_i32_lt_s(buf)
@@ -46,6 +46,7 @@ fn emit_bytes_raw_mark_shared(
   emit_local_get(buf, ptr_local)
   emit_i32_load(buf, 8)
   emit_local_set(buf, raw_cap_local)
+  // Encode: cap >= 0 → 0 - cap - 1 (symmetric with emit_bytes_raw_load_header decode).
   emit_local_get(buf, raw_cap_local)
   emit_i32_const_raw(buf, 0)
   emit_i32_ge_s(buf)
@@ -105,7 +106,10 @@ fn emit_bytes_load_header(
 }
 
 ///|
-fn emit_bytes_ensure_mutable(
+/// Allocate a new buffer, copy len bytes from data_local, rewrite ptr_local
+/// header as a mutable raw bytes object.  data_local is updated to the new
+/// allocation on return.
+fn emit_bytes_cow_copy(
   ctx : CodegenCtx,
   buf : ByteBuf,
   ptr_local : Int,
@@ -113,87 +117,6 @@ fn emit_bytes_ensure_mutable(
   cap_local : Int,
   data_local : Int,
 ) -> Unit raise WasmGenError {
-  let obj_ty_local = alloc_temp_local(ctx)
-  emit_local_get(buf, ptr_local)
-  emit_i32_load(buf, 0)
-  emit_local_set(buf, obj_ty_local)
-  emit_local_get(buf, obj_ty_local)
-  emit_i32_const_raw(buf, obj_bytes_view)
-  emit_i32_eq(buf)
-  buf.push((4).to_byte()) // if
-  buf.push((64).to_byte()) // void
-  let source_local = alloc_temp_local(ctx)
-  let start_local = alloc_temp_local(ctx)
-  let alloc_size_local = alloc_temp_local(ctx)
-  emit_local_get(buf, ptr_local)
-  emit_i32_load(buf, 4)
-  emit_local_set(buf, source_local)
-  emit_local_get(buf, ptr_local)
-  emit_i32_load(buf, 8)
-  emit_local_set(buf, start_local)
-  emit_local_get(buf, ptr_local)
-  emit_i32_load(buf, 12)
-  emit_local_get(buf, start_local)
-  emit_i32_sub(buf)
-  emit_local_set(buf, len_local)
-  emit_local_get(buf, len_local)
-  emit_local_set(buf, cap_local)
-  emit_local_get(buf, cap_local)
-  emit_i32_const_raw(buf, 3)
-  emit_i32_add(buf)
-  emit_i32_const_raw(buf, -4)
-  emit_i32_and(buf)
-  emit_local_set(buf, alloc_size_local)
-  emit_heap_alloc_local(ctx, buf, alloc_size_local, data_local)
-  emit_local_get(buf, data_local)
-  emit_local_get(buf, source_local)
-  emit_i32_load(buf, 12)
-  emit_local_get(buf, start_local)
-  emit_i32_add(buf)
-  emit_local_get(buf, len_local)
-  emit_memory_copy(buf)
-  emit_local_get(buf, ptr_local)
-  emit_i32_const_raw(buf, obj_bytes)
-  emit_i32_store(buf, 0)
-  emit_local_get(buf, ptr_local)
-  emit_local_get(buf, len_local)
-  emit_i32_store(buf, 4)
-  emit_local_get(buf, ptr_local)
-  emit_local_get(buf, cap_local)
-  emit_i32_store(buf, 8)
-  emit_local_get(buf, ptr_local)
-  emit_local_get(buf, data_local)
-  emit_i32_store(buf, 12)
-  buf.push((5).to_byte()) // else
-  let raw_cap_local = alloc_temp_local(ctx)
-  emit_local_get(buf, ptr_local)
-  emit_i32_load(buf, 4)
-  emit_local_set(buf, len_local)
-  emit_local_get(buf, ptr_local)
-  emit_i32_load(buf, 8)
-  emit_local_set(buf, raw_cap_local)
-  emit_local_get(buf, ptr_local)
-  emit_i32_load(buf, 12)
-  emit_local_set(buf, data_local)
-  emit_local_get(buf, raw_cap_local)
-  emit_i32_const_raw(buf, 0)
-  emit_i32_lt_s(buf)
-  buf.push((4).to_byte()) // if
-  buf.push((127).to_byte()) // result i32
-  emit_i32_const_raw(buf, 0)
-  emit_local_get(buf, raw_cap_local)
-  emit_i32_sub(buf)
-  emit_i32_const_raw(buf, 1)
-  emit_i32_sub(buf)
-  buf.push((5).to_byte()) // else
-  emit_local_get(buf, raw_cap_local)
-  buf.push((11).to_byte()) // end if
-  emit_local_set(buf, cap_local)
-  emit_local_get(buf, raw_cap_local)
-  emit_i32_const_raw(buf, 0)
-  emit_i32_lt_s(buf)
-  buf.push((4).to_byte()) // if
-  buf.push((64).to_byte()) // void
   let alloc_size_local = alloc_temp_local(ctx)
   let new_data_local = alloc_temp_local(ctx)
   emit_local_get(buf, cap_local)
@@ -207,6 +130,13 @@ fn emit_bytes_ensure_mutable(
   emit_local_get(buf, data_local)
   emit_local_get(buf, len_local)
   emit_memory_copy(buf)
+  // Rewrite header as mutable raw bytes
+  emit_local_get(buf, ptr_local)
+  emit_i32_const_raw(buf, obj_bytes)
+  emit_i32_store(buf, 0)
+  emit_local_get(buf, ptr_local)
+  emit_local_get(buf, len_local)
+  emit_i32_store(buf, 4)
   emit_local_get(buf, ptr_local)
   emit_local_get(buf, cap_local)
   emit_i32_store(buf, 8)
@@ -215,7 +145,42 @@ fn emit_bytes_ensure_mutable(
   emit_i32_store(buf, 12)
   emit_local_get(buf, new_data_local)
   emit_local_set(buf, data_local)
-  buf.push((11).to_byte()) // end if
+}
+
+///|
+/// Resolve view/raw header into len/cap/data, then COW-copy if the object is
+/// a view or a shared (frozen) raw bytes.
+fn emit_bytes_ensure_mutable(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  ptr_local : Int,
+  len_local : Int,
+  cap_local : Int,
+  data_local : Int,
+) -> Unit raise WasmGenError {
+  // Resolve view or raw → unified len/cap/data
+  emit_bytes_load_header(ctx, buf, ptr_local, len_local, cap_local, data_local)
+  // needs_cow = (obj_type == view) || (raw cap field < 0)
+  // For view: field at +8 is "start" (not cap), but the OR covers it.
+  // For raw: field at +8 is raw cap; negative means shared/frozen.
+  let obj_ty_local = alloc_temp_local(ctx)
+  let raw_cap_local = alloc_temp_local(ctx)
+  emit_local_get(buf, ptr_local)
+  emit_i32_load(buf, 0)
+  emit_local_set(buf, obj_ty_local)
+  emit_local_get(buf, ptr_local)
+  emit_i32_load(buf, 8)
+  emit_local_set(buf, raw_cap_local)
+  emit_local_get(buf, obj_ty_local)
+  emit_i32_const_raw(buf, obj_bytes_view)
+  emit_i32_eq(buf)
+  emit_local_get(buf, raw_cap_local)
+  emit_i32_const_raw(buf, 0)
+  emit_i32_lt_s(buf)
+  emit_i32_or(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // void
+  emit_bytes_cow_copy(ctx, buf, ptr_local, len_local, cap_local, data_local)
   buf.push((11).to_byte()) // end if
 }
 
@@ -6867,47 +6832,34 @@ fn compile_call_builtin_pre_user_inner(
     }
     "Bytes::length" => {
       // bytes_length(bytes) -> Int (tagged)
-      // Supports both raw Bytes (obj_bytes, len at offset 4) and
-      // BytesView/ArrayView (end - start, offsets 12 and 8)
+      // Supports both raw Bytes and BytesView via emit_bytes_load_header
       let pos_args = extract_positional_exprs_with_arity(
         args, "Bytes::length", 1,
       )
       let ptr_local = alloc_temp_local(ctx)
+      let len_local = alloc_temp_local(ctx)
+      let cap_local = alloc_temp_local(ctx)
+      let data_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, (-4).to_int64())
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, ptr_local)
-      emit_local_get(buf, ptr_local)
-      emit_i32_load(buf, 0) // obj_type
-      emit_i32_const_raw(buf, obj_bytes_view)
-      emit_i32_eq(buf)
-      buf.push((4).to_byte()) // if (array_view)
-      buf.push((126).to_byte()) // result i64
-      // BytesView/ArrayView: length = end - start
-      emit_local_get(buf, ptr_local)
-      emit_i32_load(buf, 12) // end
-      emit_local_get(buf, ptr_local)
-      emit_i32_load(buf, 8) // start
-      emit_i32_sub(buf)
-      emit_i64_extend_i32_s(buf)
-      emit_i64_const_raw(buf, 2L)
-      emit_i64_shl(buf)
-      buf.push((5).to_byte()) // else (regular bytes)
-      emit_local_get(buf, ptr_local)
-      emit_i32_load(buf, 4) // len
+      emit_bytes_load_header(ctx, buf, ptr_local, len_local, cap_local, data_local)
+      emit_local_get(buf, len_local)
       emit_i64_extend_i32_u(buf)
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf) // tag as int
-      buf.push((11).to_byte()) // end if
     }
     "Bytes::get" => {
       // bytes_get(bytes, idx) -> Int (tagged byte value)
-      // Supports both raw Bytes (obj_bytes) and BytesView (obj_bytes_view)
+      // Supports both raw Bytes and BytesView via emit_bytes_load_header
       let pos_args = extract_positional_exprs_with_arity(args, "Bytes::get", 2)
       let ptr_local = alloc_temp_local(ctx)
-      let idx_local = alloc_temp_local(ctx)
+      let len_local = alloc_temp_local(ctx)
+      let cap_local = alloc_temp_local(ctx)
       let data_local = alloc_temp_local(ctx)
+      let idx_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, (-4).to_int64())
       emit_i64_and(buf)
@@ -6918,37 +6870,14 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_shr_s(buf) // untag index
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, idx_local)
-      emit_local_get(buf, ptr_local)
-      emit_i32_load(buf, 0) // obj_type
-      emit_i32_const_raw(buf, obj_bytes_view)
-      emit_i32_eq(buf)
-      buf.push((4).to_byte()) // if (array_view)
-      buf.push((126).to_byte()) // result i64
-      // BytesView: source_data[start + idx]
-      emit_local_get(buf, ptr_local)
-      emit_i32_load(buf, 4) // source_ptr
-      emit_i32_load(buf, 12) // source data_ptr
-      emit_local_get(buf, ptr_local)
-      emit_i32_load(buf, 8) // start
+      emit_bytes_load_header(ctx, buf, ptr_local, len_local, cap_local, data_local)
+      emit_local_get(buf, data_local)
       emit_local_get(buf, idx_local)
-      emit_i32_add(buf)
       emit_i32_add(buf)
       emit_i32_load8_u(buf, 0)
       emit_i64_extend_i32_u(buf)
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf) // tag as int
-      buf.push((5).to_byte()) // else (regular bytes)
-      emit_local_get(buf, ptr_local)
-      emit_i32_load(buf, 12) // data_ptr
-      emit_local_set(buf, data_local)
-      emit_local_get(buf, data_local)
-      emit_local_get(buf, idx_local)
-      emit_i32_add(buf)
-      emit_i32_load8_u(buf, 0) // load element at [data_ptr + idx]
-      emit_i64_extend_i32_u(buf)
-      emit_i64_const_raw(buf, 2L)
-      emit_i64_shl(buf) // tag as int
-      buf.push((11).to_byte()) // end if
     }
     "Bytes::new" => {
       // Bytes::new() -> empty bytes with reserved packed byte storage
@@ -7231,6 +7160,8 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, src_local)
       emit_i32_load(buf, 0)
       emit_local_set(buf, src_ty_local)
+      // Flatten nested views: if src is a view, rebase start/end onto the
+      // ultimate source.  Otherwise source_local = src_local directly.
       emit_local_get(buf, src_ty_local)
       emit_i32_const_raw(buf, obj_bytes_view)
       emit_i32_eq(buf)
@@ -7240,7 +7171,6 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, src_local)
       emit_i32_load(buf, 4)
       emit_local_set(buf, source_local)
-      emit_bytes_raw_mark_shared(ctx, buf, source_local)
       emit_local_get(buf, src_local)
       emit_i32_load(buf, 8)
       emit_local_set(buf, base_start_local)
@@ -7255,8 +7185,9 @@ fn compile_call_builtin_pre_user_inner(
       buf.push((5).to_byte()) // else
       emit_local_get(buf, src_local)
       emit_local_set(buf, source_local)
-      emit_bytes_raw_mark_shared(ctx, buf, source_local)
       buf.push((11).to_byte()) // end if
+      // Mark the ultimate source as shared (frozen) so mutations trigger COW.
+      emit_bytes_raw_mark_shared(ctx, buf, source_local)
       emit_local_get(buf, obj_local)
       emit_i32_const_raw(buf, obj_bytes_view)
       emit_i32_store(buf, 0)
