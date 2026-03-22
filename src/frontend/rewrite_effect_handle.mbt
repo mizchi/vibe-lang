@@ -386,13 +386,34 @@ fn reh_rewrite_handle(
   } else {
     // Tail-resumptive: inline handler at perform sites
     let rewritten_body = reh_replace_performs(body, effect_handlers)
-    if error_arms.length() > 0 {
-      @core.Expr::Handle(body=rewritten_body, arms=error_arms, span~)
-    } else {
-      // Pure effect handling — just a block
-      @core.Expr::Block(body=rewritten_body, span~)
+    // Reconstruct effect handler arms for codegen (cross-function dispatch)
+    let all_arms : Array[@core.MatchArm] = []
+    for _key, handler in effect_handlers {
+      all_arms.push({
+        pat: reh_handler_to_pat(handler, span),
+        cond: None,
+        expr: handler.raw_expr,
+        span,
+      })
     }
+    for arm in error_arms {
+      all_arms.push(arm)
+    }
+    // Always keep Handle for cross-function dispatch via try-catch
+    @core.Expr::Handle(body=rewritten_body, arms=all_arms, span~)
   }
+}
+
+///|
+fn reh_handler_to_pat(handler : EffectHandler, span : @core.Span) -> @core.Pat {
+  let args : Array[@core.Pat] = handler.param_names.map(fn(name) {
+    if name == "_" {
+      @core.Pat::Wildcard(span~)
+    } else {
+      @core.Pat::Bind(name~, span~)
+    }
+  })
+  @core.Pat::Ctor(name=handler.key, args~, span~)
 }
 
 ///|

@@ -127,22 +127,26 @@ fn compile_expr(
       }
       compile_expr_raise(ctx, buf, value)
     }
-    @core.Expr::Perform(effect_name~, op_name~, args~, ..) => {
+    @core.Expr::Perform(effect_name~, op_name~, args~, span~) => {
       let key = effect_name + "::" + op_name
-      let func_idx = match ctx.effect_op_imports.get(key) {
-        Some(idx) => idx
-        None =>
-          raise WasmGenError::Unsupported("perform " + key + ": not registered")
+      // Check if this perform has a registered import (e.g. Fs::ReadFile)
+      match ctx.effect_op_imports.get(key) {
+        Some(idx) if idx >= 0 => {
+          // External effect: call imported function
+          for arg in args {
+            compile_expr(ctx, buf, arg.expr)
+          }
+          buf.push((0x41).to_byte()) // i32.const 0 (closure env)
+          buf.push((0).to_byte())
+          emit_call(buf, idx)
+        }
+        _ => {
+          // User-defined effect: throw for cross-function dispatch.
+          // Encode as string "Effect::Op" + tagged argument for catch handler.
+          let tag_str = @core.Expr::String(value=key, span~)
+          compile_expr_raise(ctx, buf, tag_str)
+        }
       }
-      // Push arguments (tagged i64 values)
-      for arg in args {
-        compile_expr(ctx, buf, arg.expr)
-      }
-      // Push closure env (i32 const 0, no captures for imported ops)
-      buf.push((0x41).to_byte()) // i32.const
-      buf.push((0).to_byte()) // 0
-      // call imported function
-      emit_call(buf, func_idx)
     }
     @core.Expr::Handle(body~, arms~, span~) =>
       compile_expr_handle(ctx, buf, body, arms, span)

@@ -322,6 +322,8 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         ctx.effect_op_imports[key] = -1
         ctx.effect_op_param_counts[key] = args.length()
       }
+      // User-defined effects use throw/catch for cross-function dispatch
+      ctx.need_exceptions = true
       for arg in args {
         scan_needs_expr(ctx, arg.expr)
       }
