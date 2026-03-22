@@ -197,13 +197,14 @@ pub fn TypeEnv::new() -> TypeEnv {
 fn register_builtin_effects(env : TypeEnv) -> Unit {
   // Error effect
   let error_ops : Map[String, @core.EffectOpSig] = {}
+  // Accept any type that implements the Error trait (String, suberror, etc.)
   error_ops["Throw"] = @core.EffectOpSig::{
-    params: [@core.Type::String],
+    params: [@core.Type::Param("E")],
     ret: @core.Type::Never,
   }
   env.effect_defs["Error"] = @core.EffectDef_::{
     name: "Error",
-    params: [],
+    params: ["E"],
     ops: error_ops,
   }
   // Fs effect (maps to builtin Fs::* calls)
