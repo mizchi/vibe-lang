@@ -203,10 +203,39 @@ fn compile_expr(
       let _ = span
       raise WasmGenError::Unsupported("spread outside array literal")
     }
-    // StringInterp is lowered in desugar; should never reach codegen
-    @core.Expr::StringInterp(span~, ..) => {
-      let _ = span
-      raise WasmGenError::Unsupported("StringInterp should have been desugared")
+    // StringInterp: lower to String::concat chain at codegen time (fallback)
+    @core.Expr::StringInterp(parts~, span~) => {
+      let exprs : Array[@core.Expr] = []
+      for part in parts {
+        match part {
+          @core.StringInterpPart::Lit(s) =>
+            exprs.push(@core.Expr::String(value=s, span~))
+          @core.StringInterpPart::Expr(e) =>
+            exprs.push(@core.Expr::Call(
+              name="__to_string",
+              type_args=[],
+              args=[@core.CallArg::{ label: None, expr: e, span }],
+              span~,
+            ))
+        }
+      }
+      if exprs.length() == 0 {
+        compile_expr(ctx, buf, @core.Expr::String(value="", span~))
+      } else {
+        let mut result = exprs[0]
+        for j in 1..<exprs.length() {
+          result = @core.Expr::Call(
+            name="String::concat",
+            type_args=[],
+            args=[
+              @core.CallArg::{ label: None, expr: result, span },
+              @core.CallArg::{ label: None, expr: exprs[j], span },
+            ],
+            span~,
+          )
+        }
+        compile_expr(ctx, buf, result)
+      }
     }
   }
 }
