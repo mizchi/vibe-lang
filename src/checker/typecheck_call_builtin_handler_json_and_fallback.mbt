@@ -8,6 +8,14 @@ fn type_call_builtin_handler_json_and_fallback(
   allow_effect : Bool,
   call_span : @core.Span,
 ) -> @core.Type raise TypeError {
+  let ctx = BuiltinCallCtx::{
+    env,
+    args,
+    aliases,
+    effects,
+    allow_effect,
+    call_span,
+  }
   match @core.lower_wasm_intrinsic_name(name) {
     "__to_string" => {
       let pos_args = extract_positional_args(args, "__to_string", call_span)
@@ -18,183 +26,84 @@ fn type_call_builtin_handler_json_and_fallback(
       @core.Type::String
     }
     "String::join" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "String::join",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Array(@core.Type::String), @core.Type::String],
         @core.Type::String,
         false,
       )
     "Lines::parse" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Lines::parse",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String],
         @core.Type::Array(@core.Type::String),
         false,
       )
     "Lines::stringify" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Lines::stringify",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Array(@core.Type::String)],
         @core.Type::String,
         false,
       )
     "Json::stringify" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Json::stringify",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [builtin_json_type()],
         @core.Type::String,
         false,
       )
     "Json::parse" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Json::parse",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String],
         builtin_json_type(),
         false,
       )
     "Json::stringify_lines" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Json::stringify_lines",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Array(builtin_json_type())],
         @core.Type::String,
         false,
       )
     "Json::parse_lines" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Json::parse_lines",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String],
         @core.Type::Array(builtin_json_type()),
         false,
       )
     "Json::type_of" | "Json::string" =>
-      check_builtin_simple(
-        env,
-        name,
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [builtin_json_type()],
-        @core.Type::String,
-        false,
-      )
+      ctx.simple(name, [builtin_json_type()], @core.Type::String, false)
     "Json::get" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Json::get",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [builtin_json_type(), @core.Type::String],
         builtin_json_type(),
         false,
       )
     "Json::index" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Json::index",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [builtin_json_type(), @core.Type::Int],
         builtin_json_type(),
         false,
       )
     "Json::number" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Json::number",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [builtin_json_type()],
         @core.Type::Double,
         false,
       )
     "Json::bool" | "Json::is_null" =>
-      check_builtin_simple(
-        env,
-        name,
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [builtin_json_type()],
-        @core.Type::Bool,
-        false,
-      )
+      ctx.simple(name, [builtin_json_type()], @core.Type::Bool, false)
     "Json::length" =>
-      check_builtin_simple(
-        env,
-        "Json::length",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [builtin_json_type()],
-        @core.Type::Int,
-        false,
-      )
+      ctx.simple("Json::length", [builtin_json_type()], @core.Type::Int, false)
     "Json::keys" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Json::keys",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [builtin_json_type()],
         @core.Type::Array(@core.Type::String),
         false,

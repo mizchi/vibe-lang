@@ -416,7 +416,13 @@ fn call_or_throw_expr(
           got="throw(label=...)",
           span~,
         )
-      None => return @core.Expr::Raise(value=args[0].expr, span~)
+      None =>
+        return @core.Expr::Perform(
+          effect_name="Error",
+          op_name="Throw",
+          args~,
+          span~,
+        )
     }
   }
   if name == "perform" {
@@ -956,6 +962,35 @@ fn AstParser::parse_record_expr(
   let _ = self.expect(rbrace(), "}")
   let span = self.span_from(start)
   @core.Expr::Record(fields~, span~)
+}
+
+///|
+/// Check if `{` starts a struct literal (name: value pattern) vs a block.
+fn AstParser::looks_like_struct_lit_brace(self : AstParser) -> Bool {
+  // Look ahead: { <name> : ... } means struct literal
+  let saved = self.pos
+  let mut ok = false
+  if self.peek_kind() == lbrace() {
+    self.pos += 1
+    while is_trivia(self.peek_kind()) {
+      self.pos += 1
+    }
+    if self.peek_kind() == name() {
+      self.pos += 1
+      while is_trivia(self.peek_kind()) {
+        self.pos += 1
+      }
+      if self.peek_kind() == colon() {
+        ok = true
+      }
+    }
+    // Also match empty struct: Type { }
+    if self.peek_kind() == rbrace() {
+      ok = true
+    }
+  }
+  self.pos = saved
+  ok
 }
 
 ///|
@@ -1856,10 +1891,20 @@ fn AstParser::parse_call_or_primary(
         let span = self.span_from(start)
         call_or_throw_expr(qualified_name, type_args, [], span)
       }
+    } else if self.peek_kind() == lbrace() &&
+      @core.is_ctor_name(base_name) &&
+      self.looks_like_struct_lit_brace() {
+      // Sugar: Type { field: value } → Type::{ field: value }
+      let type_args : Array[@core.Type] = []
+      let _ = self.bump() // consume {
+      let fields = self.parse_struct_lit_fields()
+      let _ = self.expect(rbrace(), "}")
+      let span = self.span_from(start)
+      @core.Expr::StructLit(name=base_name, type_args~, fields~, span~)
     } else if self.peek_kind() == double_colon() &&
       @core.is_ctor_name(base_name) &&
       self.peek_non_trivia_kind(self.pos + 1) == lbrace() {
-      // StructName::{ field: value } or StructName[T]::{ field: value }
+      // StructName::{ field: value } (explicit syntax)
       let type_args : Array[@core.Type] = []
       let _ = self.bump() // consume ::
       self.skip_trivia()
@@ -1985,6 +2030,38 @@ fn AstParser::parse_call_or_primary(
           span~,
         )
       }
+    } else if self.peek_kind() == question() && not(saw_newline) {
+      // Error propagation: expr? → handle { expr } { Error(e) => throw(e) }
+      let _ = self.bump()
+      let span = self.span_from(start)
+      let err_name = "__err$" + span.start.to_string()
+      expr = @core.Expr::Handle(
+        body=@core.Module::{ stmts: [@core.Stmt::Expr(expr~, span~)] },
+        arms=[
+          {
+            pat: @core.Pat::Ctor(
+              name="Error",
+              args=[@core.Pat::Bind(name=err_name, span~)],
+              span~,
+            ),
+            cond: None,
+            expr: @core.Expr::Perform(
+              effect_name="Error",
+              op_name="Throw",
+              args=[
+                @core.CallArg::{
+                  label: None,
+                  expr: @core.Expr::Ident(name=err_name, span~),
+                  span,
+                },
+              ],
+              span~,
+            ),
+            span,
+          },
+        ],
+        span~,
+      )
     } else if self.peek_kind() == lbracket() && not(saw_newline) {
       // Index/slice access: expr[index] or expr[i:j] — only on the same line.
       // A newline before [ starts a new array literal expression.
@@ -2001,7 +2078,7 @@ fn AstParser::parse_call_or_primary(
           let temp_ref = @core.Expr::Ident(name=temp_name, span~)
           let zero = @core.Expr::Int(value=0L, span~)
           let len_call = @core.Expr::Call(
-            name="String::length",
+            name="__len",
             type_args=[],
             args=[
               @core.CallArg::{
@@ -2043,7 +2120,7 @@ fn AstParser::parse_call_or_primary(
             let span = @core.Span::merge(expr.span(), index.span())
             let temp_ref = @core.Expr::Ident(name=temp_name, span~)
             let len_call = @core.Expr::Call(
-              name="String::length",
+              name="__len",
               type_args=[],
               args=[
                 @core.CallArg::{
@@ -2292,7 +2369,7 @@ fn desugar_string_interp(
   raw : String,
   span : @core.Span,
 ) -> @core.Expr raise ParseError {
-  let parts : Array[@core.Expr] = []
+  let parts : Array[@core.StringInterpPart] = []
   let chars = raw.to_array()
   let len = chars.length()
   let mut i = 0
@@ -2302,7 +2379,7 @@ fn desugar_string_interp(
       chars[i] == '\\' &&
       (chars[i + 1] == '{' || chars[i + 1] == '(') {
       if buf.to_string().length() > 0 {
-        parts.push(@core.Expr::String(value=buf.to_string(), span~))
+        parts.push(@core.StringInterpPart::Lit(buf.to_string()))
         buf.reset()
       }
       let open_char = chars[i + 1]
@@ -2346,14 +2423,7 @@ fn desugar_string_interp(
           span~,
         )
       }
-      parts.push(
-        @core.Expr::Call(
-          name="__to_string",
-          type_args=[],
-          args=[@core.CallArg::{ label: None, expr: inner, span }],
-          span~,
-        ),
-      )
+      parts.push(@core.StringInterpPart::Expr(inner))
     } else if chars[i] == '\\' && i + 1 < len {
       match chars[i + 1] {
         'n' => buf.write_char('\n')
@@ -2369,26 +2439,23 @@ fn desugar_string_interp(
     }
   }
   if buf.to_string().length() > 0 {
-    parts.push(@core.Expr::String(value=buf.to_string(), span~))
+    parts.push(@core.StringInterpPart::Lit(buf.to_string()))
   }
   if parts.length() == 0 {
     @core.Expr::String(value="", span~)
   } else if parts.length() == 1 {
-    parts[0]
-  } else {
-    let mut result = parts[0]
-    for j in 1..<parts.length() {
-      result = @core.Expr::Call(
-        name="String::concat",
-        type_args=[],
-        args=[
-          @core.CallArg::{ label: None, expr: result, span },
-          @core.CallArg::{ label: None, expr: parts[j], span },
-        ],
-        span~,
-      )
+    match parts[0] {
+      @core.StringInterpPart::Lit(s) => @core.Expr::String(value=s, span~)
+      @core.StringInterpPart::Expr(e) =>
+        @core.Expr::Call(
+          name="__to_string",
+          type_args=[],
+          args=[@core.CallArg::{ label: None, expr: e, span }],
+          span~,
+        )
     }
-    result
+  } else {
+    @core.Expr::StringInterp(parts~, span~)
   }
 }
 
@@ -2458,7 +2525,6 @@ fn contains_placeholder(expr : @core.Expr) -> Bool {
     | @core.Expr::Handle(..)
     | @core.Expr::Fn(..)
     | @core.Expr::While(..) => false // Don't look inside blocks/lambdas
-    @core.Expr::Raise(value~, ..) => contains_placeholder(value)
     @core.Expr::Yield(expr~, ..) => contains_placeholder(expr)
     _ => false
   }
@@ -2527,8 +2593,6 @@ fn reindex_placeholders(expr : @core.Expr, counter : Ref[Int]) -> @core.Expr {
         else_body~,
         span~,
       )
-    @core.Expr::Raise(value~, span~) =>
-      @core.Expr::Raise(value=reindex_placeholders(value, counter), span~)
     @core.Expr::Yield(expr~, span~) =>
       @core.Expr::Yield(expr=reindex_placeholders(expr, counter), span~)
     _ => expr
@@ -2597,8 +2661,6 @@ fn replace_placeholders(expr : @core.Expr) -> @core.Expr {
         else_body~,
         span~,
       )
-    @core.Expr::Raise(value~, span~) =>
-      @core.Expr::Raise(value=replace_placeholders(value), span~)
     @core.Expr::Yield(expr~, span~) =>
       @core.Expr::Yield(expr=replace_placeholders(expr), span~)
     _ => expr
@@ -2844,8 +2906,6 @@ fn desugar_expr_deep(expr : @core.Expr) -> @core.Expr {
         body=desugar_module(body),
         span~,
       )
-    @core.Expr::Raise(value~, span~) =>
-      @core.Expr::Raise(value=desugar_expr_deep(value), span~)
     @core.Expr::Yield(expr=e, span~) =>
       @core.Expr::Yield(expr=desugar_expr_deep(e), span~)
     _ => expr

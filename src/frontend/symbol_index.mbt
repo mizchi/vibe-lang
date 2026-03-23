@@ -674,7 +674,7 @@ pub fn build_symbol_index_for_module(
           span,
         )
       }
-      @core.Stmt::InternalTraitDef(name~, supertraits~, open_impl~, span~) => {
+      @core.Stmt::InternalTraitDef(name~, supertraits~, open_impl~, span~, ..) => {
         let _ = open_impl
         let suffix = if supertraits.length() == 0 {
           ""

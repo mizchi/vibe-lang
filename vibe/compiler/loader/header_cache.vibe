@@ -1,0 +1,351 @@
+//# Imports
+
+import ../syntax/lexer.vibe {
+  lex,
+}
+
+import ../syntax/parser.vibe {
+  parse_program
+}
+
+import ../core/ast.vibe {
+  Stmt,
+}
+
+import ../runtime/eval_loader/index.vibe {
+  collect_exports
+}
+
+import ../cache/persistent/index.vibe {
+  compact_string_fingerprint,
+  normalize_persistent_cache_text,
+  persistent_module_header_cache_path
+}
+
+//# Helpers
+
+let dir_of = (file_path: String) -> String {
+  let idx = String::last_index_of(file_path, "/")
+  if idx < 0 {
+    ""
+  } else if idx == 0 {
+    "/"
+  } else {
+    file_path[0:idx]
+  }
+}
+
+let normalize_path = (path: String) -> String {
+  let is_absolute = String::length(path) > 0 && String::char_code_at(path, 0) == 47
+  let mut parts = Array::slice([""], 0, 0)
+  let len = String::length(path)
+  let mut start = 0
+  let mut i = 0
+  while i <= len {
+    let at_sep = if i == len {
+      true
+    } else {
+      String::char_code_at(path, i) == 47
+    }
+    if at_sep {
+      let part = path[start:i]
+      let skip_part = if String::length(part) == 0 {
+        true
+      } else {
+        part == "."
+      }
+      if skip_part {
+        ()
+      } else if part == ".." {
+        if Array::length(parts) > 0 {
+          let next_len = Array::length(parts) - 1
+          let next_parts = Array::slice([""], 0, 0)
+          let mut j = 0
+          while j < next_len {
+            Array::push(next_parts, Array::get(parts, j))
+            j = j + 1
+          }
+          parts = next_parts
+        }
+      } else {
+        Array::push(parts, part)
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  let mut out = if is_absolute { "/" } else { "" }
+  let mut pi = 0
+  while pi < Array::length(parts) {
+    if String::length(out) > 0 && !(out == "/") {
+      out = String::concat(out, "/")
+    }
+    if out == "/" {
+      out = String::concat(out, Array::get(parts, pi))
+    } else {
+      out = String::concat(out, Array::get(parts, pi))
+    }
+    pi = pi + 1
+  }
+  out
+}
+
+let path_has_relative_prefix = (raw_path: String, len: Int) -> Bool {
+  if len >= 2 {
+    if raw_path[0:2] == "./" {
+      true
+    } else if len >= 3 {
+      raw_path[0:3] == "../"
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
+let resolve_path_candidates = (base_dir: String, raw_path: String) -> Array[String] {
+  let len = String::length(raw_path)
+  let joined = if path_has_relative_prefix(raw_path, len) {
+    if base_dir == "" || base_dir == "/" {
+      String::concat(base_dir, raw_path)
+    } else {
+      String::concat(base_dir, String::concat("/", raw_path))
+    }
+  } else {
+    raw_path
+  }
+  let normalized = normalize_path(joined)
+  if String::ends_with(normalized, ".vibe") {
+    [normalized]
+  } else {
+    [
+      String::concat(normalized, ".vibe"),
+      String::concat(normalized, "/index.vibe")
+    ]
+  }
+}
+
+let resolve_path_fs = (base_dir: String, raw_path: String) -> String with { Fs } {
+  let candidates = resolve_path_candidates(base_dir, raw_path)
+  let mut i = 0
+  let mut found = ""
+  while i < Array::length(candidates) {
+    if found == "" {
+      let candidate = Array::get(candidates, i)
+      if Fs::exists(candidate) {
+        found = candidate
+      }
+    }
+    i = i + 1
+  }
+  if found == "" {
+    Array::get(candidates, 0)
+  } else {
+    found
+  }
+}
+
+let strip_trailing_cr = (line: String) -> String {
+  let len = String::length(line)
+  if len > 0 {
+    if String::char_code_at(line, len - 1) == 13 {
+      line[0:len - 1]
+    } else {
+      line
+    }
+  } else {
+    line
+  }
+}
+
+let special_bundle_header = (path: String) -> Option[(Array[String], Array[String])] {
+  if String::ends_with(path, "selfhost_sources_bundle.vibe") {
+    Some((
+      Array::slice([""], 0, 0),
+      ["selfhost_sources", "selfhost_source_groups"]
+    ))
+  } else if String::ends_with(path, "selfhost_cli_adapter_bundle.vibe") {
+    Some((
+      Array::slice([""], 0, 0),
+      [
+        "selfhost_cli_adapter_sources",
+        "selfhost_cli_adapter_source_groups",
+        "selfhost_cli_adapter_ordered_sources",
+        "selfhost_cli_adapter_merged_source",
+        "selfhost_cli_adapter_module_source"
+      ]
+    ))
+  } else if String::ends_with(path, "selfbuild_runtime_entry_bundle.vibe") {
+    Some((
+      Array::slice([""], 0, 0),
+      ["selfbuild_runtime_entry_source"]
+    ))
+  } else {
+    None
+  }
+}
+
+let collect_import_deps_from_stmts = (stmts: Array[Stmt], base_dir: String) -> Array[String] with { Fs } {
+  let deps = Array::slice([""], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(raw_path, _) => Array::push(deps, resolve_path_fs(base_dir, raw_path)),
+      SReExport(raw_path, _) => Array::push(deps, resolve_path_fs(base_dir, raw_path)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  deps
+}
+
+let persistent_module_header_text = (deps: Array[String], exports: Array[String]) -> String {
+  let mut out = "version\t1\n"
+  let mut i = 0
+  while i < Array::length(deps) {
+    out = String::concat(
+      out,
+      String::concat("dep\t", String::concat(Array::get(deps, i), "\n"))
+    )
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(exports) {
+    out = String::concat(
+      out,
+      String::concat("export\t", String::concat(Array::get(exports, j), "\n"))
+    )
+    j = j + 1
+  }
+  out
+}
+
+let has_prefix = (line: String, prefix: String) -> Bool {
+  let prefix_len = String::length(prefix)
+  if String::length(line) < prefix_len {
+    false
+  } else {
+    let mut ok = true
+    let mut i = 0
+    while ok && i < prefix_len {
+      ok = String::char_code_at(line, i) == String::char_code_at(prefix, i)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+let parse_persistent_module_header_text = (raw: String) -> (Array[String], Array[String]) with { Error } {
+  let deps = Array::slice([""], 0, 0)
+  let exports = Array::slice([""], 0, 0)
+  let len = String::length(raw)
+  let mut line_start = 0
+  let mut saw_version = false
+  let mut i = 0
+  while i < len {
+    if String::char_code_at(raw, i) == 10 {
+      let line = strip_trailing_cr(raw[line_start:i])
+      if String::length(line) > 0 {
+        if has_prefix(line, "version\t") {
+          let value = line[8:String::length(line)]
+          if !(value == "1") {
+            throw("invalid persistent module header version")
+          }
+          saw_version = true
+        } else if has_prefix(line, "dep\t") {
+          let value = line[4:String::length(line)]
+          if String::length(value) == 0 {
+            throw("invalid persistent module header dep row")
+          }
+          Array::push(deps, value)
+        } else if has_prefix(line, "export\t") {
+          let value = line[7:String::length(line)]
+          if String::length(value) == 0 {
+            throw("invalid persistent module header export row")
+          }
+          Array::push(exports, value)
+        } else {
+          throw(String::concat("invalid persistent module header row: ", line))
+        }
+      }
+      line_start = i + 1
+    }
+    i = i + 1
+  }
+  let line = strip_trailing_cr(raw[line_start:len])
+  if String::length(line) > 0 {
+    if has_prefix(line, "version\t") {
+      let value = line[8:String::length(line)]
+      if !(value == "1") {
+        throw("invalid persistent module header version")
+      }
+      saw_version = true
+    } else if has_prefix(line, "dep\t") {
+      let value = line[4:String::length(line)]
+      if String::length(value) == 0 {
+        throw("invalid persistent module header dep row")
+      }
+      Array::push(deps, value)
+    } else if has_prefix(line, "export\t") {
+      let value = line[7:String::length(line)]
+      if String::length(value) == 0 {
+        throw("invalid persistent module header export row")
+      }
+      Array::push(exports, value)
+    } else {
+      throw(String::concat("invalid persistent module header row: ", line))
+    }
+  }
+  if !saw_version {
+    throw("missing persistent module header version")
+  } else {
+    (deps, exports)
+  }
+}
+
+//# Exports
+
+export let load_or_parse_module_header_fs_impl = (
+  path: String,
+  source: String,
+  parse_count: Int
+) -> (Array[String], Array[String], Int) with { Error, Fs } {
+  Fs::write_file("_build/debug_header_stage.txt", String::concat("start:", path))
+  let cache_path = persistent_module_header_cache_path(path, compact_string_fingerprint(source))
+  if Fs::exists(cache_path) {
+    Fs::write_file("_build/debug_header_stage.txt", "cache-hit")
+    let parsed = parse_persistent_module_header_text(
+      normalize_persistent_cache_text(Fs::read_file(cache_path))
+    )
+    Fs::write_file("_build/debug_header_stage.txt", "cache-parsed")
+    (parsed.0, parsed.1, parse_count)
+  } else {
+    Fs::write_file("_build/debug_header_stage.txt", "cache-miss")
+    let header_result = match special_bundle_header(path) {
+      Some((deps, exports)) => (deps, exports, parse_count),
+      None => {
+        Fs::write_file("_build/debug_header_path.txt", path)
+        Fs::write_file("_build/debug_header_stage.txt", "before-lex")
+        let tokens = lex(source)
+        Fs::write_file("_build/debug_header_path.txt", path)
+        Fs::write_file("_build/debug_header_stage.txt", "after-lex")
+        let stmts = parse_program(tokens)
+        Fs::write_file("_build/debug_header_path.txt", path)
+        Fs::write_file("_build/debug_header_stage.txt", "after-parse")
+        (
+          collect_import_deps_from_stmts(stmts, dir_of(path)),
+          collect_exports(stmts),
+          parse_count + 1
+        )
+      }
+    }
+    Fs::write_file("_build/debug_header_stage.txt", "after-header-result")
+    let deps = header_result.0
+    let exports = header_result.1
+    let next_parse_count = header_result.2
+    Fs::write_file(cache_path, persistent_module_header_text(deps, exports))
+    Fs::write_file("_build/debug_header_stage.txt", "after-cache-write")
+    (deps, exports, next_parse_count)
+  }
+}

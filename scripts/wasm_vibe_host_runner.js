@@ -11,6 +11,8 @@ const TAG_OBJ = 1n;
 
 const OBJ_STRING = 1;
 const OBJ_ARRAY = 5;
+const OBJ_BYTES = 13;
+const OBJ_BYTES_VIEW = 14;
 
 function usage() {
   console.error(
@@ -243,10 +245,11 @@ function decodeTaggedInt(value) {
   return Number(value >> 2n);
 }
 
-// Decode a tagged Bytes (Array[Int]) from WASM memory into a Uint8Array.
-// MoonBit WASM backend stores Array[Int] elements as tagged i32 at 4-byte stride.
-// Layout: [type:i32=5][length:i32][elem0:i32][elem1:i32]...
-// Each element is a tagged i32: (value << 2) | 0 for integers.
+// Decode a tagged Bytes value from WASM memory into a Uint8Array.
+// Supported layouts:
+// - legacy Array[Int]-backed bytes: [type=5][length][tagged elems...]
+// - raw Bytes: [type=13][length][capacity][data_ptr]
+// - BytesView: [type=14][source_ptr][start][end]
 function decodeTaggedBytes(instance, tagged) {
   if (typeof tagged !== "bigint") {
     throw new Error(`expected tagged bytes bigint, got ${typeof tagged}`);
@@ -257,8 +260,22 @@ function decodeTaggedBytes(instance, tagged) {
   const ptr = Number(tagged & ~TAG_MASK);
   const mem = new Uint8Array(instance.exports.memory.buffer);
   const ty = readU32LE(mem, ptr);
+  if (ty === OBJ_BYTES) {
+    const len = readU32LE(mem, ptr + 4);
+    const dataPtr = readU32LE(mem, ptr + 12);
+    return new Uint8Array(instance.exports.memory.buffer.slice(dataPtr, dataPtr + len));
+  }
+  if (ty === OBJ_BYTES_VIEW) {
+    const sourcePtr = readU32LE(mem, ptr + 4);
+    const start = readU32LE(mem, ptr + 8);
+    const end = readU32LE(mem, ptr + 12);
+    const sourceTagged = BigInt(sourcePtr) | TAG_OBJ;
+    return decodeTaggedBytes(instance, sourceTagged).slice(start, end);
+  }
   if (ty !== OBJ_ARRAY) {
-    throw new Error(`expected obj_array(${OBJ_ARRAY}), got ${ty}`);
+    throw new Error(
+      `expected obj_array(${OBJ_ARRAY})/obj_bytes(${OBJ_BYTES})/obj_bytes_view(${OBJ_BYTES_VIEW}), got ${ty}`,
+    );
   }
   const len = readU32LE(mem, ptr + 4);
   const result = new Uint8Array(len);

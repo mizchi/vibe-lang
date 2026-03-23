@@ -154,12 +154,13 @@ fn canonicalize_export_list_stmts(stmts : Array[Stmt]) -> Array[Stmt] {
         } else {
           out.push(stmt)
         }
-      Stmt::TraitDef(name~, supertraits~, open_impl~, span~, ..) =>
+      Stmt::TraitDef(name~, supertraits~, methods~, open_impl~, span~, ..) =>
         if export_list_names.contains(name) {
           out.push(
             Stmt::TraitDef(
               name~,
               supertraits~,
+              methods~,
               open_impl~,
               exported=true,
               span~,
@@ -281,10 +282,23 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
       )
     Stmt::TypeAlias(name~, params~, target~, ..) =>
       Stmt::TypeAlias(name~, params~, target~, span=zero_span)
-    Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, ..) =>
-      Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, span=zero_span)
-    Stmt::InternalTraitDef(name~, supertraits~, open_impl~, ..) =>
-      Stmt::InternalTraitDef(name~, supertraits~, open_impl~, span=zero_span)
+    Stmt::TraitDef(name~, supertraits~, methods~, open_impl~, exported~, ..) =>
+      Stmt::TraitDef(
+        name~,
+        supertraits~,
+        methods~,
+        open_impl~,
+        exported~,
+        span=zero_span,
+      )
+    Stmt::InternalTraitDef(name~, supertraits~, methods~, open_impl~, ..) =>
+      Stmt::InternalTraitDef(
+        name~,
+        supertraits~,
+        methods~,
+        open_impl~,
+        span=zero_span,
+      )
     Stmt::TraitImpl(type_params~, type_bounds~, trait_name~, target~, ..) =>
       Stmt::TraitImpl(
         type_params~,
@@ -555,8 +569,6 @@ fn normalize_expr(expr : Expr, scope : NormScope) -> Expr {
         arms=normalize_arms(arms, scope),
         span=zero_span,
       )
-    Expr::Raise(value~, ..) =>
-      Expr::Raise(value=normalize_expr(value, scope), span=zero_span)
     Expr::Yield(expr~, ..) =>
       Expr::Yield(expr=normalize_expr(expr, scope), span=zero_span)
     Expr::Spread(expr~, ..) =>
@@ -575,6 +587,17 @@ fn normalize_expr(expr : Expr, scope : NormScope) -> Expr {
         args=normalize_call_args(args, scope),
         span=zero_span,
       )
+    Expr::StringInterp(parts~, ..) => {
+      let norm_parts : Array[StringInterpPart] = []
+      for part in parts {
+        match part {
+          StringInterpPart::Expr(e) =>
+            norm_parts.push(StringInterpPart::Expr(normalize_expr(e, scope)))
+          StringInterpPart::Lit(s) => norm_parts.push(StringInterpPart::Lit(s))
+        }
+      }
+      Expr::StringInterp(parts=norm_parts, span=zero_span)
+    }
   }
 }
 

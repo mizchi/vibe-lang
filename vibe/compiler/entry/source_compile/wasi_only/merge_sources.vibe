@@ -1,0 +1,131 @@
+//# Imports
+
+import ../../../core/ast.vibe {
+  Expr, Stmt
+}
+
+import ../../../syntax/lexer.vibe {
+  lex,
+}
+
+import ../../../syntax/parser.vibe {
+  parse_program
+}
+
+import ../../../checker/checker_stmt.vibe {
+  check_program
+}
+
+import ../../../codegen/wasi/index.vibe {
+  compile_wasi_module_impl
+}
+
+import ./preprocess.vibe {
+  strip_generic_type_params,
+  expand_interp_stmts
+}
+
+import ./path_utils.vibe {
+  dir_of_path,
+  resolve_import_path,
+  contains_path,
+  empty_stmt_array
+}
+let rec collect_sources = (path: String, sources: Array[(String, String)], visited: Array[String]) -> Unit with { Error, Fs } {
+  if contains_path(visited, path) { () }
+  else {
+    Array::push(visited, path)
+    let source = perform Fs::ReadFile(path)
+    let stmts = parse_program(lex(source))
+    let base_dir = dir_of_path(path)
+    // Process imports first (depth-first)
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SImport(raw_path, _) => {
+          let resolved = resolve_import_path(base_dir, raw_path)
+          collect_sources(resolved, sources, visited)
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    // Then add this module
+    Array::push(sources, (path, source))
+  }
+}
+
+let rec collect_merged_stmts_recursive = (
+  path: String,
+  merged: Array[Stmt],
+  visited: Array[String]
+) -> Unit with { Error, Fs } {
+  if contains_path(visited, path) { () }
+  else {
+    Array::push(visited, path)
+    let source = perform Fs::ReadFile(path)
+    let stmts = parse_program(lex(source))
+    let base_dir = dir_of_path(path)
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SImport(raw_path, _) => {
+          let resolved = resolve_import_path(base_dir, raw_path)
+          collect_merged_stmts_recursive(resolved, merged, visited)
+        },
+        SReExport(raw_path, _) => {
+          let resolved = resolve_import_path(base_dir, raw_path)
+          collect_merged_stmts_recursive(resolved, merged, visited)
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    let mut j = 0
+    while j < Array::length(stmts) {
+      match Array::get(stmts, j) {
+        SImport(_, _) => (),
+        SReExport(_, _) => (),
+        SAliasDecl(_, _) => (),
+        _ => Array::push(merged, Array::get(stmts, j))
+      }
+      j = j + 1
+    }
+  }
+}
+
+// Merge sources: parse each, strip SImport/SReExport, concatenate stmts
+let merge_sources = (sources: Array[(String, String)]) -> Array[Stmt] with { Error } {
+  let merged = Array::slice([SExpr(EInt(0))], 0, 0)
+  let mut si = 0
+  while si < Array::length(sources) {
+    let (_, src) = Array::get(sources, si)
+    let stmts = parse_program(lex(src))
+    let mut j = 0
+    while j < Array::length(stmts) {
+      match Array::get(stmts, j) {
+        SImport(_, _) => (),
+        SReExport(_, _) => (),
+        SAliasDecl(_, _) => (),
+        _ => Array::push(merged, Array::get(stmts, j))
+      }
+      j = j + 1
+    }
+    si = si + 1
+  }
+  merged
+}
+
+export let compile_file_wasi_only = (entry_path: String, entry_name: String) -> Bytes with { Error, Fs } {
+  let stmts = empty_stmt_array()
+  let visited = Array::slice([""], 0, 0)
+  collect_merged_stmts_recursive(entry_path, stmts, visited)
+  strip_generic_type_params(stmts)
+  expand_interp_stmts(stmts)
+  let _ = check_program(stmts)
+  compile_wasi_module_impl(stmts, entry_name)
+}
+
+export {
+  collect_merged_stmts_recursive
+}

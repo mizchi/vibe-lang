@@ -310,16 +310,14 @@ fn compile_stmt(
                   match ctx.linked_fn_imports.get(source_name) {
                     Some(import_idx) => {
                       ctx.linked_fn_imports[name] = import_idx
-                      let param_count = match ctx.linked_fn_param_counts.get(
-                        source_name,
-                      ) {
+                      let param_count = match
+                        ctx.linked_fn_param_counts.get(source_name) {
                         Some(pc) => pc
                         None => 0
                       }
                       ctx.linked_fn_param_counts[name] = param_count
-                      let return_count = match ctx.linked_fn_return_counts.get(
-                        source_name,
-                      ) {
+                      let return_count = match
+                        ctx.linked_fn_return_counts.get(source_name) {
                         Some(rc) => rc
                         None => 1
                       }
@@ -334,8 +332,7 @@ fn compile_stmt(
                           result_kinds.push(ValueKind::I64)
                         }
                         ctx.fn_local_sigs[name] = func_sig_with_env_multi(
-                          param_kinds,
-                          result_kinds,
+                          param_kinds, result_kinds,
                         )
                         ctx.fn_multivalue_results[name] = result_kinds
                       } else {
@@ -360,11 +357,11 @@ fn compile_stmt(
                       ctx.local_types.push(ValueKind::I64)
                       ctx.locals[name] = idx
                       ctx.local_kinds[name] = ValueKind::I64
-                      let slot = ensure_funcref_slot(ctx, import_idx)
-                      emit_i64_const_raw(
-                        buf,
-                        tag_fn_value64(slot.to_int64()),
+                      let slot = ensure_funcref_slot(
+                        ctx,
+                        linked_funcref_key(import_idx),
                       )
+                      emit_i64_const_raw(buf, tag_fn_value64(slot.to_int64()))
                       if is_last {
                         emit_local_tee(buf, idx)
                       } else {
@@ -1185,9 +1182,6 @@ fn compile_expr_multivalue(
       buf.push((11).to_byte())
       adjust_loop_offsets(ctx, -2)
     }
-    @core.Expr::Raise(..) =>
-      // Compile raise — never returns, wasm stack becomes unreachable
-      compile_expr(ctx, buf, expr)
     @core.Expr::Call(name~, ..) =>
       // Forward multi-value from another multi-value function call
       match ctx.fn_multivalue_results.get(name) {

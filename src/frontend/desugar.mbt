@@ -563,11 +563,6 @@ fn desugar_vibe_expr(
       }
       @core.Expr::Continue(args=next_args, span~)
     }
-    @core.Expr::Raise(value~, span~) =>
-      @core.Expr::Raise(
-        value=desugar_vibe_expr(value, scope, known_non_cmd, notes),
-        span~,
-      )
     @core.Expr::Yield(expr~, span~) =>
       @core.Expr::Yield(
         expr=desugar_vibe_expr(expr, scope, known_non_cmd, notes),
@@ -900,6 +895,44 @@ fn desugar_expr(
         next_args.push(desugar_expr(arg, scope, aliases))
       }
       @core.Expr::Continue(args=next_args, span~)
+    }
+    @core.Expr::StringInterp(parts~, span~) => {
+      // Lower StringInterp to String::concat chain with __to_string calls
+      let exprs : Array[@core.Expr] = []
+      for part in parts {
+        match part {
+          @core.StringInterpPart::Lit(s) =>
+            exprs.push(@core.Expr::String(value=s, span~))
+          @core.StringInterpPart::Expr(e) =>
+            exprs.push(
+              @core.Expr::Call(
+                name="__to_string",
+                type_args=[],
+                args=[
+                  @core.CallArg::{
+                    label: None,
+                    expr: desugar_expr(e, scope, aliases),
+                    span,
+                  },
+                ],
+                span~,
+              ),
+            )
+        }
+      }
+      let mut result = exprs[0]
+      for j in 1..<exprs.length() {
+        result = @core.Expr::Call(
+          name="String::concat",
+          type_args=[],
+          args=[
+            @core.CallArg::{ label: None, expr: result, span },
+            @core.CallArg::{ label: None, expr: exprs[j], span },
+          ],
+          span~,
+        )
+      }
+      result
     }
     _ => expr
   }

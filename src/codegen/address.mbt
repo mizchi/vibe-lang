@@ -286,10 +286,6 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       let _ = span
       "(continue)"
     }
-    @core.Expr::Raise(value~, span~) => {
-      let _ = span
-      "(throw " + expr_to_addr_sexp(ctx, value) + ")"
-    }
     @core.Expr::Yield(expr~, span~) => {
       let _ = span
       "(yield " + expr_to_addr_sexp(ctx, expr) + ")"
@@ -330,6 +326,8 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       buf.write_string("))")
       buf.to_string()
     }
+    // StringInterp is lowered in desugar; should never reach codegen
+    @core.Expr::StringInterp(..) => "(string-interp-unreachable)"
   }
 }
 
@@ -956,6 +954,7 @@ fn is_builtin(name : String) -> Bool {
   name == "__div" ||
   name == "__mod" ||
   name == "__index" ||
+  name == "__len" ||
   name == "__eq" ||
   name == "__lt" ||
   name == "__assert" ||

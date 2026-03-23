@@ -1,0 +1,1446 @@
+//# Imports
+
+import ../../core/index.vibe {
+  Expr, Pat, Stmt, TypeExpr,
+  bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
+}
+
+import ../common_base/index.vibe {
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+}
+
+import ../common_extractors/index.vibe {
+  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_earray_elems, get_eassign_body, get_eassign_name, get_eassign_val, get_eassignop_body, get_eassignop_name, get_eassignop_op, get_eassignop_val, get_ebinop_lhs, get_ebinop_rhs, get_ebool_value, get_ecall_args, get_ecall_callee, get_efloat_value, get_efn_params, get_eforin_body, get_eforin_iter, get_eforin_name, get_eident_name, get_eint_value, get_eletmut_body, get_eletmut_name, get_eletmut_val, get_eletrec_body, get_eletrec_name, get_eletrec_val, get_eseq_first, get_eseq_second, get_estring_value, get_ethrow_expr, get_etuple_elems, get_eunaryop_expr, get_eunaryop_op, get_ewhile_body, get_ewhile_cond, get_match_arms, get_match_scrutinee, get_pbind_name, get_pbool_value, get_pctor_args, get_pctor_name, get_pint_value, get_pstring_value, get_ptuple_pats, get_slet_export, str_table_lookup
+}
+
+import ../common_analysis/index.vibe {
+  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in
+}
+
+import ../wasm_emit/index.vibe {
+  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_full, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data
+}
+
+import ./compile_match.vibe {
+  compile_match
+}
+
+import ./compile_lambda.vibe {
+  compile_lambda
+}
+
+//# Functions
+
+export let compile_call = (buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } {
+  if is_eident(callee) {
+    let fname = get_eident_name(callee)
+    let fn_len2 = Array::length(ctx.func_table.names)
+    let mut fn_idx_in_list = -1
+    let mut __tr_j = 0
+    while __tr_j < fn_len2 {
+      if Array::get(ctx.func_table.names, __tr_j) == fname {
+        fn_idx_in_list = __tr_j
+        __tr_j = fn_len2
+      } else {
+        __tr_j = __tr_j + 1
+      }
+    }
+    let mut local_idx_hint = -1
+    let mut li = Array::length(local_names) - 1
+    while li >= 0 {
+      if Array::get(local_names, li) == fname {
+        local_idx_hint = li
+        li = -1
+      } else {
+        li = li - 1
+      }
+    }
+    let prefer_bound_call = fn_idx_in_list >= 0 || local_idx_hint >= 0
+    let ctor_lookup_idx = lookup_ctor(ctx.ctor_table.names, fname, 0)
+    if ctor_lookup_idx >= 0 {
+      let tag = Array::get(ctx.ctor_table.tags, ctor_lookup_idx)
+      let fc = Array::get(ctx.ctor_table.field_counts, ctor_lookup_idx)
+      let obj_size = 8 + fc * 8
+      let ptr_local = next_local
+      Array::push(local_names, "__ctor_ptr")
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, ptr_local)
+      emit_global_get(buf, 0)
+      emit_i32_const(buf, obj_size)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, tag)
+      emit_i32_store(buf, 2, 0)
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, fc)
+      emit_i32_store(buf, 2, 4)
+      let actual_args = if Array::length(args) == 1 {
+        match Array::get(args, 0) {
+          ERecord(rec_fields) => {
+            let mut si2 = 0
+            let mut sn_idx = -1
+            while si2 < Array::length(ctx.ctor_table.struct_names) {
+              if Array::get(ctx.ctor_table.struct_names, si2) == fname {
+                sn_idx = si2
+                si2 = Array::length(ctx.ctor_table.struct_names)
+              } else {
+                si2 = si2 + 1
+              }
+            }
+            if sn_idx >= 0 {
+              let def_fnames = Array::get(ctx.ctor_table.struct_field_names, sn_idx)
+              let ordered = Array::slice([
+                EUnit
+              ], 0, 0)
+              let mut oi = 0
+              while oi < Array::length(def_fnames) {
+                let target_name = Array::get(def_fnames, oi)
+                let mut ri = 0
+                let mut found_rfv = EUnit
+                while ri < Array::length(rec_fields) {
+                  let (rfn, rfv) = Array::get(rec_fields, ri)
+                  if rfn == target_name {
+                    found_rfv = rfv
+                    ri = Array::length(rec_fields)
+                  } else {
+                    ri = ri + 1
+                  }
+                }
+                Array::push(ordered, found_rfv)
+                oi = oi + 1
+              }
+              ordered
+            } else {
+              args
+            }
+          },
+          _ => args
+        }
+      } else {
+        args
+      }
+      let mut nl_c = next_local + 1
+      let mut fi_c = 0
+      while fi_c < Array::length(actual_args) {
+        nl_c = ce(buf, Array::get(actual_args, fi_c), local_names, nl_c, ctx, ld)
+        let val_local = nl_c
+        Array::push(local_names, "__ctor_val")
+        emit_local_set(buf, val_local)
+        nl_c = nl_c + 1
+        emit_local_get(buf, ptr_local)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, val_local)
+        emit_i64_store(buf, 3, 8 + fi_c * 8)
+        fi_c = fi_c + 1
+      }
+      emit_local_get(buf, ptr_local)
+      emit_i64_const(buf, 1)
+      emit_i64_or(buf)
+      nl_c
+    }
+    else if !prefer_bound_call && fname == "eq" {
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      emit_i64_eq(buf)
+      emit_i64_extend_i32_s(buf)
+      nl
+    }
+    else if !prefer_bound_call && fname == "not" {
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_i64_eqz(buf)
+      emit_i64_extend_i32_s(buf)
+      nl
+    }
+    else if !prefer_bound_call && fname == "add" {
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      emit_i64_add(buf)
+      nl
+    }
+    else if !prefer_bound_call && fname == "sub" {
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      emit_i64_sub(buf)
+      nl
+    }
+    else if !prefer_bound_call && fname == "mul" {
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      emit_i64_mul(buf)
+      nl
+    }
+    else if !prefer_bound_call && fname == "lt" {
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      emit_i64_lt_s(buf)
+      emit_i64_extend_i32_s(buf)
+      nl
+    }
+    else if !prefer_bound_call && fname == "perform" {
+      // Algebraic effect: check resume override, else throw
+      // global 1 = __resume_value (i64, 0 = no resume)
+      let mut nl = next_local
+      emit_global_get(buf, 1)
+      emit_i64_const(buf, 0)
+      emit_i64_ne(buf)
+      emit_if_i64(buf)
+      // Resume override present: return it and clear
+      emit_global_get(buf, 1)
+      emit_i64_const(buf, 0)
+      emit_global_set(buf, 1)
+      emit_else(buf)
+      // No override: compile argument and throw
+      nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+      bytebuf_push(buf, 8)
+      bytebuf_push(buf, 0)
+      emit_end(buf)
+      nl
+    }
+    else if !prefer_bound_call && fname == "path" {
+      // path(x) returns x as-is (string identity)
+      ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    }
+    else if !prefer_bound_call && fname == "__float_bits" {
+      // __float_bits(i64_bits) → returns bits as-is (identity)
+      // Float literals are desugared to __float_bits(ieee754_bits) to avoid EFloat extraction issues
+      ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    }
+    else if !prefer_bound_call && fname == "__to_string" {
+      // __to_string(val) → String: if val is already a string (high bits set), return as-is
+      // Otherwise convert int to string on heap
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      let val_l = nl
+      let neg_l = nl + 1
+      let cur_l = nl + 2
+      let abs_l = nl + 3
+      let hp_l = nl + 4
+      let len_l = nl + 5
+      Array::push(local_names, "__ts_val")
+      Array::push(local_names, "__ts_neg")
+      Array::push(local_names, "__ts_cur")
+      Array::push(local_names, "__ts_abs")
+      Array::push(local_names, "__ts_hp")
+      Array::push(local_names, "__ts_len")
+      emit_local_set(buf, val_l)
+      // Check if string: unsigned shift high 32 bits, check 0 < high < heap_ptr
+      // Uses abs_l as temp (not yet used at this point)
+      emit_block_i64(buf)
+      emit_local_get(buf, val_l)
+      emit_i64_const(buf, 32)
+      bytebuf_push(buf, 136)
+      emit_local_tee(buf, abs_l)
+      emit_i64_const(buf, 0)
+      emit_i64_gt_s(buf)
+      emit_local_get(buf, abs_l)
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_lt_s(buf)
+      bytebuf_push(buf, 113)
+      emit_if_void(buf)
+      emit_local_get(buf, val_l)
+      emit_br(buf, 1)
+      emit_end(buf)
+      // cursor = 46 (i64)
+      emit_i64_const(buf, 46)
+      emit_local_set(buf, cur_l)
+      // is_neg = val < 0
+      emit_local_get(buf, val_l)
+      emit_i64_const(buf, 0)
+      emit_i64_lt_s(buf)
+      emit_i64_extend_i32_s(buf)
+      emit_local_set(buf, neg_l)
+      // abs = neg ? -val : val
+      emit_local_get(buf, val_l)
+      emit_i64_const(buf, 0)
+      emit_i64_lt_s(buf)
+      emit_if_i64(buf)
+      emit_i64_const(buf, 0)
+      emit_local_get(buf, val_l)
+      emit_i64_sub(buf)
+      emit_else(buf)
+      emit_local_get(buf, val_l)
+      emit_end(buf)
+      emit_local_set(buf, abs_l)
+      // if abs == 0: write '0'
+      emit_local_get(buf, abs_l)
+      emit_i64_eqz(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, cur_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 48)
+      emit_i32_store8(buf, 0, 0)
+      emit_local_get(buf, cur_l)
+      emit_i64_const(buf, 1)
+      emit_i64_sub(buf)
+      emit_local_set(buf, cur_l)
+      emit_end(buf)
+      // digit loop
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, abs_l)
+      emit_i64_eqz(buf)
+      emit_br_if(buf, 1)
+      // digit = abs % 10
+      emit_local_get(buf, cur_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, abs_l)
+      emit_i64_const(buf, 10)
+      emit_i64_rem_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 48)
+      emit_i32_add(buf)
+      emit_i32_store8(buf, 0, 0)
+      // cursor--
+      emit_local_get(buf, cur_l)
+      emit_i64_const(buf, 1)
+      emit_i64_sub(buf)
+      emit_local_set(buf, cur_l)
+      // abs = abs / 10
+      emit_local_get(buf, abs_l)
+      emit_i64_const(buf, 10)
+      emit_i64_div_s(buf)
+      emit_local_set(buf, abs_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      // if neg: write '-'
+      emit_local_get(buf, neg_l)
+      emit_i32_wrap_i64(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, cur_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 45)
+      emit_i32_store8(buf, 0, 0)
+      emit_local_get(buf, cur_l)
+      emit_i64_const(buf, 1)
+      emit_i64_sub(buf)
+      emit_local_set(buf, cur_l)
+      emit_end(buf)
+      // heap_ptr = global 0 (i32), extend to i64
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, hp_l)
+      // len = 46 - cursor (both i64)
+      emit_i64_const(buf, 46)
+      emit_local_get(buf, cur_l)
+      emit_i64_sub(buf)
+      emit_local_set(buf, len_l)
+      // memory.copy(heap_ptr_i32, (cursor+1)_i32, len_i32)
+      emit_local_get(buf, hp_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, cur_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, len_l)
+      emit_i32_wrap_i64(buf)
+      emit_memory_copy(buf)
+      // advance heap_ptr: global 0 = hp + ((len + 7) & ~7)
+      emit_local_get(buf, hp_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, len_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 7)
+      emit_i32_add(buf)
+      emit_i32_const(buf, -8)
+      bytebuf_push(buf, 113)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      // return (heap_ptr << 32) | len
+      emit_local_get(buf, hp_l)
+      emit_i64_const(buf, 32)
+      emit_i64_shl(buf)
+      emit_local_get(buf, len_l)
+      emit_i64_or(buf)
+      emit_end(buf)
+      nl + 6
+    }
+    else if fname == "Int::to_double" || fname == "Int::to_float" || fname == "Float::to_int" || fname == "Float::to_double" || fname == "Double::to_int" || fname == "Double::to_float" {
+      // Type conversion stub: return argument as-is (all values are i64 tagged)
+      ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    }
+    else if !prefer_bound_call && fname == "resume" {
+      // Algebraic effect resume: set global override and throw tag 1 (resume tag)
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_global_set(buf, 1)
+      emit_i64_const(buf, 0)
+      bytebuf_push(buf, 8)
+      bytebuf_push(buf, 1)
+      nl
+    }
+    else if !prefer_bound_call && fname == "assert" {
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_i32_wrap_i64(buf)
+      emit_if_void(buf)
+      emit_else(buf)
+      bytebuf_push(buf, 0)
+      emit_end(buf)
+      emit_i64_const(buf, 0)
+      nl
+    }
+    else if fname == "assert_true" {
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_i32_wrap_i64(buf)
+      emit_if_void(buf)
+      emit_else(buf)
+      bytebuf_push(buf, 0)
+      emit_end(buf)
+      emit_i64_const(buf, 0)
+      nl
+    }
+    else if fname == "assert_eq" {
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      emit_i64_eq(buf)
+      emit_if_void(buf)
+      emit_else(buf)
+      bytebuf_push(buf, 0)
+      emit_end(buf)
+      emit_i64_const(buf, 0)
+      nl
+    }
+    else if fname == "Double::to_i64_bits" {
+      ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    }
+    else if fname == "String::ends_with" {
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      emit_call(buf, 29)
+      nl
+    }
+    else if fname == "String::last_index_of" {
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      emit_call(buf, 30)
+      nl
+    }
+    else if fname == "__slice" {
+      let (ss_idx, _, _) = resolve_func(ctx.func_table, "String::substring")
+      let (bs_idx, _, _) = resolve_func(ctx.func_table, "Bytes::slice")
+      let (as_idx, _, _) = resolve_func(ctx.func_table, "Array::slice")
+      let obj_local = next_local
+      let start_local = next_local + 1
+      let end_local = next_local + 2
+      let ptr_local = next_local + 3
+      let cap_local = next_local + 4
+      Array::push(local_names, "__slice_obj")
+      Array::push(local_names, "__slice_start")
+      Array::push(local_names, "__slice_end")
+      Array::push(local_names, "__slice_ptr")
+      Array::push(local_names, "__slice_cap")
+      let mut nl = next_local + 5
+      nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+      emit_local_set(buf, obj_local)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      emit_local_set(buf, start_local)
+      nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+      emit_local_set(buf, end_local)
+      emit_local_get(buf, obj_local)
+      emit_i64_const(buf, 32)
+      emit_i64_shr_s(buf)
+      emit_i64_eqz(buf)
+      emit_if_i64(buf)
+      emit_local_get(buf, obj_local)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, ptr_local)
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 2, 0)
+      emit_local_set(buf, cap_local)
+      emit_local_get(buf, cap_local)
+      emit_i32_const(buf, 2147483647)
+      emit_i32_gt_u(buf)
+      emit_if_i64(buf)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, start_local)
+      emit_local_get(buf, end_local)
+      emit_call(buf, bs_idx)
+      emit_else(buf)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, start_local)
+      emit_local_get(buf, end_local)
+      emit_call(buf, as_idx)
+      emit_end(buf)
+      emit_else(buf)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, start_local)
+      emit_local_get(buf, end_local)
+      emit_call(buf, ss_idx)
+      emit_end(buf)
+      nl
+    }
+    else if fname == "Array::map" || fname == "map" {
+      // Array::map(arr, fn) → new array with fn applied to each element
+      let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
+      let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
+      let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
+      let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      let arr_l = nl
+      let fn_l = nl + 1
+      let res_l = nl + 2
+      let len_l = nl + 3
+      let i_l = nl + 4
+      let slot_l = nl + 5
+      let env_l = nl + 6
+      let elem_l = nl + 7
+      Array::push(local_names, "__map_arr")
+      Array::push(local_names, "__map_fn")
+      Array::push(local_names, "__map_res")
+      Array::push(local_names, "__map_len")
+      Array::push(local_names, "__map_i")
+      Array::push(local_names, "__map_slot")
+      Array::push(local_names, "__map_env")
+      Array::push(local_names, "__map_elem")
+      emit_local_set(buf, fn_l)
+      emit_local_set(buf, arr_l)
+      emit_call(buf, arr_new_fi)
+      emit_local_set(buf, res_l)
+      emit_local_get(buf, arr_l)
+      emit_call(buf, arr_len_fi)
+      emit_local_set(buf, len_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, i_l)
+      emit_closure_resolve(buf, fn_l, slot_l, env_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, i_l)
+      emit_local_get(buf, len_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      // elem = arr[i]
+      emit_local_get(buf, arr_l)
+      emit_local_get(buf, i_l)
+      emit_call(buf, arr_get_fi)
+      emit_local_set(buf, elem_l)
+      // result = fn(elem)
+      emit_local_get(buf, elem_l)
+      emit_closure_call_tail(buf, env_l, slot_l, 9, 1)
+      emit_local_set(buf, elem_l)
+      // push result
+      emit_local_get(buf, res_l)
+      emit_local_get(buf, elem_l)
+      emit_call(buf, arr_push_fi)
+      emit_local_get(buf, i_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, i_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, res_l)
+      nl + 8
+    }
+    else if fname == "Array::fold" {
+      // Array::fold(arr, init, fn) → fold left
+      let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
+      let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+      let arr_l = nl
+      let acc_l = nl + 1
+      let fn_l = nl + 2
+      let len_l = nl + 3
+      let i_l = nl + 4
+      let slot_l = nl + 5
+      let env_l = nl + 6
+      Array::push(local_names, "__fold_arr")
+      Array::push(local_names, "__fold_acc")
+      Array::push(local_names, "__fold_fn")
+      Array::push(local_names, "__fold_len")
+      Array::push(local_names, "__fold_i")
+      Array::push(local_names, "__fold_slot")
+      Array::push(local_names, "__fold_env")
+      emit_local_set(buf, fn_l)
+      emit_local_set(buf, acc_l)
+      emit_local_set(buf, arr_l)
+      emit_local_get(buf, arr_l)
+      emit_call(buf, arr_len_fi)
+      emit_local_set(buf, len_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, i_l)
+      emit_closure_resolve(buf, fn_l, slot_l, env_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, i_l)
+      emit_local_get(buf, len_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      // acc = fn(acc, arr[i])
+      emit_local_get(buf, acc_l)
+      emit_local_get(buf, arr_l)
+      emit_local_get(buf, i_l)
+      emit_call(buf, arr_get_fi)
+      emit_closure_call_tail(buf, env_l, slot_l, 9, 2)
+      emit_local_set(buf, acc_l)
+      emit_local_get(buf, i_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, i_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, acc_l)
+      nl + 7
+    }
+    else if fname == "Array::reverse" {
+      // Array::reverse(arr) → new array with elements in reverse order
+      let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
+      let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
+      let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
+      let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      let arr_l = nl
+      let res_l = nl + 1
+      let len_l = nl + 2
+      let i_l = nl + 3
+      Array::push(local_names, "__rev_arr")
+      Array::push(local_names, "__rev_res")
+      Array::push(local_names, "__rev_len")
+      Array::push(local_names, "__rev_i")
+      emit_local_set(buf, arr_l)
+      emit_call(buf, arr_new_fi)
+      emit_local_set(buf, res_l)
+      emit_local_get(buf, arr_l)
+      emit_call(buf, arr_len_fi)
+      emit_local_set(buf, len_l)
+      emit_local_get(buf, len_l)
+      emit_i64_const(buf, 1)
+      emit_i64_sub(buf)
+      emit_local_set(buf, i_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, i_l)
+      emit_i64_const(buf, 0)
+      emit_i64_lt_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, res_l)
+      emit_local_get(buf, arr_l)
+      emit_local_get(buf, i_l)
+      emit_call(buf, arr_get_fi)
+      emit_call(buf, arr_push_fi)
+      emit_local_get(buf, i_l)
+      emit_i64_const(buf, 1)
+      emit_i64_sub(buf)
+      emit_local_set(buf, i_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, res_l)
+      nl + 4
+    }
+    else if fname == "Array::concat" {
+      // Array::concat(a, b) → new array with a's elements then b's
+      let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
+      let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
+      let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
+      let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      let a_l = nl
+      let b_l = nl + 1
+      let res_l = nl + 2
+      let len_l = nl + 3
+      let i_l = nl + 4
+      Array::push(local_names, "__cat_a")
+      Array::push(local_names, "__cat_b")
+      Array::push(local_names, "__cat_res")
+      Array::push(local_names, "__cat_len")
+      Array::push(local_names, "__cat_i")
+      emit_local_set(buf, b_l)
+      emit_local_set(buf, a_l)
+      emit_call(buf, arr_new_fi)
+      emit_local_set(buf, res_l)
+      // Copy a
+      emit_local_get(buf, a_l)
+      emit_call(buf, arr_len_fi)
+      emit_local_set(buf, len_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, i_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, i_l)
+      emit_local_get(buf, len_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, res_l)
+      emit_local_get(buf, a_l)
+      emit_local_get(buf, i_l)
+      emit_call(buf, arr_get_fi)
+      emit_call(buf, arr_push_fi)
+      emit_local_get(buf, i_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, i_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      // Copy b
+      emit_local_get(buf, b_l)
+      emit_call(buf, arr_len_fi)
+      emit_local_set(buf, len_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, i_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, i_l)
+      emit_local_get(buf, len_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, res_l)
+      emit_local_get(buf, b_l)
+      emit_local_get(buf, i_l)
+      emit_call(buf, arr_get_fi)
+      emit_call(buf, arr_push_fi)
+      emit_local_get(buf, i_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, i_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, res_l)
+      nl + 5
+    }
+    else if fname == "Array::any" {
+      // Array::any(arr, fn) → true if fn(elem) is truthy for any element
+      let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
+      let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      let arr_l = nl
+      let fn_l = nl + 1
+      let len_l = nl + 2
+      let i_l = nl + 3
+      let slot_l = nl + 4
+      let env_l = nl + 5
+      let res_l = nl + 6
+      Array::push(local_names, "__any_arr")
+      Array::push(local_names, "__any_fn")
+      Array::push(local_names, "__any_len")
+      Array::push(local_names, "__any_i")
+      Array::push(local_names, "__any_slot")
+      Array::push(local_names, "__any_env")
+      Array::push(local_names, "__any_res")
+      emit_local_set(buf, fn_l)
+      emit_local_set(buf, arr_l)
+      emit_local_get(buf, arr_l)
+      emit_call(buf, arr_len_fi)
+      emit_local_set(buf, len_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, i_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, res_l)
+      emit_closure_resolve(buf, fn_l, slot_l, env_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, i_l)
+      emit_local_get(buf, len_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, arr_l)
+      emit_local_get(buf, i_l)
+      emit_call(buf, arr_get_fi)
+      emit_closure_call_tail(buf, env_l, slot_l, 9, 1)
+      emit_i32_wrap_i64(buf)
+      emit_if_void(buf)
+      emit_i64_const(buf, 1)
+      emit_local_set(buf, res_l)
+      emit_br(buf, 2)
+      emit_end(buf)
+      emit_local_get(buf, i_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, i_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, res_l)
+      nl + 7
+    }
+    else if fname == "Array::all" {
+      // Array::all(arr, fn) → true if fn(elem) is truthy for all elements
+      let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
+      let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      let arr_l = nl
+      let fn_l = nl + 1
+      let len_l = nl + 2
+      let i_l = nl + 3
+      let slot_l = nl + 4
+      let env_l = nl + 5
+      let res_l = nl + 6
+      Array::push(local_names, "__all_arr")
+      Array::push(local_names, "__all_fn")
+      Array::push(local_names, "__all_len")
+      Array::push(local_names, "__all_i")
+      Array::push(local_names, "__all_slot")
+      Array::push(local_names, "__all_env")
+      Array::push(local_names, "__all_res")
+      emit_local_set(buf, fn_l)
+      emit_local_set(buf, arr_l)
+      emit_local_get(buf, arr_l)
+      emit_call(buf, arr_len_fi)
+      emit_local_set(buf, len_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, i_l)
+      emit_i64_const(buf, 1)
+      emit_local_set(buf, res_l)
+      emit_closure_resolve(buf, fn_l, slot_l, env_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, i_l)
+      emit_local_get(buf, len_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, arr_l)
+      emit_local_get(buf, i_l)
+      emit_call(buf, arr_get_fi)
+      emit_closure_call_tail(buf, env_l, slot_l, 9, 1)
+      emit_i32_wrap_i64(buf)
+      emit_i64_extend_i32_s(buf)
+      emit_i64_eqz(buf)
+      emit_if_void(buf)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, res_l)
+      emit_br(buf, 2)
+      emit_end(buf)
+      emit_local_get(buf, i_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, i_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, res_l)
+      nl + 7
+    }
+    else if fname == "Array::find" {
+      // Array::find(arr, fn) → Some(elem) if fn(elem) truthy, else None
+      let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
+      let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      let arr_l = nl
+      let fn_l = nl + 1
+      let len_l = nl + 2
+      let i_l = nl + 3
+      let slot_l = nl + 4
+      let env_l = nl + 5
+      let elem_l = nl + 6
+      let res_l = nl + 7
+      Array::push(local_names, "__find_arr")
+      Array::push(local_names, "__find_fn")
+      Array::push(local_names, "__find_len")
+      Array::push(local_names, "__find_i")
+      Array::push(local_names, "__find_slot")
+      Array::push(local_names, "__find_env")
+      Array::push(local_names, "__find_elem")
+      Array::push(local_names, "__find_res")
+      emit_local_set(buf, fn_l)
+      emit_local_set(buf, arr_l)
+      emit_local_get(buf, arr_l)
+      emit_call(buf, arr_len_fi)
+      emit_local_set(buf, len_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, i_l)
+      // Default: None (0-arg ctor tag)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, res_l)
+      emit_closure_resolve(buf, fn_l, slot_l, env_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, i_l)
+      emit_local_get(buf, len_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, arr_l)
+      emit_local_get(buf, i_l)
+      emit_call(buf, arr_get_fi)
+      emit_local_set(buf, elem_l)
+      emit_local_get(buf, elem_l)
+      emit_closure_call_tail(buf, env_l, slot_l, 9, 1)
+      emit_i32_wrap_i64(buf)
+      emit_if_void(buf)
+      // Found: res = Some(elem) — just store the elem as Some(elem) ctor
+      // For simplicity, store the elem directly (codegen resolves Some at use site)
+      emit_local_get(buf, elem_l)
+      emit_local_set(buf, res_l)
+      emit_br(buf, 2)
+      emit_end(buf)
+      emit_local_get(buf, i_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, i_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, res_l)
+      nl + 8
+    }
+    else if fname == "Map::keys" {
+      // Map::keys(map) → array of key values
+      // Map layout: ptr[0]=count(i32), ptr+8+i*16=key, ptr+8+i*16+8=val
+      let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
+      let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      let map_l = nl
+      let res_l = nl + 1
+      let cnt_l = nl + 2
+      let i_l = nl + 3
+      Array::push(local_names, "__keys_map")
+      Array::push(local_names, "__keys_res")
+      Array::push(local_names, "__keys_cnt")
+      Array::push(local_names, "__keys_i")
+      emit_local_set(buf, map_l)
+      emit_call(buf, arr_new_fi)
+      emit_local_set(buf, res_l)
+      // count = map[0] (i32 → extend to i64)
+      emit_local_get(buf, map_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_load(buf, 2, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, cnt_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, i_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, i_l)
+      emit_local_get(buf, cnt_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      // push key at map_ptr + 8 + i * 16
+      emit_local_get(buf, res_l)
+      emit_local_get(buf, map_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, i_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 8)
+      emit_call(buf, arr_push_fi)
+      emit_local_get(buf, i_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, i_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, res_l)
+      nl + 4
+    }
+    else if fname == "Map::get" {
+      // Map::get(map, key) — linear search by key string equality
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      let (map_get_eq_idx, _, _) = resolve_func(ctx.func_table, "eq")
+      let map_local = nl
+      let key_local = nl + 1
+      let count_local = nl + 2
+      let idx_local = nl + 3
+      Array::push(local_names, "__map_ref")
+      Array::push(local_names, "__map_key")
+      Array::push(local_names, "__map_cnt")
+      Array::push(local_names, "__map_i")
+      emit_local_set(buf, key_local)
+      emit_local_set(buf, map_local)
+      // count = map[0] (i32 → extend to i64)
+      emit_local_get(buf, map_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_load(buf, 2, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, count_local)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, idx_local)
+      emit_block_i64(buf)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, idx_local)
+      emit_local_get(buf, count_local)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      // load key at map_ptr + 8 + i*16
+      emit_local_get(buf, map_local)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, idx_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 8)
+      emit_local_get(buf, key_local)
+      emit_call(buf, map_get_eq_idx)
+      emit_i32_wrap_i64(buf)
+      emit_if_void(buf)
+      // found: return value at offset 8 + i*16 + 8
+      emit_local_get(buf, map_local)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, idx_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 16)
+      emit_br(buf, 3)
+      emit_end(buf)
+      emit_local_get(buf, idx_local)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, idx_local)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_i64_const(buf, 0)
+      // not found: return 0
+      emit_end(buf)
+      nl + 4
+    }
+    else if fname == "Map::has_key" {
+      // Map::has_key(map, key) → Bool (delegates to Map::get, check != 0 conceptually)
+      // Actually: linear search, return 1 if found else 0
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      let (eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
+      let map_l = nl; let key_l = nl + 1; let cnt_l = nl + 2; let i_l = nl + 3
+      Array::push(local_names, "__hk_map"); Array::push(local_names, "__hk_key")
+      Array::push(local_names, "__hk_cnt"); Array::push(local_names, "__hk_i")
+      emit_local_set(buf, key_l); emit_local_set(buf, map_l)
+      emit_local_get(buf, map_l); emit_i32_wrap_i64(buf)
+      emit_i32_load(buf, 2, 0); emit_i64_extend_i32_u(buf); emit_local_set(buf, cnt_l)
+      emit_i64_const(buf, 0); emit_local_set(buf, i_l)
+      emit_block_i64(buf); emit_block_void(buf); emit_loop_void(buf)
+      emit_local_get(buf, i_l); emit_local_get(buf, cnt_l)
+      emit_i64_ge_s(buf); emit_br_if(buf, 1)
+      emit_local_get(buf, map_l); emit_i32_wrap_i64(buf)
+      emit_local_get(buf, i_l); emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16); emit_i32_mul(buf); emit_i32_add(buf)
+      emit_i64_load(buf, 3, 8)
+      emit_local_get(buf, key_l); emit_call(buf, eq_fi)
+      emit_i32_wrap_i64(buf); emit_if_void(buf)
+      emit_i64_const(buf, 1); emit_br(buf, 3); emit_end(buf)
+      emit_local_get(buf, i_l); emit_i64_const(buf, 1); emit_i64_add(buf)
+      emit_local_set(buf, i_l); emit_br(buf, 0)
+      emit_end(buf); emit_end(buf)
+      emit_i64_const(buf, 0); emit_end(buf)
+      nl + 4
+    }
+    else if fname == "Map::remove" {
+      // Stub: return map unchanged
+      ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    }
+    else if fname == "Map::set" {
+      // Map::set(map, key, value) → new map (immutable update)
+      // Copy old entries, update or append key-value pair
+      let (eq_fi_ms, _, _) = resolve_func(ctx.func_table, "eq")
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+      let map_l = nl
+      let key_l = nl + 1
+      let val_l = nl + 2
+      let cnt_l = nl + 3
+      let new_l = nl + 4
+      let idx_l = nl + 5
+      let found_l = nl + 6
+      Array::push(local_names, "__ms_map")
+      Array::push(local_names, "__ms_key")
+      Array::push(local_names, "__ms_val")
+      Array::push(local_names, "__ms_cnt")
+      Array::push(local_names, "__ms_new")
+      Array::push(local_names, "__ms_idx")
+      Array::push(local_names, "__ms_found")
+      emit_local_set(buf, val_l)
+      emit_local_set(buf, key_l)
+      emit_local_set(buf, map_l)
+      // count = map[0]
+      emit_local_get(buf, map_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_load(buf, 2, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, cnt_l)
+      // Alloc new map: 8 + (count+1)*16
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, new_l)
+      emit_global_get(buf, 0)
+      emit_local_get(buf, cnt_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_const(buf, 8)
+      emit_i32_add(buf)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      // Copy entries, replacing matching key
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, idx_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, found_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, idx_l)
+      emit_local_get(buf, cnt_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      // Copy key
+      emit_local_get(buf, new_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, idx_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, map_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, idx_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 8)
+      emit_i64_store(buf, 3, 8)
+      // Check if key matches
+      emit_local_get(buf, map_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, idx_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 8)
+      emit_local_get(buf, key_l)
+      emit_call(buf, eq_fi_ms)
+      emit_i32_wrap_i64(buf)
+      emit_if_void(buf)
+      // Match: use new value
+      emit_local_get(buf, new_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, idx_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, val_l)
+      emit_i64_store(buf, 3, 16)
+      emit_i64_const(buf, 1)
+      emit_local_set(buf, found_l)
+      emit_else(buf)
+      // No match: copy old value
+      emit_local_get(buf, new_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, idx_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, map_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, idx_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 16)
+      emit_i64_store(buf, 3, 16)
+      emit_end(buf)
+      emit_local_get(buf, idx_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, idx_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      // If key not found, append
+      emit_local_get(buf, found_l)
+      emit_i64_eqz(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, new_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, cnt_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, key_l)
+      emit_i64_store(buf, 3, 8)
+      emit_local_get(buf, new_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, cnt_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, val_l)
+      emit_i64_store(buf, 3, 16)
+      // new count = count + 1
+      emit_local_get(buf, new_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, cnt_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_store(buf, 2, 0)
+      emit_else(buf)
+      // Key replaced: new count = count (same)
+      emit_local_get(buf, new_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, cnt_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_store(buf, 2, 0)
+      emit_end(buf)
+      emit_local_get(buf, new_l)
+      nl + 7
+    }
+    else if fname == "MapBuilder::new" {
+      // Allocate empty map on heap: [count=0:i32][pad:i32] + room for entries
+      // Allocate 8 + 16*8 = 136 bytes (room for 8 entries)
+      let ptr_l = next_local
+      Array::push(local_names, "__mb_ptr")
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, ptr_l)
+      emit_global_get(buf, 0)
+      emit_i32_const(buf, 136)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      // count = 0
+      emit_local_get(buf, ptr_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 0)
+      emit_i32_store(buf, 2, 0)
+      emit_local_get(buf, ptr_l)
+      next_local + 1
+    }
+    else if fname == "MapBuilder::set" {
+      // MapBuilder::set(builder, key, value) → in-place mutation (same as Map::set)
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+      let mb_l = nl
+      let mk_l = nl + 1
+      let mv_l = nl + 2
+      let mc_l = nl + 3
+      Array::push(local_names, "__mbs_map")
+      Array::push(local_names, "__mbs_key")
+      Array::push(local_names, "__mbs_val")
+      Array::push(local_names, "__mbs_cnt")
+      emit_local_set(buf, mv_l)
+      emit_local_set(buf, mk_l)
+      emit_local_set(buf, mb_l)
+      // count = map[0]
+      emit_local_get(buf, mb_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_load(buf, 2, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, mc_l)
+      // store key at 8 + count*16
+      emit_local_get(buf, mb_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, mc_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, mk_l)
+      emit_i64_store(buf, 3, 8)
+      // store value at 8 + count*16 + 8
+      emit_local_get(buf, mb_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, mc_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, mv_l)
+      emit_i64_store(buf, 3, 16)
+      // count++
+      emit_local_get(buf, mb_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, mc_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_store(buf, 2, 0)
+      // return builder (void, push unit)
+      emit_i64_const(buf, 0)
+      nl + 4
+    }
+    else if fname == "MapBuilder::freeze" {
+      // freeze just returns the builder pointer as the map
+      ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    }
+    else if fname == "__rec_field" {
+      // Record field access by index: __rec_field(record, idx)
+      // Record layout: [tag:i32][count:i32][field0:i64][field1:i64]...
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      let idx_expr = Array::get(args, 1)
+      let field_idx = get_eint_value(idx_expr)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 8 + field_idx * 8)
+      nl
+    }
+    else if fname == "__len" {
+      let (sl_idx, _, _) = resolve_func(ctx.func_table, "String::length")
+      let (bl_idx, _, _) = resolve_func(ctx.func_table, "Bytes::length")
+      let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+      let obj_local = next_local
+      let ptr_local = next_local + 1
+      let cap_local = next_local + 2
+      Array::push(local_names, "__len_obj")
+      Array::push(local_names, "__len_ptr")
+      Array::push(local_names, "__len_cap")
+      let mut nl = next_local + 3
+      nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+      emit_local_set(buf, obj_local)
+      emit_local_get(buf, obj_local)
+      emit_i64_const(buf, 32)
+      emit_i64_shr_s(buf)
+      emit_i64_eqz(buf)
+      emit_if_i64(buf)
+      emit_local_get(buf, obj_local)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, ptr_local)
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 2, 0)
+      emit_local_set(buf, cap_local)
+      emit_local_get(buf, cap_local)
+      emit_i32_const(buf, 2147483647)
+      emit_i32_gt_u(buf)
+      emit_if_i64(buf)
+      emit_local_get(buf, obj_local)
+      emit_call(buf, bl_idx)
+      emit_else(buf)
+      emit_local_get(buf, obj_local)
+      emit_call(buf, al_idx)
+      emit_end(buf)
+      emit_else(buf)
+      emit_local_get(buf, obj_local)
+      emit_call(buf, sl_idx)
+      emit_end(buf)
+      nl
+    }
+    else if fname == "__index" {
+      let (sg_idx, _, _) = resolve_func(ctx.func_table, "String::char_code_at")
+      let (bg_idx, _, _) = resolve_func(ctx.func_table, "Bytes::get")
+      let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+      let obj_local = next_local
+      let idx_local = next_local + 1
+      let ptr_local = next_local + 2
+      let cap_local = next_local + 3
+      Array::push(local_names, "__index_obj")
+      Array::push(local_names, "__index_idx")
+      Array::push(local_names, "__index_ptr")
+      Array::push(local_names, "__index_cap")
+      let mut nl = next_local + 4
+      nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+      emit_local_set(buf, obj_local)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      emit_local_set(buf, idx_local)
+      emit_local_get(buf, obj_local)
+      emit_i64_const(buf, 32)
+      emit_i64_shr_s(buf)
+      emit_i64_eqz(buf)
+      emit_if_i64(buf)
+      emit_local_get(buf, obj_local)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, ptr_local)
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 2, 0)
+      emit_local_set(buf, cap_local)
+      emit_local_get(buf, cap_local)
+      emit_i32_const(buf, 2147483647)
+      emit_i32_gt_u(buf)
+      emit_if_i64(buf)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, idx_local)
+      emit_call(buf, bg_idx)
+      emit_else(buf)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, idx_local)
+      emit_call(buf, ag_idx)
+      emit_end(buf)
+      emit_else(buf)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, idx_local)
+      emit_call(buf, sg_idx)
+      emit_end(buf)
+      nl
+    }
+    else {
+      if fn_idx_in_list >= 0 {
+        let fidx = Array::get(ctx.func_table.indices, fn_idx_in_list)
+        let has_ret = Array::get(ctx.func_table.returns, fn_idx_in_list)
+        let needs_env = Array::get(ctx.func_table.needs_env, fn_idx_in_list)
+        let mut nl = next_local
+        let mut ci = 0
+        while ci < Array::length(args) {
+          nl = ce(buf, Array::get(args, ci), local_names, nl, ctx, ld)
+          ci = ci + 1
+        }
+        if needs_env {
+          emit_i64_const(buf, 0)
+        }
+        emit_call(buf, fidx)
+        if has_ret == 0 {
+          emit_i64_const(buf, 0)
+        }
+        nl
+      } else {
+        let local_idx2 = if local_idx_hint >= 0 {
+          local_idx_hint
+        } else {
+          resolve_local(local_names, fname, "call")
+        }
+        let num_args = Array::length(args)
+        let fn_val_local = next_local
+        let slot_local = next_local + 1
+        let env_local = next_local + 2
+        let mut nl = next_local + 3
+        Array::push(local_names, "__fn_val")
+        Array::push(local_names, "__slot")
+        Array::push(local_names, "__env")
+        emit_local_get(buf, local_idx2)
+        emit_local_set(buf, fn_val_local)
+        emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
+        let mut ci = 0
+        while ci < num_args {
+          nl = ce(buf, Array::get(args, ci), local_names, nl, ctx, ld)
+          ci = ci + 1
+        }
+        emit_closure_call_tail(buf, env_local, slot_local, 9, num_args)
+        nl
+      }
+    }
+    // close ctor_lookup else
+  } else {
+    let num_args = Array::length(args)
+    let fn_val_local = next_local
+    let slot_local = next_local + 1
+    let env_local = next_local + 2
+    let mut nl = next_local + 3
+    Array::push(local_names, "__fn_val")
+    Array::push(local_names, "__slot")
+    Array::push(local_names, "__env")
+    nl = ce(buf, callee, local_names, nl, ctx, ld)
+    emit_local_set(buf, fn_val_local)
+    emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
+    let mut ci = 0
+    while ci < num_args {
+      nl = ce(buf, Array::get(args, ci), local_names, nl, ctx, ld)
+      ci = ci + 1
+    }
+    emit_closure_call_tail(buf, env_local, slot_local, 9, num_args)
+    nl
+  }
+}

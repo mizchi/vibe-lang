@@ -635,8 +635,7 @@ fn walk_expr(
       walk_module(body, scopes, out)
       warning_scope_pop(scopes, out)
     }
-    @core.Expr::Raise(value~, ..) | @core.Expr::Yield(expr=value, ..) =>
-      walk_expr(value, scopes, out)
+    @core.Expr::Yield(expr=value, ..) => walk_expr(value, scopes, out)
     @core.Expr::StructLit(fields~, ..) =>
       for field in fields {
         walk_expr(field.expr, scopes, out)
@@ -662,6 +661,14 @@ fn walk_expr(
     | @core.Expr::Char(..)
     | @core.Expr::String(..)
     | @core.Expr::Placeholder(..) => ()
+    // StringInterp is lowered in desugar; should never reach here
+    @core.Expr::StringInterp(parts~, ..) =>
+      for part in parts {
+        match part {
+          @core.StringInterpPart::Expr(e) => walk_expr(e, scopes, out)
+          @core.StringInterpPart::Lit(_) => ()
+        }
+      }
   }
 }
 

@@ -309,7 +309,8 @@ pub fn compile_module_wasm_linked(
     let raw_ast = db.ast(path)
     let imports = db.imports(path)
     let aliases = build_alias_map(
-      raw_ast, compile_module_import_aliases(imports),
+      raw_ast,
+      compile_module_import_aliases(imports),
     )
     let desugared = @frontend.desugar_method_calls(raw_ast, aliases)
     @frontend.rewrite_effect_handles(desugared)
@@ -325,7 +326,9 @@ pub fn compile_module_wasm_linked(
   // Convert LinkedImport to codegen's linked_imports format
   let codegen_linked : Array[(String, String, Int, Int)] = []
   for li in linked_imports {
-    codegen_linked.push((li.module_name, li.func_name, li.param_count, li.return_count))
+    codegen_linked.push(
+      (li.module_name, li.func_name, li.param_count, li.return_count),
+    )
   }
   let wasm = @codegen.emit_module_wasm_with_options(
     bundled,
@@ -347,9 +350,22 @@ pub fn emit_wasm_with_linked_imports(
 ) -> Bytes raise WasmCompileError {
   @codegen.emit_module_wasm_with_options(
     bundled,
+    @codegen.wasm_emit_options(embed_error_strings=true, linked_imports~),
+  ) catch {
+    e => raise WasmCompileError::Gen(e)
+  }
+}
+
+///|
+pub fn emit_library_module_wasm(
+  ast : @core.Module,
+  debug_errors? : Bool = false,
+) -> Bytes raise WasmCompileError {
+  @codegen.emit_module_wasm_with_options(
+    ast,
     @codegen.wasm_emit_options(
-      embed_error_strings=true,
-      linked_imports~,
+      embed_error_strings=debug_errors,
+      library_mode=true,
     ),
   ) catch {
     e => raise WasmCompileError::Gen(e)

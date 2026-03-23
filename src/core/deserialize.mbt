@@ -118,6 +118,7 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
             return Stmt::TraitDef(
               name~,
               supertraits=[],
+              methods=[],
               open_impl=false,
               exported=false,
               span=zero,
@@ -140,6 +141,7 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
             return Stmt::TraitDef(
               name~,
               supertraits~,
+              methods=[],
               open_impl~,
               exported~,
               span=zero,
@@ -219,6 +221,7 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
         return Stmt::InternalTraitDef(
           name~,
           supertraits~,
+          methods=[],
           open_impl~,
           span=zero,
         )
@@ -422,9 +425,22 @@ fn parse_expr(json : Json) -> Expr raise DeserializeError {
         let arms = parse_arms(get_field(inner, "arms"))
         return Expr::Handle(body~, arms~, span=zero)
       }
+      "Perform" => {
+        let inner = expect_object(value)
+        let effect_name = get_string(inner, "effect_name")
+        let op_name = get_string(inner, "op_name")
+        let args = parse_call_args(get_field(inner, "args"))
+        return Expr::Perform(effect_name~, op_name~, args~, span=zero)
+      }
       "Raise" => {
+        // backward compat: convert to Perform("Error","Throw",...)
         let v = parse_expr(value)
-        return Expr::Raise(value=v, span=zero)
+        return Expr::Perform(
+          effect_name="Error",
+          op_name="Throw",
+          args=[CallArg::{ label: None, expr: v, span: zero }],
+          span=zero,
+        )
       }
       "Yield" => {
         let expr = parse_expr(value)

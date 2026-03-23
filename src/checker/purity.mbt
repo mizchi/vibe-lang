@@ -369,10 +369,6 @@ fn purity_expr_analysis_inner(
     }
     @core.Expr::While(..) | @core.Expr::Loop(..) => purity_analysis_impure()
     @core.Expr::Break(..) | @core.Expr::Continue(..) => purity_analysis_impure()
-    @core.Expr::Raise(value~, span~) => {
-      let _ = span
-      purity_expr_analysis_inner(env, value, locals)
-    }
     @core.Expr::Yield(..) => purity_analysis_impure()
     @core.Expr::Spread(expr~, ..) =>
       purity_expr_analysis_inner(env, expr, locals)
@@ -386,6 +382,8 @@ fn purity_expr_analysis_inner(
       }
       out
     }
+    // StringInterp is lowered in desugar; should never reach here
+    @core.Expr::StringInterp(..) => purity_analysis_pure()
   }
 }
 
@@ -686,10 +684,13 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "__div" ||
   name == "__mod" ||
   name == "__index" ||
+  name == "__len" ||
+  name == "__slice" ||
   name == "__eq" ||
   name == "__lt" ||
   name == "__neg" ||
   name == "__assert" ||
+  name == "__assert_eq" ||
   name == "record_set" ||
   name == "Map::keys" ||
   name == "Map::values" ||

@@ -57,6 +57,12 @@ priv struct CodegenCtx {
   known_record_fields : Map[String, Bool]
   strings : StringTable
   js_strings : StringConstTable
+  // Effect resume globals for cross-function perform dispatch
+  effect_handled_ops : Map[String, Bool]
+  mut need_effect_resume : Bool
+  mut effect_resume_idx_global : Int // i32: current read position
+  mut effect_resume_count_global : Int // i32: number of stored resume values
+  mut effect_resume_buf_global : Int // i32: pointer to resume value buffer
   // Stack switching for async
   mut need_stack_switching : Bool
   mut await_tag_type_index : Int
@@ -195,6 +201,11 @@ fn CodegenCtx::new(
     need_heap: false,
     heap_local: -1,
     current_env_idx: -1,
+    effect_handled_ops: {},
+    need_effect_resume: false,
+    effect_resume_idx_global: -1,
+    effect_resume_count_global: -1,
+    effect_resume_buf_global: -1,
     need_exceptions: false,
     error_tag_type_index: -1,
     error_tag_index: 0,
@@ -346,6 +357,67 @@ fn collect_pat_bindings_codegen(pat : @core.Pat, out : Array[String]) -> Unit {
       let _ = span
       for field in fields {
         collect_pat_bindings_codegen(field.pat, out)
+      }
+    }
+    _ => ()
+  }
+}
+
+///|
+fn collect_pat_binding_kinds_codegen(
+  ctx : CodegenCtx,
+  pat : @core.Pat,
+  scrut_kind : ValueKind,
+  out : Map[String, ValueKind],
+) -> Unit {
+  match pat {
+    @core.Pat::Bind(name~, span~) => {
+      let _ = span
+      out[name] = scrut_kind
+    }
+    @core.Pat::Ctor(name~, args~, span~) => {
+      let _ = span
+      let arg_kinds = match ctx.enum_ctor_arg_kinds.get(name) {
+        Some(kinds) => kinds
+        None => []
+      }
+      for i, arg in args {
+        let raw_arg_kind = if i < arg_kinds.length() {
+          arg_kinds[i]
+        } else {
+          ValueKind::I64
+        }
+        let arg_kind = match raw_arg_kind {
+          ValueKind::BoxedF32 | ValueKind::BoxedF64 | ValueKind::ExternRef =>
+            raw_arg_kind
+          _ => ValueKind::I64
+        }
+        collect_pat_binding_kinds_codegen(ctx, arg, arg_kind, out)
+      }
+    }
+    @core.Pat::Tuple(items~, span~) => {
+      let _ = span
+      for item in items {
+        collect_pat_binding_kinds_codegen(ctx, item, ValueKind::I64, out)
+      }
+    }
+    @core.Pat::Record(fields~, span~) => {
+      let _ = span
+      for field in fields {
+        collect_pat_binding_kinds_codegen(ctx, field.pat, ValueKind::I64, out)
+      }
+    }
+    @core.Pat::Struct(name~, fields~, span~) => {
+      let _ = name
+      let _ = span
+      for field in fields {
+        collect_pat_binding_kinds_codegen(ctx, field.pat, ValueKind::I64, out)
+      }
+    }
+    @core.Pat::Or(pats~, span~) => {
+      let _ = span
+      if pats.length() > 0 {
+        collect_pat_binding_kinds_codegen(ctx, pats[0], scrut_kind, out)
       }
     }
     _ => ()
@@ -516,10 +588,6 @@ fn collect_captures_expr(
           None => ()
         }
       }
-    }
-    @core.Expr::Raise(value~, span~) => {
-      let _ = span
-      collect_captures_expr(value, bound, outer_bound, captures, seen)
     }
     @core.Expr::While(cond~, body~, span~) => {
       let _ = span
@@ -817,10 +885,6 @@ fn collect_nested_funcs_expr(
           None => ()
         }
       }
-    }
-    @core.Expr::Raise(value~, span~) => {
-      let _ = span
-      collect_nested_funcs_expr(value, bound, funcs)
     }
     @core.Expr::While(cond~, body~, span~) => {
       let _ = span
@@ -1180,7 +1244,6 @@ fn collect_fn_span_keys_expr(expr : @core.Expr, out : Array[String]) -> Unit {
         }
       }
     }
-    @core.Expr::Raise(value~, ..) => collect_fn_span_keys_expr(value, out)
     @core.Expr::While(cond~, body~, ..) => {
       collect_fn_span_keys_expr(cond, out)
       for s in body.stmts {
@@ -1307,8 +1370,6 @@ fn precompute_ref_cell_captures_expr(
         }
       }
     }
-    @core.Expr::Raise(value~, ..) =>
-      precompute_ref_cell_captures_expr(ctx, value, scope_mcv)
     @core.Expr::While(cond~, body~, ..) => {
       precompute_ref_cell_captures_expr(ctx, cond, scope_mcv)
       precompute_ref_cell_captures_block(ctx, body.stmts, scope_mcv)

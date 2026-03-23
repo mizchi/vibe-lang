@@ -5,11 +5,15 @@ import ../core/ast.vibe {
 }
 
 import ../core/types.vibe {
-  Subst, Type, TypeDef, TypeEnv, env_bind, env_flat_bindings, env_lookup_flat, generalize, impls_overlap_for, resolve_builtin, subst_apply, trait_defined
+  Subst, Type, TypeDef, TypeEnv, env_bind, env_cache, env_flat_bindings, env_lookup_flat, generalize, impls_overlap_for, resolve_builtin, subst_apply, trait_defined
 }
 
 import ./checker.vibe {
   check_expr
+}
+
+import ../checker_trait.vibe {
+  register_builtin_traits
 }
 
 import ./checker_resolve.vibe {
@@ -171,8 +175,7 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
           ci2 = ci2 + 1
         }
         (env1, s, c)
-      }
-      ,
+      },
       SStruct(_, name, field_defs) => {
         let resolved_fields = Array::slice([
           ("", CtUnit)
@@ -195,8 +198,7 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
           fj = fj + 1
         }
         (env_bind(env, name, CtFn(field_types, CtStruct(name), false)), s, c)
-      }
-      ,
+      },
       STypeAlias(_, name, te) => {
         let t = resolve_type_expr(te, defs)
         (env_bind(env, name, t), s, c)
@@ -253,9 +255,14 @@ export let check_program = (stmts: Array[Stmt]) -> TypeEnv with { Error } {
   let empty_defs = Array::slice([
     TDAlias("_dummy", CtUnit)
   ], 0, 0)
+  let seeded_env = if trait_defined(EnvEmpty, "Eq") {
+    EnvEmpty
+  } else {
+    register_builtin_traits(EnvEmpty)
+  }
   let errors = ArrayBuilder::new()
   let frozen_errors = ArrayBuilder::freeze(errors)
-  let (env, _, _) = check_stmts(stmts, 0, EnvEmpty, empty_defs, SubstEmpty, 0, frozen_errors)
+  let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors)
   if Array::length(frozen_errors) > 0 {
     throw(Array::get(frozen_errors, 0))
   }
@@ -263,15 +270,25 @@ export let check_program = (stmts: Array[Stmt]) -> TypeEnv with { Error } {
 }
 
 export let check_program_with_env = (stmts: Array[Stmt], initial_env: TypeEnv) -> TypeEnv with { Error } {
-  let empty_defs = Array::slice([
-    TDAlias("_dummy", CtUnit)
-  ], 0, 0)
-  let cached_env = env_cache(initial_env)
-  let errors = ArrayBuilder::new()
-  let frozen_errors = ArrayBuilder::freeze(errors)
-  let (env, _, _) = check_stmts(stmts, 0, cached_env, empty_defs, SubstEmpty, 0, frozen_errors)
-  if Array::length(frozen_errors) > 0 {
-    throw(Array::get(frozen_errors, 0))
+  match initial_env {
+    EnvEmpty => check_program(stmts),
+    _ => {
+      let empty_defs = Array::slice([
+        TDAlias("_dummy", CtUnit)
+      ], 0, 0)
+      let cached_env = env_cache(initial_env)
+      let seeded_env = if trait_defined(cached_env, "Eq") {
+        cached_env
+      } else {
+        register_builtin_traits(cached_env)
+      }
+      let errors = ArrayBuilder::new()
+      let frozen_errors = ArrayBuilder::freeze(errors)
+      let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors)
+      if Array::length(frozen_errors) > 0 {
+        throw(Array::get(frozen_errors, 0))
+      }
+      env
+    }
   }
-  env
 }

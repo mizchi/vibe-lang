@@ -84,6 +84,95 @@ let builtin_builtin_traits_source : String =
   #|
   #|impl Signed for Double
   #|
+  #|// WASM numeric primitives
+  #|impl Eq for i64
+  #|
+  #|impl Eq for u8
+  #|
+  #|impl Eq for u16
+  #|
+  #|impl Eq for u32
+  #|
+  #|impl Eq for u64
+  #|
+  #|impl Eq for i16
+  #|
+  #|impl Hash for i64
+  #|
+  #|impl Hash for u8
+  #|
+  #|impl Hash for u16
+  #|
+  #|impl Hash for u32
+  #|
+  #|impl Hash for u64
+  #|
+  #|impl Hash for i16
+  #|
+  #|impl Ord for i64
+  #|
+  #|impl Ord for u8
+  #|
+  #|impl Ord for u16
+  #|
+  #|impl Ord for u32
+  #|
+  #|impl Ord for u64
+  #|
+  #|impl Ord for i16
+  #|
+  #|impl Add for i64
+  #|
+  #|impl Add for u8
+  #|
+  #|impl Add for u16
+  #|
+  #|impl Add for u32
+  #|
+  #|impl Add for u64
+  #|
+  #|impl Add for i16
+  #|
+  #|impl Sub for i64
+  #|
+  #|impl Sub for u8
+  #|
+  #|impl Sub for u16
+  #|
+  #|impl Sub for u32
+  #|
+  #|impl Sub for u64
+  #|
+  #|impl Sub for i16
+  #|
+  #|impl Mul for i64
+  #|
+  #|impl Mul for u8
+  #|
+  #|impl Mul for u16
+  #|
+  #|impl Mul for u32
+  #|
+  #|impl Mul for u64
+  #|
+  #|impl Mul for i16
+  #|
+  #|impl Div for i64
+  #|
+  #|impl Div for u8
+  #|
+  #|impl Div for u16
+  #|
+  #|impl Div for u32
+  #|
+  #|impl Div for u64
+  #|
+  #|impl Div for i16
+  #|
+  #|impl Signed for i64
+  #|
+  #|impl Signed for i16
+  #|
   #|//# Functions
   #|
   #|export let cmp_eq = [T: Eq](a: T, b: T) -> Bool {
@@ -1913,6 +2002,27 @@ let builtin_string_source : String =
   #|}
 
 ///|
+let builtin_bytes_source : String =
+  #|//# Functions
+  #|
+  #|export let Bytes::append = (dst: Bytes, src: Bytes) -> Unit {
+  #|  Bytes::append(dst, src)
+  #|}
+  #|
+  #|export let Bytes::blit = (
+  #|  dst: Bytes,
+  #|  src: Bytes,
+  #|  start: Int,
+  #|  end: Int,
+  #|) -> Unit {
+  #|  Bytes::blit(dst, src, start, end)
+  #|}
+  #|
+  #|export let Bytes::fill = (bytes: Bytes, value: Int, count: Int) -> Unit {
+  #|  Bytes::fill(bytes, value, count)
+  #|}
+
+///|
 let builtin_array_source : String =
   #|//# Functions
   #|
@@ -2118,5 +2228,6 @@ pub let builtin_module_sources : Array[(String, String)] = [
   ("prelude/double", builtin_double_source),
   ("prelude/char", builtin_char_source),
   ("prelude/string", builtin_string_source),
+  ("prelude/bytes", builtin_bytes_source),
   ("prelude/array", builtin_array_source),
 ]

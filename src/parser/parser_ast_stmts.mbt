@@ -684,11 +684,64 @@ fn AstParser::parse_trait_stmt(self : AstParser) -> @core.Stmt raise ParseError 
   } else {
     []
   }
-  let _ = self.eat(semicolon())
+  self.skip_trivia()
+  let methods : Array[@core.TraitMethodSig] = []
+  if self.peek_kind() == lbrace() {
+    let _ = self.bump()
+    while ({
+            self.skip_trivia()
+            self.peek_kind() != rbrace() && self.peek_kind() != eof()
+          }) {
+      let method_start = self.pos
+      let method_tok = self.expect(name(), "method name")
+      self.skip_trivia()
+      let params : Array[@core.FuncParam] = []
+      if self.peek_kind() == lparen() {
+        let _ = self.bump()
+        self.skip_trivia()
+        let mut param_idx = 0
+        while self.peek_kind() != rparen() && self.peek_kind() != eof() {
+          if param_idx > 0 {
+            let _ = self.expect(comma(), ",")
+            self.skip_trivia()
+          }
+          let ty = self.parse_type()
+          params.push(@core.FuncParam::{
+            name: "_" + param_idx.to_string(),
+            label: @core.ParamLabel::Positional,
+            ty,
+            bounds: [],
+          })
+          param_idx += 1
+          self.skip_trivia()
+        }
+        let _ = self.expect(rparen(), ")")
+      }
+      self.skip_trivia()
+      let ret = if self.peek_kind() == thin_arrow() {
+        let _ = self.bump()
+        self.parse_type()
+      } else {
+        @core.Type::Unit
+      }
+      self.skip_trivia()
+      let _ = self.eat(semicolon())
+      methods.push({
+        name: method_tok.text(),
+        params,
+        ret,
+        span: self.span_from(method_start),
+      })
+    }
+    let _ = self.expect(rbrace(), "}")
+  } else {
+    let _ = self.eat(semicolon())
+  }
   let span = self.span_from(start)
   @core.Stmt::TraitDef(
     name=name_tok.text(),
     supertraits~,
+    methods~,
     open_impl=false,
     exported=false,
     span~,
@@ -979,9 +1032,15 @@ fn AstParser::parse_internal_export_stmt(
     }
     let trait_stmt = self.parse_trait_stmt()
     match trait_stmt {
-      @core.Stmt::TraitDef(name~, supertraits~, ..) => {
+      @core.Stmt::TraitDef(name~, supertraits~, methods~, ..) => {
         let span = self.span_from(start)
-        @core.Stmt::InternalTraitDef(name~, supertraits~, open_impl~, span~)
+        @core.Stmt::InternalTraitDef(
+          name~,
+          supertraits~,
+          methods~,
+          open_impl~,
+          span~,
+        )
       }
       _ => {
         let span = self.span_from(start)
@@ -1299,11 +1358,6 @@ fn rewrite_module_expr(
       @core.Expr::While(
         cond=rewrite_module_expr(module_name, cond, locals),
         body=rewrite_module_block(module_name, body, locals),
-        span~,
-      )
-    @core.Expr::Raise(value~, span~) =>
-      @core.Expr::Raise(
-        value=rewrite_module_expr(module_name, value, locals),
         span~,
       )
     @core.Expr::Yield(expr~, span~) =>
@@ -2059,11 +2113,12 @@ fn AstParser::parse_export_stmt(
     }
     let trait_stmt = self.parse_trait_stmt()
     match trait_stmt {
-      @core.Stmt::TraitDef(name~, supertraits~, ..) => {
+      @core.Stmt::TraitDef(name~, supertraits~, methods~, ..) => {
         let span = self.span_from(start)
         @core.Stmt::TraitDef(
           name~,
           supertraits~,
+          methods~,
           open_impl~,
           exported=true,
           span~,

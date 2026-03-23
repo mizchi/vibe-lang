@@ -1,4 +1,9 @@
 ///|
+/// A scoped map with parent chain lookup and lazy promotion.
+///
+/// `fork()` creates a child scope sharing the parent's entries.
+/// `get()` walks the parent chain and promotes found entries to own for O(1) next lookup.
+/// `merge_up_or_self()` pushes own entries into the parent (destructive to parent).
 pub(all) struct ScopedMap[V] {
   own : Map[String, V]
   parent : ScopedMap[V]?
@@ -49,13 +54,13 @@ pub fn[V] ScopedMap::op_set(self : ScopedMap[V], key : String, val : V) -> Unit 
 
 ///|
 /// Check if key exists in own map or any parent.
+/// Promotes to own if found in parent.
 pub fn[V] ScopedMap::contains(self : ScopedMap[V], key : String) -> Bool {
   if self.own.contains(key) {
     return true
   }
   match self.parent {
     Some(p) =>
-      // Use get() which promotes to own if found
       match p.get(key) {
         Some(v) => {
           self.own[key] = v
@@ -68,14 +73,14 @@ pub fn[V] ScopedMap::contains(self : ScopedMap[V], key : String) -> Bool {
 }
 
 ///|
-/// Remove from own scope only.
+/// Remove from own scope only. Does not affect parent.
 pub fn[V] ScopedMap::remove(self : ScopedMap[V], key : String) -> Unit {
   self.own.remove(key)
 }
 
 ///|
 /// Iterate all entries (own first, then parent chain).
-/// Shadowed entries from parent may appear; callers tolerate duplicates.
+/// Note: shadowed entries from parent may appear as duplicates.
 pub fn[V] ScopedMap::iter2(self : ScopedMap[V]) -> Iter2[String, V] {
   match self.parent {
     None => self.own.iter2()
@@ -91,16 +96,16 @@ pub fn[V] ScopedMap::copy(self : ScopedMap[V]) -> ScopedMap[V] {
     None => { own: self.own.copy(), parent: None }
     Some(_) => {
       let flat : Map[String, V] = {}
-      scoped_map_flatten(self, flat)
+      flatten(self, flat)
       { own: flat, parent: None }
     }
   }
 }
 
 ///|
-fn[V] scoped_map_flatten(m : ScopedMap[V], target : Map[String, V]) -> Unit {
+fn[V] flatten(m : ScopedMap[V], target : Map[String, V]) -> Unit {
   match m.parent {
-    Some(p) => scoped_map_flatten(p, target)
+    Some(p) => flatten(p, target)
     None => ()
   }
   for k, v in m.own {
@@ -110,7 +115,7 @@ fn[V] scoped_map_flatten(m : ScopedMap[V], target : Map[String, V]) -> Unit {
 
 ///|
 /// Merge own entries into parent and return the merged result.
-/// If no parent, returns self unchanged.
+/// WARNING: This mutates the parent's own map. If no parent, returns self unchanged.
 pub fn[V] ScopedMap::merge_up_or_self(self : ScopedMap[V]) -> ScopedMap[V] {
   match self.parent {
     None => self

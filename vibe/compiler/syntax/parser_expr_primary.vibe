@@ -1,0 +1,547 @@
+//# Imports
+
+import ../core {
+  Expr, TypeExpr
+}
+
+import ./token.vibe {
+  Token
+}
+
+import ./parser_base.vibe {
+  _no_tb,
+  _no_tp,
+  collect_effect_names,
+  empty_exprs,
+  expect_tk,
+  is_lambda_start,
+  mode_block,
+  parse_param_list,
+  parse_type_impl,
+  peek,
+  tk_name
+}
+
+//# Functions
+
+let rec parse_comma_exprs_rest = (
+  tokens: Array[Token],
+  pos: Int,
+  b: ArrayBuilder[Expr],
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Array[Expr], Int) with { Error } {
+  match peek(tokens, pos) {
+    TComma => {
+      let (e, next) = parse_recur(tokens, pos + 1, 0)
+      ArrayBuilder::push(b, e)
+      parse_comma_exprs_rest(tokens, next, b, parse_recur)
+    },
+    _ => (ArrayBuilder::freeze(b), pos)
+  }
+}
+
+let rec parse_record_literal_fields = (
+  tokens: Array[Token],
+  pos: Int,
+  b: ArrayBuilder[(String, Expr)],
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Array[(String, Expr)], Int) with { Error } {
+  match peek(tokens, pos) {
+    TRBrace => (ArrayBuilder::freeze(b), pos + 1),
+    TIdent(fname) => {
+      let (val, next_pos) = match peek(tokens, pos + 1) {
+        TComma => (EIdent(fname), pos + 1),
+        TRBrace => (EIdent(fname), pos + 1),
+        _ => {
+          let colon_pos = expect_tk(tokens, pos + 1, ":")
+          parse_recur(tokens, colon_pos, 0)
+        }
+      }
+      ArrayBuilder::push(b, (fname, val))
+      match peek(tokens, next_pos) {
+        TComma => parse_record_literal_fields(tokens, next_pos + 1, b, parse_recur),
+        TRBrace => (ArrayBuilder::freeze(b), next_pos + 1),
+        _ => throw("expected ',' or '}' in record literal")
+      }
+    },
+    _ => throw("expected field name or '}' in record literal")
+  }
+}
+
+let rec parse_map_literal_fields = (
+  tokens: Array[Token],
+  pos: Int,
+  b: ArrayBuilder[(String, Expr)],
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Array[(String, Expr)], Int) with { Error } {
+  match peek(tokens, pos) {
+    TRBrace => (ArrayBuilder::freeze(b), pos + 1),
+    TIdent(fname) => {
+      let colon_pos = expect_tk(tokens, pos + 1, ":")
+      let (val, next_pos) = parse_recur(tokens, colon_pos, 0)
+      ArrayBuilder::push(b, (fname, val))
+      match peek(tokens, next_pos) {
+        TComma => parse_map_literal_fields(tokens, next_pos + 1, b, parse_recur),
+        TRBrace => (ArrayBuilder::freeze(b), next_pos + 1),
+        _ => throw("expected ',' or '}' in map literal")
+      }
+    },
+    TString(skey) => {
+      let colon_pos = expect_tk(tokens, pos + 1, ":")
+      let (val, next_pos) = parse_recur(tokens, colon_pos, 0)
+      ArrayBuilder::push(b, (skey, val))
+      match peek(tokens, next_pos) {
+        TComma => parse_map_literal_fields(tokens, next_pos + 1, b, parse_recur),
+        TRBrace => (ArrayBuilder::freeze(b), next_pos + 1),
+        _ => throw("expected ',' or '}' in map literal")
+      }
+    },
+    _ => throw("expected field name or '}' in map literal")
+  }
+}
+
+let rec parse_ctor_record_fields = (
+  tokens: Array[Token],
+  pos: Int,
+  b: ArrayBuilder[(String, Expr)],
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Array[(String, Expr)], Int) with { Error } {
+  match peek(tokens, pos) {
+    TRBrace => (ArrayBuilder::freeze(b), pos + 1),
+    TIdent(fname) => {
+      let colon_pos = expect_tk(tokens, pos + 1, ":")
+      let (val, next_pos) = parse_recur(tokens, colon_pos, 0)
+      ArrayBuilder::push(b, (fname, val))
+      match peek(tokens, next_pos) {
+        TComma => parse_ctor_record_fields(tokens, next_pos + 1, b, parse_recur),
+        TRBrace => (ArrayBuilder::freeze(b), next_pos + 1),
+        _ => throw("expected ',' or '}' in record literal")
+      }
+    },
+    _ => throw("expected field name or '}' in record literal")
+  }
+}
+
+let parse_lambda_body_expr = (
+  tokens: Array[Token],
+  params: Array[(String, Option[TypeExpr])],
+  ret_ty: Option[TypeExpr],
+  effect: Option[String],
+  body_pos: Int,
+  body_mode: Int,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  let (body, end) = parse_recur(tokens, body_pos, body_mode)
+  (EFn(_no_tp(), _no_tb(), params, ret_ty, effect, body), end)
+}
+
+let parse_paren_lambda_primary = (
+  tokens: Array[Token],
+  pos: Int,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  let (params, after_params) = parse_param_list(tokens, pos + 1)
+  match peek(tokens, after_params) {
+    TThinArrow => {
+      let after_arrow = after_params + 1
+      match peek(tokens, after_arrow) {
+        TIdent(_) => {
+          let (ty, ty_pos) = parse_type_impl(tokens, after_arrow, 0)
+          match peek(tokens, ty_pos) {
+            TLBrace => parse_lambda_body_expr(tokens, params, Some(ty), None, ty_pos + 1, mode_block, parse_recur),
+            TWith => {
+              let with_pos = expect_tk(tokens, ty_pos + 1, "{")
+              let effect_pair = collect_effect_names(tokens, with_pos, "")
+              let effect_name = effect_pair.0
+              let effect_next = effect_pair.1
+              let body_pos = expect_tk(tokens, effect_next, "{")
+              parse_lambda_body_expr(tokens, params, Some(ty), Some(effect_name), body_pos, mode_block, parse_recur)
+            },
+            _ => parse_lambda_body_expr(tokens, params, None, None, after_arrow, 0, parse_recur)
+          }
+        },
+        TLParen => {
+          let (ty, ty_pos) = parse_type_impl(tokens, after_arrow, 0)
+          match peek(tokens, ty_pos) {
+            TLBrace => parse_lambda_body_expr(tokens, params, Some(ty), None, ty_pos + 1, mode_block, parse_recur),
+            TWith => {
+              let with_pos = expect_tk(tokens, ty_pos + 1, "{")
+              let effect_pair = collect_effect_names(tokens, with_pos, "")
+              let effect_name = effect_pair.0
+              let effect_next = effect_pair.1
+              let body_pos = expect_tk(tokens, effect_next, "{")
+              parse_lambda_body_expr(tokens, params, Some(ty), Some(effect_name), body_pos, mode_block, parse_recur)
+            },
+            _ => parse_lambda_body_expr(tokens, params, None, None, after_arrow, 0, parse_recur)
+          }
+        },
+        _ => parse_lambda_body_expr(tokens, params, None, None, after_arrow, 0, parse_recur)
+      }
+    },
+    TLBrace => parse_lambda_body_expr(tokens, params, None, None, after_params + 1, mode_block, parse_recur),
+    _ => throw("expected '->' or '{' after fn params")
+  }
+}
+
+let parse_paren_tuple_primary = (
+  tokens: Array[Token],
+  pos: Int,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  match peek(tokens, pos + 1) {
+    TRParen => (EUnit, pos + 2),
+    _ => {
+      let (first, next_pos) = parse_recur(tokens, pos + 1, 0)
+      match peek(tokens, next_pos) {
+        TRParen => (first, next_pos + 1),
+        TComma => {
+          let b = ArrayBuilder::new()
+          ArrayBuilder::push(b, first)
+          let (items, end_pos) = parse_comma_exprs_rest(tokens, next_pos, b, parse_recur)
+          let close_pos = expect_tk(tokens, end_pos, ")")
+          (ETuple(items), close_pos)
+        },
+        _ => throw("expected ')' or ','")
+      }
+    }
+  }
+}
+
+let parse_paren_primary = (
+  tokens: Array[Token],
+  pos: Int,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  if is_lambda_start(tokens, pos + 1) {
+    handle {
+      parse_paren_lambda_primary(tokens, pos, parse_recur)
+    } {
+      Error(_) => parse_paren_tuple_primary(tokens, pos, parse_recur)
+    }
+  } else {
+    parse_paren_tuple_primary(tokens, pos, parse_recur)
+  }
+}
+
+let rec parse_array_elems_rest = (
+  tokens: Array[Token],
+  pos: Int,
+  b: ArrayBuilder[Expr],
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Array[Expr], Int) with { Error } {
+  match peek(tokens, pos) {
+    TComma => {
+      let next_pos = pos + 1
+      match peek(tokens, next_pos) {
+        TDotDotDot => {
+          let (expr, end_pos) = parse_recur(tokens, next_pos + 1, 0)
+          ArrayBuilder::push(b, ESpread(expr))
+          parse_array_elems_rest(tokens, end_pos, b, parse_recur)
+        },
+        _ => {
+          let (expr, end_pos) = parse_recur(tokens, next_pos, 0)
+          ArrayBuilder::push(b, expr)
+          parse_array_elems_rest(tokens, end_pos, b, parse_recur)
+        }
+      }
+    },
+    _ => (ArrayBuilder::freeze(b), pos)
+  }
+}
+
+let parse_generic_fn_primary = (
+  tokens: Array[Token],
+  pos: Int,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  let mut skip_pos = pos + 1
+  let mut depth = 1
+  while depth > 0 {
+    match peek(tokens, skip_pos) {
+      TLBracket => { depth = depth + 1 },
+      TRBracket => { depth = depth - 1 },
+      _ => ()
+    }
+    skip_pos = skip_pos + 1
+  }
+  let (params, after_params) = parse_param_list(tokens, skip_pos)
+  match peek(tokens, after_params) {
+    TThinArrow => {
+      let (ret_ty, ret_pos) = parse_type_impl(tokens, after_params + 1, 0)
+      let effect_pair = match peek(tokens, ret_pos) {
+        TWith => {
+          let with_pos = expect_tk(tokens, ret_pos + 1, "{")
+          let effect_name_pair = collect_effect_names(tokens, with_pos, "")
+          let effect_name = effect_name_pair.0
+          let end_pos = effect_name_pair.1
+          (Some(effect_name), end_pos)
+        },
+        _ => (None, ret_pos)
+      }
+      let effect = effect_pair.0
+      let effect_next = effect_pair.1
+      let body_pos = expect_tk(tokens, effect_next, "{")
+      let (body, end_pos) = parse_recur(tokens, body_pos, mode_block)
+      (EFn(_no_tp(), _no_tb(), params, Some(ret_ty), effect, body), end_pos)
+    },
+    TLBrace => {
+      let (body, end_pos) = parse_recur(tokens, after_params + 1, mode_block)
+      (EFn(_no_tp(), _no_tb(), params, None, None, body), end_pos)
+    },
+    _ => throw("expected '->' or '{' after generic function params")
+  }
+}
+
+let parse_array_primary = (
+  tokens: Array[Token],
+  pos: Int,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  match peek(tokens, pos + 1) {
+    TRBracket => (EArray(empty_exprs()), pos + 2),
+    TDotDotDot => {
+      let b = ArrayBuilder::new()
+      let (first, next_pos) = parse_recur(tokens, pos + 2, 0)
+      ArrayBuilder::push(b, ESpread(first))
+      let (items, end_pos) = parse_array_elems_rest(tokens, next_pos, b, parse_recur)
+      let close_pos = expect_tk(tokens, end_pos, "]")
+      (EArray(items), close_pos)
+    },
+    _ => {
+      let b = ArrayBuilder::new()
+      let (first, next_pos) = parse_recur(tokens, pos + 1, 0)
+      ArrayBuilder::push(b, first)
+      let (items, end_pos) = parse_array_elems_rest(tokens, next_pos, b, parse_recur)
+      let close_pos = expect_tk(tokens, end_pos, "]")
+      (EArray(items), close_pos)
+    }
+  }
+}
+
+let parse_bracket_primary = (
+  tokens: Array[Token],
+  pos: Int,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  let is_type_params = match peek(tokens, pos + 1) {
+    TIdent(_) => match peek(tokens, pos + 2) {
+      TRBracket => match peek(tokens, pos + 3) {
+        TLParen => true,
+        _ => false
+      },
+      TColon => true,
+      TComma => match peek(tokens, pos + 3) {
+        TIdent(_) => true,
+        _ => false
+      },
+      _ => false
+    },
+    _ => false
+  }
+  if is_type_params {
+    parse_generic_fn_primary(tokens, pos, parse_recur)
+  } else {
+    parse_array_primary(tokens, pos, parse_recur)
+  }
+}
+
+let parse_throw_primary = (
+  tokens: Array[Token],
+  pos: Int,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  let open_pos = expect_tk(tokens, pos + 1, "(")
+  let (expr, next_pos) = parse_recur(tokens, open_pos, 0)
+  let close_pos = expect_tk(tokens, next_pos, ")")
+  (EThrow(expr), close_pos)
+}
+
+let parse_break_primary = (
+  tokens: Array[Token],
+  pos: Int,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  match peek(tokens, pos + 1) {
+    TRBrace => (EBreak(None), pos + 1),
+    TSemicolon => (EBreak(None), pos + 1),
+    TEof => (EBreak(None), pos + 1),
+    _ => {
+      let (expr, next_pos) = parse_recur(tokens, pos + 1, 0)
+      (EBreak(Some(expr)), next_pos)
+    }
+  }
+}
+
+let parse_continue_primary = (
+  tokens: Array[Token],
+  pos: Int,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  match peek(tokens, pos + 1) {
+    TLParen => {
+      let b = ArrayBuilder::new()
+      match peek(tokens, pos + 2) {
+        TRParen => (EContinue(empty_exprs()), pos + 3),
+        _ => {
+          let (first, next_pos) = parse_recur(tokens, pos + 2, 0)
+          ArrayBuilder::push(b, first)
+          let (args, end_pos) = parse_comma_exprs_rest(tokens, next_pos, b, parse_recur)
+          let close_pos = expect_tk(tokens, end_pos, ")")
+          (EContinue(args), close_pos)
+        }
+      }
+    },
+    _ => (EContinue(empty_exprs()), pos + 1)
+  }
+}
+
+let parse_loop_primary = (
+  tokens: Array[Token],
+  pos: Int,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  match peek(tokens, pos + 1) {
+    TLParen => {
+      let params_b = ArrayBuilder::new()
+      let mut cur = pos + 2
+      let mut done = false
+      while !done {
+        match peek(tokens, cur) {
+          TRParen => {
+            cur = cur + 1
+            done = true
+          },
+          TIdent(name) => {
+            let eq_pos = expect_tk(tokens, cur + 1, "=")
+            let (init, next_pos) = parse_recur(tokens, eq_pos, 0)
+            ArrayBuilder::push(params_b, (name, init))
+            match peek(tokens, next_pos) {
+              TComma => { cur = next_pos + 1 },
+              TRParen => {
+                cur = next_pos + 1
+                done = true
+              },
+              _ => throw("expected ',' or ')' in loop params")
+            }
+          },
+          _ => throw("expected loop parameter name or ')'")
+        }
+      }
+      let body_pos = expect_tk(tokens, cur, "{")
+      let (body, end_pos) = parse_recur(tokens, body_pos, mode_block)
+      (ELoop(ArrayBuilder::freeze(params_b), body), end_pos)
+    },
+    _ => {
+      let body_pos = expect_tk(tokens, pos + 1, "{")
+      let (body, end_pos) = parse_recur(tokens, body_pos, mode_block)
+      (EWhile(EBool(true), body), end_pos)
+    }
+  }
+}
+
+let parse_perform_primary = (
+  tokens: Array[Token],
+  pos: Int,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  match peek(tokens, pos + 1) {
+    TRParen => (EIdent("perform"), pos + 1),
+    TRBracket => (EIdent("perform"), pos + 1),
+    TRBrace => (EIdent("perform"), pos + 1),
+    TComma => (EIdent("perform"), pos + 1),
+    TSemicolon => (EIdent("perform"), pos + 1),
+    TEof => (EIdent("perform"), pos + 1),
+    _ => {
+      let (arg, next_pos) = parse_recur(tokens, pos + 1, 0)
+      (ECall(EIdent("perform"), [arg]), next_pos)
+    }
+  }
+}
+
+let parse_ident_primary = (
+  tokens: Array[Token],
+  pos: Int,
+  name: String,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  if name == "true" {
+    (EBool(true), pos + 1)
+  } else if name == "false" {
+    (EBool(false), pos + 1)
+  } else if name == "perform" {
+    parse_perform_primary(tokens, pos, parse_recur)
+  } else if name == "record" {
+    match peek(tokens, pos + 1) {
+      TLBrace => {
+        let b = ArrayBuilder::new()
+        let (fields, end_pos) = parse_record_literal_fields(tokens, pos + 2, b, parse_recur)
+        (ERecord(fields), end_pos)
+      },
+      _ => (EIdent(name), pos + 1)
+    }
+  } else if name == "map" {
+    match peek(tokens, pos + 1) {
+      TLBrace => {
+        let b = ArrayBuilder::new()
+        let (fields, end_pos) = parse_map_literal_fields(tokens, pos + 2, b, parse_recur)
+        (EMap(fields), end_pos)
+      },
+      _ => (EIdent(name), pos + 1)
+    }
+  } else {
+    match peek(tokens, pos + 1) {
+      TDoubleColon => match peek(tokens, pos + 2) {
+        TIdent(member) => (EIdent(String::concat(name, String::concat("::", member))), pos + 3),
+        TLBrace => {
+          let b = ArrayBuilder::new()
+          let (fields, end_pos) = parse_ctor_record_fields(tokens, pos + 3, b, parse_recur)
+          (ERecord(fields), end_pos)
+        },
+        _ => (EIdent(name), pos + 1)
+      },
+      _ => (EIdent(name), pos + 1)
+    }
+  }
+}
+
+let parse_control_primary = (
+  tokens: Array[Token],
+  pos: Int,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  match peek(tokens, pos) {
+    TLBrace => parse_recur(tokens, pos + 1, mode_block),
+    TIf => parse_recur(tokens, pos + 1, 21),
+    TMatch => parse_recur(tokens, pos + 1, 22),
+    THandle => parse_recur(tokens, pos + 1, 24),
+    TWhile => parse_recur(tokens, pos + 1, 23),
+    TFor => parse_recur(tokens, pos + 1, 25),
+    TThrow => parse_throw_primary(tokens, pos, parse_recur),
+    TBreak => parse_break_primary(tokens, pos, parse_recur),
+    TContinue => parse_continue_primary(tokens, pos, parse_recur),
+    TRaise => throw("'raise' is deprecated, use 'throw(expr)' instead"),
+    TReturn => throw("'return' is not supported; use implicit returns"),
+    TDo => throw("'do' is reserved; use 'while' or 'for' instead"),
+    TLoop => parse_loop_primary(tokens, pos, parse_recur),
+    TYield => throw("'yield' is not supported"),
+    TDeclare => throw("'declare' is not supported"),
+    _ => throw("unexpected token: \{tk_name(peek(tokens, pos))}")
+  }
+}
+
+export let parse_primary = (
+  tokens: Array[Token],
+  pos: Int,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  match peek(tokens, pos) {
+    TInt(n) => (EInt(n), pos + 1),
+    TFloat(n) => (EFloat(n), pos + 1),
+    TString(s) => (EString(s), pos + 1),
+    TStringInterp(parts) => (EStringInterp(parts), pos + 1),
+    TIdent(name) => parse_ident_primary(tokens, pos, name, parse_recur),
+    TLParen => parse_paren_primary(tokens, pos, parse_recur),
+    TLBracket => parse_bracket_primary(tokens, pos, parse_recur),
+    _ => parse_control_primary(tokens, pos, parse_recur)
+  }
+}

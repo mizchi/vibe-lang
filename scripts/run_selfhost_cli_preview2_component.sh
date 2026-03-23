@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ "$#" -ne 4 ]; then
-  echo "usage: $0 <component.wasm> <input.vibe> <output.wasm> <entry>" >&2
+if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
+  echo "usage: $0 <component.wasm> <input.vibe> <output.wasm> <entry> [mode]" >&2
   exit 1
 fi
 
@@ -12,6 +12,7 @@ COMPONENT_PATH="$1"
 INPUT_PATH="$2"
 OUTPUT_PATH="$3"
 ENTRY_NAME="$4"
+COMPILE_MODE="${5:-mvp}"
 WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y}"
 WASMTIME_WASI_FLAGS="${VIBE_WASMTIME_WASI_FLAGS:-}"
 COMPONENT_EXPORT_NAME="${VIBE_SELFHOST_CLI_COMPONENT_EXPORT_NAME:-compile-cli-request}"
@@ -52,7 +53,7 @@ invoke_component_request() {
 mkdir -p "$(dirname "$OUTPUT_PATH")"
 : >"$OUTPUT_PATH"
 
-component_len="$(invoke_component_request "len:$ENTRY_NAME")"
+component_len="$(invoke_component_request "len-mode:$COMPILE_MODE:$ENTRY_NAME")"
 if [ "$component_len" -le 8 ]; then
   echo "component returned too small wasm length: $component_len" >&2
   exit 1
@@ -61,7 +62,7 @@ fi
 chunk_count=$(((component_len + 6) / 7))
 remaining="$component_len"
 for ((chunk_index = 0; chunk_index < chunk_count; chunk_index++)); do
-  packed="$(invoke_component_request "chunk:$ENTRY_NAME:$chunk_index")"
+  packed="$(invoke_component_request "chunk-mode:$COMPILE_MODE:$ENTRY_NAME:$chunk_index")"
   python3 - "$packed" "$remaining" "$OUTPUT_PATH" <<'PY'
 import pathlib
 import sys

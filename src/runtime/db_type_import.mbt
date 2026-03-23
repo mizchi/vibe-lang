@@ -1,4 +1,11 @@
 ///|
+priv struct TypeImportMeta {
+  exported_names : Map[String, Bool]
+  internal_exported_names : Map[String, Bool]
+  trait_names : Map[String, Bool]
+} derive(Eq)
+
+///|
 fn collect_import_trait_aliases(
   spec : @core.ImportSpec,
   imported_env : @checker.TypeEnv,
@@ -427,4 +434,128 @@ fn collect_internal_exported_names(ast : @core.Module) -> Map[String, Bool] {
     }
   }
   internal_exports
+}
+
+///|
+fn collect_trait_names(ast : @core.Module) -> Map[String, Bool] {
+  let trait_names : Map[String, Bool] = {}
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::TraitDef(name~, ..) => trait_names[name] = true
+      @core.Stmt::InternalTraitDef(name~, ..) => trait_names[name] = true
+      _ => ()
+    }
+  }
+  trait_names
+}
+
+///|
+fn merge_visible_import_names(
+  exported_names : Map[String, Bool],
+  internal_exported_names : Map[String, Bool],
+) -> Map[String, Bool] {
+  let visible_names = exported_names.copy()
+  for name, _ in internal_exported_names {
+    visible_names[name] = true
+  }
+  visible_names
+}
+
+///|
+fn copy_visible_enum_ctors(
+  surface_env : @checker.TypeEnv,
+  source_env : @checker.TypeEnv,
+  enum_name : String,
+) -> Unit {
+  match source_env.get_enum_def(enum_name) {
+    Some(enum_def) =>
+      for ctor in enum_def.ctors {
+        match source_env.get_ctor(ctor.name) {
+          Some(ctor_info) => surface_env.set_ctor(ctor.name, ctor_info)
+          None => ()
+        }
+        match source_env.get_scheme(ctor.name) {
+          Some(scheme) => {
+            surface_env.set_scheme(ctor.name, scheme)
+            match source_env.get_purity_tier(ctor.name) {
+              Some(tier) => surface_env.set_purity_tier(ctor.name, tier)
+              None =>
+                match source_env.get_purity(ctor.name) {
+                  Some(pure) => surface_env.set_purity(ctor.name, pure)
+                  None => ()
+                }
+            }
+          }
+          None => ()
+        }
+      }
+    None => ()
+  }
+}
+
+///|
+fn project_type_import_env(
+  source_env : @checker.TypeEnv,
+  ast : @core.Module,
+) -> @checker.TypeEnv {
+  let surface_env = try! @checker.get_prelude_only_env_for_module()
+  let meta = collect_type_import_meta(ast)
+  let exported_names = meta.exported_names
+  let internal_exported_names = meta.internal_exported_names
+  let visible_names = merge_visible_import_names(
+    exported_names, internal_exported_names,
+  )
+  let trait_aliases : Map[String, String] = {}
+  let trait_visiting : Map[String, Bool] = {}
+  for name, _ in visible_names {
+    if source_env.has_trait(name) {
+      import_trait_dependency_for_scheme(
+        surface_env, source_env, name, trait_aliases, visible_names, trait_visiting,
+      )
+    }
+  }
+  let type_visiting : Map[String, Bool] = {}
+  for name, _ in visible_names {
+    import_type_dependency_for_scheme(
+      surface_env, source_env, name, trait_aliases, type_visiting,
+    )
+    copy_visible_enum_ctors(surface_env, source_env, name)
+    match source_env.effect_defs.get(name) {
+      Some(effect_def) => surface_env.effect_defs[name] = effect_def
+      None => ()
+    }
+  }
+  for name, _ in visible_names {
+    match source_env.get_scheme(name) {
+      Some(scheme) => {
+        import_scheme_dependencies(
+          surface_env, source_env, scheme, trait_aliases, visible_names,
+        )
+        surface_env.set_exported_scheme(name, scheme)
+        match source_env.get_purity_tier(name) {
+          Some(tier) => surface_env.set_purity_tier(name, tier)
+          None =>
+            match source_env.get_purity(name) {
+              Some(pure) => surface_env.set_purity(name, pure)
+              None => ()
+            }
+        }
+      }
+      None =>
+        match source_env.get_ctor(name) {
+          Some(ctor_info) => surface_env.set_ctor(name, ctor_info)
+          None => ()
+        }
+    }
+  }
+  surface_env
+}
+
+///|
+fn collect_type_import_meta(ast : @core.Module) -> TypeImportMeta {
+  {
+    exported_names: collect_exported_names(ast),
+    internal_exported_names: collect_internal_exported_names(ast),
+    trait_names: collect_trait_names(ast),
+  }
 }

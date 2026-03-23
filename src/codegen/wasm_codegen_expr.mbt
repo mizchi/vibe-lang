@@ -119,22 +119,58 @@ fn compile_expr(
       )
       compile_block_expr(ctx, buf, desugared)
     }
-    @core.Expr::Perform(effect_name~, op_name~, args~, ..) => {
+    @core.Expr::Perform(effect_name="Error", op_name="Throw", args~, span~) => {
+      let value = if args.length() >= 1 {
+        args[0].expr
+      } else {
+        @core.Expr::String(value="", span~)
+      }
+      compile_expr_raise(ctx, buf, value)
+    }
+    @core.Expr::Perform(effect_name~, op_name~, args~, span~) => {
       let key = effect_name + "::" + op_name
-      let func_idx = match ctx.effect_op_imports.get(key) {
-        Some(idx) => idx
-        None =>
-          raise WasmGenError::Unsupported("perform " + key + ": not registered")
+      // Check if this perform has a registered import (e.g. Fs::ReadFile)
+      match ctx.effect_op_imports.get(key) {
+        Some(idx) if idx >= 0 => {
+          // External effect: call imported function
+          for arg in args {
+            compile_expr(ctx, buf, arg.expr)
+          }
+          buf.push((0x41).to_byte()) // i32.const 0 (closure env)
+          buf.push((0).to_byte())
+          emit_call(buf, idx)
+        }
+        _ =>
+          // User-defined effect: check resume globals first, then throw.
+          if ctx.need_effect_resume && ctx.effect_resume_idx_global >= 0 {
+            // if (resume_idx < resume_count) { return resume_buf[resume_idx++ * 8] }
+            emit_global_get(buf, ctx.effect_resume_idx_global)
+            emit_global_get(buf, ctx.effect_resume_count_global)
+            emit_i32_lt_s(buf)
+            buf.push((4).to_byte()) // if
+            buf.push((126).to_byte()) // result i64
+            // Read resume value: buf_ptr + idx * 8
+            emit_global_get(buf, ctx.effect_resume_buf_global)
+            emit_global_get(buf, ctx.effect_resume_idx_global)
+            emit_i32_const_raw(buf, 8)
+            emit_i32_mul(buf)
+            emit_i32_add(buf)
+            emit_i64_load(buf, 0)
+            // Increment idx
+            emit_global_get(buf, ctx.effect_resume_idx_global)
+            emit_i32_const_raw(buf, 1)
+            emit_i32_add(buf)
+            emit_global_set(buf, ctx.effect_resume_idx_global)
+            buf.push((5).to_byte()) // else
+            // Throw for cross-function dispatch
+            let tag_str = @core.Expr::String(value=key, span~)
+            compile_expr_raise(ctx, buf, tag_str)
+            buf.push((11).to_byte()) // end if
+          } else {
+            let tag_str = @core.Expr::String(value=key, span~)
+            compile_expr_raise(ctx, buf, tag_str)
+          }
       }
-      // Push arguments (tagged i64 values)
-      for arg in args {
-        compile_expr(ctx, buf, arg.expr)
-      }
-      // Push closure env (i32 const 0, no captures for imported ops)
-      buf.push((0x41).to_byte()) // i32.const
-      buf.push((0).to_byte()) // 0
-      // call imported function
-      emit_call(buf, func_idx)
     }
     @core.Expr::Handle(body~, arms~, span~) =>
       compile_expr_handle(ctx, buf, body, arms, span)
@@ -155,10 +191,6 @@ fn compile_expr(
       let _ = span
       compile_expr_loop(ctx, buf, params, body)
     }
-    @core.Expr::Raise(value~, span~) => {
-      let _ = span
-      compile_expr_raise(ctx, buf, value)
-    }
     @core.Expr::Yield(expr=inner, span~) => {
       let _ = span
       compile_expr_yield(ctx, buf, inner)
@@ -170,6 +202,42 @@ fn compile_expr(
     @core.Expr::Spread(span~, ..) => {
       let _ = span
       raise WasmGenError::Unsupported("spread outside array literal")
+    }
+    // StringInterp: lower to String::concat chain at codegen time (fallback)
+    @core.Expr::StringInterp(parts~, span~) => {
+      let exprs : Array[@core.Expr] = []
+      for part in parts {
+        match part {
+          @core.StringInterpPart::Lit(s) =>
+            exprs.push(@core.Expr::String(value=s, span~))
+          @core.StringInterpPart::Expr(e) =>
+            exprs.push(
+              @core.Expr::Call(
+                name="__to_string",
+                type_args=[],
+                args=[@core.CallArg::{ label: None, expr: e, span }],
+                span~,
+              ),
+            )
+        }
+      }
+      if exprs.length() == 0 {
+        compile_expr(ctx, buf, @core.Expr::String(value="", span~))
+      } else {
+        let mut result = exprs[0]
+        for j in 1..<exprs.length() {
+          result = @core.Expr::Call(
+            name="String::concat",
+            type_args=[],
+            args=[
+              @core.CallArg::{ label: None, expr: result, span },
+              @core.CallArg::{ label: None, expr: exprs[j], span },
+            ],
+            span~,
+          )
+        }
+        compile_expr(ctx, buf, result)
+      }
     }
   }
 }

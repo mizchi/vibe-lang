@@ -71,6 +71,7 @@ test:
     moon test -p mizchi/vibe/cmd/vibe_check_wasi --target wasm --warn-list '{{moon_warn_list}}'
     bash -c 'source scripts/ensure_native_cli.sh'
     bash scripts/test_parallel_cleanup_e2e.sh _build/native/debug/build/cmd/vibe/vibe.exe
+    bash scripts/test_internal_parent_watchdog_e2e.sh _build/native/debug/build/cmd/vibe/vibe.exe
     ulimit -n {{vibe_test_ulimit_n}} && _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async --jobs {{vibe_test_jobs}} examples vibe/prelude vibe/path vibe/io vibe/fs vibe/time vibe/random vibe/process vibe/shell vibe/x/rlm vibe/socket/socket_test.vibe vibe/http/http_test.vibe vibe/http/high_level_test.vibe vibe/collection vibe/json vibe/sha1 vibe/x vibe/x/args vibe/x/jsonschema vibe/wasm/wasm_parser vibe/wasm/wat_parser vibe/wasm/component_parser vibe/wasm/wat_encoder
 
 # Heavy wasm tests (wasm_opt ~4min, wasm_runtime ~1min) — run separately or in CI
@@ -80,6 +81,149 @@ test-wasm-heavy:
 
 # Run all tests including heavy wasm tests
 test-full: test test-wasm-heavy
+
+# PR-oriented contract checks: fast semantic/type contract suite
+ci-contract-moon:
+    scripts/check_lock_clean.sh
+    scripts/check_lock_clean_test.sh
+    moon check --deny-warn --warn-list '{{moon_warn_list}}' --target js
+    moon test --target js --warn-list '{{moon_warn_list}}'
+
+# PR-oriented native/runtime contract checks
+ci-contract-native:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source scripts/ensure_native_cli.sh
+    cli="_build/native/debug/build/cmd/vibe/vibe.exe"
+    bash scripts/test_parallel_cleanup_e2e.sh "$cli"
+    bash scripts/test_internal_parent_watchdog_e2e.sh "$cli"
+    scripts/test_fixtures_isolation.sh
+
+# Push-only native artifact parity checks
+ci-native-binary-parity:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source scripts/ensure_native_cli.sh
+    scripts/test_build_parity.sh
+    scripts/test_linked_debug_build.sh
+
+# wasm quick gate shards for balanced CI wall time
+ci-wasm-quick-shard shard:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{shard}}" in
+      core)
+        bash scripts/test_moon_info_regen.sh
+        ./scripts/test_selfhost_probe_wasm_validate.sh
+        ./scripts/test_golden_wat.sh
+        ;;
+      compare)
+        ./scripts/test_vibe_wasm_compare.sh
+        ./scripts/test_component_import_contract.sh
+        _build/native/debug/build/cmd/vibe/vibe.exe test vibe/wasm/wasm_opt/minify_zlib_test.vibe
+        ;;
+      http)
+        VIBE_WASI_HTTP_P3_REQUIRE_READY=0 VIBE_WASI_HTTP_P3_RUN_COMPOSE=0 ./scripts/test_wasi_http_p3_blocked_gate.sh
+        ./scripts/test_wasi_p3_e2e.sh
+        ./scripts/test_http_wasm_fallback.sh
+        ./scripts/test_http_wasm_host_imports.sh
+        ./scripts/test_compiled_backend_http_policy.sh
+        ./scripts/test_http_p3_handler_gate.sh
+        ;;
+      *)
+        echo "unknown ci-wasm-quick-shard: {{shard}}" >&2
+        exit 1
+        ;;
+    esac
+
+# selfhost release gate shards for balanced CI wall time
+ci-selfhost-gates-shard shard:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{shard}}" in
+      bootstrap)
+        just check-selfhost-bundle-sync
+        just test-selfhost-cache-probe
+        just test-selfhost-bootstrap
+        just test-selfhost-wasi-selfbuild-kpi
+        ;;
+      cli)
+        just test-selfhost-cli-core
+        just test-selfhost-cli-component-preview2
+        just test-selfhost-cli-preview2-package
+        just test-selfhost-cli-command-component
+        just test-selfhost-cli-command-parity
+        just test-selfhost-cli-direct-component
+        just test-selfhost-cli-direct-parity
+        just test-selfhost-cutover
+        ;;
+      check)
+        just test-selfhost-check-preview2-package
+        just test-selfhost-check-command-component
+        just test-selfhost-check-command-parity
+        just test-selfhost-check-direct-component
+        just test-selfhost-check-direct-parity
+        ./scripts/test_selfhost_wasi_http_boundary.sh
+        VIBE_CHECK_PARITY_REQUIRE_PARITY=1 ./scripts/test_selfhost_check_parity.sh
+        just test-golden-wat
+        ;;
+      coverage)
+        VIBE_SELFHOST_PERF_RUNS=1 \
+        VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt \
+        VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=2.5 \
+        VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=0.8 \
+        ./scripts/bench_selfhost_perf.sh
+        just coverage-selfhost-suite-gate
+        ;;
+      *)
+        echo "unknown ci-selfhost-gates-shard: {{shard}}" >&2
+        exit 1
+        ;;
+    esac
+
+# PR-oriented selfhost smoke examples
+ci-selfhost-examples-smoke:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SELFHOST_WASM="_build/dist/selfhost_compiler.wasm"
+    summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+    mkdir -p _build/s1test
+    ok=0
+    fail=0
+    total=0
+    examples=(
+      examples/async.vibe
+      examples/module_export.vibe
+      examples/module_types_export.vibe
+    )
+    for f in "${examples[@]}"; do
+      name=$(basename "$f" .vibe)
+      total=$((total + 1))
+      rm -f "_build/s1test/${name}.wasm"
+      compile_out=$(VIBE_PREOPEN_DIR="$(pwd)" bash scripts/run_wasm_vibe_host_runner.sh \
+        "$SELFHOST_WASM" "$f" "_build/s1test/${name}.wasm" "run" 2>&1 || true)
+      if [ -f "_build/s1test/${name}.wasm" ] && [ "$(wc -c < "_build/s1test/${name}.wasm")" -gt 100 ]; then
+        run_result=$(wasmtime run -W exceptions=y --invoke run "_build/s1test/${name}.wasm" 2>&1 || true)
+        if echo "$run_result" | grep -q "^0$\|^warning"; then
+          ok=$((ok + 1))
+        else
+          fail=$((fail + 1))
+          echo "::error::$name: run failed"
+        fi
+      else
+        fail=$((fail + 1))
+        echo "::error::$name: compile failed — $(echo "$compile_out" | tail -1)"
+      fi
+    done
+    {
+      echo "### Selfhost Examples"
+      echo "| Metric | Value |"
+      echo "|--------|-------|"
+      echo "| Total | $total |"
+      echo "| Pass | $ok |"
+      echo "| Fail | $fail |"
+    } >> "$summary"
+    [ "$fail" -eq 0 ]
 
 # Build wasm artifact used by Deno integration tests
 build-integration-deno-wasm:
@@ -399,7 +543,7 @@ test-selfhost-bootstrap:
 # Run quick selfhost cache probe (warm TypeDb reuse smoke)
 test-selfhost-cache-probe:
     bash -c 'source scripts/ensure_native_cli.sh'
-    _build/native/debug/build/cmd/vibe/vibe.exe test vibe/compiler/cache_probe_test.vibe
+    VIBE_TEST_BACKEND=interpreter _build/native/debug/build/cmd/vibe/vibe.exe test vibe/compiler/cache_probe_test.vibe
 
 # Run wasm selfbuild gate (stage0 wasm compiler -> stage1 selfhost wasm)
 test-selfhost-wasi-selfbuild:

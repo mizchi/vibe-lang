@@ -9,237 +9,132 @@ fn type_call_builtin_handler_collection_numeric(
   allow_effect : Bool,
   call_span : @core.Span,
 ) -> @core.Type raise TypeError {
+  let ctx = BuiltinCallCtx::{
+    env,
+    args,
+    aliases,
+    effects,
+    allow_effect,
+    call_span,
+  }
   match builtin_name {
     "String::from_char_code" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "String::from_char_code",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Int],
         @core.Type::String,
         false,
       )
     "Char::to_int" =>
-      check_builtin_simple(
-        env,
-        "Char::to_int",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::Char],
-        @core.Type::Int,
-        false,
-      )
+      ctx.simple("Char::to_int", [@core.Type::Char], @core.Type::Int, false)
     "Char::from_int" =>
-      check_builtin_simple(
-        env,
-        "Char::from_int",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::Int],
-        @core.Type::Char,
-        false,
-      )
+      ctx.simple("Char::from_int", [@core.Type::Int], @core.Type::Char, false)
     "StringBuilder::new" =>
-      check_builtin_simple(
-        env,
-        "StringBuilder::new",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [],
-        @core.Type::StringBuilder,
-        true,
-      )
+      ctx.simple("StringBuilder::new", [], @core.Type::StringBuilder, true)
     "StringBuilder::push" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "StringBuilder::push",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::StringBuilder, @core.Type::String],
         @core.Type::Unit,
         true,
       )
     "StringBuilder::freeze" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "StringBuilder::freeze",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::StringBuilder],
         @core.Type::String,
         true,
       )
-    "Bytes::new" =>
-      check_builtin_simple(
-        env,
-        "Bytes::new",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [],
-        @core.Type::Bytes,
-        true,
-      )
+    "Bytes::new" => ctx.simple("Bytes::new", [], @core.Type::Bytes, true)
     "Bytes::length" =>
-      check_builtin_simple(
-        env,
-        "Bytes::length",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::Bytes],
-        @core.Type::Int,
-        false,
-      )
+      ctx.simple("Bytes::length", [@core.Type::Bytes], @core.Type::Int, false)
     "Bytes::get" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Bytes::get",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Bytes, @core.Type::Int],
         @core.Type::Int,
         false,
       )
     "Bytes::set" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Bytes::set",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Bytes, @core.Type::Int, @core.Type::Int],
         @core.Type::Unit,
         true,
       )
     "Bytes::push" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Bytes::push",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Bytes, @core.Type::Int],
         @core.Type::Unit,
         true,
       )
     "Bytes::concat" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Bytes::concat",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Bytes, @core.Type::Bytes],
         @core.Type::Bytes,
         false,
       )
     "Bytes::slice" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Bytes::slice",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Bytes, @core.Type::Int, @core.Type::Int],
         @core.Type::Bytes,
         false,
       )
+    "Bytes::append" =>
+      ctx.simple(
+        "Bytes::append",
+        [@core.Type::Bytes, @core.Type::Bytes],
+        @core.Type::Unit,
+        true,
+      )
+    "Bytes::blit" =>
+      ctx.simple(
+        "Bytes::blit",
+        [@core.Type::Bytes, @core.Type::Bytes, @core.Type::Int, @core.Type::Int],
+        @core.Type::Unit,
+        true,
+      )
+    "Bytes::fill" =>
+      ctx.simple(
+        "Bytes::fill",
+        [@core.Type::Bytes, @core.Type::Int, @core.Type::Int],
+        @core.Type::Unit,
+        true,
+      )
     "Bytes::from_array" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Bytes::from_array",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Array(@core.Type::Int)],
         @core.Type::Bytes,
         false,
       )
     "Bytes::to_array" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Bytes::to_array",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Bytes],
         @core.Type::Array(@core.Type::Int),
         false,
       )
     "Bytes::from_string" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Bytes::from_string",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String],
         @core.Type::Bytes,
         false,
       )
     "Bytes::to_string" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Bytes::to_string",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Bytes],
         @core.Type::String,
         false,
       )
     "ArrayBuilder::new" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "ArrayBuilder::new",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [],
         @core.Type::ArrayBuilder(fresh_type_var(env)),
         true,
@@ -289,14 +184,8 @@ fn type_call_builtin_handler_collection_numeric(
       @core.Type::Array(elem_ty)
     }
     "MapBuilder::new" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "MapBuilder::new",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [],
         @core.Type::MapBuilder(fresh_type_var(env), fresh_type_var(env)),
         true,
@@ -630,157 +519,70 @@ fn type_call_builtin_handler_collection_numeric(
     | "String::utf8_length"
     | "String::utf16_length"
     | "String::unicode_length" =>
-      check_builtin_simple(
-        env,
-        name,
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::String],
-        @core.Type::Int,
-        false,
-      )
+      ctx.simple(name, [@core.Type::String], @core.Type::Int, false)
     "Int::parse" =>
-      check_builtin_simple(
-        env,
-        "Int::parse",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::String],
-        @core.Type::Int,
-        false,
-      )
+      ctx.simple("Int::parse", [@core.Type::String], @core.Type::Int, false)
     "Double::parse" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Double::parse",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String],
         @core.Type::Double,
         false,
       )
     "String::char_code_at" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "String::char_code_at",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String, @core.Type::Int],
         @core.Type::Int,
         false,
       )
     "String::substring" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "String::substring",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String, @core.Type::Int, @core.Type::Int],
         @core.Type::String,
         false,
       )
     "String::concat" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "String::concat",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String, @core.Type::String],
         @core.Type::String,
         false,
       )
     "String::equals" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "String::equals",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String, @core.Type::String],
         @core.Type::Bool,
         false,
       )
     "String::split" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "String::split",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String, @core.Type::String],
         @core.Type::Array(@core.Type::String),
         false,
       )
     "String::index_of" | "String::last_index_of" | "String::count" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         name,
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String, @core.Type::String],
         @core.Type::Int,
         false,
       )
     "String::contains" | "String::starts_with" | "String::ends_with" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         name,
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String, @core.Type::String],
         @core.Type::Bool,
         false,
       )
     "String::trim" | "String::trim_start" | "String::trim_end" =>
-      check_builtin_simple(
-        env,
-        name,
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-        [@core.Type::String],
-        @core.Type::String,
-        false,
-      )
+      ctx.simple(name, [@core.Type::String], @core.Type::String, false)
     "String::replace" | "String::replace_all" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         name,
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::String, @core.Type::String, @core.Type::String],
         @core.Type::String,
         false,
@@ -810,27 +612,15 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Bool,
       )
     "Int::max" | "Int::min" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         name,
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Int, @core.Type::Int],
         @core.Type::Int,
         false,
       )
     "Int::clamp" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         "Int::clamp",
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Int, @core.Type::Int, @core.Type::Int],
         @core.Type::Int,
         false,
@@ -848,14 +638,8 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Double,
       )
     "Double::max" | "Double::min" =>
-      check_builtin_simple(
-        env,
+      ctx.simple(
         name,
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
         [@core.Type::Double, @core.Type::Double],
         @core.Type::Double,
         false,
@@ -891,10 +675,7 @@ fn type_call_builtin_handler_collection_numeric(
       }
       let a = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
       let b = type_expr_eff(env, pos_args[1], aliases, effects, allow_effect)
-      let resolved_a = resolve_type(env, a)
-      if not(resolved_a == @core.Type::String) {
-        ensure_num_operand(env, a, pos_args[0].span())
-      }
+      ensure_num_operand(env, a, pos_args[0].span())
       if not(type_equal(env, b, a)) {
         raise TypeError::Mismatch(
           expected=a,
@@ -1221,6 +1002,30 @@ fn type_call_builtin_handler_collection_numeric(
         }
       }
     }
+    "__len" => {
+      let pos_args = extract_positional_args(args, "__len", call_span)
+      if pos_args.length() != 1 {
+        raise TypeError::BadCall(message="__len", span=call_span)
+      }
+      let container_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let resolved_container = resolve_type(env, container_ty)
+      match resolved_container {
+        @core.Type::String => @core.Type::Int
+        @core.Type::Array(_) => @core.Type::Int
+        @core.Type::Bytes => @core.Type::Int
+        _ =>
+          raise TypeError::BadCall(
+            message="__len: not measurable",
+            span=call_span,
+          )
+      }
+    }
     "__slice" => {
       let pos_args = extract_positional_args(args, "__slice", call_span)
       if pos_args.length() != 3 {
@@ -1277,6 +1082,23 @@ fn type_call_builtin_handler_collection_numeric(
         )
       }
       @core.Type::Bool
+    }
+    "__assert_eq" => {
+      let pos_args = extract_positional_args(args, "__assert_eq", call_span)
+      if pos_args.length() != 2 {
+        raise TypeError::BadCall(message="__assert_eq", span=call_span)
+      }
+      let a = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
+      let b = type_expr_eff(env, pos_args[1], aliases, effects, allow_effect)
+      if not(type_equal(env, b, a)) && not(int_char_comparable_pair(env, a, b)) {
+        raise TypeError::Mismatch(
+          expected=a,
+          actual=b,
+          span=pos_args[1].span(),
+          context=Some("argument"),
+        )
+      }
+      @core.Type::Unit
     }
     "__lt" => {
       let pos_args = extract_positional_args(args, "__lt", call_span)

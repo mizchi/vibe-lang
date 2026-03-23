@@ -2272,6 +2272,106 @@ test "Bytes::slice + Bytes::concat" {
 }
 
 ///|
+test "Bytes::slice mutation uses copy-on-write" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, VibeError] = try? rt.eval_script(
+    "let b = Bytes::from_array([10, 20, 30, 40])\n" +
+    "let s = Bytes::slice(b, 1, 3)\n" +
+    "Bytes::push(s, 99)\n" +
+    "Bytes::set(s, 0, 77)\n" +
+    "let src_len = Bytes::length(b)\n" +
+    "let src_v = Bytes::get(b, 1)\n" +
+    "let slice_len = Bytes::length(s)\n" +
+    "let slice_v0 = Bytes::get(s, 0)\n" +
+    "let slice_v2 = Bytes::get(s, 2)\n" +
+    "slice_len",
+  )
+  match result {
+    Err(e) => fail(e.to_string())
+    Ok(_) => ()
+  }
+  match rt.get("src_len") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 4)
+    _ => fail("expected src_len=4")
+  }
+  match rt.get("src_v") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 20)
+    _ => fail("expected src_v=20")
+  }
+  match rt.get("slice_len") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
+    _ => fail("expected slice_len=3")
+  }
+  match rt.get("slice_v0") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 77)
+    _ => fail("expected slice_v0=77")
+  }
+  match rt.get("slice_v2") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 99)
+    _ => fail("expected slice_v2=99")
+  }
+}
+
+///|
+test "Bytes slice-to-end syntax uses __len" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, VibeError] = try? rt.eval_script(
+    "let b = Bytes::from_array([10, 20, 30, 40])\n" +
+    "let s = b[1:]\n" +
+    "let len = Bytes::length(s)\n" +
+    "let v = s[2]\n" +
+    "v",
+  )
+  match result {
+    Err(e) => fail(e.to_string())
+    Ok(_) => ()
+  }
+  match rt.get("len") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
+    _ => fail("expected len=3")
+  }
+  match rt.get("v") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 40)
+    _ => fail("expected v=40")
+  }
+}
+
+///|
+test "Bytes::to_array + Bytes::to_string support slice views" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, VibeError] = try? rt.eval_script(
+    "let b = Bytes::from_string(\"hello\")\n" +
+    "let s = Bytes::slice(b, 1, 4)\n" +
+    "let arr = Bytes::to_array(s)\n" +
+    "let s2 = Bytes::to_string(s)\n" +
+    "let len = Bytes::length(s)\n" +
+    "let a0 = Array::get(arr, 0)\n" +
+    "let a2 = Array::get(arr, 2)\n" +
+    "len",
+  )
+  match result {
+    Err(e) => fail(e.to_string())
+    Ok(_) => ()
+  }
+  match rt.get("len") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
+    _ => fail("expected len=3")
+  }
+  match rt.get("a0") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 101)
+    _ => fail("expected a0=101")
+  }
+  match rt.get("a2") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 108)
+    _ => fail("expected a2=108")
+  }
+  match rt.get("s2") {
+    Some(@core.Value::String(v)) => assert_eq(v, "ell")
+    _ => fail("expected s2=ell")
+  }
+}
+
+///|
 test "Bytes::from_array + Bytes::to_array roundtrip" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(

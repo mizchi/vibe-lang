@@ -41,14 +41,15 @@ fn substitute_param_names(
 /// For known constructors, bind with the ctor payload type.
 /// Fallback to String binding for unknown constructors (`Error(...)` etc).
 
-///| Collect perform Effect::Op names from module body (shallow)
+///|
+/// Collect perform Effect::Op names from module body (shallow)
 fn collect_perform_ops(body : @core.Module) -> Array[String] {
   let ops : Array[String] = []
   for stmt in body.stmts {
     match stmt {
-      @core.Stmt::Let(expr~, ..) | @core.Stmt::Expr(expr~, ..) |
-      @core.Stmt::LetMut(expr~, ..) =>
-        collect_perform_ops_expr(expr, ops)
+      @core.Stmt::Let(expr~, ..)
+      | @core.Stmt::Expr(expr~, ..)
+      | @core.Stmt::LetMut(expr~, ..) => collect_perform_ops_expr(expr, ops)
       _ => ()
     }
   }
@@ -89,9 +90,10 @@ fn collect_perform_ops_expr(expr : @core.Expr, ops : Array[String]) -> Unit {
           _ => ()
         }
       }
-    @core.Expr::Raise(..) => ops.push("Error::Throw")
     @core.Expr::Call(args~, ..) =>
-      for arg in args { collect_perform_ops_expr(arg.expr, ops) }
+      for arg in args {
+        collect_perform_ops_expr(arg.expr, ops)
+      }
     _ => ()
   }
 }
@@ -899,280 +901,12 @@ fn type_expr_eff(
       let _ = span
       type_block(env, body, aliases, effects, allow_effect)
     }
-    @core.Expr::Handle(body~, arms~, span~) => {
-      let handle_effects : Array[@core.EffectAtom] = []
-      let handled_effect_names : Map[String, Bool] = {}
-      for arm in arms {
-        match arm.pat {
-          @core.Pat::Ctor(name~, ..) => {
-            handle_effects.push(@core.EffectAtom::Const(name))
-            handled_effect_names[name] = true
-            // For qualified effect ops (E::Op), also add the effect name (E)
-            // so that `with { E }` functions can be called in handle body
-            if name.contains("::") {
-              let effect_name = extract_effect_name(name)
-              handle_effects.push(@core.EffectAtom::Const(effect_name))
-              handled_effect_names[effect_name] = true
-            }
-          }
-          @core.Pat::Wildcard(..) | @core.Pat::Bind(..) => {
-            handle_effects.push(@core.EffectAtom::Const("Error"))
-            handled_effect_names["Error"] = true
-          }
-          _ => ()
-        }
-      }
-      let body_scope = effect_scope_extend(effects, handle_effects)
-      let body_env = clone_env(env)
-      body_env.handle_resume_types = {}
-      body_env.handle_resume_types_active = true
-      body_env.handle_arm_effect_name = None
-      body_env.handle_arm_resume_expected = None
-      // handle body is always in effect scope (the handle provides the handler)
-      let body_allow_effect = allow_effect || handle_effects.length() > 0
-      let body_ty = type_block(
-        body_env, body, aliases, body_scope, body_allow_effect,
+    @core.Expr::Handle(body~, arms~, span~) =>
+      type_handle_block(env, body, arms, span, aliases, effects, allow_effect)
+    @core.Expr::Match(scrutinee~, arms~, span~) =>
+      type_match_block(
+        env, scrutinee, arms, span, aliases, effects, allow_effect,
       )
-      // Check handler exhaustiveness: warn about unhandled effect ops
-      let handled_ops : Map[String, Bool] = {}
-      for arm in arms {
-        match arm.pat {
-          @core.Pat::Ctor(name~, ..) =>
-            if name.contains("::") {
-              handled_ops[name] = true
-            }
-          _ => ()
-        }
-      }
-      // Check handler exhaustiveness: if an effect has some ops handled,
-      // all ops of that effect should be handled
-      let body_performs = collect_perform_ops(body)
-      let handled_effect_set : Map[String, Bool] = {}
-      for op, _ in handled_ops {
-        handled_effect_set[extract_effect_name(op)] = true
-      }
-      for op_name in body_performs {
-        let eff = extract_effect_name(op_name)
-        // Only warn if the effect has at least one handler arm
-        if handled_effect_set.contains(eff) && not(handled_ops.contains(op_name)) {
-          raise TypeError::BadTypeDef(
-            message="handle is missing handler for `" +
-              op_name +
-              "` (effect `" +
-              eff +
-              "` is partially handled)",
-            span~,
-          )
-        }
-      }
-      let body_resume_types : Map[String, @core.Type] = body_env.handle_resume_types.copy()
-      let inferred_resume_types = body_resume_types.copy()
-      let escaping_resume_types : Map[String, @core.Type] = {}
-      for effect_name, resume_ty in body_resume_types {
-        if not(handled_effect_names.contains(effect_name)) {
-          escaping_resume_types[effect_name] = resume_ty
-        }
-      }
-      for arm in arms {
-        let arm_env = env.fork_for_match_arm()
-        arm_env.handle_arm_depth += 1
-        arm_env.handle_resume_types = inferred_resume_types.copy()
-        arm_env.handle_resume_types_active = true
-        let arm_effect_name = infer_handle_arm_effect_name(arm.pat)
-        arm_env.handle_arm_effect_name = arm_effect_name
-        arm_env.handle_arm_resume_expected = match arm_effect_name {
-          Some(name) =>
-            // Try qualified name (Effect::Op) first, then effect name
-            match inferred_resume_types.get(name) {
-              Some(ty) => Some(ty)
-              None => None
-            }
-          None => None
-        }
-        bind_handle_arm_pat(arm_env, body_env, arm.pat)
-        let arm_ty_result : Result[@core.Type, TypeError] = try? type_handle_arm_expr(
-          arm_env, arm, aliases, effects, allow_effect,
-        )
-        arm_env.handle_arm_depth -= 1
-        let arm_ty = match arm_ty_result {
-          Ok(ty) => ty
-          Err(err) => raise err
-        }
-        for effect_name, resume_ty in arm_env.handle_resume_types {
-          if body_resume_types.contains(effect_name) {
-            continue
-          }
-          match escaping_resume_types.get(effect_name) {
-            Some(existing) =>
-              if not(type_equal(arm_env, existing, resume_ty)) {
-                raise TypeError::Mismatch(
-                  expected=existing,
-                  actual=resume_ty,
-                  span~,
-                  context=Some("perform resume type"),
-                )
-              }
-            None => escaping_resume_types[effect_name] = resume_ty
-          }
-        }
-        if not(type_equal(arm_env, body_ty, arm_ty)) {
-          raise TypeError::Mismatch(
-            expected=body_ty,
-            actual=arm_ty,
-            span~,
-            context=Some("handle branches"),
-          )
-        }
-      }
-      if env.handle_resume_types_active {
-        for effect_name, resume_ty in escaping_resume_types {
-          match env.handle_resume_types.get(effect_name) {
-            Some(existing) =>
-              if not(type_equal(env, existing, resume_ty)) {
-                raise TypeError::Mismatch(
-                  expected=existing,
-                  actual=resume_ty,
-                  span~,
-                  context=Some("perform resume type"),
-                )
-              }
-            None => env.handle_resume_types[effect_name] = resume_ty
-          }
-        }
-      }
-      body_ty
-    }
-    @core.Expr::Match(scrutinee~, arms~, span~) => {
-      if arms.is_empty() {
-        raise TypeError::BadMatch(message="empty match", span~)
-      }
-      let scrutinee_ty = normalize_type_expand_enum(
-        env,
-        type_expr_eff(env, scrutinee, aliases, effects, allow_effect),
-      )
-      let mut result : @core.Type? = None
-      let mut has_wildcard = false
-      let mut has_ctor = false
-      let covered : Map[String, Bool] = {}
-      let mut has_bool_pat = false
-      let mut covered_true = false
-      let mut covered_false = false
-      for arm in arms {
-        if is_top_wildcard(arm.pat) {
-          has_wildcard = true
-        }
-        match arm.pat {
-          @core.Pat::Ctor(name~, ..) => {
-            has_ctor = true
-            covered[@core.strip_ctor_qualifier(name)] = true
-          }
-          @core.Pat::Or(pats~, ..) =>
-            for p in pats {
-              match p {
-                @core.Pat::Ctor(name~, ..) => {
-                  has_ctor = true
-                  covered[@core.strip_ctor_qualifier(name)] = true
-                }
-                @core.Pat::Bool(value~, ..) => {
-                  has_bool_pat = true
-                  if value {
-                    covered_true = true
-                  } else {
-                    covered_false = true
-                  }
-                }
-                _ => ()
-              }
-            }
-          @core.Pat::Bool(value~, ..) => {
-            has_bool_pat = true
-            if value {
-              covered_true = true
-            } else {
-              covered_false = true
-            }
-          }
-          _ => ()
-        }
-        let arm_env = env.fork_for_match_arm()
-        let bindings = collect_pattern_bindings_prenormalized(
-          env,
-          arm.pat,
-          scrutinee_ty,
-        )
-        for name, ty in bindings {
-          arm_env.set(name, ty)
-        }
-        match arm.cond {
-          Some(c) => {
-            let g_ty = type_expr_eff(arm_env, c, aliases, effects, allow_effect)
-            if not(type_equal(env, g_ty, @core.Type::Bool)) {
-              raise TypeError::Mismatch(
-                expected=@core.Type::Bool,
-                actual=g_ty,
-                span=c.span(),
-                context=Some("match guard"),
-              )
-            }
-          }
-          None => ()
-        }
-        let arm_ty = type_expr_eff(
-          arm_env,
-          arm.expr,
-          aliases,
-          effects,
-          allow_effect,
-        )
-        match result {
-          Some(t) =>
-            if not(type_equal(env, t, arm_ty)) {
-              raise TypeError::Mismatch(
-                expected=t,
-                actual=arm_ty,
-                span=arm.expr.span(),
-                context=Some("match arm"),
-              )
-            }
-          None => result = Some(arm_ty)
-        }
-      }
-      if not(has_wildcard) {
-        match scrutinee_ty {
-          @core.Type::Variant(types) => {
-            let missing_names : Array[String] = []
-            for name, _ in types {
-              if not(covered.contains(name)) {
-                missing_names.push(name)
-              }
-            }
-            if missing_names.length() > 0 {
-              raise TypeError::NonExhaustiveMatch(missing=missing_names, span~)
-            }
-          }
-          @core.Type::Bool => {
-            let missing_names : Array[String] = []
-            if not(covered_true) {
-              missing_names.push("true")
-            }
-            if not(covered_false) {
-              missing_names.push("false")
-            }
-            if not(has_bool_pat && covered_true && covered_false) {
-              raise TypeError::NonExhaustiveMatch(missing=missing_names, span~)
-            }
-          }
-          _ =>
-            if not(has_ctor) {
-              raise TypeError::NonExhaustiveMatch(missing=[], span~)
-            }
-        }
-      }
-      match result {
-        Some(t) => t
-        None => @core.Type::Unit
-      }
-    }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
       let desugared = @core.desugar_for_in(
         value_name, index_name, iterable, body, span,
@@ -1187,166 +921,11 @@ fn type_expr_eff(
       effects=fn_effects,
       body~,
       span~
-    ) => {
-      ensure_no_scoped_ref_capture_in_fn(env, params, body, span)
-      // Create fresh type variables for each type parameter
-      let type_param_vars : Map[String, @core.Type] = {}
-      for tp in type_params {
-        type_param_vars[tp] = fresh_type_var(env)
-        match type_bounds.get(tp) {
-          Some(bounds) => {
-            let deduped = dedup_trait_bounds(bounds)
-            ensure_traits_defined(env, deduped, span)
-            match type_param_vars.get(tp) {
-              Some(@core.Type::Var(id)) =>
-                add_var_trait_bounds(env, id, deduped)
-              _ => ()
-            }
-          }
-          None => ()
-        }
-      }
-      let mut uses_num = false
-      for param in params {
-        if has_num_type(param.ty) {
-          uses_num = true
-          break
-        }
-      }
-      if not(uses_num) {
-        match ret {
-          Some(r) => uses_num = has_num_type(r)
-          None => ()
-        }
-      }
-      let num_var = if uses_num { Some(fresh_num_var(env)) } else { None }
-      let scope_env = clone_env(env)
-      // Add type parameters as type aliases so inner functions can access them
-      for tp in type_params {
-        match type_param_vars.get(tp) {
-          Some(ty) =>
-            scope_env.set_type_alias(tp, TypeAlias::{
-              name: tp,
-              params: [],
-              target: ty,
-            })
-          None => ()
-        }
-      }
-      let resolved_params : Array[@core.FuncParam] = []
-      for param in params {
-        let param_ty_with_num = match num_var {
-          Some(n) => replace_num_type(param.ty, n)
-          None => param.ty
-        }
-        // Replace type parameters with their type variables
-        let param_ty = substitute_type_params(
-          param_ty_with_num, type_param_vars,
-        )
-        let resolved = normalize_type(env, param_ty)
-        ensure_no_scoped_ref_param_decl(env, resolved, span)
-        let _ = ensure_type_satisfies_bounds(
-          env,
-          resolved,
-          param.bounds,
-          span,
-          "fn param " + param.name,
-        )
-        let binding_ty = if param.label == @core.ParamLabel::Optional {
-          @core.Type::Named(name="Option", args=[resolved])
-        } else {
-          resolved
-        }
-        scope_env.set(param.name, binding_ty)
-        resolved_params.push(@core.FuncParam::{
-          name: param.name,
-          label: param.label,
-          ty: resolved,
-          bounds: declared_param_bounds(env, resolved, param.bounds),
-        })
-      }
-      let normalized_effects = normalize_effects(fn_effects, span)
-      let fn_scope = effect_scope_from_list(normalized_effects)
-      // Allow effects in function body if function declares effects
-      let fn_allow_effect = allow_effect || normalized_effects.length() > 0
-      let resolved_effects = effect_set_to_atoms(
-        effect_set_from_atoms(scope_env, normalized_effects),
+    ) =>
+      type_fn_literal(
+        env, type_params, type_bounds, params, ret, fn_effects, body, span, aliases,
+        effects, allow_effect,
       )
-      // In skip_fn_body_check mode, skip body type checking when return type is explicit
-      if env.session_state.skip_fn_body_check && ret is Some(_) {
-        let r = match ret {
-          Some(r) => r
-          None => abort("unreachable")
-        }
-        let ret_ty_with_num = match num_var {
-          Some(n) => replace_num_type(r, n)
-          None => r
-        }
-        let ret_ty = substitute_type_params(ret_ty_with_num, type_param_vars)
-        let resolved = normalize_type(env, ret_ty)
-        ensure_no_scoped_ref_return_escape(env, resolved, span)
-        @core.Type::Func(
-          params=resolved_params,
-          ret=resolved,
-          effects=resolved_effects,
-        )
-      } else {
-        let body_ty = type_block(
-          scope_env, body, aliases, fn_scope, fn_allow_effect,
-        )
-        let final_ret = match ret {
-          Some(r) => {
-            let ret_ty_with_num = match num_var {
-              Some(n) => replace_num_type(r, n)
-              None => r
-            }
-            // Replace type parameters with their type variables
-            let ret_ty = substitute_type_params(
-              ret_ty_with_num, type_param_vars,
-            )
-            let resolved = normalize_type(env, ret_ty)
-            if not(type_equal(env, resolved, body_ty)) {
-              raise TypeError::Mismatch(
-                expected=resolved,
-                actual=body_ty,
-                span~,
-                context=Some("fn return"),
-              )
-            }
-            resolved
-          }
-          None => body_ty
-        }
-        ensure_no_scoped_ref_return_escape(env, final_ret, span)
-        // Merge inferred effects from body into the function's effect list
-        let final_effects = if scope_env.inferred_effects.length() > 0 {
-          let merged : Array[@core.EffectAtom] = []
-          for e in resolved_effects {
-            merged.push(e)
-          }
-          for name, _ in scope_env.inferred_effects {
-            let mut already = false
-            for e in merged {
-              match e {
-                @core.EffectAtom::Const(n) => if n == name { already = true }
-                _ => ()
-              }
-            }
-            if not(already) {
-              merged.push(@core.EffectAtom::Const(name))
-            }
-          }
-          merged
-        } else {
-          resolved_effects
-        }
-        @core.Type::Func(
-          params=resolved_params,
-          ret=final_ret,
-          effects=final_effects,
-        )
-      }
-    }
     @core.Expr::While(cond~, body~, span~) => {
       let _ = span
       let cond_ty = type_expr_eff(env, cond, aliases, effects, allow_effect)
@@ -1421,25 +1000,6 @@ fn type_expr_eff(
       }
       @core.Type::Unit
     }
-    @core.Expr::Raise(value~, span~) => {
-      let val_ty = type_expr_eff(env, value, aliases, effects, allow_effect)
-      let _ = ensure_type_satisfies_bounds(
-        env,
-        val_ty,
-        ["Error"],
-        span,
-        "throw",
-      )
-      // throw always requires explicit with { Error } declaration
-      require_effects(
-        env,
-        effects,
-        [@core.EffectAtom::Const("Error")],
-        "throw",
-        span,
-      )
-      @core.Type::Never
-    }
     @core.Expr::Yield(expr~, span~) => {
       let _ = type_expr_eff(env, expr, aliases, effects, allow_effect)
       require_effects(
@@ -1456,126 +1016,616 @@ fn type_expr_eff(
         message="spread operator is only allowed inside array literals",
         span~,
       )
-    @core.Expr::Perform(effect_name~, op_name~, args~, span~) => {
-      // --- effect scope check with inference ---
-      // If explicit with { ... } is declared (closed scope), enforce it.
-      // If no with is declared (open/empty scope), infer the effect.
-      if not(effect_scope_allows(effects, effect_name)) {
-        if allow_effect {
-          // Explicit with { ... } declared but this effect is not in it → error
-          raise TypeError::EffectGuardNotSatisfied(
-            operation="perform " + effect_name + "::" + op_name,
-            missing_effect=Some(effect_name),
-            span~,
-          )
-        } else {
-          // No with declared → infer the effect
-          env.inferred_effects[effect_name] = true
+    @core.Expr::Perform(effect_name="Error", op_name="Throw", args~, span~) => {
+      if args.length() >= 1 {
+        let val_ty = type_expr_eff(
+          env,
+          args[0].expr,
+          aliases,
+          effects,
+          allow_effect,
+        )
+        let _ = ensure_type_satisfies_bounds(
+          env,
+          val_ty,
+          ["Error"],
+          span,
+          "throw",
+        )
+      }
+      require_effects(
+        env,
+        effects,
+        [@core.EffectAtom::Const("Error")],
+        "throw",
+        span,
+      )
+      @core.Type::Never
+    }
+    @core.Expr::Perform(effect_name~, op_name~, args~, span~) =>
+      type_perform_effect(
+        env, effect_name, op_name, args, span, aliases, effects, allow_effect,
+      )
+    @core.Expr::StringInterp(parts~, span~) => {
+      // Type-check each expression part; string interpolation always yields String
+      for part in parts {
+        match part {
+          @core.StringInterpPart::Expr(e) => {
+            let _ = type_expr_eff(env, e, aliases, effects, allow_effect)
+          }
+          _ => ()
         }
       }
-      match env.effect_defs.get(effect_name) {
-        Some(effect_def) =>
-          match effect_def.ops.get(op_name) {
-            Some(op_sig) => {
-              // Instantiate type parameters: Param("S") → fresh Var
-              let param_mapping : Map[String, @core.Type] = {}
-              for p in effect_def.params {
-                param_mapping[p] = fresh_type_var(env)
-              }
-              let inst_params = op_sig.params.map(fn(t) {
-                substitute_param_names(t, param_mapping)
-              })
-              let inst_ret = substitute_param_names(op_sig.ret, param_mapping)
-              // Arity check
-              if args.length() != inst_params.length() {
-                raise TypeError::BadTypeDef(
-                  message="perform " +
-                    effect_name +
-                    "::" +
-                    op_name +
-                    " expects " +
-                    inst_params.length().to_string() +
-                    " argument(s) but got " +
-                    args.length().to_string(),
-                  span~,
-                )
-              }
-              // Type-check arguments against instantiated param types
-              for i = 0; i < args.length(); i = i + 1 {
-                if i < inst_params.length() {
-                  let arg_ty = type_expr_eff(
-                    env,
-                    args[i].expr,
-                    aliases,
-                    effects,
-                    allow_effect,
-                  )
-                  if not(unify_types(env, arg_ty, inst_params[i])) {
-                    raise TypeError::Mismatch(
-                      expected=inst_params[i],
-                      actual=arg_ty,
-                      span=args[i].expr.span(),
-                      context=Some("effect operation argument"),
-                    )
-                  }
-                }
-              }
-              let resolved_ret = resolve_type(env, inst_ret)
-              // Register resume type for handle arm type checking
-              // Key by qualified name (Effect::Op) so each op has its own resume type
-              if env.handle_resume_types_active {
-                let qualified = effect_name + "::" + op_name
-                match env.handle_resume_types.get(qualified) {
-                  Some(_) => ()
-                  None =>
-                    env.handle_resume_types[qualified] = resolved_ret
-                }
-              }
-              resolved_ret
-            }
-            None => {
-              // List available operations for helpful error
-              let available : Array[String] = []
-              for op_key, _ in effect_def.ops {
-                available.push(op_key)
-              }
-              let hint = if available.length() > 0 {
-                {
-                  let mut s = "available operations: "
-                  for i = 0; i < available.length(); i = i + 1 {
-                    if i > 0 { s = s + ", " }
-                    s = s + available[i]
-                  }
-                  s
-                }
-              } else {
-                ""
-              }
-              raise TypeError::BadTypeDef(
-                message="unknown operation `" +
-                  op_name +
-                  "` on effect `" +
-                  effect_name +
-                  "`" +
-                  (if hint.length() > 0 { ". " + hint } else { "" }),
-                span~,
-              )
-            }
-          }
-        None =>
-          raise TypeError::BadTypeDef(
-            message="undefined effect `" +
-              effect_name +
-              "` (not declared with `effect " +
-              effect_name +
-              " { ... }`)",
-            span~,
-          )
-      }
+      let _ = span
+      @core.Type::String
     }
   }
   record_expr_type(env, expr.span(), ty)
   ty
+}
+
+///|
+fn type_handle_block(
+  env : TypeEnv,
+  body : @core.Module,
+  arms : Array[@core.MatchArm],
+  span : @core.Span,
+  aliases : Map[String, @core.Ref],
+  effects : EffectScope,
+  allow_effect : Bool,
+) -> @core.Type raise TypeError {
+  let handle_effects : Array[@core.EffectAtom] = []
+  let handled_effect_names : Map[String, Bool] = {}
+  for arm in arms {
+    match arm.pat {
+      @core.Pat::Ctor(name~, ..) => {
+        handle_effects.push(@core.EffectAtom::Const(name))
+        handled_effect_names[name] = true
+        if name.contains("::") {
+          let effect_name = extract_effect_name(name)
+          handle_effects.push(@core.EffectAtom::Const(effect_name))
+          handled_effect_names[effect_name] = true
+        }
+      }
+      @core.Pat::Wildcard(..) | @core.Pat::Bind(..) => {
+        handle_effects.push(@core.EffectAtom::Const("Error"))
+        handled_effect_names["Error"] = true
+      }
+      _ => ()
+    }
+  }
+  let body_scope = effect_scope_extend(effects, handle_effects)
+  let body_env = clone_env(env)
+  body_env.handle_resume_types = {}
+  body_env.handle_resume_types_active = true
+  body_env.handle_arm_effect_name = None
+  body_env.handle_arm_resume_expected = None
+  let body_allow_effect = allow_effect || handle_effects.length() > 0
+  let body_ty = type_block(
+    body_env, body, aliases, body_scope, body_allow_effect,
+  )
+  let handled_ops : Map[String, Bool] = {}
+  for arm in arms {
+    match arm.pat {
+      @core.Pat::Ctor(name~, ..) =>
+        if name.contains("::") {
+          handled_ops[name] = true
+        }
+      _ => ()
+    }
+  }
+  let body_performs = collect_perform_ops(body)
+  let handled_effect_set : Map[String, Bool] = {}
+  for op, _ in handled_ops {
+    handled_effect_set[extract_effect_name(op)] = true
+  }
+  for op_name in body_performs {
+    let eff = extract_effect_name(op_name)
+    if handled_effect_set.contains(eff) && not(handled_ops.contains(op_name)) {
+      raise TypeError::BadTypeDef(
+        message="handle is missing handler for `" +
+          op_name +
+          "` (effect `" +
+          eff +
+          "` is partially handled)",
+        span~,
+      )
+    }
+  }
+  let body_resume_types : Map[String, @core.Type] = body_env.handle_resume_types.copy()
+  let inferred_resume_types = body_resume_types.copy()
+  let escaping_resume_types : Map[String, @core.Type] = {}
+  for effect_name, resume_ty in body_resume_types {
+    if not(handled_effect_names.contains(effect_name)) {
+      escaping_resume_types[effect_name] = resume_ty
+    }
+  }
+  for arm in arms {
+    let arm_env = env.fork_for_match_arm()
+    arm_env.handle_arm_depth += 1
+    arm_env.handle_resume_types = inferred_resume_types.copy()
+    arm_env.handle_resume_types_active = true
+    let arm_effect_name = infer_handle_arm_effect_name(arm.pat)
+    arm_env.handle_arm_effect_name = arm_effect_name
+    arm_env.handle_arm_resume_expected = match arm_effect_name {
+      Some(name) =>
+        match inferred_resume_types.get(name) {
+          Some(ty) => Some(ty)
+          None => None
+        }
+      None => None
+    }
+    bind_handle_arm_pat(arm_env, body_env, arm.pat)
+    let arm_ty_result : Result[@core.Type, TypeError] = try? type_handle_arm_expr(
+      arm_env, arm, aliases, effects, allow_effect,
+    )
+    arm_env.handle_arm_depth -= 1
+    let arm_ty = match arm_ty_result {
+      Ok(ty) => ty
+      Err(err) => raise err
+    }
+    for effect_name, resume_ty in arm_env.handle_resume_types {
+      if body_resume_types.contains(effect_name) {
+        continue
+      }
+      match escaping_resume_types.get(effect_name) {
+        Some(existing) =>
+          if not(type_equal(arm_env, existing, resume_ty)) {
+            raise TypeError::Mismatch(
+              expected=existing,
+              actual=resume_ty,
+              span~,
+              context=Some("perform resume type"),
+            )
+          }
+        None => escaping_resume_types[effect_name] = resume_ty
+      }
+    }
+    if not(type_equal(arm_env, body_ty, arm_ty)) {
+      raise TypeError::Mismatch(
+        expected=body_ty,
+        actual=arm_ty,
+        span~,
+        context=Some("handle branches"),
+      )
+    }
+  }
+  if env.handle_resume_types_active {
+    for effect_name, resume_ty in escaping_resume_types {
+      match env.handle_resume_types.get(effect_name) {
+        Some(existing) =>
+          if not(type_equal(env, existing, resume_ty)) {
+            raise TypeError::Mismatch(
+              expected=existing,
+              actual=resume_ty,
+              span~,
+              context=Some("perform resume type"),
+            )
+          }
+        None => env.handle_resume_types[effect_name] = resume_ty
+      }
+    }
+  }
+  body_ty
+}
+
+///|
+fn type_match_block(
+  env : TypeEnv,
+  scrutinee : @core.Expr,
+  arms : Array[@core.MatchArm],
+  span : @core.Span,
+  aliases : Map[String, @core.Ref],
+  effects : EffectScope,
+  allow_effect : Bool,
+) -> @core.Type raise TypeError {
+  if arms.is_empty() {
+    raise TypeError::BadMatch(message="empty match", span~)
+  }
+  let scrutinee_ty = normalize_type_expand_enum(
+    env,
+    type_expr_eff(env, scrutinee, aliases, effects, allow_effect),
+  )
+  let mut result : @core.Type? = None
+  let mut has_wildcard = false
+  let mut has_ctor = false
+  let covered : Map[String, Bool] = {}
+  let mut has_bool_pat = false
+  let mut covered_true = false
+  let mut covered_false = false
+  for arm in arms {
+    if is_top_wildcard(arm.pat) {
+      has_wildcard = true
+    }
+    match arm.pat {
+      @core.Pat::Ctor(name~, ..) => {
+        has_ctor = true
+        covered[@core.strip_ctor_qualifier(name)] = true
+      }
+      @core.Pat::Or(pats~, ..) =>
+        for p in pats {
+          match p {
+            @core.Pat::Ctor(name~, ..) => {
+              has_ctor = true
+              covered[@core.strip_ctor_qualifier(name)] = true
+            }
+            @core.Pat::Bool(value~, ..) => {
+              has_bool_pat = true
+              if value {
+                covered_true = true
+              } else {
+                covered_false = true
+              }
+            }
+            _ => ()
+          }
+        }
+      @core.Pat::Bool(value~, ..) => {
+        has_bool_pat = true
+        if value {
+          covered_true = true
+        } else {
+          covered_false = true
+        }
+      }
+      _ => ()
+    }
+    let arm_env = env.fork_for_match_arm()
+    let bindings = collect_pattern_bindings_prenormalized(
+      env,
+      arm.pat,
+      scrutinee_ty,
+    )
+    for name, ty in bindings {
+      arm_env.set(name, ty)
+    }
+    match arm.cond {
+      Some(c) => {
+        let g_ty = type_expr_eff(arm_env, c, aliases, effects, allow_effect)
+        if not(type_equal(env, g_ty, @core.Type::Bool)) {
+          raise TypeError::Mismatch(
+            expected=@core.Type::Bool,
+            actual=g_ty,
+            span=c.span(),
+            context=Some("match guard"),
+          )
+        }
+      }
+      None => ()
+    }
+    let arm_ty = type_expr_eff(
+      arm_env,
+      arm.expr,
+      aliases,
+      effects,
+      allow_effect,
+    )
+    match result {
+      Some(t) =>
+        if not(type_equal(env, t, arm_ty)) {
+          raise TypeError::Mismatch(
+            expected=t,
+            actual=arm_ty,
+            span=arm.expr.span(),
+            context=Some("match arm"),
+          )
+        }
+      None => result = Some(arm_ty)
+    }
+  }
+  if not(has_wildcard) {
+    match scrutinee_ty {
+      @core.Type::Variant(types) => {
+        let missing_names : Array[String] = []
+        for name, _ in types {
+          if not(covered.contains(name)) {
+            missing_names.push(name)
+          }
+        }
+        if missing_names.length() > 0 {
+          raise TypeError::NonExhaustiveMatch(missing=missing_names, span~)
+        }
+      }
+      @core.Type::Bool => {
+        let missing_names : Array[String] = []
+        if not(covered_true) {
+          missing_names.push("true")
+        }
+        if not(covered_false) {
+          missing_names.push("false")
+        }
+        if not(has_bool_pat && covered_true && covered_false) {
+          raise TypeError::NonExhaustiveMatch(missing=missing_names, span~)
+        }
+      }
+      _ =>
+        if not(has_ctor) {
+          raise TypeError::NonExhaustiveMatch(missing=[], span~)
+        }
+    }
+  }
+  match result {
+    Some(t) => t
+    None => @core.Type::Unit
+  }
+}
+
+///|
+fn type_fn_literal(
+  env : TypeEnv,
+  type_params : Array[String],
+  type_bounds : Map[String, Array[String]],
+  params : Array[@core.FuncParam],
+  ret : @core.Type?,
+  fn_effects : Array[@core.EffectAtom],
+  body : @core.Module,
+  span : @core.Span,
+  aliases : Map[String, @core.Ref],
+  _effects : EffectScope,
+  allow_effect : Bool,
+) -> @core.Type raise TypeError {
+  ensure_no_scoped_ref_capture_in_fn(env, params, body, span)
+  let type_param_vars : Map[String, @core.Type] = {}
+  for tp in type_params {
+    type_param_vars[tp] = fresh_type_var(env)
+    match type_bounds.get(tp) {
+      Some(bounds) => {
+        let deduped = dedup_trait_bounds(bounds)
+        ensure_traits_defined(env, deduped, span)
+        match type_param_vars.get(tp) {
+          Some(@core.Type::Var(id)) => add_var_trait_bounds(env, id, deduped)
+          _ => ()
+        }
+      }
+      None => ()
+    }
+  }
+  let mut uses_num = false
+  for param in params {
+    if has_num_type(param.ty) {
+      uses_num = true
+      break
+    }
+  }
+  if not(uses_num) {
+    match ret {
+      Some(r) => uses_num = has_num_type(r)
+      None => ()
+    }
+  }
+  let num_var = if uses_num { Some(fresh_num_var(env)) } else { None }
+  let scope_env = clone_env(env)
+  for tp in type_params {
+    match type_param_vars.get(tp) {
+      Some(ty) =>
+        scope_env.set_type_alias(tp, TypeAlias::{
+          name: tp,
+          params: [],
+          target: ty,
+        })
+      None => ()
+    }
+  }
+  let resolved_params : Array[@core.FuncParam] = []
+  for param in params {
+    let param_ty_with_num = match num_var {
+      Some(n) => replace_num_type(param.ty, n)
+      None => param.ty
+    }
+    let param_ty = substitute_type_params(param_ty_with_num, type_param_vars)
+    let resolved = normalize_type(env, param_ty)
+    ensure_no_scoped_ref_param_decl(env, resolved, span)
+    let _ = ensure_type_satisfies_bounds(
+      env,
+      resolved,
+      param.bounds,
+      span,
+      "fn param " + param.name,
+    )
+    let binding_ty = if param.label == @core.ParamLabel::Optional {
+      @core.Type::Named(name="Option", args=[resolved])
+    } else {
+      resolved
+    }
+    scope_env.set(param.name, binding_ty)
+    resolved_params.push(@core.FuncParam::{
+      name: param.name,
+      label: param.label,
+      ty: resolved,
+      bounds: declared_param_bounds(env, resolved, param.bounds),
+    })
+  }
+  let normalized_effects = normalize_effects(fn_effects, span)
+  let fn_scope = effect_scope_from_list(normalized_effects)
+  let fn_allow_effect = allow_effect || normalized_effects.length() > 0
+  let resolved_effects = effect_set_to_atoms(
+    effect_set_from_atoms(scope_env, normalized_effects),
+  )
+  if env.session_state.skip_fn_body_check && ret is Some(_) {
+    let r = match ret {
+      Some(r) => r
+      None => abort("unreachable")
+    }
+    let ret_ty_with_num = match num_var {
+      Some(n) => replace_num_type(r, n)
+      None => r
+    }
+    let ret_ty = substitute_type_params(ret_ty_with_num, type_param_vars)
+    let resolved = normalize_type(env, ret_ty)
+    ensure_no_scoped_ref_return_escape(env, resolved, span)
+    @core.Type::Func(
+      params=resolved_params,
+      ret=resolved,
+      effects=resolved_effects,
+    )
+  } else {
+    let body_ty = type_block(
+      scope_env, body, aliases, fn_scope, fn_allow_effect,
+    )
+    let final_ret = match ret {
+      Some(r) => {
+        let ret_ty_with_num = match num_var {
+          Some(n) => replace_num_type(r, n)
+          None => r
+        }
+        let ret_ty = substitute_type_params(ret_ty_with_num, type_param_vars)
+        let resolved = normalize_type(env, ret_ty)
+        if not(type_equal(env, resolved, body_ty)) {
+          raise TypeError::Mismatch(
+            expected=resolved,
+            actual=body_ty,
+            span~,
+            context=Some("fn return"),
+          )
+        }
+        resolved
+      }
+      None => body_ty
+    }
+    ensure_no_scoped_ref_return_escape(env, final_ret, span)
+    let final_effects = if scope_env.inferred_effects.length() > 0 {
+      let merged : Array[@core.EffectAtom] = []
+      for e in resolved_effects {
+        merged.push(e)
+      }
+      for name, _ in scope_env.inferred_effects {
+        let mut already = false
+        for e in merged {
+          match e {
+            @core.EffectAtom::Const(n) => if n == name { already = true }
+            _ => ()
+          }
+        }
+        if not(already) {
+          merged.push(@core.EffectAtom::Const(name))
+        }
+      }
+      merged
+    } else {
+      resolved_effects
+    }
+    @core.Type::Func(
+      params=resolved_params,
+      ret=final_ret,
+      effects=final_effects,
+    )
+  }
+}
+
+///|
+fn type_perform_effect(
+  env : TypeEnv,
+  effect_name : String,
+  op_name : String,
+  args : Array[@core.CallArg],
+  span : @core.Span,
+  aliases : Map[String, @core.Ref],
+  effects : EffectScope,
+  allow_effect : Bool,
+) -> @core.Type raise TypeError {
+  if not(effect_scope_allows(effects, effect_name)) {
+    if allow_effect {
+      raise TypeError::EffectGuardNotSatisfied(
+        operation="perform " + effect_name + "::" + op_name,
+        missing_effect=Some(effect_name),
+        span~,
+      )
+    } else {
+      env.inferred_effects[effect_name] = true
+    }
+  }
+  match env.effect_defs.get(effect_name) {
+    Some(effect_def) =>
+      match effect_def.ops.get(op_name) {
+        Some(op_sig) => {
+          let param_mapping : Map[String, @core.Type] = {}
+          for p in effect_def.params {
+            param_mapping[p] = fresh_type_var(env)
+          }
+          let inst_params = op_sig.params.map(fn(t) {
+            substitute_param_names(t, param_mapping)
+          })
+          let inst_ret = substitute_param_names(op_sig.ret, param_mapping)
+          if args.length() != inst_params.length() {
+            raise TypeError::BadTypeDef(
+              message="perform " +
+                effect_name +
+                "::" +
+                op_name +
+                " expects " +
+                inst_params.length().to_string() +
+                " argument(s) but got " +
+                args.length().to_string(),
+              span~,
+            )
+          }
+          for i = 0; i < args.length(); i = i + 1 {
+            if i < inst_params.length() {
+              let arg_ty = type_expr_eff(
+                env,
+                args[i].expr,
+                aliases,
+                effects,
+                allow_effect,
+              )
+              if not(unify_types(env, arg_ty, inst_params[i])) {
+                raise TypeError::Mismatch(
+                  expected=inst_params[i],
+                  actual=arg_ty,
+                  span=args[i].expr.span(),
+                  context=Some("effect operation argument"),
+                )
+              }
+            }
+          }
+          let resolved_ret = resolve_type(env, inst_ret)
+          if env.handle_resume_types_active {
+            let qualified = effect_name + "::" + op_name
+            match env.handle_resume_types.get(qualified) {
+              Some(_) => ()
+              None => env.handle_resume_types[qualified] = resolved_ret
+            }
+          }
+          resolved_ret
+        }
+        None => {
+          let available : Array[String] = []
+          for op_key, _ in effect_def.ops {
+            available.push(op_key)
+          }
+          let hint = if available.length() > 0 {
+            let mut s = "available operations: "
+            for i = 0; i < available.length(); i = i + 1 {
+              if i > 0 {
+                s = s + ", "
+              }
+              s = s + available[i]
+            }
+            s
+          } else {
+            ""
+          }
+          raise TypeError::BadTypeDef(
+            message="unknown operation `" +
+              op_name +
+              "` on effect `" +
+              effect_name +
+              "`" +
+              (if hint.length() > 0 { ". " + hint } else { "" }),
+            span~,
+          )
+        }
+      }
+    None =>
+      raise TypeError::BadTypeDef(
+        message="undefined effect `" +
+          effect_name +
+          "` (not declared with `effect " +
+          effect_name +
+          " { ... }`)",
+        span~,
+      )
+  }
 }
 
 ///|
@@ -1606,13 +1656,20 @@ fn type_block(
         register_type_alias(scope_env, name, params, target, span)
         last = @core.Type::Unit
       }
-      @core.Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, span~) => {
+      @core.Stmt::TraitDef(
+        name~,
+        supertraits~,
+        open_impl~,
+        exported~,
+        span~,
+        ..
+      ) => {
         register_trait_def(
           scope_env, name, supertraits, open_impl, exported, span,
         )
         last = @core.Type::Unit
       }
-      @core.Stmt::InternalTraitDef(name~, supertraits~, open_impl~, span~) => {
+      @core.Stmt::InternalTraitDef(name~, supertraits~, open_impl~, span~, ..) => {
         register_trait_def(scope_env, name, supertraits, open_impl, false, span)
         last = @core.Type::Unit
       }
@@ -1815,6 +1872,17 @@ fn ensure_num_operand(
   match resolved {
     @core.Type::Int | @core.Type::Float | @core.Type::Double => ()
     @core.Type::Var(id) => mark_num_var(env, id)
+    @core.Type::Named(..) =>
+      if type_implements_trait(env, resolved, "Add") {
+        ()
+      } else {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=resolved,
+          span~,
+          context=Some("argument"),
+        )
+      }
     _ =>
       raise TypeError::Mismatch(
         expected=@core.Type::Int,
@@ -1839,28 +1907,17 @@ fn ensure_eq_operand(
     | @core.Type::Bool
     | @core.Type::Char
     | @core.Type::String => ()
-    @core.Type::Var(id) =>
-      if is_num_var(env, id) {
+    @core.Type::Var(_) => ()
+    @core.Type::Named(..) =>
+      if type_implements_trait(env, resolved, "Eq") {
         ()
       } else {
-        match env.var_trait_bounds.get(id) {
-          Some(bounds) =>
-            if not(trait_bound_satisfied(env, bounds, "Eq")) {
-              raise TypeError::Mismatch(
-                expected=@core.Type::Named(name="Eq", args=[]),
-                actual=resolved,
-                span~,
-                context=Some("argument"),
-              )
-            }
-          None =>
-            raise TypeError::Mismatch(
-              expected=@core.Type::Named(name="Eq", args=[]),
-              actual=resolved,
-              span~,
-              context=Some("argument"),
-            )
-        }
+        raise TypeError::Mismatch(
+          expected=@core.Type::Named(name="Eq", args=[]),
+          actual=resolved,
+          span~,
+          context=Some("argument"),
+        )
       }
     _ =>
       raise TypeError::Mismatch(
@@ -1907,6 +1964,17 @@ fn ensure_ord_operand(
               context=Some("argument"),
             )
         }
+      }
+    @core.Type::Named(..) =>
+      if type_implements_trait(env, resolved, "Ord") {
+        ()
+      } else {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Named(name="Ord", args=[]),
+          actual=resolved,
+          span~,
+          context=Some("argument"),
+        )
       }
     _ =>
       raise TypeError::Mismatch(

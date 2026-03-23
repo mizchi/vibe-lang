@@ -308,6 +308,11 @@ pub fn bang() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn question() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(135)
+}
+
+///|
 pub fn eqeq() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(49)
 }
@@ -607,7 +612,7 @@ pub fn dotdotdot() -> @cst.SyntaxKind {
 ///|
 /// Check if a SyntaxKind is a token (not a node)
 pub fn is_token(kind : @cst.SyntaxKind) -> Bool {
-  kind.raw() < 100
+  kind.raw() < 100 || kind == question()
 }
 
 ///|

@@ -67,7 +67,7 @@ wit_bindgen::generate!({
       package vibe:selfhost-cli-command-adapter;
 
       world adapter {
-        import compile-cli-hex: func(source: string, entry-name: string, mode: string) -> string;
+        import compile-cli-request: func(source: string, request: string) -> string;
         include wasi:cli/command@0.2.6;
       }
     "#,
@@ -79,20 +79,7 @@ wit_bindgen::generate!({
 
 struct Component;
 
-fn debug_enabled() -> bool {
-    wasi::cli::environment::get_environment()
-        .into_iter()
-        .any(|(key, value)| key == "VIBE_SELFHOST_CLI_COMMAND_DEBUG" && value == "1")
-}
-
-fn debug_log(message: &str) {
-    if !debug_enabled() {
-        return;
-    }
-    let stream = wasi::cli::stderr::get_stderr();
-    let _ = stream.blocking_write_and_flush(message.as_bytes());
-    let _ = stream.blocking_write_and_flush(b"\n");
-}
+const HEX_CHUNK_BYTES: usize = 1024;
 
 fn read_stdin_all() -> Result<String, ()> {
     let stream = wasi::cli::stdin::get_stdin();
@@ -131,7 +118,7 @@ fn decode_hex_nibble(byte: u8) -> Result<u8, ()> {
 
 fn decode_hex_string(hex: &str) -> Result<Vec<u8>, ()> {
     let bytes = hex.as_bytes();
-    if bytes.is_empty() || bytes.len() % 2 != 0 {
+    if bytes.len() % 2 != 0 {
         return Err(());
     }
     let mut out = Vec::with_capacity(bytes.len() / 2);
@@ -145,27 +132,46 @@ fn decode_hex_string(hex: &str) -> Result<Vec<u8>, ()> {
     Ok(out)
 }
 
+fn compile_bytes(source: &str, entry_name: &str, mode: &str) -> Result<Vec<u8>, ()> {
+    let len_request = format!("len-mode:{mode}:{entry_name}");
+    let byte_len = compile_cli_request(source, &len_request)
+        .parse::<usize>()
+        .map_err(|_| ())?;
+    if byte_len == 0 {
+        return Err(());
+    }
+    let mut out = Vec::with_capacity(byte_len);
+    let chunk_count = byte_len.div_ceil(HEX_CHUNK_BYTES);
+    for chunk_index in 0..chunk_count {
+        let chunk_request = format!("hex-chunk-mode:{mode}:{entry_name}:{chunk_index}");
+        let mut chunk = decode_hex_string(&compile_cli_request(source, &chunk_request))?;
+        let remaining = byte_len - out.len();
+        if chunk.len() > remaining {
+            chunk.truncate(remaining);
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
+
 impl exports::wasi::cli::run::Guest for Component {
     fn run() -> Result<(), ()> {
-        debug_log("run:start");
         let args = wasi::cli::environment::get_arguments();
-        let (entry_name, mode) = if args.len() >= 2 {
-            (
-                args[args.len() - 2].clone(),
-                args[args.len() - 1].clone(),
-            )
-        } else if args.len() >= 1 {
-            (args[args.len() - 1].clone(), "mvp".to_string())
-        } else {
+        let argc = args.len();
+        if argc == 0 {
             return Err(());
+        }
+        let last = args[argc - 1].clone();
+        let (entry_name, mode) = if matches!(last.as_str(), "mvp" | "no-dce") {
+            if argc < 2 {
+                return Err(());
+            }
+            (args[argc - 2].clone(), last)
+        } else {
+            (last, "mvp".to_string())
         };
-        debug_log("run:args");
         let source = read_stdin_all()?;
-        debug_log("run:stdin");
-        let hex = compile_cli_hex(&source, &entry_name, &mode);
-        debug_log("run:hex-ready");
-        let output = decode_hex_string(&hex)?;
-        debug_log("run:output-ready");
+        let output = compile_bytes(&source, &entry_name, &mode)?;
         write_stdout_all(&output)
     }
 }
@@ -177,7 +183,7 @@ cat >"$ADAPTER_WIT_DIR/world.wit" <<'EOF'
 package vibe:selfhost-cli-command-adapter;
 
 world adapter {
-  import compile-cli-hex: func(source: string, entry-name: string, mode: string) -> string;
+  import compile-cli-request: func(source: string, request: string) -> string;
   include wasi:cli/command@0.2.6;
 }
 EOF

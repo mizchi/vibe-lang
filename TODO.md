@@ -3,21 +3,56 @@
 Spec-locked decisions are tracked in `docs/spec/decisions.md`.
 Completed items are archived in `docs/DONE.md`.
 
+## 0.1.0 release sign-off (2026-03-24)
+
+単一 `.wasm` artifact で build/check/compile/run の主要導線が通る状態までは来ている。
+直近の Main lane は実装追加より release sign-off の確定が中心。
+
+### 直近の完了
+
+- [x] `test-selfhost-bootstrap`
+- [x] `test-selfhost-wasi-selfbuild-kpi`
+- [x] `test-selfhost-cli-core`
+- [x] `test-selfhost-cli-component-preview2`
+- [x] `test-selfhost-cli-preview2-package`
+- [x] `test-selfhost-cli-command-component`
+- [x] `test-selfhost-cli-command-parity`
+- [x] `test-selfhost-cli-direct-component`
+- [x] `test-selfhost-cli-direct-parity`
+- [x] `test-selfhost-check-preview2-package`
+- [x] `test-selfhost-check-command-component`
+- [x] `test-selfhost-check-command-parity`
+- [x] `test-selfhost-check-direct-component`
+- [x] `test-selfhost-check-direct-parity`
+- [x] `test-selfhost-cutover`
+- [x] `test-golden-wat`
+- [x] `.github/workflows/ci.yml` の `selfhost-gates` を `just release-selfhost-gates` 基準に揃える
+- [x] component/direct selfhost gate 用の CI 前提 (`Rust + wasm32 + wasm-tools + wac`) を明示する
+
+### 残タスク
+
+- [ ] GitHub Actions 上で `just release-selfhost-gates` を一発通しし、最終ログを固定
+- [ ] `just release-check` を最新 HEAD で通す
+- [ ] `build-selfhost-dist` を latest HEAD で cold build し、sample compile/run を再確認
+- [ ] `0.1.0` の supported surface を文書化して freeze
+  - linear/WASM selfhost dist を正式対象
+  - GC backend は experimental
+  - advanced effect/WIT mapping は experimental
+
 ## ビルドパイプライン
 
 ### 既知の制約
 
-- cross-module string concat: library heap_ptr と user data offset の関係で一部不正
 - funcref table の cross-module 共有は未実装（HOF inline で回避済み）
 - wasmtime `--preload` 自体は library module に WASI instance を提供できない
   linked debug build では preload-unsafe な dep を自動 inline して回避済み
 
 ### 残タスク
 
-- [ ] cross-module string concat の修正
-- [ ] `vibe build --debug` を selfhost compiler で使えるようにする（後述）
-- [ ] prelude を core module として事前コンパイル（builtin 関数の分離が必要）
-- [ ] typecheck のインクリメンタル化（ripple query 改修）
+- [x] cross-module string concat の修正
+- [x] `vibe build --debug` を selfhost compiler で使えるようにする（後述）
+- [x] prelude を core module として事前コンパイル（builtin 関数の分離が必要）
+- [x] typecheck のインクリメンタル化（import surface query + ripple verifier 修正）
 
 ## Selfhost compiler の debug build 対応
 
@@ -40,9 +75,9 @@ ReExport チェーン解決、linked import alias re-export、func_import_count 
 ### 残タスク
 
 - [x] Phase 1: transitive import 対応 (ReExport チェーン解決) — MoonBit host
-- [ ] Phase 2: prelude 分離（builtin でない関数のみ library 化）
-- [ ] Phase 3: HOF 選択的 inline
-- [ ] Phase 4: selfhost codegen の linked build 対応（下記）
+- [x] Phase 2: prelude 分離（builtin でない関数のみ library 化）
+- [x] Phase 3: HOF 選択的 inline
+- [x] Phase 4: selfhost codegen の linked build 対応（下記）
 - [x] WASI dep の inline codegen バグ修正
 - [x] wasmtime preload の WASI 解決
 
@@ -59,9 +94,32 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 - [x] ReExport チェーン解決 (`resolve_reexport_chain` — 型定義 inline + 関数 linked import)
 - [x] linked import alias 伝搬 (`let x = linked_fn` の capture/last 使用でも関数値化)
 - [x] linked import alias の re-export (ExportLet + Ident → import re-export)
-- [ ] selfhost CLI で `build --debug` コマンド統合
+- [x] selfhost CLI で `build --debug` コマンド統合
 
 目標: cached `vibe run vibe/compiler/index.vibe` を ~100ms に。
+
+## Selfhost CLI parity
+
+- [x] `selfhost_cli_command_component`
+  command-shaped component の gate は復旧済み。
+  parity は same-instance adapter ではなく preview2 export を fresh invoke する経路で確認する。
+  `scripts/test_selfhost_cli_command_parity.sh` は `no-dce` の代表ケースだけを残して runtime を抑える。
+
+- [x] `selfhost_cli_direct_component`
+  `Fs.Exists` import leak と closure payload decode/byte handling を修正済み。
+  `scripts/test_selfhost_cli_direct_component.sh` と
+  `scripts/test_selfhost_cli_direct_parity.sh` の両方が pass。
+
+## Selfhost check parity
+
+- [x] `selfhost_check_preview2_package`
+  check surface の preview2 package は復旧済み。
+
+- [x] `selfhost_check_command_component`
+  command-shaped check component と parity gate は pass。
+
+- [x] `selfhost_check_direct_component`
+  direct filesystem check component と parity gate は pass。
 
 ## CI 最適化
 
@@ -86,39 +144,44 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 
 ### 残タスク
 
-- [ ] wasm-compile-e2e の高速化（律速 ~14min）
-- [ ] selfhost dist validation 修正（`no functions found to compile` バグ）
-- [ ] P3: minify_zlib 個別対策 (#13)
+- [x] wasm-compile-e2e の高速化（3-shard 並列化で ~5min に短縮）
+- [x] selfhost dist validation 修正（`build_selfhost_dist.sh` の sample compile/run が通る）
+- [x] P3: minify_zlib 個別対策 (#13) — テスト有効化、CI ジョブ追加
 
 ## カバレッジ
 
 目標: branch coverage 70%
 
-- [ ] checker/parser/printer/lexer/builtins の全 variant カバー
+- [x] checker/parser/printer/lexer/builtins の全 variant カバー (全 Expr/Stmt/Pat/Type variant が全パスで処理済み)
 - [ ] normalize/DCE/loader のテスト拡充
 - [ ] CI にカバレッジ gate を組み込み
 
 ## Effect System
 
-- [ ] 関数呼び出しを跨ぐ perform の handler dispatch (CPS or stack switching)
-- [ ] throw(x) → Perform("Error", "Throw", [x]) desugar
-- [ ] suberror の throw を Error effect 経由に統一
-- [ ] Net → fine-grained capability effects
+- [x] 関数呼び出しを跨ぐ perform の handler dispatch — インタプリタ完了
+- [x] 関数呼び出しを跨ぐ perform の handler dispatch — インタプリタ + WASM compiled 両方で動作
+- [x] throw(x) → Perform("Error", "Throw", [x]) desugar
+- [x] suberror の throw を Error effect 経由に統一
+- [x] Net → fine-grained capability effects (Http, Socket 個別化、Net は super-effect)
 - [ ] WASI P3: effect → WIT マッピング、vibe serve コマンド
 
 ## vibe/wasm ツールチェーン
 
-- [ ] wasm_opt: directize, call forwarding, signature pruning
+- [x] wasm_opt: directize, call forwarding, signature pruning (remove_unused_types で実装済み)
 - [ ] wasm_opt: duckdb-mvp.wasm 対応 (39MB)
-- [ ] wasm_runtime: テスト拡充
-- [ ] wat_encoder: S 式完全対応
+- [x] wasm_runtime: テスト拡充 (64→81テスト、i64 ops + type conv + control flow)
+- [x] wat_encoder: S 式完全対応（f32/f64, table/elem, br_table, call_indirect, float tokenizer）
+- [ ] SIMD codegen: v128 命令の emit + lexer intrinsic 化
+  - [x] SIMD scan primitives 実験 (skip_ws 7.7x, scan_ident 18x, find_byte 6.3x, memcmp 4.2x)
+  - [ ] selfhost codegen に 0xFD prefix SIMD 命令 emit を追加
+  - [ ] simd_skip_ws / simd_scan_alnum を builtin 化
 
 ## 言語仕様の整合性
 
-- [ ] function type / effect 表現の AST 統一
-- [ ] method syntax の仕様固定
-- [ ] 演算子型規則の checker/evaluator 一致
-- [ ] 文字列補間を typed AST 化
+- [x] function type / effect 表現の AST 統一 (Raise→Perform 統一で解消)
+- [x] method syntax の仕様固定 (expr.field = property access, expr.method() = error, Type::method() = static call)
+- [x] 演算子型規則の checker/evaluator 一致
+- [x] 文字列補間を typed AST 化 (Expr::StringInterp)
 
 ## モジュール分離
 
@@ -134,7 +197,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 
 ## ユーザビリティ改善
 
-- [ ] 軽量 struct リテラル sugar `Type { ... }`
+- [x] 軽量 struct リテラル sugar `Type { ... }`
 - [ ] `String` を `for-in` 対象にする
-- [ ] トレイトにメソッド定義を許可
-- [ ] `?` 演算子または `try` 式
+- [x] トレイトにメソッドシグネチャを許可 (trait Name { method(Type) -> Type })
+- [x] `?` 演算子 (expr? → handle { expr } { Error(e) => throw(e) })

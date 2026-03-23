@@ -1,0 +1,796 @@
+// AST-to-WASM codegen (wasm-gc backend)
+// Uses GC struct types for ref cells instead of linear memory bump allocation.
+// Closures use table-based call_indirect (same as linear memory backend).
+
+import ../../core/index.vibe {
+  Expr, Pat, Stmt, TypeExpr,
+  bytebuf_new, bytebuf_push, bytebuf_push_buf, bytebuf_length,
+  bytebuf_to_bytes, bytebuf_push_section, bytebuf_push_vec_header,
+  leb128_encode_u32, leb128_encode_s64
+}
+
+import ../wasm_emit/index.vibe {
+  emit_header,
+  emit_type_section, emit_type_section_multi,
+  emit_function_section, emit_export_section, emit_export_section_multi,
+  emit_code_section, emit_code_section_with_locals,
+  emit_name, emit_func_type_raw,
+  emit_import_section_func, emit_memory_section,
+  emit_exports_with_memory, emit_data_section, emit_data_section_multi,
+  emit_local_get, emit_local_set, emit_local_tee,
+  emit_i64_const, emit_i64_add, emit_i64_sub, emit_i64_mul, emit_i64_div_s,
+  emit_i64_rem_s, emit_i64_and, emit_i64_or, emit_i64_xor,
+  emit_i64_shl, emit_i64_shr_s,
+  emit_i64_eq, emit_i64_ne, emit_i64_lt_s, emit_i64_gt_s,
+  emit_i64_le_s, emit_i64_ge_s, emit_i64_eqz,
+  emit_i64_extend_i32_s, emit_i32_wrap_i64,
+  emit_i32_const, emit_i32_store, emit_i32_add, emit_i32_load,
+  emit_i32_store8, emit_i32_load8_u,
+  emit_call, emit_drop, emit_return,
+  emit_block_void, emit_block_i64, emit_loop_void,
+  emit_if_void, emit_if_i64, emit_else, emit_end,
+  emit_br, emit_br_if,
+  emit_global_section_i32_mut, emit_global_get, emit_global_set,
+  string_to_data,
+  emit_f64_const_bits, emit_f64_add, emit_f64_sub, emit_f64_mul, emit_f64_div,
+  emit_f64_eq, emit_f64_ne, emit_f64_lt, emit_f64_gt, emit_f64_le, emit_f64_ge,
+  emit_f64_neg, emit_i64_reinterpret_f64, emit_f64_reinterpret_i64,
+  emit_i64_trunc_f64_s, emit_f64_convert_i64_s,
+  emit_call_indirect, emit_table_section_funcref, emit_element_section_active,
+  emit_struct_type_raw, emit_struct_new, emit_struct_get, emit_struct_set
+}
+
+import ../common_base/index.vibe {
+  emit_i32_sub, emit_i32_mul, emit_i32_ne, emit_i32_eq, emit_i32_ge_u, emit_i32_eqz, emit_i64_store, emit_i64_load, resolve_local, resolve_func, FuncTable, StrTable, LambdaTable, CtorTable, CompileCtxGc, emit_str_ref, lookup_ctor, emit_binop_op
+}
+
+import ../common_extractors/index.vibe {
+  emit_memory_copy, array_contains_str, str_table_lookup, find_catchall_idx, emit_assignop_op
+}
+
+import ../common_analysis/index.vibe {
+  emit_i64_extend_i32_u, collect_strings_stmts, collect_free_vars, is_mut_captured_in, emit_closure_resolve, emit_closure_call_tail
+}
+
+import ./backend_builtins.vibe {
+  gen_print_i64_body, gen_print_str_body, gen_str_len_body, gen_str_eq_body,
+  gen_str_concat_body, gen_arr_new_body, gen_arr_len_body, gen_arr_get_body,
+  gen_arr_push_body, gen_arr_set_body, gen_str_char_code_at_body,
+  gen_bytes_new_body, gen_bytes_get_body, gen_bytes_set_body, gen_bytes_push_body,
+  gen_bytes_append_body, gen_bytes_concat_body, gen_bytes_slice_body,
+  gen_bytes_from_array_body, gen_bytes_to_array_body, gen_bytes_blit_body,
+  gen_bytes_fill_body,
+  gen_str_from_char_code_body, gen_str_substring_body, gen_double_to_int_body,
+  gen_int_to_double_body, gen_identity_body
+}
+
+import ./backend_expr.vibe {
+  compile_expr_gc
+}
+
+// === WASI Module compiler (GC backend) ===
+
+export let compile_wasi_module_gc = (stmts: Array[Stmt], entry_name: String) -> Bytes with { Error } {
+  // Collect user functions
+  let fn_names_list = Array::slice([""], 0, 0)
+  let fn_param_counts = Array::slice([0], 0, 0)
+  let fn_needs_env_list = Array::slice([true], 0, 0)
+  let user_func_stmts = Array::slice([SExpr(EUnit)], 0, 0)
+
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    match stmt {
+      SLet(_, _, name, _, expr) => {
+        match expr {
+          EFn(_, _, params, _, _, _) => {
+            Array::push(fn_names_list, name)
+            Array::push(fn_param_counts, Array::length(params))
+            Array::push(fn_needs_env_list, true)
+            Array::push(user_func_stmts, stmt)
+            0
+          },
+          _ => 0
+        }
+      },
+      _ => 0
+    }
+    i = i + 1
+  }
+
+  // Collect enum variant constructors with stable type-scoped tags
+  // Tag scheme: (type_index << 16) | variant_index
+  let ctor_names_list = Array::slice(["None", "Some"], 0, 2)
+  let ctor_tags_list = Array::slice([0, 1], 0, 2)
+  let ctor_field_counts_list = Array::slice([0, 1], 0, 2)
+  let ctor_type_names_list = Array::slice(["Option", "Option"], 0, 2)
+  let mut type_index = 1  // type 0 = Option
+  let mut ei2 = 0
+  while ei2 < Array::length(stmts) {
+    match Array::get(stmts, ei2) {
+      SEnum(_, ename, variants) => {
+        type_index = type_index + 1
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, vfields) = Array::get(variants, vi)
+          Array::push(ctor_names_list, vname)
+          Array::push(ctor_tags_list, (type_index << 16) | vi)
+          Array::push(ctor_field_counts_list, Array::length(vfields))
+          Array::push(ctor_type_names_list, ename)
+          vi = vi + 1
+        }
+        0
+      },
+      SStruct(_, sname, sfields) => {
+        type_index = type_index + 1
+        Array::push(ctor_names_list, sname)
+        Array::push(ctor_tags_list, type_index << 16)
+        Array::push(ctor_field_counts_list, Array::length(sfields))
+        Array::push(ctor_type_names_list, sname)
+        0
+      },
+      _ => 0
+    }
+    ei2 = ei2 + 1
+  }
+
+  // Build struct field name index tables
+  let struct_names = Array::slice([""], 0, 0)
+  let struct_field_names = Array::slice([Array::slice([""], 0, 0)], 0, 0)
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SStruct(_, sname, sfields) => {
+        Array::push(struct_names, sname)
+        let fnames = Array::slice([""], 0, 0)
+        let mut sfi = 0
+        while sfi < Array::length(sfields) {
+          let (fname, _) = Array::get(sfields, sfi)
+          Array::push(fnames, fname)
+          sfi = sfi + 1
+        }
+        Array::push(struct_field_names, fnames)
+        ()
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+
+  let num_user_funcs = Array::length(fn_names_list)
+  if num_user_funcs == 0 {
+    throw("no functions found to compile")
+  }
+
+  // Find entry function
+  let mut entry_user_idx = -1
+  let mut ei = 0
+  while ei < num_user_funcs {
+    if Array::get(fn_names_list, ei) == entry_name {
+      entry_user_idx = ei
+    }
+    ei = ei + 1
+  }
+  if entry_user_idx < 0 {
+    throw(String::concat("entry function not found: ", entry_name))
+  }
+
+  // String table
+  let str_strs = collect_strings_stmts(stmts)
+  let num_strings = Array::length(str_strs)
+  let data_base = 64
+  let str_offsets = Array::slice([0], 0, 0)
+  let str_lengths = Array::slice([0], 0, 0)
+  let mut str_pos = data_base
+  let mut si = 0
+  while si < num_strings {
+    let s = Array::get(str_strs, si)
+    let slen = String::length(s)
+    Array::push(str_offsets, str_pos)
+    Array::push(str_lengths, slen)
+    str_pos = str_pos + slen
+    si = si + 1
+  }
+  let heap_start = ((str_pos + 7) / 8) * 8
+
+  // Function layout:
+  // func 0: fd_write (import)
+  // func 1-28: generated builtins (28 funcs)
+  // func 29..29+N-1: user functions
+  // func 29+N: _start
+  let num_generated = 28
+  let func_offset = 1 + num_generated  // = 29
+
+  // Builtin table: (name, param_count, wasm_func_idx, has_return)
+  let builtin_defs = [
+    ("print_int",           1, 1,  0),
+    ("print_str",           1, 2,  0),
+    ("String::length",       1, 3,  1),
+    ("String::equals",       2, 4,  1),
+    ("String::concat",       2, 5,  1),
+    ("array_new",           0, 6,  1),
+    ("Array::length",        1, 7,  1),
+    ("Array::get",           2, 8,  1),
+    ("Array::push",          2, 9,  0),
+    ("Array::set",           3, 10, 0),
+    ("Double::to_int",       1, 11, 1),
+    ("Int::to_double",       1, 12, 1),
+    ("String::char_code_at", 2, 13, 1),
+    ("String::from_char_code", 1, 14, 1),
+    ("String::substring",    3, 15, 1),
+    // Aliases
+    ("ArrayBuilder::new",       0, 6,  1),
+    ("ArrayBuilder::push",  2, 9,  0),
+    ("ArrayBuilder::freeze", 1, 16, 1),
+    // Inline-expanded builtins (handled in compile_call_gc)
+    ("Array::slice",        3, 6,  1),
+    ("Array::concat",       2, 6,  1),
+    ("Array::truncate",     2, 6,  0),
+    ("Array::push_all",     2, 6,  0),
+    ("eq",                  2, 6,  1),
+    ("not",                 1, 6,  1),
+    // Stub-registered builtins (prevent free-var capture; trap if called)
+    ("String::join",        2, 6,  1),
+    ("String::ends_with",   2, 6,  1),
+    ("String::last_index_of", 2, 6, 1),
+    ("String::starts_with", 2, 6,  1),
+    ("String::contains",    2, 6,  1),
+    ("String::index_of",    2, 6,  1),
+    ("Bytes::new",          0, 18, 1),
+    ("Bytes::length",       1, 7,  1),
+    ("Bytes::get",          2, 19, 1),
+    ("Bytes::set",          3, 20, 0),
+    ("Bytes::push",         2, 21, 0),
+    ("Bytes::append",       2, 22, 0),
+    ("Bytes::concat",       2, 23, 1),
+    ("Bytes::slice",        3, 24, 1),
+    ("Bytes::from_array",   1, 25, 1),
+    ("Bytes::to_array",     1, 26, 1),
+    ("Bytes::blit",         4, 27, 0),
+    ("Bytes::fill",         3, 28, 0),
+    ("Double::to_i64_bits", 1, 16, 1),
+    ("Double::from_i64_bits", 1, 16, 1),
+    ("FixedArray::make",    2, 6,  1),
+    ("FixedArray::length",  1, 6,  1),
+    ("FixedArray::get",     2, 6,  1),
+    ("FixedArray::set",     3, 6,  0),
+    ("FixedArray::unsafe_set", 3, 6, 0),
+    ("FixedArray::blit",    5, 6,  0),
+    ("StringBuilder::new",  0, 6,  1),
+    ("StringBuilder::push", 2, 6,  0),
+    ("StringBuilder::freeze", 1, 6, 1),
+    ("Map::get",            2, 6,  1),
+    ("Map::keys",           1, 6,  1),
+    ("MapBuilder::new",     0, 6,  1),
+    ("MapBuilder::set",     3, 6,  0),
+    ("MapBuilder::freeze",  1, 6,  1),
+    ("__to_string",         1, 17, 1),
+    ("assert",              1, 6,  0),
+    ("assert_true",         1, 6,  0),
+    ("assert_eq",           2, 6,  0),
+    ("println",             1, 6,  0),
+    ("print",               1, 6,  0),
+    ("map_has",             2, 6,  1)
+  ]
+  let mut __bi = 0
+  while __bi < Array::length(builtin_defs) {
+    let (bname, bparams, _, _) = Array::get(builtin_defs, __bi)
+    Array::push(fn_names_list, bname)
+    Array::push(fn_param_counts, bparams)
+    Array::push(fn_needs_env_list, false)
+    __bi = __bi + 1
+  }
+
+  // Build fn_indices and fn_returns
+  let fn_indices_list = Array::slice([0], 0, 0)
+  let fn_returns_list = Array::slice([0], 0, 0)
+  let mut fi = 0
+  while fi < num_user_funcs {
+    Array::push(fn_indices_list, fi + func_offset)
+    Array::push(fn_returns_list, 1)
+    fi = fi + 1
+  }
+  // Builtin indices and returns (from builtin_defs table)
+  let mut __bi2 = 0
+  while __bi2 < Array::length(builtin_defs) {
+    let (_, _, bwasm_idx, breturns) = Array::get(builtin_defs, __bi2)
+    Array::push(fn_indices_list, bwasm_idx)
+    Array::push(fn_returns_list, breturns)
+    __bi2 = __bi2 + 1
+  }
+
+  let ft_names = Array::slice([""], 0, 0)
+  let ft_indices = Array::slice([0], 0, 0)
+  let ft_params = Array::slice([0], 0, 0)
+  let ft_returns = Array::slice([0], 0, 0)
+  let ft_needs_env = Array::slice([true], 0, 0)
+  let mut ft_copy_i = 0
+  while ft_copy_i < Array::length(fn_names_list) {
+    Array::push(ft_names, Array::get(fn_names_list, ft_copy_i))
+    Array::push(ft_indices, Array::get(fn_indices_list, ft_copy_i))
+    Array::push(ft_params, Array::get(fn_param_counts, ft_copy_i))
+    Array::push(ft_returns, Array::get(fn_returns_list, ft_copy_i))
+    Array::push(ft_needs_env, Array::get(fn_needs_env_list, ft_copy_i))
+    ft_copy_i = ft_copy_i + 1
+  }
+
+  // === Type section ===
+  // type 0-9: base func types
+  // type 10: struct { mut i64 } -- RefCell GC type
+  // type 11+: closure call types (i64^(N+1)) -> i64
+  let refcell_type_idx = 10
+  let closure_type_base = 11
+
+  // Lambda accumulators (populated during compilation)
+  let fresh_bytes_array = () -> Array[Bytes] {
+    ArrayBuilder::freeze(ArrayBuilder::new())
+  }
+  let lt_w = LambdaTable::{
+    bodies: fresh_bytes_array(),
+    param_counts: Array::slice([0], 0, 0),
+    captures: Array::slice([Array::slice([""], 0, 0)], 0, 0),
+    meta_i32: Array::slice([0], 0, 0),
+    meta_i64: Array::slice([0], 0, 0)
+  }
+
+  // === Code section bodies ===
+  let bodies = fresh_bytes_array()
+  let meta_i32 = Array::slice([0], 0, 0)
+  let meta_i64 = Array::slice([0], 0, 0)
+  // Track which user func bodies have ref locals (for mixed local declarations)
+  let user_ref_local_indices_all = Array::slice([Array::slice([0], 0, 0)], 0, 0)
+
+  // Builtin bodies
+  Array::push(bodies, gen_print_i64_body())
+  Array::push(meta_i32, 3)
+  Array::push(meta_i64, 1)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_print_str_body())
+  Array::push(meta_i32, 2)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_str_len_body())
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_str_eq_body())
+  Array::push(meta_i32, 5)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_str_concat_body())
+  Array::push(meta_i32, 6)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_arr_new_body())
+  Array::push(meta_i32, 1)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_arr_len_body())
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_arr_get_body())
+  Array::push(meta_i32, 1)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_arr_push_body())
+  Array::push(meta_i32, 6)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_arr_set_body())
+  Array::push(meta_i32, 1)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_double_to_int_body())
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_int_to_double_body())
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_str_char_code_at_body())
+  Array::push(meta_i32, 1)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_str_from_char_code_body())
+  Array::push(meta_i32, 1)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_str_substring_body())
+  Array::push(meta_i32, 2)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_identity_body())
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  // __to_string: identity (returns argument as-is)
+  // For String values this is correct. For Int values the caller gets
+  // the tagged int back, which String::concat will treat as a string pointer.
+  // This is sufficient for self-compilation where interpolated values are
+  // predominantly strings.
+  Array::push(bodies, gen_identity_body())
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_bytes_new_body())
+  Array::push(meta_i32, 1)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_bytes_get_body())
+  Array::push(meta_i32, 1)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_bytes_set_body())
+  Array::push(meta_i32, 1)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_bytes_push_body())
+  Array::push(meta_i32, 6)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_bytes_append_body(7, 19, 21))
+  Array::push(meta_i32, 2)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_bytes_concat_body(18, 22))
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 1)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_bytes_slice_body(18, 19, 21))
+  Array::push(meta_i32, 2)
+  Array::push(meta_i64, 1)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_bytes_from_array_body(7, 8, 18, 21))
+  Array::push(meta_i32, 2)
+  Array::push(meta_i64, 1)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_bytes_to_array_body(6, 9, 7, 19))
+  Array::push(meta_i32, 2)
+  Array::push(meta_i64, 1)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_bytes_blit_body(19, 21))
+  Array::push(meta_i32, 2)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  Array::push(bodies, gen_bytes_fill_body(21))
+  Array::push(meta_i32, 2)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  // Compile user function bodies (with __env param for table compatibility)
+  let mut bi = 0
+  while bi < num_user_funcs {
+    let stmt = Array::get(user_func_stmts, bi)
+    match stmt {
+      SLet(_, _, _, _, expr) => {
+        match expr {
+          EFn(_, _, params, _, _, body) => {
+            let body_buf = bytebuf_new()
+            let local_names = Array::slice([""], 0, 0)
+            let mut ppi = 0
+            while ppi < Array::length(params) {
+              let (pname, _) = Array::get(params, ppi)
+              Array::push(local_names, pname)
+              ppi = ppi + 1
+            }
+            Array::push(local_names, "__env")
+            let param_count = Array::length(params) + 1  // includes __env
+            let ref_cell_names_f = Array::slice([""], 0, 0)
+            let ref_local_indices_f = Array::slice([0], 0, 0)
+            let ft = FuncTable::{
+              names: ft_names,
+              indices: ft_indices,
+              params: ft_params,
+              returns: ft_returns,
+              needs_env: ft_needs_env
+            }
+            let st = StrTable::{ strs: str_strs, offsets: str_offsets, lengths: str_lengths }
+            let ct = CtorTable::{ names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names }
+            let func_ctx = CompileCtxGc::{
+              func_table: ft, str_table: st, lambda_table: lt_w,
+              num_user_funcs: num_user_funcs, func_offset: func_offset,
+              ref_cell_names: ref_cell_names_f, ref_local_indices: ref_local_indices_f,
+              refcell_type_idx: refcell_type_idx, closure_type_base: closure_type_base,
+              ctor_table: ct
+            }
+            let final_nl = compile_expr_gc(
+              body_buf, body, local_names,
+              param_count,
+              func_ctx, -1
+            )
+            Array::push(bodies, body_buf)
+            let extra = if final_nl > param_count { final_nl - param_count } else { 0 }
+            Array::push(meta_i32, 0)
+            Array::push(meta_i64, extra)
+            Array::push(user_ref_local_indices_all, ref_local_indices_f)
+          },
+          _ => throw("expected function")
+        }
+      },
+      _ => throw("expected let statement")
+    }
+    bi = bi + 1
+  }
+
+  let num_lambdas = Array::length(lt_w.bodies)
+
+  // _start body
+  let start_body = bytebuf_new()
+  let entry_func_idx = entry_user_idx + func_offset
+  let entry_params = Array::get(ft_params, entry_user_idx)
+  if entry_params != 0 {
+    throw("WASI entry function must take 0 parameters")
+  }
+  emit_i64_const(start_body, 0)  // env=0 for user func
+  emit_call(start_body, entry_func_idx)
+  emit_call(start_body, 1)  // __print_i64
+  Array::push(bodies, start_body)
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+
+  // Append lambda bodies after _start
+  let mut li = 0
+  while li < num_lambdas {
+    Array::push(bodies, Array::get(lt_w.bodies, li))
+    Array::push(meta_i32, Array::get(lt_w.meta_i32, li))
+    Array::push(meta_i64, Array::get(lt_w.meta_i64, li))
+    Array::push(user_ref_local_indices_all, Array::slice([0], 0, 0))
+    li = li + 1
+  }
+
+  // Determine max closure call arity
+  let mut max_closure_arity = -1
+  let mut lai = 0
+  while lai < num_lambdas {
+    let lpc = Array::get(lt_w.param_counts, lai) - 1
+    if lpc > max_closure_arity {
+      max_closure_arity = lpc
+    }
+    lai = lai + 1
+  }
+  let mut uai2 = 0
+  while uai2 < num_user_funcs {
+    let upc = Array::get(ft_params, uai2)
+    if upc > max_closure_arity {
+      max_closure_arity = upc
+    }
+    uai2 = uai2 + 1
+  }
+  let num_closure_types = if max_closure_arity >= 0 { max_closure_arity + 1 } else { 0 }
+
+  // === Type section ===
+  let num_base_types = 11  // 0-9 func types + 10 struct
+  let type_content = bytebuf_new()
+  bytebuf_push_vec_header(type_content, num_base_types + num_closure_types)
+
+  emit_func_type_raw(type_content, [127, 127, 127, 127], [127])  // type 0: fd_write
+  emit_func_type_raw(type_content, [126], Array::slice([0], 0, 0))  // type 1: (i64)->()
+  emit_func_type_raw(type_content, Array::slice([0], 0, 0), Array::slice([0], 0, 0))  // type 2: ()->()
+  emit_func_type_raw(type_content, [126], [126])  // type 3: (i64)->(i64)
+  emit_func_type_raw(type_content, [126, 126], [126])  // type 4: (i64,i64)->(i64)
+  emit_func_type_raw(type_content, Array::slice([0], 0, 0), [126])  // type 5: ()->(i64)
+  emit_func_type_raw(type_content, [126, 126], Array::slice([0], 0, 0))  // type 6: (i64,i64)->()
+  emit_func_type_raw(type_content, [126, 126, 126], Array::slice([0], 0, 0))  // type 7: (i64,i64,i64)->()
+  emit_func_type_raw(type_content, [126, 126, 126], [126])  // type 8: (i64,i64,i64)->(i64)
+  emit_func_type_raw(type_content, [126, 126, 126, 126], Array::slice([0], 0, 0))  // type 9: (i64,i64,i64,i64)->()
+
+  // type 10: struct { mut i64 }
+  emit_struct_type_raw(type_content, [126], [1])
+
+  // Closure call types: (i64^(N+1)) -> i64 for N = 0..max_closure_arity
+  let mut cti = 0
+  while cti < num_closure_types {
+    let num_params = cti + 1  // N user params + 1 env
+    let ct_params = Array::slice([0], 0, 0)
+    let mut cpti = 0
+    while cpti < num_params {
+      Array::push(ct_params, 126)
+      cpti = cpti + 1
+    }
+    emit_func_type_raw(type_content, ct_params, [126])
+    cti = cti + 1
+  }
+
+  let out = bytebuf_new()
+  emit_header(out)
+  bytebuf_push_section(out, 1, type_content)
+
+  // === Import section ===
+  emit_import_section_func(out, "wasi_snapshot_preview1", "fd_write", 0)
+
+  // === Function section ===
+  let func_type_indices = Array::slice([0], 0, 0)
+  Array::push(func_type_indices, 1)  // __print_i64
+  Array::push(func_type_indices, 1)  // __print_str
+  Array::push(func_type_indices, 3)  // __str_len
+  Array::push(func_type_indices, 4)  // __str_eq
+  Array::push(func_type_indices, 4)  // __str_concat
+  Array::push(func_type_indices, 5)  // __arr_new
+  Array::push(func_type_indices, 3)  // __arr_len
+  Array::push(func_type_indices, 4)  // __arr_get
+  Array::push(func_type_indices, 6)  // __arr_push
+  Array::push(func_type_indices, 7)  // __arr_set
+  Array::push(func_type_indices, 3)  // __double_to_int
+  Array::push(func_type_indices, 3)  // __int_to_double
+  Array::push(func_type_indices, 4)  // __str_char_code_at
+  Array::push(func_type_indices, 3)  // __str_from_char_code
+  Array::push(func_type_indices, 8)  // __str_substring
+  Array::push(func_type_indices, 3)  // __identity (ArrayBuilder::freeze)
+  Array::push(func_type_indices, 3)  // __to_string (identity)
+  Array::push(func_type_indices, 5)  // __bytes_new
+  Array::push(func_type_indices, 4)  // __bytes_get
+  Array::push(func_type_indices, 7)  // __bytes_set
+  Array::push(func_type_indices, 6)  // __bytes_push
+  Array::push(func_type_indices, 6)  // __bytes_append
+  Array::push(func_type_indices, 4)  // __bytes_concat
+  Array::push(func_type_indices, 8)  // __bytes_slice
+  Array::push(func_type_indices, 3)  // __bytes_from_array
+  Array::push(func_type_indices, 3)  // __bytes_to_array
+  Array::push(func_type_indices, 9)  // __bytes_blit
+  Array::push(func_type_indices, 7)  // __bytes_fill
+  // User funcs: type = closure call type for their arity (includes env)
+  let mut fti = 0
+  while fti < num_user_funcs {
+    let upc = Array::get(ft_params, fti)
+    Array::push(func_type_indices, closure_type_base + upc)
+    fti = fti + 1
+  }
+  Array::push(func_type_indices, 2)  // _start
+  // Lambda function type indices
+  let mut lfi = 0
+  while lfi < num_lambdas {
+    let lam_user_params = Array::get(lt_w.param_counts, lfi) - 1
+    Array::push(func_type_indices, closure_type_base + lam_user_params)
+    lfi = lfi + 1
+  }
+  emit_function_section(out, func_type_indices)
+
+  // === Table section ===
+  let total_table_entries = num_user_funcs + num_lambdas
+  if total_table_entries > 0 {
+    emit_table_section_funcref(out, total_table_entries)
+  }
+
+  // === Memory section ===
+  emit_memory_section(out, 1)
+
+  // === Global section: heap_ptr ===
+  emit_global_section_i32_mut(out, heap_start)
+
+  // === Export section ===
+  let start_func_idx = func_offset + num_user_funcs
+  emit_exports_with_memory(out, ["_start"], [start_func_idx], "memory", 0)
+
+  // === Element section ===
+  if total_table_entries > 0 {
+    let table_func_indices = Array::slice([0], 0, 0)
+    let mut tei = 0
+    while tei < num_user_funcs {
+      Array::push(table_func_indices, func_offset + tei)
+      tei = tei + 1
+    }
+    let mut tej = 0
+    while tej < num_lambdas {
+      Array::push(table_func_indices, start_func_idx + 1 + tej)
+      tej = tej + 1
+    }
+    emit_element_section_active(out, table_func_indices)
+  }
+
+  // === Encode code section with mixed locals (i64 and ref types) ===
+  let code_content = bytebuf_new()
+  bytebuf_push_vec_header(code_content, Array::length(bodies))
+
+  let mut ci = 0
+  while ci < Array::length(bodies) {
+    let body = Array::get(bodies, ci)
+    let func_buf = bytebuf_new()
+    let ni32 = Array::get(meta_i32, ci)
+    let ni64 = Array::get(meta_i64, ci)
+    let ref_indices = Array::get(user_ref_local_indices_all, ci)
+    let num_ref_locals = Array::length(ref_indices)
+
+    if num_ref_locals == 0 {
+      if ni32 == 0 {
+        if ni64 == 0 {
+          leb128_encode_u32(func_buf, 0)
+        } else {
+          leb128_encode_u32(func_buf, 1)
+          leb128_encode_u32(func_buf, ni64)
+          bytebuf_push(func_buf, 126)  // i64
+        }
+      } else {
+        if ni64 == 0 {
+          leb128_encode_u32(func_buf, 1)
+          leb128_encode_u32(func_buf, ni32)
+          bytebuf_push(func_buf, 127)  // i32
+        } else {
+          leb128_encode_u32(func_buf, 2)
+          leb128_encode_u32(func_buf, ni32)
+          bytebuf_push(func_buf, 127)  // i32
+          leb128_encode_u32(func_buf, ni64)
+          bytebuf_push(func_buf, 126)  // i64
+        }
+      }
+    } else {
+      // Has ref locals — emit individual local declarations
+      let body_idx_in_user = ci - num_generated
+      let param_count_for_body = Array::get(ft_params, body_idx_in_user) + 1  // +1 for __env
+      let num_extra = ni64
+      leb128_encode_u32(func_buf, num_extra)
+      let mut rli = 0
+      while rli < num_extra {
+        let actual_local_idx = param_count_for_body + rli
+        let mut is_ref = false
+        let mut ri = 0
+        while ri < num_ref_locals {
+          if Array::get(ref_indices, ri) == actual_local_idx {
+            is_ref = true
+          }
+          ri = ri + 1
+        }
+        leb128_encode_u32(func_buf, 1)
+        if is_ref {
+          bytebuf_push(func_buf, 100)  // 0x64 = ref
+          leb128_encode_u32(func_buf, refcell_type_idx)
+        } else {
+          bytebuf_push(func_buf, 126)  // i64
+        }
+        rli = rli + 1
+      }
+    }
+
+    bytebuf_push_buf(func_buf, body)
+    bytebuf_push(func_buf, 11)  // end
+    leb128_encode_u32(code_content, bytebuf_length(func_buf))
+    bytebuf_push_buf(code_content, func_buf)
+    ci = ci + 1
+  }
+
+  bytebuf_push_section(out, 10, code_content)
+
+  // === Data section ===
+  if num_strings > 0 {
+    let data_offsets = Array::slice([0], 0, 0)
+    let data_bufs = fresh_bytes_array()
+    let mut di = 0
+    while di < num_strings {
+      Array::push(data_offsets, Array::get(str_offsets, di))
+      Array::push(data_bufs, string_to_data(Array::get(str_strs, di)))
+      di = di + 1
+    }
+    emit_data_section_multi(out, data_offsets, data_bufs)
+  }
+
+  bytebuf_to_bytes(out)
+}

@@ -1,0 +1,254 @@
+import ./entry/compiler/fs_compile/index.vibe {
+  prepare_modules_cached, compile_with_modules_cached
+}
+
+import ./type_db.vibe {
+  db_new, db_set_source, db_typecheck, db_typecheck_fs, db_typecheck_count,
+  db_parse_count, db_merge_count, db_module_source_count, db_codegen_count,
+  db_merged_source, db_grouped_merged_source
+}
+
+import ./cache/persistent/index.vibe {
+  compact_string_fingerprint,
+  persistent_dep_list_cache_path,
+  persistent_leaf_fingerprint_cache_path,
+  persistent_module_header_cache_path,
+  persistent_type_env_cache_path
+}
+
+let string_to_bytes = (s: String) -> Bytes {
+  let out = Bytes::new()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Bytes::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  out
+}
+
+let remove_file_if_exists = (path: String) -> Unit with { Fs } {
+  if Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
+  }
+}
+
+let build_type_db_fingerprint = (source: String, dep_fps: Array[(String, String)]) -> String {
+  let mut acc = compact_string_fingerprint(source)
+  let mut i = 0
+  while i < Array::length(dep_fps) {
+    let dep_pair = Array::get(dep_fps, i)
+    let dep_path = dep_pair.0
+    let dep_fp = dep_pair.1
+    acc = compact_string_fingerprint(
+      String::concat(
+        acc,
+        String::concat("|", String::concat(dep_path, String::concat("=", dep_fp)))
+      )
+    )
+    i = i + 1
+  }
+  acc
+}
+
+export let selfbuild_probe_type_db_cache_counts = () -> Int with { Error } {
+  let main_source = "let main = () -> Int { 1 + 2 }"
+  let db1 = db_set_source(db_new(), "main.vibe", main_source)
+  let db2 = db_typecheck(db1, "main.vibe")
+  let count1 = db_typecheck_count(db2)
+  let db3 = db_typecheck(db2, "main.vibe")
+  let count2 = db_typecheck_count(db3)
+  count1 * 1000 + count2
+}
+
+export let selfbuild_probe_type_db_parse_counts = () -> Int with { Error } {
+  let helper_source = "export let add = (a: Int, b: Int) -> Int { a + b }"
+  let main_source = "import ./helpers.vibe { add }\nlet main = () -> Int { add(1, 2) }"
+  let sources = [("helpers.vibe", helper_source)]
+  let db1 = prepare_modules_cached(db_new(), "main.vibe", main_source, sources)
+  let count1 = db_parse_count(db1)
+  let db2 = prepare_modules_cached(db1, "main.vibe", main_source, sources)
+  let count2 = db_parse_count(db2)
+  count1 * 1000 + count2
+}
+
+export let selfbuild_probe_type_db_fs_parse_counts = () -> Int with { Error, Fs } {
+  let helper_path = "_build/persistent_type_env_probe_helper.vibe"
+  let main_path = "_build/persistent_type_env_probe_main.vibe"
+  let helper_source = "export let add = () -> Int { 1 }"
+  let main_source = "import ./persistent_type_env_probe_helper.vibe { add }\nlet run = () -> Int { add() }"
+  let helper_fp = build_type_db_fingerprint(helper_source, Array::slice([("", "")], 0, 0))
+  let main_fp = build_type_db_fingerprint(main_source, [(helper_path, helper_fp)])
+  Fs::write_bytes(helper_path, string_to_bytes(helper_source))
+  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  remove_file_if_exists(
+    persistent_dep_list_cache_path(helper_path, compact_string_fingerprint(helper_source))
+  )
+  remove_file_if_exists(
+    persistent_dep_list_cache_path(main_path, compact_string_fingerprint(main_source))
+  )
+  remove_file_if_exists(
+    persistent_module_header_cache_path(helper_path, compact_string_fingerprint(helper_source))
+  )
+  remove_file_if_exists(
+    persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source))
+  )
+  remove_file_if_exists(
+    persistent_leaf_fingerprint_cache_path(helper_path, compact_string_fingerprint(helper_source))
+  )
+  remove_file_if_exists(
+    persistent_leaf_fingerprint_cache_path(main_path, compact_string_fingerprint(main_source))
+  )
+  remove_file_if_exists(persistent_type_env_cache_path(helper_fp))
+  remove_file_if_exists(persistent_type_env_cache_path(main_fp))
+  let db1 = db_typecheck_fs(
+    db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source),
+    main_path
+  )
+  let count1 = db_parse_count(db1)
+  let db2 = db_typecheck_fs(
+    db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source),
+    main_path
+  )
+  let count2 = db_parse_count(db2)
+  count1 * 1000 + count2
+}
+
+export let selfbuild_probe_type_db_fs_multi_dep_parse_counts = () -> Int with { Error, Fs } {
+  let helper1_path = "_build/persistent_type_env_multi_dep_helper1.vibe"
+  let helper2_path = "_build/persistent_type_env_multi_dep_helper2.vibe"
+  let main_path = "_build/persistent_type_env_multi_dep_main.vibe"
+  let helper1_source = "export let add1 = () -> Int { 1 }"
+  let helper2_source = "export let add2 = () -> Int { 2 }"
+  let main_source = String::concat(
+    "import ./persistent_type_env_multi_dep_helper1.vibe { add1 }\n",
+    String::concat(
+      "import ./persistent_type_env_multi_dep_helper2.vibe { add2 }\n",
+      "let run = () -> Int { add1() + add2() }"
+    )
+  )
+  Fs::write_bytes(helper1_path, string_to_bytes(helper1_source))
+  Fs::write_bytes(helper2_path, string_to_bytes(helper2_source))
+  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  let helper1_fp = build_type_db_fingerprint(helper1_source, Array::slice([("", "")], 0, 0))
+  let helper2_fp = build_type_db_fingerprint(helper2_source, Array::slice([("", "")], 0, 0))
+  let main_fp = build_type_db_fingerprint(
+    main_source,
+    [(helper1_path, helper1_fp), (helper2_path, helper2_fp)]
+  )
+  remove_file_if_exists(
+    persistent_dep_list_cache_path(helper1_path, compact_string_fingerprint(helper1_source))
+  )
+  remove_file_if_exists(
+    persistent_dep_list_cache_path(helper2_path, compact_string_fingerprint(helper2_source))
+  )
+  remove_file_if_exists(
+    persistent_dep_list_cache_path(main_path, compact_string_fingerprint(main_source))
+  )
+  remove_file_if_exists(
+    persistent_module_header_cache_path(helper1_path, compact_string_fingerprint(helper1_source))
+  )
+  remove_file_if_exists(
+    persistent_module_header_cache_path(helper2_path, compact_string_fingerprint(helper2_source))
+  )
+  remove_file_if_exists(
+    persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source))
+  )
+  remove_file_if_exists(
+    persistent_leaf_fingerprint_cache_path(helper1_path, compact_string_fingerprint(helper1_source))
+  )
+  remove_file_if_exists(
+    persistent_leaf_fingerprint_cache_path(helper2_path, compact_string_fingerprint(helper2_source))
+  )
+  remove_file_if_exists(
+    persistent_leaf_fingerprint_cache_path(main_path, compact_string_fingerprint(main_source))
+  )
+  remove_file_if_exists(persistent_type_env_cache_path(helper1_fp))
+  remove_file_if_exists(persistent_type_env_cache_path(helper2_fp))
+  remove_file_if_exists(persistent_type_env_cache_path(main_fp))
+  let db1 = db_typecheck_fs(
+    db_set_source(
+      db_set_source(
+        db_set_source(db_new(), helper1_path, helper1_source),
+        helper2_path,
+        helper2_source
+      ),
+      main_path,
+      main_source
+    ),
+    main_path
+  )
+  let count1 = db_parse_count(db1)
+  let db2 = db_typecheck_fs(
+    db_set_source(
+      db_set_source(
+        db_set_source(db_new(), helper1_path, helper1_source),
+        helper2_path,
+        helper2_source
+      ),
+      main_path,
+      main_source
+    ),
+    main_path
+  )
+  let count2 = db_parse_count(db2)
+  count1 * 1000 + count2
+}
+
+export let selfbuild_probe_type_db_merge_counts = () -> Int with { Error } {
+  let sources = [
+    ("helpers.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }"),
+    ("main.vibe", "import ./helpers.vibe { add }\nlet main = () -> Int { add(1, 2) }")
+  ]
+  let result1 = db_merged_source(db_new(), "main.vibe", sources)
+  let db1 = result1.2
+  let count1 = db_merge_count(db1)
+  let result2 = db_merged_source(db1, "main.vibe", sources)
+  let db2 = result2.2
+  let count2 = db_merge_count(db2)
+  count1 * 1000 + count2
+}
+
+export let selfbuild_probe_type_db_group_merge_counts = () -> Int with { Error } {
+  let groups = [
+    ("core", [("helpers.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }")]),
+    ("entry", [("main.vibe", "import ./helpers.vibe { add }\nlet main = () -> Int { add(1, 2) }")])
+  ]
+  let result1 = db_grouped_merged_source(db_new(), groups)
+  let db1 = result1.2
+  let count1 = db_merge_count(db1)
+  let result2 = db_grouped_merged_source(db1, groups)
+  let db2 = result2.2
+  let count2 = db_merge_count(db2)
+  count1 * 1000 + count2
+}
+
+export let selfbuild_probe_type_db_module_source_counts = () -> Int with { Error } {
+  let main_source = "let main = () -> Int { 1 + 2 }"
+  let sources = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let result1 = compile_with_modules_cached(db_new(), main_source, "main_a.vibe", sources)
+  let db1 = result1.1
+  let count1 = db_module_source_count(db1)
+  let result2 = compile_with_modules_cached(db1, main_source, "main_b.vibe", sources)
+  let db2 = result2.1
+  let count2 = db_module_source_count(db2)
+  count1 * 1000 + count2
+}
+
+export let selfbuild_probe_type_db_codegen_counts = () -> Int with { Error } {
+  let main_source = "let main = () -> Int { 1 + 2 }"
+  let sources = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let result1 = compile_with_modules_cached(db_new(), main_source, "main.vibe", sources)
+  let db1 = result1.1
+  let count1 = db_codegen_count(db1)
+  let result2 = compile_with_modules_cached(db1, main_source, "main.vibe", sources)
+  let db2 = result2.1
+  let count2 = db_codegen_count(db2)
+  count1 * 1000 + count2
+}

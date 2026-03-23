@@ -24,7 +24,9 @@ import ./cache / persistent {
   compact_string_fingerprint,
   persistent_dep_list_cache_path,
   persistent_artifact_cache_path,
+  persistent_leaf_fingerprint_cache_path,
   persistent_module_header_cache_path,
+  persistent_source_list_cache_path,
   persistent_source_group_cache_path,
   persistent_type_env_cache_path
 }
@@ -32,19 +34,17 @@ import ./cache / persistent {
 //# Functions
 
 let string_to_bytes = (s: String) -> Bytes {
-  let out = Array::slice([
-    0
-  ], 0, 0)
+  let out = Bytes::new()
   let len = String::length(s)
   let mut i = 0
   while i < len {
-    Array::push(out, String::char_code_at(s, i))
+    Bytes::push(out, String::char_code_at(s, i))
     i = i + 1
   }
-  Bytes::from_array(out)
+  out
 }
 
-let remove_file_if_exists = (path: String) -> Unit {
+let remove_file_if_exists = (path: String) -> Unit with { Fs } {
   if Fs::exists(path) {
     Fs::remove(path)
   } else {
@@ -155,6 +155,7 @@ test "collect_source_groups_fs: persistent cache invalidates when dependency sou
   let main_source = "import ./vibe_compiler_persistent_loader_helper.vibe { add }\nlet run = () -> Int { add() }"
   Fs::write_bytes(helper_path, string_to_bytes(source1))
   Fs::write_bytes(main_path, string_to_bytes(main_source))
+  remove_file_if_exists(persistent_source_list_cache_path(main_path))
   remove_file_if_exists(persistent_source_group_cache_path(main_path))
   collect_source_groups_fs(main_path)
   assert(Fs::exists(persistent_source_group_cache_path(main_path)))
@@ -212,13 +213,27 @@ test "compile_file_fs_mode_cached: fresh db reuses persistent type env cache whe
     build_file_compile_wasi_artifact_fingerprint(source_groups, "run", "no-dce")
   )
   remove_file_if_exists(artifact_cache_path)
+  remove_file_if_exists(persistent_source_list_cache_path(main_path))
+  remove_file_if_exists(persistent_source_group_cache_path(main_path))
   remove_file_if_exists(helper_dep_cache)
   remove_file_if_exists(main_dep_cache)
+  remove_file_if_exists(
+    persistent_module_header_cache_path(helper_path, compact_string_fingerprint(helper_source))
+  )
+  remove_file_if_exists(
+    persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source))
+  )
+  remove_file_if_exists(
+    persistent_leaf_fingerprint_cache_path(helper_path, compact_string_fingerprint(helper_source))
+  )
+  remove_file_if_exists(
+    persistent_leaf_fingerprint_cache_path(main_path, compact_string_fingerprint(main_source))
+  )
   remove_file_if_exists(persistent_type_env_cache_path(helper_fp))
   remove_file_if_exists(persistent_type_env_cache_path(main_fp))
   let (_, db1) = compile_file_fs_mode_cached(db_new(), main_path, "run", "no-dce")
   let parse1 = db_parse_count(db1)
-  assert(eq(parse1, 4))
+  assert(eq(parse1, 2))
   remove_file_if_exists(artifact_cache_path)
   let (_, db2) = compile_file_fs_mode_cached(db_new(), main_path, "run", "no-dce")
   let parse2 = db_parse_count(db2)
@@ -244,6 +259,18 @@ test "db_typecheck_fs: fresh db reuses persistent type env cache" {
   )
   remove_file_if_exists(helper_dep_cache)
   remove_file_if_exists(main_dep_cache)
+  remove_file_if_exists(
+    persistent_module_header_cache_path(helper_path, compact_string_fingerprint(helper_source))
+  )
+  remove_file_if_exists(
+    persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source))
+  )
+  remove_file_if_exists(
+    persistent_leaf_fingerprint_cache_path(helper_path, compact_string_fingerprint(helper_source))
+  )
+  remove_file_if_exists(
+    persistent_leaf_fingerprint_cache_path(main_path, compact_string_fingerprint(main_source))
+  )
   remove_file_if_exists(persistent_type_env_cache_path(helper_fp))
   remove_file_if_exists(persistent_type_env_cache_path(main_fp))
   let db1 = db_typecheck_fs(
@@ -290,6 +317,24 @@ test "db_typecheck_fs: fresh db reuses persistent dep cache for multi-dep module
   )
   remove_file_if_exists(
     persistent_dep_list_cache_path(main_path, compact_string_fingerprint(main_source))
+  )
+  remove_file_if_exists(
+    persistent_module_header_cache_path(helper1_path, compact_string_fingerprint(helper1_source))
+  )
+  remove_file_if_exists(
+    persistent_module_header_cache_path(helper2_path, compact_string_fingerprint(helper2_source))
+  )
+  remove_file_if_exists(
+    persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source))
+  )
+  remove_file_if_exists(
+    persistent_leaf_fingerprint_cache_path(helper1_path, compact_string_fingerprint(helper1_source))
+  )
+  remove_file_if_exists(
+    persistent_leaf_fingerprint_cache_path(helper2_path, compact_string_fingerprint(helper2_source))
+  )
+  remove_file_if_exists(
+    persistent_leaf_fingerprint_cache_path(main_path, compact_string_fingerprint(main_source))
   )
   remove_file_if_exists(persistent_type_env_cache_path(helper1_fp))
   remove_file_if_exists(persistent_type_env_cache_path(helper2_fp))
@@ -353,6 +398,12 @@ test "db_typecheck_fs: module header cache rebuilds missing persistent dep cache
   remove_file_if_exists(main_dep_cache)
   remove_file_if_exists(helper_header_cache)
   remove_file_if_exists(main_header_cache)
+  remove_file_if_exists(
+    persistent_leaf_fingerprint_cache_path(helper_path, compact_string_fingerprint(helper_source))
+  )
+  remove_file_if_exists(
+    persistent_leaf_fingerprint_cache_path(main_path, compact_string_fingerprint(main_source))
+  )
   remove_file_if_exists(persistent_type_env_cache_path(helper_fp))
   remove_file_if_exists(persistent_type_env_cache_path(main_fp))
 

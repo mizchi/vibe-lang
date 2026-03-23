@@ -5,7 +5,7 @@ import ./ast.vibe {
 }
 
 import ./eval.vibe {
-  eval_expr
+  eval_expr, match_pattern
 }
 
 import ./eval_loader.vibe {
@@ -13,7 +13,7 @@ import ./eval_loader.vibe {
 }
 
 import ./values.vibe {
-  ModuleCtx, ValEnv, Value, empty_module_ctx, module_ctx_new, val_env_bind, val_env_lookup, value_to_string
+  ModuleCtx, ValEnv, Value, empty_module_ctx, module_ctx_new, val_env_bind, val_env_bind_all, val_env_lookup, value_to_string
 }
 
 //# Functions
@@ -203,6 +203,13 @@ export let rec eval_stmts = (stmts: Array[Stmt], i: Int, env: ValEnv, ctx: Modul
         let (v, env2) = eval_expr(val_expr, env)
         val_env_bind(env2, name, v)
       },
+      SLetPat(pat, val_expr) => {
+        let (v, env2) = eval_expr(val_expr, env)
+        match match_pattern(pat, v) {
+          Some(bindings) => val_env_bind_all(env2, bindings),
+          None => throw("pattern match failed in let")
+        }
+      },
       SEnum(_, _, variants) => bind_enum_ctors(variants, 0, env),
       SSuberror(_, _, variants) => bind_enum_ctors(variants, 0, env),
       SEffectDef(_, _, _, _) => env,
@@ -259,10 +266,18 @@ export let eval_and_lookup = (stmts: Array[Stmt], name: String) -> String {
   }
 }
 
+let eval_and_lookup_strict = (stmts: Array[Stmt], name: String) -> String with { Error } {
+  let env = eval_stmts(stmts, 0, VEnvEmpty, empty_module_ctx())
+  match val_env_lookup(env, name) {
+    Some(v) => value_to_string(v),
+    None => "<not found>"
+  }
+}
+
 export let run_source = (source: String, name: String) -> String {
   handle {
     let stmts = load_and_parse(source)
-    eval_and_lookup(stmts, name)
+    eval_and_lookup_strict(stmts, name)
   } {
     Error(msg) => String::concat("ERROR: ", msg)
   }

@@ -297,7 +297,6 @@ fn expr_may_use_scoped_ref(expr : @core.Expr) -> Bool {
         Some(v) => expr_may_use_scoped_ref(v)
         None => false
       }
-    @core.Expr::Raise(value~, ..) => expr_may_use_scoped_ref(value)
     @core.Expr::Handle(body~, arms~, ..) =>
       module_may_use_scoped_ref(body) || match_arms_may_use_scoped_ref(arms)
     @core.Expr::StructLit(type_args~, fields~, ..) => {
@@ -322,6 +321,8 @@ fn expr_may_use_scoped_ref(expr : @core.Expr) -> Bool {
       }
       false
     }
+    // StringInterp is lowered in desugar; should never reach here
+    @core.Expr::StringInterp(..) => false
   }
 }
 
@@ -342,7 +343,10 @@ fn match_arms_may_use_scoped_ref(arms : Array[@core.MatchArm]) -> Bool {
 ///|
 
 ///|
-fn register_effect_def(env : TypeEnv, stmt : @core.Stmt) -> Unit raise TypeError {
+fn register_effect_def(
+  env : TypeEnv,
+  stmt : @core.Stmt,
+) -> Unit raise TypeError {
   let (name, params, ops) = match stmt {
     @core.Stmt::EffectDef(name~, params~, ops~, ..) => (name, params, ops)
     @core.Stmt::ExportEffectDef(name~, params~, ops~, ..) => (name, params, ops)
@@ -353,11 +357,7 @@ fn register_effect_def(env : TypeEnv, stmt : @core.Stmt) -> Unit raise TypeError
   for op in ops {
     if seen_op_names.contains(op.name) {
       raise TypeError::BadTypeDef(
-        message="duplicate operation `" +
-          op.name +
-          "` in effect `" +
-          name +
-          "`",
+        message="duplicate operation `" + op.name + "` in effect `" + name + "`",
         span=op.span,
       )
     }
@@ -568,9 +568,15 @@ fn type_check_stmts(
         register_enum_def(env, name, params, ctors, span)
       @core.Stmt::TypeAlias(name~, params~, target~, span~) =>
         register_type_alias(env, name, params, target, span)
-      @core.Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, span~) =>
-        register_trait_def(env, name, supertraits, open_impl, exported, span)
-      @core.Stmt::InternalTraitDef(name~, supertraits~, open_impl~, span~) =>
+      @core.Stmt::TraitDef(
+        name~,
+        supertraits~,
+        open_impl~,
+        exported~,
+        span~,
+        ..
+      ) => register_trait_def(env, name, supertraits, open_impl, exported, span)
+      @core.Stmt::InternalTraitDef(name~, supertraits~, open_impl~, span~, ..) =>
         register_trait_def(env, name, supertraits, open_impl, false, span)
       @core.Stmt::TraitImpl(
         type_params~,

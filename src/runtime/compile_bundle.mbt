@@ -82,6 +82,210 @@ pub(all) struct LinkedImport {
 } derive(Show, Eq)
 
 ///|
+pub fn prelude_core_module_name() -> String {
+  "prelude_core"
+}
+
+///|
+fn prelude_core_linked_import(stmt : @core.Stmt) -> LinkedImport? {
+  match stmt {
+    @core.Stmt::Let(name~, expr~, ..)
+    | @core.Stmt::ExportLet(name~, expr~, ..)
+    | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
+      match expr {
+        @core.Expr::Fn(params~, ret~, ..) =>
+          if linked_fn_has_func_param(params) {
+            None
+          } else {
+            Some(LinkedImport::{
+              module_name: prelude_core_module_name(),
+              func_name: name,
+              param_count: params.length(),
+              return_count: fn_return_count(ret),
+            })
+          }
+        _ => None
+      }
+    _ => None
+  }
+}
+
+///|
+fn prelude_core_library_stmts() -> Array[@core.Stmt] {
+  let stmts : Array[@core.Stmt] = []
+  for stmt in @checker.prelude_core_value_stmts() {
+    match prelude_core_linked_import(stmt) {
+      Some(_) => stmts.push(stmt)
+      None => ()
+    }
+  }
+  stmts
+}
+
+///|
+fn prelude_linked_build_inline_stmts() -> Array[@core.Stmt] {
+  let stmts : Array[@core.Stmt] = []
+  for stmt in @checker.prelude_core_value_stmts() {
+    match prelude_core_linked_import(stmt) {
+      Some(_) => ()
+      None => stmts.push(stmt)
+    }
+  }
+  for stmt in @checker.prelude_builtin_value_stmts() {
+    stmts.push(stmt)
+  }
+  stmts
+}
+
+///|
+fn append_prelude_core_linked_imports(
+  linked_imports : Array[LinkedImport],
+  existing_value_names : Map[String, Bool],
+) -> Unit {
+  for stmt in prelude_core_library_stmts() {
+    match prelude_core_linked_import(stmt) {
+      Some(li) =>
+        if not(existing_value_names.contains(li.func_name)) {
+          existing_value_names[li.func_name] = true
+          linked_imports.push(li)
+        }
+      None => ()
+    }
+  }
+}
+
+///|
+fn append_prelude_inline_stmts_for_linked_build(
+  bundled_stmts : Array[@core.Stmt],
+  existing_value_names : Map[String, Bool],
+) -> Unit {
+  for stmt in prelude_linked_build_inline_stmts() {
+    match bundle_stmt_value_name(stmt) {
+      Some(name) =>
+        if not(existing_value_names.contains(name)) {
+          bundled_stmts.push(stmt)
+          existing_value_names[name] = true
+        }
+      None => ()
+    }
+  }
+}
+
+///|
+pub fn prelude_core_library_module() -> @core.Module {
+  @core.Module::{ stmts: prelude_core_library_stmts() }
+}
+
+///|
+priv struct SelectedReExport {
+  spec : @core.ImportSpec
+  source : @core.ModuleRef
+}
+
+///|
+fn push_linked_import(
+  linked_imports : Array[LinkedImport],
+  existing_value_names : Map[String, Bool],
+  li : LinkedImport,
+) -> Unit {
+  if not(existing_value_names.contains(li.func_name)) {
+    existing_value_names[li.func_name] = true
+    linked_imports.push(li)
+  }
+}
+
+///|
+fn linked_import_from_resolved_fn(
+  module_name : String,
+  local_name : String,
+  resolved : ResolvedReExportFn,
+) -> LinkedImport {
+  LinkedImport::{
+    module_name,
+    func_name: local_name,
+    param_count: resolved.params.length(),
+    return_count: resolved.return_count,
+  }
+}
+
+///|
+fn collect_dependency_defs_selected(
+  db : VibeDb,
+  path : String,
+  out : Array[@core.Stmt],
+  visited : Map[String, Bool],
+  selected_export_names : Map[String, Bool],
+  selected_reexports : Array[SelectedReExport],
+) -> Unit {
+  if visited.contains(path) {
+    return
+  }
+  let emitted_types : Map[String, Bool] = {}
+  for stmt in out {
+    match bundle_stmt_type_name(stmt) {
+      Some(name) => emitted_types[name] = true
+      None => ()
+    }
+  }
+  let is_entry = visited.length() == 0
+  visited[path] = true
+  let imports = db.imports(path)
+  for imp in imports {
+    collect_dependency_defs(db, imp.path, out, visited)
+  }
+  if not(is_entry) {
+    let dep_ast = db.ast_with_hash_imports(path)
+    for stmt in dep_ast.stmts {
+      match stmt {
+        @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
+          if selected_export_names.contains(name) {
+            out.push(@core.Stmt::Let(rec~, name~, expr~, span~))
+          }
+        @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
+          if not(emitted_types.contains(name)) {
+            out.push(@core.Stmt::EnumDef(name~, params~, ctors~, span~))
+            emitted_types[name] = true
+          }
+        @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) =>
+          if not(emitted_types.contains(name)) {
+            out.push(@core.Stmt::TypeAlias(name~, params~, target~, span~))
+            emitted_types[name] = true
+          }
+        @core.Stmt::Let(..) => out.push(stmt)
+        @core.Stmt::EnumDef(name~, ..) =>
+          if not(emitted_types.contains(name)) {
+            out.push(stmt)
+            emitted_types[name] = true
+          }
+        @core.Stmt::TypeAlias(name~, ..) =>
+          if not(emitted_types.contains(name)) {
+            out.push(stmt)
+            emitted_types[name] = true
+          }
+        @core.Stmt::ReExport(..) => ()
+        @core.Stmt::Import(..) | @core.Stmt::Export(..) => ()
+        @core.Stmt::Test(..) | @core.Stmt::Bench(..) => ()
+        @core.Stmt::TraitDef(..)
+        | @core.Stmt::TraitImpl(..)
+        | @core.Stmt::InternalTraitDef(..) => ()
+        @core.Stmt::LetMut(..) => out.push(stmt)
+        _ => out.push(stmt)
+      }
+    }
+    for selected in selected_reexports {
+      collect_reexport_defs(
+        db,
+        path,
+        selected.spec,
+        selected.source,
+        out,
+        visited,
+      )
+    }
+  }
+}
+
+///|
 /// Bundle for linked mode: don't inline import dependencies, instead return
 /// their exported function names as linked imports. These become wasm imports
 /// that are resolved at runtime via `wasmtime --preload`.
@@ -110,63 +314,59 @@ pub fn bundle_for_wasm_linked(
       imp.path,
       host_imports_visited,
     )
-    // Check if any export has HOF params (including through ReExport chains)
-    let mut has_hof = false
-    for stmt in dep_ast.stmts {
-      match stmt {
-        @core.Stmt::ExportLet(expr~, ..) =>
-          match expr {
-            @core.Expr::Fn(params~, ..) =>
-              if linked_fn_has_func_param(params) {
-                has_hof = true
-              }
-            _ => ()
-          }
-        @core.Stmt::ReExport(spec~, source~, ..) =>
-          if not(has_hof) {
-            let resolved = resolve_reexport_all(db, imp.path, spec, source)
-            for r in resolved.functions {
-              if linked_fn_has_func_param(r.params) {
-                has_hof = true
-              }
-            }
-          }
-        _ => ()
-      }
-    }
-    if has_hof || needs_host_import_inline {
+    if needs_host_import_inline {
       // Inline deps that need host imports because wasmtime --preload cannot
       // instantiate library modules that carry their own host/WASI imports.
       collect_dependency_defs(db, imp.path, bundled_stmts, visited)
     } else {
-      // Module has only scalar exports: use linked imports (with ReExport resolution)
+      let selected_export_names : Map[String, Bool] = {}
+      let selected_reexports : Array[SelectedReExport] = []
       for stmt in dep_ast.stmts {
         match stmt {
-          @core.Stmt::ExportLet(name~, expr=_, ..) => {
-            existing_value_names[name] = true
+          @core.Stmt::ExportLet(name~, expr=_, ..) =>
             match resolve_bound_fn_at_path(db, imp.path, name, {}) {
               Some(resolved) =>
-                linked_imports.push(LinkedImport::{
-                  module_name,
-                  func_name: name,
-                  param_count: resolved.params.length(),
-                  return_count: resolved.return_count,
-                })
+                if linked_fn_has_func_param(resolved.params) {
+                  selected_export_names[name] = true
+                } else {
+                  push_linked_import(
+                    linked_imports,
+                    existing_value_names,
+                    linked_import_from_resolved_fn(module_name, name, resolved),
+                  )
+                }
               _ => ()
             }
-          }
           @core.Stmt::ReExport(spec~, source~, ..) => {
             let resolved = resolve_reexport_all(db, imp.path, spec, source)
+            let resolved_fn_map : Map[String, ResolvedReExportFn] = {}
             for r in resolved.functions {
-              if not(existing_value_names.contains(r.name)) {
-                existing_value_names[r.name] = true
-                linked_imports.push(LinkedImport::{
-                  module_name,
-                  func_name: r.name,
-                  param_count: r.params.length(),
-                  return_count: r.return_count,
-                })
+              resolved_fn_map[r.name] = r
+            }
+            let hof_items : Array[@core.ImportItem] = []
+            for item in spec.items {
+              let local_name = import_local_name(item)
+              match resolved_fn_map.get(local_name) {
+                Some(resolved_fn) =>
+                  if linked_fn_has_func_param(resolved_fn.params) {
+                    hof_items.push(item)
+                  } else {
+                    push_linked_import(
+                      linked_imports,
+                      existing_value_names,
+                      linked_import_from_resolved_fn(
+                        module_name, local_name, resolved_fn,
+                      ),
+                    )
+                  }
+                None => ()
               }
+            }
+            if hof_items.length() > 0 {
+              selected_reexports.push(SelectedReExport::{
+                spec: { items: hof_items },
+                source,
+              })
             }
             for t in resolved.type_stmts {
               bundled_stmts.push(t)
@@ -183,20 +383,22 @@ pub fn bundle_for_wasm_linked(
           _ => ()
         }
       }
+      if selected_export_names.length() > 0 || selected_reexports.length() > 0 {
+        collect_dependency_defs_selected(
+          db,
+          imp.path,
+          bundled_stmts,
+          visited,
+          selected_export_names,
+          selected_reexports,
+        )
+      }
     }
   }
-  // Add prelude (still needed for builtins like array_map etc.)
-  let prelude = @checker.prelude_ast()
-  for stmt in prelude.stmts {
-    match stmt {
-      @core.Stmt::Let(name~, ..) =>
-        if not(existing_value_names.contains(name)) {
-          bundled_stmts.push(stmt)
-          existing_value_names[name] = true
-        }
-      _ => ()
-    }
-  }
+  append_prelude_core_linked_imports(linked_imports, existing_value_names)
+  append_prelude_inline_stmts_for_linked_build(
+    bundled_stmts, existing_value_names,
+  )
   // Add main module statements (excluding imports; resolve re-exports for types)
   let raw_entry_ast = db.ast(path)
   let non_prelude_names : Array[String] = []
@@ -251,18 +453,9 @@ pub fn bundle_for_wasm_linked_with_imports(
   for li in linked_imports {
     existing_value_names[li.func_name] = true
   }
-  // Add prelude
-  let prelude = @checker.prelude_ast()
-  for stmt in prelude.stmts {
-    match stmt {
-      @core.Stmt::Let(name~, ..) =>
-        if not(existing_value_names.contains(name)) {
-          bundled_stmts.push(stmt)
-          existing_value_names[name] = true
-        }
-      _ => ()
-    }
-  }
+  append_prelude_inline_stmts_for_linked_build(
+    bundled_stmts, existing_value_names,
+  )
   // Add extra type definitions from resolved ReExports
   for stmt in extra_type_stmts {
     bundled_stmts.push(stmt)
@@ -422,8 +615,6 @@ fn module_expr_requires_preload_host_imports(expr : @core.Expr) -> Bool {
     | @core.Expr::Spread(expr~, ..)
     | @core.Expr::Yield(expr~, ..) =>
       module_expr_requires_preload_host_imports(expr)
-    @core.Expr::Raise(value~, ..) =>
-      module_expr_requires_preload_host_imports(value)
     @core.Expr::Record(fields~, ..) | @core.Expr::StructLit(fields~, ..) => {
       for field in fields {
         if module_expr_requires_preload_host_imports(field.expr) {
@@ -517,6 +708,8 @@ fn module_expr_requires_preload_host_imports(expr : @core.Expr) -> Bool {
     | @core.Expr::String(..)
     | @core.Expr::Ident(..)
     | @core.Expr::Placeholder(..) => false
+    // StringInterp is lowered in desugar; should never reach here
+    @core.Expr::StringInterp(..) => false
   }
 }
 
@@ -873,17 +1066,20 @@ fn bundle_for_wasm_impl(
       None => ()
     }
   }
-  let prelude = @checker.prelude_ast()
-  for stmt in prelude.stmts {
-    match stmt {
-      // Include function definitions from prelude
-      @core.Stmt::Let(name~, ..) =>
-        if not(existing_value_names.contains(name)) {
-          bundled_stmts.push(stmt)
-          existing_value_names[name] = true
-        }
-      // Skip trait definitions and impls (not needed for codegen)
-      _ => ()
+  for
+    prelude_stmts in [
+      @checker.prelude_core_value_stmts(),
+      @checker.prelude_builtin_value_stmts(),
+    ] {
+    for stmt in prelude_stmts {
+      match bundle_stmt_value_name(stmt) {
+        Some(name) =>
+          if not(existing_value_names.contains(name)) {
+            bundled_stmts.push(stmt)
+            existing_value_names[name] = true
+          }
+        None => ()
+      }
     }
   }
   // Add main module statements (excluding imports and expanding re-exports)
@@ -1176,12 +1372,20 @@ fn collect_reexport_defs(
           out.push(@core.Stmt::StructDef(name~, params~, fields~, span~))
           emitted_types[name] = true
         }
-      @core.Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, span~) =>
+      @core.Stmt::TraitDef(
+        name~,
+        supertraits~,
+        methods~,
+        open_impl~,
+        exported~,
+        span~
+      ) =>
         if requested_items.contains(name) {
           out.push(
             @core.Stmt::TraitDef(
               name~,
               supertraits~,
+              methods~,
               open_impl~,
               exported~,
               span~,
@@ -1331,7 +1535,6 @@ fn collect_all_assign_targets_expr(
       }
       collect_all_assign_targets_block(body, out)
     }
-    @core.Expr::Raise(value~, ..) => collect_all_assign_targets_expr(value, out)
     @core.Expr::Yield(expr~, ..) => collect_all_assign_targets_expr(expr, out)
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
       let desugared = @core.desugar_for_in(

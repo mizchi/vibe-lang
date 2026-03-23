@@ -25,6 +25,7 @@ test "normalize_module canonicalizes export list into explicit exports" {
       Stmt::TraitDef(
         name="Showable",
         supertraits=[],
+        methods=[],
         open_impl=false,
         exported=false,
         span=zero_span_for_export_norm_test,

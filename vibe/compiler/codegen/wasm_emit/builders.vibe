@@ -1,0 +1,359 @@
+import ../../core/index.vibe {
+  bytebuf_new, bytebuf_push, bytebuf_to_bytes, bytebuf_push_buf, bytebuf_push_section, bytebuf_push_vec_header,
+  leb128_encode_u32
+}
+
+import ./sections.vibe {
+  emit_header, emit_type_section, emit_type_section_multi, emit_function_section,
+  emit_export_section, emit_export_section_multi, emit_memory_section,
+  emit_code_section, emit_code_section_with_locals,
+  emit_i32_const, emit_func_type_raw, emit_import_section_func, emit_data_section,
+  emit_exports_with_memory, emit_end
+}
+
+import ./instructions.vibe {
+  emit_local_get, emit_local_set, emit_i64_const, emit_i64_add, emit_i64_sub, emit_i64_mul,
+  emit_i64_le_s, emit_call, emit_drop, emit_block_void, emit_loop_void, emit_br, emit_br_if,
+  emit_i32_store
+}
+
+let vt_i32 = 127
+let sec_type = 1
+let sec_data = 11
+
+let empty_int_array = () -> Array[Int] {
+  Array::slice([0], 0, 0)
+}
+
+let empty_string_array = () -> Array[String] {
+  Array::slice([""], 0, 0)
+}
+
+let empty_bytes_array = () -> Array[Bytes] {
+  Array::slice([bytebuf_new()], 0, 0)
+}
+
+let singleton_int_array = (v0: Int) -> Array[Int] {
+  let values = empty_int_array()
+  Array::push(values, v0)
+  values
+}
+
+let pair_int_array = (v0: Int, v1: Int) -> Array[Int] {
+  let values = empty_int_array()
+  Array::push(values, v0)
+  Array::push(values, v1)
+  values
+}
+
+let triple_int_array = (v0: Int, v1: Int, v2: Int) -> Array[Int] {
+  let values = empty_int_array()
+  Array::push(values, v0)
+  Array::push(values, v1)
+  Array::push(values, v2)
+  values
+}
+
+let quad_int_array = (v0: Int, v1: Int, v2: Int, v3: Int) -> Array[Int] {
+  let values = empty_int_array()
+  Array::push(values, v0)
+  Array::push(values, v1)
+  Array::push(values, v2)
+  Array::push(values, v3)
+  values
+}
+
+let singleton_string_array = (v0: String) -> Array[String] {
+  let values = empty_string_array()
+  Array::push(values, v0)
+  values
+}
+
+let pair_string_array = (v0: String, v1: String) -> Array[String] {
+  let values = empty_string_array()
+  Array::push(values, v0)
+  Array::push(values, v1)
+  values
+}
+
+let triple_string_array = (v0: String, v1: String, v2: String) -> Array[String] {
+  let values = empty_string_array()
+  Array::push(values, v0)
+  Array::push(values, v1)
+  Array::push(values, v2)
+  values
+}
+
+let singleton_bytes_array = (v0: Bytes) -> Array[Bytes] {
+  let values = empty_bytes_array()
+  Array::push(values, v0)
+  values
+}
+
+let pair_bytes_array = (v0: Bytes, v1: Bytes) -> Array[Bytes] {
+  let values = empty_bytes_array()
+  Array::push(values, v0)
+  Array::push(values, v1)
+  values
+}
+
+let triple_bytes_array = (v0: Bytes, v1: Bytes, v2: Bytes) -> Array[Bytes] {
+  let values = empty_bytes_array()
+  Array::push(values, v0)
+  Array::push(values, v1)
+  Array::push(values, v2)
+  values
+}
+
+export let build_add_module = () -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  emit_type_section(out, 2, 1)
+  emit_function_section(out, singleton_int_array(0))
+  emit_export_section(out, "add", 0)
+  let body = bytebuf_new()
+  emit_local_get(body, 0)
+  emit_local_get(body, 1)
+  emit_i64_add(body)
+  emit_code_section(out, singleton_bytes_array(body))
+  bytebuf_to_bytes(out)
+}
+
+export let build_call_module = () -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  emit_type_section_multi(out, quad_int_array(1, 1, 2, 1))
+  emit_function_section(out, pair_int_array(0, 1))
+  emit_export_section_multi(out, pair_string_array("square", "sum_sq"), pair_int_array(0, 1))
+
+  let sq_body = bytebuf_new()
+  emit_local_get(sq_body, 0)
+  emit_local_get(sq_body, 0)
+  emit_i64_mul(sq_body)
+
+  let ss_body = bytebuf_new()
+  emit_local_get(ss_body, 0)
+  emit_call(ss_body, 0)
+  emit_local_get(ss_body, 1)
+  emit_call(ss_body, 0)
+  emit_i64_add(ss_body)
+
+  emit_code_section(out, pair_bytes_array(sq_body, ss_body))
+  bytebuf_to_bytes(out)
+}
+
+export let build_arithmetic_module = () -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  emit_type_section(out, 2, 1)
+  emit_function_section(out, triple_int_array(0, 0, 0))
+  emit_export_section_multi(out, triple_string_array("add", "sub", "mul"), triple_int_array(0, 1, 2))
+
+  let add_body = bytebuf_new()
+  emit_local_get(add_body, 0)
+  emit_local_get(add_body, 1)
+  emit_i64_add(add_body)
+
+  let sub_body = bytebuf_new()
+  emit_local_get(sub_body, 0)
+  emit_local_get(sub_body, 1)
+  emit_i64_sub(sub_body)
+
+  let mul_body = bytebuf_new()
+  emit_local_get(mul_body, 0)
+  emit_local_get(mul_body, 1)
+  emit_i64_mul(mul_body)
+
+  emit_code_section(out, triple_bytes_array(add_body, sub_body, mul_body))
+  bytebuf_to_bytes(out)
+}
+
+export let build_fibonacci_module = () -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  emit_type_section(out, 1, 1)
+  emit_function_section(out, singleton_int_array(0))
+  emit_export_section(out, "fib", 0)
+
+  let b = bytebuf_new()
+  emit_i64_const(b, 0)
+  emit_local_set(b, 1)
+  emit_i64_const(b, 1)
+  emit_local_set(b, 2)
+
+  emit_block_void(b)
+    emit_loop_void(b)
+      emit_local_get(b, 0)
+      emit_i64_const(b, 0)
+      emit_i64_le_s(b)
+      emit_br_if(b, 1)
+
+      emit_local_get(b, 1)
+      emit_local_get(b, 2)
+      emit_i64_add(b)
+      emit_local_set(b, 3)
+      emit_local_get(b, 2)
+      emit_local_set(b, 1)
+      emit_local_get(b, 3)
+      emit_local_set(b, 2)
+      emit_local_get(b, 0)
+      emit_i64_const(b, 1)
+      emit_i64_sub(b)
+      emit_local_set(b, 0)
+      emit_br(b, 0)
+    emit_end(b)
+  emit_end(b)
+
+  emit_local_get(b, 1)
+  emit_code_section_with_locals(out, singleton_bytes_array(b), singleton_int_array(3))
+  bytebuf_to_bytes(out)
+}
+
+export let build_factorial_module = () -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  emit_type_section(out, 1, 1)
+  emit_function_section(out, singleton_int_array(0))
+  emit_export_section(out, "fact", 0)
+
+  let b = bytebuf_new()
+  emit_i64_const(b, 1)
+  emit_local_set(b, 1)
+
+  emit_block_void(b)
+    emit_loop_void(b)
+      emit_local_get(b, 0)
+      emit_i64_const(b, 1)
+      emit_i64_le_s(b)
+      emit_br_if(b, 1)
+
+      emit_local_get(b, 1)
+      emit_local_get(b, 0)
+      emit_i64_mul(b)
+      emit_local_set(b, 1)
+
+      emit_local_get(b, 0)
+      emit_i64_const(b, 1)
+      emit_i64_sub(b)
+      emit_local_set(b, 0)
+      emit_br(b, 0)
+    emit_end(b)
+  emit_end(b)
+
+  emit_local_get(b, 1)
+  emit_code_section_with_locals(out, singleton_bytes_array(b), singleton_int_array(1))
+  bytebuf_to_bytes(out)
+}
+
+export let build_hello_module = () -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+
+  let type_content = bytebuf_new()
+  bytebuf_push_vec_header(type_content, 2)
+  emit_func_type_raw(type_content, quad_int_array(vt_i32, vt_i32, vt_i32, vt_i32), singleton_int_array(vt_i32))
+  emit_func_type_raw(type_content, Array::slice([0], 0, 0), Array::slice([0], 0, 0))
+  bytebuf_push_section(out, sec_type, type_content)
+
+  emit_import_section_func(out, "wasi_snapshot_preview1", "fd_write", 0)
+  emit_function_section(out, singleton_int_array(1))
+  emit_memory_section(out, 1)
+  emit_exports_with_memory(out, singleton_string_array("_start"), singleton_int_array(1), "memory", 0)
+
+  let b = bytebuf_new()
+  emit_i32_const(b, 0)
+  emit_i32_const(b, 8)
+  emit_i32_store(b, 2, 0)
+  emit_i32_const(b, 4)
+  emit_i32_const(b, 12)
+  emit_i32_store(b, 2, 0)
+  emit_i32_const(b, 1)
+  emit_i32_const(b, 0)
+  emit_i32_const(b, 1)
+  emit_i32_const(b, 100)
+  emit_call(b, 0)
+  emit_drop(b)
+  emit_code_section(out, singleton_bytes_array(b))
+
+  let hello_data = bytebuf_new()
+  bytebuf_push(hello_data, 104)
+  bytebuf_push(hello_data, 101)
+  bytebuf_push(hello_data, 108)
+  bytebuf_push(hello_data, 108)
+  bytebuf_push(hello_data, 111)
+  bytebuf_push(hello_data, 32)
+  bytebuf_push(hello_data, 119)
+  bytebuf_push(hello_data, 111)
+  bytebuf_push(hello_data, 114)
+  bytebuf_push(hello_data, 108)
+  bytebuf_push(hello_data, 100)
+  bytebuf_push(hello_data, 10)
+  emit_data_section(out, 8, hello_data)
+
+  bytebuf_to_bytes(out)
+}
+
+export let string_to_data = (s: String) -> Bytes {
+  let buf = bytebuf_new()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    bytebuf_push(buf, String::char_code_at(s, i))
+    i = i + 1
+  }
+  buf
+}
+
+export let emit_data_section_multi = (out: Bytes, offsets: Array[Int], datas: Array[Bytes]) -> Unit {
+  let count = Array::length(offsets)
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, count)
+  let mut i = 0
+  while i < count {
+    bytebuf_push(content, 0)
+    emit_i32_const(content, Array::get(offsets, i))
+    emit_end(content)
+    let data = Array::get(datas, i)
+    leb128_encode_u32(content, Bytes::length(data))
+    bytebuf_push_buf(content, data)
+    i = i + 1
+  }
+  bytebuf_push_section(out, sec_data, content)
+}
+
+export let build_print_string_module = (msg: String) -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+
+  let type_content = bytebuf_new()
+  bytebuf_push_vec_header(type_content, 2)
+  emit_func_type_raw(type_content, quad_int_array(vt_i32, vt_i32, vt_i32, vt_i32), singleton_int_array(vt_i32))
+  emit_func_type_raw(type_content, Array::slice([0], 0, 0), Array::slice([0], 0, 0))
+  bytebuf_push_section(out, sec_type, type_content)
+
+  emit_import_section_func(out, "wasi_snapshot_preview1", "fd_write", 0)
+  emit_function_section(out, singleton_int_array(1))
+  emit_memory_section(out, 1)
+  emit_exports_with_memory(out, singleton_string_array("_start"), singleton_int_array(1), "memory", 0)
+
+  let str_data = string_to_data(msg)
+  let str_len = Bytes::length(str_data)
+
+  let b = bytebuf_new()
+  emit_i32_const(b, 0)
+  emit_i32_const(b, 16)
+  emit_i32_store(b, 2, 0)
+  emit_i32_const(b, 4)
+  emit_i32_const(b, str_len)
+  emit_i32_store(b, 2, 0)
+  emit_i32_const(b, 1)
+  emit_i32_const(b, 0)
+  emit_i32_const(b, 1)
+  emit_i32_const(b, 8)
+  emit_call(b, 0)
+  emit_drop(b)
+
+  emit_code_section(out, singleton_bytes_array(b))
+  emit_data_section(out, 16, str_data)
+  bytebuf_to_bytes(out)
+}

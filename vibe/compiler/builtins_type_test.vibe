@@ -15,82 +15,114 @@ let check_ok = (source: String) -> Bool {
   }
 }
 
-//# Misc — String builtins
+let check_err = (source: String) -> Bool {
+  not(check_ok(source))
+}
 
-test "String::length" { assert(check_ok("String::length(\"hi\")")) }
-test "String::concat" { assert(check_ok("String::concat(\"a\", \"b\")")) }
-test "String::equals" { assert(check_ok("String::equals(\"a\", \"b\")")) }
-test "String::contains" { assert(check_ok("String::contains(\"abc\", \"b\")")) }
-test "String::starts_with" { assert(check_ok("String::starts_with(\"abc\", \"a\")")) }
-test "String::ends_with" { assert(check_ok("String::ends_with(\"abc\", \"c\")")) }
-test "String::index_of" { assert(check_ok("String::index_of(\"abc\", \"b\")")) }
-test "String::last_index_of" { assert(check_ok("String::last_index_of(\"abab\", \"ab\")")) }
-test "String::char_code_at" { assert(check_ok("String::char_code_at(\"a\", 0)")) }
-test "String::from_char_code" { assert(check_ok("String::from_char_code(65)")) }
-test "String::substring" { assert(check_ok("String::substring(\"hello\", 1, 3)")) }
-test "String::split" { assert(check_ok("String::split(\"a,b\", \",\")")) }
-test "String::trim" { assert(check_ok("String::trim(\" hi \")")) }
+let assert_all_ok = (sources: Array[String]) -> Unit with { Error } {
+  let mut i = 0
+  while i < Array::length(sources) {
+    let source = Array::get(sources, i)
+    if not(check_ok(source)) {
+      throw(String::concat("expected ok: ", source))
+    }
+    i = i + 1
+  }
+}
 
-//# Misc — Array builtins
+let assert_all_err = (sources: Array[String]) -> Unit with { Error } {
+  let mut i = 0
+  while i < Array::length(sources) {
+    let source = Array::get(sources, i)
+    if not(check_err(source)) {
+      throw(String::concat("expected error: ", source))
+    }
+    i = i + 1
+  }
+}
 
-test "Array::length" { assert(check_ok("Array::length([1, 2])")) }
-test "Array::get" { assert(check_ok("Array::get([1, 2], 0)")) }
-test "Array::set" { assert(check_ok("Array::set([1, 2], 0, 9)")) }
-test "Array::push" { assert(check_ok("let a = [1]\nArray::push(a, 2)")) }
-test "Array::slice" { assert(check_ok("Array::slice([1, 2, 3], 0, 2)")) }
-test "Array::concat" { assert(check_ok("Array::concat([1], [2])")) }
-test "Array::push_all" { assert(check_ok("let a = [1]\nArray::push_all(a, [2, 3])")) }
+//# Misc — Builtin type checks
 
-//# Misc — ArrayBuilder builtins
+test "Builtin happy-path typechecks" {
+  assert_all_ok([
+    "String::length(\"hi\")",
+    "String::concat(\"a\", \"b\")",
+    "String::equals(\"a\", \"b\")",
+    "String::contains(\"abc\", \"b\")",
+    "String::starts_with(\"abc\", \"a\")",
+    "String::ends_with(\"abc\", \"c\")",
+    "String::index_of(\"abc\", \"b\")",
+    "String::last_index_of(\"abab\", \"ab\")",
+    "String::char_code_at(\"a\", 0)",
+    "String::from_char_code(65)",
+    "String::substring(\"hello\", 1, 3)",
+    "String::split(\"a,b\", \",\")",
+    "String::trim(\" hi \")",
+  ])
+  assert_all_ok([
+    "Array::length([1, 2])",
+    "Array::get([1, 2], 0)",
+    "Array::set([1, 2], 0, 9)",
+    "let a = [1]\nArray::push(a, 2)",
+    "Array::slice([1, 2, 3], 0, 2)",
+    "Array::concat([1], [2])",
+    "let a = [1]\nArray::push_all(a, [2, 3])",
+  ])
+  assert_all_ok([
+    "ArrayBuilder::new()",
+    "let b = ArrayBuilder::new()\nArrayBuilder::push(b, 1)",
+    "let b = ArrayBuilder::new()\nArrayBuilder::freeze(b)",
+  ])
+  assert_all_ok([
+    "Map::get(map { \"a\": 1 }, \"a\")",
+    "Map::keys(map { \"a\": 1 })",
+    "Map::has_key(map { \"a\": 1 }, \"a\")",
+    "let m = map { \"a\": 1 }\nMap::set(m, \"b\", 2)",
+  ])
+  assert_all_ok([
+    "MapBuilder::new()",
+    "let b = MapBuilder::new()\nMapBuilder::set(b, \"k\", 1)",
+    "let b = MapBuilder::new()\nMapBuilder::freeze(b)",
+  ])
+  assert_all_ok([
+    "Bytes::new()",
+    "let b = Bytes::new()\nBytes::push(b, 65)",
+    "Bytes::from_array([1, 2])",
+    "Bytes::to_array(Bytes::from_array([1]))",
+    "Bytes::concat(Bytes::from_array([1]), Bytes::from_array([2]))",
+    "Bytes::slice(Bytes::from_array([1, 2, 3]), 0, 2)",
+  ])
+  assert_all_ok([
+    "StringBuilder::new()",
+    "let b = StringBuilder::new()\nStringBuilder::push(b, \"hi\")",
+    "let b = StringBuilder::new()\nStringBuilder::freeze(b)",
+  ])
+  assert_all_ok([
+    "Int::to_double(42)",
+    "Double::to_int(3.14)",
+    "Char::to_int('A')",
+    "Char::from_int(65)",
+    "__to_string(42)",
+  ])
+  assert_all_ok([
+    "not(true)",
+    "eq(1, 1)",
+    "assert(true)",
+    "let f = () -> Int with { Error } { throw(\"x\")\n0 }\nhandle { f() } { Error(_) => 1 }",
+  ])
+  assert_all_ok([
+    "Some(42)",
+    "let x: Option[Int] = None\nx",
+  ])
+  assert_all_ok([
+    "let sub_u32 = (a: u32, b: u32) -> u32 { a - b }",
+    "let mul_u8 = (a: u8, b: u8) -> u8 { a * b }",
+    "let lt_i16 = (a: i16, b: i16) -> Bool { a < b }",
+  ])
+}
 
-test "ArrayBuilder::new" { assert(check_ok("ArrayBuilder::new()")) }
-test "ArrayBuilder::push" { assert(check_ok("let b = ArrayBuilder::new()\nArrayBuilder::push(b, 1)")) }
-test "ArrayBuilder::freeze" { assert(check_ok("let b = ArrayBuilder::new()\nArrayBuilder::freeze(b)")) }
-
-//# Misc — Map builtins
-
-test "Map::get" { assert(check_ok("Map::get(map { \"a\": 1 }, \"a\")")) }
-test "Map::keys" { assert(check_ok("Map::keys(map { \"a\": 1 })")) }
-test "Map::has_key" { assert(check_ok("Map::has_key(map { \"a\": 1 }, \"a\")")) }
-test "Map::set" { assert(check_ok("let m = map { \"a\": 1 }\nMap::set(m, \"b\", 2)")) }
-
-//# Misc — MapBuilder builtins
-
-test "MapBuilder::new" { assert(check_ok("MapBuilder::new()")) }
-test "MapBuilder::set" { assert(check_ok("let b = MapBuilder::new()\nMapBuilder::set(b, \"k\", 1)")) }
-test "MapBuilder::freeze" { assert(check_ok("let b = MapBuilder::new()\nMapBuilder::freeze(b)")) }
-
-//# Misc — Bytes builtins
-
-test "Bytes::new" { assert(check_ok("Bytes::new()")) }
-test "Bytes::push" { assert(check_ok("let b = Bytes::new()\nBytes::push(b, 65)")) }
-test "Bytes::from_array" { assert(check_ok("Bytes::from_array([1, 2])")) }
-test "Bytes::to_array" { assert(check_ok("Bytes::to_array(Bytes::from_array([1]))")) }
-test "Bytes::concat" { assert(check_ok("Bytes::concat(Bytes::from_array([1]), Bytes::from_array([2]))")) }
-test "Bytes::slice" { assert(check_ok("Bytes::slice(Bytes::from_array([1, 2, 3]), 0, 2)")) }
-
-//# Misc — StringBuilder builtins
-
-test "StringBuilder::new" { assert(check_ok("StringBuilder::new()")) }
-test "StringBuilder::push" { assert(check_ok("let b = StringBuilder::new()\nStringBuilder::push(b, \"hi\")")) }
-test "StringBuilder::freeze" { assert(check_ok("let b = StringBuilder::new()\nStringBuilder::freeze(b)")) }
-
-//# Misc — Conversion builtins
-
-test "Int::to_double" { assert(check_ok("Int::to_double(42)")) }
-test "Double::to_int" { assert(check_ok("Double::to_int(3.14)")) }
-test "Char::to_int" { assert(check_ok("Char::to_int('A')")) }
-test "Char::from_int" { assert(check_ok("Char::from_int(65)")) }
-test "__to_string" { assert(check_ok("__to_string(42)")) }
-
-//# Misc — Logic builtins
-
-test "not" { assert(check_ok("not(true)")) }
-test "eq" { assert(check_ok("eq(1, 1)")) }
-test "assert" { assert(check_ok("assert(true)")) }
-test "throw" { assert(check_ok("let f = () -> Int with { Error } { throw(\"x\")\n0 }\nhandle { f() } { Error(_) => 1 }")) }
-
-//# Misc — Option builtins
-
-test "Some" { assert(check_ok("Some(42)")) }
-test "None" { assert(check_ok("let x: Option[Int] = None\nx")) }
+test "Builtin error-paths stay rejected" {
+  assert_all_err([
+    "let f = (a: i64, b: u32) -> i64 { a + b }",
+  ])
+}

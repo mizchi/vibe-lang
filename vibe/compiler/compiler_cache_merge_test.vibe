@@ -1,0 +1,75 @@
+//# Imports
+
+import ./type_db.vibe {
+  db_grouped_merged_source, db_merge_count, db_merged_source, db_new
+}
+
+//# Functions
+
+let repeat_string = (fragment: String, count: Int) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < count {
+    out = String::concat(out, fragment)
+    i = i + 1
+  }
+  out
+}
+
+//# Misc
+
+test "db_grouped_merged_source: warm grouped merge reuses cached groups" {
+  let groups = [
+    ("core", [
+      ("helpers.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }")
+    ]),
+    ("entry", [
+      ("main.vibe", "import ./helpers.vibe { add }\nlet main = () -> Int { add(1, 2) }")
+    ])
+  ]
+  let (_, _, db1) = db_grouped_merged_source(db_new(), groups)
+  let merge_count1 = db_merge_count(db1)
+  let (_, _, db2) = db_grouped_merged_source(db1, groups)
+  assert(eq(db_merge_count(db2), merge_count1))
+}
+
+test "db_grouped_merged_source: changing one group only rebuilds that group and final merge" {
+  let groups1 = [
+    ("core", [
+      ("helpers.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }")
+    ]),
+    ("entry", [
+      ("main.vibe", "import ./helpers.vibe { add }\nlet main = () -> Int { add(1, 2) }")
+    ])
+  ]
+  let groups2 = [
+    ("core", [
+      ("helpers.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }")
+    ]),
+    ("entry", [
+      ("main.vibe", "import ./helpers.vibe { add }\nlet main = () -> Int { add(2, 3) }")
+    ])
+  ]
+  let (_, _, db1) = db_grouped_merged_source(db_new(), groups1)
+  let merge_count1 = db_merge_count(db1)
+  let (_, _, db2) = db_grouped_merged_source(db1, groups2)
+  assert(eq(db_merge_count(db2), merge_count1 + 2))
+}
+
+test "db_merged_source: fingerprint stays compact for large sources" {
+  let large_source = repeat_string("let value = 42\n", 2048)
+  let (_, fingerprint, _) = db_merged_source(db_new(), "main.vibe", [
+    ("main.vibe", large_source)
+  ])
+  assert(String::length(fingerprint) < 64)
+}
+
+test "db_grouped_merged_source: grouped fingerprint stays compact for large sources" {
+  let large_source = repeat_string("let value = 42\n", 2048)
+  let (_, fingerprint, _) = db_grouped_merged_source(db_new(), [
+    ("core", [
+      ("main.vibe", large_source)
+    ])
+  ])
+  assert(String::length(fingerprint) < 64)
+}

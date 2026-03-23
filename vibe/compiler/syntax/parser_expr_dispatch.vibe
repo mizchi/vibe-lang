@@ -1,0 +1,493 @@
+//# Imports
+
+import ../core {
+  Expr, Pat, Stmt
+}
+
+import ./token.vibe {
+  Token
+}
+
+import ./parser_base.vibe {
+  empty_arms,
+  expect_tk,
+  mode_block,
+  mode_for_in,
+  mode_handle,
+  mode_if,
+  mode_match,
+  mode_while,
+  parse_enum_stmt,
+  parse_pattern,
+  parse_struct_stmt,
+  parse_type_impl,
+  peek,
+  skip_semi
+}
+
+import ./parser_expr_core.vibe {
+
+  parse_infix
+}
+
+//# Functions
+
+let rec parse_match_rest = (
+  tokens: Array[Token],
+  pos: Int,
+  scrutinee: Expr,
+  b: ArrayBuilder[(Pat, Expr)],
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  match peek(tokens, pos) {
+    TComma => match peek(tokens, pos + 1) {
+      TRBrace => (EMatch(scrutinee, ArrayBuilder::freeze(b)), pos + 2),
+      _ => {
+        let (pa, paa) = parse_pattern(tokens, pos + 1)
+        let a2 = match peek(tokens, paa) {
+          TIf => {
+            let (_, ga) = parse_recur(tokens, paa + 1, 0)
+            expect_tk(tokens, ga, "=>")
+          },
+          _ => expect_tk(tokens, paa, "=>")
+        }
+        let (ea, en) = parse_recur(tokens, a2, 0)
+        ArrayBuilder::push(b, (pa, ea))
+        parse_match_rest(tokens, en, scrutinee, b, parse_recur)
+      }
+    },
+    TRBrace => (EMatch(scrutinee, ArrayBuilder::freeze(b)), pos + 1),
+    _ => {
+      let (pa, paa) = parse_pattern(tokens, pos)
+      let a2 = match peek(tokens, paa) {
+        TIf => {
+          let (_, ga) = parse_recur(tokens, paa + 1, 0)
+          expect_tk(tokens, ga, "=>")
+        },
+        _ => expect_tk(tokens, paa, "=>")
+      }
+      let (ea, en) = parse_recur(tokens, a2, 0)
+      ArrayBuilder::push(b, (pa, ea))
+      parse_match_rest(tokens, en, scrutinee, b, parse_recur)
+    }
+  }
+}
+
+let rec parse_handle_rest = (
+  tokens: Array[Token],
+  pos: Int,
+  body: Expr,
+  b: ArrayBuilder[(Pat, Expr)],
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  match peek(tokens, pos) {
+    TComma => match peek(tokens, pos + 1) {
+      TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 2),
+      _ => {
+        let (pa, paa) = parse_pattern(tokens, pos + 1)
+        let a2 = expect_tk(tokens, paa, "=>")
+        let (ea, en) = parse_recur(tokens, a2, 0)
+        ArrayBuilder::push(b, (pa, ea))
+        parse_handle_rest(tokens, en, body, b, parse_recur)
+      }
+    },
+    TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 1),
+    _ => {
+      let (pa, paa) = parse_pattern(tokens, pos)
+      let a2 = expect_tk(tokens, paa, "=>")
+      let (ea, en) = parse_recur(tokens, a2, 0)
+      ArrayBuilder::push(b, (pa, ea))
+      parse_handle_rest(tokens, en, body, b, parse_recur)
+    }
+  }
+}
+
+let parse_block_after_expr = (
+  tokens: Array[Token],
+  pos: Int,
+  e: Expr,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  match peek(tokens, pos) {
+    TRBrace => (e, pos + 1),
+    TSemicolon => {
+      let (rest, end) = parse_recur(tokens, pos + 1, mode_block)
+      (ESeq(e, rest), end)
+    },
+    TEq => match e {
+      EIdent(name) => {
+        let val_pair = parse_recur(tokens, pos + 1, 0)
+        let val = val_pair.0
+        let val_next = val_pair.1
+        let a = skip_semi(tokens, val_next)
+        let (rest, end) = parse_recur(tokens, a, mode_block)
+        (EAssign(name, val, rest), end)
+      },
+      _ => throw("invalid assignment target")
+    },
+    TPlusEq => match e {
+      EIdent(name) => {
+        let val_pair = parse_recur(tokens, pos + 1, 0)
+        let val = val_pair.0
+        let val_next = val_pair.1
+        let a = skip_semi(tokens, val_next)
+        let (rest, end) = parse_recur(tokens, a, mode_block)
+        (EAssignOp(name, "+", val, rest), end)
+      },
+      _ => throw("invalid assignment target")
+    },
+    TMinusEq => match e {
+      EIdent(name) => {
+        let val_pair = parse_recur(tokens, pos + 1, 0)
+        let val = val_pair.0
+        let val_next = val_pair.1
+        let a = skip_semi(tokens, val_next)
+        let (rest, end) = parse_recur(tokens, a, mode_block)
+        (EAssignOp(name, "-", val, rest), end)
+      },
+      _ => throw("invalid assignment target")
+    },
+    TStarEq => match e {
+      EIdent(name) => {
+        let val_pair = parse_recur(tokens, pos + 1, 0)
+        let val = val_pair.0
+        let val_next = val_pair.1
+        let a = skip_semi(tokens, val_next)
+        let (rest, end) = parse_recur(tokens, a, mode_block)
+        (EAssignOp(name, "*", val, rest), end)
+      },
+      _ => throw("invalid assignment target")
+    },
+    TSlashEq => match e {
+      EIdent(name) => {
+        let val_pair = parse_recur(tokens, pos + 1, 0)
+        let val = val_pair.0
+        let val_next = val_pair.1
+        let a = skip_semi(tokens, val_next)
+        let (rest, end) = parse_recur(tokens, a, mode_block)
+        (EAssignOp(name, "/", val, rest), end)
+      },
+      _ => throw("invalid assignment target")
+    },
+    TPercentEq => match e {
+      EIdent(name) => {
+        let val_pair = parse_recur(tokens, pos + 1, 0)
+        let val = val_pair.0
+        let val_next = val_pair.1
+        let a = skip_semi(tokens, val_next)
+        let (rest, end) = parse_recur(tokens, a, mode_block)
+        (EAssignOp(name, "%", val, rest), end)
+      },
+      _ => throw("invalid assignment target")
+    },
+    _ => {
+      let (rest, end) = parse_recur(tokens, pos, mode_block)
+      if end <= pos {
+        throw("internal parser error: block continuation did not advance")
+      } else {
+        (ESeq(e, rest), end)
+      }
+    }
+  }
+}
+
+export let parse_impl_dispatch = (
+  tokens: Array[Token],
+  pos: Int,
+  mode: Int,
+  parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }
+) -> (Expr, Int) with { Error } {
+  if mode >= 0 && mode <= 10 {
+    parse_infix(tokens, pos, mode, pos, parse_recur)
+  } else if mode == mode_match {
+    let (scrutinee, sn) = parse_recur(tokens, pos, 0)
+    let br = expect_tk(tokens, sn, "{")
+    match peek(tokens, br) {
+      TRBrace => (EMatch(scrutinee, empty_arms()), br + 1),
+      _ => {
+        let b = ArrayBuilder::new()
+        let (fp, fa) = parse_pattern(tokens, br)
+        let aa = match peek(tokens, fa) {
+          TIf => {
+            let (_, ga) = parse_recur(tokens, fa + 1, 0)
+            expect_tk(tokens, ga, "=>")
+          },
+          _ => expect_tk(tokens, fa, "=>")
+        }
+        let (fe, fn1) = parse_recur(tokens, aa, 0)
+        ArrayBuilder::push(b, (fp, fe))
+        parse_match_rest(tokens, fn1, scrutinee, b, parse_recur)
+      }
+    }
+  } else if mode == mode_if {
+    let (cond, cn) = parse_recur(tokens, pos, 0)
+    let mut is_mode = false
+    let mut is_pat_val = PWild
+    let mut brace_pos = cn
+    match peek(tokens, cn) {
+      TIdent(kw) => if kw == "is" {
+        let (pat, pn) = parse_pattern(tokens, cn + 1)
+        is_mode = true
+        is_pat_val = pat
+        brace_pos = pn
+      },
+      _ => ()
+    }
+    let br = expect_tk(tokens, brace_pos, "{")
+    let (then_e, tn) = parse_recur(tokens, br, mode_block)
+    let (else_e, end_pos) = match peek(tokens, tn) {
+      TElse => match peek(tokens, tn + 1) {
+        TIf => parse_recur(tokens, tn + 2, mode_if),
+        TLBrace => parse_recur(tokens, tn + 2, mode_block),
+        _ => parse_recur(tokens, tn + 1, 0)
+      },
+      _ => (EUnit, tn)
+    }
+    if is_mode {
+      (EMatch(cond, [(is_pat_val, then_e), (PWild, else_e)]), end_pos)
+    } else {
+      (EIf(cond, then_e, else_e), end_pos)
+    }
+  } else if mode == mode_while {
+    let (cond, cn) = parse_recur(tokens, pos, 0)
+    let br = expect_tk(tokens, cn, "{")
+    let (body, end) = parse_recur(tokens, br, mode_block)
+    (EWhile(cond, body), end)
+  } else if mode == mode_handle {
+    let br = expect_tk(tokens, pos, "{")
+    let (body, bn) = parse_recur(tokens, br, mode_block)
+    let hb = expect_tk(tokens, bn, "{")
+    match peek(tokens, hb) {
+      TRBrace => (EHandle(body, empty_arms()), hb + 1),
+      _ => {
+        let b = ArrayBuilder::new()
+        let (fp, fa) = parse_pattern(tokens, hb)
+        let aa = expect_tk(tokens, fa, "=>")
+        let (fe, fn1) = parse_recur(tokens, aa, 0)
+        ArrayBuilder::push(b, (fp, fe))
+        parse_handle_rest(tokens, fn1, body, b, parse_recur)
+      }
+    }
+  } else if mode == mode_for_in {
+    match peek(tokens, pos) {
+      TIdent(first_name) => {
+        match peek(tokens, pos + 1) {
+          TComma => match peek(tokens, pos + 2) {
+            TIdent(second_name) => {
+              let ip = expect_tk(tokens, pos + 3, "in")
+              match parse_recur(tokens, ip, 0) {
+                (iterable, after_iter) => {
+                  let bb = expect_tk(tokens, after_iter, "{")
+                  let (body, end) = parse_recur(tokens, bb, mode_block)
+                  (EForIn(second_name, Some(first_name), iterable, body), end)
+                },
+                _ => throw("unreachable: parse_recur for for-in")
+              }
+            },
+            _ => throw("expected value binding name after ','")
+          },
+          _ => {
+            let ip = expect_tk(tokens, pos + 1, "in")
+            match parse_recur(tokens, ip, 0) {
+              (iterable, after_iter) => {
+                let bb = expect_tk(tokens, after_iter, "{")
+                let (body, end) = parse_recur(tokens, bb, mode_block)
+                (EForIn(first_name, None, iterable, body), end)
+              },
+              _ => throw("unreachable: parse_recur for for-in")
+            }
+          }
+        }
+      },
+      _ => throw("expected identifier after 'for'")
+    }
+  } else if mode == mode_block {
+    match peek(tokens, pos) {
+      TRBrace => (EUnit, pos + 1),
+      TEnum => {
+        let (enum_stmt, enum_end) = parse_enum_stmt(tokens, pos + 1, false)
+        let (rest, rend) = parse_recur(tokens, enum_end, mode_block)
+        match enum_stmt {
+          SEnum(_, _, variants) => {
+            let mut result = rest
+            let mut vi = Array::length(variants) - 1
+            while vi >= 0 {
+              let (vname, vfields) = Array::get(variants, vi)
+              if Array::length(vfields) == 0 {
+                result = ELet(vname, EInt(vi), result)
+              }
+              vi = vi - 1
+            }
+            (result, rend)
+          },
+          _ => (rest, rend)
+        }
+      },
+      TStruct => {
+        let (_, struct_end) = parse_struct_stmt(tokens, pos + 1, false)
+        parse_recur(tokens, struct_end, mode_block)
+      },
+      TLet => {
+        let next = pos + 1
+        match peek(tokens, next) {
+          TRec => match peek(tokens, next + 1) {
+            TIdent(name) => {
+              let eq_pos_r = match peek(tokens, next + 2) {
+                TColon => {
+                  let (_, tp) = parse_type_impl(tokens, next + 3, 0)
+                  tp
+                },
+                _ => next + 2
+              }
+              let eq = expect_tk(tokens, eq_pos_r, "=")
+              let val_pair = parse_recur(tokens, eq, 0)
+              let val = val_pair.0
+              let val_next = val_pair.1
+              let a = skip_semi(tokens, val_next)
+              let (body, end) = parse_recur(tokens, a, mode_block)
+              if end <= a {
+                throw("internal parser error: block let-rec parser did not advance")
+              } else {
+                (ELetRec(name, val, body), end)
+              }
+            },
+            _ => throw("expected identifier after 'let rec'")
+          },
+          TMut => match peek(tokens, next + 1) {
+            TIdent(name) => {
+              let eq_pos_m = match peek(tokens, next + 2) {
+                TColon => {
+                  let (_, tp) = parse_type_impl(tokens, next + 3, 0)
+                  tp
+                },
+                _ => next + 2
+              }
+              let eq = expect_tk(tokens, eq_pos_m, "=")
+              let val_pair = parse_recur(tokens, eq, 0)
+              let val = val_pair.0
+              let val_next = val_pair.1
+              let a = skip_semi(tokens, val_next)
+              let (body, end) = parse_recur(tokens, a, mode_block)
+              if end <= a {
+                throw("internal parser error: block let-mut parser did not advance")
+              } else {
+                (ELetMut(name, val, body), end)
+              }
+            },
+            _ => throw("expected identifier after 'let mut'")
+          },
+          TIdent(name) => {
+            let next_is_lbrace = match peek(tokens, next + 1) {
+              TLBrace => true,
+              _ => false
+            }
+            let next_is_lparen = match peek(tokens, next + 1) {
+              TLParen => true,
+              _ => false
+            }
+            if name == "record" && next_is_lbrace {
+              let (pat, pn) = parse_pattern(tokens, next)
+              let eq = expect_tk(tokens, pn, "=")
+              let val_pair = parse_recur(tokens, eq, 0)
+              let val = val_pair.0
+              let val_next = val_pair.1
+              let a = skip_semi(tokens, val_next)
+              let (body, end) = parse_recur(tokens, a, mode_block)
+              let val_name = "__rec_destr"
+              let mut desugar = body
+              match pat {
+                PTuple(field_pats) => {
+                  let mut di = Array::length(field_pats) - 1
+                  while di >= 0 {
+                    let fp = Array::get(field_pats, di)
+                    match fp {
+                      PBind(bname) => {
+                        desugar = ELet(bname, ECall(EIdent("__rec_field"), [EIdent(val_name), EInt(di)]), desugar)
+                      },
+                      PTuple(sub_pats) => {
+                        let sub_name = String::concat("__rec_sub_", __to_string(di))
+                        let mut si = Array::length(sub_pats) - 1
+                        while si >= 0 {
+                          match Array::get(sub_pats, si) {
+                            PBind(sname) => {
+                              desugar = ELet(sname, EDot(EIdent(sub_name), __to_string(si)), desugar)
+                            },
+                            _ => ()
+                          }
+                          si = si - 1
+                        }
+                        desugar = ELet(sub_name, ECall(EIdent("__rec_field"), [EIdent(val_name), EInt(di)]), desugar)
+                      },
+                      _ => ()
+                    }
+                    di = di - 1
+                  }
+                },
+                _ => ()
+              }
+              desugar = ELet(val_name, val, desugar)
+              (desugar, end)
+            } else if next_is_lparen {
+              let (pat, pn) = parse_pattern(tokens, next)
+              let eq = expect_tk(tokens, pn, "=")
+              let val_pair = parse_recur(tokens, eq, 0)
+              let val = val_pair.0
+              let val_next = val_pair.1
+              let a = skip_semi(tokens, val_next)
+              let (body, end) = parse_recur(tokens, a, mode_block)
+              if end <= a {
+                throw("internal parser error: block let-ctor-pat parser did not advance")
+              } else {
+                (EMatch(val, [(pat, body)]), end)
+              }
+            } else {
+              let eq_pos = match peek(tokens, next + 1) {
+                TColon => {
+                  let (_, tp) = parse_type_impl(tokens, next + 2, 0)
+                  tp
+                },
+                _ => next + 1
+              }
+              let eq = expect_tk(tokens, eq_pos, "=")
+              let val_pair = parse_recur(tokens, eq, 0)
+              let val = val_pair.0
+              let val_next = val_pair.1
+              let a = skip_semi(tokens, val_next)
+              let (body, end) = parse_recur(tokens, a, mode_block)
+              if end <= a {
+                throw("internal parser error: block let parser did not advance")
+              } else {
+                (ELet(name, val, body), end)
+              }
+            }
+          },
+          TLParen => {
+            let (pat, pn) = parse_pattern(tokens, next)
+            let eq = expect_tk(tokens, pn, "=")
+            let val_pair = parse_recur(tokens, eq, 0)
+            let val = val_pair.0
+            let val_next = val_pair.1
+            let a = skip_semi(tokens, val_next)
+            let (body, end) = parse_recur(tokens, a, mode_block)
+            if end <= a {
+              throw("internal parser error: block let-pat parser did not advance")
+            } else {
+              (EMatch(val, [(pat, body)]), end)
+            }
+          },
+          _ => throw("expected identifier after 'let'")
+        }
+      },
+      _ => {
+        let (e, next) = parse_recur(tokens, pos, 0)
+        if next <= pos {
+          throw("internal parser error: block expr parser did not advance")
+        } else {
+          parse_block_after_expr(tokens, next, e, parse_recur)
+        }
+      }
+    }
+  } else {
+    throw("internal parser error: unknown parse mode")
+  }
+}

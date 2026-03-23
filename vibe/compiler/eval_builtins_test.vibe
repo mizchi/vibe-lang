@@ -18,18 +18,30 @@ let _no_args = Array::slice([
   VUnit
 ], 0, 0)
 
+let bytes_value = (items: Array[Int]) -> Value {
+  let data = Bytes::new()
+  for item in items {
+    Bytes::push(data, item)
+  }
+  VBytes(data)
+}
+
 let expect_builtin_text = (name: String, args: Array[Value], expected: String) -> Unit {
   let value_opt = eval_builtin_call(name, args)
-  assert(Option::is_some(value_opt))
-  let value = Option::unwrap_or(value_opt, VUnit)
-  assert(value_to_string(value) == expected)
+  let value = match value_opt {
+    Some(v) => v,
+    None => { assert(false); VUnit }
+  }
+  assert_eq(value_to_string(value), expected)
 }
 
 let expect_builtin_value = (name: String, args: Array[Value], expected: Value) -> Unit {
   let value_opt = eval_builtin_call(name, args)
-  assert(Option::is_some(value_opt))
-  let value = Option::unwrap_or(value_opt, VUnit)
-  assert(values_equal(value, expected))
+  let value = match value_opt {
+    Some(v) => v,
+    None => { assert(false); VUnit }
+  }
+  assert_true(values_equal(value, expected))
 }
 
 //# Misc
@@ -142,7 +154,7 @@ test "not builtin" {
 }
 
 test "unknown returns None" {
-  assert(match eval_builtin_call("nonexistent_fn", [
+  assert_true(match eval_builtin_call("nonexistent_fn", [
     VUnit
   ]) {
     Some(_) => false,
@@ -156,7 +168,7 @@ test "Bytes::new" {
 
 test "Bytes::slice" {
   expect_builtin_text("Bytes::slice", [
-    VBytes([
+    bytes_value([
       10,
       20,
       30,
@@ -169,11 +181,11 @@ test "Bytes::slice" {
 
 test "Bytes::concat" {
   expect_builtin_text("Bytes::concat", [
-    VBytes([
+    bytes_value([
       1,
       2
     ]),
-    VBytes([
+    bytes_value([
       3,
       4
     ])
@@ -189,11 +201,37 @@ test "Bytes::to_array roundtrip" {
   let bytes_opt = eval_builtin_call("Bytes::from_array", [
     arr
   ])
-  assert(Option::is_some(bytes_opt))
-  let bytes = Option::unwrap_or(bytes_opt, VUnit)
+  let bytes = match bytes_opt { Some(v) => v, None => { assert(false); VUnit } }
   expect_builtin_text("Bytes::to_array", [
     bytes
   ], "[65, 66, 67]")
+}
+
+test "assert_true" {
+  expect_builtin_value("assert_true", [
+    VBool(true)
+  ], VUnit)
+}
+
+test "assert_eq same int" {
+  expect_builtin_value("assert_eq", [
+    VInt(42),
+    VInt(42)
+  ], VUnit)
+}
+
+test "assert_eq same string" {
+  expect_builtin_value("assert_eq", [
+    VString("hello"),
+    VString("hello")
+  ], VUnit)
+}
+
+test "assert_eq same bool" {
+  expect_builtin_value("assert_eq", [
+    VBool(true),
+    VBool(true)
+  ], VUnit)
 }
 
 test "sh builtin" {

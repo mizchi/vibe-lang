@@ -550,10 +550,6 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    @core.Expr::Raise(value~, span~) => {
-      let _ = span
-      "(throw " + expr_to_sexp(value, aliases) + ")"
-    }
     @core.Expr::Yield(expr~, span~) => {
       let _ = span
       "(yield " + expr_to_sexp(expr, aliases) + ")"
@@ -562,20 +558,8 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
       let _ = span
       "(spread " + expr_to_sexp(expr, aliases) + ")"
     }
-    @core.Expr::Perform(effect_name~, op_name~, args~, span~) => {
-      let _ = span
-      let buf = StringBuilder::new()
-      buf.write_string("(perform ")
-      buf.write_string(effect_name)
-      buf.write_char('.')
-      buf.write_string(op_name)
-      for arg in args {
-        buf.write_char(' ')
-        buf.write_string(expr_to_sexp(arg.expr, aliases))
-      }
-      buf.write_char(')')
-      buf.to_string()
-    }
+    // StringInterp is lowered in desugar; should never reach here
+    @core.Expr::StringInterp(..) => "(string-interp-unreachable)"
   }
 }
 

@@ -706,13 +706,22 @@ fn collect_for_in_helper_refs_expr(
       for arg in args {
         collect_for_in_helper_refs_expr(arg, bound, refs, on_name)
       }
-    @core.Expr::Raise(value~, ..) | @core.Expr::Yield(expr=value, ..) =>
+    @core.Expr::Yield(expr=value, ..) =>
       collect_for_in_helper_refs_expr(value, bound, refs, on_name)
     @core.Expr::Spread(expr~, ..) =>
       collect_for_in_helper_refs_expr(expr, bound, refs, on_name)
     @core.Expr::Perform(args~, ..) =>
       for arg in args {
         collect_for_in_helper_refs_expr(arg.expr, bound, refs, on_name)
+      }
+    // StringInterp is lowered in desugar; should never reach DCE
+    @core.Expr::StringInterp(parts~, ..) =>
+      for part in parts {
+        match part {
+          @core.StringInterpPart::Expr(e) =>
+            collect_for_in_helper_refs_expr(e, bound, refs, on_name)
+          @core.StringInterpPart::Lit(_) => ()
+        }
       }
   }
 }

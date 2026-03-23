@@ -1,0 +1,77 @@
+//# Imports
+
+import ./entry / compiler / file_compile {
+  compile_file_fs_module_cached
+}
+
+import ./entry / compiler / fs_compile {
+  prepare_modules_cached
+}
+
+import ./type_db.vibe {
+  db_merge_count, db_new, db_parse_count, db_typecheck_count
+}
+
+//# Functions
+
+let string_to_bytes = (s: String) -> Bytes {
+  let out = Array::slice([
+    0
+  ], 0, 0)
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+//# Misc
+
+test "prepare_modules_cached: warm prepare reuses typecheck cache" {
+  let helper_source = "export let add = (a: Int, b: Int) -> Int { a + b }"
+  let main_source = "import ./helpers.vibe { add }\nlet main = () -> Int { add(1, 2) }"
+  let sources = [
+    ("helpers.vibe", helper_source)
+  ]
+  let db1 = prepare_modules_cached(db_new(), "main.vibe", main_source, sources)
+  let count1 = db_typecheck_count(db1)
+  let db2 = prepare_modules_cached(db1, "main.vibe", main_source, sources)
+  assert(eq(db_typecheck_count(db2), count1))
+}
+
+test "prepare_modules_cached: warm prepare reuses parsed modules" {
+  let helper_source = "export let add = (a: Int, b: Int) -> Int { a + b }"
+  let main_source = "import ./helpers.vibe { add }\nlet main = () -> Int { add(1, 2) }"
+  let sources = [
+    ("helpers.vibe", helper_source)
+  ]
+  let db1 = prepare_modules_cached(db_new(), "main.vibe", main_source, sources)
+  let parse_count1 = db_parse_count(db1)
+  let db2 = prepare_modules_cached(db1, "main.vibe", main_source, sources)
+  assert(eq(db_parse_count(db2), parse_count1))
+}
+
+test "compile_file_fs_module_cached: warm compile reuses merged module cache" {
+  let helper_path = "/tmp/vibe_compiler_cache_helper.vibe"
+  let main_path = "/tmp/vibe_compiler_cache_main.vibe"
+  Fs::write_bytes(helper_path, string_to_bytes("export let add = (a: Int, b: Int) -> Int { a + b }"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./vibe_compiler_cache_helper.vibe { add }\nlet run = () -> Int { add(1, 2) }"))
+  let (_, db1) = compile_file_fs_module_cached(db_new(), main_path)
+  let merge_count1 = db_merge_count(db1)
+  let (_, db2) = compile_file_fs_module_cached(db1, main_path)
+  assert(eq(db_merge_count(db2), merge_count1))
+}
+
+test "compile_file_fs_module_cached: same merged source reuses merge cache across entry paths" {
+  let main_path1 = "/tmp/vibe_compiler_merge_cache_same_source_a.vibe"
+  let main_path2 = "/tmp/vibe_compiler_merge_cache_same_source_b.vibe"
+  let source = "let run = () -> Int { 1 + 2 }"
+  Fs::write_bytes(main_path1, string_to_bytes(source))
+  Fs::write_bytes(main_path2, string_to_bytes(source))
+  let (_, db1) = compile_file_fs_module_cached(db_new(), main_path1)
+  let merge_count1 = db_merge_count(db1)
+  let (_, db2) = compile_file_fs_module_cached(db1, main_path2)
+  assert(eq(db_merge_count(db2), merge_count1))
+}

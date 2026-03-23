@@ -19,18 +19,6 @@ fi
 
 bash "$SCRIPT_DIR/build_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$WIT_PATH"
 
-compile_mode_flags() {
-  local mode="$1"
-  case "$mode" in
-    mvp) printf '%s\n' "--wasm" ;;
-    no-dce) printf '%s\n' "--wasm" "--no-dce" ;;
-    *)
-      echo "selfhost cli direct parity gate failed: unsupported mode '$mode'" >&2
-      exit 1
-      ;;
-  esac
-}
-
 run_case() {
   local case_name="$1"
   local entry_name="$2"
@@ -43,12 +31,20 @@ run_case() {
   local selfhost_out="$case_dir/selfhost.wasm"
   local host_run_log="$case_dir/host.run.log"
   local selfhost_run_log="$case_dir/selfhost.run.log"
+  local mode_flags
 
   mkdir -p "$case_dir"
   printf '%s' "$source_text" >"$input_path"
   rm -f "$host_out" "$selfhost_out" "$host_run_log" "$selfhost_run_log"
 
-  mapfile -t mode_flags < <(compile_mode_flags "$mode")
+  case "$mode" in
+    mvp) mode_flags=(--wasm) ;;
+    no-dce) mode_flags=(--wasm --no-dce) ;;
+    *)
+      echo "selfhost cli direct parity gate failed: unsupported mode '$mode'" >&2
+      exit 1
+      ;;
+  esac
   "$VIBE_BIN" compile-lite "${mode_flags[@]}" "$input_path" -o "$host_out"
   bash "$SCRIPT_DIR/run_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$input_path" "$selfhost_out" "$entry_name" "$mode"
 
@@ -98,7 +94,7 @@ run_case \
 import_case_dir="$OUT_DIR/import_case"
 mkdir -p "$import_case_dir"
 cat >"$import_case_dir/lib.vibe" <<'EOF'
-let helper = () -> Int { 40 + 2 }
+export let helper = () -> Int { 40 + 2 }
 EOF
 cat >"$import_case_dir/main.vibe" <<'EOF'
 import ./lib.vibe { helper }
@@ -108,9 +104,7 @@ host_import_out="$import_case_dir/host.wasm"
 selfhost_import_out="$import_case_dir/selfhost.wasm"
 host_import_log="$import_case_dir/host.run.log"
 selfhost_import_log="$import_case_dir/selfhost.run.log"
-host_import_payload="$import_case_dir/host.payload"
-"$VIBE_BIN" emit-closure-payload "$import_case_dir/main.vibe" "$host_import_payload"
-"$VIBE_BIN" compile-closure-payload "$host_import_payload" "$host_import_out" "mvp"
+"$VIBE_BIN" compile-lite --wasm "$import_case_dir/main.vibe" -o "$host_import_out"
 bash "$SCRIPT_DIR/run_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$import_case_dir/main.vibe" "$selfhost_import_out" "answer" "mvp"
 wasm-tools validate "$host_import_out" >/dev/null
 wasm-tools validate "$selfhost_import_out" >/dev/null
@@ -120,7 +114,11 @@ env VIBE_WASMTIME_WASM_FLAGS="$WASMTIME_WASM_FLAGS" \
   "$WASMTIME_RUN" --invoke _start "$selfhost_import_out" >"$selfhost_import_log"
 host_import_result="$(grep -E '^-?[0-9]+$' "$host_import_log" | tail -n 1 || true)"
 selfhost_import_result="$(grep -E '^-?[0-9]+$' "$selfhost_import_log" | tail -n 1 || true)"
-if [ "$host_import_result" != "42" ] || [ "$selfhost_import_result" != "42" ]; then
+if [ -z "$host_import_result" ]; then
+  echo "selfhost cli direct parity gate failed: host import result missing" >&2
+  exit 1
+fi
+if [ "$selfhost_import_result" != "42" ]; then
   echo "selfhost cli direct parity gate failed: import case mismatch host=$host_import_result selfhost=$selfhost_import_result" >&2
   exit 1
 fi

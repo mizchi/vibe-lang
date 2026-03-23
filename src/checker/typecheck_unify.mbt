@@ -1,4 +1,16 @@
 ///|
+/// Check if a type contains any Named nodes (the only nodes normalize_type_inner transforms).
+/// Used to skip normalization walks for types that cannot change.
+fn type_has_named_node(ty : @core.Type) -> Bool {
+  type_tree_any(ty, fn(t) {
+    match t {
+      @core.Type::Named(..) => true
+      _ => false
+    }
+  })
+}
+
+///|
 fn normalize_type(env : TypeEnv, ty : @core.Type) -> @core.Type raise TypeError {
   normalize_type_with_mode(env, ty, false)
 }
@@ -152,38 +164,11 @@ fn normalize_type_with_mode(
   ty : @core.Type,
   expand_enum : Bool,
 ) -> @core.Type raise TypeError {
-  let resolved = resolve_type(env, ty)
-  // Fast path: ground types need no normalization
-  match resolved {
-    Int
-    | Float
-    | Double
-    | Bool
-    | Char
-    | String
-    | Path
-    | PromptText
-    | Unit
-    | StringBuilder
-    | Never
-    | Var(_)
-    | Param(_) => return resolved
-    _ => ()
-  }
-  normalize_type_cache_refresh(env)
-  match normalize_type_cache_lookup(env, resolved, expand_enum) {
-    Some(hit) => return hit
-    None => ()
-  }
-  let visiting : Map[String, Bool] = {}
-  let normalized = normalize_type_inner(env, resolved, visiting, expand_enum)
-  normalize_type_cache_store(env, resolved, normalized, expand_enum)
-  normalized
+  normalize_type_with_mode_resolved(env, resolve_type(env, ty), expand_enum)
 }
 
 ///|
-/// Like normalize_type_with_mode but skips the initial resolve_type call,
-/// assuming the caller has already resolved the type.
+/// Core normalization logic operating on an already-resolved type.
 fn normalize_type_with_mode_resolved(
   env : TypeEnv,
   resolved : @core.Type,
@@ -321,7 +306,72 @@ fn resolve_builtin_type_name(
       } else {
         None
       }
+    // WASM numeric primitives (kept as Named for codegen-level use)
+    "i64" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="i64", args=[]))
+      } else {
+        None
+      }
+    "u8" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="u8", args=[]))
+      } else {
+        None
+      }
+    "u16" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="u16", args=[]))
+      } else {
+        None
+      }
+    "u32" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="u32", args=[]))
+      } else {
+        None
+      }
+    "u64" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="u64", args=[]))
+      } else {
+        None
+      }
+    "i16" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="i16", args=[]))
+      } else {
+        None
+      }
+    "v128" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="v128", args=[]))
+      } else {
+        None
+      }
     _ => None
+  }
+}
+
+///|
+/// Check if a type name is a WASM opaque type that should not be expanded.
+fn is_wasm_opaque_type(name : String) -> Bool {
+  match name {
+    "anyref"
+    | "eqref"
+    | "i31ref"
+    | "structref"
+    | "arrayref"
+    | "funcref"
+    | "externref"
+    | "i64"
+    | "u8"
+    | "u16"
+    | "u32"
+    | "u64"
+    | "i16"
+    | "v128" => true
+    _ => false
   }
 }
 
@@ -355,6 +405,10 @@ fn normalize_type_inner(
         env.get_type_alias(name) is None &&
         env.get_enum_def(name) is None &&
         env.get_struct(name) is None {
+        return @core.Type::Named(name~, args=normalized_args)
+      }
+      // WASM opaque types (wasm ref types + numeric primitives) - preserve as-is
+      if normalized_args.is_empty() && is_wasm_opaque_type(name) {
         return @core.Type::Named(name~, args=normalized_args)
       }
       if visiting.contains(name) {
@@ -444,160 +498,142 @@ fn normalize_type_inner(
         normalized
       }
     }
-    @core.Type::Tuple(items) => {
-      let out : Array[@core.Type] = []
-      for item in items {
-        out.push(normalize_type_inner(env, item, visiting, expand_enum))
+    @core.Type::Tuple(items) =>
+      if not(type_has_named_node(ty)) {
+        ty
+      } else {
+        let out : Array[@core.Type] = []
+        for item in items {
+          out.push(normalize_type_inner(env, item, visiting, expand_enum))
+        }
+        @core.Type::Tuple(out)
       }
-      @core.Type::Tuple(out)
-    }
-    @core.Type::Record(fields) => {
-      let out : Map[String, @core.Type] = {}
-      for name, item in fields {
-        out[name] = normalize_type_inner(env, item, visiting, expand_enum)
+    @core.Type::Record(fields) =>
+      if not(type_has_named_node(ty)) {
+        ty
+      } else {
+        let out : Map[String, @core.Type] = {}
+        for name, item in fields {
+          out[name] = normalize_type_inner(env, item, visiting, expand_enum)
+        }
+        @core.Type::Record(out)
       }
-      @core.Type::Record(out)
-    }
     @core.Type::Array(inner) =>
-      @core.Type::Array(normalize_type_inner(env, inner, visiting, expand_enum))
-    @core.Type::Map(key, inner) =>
-      @core.Type::Map(
-        normalize_type_inner(env, key, visiting, expand_enum),
-        normalize_type_inner(env, inner, visiting, expand_enum),
-      )
-    @core.Type::ArrayBuilder(inner) =>
-      @core.Type::ArrayBuilder(
-        normalize_type_inner(env, inner, visiting, expand_enum),
-      )
-    @core.Type::MapBuilder(key, inner) =>
-      @core.Type::MapBuilder(
-        normalize_type_inner(env, key, visiting, expand_enum),
-        normalize_type_inner(env, inner, visiting, expand_enum),
-      )
-    @core.Type::Variant(fields) => {
-      let out : Map[String, @core.Type] = {}
-      for name, item in fields {
-        out[name] = normalize_type_inner(env, item, visiting, expand_enum)
+      if not(type_has_named_node(inner)) {
+        ty
+      } else {
+        @core.Type::Array(
+          normalize_type_inner(env, inner, visiting, expand_enum),
+        )
       }
-      @core.Type::Variant(out)
-    }
+    @core.Type::Map(key, inner) =>
+      if not(type_has_named_node(key)) && not(type_has_named_node(inner)) {
+        ty
+      } else {
+        @core.Type::Map(
+          normalize_type_inner(env, key, visiting, expand_enum),
+          normalize_type_inner(env, inner, visiting, expand_enum),
+        )
+      }
+    @core.Type::ArrayBuilder(inner) =>
+      if not(type_has_named_node(inner)) {
+        ty
+      } else {
+        @core.Type::ArrayBuilder(
+          normalize_type_inner(env, inner, visiting, expand_enum),
+        )
+      }
+    @core.Type::MapBuilder(key, inner) =>
+      if not(type_has_named_node(key)) && not(type_has_named_node(inner)) {
+        ty
+      } else {
+        @core.Type::MapBuilder(
+          normalize_type_inner(env, key, visiting, expand_enum),
+          normalize_type_inner(env, inner, visiting, expand_enum),
+        )
+      }
+    @core.Type::Variant(fields) =>
+      if not(type_has_named_node(ty)) {
+        ty
+      } else {
+        let out : Map[String, @core.Type] = {}
+        for name, item in fields {
+          out[name] = normalize_type_inner(env, item, visiting, expand_enum)
+        }
+        @core.Type::Variant(out)
+      }
     @core.Type::Param(_) => ty
     @core.Type::Var(_) => ty
-    @core.Type::Func(params~, ret~, effects~) => {
-      let out : Array[@core.FuncParam] = []
-      for param in params {
-        out.push(@core.FuncParam::{
-          name: param.name,
-          label: param.label,
-          ty: normalize_type_inner(env, param.ty, visiting, expand_enum),
-          bounds: param.bounds,
-        })
+    @core.Type::Func(params~, ret~, effects~) =>
+      if not(type_has_named_node(ty)) {
+        ty
+      } else {
+        let out : Array[@core.FuncParam] = []
+        for param in params {
+          out.push(@core.FuncParam::{
+            name: param.name,
+            label: param.label,
+            ty: normalize_type_inner(env, param.ty, visiting, expand_enum),
+            bounds: param.bounds,
+          })
+        }
+        @core.Type::Func(
+          params=out,
+          ret=normalize_type_inner(env, ret, visiting, expand_enum),
+          effects~,
+        )
       }
-      @core.Type::Func(
-        params=out,
-        ret=normalize_type_inner(env, ret, visiting, expand_enum),
-        effects~,
-      )
-    }
     _ => ty
   }
 }
 
 ///|
+/// Quick heuristic: could this type possibly contain a Ref?
+/// Returns true for user-defined Named types (aliases may hide Ref),
+/// false for builtins. Compound types recurse via type_tree_any.
 fn type_may_contain_scoped_ref_hint(ty : @core.Type) -> Bool {
-  match ty {
-    @core.Type::Named(name~, args~) => {
-      if name == "Ref" {
-        return true
-      }
-      // Builtin type names cannot contain Ref.
-      match name {
-        "Int"
-        | "i32"
-        | "Float"
-        | "f32"
-        | "Double"
-        | "f64"
-        | "Bool"
-        | "Char"
-        | "String"
-        | "@core.Path"
-        | "PromptText"
-        | "Unit"
-        | "StringBuilder"
-        | "Bytes" => return false
-        "Array" | "Map" | "ArrayBuilder" | "MapBuilder" => {
-          for arg in args {
-            if type_may_contain_scoped_ref_hint(arg) {
-              return true
-            }
-          }
-          return false
+  type_tree_any(ty, fn(t) {
+    match t {
+      @core.Type::Named(name~, ..) =>
+        match name {
+          "Ref" => true
+          "Int"
+          | "i32"
+          | "Float"
+          | "f32"
+          | "Double"
+          | "f64"
+          | "Bool"
+          | "Char"
+          | "String"
+          | "@core.Path"
+          | "PromptText"
+          | "Unit"
+          | "StringBuilder"
+          | "Bytes"
+          | "Array"
+          | "Map"
+          | "ArrayBuilder"
+          | "MapBuilder"
+          | "i64"
+          | "u8"
+          | "u16"
+          | "u32"
+          | "u64"
+          | "i16"
+          | "v128"
+          | "anyref"
+          | "eqref"
+          | "i31ref"
+          | "structref"
+          | "arrayref"
+          | "funcref"
+          | "externref" => false
+          _ => true
         }
-        _ => ()
-      }
-      for arg in args {
-        if type_may_contain_scoped_ref_hint(arg) {
-          return true
-        }
-      }
-      // User-defined named types/aliases may hide `Ref`.
-      true
+      _ => false
     }
-    @core.Type::Tuple(items) => {
-      for item in items {
-        if type_may_contain_scoped_ref_hint(item) {
-          return true
-        }
-      }
-      false
-    }
-    @core.Type::Record(fields) => {
-      for _, value in fields {
-        if type_may_contain_scoped_ref_hint(value) {
-          return true
-        }
-      }
-      false
-    }
-    @core.Type::Array(inner) | @core.Type::ArrayBuilder(inner) =>
-      type_may_contain_scoped_ref_hint(inner)
-    @core.Type::Map(_key, inner) | @core.Type::MapBuilder(_key, inner) =>
-      type_may_contain_scoped_ref_hint(inner)
-    @core.Type::Variant(ctors) => {
-      for _, payload_ty in ctors {
-        if type_may_contain_scoped_ref_hint(payload_ty) {
-          return true
-        }
-      }
-      false
-    }
-    @core.Type::Func(params~, ret~, ..) => {
-      if type_may_contain_scoped_ref_hint(ret) {
-        return true
-      }
-      for param in params {
-        if type_may_contain_scoped_ref_hint(param.ty) {
-          return true
-        }
-      }
-      false
-    }
-    @core.Type::Int
-    | @core.Type::Float
-    | @core.Type::Double
-    | @core.Type::Bool
-    | @core.Type::Char
-    | @core.Type::String
-    | @core.Type::Path
-    | @core.Type::PromptText
-    | @core.Type::Unit
-    | @core.Type::StringBuilder
-    | @core.Type::Bytes
-    | @core.Type::Param(_)
-    | @core.Type::Var(_)
-    | @core.Type::Never => false
-  }
+  })
 }
 
 ///|
@@ -834,59 +870,40 @@ fn type_contains_scoped_ref_inner_fast(
         }
       }
     @core.Type::Tuple(items) => {
-      let mut hit = false
       for item in items {
         if type_contains_scoped_ref_inner_fast(env, item, visiting, name_cache) {
-          hit = true
-          break
+          return true
         }
       }
-      hit
+      false
     }
-    @core.Type::Record(fields) => {
-      let mut hit = false
+    @core.Type::Record(fields) | @core.Type::Variant(fields) => {
       for _, value in fields {
         if type_contains_scoped_ref_inner_fast(env, value, visiting, name_cache) {
-          hit = true
-          break
+          return true
         }
       }
-      hit
+      false
     }
     @core.Type::Array(inner) | @core.Type::ArrayBuilder(inner) =>
       type_contains_scoped_ref_inner_fast(env, inner, visiting, name_cache)
     @core.Type::Map(_key, inner) | @core.Type::MapBuilder(_key, inner) =>
       type_contains_scoped_ref_inner_fast(env, inner, visiting, name_cache)
-    @core.Type::Variant(ctors) => {
-      let mut hit = false
-      for _, payload_ty in ctors {
-        if type_contains_scoped_ref_inner_fast(
-            env, payload_ty, visiting, name_cache,
-          ) {
-          hit = true
-          break
-        }
-      }
-      hit
-    }
     @core.Type::Func(params~, ret~, ..) => {
-      let mut hit = false
       if type_contains_scoped_ref_inner_fast(env, ret, visiting, name_cache) {
-        hit = true
-      } else {
-        for param in params {
-          if type_contains_scoped_ref_inner_fast(
-              env,
-              param.ty,
-              visiting,
-              name_cache,
-            ) {
-            hit = true
-            break
-          }
+        return true
+      }
+      for param in params {
+        if type_contains_scoped_ref_inner_fast(
+            env,
+            param.ty,
+            visiting,
+            name_cache,
+          ) {
+          return true
         }
       }
-      hit
+      false
     }
   }
 }
@@ -1281,7 +1298,11 @@ fn unify_types_inner(
       } else {
         let nl = normalize_type_expand_enum(env, left)
         let nr = normalize_type_expand_enum(env, right)
-        unify_types_inner(env, nl, nr, cache)
+        // If both are still Named after expansion (opaque types), they can't unify
+        match (nl, nr) {
+          (@core.Type::Named(..), @core.Type::Named(..)) => false
+          _ => unify_types_inner(env, nl, nr, cache)
+        }
       }
     (@core.Type::Var(id), t) => bind_var(env, id, t)
     (t, @core.Type::Var(id)) => bind_var(env, id, t)
@@ -1290,11 +1311,18 @@ fn unify_types_inner(
     (_, @core.Type::Param(_)) => false
     (@core.Type::Named(..), _) => {
       let nl = normalize_type_expand_enum(env, left)
-      unify_types_inner(env, nl, right, cache)
+      // If normalization didn't change the type (opaque Named), it can't unify
+      match nl {
+        @core.Type::Named(..) => false
+        _ => unify_types_inner(env, nl, right, cache)
+      }
     }
     (_, @core.Type::Named(..)) => {
       let nr = normalize_type_expand_enum(env, right)
-      unify_types_inner(env, left, nr, cache)
+      match nr {
+        @core.Type::Named(..) => false
+        _ => unify_types_inner(env, left, nr, cache)
+      }
     }
     (@core.Type::Int, @core.Type::Int) => true
     (@core.Type::Float, @core.Type::Float) => true
@@ -1497,58 +1525,41 @@ fn occurs_in(env : TypeEnv, id : Int, ty : @core.Type) -> Bool {
   match resolve_type(env, ty) {
     @core.Type::Var(other) => other == id
     @core.Type::Tuple(items) => {
-      let mut found = false
       for item in items {
         if occurs_in(env, id, item) {
-          found = true
-          break
+          return true
         }
       }
-      found
+      false
     }
-    @core.Type::Record(fields) => {
-      let mut found = false
+    @core.Type::Record(fields) | @core.Type::Variant(fields) => {
       for _, item in fields {
         if occurs_in(env, id, item) {
-          found = true
-          break
+          return true
         }
       }
-      found
+      false
     }
     @core.Type::Array(inner) => occurs_in(env, id, inner)
     @core.Type::Map(_key, inner) => occurs_in(env, id, inner)
-    @core.Type::Variant(fields) => {
-      let mut found = false
-      for _, item in fields {
-        if occurs_in(env, id, item) {
-          found = true
-          break
-        }
-      }
-      found
-    }
-    @core.Type::Named(name=_, args~) => {
-      let mut found = false
+    @core.Type::Named(args~, ..) => {
       for arg in args {
         if occurs_in(env, id, arg) {
-          found = true
-          break
+          return true
         }
       }
-      found
+      false
     }
-    @core.Type::Func(params~, ret~, effects=_) => {
-      let mut found = occurs_in(env, id, ret)
-      if not(found) {
-        for param in params {
-          if occurs_in(env, id, param.ty) {
-            found = true
-            break
-          }
+    @core.Type::Func(params~, ret~, ..) => {
+      if occurs_in(env, id, ret) {
+        return true
+      }
+      for param in params {
+        if occurs_in(env, id, param.ty) {
+          return true
         }
       }
-      found
+      false
     }
     _ => false
   }

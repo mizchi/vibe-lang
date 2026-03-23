@@ -323,6 +323,7 @@ test "roundtrip: trait def and trait impl" {
       Stmt::TraitDef(
         name="Printable",
         supertraits=["Show"],
+        methods=[],
         open_impl=true,
         exported=false,
         span=zero_span(),
@@ -693,8 +694,16 @@ test "roundtrip: let-pat and let-pat-else" {
         else_body=Module::{
           stmts: [
             Stmt::Expr(
-              expr=Expr::Raise(
-                value=Expr::String(value="none", span=zero_span()),
+              expr=Expr::Perform(
+                effect_name="Error",
+                op_name="Throw",
+                args=[
+                  CallArg::{
+                    label: None,
+                    expr: Expr::String(value="none", span=zero_span()),
+                    span: zero_span(),
+                  },
+                ],
                 span=zero_span(),
               ),
               span=zero_span(),
@@ -1190,12 +1199,20 @@ test "roundtrip: handle expression" {
 }
 
 ///|
-test "roundtrip: raise expression standalone" {
+test "roundtrip: raise expression standalone (desugared to Perform)" {
   let m = Module::{
     stmts: [
       Stmt::Expr(
-        expr=Expr::Raise(
-          value=Expr::String(value="fail", span=zero_span()),
+        expr=Expr::Perform(
+          effect_name="Error",
+          op_name="Throw",
+          args=[
+            CallArg::{
+              label: None,
+              expr: Expr::String(value="fail", span=zero_span()),
+              span: zero_span(),
+            },
+          ],
           span=zero_span(),
         ),
         span=zero_span(),
@@ -1494,6 +1511,7 @@ test "roundtrip: trait def with exported=true" {
       Stmt::TraitDef(
         name="Serializable",
         supertraits=[],
+        methods=[],
         open_impl=false,
         exported=true,
         span=zero_span(),

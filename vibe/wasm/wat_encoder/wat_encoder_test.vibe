@@ -193,3 +193,67 @@ test "roundtrip magic and sections" {
   // Verify it has multiple sections (type, func, memory, export, code, data = 6 sections)
   assert(Bytes::length(bytes) > 30)
 }
+
+test "f64 const" {
+  let bytes = compile("(module (func (export \"f\") (result f64) f64.const 3.14))")
+  assert(check_magic(bytes))
+  assert(check_sections_ordered(bytes))
+  assert(find_export(bytes, "f"))
+}
+
+test "f32 const" {
+  let bytes = compile("(module (func (export \"f\") (result f32) f32.const 1.5))")
+  assert(check_magic(bytes))
+  assert(check_sections_ordered(bytes))
+  assert(find_export(bytes, "f"))
+}
+
+test "f64 arithmetic" {
+  let bytes = compile("(module (func (export \"f\") (param f64 f64) (result f64) local.get 0 local.get 1 f64.add))")
+  assert(check_magic(bytes))
+  assert(find_export(bytes, "f"))
+}
+
+test "f32 compare" {
+  let bytes = compile("(module (func (export \"f\") (param f32 f32) (result i32) local.get 0 local.get 1 f32.lt))")
+  assert(check_magic(bytes))
+  assert(find_export(bytes, "f"))
+}
+
+test "float conversion" {
+  let bytes = compile("(module (func (export \"f\") (param i32) (result f64) local.get 0 f64.convert_i32_s))")
+  assert(check_magic(bytes))
+  assert(find_export(bytes, "f"))
+}
+
+test "table and elem" {
+  let wat = "(module (table 2 funcref) (func $a (result i32) i32.const 1) (func $b (result i32) i32.const 2) (elem (i32.const 0) $a $b))"
+  let bytes = compile(wat)
+  assert(check_magic(bytes))
+  assert(check_sections_ordered(bytes))
+}
+
+test "call_indirect" {
+  let wat = "(module (type (func (result i32))) (table 2 funcref) (func $f (result i32) i32.const 42) (elem (i32.const 0) $f) (func (export \"main\") (result i32) i32.const 0 call_indirect 0))"
+  let bytes = compile(wat)
+  assert(check_magic(bytes))
+  assert(check_sections_ordered(bytes))
+}
+
+test "br_table" {
+  let bytes = compile("(module (func (export \"f\") (param i32) (result i32) (block (block (block (local.get 0) (br_table 0 1 2)) (return (i32.const 10))) (return (i32.const 20))) (i32.const 30)))")
+  assert(check_magic(bytes))
+  assert(find_export(bytes, "f"))
+}
+
+test "i64 sub-word load" {
+  let bytes = compile("(module (memory 1) (func (export \"f\") (result i64) i32.const 0 i64.load8_u))")
+  assert(check_magic(bytes))
+  assert(find_export(bytes, "f"))
+}
+
+test "f64 load store" {
+  let bytes = compile("(module (memory 1) (func (export \"f\") (param f64) i32.const 0 local.get 0 f64.store))")
+  assert(check_magic(bytes))
+  assert(find_export(bytes, "f"))
+}

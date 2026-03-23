@@ -1,6 +1,15 @@
 ///|
 /// CLI entry logic for vibe
 pub fn run(args : Array[String]) -> Unit {
+  let internal_parent_pid = internal_parent_pid_env()
+  match internal_parent_pid {
+    Some(parent_pid) => {
+      vibe_worker_process_group_init()
+      vibe_worker_parent_watchdog_start(parent_pid)
+    }
+    None => ()
+  }
+  defer vibe_worker_parent_watchdog_stop()
   let parsed = match parse_cli_dispatch_args(args) {
     Ok(v) => v
     Err(_) => {
@@ -82,6 +91,12 @@ extern "C" fn vibe_parallel_cleanup_register_child_pid(pid : Int) = "vibe_parall
 
 ///|
 extern "C" fn vibe_parallel_cleanup_unregister_child_pid(pid : Int) = "vibe_parallel_cleanup_unregister_child_pid"
+
+///|
+extern "C" fn vibe_parallel_cleanup_assign_child_process_group(pid : Int) = "vibe_parallel_cleanup_assign_child_process_group"
+
+///|
+extern "C" fn vibe_worker_process_group_init() = "vibe_worker_process_group_init"
 
 ///|
 extern "C" fn vibe_worker_parent_watchdog_start(parent_pid : Int) = "vibe_worker_parent_watchdog_start"
@@ -1531,8 +1546,6 @@ fn expr_uses_wasm_runtime_fallback_builtins(expr : @vibe_core.Expr) -> Bool {
       }
       false
     }
-    @vibe_core.Expr::Raise(value~, ..) =>
-      expr_uses_wasm_runtime_fallback_builtins(value)
     @vibe_core.Expr::Yield(expr~, ..) =>
       expr_uses_wasm_runtime_fallback_builtins(expr)
     @vibe_core.Expr::Handle(body~, arms~, ..) => {
@@ -1685,7 +1698,6 @@ fn expr_uses_http_builtins(expr : @vibe_core.Expr) -> Bool {
       }
       false
     }
-    @vibe_core.Expr::Raise(value~, ..) => expr_uses_http_builtins(value)
     @vibe_core.Expr::Yield(expr~, ..) => expr_uses_http_builtins(expr)
     @vibe_core.Expr::Handle(body~, arms~, ..) => {
       if module_uses_http_builtins(body) {
@@ -1866,7 +1878,9 @@ fn run_cmd_wasm_linked(
   let ast = @frontend.rewrite_effect_handles(desugared)
   let codegen_linked : Array[(String, String, Int, Int)] = []
   for li in cached_imports {
-    codegen_linked.push((li.module_name, li.func_name, li.param_count, li.return_count))
+    codegen_linked.push(
+      (li.module_name, li.func_name, li.param_count, li.return_count),
+    )
   }
   let (bundled, _) = @runtime.bundle_for_wasm_linked_with_imports(
     ast, cached_imports,
@@ -1903,13 +1917,21 @@ fn run_cmd_wasm_linked(
       for flag in runner.wasi_flags {
         cmd = cmd + " -S " + shell_quote_command_arg(flag)
       }
-      cmd = cmd + " --preload " + shell_quote_command_arg(li.module_name) + "=" + shell_quote_command_arg(lib_path)
+      cmd = cmd +
+        " --preload " +
+        shell_quote_command_arg(li.module_name) +
+        "=" +
+        shell_quote_command_arg(lib_path)
       cmd = cmd + " --invoke _start " + shell_quote_command_arg(wasm_path)
     }
   }
   let out_path = wasm_path + ".out"
   let err_path = wasm_path + ".err"
-  let full_cmd = cmd + " >" + shell_quote_command_arg(out_path) + " 2>" + shell_quote_command_arg(err_path)
+  let full_cmd = cmd +
+    " >" +
+    shell_quote_command_arg(out_path) +
+    " 2>" +
+    shell_quote_command_arg(err_path)
   let status = c_system(system_command_bytes(full_cmd))
   let stdout = @os_fs.read_file_to_string(out_path) catch { _ => "" }
   let stderr = @os_fs.read_file_to_string(err_path) catch { _ => "" }
@@ -2976,7 +2998,9 @@ fn build_compiled_test_batch_source(
       "() } { Error(_e) => 1 }\n",
     )
     out.write_string(
-      "if __test_result_" + i_str + " != 0 { __test_failures = __test_failures + 1 }\n",
+      "if __test_result_" +
+      i_str +
+      " != 0 { __test_failures = __test_failures + 1 }\n",
     )
   }
   out.write_string("__test_failures\n")
@@ -3151,16 +3175,14 @@ fn run_test_file_compiled_with_cache(
         "write batch source failed: " + e.to_string(),
       )
   }
-  let (batch_db, batch_entry) = match load_compiled_test_case_db(
-    batch_source_path,
-  ) {
+  let (batch_db, batch_entry) = match
+    load_compiled_test_case_db(batch_source_path) {
     Err(_err) => {
       remove_file_if_exists(batch_source_path)
       // Fallback to per-case execution on batch compile failure
       return run_test_file_compiled_per_case(
-        cases, source, top_level_source, wrapper_prelude_source, parent,
-        stamp, runner, http_runner, use_http_host_runner,
-        stop_on_first_failure,
+        cases, source, top_level_source, wrapper_prelude_source, parent, stamp, runner,
+        http_runner, use_http_host_runner, stop_on_first_failure,
       )
     }
     Ok(v) => v
@@ -3178,9 +3200,8 @@ fn run_test_file_compiled_with_cache(
       }
       // Fallback to per-case execution on batch compile failure
       return run_test_file_compiled_per_case(
-        cases, source, top_level_source, wrapper_prelude_source, parent,
-        stamp, runner, http_runner, use_http_host_runner,
-        stop_on_first_failure,
+        cases, source, top_level_source, wrapper_prelude_source, parent, stamp, runner,
+        http_runner, use_http_host_runner, stop_on_first_failure,
       )
     }
   }
@@ -3207,10 +3228,7 @@ fn run_test_file_compiled_with_cache(
     // Parse failure count from stdout "last: N"
     let stdout = run_out.stdout.trim().to_string()
     if stdout.has_prefix("last: ") {
-      let num_str = stdout.unsafe_substring(
-        start=6,
-        end=stdout.length(),
-      )
+      let num_str = stdout.unsafe_substring(start=6, end=stdout.length())
       let parsed : Result[Int, _] = try? @strconv.parse_int(num_str)
       match parsed {
         Ok(n) => n
@@ -3230,7 +3248,7 @@ fn run_test_file_compiled_with_cache(
     failures.push(CliTestFailure::{
       name: Some("batch"),
       error: fail_count.to_string() +
-        " test(s) failed in batch mode; run with VIBE_TEST_BACKEND=interpreter for details",
+      " test(s) failed in batch mode; run with VIBE_TEST_BACKEND=interpreter for details",
     })
     CompiledTestAttempt::Success({
       total: cases.length(),
@@ -3241,8 +3259,8 @@ fn run_test_file_compiled_with_cache(
   } else if fail_count >= cases.length() {
     // All failed or wasmtime crashed — fallback to per-case for details
     run_test_file_compiled_per_case(
-      cases, source, top_level_source, wrapper_prelude_source, parent,
-      stamp, runner, http_runner, use_http_host_runner, stop_on_first_failure,
+      cases, source, top_level_source, wrapper_prelude_source, parent, stamp, runner,
+      http_runner, use_http_host_runner, stop_on_first_failure,
     )
   } else {
     CompiledTestAttempt::Success({
@@ -3280,8 +3298,7 @@ fn run_test_file_compiled_per_case(
     let source_path = base + ".vibe"
     let wasm_path = base + ".wasm"
     let outcome = run_compiled_test_case(
-      runner, http_runner, use_http_host_runner, source_path, wasm_path,
-      case_source,
+      runner, http_runner, use_http_host_runner, source_path, wasm_path, case_source,
     )
     remove_file_if_exists(source_path)
     remove_file_if_exists(wasm_path)
@@ -3635,6 +3652,7 @@ fn test_cmd_report_json(
   entry_paths : Array[String],
   features : @runtime.RuntimeFeatureFlags,
 ) -> Unit {
+  vibe_worker_process_group_init()
   let worker_parent_pid = test_worker_parent_pid()
   match worker_parent_pid {
     Some(parent_pid) => vibe_worker_parent_watchdog_start(parent_pid)
@@ -3688,8 +3706,8 @@ fn parse_report_json_int(json : Json, key : String) -> Int {
 }
 
 ///|
-fn test_worker_parent_pid() -> Int? {
-  match @sys.get_env_var("VIBE_INTERNAL_TEST_PARENT_PID") {
+fn parse_internal_parent_pid_env(env_name : String) -> Int? {
+  match @sys.get_env_var(env_name) {
     Some(raw) => {
       let pid = @strconv.parse_int(raw) catch { _ => 0 }
       if pid > 1 {
@@ -3700,6 +3718,19 @@ fn test_worker_parent_pid() -> Int? {
     }
     None => None
   }
+}
+
+///|
+fn internal_parent_pid_env() -> Int? {
+  match parse_internal_parent_pid_env("VIBE_INTERNAL_PARENT_PID") {
+    Some(pid) => Some(pid)
+    None => parse_internal_parent_pid_env("VIBE_INTERNAL_TEST_PARENT_PID")
+  }
+}
+
+///|
+fn test_worker_parent_pid() -> Int? {
+  internal_parent_pid_env()
 }
 
 ///|
@@ -4476,6 +4507,7 @@ fn test_cmd_parallel(
           stderr=w_err,
           cancel_handler=@async_process.hard_cancel(),
         )
+        vibe_parallel_cleanup_assign_child_process_group(child.pid)
         vibe_parallel_cleanup_register_child_pid(child.pid)
         defer vibe_parallel_cleanup_unregister_child_pid(child.pid)
         let stdout_task = group.spawn(() => {
@@ -6714,14 +6746,14 @@ fn build_cmd_release(entry : String, out_path : String?) -> Unit {
   // Try -Oz optimization; fall back to unoptimized if wite doesn't support
   // the generated opcodes (e.g., exceptions/try_table).
   let optimized : Result[Bytes, _] = try? @runtime_compile.compile_module_wasm_with_opt_level(
-    db, resolved_entry, opt_level=Some("-Oz"),
+    db,
+    resolved_entry,
+    opt_level=Some("-Oz"),
   )
   let wasm_bytes = match optimized {
     Ok(bytes) => bytes
     Err(_) =>
-      @runtime_compile.compile_module_wasm_with_opt_level(
-        db, resolved_entry,
-      ) catch {
+      @runtime_compile.compile_module_wasm_with_opt_level(db, resolved_entry) catch {
         e => abort("build: " + e.user_message())
       }
   }
@@ -6729,7 +6761,13 @@ fn build_cmd_release(entry : String, out_path : String?) -> Unit {
     e => abort("build: write failed: " + e.to_string())
   }
   let size = wasm_bytes.length()
-  println("build --release: wrote " + resolved_out + " (" + size.to_string() + " bytes)")
+  println(
+    "build --release: wrote " +
+    resolved_out +
+    " (" +
+    size.to_string() +
+    " bytes)",
+  )
 }
 
 ///|
@@ -6779,9 +6817,7 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
       }
       let saved_hashes = parse_source_hash_cache(hash_text)
       for path, saved_hash in saved_hashes {
-        let current_source = @os_fs.read_file_to_string(path) catch {
-          _ => ""
-        }
+        let current_source = @os_fs.read_file_to_string(path) catch { _ => "" }
         if current_source.length() > 0 {
           let current_hash = @vibe_core.content_address_hash_string(
             current_source,
@@ -6811,7 +6847,9 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
     let cached_imports = parse_linked_imports_cache(cached_text)
     let codegen_linked : Array[(String, String, Int, Int)] = []
     for li in cached_imports {
-      codegen_linked.push((li.module_name, li.func_name, li.param_count, li.return_count))
+      codegen_linked.push(
+        (li.module_name, li.func_name, li.param_count, li.return_count),
+      )
     }
     // Parse + desugar + codegen (no import resolution, no typecheck)
     let raw_ast = @parser.parse_ast(source) catch {
@@ -6820,14 +6858,16 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
     let desugared = @frontend.desugar_method_calls(raw_ast, {})
     let ast = @frontend.rewrite_effect_handles(desugared)
     // Resolve type definitions from entry's ReExport chains (standalone, no db)
-    let extra_type_stmts = collect_reexport_type_stmts_standalone(resolved, raw_ast)
-    let (bundled, _) = @runtime.bundle_for_wasm_linked_with_imports(
-      ast, cached_imports, extra_type_stmts~,
+    let extra_type_stmts = collect_reexport_type_stmts_standalone(
+      resolved, raw_ast,
     )
-    let maybe_wasm = try Some(
-      @runtime_compile.emit_wasm_with_linked_imports(
-        bundled, codegen_linked,
-      ),
+    let (bundled, _) = @runtime.bundle_for_wasm_linked_with_imports(
+      ast,
+      cached_imports,
+      extra_type_stmts~,
+    )
+    let maybe_wasm = Some(
+      @runtime_compile.emit_wasm_with_linked_imports(bundled, codegen_linked),
     ) catch {
       _ => None
     }
@@ -6843,7 +6883,9 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
           Err(err) => abort("build: " + err)
         }
         let (wasm, imports) = @runtime_compile.compile_module_wasm_linked(
-          db, resolved_entry, debug_errors=true,
+          db,
+          resolved_entry,
+          debug_errors=true,
         ) catch {
           e => abort("build --debug: " + e.user_message())
         }
@@ -6861,13 +6903,17 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
       Err(err) => abort("build: " + err)
     }
     let (wasm, imports) = @runtime_compile.compile_module_wasm_linked(
-      db, resolved_entry, debug_errors=true,
+      db,
+      resolved_entry,
+      debug_errors=true,
     ) catch {
       e => abort("build --debug: " + e.user_message())
     }
     // Save linked imports cache
     if not(@os_fs.path_exists(cache_dir)) {
-      let _ = c_system(system_command_bytes("mkdir -p " + shell_quote_command_arg(cache_dir)))
+      let _ = c_system(
+        system_command_bytes("mkdir -p " + shell_quote_command_arg(cache_dir)),
+      )
     }
     let cache_text = serialize_linked_imports_cache(imports)
     @os_fs.write_string_to_file(imports_cache_path, cache_text) catch {
@@ -6895,7 +6941,13 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
   if preload_parts.length() > 0 {
     let preload_str = preload_parts
       .iter()
-      .fold(init="", fn(acc, s) { if acc.length() > 0 { acc + " " + s } else { s } })
+      .fold(init="", fn(acc, s) {
+        if acc.length() > 0 {
+          acc + " " + s
+        } else {
+          s
+        }
+      })
     println("  run: wasmtime " + preload_str + " " + resolved_out)
   }
 }
@@ -6911,6 +6963,39 @@ fn save_library_modules(
   for li in imports {
     module_names[li.module_name] = true
   }
+  if module_names.contains(@runtime.prelude_core_module_name()) {
+    let mod_name = @runtime.prelude_core_module_name()
+    let lib_wasm_path = cache_dir + "/" + mod_name + ".wasm"
+    let maybe_lib_bytes = Some(
+      @runtime_compile.emit_library_module_wasm(
+        @runtime.prelude_core_library_module(),
+        debug_errors=true,
+      ),
+    ) catch {
+      e => {
+        println(
+          "build --debug: warning: library compile failed for " +
+          mod_name +
+          ": " +
+          e.user_message(),
+        )
+        None
+      }
+    }
+    match maybe_lib_bytes {
+      Some(lib_bytes) =>
+        @os_fs.write_bytes_to_file(lib_wasm_path, lib_bytes) catch {
+          e =>
+            println(
+              "build --debug: warning: write failed for " +
+              mod_name +
+              ": " +
+              e.to_string(),
+            )
+        }
+      None => ()
+    }
+  }
   let db_imports = db.imports(entry)
   for imp in db_imports {
     let mod_name = @runtime.linked_module_name(imp.path)
@@ -6919,16 +7004,30 @@ fn save_library_modules(
     }
     let lib_wasm_path = cache_dir + "/" + mod_name + ".wasm"
     let lib_bytes = @runtime_compile.compile_module_wasm_with_opt_level(
-      db, imp.path, no_dce=true, library_mode=true, debug_errors=true,
+      db,
+      imp.path,
+      no_dce=true,
+      library_mode=true,
+      debug_errors=true,
     ) catch {
       e => {
-        println("build --debug: warning: library compile failed for " + mod_name + ": " + e.user_message())
+        println(
+          "build --debug: warning: library compile failed for " +
+          mod_name +
+          ": " +
+          e.user_message(),
+        )
         continue
       }
     }
     @os_fs.write_bytes_to_file(lib_wasm_path, lib_bytes) catch {
       e => {
-        println("build --debug: warning: write failed for " + mod_name + ": " + e.to_string())
+        println(
+          "build --debug: warning: write failed for " +
+          mod_name +
+          ": " +
+          e.to_string(),
+        )
         continue
       }
     }
@@ -6996,9 +7095,7 @@ fn collect_reexport_types_recursive(
   let source_text = @os_fs.read_file_to_string(source_path) catch {
     _ => return
   }
-  let source_ast = @parser.parse_ast(source_text) catch {
-    _ => return
-  }
+  let source_ast = @parser.parse_ast(source_text) catch { _ => return }
   for stmt in source_ast.stmts {
     match stmt {
       @vibe_core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
@@ -7029,7 +7126,12 @@ fn collect_reexport_types_recursive(
         }
         if inner_wanted.size() > 0 {
           collect_reexport_types_recursive(
-            source_path, inner_source, inner_wanted, result, found, depth + 1,
+            source_path,
+            inner_source,
+            inner_wanted,
+            result,
+            found,
+            depth + 1,
           )
         }
       }
@@ -7057,9 +7159,11 @@ fn serialize_linked_imports_cache(
 }
 
 ///|
+
 ///|
 /// Spawn background `vibe build --debug` to create linked cache for next run.
 /// Only spawns if no cache exists yet. The background process is fire-and-forget.
+
 ///|
 /// Find the nearest parent .vibe directory for cache hoisting.
 /// Returns (vibe_dir_path, cache_key) where cache_key is the relative path
@@ -7071,6 +7175,7 @@ fn serialize_linked_imports_cache(
 ///   - cache_key = "wasm_wasm_runtime_foo"
 ///
 /// If no .vibe found, falls back to entry's parent directory.
+
 ///|
 /// `vibe clean [path]` — remove debug linked build cache.
 /// If path is given, clean cache for that file. Otherwise clean all debug cache.
@@ -7082,9 +7187,9 @@ fn clean_cmd(args : Array[String]) -> Unit {
     let (vibe_root, cache_key) = find_vibe_cache_root(resolved)
     let cache_dir = vibe_root + "/debug/" + cache_key
     if @os_fs.path_exists(cache_dir) {
-      let _ = c_system(system_command_bytes(
-        "rm -rf " + shell_quote_command_arg(cache_dir),
-      ))
+      let _ = c_system(
+        system_command_bytes("rm -rf " + shell_quote_command_arg(cache_dir)),
+      )
       println("clean: removed " + cache_dir)
     } else {
       println("clean: no cache for " + entry)
@@ -7099,9 +7204,9 @@ fn clean_cmd(args : Array[String]) -> Unit {
         @os_fs.path_exists(vibe_dir + "/cache.json") {
         let debug_dir = vibe_dir + "/debug"
         if @os_fs.path_exists(debug_dir) {
-          let _ = c_system(system_command_bytes(
-            "rm -rf " + shell_quote_command_arg(debug_dir),
-          ))
+          let _ = c_system(
+            system_command_bytes("rm -rf " + shell_quote_command_arg(debug_dir)),
+          )
           println("clean: removed " + debug_dir)
         } else {
           println("clean: no debug cache in " + vibe_dir)
@@ -7147,7 +7252,10 @@ fn find_vibe_cache_root(entry_path : String) -> (String, String) {
       @os_fs.path_exists(vibe_dir + "/cache.json") {
       // Compute relative path from dir to entry for cache key
       let rel = if entry_dir.length() > dir.length() + 1 {
-        entry_dir.unsafe_substring(start=dir.length() + 1, end=entry_dir.length())
+        entry_dir.unsafe_substring(
+          start=dir.length() + 1,
+          end=entry_dir.length(),
+        )
       } else {
         ""
       }
@@ -7191,7 +7299,10 @@ fn maybe_create_linked_cache_background(entry_path : String) -> Unit {
     Some(bin) if bin.has_suffix("vibe.exe") || bin.has_suffix("vibe") => bin
     _ => return // can't find self
   }
-  let cmd = shell_quote_command_arg(self_bin) +
+  let cmd = "VIBE_INTERNAL_PARENT_PID=" +
+    vibe_getpid().to_string() +
+    " " +
+    shell_quote_command_arg(self_bin) +
     " build --debug " +
     shell_quote_command_arg(entry_path) +
     " -o /dev/null >/dev/null 2>&1 &"
@@ -7246,9 +7357,7 @@ fn parse_source_hash_cache(text : String) -> Map[String, String] {
 }
 
 ///|
-fn parse_linked_imports_cache(
-  text : String,
-) -> Array[@runtime.LinkedImport] {
+fn parse_linked_imports_cache(text : String) -> Array[@runtime.LinkedImport] {
   let out : Array[@runtime.LinkedImport] = []
   for line_view in text.split("\n") {
     let line = line_view.to_string().trim().to_string()

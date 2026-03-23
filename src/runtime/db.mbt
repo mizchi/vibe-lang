@@ -34,6 +34,7 @@ pub struct VibeDbQueries {
   cst_query : @ripple.Query[String, @cst.SyntaxNode]
   ast_query : @ripple.Query[String, HashedModule] // Uses structural hash for Eq
   type_query : @ripple.Query[String, @checker.TypeEnv]
+  type_import_query : @ripple.Query[String, @checker.TypeEnv]
   simple_type_query : @ripple.Query[String, @checker.TypeEnv]
   import_query : @ripple.Query[String, Array[ImportSpec]]
 }

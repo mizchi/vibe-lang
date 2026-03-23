@@ -55,6 +55,20 @@ fn value_kind_from_type(ctx : CodegenCtx, ty : @core.Type) -> ValueKind {
 }
 
 ///|
+fn linked_funcref_key(import_idx : Int) -> Int {
+  -import_idx - 1
+}
+
+///|
+fn decode_funcref_func_index(func_import_count : Int, key : Int) -> Int {
+  if key < 0 {
+    -key - 1
+  } else {
+    func_import_count + key
+  }
+}
+
+///|
 fn ensure_funcref_slot(ctx : CodegenCtx, func_idx : Int) -> Int {
   match ctx.fn_table_slots.get(func_idx) {
     Some(slot) => slot
@@ -318,7 +332,8 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
     // listen/accept/request_* + respond
     count += 12
   }
-  count += ctx.effect_op_imports.length()
+  // Exclude handled effect ops (they use throw/catch, not imports)
+  count += ctx.effect_op_imports.length() - ctx.effect_handled_ops.length()
   count += ctx.linked_fn_imports_list.length()
   count
 }
@@ -405,7 +420,7 @@ fn infer_expr_kind_with(
       let pos_args = extract_positional_exprs(args, name)
       match name {
         "add" | "sub" | "mul" | "div" | "eq" | "lt" => ValueKind::I64
-        "__index" => ValueKind::I64
+        "__index" | "__len" => ValueKind::I64
         "__add" | "__sub" | "__mul" | "__div" | "__mod" => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("arity: " + name)
@@ -516,7 +531,7 @@ fn infer_expr_kind_with(
         | "arrayref_eq"
         | "funcref_eq"
         | "externref_eq" => ValueKind::I64
-        "__eq" | "__lt" => ValueKind::I64
+        "__eq" | "__lt" | "__assert_eq" => ValueKind::I64
         "__to_string" =>
           if ctx.use_js_strings {
             ValueKind::ExternRef
@@ -639,7 +654,6 @@ fn infer_expr_kind_with(
       try_kind
     }
     @core.Expr::Match(scrutinee~, arms~, span~) => {
-      let _ = scrutinee
       let _ = span
       if arms.length() == 0 {
         ValueKind::I64
@@ -647,10 +661,16 @@ fn infer_expr_kind_with(
         // Infer type from the first arm's expression
         let arm = arms[0]
         let arm_locals = locals.copy()
-        let bindings : Array[String] = []
-        collect_pat_bindings_codegen(arm.pat, bindings)
-        for name in bindings {
-          arm_locals[name] = ValueKind::I64
+        let scrut_kind = infer_expr_kind_with(ctx, scrutinee, locals)
+        let binding_kinds : Map[String, ValueKind] = {}
+        collect_pat_binding_kinds_codegen(
+          ctx,
+          arm.pat,
+          scrut_kind,
+          binding_kinds,
+        )
+        for name, kind in binding_kinds {
+          arm_locals[name] = kind
         }
         infer_expr_kind_with(ctx, arm.expr, arm_locals)
       }
@@ -715,11 +735,6 @@ fn infer_expr_kind_with(
       let _ = span
       ValueKind::I64
     }
-    @core.Expr::Raise(value~, span~) => {
-      let _ = value
-      let _ = span
-      ValueKind::I64
-    }
     @core.Expr::Yield(expr~, span~) => {
       let _ = expr
       let _ = span
@@ -735,6 +750,7 @@ fn infer_expr_kind_with(
       let _ = span
       raise WasmGenError::Unsupported("spread outside array literal")
     }
+    @core.Expr::StringInterp(..) => ValueKind::I64 // string = tagged i64
   }
 }
 
@@ -1130,9 +1146,20 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "Fs::read_file" ||
         name == "Fs::write_file" ||
         name == "Fs::write_bytes" ||
+        name == "Bytes::new" ||
         name == "Bytes::from_array" ||
+        name == "Bytes::from_string" ||
+        name == "Bytes::to_string" ||
         name == "Bytes::length" ||
         name == "Bytes::get" ||
+        name == "Bytes::set" ||
+        name == "Bytes::push" ||
+        name == "Bytes::append" ||
+        name == "Bytes::blit" ||
+        name == "Bytes::fill" ||
+        name == "Bytes::slice" ||
+        name == "Bytes::concat" ||
+        name == "Bytes::to_array" ||
         name == "Fs::exists" ||
         name == "Fs::stat_token" ||
         name == "Socket::tcp_connect" ||
@@ -1240,10 +1267,6 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         }
       }
       result
-    }
-    @core.Expr::Raise(value~, span~) => {
-      let _ = span
-      needs_heap_expr(ctx, value)
     }
     @core.Expr::Yield(expr~, span~) => {
       let _ = span
@@ -1964,7 +1987,6 @@ fn expr_always_returns_tuple(
       }
       true
     }
-    @core.Expr::Raise(..) => true // never returns, vacuously compatible
     @core.Expr::Call(name~, ..) =>
       // Self-recursive call or call to known multi-value function with matching arity
       name == self_name ||

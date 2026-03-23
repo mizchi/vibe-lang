@@ -85,10 +85,24 @@ pub(all) struct RecordFieldPat {
 } derive(Show, Eq)
 
 ///|
+pub(all) enum StringInterpPart {
+  Lit(String)
+  Expr(Expr)
+} derive(Show, Eq)
+
+///|
 pub(all) struct MatchArm {
   pat : Pat
   cond : Expr?
   expr : Expr
+  span : Span
+} derive(Show, Eq)
+
+///|
+pub(all) struct TraitMethodSig {
+  name : String
+  params : Array[FuncParam]
+  ret : Type
   span : Span
 } derive(Show, Eq)
 
@@ -171,6 +185,7 @@ pub(all) enum Stmt {
   TraitDef(
     name~ : String,
     supertraits~ : Array[String],
+    methods~ : Array[TraitMethodSig],
     open_impl~ : Bool,
     exported~ : Bool,
     span~ : Span
@@ -222,6 +237,7 @@ pub(all) enum Stmt {
   InternalTraitDef(
     name~ : String,
     supertraits~ : Array[String],
+    methods~ : Array[TraitMethodSig],
     open_impl~ : Bool,
     span~ : Span
   )
@@ -275,6 +291,8 @@ pub(all) enum Expr {
   Bool(value~ : Bool, span~ : Span)
   Char(value~ : Char, span~ : Span)
   String(value~ : String, span~ : Span)
+  /// String interpolation: `"hello ${name}"` → parts = [Lit("hello "), Expr(__to_string(name))]
+  StringInterp(parts~ : Array[StringInterpPart], span~ : Span)
   Ident(name~ : String, span~ : Span)
   Placeholder(index~ : Int, span~ : Span) // _ placeholder for lambda shorthand
   Call(
@@ -311,7 +329,6 @@ pub(all) enum Expr {
   Loop(params~ : Array[LoopParam], body~ : Module, span~ : Span)
   Break(value~ : Expr?, span~ : Span)
   Continue(args~ : Array[Expr], span~ : Span)
-  Raise(value~ : Expr, span~ : Span)
   Yield(expr~ : Expr, span~ : Span)
   Handle(body~ : Module, arms~ : Array[MatchArm], span~ : Span)
   StructLit(
@@ -371,6 +388,7 @@ pub fn Expr::span(self : Expr) -> Span {
     | Expr::Bool(span~, ..)
     | Expr::Char(span~, ..)
     | Expr::String(span~, ..)
+    | Expr::StringInterp(span~, ..)
     | Expr::Ident(span~, ..)
     | Expr::Placeholder(span~, ..)
     | Expr::Call(span~, ..)
@@ -388,7 +406,6 @@ pub fn Expr::span(self : Expr) -> Span {
     | Expr::Loop(span~, ..)
     | Expr::Break(span~, ..)
     | Expr::Continue(span~, ..)
-    | Expr::Raise(span~, ..)
     | Expr::Yield(span~, ..)
     | Expr::Handle(span~, ..)
     | Expr::StructLit(span~, ..)

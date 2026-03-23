@@ -1024,6 +1024,13 @@ fn emit_memory_copy(buf : ByteBuf) -> Unit {
 }
 
 ///|
+fn emit_memory_fill(buf : ByteBuf) -> Unit {
+  buf.push((0xFC).to_byte()) // prefix
+  write_u32_leb(buf, 11) // memory.fill
+  buf.push((0).to_byte()) // memory 0
+}
+
+///|
 /// Convert i32 comparison result (0/1) on stack to tagged i64 bool.
 /// Replaces the 5-instruction pattern: extend_i32_s, const 2, shl, const tag_bool, or
 fn emit_tag_bool_from_i32(buf : ByteBuf) -> Unit {

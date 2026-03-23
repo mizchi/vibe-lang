@@ -295,10 +295,6 @@ pub fn walk_expr_refs(
         walk_expr_refs(arg, bound, refs, on_name)
       }
     }
-    Expr::Raise(value~, span~) => {
-      let _ = span
-      walk_expr_refs(value, bound, refs, on_name)
-    }
     Expr::Yield(expr~, span~) => {
       let _ = span
       walk_expr_refs(expr, bound, refs, on_name)
@@ -313,6 +309,15 @@ pub fn walk_expr_refs(
       let _ = op_name
       for arg in args {
         walk_expr_refs(arg.expr, bound, refs, on_name)
+      }
+    }
+    Expr::StringInterp(parts~, span~) => {
+      let _ = span
+      for part in parts {
+        match part {
+          StringInterpPart::Expr(e) => walk_expr_refs(e, bound, refs, on_name)
+          StringInterpPart::Lit(_) => ()
+        }
       }
     }
   }

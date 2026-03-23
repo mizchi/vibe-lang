@@ -31,19 +31,57 @@ test "parse string slice s[:j] desugars to __slice with 0 start" {
 }
 
 ///|
-test "parse string slice s[i:] desugars to block with String::length" {
+test "parse string slice s[i:] desugars to block with __len" {
   let module_ = parse_ast("let x = s[1:]")
   match module_.stmts[0] {
-    @core.Stmt::Let(name="x", expr=@core.Expr::Block(..), ..) => ()
+    @core.Stmt::Let(name="x", expr=@core.Expr::Block(body~, ..), ..) => {
+      let temp_name = match body.stmts[0] {
+        @core.Stmt::Let(name~, ..) => name
+        _ => fail("expected temp let in s[i:] block")
+      }
+      match body.stmts[1] {
+        @core.Stmt::Expr(expr=@core.Expr::Call(name="__slice", args~, ..), ..) =>
+          match args[2].expr {
+            @core.Expr::Call(name="__len", args=len_args, ..) => {
+              assert_eq(len_args.length(), 1)
+              match len_args[0].expr {
+                @core.Expr::Ident(name~, ..) => assert_eq(name, temp_name)
+                _ => fail("expected __len temp ident")
+              }
+            }
+            _ => fail("expected __len call")
+          }
+        _ => fail("expected __slice expr in s[i:] block")
+      }
+    }
     _ => fail("expected let with block expr for s[i:]")
   }
 }
 
 ///|
-test "parse string slice s[:] desugars to full copy" {
+test "parse string slice s[:] desugars to full copy via __len" {
   let module_ = parse_ast("let x = s[:]")
   match module_.stmts[0] {
-    @core.Stmt::Let(name="x", expr=@core.Expr::Block(..), ..) => ()
+    @core.Stmt::Let(name="x", expr=@core.Expr::Block(body~, ..), ..) => {
+      let temp_name = match body.stmts[0] {
+        @core.Stmt::Let(name~, ..) => name
+        _ => fail("expected temp let in s[:] block")
+      }
+      match body.stmts[1] {
+        @core.Stmt::Expr(expr=@core.Expr::Call(name="__slice", args~, ..), ..) =>
+          match args[2].expr {
+            @core.Expr::Call(name="__len", args=len_args, ..) => {
+              assert_eq(len_args.length(), 1)
+              match len_args[0].expr {
+                @core.Expr::Ident(name~, ..) => assert_eq(name, temp_name)
+                _ => fail("expected __len temp ident")
+              }
+            }
+            _ => fail("expected __len call")
+          }
+        _ => fail("expected __slice expr in s[:] block")
+      }
+    }
     _ => fail("expected let with block expr for s[:]")
   }
 }

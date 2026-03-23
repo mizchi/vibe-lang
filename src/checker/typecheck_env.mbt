@@ -61,7 +61,7 @@ pub struct ScopedRefProfile {
 
 ///|
 pub struct TypeEnv {
-  bindings : ScopedMap[TypeScheme]
+  bindings : @scoped_map.ScopedMap[TypeScheme]
   addr_types : Map[String, @core.Type]
   enum_defs : Map[String, EnumDef]
   struct_defs : Map[String, StructDef]
@@ -73,8 +73,8 @@ pub struct TypeEnv {
   traits : Map[String, TraitDefInfo]
   trait_impls : Map[String, Array[TraitImplDef]]
   fn_versions : Map[String, ApiSemver]
-  purities : ScopedMap[Bool]
-  purity_tiers : ScopedMap[TopLevelPurityTier]
+  purities : @scoped_map.ScopedMap[Bool]
+  purity_tiers : @scoped_map.ScopedMap[TopLevelPurityTier]
   expr_types : Map[Int64, @core.Type]
   num_vars : Map[Int, Bool]
   var_trait_bounds : Map[Int, Array[String]]
@@ -130,7 +130,7 @@ pub struct TypeEnv {
 ///|
 pub fn TypeEnv::new() -> TypeEnv {
   let env : TypeEnv = {
-    bindings: ScopedMap::new(),
+    bindings: @scoped_map.ScopedMap::new(),
     addr_types: {},
     enum_defs: {},
     struct_defs: {},
@@ -141,8 +141,8 @@ pub fn TypeEnv::new() -> TypeEnv {
     traits: {},
     trait_impls: {},
     fn_versions: {},
-    purities: ScopedMap::new(),
-    purity_tiers: ScopedMap::new(),
+    purities: @scoped_map.ScopedMap::new(),
+    purity_tiers: @scoped_map.ScopedMap::new(),
     expr_types: {},
     num_vars: {},
     var_trait_bounds: {},
@@ -197,13 +197,14 @@ pub fn TypeEnv::new() -> TypeEnv {
 fn register_builtin_effects(env : TypeEnv) -> Unit {
   // Error effect
   let error_ops : Map[String, @core.EffectOpSig] = {}
+  // Accept any type that implements the Error trait (String, suberror, etc.)
   error_ops["Throw"] = @core.EffectOpSig::{
-    params: [@core.Type::String],
+    params: [@core.Type::Param("E")],
     ret: @core.Type::Never,
   }
   env.effect_defs["Error"] = @core.EffectDef_::{
     name: "Error",
-    params: [],
+    params: ["E"],
     ops: error_ops,
   }
   // Fs effect (maps to builtin Fs::* calls)
@@ -398,7 +399,7 @@ fn register_builtin_effects(env : TypeEnv) -> Unit {
 ///|
 pub fn TypecheckSession::new_env(self : TypecheckSession) -> TypeEnv {
   let env : TypeEnv = {
-    bindings: ScopedMap::new(),
+    bindings: @scoped_map.ScopedMap::new(),
     addr_types: {},
     enum_defs: {},
     struct_defs: {},
@@ -409,8 +410,8 @@ pub fn TypecheckSession::new_env(self : TypecheckSession) -> TypeEnv {
     traits: {},
     trait_impls: {},
     fn_versions: {},
-    purities: ScopedMap::new(),
-    purity_tiers: ScopedMap::new(),
+    purities: @scoped_map.ScopedMap::new(),
+    purity_tiers: @scoped_map.ScopedMap::new(),
     expr_types: {},
     num_vars: {},
     var_trait_bounds: {},

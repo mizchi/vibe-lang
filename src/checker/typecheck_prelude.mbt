@@ -1,6 +1,6 @@
 ///|
 fn clone_env(env : TypeEnv) -> TypeEnv {
-  env.fork_for_check()
+  env.fork_for_expr()
 }
 
 ///|

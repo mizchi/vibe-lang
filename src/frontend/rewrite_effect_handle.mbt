@@ -55,13 +55,7 @@ fn reh_rewrite_stmt(stmt : @core.Stmt) -> @core.Stmt {
 ///|
 fn reh_rewrite_expr(expr : @core.Expr) -> @core.Expr {
   match expr {
-    // Desugar: perform Error::Throw(msg) → throw(msg) (Raise)
-    @core.Expr::Perform(effect_name="Error", op_name="Throw", args~, span~) =>
-      if args.length() >= 1 {
-        @core.Expr::Raise(value=reh_rewrite_expr(args[0].expr), span~)
-      } else {
-        @core.Expr::Raise(value=@core.Expr::String(value="", span~), span~)
-      }
+    // perform Error::Throw(msg) flows through as Perform (unified with Raise)
     // Desugar: perform Fs::Op(args) → Fs::builtin(args)
     @core.Expr::Perform(effect_name="Fs", op_name~, args~, span~) => {
       let builtin_name = match op_name {
@@ -308,7 +302,10 @@ fn reh_extract_resume_expr(expr : @core.Expr) -> @core.Expr {
       if stmts.length() > 0 {
         let last = stmts[stmts.length() - 1]
         match last {
-          @core.Stmt::Expr(expr=@core.Expr::Call(name="__resume", args~, ..), ..) =>
+          @core.Stmt::Expr(
+            expr=@core.Expr::Call(name="__resume", args~, ..),
+            ..
+          ) =>
             if args.length() == 1 {
               // Replace last stmt with just the resume arg value
               let new_stmts : Array[@core.Stmt] = []
@@ -316,11 +313,10 @@ fn reh_extract_resume_expr(expr : @core.Expr) -> @core.Expr {
                 new_stmts.push(stmts[i])
               }
               let last_span = last.span()
-              new_stmts.push(@core.Stmt::Expr(expr=args[0].expr, span=last_span))
-              @core.Expr::Block(
-                body=@core.Module::{ stmts: new_stmts },
-                span~,
+              new_stmts.push(
+                @core.Stmt::Expr(expr=args[0].expr, span=last_span),
               )
+              @core.Expr::Block(body=@core.Module::{ stmts: new_stmts }, span~)
             } else {
               expr
             }
@@ -390,13 +386,34 @@ fn reh_rewrite_handle(
   } else {
     // Tail-resumptive: inline handler at perform sites
     let rewritten_body = reh_replace_performs(body, effect_handlers)
-    if error_arms.length() > 0 {
-      @core.Expr::Handle(body=rewritten_body, arms=error_arms, span~)
-    } else {
-      // Pure effect handling — just a block
-      @core.Expr::Block(body=rewritten_body, span~)
+    // Reconstruct effect handler arms for codegen (cross-function dispatch)
+    let all_arms : Array[@core.MatchArm] = []
+    for _key, handler in effect_handlers {
+      all_arms.push({
+        pat: reh_handler_to_pat(handler, span),
+        cond: None,
+        expr: handler.raw_expr,
+        span,
+      })
     }
+    for arm in error_arms {
+      all_arms.push(arm)
+    }
+    // Always keep Handle for cross-function dispatch via try-catch
+    @core.Expr::Handle(body=rewritten_body, arms=all_arms, span~)
   }
+}
+
+///|
+fn reh_handler_to_pat(handler : EffectHandler, span : @core.Span) -> @core.Pat {
+  let args : Array[@core.Pat] = handler.param_names.map(fn(name) {
+    if name == "_" {
+      @core.Pat::Wildcard(span~)
+    } else {
+      @core.Pat::Bind(name~, span~)
+    }
+  })
+  @core.Pat::Ctor(name=handler.key, args~, span~)
 }
 
 ///|
@@ -1053,7 +1070,12 @@ fn reh_rewrite_resume_to_k_stmt(
 ) -> @core.Stmt {
   match stmt {
     @core.Stmt::Let(rec~, name~, expr~, span~) =>
-      @core.Stmt::Let(rec~, name~, expr=reh_rewrite_resume_to_k(expr, k_name), span~)
+      @core.Stmt::Let(
+        rec~,
+        name~,
+        expr=reh_rewrite_resume_to_k(expr, k_name),
+        span~,
+      )
     @core.Stmt::Expr(expr~, span~) =>
       @core.Stmt::Expr(expr=reh_rewrite_resume_to_k(expr, k_name), span~)
     @core.Stmt::LetMut(name~, expr~, span~) =>

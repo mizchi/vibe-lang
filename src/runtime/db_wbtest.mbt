@@ -815,3 +815,86 @@ test "preparsed import cache is ignored after source changes" {
   assert_eq(imports.length(), 1)
   assert_eq(imports[0].path, "/project/lib/b.vibe")
 }
+
+///|
+test "type import query backdates when dependency private impl changes" {
+  let db = VibeDb::new()
+  db.set_source(
+    "/project/lib.vibe",
+    "let helper = 1\n" + "export let value = helper\n",
+  )
+  db.set_source(
+    "/project/main.vibe",
+    "import ./lib.vibe { value }\n" + "let x = value\n" + "x\n",
+  )
+  let _ = db.types("/project/main.vibe")
+  let lib_type_changed_1 = match
+    db.queries.type_query.changed_at("/project/lib.vibe") {
+    Some(rev) => rev.get()
+    None => fail("expected lib type_query revision")
+  }
+  let lib_import_changed_1 = match
+    db.queries.type_import_query.changed_at("/project/lib.vibe") {
+    Some(rev) => rev.get()
+    None => fail("expected lib type_import_query revision")
+  }
+  let main_type_changed_1 = match
+    db.queries.type_query.changed_at("/project/main.vibe") {
+    Some(rev) => rev.get()
+    None => fail("expected main type_query revision")
+  }
+  db.set_source(
+    "/project/lib.vibe",
+    "let helper = 2 - 1\n" + "export let value = helper\n",
+  )
+  let _ = db.types("/project/main.vibe")
+  let lib_type_changed_2 = match
+    db.queries.type_query.changed_at("/project/lib.vibe") {
+    Some(rev) => rev.get()
+    None => fail("expected lib type_query revision after update")
+  }
+  let lib_import_changed_2 = match
+    db.queries.type_import_query.changed_at("/project/lib.vibe") {
+    Some(rev) => rev.get()
+    None => fail("expected lib type_import_query revision after update")
+  }
+  let main_type_changed_2 = match
+    db.queries.type_query.changed_at("/project/main.vibe") {
+    Some(rev) => rev.get()
+    None => fail("expected main type_query revision after update")
+  }
+  assert_true(lib_type_changed_2 > lib_type_changed_1)
+  assert_eq(lib_import_changed_2, lib_import_changed_1)
+  assert_eq(main_type_changed_2, main_type_changed_1)
+}
+
+///|
+test "downstream type query does not re-run on dependency private impl change" {
+  let db = VibeDb::new()
+  db.set_source(
+    "/project/lib.vibe",
+    "let helper = 1\n" + "export let value = helper\n",
+  )
+  db.set_source(
+    "/project/main.vibe",
+    "import ./lib.vibe { value, value }\n" + "let x = value\n" + "x\n",
+  )
+  let _ = db.types("/project/main.vibe")
+  let duplicate_count_1 = db
+    .diagnostics("/project/main.vibe")
+    .iter()
+    .filter(fn(diag) { diag.message == "duplicate declaration: value" })
+    .count()
+  assert_eq(duplicate_count_1, 1)
+  db.set_source(
+    "/project/lib.vibe",
+    "let helper = 2 - 1\n" + "export let value = helper\n",
+  )
+  let _ = db.types("/project/main.vibe")
+  let duplicate_count_2 = db
+    .diagnostics("/project/main.vibe")
+    .iter()
+    .filter(fn(diag) { diag.message == "duplicate declaration: value" })
+    .count()
+  assert_eq(duplicate_count_2, 1)
+}
