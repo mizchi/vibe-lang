@@ -16,7 +16,7 @@ jobs:
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
           ./actionlint -color
 
-  test:
+  contract-moon:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -26,6 +26,38 @@ jobs:
         run: |
           curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+
+      - name: Cache MoonBit build
+        uses: actions/cache@v4
+        with:
+          path: |
+            _build
+            .mooncakes
+          key: moonbit-${{ runner.os }}-${{ hashFiles('moon.mod.json', 'src/**/*.mbt') }}
+          restore-keys: moonbit-${{ runner.os }}-
+
+      - name: Install just
+        run: curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+
+      - name: Moon update
+        run: moon update
+
+      - name: PR contract checks (MoonBit/js)
+        run: just ci-contract-moon
+
+  contract-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install MoonBit CLI
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+
+      - name: Install just
+        run: curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
 
       - name: Cache MoonBit build
         uses: actions/cache@v4
@@ -46,60 +78,48 @@ jobs:
       - name: Moon update
         run: moon update
 
-      - name: Moon check
-        run: moon check --target js
+      - name: PR contract checks (native/runtime)
+        run: just ci-contract-native
 
-      - name: Moon test
-        run: moon test --target js
+  native-binary-parity:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Install wasmtime
+      - name: Install MoonBit CLI
         run: |
-          curl -fsSL https://wasmtime.dev/install.sh | bash
-          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
 
-      - name: Install wasm-tools
-        run: |
-          curl -LO https://github.com/bytecodealliance/wasm-tools/releases/download/v1.245.1/wasm-tools-1.245.1-x86_64-linux.tar.gz
-          tar xzf wasm-tools-1.245.1-x86_64-linux.tar.gz
-          sudo mv wasm-tools-1.245.1-x86_64-linux/wasm-tools /usr/local/bin/
+      - name: Install just
+        run: curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
 
-      - name: Build vibe CLI (native release)
-        run: VIBE_CLI_RELEASE=1 bash -c 'source scripts/ensure_native_cli.sh'
+      - name: Cache MoonBit build
+        uses: actions/cache@v4
+        with:
+          path: |
+            _build
+            .mooncakes
+          key: moonbit-${{ runner.os }}-${{ hashFiles('moon.mod.json', 'src/**/*.mbt') }}
+          restore-keys: moonbit-${{ runner.os }}-
 
-      - name: Fixture isolation test (crash/timeout detection)
-        continue-on-error: true
-        run: scripts/test_fixtures_isolation.sh
+      - name: Cache vibe linked build
+        uses: actions/cache@v4
+        with:
+          path: vibe/.vibe/debug
+          key: vibe-debug-${{ runner.os }}-${{ hashFiles('vibe/**/*.vibe') }}
+          restore-keys: vibe-debug-${{ runner.os }}-
 
-      - name: Build parity test (debug vs release)
-        continue-on-error: true
-        run: scripts/test_build_parity.sh
+      - name: Moon update
+        run: moon update
 
-      - name: Linked debug build test (selfhost compiler)
-        continue-on-error: true
-        run: scripts/test_linked_debug_build.sh
-
-      - name: Vibe normalize check
-        continue-on-error: true
-        run: |
-          moon build --target native src/cmd/vibe --warn-list '-29'
-          start_ts=$(date +%s%N)
-          scripts/vibe_normalize_all.sh --check examples vibe
-          end_ts=$(date +%s%N)
-          elapsed_ms=$(( (end_ts - start_ts) / 1000000 ))
-          file_count=$(find examples vibe -name '*.vibe' -type f | grep -cEv '^examples/wasm/')
-          {
-            echo "### Normalize Benchmark"
-            echo "| Metric | Value |"
-            echo "|--------|-------|"
-            echo "| Files | ${file_count} |"
-            echo "| Total | ${elapsed_ms}ms |"
-          } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$file_count" -gt 0 ]; then
-            avg_us=$(( elapsed_ms * 1000 / file_count ))
-            echo "| Per-file avg | ${avg_us}us |" >> "$GITHUB_STEP_SUMMARY"
-          fi
+      - name: Native binary parity checks
+        run: just ci-native-binary-parity
 
   bundle-size-compiler:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -132,6 +152,7 @@ jobs:
         run: scripts/bench_compiler_bundle_size.sh
 
   bundle-size-product-gate:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -216,7 +237,13 @@ jobs:
         run: ./scripts/test_wasm_vibe_wasmtime.sh wasm/vibe/vibe.wasm
 
   wasm-codegen-quick:
+    if: github.event_name == 'push'
+    name: wasm-codegen-quick (${{ matrix.shard }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [core, compare, http]
     steps:
       - uses: actions/checkout@v4
       - name: Install MoonBit CLI
@@ -227,6 +254,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: Install just
+        run: curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
       - name: Cache MoonBit build
         uses: actions/cache@v4
         with:
@@ -246,48 +275,10 @@ jobs:
         run: |
           curl -fsSL https://wasmtime.dev/install.sh | bash
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
-      - name: Check moon info regen cycle
-        continue-on-error: true
-        run: bash scripts/test_moon_info_regen.sh
       - name: Build vibe CLI (native)
         run: VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
-      - name: Validate selfhost probe wasm fixture
-        continue-on-error: true
-        run: ./scripts/test_selfhost_probe_wasm_validate.sh
-      - name: Golden WAT snapshot tests
-        continue-on-error: true
-        run: ./scripts/test_golden_wat.sh
-      - name: Check vibe vs vibe_wasm compare parity
-        continue-on-error: true
-        run: ./scripts/test_vibe_wasm_compare.sh
-      - name: WASI HTTP P3 blocked gate
-        continue-on-error: true
-        run: |
-          VIBE_WASI_HTTP_P3_REQUIRE_READY=0 \
-          VIBE_WASI_HTTP_P3_RUN_COMPOSE=0 \
-          ./scripts/test_wasi_http_p3_blocked_gate.sh
-      - name: WASI P3 E2E
-        continue-on-error: true
-        run: ./scripts/test_wasi_p3_e2e.sh
-      - name: Check HTTP builtin wasm fallback
-        continue-on-error: true
-        run: ./scripts/test_http_wasm_fallback.sh
-      - name: Check HTTP builtin wasm host-import path
-        continue-on-error: true
-        run: ./scripts/test_http_wasm_host_imports.sh
-      - name: Check compiled backend HTTP policy
-        continue-on-error: true
-        run: ./scripts/test_compiled_backend_http_policy.sh
-      - name: Check component import contract
-        continue-on-error: true
-        run: ./scripts/test_component_import_contract.sh
-      - name: HTTP P3 handler gate
-        continue-on-error: true
-        run: ./scripts/test_http_p3_handler_gate.sh
-      - name: wasm_opt minify_zlib regression
-        continue-on-error: true
-        run: |
-          _build/native/debug/build/cmd/vibe/vibe.exe test vibe/wasm/wasm_opt/minify_zlib_test.vibe
+      - name: Run wasm quick shard (${{ matrix.shard }})
+        run: just ci-wasm-quick-shard ${{ matrix.shard }}
 
   wasm-compile-e2e:
     runs-on: ubuntu-latest
@@ -343,7 +334,13 @@ jobs:
         run: ./scripts/test_wasm_compile_wasmtime.sh
 
   selfhost-gates:
+    if: github.event_name == 'push'
+    name: selfhost-gates (${{ matrix.shard }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [bootstrap, cli, check, coverage]
     steps:
       - uses: actions/checkout@v4
       - name: Install MoonBit CLI
@@ -395,28 +392,8 @@ jobs:
         run: curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
       - name: Build vibe CLI (native)
         run: VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
-      - name: Selfhost release gate bundle
-        continue-on-error: true
-        run: just release-selfhost-gates
-      - name: Selfhost WASI HTTP boundary gate
-        continue-on-error: true
-        run: ./scripts/test_selfhost_wasi_http_boundary.sh
-      - name: Selfhost check parity snapshot gate
-        continue-on-error: true
-        run: |
-          VIBE_CHECK_PARITY_REQUIRE_PARITY=1 \
-          ./scripts/test_selfhost_check_parity.sh
-      - name: Selfhost perf KPI gate
-        continue-on-error: true
-        run: |
-          VIBE_SELFHOST_PERF_RUNS=1 \
-          VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt \
-          VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=2.5 \
-          VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=0.8 \
-          ./scripts/bench_selfhost_perf.sh
-      - name: Selfhost suite coverage gate
-        continue-on-error: true
-        run: just coverage-selfhost-suite-gate
+      - name: Run selfhost gate shard (${{ matrix.shard }})
+        run: just ci-selfhost-gates-shard ${{ matrix.shard }}
 
   e2e-component:
     runs-on: ubuntu-latest
@@ -459,15 +436,9 @@ jobs:
           wasm-tools --version
 
       - name: Run Component E2E tests
-        continue-on-error: true
         run: ./scripts/test_component_e2e.sh
 
-      - name: WASI P3 E2E (compile + compose + validate)
-        continue-on-error: true
-        run: ./scripts/test_wasi_p3_e2e.sh
-
       - name: Run Codegen Unsupported Syntax tests
-        continue-on-error: true
         run: ./scripts/test_codegen_unsupported.sh
 
   selfhost-examples:
@@ -502,44 +473,7 @@ jobs:
 
       - name: Selfhost examples compile+run
         if: steps.selfhost_build.outcome == 'success'
-        run: |
-          SELFHOST_WASM=_build/dist/selfhost_compiler.wasm
-          mkdir -p _build/s1test
-          ok=0; fail=0; total=0
-          # Keep CI aligned with the currently supported selfhost smoke surface.
-          examples=(
-            examples/async.vibe
-            examples/module_export.vibe
-            examples/module_types_export.vibe
-          )
-          for f in "${examples[@]}"; do
-            name=$(basename "$f" .vibe)
-            total=$((total + 1))
-            rm -f "_build/s1test/${name}.wasm"
-            compile_out=$(VIBE_PREOPEN_DIR="$(pwd)" bash scripts/run_wasm_vibe_host_runner.sh \
-              "$SELFHOST_WASM" "$f" "_build/s1test/${name}.wasm" "run" 2>&1 || true)
-            if [ -f "_build/s1test/${name}.wasm" ] && [ "$(wc -c < "_build/s1test/${name}.wasm")" -gt 100 ]; then
-              run_result=$(wasmtime run -W exceptions=y --invoke run "_build/s1test/${name}.wasm" 2>&1 || true)
-              if echo "$run_result" | grep -q "^0$\|^warning"; then
-                ok=$((ok + 1))
-              else
-                fail=$((fail + 1))
-                echo "::error::$name: run failed"
-              fi
-            else
-              fail=$((fail + 1))
-              echo "::error::$name: compile failed — $(echo "$compile_out" | tail -1)"
-            fi
-          done
-          {
-            echo "### Selfhost Examples"
-            echo "| Metric | Value |"
-            echo "|--------|-------|"
-            echo "| Total | $total |"
-            echo "| Pass | $ok |"
-            echo "| Fail | $fail |"
-          } >> "$GITHUB_STEP_SUMMARY"
-          [ "$fail" -eq 0 ] || exit 1
+        run: just ci-selfhost-examples-smoke
 
       - name: Selfhost runtime fixtures
         if: always()
