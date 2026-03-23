@@ -21,6 +21,11 @@ fi
 
 failed=0
 passed=0
+skipped=0
+test_index=0
+
+SHARD_INDEX="${SHARD_INDEX:-0}"
+SHARD_TOTAL="${SHARD_TOTAL:-1}"
 
 # Test cases: each prints a result value
 test_cases=(
@@ -182,6 +187,15 @@ echo "Testing interpreter vs WASM output..."
 echo ""
 
 for expr in "${test_cases[@]}"; do
+  if [ "$SHARD_TOTAL" -gt 1 ]; then
+    if [ $((test_index % SHARD_TOTAL)) -ne "$SHARD_INDEX" ]; then
+      test_index=$((test_index + 1))
+      skipped=$((skipped + 1))
+      continue
+    fi
+  fi
+  test_index=$((test_index + 1))
+
   # Create test file
   echo "$expr" > "$TEMP_DIR/test.vibe"
 
@@ -216,7 +230,10 @@ for expr in "${test_cases[@]}"; do
 done
 
 echo ""
-echo "Summary: $passed passed, $failed failed"
+echo "Summary: $passed passed, $failed failed, $skipped skipped"
+if [ "$SHARD_TOTAL" -gt 1 ]; then
+  echo "Shard: $((SHARD_INDEX + 1))/$SHARD_TOTAL"
+fi
 
 if [ $failed -gt 0 ]; then
   exit 1
