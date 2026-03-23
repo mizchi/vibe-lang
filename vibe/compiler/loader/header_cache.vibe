@@ -165,6 +165,22 @@ let special_bundle_header = (path: String) -> Option[(Array[String], Array[Strin
       Array::slice([""], 0, 0),
       ["selfhost_sources", "selfhost_source_groups"]
     ))
+  } else if String::ends_with(path, "selfhost_cli_adapter_bundle.vibe") {
+    Some((
+      Array::slice([""], 0, 0),
+      [
+        "selfhost_cli_adapter_sources",
+        "selfhost_cli_adapter_source_groups",
+        "selfhost_cli_adapter_ordered_sources",
+        "selfhost_cli_adapter_merged_source",
+        "selfhost_cli_adapter_module_source"
+      ]
+    ))
+  } else if String::ends_with(path, "selfbuild_runtime_entry_bundle.vibe") {
+    Some((
+      Array::slice([""], 0, 0),
+      ["selfbuild_runtime_entry_source"]
+    ))
   } else {
     None
   }
@@ -295,18 +311,28 @@ export let load_or_parse_module_header_fs_impl = (
   source: String,
   parse_count: Int
 ) -> (Array[String], Array[String], Int) with { Error, Fs } {
+  Fs::write_file("_build/debug_header_stage.txt", String::concat("start:", path))
   let cache_path = persistent_module_header_cache_path(path, compact_string_fingerprint(source))
   if Fs::exists(cache_path) {
+    Fs::write_file("_build/debug_header_stage.txt", "cache-hit")
     let parsed = parse_persistent_module_header_text(
       normalize_persistent_cache_text(Fs::read_file(cache_path))
     )
+    Fs::write_file("_build/debug_header_stage.txt", "cache-parsed")
     (parsed.0, parsed.1, parse_count)
   } else {
+    Fs::write_file("_build/debug_header_stage.txt", "cache-miss")
     let header_result = match special_bundle_header(path) {
       Some((deps, exports)) => (deps, exports, parse_count),
       None => {
+        Fs::write_file("_build/debug_header_path.txt", path)
+        Fs::write_file("_build/debug_header_stage.txt", "before-lex")
         let tokens = lex(source)
+        Fs::write_file("_build/debug_header_path.txt", path)
+        Fs::write_file("_build/debug_header_stage.txt", "after-lex")
         let stmts = parse_program(tokens)
+        Fs::write_file("_build/debug_header_path.txt", path)
+        Fs::write_file("_build/debug_header_stage.txt", "after-parse")
         (
           collect_import_deps_from_stmts(stmts, dir_of(path)),
           collect_exports(stmts),
@@ -314,10 +340,12 @@ export let load_or_parse_module_header_fs_impl = (
         )
       }
     }
+    Fs::write_file("_build/debug_header_stage.txt", "after-header-result")
     let deps = header_result.0
     let exports = header_result.1
     let next_parse_count = header_result.2
     Fs::write_file(cache_path, persistent_module_header_text(deps, exports))
+    Fs::write_file("_build/debug_header_stage.txt", "after-cache-write")
     (deps, exports, next_parse_count)
   }
 }

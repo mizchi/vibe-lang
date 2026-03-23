@@ -364,6 +364,67 @@ fn collect_pat_bindings_codegen(pat : @core.Pat, out : Array[String]) -> Unit {
 }
 
 ///|
+fn collect_pat_binding_kinds_codegen(
+  ctx : CodegenCtx,
+  pat : @core.Pat,
+  scrut_kind : ValueKind,
+  out : Map[String, ValueKind],
+) -> Unit {
+  match pat {
+    @core.Pat::Bind(name~, span~) => {
+      let _ = span
+      out[name] = scrut_kind
+    }
+    @core.Pat::Ctor(name~, args~, span~) => {
+      let _ = span
+      let arg_kinds = match ctx.enum_ctor_arg_kinds.get(name) {
+        Some(kinds) => kinds
+        None => []
+      }
+      for i, arg in args {
+        let raw_arg_kind = if i < arg_kinds.length() {
+          arg_kinds[i]
+        } else {
+          ValueKind::I64
+        }
+        let arg_kind = match raw_arg_kind {
+          ValueKind::BoxedF32 | ValueKind::BoxedF64 | ValueKind::ExternRef =>
+            raw_arg_kind
+          _ => ValueKind::I64
+        }
+        collect_pat_binding_kinds_codegen(ctx, arg, arg_kind, out)
+      }
+    }
+    @core.Pat::Tuple(items~, span~) => {
+      let _ = span
+      for item in items {
+        collect_pat_binding_kinds_codegen(ctx, item, ValueKind::I64, out)
+      }
+    }
+    @core.Pat::Record(fields~, span~) => {
+      let _ = span
+      for field in fields {
+        collect_pat_binding_kinds_codegen(ctx, field.pat, ValueKind::I64, out)
+      }
+    }
+    @core.Pat::Struct(name~, fields~, span~) => {
+      let _ = name
+      let _ = span
+      for field in fields {
+        collect_pat_binding_kinds_codegen(ctx, field.pat, ValueKind::I64, out)
+      }
+    }
+    @core.Pat::Or(pats~, span~) => {
+      let _ = span
+      if pats.length() > 0 {
+        collect_pat_binding_kinds_codegen(ctx, pats[0], scrut_kind, out)
+      }
+    }
+    _ => ()
+  }
+}
+
+///|
 fn collect_captures_block(
   body : @core.Module,
   bound : Map[String, Bool],

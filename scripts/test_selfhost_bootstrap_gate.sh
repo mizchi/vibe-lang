@@ -303,7 +303,7 @@ SELFHOST_COMPILED_TEST_FILES=()
 for test_path in "$PROJECT_ROOT"/vibe/compiler/*_test.vibe; do
   test_name="$(basename "$test_path")"
   case "$test_name" in
-    selfhost_s5_test.vibe|selfhost_s5_*_test.vibe|codegen_parser_test.vibe|compiler_cache_test.vibe|cli_cache_test.vibe|cli_adapter_cache_test.vibe|codegen_enum_import_test.vibe|cache_probe_*_bench_test.vibe|compiler_fs_test.vibe|module_loader_check_module_test.vibe)
+    selfhost_s5_test.vibe|selfhost_s5_*_test.vibe|codegen_parser_test.vibe|compiler_cache_test.vibe|cli_cache_test.vibe|cli_adapter_cache_test.vibe|codegen_enum_import_test.vibe|cache_probe_*_bench_test.vibe|compiler_fs_test.vibe|module_loader_check_module_test.vibe|fixture_real_selfhost_test.vibe|checker_error_format_test.vibe)
       ;;
     *)
       SELFHOST_COMPILED_TEST_FILES+=("$test_path")
@@ -389,9 +389,9 @@ fi
 TOSTRING_PROBE="$OUT_DIR/selfhost_tostring_probe.vibe"
 cat >"$TOSTRING_PROBE" <<'EOF'
 test "__to_string number parity" {
-  assert(string_equals(__to_string(1.5), "1.5"))
-  assert(string_equals(__to_string(2.0), "2"))
-  assert(string_equals(__to_string(1.5f), "1.5"))
+  assert(String::equals(__to_string(1.5), "1.5"))
+  assert(String::equals(__to_string(2.0), "2"))
+  assert(String::equals(__to_string(1.5f), "1.5"))
 }
 EOF
 run_stage "compiled __to_string(Double/Float) probe" \

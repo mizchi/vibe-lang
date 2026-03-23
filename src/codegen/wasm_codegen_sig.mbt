@@ -654,7 +654,6 @@ fn infer_expr_kind_with(
       try_kind
     }
     @core.Expr::Match(scrutinee~, arms~, span~) => {
-      let _ = scrutinee
       let _ = span
       if arms.length() == 0 {
         ValueKind::I64
@@ -662,10 +661,16 @@ fn infer_expr_kind_with(
         // Infer type from the first arm's expression
         let arm = arms[0]
         let arm_locals = locals.copy()
-        let bindings : Array[String] = []
-        collect_pat_bindings_codegen(arm.pat, bindings)
-        for name in bindings {
-          arm_locals[name] = ValueKind::I64
+        let scrut_kind = infer_expr_kind_with(ctx, scrutinee, locals)
+        let binding_kinds : Map[String, ValueKind] = {}
+        collect_pat_binding_kinds_codegen(
+          ctx,
+          arm.pat,
+          scrut_kind,
+          binding_kinds,
+        )
+        for name, kind in binding_kinds {
+          arm_locals[name] = kind
         }
         infer_expr_kind_with(ctx, arm.expr, arm_locals)
       }

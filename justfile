@@ -400,7 +400,7 @@ test-selfhost-bootstrap:
 # Run quick selfhost cache probe (warm TypeDb reuse smoke)
 test-selfhost-cache-probe:
     bash -c 'source scripts/ensure_native_cli.sh'
-    _build/native/debug/build/cmd/vibe/vibe.exe test vibe/compiler/cache_probe_test.vibe
+    VIBE_TEST_BACKEND=interpreter _build/native/debug/build/cmd/vibe/vibe.exe test vibe/compiler/cache_probe_test.vibe
 
 # Run wasm selfbuild gate (stage0 wasm compiler -> stage1 selfhost wasm)
 test-selfhost-wasi-selfbuild:

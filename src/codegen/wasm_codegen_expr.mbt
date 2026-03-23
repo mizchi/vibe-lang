@@ -211,12 +211,14 @@ fn compile_expr(
           @core.StringInterpPart::Lit(s) =>
             exprs.push(@core.Expr::String(value=s, span~))
           @core.StringInterpPart::Expr(e) =>
-            exprs.push(@core.Expr::Call(
-              name="__to_string",
-              type_args=[],
-              args=[@core.CallArg::{ label: None, expr: e, span }],
-              span~,
-            ))
+            exprs.push(
+              @core.Expr::Call(
+                name="__to_string",
+                type_args=[],
+                args=[@core.CallArg::{ label: None, expr: e, span }],
+                span~,
+              ),
+            )
         }
       }
       if exprs.length() == 0 {

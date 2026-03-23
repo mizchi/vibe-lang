@@ -7113,8 +7113,8 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_or(buf)
     }
     "Fs::write_bytes" => {
-      // fs_write_bytes(path, byte_array) -> Unit
-      // byte_array is Array[Int] where each element is a tagged byte value
+      // fs_write_bytes(path, bytes) -> Unit
+      // Accept both raw Bytes and BytesView payloads.
       if ctx.use_js_strings {
         raise WasmGenError::Unsupported(
           "Fs::write_bytes requires --wasm backend",
@@ -7126,8 +7126,9 @@ fn compile_call_builtin_pre_user_inner(
       require_heap(ctx)
       let path_raw_local = alloc_temp_local(ctx)
       let path_len_local = alloc_temp_local(ctx)
-      let arr_ptr_local = alloc_temp_local(ctx)
-      let arr_len_local = alloc_temp_local(ctx)
+      let bytes_ptr_local = alloc_temp_local(ctx)
+      let bytes_len_local = alloc_temp_local(ctx)
+      let bytes_cap_local = alloc_temp_local(ctx)
       let data_size_local = alloc_temp_local(ctx)
       let data_ptr_local = alloc_temp_local(ctx)
       let ret_area_local = alloc_temp_local(ctx)
@@ -7158,19 +7159,14 @@ fn compile_call_builtin_pre_user_inner(
       emit_local_get(buf, path_raw_local)
       emit_i32_load(buf, 4)
       emit_local_set(buf, path_len_local)
-      // Get byte array pointer and length
+      // Resolve bytes header so raw Bytes and BytesView share one path.
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_untag_ptr_i32(buf)
-      emit_local_set(buf, arr_ptr_local)
-      emit_local_get(buf, arr_ptr_local)
-      emit_i32_load(buf, 4)
-      emit_local_set(buf, arr_len_local)
-      // Packed bytes: data is already contiguous at arr_ptr + 8
-      emit_local_get(buf, arr_ptr_local)
-      emit_i32_const_raw(buf, 8)
-      emit_i32_add(buf)
-      emit_local_set(buf, data_ptr_local)
-      emit_local_get(buf, arr_len_local)
+      emit_local_set(buf, bytes_ptr_local)
+      emit_bytes_load_header(
+        ctx, buf, bytes_ptr_local, bytes_len_local, bytes_cap_local, data_ptr_local,
+      )
+      emit_local_get(buf, bytes_len_local)
       emit_local_set(buf, data_size_local)
       // Allocate retptr for open-at result
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
@@ -7203,10 +7199,10 @@ fn compile_call_builtin_pre_user_inner(
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
       // Sync heap
       emit_heap_pre_call_sync(ctx, buf)
-      // write(opened_desc, data_ptr, arr_len, offset=0, retptr)
+      // write(opened_desc, data_ptr, bytes_len, offset=0, retptr)
       emit_local_get(buf, opened_desc_local)
-      emit_local_get(buf, data_ptr_local) // contiguous byte data
-      emit_local_get(buf, arr_len_local)
+      emit_local_get(buf, data_ptr_local)
+      emit_local_get(buf, data_size_local)
       // i64.const 0 (offset)
       buf.push((66).to_byte())
       buf.push((0).to_byte())

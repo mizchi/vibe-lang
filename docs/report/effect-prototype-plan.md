@@ -121,6 +121,73 @@ What it verifies:
 - `handle` で mock implementation を注入できる
 - effect を使った capability 分離の最小ケースになる
 
+## Minimal Prototype Scope
+
+最小実装としてやるのは次の範囲に限る。
+
+- single-callee / single-handler の `perform` / `resume`
+- nested handler の pass-through か rethrow のどちらか一方
+- typed payload を持つ effect op
+- continuation の single-shot 制約確認
+- linear/WASM backend を先行
+
+やらないもの:
+
+- `throw` / `suberror` の統合
+- capability 分解の本実装
+- `Net` / `process` / `socket` の I/O 実装
+- GC backend 同時完成
+- selfhost 全面移植
+
+## Test Plan
+
+prototype 用のテストは次の 3 段階で切る。
+
+1. integration test で `perform` / `resume` の往復を確認する
+2. nested handler と single-shot を確認する
+3. capability 系は stretch に落とし、見積もり補助に使う
+
+優先テストは次の通り。
+
+- `handle catches error`
+- `perform handle typed payload`
+- `perform multi-layer handle`
+- `resume continues after perform`
+- `resume multi-layer perform`
+- `resume rejects prior effects before perform`
+
+stretch で追加する候補:
+
+- `filter all pass` / `map double` / `swap behavior`
+
+## Estimation Basis
+
+工数見積もりは「どの subsystem を跨ぐか」と「continuation をどこで保持するか」で大きく変わる。
+
+- checker だけなら比較的狭い
+- codegen まで入ると `perform` の命令列と `resume` の戻り方が増える
+- runtime まで触ると continuation の保存形式と single-shot enforcement が論点になる
+- selfhost まで持っていくと、既存の import/linker/handler 経路との整合が最後のボトルネックになる
+
+見積もりに効く根拠は次の 4 点。
+
+- `perform` を caller / callee のどちらで捕捉するか
+- `resume` の戻り先を value / stack / continuation object のどれで表すか
+- nested handler を pass-through か rethrow かで止めるか
+- typed payload を既存の builtin signature に乗せるか effect 専用にするか
+
+## Metrics
+
+prototype で最低限取る計測項目は次の通り。
+
+- compile time の増分
+- wasm size の増分
+- runtime overhead の有無
+- touched subsystem の数
+- `perform` / `resume` の call chain 深さ
+- nested handler の有無での差分
+- selfhost 影響の有無
+
 ## Priority
 
 prototype の着手順は次の順でよい。

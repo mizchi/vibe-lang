@@ -19,18 +19,6 @@ fi
 
 bash "$SCRIPT_DIR/build_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$WIT_PATH"
 
-compile_mode_flags() {
-  local mode="$1"
-  case "$mode" in
-    mvp) printf '%s\n' "--wasm" ;;
-    no-dce) printf '%s\n' "--wasm" "--no-dce" ;;
-    *)
-      echo "selfhost cli direct parity gate failed: unsupported mode '$mode'" >&2
-      exit 1
-      ;;
-  esac
-}
-
 run_case() {
   local case_name="$1"
   local entry_name="$2"
@@ -43,12 +31,20 @@ run_case() {
   local selfhost_out="$case_dir/selfhost.wasm"
   local host_run_log="$case_dir/host.run.log"
   local selfhost_run_log="$case_dir/selfhost.run.log"
+  local mode_flags
 
   mkdir -p "$case_dir"
   printf '%s' "$source_text" >"$input_path"
   rm -f "$host_out" "$selfhost_out" "$host_run_log" "$selfhost_run_log"
 
-  mapfile -t mode_flags < <(compile_mode_flags "$mode")
+  case "$mode" in
+    mvp) mode_flags=(--wasm) ;;
+    no-dce) mode_flags=(--wasm --no-dce) ;;
+    *)
+      echo "selfhost cli direct parity gate failed: unsupported mode '$mode'" >&2
+      exit 1
+      ;;
+  esac
   "$VIBE_BIN" compile-lite "${mode_flags[@]}" "$input_path" -o "$host_out"
   bash "$SCRIPT_DIR/run_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$input_path" "$selfhost_out" "$entry_name" "$mode"
 

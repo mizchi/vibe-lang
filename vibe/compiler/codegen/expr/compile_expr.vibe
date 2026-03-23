@@ -40,6 +40,36 @@ import ./compile_expr_tail.vibe {
 //# Functions
 
 export let rec compile_expr = (buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int) -> Int with { Error } {
+  let rec expr_is_floatish = (e: Expr) -> Bool with { Error } {
+    let tag = expr_tag(e)
+    if tag == 2 {
+      true
+    } else if tag == 5 {
+      let op = get_ebinop_op(e)
+      if op == "+" || op == "-" || op == "*" || op == "/" || op == "<" || op == ">" || op == "<=" || op == ">=" {
+        expr_is_floatish(get_ebinop_lhs(e)) || expr_is_floatish(get_ebinop_rhs(e))
+      } else {
+        false
+      }
+    } else if tag == 6 {
+      let op = get_eunaryop_op(e)
+      if op == "-" {
+        expr_is_floatish(get_eunaryop_expr(e))
+      } else {
+        false
+      }
+    } else if tag == 8 {
+      let callee = get_ecall_callee(e)
+      if is_eident(callee) {
+        let fname = get_eident_name(callee)
+        fname == "Int::to_double" || fname == "Double::from_i64_bits"
+      } else {
+        false
+      }
+    } else {
+      false
+    }
+  }
   let __tag = expr_tag(expr)
   if __tag == 0 {
     let n = get_eint_value(expr)
@@ -175,29 +205,76 @@ export let rec compile_expr = (buf: Bytes, expr: Expr, local_names: Array[String
     let op = get_ebinop_op(expr)
     let lhs = get_ebinop_lhs(expr)
     let rhs = get_ebinop_rhs(expr)
-    let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
-    let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
     if op == "==" {
+      let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
+      let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
       // Use eq builtin for deep equality (handles strings)
       let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
       emit_call(buf, eq_fidx)
+      nl2
     } else if op == "!=" {
+      let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
+      let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
       let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
       emit_call(buf, eq_fidx)
       emit_i64_eqz(buf)
       emit_i64_extend_i32_s(buf)
+      nl2
+    } else if expr_is_floatish(lhs) || expr_is_floatish(rhs) {
+      let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
+      emit_f64_reinterpret_i64(buf)
+      let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
+      emit_f64_reinterpret_i64(buf)
+      if op == "+" {
+        emit_f64_add(buf)
+        emit_i64_reinterpret_f64(buf)
+      } else if op == "-" {
+        emit_f64_sub(buf)
+        emit_i64_reinterpret_f64(buf)
+      } else if op == "*" {
+        emit_f64_mul(buf)
+        emit_i64_reinterpret_f64(buf)
+      } else if op == "/" {
+        emit_f64_div(buf)
+        emit_i64_reinterpret_f64(buf)
+      } else if op == "<" {
+        emit_f64_lt(buf)
+        emit_i64_extend_i32_s(buf)
+      } else if op == ">" {
+        emit_f64_gt(buf)
+        emit_i64_extend_i32_s(buf)
+      } else if op == "<=" {
+        emit_f64_le(buf)
+        emit_i64_extend_i32_s(buf)
+      } else if op == ">=" {
+        emit_f64_ge(buf)
+        emit_i64_extend_i32_s(buf)
+      } else {
+        throw(String::concat("unsupported float binop: ", op))
+      }
+      nl2
     } else {
+      let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
+      let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
       emit_binop_op(buf, op)
+      nl2
     }
-    nl2
   } else if __tag == 6 {
     let op = get_eunaryop_op(expr)
     let operand = get_eunaryop_expr(expr)
     if op == "-" {
-      emit_i64_const(buf, 0)
-      let nl = compile_expr(buf, operand, local_names, next_local, ctx, ld)
-      emit_i64_sub(buf)
-      nl
+      if expr_is_floatish(operand) {
+        let nl = compile_expr(buf, operand, local_names, next_local, ctx, ld)
+        emit_f64_reinterpret_i64(buf)
+        emit_f64_neg(buf)
+        emit_i64_reinterpret_f64(buf)
+        nl
+      } else {
+        emit_i64_const(buf, 0)
+        let nl = compile_expr(buf, operand, local_names, next_local, ctx, ld)
+        emit_i64_sub(buf)
+        nl
+      }
     } else if op == "!" {
       let nl = compile_expr(buf, operand, local_names, next_local, ctx, ld)
       emit_i64_eqz(buf)
@@ -218,23 +295,40 @@ export let rec compile_expr = (buf: Bytes, expr: Expr, local_names: Array[String
       if cop == "==" || cop == "!=" || cop == "<" || cop == ">" || cop == "<=" || cop == ">=" {
         let clhs = get_ebinop_lhs(cond)
         let crhs = get_ebinop_rhs(cond)
-        let cnl1 = compile_expr(buf, clhs, local_names, next_local, ctx, ld)
-        let cnl2 = compile_expr(buf, crhs, local_names, cnl1, ctx, ld)
         if cop == "==" {
+          let cnl1 = compile_expr(buf, clhs, local_names, next_local, ctx, ld)
+          let cnl2 = compile_expr(buf, crhs, local_names, cnl1, ctx, ld)
           let (eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
           emit_call(buf, eq_fi)
           emit_i32_wrap_i64(buf)
+          cnl2
         } else if cop == "!=" {
+          let cnl1 = compile_expr(buf, clhs, local_names, next_local, ctx, ld)
+          let cnl2 = compile_expr(buf, crhs, local_names, cnl1, ctx, ld)
           let (eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
           emit_call(buf, eq_fi)
           emit_i32_wrap_i64(buf)
           emit_i32_eqz(buf)
+          cnl2
+        } else if expr_is_floatish(clhs) || expr_is_floatish(crhs) {
+          let cnl1 = compile_expr(buf, clhs, local_names, next_local, ctx, ld)
+          emit_f64_reinterpret_i64(buf)
+          let cnl2 = compile_expr(buf, crhs, local_names, cnl1, ctx, ld)
+          emit_f64_reinterpret_i64(buf)
+          if cop == "<" { emit_f64_lt(buf) }
+          else if cop == ">" { emit_f64_gt(buf) }
+          else if cop == "<=" { emit_f64_le(buf) }
+          else { emit_f64_ge(buf) }
+          cnl2
+        } else {
+          let cnl1 = compile_expr(buf, clhs, local_names, next_local, ctx, ld)
+          let cnl2 = compile_expr(buf, crhs, local_names, cnl1, ctx, ld)
+          if cop == "<" { emit_i64_lt_s(buf) }
+          else if cop == ">" { emit_i64_gt_s(buf) }
+          else if cop == "<=" { emit_i64_le_s(buf) }
+          else { emit_i64_ge_s(buf) }
+          cnl2
         }
-        else if cop == "<" { emit_i64_lt_s(buf) }
-        else if cop == ">" { emit_i64_gt_s(buf) }
-        else if cop == "<=" { emit_i64_le_s(buf) }
-        else { emit_i64_ge_s(buf) }
-        cnl2
       } else {
         let cnl = compile_expr(buf, cond, local_names, next_local, ctx, ld)
         emit_i32_wrap_i64(buf)
@@ -256,24 +350,44 @@ export let rec compile_expr = (buf: Bytes, expr: Expr, local_names: Array[String
           if iop == "==" || iop == "!=" || iop == "<" || iop == ">" || iop == "<=" || iop == ">=" {
             let ilhs = get_ebinop_lhs(uoperand)
             let irhs = get_ebinop_rhs(uoperand)
-            let inl1 = compile_expr(buf, ilhs, local_names, next_local, ctx, ld)
-            let inl2 = compile_expr(buf, irhs, local_names, inl1, ctx, ld)
             if iop == "==" {
-              let (eq_fi2, _, _) = resolve_func(ctx.func_table, "eq")
-              emit_call(buf, eq_fi2)
-              emit_i32_wrap_i64(buf)
-            } else if iop == "!=" {
+              let inl1 = compile_expr(buf, ilhs, local_names, next_local, ctx, ld)
+              let inl2 = compile_expr(buf, irhs, local_names, inl1, ctx, ld)
               let (eq_fi2, _, _) = resolve_func(ctx.func_table, "eq")
               emit_call(buf, eq_fi2)
               emit_i32_wrap_i64(buf)
               emit_i32_eqz(buf)
+              inl2
+            } else if iop == "!=" {
+              let inl1 = compile_expr(buf, ilhs, local_names, next_local, ctx, ld)
+              let inl2 = compile_expr(buf, irhs, local_names, inl1, ctx, ld)
+              let (eq_fi2, _, _) = resolve_func(ctx.func_table, "eq")
+              emit_call(buf, eq_fi2)
+              emit_i32_wrap_i64(buf)
+              emit_i32_eqz(buf)
+              emit_i32_eqz(buf)
+              inl2
+            } else if expr_is_floatish(ilhs) || expr_is_floatish(irhs) {
+              let inl1 = compile_expr(buf, ilhs, local_names, next_local, ctx, ld)
+              emit_f64_reinterpret_i64(buf)
+              let inl2 = compile_expr(buf, irhs, local_names, inl1, ctx, ld)
+              emit_f64_reinterpret_i64(buf)
+              if iop == "<" { emit_f64_lt(buf) }
+              else if iop == ">" { emit_f64_gt(buf) }
+              else if iop == "<=" { emit_f64_le(buf) }
+              else { emit_f64_ge(buf) }
+              emit_i32_eqz(buf)
+              inl2
+            } else {
+              let inl1 = compile_expr(buf, ilhs, local_names, next_local, ctx, ld)
+              let inl2 = compile_expr(buf, irhs, local_names, inl1, ctx, ld)
+              if iop == "<" { emit_i64_lt_s(buf) }
+              else if iop == ">" { emit_i64_gt_s(buf) }
+              else if iop == "<=" { emit_i64_le_s(buf) }
+              else { emit_i64_ge_s(buf) }
+              emit_i32_eqz(buf)
+              inl2
             }
-            else if iop == "<" { emit_i64_lt_s(buf) }
-            else if iop == ">" { emit_i64_gt_s(buf) }
-            else if iop == "<=" { emit_i64_le_s(buf) }
-            else { emit_i64_ge_s(buf) }
-            emit_i32_eqz(buf)
-            inl2
           } else {
             let cnl = compile_expr(buf, cond, local_names, next_local, ctx, ld)
             emit_i32_wrap_i64(buf)

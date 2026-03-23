@@ -62,7 +62,7 @@ fn compile_pat_match(
     }
     @core.Pat::Bind(name~, span~) => {
       let _ = span
-      let idx = bind_local(ctx, name)
+      let idx = bind_local_with_kind(ctx, name, ValueKind::I64)
       emit_local_get(buf, value_idx)
       emit_local_set(buf, idx)
       bindings[name] = idx
@@ -407,7 +407,7 @@ fn compile_ctor_args_cont(
   let field_kind = if index < arg_kinds.length() {
     arg_kinds[index]
   } else {
-    ValueKind::I32
+    ValueKind::I64
   }
   if ctx.use_js_strings && field_kind == ValueKind::ExternRef {
     // ExternRef field: load table slot index, then table.get
@@ -845,7 +845,7 @@ fn compile_enum_default_body(
       // If it's a Bind pattern, bind the scrutinee
       match arm.pat {
         @core.Pat::Bind(name~, ..) => {
-          let idx = bind_local(ctx, name)
+          let idx = bind_local_with_kind(ctx, name, ValueKind::I64)
           emit_local_get(buf, scrut_idx)
           emit_local_set(buf, idx)
           bindings[name] = idx
@@ -875,13 +875,14 @@ fn compile_guarded_arm_with_bindings(
 ) -> Unit raise WasmGenError {
   let saved = ctx.locals.copy()
   let saved_kinds = ctx.local_kinds.copy()
-  let binding_kind = if ctx.use_js_strings {
-    ValueKind::I32
-  } else {
-    ValueKind::I64
-  }
+  let binding_kinds : Map[String, ValueKind] = {}
+  collect_pat_binding_kinds_codegen(ctx, arm.pat, ValueKind::I64, binding_kinds)
   for name, idx in bindings {
     ctx.locals[name] = idx
+    let binding_kind = match binding_kinds.get(name) {
+      Some(kind) => kind
+      None => if ctx.use_js_strings { ValueKind::I32 } else { ValueKind::I64 }
+    }
     ctx.local_kinds[name] = binding_kind
   }
   match arm.cond {
@@ -917,10 +918,14 @@ fn compile_guarded_arm_with_bindings(
 }
 
 ///|
-fn bind_local(ctx : CodegenCtx, _name : String) -> Int {
+fn bind_local_with_kind(
+  ctx : CodegenCtx,
+  _name : String,
+  kind : ValueKind,
+) -> Int {
   let idx = ctx.local_count
   ctx.local_count += 1
-  ctx.local_types.push(ValueKind::I64)
+  ctx.local_types.push(kind)
   idx
 }
 

@@ -509,10 +509,10 @@ pub fn prelude_ast() -> @core.Module {
 ///|
 pub fn prelude_names() -> Array[String] {
   [
-    "add", "sub", "mul", "div", "eq", "lt", "not", "and", "or", "assert", "assert_true", "to_string",
-    "iter_require", "iter_length", "iter_get", "Array::map", "Array::fold", "Array::filter",
-    "Array::foreach", "Array::concat", "Array::reverse", "Array::any", "Array::all",
-    "Array::find", "assert_eq", "Array::sort", "Array::contains", "Array::join",
+    "add", "sub", "mul", "div", "eq", "lt", "not", "and", "or", "assert", "assert_true",
+    "to_string", "iter_require", "iter_length", "iter_get", "Array::map", "Array::fold",
+    "Array::filter", "Array::foreach", "Array::concat", "Array::reverse", "Array::any",
+    "Array::all", "Array::find", "assert_eq", "Array::sort", "Array::contains", "Array::join",
     "Map::get_or", "Map::map", "Map::filter", "where",
   ]
 }

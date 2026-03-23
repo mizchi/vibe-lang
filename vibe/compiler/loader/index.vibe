@@ -43,6 +43,14 @@ import ../cache/persistent/index.vibe {
   persistent_source_list_cache_path
 }
 
+import ../selfhost_sources_bundle.vibe {
+  selfhost_sources, selfhost_source_groups
+}
+
+import ../selfhost_cli_adapter_bundle.vibe {
+  selfhost_cli_adapter_sources, selfhost_cli_adapter_source_groups
+}
+
 //# Path helpers (inline to avoid cross-module import issues)
 
 let dir_of = (file_path: String) -> String {
@@ -328,6 +336,54 @@ let special_bundle_header = (path: String) -> Option[(Array[String], Array[Strin
       Array::slice([""], 0, 0),
       ["selfhost_sources", "selfhost_source_groups"]
     ))
+  } else {
+    None
+  }
+}
+
+let special_manifest_header_deps = (path: String) -> Option[Array[String]] {
+  if path == "vibe/compiler/index.vibe" {
+    Some([
+      "vibe/compiler/ast.vibe",
+      "vibe/compiler/lexer.vibe",
+      "vibe/compiler/parser.vibe",
+      "vibe/compiler/printer.vibe",
+      "vibe/compiler/token.vibe",
+      "vibe/compiler/types.vibe",
+      "vibe/compiler/type_db.vibe",
+      "vibe/compiler/cli_cache.vibe",
+      "vibe/compiler/checker/checker_stmt.vibe",
+      "vibe/compiler/codegen.vibe",
+      "vibe/compiler/codegen/gc/index.vibe",
+      "vibe/compiler/entry/source_compile/index.vibe",
+      "vibe/compiler/entry/source_compile/wasi_only/index.vibe",
+      "vibe/compiler/entry/compiler/fs_compile/index.vibe",
+      "vibe/compiler/entry/compiler/file_compile/index.vibe",
+      "vibe/compiler/module_loader.vibe",
+      "vibe/compiler/selfhost_sources_bundle.vibe",
+      "vibe/compiler/selfhost_cli_adapter_bundle.vibe",
+      "vibe/compiler/selfbuild_runtime_entry_bundle.vibe",
+      "vibe/compiler/cache/persistent/index.vibe",
+      "vibe/compiler/core/index.vibe",
+      "vibe/compiler/codegen/wasi/index.vibe",
+      "vibe/compiler/codegen_common_base.vibe",
+      "vibe/compiler/codegen_common_extractors.vibe",
+      "vibe/compiler/codegen_common_analysis.vibe"
+    ])
+  } else if path == "vibe/compiler/entry/compiler/fs_compile/index.vibe" {
+    Some([
+      "vibe/compiler/syntax/lexer.vibe",
+      "vibe/compiler/syntax/parser.vibe",
+      "vibe/compiler/core/ast.vibe",
+      "vibe/compiler/codegen/index.vibe",
+      "vibe/compiler/codegen/wasi/index.vibe",
+      "vibe/compiler/checker/checker_stmt.vibe",
+      "vibe/compiler/core/index.vibe",
+      "vibe/compiler/loader/index.vibe",
+      "vibe/compiler/runtime/index.vibe",
+      "vibe/compiler/cache/persistent/index.vibe",
+      "vibe/compiler/entry/compiler/fs_compile/closure_order.vibe"
+    ])
   } else {
     None
   }
@@ -1323,6 +1379,121 @@ let copy_grouped_sources = (
   out
 }
 
+let flatten_group_sources = (
+  groups: Array[(String, Array[(String, String)])]
+) -> Array[(String, String)] {
+  let out = empty_source_specs()
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (_, sources) = Array::get(groups, gi)
+    let mut si = 0
+    while si < Array::length(sources) {
+      Array::push(out, Array::get(sources, si))
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  out
+}
+
+let filter_group_sources = (
+  groups: Array[(String, Array[(String, String)])],
+  ordered_sources: Array[(String, String)]
+) -> Array[(String, Array[(String, String)])] {
+  let filtered = empty_grouped_sources()
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (group_name, sources) = Array::get(groups, gi)
+    let next_sources = empty_source_specs()
+    let mut si = 0
+    while si < Array::length(sources) {
+      let pair = Array::get(sources, si)
+      let (path, _) = pair
+      match source_lookup(ordered_sources, path) {
+        Some(_) => Array::push(next_sources, pair),
+        None => ()
+      }
+      si = si + 1
+    }
+    if Array::length(next_sources) > 0 {
+      Array::push(filtered, (group_name, next_sources))
+    }
+    gi = gi + 1
+  }
+  filtered
+}
+
+let special_bundle_source_groups = (
+  entry_path: String
+) -> Option[Array[(String, Array[(String, String)])]] {
+  if entry_path == "vibe/compiler/index.vibe" {
+    Some(copy_grouped_sources(selfhost_source_groups()))
+  } else if entry_path == "vibe/compiler/selfhost_cli_adapter.vibe" {
+    Some(copy_grouped_sources(selfhost_cli_adapter_source_groups()))
+  } else {
+    None
+  }
+}
+
+let normalize_bundle_source_groups = (
+  groups: Array[(String, Array[(String, String)])],
+  main_path: String,
+  main_source: String
+) -> Array[(String, Array[(String, String)])] {
+  let normalized = empty_grouped_sources()
+  let mut found = false
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (group_name, sources) = Array::get(groups, gi)
+    let next_sources = empty_source_specs()
+    let mut si = 0
+    while si < Array::length(sources) {
+      let (path, source) = Array::get(sources, si)
+      if path == main_path {
+        Array::push(next_sources, (path, main_source))
+        found = true
+      } else {
+        Array::push(next_sources, (path, source))
+      }
+      si = si + 1
+    }
+    Array::push(normalized, (group_name, next_sources))
+    gi = gi + 1
+  }
+  if !found {
+    let entry_sources = empty_source_specs()
+    Array::push(entry_sources, (main_path, main_source))
+    Array::push(normalized, ("entry", entry_sources))
+  }
+  normalized
+}
+
+let special_manifest_sources = (
+  entry_path: String
+) -> Option[(String, Array[(String, String)])] {
+  let manifest_path = join_path(dir_of(entry_path), "selfhost_sources_manifest.tsv")
+  if entry_path == "vibe/compiler/index.vibe" {
+    Some((manifest_path, copy_source_specs(selfhost_sources())))
+  } else if entry_path == "vibe/compiler/selfhost_cli_adapter.vibe" {
+    Some((manifest_path, copy_source_specs(selfhost_cli_adapter_sources())))
+  } else {
+    None
+  }
+}
+
+let special_manifest_source_groups = (
+  entry_path: String
+) -> Option[(String, Array[(String, Array[(String, String)])])] {
+  let manifest_path = join_path(dir_of(entry_path), "selfhost_sources_manifest.tsv")
+  if entry_path == "vibe/compiler/index.vibe" {
+    Some((manifest_path, copy_grouped_sources(selfhost_source_groups())))
+  } else if entry_path == "vibe/compiler/selfhost_cli_adapter.vibe" {
+    Some((manifest_path, copy_grouped_sources(selfhost_cli_adapter_source_groups())))
+  } else {
+    None
+  }
+}
+
 let rec collect_needed_paths_rec = (
   path: String,
   preloaded_sources: Array[(String, String)],
@@ -1546,10 +1717,16 @@ let push_grouped_source = (
 let try_load_manifest_rows = (entry_path: String) -> Option[(String, Array[(String, String)])] with { Error, Fs } {
   let base_dir = dir_of(entry_path)
   let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
+  Fs::write_file("_build/debug_try_manifest_rows.txt", String::concat("path:", manifest_path))
   if !(Fs::exists(manifest_path)) {
+    Fs::write_file("_build/debug_try_manifest_rows.txt", "manifest-missing")
     None
   } else {
     let rows = parse_source_manifest_rows(Fs::read_file(manifest_path))
+    Fs::write_file(
+      "_build/debug_try_manifest_rows.txt",
+      String::concat("rows:", __to_string(Array::length(rows)))
+    )
     let mut has_entry = false
     let mut i = 0
     while i < Array::length(rows) {
@@ -1561,8 +1738,13 @@ let try_load_manifest_rows = (entry_path: String) -> Option[(String, Array[(Stri
       i = i + 1
     }
     if has_entry {
+      Fs::write_file("_build/debug_try_manifest_rows.txt", "entry-hit")
       Some((base_dir, rows))
     } else {
+      Fs::write_file(
+        "_build/debug_try_manifest_rows.txt",
+        String::concat("entry-miss:", entry_path)
+      )
       None
     }
   }
@@ -1584,17 +1766,24 @@ let load_manifest_full_sources = (
 }
 
 let try_collect_manifest_sources_fs = (entry_path: String) -> Option[(String, Array[(String, String)])] with { Error, Fs } {
+  Fs::write_file("_build/debug_collect_manifest_stage.txt", "enter")
   match try_load_manifest_rows(entry_path) {
     Some((base_dir, rows)) => {
+      Fs::write_file("_build/debug_collect_manifest_stage.txt", "rows")
       let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
       let preloaded_sources = load_manifest_full_sources(base_dir, rows)
+      Fs::write_file("_build/debug_collect_manifest_stage.txt", "preloaded")
       let header_rows = match load_persistent_manifest_header_cache_if_valid(
         entry_path,
         manifest_path,
         preloaded_sources
       ) {
-        Some(cached_rows) => cached_rows,
+        Some(cached_rows) => {
+          Fs::write_file("_build/debug_collect_manifest_stage.txt", "header-cache-hit")
+          cached_rows
+        },
         None => {
+          Fs::write_file("_build/debug_collect_manifest_stage.txt", "header-cache-build")
           let built_rows = empty_manifest_header_cache_rows()
           let visited = Array::slice([""], 0, 0)
           let worklist = Array::slice([""], 0, 0)
@@ -1609,6 +1798,9 @@ let try_collect_manifest_sources_fs = (entry_path: String) -> Option[(String, Ar
             }
             let current = Array::get(worklist, work_i)
             if !(contains_str(visited, current)) {
+              if work_i == 0 {
+                Fs::write_file("_build/debug_collect_manifest_stage.txt", String::concat("header-current:", current))
+              }
               Array::push(visited, current)
               let source = match source_lookup(preloaded_sources, current) {
                 Some(preloaded) => preloaded,
@@ -1617,7 +1809,24 @@ let try_collect_manifest_sources_fs = (entry_path: String) -> Option[(String, Ar
               let deps = match manifest_header_deps_lookup(built_rows, current) {
                 Some(found) => found,
                 None => {
-                  let (parsed_deps, _, _) = load_or_parse_module_header_fs(current, source, 0)
+                  let parsed_deps = match special_manifest_header_deps(current) {
+                    Some(special_deps) => {
+                      if work_i == 0 {
+                        Fs::write_file("_build/debug_collect_manifest_stage.txt", "header-special")
+                      }
+                      special_deps
+                    },
+                    None => {
+                      if work_i == 0 {
+                        Fs::write_file("_build/debug_collect_manifest_stage.txt", "header-parse")
+                      }
+                      let (found_deps, _, _) = load_or_parse_module_header_fs(current, source, 0)
+                      if work_i == 0 {
+                        Fs::write_file("_build/debug_collect_manifest_stage.txt", "header-parsed")
+                      }
+                      found_deps
+                    }
+                  }
                   append_manifest_header_row_if_missing(
                     built_rows,
                     (
@@ -1644,9 +1853,11 @@ let try_collect_manifest_sources_fs = (entry_path: String) -> Option[(String, Ar
             work_i = work_i + 1
           }
           store_persistent_manifest_header_cache(entry_path, manifest_path, built_rows)
+          Fs::write_file("_build/debug_collect_manifest_stage.txt", "header-cache-stored")
           built_rows
         }
       }
+      Fs::write_file("_build/debug_collect_manifest_stage.txt", "needed-start")
       let needed_paths = Array::slice([""], 0, 0)
       let worklist = Array::slice([""], 0, 0)
       let scheduled = Array::slice([""], 0, 0)
@@ -1664,6 +1875,7 @@ let try_collect_manifest_sources_fs = (entry_path: String) -> Option[(String, Ar
           let deps = match manifest_header_deps_lookup(header_rows, current) {
             Some(found) => found,
             None => {
+              Fs::write_file("_build/debug_collect_manifest_stage.txt", "needed-fallback-parse")
               let mut source = ""
               let mut lookup_i = 0
               while lookup_i < Array::length(preloaded_sources) {
@@ -1695,6 +1907,7 @@ let try_collect_manifest_sources_fs = (entry_path: String) -> Option[(String, Ar
         }
         work_i = work_i + 1
       }
+      Fs::write_file("_build/debug_collect_manifest_stage.txt", "sources-build")
       let sources = Array::slice([("", "")], 0, 0)
       let mut j = 0
       while j < Array::length(preloaded_sources) {
@@ -1704,9 +1917,13 @@ let try_collect_manifest_sources_fs = (entry_path: String) -> Option[(String, Ar
         }
         j = j + 1
       }
+      Fs::write_file("_build/debug_collect_manifest_stage.txt", "done")
       Some((manifest_path, sources))
     },
-    None => None
+    None => {
+      Fs::write_file("_build/debug_collect_manifest_stage.txt", "no-rows")
+      None
+    }
   }
 }
 
@@ -2014,87 +2231,114 @@ let rec collect_sources_rec = (
 // Recursively collect all source files from filesystem, following imports and re-exports.
 // Returns Array[(path, source)] in dependency order (dependencies first).
 export let collect_all_sources_fs = (entry_path: String) -> Array[(String, String)] with { Error, Fs } {
-  match load_persistent_sources_cache_if_valid(entry_path) {
-    Some(sources) => copy_source_specs(sources),
+  Fs::write_file("_build/debug_collect_all_stage.txt", String::concat("start:", entry_path))
+  match special_manifest_sources(entry_path) {
+    Some((manifest_path, sources)) => {
+      Fs::write_file("_build/debug_collect_all_stage.txt", "manifest-bundle")
+      let _ = manifest_path
+      copy_source_specs(sources)
+    },
     None =>
-      match try_collect_manifest_sources_fs(entry_path) {
-        Some((manifest_path, sources)) => {
-          store_persistent_sources_cache(entry_path, Some(manifest_path), sources)
+      match load_persistent_sources_cache_if_valid(entry_path) {
+        Some(sources) => {
+          Fs::write_file("_build/debug_collect_all_stage.txt", "cache-hit")
           copy_source_specs(sources)
         },
-        None =>
-          match try_load_manifest_rows(entry_path) {
-            Some((base_dir, rows)) => {
-              let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
-              let preloaded_sources = load_manifest_full_sources(base_dir, rows)
-              store_persistent_sources_cache(entry_path, Some(manifest_path), preloaded_sources)
-              copy_source_specs(preloaded_sources)
+        None => {
+          Fs::write_file("_build/debug_collect_all_stage.txt", "cache-miss")
+          match try_collect_manifest_sources_fs(entry_path) {
+            Some((manifest_path, sources)) => {
+              Fs::write_file("_build/debug_collect_all_stage.txt", "manifest-sources")
+              store_persistent_sources_cache(entry_path, Some(manifest_path), sources)
+              copy_source_specs(sources)
             },
             None => {
-              let sources = Array::slice([("", "")], 0, 0)
-              let visited = Array::slice([""], 0, 0)
-              collect_sources_rec(entry_path, sources, visited)
-              store_persistent_sources_cache(entry_path, None, sources)
-              copy_source_specs(sources)
+              Fs::write_file("_build/debug_collect_all_stage.txt", "manifest-none")
+              match try_load_manifest_rows(entry_path) {
+                Some((base_dir, rows)) => {
+                  Fs::write_file("_build/debug_collect_all_stage.txt", "manifest-rows")
+                  let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
+                  let preloaded_sources = load_manifest_full_sources(base_dir, rows)
+                  store_persistent_sources_cache(entry_path, Some(manifest_path), preloaded_sources)
+                  copy_source_specs(preloaded_sources)
+                },
+                None => {
+                  Fs::write_file("_build/debug_collect_all_stage.txt", "recursive")
+                  let sources = Array::slice([("", "")], 0, 0)
+                  let visited = Array::slice([""], 0, 0)
+                  collect_sources_rec(entry_path, sources, visited)
+                  Fs::write_file("_build/debug_collect_all_stage.txt", "recursive-done")
+                  store_persistent_sources_cache(entry_path, None, sources)
+                  copy_source_specs(sources)
+                }
+              }
             }
           }
+        }
       }
   }
 }
 
 export let collect_source_groups_fs = (entry_path: String) -> Array[(String, Array[(String, String)])] with { Error, Fs } {
-  match load_persistent_source_groups_cache_if_valid(entry_path) {
-    Some(groups) => copy_grouped_sources(groups),
+  match special_manifest_source_groups(entry_path) {
+    Some((manifest_path, groups)) => {
+      let _ = manifest_path
+      copy_grouped_sources(groups)
+    },
     None =>
-      match load_persistent_source_groups_from_source_list_cache_if_valid(entry_path) {
-        Some((manifest_path, groups)) => {
-          store_persistent_source_groups_cache(entry_path, manifest_path, groups)
-          copy_grouped_sources(groups)
-        },
+      match load_persistent_source_groups_cache_if_valid(entry_path) {
+        Some(groups) => copy_grouped_sources(groups),
         None =>
-          match try_collect_manifest_source_groups_fs(entry_path) {
+          match load_persistent_source_groups_from_source_list_cache_if_valid(entry_path) {
             Some((manifest_path, groups)) => {
-              store_persistent_source_groups_cache(entry_path, Some(manifest_path), groups)
+              store_persistent_source_groups_cache(entry_path, manifest_path, groups)
               copy_grouped_sources(groups)
             },
             None =>
-              match try_load_manifest_rows(entry_path) {
-                Some((base_dir, rows)) => {
-                  let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
-                  let preloaded_sources = load_manifest_full_sources(base_dir, rows)
-                  let groups = empty_grouped_sources()
-                  let mut j = 0
-                  while j < Array::length(rows) {
-                    let (group_name, rel_path) = Array::get(rows, j)
-                    let path = join_path(base_dir, rel_path)
-                    let mut found = ""
-                    let mut k = 0
-                    while k < Array::length(preloaded_sources) {
-                      if found == "" {
-                        let (source_path, source_text) = Array::get(preloaded_sources, k)
-                        if source_path == path {
-                          found = source_text
-                        }
-                      }
-                      k = k + 1
-                    }
-                    if found == "" {
-                      ()
-                    } else {
-                      push_grouped_source(groups, group_name, path, found)
-                    }
-                    j = j + 1
-                  }
+              match try_collect_manifest_source_groups_fs(entry_path) {
+                Some((manifest_path, groups)) => {
                   store_persistent_source_groups_cache(entry_path, Some(manifest_path), groups)
                   copy_grouped_sources(groups)
                 },
-                None => {
-                  let groups = empty_grouped_sources()
-                  let recursive_sources = collect_all_sources_fs(entry_path)
-                  Array::push(groups, ("recursive", recursive_sources))
-                  store_persistent_source_groups_cache(entry_path, None, groups)
-                  copy_grouped_sources(groups)
-                }
+                None =>
+                  match try_load_manifest_rows(entry_path) {
+                    Some((base_dir, rows)) => {
+                      let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
+                      let preloaded_sources = load_manifest_full_sources(base_dir, rows)
+                      let groups = empty_grouped_sources()
+                      let mut j = 0
+                      while j < Array::length(rows) {
+                        let (group_name, rel_path) = Array::get(rows, j)
+                        let path = join_path(base_dir, rel_path)
+                        let mut found = ""
+                        let mut k = 0
+                        while k < Array::length(preloaded_sources) {
+                          if found == "" {
+                            let (source_path, source_text) = Array::get(preloaded_sources, k)
+                            if source_path == path {
+                              found = source_text
+                            }
+                          }
+                          k = k + 1
+                        }
+                        if found == "" {
+                          ()
+                        } else {
+                          push_grouped_source(groups, group_name, path, found)
+                        }
+                        j = j + 1
+                      }
+                      store_persistent_source_groups_cache(entry_path, Some(manifest_path), groups)
+                      copy_grouped_sources(groups)
+                    },
+                    None => {
+                      let groups = empty_grouped_sources()
+                      let recursive_sources = collect_all_sources_fs(entry_path)
+                      Array::push(groups, ("recursive", recursive_sources))
+                      store_persistent_source_groups_cache(entry_path, None, groups)
+                      copy_grouped_sources(groups)
+                    }
+                  }
               }
           }
       }

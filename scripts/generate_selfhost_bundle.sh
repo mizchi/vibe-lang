@@ -150,7 +150,7 @@ def visit_bundle(rel: str):
         visit_bundle(resolve_path(rel, dep))
 
 # Additional entry points for the main bundle
-bundle_extra_entries = os.environ.get("VIBE_SELFHOST_BUNDLE_EXTRA_ENTRIES", "codegen/gc/index.vibe")
+bundle_extra_entries = os.environ.get("VIBE_SELFHOST_BUNDLE_EXTRA_ENTRIES", "codegen/gc/index.vibe,index.vibe")
 for entry in bundle_extra_entries.split(","):
     entry = entry.strip()
     if entry:
@@ -176,6 +176,94 @@ while IFS=$'\t' read -r kind idx; do
   fi
 done < "$cli_adapter_index_rows_file"
 rm -f "$cli_adapter_index_rows_file"
+
+main_index_rows_file="$(mktemp)"
+python3 - "$COMPILER_DIR" "$MANIFEST" "index.vibe" >"$main_index_rows_file" <<'PY'
+import os
+import re
+import sys
+
+compiler_dir, manifest_path, root_rel = sys.argv[1:]
+rows = []
+for raw in open(manifest_path, "r", encoding="utf-8"):
+    line = raw.rstrip("\n")
+    if not line or line.startswith("#"):
+        continue
+    parts = line.split("\t")
+    if len(parts) != 2:
+        continue
+    rows.append((parts[0], parts[1]))
+
+source_by_rel = {}
+for _, rel in rows:
+    full = os.path.join(compiler_dir, rel)
+    if os.path.isfile(full):
+        with open(full, "r", encoding="utf-8") as f:
+            source_by_rel[rel] = f.read()
+
+dep_pattern = re.compile(r'^\s*(?:import|export)\s+(\.[\w./\s-]+?)(?:\.vibe)?\s*\{', re.MULTILINE)
+
+def normalize_path(path: str) -> str:
+    parts = []
+    for seg in path.split("/"):
+        if seg == "" or seg == ".":
+            continue
+        if seg == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(seg)
+    return "/".join(parts)
+
+def resolve_path(base_rel: str, raw_path: str) -> str:
+    base_dir = os.path.dirname(base_rel)
+    raw_path = re.sub(r'\s*/\s*', '/', raw_path.strip())
+    path = raw_path if raw_path.endswith(".vibe") else raw_path + ".vibe"
+    if path.startswith("./") or path.startswith("../"):
+        if base_dir:
+            candidate = normalize_path(base_dir + "/" + path)
+        else:
+            candidate = normalize_path(path)
+    else:
+        candidate = normalize_path(path)
+    if candidate in source_by_rel:
+        return candidate
+    idx_candidate = candidate.replace(".vibe", "/index.vibe")
+    if idx_candidate in source_by_rel:
+        return idx_candidate
+    return candidate
+
+index_by_rel = {}
+for pair_index, (_, rel) in enumerate(rows):
+    index_by_rel[rel] = pair_index
+
+visited = set()
+ordered = []
+
+def visit_ordered(rel: str):
+    if rel in visited:
+        return
+    source = source_by_rel.get(rel)
+    if source is None:
+        return
+    visited.add(rel)
+    for dep in dep_pattern.findall(source):
+        visit_ordered(resolve_path(rel, dep))
+    ordered.append(rel)
+
+visit_ordered(root_rel)
+for rel in ordered:
+    idx = index_by_rel.get(rel)
+    if idx is not None:
+        print(idx)
+PY
+MAIN_ORDERED_INDEXES=()
+while IFS= read -r idx; do
+  if [ -n "${idx}" ]; then
+    MAIN_ORDERED_INDEXES+=("$idx")
+  fi
+done < "$main_index_rows_file"
+rm -f "$main_index_rows_file"
 
 # Build lookup set for bundle reachability filter
 is_bundle_reachable() {
@@ -204,6 +292,31 @@ find_adapter_local_index() {
       return 0
     fi
     i=$((i + 1))
+  done
+  return 1
+}
+
+find_bundle_local_index() {
+  local target="$1"
+  local pair manifest_idx local_idx
+  for pair in "${BUNDLE_SOURCE_INDEXES[@]}"; do
+    manifest_idx="${pair%%:*}"
+    local_idx="${pair#*:}"
+    if [ "$manifest_idx" = "$target" ]; then
+      echo "$local_idx"
+      return 0
+    fi
+  done
+  return 1
+}
+
+is_main_ordered() {
+  local target="$1"
+  local idx
+  for idx in "${MAIN_ORDERED_INDEXES[@]}"; do
+    if [ "$idx" = "$target" ]; then
+      return 0
+    fi
   done
   return 1
 }
@@ -473,12 +586,24 @@ def normalize_path(path: str) -> str:
 def resolve_path(base_rel: str, raw_path: str) -> str:
     base_dir = os.path.dirname(base_rel)
     raw_path = re.sub(r'\s*/\s*', '/', raw_path.strip())
-    path = raw_path if raw_path.endswith(".vibe") else raw_path + ".vibe"
-    if path.startswith("./") or path.startswith("../"):
+    joined = raw_path
+    if raw_path.startswith("./") or raw_path.startswith("../"):
       if base_dir:
-        return normalize_path(base_dir + "/" + path)
-      return normalize_path(path)
-    return normalize_path(path)
+        joined = normalize_path(base_dir + "/" + raw_path)
+      else:
+        joined = normalize_path(raw_path)
+    else:
+      joined = normalize_path(raw_path)
+    candidates = []
+    if joined.endswith(".vibe"):
+      candidates.append(joined)
+    else:
+      candidates.append(joined + ".vibe")
+      candidates.append(joined + "/index.vibe")
+    for candidate in candidates:
+      if candidate in source_by_rel:
+        return candidate
+    return candidates[0]
 
 visited = set()
 ordered = []
@@ -658,6 +783,29 @@ sys.stdout.write('\"' + content + '\"')
   done
 
   echo ""
+  echo "  groups"
+  echo "}"
+  echo ""
+  echo "export let selfhost_ordered_sources = () -> Array[(String, String)] {"
+  echo "  let sources = Array::slice([(\"\", \"\")], 0, 0)"
+  for idx in "${MAIN_ORDERED_INDEXES[@]}"; do
+    if local_idx="$(find_bundle_local_index "$idx")"; then
+      echo "  Array::push(sources, source_$local_idx)"
+    fi
+  done
+  echo "  sources"
+  echo "}"
+  echo ""
+  echo "export let selfhost_ordered_source_groups = () -> Array[(String, Array[(String, String)])] {"
+  echo "  let groups = empty_grouped_sources()"
+  for pair in "${BUNDLE_SOURCE_INDEXES[@]}"; do
+    manifest_idx="${pair%%:*}"
+    local_idx="${pair#*:}"
+    if is_main_ordered "$manifest_idx"; then
+      group="${MANIFEST_GROUPS[$manifest_idx]}"
+      echo "  push_grouped_source_pair(groups, \"$group\", source_$local_idx)"
+    fi
+  done
   echo "  groups"
   echo "}"
 } > "$OUT"
