@@ -354,6 +354,19 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-selfhost-${{ runner.os }}-${{ hashFiles('.github/workflows/ci.yml', 'scripts/build_selfhost_*component*.sh') }}
+          restore-keys: cargo-selfhost-${{ runner.os }}-
       - name: Cache MoonBit build
         uses: actions/cache@v4
         with:
@@ -368,25 +381,23 @@ jobs:
         run: |
           curl -fsSL https://wasmtime.dev/install.sh | bash
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+      - name: Install wasm-tools
+        run: |
+          curl -LO https://github.com/bytecodealliance/wasm-tools/releases/download/v1.245.1/wasm-tools-1.245.1-x86_64-linux.tar.gz
+          tar xzf wasm-tools-1.245.1-x86_64-linux.tar.gz
+          sudo mv wasm-tools-1.245.1-x86_64-linux/wasm-tools /usr/local/bin/
+      - name: Install wac
+        run: |
+          if ! command -v wac >/dev/null 2>&1; then
+            cargo install wac-cli --version 0.9.0 --locked
+          fi
       - name: Install just
         run: curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
       - name: Build vibe CLI (native)
         run: VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
-      - name: Selfhost bootstrap gate
+      - name: Selfhost release gate bundle
         continue-on-error: true
-        run: |
-          VIBE_SELFHOST_BOOTSTRAP_BASELINE_SEC=180 \
-          VIBE_SELFHOST_BOOTSTRAP_REDUCTION_PCT=30 \
-          VIBE_SELFHOST_BOOTSTRAP_STAGE_TIMEOUT_SEC=900 \
-          ./scripts/test_selfhost_bootstrap_gate.sh
-      - name: Selfhost WASI selfbuild gate
-        continue-on-error: true
-        run: |
-          VIBE_SELFHOST_SELFBUILD_STRICT_RECURSIVE=1 \
-          VIBE_SELFHOST_SELFBUILD_REQUIRE_TRUE_RECURSIVE=1 \
-          VIBE_SELFHOST_SELFBUILD_STAGE_TIMEOUT_SEC=600 \
-          VIBE_SELFHOST_SELFBUILD_MAX_TOTAL_SEC=300 \
-          ./scripts/test_selfhost_wasi_selfbuild.sh
+        run: just release-selfhost-gates
       - name: Selfhost WASI HTTP boundary gate
         continue-on-error: true
         run: ./scripts/test_selfhost_wasi_http_boundary.sh
@@ -403,16 +414,6 @@ jobs:
           VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=2.5 \
           VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=0.8 \
           ./scripts/bench_selfhost_perf.sh
-      - name: Selfhost cutover gate
-        continue-on-error: true
-        run: |
-          VIBE_CUTOVER_REQUIRE_PARITY=1 \
-          VIBE_CUTOVER_INCLUDE_COMPILER_SIZE=1 \
-          VIBE_CUTOVER_INCLUDE_FAIL_CASES=1 \
-          VIBE_CUTOVER_REQUIRED_FAIL_CLASSES=parse,type,io \
-          VIBE_CUTOVER_MODES=mvp,no-dce,debug-errors \
-          VIBE_CUTOVER_STAGE_TIMEOUT_SEC=300 \
-          ./scripts/test_selfhost_cutover_gate.sh
       - name: Selfhost suite coverage gate
         continue-on-error: true
         run: just coverage-selfhost-suite-gate

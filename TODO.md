@@ -3,6 +3,42 @@
 Spec-locked decisions are tracked in `docs/spec/decisions.md`.
 Completed items are archived in `docs/DONE.md`.
 
+## 0.1.0 release sign-off (2026-03-24)
+
+単一 `.wasm` artifact で build/check/compile/run の主要導線が通る状態までは来ている。
+直近の Main lane は実装追加より release sign-off の確定が中心。
+
+### 直近の完了
+
+- [x] `test-selfhost-bootstrap`
+- [x] `test-selfhost-wasi-selfbuild-kpi`
+- [x] `test-selfhost-cli-core`
+- [x] `test-selfhost-cli-component-preview2`
+- [x] `test-selfhost-cli-preview2-package`
+- [x] `test-selfhost-cli-command-component`
+- [x] `test-selfhost-cli-command-parity`
+- [x] `test-selfhost-cli-direct-component`
+- [x] `test-selfhost-cli-direct-parity`
+- [x] `test-selfhost-check-preview2-package`
+- [x] `test-selfhost-check-command-component`
+- [x] `test-selfhost-check-command-parity`
+- [x] `test-selfhost-check-direct-component`
+- [x] `test-selfhost-check-direct-parity`
+- [x] `test-selfhost-cutover`
+- [x] `test-golden-wat`
+- [x] `.github/workflows/ci.yml` の `selfhost-gates` を `just release-selfhost-gates` 基準に揃える
+- [x] component/direct selfhost gate 用の CI 前提 (`Rust + wasm32 + wasm-tools + wac`) を明示する
+
+### 残タスク
+
+- [ ] GitHub Actions 上で `just release-selfhost-gates` を一発通しし、最終ログを固定
+- [ ] `just release-check` を最新 HEAD で通す
+- [ ] `build-selfhost-dist` を latest HEAD で cold build し、sample compile/run を再確認
+- [ ] `0.1.0` の supported surface を文書化して freeze
+  - linear/WASM selfhost dist を正式対象
+  - GC backend は experimental
+  - advanced effect/WIT mapping は experimental
+
 ## ビルドパイプライン
 
 ### 既知の制約
@@ -73,6 +109,17 @@ linked debug build を selfhost でも生成するには以下の移植が必要
   `Fs.Exists` import leak と closure payload decode/byte handling を修正済み。
   `scripts/test_selfhost_cli_direct_component.sh` と
   `scripts/test_selfhost_cli_direct_parity.sh` の両方が pass。
+
+## Selfhost check parity
+
+- [x] `selfhost_check_preview2_package`
+  check surface の preview2 package は復旧済み。
+
+- [x] `selfhost_check_command_component`
+  command-shaped check component と parity gate は pass。
+
+- [x] `selfhost_check_direct_component`
+  direct filesystem check component と parity gate は pass。
 
 ## CI 最適化
 
