@@ -297,22 +297,19 @@ jobs:
       - name: Run wasm quick shard (${{ matrix.shard }})
         run: just ci-wasm-quick-shard ${{ matrix.shard }}
 
-  wasm-compile-e2e:
+  wasm-parity:
+    name: wasm-parity (${{ matrix.suite }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2]
+        suite: [handle, pattern]
     steps:
       - uses: actions/checkout@v4
       - name: Install MoonBit CLI
         run: |
           curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
       - name: Cache MoonBit build
         uses: actions/cache@v4
         with:
@@ -329,25 +326,55 @@ jobs:
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
       - name: Build vibe CLI (native)
         run: VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
-      - name: Check handle/exception interpreter vs wasm parity (shard 0 only)
+      - name: Run wasm parity suite (${{ matrix.suite }})
         continue-on-error: true
         run: |
-          [ "$SHARD_INDEX" != "0" ] && echo "Skipped (shard $SHARD_INDEX)" && exit 0
-          ./scripts/test_handle_exception_wasm_match.sh
-        env:
-          SHARD_INDEX: ${{ matrix.shard }}
-      - name: Check interpreter vs wasm pattern match parity (shard 0 only)
-        continue-on-error: true
+          case "${{ matrix.suite }}" in
+            handle)
+              ./scripts/test_handle_exception_wasm_match.sh
+              ;;
+            pattern)
+              ./scripts/test_interpreter_wasm_match.sh
+              ;;
+            *)
+              echo "unknown wasm parity suite: ${{ matrix.suite }}" >&2
+              exit 1
+              ;;
+          esac
+
+  wasm-compile-e2e:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MoonBit CLI
         run: |
-          [ "$SHARD_INDEX" != "0" ] && echo "Skipped (shard $SHARD_INDEX)" && exit 0
-          ./scripts/test_interpreter_wasm_match.sh
-        env:
-          SHARD_INDEX: ${{ matrix.shard }}
-      - name: WASM compile E2E (shard ${{ matrix.shard }}/3)
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: Cache MoonBit build
+        uses: actions/cache@v4
+        with:
+          path: |
+            _build
+            .mooncakes
+          key: moonbit-${{ runner.os }}-${{ hashFiles('moon.mod.json', 'src/**/*.mbt') }}
+          restore-keys: moonbit-${{ runner.os }}-
+      - name: Moon update
+        run: moon update
+      - name: Install wasmtime
+        run: |
+          curl -fsSL https://wasmtime.dev/install.sh | bash
+          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+      - name: Build vibe CLI (native)
+        run: VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
+      - name: WASM compile E2E (shard ${{ matrix.shard }}/4)
         continue-on-error: true
         env:
           SHARD_INDEX: ${{ matrix.shard }}
-          SHARD_TOTAL: 3
+          SHARD_TOTAL: 4
         run: ./scripts/test_wasm_compile_wasmtime.sh
 
   selfhost-gates:
@@ -373,10 +400,12 @@ jobs:
         with:
           node-version: '24'
       - name: Install Rust toolchain
+        if: matrix.shard == 'cli' || matrix.shard == 'check'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - name: Cache Cargo registry
+        if: matrix.shard == 'cli' || matrix.shard == 'check'
         uses: actions/cache@v4
         with:
           path: |
@@ -400,11 +429,13 @@ jobs:
           curl -fsSL https://wasmtime.dev/install.sh | bash
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
       - name: Install wasm-tools
+        if: matrix.shard != 'coverage'
         run: |
           curl -LO https://github.com/bytecodealliance/wasm-tools/releases/download/v1.245.1/wasm-tools-1.245.1-x86_64-linux.tar.gz
           tar xzf wasm-tools-1.245.1-x86_64-linux.tar.gz
           sudo mv wasm-tools-1.245.1-x86_64-linux/wasm-tools /usr/local/bin/
       - name: Install wac
+        if: matrix.shard == 'cli' || matrix.shard == 'check'
         run: |
           if ! command -v wac >/dev/null 2>&1; then
             cargo install wac-cli --version 0.9.0 --locked
