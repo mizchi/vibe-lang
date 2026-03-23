@@ -869,6 +869,7 @@ pub fn VibeDb::new() -> VibeDb {
           let imported_meta = type_import_meta_query.fetch(rt, imp.path)
           let exported_names = imported_meta.exported_names
           let internal_exported_names = imported_meta.internal_exported_names
+          let trait_names = imported_meta.trait_names
           let importer_dir = @path.Path(file_path).dirname().to_string()
           let imported_dir = @path.Path(imp.path).dirname().to_string()
           let allow_internal_import = importer_dir == imported_dir
@@ -1363,14 +1364,14 @@ pub fn VibeDb::new() -> VibeDb {
                       )
                       if not(imported_any) {
                         if import_item_accepts_trait(item) &&
-                          imported_env.has_trait(name) {
+                          trait_names.contains(name) {
                           report_non_exported_trait(name)
                         } else if item.kind != @core.ImportKind::Value {
                           report_kind_mismatch(item, name)
                         }
                       }
                     } else if import_item_accepts_trait(item) &&
-                      imported_env.has_trait(name) {
+                      trait_names.contains(name) {
                       report_non_exported_trait(name)
                     }
                   }

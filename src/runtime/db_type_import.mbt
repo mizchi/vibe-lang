@@ -2,6 +2,7 @@
 priv struct TypeImportMeta {
   exported_names : Map[String, Bool]
   internal_exported_names : Map[String, Bool]
+  trait_names : Map[String, Bool]
 } derive(Eq)
 
 ///|
@@ -436,6 +437,19 @@ fn collect_internal_exported_names(ast : @core.Module) -> Map[String, Bool] {
 }
 
 ///|
+fn collect_trait_names(ast : @core.Module) -> Map[String, Bool] {
+  let trait_names : Map[String, Bool] = {}
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::TraitDef(name~, ..) => trait_names[name] = true
+      @core.Stmt::InternalTraitDef(name~, ..) => trait_names[name] = true
+      _ => ()
+    }
+  }
+  trait_names
+}
+
+///|
 fn merge_visible_import_names(
   exported_names : Map[String, Bool],
   internal_exported_names : Map[String, Bool],
@@ -542,5 +556,6 @@ fn collect_type_import_meta(ast : @core.Module) -> TypeImportMeta {
   {
     exported_names: collect_exported_names(ast),
     internal_exported_names: collect_internal_exported_names(ast),
+    trait_names: collect_trait_names(ast),
   }
 }
