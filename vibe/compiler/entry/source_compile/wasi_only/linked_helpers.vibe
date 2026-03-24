@@ -25,64 +25,12 @@ import ./preprocess.vibe {
   expand_interp_stmts
 }
 
-import ./path_utils.vibe {
+import ../../../module_graph_path.vibe {
   dir_of_path,
   resolve_import_path,
-  contains_path,
-  empty_stmt_array
-}
-
-import ./merge_sources.vibe {
-  collect_merged_stmts_recursive
-}
-
-let array_contains_name = (arr: Array[String], name: String) -> Bool {
-  let mut found = false
-  let mut i = 0
-  while i < Array::length(arr) {
-    if Array::get(arr, i) == name { found = true }
-    i = i + 1
-  }
-  found
-}
-
-let get_export_name = (items: Array[(String, Option[String])], name: String) -> String {
-  let mut result = name
-  let mut i = 0
-  while i < Array::length(items) {
-    let (iname, irename) = Array::get(items, i)
-    if iname == name {
-      match irename {
-        Some(alias) => { result = alias },
-        None => ()
-      }
-    }
-    i = i + 1
-  }
-  result
-}
-
-let path_to_module_name = (path: String) -> String {
-  let len = String::length(path)
-  let mut last_slash = -1
-  let mut i = 0
-  while i < len {
-    if String::char_code_at(path, i) == 47 {
-      last_slash = i
-    }
-    i = i + 1
-  }
-  let base = if last_slash >= 0 {
-    path[last_slash + 1 : len]
-  } else {
-    path
-  }
-  let base_len = String::length(base)
-  if String::ends_with(base, ".vibe") {
-    base[0 : base_len - 5]
-  } else {
-    base
-  }
+  contains_name,
+  get_export_name,
+  path_to_module_name
 }
 
 let rec resolve_reexport_chain = (source_path: String, items: Array[(String, Option[String])], module_name: String, linked_imports: Array[(String, String, Int, Int)], type_stmts: Array[Stmt], depth: Int) -> Unit with { Error, Fs } {
@@ -102,13 +50,13 @@ let rec resolve_reexport_chain = (source_path: String, items: Array[(String, Opt
     while si < Array::length(stmts) {
       match Array::get(stmts, si) {
         SLet(true, _, name, _, EFn(_, _, params, _, _, _)) => {
-          if array_contains_name(wanted_names, name) {
+          if contains_name(wanted_names, name) {
             let export_name = get_export_name(items, name)
             Array::push(linked_imports, (module_name, export_name, Array::length(params), 1))
           }
         },
         SEnum(true, name, _) => {
-          if array_contains_name(wanted_names, name) {
+          if contains_name(wanted_names, name) {
             Array::push(type_stmts, Array::get(stmts, si))
           }
         },
@@ -117,7 +65,7 @@ let rec resolve_reexport_chain = (source_path: String, items: Array[(String, Opt
           let mut fi = 0
           while fi < Array::length(inner_items) {
             let (iname, irename) = Array::get(inner_items, fi)
-            if array_contains_name(wanted_names, iname) {
+            if contains_name(wanted_names, iname) {
               Array::push(filtered, (iname, irename))
             }
             fi = fi + 1

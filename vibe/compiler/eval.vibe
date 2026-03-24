@@ -151,7 +151,20 @@ let rec decode_type_expr = (tv: Value) -> TypeExpr {
         TyApp(name, decode_type_exprs(Array::get(arr, 2)))
       }
       else if tag == "tf" {
-        TyFn(decode_type_exprs(Array::get(arr, 1)), decode_type_expr(Array::get(arr, 2)))
+        let effect_name = if Array::length(arr) > 3 {
+          match Array::get(arr, 3) {
+            VString(name) => if name == "" { None } else { Some(name) },
+            VUnit => None,
+            _ => None
+          }
+        } else {
+          None
+        }
+        TyFn(
+          decode_type_exprs(Array::get(arr, 1)),
+          decode_type_expr(Array::get(arr, 2)),
+          effect_name
+        )
       }
       else if tag == "tt" {
         TyTuple(decode_type_exprs(Array::get(arr, 1)))
@@ -804,10 +817,14 @@ let rec encode_type_expr = (ty: TypeExpr) -> Value {
       VString(name),
       encode_type_exprs(args, 0)
     ]),
-    TyFn(params, ret) => VArray([
+    TyFn(params, ret, effect_name) => VArray([
       VString("tf"),
       encode_type_exprs(params, 0),
-      encode_type_expr(ret)
+      encode_type_expr(ret),
+      match effect_name {
+        Some(name) => VString(name),
+        None => VUnit
+      }
     ]),
     TyTuple(items) => VArray([
       VString("tt"),

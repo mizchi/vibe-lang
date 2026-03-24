@@ -8,6 +8,14 @@ Completed items are archived in `docs/DONE.md`.
 単一 `.wasm` artifact で build/check/compile/run の主要導線が通る状態までは来ている。
 直近の Main lane は実装追加より release sign-off の確定が中心。
 
+### 実装単純化 (2026-03-24)
+
+- [x] effect surface を `TyFn/CtFn + with {Name}` に寄せ、named effect を canonical 表現にする
+- [x] `module_graph/path` helper を共通化し、loader/runtime/selfhost entry の path 解決重複を削除
+- [x] loader の `_build/debug_*` / manifest helper debug 書き込みを撤去
+- [x] persistent module header / type env codec を shared helper に統一
+- [x] `selfhost_cli_core_entry` から probe export を分離し、canonical CLI entry を薄く保つ
+
 ### 直近の完了
 
 - [x] `test-selfhost-bootstrap`

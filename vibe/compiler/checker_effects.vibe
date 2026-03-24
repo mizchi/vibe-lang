@@ -8,6 +8,10 @@ import ./builtins.vibe {
   lookup_builtin
 }
 
+import ./builtin_name.vibe {
+  canonical_builtin_name
+}
+
 import ./types.vibe {
   Type, TypeEnv, env_lookup
 }
@@ -19,80 +23,24 @@ export enum EffectError {
   EEEffectfulCallOutsideEffect(String)
 }
 
-//# Functions
-
-let canonical_builtin_name = (name: String) -> String {
-  match name {
-    "Fs::ReadFile" => "Fs::read_file",
-    "Fs::WriteFile" => "Fs::write_file",
-    "Fs::ReadBytes" => "Fs::read_bytes",
-    "Fs::WriteBytes" => "Fs::write_bytes",
-    "Fs::Exists" => "Fs::exists",
-    "Fs::StatToken" => "Fs::stat_token",
-    "Fs::ReadDir" => "Fs::readdir",
-    "Fs::IsDir" => "Fs::is_dir",
-    "Fs::IsFile" => "Fs::is_file",
-    "Fs::Mkdir" => "Fs::mkdir",
-    "Fs::Getcwd" => "Fs::getcwd",
-    "Fs::Chdir" => "Fs::chdir",
-    "Fs::Remove" => "Fs::remove",
-    "Fs::Copy" => "Fs::copy",
-    "Fs::Append" => "Fs::append",
-    "Env::Get" => "Env::get",
-    "Env::ArgsLen" => "Env::args_len",
-    "Env::ArgsGet" => "Env::args_get",
-    _ => name
-  }
-}
-
 let is_effectful_type = (ty: Type) -> Bool {
   match ty {
-    CtFn(_, _, has_effect) => has_effect,
+    CtFn(_, _, Some(_)) => true,
     _ => false
   }
 }
 
-let is_effectful_builtin = (name: String) -> Bool {
-  let normalized = canonical_builtin_name(name)
-  normalized == "throw"
-  || normalized == "sh"
-  || normalized == "sh_lines"
-  || normalized == "Fs::read_file"
-  || normalized == "Fs::write_file"
-  || normalized == "Fs::exists"
-  || normalized == "Fs::stat_token"
-  || normalized == "Fs::readdir"
-  || normalized == "Fs::is_dir"
-  || normalized == "Fs::mkdir"
-  || normalized == "Fs::mkdir_p"
-  || normalized == "Fs::getcwd"
-  || normalized == "Fs::chdir"
-  || normalized == "Fs::remove"
-  || normalized == "Fs::is_file"
-  || normalized == "Fs::copy"
-  || normalized == "Fs::rename"
-  || normalized == "Fs::append"
-  || normalized == "Fs::write_bytes"
-  || normalized == "Env::get"
-  || normalized == "Env::args_len"
-  || normalized == "Env::args_get"
-  || normalized == "Http::request"
-  || normalized == "Http::listen"
-}
-
 let is_effectful_name = (name: String, env: TypeEnv) -> Bool {
-  if is_effectful_builtin(name) {
-    true
-  } else {
-    match env_lookup(env, name) {
-      Some(ty) => is_effectful_type(ty),
-      None => match lookup_builtin(name) {
+  match env_lookup(env, name) {
+    Some(ty) => is_effectful_type(ty),
+    None => {
+      let normalized = canonical_builtin_name(name)
+      match lookup_builtin(normalized) {
         Some(ty) => is_effectful_type(ty),
         None => false
       }
     }
   }
-}
 
 export let rec check_effects_expr = (expr: Expr, env: TypeEnv, in_effect: Bool) -> Array[EffectError] {
   let errors = Array::slice([

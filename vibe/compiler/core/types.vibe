@@ -10,7 +10,7 @@ export enum Type {
   CtTuple(Array[Type]);
   CtArray(Type);
   CtOption(Type);
-  CtFn(Array[Type], Type, Bool);
+  CtFn(Array[Type], Type, Option[String]);
   CtEnum(String);
   CtStruct(String);
   CtBytes;
@@ -232,6 +232,19 @@ let string_array_equal = (left: Array[String], right: Array[String]) -> Bool {
   result
 }
 
+let option_string_equal = (left: Option[String], right: Option[String]) -> Bool {
+  match left {
+    Some(left_name) => match right {
+      Some(right_name) => left_name == right_name,
+      None => false
+    },
+    None => match right {
+      Some(_) => false,
+      None => true
+    }
+  }
+}
+
 export let rec types_equal = (a: Type, b: Type) -> Bool {
   match a {
     CtInt => match b {
@@ -338,12 +351,11 @@ export let rec types_equal = (a: Type, b: Type) -> Bool {
       },
       _ => false
     },
-    CtFn(aparams, aret, ahas_error) => match b {
-      CtFn(bparams, bret, bhas_error) =>
+    CtFn(aparams, aret, aeffect) => match b {
+      CtFn(bparams, bret, beffect) =>
       if Array::length(aparams) != Array::length(bparams) {
         false
-      } else if ahas_error {
-        if bhas_error {
+      } else if option_string_equal(aeffect, beffect) {
           let tae_len3 = Array::length(aparams)
           let mut tae_i3 = 0
           let mut tae_result3 = true
@@ -365,33 +377,8 @@ export let rec types_equal = (a: Type, b: Type) -> Bool {
           } else {
             false
           }
-        } else {
-          false
-        }
-      } else if bhas_error {
-        false
       } else {
-        let tae_len4 = Array::length(aparams)
-        let mut tae_i4 = 0
-        let mut tae_result4 = true
-        let mut tae_done4 = false
-        while !tae_done4{
-          if tae_i4 >= tae_len4 {
-            tae_done4 = true
-          } else {
-            if types_equal(Array::get(aparams, tae_i4), Array::get(bparams, tae_i4)) {
-              tae_i4 = tae_i4 + 1
-            } else {
-              tae_result4 = false
-              tae_done4 = true
-            }
-          }
-        }
-        if tae_result4 {
-          types_equal(aret, bret)
-        } else {
-          false
-        }
+        false
       },
       _ => false
     },
@@ -700,11 +687,11 @@ export let rec subst_apply = (s: Subst, ty: Type) -> Type {
       }
       out
     },
-    CtFn(params, ret, he) => {
+    CtFn(params, ret, effect_name) => {
       let rp = for p in params {
         subst_apply(s, p)
       }
-      CtFn(rp, subst_apply(s, ret), he)
+      CtFn(rp, subst_apply(s, ret), effect_name)
     },
     CtArray(elem) => CtArray(subst_apply(s, elem)),
     CtOption(elem) => CtOption(subst_apply(s, elem)),
@@ -750,8 +737,11 @@ export let rec unify = (a: Type, b: Type, s: Subst) -> Option[Subst] {
                   CtOption(eb) => unify(ea, eb, s),
                   _ => None
                 },
-                CtFn(pa, ra, _) => match tb {
-                  CtFn(pb, rb, _) => if Array::length(pa) != Array::length(pb) {
+                CtFn(pa, ra, aeffect) => match tb {
+                  CtFn(pb, rb, beffect) => if Array::length(pa) != Array::length(pb) {
+                    None
+                  }
+                  else if !option_string_equal(aeffect, beffect) {
                     None
                   }
                   else {
@@ -1011,14 +1001,15 @@ export let rec type_to_string = (ty: Type) -> String {
       }
       "(\{join_types(parts, ", ")})"
     },
-    CtFn(params, ret, has_error) => {
+    CtFn(params, ret, effect_name) => {
       let parts = for p in params {
         type_to_string(p)
       }
       let base = "(\{join_types(parts, ", ")}) -> \{type_to_string(ret)}"
-      if has_error {
-        "\{base} with {Error}"
-      } else base
+      match effect_name {
+        Some(name) => "\{base} with {\{name}}",
+        None => base
+      }
     }
   }
 }

@@ -21,6 +21,14 @@ import ./typecheck_fs.vibe {
   ensure_fingerprint_fs_impl
 }
 
+import ./type_env_codec.vibe {
+  load_persistent_leaf_fingerprint,
+  persistent_dep_list_text,
+  persistent_leaf_fingerprint_text,
+  persistent_type_env_cache_text,
+  load_persistent_type_env
+}
+
 import ../syntax/index.vibe {
   lex,
   parse_program,
@@ -29,6 +37,11 @@ import ../syntax/index.vibe {
 
 import ../module_loader.vibe {
   load_or_parse_module_header_fs
+}
+
+import ../module_graph_path.vibe {
+  dir_of_path,
+  resolve_import_path
 }
 
 import ../cache/persistent/index.vibe {
@@ -96,66 +109,9 @@ let string_to_bytes = (s: String) -> Bytes {
   out
 }
 
-let dir_of = (file_path: String) -> String {
-  let idx = String::last_index_of(file_path, "/")
-  if idx < 0 {
-    ""
-  } else {
-    file_path[0:idx]
-  }
-}
+let dir_of = dir_of_path
 
-let resolve_path = (base_dir: String, raw_path: String) -> String {
-  let len = String::length(raw_path)
-  if len >= 3 {
-    if raw_path[0:3] == "../" {
-      let rest = raw_path[3:len]
-      let parent = dir_of(base_dir)
-      let resolved = if String::ends_with(rest, ".vibe") {
-        rest
-      } else {
-        String::concat(rest, ".vibe")
-      }
-      if parent == "" {
-        resolved
-      } else {
-        String::concat(parent, String::concat("/", resolved))
-      }
-    } else if raw_path[0:2] == "./" {
-      let rest = raw_path[2:len]
-      let resolved = if String::ends_with(rest, ".vibe") {
-        rest
-      } else {
-        String::concat(rest, ".vibe")
-      }
-      if base_dir == "" {
-        resolved
-      } else {
-        String::concat(base_dir, String::concat("/", resolved))
-      }
-    } else {
-      raw_path
-    }
-  } else if len >= 2 {
-    if raw_path[0:2] == "./" {
-      let rest = raw_path[2:len]
-      let resolved = if String::ends_with(rest, ".vibe") {
-        rest
-      } else {
-        String::concat(rest, ".vibe")
-      }
-      if base_dir == "" {
-        resolved
-      } else {
-        String::concat(base_dir, String::concat("/", resolved))
-      }
-    } else {
-      raw_path
-    }
-  } else {
-    raw_path
-  }
-}
+let resolve_path = resolve_import_path
 
 let parse_program_with_path = (path: String, source: String) -> Array[Stmt] with { Error } {
   handle {
@@ -460,432 +416,6 @@ let compact_string_fingerprint = (source: String) -> String {
   )
 }
 
-let serialize_segment = (text: String) -> String {
-  String::concat(__to_string(String::length(text)), String::concat(":", text))
-}
-
-let parse_count_header = (text: String, pos: Int, terminator: Int) -> (Int, Int) with { Error } {
-  let len = String::length(text)
-  let mut i = pos
-  while i < len && String::char_code_at(text, i) != terminator {
-    i = i + 1
-  }
-  if i >= len {
-    throw("invalid persistent type env payload")
-  } else {
-    (Int::parse(text[pos:i]), i + 1)
-  }
-}
-
-let parse_segment = (text: String, pos: Int) -> (String, Int) with { Error } {
-  let (seg_len, start) = parse_count_header(text, pos, 58)
-  let end = start + seg_len
-  if end > String::length(text) {
-    throw("invalid persistent type env segment")
-  } else {
-    (text[start:end], end)
-  }
-}
-
-let serialize_string_array = (items: Array[String]) -> String {
-  let mut out = String::concat(__to_string(Array::length(items)), "[")
-  let mut i = 0
-  while i < Array::length(items) {
-    out = String::concat(out, serialize_segment(Array::get(items, i)))
-    i = i + 1
-  }
-  String::concat(out, "]")
-}
-
-let parse_string_array = (text: String, pos: Int) -> (Array[String], Int) with { Error } {
-  let (count, start) = parse_count_header(text, pos, 91)
-  let items = Array::slice([""], 0, 0)
-  let mut i = 0
-  let mut cursor = start
-  while i < count {
-    let (item, next_cursor) = parse_segment(text, cursor)
-    Array::push(items, item)
-    cursor = next_cursor
-    i = i + 1
-  }
-  if cursor >= String::length(text) || String::char_code_at(text, cursor) != 93 {
-    throw("invalid persistent type env string array")
-  } else {
-    (items, cursor + 1)
-  }
-}
-
-let serialize_int_array = (items: Array[Int]) -> String {
-  let mut out = String::concat(__to_string(Array::length(items)), "[")
-  let mut i = 0
-  while i < Array::length(items) {
-    out = String::concat(out, serialize_segment(__to_string(Array::get(items, i))))
-    i = i + 1
-  }
-  String::concat(out, "]")
-}
-
-let parse_int_array = (text: String, pos: Int) -> (Array[Int], Int) with { Error } {
-  let (count, start) = parse_count_header(text, pos, 91)
-  let items = Array::slice([0], 0, 0)
-  let mut i = 0
-  let mut cursor = start
-  while i < count {
-    let (raw, next_cursor) = parse_segment(text, cursor)
-    Array::push(items, Int::parse(raw))
-    cursor = next_cursor
-    i = i + 1
-  }
-  if cursor >= String::length(text) || String::char_code_at(text, cursor) != 93 {
-    throw("invalid persistent type env int array")
-  } else {
-    (items, cursor + 1)
-  }
-}
-
-let serialize_bounds_array = (items: Array[(Int, Array[String])]) -> String {
-  let mut out = String::concat(__to_string(Array::length(items)), "[")
-  let mut i = 0
-  while i < Array::length(items) {
-    let (id, bounds) = Array::get(items, i)
-    out = String::concat(out, serialize_segment(__to_string(id)))
-    out = String::concat(out, serialize_string_array(bounds))
-    i = i + 1
-  }
-  String::concat(out, "]")
-}
-
-let parse_bounds_array = (text: String, pos: Int) -> (Array[(Int, Array[String])], Int) with { Error } {
-  let (count, start) = parse_count_header(text, pos, 91)
-  let items = Array::slice([(0, Array::slice([""], 0, 0))], 0, 0)
-  let mut i = 0
-  let mut cursor = start
-  while i < count {
-    let (raw_id, next_cursor) = parse_segment(text, cursor)
-    let (bounds, next_cursor2) = parse_string_array(text, next_cursor)
-    Array::push(items, (Int::parse(raw_id), bounds))
-    cursor = next_cursor2
-    i = i + 1
-  }
-  if cursor >= String::length(text) || String::char_code_at(text, cursor) != 93 {
-    throw("invalid persistent type env bounds array")
-  } else {
-    (items, cursor + 1)
-  }
-}
-
-let rec serialize_type = (ty: Type) -> String {
-  match ty {
-    CtInt => "I",
-    CtDouble => "D",
-    CtBool => "B",
-    CtString => "G",
-    CtChar => "H",
-    CtUnit => "U",
-    CtBytes => "Y",
-    CtUnknown => "X",
-    CtVar(id) => String::concat("V", serialize_segment(__to_string(id))),
-    CtEnum(name) => String::concat("E", serialize_segment(name)),
-    CtStruct(name) => String::concat("R", serialize_segment(name)),
-    CtArray(elem) => String::concat("A", serialize_type(elem)),
-    CtOption(elem) => String::concat("O", serialize_type(elem)),
-    CtTuple(elems) => String::concat("T", serialize_type_array(elems)),
-    CtFn(params, ret, has_error) =>
-      String::concat(
-        "F",
-        String::concat(
-          serialize_segment(if has_error { "1" } else { "0" }),
-          String::concat(serialize_type_array(params), serialize_type(ret))
-        )
-      ),
-    CtNamed(name, args) =>
-      String::concat("N", String::concat(serialize_segment(name), serialize_type_array(args))),
-    CtForAll(vars, bounds, body) =>
-      String::concat(
-        "Q",
-        String::concat(
-          serialize_int_array(vars),
-          String::concat(serialize_bounds_array(bounds), serialize_type(body))
-        )
-      )
-  }
-}
-
-let serialize_type_array = (items: Array[Type]) -> String {
-  let mut out = String::concat(__to_string(Array::length(items)), "[")
-  let mut i = 0
-  while i < Array::length(items) {
-    out = String::concat(out, serialize_segment(serialize_type(Array::get(items, i))))
-    i = i + 1
-  }
-  String::concat(out, "]")
-}
-
-let parse_type_array = (text: String, pos: Int) -> (Array[Type], Int) with { Error } {
-  let (count, start) = parse_count_header(text, pos, 91)
-  let items = Array::slice([CtUnknown], 0, 0)
-  let mut i = 0
-  let mut cursor = start
-  while i < count {
-    let (raw, next_cursor) = parse_segment(text, cursor)
-    let (item, end_cursor) = parse_cached_type(raw, 0)
-    if end_cursor != String::length(raw) {
-      throw("invalid persistent type env nested type")
-    } else {
-      Array::push(items, item)
-      cursor = next_cursor
-      i = i + 1
-    }
-  }
-  if cursor >= String::length(text) || String::char_code_at(text, cursor) != 93 {
-    throw("invalid persistent type env type array")
-  } else {
-    (items, cursor + 1)
-  }
-}
-
-let persistent_type_env_cache_text = (env: TypeEnv) -> String {
-  let bindings = env_flat_bindings(env)
-  let mut out = "version\t1\n"
-  let mut i = 0
-  while i < Array::length(bindings) {
-    let (name, ty) = Array::get(bindings, i)
-    out = String::concat(
-      out,
-      String::concat(
-        "bind\t",
-        String::concat(name, String::concat("\t", String::concat(serialize_type(ty), "\n")))
-      )
-    )
-    i = i + 1
-  }
-  out
-}
-
-let parse_cached_type = (source: String, pos: Int) -> (Type, Int) with { Error } {
-  if pos >= String::length(source) {
-    throw("invalid persistent type env type")
-  } else {
-    let tag = String::char_code_at(source, pos)
-    match tag {
-      73 => (CtInt, pos + 1),
-      68 => (CtDouble, pos + 1),
-      66 => (CtBool, pos + 1),
-      71 => (CtString, pos + 1),
-      72 => (CtChar, pos + 1),
-      85 => (CtUnit, pos + 1),
-      89 => (CtBytes, pos + 1),
-      88 => (CtUnknown, pos + 1),
-      86 => {
-        let (raw, next_pos) = parse_segment(source, pos + 1)
-        (CtVar(Int::parse(raw)), next_pos)
-      },
-      69 => {
-        let (name, next_pos) = parse_segment(source, pos + 1)
-        (CtEnum(name), next_pos)
-      },
-      82 => {
-        let (name, next_pos) = parse_segment(source, pos + 1)
-        (CtStruct(name), next_pos)
-      },
-      65 => {
-        let (elem, next_pos) = parse_cached_type(source, pos + 1)
-        (CtArray(elem), next_pos)
-      },
-      79 => {
-        let (elem, next_pos) = parse_cached_type(source, pos + 1)
-        (CtOption(elem), next_pos)
-      },
-      84 => {
-        let (elems, next_pos) = parse_type_array(source, pos + 1)
-        (CtTuple(elems), next_pos)
-      },
-      70 => {
-        let (raw_flag, next_pos1) = parse_segment(source, pos + 1)
-        let (params, next_pos2) = parse_type_array(source, next_pos1)
-        let (ret, next_pos3) = parse_cached_type(source, next_pos2)
-        (CtFn(params, ret, raw_flag == "1"), next_pos3)
-      },
-      78 => {
-        let (name, next_pos1) = parse_segment(source, pos + 1)
-        let (args, next_pos2) = parse_type_array(source, next_pos1)
-        (CtNamed(name, args), next_pos2)
-      },
-      81 => {
-        let (vars, next_pos1) = parse_int_array(source, pos + 1)
-        let (bounds, next_pos2) = parse_bounds_array(source, next_pos1)
-        let (body, next_pos3) = parse_cached_type(source, next_pos2)
-        (CtForAll(vars, bounds, body), next_pos3)
-      },
-      _ => throw("invalid persistent type env type tag")
-    }
-  }
-}
-
-let load_persistent_type_env = (fingerprint: String) -> Option[TypeEnv] with { Error, Fs } {
-  let path = persistent_type_env_cache_path(fingerprint)
-  if !(Fs::exists(path)) {
-    None
-  } else {
-    let lines = String::split(normalize_persistent_cache_text(Fs::read_file(path)), "\n")
-    let len = Array::length(lines)
-    let rec go = (
-      index: Int,
-      version_ok: Bool,
-      bindings: Array[(String, Type)]
-    ) -> Option[TypeEnv] with { Error } {
-      if index >= len {
-        if version_ok {
-          Some(rebuild_persistent_type_env(bindings))
-        } else {
-          None
-        }
-      } else {
-        let line = Array::get(lines, index)
-        if String::length(line) == 0 {
-          go(index + 1, version_ok, bindings)
-        } else {
-          let parts = String::split(line, "\t")
-          if !version_ok {
-            if Array::length(parts) == 2 &&
-              Array::get(parts, 0) == "version" &&
-              Array::get(parts, 1) == "1" {
-              go(index + 1, true, bindings)
-            } else {
-              throw(String::concat("invalid persistent type env header: ", line))
-            }
-          } else if Array::length(parts) == 3 && Array::get(parts, 0) == "bind" {
-            let raw_type = Array::get(parts, 2)
-            let (ty, end_pos) = parse_cached_type(raw_type, 0)
-            if end_pos != String::length(raw_type) {
-              throw(String::concat("invalid persistent type env row: ", line))
-            } else {
-              Array::push(bindings, (Array::get(parts, 1), ty))
-              go(index + 1, true, bindings)
-            }
-          } else {
-            throw(String::concat("invalid persistent type env row: ", line))
-          }
-        }
-      }
-    }
-    go(0, false, empty_type_bindings())
-  }
-}
-
-let parse_persistent_dep_list_text = (text: String) -> Array[String] with { Error } {
-  let lines = String::split(text, "\n")
-  let deps = empty_stack()
-  let len = Array::length(lines)
-  let rec go = (index: Int, version_ok: Bool) -> Array[String] with { Error } {
-    if index >= len {
-      if version_ok {
-        deps
-      } else {
-        throw("invalid persistent dep cache header")
-      }
-    } else {
-      let line = Array::get(lines, index)
-      if String::length(line) == 0 {
-        go(index + 1, version_ok)
-      } else if !version_ok {
-        if line == "version\t4" {
-          go(index + 1, true)
-        } else {
-          throw("invalid persistent dep cache header")
-        }
-      } else if String::starts_with(line, "dep\t") {
-        Array::push(deps, line[4:String::length(line)])
-        go(index + 1, true)
-      } else {
-        throw("invalid persistent dep cache row")
-      }
-    }
-  }
-  go(0, false)
-}
-
-let persistent_dep_list_text = (deps: Array[String]) -> String {
-  let mut out = "version\t4\n"
-  let mut i = 0
-  while i < Array::length(deps) {
-    out = String::concat(out, String::concat("dep\t", String::concat(Array::get(deps, i), "\n")))
-    i = i + 1
-  }
-  out
-}
-
-let persistent_leaf_fingerprint_text = (fingerprint: String) -> String {
-  String::concat("version\t1\n", String::concat(fingerprint, "\n"))
-}
-
-let load_persistent_leaf_fingerprint = (path: String, source: String) -> Option[String] {
-  let cache_path = persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(source))
-  let cache_exists = perform Fs::Exists(cache_path)
-  if !cache_exists {
-    None
-  } else {
-    let text = normalize_persistent_cache_text(perform Fs::ReadFile(cache_path))
-    let prefix = "version\t1\n"
-    if String::length(text) > String::length(prefix) &&
-      text[0:String::length(prefix)] == prefix {
-      Some(String::substring(text, String::length(prefix), String::length(text) - 1))
-    } else {
-      None
-    }
-  }
-}
-
-let load_or_parse_deps_for_source_fs = (
-  dep_source_cache: Array[(String, String)],
-  path: String,
-  source: String,
-  parse_count: Int
-) -> (Array[String], Array[(String, String)], Int) with { Error, Fs } {
-  let next_dep_source_cache = upsert_string_pair(dep_source_cache, path, source)
-  let cache_path = persistent_dep_list_cache_path(path, compact_string_fingerprint(source))
-  if Fs::exists(cache_path) {
-    let text = normalize_persistent_cache_text(Fs::read_file(cache_path))
-    let line_prefix = "version\t4\n"
-    let prefix = "version\t2\n"
-    let single_prefix = "version\t3\n"
-    if String::length(text) == 0 {
-      (empty_stack(), next_dep_source_cache, parse_count)
-    } else if String::length(text) >= String::length(line_prefix) &&
-      text[0:String::length(line_prefix)] == line_prefix {
-      (parse_persistent_dep_list_text(text), next_dep_source_cache, parse_count)
-    } else if String::length(text) >= String::length(single_prefix) &&
-      text[0:String::length(single_prefix)] == single_prefix {
-      let dep = String::substring(text, String::length(single_prefix), String::length(text))
-      ([dep], next_dep_source_cache, parse_count)
-    } else if String::length(text) >= String::length(prefix) &&
-      text[0:String::length(prefix)] == prefix {
-      (parse_persistent_dep_list_text(text), next_dep_source_cache, parse_count)
-    } else {
-      let (deps, _, next_parse_count) = load_or_parse_module_header_fs(path, source, parse_count)
-      Fs::write_file(cache_path, persistent_dep_list_text(deps))
-      (deps, next_dep_source_cache, next_parse_count)
-    }
-  } else {
-    let (deps, _, next_parse_count) = load_or_parse_module_header_fs(path, source, parse_count)
-    Fs::write_file(cache_path, persistent_dep_list_text(deps))
-    (deps, next_dep_source_cache, next_parse_count)
-  }
-}
-
-let rebuild_persistent_type_env = (bindings: Array[(String, Type)]) -> TypeEnv {
-  let mut env = EnvEmpty
-  let len = Array::length(bindings)
-  let mut i = 0
-  while i < len {
-    let idx = len - i - 1
-    let (name, ty) = Array::get(bindings, idx)
-    env = env_bind(env, name, ty)
-    i = i + 1
-  }
-  env
-}
-
 let store_persistent_type_env = (fingerprint: String, env: TypeEnv) -> Unit with { Error, Fs } {
   Fs::write_file(
     persistent_type_env_cache_path(fingerprint),
@@ -998,6 +528,21 @@ let resolve_deps_for_source = (
       )
     }
   }
+}
+
+let load_or_parse_deps_for_source_fs = (
+  dep_source_cache: Array[(String, String)],
+  path: String,
+  source: String,
+  parse_count: Int
+) -> (Array[String], Array[(String, String)], Int) with { Error } {
+  let stmts = parse_program_with_path(path, source)
+  let deps = collect_import_deps_from_stmts(stmts, dir_of(path))
+  (
+    deps,
+    upsert_string_pair(dep_source_cache, path, source),
+    parse_count + 1
+  )
 }
 
 let resolve_deps_for_source_fs = (

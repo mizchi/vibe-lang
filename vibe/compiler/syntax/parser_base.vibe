@@ -355,6 +355,23 @@ let empty_type_exprs = () -> Array[TypeExpr] {
   ], 0, 0)
 }
 
+let rec collect_effect_names = (tokens: Array[Token], pos: Int, acc: String) -> (String, Int)with { Error } {
+  match peek(tokens, pos) {
+    TRBrace => (acc, pos + 1),
+    TIdent(name) => {
+      let new_acc = if String::length(acc) == 0 {
+        name
+      } else "\{acc}, \{name}"
+      match peek(tokens, pos + 1) {
+        TComma => collect_effect_names(tokens, pos + 2, new_acc),
+        TRBrace => (new_acc, pos + 2),
+        _ => throw("expected ',' or '}' in effect list")
+      }
+    },
+    _ => throw("expected effect name or '}'")
+  }
+}
+
 let rec parse_type_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)with { Error } {
   let rec type_list_rest = (tokens: Array[Token], pos: Int, b: ArrayBuilder[TypeExpr]) -> (Array[TypeExpr], Int)with { Error } {
     match peek(tokens, pos) {
@@ -412,31 +429,15 @@ let rec parse_type_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (TypeEx
           },
           _ => rn
         };
-        // Skip optional `with { Effect }` after function return type
-        let fn_end = match peek(tokens, rn2) {
+        let effect_pair = match peek(tokens, rn2) {
           TWith => {
-            // Skip { ... } block
-            let mut wp = rn2 + 1
-            match peek(tokens, wp) {
-              TLBrace => {
-                wp = wp + 1
-                let mut wd = 1
-                while wd > 0 {
-                  match peek(tokens, wp) {
-                    TLBrace => { wd = wd + 1 },
-                    TRBrace => { wd = wd - 1 },
-                    _ => ()
-                  }
-                  wp = wp + 1
-                }
-                wp
-              },
-              _ => rn2
-            }
+            let with_pos = expect_tk(tokens, rn2 + 1, "{")
+            let effect_name_pair = collect_effect_names(tokens, with_pos, "")
+            (Some(effect_name_pair.0), effect_name_pair.1)
           },
-          _ => rn2
+          _ => (None, rn2)
         }
-        (TyFn(params, ret), fn_end)
+        (TyFn(params, ret, effect_pair.0), effect_pair.1)
       },
       _ => (atom_ty, atom_next)
     }
@@ -747,23 +748,6 @@ let rec collect_import_path = (tokens: Array[Token], pos: Int, acc: String) -> (
     TMatch => collect_import_path(tokens, pos + 1, "\{acc}match"),
     TTest => collect_import_path(tokens, pos + 1, "\{acc}test"),
     _ => throw("unexpected token in import path: \{tk_name(peek(tokens, pos))}")
-  }
-}
-
-let rec collect_effect_names = (tokens: Array[Token], pos: Int, acc: String) -> (String, Int)with { Error } {
-  match peek(tokens, pos) {
-    TRBrace => (acc, pos + 1),
-    TIdent(name) => {
-      let new_acc = if String::length(acc) == 0 {
-        name
-      } else "\{acc}, \{name}"
-      match peek(tokens, pos + 1) {
-        TComma => collect_effect_names(tokens, pos + 2, new_acc),
-        TRBrace => (new_acc, pos + 2),
-        _ => throw("expected ',' or '}' in effect list")
-      }
-    },
-    _ => throw("expected effect name or '}'")
   }
 }
 

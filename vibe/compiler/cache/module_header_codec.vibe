@@ -1,0 +1,118 @@
+//# Functions
+
+let strip_trailing_cr = (line: String) -> String {
+  let len = String::length(line)
+  if len > 0 {
+    if String::char_code_at(line, len - 1) == 13 {
+      line[0:len - 1]
+    } else {
+      line
+    }
+  } else {
+    line
+  }
+}
+
+let has_prefix = (line: String, prefix: String) -> Bool {
+  let prefix_len = String::length(prefix)
+  if String::length(line) < prefix_len {
+    false
+  } else {
+    let mut ok = true
+    let mut i = 0
+    while ok && i < prefix_len {
+      ok = String::char_code_at(line, i) == String::char_code_at(prefix, i)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+export let persistent_module_header_text = (deps: Array[String], exports: Array[String]) -> String {
+  let mut out = "version\t1\n"
+  let mut i = 0
+  while i < Array::length(deps) {
+    out = String::concat(
+      out,
+      String::concat("dep\t", String::concat(Array::get(deps, i), "\n"))
+    )
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(exports) {
+    out = String::concat(
+      out,
+      String::concat("export\t", String::concat(Array::get(exports, j), "\n"))
+    )
+    j = j + 1
+  }
+  out
+}
+
+export let parse_persistent_module_header_text = (raw: String) -> (Array[String], Array[String]) with { Error } {
+  let deps = Array::slice([""], 0, 0)
+  let exports = Array::slice([""], 0, 0)
+  let mut saw_version = false
+  let len = String::length(raw)
+  let mut line_start = 0
+  let mut i = 0
+  while i < len {
+    if String::char_code_at(raw, i) == 10 {
+      let line = strip_trailing_cr(raw[line_start:i])
+      if String::length(line) > 0 {
+        if has_prefix(line, "version\t") {
+          let value = line[8:String::length(line)]
+          if !(value == "1") {
+            throw("invalid persistent module header version")
+          }
+          saw_version = true
+        } else if has_prefix(line, "dep\t") {
+          let value = line[4:String::length(line)]
+          if String::length(value) == 0 {
+            throw("invalid persistent module header dep row")
+          }
+          Array::push(deps, value)
+        } else if has_prefix(line, "export\t") {
+          let value = line[7:String::length(line)]
+          if String::length(value) == 0 {
+            throw("invalid persistent module header export row")
+          }
+          Array::push(exports, value)
+        } else {
+          throw(String::concat("invalid persistent module header row: ", line))
+        }
+      }
+      line_start = i + 1
+    }
+    i = i + 1
+  }
+  let line = strip_trailing_cr(raw[line_start:len])
+  if String::length(line) > 0 {
+    if has_prefix(line, "version\t") {
+      let value = line[8:String::length(line)]
+      if !(value == "1") {
+        throw("invalid persistent module header version")
+      }
+      saw_version = true
+    } else if has_prefix(line, "dep\t") {
+      let value = line[4:String::length(line)]
+      if String::length(value) == 0 {
+        throw("invalid persistent module header dep row")
+      }
+      Array::push(deps, value)
+    } else if has_prefix(line, "export\t") {
+      let value = line[7:String::length(line)]
+      if String::length(value) == 0 {
+        throw("invalid persistent module header export row")
+      }
+      Array::push(exports, value)
+    } else {
+      throw(String::concat("invalid persistent module header row: ", line))
+    }
+  }
+  if !saw_version {
+    throw("missing persistent module header version")
+  } else {
+    (deps, exports)
+  }
+}
