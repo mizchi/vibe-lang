@@ -81,6 +81,9 @@ pub struct CompiledModule {
 let compile_module_cache : Ref[Map[String, CompiledModule]] = @ref.new({})
 
 ///|
+let wasm_artifact_cache : Ref[Map[String, Bytes]] = @ref.new({})
+
+///|
 fn elapsed_us_from(start : @bench.Timestamp) -> Int {
   @bench.monotonic_clock_end(start).to_int()
 }
@@ -150,6 +153,48 @@ fn compile_module_cache_key(
     }
   }
   @core.git_blob_hash_string(buf.to_string())
+}
+
+///|
+fn wasm_artifact_cache_key(
+  bundled : @core.Module,
+  import_aliases : Map[String, @core.Ref],
+  cache_namespace : String,
+  opt_level : String?,
+) -> String {
+  let buf = StringBuilder::new()
+  buf.write_string(cache_namespace)
+  buf.write_char('\n')
+  match opt_level {
+    Some(level) => buf.write_string(level)
+    None => buf.write_string("none")
+  }
+  buf.write_char('\n')
+  buf.write_string(
+    @runtime.module_to_sexp(bundled, build_alias_map(bundled, import_aliases)),
+  )
+  @core.git_blob_hash_string(buf.to_string())
+}
+
+///|
+fn wasm_artifact_cache_namespace(
+  bundler_kind : String,
+  debug_errors : Bool,
+  http_host_imports : Bool,
+  force_cabi_realloc : Bool,
+  library_mode : Bool,
+) -> String {
+  let buf = StringBuilder::new()
+  buf.write_string(bundler_kind)
+  buf.write_char('\n')
+  buf.write_string(debug_errors.to_string())
+  buf.write_char('\n')
+  buf.write_string(http_host_imports.to_string())
+  buf.write_char('\n')
+  buf.write_string(force_cabi_realloc.to_string())
+  buf.write_char('\n')
+  buf.write_string(library_mode.to_string())
+  buf.to_string()
 }
 
 ///|
@@ -503,6 +548,7 @@ fn compile_module_wasm_profiled_with(
   path : String,
   bundler : (@runtime.VibeDb, String, @core.Module) -> @core.Module,
   emitter : (@core.Module) -> Bytes raise @codegen.WasmGenError,
+  cache_namespace : String,
   opt_level : String?,
 ) -> (Bytes, WasmCompileStageProfile) raise WasmCompileError {
   let start_total = @bench.monotonic_clock_start()
@@ -516,8 +562,24 @@ fn compile_module_wasm_profiled_with(
   @profiler.profiler_enter("compile/bundle")
   let start_bundle = @bench.monotonic_clock_start()
   let bundled = bundler(db, path, compiled.ast)
+  let cache_key = wasm_artifact_cache_key(
+    bundled,
+    compiled.aliases,
+    cache_namespace,
+    opt_level,
+  )
   let bundle_us = elapsed_us_from(start_bundle)
   @profiler.profiler_leave()
+  match wasm_artifact_cache.val.get(cache_key) {
+    Some(cached) => {
+      let total_us = elapsed_us_from(start_total)
+      return (
+        cached,
+        { module_us, bundle_us, emit_us: 0, optimize_us: 0, total_us },
+      )
+    }
+    None => ()
+  }
   @profiler.profiler_enter("compile/emit")
   let start_emit = @bench.monotonic_clock_start()
   let wasm = emitter(bundled) catch { e => raise WasmCompileError::Gen(e) }
@@ -528,6 +590,7 @@ fn compile_module_wasm_profiled_with(
   let optimized = optimize_wasm_bytes_with_opt_level(wasm, opt_level)
   let optimize_us = elapsed_us_from(start_optimize)
   @profiler.profiler_leave()
+  wasm_artifact_cache.val[cache_key] = optimized
   let total_us = elapsed_us_from(start_total)
   (optimized, { module_us, bundle_us, emit_us, optimize_us, total_us })
 }
@@ -599,6 +662,17 @@ pub fn compile_module_wasm_with_opt_level_profiled(
   force_cabi_realloc? : Bool = false,
   library_mode? : Bool = false,
 ) -> (Bytes, WasmCompileStageProfile) raise WasmCompileError {
+  let cache_namespace = wasm_artifact_cache_namespace(
+    if no_dce {
+      "no_dce"
+    } else {
+      "default"
+    },
+    debug_errors,
+    http_host_imports,
+    force_cabi_realloc,
+    library_mode,
+  )
   if no_dce {
     compile_module_wasm_profiled_with(
       db,
@@ -615,6 +689,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
           ),
         )
       },
+      cache_namespace,
       opt_level,
     )
   } else {
@@ -633,6 +708,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
           ),
         )
       },
+      cache_namespace,
       opt_level,
     )
   }

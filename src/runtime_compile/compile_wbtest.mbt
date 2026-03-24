@@ -55,6 +55,47 @@ test "compile_module cache reuses same key" {
 }
 
 ///|
+test "compile_module_wasm_with_opt_level_profiled reuses wasm artifact cache" {
+  let db = @runtime.VibeDb::new()
+  db.set_source("main", "let main = () -> Int { 1 + 2 }")
+  let (bytes1, profile1) = compile_module_wasm_with_opt_level_profiled(
+    db,
+    "main",
+    no_dce=true,
+  )
+  let (bytes2, profile2) = compile_module_wasm_with_opt_level_profiled(
+    db,
+    "main",
+    no_dce=true,
+  )
+  assert_eq(bytes1, bytes2)
+  assert_true(profile1.emit_us > 0)
+  assert_eq(profile2.emit_us, 0)
+  assert_eq(profile2.optimize_us, 0)
+}
+
+///|
+test "compile_module_wasm_with_opt_level_profiled separates artifact cache by mode" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "cache_mode_probe", "let cache_mode_probe_unique = () -> Int { 1 + 2 }",
+  )
+  let (_, profile1) = compile_module_wasm_with_opt_level_profiled(
+    db,
+    "cache_mode_probe",
+    no_dce=true,
+  )
+  let (_, profile2) = compile_module_wasm_with_opt_level_profiled(
+    db,
+    "cache_mode_probe",
+    no_dce=true,
+    library_mode=true,
+  )
+  assert_true(profile1.emit_us > 0)
+  assert_true(profile2.emit_us > 0)
+}
+
+///|
 test "check_incompatible_server_builtins detects Http::listen" {
   let db = @runtime.VibeDb::new()
   db.set_source(
