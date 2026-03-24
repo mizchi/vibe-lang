@@ -13,7 +13,7 @@ Completed items are archived in `docs/DONE.md`.
 - [x] effect surface を `TyFn/CtFn + with {Name}` に寄せ、named effect を canonical 表現にする
 - [x] `module_graph/path` helper を共通化し、loader/runtime/selfhost entry の path 解決重複を削除
 - [x] loader の `_build/debug_*` / manifest helper debug 書き込みを撤去
-- [x] `special_manifest_header_deps` の `index.vibe` hardcode を外し、manifest 依存は実ソース header から組み立てる
+- [x] `special_manifest_header_deps` を撤去し、manifest 依存は実ソース header から組み立てる
 - [x] persistent module header / type env codec を shared helper に統一
 - [x] `selfhost_cli_core_entry` から probe export を分離し、canonical CLI entry を薄く保つ
 
