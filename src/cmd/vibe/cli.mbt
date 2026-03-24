@@ -36,6 +36,8 @@ pub fn run(args : Array[String]) -> Unit {
     "eval" => eval_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
     "test" => test_cmd(cmd_args, runtime_features)
     "check" => check_cmd(cmd_args)
+    "session-http" => session_http_cmd(cmd_args, runtime_features)
+    "session-json" => session_json_cmd(cmd_args, runtime_features)
     "finalize" => finalize_cmd(cmd_args)
     "apply" => apply_cmd(cmd_args)
     "symbols" => symbols_cmd(cmd_args)
@@ -122,6 +124,12 @@ fn print_usage() -> Unit {
     "  test [--jobs N] <file|dir...>  run test blocks (parallel for dirs; default jobs=VIBE_TEST_JOBS or 1, max 16)",
   )
   println("  check [--profile-tsv path] <file...>  parse/type check scripts")
+  println(
+    "  session-http --port N        internal: persistent localhost JSON session for check/test",
+  )
+  println(
+    "  session-json                internal: persistent stdin/stdout JSON session for check/test",
+  )
   println(
     "  emit-module-source <in> <out> <entry>  internal: extract entry-pruned module source",
   )
@@ -231,10 +239,16 @@ fn print_usage() -> Unit {
   )
   println("  runtime flags: --unstable-async --unstable-threads")
   println(
-    "  exec backend env: VIBE_RUN_BACKEND=compiled|interpreter|auto (default: auto), VIBE_TEST_BACKEND=compiled|interpreter|auto (default: compiled)",
+    "  exec backend env: VIBE_RUN_BACKEND=compiled|interpreter|auto (default: compiled), VIBE_TEST_BACKEND=compiled|interpreter|auto (default: compiled)",
   )
   println(
-    "                    VIBE_ALLOW_INTERPRETER_FALLBACK=1 enables fallback only when backend=auto",
+    "                    VIBE_ENABLE_INTERPRETER=1 re-enables the legacy interpreter backend",
+  )
+  println(
+    "                    VIBE_ALLOW_INTERPRETER_FALLBACK=1 enables fallback only when backend=auto and interpreter is enabled",
+  )
+  println(
+    "                    check/test use a persistent localhost session worker by default; set VIBE_USE_SESSION_HTTP=0 to disable",
   )
   println(
     "  llm flags: --llm  enable LLM/RLM capabilities (requires VIBE_LLM_PROVIDER)",
@@ -692,6 +706,17 @@ fn split_compile_lite_args(
     i += 1
   }
   Ok((filtered, profile_tsv, profile_callstack, in_memory))
+}
+
+///|
+fn remove_file_if_exists(path : String) -> Unit {
+  if not(@os_fs.path_exists(path)) {
+    return
+  }
+  let is_file = @os_fs.is_file(path) catch { _ => false }
+  if is_file {
+    ignore(@os_fs.remove_file(path) catch { _ => () })
+  }
 }
 
 ///|
@@ -1159,6 +1184,15 @@ fn resolve_cli_exec_backend_pref_for_entry(
 }
 
 ///|
+fn resolve_run_backend_pref(entry_path : String) -> CliExecBackendPref {
+  match @sys.get_env_var("VIBE_RUN_BACKEND") {
+    Some(_) =>
+      resolve_cli_exec_backend_pref_for_entry("VIBE_RUN_BACKEND", entry_path)
+    None => CliExecBackendPref::Compiled
+  }
+}
+
+///|
 fn cli_allow_interpreter_fallback() -> Bool {
   match @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK") {
     Some(raw) => parse_bool_flag(raw)
@@ -1167,8 +1201,55 @@ fn cli_allow_interpreter_fallback() -> Bool {
 }
 
 ///|
+fn cli_use_session_http_with(raw : String?, has_self_bin : Bool) -> Bool {
+  match raw {
+    Some(value) => parse_bool_flag(value)
+    None => has_self_bin
+  }
+}
+
+///|
+fn cli_use_session_http() -> Bool {
+  cli_use_session_http_with(
+    @sys.get_env_var("VIBE_USE_SESSION_HTTP"),
+    current_cli_binary_path() is Some(_),
+  )
+}
+
+///|
+fn cli_interpreter_backend_enabled() -> Bool {
+  match @sys.get_env_var("VIBE_ENABLE_INTERPRETER") {
+    Some(raw) => parse_bool_flag(raw)
+    None => false
+  }
+}
+
+///|
+fn cli_require_interpreter_backend(mode : String) -> Result[Unit, String] {
+  if cli_interpreter_backend_enabled() {
+    Ok(())
+  } else {
+    Err(
+      "interpreter backend disabled for " +
+      mode +
+      "; set VIBE_ENABLE_INTERPRETER=1 to re-enable it",
+    )
+  }
+}
+
+///|
 fn cli_can_fallback_to_interpreter(backend_pref : CliExecBackendPref) -> Bool {
-  backend_pref == CliExecBackendPref::Auto && cli_allow_interpreter_fallback()
+  backend_pref == CliExecBackendPref::Auto &&
+  cli_allow_interpreter_fallback() &&
+  cli_interpreter_backend_enabled()
+}
+
+///|
+fn cli_stop_compiled_test_on_first_failure(
+  allow_interpreter_fallback : Bool,
+) -> Bool {
+  ignore(allow_interpreter_fallback)
+  false
 }
 
 ///|
@@ -1993,20 +2074,57 @@ fn run_cmd_wasm_backend(entry_path : String) -> Result[WasmRunValue, String] {
     Ok(v) => v
     Err(err) => return Err(err)
   }
-  let wasm_bytes = compile_module_wasm_for_exec(
-    db,
-    entry,
-    http_host_imports=use_http_host_runner,
-  ) catch {
-    e => return Err("compile wasm error: " + e.user_message())
-  }
   let parent = @vibe_fs.parent_path(entry)
   let stamp = @env.now().to_string() + "_" + vibe_getpid().to_string()
-  let wasm_path = parent + "/.vibe_run_wasm_" + stamp + ".wasm"
-  @os_fs.write_bytes_to_file(wasm_path, wasm_bytes) catch {
-    e => return Err("write wasm failed: " + e.to_string())
+  let (run_cache_dir, cached_wasm_path, cached_hash_path) = run_monolithic_cache_paths(
+    entry, use_http_host_runner,
+  )
+  let current_hashes = collect_source_hash_cache(db, entry, true)
+  let has_cached_wasm = @os_fs.path_exists(cached_wasm_path)
+  let has_cached_hashes = @os_fs.path_exists(cached_hash_path)
+  let use_cached_wasm = if has_cached_wasm && has_cached_hashes {
+    let saved_hashes = parse_source_hash_cache(
+      @os_fs.read_file_to_string(cached_hash_path) catch {
+        _ => ""
+      },
+    )
+    source_hash_cache_matches(saved_hashes, current_hashes)
+  } else {
+    false
   }
-  defer remove_file_if_exists(wasm_path)
+  let wasm_path = if use_cached_wasm {
+    cached_wasm_path
+  } else {
+    parent + "/.vibe_run_wasm_" + stamp + ".wasm"
+  }
+  if not(use_cached_wasm) {
+    let wasm_bytes = compile_module_wasm_for_exec(
+      db,
+      entry,
+      http_host_imports=use_http_host_runner,
+    ) catch {
+      e => return Err("compile wasm error: " + e.user_message())
+    }
+    @os_fs.write_bytes_to_file(wasm_path, wasm_bytes) catch {
+      e => return Err("write wasm failed: " + e.to_string())
+    }
+    match ensure_parent_dir_for_file(cached_wasm_path, "run cache") {
+      Ok(_) => {
+        @os_fs.write_bytes_to_file(cached_wasm_path, wasm_bytes) catch {
+          _ => ()
+        }
+        @os_fs.write_string_to_file(
+          cached_hash_path,
+          serialize_source_hash_cache(current_hashes),
+        ) catch {
+          _ => ()
+        }
+        let _ = run_cache_dir
+      }
+      Err(_) => ()
+    }
+  }
+  defer (if not(use_cached_wasm) { remove_file_if_exists(wasm_path) })
   let exec_out = match http_runner {
     Some(host_runner) =>
       run_http_host_invoke_run_capture(
@@ -2077,12 +2195,16 @@ fn run_cmd(
   let entry_path = args[0]
   match syntax_mode {
     @runtime.ParserMode::VibeMode => {
-      let backend_pref = resolve_cli_exec_backend_pref_for_entry(
-        "VIBE_RUN_BACKEND", entry_path,
-      )
+      let backend_pref = resolve_run_backend_pref(entry_path)
       let allow_interpreter_fallback = cli_can_fallback_to_interpreter(
         backend_pref,
       )
+      if backend_pref == CliExecBackendPref::Interpreter {
+        match cli_require_interpreter_backend("run") {
+          Ok(_) => ()
+          Err(err) => die("error: " + err)
+        }
+      }
       if backend_pref != CliExecBackendPref::Interpreter {
         match run_cmd_wasm_backend(entry_path) {
           Ok(result) => {
@@ -2097,7 +2219,7 @@ fn run_cmd(
               die("error: run wasm backend: " + err)
             }
             println(
-              "warning: run wasm backend failed; falling back to interpreter (VIBE_ALLOW_INTERPRETER_FALLBACK=1): " +
+              "warning: run wasm backend failed; falling back to interpreter (VIBE_ENABLE_INTERPRETER=1 VIBE_ALLOW_INTERPRETER_FALLBACK=1): " +
               err,
             )
           }
@@ -2277,6 +2399,153 @@ fn resolve_entry_artifacts_with_cache(
 }
 
 ///|
+struct CliCheckReport {
+  file : String
+  resolved_entry : String
+  graph_head : String?
+  error_count : Int
+  warning_count : Int
+  load_us : Int
+  type_us : Int
+  total_us : Int
+  messages : Array[String]
+}
+
+///|
+enum CliSessionRequestKind {
+  Ping
+  Check
+  Test
+  Shutdown
+} derive(Eq, Show)
+
+///|
+struct CliSessionRequest {
+  kind : CliSessionRequestKind
+  path : String?
+} derive(Eq, Show)
+
+///|
+fn run_check_entry_with_cache(
+  cache : CliEntryDbCache,
+  entry_path : String,
+  check_debug : Bool,
+) -> CliCheckReport {
+  let messages : Array[String] = []
+  let start_total = @bench.monotonic_clock_start()
+  let start_load = @bench.monotonic_clock_start()
+  if check_debug {
+    println("[check_debug] resolving: \{entry_path}")
+  }
+  match resolve_entry_artifacts_with_cache(cache, entry_path, skip_types=true) {
+    Err(err) => {
+      let load_us = elapsed_us_from(start_load)
+      let total_us = elapsed_us_from(start_total)
+      messages.push("check: \{entry_path}: \{err}")
+      CliCheckReport::{
+        file: entry_path,
+        resolved_entry: entry_path,
+        graph_head: None,
+        error_count: 1,
+        warning_count: 0,
+        load_us,
+        type_us: 0,
+        total_us,
+        messages,
+      }
+    }
+    Ok((db, entry, _lock, _index, graph_head)) => {
+      if check_debug {
+        println("[check_debug] resolved: \{entry}")
+      }
+      let source = match db.get_source(entry) {
+        Some(v) => v
+        None =>
+          @os_fs.read_file_to_string(entry) catch {
+            e => {
+              let load_us = elapsed_us_from(start_load)
+              let total_us = elapsed_us_from(start_total)
+              messages.push("check: \{entry_path}: \{e}")
+              return CliCheckReport::{
+                file: entry_path,
+                resolved_entry: entry,
+                graph_head: Some(graph_head),
+                error_count: 1,
+                warning_count: 0,
+                load_us,
+                type_us: 0,
+                total_us,
+                messages,
+              }
+            }
+          }
+      }
+      let load_us = elapsed_us_from(start_load)
+      let start_type = @bench.monotonic_clock_start()
+      if check_debug {
+        println("[check_debug] starting db.types: \{entry}")
+      }
+      let _env = db.types(entry)
+      let type_us = elapsed_us_from(start_type)
+      if check_debug {
+        println("[check_debug] finished db.types: \{entry}")
+      }
+      let dep_imports = db.imports(entry)
+      for imp in dep_imports {
+        let dep_diags = db.diagnostics(imp.path)
+        if dep_diags.length() > 0 {
+          let dep_source = match db.get_source(imp.path) {
+            Some(v) => v
+            None => ""
+          }
+          for dep_diag in dep_diags {
+            messages.push(dep_diag.render(imp.path, dep_source))
+          }
+        }
+      }
+      let diags = db.diagnostics(entry)
+      for diag in diags {
+        messages.push(diag.render(entry_path, source))
+      }
+      let warnings = db.warnings(entry)
+      for warning in warnings {
+        messages.push(warning.render(entry_path, source))
+      }
+      let layering_violations = std_layering_violations_for_source(
+        entry, source,
+      )
+      for violation in layering_violations {
+        messages.push("check: \{entry_path}: \{violation}")
+      }
+      if diags.length() == 0 && warnings.length() == 0 {
+        messages.push(
+          "\{entry_path}: ok (graph_head=\{short_hash(graph_head)})",
+        )
+      }
+      let total_us = elapsed_us_from(start_total)
+      CliCheckReport::{
+        file: entry_path,
+        resolved_entry: entry,
+        graph_head: Some(graph_head),
+        error_count: diags.length() + layering_violations.length(),
+        warning_count: warnings.length(),
+        load_us,
+        type_us,
+        total_us,
+        messages,
+      }
+    }
+  }
+}
+
+///|
+fn print_cli_check_report(report : CliCheckReport) -> Unit {
+  for message in report.messages {
+    println(message)
+  }
+}
+
+///|
 fn check_cmd(args : Array[String]) -> Unit {
   let (check_args, profile_tsv) = match split_check_cmd_args(args) {
     Ok(v) => v
@@ -2294,97 +2563,24 @@ fn check_cmd(args : Array[String]) -> Unit {
   let mut type_us_total = 0
   let mut total_us_total = 0
   let cache = CliEntryDbCache::new()
+  let use_session_http = cli_use_session_http()
   for entry_path in check_args {
-    let start_total = @bench.monotonic_clock_start()
-    let start_load = @bench.monotonic_clock_start()
-    if check_debug {
-      println("[check_debug] resolving: \{entry_path}")
-    }
-    match
-      resolve_entry_artifacts_with_cache(cache, entry_path, skip_types=true) {
-      Err(err) => {
-        let load_us = elapsed_us_from(start_load)
-        let total_us = elapsed_us_from(start_total)
-        load_us_total += load_us
-        total_us_total += total_us
-        load_ms_total += elapsed_ms_from_us(load_us)
-        total_ms_total += elapsed_ms_from_us(total_us)
-        println("check: \{entry_path}: \{err}")
-        total_errors += 1
+    let report = if use_session_http {
+      match run_check_entry_via_session(entry_path) {
+        Ok(v) => v
+        Err(_) => run_check_entry_with_cache(cache, entry_path, check_debug)
       }
-      Ok((db, entry, _lock, _index, graph_head)) => {
-        if check_debug {
-          println("[check_debug] resolved: \{entry}")
-        }
-        let source = match db.get_source(entry) {
-          Some(v) => v
-          None =>
-            @os_fs.read_file_to_string(entry) catch {
-              e => {
-                println("check: \{entry_path}: \{e}")
-                total_errors += 1
-                let load_us = elapsed_us_from(start_load)
-                let total_us = elapsed_us_from(start_total)
-                load_us_total += load_us
-                total_us_total += total_us
-                load_ms_total += elapsed_ms_from_us(load_us)
-                total_ms_total += elapsed_ms_from_us(total_us)
-                continue
-              }
-            }
-        }
-        let load_us = elapsed_us_from(start_load)
-        load_us_total += load_us
-        load_ms_total += elapsed_ms_from_us(load_us)
-        let start_type = @bench.monotonic_clock_start()
-        if check_debug {
-          println("[check_debug] starting db.types: \{entry}")
-        }
-        let _env = db.types(entry)
-        let type_us = elapsed_us_from(start_type)
-        type_us_total += type_us
-        type_ms_total += elapsed_ms_from_us(type_us)
-        if check_debug {
-          println("[check_debug] finished db.types: \{entry}")
-        }
-        // Show dependency diagnostics first (root cause priority)
-        let dep_imports = db.imports(entry)
-        for imp in dep_imports {
-          let dep_diags = db.diagnostics(imp.path)
-          if dep_diags.length() > 0 {
-            let dep_source = match db.get_source(imp.path) {
-              Some(v) => v
-              None => ""
-            }
-            for dep_diag in dep_diags {
-              println(dep_diag.render(imp.path, dep_source))
-            }
-          }
-        }
-        let diags = db.diagnostics(entry)
-        for diag in diags {
-          println(diag.render(entry_path, source))
-        }
-        let warnings = db.warnings(entry)
-        for warning in warnings {
-          println(warning.render(entry_path, source))
-        }
-        let layering_violations = std_layering_violations_for_source(
-          entry, source,
-        )
-        for violation in layering_violations {
-          println("check: \{entry_path}: \{violation}")
-        }
-        if diags.length() == 0 && warnings.length() == 0 {
-          println("\{entry_path}: ok (graph_head=\{short_hash(graph_head)})")
-        }
-        total_errors += diags.length()
-        total_errors += layering_violations.length()
-        let total_us = elapsed_us_from(start_total)
-        total_us_total += total_us
-        total_ms_total += elapsed_ms_from_us(total_us)
-      }
+    } else {
+      run_check_entry_with_cache(cache, entry_path, check_debug)
     }
+    print_cli_check_report(report)
+    total_errors += report.error_count
+    load_us_total += report.load_us
+    type_us_total += report.type_us
+    total_us_total += report.total_us
+    load_ms_total += elapsed_ms_from_us(report.load_us)
+    type_ms_total += elapsed_ms_from_us(report.type_us)
+    total_ms_total += elapsed_ms_from_us(report.total_us)
   }
   match profile_tsv {
     Some(path) => {
@@ -3008,6 +3204,28 @@ fn build_compiled_test_batch_source(
 }
 
 ///|
+fn compiled_test_generated_source_path(
+  parent : String,
+  kind : String,
+  source : String,
+) -> String {
+  let hash = @vibe_core.content_address_hash_string(kind + "\n" + source)
+  parent + "/.vibe_test_" + kind + "_" + hash + ".vibe"
+}
+
+///|
+fn load_compiled_test_case_db_with_cache(
+  cache : CliEntryDbCache,
+  source_path : String,
+  source : String,
+) -> Result[(@runtime.VibeDb, String), String] {
+  @os_fs.write_string_to_file(source_path, source) catch {
+    e => return Err("write temp source failed: " + e.to_string())
+  }
+  load_db_for_test_with_cache(cache, source_path)
+}
+
+///|
 fn wasmtime_failure_detail(stdout : String, stderr : String) -> String {
   let err_line = first_non_empty_line(stderr)
   if err_line.length() > 0 {
@@ -3026,6 +3244,7 @@ fn wasmtime_failure_detail(stdout : String, stderr : String) -> String {
 
 ///|
 fn run_compiled_test_case(
+  cache : CliEntryDbCache,
   runner : BenchWasmRunner,
   http_runner : HttpHostRunner?,
   use_http_host_runner : Bool,
@@ -3033,13 +3252,8 @@ fn run_compiled_test_case(
   wasm_path : String,
   source : String,
 ) -> CompiledTestCaseExec {
-  @os_fs.write_string_to_file(source_path, source) catch {
-    e =>
-      return CompiledTestCaseExec::Error(
-        "write source failed: " + e.to_string(),
-      )
-  }
-  let (db, entry) = match load_compiled_test_case_db(source_path) {
+  let (db, entry) = match
+    load_compiled_test_case_db_with_cache(cache, source_path, source) {
     Err(err) => return CompiledTestCaseExec::Error("load error: " + err)
     Ok(v) => v
   }
@@ -3123,6 +3337,21 @@ fn run_test_file_compiled_with_cache(
     Ok(v) => v
     Err(err) => return CompiledTestAttempt::Unsupported(err)
   }
+  let (test_cache_dir, cached_batch_wasm_path, cached_batch_hash_path) = compiled_test_batch_cache_paths(
+    entry, use_http_host_runner,
+  )
+  let current_hashes = collect_source_hash_cache(db, entry, true)
+  let use_cached_batch_wasm = if @os_fs.path_exists(cached_batch_wasm_path) &&
+    @os_fs.path_exists(cached_batch_hash_path) {
+    let saved_hashes = parse_source_hash_cache(
+      @os_fs.read_file_to_string(cached_batch_hash_path) catch {
+        _ => ""
+      },
+    )
+    source_hash_cache_matches(saved_hashes, current_hashes)
+  } else {
+    false
+  }
   let http_runner = match use_http_host_runner {
     true =>
       match resolve_http_host_runner(entry) {
@@ -3157,63 +3386,80 @@ fn run_test_file_compiled_with_cache(
   )
   let parent = @vibe_fs.parent_path(entry)
   let stamp = @env.now().to_string() + "_" + vibe_getpid().to_string()
-  let base = parent + "/.vibe_test_batch_" + stamp
-  let batch_source_path = base + ".vibe"
-  let batch_wasm_path = base + ".wasm"
-  // Build batched source: all tests compiled + run in a single WASM
-  let body_sources : Array[String] = []
-  for case in cases {
-    body_sources.push(render_stmt_snippets(source, case.body.stmts))
+  let batch_wasm_path = if use_cached_batch_wasm {
+    cached_batch_wasm_path
+  } else {
+    parent + "/.vibe_test_batch_" + stamp + ".wasm"
   }
-  let batch_source = build_compiled_test_batch_source(
-    top_level_source, wrapper_prelude_source, body_sources,
-  )
-  // Write and compile once
-  @os_fs.write_string_to_file(batch_source_path, batch_source) catch {
-    e =>
-      return CompiledTestAttempt::Error(
-        "write batch source failed: " + e.to_string(),
-      )
-  }
-  let (batch_db, batch_entry) = match
-    load_compiled_test_case_db(batch_source_path) {
-    Err(_err) => {
-      remove_file_if_exists(batch_source_path)
-      // Fallback to per-case execution on batch compile failure
-      return run_test_file_compiled_per_case(
-        cases, source, top_level_source, wrapper_prelude_source, parent, stamp, runner,
-        http_runner, use_http_host_runner, stop_on_first_failure,
-      )
+  if not(use_cached_batch_wasm) {
+    // Build batched source: all tests compiled + run in a single WASM
+    let body_sources : Array[String] = []
+    for case in cases {
+      body_sources.push(render_stmt_snippets(source, case.body.stmts))
     }
-    Ok(v) => v
-  }
-  let batch_wasm_bytes = compile_module_wasm_for_exec(
-    batch_db,
-    batch_entry,
-    http_host_imports=use_http_host_runner,
-  ) catch {
-    e => {
-      remove_file_if_exists(batch_source_path)
-      let msg = e.user_message()
-      if is_wasm_unsupported_compile_error(msg) {
-        return CompiledTestAttempt::Unsupported(msg)
+    let batch_source = build_compiled_test_batch_source(
+      top_level_source, wrapper_prelude_source, body_sources,
+    )
+    let batch_source_path = compiled_test_generated_source_path(
+      parent, "batch", batch_source,
+    )
+    let (batch_db, batch_entry) = match
+      load_compiled_test_case_db_with_cache(
+        cache, batch_source_path, batch_source,
+      ) {
+      Err(_err) => {
+        remove_file_if_exists(batch_source_path)
+        // Fallback to per-case execution on batch compile failure
+        return run_test_file_compiled_per_case(
+          cache, cases, source, top_level_source, wrapper_prelude_source, parent,
+          stamp, runner, http_runner, use_http_host_runner, stop_on_first_failure,
+        )
       }
-      // Fallback to per-case execution on batch compile failure
-      return run_test_file_compiled_per_case(
-        cases, source, top_level_source, wrapper_prelude_source, parent, stamp, runner,
-        http_runner, use_http_host_runner, stop_on_first_failure,
-      )
+      Ok(v) => v
+    }
+    let batch_wasm_bytes = compile_module_wasm_for_exec(
+      batch_db,
+      batch_entry,
+      http_host_imports=use_http_host_runner,
+    ) catch {
+      e => {
+        remove_file_if_exists(batch_source_path)
+        let msg = e.user_message()
+        if is_wasm_unsupported_compile_error(msg) {
+          return CompiledTestAttempt::Unsupported(msg)
+        }
+        // Fallback to per-case execution on batch compile failure
+        return run_test_file_compiled_per_case(
+          cache, cases, source, top_level_source, wrapper_prelude_source, parent,
+          stamp, runner, http_runner, use_http_host_runner, stop_on_first_failure,
+        )
+      }
+    }
+    @os_fs.write_bytes_to_file(batch_wasm_path, batch_wasm_bytes) catch {
+      e => {
+        remove_file_if_exists(batch_source_path)
+        return CompiledTestAttempt::Error(
+          "write batch wasm failed: " + e.to_string(),
+        )
+      }
+    }
+    remove_file_if_exists(batch_source_path)
+    match ensure_parent_dir_for_file(cached_batch_wasm_path, "test cache") {
+      Ok(_) => {
+        @os_fs.write_bytes_to_file(cached_batch_wasm_path, batch_wasm_bytes) catch {
+          _ => ()
+        }
+        @os_fs.write_string_to_file(
+          cached_batch_hash_path,
+          serialize_source_hash_cache(current_hashes),
+        ) catch {
+          _ => ()
+        }
+        let _ = test_cache_dir
+      }
+      Err(_) => ()
     }
   }
-  @os_fs.write_bytes_to_file(batch_wasm_path, batch_wasm_bytes) catch {
-    e => {
-      remove_file_if_exists(batch_source_path)
-      return CompiledTestAttempt::Error(
-        "write batch wasm failed: " + e.to_string(),
-      )
-    }
-  }
-  remove_file_if_exists(batch_source_path)
   // Run all tests in one wasmtime invocation; exit code = number of failures
   let run_out = match http_runner {
     Some(v) =>
@@ -3240,27 +3486,12 @@ fn run_test_file_compiled_with_cache(
   } else {
     0
   }
-  if fail_count > 0 && fail_count < cases.length() {
-    // Batch had some failures — report batch result with failure count.
-    // Individual test identification requires per-case fallback which is
-    // expensive; for now, report the aggregate.
-    let failures : Array[CliTestFailure] = []
-    failures.push(CliTestFailure::{
-      name: Some("batch"),
-      error: fail_count.to_string() +
-      " test(s) failed in batch mode; run with VIBE_TEST_BACKEND=interpreter for details",
-    })
-    CompiledTestAttempt::Success({
-      total: cases.length(),
-      passed: cases.length() - fail_count,
-      failed: fail_count,
-      failures,
-    })
-  } else if fail_count >= cases.length() {
-    // All failed or wasmtime crashed — fallback to per-case for details
+  if fail_count > 0 {
+    // Any batch failure falls back to per-case execution so failure details do
+    // not depend on the legacy interpreter path.
     run_test_file_compiled_per_case(
-      cases, source, top_level_source, wrapper_prelude_source, parent, stamp, runner,
-      http_runner, use_http_host_runner, stop_on_first_failure,
+      cache, cases, source, top_level_source, wrapper_prelude_source, parent, stamp,
+      runner, http_runner, use_http_host_runner, stop_on_first_failure,
     )
   } else {
     CompiledTestAttempt::Success({
@@ -3276,6 +3507,7 @@ fn run_test_file_compiled_with_cache(
 /// Fallback: run each test case individually (used when batch fails or
 /// to identify specific failures after a batch failure).
 fn run_test_file_compiled_per_case(
+  cache : CliEntryDbCache,
   cases : Array[CompiledTestCase],
   source : String,
   top_level_source : String,
@@ -3294,11 +3526,19 @@ fn run_test_file_compiled_per_case(
     let case_source = build_compiled_test_case_source(
       top_level_source, wrapper_prelude_source, case_body_source,
     )
-    let base = parent + "/.vibe_test_wasm_" + stamp + "_" + i.to_string()
-    let source_path = base + ".vibe"
-    let wasm_path = base + ".wasm"
+    let source_path = compiled_test_generated_source_path(
+      parent,
+      "case_" + i.to_string(),
+      case_source,
+    )
+    let wasm_path = parent +
+      "/.vibe_test_wasm_" +
+      stamp +
+      "_" +
+      i.to_string() +
+      ".wasm"
     let outcome = run_compiled_test_case(
-      runner, http_runner, use_http_host_runner, source_path, wasm_path, case_source,
+      cache, runner, http_runner, use_http_host_runner, source_path, wasm_path, case_source,
     )
     remove_file_if_exists(source_path)
     remove_file_if_exists(wasm_path)
@@ -3418,32 +3658,42 @@ fn run_test_file_with_backend_with_cache(
 ) -> Result[CliTestReport, String] {
   let backend_pref = resolve_test_backend_pref(entry_path)
   let allow_interpreter_fallback = cli_can_fallback_to_interpreter(backend_pref)
-  if backend_pref != CliExecBackendPref::Interpreter {
-    let stop_on_first_failure = allow_interpreter_fallback
-    match
-      run_test_file_compiled_with_cache(
-        cache, entry_path, stop_on_first_failure,
-      ) {
-      CompiledTestAttempt::Success(report) => {
-        if report.failed > 0 &&
-          compiled_report_has_runtime_import_failures(report) {
-          return run_test_file_interpreter_with_cache(
-            cache, entry_path, features,
-          )
-        }
-        return Ok(report)
-      }
-      CompiledTestAttempt::Unsupported(_) =>
-        if backend_pref == CliExecBackendPref::Compiled ||
-          not(allow_interpreter_fallback) {
-          return run_test_file_interpreter_with_cache(
-            cache, entry_path, features,
-          )
-        }
-      CompiledTestAttempt::Error(err) => return Err(err)
+  if backend_pref == CliExecBackendPref::Interpreter {
+    match cli_require_interpreter_backend("test") {
+      Ok(_) => ()
+      Err(err) => return Err(err)
     }
+    return run_test_file_interpreter_with_cache(cache, entry_path, features)
   }
-  run_test_file_interpreter_with_cache(cache, entry_path, features)
+  // Runtime import failures are detected from compiled failure reports, so
+  // ordinary failing tests do not need to bounce through interpreter fallback.
+  let stop_on_first_failure = cli_stop_compiled_test_on_first_failure(
+    allow_interpreter_fallback,
+  )
+  match
+    run_test_file_compiled_with_cache(cache, entry_path, stop_on_first_failure) {
+    CompiledTestAttempt::Success(report) => {
+      if report.failed > 0 &&
+        compiled_report_has_runtime_import_failures(report) {
+        if allow_interpreter_fallback {
+          return run_test_file_interpreter_with_cache(
+            cache, entry_path, features,
+          )
+        }
+        return Err(
+          "compiled test backend unsupported: runtime imports require interpreter fallback",
+        )
+      }
+      Ok(report)
+    }
+    CompiledTestAttempt::Unsupported(err) =>
+      if allow_interpreter_fallback {
+        run_test_file_interpreter_with_cache(cache, entry_path, features)
+      } else {
+        Err("compiled test backend unsupported: " + err)
+      }
+    CompiledTestAttempt::Error(err) => Err(err)
+  }
 }
 
 ///|
@@ -3565,8 +3815,18 @@ fn test_cmd_sequential(
   let mut failed_count = 0
   let file_count = entry_paths.length()
   let cache = CliEntryDbCache::new()
+  let use_session_http = cli_use_session_http()
   for entry_path in entry_paths {
-    match run_test_file_with_backend_with_cache(cache, entry_path, features) {
+    let report = if use_session_http {
+      match run_test_file_via_session(entry_path, features) {
+        Ok(v) => Ok(v)
+        Err(_) =>
+          run_test_file_with_backend_with_cache(cache, entry_path, features)
+      }
+    } else {
+      run_test_file_with_backend_with_cache(cache, entry_path, features)
+    }
+    match report {
       Ok(report) => {
         if !print_cli_test_report(entry_path, report) {
           failed = true
@@ -3618,6 +3878,38 @@ fn make_cli_test_report_json(
 }
 
 ///|
+fn make_cli_check_report_json(report : CliCheckReport) -> Json {
+  let messages_arr : Array[Json] = []
+  for message in report.messages {
+    messages_arr.push(Json::string(message))
+  }
+  let obj : Map[String, Json] = {}
+  obj["cmd"] = Json::string("check")
+  obj["file"] = Json::string(report.file)
+  obj["resolved_entry"] = Json::string(report.resolved_entry)
+  obj["ok"] = Json::boolean(report.error_count == 0)
+  obj["errors"] = Json::number(report.error_count.to_double())
+  obj["warnings"] = Json::number(report.warning_count.to_double())
+  obj["load_ms"] = Json::number(elapsed_ms_from_us(report.load_us).to_double())
+  obj["type_ms"] = Json::number(elapsed_ms_from_us(report.type_us).to_double())
+  obj["total_ms"] = Json::number(
+    elapsed_ms_from_us(report.total_us).to_double(),
+  )
+  obj["messages"] = Json::array(messages_arr)
+  match report.graph_head {
+    Some(hash) => {
+      obj["graph_head"] = Json::string(hash)
+      obj["short_graph_head"] = Json::string(short_hash(hash))
+    }
+    None => {
+      obj["graph_head"] = Json::null()
+      obj["short_graph_head"] = Json::null()
+    }
+  }
+  Json::object(obj)
+}
+
+///|
 fn make_error_report_json(
   entry_path : String,
   phase : String,
@@ -3635,6 +3927,297 @@ fn make_error_report_json(
   obj["elapsed_ms"] = Json::number(elapsed_ms.to_double())
   obj["failures"] = Json::array([Json::object(f)])
   Json::object(obj)
+}
+
+///|
+fn make_cli_session_test_report_json(
+  path : String,
+  report : CliTestReport,
+  elapsed_ms : Int,
+) -> Json {
+  let base = make_cli_test_report_json(path, report, elapsed_ms)
+  match base {
+    Json::Object(obj) => {
+      obj["cmd"] = Json::string("test")
+      Json::object(obj)
+    }
+    _ => base
+  }
+}
+
+///|
+fn make_cli_session_error_json(
+  cmd : String,
+  entry_path : String,
+  phase : String,
+  error : String,
+  elapsed_ms : Int,
+) -> Json {
+  let base = make_error_report_json(entry_path, phase, error, elapsed_ms)
+  match base {
+    Json::Object(obj) => {
+      obj["cmd"] = Json::string(cmd)
+      Json::object(obj)
+    }
+    _ => base
+  }
+}
+
+///|
+fn session_http_port_for_entry_with_features(
+  entry_path : String,
+  features : @runtime.RuntimeFeatureFlags,
+) -> Int {
+  let resolved = @loader.resolve_entry_path(entry_path)
+  let (vibe_root, _cache_key) = find_vibe_cache_root(resolved)
+  let mut acc = 0
+  for _, ch in vibe_root {
+    acc = (acc * 131 + Char::to_int(ch)) % 20000
+  }
+  if features.is_unstable_async_enabled() {
+    acc = (acc * 131 + 17) % 20000
+  }
+  if features.is_unstable_threads_enabled() {
+    acc = (acc * 131 + 31) % 20000
+  }
+  36000 + acc
+}
+
+///|
+fn current_cli_binary_path() -> String? {
+  let resolve_bin = fn(raw : String) -> String {
+    if raw.has_prefix("/") || not(raw.contains("/")) {
+      raw
+    } else {
+      @io.current_dir_or_root() + "/" + raw
+    }
+  }
+  let argv = @env.args()
+  if argv.length() > 0 {
+    let argv0 = argv[0]
+    if argv0.has_suffix("vibe.exe") || argv0.has_suffix("vibe") {
+      return Some(resolve_bin(argv0))
+    }
+  }
+  match @sys.get_env_var("_") {
+    Some(bin) if bin.has_suffix("vibe.exe") || bin.has_suffix("vibe") =>
+      Some(resolve_bin(bin))
+    _ => None
+  }
+}
+
+///|
+fn session_http_request_json(
+  port : Int,
+  request : Json,
+) -> Result[Json, String] {
+  let out : Ref[Result[Json, String]] = @ref.new(
+    Err("session-http: request did not complete"),
+  )
+  let url = "http://127.0.0.1:" + port.to_string() + "/"
+  @async.run_async_main(async fn() {
+    let (_response, data) = @http.post(url, request.stringify(), headers={
+      "content-type": "application/json",
+    }) catch {
+      err => {
+        out.val = Err(err.to_string())
+        return
+      }
+    }
+    let response_body = data.text() catch {
+      err => {
+        out.val = Err(err.to_string())
+        return
+      }
+    }
+    if response_body.length() == 0 {
+      out.val = Err("empty session http response")
+      return
+    }
+    let parsed : Json = @json.parse(response_body) catch {
+      _ => {
+        out.val = Err("invalid session http response json")
+        return
+      }
+    }
+    out.val = Ok(parsed)
+  })
+  out.val
+}
+
+///|
+fn session_http_ping(port : Int) -> Bool {
+  let req : Map[String, Json] = {}
+  req["cmd"] = Json::string("ping")
+  match session_http_request_json(port, Json::object(req)) {
+    Ok(Json::Object(obj)) =>
+      match obj.get("ok") {
+        Some(Json::True) => true
+        _ => false
+      }
+    _ => false
+  }
+}
+
+///|
+fn ensure_session_http_worker(
+  entry_path : String,
+  features : @runtime.RuntimeFeatureFlags,
+) -> Result[Int, String] {
+  let port = session_http_port_for_entry_with_features(entry_path, features)
+  if session_http_ping(port) {
+    return Ok(port)
+  }
+  let self_bin = match current_cli_binary_path() {
+    Some(v) => v
+    None =>
+      return Err("session-http: failed to resolve current vibe binary path")
+  }
+  let cmd = "nohup " +
+    shell_quote_command_arg(self_bin) +
+    (if features.is_unstable_async_enabled() {
+      " --unstable-async"
+    } else {
+      ""
+    }) +
+    (if features.is_unstable_threads_enabled() {
+      " --unstable-threads"
+    } else {
+      ""
+    }) +
+    " session-http --port " +
+    port.to_string() +
+    " >/dev/null 2>&1 &"
+  let status = c_system(system_command_bytes(cmd))
+  if status != 0 {
+    return Err("session-http: failed to spawn worker")
+  }
+  for _ in 0..<25 {
+    @io.sleep_ms(20L)
+    if session_http_ping(port) {
+      return Ok(port)
+    }
+  }
+  Err("session-http: worker did not become ready")
+}
+
+///|
+fn parse_cli_check_report_json(json : Json) -> Result[CliCheckReport, String] {
+  match json {
+    Json::Object(obj) => {
+      let file = parse_report_json_string(json, "file")
+      let resolved_entry = parse_report_json_string(json, "resolved_entry")
+      let error_count = parse_report_json_int(json, "errors")
+      let warning_count = parse_report_json_int(json, "warnings")
+      let load_ms = parse_report_json_int(json, "load_ms")
+      let type_ms = parse_report_json_int(json, "type_ms")
+      let total_ms = parse_report_json_int(json, "total_ms")
+      let graph_head = match obj.get("graph_head") {
+        Some(Json::String(value)) => Some(value)
+        _ => None
+      }
+      let messages : Array[String] = []
+      match obj.get("messages") {
+        Some(Json::Array(arr)) =>
+          for item in arr {
+            match item {
+              Json::String(value) => messages.push(value)
+              _ => ()
+            }
+          }
+        _ => ()
+      }
+      Ok(CliCheckReport::{
+        file,
+        resolved_entry,
+        graph_head,
+        error_count,
+        warning_count,
+        load_us: load_ms * 1000,
+        type_us: type_ms * 1000,
+        total_us: total_ms * 1000,
+        messages,
+      })
+    }
+    _ => Err("session-http: invalid check response")
+  }
+}
+
+///|
+fn run_check_entry_via_session(
+  entry_path : String,
+) -> Result[CliCheckReport, String] {
+  let port = match
+    ensure_session_http_worker(
+      entry_path,
+      @runtime.RuntimeFeatureFlags::new(false, false),
+    ) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let req : Map[String, Json] = {}
+  req["cmd"] = Json::string("check")
+  req["path"] = Json::string(entry_path)
+  let json = match session_http_request_json(port, Json::object(req)) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  parse_cli_check_report_json(json)
+}
+
+///|
+fn parse_cli_test_report_json(json : Json) -> Result[CliTestReport, String] {
+  match json {
+    Json::Object(obj) => {
+      let failures : Array[CliTestFailure] = []
+      match obj.get("failures") {
+        Some(Json::Array(items)) =>
+          for item in items {
+            match item {
+              Json::Object(failure_obj) => {
+                let name = match failure_obj.get("name") {
+                  Some(Json::String(value)) => Some(value)
+                  _ => None
+                }
+                let error = match failure_obj.get("error") {
+                  Some(Json::String(value)) => value
+                  _ => ""
+                }
+                failures.push(CliTestFailure::{ name, error })
+              }
+              _ => ()
+            }
+          }
+        _ => ()
+      }
+      Ok({
+        total: parse_report_json_int(json, "total"),
+        passed: parse_report_json_int(json, "passed"),
+        failed: parse_report_json_int(json, "failed"),
+        failures,
+      })
+    }
+    _ => Err("session-http: invalid test response")
+  }
+}
+
+///|
+fn run_test_file_via_session(
+  entry_path : String,
+  features : @runtime.RuntimeFeatureFlags,
+) -> Result[CliTestReport, String] {
+  let port = match ensure_session_http_worker(entry_path, features) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let req : Map[String, Json] = {}
+  req["cmd"] = Json::string("test")
+  req["path"] = Json::string(entry_path)
+  let json = match session_http_request_json(port, Json::object(req)) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  parse_cli_test_report_json(json)
 }
 
 ///|
@@ -3661,13 +4244,23 @@ fn test_cmd_report_json(
   defer vibe_worker_parent_watchdog_stop()
   let mut any_failed = false
   let cache = CliEntryDbCache::new()
+  let use_session_http = cli_use_session_http()
   for entry_path in entry_paths {
     if should_exit_report_json_worker(worker_parent_pid) {
       c_exit(130)
     }
     let start = @bench.monotonic_clock_start()
     let mut elapsed_ms = 1
-    match run_test_file_with_backend_with_cache(cache, entry_path, features) {
+    let report = if use_session_http {
+      match run_test_file_via_session(entry_path, features) {
+        Ok(v) => Ok(v)
+        Err(_) =>
+          run_test_file_with_backend_with_cache(cache, entry_path, features)
+      }
+    } else {
+      run_test_file_with_backend_with_cache(cache, entry_path, features)
+    }
+    match report {
       Ok(report) => {
         let elapsed_us = @bench.monotonic_clock_end(start)
         elapsed_ms = elapsed_us_to_ms_int(elapsed_us)
@@ -3691,6 +4284,248 @@ fn test_cmd_report_json(
   if any_failed {
     abort("test: failures detected")
   }
+}
+
+///|
+fn parse_cli_session_request(
+  line : String,
+) -> Result[CliSessionRequest, String] {
+  let json : Json = @json.parse(line) catch {
+    _ => return Err("session-json: invalid json")
+  }
+  match json {
+    Json::Object(obj) => {
+      let cmd = match obj.get("cmd") {
+        Some(Json::String(value)) => value.trim().to_string().to_lower()
+        _ => return Err("session-json: missing cmd")
+      }
+      match cmd {
+        "ping" =>
+          Ok(CliSessionRequest::{
+            kind: CliSessionRequestKind::Ping,
+            path: None,
+          })
+        "check" =>
+          match obj.get("path") {
+            Some(Json::String(value)) => {
+              let path = value.trim().to_string()
+              if path.length() == 0 {
+                Err("session-json: missing path")
+              } else {
+                Ok(CliSessionRequest::{
+                  kind: CliSessionRequestKind::Check,
+                  path: Some(path),
+                })
+              }
+            }
+            _ => Err("session-json: missing path")
+          }
+        "test" =>
+          match obj.get("path") {
+            Some(Json::String(value)) => {
+              let path = value.trim().to_string()
+              if path.length() == 0 {
+                Err("session-json: missing path")
+              } else {
+                Ok(CliSessionRequest::{
+                  kind: CliSessionRequestKind::Test,
+                  path: Some(path),
+                })
+              }
+            }
+            _ => Err("session-json: missing path")
+          }
+        "shutdown" | "quit" =>
+          Ok(CliSessionRequest::{
+            kind: CliSessionRequestKind::Shutdown,
+            path: None,
+          })
+        _ => Err("session-json: unsupported cmd: " + cmd)
+      }
+    }
+    _ => Err("session-json: request must be object")
+  }
+}
+
+///|
+fn handle_cli_session_request(
+  cache : CliEntryDbCache,
+  req : CliSessionRequest,
+  features : @runtime.RuntimeFeatureFlags,
+) -> (Json, Bool) {
+  match req.kind {
+    CliSessionRequestKind::Ping => {
+      let obj : Map[String, Json] = {}
+      obj["cmd"] = Json::string("ping")
+      obj["ok"] = Json::boolean(true)
+      (Json::object(obj), false)
+    }
+    CliSessionRequestKind::Shutdown => {
+      let obj : Map[String, Json] = {}
+      obj["cmd"] = Json::string("shutdown")
+      obj["ok"] = Json::boolean(true)
+      (Json::object(obj), true)
+    }
+    CliSessionRequestKind::Check =>
+      match req.path {
+        Some(path) => {
+          let report = run_check_entry_with_cache(cache, path, false)
+          (make_cli_check_report_json(report), false)
+        }
+        None =>
+          (
+            make_cli_session_error_json(
+              "check", "", "parse", "session-json: missing path", 1,
+            ),
+            false,
+          )
+      }
+    CliSessionRequestKind::Test =>
+      match req.path {
+        Some(path) => {
+          let start = @bench.monotonic_clock_start()
+          match run_test_file_with_backend_with_cache(cache, path, features) {
+            Ok(report) => {
+              let elapsed_us = @bench.monotonic_clock_end(start)
+              let elapsed_ms = elapsed_us_to_ms_int(elapsed_us)
+              (
+                make_cli_session_test_report_json(path, report, elapsed_ms),
+                false,
+              )
+            }
+            Err(err) => {
+              let elapsed_us = @bench.monotonic_clock_end(start)
+              let elapsed_ms = elapsed_us_to_ms_int(elapsed_us)
+              (
+                make_cli_session_error_json(
+                  "test", path, "test", err, elapsed_ms,
+                ),
+                false,
+              )
+            }
+          }
+        }
+        None =>
+          (
+            make_cli_session_error_json(
+              "test", "", "parse", "session-json: missing path", 1,
+            ),
+            false,
+          )
+      }
+  }
+}
+
+///|
+fn session_json_cmd(
+  args : Array[String],
+  features : @runtime.RuntimeFeatureFlags,
+) -> Unit {
+  if args.length() > 0 {
+    abort("session-json: unexpected args")
+  }
+  async fn session_loop() {
+    let input = @stdio.stdin
+    let cache = CliEntryDbCache::new()
+    while input.read_until("\n") is Some(line) {
+      let trimmed = line.trim().to_string()
+      if trimmed.length() == 0 {
+        continue
+      }
+      match parse_cli_session_request(trimmed) {
+        Err(err) =>
+          println(
+            make_cli_session_error_json("session", "", "parse", err, 1).stringify(),
+          )
+        Ok(req) => {
+          let (response, should_shutdown) = handle_cli_session_request(
+            cache, req, features,
+          )
+          println(response.stringify())
+          if should_shutdown {
+            break
+          }
+        }
+      }
+    }
+  }
+  @async.run_async_main(session_loop)
+}
+
+///|
+fn split_session_http_cmd_args(args : Array[String]) -> Result[Int, String] {
+  let mut port : Int? = None
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
+    if arg == "--port" {
+      i += 1
+      if i >= args.length() {
+        return Err("session-http: missing value after --port")
+      }
+      let parsed = @strconv.parse_int(args[i]) catch {
+        e => return Err("session-http: invalid --port: " + e.to_string())
+      }
+      port = Some(parsed)
+    } else {
+      return Err("session-http: unknown arg " + arg)
+    }
+    i += 1
+  }
+  match port {
+    Some(v) if v > 0 => Ok(v)
+    _ => Err("session-http: --port is required")
+  }
+}
+
+///|
+fn session_http_cmd(
+  args : Array[String],
+  features : @runtime.RuntimeFeatureFlags,
+) -> Unit {
+  let port = match split_session_http_cmd_args(args) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  let cache = CliEntryDbCache::new()
+  async fn session_http_loop() {
+    let addr = @socket.Addr::parse("127.0.0.1:\{port}") catch {
+      err => abort("session-http: invalid listen addr: " + err.to_string())
+    }
+    let server = @http.Server::new(addr) catch {
+      err => abort("session-http: listen failed: " + err.to_string())
+    }
+    server.run_forever(
+      (_request, body, conn) => {
+        let request_buf = StringBuilder::new()
+        try {
+          while body.read_some() is Some(chunk) {
+            request_buf.write_string(@utf8.decode(chunk))
+          }
+        } catch {
+          _ => ()
+        }
+        let request_body = request_buf.to_string()
+        let (response, should_shutdown) = match
+          parse_cli_session_request(request_body) {
+          Ok(req) => handle_cli_session_request(cache, req, features)
+          Err(err) =>
+            (make_cli_session_error_json("session", "", "parse", err, 1), false)
+        }
+        conn.send_response(200, "OK", extra_headers={
+          "content-type": "application/json",
+        })
+        conn..write(response.stringify()).end_response()
+        if should_shutdown {
+          server.close()
+          c_exit(0)
+        }
+      },
+      allow_failure=true,
+      max_connections=1,
+    )
+  }
+  @async.run_async_main(session_http_loop)
 }
 
 ///|
@@ -7317,24 +8152,60 @@ fn save_source_hashes(
   hash_cache_path : String,
 ) -> Unit {
   let _ = cache_dir
-  let buf = StringBuilder::new()
-  let imports = db.imports(entry)
-  for imp in imports {
-    let source = match db.get_source(imp.path) {
-      Some(s) => s
-      None => ""
-    }
-    if source.length() > 0 {
-      let hash = @vibe_core.content_address_hash_string(source)
-      buf.write_string(imp.path)
-      buf.write_char('\t')
-      buf.write_string(hash)
-      buf.write_char('\n')
-    }
-  }
-  @os_fs.write_string_to_file(hash_cache_path, buf.to_string()) catch {
+  let hashes = collect_source_hash_cache(db, entry, false)
+  @os_fs.write_string_to_file(
+    hash_cache_path,
+    serialize_source_hash_cache(hashes),
+  ) catch {
     _ => ()
   }
+}
+
+///|
+fn collect_source_hash_cache(
+  db : @runtime.VibeDb,
+  entry : String,
+  include_entry : Bool,
+) -> Map[String, String] {
+  let out : Map[String, String] = {}
+  if include_entry {
+    match db.get_source(entry) {
+      Some(source) if source.length() > 0 =>
+        out[entry] = @vibe_core.content_address_hash_string(source)
+      _ => ()
+    }
+  }
+  let imports = db.imports(entry)
+  for imp in imports {
+    match db.get_source(imp.path) {
+      Some(source) if source.length() > 0 =>
+        out[imp.path] = @vibe_core.content_address_hash_string(source)
+      _ => ()
+    }
+  }
+  out
+}
+
+///|
+fn serialize_source_hash_cache(hashes : Map[String, String]) -> String {
+  let keys : Array[String] = []
+  for path, _ in hashes {
+    keys.push(path)
+  }
+  keys.sort()
+  let buf = StringBuilder::new()
+  for path in keys {
+    match hashes.get(path) {
+      Some(hash) => {
+        buf.write_string(path)
+        buf.write_char('\t')
+        buf.write_string(hash)
+        buf.write_char('\n')
+      }
+      None => ()
+    }
+  }
+  buf.to_string()
 }
 
 ///|
@@ -7354,6 +8225,65 @@ fn parse_source_hash_cache(text : String) -> Map[String, String] {
     }
   }
   out
+}
+
+///|
+fn source_hash_cache_matches(
+  saved : Map[String, String],
+  current : Map[String, String],
+) -> Bool {
+  if saved.length() != current.length() {
+    return false
+  }
+  for path, current_hash in current {
+    match saved.get(path) {
+      Some(saved_hash) => if saved_hash != current_hash { return false }
+      None => return false
+    }
+  }
+  true
+}
+
+///|
+fn run_monolithic_cache_paths(
+  entry_path : String,
+  use_http_host_runner : Bool,
+) -> (String, String, String) {
+  let resolved = @loader.resolve_entry_path(entry_path)
+  let (vibe_root, cache_key) = find_vibe_cache_root(resolved)
+  let cache_dir = vibe_root + "/run/" + cache_key
+  let wasm_name = if use_http_host_runner {
+    "app_http.wasm"
+  } else {
+    "app.wasm"
+  }
+  let hash_name = if use_http_host_runner {
+    "source_hashes_http.txt"
+  } else {
+    "source_hashes.txt"
+  }
+  (cache_dir, cache_dir + "/" + wasm_name, cache_dir + "/" + hash_name)
+}
+
+///|
+fn compiled_test_batch_cache_paths(
+  entry_path : String,
+  use_http_host_runner : Bool,
+) -> (String, String, String) {
+  let resolved = @loader.resolve_entry_path(entry_path)
+  let (vibe_root, cache_key) = find_vibe_cache_root(resolved)
+  let cache_dir = vibe_root + "/test/" + cache_key
+  let wasm_name = if use_http_host_runner {
+    "batch_http.wasm"
+  } else {
+    "batch.wasm"
+  }
+  let hash_name = if use_http_host_runner {
+    "source_hashes_http.txt"
+  } else {
+    "source_hashes.txt"
+  }
+  (cache_dir, cache_dir + "/" + wasm_name, cache_dir + "/" + hash_name)
 }
 
 ///|

@@ -2708,6 +2708,56 @@ test "compiled test case db load does not persist temporary lock refs" {
 }
 
 ///|
+test "compiled test generated source path is stable per content" {
+  let parent = "/tmp/compiled_test_generated_source_path"
+  let path1 = compiled_test_generated_source_path(
+    parent, "batch", "let x = 1\n",
+  )
+  let path2 = compiled_test_generated_source_path(
+    parent, "batch", "let x = 1\n",
+  )
+  let path3 = compiled_test_generated_source_path(
+    parent, "batch", "let x = 2\n",
+  )
+  assert_eq(path1, path2)
+  assert_true(path1 != path3)
+}
+
+///|
+test "compiled test case db load with cache reuses same root db" {
+  let root = wbtest_make_temp_dir("compiled_test_case_db_cache")
+  let lock_seed = "{\"path\":{},\"version\":{},\"symbol\":{},\"module\":{},\"annotation\":{}}\n"
+  @os_fs.write_string_to_file(root + "/index.lock", lock_seed) catch {
+    e => fail("write seed lock failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    root + "/index.vibe",
+    "export let version = \"0.1.0\"\n",
+  ) catch {
+    e => fail("write index.vibe failed: " + e.to_string())
+  }
+  let cache = CliEntryDbCache::new()
+  let source1 = "0\n"
+  let source2 = "1\n"
+  let path1 = compiled_test_generated_source_path(root, "case", source1)
+  let path2 = compiled_test_generated_source_path(root, "case", source2)
+  match load_compiled_test_case_db_with_cache(cache, path1, source1) {
+    Ok(_) => ()
+    Err(err) => fail("load compiled test db with cache failed: " + err)
+  }
+  match load_compiled_test_case_db_with_cache(cache, path2, source2) {
+    Ok(_) => ()
+    Err(err) => fail("load compiled test db with cache failed: " + err)
+  }
+  assert_eq(cache.by_root.length(), 1)
+  wbtest_remove_if_exists(path1)
+  wbtest_remove_if_exists(path2)
+  wbtest_remove_if_exists(root + "/index.lock")
+  wbtest_remove_if_exists(root + "/index.vibe")
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "compiled test prelude omits wrapper conflict names" {
   let ast = @parser.parse_ast(
     "let main = 1\n" +
@@ -3580,6 +3630,39 @@ fn wbtest_restore_env_var(name : String, prev : String?) -> Unit {
 }
 
 ///|
+fn write_wbtest_json_parse_fallback_source(source_path : String) -> Unit {
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "test \"Json::parse fallback\" {\n" +
+    "  let data = Json::parse(\"{\\\"name\\\":\\\"vibe\\\"}\")\n" +
+    "  assert(String::equals(Json::string(Json::get(data, \"name\")), \"vibe\"))\n" +
+    "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+}
+
+///|
+fn write_wbtest_basic_test_source(source_path : String) -> Unit {
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "test \"basic\" {\n" + "  assert(eq(add(1, 2), 3))\n" + "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+}
+
+///|
 test "exec backend pref parsing" {
   assert_eq(
     parse_cli_exec_backend_pref("interpreter"),
@@ -3631,6 +3714,32 @@ test "resolve_test_backend_pref defaults to compiled in auto mode" {
   assert_eq(
     resolve_test_backend_pref("examples/hello.vibe"),
     CliExecBackendPref::Compiled,
+  )
+}
+
+///|
+test "resolve_run_backend_pref defaults to compiled when env is unset" {
+  let prev_run_backend = @sys.get_env_var("VIBE_RUN_BACKEND")
+  @sys.unset_env_var("VIBE_RUN_BACKEND")
+  defer wbtest_restore_env_var("VIBE_RUN_BACKEND", prev_run_backend)
+  assert_eq(
+    resolve_run_backend_pref("vibe/compiler/eval_test.vibe"),
+    CliExecBackendPref::Compiled,
+  )
+  assert_eq(
+    resolve_run_backend_pref("examples/hello.vibe"),
+    CliExecBackendPref::Compiled,
+  )
+}
+
+///|
+test "resolve_run_backend_pref preserves explicit auto for fallback" {
+  let prev_run_backend = @sys.get_env_var("VIBE_RUN_BACKEND")
+  @sys.set_env_var("VIBE_RUN_BACKEND", "auto")
+  defer wbtest_restore_env_var("VIBE_RUN_BACKEND", prev_run_backend)
+  assert_eq(
+    resolve_run_backend_pref("examples/hello.vibe"),
+    CliExecBackendPref::Auto,
   )
 }
 
@@ -3701,23 +3810,342 @@ test "cli entry db cache isolates different roots" {
 }
 
 ///|
+test "serialize source hash cache roundtrips" {
+  let hashes : Map[String, String] = {}
+  hashes["/tmp/a.vibe"] = "aaa"
+  hashes["/tmp/b.vibe"] = "bbb"
+  let parsed = parse_source_hash_cache(serialize_source_hash_cache(hashes))
+  assert_eq(parsed.length(), 2)
+  assert_eq(parsed.get("/tmp/a.vibe"), Some("aaa"))
+  assert_eq(parsed.get("/tmp/b.vibe"), Some("bbb"))
+}
+
+///|
+test "source hash cache match requires identical entries" {
+  let saved : Map[String, String] = {}
+  saved["/tmp/a.vibe"] = "aaa"
+  let same : Map[String, String] = {}
+  same["/tmp/a.vibe"] = "aaa"
+  let changed : Map[String, String] = {}
+  changed["/tmp/a.vibe"] = "bbb"
+  let extra : Map[String, String] = {}
+  extra["/tmp/a.vibe"] = "aaa"
+  extra["/tmp/b.vibe"] = "bbb"
+  assert_true(source_hash_cache_matches(saved, same))
+  assert_false(source_hash_cache_matches(saved, changed))
+  assert_false(source_hash_cache_matches(saved, extra))
+}
+
+///|
+test "run monolithic cache paths separate http mode" {
+  let paths1 = run_monolithic_cache_paths("/tmp/project/src/main.vibe", false)
+  let paths2 = run_monolithic_cache_paths("/tmp/project/src/main.vibe", true)
+  assert_true(paths1.0.contains("/.vibe/run/"))
+  assert_true(paths1.1.has_suffix("/app.wasm"))
+  assert_true(paths1.2.has_suffix("/source_hashes.txt"))
+  assert_true(paths2.1.has_suffix("/app_http.wasm"))
+  assert_true(paths1.1 != paths2.1)
+}
+
+///|
+test "compiled test batch cache paths separate http mode" {
+  let paths1 = compiled_test_batch_cache_paths(
+    "/tmp/project/src/main_test.vibe", false,
+  )
+  let paths2 = compiled_test_batch_cache_paths(
+    "/tmp/project/src/main_test.vibe", true,
+  )
+  assert_true(paths1.0.contains("/.vibe/test/"))
+  assert_true(paths1.1.has_suffix("/batch.wasm"))
+  assert_true(paths1.2.has_suffix("/source_hashes.txt"))
+  assert_true(paths2.1.has_suffix("/batch_http.wasm"))
+  assert_true(paths1.1 != paths2.1)
+}
+
+///|
+test "session http port is stable per entry root" {
+  let features = @runtime.RuntimeFeatureFlags::new(false, false)
+  let port1 = session_http_port_for_entry_with_features(
+    "/tmp/project/src/main.vibe", features,
+  )
+  let port2 = session_http_port_for_entry_with_features(
+    "/tmp/project/src/main.vibe", features,
+  )
+  let port3 = session_http_port_for_entry_with_features(
+    "/tmp/project/src/other.vibe", features,
+  )
+  assert_eq(port1, port2)
+  assert_eq(port1, port3)
+  assert_true(port1 >= 36000)
+}
+
+///|
+test "session http defaults on when self binary exists" {
+  assert_true(cli_use_session_http_with(None, true))
+}
+
+///|
+test "session http defaults off without self binary" {
+  assert_false(cli_use_session_http_with(None, false))
+}
+
+///|
+test "session http env overrides default" {
+  assert_false(cli_use_session_http_with(Some("0"), true))
+  assert_true(cli_use_session_http_with(Some("1"), false))
+}
+
+///|
+test "session http port separates runtime feature sets" {
+  let baseline = @runtime.RuntimeFeatureFlags::new(false, false)
+  let async_only = @runtime.RuntimeFeatureFlags::new(true, false)
+  let threads_only = @runtime.RuntimeFeatureFlags::new(false, true)
+  let both = @runtime.RuntimeFeatureFlags::new(true, true)
+  let base_port = session_http_port_for_entry_with_features(
+    "/tmp/project/src/main.vibe", baseline,
+  )
+  assert_true(
+    base_port !=
+    session_http_port_for_entry_with_features(
+      "/tmp/project/src/main.vibe", async_only,
+    ),
+  )
+  assert_true(
+    base_port !=
+    session_http_port_for_entry_with_features(
+      "/tmp/project/src/main.vibe", threads_only,
+    ),
+  )
+  assert_true(
+    session_http_port_for_entry_with_features(
+      "/tmp/project/src/main.vibe", async_only,
+    ) !=
+    session_http_port_for_entry_with_features(
+      "/tmp/project/src/main.vibe", both,
+    ),
+  )
+}
+
+///|
+test "cli session request parses check json" {
+  let req = match
+    parse_cli_session_request(
+      "{\"cmd\":\"check\",\"path\":\"/tmp/project/main.vibe\"}",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("expected check request: " + err)
+  }
+  assert_eq(req.kind, CliSessionRequestKind::Check)
+  assert_eq(req.path, Some("/tmp/project/main.vibe"))
+}
+
+///|
+test "cli session request parses shutdown json" {
+  let req = match parse_cli_session_request("{\"cmd\":\"shutdown\"}") {
+    Ok(v) => v
+    Err(err) => fail("expected shutdown request: " + err)
+  }
+  assert_eq(req.kind, CliSessionRequestKind::Shutdown)
+  assert_eq(req.path, None)
+}
+
+///|
+test "cli session request parses ping json" {
+  let req = match parse_cli_session_request("{\"cmd\":\"ping\"}") {
+    Ok(v) => v
+    Err(err) => fail("expected ping request: " + err)
+  }
+  assert_eq(req.kind, CliSessionRequestKind::Ping)
+  assert_eq(req.path, None)
+}
+
+///|
+test "cli session request rejects missing path" {
+  match parse_cli_session_request("{\"cmd\":\"test\"}") {
+    Ok(_) => fail("expected missing path error")
+    Err(err) => assert_true(err.contains("missing path"))
+  }
+}
+
+///|
+test "cli session test report json roundtrips" {
+  let failures : Array[CliTestFailure] = [{ name: Some("demo"), error: "boom" }]
+  let report : CliTestReport = { total: 2, passed: 1, failed: 1, failures }
+  let parsed = match
+    parse_cli_test_report_json(
+      make_cli_session_test_report_json(
+        "/tmp/project/main_test.vibe", report, 12,
+      ),
+    ) {
+    Ok(v) => v
+    Err(err) => fail("expected parsed report: " + err)
+  }
+  assert_eq(parsed.total, 2)
+  assert_eq(parsed.passed, 1)
+  assert_eq(parsed.failed, 1)
+  assert_eq(parsed.failures.length(), 1)
+  assert_eq(parsed.failures[0].name, Some("demo"))
+  assert_eq(parsed.failures[0].error, "boom")
+}
+
+///|
 test "interpreter fallback is disabled by default" {
   let prev_fallback = @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
+  let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
   @sys.unset_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
+  @sys.unset_env_var("VIBE_ENABLE_INTERPRETER")
   defer wbtest_restore_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", prev_fallback)
+  defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
+  assert_false(cli_interpreter_backend_enabled())
   assert_false(cli_allow_interpreter_fallback())
   assert_false(cli_can_fallback_to_interpreter(CliExecBackendPref::Auto))
 }
 
 ///|
-test "interpreter fallback env only enables auto backend fallback" {
+test "interpreter backend enable env gates fallback" {
   let prev_fallback = @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
+  let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
   @sys.set_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", "1")
+  @sys.unset_env_var("VIBE_ENABLE_INTERPRETER")
   defer wbtest_restore_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", prev_fallback)
+  defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
+  assert_false(cli_interpreter_backend_enabled())
+  assert_true(cli_allow_interpreter_fallback())
+  assert_false(cli_can_fallback_to_interpreter(CliExecBackendPref::Auto))
+  @sys.set_env_var("VIBE_ENABLE_INTERPRETER", "1")
+  assert_true(cli_interpreter_backend_enabled())
   assert_true(cli_allow_interpreter_fallback())
   assert_true(cli_can_fallback_to_interpreter(CliExecBackendPref::Auto))
   assert_false(cli_can_fallback_to_interpreter(CliExecBackendPref::Compiled))
   assert_false(cli_can_fallback_to_interpreter(CliExecBackendPref::Interpreter))
+}
+
+///|
+test "compiled test failure reporting never stops early for interpreter fallback" {
+  assert_false(cli_stop_compiled_test_on_first_failure(false))
+  assert_false(cli_stop_compiled_test_on_first_failure(true))
+}
+
+///|
+test "explicit interpreter backend is disabled by default for tests" {
+  let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
+  let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
+  @sys.set_env_var("VIBE_TEST_BACKEND", "interpreter")
+  @sys.unset_env_var("VIBE_ENABLE_INTERPRETER")
+  defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
+  defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_backend_explicit_interpreter_disabled.vibe",
+  )
+  write_wbtest_basic_test_source(source_path)
+  match
+    run_test_file_with_backend(
+      source_path,
+      @runtime.RuntimeFeatureFlags::stable(),
+    ) {
+    Err(err) =>
+      assert_true(err.contains("interpreter backend disabled for test"))
+    Ok(report) =>
+      fail(
+        "expected explicit interpreter disable error, got success: " +
+        report.total.to_string(),
+      )
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
+test "explicit interpreter backend works when enabled for tests" {
+  let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
+  let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
+  @sys.set_env_var("VIBE_TEST_BACKEND", "interpreter")
+  @sys.set_env_var("VIBE_ENABLE_INTERPRETER", "1")
+  defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
+  defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_backend_explicit_interpreter_enabled.vibe",
+  )
+  write_wbtest_basic_test_source(source_path)
+  match
+    run_test_file_with_backend(
+      source_path,
+      @runtime.RuntimeFeatureFlags::stable(),
+    ) {
+    Ok(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    Err(err) => fail("expected explicit interpreter success, got error: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
+test "test backend reports unsupported compiled cases by default" {
+  let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
+  let prev_fallback = @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
+  let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
+  @sys.unset_env_var("VIBE_TEST_BACKEND")
+  @sys.unset_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
+  @sys.unset_env_var("VIBE_ENABLE_INTERPRETER")
+  defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
+  defer wbtest_restore_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", prev_fallback)
+  defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_backend_default_compiled_json_parse.vibe",
+  )
+  write_wbtest_json_parse_fallback_source(source_path)
+  match
+    run_test_file_with_backend(
+      source_path,
+      @runtime.RuntimeFeatureFlags::stable(),
+    ) {
+    Err(err) => {
+      assert_true(err.contains("compiled test backend unsupported"))
+      assert_true(err.contains("wasm runtime fallback builtins"))
+    }
+    Ok(report) =>
+      fail(
+        "expected unsupported compiled backend error, got success: " +
+        report.total.to_string(),
+      )
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
+test "test backend auto fallback still uses interpreter when enabled" {
+  let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
+  let prev_fallback = @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
+  let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
+  @sys.set_env_var("VIBE_TEST_BACKEND", "auto")
+  @sys.set_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", "1")
+  @sys.set_env_var("VIBE_ENABLE_INTERPRETER", "1")
+  defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
+  defer wbtest_restore_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", prev_fallback)
+  defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_backend_auto_fallback_json_parse.vibe",
+  )
+  write_wbtest_json_parse_fallback_source(source_path)
+  match
+    run_test_file_with_backend(
+      source_path,
+      @runtime.RuntimeFeatureFlags::stable(),
+    ) {
+    Ok(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    Err(err) => fail("expected auto fallback success, got error: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
 }
 
 ///|

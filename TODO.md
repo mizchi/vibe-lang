@@ -15,6 +15,7 @@ Completed items are archived in `docs/DONE.md`.
 - [x] loader の `_build/debug_*` / manifest helper debug 書き込みを撤去
 - [x] `special_manifest_header_deps` を撤去し、manifest 依存は実ソース header から組み立てる
 - [x] persistent module header / type env codec を shared helper に統一
+- [x] `index.vibe` の probe / `cli_cache` 重複 export を削減し、cache helper 経由へ寄せる
 - [x] `selfhost_cli_core_entry` から probe export を分離し、canonical CLI entry を薄く保つ
 
 ### 直近の完了
@@ -35,6 +36,8 @@ Completed items are archived in `docs/DONE.md`.
 - [x] `test-selfhost-check-direct-parity`
 - [x] `test-selfhost-cutover`
 - [x] `test-golden-wat`
+- [x] `just ci-contract-moon`
+- [x] `just ci-contract-native`
 - [x] `.github/workflows/ci.yml` の `selfhost-gates` を `just release-selfhost-gates` 基準に揃える
 - [x] component/direct selfhost gate 用の CI 前提 (`Rust + wasm32 + wasm-tools + wac`) を明示する
 
@@ -203,6 +206,20 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 - [ ] selfhost perf gap を cutover 水準まで詰める
 - [ ] GC backend セルフコンパイルで ~350KB 配布形
 - [ ] `vibe/compiler` の論理分割
+
+## Interpreter 廃止
+
+- [x] `vibe run` / `vibe test` の既定 backend を compiled に寄せる
+- [x] interpreter backend を `VIBE_ENABLE_INTERPRETER=1` の明示 opt-in にする
+- [x] `bench` の interpreter backend / fallback も `VIBE_ENABLE_INTERPRETER=1` 前提に寄せる
+- [x] one-shot CLI でも `run/test` の wasm cache を使って compiled 固定費を減らす
+- [x] `bench` の generated wasm も content-addressed cache で再利用する
+- [x] compiled test 失敗時の詳細取得を per-case compiled fallback に寄せる
+- [x] internal `session-json` worker で同一 process の `check/test` cache 再利用口を作る
+- [x] `check/test` は localhost session worker を既定利用し、`VIBE_USE_SESSION_HTTP=0` で無効化できるようにする
+- [ ] `run` も長寿命 process で incremental compile cache を常用化
+- [ ] interpreter を fallback/debug 専用に縮退
+- [ ] compiled parity が揃ったら evaluator / interpreter 実装を削除
 
 ## ユーザビリティ改善
 
