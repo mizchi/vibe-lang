@@ -37,8 +37,17 @@ export ./type_db.vibe {
   db_load_artifact, db_store_artifact
 }
 
-export ./cli_cache.vibe {
-  parse_batch_jobs_tsv, prepare_jobs_cached, compile_jobs_cached
+import ./cli_cache.vibe {
+  parse_batch_jobs_tsv, prepare_jobs_cached, compile_jobs_cached,
+  selfbuild_probe_cli_cache_counts, selfbuild_probe_cli_file_cache_counts
+}
+
+import ./cache_probe_support.vibe {
+  selfbuild_probe_type_db_cache_counts,
+  selfbuild_probe_type_db_fs_parse_counts,
+  selfbuild_probe_type_db_group_merge_counts,
+  selfbuild_probe_type_db_module_source_counts,
+  selfbuild_probe_type_db_codegen_counts
 }
 
 export ./checker/checker_stmt.vibe {
@@ -93,12 +102,7 @@ import ./selfbuild_runtime_entry_bundle.vibe {
 
 import ./cache / persistent {
   build_file_compile_wasi_artifact_fingerprint,
-  compact_string_fingerprint,
-  persistent_artifact_cache_path,
-  persistent_dep_list_cache_path,
-  persistent_leaf_fingerprint_cache_path,
-  persistent_module_header_cache_path,
-  persistent_type_env_cache_path
+  persistent_artifact_cache_path
 }
 
 import ./core/index.vibe {
@@ -176,32 +180,6 @@ let string_to_bytes = (s: String) -> Bytes {
     i = i + 1
   }
   out
-}
-
-let remove_file_if_exists = (path: String) -> Unit with { Fs } {
-  if Fs::exists(path) {
-    Fs::remove(path)
-  } else {
-    ()
-  }
-}
-
-let build_type_db_fingerprint = (source: String, dep_fps: Array[(String, String)]) -> String {
-  let mut acc = compact_string_fingerprint(source)
-  let mut i = 0
-  while i < Array::length(dep_fps) {
-    let dep_pair = Array::get(dep_fps, i)
-    let dep_path = dep_pair.0
-    let dep_fp = dep_pair.1
-    acc = compact_string_fingerprint(
-      String::concat(
-        acc,
-        String::concat("|", String::concat(dep_path, String::concat("=", dep_fp)))
-      )
-    )
-    i = i + 1
-  }
-  acc
 }
 
 let compile_selfhost_cli_adapter_to = (output_path: String) -> Int with { Error, Fs } {
@@ -419,117 +397,6 @@ export let selfbuild_probe_parse = () -> Int with { Error } {
   let tokens = lex("let add = (a: Int, b: Int) -> Int { a + b }")
   let stmts = parse_program(tokens)
   Array::length(stmts)
-}
-
-export let selfbuild_probe_type_db_cache_counts = () -> Int with { Error } {
-  let main_source = "let main = () -> Int { 1 + 2 }"
-  let db1 = db_set_source(db_new(), "main.vibe", main_source)
-  let db2 = db_typecheck(db1, "main.vibe")
-  let count1 = db_typecheck_count(db2)
-  let db3 = db_typecheck(db2, "main.vibe")
-  let count2 = db_typecheck_count(db3)
-  count1 * 1000 + count2
-}
-
-export let selfbuild_probe_type_db_fs_parse_counts = () -> Int with { Error, Fs } {
-  let nonce_path = "_build/persistent_type_env_probe_nonce.txt"
-  let prev_nonce = if Fs::exists(nonce_path) { perform Fs::ReadFile(nonce_path) } else { "" }
-  let nonce = __to_string(String::length(prev_nonce) + 1)
-  Fs::write_bytes(nonce_path, string_to_bytes(String::concat(prev_nonce, "x")))
-  let helper_path = String::concat(
-    "_build/persistent_type_env_probe_helper_",
-    String::concat(nonce, ".vibe")
-  )
-  let main_path = String::concat(
-    "_build/persistent_type_env_probe_main_",
-    String::concat(nonce, ".vibe")
-  )
-  let helper_name = String::substring(
-    helper_path,
-    String::last_index_of(helper_path, "/") + 1,
-    String::length(helper_path)
-  )
-  let helper_source = String::concat("export let add = () -> Int { 1 }\n// ", nonce)
-  let main_source = String::concat(
-    "import ./",
-    String::concat(
-      helper_name,
-      String::concat(" { add }\nlet run = () -> Int { add() }\n// ", nonce)
-    )
-  )
-  Fs::write_bytes(helper_path, string_to_bytes(helper_source))
-  Fs::write_bytes(main_path, string_to_bytes(main_source))
-  let db1 = db_typecheck_fs(
-    db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source),
-    main_path
-  )
-  let count1 = db_parse_count(db1)
-  let db2 = db_typecheck_fs(
-    db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source),
-    main_path
-  )
-  let count2 = db_parse_count(db2)
-  count1 * 1000 + count2
-}
-
-export let selfbuild_probe_type_db_group_merge_counts = () -> Int with { Error } {
-  let groups = [
-    ("core", [("helpers.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }")]),
-    ("entry", [("main.vibe", "import ./helpers.vibe { add }\nlet main = () -> Int { add(1, 2) }")])
-  ]
-  let result1 = db_grouped_merged_source(db_new(), groups)
-  let db1 = result1.2
-  let count1 = db_merge_count(db1)
-  let result2 = db_grouped_merged_source(db1, groups)
-  let db2 = result2.2
-  let count2 = db_merge_count(db2)
-  count1 * 1000 + count2
-}
-
-export let selfbuild_probe_type_db_module_source_counts = () -> Int with { Error } {
-  let main_source = "let main = () -> Int { 1 + 2 }"
-  let sources = Array::slice([
-    ("", "")
-  ], 0, 0)
-  let result1 = compile_with_modules_cached(db_new(), main_source, "main_a.vibe", sources)
-  let db1 = result1.1
-  let count1 = db_module_source_count(db1)
-  let result2 = compile_with_modules_cached(db1, main_source, "main_b.vibe", sources)
-  let db2 = result2.1
-  let count2 = db_module_source_count(db2)
-  count1 * 1000 + count2
-}
-
-export let selfbuild_probe_type_db_codegen_counts = () -> Int with { Error } {
-  let main_source = "let main = () -> Int { 1 + 2 }"
-  let sources = Array::slice([
-    ("", "")
-  ], 0, 0)
-  let result1 = compile_with_modules_cached(db_new(), main_source, "main.vibe", sources)
-  let db1 = result1.1
-  let count1 = db_codegen_count(db1)
-  let result2 = compile_with_modules_cached(db1, main_source, "main.vibe", sources)
-  let db2 = result2.1
-  let count2 = db_codegen_count(db2)
-  count1 * 1000 + count2
-}
-
-export let selfbuild_probe_cli_file_cache_counts = () -> Int with { Error, Fs } {
-  let helper_path = "/tmp/vibe_selfhost_cli_cache_v4_helper.vibe"
-  let main_path = "/tmp/vibe_selfhost_cli_cache_v4_main.vibe"
-  let helper_source = "export let add = (a: Int, b: Int) -> Int { a + b }"
-  let main_source = "import ./vibe_selfhost_cli_cache_v4_helper.vibe { add }\nlet run = () -> Int { add(1, 2) }"
-  Fs::write_bytes(helper_path, string_to_bytes(helper_source))
-  Fs::write_bytes(main_path, string_to_bytes(main_source))
-  let db1 = prepare_file_fs_cached(db_new(), main_path)
-  let count1 = db_typecheck_count(db1)
-  let db2 = prepare_file_fs_cached(db1, main_path)
-  let count2 = db_typecheck_count(db2)
-  count1 * 1000 + count2
-}
-
-export let selfbuild_probe_cli_cache_counts = () -> Int with { Error, Fs } {
-  selfbuild_probe_cli_file_cache_counts()
 }
 
 export {
