@@ -543,6 +543,218 @@ test "shell restore resets duplicate scratch source" {
 }
 
 ///|
+test "compiled repl line preserves let bindings across lines" {
+  let root = wbtest_make_temp_dir("compiled_repl_state")
+  let source_path = root + "/compiled_repl.vibe"
+  let wasm0 = root + "/expr_0.wasm"
+  let wasm1 = root + "/expr_1.wasm"
+  let cache = CliEntryDbCache::new()
+  let first = match
+    run_compiled_repl_line_with_cache(
+      cache, source_path, wasm0, "", "let x = 40",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("first compiled repl line failed: " + err)
+  }
+  assert_eq(first.value, WasmRunValue::Int(40L))
+  assert_true(@os_fs.path_exists(wasm0))
+  let second = match
+    run_compiled_repl_line_with_cache(
+      cache,
+      source_path,
+      wasm1,
+      first.next_source,
+      "x + 2",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("second compiled repl line failed: " + err)
+  }
+  assert_eq(second.value, WasmRunValue::Int(42L))
+  assert_true(@os_fs.path_exists(wasm1))
+  assert_true(second.total_us > 0)
+  wbtest_remove_if_exists(wasm0)
+  wbtest_remove_if_exists(wasm1)
+  wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "compiled repl line decodes bool result" {
+  let root = wbtest_make_temp_dir("compiled_repl_bool")
+  let source_path = root + "/compiled_repl.vibe"
+  let wasm_path = root + "/expr_0.wasm"
+  let cache = CliEntryDbCache::new()
+  let result = match
+    run_compiled_repl_line_with_cache(
+      cache, source_path, wasm_path, "", "1 < 2",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("compiled repl bool line failed: " + err)
+  }
+  assert_eq(result.value, WasmRunValue::Bool(true))
+  assert_true(@os_fs.path_exists(wasm_path))
+  wbtest_remove_if_exists(wasm_path)
+  wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "compiled repl line preserves function bindings across lines" {
+  let root = wbtest_make_temp_dir("compiled_repl_fn_binding")
+  let source_path = root + "/compiled_repl.vibe"
+  let wasm0 = root + "/expr_0.wasm"
+  let wasm1 = root + "/expr_1.wasm"
+  let wasm2 = root + "/expr_2.wasm"
+  let cache = CliEntryDbCache::new()
+  let seed = match
+    run_compiled_repl_line_with_cache(
+      cache, source_path, wasm0, "", "let x = 40",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("seed compiled repl line failed: " + err)
+  }
+  let fn_binding = match
+    run_compiled_repl_line_with_cache(
+      cache,
+      source_path,
+      wasm1,
+      seed.next_source,
+      "let add_x = (n: Int) -> Int { n + x }",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("function binding line failed: " + err)
+  }
+  assert_eq(fn_binding.value, WasmRunValue::Int(0L))
+  assert_eq(fn_binding.display_override, Some("<fn add_x>"))
+  let result = match
+    run_compiled_repl_line_with_cache(
+      cache,
+      source_path,
+      wasm2,
+      fn_binding.next_source,
+      "add_x(2)",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("function call line failed: " + err)
+  }
+  assert_eq(result.value, WasmRunValue::Int(42L))
+  wbtest_remove_if_exists(wasm0)
+  wbtest_remove_if_exists(wasm1)
+  wbtest_remove_if_exists(wasm2)
+  wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "compiled repl line preserves function alias bindings across lines" {
+  let root = wbtest_make_temp_dir("compiled_repl_fn_alias")
+  let helper_path = root + "/helper.vibe"
+  let source_path = root + "/compiled_repl.vibe"
+  let wasm0 = root + "/expr_0.wasm"
+  let wasm1 = root + "/expr_1.wasm"
+  let wasm2 = root + "/expr_2.wasm"
+  @os_fs.write_string_to_file(
+    helper_path, "let inc = (x: Int) -> Int { x + 1 }\nexport { inc }\n",
+  ) catch {
+    e => fail("write helper failed: " + e.to_string())
+  }
+  let cache = CliEntryDbCache::new()
+  let imported = match
+    run_compiled_repl_line_with_cache(
+      cache, source_path, wasm0, "", "import ./helper.vibe { inc }",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("import line failed: " + err)
+  }
+  let alias_binding = match
+    run_compiled_repl_line_with_cache(
+      cache,
+      source_path,
+      wasm1,
+      imported.next_source,
+      "let alias = inc",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("alias binding line failed: " + err)
+  }
+  assert_eq(alias_binding.value, WasmRunValue::Int(0L))
+  assert_eq(alias_binding.display_override, Some("<bound alias>"))
+  let result = match
+    run_compiled_repl_line_with_cache(
+      cache,
+      source_path,
+      wasm2,
+      alias_binding.next_source,
+      "alias(41)",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("alias call line failed: " + err)
+  }
+  assert_eq(result.value, WasmRunValue::Int(42L))
+  wbtest_remove_if_exists(wasm0)
+  wbtest_remove_if_exists(wasm1)
+  wbtest_remove_if_exists(wasm2)
+  wbtest_remove_if_exists(helper_path)
+  wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "compiled repl line renders string literal" {
+  let root = wbtest_make_temp_dir("compiled_repl_string_literal")
+  let source_path = root + "/compiled_repl.vibe"
+  let wasm_path = root + "/expr_0.wasm"
+  let cache = CliEntryDbCache::new()
+  let result = match
+    run_compiled_repl_line_with_cache(
+      cache, source_path, wasm_path, "", "\"hi\"",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("compiled repl string literal failed: " + err)
+  }
+  assert_eq(result.value, WasmRunValue::Int(0L))
+  assert_eq(result.display_override, Some("\"hi\""))
+  wbtest_remove_if_exists(wasm_path)
+  wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "compiled repl line renders string let binding and reuse" {
+  let root = wbtest_make_temp_dir("compiled_repl_string_binding")
+  let source_path = root + "/compiled_repl.vibe"
+  let wasm0 = root + "/expr_0.wasm"
+  let wasm1 = root + "/expr_1.wasm"
+  let cache = CliEntryDbCache::new()
+  let bound = match
+    run_compiled_repl_line_with_cache(
+      cache, source_path, wasm0, "", "let s = \"hi\"",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("compiled repl string binding failed: " + err)
+  }
+  assert_eq(bound.value, WasmRunValue::Int(0L))
+  assert_eq(bound.display_override, Some("\"hi\""))
+  let reused = match
+    run_compiled_repl_line_with_cache(
+      cache,
+      source_path,
+      wasm1,
+      bound.next_source,
+      "s",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("compiled repl string reuse failed: " + err)
+  }
+  assert_eq(reused.value, WasmRunValue::Int(0L))
+  assert_eq(reused.display_override, Some("\"hi\""))
+  wbtest_remove_if_exists(wasm0)
+  wbtest_remove_if_exists(wasm1)
+  wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
 // Test removed: `do` keyword was removed from the language.
 // The hint mechanism for `do { ... }` in posix mode is no longer needed.
 
@@ -928,7 +1140,7 @@ test "cli wasm bench compile uses size-oriented optimize level" {
     #|let base = "abcdefghijklmnopqrstuvwxyz"
     #|let s = repeat(base, 12)
     #|String::length(s)
-  let optimized_size = match
+  let (_, optimized_size) = match
     compile_bench_script_to_wasm(source_path, wasm_path, source) {
     Ok(bytes) => bytes
     Err(err) => fail("compile bench wasm failed: " + err)

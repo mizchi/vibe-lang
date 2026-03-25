@@ -3634,7 +3634,7 @@ fn write_wbtest_json_parse_fallback_source(source_path : String) -> Unit {
   wbtest_remove_if_exists(source_path)
   match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
     Ok(_) => ()
-    Err(err) => fail("create temp source dir failed: " + err)
+    Err(err) => abort("create temp source dir failed: " + err)
   }
   @os_fs.write_string_to_file(
     source_path,
@@ -3643,7 +3643,7 @@ fn write_wbtest_json_parse_fallback_source(source_path : String) -> Unit {
     "  assert(String::equals(Json::string(Json::get(data, \"name\")), \"vibe\"))\n" +
     "}\n",
   ) catch {
-    e => fail("write temp source failed: " + e.to_string())
+    e => abort("write temp source failed: " + e.to_string())
   }
 }
 
@@ -3652,13 +3652,13 @@ fn write_wbtest_basic_test_source(source_path : String) -> Unit {
   wbtest_remove_if_exists(source_path)
   match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
     Ok(_) => ()
-    Err(err) => fail("create temp source dir failed: " + err)
+    Err(err) => abort("create temp source dir failed: " + err)
   }
   @os_fs.write_string_to_file(
     source_path,
     "test \"basic\" {\n" + "  assert(eq(add(1, 2), 3))\n" + "}\n",
   ) catch {
-    e => fail("write temp source failed: " + e.to_string())
+    e => abort("write temp source failed: " + e.to_string())
   }
 }
 
@@ -4447,4 +4447,165 @@ test "graph ir rows convert to symbol index for lsif emission" {
   let point_hits = index.find_exact("Point")
   assert_eq(point_hits.length(), 1)
   assert_eq(@frontend.symbol_kind_name(point_hits[0].kind), "struct")
+}
+
+///|
+test "append eval db source hoists late import ahead of prior bindings" {
+  let saved1 = append_eval_db_source("", "let x=1")
+  let saved2 = append_eval_db_source(saved1, "import ./helper.vibe { inc }")
+  let import_pos = saved2.index_of("import ./helper.vibe { inc }")
+  let let_pos = saved2.index_of("let x = 1")
+  match import_pos, let_pos {
+    Some(i), Some(j) => assert_true(i < j)
+    _ => fail("expected hoisted import and let binding in saved source")
+  }
+  let _ = @parser.parse_ast(saved2) catch {
+    e => fail("saved source parse failed: " + e.to_string())
+  }
+}
+
+///|
+test "compiled repl string fallback decodes _start export" {
+  let root = wbtest_make_temp_dir("compiled_repl_string_literal_wb")
+  let source_path = root + "/compiled_repl.vibe"
+  let wasm_path = root + "/expr_0.wasm"
+  let cache = CliEntryDbCache::new()
+  let result = match
+    run_compiled_repl_line_with_cache(
+      cache, source_path, wasm_path, "", "\"hi\"",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("compiled repl string literal failed: " + err)
+  }
+  assert_eq(result.value, WasmRunValue::Int(0L))
+  assert_eq(result.display_override, Some("\"hi\""))
+  wbtest_remove_if_exists(wasm_path)
+  wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "compiled repl array fallback renders duplicate strings" {
+  let root = wbtest_make_temp_dir("compiled_repl_array_literal_wb")
+  let source_path = root + "/compiled_repl.vibe"
+  let wasm_path = root + "/expr_0.wasm"
+  let cache = CliEntryDbCache::new()
+  let result = match
+    run_compiled_repl_line_with_cache(
+      cache, source_path, wasm_path, "", "[\"hi\", \"hi\"]",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("compiled repl array literal failed: " + err)
+  }
+  assert_eq(result.value, WasmRunValue::Int(0L))
+  assert_eq(result.display_override, Some("[\"hi\", \"hi\"]"))
+  wbtest_remove_if_exists(wasm_path)
+  wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "compiled repl array binding renders on reuse" {
+  let root = wbtest_make_temp_dir("compiled_repl_array_binding_wb")
+  let source_path = root + "/compiled_repl.vibe"
+  let wasm0 = root + "/expr_0.wasm"
+  let wasm1 = root + "/expr_1.wasm"
+  let cache = CliEntryDbCache::new()
+  let bound = match
+    run_compiled_repl_line_with_cache(
+      cache, source_path, wasm0, "", "let xs = [1, 2]",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("compiled repl array binding failed: " + err)
+  }
+  assert_eq(bound.value, WasmRunValue::Int(0L))
+  assert_eq(bound.display_override, Some("[1, 2]"))
+  let reused = match
+    run_compiled_repl_line_with_cache(
+      cache,
+      source_path,
+      wasm1,
+      bound.next_source,
+      "xs",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("compiled repl array reuse failed: " + err)
+  }
+  assert_eq(reused.value, WasmRunValue::Int(0L))
+  assert_eq(reused.display_override, Some("[1, 2]"))
+  wbtest_remove_if_exists(wasm0)
+  wbtest_remove_if_exists(wasm1)
+  wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "compiled repl map fallback renders entries" {
+  let root = wbtest_make_temp_dir("compiled_repl_map_literal_wb")
+  let source_path = root + "/compiled_repl.vibe"
+  let wasm_path = root + "/expr_0.wasm"
+  let cache = CliEntryDbCache::new()
+  let result = match
+    run_compiled_repl_line_with_cache(
+      cache, source_path, wasm_path, "", "map { a: 1, b: 2 }",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("compiled repl map literal failed: " + err)
+  }
+  assert_eq(result.value, WasmRunValue::Int(0L))
+  assert_eq(result.display_override, Some("{|\"a\": 1, \"b\": 2|}"))
+  wbtest_remove_if_exists(wasm_path)
+  wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "compiled repl hoists import entered after prior binding" {
+  let root = wbtest_make_temp_dir("compiled_repl_import_hoist_wb")
+  let helper_path = root + "/helper.vibe"
+  let source_path = root + "/compiled_repl.vibe"
+  let wasm0 = root + "/expr_0.wasm"
+  let wasm1 = root + "/expr_1.wasm"
+  let wasm2 = root + "/expr_2.wasm"
+  @os_fs.write_string_to_file(
+    helper_path, "let inc = (x: Int) -> Int { x + 1 }\nexport { inc }\n",
+  ) catch {
+    e => fail("write helper failed: " + e.to_string())
+  }
+  let cache = CliEntryDbCache::new()
+  let seeded = match
+    run_compiled_repl_line_with_cache(cache, source_path, wasm0, "", "let x = 41")
+  {
+    Ok(v) => v
+    Err(err) => fail("seed compiled repl line failed: " + err)
+  }
+  let imported = match
+    run_compiled_repl_line_with_cache(
+      cache,
+      source_path,
+      wasm1,
+      seeded.next_source,
+      "import ./helper.vibe { inc }",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("late import line failed: " + err)
+  }
+  let result = match
+    run_compiled_repl_line_with_cache(
+      cache,
+      source_path,
+      wasm2,
+      imported.next_source,
+      "inc(x)",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("late import call failed: " + err)
+  }
+  assert_eq(result.value, WasmRunValue::Int(42L))
+  wbtest_remove_if_exists(wasm0)
+  wbtest_remove_if_exists(wasm1)
+  wbtest_remove_if_exists(wasm2)
+  wbtest_remove_if_exists(helper_path)
+  wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root)
 }

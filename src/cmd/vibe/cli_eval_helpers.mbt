@@ -671,23 +671,79 @@ fn eval_run_missing_test_target_message(
 }
 
 ///|
+fn eval_source_is_import_stmt(source : String) -> Bool {
+  source.trim().to_string().has_prefix("import ")
+}
+
+///|
+fn eval_source_is_import_prefix_line(line : String) -> Bool {
+  let trimmed = line.trim().to_string()
+  trimmed.length() == 0 ||
+  trimmed.has_prefix("//") ||
+  trimmed.has_prefix("/*") ||
+  trimmed.has_prefix("*") ||
+  trimmed.has_prefix("import ")
+}
+
+///|
+fn append_eval_db_source_hoist_import(
+  base_source : String,
+  import_stmt : String,
+) -> String {
+  let head = StringBuilder::new()
+  let tail = StringBuilder::new()
+  let mut in_prefix = true
+  let mut inserted = false
+  for line_view in base_source.split("\n") {
+    let line = line_view.to_string()
+    if in_prefix && eval_source_is_import_prefix_line(line) {
+      head.write_string(line)
+      head.write_char('\n')
+      continue
+    }
+    if in_prefix {
+      head.write_string(import_stmt)
+      head.write_char('\n')
+      inserted = true
+      in_prefix = false
+    }
+    tail.write_string(line)
+    tail.write_char('\n')
+  }
+  if not(inserted) {
+    head.write_string(import_stmt)
+    head.write_char('\n')
+  }
+  head.write_string(tail.to_string())
+  head.to_string()
+}
+
+///|
 fn append_eval_db_source(base_source : String, expr : String) -> String {
   let trimmed = expr.trim().to_string()
   if trimmed.length() == 0 {
     return base_source
   }
-  let out = StringBuilder::new()
-  if base_source.length() > 0 {
-    out.write_string(base_source)
-    if not(base_source.has_suffix("\n")) {
+  let next_source = if eval_source_is_import_stmt(trimmed) {
+    if base_source.length() == 0 {
+      trimmed + "\n"
+    } else {
+      append_eval_db_source_hoist_import(base_source, trimmed)
+    }
+  } else {
+    let out = StringBuilder::new()
+    if base_source.length() > 0 {
+      out.write_string(base_source)
+      if not(base_source.has_suffix("\n")) {
+        out.write_char('\n')
+      }
+    }
+    out.write_string(trimmed)
+    if not(trimmed.has_suffix("\n")) {
       out.write_char('\n')
     }
+    out.to_string()
   }
-  out.write_string(trimmed)
-  if not(trimmed.has_suffix("\n")) {
-    out.write_char('\n')
-  }
-  let next_source = out.to_string()
   let parsed_ok = @parser.parse_ast(next_source) catch {
     _ => return next_source
   }

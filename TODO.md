@@ -223,6 +223,11 @@ linked debug build を selfhost でも生成するには以下の移植が必要
   - [x] `bench` の自動 interpreter fallback も撤去し、明示 `--backend interpreter` だけ残す
   - [x] fallback 互換 env の参照を削除
 - [ ] compiled parity が揃ったら evaluator / interpreter 実装を削除
+  - [x] `wasm-shell-stdin` で scalar let / late import / bool 行が stateful に動く
+  - [x] 関数値 `let` 束縛は placeholder 表示に degrade して shell を継続する
+  - [x] String 値は compiled REPL の repr transport で表示する
+  - [x] Array / Map など composite 値の表示 transport を追加する
+  - [ ] `vibe shell` 本体を compiled session backend に切り替える
 
 ## ユーザビリティ改善
 

@@ -2727,10 +2727,436 @@ fn run_eval_line_repl_with_prompt(
 }
 
 ///|
+struct CompiledReplExec {
+  next_source : String
+  value : WasmRunValue
+  display_override : String?
+  load_us : Int
+  compile_us : Int
+  exec_us : Int
+  total_us : Int
+  module_us : Int
+  bundle_us : Int
+  emit_us : Int
+  optimize_us : Int
+} derive(Show, Eq)
+
+///|
+fn repl_compiled_zero_result_line(line : String) -> Bool {
+  let trimmed = line.trim().to_string()
+  trimmed.has_prefix("fn ") ||
+  trimmed.has_prefix("enum ") ||
+  trimmed.has_prefix("struct ") ||
+  trimmed.has_prefix("trait ") ||
+  trimmed.has_prefix("impl ") ||
+  trimmed.has_prefix("type ") ||
+  trimmed.has_prefix("suberror ") ||
+  trimmed.has_prefix("extern ") ||
+  trimmed.has_prefix("import ") ||
+  trimmed.has_prefix("export {")
+}
+
+///|
+fn repl_compiled_result_expr(line : String) -> String {
+  match extract_let_name(line) {
+    Some(name) => name
+    None => if repl_compiled_zero_result_line(line) { "0" } else { line }
+  }
+}
+
+///|
+fn repl_compiled_binding_rhs(line : String) -> String? {
+  let chars = line.to_array()
+  let mut i = 0
+  while i < chars.length() {
+    if chars[i] == '=' {
+      return Some(
+        line.unsafe_substring(start=i + 1, end=line.length()).trim().to_string(),
+      )
+    }
+    i += 1
+  }
+  None
+}
+
+///|
+fn repl_compiled_binding_display_override(line : String) -> String? {
+  match extract_let_name(line) {
+    Some(name) =>
+      match repl_compiled_binding_rhs(line) {
+        Some(rhs) =>
+          if rhs.has_prefix("(") && rhs.contains("{") {
+            Some("<fn " + name + ">")
+          } else {
+            Some("<bound " + name + ">")
+          }
+        None => Some("<bound " + name + ">")
+      }
+    None => None
+  }
+}
+
+///|
+let repl_node_display_runner_source : String =
+  #|const fs = require("node:fs/promises");
+  #|const decoder = new TextDecoder();
+  #|
+  #|function fail(message, code = 1) {
+  #|  console.error(message);
+  #|  process.exit(code);
+  #|}
+  #|
+  #|async function main() {
+  #|  const wasmPath = process.argv[2];
+  #|  if (!wasmPath) {
+  #|    fail("usage: wasm_repl_string_runner.js <wasm-path>", 2);
+  #|  }
+  #|  const bytes = await fs.readFile(wasmPath);
+  #|  let memory = null;
+  #|  const ignoreFdWrite = (fd, iovsPtr, iovsLen, nwrittenPtr) => {
+  #|    if (!memory) {
+  #|      return 1;
+  #|    }
+  #|    const view = new DataView(memory.buffer);
+  #|    let written = 0;
+  #|    for (let i = 0; i < iovsLen; i += 1) {
+  #|      const base = iovsPtr + i * 8;
+  #|      written += view.getUint32(base + 4, true);
+  #|    }
+  #|    view.setUint32(nwrittenPtr, written, true);
+  #|    return 0;
+  #|  };
+  #|  let instance;
+  #|  try {
+  #|    ({ instance } = await WebAssembly.instantiate(bytes, {
+  #|      wasi_snapshot_preview1: {
+  #|        fd_write: ignoreFdWrite,
+  #|      },
+  #|    }));
+  #|  } catch (error) {
+  #|    fail(String(error && error.message ? error.message : error));
+  #|  }
+  #|  const exports = instance.exports;
+  #|  memory = exports.memory;
+  #|  if (!(memory instanceof WebAssembly.Memory)) {
+  #|    fail("missing memory export");
+  #|  }
+  #|  const invoke =
+  #|    typeof exports.run === "function"
+  #|      ? exports.run
+  #|      : typeof exports._start === "function"
+  #|      ? exports._start
+  #|      : null;
+  #|  if (typeof invoke !== "function") {
+  #|    fail("missing run or _start export");
+  #|  }
+  #|  let tagged;
+  #|  try {
+  #|    tagged = invoke.length === 0 ? invoke() : invoke(0n);
+  #|  } catch (error) {
+  #|    fail(String(error && error.message ? error.message : error));
+  #|  }
+  #|  if (typeof tagged !== "bigint") {
+  #|    fail("run export did not return i64");
+  #|  }
+  #|  const readBytes = (ptr, len) => {
+  #|    if (ptr < 0 || len < 0 || ptr + len > memory.buffer.byteLength) {
+  #|      return null;
+  #|    }
+  #|    return new Uint8Array(memory.buffer, ptr, len);
+  #|  };
+  #|  const readTagged32 = (offset) => {
+  #|    const view = new DataView(memory.buffer);
+  #|    return BigInt.asIntN(32, BigInt(view.getUint32(offset, true)));
+  #|  };
+  #|  const readStringBytes = (ptr, seen = new Set()) => {
+  #|    if (seen.has(ptr)) {
+  #|      return null;
+  #|    }
+  #|    seen.add(ptr);
+  #|    if (ptr < 0 || ptr + 8 > memory.buffer.byteLength) {
+  #|      return null;
+  #|    }
+  #|    const view = new DataView(memory.buffer);
+  #|    const ty = view.getUint32(ptr, true);
+  #|    if (ty === 1) {
+  #|      const len = view.getUint32(ptr + 4, true);
+  #|      return readBytes(ptr + 8, len);
+  #|    }
+  #|    if (ty === 11) {
+  #|      const sourcePtr = view.getUint32(ptr + 4, true);
+  #|      const start = view.getUint32(ptr + 8, true);
+  #|      const end = view.getUint32(ptr + 12, true);
+  #|      if (end < start) {
+  #|        return null;
+  #|      }
+  #|      const sourceBytes = readStringBytes(sourcePtr, seen);
+  #|      if (!sourceBytes || end > sourceBytes.length) {
+  #|        return null;
+  #|      }
+  #|      return sourceBytes.slice(start, end);
+  #|    }
+  #|    return null;
+  #|  };
+  #|  const decodeString = (ptr) => {
+  #|    const bytesView = readStringBytes(ptr);
+  #|    if (!bytesView) {
+  #|      return null;
+  #|    }
+  #|    return decoder.decode(bytesView);
+  #|  };
+  #|  const renderTagged = (value, seen = new Set()) => {
+  #|    const tag = Number(value & 3n);
+  #|    if (tag === 0) {
+  #|      return String(value >> 2n);
+  #|    }
+  #|    if (tag === 3) {
+  #|      return value >> 2n !== 0n ? "true" : "false";
+  #|    }
+  #|    const ptr = Number(value & ~3n);
+  #|    if (seen.has(ptr)) {
+  #|      return "<cycle>";
+  #|    }
+  #|    const nextSeen = new Set(seen);
+  #|    nextSeen.add(ptr);
+  #|    if (ptr < 0 || ptr + 8 > memory.buffer.byteLength) {
+  #|      return null;
+  #|    }
+  #|    const view = new DataView(memory.buffer);
+  #|    const ty = view.getUint32(ptr, true);
+  #|    if (ty === 1 || ty === 11) {
+  #|      const text = decodeString(ptr);
+  #|      return text == null ? null : JSON.stringify(text);
+  #|    }
+  #|    if (ty === 5) {
+  #|      const len = view.getUint32(ptr + 4, true);
+  #|      const items = [];
+  #|      for (let i = 0; i < len; i += 1) {
+  #|        const rendered = renderTagged(
+  #|          readTagged32(ptr + 8 + i * 4),
+  #|          nextSeen,
+  #|        );
+  #|        if (rendered == null) {
+  #|          return null;
+  #|        }
+  #|        items.push(rendered);
+  #|      }
+  #|      return `[${items.join(", ")}]`;
+  #|    }
+  #|    if (ty === 12) {
+  #|      const sourcePtr = view.getUint32(ptr + 4, true);
+  #|      const start = view.getUint32(ptr + 8, true);
+  #|      const end = view.getUint32(ptr + 12, true);
+  #|      if (end < start) {
+  #|        return null;
+  #|      }
+  #|      const items = [];
+  #|      for (let i = start; i < end; i += 1) {
+  #|        const rendered = renderTagged(
+  #|          readTagged32(sourcePtr + 8 + i * 4),
+  #|          nextSeen,
+  #|        );
+  #|        if (rendered == null) {
+  #|          return null;
+  #|        }
+  #|        items.push(rendered);
+  #|      }
+  #|      return `[${items.join(", ")}]`;
+  #|    }
+  #|    if (ty === 6) {
+  #|      const len = view.getUint32(ptr + 4, true);
+  #|      const entries = [];
+  #|      for (let i = 0; i < len; i += 1) {
+  #|        const keyPtr = view.getUint32(ptr + 8 + i * 8, true);
+  #|        const keyText = decodeString(keyPtr);
+  #|        const rendered = renderTagged(
+  #|          readTagged32(ptr + 12 + i * 8),
+  #|          nextSeen,
+  #|        );
+  #|        if (keyText == null || rendered == null) {
+  #|          return null;
+  #|        }
+  #|        entries.push(`${JSON.stringify(keyText)}: ${rendered}`);
+  #|      }
+  #|      return `{|${entries.join(", ")}|}`;
+  #|    }
+  #|    return null;
+  #|  };
+  #|  const rendered = renderTagged(tagged);
+  #|  if (rendered == null) {
+  #|    process.exit(2);
+  #|  }
+  #|  process.stdout.write(rendered);
+  #|}
+  #|
+  #|main().catch((error) => {
+  #|  fail(String(error && error.message ? error.message : error));
+  #|});
+
+///|
+fn repl_node_display_runner_path() -> String {
+  "/tmp/vibe-repl-display-runner.js"
+}
+
+///|
+fn ensure_repl_node_display_runner() -> Result[String, String] {
+  let path = repl_node_display_runner_path()
+  @os_fs.write_string_to_file(path, repl_node_display_runner_source) catch {
+    e => return Err("failed to write node display runner: " + e.to_string())
+  }
+  Ok(path)
+}
+
+///|
+fn repl_try_compiled_display(wasm_path : String) -> String? {
+  let node_bin = match find_command_in_path("node") {
+    Some(path) => path
+    None => return None
+  }
+  let runner_path = match ensure_repl_node_display_runner() {
+    Ok(path) => path
+    Err(_) => return None
+  }
+  let out_path = wasm_path + ".display.out"
+  let err_path = wasm_path + ".display.err"
+  defer remove_file_if_exists(out_path)
+  defer remove_file_if_exists(err_path)
+  let cmd = shell_quote_command_arg(node_bin) +
+    " " +
+    shell_quote_command_arg(runner_path) +
+    " " +
+    shell_quote_command_arg(wasm_path) +
+    " >" +
+    shell_quote_command_arg(out_path) +
+    " 2>" +
+    shell_quote_command_arg(err_path)
+  let status = c_system(system_command_bytes(cmd))
+  if status != 0 {
+    return None
+  }
+  let stdout = @os_fs.read_file_to_string(out_path) catch { _ => "" }
+  let display = stdout.trim().to_string()
+  if display.length() == 0 {
+    None
+  } else {
+    Some(display)
+  }
+}
+
+///|
+fn repl_build_compiled_source(scratch_source : String, line : String) -> String {
+  let buf = StringBuilder::new()
+  let base = append_eval_db_source(scratch_source, line)
+  buf.write_string(base)
+  if not(base.has_suffix("\n")) {
+    buf.write_string("\n")
+  }
+  let result_expr = repl_compiled_result_expr(line)
+  if result_expr != line {
+    buf.write_string(result_expr)
+    buf.write_string("\n")
+  }
+  buf.to_string()
+}
+
+///|
+fn run_compiled_repl_line_with_cache(
+  cache : CliEntryDbCache,
+  source_path : String,
+  wasm_path : String,
+  scratch_source : String,
+  line : String,
+) -> Result[CompiledReplExec, String] {
+  let source = repl_build_compiled_source(scratch_source, line)
+  let total_start = @bench.monotonic_clock_start()
+  let load_start = @bench.monotonic_clock_start()
+  let (db, entry) = match
+    load_compiled_test_case_db_with_cache(cache, source_path, source) {
+    Ok(v) => v
+    Err(err) => return Err("load error: " + err)
+  }
+  let load_us = @bench.monotonic_clock_end(load_start).to_int()
+  let ast = db.ast(entry)
+  let detect_ast = @runtime.bundle_for_wasm_no_dce(db, entry, ast)
+  if module_uses_wasm_runtime_fallback_builtins(detect_ast) {
+    return Err("compiled repl unsupported: wasm runtime fallback builtins")
+  }
+  if module_uses_http_builtins(detect_ast) {
+    return Err("compiled repl unsupported: http host imports")
+  }
+  let runner = match resolve_bench_wasm_runner(entry) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let compile_start = @bench.monotonic_clock_start()
+  let (wasm_bytes, profile) = @runtime_compile.compile_module_wasm_with_opt_level_profiled(
+    db,
+    entry,
+    no_dce=true,
+    debug_errors=true,
+  ) catch {
+    err => return Err("compile wasm error: " + err.user_message())
+  }
+  let compile_us = @bench.monotonic_clock_end(compile_start).to_int()
+  @os_fs.write_bytes_to_file(wasm_path, wasm_bytes) catch {
+    e => return Err("write wasm failed: " + e.to_string())
+  }
+  let exec_start = @bench.monotonic_clock_start()
+  let run_out = run_wasmtime_invoke_run_capture(
+    runner,
+    wasm_path,
+    wasm_path + ".invoke",
+  )
+  let exec_us = @bench.monotonic_clock_end(exec_start).to_int()
+  if run_out.status != 0 {
+    return Err(wasmtime_failure_detail(run_out.stdout, run_out.stderr))
+  }
+  let tagged = match parse_last_numeric_line_int64(run_out.stdout) {
+    Some(v) => v
+    None =>
+      return Err(
+        "compiled repl output missing numeric result: " +
+        first_non_empty_line(run_out.stdout),
+      )
+  }
+  let (value, display_override) = match decode_tagged_wasm_run_value(tagged) {
+    Some(v) => (v, None)
+    None =>
+      match repl_try_compiled_display(wasm_path) {
+        Some(display) => (WasmRunValue::Int(0L), Some(display))
+        None =>
+          match repl_compiled_binding_display_override(line) {
+            Some(display) => (WasmRunValue::Int(0L), Some(display))
+            None =>
+              return Err(
+                "compiled repl unsupported wasm return tag: " +
+                tagged.to_string(),
+              )
+          }
+      }
+  }
+  let total_us = @bench.monotonic_clock_end(total_start).to_int()
+  Ok({
+    next_source: append_eval_db_source(scratch_source, line),
+    value,
+    display_override,
+    load_us,
+    compile_us,
+    exec_us,
+    total_us,
+    module_us: profile.module_us,
+    bundle_us: profile.bundle_us,
+    emit_us: profile.emit_us,
+    optimize_us: profile.optimize_us,
+  })
+}
+
+///|
 /// WASM REPL: compile each expression to WASM and output to file
 fn wasm_repl_stdin_cmd(args : Array[String]) -> Unit {
   let mut prompt_enabled = true
   let mut out_dir = "/tmp"
+  let mut profile_enabled = false
   let mut counter = 0
   let mut i = 0
   while i < args.length() {
@@ -2747,6 +3173,10 @@ fn wasm_repl_stdin_cmd(args : Array[String]) -> Unit {
         out_dir = args[i + 1]
         i += 2
       }
+      "--profile" => {
+        profile_enabled = true
+        i += 1
+      }
       _ => abort("wasm-shell-stdin: unknown arg " + arg)
     }
   }
@@ -2760,6 +3190,13 @@ fn wasm_repl_stdin_cmd(args : Array[String]) -> Unit {
   async fn repl_loop() {
     let prompt = "wasm> "
     let input = @stdio.stdin
+    let cache = CliEntryDbCache::new()
+    let source_path = @io.current_dir_or_root() +
+      "/.vibe_compiled_repl_" +
+      vibe_getpid().to_string() +
+      ".vibe"
+    let mut scratch_source = ""
+    defer remove_file_if_exists(source_path)
     if prompt_enabled {
       @stdio.stdout.write(prompt)
     }
@@ -2775,38 +3212,54 @@ fn wasm_repl_stdin_cmd(args : Array[String]) -> Unit {
       match line_str {
         ":q" | ":quit" | ":exit" | "exit" => break
         _ => {
-          // Create a temporary source for compilation
-          let db = @runtime.VibeDb::new()
-          let tmp_path = "/tmp/wasm_repl_" + counter.to_string() + ".vibe"
-          db.set_source(tmp_path, line_str)
-          // Compile to WASM
-          let wasm_bytes = @runtime_compile.compile_module_wasm(db, tmp_path) catch {
-            e => {
-              println("error: " + e.to_string())
-              if prompt_enabled {
-                @stdio.stdout.write(prompt)
-              }
-              continue
-            }
-          }
-          // Write WASM to file
           let out_path = out_dir + "/expr_" + counter.to_string() + ".wasm"
-          @os_fs.write_bytes_to_file(out_path, wasm_bytes) catch {
-            e => {
-              println("error writing file: " + e.to_string())
+          let exec = match
+            run_compiled_repl_line_with_cache(
+              cache, source_path, out_path, scratch_source, line_str,
+            ) {
+            Ok(v) => v
+            Err(err) => {
+              println("error: " + err)
               if prompt_enabled {
                 @stdio.stdout.write(prompt)
               }
               continue
             }
           }
+          scratch_source = exec.next_source
           println(
             "wrote " +
             out_path +
             " (" +
-            wasm_bytes.length().to_string() +
+            (@os_fs.read_file_to_bytes(out_path) catch { _ => Bytes::new(0) })
+            .length()
+            .to_string() +
             " bytes)",
           )
+          match exec.display_override {
+            Some(display) => println("last: " + display)
+            None => print_wasm_run_value(exec.value)
+          }
+          if profile_enabled {
+            println(
+              "profile(us): total=" +
+              exec.total_us.to_string() +
+              " load=" +
+              exec.load_us.to_string() +
+              " compile=" +
+              exec.compile_us.to_string() +
+              " exec=" +
+              exec.exec_us.to_string() +
+              " module=" +
+              exec.module_us.to_string() +
+              " bundle=" +
+              exec.bundle_us.to_string() +
+              " emit=" +
+              exec.emit_us.to_string() +
+              " optimize=" +
+              exec.optimize_us.to_string(),
+            )
+          }
           counter += 1
         }
       }
