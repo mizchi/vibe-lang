@@ -221,7 +221,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 - [ ] interpreter を fallback/debug 専用に縮退
   - [x] `run/test` の自動 interpreter fallback を撤去し、明示 backend 指定だけ残す
   - [x] `bench` の自動 interpreter fallback も撤去し、明示 `--backend interpreter` だけ残す
-  - [x] `VIBE_ALLOW_INTERPRETER_FALLBACK` の互換層を削除
+  - [x] fallback 互換 env の参照を削除
 - [ ] compiled parity が揃ったら evaluator / interpreter 実装を削除
 
 ## ユーザビリティ改善

@@ -4013,16 +4013,13 @@ test "cli session run json roundtrips" {
 }
 
 ///|
-test "removed fallback env no longer affects run and test backend choice" {
-  let prev_fallback = @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
+test "run and test default to compiled even when interpreter is enabled" {
   let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
   let prev_run_backend = @sys.get_env_var("VIBE_RUN_BACKEND")
   let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
-  @sys.set_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", "1")
   @sys.unset_env_var("VIBE_ENABLE_INTERPRETER")
   @sys.unset_env_var("VIBE_RUN_BACKEND")
   @sys.unset_env_var("VIBE_TEST_BACKEND")
-  defer wbtest_restore_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", prev_fallback)
   defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
   defer wbtest_restore_env_var("VIBE_RUN_BACKEND", prev_run_backend)
   defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
@@ -4142,15 +4139,12 @@ test "test backend reports unsupported compiled cases by default" {
 }
 
 ///|
-test "test backend auto fallback remains disabled even when interpreter is enabled" {
-  let prev_fallback = @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
+test "test backend auto remains compiled even when interpreter is enabled" {
   let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
   let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
   @sys.set_env_var("VIBE_TEST_BACKEND", "auto")
-  @sys.set_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", "1")
   @sys.set_env_var("VIBE_ENABLE_INTERPRETER", "1")
   defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
-  defer wbtest_restore_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", prev_fallback)
   defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
   let cwd = @io.current_dir_or_root()
   let source_path = @vibe_fs.normalize_path(
@@ -4168,7 +4162,7 @@ test "test backend auto fallback remains disabled even when interpreter is enabl
     }
     Ok(report) =>
       fail(
-        "expected auto fallback to stay disabled, got success: " +
+        "expected auto backend to stay compiled, got success: " +
         report.total.to_string(),
       )
   }

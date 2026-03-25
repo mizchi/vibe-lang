@@ -899,13 +899,10 @@ test "bench interpreter backend works when enabled" {
 }
 
 ///|
-test "bench auto fallback remains disabled even when interpreter is enabled" {
+test "bench auto fallback remains disabled regardless of interpreter enablement" {
   let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
-  let prev_fallback = @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
   @sys.unset_env_var("VIBE_ENABLE_INTERPRETER")
-  @sys.set_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", "1")
   defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
-  defer wbtest_restore_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", prev_fallback)
   assert_false(bench_allow_interpreter_fallback())
   @sys.set_env_var("VIBE_ENABLE_INTERPRETER", "1")
   assert_false(bench_allow_interpreter_fallback())

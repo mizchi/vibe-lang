@@ -244,7 +244,6 @@ fn print_usage() -> Unit {
   println(
     "                    VIBE_ENABLE_INTERPRETER=1 re-enables the legacy interpreter backend",
   )
-  println("                    VIBE_ALLOW_INTERPRETER_FALLBACK is removed")
   println(
     "                    run/check/test use a persistent localhost session worker by default; set VIBE_USE_SESSION_HTTP=0 to disable",
   )
