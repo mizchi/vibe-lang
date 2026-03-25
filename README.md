@@ -48,6 +48,8 @@ just coverage-deno  # wasm integration coverage (summary/lcov/html)
 just coverage-wasm-source examples/pattern_coverage.vibe  # vibe source span + wasm counter coverage
 just coverage-wasm-std  # vibe/prelude *_test.vibe coverage aggregation (wasm source)
 just release-check  # full check before release
+just playground-dev  # current wasm build で playground を起動
+just playground-build  # GitHub Pages 向け playground を build
 ```
 
 Coverage で使う主な環境変数:

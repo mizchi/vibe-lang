@@ -1,4 +1,11 @@
 import * as monaco from "monaco-editor";
+import type {
+  CheckResult,
+  EvalResult,
+  FormatResult,
+  IdeOutlineResult,
+  VibeService,
+} from "../../js/vibe/index.js";
 import { vibeLanguageConfig, vibeMonarchLanguage } from "./vibe-monarch.js";
 import {
   initTreeSitter,
@@ -43,13 +50,19 @@ monaco.editor.defineTheme("vibe-dark", {
 const editorContainer = document.getElementById("editor-container")!;
 const output = document.getElementById("output") as HTMLDivElement;
 const diagnostics = document.getElementById("diagnostics") as HTMLDivElement;
+const outlineEl = document.getElementById("outline") as HTMLDivElement;
 const btnRun = document.getElementById("btn-run") as HTMLButtonElement;
+const btnFormat = document.getElementById("btn-format") as HTMLButtonElement;
 const btnReset = document.getElementById("btn-reset") as HTMLButtonElement;
 const btnShare = document.getElementById("btn-share") as HTMLButtonElement;
 const presetSelect = document.getElementById(
   "preset-select",
 ) as HTMLSelectElement;
 const statusEl = document.getElementById("status") as HTMLSpanElement;
+const buildMetaEl = document.getElementById("build-meta") as HTMLSpanElement;
+
+const BUILD_LABEL = import.meta.env.VITE_VIBE_BUILD_LABEL ?? "local";
+const BUILD_TARGET = "src/lib wasm-gc";
 
 // ── Presets / URL ─────────────────────────────────────────────
 
@@ -58,26 +71,15 @@ type Preset = { id: string; source: string };
 const HASH_CODE_KEY = "code";
 const PRESETS: Preset[] = [
   {
-    id: "fib",
-    source: `let rec fib = (n: Int) -> Int {
-  match n {
-    0 => 0,
-    1 => 1,
-    _ => fib(n - 1) + fib(n - 2),
-  }
+    id: "effects-error",
+    source: `let safe_div = (a: Int, b: Int) -> Int with { Error } {
+  if eq(b, 0) { throw("division by zero") } else { a / b }
 }
 
 export let _start = () -> Int {
-  fib(10)
-}`,
-  },
-  {
-    id: "map-filter",
-    source: `export let _start = () -> Int {
-  let values = [1, 2, 3, 4, 5]
-  let doubled = Array::map(values, (x: Int) -> Int { x * 2 })
-  let evens = Array::filter(doubled, (x: Int) -> Bool { x % 2 == 0 })
-  Array::fold(evens, 0, (acc: Int, x: Int) -> Int { acc + x })
+  let ok = handle { safe_div(12, 3) } { Error(_) => -1 }
+  let err = handle { safe_div(12, 0) } { Error(_) => -1 }
+  ok + err
 }`,
   },
   {
@@ -87,8 +89,8 @@ export let _start = () -> Int {
   Rect(Int, Int)
 }
 
-let area = (s: Shape) -> Int {
-  match s {
+let area = (shape: Shape) -> Int {
+  match shape {
     Circle(r) => r * r * 3,
     Rect(w, h) => w * h,
   }
@@ -96,6 +98,34 @@ let area = (s: Shape) -> Int {
 
 export let _start = () -> Int {
   area(Circle(5)) + area(Rect(3, 4))
+}`,
+  },
+  {
+    id: "collections",
+    source: `let values = [1, 2, 3, 4, 5]
+
+let squared_evens = () -> Array[Int] {
+  let squared = Array::map(values, (x: Int) -> Int { x * x })
+  Array::filter(squared, (x: Int) -> Bool { x % 2 == 0 })
+}
+
+export let _start = () -> Int {
+  Array::fold(squared_evens(), 0, (acc: Int, x: Int) -> Int { acc + x })
+}`,
+  },
+  {
+    id: "suberror",
+    source: `suberror AppError {
+  NotFound(String);
+  InvalidInput(Int)
+}
+
+let risky = () -> Int with { Error } {
+  throw(NotFound("missing"))
+}
+
+export let _start = () -> Int {
+  handle { risky() } { Error(_) => -1 }
 }`,
   },
 ];
@@ -182,11 +212,19 @@ syncPresetSelection(defaultSource);
 
 // ── Vibe service ──────────────────────────────────────────────
 
-let service: any = null;
+type OutlineSymbol = {
+  name: string;
+  kind: string;
+  signature: string;
+  line: number;
+  column: number;
+};
+
+let service: VibeService | null = null;
 let checkTimer: number | null = null;
 let checkSeq = 0;
 
-function renderResult(result: any) {
+function renderResult(result: EvalResult) {
   output.textContent = "";
   if (result.ok) {
     if (result.value !== null) {
@@ -207,7 +245,7 @@ function renderResult(result: any) {
     }
     if (result.diagnostics.length > 0) {
       const warnings = result.diagnostics
-        .map((d: any) => `[${d.stage}] ${d.message}`)
+        .map((d) => `[${d.stage}] ${d.message}`)
         .join("\n");
       output.appendChild(document.createTextNode("\n" + warnings));
     }
@@ -215,7 +253,7 @@ function renderResult(result: any) {
     const errSpan = document.createElement("span");
     errSpan.className = "result-error";
     errSpan.textContent = result.diagnostics
-      .map((d: any) => {
+      .map((d) => {
         let msg = `[${d.stage}] ${d.message}`;
         if (d.hint) msg += `\n  hint: ${d.hint}`;
         if (d.note) msg += `\n  note: ${d.note}`;
@@ -244,12 +282,16 @@ function offsetToPosition(
 }
 
 function renderDiagnostics(
-  result: any | null,
+  result: CheckResult | null,
   runtimeError?: string,
 ) {
   diagnostics.textContent = "";
+  const model = editor.getModel();
 
   if (runtimeError) {
+    if (model) {
+      monaco.editor.setModelMarkers(model, "vibe", []);
+    }
     const line = document.createElement("div");
     line.className = "diag-item error";
     line.textContent = runtimeError;
@@ -258,6 +300,9 @@ function renderDiagnostics(
   }
 
   if (!result) {
+    if (model) {
+      monaco.editor.setModelMarkers(model, "vibe", []);
+    }
     const line = document.createElement("div");
     line.className = "diag-empty";
     line.textContent = "Edit code to see diagnostics.";
@@ -278,7 +323,7 @@ function renderDiagnostics(
     return;
   }
 
-  result.diagnostics.forEach((diag: any, index: number) => {
+  result.diagnostics.forEach((diag, index) => {
     const isError = index < result.error_count;
     const line = document.createElement("div");
     line.className = isError ? "diag-item error" : "diag-item warning";
@@ -290,15 +335,16 @@ function renderDiagnostics(
   });
 
   // Push diagnostics to Monaco markers
-  const model = editor.getModel();
   if (model && result) {
     const source = model.getValue();
     const markers: monaco.editor.IMarkerData[] = result.diagnostics
-      .filter((diag: any) => diag.span)
-      .map((diag: any, index: number) => {
+      .flatMap((diag, index) => {
+        if (!diag.span) {
+          return [];
+        }
         const start = offsetToPosition(source, diag.span.start);
         const end = offsetToPosition(source, diag.span.end);
-        return {
+        return [{
           severity:
             index < result.error_count
               ? monaco.MarkerSeverity.Error
@@ -311,27 +357,95 @@ function renderDiagnostics(
           startColumn: start.column,
           endLineNumber: end.line,
           endColumn: end.column,
-        };
+        }];
       });
     monaco.editor.setModelMarkers(model, "vibe", markers);
   }
 }
 
-async function runCheck(seq: number) {
+function renderOutline(symbols: OutlineSymbol[], runtimeError?: string) {
+  outlineEl.textContent = "";
+
+  if (runtimeError) {
+    const line = document.createElement("div");
+    line.className = "outline-empty";
+    line.textContent = runtimeError;
+    outlineEl.appendChild(line);
+    return;
+  }
+
+  if (symbols.length === 0) {
+    const line = document.createElement("div");
+    line.className = "outline-empty";
+    line.textContent = "No symbols.";
+    outlineEl.appendChild(line);
+    return;
+  }
+
+  symbols.forEach((symbol) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "outline-item";
+    row.addEventListener("click", () => {
+      editor.revealLineInCenter(symbol.line);
+      editor.setPosition({ lineNumber: symbol.line, column: symbol.column });
+      editor.focus();
+    });
+
+    const name = document.createElement("span");
+    name.className = "outline-name";
+    name.textContent = symbol.name;
+    row.appendChild(name);
+
+    const meta = document.createElement("span");
+    meta.className = "outline-meta";
+    meta.textContent = `${symbol.kind} · L${symbol.line}`;
+    row.appendChild(meta);
+
+    const signature = document.createElement("span");
+    signature.className = "outline-signature";
+    signature.textContent = symbol.signature;
+    row.appendChild(signature);
+
+    outlineEl.appendChild(row);
+  });
+}
+
+async function runAnalysis(seq: number) {
   if (!service) return;
   const source = editor.getValue();
   if (!source.trim()) {
-    if (seq === checkSeq) renderDiagnostics(null);
+    if (seq === checkSeq) {
+      renderDiagnostics(null);
+      renderOutline([]);
+    }
     return;
   }
   try {
-    const result = await service.check(source);
+    const [result, outline]: [CheckResult, IdeOutlineResult] = await Promise.all([
+      service.check(source),
+      service.ideOutline({ source }),
+    ]);
     if (seq === checkSeq) {
       renderDiagnostics(result);
+      if (outline.ok) {
+        renderOutline(
+          outline.symbols.map((symbol) => ({
+            name: symbol.name,
+            kind: symbol.kind,
+            signature: symbol.signature,
+            line: symbol.line,
+            column: symbol.column,
+          })),
+        );
+      } else {
+        renderOutline([], outline.error);
+      }
     }
   } catch (e) {
     if (seq === checkSeq) {
       renderDiagnostics(null, `Check error: ${e}`);
+      renderOutline([], `Outline error: ${e}`);
     }
   }
 }
@@ -344,7 +458,7 @@ function scheduleCheck(delayMs = 180) {
     window.clearTimeout(checkTimer);
   }
   checkTimer = window.setTimeout(() => {
-    void runCheck(seq);
+    void runAnalysis(seq);
   }, delayMs);
 }
 
@@ -367,6 +481,25 @@ async function runEval() {
     output.appendChild(span);
   } finally {
     btnRun.disabled = false;
+  }
+}
+
+async function formatSource() {
+  if (!service) return;
+  const source = editor.getValue();
+  if (!source.trim()) return;
+
+  btnFormat.disabled = true;
+  try {
+    const result: FormatResult = await service.format(source);
+    if (result.ok && result.changed) {
+      editor.setValue(result.formatted);
+    }
+    scheduleCheck(0);
+  } catch (e) {
+    renderDiagnostics(null, `Format error: ${e}`);
+  } finally {
+    btnFormat.disabled = false;
   }
 }
 
@@ -476,6 +609,7 @@ replInput.addEventListener("keydown", (e) => {
 // ── Event handlers ────────────────────────────────────────────
 
 btnRun.addEventListener("click", runEval);
+btnFormat.addEventListener("click", () => void formatSource());
 btnReset.addEventListener("click", resetSession);
 btnShare.addEventListener("click", () => void shareCurrentUrl());
 
@@ -534,6 +668,7 @@ async function loadWasmModule(url: string): Promise<WebAssembly.Module> {
 async function init() {
   // Start tree-sitter init in parallel
   const tsPromise = setupSemanticTokens();
+  buildMetaEl.textContent = `${BUILD_TARGET} · ${BUILD_LABEL}`;
 
   try {
     const { createVibeService } = await import("../../js/vibe/index.js");
@@ -542,6 +677,7 @@ async function init() {
     statusEl.textContent = "Ready";
     statusEl.className = "ready";
     btnRun.disabled = false;
+    btnFormat.disabled = false;
     btnReset.disabled = false;
     replInput.disabled = false;
     scheduleCheck(0);
@@ -549,6 +685,7 @@ async function init() {
     console.warn("Vibe runtime not available:", e);
     statusEl.textContent = "Editor only (no runtime)";
     statusEl.className = "ready";
+    renderOutline([], "Runtime unavailable.");
   }
 
   await tsPromise;
