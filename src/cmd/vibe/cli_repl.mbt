@@ -1412,7 +1412,7 @@ fn repl_print_eval_result_for_shell(
 ///|
 fn handle_repl_vibe_shell_command(
   rt : @runtime.Runtime,
-  syntax_mode : @runtime.ParserMode,
+  _syntax_mode : @runtime.ParserMode,
   line : String,
   scratch_db_path : String,
   scratch_source : String,
@@ -1443,64 +1443,13 @@ fn handle_repl_vibe_shell_command(
       }
       ReplMetaCommandResult::HandledContinue
     }
-    Some(pipe_tail) => {
-      let expression = "Json::parse(\"" +
-        escape_string_for_vibe(payload_text) +
-        "\") |> " +
-        pipe_tail
-      let result = rt.eval_script_with_mode(expression, syntax_mode) catch {
-        e => {
-          print_line(
-            format_repl_error_with_mode(e, expression, syntax_mode, "shell"),
-          )
-          return ReplMetaCommandResult::HandledContinue
-        }
-      }
-      repl_print_eval_result_for_shell(result, print_line)
+    Some(_) => {
+      print_line(
+        "error: shell pipeline transforms were removed from compiled shell; use --json and external tools",
+      )
       ReplMetaCommandResult::HandledContinue
     }
   }
-}
-
-///|
-fn repl_restore_scratch_source(
-  rt : @runtime.Runtime,
-  syntax_mode : @runtime.ParserMode,
-  scratch_db_path : String,
-  source : String,
-  print_line : (String) -> Unit,
-) -> String {
-  if source.trim().to_string().length() == 0 {
-    return source
-  }
-  try rt.eval_script_with_mode(source, syntax_mode) |> ignore catch {
-    e => {
-      let err = e.to_string()
-      let diagnosis = eval_restore_diagnose(err)
-      let message = eval_restore_message(scratch_db_path, err, diagnosis)
-      match diagnosis.severity {
-        EvalRestoreSeverity::Fatal => {
-          print_line("error: " + message)
-          print_line("warn: continuing with empty in-memory scratch scope")
-          return ""
-        }
-        EvalRestoreSeverity::NonFatal => print_line("warn: " + message)
-      }
-      if diagnosis.category == "duplicate_decl" {
-        match write_eval_db_source(scratch_db_path, "") {
-          Ok(_) =>
-            print_line(
-              "warn: duplicate declarations detected; reset namespace db: " +
-              scratch_db_path,
-            )
-          Err(write_err) =>
-            print_line("warn: failed to reset namespace db: " + write_err)
-        }
-        return ""
-      }
-    }
-  }
-  source
 }
 
 ///|
@@ -1796,14 +1745,11 @@ fn repl_tui_cmd(
     Ok(v) => v
     Err(err) => abort("shell: " + err)
   }
-  let restore_logs : Array[String] = []
-  let restored_source = repl_restore_scratch_source(
-    rt,
-    syntax_mode,
-    scratch_db_path,
-    restored_source,
-    fn(s) { restore_logs.push(s) },
-  )
+  let cache = CliEntryDbCache::new()
+  let compiled_source_path = compiled_repl_temp_source_path()
+  let compiled_wasm_path = compiled_repl_temp_wasm_path()
+  defer remove_file_if_exists(compiled_source_path)
+  defer remove_file_if_exists(compiled_wasm_path)
   let (initial_cols, initial_rows) = @tui.get_terminal_size()
   let (app, cleanup) = @tui.init_vnode_terminal(
     initial_cols, initial_rows, @tui.print_raw,
@@ -2132,88 +2078,23 @@ fn repl_tui_cmd(
       ReplMetaCommandResult::HandledContinue => return true
       ReplMetaCommandResult::NotMeta => ()
     }
-    let result = rt.eval_script_with_mode(trimmed, syntax_mode) catch {
-      e => {
-        // Fallback: if VibeMode fails with name resolution, retry with PosixMode desugar
-        let err_str = e.to_string()
-        if err_str.contains("UnknownName") || err_str.contains("BadCall") {
-          let wrapped = "{\n" + trimmed + "\n}"
-          let retry = rt.eval_script_with_mode(
-            wrapped,
-            @runtime.ParserMode::PosixMode,
-          ) catch {
-            retry_err => {
-              push_output_line(
-                format_repl_error_with_mode(
-                  retry_err,
-                  wrapped,
-                  @runtime.ParserMode::PosixMode,
-                  "shell",
-                  unwrap_prefix="{\n",
-                ),
-              )
-              return true
-            }
-          }
-          match retry.last {
-            Some(@vibe_core.Value::Array(items)) =>
-              for item in items {
-                match item {
-                  @vibe_core.Value::String(s) => push_output_line(s)
-                  other => push_output_line(other.to_string())
-                }
-              }
-            Some(value) => push_output_line(value.to_string())
-            None => ()
-          }
-          for effect in retry.effects {
-            match effect {
-              @runtime.Effect::ShellExec(_)
-              | @runtime.Effect::PosixDesugar(_) => ()
-              _ => push_output_line("effect: " + effect.to_string())
-            }
-          }
-          return true
-        }
-        push_output_line(
-          format_repl_error_with_mode(e, trimmed, syntax_mode, "shell"),
-        )
-        return true
-      }
-    }
-    match result.last {
-      Some(value) => push_output_line("last: " + value.to_string())
-      None => ()
-    }
-    for effect in result.effects {
-      match effect {
-        @runtime.Effect::PosixDesugar(message) =>
-          push_output_line("note: " + message)
-        _ => push_output_line("effect: " + effect.to_string())
-      }
-    }
-    scratch_source_ref.val = append_eval_db_source(
+    let next_source = run_compiled_shell_line(
+      cache,
+      rt,
+      syntax_mode,
+      scratch_db_path,
+      compiled_source_path,
+      compiled_wasm_path,
       scratch_source_ref.val,
       trimmed,
+      print_line=push_output_line,
     )
-    match write_eval_db_source(scratch_db_path, scratch_source_ref.val) {
-      Ok(_) => ()
-      Err(err) => {
-        push_output_line("error: failed to persist namespace db: " + err)
-        return true
+    if next_source != scratch_source_ref.val {
+      scratch_source_ref.val = next_source
+      match extract_let_name(trimmed) {
+        Some(name) => push_unique(vibe_names, name)
+        None => ()
       }
-    }
-    match extract_let_name(trimmed) {
-      Some(name) => {
-        push_unique(vibe_names, name)
-        repl_warn_reserved_shell_binding(name, push_output_line)
-        match rt.get_addr(name) {
-          Some(addr) =>
-            push_output_line("addr: " + name + "#" + short_hash(addr))
-          None => ()
-        }
-      }
-      None => ()
     }
     true
   }
@@ -2520,9 +2401,6 @@ fn repl_tui_cmd(
 
   do_render()
   push_output_line("namespace: " + namespace_name + " db=" + scratch_db_path)
-  for line in restore_logs {
-    push_output_line(line)
-  }
   do_render()
   @tui.start_keypress_listener(handle_key)
   cleanup_once()
@@ -2535,7 +2413,7 @@ fn repl_stdin_cmd(
   features : @runtime.RuntimeFeatureFlags,
   enable_llm~ : Bool,
 ) -> Unit {
-  run_eval_line_repl_with_prompt(
+  run_compiled_line_repl_with_prompt(
     args,
     "shell-stdin",
     "vibe> ",
@@ -2548,18 +2426,13 @@ fn repl_stdin_cmd(
 ///|
 fn repl_wasi_cmd(
   args : Array[String],
-  syntax_mode : @runtime.ParserMode,
-  features : @runtime.RuntimeFeatureFlags,
+  _syntax_mode : @runtime.ParserMode,
+  _features : @runtime.RuntimeFeatureFlags,
   enable_llm~ : Bool,
 ) -> Unit {
-  run_eval_line_repl_with_prompt(
-    args,
-    "shell-wasi",
-    "wasi> ",
-    syntax_mode,
-    features,
-    enable_llm~,
-  )
+  let _ = args
+  let _ = enable_llm
+  abort("shell-wasi: command was removed from public CLI; use shell-stdin")
 }
 
 ///|
@@ -2571,159 +2444,6 @@ fn print_line_repl_tty_mode(mode : LineReplIoMode) -> Unit {
       )
     LineReplIoMode::Plain => ()
   }
-}
-
-///|
-fn run_eval_line_repl_with_prompt(
-  args : Array[String],
-  cmd_name : String,
-  prompt : String,
-  syntax_mode : @runtime.ParserMode,
-  features : @runtime.RuntimeFeatureFlags,
-  enable_llm~ : Bool,
-) -> Unit {
-  let options = match parse_line_repl_options(args, cmd_name, prompt) {
-    Ok(opts) => opts
-    Err(msg) =>
-      if msg.has_prefix("usage: ") {
-        println(msg)
-        return
-      } else {
-        abort(msg)
-      }
-  }
-  let (namespace_name, scratch_db_path) = match resolve_scratch_db_path() {
-    Ok(v) => v
-    Err(err) => abort(cmd_name + ": " + err)
-  }
-  async fn repl_loop() {
-    let rt = new_cli_runtime(features, enable_llm~)
-    let mut scratch_source = match load_eval_db_source(scratch_db_path) {
-      Ok(v) => v
-      Err(err) => {
-        println("error: " + err)
-        return
-      }
-    }
-    scratch_source = repl_restore_scratch_source(
-      rt,
-      syntax_mode,
-      scratch_db_path,
-      scratch_source,
-      fn(s) { println(s) },
-    )
-    let input = @stdio.stdin
-    print_line_repl_tty_mode(options.io_mode)
-    println("namespace: " + namespace_name + " db=" + scratch_db_path)
-    if options.prompt_enabled {
-      @stdio.stdout.write(options.prompt)
-    }
-    while input.read_until("\n") is Some(line) {
-      let trimmed = line.trim()
-      if trimmed.is_empty() {
-        if options.prompt_enabled {
-          @stdio.stdout.write(options.prompt)
-        }
-        continue
-      }
-      let line_str = trimmed.to_string()
-      match
-        handle_repl_meta_command(line_str, scratch_db_path, scratch_source, fn(
-          s,
-        ) {
-          println(s)
-        }) {
-        ReplMetaCommandResult::HandledExit => break
-        ReplMetaCommandResult::HandledContinue => {
-          if options.prompt_enabled {
-            @stdio.stdout.write(options.prompt)
-          }
-          continue
-        }
-        ReplMetaCommandResult::NotMeta => ()
-      }
-      match
-        handle_repl_vibe_shell_command(
-          rt,
-          syntax_mode,
-          line_str,
-          scratch_db_path,
-          scratch_source,
-          fn(s) { println(s) },
-        ) {
-        ReplMetaCommandResult::HandledExit => break
-        ReplMetaCommandResult::HandledContinue => {
-          if options.prompt_enabled {
-            @stdio.stdout.write(options.prompt)
-          }
-          continue
-        }
-        ReplMetaCommandResult::NotMeta => ()
-      }
-      let result = rt.eval_script_with_mode(line_str, syntax_mode) catch {
-        e => {
-          // Fallback: if VibeMode fails with name resolution, retry with PosixMode
-          let err_str = e.to_string()
-          if err_str.contains("UnknownName") || err_str.contains("BadCall") {
-            let wrapped = "{\n" + line_str + "\n}"
-            let retry = rt.eval_script_with_mode(
-              wrapped,
-              @runtime.ParserMode::PosixMode,
-            ) catch {
-              retry_err => {
-                println(
-                  format_repl_error_with_mode(
-                    retry_err,
-                    wrapped,
-                    @runtime.ParserMode::PosixMode,
-                    cmd_name,
-                    unwrap_prefix="{\n",
-                  ),
-                )
-                if options.prompt_enabled {
-                  @stdio.stdout.write(options.prompt)
-                }
-                continue
-              }
-            }
-            print_eval_result(retry)
-            if options.prompt_enabled {
-              @stdio.stdout.write(options.prompt)
-            }
-            continue
-          }
-          println(
-            format_repl_error_with_mode(e, line_str, syntax_mode, cmd_name),
-          )
-          if options.prompt_enabled {
-            @stdio.stdout.write(options.prompt)
-          }
-          continue
-        }
-      }
-      print_eval_result(result)
-      match extract_let_name(line_str) {
-        Some(name) => {
-          repl_warn_reserved_shell_binding(name, fn(s) { println(s) })
-          match rt.get_addr(name) {
-            Some(addr) => println("addr: " + name + "#" + short_hash(addr))
-            None => ()
-          }
-        }
-        None => ()
-      }
-      scratch_source = append_eval_db_source(scratch_source, line_str)
-      match write_eval_db_source(scratch_db_path, scratch_source) {
-        Ok(_) => ()
-        Err(err) => println("error: failed to persist namespace db: " + err)
-      }
-      if options.prompt_enabled {
-        @stdio.stdout.write(options.prompt)
-      }
-    }
-  }
-
-  @async.run_async_main(repl_loop)
 }
 
 ///|
@@ -2740,6 +2460,42 @@ struct CompiledReplExec {
   emit_us : Int
   optimize_us : Int
 } derive(Show, Eq)
+
+///|
+fn compiled_repl_temp_source_path() -> String {
+  "/tmp/vibe-compiled-repl-" + vibe_getpid().to_string() + ".vibe"
+}
+
+///|
+fn compiled_repl_temp_wasm_path() -> String {
+  "/tmp/vibe-compiled-repl-" + vibe_getpid().to_string() + ".wasm"
+}
+
+///|
+fn repl_raw_output_text(text : String) -> String {
+  let out = StringBuilder::new()
+  let mut wrote = false
+  for part in text.split("\n") {
+    out.write_string("\r\n")
+    out.write_string(part.to_string())
+    wrote = true
+  }
+  if wrote {
+    out.write_string("\r\n")
+  }
+  out.to_string()
+}
+
+///|
+fn repl_print_wasm_run_value(
+  value : WasmRunValue,
+  print_line : (String) -> Unit,
+) -> Unit {
+  match value {
+    WasmRunValue::Int(n) => print_line("last: " + n.to_string())
+    WasmRunValue::Bool(b) => print_line("last: " + b.to_string())
+  }
+}
 
 ///|
 fn repl_compiled_zero_result_line(line : String) -> Bool {
@@ -3152,6 +2908,129 @@ fn run_compiled_repl_line_with_cache(
 }
 
 ///|
+fn run_compiled_shell_line(
+  cache : CliEntryDbCache,
+  rt : @runtime.Runtime,
+  syntax_mode : @runtime.ParserMode,
+  scratch_db_path : String,
+  source_path : String,
+  wasm_path : String,
+  scratch_source : String,
+  line_str : String,
+  print_line? : (String) -> Unit = fn(s) { println(s) },
+) -> String {
+  match
+    handle_repl_meta_command(
+      line_str, scratch_db_path, scratch_source, print_line,
+    ) {
+    ReplMetaCommandResult::HandledExit => return scratch_source
+    ReplMetaCommandResult::HandledContinue => return scratch_source
+    ReplMetaCommandResult::NotMeta => ()
+  }
+  match
+    handle_repl_vibe_shell_command(
+      rt, syntax_mode, line_str, scratch_db_path, scratch_source, print_line,
+    ) {
+    ReplMetaCommandResult::HandledExit => return scratch_source
+    ReplMetaCommandResult::HandledContinue => return scratch_source
+    ReplMetaCommandResult::NotMeta => ()
+  }
+  let exec = match
+    run_compiled_repl_line_with_cache(
+      cache, source_path, wasm_path, scratch_source, line_str,
+    ) {
+    Ok(v) => v
+    Err(err) => {
+      print_line("error: " + err)
+      return scratch_source
+    }
+  }
+  match exec.display_override {
+    Some(display) => print_line("last: " + display)
+    None => repl_print_wasm_run_value(exec.value, print_line)
+  }
+  let next_source = exec.next_source
+  match write_eval_db_source(scratch_db_path, next_source) {
+    Ok(_) => ()
+    Err(err) => {
+      print_line("error: failed to persist namespace db: " + err)
+      return scratch_source
+    }
+  }
+  match extract_let_name(line_str) {
+    Some(name) => repl_warn_reserved_shell_binding(name, print_line)
+    None => ()
+  }
+  next_source
+}
+
+///|
+fn run_compiled_line_repl_with_prompt(
+  args : Array[String],
+  cmd_name : String,
+  prompt : String,
+  syntax_mode : @runtime.ParserMode,
+  features : @runtime.RuntimeFeatureFlags,
+  enable_llm~ : Bool,
+) -> Unit {
+  let options = match parse_line_repl_options(args, cmd_name, prompt) {
+    Ok(opts) => opts
+    Err(msg) =>
+      if msg.has_prefix("usage: ") {
+        println(msg)
+        return
+      } else {
+        abort(msg)
+      }
+  }
+  let (namespace_name, scratch_db_path) = match resolve_scratch_db_path() {
+    Ok(v) => v
+    Err(err) => abort(cmd_name + ": " + err)
+  }
+  async fn repl_loop() {
+    let rt = new_cli_runtime(features, enable_llm~)
+    let cache = CliEntryDbCache::new()
+    let source_path = compiled_repl_temp_source_path()
+    let wasm_path = compiled_repl_temp_wasm_path()
+    defer remove_file_if_exists(source_path)
+    defer remove_file_if_exists(wasm_path)
+    let mut scratch_source = match load_eval_db_source(scratch_db_path) {
+      Ok(v) => v
+      Err(err) => {
+        println("error: " + err)
+        return
+      }
+    }
+    let input = @stdio.stdin
+    print_line_repl_tty_mode(options.io_mode)
+    println("namespace: " + namespace_name + " db=" + scratch_db_path)
+    if options.prompt_enabled {
+      @stdio.stdout.write(options.prompt)
+    }
+    while input.read_until("\n") is Some(line) {
+      let trimmed = line.trim()
+      if trimmed.is_empty() {
+        if options.prompt_enabled {
+          @stdio.stdout.write(options.prompt)
+        }
+        continue
+      }
+      let line_str = trimmed.to_string()
+      if not(handle_cd_builtin(rt, line_str, fn(s) { println(s) })) {
+        scratch_source = run_compiled_shell_line(
+          cache, rt, syntax_mode, scratch_db_path, source_path, wasm_path, scratch_source,
+          line_str,
+        )
+      }
+      if options.prompt_enabled {
+        @stdio.stdout.write(options.prompt)
+      }
+    }
+  }
+  @async.run_async_main(repl_loop)
+}
+
+///|
 /// WASM REPL: compile each expression to WASM and output to file
 fn wasm_repl_stdin_cmd(args : Array[String]) -> Unit {
   let mut prompt_enabled = true
@@ -3313,6 +3192,11 @@ fn repl_ai_cmd(
   }
   async fn repl_loop() {
     let rt = new_cli_runtime(features, enable_llm~)
+    let cache = CliEntryDbCache::new()
+    let source_path = compiled_repl_temp_source_path()
+    let wasm_path = compiled_repl_temp_wasm_path()
+    defer remove_file_if_exists(source_path)
+    defer remove_file_if_exists(wasm_path)
     let mut scratch_source = match load_eval_db_source(scratch_db_path) {
       Ok(v) => v
       Err(err) => {
@@ -3320,13 +3204,6 @@ fn repl_ai_cmd(
         return
       }
     }
-    scratch_source = repl_restore_scratch_source(
-      rt,
-      syntax_mode,
-      scratch_db_path,
-      scratch_source,
-      fn(s) { println(s) },
-    )
     // header
     println("cwd: " + @io.current_dir_or_root())
     println("namespace: " + namespace_name + " db=" + scratch_db_path)
@@ -3378,33 +3255,20 @@ fn repl_ai_cmd(
         }
         ReplMetaCommandResult::NotMeta => ()
       }
-      let result = rt.eval_script_with_mode(line_str, syntax_mode) catch {
-        e => {
-          println("error: " + e.to_string())
-          if prompt_enabled {
-            @stdio.stdout.write(prompt)
-          }
-          continue
+      if handle_cd_builtin(rt, line_str, fn(s) { println(s) }) {
+        if prompt_enabled {
+          @stdio.stdout.write(prompt)
         }
+        continue
       }
-      print_eval_result(result)
       let let_name = extract_let_name(line_str)
-      match let_name {
-        Some(name) => {
-          repl_warn_reserved_shell_binding(name, fn(s) { println(s) })
-          match rt.get_addr(name) {
-            Some(addr) => println("addr: " + name + "#" + short_hash(addr))
-            None => ()
-          }
-        }
-        None => ()
-      }
-      scratch_source = append_eval_db_source(scratch_source, line_str)
-      match write_eval_db_source(scratch_db_path, scratch_source) {
-        Ok(_) => ()
-        Err(err) => println("error: failed to persist namespace db: " + err)
-      }
-      if let_name is Some(_) {
+      let next_source = run_compiled_shell_line(
+        cache, rt, syntax_mode, scratch_db_path, source_path, wasm_path, scratch_source,
+        line_str,
+      )
+      let changed = next_source != scratch_source
+      scratch_source = next_source
+      if changed && let_name is Some(_) {
         print_ai_symbols(scratch_db_path, scratch_source)
       }
       if prompt_enabled {
@@ -3443,13 +3307,6 @@ fn repl_interactive_cmd(
     Ok(v) => v
     Err(err) => abort("shell: " + err)
   }
-  let scratch_source = repl_restore_scratch_source(
-    rt,
-    syntax_mode,
-    scratch_db_path,
-    scratch_source,
-    fn(s) { println(s) },
-  )
   // header
   println("cwd: " + @io.current_dir_or_root())
   println("namespace: " + namespace_name + " db=" + scratch_db_path)
@@ -3457,18 +3314,18 @@ fn repl_interactive_cmd(
   // Detect TTY for readline-like editing
   let use_raw = @tui_io.is_tty() && prompt_enabled
   if use_raw {
-    repl_interactive_raw_loop(
+    repl_interactive_raw_loop_compiled(
       rt, syntax_mode, scratch_db_path, scratch_source, prompt_enabled,
     )
   } else {
-    repl_interactive_plain_loop(
+    repl_interactive_plain_loop_compiled(
       rt, syntax_mode, scratch_db_path, scratch_source, prompt_enabled,
     )
   }
 }
 
 ///|
-fn repl_interactive_plain_loop(
+fn repl_interactive_plain_loop_compiled(
   rt : @runtime.Runtime,
   syntax_mode : @runtime.ParserMode,
   scratch_db_path : String,
@@ -3476,6 +3333,11 @@ fn repl_interactive_plain_loop(
   prompt_enabled : Bool,
 ) -> Unit {
   async fn repl_loop() {
+    let cache = CliEntryDbCache::new()
+    let source_path = compiled_repl_temp_source_path()
+    let wasm_path = compiled_repl_temp_wasm_path()
+    defer remove_file_if_exists(source_path)
+    defer remove_file_if_exists(wasm_path)
     let mut scratch_source = initial_source
     let input = @stdio.stdin
     fn get_prompt() -> String {
@@ -3498,13 +3360,9 @@ fn repl_interactive_plain_loop(
         ":q" | ":quit" | ":exit" | "exit" => break
         _ =>
           if not(handle_cd_builtin(rt, line_str, fn(s) { println(s) })) {
-            scratch_source = run_interactive_line(
-              rt,
-              syntax_mode,
-              scratch_db_path,
-              scratch_source,
+            scratch_source = run_compiled_shell_line(
+              cache, rt, syntax_mode, scratch_db_path, source_path, wasm_path, scratch_source,
               line_str,
-              posix_fallback=true,
             )
           }
       }
@@ -3518,99 +3376,18 @@ fn repl_interactive_plain_loop(
 }
 
 ///|
-fn run_interactive_line(
-  rt : @runtime.Runtime,
-  syntax_mode : @runtime.ParserMode,
-  scratch_db_path : String,
-  scratch_source : String,
-  line_str : String,
-  posix_fallback? : Bool = false,
-  print_line? : (String) -> Unit = fn(s) { println(s) },
-) -> String {
-  match
-    handle_repl_meta_command(
-      line_str, scratch_db_path, scratch_source, print_line,
-    ) {
-    ReplMetaCommandResult::HandledExit => return scratch_source
-    ReplMetaCommandResult::HandledContinue => return scratch_source
-    ReplMetaCommandResult::NotMeta => ()
-  }
-  match
-    handle_repl_vibe_shell_command(
-      rt, syntax_mode, line_str, scratch_db_path, scratch_source, print_line,
-    ) {
-    ReplMetaCommandResult::HandledExit => return scratch_source
-    ReplMetaCommandResult::HandledContinue => return scratch_source
-    ReplMetaCommandResult::NotMeta => ()
-  }
-
-  let result = rt.eval_script_with_mode(line_str, syntax_mode) catch {
-    e => {
-      // Fallback: if VibeMode fails with name resolution, retry with PosixMode desugar
-      if posix_fallback {
-        let err_str = e.to_string()
-        if err_str.contains("UnknownName") || err_str.contains("BadCall") {
-          let wrapped = "{\n" + line_str + "\n}"
-          let retry = rt.eval_script_with_mode(
-            wrapped,
-            @runtime.ParserMode::PosixMode,
-          ) catch {
-            retry_err => {
-              // Show PosixMode error (more informative after desugar)
-              print_line(
-                format_repl_error_with_mode(
-                  retry_err,
-                  wrapped,
-                  @runtime.ParserMode::PosixMode,
-                  "shell",
-                  unwrap_prefix="{\n",
-                ),
-              )
-              return scratch_source
-            }
-          }
-          repl_print_eval_result_for_shell(retry, print_line)
-          return scratch_source
-        }
-      }
-      print_line(format_repl_error_with_mode(e, line_str, syntax_mode, "shell"))
-      return scratch_source
-    }
-  }
-  repl_print_eval_result_for_shell(result, print_line)
-  let let_name = extract_let_name(line_str)
-  match let_name {
-    Some(name) => {
-      repl_warn_reserved_shell_binding(name, print_line)
-      match rt.get_addr(name) {
-        Some(addr) => print_line("addr: " + name + "#" + short_hash(addr))
-        None => ()
-      }
-    }
-    None => ()
-  }
-  let next_source = append_eval_db_source(scratch_source, line_str)
-  match write_eval_db_source(scratch_db_path, next_source) {
-    Ok(_) => ()
-    Err(err) => {
-      print_line("error: failed to persist namespace db: " + err)
-      return scratch_source
-    }
-  }
-  if let_name is Some(_) {
-    print_ai_symbols(scratch_db_path, next_source, print_line~)
-  }
-  next_source
-}
-
-///|
-fn repl_interactive_raw_loop(
+fn repl_interactive_raw_loop_compiled(
   rt : @runtime.Runtime,
   syntax_mode : @runtime.ParserMode,
   scratch_db_path : String,
   initial_source : String,
   prompt_enabled : Bool,
 ) -> Unit {
+  let cache = CliEntryDbCache::new()
+  let source_path = compiled_repl_temp_source_path()
+  let wasm_path = compiled_repl_temp_wasm_path()
+  defer remove_file_if_exists(source_path)
+  defer remove_file_if_exists(wasm_path)
   let scratch_source_ref = Ref::new(initial_source)
   let line_buf = StringBuilder::new()
   let cursor_pos = Ref::new(0)
@@ -3618,16 +3395,9 @@ fn repl_interactive_raw_loop(
   load_history(history)
   let history_idx = Ref::new(-1)
   let history_draft = Ref::new("")
+
   fn get_prompt() -> String {
     @vibe_fs.basename(@io.current_dir_or_root()) + "> "
-  }
-
-  let done = Ref::new(false)
-  fn raw_println(s : String) -> Unit {
-    // Split multi-line strings so each line gets proper \r\n in raw terminal mode
-    for part in s.split("\n") {
-      @tui.print_raw(part.to_string() + "\r\n")
-    }
   }
 
   fn line_buf_to_string() -> String {
@@ -3635,37 +3405,41 @@ fn repl_interactive_raw_loop(
   }
 
   fn line_buf_length() -> Int {
-    line_buf_to_string().to_array().length()
+    line_buf_to_string().length()
+  }
+
+  fn raw_println(s : String) -> Unit {
+    @tui.print_raw(repl_raw_output_text(s))
   }
 
   fn redraw_line() {
-    let text = line_buf_to_string()
-    @tui.print_raw("\r" + @render.ansi_clear_line())
-    if prompt_enabled {
-      @tui.print_raw(get_prompt())
+    if not(prompt_enabled) {
+      return
     }
-    @tui.print_raw(text)
-    let text_len = text.to_array().length()
-    let back = text_len - cursor_pos.val
-    if back > 0 {
-      @tui.print_raw(@render.ansi_move_left(n=back))
+    let prompt = get_prompt()
+    let text = line_buf_to_string()
+    @tui.print_raw("\r")
+    @tui.print_raw(@render.ansi_clear_line())
+    @tui.print_raw(prompt + text)
+    let suffix = line_buf_length() - cursor_pos.val
+    if suffix > 0 {
+      @tui.print_raw(@render.ansi_move_left(n=suffix))
     }
   }
 
   fn set_line(text : String) {
     line_buf.reset()
     line_buf.write_string(text)
-    cursor_pos.val = text.to_array().length()
+    cursor_pos.val = text.length()
     redraw_line()
   }
 
   fn insert_char(ch : Char) {
     let text = line_buf_to_string()
     let chars = text.to_array()
-    let pos = cursor_pos.val
     let next = StringBuilder::new()
     let mut idx = 0
-    while idx < pos && idx < chars.length() {
+    while idx < cursor_pos.val {
       next.write_char(chars[idx])
       idx += 1
     }
@@ -3676,50 +3450,42 @@ fn repl_interactive_raw_loop(
     }
     line_buf.reset()
     line_buf.write_string(next.to_string())
-    cursor_pos.val = pos + 1
+    cursor_pos.val += 1
     redraw_line()
   }
 
   fn delete_back() {
-    let pos = cursor_pos.val
-    if pos <= 0 {
+    if cursor_pos.val <= 0 {
       return
     }
     let text = line_buf_to_string()
     let chars = text.to_array()
     let next = StringBuilder::new()
     let mut idx = 0
-    while idx < pos - 1 {
-      next.write_char(chars[idx])
-      idx += 1
-    }
-    idx = pos
     while idx < chars.length() {
-      next.write_char(chars[idx])
+      if idx != cursor_pos.val - 1 {
+        next.write_char(chars[idx])
+      }
       idx += 1
     }
     line_buf.reset()
     line_buf.write_string(next.to_string())
-    cursor_pos.val = pos - 1
+    cursor_pos.val -= 1
     redraw_line()
   }
 
   fn delete_forward() {
-    let pos = cursor_pos.val
-    let text = line_buf_to_string()
-    let chars = text.to_array()
-    if pos >= chars.length() {
+    if cursor_pos.val >= line_buf_length() {
       return
     }
+    let text = line_buf_to_string()
+    let chars = text.to_array()
     let next = StringBuilder::new()
     let mut idx = 0
-    while idx < pos {
-      next.write_char(chars[idx])
-      idx += 1
-    }
-    idx = pos + 1
     while idx < chars.length() {
-      next.write_char(chars[idx])
+      if idx != cursor_pos.val {
+        next.write_char(chars[idx])
+      }
       idx += 1
     }
     line_buf.reset()
@@ -3803,9 +3569,11 @@ fn repl_interactive_raw_loop(
     redraw_line()
   }
 
+  let done = Ref::new(false)
+
   fn submit_line() {
-    @tui.print_raw("\r\n")
     let text = line_buf_to_string().trim().to_string()
+    @tui.print_raw("\r\n")
     line_buf.reset()
     cursor_pos.val = 0
     history_idx.val = -1
@@ -3828,13 +3596,15 @@ fn repl_interactive_raw_loop(
       append_history(text)
     }
     if not(handle_cd_builtin(rt, text, raw_println)) {
-      scratch_source_ref.val = run_interactive_line(
+      scratch_source_ref.val = run_compiled_shell_line(
+        cache,
         rt,
         syntax_mode,
         scratch_db_path,
+        source_path,
+        wasm_path,
         scratch_source_ref.val,
         text,
-        posix_fallback=true,
         print_line=raw_println,
       )
     }
@@ -3850,7 +3620,6 @@ fn repl_interactive_raw_loop(
     if input.length() == 0 {
       return
     }
-    // Handle printable multi-char paste
     if input.length() > 1 &&
       input[0].to_int() != 0x1b &&
       @tui.is_printable_string(input) {

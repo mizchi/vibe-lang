@@ -1,28 +1,6 @@
 ///|
 fn main {
   touch_cli_helpers()
-  let args = @sys.get_cli_args()
-  if js_is_deno() {
-    // args = [script_path, cmd, ...sub_args]
-    // Skip args[0] (script path) and any global flags
-    let mut cmd_idx = 1
-    while cmd_idx < args.length() {
-      match args[cmd_idx] {
-        "--unstable-async" | "--unstable-threads" | "--llm" => cmd_idx += 1
-        _ => break
-      }
-    }
-    if cmd_idx < args.length() && args[cmd_idx] == "shell" {
-      let sub : Array[String] = []
-      let mut j = cmd_idx + 1
-      while j < args.length() {
-        sub.push(args[j])
-        j += 1
-      }
-      repl_deno_cmd(sub)
-      return
-    }
-  }
   print_js_usage()
 }
 

@@ -372,7 +372,11 @@ test "shell vibe command supports pipeline transform over json payload" {
   )
   assert_eq(result, ReplMetaCommandResult::HandledContinue)
   let text = wbtest_join_lines(lines)
-  assert_true(text.contains("last: true"))
+  assert_true(
+    text.contains(
+      "error: shell pipeline transforms were removed from compiled shell",
+    ),
+  )
 }
 
 ///|
@@ -490,15 +494,21 @@ test "shell vibe normalize dedups duplicate lets with last wins" {
 test "shell warns when binding reserved vibe subcommand name" {
   let root = wbtest_make_temp_dir("repl_reserved_binding_warn")
   let scratch_db_path = root + "/scratch.db"
+  let source_path = root + "/compiled_repl.vibe"
+  let wasm_path = root + "/expr_0.wasm"
   let lines : Array[String] = []
   let rt = new_cli_runtime(
     @runtime.RuntimeFeatureFlags::stable(),
     enable_llm=false,
   )
-  let _ = run_interactive_line(
+  let cache = CliEntryDbCache::new()
+  let _ = run_compiled_shell_line(
+    cache,
     rt,
     @runtime.ParserMode::VibeMode,
     scratch_db_path,
+    source_path,
+    wasm_path,
     "",
     "let view = 1",
     print_line=fn(s) { lines.push(s) },
@@ -509,35 +519,8 @@ test "shell warns when binding reserved vibe subcommand name" {
       "warn: `view` is reserved for shell commands; use `view(...)` for explicit function call.",
     ),
   )
-  wbtest_remove_if_exists(scratch_db_path)
-  wbtest_remove_if_exists(root)
-}
-
-///|
-test "shell restore resets duplicate scratch source" {
-  let root = wbtest_make_temp_dir("repl_restore_duplicate_decl")
-  let scratch_db_path = root + "/scratch.db"
-  let lines : Array[String] = []
-  let rt = new_cli_runtime(
-    @runtime.RuntimeFeatureFlags::stable(),
-    enable_llm=false,
-  )
-  let source = "let x = 1\nlet x = 2\n"
-  let restored = repl_restore_scratch_source(
-    rt,
-    @runtime.ParserMode::VibeMode,
-    scratch_db_path,
-    source,
-    fn(s) { lines.push(s) },
-  )
-  assert_eq(restored, "")
-  let saved = @os_fs.read_file_to_string(scratch_db_path) catch {
-    e => fail("read scratch db failed: " + e.to_string())
-  }
-  assert_eq(saved, "")
-  let text = wbtest_join_lines(lines)
-  assert_true(text.contains("failed to restore db"))
-  assert_true(text.contains("reset namespace db"))
+  wbtest_remove_if_exists(wasm_path)
+  wbtest_remove_if_exists(source_path)
   wbtest_remove_if_exists(scratch_db_path)
   wbtest_remove_if_exists(root)
 }
@@ -1056,12 +1039,12 @@ test "cli bench backend parse" {
     None => fail("expected wasm backend")
   }
   match parse_bench_backend("interpreter") {
-    Some(backend) => assert_eq(bench_backend_name(backend), "interpreter")
-    None => fail("expected interpreter backend")
+    Some(_) => fail("unexpected legacy interpreter backend")
+    None => ()
   }
   match parse_bench_backend("interp") {
-    Some(backend) => assert_eq(bench_backend_name(backend), "interpreter")
-    None => fail("expected interpreter backend alias")
+    Some(_) => fail("unexpected legacy interpreter backend alias")
+    None => ()
   }
   match parse_bench_backend("unknown") {
     Some(_) => fail("unexpected backend")
@@ -1088,51 +1071,17 @@ test "bench script cache paths are stable per source" {
 }
 
 ///|
-test "bench interpreter backend is disabled by default" {
-  let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
-  @sys.unset_env_var("VIBE_ENABLE_INTERPRETER")
-  defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
-  match bench_require_interpreter_backend() {
-    Ok(_) => fail("expected disabled interpreter backend")
-    Err(err) =>
-      assert_true(err.contains("interpreter backend disabled for bench"))
-  }
-}
-
-///|
-test "bench interpreter backend works when enabled" {
-  let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
-  @sys.set_env_var("VIBE_ENABLE_INTERPRETER", "1")
-  defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
-  match bench_require_interpreter_backend() {
-    Ok(_) => ()
-    Err(err) => fail("expected enabled interpreter backend: " + err)
-  }
-}
-
-///|
-test "bench auto fallback remains disabled regardless of interpreter enablement" {
-  let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
-  @sys.unset_env_var("VIBE_ENABLE_INTERPRETER")
-  defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
-  assert_false(bench_allow_interpreter_fallback())
-  @sys.set_env_var("VIBE_ENABLE_INTERPRETER", "1")
-  assert_false(bench_allow_interpreter_fallback())
-}
-
-///|
-test "cli bench uses expr mode ignores backend with path" {
+test "cli bench uses expr mode only for removed legacy flags" {
   assert_false(
     bench_uses_expr_mode(["--backend", "wasm", "examples/simple_bench.vibe"]),
   )
-  assert_true(bench_uses_expr_mode(["--backend", "interpreter"]))
+  assert_true(bench_uses_expr_mode(["--expr", "add(1,2)"]))
 }
 
 ///|
 test "cli wasm bench compile uses size-oriented optimize level" {
   let root = wbtest_make_temp_dir("bench_wasm_size_opt")
-  let source_path = root + "/case.vibe"
-  let wasm_path = root + "/case.wasm"
+  let entry_path = root + "/case.vibe"
   let source =
     #|let rec repeat = (s: String, n: Int) -> String {
     #|  if eq(n, 0) { "" } else { String::concat(s, repeat(s, sub(n, 1))) }
@@ -1140,8 +1089,11 @@ test "cli wasm bench compile uses size-oriented optimize level" {
     #|let base = "abcdefghijklmnopqrstuvwxyz"
     #|let s = repeat(base, 12)
     #|String::length(s)
+  let (_, source_path, wasm_path) = bench_script_cache_paths(
+    entry_path, "size_opt", source,
+  )
   let (_, optimized_size) = match
-    compile_bench_script_to_wasm(source_path, wasm_path, source) {
+    compile_bench_script_to_wasm(entry_path, "size_opt", source) {
     Ok(bytes) => bytes
     Err(err) => fail("compile bench wasm failed: " + err)
   }
@@ -1373,48 +1325,15 @@ test "cli apply tracks rename continuity for similar function" {
 }
 
 ///|
-test "cli eval without db uses scratch namespace db" {
-  let root = wbtest_make_temp_dir("eval_default_scratch_db")
-  let scratch_db = root + "/scratch.db"
-  let out_path = root + "/out.vibe"
-  let prev = @sys.get_env_var("VIBE_SCRATCH_DB_PATH")
-  @sys.set_env_var("VIBE_SCRATCH_DB_PATH", scratch_db)
-  let features = @runtime.RuntimeFeatureFlags::stable()
-  eval_cmd(["let", "seed", "=", "10"], @runtime.ParserMode::VibeMode, features)
-  eval_cmd(
-    ["let", "answer", "=", "seed", "+", "32"],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(["--export=" + out_path], @runtime.ParserMode::VibeMode, features)
-  match prev {
-    Some(value) => @sys.set_env_var("VIBE_SCRATCH_DB_PATH", value)
-    None => @sys.unset_env_var("VIBE_SCRATCH_DB_PATH")
-  }
-  assert_true(@os_fs.path_exists(scratch_db))
-  let scratch_source = @os_fs.read_file_to_string(scratch_db) catch {
-    e => fail("read scratch db failed: " + e.to_string())
-  }
-  assert_true(scratch_source.contains("let seed = 10"))
-  assert_true(scratch_source.contains("let answer = seed + 32"))
-  let exported = @os_fs.read_file_to_string(out_path) catch {
-    e => fail("read exported module failed: " + e.to_string())
-  }
-  assert_true(exported.contains("let seed = 10"))
-  assert_true(exported.contains("let answer = seed + 32"))
-  wbtest_remove_if_exists(out_path)
-  wbtest_remove_if_exists(scratch_db)
-  wbtest_remove_if_exists(root)
-}
-
-///|
 test "cli history reset clears scratch namespace db" {
   let root = wbtest_make_temp_dir("history_reset_scratch")
   let scratch_db = root + "/scratch.db"
   let prev = @sys.get_env_var("VIBE_SCRATCH_DB_PATH")
   @sys.set_env_var("VIBE_SCRATCH_DB_PATH", scratch_db)
-  let features = @runtime.RuntimeFeatureFlags::stable()
-  eval_cmd(["let", "v", "=", "1"], @runtime.ParserMode::VibeMode, features)
+  match write_eval_db_source(scratch_db, "let v = 1\n") {
+    Ok(_) => ()
+    Err(err) => fail("write scratch db failed: " + err)
+  }
   assert_true(@os_fs.path_exists(scratch_db))
   history_cmd(["reset"])
   match prev {
@@ -1472,8 +1391,10 @@ test "cli symbols marks shadowed when scratch overrides index symbol" {
   apply_cmd([entry])
   let prev = @sys.get_env_var("VIBE_SCRATCH_DB_PATH")
   @sys.set_env_var("VIBE_SCRATCH_DB_PATH", scratch_db)
-  let features = @runtime.RuntimeFeatureFlags::stable()
-  eval_cmd(["let", "foo", "=", "1"], @runtime.ParserMode::VibeMode, features)
+  match write_eval_db_source(scratch_db, "let foo = 1\n") {
+    Ok(_) => ()
+    Err(err) => fail("write scratch db failed: " + err)
+  }
   let rows = match collect_symbols_rows(entry) {
     Ok(v) => v
     Err(err) => fail("collect symbols failed: " + err)
@@ -1510,8 +1431,10 @@ test "cli write_file selector name prefers scratch namespace symbol" {
   apply_cmd([entry])
   let prev = @sys.get_env_var("VIBE_SCRATCH_DB_PATH")
   @sys.set_env_var("VIBE_SCRATCH_DB_PATH", scratch_db)
-  let features = @runtime.RuntimeFeatureFlags::stable()
-  eval_cmd(["let", "foo", "=", "1"], @runtime.ParserMode::VibeMode, features)
+  match write_eval_db_source(scratch_db, "let foo = 1\n") {
+    Ok(_) => ()
+    Err(err) => fail("write scratch db failed: " + err)
+  }
   write_file_cmd(["--entry=" + entry, "foo", out_path])
   match prev {
     Some(value) => @sys.set_env_var("VIBE_SCRATCH_DB_PATH", value)
@@ -1593,858 +1516,6 @@ test "cli write_file dry-run does not write output file" {
   write_file_cmd(["--entry=" + entry, "--dry-run", "--json", "value", out_path])
   assert_false(@os_fs.path_exists(out_path))
   wbtest_remove_if_exists(out_path)
-  wbtest_remove_if_exists(root)
-}
-
-///|
-test "cli eval db workflow persists namespace and exports module" {
-  let root = wbtest_make_temp_dir("eval_db_workflow")
-  let db_path = root + "/tmp1.db"
-  let out_path = root + "/main.vibe"
-  let features = @runtime.RuntimeFeatureFlags::stable()
-  eval_cmd(
-    ["--db=" + db_path, "let", "base", "=", "40"],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    ["--db=" + db_path, "let", "answer", "=", "base", "+", "2"],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    ["--db=" + db_path, "export", "{", "answer", "}"],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    ["--db=" + db_path, "--export=" + out_path],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let exported = @os_fs.read_file_to_string(out_path) catch {
-    e => fail("read exported module failed: " + e.to_string())
-  }
-  assert_true(exported.contains("let base = 40"))
-  assert_true(exported.contains("let answer = base + 2"))
-  assert_true(exported.contains("export {"))
-  assert_true(exported.contains("\n  answer"))
-  fetch_cmd([out_path])
-  let lock_path = @codebase.lock_file_path(out_path)
-  let lock = match @codebase.load_lock_data(lock_path) {
-    Ok(v) => v
-    Err(err) => fail("load lock failed: " + err)
-  }
-  let fetched_source = @os_fs.read_file_to_string(out_path) catch {
-    e => fail("read fetched module failed: " + e.to_string())
-  }
-  assert_true(fetched_source.length() > 0)
-  let resolved = @loader.resolve_entry_path(out_path)
-  match lock.path_refs.get(resolved) {
-    Some(hash) => assert_true(hash.length() == 40)
-    None => fail("expected path ref for exported module")
-  }
-  wbtest_remove_if_exists(out_path)
-  wbtest_remove_if_exists(db_path)
-  wbtest_remove_if_exists(root)
-}
-
-///|
-test "cli eval db workflow supports include scripts" {
-  let root = wbtest_make_temp_dir("eval_db_include_workflow")
-  let db_path = root + "/tmp1.db"
-  let include_path = root + "/index.lock"
-  let out_path = root + "/main.vibe"
-  let features = @runtime.RuntimeFeatureFlags::stable()
-  @os_fs.write_string_to_file(include_path, "let seed = 10\n") catch {
-    e => fail("write include source failed: " + e.to_string())
-  }
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "--include=" + include_path,
-      "let",
-      "answer",
-      "=",
-      "seed",
-      "+",
-      "2",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "--include=bit:" + include_path,
-      "export",
-      "{",
-      "answer",
-      "}",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    ["--db=" + db_path, "--include=" + include_path, "--export=" + out_path],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let exported = @os_fs.read_file_to_string(out_path) catch {
-    e => fail("read exported module failed: " + e.to_string())
-  }
-  assert_true(exported.contains("let answer = seed + 2"))
-  assert_true(exported.contains("export {"))
-  assert_true(exported.contains("\n  answer"))
-  wbtest_remove_if_exists(out_path)
-  wbtest_remove_if_exists(include_path)
-  wbtest_remove_if_exists(db_path)
-  wbtest_remove_if_exists(root)
-}
-
-///|
-test "cli eval finalize normalize apply workflow with relative paths" {
-  let cwd = @io.current_dir_or_root()
-  let rel_root = "tmp_probe/e2e_eval_finalize_apply_" + @env.now().to_string()
-  let abs_root = @vibe_fs.normalize_path(cwd + "/" + rel_root)
-  let local_lock_path = abs_root + "/index.lock"
-  let local_vibe_dir = abs_root + "/.vibe"
-  let include_abs = abs_root + "/include/index.vibe"
-  let include_rel = "./" + rel_root + "/include/index.vibe"
-  let db_rel = rel_root + "/scratch/workflow.db"
-  let out_rel = rel_root + "/dist/main.vibe"
-  let out_abs = @vibe_fs.normalize_path(cwd + "/" + out_rel)
-  let lock_seed = "{\"path\":{},\"version\":{},\"symbol\":{},\"module\":{},\"annotation\":{}}\n"
-  let features = @runtime.RuntimeFeatureFlags::stable()
-  wbtest_remove_if_exists(abs_root)
-  match ensure_parent_dir_for_file(include_abs, "test setup") {
-    Ok(_) => ()
-    Err(err) => fail("create include parent failed: " + err)
-  }
-  @os_fs.create_dir(local_vibe_dir) catch {
-    e => fail("create local .vibe dir failed: " + e.to_string())
-  }
-  @os_fs.write_string_to_file(local_lock_path, lock_seed) catch {
-    e => fail("write local lock seed failed: " + e.to_string())
-  }
-  @os_fs.write_string_to_file(
-    include_abs,
-    "let seed = 40\n" + "let helper = (x: Int) -> Int { x + seed }\n",
-  ) catch {
-    e => fail("write include source failed: " + e.to_string())
-  }
-
-  eval_cmd(
-    [
-      "--db=" + db_rel,
-      "--include=" + include_rel,
-      "let",
-      "answer",
-      "=",
-      "helper(2)",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    ["--db=" + db_rel, "--include=" + include_rel, "export", "{", "answer", "}"],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  finalize_cmd(["--db=" + db_rel, "--library", "--export=" + out_rel])
-  normalize_cmd(["--check", out_rel])
-  fetch_cmd([out_rel])
-  apply_cmd([out_rel])
-  match resolve_entry_artifacts(out_rel) {
-    Ok((db, entry, _lock, _index, _graph_head)) => {
-      let _ = db.types(entry)
-    }
-    Err(err) => fail("resolve entry artifacts failed: " + err)
-  }
-  let exported = @os_fs.read_file_to_string(out_abs) catch {
-    e => fail("read exported module failed: " + e.to_string())
-  }
-  assert_true(exported.contains("let answer"))
-  assert_true(exported.contains("helper(2)"))
-  assert_true(exported.contains("export"))
-  assert_true(exported.contains("answer"))
-
-  // Help path should remain non-failing in the same workflow.
-  repl_stdin_cmd(
-    ["--help"],
-    @runtime.ParserMode::PosixMode,
-    features,
-    enable_llm=false,
-  )
-
-  wbtest_remove_if_exists(abs_root)
-}
-
-///|
-test "cli eval include resolves named alias from VIBE_LIB_ROOT first" {
-  let root = wbtest_make_temp_dir("eval_db_named_alias_lib_root")
-  let lib_root = root + "/lib-root"
-  let legacy_lib = root + "/legacy-lib"
-  let db_path = root + "/tmp1.db"
-  let out_path = root + "/main.vibe"
-  let alias_path = lib_root + "/vibe/prelude@0.1.0.lock"
-  let legacy_alias_path = legacy_lib + "/vibe/prelude@0.1.0.lock"
-  let seed_source = "let seed = 50\n"
-  let seed_hash = @vibe_core.git_blob_hash_string(seed_source)
-  let codebase = @codebase.Codebase::new(lib_root)
-  let _ = codebase.write_object(seed_hash, seed_source) catch {
-    e => fail("write alias object failed: " + e.to_string())
-  }
-  @os_fs.create_dir(lib_root + "/vibe") catch {
-    e => fail("create lib_root/vibe failed: " + e.to_string())
-  }
-  @os_fs.write_string_to_file(alias_path, "hash:" + seed_hash + "\n") catch {
-    e => fail("write lib root alias failed: " + e.to_string())
-  }
-  @os_fs.create_dir(legacy_lib) catch {
-    e => fail("create legacy lib failed: " + e.to_string())
-  }
-  @os_fs.create_dir(legacy_lib + "/vibe") catch {
-    e => fail("create legacy lib/vibe failed: " + e.to_string())
-  }
-  @os_fs.write_string_to_file(
-    legacy_alias_path, "hash:0000000000000000000000000000000000000000\n",
-  ) catch {
-    e => fail("write legacy alias failed: " + e.to_string())
-  }
-  let prev_root = @sys.get_env_var("VIBE_LIB_ROOT")
-  let prev_dir = @sys.get_env_var("VIBE_LIB_DIR")
-  @sys.set_env_var("VIBE_LIB_ROOT", lib_root)
-  @sys.set_env_var("VIBE_LIB_DIR", legacy_lib)
-  let features = @runtime.RuntimeFeatureFlags::stable()
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "--include=vibe/prelude@0.1.0.lock",
-      "let",
-      "answer",
-      "=",
-      "seed",
-      "+",
-      "2",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "--include=vibe/prelude@0.1.0.lock",
-      "export",
-      "{",
-      "answer",
-      "}",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "--include=vibe/prelude@0.1.0.lock",
-      "--export=" + out_path,
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  wbtest_restore_env_var("VIBE_LIB_ROOT", prev_root)
-  wbtest_restore_env_var("VIBE_LIB_DIR", prev_dir)
-  let exported = @os_fs.read_file_to_string(out_path) catch {
-    e => fail("read exported module failed: " + e.to_string())
-  }
-  assert_true(exported.contains("let answer = seed + 2"))
-  assert_true(exported.contains("export {"))
-  assert_true(exported.contains("\n  answer"))
-  wbtest_remove_if_exists(out_path)
-  wbtest_remove_if_exists(db_path)
-  wbtest_remove_if_exists(root)
-}
-
-///|
-test "cli eval include resolves latest named alias when version omitted" {
-  let root = wbtest_make_temp_dir("eval_db_named_alias_latest")
-  let lib_root = root + "/lib-root"
-  let db_path = root + "/tmp1.db"
-  let out_path = root + "/main.vibe"
-  let alias_v1 = lib_root + "/vibe/prelude@0.1.0.lock"
-  let alias_v2 = lib_root + "/vibe/prelude@0.2.0.lock"
-  let seed_source = "let seed = 60\n"
-  let seed_hash = @vibe_core.git_blob_hash_string(seed_source)
-  let codebase = @codebase.Codebase::new(lib_root)
-  let _ = codebase.write_object(seed_hash, seed_source) catch {
-    e => fail("write alias object failed: " + e.to_string())
-  }
-  @os_fs.create_dir(lib_root + "/vibe") catch {
-    e => fail("create lib_root/vibe failed: " + e.to_string())
-  }
-  // Old version intentionally points to missing object. Latest must be selected.
-  @os_fs.write_string_to_file(
-    alias_v1, "hash:0000000000000000000000000000000000000000\n",
-  ) catch {
-    e => fail("write older alias failed: " + e.to_string())
-  }
-  @os_fs.write_string_to_file(alias_v2, "hash:" + seed_hash + "\n") catch {
-    e => fail("write latest alias failed: " + e.to_string())
-  }
-  let prev_root = @sys.get_env_var("VIBE_LIB_ROOT")
-  let prev_dir = @sys.get_env_var("VIBE_LIB_DIR")
-  @sys.set_env_var("VIBE_LIB_ROOT", lib_root)
-  @sys.set_env_var("VIBE_LIB_DIR", root + "/legacy-lib")
-  let features = @runtime.RuntimeFeatureFlags::stable()
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "--include=vibe/prelude.lock",
-      "let",
-      "answer",
-      "=",
-      "seed",
-      "+",
-      "3",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "--include=vibe/prelude.lock",
-      "export",
-      "{",
-      "answer",
-      "}",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    ["--db=" + db_path, "--include=vibe/prelude.lock", "--export=" + out_path],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  wbtest_restore_env_var("VIBE_LIB_ROOT", prev_root)
-  wbtest_restore_env_var("VIBE_LIB_DIR", prev_dir)
-  let exported = @os_fs.read_file_to_string(out_path) catch {
-    e => fail("read exported module failed: " + e.to_string())
-  }
-  assert_true(exported.contains("let answer = seed + 3"))
-  assert_true(exported.contains("export {"))
-  assert_true(exported.contains("\n  answer"))
-  wbtest_remove_if_exists(out_path)
-  wbtest_remove_if_exists(db_path)
-  wbtest_remove_if_exists(root)
-}
-
-///|
-test "cli eval db workflow validates scope symbols and types per step" {
-  let root = wbtest_make_temp_dir("eval_db_scope_validation")
-  let db_path = root + "/tmp1.db"
-  let out_path = root + "/main.vibe"
-  let features = @runtime.RuntimeFeatureFlags::stable()
-  eval_cmd(
-    ["--db=" + db_path, "let", "base", "=", "40"],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let scope1 = scope_symbol_signatures_from_db(db_path)
-  assert_eq(scope1.length(), 1)
-  assert_scope_symbol_signature(scope1, "base", "Int")
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "let",
-      "inc",
-      "=",
-      "(x:",
-      "Int)",
-      "->",
-      "Int",
-      "{",
-      "x",
-      "+",
-      "base",
-      "}",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let scope2 = scope_symbol_signatures_from_db(db_path)
-  assert_eq(scope2.length(), 2)
-  assert_scope_symbol_signature(scope2, "base", "Int")
-  assert_scope_symbol_signature(scope2, "inc", "(x: Int) -> Int")
-  eval_cmd(
-    ["--db=" + db_path, "let", "answer", "=", "inc", "(", "2", ")"],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let scope3 = scope_symbol_signatures_from_db(db_path)
-  assert_eq(scope3.length(), 3)
-  assert_scope_symbol_signature(scope3, "base", "Int")
-  assert_scope_symbol_signature(scope3, "inc", "(x: Int) -> Int")
-  assert_scope_symbol_signature(scope3, "answer", "Int")
-  eval_cmd(
-    ["--db=" + db_path, "export", "{", "answer", "}"],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let scope4 = scope_symbol_signatures_from_db(db_path)
-  assert_eq(scope4.length(), 3)
-  assert_scope_symbol_signature(scope4, "answer", "Int")
-  eval_cmd(
-    ["--db=" + db_path, "--export=" + out_path],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let exported = @os_fs.read_file_to_string(out_path) catch {
-    e => fail("read exported module failed: " + e.to_string())
-  }
-  assert_true(exported.contains("let base = 40"))
-  assert_true(exported.contains("let inc = (x: Int) -> Int"))
-  assert_true(exported.contains("x + base"))
-  assert_true(exported.contains("let answer = inc"))
-  assert_true(exported.contains("export {"))
-  assert_true(exported.contains("\n  answer"))
-  wbtest_remove_if_exists(out_path)
-  wbtest_remove_if_exists(db_path)
-  wbtest_remove_if_exists(root)
-}
-
-///|
-test "cli eval db complex workflow validates chained function scope types" {
-  let root = wbtest_make_temp_dir("eval_db_scope_complex")
-  let db_path = root + "/tmp1.db"
-  let out_path = root + "/main.vibe"
-  let features = @runtime.RuntimeFeatureFlags::stable()
-  eval_cmd(
-    ["--db=" + db_path, "let", "base", "=", "10"],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let scope1 = scope_symbol_signatures_from_db(db_path)
-  assert_eq(scope1.length(), 1)
-  assert_scope_symbol_signature(scope1, "base", "Int")
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "let",
-      "add_base",
-      "=",
-      "(x:",
-      "Int)",
-      "->",
-      "Int",
-      "{",
-      "x",
-      "+",
-      "base",
-      "}",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let scope2 = scope_symbol_signatures_from_db(db_path)
-  assert_eq(scope2.length(), 2)
-  assert_scope_symbol_signature(scope2, "add_base", "(x: Int) -> Int")
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "let",
-      "add_twice",
-      "=",
-      "(x:",
-      "Int)",
-      "->",
-      "Int",
-      "{",
-      "add_base",
-      "(",
-      "add_base",
-      "(",
-      "x",
-      ")",
-      ")",
-      "}",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let scope3 = scope_symbol_signatures_from_db(db_path)
-  assert_eq(scope3.length(), 3)
-  assert_scope_symbol_signature(scope3, "add_twice", "(x: Int) -> Int")
-  eval_cmd(
-    ["--db=" + db_path, "let", "result", "=", "add_twice", "(", "5", ")"],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let scope4 = scope_symbol_signatures_from_db(db_path)
-  assert_eq(scope4.length(), 4)
-  assert_scope_symbol_signature(scope4, "result", "Int")
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "export",
-      "{",
-      "add_base",
-      ",",
-      "add_twice",
-      ",",
-      "result",
-      "}",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let scope5 = scope_symbol_signatures_from_db(db_path)
-  assert_eq(scope5.length(), 4)
-  assert_scope_symbol_signature(scope5, "add_base", "(x: Int) -> Int")
-  assert_scope_symbol_signature(scope5, "add_twice", "(x: Int) -> Int")
-  assert_scope_symbol_signature(scope5, "result", "Int")
-  eval_cmd(
-    ["--db=" + db_path, "--export=" + out_path],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let exported = @os_fs.read_file_to_string(out_path) catch {
-    e => fail("read exported module failed: " + e.to_string())
-  }
-  assert_true(exported.contains("let base = 10"))
-  assert_true(exported.contains("let add_base = (x: Int) -> Int"))
-  assert_true(exported.contains("x + base"))
-  assert_true(exported.contains("let add_twice = (x: Int) -> Int"))
-  assert_true(exported.contains("let result = add_twice"))
-  assert_true(exported.contains("export {"))
-  assert_true(exported.contains("add_base, add_twice, result"))
-  wbtest_remove_if_exists(out_path)
-  wbtest_remove_if_exists(db_path)
-  wbtest_remove_if_exists(root)
-}
-
-///|
-test "cli write_file handles complex eval exported module" {
-  let root = wbtest_make_temp_dir("eval_write_file_complex")
-  let db_path = root + "/tmp1.db"
-  let out_path = root + "/main.vibe"
-  let no_deps_path = root + "/add_twice_nodeps.vibe"
-  let full_path = root + "/result_full.vibe"
-  let features = @runtime.RuntimeFeatureFlags::stable()
-  eval_cmd(
-    ["--db=" + db_path, "let", "base", "=", "10"],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "let",
-      "add_base",
-      "=",
-      "(x:",
-      "Int)",
-      "->",
-      "Int",
-      "{",
-      "x",
-      "+",
-      "base",
-      "}",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "let",
-      "add_twice",
-      "=",
-      "(x:",
-      "Int)",
-      "->",
-      "Int",
-      "{",
-      "add_base",
-      "(",
-      "add_base",
-      "(",
-      "x",
-      ")",
-      ")",
-      "}",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    ["--db=" + db_path, "let", "result", "=", "add_twice", "(", "5", ")"],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "export",
-      "{",
-      "add_base",
-      ",",
-      "add_twice",
-      ",",
-      "result",
-      "}",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    ["--db=" + db_path, "--export=" + out_path],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  apply_cmd([out_path])
-  write_file_cmd(["--entry=" + out_path, "--no-deps", "add_twice", no_deps_path])
-  let no_deps_source = @os_fs.read_file_to_string(no_deps_path) catch {
-    e => fail("read no-deps write_file output failed: " + e.to_string())
-  }
-  assert_true(no_deps_source.contains("let add_twice = (x: Int) -> Int"))
-  assert_false(no_deps_source.contains("let base = 10"))
-  assert_false(no_deps_source.contains("let add_base = (x: Int) -> Int"))
-  assert_true(no_deps_source.contains("export { add_twice }"))
-  write_file_cmd(["--entry=" + out_path, "result", full_path])
-  let full_source = @os_fs.read_file_to_string(full_path) catch {
-    e => fail("read full write_file output failed: " + e.to_string())
-  }
-  assert_true(full_source.contains("let base = 10"))
-  assert_true(full_source.contains("let add_base = (x: Int) -> Int"))
-  assert_true(full_source.contains("let add_twice = (x: Int) -> Int"))
-  assert_true(full_source.contains("let result = add_twice"))
-  assert_true(full_source.contains("export {"))
-  assert_true(full_source.contains("add_base, add_twice, result"))
-  wbtest_remove_if_exists(full_path)
-  wbtest_remove_if_exists(no_deps_path)
-  wbtest_remove_if_exists(out_path)
-  wbtest_remove_if_exists(db_path)
-  wbtest_remove_if_exists(root)
-}
-
-///|
-test "cli eval inspect scope and assertions on persisted namespace" {
-  let root = wbtest_make_temp_dir("eval_inspect_scope_assert")
-  let db_path = root + "/tmp1.db"
-  let features = @runtime.RuntimeFeatureFlags::stable()
-  eval_cmd(
-    ["--db=" + db_path, "let", "base", "=", "10"],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "let",
-      "inc",
-      "=",
-      "(x:",
-      "Int)",
-      "->",
-      "Int",
-      "{",
-      "x",
-      "+",
-      "base",
-      "}",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "--inspect-scope",
-      "--assert",
-      "base:Int",
-      "--assert",
-      "inc:(x: Int) -> Int",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let scope = scope_symbol_signatures_from_db(db_path)
-  assert_eq(scope.length(), 2)
-  assert_scope_symbol_signature(scope, "base", "Int")
-  assert_scope_symbol_signature(scope, "inc", "(x: Int) -> Int")
-  wbtest_remove_if_exists(db_path)
-  wbtest_remove_if_exists(root)
-}
-
-///|
-test "cli eval test-for stores tests outside dag and accumulates by function" {
-  let root = wbtest_make_temp_dir("eval_test_for_sidecar")
-  let db_path = root + "/tmp1.db"
-  let out_path = root + "/main.vibe"
-  let features = @runtime.RuntimeFeatureFlags::stable()
-  eval_cmd(
-    ["--db=" + db_path, "let", "base", "=", "10"],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "let",
-      "add_base",
-      "=",
-      "(x:",
-      "Int)",
-      "->",
-      "Int",
-      "{",
-      "x",
-      "+",
-      "base",
-      "}",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "--test-for",
-      "add_base",
-      "test \"add_base/one\" { assert(add_base(1) == 11) }",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "--test-for=add_base",
-      "test \"add_base/two\" { assert(add_base(2) == 12) }",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let test_path = eval_test_file_path(db_path, "add_base")
-  assert_true(@os_fs.path_exists(test_path))
-  let test_source = @os_fs.read_file_to_string(test_path) catch {
-    e => fail("read eval test sidecar failed: " + e.to_string())
-  }
-  assert_true(test_source.contains("test \"add_base/one\""))
-  assert_true(test_source.contains("test \"add_base/two\""))
-  let db_source = match load_eval_db_source(db_path) {
-    Ok(v) => v
-    Err(err) => fail("load eval db failed: " + err)
-  }
-  assert_false(db_source.contains("test \"add_base/one\""))
-  assert_false(db_source.contains("test \"add_base/two\""))
-  eval_cmd(
-    ["--db=" + db_path, "--export=" + out_path],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let exported = @os_fs.read_file_to_string(out_path) catch {
-    e => fail("read exported module failed: " + e.to_string())
-  }
-  assert_true(exported.contains("let add_base = (x: Int) -> Int"))
-  assert_false(exported.contains("test \"add_base/one\""))
-  assert_false(exported.contains("test \"add_base/two\""))
-  wbtest_remove_if_exists(eval_tests_dir_path(db_path))
-  wbtest_remove_if_exists(out_path)
-  wbtest_remove_if_exists(db_path)
-  wbtest_remove_if_exists(root)
-}
-
-///|
-test "cli eval test-for run uses def-level cache key" {
-  let root = wbtest_make_temp_dir("eval_test_for_run_cache")
-  let db_path = root + "/tmp1.db"
-  let features = @runtime.RuntimeFeatureFlags::stable()
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "let",
-      "add_one",
-      "=",
-      "(x:",
-      "Int)",
-      "->",
-      "Int",
-      "{",
-      "x",
-      "+",
-      "1",
-      "}",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    [
-      "--db=" + db_path,
-      "--test-for",
-      "add_one",
-      "--run",
-      "test \"add_one/basic\" { assert(add_one(1) >= 2) }",
-    ],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let cache_path = eval_test_cache_file_path(db_path, "add_one")
-  assert_true(@os_fs.path_exists(cache_path))
-  let first_hash = @os_fs.read_file_to_string(cache_path) catch {
-    e => fail("read eval test cache failed: " + e.to_string())
-  }
-  assert_true(first_hash.trim().to_string().length() > 0)
-
-  // No new test expression: should use existing sidecar and keep cache key.
-  eval_cmd(
-    ["--db=" + db_path, "--test-for", "add_one", "--run"],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let second_hash = @os_fs.read_file_to_string(cache_path) catch {
-    e => fail("read eval test cache second failed: " + e.to_string())
-  }
-  assert_eq(second_hash.trim().to_string(), first_hash.trim().to_string())
-
-  // Unrelated DB edits should not invalidate def-level cache key.
-  eval_cmd(
-    ["--db=" + db_path, "let", "unrelated", "=", "42"],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  eval_cmd(
-    ["--db=" + db_path, "--test-for", "add_one", "--run"],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let third_hash = @os_fs.read_file_to_string(cache_path) catch {
-    e => fail("read eval test cache third failed: " + e.to_string())
-  }
-  assert_true(third_hash.trim().to_string().length() > 0)
-  assert_eq(third_hash.trim().to_string(), first_hash.trim().to_string())
-
-  // Editing target definition should update dep snapshot hash.
-  let updated_db_source = "let add_one = (x: Int) -> Int { x + 2 }\nlet unrelated = 42\n"
-  @os_fs.write_string_to_file(db_path, updated_db_source) catch {
-    e => fail("rewrite db failed: " + e.to_string())
-  }
-  eval_cmd(
-    ["--db=" + db_path, "--test-for", "add_one", "--run"],
-    @runtime.ParserMode::VibeMode,
-    features,
-  )
-  let fourth_hash = @os_fs.read_file_to_string(cache_path) catch {
-    e => fail("read eval test cache fourth failed: " + e.to_string())
-  }
-  assert_true(fourth_hash.trim().to_string().length() > 0)
-  assert_true(fourth_hash.trim().to_string() != first_hash.trim().to_string())
-  wbtest_remove_if_exists(eval_tests_dir_path(db_path))
-  wbtest_remove_if_exists(db_path)
   wbtest_remove_if_exists(root)
 }
 
@@ -2613,47 +1684,6 @@ test "cli finalize library mode keeps re-export stmt parseable" {
   assert_true(has_reexport)
   wbtest_remove_if_exists(db_path)
   wbtest_remove_if_exists(root)
-}
-
-///|
-fn scope_symbol_signatures_from_db(db_path : String) -> Map[String, String] {
-  let source = match load_eval_db_source(db_path) {
-    Ok(v) => v
-    Err(err) => abort("load eval db failed: " + err)
-  }
-  let db = @runtime.VibeDb::new()
-  db.set_source(db_path, source)
-  let index = @runtime.build_symbol_index(db, [db_path])
-  let out : Map[String, String] = {}
-  for entry in index.entries {
-    if entry.path == db_path {
-      out[entry.name] = entry.signature
-    }
-  }
-  out
-}
-
-///|
-fn assert_scope_symbol_signature(
-  scope : Map[String, String],
-  symbol_name : String,
-  expected_signature : String,
-) -> Unit {
-  match scope.get(symbol_name) {
-    Some(signature) =>
-      if signature != expected_signature {
-        abort(
-          "unexpected signature for `" +
-          symbol_name +
-          "` expected=`" +
-          expected_signature +
-          "` actual=`" +
-          signature +
-          "`",
-        )
-      }
-    None => abort("missing scope symbol: " + symbol_name)
-  }
 }
 
 ///|

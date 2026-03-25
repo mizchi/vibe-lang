@@ -163,13 +163,9 @@ pub fn ensure_cli_parser_mode_supported(
   match mode {
     @runtime.ParserMode::VibeMode => Ok(())
     @runtime.ParserMode::PosixMode | @runtime.ParserMode::PosixStrictMode =>
-      match cmd_name {
-        "shell" | "shell-stdin" | "shell-wasi" => Ok(())
-        _ =>
-          Err(
-            cmd_name +
-            ": --syntax posix-ext/posix-strict is supported only for shell/shell-stdin/shell-wasi",
-          )
-      }
+      Err(
+        cmd_name +
+        ": --syntax posix-ext/posix-strict was removed from public CLI; use --syntax vibe",
+      )
   }
 }

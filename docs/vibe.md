@@ -784,23 +784,20 @@ Notes:
 - Optional name form: `test "name" { ... }` (label only).
 Runtime API:
 - `Runtime::run_script_tests(script)` parses, type-checks, and runs tests with isolated envs.
-- `Runtime::eval_script_with_mode(script, PosixMode)` enables preview vibe shell
-  command-head desugaring.
+- `Runtime::eval_script_with_mode(script, PosixMode)` remains as an internal
+  runtime API for preview shell-style command-head desugaring.
 CLI:
 - `moon run --target native src/cmd/vibe -- run <file>` executes a script (ignores `test {}`).
-- `moon run --target native src/cmd/vibe -- eval [--db tmp1.db] [--include index.vbundle] <expr...>` evaluates one expression/script; with `--db`, appends evaluated source for incremental sessions, and `--export <file>` writes accumulated source.
-  - `--include` accepts path forms and alias forms:
-    - `--include=bit:<path>`: explicit alias to path-backed source.
-    - `--include=vibe/prelude@0.1.0.vbundle`: named alias resolved from `VIBE_LIB_ROOT` (fallback: `VIBE_LIB_DIR`, then `$HOME/.vibe/lib`).
-  - alias file may store `hash:<sha1>` (or JSON `{ "hash": "<sha1>" }`); `eval` resolves the module source from local object stores.
+- `moon run --target native src/cmd/vibe -- eval ...` was removed from the public CLI.
+  Interactive evaluation now lives under compiled `shell` / `shell-stdin`.
 - `moon run --target native src/cmd/vibe -- test <file...>` runs test blocks and prints a report.
 - `moon run --target native src/cmd/vibe -- compile [--wasm | --wasm-js-string] [-o out] <file>` emits IR (default) or wasm bytes.
 - `moon run --target wasm src/cmd/vibe_compile_wasi -- [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wit|--wit-component] [-o out] <file>` runs compile pipeline from wasm target as well.
   - `vibe_compile_wasi` only: `--wasm` prefers `wasm-gc`; use `--wasm-mvp` for core wasm backend (broader language coverage).
   - selfhost compiler boundary: compile logic stays in `vibe/compiler/*`; filesystem / environ / stdio stay in the host wrapper (`src/cmd/vibe_compile_wasi`). See ADR-0028.
-- Parser-consuming commands support `--syntax vibe|posix` (default `vibe`);
-  `posix` is preview-enabled for `shell/shell-stdin/shell-wasi` and is
-  rejected on static/compile-oriented commands.
+- Public CLI parser-consuming commands support `--syntax vibe`.
+  `posix-ext` / `posix-strict` remain internal runtime/testing modes and are
+  rejected by the public CLI.
 - `moon run --target native src/cmd/vibe -- repl` launches the TUI interactive shell (completion + layout, history).
 - `moon run --target native src/cmd/vibe -- repl-stdin [--no-prompt]` reads lines from stdin and evaluates them.
 - `moon run --target native src/cmd/vibe -- repl-wasi [--no-prompt] [--tty|--no-tty]` runs line REPL with wasi-style prompt/tty options.
@@ -843,15 +840,13 @@ Bench:
     `VIBE_BENCH_KPI_MAX_WASM_BYTES`, `VIBE_BENCH_KPI_MAX_SCORE`.
 - 言語組み込み benchmark:
   - `bench "name" { ... }` を `.vibe` に書き、`vibe bench <file|dir...>` で実行。
-  - backend は `--backend wasm|interpreter`（`<file|dir...>` 指定時のデフォルトは `wasm`）。
+  - backend は `--backend wasm` のみ（`<file|dir...>` 指定時のデフォルトも `wasm`）。
   - ディレクトリ指定時は top-level の `*_bench.vibe` を探索。
   - `--n` / `--warmup` は benchmark 実行回数に適用。
   - `--backend wasm` はサイズ優先で `--no-dce -Oz` 相当のコンパイルを使い、出力に `wasm_bytes=<size>` を含める。
 - 互換の expression benchmark モード（legacy）:
-  - `--backend interpreter` のみ対応（`--backend wasm` は非対応）。
-  - `vibe bench --n 20000 --warmup 1000 --expr "add(1,2)"`
-  - `vibe bench --case sum=add(1,2) --case "1 == 1"`
-  - `vibe bench --cases bench/cases.txt`
+  - legacy expr mode (`--expr`, `--case`, `--cases`) は廃止
+  - `bench {}` を含む `.vibe` file を `vibe bench <file>` で実行する
 - `vibe index ref push <scope> <index-file>` / `pull <scope> <out-file>` maps advanced graph snapshots to git/bit refs under
   `refs/bit/index/<scope>/graph/head`.
 - `vibe index ref push-delta <scope> <delta-file>` / `pull-delta <scope> <out-file>` maps advanced graph deltas to

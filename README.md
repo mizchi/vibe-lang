@@ -305,7 +305,7 @@ examples/async_host/  # Rust/wasmtime host runtime
 - `docs/vibe.md` - Language specification (normative for implemented behavior)
 - `docs/module_design.md` - Module design proposals (non-normative)
 - `docs/module-system.md` - Current module system spec
-- `docs/vibe-eval.md` - Eval workflow documentation
+- `docs/vibe-eval.md` - Legacy evaluator workflow notes
 - `docs/async_design.md` - Async design proposals (non-normative)
 - `docs/unstable_features.md` - Unstable runtime feature flags (`--unstable-async`, `--unstable-threads`)
 - `docs/coverage.md` - Coverage strategy for MoonBit + WASM integration
@@ -335,13 +335,13 @@ just bench-typechecker
 ```
 
 `vibe bench` は `bench {}` ブロックを言語機能として実行する。  
-`<file|dir...>` 指定時は `--backend wasm` がデフォルト（`--backend interpreter` で従来実装）。  
-legacy の式ベンチ (`--expr/--case/--cases`) は `interpreter` backend のみ対応。
+`<file|dir...>` 指定時は `--backend wasm` のみをサポートする。  
+legacy の式ベンチ (`--expr/--case/--cases`) は廃止。`bench {}` を含む `.vibe` file を渡す。
 `--backend wasm` ではサイズ優先で `--no-dce -Oz` 相当のコンパイルを使い、各ケースに `wasm_bytes=<size>` を出力する。
 `just bench-kpi` は `vibe bench` の結果を `dist/bench_kpi/latest.tsv` に保存し、`per_us` と `wasm_bytes` を同時に確認できる。
 KPI しきい値は `VIBE_BENCH_KPI_MAX_PER_US` / `VIBE_BENCH_KPI_MAX_WASM_BYTES` / `VIBE_BENCH_KPI_MAX_SCORE` で設定可能。
 引数なしの `just bench-kpi` は `bench/kpi_bench.vibe`（数値パイプライン/状態更新の4ケース）を対象にする。
-`VIBE_BENCH_KPI_N` / `VIBE_BENCH_KPI_WARMUP` 未指定時は `wasm=20000/1000`, `interpreter=2000/200` を使う。
+`VIBE_BENCH_KPI_N` / `VIBE_BENCH_KPI_WARMUP` 未指定時は `wasm=20000/1000` を使う。
 `just bench-std-baseline-update` は `vibe/prelude` を含む bundle-size budget
 (`bench/golden/bundle_size_budget.tsv`) と KPI snapshot
 (`bench/golden/kpi_wasm.tsv`, `bench/golden/kpi_interpreter.tsv`) を更新する。

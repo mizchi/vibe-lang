@@ -218,16 +218,25 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 - [x] internal `session-json` worker で同一 process の `check/test` cache 再利用口を作る
 - [x] `run/check/test` は localhost session worker を既定利用し、`VIBE_USE_SESSION_HTTP=0` で無効化できるようにする
 - [x] 長寿命 process で incremental compile cache を常用化
-- [ ] interpreter を fallback/debug 専用に縮退
-  - [x] `run/test` の自動 interpreter fallback を撤去し、明示 backend 指定だけ残す
-  - [x] `bench` の自動 interpreter fallback も撤去し、明示 `--backend interpreter` だけ残す
-  - [x] fallback 互換 env の参照を削除
-- [ ] compiled parity が揃ったら evaluator / interpreter 実装を削除
+- [x] interpreter の public CLI surface を撤去
+  - [x] `run/test` の自動 interpreter fallback を撤去する
+  - [x] `bench` の自動 interpreter fallback を撤去する
+  - [x] fallback 互換 env の参照を削除する
+  - [x] `run/test` の明示 interpreter backend も削除する
+  - [x] `bench --backend interpreter` を削除する
+  - [x] `bench` の legacy expr mode (`--expr`, `--case`, `--cases`) を削除する
+- [ ] compiled parity が揃ったので evaluator / interpreter 実装を削除
   - [x] `wasm-shell-stdin` で scalar let / late import / bool 行が stateful に動く
   - [x] 関数値 `let` 束縛は placeholder 表示に degrade して shell を継続する
   - [x] String 値は compiled REPL の repr transport で表示する
   - [x] Array / Map など composite 値の表示 transport を追加する
-  - [ ] `vibe shell` 本体を compiled session backend に切り替える
+  - [x] 通常の `vibe shell` / `shell-stdin` を compiled session backend に切り替える
+  - [x] `shell --ai` / `shell --tui` の evaluator 依存を整理する
+  - [x] `cli_repl_js` の evaluator 依存を廃止する
+  - [x] public CLI の `--syntax posix-*` shell 導線を閉じる
+  - [x] `eval` command を public CLI から外す
+  - [ ] `src/runtime/lib.mbt` の `Runtime::eval_script_with_mode` caller を 0 にする
+  - [ ] host / selfhost evaluator 実装と専用 test を削除する
 
 ## ユーザビリティ改善
 

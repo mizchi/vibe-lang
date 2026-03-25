@@ -1,7 +1,7 @@
 # ADR-0002: マルチバックエンド・コンパイル戦略
 
 - Date: 2026-02-16
-- Status: accepted
+- Status: superseded by ADR-0034
 
 ## Context
 

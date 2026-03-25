@@ -33,7 +33,10 @@ pub fn run(args : Array[String]) -> Unit {
   }
   match cmd {
     "run" => run_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
-    "eval" => eval_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
+    "eval" =>
+      abort(
+        "eval: command was removed from public CLI; use shell/shell-stdin for interactive evaluation or compile/run workflows",
+      )
     "test" => test_cmd(cmd_args, runtime_features)
     "check" => check_cmd(cmd_args)
     "session-http" => session_http_cmd(cmd_args, runtime_features)
@@ -60,8 +63,7 @@ pub fn run(args : Array[String]) -> Unit {
     "shell" => repl_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
     "shell-stdin" =>
       repl_stdin_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
-    "shell-wasi" =>
-      repl_wasi_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
+    "shell-wasi" => abort("shell-wasi: command was removed from public CLI")
     "wasm-shell-stdin" => wasm_repl_stdin_cmd(cmd_args)
     "hash" => hash_cmd(cmd_args)
     "save" => save_cmd(cmd_args)
@@ -113,13 +115,6 @@ fn print_usage() -> Unit {
   println("commands:")
   println("  run <file>                 run a script (requires `let main`)")
   println("    demo: vibe run vibe/x/args/demo.vibe")
-  println(
-    "  eval [--db file] [--include file] [--inspect-scope] [--assert name:sig]... [--test-for name] [--run] [--export file] <expr...>  evaluate expression/script",
-  )
-  println(
-    "       include resolution: relative paths use cwd first, then --db parent",
-  )
-  println("       --run without --test-for prints detected target candidates")
   println(
     "  test [--jobs N] <file|dir...>  run test blocks (parallel for dirs; default jobs=VIBE_TEST_JOBS or 1, max 16)",
   )
@@ -193,18 +188,12 @@ fn print_usage() -> Unit {
     "                                     precompile .vibe modules to .wasm",
   )
   println(
-    "  bench [--backend compiled|interpreter] [--runs N] [--warmup N] [--n N] <file|dir...>  run `bench {}` blocks",
-  )
-  println(
-    "        (legacy expr mode: --expr EXPR | --case NAME=EXPR | --cases FILE)",
+    "  bench [--backend compiled] [--runs N] [--warmup N] [--n N] <file|dir...>  run `bench {}` blocks",
   )
   println("  bench-file [--n N] [--warmup N] <file>")
   println("  shell                       interactive TUI shell")
   println(
     "  shell-stdin [--no-prompt] [--tty|--no-tty]  read-eval-print loop (stdin)",
-  )
-  println(
-    "  shell-wasi [--no-prompt] [--tty|--no-tty]   wasi-friendly line shell",
   )
   println(
     "  wasm-shell-stdin [--no-prompt] [-o dir]  compile each expr to WASM",
@@ -235,14 +224,11 @@ fn print_usage() -> Unit {
   println("")
   println("  lsp                         start LSP server (stdin/stdout)")
   println(
-    "  parser commands: --syntax vibe|posix-ext|posix-strict (default: vibe; posix=posix-ext; posix profiles are shell/shell-stdin/shell-wasi only)",
+    "  parser commands: --syntax vibe (public CLI); posix-ext/posix-strict are internal-only",
   )
   println("  runtime flags: --unstable-async --unstable-threads")
   println(
-    "  exec backend env: VIBE_RUN_BACKEND=compiled|interpreter|auto (default: compiled), VIBE_TEST_BACKEND=compiled|interpreter|auto (default: compiled)",
-  )
-  println(
-    "                    VIBE_ENABLE_INTERPRETER=1 re-enables the legacy interpreter backend",
+    "  exec backend env: VIBE_RUN_BACKEND=compiled|auto (default: compiled), VIBE_TEST_BACKEND=compiled|auto (default: compiled)",
   )
   println(
     "                    run/check/test use a persistent localhost session worker by default; set VIBE_USE_SESSION_HTTP=0 to disable",
@@ -288,16 +274,6 @@ fn resolve_test_loop_fuel_env_value() -> String {
 }
 
 ///|
-fn new_test_runtime_with_features(
-  features : @runtime.RuntimeFeatureFlags,
-) -> @runtime.Runtime {
-  let prev_loop_fuel = @sys.get_env_var("VIBE_LOOP_FUEL")
-  @sys.set_env_var("VIBE_LOOP_FUEL", resolve_test_loop_fuel_env_value())
-  defer restore_cli_env_var("VIBE_LOOP_FUEL", prev_loop_fuel)
-  new_runtime_with_features(features)
-}
-
-///|
 fn new_runtime_with_llm(
   features : @runtime.RuntimeFeatureFlags,
 ) -> @runtime.Runtime {
@@ -323,7 +299,6 @@ fn new_cli_runtime(
 fn command_requires_parser(cmd : String) -> Bool {
   match cmd {
     "run"
-    | "eval"
     | "test"
     | "check"
     | "apply"
@@ -334,7 +309,6 @@ fn command_requires_parser(cmd : String) -> Bool {
     | "bench-file"
     | "shell"
     | "shell-stdin"
-    | "shell-wasi"
     | "wasm-shell-stdin"
     | "hash"
     | "save"
@@ -1114,7 +1088,6 @@ fn[T] die(msg : String) -> T {
 ///|
 enum CliExecBackendPref {
   Auto
-  Interpreter
   Compiled
 } derive(Eq, Show)
 
@@ -1122,7 +1095,6 @@ enum CliExecBackendPref {
 fn parse_cli_exec_backend_pref(raw : String) -> CliExecBackendPref {
   let value = raw.trim().to_string().to_lower()
   match value {
-    "interp" | "interpreter" => CliExecBackendPref::Interpreter
     "compiled" | "compile" | "wasm" => CliExecBackendPref::Compiled
     _ => CliExecBackendPref::Auto
   }
@@ -1194,35 +1166,6 @@ fn cli_use_session_http() -> Bool {
     @sys.get_env_var("VIBE_USE_SESSION_HTTP"),
     current_cli_binary_path() is Some(_),
   )
-}
-
-///|
-fn cli_interpreter_backend_enabled() -> Bool {
-  match @sys.get_env_var("VIBE_ENABLE_INTERPRETER") {
-    Some(raw) => parse_bool_flag(raw)
-    None => false
-  }
-}
-
-///|
-fn cli_require_interpreter_backend(mode : String) -> Result[Unit, String] {
-  if cli_interpreter_backend_enabled() {
-    Ok(())
-  } else {
-    Err(
-      "interpreter backend disabled for " +
-      mode +
-      "; set VIBE_ENABLE_INTERPRETER=1 to re-enable it",
-    )
-  }
-}
-
-///|
-fn cli_stop_compiled_test_on_first_failure(
-  allow_interpreter_fallback : Bool,
-) -> Bool {
-  ignore(allow_interpreter_fallback)
-  false
 }
 
 ///|
@@ -2167,117 +2110,34 @@ fn print_wasm_run_value(value : WasmRunValue) -> Unit {
 fn run_cmd(
   args : Array[String],
   syntax_mode : @runtime.ParserMode,
-  features : @runtime.RuntimeFeatureFlags,
+  _features : @runtime.RuntimeFeatureFlags,
   enable_llm~ : Bool,
 ) -> Unit {
+  let _ = enable_llm
   if args.length() != 1 {
     abort("run: expected <file>")
   }
   let entry_path = args[0]
   match syntax_mode {
-    @runtime.ParserMode::VibeMode => {
-      let backend_pref = resolve_run_backend_pref(entry_path)
-      if backend_pref == CliExecBackendPref::Interpreter {
-        match cli_require_interpreter_backend("run") {
-          Ok(_) => ()
-          Err(err) => die("error: " + err)
-        }
+    @runtime.ParserMode::VibeMode => ()
+    _ => abort("run: --syntax vibe only")
+  }
+  let use_session_http = cli_use_session_http()
+  if use_session_http {
+    match run_entry_via_session(entry_path, _features) {
+      Ok(result) => {
+        print_wasm_run_value(result)
+        return
       }
-      let use_session_http = cli_use_session_http()
-      if backend_pref != CliExecBackendPref::Interpreter {
-        if use_session_http {
-          match run_entry_via_session(entry_path, features) {
-            Ok(result) => {
-              print_wasm_run_value(result)
-              return
-            }
-            Err(_) => ()
-          }
-        }
-        match run_cmd_wasm_backend(entry_path) {
-          Ok(result) => {
-            print_wasm_run_value(result)
-            // Create linked cache in background for next run
-            maybe_create_linked_cache_background(entry_path)
-            return
-          }
-          Err(err) => die("error: run wasm backend: " + err)
-        }
-      }
-      match @loader.load_db(entry_path) {
-        Err(err) => die("error: " + err)
-        Ok((db, entry)) => {
-          let compiled = @runtime_compile.compile_module(db, entry) catch {
-            e => die("error: " + e.to_string())
-          }
-          let rt = new_cli_runtime(features, enable_llm~)
-          rt.set_type_env(compiled.type_env)
-          // Build path-to-hash mapping and load imported modules into runtime cache
-          let path_to_hash : Map[String, String] = {}
-          load_imports_into_runtime(rt, db, entry, path_to_hash)
-          // Also add mappings for raw paths from the AST
-          let base_dir = @vibe_fs.parent_path(entry)
-          for stmt in compiled.ast.stmts {
-            match stmt {
-              @vibe_core.Stmt::Import(source~, ..)
-              | @vibe_core.Stmt::ReExport(source~, ..) =>
-                match source {
-                  @vibe_core.ModuleRef::Path(path=raw_path) => {
-                    // Resolve the path to find the hash
-                    let resolved = @loader.resolve_import_path(
-                      base_dir, raw_path,
-                    )
-                    match path_to_hash.get(resolved) {
-                      Some(hash) => path_to_hash[raw_path] = hash
-                      None => ()
-                    }
-                  }
-                  @vibe_core.ModuleRef::Hash(_)
-                  | @vibe_core.ModuleRef::Version(_)
-                  | @vibe_core.ModuleRef::Symbol(_)
-                  | @vibe_core.ModuleRef::Alias(_)
-                  | @vibe_core.ModuleRef::PinnedPath(..) => ()
-                }
-              _ => ()
-            }
-          }
-          // Convert the AST's import paths to hashes
-          let converted_ast = @vibe_core.convert_imports_to_hash(compiled.ast, fn(
-            path,
-          ) {
-            path_to_hash.get(path)
-          })
-          // Set aliases
-          for name, target in compiled.aliases {
-            rt.set_alias(name, target)
-          }
-          // Check top-level purity
-          @checker.check_toplevel_purity(compiled.type_env, converted_ast.stmts) catch {
-            e => die("error: " + e.diagnostic().message)
-          }
-          // Load top-level definitions into runtime
-          let _ = rt.eval_module(converted_ast) catch {
-            e => die("error: " + e.user_message())
-          }
-          // Execute main entry point
-          let main_result = rt.call_main() catch {
-            e => die("error: " + e.user_message())
-          }
-          print_eval_result(main_result)
-        }
-      }
+      Err(_) => ()
     }
-    @runtime.ParserMode::PosixMode | @runtime.ParserMode::PosixStrictMode => {
-      let resolved = @loader.resolve_entry_path(entry_path)
-      let source = @os_fs.read_file_to_string(resolved) catch {
-        e => die("error: " + e.to_string())
-      }
-      let rt = new_cli_runtime(features, enable_llm~)
-      let result = rt.eval_script_with_mode(source, syntax_mode) catch {
-        e => die("error: " + e.user_message())
-      }
-      print_eval_result(result)
+  }
+  match run_cmd_wasm_backend(entry_path) {
+    Ok(result) => {
+      print_wasm_run_value(result)
+      maybe_create_linked_cache_background(entry_path)
     }
+    Err(err) => die("error: run wasm backend: " + err)
   }
 }
 
@@ -3570,103 +3430,22 @@ fn run_test_file_compiled(
 }
 
 ///|
-fn run_test_file_interpreter_with_cache(
-  cache : CliEntryDbCache,
-  entry_path : String,
-  features : @runtime.RuntimeFeatureFlags,
-) -> Result[CliTestReport, String] {
-  let (db, entry) = match load_db_for_test_with_cache(cache, entry_path) {
-    Err(err) => return Err("load error: " + err)
-    Ok(v) => v
-  }
-  let compiled = @runtime_compile.compile_module(db, entry) catch {
-    e => return Err("compile error: " + e.to_string())
-  }
-  let rt = new_test_runtime_with_features(features)
-  rt.set_type_env(compiled.type_env)
-  let path_to_hash : Map[String, String] = {}
-  load_imports_into_runtime(rt, db, entry, path_to_hash)
-  let base_dir = @vibe_fs.parent_path(entry)
-  for stmt in compiled.ast.stmts {
-    match stmt {
-      @vibe_core.Stmt::Import(source~, ..)
-      | @vibe_core.Stmt::ReExport(source~, ..) =>
-        match source {
-          @vibe_core.ModuleRef::Path(path=raw_path) => {
-            let resolved = @loader.resolve_import_path(base_dir, raw_path)
-            match path_to_hash.get(resolved) {
-              Some(hash) => path_to_hash[raw_path] = hash
-              None => ()
-            }
-          }
-          @vibe_core.ModuleRef::Hash(_)
-          | @vibe_core.ModuleRef::Version(_)
-          | @vibe_core.ModuleRef::Symbol(_)
-          | @vibe_core.ModuleRef::Alias(_)
-          | @vibe_core.ModuleRef::PinnedPath(..) => ()
-        }
-      _ => ()
-    }
-  }
-  let converted_ast = @vibe_core.convert_imports_to_hash(compiled.ast, fn(
-    path,
-  ) {
-    path_to_hash.get(path)
-  })
-  for name, target in compiled.aliases {
-    rt.set_alias(name, target)
-  }
-  let report = rt.run_tests(converted_ast) catch {
-    e => return Err("eval error: " + e.to_string())
-  }
-  let failures : Array[CliTestFailure] = []
-  for failure in report.failures {
-    failures.push(CliTestFailure::{ name: failure.name, error: failure.error })
-  }
-  Ok({
-    total: report.total,
-    passed: report.passed,
-    failed: report.failed,
-    failures,
-  })
-}
-
-///|
-fn run_test_file_interpreter(
-  entry_path : String,
-  features : @runtime.RuntimeFeatureFlags,
-) -> Result[CliTestReport, String] {
-  run_test_file_interpreter_with_cache(
-    CliEntryDbCache::new(),
-    entry_path,
-    features,
-  )
-}
-
-///|
 fn run_test_file_with_backend_with_cache(
   cache : CliEntryDbCache,
   entry_path : String,
   features : @runtime.RuntimeFeatureFlags,
 ) -> Result[CliTestReport, String] {
-  let backend_pref = resolve_test_backend_pref(entry_path)
-  if backend_pref == CliExecBackendPref::Interpreter {
-    match cli_require_interpreter_backend("test") {
-      Ok(_) => ()
-      Err(err) => return Err(err)
-    }
-    return run_test_file_interpreter_with_cache(cache, entry_path, features)
-  }
+  ignore(features)
   // Runtime import failures are detected from compiled failure reports, so
-  // ordinary failing tests do not need to bounce through interpreter fallback.
-  let stop_on_first_failure = cli_stop_compiled_test_on_first_failure(false)
+  // ordinary failing tests keep the compiled per-case reporting path.
+  let stop_on_first_failure = false
   match
     run_test_file_compiled_with_cache(cache, entry_path, stop_on_first_failure) {
     CompiledTestAttempt::Success(report) => {
       if report.failed > 0 &&
         compiled_report_has_runtime_import_failures(report) {
         return Err(
-          "compiled test backend unsupported: runtime imports require interpreter fallback",
+          "compiled test backend unsupported: runtime imports are not available in compiled mode",
         )
       }
       Ok(report)
@@ -6477,41 +6256,6 @@ fn print_test_report(path : String, report : @runtime.TestReport) -> Bool {
 fn print_cli_test_report(path : String, report : CliTestReport) -> Bool {
   let status = if report.failed == 0 { "ok" } else { "fail" }
   println("\{path}: \{status} (\{report.passed}/\{report.total})")
-  if report.failed > 0 {
-    println("  failures:")
-    for failure in report.failures {
-      let name = match failure.name {
-        Some(n) => n
-        None => "<unnamed>"
-      }
-      println("  - " + name + ": " + failure.error)
-    }
-  }
-  report.failed == 0
-}
-
-///|
-fn print_bench_report(path : String, report : @runtime.BenchReport) -> Bool {
-  let status = if report.failed == 0 { "ok" } else { "fail" }
-  println("\{path}: \{status} (\{report.passed}/\{report.total})")
-  for result in report.results {
-    let name = match result.name {
-      Some(n) => n
-      None => "<unnamed>"
-    }
-    println(
-      "  bench: " +
-      name +
-      " count=" +
-      result.iterations.to_string() +
-      " warmup=" +
-      result.warmup.to_string() +
-      " total_ms=" +
-      result.elapsed_ms.to_string() +
-      " per_us=" +
-      result.per_us.to_string(),
-    )
-  }
   if report.failed > 0 {
     println("  failures:")
     for failure in report.failures {

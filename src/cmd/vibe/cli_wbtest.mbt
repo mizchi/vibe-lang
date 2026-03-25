@@ -177,332 +177,6 @@ test "repl parser mode hint removed with do keyword" {
 }
 
 ///|
-test "eval cmd options parse db and expression" {
-  let parsed = parse_eval_cmd_options(
-    ["--db=tmp1.db", "--include=index.lock", "let", "value", "=", "1"],
-    "eval",
-  )
-  match parsed {
-    Ok(opts) => {
-      match opts.db_path {
-        Some(path) => assert_eq(path, "tmp1.db")
-        None => fail("expected db path")
-      }
-      match opts.export_path {
-        Some(_) => fail("unexpected export path")
-        None => ()
-      }
-      assert_eq(opts.include_paths, ["index.lock"])
-      match opts.expr {
-        Some(expr) => assert_eq(expr, "let value = 1")
-        None => fail("expected expression")
-      }
-    }
-    Err(msg) => fail("unexpected err: " + msg)
-  }
-}
-
-///|
-test "eval cmd options parse export only" {
-  let parsed = parse_eval_cmd_options(
-    ["--db", "tmp1.db", "--include", "index.lock", "--export", "out.vibe"],
-    "eval",
-  )
-  match parsed {
-    Ok(opts) => {
-      match opts.db_path {
-        Some(path) => assert_eq(path, "tmp1.db")
-        None => fail("expected db path")
-      }
-      match opts.export_path {
-        Some(path) => assert_eq(path, "out.vibe")
-        None => fail("expected export path")
-      }
-      assert_eq(opts.include_paths, ["index.lock"])
-      match opts.expr {
-        Some(_) => fail("unexpected expression")
-        None => ()
-      }
-    }
-    Err(msg) => fail("unexpected err: " + msg)
-  }
-}
-
-///|
-test "eval cmd options allows export without db" {
-  let parsed = parse_eval_cmd_options(["--export", "out.vibe"], "eval")
-  match parsed {
-    Ok(opts) => {
-      match opts.db_path {
-        Some(_) => fail("unexpected db path")
-        None => ()
-      }
-      match opts.export_path {
-        Some(path) => assert_eq(path, "out.vibe")
-        None => fail("expected export path")
-      }
-      match opts.expr {
-        Some(_) => fail("unexpected expression")
-        None => ()
-      }
-    }
-    Err(msg) => fail("unexpected err: " + msg)
-  }
-}
-
-///|
-test "eval cmd options parse multiple includes" {
-  let parsed = parse_eval_cmd_options(
-    [
-      "--db", "tmp1.db", "--include", "index.lock", "--include=bit:/tmp/std.lock",
-      "let", "x", "=", "1",
-    ],
-    "eval",
-  )
-  match parsed {
-    Ok(opts) => {
-      assert_eq(opts.include_paths, ["index.lock", "bit:/tmp/std.lock"])
-      match opts.expr {
-        Some(expr) => assert_eq(expr, "let x = 1")
-        None => fail("expected expression")
-      }
-    }
-    Err(msg) => fail("unexpected err: " + msg)
-  }
-}
-
-///|
-test "eval cmd options parse inspect scope assertions and test target" {
-  let parsed = parse_eval_cmd_options(
-    [
-      "--db=tmp1.db", "--inspect-scope", "--assert=base:Int", "--assert", "inc:(x: Int) -> Int",
-      "--test-for", "inc", "test \"inc/basic\" { assert_eq(inc(1), 2) }",
-    ],
-    "eval",
-  )
-  match parsed {
-    Ok(opts) => {
-      assert_true(opts.inspect_scope)
-      assert_false(opts.test_run)
-      assert_eq(opts.assertions.length(), 2)
-      assert_eq(opts.assertions[0].name, "base")
-      assert_eq(opts.assertions[0].expected_signature, "Int")
-      assert_eq(opts.assertions[1].name, "inc")
-      assert_eq(opts.assertions[1].expected_signature, "(x: Int) -> Int")
-      match opts.test_target {
-        Some(name) => assert_eq(name, "inc")
-        None => fail("expected test target")
-      }
-      match opts.expr {
-        Some(expr) =>
-          assert_eq(expr, "test \"inc/basic\" { assert_eq(inc(1), 2) }")
-        None => fail("expected expression")
-      }
-    }
-    Err(msg) => fail("unexpected err: " + msg)
-  }
-}
-
-///|
-test "eval cmd options parse run for existing test target without expression" {
-  let parsed = parse_eval_cmd_options(
-    ["--db=tmp1.db", "--test-for", "inc", "--run"],
-    "eval",
-  )
-  match parsed {
-    Ok(opts) => {
-      assert_true(opts.test_run)
-      match opts.test_target {
-        Some(name) => assert_eq(name, "inc")
-        None => fail("expected test target")
-      }
-      match opts.expr {
-        Some(_) => fail("unexpected expression")
-        None => ()
-      }
-    }
-    Err(msg) => fail("unexpected err: " + msg)
-  }
-}
-
-///|
-test "eval cmd options allow inspect scope without expression" {
-  let parsed = parse_eval_cmd_options(
-    ["--db=tmp1.db", "--inspect-scope"],
-    "eval",
-  )
-  match parsed {
-    Ok(opts) => {
-      assert_true(opts.inspect_scope)
-      match opts.expr {
-        Some(_) => fail("unexpected expression")
-        None => ()
-      }
-    }
-    Err(msg) => fail("unexpected err: " + msg)
-  }
-}
-
-///|
-test "eval cmd options reject malformed assert" {
-  let parsed = parse_eval_cmd_options(
-    ["--assert", "bad", "let", "x", "=", "1"],
-    "eval",
-  )
-  match parsed {
-    Ok(_) => fail("expected error")
-    Err(msg) =>
-      assert_eq(
-        msg, "eval: invalid --assert `bad` (expected <name>:<signature>)",
-      )
-  }
-}
-
-///|
-test "eval cmd options allow run without test target for runtime suggestion" {
-  let parsed = parse_eval_cmd_options(["--db=tmp1.db", "--run"], "eval")
-  match parsed {
-    Ok(opts) => {
-      assert_true(opts.test_run)
-      match opts.test_target {
-        Some(_) => fail("unexpected test target")
-        None => ()
-      }
-    }
-    Err(msg) => fail("unexpected err: " + msg)
-  }
-}
-
-///|
-test "eval cmd options reject test target without expression" {
-  let parsed = parse_eval_cmd_options(
-    ["--db=tmp1.db", "--test-for", "inc"],
-    "eval",
-  )
-  match parsed {
-    Ok(_) => fail("expected error")
-    Err(msg) => assert_eq(msg, "eval: --test-for requires expression")
-  }
-}
-
-///|
-test "eval cmd options reject missing expression and export" {
-  let parsed = parse_eval_cmd_options(["--db=tmp1.db"], "eval")
-  match parsed {
-    Ok(_) => fail("expected error")
-    Err(msg) => assert_eq(msg, "eval: expected expression or --export")
-  }
-}
-
-///|
-test "eval cmd options reject missing include value" {
-  let parsed = parse_eval_cmd_options(["--db=tmp1.db", "--include"], "eval")
-  match parsed {
-    Ok(_) => fail("expected error")
-    Err(msg) => assert_eq(msg, "eval: missing value for --include")
-  }
-}
-
-///|
-test "eval include path resolves relative base dir from current directory" {
-  let cwd = @io.current_dir_or_root()
-  let resolved = resolve_eval_include_path(
-    ".", "tmp_probe/eval/include-test.vibe", "/home/test/.vibe/lib",
-  )
-  assert_eq(
-    resolved,
-    @vibe_fs.normalize_path(cwd + "/tmp_probe/eval/include-test.vibe"),
-  )
-}
-
-///|
-test "load eval include source prefers cwd before db parent for relative include" {
-  let cwd = @io.current_dir_or_root()
-  let rel_root = "tmp_probe/wbtest_eval_include_cwd_priority"
-  let include_rel = rel_root + "/shared.vibe"
-  let cwd_dir = @vibe_fs.normalize_path(cwd + "/" + rel_root)
-  let cwd_include = @vibe_fs.normalize_path(cwd + "/" + include_rel)
-  let base_root = wbtest_make_temp_dir("eval_include_base_priority")
-  let base_dir = @vibe_fs.normalize_path(base_root + "/workspace")
-  let base_include = @vibe_fs.normalize_path(base_dir + "/" + include_rel)
-  wbtest_remove_if_exists(cwd_dir)
-  wbtest_remove_if_exists(base_root)
-  match @io.create_dir(cwd_dir) {
-    Ok(_) => ()
-    Err(err) => fail("create cwd include dir failed: " + err)
-  }
-  match ensure_parent_dir_for_file(base_include, "eval") {
-    Ok(_) => ()
-    Err(err) => fail("create base include dir failed: " + err)
-  }
-  @os_fs.write_string_to_file(cwd_include, "let seed = 1\n") catch {
-    e => fail("write cwd include failed: " + e.to_string())
-  }
-  @os_fs.write_string_to_file(base_include, "let seed = 2\n") catch {
-    e => fail("write base include failed: " + e.to_string())
-  }
-  let loaded = match
-    load_eval_include_source(include_rel, base_dir, "/tmp/vibe_lib_unused") {
-    Ok(v) => v
-    Err(err) => fail("load include failed: " + err)
-  }
-  assert_true(loaded.contains("let seed = 1"))
-  assert_false(loaded.contains("let seed = 2"))
-  wbtest_remove_if_exists(cwd_dir)
-  wbtest_remove_if_exists(base_root)
-}
-
-///|
-test "load eval include source falls back to db parent when cwd missing" {
-  let cwd = @io.current_dir_or_root()
-  let rel_root = "tmp_probe/wbtest_eval_include_db_fallback"
-  let include_rel = rel_root + "/shared.vibe"
-  let cwd_dir = @vibe_fs.normalize_path(cwd + "/" + rel_root)
-  let base_root = wbtest_make_temp_dir("eval_include_base_fallback")
-  let base_dir = @vibe_fs.normalize_path(base_root + "/workspace")
-  let base_include = @vibe_fs.normalize_path(base_dir + "/" + include_rel)
-  wbtest_remove_if_exists(cwd_dir)
-  wbtest_remove_if_exists(base_root)
-  match ensure_parent_dir_for_file(base_include, "eval") {
-    Ok(_) => ()
-    Err(err) => fail("create base include dir failed: " + err)
-  }
-  @os_fs.write_string_to_file(base_include, "let seed = 2\n") catch {
-    e => fail("write base include failed: " + e.to_string())
-  }
-  let loaded = match
-    load_eval_include_source(include_rel, base_dir, "/tmp/vibe_lib_unused") {
-    Ok(v) => v
-    Err(err) => fail("load include failed: " + err)
-  }
-  assert_true(loaded.contains("let seed = 2"))
-  wbtest_remove_if_exists(cwd_dir)
-  wbtest_remove_if_exists(base_root)
-}
-
-///|
-test "load eval include source missing message shows tried candidates" {
-  let cwd = @io.current_dir_or_root()
-  let rel_root = "tmp_probe/wbtest_eval_include_missing"
-  let include_rel = rel_root + "/missing.vibe"
-  let cwd_dir = @vibe_fs.normalize_path(cwd + "/" + rel_root)
-  let base_root = wbtest_make_temp_dir("eval_include_missing_message")
-  let base_dir = @vibe_fs.normalize_path(base_root + "/workspace")
-  wbtest_remove_if_exists(cwd_dir)
-  match
-    load_eval_include_source(include_rel, base_dir, "/tmp/vibe_lib_unused") {
-    Ok(_) => fail("expected include missing error")
-    Err(err) => {
-      assert_true(err.contains("include not found"))
-      assert_true(err.contains("tried:"))
-      assert_true(err.contains(include_rel))
-    }
-  }
-  wbtest_remove_if_exists(cwd_dir)
-  wbtest_remove_if_exists(base_root)
-}
-
-///|
 test "resolve vibe lib dir prefers VIBE_LIB_ROOT over VIBE_LIB_DIR" {
   let prev_root = @sys.get_env_var("VIBE_LIB_ROOT")
   let prev_dir = @sys.get_env_var("VIBE_LIB_DIR")
@@ -1032,7 +706,7 @@ test "cli syntax mode support matrix" {
     Ok(_) => fail("expected run rejection")
     Err(msg) => {
       assert_true(msg.contains("run"))
-      assert_true(msg.contains("supported only"))
+      assert_true(msg.contains("removed from public CLI"))
     }
   }
   match
@@ -1040,37 +714,49 @@ test "cli syntax mode support matrix" {
     Ok(_) => fail("expected eval rejection")
     Err(msg) => {
       assert_true(msg.contains("eval"))
-      assert_true(msg.contains("supported only"))
+      assert_true(msg.contains("removed from public CLI"))
     }
   }
   match
     ensure_cli_parser_mode_supported(@runtime.ParserMode::PosixMode, "shell") {
-    Ok(_) => ()
-    Err(msg) => fail("unexpected shell error: " + msg)
+    Ok(_) => fail("expected shell rejection")
+    Err(msg) => {
+      assert_true(msg.contains("shell"))
+      assert_true(msg.contains("removed from public CLI"))
+    }
   }
   match
     ensure_cli_parser_mode_supported(
       @runtime.ParserMode::PosixMode,
       "shell-stdin",
     ) {
-    Ok(_) => ()
-    Err(msg) => fail("unexpected shell-stdin error: " + msg)
+    Ok(_) => fail("expected shell-stdin rejection")
+    Err(msg) => {
+      assert_true(msg.contains("shell-stdin"))
+      assert_true(msg.contains("removed from public CLI"))
+    }
   }
   match
     ensure_cli_parser_mode_supported(
       @runtime.ParserMode::PosixMode,
       "shell-wasi",
     ) {
-    Ok(_) => ()
-    Err(msg) => fail("unexpected shell-wasi error: " + msg)
+    Ok(_) => fail("expected shell-wasi rejection")
+    Err(msg) => {
+      assert_true(msg.contains("shell-wasi"))
+      assert_true(msg.contains("removed from public CLI"))
+    }
   }
   match
     ensure_cli_parser_mode_supported(
       @runtime.ParserMode::PosixStrictMode,
       "shell",
     ) {
-    Ok(_) => ()
-    Err(msg) => fail("unexpected strict shell error: " + msg)
+    Ok(_) => fail("expected strict shell rejection")
+    Err(msg) => {
+      assert_true(msg.contains("shell"))
+      assert_true(msg.contains("removed from public CLI"))
+    }
   }
   match
     ensure_cli_parser_mode_supported(
@@ -1080,7 +766,7 @@ test "cli syntax mode support matrix" {
     Ok(_) => fail("expected strict run rejection")
     Err(msg) => {
       assert_true(msg.contains("run"))
-      assert_true(msg.contains("supported only"))
+      assert_true(msg.contains("removed from public CLI"))
     }
   }
   match
@@ -1088,7 +774,7 @@ test "cli syntax mode support matrix" {
     Ok(_) => fail("expected bench rejection")
     Err(msg) => {
       assert_true(msg.contains("bench"))
-      assert_true(msg.contains("supported only"))
+      assert_true(msg.contains("removed from public CLI"))
     }
   }
   match
@@ -1096,9 +782,14 @@ test "cli syntax mode support matrix" {
     Ok(_) => fail("expected compile rejection")
     Err(msg) => {
       assert_true(msg.contains("compile"))
-      assert_true(msg.contains("supported only"))
+      assert_true(msg.contains("removed from public CLI"))
     }
   }
+}
+
+///|
+test "removed eval command does not require parser gate" {
+  assert_false(command_requires_parser("eval"))
 }
 
 ///|
@@ -2133,40 +1824,6 @@ test "ensure_parent_dir_for_file errors when parent path is file" {
 }
 
 ///|
-test "eval run missing target message includes function and sidecar candidates" {
-  let root = wbtest_make_temp_dir("eval_run_missing_target_candidates")
-  let db_path = root + "/tmp1.db"
-  let source = "let base = 1\nlet add_one = (x: Int) -> Int { x + base }\n"
-  match
-    write_eval_test_source(
-      db_path, "saved_target", "test \"saved\" { assert(true) }",
-    ) {
-    Ok(_) => ()
-    Err(err) => fail("write sidecar failed: " + err)
-  }
-  let msg = eval_run_missing_test_target_message(db_path, source)
-  assert_true(msg.contains("eval: --run requires --test-for"))
-  assert_true(msg.contains("add_one"))
-  assert_true(msg.contains("saved_target"))
-  assert_false(msg.contains("base"))
-  wbtest_remove_if_exists(eval_tests_dir_path(db_path))
-  wbtest_remove_if_exists(db_path)
-  wbtest_remove_if_exists(root)
-}
-
-///|
-test "eval run missing target message reports no candidates when empty" {
-  let root = wbtest_make_temp_dir("eval_run_missing_target_empty")
-  let db_path = root + "/tmp1.db"
-  let msg = eval_run_missing_test_target_message(db_path, "")
-  assert_true(msg.contains("eval: --run requires --test-for"))
-  assert_true(msg.contains("no test targets found"))
-  wbtest_remove_if_exists(eval_tests_dir_path(db_path))
-  wbtest_remove_if_exists(db_path)
-  wbtest_remove_if_exists(root)
-}
-
-///|
 test "eval restore diagnosis classifies parse as non-fatal" {
   let diagnosis = eval_restore_diagnose("Parse((start=1,end=2), expected expr)")
   assert_eq(diagnosis.severity, EvalRestoreSeverity::NonFatal)
@@ -2863,8 +2520,9 @@ test "compiled test wrapper executes top-level computed let bindings" {
   match run_test_file_compiled(source_path, false) {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
-      assert_eq(report.passed, 1)
-      assert_eq(report.failed, 0)
+      if report.passed != 1 || report.failed != 0 {
+        fail("unexpected compiled report: " + report.to_string())
+      }
     }
     CompiledTestAttempt::Unsupported(err) =>
       fail("compiled test unexpectedly unsupported: " + err)
@@ -2903,8 +2561,9 @@ test "compiled test wrapper executes closure-captured string condition" {
   match run_test_file_compiled(source_path, false) {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
-      assert_eq(report.passed, 1)
-      assert_eq(report.failed, 0)
+      if report.passed != 1 || report.failed != 0 {
+        fail("unexpected compiled report: " + report.to_string())
+      }
     }
     CompiledTestAttempt::Unsupported(err) =>
       fail("compiled test unexpectedly unsupported: " + err)
@@ -2939,8 +2598,9 @@ test "compiled test wrapper supports paren string interpolation syntax" {
   match run_test_file_compiled(source_path, false) {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
-      assert_eq(report.passed, 1)
-      assert_eq(report.failed, 0)
+      if report.passed != 1 || report.failed != 0 {
+        fail("unexpected compiled report: " + report.to_string())
+      }
     }
     CompiledTestAttempt::Unsupported(err) =>
       fail("compiled test unexpectedly unsupported: " + err)
@@ -3162,7 +2822,7 @@ test "compiled test wrapper keeps Map::keys results as strings" {
   @os_fs.write_string_to_file(
     source_path,
     "test \"Map::keys strings\" {\n" +
-    "  let m: Map[Int] = map {\n" +
+    "  let m: Map[String, Int] = map {\n" +
     "    \"name\": 1,\n" +
     "    \"ok\": 2\n" +
     "  }\n" +
@@ -3178,8 +2838,9 @@ test "compiled test wrapper keeps Map::keys results as strings" {
   match run_test_file_compiled(source_path, false) {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
-      assert_eq(report.passed, 1)
-      assert_eq(report.failed, 0)
+      if report.passed != 1 || report.failed != 0 {
+        fail("unexpected compiled report: " + report.to_string())
+      }
     }
     CompiledTestAttempt::Unsupported(err) =>
       fail("compiled Map::keys strings unexpectedly unsupported: " + err)
@@ -3666,7 +3327,7 @@ fn write_wbtest_basic_test_source(source_path : String) -> Unit {
 test "exec backend pref parsing" {
   assert_eq(
     parse_cli_exec_backend_pref("interpreter"),
-    CliExecBackendPref::Interpreter,
+    CliExecBackendPref::Auto,
   )
   assert_eq(
     parse_cli_exec_backend_pref("compiled"),
@@ -3756,17 +3417,17 @@ test "resolve_test_loop_fuel_env_value respects override" {
 }
 
 ///|
-test "resolve_test_backend_pref respects explicit interpreter" {
+test "resolve_test_backend_pref ignores legacy interpreter env" {
   let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
   @sys.set_env_var("VIBE_TEST_BACKEND", "interpreter")
   defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
   assert_eq(
     resolve_test_backend_pref("vibe/compiler/eval_test.vibe"),
-    CliExecBackendPref::Interpreter,
+    CliExecBackendPref::Compiled,
   )
   assert_eq(
     resolve_test_backend_pref("examples/hello.vibe"),
-    CliExecBackendPref::Interpreter,
+    CliExecBackendPref::Compiled,
   )
 }
 
@@ -4013,17 +3674,13 @@ test "cli session run json roundtrips" {
 }
 
 ///|
-test "run and test default to compiled even when interpreter is enabled" {
-  let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
+test "run and test default to compiled even when legacy interpreter env is set" {
   let prev_run_backend = @sys.get_env_var("VIBE_RUN_BACKEND")
   let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
-  @sys.unset_env_var("VIBE_ENABLE_INTERPRETER")
   @sys.unset_env_var("VIBE_RUN_BACKEND")
   @sys.unset_env_var("VIBE_TEST_BACKEND")
-  defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
   defer wbtest_restore_env_var("VIBE_RUN_BACKEND", prev_run_backend)
   defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
-  assert_false(cli_interpreter_backend_enabled())
   assert_eq(
     resolve_run_backend_pref("examples/hello.vibe"),
     CliExecBackendPref::Compiled,
@@ -4032,89 +3689,23 @@ test "run and test default to compiled even when interpreter is enabled" {
     resolve_test_backend_pref("examples/hello.vibe"),
     CliExecBackendPref::Compiled,
   )
-  @sys.set_env_var("VIBE_ENABLE_INTERPRETER", "1")
-  assert_true(cli_interpreter_backend_enabled())
+  @sys.set_env_var("VIBE_RUN_BACKEND", "interpreter")
+  @sys.set_env_var("VIBE_TEST_BACKEND", "interpreter")
   assert_eq(
     resolve_run_backend_pref("examples/hello.vibe"),
-    CliExecBackendPref::Compiled,
+    CliExecBackendPref::Auto,
   )
   assert_eq(
     resolve_test_backend_pref("examples/hello.vibe"),
     CliExecBackendPref::Compiled,
   )
-}
-
-///|
-test "compiled test failure reporting never stops early for interpreter fallback" {
-  assert_false(cli_stop_compiled_test_on_first_failure(false))
-  assert_false(cli_stop_compiled_test_on_first_failure(true))
-}
-
-///|
-test "explicit interpreter backend is disabled by default for tests" {
-  let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
-  let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
-  @sys.set_env_var("VIBE_TEST_BACKEND", "interpreter")
-  @sys.unset_env_var("VIBE_ENABLE_INTERPRETER")
-  defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
-  defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
-  let cwd = @io.current_dir_or_root()
-  let source_path = @vibe_fs.normalize_path(
-    cwd + "/.wbtest_backend_explicit_interpreter_disabled.vibe",
-  )
-  write_wbtest_basic_test_source(source_path)
-  match
-    run_test_file_with_backend(
-      source_path,
-      @runtime.RuntimeFeatureFlags::stable(),
-    ) {
-    Err(err) =>
-      assert_true(err.contains("interpreter backend disabled for test"))
-    Ok(report) =>
-      fail(
-        "expected explicit interpreter disable error, got success: " +
-        report.total.to_string(),
-      )
-  }
-  wbtest_remove_if_exists(source_path)
-}
-
-///|
-test "explicit interpreter backend works when enabled for tests" {
-  let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
-  let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
-  @sys.set_env_var("VIBE_TEST_BACKEND", "interpreter")
-  @sys.set_env_var("VIBE_ENABLE_INTERPRETER", "1")
-  defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
-  defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
-  let cwd = @io.current_dir_or_root()
-  let source_path = @vibe_fs.normalize_path(
-    cwd + "/.wbtest_backend_explicit_interpreter_enabled.vibe",
-  )
-  write_wbtest_basic_test_source(source_path)
-  match
-    run_test_file_with_backend(
-      source_path,
-      @runtime.RuntimeFeatureFlags::stable(),
-    ) {
-    Ok(report) => {
-      assert_eq(report.total, 1)
-      assert_eq(report.passed, 1)
-      assert_eq(report.failed, 0)
-    }
-    Err(err) => fail("expected explicit interpreter success, got error: " + err)
-  }
-  wbtest_remove_if_exists(source_path)
 }
 
 ///|
 test "test backend reports unsupported compiled cases by default" {
   let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
-  let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
   @sys.unset_env_var("VIBE_TEST_BACKEND")
-  @sys.unset_env_var("VIBE_ENABLE_INTERPRETER")
   defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
-  defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
   let cwd = @io.current_dir_or_root()
   let source_path = @vibe_fs.normalize_path(
     cwd + "/.wbtest_backend_default_compiled_json_parse.vibe",
@@ -4139,13 +3730,10 @@ test "test backend reports unsupported compiled cases by default" {
 }
 
 ///|
-test "test backend auto remains compiled even when interpreter is enabled" {
+test "test backend legacy interpreter env still remains compiled" {
   let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
-  let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
-  @sys.set_env_var("VIBE_TEST_BACKEND", "auto")
-  @sys.set_env_var("VIBE_ENABLE_INTERPRETER", "1")
+  @sys.set_env_var("VIBE_TEST_BACKEND", "interpreter")
   defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
-  defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
   let cwd = @io.current_dir_or_root()
   let source_path = @vibe_fs.normalize_path(
     cwd + "/.wbtest_backend_auto_fallback_json_parse.vibe",
@@ -4453,15 +4041,32 @@ test "graph ir rows convert to symbol index for lsif emission" {
 test "append eval db source hoists late import ahead of prior bindings" {
   let saved1 = append_eval_db_source("", "let x=1")
   let saved2 = append_eval_db_source(saved1, "import ./helper.vibe { inc }")
-  let import_pos = saved2.index_of("import ./helper.vibe { inc }")
-  let let_pos = saved2.index_of("let x = 1")
-  match import_pos, let_pos {
-    Some(i), Some(j) => assert_true(i < j)
-    _ => fail("expected hoisted import and let binding in saved source")
-  }
-  let _ = @parser.parse_ast(saved2) catch {
+  let ast = @parser.parse_ast(saved2) catch {
     e => fail("saved source parse failed: " + e.to_string())
   }
+  assert_true(saved2.contains("let x = 1"))
+  match ast.stmts {
+    [@vibe_core.Stmt::Import(..), @vibe_core.Stmt::Let(..), ..] => ()
+    _ => fail("expected hoisted import before prior binding")
+  }
+}
+
+///|
+test "compiled repl temp source path uses tmp dir" {
+  let path = compiled_repl_temp_source_path()
+  assert_true(path.has_prefix("/tmp/vibe-compiled-repl-"))
+  assert_true(path.has_suffix(".vibe"))
+  assert_false(path.has_prefix(@io.current_dir_or_root() + "/"))
+}
+
+///|
+test "raw repl output text ends with trailing newline" {
+  assert_eq(repl_raw_output_text("last: 3"), "\r\nlast: 3\r\n")
+}
+
+///|
+test "raw repl output text preserves multiline boundaries" {
+  assert_eq(repl_raw_output_text("a\nb"), "\r\na\r\nb\r\n")
 }
 
 ///|
@@ -4574,8 +4179,9 @@ test "compiled repl hoists import entered after prior binding" {
   }
   let cache = CliEntryDbCache::new()
   let seeded = match
-    run_compiled_repl_line_with_cache(cache, source_path, wasm0, "", "let x = 41")
-  {
+    run_compiled_repl_line_with_cache(
+      cache, source_path, wasm0, "", "let x = 41",
+    ) {
     Ok(v) => v
     Err(err) => fail("seed compiled repl line failed: " + err)
   }

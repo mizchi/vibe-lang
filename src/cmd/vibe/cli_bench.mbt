@@ -1,17 +1,5 @@
 ///|
-fn load_bench_cases(
-  path : String,
-  start_case_index : Int,
-) -> Result[Array[BenchCase], String] {
-  let source = @os_fs.read_file_to_string(path) catch {
-    e => return Err("read failed: " + e.to_string())
-  }
-  parse_bench_case_source(source, start_case_index)
-}
-
-///|
 enum BenchBackend {
-  Interpreter
   Wasm
 } derive(Show, Eq)
 
@@ -77,24 +65,8 @@ fn is_wasm_unsupported_compile_error(message : String) -> Bool {
 }
 
 ///|
-fn wasm_bench_report_has_only_unsupported_compile_failures(
-  report : WasmBenchReport,
-) -> Bool {
-  if report.failed == 0 || report.passed > 0 {
-    return false
-  }
-  for failure in report.failures {
-    if not(is_wasm_unsupported_compile_error(failure.error)) {
-      return false
-    }
-  }
-  true
-}
-
-///|
 fn bench_backend_name(backend : BenchBackend) -> String {
   match backend {
-    BenchBackend::Interpreter => "interpreter"
     BenchBackend::Wasm => "compiled"
   }
 }
@@ -102,7 +74,6 @@ fn bench_backend_name(backend : BenchBackend) -> String {
 ///|
 fn parse_bench_backend(value : String) -> BenchBackend? {
   match value.trim().to_string().to_lower() {
-    "interpreter" | "interp" => Some(BenchBackend::Interpreter)
     "wasm" | "compiled" => Some(BenchBackend::Wasm)
     _ => None
   }
@@ -112,23 +83,8 @@ fn parse_bench_backend(value : String) -> BenchBackend? {
 fn parse_bench_backend_or_abort(value : String) -> BenchBackend {
   match parse_bench_backend(value) {
     Some(v) => v
-    None =>
-      abort(
-        "bench: invalid --backend: " +
-        value +
-        " (expected compiled|interpreter)",
-      )
+    None => abort("bench: invalid --backend: " + value + " (expected compiled)")
   }
-}
-
-///|
-fn bench_require_interpreter_backend() -> Result[Unit, String] {
-  cli_require_interpreter_backend("bench")
-}
-
-///|
-fn bench_allow_interpreter_fallback() -> Bool {
-  false
 }
 
 ///|
@@ -158,175 +114,6 @@ fn resolve_bench_backend(
     }
   }
   backend
-}
-
-///|
-fn run_bench_case(
-  case_item : BenchCase,
-  count : Int,
-  warmup : Int,
-  syntax_mode : @runtime.ParserMode,
-  features : @runtime.RuntimeFeatureFlags,
-) -> (Double, Double) {
-  let rt = new_runtime_with_features(features)
-  for _ in 0..<warmup {
-    let _ = rt.eval_script_with_mode(case_item.expr, syntax_mode) catch {
-      e => abort("bench: " + case_item.name + ": " + e.to_string())
-    }
-  }
-  let start = @bench.monotonic_clock_start()
-  for _ in 0..<count {
-    let _ = rt.eval_script_with_mode(case_item.expr, syntax_mode) catch {
-      e => abort("bench: " + case_item.name + ": " + e.to_string())
-    }
-  }
-  let elapsed_us = @bench.monotonic_clock_end(start)
-  let elapsed_ms = elapsed_us / 1000.0
-  let per_us = elapsed_us / count.to_double()
-  (elapsed_ms, per_us)
-}
-
-///|
-fn bench_expr_cmd(
-  args : Array[String],
-  syntax_mode : @runtime.ParserMode,
-  features : @runtime.RuntimeFeatureFlags,
-) -> Unit {
-  let mut count = 20000
-  let mut warmup = 1000
-  let mut expr : String? = None
-  let cases : Array[BenchCase] = []
-  let mut i = 0
-  while i < args.length() {
-    let arg = args[i]
-    match arg {
-      "-n" | "--n" => {
-        if i + 1 >= args.length() {
-          abort("bench: missing value for --n")
-        }
-        count = @strconv.parse_int(args[i + 1]) catch {
-          e => abort("bench: invalid --n: " + e.to_string())
-        }
-        i += 2
-      }
-      "--warmup" => {
-        if i + 1 >= args.length() {
-          abort("bench: missing value for --warmup")
-        }
-        warmup = @strconv.parse_int(args[i + 1]) catch {
-          e => abort("bench: invalid --warmup: " + e.to_string())
-        }
-        i += 2
-      }
-      "-e" | "--expr" => {
-        if i + 1 >= args.length() {
-          abort("bench: missing value for --expr")
-        }
-        expr = Some(args[i + 1])
-        i += 2
-      }
-      "--case" => {
-        if i + 1 >= args.length() {
-          abort("bench: missing value for --case")
-        }
-        match parse_bench_case_arg(args[i + 1], cases.length() + 1) {
-          Ok(case_item) => cases.push(case_item)
-          Err(msg) => abort("bench: invalid --case: " + msg)
-        }
-        i += 2
-      }
-      "--cases" => {
-        if i + 1 >= args.length() {
-          abort("bench: missing value for --cases")
-        }
-        let case_path = args[i + 1]
-        let loaded = match load_bench_cases(case_path, cases.length() + 1) {
-          Ok(items) => items
-          Err(msg) => abort("bench: " + case_path + ": " + msg)
-        }
-        for case_item in loaded {
-          cases.push(case_item)
-        }
-        i += 2
-      }
-      "-b" | "--backend" => {
-        if i + 1 >= args.length() {
-          abort("bench: missing value for --backend")
-        }
-        let backend = parse_bench_backend_or_abort(args[i + 1])
-        match backend {
-          BenchBackend::Interpreter => ()
-          BenchBackend::Wasm =>
-            abort(
-              "bench: --backend wasm is not supported in legacy expr mode; pass <file|dir...> or use --backend interpreter",
-            )
-        }
-        i += 2
-      }
-      _ => abort("bench: unknown arg " + arg)
-    }
-  }
-  if count <= 0 {
-    abort("bench: --n must be > 0")
-  }
-  if warmup < 0 {
-    abort("bench: --warmup must be >= 0")
-  }
-  match expr {
-    Some(expr_text) => cases.push({ name: "expr", expr: expr_text })
-    None =>
-      if cases.length() == 0 {
-        cases.push({ name: "expr", expr: "add(1,2)" })
-      }
-  }
-  let multi_case = cases.length() > 1
-  let mut total_ms = 0.0
-  for case_item in cases {
-    let (elapsed_ms, per_us) = run_bench_case(
-      case_item, count, warmup, syntax_mode, features,
-    )
-    total_ms += elapsed_ms
-    if elapsed_ms <= 0.0 {
-      println(
-        "bench: " +
-        case_item.name +
-        ": elapsed_ms=0; increase --n for measurable time",
-      )
-    }
-    if multi_case || case_item.name != "expr" {
-      println(
-        "bench: name=\"" +
-        case_item.name +
-        "\" expr=\"" +
-        case_item.expr +
-        "\" count=" +
-        count.to_string() +
-        " total_ms=" +
-        elapsed_ms.to_string() +
-        " per_us=" +
-        per_us.to_string(),
-      )
-    } else {
-      println(
-        "bench: expr=\"" +
-        case_item.expr +
-        "\" count=" +
-        count.to_string() +
-        " total_ms=" +
-        elapsed_ms.to_string() +
-        " per_us=" +
-        per_us.to_string(),
-      )
-    }
-  }
-  if multi_case {
-    println(
-      "bench: cases=" +
-      cases.length().to_string() +
-      " total_ms=" +
-      total_ms.to_string(),
-    )
-  }
 }
 
 ///|
@@ -363,40 +150,27 @@ fn bench_cmd(
   syntax_mode : @runtime.ParserMode,
   features : @runtime.RuntimeFeatureFlags,
 ) -> Unit {
+  ignore(features)
   let expr_mode = bench_uses_expr_mode(args)
   if expr_mode {
-    let backend = resolve_bench_backend(args, BenchBackend::Interpreter)
-    match backend {
-      BenchBackend::Interpreter =>
-        match bench_require_interpreter_backend() {
-          Ok(_) => ()
-          Err(err) => abort("bench: " + err)
-        }
-      BenchBackend::Wasm =>
-        abort(
-          "bench: --backend wasm is not supported in legacy expr mode; pass <file|dir...> or use --backend interpreter",
-        )
-    }
-    bench_expr_cmd(args, syntax_mode, features)
+    abort(
+      "bench: legacy expr mode was removed; pass <file|dir...> with `bench {}` blocks",
+    )
   } else {
-    let backend = resolve_bench_backend(args, BenchBackend::Wasm)
+    let _ = resolve_bench_backend(args, BenchBackend::Wasm)
     match syntax_mode {
       @runtime.ParserMode::PosixMode | @runtime.ParserMode::PosixStrictMode =>
         abort(
-          "bench: --syntax posix-ext/posix-strict is supported only with --expr/--case/--cases",
+          "bench: --syntax posix-ext/posix-strict is no longer supported; use vibe bench files",
         )
       @runtime.ParserMode::VibeMode => ()
     }
-    bench_blocks_cmd(args, features, backend)
+    bench_blocks_cmd(args)
   }
 }
 
 ///|
-fn bench_blocks_cmd(
-  args : Array[String],
-  features : @runtime.RuntimeFeatureFlags,
-  backend : BenchBackend,
-) -> Unit {
+fn bench_blocks_cmd(args : Array[String]) -> Unit {
   let mut runs = 10
   let mut warmup = 3
   let mut legacy_n : Int? = None
@@ -472,8 +246,6 @@ fn bench_blocks_cmd(
   let mut total = 0
   let mut passed = 0
   let mut failed_count = 0
-  let allow_interpreter_fallback = bench_allow_interpreter_fallback()
-  let mut used_interpreter_fallback = false
   let file_count = entry_paths.length()
   for entry_path in entry_paths {
     let resolved_entry_path = @loader.resolve_entry_path(entry_path)
@@ -482,291 +254,47 @@ fn bench_blocks_cmd(
         Some(n) => n
         None => 1000
       }
-      match backend {
-        BenchBackend::Interpreter => {
-          match bench_require_interpreter_backend() {
-            Ok(_) => ()
-            Err(err) => abort("bench: " + err)
-          }
-          match
-            run_bench_blocks_interpreter_entry(
-              resolved_entry_path, count, warmup, features,
-            ) {
-            Err(err) => {
-              println("[\{entry_path}] \{err}")
-              failed = true
-            }
-            Ok(report) => {
-              if !print_bench_report(entry_path, report) {
-                failed = true
-              }
-              total += report.total
-              passed += report.passed
-              failed_count += report.failed
-            }
-          }
+      match run_bench_blocks_wasm_entry(resolved_entry_path, count, warmup) {
+        Err(err) => {
+          println("[\{entry_path}] \{err}")
+          failed = true
         }
-        BenchBackend::Wasm =>
-          match
-            run_bench_blocks_wasm_entry(resolved_entry_path, count, warmup) {
-            Err(err) =>
-              if is_wasm_unsupported_compile_error(err) &&
-                allow_interpreter_fallback {
-                used_interpreter_fallback = true
-                println(
-                  "[\{entry_path}] wasm backend unsupported, fallback to interpreter: \{err}",
-                )
-                match
-                  run_bench_blocks_interpreter_entry(
-                    resolved_entry_path, count, warmup, features,
-                  ) {
-                  Err(interp_err) => {
-                    println("[\{entry_path}] \{interp_err}")
-                    failed = true
-                  }
-                  Ok(report) => {
-                    if !print_bench_report(entry_path, report) {
-                      failed = true
-                    }
-                    total += report.total
-                    passed += report.passed
-                    failed_count += report.failed
-                  }
-                }
-              } else {
-                println("[\{entry_path}] \{err}")
-                failed = true
-              }
-            Ok(report) =>
-              if wasm_bench_report_has_only_unsupported_compile_failures(report) &&
-                allow_interpreter_fallback {
-                used_interpreter_fallback = true
-                let reason = if report.failures.length() > 0 {
-                  report.failures[0].error
-                } else {
-                  "unsupported wasm compile error"
-                }
-                println(
-                  "[\{entry_path}] wasm backend unsupported, fallback to interpreter: \{reason}",
-                )
-                match
-                  run_bench_blocks_interpreter_entry(
-                    resolved_entry_path, count, warmup, features,
-                  ) {
-                  Err(interp_err) => {
-                    println("[\{entry_path}] \{interp_err}")
-                    failed = true
-                  }
-                  Ok(interp_report) => {
-                    if !print_bench_report(entry_path, interp_report) {
-                      failed = true
-                    }
-                    total += interp_report.total
-                    passed += interp_report.passed
-                    failed_count += interp_report.failed
-                  }
-                }
-              } else {
-                if !print_wasm_bench_report(entry_path, report) {
-                  failed = true
-                }
-                total += report.total
-                passed += report.passed
-                failed_count += report.failed
-              }
+        Ok(report) => {
+          if !print_wasm_bench_report(entry_path, report) {
+            failed = true
           }
+          total += report.total
+          passed += report.passed
+          failed_count += report.failed
+        }
       }
     } else {
       // Statistical mode (default)
-      match backend {
-        BenchBackend::Interpreter => {
-          match bench_require_interpreter_backend() {
-            Ok(_) => ()
-            Err(err) => abort("bench: " + err)
-          }
-          match
-            run_bench_blocks_interpreter_statistical_entry(
-              resolved_entry_path, runs, warmup, features,
-            ) {
-            Err(err) => {
-              println("[\{entry_path}] \{err}")
-              failed = true
-            }
-            Ok(report) => {
-              if !print_bench_summary_report(entry_path, report) {
-                failed = true
-              }
-              total += report.total
-              passed += report.passed
-              failed_count += report.failed
-            }
-          }
+      match
+        run_bench_blocks_wasm_statistical_entry(
+          resolved_entry_path, runs, warmup,
+        ) {
+        Err(err) => {
+          println("[\{entry_path}] \{err}")
+          failed = true
         }
-        BenchBackend::Wasm =>
-          match
-            run_bench_blocks_wasm_statistical_entry(
-              resolved_entry_path, runs, warmup,
-            ) {
-            Err(err) =>
-              if is_wasm_unsupported_compile_error(err) &&
-                allow_interpreter_fallback {
-                used_interpreter_fallback = true
-                println(
-                  "[\{entry_path}] wasm backend unsupported, fallback to interpreter: \{err}",
-                )
-                match
-                  run_bench_blocks_interpreter_statistical_entry(
-                    resolved_entry_path, runs, warmup, features,
-                  ) {
-                  Err(interp_err) => {
-                    println("[\{entry_path}] \{interp_err}")
-                    failed = true
-                  }
-                  Ok(report) => {
-                    if !print_bench_summary_report(entry_path, report) {
-                      failed = true
-                    }
-                    total += report.total
-                    passed += report.passed
-                    failed_count += report.failed
-                  }
-                }
-              } else {
-                println("[\{entry_path}] \{err}")
-                failed = true
-              }
-            Ok(report) => {
-              if !print_wasm_bench_summary_report(entry_path, report) {
-                failed = true
-              }
-              total += report.total
-              passed += report.passed
-              failed_count += report.failed
-            }
+        Ok(report) => {
+          if !print_wasm_bench_summary_report(entry_path, report) {
+            failed = true
           }
+          total += report.total
+          passed += report.passed
+          failed_count += report.failed
+        }
       }
     }
   }
-  let backend_name = if backend == BenchBackend::Wasm &&
-    used_interpreter_fallback {
-    "wasm+interpreter-fallback"
-  } else {
-    bench_backend_name(backend)
-  }
   println(
-    "summary: files=\{file_count} backend=\{backend_name} total=\{total} passed=\{passed} failed=\{failed_count}",
+    "summary: files=\{file_count} backend=compiled total=\{total} passed=\{passed} failed=\{failed_count}",
   )
   if failed {
     abort("bench: failures detected")
   }
-}
-
-///|
-fn run_bench_blocks_interpreter_entry(
-  entry_path : String,
-  count : Int,
-  warmup : Int,
-  features : @runtime.RuntimeFeatureFlags,
-) -> Result[@runtime.BenchReport, String] {
-  let (db, entry) = match @loader.load_db(entry_path) {
-    Err(err) => return Err("load error: " + err)
-    Ok(v) => v
-  }
-  let compiled = @runtime_compile.compile_module(db, entry) catch {
-    e => return Err("compile error: " + e.to_string())
-  }
-  let rt = new_runtime_with_features(features)
-  rt.set_type_env(compiled.type_env)
-  let path_to_hash : Map[String, String] = {}
-  load_imports_into_runtime(rt, db, entry, path_to_hash)
-  let base_dir = @vibe_fs.parent_path(entry)
-  for stmt in compiled.ast.stmts {
-    match stmt {
-      @vibe_core.Stmt::Import(source~, ..)
-      | @vibe_core.Stmt::ReExport(source~, ..) =>
-        match source {
-          @vibe_core.ModuleRef::Path(path=raw_path) => {
-            let resolved = @loader.resolve_import_path(base_dir, raw_path)
-            match path_to_hash.get(resolved) {
-              Some(hash) => path_to_hash[raw_path] = hash
-              None => ()
-            }
-          }
-          @vibe_core.ModuleRef::Hash(_)
-          | @vibe_core.ModuleRef::Version(_)
-          | @vibe_core.ModuleRef::Symbol(_)
-          | @vibe_core.ModuleRef::Alias(_)
-          | @vibe_core.ModuleRef::PinnedPath(..) => ()
-        }
-      _ => ()
-    }
-  }
-  let converted_ast = @vibe_core.convert_imports_to_hash(compiled.ast, fn(
-    path,
-  ) {
-    path_to_hash.get(path)
-  })
-  for name, target in compiled.aliases {
-    rt.set_alias(name, target)
-  }
-  let report = rt.run_benches(converted_ast, count, warmup) catch {
-    e => return Err("eval error: " + e.to_string())
-  }
-  Ok(report)
-}
-
-///|
-fn run_bench_blocks_interpreter_statistical_entry(
-  entry_path : String,
-  runs : Int,
-  warmup : Int,
-  features : @runtime.RuntimeFeatureFlags,
-) -> Result[@runtime.BenchSummaryReport, String] {
-  let (db, entry) = match @loader.load_db(entry_path) {
-    Err(err) => return Err("load error: " + err)
-    Ok(v) => v
-  }
-  let compiled = @runtime_compile.compile_module(db, entry) catch {
-    e => return Err("compile error: " + e.to_string())
-  }
-  let rt = new_runtime_with_features(features)
-  rt.set_type_env(compiled.type_env)
-  let path_to_hash : Map[String, String] = {}
-  load_imports_into_runtime(rt, db, entry, path_to_hash)
-  let base_dir = @vibe_fs.parent_path(entry)
-  for stmt in compiled.ast.stmts {
-    match stmt {
-      @vibe_core.Stmt::Import(source~, ..)
-      | @vibe_core.Stmt::ReExport(source~, ..) =>
-        match source {
-          @vibe_core.ModuleRef::Path(path=raw_path) => {
-            let resolved = @loader.resolve_import_path(base_dir, raw_path)
-            match path_to_hash.get(resolved) {
-              Some(hash) => path_to_hash[raw_path] = hash
-              None => ()
-            }
-          }
-          @vibe_core.ModuleRef::Hash(_)
-          | @vibe_core.ModuleRef::Version(_)
-          | @vibe_core.ModuleRef::Symbol(_)
-          | @vibe_core.ModuleRef::Alias(_)
-          | @vibe_core.ModuleRef::PinnedPath(..) => ()
-        }
-      _ => ()
-    }
-  }
-  let converted_ast = @vibe_core.convert_imports_to_hash(compiled.ast, fn(
-    path,
-  ) {
-    path_to_hash.get(path)
-  })
-  for name, target in compiled.aliases {
-    rt.set_alias(name, target)
-  }
-  let report = rt.run_benches_statistical(converted_ast, runs, warmup) catch {
-    e => return Err("eval error: " + e.to_string())
-  }
-  Ok(report)
 }
 
 ///|
@@ -1538,27 +1066,6 @@ fn rpad(s : String, width : Int) -> String {
     buf.write_char(' ')
   }
   buf.to_string()
-}
-
-///|
-fn print_bench_summary_report(
-  path : String,
-  report : @runtime.BenchSummaryReport,
-) -> Bool {
-  println("[\{path}]")
-  let mut success = true
-  for result in report.results {
-    print_bench_summary_entry(result)
-  }
-  for failure in report.failures {
-    success = false
-    let name = match failure.name {
-      Some(v) => v
-      None => "<anon>"
-    }
-    println("  bench: " + name + " failed: " + failure.error)
-  }
-  success
 }
 
 ///|
