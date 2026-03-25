@@ -122,6 +122,17 @@ fn parse_bench_backend_or_abort(value : String) -> BenchBackend {
 }
 
 ///|
+fn bench_require_interpreter_backend() -> Result[Unit, String] {
+  cli_require_interpreter_backend("bench")
+}
+
+///|
+fn bench_allow_interpreter_fallback() -> Bool {
+  ignore(cli_allow_interpreter_fallback())
+  false
+}
+
+///|
 fn resolve_bench_backend(
   args : Array[String],
   default_backend : BenchBackend,
@@ -357,7 +368,11 @@ fn bench_cmd(
   if expr_mode {
     let backend = resolve_bench_backend(args, BenchBackend::Interpreter)
     match backend {
-      BenchBackend::Interpreter => ()
+      BenchBackend::Interpreter =>
+        match bench_require_interpreter_backend() {
+          Ok(_) => ()
+          Err(err) => abort("bench: " + err)
+        }
       BenchBackend::Wasm =>
         abort(
           "bench: --backend wasm is not supported in legacy expr mode; pass <file|dir...> or use --backend interpreter",
@@ -458,6 +473,7 @@ fn bench_blocks_cmd(
   let mut total = 0
   let mut passed = 0
   let mut failed_count = 0
+  let allow_interpreter_fallback = bench_allow_interpreter_fallback()
   let mut used_interpreter_fallback = false
   let file_count = entry_paths.length()
   for entry_path in entry_paths {
@@ -468,7 +484,11 @@ fn bench_blocks_cmd(
         None => 1000
       }
       match backend {
-        BenchBackend::Interpreter =>
+        BenchBackend::Interpreter => {
+          match bench_require_interpreter_backend() {
+            Ok(_) => ()
+            Err(err) => abort("bench: " + err)
+          }
           match
             run_bench_blocks_interpreter_entry(
               resolved_entry_path, count, warmup, features,
@@ -486,11 +506,13 @@ fn bench_blocks_cmd(
               failed_count += report.failed
             }
           }
+        }
         BenchBackend::Wasm =>
           match
             run_bench_blocks_wasm_entry(resolved_entry_path, count, warmup) {
             Err(err) =>
-              if is_wasm_unsupported_compile_error(err) {
+              if is_wasm_unsupported_compile_error(err) &&
+                allow_interpreter_fallback {
                 used_interpreter_fallback = true
                 println(
                   "[\{entry_path}] wasm backend unsupported, fallback to interpreter: \{err}",
@@ -517,7 +539,8 @@ fn bench_blocks_cmd(
                 failed = true
               }
             Ok(report) =>
-              if wasm_bench_report_has_only_unsupported_compile_failures(report) {
+              if wasm_bench_report_has_only_unsupported_compile_failures(report) &&
+                allow_interpreter_fallback {
                 used_interpreter_fallback = true
                 let reason = if report.failures.length() > 0 {
                   report.failures[0].error
@@ -557,7 +580,11 @@ fn bench_blocks_cmd(
     } else {
       // Statistical mode (default)
       match backend {
-        BenchBackend::Interpreter =>
+        BenchBackend::Interpreter => {
+          match bench_require_interpreter_backend() {
+            Ok(_) => ()
+            Err(err) => abort("bench: " + err)
+          }
           match
             run_bench_blocks_interpreter_statistical_entry(
               resolved_entry_path, runs, warmup, features,
@@ -575,13 +602,15 @@ fn bench_blocks_cmd(
               failed_count += report.failed
             }
           }
+        }
         BenchBackend::Wasm =>
           match
             run_bench_blocks_wasm_statistical_entry(
               resolved_entry_path, runs, warmup,
             ) {
             Err(err) =>
-              if is_wasm_unsupported_compile_error(err) {
+              if is_wasm_unsupported_compile_error(err) &&
+                allow_interpreter_fallback {
                 used_interpreter_fallback = true
                 println(
                   "[\{entry_path}] wasm backend unsupported, fallback to interpreter: \{err}",
@@ -845,14 +874,17 @@ fn build_bench_case_loop_script(
 }
 
 ///|
-fn remove_file_if_exists(path : String) -> Unit {
-  if not(@os_fs.path_exists(path)) {
-    return
-  }
-  let is_file = @os_fs.is_file(path) catch { _ => false }
-  if is_file {
-    ignore(@os_fs.remove_file(path) catch { _ => () })
-  }
+fn bench_script_cache_paths(
+  entry_path : String,
+  script_kind : String,
+  source : String,
+) -> (String, String, String) {
+  let resolved = @loader.resolve_entry_path(entry_path)
+  let (vibe_root, cache_key) = find_vibe_cache_root(resolved)
+  let hash = @vibe_core.content_address_hash_string(script_kind + "\n" + source)
+  let cache_dir = vibe_root + "/bench/" + cache_key
+  let prefix = cache_dir + "/" + script_kind + "_" + hash
+  (cache_dir, prefix + ".vibe", prefix + ".wasm")
 }
 
 ///|
@@ -1059,10 +1091,25 @@ fn run_wasmtime_bench_module(
 
 ///|
 fn compile_bench_script_to_wasm(
-  source_path : String,
-  wasm_path : String,
+  entry_path : String,
+  script_kind : String,
   source : String,
-) -> Result[Int, String] {
+) -> Result[(String, Int), String] {
+  let (cache_dir, source_path, wasm_path) = bench_script_cache_paths(
+    entry_path, script_kind, source,
+  )
+  if @os_fs.path_exists(wasm_path) {
+    let cached_bytes = @os_fs.read_file_to_bytes(wasm_path) catch {
+      _ => Bytes::new(0)
+    }
+    if cached_bytes.length() > 0 {
+      return Ok((wasm_path, cached_bytes.length()))
+    }
+  }
+  match ensure_parent_dir_for_file(wasm_path, "bench cache") {
+    Ok(_) => ()
+    Err(err) => return Err("bench cache dir failed: " + err)
+  }
   @os_fs.write_string_to_file(source_path, source) catch {
     e => return Err("write source failed: " + e.to_string())
   }
@@ -1102,20 +1149,21 @@ fn compile_bench_script_to_wasm(
   @os_fs.write_bytes_to_file(wasm_path, wasm_bytes) catch {
     e => return Err("write wasm failed: " + e.to_string())
   }
-  Ok(wasm_bytes.length())
+  let _ = cache_dir
+  Ok((wasm_path, wasm_bytes.length()))
 }
 
 ///|
 fn run_wasm_case_measure(
   runner : BenchWasmRunner,
-  source_path : String,
-  wasm_path : String,
+  entry_path : String,
+  script_kind : String,
   source : String,
   count : Int,
 ) -> Result[(Double, Double, Int), String] {
-  let wasm_bytes = match
-    compile_bench_script_to_wasm(source_path, wasm_path, source) {
-    Ok(bytes) => bytes
+  let (wasm_path, wasm_bytes) = match
+    compile_bench_script_to_wasm(entry_path, script_kind, source) {
+    Ok(v) => v
     Err(err) => return Err(err)
   }
   let start = @bench.monotonic_clock_start()
@@ -1140,16 +1188,6 @@ fn run_wasm_bench_case(
   count : Int,
   warmup : Int,
 ) -> Result[WasmBenchResult, WasmBenchFailure] {
-  let parent_dir = @vibe_fs.parent_path(entry_path)
-  let prefix = parent_dir +
-    "/.vibe_bench_case_" +
-    @env.now().to_string() +
-    "_" +
-    case_index.to_string()
-  let warm_source_path = prefix + "_warm.vibe"
-  let warm_wasm_path = prefix + "_warm.wasm"
-  let run_source_path = prefix + "_run.vibe"
-  let run_wasm_path = prefix + "_run.wasm"
   let warm_source = build_bench_case_loop_script(
     prelude_source, case_body_source, warmup,
   )
@@ -1159,13 +1197,19 @@ fn run_wasm_bench_case(
   let measured = if warmup > 0 {
     match
       compile_bench_script_to_wasm(
-        warm_source_path, warm_wasm_path, warm_source,
+        entry_path,
+        "warm_" + case_index.to_string() + "_" + warmup.to_string(),
+        warm_source,
       ) {
-      Ok(_) =>
+      Ok((warm_wasm_path, _)) =>
         match run_wasmtime_bench_module(runner, warm_wasm_path) {
           Ok(_) =>
             run_wasm_case_measure(
-              runner, run_source_path, run_wasm_path, run_source, count,
+              runner,
+              entry_path,
+              "run_" + case_index.to_string() + "_" + count.to_string(),
+              run_source,
+              count,
             )
           Err(err) => Err("warmup run failed: " + err)
         }
@@ -1173,13 +1217,13 @@ fn run_wasm_bench_case(
     }
   } else {
     run_wasm_case_measure(
-      runner, run_source_path, run_wasm_path, run_source, count,
+      runner,
+      entry_path,
+      "run_" + case_index.to_string() + "_" + count.to_string(),
+      run_source,
+      count,
     )
   }
-  remove_file_if_exists(warm_wasm_path)
-  remove_file_if_exists(warm_source_path)
-  remove_file_if_exists(run_wasm_path)
-  remove_file_if_exists(run_source_path)
   match measured {
     Ok((elapsed_ms, per_us, wasm_bytes)) =>
       Ok(WasmBenchResult::{
@@ -1272,17 +1316,9 @@ fn run_bench_blocks_wasm_statistical_entry(
     case_index += 1
     let case_name = case_item.name
     let case_body_source = case_item.body_source
-    let parent_dir = @vibe_fs.parent_path(entry_path)
-    let prefix = parent_dir +
-      "/.vibe_bench_stat_" +
-      @env.now().to_string() +
-      "_" +
-      case_index.to_string()
     // Auto-calibrate: try increasing batch sizes until ~100ms
     let threshold_us = 100000.0
     let mut batch_size = 1
-    let cal_source_path = prefix + "_cal.vibe"
-    let cal_wasm_path = prefix + "_cal.wasm"
     let mut calibration_ok = true
     let mut trial = 1
     while true {
@@ -1291,8 +1327,12 @@ fn run_bench_blocks_wasm_statistical_entry(
         case_body_source,
         trial,
       )
-      match
-        compile_bench_script_to_wasm(cal_source_path, cal_wasm_path, cal_source) {
+      let cal_script_kind = "stat_cal_" +
+        case_index.to_string() +
+        "_" +
+        trial.to_string()
+      let cal_wasm_path = match
+        compile_bench_script_to_wasm(entry_path, cal_script_kind, cal_source) {
         Err(err) => {
           failures.push(WasmBenchFailure::{
             name: case_name,
@@ -1301,7 +1341,7 @@ fn run_bench_blocks_wasm_statistical_entry(
           calibration_ok = false
           break
         }
-        Ok(_) => ()
+        Ok((path, _)) => path
       }
       let start = @bench.monotonic_clock_start()
       match run_wasmtime_bench_module(runner, cal_wasm_path) {
@@ -1325,28 +1365,27 @@ fn run_bench_blocks_wasm_statistical_entry(
       }
       trial = trial * 2
     }
-    remove_file_if_exists(cal_source_path)
-    remove_file_if_exists(cal_wasm_path)
     if not(calibration_ok) {
       continue
     }
     // Compile the measurement script once
-    let run_source_path = prefix + "_run.vibe"
-    let run_wasm_path = prefix + "_run.wasm"
     let run_source = build_bench_case_loop_script(
       plan.prelude_source,
       case_body_source,
       batch_size,
     )
-    let wasm_bytes = match
-      compile_bench_script_to_wasm(run_source_path, run_wasm_path, run_source) {
-      Ok(bytes) => bytes
+    let run_script_kind = "stat_run_" +
+      case_index.to_string() +
+      "_" +
+      batch_size.to_string()
+    let (run_wasm_path, wasm_bytes) = match
+      compile_bench_script_to_wasm(entry_path, run_script_kind, run_source) {
+      Ok(v) => v
       Err(err) => {
         failures.push(WasmBenchFailure::{
           name: case_name,
           error: "compile failed: " + err,
         })
-        remove_file_if_exists(run_source_path)
         continue
       }
     }
@@ -1366,8 +1405,6 @@ fn run_bench_blocks_wasm_statistical_entry(
       }
     }
     if not(warmup_ok) {
-      remove_file_if_exists(run_source_path)
-      remove_file_if_exists(run_wasm_path)
       continue
     }
     // Collect samples
@@ -1389,8 +1426,6 @@ fn run_bench_blocks_wasm_statistical_entry(
       let elapsed_us = @bench.monotonic_clock_end(start)
       samples.push(elapsed_us / batch_size.to_double())
     }
-    remove_file_if_exists(run_source_path)
-    remove_file_if_exists(run_wasm_path)
     if not(sample_ok) {
       continue
     }

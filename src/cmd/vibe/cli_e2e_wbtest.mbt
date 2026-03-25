@@ -858,6 +858,60 @@ test "cli bench backend parse" {
 }
 
 ///|
+test "bench script cache paths are stable per source" {
+  let paths1 = bench_script_cache_paths(
+    "/tmp/project/src/main_bench.vibe", "run_1", "let value = 1\n",
+  )
+  let paths2 = bench_script_cache_paths(
+    "/tmp/project/src/main_bench.vibe", "run_1", "let value = 1\n",
+  )
+  let paths3 = bench_script_cache_paths(
+    "/tmp/project/src/main_bench.vibe", "run_1", "let value = 2\n",
+  )
+  assert_true(paths1.0.contains("/.vibe/bench/"))
+  assert_eq(paths1.1, paths2.1)
+  assert_eq(paths1.2, paths2.2)
+  assert_true(paths1.2.has_suffix(".wasm"))
+  assert_true(paths1.1 != paths3.1)
+}
+
+///|
+test "bench interpreter backend is disabled by default" {
+  let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
+  @sys.unset_env_var("VIBE_ENABLE_INTERPRETER")
+  defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
+  match bench_require_interpreter_backend() {
+    Ok(_) => fail("expected disabled interpreter backend")
+    Err(err) =>
+      assert_true(err.contains("interpreter backend disabled for bench"))
+  }
+}
+
+///|
+test "bench interpreter backend works when enabled" {
+  let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
+  @sys.set_env_var("VIBE_ENABLE_INTERPRETER", "1")
+  defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
+  match bench_require_interpreter_backend() {
+    Ok(_) => ()
+    Err(err) => fail("expected enabled interpreter backend: " + err)
+  }
+}
+
+///|
+test "bench auto fallback remains disabled even when interpreter is enabled" {
+  let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
+  let prev_fallback = @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
+  @sys.unset_env_var("VIBE_ENABLE_INTERPRETER")
+  @sys.set_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", "1")
+  defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
+  defer wbtest_restore_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", prev_fallback)
+  assert_false(bench_allow_interpreter_fallback())
+  @sys.set_env_var("VIBE_ENABLE_INTERPRETER", "1")
+  assert_false(bench_allow_interpreter_fallback())
+}
+
+///|
 test "cli bench uses expr mode ignores backend with path" {
   assert_false(
     bench_uses_expr_mode(["--backend", "wasm", "examples/simple_bench.vibe"]),
