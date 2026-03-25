@@ -63,7 +63,6 @@ pub fn run(args : Array[String]) -> Unit {
     "shell" => repl_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
     "shell-stdin" =>
       repl_stdin_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
-    "shell-wasi" => abort("shell-wasi: command was removed from public CLI")
     "wasm-shell-stdin" => wasm_repl_stdin_cmd(cmd_args)
     "hash" => hash_cmd(cmd_args)
     "save" => save_cmd(cmd_args)
@@ -2141,32 +2140,6 @@ fn run_cmd(
   }
 }
 
-///|
-/// Load all imported modules into runtime's module cache
-fn load_imports_into_runtime(
-  rt : @runtime.Runtime,
-  db : @runtime.VibeDb,
-  path : String,
-  path_to_hash : Map[String, String],
-) -> Unit {
-  let imports = db.imports(path)
-  for imp in imports {
-    match imp.hash {
-      Some(hash) => {
-        // Record the path-to-hash mapping
-        path_to_hash[imp.path] = hash
-        // Get the AST for this imported module
-        let ast = db.ast_with_hash_imports(imp.path)
-        rt.register_module(hash, ast)
-        // Recursively load imports of the imported module
-        load_imports_into_runtime(rt, db, imp.path, path_to_hash)
-      }
-      None => ()
-    }
-  }
-}
-
-///|
 struct CliEntryDbCache {
   by_root : Map[String, @runtime.VibeDb]
 }
