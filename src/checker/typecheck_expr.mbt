@@ -110,34 +110,6 @@ fn extract_effect_name(qualified : String) -> String {
 }
 
 ///|
-/// Resolve effect operation return type from "Effect::Op" pattern name.
-fn reh_resolve_effect_op_ret(
-  env : TypeEnv,
-  qualified_name : String,
-) -> @core.Type? {
-  let mut sep = -1
-  for i = 0; i + 1 < qualified_name.length(); i = i + 1 {
-    if qualified_name[i] == ':' && qualified_name[i + 1] == ':' {
-      sep = i
-      break
-    }
-  }
-  if sep < 0 {
-    return None
-  }
-  let effect_name = qualified_name[0:sep].to_string()
-  let op_name = qualified_name[sep + 2:qualified_name.length()].to_string()
-  match env.effect_defs.get(effect_name) {
-    Some(effect_def) =>
-      match effect_def.ops.get(op_name) {
-        Some(op_sig) => Some(op_sig.ret)
-        None => None
-      }
-    None => None
-  }
-}
-
-///|
 /// Resolve effect operation param types from "Effect::Op" pattern name.
 fn reh_resolve_effect_op_params(
   env : TypeEnv,

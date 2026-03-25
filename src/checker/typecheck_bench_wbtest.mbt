@@ -3,12 +3,6 @@
 // --- Test type fixtures ---
 
 ///|
-/// Simple type: Int
-fn bench_ty_int() -> @core.Type {
-  @core.Type::Int
-}
-
-///|
 /// Shallow type: (Int, String, Bool)
 fn bench_ty_tuple3() -> @core.Type {
   @core.Type::Tuple([@core.Type::Int, @core.Type::String, @core.Type::Bool])

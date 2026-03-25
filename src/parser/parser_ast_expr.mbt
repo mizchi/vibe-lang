@@ -368,23 +368,6 @@ fn call3(
 }
 
 ///|
-
-///|
-/// Split "Effect::Op" into (effect_name, op_name). Returns ("", name) if no "::" found.
-fn split_qualified_effect_op(name : String) -> (String, String) {
-  let mut i = 0
-  while i + 1 < name.length() {
-    if name[i] == ':' && name[i + 1] == ':' {
-      let effect = name[0:i].to_string()
-      let op = name[i + 2:name.length()].to_string()
-      return (effect, op)
-    }
-    i += 1
-  }
-  ("", name)
-}
-
-///|
 fn call_or_throw_expr(
   name : String,
   type_args : Array[@core.Type],

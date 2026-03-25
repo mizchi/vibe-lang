@@ -19,7 +19,7 @@ struct CliRuntimeArgs {
 } derive(Show, Eq)
 
 ///|
-pub struct CliDispatchArgs {
+struct CliDispatchArgs {
   cmd : String
   syntax_mode : @runtime.ParserMode
   cmd_args : Array[String]

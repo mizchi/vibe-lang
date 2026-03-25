@@ -1268,7 +1268,7 @@ fn emit_rebox_multivalue(
   ctx : CodegenCtx,
   buf : ByteBuf,
   kinds : Array[ValueKind],
-) -> Unit raise WasmGenError {
+) -> Unit {
   // Store each multi-value result in a temp local
   let temp_locals : Array[Int] = []
   // Pop in reverse order (last result is on top of stack)

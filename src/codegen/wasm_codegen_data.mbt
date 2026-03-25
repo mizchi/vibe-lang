@@ -113,7 +113,7 @@ fn emit_unbox_f64_expr(
 }
 
 ///|
-fn require_heap(ctx : CodegenCtx) -> Unit raise WasmGenError {
+fn require_heap(ctx : CodegenCtx) -> Unit {
   if ctx.heap_local < 0 {
     // Lazy heap initialization: allocate heap_local on first demand.
     // This handles cases where scan_needs/needs_heap_block didn't
@@ -134,11 +134,7 @@ fn require_heap(ctx : CodegenCtx) -> Unit raise WasmGenError {
 }
 
 ///|
-fn emit_heap_reserve(
-  ctx : CodegenCtx,
-  buf : ByteBuf,
-  size : Int,
-) -> Unit raise WasmGenError {
+fn emit_heap_reserve(ctx : CodegenCtx, buf : ByteBuf, size : Int) -> Unit {
   require_heap(ctx)
   if size <= 0 {
     return
@@ -199,7 +195,7 @@ fn emit_heap_alloc(
   buf : ByteBuf,
   size : Int,
   obj_local : Int,
-) -> Unit raise WasmGenError {
+) -> Unit {
   emit_heap_reserve(ctx, buf, size)
   emit_local_get(buf, ctx.heap_local)
   emit_local_set(buf, obj_local)
@@ -220,7 +216,7 @@ fn emit_heap_alloc_unchecked(
   buf : ByteBuf,
   size : Int,
   obj_local : Int,
-) -> Unit raise WasmGenError {
+) -> Unit {
   require_heap(ctx)
   emit_local_get(buf, ctx.heap_local)
   emit_local_set(buf, obj_local)
@@ -236,7 +232,7 @@ fn emit_heap_reserve_local(
   ctx : CodegenCtx,
   buf : ByteBuf,
   size_local : Int,
-) -> Unit raise WasmGenError {
+) -> Unit {
   require_heap(ctx)
   let new_heap_local = alloc_temp_local(ctx)
   let current_pages_local = alloc_temp_local(ctx)
@@ -272,7 +268,7 @@ fn emit_heap_alloc_local(
   buf : ByteBuf,
   size_local : Int,
   obj_local : Int,
-) -> Unit raise WasmGenError {
+) -> Unit {
   emit_heap_reserve_local(ctx, buf, size_local)
   emit_local_get(buf, ctx.heap_local)
   emit_local_set(buf, obj_local)

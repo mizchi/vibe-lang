@@ -1,5 +1,5 @@
 ///|
-pub struct BenchCase {
+struct BenchCase {
   name : String
   expr : String
 } derive(Show, Eq)

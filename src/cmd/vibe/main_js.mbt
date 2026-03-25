@@ -44,7 +44,7 @@ fn touch_cli_helpers() -> Unit {
 }
 
 ///|
-pub fn print_js_usage() -> Unit {
+fn print_js_usage() -> Unit {
   println("vibe command is native-only for interactive I/O right now.")
   println(
     "reason: moonbit async stdio lacks stdin/stdout values on js/wasm targets.",

@@ -116,7 +116,7 @@ fn emit_bytes_cow_copy(
   len_local : Int,
   cap_local : Int,
   data_local : Int,
-) -> Unit raise WasmGenError {
+) -> Unit {
   let alloc_size_local = alloc_temp_local(ctx)
   let new_data_local = alloc_temp_local(ctx)
   emit_local_get(buf, cap_local)
@@ -171,7 +171,7 @@ fn emit_bytes_ensure_mutable(
   len_local : Int,
   cap_local : Int,
   data_local : Int,
-) -> Unit raise WasmGenError {
+) -> Unit {
   // Resolve view or raw → unified len/cap/data
   emit_bytes_load_header(ctx, buf, ptr_local, len_local, cap_local, data_local)
   // needs_cow = (obj_type == view) || (raw cap field < 0)
@@ -206,7 +206,7 @@ fn emit_bytes_raw_alloc_with_cap_local(
   cap_local : Int,
   obj_local : Int,
   data_local : Int,
-) -> Unit raise WasmGenError {
+) -> Unit {
   let data_size_local = alloc_temp_local(ctx)
   emit_local_get(buf, cap_local)
   emit_i32_const_raw(buf, 3)
@@ -239,7 +239,7 @@ fn emit_bytes_raw_ensure_capacity(
   add_local : Int,
   cap_local : Int,
   data_local : Int,
-) -> Unit raise WasmGenError {
+) -> Unit {
   let needed_local = alloc_temp_local(ctx)
   let doubled_cap_local = alloc_temp_local(ctx)
   let new_cap_local = alloc_temp_local(ctx)
@@ -424,7 +424,7 @@ fn emit_number_obj_to_string(
   obj_ptr_local : Int,
   obj_ty_local : Int,
   fallback_str : Int64,
-) -> Unit raise WasmGenError {
+) -> Unit {
   let is_neg_local = alloc_temp_local(ctx)
   let int_part_local = alloc_temp_local(ctx)
   let scaled_local = alloc_temp_local(ctx)
@@ -8272,7 +8272,7 @@ fn emit_alloc_substr_push(
   sub_ptr : Int,
   copy_j : Int,
   obj_size_local : Int,
-) -> Unit raise WasmGenError {
+) -> Unit {
   // Compute aligned size: align4(8 + sub_len)
   emit_local_get(buf, sub_len)
   emit_i32_const_raw(buf, 8)

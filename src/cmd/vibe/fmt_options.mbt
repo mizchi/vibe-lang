@@ -1,5 +1,5 @@
 ///|
-pub struct FmtCmdOptions {
+struct FmtCmdOptions {
   dry_run : Bool
   files : Array[String]
 } derive(Show, Eq)
