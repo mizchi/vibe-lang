@@ -5,20 +5,12 @@ fn parse_cli_syntax_mode(
 ) -> Result[@runtime.ParserMode, String] {
   match value {
     "vibe" => Ok(@runtime.ParserMode::VibeMode)
-    "posix" | "posix-ext" => Ok(@runtime.ParserMode::PosixMode)
-    "posix-strict" => Ok(@runtime.ParserMode::PosixStrictMode)
-    _ =>
-      Err(
-        cmd_name +
-        ": unsupported syntax `" +
-        value +
-        "` (expected: vibe|posix-ext|posix-strict)",
-      )
+    _ => Err(cmd_name + ": unsupported syntax `" + value + "` (expected: vibe)")
   }
 }
 
 ///|
-pub struct CliRuntimeArgs {
+struct CliRuntimeArgs {
   syntax_mode : @runtime.ParserMode
   cmd_args : Array[String]
   unstable_async : Bool
@@ -37,7 +29,7 @@ pub struct CliDispatchArgs {
 } derive(Show, Eq)
 
 ///|
-pub fn parse_cli_syntax_args(
+fn parse_cli_syntax_args(
   args : Array[String],
   cmd_name : String,
 ) -> Result[(@runtime.ParserMode, Array[String]), String] {
@@ -48,10 +40,7 @@ pub fn parse_cli_syntax_args(
     let arg = args[i]
     if arg == "--syntax" {
       if i + 1 >= args.length() {
-        return Err(
-          cmd_name +
-          ": missing value for --syntax (expected: vibe|posix-ext|posix-strict)",
-        )
+        return Err(cmd_name + ": missing value for --syntax (expected: vibe)")
       }
       match parse_cli_syntax_mode(args[i + 1], cmd_name) {
         Ok(next) => mode = next
@@ -76,7 +65,7 @@ pub fn parse_cli_syntax_args(
 }
 
 ///|
-pub fn parse_cli_runtime_args(
+fn parse_cli_runtime_args(
   args : Array[String],
   cmd_name : String,
 ) -> Result[CliRuntimeArgs, String] {
@@ -156,16 +145,3 @@ pub fn parse_cli_dispatch_args(
 }
 
 ///|
-pub fn ensure_cli_parser_mode_supported(
-  mode : @runtime.ParserMode,
-  cmd_name : String,
-) -> Result[Unit, String] {
-  match mode {
-    @runtime.ParserMode::VibeMode => Ok(())
-    @runtime.ParserMode::PosixMode | @runtime.ParserMode::PosixStrictMode =>
-      Err(
-        cmd_name +
-        ": --syntax posix-ext/posix-strict was removed from public CLI; use --syntax vibe",
-      )
-  }
-}

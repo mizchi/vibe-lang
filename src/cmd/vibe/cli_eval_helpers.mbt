@@ -1,18 +1,4 @@
 ///|
-fn print_eval_result(result : @runtime.EvalResult) -> Unit {
-  match result.last {
-    Some(value) => println("last: " + value.to_string())
-    None => ()
-  }
-  for effect in result.effects {
-    match effect {
-      @runtime.Effect::PosixDesugar(message) => println("note: " + message)
-      _ => println("effect: " + effect.to_string())
-    }
-  }
-}
-
-///|
 fn load_eval_db_source(path : String) -> Result[String, String] {
   if not(@os_fs.path_exists(path)) {
     return Ok("")
@@ -35,67 +21,6 @@ struct EvalScopeSymbol {
   path : String
   def_id : String
 } derive(Show, Eq)
-
-///|
-enum EvalRestoreSeverity {
-  Fatal
-  NonFatal
-} derive(Show, Eq)
-
-///|
-struct EvalRestoreDiagnosis {
-  severity : EvalRestoreSeverity
-  category : String
-  hint : String
-} derive(Show, Eq)
-
-///|
-fn eval_restore_diagnose(err_text : String) -> EvalRestoreDiagnosis {
-  if err_text.contains("DuplicateDecl") {
-    return {
-      severity: EvalRestoreSeverity::NonFatal,
-      category: "duplicate_decl",
-      hint: "run `vibe history reset` to clear duplicate declarations in scratch db",
-    }
-  }
-  if err_text.contains("Parse(") || err_text.contains("ParseError") {
-    return {
-      severity: EvalRestoreSeverity::NonFatal,
-      category: "parse",
-      hint: "db source may be stale or syntax mode changed; run `vibe history reset` and re-evaluate needed defs",
-    }
-  }
-  if err_text.contains("UnknownName(") ||
-    err_text.contains("UnknownType(") ||
-    err_text.contains("UnknownModule(") {
-    return {
-      severity: EvalRestoreSeverity::NonFatal,
-      category: "unresolved_name",
-      hint: "required defs/imports are missing; re-run with `--include` or reset scratch db",
-    }
-  }
-  {
-    severity: EvalRestoreSeverity::Fatal,
-    category: "runtime",
-    hint: "inspect db source and runtime error; if needed run `vibe history reset` to recover",
-  }
-}
-
-///|
-fn eval_restore_message(
-  db_path : String,
-  err_text : String,
-  diagnosis : EvalRestoreDiagnosis,
-) -> String {
-  "failed to restore db `" +
-  db_path +
-  "` (" +
-  diagnosis.category +
-  "): " +
-  err_text +
-  " hint: " +
-  diagnosis.hint
-}
 
 ///|
 fn eval_scope_symbol_id_from_entry(entry : @frontend.SymbolEntry) -> String {
@@ -301,51 +226,6 @@ fn resolve_scratch_db_path_for_index_root(
       }
       Ok((ns_name, db_path))
     }
-  }
-}
-
-///|
-fn path_last_segment(path : String) -> String {
-  let parts : Array[String] = []
-  for part in path.split("/") {
-    let text = part.to_string()
-    if text.length() > 0 {
-      parts.push(text)
-    }
-  }
-  if parts.length() == 0 {
-    ""
-  } else {
-    parts[parts.length() - 1]
-  }
-}
-
-///|
-fn load_git_blob_source_from_objects_dir(
-  objects_dir : String,
-  hash : String,
-) -> Result[String, String] {
-  if not(@os_fs.path_exists(objects_dir)) {
-    return Err("git objects dir not found: " + objects_dir)
-  }
-  let git_dir = @vibe_fs.parent_path(objects_dir)
-  let fs = @osfs.OsFs::new()
-  let db = @gitlib.ObjectDb::load_lazy(fs, git_dir) catch {
-    e =>
-      return Err(
-        "failed to load git object db `" + objects_dir + "`: " + e.to_string(),
-      )
-  }
-  let id = @bit.ObjectId::from_hex(hash) catch {
-    e => return Err("invalid object hash `" + hash + "`: " + e.to_string())
-  }
-  let obj = db.get(fs, id) catch {
-    e =>
-      return Err("failed to read git object `" + hash + "`: " + e.to_string())
-  }
-  match obj {
-    Some(pack_obj) => Ok(@utf8.decode_lossy(pack_obj.data[:]))
-    None => Err("git object not found: " + hash)
   }
 }
 

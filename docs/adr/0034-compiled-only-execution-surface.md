@@ -43,7 +43,7 @@
 
 具体的には以下を採る。
 
-- `VIBE_RUN_BACKEND` / `VIBE_TEST_BACKEND` は `compiled|auto` のみを正式値とする
+- `run/test` の backend 選択 env は廃止し、public execution surface は compiled 固定にする
 - `bench` の `--backend interpreter` は廃止する
 - `bench` の legacy expr mode (`--expr`, `--case`, `--cases`) は廃止する
 - `shell` 系は compiled session backend を canonical path とする

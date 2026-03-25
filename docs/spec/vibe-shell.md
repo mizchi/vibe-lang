@@ -24,7 +24,7 @@ Status: draft memo for implementation planning.
 
 ## Posix mode compatibility
 
-- `--syntax posix` では POSIX 互換を優先する。
+- internal `PosixMode` では POSIX 互換を優先する。
 - POSIX 既存表現 (`|`, リダイレクト, クォート) は将来も最優先で保護する。
 - object pipeline 機能は `|>` と明示変換 API でのみ有効化する。
 - 既存 POSIX スクリプトの無変更実行を回帰要件にする。

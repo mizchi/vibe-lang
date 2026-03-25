@@ -25,9 +25,9 @@ test "shell" {
 }
 ```
 
-## PosixMode (REPL / `vibe shell`)
+## PosixMode (internal runtime preview)
 
-In `vibe shell` (or `--syntax posix`), bare commands are desugared to `sh_lines()` calls:
+In internal `PosixMode`, bare commands are desugared to `sh_lines()` calls:
 
 ```
 $ vibe shell

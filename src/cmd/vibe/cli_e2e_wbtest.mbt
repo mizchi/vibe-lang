@@ -1035,7 +1035,7 @@ test "cli normalize directory hoists non-index import into index" {
 ///|
 test "cli bench backend parse" {
   match parse_bench_backend("wasm") {
-    Some(backend) => assert_eq(bench_backend_name(backend), "compiled")
+    Some(backend) => assert_eq(backend, BenchBackend::Wasm)
     None => fail("expected wasm backend")
   }
   match parse_bench_backend("interpreter") {

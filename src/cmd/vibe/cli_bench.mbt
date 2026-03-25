@@ -65,13 +65,6 @@ fn is_wasm_unsupported_compile_error(message : String) -> Bool {
 }
 
 ///|
-fn bench_backend_name(backend : BenchBackend) -> String {
-  match backend {
-    BenchBackend::Wasm => "compiled"
-  }
-}
-
-///|
 fn parse_bench_backend(value : String) -> BenchBackend? {
   match value.trim().to_string().to_lower() {
     "wasm" | "compiled" => Some(BenchBackend::Wasm)
@@ -147,7 +140,7 @@ fn bench_uses_expr_mode(args : Array[String]) -> Bool {
 ///|
 fn bench_cmd(
   args : Array[String],
-  syntax_mode : @runtime.ParserMode,
+  _syntax_mode : @runtime.ParserMode,
   features : @runtime.RuntimeFeatureFlags,
 ) -> Unit {
   ignore(features)
@@ -158,13 +151,6 @@ fn bench_cmd(
     )
   } else {
     let _ = resolve_bench_backend(args, BenchBackend::Wasm)
-    match syntax_mode {
-      @runtime.ParserMode::PosixMode | @runtime.ParserMode::PosixStrictMode =>
-        abort(
-          "bench: --syntax posix-ext/posix-strict is no longer supported; use vibe bench files",
-        )
-      @runtime.ParserMode::VibeMode => ()
-    }
     bench_blocks_cmd(args)
   }
 }
@@ -1006,13 +992,6 @@ fn pad_left_zero(n : Int, width : Int) -> String {
     out += "0"
   }
   out + s
-}
-
-///|
-fn format_pct(pct : Double) -> String {
-  let whole = pct.floor().to_int()
-  let frac = ((pct - whole.to_double()) * 100.0).round().to_int()
-  whole.to_string() + "." + pad_left_zero(frac, 2) + "%"
 }
 
 ///|

@@ -25,12 +25,6 @@ pub fn run(args : Array[String]) -> Unit {
     parsed.unstable_threads,
   )
   let enable_llm = parsed.enable_llm
-  if command_requires_parser(cmd) {
-    match ensure_cli_parser_mode_supported(syntax_mode, cmd) {
-      Ok(_) => ()
-      Err(msg) => abort(msg)
-    }
-  }
   match cmd {
     "run" => run_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
     "eval" =>
@@ -222,12 +216,10 @@ fn print_usage() -> Unit {
   )
   println("")
   println("  lsp                         start LSP server (stdin/stdout)")
-  println(
-    "  parser commands: --syntax vibe (public CLI); posix-ext/posix-strict are internal-only",
-  )
+  println("  parser commands: --syntax vibe")
   println("  runtime flags: --unstable-async --unstable-threads")
   println(
-    "  exec backend env: VIBE_RUN_BACKEND=compiled|auto (default: compiled), VIBE_TEST_BACKEND=compiled|auto (default: compiled)",
+    "  run mode env: VIBE_RUN_BACKEND=release|monolithic  disable linked debug fast path",
   )
   println(
     "                    run/check/test use a persistent localhost session worker by default; set VIBE_USE_SESSION_HTTP=0 to disable",
@@ -257,22 +249,6 @@ fn new_runtime_with_features(
 }
 
 ///|
-fn restore_cli_env_var(name : String, prev : String?) -> Unit {
-  match prev {
-    Some(value) => @sys.set_env_var(name, value)
-    None => @sys.unset_env_var(name)
-  }
-}
-
-///|
-fn resolve_test_loop_fuel_env_value() -> String {
-  match @sys.get_env_var("VIBE_TEST_LOOP_FUEL") {
-    Some(raw) => raw
-    None => "10000000"
-  }
-}
-
-///|
 fn new_runtime_with_llm(
   features : @runtime.RuntimeFeatureFlags,
 ) -> @runtime.Runtime {
@@ -295,34 +271,11 @@ fn new_cli_runtime(
 }
 
 ///|
-fn command_requires_parser(cmd : String) -> Bool {
-  match cmd {
-    "run"
-    | "test"
-    | "check"
-    | "apply"
-    | "symbols"
-    | "normalize"
-    | "compile"
-    | "bench"
-    | "bench-file"
-    | "shell"
-    | "shell-stdin"
-    | "wasm-shell-stdin"
-    | "hash"
-    | "save"
-    | "fetch"
-    | "update-lock" => true
-    _ => false
-  }
-}
-
-///|
 fn short_hash(hash : String) -> String {
   if hash.length() <= 7 {
     hash
   } else {
-    (try! hash[0:7]).to_string()
+    hash[0:7].to_string()
   }
 }
 
@@ -1085,73 +1038,6 @@ fn[T] die(msg : String) -> T {
 }
 
 ///|
-enum CliExecBackendPref {
-  Auto
-  Compiled
-} derive(Eq, Show)
-
-///|
-fn parse_cli_exec_backend_pref(raw : String) -> CliExecBackendPref {
-  let value = raw.trim().to_string().to_lower()
-  match value {
-    "compiled" | "compile" | "wasm" => CliExecBackendPref::Compiled
-    _ => CliExecBackendPref::Auto
-  }
-}
-
-///|
-fn resolve_cli_exec_backend_pref(env_name : String) -> CliExecBackendPref {
-  match @sys.get_env_var(env_name) {
-    Some(raw) => parse_cli_exec_backend_pref(raw)
-    None => CliExecBackendPref::Auto
-  }
-}
-
-///|
-fn normalize_cli_entry_path(path : String) -> String {
-  path.replace(old="\\", new="/")
-}
-
-///|
-fn entry_prefers_compiled_backend(entry_path : String) -> Bool {
-  let normalized = normalize_cli_entry_path(entry_path)
-  let matched_normalized = normalized == "vibe/compiler" ||
-    normalized.has_prefix("vibe/compiler/") ||
-    normalized.has_suffix("/vibe/compiler") ||
-    normalized.contains("/vibe/compiler/")
-  if matched_normalized {
-    return true
-  }
-  entry_path == "vibe\\compiler" ||
-  entry_path.has_prefix("vibe\\compiler\\") ||
-  entry_path.has_suffix("\\vibe\\compiler") ||
-  entry_path.contains("\\vibe\\compiler\\")
-}
-
-///|
-fn resolve_cli_exec_backend_pref_for_entry(
-  env_name : String,
-  entry_path : String,
-) -> CliExecBackendPref {
-  let pref = resolve_cli_exec_backend_pref(env_name)
-  if pref == CliExecBackendPref::Auto {
-    if entry_prefers_compiled_backend(entry_path) {
-      return CliExecBackendPref::Compiled
-    }
-  }
-  pref
-}
-
-///|
-fn resolve_run_backend_pref(entry_path : String) -> CliExecBackendPref {
-  match @sys.get_env_var("VIBE_RUN_BACKEND") {
-    Some(_) =>
-      resolve_cli_exec_backend_pref_for_entry("VIBE_RUN_BACKEND", entry_path)
-    None => CliExecBackendPref::Compiled
-  }
-}
-
-///|
 fn cli_use_session_http_with(raw : String?, has_self_bin : Bool) -> Bool {
   match raw {
     Some(value) => parse_bool_flag(value)
@@ -1766,23 +1652,6 @@ fn compile_module_wasm_for_exec(
 }
 
 ///|
-fn compile_module_wasm_for_exec_with_coverage(
-  db : @runtime.VibeDb,
-  entry : String,
-  http_host_imports? : Bool = false,
-  run_tests? : Bool = false,
-) -> @runtime_compile.WasmCoverageArtifact raise @runtime_compile.WasmCompileError {
-  @runtime_compile.compile_module_wasm_with_coverage(
-    db,
-    entry,
-    no_dce=false,
-    run_tests~,
-    debug_errors=true,
-    http_host_imports~,
-  )
-}
-
-///|
 fn emit_module_source_cmd(args : Array[String]) -> Unit {
   if args.length() != 3 {
     abort("emit-module-source: expected <in> <out> <entry>")
@@ -2108,7 +1977,7 @@ fn print_wasm_run_value(value : WasmRunValue) -> Unit {
 ///|
 fn run_cmd(
   args : Array[String],
-  syntax_mode : @runtime.ParserMode,
+  _syntax_mode : @runtime.ParserMode,
   _features : @runtime.RuntimeFeatureFlags,
   enable_llm~ : Bool,
 ) -> Unit {
@@ -2117,10 +1986,6 @@ fn run_cmd(
     abort("run: expected <file>")
   }
   let entry_path = args[0]
-  match syntax_mode {
-    @runtime.ParserMode::VibeMode => ()
-    _ => abort("run: --syntax vibe only")
-  }
   let use_session_http = cli_use_session_http()
   if use_session_http {
     match run_entry_via_session(entry_path, _features) {
@@ -3116,13 +2981,6 @@ fn run_compiled_test_case(
 }
 
 ///|
-fn load_compiled_test_case_db(
-  source_path : String,
-) -> Result[(@runtime.VibeDb, String), String] {
-  @loader.load_db_for_test(source_path)
-}
-
-///|
 fn run_test_file_compiled_with_cache(
   cache : CliEntryDbCache,
   entry_path : String,
@@ -3392,18 +3250,6 @@ fn run_test_file_compiled_per_case(
 }
 
 ///|
-fn run_test_file_compiled(
-  entry_path : String,
-  stop_on_first_failure : Bool,
-) -> CompiledTestAttempt {
-  run_test_file_compiled_with_cache(
-    CliEntryDbCache::new(),
-    entry_path,
-    stop_on_first_failure,
-  )
-}
-
-///|
 fn run_test_file_with_backend_with_cache(
   cache : CliEntryDbCache,
   entry_path : String,
@@ -3431,18 +3277,6 @@ fn run_test_file_with_backend_with_cache(
 }
 
 ///|
-fn run_test_file_with_backend(
-  entry_path : String,
-  features : @runtime.RuntimeFeatureFlags,
-) -> Result[CliTestReport, String] {
-  run_test_file_with_backend_with_cache(
-    CliEntryDbCache::new(),
-    entry_path,
-    features,
-  )
-}
-
-///|
 fn compiled_report_has_runtime_import_failures(report : CliTestReport) -> Bool {
   for failure in report.failures {
     if failure.error.contains("unknown import:") ||
@@ -3451,19 +3285,6 @@ fn compiled_report_has_runtime_import_failures(report : CliTestReport) -> Bool {
     }
   }
   false
-}
-
-///|
-fn resolve_test_backend_pref(entry_path : String) -> CliExecBackendPref {
-  let pref = resolve_cli_exec_backend_pref_for_entry(
-    "VIBE_TEST_BACKEND", entry_path,
-  )
-  if pref == CliExecBackendPref::Auto {
-    // `vibe test` defaults to compiled backend.
-    CliExecBackendPref::Compiled
-  } else {
-    pref
-  }
 }
 
 ///|
@@ -6210,23 +6031,6 @@ fn system_command_bytes(cmd : String) -> Bytes {
 }
 
 ///|
-fn print_test_report(path : String, report : @runtime.TestReport) -> Bool {
-  let status = if report.failed == 0 { "ok" } else { "fail" }
-  println("\{path}: \{status} (\{report.passed}/\{report.total})")
-  if report.failed > 0 {
-    println("  failures:")
-    for failure in report.failures {
-      let name = match failure.name {
-        Some(n) => n
-        None => "<unnamed>"
-      }
-      println("  - " + name + ": " + failure.error)
-    }
-  }
-  report.failed == 0
-}
-
-///|
 fn print_cli_test_report(path : String, report : CliTestReport) -> Bool {
   let status = if report.failed == 0 { "ok" } else { "fail" }
   println("\{path}: \{status} (\{report.passed}/\{report.total})")
@@ -6936,11 +6740,7 @@ fn source_slice_by_span(source : String, start : Int, end : Int) -> String {
   if stop <= s {
     return ""
   }
-  try source[s:stop] catch {
-    _ => ""
-  } noraise {
-    value => value.to_string()
-  }
+  source[s:stop].to_string()
 }
 
 ///|
@@ -7423,7 +7223,6 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
   }
   // In debug linked mode, try fast path: load only user file (skip import I/O).
   let resolved_entry_for_parent = @loader.resolve_entry_path(entry)
-  let parent = @vibe_fs.parent_path(resolved_entry_for_parent)
   // Hoist .vibe/debug cache to nearest parent .vibe directory.
   // Cache key = relative path from .vibe root to avoid collisions.
   let (vibe_root, cache_key) = find_vibe_cache_root(resolved_entry_for_parent)
@@ -7762,7 +7561,7 @@ fn collect_reexport_types_recursive(
             inner_wanted[item.name] = true
           }
         }
-        if inner_wanted.size() > 0 {
+        if inner_wanted.length() > 0 {
           collect_reexport_types_recursive(
             source_path,
             inner_source,

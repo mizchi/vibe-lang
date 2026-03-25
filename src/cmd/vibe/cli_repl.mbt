@@ -911,7 +911,7 @@ fn repl_vibe_normalize_json(
   if args.length() > 0 {
     let first_arg = args[0]
     let first_path = @loader.resolve_entry_path(first_arg)
-    let first_exists = @os_fs.path_exists(first_path) catch { _ => false }
+    let first_exists = @os_fs.path_exists(first_path)
     let first_is_file_like = first_arg == "." ||
       first_arg.has_prefix("./") ||
       first_arg.has_prefix("../") ||
@@ -1358,51 +1358,6 @@ fn repl_print_vibe_payload_human(
       }
     }
     _ => print_line(payload.stringify())
-  }
-}
-
-///|
-fn repl_print_eval_result_for_shell(
-  result : @runtime.EvalResult,
-  print_line : (String) -> Unit,
-) -> Unit {
-  let is_shell = result.effects
-    .iter()
-    .any(fn(e) {
-      match e {
-        @runtime.Effect::ShellExec(_) => true
-        _ => false
-      }
-    })
-  if is_shell {
-    match result.last {
-      Some(@vibe_core.Value::Array(items)) =>
-        for item in items {
-          match item {
-            @vibe_core.Value::String(s) => print_line(s)
-            other => print_line(other.to_string())
-          }
-        }
-      Some(value) => print_line(value.to_string())
-      None => ()
-    }
-    for effect in result.effects {
-      match effect {
-        @runtime.Effect::ShellExec(_) | @runtime.Effect::PosixDesugar(_) => ()
-        _ => print_line("effect: " + effect.to_string())
-      }
-    }
-  } else {
-    match result.last {
-      Some(value) => print_line("last: " + value.to_string())
-      None => ()
-    }
-    for effect in result.effects {
-      match effect {
-        @runtime.Effect::PosixDesugar(message) => print_line("note: " + message)
-        _ => print_line("effect: " + effect.to_string())
-      }
-    }
   }
 }
 
@@ -2437,18 +2392,6 @@ fn resolve_repl_initial_source(
   } else {
     Ok("")
   }
-}
-
-///|
-fn repl_wasi_cmd(
-  args : Array[String],
-  _syntax_mode : @runtime.ParserMode,
-  _features : @runtime.RuntimeFeatureFlags,
-  enable_llm~ : Bool,
-) -> Unit {
-  let _ = args
-  let _ = enable_llm
-  abort("shell-wasi: command was removed from public CLI; use shell-stdin")
 }
 
 ///|
@@ -3806,28 +3749,6 @@ fn handle_cd_builtin(
     print_line("cd: no such file or directory: " + arg)
   }
   true
-}
-
-///|
-fn format_repl_error(
-  e : Error,
-  source : String,
-  unwrap_prefix? : String = "",
-) -> String {
-  @runtime.format_error_for_repl(e, source, unwrap_prefix~)
-}
-
-///|
-fn format_repl_error_with_mode(
-  e : Error,
-  source : String,
-  syntax_mode : @runtime.ParserMode,
-  cmd_name : String,
-  unwrap_prefix? : String = "",
-) -> String {
-  let _ = syntax_mode
-  let _ = cmd_name
-  format_repl_error(e, source, unwrap_prefix~)
 }
 
 ///|

@@ -25,16 +25,15 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 ## Syntax dispatch
 
 Parser dispatch is explicit:
-- parser-consuming CLI commands accept `--syntax vibe|posix`.
+- parser-consuming CLI commands accept `--syntax vibe`.
 - default is `--syntax vibe`.
-- `--syntax posix` is a preview mode for shell commands
-  (`shell`, `shell-stdin`, `shell-wasi`).
 - static/compile-oriented commands (`check`, `test`, `compile`, `hash`, `save`,
   `fetch`, `update-lock`, `bench-file`, `wasm-repl-stdin`) remain vibe-only.
-- Runtime API preview:
+- non-`vibe` syntax values are rejected by the public CLI.
+- Runtime API preview remains available for internal/runtime tests:
   `Runtime::eval_script_with_mode(script, PosixMode)` supports vibe shell-style
   command-head desugaring (`ls` -> `sh_lines("ls")`).
-- In `--syntax posix`, each unresolved bare identifier command-head rewrite
+- In internal `PosixMode`, each unresolved bare identifier command-head rewrite
   emits a runtime note (`note: posix-mode command-head desugar: ...`) so
   migration behavior is explicit in `run`/`repl` output.
 
@@ -795,9 +794,7 @@ CLI:
 - `moon run --target wasm src/cmd/vibe_compile_wasi -- [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wit|--wit-component] [-o out] <file>` runs compile pipeline from wasm target as well.
   - `vibe_compile_wasi` only: `--wasm` prefers `wasm-gc`; use `--wasm-mvp` for core wasm backend (broader language coverage).
   - selfhost compiler boundary: compile logic stays in `vibe/compiler/*`; filesystem / environ / stdio stay in the host wrapper (`src/cmd/vibe_compile_wasi`). See ADR-0028.
-- Public CLI parser-consuming commands support `--syntax vibe`.
-  `posix-ext` / `posix-strict` remain internal runtime/testing modes and are
-  rejected by the public CLI.
+- Public CLI parser-consuming commands support `--syntax vibe` only.
 - `moon run --target native src/cmd/vibe -- repl` launches the TUI interactive shell (completion + layout, history).
 - `moon run --target native src/cmd/vibe -- repl-stdin [--no-prompt]` reads lines from stdin and evaluates them.
 - `moon run --target native src/cmd/vibe -- repl-wasi [--no-prompt] [--tty|--no-tty]` runs line REPL with wasi-style prompt/tty options.

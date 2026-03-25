@@ -21,11 +21,7 @@ fn symbol_line_col(source : String, span : @vibe_core.Span) -> (Int, Int) {
 ///|
 fn symbol_line_text(source : String, span : @vibe_core.Span) -> String {
   let (_, line_start, line_end) = @vibe_core.line_info(source, span.start)
-  try source[line_start:line_end] catch {
-    _ => ""
-  } noraise {
-    s => s.to_string()
-  }
+  source[line_start:line_end].to_string()
 }
 
 ///|
@@ -37,11 +33,7 @@ fn graph_ir_line_col(source : String, row : @x_exp.GraphIrRow) -> (Int, Int) {
 ///|
 fn graph_ir_line_text(source : String, row : @x_exp.GraphIrRow) -> String {
   let (_, line_start, line_end) = @vibe_core.line_info(source, row.start)
-  try source[line_start:line_end] catch {
-    _ => ""
-  } noraise {
-    s => s.to_string()
-  }
+  source[line_start:line_end].to_string()
 }
 
 ///|

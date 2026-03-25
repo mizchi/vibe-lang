@@ -72,11 +72,10 @@ Status: accepted and moved from `TODO.md`.
   `use` is removed from surface syntax; canonical import form is
   `import <module-ref> { ... }` only.
 - Parser dispatch policy is fixed in spec and CLI behavior:
-  parser-consuming commands use explicit `--syntax vibe|posix` switch
+  parser-consuming public CLI commands use explicit `--syntax vibe`
   (default `vibe`) with no automatic fallback.
-  `posix` is preview-enabled only for shell commands
-  (`shell`/`shell-stdin`/`shell-wasi`) and rejected on
-  static/compile-oriented commands.
+  Posix parser mode remains internal/runtime-only and is not exposed on the
+  public CLI surface.
 - PosixMode runtime preview semantics are fixed:
   `Runtime::eval_script_with_mode(..., PosixMode)` desugars unresolved
   command-like bare identifiers to `sh_lines("<name>")`, while preserving bound

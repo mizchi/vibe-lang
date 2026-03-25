@@ -375,11 +375,11 @@ test "cli syntax mode parse default" {
 }
 
 ///|
-test "cli syntax mode parse explicit posix" {
-  let parsed = parse_cli_syntax_args(["--syntax", "posix", "main.vibe"], "run")
+test "cli syntax mode parse explicit vibe" {
+  let parsed = parse_cli_syntax_args(["--syntax", "vibe", "main.vibe"], "run")
   match parsed {
     Ok((mode, rest)) => {
-      assert_eq(mode, @runtime.ParserMode::PosixMode)
+      assert_eq(mode, @runtime.ParserMode::VibeMode)
       assert_eq(rest, ["main.vibe"])
     }
     Err(msg) => fail("unexpected err: " + msg)
@@ -387,32 +387,38 @@ test "cli syntax mode parse explicit posix" {
 }
 
 ///|
-test "cli syntax mode parse explicit posix-ext" {
+test "cli syntax mode parse rejects explicit posix" {
+  let parsed = parse_cli_syntax_args(["--syntax", "posix", "main.vibe"], "run")
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) =>
+      assert_eq(msg, "run: unsupported syntax `posix` (expected: vibe)")
+  }
+}
+
+///|
+test "cli syntax mode parse rejects explicit posix-ext" {
   let parsed = parse_cli_syntax_args(
     ["--syntax", "posix-ext", "main.vibe"],
     "run",
   )
   match parsed {
-    Ok((mode, rest)) => {
-      assert_eq(mode, @runtime.ParserMode::PosixMode)
-      assert_eq(rest, ["main.vibe"])
-    }
-    Err(msg) => fail("unexpected err: " + msg)
+    Ok(_) => fail("expected error")
+    Err(msg) =>
+      assert_eq(msg, "run: unsupported syntax `posix-ext` (expected: vibe)")
   }
 }
 
 ///|
-test "cli syntax mode parse explicit posix-strict" {
+test "cli syntax mode parse rejects explicit posix-strict" {
   let parsed = parse_cli_syntax_args(
     ["--syntax", "posix-strict", "main.vibe"],
     "run",
   )
   match parsed {
-    Ok((mode, rest)) => {
-      assert_eq(mode, @runtime.ParserMode::PosixStrictMode)
-      assert_eq(rest, ["main.vibe"])
-    }
-    Err(msg) => fail("unexpected err: " + msg)
+    Ok(_) => fail("expected error")
+    Err(msg) =>
+      assert_eq(msg, "run: unsupported syntax `posix-strict` (expected: vibe)")
   }
 }
 
@@ -433,14 +439,12 @@ test "cli runtime flags parse default" {
 ///|
 test "cli runtime flags parse with unstable flags" {
   let parsed = parse_cli_runtime_args(
-    [
-      "--unstable-async", "--syntax", "posix-strict", "--unstable-threads", "main.vibe",
-    ],
+    ["--unstable-async", "--syntax", "vibe", "--unstable-threads", "main.vibe"],
     "run",
   )
   match parsed {
     Ok(opts) => {
-      assert_eq(opts.syntax_mode, @runtime.ParserMode::PosixStrictMode)
+      assert_eq(opts.syntax_mode, @runtime.ParserMode::VibeMode)
       assert_eq(opts.cmd_args, ["main.vibe"])
       assert_true(opts.unstable_async)
       assert_true(opts.unstable_threads)
@@ -484,13 +488,13 @@ test "cli dispatch args parse leading unstable flags" {
 ///|
 test "cli dispatch args merges leading and trailing unstable flags" {
   let parsed = parse_cli_dispatch_args([
-    "vibe", "--unstable-async", "run", "--unstable-threads", "--syntax", "posix",
+    "vibe", "--unstable-async", "run", "--unstable-threads", "--syntax", "vibe",
     "main.vibe",
   ])
   match parsed {
     Ok(v) => {
       assert_eq(v.cmd, "run")
-      assert_eq(v.syntax_mode, @runtime.ParserMode::PosixMode)
+      assert_eq(v.syntax_mode, @runtime.ParserMode::VibeMode)
       assert_eq(v.cmd_args, ["main.vibe"])
       assert_true(v.unstable_async)
       assert_true(v.unstable_threads)
@@ -716,10 +720,7 @@ test "cli syntax mode parse rejects unknown value" {
   let parsed = parse_cli_syntax_args(["--syntax", "foo"], "run")
   match parsed {
     Ok(_) => fail("expected error")
-    Err(msg) =>
-      assert_eq(
-        msg, "run: unsupported syntax `foo` (expected: vibe|posix-ext|posix-strict)",
-      )
+    Err(msg) => assert_eq(msg, "run: unsupported syntax `foo` (expected: vibe)")
   }
 }
 
@@ -729,103 +730,8 @@ test "cli syntax mode parse rejects missing value" {
   match parsed {
     Ok(_) => fail("expected error")
     Err(msg) =>
-      assert_eq(
-        msg, "run: missing value for --syntax (expected: vibe|posix-ext|posix-strict)",
-      )
+      assert_eq(msg, "run: missing value for --syntax (expected: vibe)")
   }
-}
-
-///|
-test "cli syntax mode support matrix" {
-  match
-    ensure_cli_parser_mode_supported(@runtime.ParserMode::PosixMode, "run") {
-    Ok(_) => fail("expected run rejection")
-    Err(msg) => {
-      assert_true(msg.contains("run"))
-      assert_true(msg.contains("removed from public CLI"))
-    }
-  }
-  match
-    ensure_cli_parser_mode_supported(@runtime.ParserMode::PosixMode, "eval") {
-    Ok(_) => fail("expected eval rejection")
-    Err(msg) => {
-      assert_true(msg.contains("eval"))
-      assert_true(msg.contains("removed from public CLI"))
-    }
-  }
-  match
-    ensure_cli_parser_mode_supported(@runtime.ParserMode::PosixMode, "shell") {
-    Ok(_) => fail("expected shell rejection")
-    Err(msg) => {
-      assert_true(msg.contains("shell"))
-      assert_true(msg.contains("removed from public CLI"))
-    }
-  }
-  match
-    ensure_cli_parser_mode_supported(
-      @runtime.ParserMode::PosixMode,
-      "shell-stdin",
-    ) {
-    Ok(_) => fail("expected shell-stdin rejection")
-    Err(msg) => {
-      assert_true(msg.contains("shell-stdin"))
-      assert_true(msg.contains("removed from public CLI"))
-    }
-  }
-  match
-    ensure_cli_parser_mode_supported(
-      @runtime.ParserMode::PosixMode,
-      "shell-wasi",
-    ) {
-    Ok(_) => fail("expected shell-wasi rejection")
-    Err(msg) => {
-      assert_true(msg.contains("shell-wasi"))
-      assert_true(msg.contains("removed from public CLI"))
-    }
-  }
-  match
-    ensure_cli_parser_mode_supported(
-      @runtime.ParserMode::PosixStrictMode,
-      "shell",
-    ) {
-    Ok(_) => fail("expected strict shell rejection")
-    Err(msg) => {
-      assert_true(msg.contains("shell"))
-      assert_true(msg.contains("removed from public CLI"))
-    }
-  }
-  match
-    ensure_cli_parser_mode_supported(
-      @runtime.ParserMode::PosixStrictMode,
-      "run",
-    ) {
-    Ok(_) => fail("expected strict run rejection")
-    Err(msg) => {
-      assert_true(msg.contains("run"))
-      assert_true(msg.contains("removed from public CLI"))
-    }
-  }
-  match
-    ensure_cli_parser_mode_supported(@runtime.ParserMode::PosixMode, "bench") {
-    Ok(_) => fail("expected bench rejection")
-    Err(msg) => {
-      assert_true(msg.contains("bench"))
-      assert_true(msg.contains("removed from public CLI"))
-    }
-  }
-  match
-    ensure_cli_parser_mode_supported(@runtime.ParserMode::PosixMode, "compile") {
-    Ok(_) => fail("expected compile rejection")
-    Err(msg) => {
-      assert_true(msg.contains("compile"))
-      assert_true(msg.contains("removed from public CLI"))
-    }
-  }
-}
-
-///|
-test "removed eval command does not require parser gate" {
-  assert_false(command_requires_parser("eval"))
 }
 
 ///|
@@ -1860,30 +1766,6 @@ test "ensure_parent_dir_for_file errors when parent path is file" {
 }
 
 ///|
-test "eval restore diagnosis classifies parse as non-fatal" {
-  let diagnosis = eval_restore_diagnose("Parse((start=1,end=2), expected expr)")
-  assert_eq(diagnosis.severity, EvalRestoreSeverity::NonFatal)
-  assert_eq(diagnosis.category, "parse")
-  assert_true(diagnosis.hint.contains("history reset"))
-}
-
-///|
-test "eval restore diagnosis classifies unknown name as non-fatal" {
-  let diagnosis = eval_restore_diagnose("UnknownName(\"echo\")")
-  assert_eq(diagnosis.severity, EvalRestoreSeverity::NonFatal)
-  assert_eq(diagnosis.category, "unresolved_name")
-  assert_true(diagnosis.hint.contains("--include"))
-}
-
-///|
-test "eval restore diagnosis classifies unknown runtime error as fatal" {
-  let diagnosis = eval_restore_diagnose("Trap(Unreachable)")
-  assert_eq(diagnosis.severity, EvalRestoreSeverity::Fatal)
-  assert_eq(diagnosis.category, "runtime")
-  assert_true(diagnosis.hint.contains("history reset"))
-}
-
-///|
 test "split test entry path batches caps workers and balances paths" {
   let capped = split_test_entry_path_batches(["a.vibe", "b.vibe", "c.vibe"], 10)
   assert_eq(capped.length(), 3)
@@ -2384,7 +2266,7 @@ test "compiled test case db load does not persist temporary lock refs" {
   @os_fs.write_string_to_file(source_path, "0\n") catch {
     e => fail("write temp source failed: " + e.to_string())
   }
-  match load_compiled_test_case_db(source_path) {
+  match wbtest_load_compiled_test_case_db(source_path) {
     Ok(_) => ()
     Err(err) => fail("load compiled test db failed: " + err)
   }
@@ -2553,7 +2435,7 @@ test "compiled test wrapper executes top-level computed let bindings" {
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
   }
-  match run_test_file_compiled(source_path, false) {
+  match wbtest_run_test_file_compiled(source_path, false) {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       if report.passed != 1 || report.failed != 0 {
@@ -2594,7 +2476,7 @@ test "compiled test wrapper executes closure-captured string condition" {
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
   }
-  match run_test_file_compiled(source_path, false) {
+  match wbtest_run_test_file_compiled(source_path, false) {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       if report.passed != 1 || report.failed != 0 {
@@ -2631,7 +2513,7 @@ test "compiled test wrapper supports paren string interpolation syntax" {
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
   }
-  match run_test_file_compiled(source_path, false) {
+  match wbtest_run_test_file_compiled(source_path, false) {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       if report.passed != 1 || report.failed != 0 {
@@ -2668,7 +2550,7 @@ test "compiled test wrapper executes imported let aliases" {
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
   }
-  match run_test_file_compiled(source_path, false) {
+  match wbtest_run_test_file_compiled(source_path, false) {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       assert_eq(report.passed, 1)
@@ -2719,7 +2601,7 @@ test "compiled test wrapper keeps higher-order imported aliases valid" {
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
   }
-  match run_test_file_compiled(source_path, false) {
+  match wbtest_run_test_file_compiled(source_path, false) {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       assert_eq(report.passed, 1)
@@ -2766,7 +2648,7 @@ test "compiled test wrapper keeps export helper chain top-level" {
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
   }
-  match run_test_file_compiled(source_path, false) {
+  match wbtest_run_test_file_compiled(source_path, false) {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       assert_eq(report.passed, 1)
@@ -2830,7 +2712,7 @@ test "compiled test wrapper keeps recursive string helpers valid" {
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
   }
-  match run_test_file_compiled(source_path, false) {
+  match wbtest_run_test_file_compiled(source_path, false) {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       assert_eq(report.passed, 1)
@@ -2871,7 +2753,7 @@ test "compiled test wrapper keeps Map::keys results as strings" {
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
   }
-  match run_test_file_compiled(source_path, false) {
+  match wbtest_run_test_file_compiled(source_path, false) {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       if report.passed != 1 || report.failed != 0 {
@@ -2910,7 +2792,7 @@ test "compiled test wrapper overwrites duplicate map builder keys" {
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
   }
-  match run_test_file_compiled(source_path, false) {
+  match wbtest_run_test_file_compiled(source_path, false) {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       assert_eq(report.passed, 1)
@@ -2941,7 +2823,7 @@ test "compiled test wrapper keeps float add assertions valid" {
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
   }
-  match run_test_file_compiled(source_path, false) {
+  match wbtest_run_test_file_compiled(source_path, false) {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       assert_eq(report.passed, 1)
@@ -2981,7 +2863,7 @@ test "compiled test wrapper keeps nested let record destructuring valid" {
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
   }
-  match run_test_file_compiled(source_path, false) {
+  match wbtest_run_test_file_compiled(source_path, false) {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       assert_eq(report.passed, 1)
@@ -3017,7 +2899,7 @@ test "compiled test marks Json::parse builtins unsupported for fallback" {
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
   }
-  match run_test_file_compiled(source_path, false) {
+  match wbtest_run_test_file_compiled(source_path, false) {
     CompiledTestAttempt::Unsupported(err) =>
       assert_true(err.contains("wasm runtime fallback builtins"))
     CompiledTestAttempt::Success(report) =>
@@ -3051,7 +2933,7 @@ test "compiled test marks imported jq fallback builtins unsupported" {
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
   }
-  match run_test_file_compiled(source_path, false) {
+  match wbtest_run_test_file_compiled(source_path, false) {
     CompiledTestAttempt::Unsupported(err) =>
       assert_true(err.contains("wasm runtime fallback builtins"))
     CompiledTestAttempt::Success(report) =>
@@ -3095,7 +2977,7 @@ test "compiled test marks perform resume builtins unsupported for fallback" {
   ) catch {
     e => fail("write temp source failed: " + e.to_string())
   }
-  match run_test_file_compiled(source_path, false) {
+  match wbtest_run_test_file_compiled(source_path, false) {
     CompiledTestAttempt::Unsupported(err) =>
       assert_true(err.contains("wasm runtime fallback builtins"))
     CompiledTestAttempt::Success(report) =>
@@ -3345,6 +3227,37 @@ fn write_wbtest_json_parse_fallback_source(source_path : String) -> Unit {
 }
 
 ///|
+fn wbtest_load_compiled_test_case_db(
+  source_path : String,
+) -> Result[(@runtime.VibeDb, String), String] {
+  load_db_for_test_with_cache(CliEntryDbCache::new(), source_path)
+}
+
+///|
+fn wbtest_run_test_file_compiled(
+  entry_path : String,
+  stop_on_first_failure : Bool,
+) -> CompiledTestAttempt {
+  run_test_file_compiled_with_cache(
+    CliEntryDbCache::new(),
+    entry_path,
+    stop_on_first_failure,
+  )
+}
+
+///|
+fn wbtest_run_test_file_with_backend(
+  entry_path : String,
+  features : @runtime.RuntimeFeatureFlags,
+) -> Result[CliTestReport, String] {
+  run_test_file_with_backend_with_cache(
+    CliEntryDbCache::new(),
+    entry_path,
+    features,
+  )
+}
+
+///|
 fn write_wbtest_basic_test_source(source_path : String) -> Unit {
   wbtest_remove_if_exists(source_path)
   match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
@@ -3357,114 +3270,6 @@ fn write_wbtest_basic_test_source(source_path : String) -> Unit {
   ) catch {
     e => abort("write temp source failed: " + e.to_string())
   }
-}
-
-///|
-test "exec backend pref parsing" {
-  assert_eq(
-    parse_cli_exec_backend_pref("interpreter"),
-    CliExecBackendPref::Auto,
-  )
-  assert_eq(
-    parse_cli_exec_backend_pref("compiled"),
-    CliExecBackendPref::Compiled,
-  )
-  assert_eq(parse_cli_exec_backend_pref("unknown"), CliExecBackendPref::Auto)
-}
-
-///|
-test "entry_prefers_compiled_backend detects vibe compiler paths" {
-  assert_true(entry_prefers_compiled_backend("vibe/compiler/eval_test.vibe"))
-  assert_true(
-    entry_prefers_compiled_backend(
-      "/Users/mz/ghq/github.com/mizchi/vibe-lang/vibe/compiler/eval_test.vibe",
-    ),
-  )
-  assert_true(entry_prefers_compiled_backend("vibe\\compiler\\eval_test.vibe"))
-  assert_false(entry_prefers_compiled_backend("examples/hello.vibe"))
-}
-
-///|
-test "resolve_test_backend_pref defaults to compiled in auto mode" {
-  let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
-  @sys.unset_env_var("VIBE_TEST_BACKEND")
-  defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
-  assert_eq(
-    resolve_test_backend_pref("vibe/compiler/eval_test.vibe"),
-    CliExecBackendPref::Compiled,
-  )
-  assert_eq(
-    resolve_test_backend_pref("examples/hello.vibe"),
-    CliExecBackendPref::Compiled,
-  )
-}
-
-///|
-test "resolve_run_backend_pref defaults to compiled when env is unset" {
-  let prev_run_backend = @sys.get_env_var("VIBE_RUN_BACKEND")
-  @sys.unset_env_var("VIBE_RUN_BACKEND")
-  defer wbtest_restore_env_var("VIBE_RUN_BACKEND", prev_run_backend)
-  assert_eq(
-    resolve_run_backend_pref("vibe/compiler/eval_test.vibe"),
-    CliExecBackendPref::Compiled,
-  )
-  assert_eq(
-    resolve_run_backend_pref("examples/hello.vibe"),
-    CliExecBackendPref::Compiled,
-  )
-}
-
-///|
-test "resolve_run_backend_pref preserves explicit auto for fallback" {
-  let prev_run_backend = @sys.get_env_var("VIBE_RUN_BACKEND")
-  @sys.set_env_var("VIBE_RUN_BACKEND", "auto")
-  defer wbtest_restore_env_var("VIBE_RUN_BACKEND", prev_run_backend)
-  assert_eq(
-    resolve_run_backend_pref("examples/hello.vibe"),
-    CliExecBackendPref::Auto,
-  )
-}
-
-///|
-test "resolve_test_backend_pref keeps compiler tests on compiled in auto mode" {
-  let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
-  @sys.unset_env_var("VIBE_TEST_BACKEND")
-  defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
-  assert_eq(
-    resolve_test_backend_pref("vibe/compiler/codegen_lexer_test.vibe"),
-    CliExecBackendPref::Compiled,
-  )
-}
-
-///|
-test "resolve_test_loop_fuel_env_value defaults high for test runtime" {
-  let prev = @sys.get_env_var("VIBE_TEST_LOOP_FUEL")
-  @sys.unset_env_var("VIBE_TEST_LOOP_FUEL")
-  defer wbtest_restore_env_var("VIBE_TEST_LOOP_FUEL", prev)
-  assert_eq(resolve_test_loop_fuel_env_value(), "10000000")
-}
-
-///|
-test "resolve_test_loop_fuel_env_value respects override" {
-  let prev = @sys.get_env_var("VIBE_TEST_LOOP_FUEL")
-  @sys.set_env_var("VIBE_TEST_LOOP_FUEL", "424242")
-  defer wbtest_restore_env_var("VIBE_TEST_LOOP_FUEL", prev)
-  assert_eq(resolve_test_loop_fuel_env_value(), "424242")
-}
-
-///|
-test "resolve_test_backend_pref ignores legacy interpreter env" {
-  let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
-  @sys.set_env_var("VIBE_TEST_BACKEND", "interpreter")
-  defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
-  assert_eq(
-    resolve_test_backend_pref("vibe/compiler/eval_test.vibe"),
-    CliExecBackendPref::Compiled,
-  )
-  assert_eq(
-    resolve_test_backend_pref("examples/hello.vibe"),
-    CliExecBackendPref::Compiled,
-  )
 }
 
 ///|
@@ -3710,45 +3515,14 @@ test "cli session run json roundtrips" {
 }
 
 ///|
-test "run and test default to compiled even when legacy interpreter env is set" {
-  let prev_run_backend = @sys.get_env_var("VIBE_RUN_BACKEND")
-  let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
-  @sys.unset_env_var("VIBE_RUN_BACKEND")
-  @sys.unset_env_var("VIBE_TEST_BACKEND")
-  defer wbtest_restore_env_var("VIBE_RUN_BACKEND", prev_run_backend)
-  defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
-  assert_eq(
-    resolve_run_backend_pref("examples/hello.vibe"),
-    CliExecBackendPref::Compiled,
-  )
-  assert_eq(
-    resolve_test_backend_pref("examples/hello.vibe"),
-    CliExecBackendPref::Compiled,
-  )
-  @sys.set_env_var("VIBE_RUN_BACKEND", "interpreter")
-  @sys.set_env_var("VIBE_TEST_BACKEND", "interpreter")
-  assert_eq(
-    resolve_run_backend_pref("examples/hello.vibe"),
-    CliExecBackendPref::Auto,
-  )
-  assert_eq(
-    resolve_test_backend_pref("examples/hello.vibe"),
-    CliExecBackendPref::Compiled,
-  )
-}
-
-///|
 test "test backend reports unsupported compiled cases by default" {
-  let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
-  @sys.unset_env_var("VIBE_TEST_BACKEND")
-  defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
   let cwd = @io.current_dir_or_root()
   let source_path = @vibe_fs.normalize_path(
     cwd + "/.wbtest_backend_default_compiled_json_parse.vibe",
   )
   write_wbtest_json_parse_fallback_source(source_path)
   match
-    run_test_file_with_backend(
+    wbtest_run_test_file_with_backend(
       source_path,
       @runtime.RuntimeFeatureFlags::stable(),
     ) {
@@ -3759,34 +3533,6 @@ test "test backend reports unsupported compiled cases by default" {
     Ok(report) =>
       fail(
         "expected unsupported compiled backend error, got success: " +
-        report.total.to_string(),
-      )
-  }
-  wbtest_remove_if_exists(source_path)
-}
-
-///|
-test "test backend legacy interpreter env still remains compiled" {
-  let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
-  @sys.set_env_var("VIBE_TEST_BACKEND", "interpreter")
-  defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
-  let cwd = @io.current_dir_or_root()
-  let source_path = @vibe_fs.normalize_path(
-    cwd + "/.wbtest_backend_auto_fallback_json_parse.vibe",
-  )
-  write_wbtest_json_parse_fallback_source(source_path)
-  match
-    run_test_file_with_backend(
-      source_path,
-      @runtime.RuntimeFeatureFlags::stable(),
-    ) {
-    Err(err) => {
-      assert_true(err.contains("compiled test backend unsupported"))
-      assert_true(err.contains("wasm runtime fallback builtins"))
-    }
-    Ok(report) =>
-      fail(
-        "expected auto backend to stay compiled, got success: " +
         report.total.to_string(),
       )
   }
