@@ -32,10 +32,7 @@ fn repl_cmd(
     return
   }
   if tui_mode {
-    if sub_args.length() != 0 {
-      abort("shell --tui: no extra args supported")
-    }
-    repl_tui_cmd(syntax_mode, features, enable_llm~)
+    repl_tui_cmd(sub_args, syntax_mode, features, enable_llm~)
     return
   }
   // Default: interactive line REPL with readline-like editing
@@ -1732,16 +1729,23 @@ fn append_history(line : String) -> Unit {
 
 ///|
 fn repl_tui_cmd(
+  args : Array[String],
   syntax_mode : @runtime.ParserMode,
   features : @runtime.RuntimeFeatureFlags,
   enable_llm~ : Bool,
 ) -> Unit {
+  let restore_namespace = match args {
+    ["--restore"] => true
+    [] => false
+    _ => abort("shell --tui: unknown arg " + args[0])
+  }
   let rt = new_cli_runtime(features, enable_llm~)
   let (namespace_name, scratch_db_path) = match resolve_scratch_db_path() {
     Ok(v) => v
     Err(err) => abort("shell: " + err)
   }
-  let restored_source = match load_eval_db_source(scratch_db_path) {
+  let restored_source = match
+    resolve_repl_initial_source(scratch_db_path, restore_namespace) {
     Ok(v) => v
     Err(err) => abort("shell: " + err)
   }
@@ -2424,6 +2428,18 @@ fn repl_stdin_cmd(
 }
 
 ///|
+fn resolve_repl_initial_source(
+  scratch_db_path : String,
+  restore_namespace : Bool,
+) -> Result[String, String] {
+  if restore_namespace {
+    load_eval_db_source(scratch_db_path)
+  } else {
+    Ok("")
+  }
+}
+
+///|
 fn repl_wasi_cmd(
   args : Array[String],
   _syntax_mode : @runtime.ParserMode,
@@ -2994,7 +3010,8 @@ fn run_compiled_line_repl_with_prompt(
     let wasm_path = compiled_repl_temp_wasm_path()
     defer remove_file_if_exists(source_path)
     defer remove_file_if_exists(wasm_path)
-    let mut scratch_source = match load_eval_db_source(scratch_db_path) {
+    let mut scratch_source = match
+      resolve_repl_initial_source(scratch_db_path, options.restore_namespace) {
       Ok(v) => v
       Err(err) => {
         println("error: " + err)
@@ -3176,11 +3193,16 @@ fn repl_ai_cmd(
   enable_llm~ : Bool,
 ) -> Unit {
   let mut prompt_enabled = true
+  let mut restore_namespace = false
   let mut i = 0
   while i < args.length() {
     match args[i] {
       "--no-prompt" => {
         prompt_enabled = false
+        i += 1
+      }
+      "--restore" => {
+        restore_namespace = true
         i += 1
       }
       _ => abort("shell --ai: unknown arg " + args[i])
@@ -3197,7 +3219,8 @@ fn repl_ai_cmd(
     let wasm_path = compiled_repl_temp_wasm_path()
     defer remove_file_if_exists(source_path)
     defer remove_file_if_exists(wasm_path)
-    let mut scratch_source = match load_eval_db_source(scratch_db_path) {
+    let mut scratch_source = match
+      resolve_repl_initial_source(scratch_db_path, restore_namespace) {
       Ok(v) => v
       Err(err) => {
         println("error: " + err)
@@ -3288,11 +3311,16 @@ fn repl_interactive_cmd(
   enable_llm~ : Bool,
 ) -> Unit {
   let mut prompt_enabled = true
+  let mut restore_namespace = false
   let mut i = 0
   while i < args.length() {
     match args[i] {
       "--no-prompt" => {
         prompt_enabled = false
+        i += 1
+      }
+      "--restore" => {
+        restore_namespace = true
         i += 1
       }
       _ => abort("shell: unknown arg " + args[i])
@@ -3303,7 +3331,8 @@ fn repl_interactive_cmd(
     Err(err) => abort("shell: " + err)
   }
   let rt = new_cli_runtime(features, enable_llm~)
-  let scratch_source = match load_eval_db_source(scratch_db_path) {
+  let scratch_source = match
+    resolve_repl_initial_source(scratch_db_path, restore_namespace) {
     Ok(v) => v
     Err(err) => abort("shell: " + err)
   }

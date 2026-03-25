@@ -11,11 +11,12 @@ pub struct LineReplOptions {
   prompt : String
   prompt_enabled : Bool
   io_mode : LineReplIoMode
+  restore_namespace : Bool
 }
 
 ///|
 fn line_repl_usage(cmd_name : String) -> String {
-  "usage: " + cmd_name + " [--no-prompt] [--tty|--no-tty]"
+  "usage: " + cmd_name + " [--no-prompt] [--tty|--no-tty] [--restore]"
 }
 
 ///|
@@ -26,6 +27,7 @@ pub fn parse_line_repl_options(
 ) -> Result[LineReplOptions, String] {
   let mut prompt_enabled = true
   let mut io_mode = LineReplIoMode::Plain
+  let mut restore_namespace = false
   let mut i = 0
   while i < args.length() {
     let arg = args[i]
@@ -43,10 +45,14 @@ pub fn parse_line_repl_options(
         io_mode = LineReplIoMode::Plain
         i += 1
       }
+      "--restore" => {
+        restore_namespace = true
+        i += 1
+      }
       _ => return Err(cmd_name + ": unknown arg " + arg)
     }
   }
-  Ok({ prompt, prompt_enabled, io_mode })
+  Ok({ prompt, prompt_enabled, io_mode, restore_namespace })
 }
 
 ///|

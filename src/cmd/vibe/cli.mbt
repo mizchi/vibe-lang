@@ -2140,6 +2140,7 @@ fn run_cmd(
   }
 }
 
+///|
 struct CliEntryDbCache {
   by_root : Map[String, @runtime.VibeDb]
 }

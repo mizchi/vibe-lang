@@ -122,6 +122,7 @@ test "line shell options parse default" {
     Ok(opts) => {
       assert_eq(opts.prompt, "vibe> ")
       assert_true(opts.prompt_enabled)
+      assert_false(opts.restore_namespace)
       match opts.io_mode {
         LineReplIoMode::Plain => ()
         _ => fail("expected plain mode")
@@ -134,13 +135,14 @@ test "line shell options parse default" {
 ///|
 test "line shell options parse tty and no prompt" {
   let parsed = parse_line_repl_options(
-    ["--no-prompt", "--tty"],
+    ["--no-prompt", "--tty", "--restore"],
     "shell-stdin",
     "vibe> ",
   )
   match parsed {
     Ok(opts) => {
       assert_false(opts.prompt_enabled)
+      assert_true(opts.restore_namespace)
       match opts.io_mode {
         LineReplIoMode::Tty => ()
         _ => fail("expected tty mode")
@@ -165,8 +167,42 @@ test "line shell options show help" {
   match parsed {
     Ok(_) => fail("expected help text")
     Err(msg) =>
-      assert_eq(msg, "usage: shell-stdin [--no-prompt] [--tty|--no-tty]")
+      assert_eq(
+        msg, "usage: shell-stdin [--no-prompt] [--tty|--no-tty] [--restore]",
+      )
   }
+}
+
+///|
+test "resolve repl initial source ignores scratch db by default" {
+  let root = wbtest_make_temp_dir("repl_initial_source_fresh")
+  let scratch_db_path = root + "/scratch.db"
+  @os_fs.write_string_to_file(scratch_db_path, "let x = 41\n") catch {
+    e => fail("write scratch db failed: " + e.to_string())
+  }
+  let source = match resolve_repl_initial_source(scratch_db_path, false) {
+    Ok(v) => v
+    Err(err) => fail("expected fresh source: " + err)
+  }
+  assert_eq(source, "")
+  wbtest_remove_if_exists(scratch_db_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "resolve repl initial source restores scratch db when requested" {
+  let root = wbtest_make_temp_dir("repl_initial_source_restore")
+  let scratch_db_path = root + "/scratch.db"
+  @os_fs.write_string_to_file(scratch_db_path, "let x = 41\n") catch {
+    e => fail("write scratch db failed: " + e.to_string())
+  }
+  let source = match resolve_repl_initial_source(scratch_db_path, true) {
+    Ok(v) => v
+    Err(err) => fail("expected restored source: " + err)
+  }
+  assert_eq(source, "let x = 41\n")
+  wbtest_remove_if_exists(scratch_db_path)
+  wbtest_remove_if_exists(root)
 }
 
 ///|
