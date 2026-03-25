@@ -116,24 +116,6 @@ pub fn Runtime::run_tests(
 }
 
 ///|
-/// Collect dependency snapshot (`name -> addr`) for test blocks.
-/// Returns `None` when any dependency cannot be resolved from current runtime.
-pub fn Runtime::collect_test_dep_snapshot(
-  self : Runtime,
-  ast : @core.Module,
-) -> Map[String, String]? {
-  let merged : Map[String, Bool] = {}
-  let cases = collect_tests(ast)
-  for case in cases {
-    let deps = collect_dep_names(case.body)
-    for name, _ in deps {
-      merged[name] = true
-    }
-  }
-  resolve_dep_addrs(self, merged)
-}
-
-///|
 fn test_case_key(case : TestCase) -> String {
   let name = match case.name {
     Some(n) => n

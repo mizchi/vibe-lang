@@ -532,7 +532,7 @@ fn purity_all_analysis(
 }
 
 ///|
-pub fn bind_pattern_names(
+fn bind_pattern_names(
   bound : Map[String, TopLevelPurityTier],
   pat : @core.Pat,
 ) -> Unit {
@@ -761,54 +761,4 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "Double::ceil" ||
   name == "String::to_upper" ||
   name == "String::to_lower"
-}
-
-///|
-pub fn clone_bool_map(src : Map[String, Bool]) -> Map[String, Bool] {
-  src.copy()
-}
-
-///|
-pub fn check_toplevel_purity(
-  env : TypeEnv,
-  stmts : Array[@core.Stmt],
-) -> Unit raise TypeError {
-  let scope = PurityScope::new()
-  for stmt in stmts {
-    match stmt {
-      @core.Stmt::Let(rec~, name~, expr~, span~) => {
-        let info = purity_for_let_in_scope(env, rec, name, expr, scope)
-        if not(info.expr) {
-          raise TypeError::TopLevelImpure(name~, tier=info.expr_tier, span~)
-        }
-        scope.bindings[name] = info.value_tier
-      }
-      @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
-        let info = purity_for_let_in_scope(env, rec, name, expr, scope)
-        if not(info.expr) {
-          raise TypeError::TopLevelImpure(name~, tier=info.expr_tier, span~)
-        }
-        scope.bindings[name] = info.value_tier
-      }
-      @core.Stmt::LetMut(name~, span~, ..) =>
-        raise TypeError::TopLevelImpure(
-          name~,
-          tier=TopLevelPurityTier::StateLocal,
-          span~,
-        )
-      @core.Stmt::Assign(name~, span~, ..) =>
-        raise TypeError::TopLevelImpure(
-          name~,
-          tier=TopLevelPurityTier::StateLocal,
-          span~,
-        )
-      @core.Stmt::Expr(expr~, span~) => {
-        let info = purity_expr_analysis_inner(env, expr, scope)
-        if not(info.is_pure()) {
-          raise TypeError::TopLevelImpure(name="_", tier=info.tier(), span~)
-        }
-      }
-      _ => ()
-    }
-  }
 }

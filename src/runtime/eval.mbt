@@ -927,18 +927,6 @@ pub fn Runtime::eval_module(
 }
 
 ///|
-pub fn Runtime::call_main(self : Runtime) -> EvalResult raise EvalError {
-  match self.get("main") {
-    Some(@core.Value::Fn(fn_val)) => {
-      let out = eval_user_call(self, fn_val, [])
-      { last: Some(out.value), effects: out.effects }
-    }
-    Some(_) => raise EvalError::BadCall(MainNotFn)
-    None => raise EvalError::BadCall(MainNotDefined)
-  }
-}
-
-///|
 priv struct EvalOutput {
   value : @core.Value
   effects : Array[Effect]

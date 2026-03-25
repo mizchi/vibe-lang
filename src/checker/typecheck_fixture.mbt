@@ -1,5 +1,5 @@
 ///|
-pub struct TypecheckFixtureEntry {
+struct TypecheckFixtureEntry {
   source_path : String
   diag_path : String
 } derive(Show, Eq)
@@ -56,7 +56,7 @@ fn trim_trailing_newlines(text : String) -> String {
 }
 
 ///|
-pub fn render_typecheck_fixture_result(
+fn render_typecheck_fixture_result(
   path : String,
   source : String,
 ) -> String {
@@ -71,7 +71,7 @@ pub fn render_typecheck_fixture_result(
 }
 
 ///|
-pub fn collect_typecheck_fixture_entries(
+fn collect_typecheck_fixture_entries(
   fixture_dir : String,
 ) -> Result[Array[TypecheckFixtureEntry], String] {
   let entries = @os_fs.read_dir(fixture_dir) catch {

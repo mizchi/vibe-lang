@@ -2372,13 +2372,6 @@ pub fn emit_module_wasm_with_coverage_options(
 }
 
 ///|
-pub fn emit_module_wasm_with_coverage(
-  ast : @core.Module,
-) -> WasmCoverageArtifact raise WasmGenError {
-  emit_module_wasm_with_coverage_options(ast, default_emit_options())
-}
-
-///|
 pub fn emit_module_wasm_js_string_with_coverage_options(
   ast : @core.Module,
   options : WasmEmitOptions,
@@ -2390,11 +2383,4 @@ pub fn emit_module_wasm_js_string_with_coverage_options(
     embed_error_strings=true,
   )
   emit_module_with_coverage(ctx, ast)
-}
-
-///|
-pub fn emit_module_wasm_js_string_with_coverage(
-  ast : @core.Module,
-) -> WasmCoverageArtifact raise WasmGenError {
-  emit_module_wasm_js_string_with_coverage_options(ast, default_emit_options())
 }

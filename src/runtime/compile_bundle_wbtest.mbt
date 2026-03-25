@@ -205,67 +205,6 @@ test "bundle_for_wasm_linked strips ReExport from entry and resolves types" {
   assert_true(has_color)
 }
 
-///|
-test "bundle_for_wasm_linked_with_imports skips ReExport and uses extra_type_stmts" {
-  let zero_span = @core.Span::{ start: 0, end: 0 }
-  let extra_types : Array[@core.Stmt] = [
-    @core.Stmt::EnumDef(
-      name="Token",
-      params=[],
-      ctors=[
-        @core.TypeCtor::{ name: "TEof", args: [], span: zero_span },
-        @core.TypeCtor::{
-          name: "TInt",
-          args: [@core.Type::Named(name="Int", args=[])],
-          span: zero_span,
-        },
-      ],
-      span=zero_span,
-    ),
-  ]
-  let ast = @core.Module::{
-    stmts: [
-      @core.Stmt::ReExport(
-        spec=@core.ImportSpec::{
-          items: [
-            @core.ImportItem::{
-              kind: @core.ImportKind::Value,
-              name: "Token",
-              rename: None,
-            },
-          ],
-        },
-        source=@core.ModuleRef::Path(path="./token.vibe"),
-        span=zero_span,
-      ),
-      @core.Stmt::Let(
-        rec=false,
-        name="t",
-        expr=@core.Expr::Ident(name="TEof", span=zero_span),
-        span=zero_span,
-      ),
-    ],
-  }
-  let linked : Array[LinkedImport] = []
-  let (bundled, _) = bundle_for_wasm_linked_with_imports(
-    ast,
-    linked,
-    extra_type_stmts=extra_types,
-  )
-  let mut has_token = false
-  let mut has_reexport = false
-  for stmt in bundled.stmts {
-    match stmt {
-      @core.Stmt::EnumDef(name~, ..) => if name == "Token" { has_token = true }
-      @core.Stmt::ReExport(..) => has_reexport = true
-      _ => ()
-    }
-  }
-  assert_true(has_token)
-  assert_false(has_reexport)
-}
-
-///|
 test "bundle_for_wasm_linked detects HOF through ReExport chain" {
   let db = VibeDb::new()
   db.set_source(

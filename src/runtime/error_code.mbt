@@ -60,8 +60,3 @@ pub(all) enum ErrorCode {
 pub impl Show for ErrorCode with output(self, logger) {
   logger.write_string(format_error(self))
 }
-
-///|
-pub fn ErrorCode::to_string(self : ErrorCode) -> String {
-  format_error(self)
-}

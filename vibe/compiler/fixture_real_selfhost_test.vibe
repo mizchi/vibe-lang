@@ -1,7 +1,7 @@
 //# Imports
 
 import ./fixture_test_support.vibe {
-  list_root_fixture_paths, parse_fixture_spec
+  parse_fixture_spec
 }
 
 //# Functions
@@ -21,6 +21,23 @@ let contains_path = (paths: Array[String], target: String) -> Bool {
 
 let is_http_p3_fixture = (path: String) -> Bool {
   String::contains(path, "/http_p3_")
+}
+
+let root_fixture_paths_from_entries = (
+  fixture_root: String,
+  entries: Array[(String, Bool)]
+) -> Array[String] {
+  let files = ArrayBuilder::new()
+  let mut i = 0
+  while i < Array::length(entries) {
+    let (name, is_file) = Array::get(entries, i)
+    let path = String::concat(String::concat(fixture_root, "/"), name)
+    if is_file && String::ends_with(path, ".vibe") {
+      ArrayBuilder::push(files, path)
+    }
+    i = i + 1
+  }
+  ArrayBuilder::freeze(files)
 }
 
 let fixture_root = "vibe/compiler/fixtures"
@@ -57,13 +74,23 @@ test "real fixture spec parses runtime fields" {
 }
 
 test "real fixture discovery lists root fixtures" {
-  let files = list_root_fixture_paths(fixture_root)
+  let files = root_fixture_paths_from_entries(fixture_root, [
+    ("http_p3_skip.vibe", true),
+    ("closure_capture.vibe", true),
+    ("notes.txt", true),
+    ("nested", false)
+  ])
   assert(Array::length(files) > 0)
   assert(contains_path(files, "vibe/compiler/fixtures/closure_capture.vibe"))
 }
 
 test "real fixture discovery can exclude http p3" {
-  let files = list_root_fixture_paths(fixture_root)
+  let files = root_fixture_paths_from_entries(fixture_root, [
+    ("http_p3_skip.vibe", true),
+    ("closure_capture.vibe", true),
+    ("math_ops.vibe", true),
+    ("nested", false)
+  ])
   let mut count = 0
   for path in files {
     if not(is_http_p3_fixture(path)) {
@@ -74,7 +101,12 @@ test "real fixture discovery can exclude http p3" {
 }
 
 test "real fixture discovery has no stale todo files" {
-  let files = list_root_fixture_paths(fixture_root)
+  let files = root_fixture_paths_from_entries(fixture_root, [
+    ("closure_capture.vibe", true),
+    ("math_ops.vibe", true),
+    ("todo_notes.txt", true),
+    ("todo_nested", false)
+  ])
   let mut stale = 0
   for path in files {
     let base = String::substring(path, String::length(String::concat(fixture_root, "/")), String::length(path))

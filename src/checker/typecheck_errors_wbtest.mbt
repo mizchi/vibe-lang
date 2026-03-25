@@ -38,36 +38,6 @@ test "placeholder bad-call diagnostic carries usage hint" {
   }
 }
 
-///|
-test "top-level purity diagnostic shows state_local tier" {
-  let diag = TypeError::TopLevelImpure(
-    name="x",
-    tier=TopLevelPurityTier::StateLocal,
-    span=test_span_typecheck_errors(),
-  ).diagnostic()
-  match diag.note {
-    Some(note) => assert_true(note.contains("state_local"))
-    None => fail("expected state_local note")
-  }
-}
-
-///|
-test "top-level purity diagnostic hint for state_local" {
-  let diag = TypeError::TopLevelImpure(
-    name="x",
-    tier=TopLevelPurityTier::StateLocal,
-    span=test_span_typecheck_errors(),
-  ).diagnostic()
-  match diag.hint {
-    Some(hint) => {
-      assert_true(hint.contains("for"))
-      assert_true(hint.contains("mutation"))
-    }
-    None => fail("expected hint")
-  }
-}
-
-///|
 test "scoped ref escape diagnostic carries guidance" {
   let diag = TypeError::ScopedRefEscape(
     context="function return",

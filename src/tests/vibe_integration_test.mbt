@@ -1089,8 +1089,9 @@ fn compiler_compile_files() -> Array[String] {
     "vibe/compiler/parser.vibe", "vibe/compiler/printer.vibe", "vibe/compiler/values.vibe",
     "vibe/compiler/builtins.vibe", "vibe/compiler/types.vibe", "vibe/compiler/checker_resolve.vibe",
     "vibe/compiler/checker.vibe", "vibe/compiler/checker_stmt.vibe", "vibe/compiler/eval_builtins.vibe",
-    "vibe/compiler/eval.vibe", "vibe/compiler/eval_loader.vibe", "vibe/compiler/eval_stmt.vibe",
-    "vibe/compiler/eval_e2e_helpers.vibe", "vibe/compiler/type_db.vibe", "vibe/compiler/index.vibe",
+    "vibe/compiler/eval.vibe", "vibe/compiler/runtime/eval_loader/index.vibe", "vibe/compiler/eval_stmt.vibe",
+    "vibe/compiler/eval_stmt_test_support.vibe",
+    "vibe/compiler/type_db.vibe", "vibe/compiler/index.vibe",
   ]
 }
 
@@ -1173,13 +1174,13 @@ test "selfhost gate5: eval pipeline meta-circular" {
   load_compiler_source(db, "vibe/compiler/values.vibe", visited)
   load_compiler_source(db, "vibe/compiler/eval_builtins.vibe", visited)
   load_compiler_source(db, "vibe/compiler/eval.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval_loader.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/runtime/eval_loader/index.vibe", visited)
   load_compiler_source(db, "vibe/module/path.vibe", visited)
   load_compiler_source(db, "vibe/compiler/eval_stmt.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval_e2e_helpers.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/eval_stmt_test_support.vibe", visited)
   let driver =
-    #|import ./vibe/compiler/eval_e2e_helpers.vibe { run_and_lookup }
-    #|run_and_lookup("let x = 42", "x")
+    #|import ./vibe/compiler/eval_stmt_test_support.vibe { run_source }
+    #|run_source("let x = 42", "x")
   let result = eval_selfhost_module(db, driver)
   match result.last {
     Some(@core.Value::String(v)) => assert_eq(v, "42")
@@ -1252,15 +1253,15 @@ test "selfhost final: eval pipeline processes own token module" {
   load_compiler_source(db, "vibe/compiler/values.vibe", visited)
   load_compiler_source(db, "vibe/compiler/eval_builtins.vibe", visited)
   load_compiler_source(db, "vibe/compiler/eval.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval_loader.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/runtime/eval_loader/index.vibe", visited)
   load_compiler_source(db, "vibe/module/path.vibe", visited)
   load_compiler_source(db, "vibe/compiler/eval_stmt.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval_e2e_helpers.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/eval_stmt_test_support.vibe", visited)
   let driver =
-    #|import ./vibe/compiler/eval_e2e_helpers.vibe { run_and_lookup }
+    #|import ./vibe/compiler/eval_stmt_test_support.vibe { run_source }
     #|let source = Fs::read_file("vibe/compiler/token.vibe")
     #|let test_src = String::concat(source, "\nlet __result = token_to_string(TInt(42))")
-    #|run_and_lookup(test_src, "__result")
+    #|run_source(test_src, "__result")
   let result = eval_selfhost_module(db, driver)
   match result.last {
     Some(@core.Value::String(v)) => assert_true(v.contains("TInt(42)"))
@@ -1319,8 +1320,8 @@ test "probe: selfhost roundtrip all compiler sources" {
   load_compiler_source(db, "vibe/compiler/printer.vibe", visited)
   // Exclude parser.vibe (1608 lines) and eval.vibe (1354 lines) — too large for interpreter
   let full_files : Array[String] = [
-    "vibe/compiler/eval_e2e_helpers.vibe", "vibe/compiler/index.vibe", "vibe/compiler/checker_resolve.vibe",
-    "vibe/compiler/ast.vibe", "vibe/compiler/eval_loader.vibe", "vibe/compiler/checker_stmt.vibe",
+    "vibe/compiler/eval_stmt_test_support.vibe", "vibe/compiler/index.vibe", "vibe/compiler/checker_resolve.vibe",
+    "vibe/compiler/ast.vibe", "vibe/compiler/runtime/eval_loader/index.vibe", "vibe/compiler/checker_stmt.vibe",
     "vibe/compiler/values.vibe", "vibe/compiler/token.vibe", "vibe/compiler/eval_stmt.vibe",
     "vibe/compiler/type_db.vibe", "vibe/compiler/checker.vibe", "vibe/compiler/printer.vibe",
     "vibe/compiler/builtins.vibe", "vibe/compiler/eval_builtins.vibe", "vibe/compiler/lexer.vibe",

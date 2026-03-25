@@ -35,11 +35,6 @@ pub fn RuntimeFeatureFlags::unstable_threads_only() -> RuntimeFeatureFlags {
 }
 
 ///|
-pub fn RuntimeFeatureFlags::unstable_all() -> RuntimeFeatureFlags {
-  RuntimeFeatureFlags::new(true, true)
-}
-
-///|
 pub fn RuntimeFeatureFlags::is_unstable_async_enabled(
   self : RuntimeFeatureFlags,
 ) -> Bool {

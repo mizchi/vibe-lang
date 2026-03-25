@@ -247,7 +247,7 @@ fn llm_complete_anthropic(
 }
 
 ///|
-pub fn llm_complete(
+fn llm_complete(
   config : LlmConfig,
   system : String,
   user : String,

@@ -1,31 +1,65 @@
 //# Imports
 
-import ./ast.vibe {
-  Expr, Pat, Stmt, TypeExpr
+import ./eval_stmt.vibe {
+  eval_stmts
+}
+
+import ./runtime / eval_loader {
+  load_and_parse, source_lookup
+}
+
+import ./values.vibe {
+  ValEnv, empty_module_ctx, module_ctx_new, val_env_lookup, value_to_string
 }
 
 //# Functions
 
-export let _a1 = (e: Expr) -> Expr {
-  e
+let dir_of = (file_path: String) -> String {
+  let idx = String::last_index_of(file_path, "/")
+  if idx < 0 {
+    ""
+  } else {
+    file_path[0:idx]
+  }
 }
 
-export let _a2 = (p: Pat) -> Pat {
-  p
+let eval_and_lookup_strict = (stmts: Array[Stmt], name: String) -> String with { Error } {
+  let env: ValEnv = eval_stmts(stmts, 0, VEnvEmpty, empty_module_ctx())
+  match val_env_lookup(env, name) {
+    Some(v) => value_to_string(v),
+    None => "<not found>"
+  }
 }
 
-export let _a3 = (t: TypeExpr) -> TypeExpr {
-  t
+export let run_source = (source: String, name: String) -> String {
+  handle {
+    let stmts = load_and_parse(source)
+    eval_and_lookup_strict(stmts, name)
+  } {
+    Error(msg) => String::concat("ERROR: ", msg)
+  }
 }
 
-export let _a4 = (s: Stmt) -> Stmt {
-  s
+export let run_source_with_imports = (
+  sources: Array[(String, String)],
+  main_key: String,
+  lookup_name: String
+) -> String {
+  handle {
+    match source_lookup(sources, main_key) {
+      None => throw(String::concat("main module not found: ", main_key)),
+      Some(main_src) => {
+        let stmts = load_and_parse(main_src)
+        let base_dir = dir_of(main_key)
+        let ctx = module_ctx_new(sources, base_dir)
+        let env: ValEnv = eval_stmts(stmts, 0, VEnvEmpty, ctx)
+        match val_env_lookup(env, lookup_name) {
+          Some(v) => value_to_string(v),
+          None => "<not found>"
+        }
+      }
+    }
+  } {
+    Error(msg) => String::concat("ERROR: ", msg)
+  }
 }
-
-export let no_tp = Array::slice([
-  ""
-], 0, 0)
-
-export let no_tb = Array::slice([
-  ("", no_tp)
-], 0, 0)

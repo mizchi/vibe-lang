@@ -37,7 +37,6 @@ suberror TypeError {
     span~ : @core.Span
   )
   ScopedRefEscape(context~ : String, span~ : @core.Span)
-  TopLevelImpure(name~ : String, tier~ : TopLevelPurityTier, span~ : @core.Span)
   TopLevelLetMut(name~ : String, span~ : @core.Span)
 } derive(Show, Eq)
 
@@ -81,28 +80,6 @@ fn effect_guard_note(_operation : String, missing_effect : String?) -> String? {
   }
 }
 
-///|
-fn top_level_purity_tier_name(tier : TopLevelPurityTier) -> String {
-  match tier {
-    TopLevelPurityTier::Pure => "pure"
-    TopLevelPurityTier::StateLocal => "state_local"
-    TopLevelPurityTier::Impure => "impure"
-  }
-}
-
-///|
-fn top_level_impure_hint(tier : TopLevelPurityTier) -> String {
-  match tier {
-    TopLevelPurityTier::StateLocal =>
-      "use `for x in arr { ... }` or move mutation into a function"
-    TopLevelPurityTier::Impure =>
-      "move side effects into `let main = () -> { ... }`"
-    TopLevelPurityTier::Pure =>
-      "move side effects into `let main = () -> { ... }`"
-  }
-}
-
-///|
 fn scoped_ref_escape_hint(_context : String) -> String {
   "keep `Ref[T]` inside local scope and return a pure value instead"
 }
@@ -281,14 +258,6 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         span: Some(span),
         hint: Some(scoped_ref_escape_hint(context)),
         note: Some(scoped_ref_escape_note(context)),
-      }
-    TypeError::TopLevelImpure(name~, tier~, span~) =>
-      @core.Diagnostic::{
-        stage: "type",
-        message: "top-level binding must be pure: " + name,
-        span: Some(span),
-        hint: Some(top_level_impure_hint(tier)),
-        note: Some("detected purity tier: " + top_level_purity_tier_name(tier)),
       }
     TypeError::TopLevelLetMut(name~, span~) =>
       @core.Diagnostic::{

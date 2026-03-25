@@ -1181,26 +1181,6 @@ pub fn classify_function_api_change(
   }
 }
 
-///|
-/// Completion helper: true if param type can accept receiver type.
-pub fn completion_param_matches(
-  env : TypeEnv,
-  receiver : @core.Type,
-  param : @core.Type,
-) -> Bool {
-  let recv = normalize_type(env, receiver) catch { _ => receiver }
-  let param_ty = normalize_type(env, param) catch { _ => param }
-  match param_ty {
-    @core.Type::Var(_) | @core.Type::Param(_) => true
-    _ =>
-      match recv {
-        @core.Type::Var(_) | @core.Type::Param(_) => true
-        _ => type_equal(env, recv, param_ty) catch { _ => false }
-      }
-  }
-}
-
-///|
 fn unify_pair_cache_key(left : @core.Type, right : @core.Type) -> (Int, Int) {
   (left.structural_hash(), right.structural_hash())
 }

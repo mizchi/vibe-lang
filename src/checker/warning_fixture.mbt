@@ -19,7 +19,7 @@ fn trim_trailing_newlines_warning(text : String) -> String {
 }
 
 ///|
-pub fn render_warning_fixture_result(path : String, source : String) -> String {
+fn render_warning_fixture_result(path : String, source : String) -> String {
   let ast = @parser.parse_ast(source) catch {
     e => return e.diagnostic().render(path, source)
   }

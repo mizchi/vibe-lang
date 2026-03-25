@@ -4,38 +4,8 @@ pub fn type_check(ast : @core.Module) -> TypeEnv raise TypeError {
 }
 
 ///|
-pub fn type_check_with_profile(
-  ast : @core.Module,
-) -> (TypeEnv, ScopedRefProfile) raise TypeError {
-  type_check_with_aliases_profile(ast, {})
-}
-
-///|
-pub fn type_check_with_aliases_profile(
-  ast : @core.Module,
-  aliases : Map[String, @core.Ref],
-) -> (TypeEnv, ScopedRefProfile) raise TypeError {
-  let env = get_cached_prelude_env_for_module()
-  env.set_scoped_ref_profile_enabled(true)
-  env.set_scoped_ref_checks_enabled(module_may_use_scoped_ref(ast))
-  let exported_names = collect_exported_names(ast.stmts)
-  let typed = type_check_stmts(
-    env,
-    ast.stmts,
-    aliases,
-    effect_scope_all(),
-    false,
-    exported_names,
-    is_top_level=true,
-  ) catch {
-    e => raise e.resolve_vars(env)
-  }
-  (typed, typed.get_scoped_ref_profile())
-}
-
-///|
 /// @core.Type check with import aliases (qualified names treated as external).
-pub fn type_check_with_aliases(
+fn type_check_with_aliases(
   ast : @core.Module,
   aliases : Map[String, @core.Ref],
 ) -> TypeEnv raise TypeError {
@@ -76,7 +46,7 @@ fn ensure_prelude_seed(session : TypecheckSession) -> TypeEnv raise TypeError {
 }
 
 ///|
-pub fn get_cached_prelude_env_for_module() -> TypeEnv raise TypeError {
+fn get_cached_prelude_env_for_module() -> TypeEnv raise TypeError {
   get_cached_prelude_env_for_module_with_session(default_typecheck_session)
 }
 
@@ -100,11 +70,6 @@ fn get_cached_prelude_env_for_module_with_session(
 pub fn get_prelude_only_env_for_module() -> TypeEnv raise TypeError {
   let seed = ensure_prelude_seed(default_typecheck_session)
   seed.clone_for_module()
-}
-
-///|
-pub fn get_default_typecheck_session() -> TypecheckSession {
-  default_typecheck_session
 }
 
 ///|

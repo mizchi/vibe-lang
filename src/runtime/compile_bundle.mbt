@@ -437,55 +437,6 @@ pub fn bundle_for_wasm_linked(
 }
 
 ///|
-
-///|
-/// Bundle for linked mode with pre-computed imports list (fast path).
-/// No VibeDb needed — just prelude + user AST.
-/// `extra_type_stmts` provides type definitions resolved from ReExport chains
-/// (since db is not available to resolve them at bundle time).
-pub fn bundle_for_wasm_linked_with_imports(
-  ast : @core.Module,
-  linked_imports : Array[LinkedImport],
-  extra_type_stmts? : Array[@core.Stmt] = [],
-) -> (@core.Module, Array[LinkedImport]) {
-  let bundled_stmts : Array[@core.Stmt] = []
-  let existing_value_names : Map[String, Bool] = {}
-  for li in linked_imports {
-    existing_value_names[li.func_name] = true
-  }
-  append_prelude_inline_stmts_for_linked_build(
-    bundled_stmts, existing_value_names,
-  )
-  // Add extra type definitions from resolved ReExports
-  for stmt in extra_type_stmts {
-    bundled_stmts.push(stmt)
-  }
-  // Add user code (skip imports and re-exports)
-  let non_prelude_names : Array[String] = []
-  for stmt in ast.stmts {
-    match stmt {
-      @core.Stmt::Import(..) | @core.Stmt::ReExport(..) => ()
-      _ => {
-        match bundle_stmt_value_name(stmt) {
-          Some(name) => non_prelude_names.push(name)
-          None => ()
-        }
-        bundled_stmts.push(stmt)
-      }
-    }
-  }
-  let bundled = @core.Module::{
-    stmts: dedupe_bundle_structural_defs(bundled_stmts),
-  }
-  let after_dce = @pipeline.dce_module_with_entry_names(
-    bundled, non_prelude_names,
-  )
-  (demote_unused_let_mut(after_dce), linked_imports)
-}
-
-///|
-
-///|
 /// Check if any function parameter has a Func type (higher-order function).
 /// HOF functions need funcref table sharing, so they must be inlined.
 fn linked_fn_has_func_param(params : Array[@core.FuncParam]) -> Bool {
@@ -1011,7 +962,7 @@ fn resolve_reexport_at_path(
 }
 
 ///|
-pub fn linked_module_name(path : String) -> String {
+fn linked_module_name(path : String) -> String {
   // Convert path to a valid wasm module name
   // e.g. "./wasm_runtime.vibe" -> "wasm_runtime"
   let mut name = path

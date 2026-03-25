@@ -280,7 +280,7 @@ fn string_trim_simple(s : String) -> String {
 }
 
 ///|
-pub fn rlm_run_loop(
+fn rlm_run_loop(
   parent_rt : Runtime,
   task : String,
   prompt : String,

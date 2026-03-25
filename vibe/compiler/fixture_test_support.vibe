@@ -17,7 +17,7 @@ import ./core {
 }
 
 import ./eval_stmt.vibe {
-  eval_with_imports_lookup
+  eval_stmts
 }
 
 import ./lexer.vibe {
@@ -38,6 +38,10 @@ import ./runtime / eval_loader {
 
 import ./runtime {
   db_new, db_set_source, db_typecheck
+}
+
+import ./values.vibe {
+  ValEnv, module_ctx_new, val_env_lookup, value_to_string
 }
 
 //# Types
@@ -140,6 +144,20 @@ let sort_strings = (items: Array[String]) -> Unit {
       }
       i = i + 1
     }
+  }
+}
+
+let eval_with_imports_lookup = (
+  stmts: Array[Stmt],
+  sources: Array[(String, String)],
+  base_dir: String,
+  name: String
+) -> String with { Error } {
+  let ctx = module_ctx_new(sources, base_dir)
+  let env = eval_stmts(stmts, 0, VEnvEmpty, ctx)
+  match val_env_lookup(env, name) {
+    Some(v) => value_to_string(v),
+    None => "<not found>"
   }
 }
 
@@ -341,23 +359,6 @@ export let parse_fixture_spec = (data: String, path: String) -> FixtureSpec with
     version_refs: json_string_map_field(obj, "version_refs"),
     symbol_refs: json_string_map_field(obj, "symbol_refs")
   }
-}
-
-export let list_root_fixture_paths = (fixture_dir: String) -> Array[String] {
-  let names = perform Fs::ReadDir(fixture_dir)
-  let files = ArrayBuilder::new()
-  let mut i = 0
-  while i < Array::length(names) {
-    let name = Array::get(names, i)
-    let path = String::concat(String::concat(fixture_dir, "/"), name)
-    if perform Fs::IsFile(path) && String::ends_with(path, ".vibe") {
-      ArrayBuilder::push(files, path)
-    }
-    i = i + 1
-  }
-  let sorted = ArrayBuilder::freeze(files)
-  sort_strings(sorted)
-  sorted
 }
 
 let resolve_ref_import_path = (current_path: String, raw_path: String, spec: FixtureSpec) -> String with { Error, Fs } {
