@@ -245,7 +245,7 @@ fn print_usage() -> Unit {
     "                    VIBE_ENABLE_INTERPRETER=1 re-enables the legacy interpreter backend",
   )
   println(
-    "                    VIBE_ALLOW_INTERPRETER_FALLBACK=1 enables fallback only when backend=auto and interpreter is enabled",
+    "                    VIBE_ALLOW_INTERPRETER_FALLBACK=1 is legacy and only kept for bench-specific fallback paths",
   )
   println(
     "                    run/check/test use a persistent localhost session worker by default; set VIBE_USE_SESSION_HTTP=0 to disable",
@@ -1239,9 +1239,8 @@ fn cli_require_interpreter_backend(mode : String) -> Result[Unit, String] {
 
 ///|
 fn cli_can_fallback_to_interpreter(backend_pref : CliExecBackendPref) -> Bool {
-  backend_pref == CliExecBackendPref::Auto &&
-  cli_allow_interpreter_fallback() &&
-  cli_interpreter_backend_enabled()
+  ignore(backend_pref)
+  false
 }
 
 ///|
@@ -2204,9 +2203,6 @@ fn run_cmd(
   match syntax_mode {
     @runtime.ParserMode::VibeMode => {
       let backend_pref = resolve_run_backend_pref(entry_path)
-      let allow_interpreter_fallback = cli_can_fallback_to_interpreter(
-        backend_pref,
-      )
       if backend_pref == CliExecBackendPref::Interpreter {
         match cli_require_interpreter_backend("run") {
           Ok(_) => ()
@@ -2231,16 +2227,7 @@ fn run_cmd(
             maybe_create_linked_cache_background(entry_path)
             return
           }
-          Err(err) => {
-            if backend_pref == CliExecBackendPref::Compiled ||
-              not(allow_interpreter_fallback) {
-              die("error: run wasm backend: " + err)
-            }
-            println(
-              "warning: run wasm backend failed; falling back to interpreter (VIBE_ENABLE_INTERPRETER=1 VIBE_ALLOW_INTERPRETER_FALLBACK=1): " +
-              err,
-            )
-          }
+          Err(err) => die("error: run wasm backend: " + err)
         }
       }
       match @loader.load_db(entry_path) {

@@ -219,6 +219,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 - [x] `run/check/test` は localhost session worker を既定利用し、`VIBE_USE_SESSION_HTTP=0` で無効化できるようにする
 - [x] 長寿命 process で incremental compile cache を常用化
 - [ ] interpreter を fallback/debug 専用に縮退
+  - [x] `run/test` の自動 interpreter fallback を撤去し、明示 backend 指定だけ残す
 - [ ] compiled parity が揃ったら evaluator / interpreter 実装を削除
 
 ## ユーザビリティ改善

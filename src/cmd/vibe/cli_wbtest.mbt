@@ -4041,7 +4041,7 @@ test "interpreter fallback is disabled by default" {
 }
 
 ///|
-test "interpreter backend enable env gates fallback" {
+test "run and test no longer auto-fallback even when interpreter is enabled" {
   let prev_fallback = @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
   let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
   @sys.set_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", "1")
@@ -4054,7 +4054,7 @@ test "interpreter backend enable env gates fallback" {
   @sys.set_env_var("VIBE_ENABLE_INTERPRETER", "1")
   assert_true(cli_interpreter_backend_enabled())
   assert_true(cli_allow_interpreter_fallback())
-  assert_true(cli_can_fallback_to_interpreter(CliExecBackendPref::Auto))
+  assert_false(cli_can_fallback_to_interpreter(CliExecBackendPref::Auto))
   assert_false(cli_can_fallback_to_interpreter(CliExecBackendPref::Compiled))
   assert_false(cli_can_fallback_to_interpreter(CliExecBackendPref::Interpreter))
 }
@@ -4157,7 +4157,7 @@ test "test backend reports unsupported compiled cases by default" {
 }
 
 ///|
-test "test backend auto fallback still uses interpreter when enabled" {
+test "test backend auto fallback remains disabled even when interpreter is enabled" {
   let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
   let prev_fallback = @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
   let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
@@ -4177,12 +4177,15 @@ test "test backend auto fallback still uses interpreter when enabled" {
       source_path,
       @runtime.RuntimeFeatureFlags::stable(),
     ) {
-    Ok(report) => {
-      assert_eq(report.total, 1)
-      assert_eq(report.passed, 1)
-      assert_eq(report.failed, 0)
+    Err(err) => {
+      assert_true(err.contains("compiled test backend unsupported"))
+      assert_true(err.contains("wasm runtime fallback builtins"))
     }
-    Err(err) => fail("expected auto fallback success, got error: " + err)
+    Ok(report) =>
+      fail(
+        "expected auto fallback to stay disabled, got success: " +
+        report.total.to_string(),
+      )
   }
   wbtest_remove_if_exists(source_path)
 }
