@@ -216,8 +216,8 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 - [x] `bench` の generated wasm も content-addressed cache で再利用する
 - [x] compiled test 失敗時の詳細取得を per-case compiled fallback に寄せる
 - [x] internal `session-json` worker で同一 process の `check/test` cache 再利用口を作る
-- [x] `check/test` は localhost session worker を既定利用し、`VIBE_USE_SESSION_HTTP=0` で無効化できるようにする
-- [ ] `run` も長寿命 process で incremental compile cache を常用化
+- [x] `run/check/test` は localhost session worker を既定利用し、`VIBE_USE_SESSION_HTTP=0` で無効化できるようにする
+- [x] 長寿命 process で incremental compile cache を常用化
 - [ ] interpreter を fallback/debug 専用に縮退
 - [ ] compiled parity が揃ったら evaluator / interpreter 実装を削除
 

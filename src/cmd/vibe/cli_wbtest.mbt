@@ -3940,6 +3940,19 @@ test "cli session request parses check json" {
 }
 
 ///|
+test "cli session request parses run json" {
+  let req = match
+    parse_cli_session_request(
+      "{\"cmd\":\"run\",\"path\":\"/tmp/project/main.vibe\"}",
+    ) {
+    Ok(v) => v
+    Err(err) => fail("expected run request: " + err)
+  }
+  assert_eq(req.kind, CliSessionRequestKind::Run)
+  assert_eq(req.path, Some("/tmp/project/main.vibe"))
+}
+
+///|
 test "cli session request parses shutdown json" {
   let req = match parse_cli_session_request("{\"cmd\":\"shutdown\"}") {
     Ok(v) => v
@@ -3986,6 +3999,32 @@ test "cli session test report json roundtrips" {
   assert_eq(parsed.failures.length(), 1)
   assert_eq(parsed.failures[0].name, Some("demo"))
   assert_eq(parsed.failures[0].error, "boom")
+}
+
+///|
+test "cli session run json roundtrips" {
+  let parsed_int = match
+    parse_cli_run_value_json(
+      make_cli_session_run_result_json(
+        "/tmp/project/main.vibe",
+        WasmRunValue::Int(42L),
+      ),
+    ) {
+    Ok(v) => v
+    Err(err) => fail("expected parsed int result: " + err)
+  }
+  assert_eq(parsed_int, WasmRunValue::Int(42L))
+  let parsed_bool = match
+    parse_cli_run_value_json(
+      make_cli_session_run_result_json(
+        "/tmp/project/main.vibe",
+        WasmRunValue::Bool(true),
+      ),
+    ) {
+    Ok(v) => v
+    Err(err) => fail("expected parsed bool result: " + err)
+  }
+  assert_eq(parsed_bool, WasmRunValue::Bool(true))
 }
 
 ///|

@@ -125,10 +125,10 @@ fn print_usage() -> Unit {
   )
   println("  check [--profile-tsv path] <file...>  parse/type check scripts")
   println(
-    "  session-http --port N        internal: persistent localhost JSON session for check/test",
+    "  session-http --port N        internal: persistent localhost JSON session for run/check/test",
   )
   println(
-    "  session-json                internal: persistent stdin/stdout JSON session for check/test",
+    "  session-json                internal: persistent stdin/stdout JSON session for run/check/test",
   )
   println(
     "  emit-module-source <in> <out> <entry>  internal: extract entry-pruned module source",
@@ -248,7 +248,7 @@ fn print_usage() -> Unit {
     "                    VIBE_ALLOW_INTERPRETER_FALLBACK=1 enables fallback only when backend=auto and interpreter is enabled",
   )
   println(
-    "                    check/test use a persistent localhost session worker by default; set VIBE_USE_SESSION_HTTP=0 to disable",
+    "                    run/check/test use a persistent localhost session worker by default; set VIBE_USE_SESSION_HTTP=0 to disable",
   )
   println(
     "  llm flags: --llm  enable LLM/RLM capabilities (requires VIBE_LLM_PROVIDER)",
@@ -2034,7 +2034,10 @@ fn run_cmd_wasm_linked(
 }
 
 ///|
-fn run_cmd_wasm_backend(entry_path : String) -> Result[WasmRunValue, String] {
+fn run_cmd_wasm_backend_with_cache(
+  cache : CliEntryDbCache,
+  entry_path : String,
+) -> Result[WasmRunValue, String] {
   // Default: linked build (debug mode). Use VIBE_RUN_BACKEND=release for monolithic.
   let force_release = match @sys.get_env_var("VIBE_RUN_BACKEND") {
     Some("release") | Some("monolithic") => true
@@ -2057,7 +2060,7 @@ fn run_cmd_wasm_backend(entry_path : String) -> Result[WasmRunValue, String] {
     // After execution, spawn background cache creation for next run.
   }
   // Monolithic fallback
-  let (db, entry) = match @loader.load_db(entry_path) {
+  let (db, entry) = match load_db_for_run_with_cache(cache, entry_path) {
     Err(err) => return Err("load error: " + err)
     Ok(v) => v
   }
@@ -2175,6 +2178,11 @@ fn run_cmd_wasm_backend(entry_path : String) -> Result[WasmRunValue, String] {
 }
 
 ///|
+fn run_cmd_wasm_backend(entry_path : String) -> Result[WasmRunValue, String] {
+  run_cmd_wasm_backend_with_cache(CliEntryDbCache::new(), entry_path)
+}
+
+///|
 fn print_wasm_run_value(value : WasmRunValue) -> Unit {
   match value {
     WasmRunValue::Int(n) => println("last: " + n.to_string())
@@ -2205,7 +2213,17 @@ fn run_cmd(
           Err(err) => die("error: " + err)
         }
       }
+      let use_session_http = cli_use_session_http()
       if backend_pref != CliExecBackendPref::Interpreter {
+        if use_session_http {
+          match run_entry_via_session(entry_path, features) {
+            Ok(result) => {
+              print_wasm_run_value(result)
+              return
+            }
+            Err(_) => ()
+          }
+        }
         match run_cmd_wasm_backend(entry_path) {
           Ok(result) => {
             print_wasm_run_value(result)
@@ -2364,6 +2382,19 @@ fn load_db_for_test_with_cache(
 }
 
 ///|
+fn load_db_for_run_with_cache(
+  cache : CliEntryDbCache,
+  entry_path : String,
+) -> Result[(@runtime.VibeDb, String), String] {
+  let resolved = @loader.resolve_entry_path(entry_path)
+  let db = cache.db_for_resolved_entry(resolved)
+  match @loader.load_db_with_paths_into(db, resolved) {
+    Ok((loaded_db, entry, _paths)) => Ok((loaded_db, entry))
+    Err(err) => Err(err)
+  }
+}
+
+///|
 fn resolve_entry_artifacts_with_cache(
   cache : CliEntryDbCache,
   entry_path : String,
@@ -2414,6 +2445,7 @@ struct CliCheckReport {
 ///|
 enum CliSessionRequestKind {
   Ping
+  Run
   Check
   Test
   Shutdown
@@ -3946,6 +3978,28 @@ fn make_cli_session_test_report_json(
 }
 
 ///|
+fn make_cli_session_run_result_json(
+  path : String,
+  value : WasmRunValue,
+) -> Json {
+  let obj : Map[String, Json] = {}
+  obj["cmd"] = Json::string("run")
+  obj["file"] = Json::string(path)
+  obj["ok"] = Json::boolean(true)
+  match value {
+    WasmRunValue::Int(n) => {
+      obj["value_kind"] = Json::string("int")
+      obj["value"] = Json::string(n.to_string())
+    }
+    WasmRunValue::Bool(b) => {
+      obj["value_kind"] = Json::string("bool")
+      obj["value"] = Json::boolean(b)
+    }
+  }
+  Json::object(obj)
+}
+
+///|
 fn make_cli_session_error_json(
   cmd : String,
   entry_path : String,
@@ -4166,6 +4220,54 @@ fn run_check_entry_via_session(
 }
 
 ///|
+fn parse_cli_run_value_json(json : Json) -> Result[WasmRunValue, String] {
+  match json {
+    Json::Object(obj) => {
+      let kind = parse_report_json_string(json, "value_kind")
+      match kind {
+        "int" =>
+          match obj.get("value") {
+            Some(Json::String(value)) => {
+              let parsed = @strconv.parse_int(value) catch {
+                _ => return Err("session-http: invalid run int result")
+              }
+              Ok(WasmRunValue::Int(parsed.to_int64()))
+            }
+            _ => Err("session-http: invalid run int result")
+          }
+        "bool" =>
+          match obj.get("value") {
+            Some(Json::True) => Ok(WasmRunValue::Bool(true))
+            Some(Json::False) => Ok(WasmRunValue::Bool(false))
+            _ => Err("session-http: invalid run bool result")
+          }
+        _ => Err("session-http: invalid run response")
+      }
+    }
+    _ => Err("session-http: invalid run response")
+  }
+}
+
+///|
+fn run_entry_via_session(
+  entry_path : String,
+  features : @runtime.RuntimeFeatureFlags,
+) -> Result[WasmRunValue, String] {
+  let port = match ensure_session_http_worker(entry_path, features) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let req : Map[String, Json] = {}
+  req["cmd"] = Json::string("run")
+  req["path"] = Json::string(entry_path)
+  let json = match session_http_request_json(port, Json::object(req)) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  parse_cli_run_value_json(json)
+}
+
+///|
 fn parse_cli_test_report_json(json : Json) -> Result[CliTestReport, String] {
   match json {
     Json::Object(obj) => {
@@ -4305,6 +4407,21 @@ fn parse_cli_session_request(
             kind: CliSessionRequestKind::Ping,
             path: None,
           })
+        "run" =>
+          match obj.get("path") {
+            Some(Json::String(value)) => {
+              let path = value.trim().to_string()
+              if path.length() == 0 {
+                Err("session-json: missing path")
+              } else {
+                Ok(CliSessionRequest::{
+                  kind: CliSessionRequestKind::Run,
+                  path: Some(path),
+                })
+              }
+            }
+            _ => Err("session-json: missing path")
+          }
         "check" =>
           match obj.get("path") {
             Some(Json::String(value)) => {
@@ -4366,6 +4483,25 @@ fn handle_cli_session_request(
       obj["ok"] = Json::boolean(true)
       (Json::object(obj), true)
     }
+    CliSessionRequestKind::Run =>
+      match req.path {
+        Some(path) =>
+          match run_cmd_wasm_backend_with_cache(cache, path) {
+            Ok(result) => {
+              maybe_create_linked_cache_background(path)
+              (make_cli_session_run_result_json(path, result), false)
+            }
+            Err(err) =>
+              (make_cli_session_error_json("run", path, "run", err, 1), false)
+          }
+        None =>
+          (
+            make_cli_session_error_json(
+              "run", "", "parse", "session-json: missing path", 1,
+            ),
+            false,
+          )
+      }
     CliSessionRequestKind::Check =>
       match req.path {
         Some(path) => {
