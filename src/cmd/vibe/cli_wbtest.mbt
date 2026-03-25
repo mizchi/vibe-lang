@@ -3688,21 +3688,6 @@ test "entry_prefers_compiled_backend detects vibe compiler paths" {
 }
 
 ///|
-test "entry_prefers_interpreter_backend no longer special-cases compiler import tests" {
-  assert_false(
-    entry_prefers_interpreter_backend("vibe/compiler/codegen_lexer_test.vibe"),
-  )
-  assert_false(
-    entry_prefers_interpreter_backend(
-      "/Users/mz/ghq/github.com/mizchi/vibe-lang/vibe/compiler/codegen_lexer_test.vibe",
-    ),
-  )
-  assert_false(
-    entry_prefers_interpreter_backend("vibe/compiler/codegen_test.vibe"),
-  )
-}
-
-///|
 test "resolve_test_backend_pref defaults to compiled in auto mode" {
   let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
   @sys.unset_env_var("VIBE_TEST_BACKEND")
@@ -4028,35 +4013,38 @@ test "cli session run json roundtrips" {
 }
 
 ///|
-test "interpreter fallback is disabled by default" {
+test "removed fallback env no longer affects run and test backend choice" {
   let prev_fallback = @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
   let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
-  @sys.unset_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
-  @sys.unset_env_var("VIBE_ENABLE_INTERPRETER")
-  defer wbtest_restore_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", prev_fallback)
-  defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
-  assert_false(cli_interpreter_backend_enabled())
-  assert_false(cli_allow_interpreter_fallback())
-  assert_false(cli_can_fallback_to_interpreter(CliExecBackendPref::Auto))
-}
-
-///|
-test "run and test no longer auto-fallback even when interpreter is enabled" {
-  let prev_fallback = @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
-  let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
+  let prev_run_backend = @sys.get_env_var("VIBE_RUN_BACKEND")
+  let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
   @sys.set_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", "1")
   @sys.unset_env_var("VIBE_ENABLE_INTERPRETER")
+  @sys.unset_env_var("VIBE_RUN_BACKEND")
+  @sys.unset_env_var("VIBE_TEST_BACKEND")
   defer wbtest_restore_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", prev_fallback)
   defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
+  defer wbtest_restore_env_var("VIBE_RUN_BACKEND", prev_run_backend)
+  defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
   assert_false(cli_interpreter_backend_enabled())
-  assert_true(cli_allow_interpreter_fallback())
-  assert_false(cli_can_fallback_to_interpreter(CliExecBackendPref::Auto))
+  assert_eq(
+    resolve_run_backend_pref("examples/hello.vibe"),
+    CliExecBackendPref::Compiled,
+  )
+  assert_eq(
+    resolve_test_backend_pref("examples/hello.vibe"),
+    CliExecBackendPref::Compiled,
+  )
   @sys.set_env_var("VIBE_ENABLE_INTERPRETER", "1")
   assert_true(cli_interpreter_backend_enabled())
-  assert_true(cli_allow_interpreter_fallback())
-  assert_false(cli_can_fallback_to_interpreter(CliExecBackendPref::Auto))
-  assert_false(cli_can_fallback_to_interpreter(CliExecBackendPref::Compiled))
-  assert_false(cli_can_fallback_to_interpreter(CliExecBackendPref::Interpreter))
+  assert_eq(
+    resolve_run_backend_pref("examples/hello.vibe"),
+    CliExecBackendPref::Compiled,
+  )
+  assert_eq(
+    resolve_test_backend_pref("examples/hello.vibe"),
+    CliExecBackendPref::Compiled,
+  )
 }
 
 ///|
@@ -4125,13 +4113,10 @@ test "explicit interpreter backend works when enabled for tests" {
 ///|
 test "test backend reports unsupported compiled cases by default" {
   let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
-  let prev_fallback = @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
   let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
   @sys.unset_env_var("VIBE_TEST_BACKEND")
-  @sys.unset_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
   @sys.unset_env_var("VIBE_ENABLE_INTERPRETER")
   defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
-  defer wbtest_restore_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", prev_fallback)
   defer wbtest_restore_env_var("VIBE_ENABLE_INTERPRETER", prev_enable)
   let cwd = @io.current_dir_or_root()
   let source_path = @vibe_fs.normalize_path(
@@ -4158,8 +4143,8 @@ test "test backend reports unsupported compiled cases by default" {
 
 ///|
 test "test backend auto fallback remains disabled even when interpreter is enabled" {
-  let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
   let prev_fallback = @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
+  let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
   let prev_enable = @sys.get_env_var("VIBE_ENABLE_INTERPRETER")
   @sys.set_env_var("VIBE_TEST_BACKEND", "auto")
   @sys.set_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", "1")

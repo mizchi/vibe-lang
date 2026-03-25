@@ -244,9 +244,7 @@ fn print_usage() -> Unit {
   println(
     "                    VIBE_ENABLE_INTERPRETER=1 re-enables the legacy interpreter backend",
   )
-  println(
-    "                    VIBE_ALLOW_INTERPRETER_FALLBACK=1 is legacy and currently ignored",
-  )
+  println("                    VIBE_ALLOW_INTERPRETER_FALLBACK is removed")
   println(
     "                    run/check/test use a persistent localhost session worker by default; set VIBE_USE_SESSION_HTTP=0 to disable",
   )
@@ -1161,21 +1159,12 @@ fn entry_prefers_compiled_backend(entry_path : String) -> Bool {
 }
 
 ///|
-fn entry_prefers_interpreter_backend(entry_path : String) -> Bool {
-  ignore(entry_path)
-  false
-}
-
-///|
 fn resolve_cli_exec_backend_pref_for_entry(
   env_name : String,
   entry_path : String,
 ) -> CliExecBackendPref {
   let pref = resolve_cli_exec_backend_pref(env_name)
   if pref == CliExecBackendPref::Auto {
-    if entry_prefers_interpreter_backend(entry_path) {
-      return CliExecBackendPref::Interpreter
-    }
     if entry_prefers_compiled_backend(entry_path) {
       return CliExecBackendPref::Compiled
     }
@@ -1189,14 +1178,6 @@ fn resolve_run_backend_pref(entry_path : String) -> CliExecBackendPref {
     Some(_) =>
       resolve_cli_exec_backend_pref_for_entry("VIBE_RUN_BACKEND", entry_path)
     None => CliExecBackendPref::Compiled
-  }
-}
-
-///|
-fn cli_allow_interpreter_fallback() -> Bool {
-  match @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK") {
-    Some(raw) => parse_bool_flag(raw)
-    None => false
   }
 }
 
@@ -1235,12 +1216,6 @@ fn cli_require_interpreter_backend(mode : String) -> Result[Unit, String] {
       "; set VIBE_ENABLE_INTERPRETER=1 to re-enable it",
     )
   }
-}
-
-///|
-fn cli_can_fallback_to_interpreter(backend_pref : CliExecBackendPref) -> Bool {
-  ignore(backend_pref)
-  false
 }
 
 ///|
@@ -3676,7 +3651,6 @@ fn run_test_file_with_backend_with_cache(
   features : @runtime.RuntimeFeatureFlags,
 ) -> Result[CliTestReport, String] {
   let backend_pref = resolve_test_backend_pref(entry_path)
-  let allow_interpreter_fallback = cli_can_fallback_to_interpreter(backend_pref)
   if backend_pref == CliExecBackendPref::Interpreter {
     match cli_require_interpreter_backend("test") {
       Ok(_) => ()
@@ -3686,19 +3660,12 @@ fn run_test_file_with_backend_with_cache(
   }
   // Runtime import failures are detected from compiled failure reports, so
   // ordinary failing tests do not need to bounce through interpreter fallback.
-  let stop_on_first_failure = cli_stop_compiled_test_on_first_failure(
-    allow_interpreter_fallback,
-  )
+  let stop_on_first_failure = cli_stop_compiled_test_on_first_failure(false)
   match
     run_test_file_compiled_with_cache(cache, entry_path, stop_on_first_failure) {
     CompiledTestAttempt::Success(report) => {
       if report.failed > 0 &&
         compiled_report_has_runtime_import_failures(report) {
-        if allow_interpreter_fallback {
-          return run_test_file_interpreter_with_cache(
-            cache, entry_path, features,
-          )
-        }
         return Err(
           "compiled test backend unsupported: runtime imports require interpreter fallback",
         )
@@ -3706,11 +3673,7 @@ fn run_test_file_with_backend_with_cache(
       Ok(report)
     }
     CompiledTestAttempt::Unsupported(err) =>
-      if allow_interpreter_fallback {
-        run_test_file_interpreter_with_cache(cache, entry_path, features)
-      } else {
-        Err("compiled test backend unsupported: " + err)
-      }
+      Err("compiled test backend unsupported: " + err)
     CompiledTestAttempt::Error(err) => Err(err)
   }
 }

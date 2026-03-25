@@ -128,7 +128,6 @@ fn bench_require_interpreter_backend() -> Result[Unit, String] {
 
 ///|
 fn bench_allow_interpreter_fallback() -> Bool {
-  ignore(cli_allow_interpreter_fallback())
   false
 }
 
