@@ -624,6 +624,10 @@ fn AstParser::parse_for_in_expr(
   // Parse first binding name
   let first_name = self.expect(name(), "binding name").text()
   self.skip_trivia()
+  // Check for C-style for: `for i = init; cond; update { body }`
+  if self.peek_kind() == eq() {
+    return self.parse_for_c_style(start, first_name)
+  }
   // Check for index,value form: `for i, x in ...`
   let (index_name, value_name) = if self.peek_kind() == comma() {
     let _ = self.bump() // consume comma
@@ -646,6 +650,173 @@ fn AstParser::parse_for_in_expr(
   let body = self.parse_block()
   let span = self.span_from(start)
   @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~)
+}
+
+///|
+/// Parse C-style for loop: `for name = init; cond; name = update { body }`
+/// Desugars to: `loop (name = init) { if !(cond) { break }; body_rewritten; continue(update) }`
+/// where bare `continue` in body becomes `continue(update)`.
+fn AstParser::parse_for_c_style(
+  self : AstParser,
+  start : Int,
+  var_name : String,
+) -> @core.Expr raise ParseError {
+  // Consume `=`
+  let _ = self.expect(eq(), "=")
+  // Parse init expression
+  let init_expr = self.parse_expr()
+  // Consume `;`
+  let _ = self.expect(semicolon(), ";")
+  // Parse condition expression
+  let cond_expr = self.parse_expr()
+  // Consume `;`
+  let _ = self.expect(semicolon(), ";")
+  // Parse update: `name = expr`
+  // For the update expression, we need to substitute var_name with the loop param.
+  // We parse "name = expr" and extract the expression.
+  let _update_name = self.expect(name(), "update variable").text()
+  self.skip_trivia()
+  let _ = self.expect(eq(), "=")
+  let update_expr = self.parse_expr()
+  // Parse body block
+  let body = self.parse_block()
+  let span = self.span_from(start)
+  // Build: loop (var_name = init_expr) {
+  //   if !(cond) { break }
+  //   <body with continue rewritten to continue(update_expr)>
+  //   continue(update_expr)
+  // }
+  let loop_param : @core.LoopParam = { name: var_name, init: init_expr, span }
+  // Negate condition: if !(cond) { break }
+  let break_check = @core.Stmt::Expr(
+    expr=@core.Expr::If(
+      cond=cond_expr,
+      then_body={ stmts: [] },
+      else_body={
+        stmts: [
+          @core.Stmt::Expr(expr=@core.Expr::Break(value=None, span~), span~),
+        ],
+      },
+      span~,
+    ),
+    span~,
+  )
+  // Rewrite bare continue in body to continue(update_expr)
+  let rewritten_stmts = rewrite_continue_for_loop(body.stmts, update_expr, span)
+  // Build final loop body stmts
+  let loop_stmts : Array[@core.Stmt] = [break_check]
+  for stmt in rewritten_stmts {
+    loop_stmts.push(stmt)
+  }
+  // Append continue(update_expr) at end
+  loop_stmts.push(
+    @core.Stmt::Expr(
+      expr=@core.Expr::Continue(args=[update_expr], span~),
+      span~,
+    ),
+  )
+  @core.Expr::Loop(params=[loop_param], body={ stmts: loop_stmts }, span~)
+}
+
+///|
+/// Rewrite bare `continue` to `continue(update_expr)` in stmts for for-C desugaring.
+fn rewrite_continue_for_loop(
+  stmts : Array[@core.Stmt],
+  update_expr : @core.Expr,
+  span : @core.Span,
+) -> Array[@core.Stmt] {
+  let out : Array[@core.Stmt] = []
+  for stmt in stmts {
+    out.push(rewrite_continue_for_loop_stmt(stmt, update_expr, span))
+  }
+  out
+}
+
+///|
+fn rewrite_continue_for_loop_stmt(
+  stmt : @core.Stmt,
+  update_expr : @core.Expr,
+  span : @core.Span,
+) -> @core.Stmt {
+  match stmt {
+    @core.Stmt::Expr(expr~, span=stmt_span) =>
+      @core.Stmt::Expr(
+        expr=rewrite_continue_for_loop_expr(expr, update_expr, span),
+        span=stmt_span,
+      )
+    @core.Stmt::Let(rec~, name~, expr~, span=stmt_span) =>
+      @core.Stmt::Let(
+        rec~,
+        name~,
+        expr=rewrite_continue_for_loop_expr(expr, update_expr, span),
+        span=stmt_span,
+      )
+    @core.Stmt::LetMut(name~, expr~, span=stmt_span) =>
+      @core.Stmt::LetMut(
+        name~,
+        expr=rewrite_continue_for_loop_expr(expr, update_expr, span),
+        span=stmt_span,
+      )
+    @core.Stmt::Assign(name~, expr~, span=stmt_span) =>
+      @core.Stmt::Assign(
+        name~,
+        expr=rewrite_continue_for_loop_expr(expr, update_expr, span),
+        span=stmt_span,
+      )
+    _ => stmt
+  }
+}
+
+///|
+/// Rewrite bare `continue` to `continue(update_expr)` in expressions.
+/// Stop at nested While/Loop/ForIn boundaries.
+fn rewrite_continue_for_loop_expr(
+  expr : @core.Expr,
+  update_expr : @core.Expr,
+  span : @core.Span,
+) -> @core.Expr {
+  match expr {
+    @core.Expr::Continue(args~, span=cont_span) =>
+      if args.is_empty() {
+        @core.Expr::Continue(args=[update_expr], span=cont_span)
+      } else {
+        expr
+      }
+    @core.Expr::If(cond~, then_body~, else_body~, span=if_span) =>
+      @core.Expr::If(
+        cond~,
+        then_body=rewrite_continue_for_loop_module(then_body, update_expr, span),
+        else_body=rewrite_continue_for_loop_module(else_body, update_expr, span),
+        span=if_span,
+      )
+    @core.Expr::Block(body~, span=blk_span) =>
+      @core.Expr::Block(
+        body=rewrite_continue_for_loop_module(body, update_expr, span),
+        span=blk_span,
+      )
+    @core.Expr::Match(scrutinee~, arms~, span=m_span) => {
+      let new_arms : Array[@core.MatchArm] = []
+      for arm in arms {
+        new_arms.push({
+          ..arm,
+          expr: rewrite_continue_for_loop_expr(arm.expr, update_expr, span),
+        })
+      }
+      @core.Expr::Match(scrutinee~, arms=new_arms, span=m_span)
+    }
+    // Do NOT recurse into While/Loop/ForIn — their continue targets the inner loop
+    @core.Expr::While(..) | @core.Expr::Loop(..) | @core.Expr::ForIn(..) => expr
+    _ => expr
+  }
+}
+
+///|
+fn rewrite_continue_for_loop_module(
+  mod_ : @core.Module,
+  update_expr : @core.Expr,
+  span : @core.Span,
+) -> @core.Module {
+  { stmts: rewrite_continue_for_loop(mod_.stmts, update_expr, span) }
 }
 
 ///|

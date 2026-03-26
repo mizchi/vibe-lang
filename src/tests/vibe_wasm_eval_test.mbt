@@ -2103,3 +2103,49 @@ test "vibe backends match: P3 handler pattern" {
     handler_code + "\nhandler(\"GET\", \"/proxy?target=http://example.com\")",
   )
 }
+
+///|
+test "vibe wasm eval for-c loop basic" {
+  let script =
+    #|let _start = () -> {
+    #|  let mut sum = 0
+    #|  for i = 1; lt(i, 6); i = add(i, 1) {
+    #|    sum = add(sum, i)
+    #|  }
+    #|  sum
+    #|}
+    #|_start()
+  assert_eval_backends_same(script)
+}
+
+///|
+test "vibe wasm eval for-c loop with continue" {
+  let script =
+    #|let _start = () -> {
+    #|  let mut sum = 0
+    #|  for i = 0; lt(i, 10); i = add(i, 1) {
+    #|    if eq(i, 5) { continue }
+    #|    sum = add(sum, i)
+    #|  }
+    #|  sum
+    #|}
+    #|_start()
+  assert_eval_backends_same(script)
+}
+
+///|
+test "vibe wasm eval while loop with continue" {
+  let script =
+    #|let _start = () -> {
+    #|  let mut i = 0
+    #|  let mut sum = 0
+    #|  while lt(i, 10) {
+    #|    i = add(i, 1)
+    #|    if eq(i, 5) { continue }
+    #|    sum = add(sum, i)
+    #|  }
+    #|  sum
+    #|}
+    #|_start()
+  assert_eval_backends_same(script)
+}
