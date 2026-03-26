@@ -2022,12 +2022,13 @@ fn compile_call_builtin_pre_user_inner(
       }
     }
     "Int::parse" => {
-      // parse_int(s: String) -> Int
-      // Iterate string bytes, accumulate digits, handle optional sign.
+      // Int::parse(s: String) -> Option[Int]
+      // Returns Some(int) on success, None on failure.
       let pos_args = extract_positional_exprs_with_arity(args, "Int::parse", 1)
       if ctx.use_js_strings {
         raise WasmGenError::Unsupported("Int::parse with js strings")
       } else {
+        require_heap(ctx)
         // Native string mode: byte-iterate and accumulate
         let str_ptr_local = alloc_temp_local(ctx) // base pointer
         let str_len_local = alloc_temp_local(ctx) // string length
@@ -2035,6 +2036,9 @@ fn compile_call_builtin_pre_user_inner(
         let result_local = alloc_temp_local(ctx) // accumulator
         let neg_local = alloc_temp_local(ctx) // sign flag (0=pos, 1=neg)
         let byte_local = alloc_temp_local(ctx) // current byte
+        let valid_local = alloc_temp_local(ctx) // validity flag (1=valid, 0=invalid)
+        let has_digit_local = alloc_temp_local(ctx) // has at least one digit
+        let obj_local = alloc_temp_local(ctx) // heap object for Option
 
         // Untag pointer, get base address
         compile_expr_i32(ctx, buf, pos_args[0])
@@ -2046,23 +2050,25 @@ fn compile_call_builtin_pre_user_inner(
         emit_i32_load(buf, 4)
         emit_local_set(buf, str_len_local)
 
-        // Initialize: result=0, idx=0, neg=0
+        // Initialize: result=0, idx=0, neg=0, valid=1, has_digit=0
         emit_i32_const_raw(buf, 0)
         emit_local_set(buf, result_local)
         emit_i32_const_raw(buf, 0)
         emit_local_set(buf, idx_local)
         emit_i32_const_raw(buf, 0)
         emit_local_set(buf, neg_local)
+        emit_i32_const_raw(buf, 1)
+        emit_local_set(buf, valid_local)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, has_digit_local)
 
         // Skip leading spaces (byte == 32)
         emit_block(buf) // block $skip_done
         emit_loop(buf) // loop $skip_loop
-        // if idx >= len: break
         emit_local_get(buf, idx_local)
         emit_local_get(buf, str_len_local)
         emit_i32_ge_s(buf)
         emit_br_if(buf, 1) // br $skip_done
-        // load byte
         emit_local_get(buf, str_ptr_local)
         emit_local_get(buf, idx_local)
         emit_i32_add(buf)
@@ -2070,7 +2076,6 @@ fn compile_call_builtin_pre_user_inner(
         emit_i32_const_raw(buf, 32) // space
         emit_i32_ne(buf)
         emit_br_if(buf, 1) // not space => break
-        // idx++
         emit_local_get(buf, idx_local)
         emit_i32_const_raw(buf, 1)
         emit_i32_add(buf)
@@ -2085,17 +2090,15 @@ fn compile_call_builtin_pre_user_inner(
         emit_local_get(buf, str_len_local)
         emit_i32_ge_s(buf)
         emit_br_if(buf, 0) // no chars left => skip sign check
-        // load byte at idx
         emit_local_get(buf, str_ptr_local)
         emit_local_get(buf, idx_local)
         emit_i32_add(buf)
         emit_i32_load8_u(buf, 8)
         emit_local_set(buf, byte_local)
-        // if byte == 45 ('-')
         emit_local_get(buf, byte_local)
-        emit_i32_const_raw(buf, 45)
+        emit_i32_const_raw(buf, 45) // '-'
         emit_i32_eq(buf)
-        emit_if(buf) // if
+        emit_if(buf)
         emit_i32_const_raw(buf, 1)
         emit_local_set(buf, neg_local)
         emit_local_get(buf, idx_local)
@@ -2104,9 +2107,8 @@ fn compile_call_builtin_pre_user_inner(
         emit_local_set(buf, idx_local)
         emit_br(buf, 1) // br $sign_done
         emit_end(buf) // end if
-        // if byte == 43 ('+')
         emit_local_get(buf, byte_local)
-        emit_i32_const_raw(buf, 43)
+        emit_i32_const_raw(buf, 43) // '+'
         emit_i32_eq(buf)
         emit_if(buf)
         emit_local_get(buf, idx_local)
@@ -2117,14 +2119,13 @@ fn compile_call_builtin_pre_user_inner(
         emit_end(buf) // end block $sign_done
 
         // Main digit loop: result = result * 10 + (byte - 48)
+        // On non-digit (except trailing space), set valid=0 and break
         emit_block(buf) // block $digit_done
         emit_loop(buf) // loop $digit_loop
-        // if idx >= len: break
         emit_local_get(buf, idx_local)
         emit_local_get(buf, str_len_local)
         emit_i32_ge_s(buf)
         emit_br_if(buf, 1) // br $digit_done
-        // load byte
         emit_local_get(buf, str_ptr_local)
         emit_local_get(buf, idx_local)
         emit_i32_add(buf)
@@ -2135,12 +2136,31 @@ fn compile_call_builtin_pre_user_inner(
         emit_i32_const_raw(buf, 32)
         emit_i32_eq(buf)
         emit_br_if(buf, 1) // br $digit_done
-        // result = result * 10 + (byte - 48)
+        // Check if digit: byte < '0' (48) or byte > '9' (57) => invalid
+        emit_local_get(buf, byte_local)
+        emit_i32_const_raw(buf, 48) // '0'
+        emit_i32_lt_s(buf)
+        emit_if(buf)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, valid_local)
+        emit_br(buf, 2) // br $digit_done (block depth: if=0, loop=1, block=2 => need 2)
+        emit_end(buf) // end if
+        emit_local_get(buf, byte_local)
+        emit_i32_const_raw(buf, 57) // '9'
+        emit_i32_gt_s(buf)
+        emit_if(buf)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, valid_local)
+        emit_br(buf, 2) // br $digit_done
+        emit_end(buf) // end if
+        // Valid digit: result = result * 10 + (byte - 48)
+        emit_i32_const_raw(buf, 1)
+        emit_local_set(buf, has_digit_local)
         emit_local_get(buf, result_local)
         emit_i32_const_raw(buf, 10)
         emit_i32_mul(buf)
         emit_local_get(buf, byte_local)
-        emit_i32_const_raw(buf, 48) // '0'
+        emit_i32_const_raw(buf, 48)
         emit_i32_sub(buf)
         emit_i32_add(buf)
         emit_local_set(buf, result_local)
@@ -2153,6 +2173,14 @@ fn compile_call_builtin_pre_user_inner(
         emit_end(buf) // end loop
         emit_end(buf) // end block
 
+        // Check valid && has_digit: if not, produce None
+        // valid = valid & has_digit
+        emit_local_get(buf, valid_local)
+        emit_local_get(buf, has_digit_local)
+        emit_i32_and(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((126).to_byte()) // result i64
+
         // Apply negation if neg_local == 1
         emit_local_get(buf, neg_local)
         emit_if(buf)
@@ -2163,22 +2191,61 @@ fn compile_call_builtin_pre_user_inner(
         emit_end(buf) // end if
 
         // Tag result as i64 Int: (result << 2) | tag_int
+        // Then wrap in Some: heap alloc enum obj with tag=1, payload=tagged_int
+        // Some tag index = 1 (None=0, Some=1)
+        let some_size = align4(8 + 8) // obj_type(4) + enum_tag(4) + payload(8)
+        emit_heap_alloc(ctx, buf, some_size, obj_local)
+        // Store obj_type = obj_enum (10)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, obj_enum)
+        emit_i32_store(buf, 0)
+        // Store enum tag = 1 (Some)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_store(buf, 4)
+        // Store payload: tagged int value at offset 8
+        emit_local_get(buf, obj_local)
         emit_local_get(buf, result_local)
         emit_i64_extend_i32_s(buf)
         emit_i64_const_raw(buf, 2L)
         emit_i64_shl(buf)
         // tag_int = 0, i64.or is a no-op
+        emit_i64_store(buf, 8)
+        // Return tagged pointer: (obj_local as i64) | tag_obj
+        emit_local_get(buf, obj_local)
+        emit_i64_extend_i32_u(buf)
+        emit_i64_const_raw(buf, tag_obj.to_int64())
+        emit_i64_or(buf)
+
+        emit_else(buf) // else: produce None
+
+        // None: heap alloc enum obj with tag=0, no payload
+        let none_size = align4(8) // obj_type(4) + enum_tag(4)
+        emit_heap_alloc(ctx, buf, none_size, obj_local)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, obj_enum)
+        emit_i32_store(buf, 0)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, 0) // None tag = 0
+        emit_i32_store(buf, 4)
+        emit_local_get(buf, obj_local)
+        emit_i64_extend_i32_u(buf)
+        emit_i64_const_raw(buf, tag_obj.to_int64())
+        emit_i64_or(buf)
+
+        emit_end(buf) // end if valid
       }
     }
     "Double::parse" => {
-      // parse_double(s: String) -> Double
-      // Parse integer + fractional parts, box result as f64 object.
+      // Double::parse(s: String) -> Option[Double]
+      // Returns Some(double) on success, None on failure.
       let pos_args = extract_positional_exprs_with_arity(
         args, "Double::parse", 1,
       )
       if ctx.use_js_strings {
         raise WasmGenError::Unsupported("Double::parse with js strings")
       } else {
+        require_heap(ctx)
         // Native string mode: byte-iterate and accumulate
         let str_ptr_local = alloc_temp_local(ctx)
         let str_len_local = alloc_temp_local(ctx)
@@ -2188,6 +2255,10 @@ fn compile_call_builtin_pre_user_inner(
         let frac_div_local = alloc_temp_local(ctx) // fractional divisor (i32)
         let neg_local = alloc_temp_local(ctx) // sign flag
         let byte_local = alloc_temp_local(ctx)
+        let valid_local = alloc_temp_local(ctx) // validity flag
+        let has_digit_local = alloc_temp_local(ctx) // has at least one digit
+        let boxed_f64_local = alloc_temp_local(ctx) // boxed f64 tagged ptr
+        let obj_local = alloc_temp_local(ctx) // Option enum heap object
 
         // Untag pointer
         compile_expr_i32(ctx, buf, pos_args[0])
@@ -2210,6 +2281,10 @@ fn compile_call_builtin_pre_user_inner(
         emit_local_set(buf, idx_local)
         emit_i32_const_raw(buf, 0)
         emit_local_set(buf, neg_local)
+        emit_i32_const_raw(buf, 1)
+        emit_local_set(buf, valid_local)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, has_digit_local)
 
         // Skip leading spaces
         emit_block(buf)
@@ -2289,7 +2364,26 @@ fn compile_call_builtin_pre_user_inner(
         emit_i32_const_raw(buf, 32)
         emit_i32_eq(buf)
         emit_br_if(buf, 1)
+        // Check if digit: byte < '0' or byte > '9' => invalid
+        emit_local_get(buf, byte_local)
+        emit_i32_const_raw(buf, 48)
+        emit_i32_lt_s(buf)
+        emit_if(buf)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, valid_local)
+        emit_br(buf, 2) // br $digit_done
+        emit_end(buf)
+        emit_local_get(buf, byte_local)
+        emit_i32_const_raw(buf, 57)
+        emit_i32_gt_s(buf)
+        emit_if(buf)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, valid_local)
+        emit_br(buf, 2) // br $digit_done
+        emit_end(buf)
         // int_part = int_part * 10 + (byte - 48)
+        emit_i32_const_raw(buf, 1)
+        emit_local_set(buf, has_digit_local)
         emit_local_get(buf, int_part_local)
         emit_i32_const_raw(buf, 10)
         emit_i32_mul(buf)
@@ -2342,7 +2436,26 @@ fn compile_call_builtin_pre_user_inner(
         emit_i32_const_raw(buf, 32)
         emit_i32_eq(buf)
         emit_br_if(buf, 1)
+        // Check if digit
+        emit_local_get(buf, byte_local)
+        emit_i32_const_raw(buf, 48)
+        emit_i32_lt_s(buf)
+        emit_if(buf)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, valid_local)
+        emit_br(buf, 2) // br $frac_done
+        emit_end(buf)
+        emit_local_get(buf, byte_local)
+        emit_i32_const_raw(buf, 57)
+        emit_i32_gt_s(buf)
+        emit_if(buf)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, valid_local)
+        emit_br(buf, 2) // br $frac_done
+        emit_end(buf)
         // frac_part = frac_part * 10 + (byte - 48)
+        emit_i32_const_raw(buf, 1)
+        emit_local_set(buf, has_digit_local)
         emit_local_get(buf, frac_part_local)
         emit_i32_const_raw(buf, 10)
         emit_i32_mul(buf)
@@ -2366,8 +2479,15 @@ fn compile_call_builtin_pre_user_inner(
         emit_end(buf) // end block $frac_done
         emit_end(buf) // end block (dot check)
 
+        // Check valid && has_digit
+        emit_local_get(buf, valid_local)
+        emit_local_get(buf, has_digit_local)
+        emit_i32_and(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((126).to_byte()) // result i64
+
         // Build f64 result: (int_part + frac_part / frac_div) * sign
-        // Use emit_boxed_f64_raise to box the result
+        // Box the f64, store tagged ptr in boxed_f64_local
         emit_boxed_f64_raise(ctx, buf, fn() {
           // f64(int_part)
           emit_local_get(buf, int_part_local)
@@ -2383,8 +2503,7 @@ fn compile_call_builtin_pre_user_inner(
           emit_f64_div(buf)
           // add int + frac
           emit_f64_add(buf)
-          // apply sign: multiply by (1.0 - 2.0 * neg_local)
-          // branchless: neg=0 → *1.0, neg=1 → *-1.0
+          // apply sign
           emit_f64_const(buf, 1.0)
           emit_local_get(buf, neg_local)
           emit_i64_extend_i32_s(buf)
@@ -2394,6 +2513,42 @@ fn compile_call_builtin_pre_user_inner(
           emit_f64_sub(buf)
           emit_f64_mul(buf)
         })
+        emit_local_set(buf, boxed_f64_local)
+
+        // Wrap in Some: enum obj with tag=1, payload=boxed_f64
+        let some_size = align4(8 + 8) // obj_type(4) + enum_tag(4) + payload(8)
+        emit_heap_alloc(ctx, buf, some_size, obj_local)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, obj_enum)
+        emit_i32_store(buf, 0)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, 1) // Some tag = 1
+        emit_i32_store(buf, 4)
+        emit_local_get(buf, obj_local)
+        emit_local_get(buf, boxed_f64_local)
+        emit_i64_store(buf, 8)
+        // Return tagged pointer
+        emit_local_get(buf, obj_local)
+        emit_i64_extend_i32_u(buf)
+        emit_i64_const_raw(buf, tag_obj.to_int64())
+        emit_i64_or(buf)
+
+        emit_else(buf) // else: produce None
+
+        let none_size = align4(8) // obj_type(4) + enum_tag(4)
+        emit_heap_alloc(ctx, buf, none_size, obj_local)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, obj_enum)
+        emit_i32_store(buf, 0)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, 0) // None tag = 0
+        emit_i32_store(buf, 4)
+        emit_local_get(buf, obj_local)
+        emit_i64_extend_i32_u(buf)
+        emit_i64_const_raw(buf, tag_obj.to_int64())
+        emit_i64_or(buf)
+
+        emit_end(buf) // end if valid
       }
     }
     "String::substring" => {

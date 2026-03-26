@@ -521,12 +521,17 @@ fn type_call_builtin_handler_collection_numeric(
     | "String::unicode_length" =>
       ctx.simple(name, [@core.Type::String], @core.Type::Int, false)
     "Int::parse" =>
-      ctx.simple("Int::parse", [@core.Type::String], @core.Type::Int, false)
+      ctx.simple(
+        "Int::parse",
+        [@core.Type::String],
+        @core.Type::Named(name="Option", args=[@core.Type::Int]),
+        false,
+      )
     "Double::parse" =>
       ctx.simple(
         "Double::parse",
         [@core.Type::String],
-        @core.Type::Double,
+        @core.Type::Named(name="Option", args=[@core.Type::Double]),
         false,
       )
     "String::char_code_at" =>

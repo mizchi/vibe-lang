@@ -2192,3 +2192,87 @@ test "vibe eval for-in over string with index" {
   // 0 + 1 + 2 + 3 + 4 = 10
   assert_eq(value, @core.Value::Int(10L))
 }
+
+///|
+test "vibe eval Int::parse success" {
+  let script =
+    #|Int::parse("42")
+  let value = try eval_run_interpreter(script) catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  let expected : Map[String, @core.Value] = {}
+  expected["Some"] = @core.Value::Int(42L)
+  assert_eq(value, @core.Value::Record(expected))
+}
+
+///|
+test "vibe eval Int::parse failure" {
+  let script =
+    #|Int::parse("abc")
+  let value = try eval_run_interpreter(script) catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  let expected : Map[String, @core.Value] = {}
+  expected["None"] = @core.Value::Unit
+  assert_eq(value, @core.Value::Record(expected))
+}
+
+///|
+test "vibe eval Int::parse negative" {
+  let script =
+    #|Int::parse("-123")
+  let value = try eval_run_interpreter(script) catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  let expected : Map[String, @core.Value] = {}
+  expected["Some"] = @core.Value::Int(-123L)
+  assert_eq(value, @core.Value::Record(expected))
+}
+
+///|
+test "vibe eval Int::parse empty string" {
+  let script =
+    #|Int::parse("")
+  let value = try eval_run_interpreter(script) catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  let expected : Map[String, @core.Value] = {}
+  expected["None"] = @core.Value::Unit
+  assert_eq(value, @core.Value::Record(expected))
+}
+
+///|
+test "vibe eval Double::parse success" {
+  let script =
+    #|Double::parse("3.14")
+  let value = try eval_run_interpreter(script) catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  let expected : Map[String, @core.Value] = {}
+  expected["Some"] = @core.Value::Double(3.14)
+  assert_eq(value, @core.Value::Record(expected))
+}
+
+///|
+test "vibe eval Double::parse failure" {
+  let script =
+    #|Double::parse("abc")
+  let value = try eval_run_interpreter(script) catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  let expected : Map[String, @core.Value] = {}
+  expected["None"] = @core.Value::Unit
+  assert_eq(value, @core.Value::Record(expected))
+}

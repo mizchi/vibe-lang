@@ -204,7 +204,9 @@ fn eval_pure_builtin(
           let trimmed = s.trim()
           let len = trimmed.length()
           if len == 0 {
-            raise EvalError::BadCall(E("Int::parse: empty string"))
+            let none_map : Map[String, @core.Value] = {}
+            none_map["None"] = @core.Value::Unit
+            return @core.Value::Record(none_map)
           }
           let mut start = 0
           let mut negative = false
@@ -216,21 +218,33 @@ fn eval_pure_builtin(
             start = start + 1
           }
           if start >= len {
-            raise EvalError::BadCall(E("Int::parse: no digits"))
+            let none_map : Map[String, @core.Value] = {}
+            none_map["None"] = @core.Value::Unit
+            return @core.Value::Record(none_map)
           }
           let mut result : Int64 = 0L
+          let mut valid = true
           for i = start; i < len; i = i + 1 {
             let c = trimmed[i]
             if c >= '0' && c <= '9' {
               result = result * 10L + (c.to_int() - 48).to_int64()
             } else {
-              raise EvalError::BadCall(E("Int::parse: invalid digit"))
+              valid = false
+              break
             }
           }
-          if negative {
-            result = -result
+          if not(valid) {
+            let none_map : Map[String, @core.Value] = {}
+            none_map["None"] = @core.Value::Unit
+            @core.Value::Record(none_map)
+          } else {
+            if negative {
+              result = -result
+            }
+            let some_map : Map[String, @core.Value] = {}
+            some_map["Some"] = @core.Value::Int(result)
+            @core.Value::Record(some_map)
           }
-          @core.Value::Int(result)
         }
         _ => raise EvalError::BadCall(E("Int::parse"))
       }
@@ -242,10 +256,21 @@ fn eval_pure_builtin(
       match args[0] {
         @core.Value::String(s) => {
           let trimmed = s.trim()
-          let value = @strconv.parse_double(trimmed) catch {
-            _ => raise EvalError::BadCall(E("Double::parse: invalid"))
+          let value : Result[Double, @strconv.StrConvError] = try? @strconv.parse_double(
+            trimmed,
+          )
+          match value {
+            Ok(v) => {
+              let some_map : Map[String, @core.Value] = {}
+              some_map["Some"] = @core.Value::Double(v)
+              @core.Value::Record(some_map)
+            }
+            Err(_) => {
+              let none_map : Map[String, @core.Value] = {}
+              none_map["None"] = @core.Value::Unit
+              @core.Value::Record(none_map)
+            }
           }
-          @core.Value::Double(value)
         }
         _ => raise EvalError::BadCall(E("Double::parse"))
       }

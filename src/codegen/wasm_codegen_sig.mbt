@@ -486,7 +486,6 @@ fn infer_expr_kind_with(
         | "to_double"
         | "Float::to_double"
         | "f64_promote_f32"
-        | "Double::parse"
         | "f64_neg"
         | "f64_abs"
         | "f64_ceil"
@@ -1032,8 +1031,7 @@ fn has_float_operand(expr : @core.Expr) -> Bool {
         | "f64_nearest"
         | "f64_sqrt"
         | "f32_load"
-        | "f64_load"
-        | "Double::parse" => true
+        | "f64_load" => true
         _ => args.iter().any(fn(a) { has_float_operand(a.expr) })
       }
     _ => false
@@ -1177,6 +1175,7 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "Http::request_header" ||
         name == "Http::request_body" ||
         name == "Http::respond" ||
+        name == "Int::parse" ||
         name == "Double::parse" {
         return true
       }
