@@ -3038,7 +3038,10 @@ fn run_test_file_compiled_with_cache(
     db, entry, ast, cases, current_hashes,
   )
   match pure_cache_result {
-    Some(report) => return CompiledTestAttempt::Success(report)
+    Some(report) => {
+      println(entry + ": cached (" + report.total.to_string() + "/" + report.total.to_string() + " pure)")
+      return CompiledTestAttempt::Success(report)
+    }
     None => ()
   }
   let runner = match resolve_bench_wasm_runner(entry) {
@@ -3319,9 +3322,10 @@ fn test_cmd(
   if args.length() == 0 {
     abort("test: expected <file|dir...>")
   }
-  // Parse --jobs and --report-json flags
+  // Parse --jobs, --report-json, --no-cache flags
   let mut jobs = 0
   let mut report_json = false
+  let mut no_cache = false
   let path_args : Array[String] = []
   let mut i = 0
   while i < args.length() {
@@ -3333,10 +3337,15 @@ fn test_cmd(
       }
     } else if arg == "--report-json" {
       report_json = true
+    } else if arg == "--no-cache" {
+      no_cache = true
     } else {
       path_args.push(arg)
     }
     i += 1
+  }
+  if no_cache {
+    @sys.set_env_var("VIBE_NO_TEST_CACHE", "1")
   }
   let entry_paths = resolve_test_entry_paths(path_args)
   if entry_paths.length() == 0 {
