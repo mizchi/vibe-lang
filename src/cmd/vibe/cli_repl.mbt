@@ -62,6 +62,7 @@ enum ReplMetaCommandResult {
   NotMeta
   HandledContinue
   HandledExit
+  HandledLoadSource(String)
 } derive(Show, Eq)
 
 ///|
@@ -95,7 +96,10 @@ struct ReplSymbolsRow {
 
 ///|
 fn repl_meta_command_names() -> Array[String] {
-  [":q", ":quit", ":exit", ":view", ":outline", ":peek", ":type"]
+  [
+    ":q", ":quit", ":exit", ":view", ":outline", ":peek", ":type",
+    ":save", ":load", ":clear", ":source",
+  ]
 }
 
 ///|
@@ -1625,6 +1629,60 @@ fn handle_repl_meta_command(
       repl_handle_peek_meta_command(
         cmd_args, scratch_db_path, scratch_source, print_line,
       )
+    ":save" => {
+      if cmd_args.length() == 0 {
+        print_line("usage: :save <filename.vibe>")
+        return ReplMetaCommandResult::HandledContinue
+      }
+      let path = cmd_args[0]
+      if scratch_source.trim().to_string().length() == 0 {
+        print_line("nothing to save (empty session)")
+        return ReplMetaCommandResult::HandledContinue
+      }
+      @os_fs.write_string_to_file(path, scratch_source) catch {
+        e => {
+          print_line("save failed: " + e.to_string())
+          return ReplMetaCommandResult::HandledContinue
+        }
+      }
+      // Count bindings
+      let mut binding_count = 0
+      for line_view in scratch_source.split("\n") {
+        let l = line_view.to_string().trim().to_string()
+        if l.has_prefix("let ") || l.has_prefix("export let ") {
+          binding_count += 1
+        }
+      }
+      print_line("saved: " + path + " (" + binding_count.to_string() + " bindings)")
+      ReplMetaCommandResult::HandledContinue
+    }
+    ":load" => {
+      if cmd_args.length() == 0 {
+        print_line("usage: :load <filename.vibe>")
+        return ReplMetaCommandResult::HandledContinue
+      }
+      let path = cmd_args[0]
+      let content = @os_fs.read_file_to_string(path) catch {
+        e => {
+          print_line("load failed: " + e.to_string())
+          return ReplMetaCommandResult::HandledContinue
+        }
+      }
+      print_line("loaded: " + path + " (" + content.length().to_string() + " bytes)")
+      ReplMetaCommandResult::HandledLoadSource(content)
+    }
+    ":clear" => {
+      print_line("session cleared")
+      ReplMetaCommandResult::HandledLoadSource("")
+    }
+    ":source" => {
+      if scratch_source.trim().to_string().length() == 0 {
+        print_line("(empty session)")
+      } else {
+        print_line(scratch_source)
+      }
+      ReplMetaCommandResult::HandledContinue
+    }
     _ => {
       print_line("unknown command: " + cmd)
       ReplMetaCommandResult::HandledContinue
@@ -2953,6 +3011,7 @@ fn run_compiled_shell_line(
     ) {
     ReplMetaCommandResult::HandledExit => return scratch_source
     ReplMetaCommandResult::HandledContinue => return scratch_source
+    ReplMetaCommandResult::HandledLoadSource(new_source) => return new_source
     ReplMetaCommandResult::NotMeta => ()
   }
   match
@@ -2961,6 +3020,7 @@ fn run_compiled_shell_line(
     ) {
     ReplMetaCommandResult::HandledExit => return scratch_source
     ReplMetaCommandResult::HandledContinue => return scratch_source
+    ReplMetaCommandResult::HandledLoadSource(_) => return scratch_source
     ReplMetaCommandResult::NotMeta => ()
   }
   // Preprocess posix-style input when in PosixMode

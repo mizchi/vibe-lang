@@ -142,6 +142,65 @@ posix preprocessor の拡張:
 | `cat f.csv \|> from_csv` | `from_csv(Fs::read_file("f.csv"))` |
 | `cat f.json \|> jq .name` | `jq(Fs::read_file("f.json"), ".name")` |
 
+## ワークフロー: REPL → ファイル → リファクタ
+
+vibe shell の典型的な開発ワークフロー:
+
+### 1. REPL で探索的にコードを書く
+
+```
+vibe> let data = cat data.csv |> from_csv
+vibe> let filtered = data |> where age > 30
+vibe> let names = filtered |> select name
+vibe> Array::length(names)
+last: 5
+vibe> let avg = Array::fold(filtered |> select age, 0, (acc, x) -> acc + x) / 5
+last: 42
+```
+
+### 2. セッションを `.vibe` ファイルに吐き出す
+
+```
+vibe> :save analysis.vibe
+saved: analysis.vibe (6 bindings)
+```
+
+`:save` コマンドが scratch_source の全バインディングを normalize してファイルに書き出す。
+
+### 3. normalize でクリーンアップ
+
+```bash
+vibe normalize analysis.vibe
+```
+
+- import の整理・ソート
+- 未使用バインディングの除去
+- 関数定義の並び替え (トポロジカルソート)
+- フォーマット統一
+
+### 4. エディタでリファクタ
+
+```bash
+vim analysis.vibe   # or vscode with vibe extension
+vibe check analysis.vibe
+vibe run analysis.vibe
+```
+
+### 5. テストを追加して品質保証
+
+```bash
+# analysis.vibe の末尾にテストブロックを追加
+vibe test analysis.vibe
+```
+
+### 設計上の要件
+
+- **scratch_source はバインディングを蓄積**: `let x = ...` は後続行から参照可能
+- **`:save` コマンド**: 現在の scratch_source を normalize してファイルに書き出す
+- **`:load` コマンド**: ファイルを scratch_source に読み込んで REPL で継続
+- **`:clear` コマンド**: scratch_source をリセット
+- **normalize との統合**: `:save` は `vibe normalize` と同等の整形を適用
+
 ## フォールバック戦略
 
 ```
