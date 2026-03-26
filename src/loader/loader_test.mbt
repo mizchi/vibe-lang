@@ -767,3 +767,146 @@ test "loader load_db_with_paths: repo threads_runtime_test imports runtime_hints
     }
   }
 }
+
+///|
+test "loader load_db_with_paths: repo url_test cross-directory import" {
+  let cwd = @io.current_dir_or_root()
+  let entry = @vibe_fs.normalize_path(cwd + "/vibe/x/url_test.vibe")
+  let loaded = match load_db_with_paths(entry) {
+    Ok(v) => v
+    Err(err) => fail("url_test.vibe should load: " + err)
+  }
+  let (db, resolved, paths) = loaded
+  // Verify cross-directory transitive dependencies were loaded
+  let regexp_index = @vibe_fs.normalize_path(cwd + "/vibe/x/regexp/index.vibe")
+  let pattern_path = @vibe_fs.normalize_path(cwd + "/vibe/x/url/pattern.vibe")
+  assert_true(contains_path(paths, regexp_index))
+  assert_true(contains_path(paths, pattern_path))
+  // Verify no import-stage errors
+  let diags = db.import_diagnostics(resolved)
+  let import_errors = diags.filter(fn(diag) {
+    diag.stage == "import" && diag.message.contains("missing:")
+  })
+  if not(import_errors.is_empty()) {
+    let lines : Array[String] = []
+    for diag in import_errors {
+      lines.push(diag.message)
+    }
+    fail("unexpected import errors: " + lines.join(","))
+  }
+}
+
+///|
+test "loader load_db_with_paths: repo url/url_test cross-directory import" {
+  let cwd = @io.current_dir_or_root()
+  let entry = @vibe_fs.normalize_path(cwd + "/vibe/x/url/url_test.vibe")
+  let loaded = match load_db_with_paths(entry) {
+    Ok(v) => v
+    Err(err) => fail("url/url_test.vibe should load: " + err)
+  }
+  let (db, resolved, paths) = loaded
+  // Verify cross-directory transitive dependencies were loaded
+  let regexp_index = @vibe_fs.normalize_path(cwd + "/vibe/x/regexp/index.vibe")
+  assert_true(contains_path(paths, regexp_index))
+  // Verify no import-stage errors
+  let diags = db.import_diagnostics(resolved)
+  let import_errors = diags.filter(fn(diag) {
+    diag.stage == "import" && diag.message.contains("missing:")
+  })
+  if not(import_errors.is_empty()) {
+    let lines : Array[String] = []
+    for diag in import_errors {
+      lines.push(diag.message)
+    }
+    fail("unexpected import errors: " + lines.join(","))
+  }
+}
+
+///|
+test "loader load_db_with_paths: repo scan_root_import_test cross-directory" {
+  let cwd = @io.current_dir_or_root()
+  let entry = @vibe_fs.normalize_path(
+    cwd + "/vibe/x/url/scan_root_import_test.vibe",
+  )
+  let loaded = match load_db_with_paths(entry) {
+    Ok(v) => v
+    Err(err) => fail("scan_root_import_test.vibe should load: " + err)
+  }
+  let (db, resolved, paths) = loaded
+  // Verify cross-directory import was loaded
+  let scan_index = @vibe_fs.normalize_path(cwd + "/vibe/x/scan/index.vibe")
+  assert_true(contains_path(paths, scan_index))
+  let diags = db.import_diagnostics(resolved)
+  let import_errors = diags.filter(fn(diag) {
+    diag.stage == "import" && diag.message.contains("missing:")
+  })
+  if not(import_errors.is_empty()) {
+    let lines : Array[String] = []
+    for diag in import_errors {
+      lines.push(diag.message)
+    }
+    fail("unexpected import errors: " + lines.join(","))
+  }
+}
+
+///|
+test "loader cross-root import via transitive dependency" {
+  // Simulate url_test.vibe scenario:
+  // /project/x/url_test.vibe imports ./url/pattern.vibe
+  // /project/x/url/pattern.vibe imports ../regexp (cross-dir, still under root)
+  let fs = MemIoAdapter::new("/project/x")
+  // index.vibe at root so resolve_index_root finds /project/x
+  fs.fs.write_string(
+    "/project/x/index.vibe", "export let version = \"0.1.0\"\n",
+  ) catch {
+    e => fail(e.to_string())
+  }
+  // regexp module (sibling of url/ under x/)
+  fs.fs.mkdir_p("/project/x/regexp") catch {
+    e => fail(e.to_string())
+  }
+  fs.fs.write_string(
+    "/project/x/regexp/index.vibe", "export ./regexp.vibe { compile }\nexport { compile }\n",
+  ) catch {
+    e => fail(e.to_string())
+  }
+  fs.fs.write_string(
+    "/project/x/regexp/regexp.vibe", "export let compile = (s: String) -> String { s }\n",
+  ) catch {
+    e => fail(e.to_string())
+  }
+  // url/ subdirectory
+  fs.fs.mkdir_p("/project/x/url") catch {
+    e => fail(e.to_string())
+  }
+  fs.fs.write_string(
+    "/project/x/url/pattern.vibe", "import ../regexp { compile }\nexport let make_pattern = (s: String) -> String { compile(s) }\n",
+  ) catch {
+    e => fail(e.to_string())
+  }
+  // Entry test file at root level
+  fs.fs.write_string(
+    "/project/x/url_test.vibe", "import ./url/pattern.vibe { make_pattern }\ntest \"basic\" {\n  let _ = make_pattern(\"x\")\n  assert(true)\n}\n",
+  ) catch {
+    e => fail(e.to_string())
+  }
+  match load_db_with_paths_with_fs("/project/x/url_test.vibe", fs) {
+    Ok((db, resolved, paths)) => {
+      assert_eq(resolved, "/project/x/url_test.vibe")
+      // Verify all transitive dependencies were loaded
+      assert_true(contains_path(paths, "/project/x/url/pattern.vibe"))
+      assert_true(contains_path(paths, "/project/x/regexp/index.vibe"))
+      assert_true(contains_path(paths, "/project/x/regexp/regexp.vibe"))
+      // Verify import resolution is clean
+      let diags = db.import_diagnostics(resolved)
+      if not(diags.is_empty()) {
+        let lines : Array[String] = []
+        for diag in diags {
+          lines.push(diag.stage + ":" + diag.message)
+        }
+        fail("unexpected diagnostics: " + lines.join(","))
+      }
+    }
+    Err(err) => fail("cross-root import should succeed: " + err)
+  }
+}
