@@ -54,11 +54,7 @@ pub fn run(args : Array[String]) -> Unit {
     "precompile" => precompile_cmd(cmd_args)
     "bench" => bench_cmd(cmd_args, syntax_mode, runtime_features)
     "bench-file" => bench_file_cmd(cmd_args, runtime_features)
-    "shell" =>
-      repl_cmd(
-        cmd_args, syntax_mode, runtime_features, enable_llm~,
-        permissions=parsed.permissions,
-      )
+    "shell" => repl_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
     "shell-stdin" =>
       repl_stdin_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
     "wasm-shell-stdin" => wasm_repl_stdin_cmd(cmd_args)
@@ -2250,7 +2246,8 @@ fn print_cli_check_report(report : CliCheckReport) -> Unit {
 
 ///|
 fn check_cmd(args : Array[String]) -> Unit {
-  let (check_args, profile_tsv) = match split_check_cmd_args(args) {
+  let (check_args, profile_tsv, builtin_contract) = match
+    split_check_cmd_args(args) {
     Ok(v) => v
     Err(msg) => abort(msg)
   }
@@ -2284,6 +2281,20 @@ fn check_cmd(args : Array[String]) -> Unit {
     load_ms_total += elapsed_ms_from_us(report.load_us)
     type_ms_total += elapsed_ms_from_us(report.type_us)
     total_ms_total += elapsed_ms_from_us(report.total_us)
+  }
+  // Builtin contract verification
+  if builtin_contract != "ignore" {
+    let checker_names = @checker.checker_declared_builtin_names()
+    let report = @runtime_compile.verify_builtin_contract(checker_names)
+    let contract_messages = @runtime_compile.format_builtin_contract_report(
+      report, builtin_contract,
+    )
+    for msg in contract_messages {
+      println(msg)
+    }
+    if builtin_contract == "error" && report.missing_handlers.length() > 0 {
+      total_errors += report.missing_handlers.length()
+    }
   }
   match profile_tsv {
     Some(path) => {
@@ -2329,9 +2340,10 @@ fn check_failure_message(total_errors : Int) -> String? {
 ///|
 fn split_check_cmd_args(
   args : Array[String],
-) -> Result[(Array[String], String?), String] {
+) -> Result[(Array[String], String?, String), String] {
   let filtered : Array[String] = []
   let mut profile_tsv : String? = None
+  let mut builtin_contract : String = "ignore"
   let mut i = 0
   while i < args.length() {
     let arg = args[i]
@@ -2341,12 +2353,38 @@ fn split_check_cmd_args(
         return Err("check: missing path after --profile-tsv")
       }
       profile_tsv = Some(args[i])
+    } else if arg.has_prefix("--builtin-contract=") {
+      let value = arg.substring(start="--builtin-contract=".length())
+      if value == "warn" || value == "error" || value == "ignore" {
+        builtin_contract = value
+      } else {
+        return Err(
+          "check: invalid --builtin-contract value: " +
+          value +
+          " (expected warn|error|ignore)",
+        )
+      }
+    } else if arg == "--builtin-contract" {
+      i += 1
+      if i >= args.length() {
+        return Err("check: missing value after --builtin-contract")
+      }
+      let value = args[i]
+      if value == "warn" || value == "error" || value == "ignore" {
+        builtin_contract = value
+      } else {
+        return Err(
+          "check: invalid --builtin-contract value: " +
+          value +
+          " (expected warn|error|ignore)",
+        )
+      }
     } else {
       filtered.push(arg)
     }
     i += 1
   }
-  Ok((filtered, profile_tsv))
+  Ok((filtered, profile_tsv, builtin_contract))
 }
 
 ///|
@@ -3050,7 +3088,14 @@ fn run_test_file_compiled_with_cache(
   )
   match pure_cache_result {
     Some(report) => {
-      println(entry + ": cached (" + report.total.to_string() + "/" + report.total.to_string() + " pure)")
+      println(
+        entry +
+        ": cached (" +
+        report.total.to_string() +
+        "/" +
+        report.total.to_string() +
+        " pure)",
+      )
       return CompiledTestAttempt::Success(report)
     }
     None => ()

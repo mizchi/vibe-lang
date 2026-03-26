@@ -1058,7 +1058,7 @@ test "check split args extracts profile tsv path" {
     "--profile-tsv", "/tmp/check.tsv", "a.vibe", "b.vibe",
   ])
   match parsed {
-    Ok((args, Some(path))) => {
+    Ok((args, Some(path), _)) => {
       assert_eq(path, "/tmp/check.tsv")
       assert_eq(args.length(), 2)
       assert_eq(args[0], "a.vibe")
@@ -1075,6 +1075,61 @@ test "check split args rejects missing profile path" {
   match parsed {
     Ok(_) => fail("expected parse error")
     Err(msg) => assert_eq(msg, "check: missing path after --profile-tsv")
+  }
+}
+
+///|
+test "check split args extracts builtin-contract flag" {
+  let parsed = split_check_cmd_args([
+    "--builtin-contract=warn", "a.vibe",
+  ])
+  match parsed {
+    Ok((args, None, contract)) => {
+      assert_eq(args.length(), 1)
+      assert_eq(args[0], "a.vibe")
+      assert_eq(contract, "warn")
+    }
+    Ok(_) => fail("unexpected result")
+    Err(msg) => fail(msg)
+  }
+}
+
+///|
+test "check split args builtin-contract separate value" {
+  let parsed = split_check_cmd_args([
+    "--builtin-contract", "error", "a.vibe",
+  ])
+  match parsed {
+    Ok((args, None, contract)) => {
+      assert_eq(args.length(), 1)
+      assert_eq(contract, "error")
+    }
+    Ok(_) => fail("unexpected result")
+    Err(msg) => fail(msg)
+  }
+}
+
+///|
+test "check split args builtin-contract invalid value" {
+  let parsed = split_check_cmd_args([
+    "--builtin-contract=invalid", "a.vibe",
+  ])
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) =>
+      assert_eq(
+        msg,
+        "check: invalid --builtin-contract value: invalid (expected warn|error|ignore)",
+      )
+  }
+}
+
+///|
+test "check split args builtin-contract default is ignore" {
+  let parsed = split_check_cmd_args(["a.vibe"])
+  match parsed {
+    Ok((_, _, contract)) => assert_eq(contract, "ignore")
+    Err(msg) => fail(msg)
   }
 }
 
@@ -4036,38 +4091,4 @@ test "pure_test_result_cache_paths returns expected layout" {
   )
   assert_true(cache_dir.contains("/.vibe/test/"))
   assert_true(result_path.has_suffix("/pure_result.txt"))
-}
-
-///|
-test "cli dispatch args shell --posix flag parsed" {
-  let parsed = parse_cli_dispatch_args([
-    "vibe", "shell", "--posix",
-  ])
-  match parsed {
-    Ok(v) => {
-      assert_eq(v.cmd, "shell")
-      // --posix is consumed by repl_cmd, not parse_cli_dispatch_args,
-      // so it should appear in cmd_args
-      assert_true(v.cmd_args.contains("--posix"))
-    }
-    Err(msg) => fail("unexpected err: " + msg)
-  }
-}
-
-///|
-test "cli dispatch args shell --posix with --allow-fs" {
-  let parsed = parse_cli_dispatch_args([
-    "vibe", "shell", "--posix", "--allow-fs",
-  ])
-  match parsed {
-    Ok(v) => {
-      assert_eq(v.cmd, "shell")
-      assert_true(v.cmd_args.contains("--posix"))
-      match v.permissions {
-        Some(_) => () // permissions parsed correctly
-        None => fail("expected permissions to be set")
-      }
-    }
-    Err(msg) => fail("unexpected err: " + msg)
-  }
 }

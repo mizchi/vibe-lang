@@ -51,7 +51,7 @@ fn emit_wasm_runtime_fallback_throw(
   buf : ByteBuf,
   name : String,
 ) -> Unit {
-  let message = name + " is not available on wasm target"
+  let message = "builtin '" + name + "' not implemented in compiled backend"
   emit_i64_const_tagged(buf, intern_error_code(ctx, message).to_int64())
   buf.push((8).to_byte()) // throw
   write_u32_leb(buf, ctx.error_tag_index)
