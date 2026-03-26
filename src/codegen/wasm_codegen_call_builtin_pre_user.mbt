@@ -5204,7 +5204,6 @@ fn compile_call_builtin_pre_user_inner(
         }
       } else {
         let key_local = alloc_temp_local(ctx)
-        let entry_key_local = alloc_temp_local(ctx)
         compile_expr_i32(ctx, buf, pos_args[1])
         emit_i32_wrap_i64(buf)
         emit_local_set(buf, key_local)
@@ -5221,8 +5220,8 @@ fn compile_call_builtin_pre_user_inner(
         emit_i32_shl(buf)
         emit_i32_add(buf)
         emit_i32_load(buf, 8) // key
-        emit_local_set(buf, entry_key_local)
-        emit_non_js_string_ptr_equals_i32(ctx, buf, entry_key_local, key_local)
+        emit_local_get(buf, key_local)
+        emit_i32_eq(buf)
         buf.push((4).to_byte()) // if
         buf.push((64).to_byte()) // void
         emit_i32_const_raw(buf, 1)
