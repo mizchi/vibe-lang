@@ -1094,7 +1094,8 @@ async function main() {
       // Selfhost-compiled modules return untagged i64 values — print as-is.
       console.log(result.toString());
     } else {
-      console.log(taggedIntToText(result));
+      // Output raw tagged i64 for CLI to parse (vibe run expects tagged value)
+      console.log(result.toString());
     }
   } else if (result !== undefined) {
     console.log(String(result));
