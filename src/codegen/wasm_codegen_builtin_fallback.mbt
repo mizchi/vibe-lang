@@ -38,15 +38,9 @@ fn is_wasm_runtime_fallback_builtin(name : String) -> Bool {
     | "PromptText::new"
     | "PromptText::to_string"
     | "select"
-    | "sh_lines"
-    // Set builtins are currently interpreter-only.
-    | "Set::new"
-    | "Set::add"
-    | "Set::contains"
-    | "Set::remove"
-    | "Set::size"
-    | "Set::to_array"
-    | "Set::from_array" => true
+    | "sh_lines" => true
+    // Set builtins now have native WASM implementations in
+    // wasm_codegen_call_builtin_pre_user.mbt.
     _ => false
   }
 }

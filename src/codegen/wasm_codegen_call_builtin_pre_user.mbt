@@ -5082,6 +5082,775 @@ fn compile_call_builtin_pre_user_inner(
       )
       compile_expr_i32(ctx, buf, pos_args[0])
     }
+    "Set::new" => {
+      // Set::new() -> allocate empty map obj with len=0 (same layout as Map)
+      let _ = extract_positional_exprs_with_arity(args, "Set::new", 0)
+      let max_cap = 128
+      require_heap(ctx)
+      let size = align4(8 + max_cap * 8)
+      let obj_local = alloc_temp_local(ctx)
+      emit_heap_alloc(ctx, buf, size, obj_local)
+      emit_local_get(buf, obj_local)
+      emit_i32_const_raw(buf, obj_map)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, obj_local)
+      emit_i32_const_raw(buf, 0)
+      emit_i32_store(buf, 4)
+      emit_local_get(buf, obj_local)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
+    }
+    "Set::size" => {
+      // Set::size(set) -> read length field from map obj, return as tagged int
+      let pos_args = extract_positional_exprs_with_arity(args, "Set::size", 1)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      emit_i32_load(buf, 4) // length
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf)
+      // tag_int = 0, so no OR needed
+    }
+    "Set::contains" => {
+      // Set::contains(set, val) -> same as Map::has_key
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Set::contains", 2,
+      )
+      let map_ptr = alloc_temp_local(ctx)
+      let map_len = alloc_temp_local(ctx)
+      let loop_i = alloc_temp_local(ctx)
+      let found_local = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      emit_local_set(buf, map_ptr)
+      emit_local_get(buf, map_ptr)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, map_len)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, loop_i)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, found_local)
+      if ctx.use_js_strings {
+        let key_kind = infer_expr_kind(ctx, pos_args[1])
+        if key_kind == ValueKind::ExternRef {
+          ctx.need_extern_table = true
+          ctx.need_js_equals = true
+          let key_local = alloc_temp_local_with_kind(ctx, ValueKind::ExternRef)
+          compile_expr(ctx, buf, pos_args[1])
+          emit_local_set(buf, key_local)
+          buf.push((3).to_byte()) // loop
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, loop_i)
+          emit_local_get(buf, map_len)
+          emit_i32_lt_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, map_ptr)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 8) // slot index
+          emit_table_get(buf, ctx.extern_table_index)
+          emit_local_get(buf, key_local)
+          emit_call(buf, import_index_js_equals(ctx))
+          buf.push((4).to_byte()) // if (equals)
+          buf.push((64).to_byte()) // void
+          emit_i32_const_raw(buf, 1)
+          emit_local_set(buf, found_local)
+          buf.push((11).to_byte()) // end if (equals)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, loop_i)
+          buf.push((12).to_byte()) // br
+          write_u32_leb(buf, 1) // to loop
+          buf.push((11).to_byte()) // end if (i < len)
+          buf.push((11).to_byte()) // end loop
+        } else {
+          let key_local = alloc_temp_local(ctx)
+          compile_expr_i32(ctx, buf, pos_args[1])
+          emit_i32_wrap_i64(buf)
+          emit_local_set(buf, key_local)
+          buf.push((3).to_byte()) // loop
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, loop_i)
+          emit_local_get(buf, map_len)
+          emit_i32_lt_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, map_ptr)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 8) // key
+          emit_local_get(buf, key_local)
+          emit_i32_eq(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_i32_const_raw(buf, 1)
+          emit_local_set(buf, found_local)
+          buf.push((11).to_byte()) // end if
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, loop_i)
+          buf.push((12).to_byte()) // br
+          write_u32_leb(buf, 1) // to loop
+          buf.push((11).to_byte()) // end if
+          buf.push((11).to_byte()) // end loop
+        }
+      } else {
+        let key_local = alloc_temp_local(ctx)
+        let entry_key_local = alloc_temp_local(ctx)
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, key_local)
+        buf.push((3).to_byte()) // loop
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, loop_i)
+        emit_local_get(buf, map_len)
+        emit_i32_lt_s(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, map_ptr)
+        emit_local_get(buf, loop_i)
+        emit_i32_const_raw(buf, 3)
+        emit_i32_shl(buf)
+        emit_i32_add(buf)
+        emit_i32_load(buf, 8) // key
+        emit_local_set(buf, entry_key_local)
+        emit_non_js_string_ptr_equals_i32(ctx, buf, entry_key_local, key_local)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_i32_const_raw(buf, 1)
+        emit_local_set(buf, found_local)
+        buf.push((11).to_byte()) // end if
+        emit_local_get(buf, loop_i)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, loop_i)
+        buf.push((12).to_byte()) // br
+        write_u32_leb(buf, 1) // to loop
+        buf.push((11).to_byte()) // end if
+        buf.push((11).to_byte()) // end loop
+      }
+      emit_local_get(buf, found_local)
+      emit_tag_bool_from_i32(buf)
+    }
+    "Set::add" => {
+      // Set::add(set, val) -> new set with val added (immutable)
+      // Allocate new map, copy all entries, add new entry if not exists
+      let pos_args = extract_positional_exprs_with_arity(args, "Set::add", 2)
+      require_heap(ctx)
+      let max_cap = 128
+      let src_ptr = alloc_temp_local(ctx)
+      let src_len = alloc_temp_local(ctx)
+      let dst_ptr = alloc_temp_local(ctx)
+      let loop_i = alloc_temp_local(ctx)
+      let found_local = alloc_temp_local(ctx)
+      let new_len = alloc_temp_local(ctx)
+      // load source set
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      emit_local_set(buf, src_ptr)
+      emit_local_get(buf, src_ptr)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, src_len)
+      // allocate new map obj
+      let size = align4(8 + max_cap * 8)
+      emit_heap_alloc(ctx, buf, size, dst_ptr)
+      // set tag
+      emit_local_get(buf, dst_ptr)
+      emit_i32_const_raw(buf, obj_map)
+      emit_i32_store(buf, 0)
+      // copy entries using memory.copy: dst+8, src+8, src_len*8
+      emit_local_get(buf, dst_ptr)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf) // dst addr
+      emit_local_get(buf, src_ptr)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf) // src addr
+      emit_local_get(buf, src_len)
+      emit_i32_const_raw(buf, 3)
+      emit_i32_shl(buf) // byte count = src_len * 8
+      emit_memory_copy(buf)
+      // check if val already exists in the set
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, loop_i)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, found_local)
+      if ctx.use_js_strings {
+        let key_kind = infer_expr_kind(ctx, pos_args[1])
+        if key_kind == ValueKind::ExternRef {
+          ctx.need_extern_table = true
+          ctx.need_js_equals = true
+          let key_local = alloc_temp_local_with_kind(ctx, ValueKind::ExternRef)
+          compile_expr(ctx, buf, pos_args[1])
+          emit_local_set(buf, key_local)
+          // search loop
+          buf.push((3).to_byte()) // loop
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, loop_i)
+          emit_local_get(buf, src_len)
+          emit_i32_lt_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, dst_ptr)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 8) // slot index
+          emit_table_get(buf, ctx.extern_table_index)
+          emit_local_get(buf, key_local)
+          emit_call(buf, import_index_js_equals(ctx))
+          buf.push((4).to_byte()) // if (equals)
+          buf.push((64).to_byte()) // void
+          emit_i32_const_raw(buf, 1)
+          emit_local_set(buf, found_local)
+          buf.push((11).to_byte()) // end if (equals)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, loop_i)
+          buf.push((12).to_byte()) // br
+          write_u32_leb(buf, 1) // to loop
+          buf.push((11).to_byte()) // end if (i < len)
+          buf.push((11).to_byte()) // end loop
+          // if not found, append new entry
+          emit_local_get(buf, found_local)
+          emit_i32_eqz(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          // store key in extern table slot
+          let slot = ctx.extern_table_next_slot
+          ctx.extern_table_next_slot += 1
+          emit_local_get(buf, dst_ptr)
+          emit_local_get(buf, src_len)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
+          emit_i32_add(buf)
+          emit_i32_const_raw(buf, slot)
+          emit_local_get(buf, key_local)
+          emit_table_set(buf, ctx.extern_table_index)
+          emit_i32_const_raw(buf, slot)
+          emit_i32_store(buf, 8)
+          // store value = tagged true (7 = (1 << 2) | 3)
+          emit_local_get(buf, dst_ptr)
+          emit_local_get(buf, src_len)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
+          emit_i32_add(buf)
+          emit_i32_const_raw(buf, 7)
+          emit_i32_store(buf, 12)
+          // new_len = src_len + 1
+          emit_local_get(buf, src_len)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, new_len)
+          buf.push((5).to_byte()) // else
+          emit_local_get(buf, src_len)
+          emit_local_set(buf, new_len)
+          buf.push((11).to_byte()) // end if
+        } else {
+          let key_local = alloc_temp_local(ctx)
+          compile_expr_i32(ctx, buf, pos_args[1])
+          emit_i32_wrap_i64(buf)
+          emit_local_set(buf, key_local)
+          buf.push((3).to_byte()) // loop
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, loop_i)
+          emit_local_get(buf, src_len)
+          emit_i32_lt_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, dst_ptr)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 8)
+          emit_local_get(buf, key_local)
+          emit_i32_eq(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_i32_const_raw(buf, 1)
+          emit_local_set(buf, found_local)
+          buf.push((11).to_byte()) // end if
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, loop_i)
+          buf.push((12).to_byte()) // br
+          write_u32_leb(buf, 1) // to loop
+          buf.push((11).to_byte()) // end if
+          buf.push((11).to_byte()) // end loop
+          // if not found, append
+          emit_local_get(buf, found_local)
+          emit_i32_eqz(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, dst_ptr)
+          emit_local_get(buf, src_len)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
+          emit_i32_add(buf)
+          emit_local_get(buf, key_local)
+          emit_i32_store(buf, 8)
+          emit_local_get(buf, dst_ptr)
+          emit_local_get(buf, src_len)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
+          emit_i32_add(buf)
+          emit_i32_const_raw(buf, 7) // tagged true
+          emit_i32_store(buf, 12)
+          emit_local_get(buf, src_len)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, new_len)
+          buf.push((5).to_byte()) // else
+          emit_local_get(buf, src_len)
+          emit_local_set(buf, new_len)
+          buf.push((11).to_byte()) // end if
+        }
+      } else {
+        let key_local = alloc_temp_local(ctx)
+        let entry_key_local = alloc_temp_local(ctx)
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, key_local)
+        buf.push((3).to_byte()) // loop
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, loop_i)
+        emit_local_get(buf, src_len)
+        emit_i32_lt_s(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, dst_ptr)
+        emit_local_get(buf, loop_i)
+        emit_i32_const_raw(buf, 3)
+        emit_i32_shl(buf)
+        emit_i32_add(buf)
+        emit_i32_load(buf, 8)
+        emit_local_set(buf, entry_key_local)
+        emit_non_js_string_ptr_equals_i32(ctx, buf, entry_key_local, key_local)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_i32_const_raw(buf, 1)
+        emit_local_set(buf, found_local)
+        buf.push((11).to_byte()) // end if
+        emit_local_get(buf, loop_i)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, loop_i)
+        buf.push((12).to_byte()) // br
+        write_u32_leb(buf, 1) // to loop
+        buf.push((11).to_byte()) // end if
+        buf.push((11).to_byte()) // end loop
+        emit_local_get(buf, found_local)
+        emit_i32_eqz(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, dst_ptr)
+        emit_local_get(buf, src_len)
+        emit_i32_const_raw(buf, 3)
+        emit_i32_shl(buf)
+        emit_i32_add(buf)
+        emit_local_get(buf, key_local)
+        emit_i32_store(buf, 8)
+        emit_local_get(buf, dst_ptr)
+        emit_local_get(buf, src_len)
+        emit_i32_const_raw(buf, 3)
+        emit_i32_shl(buf)
+        emit_i32_add(buf)
+        emit_i32_const_raw(buf, 7) // tagged true
+        emit_i32_store(buf, 12)
+        emit_local_get(buf, src_len)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, new_len)
+        buf.push((5).to_byte()) // else
+        emit_local_get(buf, src_len)
+        emit_local_set(buf, new_len)
+        buf.push((11).to_byte()) // end if
+      }
+      // set new length
+      emit_local_get(buf, dst_ptr)
+      emit_local_get(buf, new_len)
+      emit_i32_store(buf, 4)
+      // return tagged pointer
+      emit_local_get(buf, dst_ptr)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
+    }
+    "Set::remove" => {
+      // Set::remove(set, val) -> new set without val (immutable)
+      // Allocate new map, copy entries that don't match val
+      let pos_args = extract_positional_exprs_with_arity(args, "Set::remove", 2)
+      require_heap(ctx)
+      let max_cap = 128
+      let src_ptr = alloc_temp_local(ctx)
+      let src_len = alloc_temp_local(ctx)
+      let dst_ptr = alloc_temp_local(ctx)
+      let loop_i = alloc_temp_local(ctx)
+      let dst_len = alloc_temp_local(ctx)
+      // load source set
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      emit_local_set(buf, src_ptr)
+      emit_local_get(buf, src_ptr)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, src_len)
+      // allocate new map obj
+      let size = align4(8 + max_cap * 8)
+      emit_heap_alloc(ctx, buf, size, dst_ptr)
+      emit_local_get(buf, dst_ptr)
+      emit_i32_const_raw(buf, obj_map)
+      emit_i32_store(buf, 0)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, loop_i)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, dst_len)
+      if ctx.use_js_strings {
+        let key_kind = infer_expr_kind(ctx, pos_args[1])
+        if key_kind == ValueKind::ExternRef {
+          ctx.need_extern_table = true
+          ctx.need_js_equals = true
+          let key_local = alloc_temp_local_with_kind(ctx, ValueKind::ExternRef)
+          compile_expr(ctx, buf, pos_args[1])
+          emit_local_set(buf, key_local)
+          let entry_slot = alloc_temp_local(ctx)
+          let entry_val = alloc_temp_local(ctx)
+          buf.push((3).to_byte()) // loop
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, loop_i)
+          emit_local_get(buf, src_len)
+          emit_i32_lt_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          // load entry key slot
+          emit_local_get(buf, src_ptr)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 8)
+          emit_local_set(buf, entry_slot)
+          // load entry value
+          emit_local_get(buf, src_ptr)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 12)
+          emit_local_set(buf, entry_val)
+          // compare
+          emit_local_get(buf, entry_slot)
+          emit_table_get(buf, ctx.extern_table_index)
+          emit_local_get(buf, key_local)
+          emit_call(buf, import_index_js_equals(ctx))
+          emit_i32_eqz(buf)
+          buf.push((4).to_byte()) // if (not equal = keep)
+          buf.push((64).to_byte()) // void
+          // copy entry to dst
+          emit_local_get(buf, dst_ptr)
+          emit_local_get(buf, dst_len)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
+          emit_i32_add(buf)
+          emit_local_get(buf, entry_slot)
+          emit_i32_store(buf, 8)
+          emit_local_get(buf, dst_ptr)
+          emit_local_get(buf, dst_len)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
+          emit_i32_add(buf)
+          emit_local_get(buf, entry_val)
+          emit_i32_store(buf, 12)
+          emit_local_get(buf, dst_len)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, dst_len)
+          buf.push((11).to_byte()) // end if (not equal)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, loop_i)
+          buf.push((12).to_byte()) // br
+          write_u32_leb(buf, 1) // to loop
+          buf.push((11).to_byte()) // end if (i < len)
+          buf.push((11).to_byte()) // end loop
+        } else {
+          let key_local = alloc_temp_local(ctx)
+          compile_expr_i32(ctx, buf, pos_args[1])
+          emit_i32_wrap_i64(buf)
+          emit_local_set(buf, key_local)
+          let entry_key = alloc_temp_local(ctx)
+          let entry_val = alloc_temp_local(ctx)
+          buf.push((3).to_byte()) // loop
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, loop_i)
+          emit_local_get(buf, src_len)
+          emit_i32_lt_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, src_ptr)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 8)
+          emit_local_set(buf, entry_key)
+          emit_local_get(buf, src_ptr)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 12)
+          emit_local_set(buf, entry_val)
+          emit_local_get(buf, entry_key)
+          emit_local_get(buf, key_local)
+          emit_i32_eq(buf)
+          emit_i32_eqz(buf) // not equal = keep
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, dst_ptr)
+          emit_local_get(buf, dst_len)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
+          emit_i32_add(buf)
+          emit_local_get(buf, entry_key)
+          emit_i32_store(buf, 8)
+          emit_local_get(buf, dst_ptr)
+          emit_local_get(buf, dst_len)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
+          emit_i32_add(buf)
+          emit_local_get(buf, entry_val)
+          emit_i32_store(buf, 12)
+          emit_local_get(buf, dst_len)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, dst_len)
+          buf.push((11).to_byte()) // end if
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, loop_i)
+          buf.push((12).to_byte()) // br
+          write_u32_leb(buf, 1) // to loop
+          buf.push((11).to_byte()) // end if
+          buf.push((11).to_byte()) // end loop
+        }
+      } else {
+        let key_local = alloc_temp_local(ctx)
+        let entry_key_local = alloc_temp_local(ctx)
+        let entry_val = alloc_temp_local(ctx)
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, key_local)
+        buf.push((3).to_byte()) // loop
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, loop_i)
+        emit_local_get(buf, src_len)
+        emit_i32_lt_s(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, src_ptr)
+        emit_local_get(buf, loop_i)
+        emit_i32_const_raw(buf, 3)
+        emit_i32_shl(buf)
+        emit_i32_add(buf)
+        emit_i32_load(buf, 8)
+        emit_local_set(buf, entry_key_local)
+        emit_local_get(buf, src_ptr)
+        emit_local_get(buf, loop_i)
+        emit_i32_const_raw(buf, 3)
+        emit_i32_shl(buf)
+        emit_i32_add(buf)
+        emit_i32_load(buf, 12)
+        emit_local_set(buf, entry_val)
+        emit_non_js_string_ptr_equals_i32(ctx, buf, entry_key_local, key_local)
+        emit_i32_eqz(buf) // not equal = keep
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, dst_ptr)
+        emit_local_get(buf, dst_len)
+        emit_i32_const_raw(buf, 3)
+        emit_i32_shl(buf)
+        emit_i32_add(buf)
+        emit_local_get(buf, entry_key_local)
+        emit_i32_store(buf, 8)
+        emit_local_get(buf, dst_ptr)
+        emit_local_get(buf, dst_len)
+        emit_i32_const_raw(buf, 3)
+        emit_i32_shl(buf)
+        emit_i32_add(buf)
+        emit_local_get(buf, entry_val)
+        emit_i32_store(buf, 12)
+        emit_local_get(buf, dst_len)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, dst_len)
+        buf.push((11).to_byte()) // end if
+        emit_local_get(buf, loop_i)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, loop_i)
+        buf.push((12).to_byte()) // br
+        write_u32_leb(buf, 1) // to loop
+        buf.push((11).to_byte()) // end if
+        buf.push((11).to_byte()) // end loop
+      }
+      // set dst length
+      emit_local_get(buf, dst_ptr)
+      emit_local_get(buf, dst_len)
+      emit_i32_store(buf, 4)
+      // return tagged pointer
+      emit_local_get(buf, dst_ptr)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
+    }
+    "Set::to_array" => {
+      // Set::to_array(set) -> allocate array with keys from map (same as Map::keys)
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Set::to_array", 1,
+      )
+      require_heap(ctx)
+      let map_ptr = alloc_temp_local(ctx)
+      let map_len = alloc_temp_local(ctx)
+      let arr_ptr = alloc_temp_local(ctx)
+      let loop_i = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      emit_local_set(buf, map_ptr)
+      emit_local_get(buf, map_ptr)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, map_len)
+      let max_cap = 128
+      let arr_size = align4(8 + max_cap * 4)
+      emit_heap_alloc(ctx, buf, arr_size, arr_ptr)
+      emit_local_get(buf, arr_ptr)
+      emit_i32_const_raw(buf, obj_array)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, arr_ptr)
+      emit_local_get(buf, map_len)
+      emit_i32_store(buf, 4)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, loop_i)
+      buf.push((3).to_byte()) // loop
+      buf.push((64).to_byte()) // void
+      emit_local_get(buf, loop_i)
+      emit_local_get(buf, map_len)
+      emit_i32_lt_s(buf)
+      buf.push((4).to_byte()) // if
+      buf.push((64).to_byte()) // void
+      emit_local_get(buf, arr_ptr)
+      emit_local_get(buf, loop_i)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      // load key from map
+      emit_local_get(buf, map_ptr)
+      emit_local_get(buf, loop_i)
+      emit_i32_const_raw(buf, 3)
+      emit_i32_shl(buf)
+      emit_i32_add(buf)
+      emit_i32_load(buf, 8)
+      if not(ctx.use_js_strings) {
+        emit_i64_extend_i32_u(buf)
+        emit_i64_const_raw(buf, tag_obj.to_int64())
+        emit_i64_or(buf)
+        emit_i32_wrap_i64(buf)
+      }
+      emit_i32_store(buf, 8)
+      emit_local_get(buf, loop_i)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_add(buf)
+      emit_local_set(buf, loop_i)
+      buf.push((12).to_byte()) // br
+      write_u32_leb(buf, 1) // to loop
+      buf.push((11).to_byte()) // end if
+      buf.push((11).to_byte()) // end loop
+      emit_local_get(buf, arr_ptr)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
+    }
+    "Set::from_array" => {
+      // Set::from_array(arr) -> new set from array elements
+      // Creates map where each array element is a key with value=true
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Set::from_array", 1,
+      )
+      require_heap(ctx)
+      let max_cap = 128
+      let arr_ptr = alloc_temp_local(ctx)
+      let arr_len = alloc_temp_local(ctx)
+      let dst_ptr = alloc_temp_local(ctx)
+      let loop_i = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      emit_local_set(buf, arr_ptr)
+      emit_local_get(buf, arr_ptr)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, arr_len)
+      let map_size = align4(8 + max_cap * 8)
+      emit_heap_alloc(ctx, buf, map_size, dst_ptr)
+      emit_local_get(buf, dst_ptr)
+      emit_i32_const_raw(buf, obj_map)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, dst_ptr)
+      emit_local_get(buf, arr_len)
+      emit_i32_store(buf, 4)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, loop_i)
+      buf.push((3).to_byte()) // loop
+      buf.push((64).to_byte()) // void
+      emit_local_get(buf, loop_i)
+      emit_local_get(buf, arr_len)
+      emit_i32_lt_s(buf)
+      buf.push((4).to_byte()) // if
+      buf.push((64).to_byte()) // void
+      // store key: dst[8 + i*8] = arr[8 + i*4]
+      emit_local_get(buf, dst_ptr)
+      emit_local_get(buf, loop_i)
+      emit_i32_const_raw(buf, 3)
+      emit_i32_shl(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, arr_ptr)
+      emit_local_get(buf, loop_i)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i32_load(buf, 8)
+      emit_i32_store(buf, 8)
+      // store value: dst[12 + i*8] = tagged true (7)
+      emit_local_get(buf, dst_ptr)
+      emit_local_get(buf, loop_i)
+      emit_i32_const_raw(buf, 3)
+      emit_i32_shl(buf)
+      emit_i32_add(buf)
+      emit_i32_const_raw(buf, 7) // tagged true = (1 << 2) | 3
+      emit_i32_store(buf, 12)
+      emit_local_get(buf, loop_i)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_add(buf)
+      emit_local_set(buf, loop_i)
+      buf.push((12).to_byte()) // br
+      write_u32_leb(buf, 1) // to loop
+      buf.push((11).to_byte()) // end if
+      buf.push((11).to_byte()) // end loop
+      emit_local_get(buf, dst_ptr)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
+    }
     "Map::has_key" => {
       // map_has_key(map, key) -> linear search for key, return tagged bool
       let pos_args = extract_positional_exprs_with_arity(
