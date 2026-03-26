@@ -1997,6 +1997,18 @@ let builtin_string_source : String =
   #|  String::last_index_of(s, sub)
   #|}
   #|
+  #|export let String::split = (s: String, sep: String) -> Array[String] {
+  #|  String::split(s, sep)
+  #|}
+  #|
+  #|export let String::to_upper = (s: String) -> String {
+  #|  String::to_upper(s)
+  #|}
+  #|
+  #|export let String::to_lower = (s: String) -> String {
+  #|  String::to_lower(s)
+  #|}
+  #|
   #|export let String::unicode_length = (s: String) -> Int {
   #|  string_unicode_length_value(s)
   #|}
