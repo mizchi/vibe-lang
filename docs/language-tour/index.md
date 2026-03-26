@@ -5,7 +5,7 @@ vibe is an ML-like statically typed scripting language with shell integration, t
 ## CLI
 
 ```bash
-vibe run file.vibe       # Run a script (calls _start)
+vibe run file.vibe       # Run a script (evaluates the final top-level expression)
 vibe test file.vibe      # Run tests in a file
 vibe shell               # Interactive REPL (PosixMode)
 vibe bench file.vibe     # Run benchmarks
@@ -19,9 +19,7 @@ let greeting = (name: String) -> String {
   "hello \(name)"
 }
 
-export let _start = () -> String {
-  greeting("world")
-}
+greeting("world")
 
 test "greeting" {
   assert(String::equals(greeting("world"), "hello world"))
@@ -30,13 +28,11 @@ test "greeting" {
 
 ## Entry Point
 
-Every runnable `.vibe` file defines an `export let _start` function as its entry point.
-Top-level function calls are not allowed — all execution starts from `_start`.
+Source-level scripts run the final top-level expression.
+When you `vibe build`, the generated WASM exports `_start` as the ABI entry point.
 
 ```vibe
-export let _start = () -> Int {
-  1 + 2
-}
+1 + 2
 ```
 
 ## Guide
