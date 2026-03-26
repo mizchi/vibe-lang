@@ -1181,6 +1181,7 @@ pub fn classify_function_api_change(
   }
 }
 
+///|
 fn unify_pair_cache_key(left : @core.Type, right : @core.Type) -> (Int, Int) {
   (left.structural_hash(), right.structural_hash())
 }

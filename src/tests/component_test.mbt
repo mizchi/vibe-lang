@@ -702,31 +702,29 @@ test "P3 handler: interpreter returns correct status codes" {
     #|    else { -1 } }
     #|  } else { 405 }
     #|}
-  let rt = Runtime::new(@capability.CapabilitySet::new())
-  let r1 = try rt.eval_script(base + "\nhandler(\"GET\", \"/\")") catch {
+  let r1 = try run_compiled_script(base + "\nhandler(\"GET\", \"/\")") catch {
     e => fail("eval error: " + e.to_string())
   } noraise {
     r => r
   }
   assert_eq(r1.last, Some(@core.Value::Int(200)))
-  let rt2 = Runtime::new(@capability.CapabilitySet::new())
   let r2 = try
-    rt2.eval_script(base + "\nhandler(\"GET\", \"/notfound\")")
+    run_compiled_script(base + "\nhandler(\"GET\", \"/notfound\")")
   catch {
     e => fail("eval error: " + e.to_string())
   } noraise {
     r => r
   }
   assert_eq(r2.last, Some(@core.Value::Int(404)))
-  let rt3 = Runtime::new(@capability.CapabilitySet::new())
-  let r3 = try rt3.eval_script(base + "\nhandler(\"POST\", \"/\")") catch {
+  let r3 = try run_compiled_script(base + "\nhandler(\"POST\", \"/\")") catch {
     e => fail("eval error: " + e.to_string())
   } noraise {
     r => r
   }
   assert_eq(r3.last, Some(@core.Value::Int(405)))
-  let rt4 = Runtime::new(@capability.CapabilitySet::new())
-  let r4 = try rt4.eval_script(base + "\nhandler(\"GET\", \"/proxy\")") catch {
+  let r4 = try
+    run_compiled_script(base + "\nhandler(\"GET\", \"/proxy\")")
+  catch {
     e => fail("eval error: " + e.to_string())
   } noraise {
     r => r

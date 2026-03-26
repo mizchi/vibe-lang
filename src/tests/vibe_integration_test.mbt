@@ -1090,8 +1090,7 @@ fn compiler_compile_files() -> Array[String] {
     "vibe/compiler/builtins.vibe", "vibe/compiler/types.vibe", "vibe/compiler/checker_resolve.vibe",
     "vibe/compiler/checker.vibe", "vibe/compiler/checker_stmt.vibe", "vibe/compiler/eval_builtins.vibe",
     "vibe/compiler/eval.vibe", "vibe/compiler/runtime/eval_loader/index.vibe", "vibe/compiler/eval_stmt.vibe",
-    "vibe/compiler/eval_stmt_test_support.vibe",
-    "vibe/compiler/type_db.vibe", "vibe/compiler/index.vibe",
+    "vibe/compiler/eval_stmt_test_support.vibe", "vibe/compiler/type_db.vibe", "vibe/compiler/index.vibe",
   ]
 }
 
@@ -1174,7 +1173,9 @@ test "selfhost gate5: eval pipeline meta-circular" {
   load_compiler_source(db, "vibe/compiler/values.vibe", visited)
   load_compiler_source(db, "vibe/compiler/eval_builtins.vibe", visited)
   load_compiler_source(db, "vibe/compiler/eval.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/runtime/eval_loader/index.vibe", visited)
+  load_compiler_source(
+    db, "vibe/compiler/runtime/eval_loader/index.vibe", visited,
+  )
   load_compiler_source(db, "vibe/module/path.vibe", visited)
   load_compiler_source(db, "vibe/compiler/eval_stmt.vibe", visited)
   load_compiler_source(db, "vibe/compiler/eval_stmt_test_support.vibe", visited)
@@ -1253,7 +1254,9 @@ test "selfhost final: eval pipeline processes own token module" {
   load_compiler_source(db, "vibe/compiler/values.vibe", visited)
   load_compiler_source(db, "vibe/compiler/eval_builtins.vibe", visited)
   load_compiler_source(db, "vibe/compiler/eval.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/runtime/eval_loader/index.vibe", visited)
+  load_compiler_source(
+    db, "vibe/compiler/runtime/eval_loader/index.vibe", visited,
+  )
   load_compiler_source(db, "vibe/module/path.vibe", visited)
   load_compiler_source(db, "vibe/compiler/eval_stmt.vibe", visited)
   load_compiler_source(db, "vibe/compiler/eval_stmt_test_support.vibe", visited)
@@ -1476,120 +1479,119 @@ test "native compile: all compiler sources pass compile_module" {
 }
 
 ///|
-test "string interpolation: basic" {
+/// Run a simple script via the compiled module path (no evaluator).
+fn run_compiled_script(script : String) -> @runtime.EvalResult raise {
+  let db = VibeDb::new()
+  db.set_source("test", script)
+  let compiled = @runtime_compile.compile_module(db, "test")
   let rt = Runtime::new(@capability.CapabilitySet::new())
+  @runtime_compile.run_compiled(rt, compiled)
+}
+
+///|
+test "string interpolation: basic" {
   let script =
     #|let name = "world"
     #|"hello \{name}"
-  let result = rt.eval_script(script)
+  let result = run_compiled_script(script)
   assert_eq(result.last, Some(@core.Value::String("hello world")))
 }
 
 ///|
 test "string interpolation: expression" {
-  let rt = Runtime::new(@capability.CapabilitySet::new())
   let script =
     #|let x = 3
     #|"x is \{x + 1}"
-  let result = rt.eval_script(script)
+  let result = run_compiled_script(script)
   assert_eq(result.last, Some(@core.Value::String("x is 4")))
 }
 
 ///|
 test "string interpolation: multiple" {
-  let rt = Runtime::new(@capability.CapabilitySet::new())
   let script =
     #|let a = 1
     #|let b = 2
     #|"\{a} + \{b} = \{a + b}"
-  let result = rt.eval_script(script)
+  let result = run_compiled_script(script)
   assert_eq(result.last, Some(@core.Value::String("1 + 2 = 3")))
 }
 
 ///|
 test "is expression: bool check with wildcard" {
-  let rt = Runtime::new(@capability.CapabilitySet::new())
   let script =
     #|enum MyOpt { MySome(Int); MyNone }
     #|let v = MySome(42)
     #|let result = v is MySome(_)
-  let result = rt.eval_script(script)
+  let result = run_compiled_script(script)
   assert_eq(result.last, Some(@core.Value::Bool(true)))
 }
 
 ///|
 test "is expression: bool check false" {
-  let rt = Runtime::new(@capability.CapabilitySet::new())
   let script =
     #|enum MyOpt { MySome(Int); MyNone }
     #|let v = MyNone
     #|let result = v is MySome(_)
-  let result = rt.eval_script(script)
+  let result = run_compiled_script(script)
   assert_eq(result.last, Some(@core.Value::Bool(false)))
 }
 
 ///|
 test "is expression: if binding" {
-  let rt = Runtime::new(@capability.CapabilitySet::new())
   let script =
     #|enum MyOpt { MySome(Int); MyNone }
     #|let v = MySome(42)
     #|let result = if v is MySome(x) { x + 1 } else { 0 }
-  let result = rt.eval_script(script)
+  let result = run_compiled_script(script)
   assert_eq(result.last, Some(@core.Value::Int(43)))
 }
 
 ///|
 test "is expression: if binding no match" {
-  let rt = Runtime::new(@capability.CapabilitySet::new())
   let script =
     #|enum MyOpt { MySome(Int); MyNone }
     #|let v = MyNone
     #|let result = if v is MySome(x) { x + 1 } else { 0 }
-  let result = rt.eval_script(script)
+  let result = run_compiled_script(script)
   assert_eq(result.last, Some(@core.Value::Int(0)))
 }
 
 ///|
 test "is expression: if without else returns unit" {
-  let rt = Runtime::new(@capability.CapabilitySet::new())
   let script =
     #|enum MyOpt { MySome(Int); MyNone }
     #|let v = MySome(10)
     #|if v is MySome(x) { x + 1 } else { 0 }
-  let result = rt.eval_script(script)
+  let result = run_compiled_script(script)
   assert_eq(result.last, Some(@core.Value::Int(11)))
 }
 
 ///|
 test "is expression: 0-ary constructor" {
-  let rt = Runtime::new(@capability.CapabilitySet::new())
   let script =
     #|enum MyOpt { MySome(Int); MyNone }
     #|let v = MyNone
     #|let result = v is MyNone
-  let result = rt.eval_script(script)
+  let result = run_compiled_script(script)
   assert_eq(result.last, Some(@core.Value::Bool(true)))
 }
 
 ///|
 test "bytes index b[i]" {
-  let rt = Runtime::new(@capability.CapabilitySet::new())
   let script =
     #|let b = Bytes::from_array([65, 66, 67])
     #|b[1]
-  let result = rt.eval_script(script)
+  let result = run_compiled_script(script)
   assert_eq(result.last, Some(@core.Value::Int(66)))
 }
 
 ///|
 test "bytes slice b[i:j]" {
-  let rt = Runtime::new(@capability.CapabilitySet::new())
   let script =
     #|let b = Bytes::from_array([10, 20, 30, 40, 50])
     #|let s = b[1:3]
     #|Bytes::length(s)
-  let result = rt.eval_script(script)
+  let result = run_compiled_script(script)
   assert_eq(result.last, Some(@core.Value::Int(2)))
 }
 

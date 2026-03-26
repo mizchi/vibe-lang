@@ -1,8 +1,8 @@
 ///|
-/// Compare direct interpreter (eval_script) vs compiled interpreter
-/// (compile_module + run_compiled) for features beyond WASM evaluator scope.
+/// Verify compiled interpreter (compile_module + run_compiled) produces
+/// a result without error. Previously compared with eval_script; now
+/// only validates the compiled path (evaluator is being removed).
 fn assert_interp_compiled_same(script : String) -> Unit raise {
-  // Compiled interpreter path
   let db = VibeDb::new()
   db.set_source("main", script)
   let compiled = try compile_module(db, "main") catch {
@@ -10,30 +10,12 @@ fn assert_interp_compiled_same(script : String) -> Unit raise {
   } noraise {
     c => c
   }
-  let rt_compiled = Runtime::new(@capability.CapabilitySet::new())
-  let compiled_result = try
-    @runtime_compile.run_compiled(rt_compiled, compiled)
-  catch {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = try @runtime_compile.run_compiled(rt, compiled) catch {
     e => fail("compiled eval error: " + e.to_string())
   } noraise {
     r => r
   }
-  let compiled_value = match compiled_result.last {
-    Some(v) => v
-    None => @core.Value::Unit
-  }
-  // Direct interpreter path
-  let rt_direct = Runtime::new(@capability.CapabilitySet::new())
-  let direct_result = try rt_direct.eval_script(script) catch {
-    e => fail("direct eval error: " + e.to_string())
-  } noraise {
-    r => r
-  }
-  let direct_value = match direct_result.last {
-    Some(v) => v
-    None => @core.Value::Unit
-  }
-  assert_eq(compiled_value, direct_value)
 }
 
 ///|

@@ -1,3 +1,5 @@
+// TODO(issue#20): evaluator ベンチマーク。evaluator 削除時に削除する。
+
 ///|
 test "bench: vibe.runtime.eval_script" (b : @bench.T) {
   b.bench(fn() {

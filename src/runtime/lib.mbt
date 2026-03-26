@@ -6,6 +6,7 @@ suberror VibeError {
   Eval(EvalError)
 } derive(Show, Eq)
 
+///|
 pub(all) enum ParserMode {
   VibeMode
   PosixMode

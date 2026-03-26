@@ -209,6 +209,7 @@ test "compile_module_wasm_with_opt_level_profiled returns wasm and stage timings
   assert_true(stage_profile.total_us >= 0)
 }
 
+///|
 test "lower_top_level_tests_to_exprs wraps each test body in a function" {
   let source =
     #|let mut counter = 0

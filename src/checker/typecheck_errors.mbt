@@ -80,6 +80,7 @@ fn effect_guard_note(_operation : String, missing_effect : String?) -> String? {
   }
 }
 
+///|
 fn scoped_ref_escape_hint(_context : String) -> String {
   "keep `Ref[T]` inside local scope and return a pure value instead"
 }

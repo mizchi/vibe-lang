@@ -205,6 +205,7 @@ test "bundle_for_wasm_linked strips ReExport from entry and resolves types" {
   assert_true(has_color)
 }
 
+///|
 test "bundle_for_wasm_linked detects HOF through ReExport chain" {
   let db = VibeDb::new()
   db.set_source(

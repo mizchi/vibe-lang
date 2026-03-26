@@ -1,3 +1,5 @@
+// TODO(issue#20): evaluator ベンチマーク。evaluator 削除時にファイルごと削除する。
+
 ///|
 /// Generate N incremental eval snippets that build on each other.
 /// Each snippet defines a function and calls the previous one.

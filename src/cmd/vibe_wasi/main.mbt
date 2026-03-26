@@ -305,6 +305,7 @@ fn run_repl(options : LineReplOptions) -> Unit {
         match trimmed {
           ":q" | ":quit" | ":exit" | "exit" => break
           _ => {
+            // TODO(issue#20): migrate to compiled session backend or remove vibe_wasi REPL.
             let result = rt.eval_script(trimmed) catch {
               e => {
                 io.writeln("error: " + e.to_string())

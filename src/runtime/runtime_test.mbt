@@ -1,3 +1,7 @@
+// TODO(issue#20): このファイルは全て eval_script (evaluator) に依存するテスト。
+// evaluator 削除時にファイルごと削除する。compiled backend テストは
+// src/tests/ と vibe/compiler/ にすでに存在する。
+
 ///|
 /// Tests for vibe prototype
 fn first_test_perform_site_key(script : String) -> String raise {

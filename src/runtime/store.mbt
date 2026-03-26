@@ -505,6 +505,11 @@ pub fn Runtime::set_type_env(self : Runtime, env : @checker.TypeEnv) -> Unit {
 }
 
 ///|
+pub fn Runtime::set_cwd(self : Runtime, cwd : String) -> Unit {
+  self.cwd = cwd
+}
+
+///|
 fn clone_string_map(src : Map[String, String]) -> Map[String, String] {
   let out : Map[String, String] = {}
   for k, v in src {

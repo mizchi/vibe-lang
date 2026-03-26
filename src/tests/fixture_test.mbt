@@ -361,6 +361,8 @@ fn eval_fixture(
   spec : FixtureSpec,
 ) -> Result[EvalResult, String] {
   if not(script.contains("import ")) && not(script.contains("effect ")) {
+    // TODO(issue#20): migrate to compiled backend (run_compiled).
+    // Some fixtures depend on evaluator prelude (e.g. Eq trait).
     let rt = Runtime::new(@capability.CapabilitySet::developer())
     return Ok(rt.eval_script(script)) catch { e => Err(e.to_string()) }
   }
