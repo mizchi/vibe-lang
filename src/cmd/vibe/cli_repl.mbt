@@ -1639,21 +1639,22 @@ fn handle_repl_meta_command(
         print_line("nothing to save (empty session)")
         return ReplMetaCommandResult::HandledContinue
       }
-      @os_fs.write_string_to_file(path, scratch_source) catch {
+      // DAG-aware save: deduplicate same-name let bindings (keep last)
+      let deduped = repl_deduplicate_bindings(scratch_source)
+      @os_fs.write_string_to_file(path, deduped) catch {
         e => {
           print_line("save failed: " + e.to_string())
           return ReplMetaCommandResult::HandledContinue
         }
       }
-      // Count bindings
       let mut binding_count = 0
-      for line_view in scratch_source.split("\n") {
+      for line_view in deduped.split("\n") {
         let l = line_view.to_string().trim().to_string()
         if l.has_prefix("let ") || l.has_prefix("export let ") {
           binding_count += 1
         }
       }
-      print_line("saved: " + path + " (" + binding_count.to_string() + " bindings)")
+      print_line("saved: " + path + " (" + binding_count.to_string() + " bindings, deduplicated)")
       ReplMetaCommandResult::HandledContinue
     }
     ":load" => {
@@ -3837,6 +3838,108 @@ fn process_chdir(dir : String) -> Bool {
     }
   })
   c_chdir(path_bytes) == 0
+}
+
+///|
+/// Deduplicate REPL session bindings: for same-name `let` bindings,
+/// keep only the last definition. This produces a clean DAG where
+/// each name has exactly one binding (the most recent one).
+/// Non-let statements (test blocks, bare expressions, imports) are kept as-is.
+fn repl_deduplicate_bindings(source : String) -> String {
+  // Collect all statements with their binding names
+  let stmts : Array[(String, String?)] = [] // (line, binding_name?)
+  let buf = StringBuilder::new()
+  let mut in_block = 0
+  for line_view in source.split("\n") {
+    let line = line_view.to_string()
+    let trimmed = line.trim().to_string()
+    // Track brace depth for multi-line blocks
+    for ch in trimmed {
+      if ch == '{' {
+        in_block += 1
+      } else if ch == '}' {
+        in_block -= 1
+      }
+    }
+    buf.write_string(line)
+    buf.write_char('\n')
+    if in_block <= 0 {
+      in_block = 0
+      let stmt = buf.to_string()
+      buf.reset()
+      let name = extract_let_binding_name(stmt.trim().to_string())
+      stmts.push((stmt, name))
+    }
+  }
+  if buf.to_string().length() > 0 {
+    stmts.push((buf.to_string(), None))
+  }
+  // For each binding name, record the last index
+  let last_index : Map[String, Int] = {}
+  let mut i = 0
+  while i < stmts.length() {
+    match stmts[i].1 {
+      Some(name) => last_index[name] = i
+      None => ()
+    }
+    i += 1
+  }
+  // Output only the last binding for each name, plus all non-binding stmts
+  let out = StringBuilder::new()
+  i = 0
+  while i < stmts.length() {
+    let keep = match stmts[i].1 {
+      Some(name) =>
+        match last_index.get(name) {
+          Some(idx) => idx == i
+          None => true
+        }
+      None => true
+    }
+    if keep {
+      let stmt_text = stmts[i].0
+      if stmt_text.trim().to_string().length() > 0 {
+        out.write_string(stmt_text)
+        if not(stmt_text.has_suffix("\n")) {
+          out.write_char('\n')
+        }
+      }
+    }
+    i += 1
+  }
+  out.to_string()
+}
+
+///|
+fn extract_let_binding_name(line : String) -> String? {
+  let prefixes = ["export let mut ", "export let ", "let mut ", "let "]
+  let mut prefix_len = 0
+  let mut found = false
+  for p in prefixes {
+    if line.has_prefix(p) {
+      prefix_len = p.length()
+      found = true
+      break
+    }
+  }
+  if not(found) {
+    return None
+  }
+  // Extract name until = or : or space
+  let chars = line.to_array()
+  let mut end = prefix_len
+  while end < chars.length() &&
+        chars[end] != ' ' &&
+        chars[end] != '=' &&
+        chars[end] != ':' &&
+        chars[end] != '(' {
+    end += 1
+  }
+  if end == prefix_len {
+    return None
+  }
+  let name = line.substring(start=prefix_len, end~)
+  Some(name)
 }
 
 ///|
