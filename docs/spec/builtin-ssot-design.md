@@ -15,124 +15,168 @@
 
 host と selfhost で同じシグネチャを別々に管理しており、不一致が頻発。
 
-## 設計: .vibe をSSoTにする
+## 設計: コンパイル時生成 + バイナリ中間表現
 
-### Step 1: ビルトイン宣言ファイル (`vibe/builtins/declarations.vibe`)
+### 原則
+
+1. **declarations.vibe が SSoT** (人間が編集する唯一の場所)
+2. **ビルド時にバイナリテーブルに変換** (ランタイムでテキストパースしない)
+3. **バイナリテーブルは WASM data section に埋め込み可能** なコンパクトさ
+
+### パイプライン
+
+```
+declarations.vibe  (SSoT, 人間が編集)
+       │
+       ▼ ビルド時 (moon build / vibe build)
+  builtin_table.bin  (バイナリ中間表現)
+       │
+       ├──▶ Host checker: MoonBit が Bytes として読み込み
+       ├──▶ Selfhost checker: vibe が Bytes として読み込み
+       └──▶ CI: 契約検証 (host == selfhost == declarations)
+```
+
+### declarations.vibe 構文
 
 ```vibe
 // vibe/builtins/declarations.vibe
-// SSoT: 全ビルトイン関数の型シグネチャ宣言
 
 //# Array
 declare Array::new() -> Array[T]
-declare Array::length(Array[T]) -> Int
 declare Array::get(Array[T], Int) -> T
 declare Array::push(Array[T], T) -> Array[T]
-declare Array::set(Array[T], Int, T) -> Array[T]
 declare Array::map(Array[T], (T) -> U) -> Array[U]
-declare Array::filter(Array[T], (T) -> Bool) -> Array[T]
 declare Array::find_index(Array[T], (T) -> Bool) -> Option[Int]
-declare Array::sort_by(Array[T], (T, T) -> Int) -> Array[T]
-declare Array::contains(Array[T], T) -> Bool
 
 //# String
 declare String::length(String) -> Int
-declare String::substring(String, Int, Int) -> String
 declare String::split(String, String) -> Array[String]
-declare String::join(Array[String], String) -> String
-declare String::to_upper(String) -> String
-declare String::to_lower(String) -> String
-declare String::concat(String, String) -> String
 declare String::equals(String, String) -> Bool
-
-//# Int
-declare Int::parse(String) -> Option[Int]
-
-//# Double
-declare Double::parse(String) -> Option[Double]
 
 //# Set
 declare Set::new() -> Set[T]
 declare Set::add(Set[T], T) -> Set[T]
 declare Set::contains(Set[T], T) -> Bool
-declare Set::remove(Set[T], T) -> Set[T]
-declare Set::size(Set[T]) -> Int
-declare Set::to_array(Set[T]) -> Array[T]
-declare Set::from_array(Array[T]) -> Set[T]
-
-//# Option
-declare Option::map(Option[T], (T) -> U) -> Option[U]
-declare Option::and_then(Option[T], (T) -> Option[U]) -> Option[U]
-declare Option::unwrap_or(Option[T], T) -> T
-declare Option::is_some(Option[T]) -> Bool
-declare Option::is_none(Option[T]) -> Bool
-
-//# Map
-declare Map::new() -> Map[K, V]
-declare Map::set(Map[K, V], K, V) -> Map[K, V]
-declare Map::get(Map[K, V], K) -> Option[V]
-declare Map::has_key(Map[K, V], K) -> Bool
-declare Map::remove(Map[K, V], K) -> Map[K, V]
-declare Map::size(Map[K, V]) -> Int
-declare Map::keys(Map[K, V]) -> Array[K]
-declare Map::values(Map[K, V]) -> Array[V]
-
-//# IO
-declare println(String) -> Unit
-declare print(String) -> Unit
-declare assert(Bool) -> Unit
-declare assert_eq(T, T) -> Unit
 ```
 
-### Step 2: コンパイル時にパースして中間表現に変換
+### バイナリテーブル形式
+
+コンパクトで WASM 上でも高速にデコードできるフラットバイナリ:
 
 ```
-declarations.vibe → parse → Array[BuiltinDecl]
+Header:
+  magic: "VBLT" (4 bytes)
+  version: u8
+  count: LEB128  (エントリ数)
+
+Entry (繰り返し):
+  name_len: LEB128
+  name: UTF-8 bytes  (例: "Array::get")
+  param_count: LEB128
+  params: [TypeTag]  (各 1 byte)
+  ret: TypeTag       (1 byte)
+  flags: u8          (has_effects, is_generic, ...)
+
+TypeTag (1 byte):
+  0x00 = Unit
+  0x01 = Int
+  0x02 = Bool
+  0x03 = String
+  0x04 = Double
+  0x05 = Float
+  0x06 = Bytes
+  0x07 = Char
+  0x08 = Path
+  0x10 = Array[T]    (次の1バイトが要素型)
+  0x11 = Map[K,V]    (次の2バイト)
+  0x12 = Set[T]      (次の1バイト)
+  0x13 = Option[T]   (次の1バイト)
+  0x14 = Result[T,E] (次の2バイト)
+  0x20 = Fn(...)     (param_count + params + ret)
+  0xF0 = T (generic type var 0)
+  0xF1 = U (generic type var 1)
+  0xF2 = V (generic type var 2)
+  0xFF = Unknown
 ```
 
-```
-struct BuiltinDecl {
-  name: String       // "Array::get"
-  params: Array[Type] // [Array[T], Int]
-  ret: Type          // T
-  effects: Array[String] // []
+### サイズ見積もり
+
+典型的なエントリ: `Array::get(Array[T], Int) -> T`
+- name: 10 bytes + 1 (len)
+- params: 1 (count) + 2 (Array[T]) + 1 (Int) = 4
+- ret: 1 (T)
+- flags: 1
+- total: ~17 bytes
+
+100 builtins × ~20 bytes = **~2KB** (data section に余裕で収まる)
+
+### デコーダー (vibe 実装, ~50行)
+
+```vibe
+let decode_builtin_table = (bytes: Bytes) -> Array[BuiltinDecl] {
+  let pos = [4]  // skip magic
+  let version = Bytes::get(bytes, Array::get(pos, 0))
+  pos[0] = pos[0] + 1
+  let count = decode_leb128(bytes, pos)
+  let result = Array::new()
+  let mut i = 0
+  while i < count {
+    let name_len = decode_leb128(bytes, pos)
+    let name = Bytes::to_string(bytes, Array::get(pos, 0), name_len)
+    pos[0] = pos[0] + name_len
+    let param_count = decode_leb128(bytes, pos)
+    let params = Array::new()
+    let mut j = 0
+    while j < param_count {
+      Array::push(params, decode_type_tag(bytes, pos))
+      j = j + 1
+    }
+    let ret = decode_type_tag(bytes, pos)
+    let flags = Bytes::get(bytes, Array::get(pos, 0))
+    pos[0] = pos[0] + 1
+    Array::push(result, { name, params, ret, flags })
+    i = i + 1
+  }
+  result
 }
 ```
 
-### Step 3: host と selfhost の両方がこの中間表現を消費
+### Host 側のデコーダー (MoonBit, ~50行)
 
-**Host compiler**:
-- `src/checker/` が `declarations.vibe` をパースして型チェック情報を生成
-- `src/codegen/` は name → codegen handler のマッピングのみ保持 (シグネチャは宣言から導出)
+同じバイナリ形式を MoonBit の `Bytes` で読む。
+host checker の起動時に1回デコードし、`Map[String, BuiltinDecl]` をキャッシュ。
 
-**Selfhost compiler**:
-- `vibe/compiler/checker/` が同じ `declarations.vibe` をパースして lookup テーブルを構築
-- 現在の `builtins_array.vibe` 等の手動 match arm は自動生成に置換
+### Codegen との関係
 
-### Step 4: 段階的移行
+codegen (WASM emit) はシグネチャに依存しない — name → emit handler のマッピングだけ。
+ただし **シグネチャ検証** として:
+- CI で `codegen handler の name set ⊇ declarations の name set` を検証
+- 新しい declare を追加したら codegen handler が必要 (テストで検出)
 
-| Phase | 内容 |
-|-------|------|
-| Phase 0 | `declarations.vibe` を定義、パーサーを実装 |
-| Phase 1 | Host checker が declarations.vibe から型情報を読み込み |
-| Phase 2 | Selfhost checker も同じファイルから読み込み |
-| Phase 3 | `builtin_modules.mbt` の vibe source 埋め込みを declarations.vibe に統合 |
-| Phase 4 | codegen handler のシグネチャ検証を declarations から自動化 |
+### 段階的移行
 
-## メリット
+| Phase | 内容 | オーバーヘッド |
+|-------|------|---------------|
+| Phase 0 | declarations.vibe + バイナリエンコーダー | ビルド時のみ |
+| Phase 1 | Host checker が bin から読み込み | 起動時 ~2KB decode (< 1ms) |
+| Phase 2 | Selfhost checker が同じ bin から読み込み | 同上 |
+| Phase 3 | 既存の手書き builtins_*.vibe を自動生成に置換 | ゼロ |
+| Phase 4 | CI で host/selfhost/declarations の契約検証 | CI のみ |
 
-1. **SSoT**: シグネチャの定義が1箇所
-2. **契約**: host と selfhost が同じ宣言を共有
-3. **検証可能**: declarations と codegen の不一致を自動検出
-4. **拡張容易**: 新ビルトイン追加は declarations に1行追加するだけ
-5. **ドキュメント**: declarations.vibe がそのまま API リファレンス
+### ランタイムオーバーヘッド
 
-## `declare` 構文
+- **テーブルサイズ**: ~2KB (100 builtins)
+- **デコード**: LEB128 + 固定バイト読み取り、O(n) で n = builtin 数
+- **lookup**: デコード後は `Map[String, BuiltinDecl]` で O(1)
+- **WASM data section**: 2KB は WASM バイナリの 0.01% 以下
+- **ゼロコピー可能**: data section pointer から直接読む場合、alloc 不要
 
-```
-declare <Name>::<method>(<params>) -> <return> [with { <effects> }]
-```
+### 代替案: なぜテキストパースではないか
 
-- `declare` は新しいキーワード (既存の `let`/`export let` とは異なる)
-- body なし (型宣言のみ)
-- 実装は codegen が提供 (host) または builtin_bodies が提供 (selfhost)
+| | テキスト (.vibe) | バイナリ (.bin) |
+|---|---|---|
+| パースコスト | 文字列分割 + 型パーサー | LEB128 + 固定 offset |
+| サイズ | ~5KB | ~2KB |
+| エラー耐性 | パースエラーの可能性 | 形式が固定、壊れにくい |
+| WASM 互換 | String 操作が重い | Bytes 操作で完結 |
+| 依存 | vibe parser が必要 | 50行のデコーダーのみ |
