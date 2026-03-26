@@ -5,7 +5,7 @@ pub fn type_check(ast : @core.Module) -> TypeEnv raise TypeError {
 
 ///|
 /// @core.Type check with import aliases (qualified names treated as external).
-fn type_check_with_aliases(
+pub fn type_check_with_aliases(
   ast : @core.Module,
   aliases : Map[String, @core.Ref],
 ) -> TypeEnv raise TypeError {
@@ -46,7 +46,7 @@ fn ensure_prelude_seed(session : TypecheckSession) -> TypeEnv raise TypeError {
 }
 
 ///|
-fn get_cached_prelude_env_for_module() -> TypeEnv raise TypeError {
+pub fn get_cached_prelude_env_for_module() -> TypeEnv raise TypeError {
   get_cached_prelude_env_for_module_with_session(default_typecheck_session)
 }
 
