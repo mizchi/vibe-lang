@@ -1,107 +1,132 @@
+//# WASM SIMD Instruction Emitters
+//
+// WASM SIMD (128-bit) instructions for v128 operations.
+// Prefix: 0xFD (253) followed by LEB128-encoded sub-opcode.
+//
+// Reference: https://webassembly.github.io/spec/core/binary/instructions.html#simd-instructions
+
 import ../../core/index.vibe {
-  bytebuf_new, bytebuf_push, bytebuf_push2,
-  leb128_encode_u32
+  bytebuf_push, leb128_encode_u32
 }
 
-///|
+//# Constants
 
-// SIMD prefix byte: 0xFD = 253
 let simd_prefix = 253
 
-///|
+// Memory ops (prefix + LEB128 opcode + memarg)
+let simd_v128_load = 0
+let simd_v128_store = 11
 
-// Helper: emit SIMD prefix + LEB128-encoded opcode
-let emit_simd_op = (buf: Bytes, opcode: Int) -> Unit {
+// Splat ops
+let simd_i8x16_splat = 15
+
+// Comparison ops
+let simd_i8x16_eq = 35
+
+// Boolean reduction
+let simd_v128_any_true = 83
+
+// Bitwise
+let simd_v128_and = 78
+let simd_v128_not = 77
+
+// i8x16 specific
+let simd_i8x16_all_true = 99
+let simd_i8x16_bitmask = 100
+
+// v128.const (opcode 12, followed by 16 immediate bytes)
+let simd_v128_const = 12
+
+//# Memory Instructions
+
+// v128.load memarg  -- load 128 bits from memory
+export let emit_v128_load = (buf: Bytes, align: Int, offset: Int) -> Unit {
   bytebuf_push(buf, simd_prefix)
-  leb128_encode_u32(buf, opcode)
+  leb128_encode_u32(buf, simd_v128_load)
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
 }
 
-///|
+// v128.store memarg  -- store 128 bits to memory
+export let emit_v128_store = (buf: Bytes, align: Int, offset: Int) -> Unit {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_v128_store)
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
 
-// v128.const: 0xFD 0x0C + 16 immediate bytes
-export let emit_v128_const = (buf: Bytes, bytes: Array[Int]) -> Unit {
-  emit_simd_op(buf, 12)
+//# Splat Instructions
+
+// i8x16.splat  -- broadcast i32 to all 16 lanes
+export let emit_i8x16_splat = (buf: Bytes) -> Unit {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_i8x16_splat)
+}
+
+//# Comparison Instructions
+
+// i8x16.eq  -- lane-wise equality, result: 0xFF or 0x00 per lane
+export let emit_i8x16_eq = (buf: Bytes) -> Unit {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_i8x16_eq)
+}
+
+//# Boolean Reduction
+
+// v128.any_true  -- 1 if any bit is non-zero
+export let emit_v128_any_true = (buf: Bytes) -> Unit {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_v128_any_true)
+}
+
+// i8x16.all_true  -- 1 if all lanes are non-zero
+export let emit_i8x16_all_true = (buf: Bytes) -> Unit {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_i8x16_all_true)
+}
+
+// i8x16.bitmask  -- extract MSB of each lane into i32 bitmask
+export let emit_i8x16_bitmask = (buf: Bytes) -> Unit {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_i8x16_bitmask)
+}
+
+//# Bitwise Instructions
+
+// v128.and
+export let emit_v128_and = (buf: Bytes) -> Unit {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_v128_and)
+}
+
+// v128.not
+export let emit_v128_not = (buf: Bytes) -> Unit {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_v128_not)
+}
+
+//# v128.const
+
+// v128.const -- push 16-byte immediate constant onto stack
+// The 16 bytes are written directly after the opcode.
+export let emit_v128_const_zero = (buf: Bytes) -> Unit {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_v128_const)
+  // 16 zero bytes
   let mut i = 0
   while i < 16 {
-    if i < Array::length(bytes) {
-      bytebuf_push(buf, Array::get(bytes, i))
-    } else {
-      bytebuf_push(buf, 0)
-    }
+    bytebuf_push(buf, 0)
     i = i + 1
   }
 }
 
-///|
-
-// i8x16.splat: 0xFD 0x17
-export let emit_i8x16_splat = (buf: Bytes) -> Unit {
-  emit_simd_op(buf, 23)
-}
-
-///|
-
-// i8x16.eq: 0xFD 0x23
-export let emit_i8x16_eq = (buf: Bytes) -> Unit {
-  emit_simd_op(buf, 35)
-}
-
-///|
-
-// v128.any_true: 0xFD 0x53
-export let emit_v128_any_true = (buf: Bytes) -> Unit {
-  emit_simd_op(buf, 83)
-}
-
-///|
-
-// v128.load: 0xFD 0x00 + memarg(align, offset)
-export let emit_v128_load = (buf: Bytes, align: Int, offset: Int) -> Unit {
-  emit_simd_op(buf, 0)
-  leb128_encode_u32(buf, align)
-  leb128_encode_u32(buf, offset)
-}
-
-///|
-
-// i8x16.swizzle: 0xFD 0x0E
-export let emit_i8x16_swizzle = (buf: Bytes) -> Unit {
-  emit_simd_op(buf, 14)
-}
-
-///|
-
-// v128.store: 0xFD 0x0B + memarg(align, offset)
-export let emit_v128_store = (buf: Bytes, align: Int, offset: Int) -> Unit {
-  emit_simd_op(buf, 11)
-  leb128_encode_u32(buf, align)
-  leb128_encode_u32(buf, offset)
-}
-
-///|
-
-// v128.not: 0xFD 0x4D
-export let emit_v128_not = (buf: Bytes) -> Unit {
-  emit_simd_op(buf, 77)
-}
-
-///|
-
-// v128.and: 0xFD 0x4E
-export let emit_v128_and = (buf: Bytes) -> Unit {
-  emit_simd_op(buf, 78)
-}
-
-///|
-
-// i8x16.sub: 0xFD 0x71
-export let emit_i8x16_sub = (buf: Bytes) -> Unit {
-  emit_simd_op(buf, 113)
-}
-
-///|
-
-// i8x16.min_u: 0xFD 0x77
-export let emit_i8x16_min_u = (buf: Bytes) -> Unit {
-  emit_simd_op(buf, 119)
+// v128.const with all lanes set to the same byte value
+export let emit_v128_const_splat_byte = (buf: Bytes, byte_val: Int) -> Unit {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_v128_const)
+  let mut i = 0
+  while i < 16 {
+    bytebuf_push(buf, byte_val & 255)
+    i = i + 1
+  }
 }

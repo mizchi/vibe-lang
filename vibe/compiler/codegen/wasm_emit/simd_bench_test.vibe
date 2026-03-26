@@ -1,0 +1,184 @@
+//# SIMD vs Scalar Benchmark: Code Generation Size Comparison
+//
+// This test generates pairs of WASM modules (scalar vs SIMD) for the same
+// operations and compares their binary sizes. SIMD should produce significantly
+// more compact code for bulk data operations.
+//
+// Operations tested:
+//   1. memcmp_16: Compare 16 bytes of memory
+//   2. find_byte_16: Find a byte in a 16-byte chunk
+
+import ../../core/index.vibe {
+  bytebuf_new, bytebuf_push, bytebuf_length, bytebuf_to_bytes, bytebuf_push_buf,
+  bytebuf_push_section, bytebuf_push_vec_header, leb128_encode_u32
+}
+
+import ./sections.vibe {
+  emit_header, emit_type_section, emit_function_section,
+  emit_export_section, emit_memory_section,
+  emit_code_section_with_locals, emit_end, emit_func_type_raw
+}
+
+import ./simd_patterns.vibe {
+  emit_simd_memcmp_16, emit_simd_find_byte_16,
+  emit_scalar_memcmp_16_unrolled, emit_scalar_find_byte_16_unrolled
+}
+
+//# Helpers
+
+let vt_i64 = 126
+let sec_type = 1
+
+let empty_int_array = () -> Array[Int] {
+  Array::slice([0], 0, 0)
+}
+
+let singleton_int_array = (v0: Int) -> Array[Int] {
+  let values = empty_int_array()
+  Array::push(values, v0)
+  values
+}
+
+let pair_int_array = (v0: Int, v1: Int) -> Array[Int] {
+  let values = empty_int_array()
+  Array::push(values, v0)
+  Array::push(values, v1)
+  values
+}
+
+let singleton_bytes_array = (v0: Bytes) -> Array[Bytes] {
+  let values = Array::slice([bytebuf_new()], 0, 0)
+  Array::push(values, v0)
+  values
+}
+
+let assert_wasm_magic = (bytes: Bytes) -> Unit {
+  assert(Bytes::get(bytes, 0) == 0)
+  assert(Bytes::get(bytes, 1) == 97)
+  assert(Bytes::get(bytes, 2) == 115)
+  assert(Bytes::get(bytes, 3) == 109)
+}
+
+//# Module Builders
+
+// Build a complete WASM module with one exported function.
+// func_type: (i64, i64) -> i64  (two params, one result)
+let build_module_2param = (name: String, body: Bytes, num_locals: Int) -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+
+  // Type section: one type (i64, i64) -> i64
+  let type_content = bytebuf_new()
+  bytebuf_push_vec_header(type_content, 1)
+  emit_func_type_raw(type_content, pair_int_array(vt_i64, vt_i64), singleton_int_array(vt_i64))
+  bytebuf_push_section(out, sec_type, type_content)
+
+  emit_function_section(out, singleton_int_array(0))
+  emit_memory_section(out, 1)
+  emit_export_section(out, name, 0)
+  emit_code_section_with_locals(out, singleton_bytes_array(body), singleton_int_array(num_locals))
+  bytebuf_to_bytes(out)
+}
+
+//# Benchmark 1: memcmp_16
+
+let build_simd_memcmp_module = () -> Bytes {
+  let body = bytebuf_new()
+  emit_simd_memcmp_16(body)
+  build_module_2param("memcmp16", body, 0)
+}
+
+let build_scalar_memcmp_module = () -> Bytes {
+  let body = bytebuf_new()
+  emit_scalar_memcmp_16_unrolled(body)
+  build_module_2param("memcmp16", body, 0)
+}
+
+//# Benchmark 2: find_byte_16
+
+let build_simd_find_byte_module = () -> Bytes {
+  let body = bytebuf_new()
+  emit_simd_find_byte_16(body)
+  build_module_2param("find_byte16", body, 0)
+}
+
+let build_scalar_find_byte_module = () -> Bytes {
+  let body = bytebuf_new()
+  emit_scalar_find_byte_16_unrolled(body)
+  build_module_2param("find_byte16", body, 0)
+}
+
+//# Tests
+
+test "simd memcmp_16: valid WASM" {
+  let bytes = build_simd_memcmp_module()
+  assert_wasm_magic(bytes)
+}
+
+test "scalar memcmp_16: valid WASM" {
+  let bytes = build_scalar_memcmp_module()
+  assert_wasm_magic(bytes)
+}
+
+test "simd find_byte_16: valid WASM" {
+  let bytes = build_simd_find_byte_module()
+  assert_wasm_magic(bytes)
+}
+
+test "scalar find_byte_16: valid WASM" {
+  let bytes = build_scalar_find_byte_module()
+  assert_wasm_magic(bytes)
+}
+
+test "memcmp_16: SIMD is more compact than scalar" {
+  let simd_bytes = build_simd_memcmp_module()
+  let scalar_bytes = build_scalar_memcmp_module()
+
+  let simd_size = Bytes::length(simd_bytes)
+  let scalar_size = Bytes::length(scalar_bytes)
+
+  // SIMD version should be smaller:
+  // - SIMD: v128.load + v128.load + i8x16.eq + i8x16.all_true (~20 bytes of instructions)
+  // - Scalar: 2x i64.load + i64.eq + if/else structure (~40+ bytes of instructions)
+  assert(simd_size < scalar_size)
+}
+
+test "find_byte_16: SIMD is more compact than scalar" {
+  let simd_bytes = build_simd_find_byte_module()
+  let scalar_bytes = build_scalar_find_byte_module()
+
+  let simd_size = Bytes::length(simd_bytes)
+  let scalar_size = Bytes::length(scalar_bytes)
+
+  // SIMD version should be much smaller:
+  // - SIMD: v128.load + i8x16.splat + i8x16.eq + i8x16.bitmask (~18 bytes)
+  // - Scalar: 4+ byte-by-byte loads + comparisons + branches (~100+ bytes)
+  assert(simd_size < scalar_size)
+}
+
+test "memcmp_16: SIMD body is at least 10 bytes smaller" {
+  let simd_bytes = build_simd_memcmp_module()
+  let scalar_bytes = build_scalar_memcmp_module()
+
+  let simd_size = Bytes::length(simd_bytes)
+  let scalar_size = Bytes::length(scalar_bytes)
+
+  // Module overhead (header, type section, etc.) is identical.
+  // The body difference should be at least 10 bytes:
+  // SIMD body: ~18 bytes (9 instructions)
+  // Scalar body: ~33 bytes (2x i64.load + compare + if/else + branch)
+  assert(scalar_size - simd_size >= 10)
+}
+
+test "find_byte_16: SIMD body is at least 20 bytes smaller" {
+  let simd_bytes = build_simd_find_byte_module()
+  let scalar_bytes = build_scalar_find_byte_module()
+
+  let simd_size = Bytes::length(simd_bytes)
+  let scalar_size = Bytes::length(scalar_bytes)
+
+  // The scalar version with just 4 unrolled byte checks already generates
+  // ~80+ bytes of instructions. SIMD does it in ~18 bytes.
+  // The difference should be dramatic even with only 4 of 16 bytes unrolled.
+  assert(scalar_size - simd_size >= 20)
+}
