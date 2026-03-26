@@ -1647,6 +1647,7 @@ fn compile_module_wasm_for_exec(
   db : @runtime.VibeDb,
   entry : String,
   http_host_imports? : Bool = false,
+  fs_host_imports? : Bool = false,
 ) -> Bytes raise @runtime_compile.WasmCompileError {
   @runtime_compile.compile_module_wasm_with_opt_level(
     db,
@@ -1657,6 +1658,7 @@ fn compile_module_wasm_for_exec(
     // parity with interpreter on compiled execution paths.
     debug_errors=true,
     http_host_imports~,
+    fs_host_imports~,
   )
 }
 
@@ -1901,6 +1903,7 @@ fn run_cmd_wasm_backend_with_cache(
       db,
       entry,
       http_host_imports=use_node_runner,
+      fs_host_imports=use_node_runner,
     ) catch {
       e => return Err("compile wasm error: " + e.user_message())
     }
@@ -3020,6 +3023,7 @@ fn run_compiled_test_case(
     db,
     entry,
     http_host_imports=use_http_host_runner,
+    fs_host_imports=use_http_host_runner,
   ) catch {
     e => {
       let msg = e.user_message()
@@ -3192,6 +3196,7 @@ fn run_test_file_compiled_with_cache(
       batch_db,
       batch_entry,
       http_host_imports=use_http_host_runner,
+      fs_host_imports=use_http_host_runner,
     ) catch {
       e => {
         remove_file_if_exists(batch_source_path)

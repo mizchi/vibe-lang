@@ -84,6 +84,8 @@ priv struct CodegenCtx {
   mut need_http : Bool
   http_host_imports : Bool
   http_component_wasi_shim : Bool
+  // Filesystem host imports (vibe module instead of WASI)
+  fs_host_imports : Bool
   // Source-level coverage instrumentation
   coverage_enabled : Bool
   coverage_points : Array[WasmCoveragePoint]
@@ -142,6 +144,7 @@ fn CodegenCtx::new(
   embed_error_strings? : Bool = false,
   http_host_imports? : Bool = false,
   http_component_wasi_shim? : Bool = false,
+  fs_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
   library_mode? : Bool = false,
 ) -> CodegenCtx {
@@ -239,6 +242,7 @@ fn CodegenCtx::new(
     need_http: false,
     http_host_imports,
     http_component_wasi_shim,
+    fs_host_imports,
     // Source-level coverage instrumentation
     coverage_enabled,
     coverage_points: [],

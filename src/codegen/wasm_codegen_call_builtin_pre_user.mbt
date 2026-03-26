@@ -7155,6 +7155,11 @@ fn compile_call_builtin_pre_user_inner(
       if ctx.use_js_strings {
         raise WasmGenError::Unsupported("Fs::exists requires --wasm backend")
       }
+      if ctx.fs_host_imports {
+        let pos_args = extract_positional_exprs_with_arity(args, "Fs::exists", 1)
+        compile_expr(ctx, buf, pos_args[0])
+        emit_call(buf, import_index_fs_host_exists(ctx))
+      } else {
       let pos_args = extract_positional_exprs_with_arity(args, "Fs::exists", 1)
       require_heap(ctx)
       let raw_local = alloc_temp_local(ctx)
@@ -7211,6 +7216,7 @@ fn compile_call_builtin_pre_user_inner(
       buf.push((5).to_byte()) // else
       emit_i64_const_raw(buf, tag_int_value64(0L)) // false
       buf.push((11).to_byte()) // end if
+      } // end else (WASI path)
     }
     "Fs::stat_token" => {
       if ctx.use_js_strings {
@@ -7218,6 +7224,13 @@ fn compile_call_builtin_pre_user_inner(
           "Fs::stat_token requires --wasm backend",
         )
       }
+      if ctx.fs_host_imports {
+        let pos_args = extract_positional_exprs_with_arity(
+          args, "Fs::stat_token", 1,
+        )
+        compile_expr(ctx, buf, pos_args[0])
+        emit_call(buf, import_index_fs_host_stat_token(ctx))
+      } else {
       let pos_args = extract_positional_exprs_with_arity(
         args, "Fs::stat_token", 1,
       )
@@ -7276,11 +7289,19 @@ fn compile_call_builtin_pre_user_inner(
       buf.push((5).to_byte()) // else
       emit_i64_const_raw(buf, tag_int_value64(0L))
       buf.push((11).to_byte()) // end if
+      } // end else (WASI path)
     }
     "Fs::read_file" => {
       if ctx.use_js_strings {
         raise WasmGenError::Unsupported("Fs::read_file requires --wasm backend")
       }
+      if ctx.fs_host_imports {
+        let pos_args = extract_positional_exprs_with_arity(
+          args, "Fs::read_file", 1,
+        )
+        compile_expr(ctx, buf, pos_args[0])
+        emit_call(buf, import_index_fs_host_read_file(ctx))
+      } else {
       let pos_args = extract_positional_exprs_with_arity(
         args, "Fs::read_file", 1,
       )
@@ -7452,6 +7473,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_obj.to_int64())
       emit_i64_or(buf)
       buf.push((11).to_byte()) // end if (open)
+      } // end else (WASI path)
     }
     "Fs::write_file" => {
       if ctx.use_js_strings {
@@ -7459,6 +7481,14 @@ fn compile_call_builtin_pre_user_inner(
           "Fs::write_file requires --wasm backend",
         )
       }
+      if ctx.fs_host_imports {
+        let pos_args = extract_positional_exprs_with_arity(
+          args, "Fs::write_file", 2,
+        )
+        compile_expr(ctx, buf, pos_args[0])
+        compile_expr(ctx, buf, pos_args[1])
+        emit_call(buf, import_index_fs_host_write_file(ctx))
+      } else {
       let pos_args = extract_positional_exprs_with_arity(
         args, "Fs::write_file", 2,
       )
@@ -7554,6 +7584,7 @@ fn compile_call_builtin_pre_user_inner(
       buf.push((5).to_byte()) // else (open error)
       emit_i64_const_raw(buf, tag_int_value64(0L))
       buf.push((11).to_byte()) // end if
+      } // end else (WASI path for Fs::write_file)
     }
     "Bytes::from_array" => {
       // bytes_from_array(arr) -> Bytes
@@ -8200,6 +8231,14 @@ fn compile_call_builtin_pre_user_inner(
           "Fs::write_bytes requires --wasm backend",
         )
       }
+      if ctx.fs_host_imports {
+        let pos_args = extract_positional_exprs_with_arity(
+          args, "Fs::write_bytes", 2,
+        )
+        compile_expr(ctx, buf, pos_args[0])
+        compile_expr(ctx, buf, pos_args[1])
+        emit_call(buf, import_index_fs_host_write_bytes(ctx))
+      } else {
       let pos_args = extract_positional_exprs_with_arity(
         args, "Fs::write_bytes", 2,
       )
@@ -8298,6 +8337,7 @@ fn compile_call_builtin_pre_user_inner(
       buf.push((5).to_byte()) // else (open error)
       emit_i64_const_raw(buf, tag_int_value64(0L))
       buf.push((11).to_byte()) // end if
+      } // end else (WASI path)
     }
     "Socket::tcp_connect" => {
       if ctx.use_js_strings {
@@ -9006,6 +9046,64 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_extend_i32_u(buf)
       emit_i64_const_raw(buf, tag_obj.to_int64())
       emit_i64_or(buf)
+    }
+    // Fs builtins that only have host import codegen (no WASI path)
+    "Fs::readdir" if ctx.fs_host_imports => {
+      let pos_args = extract_positional_exprs_with_arity(args, "Fs::readdir", 1)
+      compile_expr(ctx, buf, pos_args[0])
+      emit_call(buf, import_index_fs_host_readdir(ctx))
+    }
+    "Fs::getcwd" if ctx.fs_host_imports => {
+      let _ = extract_positional_exprs_with_arity(args, "Fs::getcwd", 0)
+      emit_call(buf, import_index_fs_host_getcwd(ctx))
+    }
+    "Fs::chdir" if ctx.fs_host_imports => {
+      let pos_args = extract_positional_exprs_with_arity(args, "Fs::chdir", 1)
+      compile_expr(ctx, buf, pos_args[0])
+      emit_call(buf, import_index_fs_host_chdir(ctx))
+    }
+    "Fs::is_dir" if ctx.fs_host_imports => {
+      let pos_args = extract_positional_exprs_with_arity(args, "Fs::is_dir", 1)
+      compile_expr(ctx, buf, pos_args[0])
+      emit_call(buf, import_index_fs_host_is_dir(ctx))
+    }
+    "Fs::is_file" if ctx.fs_host_imports => {
+      let pos_args = extract_positional_exprs_with_arity(args, "Fs::is_file", 1)
+      compile_expr(ctx, buf, pos_args[0])
+      emit_call(buf, import_index_fs_host_is_file(ctx))
+    }
+    "Fs::mkdir" if ctx.fs_host_imports => {
+      let pos_args = extract_positional_exprs_with_arity(args, "Fs::mkdir", 1)
+      compile_expr(ctx, buf, pos_args[0])
+      emit_call(buf, import_index_fs_host_mkdir(ctx))
+    }
+    "Fs::mkdir_p" if ctx.fs_host_imports => {
+      let pos_args = extract_positional_exprs_with_arity(args, "Fs::mkdir_p", 1)
+      compile_expr(ctx, buf, pos_args[0])
+      emit_call(buf, import_index_fs_host_mkdir_p(ctx))
+    }
+    "Fs::remove" if ctx.fs_host_imports => {
+      let pos_args = extract_positional_exprs_with_arity(args, "Fs::remove", 1)
+      compile_expr(ctx, buf, pos_args[0])
+      emit_call(buf, import_index_fs_host_remove(ctx))
+    }
+    "Fs::rename" if ctx.fs_host_imports => {
+      let pos_args = extract_positional_exprs_with_arity(args, "Fs::rename", 2)
+      compile_expr(ctx, buf, pos_args[0])
+      compile_expr(ctx, buf, pos_args[1])
+      emit_call(buf, import_index_fs_host_rename(ctx))
+    }
+    "Fs::copy" if ctx.fs_host_imports => {
+      let pos_args = extract_positional_exprs_with_arity(args, "Fs::copy", 2)
+      compile_expr(ctx, buf, pos_args[0])
+      compile_expr(ctx, buf, pos_args[1])
+      emit_call(buf, import_index_fs_host_copy(ctx))
+    }
+    "Fs::append" if ctx.fs_host_imports => {
+      let pos_args = extract_positional_exprs_with_arity(args, "Fs::append", 2)
+      compile_expr(ctx, buf, pos_args[0])
+      compile_expr(ctx, buf, pos_args[1])
+      emit_call(buf, import_index_fs_host_append(ctx))
     }
     _ if not(is_user_fn) && is_wasm_runtime_fallback_builtin(name) =>
       emit_wasm_runtime_fallback_throw(ctx, buf, name)

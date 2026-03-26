@@ -313,6 +313,24 @@ function taggedIntToText(tagged) {
   return tagged.toString();
 }
 
+function buildFsMetadataHashParts(filePath) {
+  const stat = fs.statSync(filePath, { bigint: true });
+  const size = typeof stat.size === "bigint" ? stat.size : BigInt(stat.size);
+  const mtimeNs =
+    typeof stat.mtimeNs === "bigint"
+      ? stat.mtimeNs
+      : BigInt(Math.round(Number(stat.mtimeMs) * 1e6));
+  const lower = BigInt.asUintN(
+    64,
+    (size * 0x9e3779b185ebca87n) ^ mtimeNs ^ 0x243f6a8885a308d3n,
+  );
+  const upper = BigInt.asUintN(
+    64,
+    ((mtimeNs << 1n) ^ (size << 17n) ^ 0x13198a2e03707344n),
+  );
+  return { lower, upper };
+}
+
 function createPreview2FilesystemHost(projectRoot) {
   const rootPath = path.resolve(projectRoot);
   const descriptors = new Map([[3, { kind: "dir", path: rootPath }]]);
@@ -360,24 +378,6 @@ function createPreview2FilesystemHost(projectRoot) {
     writeU8(mem, retptr, 0);
     writeU32LE(mem, retptr + 4, ptr >>> 0);
     writeU32LE(mem, retptr + 8, len >>> 0);
-  }
-
-  function buildFsMetadataHashParts(filePath) {
-    const stat = fs.statSync(filePath, { bigint: true });
-    const size = typeof stat.size === "bigint" ? stat.size : BigInt(stat.size);
-    const mtimeNs =
-      typeof stat.mtimeNs === "bigint"
-        ? stat.mtimeNs
-        : BigInt(Math.round(Number(stat.mtimeMs) * 1e6));
-    const lower = BigInt.asUintN(
-      64,
-      (size * 0x9e3779b185ebca87n) ^ mtimeNs ^ 0x243f6a8885a308d3n,
-    );
-    const upper = BigInt.asUintN(
-      64,
-      ((mtimeNs << 1n) ^ (size << 17n) ^ 0x13198a2e03707344n),
-    );
-    return { lower, upper };
   }
 
   function resolveDescriptor(handle) {
@@ -762,6 +762,16 @@ async function main() {
         const { lower, upper } = buildFsMetadataHashParts(filePath);
         return encodeTaggedInt(BigInt.asUintN(61, lower ^ upper));
       },
+      fs_write_file(pathTagged, contentTagged) {
+        const filePath = decodeStringArg(instanceRef, pathTagged);
+        const content = decodeStringArg(instanceRef, contentTagged);
+        const dir = path.dirname(filePath);
+        if (dir && !fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
+        }
+        fs.writeFileSync(filePath, content, "utf8");
+        return 0n;
+      },
       fs_write_bytes(pathTagged, bytesTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
         const bytes = decodeTaggedBytes(instanceRef, bytesTagged);
@@ -771,6 +781,101 @@ async function main() {
         }
         fs.writeFileSync(filePath, bytes);
         return 0n;
+      },
+      fs_readdir(pathTagged) {
+        const dirPath = decodeStringArg(instanceRef, pathTagged);
+        try {
+          const entries = fs.readdirSync(dirPath);
+          // Return as newline-separated string (same as interpreter)
+          return encodeTaggedString(instanceRef, entries.join("\n"));
+        } catch (e) {
+          return encodeTaggedString(instanceRef, "");
+        }
+      },
+      fs_getcwd() {
+        return encodeTaggedString(instanceRef, process.cwd());
+      },
+      fs_chdir(pathTagged) {
+        const dirPath = decodeStringArg(instanceRef, pathTagged);
+        try {
+          process.chdir(dirPath);
+          return 0n;
+        } catch (e) {
+          return 0n;
+        }
+      },
+      fs_is_dir(pathTagged) {
+        const filePath = decodeStringArg(instanceRef, pathTagged);
+        try {
+          return encodeTaggedBool(fs.statSync(filePath).isDirectory());
+        } catch (e) {
+          return encodeTaggedBool(false);
+        }
+      },
+      fs_is_file(pathTagged) {
+        const filePath = decodeStringArg(instanceRef, pathTagged);
+        try {
+          return encodeTaggedBool(fs.statSync(filePath).isFile());
+        } catch (e) {
+          return encodeTaggedBool(false);
+        }
+      },
+      fs_mkdir(pathTagged) {
+        const dirPath = decodeStringArg(instanceRef, pathTagged);
+        try {
+          fs.mkdirSync(dirPath);
+          return 0n;
+        } catch (e) {
+          return 0n;
+        }
+      },
+      fs_mkdir_p(pathTagged) {
+        const dirPath = decodeStringArg(instanceRef, pathTagged);
+        try {
+          fs.mkdirSync(dirPath, { recursive: true });
+          return 0n;
+        } catch (e) {
+          return 0n;
+        }
+      },
+      fs_remove(pathTagged) {
+        const filePath = decodeStringArg(instanceRef, pathTagged);
+        try {
+          fs.rmSync(filePath, { recursive: true, force: true });
+          return 0n;
+        } catch (e) {
+          return 0n;
+        }
+      },
+      fs_rename(srcTagged, dstTagged) {
+        const src = decodeStringArg(instanceRef, srcTagged);
+        const dst = decodeStringArg(instanceRef, dstTagged);
+        try {
+          fs.renameSync(src, dst);
+          return 0n;
+        } catch (e) {
+          return 0n;
+        }
+      },
+      fs_copy(srcTagged, dstTagged) {
+        const src = decodeStringArg(instanceRef, srcTagged);
+        const dst = decodeStringArg(instanceRef, dstTagged);
+        try {
+          fs.copyFileSync(src, dst);
+          return 0n;
+        } catch (e) {
+          return 0n;
+        }
+      },
+      fs_append(pathTagged, contentTagged) {
+        const filePath = decodeStringArg(instanceRef, pathTagged);
+        const content = decodeStringArg(instanceRef, contentTagged);
+        try {
+          fs.appendFileSync(filePath, content, "utf8");
+          return 0n;
+        } catch (e) {
+          return 0n;
+        }
       },
       ["env-get"](nameTagged) {
         const name = decodeStringArg(instanceRef, nameTagged);

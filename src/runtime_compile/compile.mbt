@@ -133,6 +133,7 @@ fn wasm_artifact_cache_namespace(
   bundler_kind : String,
   debug_errors : Bool,
   http_host_imports : Bool,
+  fs_host_imports : Bool,
   force_cabi_realloc : Bool,
   library_mode : Bool,
 ) -> String {
@@ -142,6 +143,8 @@ fn wasm_artifact_cache_namespace(
   buf.write_string(debug_errors.to_string())
   buf.write_char('\n')
   buf.write_string(http_host_imports.to_string())
+  buf.write_char('\n')
+  buf.write_string(fs_host_imports.to_string())
   buf.write_char('\n')
   buf.write_string(force_cabi_realloc.to_string())
   buf.write_char('\n')
@@ -297,11 +300,13 @@ fn wasm_emit_options(
   debug_errors : Bool,
   http_host_imports? : Bool = false,
   http_component_wasi_shim? : Bool = false,
+  fs_host_imports? : Bool = false,
 ) -> @codegen.WasmEmitOptions {
   @codegen.wasm_emit_options(
     embed_error_strings=debug_errors,
     http_host_imports~,
     http_component_wasi_shim~,
+    fs_host_imports~,
   )
 }
 
@@ -510,6 +515,7 @@ pub fn compile_module_wasm_with_opt_level(
   opt_level? : String? = None,
   debug_errors? : Bool = false,
   http_host_imports? : Bool = false,
+  fs_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
   library_mode? : Bool = false,
 ) -> Bytes raise WasmCompileError {
@@ -520,6 +526,7 @@ pub fn compile_module_wasm_with_opt_level(
     opt_level~,
     debug_errors~,
     http_host_imports~,
+    fs_host_imports~,
     force_cabi_realloc~,
     library_mode~,
   )
@@ -534,6 +541,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
   opt_level? : String? = None,
   debug_errors? : Bool = false,
   http_host_imports? : Bool = false,
+  fs_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
   library_mode? : Bool = false,
 ) -> (Bytes, WasmCompileStageProfile) raise WasmCompileError {
@@ -545,6 +553,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
     },
     debug_errors,
     http_host_imports,
+    fs_host_imports,
     force_cabi_realloc,
     library_mode,
   )
@@ -559,6 +568,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
           @codegen.wasm_emit_options(
             embed_error_strings=debug_errors,
             http_host_imports~,
+            fs_host_imports~,
             force_cabi_realloc~,
             library_mode~,
           ),
@@ -578,6 +588,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
           @codegen.wasm_emit_options(
             embed_error_strings=debug_errors,
             http_host_imports~,
+            fs_host_imports~,
             force_cabi_realloc~,
             library_mode~,
           ),

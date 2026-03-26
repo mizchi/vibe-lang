@@ -244,10 +244,15 @@ fn builtin_type_count(ctx : CodegenCtx) -> Int {
   if ctx.need_stdin_read_char {
     count += 1
   }
-  if ctx.need_fs {
+  if ctx.need_fs && not(ctx.fs_host_imports) {
     // Keep in sync with wasm_codegen_module.mbt type section:
     // get-directories/resource-drop, open-at, read, write, metadata-hash-at, stat-at
     count += 5
+  }
+  if ctx.need_fs && ctx.fs_host_imports {
+    // Keep in sync with wasm_codegen_module.mbt type section:
+    // fs host import arity signatures: (0), (1), (2) -> i64
+    count += 3
   }
   if ctx.need_socket {
     // Keep in sync with wasm_codegen_module.mbt type section:
@@ -322,8 +327,11 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
   if ctx.need_stdin_read_char {
     count += 2
   }
-  if ctx.need_fs {
+  if ctx.need_fs && not(ctx.fs_host_imports) {
     count += 7
+  }
+  if ctx.need_fs && ctx.fs_host_imports {
+    count += 16
   }
   if ctx.need_socket {
     count += 13
@@ -1663,7 +1671,7 @@ fn import_index_after_stdin(ctx : CodegenCtx) -> Int {
 
 ///|
 fn import_index_fs_get_directories(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_fs) {
+  if not(ctx.need_fs) || ctx.fs_host_imports {
     raise WasmGenError::BackendLimit(backend="wasm", feature="fs WASI import")
   }
   import_index_after_stdin(ctx)
@@ -1707,10 +1715,96 @@ fn fs_root_descriptor_global_index(ctx : CodegenCtx) -> Int {
 }
 
 ///|
+fn import_index_fs_host_read_file(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_fs && ctx.fs_host_imports) {
+    raise WasmGenError::BackendLimit(backend="wasm", feature="fs host import")
+  }
+  import_index_after_stdin(ctx)
+}
+
+///|
+fn import_index_fs_host_exists(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_host_read_file(ctx) + 1
+}
+
+///|
+fn import_index_fs_host_stat_token(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_host_read_file(ctx) + 2
+}
+
+///|
+fn import_index_fs_host_write_file(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_host_read_file(ctx) + 3
+}
+
+///|
+fn import_index_fs_host_write_bytes(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_host_read_file(ctx) + 4
+}
+
+///|
+fn import_index_fs_host_readdir(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_host_read_file(ctx) + 5
+}
+
+///|
+fn import_index_fs_host_getcwd(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_host_read_file(ctx) + 6
+}
+
+///|
+fn import_index_fs_host_chdir(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_host_read_file(ctx) + 7
+}
+
+///|
+fn import_index_fs_host_is_dir(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_host_read_file(ctx) + 8
+}
+
+///|
+fn import_index_fs_host_is_file(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_host_read_file(ctx) + 9
+}
+
+///|
+fn import_index_fs_host_mkdir(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_host_read_file(ctx) + 10
+}
+
+///|
+fn import_index_fs_host_mkdir_p(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_host_read_file(ctx) + 11
+}
+
+///|
+fn import_index_fs_host_remove(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_host_read_file(ctx) + 12
+}
+
+///|
+fn import_index_fs_host_rename(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_host_read_file(ctx) + 13
+}
+
+///|
+fn import_index_fs_host_copy(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_host_read_file(ctx) + 14
+}
+
+///|
+fn import_index_fs_host_append(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_host_read_file(ctx) + 15
+}
+
+///|
 fn import_index_after_fs(ctx : CodegenCtx) -> Int {
   let mut idx = import_index_after_stdin(ctx)
-  if ctx.need_fs {
+  if ctx.need_fs && not(ctx.fs_host_imports) {
     idx += 7
+  }
+  if ctx.need_fs && ctx.fs_host_imports {
+    idx += 16
   }
   idx
 }
@@ -1875,7 +1969,7 @@ fn socket_table_global_index(ctx : CodegenCtx) -> Int {
   (if ctx.use_heap_global { 1 } else { 0 }) +
   (if ctx.need_stack_switching { 1 } else { 0 }) +
   (if ctx.coverage_enabled { 2 } else { 0 }) +
-  (if ctx.need_fs { 1 } else { 0 })
+  (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 })
 }
 
 ///|

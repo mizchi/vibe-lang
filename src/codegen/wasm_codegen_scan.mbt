@@ -63,7 +63,18 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         | "Fs::write_file"
         | "Fs::write_bytes"
         | "Fs::exists"
-        | "Fs::stat_token" => {
+        | "Fs::stat_token"
+        | "Fs::readdir"
+        | "Fs::getcwd"
+        | "Fs::chdir"
+        | "Fs::is_dir"
+        | "Fs::is_file"
+        | "Fs::mkdir"
+        | "Fs::mkdir_p"
+        | "Fs::remove"
+        | "Fs::rename"
+        | "Fs::copy"
+        | "Fs::append" => {
           ctx.need_fs = true
           ctx.need_heap = true
         }

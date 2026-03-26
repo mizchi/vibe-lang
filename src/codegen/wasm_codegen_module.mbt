@@ -50,6 +50,32 @@ fn write_http_host_import(
 }
 
 ///|
+fn write_fs_host_import(
+  import_sec : ByteBuf,
+  builtin_name : String,
+  type_idx : Int,
+) -> Unit {
+  // Convert "Fs::read_file" -> "fs_read_file" for vibe module import name
+  let func_name = fs_host_import_func_name(builtin_name)
+  write_name(import_sec, "vibe")
+  write_name(import_sec, func_name)
+  import_sec.push((0).to_byte())
+  write_u32_leb(import_sec, type_idx)
+}
+
+///|
+fn fs_host_import_func_name(builtin_name : String) -> String {
+  // "Fs::read_file" -> "fs_read_file"
+  // "Fs::getcwd" -> "fs_getcwd"
+  let mut result = "fs_"
+  let prefix_len = 4 // "Fs::" is 4 chars
+  for i = prefix_len; i < builtin_name.length(); i = i + 1 {
+    result = result + builtin_name[i].to_string()
+  }
+  result
+}
+
+///|
 fn exported_env_global_export_name(name : String) -> String {
   "__export_env_" + name
 }
@@ -101,6 +127,9 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let mut http_host_arity1_type = -1
   let mut http_host_arity2_type = -1
   let mut http_host_arity4_type = -1
+  let mut fs_host_arity0_type = -1
+  let mut fs_host_arity1_type = -1
+  let mut fs_host_arity2_type = -1
   if ctx.need_js_length {
     js_length_type = type_count
     type_count += 1
@@ -149,7 +178,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     stdin_read_char_type = type_count
     type_count += 1
   }
-  if ctx.need_fs {
+  if ctx.need_fs && not(ctx.fs_host_imports) {
     // fs_get_dirs_type: (i32) -> () — shared by get-directories and resource-drop
     fs_get_dirs_type = type_count
     type_count += 1
@@ -207,6 +236,17 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     type_count += 1
     // (i64, i64, i64, i64) -> i64
     http_host_arity4_type = type_count
+    type_count += 1
+  }
+  if ctx.need_fs && ctx.fs_host_imports {
+    // () -> i64
+    fs_host_arity0_type = type_count
+    type_count += 1
+    // (i64) -> i64
+    fs_host_arity1_type = type_count
+    type_count += 1
+    // (i64, i64) -> i64
+    fs_host_arity2_type = type_count
     type_count += 1
   }
   let builtin_count = type_count
@@ -352,7 +392,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     type_sec.push((127).to_byte())
     write_u32_leb(type_sec, 0)
   }
-  if ctx.need_fs {
+  if ctx.need_fs && not(ctx.fs_host_imports) {
     // fs_get_dirs_type: (func (param i32) -> ()) — get-directories & resource-drop
     type_sec.push((96).to_byte())
     write_u32_leb(type_sec, 1)
@@ -486,6 +526,26 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     write_u32_leb(type_sec, 1)
     type_sec.push((126).to_byte()) // i64
   }
+  if ctx.need_fs && ctx.fs_host_imports {
+    // fs_host_arity0_type: (func (result i64))
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 0)
+    write_u32_leb(type_sec, 1)
+    type_sec.push((126).to_byte()) // i64
+    // fs_host_arity1_type: (func (param i64) (result i64))
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 1)
+    type_sec.push((126).to_byte()) // i64
+    write_u32_leb(type_sec, 1)
+    type_sec.push((126).to_byte()) // i64
+    // fs_host_arity2_type: (func (param i64 i64) (result i64))
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 2)
+    type_sec.push((126).to_byte()) // i64
+    type_sec.push((126).to_byte()) // i64
+    write_u32_leb(type_sec, 1)
+    type_sec.push((126).to_byte()) // i64
+  }
   for sig in ctx.fn_sig_order {
     write_func_type(type_sec, sig.params, sig.results)
   }
@@ -611,8 +671,13 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   if ctx.need_stdin_read_char {
     func_import_count += 2
   }
-  if ctx.need_fs {
+  if ctx.need_fs && not(ctx.fs_host_imports) {
     func_import_count += 7
+  }
+  if ctx.need_fs && ctx.fs_host_imports {
+    // fs host imports: read_file, exists, stat_token, write_file, write_bytes,
+    // readdir, getcwd, chdir, is_dir, is_file, mkdir, mkdir_p, remove, rename, copy, append
+    func_import_count += 16
   }
   if ctx.need_socket {
     func_import_count += 13
@@ -745,7 +810,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, stdin_read_char_type)
     }
-    if ctx.need_fs {
+    if ctx.need_fs && not(ctx.fs_host_imports) {
       // 1. get-directories
       write_name(import_sec, "wasi:filesystem/preopens@0.2.6")
       write_name(import_sec, "get-directories")
@@ -781,6 +846,25 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       write_name(import_sec, "[resource-drop]descriptor")
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, fs_get_dirs_type)
+    }
+    if ctx.need_fs && ctx.fs_host_imports {
+      // Fs host imports: all tagged i64 calling convention
+      write_fs_host_import(import_sec, "Fs::read_file", fs_host_arity1_type)
+      write_fs_host_import(import_sec, "Fs::exists", fs_host_arity1_type)
+      write_fs_host_import(import_sec, "Fs::stat_token", fs_host_arity1_type)
+      write_fs_host_import(import_sec, "Fs::write_file", fs_host_arity2_type)
+      write_fs_host_import(import_sec, "Fs::write_bytes", fs_host_arity2_type)
+      write_fs_host_import(import_sec, "Fs::readdir", fs_host_arity1_type)
+      write_fs_host_import(import_sec, "Fs::getcwd", fs_host_arity0_type)
+      write_fs_host_import(import_sec, "Fs::chdir", fs_host_arity1_type)
+      write_fs_host_import(import_sec, "Fs::is_dir", fs_host_arity1_type)
+      write_fs_host_import(import_sec, "Fs::is_file", fs_host_arity1_type)
+      write_fs_host_import(import_sec, "Fs::mkdir", fs_host_arity1_type)
+      write_fs_host_import(import_sec, "Fs::mkdir_p", fs_host_arity1_type)
+      write_fs_host_import(import_sec, "Fs::remove", fs_host_arity1_type)
+      write_fs_host_import(import_sec, "Fs::rename", fs_host_arity2_type)
+      write_fs_host_import(import_sec, "Fs::copy", fs_host_arity2_type)
+      write_fs_host_import(import_sec, "Fs::append", fs_host_arity2_type)
     }
     if ctx.need_socket {
       // 1. instance-network
@@ -1034,11 +1118,12 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let coverage_count = ctx.coverage_points.length()
   let coverage_bytes = coverage_count * 4
   let exported_env_global_count = ctx.exported_fn_env_globals.length()
+  let need_fs_global = ctx.need_fs && not(ctx.fs_host_imports)
   let need_globals = ctx.use_heap_global ||
     ctx.need_stack_switching ||
     ctx.need_effect_resume ||
     ctx.coverage_enabled ||
-    ctx.need_fs ||
+    need_fs_global ||
     ctx.need_socket ||
     exported_env_global_count > 0
   // In linked mode, __heap_ptr is imported (not defined in global section)
@@ -1049,7 +1134,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       (if ctx.need_stack_switching { 1 } else { 0 }) +
       (if ctx.need_effect_resume { 3 } else { 0 }) +
       (if ctx.coverage_enabled { 2 } else { 0 }) +
-      (if ctx.need_fs { 1 } else { 0 }) +
+      (if need_fs_global { 1 } else { 0 }) +
       (if ctx.need_socket { 1 } else { 0 }) +
       exported_env_global_count
     write_u32_leb(global_sec, global_count)
@@ -1100,7 +1185,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       emit_i32_const_raw(global_sec, coverage_count)
       global_sec.push((11).to_byte()) // end
     }
-    if ctx.need_fs {
+    if need_fs_global {
       // fs_root_descriptor global: i32, mutable, init = -1 (uninitialized)
       global_sec.push((127).to_byte()) // i32
       global_sec.push((1).to_byte()) // mutable
@@ -1120,7 +1205,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
         (if ctx.need_stack_switching { 1 } else { 0 }) +
         (if ctx.need_effect_resume { 3 } else { 0 }) +
         (if ctx.coverage_enabled { 2 } else { 0 }) +
-        (if ctx.need_fs { 1 } else { 0 }) +
+        (if need_fs_global { 1 } else { 0 }) +
         (if ctx.need_socket { 1 } else { 0 })
       for name, _ in ctx.exported_fn_env_globals {
         // Mutable i32 global, initial value 0
@@ -1141,7 +1226,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let need_cabi_realloc_export = ctx.need_stdin_read_char ||
     ctx.need_socket ||
     ctx.need_http ||
-    ctx.need_fs ||
+    need_fs_global ||
     ctx.force_cabi_realloc
   let need_http_host_string_new_export = ctx.need_http && ctx.http_host_imports
   let emit_start = not(ctx.library_mode)
@@ -1155,7 +1240,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     (if ctx.need_exceptions { 1 } else { 0 }) +
     (if ctx.need_stack_switching { 3 } else { 0 }) + // await_tag + sleep_tag + global
     (if ctx.coverage_enabled { 2 } else { 0 }) +
-    (if ctx.need_fs { 1 } else { 0 }) +
+    (if need_fs_global { 1 } else { 0 }) +
     (if ctx.use_heap_global { 1 } else { 0 }) + // __heap_ptr global
     (if export_funcref_table { 1 } else { 0 })
   let export_sec = ByteBuf::new()
@@ -1255,7 +1340,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     export_sec.push((3).to_byte()) // global export
     write_u32_leb(export_sec, 0)
   }
-  if ctx.need_fs {
+  if need_fs_global {
     write_name(export_sec, "__fs_root_descriptor")
     export_sec.push((3).to_byte()) // global export
     write_u32_leb(export_sec, fs_root_descriptor_global_index(ctx))
@@ -3027,8 +3112,11 @@ fn emit_module_with_coverage(
     if ctx.need_stdin_read_char {
       pre_import_count += 2
     }
-    if ctx.need_fs {
+    if ctx.need_fs && not(ctx.fs_host_imports) {
       pre_import_count += 7
+    }
+    if ctx.need_fs && ctx.fs_host_imports {
+      pre_import_count += 16
     }
     if ctx.need_socket {
       pre_import_count += 13
@@ -3339,7 +3427,7 @@ fn emit_module_with_coverage(
     let mut env_global_idx = (if ctx.use_heap_global { 1 } else { 0 }) +
       (if ctx.need_stack_switching { 1 } else { 0 }) +
       (if ctx.coverage_enabled { 2 } else { 0 }) +
-      (if ctx.need_fs { 1 } else { 0 }) +
+      (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 }) +
       (if ctx.need_socket { 1 } else { 0 })
     for name, _ in ctx.exported_fn_env_globals {
       ctx.exported_fn_env_globals[name] = env_global_idx
@@ -3427,7 +3515,7 @@ fn emit_module_with_coverage(
   if ctx.need_stdin_read_char ||
     ctx.need_socket ||
     ctx.need_http ||
-    ctx.need_fs ||
+    (ctx.need_fs && not(ctx.fs_host_imports)) ||
     ctx.force_cabi_realloc {
     let cabi_realloc_sig = FuncSig::{
       params: [ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32],
@@ -3497,6 +3585,7 @@ pub fn emit_module_wasm_with_options(
     embed_error_strings=options.embed_error_strings,
     http_host_imports=options.http_host_imports,
     http_component_wasi_shim=options.http_component_wasi_shim,
+    fs_host_imports=options.fs_host_imports,
     force_cabi_realloc=options.force_cabi_realloc,
     library_mode=options.library_mode,
   )
@@ -3541,6 +3630,7 @@ pub fn emit_module_wasm_with_coverage_options(
     embed_error_strings=options.embed_error_strings,
     http_host_imports=options.http_host_imports,
     http_component_wasi_shim=options.http_component_wasi_shim,
+    fs_host_imports=options.fs_host_imports,
   )
   emit_module_with_coverage(ctx, ast)
 }

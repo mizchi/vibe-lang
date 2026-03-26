@@ -52,6 +52,7 @@ pub struct WasmEmitOptions {
   embed_error_strings : Bool
   http_host_imports : Bool
   http_component_wasi_shim : Bool
+  fs_host_imports : Bool
   force_cabi_realloc : Bool
   /// Library mode: skip _start generation, export all functions.
   /// Produces a .wasm suitable for `wasmtime --preload`.
@@ -66,6 +67,7 @@ pub fn wasm_emit_options(
   embed_error_strings? : Bool = false,
   http_host_imports? : Bool = false,
   http_component_wasi_shim? : Bool = false,
+  fs_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
   library_mode? : Bool = false,
   linked_imports? : Array[(String, String, Int, Int)] = [],
@@ -74,6 +76,7 @@ pub fn wasm_emit_options(
     embed_error_strings,
     http_host_imports,
     http_component_wasi_shim,
+    fs_host_imports,
     force_cabi_realloc,
     library_mode,
     linked_imports,
