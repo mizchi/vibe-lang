@@ -1,52 +1,58 @@
+// Optimized zlib tests: consolidated to minimize expensive interpreter calls.
+// Previously 6 tests (~4min total); now 2 tests targeting <30s.
+// Run via CI job or: vibe test vibe/wasm/wasm_opt/minify_zlib_test.vibe
+// See: https://github.com/mizchi/vibe-lang/issues/13
+
 //# Imports
 
 import ./index.vibe {
-  binary_size, count_exports, count_functions, count_types, minify, minify_fast, section_sizes, strip_custom_sections
+  minify, minify_fast, binary_size, count_functions, count_exports,
+  strip_custom_sections
 }
 
 //# Misc
 
-test "zlib.wasm is valid" {
+// zlib.wasm: 171100 bytes
+// vibe minify:      57878 bytes (66.2% reduction, wasmtime validated)
+// vibe minify_fast:  72020 bytes (57.9%)
+// wite(-O1):         69644 bytes (59.3%)
+// wasm-opt(-Oz):     66146 bytes (61.3%)
+
+// Light pass: validate file, counts, strip, and minify_fast in one test.
+// Avoids calling the expensive full minify pipeline.
+test "zlib.wasm light: valid + counts + strip + minify_fast" {
   let bytes = Fs::read_bytes("vibe/wasm/wasm_opt/__fixtures/zlib.wasm")
+  // valid header
   assert_true(binary_size(bytes) == 171100)
   assert_true(bytes[0] == 0)
   assert_true(bytes[4] == 1)
-}
-
-test "zlib.wasm strip custom ~72K" {
-  let stripped = strip_custom_sections(Fs::read_bytes("vibe/wasm/wasm_opt/__fixtures/zlib.wasm"))
-  assert_true(binary_size(stripped) == 72020)
-}
-
-test "zlib.wasm counts" {
-  let bytes = Fs::read_bytes("vibe/wasm/wasm_opt/__fixtures/zlib.wasm")
+  // counts
   assert_true(count_functions(bytes) > 100)
   assert_true(count_exports(bytes) > 0)
+  // strip custom sections
+  let stripped = strip_custom_sections(bytes)
+  assert_true(binary_size(stripped) == 72020)
+  // minify_fast
+  let fast = minify_fast(bytes)
+  assert_true(binary_size(fast) == 72020)
+  assert_true(count_exports(fast) == count_exports(bytes))
+  assert_true(count_functions(fast) == count_functions(bytes))
 }
 
-test "zlib.wasm minify_fast" {
-  let bytes = Fs::read_bytes("vibe/wasm/wasm_opt/__fixtures/zlib.wasm")
-  let opt = minify_fast(bytes)
-  assert_true(binary_size(opt) == 72020)
-  assert_true(count_exports(opt) == count_exports(bytes))
-  assert_true(count_functions(opt) == count_functions(bytes))
-}
-
-test "zlib.wasm minify valid header" {
+// Heavy pass: single minify call validates header, counts, and size target.
+test "zlib.wasm heavy: minify header + beats wasm-opt" {
   let opt = minify(Fs::read_bytes("vibe/wasm/wasm_opt/__fixtures/zlib.wasm"))
+  // valid header
   assert_true(opt[0] == 0)
   assert_true(opt[1] == 97)
   assert_true(opt[4] == 1)
+  // structure preserved
   assert_true(count_functions(opt) > 0)
   assert_true(count_exports(opt) > 0)
-}
-
-test "zlib.wasm minify beats wasm-opt" {
-  let opt = minify(Fs::read_bytes("vibe/wasm/wasm_opt/__fixtures/zlib.wasm"))
+  // size: must beat wasm-opt(-Oz) = 66146
   let n = binary_size(opt)
-  // Must beat wasm-opt(-Oz) = 66146
   assert_true(n < 66146)
-  // Pin to measured value
+  // Pin to measured range
   assert_true(n > 55000)
   assert_true(n < 60000)
 }
