@@ -3740,7 +3740,7 @@ fn handle_cd_builtin(
   }
   if process_chdir(target) {
     // Update runtime cwd directly
-    rt.cwd = @io.current_dir_or_root()
+    rt.set_cwd(@io.current_dir_or_root())
   } else {
     print_line("cd: no such file or directory: " + arg)
   }
