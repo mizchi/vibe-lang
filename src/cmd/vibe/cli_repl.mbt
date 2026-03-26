@@ -39,9 +39,7 @@ fn repl_cmd(
   if posix_mode {
     match permissions {
       Some(_) =>
-        @stdio.stderr.write_line(
-          "posix: sandbox permissions active",
-        )
+        println("posix: sandbox permissions active")
       None => ()
     }
   }
