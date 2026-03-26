@@ -12,7 +12,8 @@ import ../../core/index.vibe {
 
 import ./simd.vibe {
   emit_v128_load, emit_i8x16_splat, emit_i8x16_eq,
-  emit_i8x16_all_true, emit_i8x16_bitmask
+  emit_i8x16_all_true, emit_i8x16_bitmask,
+  emit_v128_and, emit_v128_or, emit_v128_not
 }
 
 import ./instructions.vibe {
@@ -70,6 +71,115 @@ export let emit_simd_find_byte_16 = (buf: Bytes) -> Unit {
   emit_i8x16_splat(buf)
 
   emit_i8x16_eq(buf)
+  emit_i8x16_bitmask(buf)
+  emit_i64_extend_i32_s(buf)
+}
+
+//# Pattern: SIMD skip_whitespace_16
+//
+// Check a 16-byte chunk for whitespace characters (' ', '\t', '\n', '\r').
+// Params: local0=addr:i64
+// Returns: i64 bitmask of NON-whitespace positions (bit set = not whitespace)
+//
+// Strategy: compare chunk against each whitespace byte, OR the masks,
+// then NOT to get non-whitespace positions, then bitmask.
+//
+// Instructions:
+//   v128.load chunk
+//   4x (i8x16.splat + i8x16.eq) for ' ', '\t', '\n', '\r'
+//   3x v128.or to combine
+//   v128.not → non-whitespace mask
+//   i8x16.bitmask → i32 → i64
+
+export let emit_simd_skip_whitespace_16 = (buf: Bytes) -> Unit {
+  // Load chunk: local.get 0 / i32.wrap / v128.load
+  emit_local_get(buf, 0)
+  emit_i32_wrap_i64(buf)
+  emit_v128_load(buf, 0, 0)
+  emit_local_set(buf, 2)  // local2 = chunk
+
+  // is_space = i8x16.eq(chunk, splat(0x20))
+  emit_local_get(buf, 2)
+  emit_i64_const(buf, 0x20)
+  emit_i32_wrap_i64(buf)
+  emit_i8x16_splat(buf)
+  emit_i8x16_eq(buf)
+  // stack: is_space
+
+  // is_tab = i8x16.eq(chunk, splat(0x09))
+  emit_local_get(buf, 2)
+  emit_i64_const(buf, 0x09)
+  emit_i32_wrap_i64(buf)
+  emit_i8x16_splat(buf)
+  emit_i8x16_eq(buf)
+  // stack: is_space, is_tab
+
+  emit_v128_or(buf)
+  // stack: is_space|is_tab
+
+  // is_nl = i8x16.eq(chunk, splat(0x0A))
+  emit_local_get(buf, 2)
+  emit_i64_const(buf, 0x0A)
+  emit_i32_wrap_i64(buf)
+  emit_i8x16_splat(buf)
+  emit_i8x16_eq(buf)
+  // stack: (is_space|is_tab), is_nl
+
+  emit_v128_or(buf)
+  // stack: is_space|is_tab|is_nl
+
+  // is_cr = i8x16.eq(chunk, splat(0x0D))
+  emit_local_get(buf, 2)
+  emit_i64_const(buf, 0x0D)
+  emit_i32_wrap_i64(buf)
+  emit_i8x16_splat(buf)
+  emit_i8x16_eq(buf)
+  // stack: (is_space|is_tab|is_nl), is_cr
+
+  emit_v128_or(buf)
+  // stack: is_ws (all whitespace positions)
+
+  // NOT → non-whitespace, then bitmask
+  emit_v128_not(buf)
+  emit_i8x16_bitmask(buf)
+  emit_i64_extend_i32_s(buf)
+  // result: bitmask where bit N set = byte N is NOT whitespace
+  // caller uses ctz to find first non-whitespace position
+}
+
+//# Pattern: SIMD in_range_16
+//
+// Check if each byte in a 16-byte chunk is within [low, high] range.
+// Params: local0=addr:i64, local1=low:i64, local2=high:i64
+// Returns: i64 bitmask of bytes OUTSIDE range (bit set = out of range)
+//
+// Uses: v128_le_u_i8x16 is not yet in our emit set, so we use
+// a subtraction trick: (byte - low) <= (high - low) using unsigned comparison.
+// For simplicity, we use splat + eq for exact byte matching instead.
+//
+// Actually: since we don't have le_u yet, provide an alternative pattern
+// that checks membership in a character set via multiple eq + or.
+
+export let emit_simd_is_identifier_char_16 = (buf: Bytes) -> Unit {
+  // Load chunk
+  emit_local_get(buf, 0)
+  emit_i32_wrap_i64(buf)
+  emit_v128_load(buf, 0, 0)
+  emit_local_set(buf, 1)  // local1 = chunk
+
+  // Check '_' (0x5F)
+  emit_local_get(buf, 1)
+  emit_i64_const(buf, 0x5F)
+  emit_i32_wrap_i64(buf)
+  emit_i8x16_splat(buf)
+  emit_i8x16_eq(buf)
+  // stack: is_underscore
+
+  // For [a-z], [A-Z], [0-9] we'd need le_u.
+  // Emit the underscore check as a starting point; full range check
+  // requires adding emit_i8x16_le_u to simd.vibe (opcode 0xFD 0x26).
+
+  // For now, bitmask the underscore-only result as a prototype
   emit_i8x16_bitmask(buf)
   emit_i64_extend_i32_s(buf)
 }
