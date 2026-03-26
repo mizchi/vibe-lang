@@ -3031,6 +3031,16 @@ fn run_test_file_compiled_with_cache(
       failures: [],
     })
   }
+  // ADR-0026: Pure test result cache — skip execution when all tests are
+  // effect-free and source hashes match.
+  let current_hashes = collect_source_hash_cache(db, entry, true)
+  let pure_cache_result = pure_test_cache_lookup(
+    db, entry, ast, cases, current_hashes,
+  )
+  match pure_cache_result {
+    Some(report) => return CompiledTestAttempt::Success(report)
+    None => ()
+  }
   let runner = match resolve_bench_wasm_runner(entry) {
     Ok(v) => v
     Err(err) => return CompiledTestAttempt::Unsupported(err)
@@ -3038,7 +3048,6 @@ fn run_test_file_compiled_with_cache(
   let (test_cache_dir, cached_batch_wasm_path, cached_batch_hash_path) = compiled_test_batch_cache_paths(
     entry, use_http_host_runner,
   )
-  let current_hashes = collect_source_hash_cache(db, entry, true)
   let use_cached_batch_wasm = if @os_fs.path_exists(cached_batch_wasm_path) &&
     @os_fs.path_exists(cached_batch_hash_path) {
     let saved_hashes = parse_source_hash_cache(
@@ -3192,6 +3201,8 @@ fn run_test_file_compiled_with_cache(
       runner, http_runner, use_http_host_runner, stop_on_first_failure,
     )
   } else {
+    // ADR-0026: Save pure test result cache on success
+    pure_test_cache_save(db, entry, ast, cases, current_hashes)
     CompiledTestAttempt::Success({
       total: cases.length(),
       passed: cases.length(),
@@ -7929,4 +7940,147 @@ fn parse_linked_imports_cache(text : String) -> Array[@runtime.LinkedImport] {
     }
   }
   out
+}
+
+///|
+/// ADR-0026: Check if all test blocks in a module are effect-free (pure).
+/// Returns true when every test body can be safely cached.
+fn all_test_blocks_pure(
+  db : @runtime.VibeDb,
+  entry : String,
+  cases : Array[CompiledTestCase],
+) -> Bool {
+  let env = db.types(entry)
+  for case in cases {
+    if not(@checker.purity_block(env, case.body)) {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// ADR-0026: Build the cache key for pure test results.
+/// Combines all source hashes into a single deterministic string.
+fn pure_test_cache_key(current_hashes : Map[String, String]) -> String {
+  let buf = StringBuilder::new()
+  let keys : Array[String] = []
+  for path, _ in current_hashes {
+    keys.push(path)
+  }
+  keys.sort()
+  for path in keys {
+    match current_hashes.get(path) {
+      Some(hash) => {
+        buf.write_string(path)
+        buf.write_char(':')
+        buf.write_string(hash)
+        buf.write_char('\n')
+      }
+      None => ()
+    }
+  }
+  @vibe_core.content_address_hash_string(buf.to_string())
+}
+
+///|
+/// ADR-0026: Compute the file paths for pure test result cache.
+fn pure_test_result_cache_paths(entry : String) -> (String, String) {
+  let resolved = @loader.resolve_entry_path(entry)
+  let (vibe_root, cache_key) = find_vibe_cache_root(resolved)
+  let cache_dir = vibe_root + "/test/" + cache_key
+  let result_path = cache_dir + "/pure_result.txt"
+  (cache_dir, result_path)
+}
+
+///|
+/// ADR-0026: Look up cached test results for pure test files.
+/// Returns Some(report) if cache hit (all tests pure + hashes match), None otherwise.
+fn pure_test_cache_lookup(
+  db : @runtime.VibeDb,
+  entry : String,
+  ast : @vibe_core.Module,
+  cases : Array[CompiledTestCase],
+  current_hashes : Map[String, String],
+) -> CliTestReport? {
+  let _ = ast
+  // Skip cache if env var says so
+  match @sys.get_env_var("VIBE_NO_TEST_CACHE") {
+    Some(v) if v.length() > 0 => return None
+    _ => ()
+  }
+  if not(all_test_blocks_pure(db, entry, cases)) {
+    return None
+  }
+  let (_cache_dir, result_path) = pure_test_result_cache_paths(entry)
+  if not(@os_fs.path_exists(result_path)) {
+    return None
+  }
+  let saved_text = @os_fs.read_file_to_string(result_path) catch {
+    _ => return None
+  }
+  // Format: "hash\tcount\n" where hash is the combined source hash
+  let lines : Array[String] = []
+  for line_view in saved_text.split("\n") {
+    let line = line_view.to_string().trim().to_string()
+    if line.length() > 0 {
+      lines.push(line)
+    }
+  }
+  if lines.length() == 0 {
+    return None
+  }
+  let parts : Array[String] = []
+  for part_view in lines[0].split("\t") {
+    parts.push(part_view.to_string())
+  }
+  if parts.length() < 2 {
+    return None
+  }
+  let saved_hash = parts[0]
+  let saved_count : Result[Int, _] = try? @strconv.parse_int(parts[1])
+  let expected_count = match saved_count {
+    Ok(n) => n
+    Err(_) => return None
+  }
+  let current_hash = pure_test_cache_key(current_hashes)
+  if saved_hash != current_hash {
+    return None
+  }
+  if expected_count != cases.length() {
+    return None
+  }
+  Some(CliTestReport::{
+    total: expected_count,
+    passed: expected_count,
+    failed: 0,
+    failures: [],
+  })
+}
+
+///|
+/// ADR-0026: Save pure test result to cache after successful execution.
+fn pure_test_cache_save(
+  db : @runtime.VibeDb,
+  entry : String,
+  ast : @vibe_core.Module,
+  cases : Array[CompiledTestCase],
+  current_hashes : Map[String, String],
+) -> Unit {
+  let _ = ast
+  if not(all_test_blocks_pure(db, entry, cases)) {
+    return
+  }
+  let (cache_dir, result_path) = pure_test_result_cache_paths(entry)
+  match ensure_parent_dir_for_file(result_path, "pure test cache") {
+    Ok(_) => {
+      let _ = cache_dir
+      let hash = pure_test_cache_key(current_hashes)
+      let content = hash + "\t" + cases.length().to_string() + "\n"
+      @os_fs.write_string_to_file(result_path, content) catch {
+        _ => ()
+      }
+    }
+    Err(_) => ()
+  }
 }
