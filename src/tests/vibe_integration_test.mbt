@@ -1572,3 +1572,53 @@ test "stage0 checker vs wasm compile: error parity" {
     fail("stage0 error parity: \{ok} ok, \{failures.length()} fail:\n\{detail}")
   }
 }
+
+///|
+test "match arm mutable variable propagation" {
+  let source =
+    #|let f = () -> Int {
+    #|  let mut count = 0
+    #|  match Some(1) {
+    #|    Some(x) => { count = count + 1 }
+    #|    None => ()
+    #|  }
+    #|  count
+    #|}
+    #|f()
+  let db = VibeDb::new()
+  db.set_source("main", source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  rt.set_type_env(compiled.type_env)
+  let result = rt.eval_module(compiled.ast)
+  match result.last {
+    Some(@core.Value::Int(v)) => assert_eq(v, 1)
+    _ as v => fail("expected Int(1), got \{v}")
+  }
+}
+
+///|
+test "match arm mutable variable propagation with multiple arms" {
+  let source =
+    #|let f = (opt: Option[Int]) -> Int {
+    #|  let mut result = 0
+    #|  match opt {
+    #|    Some(x) => { result = x * 10 }
+    #|    None => { result = 99 }
+    #|  }
+    #|  result
+    #|}
+    #|let a = f(Some(3))
+    #|let b = f(None)
+    #|a + b
+  let db = VibeDb::new()
+  db.set_source("main", source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  rt.set_type_env(compiled.type_env)
+  let result = rt.eval_module(compiled.ast)
+  match result.last {
+    Some(@core.Value::Int(v)) => assert_eq(v, 129)
+    _ as v => fail("expected Int(129), got \{v}")
+  }
+}
