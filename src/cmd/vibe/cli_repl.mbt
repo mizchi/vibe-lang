@@ -2098,6 +2098,7 @@ fn repl_tui_cmd(
         push_output_line,
       ) {
       ReplMetaCommandResult::HandledExit => return false
+      ReplMetaCommandResult::HandledLoadSource(_) => return false
       ReplMetaCommandResult::HandledContinue => return true
       ReplMetaCommandResult::NotMeta => ()
     }
@@ -2111,6 +2112,7 @@ fn repl_tui_cmd(
         push_output_line,
       ) {
       ReplMetaCommandResult::HandledExit => return false
+      ReplMetaCommandResult::HandledLoadSource(_) => return false
       ReplMetaCommandResult::HandledContinue => return true
       ReplMetaCommandResult::NotMeta => ()
     }
@@ -2947,7 +2949,7 @@ fn run_compiled_repl_line_with_cache(
   let run_out = if use_node_runner {
     match resolve_http_host_runner(source_path) {
       Ok(http_runner) =>
-        run_http_host_invoke_capture(http_runner, wasm_path, wasm_path + ".invoke")
+        run_http_host_invoke_run_capture(http_runner, wasm_path, wasm_path + ".invoke")
       Err(_) =>
         run_wasmtime_invoke_run_capture(runner, wasm_path, wasm_path + ".invoke")
     }
@@ -3335,6 +3337,7 @@ fn repl_ai_cmd(
           println(s)
         }) {
         ReplMetaCommandResult::HandledExit => break
+        ReplMetaCommandResult::HandledLoadSource(_) => break
         ReplMetaCommandResult::HandledContinue => {
           if prompt_enabled {
             @stdio.stdout.write(prompt)
@@ -3353,6 +3356,7 @@ fn repl_ai_cmd(
           fn(s) { println(s) },
         ) {
         ReplMetaCommandResult::HandledExit => break
+        ReplMetaCommandResult::HandledLoadSource(_) => break
         ReplMetaCommandResult::HandledContinue => {
           if prompt_enabled {
             @stdio.stdout.write(prompt)

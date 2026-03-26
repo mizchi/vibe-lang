@@ -1213,14 +1213,20 @@ fn resolve_http_host_runner(
     add_root(project_root_for_path(argv[0]))
   }
   add_root(project_root_for_path(@io.current_dir_or_root()))
+  // Prefer wasm_vibe_host_runner.js (supports Fs + HTTP + Env),
+  // fall back to wasm_http_host_runner.js (HTTP only)
   for project_root in root_candidates {
-    let runner_script = project_root + "/scripts/wasm_http_host_runner.js"
-    if is_existing_file(runner_script) {
-      return Ok({ node_bin, runner_script })
+    let vibe_runner = project_root + "/scripts/wasm_vibe_host_runner.js"
+    if is_existing_file(vibe_runner) {
+      return Ok({ node_bin, runner_script: vibe_runner })
+    }
+    let http_runner = project_root + "/scripts/wasm_http_host_runner.js"
+    if is_existing_file(http_runner) {
+      return Ok({ node_bin, runner_script: http_runner })
     }
   }
   Err(
-    "http host runner script not found under project roots: " +
+    "host runner script not found under project roots: " +
     root_candidates.join(", "),
   )
 }
