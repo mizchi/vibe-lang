@@ -60,8 +60,9 @@ fn type_tree_any(ty : @core.Type, pred : (@core.Type) -> Bool) -> Bool {
       }
       false
     }
-    @core.Type::Array(inner) | @core.Type::ArrayBuilder(inner) =>
-      type_tree_any(inner, pred)
+    @core.Type::Array(inner)
+    | @core.Type::ArrayBuilder(inner)
+    | @core.Type::Set(inner) => type_tree_any(inner, pred)
     @core.Type::Map(key, inner) | @core.Type::MapBuilder(key, inner) =>
       type_tree_any(key, pred) || type_tree_any(inner, pred)
     @core.Type::Named(args~, ..) => {
@@ -189,6 +190,12 @@ fn transform_type_structure(
     @core.Type::Array(inner) =>
       if has_target(inner) {
         @core.Type::Array(walk(inner))
+      } else {
+        ty
+      }
+    @core.Type::Set(inner) =>
+      if has_target(inner) {
+        @core.Type::Set(walk(inner))
       } else {
         ty
       }

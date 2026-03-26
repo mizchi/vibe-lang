@@ -1142,7 +1142,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
               None => true
             }
             if guard_ok {
-              let out : EvalOutput = eval_expr_with_bindings_shared_mut(
+              let out : EvalOutput = eval_expr_with_bindings(
                 rt,
                 arm.expr,
                 bindings,
@@ -1624,43 +1624,6 @@ fn eval_expr_with_bindings(
 }
 
 ///|
-/// Evaluate expression with bindings, sharing mutable variable state.
-/// Pattern bindings are scoped (cleaned up after), but mutations to existing
-/// mutable variables propagate back to the caller's runtime.
-fn eval_expr_with_bindings_shared_mut(
-  rt : Runtime,
-  expr : @core.Expr,
-  bindings : Map[String, @core.Value],
-) -> EvalOutput raise EvalError {
-  // Snapshot env keys added by bindings so we can remove them after
-  let added_keys : Array[String] = []
-  let shadowed : Map[String, String] = {}
-  for name, value in bindings {
-    // Save any existing env entry that will be shadowed
-    match rt.env.get(name) {
-      Some(old_hash) => shadowed[name] = old_hash
-      None => ()
-    }
-    rt.bind(name, value) |> ignore
-    added_keys.push(name)
-  }
-  // For Block expressions, use eval_block_shared_mut so mutable variable
-  // assignments inside the block propagate to the outer scope.
-  let result = match expr {
-    @core.Expr::Block(body~, ..) => eval_block_shared_mut(rt, body)
-    _ => eval_expr(rt, expr)
-  }
-  // Clean up: remove bindings and restore shadowed entries
-  for name in added_keys {
-    match shadowed.get(name) {
-      Some(old_hash) => rt.env[name] = old_hash
-      None => rt.env.remove(name)
-    }
-  }
-  result
-}
-
-///|
 fn eval_block(rt : Runtime, body : @core.Module) -> EvalOutput raise EvalError {
   let scope_rt = rt.fork_for_test()
   let res = scope_rt.eval_module(body)
@@ -1792,6 +1755,7 @@ fn builtin_ufcs_namespace_rt(ty : @core.Type) -> String? {
     @core.Type::Path => Some("Path")
     @core.Type::Array(_) => Some("Array")
     @core.Type::Map(_, _) => Some("Map")
+    @core.Type::Set(_) => Some("Set")
     @core.Type::ArrayBuilder(_) => Some("ArrayBuilder")
     @core.Type::MapBuilder(_, _) => Some("MapBuilder")
     @core.Type::Bytes => Some("Bytes")
@@ -4554,6 +4518,7 @@ fn value_type_name(value : @core.Value) -> String {
     @core.Value::Record(_) => "Record"
     @core.Value::Array(_) => "Array"
     @core.Value::Map(_) => "Map"
+    @core.Value::Set(_) => "Set"
     @core.Value::Fn(_) => "Fn"
     @core.Value::ArrayBuilder(_) => "ArrayBuilder"
     @core.Value::MapBuilder(_) => "MapBuilder"

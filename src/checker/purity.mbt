@@ -670,6 +670,8 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "FixedArray::length" ||
   name == "FixedArray::get" ||
   name == "Map::get" ||
+  name == "Set::contains" ||
+  name == "Set::size" ||
   name == "String::length" ||
   name == "String::utf8_length" ||
   name == "String::utf16_length" ||
@@ -695,6 +697,11 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "Map::keys" ||
   name == "Map::values" ||
   name == "Map::has_key" ||
+  name == "Set::new" ||
+  name == "Set::add" ||
+  name == "Set::remove" ||
+  name == "Set::to_array" ||
+  name == "Set::from_array" ||
   name == "Int::to_float" ||
   name == "Int::to_double" ||
   name == "Float::to_int" ||

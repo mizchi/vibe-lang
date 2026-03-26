@@ -366,6 +366,13 @@ pub fn is_builtin_name(name : String) -> Bool {
   name == "MapBuilder::new" ||
   name == "MapBuilder::set" ||
   name == "MapBuilder::freeze" ||
+  name == "Set::new" ||
+  name == "Set::add" ||
+  name == "Set::contains" ||
+  name == "Set::remove" ||
+  name == "Set::size" ||
+  name == "Set::to_array" ||
+  name == "Set::from_array" ||
   name == "Bytes::new" ||
   name == "Bytes::push" ||
   name == "Bytes::set"

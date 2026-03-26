@@ -161,6 +161,8 @@ fn function_tracking_type_to_json(ty : @vibe_core.Type) -> Json {
     @vibe_core.Type::Var(id) => obj["Var"] = Json::number(id.to_double())
     @vibe_core.Type::Array(inner) =>
       obj["Array"] = function_tracking_type_to_json(inner)
+    @vibe_core.Type::Set(inner) =>
+      obj["Set"] = function_tracking_type_to_json(inner)
     @vibe_core.Type::Map(_key, inner) =>
       obj["Map"] = function_tracking_type_to_json(inner)
     @vibe_core.Type::ArrayBuilder(inner) =>
@@ -357,6 +359,11 @@ fn function_tracking_type_from_json(json : Json) -> @vibe_core.Type? {
       "Array" =>
         match function_tracking_type_from_json(value) {
           Some(inner) => return Some(@vibe_core.Type::Array(inner))
+          None => return None
+        }
+      "Set" =>
+        match function_tracking_type_from_json(value) {
+          Some(inner) => return Some(@vibe_core.Type::Set(inner))
           None => return None
         }
       "Map" =>

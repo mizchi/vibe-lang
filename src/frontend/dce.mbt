@@ -890,8 +890,9 @@ fn collect_refs_type(ty : @core.Type, refs : Map[String, Bool]) -> Unit {
       for _, field_ty in fields {
         collect_refs_type(field_ty, refs)
       }
-    @core.Type::Array(inner) | @core.Type::ArrayBuilder(inner) =>
-      collect_refs_type(inner, refs)
+    @core.Type::Array(inner)
+    | @core.Type::ArrayBuilder(inner)
+    | @core.Type::Set(inner) => collect_refs_type(inner, refs)
     @core.Type::Map(_key, inner) | @core.Type::MapBuilder(_key, inner) =>
       collect_refs_type(inner, refs)
     @core.Type::StringBuilder | @core.Type::Bytes | @core.Type::V128 => ()

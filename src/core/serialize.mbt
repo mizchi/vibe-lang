@@ -793,6 +793,11 @@ fn serialize_type_to(ty : Type, buf : StringBuilder) -> Unit {
       serialize_type_to(value, buf)
       buf.write_string("]}")
     }
+    Type::Set(elem) => {
+      buf.write_string("{\"Set\":")
+      serialize_type_to(elem, buf)
+      buf.write_char('}')
+    }
     Type::ArrayBuilder(elem) => {
       buf.write_string("{\"ArrayBuilder\":")
       serialize_type_to(elem, buf)

@@ -683,6 +683,7 @@ fn type_to_sexp(ty : @core.Type) -> String {
       buf.to_string()
     }
     @core.Type::Array(inner) => "(Array " + type_to_sexp(inner) + ")"
+    @core.Type::Set(inner) => "(Set " + type_to_sexp(inner) + ")"
     @core.Type::Map(_key, inner) => "(Map " + type_to_sexp(inner) + ")"
     @core.Type::ArrayBuilder(inner) =>
       "(ArrayBuilder " + type_to_sexp(inner) + ")"

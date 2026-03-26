@@ -48,8 +48,9 @@ fn has_num_type(ty : @core.Type) -> Bool {
       }
       found
     }
-    @core.Type::Array(inner) | @core.Type::ArrayBuilder(inner) =>
-      has_num_type(inner)
+    @core.Type::Array(inner)
+    | @core.Type::ArrayBuilder(inner)
+    | @core.Type::Set(inner) => has_num_type(inner)
     @core.Type::Map(_key, inner) | @core.Type::MapBuilder(_key, inner) =>
       has_num_type(inner)
     @core.Type::Variant(fields) => {
@@ -109,6 +110,7 @@ fn replace_num_type(ty : @core.Type, num_var : @core.Type) -> @core.Type {
     }
     @core.Type::Array(inner) =>
       @core.Type::Array(replace_num_type(inner, num_var))
+    @core.Type::Set(inner) => @core.Type::Set(replace_num_type(inner, num_var))
     @core.Type::Map(key, inner) =>
       @core.Type::Map(
         replace_num_type(key, num_var),
@@ -179,6 +181,8 @@ fn substitute_type_params(
     }
     @core.Type::Array(inner) =>
       @core.Type::Array(substitute_type_params(inner, mapping))
+    @core.Type::Set(inner) =>
+      @core.Type::Set(substitute_type_params(inner, mapping))
     @core.Type::Map(key, inner) =>
       @core.Type::Map(
         substitute_type_params(key, mapping),

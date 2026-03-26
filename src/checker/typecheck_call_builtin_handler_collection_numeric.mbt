@@ -515,6 +515,112 @@ fn type_call_builtin_handler_collection_numeric(
       ensure_type(env, value_ty, elem_ty, pos_args[2].span(), "argument")
       map_ty
     }
+    "Set::new" => {
+      let _ = check_positional_arity(args, "Set::new", 0, call_span)
+      @core.Type::Set(fresh_type_var(env))
+    }
+    "Set::add" => {
+      let pos_args = check_positional_arity(args, "Set::add", 2, call_span)
+      let set_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let elem_ty = expect_set_elem_type(env, set_ty, pos_args[0].span())
+      let arg_ty = type_expr_eff(
+        env,
+        pos_args[1],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      ensure_type(env, arg_ty, elem_ty, pos_args[1].span(), "argument")
+      ensure_map_key_hashable(env, arg_ty, pos_args[1].span())
+      set_ty
+    }
+    "Set::contains" => {
+      let pos_args = check_positional_arity(args, "Set::contains", 2, call_span)
+      let set_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let elem_ty = expect_set_elem_type(env, set_ty, pos_args[0].span())
+      let arg_ty = type_expr_eff(
+        env,
+        pos_args[1],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      ensure_type(env, arg_ty, elem_ty, pos_args[1].span(), "argument")
+      ensure_map_key_hashable(env, arg_ty, pos_args[1].span())
+      @core.Type::Bool
+    }
+    "Set::remove" => {
+      let pos_args = check_positional_arity(args, "Set::remove", 2, call_span)
+      let set_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let elem_ty = expect_set_elem_type(env, set_ty, pos_args[0].span())
+      let arg_ty = type_expr_eff(
+        env,
+        pos_args[1],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      ensure_type(env, arg_ty, elem_ty, pos_args[1].span(), "argument")
+      ensure_map_key_hashable(env, arg_ty, pos_args[1].span())
+      set_ty
+    }
+    "Set::size" => {
+      let pos_args = check_positional_arity(args, "Set::size", 1, call_span)
+      let set_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let _ = expect_set_elem_type(env, set_ty, pos_args[0].span())
+      @core.Type::Int
+    }
+    "Set::to_array" => {
+      let pos_args = check_positional_arity(args, "Set::to_array", 1, call_span)
+      let set_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let elem_ty = expect_set_elem_type(env, set_ty, pos_args[0].span())
+      @core.Type::Array(elem_ty)
+    }
+    "Set::from_array" => {
+      let pos_args = check_positional_arity(
+        args, "Set::from_array", 1, call_span,
+      )
+      let arr_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let elem_ty = expect_array_elem_type(env, arr_ty, pos_args[0].span())
+      ensure_map_key_hashable(env, elem_ty, pos_args[0].span())
+      @core.Type::Set(elem_ty)
+    }
     "String::length"
     | "String::utf8_length"
     | "String::utf16_length"

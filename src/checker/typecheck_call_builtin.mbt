@@ -104,6 +104,17 @@ fn expect_array_elem_type(
 }
 
 ///|
+fn expect_set_elem_type(
+  env : TypeEnv,
+  actual : @core.Type,
+  span : @core.Span,
+) -> @core.Type raise TypeError {
+  let elem_ty = fresh_type_var(env)
+  ensure_type(env, actual, @core.Type::Set(elem_ty), span, "argument")
+  elem_ty
+}
+
+///|
 fn expect_map_elem_type(
   env : TypeEnv,
   actual : @core.Type,

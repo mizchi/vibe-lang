@@ -245,6 +245,12 @@ fn resolve_builtin_type_name(
       } else {
         None
       }
+    "Set" =>
+      if args.length() == 1 {
+        Some(@core.Type::Set(args[0]))
+      } else {
+        None
+      }
     "ArrayBuilder" =>
       if args.length() == 1 {
         Some(@core.Type::ArrayBuilder(args[0]))
@@ -536,6 +542,12 @@ fn normalize_type_inner(
           normalize_type_inner(env, inner, visiting, expand_enum),
         )
       }
+    @core.Type::Set(inner) =>
+      if not(type_has_named_node(inner)) {
+        ty
+      } else {
+        @core.Type::Set(normalize_type_inner(env, inner, visiting, expand_enum))
+      }
     @core.Type::ArrayBuilder(inner) =>
       if not(type_has_named_node(inner)) {
         ty
@@ -614,6 +626,7 @@ fn type_may_contain_scoped_ref_hint(ty : @core.Type) -> Bool {
           | "Bytes"
           | "Array"
           | "Map"
+          | "Set"
           | "ArrayBuilder"
           | "MapBuilder"
           | "i64"
@@ -887,7 +900,9 @@ fn type_contains_scoped_ref_inner_fast(
       }
       false
     }
-    @core.Type::Array(inner) | @core.Type::ArrayBuilder(inner) =>
+    @core.Type::Array(inner)
+    | @core.Type::ArrayBuilder(inner)
+    | @core.Type::Set(inner) =>
       type_contains_scoped_ref_inner_fast(env, inner, visiting, name_cache)
     @core.Type::Map(_key, inner) | @core.Type::MapBuilder(_key, inner) =>
       type_contains_scoped_ref_inner_fast(env, inner, visiting, name_cache)
@@ -1113,6 +1128,8 @@ pub fn is_type_subtype(
       ok
     }
     (@core.Type::Array(sub_inner), @core.Type::Array(sup_inner)) =>
+      is_type_subtype(env, sub_inner, sup_inner)
+    (@core.Type::Set(sub_inner), @core.Type::Set(sup_inner)) =>
       is_type_subtype(env, sub_inner, sup_inner)
     (@core.Type::Map(sub_key, sub_inner), @core.Type::Map(sup_key, sup_inner)) =>
       is_type_subtype(env, sub_key, sup_key) &&
@@ -1372,6 +1389,8 @@ fn unify_types_inner(
       }
     (@core.Type::Array(ae), @core.Type::Array(be)) =>
       unify_types_inner(env, ae, be, cache)
+    (@core.Type::Set(ae), @core.Type::Set(be)) =>
+      unify_types_inner(env, ae, be, cache)
     (@core.Type::Map(ak, av), @core.Type::Map(bk, bv)) =>
       unify_types_inner(env, ak, bk, cache) &&
       unify_types_inner(env, av, bv, cache)
@@ -1544,7 +1563,8 @@ fn occurs_in(env : TypeEnv, id : Int, ty : @core.Type) -> Bool {
       }
       false
     }
-    @core.Type::Array(inner) => occurs_in(env, id, inner)
+    @core.Type::Array(inner) | @core.Type::Set(inner) =>
+      occurs_in(env, id, inner)
     @core.Type::Map(_key, inner) => occurs_in(env, id, inner)
     @core.Type::Named(args~, ..) => {
       for arg in args {

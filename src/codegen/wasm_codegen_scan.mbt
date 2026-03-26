@@ -94,8 +94,7 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         | "to_double"
         | "Int::parse"
         | "Double::parse"
-        | "__slice" =>
-          ctx.need_heap = true
+        | "__slice" => ctx.need_heap = true
         "Char::to_int" | "Char::from_int" => ()
         "__to_string" => if not(ctx.use_js_strings) { ctx.need_heap = true }
         _ =>

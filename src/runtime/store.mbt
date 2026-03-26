@@ -570,6 +570,7 @@ fn value_hash(value : @core.Value) -> String {
     @core.Value::Record(_) => "r:"
     @core.Value::Array(_) => "a:"
     @core.Value::Map(_) => "m:"
+    @core.Value::Set(_) => "set:"
     @core.Value::ArrayBuilder(_) => "ab:"
     @core.Value::MapBuilder(_) => "mb:"
     @core.Value::StringBuilder(_) => "sb:"

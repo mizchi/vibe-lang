@@ -75,6 +75,13 @@ fn is_cheap_pure_builtin(name : String) -> Bool {
   name == "Map::get" ||
   name == "Map::set" ||
   name == "Map::has_key" ||
+  name == "Set::new" ||
+  name == "Set::add" ||
+  name == "Set::contains" ||
+  name == "Set::remove" ||
+  name == "Set::size" ||
+  name == "Set::to_array" ||
+  name == "Set::from_array" ||
   name == "record_set" ||
   name == "String::contains" ||
   name == "String::index_of" ||

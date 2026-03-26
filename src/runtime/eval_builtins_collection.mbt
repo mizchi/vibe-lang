@@ -249,6 +249,104 @@ fn eval_collection_builtin(
         _ => raise EvalError::BadCall(E("Map::has_key"))
       }
     }
+    "Set::new" => {
+      if args.length() != 0 {
+        raise EvalError::BadCall(E("Set::new: expected 0 arguments"))
+      }
+      let items : Map[String, @core.Value] = {}
+      Some(@core.Value::Set(items))
+    }
+    "Set::add" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall(E("Set::add: expected 2 arguments"))
+      }
+      match args[0] {
+        @core.Value::Set(items) => {
+          let key = value_to_map_key(args[1])
+          let new_set : Map[String, @core.Value] = {}
+          items.each(fn(k, v) { new_set[k] = v })
+          new_set[key] = args[1]
+          Some(@core.Value::Set(new_set))
+        }
+        _ =>
+          raise EvalError::BadCall(
+            E("Set::add: expected Set as first argument"),
+          )
+      }
+    }
+    "Set::contains" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall(E("Set::contains: expected 2 arguments"))
+      }
+      match args[0] {
+        @core.Value::Set(items) => {
+          let key = value_to_map_key(args[1])
+          Some(@core.Value::Bool(items.contains(key)))
+        }
+        _ =>
+          raise EvalError::BadCall(
+            E("Set::contains: expected Set as first argument"),
+          )
+      }
+    }
+    "Set::remove" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall(E("Set::remove: expected 2 arguments"))
+      }
+      match args[0] {
+        @core.Value::Set(items) => {
+          let key = value_to_map_key(args[1])
+          let new_set : Map[String, @core.Value] = {}
+          items.each(fn(k, v) { if k != key { new_set[k] = v } })
+          Some(@core.Value::Set(new_set))
+        }
+        _ =>
+          raise EvalError::BadCall(
+            E("Set::remove: expected Set as first argument"),
+          )
+      }
+    }
+    "Set::size" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall(E("Set::size: expected 1 argument"))
+      }
+      match args[0] {
+        @core.Value::Set(items) =>
+          Some(@core.Value::Int(items.length().to_int64()))
+        _ => raise EvalError::BadCall(E("Set::size: expected Set"))
+      }
+    }
+    "Set::to_array" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall(E("Set::to_array: expected 1 argument"))
+      }
+      match args[0] {
+        @core.Value::Set(items) => {
+          let arr : Array[@core.Value] = []
+          for _, v in items {
+            arr.push(v)
+          }
+          Some(@core.Value::Array(arr))
+        }
+        _ => raise EvalError::BadCall(E("Set::to_array: expected Set"))
+      }
+    }
+    "Set::from_array" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall(E("Set::from_array: expected 1 argument"))
+      }
+      match args[0] {
+        @core.Value::Array(items) => {
+          let set : Map[String, @core.Value] = {}
+          for item in items {
+            let key = value_to_map_key(item)
+            set[key] = item
+          }
+          Some(@core.Value::Set(set))
+        }
+        _ => raise EvalError::BadCall(E("Set::from_array: expected Array"))
+      }
+    }
     "Bytes::length" => {
       if args.length() != 1 {
         raise EvalError::BadCall(E("Bytes::length: expected 1 argument"))

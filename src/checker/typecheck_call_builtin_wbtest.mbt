@@ -503,3 +503,115 @@ test "type_call_builtin: int_ctz returns Int" {
   }
   assert_eq(actual, @core.Type::Int)
 }
+
+///|
+test "type_call_builtin: Set::new returns Set" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_call_builtin(
+    env,
+    "Set::new",
+    [],
+    aliases,
+    effect_scope_all(),
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  match actual {
+    @core.Type::Set(_) => ()
+    _ => fail("expected Set type")
+  }
+}
+
+///|
+test "type_call_builtin: Set::add returns Set" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  env.set("s", @core.Type::Set(@core.Type::Int))
+  let args = [builtin_test_ident_arg("s"), builtin_test_int_arg(42)]
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_call_builtin(
+    env,
+    "Set::add",
+    args,
+    aliases,
+    effect_scope_all(),
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  match actual {
+    @core.Type::Set(_) => ()
+    _ => fail("expected Set type")
+  }
+}
+
+///|
+test "type_call_builtin: Set::contains returns Bool" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  env.set("s", @core.Type::Set(@core.Type::Int))
+  let args = [builtin_test_ident_arg("s"), builtin_test_int_arg(42)]
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_call_builtin(
+    env,
+    "Set::contains",
+    args,
+    aliases,
+    effect_scope_all(),
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(actual, @core.Type::Bool)
+}
+
+///|
+test "type_call_builtin: Set::size returns Int" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  env.set("s", @core.Type::Set(@core.Type::Int))
+  let args = [builtin_test_ident_arg("s")]
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_call_builtin(
+    env,
+    "Set::size",
+    args,
+    aliases,
+    effect_scope_all(),
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(actual, @core.Type::Int)
+}
+
+///|
+test "type_call_builtin: Set::to_array returns Array" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  env.set("s", @core.Type::Set(@core.Type::Int))
+  let args = [builtin_test_ident_arg("s")]
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_call_builtin(
+    env,
+    "Set::to_array",
+    args,
+    aliases,
+    effect_scope_all(),
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  match actual {
+    @core.Type::Array(_) => ()
+    _ => fail("expected Array type, got " + actual.to_string())
+  }
+}

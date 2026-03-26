@@ -1092,6 +1092,12 @@ fn type_matches_impl_target(
           type_matches_impl_target(env, inner, actual_inner, mapping)
         _ => false
       }
+    @core.Type::Set(inner) =>
+      match a {
+        @core.Type::Set(actual_inner) =>
+          type_matches_impl_target(env, inner, actual_inner, mapping)
+        _ => false
+      }
     @core.Type::ArrayBuilder(inner) =>
       match a {
         @core.Type::ArrayBuilder(actual_inner) =>
@@ -1447,6 +1453,12 @@ fn trait_impl_targets_may_overlap_concrete(
     @core.Type::Map(_lkey, left_item) =>
       match right {
         @core.Type::Map(_rkey, right_item) =>
+          trait_impl_targets_may_overlap(left_item, right_item)
+        _ => false
+      }
+    @core.Type::Set(left_item) =>
+      match right {
+        @core.Type::Set(right_item) =>
           trait_impl_targets_may_overlap(left_item, right_item)
         _ => false
       }

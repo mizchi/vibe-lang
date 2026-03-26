@@ -14,6 +14,8 @@ fn substitute_param_names(
       @core.Type::Tuple(elems.map(fn(t) { substitute_param_names(t, mapping) }))
     @core.Type::Array(elem) =>
       @core.Type::Array(substitute_param_names(elem, mapping))
+    @core.Type::Set(elem) =>
+      @core.Type::Set(substitute_param_names(elem, mapping))
     @core.Type::Map(k, v) =>
       @core.Type::Map(
         substitute_param_names(k, mapping),

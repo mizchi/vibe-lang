@@ -557,6 +557,10 @@ fn parse_type(json : Json) -> Type raise DeserializeError {
             return Type::Map(parse_type(items[0]), parse_type(items[1]))
           _ => abort("Map type requires exactly 2 type arguments")
         }
+      "Set" => {
+        let elem = parse_type(value)
+        return Type::Set(elem)
+      }
       "ArrayBuilder" => {
         let elem = parse_type(value)
         return Type::ArrayBuilder(elem)

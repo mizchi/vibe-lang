@@ -118,6 +118,7 @@ fn encode_value(value : @core.Value) -> String {
     @core.Value::Record(fields) => "r:" + encode_record(fields)
     @core.Value::Array(items) => "a:" + encode_list(items)
     @core.Value::Map(fields) => "m:" + encode_record(fields)
+    @core.Value::Set(items) => "set:" + encode_record(items)
     @core.Value::ArrayBuilder(items) => "ab:" + encode_list(items)
     @core.Value::MapBuilder(fields) => "mb:" + encode_record(fields)
     @core.Value::StringBuilder(chunks) => {

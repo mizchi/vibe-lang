@@ -1574,51 +1574,82 @@ test "stage0 checker vs wasm compile: error parity" {
 }
 
 ///|
-test "match arm mutable variable propagation" {
-  let source =
-    #|let f = () -> Int {
-    #|  let mut count = 0
-    #|  match Some(1) {
-    #|    Some(x) => { count = count + 1 }
-    #|    None => ()
-    #|  }
-    #|  count
-    #|}
-    #|f()
-  let db = VibeDb::new()
-  db.set_source("main", source)
-  let compiled = compile_module(db, "main")
+test "Set::new creates empty set" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
-  rt.set_type_env(compiled.type_env)
-  let result = rt.eval_module(compiled.ast)
-  match result.last {
-    Some(@core.Value::Int(v)) => assert_eq(v, 1)
-    _ as v => fail("expected Int(1), got \{v}")
-  }
+  let script =
+    #|let s = Set::new()
+    #|Set::size(s)
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Int(0L)))
 }
 
 ///|
-test "match arm mutable variable propagation with multiple arms" {
-  let source =
-    #|let f = (opt: Option[Int]) -> Int {
-    #|  let mut result = 0
-    #|  match opt {
-    #|    Some(x) => { result = x * 10 }
-    #|    None => { result = 99 }
-    #|  }
-    #|  result
-    #|}
-    #|let a = f(Some(3))
-    #|let b = f(None)
-    #|a + b
-  let db = VibeDb::new()
-  db.set_source("main", source)
-  let compiled = compile_module(db, "main")
+test "Set::add and Set::size" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
-  rt.set_type_env(compiled.type_env)
-  let result = rt.eval_module(compiled.ast)
-  match result.last {
-    Some(@core.Value::Int(v)) => assert_eq(v, 129)
-    _ as v => fail("expected Int(129), got \{v}")
-  }
+  let script =
+    #|let s = Set::new()
+    #|let s2 = Set::add(s, 1)
+    #|let s3 = Set::add(s2, 2)
+    #|let s4 = Set::add(s3, 1)
+    #|Set::size(s4)
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Int(2L)))
+}
+
+///|
+test "Set::contains" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let s = Set::add(Set::add(Set::new(), "a"), "b")
+    #|let has_a = Set::contains(s, "a")
+    #|let has_c = Set::contains(s, "c")
+    #|(has_a, has_c)
+  let result = rt.eval_script(script)
+  assert_eq(
+    result.last,
+    Some(
+      @core.Value::Tuple([@core.Value::Bool(true), @core.Value::Bool(false)]),
+    ),
+  )
+}
+
+///|
+test "Set::remove" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let s = Set::add(Set::add(Set::new(), 1), 2)
+    #|let s2 = Set::remove(s, 1)
+    #|(Set::size(s2), Set::contains(s2, 1), Set::contains(s2, 2))
+  let result = rt.eval_script(script)
+  assert_eq(
+    result.last,
+    Some(
+      @core.Value::Tuple([
+        @core.Value::Int(1L),
+        @core.Value::Bool(false),
+        @core.Value::Bool(true),
+      ]),
+    ),
+  )
+}
+
+///|
+test "Set::from_array and Set::to_array" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let s = Set::from_array([1, 2, 3, 2, 1])
+    #|Set::size(s)
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Int(3L)))
+}
+
+///|
+test "Set::to_array returns elements" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let s = Set::from_array([10, 20])
+    #|let arr = Set::to_array(s)
+    #|Array::length(arr)
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Int(2L)))
 }

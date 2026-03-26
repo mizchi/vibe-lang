@@ -159,6 +159,7 @@ fn render_type(ty : @core.Type) -> String {
       "{ " + join_with(parts, "; ") + " }"
     }
     @core.Type::Array(item) => "Array[" + render_type(item) + "]"
+    @core.Type::Set(item) => "Set[" + render_type(item) + "]"
     @core.Type::Map(key, item) =>
       "Map[" + render_type(key) + ", " + render_type(item) + "]"
     @core.Type::ArrayBuilder(item) => "ArrayBuilder[" + render_type(item) + "]"

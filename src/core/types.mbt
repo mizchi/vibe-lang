@@ -45,6 +45,7 @@ pub(all) enum Type {
   Record(Map[String, Type])
   Array(Type)
   Map(Type, Type)
+  Set(Type)
   ArrayBuilder(Type)
   MapBuilder(Type, Type)
   StringBuilder
@@ -168,6 +169,7 @@ fn format_type_compact(ty : Type) -> String {
       buf.to_string()
     }
     Type::Array(inner) => "Array[" + format_type_compact(inner) + "]"
+    Type::Set(inner) => "Set[" + format_type_compact(inner) + "]"
     Type::Map(key, value) =>
       "Map[" +
       format_type_compact(key) +
@@ -248,6 +250,7 @@ pub(all) enum Value {
   Record(Map[String, Value])
   Array(Array[Value])
   Map(Map[String, Value])
+  Set(Map[String, Value])
   ArrayBuilder(Array[Value])
   MapBuilder(Map[String, Value])
   StringBuilder(Array[String])
@@ -331,6 +334,18 @@ pub impl Show for Value with output(self, logger) {
         value.output(logger)
       }
       logger.write_string("|}")
+    }
+    Value::Set(items) => {
+      logger.write_string("Set{")
+      let mut first = true
+      for key, _ in items {
+        if not(first) {
+          logger.write_string(", ")
+        }
+        first = false
+        logger.write_string(key)
+      }
+      logger.write_string("}")
     }
     Value::ArrayBuilder(items) => {
       logger.write_string("[..builder ")

@@ -16,6 +16,7 @@ fn builtin_ufcs_namespace(ty : @core.Type) -> String? {
     @core.Type::Path => Some("Path")
     @core.Type::Array(_) => Some("Array")
     @core.Type::Map(_, _) => Some("Map")
+    @core.Type::Set(_) => Some("Set")
     @core.Type::ArrayBuilder(_) => Some("ArrayBuilder")
     @core.Type::MapBuilder(_, _) => Some("MapBuilder")
     @core.Type::Bytes => Some("Bytes")

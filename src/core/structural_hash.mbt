@@ -511,6 +511,7 @@ pub fn Type::structural_hash(self : Type) -> Int {
         combine_hash(0x4d617000, key.structural_hash()),
         value.structural_hash(),
       )
+    Type::Set(inner) => combine_hash(0x53657400, inner.structural_hash())
     Type::ArrayBuilder(inner) =>
       combine_hash(0x41724275, inner.structural_hash())
     Type::MapBuilder(key, value) =>
