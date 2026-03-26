@@ -1126,6 +1126,27 @@ test "vibe wasm compiles __to_string builtin" {
 }
 
 ///|
+test "vibe wasm compiles string == string equality" {
+  let db = VibeDb::new()
+  let src =
+    #|let a = "hello"
+    #|let b = "hello"
+    #|let c = "world"
+    #|let eq1 = a == b
+    #|let eq2 = a == c
+    #|let neq1 = a != c
+    #|if eq1 && not(eq2) && neq1 { 1 } else { 0 }
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "_start"))
+}
+
+///|
 test "vibe wasm compiles threads builtin thunks" {
   let db = VibeDb::new()
   let src =

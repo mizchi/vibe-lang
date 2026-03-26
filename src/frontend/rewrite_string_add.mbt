@@ -1,5 +1,7 @@
 ///|
-/// Rewrite `__add(a, b)` to `String::concat(a, b)` when operands are String typed.
+/// Rewrite String operator calls to explicit builtin calls:
+/// - `__add(a, b)` to `String::concat(a, b)` when operands are String typed.
+/// - `__eq(a, b)` to `String::equals(a, b)` when operands are String typed.
 pub fn rewrite_string_add(
   ast : @core.Module,
   env : @checker.TypeEnv,
@@ -97,6 +99,13 @@ fn rsa_rewrite_expr(expr : @core.Expr, env : @checker.TypeEnv) -> @core.Expr {
       let effective_name = if name == "__add" && next_args.length() == 2 {
         if rsa_is_string_valued(next_args[0].expr, env) {
           "String::concat"
+        } else {
+          name
+        }
+      } else if name == "__eq" && next_args.length() == 2 {
+        if rsa_is_string_valued(next_args[0].expr, env) ||
+          rsa_is_string_valued(next_args[1].expr, env) {
+          "String::equals"
         } else {
           name
         }
