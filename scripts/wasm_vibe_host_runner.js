@@ -833,9 +833,35 @@ async function main() {
     process.env.VIBE_PREOPEN_DIR || process.cwd(),
   );
 
+  // Selfhost-compiled WASM uses "Env" and "Fs" module names for effect imports
+  const envModule = {
+    ArgsLen() {
+      return encodeTaggedInt(passthroughArgs.length);
+    },
+    ArgsGet(indexTagged) {
+      const index = decodeTaggedInt(indexTagged);
+      const val =
+        index >= 0 && index < passthroughArgs.length ? passthroughArgs[index] : "";
+      return encodeTaggedString(instanceRef, val);
+    },
+  };
+  const fsModule = {
+    ReadFile(pathTagged) {
+      return vibeModule.fs_read_file(pathTagged);
+    },
+    WriteBytes(pathTagged, bytesTagged) {
+      return vibeModule.fs_write_bytes(pathTagged, bytesTagged);
+    },
+    Exists(pathTagged) {
+      return vibeModule.fs_exists(pathTagged);
+    },
+  };
+
   const imports = new Proxy(
     {
       vibe: vibeModule,
+      Env: envModule,
+      Fs: fsModule,
       wasi_snapshot_preview1: wasiModule,
       "wasi:filesystem/preopens@0.2.6":
         preview2FsHost["wasi:filesystem/preopens@0.2.6"],
