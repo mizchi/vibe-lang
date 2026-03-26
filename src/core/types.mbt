@@ -49,6 +49,7 @@ pub(all) enum Type {
   MapBuilder(Type, Type)
   StringBuilder
   Bytes
+  V128
   Variant(Map[String, Type])
   Named(name~ : String, args~ : Array[Type])
   Param(String)
@@ -183,6 +184,7 @@ fn format_type_compact(ty : Type) -> String {
       "]"
     Type::StringBuilder => "StringBuilder"
     Type::Bytes => "Bytes"
+    Type::V128 => "V128"
     Type::Variant(_) => "Variant"
     Type::Named(name~, args~) =>
       if args.length() == 0 {

@@ -617,6 +617,117 @@ fn type_call_builtin_handler_runtime_memory(
       }
       @core.Type::Unit
     }
+    // --- SIMD V128 builtins ---
+    "v128_load" => {
+      let ctx = BuiltinCallCtx::{
+        env, args, aliases, effects, allow_effect, call_span,
+      }
+      ctx.simple(
+        "v128_load",
+        [@core.Type::Bytes, @core.Type::Int],
+        @core.Type::V128,
+        false,
+      )
+    }
+    "v128_store" => {
+      let ctx = BuiltinCallCtx::{
+        env, args, aliases, effects, allow_effect, call_span,
+      }
+      ctx.simple(
+        "v128_store",
+        [@core.Type::Bytes, @core.Type::Int, @core.Type::V128],
+        @core.Type::Unit,
+        false,
+      )
+    }
+    "v128_splat_i8x16" => {
+      let ctx = BuiltinCallCtx::{
+        env, args, aliases, effects, allow_effect, call_span,
+      }
+      ctx.simple(
+        "v128_splat_i8x16",
+        [@core.Type::Int],
+        @core.Type::V128,
+        false,
+      )
+    }
+    "v128_eq_i8x16" | "v128_le_u_i8x16" | "v128_ge_u_i8x16" => {
+      let ctx = BuiltinCallCtx::{
+        env, args, aliases, effects, allow_effect, call_span,
+      }
+      ctx.simple(
+        builtin_name,
+        [@core.Type::V128, @core.Type::V128],
+        @core.Type::V128,
+        false,
+      )
+    }
+    "v128_and" | "v128_or" => {
+      let ctx = BuiltinCallCtx::{
+        env, args, aliases, effects, allow_effect, call_span,
+      }
+      ctx.simple(
+        builtin_name,
+        [@core.Type::V128, @core.Type::V128],
+        @core.Type::V128,
+        false,
+      )
+    }
+    "v128_not" => {
+      let ctx = BuiltinCallCtx::{
+        env, args, aliases, effects, allow_effect, call_span,
+      }
+      ctx.simple(
+        "v128_not",
+        [@core.Type::V128],
+        @core.Type::V128,
+        false,
+      )
+    }
+    "v128_bitmask_i8x16" => {
+      let ctx = BuiltinCallCtx::{
+        env, args, aliases, effects, allow_effect, call_span,
+      }
+      ctx.simple(
+        "v128_bitmask_i8x16",
+        [@core.Type::V128],
+        @core.Type::Int,
+        false,
+      )
+    }
+    "v128_any_true" => {
+      let ctx = BuiltinCallCtx::{
+        env, args, aliases, effects, allow_effect, call_span,
+      }
+      ctx.simple(
+        "v128_any_true",
+        [@core.Type::V128],
+        @core.Type::Bool,
+        false,
+      )
+    }
+    "v128_all_true_i8x16" => {
+      let ctx = BuiltinCallCtx::{
+        env, args, aliases, effects, allow_effect, call_span,
+      }
+      ctx.simple(
+        "v128_all_true_i8x16",
+        [@core.Type::V128],
+        @core.Type::Bool,
+        false,
+      )
+    }
+    "int_ctz" => {
+      let ctx = BuiltinCallCtx::{
+        env, args, aliases, effects, allow_effect, call_span,
+      }
+      ctx.simple(
+        "int_ctz",
+        [@core.Type::Int],
+        @core.Type::Int,
+        false,
+      )
+    }
     _ =>
       type_call_builtin_handler_json_and_fallback(
         env, name, args, aliases, effects, allow_effect, call_span,

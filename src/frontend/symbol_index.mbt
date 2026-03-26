@@ -166,6 +166,7 @@ fn render_type(ty : @core.Type) -> String {
       "MapBuilder[" + render_type(key) + ", " + render_type(item) + "]"
     @core.Type::StringBuilder => "StringBuilder"
     @core.Type::Bytes => "Bytes"
+    @core.Type::V128 => "V128"
     @core.Type::Variant(fields) => {
       let parts : Array[String] = []
       let keys = sorted_map_keys(fields)

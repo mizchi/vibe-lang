@@ -1042,3 +1042,154 @@ fn emit_tag_bool_from_i32(buf : ByteBuf) -> Unit {
 }
 
 ///|
+/// Emit SIMD prefix byte (0xFD) followed by LEB128 opcode.
+fn emit_simd_prefix(buf : ByteBuf, opcode : Int) -> Unit {
+  buf.push((0xFD).to_byte())
+  write_u32_leb(buf, opcode)
+}
+
+///|
+/// v128.load: 0xFD 0x00, memarg align=4 offset
+fn emit_v128_load(buf : ByteBuf, offset : Int) -> Unit {
+  emit_simd_prefix(buf, 0)
+  write_u32_leb(buf, 4) // alignment: 2^4 = 16 bytes
+  write_u32_leb(buf, offset)
+}
+
+///|
+/// v128.store: 0xFD 0x0B, memarg align=4 offset
+fn emit_v128_store(buf : ByteBuf, offset : Int) -> Unit {
+  emit_simd_prefix(buf, 11)
+  write_u32_leb(buf, 4) // alignment
+  write_u32_leb(buf, offset)
+}
+
+///|
+/// i8x16.splat: 0xFD 0x0F (15)
+fn emit_i8x16_splat(buf : ByteBuf) -> Unit {
+  emit_simd_prefix(buf, 15)
+}
+
+///|
+/// i8x16.eq: 0xFD 0x26 (38)
+fn emit_i8x16_eq(buf : ByteBuf) -> Unit {
+  emit_simd_prefix(buf, 38)
+}
+
+///|
+/// i8x16.le_u: 0xFD 0x2C (44)
+fn emit_i8x16_le_u(buf : ByteBuf) -> Unit {
+  emit_simd_prefix(buf, 44)
+}
+
+///|
+/// i8x16.ge_u: 0xFD 0x2E (46)
+fn emit_i8x16_ge_u(buf : ByteBuf) -> Unit {
+  emit_simd_prefix(buf, 46)
+}
+
+///|
+/// v128.not: 0xFD 0x4D (77)
+fn emit_v128_not(buf : ByteBuf) -> Unit {
+  emit_simd_prefix(buf, 77)
+}
+
+///|
+/// v128.and: 0xFD 0x4E (78)
+fn emit_v128_and(buf : ByteBuf) -> Unit {
+  emit_simd_prefix(buf, 78)
+}
+
+///|
+/// v128.or: 0xFD 0x50 (80)
+fn emit_v128_or(buf : ByteBuf) -> Unit {
+  emit_simd_prefix(buf, 80)
+}
+
+///|
+/// v128.any_true: 0xFD 0x53 (83)
+fn emit_v128_any_true(buf : ByteBuf) -> Unit {
+  emit_simd_prefix(buf, 83)
+}
+
+///|
+/// i8x16.all_true: 0xFD 0x63 (99)
+fn emit_i8x16_all_true(buf : ByteBuf) -> Unit {
+  emit_simd_prefix(buf, 99)
+}
+
+///|
+/// i8x16.bitmask: 0xFD 0x64 (100)
+fn emit_i8x16_bitmask(buf : ByteBuf) -> Unit {
+  emit_simd_prefix(buf, 100)
+}
+
+///|
+/// i32.ctz: 0x68
+fn emit_i32_ctz(buf : ByteBuf) -> Unit {
+  buf.push((0x68).to_byte())
+}
+
+///|
+/// Helper: unbox V128 from tagged pointer, load v128 from heap at offset 4.
+fn emit_unbox_v128_expr(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  compile_expr_i32(ctx, buf, expr)
+  emit_untag_ptr_i32(buf)
+  emit_v128_load(buf, 4)
+}
+
+///|
+/// Helper: box v128 value on stack into heap object, return tagged i64.
+fn emit_box_v128(ctx : CodegenCtx, buf : ByteBuf, v128_local : Int) -> Unit {
+  let addr_local = alloc_temp_local(ctx)
+  require_heap(ctx)
+  emit_heap_alloc(ctx, buf, 20, addr_local)
+  emit_local_get(buf, addr_local)
+  emit_i32_const_raw(buf, obj_v128)
+  emit_i32_store(buf, 0)
+  emit_local_get(buf, addr_local)
+  emit_local_get(buf, v128_local)
+  emit_v128_store(buf, 4)
+  emit_local_get(buf, addr_local)
+  emit_i64_extend_i32_u(buf)
+  emit_i64_const_raw(buf, tag_obj.to_int64())
+  emit_i64_or(buf)
+}
+
+///|
+/// V128 binary operation: unbox both args, apply op, box result.
+fn emit_v128_binary_op(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  left : @core.Expr,
+  right : @core.Expr,
+  op : (ByteBuf) -> Unit,
+) -> Unit raise WasmGenError {
+  let v128_local = alloc_temp_local_with_kind(ctx, ValueKind::V128)
+  emit_unbox_v128_expr(ctx, buf, left)
+  emit_unbox_v128_expr(ctx, buf, right)
+  op(buf)
+  emit_local_set(buf, v128_local)
+  emit_box_v128(ctx, buf, v128_local)
+}
+
+///|
+/// V128 unary operation: unbox arg, apply op, box result.
+fn emit_v128_unary_op(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  arg : @core.Expr,
+  op : (ByteBuf) -> Unit,
+) -> Unit raise WasmGenError {
+  let v128_local = alloc_temp_local_with_kind(ctx, ValueKind::V128)
+  emit_unbox_v128_expr(ctx, buf, arg)
+  op(buf)
+  emit_local_set(buf, v128_local)
+  emit_box_v128(ctx, buf, v128_local)
+}
+
+///|

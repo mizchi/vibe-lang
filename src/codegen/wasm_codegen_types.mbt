@@ -163,12 +163,16 @@ let obj_bytes = 13
 let obj_bytes_view = 14
 
 ///|
+let obj_v128 = 15
+
+///|
 enum ValueKind {
   I32
   I64
   BoxedF32
   BoxedF64
   ExternRef
+  V128
 } derive(Show, Eq)
 
 ///|
@@ -178,6 +182,7 @@ fn valtype_byte(kind : ValueKind) -> Byte {
     ValueKind::I64 | ValueKind::BoxedF32 | ValueKind::BoxedF64 =>
       (126).to_byte()
     ValueKind::ExternRef => (111).to_byte()
+    ValueKind::V128 => (123).to_byte() // 0x7B
   }
 }
 
