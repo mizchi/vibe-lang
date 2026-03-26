@@ -69,7 +69,9 @@ EXCLUDE_DIRS_REGEX="$(echo "$EXCLUDE_DIRS_RAW" | awk '{$1=$1; print}' | tr ' ' '
 
 # Explicit files to exclude from normalize
 # - vibe/compiler/coverage_selfhost_suite_lib.vibe currently crashes native normalize
-EXCLUDE_FILES_RAW="${VIBE_NORMALIZE_EXCLUDE_FILES:-vibe/compiler/coverage_selfhost_suite_lib.vibe}"
+# - selfhost *_bundle.vibe files are generated artifacts; check-selfhost-bundle-sync
+#   compares them against the generator output and normalize would cause false drift
+EXCLUDE_FILES_RAW="${VIBE_NORMALIZE_EXCLUDE_FILES:-vibe/compiler/coverage_selfhost_suite_lib.vibe vibe/compiler/selfhost_sources_bundle.vibe vibe/compiler/selfhost_cli_adapter_bundle.vibe vibe/compiler/selfbuild_runtime_entry_bundle.vibe}"
 EXCLUDE_FILES_RAW="${EXCLUDE_FILES_RAW//,/ }"
 EXCLUDE_FILES_REGEX="$(echo "$EXCLUDE_FILES_RAW" | awk '{$1=$1; print}' | tr ' ' '|')"
 
@@ -132,7 +134,9 @@ for root in "${SOURCE_ROOTS[@]}"; do
       -name '*.vibe' \
       -type f \
       -not -name '.tmp_*' \
+      -not -name '.vibe_test_case_*' \
       -not -name '.vibe_test_wasm_*' \
+      -not -name '.vibe_compiled_repl_*' \
       -exec dirname {} \; |
       sort -u |
       filter_excluded_dirs
@@ -150,7 +154,9 @@ for dir in "${DIRS[@]}"; do
       -name '*.vibe' \
       -not -name 'index.vibe' \
       -not -name '.tmp_*' \
+      -not -name '.vibe_test_case_*' \
       -not -name '.vibe_test_wasm_*' \
+      -not -name '.vibe_compiled_repl_*' \
       -type f |
       sort |
       filter_excluded_explicit_files
