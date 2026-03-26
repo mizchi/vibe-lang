@@ -61,7 +61,6 @@ fn is_posix_operator_char(c : Char) -> Bool {
   c == '%' ||
   c == '^' ||
   c == '&' ||
-  c == '.' ||
   c == ')' ||
   c == ']' ||
   c == '{' ||
@@ -147,65 +146,125 @@ fn preprocess_posix_line_with_compat_note(line : String) -> (String, String?) {
 }
 
 ///|
-/// Convert known shell builtins to vibe function calls.
+/// Convert known shell builtins to vibe builtin function calls.
+/// Maps posix commands to Fs::/Env::/builtin calls that the compiled backend supports.
 /// Returns None if the command is not a known builtin (fallback to sh_lines).
 fn convert_shell_builtin_command(
   cmd : String,
   args : String,
 ) -> String? {
-  // Single-string-arg commands: cmd arg → cmd("arg")
-  let single_arg_cmds : Array[String] = [
-    "cd", "rm", "cat", "mkdir", "mkdir_p", "touch", "echo", "print", "println",
-    "exists", "is_dir", "is_file", "realpath", "pwd",
-  ]
-  for c in single_arg_cmds {
-    if cmd == c {
-      if cmd == "pwd" {
-        return Some("pwd()")
-      }
-      if args.length() == 0 {
-        return None // needs an argument
-      }
-      return Some(cmd + "(\"" + escape_posix_for_vibe_string(args) + "\")")
-    }
+  // Map posix commands to builtin names
+  let escaped_args = if args.length() > 0 {
+    escape_posix_for_vibe_string(args)
+  } else {
+    ""
   }
-  // Two-string-arg commands: cmd src dst → cmd("src", "dst")
-  let two_arg_cmds : Array[String] = [
-    "cp", "mv", "tee", "append", "write_file", "env_or",
-  ]
-  for c in two_arg_cmds {
-    if cmd == c {
-      // Split args on first space
+  match cmd {
+    // Filesystem read operations
+    "cat" =>
+      if args.length() > 0 {
+        Some("Fs::read_file(\"" + escaped_args + "\")")
+      } else {
+        None
+      }
+    "ls" =>
+      Some("Fs::readdir(\"" + (if args.length() > 0 { escaped_args } else { "." }) + "\")")
+    "pwd" => Some("Fs::getcwd()")
+    "exists" =>
+      if args.length() > 0 {
+        Some("Fs::exists(\"" + escaped_args + "\")")
+      } else {
+        None
+      }
+    "is_dir" =>
+      if args.length() > 0 {
+        Some("Fs::is_dir(\"" + escaped_args + "\")")
+      } else {
+        None
+      }
+    "is_file" =>
+      if args.length() > 0 {
+        Some("Fs::is_file(\"" + escaped_args + "\")")
+      } else {
+        None
+      }
+    // Filesystem write operations
+    "mkdir" =>
+      if args.length() > 0 {
+        Some("Fs::mkdir(\"" + escaped_args + "\")")
+      } else {
+        None
+      }
+    "mkdir_p" =>
+      if args.length() > 0 {
+        Some("Fs::mkdir_p(\"" + escaped_args + "\")")
+      } else {
+        None
+      }
+    "rm" =>
+      if args.length() > 0 {
+        Some("Fs::remove(\"" + escaped_args + "\")")
+      } else {
+        None
+      }
+    "touch" =>
+      if args.length() > 0 {
+        Some("Fs::write_file(\"" + escaped_args + "\", \"\")")
+      } else {
+        None
+      }
+    "cp" =>
       match split_first_arg(args) {
         Some((first, second)) =>
-          return Some(
-            cmd +
-            "(\"" +
+          Some(
+            "Fs::copy(\"" +
             escape_posix_for_vibe_string(first) +
             "\", \"" +
             escape_posix_for_vibe_string(second) +
             "\")",
           )
-        None => return None
+        None => None
       }
-    }
+    "mv" =>
+      match split_first_arg(args) {
+        Some((first, second)) =>
+          Some(
+            "Fs::rename(\"" +
+            escape_posix_for_vibe_string(first) +
+            "\", \"" +
+            escape_posix_for_vibe_string(second) +
+            "\")",
+          )
+        None => None
+      }
+    // IO operations
+    "echo" =>
+      if args.length() > 0 {
+        Some("println(\"" + escaped_args + "\")")
+      } else {
+        Some("println(\"\")")
+      }
+    "print" =>
+      if args.length() > 0 {
+        Some("print(\"" + escaped_args + "\")")
+      } else {
+        None
+      }
+    // Environment
+    "env" =>
+      if args.length() > 0 {
+        Some("Env::get(\"" + escaped_args + "\")")
+      } else {
+        None
+      }
+    "cd" =>
+      if args.length() > 0 {
+        Some("Fs::chdir(\"" + escaped_args + "\")")
+      } else {
+        None
+      }
+    _ => None
   }
-  // ls dir → ls("dir")
-  if cmd == "ls" || cmd == "ls_all" || cmd == "find" {
-    if args.length() == 0 {
-      return Some(cmd + "(\".\")")
-    }
-    return Some(cmd + "(\"" + escape_posix_for_vibe_string(args) + "\")")
-  }
-  // env NAME → env("NAME")
-  if cmd == "env" {
-    if args.length() == 0 {
-      return None
-    }
-    return Some("env(\"" + escape_posix_for_vibe_string(args) + "\")")
-  }
-  // exec cmd → exec("cmd") (falls through to sh_lines for safety)
-  None
 }
 
 ///|
