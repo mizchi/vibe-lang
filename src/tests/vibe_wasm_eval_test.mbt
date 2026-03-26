@@ -2149,3 +2149,46 @@ test "vibe wasm eval while loop with continue" {
     #|_start()
   assert_eval_backends_same(script)
 }
+
+///|
+test "vibe eval for-in over string collects characters" {
+  let script =
+    #|let main = () -> String {
+    #|  let s = "abc"
+    #|  let mut result = ""
+    #|  let chars = for c in s {
+    #|    result = result + c
+    #|    c
+    #|  }
+    #|  result
+    #|}
+    #|main()
+  let value = try eval_run_interpreter(script) catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  assert_eq(value, @core.Value::String("abc"))
+}
+
+///|
+test "vibe eval for-in over string with index" {
+  let script =
+    #|let main = () -> Int {
+    #|  let s = "hello"
+    #|  let mut sum = 0
+    #|  let _ = for i, c in s {
+    #|    sum = sum + i
+    #|    c
+    #|  }
+    #|  sum
+    #|}
+    #|main()
+  let value = try eval_run_interpreter(script) catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  // 0 + 1 + 2 + 3 + 4 = 10
+  assert_eq(value, @core.Value::Int(10L))
+}

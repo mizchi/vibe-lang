@@ -1163,9 +1163,21 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       }
     }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
-      let desugared = @core.desugar_for_in(
-        value_name, index_name, iterable, body, span,
-      )
+      // Evaluate iterable to check if it's a String
+      let iter_val = eval_expr(rt, iterable)
+      let is_string = match iter_val.value {
+        @core.Value::String(_) => true
+        _ => false
+      }
+      let desugared = if is_string {
+        @core.desugar_for_in_string(
+          value_name, index_name, iterable, body, span,
+        )
+      } else {
+        @core.desugar_for_in(
+          value_name, index_name, iterable, body, span,
+        )
+      }
       eval_block_shared_mut(rt, desugared)
     }
     @core.Expr::Fn(

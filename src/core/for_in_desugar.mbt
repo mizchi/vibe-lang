@@ -162,6 +162,158 @@ pub fn desugar_for_in(
 }
 
 ///|
+/// Desugar ForIn over String into a Block with array builder pattern.
+///
+/// for c in str_expr { body } →
+/// {
+///   let __for_str = str_expr
+///   let __for_len = String::length(__for_str)
+///   let __for_b = array_builder()
+///   let mut __for_i = 0
+///   while __for_i < __for_len {
+///     let c = String::substring(__for_str, __for_i, __for_i + 1)
+///     [let i = __for_i]
+///     __for_i = __for_i + 1
+///     <body init stmts>
+///     array_builder_push(__for_b, <last_expr>)
+///   }
+///   array_builder_freeze(__for_b)
+/// }
+pub fn desugar_for_in_string(
+  value_name : String,
+  index_name : String?,
+  iterable : Expr,
+  body : Module,
+  span : Span,
+) -> Module {
+  let synth_span = fn(offset : Int) -> Span {
+    Span::new(span.start + offset, span.start + offset + 1)
+  }
+  let suffix = span.start.to_string()
+  let str_span = synth_span(1)
+  let len_span = synth_span(3)
+  let i_span = synth_span(4)
+  let b_span = synth_span(5)
+  let str_ident = Expr::Ident(name="__for_str" + suffix, span=str_span)
+  let len_ident = Expr::Ident(name="__for_len" + suffix, span=len_span)
+  let i_ident = Expr::Ident(name="__for_i" + suffix, span=i_span)
+  let b_ident = Expr::Ident(name="__for_b" + suffix, span=b_span)
+  let zero = Expr::Int(value=0L, span=i_span)
+  let one = Expr::Int(value=1L, span=i_span)
+  // let __for_strN = iterable
+  let let_str = Stmt::Let(
+    rec=false,
+    name="__for_str" + suffix,
+    expr=iterable,
+    span~,
+  )
+  // let __for_lenN = String::length(__for_strN)
+  let let_len = Stmt::Let(
+    rec=false,
+    name="__for_len" + suffix,
+    expr=Expr::Call(
+      name="String::length",
+      type_args=[],
+      args=[CallArg::{ label: None, expr: str_ident, span: str_span }],
+      span~,
+    ),
+    span~,
+  )
+  // let __for_bN = array_builder()
+  let let_b = Stmt::Let(
+    rec=false,
+    name="__for_b" + suffix,
+    expr=Expr::Call(name="ArrayBuilder::new", type_args=[], args=[], span~),
+    span~,
+  )
+  // let mut __for_iN = 0
+  let let_i = Stmt::LetMut(name="__for_i" + suffix, expr=zero, span~)
+  // while __for_iN < __for_lenN
+  let cond = desugar_call2("__lt", i_ident, len_ident)
+  // Split body: init stmts + last expr to collect
+  let (init_stmts, collect_expr) = desugar_split_body_last_expr(body, span)
+  // Build while body stmts
+  let while_stmts : Array[Stmt] = []
+  // let c = String::substring(__for_str, __for_i, __for_i + 1)
+  while_stmts.push(
+    Stmt::Let(
+      rec=false,
+      name=value_name,
+      expr=Expr::Call(
+        name="String::substring",
+        type_args=[],
+        args=[
+          CallArg::{ label: None, expr: str_ident, span: str_span },
+          CallArg::{ label: None, expr: i_ident, span: i_span },
+          CallArg::{
+            label: None,
+            expr: desugar_call2("__add", i_ident, one),
+            span: i_span,
+          },
+        ],
+        span~,
+      ),
+      span~,
+    ),
+  )
+  // Optional: let i = __for_i
+  match index_name {
+    Some(idx_name) =>
+      while_stmts.push(Stmt::Let(rec=false, name=idx_name, expr=i_ident, span~))
+    None => ()
+  }
+  // __for_iN = __for_iN + 1  (BEFORE body to prevent infinite loop on continue)
+  while_stmts.push(
+    Stmt::Assign(
+      name="__for_i" + suffix,
+      expr=desugar_call2("__add", i_ident, one),
+      span~,
+    ),
+  )
+  // Add body init stmts (everything except the last expr)
+  for stmt in init_stmts {
+    while_stmts.push(stmt)
+  }
+  // array_builder_push(__for_b, <last_expr>)
+  while_stmts.push(
+    Stmt::Expr(
+      expr=Expr::Call(
+        name="ArrayBuilder::push",
+        type_args=[],
+        args=[
+          CallArg::{ label: None, expr: b_ident, span: b_span },
+          CallArg::{
+            label: None,
+            expr: collect_expr,
+            span: collect_expr.span(),
+          },
+        ],
+        span~,
+      ),
+      span~,
+    ),
+  )
+  let while_body = Module::{ stmts: while_stmts }
+  let while_expr = Expr::While(cond~, body=while_body, span~)
+  // Wrap in block, return frozen array
+  let freeze_expr = Expr::Call(
+    name="ArrayBuilder::freeze",
+    type_args=[],
+    args=[CallArg::{ label: None, expr: b_ident, span: b_span }],
+    span~,
+  )
+  let do_stmts : Array[Stmt] = [
+    let_str,
+    let_len,
+    let_b,
+    let_i,
+    Stmt::Expr(expr=while_expr, span~),
+    Stmt::Expr(expr=freeze_expr, span~),
+  ]
+  Module::{ stmts: do_stmts }
+}
+
+///|
 fn desugar_call2(name : String, left : Expr, right : Expr) -> Expr {
   let left_span = left.span()
   let right_span = right.span()
