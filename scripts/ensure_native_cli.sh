@@ -19,7 +19,7 @@ _ENSURE_WARN_LIST="${VIBE_MOON_WARN_LIST:--1-7-24-29}"
 
 if [[ "$_ENSURE_RELEASE" == "1" ]]; then
   VIBE_CLI_BIN="$_ENSURE_ROOT_DIR/target/native/release/build/cmd/vibe/vibe.exe"
-  _ENSURE_BUILD_FLAGS=(--target native --release src/cmd/vibe --warn-list "$_ENSURE_WARN_LIST")
+  _ENSURE_BUILD_FLAGS=(--target native --release --target-dir target src/cmd/vibe --warn-list "$_ENSURE_WARN_LIST")
 else
   VIBE_CLI_BIN="$_ENSURE_ROOT_DIR/_build/native/debug/build/cmd/vibe/vibe.exe"
   _ENSURE_BUILD_FLAGS=(--target native src/cmd/vibe --warn-list "$_ENSURE_WARN_LIST")
