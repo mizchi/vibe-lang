@@ -1696,6 +1696,1173 @@ fn strip_type_assert_module(ast : @core.Module) -> @core.Module {
 }
 
 ///|
+priv struct StaticFoldNamedField {
+  name : String
+  value : StaticFoldValue
+}
+
+///|
+priv enum StaticFoldValue {
+  Int(value~ : Int64)
+  Bool(value~ : Bool)
+  String(value~ : String)
+  Tuple(items~ : Array[StaticFoldValue])
+  Array(items~ : Array[StaticFoldValue])
+  Record(fields~ : Array[StaticFoldNamedField])
+  Map(fields~ : Array[StaticFoldNamedField])
+  Ctor(name~ : String, args~ : Array[StaticFoldValue])
+  Closure(
+    params~ : Array[@core.FuncParam],
+    body~ : @core.Module,
+    env~ : Map[String, StaticFoldValue]
+  )
+}
+
+///|
+fn static_fold_clone_env(
+  env : Map[String, StaticFoldValue],
+) -> Map[String, StaticFoldValue] {
+  let out : Map[String, StaticFoldValue] = {}
+  for k, v in env {
+    out[k] = v
+  }
+  out
+}
+
+///|
+fn static_fold_clone_bindings(
+  bindings : Map[String, StaticFoldValue],
+) -> Map[String, StaticFoldValue] {
+  let out : Map[String, StaticFoldValue] = {}
+  for k, v in bindings {
+    out[k] = v
+  }
+  out
+}
+
+///|
+fn static_fold_value_eq(
+  left : StaticFoldValue,
+  right : StaticFoldValue,
+) -> Bool {
+  match (left, right) {
+    (
+      StaticFoldValue::Int(value=left_value),
+      StaticFoldValue::Int(value=right_value),
+    ) => left_value == right_value
+    (
+      StaticFoldValue::Bool(value=left_value),
+      StaticFoldValue::Bool(value=right_value),
+    ) => left_value == right_value
+    (
+      StaticFoldValue::String(value=left_value),
+      StaticFoldValue::String(value=right_value),
+    ) => left_value == right_value
+    (
+      StaticFoldValue::Tuple(items=left_items),
+      StaticFoldValue::Tuple(items=right_items),
+    )
+    | (
+      StaticFoldValue::Array(items=left_items),
+      StaticFoldValue::Array(items=right_items),
+    ) =>
+      if left_items.length() != right_items.length() {
+        false
+      } else {
+        let mut ok = true
+        for i in 0..<left_items.length() {
+          if not(static_fold_value_eq(left_items[i], right_items[i])) {
+            ok = false
+          }
+        }
+        ok
+      }
+    (
+      StaticFoldValue::Ctor(name=left_name, args=left_args),
+      StaticFoldValue::Ctor(name=right_name, args=right_args),
+    ) =>
+      if left_name != right_name || left_args.length() != right_args.length() {
+        false
+      } else {
+        let mut ok = true
+        for i in 0..<left_args.length() {
+          if not(static_fold_value_eq(left_args[i], right_args[i])) {
+            ok = false
+          }
+        }
+        ok
+      }
+    (
+      StaticFoldValue::Record(fields=left_fields),
+      StaticFoldValue::Record(fields=right_fields),
+    )
+    | (
+      StaticFoldValue::Map(fields=left_fields),
+      StaticFoldValue::Map(fields=right_fields),
+    ) =>
+      if left_fields.length() != right_fields.length() {
+        false
+      } else {
+        let mut ok = true
+        for i in 0..<left_fields.length() {
+          if left_fields[i].name != right_fields[i].name ||
+            not(
+              static_fold_value_eq(left_fields[i].value, right_fields[i].value),
+            ) {
+            ok = false
+          }
+        }
+        ok
+      }
+    _ => false
+  }
+}
+
+///|
+fn static_fold_render_call_args(
+  values : Array[StaticFoldValue],
+  span : @core.Span,
+) -> Array[@core.CallArg]? {
+  let args : Array[@core.CallArg] = []
+  for value in values {
+    match static_fold_render_value(value, span) {
+      Some(expr) => args.push(@core.CallArg::{ label: None, expr, span })
+      None => return None
+    }
+  }
+  Some(args)
+}
+
+///|
+fn static_fold_render_record_fields(
+  fields : Array[StaticFoldNamedField],
+  span : @core.Span,
+) -> Array[@core.RecordFieldExpr]? {
+  let out : Array[@core.RecordFieldExpr] = []
+  for field in fields {
+    match static_fold_render_value(field.value, span) {
+      Some(expr) =>
+        out.push(@core.RecordFieldExpr::{ name: field.name, expr, span })
+      None => return None
+    }
+  }
+  Some(out)
+}
+
+///|
+fn static_fold_render_map_fields(
+  fields : Array[StaticFoldNamedField],
+  span : @core.Span,
+) -> Array[@core.MapFieldExpr]? {
+  let out : Array[@core.MapFieldExpr] = []
+  for field in fields {
+    match static_fold_render_value(field.value, span) {
+      Some(expr) =>
+        out.push(@core.MapFieldExpr::{ key: field.name, expr, span })
+      None => return None
+    }
+  }
+  Some(out)
+}
+
+///|
+fn static_fold_render_value(
+  value : StaticFoldValue,
+  span : @core.Span,
+) -> @core.Expr? {
+  match value {
+    StaticFoldValue::Int(value~) => Some(@core.Expr::Int(value~, span~))
+    StaticFoldValue::Bool(value~) => Some(@core.Expr::Bool(value~, span~))
+    StaticFoldValue::String(value~) => Some(@core.Expr::String(value~, span~))
+    StaticFoldValue::Tuple(items~) => {
+      let exprs : Array[@core.Expr] = []
+      for item in items {
+        match static_fold_render_value(item, span) {
+          Some(expr) => exprs.push(expr)
+          None => return None
+        }
+      }
+      Some(@core.Expr::Tuple(items=exprs, span~))
+    }
+    StaticFoldValue::Array(items~) => {
+      let exprs : Array[@core.Expr] = []
+      for item in items {
+        match static_fold_render_value(item, span) {
+          Some(expr) => exprs.push(expr)
+          None => return None
+        }
+      }
+      Some(@core.Expr::Array(items=exprs, span~))
+    }
+    StaticFoldValue::Record(fields~) =>
+      match static_fold_render_record_fields(fields, span) {
+        Some(rendered) => Some(@core.Expr::Record(fields=rendered, span~))
+        None => None
+      }
+    StaticFoldValue::Map(fields~) =>
+      match static_fold_render_map_fields(fields, span) {
+        Some(rendered) => Some(@core.Expr::Map(fields=rendered, span~))
+        None => None
+      }
+    StaticFoldValue::Ctor(name~, args~) =>
+      if args.length() == 0 {
+        Some(@core.Expr::Ident(name~, span~))
+      } else {
+        match static_fold_render_call_args(args, span) {
+          Some(rendered_args) =>
+            Some(
+              @core.Expr::Call(name~, type_args=[], args=rendered_args, span~),
+            )
+          None => None
+        }
+      }
+    StaticFoldValue::Closure(..) => None
+  }
+}
+
+///|
+fn static_fold_builtin_call(
+  name : String,
+  args : Array[StaticFoldValue],
+) -> StaticFoldValue? {
+  let normalized_name = match thin_prelude_builtin_target(name) {
+    Some(target) => target
+    None => name
+  }
+  match normalized_name {
+    "__add" =>
+      if args.length() == 2 {
+        match (args[0], args[1]) {
+          (StaticFoldValue::Int(value=left), StaticFoldValue::Int(value=right)) =>
+            Some(StaticFoldValue::Int(value=left + right))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__sub" =>
+      if args.length() == 2 {
+        match (args[0], args[1]) {
+          (StaticFoldValue::Int(value=left), StaticFoldValue::Int(value=right)) =>
+            Some(StaticFoldValue::Int(value=left - right))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__mul" =>
+      if args.length() == 2 {
+        match (args[0], args[1]) {
+          (StaticFoldValue::Int(value=left), StaticFoldValue::Int(value=right)) =>
+            Some(StaticFoldValue::Int(value=left * right))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__div" =>
+      if args.length() == 2 {
+        match (args[0], args[1]) {
+          (StaticFoldValue::Int(value=_), StaticFoldValue::Int(value=0L)) =>
+            None
+          (StaticFoldValue::Int(value=left), StaticFoldValue::Int(value=right)) =>
+            Some(StaticFoldValue::Int(value=left / right))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__mod" =>
+      if args.length() == 2 {
+        match (args[0], args[1]) {
+          (StaticFoldValue::Int(value=_), StaticFoldValue::Int(value=0L)) =>
+            None
+          (StaticFoldValue::Int(value=left), StaticFoldValue::Int(value=right)) =>
+            Some(StaticFoldValue::Int(value=left % right))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__lt" =>
+      if args.length() == 2 {
+        match (args[0], args[1]) {
+          (StaticFoldValue::Int(value=left), StaticFoldValue::Int(value=right)) =>
+            Some(StaticFoldValue::Bool(value=left < right))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__eq" =>
+      if args.length() == 2 {
+        Some(
+          StaticFoldValue::Bool(value=static_fold_value_eq(args[0], args[1])),
+        )
+      } else {
+        None
+      }
+    "and" =>
+      if args.length() == 2 {
+        match (args[0], args[1]) {
+          (StaticFoldValue::Bool(value=left), StaticFoldValue::Bool(value=right)
+          ) => Some(StaticFoldValue::Bool(value=left && right))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "or" =>
+      if args.length() == 2 {
+        match (args[0], args[1]) {
+          (StaticFoldValue::Bool(value=left), StaticFoldValue::Bool(value=right)
+          ) => Some(StaticFoldValue::Bool(value=left || right))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "not" =>
+      if args.length() == 1 {
+        match args[0] {
+          StaticFoldValue::Bool(value~) =>
+            Some(StaticFoldValue::Bool(value=not(value)))
+          _ => None
+        }
+      } else {
+        None
+      }
+    _ => None
+  }
+}
+
+///|
+fn static_fold_match_pat(
+  pat : @core.Pat,
+  value : StaticFoldValue,
+  bindings : Map[String, StaticFoldValue],
+) -> Bool {
+  match pat {
+    @core.Pat::Wildcard(..) => true
+    @core.Pat::Bind(name~, ..) => {
+      bindings[name] = value
+      true
+    }
+    @core.Pat::Int(value=pat_value, ..) =>
+      match value {
+        StaticFoldValue::Int(value=value_int) => pat_value == value_int
+        _ => false
+      }
+    @core.Pat::Bool(value=pat_value, ..) =>
+      match value {
+        StaticFoldValue::Bool(value=value_bool) => pat_value == value_bool
+        _ => false
+      }
+    @core.Pat::String(value=pat_value, ..) =>
+      match value {
+        StaticFoldValue::String(value=value_string) => pat_value == value_string
+        _ => false
+      }
+    @core.Pat::Tuple(items~, ..) =>
+      match value {
+        StaticFoldValue::Tuple(items=value_items) =>
+          if items.length() != value_items.length() {
+            false
+          } else {
+            let mut ok = true
+            for i in 0..<items.length() {
+              if not(static_fold_match_pat(items[i], value_items[i], bindings)) {
+                ok = false
+              }
+            }
+            ok
+          }
+        _ => false
+      }
+    @core.Pat::Ctor(name~, args~, ..) =>
+      match value {
+        StaticFoldValue::Ctor(name=value_name, args=value_args) => {
+          let pat_name = @core.strip_ctor_qualifier(name)
+          if pat_name != value_name || args.length() != value_args.length() {
+            false
+          } else {
+            let mut ok = true
+            for i in 0..<args.length() {
+              if not(static_fold_match_pat(args[i], value_args[i], bindings)) {
+                ok = false
+              }
+            }
+            ok
+          }
+        }
+        _ => false
+      }
+    @core.Pat::Or(pats~, ..) => {
+      for sub_pat in pats {
+        let trial = static_fold_clone_bindings(bindings)
+        if static_fold_match_pat(sub_pat, value, trial) {
+          for name, bound_value in trial {
+            bindings[name] = bound_value
+          }
+          return true
+        }
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+///|
+fn static_fold_eval_block(
+  body : @core.Module,
+  env : Map[String, StaticFoldValue],
+) -> StaticFoldValue? {
+  let scope_env = static_fold_clone_env(env)
+  let mut result : StaticFoldValue? = None
+  for stmt in body.stmts {
+    match stmt {
+      @core.Stmt::Let(rec~, name~, expr~, ..)
+      | @core.Stmt::ExportLet(rec~, name~, expr~, ..) =>
+        if rec {
+          return None
+        } else {
+          match static_fold_eval_expr(expr, scope_env) {
+            Some(value) => {
+              scope_env[name] = value
+              result = Some(value)
+            }
+            None => return None
+          }
+        }
+      @core.Stmt::Expr(expr~, ..) =>
+        match static_fold_eval_expr(expr, scope_env) {
+          Some(value) => result = Some(value)
+          None => return None
+        }
+      _ => return None
+    }
+  }
+  result
+}
+
+///|
+fn static_fold_eval_expr(
+  expr : @core.Expr,
+  env : Map[String, StaticFoldValue],
+) -> StaticFoldValue? {
+  match expr {
+    @core.Expr::Int(value~, ..) => Some(StaticFoldValue::Int(value~))
+    @core.Expr::Bool(value~, ..) => Some(StaticFoldValue::Bool(value~))
+    @core.Expr::String(value~, ..) => Some(StaticFoldValue::String(value~))
+    @core.Expr::Ident(name~, ..) =>
+      match env.get(name) {
+        Some(value) => Some(value)
+        None =>
+          if @core.is_ctor_name(name) {
+            Some(
+              StaticFoldValue::Ctor(name=@core.strip_ctor_qualifier(name), args=[]),
+            )
+          } else {
+            None
+          }
+      }
+    @core.Expr::Tuple(items~, ..) => {
+      let values : Array[StaticFoldValue] = []
+      for item in items {
+        match static_fold_eval_expr(item, env) {
+          Some(value) => values.push(value)
+          None => return None
+        }
+      }
+      Some(StaticFoldValue::Tuple(items=values))
+    }
+    @core.Expr::Array(items~, ..) => {
+      let values : Array[StaticFoldValue] = []
+      for item in items {
+        match static_fold_eval_expr(item, env) {
+          Some(value) => values.push(value)
+          None => return None
+        }
+      }
+      Some(StaticFoldValue::Array(items=values))
+    }
+    @core.Expr::Record(fields~, ..) => {
+      let values : Array[StaticFoldNamedField] = []
+      for field in fields {
+        match static_fold_eval_expr(field.expr, env) {
+          Some(value) =>
+            values.push(StaticFoldNamedField::{ name: field.name, value })
+          None => return None
+        }
+      }
+      Some(StaticFoldValue::Record(fields=values))
+    }
+    @core.Expr::Map(fields~, ..) => {
+      let values : Array[StaticFoldNamedField] = []
+      for field in fields {
+        match static_fold_eval_expr(field.expr, env) {
+          Some(value) =>
+            values.push(StaticFoldNamedField::{ name: field.key, value })
+          None => return None
+        }
+      }
+      Some(StaticFoldValue::Map(fields=values))
+    }
+    @core.Expr::Fn(params~, body~, ..) =>
+      Some(
+        StaticFoldValue::Closure(params~, body~, env=static_fold_clone_env(env)),
+      )
+    @core.Expr::Block(body~, ..) => static_fold_eval_block(body, env)
+    @core.Expr::If(cond~, then_body~, else_body~, ..) =>
+      match static_fold_eval_expr(cond, env) {
+        Some(StaticFoldValue::Bool(value~)) =>
+          if value {
+            static_fold_eval_block(then_body, env)
+          } else {
+            static_fold_eval_block(else_body, env)
+          }
+        _ => None
+      }
+    @core.Expr::Match(scrutinee~, arms~, ..) =>
+      match static_fold_eval_expr(scrutinee, env) {
+        Some(scrutinee_value) => {
+          for arm in arms {
+            let bindings : Map[String, StaticFoldValue] = {}
+            if static_fold_match_pat(arm.pat, scrutinee_value, bindings) {
+              let arm_env = static_fold_clone_env(env)
+              for name, value in bindings {
+                arm_env[name] = value
+              }
+              match arm.cond {
+                Some(cond) =>
+                  match static_fold_eval_expr(cond, arm_env) {
+                    Some(StaticFoldValue::Bool(value=true)) =>
+                      return static_fold_eval_expr(arm.expr, arm_env)
+                    Some(StaticFoldValue::Bool(value=false)) => ()
+                    _ => return None
+                  }
+                None => return static_fold_eval_expr(arm.expr, arm_env)
+              }
+            }
+          }
+          None
+        }
+        None => None
+      }
+    @core.Expr::Call(name~, type_args~, args~, ..) => {
+      if type_args.length() > 0 {
+        return None
+      }
+      let values : Array[StaticFoldValue] = []
+      for arg in args {
+        if arg.label is Some(_) {
+          return None
+        }
+        match static_fold_eval_expr(arg.expr, env) {
+          Some(value) => values.push(value)
+          None => return None
+        }
+      }
+      if @core.is_ctor_name(name) {
+        Some(
+          StaticFoldValue::Ctor(
+            name=@core.strip_ctor_qualifier(name),
+            args=values,
+          ),
+        )
+      } else {
+        match static_fold_builtin_call(name, values) {
+          Some(value) => Some(value)
+          None =>
+            match env.get(name) {
+              Some(StaticFoldValue::Closure(params~, body~, env=closure_env)) =>
+                if params.length() != values.length() {
+                  None
+                } else {
+                  let call_env = static_fold_clone_env(closure_env)
+                  for i in 0..<params.length() {
+                    call_env[params[i].name] = values[i]
+                  }
+                  static_fold_eval_block(body, call_env)
+                }
+              _ => None
+            }
+        }
+      }
+    }
+    _ => None
+  }
+}
+
+///|
+fn static_fold_stmt(
+  stmt : @core.Stmt,
+  env : Map[String, StaticFoldValue],
+) -> @core.Stmt {
+  match stmt {
+    @core.Stmt::Let(rec~, name~, expr~, span~) =>
+      match static_fold_eval_expr(expr, env) {
+        Some(value) =>
+          match static_fold_render_value(value, expr.span()) {
+            Some(next_expr) =>
+              @core.Stmt::Let(rec~, name~, expr=next_expr, span~)
+            None => stmt
+          }
+        None => stmt
+      }
+    @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
+      match static_fold_eval_expr(expr, env) {
+        Some(value) =>
+          match static_fold_render_value(value, expr.span()) {
+            Some(next_expr) =>
+              @core.Stmt::ExportLet(rec~, name~, expr=next_expr, span~)
+            None => stmt
+          }
+        None => stmt
+      }
+    @core.Stmt::Expr(expr~, span~) =>
+      match static_fold_eval_expr(expr, env) {
+        Some(value) =>
+          match static_fold_render_value(value, expr.span()) {
+            Some(next_expr) => @core.Stmt::Expr(expr=next_expr, span~)
+            None => stmt
+          }
+        None => stmt
+      }
+    _ => stmt
+  }
+}
+
+///|
+fn static_fold_stmt_binding_value(
+  stmt : @core.Stmt,
+  env : Map[String, StaticFoldValue],
+) -> (String, StaticFoldValue)? {
+  match stmt {
+    @core.Stmt::Let(expr~, name~, ..)
+    | @core.Stmt::ExportLet(expr~, name~, ..) =>
+      match static_fold_eval_expr(expr, env) {
+        Some(value) => Some((name, value))
+        None => None
+      }
+    _ => None
+  }
+}
+
+///|
+fn static_fold_bind_local_names(
+  bound : Map[String, Bool],
+  names : Array[String],
+) -> Map[String, Bool] {
+  let next_bound : Map[String, Bool] = {}
+  for name, _ in bound {
+    next_bound[name] = true
+  }
+  for name in names {
+    next_bound[name] = true
+  }
+  next_bound
+}
+
+///|
+fn static_fold_collect_pat_names(pat : @core.Pat) -> Array[String] {
+  let names : Array[String] = []
+  collect_pat_bindings_codegen(pat, names)
+  names
+}
+
+///|
+fn static_fold_count_ref_name(
+  name : String,
+  candidates : Map[String, Bool],
+  counts : Map[String, Int],
+  bound : Map[String, Bool],
+) -> Unit {
+  if bound.contains(name) || not(candidates.contains(name)) {
+    return
+  }
+  match counts.get(name) {
+    Some(value) => counts[name] = value + 1
+    None => counts[name] = 1
+  }
+}
+
+///|
+fn static_fold_count_refs_expr(
+  expr : @core.Expr,
+  candidates : Map[String, Bool],
+  counts : Map[String, Int],
+  bound : Map[String, Bool],
+) -> Unit {
+  match expr {
+    @core.Expr::Ident(name~, ..) =>
+      static_fold_count_ref_name(name, candidates, counts, bound)
+    @core.Expr::Call(name~, args~, ..) => {
+      if not(@core.is_ctor_name(name)) {
+        static_fold_count_ref_name(name, candidates, counts, bound)
+      }
+      for arg in args {
+        static_fold_count_refs_expr(arg.expr, candidates, counts, bound)
+      }
+    }
+    @core.Expr::Tuple(items~, ..) | @core.Expr::Array(items~, ..) =>
+      for item in items {
+        static_fold_count_refs_expr(item, candidates, counts, bound)
+      }
+    @core.Expr::TupleIndex(expr=inner, ..)
+    | @core.Expr::Yield(expr=inner, ..)
+    | @core.Expr::Spread(expr=inner, ..) =>
+      static_fold_count_refs_expr(inner, candidates, counts, bound)
+    @core.Expr::Record(fields~, ..) =>
+      for field in fields {
+        static_fold_count_refs_expr(field.expr, candidates, counts, bound)
+      }
+    @core.Expr::Map(fields~, ..) =>
+      for field in fields {
+        static_fold_count_refs_expr(field.expr, candidates, counts, bound)
+      }
+    @core.Expr::StructLit(fields~, ..) =>
+      for field in fields {
+        static_fold_count_refs_expr(field.expr, candidates, counts, bound)
+      }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      static_fold_count_refs_expr(cond, candidates, counts, bound)
+      static_fold_count_refs_module_into(then_body, candidates, counts, bound)
+      static_fold_count_refs_module_into(else_body, candidates, counts, bound)
+    }
+    @core.Expr::Block(body~, ..) | @core.Expr::Handle(body~, ..) =>
+      static_fold_count_refs_module_into(body, candidates, counts, bound)
+    @core.Expr::Fn(params~, body~, ..) => {
+      let names : Array[String] = []
+      for param in params {
+        names.push(param.name)
+      }
+      static_fold_count_refs_module_into(
+        body,
+        candidates,
+        counts,
+        static_fold_bind_local_names(bound, names),
+      )
+    }
+    @core.Expr::Match(scrutinee~, arms~, ..) => {
+      static_fold_count_refs_expr(scrutinee, candidates, counts, bound)
+      for arm in arms {
+        let arm_bound = static_fold_bind_local_names(
+          bound,
+          static_fold_collect_pat_names(arm.pat),
+        )
+        match arm.cond {
+          Some(cond) =>
+            static_fold_count_refs_expr(cond, candidates, counts, arm_bound)
+          None => ()
+        }
+        static_fold_count_refs_expr(arm.expr, candidates, counts, arm_bound)
+      }
+    }
+    @core.Expr::ForIn(iterable~, value_name~, index_name~, body~, ..) => {
+      static_fold_count_refs_expr(iterable, candidates, counts, bound)
+      let names : Array[String] = [value_name]
+      match index_name {
+        Some(name) => names.push(name)
+        None => ()
+      }
+      static_fold_count_refs_module_into(
+        body,
+        candidates,
+        counts,
+        static_fold_bind_local_names(bound, names),
+      )
+    }
+    @core.Expr::While(cond~, body~, ..) => {
+      static_fold_count_refs_expr(cond, candidates, counts, bound)
+      static_fold_count_refs_module_into(body, candidates, counts, bound)
+    }
+    @core.Expr::Loop(params~, body~, ..) => {
+      let names : Array[String] = []
+      for param in params {
+        static_fold_count_refs_expr(param.init, candidates, counts, bound)
+        names.push(param.name)
+      }
+      static_fold_count_refs_module_into(
+        body,
+        candidates,
+        counts,
+        static_fold_bind_local_names(bound, names),
+      )
+    }
+    @core.Expr::Break(value~, ..) =>
+      match value {
+        Some(inner) =>
+          static_fold_count_refs_expr(inner, candidates, counts, bound)
+        None => ()
+      }
+    @core.Expr::Continue(args~, ..) =>
+      for arg in args {
+        static_fold_count_refs_expr(arg, candidates, counts, bound)
+      }
+    @core.Expr::Perform(args~, ..) =>
+      for arg in args {
+        static_fold_count_refs_expr(arg.expr, candidates, counts, bound)
+      }
+    _ => ()
+  }
+}
+
+///|
+fn static_fold_count_refs_module(
+  ast : @core.Module,
+  candidates : Map[String, Bool],
+) -> Map[String, Int] {
+  let counts : Map[String, Int] = {}
+  static_fold_count_refs_module_into(ast, candidates, counts, {})
+  counts
+}
+
+///|
+fn static_fold_count_refs_module_into(
+  ast : @core.Module,
+  candidates : Map[String, Bool],
+  counts : Map[String, Int],
+  bound : Map[String, Bool],
+) -> Unit {
+  let scope_bound : Map[String, Bool] = {}
+  for name, _ in bound {
+    scope_bound[name] = true
+  }
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(rec~, name~, expr~, ..)
+      | @core.Stmt::ExportLet(rec~, name~, expr~, ..)
+      | @core.Stmt::InternalExportLet(rec~, name~, expr~, ..) => {
+        let expr_bound = if rec {
+          static_fold_bind_local_names(scope_bound, [name])
+        } else {
+          scope_bound
+        }
+        static_fold_count_refs_expr(expr, candidates, counts, expr_bound)
+      }
+      @core.Stmt::LetMut(name~, expr~, ..) => {
+        static_fold_count_refs_expr(expr, candidates, counts, scope_bound)
+        scope_bound[name] = true
+      }
+      @core.Stmt::Assign(name~, expr~, ..) => {
+        static_fold_count_ref_name(name, candidates, counts, scope_bound)
+        static_fold_count_refs_expr(expr, candidates, counts, scope_bound)
+      }
+      @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
+        static_fold_count_refs_expr(target, candidates, counts, scope_bound)
+        static_fold_count_refs_expr(index, candidates, counts, scope_bound)
+        static_fold_count_refs_expr(value, candidates, counts, scope_bound)
+      }
+      @core.Stmt::LetPat(pat~, expr~, ..) => {
+        static_fold_count_refs_expr(expr, candidates, counts, scope_bound)
+        for name in static_fold_collect_pat_names(pat) {
+          scope_bound[name] = true
+        }
+      }
+      @core.Stmt::LetPatElse(pat~, expr~, else_body~, ..) => {
+        static_fold_count_refs_expr(expr, candidates, counts, scope_bound)
+        static_fold_count_refs_module_into(
+          else_body, candidates, counts, scope_bound,
+        )
+        for name in static_fold_collect_pat_names(pat) {
+          scope_bound[name] = true
+        }
+      }
+      @core.Stmt::Expr(expr~, ..) =>
+        static_fold_count_refs_expr(expr, candidates, counts, scope_bound)
+      @core.Stmt::Test(body~, ..) | @core.Stmt::Bench(body~, ..) =>
+        static_fold_count_refs_module_into(
+          body, candidates, counts, scope_bound,
+        )
+      _ => ()
+    }
+  }
+}
+
+///|
+fn strip_unused_top_level_static_bindings(
+  ast : @core.Module,
+  candidates : Map[String, Bool],
+) -> @core.Module {
+  if candidates.length() == 0 {
+    return ast
+  }
+  let mut current = ast
+  let mut changed = true
+  while changed {
+    changed = false
+    let counts = static_fold_count_refs_module(current, candidates)
+    let stmts : Array[@core.Stmt] = []
+    for stmt in current.stmts {
+      match stmt {
+        @core.Stmt::Let(name~, ..) =>
+          if name != "run" &&
+            candidates.contains(name) &&
+            not(counts.contains(name)) {
+            changed = true
+          } else {
+            stmts.push(stmt)
+          }
+        _ => stmts.push(stmt)
+      }
+    }
+    current = @core.Module::{ stmts, }
+  }
+  current
+}
+
+///|
+fn static_fold_module(ast : @core.Module) -> @core.Module {
+  let env : Map[String, StaticFoldValue] = {}
+  let candidates : Map[String, Bool] = {}
+  let stmts : Array[@core.Stmt] = []
+  for stmt in ast.stmts {
+    let next_stmt = static_fold_stmt(stmt, env)
+    stmts.push(next_stmt)
+    match next_stmt {
+      @core.Stmt::Let(rec=true, name~, expr=@core.Expr::Fn(..), ..) =>
+        candidates[name] = true
+      _ =>
+        match static_fold_stmt_binding_value(next_stmt, env) {
+          Some((name, value)) => {
+            env[name] = value
+            match next_stmt {
+              @core.Stmt::Let(..) => candidates[name] = true
+              _ => ()
+            }
+          }
+          None => ()
+        }
+    }
+  }
+  strip_unused_top_level_static_bindings(@core.Module::{ stmts, }, candidates)
+}
+
+///|
+fn thin_prelude_builtin_target(name : String) -> String? {
+  match name {
+    "add" => Some("__add")
+    "sub" => Some("__sub")
+    "mul" => Some("__mul")
+    "div" => Some("__div")
+    "eq" => Some("__eq")
+    "lt" => Some("__lt")
+    "assert" => Some("__assert")
+    "assert_true" => Some("__assert")
+    "assert_eq" => Some("__assert_eq")
+    _ => None
+  }
+}
+
+///|
+fn is_thin_prelude_builtin_wrapper_expr(
+  name : String,
+  expr : @core.Expr,
+) -> Bool {
+  match thin_prelude_builtin_target(name) {
+    Some(target) =>
+      match expr {
+        @core.Expr::Fn(params~, body~, ..) =>
+          if body.stmts.length() != 1 {
+            false
+          } else {
+            match body.stmts[0] {
+              @core.Stmt::Expr(
+                expr=@core.Expr::Call(name=call_name, args~, ..),
+                ..
+              ) =>
+                if call_name != target || args.length() != params.length() {
+                  false
+                } else {
+                  let mut ok = true
+                  for i in 0..<params.length() {
+                    match args[i].expr {
+                      @core.Expr::Ident(name=arg_name, ..) =>
+                        if arg_name != params[i].name {
+                          ok = false
+                        }
+                      _ => ok = false
+                    }
+                  }
+                  ok
+                }
+              _ => false
+            }
+          }
+        _ => false
+      }
+    None => false
+  }
+}
+
+///|
+fn thin_prelude_builtin_wrapper_name(stmt : @core.Stmt) -> String? {
+  match stmt {
+    @core.Stmt::Let(rec=false, name~, expr~, ..) =>
+      if is_thin_prelude_builtin_wrapper_expr(name, expr) {
+        Some(name)
+      } else {
+        None
+      }
+    _ => None
+  }
+}
+
+///|
+fn collect_bare_ident_refs_expr(
+  expr : @core.Expr,
+  candidates : Map[String, Bool],
+  found : Map[String, Bool],
+) -> Unit {
+  match expr {
+    @core.Expr::Ident(name~, ..) =>
+      if candidates.contains(name) {
+        found[name] = true
+      }
+    @core.Expr::Call(args~, ..) =>
+      for arg in args {
+        collect_bare_ident_refs_expr(arg.expr, candidates, found)
+      }
+    @core.Expr::Tuple(items~, ..) | @core.Expr::Array(items~, ..) =>
+      for item in items {
+        collect_bare_ident_refs_expr(item, candidates, found)
+      }
+    @core.Expr::TupleIndex(expr=inner, ..)
+    | @core.Expr::Yield(expr=inner, ..)
+    | @core.Expr::Spread(expr=inner, ..) =>
+      collect_bare_ident_refs_expr(inner, candidates, found)
+    @core.Expr::Record(fields~, ..) =>
+      for field in fields {
+        collect_bare_ident_refs_expr(field.expr, candidates, found)
+      }
+    @core.Expr::Map(fields~, ..) =>
+      for field in fields {
+        collect_bare_ident_refs_expr(field.expr, candidates, found)
+      }
+    @core.Expr::StructLit(fields~, ..) =>
+      for field in fields {
+        collect_bare_ident_refs_expr(field.expr, candidates, found)
+      }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      collect_bare_ident_refs_expr(cond, candidates, found)
+      collect_bare_ident_refs_module(then_body, candidates, found)
+      collect_bare_ident_refs_module(else_body, candidates, found)
+    }
+    @core.Expr::Block(body~, ..)
+    | @core.Expr::Handle(body~, ..)
+    | @core.Expr::Fn(body~, ..) =>
+      collect_bare_ident_refs_module(body, candidates, found)
+    @core.Expr::Match(scrutinee~, arms~, ..) => {
+      collect_bare_ident_refs_expr(scrutinee, candidates, found)
+      for arm in arms {
+        match arm.cond {
+          Some(cond) => collect_bare_ident_refs_expr(cond, candidates, found)
+          None => ()
+        }
+        collect_bare_ident_refs_expr(arm.expr, candidates, found)
+      }
+    }
+    @core.Expr::ForIn(iterable~, body~, ..) => {
+      collect_bare_ident_refs_expr(iterable, candidates, found)
+      collect_bare_ident_refs_module(body, candidates, found)
+    }
+    @core.Expr::While(cond~, body~, ..) => {
+      collect_bare_ident_refs_expr(cond, candidates, found)
+      collect_bare_ident_refs_module(body, candidates, found)
+    }
+    @core.Expr::Loop(params~, body~, ..) => {
+      for param in params {
+        collect_bare_ident_refs_expr(param.init, candidates, found)
+      }
+      collect_bare_ident_refs_module(body, candidates, found)
+    }
+    @core.Expr::Break(value~, ..) =>
+      match value {
+        Some(inner) => collect_bare_ident_refs_expr(inner, candidates, found)
+        None => ()
+      }
+    @core.Expr::Continue(args~, ..) =>
+      for arg in args {
+        collect_bare_ident_refs_expr(arg, candidates, found)
+      }
+    @core.Expr::Perform(args~, ..) =>
+      for arg in args {
+        collect_bare_ident_refs_expr(arg.expr, candidates, found)
+      }
+    _ => ()
+  }
+}
+
+///|
+fn collect_bare_ident_refs_stmt(
+  stmt : @core.Stmt,
+  candidates : Map[String, Bool],
+  found : Map[String, Bool],
+) -> Unit {
+  match stmt {
+    @core.Stmt::Let(expr~, ..)
+    | @core.Stmt::ExportLet(expr~, ..)
+    | @core.Stmt::InternalExportLet(expr~, ..)
+    | @core.Stmt::LetMut(expr~, ..)
+    | @core.Stmt::Assign(expr~, ..)
+    | @core.Stmt::Expr(expr~, ..)
+    | @core.Stmt::LetPat(expr~, ..) =>
+      collect_bare_ident_refs_expr(expr, candidates, found)
+    @core.Stmt::LetPatElse(expr~, else_body~, ..) => {
+      collect_bare_ident_refs_expr(expr, candidates, found)
+      collect_bare_ident_refs_module(else_body, candidates, found)
+    }
+    @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
+      collect_bare_ident_refs_expr(target, candidates, found)
+      collect_bare_ident_refs_expr(index, candidates, found)
+      collect_bare_ident_refs_expr(value, candidates, found)
+    }
+    @core.Stmt::Test(body~, ..) | @core.Stmt::Bench(body~, ..) =>
+      collect_bare_ident_refs_module(body, candidates, found)
+    _ => ()
+  }
+}
+
+///|
+fn collect_bare_ident_refs_module(
+  ast : @core.Module,
+  candidates : Map[String, Bool],
+  found : Map[String, Bool],
+) -> Unit {
+  for stmt in ast.stmts {
+    collect_bare_ident_refs_stmt(stmt, candidates, found)
+  }
+}
+
+///|
+fn strip_unused_thin_prelude_builtin_wrappers(
+  ast : @core.Module,
+) -> @core.Module {
+  let thin_wrappers : Map[String, Bool] = {}
+  for stmt in ast.stmts {
+    match thin_prelude_builtin_wrapper_name(stmt) {
+      Some(name) => thin_wrappers[name] = true
+      None => ()
+    }
+  }
+  if thin_wrappers.length() == 0 {
+    return ast
+  }
+  let bare_refs : Map[String, Bool] = {}
+  collect_bare_ident_refs_module(ast, thin_wrappers, bare_refs)
+  let stmts : Array[@core.Stmt] = []
+  for stmt in ast.stmts {
+    match thin_prelude_builtin_wrapper_name(stmt) {
+      Some(name) => if bare_refs.contains(name) { stmts.push(stmt) }
+      None => stmts.push(stmt)
+    }
+  }
+  @core.Module::{ stmts, }
+}
+
+///|
 fn ensure_run_ast_result(
   ast : @core.Module,
   exported_fns : Map[String, Bool],
@@ -1736,7 +2903,9 @@ fn emit_module_with_coverage(
 ) -> WasmCoverageArtifact raise WasmGenError {
   // Pre-process: strip type-assertion identity blocks so that
   // collect_func_defs doesn't create dead identity stub functions.
-  let ast = strip_type_assert_module(ast)
+  let ast = strip_unused_thin_prelude_builtin_wrappers(
+    static_fold_module(strip_type_assert_module(ast)),
+  )
   // Collect exported function names
   for stmt in ast.stmts {
     match stmt {

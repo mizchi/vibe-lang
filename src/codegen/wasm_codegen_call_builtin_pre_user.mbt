@@ -795,6 +795,25 @@ fn emit_number_obj_to_string(
 }
 
 ///|
+fn compile_eq_builtin_pre_user(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  name : String,
+  args : Array[@core.CallArg],
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs_with_arity(args, name, 2)
+  let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
+  match resolved_kind {
+    ValueKind::I32 | ValueKind::I64 =>
+      compile_i32_cmp_tagged(ctx, buf, pos_args[0], pos_args[1], emit_i64_eq)
+    _ =>
+      compile_binary_cmp_op(
+        ctx, buf, name, args, emit_i64_eq, emit_f32_eq, emit_f64_eq,
+      )
+  }
+}
+
+///|
 fn compile_call_builtin_pre_user_inner(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -898,10 +917,7 @@ fn compile_call_builtin_pre_user_inner(
           )
       }
     }
-    "eq" if not(is_user_fn) =>
-      compile_binary_cmp_op(
-        ctx, buf, "eq", args, emit_i64_eq, emit_f32_eq, emit_f64_eq,
-      )
+    "eq" if not(is_user_fn) => compile_eq_builtin_pre_user(ctx, buf, "eq", args)
     "lt" if not(is_user_fn) => {
       let pos_args = extract_positional_exprs_with_arity(args, "lt", 2)
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
@@ -935,9 +951,7 @@ fn compile_call_builtin_pre_user_inner(
     }
     "assert_eq" | "__assert_eq" if not(is_user_fn) => {
       // assert_eq(a, b): compile __eq(a, b), then assert the result
-      compile_binary_cmp_op(
-        ctx, buf, "__eq", args, emit_i64_eq, emit_f32_eq, emit_f64_eq,
-      )
+      compile_eq_builtin_pre_user(ctx, buf, "__eq", args)
       // compile_binary_cmp_op leaves tagged i64 bool on stack
       emit_i64_const_raw(buf, tag_bool_value64(true))
       emit_i64_eq(buf)
@@ -1067,10 +1081,7 @@ fn compile_call_builtin_pre_user_inner(
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_i64_xor(buf)
     }
-    "__eq" =>
-      compile_binary_cmp_op(
-        ctx, buf, "__eq", args, emit_i64_eq, emit_f32_eq, emit_f64_eq,
-      )
+    "__eq" => compile_eq_builtin_pre_user(ctx, buf, "__eq", args)
     "__lt" => {
       let pos_args = extract_positional_exprs_with_arity(args, "__lt", 2)
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
