@@ -2,6 +2,29 @@
 let resolve_member_depth : Ref[Int] = Ref::new(0)
 
 ///|
+/// Map a resolved type to its builtin namespace root for UFCS dispatch.
+/// This is separate from TypeEnv::namespace_root to avoid affecting existing
+/// user-defined function resolution (resolve_type_member_call_name).
+fn builtin_ufcs_namespace(ty : @core.Type) -> String? {
+  match ty {
+    @core.Type::Int => Some("Int")
+    @core.Type::Float => Some("Float")
+    @core.Type::Double => Some("Double")
+    @core.Type::Bool => Some("Bool")
+    @core.Type::Char => Some("Char")
+    @core.Type::String => Some("String")
+    @core.Type::Path => Some("Path")
+    @core.Type::Array(_) => Some("Array")
+    @core.Type::Map(_, _) => Some("Map")
+    @core.Type::ArrayBuilder(_) => Some("ArrayBuilder")
+    @core.Type::MapBuilder(_, _) => Some("MapBuilder")
+    @core.Type::Bytes => Some("Bytes")
+    @core.Type::PromptText => Some("PromptText")
+    _ => None
+  }
+}
+
+///|
 fn resolve_type_member_call_name(
   env : TypeEnv,
   name : String,
