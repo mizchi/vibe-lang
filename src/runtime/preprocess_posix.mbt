@@ -125,14 +125,130 @@ fn preprocess_posix_line_with_compat_note(line : String) -> (String, String?) {
   if is_posix_operator_char(c) {
     return (line, None)
   }
-  // Command with arguments → wrap in sh_lines(...)
+  // Check if first_word is a known vibe/shell command
+  let rest = chars_slice(chars, rest_start, len).trim().to_string()
   let leading = chars_slice(chars, 0, ws_end)
-  let content = chars_slice(chars, ws_end, len)
-  let rewritten = convert_posix_command(content)
-  (
-    leading + rewritten,
-    Some("command-head rewrite `" + content + "` -> `" + rewritten + "`"),
-  )
+  match convert_shell_builtin_command(first_word, rest) {
+    Some(rewritten) =>
+      (
+        leading + rewritten,
+        Some("shell builtin `" + first_word + "` -> `" + rewritten + "`"),
+      )
+    None => {
+      // Fallback: wrap in sh_lines(...)
+      let content = chars_slice(chars, ws_end, len)
+      let rewritten = convert_posix_command(content)
+      (
+        leading + rewritten,
+        Some("command-head rewrite `" + content + "` -> `" + rewritten + "`"),
+      )
+    }
+  }
+}
+
+///|
+/// Convert known shell builtins to vibe function calls.
+/// Returns None if the command is not a known builtin (fallback to sh_lines).
+fn convert_shell_builtin_command(
+  cmd : String,
+  args : String,
+) -> String? {
+  // Single-string-arg commands: cmd arg → cmd("arg")
+  let single_arg_cmds : Array[String] = [
+    "cd", "rm", "cat", "mkdir", "mkdir_p", "touch", "echo", "print", "println",
+    "exists", "is_dir", "is_file", "realpath", "pwd",
+  ]
+  for c in single_arg_cmds {
+    if cmd == c {
+      if cmd == "pwd" {
+        return Some("pwd()")
+      }
+      if args.length() == 0 {
+        return None // needs an argument
+      }
+      return Some(cmd + "(\"" + escape_posix_for_vibe_string(args) + "\")")
+    }
+  }
+  // Two-string-arg commands: cmd src dst → cmd("src", "dst")
+  let two_arg_cmds : Array[String] = [
+    "cp", "mv", "tee", "append", "write_file", "env_or",
+  ]
+  for c in two_arg_cmds {
+    if cmd == c {
+      // Split args on first space
+      match split_first_arg(args) {
+        Some((first, second)) =>
+          return Some(
+            cmd +
+            "(\"" +
+            escape_posix_for_vibe_string(first) +
+            "\", \"" +
+            escape_posix_for_vibe_string(second) +
+            "\")",
+          )
+        None => return None
+      }
+    }
+  }
+  // ls dir → ls("dir")
+  if cmd == "ls" || cmd == "ls_all" || cmd == "find" {
+    if args.length() == 0 {
+      return Some(cmd + "(\".\")")
+    }
+    return Some(cmd + "(\"" + escape_posix_for_vibe_string(args) + "\")")
+  }
+  // env NAME → env("NAME")
+  if cmd == "env" {
+    if args.length() == 0 {
+      return None
+    }
+    return Some("env(\"" + escape_posix_for_vibe_string(args) + "\")")
+  }
+  // exec cmd → exec("cmd") (falls through to sh_lines for safety)
+  None
+}
+
+///|
+fn split_first_arg(s : String) -> (String, String)? {
+  let chars = s.to_array()
+  let len = chars.length()
+  let mut i = 0
+  // Handle quoted first arg
+  if len > 0 && chars[0] == '"' {
+    i = 1
+    while i < len && chars[i] != '"' {
+      i = i + 1
+    }
+    if i >= len {
+      return None
+    }
+    let first = chars_slice(chars, 1, i)
+    i = i + 1
+    while i < len && (chars[i] == ' ' || chars[i] == '\t') {
+      i = i + 1
+    }
+    if i >= len {
+      return None
+    }
+    let second = chars_slice(chars, i, len).trim().to_string()
+    return Some((first, second))
+  }
+  // Unquoted first arg
+  while i < len && chars[i] != ' ' && chars[i] != '\t' {
+    i = i + 1
+  }
+  if i >= len {
+    return None
+  }
+  let first = chars_slice(chars, 0, i)
+  while i < len && (chars[i] == ' ' || chars[i] == '\t') {
+    i = i + 1
+  }
+  if i >= len {
+    return None
+  }
+  let second = chars_slice(chars, i, len).trim().to_string()
+  Some((first, second))
 }
 
 ///|

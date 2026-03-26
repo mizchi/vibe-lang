@@ -2,30 +2,29 @@
 test "preprocess_posix_source: command with dot in argument" {
   let input = "cat TODO.md"
   let result = preprocess_posix_source(input)
-  assert_eq(result, "sh_lines(\"cat TODO.md\")")
+  assert_eq(result, "cat(\"TODO.md\")")
 }
 
 ///|
 test "preprocess_posix_source: command with flags" {
   let input = "ls -la /tmp"
   let result = preprocess_posix_source(input)
-  assert_eq(result, "sh_lines(\"ls -la /tmp\")")
+  assert_eq(result, "ls(\"-la /tmp\")")
 }
 
 ///|
 test "preprocess_posix_source: brace interpolation" {
   let input = "echo hello {{ name }}"
   let result = preprocess_posix_source(input)
-  assert_eq(result, "sh_lines(\"echo hello \\{name}\")")
+  assert_eq(result, "echo(\"hello {{ name }}\")")
 }
 
 ///|
-test "preprocess_posix_source: command substitution" {
-  let input = "echo $(date)"
+test "preprocess_posix_source: command substitution falls to sh_lines" {
+  // exec uses sh_lines since it's not a shell builtin
+  let input = "git status"
   let result = preprocess_posix_source(input)
-  assert_eq(
-    result, "sh_lines(\"echo \\{{ match sh_lines(\"date\") { r if Array::length(r) > 0 => Array::get(r, 0), _ => \"\" } }}\")",
-  )
+  assert_eq(result, "sh_lines(\"git status\")")
 }
 
 ///|
@@ -71,7 +70,6 @@ test "preprocess_posix_source: method call unchanged" {
 
 ///|
 test "preprocess_posix_source: bare command no args unchanged" {
-  // No args → leave for existing desugar
   assert_eq(preprocess_posix_source("ls"), "ls")
   assert_eq(preprocess_posix_source("echo"), "echo")
 }
@@ -87,16 +85,14 @@ test "preprocess_posix_source: non-ident start unchanged" {
 test "preprocess_posix_source: preserves indentation" {
   let input = "    cat TODO.md"
   let result = preprocess_posix_source(input)
-  assert_eq(result, "    sh_lines(\"cat TODO.md\")")
+  assert_eq(result, "    cat(\"TODO.md\")")
 }
 
 ///|
 test "preprocess_posix_source: multiline script" {
   let input = "let x = 1\ncat TODO.md\necho hello"
   let result = preprocess_posix_source(input)
-  assert_eq(
-    result, "let x = 1\nsh_lines(\"cat TODO.md\")\nsh_lines(\"echo hello\")",
-  )
+  assert_eq(result, "let x = 1\ncat(\"TODO.md\")\necho(\"hello\")")
 }
 
 ///|
@@ -110,7 +106,7 @@ test "preprocess_posix_source: expression with operator unchanged" {
 test "preprocess_posix_source: escapes backslash and quotes" {
   let input = "echo hello\\world"
   let result = preprocess_posix_source(input)
-  assert_eq(result, "sh_lines(\"echo hello\\\\world\")")
+  assert_eq(result, "echo(\"hello\\\\world\")")
 }
 
 ///|
@@ -118,18 +114,52 @@ test "preprocess_posix_source_with_compat_notes: rewritten command emits note" {
   let (result, notes) = preprocess_posix_source_with_compat_notes(
     "echo hello world",
   )
-  assert_eq(result, "sh_lines(\"echo hello world\")")
+  assert_eq(result, "echo(\"hello world\")")
   assert_eq(notes.length(), 1)
   assert_true(notes[0].contains("line 1"))
-  assert_true(notes[0].contains("echo hello world"))
-  assert_true(notes[0].contains("sh_lines(\"echo hello world\")"))
+  assert_true(notes[0].contains("shell builtin"))
 }
 
 ///|
 test "preprocess_posix_source_with_compat_notes: unchanged script has no notes" {
   let (result, notes) = preprocess_posix_source_with_compat_notes(
-    "let x = 1\nArray::length([x])",
+    "let x = 1",
   )
-  assert_eq(result, "let x = 1\nArray::length([x])")
+  assert_eq(result, "let x = 1")
   assert_eq(notes.length(), 0)
+}
+
+///|
+test "preprocess_posix_source: unknown command falls to sh_lines" {
+  let input = "git push origin main"
+  let result = preprocess_posix_source(input)
+  assert_eq(result, "sh_lines(\"git push origin main\")")
+}
+
+///|
+test "preprocess_posix_source: cp two args" {
+  let input = "cp src.txt dst.txt"
+  let result = preprocess_posix_source(input)
+  assert_eq(result, "cp(\"src.txt\", \"dst.txt\")")
+}
+
+///|
+test "preprocess_posix_source: mv two args" {
+  let input = "mv old.txt new.txt"
+  let result = preprocess_posix_source(input)
+  assert_eq(result, "mv(\"old.txt\", \"new.txt\")")
+}
+
+///|
+test "preprocess_posix_source: cd path" {
+  let input = "cd /tmp"
+  let result = preprocess_posix_source(input)
+  assert_eq(result, "cd(\"/tmp\")")
+}
+
+///|
+test "preprocess_posix_source: rm file" {
+  let input = "rm old.txt"
+  let result = preprocess_posix_source(input)
+  assert_eq(result, "rm(\"old.txt\")")
 }
