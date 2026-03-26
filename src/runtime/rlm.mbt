@@ -294,8 +294,7 @@ fn rlm_run_loop(
   ])
   let sandbox = Runtime::new(sandbox_caps)
 
-  // TODO(issue#20): migrate Rlm to compiled session backend.
-  // Rlm executes LLM-generated code line-by-line; needs compiled REPL session.
+  // TODO(#20): migrate to compiled backend (needs REPL session support)
   // Bind the prompt in the sandbox
   // json_escape_string returns a quoted string like "\"hello world\""
   let prompt_script = "let prompt = " + json_escape_string(prompt)
