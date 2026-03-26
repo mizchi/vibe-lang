@@ -240,6 +240,38 @@ let empty_states = () -> Array[(Int, Array[Int])] {
   ], 0, 0)
 }
 
+let rec repeat_impl = (mc: (Re, String, Int, Int, Array[Int]) -> Array[(Int, Array[Int])], inner: Re, s: String, flags: Int, min_n: Int, max_n: Int, lazy: Bool, count: Int, cur: Int, cur_collector: Array[Int]) -> Array[(Int, Array[Int])] {
+  let stop_states = if count >= min_n {
+    single_state(cur, cur_collector)
+  } else {
+    empty_states()
+  }
+  if count >= max_n {
+    stop_states
+  } else {
+    let next_states = mc(inner, s, cur, flags, cur_collector)
+    let advanced_states = empty_states()
+    let n_next = Array::length(next_states)
+    let mut i = 0
+    while i < n_next {
+      let (next_pos, next_collector) = Array::get(next_states, i)
+      if next_pos > cur {
+        append_states(advanced_states, repeat_impl(mc, inner, s, flags, min_n, max_n, lazy, count + 1, next_pos, next_collector))
+      }
+      i = i + 1
+    }
+    let results = empty_states()
+    if lazy {
+      append_states(results, stop_states)
+      append_states(results, advanced_states)
+    } else {
+      append_states(results, advanced_states)
+      append_states(results, stop_states)
+    }
+    results
+  }
+}
+
 let flag_ignore_case: Int = 1
 
 let chars_equal = (lhs: Int, rhs: Int, flags: Int) -> Bool {
@@ -324,7 +356,7 @@ let extract_captures = (collector: Array[Int], s: String, num_groups: Int) -> Ar
       if gid < num_groups {
         let start = Array::get(collector, ci + 1)
         let end = Array::get(collector, ci + 2)
-        Array::set(captures, gid, s[start:end])
+        Array::set(captures, gid, s[start: end])
       }
     }
     ci = ci + 3
@@ -778,50 +810,13 @@ let in_ranges_with_flags = (c: Int, ranges: Array[(Int, Int)], flags: Int) -> Bo
   (flag_enabled(flags, flag_ignore_case) && (in_ranges(lower_ascii(c), ranges) || in_ranges(upper_ascii(c), ranges)))
 }
 
-let rec repeat_impl = (
-  mc: (Re, String, Int, Int, Array[Int]) -> Array[(Int, Array[Int])],
-  inner: Re, s: String, flags: Int,
-  min_n: Int, max_n: Int, lazy: Bool,
-  count: Int, cur: Int, cur_collector: Array[Int]
-) -> Array[(Int, Array[Int])] {
-  let stop_states = if count >= min_n {
-    single_state(cur, cur_collector)
-  } else {
-    empty_states()
-  }
-  if count >= max_n {
-    stop_states
-  } else {
-    let next_states = mc(inner, s, cur, flags, cur_collector)
-    let advanced_states = empty_states()
-    let n_next = Array::length(next_states)
-    let mut i = 0
-    while i < n_next {
-      let (next_pos, next_collector) = Array::get(next_states, i)
-      if next_pos > cur {
-        append_states(advanced_states, repeat_impl(mc, inner, s, flags, min_n, max_n, lazy, count + 1, next_pos, next_collector))
-      }
-      i = i + 1
-    }
-    let results = empty_states()
-    if lazy {
-      append_states(results, stop_states)
-      append_states(results, advanced_states)
-    } else {
-      append_states(results, advanced_states)
-      append_states(results, stop_states)
-    }
-    results
-  }
-}
-
 let rec match_candidates = (re: Re, s: String, pos: Int, flags: Int, collector: Array[Int]) -> Array[(Int, Array[Int])] {
   let len = String::length(s)
   let match_seq_impl = (parts: Array[Re], seq_pos: Int, seq_collector: Array[Int]) -> Array[(Int, Array[Int])] {
-    // Iterative implementation: process parts left-to-right, collecting all possible states
     let part_count = Array::length(parts)
-    // current_states holds (idx, pos, collector) triples being processed
-    let mut states = [(seq_pos, seq_collector)]
+    let mut states = [
+      (seq_pos, seq_collector)
+    ]
     let mut idx = 0
     while idx < part_count {
       let next_states = empty_states()
@@ -1051,14 +1046,14 @@ export let split = (re: Re, s: String) -> Array[String] {
   while pos <= len {
     let r = do_match(re, s, pos)
     if r >= 0 && r > pos {
-      Array::push(results, s[start:pos])
+      Array::push(results, s[start: pos])
       start = r
       pos = r
     } else {
       pos = pos + 1
     }
   }
-  Array::push(results, s[start:len])
+  Array::push(results, s[start: len])
   results
 }
 
@@ -1069,7 +1064,7 @@ export let find_all = (re: Re, s: String) -> Array[String] {
   while pos <= len {
     let r = do_match(re, s, pos)
     if r >= 0 {
-      Array::push(results, s[pos:r])
+      Array::push(results, s[pos: r])
       if r == pos {
         pos = pos + 1
       } else {
@@ -1099,17 +1094,13 @@ export let find_match = (re: Re, s: String) -> String {
     else {
       let r = do_match(re, s, pos)
       if r >= 0 {
-        s[pos:r]
+        s[pos: r]
       } else {
         try_pos(pos + 1)
       }
     }
   }
   try_pos(0)
-}
-
-export let debug_match_pos = (re: Re, s: String) -> Int {
-  do_match(re, s, 0)
 }
 
 export let test_match = (re: Re, s: String) -> Bool {
@@ -1166,7 +1157,7 @@ export let match_groups = (regex: Regex, s: String) -> Match {
         }
       }
       if found {
-        let full = s[match_start:match_end]
+        let full = s[match_start: match_end]
         Match(full, result_captures, gnames)
       } else {
         Match("", empty_string_array(), gnames)
@@ -1193,6 +1184,10 @@ export let replace_first = (re: Re, s: String, replacement: String) -> String {
   try_pos(0)
 }
 
+export let debug_match_pos = (re: Re, s: String) -> Int {
+  do_match(re, s, 0)
+}
+
 export let find_all_groups = (regex: Regex, s: String) -> Array[Match] {
   match regex {
     Regex(re, gnames) => {
@@ -1205,7 +1200,7 @@ export let find_all_groups = (regex: Regex, s: String) -> Array[Match] {
         let collector = empty_int_array()
         let r = match_engine(re, s, pos, 0, dummy_parts, 0, collector)
         if r >= 0 {
-          let full = s[pos:r]
+          let full = s[pos: r]
           let caps = extract_captures(collector, s, num_groups)
           Array::push(results, Match(full, caps, gnames))
           if r == pos {

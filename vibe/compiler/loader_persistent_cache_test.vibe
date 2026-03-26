@@ -1,20 +1,29 @@
 //# Imports
 
-import ./module_loader.vibe {
-  collect_all_sources_fs, collect_source_groups_fs, load_or_parse_module_header_fs,
-  load_persistent_source_group_fingerprint_if_valid
+import ./cache / persistent {
+  build_source_groups_fingerprint, compact_string_fingerprint, persistent_manifest_header_cache_path, persistent_module_header_cache_path, persistent_source_group_cache_path, persistent_source_list_cache_path
 }
 
-import ./cache / persistent {
-  build_source_groups_fingerprint,
-  compact_string_fingerprint,
-  persistent_manifest_header_cache_path,
-  persistent_module_header_cache_path,
-  persistent_source_group_cache_path,
-  persistent_source_list_cache_path
+import ./module_loader.vibe {
+  collect_all_sources_fs, collect_source_groups_fs, load_or_parse_module_header_fs, load_persistent_source_group_fingerprint_if_valid
 }
 
 //# Functions
+
+let lookup_source = (sources: Array[(String, String)], target_path: String) -> Option[String] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(sources) {
+    let (path, source) = Array::get(sources, i)
+    if path == target_path {
+      found = Some(source)
+      i = Array::length(sources)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
 
 let string_to_bytes = (s: String) -> Bytes {
   let out = Array::slice([
@@ -29,18 +38,7 @@ let string_to_bytes = (s: String) -> Bytes {
   Bytes::from_array(out)
 }
 
-let remove_file_if_exists = (path: String) -> Unit with { Fs } {
-  if Fs::exists(path) {
-    Fs::remove(path)
-  } else {
-    ()
-  }
-}
-
-let lookup_group_source = (
-  groups: Array[(String, Array[(String, String)])],
-  target_path: String
-) -> Option[String] {
+let lookup_group_source = (groups: Array[(String, Array[(String, String)])], target_path: String) -> Option[String] {
   let mut gi = 0
   let mut found = None
   while gi < Array::length(groups) {
@@ -61,40 +59,26 @@ let lookup_group_source = (
   found
 }
 
-let lookup_source = (sources: Array[(String, String)], target_path: String) -> Option[String] {
-  let mut i = 0
-  let mut found = None
-  while i < Array::length(sources) {
-    let (path, source) = Array::get(sources, i)
-    if path == target_path {
-      found = Some(source)
-      i = Array::length(sources)
-    } else {
-      i = i + 1
-    }
+let remove_file_if_exists = (path: String) -> Unit with { Fs } {
+  if Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
   }
-  found
 }
 
-let setup_manifest_fixture = (
-  base_dir: String,
-  helper_source: String,
-  main_source: String
-) -> (String, String, String) with { Error, Fs } {
+let setup_manifest_fixture = (base_dir: String, helper_source: String, main_source: String) -> (String, String, String)with { Error, Fs } {
   let manifest_path = String::concat(base_dir, "/selfhost_sources_manifest.tsv")
   let helper_path = String::concat(base_dir, "/helper.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
-  Fs::write_bytes(
-    manifest_path,
-    string_to_bytes("core\thelper.vibe\nentry\tmain.vibe\n")
-  )
+  Fs::write_bytes(manifest_path, string_to_bytes("core\thelper.vibe\nentry\tmain.vibe\n"))
   Fs::write_bytes(helper_path, string_to_bytes(helper_source))
   Fs::write_bytes(main_path, string_to_bytes(main_source))
   (manifest_path, helper_path, main_path)
 }
 
-//# Tests
+//# Misc
 
 test "load_persistent_source_group_fingerprint_if_valid: same-content rewrite keeps cache valid" {
   let helper_path = "/tmp/vibe_compiler_persistent_loader_same_helper.vibe"
@@ -115,11 +99,7 @@ test "load_persistent_source_group_fingerprint_if_valid: same-content rewrite ke
 }
 
 test "collect_all_sources_fs: reuses valid source group cache when list cache is missing" {
-  let (_, helper_path, main_path) = setup_manifest_fixture(
-    "/tmp/vibe_compiler_persistent_manifest_groups_to_list",
-    "export let add = () -> Int { 1 }",
-    "import ./helper.vibe { add }\nlet run = () -> Int { add() }"
-  )
+  let (_, helper_path, main_path) = setup_manifest_fixture("/tmp/vibe_compiler_persistent_manifest_groups_to_list", "export let add = () -> Int { 1 }", "import ./helper.vibe { add }\nlet run = () -> Int { add() }")
   remove_file_if_exists(persistent_source_group_cache_path(main_path))
   remove_file_if_exists(persistent_source_list_cache_path(main_path))
   let groups = collect_source_groups_fs(main_path)
@@ -135,11 +115,7 @@ test "collect_all_sources_fs: reuses valid source group cache when list cache is
 }
 
 test "collect_source_groups_fs: reuses valid source list cache when group cache is missing" {
-  let (_, helper_path, main_path) = setup_manifest_fixture(
-    "/tmp/vibe_compiler_persistent_manifest_list_to_groups",
-    "export let add = () -> Int { 1 }",
-    "import ./helper.vibe { add }\nlet run = () -> Int { add() }"
-  )
+  let (_, helper_path, main_path) = setup_manifest_fixture("/tmp/vibe_compiler_persistent_manifest_list_to_groups", "export let add = () -> Int { 1 }", "import ./helper.vibe { add }\nlet run = () -> Int { add() }")
   remove_file_if_exists(persistent_source_group_cache_path(main_path))
   remove_file_if_exists(persistent_source_list_cache_path(main_path))
   let sources = collect_all_sources_fs(main_path)
@@ -156,31 +132,23 @@ test "collect_source_groups_fs: reuses valid source list cache when group cache 
 
 test "collect_all_sources_fs: reuses aggregated manifest headers when source caches are missing" {
   let base_dir = "/tmp/vibe_compiler_persistent_manifest_headers"
-  let (_, helper_path, main_path) = setup_manifest_fixture(
-    base_dir,
-    "export let add = () -> Int { 1 }",
-    "import ./helper.vibe { add }\nlet run = () -> Int { add() }"
-  )
+  let (_, helper_path, main_path) = setup_manifest_fixture(base_dir, "export let add = () -> Int { 1 }", "import ./helper.vibe { add }\nlet run = () -> Int { add() }")
   remove_file_if_exists(persistent_manifest_header_cache_path(main_path))
   remove_file_if_exists(persistent_source_group_cache_path(main_path))
   remove_file_if_exists(persistent_source_list_cache_path(main_path))
   let initial = collect_all_sources_fs(main_path)
   assert(eq(Array::length(initial), 2))
   assert(Fs::exists(persistent_manifest_header_cache_path(main_path)))
-
   remove_file_if_exists(persistent_source_group_cache_path(main_path))
   remove_file_if_exists(persistent_source_list_cache_path(main_path))
-  remove_file_if_exists(
-    persistent_module_header_cache_path(main_path, compact_string_fingerprint(Fs::read_file(main_path)))
-  )
-  remove_file_if_exists(
-    persistent_module_header_cache_path(helper_path, compact_string_fingerprint(Fs::read_file(helper_path)))
-  )
+  remove_file_if_exists(persistent_module_header_cache_path(main_path, compact_string_fingerprint(Fs::read_file(main_path))))
+  remove_file_if_exists(persistent_module_header_cache_path(helper_path, compact_string_fingerprint(Fs::read_file(helper_path))))
   Fs::write_bytes(helper_path, string_to_bytes("impl"))
-
   let rebuilt = collect_all_sources_fs(main_path)
   assert(eq(Array::length(rebuilt), 2))
-  match lookup_group_source([("recursive", rebuilt)], helper_path) {
+  match lookup_group_source([
+    ("recursive", rebuilt)
+  ], helper_path) {
     Some(source) => assert(source == "impl"),
     None => assert(false)
   }
@@ -192,7 +160,6 @@ test "collect_all_sources_fs: compiler index manifest follows source imports wit
   remove_file_if_exists(persistent_manifest_header_cache_path(entry_path))
   remove_file_if_exists(persistent_source_group_cache_path(entry_path))
   remove_file_if_exists(persistent_source_list_cache_path(entry_path))
-
   let sources = collect_all_sources_fs(entry_path)
   match lookup_source(sources, cache_probe_path) {
     Some(_) => assert(true),
@@ -207,14 +174,12 @@ test "collect_all_sources_fs: resolves ../../../ imports from nested entry" {
   let main_path = String::concat(entry_dir, "/main.vibe")
   Fs::mkdir_p(entry_dir)
   Fs::write_bytes(helper_path, string_to_bytes("export let add = () -> Int { 1 }"))
-  Fs::write_bytes(
-    main_path,
-    string_to_bytes("import ../../../helper.vibe { add }\nlet run = () -> Int { add() }")
-  )
-
+  Fs::write_bytes(main_path, string_to_bytes("import ../../../helper.vibe { add }\nlet run = () -> Int { add() }"))
   let sources = collect_all_sources_fs(main_path)
   assert(eq(Array::length(sources), 2))
-  match lookup_group_source([("recursive", sources)], helper_path) {
+  match lookup_group_source([
+    ("recursive", sources)
+  ], helper_path) {
     Some(source) => assert(source == "export let add = () -> Int { 1 }"),
     None => assert(false)
   }
@@ -229,17 +194,13 @@ test "load_or_parse_module_header_fs: warm cache reuses deps and exports" {
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(helper_path, string_to_bytes(helper_source))
   Fs::write_bytes(main_path, string_to_bytes(main_source))
-  remove_file_if_exists(
-    persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source))
-  )
-
+  remove_file_if_exists(persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source)))
   let (deps1, exports1, parse1) = load_or_parse_module_header_fs(main_path, main_source, 0)
   assert(eq(parse1, 1))
   assert(eq(Array::length(deps1), 1))
   assert(Array::get(deps1, 0) == helper_path)
   assert(eq(Array::length(exports1), 1))
   assert(Array::get(exports1, 0) == "run")
-
   let (deps2, exports2, parse2) = load_or_parse_module_header_fs(main_path, main_source, 0)
   assert(eq(parse2, 0))
   assert(eq(Array::length(deps2), 1))
@@ -251,22 +212,10 @@ test "load_or_parse_module_header_fs: warm cache reuses deps and exports" {
 test "load_or_parse_module_header_fs: selfhost source bundle uses cheap header scan" {
   let base_dir = "/tmp/vibe_compiler_generated_bundle_header"
   let bundle_path = String::concat(base_dir, "/selfhost_sources_bundle.vibe")
-  let bundle_source = String::concat(
-    "// AUTO-GENERATED\n",
-    String::concat(
-      "let source_0 = (\"x\", \"y\")\n",
-      String::concat(
-        "export let selfhost_sources = () -> Array[(String, String)] { [] }\n",
-        "export let selfhost_source_groups = () -> Array[(String, Array[(String, String)])] { [] }\n"
-      )
-    )
-  )
+  let bundle_source = String::concat("// AUTO-GENERATED\n", String::concat("let source_0 = (\"x\", \"y\")\n", String::concat("export let selfhost_sources = () -> Array[(String, String)] { [] }\n", "export let selfhost_source_groups = () -> Array[(String, Array[(String, String)])] { [] }\n")))
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(bundle_path, string_to_bytes(bundle_source))
-  remove_file_if_exists(
-    persistent_module_header_cache_path(bundle_path, compact_string_fingerprint(bundle_source))
-  )
-
+  remove_file_if_exists(persistent_module_header_cache_path(bundle_path, compact_string_fingerprint(bundle_source)))
   let (deps1, exports1, parse1) = load_or_parse_module_header_fs(bundle_path, bundle_source, 0)
   assert(eq(Array::length(deps1), 0))
   assert(eq(Array::length(exports1), 2))
@@ -276,10 +225,7 @@ test "load_or_parse_module_header_fs: selfhost source bundle uses cheap header s
 }
 
 test "persistent_module_header_cache_path: uses compiled-safe filename" {
-  let path = persistent_module_header_cache_path(
-    "/tmp/vibe_compiler_persistent_module_header/main.vibe",
-    compact_string_fingerprint("export let run = () -> Int { 1 }")
-  )
+  let path = persistent_module_header_cache_path("/tmp/vibe_compiler_persistent_module_header/main.vibe", compact_string_fingerprint("export let run = () -> Int { 1 }"))
   assert(String::index_of(path, ":") < 0)
   assert(String::starts_with(path, "_build/vibe_selfhost_module_header_"))
 }

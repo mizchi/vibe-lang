@@ -6,12 +6,6 @@ import ./entry / source_compile {
 
 //# Functions
 
-let cached_compile_key = Array::slice([""], 0, 0)
-
-let cached_compile_len = Array::slice([0], 0, 0)
-
-let cached_compile_bytes = Bytes::new()
-
 let find_colon = (s: String, start: Int, end_: Int) -> Int {
   let mut out = -1
   let mut i = start
@@ -23,6 +17,10 @@ let find_colon = (s: String, start: Int, end_: Int) -> Int {
     }
   }
   out
+}
+
+let cache_key_for = (source: String, entry_name: String, mode: String) -> String {
+  String::concat(mode, String::concat("|", String::concat(entry_name, String::concat("|", source))))
 }
 
 let parse_decimal_int = (s: String, start: Int, end_: Int) -> Int with { Error } {
@@ -40,15 +38,32 @@ let parse_decimal_int = (s: String, start: Int, end_: Int) -> Int with { Error }
   out
 }
 
-let cache_key_for = (source: String, entry_name: String, mode: String) -> String {
-  String::concat(
-    mode,
-    String::concat("|", String::concat(entry_name, String::concat("|", source)))
-  )
-}
+let cached_compile_key = Array::slice([
+  ""
+], 0, 0)
 
 let cache_key_matches = (cache_key: String) -> Bool {
   Array::length(cached_compile_key) > 0 && Array::get(cached_compile_key, 0) == cache_key
+}
+
+let cached_compile_len = Array::slice([
+  0
+], 0, 0)
+
+let cached_compile_bytes = Bytes::new()
+
+let pack_cached_chunk = (chunk_index: Int) -> Int {
+  let start = chunk_index * 7
+  let byte_len = Array::get(cached_compile_len, 0)
+  let mut out = 0
+  let mut shift = 0
+  let mut k = 0
+  while k < 7 && start + k < byte_len {
+    out = out|(Bytes::get(cached_compile_bytes, start + k)<<shift)
+    k = k + 1
+    shift = shift + 8
+  }
+  out
 }
 
 let remember_compiled_bytes = (cache_key: String, bytes: Bytes) -> Int {
@@ -86,20 +101,6 @@ let ensure_compiled = (source: String, entry_name: String, mode: String) -> Int 
   }
 }
 
-let pack_cached_chunk = (chunk_index: Int) -> Int {
-  let start = chunk_index * 7
-  let byte_len = Array::get(cached_compile_len, 0)
-  let mut out = 0
-  let mut shift = 0
-  let mut k = 0
-  while k < 7 && start + k < byte_len {
-    out = out|(Bytes::get(cached_compile_bytes, start + k)<<shift)
-    k = k + 1
-    shift = shift + 8
-  }
-  out
-}
-
 export let compile_cli_request = (source: String, request: String) -> Int {
   handle {
     let request_len = String::length(request)
@@ -109,32 +110,32 @@ export let compile_cli_request = (source: String, request: String) -> Int {
     else if request == "probe:compile-fixed-len" {
       ensure_compiled("let answer = () -> Int { 40 + 2 }", "answer", "mvp")
     }
-    else if request_len >= 4 && request[0:4] == "len:" {
-      let entry_name = request[4:request_len]
+    else if request_len >= 4 && request[0: 4] == "len:" {
+      let entry_name = request[4: request_len]
       ensure_compiled(source, entry_name, "mvp")
     }
-    else if request_len >= 9 && request[0:9] == "len-mode:" {
+    else if request_len >= 9 && request[0: 9] == "len-mode:" {
       let sep = find_colon(request, 9, request_len)
       if sep == -1 {
         0
       } else {
-        let mode = request[9:sep]
-        let entry_name = request[sep + 1:request_len]
+        let mode = request[9: sep]
+        let entry_name = request[sep + 1: request_len]
         ensure_compiled(source, entry_name, mode)
       }
     }
-    else if request_len >= 6 && request[0:6] == "chunk:" {
+    else if request_len >= 6 && request[0: 6] == "chunk:" {
       let sep = find_colon(request, 6, request_len)
       if sep == -1 {
         0
       } else {
-        let entry_name = request[6:sep]
+        let entry_name = request[6: sep]
         let chunk_index = parse_decimal_int(request, sep + 1, request_len)
         let _ = ensure_compiled(source, entry_name, "mvp")
         pack_cached_chunk(chunk_index)
       }
     }
-    else if request_len >= 11 && request[0:11] == "chunk-mode:" {
+    else if request_len >= 11 && request[0: 11] == "chunk-mode:" {
       let mode_sep = find_colon(request, 11, request_len)
       if mode_sep == -1 {
         0
@@ -143,8 +144,8 @@ export let compile_cli_request = (source: String, request: String) -> Int {
         if entry_sep == -1 {
           0
         } else {
-          let mode = request[11:mode_sep]
-          let entry_name = request[mode_sep + 1:entry_sep]
+          let mode = request[11: mode_sep]
+          let entry_name = request[mode_sep + 1: entry_sep]
           let chunk_index = parse_decimal_int(request, entry_sep + 1, request_len)
           let _ = ensure_compiled(source, entry_name, mode)
           pack_cached_chunk(chunk_index)

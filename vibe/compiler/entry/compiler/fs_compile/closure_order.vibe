@@ -1,26 +1,22 @@
 //# Imports
 
-import ../../../syntax/lexer.vibe {
+import .. / .. / .. / syntax / lexer.vibe {
   lex
 }
 
-import ../../../syntax/parser.vibe {
+import .. / .. / .. / syntax / parser.vibe {
   parse_program
 }
 
 //# Functions
 
-let contains_str = (arr: Array[String], target: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(arr) {
-    if !found && Array::get(arr, i) == target {
-      found = true
-    } else {
-      i = i + 1
-    }
+let dir_of = (file_path: String) -> String {
+  let idx = String::last_index_of(file_path, "/")
+  if idx < 0 {
+    ""
+  } else {
+    file_path[0: idx]
   }
-  found
 }
 
 let contains_int = (arr: Array[Int], target: Int) -> Bool {
@@ -36,71 +32,16 @@ let contains_int = (arr: Array[Int], target: Int) -> Bool {
   found
 }
 
-let source_find_index = (sources: Array[(String, String)], path_key: String) -> Int {
-  let mut i = 0
-  let mut found = -1
-  while i < Array::length(sources) {
-    let (path, _) = Array::get(sources, i)
-    if path == path_key {
-      found = i
-      i = Array::length(sources)
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
-export let source_lookup_exists = (sources: Array[(String, String)], path_key: String) -> Bool {
-  source_find_index(sources, path_key) >= 0
-}
-
-export let source_lookup_or_throw = (sources: Array[(String, String)], path_key: String) -> String with { Error } {
-  let idx = source_find_index(sources, path_key)
-  if idx < 0 {
-    throw(String::concat("module not found: ", path_key))
-  } else {
-    let (_, source) = Array::get(sources, idx)
-    source
-  }
-}
-
-let normalize_all_sources = (
-  main_path: String,
-  main_source: String,
-  sources: Array[(String, String)]
-) -> (Array[(String, String)], Int) {
-  let all_sources = Array::slice([("", "")], 0, 0)
-  let mut si = 0
-  while si < Array::length(sources) {
-    Array::push(all_sources, Array::get(sources, si))
-    si = si + 1
-  }
-  let mut main_index = source_find_index(all_sources, main_path)
-  if main_index < 0 {
-    Array::push(all_sources, (main_path, main_source))
-    main_index = Array::length(all_sources) - 1
-  }
-  (all_sources, main_index)
-}
-
-let dir_of = (file_path: String) -> String {
-  let idx = String::last_index_of(file_path, "/")
-  if idx < 0 {
-    ""
-  } else {
-    file_path[0:idx]
-  }
-}
-
 let normalize_path = (path: String) -> String {
-  let mut parts = Array::slice([""], 0, 0)
+  let mut parts = Array::slice([
+    ""
+  ], 0, 0)
   let len = String::length(path)
   let mut start = 0
   let mut i = 0
   while i <= len {
     if i == len || String::char_code_at(path, i) == 47 {
-      let part = path[start:i]
+      let part = path[start: i]
       if String::length(part) == 0 || part == "." {
         ()
       } else if part == ".." {
@@ -128,16 +69,16 @@ let normalize_path = (path: String) -> String {
 
 let resolve_path = (base_dir: String, raw_path: String) -> String {
   let len = String::length(raw_path)
-  let joined = if (len >= 2 && raw_path[0:2] == "./") ||
-    (len >= 3 && raw_path[0:3] == "../") {
-      if base_dir == "" {
-        raw_path
-      } else {
-        String::concat(base_dir, String::concat("/", raw_path))
-      }
-    } else {
+  let joined = if (len >= 2 && raw_path[0: 2] == "./") ||
+  (len >= 3 && raw_path[0: 3] == "../") {
+    if base_dir == "" {
       raw_path
+    } else {
+      String::concat(base_dir, String::concat("/", raw_path))
     }
+  } else {
+    raw_path
+  }
   let normalized = normalize_path(joined)
   if String::ends_with(normalized, ".vibe") {
     normalized
@@ -146,21 +87,61 @@ let resolve_path = (base_dir: String, raw_path: String) -> String {
   }
 }
 
+let source_find_index = (sources: Array[(String, String)], path_key: String) -> Int {
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(sources) {
+    let (path, _) = Array::get(sources, i)
+    if path == path_key {
+      found = i
+      i = Array::length(sources)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+export let source_lookup_exists = (sources: Array[(String, String)], path_key: String) -> Bool {
+  source_find_index(sources, path_key) >= 0
+}
+
+let normalize_all_sources = (main_path: String, main_source: String, sources: Array[(String, String)]) -> (Array[(String, String)], Int) {
+  let all_sources = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let mut si = 0
+  while si < Array::length(sources) {
+    Array::push(all_sources, Array::get(sources, si))
+    si = si + 1
+  }
+  let mut main_index = source_find_index(all_sources, main_path)
+  if main_index < 0 {
+    Array::push(all_sources, (main_path, main_source))
+    main_index = Array::length(all_sources) - 1
+  }
+  (all_sources, main_index)
+}
+
+export let source_lookup_or_throw = (sources: Array[(String, String)], path_key: String) -> String with { Error } {
+  let idx = source_find_index(sources, path_key)
+  if idx < 0 {
+    throw(String::concat("module not found: ", path_key))
+  } else {
+    let (_, source) = Array::get(sources, idx)
+    source
+  }
+}
+
+export let source_lookup_exists_for_test = (sources: Array[(String, String)], path_key: String) -> Bool {
+  source_lookup_exists(sources, path_key)
+}
+
 export let resolve_relative_path_for_test = (base_dir: String, raw_path: String) -> String {
   resolve_path(base_dir, raw_path)
 }
 
-export let source_lookup_exists_for_test = (
-  sources: Array[(String, String)],
-  path_key: String
-) -> Bool {
-  source_lookup_exists(sources, path_key)
-}
-
-export let first_import_resolved_path_for_test = (
-  main_source: String,
-  main_path: String
-) -> String with { Error } {
+export let first_import_resolved_path_for_test = (main_source: String, main_path: String) -> String with { Error } {
   let stmts = parse_program(lex(main_source))
   let base_dir = dir_of(main_path)
   let mut i = 0
@@ -183,18 +164,7 @@ export let first_import_resolved_path_for_test = (
   resolved
 }
 
-export let source_lookup_or_throw_len_for_test = (
-  sources: Array[(String, String)],
-  path_key: String
-) -> Int with { Error } {
-  String::length(source_lookup_or_throw(sources, path_key))
-}
-
-export let first_import_source_len_for_test = (
-  main_source: String,
-  main_path: String,
-  sources: Array[(String, String)]
-) -> Int with { Error } {
+export let first_import_source_len_for_test = (main_source: String, main_path: String, sources: Array[(String, String)]) -> Int with { Error } {
   let resolved = first_import_resolved_path_for_test(main_source, main_path)
   let mut si = 0
   let mut found = None
@@ -213,30 +183,20 @@ export let first_import_source_len_for_test = (
   }
 }
 
-export let collect_inline_sources_ordered = (
-  main_path: String,
-  main_source: String,
-  sources: Array[(String, String)]
-) -> Array[(String, String)] with { Error } {
-  let (all_sources, main_index) = normalize_all_sources(main_path, main_source, sources)
-  let ordered_indexes = collect_inline_source_indexes_ordered(all_sources, main_index)
-  let ordered = Array::slice([("", "")], 0, 0)
-  let mut oi = 0
-  while oi < Array::length(ordered_indexes) {
-    let source_index = Array::get(ordered_indexes, oi)
-    Array::push(ordered, Array::get(all_sources, source_index))
-    oi = oi + 1
-  }
-  ordered
+export let source_lookup_or_throw_len_for_test = (sources: Array[(String, String)], path_key: String) -> Int with { Error } {
+  String::length(source_lookup_or_throw(sources, path_key))
 }
 
-let collect_inline_source_indexes_ordered = (
-  all_sources: Array[(String, String)],
-  main_index: Int
-) -> Array[Int] with { Error } {
-  let ordered_indexes = Array::slice([0], 0, 0)
-  let visited = Array::slice([0], 0, 0)
-  let mut stack = Array::slice([(0, false)], 0, 0)
+let collect_inline_source_indexes_ordered = (all_sources: Array[(String, String)], main_index: Int) -> Array[Int] with { Error } {
+  let ordered_indexes = Array::slice([
+    0
+  ], 0, 0)
+  let visited = Array::slice([
+    0
+  ], 0, 0)
+  let mut stack = Array::slice([
+    (0, false)
+  ], 0, 0)
   Array::push(stack, (main_index, false))
   while Array::length(stack) > 0 {
     let stack_len = Array::length(stack)
@@ -249,7 +209,9 @@ let collect_inline_source_indexes_ordered = (
     } else {
       Array::push(visited, source_index)
       Array::push(stack, (source_index, true))
-      let deps = Array::slice([0], 0, 0)
+      let deps = Array::slice([
+        0
+      ], 0, 0)
       let (path, source) = Array::get(all_sources, source_index)
       let stmts = parse_program(lex(source))
       let base_dir = dir_of(path)
@@ -287,11 +249,22 @@ let collect_inline_source_indexes_ordered = (
   ordered_indexes
 }
 
-export let closure_ordered_source_count = (
-  main_source: String,
-  main_path: String,
-  sources: Array[(String, String)]
-) -> Int with { Error } {
+export let closure_ordered_source_count = (main_source: String, main_path: String, sources: Array[(String, String)]) -> Int with { Error } {
   let (all_sources, main_index) = normalize_all_sources(main_path, main_source, sources)
   Array::length(collect_inline_source_indexes_ordered(all_sources, main_index))
+}
+
+export let collect_inline_sources_ordered = (main_path: String, main_source: String, sources: Array[(String, String)]) -> Array[(String, String)] with { Error } {
+  let (all_sources, main_index) = normalize_all_sources(main_path, main_source, sources)
+  let ordered_indexes = collect_inline_source_indexes_ordered(all_sources, main_index)
+  let ordered = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let mut oi = 0
+  while oi < Array::length(ordered_indexes) {
+    let source_index = Array::get(ordered_indexes, oi)
+    Array::push(ordered, Array::get(all_sources, source_index))
+    oi = oi + 1
+  }
+  ordered
 }

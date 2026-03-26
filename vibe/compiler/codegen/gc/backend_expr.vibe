@@ -1,88 +1,44 @@
-// AST-to-WASM codegen (wasm-gc backend)
-// Uses GC struct types for ref cells instead of linear memory bump allocation.
-// Closures use table-based call_indirect (same as linear memory backend).
+//# Imports
 
-import ../../core/index.vibe {
-  Expr, Pat, Stmt, TypeExpr,
-  bytebuf_new, bytebuf_push, bytebuf_length,
-  bytebuf_to_bytes, bytebuf_push_section, bytebuf_push_vec_header,
-  leb128_encode_u32, leb128_encode_s64
+import .. / .. / core {
+  Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
 }
 
-import ../wasm_emit/index.vibe {
-  emit_header,
-  emit_type_section, emit_type_section_multi,
-  emit_function_section, emit_export_section, emit_export_section_multi,
-  emit_code_section, emit_code_section_with_locals,
-  emit_name, emit_func_type_raw,
-  emit_import_section_func, emit_memory_section,
-  emit_exports_with_memory, emit_data_section, emit_data_section_multi,
-  emit_local_get, emit_local_set, emit_local_tee,
-  emit_i64_const, emit_i64_add, emit_i64_sub, emit_i64_mul, emit_i64_div_s,
-  emit_i64_rem_s, emit_i64_and, emit_i64_or, emit_i64_xor,
-  emit_i64_shl, emit_i64_shr_s,
-  emit_i64_eq, emit_i64_ne, emit_i64_lt_s, emit_i64_gt_s,
-  emit_i64_le_s, emit_i64_ge_s, emit_i64_eqz,
-  emit_i64_extend_i32_s, emit_i32_wrap_i64,
-  emit_i32_const, emit_i32_store, emit_i32_add, emit_i32_load,
-  emit_i32_store8, emit_i32_load8_u,
-  emit_call, emit_drop, emit_return,
-  emit_block_void, emit_block_i64, emit_loop_void,
-  emit_if_void, emit_if_i64, emit_else, emit_end,
-  emit_br, emit_br_if,
-  emit_global_section_i32_mut, emit_global_get, emit_global_set,
-  string_to_data,
-  emit_f64_const_bits, emit_f64_add, emit_f64_sub, emit_f64_mul, emit_f64_div,
-  emit_f64_eq, emit_f64_ne, emit_f64_lt, emit_f64_gt, emit_f64_le, emit_f64_ge,
-  emit_f64_neg, emit_i64_reinterpret_f64, emit_f64_reinterpret_i64,
-  emit_i64_trunc_f64_s, emit_f64_convert_i64_s,
-  emit_call_indirect, emit_table_section_funcref, emit_element_section_active,
-  emit_struct_type_raw, emit_struct_new, emit_struct_get, emit_struct_set
+import .. / common_analysis {
+  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in
 }
 
-import ../common_base/index.vibe {
-  emit_i32_sub, emit_i32_mul, emit_i32_ne, emit_i32_eq, emit_i32_ge_u, emit_i32_eqz, emit_i64_store, emit_i64_load, resolve_local, resolve_func, FuncTable, StrTable, LambdaTable, CtorTable, CompileCtxGc, emit_str_ref, find_func_stmt, lookup_ctor, emit_binop_op
+import .. / common_base {
+  CompileCtxGc, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, find_func_stmt, lookup_ctor, resolve_func, resolve_local
 }
 
-import ../common_extractors/index.vibe {
-  emit_memory_copy, array_contains_str, str_table_lookup, find_catchall_idx, emit_assignop_op
+import .. / common_extractors {
+  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, str_table_lookup
 }
 
-import ../common_analysis/index.vibe {
-  emit_i64_extend_i32_u, collect_strings_stmts, collect_free_vars, is_mut_captured_in, emit_closure_resolve, emit_closure_call_tail
+import .. / wasm_emit {
+  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_struct_get, emit_struct_new, emit_struct_set, emit_struct_type_raw, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data
 }
 
 import ./backend_builtins.vibe {
-  gen_print_i64_body, gen_print_str_body, gen_str_len_body, gen_str_eq_body,
-  gen_str_concat_body, gen_arr_new_body, gen_arr_len_body, gen_arr_get_body,
-  gen_arr_push_body, gen_arr_set_body, gen_str_char_code_at_body,
-  gen_str_from_char_code_body, gen_str_substring_body, gen_double_to_int_body,
-  gen_int_to_double_body, gen_identity_body
+  gen_arr_get_body, gen_arr_len_body, gen_arr_new_body, gen_arr_push_body, gen_arr_set_body, gen_double_to_int_body, gen_identity_body, gen_int_to_double_body, gen_print_i64_body, gen_print_str_body, gen_str_char_code_at_body, gen_str_concat_body, gen_str_eq_body, gen_str_from_char_code_body, gen_str_len_body, gen_str_substring_body
 }
 
 import ./backend_call.vibe {
   compile_call_gc
 }
 
-import ./backend_match.vibe {
-  compile_match_gc
-}
-
 import ./backend_lambda_body.vibe {
   compile_lambda_gc
 }
 
-// === Expression compiler (GC backend) ===
+import ./backend_match.vibe {
+  compile_match_gc
+}
 
-let rec compile_expr_gc = (
-  buf: Bytes,
-  expr: Expr,
-  local_names: Array[String],
-  next_local: Int,
-  ctx: CompileCtxGc,
-  ld: Int
-) -> Int with { Error } {
-  // shorthand for recursive call
+//# Functions
+
+let rec compile_expr_gc = (buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int) -> Int with { Error } {
   let ce = (b: Bytes, e: Expr, ln: Array[String], nl: Int, d: Int) -> Int with { Error } {
     compile_expr_gc(b, e, ln, nl, ctx, d)
   }
@@ -92,7 +48,11 @@ let rec compile_expr_gc = (
       next_local
     },
     EBool(b_val) => {
-      emit_i64_const(buf, if b_val { 1 } else { 0 })
+      emit_i64_const(buf, if b_val {
+        1
+      } else {
+        0
+      })
       next_local
     },
     EFloat(v) => {
@@ -107,17 +67,19 @@ let rec compile_expr_gc = (
       next_local
     },
     EIdent(name) => {
-      // Try local first
       let len = Array::length(local_names)
       let rec try_local = (i: Int) -> Int {
-        if i < 0 { -1 }
-        else if Array::get(local_names, i) == name { i }
+        if i < 0 {
+          -1
+        }
+        else if Array::get(local_names, i) == name {
+          i
+        }
         else try_local(i - 1)
       }
       let local_idx = try_local(len - 1)
       if local_idx >= 0 {
         if array_contains_str(ctx.ref_cell_names, name) {
-          // Ref cell: local holds (ref $RefCell), read via struct.get
           emit_local_get(buf, local_idx)
           emit_struct_get(buf, ctx.refcell_type_idx, 0)
         } else {
@@ -125,7 +87,6 @@ let rec compile_expr_gc = (
         }
         next_local
       } else {
-        // Check if it's a 0-arg enum constructor
         let ctor_idx = lookup_ctor(ctx.ctor_table.names, name, 0)
         if ctor_idx >= 0 {
           let tag_c = Array::get(ctx.ctor_table.tags, ctor_idx)
@@ -151,23 +112,24 @@ let rec compile_expr_gc = (
           emit_i64_or(buf)
           next_local + 1
         } else {
-        // Check if it's a top-level function — emit as bare fn value
-        let fn_len = Array::length(ctx.func_table.names)
-        let mut fni = -1
-        let mut __fj = 0
-        while __fj < fn_len {
-          if Array::get(ctx.func_table.names, __fj) == name {
-            fni = __fj
-            __fj = fn_len
-          } else {
-            __fj = __fj + 1
+          let fn_len = Array::length(ctx.func_table.names)
+          let mut fni = -1
+          let mut __fj = 0
+          while __fj < fn_len {
+            if Array::get(ctx.func_table.names, __fj) == name {
+              fni = __fj
+              __fj = fn_len
+            } else {
+              __fj = __fj + 1
+            }
           }
-        }
-        if fni < 0 { throw(String::concat("undefined variable: ", name)) }
-        let fidx = Array::get(ctx.func_table.indices, fni)
-        let table_slot = fidx - ctx.func_offset
-        emit_i64_const(buf, (table_slot << 2) | 2)
-        next_local
+          if fni < 0 {
+            throw(String::concat("undefined variable: ", name))
+          }
+          let fidx = Array::get(ctx.func_table.indices, fni)
+          let table_slot = fidx - ctx.func_offset
+          emit_i64_const(buf, (table_slot<<2)|2)
+          next_local
         }
       }
     },
@@ -177,33 +139,43 @@ let rec compile_expr_gc = (
       emit_binop_op(buf, op)
       nl2
     },
-    EUnaryOp(op, operand) => {
-      if op == "-" {
-        emit_i64_const(buf, 0)
-        let nl = ce(buf, operand, local_names, next_local, ld)
-        emit_i64_sub(buf)
-        nl
-      } else if op == "!" {
-        let nl = ce(buf, operand, local_names, next_local, ld)
-        // Bool: true=1, false=0. Use eqz to negate.
-        emit_i64_eqz(buf)
-        emit_i64_extend_i32_s(buf)
-        nl
-      } else {
-        throw(String::concat("unsupported unary op: ", op))
-      }
-    },
+    EUnaryOp(op, operand) => if op == "-" {
+      emit_i64_const(buf, 0)
+      let nl = ce(buf, operand, local_names, next_local, ld)
+      emit_i64_sub(buf)
+      nl
+    } else if op == "!" {
+      let nl = ce(buf, operand, local_names, next_local, ld)
+      emit_i64_eqz(buf)
+      emit_i64_extend_i32_s(buf)
+      nl
+    } else {
+      throw(String::concat("unsupported unary op: ", op))
+    }
+    ,
     EIf(cond, then_e, else_e) => {
       let nl1 = match cond {
         EBinOp(cop, clhs, crhs) => if cop == "==" || cop == "!=" || cop == "<" || cop == ">" || cop == "<=" || cop == ">=" {
           let cnl1 = ce(buf, clhs, local_names, next_local, ld)
           let cnl2 = ce(buf, crhs, local_names, cnl1, ld)
-          if cop == "==" { emit_i64_eq(buf) }
-          else if cop == "!=" { emit_i64_ne(buf) }
-          else if cop == "<" { emit_i64_lt_s(buf) }
-          else if cop == ">" { emit_i64_gt_s(buf) }
-          else if cop == "<=" { emit_i64_le_s(buf) }
-          else { emit_i64_ge_s(buf) }
+          if cop == "==" {
+            emit_i64_eq(buf)
+          }
+          else if cop == "!=" {
+            emit_i64_ne(buf)
+          }
+          else if cop == "<" {
+            emit_i64_lt_s(buf)
+          }
+          else if cop == ">" {
+            emit_i64_gt_s(buf)
+          }
+          else if cop == "<=" {
+            emit_i64_le_s(buf)
+          }
+          else {
+            emit_i64_ge_s(buf)
+          }
           cnl2
         } else {
           let cnl = ce(buf, cond, local_names, next_local, ld)
@@ -211,7 +183,11 @@ let rec compile_expr_gc = (
           cnl
         },
         EBool(b_val) => {
-          emit_i32_const(buf, if b_val { 1 } else { 0 })
+          emit_i32_const(buf, if b_val {
+            1
+          } else {
+            0
+          })
           next_local
         },
         _ => {
@@ -221,7 +197,11 @@ let rec compile_expr_gc = (
         }
       }
       emit_if_i64(buf)
-      let ld_inner = if ld >= 0 { ld + 1 } else { -1 }
+      let ld_inner = if ld >= 0 {
+        ld + 1
+      } else {
+        -1
+      }
       let names_len_before = Array::length(local_names)
       let nl_then = ce(buf, then_e, local_names, nl1, ld_inner)
       emit_else(buf)
@@ -229,7 +209,11 @@ let rec compile_expr_gc = (
       let nl_else = ce(buf, else_e, local_names, nl1, ld_inner)
       emit_end(buf)
       Array::truncate(local_names, names_len_before)
-      let max_nl = if nl_then > nl_else { nl_then } else { nl_else }
+      let max_nl = if nl_then > nl_else {
+        nl_then
+      } else {
+        nl_else
+      }
       while Array::length(local_names) < max_nl {
         Array::push(local_names, "")
       }
@@ -248,10 +232,11 @@ let rec compile_expr_gc = (
       Array::push(local_names, name)
       let nl = ce(buf, value, local_names, next_local + 1, ld)
       emit_local_set(buf, local_idx)
-      // Backpatch self-reference in closure for recursive let rec
       match value {
         EFn(_, _, params, _, _, fn_body) => {
-          let param_names_bp = Array::slice([""], 0, 0)
+          let param_names_bp = Array::slice([
+            ""
+          ], 0, 0)
           let mut bpi = 0
           while bpi < Array::length(params) {
             let (pn, _) = Array::get(params, bpi)
@@ -285,7 +270,6 @@ let rec compile_expr_gc = (
       let local_idx = next_local
       Array::push(local_names, name)
       if is_mut_captured_in(body, name) {
-        // Mutable captured: allocate GC ref cell via struct.new
         Array::push(ctx.ref_cell_names, name)
         let nl = ce(buf, value, local_names, next_local + 1, ld)
         emit_struct_new(buf, ctx.refcell_type_idx)
@@ -303,7 +287,6 @@ let rec compile_expr_gc = (
     EAssign(name, value, body) => {
       let idx = resolve_local(local_names, name, "gc_var")
       if array_contains_str(ctx.ref_cell_names, name) {
-        // Ref cell: struct.set
         emit_local_get(buf, idx)
         let nl = ce(buf, value, local_names, next_local, ld)
         emit_struct_set(buf, ctx.refcell_type_idx, 0)
@@ -317,10 +300,9 @@ let rec compile_expr_gc = (
     EAssignOp(name, op, value, body) => {
       let idx = resolve_local(local_names, name, "gc_var")
       if array_contains_str(ctx.ref_cell_names, name) {
-        // Ref cell: read via struct.get, compute, write via struct.set
-        emit_local_get(buf, idx)   // ref on stack (for struct.set later)
-        emit_local_get(buf, idx)   // ref on stack (for struct.get)
-        emit_struct_get(buf, ctx.refcell_type_idx, 0)  // current value
+        emit_local_get(buf, idx)
+        emit_local_get(buf, idx)
+        emit_struct_get(buf, ctx.refcell_type_idx, 0)
         let nl = ce(buf, value, local_names, next_local, ld)
         emit_assignop_op(buf, op)
         emit_struct_set(buf, ctx.refcell_type_idx, 0)
@@ -339,7 +321,6 @@ let rec compile_expr_gc = (
       ce(buf, second, local_names, nl_s, ld)
     },
     ETuple(elems) => {
-      // Allocate N*8 bytes on heap, store each element as i64
       let num_elems = Array::length(elems)
       let alloc_size = num_elems * 8
       let ptr_local = next_local
@@ -395,75 +376,85 @@ let rec compile_expr_gc = (
       Array::push(local_names, "__for_i")
       let nl2 = nl1 + 1
       emit_block_void(buf)
-        emit_loop_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, i_local)
+      emit_local_get(buf, arr_local)
+      emit_call(buf, arr_len_idx)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      let var_local = match index_name {
+        Some(_) => nl2 + 1,
+        None => nl2
+      }
+      match index_name {
+        Some(index_name) => {
           emit_local_get(buf, i_local)
-          emit_local_get(buf, arr_local)
-          emit_call(buf, arr_len_idx)
-          emit_i64_ge_s(buf)
-          // S1b: i64_ge_s already leaves i32, skip extend+wrap
-          emit_br_if(buf, 1)
-          let var_local = match index_name {
-            Some(_) => nl2 + 1,
-            None => nl2
-          }
-          match index_name {
-            Some(index_name) => {
-              emit_local_get(buf, i_local)
-              emit_local_set(buf, nl2)
-              Array::push(local_names, index_name)
-            },
-            None => ()
-          }
-          emit_local_get(buf, arr_local)
-          emit_local_get(buf, i_local)
-          emit_call(buf, arr_get_idx)
-          emit_local_set(buf, var_local)
-          Array::push(local_names, var_name)
-          let nl3 = var_local + 1
-          let nl4 = ce(buf, body, local_names, nl3, ld + 1)
-          emit_drop(buf)
-          emit_local_get(buf, i_local)
-          emit_i64_const(buf, 1)
-          emit_i64_add(buf)
-          emit_local_set(buf, i_local)
-          emit_br(buf, 0)
-        emit_end(buf)
+          emit_local_set(buf, nl2)
+          Array::push(local_names, index_name)
+        },
+        None => ()
+      }
+      emit_local_get(buf, arr_local)
+      emit_local_get(buf, i_local)
+      emit_call(buf, arr_get_idx)
+      emit_local_set(buf, var_local)
+      Array::push(local_names, var_name)
+      let nl3 = var_local + 1
+      let nl4 = ce(buf, body, local_names, nl3, ld + 1)
+      emit_drop(buf)
+      emit_local_get(buf, i_local)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, i_local)
+      emit_br(buf, 0)
+      emit_end(buf)
       emit_end(buf)
       emit_i64_const(buf, 0)
       nl4
     },
     EWhile(cond, body) => {
       emit_block_void(buf)
-        emit_loop_void(buf)
-          // S1b: skip extend+wrap for comparison conditions in while
-          let nl1 = match cond {
-            EBinOp(wcop, wlhs, wrhs) => if wcop == "==" || wcop == "!=" || wcop == "<" || wcop == ">" || wcop == "<=" || wcop == ">=" {
-              let wnl1 = ce(buf, wlhs, local_names, next_local, ld + 1)
-              let wnl2 = ce(buf, wrhs, local_names, wnl1, ld + 1)
-              if wcop == "==" { emit_i64_eq(buf) }
-              else if wcop == "!=" { emit_i64_ne(buf) }
-              else if wcop == "<" { emit_i64_lt_s(buf) }
-              else if wcop == ">" { emit_i64_gt_s(buf) }
-              else if wcop == "<=" { emit_i64_le_s(buf) }
-              else { emit_i64_ge_s(buf) }
-              emit_i32_eqz(buf)
-              wnl2
-            } else {
-              let wnl = ce(buf, cond, local_names, next_local, ld + 1)
-              emit_i64_eqz(buf)
-              wnl
-            },
-            _ => {
-              let wnl = ce(buf, cond, local_names, next_local, ld + 1)
-              emit_i64_eqz(buf)
-              wnl
-            }
+      emit_loop_void(buf)
+      let nl1 = match cond {
+        EBinOp(wcop, wlhs, wrhs) => if wcop == "==" || wcop == "!=" || wcop == "<" || wcop == ">" || wcop == "<=" || wcop == ">=" {
+          let wnl1 = ce(buf, wlhs, local_names, next_local, ld + 1)
+          let wnl2 = ce(buf, wrhs, local_names, wnl1, ld + 1)
+          if wcop == "==" {
+            emit_i64_eq(buf)
           }
-          emit_br_if(buf, 1)
-          let nl2 = ce(buf, body, local_names, nl1, ld + 1)
-          emit_drop(buf)
-          emit_br(buf, 0)
-        emit_end(buf)
+          else if wcop == "!=" {
+            emit_i64_ne(buf)
+          }
+          else if wcop == "<" {
+            emit_i64_lt_s(buf)
+          }
+          else if wcop == ">" {
+            emit_i64_gt_s(buf)
+          }
+          else if wcop == "<=" {
+            emit_i64_le_s(buf)
+          }
+          else {
+            emit_i64_ge_s(buf)
+          }
+          emit_i32_eqz(buf)
+          wnl2
+        } else {
+          let wnl = ce(buf, cond, local_names, next_local, ld + 1)
+          emit_i64_eqz(buf)
+          wnl
+        },
+        _ => {
+          let wnl = ce(buf, cond, local_names, next_local, ld + 1)
+          emit_i64_eqz(buf)
+          wnl
+        }
+      }
+      emit_br_if(buf, 1)
+      let nl2 = ce(buf, body, local_names, nl1, ld + 1)
+      emit_drop(buf)
+      emit_br(buf, 0)
+      emit_end(buf)
       emit_end(buf)
       emit_i64_const(buf, 0)
       nl2
@@ -485,24 +476,31 @@ let rec compile_expr_gc = (
     EThrow(msg_expr) => {
       let nl = ce(buf, msg_expr, local_names, next_local, ld)
       emit_drop(buf)
-      bytebuf_push(buf, 0)  // unreachable
+      bytebuf_push(buf, 0)
       nl
     },
     EFn(_, _, params, _, _, fn_body) =>
-      compile_lambda_gc(buf, params, fn_body, local_names, next_local, ctx, ld, compile_expr_gc),
+    compile_lambda_gc(buf, params, fn_body, local_names, next_local, ctx, ld, compile_expr_gc),
     EDot(obj, field) => {
-      // Struct field access: find field index from ctx.ctor_table.struct_field_names
       let rec find_struct_field_idx = (si2: Int) -> Int {
-        if si2 >= Array::length(ctx.ctor_table.struct_names) { -1 }
+        if si2 >= Array::length(ctx.ctor_table.struct_names) {
+          -1
+        }
         else {
           let fnames = Array::get(ctx.ctor_table.struct_field_names, si2)
           let rec find_f = (fi: Int) -> Int {
-            if fi >= Array::length(fnames) { -1 }
-            else if Array::get(fnames, fi) == field { fi }
+            if fi >= Array::length(fnames) {
+              -1
+            }
+            else if Array::get(fnames, fi) == field {
+              fi
+            }
             else find_f(fi + 1)
           }
           let idx = find_f(0)
-          if idx >= 0 { idx }
+          if idx >= 0 {
+            idx
+          }
           else find_struct_field_idx(si2 + 1)
         }
       }
@@ -511,16 +509,13 @@ let rec compile_expr_gc = (
         throw(String::concat("unknown struct field: ", field))
       }
       let nl1 = ce(buf, obj, local_names, next_local, ld)
-      // Untag: ptr & ~1
       emit_i64_const(buf, -2)
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
-      // Load field at offset 8 + field_idx * 8
       emit_i64_load(buf, 3, 8 + field_idx * 8)
       nl1
     },
     ERecord(fields) => {
-      // Record literal: heap alloc [tag_i32 | field_count_i32 | fields:.]
       let flen = Array::length(fields)
       let obj_size = 8 + flen * 8
       let ptr_local = next_local
@@ -565,6 +560,8 @@ let rec compile_expr_gc = (
     _ => throw("unsupported expression in gc codegen")
   }
 }
+
+//# Misc
 
 export {
   compile_expr_gc

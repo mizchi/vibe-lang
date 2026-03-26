@@ -1,51 +1,21 @@
 //# Imports
 
-import ./index.vibe { compile }
+import ./index.vibe {
+  compile
+}
 
 //# Functions
 
 let check_magic = (bytes: Bytes) -> Bool {
-  if Bytes::length(bytes) < 8 { false }
+  if Bytes::length(bytes) < 8 {
+    false
+  }
   else {
     (bytes[0] == 0x00) && (bytes[1] == 0x61) && (bytes[2] == 0x73) && (bytes[3] == 0x6D) &&
     (bytes[4] == 0x01) && (bytes[5] == 0x00) && (bytes[6] == 0x00) && (bytes[7] == 0x00)
   }
 }
 
-// Check that section IDs are in ascending order (skipping duplicates)
-let check_sections_ordered = (bytes: Bytes) -> Bool {
-  let len = Bytes::length(bytes)
-  if len < 8 { true }
-  else {
-    let mut i = 8
-    let mut prev_id = -1
-    let mut ok = true
-    while (i < len) && ok {
-      let sec_id = bytes[i]
-      i = i + 1
-      // Read section size (uleb128)
-      let mut size = 0
-      let mut shift = 0
-      let mut reading = true
-      while (i < len) && reading {
-        let byte = bytes[i]
-        size = size | ((byte & 0x7F) << shift)
-        i = i + 1
-        if (byte & 0x80) == 0 { reading = false }
-        else { shift = shift + 7 }
-      }
-      // Custom sections (id=0) can appear anywhere
-      if sec_id > 0 {
-        if sec_id <= prev_id { ok = false }
-        else { prev_id = sec_id }
-      }
-      i = i + size
-    }
-    ok
-  }
-}
-
-// Find export name in WASM binary
 let find_export = (bytes: Bytes, name: String) -> Bool {
   let len = Bytes::length(bytes)
   let mut i = 8
@@ -53,45 +23,52 @@ let find_export = (bytes: Bytes, name: String) -> Bool {
   while (i < len) && (found == false) {
     let sec_id = bytes[i]
     i = i + 1
-    // Read section size
     let mut size = 0
     let mut shift = 0
     let mut reading = true
     while (i < len) && reading {
       let byte = bytes[i]
-      size = size | ((byte & 0x7F) << shift)
+      size = size|((byte&0x7F)<<shift)
       i = i + 1
-      if (byte & 0x80) == 0 { reading = false }
-      else { shift = shift + 7 }
+      if (byte&0x80) == 0 {
+        reading = false
+      }
+      else {
+        shift = shift + 7
+      }
     }
     if sec_id == 7 {
-      // Export section - search for name
       let sec_end = i + size
-      // Read count
       let mut cnt = 0
       let mut shift2 = 0
       let mut reading2 = true
       while (i < sec_end) && reading2 {
         let byte = bytes[i]
-        cnt = cnt | ((byte & 0x7F) << shift2)
+        cnt = cnt|((byte&0x7F)<<shift2)
         i = i + 1
-        if (byte & 0x80) == 0 { reading2 = false }
-        else { shift2 = shift2 + 7 }
+        if (byte&0x80) == 0 {
+          reading2 = false
+        }
+        else {
+          shift2 = shift2 + 7
+        }
       }
       let mut ei = 0
       while (ei < cnt) && (found == false) {
-        // Read name length
         let mut nlen = 0
         let mut shift3 = 0
         let mut reading3 = true
         while (i < sec_end) && reading3 {
           let byte = bytes[i]
-          nlen = nlen | ((byte & 0x7F) << shift3)
+          nlen = nlen|((byte&0x7F)<<shift3)
           i = i + 1
-          if (byte & 0x80) == 0 { reading3 = false }
-          else { shift3 = shift3 + 7 }
+          if (byte&0x80) == 0 {
+            reading3 = false
+          }
+          else {
+            shift3 = shift3 + 7
+          }
         }
-        // Read name chars
         let mut ename = ""
         let mut ni = 0
         while ni < nlen {
@@ -99,16 +76,18 @@ let find_export = (bytes: Bytes, name: String) -> Bool {
           i = i + 1
           ni = ni + 1
         }
-        // Skip kind + index
         i = i + 1
-        // Read index (uleb128)
         let mut reading4 = true
         while (i < sec_end) && reading4 {
           let byte = bytes[i]
           i = i + 1
-          if (byte & 0x80) == 0 { reading4 = false }
+          if (byte&0x80) == 0 {
+            reading4 = false
+          }
         }
-        if ename == name { found = true }
+        if ename == name {
+          found = true
+        }
         ei = ei + 1
       }
       i = sec_end
@@ -117,6 +96,46 @@ let find_export = (bytes: Bytes, name: String) -> Bool {
     }
   }
   found
+}
+
+let check_sections_ordered = (bytes: Bytes) -> Bool {
+  let len = Bytes::length(bytes)
+  if len < 8 {
+    true
+  }
+  else {
+    let mut i = 8
+    let mut prev_id = -1
+    let mut ok = true
+    while (i < len) && ok {
+      let sec_id = bytes[i]
+      i = i + 1
+      let mut size = 0
+      let mut shift = 0
+      let mut reading = true
+      while (i < len) && reading {
+        let byte = bytes[i]
+        size = size|((byte&0x7F)<<shift)
+        i = i + 1
+        if (byte&0x80) == 0 {
+          reading = false
+        }
+        else {
+          shift = shift + 7
+        }
+      }
+      if sec_id > 0 {
+        if sec_id <= prev_id {
+          ok = false
+        }
+        else {
+          prev_id = sec_id
+        }
+      }
+      i = i + size
+    }
+    ok
+  }
 }
 
 //# Misc

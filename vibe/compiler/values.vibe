@@ -31,6 +31,143 @@ export let val_env_bind = (env: ValEnv, name: String, v: Value) -> ValEnv {
   VEnvBind(name, v, env)
 }
 
+export let rec values_equal = (a: Value, b: Value) -> Bool {
+  let rec values_equal_array = (left: Array[Value], right: Array[Value], i: Int) -> Bool {
+    if i >= Array::length(left) {
+      true
+    }
+    else if values_equal(Array::get(left, i), Array::get(right, i)) {
+      values_equal_array(left, right, i + 1)
+    }
+    else {
+      false
+    }
+  }
+  let rec bytes_equal = (left: Bytes, right: Bytes, i: Int) -> Bool {
+    if i >= Bytes::length(left) {
+      true
+    }
+    else if Bytes::get(left, i) == Bytes::get(right, i) {
+      bytes_equal(left, right, i + 1)
+    }
+    else {
+      false
+    }
+  }
+  let rec record_fields_equal = (left: Array[(String, Value)], right: Array[(String, Value)], i: Int) -> Bool {
+    if i >= Array::length(left) {
+      true
+    }
+    else {
+      let (left_name, left_value) = Array::get(left, i)
+      let (right_name, right_value) = Array::get(right, i)
+      if !(left_name == right_name) {
+        false
+      }
+      else if values_equal(left_value, right_value) {
+        record_fields_equal(left, right, i + 1)
+      }
+      else {
+        false
+      }
+    }
+  }
+  let rec string_array_equal = (left: Array[String], right: Array[String], i: Int) -> Bool {
+    if i >= Array::length(left) {
+      true
+    }
+    else if Array::get(left, i) == Array::get(right, i) {
+      string_array_equal(left, right, i + 1)
+    }
+    else {
+      false
+    }
+  }
+  match a {
+    VInt(x) => match b {
+      VInt(y) => x == y,
+      _ => false
+    },
+    VFloat(x) => match b {
+      VFloat(y) => x == y,
+      _ => false
+    },
+    VString(x) => match b {
+      VString(y) => x == y,
+      _ => false
+    },
+    VBool(x) => match b {
+      VBool(y) => x == y,
+      _ => false
+    },
+    VUnit => match b {
+      VUnit => true,
+      _ => false
+    },
+    VTuple(left) => match b {
+      VTuple(right) => if Array::length(left) != Array::length(right) {
+        false
+      } else {
+        values_equal_array(left, right, 0)
+      }
+      ,
+      _ => false
+    },
+    VArray(left) => match b {
+      VArray(right) => if Array::length(left) != Array::length(right) {
+        false
+      } else {
+        values_equal_array(left, right, 0)
+      }
+      ,
+      _ => false
+    },
+    VRecord(left) => match b {
+      VRecord(right) => if Array::length(left) != Array::length(right) {
+        false
+      } else {
+        record_fields_equal(left, right, 0)
+      }
+      ,
+      _ => false
+    },
+    VCtor(left_name, left_args) => match b {
+      VCtor(right_name, right_args) => if !(left_name == right_name) {
+        false
+      } else if Array::length(left_args) != Array::length(right_args) {
+        false
+      } else {
+        values_equal_array(left_args, right_args, 0)
+      }
+      ,
+      _ => false
+    },
+    VBytes(left) => match b {
+      VBytes(right) => if Bytes::length(left) != Bytes::length(right) {
+        false
+      } else {
+        bytes_equal(left, right, 0)
+      }
+      ,
+      _ => false
+    },
+    VFn(_, _, _, _) => false,
+    VBreak(left) => match b {
+      VBreak(right) => values_equal(left, right),
+      _ => false
+    },
+    VContinue(left) => match b {
+      VContinue(right) => if Array::length(left) != Array::length(right) {
+        false
+      } else {
+        values_equal_array(left, right, 0)
+      }
+      ,
+      _ => false
+    }
+  }
+}
+
 export let module_ctx_new = (sources: Array[(String, String)], base_dir: String) -> ModuleCtx {
   ModuleCtx(sources, Array::slice([
     ""
@@ -119,149 +256,6 @@ export let rec value_to_string = (v: Value) -> String {
     VFn(_, _, _, _) => "<fn>",
     VBreak(inner) => String::concat("<break:", String::concat(value_to_string(inner), ">")),
     VContinue(_) => "<continue>"
-  }
-}
-
-export let rec values_equal = (a: Value, b: Value) -> Bool {
-  let rec values_equal_array = (left: Array[Value], right: Array[Value], i: Int) -> Bool {
-    if i >= Array::length(left) {
-      true
-    }
-    else if values_equal(Array::get(left, i), Array::get(right, i)) {
-      values_equal_array(left, right, i + 1)
-    }
-    else {
-      false
-    }
-  }
-  let rec bytes_equal = (left: Bytes, right: Bytes, i: Int) -> Bool {
-    if i >= Bytes::length(left) {
-      true
-    }
-    else if Bytes::get(left, i) == Bytes::get(right, i) {
-      bytes_equal(left, right, i + 1)
-    }
-    else {
-      false
-    }
-  }
-  let rec record_fields_equal = (left: Array[(String, Value)], right: Array[(String, Value)], i: Int) -> Bool {
-    if i >= Array::length(left) {
-      true
-    }
-    else {
-      let (left_name, left_value) = Array::get(left, i)
-      let (right_name, right_value) = Array::get(right, i)
-      if !(left_name == right_name) {
-        false
-      }
-      else if values_equal(left_value, right_value) {
-        record_fields_equal(left, right, i + 1)
-      }
-      else {
-        false
-      }
-    }
-  }
-  let rec string_array_equal = (left: Array[String], right: Array[String], i: Int) -> Bool {
-    if i >= Array::length(left) {
-      true
-    }
-    else if Array::get(left, i) == Array::get(right, i) {
-      string_array_equal(left, right, i + 1)
-    }
-    else {
-      false
-    }
-  }
-  match a {
-    VInt(x) => match b {
-      VInt(y) => x == y,
-      _ => false
-    },
-    VFloat(x) => match b {
-      VFloat(y) => x == y,
-      _ => false
-    },
-    VString(x) => match b {
-      VString(y) => x == y,
-      _ => false
-    },
-    VBool(x) => match b {
-      VBool(y) => x == y,
-      _ => false
-    },
-    VUnit => match b {
-      VUnit => true,
-      _ => false
-    },
-    VTuple(left) => match b {
-      VTuple(right) => {
-        if Array::length(left) != Array::length(right) {
-          false
-        } else {
-          values_equal_array(left, right, 0)
-        }
-      },
-      _ => false
-    },
-    VArray(left) => match b {
-      VArray(right) => {
-        if Array::length(left) != Array::length(right) {
-          false
-        } else {
-          values_equal_array(left, right, 0)
-        }
-      },
-      _ => false
-    },
-    VRecord(left) => match b {
-      VRecord(right) => {
-        if Array::length(left) != Array::length(right) {
-          false
-        } else {
-          record_fields_equal(left, right, 0)
-        }
-      },
-      _ => false
-    },
-    VCtor(left_name, left_args) => match b {
-      VCtor(right_name, right_args) => {
-        if !(left_name == right_name) {
-          false
-        } else if Array::length(left_args) != Array::length(right_args) {
-          false
-        } else {
-          values_equal_array(left_args, right_args, 0)
-        }
-      },
-      _ => false
-    },
-    VBytes(left) => match b {
-      VBytes(right) => {
-        if Bytes::length(left) != Bytes::length(right) {
-          false
-        } else {
-          bytes_equal(left, right, 0)
-        }
-      },
-      _ => false
-    },
-    VFn(_, _, _, _) => false,
-    VBreak(left) => match b {
-      VBreak(right) => values_equal(left, right),
-      _ => false
-    },
-    VContinue(left) => match b {
-      VContinue(right) => {
-        if Array::length(left) != Array::length(right) {
-          false
-        } else {
-          values_equal_array(left, right, 0)
-        }
-      },
-      _ => false
-    }
   }
 }
 

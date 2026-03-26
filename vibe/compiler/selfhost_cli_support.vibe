@@ -1,47 +1,30 @@
 //# Imports
 
+import ./codegen / wasi {
+  compile_wasi_module_linked_impl
+}
+
+import ./core / ast.vibe {
+  Expr, Stmt
+}
+
 import ./entry / source_compile / wasi_only {
   compile_source_wasi_only
 }
 
-import ./core/ast.vibe {
-  Expr, Stmt
+import ./module_graph_path.vibe {
+  contains_name, contains_path, dir_of_path, get_export_name, path_to_module_name, resolve_import_path
 }
 
-import ./syntax/lexer.vibe {
+import ./syntax / lexer.vibe {
   lex
 }
 
-import ./syntax/parser.vibe {
+import ./syntax / parser.vibe {
   parse_program
 }
 
-import ./codegen/wasi/index.vibe {
-  compile_wasi_module_linked_impl
-}
-
-import ./module_graph_path.vibe {
-  dir_of_path,
-  resolve_import_path,
-  contains_path,
-  contains_name,
-  get_export_name,
-  path_to_module_name
-}
-
 //# Functions
-
-let empty_stmt_array = () -> Array[Stmt] {
-  Array::slice([SExpr(EInt(0))], 0, 0)
-}
-
-let empty_source_pairs = () -> Array[(String, String)] {
-  Array::slice([("", "")], 0, 0)
-}
-
-let empty_linked_imports = () -> Array[(String, String, Int, Int)] {
-  Array::slice([("", "", 0, 0)], 0, 0)
-}
 
 export let read_arg = (index: Int) -> String {
   if perform Env::ArgsLen > index {
@@ -51,29 +34,73 @@ export let read_arg = (index: Int) -> String {
   }
 }
 
+let read_arg_or_env = (index: Int, env_name: String) -> String {
+  let value = read_arg(index)
+  if value != "" {
+    value
+  } else {
+    perform Env::Get(env_name)
+  }
+}
+
+let empty_stmt_array = () -> Array[Stmt] {
+  Array::slice([
+    SExpr(EInt(0))
+  ], 0, 0)
+}
+
 let linked_output_dir = (output_path: String) -> String {
   let len = String::length(output_path)
-  if len >= 5 && output_path[len - 5:len] == ".wasm" {
-    String::concat(output_path[0:len - 5], ".debug")
+  if len >= 5 && output_path[len - 5: len] == ".wasm" {
+    String::concat(output_path[0: len - 5], ".debug")
   } else {
     String::concat(output_path, ".debug")
   }
 }
 
-let rec resolve_reexport_chain = (
-  source_path: String,
-  items: Array[(String, Option[String])],
-  module_name: String,
-  linked_imports: Array[(String, String, Int, Int)],
-  type_stmts: Array[Stmt],
-  depth: Int
-) -> Unit with { Error, Fs } {
-  if depth > 10 { () }
+let empty_source_pairs = () -> Array[(String, String)] {
+  Array::slice([
+    ("", "")
+  ], 0, 0)
+}
+
+let append_library_entry = (stmts: Array[Stmt]) -> Unit {
+  let empty_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let empty_bounds = Array::slice([
+    ("", Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let empty_params = Array::slice([
+    ("", None)
+  ], 0, 0)
+  Array::push(stmts, SLet(false, false, "__library_entry", None, EFn(empty_tp, empty_bounds, empty_params, None, None, EInt(0))))
+}
+
+export let compile_release_file = (input_path: String, entry_name: String) -> Bytes with { Error, Fs } {
+  let source = perform Fs::ReadFile(input_path)
+  compile_source_wasi_only(source, entry_name)
+}
+
+let empty_linked_imports = () -> Array[(String, String, Int, Int)] {
+  Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0)
+}
+
+let rec resolve_reexport_chain = (source_path: String, items: Array[(String, Option[String])], module_name: String, linked_imports: Array[(String, String, Int, Int)], type_stmts: Array[Stmt], depth: Int) -> Unit with { Error, Fs } {
+  if depth > 10 {
+    ()
+  }
   else {
     let source = perform Fs::ReadFile(source_path)
     let stmts = parse_program(lex(source))
     let source_dir = dir_of_path(source_path)
-    let wanted_names = Array::slice([""], 0, 0)
+    let wanted_names = Array::slice([
+      ""
+    ], 0, 0)
     let mut wi = 0
     while wi < Array::length(items) {
       let (name, _) = Array::get(items, wi)
@@ -83,22 +110,19 @@ let rec resolve_reexport_chain = (
     let mut si = 0
     while si < Array::length(stmts) {
       match Array::get(stmts, si) {
-        SLet(true, _, name, _, EFn(_, _, params, _, _, _)) => {
-          if contains_name(wanted_names, name) {
-            let export_name = get_export_name(items, name)
-            Array::push(
-              linked_imports,
-              (module_name, export_name, Array::length(params), 1)
-            )
-          }
-        },
-        SEnum(true, name, _) => {
-          if contains_name(wanted_names, name) {
-            Array::push(type_stmts, Array::get(stmts, si))
-          }
-        },
+        SLet(true, _, name, _, EFn(_, _, params, _, _, _)) => if contains_name(wanted_names, name) {
+          let export_name = get_export_name(items, name)
+          Array::push(linked_imports, (module_name, export_name, Array::length(params), 1))
+        }
+        ,
+        SEnum(true, name, _) => if contains_name(wanted_names, name) {
+          Array::push(type_stmts, Array::get(stmts, si))
+        }
+        ,
         SReExport(raw_path, inner_items) => {
-          let filtered = Array::slice([("", None)], 0, 0)
+          let filtered = Array::slice([
+            ("", None)
+          ], 0, 0)
           let mut fi = 0
           while fi < Array::length(inner_items) {
             let (iname, irename) = Array::get(inner_items, fi)
@@ -109,14 +133,7 @@ let rec resolve_reexport_chain = (
           }
           if Array::length(filtered) > 0 {
             let resolved = resolve_import_path(source_dir, raw_path)
-            resolve_reexport_chain(
-              resolved,
-              filtered,
-              module_name,
-              linked_imports,
-              type_stmts,
-              depth + 1
-            )
+            resolve_reexport_chain(resolved, filtered, module_name, linked_imports, type_stmts, depth + 1)
           }
         },
         _ => ()
@@ -126,12 +143,95 @@ let rec resolve_reexport_chain = (
   }
 }
 
-let rec collect_library_stmts_recursive = (
-  path: String,
-  merged: Array[Stmt],
-  visited: Array[String]
-) -> Unit with { Error, Fs } {
-  if contains_path(visited, path) { () }
+let append_non_import_stmts = (dst: Array[Stmt], src: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(src) {
+    match Array::get(src, i) {
+      SImport(_, _) => (),
+      SReExport(_, _) => (),
+      SAliasDecl(_, _) => (),
+      _ => Array::push(dst, Array::get(src, i))
+    }
+    i = i + 1
+  }
+}
+
+export let build_linked_debug_entry = (input_path: String, entry_name: String) -> (Bytes, Array[(String, String)])with { Error, Fs } {
+  let entry_source = perform Fs::ReadFile(input_path)
+  let entry_stmts = parse_program(lex(entry_source))
+  let entry_dir = dir_of_path(input_path)
+  let dep_paths = Array::slice([
+    ""
+  ], 0, 0)
+  let mut ei = 0
+  while ei < Array::length(entry_stmts) {
+    match Array::get(entry_stmts, ei) {
+      SImport(raw_path, items) => if Array::length(items) > 0 {
+        let resolved = resolve_import_path(entry_dir, raw_path)
+        if !contains_path(dep_paths, resolved) {
+          Array::push(dep_paths, resolved)
+        }
+      }
+      ,
+      SReExport(raw_path, _) => {
+        let resolved = resolve_import_path(entry_dir, raw_path)
+        if !contains_path(dep_paths, resolved) {
+          Array::push(dep_paths, resolved)
+        }
+      },
+      _ => ()
+    }
+    ei = ei + 1
+  }
+  let linked_imports = empty_linked_imports()
+  let linked_dep_specs = empty_source_pairs()
+  let resolved_type_stmts = empty_stmt_array()
+  let mut di = 0
+  while di < Array::length(dep_paths) {
+    let dep_path = Array::get(dep_paths, di)
+    let dep_source = perform Fs::ReadFile(dep_path)
+    let dep_stmts = parse_program(lex(dep_source))
+    let module_name = path_to_module_name(dep_path)
+    let dep_dir = dir_of_path(dep_path)
+    let mut has_linked = false
+    let mut dsi = 0
+    while dsi < Array::length(dep_stmts) {
+      match Array::get(dep_stmts, dsi) {
+        SLet(true, _, name, _, EFn(_, _, params, _, _, _)) => {
+          Array::push(linked_imports, (module_name, name, Array::length(params), 1))
+          has_linked = true
+        },
+        SReExport(raw_path, items) => {
+          let resolved = resolve_import_path(dep_dir, raw_path)
+          resolve_reexport_chain(resolved, items, module_name, linked_imports, resolved_type_stmts, 0)
+          has_linked = true
+        },
+        SEnum(true, _, _) => Array::push(resolved_type_stmts, Array::get(dep_stmts, dsi))
+        ,
+        _ => ()
+      }
+      dsi = dsi + 1
+    }
+    if has_linked {
+      Array::push(linked_dep_specs, (module_name, dep_path))
+    }
+    di = di + 1
+  }
+  let main_stmts = empty_stmt_array()
+  let mut ti = 0
+  while ti < Array::length(resolved_type_stmts) {
+    Array::push(main_stmts, Array::get(resolved_type_stmts, ti))
+    ti = ti + 1
+  }
+  append_non_import_stmts(main_stmts, entry_stmts)
+  let bytes = compile_wasi_module_linked_impl(main_stmts, entry_name, empty_source_pairs(), linked_imports, false)
+  (bytes, linked_dep_specs)
+}
+
+let rec collect_library_stmts_recursive = (path: String, merged: Array[Stmt], visited: Array[String]) -> Unit with { Error, Fs } {
+  if contains_path(visited, path) {
+    ()
+  }
   else {
     Array::push(visited, path)
     let source = perform Fs::ReadFile(path)
@@ -165,163 +265,24 @@ let rec collect_library_stmts_recursive = (
   }
 }
 
-let append_non_import_stmts = (dst: Array[Stmt], src: Array[Stmt]) -> Unit {
-  let mut i = 0
-  while i < Array::length(src) {
-    match Array::get(src, i) {
-      SImport(_, _) => (),
-      SReExport(_, _) => (),
-      SAliasDecl(_, _) => (),
-      _ => Array::push(dst, Array::get(src, i))
-    }
-    i = i + 1
-  }
-}
-
-let append_library_entry = (stmts: Array[Stmt]) -> Unit {
-  let empty_tp = Array::slice([""], 0, 0)
-  let empty_bounds = Array::slice([("", Array::slice([""], 0, 0))], 0, 0)
-  let empty_params = Array::slice([("", None)], 0, 0)
-  Array::push(
-    stmts,
-    SLet(
-      false,
-      false,
-      "__library_entry",
-      None,
-      EFn(empty_tp, empty_bounds, empty_params, None, None, EInt(0))
-    )
-  )
-}
-
-export let compile_release_file = (input_path: String, entry_name: String) -> Bytes with { Error, Fs } {
-  let source = perform Fs::ReadFile(input_path)
-  compile_source_wasi_only(source, entry_name)
-}
-
-export let build_linked_debug_entry = (
-  input_path: String,
-  entry_name: String
-) -> (Bytes, Array[(String, String)]) with { Error, Fs } {
-  let entry_source = perform Fs::ReadFile(input_path)
-  let entry_stmts = parse_program(lex(entry_source))
-  let entry_dir = dir_of_path(input_path)
-  let dep_paths = Array::slice([""], 0, 0)
-  let mut ei = 0
-  while ei < Array::length(entry_stmts) {
-    match Array::get(entry_stmts, ei) {
-      SImport(raw_path, items) => {
-        if Array::length(items) > 0 {
-          let resolved = resolve_import_path(entry_dir, raw_path)
-          if !contains_path(dep_paths, resolved) {
-            Array::push(dep_paths, resolved)
-          }
-        }
-      },
-      SReExport(raw_path, _) => {
-        let resolved = resolve_import_path(entry_dir, raw_path)
-        if !contains_path(dep_paths, resolved) {
-          Array::push(dep_paths, resolved)
-        }
-      },
-      _ => ()
-    }
-    ei = ei + 1
-  }
-  let linked_imports = empty_linked_imports()
-  let linked_dep_specs = empty_source_pairs()
-  let resolved_type_stmts = empty_stmt_array()
-  let mut di = 0
-  while di < Array::length(dep_paths) {
-    let dep_path = Array::get(dep_paths, di)
-    let dep_source = perform Fs::ReadFile(dep_path)
-    let dep_stmts = parse_program(lex(dep_source))
-    let module_name = path_to_module_name(dep_path)
-    let dep_dir = dir_of_path(dep_path)
-    let mut has_linked = false
-    let mut dsi = 0
-    while dsi < Array::length(dep_stmts) {
-      match Array::get(dep_stmts, dsi) {
-        SLet(true, _, name, _, EFn(_, _, params, _, _, _)) => {
-          Array::push(
-            linked_imports,
-            (module_name, name, Array::length(params), 1)
-          )
-          has_linked = true
-        },
-        SReExport(raw_path, items) => {
-          let resolved = resolve_import_path(dep_dir, raw_path)
-          resolve_reexport_chain(
-            resolved,
-            items,
-            module_name,
-            linked_imports,
-            resolved_type_stmts,
-            0
-          )
-          has_linked = true
-        },
-        SEnum(true, _, _) => {
-          Array::push(resolved_type_stmts, Array::get(dep_stmts, dsi))
-        },
-        _ => ()
-      }
-      dsi = dsi + 1
-    }
-    if has_linked {
-      Array::push(linked_dep_specs, (module_name, dep_path))
-    }
-    di = di + 1
-  }
-  let main_stmts = empty_stmt_array()
-  let mut ti = 0
-  while ti < Array::length(resolved_type_stmts) {
-    Array::push(main_stmts, Array::get(resolved_type_stmts, ti))
-    ti = ti + 1
-  }
-  append_non_import_stmts(main_stmts, entry_stmts)
-  let bytes = compile_wasi_module_linked_impl(
-    main_stmts,
-    entry_name,
-    empty_source_pairs(),
-    linked_imports,
-    false
-  )
-  (bytes, linked_dep_specs)
-}
-
 export let compile_debug_library = (dep_path: String) -> Bytes with { Error, Fs } {
   let merged = empty_stmt_array()
-  let visited = Array::slice([""], 0, 0)
+  let visited = Array::slice([
+    ""
+  ], 0, 0)
   collect_library_stmts_recursive(dep_path, merged, visited)
   append_library_entry(merged)
-  compile_wasi_module_linked_impl(
-    merged,
-    "__library_entry",
-    empty_source_pairs(),
-    empty_linked_imports(),
-    true
-  )
+  compile_wasi_module_linked_impl(merged, "__library_entry", empty_source_pairs(), empty_linked_imports(), true)
 }
 
-export let write_linked_debug_build = (
-  input_path: String,
-  output_path: String,
-  entry_name: String
-) -> Unit with { Error, Fs } {
-  let (entry_bytes, linked_dep_specs) = build_linked_debug_entry(
-    input_path,
-    entry_name
-  )
+export let write_linked_debug_build = (input_path: String, output_path: String, entry_name: String) -> Unit with { Error, Fs } {
+  let (entry_bytes, linked_dep_specs) = build_linked_debug_entry(input_path, entry_name)
   Fs::write_bytes(output_path, entry_bytes)
   let output_dir = linked_output_dir(output_path)
   let mut i = 0
   while i < Array::length(linked_dep_specs) {
     let (module_name, dep_path) = Array::get(linked_dep_specs, i)
-    let lib_output_path = String::concat(
-      output_dir,
-      String::concat("/", String::concat(module_name, ".wasm"))
-    )
+    let lib_output_path = String::concat(output_dir, String::concat("/", String::concat(module_name, ".wasm")))
     let lib_bytes = compile_debug_library(dep_path)
     Fs::write_bytes(lib_output_path, lib_bytes)
     i = i + 1
@@ -329,9 +290,9 @@ export let write_linked_debug_build = (
 }
 
 export let cli_main = () -> Int with { Error, Fs, Env } {
-  let input_path = read_arg(0)
-  let output_path = read_arg(1)
-  let entry_name = read_arg(2)
+  let input_path = read_arg_or_env(0, "VIBE_INPUT")
+  let output_path = read_arg_or_env(1, "VIBE_OUTPUT")
+  let entry_name = read_arg_or_env(2, "VIBE_ENTRY")
   let mode = read_arg(3)
   if input_path == "" {
     1

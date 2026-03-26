@@ -1,73 +1,34 @@
-// AST-to-WASM codegen (wasm-gc backend)
-// Uses GC struct types for ref cells instead of linear memory bump allocation.
-// Closures use table-based call_indirect (same as linear memory backend).
+//# Imports
 
-import ../../core/index.vibe {
-  Expr, Pat, Stmt, TypeExpr,
-  bytebuf_new, bytebuf_push, bytebuf_length,
-  bytebuf_to_bytes, bytebuf_push_section, bytebuf_push_vec_header,
-  leb128_encode_u32, leb128_encode_s64
+import .. / .. / core {
+  Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
 }
 
-import ../wasm_emit/index.vibe {
-  emit_header,
-  emit_type_section, emit_type_section_multi,
-  emit_function_section, emit_export_section, emit_export_section_multi,
-  emit_code_section, emit_code_section_with_locals,
-  emit_name, emit_func_type_raw,
-  emit_import_section_func, emit_memory_section,
-  emit_exports_with_memory, emit_data_section, emit_data_section_multi,
-  emit_local_get, emit_local_set, emit_local_tee,
-  emit_i64_const, emit_i64_add, emit_i64_sub, emit_i64_mul, emit_i64_div_s,
-  emit_i64_rem_s, emit_i64_and, emit_i64_or, emit_i64_xor,
-  emit_i64_shl, emit_i64_shr_s,
-  emit_i64_eq, emit_i64_ne, emit_i64_lt_s, emit_i64_gt_s,
-  emit_i64_le_s, emit_i64_ge_s, emit_i64_eqz,
-  emit_i64_extend_i32_s, emit_i32_wrap_i64,
-  emit_i32_const, emit_i32_store, emit_i32_add, emit_i32_load,
-  emit_i32_store8, emit_i32_load8_u,
-  emit_call, emit_drop, emit_return,
-  emit_block_void, emit_block_i64, emit_loop_void,
-  emit_if_void, emit_if_i64, emit_else, emit_end,
-  emit_br, emit_br_if,
-  emit_global_section_i32_mut, emit_global_get, emit_global_set,
-  string_to_data,
-  emit_f64_const_bits, emit_f64_add, emit_f64_sub, emit_f64_mul, emit_f64_div,
-  emit_f64_eq, emit_f64_ne, emit_f64_lt, emit_f64_gt, emit_f64_le, emit_f64_ge,
-  emit_f64_neg, emit_i64_reinterpret_f64, emit_f64_reinterpret_i64,
-  emit_i64_trunc_f64_s, emit_f64_convert_i64_s,
-  emit_call_indirect, emit_table_section_funcref, emit_element_section_active,
-  emit_struct_type_raw, emit_struct_new, emit_struct_get, emit_struct_set
+import .. / common_analysis {
+  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in
 }
 
-import ../common_base/index.vibe {
-  emit_i32_sub, emit_i32_mul, emit_i32_ne, emit_i32_eq, emit_i32_ge_u, emit_i32_gt_u, emit_i32_eqz, emit_i64_store, emit_i64_load, resolve_local, resolve_func, FuncTable, StrTable, LambdaTable, CtorTable, CompileCtxGc, emit_str_ref, find_func_stmt, lookup_ctor, emit_binop_op
+import .. / common_base {
+  CompileCtxGc, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, find_func_stmt, lookup_ctor, resolve_func, resolve_local
 }
 
-import ../common_extractors/index.vibe {
-  emit_memory_copy, array_contains_str, str_table_lookup, find_catchall_idx, emit_assignop_op
+import .. / common_extractors {
+  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, str_table_lookup
 }
 
-import ../common_analysis/index.vibe {
-  emit_i64_extend_i32_u, collect_strings_stmts, collect_free_vars, is_mut_captured_in, emit_closure_resolve, emit_closure_call_tail
+import .. / wasm_emit {
+  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_struct_get, emit_struct_new, emit_struct_set, emit_struct_type_raw, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data
 }
 
 import ./backend_builtins.vibe {
-  gen_print_i64_body, gen_print_str_body, gen_str_len_body, gen_str_eq_body,
-  gen_str_concat_body, gen_arr_new_body, gen_arr_len_body, gen_arr_get_body,
-  gen_arr_push_body, gen_arr_set_body, gen_str_char_code_at_body,
-  gen_str_from_char_code_body, gen_str_substring_body, gen_double_to_int_body,
-  gen_int_to_double_body, gen_identity_body
+  gen_arr_get_body, gen_arr_len_body, gen_arr_new_body, gen_arr_push_body, gen_arr_set_body, gen_double_to_int_body, gen_identity_body, gen_int_to_double_body, gen_print_i64_body, gen_print_str_body, gen_str_char_code_at_body, gen_str_concat_body, gen_str_eq_body, gen_str_from_char_code_body, gen_str_len_body, gen_str_substring_body
 }
-let compile_call_gc = (
-  buf: Bytes, callee: Expr, args: Array[Expr],
-  local_names: Array[String], next_local: Int,
-  ctx: CompileCtxGc, ld: Int,
-  ce: (Bytes, Expr, Array[String], Int, Int) -> Int with { Error }
-) -> Int with { Error } {
+
+//# Functions
+
+let compile_call_gc = (buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with { Error }) -> Int with { Error } {
   match callee {
     EIdent(fname) => {
-      // Check if this is an enum constructor call
       let ctor_lookup_idx = lookup_ctor(ctx.ctor_table.names, fname, 0)
       if ctor_lookup_idx >= 0 {
         let tag = Array::get(ctx.ctor_table.tags, ctor_lookup_idx)
@@ -90,27 +51,36 @@ let compile_call_gc = (
         emit_i32_wrap_i64(buf)
         emit_i32_const(buf, fc)
         emit_i32_store(buf, 2, 4)
-        // For structs, unwrap ERecord and reorder fields
         let actual_args = if Array::length(args) == 1 {
           match Array::get(args, 0) {
             ERecord(rec_fields) => {
               let rec find_sn = (sni: Int) -> Int {
-                if sni >= Array::length(ctx.ctor_table.struct_names) { -1 }
-                else if Array::get(ctx.ctor_table.struct_names, sni) == fname { sni }
+                if sni >= Array::length(ctx.ctor_table.struct_names) {
+                  -1
+                }
+                else if Array::get(ctx.ctor_table.struct_names, sni) == fname {
+                  sni
+                }
                 else find_sn(sni + 1)
               }
               let sn_idx = find_sn(0)
               if sn_idx >= 0 {
                 let def_fnames = Array::get(ctx.ctor_table.struct_field_names, sn_idx)
-                let ordered = Array::slice([EUnit], 0, 0)
+                let ordered = Array::slice([
+                  EUnit
+                ], 0, 0)
                 let mut oi = 0
                 while oi < Array::length(def_fnames) {
                   let target_name = Array::get(def_fnames, oi)
                   let rec find_rf = (ri: Int) -> Expr {
-                    if ri >= Array::length(rec_fields) { EUnit }
+                    if ri >= Array::length(rec_fields) {
+                      EUnit
+                    }
                     else {
                       let (rfn, rfv) = Array::get(rec_fields, ri)
-                      if rfn == target_name { rfv }
+                      if rfn == target_name {
+                        rfv
+                      }
                       else find_rf(ri + 1)
                     }
                   }
@@ -118,11 +88,15 @@ let compile_call_gc = (
                   oi = oi + 1
                 }
                 ordered
-              } else { args }
+              } else {
+                args
+              }
             },
             _ => args
           }
-        } else { args }
+        } else {
+          args
+        }
         let mut nl_c = next_local + 1
         let mut fi_c = 0
         while fi_c < Array::length(actual_args) {
@@ -284,7 +258,6 @@ let compile_call_gc = (
         nl
       }
       else if fname == "Array::slice" {
-        // Array::slice(arr, start, end) → new array with elements [start..end)
         let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
         let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
         let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
@@ -309,7 +282,6 @@ let compile_call_gc = (
         emit_local_set(buf, new_arr_local)
         emit_local_get(buf, start_local)
         emit_local_set(buf, i_local)
-        // while (i < end) { Array::push(new, Array::get(arr, i)); i = i + 1 }
         emit_block_void(buf)
         emit_loop_void(buf)
         emit_local_get(buf, i_local)
@@ -332,7 +304,6 @@ let compile_call_gc = (
         nl
       }
       else if fname == "Array::concat" {
-        // Array::concat(a, b) → new array with a's elements then b's
         let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
         let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
         let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
@@ -354,7 +325,6 @@ let compile_call_gc = (
         emit_local_set(buf, b_local)
         emit_call(buf, an_idx)
         emit_local_set(buf, new_arr_local)
-        // Copy a
         emit_i64_const(buf, 0)
         emit_local_set(buf, i_local)
         emit_local_get(buf, a_local)
@@ -378,7 +348,6 @@ let compile_call_gc = (
         emit_br(buf, 0)
         emit_end(buf)
         emit_end(buf)
-        // Copy b
         emit_i64_const(buf, 0)
         emit_local_set(buf, i_local)
         emit_local_get(buf, b_local)
@@ -406,8 +375,6 @@ let compile_call_gc = (
         nl
       }
       else if fname == "Array::truncate" {
-        // Array::truncate(arr, len) → sets arr.length = len (void)
-        // In GC backend, truncate is a no-op approximation: just return 0
         let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
         emit_drop(buf)
         nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
@@ -416,7 +383,6 @@ let compile_call_gc = (
         nl
       }
       else if fname == "Array::push_all" {
-        // Array::push_all(dst, src) → push all src elements to dst
         let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
         let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
         let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
@@ -477,77 +443,69 @@ let compile_call_gc = (
         nl
       }
       else if fname == "__to_string" {
-        // __to_string in GC backend: for String values, identity.
-        // For Int values, calls the generated __to_string builtin function.
         let (ts_idx, _, _) = resolve_func(ctx.func_table, "__to_string")
         let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
         emit_call(buf, ts_idx)
         nl
       }
       else if fname == "String::join" || fname == "String::ends_with" || fname == "String::last_index_of" || fname == "String::starts_with" || fname == "String::contains" || fname == "String::index_of" || fname == "FixedArray::make" || fname == "FixedArray::length" || fname == "FixedArray::get" || fname == "FixedArray::set" || fname == "FixedArray::unsafe_set" || fname == "FixedArray::blit" || fname == "StringBuilder::new" || fname == "StringBuilder::push" || fname == "StringBuilder::freeze" || fname == "Map::get" || fname == "Map::keys" || fname == "MapBuilder::new" || fname == "MapBuilder::set" || fname == "MapBuilder::freeze" || fname == "assert" || fname == "assert_true" || fname == "assert_eq" || fname == "println" || fname == "print" || fname == "map_has" {
-        // These builtins are not yet implemented in GC backend.
-        // Registered in fn_names to prevent free-var capture errors.
         throw(String::concat("GC codegen: unimplemented builtin: ", fname))
       }
       else {
-      let fn_len2 = Array::length(ctx.func_table.names)
-      let mut fn_idx_in_list = -1
-      let mut __fi = 0
-      while __fi < fn_len2 {
-        if Array::get(ctx.func_table.names, __fi) == fname {
-          fn_idx_in_list = __fi
-          __fi = fn_len2
-        } else {
-          __fi = __fi + 1
-        }
-      }
-      if fn_idx_in_list >= 0 {
-        // Direct call to known function
-        let fidx = Array::get(ctx.func_table.indices, fn_idx_in_list)
-        let has_ret = Array::get(ctx.func_table.returns, fn_idx_in_list)
-        let mut nl = next_local
-        let mut ci = 0
-        while ci < Array::length(args) {
-          nl = ce(buf, Array::get(args, ci), local_names, nl, ld)
-          ci = ci + 1
-        }
-        // User funcs in GC backend have __env param for table compatibility
-        if ctx.func_offset > 0 {
-          if fidx >= ctx.func_offset {
-            emit_i64_const(buf, 0)
+        let fn_len2 = Array::length(ctx.func_table.names)
+        let mut fn_idx_in_list = -1
+        let mut __fi = 0
+        while __fi < fn_len2 {
+          if Array::get(ctx.func_table.names, __fi) == fname {
+            fn_idx_in_list = __fi
+            __fi = fn_len2
+          } else {
+            __fi = __fi + 1
           }
         }
-        emit_call(buf, fidx)
-        if has_ret == 0 {
-          emit_i64_const(buf, 0)
+        if fn_idx_in_list >= 0 {
+          let fidx = Array::get(ctx.func_table.indices, fn_idx_in_list)
+          let has_ret = Array::get(ctx.func_table.returns, fn_idx_in_list)
+          let mut nl = next_local
+          let mut ci = 0
+          while ci < Array::length(args) {
+            nl = ce(buf, Array::get(args, ci), local_names, nl, ld)
+            ci = ci + 1
+          }
+          if ctx.func_offset > 0 {
+            if fidx >= ctx.func_offset {
+              emit_i64_const(buf, 0)
+            }
+          }
+          emit_call(buf, fidx)
+          if has_ret == 0 {
+            emit_i64_const(buf, 0)
+          }
+          nl
+        } else {
+          let local_idx2 = resolve_local(local_names, fname, "gc_call")
+          let num_args = Array::length(args)
+          let fn_val_local = next_local
+          let slot_local = next_local + 1
+          let env_local = next_local + 2
+          let mut nl = next_local + 3
+          Array::push(local_names, "__fn_val")
+          Array::push(local_names, "__slot")
+          Array::push(local_names, "__env")
+          emit_local_get(buf, local_idx2)
+          emit_local_set(buf, fn_val_local)
+          emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
+          let mut ci = 0
+          while ci < num_args {
+            nl = ce(buf, Array::get(args, ci), local_names, nl, ld)
+            ci = ci + 1
+          }
+          emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, num_args)
+          nl
         }
-        nl
-      } else {
-        // Indirect call: fname is a local holding a closure/fn value
-        let local_idx2 = resolve_local(local_names, fname, "gc_call")
-        let num_args = Array::length(args)
-        let fn_val_local = next_local
-        let slot_local = next_local + 1
-        let env_local = next_local + 2
-        let mut nl = next_local + 3
-        Array::push(local_names, "__fn_val")
-        Array::push(local_names, "__slot")
-        Array::push(local_names, "__env")
-        emit_local_get(buf, local_idx2)
-        emit_local_set(buf, fn_val_local)
-        emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
-        let mut ci = 0
-        while ci < num_args {
-          nl = ce(buf, Array::get(args, ci), local_names, nl, ld)
-          ci = ci + 1
-        }
-        emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, num_args)
-        nl
       }
-      } // close ctor_lookup else
     },
     _ => {
-      // Callee is an arbitrary expression
       let num_args = Array::length(args)
       let fn_val_local = next_local
       let slot_local = next_local + 1
@@ -569,6 +527,8 @@ let compile_call_gc = (
     }
   }
 }
+
+//# Misc
 
 export {
   compile_call_gc

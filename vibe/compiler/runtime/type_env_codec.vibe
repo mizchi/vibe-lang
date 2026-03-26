@@ -1,17 +1,11 @@
 //# Imports
 
-import ../core/index.vibe {
-  Type,
-  TypeEnv,
-  env_bind,
-  env_flat_bindings
+import .. / cache / persistent {
+  compact_string_fingerprint, normalize_persistent_cache_text, persistent_leaf_fingerprint_cache_path, persistent_type_env_cache_path
 }
 
-import ../cache/persistent/index.vibe {
-  compact_string_fingerprint,
-  normalize_persistent_cache_text,
-  persistent_leaf_fingerprint_cache_path,
-  persistent_type_env_cache_path
+import .. / core {
+  Type, TypeEnv, env_bind, env_flat_bindings
 }
 
 //# Functions
@@ -20,7 +14,17 @@ let serialize_segment = (text: String) -> String {
   String::concat(__to_string(String::length(text)), String::concat(":", text))
 }
 
-let parse_count_header = (text: String, pos: Int, terminator: Int) -> (Int, Int) with { Error } {
+let decode_effect_name = (raw: String) -> Option[String] {
+  if raw == "" || raw == "0" {
+    None
+  } else if raw == "1" {
+    Some("Error")
+  } else {
+    Some(raw)
+  }
+}
+
+let parse_count_header = (text: String, pos: Int, terminator: Int) -> (Int, Int)with { Error } {
   let len = String::length(text)
   let mut i = pos
   while i < len && String::char_code_at(text, i) != terminator {
@@ -29,61 +33,25 @@ let parse_count_header = (text: String, pos: Int, terminator: Int) -> (Int, Int)
   if i >= len {
     throw("invalid persistent type env payload")
   } else {
-    (Int::parse(text[pos:i]), i + 1)
+    (Int::parse(text[pos: i]), i + 1)
   }
 }
 
-let parse_segment = (text: String, pos: Int) -> (String, Int) with { Error } {
+let parse_segment = (text: String, pos: Int) -> (String, Int)with { Error } {
   let (seg_len, start) = parse_count_header(text, pos, 58)
   let end = start + seg_len
   if end > String::length(text) {
     throw("invalid persistent type env segment")
   } else {
-    (text[start:end], end)
+    (text[start: end], end)
   }
 }
 
-let serialize_string_array = (items: Array[String]) -> String {
-  let mut out = String::concat(__to_string(Array::length(items)), "[")
-  let mut i = 0
-  while i < Array::length(items) {
-    out = String::concat(out, serialize_segment(Array::get(items, i)))
-    i = i + 1
-  }
-  String::concat(out, "]")
-}
-
-let parse_string_array = (text: String, pos: Int) -> (Array[String], Int) with { Error } {
+let parse_int_array = (text: String, pos: Int) -> (Array[Int], Int)with { Error } {
   let (count, start) = parse_count_header(text, pos, 91)
-  let items = Array::slice([""], 0, 0)
-  let mut i = 0
-  let mut cursor = start
-  while i < count {
-    let (item, next_cursor) = parse_segment(text, cursor)
-    Array::push(items, item)
-    cursor = next_cursor
-    i = i + 1
-  }
-  if cursor >= String::length(text) || String::char_code_at(text, cursor) != 93 {
-    throw("invalid persistent type env string array")
-  } else {
-    (items, cursor + 1)
-  }
-}
-
-let serialize_int_array = (items: Array[Int]) -> String {
-  let mut out = String::concat(__to_string(Array::length(items)), "[")
-  let mut i = 0
-  while i < Array::length(items) {
-    out = String::concat(out, serialize_segment(__to_string(Array::get(items, i))))
-    i = i + 1
-  }
-  String::concat(out, "]")
-}
-
-let parse_int_array = (text: String, pos: Int) -> (Array[Int], Int) with { Error } {
-  let (count, start) = parse_count_header(text, pos, 91)
-  let items = Array::slice([0], 0, 0)
+  let items = Array::slice([
+    0
+  ], 0, 0)
   let mut i = 0
   let mut cursor = start
   while i < count {
@@ -99,21 +67,33 @@ let parse_int_array = (text: String, pos: Int) -> (Array[Int], Int) with { Error
   }
 }
 
-let serialize_bounds_array = (items: Array[(Int, Array[String])]) -> String {
-  let mut out = String::concat(__to_string(Array::length(items)), "[")
+let parse_string_array = (text: String, pos: Int) -> (Array[String], Int)with { Error } {
+  let (count, start) = parse_count_header(text, pos, 91)
+  let items = Array::slice([
+    ""
+  ], 0, 0)
   let mut i = 0
-  while i < Array::length(items) {
-    let (id, bounds) = Array::get(items, i)
-    out = String::concat(out, serialize_segment(__to_string(id)))
-    out = String::concat(out, serialize_string_array(bounds))
+  let mut cursor = start
+  while i < count {
+    let (item, next_cursor) = parse_segment(text, cursor)
+    Array::push(items, item)
+    cursor = next_cursor
     i = i + 1
   }
-  String::concat(out, "]")
+  if cursor >= String::length(text) || String::char_code_at(text, cursor) != 93 {
+    throw("invalid persistent type env string array")
+  } else {
+    (items, cursor + 1)
+  }
 }
 
-let parse_bounds_array = (text: String, pos: Int) -> (Array[(Int, Array[String])], Int) with { Error } {
+let parse_bounds_array = (text: String, pos: Int) -> (Array[(Int, Array[String])], Int)with { Error } {
   let (count, start) = parse_count_header(text, pos, 91)
-  let items = Array::slice([(0, Array::slice([""], 0, 0))], 0, 0)
+  let items = Array::slice([
+    (0, Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
   let mut i = 0
   let mut cursor = start
   while i < count {
@@ -130,73 +110,12 @@ let parse_bounds_array = (text: String, pos: Int) -> (Array[(Int, Array[String])
   }
 }
 
-let serialize_effect_name = (effect_name: Option[String]) -> String {
-  match effect_name {
-    Some(name) => name,
-    None => ""
-  }
-}
-
-let decode_effect_name = (raw: String) -> Option[String] {
-  if raw == "" || raw == "0" {
-    None
-  } else if raw == "1" {
-    Some("Error")
-  } else {
-    Some(raw)
-  }
-}
-
-let rec serialize_type = (ty: Type) -> String {
-  let rec serialize_type_array = (items: Array[Type]) -> String {
-    let mut out = String::concat(__to_string(Array::length(items)), "[")
-    let mut i = 0
-    while i < Array::length(items) {
-      out = String::concat(out, serialize_segment(serialize_type(Array::get(items, i))))
-      i = i + 1
-    }
-    String::concat(out, "]")
-  }
-  match ty {
-    CtInt => "I",
-    CtDouble => "D",
-    CtBool => "B",
-    CtString => "G",
-    CtChar => "H",
-    CtUnit => "U",
-    CtBytes => "Y",
-    CtUnknown => "X",
-    CtVar(id) => String::concat("V", serialize_segment(__to_string(id))),
-    CtEnum(name) => String::concat("E", serialize_segment(name)),
-    CtStruct(name) => String::concat("R", serialize_segment(name)),
-    CtArray(elem) => String::concat("A", serialize_type(elem)),
-    CtOption(elem) => String::concat("O", serialize_type(elem)),
-    CtTuple(elems) => String::concat("T", serialize_type_array(elems)),
-    CtFn(params, ret, effect_name) =>
-      String::concat(
-        "F",
-        String::concat(
-          serialize_segment(serialize_effect_name(effect_name)),
-          String::concat(serialize_type_array(params), serialize_type(ret))
-        )
-      ),
-    CtNamed(name, args) =>
-      String::concat("N", String::concat(serialize_segment(name), serialize_type_array(args))),
-    CtForAll(vars, bounds, body) =>
-      String::concat(
-        "Q",
-        String::concat(
-          serialize_int_array(vars),
-          String::concat(serialize_bounds_array(bounds), serialize_type(body))
-        )
-      )
-  }
-}
-
-let rec parse_cached_type = (source: String, pos: Int) -> (Type, Int) with { Error } {
-  let rec parse_type_array = (text: String, pos: Int) -> (Array[Type], Int) with { Error } {
+let rec parse_cached_type = (source: String, pos: Int) -> (Type, Int)with { Error } {
+  let rec parse_type_array = (text: String, pos: Int) -> (Array[Type], Int)with { Error } {
     let (count, start) = parse_count_header(text, pos, 91)
-    let items = Array::slice([CtUnknown], 0, 0)
+    let items = Array::slice([
+      CtUnknown
+    ], 0, 0)
     let mut i = 0
     let mut cursor = start
     while i < count {
@@ -275,6 +194,89 @@ let rec parse_cached_type = (source: String, pos: Int) -> (Type, Int) with { Err
   }
 }
 
+let serialize_int_array = (items: Array[Int]) -> String {
+  let mut out = String::concat(__to_string(Array::length(items)), "[")
+  let mut i = 0
+  while i < Array::length(items) {
+    out = String::concat(out, serialize_segment(__to_string(Array::get(items, i))))
+    i = i + 1
+  }
+  String::concat(out, "]")
+}
+
+let serialize_effect_name = (effect_name: Option[String]) -> String {
+  match effect_name {
+    Some(name) => name,
+    None => ""
+  }
+}
+
+let serialize_string_array = (items: Array[String]) -> String {
+  let mut out = String::concat(__to_string(Array::length(items)), "[")
+  let mut i = 0
+  while i < Array::length(items) {
+    out = String::concat(out, serialize_segment(Array::get(items, i)))
+    i = i + 1
+  }
+  String::concat(out, "]")
+}
+
+let serialize_bounds_array = (items: Array[(Int, Array[String])]) -> String {
+  let mut out = String::concat(__to_string(Array::length(items)), "[")
+  let mut i = 0
+  while i < Array::length(items) {
+    let (id, bounds) = Array::get(items, i)
+    out = String::concat(out, serialize_segment(__to_string(id)))
+    out = String::concat(out, serialize_string_array(bounds))
+    i = i + 1
+  }
+  String::concat(out, "]")
+}
+
+let rec serialize_type = (ty: Type) -> String {
+  let rec serialize_type_array = (items: Array[Type]) -> String {
+    let mut out = String::concat(__to_string(Array::length(items)), "[")
+    let mut i = 0
+    while i < Array::length(items) {
+      out = String::concat(out, serialize_segment(serialize_type(Array::get(items, i))))
+      i = i + 1
+    }
+    String::concat(out, "]")
+  }
+  match ty {
+    CtInt => "I",
+    CtDouble => "D",
+    CtBool => "B",
+    CtString => "G",
+    CtChar => "H",
+    CtUnit => "U",
+    CtBytes => "Y",
+    CtUnknown => "X",
+    CtVar(id) => String::concat("V", serialize_segment(__to_string(id))),
+    CtEnum(name) => String::concat("E", serialize_segment(name)),
+    CtStruct(name) => String::concat("R", serialize_segment(name)),
+    CtArray(elem) => String::concat("A", serialize_type(elem)),
+    CtOption(elem) => String::concat("O", serialize_type(elem)),
+    CtTuple(elems) => String::concat("T", serialize_type_array(elems)),
+    CtFn(params, ret, effect_name) =>
+    String::concat("F", String::concat(serialize_segment(serialize_effect_name(effect_name)), String::concat(serialize_type_array(params), serialize_type(ret)))),
+    CtNamed(name, args) =>
+    String::concat("N", String::concat(serialize_segment(name), serialize_type_array(args))),
+    CtForAll(vars, bounds, body) =>
+    String::concat("Q", String::concat(serialize_int_array(vars), String::concat(serialize_bounds_array(bounds), serialize_type(body))))
+  }
+}
+
+export let persistent_dep_list_text = (deps: Array[String]) -> String {
+  if Array::length(deps) == 0 {
+    ""
+  } else if Array::length(deps) == 1 {
+    String::concat("version\t3\n", Array::get(deps, 0))
+  } else {
+    String::concat("version\t2\n", serialize_string_array(deps))
+  }
+}
+
 let rebuild_persistent_type_env = (bindings: Array[(String, Type)]) -> TypeEnv {
   let mut env = EnvEmpty
   let len = Array::length(bindings)
@@ -288,24 +290,6 @@ let rebuild_persistent_type_env = (bindings: Array[(String, Type)]) -> TypeEnv {
   env
 }
 
-export let persistent_type_env_cache_text = (env: TypeEnv) -> String {
-  let bindings = env_flat_bindings(env)
-  let mut out = "version\t1\n"
-  let mut i = 0
-  while i < Array::length(bindings) {
-    let (name, ty) = Array::get(bindings, i)
-    out = String::concat(
-      out,
-      String::concat(
-        "bind\t",
-        String::concat(name, String::concat("\t", String::concat(serialize_type(ty), "\n")))
-      )
-    )
-    i = i + 1
-  }
-  out
-}
-
 export let load_persistent_type_env = (fingerprint: String) -> Option[TypeEnv] with { Error, Fs } {
   let path = persistent_type_env_cache_path(fingerprint)
   if !(Fs::exists(path)) {
@@ -313,11 +297,7 @@ export let load_persistent_type_env = (fingerprint: String) -> Option[TypeEnv] w
   } else {
     let lines = String::split(normalize_persistent_cache_text(Fs::read_file(path)), "\n")
     let len = Array::length(lines)
-    let rec go = (
-      index: Int,
-      version_ok: Bool,
-      bindings: Array[(String, Type)]
-    ) -> Option[TypeEnv] with { Error } {
+    let rec go = (index: Int, version_ok: Bool, bindings: Array[(String, Type)]) -> Option[TypeEnv] with { Error } {
       if index >= len {
         if version_ok {
           Some(rebuild_persistent_type_env(bindings))
@@ -332,8 +312,8 @@ export let load_persistent_type_env = (fingerprint: String) -> Option[TypeEnv] w
           let parts = String::split(line, "\t")
           if !version_ok {
             if Array::length(parts) == 2 &&
-              Array::get(parts, 0) == "version" &&
-              Array::get(parts, 1) == "1" {
+            Array::get(parts, 0) == "version" &&
+            Array::get(parts, 1) == "1" {
               go(index + 1, true, bindings)
             } else {
               throw(String::concat("invalid persistent type env header: ", line))
@@ -344,13 +324,9 @@ export let load_persistent_type_env = (fingerprint: String) -> Option[TypeEnv] w
             if end_pos != String::length(raw_type) {
               throw(String::concat("invalid persistent type env bind row: ", line))
             } else {
-              go(
-                index + 1,
-                true,
-                Array::concat(bindings, [
-                  (Array::get(parts, 1), ty)
-                ])
-              )
+              go(index + 1, true, Array::concat(bindings, [
+                (Array::get(parts, 1), ty)
+              ]))
             }
           } else {
             throw(String::concat("invalid persistent type env row: ", line))
@@ -358,22 +334,22 @@ export let load_persistent_type_env = (fingerprint: String) -> Option[TypeEnv] w
         }
       }
     }
-    go(0, false, Array::slice([("", CtUnknown)], 0, 0))
+    go(0, false, Array::slice([
+      ("", CtUnknown)
+    ], 0, 0))
   }
 }
 
-export let persistent_dep_list_text = (deps: Array[String]) -> String {
-  if Array::length(deps) == 0 {
-    ""
-  } else if Array::length(deps) == 1 {
-    String::concat("version\t3\n", Array::get(deps, 0))
-  } else {
-    String::concat("version\t2\n", serialize_string_array(deps))
+export let persistent_type_env_cache_text = (env: TypeEnv) -> String {
+  let bindings = env_flat_bindings(env)
+  let mut out = "version\t1\n"
+  let mut i = 0
+  while i < Array::length(bindings) {
+    let (name, ty) = Array::get(bindings, i)
+    out = String::concat(out, String::concat("bind\t", String::concat(name, String::concat("\t", String::concat(serialize_type(ty), "\n")))))
+    i = i + 1
   }
-}
-
-export let persistent_leaf_fingerprint_text = (fingerprint: String) -> String {
-  String::concat("version\t1\n", String::concat(fingerprint, "\n"))
+  out
 }
 
 export let load_persistent_leaf_fingerprint = (path: String, source: String) -> Option[String] with { Error, Fs } {
@@ -384,10 +360,14 @@ export let load_persistent_leaf_fingerprint = (path: String, source: String) -> 
     let text = normalize_persistent_cache_text(Fs::read_file(cache_path))
     let prefix = "version\t1\n"
     if String::length(text) > String::length(prefix) &&
-      text[0:String::length(prefix)] == prefix {
+    text[0: String::length(prefix)] == prefix {
       Some(String::substring(text, String::length(prefix), String::length(text) - 1))
     } else {
       None
     }
   }
+}
+
+export let persistent_leaf_fingerprint_text = (fingerprint: String) -> String {
+  String::concat("version\t1\n", String::concat(fingerprint, "\n"))
 }
