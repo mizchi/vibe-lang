@@ -108,7 +108,7 @@ fn compile_stmt(
           ..
         ) => {
           let _ = effects
-          let key = span_key(fn_span)
+          let key = span_key_unique(fn_span, fn_params)
           let func_idx = match ctx.fn_closure_indices.get(key) {
             Some(i) => i
             None => -1

@@ -862,7 +862,7 @@ fn collect_top_level_funcs(ast : @core.Module) -> Array[FuncDef] {
               params,
               ret,
               body,
-              span_key: span_key(span),
+              span_key: span_key_unique(span, params),
               captures: [],
             })
           }
@@ -882,7 +882,7 @@ fn collect_top_level_funcs(ast : @core.Module) -> Array[FuncDef] {
               params,
               ret,
               body,
-              span_key: span_key(span),
+              span_key: span_key_unique(span, params),
               captures: [],
             })
           }
@@ -902,10 +902,10 @@ fn filter_top_level_funcs(ctx : CodegenCtx, ast : @core.Module) -> @core.Module 
     let skip = match stmt {
       @core.Stmt::Let(rec=_, name=_, expr~, span=_) =>
         match expr {
-          @core.Expr::Fn(params=_, ret=_, effects=_, body=_, span~, ..) => {
+          @core.Expr::Fn(params~, ret=_, effects=_, body=_, span~, ..) => {
             // Only skip functions with NO captures
             // Functions with captures need to be processed in run() to create closure
-            let key = span_key(span)
+            let key = span_key_unique(span, params)
             match ctx.fn_closure_captures.get(key) {
               Some(captures) => captures.length() == 0
               None => true // No capture info, assume no captures
@@ -916,11 +916,11 @@ fn filter_top_level_funcs(ctx : CodegenCtx, ast : @core.Module) -> @core.Module 
       @core.Stmt::ExportLet(rec=_, name~, expr~, span=_) =>
         // ExportLet functions are also skipped if they have no captures
         match expr {
-          @core.Expr::Fn(params=_, ret=_, effects=_, body=_, span~, ..) =>
+          @core.Expr::Fn(params~, ret=_, effects=_, body=_, span~, ..) =>
             if ctx.exported_fn_env_globals.contains(name) {
               false
             } else {
-              let key = span_key(span)
+              let key = span_key_unique(span, params)
               match ctx.fn_closure_captures.get(key) {
                 Some(captures) => captures.length() == 0
                 None => true
@@ -1273,11 +1273,10 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
       needs_heap_expr(ctx, expr)
     }
     @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
-      let _ = params
       let _ = ret
       let _ = effects
       let _ = body
-      let key = span_key(span)
+      let key = span_key_unique(span, params)
       match ctx.fn_closure_captures.get(key) {
         Some(captures) => captures.length() > 0
         None => false

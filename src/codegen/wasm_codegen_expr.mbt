@@ -174,7 +174,7 @@ fn compile_expr(
     }
     @core.Expr::Handle(body~, arms~, span~) =>
       compile_expr_handle(ctx, buf, body, arms, span)
-    @core.Expr::Fn(span~, ..) => compile_expr_fn(ctx, buf, span)
+    @core.Expr::Fn(params~, span~, ..) => compile_expr_fn(ctx, buf, span, params)
     @core.Expr::While(cond~, body~, span~) => {
       let _ = span
       compile_expr_while(ctx, buf, cond, body)

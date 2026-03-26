@@ -80,6 +80,7 @@ fn elapsed_us_from(start : @bench.Timestamp) -> Int {
   @bench.monotonic_clock_end(start).to_int()
 }
 
+///|
 fn compile_module_cache_key(
   path : String,
   source : String,
@@ -233,6 +234,7 @@ pub fn compile_module(
   let aliases = build_alias_map(raw_ast, compile_module_import_aliases(imports))
   let desugared = @frontend.desugar_method_calls(raw_ast, aliases)
   let ast = @frontend.rewrite_effect_handles(desugared)
+  let ast = @frontend.rewrite_string_add(ast, env)
   let mono = @frontend.monoify_module(ast, env)
   let resolved_ast = db.rewrite_imports_to_hash(path, mono.ast)
   let ir = @runtime.module_to_sexp(resolved_ast, aliases)
@@ -290,6 +292,7 @@ fn compile_module_wasm_with(
   }
 }
 
+///|
 fn wasm_emit_options(
   debug_errors : Bool,
   http_host_imports? : Bool = false,
@@ -665,6 +668,7 @@ pub fn compile_module_wasm_js_string(
   })
 }
 
+///|
 /// Compile a module to WASM using wasm-gc opcodes (fixture-focused).
 pub fn compile_module_wasm_gc(
   db : @runtime.VibeDb,
@@ -675,6 +679,7 @@ pub fn compile_module_wasm_gc(
   )
 }
 
+///|
 /// Compile a module to WASM without DCE (for benchmarking).
 pub fn compile_module_wasm_no_dce(
   db : @runtime.VibeDb,
@@ -799,6 +804,7 @@ pub fn compile_module_component_string_lift_auto(
   optimize_wasm_bytes_with_opt_level(component, opt_level)
 }
 
+///|
 /// Check if AST uses server builtins incompatible with P3 handler mode.
 fn check_incompatible_server_builtins(ast : @core.Module) -> Array[String] {
   let found : Array[String] = []
@@ -869,6 +875,7 @@ pub fn compile_module_component_with_opt_level(
   optimize_wasm_bytes_with_opt_level(component, opt_level)
 }
 
+///|
 /// Generate WIT world for component embedding (`wasm-tools component embed/new`).
 /// Uses bundled AST so builtins used through imports are reflected in the interface.
 pub fn generate_module_component_wit(

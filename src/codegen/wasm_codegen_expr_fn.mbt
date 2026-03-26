@@ -3,8 +3,9 @@ fn compile_expr_fn(
   ctx : CodegenCtx,
   buf : ByteBuf,
   span : @core.Span,
+  params : Array[@core.FuncParam],
 ) -> Unit raise WasmGenError {
-  let key = span_key(span)
+  let key = span_key_unique(span, params)
   let func_idx = match ctx.fn_closure_indices.get(key) {
     Some(idx) => idx
     None => raise WasmGenError::Unsupported("fn index")
