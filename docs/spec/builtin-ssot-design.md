@@ -171,6 +171,68 @@ codegen (WASM emit) はシグネチャに依存しない — name → emit handl
 - **WASM data section**: 2KB は WASM バイナリの 0.01% 以下
 - **ゼロコピー可能**: data section pointer から直接読む場合、alloc 不要
 
+### 契約検証: 未注入ビルトインの検出
+
+#### コンパイル時検証 (checker)
+
+checker が builtin_table をロードした時点で、codegen が提供する handler set と
+突合し、**宣言されているが handler がない** builtin を警告する:
+
+```
+warning: builtin 'Set::from_array' declared but no codegen handler registered
+  → compiled backend では呼び出し時に runtime error になります
+```
+
+これにより「型チェックは通るが実行時に落ちる」パターンを防ぐ。
+
+#### 実装
+
+```vibe
+// checker 起動時
+let declared = decode_builtin_table(builtin_table_bytes)
+let registered = codegen_handler_names()  // codegen が提供する name set
+
+for decl in declared {
+  if not(Set::contains(registered, decl.name)) {
+    emit_warning("builtin '" + decl.name + "' declared but no codegen handler")
+  }
+}
+```
+
+#### 3段階の厳格度
+
+| レベル | 動作 | 用途 |
+|--------|------|------|
+| `warn` (default) | 警告を出すが型チェックは通す | 開発中、段階的追加 |
+| `error` | 型チェックエラーにする | CI / release build |
+| `ignore` | 何もしない | テスト / 実験 |
+
+`vibe check --builtin-contract=error` で CI gate として使用。
+
+#### ランタイムフォールバック
+
+codegen handler がない builtin が実際に呼ばれた場合:
+
+1. **compiled backend**: WASM import `vibe.builtin_missing` を生成
+   → runner が trap message で builtin 名を報告
+2. **eval backend**: `raise EvalError::MissingBuiltin(name)` で明確なエラー
+
+```
+runtime error: builtin 'Set::from_array' called but not implemented
+  in compiled backend. Add codegen handler or use eval backend.
+```
+
+#### CI gate
+
+```bash
+# justfile
+check-builtin-contract:
+    vibe check --builtin-contract=error examples/basics.vibe
+```
+
+declarations の全 builtin が codegen handler を持つことを保証。
+新しい `declare` を追加したら、handler 追加まで CI が fail。
+
 ### 代替案: なぜテキストパースではないか
 
 | | テキスト (.vibe) | バイナリ (.bin) |
