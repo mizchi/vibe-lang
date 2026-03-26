@@ -1,9 +1,58 @@
-# Structured Shell Design: nushell-style data pipelines
+# Structured Shell Design: shellscript superset + nushell-style data pipelines
 
 ## ビジョン
 
-vibe shell は PowerShell/nushell のように**構造化データ**をパイプラインで変形する。
-文字列ストリームではなく、vibe のファーストクラス値 (Array, Record, FileEntry 等) がパイプラインを流れる。
+vibe shell の posix mode は **shellscript のスーパーセット** として設計する。
+
+1. **既存の shellscript がそのまま動く** — 認識できないコマンドは `sh_lines()` にフォールバック
+2. **認識できるコマンドは構造化データで返す** — `ls` → `Array[FileEntry]`, `cat` → `String`
+3. **vibe 式で拡張できる** — `|>`, `match`, `if`, `let`, lambda はそのまま使える
+
+つまり: `bash の全コマンド + vibe の型付きパイプライン + nushell の構造化データ`
+
+## 設計原則
+
+### 1. shellscript 互換 (フォールバック)
+
+```bash
+# 全て動く — 認識できないコマンドは sh_lines() 経由で /bin/sh に委譲
+git status
+docker build -t myapp .
+curl -s https://api.example.com
+grep -r "TODO" src/
+```
+
+### 2. 認識コマンドは構造化データに昇格
+
+```bash
+# ls は Array[FileEntry] を返す (テーブル表示)
+ls .
+
+# cat は String を返す (そのまま表示)
+cat README.md
+
+# env は String を返す
+env HOME
+```
+
+### 3. vibe 式でシームレスに拡張
+
+```bash
+# パイプで構造化フィルタ
+ls . |> where_entry(e -> e.is_dir)
+
+# let 束縛
+let files = ls .
+Array::length(files)
+
+# if/match も混在可能
+if exists "package.json" { cat package.json |> jq .name } else { "no package" }
+```
+
+### 4. 段階的に認識コマンドを増やす
+
+将来的に `grep`, `find`, `sort`, `head`, `tail` 等も vibe 実装で置き換え可能。
+ただし **常にフォールバックが動く** ので、未実装コマンドでもブロックされない。
 
 ## 現状
 
@@ -93,6 +142,22 @@ posix preprocessor の拡張:
 | `cat f.csv \|> from_csv` | `from_csv(Fs::read_file("f.csv"))` |
 | `cat f.json \|> jq .name` | `jq(Fs::read_file("f.json"), ".name")` |
 
+## フォールバック戦略
+
+```
+入力行
+  │
+  ├─ vibe keyword (let, if, match, ...) → vibe 式としてコンパイル
+  ├─ 関数呼び出し f(...) → vibe 式としてコンパイル
+  ├─ 認識コマンド (cat, ls, cd, ...) → vibe builtin 呼び出しに変換
+  └─ 不明コマンド → sh_lines("...") でシステムシェルに委譲
+```
+
+これにより:
+- `git push` → そのまま動く (sh_lines)
+- `cat file.txt |> lines |> grep "TODO"` → 構造化パイプライン
+- `let count = ls . |> where_entry(e -> e.is_dir) |> Array::length` → 型安全
+
 ## 実装計画
 
 | Phase | 内容 | 依存 |
@@ -101,6 +166,7 @@ posix preprocessor の拡張:
 | Phase 1 | `ls . \|> where is_dir` パイプライン変換 | posix preprocessor 拡張 |
 | Phase 2 | テーブル表示 (Array[FileEntry] の format) | Show trait / REPL display |
 | Phase 3 | from_csv/from_yaml/to_json 変換 | 既存 vibe/shell/from_*.vibe |
+| Phase 4 | grep/find/sort 等の vibe native 実装 | 段階的 |
 
 ## 既存ライブラリとの対応
 
