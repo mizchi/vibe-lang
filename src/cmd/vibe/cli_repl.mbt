@@ -2921,12 +2921,9 @@ fn run_compiled_repl_line_with_cache(
   let load_us = @bench.monotonic_clock_end(load_start).to_int()
   let ast = db.ast(entry)
   let detect_ast = @runtime.bundle_for_wasm_no_dce(db, entry, ast)
-  if module_uses_wasm_runtime_fallback_builtins(detect_ast) {
-    return Err("compiled repl unsupported: wasm runtime fallback builtins")
-  }
-  if module_uses_http_builtins(detect_ast) {
-    return Err("compiled repl unsupported: http host imports")
-  }
+  let use_fs_host = module_uses_wasm_runtime_fallback_builtins(detect_ast)
+  let use_http_host = module_uses_http_builtins(detect_ast)
+  let use_node_runner = use_fs_host || use_http_host
   let runner = match resolve_bench_wasm_runner(entry) {
     Ok(v) => v
     Err(err) => return Err(err)
@@ -2937,6 +2934,8 @@ fn run_compiled_repl_line_with_cache(
     entry,
     no_dce=true,
     debug_errors=true,
+    http_host_imports=use_node_runner,
+    fs_host_imports=use_node_runner,
   ) catch {
     err => return Err("compile wasm error: " + err.user_message())
   }
@@ -2945,11 +2944,16 @@ fn run_compiled_repl_line_with_cache(
     e => return Err("write wasm failed: " + e.to_string())
   }
   let exec_start = @bench.monotonic_clock_start()
-  let run_out = run_wasmtime_invoke_run_capture(
-    runner,
-    wasm_path,
-    wasm_path + ".invoke",
-  )
+  let run_out = if use_node_runner {
+    match resolve_http_host_runner(source_path) {
+      Ok(http_runner) =>
+        run_http_host_invoke_capture(http_runner, wasm_path, wasm_path + ".invoke")
+      Err(_) =>
+        run_wasmtime_invoke_run_capture(runner, wasm_path, wasm_path + ".invoke")
+    }
+  } else {
+    run_wasmtime_invoke_run_capture(runner, wasm_path, wasm_path + ".invoke")
+  }
   let exec_us = @bench.monotonic_clock_end(exec_start).to_int()
   if run_out.status != 0 {
     return Err(wasmtime_failure_detail(run_out.stdout, run_out.stderr))
