@@ -226,8 +226,9 @@ fn normalize_type_annotation_allowed(ty : @vibe_core.Type) -> Bool {
     @vibe_core.Type::Map(_key, inner)
     | @vibe_core.Type::MapBuilder(_key, inner) =>
       normalize_type_annotation_allowed(inner)
-    @vibe_core.Type::StringBuilder | @vibe_core.Type::Bytes | @vibe_core.Type::V128 =>
-      true
+    @vibe_core.Type::StringBuilder
+    | @vibe_core.Type::Bytes
+    | @vibe_core.Type::V128 => true
     @vibe_core.Type::Named(args~, ..) => {
       for arg in args {
         if not(normalize_type_annotation_allowed(arg)) {

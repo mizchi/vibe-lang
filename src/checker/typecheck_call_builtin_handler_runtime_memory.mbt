@@ -620,7 +620,12 @@ fn type_call_builtin_handler_runtime_memory(
     // --- SIMD V128 builtins ---
     "v128_load" => {
       let ctx = BuiltinCallCtx::{
-        env, args, aliases, effects, allow_effect, call_span,
+        env,
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
       }
       ctx.simple(
         "v128_load",
@@ -631,7 +636,12 @@ fn type_call_builtin_handler_runtime_memory(
     }
     "v128_store" => {
       let ctx = BuiltinCallCtx::{
-        env, args, aliases, effects, allow_effect, call_span,
+        env,
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
       }
       ctx.simple(
         "v128_store",
@@ -642,18 +652,23 @@ fn type_call_builtin_handler_runtime_memory(
     }
     "v128_splat_i8x16" => {
       let ctx = BuiltinCallCtx::{
-        env, args, aliases, effects, allow_effect, call_span,
+        env,
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
       }
-      ctx.simple(
-        "v128_splat_i8x16",
-        [@core.Type::Int],
-        @core.Type::V128,
-        false,
-      )
+      ctx.simple("v128_splat_i8x16", [@core.Type::Int], @core.Type::V128, false)
     }
     "v128_eq_i8x16" | "v128_le_u_i8x16" | "v128_ge_u_i8x16" => {
       let ctx = BuiltinCallCtx::{
-        env, args, aliases, effects, allow_effect, call_span,
+        env,
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
       }
       ctx.simple(
         builtin_name,
@@ -664,7 +679,12 @@ fn type_call_builtin_handler_runtime_memory(
     }
     "v128_and" | "v128_or" => {
       let ctx = BuiltinCallCtx::{
-        env, args, aliases, effects, allow_effect, call_span,
+        env,
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
       }
       ctx.simple(
         builtin_name,
@@ -675,18 +695,23 @@ fn type_call_builtin_handler_runtime_memory(
     }
     "v128_not" => {
       let ctx = BuiltinCallCtx::{
-        env, args, aliases, effects, allow_effect, call_span,
+        env,
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
       }
-      ctx.simple(
-        "v128_not",
-        [@core.Type::V128],
-        @core.Type::V128,
-        false,
-      )
+      ctx.simple("v128_not", [@core.Type::V128], @core.Type::V128, false)
     }
     "v128_bitmask_i8x16" => {
       let ctx = BuiltinCallCtx::{
-        env, args, aliases, effects, allow_effect, call_span,
+        env,
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
       }
       ctx.simple(
         "v128_bitmask_i8x16",
@@ -697,18 +722,23 @@ fn type_call_builtin_handler_runtime_memory(
     }
     "v128_any_true" => {
       let ctx = BuiltinCallCtx::{
-        env, args, aliases, effects, allow_effect, call_span,
+        env,
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
       }
-      ctx.simple(
-        "v128_any_true",
-        [@core.Type::V128],
-        @core.Type::Bool,
-        false,
-      )
+      ctx.simple("v128_any_true", [@core.Type::V128], @core.Type::Bool, false)
     }
     "v128_all_true_i8x16" => {
       let ctx = BuiltinCallCtx::{
-        env, args, aliases, effects, allow_effect, call_span,
+        env,
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
       }
       ctx.simple(
         "v128_all_true_i8x16",
@@ -719,14 +749,14 @@ fn type_call_builtin_handler_runtime_memory(
     }
     "int_ctz" => {
       let ctx = BuiltinCallCtx::{
-        env, args, aliases, effects, allow_effect, call_span,
+        env,
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
       }
-      ctx.simple(
-        "int_ctz",
-        [@core.Type::Int],
-        @core.Type::Int,
-        false,
-      )
+      ctx.simple("int_ctz", [@core.Type::Int], @core.Type::Int, false)
     }
     _ =>
       type_call_builtin_handler_json_and_fallback(

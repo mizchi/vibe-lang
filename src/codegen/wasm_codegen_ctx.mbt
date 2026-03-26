@@ -1211,7 +1211,8 @@ fn collect_fn_span_keys_stmt(stmt : @core.Stmt, out : Array[String]) -> Unit {
 ///|
 fn collect_fn_span_keys_expr(expr : @core.Expr, out : Array[String]) -> Unit {
   match expr {
-    @core.Expr::Fn(params~, span~, ..) => out.push(span_key_unique(span, params))
+    @core.Expr::Fn(params~, span~, ..) =>
+      out.push(span_key_unique(span, params))
     // Don't recurse into Fn body
     @core.Expr::Call(args~, ..) =>
       for arg in args {
@@ -1311,8 +1312,10 @@ fn precompute_ref_cell_captures_block(
   for stmt in stmts {
     match stmt {
       @core.Stmt::Let(expr=@core.Expr::Fn(params~, body~, span~, ..), ..)
-      | @core.Stmt::ExportLet(expr=@core.Expr::Fn(params~, body~, span~, ..), ..) =>
-        precompute_ref_cell_for_fn(ctx, span, params, body, scope_mcv)
+      | @core.Stmt::ExportLet(
+        expr=@core.Expr::Fn(params~, body~, span~, ..),
+        ..
+      ) => precompute_ref_cell_for_fn(ctx, span, params, body, scope_mcv)
       @core.Stmt::Let(expr~, ..) | @core.Stmt::ExportLet(expr~, ..) =>
         precompute_ref_cell_captures_expr(ctx, expr, scope_mcv)
       @core.Stmt::Expr(expr~, ..) =>

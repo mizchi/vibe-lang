@@ -887,10 +887,7 @@ fn type_expr_eff(
           @core.desugar_for_in_string(
             value_name, index_name, iterable, body, span,
           )
-        _ =>
-          @core.desugar_for_in(
-            value_name, index_name, iterable, body, span,
-          )
+        _ => @core.desugar_for_in(value_name, index_name, iterable, body, span)
       }
       type_block(env, desugared, aliases, effects, true)
     }

@@ -1086,10 +1086,9 @@ fn eval_selfhost_module(
 fn compiler_compile_files() -> Array[String] {
   [
     "vibe/compiler/token.vibe", "vibe/compiler/ast.vibe", "vibe/compiler/lexer.vibe",
-    "vibe/compiler/parser.vibe", "vibe/compiler/printer.vibe",
-    "vibe/compiler/builtins.vibe", "vibe/compiler/types.vibe", "vibe/compiler/checker_resolve.vibe",
-    "vibe/compiler/checker.vibe", "vibe/compiler/checker_stmt.vibe",
-    "vibe/compiler/runtime/eval_loader/index.vibe",
+    "vibe/compiler/parser.vibe", "vibe/compiler/printer.vibe", "vibe/compiler/builtins.vibe",
+    "vibe/compiler/types.vibe", "vibe/compiler/checker_resolve.vibe", "vibe/compiler/checker.vibe",
+    "vibe/compiler/checker_stmt.vibe", "vibe/compiler/runtime/eval_loader/index.vibe",
     "vibe/compiler/type_db.vibe", "vibe/compiler/index.vibe",
   ]
 }
@@ -1241,11 +1240,10 @@ test "probe: selfhost roundtrip all compiler sources" {
   load_compiler_source(db, "vibe/compiler/printer.vibe", visited)
   // Exclude parser.vibe (1608 lines) — too large for interpreter
   let full_files : Array[String] = [
-    "vibe/compiler/index.vibe", "vibe/compiler/checker_resolve.vibe",
-    "vibe/compiler/ast.vibe", "vibe/compiler/runtime/eval_loader/index.vibe", "vibe/compiler/checker_stmt.vibe",
-    "vibe/compiler/token.vibe",
-    "vibe/compiler/type_db.vibe", "vibe/compiler/checker.vibe", "vibe/compiler/printer.vibe",
-    "vibe/compiler/builtins.vibe", "vibe/compiler/lexer.vibe",
+    "vibe/compiler/index.vibe", "vibe/compiler/checker_resolve.vibe", "vibe/compiler/ast.vibe",
+    "vibe/compiler/runtime/eval_loader/index.vibe", "vibe/compiler/checker_stmt.vibe",
+    "vibe/compiler/token.vibe", "vibe/compiler/type_db.vibe", "vibe/compiler/checker.vibe",
+    "vibe/compiler/printer.vibe", "vibe/compiler/builtins.vibe", "vibe/compiler/lexer.vibe",
     "vibe/compiler/types.vibe",
   ]
   let smoke_files : Array[String] = [

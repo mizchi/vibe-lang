@@ -3,7 +3,7 @@ test "parse UFCS: expr.method(args) desugars to method(expr, args)" {
   let input = "obj.method(1)"
   let parsed : Result[@core.Module, ParseError] = try? parse_ast(input)
   match parsed {
-    Ok(m) => {
+    Ok(m) =>
       match m.stmts[0] {
         @core.Stmt::Expr(expr~, ..) =>
           match expr {
@@ -13,7 +13,6 @@ test "parse UFCS: expr.method(args) desugars to method(expr, args)" {
           }
         _ => fail("[parse] expected Expr stmt")
       }
-    }
     Err(err) => fail("[parse] UFCS should parse: \{err.to_string()}")
   }
 }
