@@ -3042,6 +3042,34 @@ fn run_compiled_shell_line(
       @runtime.preprocess_posix_source(line_str)
     @runtime.ParserMode::VibeMode => line_str
   }
+  // Handle sh_lines directly in REPL (bypass WASM compilation)
+  if effective_line.has_prefix("sh_lines(\"") &&
+    effective_line.has_suffix("\")") {
+    let cmd = effective_line[10:effective_line.length() - 2].to_string()
+    let cmd_unescaped = cmd.replace(old="\\\\", new="\\").replace(
+      old="\\\"", new="\"",
+    )
+    let out_path = "/tmp/vibe-shell-cmd-" +
+      @env.now().to_string() +
+      ".out"
+    let err_path = out_path + ".err"
+    let shell_cmd = cmd_unescaped +
+      " >" +
+      shell_quote_command_arg(out_path) +
+      " 2>" +
+      shell_quote_command_arg(err_path)
+    let status = c_system(system_command_bytes(shell_cmd))
+    let stdout = @os_fs.read_file_to_string(out_path) catch { _ => "" }
+    let stderr = @os_fs.read_file_to_string(err_path) catch { _ => "" }
+    remove_file_if_exists(out_path)
+    remove_file_if_exists(err_path)
+    if status != 0 && stderr.length() > 0 {
+      print_line("error: " + stderr.trim().to_string())
+    } else if stdout.trim().to_string().length() > 0 {
+      print_line(stdout.trim().to_string())
+    }
+    return scratch_source
+  }
   let exec = match
     run_compiled_repl_line_with_cache(
       cache, source_path, wasm_path, scratch_source, effective_line,

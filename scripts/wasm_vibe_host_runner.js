@@ -733,6 +733,16 @@ async function main() {
         cp.execSync(cmd, { stdio: "inherit", shell: "/bin/bash" });
         return 0n;
       },
+      sh_lines(cmdTagged) {
+        const cmd = decodeStringArg(instanceRef, cmdTagged);
+        try {
+          const output = cp.execSync(cmd, { encoding: "utf-8", shell: "/bin/bash", stdio: ["pipe", "pipe", "pipe"] });
+          return encodeTaggedString(instanceRef, output.trimEnd());
+        } catch (e) {
+          const stderr = e.stderr ? e.stderr.toString().trim() : e.message;
+          return encodeTaggedString(instanceRef, "error: " + stderr);
+        }
+      },
       path(pathValue) {
         const input = decodeStringArg(instanceRef, pathValue);
         return encodeTaggedString(instanceRef, input);
@@ -786,8 +796,17 @@ async function main() {
         const dirPath = decodeStringArg(instanceRef, pathTagged);
         try {
           const entries = fs.readdirSync(dirPath);
-          // Return as newline-separated string (same as interpreter)
-          return encodeTaggedString(instanceRef, entries.join("\n"));
+          // Return as newline-separated string with type info
+          const lines = entries.map((name) => {
+            const fullPath = path.join(dirPath, name);
+            try {
+              const stat = fs.statSync(fullPath);
+              return (stat.isDirectory() ? "d " : "- ") + name;
+            } catch {
+              return "? " + name;
+            }
+          });
+          return encodeTaggedString(instanceRef, lines.join("\n"));
         } catch (e) {
           return encodeTaggedString(instanceRef, "");
         }
