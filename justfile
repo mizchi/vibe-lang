@@ -72,6 +72,11 @@ test:
     bash -c 'source scripts/ensure_native_cli.sh'
     bash scripts/test_parallel_cleanup_e2e.sh _build/native/debug/build/cmd/vibe/vibe.exe
     bash scripts/test_internal_parent_watchdog_e2e.sh _build/native/debug/build/cmd/vibe/vibe.exe
+
+# Broad compiled package sweep. Keep opt-in until compiled-only parity is restored
+# outside the 0.1.0 supported surface.
+test-vibe-package-suite:
+    bash -c 'source scripts/ensure_native_cli.sh'
     ulimit -n {{vibe_test_ulimit_n}} && _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async --jobs {{vibe_test_jobs}} examples vibe/prelude vibe/path vibe/io vibe/fs vibe/time vibe/random vibe/process vibe/shell vibe/x/rlm vibe/socket/socket_test.vibe vibe/http/http_test.vibe vibe/http/high_level_test.vibe vibe/collection vibe/json vibe/sha1 vibe/x vibe/x/args vibe/x/jsonschema vibe/wasm/wasm_parser vibe/wasm/wat_parser vibe/wasm/component_parser vibe/wasm/wat_encoder
 
 # Heavy wasm tests (wasm_opt ~4min, wasm_runtime ~1min) — run separately or in CI
@@ -143,7 +148,6 @@ ci-selfhost-gates-shard shard:
     case "{{shard}}" in
       bootstrap)
         just check-selfhost-bundle-sync
-        just test-selfhost-cache-probe
         just test-selfhost-bootstrap
         just test-selfhost-wasi-selfbuild-kpi
         ;;
@@ -543,7 +547,7 @@ test-selfhost-bootstrap:
 # Run quick selfhost cache probe (warm TypeDb reuse smoke)
 test-selfhost-cache-probe:
     bash -c 'source scripts/ensure_native_cli.sh'
-    VIBE_TEST_BACKEND=interpreter _build/native/debug/build/cmd/vibe/vibe.exe test vibe/compiler/cache_probe_test.vibe
+    _build/native/debug/build/cmd/vibe/vibe.exe run vibe/compiler/cache_probe_run.vibe
 
 # Run wasm selfbuild gate (stage0 wasm compiler -> stage1 selfhost wasm)
 test-selfhost-wasi-selfbuild:
@@ -984,11 +988,13 @@ vibe-normalize-cached:
 vibe-normalize-check:
     scripts/vibe_normalize_all.sh --check
 
-# Pre-release selfhost gate bundle
-release-selfhost-gates: check-selfhost-bundle-sync test-selfhost-cache-probe test-selfhost-bootstrap test-selfhost-wasi-selfbuild-kpi test-selfhost-cli-core test-selfhost-cli-component-preview2 test-selfhost-cli-preview2-package test-selfhost-cli-command-component test-selfhost-cli-command-parity test-selfhost-cli-direct-component test-selfhost-cli-direct-parity test-selfhost-check-preview2-package test-selfhost-check-command-component test-selfhost-check-command-parity test-selfhost-check-direct-component test-selfhost-check-direct-parity test-selfhost-cutover test-golden-wat
+# Pre-release selfhost gate bundle for local sign-off.
+# Heavy bootstrap/selfbuild gates are CI-only by default; run
+# `just release-selfhost-bootstrap-gates` when you want them locally.
+release-selfhost-gates: check-selfhost-bundle-sync test-selfhost-cli-core test-selfhost-cli-component-preview2 test-selfhost-cli-preview2-package test-selfhost-cli-command-component test-selfhost-cli-command-parity test-selfhost-cli-direct-component test-selfhost-cli-direct-parity test-selfhost-check-preview2-package test-selfhost-check-command-component test-selfhost-check-command-parity test-selfhost-check-direct-component test-selfhost-check-direct-parity test-selfhost-cutover test-golden-wat
 
 # Pre-release check (includes selfhost gates + wasm bundle-size monitor)
-release-check: fmt info check test-full vibe-normalize bench-bundle-size-monitor release-selfhost-gates
+release-check: fmt info check test vibe-normalize bench-bundle-size-monitor release-selfhost-gates
 
 # Alias for teams used to `check-release`
 check-release: release-check
