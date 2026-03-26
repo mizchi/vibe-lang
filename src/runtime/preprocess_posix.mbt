@@ -238,15 +238,16 @@ fn convert_shell_builtin_command(
         None => None
       }
     // IO operations
+    // echo → return the string value (REPL will display it)
     "echo" =>
       if args.length() > 0 {
-        Some("println(\"" + escaped_args + "\")")
+        Some("\"" + escaped_args + "\"")
       } else {
-        Some("println(\"\")")
+        Some("\"\"")
       }
     "print" =>
       if args.length() > 0 {
-        Some("print(\"" + escaped_args + "\")")
+        Some("\"" + escaped_args + "\"")
       } else {
         None
       }

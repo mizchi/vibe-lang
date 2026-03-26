@@ -10,8 +10,8 @@ test "preprocess_posix_source: ls maps to Fs::readdir" {
 }
 
 ///|
-test "preprocess_posix_source: echo maps to println" {
-  assert_eq(preprocess_posix_source("echo hello world"), "println(\"hello world\")")
+test "preprocess_posix_source: echo returns string value" {
+  assert_eq(preprocess_posix_source("echo hello world"), "\"hello world\"")
 }
 
 ///|
@@ -70,7 +70,7 @@ test "preprocess_posix_source: preserves indentation" {
 test "preprocess_posix_source: multiline script" {
   assert_eq(
     preprocess_posix_source("let x = 1\ncat TODO.md\necho hello"),
-    "let x = 1\nFs::read_file(\"TODO.md\")\nprintln(\"hello\")",
+    "let x = 1\nFs::read_file(\"TODO.md\")\n\"hello\"",
   )
 }
 
@@ -127,7 +127,7 @@ test "preprocess_posix_source_with_compat_notes: rewritten command emits note" {
   let (result, notes) = preprocess_posix_source_with_compat_notes(
     "echo hello world",
   )
-  assert_eq(result, "println(\"hello world\")")
+  assert_eq(result, "\"hello world\"")
   assert_eq(notes.length(), 1)
   assert_true(notes[0].contains("line 1"))
   assert_true(notes[0].contains("shell builtin"))
