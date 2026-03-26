@@ -2695,6 +2695,57 @@ let repl_node_display_runner_source : String =
   #|      }
   #|      return `{|${entries.join(", ")}|}`;
   #|    }
+  #|    if (ty === 9) {
+  #|      const f64Buf = new Float64Array(memory.buffer, ptr + 4, 1);
+  #|      return String(f64Buf[0]);
+  #|    }
+  #|    if (ty === 10) {
+  #|      const ctorTag = view.getUint32(ptr + 4, true);
+  #|      const objSize = (() => {
+  #|        let off = ptr + 8;
+  #|        while (off + 4 <= memory.buffer.byteLength) {
+  #|          const v = view.getUint32(off, true);
+  #|          if (v === 0 && off > ptr + 8) break;
+  #|          off += 4;
+  #|          if (off > ptr + 64) break;
+  #|        }
+  #|        return off - ptr;
+  #|      })();
+  #|      const nargs = (objSize - 8) / 4;
+  #|      if (nargs === 0) {
+  #|        return `Ctor(${ctorTag})`;
+  #|      }
+  #|      const args = [];
+  #|      for (let i = 0; i < nargs; i++) {
+  #|        const argTagged = readTagged32(ptr + 8 + i * 4);
+  #|        const rendered = renderTagged(argTagged, nextSeen);
+  #|        if (rendered == null) return `Ctor(${ctorTag}, ?)`;
+  #|        args.push(rendered);
+  #|      }
+  #|      return `Ctor(${ctorTag}, ${args.join(", ")})`;
+  #|    }
+  #|    if (ty === 3) {
+  #|      const len = view.getUint32(ptr + 4, true);
+  #|      const items = [];
+  #|      for (let i = 0; i < len; i++) {
+  #|        const rendered = renderTagged(readTagged32(ptr + 8 + i * 4), nextSeen);
+  #|        if (rendered == null) return null;
+  #|        items.push(rendered);
+  #|      }
+  #|      return `(${items.join(", ")})`;
+  #|    }
+  #|    if (ty === 4) {
+  #|      const nfields = view.getUint32(ptr + 4, true);
+  #|      const entries = [];
+  #|      for (let i = 0; i < nfields; i++) {
+  #|        const keyPtr = view.getUint32(ptr + 8 + i * 8, true);
+  #|        const keyText = decodeString(keyPtr);
+  #|        const val = renderTagged(readTagged32(ptr + 12 + i * 8), nextSeen);
+  #|        if (keyText == null || val == null) return null;
+  #|        entries.push(`${keyText}: ${val}`);
+  #|      }
+  #|      return `{ ${entries.join(", ")} }`;
+  #|    }
   #|    return null;
   #|  };
   #|  const rendered = renderTagged(tagged);
