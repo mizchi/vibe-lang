@@ -1086,11 +1086,11 @@ fn eval_selfhost_module(
 fn compiler_compile_files() -> Array[String] {
   [
     "vibe/compiler/token.vibe", "vibe/compiler/ast.vibe", "vibe/compiler/lexer.vibe",
-    "vibe/compiler/parser.vibe", "vibe/compiler/printer.vibe", "vibe/compiler/values.vibe",
+    "vibe/compiler/parser.vibe", "vibe/compiler/printer.vibe",
     "vibe/compiler/builtins.vibe", "vibe/compiler/types.vibe", "vibe/compiler/checker_resolve.vibe",
-    "vibe/compiler/checker.vibe", "vibe/compiler/checker_stmt.vibe", "vibe/compiler/eval_builtins.vibe",
-    "vibe/compiler/eval.vibe", "vibe/compiler/runtime/eval_loader/index.vibe", "vibe/compiler/eval_stmt.vibe",
-    "vibe/compiler/eval_stmt_test_support.vibe", "vibe/compiler/type_db.vibe", "vibe/compiler/index.vibe",
+    "vibe/compiler/checker.vibe", "vibe/compiler/checker_stmt.vibe",
+    "vibe/compiler/runtime/eval_loader/index.vibe",
+    "vibe/compiler/type_db.vibe", "vibe/compiler/index.vibe",
   ]
 }
 
@@ -1160,36 +1160,6 @@ test "selfhost gate5: lex-parse-print roundtrip" {
 }
 
 ///|
-test "selfhost gate5: eval pipeline meta-circular" {
-  if not(selfhost_deep_tests_enabled()) {
-    return
-  }
-  let db = VibeDb::new()
-  let visited : Map[String, Bool] = {}
-  load_compiler_source(db, "vibe/compiler/token.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/ast.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/lexer.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/parser.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/values.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval_builtins.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval.vibe", visited)
-  load_compiler_source(
-    db, "vibe/compiler/runtime/eval_loader/index.vibe", visited,
-  )
-  load_compiler_source(db, "vibe/module/path.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval_stmt.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval_stmt_test_support.vibe", visited)
-  let driver =
-    #|import ./vibe/compiler/eval_stmt_test_support.vibe { run_source }
-    #|run_source("let x = 42", "x")
-  let result = eval_selfhost_module(db, driver)
-  match result.last {
-    Some(@core.Value::String(v)) => assert_eq(v, "42")
-    _ => fail("expected String(\"42\"), got: \{result.last.to_string()}")
-  }
-}
-
-///|
 test "selfhost final: lexer tokenizes own source" {
   let db = VibeDb::new()
   let visited : Map[String, Bool] = {}
@@ -1241,61 +1211,9 @@ test "selfhost final: parser roundtrips own source" {
 }
 
 ///|
-test "selfhost final: eval pipeline processes own token module" {
-  if not(selfhost_deep_tests_enabled()) {
-    return
-  }
-  let db = VibeDb::new()
-  let visited : Map[String, Bool] = {}
-  load_compiler_source(db, "vibe/compiler/token.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/ast.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/lexer.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/parser.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/values.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval_builtins.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval.vibe", visited)
-  load_compiler_source(
-    db, "vibe/compiler/runtime/eval_loader/index.vibe", visited,
-  )
-  load_compiler_source(db, "vibe/module/path.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval_stmt.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval_stmt_test_support.vibe", visited)
-  let driver =
-    #|import ./vibe/compiler/eval_stmt_test_support.vibe { run_source }
-    #|let source = Fs::read_file("vibe/compiler/token.vibe")
-    #|let test_src = String::concat(source, "\nlet __result = token_to_string(TInt(42))")
-    #|run_source(test_src, "__result")
-  let result = eval_selfhost_module(db, driver)
-  match result.last {
-    Some(@core.Value::String(v)) => assert_true(v.contains("TInt(42)"))
-    _ =>
-      fail(
-        "expected String containing 'TInt(42)', got: \{result.last.to_string()}",
-      )
-  }
-}
-
-///|
 test "native roundtrip: parser.vibe format idempotency" {
   let source = @os_fs.read_file_to_string("vibe/compiler/parser.vibe") catch {
     e => fail("[read] parser.vibe: \{e.to_string()}")
-  }
-  let formatted = @parser.format_script(source)
-  let before = @parser.parse_ast(source) catch {
-    e => fail("[before-format] parse failed: \{e.to_string()}")
-  }
-  let after = @parser.parse_ast(formatted) catch {
-    e => fail("[after-format] parse failed: \{e.to_string()}")
-  }
-  assert_eq(@core.normalize_module(after), @core.normalize_module(before))
-  let formatted2 = @parser.format_script(formatted)
-  assert_eq(formatted, formatted2)
-}
-
-///|
-test "native roundtrip: eval.vibe format idempotency" {
-  let source = @os_fs.read_file_to_string("vibe/compiler/eval.vibe") catch {
-    e => fail("[read] eval.vibe: \{e.to_string()}")
   }
   let formatted = @parser.format_script(source)
   let before = @parser.parse_ast(source) catch {
@@ -1321,17 +1239,17 @@ test "probe: selfhost roundtrip all compiler sources" {
   load_compiler_source(db, "vibe/compiler/lexer.vibe", visited)
   load_compiler_source(db, "vibe/compiler/parser.vibe", visited)
   load_compiler_source(db, "vibe/compiler/printer.vibe", visited)
-  // Exclude parser.vibe (1608 lines) and eval.vibe (1354 lines) — too large for interpreter
+  // Exclude parser.vibe (1608 lines) — too large for interpreter
   let full_files : Array[String] = [
-    "vibe/compiler/eval_stmt_test_support.vibe", "vibe/compiler/index.vibe", "vibe/compiler/checker_resolve.vibe",
+    "vibe/compiler/index.vibe", "vibe/compiler/checker_resolve.vibe",
     "vibe/compiler/ast.vibe", "vibe/compiler/runtime/eval_loader/index.vibe", "vibe/compiler/checker_stmt.vibe",
-    "vibe/compiler/values.vibe", "vibe/compiler/token.vibe", "vibe/compiler/eval_stmt.vibe",
+    "vibe/compiler/token.vibe",
     "vibe/compiler/type_db.vibe", "vibe/compiler/checker.vibe", "vibe/compiler/printer.vibe",
-    "vibe/compiler/builtins.vibe", "vibe/compiler/eval_builtins.vibe", "vibe/compiler/lexer.vibe",
+    "vibe/compiler/builtins.vibe", "vibe/compiler/lexer.vibe",
     "vibe/compiler/types.vibe",
   ]
   let smoke_files : Array[String] = [
-    "vibe/compiler/token.vibe", "vibe/compiler/ast.vibe", "vibe/compiler/values.vibe",
+    "vibe/compiler/token.vibe", "vibe/compiler/ast.vibe",
   ]
   // Full probe is expensive on JS interpreter backend; keep smoke fast by default.
   // - VIBE_SELFHOST_PROBE_FULL=1: run all full_files
@@ -1476,6 +1394,124 @@ test "native compile: all compiler sources pass compile_module" {
       failures.iter().fold(init="", fn(acc, f) { acc + "  " + f + "\n" }),
     )
   }
+}
+
+///|
+test "string interpolation: basic" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let name = "world"
+    #|"hello \{name}"
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::String("hello world")))
+}
+
+///|
+test "string interpolation: expression" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let x = 3
+    #|"x is \{x + 1}"
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::String("x is 4")))
+}
+
+///|
+test "string interpolation: multiple" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let a = 1
+    #|let b = 2
+    #|"\{a} + \{b} = \{a + b}"
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::String("1 + 2 = 3")))
+}
+
+///|
+test "is expression: bool check with wildcard" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|enum MyOpt { MySome(Int); MyNone }
+    #|let v = MySome(42)
+    #|let result = v is MySome(_)
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Bool(true)))
+}
+
+///|
+test "is expression: bool check false" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|enum MyOpt { MySome(Int); MyNone }
+    #|let v = MyNone
+    #|let result = v is MySome(_)
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Bool(false)))
+}
+
+///|
+test "is expression: if binding" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|enum MyOpt { MySome(Int); MyNone }
+    #|let v = MySome(42)
+    #|let result = if v is MySome(x) { x + 1 } else { 0 }
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Int(43)))
+}
+
+///|
+test "is expression: if binding no match" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|enum MyOpt { MySome(Int); MyNone }
+    #|let v = MyNone
+    #|let result = if v is MySome(x) { x + 1 } else { 0 }
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Int(0)))
+}
+
+///|
+test "is expression: if without else returns unit" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|enum MyOpt { MySome(Int); MyNone }
+    #|let v = MySome(10)
+    #|if v is MySome(x) { x + 1 } else { 0 }
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Int(11)))
+}
+
+///|
+test "is expression: 0-ary constructor" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|enum MyOpt { MySome(Int); MyNone }
+    #|let v = MyNone
+    #|let result = v is MyNone
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Bool(true)))
+}
+
+///|
+test "bytes index b[i]" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let b = Bytes::from_array([65, 66, 67])
+    #|b[1]
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Int(66)))
+}
+
+///|
+test "bytes slice b[i:j]" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let b = Bytes::from_array([10, 20, 30, 40, 50])
+    #|let s = b[1:3]
+    #|Bytes::length(s)
+  let result = rt.eval_script(script)
+  assert_eq(result.last, Some(@core.Value::Int(2)))
 }
 
 ///|
