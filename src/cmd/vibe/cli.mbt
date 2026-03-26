@@ -1302,6 +1302,10 @@ fn is_wasm_runtime_fallback_builtin_name(name : String) -> Bool {
     | "Json::is_null"
     | "Json::length"
     | "Json::keys"
+    | "Fs::read_file"
+    | "Fs::write_file"
+    | "Fs::write_bytes"
+    | "Fs::exists"
     | "Fs::chdir"
     | "Fs::copy"
     | "Fs::readdir"
@@ -1848,8 +1852,11 @@ fn run_cmd_wasm_backend_with_cache(
     Err(err) => return Err("load error: " + err)
     Ok(v) => v
   }
-  let use_http_host_runner = module_uses_http_builtins(db.ast(entry))
-  let http_runner = match use_http_host_runner {
+  let ast = db.ast(entry)
+  let use_http_host_runner = module_uses_http_builtins(ast)
+  let use_fs_host_runner = module_uses_wasm_runtime_fallback_builtins(ast)
+  let use_node_runner = use_http_host_runner || use_fs_host_runner
+  let http_runner = match use_node_runner {
     true =>
       match resolve_http_host_runner(entry) {
         Ok(v) => Some(v)
@@ -1864,7 +1871,7 @@ fn run_cmd_wasm_backend_with_cache(
   let parent = @vibe_fs.parent_path(entry)
   let stamp = @env.now().to_string() + "_" + vibe_getpid().to_string()
   let (run_cache_dir, cached_wasm_path, cached_hash_path) = run_monolithic_cache_paths(
-    entry, use_http_host_runner,
+    entry, use_node_runner,
   )
   let current_hashes = collect_source_hash_cache(db, entry, true)
   let has_cached_wasm = @os_fs.path_exists(cached_wasm_path)
@@ -1888,7 +1895,7 @@ fn run_cmd_wasm_backend_with_cache(
     let wasm_bytes = compile_module_wasm_for_exec(
       db,
       entry,
-      http_host_imports=use_http_host_runner,
+      http_host_imports=use_node_runner,
     ) catch {
       e => return Err("compile wasm error: " + e.user_message())
     }
@@ -1928,8 +1935,8 @@ fn run_cmd_wasm_backend_with_cache(
   }
   if exec_out.status != 0 {
     let detail = first_non_empty_line(exec_out.stderr)
-    let runner_name = if use_http_host_runner {
-      "http host runner"
+    let runner_name = if use_node_runner {
+      "node host runner"
     } else {
       "wasmtime"
     }
@@ -1950,7 +1957,7 @@ fn run_cmd_wasm_backend_with_cache(
     Some(v) => v
     None =>
       return Err(
-        (if use_http_host_runner { "http host runner" } else { "wasmtime" }) +
+        (if use_node_runner { "node host runner" } else { "wasmtime" }) +
         " output missing numeric result: " +
         first_non_empty_line(exec_out.stdout),
       )
