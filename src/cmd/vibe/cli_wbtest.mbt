@@ -4037,3 +4037,37 @@ test "pure_test_result_cache_paths returns expected layout" {
   assert_true(cache_dir.contains("/.vibe/test/"))
   assert_true(result_path.has_suffix("/pure_result.txt"))
 }
+
+///|
+test "cli dispatch args shell --posix flag parsed" {
+  let parsed = parse_cli_dispatch_args([
+    "vibe", "shell", "--posix",
+  ])
+  match parsed {
+    Ok(v) => {
+      assert_eq(v.cmd, "shell")
+      // --posix is consumed by repl_cmd, not parse_cli_dispatch_args,
+      // so it should appear in cmd_args
+      assert_true(v.cmd_args.contains("--posix"))
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli dispatch args shell --posix with --allow-fs" {
+  let parsed = parse_cli_dispatch_args([
+    "vibe", "shell", "--posix", "--allow-fs",
+  ])
+  match parsed {
+    Ok(v) => {
+      assert_eq(v.cmd, "shell")
+      assert_true(v.cmd_args.contains("--posix"))
+      match v.permissions {
+        Some(_) => () // permissions parsed correctly
+        None => fail("expected permissions to be set")
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}

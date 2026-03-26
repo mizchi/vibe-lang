@@ -54,7 +54,11 @@ pub fn run(args : Array[String]) -> Unit {
     "precompile" => precompile_cmd(cmd_args)
     "bench" => bench_cmd(cmd_args, syntax_mode, runtime_features)
     "bench-file" => bench_file_cmd(cmd_args, runtime_features)
-    "shell" => repl_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
+    "shell" =>
+      repl_cmd(
+        cmd_args, syntax_mode, runtime_features, enable_llm~,
+        permissions=parsed.permissions,
+      )
     "shell-stdin" =>
       repl_stdin_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
     "wasm-shell-stdin" => wasm_repl_stdin_cmd(cmd_args)

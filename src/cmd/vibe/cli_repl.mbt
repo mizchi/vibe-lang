@@ -4,9 +4,11 @@ fn repl_cmd(
   _syntax_mode : @runtime.ParserMode,
   features : @runtime.RuntimeFeatureFlags,
   enable_llm~ : Bool,
+  permissions~ : @capability.CapabilitySet? = None,
 ) -> Unit {
   let mut tui_mode = false
   let mut ai_mode = false
+  let mut posix_mode = false
   let sub_args : Array[String] = []
   let mut i = 0
   while i < args.length() {
@@ -19,14 +21,30 @@ fn repl_cmd(
         ai_mode = true
         i += 1
       }
+      "--posix" => {
+        posix_mode = true
+        i += 1
+      }
       _ => {
         sub_args.push(args[i])
         i += 1
       }
     }
   }
-  // Default shell uses VibeMode; POSIX commands via posix_fallback in TTY mode
-  let syntax_mode = @runtime.ParserMode::VibeMode
+  let syntax_mode = if posix_mode {
+    @runtime.ParserMode::PosixMode
+  } else {
+    @runtime.ParserMode::VibeMode
+  }
+  if posix_mode {
+    match permissions {
+      Some(_) =>
+        @stdio.stderr.write_line(
+          "posix: sandbox permissions active",
+        )
+      None => ()
+    }
+  }
   if ai_mode {
     repl_ai_cmd(sub_args, syntax_mode, features, enable_llm~)
     return
@@ -2945,9 +2963,15 @@ fn run_compiled_shell_line(
     ReplMetaCommandResult::HandledContinue => return scratch_source
     ReplMetaCommandResult::NotMeta => ()
   }
+  // Preprocess posix-style input when in PosixMode
+  let effective_line = match syntax_mode {
+    @runtime.ParserMode::PosixMode | @runtime.ParserMode::PosixStrictMode =>
+      @runtime.preprocess_posix_source(line_str)
+    @runtime.ParserMode::VibeMode => line_str
+  }
   let exec = match
     run_compiled_repl_line_with_cache(
-      cache, source_path, wasm_path, scratch_source, line_str,
+      cache, source_path, wasm_path, scratch_source, effective_line,
     ) {
     Ok(v) => v
     Err(err) => {

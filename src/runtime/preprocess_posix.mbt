@@ -2,7 +2,7 @@
 /// Preprocess PosixMode source: rewrite command-like lines to sh_lines("...") calls.
 /// Handles {{ expr }} interpolation and $() command substitution.
 /// Lines starting with keywords, function calls, or assignments are left unchanged.
-fn preprocess_posix_source(script : String) -> String {
+pub fn preprocess_posix_source(script : String) -> String {
   let buf = StringBuilder::new()
   let mut first = true
   for line_view in script.split("\n") {
