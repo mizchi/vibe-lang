@@ -46,7 +46,7 @@ fn ensure_prelude_seed(session : TypecheckSession) -> TypeEnv raise TypeError {
 }
 
 ///|
-fn get_cached_prelude_env_for_module() -> TypeEnv raise TypeError {
+pub fn get_cached_prelude_env_for_module() -> TypeEnv raise TypeError {
   get_cached_prelude_env_for_module_with_session(default_typecheck_session)
 }
 
