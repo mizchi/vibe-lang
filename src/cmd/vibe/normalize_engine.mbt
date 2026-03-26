@@ -472,15 +472,51 @@ fn pass_render(
 }
 
 ///|
+fn normalize_is_synthetic_trait_impl(
+  source : String,
+  stmt : @vibe_core.Stmt,
+) -> Bool {
+  match stmt {
+    @vibe_core.Stmt::TraitImpl(span~, ..) => {
+      let snippet = normalize_source_slice_by_span(source, span.start, span.end)
+        .trim()
+        .to_string()
+      not(snippet.has_prefix("impl "))
+    }
+    _ => false
+  }
+}
+
+///|
+fn normalize_filter_synthetic_trait_impls(
+  source : String,
+  stmts : Array[@vibe_core.Stmt],
+) -> Array[@vibe_core.Stmt] {
+  let out : Array[@vibe_core.Stmt] = []
+  for stmt in stmts {
+    if not(normalize_is_synthetic_trait_impl(source, stmt)) {
+      out.push(stmt)
+    }
+  }
+  out
+}
+
+///|
 fn pass_validate(
+  source : String,
   rendered : String,
   expected_stmts : Array[@vibe_core.Stmt],
 ) -> Result[Unit, String] {
   let formatted = @parser.format_script(rendered)
-  let reparsed = @parser.parse_ast(formatted) catch {
+  let reparsed_raw = @parser.parse_ast(formatted) catch {
     e => return Err("normalize: rendered parse failed: " + e.to_string())
   }
-  let expected = @vibe_core.Module::{ stmts: expected_stmts }
+  let reparsed = @vibe_core.Module::{
+    stmts: normalize_filter_synthetic_trait_impls(formatted, reparsed_raw.stmts),
+  }
+  let expected = @vibe_core.Module::{
+    stmts: normalize_filter_synthetic_trait_impls(source, expected_stmts),
+  }
   let expected_decl_assign_names = normalize_collect_decl_assign_stmt_names(
     expected,
   )
@@ -542,11 +578,14 @@ fn normalize_source_text_flat_with_entry_names_internal(
   }
   // Pass 7: Annotate
   let (env, annotations) = pass_annotate(final_sorted)
+  let render_sorted = normalize_filter_synthetic_trait_impls(
+    quickfixed, final_sorted,
+  )
   // Pass 8: Render
   let rendered = match
     pass_render(
       quickfixed,
-      final_sorted,
+      render_sorted,
       optimized.rewritten_exprs,
       annotations,
       env,
@@ -555,7 +594,7 @@ fn normalize_source_text_flat_with_entry_names_internal(
     Err(e) => return Err(e)
   }
   // Pass 9: Validate
-  match pass_validate(rendered, final_sorted) {
+  match pass_validate(quickfixed, rendered, final_sorted) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }

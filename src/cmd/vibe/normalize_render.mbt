@@ -248,6 +248,64 @@ fn normalize_render_import_spec(spec : @vibe_core.ImportSpec) -> String {
 }
 
 ///|
+fn normalize_render_type_params(params : Array[String]) -> String {
+  if params.length() == 0 {
+    return ""
+  }
+  "[" + normalize_render_name_list(params) + "]"
+}
+
+///|
+fn normalize_render_effect_op(op : @vibe_core.EffectOp) -> String {
+  let out = StringBuilder::new()
+  out.write_string(op.name)
+  if op.params.length() > 0 {
+    out.write_string("(")
+    for i, param in op.params {
+      if i > 0 {
+        out.write_string(", ")
+      }
+      out.write_string(normalize_render_type_annotation(param))
+    }
+    out.write_string(")")
+  }
+  out.write_string(" -> ")
+  out.write_string(normalize_render_type_annotation(op.ret))
+  out.to_string()
+}
+
+///|
+fn normalize_render_effect_stmt(
+  exported : Bool,
+  name : String,
+  params : Array[String],
+  ops : Array[@vibe_core.EffectOp],
+) -> String {
+  let out = StringBuilder::new()
+  if exported {
+    out.write_string("export ")
+  }
+  out.write_string("effect ")
+  out.write_string(name)
+  out.write_string(normalize_render_type_params(params))
+  if ops.length() == 0 {
+    out.write_string(" {}")
+    return out.to_string()
+  }
+  out.write_string(" {\n")
+  for i, op in ops {
+    out.write_string("  ")
+    out.write_string(normalize_render_effect_op(op))
+    if i + 1 < ops.length() {
+      out.write_string(";")
+    }
+    out.write_string("\n")
+  }
+  out.write_string("}")
+  out.to_string()
+}
+
+///|
 fn normalize_render_stmt_fallback(stmt : @vibe_core.Stmt) -> String? {
   match stmt {
     @vibe_core.Stmt::Import(spec~, source~, ..) =>
@@ -328,6 +386,10 @@ fn normalize_render_stmt(
         source, true, rec, name, render_expr, rewritten_expr, annotation, env,
       )
     }
+    @vibe_core.Stmt::EffectDef(name~, params~, ops~, ..) =>
+      Some(normalize_render_effect_stmt(false, name, params, ops))
+    @vibe_core.Stmt::ExportEffectDef(name~, params~, ops~, ..) =>
+      Some(normalize_render_effect_stmt(true, name, params, ops))
     _ => normalize_render_stmt_fallback(stmt)
   }
 }

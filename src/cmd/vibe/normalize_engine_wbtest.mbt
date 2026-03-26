@@ -195,7 +195,7 @@ test "normalize_engine: infers fn return annotation in fn expression" {
 }
 
 ///|
-test "normalize_engine: inline comment in fn params falls back to rendered form" {
+test "normalize_engine: inline comment in fn params is preserved on its own line" {
   let source =
     #|let rec compile_expr = (
     #|  buf: Array[Int],
@@ -208,10 +208,9 @@ test "normalize_engine: inline comment in fn params falls back to rendered form"
   let result = normalize_source_text(source)
   match result {
     Ok(normalized) => {
-      assert_false(normalized.contains("loop depth"))
-      assert_true(
-        normalized.contains("let rec compile_expr = (buf: Array[Int]"),
-      )
+      assert_true(normalized.contains("loop depth"))
+      assert_true(normalized.contains("let rec compile_expr ="))
+      assert_true(normalized.contains("buf: Array[Int]"))
       assert_true(normalized.contains("ld: Int"))
       assert_true(normalized.contains("-> Int with"))
     }
@@ -351,6 +350,92 @@ test "normalize_engine: pure and effectful functions separated" {
       assert_true(idx_effect >= 0)
       assert_true(idx_pure < idx_effect)
     }
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}
+
+///|
+test "normalize_engine: http response builder snippet stays semantic" {
+  let source =
+    #|export struct HttpResponse {
+    #|  status: Int;
+    #|  headers: Map[String, String];
+    #|  body: String
+    #|}
+    #|
+    #|export let text = (status: Int, body: String) -> HttpResponse {
+    #|  let h = MapBuilder::new()
+    #|  MapBuilder::set(h, "content-type", "text/plain; charset=utf-8")
+    #|  HttpResponse::{ status: status, headers: MapBuilder::freeze(h), body: body }
+    #|}
+  let result = normalize_source_text(source)
+  match result {
+    Ok(normalized) => assert_true(normalized.contains("HttpResponse::{"))
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}
+
+///|
+test "normalize_engine: suberror snippet stays semantic" {
+  let source =
+    #|suberror HttpError {
+    #|  BadRequest(String);
+    #|  NotFound;
+    #|  MethodNotAllowed;
+    #|  Forbidden;
+    #|  InternalError(String)
+    #|}
+  let result = normalize_source_text(source)
+  match result {
+    Ok(normalized) => assert_true(normalized.contains("suberror HttpError"))
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}
+
+///|
+test "normalize_engine: http handle harness snippet stays semantic" {
+  let source =
+    #|export struct HttpRequest {
+    #|  method: String;
+    #|  url: String;
+    #|  headers: Map[String, String];
+    #|  body: String
+    #|}
+    #|
+    #|export struct HttpResponse {
+    #|  status: Int;
+    #|  headers: Map[String, String];
+    #|  body: String
+    #|}
+    #|
+    #|let error_to_response = (err: String) -> HttpResponse {
+    #|  HttpResponse::{ status: 500, headers: MapBuilder::freeze(MapBuilder::new()), body: err }
+    #|}
+    #|
+    #|let serialize_response = (resp: HttpResponse) -> String {
+    #|  resp.body
+    #|}
+    #|
+    #|export let harness = (
+    #|  user_handler: (HttpRequest) -> HttpResponse with { Error }
+    #|) -> (String, String) -> String {
+    #|  (method: String, url: String) -> String {
+    #|    let resp = handle {
+    #|      user_handler(HttpRequest::{
+    #|        method: method,
+    #|        url: url,
+    #|        headers: MapBuilder::freeze(MapBuilder::new()),
+    #|        body: ""
+    #|      })
+    #|    } {
+    #|      Error(err) => error_to_response(err)
+    #|    }
+    #|    serialize_response(resp)
+    #|  }
+    #|}
+  let result = normalize_source_text(source)
+  match result {
+    Ok(normalized) => assert_true(normalized.contains("export let harness"))
     Err(msg) => fail("normalize failed: " + msg)
   }
 }

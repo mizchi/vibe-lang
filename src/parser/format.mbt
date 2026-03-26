@@ -82,10 +82,12 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
   let mut saw_newline = false
   let mut line_has_content = false
   let mut prev_prev_kind : @cst.SyntaxKind? = None
+  let mut prev_prev_text : String? = None
   let mut prev_kind : @cst.SyntaxKind? = None
   let mut prev_text : String? = None
   let mut prev_prefix = false
   let mut prev_pipe = false
+  let mut prev_line_comment = false
   let mut i = 0
   while i < tokens.length() {
     let tok = tokens[i]
@@ -95,6 +97,7 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
       continue
     }
     if kind == comment() {
+      let comment_text = trim_ascii_whitespace(tok.text())
       if pending_newlines == 0 && line_has_content {
         pending_newlines = 1
       }
@@ -109,18 +112,29 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
         format_write_indent(buf, indent, indent_size)
         line_has_content = false
       }
-      buf.write_string(trim_ascii_whitespace(tok.text()))
+      buf.write_string(comment_text)
       line_has_content = true
       prev_prev_kind = None
+      prev_prev_text = None
       prev_kind = None
       prev_text = None
       prev_prefix = false
       prev_pipe = false
+      prev_line_comment = comment_text.has_prefix("//")
       i += 1
       continue
     }
     if kind == newline() {
       saw_newline = true
+      if prev_line_comment {
+        let max_nl = if brace_depth == 0 { 2 } else { 1 }
+        if pending_newlines < max_nl {
+          pending_newlines += 1
+        }
+        prev_line_comment = false
+        i += 1
+        continue
+      }
       let next_kind = next_non_trivia_kind(tokens, i)
       let collapse_generic_break = match (prev_kind, next_kind) {
         (Some(prev), Some(next)) =>
@@ -191,6 +205,7 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
       pending_newlines = 0
       format_write_indent(buf, indent, indent_size)
       prev_prev_kind = None
+      prev_prev_text = None
       prev_kind = None
       prev_text = None
       prev_prefix = false
@@ -223,7 +238,7 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
     }
     let curr_prefix = is_prefix_op(kind, prev_kind)
     let insert_struct_double_colon = should_insert_struct_double_colon(
-      prev_prev_kind, prev_kind, prev_text, kind, in_type_context,
+      prev_prev_kind, prev_prev_text, prev_kind, prev_text, kind, in_type_context,
     )
     let effects_rbrace = kind == rbrace() &&
       container_stack.length() > 0 &&
@@ -369,10 +384,12 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
       kind, type_context_stack, paren_depth, brace_depth, bracket_depth,
     )
     prev_prev_kind = prev_kind
+    prev_prev_text = prev_text
     prev_kind = Some(kind)
     prev_text = Some(tok.text())
     prev_prefix = curr_prefix
     prev_pipe = curr_pipe
+    prev_line_comment = false
     i += 1
   }
   if pending_newlines > 0 {
@@ -857,6 +874,7 @@ fn next_non_trivia_kind(
 ///|
 fn should_insert_struct_double_colon(
   prev_prev_kind : @cst.SyntaxKind?,
+  prev_prev_text : String?,
   prev_kind : @cst.SyntaxKind?,
   prev_text : String?,
   curr_kind : @cst.SyntaxKind,
@@ -873,6 +891,11 @@ fn should_insert_struct_double_colon(
         return false
       }
     None => ()
+  }
+  match prev_prev_text {
+    Some("effect") => return false
+    Some("suberror") => return false
+    _ => ()
   }
   if prev_prev_kind == Some(thin_arrow()) {
     return false
