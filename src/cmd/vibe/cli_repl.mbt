@@ -2960,6 +2960,8 @@ fn run_compiled_repl_line_with_cache(
   if run_out.status != 0 {
     return Err(wasmtime_failure_detail(run_out.stdout, run_out.stderr))
   }
+  // Check for VIBE_DISPLAY: prefix from Node runner (string/complex values)
+  let node_display = extract_vibe_display_line(run_out.stdout)
   let tagged = match parse_last_numeric_line_int64(run_out.stdout) {
     Some(v) => v
     None =>
@@ -2968,19 +2970,23 @@ fn run_compiled_repl_line_with_cache(
         first_non_empty_line(run_out.stdout),
       )
   }
-  let (value, display_override) = match decode_tagged_wasm_run_value(tagged) {
-    Some(v) => (v, None)
+  let (value, display_override) = match node_display {
+    Some(display) => (WasmRunValue::Int(0L), Some(display))
     None =>
-      match repl_try_compiled_display(wasm_path) {
-        Some(display) => (WasmRunValue::Int(0L), Some(display))
+      match decode_tagged_wasm_run_value(tagged) {
+        Some(v) => (v, None)
         None =>
-          match repl_compiled_binding_display_override(line) {
+          match repl_try_compiled_display(wasm_path) {
             Some(display) => (WasmRunValue::Int(0L), Some(display))
             None =>
-              return Err(
-                "compiled repl unsupported wasm return tag: " +
-                tagged.to_string(),
-              )
+              match repl_compiled_binding_display_override(line) {
+                Some(display) => (WasmRunValue::Int(0L), Some(display))
+                None =>
+                  return Err(
+                    "compiled repl unsupported wasm return tag: " +
+                    tagged.to_string(),
+                  )
+              }
           }
       }
   }
@@ -3948,6 +3954,18 @@ fn extract_let_binding_name(line : String) -> String? {
   }
   let name = line.substring(start=prefix_len, end~)
   Some(name)
+}
+
+///|
+/// Extract VIBE_DISPLAY: line from Node runner output.
+fn extract_vibe_display_line(stdout : String) -> String? {
+  for line_view in stdout.split("\n") {
+    let line = line_view.to_string()
+    if line.has_prefix("VIBE_DISPLAY:") {
+      return Some(line.substring(start=13))
+    }
+  }
+  None
 }
 
 ///|

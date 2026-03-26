@@ -1094,7 +1094,32 @@ async function main() {
       // Selfhost-compiled modules return untagged i64 values — print as-is.
       console.log(result.toString());
     } else {
-      // Output raw tagged i64 for CLI to parse (vibe run expects tagged value)
+      // For string/array/record results, output display text on first line
+      // then raw tagged i64 on second line. CLI checks for VIBE_DISPLAY: prefix.
+      const tag = Number(result & 3n);
+      if (tag === 1) {
+        // Object pointer — try to render display text
+        const ptr = Number(result & ~3n);
+        const mem = instance.exports.memory;
+        if (mem && ptr > 0 && ptr + 8 <= mem.buffer.byteLength) {
+          const view = new DataView(mem.buffer);
+          const ty = view.getUint32(ptr, true);
+          if (ty === 1) {
+            // String object
+            const len = view.getUint32(ptr + 4, true);
+            if (ptr + 8 + len <= mem.buffer.byteLength) {
+              const bytes = new Uint8Array(mem.buffer, ptr + 8, len);
+              const text = new TextDecoder().decode(bytes);
+              console.log("VIBE_DISPLAY:" + JSON.stringify(text));
+            }
+          } else if (ty === 5) {
+            // Array — show element count
+            const len = view.getUint32(ptr + 4, true);
+            console.log("VIBE_DISPLAY:[Array(" + len + ")]");
+          }
+        }
+      }
+      // Always output raw tagged i64 as last line
       console.log(result.toString());
     }
   } else if (result !== undefined) {

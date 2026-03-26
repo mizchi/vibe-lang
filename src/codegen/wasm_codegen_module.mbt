@@ -67,7 +67,7 @@ fn write_fs_host_import(
 fn fs_host_import_func_name(builtin_name : String) -> String {
   // "Fs::read_file" -> "fs_read_file"
   // "Fs::getcwd" -> "fs_getcwd"
-  "fs_" + builtin_name.substring(start=4)
+  "fs_" + builtin_name[4:].to_string()
 }
 
 ///|

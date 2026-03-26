@@ -1967,6 +1967,8 @@ fn run_cmd_wasm_backend_with_cache(
       runner_name + " command failed: status=" + exec_out.status.to_string(),
     )
   }
+  // Check for VIBE_DISPLAY: prefix from Node runner
+  let node_display = extract_vibe_display_line_run(exec_out.stdout)
   let tagged = match parse_last_numeric_line_int64(exec_out.stdout) {
     Some(v) => v
     None =>
@@ -1976,10 +1978,28 @@ fn run_cmd_wasm_backend_with_cache(
         first_non_empty_line(exec_out.stdout),
       )
   }
-  match decode_tagged_wasm_run_value(tagged) {
-    Some(result) => Ok(result)
-    None => Err("unsupported wasm return tag: " + tagged.to_string())
+  match node_display {
+    Some(display) => {
+      println("last: " + display)
+      Ok(WasmRunValue::Int(0L))
+    }
+    None =>
+      match decode_tagged_wasm_run_value(tagged) {
+        Some(result) => Ok(result)
+        None => Err("unsupported wasm return tag: " + tagged.to_string())
+      }
   }
+}
+
+///|
+fn extract_vibe_display_line_run(stdout : String) -> String? {
+  for line_view in stdout.split("\n") {
+    let line = line_view.to_string()
+    if line.has_prefix("VIBE_DISPLAY:") {
+      return Some(line.substring(start=13))
+    }
+  }
+  None
 }
 
 ///|
