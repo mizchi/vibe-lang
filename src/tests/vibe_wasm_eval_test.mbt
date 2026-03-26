@@ -2276,3 +2276,31 @@ test "vibe eval Double::parse failure" {
   expected["None"] = @core.Value::Unit
   assert_eq(value, @core.Value::Record(expected))
 }
+
+///|
+test "vibe wasm eval while else mutable update" {
+  let script =
+    #|let main = () -> {
+    #|  let mut x = 0
+    #|  while true {
+    #|    if false { } else { x = 1; break }
+    #|  }
+    #|  x
+    #|}
+    #|main()
+  assert_eval_backends_same(script)
+}
+
+///|
+test "vibe wasm eval while else-if mutable update" {
+  let script =
+    #|let main = () -> {
+    #|  let mut x = 0
+    #|  while true {
+    #|    if false { } else if true { x = 2; break } else { }
+    #|  }
+    #|  x
+    #|}
+    #|main()
+  assert_eval_backends_same(script)
+}
