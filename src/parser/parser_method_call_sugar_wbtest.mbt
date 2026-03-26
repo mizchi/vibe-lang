@@ -1,10 +1,20 @@
 ///|
-test "parse rejects method-call sugar expr.method(args)" {
+test "parse UFCS: expr.method(args) desugars to method(expr, args)" {
   let input = "obj.method(1)"
   let parsed : Result[@core.Module, ParseError] = try? parse_ast(input)
   match parsed {
-    Ok(_) => fail("[parse] expected method-call sugar to be rejected")
-    Err(err) => assert_true(err.to_string().contains("method-call sugar"))
+    Ok(m) => {
+      match m.stmts[0] {
+        @core.Stmt::Expr(expr~, ..) =>
+          match expr {
+            @core.Expr::Call(name="method", args~, ..) =>
+              assert_eq(args.length(), 2) // obj + 1
+            _ => fail("[parse] expected Call node, got: \{expr}")
+          }
+        _ => fail("[parse] expected Expr stmt")
+      }
+    }
+    Err(err) => fail("[parse] UFCS should parse: \{err.to_string()}")
   }
 }
 

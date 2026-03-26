@@ -2160,12 +2160,27 @@ fn AstParser::parse_call_or_primary(
       let method_tok = self.expect(name(), "method name")
       self.skip_trivia()
       if self.peek_kind() == lparen() {
+        // UFCS: expr.method(args) → method(expr, args)
+        let _ = self.bump() // consume (
+        self.skip_trivia()
+        let call_args : Array[@core.CallArg] = []
+        let expr_span = expr.span()
+        call_args.push(@core.CallArg::{ label: None, expr, span: expr_span })
+        if self.peek_kind() != rparen() {
+          let args = self.parse_args()
+          for arg in args {
+            call_args.push(arg)
+          }
+        }
+        let _ = self.expect(rparen(), ")")
         let span = self.span_from(start)
-        raise ParseError::UnexpectedToken(
-          expected="member access (`expr.field`), method-call sugar is removed; use `(expr.field)(...)`",
-          got=method_tok.text() + "(...)",
+        expr = @core.Expr::Call(
+          name=method_tok.text(),
+          type_args=[],
+          args=call_args,
           span~,
         )
+        continue
       } else {
         // expr.prop → __index(expr, "prop") — member access only
         let span = self.span_from(start)
