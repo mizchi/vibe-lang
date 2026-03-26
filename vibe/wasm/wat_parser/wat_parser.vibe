@@ -1,38 +1,136 @@
-// WAT (WebAssembly Text Format) Parser
-// Parses S-expression based WAT into structured representation
-
 //# Functions
 
-// === Token types ===
-let tok_lparen = 1
-let tok_rparen = 2
-let tok_keyword = 3   // module, func, type, param, result, etc.
-let tok_ident = 4     // $name
-let tok_int = 5       // 42, -1, 0xFF
-let tok_float = 6     // 1.0, nan, inf
-let tok_string = 7    // "hello"
-let tok_comment = 8   // ;; or (; ;)
-let tok_eof = 9
+let hex_val = (c: Int) -> Int {
+  if (c >= 48) && (c <= 57) {
+    c - 48
+  }
+  else {
+    if (c >= 97) && (c <= 102) {
+      c - 87
+    }
+    else {
+      if (c >= 65) && (c <= 70) {
+        c - 55
+      }
+      else {
+        0
+      }
+    }
+  }
+}
 
-// === Tokenizer ===
+let tok_eof: Int = 9
 
-// Token: (type, start, end) in source string
-// For idents/keywords, the value is source[start..end]
+let tok_int: Int = 5
+
+let is_digit = (c: Int) -> Bool {
+  (c >= 48) && (c <= 57)
+}
+
+export let parse_int = (s: String) -> Int {
+  let len = String::length(s)
+  if len == 0 {
+    0
+  }
+  else {
+    let mut neg = false
+    let mut start = 0
+    if String::char_code_at(s, 0) == 45 {
+      neg = true
+      start = 1
+    } else {
+      if String::char_code_at(s, 0) == 43 {
+        start = 1
+      }
+    }
+    let mut val = 0
+    if ((start + 1) < len) && (String::char_code_at(s, start) == 48) && ((String::char_code_at(s, start + 1) == 120) || (String::char_code_at(s, start + 1) == 88)) {
+      let mut i = start + 2
+      while i < len {
+        let c = String::char_code_at(s, i)
+        if (c >= 48) && (c <= 57) {
+          val = val * 16 + (c - 48)
+        }
+        else {
+          if (c >= 97) && (c <= 102) {
+            val = val * 16 + (c - 87)
+          }
+          else {
+            if (c >= 65) && (c <= 70) {
+              val = val * 16 + (c - 55)
+            }
+          }
+        }
+        i = i + 1
+      }
+    } else {
+      let mut i = start
+      while i < len {
+        let c = String::char_code_at(s, i)
+        if (c >= 48) && (c <= 57) {
+          val = val * 10 + (c - 48)
+        }
+        i = i + 1
+      }
+    }
+    if neg {
+      0 - val
+    } else {
+      val
+    }
+  }
+}
+
+let tok_float: Int = 6
+
+let tok_ident: Int = 4
+
+let is_id_char = (c: Int) -> Bool {
+  ((c >= 97) && (c <= 122)) ||
+  ((c >= 65) && (c <= 90)) ||
+  ((c >= 48) && (c <= 57)) ||
+  (c == 95) || (c == 46) || (c == 47) || (c == 58) || (c == 45)
+}
+
+let tok_lparen: Int = 1
+
+let tok_rparen: Int = 2
+
+let tok_string: Int = 7
+
+export let token_text = (src: String, tok: (Int, Int, Int)) -> String {
+  let (_, start, end_pos) = tok
+  String::substring(src, start, end_pos)
+}
+
+let token_type = (tokens: Array[(Int, Int, Int)], idx: Int) -> Int {
+  let (ty, _, _) = Array::get(tokens, idx)
+  ty
+}
+
+let tok_comment: Int = 8
+
+let tok_keyword: Int = 3
+
+let is_hex_digit = (c: Int) -> Bool {
+  ((c >= 48) && (c <= 57)) ||
+  ((c >= 97) && (c <= 102)) ||
+  ((c >= 65) && (c <= 70))
+}
 
 export let tokenize = (src: String) -> Array[(Int, Int, Int)] {
   let len = String::length(src)
-  let result = Array::slice([(0, 0, 0)], 0, 0)
+  let result = Array::slice([
+    (0, 0, 0)
+  ], 0, 0)
   let mut i = 0
   while i < len {
     let c = String::char_code_at(src, i)
     if (c == 32) || (c == 9) || (c == 10) || (c == 13) {
-      // whitespace
       i = i + 1
     } else {
       if c == 40 {
-        // '(' - check for block comment
         if ((i + 1) < len) && (String::char_code_at(src, i + 1) == 59) {
-          // (; block comment ;)
           let start = i
           i = i + 2
           let mut depth = 1
@@ -57,12 +155,10 @@ export let tokenize = (src: String) -> Array[(Int, Int, Int)] {
         }
       } else {
         if c == 41 {
-          // ')'
           Array::push(result, (tok_rparen, i, i + 1))
           i = i + 1
         } else {
           if c == 59 {
-            // ';' - line comment
             let start = i
             while (i < len) && (String::char_code_at(src, i) != 10) {
               i = i + 1
@@ -70,7 +166,6 @@ export let tokenize = (src: String) -> Array[(Int, Int, Int)] {
             Array::push(result, (tok_comment, start, i))
           } else {
             if c == 34 {
-              // '"' - string literal
               let start = i
               i = i + 1
               while (i < len) && (String::char_code_at(src, i) != 34) {
@@ -80,11 +175,12 @@ export let tokenize = (src: String) -> Array[(Int, Int, Int)] {
                   i = i + 1
                 }
               }
-              if i < len { i = i + 1 }
+              if i < len {
+                i = i + 1
+              }
               Array::push(result, (tok_string, start, i))
             } else {
               if c == 36 {
-                // '$' - identifier
                 let start = i
                 i = i + 1
                 while (i < len) && (is_id_char(String::char_code_at(src, i))) {
@@ -93,10 +189,10 @@ export let tokenize = (src: String) -> Array[(Int, Int, Int)] {
                 Array::push(result, (tok_ident, start, i))
               } else {
                 if is_digit(c) || ((c == 45) && ((i + 1) < len) && (is_digit(String::char_code_at(src, i + 1)))) || ((c == 43) && ((i + 1) < len) && (is_digit(String::char_code_at(src, i + 1)))) {
-                  // number
                   let start = i
-                  if (c == 45) || (c == 43) { i = i + 1 }
-                  // hex prefix
+                  if (c == 45) || (c == 43) {
+                    i = i + 1
+                  }
                   if ((i + 1) < len) && (String::char_code_at(src, i) == 48) && ((String::char_code_at(src, i + 1) == 120) || (String::char_code_at(src, i + 1) == 88)) {
                     i = i + 2
                     while (i < len) && (is_hex_digit(String::char_code_at(src, i)) || (String::char_code_at(src, i) == 95)) {
@@ -107,7 +203,6 @@ export let tokenize = (src: String) -> Array[(Int, Int, Int)] {
                       i = i + 1
                     }
                   }
-                  // check for float
                   let mut is_float = false
                   if (i < len) && (String::char_code_at(src, i) == 46) {
                     is_float = true
@@ -132,7 +227,6 @@ export let tokenize = (src: String) -> Array[(Int, Int, Int)] {
                     Array::push(result, (tok_int, start, i))
                   }
                 } else {
-                  // keyword or instruction name (a-z, A-Z, 0-9, _, ., /)
                   let start = i
                   while (i < len) && (is_id_char(String::char_code_at(src, i))) {
                     i = i + 1
@@ -140,7 +234,6 @@ export let tokenize = (src: String) -> Array[(Int, Int, Int)] {
                   if i > start {
                     Array::push(result, (tok_keyword, start, i))
                   } else {
-                    // skip unknown char
                     i = i + 1
                   }
                 }
@@ -155,33 +248,67 @@ export let tokenize = (src: String) -> Array[(Int, Int, Int)] {
   result
 }
 
-let is_digit = (c: Int) -> Bool {
-  (c >= 48) && (c <= 57)
+export let tok_type_int = () -> Int {
+  5
 }
 
-let is_hex_digit = (c: Int) -> Bool {
-  ((c >= 48) && (c <= 57)) ||
-  ((c >= 97) && (c <= 102)) ||
-  ((c >= 65) && (c <= 70))
+export let decode_string = (s: String) -> String {
+  let len = String::length(s)
+  if len < 2 {
+    ""
+  }
+  else {
+    let mut result = ""
+    let mut i = 1
+    let end_pos = len - 1
+    while i < end_pos {
+      let c = String::char_code_at(s, i)
+      if c == 92 {
+        i = i + 1
+        if i < end_pos {
+          let c2 = String::char_code_at(s, i)
+          if c2 == 110 {
+            result = String::concat(result, String::from_char_code(10)); i = i + 1
+          }
+          else {
+            if c2 == 116 {
+              result = String::concat(result, String::from_char_code(9)); i = i + 1
+            }
+            else {
+              if c2 == 92 {
+                result = String::concat(result, "\\"); i = i + 1
+              }
+              else {
+                if c2 == 34 {
+                  result = String::concat(result, "\""); i = i + 1
+                }
+                else {
+                  if is_hex_digit(c2) && ((i + 1) < end_pos) && (is_hex_digit(String::char_code_at(s, i + 1))) {
+                    let h = hex_val(c2) * 16 + hex_val(String::char_code_at(s, i + 1))
+                    result = String::concat(result, String::from_char_code(h))
+                    i = i + 2
+                  } else {
+                    result = String::concat(result, String::from_char_code(c2))
+                    i = i + 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      } else {
+        result = String::concat(result, String::from_char_code(c))
+        i = i + 1
+      }
+    }
+    result
+  }
 }
 
-let is_id_char = (c: Int) -> Bool {
-  ((c >= 97) && (c <= 122)) ||   // a-z
-  ((c >= 65) && (c <= 90)) ||    // A-Z
-  ((c >= 48) && (c <= 57)) ||    // 0-9
-  (c == 95) || (c == 46) || (c == 47) || (c == 58) || (c == 45)  // _ . / : -
-}
-
-// === Token value extraction ===
-
-export let token_text = (src: String, tok: (Int, Int, Int)) -> String {
-  let (_, start, end_pos) = tok
-  String::substring(src, start, end_pos)
-}
-
-// Filter out comments and EOF from tokens
 export let filter_tokens = (tokens: Array[(Int, Int, Int)]) -> Array[(Int, Int, Int)] {
-  let result = Array::slice([(0, 0, 0)], 0, 0)
+  let result = Array::slice([
+    (0, 0, 0)
+  ], 0, 0)
   let mut i = 0
   while i < Array::length(tokens) {
     let (ty, s, e) = Array::get(tokens, i)
@@ -193,69 +320,31 @@ export let filter_tokens = (tokens: Array[(Int, Int, Int)]) -> Array[(Int, Int, 
   result
 }
 
-// === S-expression parser ===
-
-// Parse WAT module into a flat list of sections.
-// Each section: (keyword, content_tokens_start, content_tokens_end)
-// where content_tokens are indices into the filtered token array.
-
-// Parse top-level module sections.
-// Returns array of (section_keyword: String, depth_start_idx: Int, depth_end_idx: Int)
-export let parse_module_sections = (src: String, tokens: Array[(Int, Int, Int)]) -> Array[(String, Int, Int)] {
-  let result = Array::slice([("", 0, 0)], 0, 0)
-  let cnt = Array::length(tokens)
-  let mut i = 0
-  // Skip to (module ...
-  while (i < cnt) && (token_type(tokens, i) != tok_lparen) { i = i + 1 }
-  if i >= cnt { result }
+let int_to_string = (n: Int) -> String {
+  if n == 0 {
+    "0"
+  }
   else {
-    i = i + 1
-    // Skip "module" keyword
-    if (i < cnt) && (token_type(tokens, i) == tok_keyword) { i = i + 1 }
-    // Parse sections
-    while i < cnt {
-      let ty = token_type(tokens, i)
-      if ty == tok_rparen {
-        i = cnt
-      } else {
-        if ty == tok_lparen {
-          let section_start = i
-          i = i + 1
-          if (i < cnt) && (token_type(tokens, i) == tok_keyword) {
-            let kw = token_text(src, Array::get(tokens, i))
-            // Find matching rparen
-            let mut depth = 1
-            let kw_idx = i
-            i = i + 1
-            while (i < cnt) && (depth > 0) {
-              let t = token_type(tokens, i)
-              if t == tok_lparen { depth = depth + 1 }
-              else { if t == tok_rparen { depth = depth - 1 } }
-              i = i + 1
-            }
-            Array::push(result, (kw, kw_idx + 1, i - 1))
-          } else {
-            i = i + 1
-          }
-        } else {
-          i = i + 1
-        }
-      }
+    let mut val = if n < 0 {
+      0 - n
+    } else {
+      n
     }
-    result
+    let mut s = ""
+    while val > 0 {
+      let digit = val - ((val / 10) * 10)
+      s = String::concat(String::from_char_code(48 + digit), s)
+      val = val / 10
+    }
+    if n < 0 {
+      String::concat("-", s)
+    } else {
+      s
+    }
   }
 }
 
-let token_type = (tokens: Array[(Int, Int, Int)], idx: Int) -> Int {
-  let (ty, _, _) = Array::get(tokens, idx)
-  ty
-}
-
-// === Instruction parsing ===
-
-// Check if a keyword is a known WAT instruction
 export let is_instruction = (kw: String) -> Bool {
-  // Common instruction prefixes
   String::starts_with(kw, "i32.") ||
   String::starts_with(kw, "i64.") ||
   String::starts_with(kw, "f32.") ||
@@ -280,178 +369,91 @@ export let is_instruction = (kw: String) -> Bool {
   (kw == "nop")
 }
 
-// === Parse integer from token text ===
-
-export let parse_int = (s: String) -> Int {
-  let len = String::length(s)
-  if len == 0 { 0 }
-  else {
-    let mut neg = false
-    let mut start = 0
-    if String::char_code_at(s, 0) == 45 {
-      neg = true
-      start = 1
-    } else {
-      if String::char_code_at(s, 0) == 43 { start = 1 }
-    }
-    let mut val = 0
-    // hex
-    if ((start + 1) < len) && (String::char_code_at(s, start) == 48) && ((String::char_code_at(s, start + 1) == 120) || (String::char_code_at(s, start + 1) == 88)) {
-      let mut i = start + 2
-      while i < len {
-        let c = String::char_code_at(s, i)
-        if (c >= 48) && (c <= 57) { val = val * 16 + (c - 48) }
-        else { if (c >= 97) && (c <= 102) { val = val * 16 + (c - 87) }
-        else { if (c >= 65) && (c <= 70) { val = val * 16 + (c - 55) } } }
-        i = i + 1
-      }
-    } else {
-      let mut i = start
-      while i < len {
-        let c = String::char_code_at(s, i)
-        if (c >= 48) && (c <= 57) {
-          val = val * 10 + (c - 48)
-        }
-        i = i + 1
-      }
-    }
-    if neg { 0 - val } else { val }
-  }
+export let tok_type_float = () -> Int {
+  6
 }
 
-// === Decode WAT string literal (handle escape sequences) ===
+export let tok_type_ident = () -> Int {
+  4
+}
 
-export let decode_string = (s: String) -> String {
-  let len = String::length(s)
-  if len < 2 { "" }
+export let tok_type_lparen = () -> Int {
+  1
+}
+
+export let tok_type_rparen = () -> Int {
+  2
+}
+
+export let tok_type_string = () -> Int {
+  7
+}
+
+export let tok_type_keyword = () -> Int {
+  3
+}
+
+export let parse_module_sections = (src: String, tokens: Array[(Int, Int, Int)]) -> Array[(String, Int, Int)] {
+  let result = Array::slice([
+    ("", 0, 0)
+  ], 0, 0)
+  let cnt = Array::length(tokens)
+  let mut i = 0
+  while (i < cnt) && (token_type(tokens, i) != tok_lparen) {
+    i = i + 1
+  }
+  if i >= cnt {
+    result
+  }
   else {
-    let mut result = ""
-    let mut i = 1
-    let end_pos = len - 1
-    while i < end_pos {
-      let c = String::char_code_at(s, i)
-      if c == 92 {
-        // backslash escape
-        i = i + 1
-        if i < end_pos {
-          let c2 = String::char_code_at(s, i)
-          if c2 == 110 { result = String::concat(result, String::from_char_code(10)); i = i + 1 }
-          else { if c2 == 116 { result = String::concat(result, String::from_char_code(9)); i = i + 1 }
-          else { if c2 == 92 { result = String::concat(result, "\\"); i = i + 1 }
-          else { if c2 == 34 { result = String::concat(result, "\""); i = i + 1 }
-          else {
-            // hex escape: \XX (two hex digits)
-            if is_hex_digit(c2) && ((i + 1) < end_pos) && (is_hex_digit(String::char_code_at(s, i + 1))) {
-              let h = hex_val(c2) * 16 + hex_val(String::char_code_at(s, i + 1))
-              result = String::concat(result, String::from_char_code(h))
-              i = i + 2
-            } else {
-              result = String::concat(result, String::from_char_code(c2))
+    i = i + 1
+    if (i < cnt) && (token_type(tokens, i) == tok_keyword) {
+      i = i + 1
+    }
+    while i < cnt {
+      let ty = token_type(tokens, i)
+      if ty == tok_rparen {
+        i = cnt
+      } else {
+        if ty == tok_lparen {
+          let section_start = i
+          i = i + 1
+          if (i < cnt) && (token_type(tokens, i) == tok_keyword) {
+            let kw = token_text(src, Array::get(tokens, i))
+            let mut depth = 1
+            let kw_idx = i
+            i = i + 1
+            while (i < cnt) && (depth > 0) {
+              let t = token_type(tokens, i)
+              if t == tok_lparen {
+                depth = depth + 1
+              }
+              else {
+                if t == tok_rparen {
+                  depth = depth - 1
+                }
+              }
               i = i + 1
             }
-          } } } }
+            Array::push(result, (kw, kw_idx + 1, i - 1))
+          } else {
+            i = i + 1
+          }
+        } else {
+          i = i + 1
         }
-      } else {
-        result = String::concat(result, String::from_char_code(c))
-        i = i + 1
       }
     }
     result
   }
 }
 
-let hex_val = (c: Int) -> Int {
-  if (c >= 48) && (c <= 57) { c - 48 }
-  else { if (c >= 97) && (c <= 102) { c - 87 }
-  else { if (c >= 65) && (c <= 70) { c - 55 }
-  else { 0 } } }
-}
-
-// === Token type constants (exported via functions) ===
-
-export let tok_type_lparen = () -> Int { 1 }
-export let tok_type_rparen = () -> Int { 2 }
-export let tok_type_keyword = () -> Int { 3 }
-export let tok_type_ident = () -> Int { 4 }
-export let tok_type_int = () -> Int { 5 }
-export let tok_type_float = () -> Int { 6 }
-export let tok_type_string = () -> Int { 7 }
-
-// ============================================================
-// High-level API: parse WAT text with one call
-// ============================================================
-
-let int_to_string = (n: Int) -> String {
-  if n == 0 { "0" }
-  else {
-    let mut val = if n < 0 { 0 - n } else { n }
-    let mut s = ""
-    while val > 0 {
-      let digit = val - ((val / 10) * 10)
-      s = String::concat(String::from_char_code(48 + digit), s)
-      val = val / 10
-    }
-    if n < 0 { String::concat("-", s) } else { s }
-  }
-}
-
-// Parse WAT and return section names
-export let wat_section_names = (src: String) -> Array[String] {
-  let tokens = filter_tokens(tokenize(src))
-  let sections = parse_module_sections(src, tokens)
-  let result = Array::slice([""], 0, 0)
-  let mut i = 0
-  while i < Array::length(sections) {
-    let (kw, _, _) = Array::get(sections, i)
-    Array::push(result, kw)
-    i = i + 1
-  }
-  result
-}
-
-// Extract type signatures: returns array of "(i32 i32) -> (i64)" style strings
-export let wat_type_sigs = (src: String) -> Array[String] {
-  let tokens = filter_tokens(tokenize(src))
-  let sections = parse_module_sections(src, tokens)
-  let result = Array::slice([""], 0, 0)
-  let mut i = 0
-  while i < Array::length(sections) {
-    let (kw, start, end_idx) = Array::get(sections, i)
-    if kw == "type" {
-      let mut sig = "("
-      // Find (func ...)
-      let mut j = start
-      let mut in_params = false
-      let mut in_results = false
-      while j < end_idx {
-        let (ty, _, _) = Array::get(tokens, j)
-        let text = token_text(src, Array::get(tokens, j))
-        if (ty == tok_keyword) && (text == "param") { in_params = true; in_results = false }
-        else if (ty == tok_keyword) && (text == "result") { in_results = true; in_params = false; sig = String::concat(sig, ") -> (") }
-        else if ty == tok_keyword {
-          if in_params || in_results {
-            if String::ends_with(sig, "(") { sig = String::concat(sig, text) }
-            else { sig = String::concat(sig, String::concat(" ", text)) }
-          } else { () }
-        } else { () }
-        j = j + 1
-      }
-      if not(String::contains(sig, "->")) {
-        sig = String::concat(sig, ") -> (")
-      } else { () }
-      sig = String::concat(sig, ")")
-      Array::push(result, sig)
-    } else { () }
-    i = i + 1
-  }
-  result
-}
-
-// Extract export names: returns array of (name, kind)
 export let wat_exports = (src: String) -> Array[(String, String)] {
   let tokens = filter_tokens(tokenize(src))
   let sections = parse_module_sections(src, tokens)
-  let result = Array::slice([("", "")], 0, 0)
+  let result = Array::slice([
+    ("", "")
+  ], 0, 0)
   let mut i = 0
   while i < Array::length(sections) {
     let (kw, start, end_idx) = Array::get(sections, i)
@@ -468,23 +470,30 @@ export let wat_exports = (src: String) -> Array[(String, String)] {
             let text = token_text(src, Array::get(tokens, j))
             if (text == "func") || (text == "memory") || (text == "table") || (text == "global") {
               kind = text
-            } else { () }
-          } else { () }
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
         }
         j = j + 1
       }
       Array::push(result, (name, kind))
-    } else { () }
+    } else {
+      ()
+    }
     i = i + 1
   }
   result
 }
 
-// Extract import entries: returns array of (module, name, kind)
 export let wat_imports = (src: String) -> Array[(String, String, String)] {
   let tokens = filter_tokens(tokenize(src))
   let sections = parse_module_sections(src, tokens)
-  let result = Array::slice([("", "", "")], 0, 0)
+  let result = Array::slice([
+    ("", "", "")
+  ], 0, 0)
   let mut i = 0
   while i < Array::length(sections) {
     let (kw, start, end_idx) = Array::get(sections, i)
@@ -498,41 +507,36 @@ export let wat_imports = (src: String) -> Array[(String, String, String)] {
         let (ty, _, _) = Array::get(tokens, j)
         if ty == tok_string {
           let decoded = decode_string(token_text(src, Array::get(tokens, j)))
-          if str_count == 0 { mod_name = decoded }
-          else { field_name = decoded }
+          if str_count == 0 {
+            mod_name = decoded
+          }
+          else {
+            field_name = decoded
+          }
           str_count = str_count + 1
         } else {
           if ty == tok_keyword {
             let text = token_text(src, Array::get(tokens, j))
             if (text == "func") || (text == "memory") || (text == "table") || (text == "global") {
               kind = text
-            } else { () }
-          } else { () }
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
         }
         j = j + 1
       }
       Array::push(result, (mod_name, field_name, kind))
-    } else { () }
+    } else {
+      ()
+    }
     i = i + 1
   }
   result
 }
 
-// Count functions (type + func sections)
-export let wat_func_count = (src: String) -> Int {
-  let tokens = filter_tokens(tokenize(src))
-  let sections = parse_module_sections(src, tokens)
-  let mut count = 0
-  let mut i = 0
-  while i < Array::length(sections) {
-    let (kw, _, _) = Array::get(sections, i)
-    if kw == "func" { count = count + 1 } else { () }
-    i = i + 1
-  }
-  count
-}
-
-// Human-readable WAT module summary
 export let wat_summary = (src: String) -> String {
   let tokens = filter_tokens(tokenize(src))
   let sections = parse_module_sections(src, tokens)
@@ -545,30 +549,164 @@ export let wat_summary = (src: String) -> String {
   let mut tables = 0
   let mut globals = 0
   let mut data_segs = 0
-
   let mut i = 0
   while i < Array::length(sections) {
     let (kw, _, _) = Array::get(sections, i)
-    if kw == "type" { types = types + 1 }
-    else if kw == "func" { funcs = funcs + 1 }
-    else if kw == "import" { imports = imports + 1 }
-    else if kw == "export" { exports = exports + 1 }
-    else if kw == "memory" { memories = memories + 1 }
-    else if kw == "table" { tables = tables + 1 }
-    else if kw == "global" { globals = globals + 1 }
-    else if kw == "data" { data_segs = data_segs + 1 }
-    else { () }
+    if kw == "type" {
+      types = types + 1
+    }
+    else if kw == "func" {
+      funcs = funcs + 1
+    }
+    else if kw == "import" {
+      imports = imports + 1
+    }
+    else if kw == "export" {
+      exports = exports + 1
+    }
+    else if kw == "memory" {
+      memories = memories + 1
+    }
+    else if kw == "table" {
+      tables = tables + 1
+    }
+    else if kw == "global" {
+      globals = globals + 1
+    }
+    else if kw == "data" {
+      data_segs = data_segs + 1
+    }
+    else {
+      ()
+    }
     i = i + 1
   }
-
   out = String::concat("sections: ", int_to_string(Array::length(sections)))
-  if types > 0 { out = String::concat(out, String::concat("\ntypes: ", int_to_string(types))) } else { () }
-  if funcs > 0 { out = String::concat(out, String::concat("\nfuncs: ", int_to_string(funcs))) } else { () }
-  if imports > 0 { out = String::concat(out, String::concat("\nimports: ", int_to_string(imports))) } else { () }
-  if exports > 0 { out = String::concat(out, String::concat("\nexports: ", int_to_string(exports))) } else { () }
-  if memories > 0 { out = String::concat(out, String::concat("\nmemories: ", int_to_string(memories))) } else { () }
-  if tables > 0 { out = String::concat(out, String::concat("\ntables: ", int_to_string(tables))) } else { () }
-  if globals > 0 { out = String::concat(out, String::concat("\nglobals: ", int_to_string(globals))) } else { () }
-  if data_segs > 0 { out = String::concat(out, String::concat("\ndata: ", int_to_string(data_segs))) } else { () }
+  if types > 0 {
+    out = String::concat(out, String::concat("\ntypes: ", int_to_string(types)))
+  } else {
+    ()
+  }
+  if funcs > 0 {
+    out = String::concat(out, String::concat("\nfuncs: ", int_to_string(funcs)))
+  } else {
+    ()
+  }
+  if imports > 0 {
+    out = String::concat(out, String::concat("\nimports: ", int_to_string(imports)))
+  } else {
+    ()
+  }
+  if exports > 0 {
+    out = String::concat(out, String::concat("\nexports: ", int_to_string(exports)))
+  } else {
+    ()
+  }
+  if memories > 0 {
+    out = String::concat(out, String::concat("\nmemories: ", int_to_string(memories)))
+  } else {
+    ()
+  }
+  if tables > 0 {
+    out = String::concat(out, String::concat("\ntables: ", int_to_string(tables)))
+  } else {
+    ()
+  }
+  if globals > 0 {
+    out = String::concat(out, String::concat("\nglobals: ", int_to_string(globals)))
+  } else {
+    ()
+  }
+  if data_segs > 0 {
+    out = String::concat(out, String::concat("\ndata: ", int_to_string(data_segs)))
+  } else {
+    ()
+  }
   out
+}
+
+export let wat_type_sigs = (src: String) -> Array[String] {
+  let tokens = filter_tokens(tokenize(src))
+  let sections = parse_module_sections(src, tokens)
+  let result = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(sections) {
+    let (kw, start, end_idx) = Array::get(sections, i)
+    if kw == "type" {
+      let mut sig = "("
+      let mut j = start
+      let mut in_params = false
+      let mut in_results = false
+      while j < end_idx {
+        let (ty, _, _) = Array::get(tokens, j)
+        let text = token_text(src, Array::get(tokens, j))
+        if (ty == tok_keyword) && (text == "param") {
+          in_params = true; in_results = false
+        }
+        else if (ty == tok_keyword) && (text == "result") {
+          in_results = true; in_params = false; sig = String::concat(sig, ") -> (")
+        }
+        else if ty == tok_keyword {
+          if in_params || in_results {
+            if String::ends_with(sig, "(") {
+              sig = String::concat(sig, text)
+            }
+            else {
+              sig = String::concat(sig, String::concat(" ", text))
+            }
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+      if not(String::contains(sig, "->")) {
+        sig = String::concat(sig, ") -> (")
+      } else {
+        ()
+      }
+      sig = String::concat(sig, ")")
+      Array::push(result, sig)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  result
+}
+
+export let wat_func_count = (src: String) -> Int {
+  let tokens = filter_tokens(tokenize(src))
+  let sections = parse_module_sections(src, tokens)
+  let mut count = 0
+  let mut i = 0
+  while i < Array::length(sections) {
+    let (kw, _, _) = Array::get(sections, i)
+    if kw == "func" {
+      count = count + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count
+}
+
+export let wat_section_names = (src: String) -> Array[String] {
+  let tokens = filter_tokens(tokenize(src))
+  let sections = parse_module_sections(src, tokens)
+  let result = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(sections) {
+    let (kw, _, _) = Array::get(sections, i)
+    Array::push(result, kw)
+    i = i + 1
+  }
+  result
 }

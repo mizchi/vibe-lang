@@ -2301,7 +2301,17 @@ fn check_cmd(args : Array[String]) -> Unit {
     None => ()
   }
   if total_errors > 0 {
-    abort("check: \{total_errors} error(s) found")
+    die("check: \{total_errors} error(s) found")
+  }
+}
+
+///|
+/// Return an exit message when check finds errors, or None for success.
+fn check_failure_message(total_errors : Int) -> String? {
+  if total_errors > 0 {
+    Some("check: \{total_errors} error(s) found")
+  } else {
+    None
   }
 }
 

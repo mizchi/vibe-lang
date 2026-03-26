@@ -1,22 +1,15 @@
 //# Imports
 
 import ./entry / source_compile / wasi_only {
-  compile_file_wasi_only,
-  compile_file_wasi_linked_artifacts,
-  compile_file_wasi_library
+  compile_file_wasi_library, compile_file_wasi_linked_artifacts, compile_file_wasi_only
 }
 
 //# Functions
 
-let assert_wasm_magic = (bytes: Bytes) -> Unit {
-  assert(Bytes::get(bytes, 0) == 0)
-  assert(Bytes::get(bytes, 1) == 97)
-  assert(Bytes::get(bytes, 2) == 115)
-  assert(Bytes::get(bytes, 3) == 109)
-}
-
 let string_to_bytes = (s: String) -> Bytes {
-  let out = Array::slice([0], 0, 0)
+  let out = Array::slice([
+    0
+  ], 0, 0)
   let len = String::length(s)
   let mut i = 0
   while i < len {
@@ -26,6 +19,13 @@ let string_to_bytes = (s: String) -> Bytes {
   Bytes::from_array(out)
 }
 
+let assert_wasm_magic = (bytes: Bytes) -> Unit {
+  assert(Bytes::get(bytes, 0) == 0)
+  assert(Bytes::get(bytes, 1) == 97)
+  assert(Bytes::get(bytes, 2) == 115)
+  assert(Bytes::get(bytes, 3) == 109)
+}
+
 //# Misc
 
 test "compile_file_wasi_linked_artifacts: returns direct linked deps for library build" {
@@ -33,18 +33,9 @@ test "compile_file_wasi_linked_artifacts: returns direct linked deps for library
   let helper_path = String::concat(base_dir, "/lib.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
-  Fs::write_bytes(
-    helper_path,
-    string_to_bytes("export let add = (a: Int, b: Int) -> Int { a + b }\n")
-  )
-  Fs::write_bytes(
-    main_path,
-    string_to_bytes("import ./lib.vibe { add }\nlet run = () -> Int { add(1, 2) }\n")
-  )
-  let (entry_bytes, linked_imports, linked_dep_specs) = compile_file_wasi_linked_artifacts(
-    main_path,
-    "run"
-  )
+  Fs::write_bytes(helper_path, string_to_bytes("export let add = (a: Int, b: Int) -> Int { a + b }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./lib.vibe { add }\nlet run = () -> Int { add(1, 2) }\n"))
+  let (entry_bytes, linked_imports, linked_dep_specs) = compile_file_wasi_linked_artifacts(main_path, "run")
   assert_wasm_magic(entry_bytes)
   assert(Array::length(linked_imports) == 1)
   let (module_name, func_name, param_count, return_count) = Array::get(linked_imports, 0)
@@ -64,10 +55,7 @@ test "compile_file_wasi_only: simple file produces valid WASM" {
   let base_dir = "/tmp/vibe_compiler_wasi_only"
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
-  Fs::write_bytes(
-    main_path,
-    string_to_bytes("export let answer = () -> Int { 40 + 2 }\n")
-  )
+  Fs::write_bytes(main_path, string_to_bytes("export let answer = () -> Int { 40 + 2 }\n"))
   let bytes = compile_file_wasi_only(main_path, "answer")
   assert_wasm_magic(bytes)
 }

@@ -1,10 +1,10 @@
 //# Imports
 
-import ../core/ast.vibe {
+import .. / core / ast.vibe {
   Expr
 }
 
-import ../core/types.vibe {
+import .. / core / types.vibe {
   Subst, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_typedef, fresh_var, generalize, instantiate, resolve_builtin, subst_add_bound, subst_apply, type_implements_trait, unify
 }
 
@@ -43,25 +43,9 @@ let prepend_expr = (first: Expr, rest: Array[Expr]) -> Array[Expr] {
   out
 }
 
-let is_bool_binop = (op: String) -> Bool {
-  op == "=="
-  || op == "!="
-  || op == "<"
-  || op == ">"
-  || op == "<="
-  || op == ">="
-  || op == "&&"
-  || op == "||"
-}
-
 let is_logic_binop = (op: String) -> Bool {
   op == "&&"
   || op == "||"
-}
-
-let is_equality_binop = (op: String) -> Bool {
-  op == "=="
-  || op == "!="
 }
 
 let is_order_binop = (op: String) -> Bool {
@@ -69,6 +53,29 @@ let is_order_binop = (op: String) -> Bool {
   || op == ">"
   || op == "<="
   || op == ">="
+}
+
+let type_name_prefix = (ty: Type) -> String {
+  match ty {
+    CtInt => "Int",
+    CtDouble => "Double",
+    CtBool => "Bool",
+    CtString => "String",
+    CtChar => "Char",
+    CtUnit => "Unit",
+    CtBytes => "Bytes",
+    CtArray(_) => "Array",
+    CtOption(_) => "Option",
+    CtEnum(name) => name,
+    CtStruct(name) => name,
+    CtNamed(name, _) => name,
+    _ => ""
+  }
+}
+
+let is_equality_binop = (op: String) -> Bool {
+  op == "=="
+  || op == "!="
 }
 
 let unify_binop_candidate = (left_ty: Type, right_ty: Type, target_ty: Type, s: Subst) -> Option[Subst] {
@@ -85,13 +92,7 @@ let unify_same_binop_operands = (left_ty: Type, right_ty: Type, s: Subst) -> Opt
   }
 }
 
-let infer_named_trait_binop = (
-  env: TypeEnv,
-  left_ty: Type,
-  right_ty: Type,
-  trait_name: String,
-  s: Subst,
-) -> Option[(Type, Subst)] {
+let infer_named_trait_binop = (env: TypeEnv, left_ty: Type, right_ty: Type, trait_name: String, s: Subst,) -> Option[(Type, Subst)] {
   match unify_same_binop_operands(left_ty, right_ty, s) {
     Some((resolved, s1)) => if type_implements_trait(env, s1, resolved, trait_name) {
       Some((resolved, s1))
@@ -129,8 +130,8 @@ let infer_binop_type = (op: String, left_ty: Type, right_ty: Type, env: TypeEnv,
         None => match infer_named_trait_binop(env, left_ty, right_ty, "Ord", s) {
           Some((_, s1)) => (CtBool, s1),
           None => {
-          Array::push(errors, String::concat("type mismatch in '", String::concat(op, "': operands must be Int or Double")))
-          (CtUnknown, s)
+            Array::push(errors, String::concat("type mismatch in '", String::concat(op, "': operands must be Int or Double")))
+            (CtUnknown, s)
           }
         }
       }
@@ -146,8 +147,8 @@ let infer_binop_type = (op: String, left_ty: Type, right_ty: Type, env: TypeEnv,
           None => match infer_named_trait_binop(env, left_ty, right_ty, "Add", s) {
             Some((resolved, s1)) => (resolved, s1),
             None => {
-            Array::push(errors, "type mismatch in '+': operands must be Int, Double, or String")
-            (CtUnknown, s)
+              Array::push(errors, "type mismatch in '+': operands must be Int, Double, or String")
+              (CtUnknown, s)
             }
           }
         }
@@ -155,8 +156,8 @@ let infer_binop_type = (op: String, left_ty: Type, right_ty: Type, env: TypeEnv,
     }
   }
   else if op == "-"
-    || op == "*"
-    || op == "/" {
+  || op == "*"
+  || op == "/" {
     let trait_name = if op == "-" {
       "Sub"
     } else if op == "*" {
@@ -171,8 +172,8 @@ let infer_binop_type = (op: String, left_ty: Type, right_ty: Type, env: TypeEnv,
         None => match infer_named_trait_binop(env, left_ty, right_ty, trait_name, s) {
           Some((resolved, s1)) => (resolved, s1),
           None => {
-          Array::push(errors, String::concat("type mismatch in '", String::concat(op, "': operands must be Int or Double")))
-          (CtUnknown, s)
+            Array::push(errors, String::concat("type mismatch in '", String::concat(op, "': operands must be Int or Double")))
+            (CtUnknown, s)
           }
         }
       }
@@ -199,24 +200,6 @@ let infer_binop_type = (op: String, left_ty: Type, right_ty: Type, env: TypeEnv,
   else {
     Array::push(errors, String::concat("unknown operator: ", op))
     (CtUnknown, s)
-  }
-}
-
-let type_name_prefix = (ty: Type) -> String {
-  match ty {
-    CtInt => "Int",
-    CtDouble => "Double",
-    CtBool => "Bool",
-    CtString => "String",
-    CtChar => "Char",
-    CtUnit => "Unit",
-    CtBytes => "Bytes",
-    CtArray(_) => "Array",
-    CtOption(_) => "Option",
-    CtEnum(name) => name,
-    CtStruct(name) => name,
-    CtNamed(name, _) => name,
-    _ => ""
   }
 }
 
@@ -383,14 +366,7 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
     EBinOp(op, left, right) => {
       let (left_ty, s1, c1) = check_expr(left, env, defs, s, c, errors)
       let (right_ty, s2, c2) = check_expr(right, env, defs, s1, c1, errors)
-      let (result_ty, s3) = infer_binop_type(
-        op,
-        subst_apply(s2, left_ty),
-        subst_apply(s2, right_ty),
-        env,
-        s2,
-        errors
-      )
+      let (result_ty, s3) = infer_binop_type(op, subst_apply(s2, left_ty), subst_apply(s2, right_ty), env, s2, errors)
       (subst_apply(s3, result_ty), s3, c2)
     },
     EUnaryOp(op, operand) => {
@@ -564,12 +540,11 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
       let mut pi = 0
       while pi < plen {
         let (raw_name, ann) = Array::get(params, pi)
-        // Strip labeled/optional markers
         let nlen = String::length(raw_name)
         let name = if nlen > 0 {
           let lc = String::char_code_at(raw_name, nlen - 1)
           if lc == '~' || lc == '?' {
-            raw_name[0:nlen - 1]
+            raw_name[0: nlen - 1]
           } else raw_name
         } else raw_name
         let (pt, ns, nc) = match ann {

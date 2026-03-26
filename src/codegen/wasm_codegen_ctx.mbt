@@ -322,6 +322,31 @@ fn span_key(span : @core.Span) -> String {
 }
 
 ///|
+/// Build a span key that is unique within the func array by appending a
+/// disambiguating suffix when the bare span key collides with an earlier
+/// entry.  Both `collect_func_defs` (registration) and `compile_expr_fn`
+/// (lookup) use this function, so the keys always agree.
+fn span_key_unique(
+  span : @core.Span,
+  params : Array[@core.FuncParam],
+) -> String {
+  let base = span_key(span)
+  if params.length() == 0 {
+    return base
+  }
+  let buf = StringBuilder::new()
+  buf.write_string(base)
+  buf.write_char('/')
+  for i, p in params {
+    if i > 0 {
+      buf.write_char(',')
+    }
+    buf.write_string(p.name)
+  }
+  buf.to_string()
+}
+
+///|
 fn push_capture(
   name : String,
   captures : Array[String],
@@ -655,7 +680,7 @@ fn collect_nested_funcs_block(
         match expr {
           @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
             let _ = effects
-            let key = span_key(span)
+            let key = span_key_unique(span, params)
             let captures : Array[String] = []
             let seen : Map[String, Bool] = {}
             let fn_bound : Map[String, Bool] = {}
@@ -737,7 +762,7 @@ fn collect_nested_funcs_block(
         match expr {
           @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
             let _ = effects
-            let key = span_key(span)
+            let key = span_key_unique(span, params)
             let captures : Array[String] = []
             let seen : Map[String, Bool] = {}
             let fn_bound : Map[String, Bool] = {}
@@ -790,7 +815,7 @@ fn collect_nested_funcs_expr(
   match expr {
     @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = effects
-      let key = span_key(span)
+      let key = span_key_unique(span, params)
       let captures : Array[String] = []
       let seen : Map[String, Bool] = {}
       let fn_bound : Map[String, Bool] = {}
@@ -942,7 +967,7 @@ fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
         match expr {
           @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
             let _ = effects
-            let key = span_key(span)
+            let key = span_key_unique(span, params)
             // Collect captures: variables used in body but defined in outer scope
             let captures : Array[String] = []
             let seen : Map[String, Bool] = {}
@@ -997,7 +1022,7 @@ fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
         match expr {
           @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
             let _ = effects
-            let key = span_key(span)
+            let key = span_key_unique(span, params)
             let captures : Array[String] = []
             let seen : Map[String, Bool] = {}
             let fn_bound : Map[String, Bool] = {}
@@ -1158,9 +1183,9 @@ fn compute_mut_captured_for_block(
 ///|
 fn collect_fn_span_keys_stmt(stmt : @core.Stmt, out : Array[String]) -> Unit {
   match stmt {
-    @core.Stmt::Let(expr=@core.Expr::Fn(span~, ..), ..)
-    | @core.Stmt::ExportLet(expr=@core.Expr::Fn(span~, ..), ..) =>
-      out.push(span_key(span))
+    @core.Stmt::Let(expr=@core.Expr::Fn(params~, span~, ..), ..)
+    | @core.Stmt::ExportLet(expr=@core.Expr::Fn(params~, span~, ..), ..) =>
+      out.push(span_key_unique(span, params))
     // Don't recurse into Fn body — that's a different scope
     @core.Stmt::Let(expr~, ..) | @core.Stmt::ExportLet(expr~, ..) =>
       collect_fn_span_keys_expr(expr, out)
@@ -1186,7 +1211,8 @@ fn collect_fn_span_keys_stmt(stmt : @core.Stmt, out : Array[String]) -> Unit {
 ///|
 fn collect_fn_span_keys_expr(expr : @core.Expr, out : Array[String]) -> Unit {
   match expr {
-    @core.Expr::Fn(span~, ..) => out.push(span_key(span))
+    @core.Expr::Fn(params~, span~, ..) =>
+      out.push(span_key_unique(span, params))
     // Don't recurse into Fn body
     @core.Expr::Call(args~, ..) =>
       for arg in args {
@@ -1285,9 +1311,11 @@ fn precompute_ref_cell_captures_block(
 ) -> Unit {
   for stmt in stmts {
     match stmt {
-      @core.Stmt::Let(expr=@core.Expr::Fn(body~, span~, ..), ..)
-      | @core.Stmt::ExportLet(expr=@core.Expr::Fn(body~, span~, ..), ..) =>
-        precompute_ref_cell_for_fn(ctx, span, body, scope_mcv)
+      @core.Stmt::Let(expr=@core.Expr::Fn(params~, body~, span~, ..), ..)
+      | @core.Stmt::ExportLet(
+        expr=@core.Expr::Fn(params~, body~, span~, ..),
+        ..
+      ) => precompute_ref_cell_for_fn(ctx, span, params, body, scope_mcv)
       @core.Stmt::Let(expr~, ..) | @core.Stmt::ExportLet(expr~, ..) =>
         precompute_ref_cell_captures_expr(ctx, expr, scope_mcv)
       @core.Stmt::Expr(expr~, ..) =>
@@ -1319,8 +1347,8 @@ fn precompute_ref_cell_captures_expr(
   scope_mcv : Map[String, Bool],
 ) -> Unit {
   match expr {
-    @core.Expr::Fn(body~, span~, ..) =>
-      precompute_ref_cell_for_fn(ctx, span, body, scope_mcv)
+    @core.Expr::Fn(params~, body~, span~, ..) =>
+      precompute_ref_cell_for_fn(ctx, span, params, body, scope_mcv)
     @core.Expr::Call(args~, ..) =>
       for arg in args {
         precompute_ref_cell_captures_expr(ctx, arg.expr, scope_mcv)
@@ -1398,10 +1426,11 @@ fn precompute_ref_cell_captures_expr(
 fn precompute_ref_cell_for_fn(
   ctx : CodegenCtx,
   span : @core.Span,
+  params : Array[@core.FuncParam],
   body : @core.Module,
   scope_mcv : Map[String, Bool],
 ) -> Unit {
-  let key = span_key(span)
+  let key = span_key_unique(span, params)
   match ctx.fn_closure_captures.get(key) {
     Some(caps) => {
       let flags : Array[Bool] = []

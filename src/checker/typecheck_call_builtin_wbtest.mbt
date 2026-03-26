@@ -399,3 +399,107 @@ test "type_call_builtin: Threads::spawn succeeds with Threads effect scope" {
     Err(err) => fail("unexpected error: \{err.to_string()}")
   }
 }
+
+///|
+test "type_call_builtin: v128_splat_i8x16 returns V128" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  let args = [builtin_test_int_arg(0x20)]
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_call_builtin(
+    env,
+    "v128_splat_i8x16",
+    args,
+    aliases,
+    effect_scope_all(),
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(actual, @core.Type::V128)
+}
+
+///|
+test "type_call_builtin: v128_any_true returns Bool" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  env.set("v", @core.Type::V128)
+  let args = [builtin_test_ident_arg("v")]
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_call_builtin(
+    env,
+    "v128_any_true",
+    args,
+    aliases,
+    effect_scope_all(),
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(actual, @core.Type::Bool)
+}
+
+///|
+test "type_call_builtin: v128_bitmask_i8x16 returns Int" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  env.set("v", @core.Type::V128)
+  let args = [builtin_test_ident_arg("v")]
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_call_builtin(
+    env,
+    "v128_bitmask_i8x16",
+    args,
+    aliases,
+    effect_scope_all(),
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(actual, @core.Type::Int)
+}
+
+///|
+test "type_call_builtin: v128_eq_i8x16 returns V128" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  env.set("a", @core.Type::V128)
+  env.set("b", @core.Type::V128)
+  let args = [builtin_test_ident_arg("a"), builtin_test_ident_arg("b")]
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_call_builtin(
+    env,
+    "v128_eq_i8x16",
+    args,
+    aliases,
+    effect_scope_all(),
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(actual, @core.Type::V128)
+}
+
+///|
+test "type_call_builtin: int_ctz returns Int" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  let args = [builtin_test_int_arg(42)]
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_call_builtin(
+    env,
+    "int_ctz",
+    args,
+    aliases,
+    effect_scope_all(),
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(actual, @core.Type::Int)
+}

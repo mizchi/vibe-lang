@@ -1086,11 +1086,9 @@ fn eval_selfhost_module(
 fn compiler_compile_files() -> Array[String] {
   [
     "vibe/compiler/token.vibe", "vibe/compiler/ast.vibe", "vibe/compiler/lexer.vibe",
-    "vibe/compiler/parser.vibe", "vibe/compiler/printer.vibe", "vibe/compiler/values.vibe",
-    "vibe/compiler/builtins.vibe", "vibe/compiler/types.vibe", "vibe/compiler/checker_resolve.vibe",
-    "vibe/compiler/checker.vibe", "vibe/compiler/checker_stmt.vibe", "vibe/compiler/eval_builtins.vibe",
-    "vibe/compiler/eval.vibe", "vibe/compiler/runtime/eval_loader/index.vibe", "vibe/compiler/eval_stmt.vibe",
-    "vibe/compiler/eval_stmt_test_support.vibe",
+    "vibe/compiler/parser.vibe", "vibe/compiler/printer.vibe", "vibe/compiler/builtins.vibe",
+    "vibe/compiler/types.vibe", "vibe/compiler/checker_resolve.vibe", "vibe/compiler/checker.vibe",
+    "vibe/compiler/checker_stmt.vibe", "vibe/compiler/runtime/eval_loader/index.vibe",
     "vibe/compiler/type_db.vibe", "vibe/compiler/index.vibe",
   ]
 }
@@ -1161,34 +1159,6 @@ test "selfhost gate5: lex-parse-print roundtrip" {
 }
 
 ///|
-test "selfhost gate5: eval pipeline meta-circular" {
-  if not(selfhost_deep_tests_enabled()) {
-    return
-  }
-  let db = VibeDb::new()
-  let visited : Map[String, Bool] = {}
-  load_compiler_source(db, "vibe/compiler/token.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/ast.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/lexer.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/parser.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/values.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval_builtins.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/runtime/eval_loader/index.vibe", visited)
-  load_compiler_source(db, "vibe/module/path.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval_stmt.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval_stmt_test_support.vibe", visited)
-  let driver =
-    #|import ./vibe/compiler/eval_stmt_test_support.vibe { run_source }
-    #|run_source("let x = 42", "x")
-  let result = eval_selfhost_module(db, driver)
-  match result.last {
-    Some(@core.Value::String(v)) => assert_eq(v, "42")
-    _ => fail("expected String(\"42\"), got: \{result.last.to_string()}")
-  }
-}
-
-///|
 test "selfhost final: lexer tokenizes own source" {
   let db = VibeDb::new()
   let visited : Map[String, Bool] = {}
@@ -1240,59 +1210,9 @@ test "selfhost final: parser roundtrips own source" {
 }
 
 ///|
-test "selfhost final: eval pipeline processes own token module" {
-  if not(selfhost_deep_tests_enabled()) {
-    return
-  }
-  let db = VibeDb::new()
-  let visited : Map[String, Bool] = {}
-  load_compiler_source(db, "vibe/compiler/token.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/ast.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/lexer.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/parser.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/values.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval_builtins.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/runtime/eval_loader/index.vibe", visited)
-  load_compiler_source(db, "vibe/module/path.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval_stmt.vibe", visited)
-  load_compiler_source(db, "vibe/compiler/eval_stmt_test_support.vibe", visited)
-  let driver =
-    #|import ./vibe/compiler/eval_stmt_test_support.vibe { run_source }
-    #|let source = Fs::read_file("vibe/compiler/token.vibe")
-    #|let test_src = String::concat(source, "\nlet __result = token_to_string(TInt(42))")
-    #|run_source(test_src, "__result")
-  let result = eval_selfhost_module(db, driver)
-  match result.last {
-    Some(@core.Value::String(v)) => assert_true(v.contains("TInt(42)"))
-    _ =>
-      fail(
-        "expected String containing 'TInt(42)', got: \{result.last.to_string()}",
-      )
-  }
-}
-
-///|
 test "native roundtrip: parser.vibe format idempotency" {
   let source = @os_fs.read_file_to_string("vibe/compiler/parser.vibe") catch {
     e => fail("[read] parser.vibe: \{e.to_string()}")
-  }
-  let formatted = @parser.format_script(source)
-  let before = @parser.parse_ast(source) catch {
-    e => fail("[before-format] parse failed: \{e.to_string()}")
-  }
-  let after = @parser.parse_ast(formatted) catch {
-    e => fail("[after-format] parse failed: \{e.to_string()}")
-  }
-  assert_eq(@core.normalize_module(after), @core.normalize_module(before))
-  let formatted2 = @parser.format_script(formatted)
-  assert_eq(formatted, formatted2)
-}
-
-///|
-test "native roundtrip: eval.vibe format idempotency" {
-  let source = @os_fs.read_file_to_string("vibe/compiler/eval.vibe") catch {
-    e => fail("[read] eval.vibe: \{e.to_string()}")
   }
   let formatted = @parser.format_script(source)
   let before = @parser.parse_ast(source) catch {
@@ -1318,17 +1238,16 @@ test "probe: selfhost roundtrip all compiler sources" {
   load_compiler_source(db, "vibe/compiler/lexer.vibe", visited)
   load_compiler_source(db, "vibe/compiler/parser.vibe", visited)
   load_compiler_source(db, "vibe/compiler/printer.vibe", visited)
-  // Exclude parser.vibe (1608 lines) and eval.vibe (1354 lines) — too large for interpreter
+  // Exclude parser.vibe (1608 lines) — too large for interpreter
   let full_files : Array[String] = [
-    "vibe/compiler/eval_stmt_test_support.vibe", "vibe/compiler/index.vibe", "vibe/compiler/checker_resolve.vibe",
-    "vibe/compiler/ast.vibe", "vibe/compiler/runtime/eval_loader/index.vibe", "vibe/compiler/checker_stmt.vibe",
-    "vibe/compiler/values.vibe", "vibe/compiler/token.vibe", "vibe/compiler/eval_stmt.vibe",
-    "vibe/compiler/type_db.vibe", "vibe/compiler/checker.vibe", "vibe/compiler/printer.vibe",
-    "vibe/compiler/builtins.vibe", "vibe/compiler/eval_builtins.vibe", "vibe/compiler/lexer.vibe",
+    "vibe/compiler/index.vibe", "vibe/compiler/checker_resolve.vibe", "vibe/compiler/ast.vibe",
+    "vibe/compiler/runtime/eval_loader/index.vibe", "vibe/compiler/checker_stmt.vibe",
+    "vibe/compiler/token.vibe", "vibe/compiler/type_db.vibe", "vibe/compiler/checker.vibe",
+    "vibe/compiler/printer.vibe", "vibe/compiler/builtins.vibe", "vibe/compiler/lexer.vibe",
     "vibe/compiler/types.vibe",
   ]
   let smoke_files : Array[String] = [
-    "vibe/compiler/token.vibe", "vibe/compiler/ast.vibe", "vibe/compiler/values.vibe",
+    "vibe/compiler/token.vibe", "vibe/compiler/ast.vibe",
   ]
   // Full probe is expensive on JS interpreter backend; keep smoke fast by default.
   // - VIBE_SELFHOST_PROBE_FULL=1: run all full_files

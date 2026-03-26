@@ -128,3 +128,19 @@ test "normalize_format: self-import (import .{ ... }) round-trips" {
   }
   assert_true(result.contains("import ."))
 }
+
+///|
+test "normalize_format: export effect definition round-trips" {
+  let source =
+    #|import ./token.vibe { Token }
+    #|
+    #|export effect ParseRecur {
+    #|  Call(Array[Token], Int, Int) -> (Expr, Int)
+    #|}
+  let result = match normalize_format_source_text(source) {
+    Ok(v) => v
+    Err(err) => fail("normalize failed: " + err)
+  }
+  assert_true(result.contains("export effect ParseRecur {"))
+  assert_true(result.contains("Call(Array[Token], Int, Int) -> (Expr, Int)"))
+}

@@ -209,6 +209,7 @@ test "compile_module_wasm_with_opt_level_profiled returns wasm and stage timings
   assert_true(stage_profile.total_us >= 0)
 }
 
+///|
 test "lower_top_level_tests_to_exprs wraps each test body in a function" {
   let source =
     #|let mut counter = 0
@@ -324,4 +325,31 @@ test "lower_top_level_tests_to_exprs keeps imports and helpers top-level" {
     }
     _ => fail("expected wrapper invocation")
   }
+}
+
+///|
+test "compile_module_wasm cross-directory transitive import" {
+  // Simulates url_test.vibe: entry -> ./url/pattern.vibe -> ../regexp/index.vibe
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "/x/regexp/regexp.vibe", "export let compile = (s: String) -> String { s }\n",
+  )
+  db.set_source(
+    "/x/regexp/index.vibe", "export ./regexp.vibe { compile }\nexport { compile }\n",
+  )
+  db.set_source(
+    "/x/url/pattern.vibe", "import ../regexp { compile }\nexport let make_pattern = (s: String) -> String { compile(s) }\n",
+  )
+  db.set_source(
+    "/x/url_test.vibe", "import ./url/pattern.vibe { make_pattern }\nlet main = () -> Int { let _ = make_pattern(\"x\")\n0 }\n",
+  )
+  let wasm_bytes = compile_module_wasm_with_opt_level(db, "/x/url_test.vibe") catch {
+    e => fail("compile failed: " + e.user_message())
+  }
+  // WASM binary should start with magic number
+  assert_true(wasm_bytes.length() > 8)
+  assert_eq(wasm_bytes[0], b'\x00')
+  assert_eq(wasm_bytes[1], b'\x61')
+  assert_eq(wasm_bytes[2], b'\x73')
+  assert_eq(wasm_bytes[3], b'\x6d')
 }

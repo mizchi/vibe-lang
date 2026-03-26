@@ -288,6 +288,8 @@ fn eval_pure_builtin(
           @core.Value::Float(a + b)
         (@core.Value::Double(a), @core.Value::Double(b)) =>
           @core.Value::Double(a + b)
+        (@core.Value::String(a), @core.Value::String(b)) =>
+          @core.Value::String(a + b)
         _ =>
           raise EvalError::BadCall(
             E(

@@ -38,6 +38,7 @@ test "placeholder bad-call diagnostic carries usage hint" {
   }
 }
 
+///|
 test "scoped ref escape diagnostic carries guidance" {
   let diag = TypeError::ScopedRefEscape(
     context="function return",

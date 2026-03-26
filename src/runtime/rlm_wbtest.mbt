@@ -1,3 +1,5 @@
+// TODO(issue#20): eval_script 依存テスト。Rlm の compiled backend 移行時に書き換える。
+
 ///|
 test "LlmConfig::from_env returns None when VIBE_LLM_PROVIDER not set" {
   // Ensure env var is not set (it shouldn't be in test environment)

@@ -180,10 +180,8 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       }
     }
     @core.Expr::Fn(params~, ret~, effects=_, body~, span~, ..) => {
-      let _ = span
-      let _ = params
       let _ = ret
-      let key = span_key(span)
+      let key = span_key_unique(span, params)
       match ctx.fn_closure_captures.get(key) {
         Some(captures) => if captures.length() > 0 { ctx.need_heap = true }
         None => ()

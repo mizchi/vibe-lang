@@ -216,9 +216,7 @@ let sum = "result: \(add(1, 2))" // => "result: 3"
 // 1 |> add(2)          => add(1, 2)
 // "hello" |> String::length  => String::length("hello")
 
-export let _start = () -> Int {
-  1 |> add(2) |> mul(3)   // => 9
-}
+1 |> add(2) |> mul(3)   // => 9
 ```
 
 ## Type Definitions

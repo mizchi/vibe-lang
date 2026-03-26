@@ -1,0 +1,292 @@
+//# SIMD Higher-Level Patterns
+//
+// Composable SIMD instruction sequences for common compiler operations.
+// Each pattern emits a WASM function body into a bytebuf.
+//
+// Convention: all functions use i64 params/results (vibe's tagged int ABI).
+// Memory addresses are passed as i64 and wrapped to i32 for memory ops.
+
+import ../../core/index.vibe {
+  bytebuf_push, leb128_encode_u32
+}
+
+import ./simd.vibe {
+  emit_v128_load, emit_i8x16_splat, emit_i8x16_eq,
+  emit_i8x16_all_true, emit_i8x16_bitmask,
+  emit_v128_and, emit_v128_or, emit_v128_not
+}
+
+import ./instructions.vibe {
+  emit_local_get, emit_local_set,
+  emit_i32_wrap_i64, emit_i64_extend_i32_s, emit_i64_const,
+  emit_i64_add, emit_i64_eq,
+  emit_i32_load8_u,
+  emit_return,
+  emit_if_i64, emit_else, emit_end
+}
+
+//# Pattern: SIMD memcmp_16
+//
+// Compare 16 bytes at two memory addresses using SIMD.
+// Params: local0=addr_a:i64, local1=addr_b:i64
+// Returns: i64 (1 if all 16 bytes equal, 0 otherwise)
+//
+// Instructions (7 total):
+//   local.get 0 / i32.wrap_i64 / v128.load
+//   local.get 1 / i32.wrap_i64 / v128.load
+//   i8x16.eq / i8x16.all_true / i64.extend_i32_s
+
+export let emit_simd_memcmp_16 = (buf: Bytes) -> Unit {
+  emit_local_get(buf, 0)
+  emit_i32_wrap_i64(buf)
+  emit_v128_load(buf, 0, 0)
+
+  emit_local_get(buf, 1)
+  emit_i32_wrap_i64(buf)
+  emit_v128_load(buf, 0, 0)
+
+  emit_i8x16_eq(buf)
+  emit_i8x16_all_true(buf)
+  emit_i64_extend_i32_s(buf)
+}
+
+//# Pattern: SIMD find_byte_16
+//
+// Find a byte in a 16-byte memory chunk using SIMD.
+// Params: local0=addr:i64, local1=target_byte:i64
+// Returns: i64 bitmask (bit N set if byte at offset N matches)
+//
+// Instructions (7 total):
+//   local.get 0 / i32.wrap_i64 / v128.load
+//   local.get 1 / i32.wrap_i64 / i8x16.splat
+//   i8x16.eq / i8x16.bitmask / i64.extend_i32_s
+
+export let emit_simd_find_byte_16 = (buf: Bytes) -> Unit {
+  emit_local_get(buf, 0)
+  emit_i32_wrap_i64(buf)
+  emit_v128_load(buf, 0, 0)
+
+  emit_local_get(buf, 1)
+  emit_i32_wrap_i64(buf)
+  emit_i8x16_splat(buf)
+
+  emit_i8x16_eq(buf)
+  emit_i8x16_bitmask(buf)
+  emit_i64_extend_i32_s(buf)
+}
+
+//# Pattern: SIMD skip_whitespace_16
+//
+// Check a 16-byte chunk for whitespace characters (' ', '\t', '\n', '\r').
+// Params: local0=addr:i64
+// Returns: i64 bitmask of NON-whitespace positions (bit set = not whitespace)
+//
+// Strategy: compare chunk against each whitespace byte, OR the masks,
+// then NOT to get non-whitespace positions, then bitmask.
+//
+// Instructions:
+//   v128.load chunk
+//   4x (i8x16.splat + i8x16.eq) for ' ', '\t', '\n', '\r'
+//   3x v128.or to combine
+//   v128.not → non-whitespace mask
+//   i8x16.bitmask → i32 → i64
+
+export let emit_simd_skip_whitespace_16 = (buf: Bytes) -> Unit {
+  // Load chunk: local.get 0 / i32.wrap / v128.load
+  emit_local_get(buf, 0)
+  emit_i32_wrap_i64(buf)
+  emit_v128_load(buf, 0, 0)
+  emit_local_set(buf, 2)  // local2 = chunk
+
+  // is_space = i8x16.eq(chunk, splat(0x20))
+  emit_local_get(buf, 2)
+  emit_i64_const(buf, 0x20)
+  emit_i32_wrap_i64(buf)
+  emit_i8x16_splat(buf)
+  emit_i8x16_eq(buf)
+  // stack: is_space
+
+  // is_tab = i8x16.eq(chunk, splat(0x09))
+  emit_local_get(buf, 2)
+  emit_i64_const(buf, 0x09)
+  emit_i32_wrap_i64(buf)
+  emit_i8x16_splat(buf)
+  emit_i8x16_eq(buf)
+  // stack: is_space, is_tab
+
+  emit_v128_or(buf)
+  // stack: is_space|is_tab
+
+  // is_nl = i8x16.eq(chunk, splat(0x0A))
+  emit_local_get(buf, 2)
+  emit_i64_const(buf, 0x0A)
+  emit_i32_wrap_i64(buf)
+  emit_i8x16_splat(buf)
+  emit_i8x16_eq(buf)
+  // stack: (is_space|is_tab), is_nl
+
+  emit_v128_or(buf)
+  // stack: is_space|is_tab|is_nl
+
+  // is_cr = i8x16.eq(chunk, splat(0x0D))
+  emit_local_get(buf, 2)
+  emit_i64_const(buf, 0x0D)
+  emit_i32_wrap_i64(buf)
+  emit_i8x16_splat(buf)
+  emit_i8x16_eq(buf)
+  // stack: (is_space|is_tab|is_nl), is_cr
+
+  emit_v128_or(buf)
+  // stack: is_ws (all whitespace positions)
+
+  // NOT → non-whitespace, then bitmask
+  emit_v128_not(buf)
+  emit_i8x16_bitmask(buf)
+  emit_i64_extend_i32_s(buf)
+  // result: bitmask where bit N set = byte N is NOT whitespace
+  // caller uses ctz to find first non-whitespace position
+}
+
+//# Pattern: SIMD in_range_16
+//
+// Check if each byte in a 16-byte chunk is within [low, high] range.
+// Params: local0=addr:i64, local1=low:i64, local2=high:i64
+// Returns: i64 bitmask of bytes OUTSIDE range (bit set = out of range)
+//
+// Uses: v128_le_u_i8x16 is not yet in our emit set, so we use
+// a subtraction trick: (byte - low) <= (high - low) using unsigned comparison.
+// For simplicity, we use splat + eq for exact byte matching instead.
+//
+// Actually: since we don't have le_u yet, provide an alternative pattern
+// that checks membership in a character set via multiple eq + or.
+
+export let emit_simd_is_identifier_char_16 = (buf: Bytes) -> Unit {
+  // Load chunk
+  emit_local_get(buf, 0)
+  emit_i32_wrap_i64(buf)
+  emit_v128_load(buf, 0, 0)
+  emit_local_set(buf, 1)  // local1 = chunk
+
+  // Check '_' (0x5F)
+  emit_local_get(buf, 1)
+  emit_i64_const(buf, 0x5F)
+  emit_i32_wrap_i64(buf)
+  emit_i8x16_splat(buf)
+  emit_i8x16_eq(buf)
+  // stack: is_underscore
+
+  // For [a-z], [A-Z], [0-9] we'd need le_u.
+  // Emit the underscore check as a starting point; full range check
+  // requires adding emit_i8x16_le_u to simd.vibe (opcode 0xFD 0x26).
+
+  // For now, bitmask the underscore-only result as a prototype
+  emit_i8x16_bitmask(buf)
+  emit_i64_extend_i32_s(buf)
+}
+
+//# Scalar baselines (for code size comparison)
+
+// i64.load instruction (opcode 0x29 = 41, followed by memarg)
+let emit_i64_load = (buf: Bytes, align: Int, offset: Int) -> Unit {
+  bytebuf_push(buf, 41)
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
+
+//# Scalar memcmp_16 (unrolled, 2x i64.load)
+//
+// Compare 16 bytes as two 8-byte i64 loads.
+// Params: local0=addr_a:i64, local1=addr_b:i64
+// Returns: i64 (1 if equal, 0 otherwise)
+//
+// This is the realistic scalar baseline -- compilers unroll small memcmp
+// into word-sized loads. Still more instructions than SIMD.
+
+export let emit_scalar_memcmp_16_unrolled = (buf: Bytes) -> Unit {
+  // Compare first 8 bytes
+  emit_local_get(buf, 0)
+  emit_i32_wrap_i64(buf)
+  emit_i64_load(buf, 0, 0)
+
+  emit_local_get(buf, 1)
+  emit_i32_wrap_i64(buf)
+  emit_i64_load(buf, 0, 0)
+
+  emit_i64_eq(buf)
+  // if first 8 bytes equal, check second 8 bytes
+  emit_if_i64(buf)
+    emit_local_get(buf, 0)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 0, 8)
+
+    emit_local_get(buf, 1)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 0, 8)
+
+    emit_i64_eq(buf)
+    emit_i64_extend_i32_s(buf)
+  emit_else(buf)
+    emit_i64_const(buf, 0)
+  emit_end(buf)
+}
+
+//# Scalar find_byte_16 (unrolled, 4 bytes checked)
+//
+// Check bytes one by one with conditional branches.
+// Params: local0=addr:i64, local1=target_byte:i64
+// Returns: i64 bitmask (1<<pos for first match, 0 if not found)
+//
+// Only checks first 4 bytes for code brevity. A full 16-byte unroll
+// would be 4x larger, making the SIMD advantage even more dramatic.
+
+export let emit_scalar_find_byte_16_unrolled = (buf: Bytes) -> Unit {
+  // Byte 0
+  emit_local_get(buf, 0)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load8_u(buf, 0, 0)
+  emit_i64_extend_i32_s(buf)
+  emit_local_get(buf, 1)
+  emit_i64_eq(buf)
+  emit_if_i64(buf)
+    emit_i64_const(buf, 1)
+    emit_return(buf)
+  emit_else(buf)
+    // Byte 1
+    emit_local_get(buf, 0)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load8_u(buf, 0, 1)
+    emit_i64_extend_i32_s(buf)
+    emit_local_get(buf, 1)
+    emit_i64_eq(buf)
+    emit_if_i64(buf)
+      emit_i64_const(buf, 2)
+      emit_return(buf)
+    emit_else(buf)
+      // Byte 2
+      emit_local_get(buf, 0)
+      emit_i32_wrap_i64(buf)
+      emit_i32_load8_u(buf, 0, 2)
+      emit_i64_extend_i32_s(buf)
+      emit_local_get(buf, 1)
+      emit_i64_eq(buf)
+      emit_if_i64(buf)
+        emit_i64_const(buf, 4)
+        emit_return(buf)
+      emit_else(buf)
+        // Byte 3
+        emit_local_get(buf, 0)
+        emit_i32_wrap_i64(buf)
+        emit_i32_load8_u(buf, 0, 3)
+        emit_i64_extend_i32_s(buf)
+        emit_local_get(buf, 1)
+        emit_i64_eq(buf)
+        emit_if_i64(buf)
+          emit_i64_const(buf, 8)
+          emit_return(buf)
+        emit_else(buf)
+          emit_i64_const(buf, 0)
+        emit_end(buf)
+      emit_end(buf)
+    emit_end(buf)
+  emit_end(buf)
+}

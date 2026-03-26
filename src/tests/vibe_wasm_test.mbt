@@ -1191,3 +1191,81 @@ test "vibe wasm compiles wasm primitive memory and conversion builtins" {
   assert_true(bytes_contains_ascii(wasm, "_start"))
   assert_true(bytes_contains_ascii(wasm, "memory"))
 }
+
+///|
+test "vibe wasm simd v128_splat and v128_any_true compile" {
+  let db = VibeDb::new()
+  let src =
+    #|let v = v128_splat_i8x16(0x20)
+    #|let found = v128_any_true(v)
+    #|0
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_eq(wasm[0].to_int(), 0x00)
+  assert_eq(wasm[1].to_int(), 0x61)
+  assert_eq(wasm[2].to_int(), 0x73)
+  assert_eq(wasm[3].to_int(), 0x6d)
+}
+
+///|
+test "vibe wasm simd v128_eq_i8x16 and v128_bitmask compile" {
+  let db = VibeDb::new()
+  let src =
+    #|let a = v128_splat_i8x16(0x20)
+    #|let b = v128_splat_i8x16(0x20)
+    #|let mask = v128_eq_i8x16(a, b)
+    #|let bits = v128_bitmask_i8x16(mask)
+    #|bits
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_eq(wasm[0].to_int(), 0x00)
+  assert_eq(wasm[1].to_int(), 0x61)
+}
+
+///|
+test "vibe wasm simd v128_and v128_or v128_not compile" {
+  let db = VibeDb::new()
+  let src =
+    #|let a = v128_splat_i8x16(0xFF)
+    #|let b = v128_splat_i8x16(0x0F)
+    #|let c = v128_and(a, b)
+    #|let d = v128_or(a, b)
+    #|let e = v128_not(a)
+    #|0
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_eq(wasm[0].to_int(), 0x00)
+  assert_eq(wasm[1].to_int(), 0x61)
+}
+
+///|
+test "vibe wasm int_ctz compile" {
+  let db = VibeDb::new()
+  let src =
+    #|let x = int_ctz(8)
+    #|x
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_eq(wasm[0].to_int(), 0x00)
+  assert_eq(wasm[1].to_int(), 0x61)
+}

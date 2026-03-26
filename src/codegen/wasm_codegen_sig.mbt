@@ -87,6 +87,7 @@ fn value_kind_key_char(kind : ValueKind) -> Char {
     ValueKind::I32 => 'i'
     ValueKind::I64 | ValueKind::BoxedF32 | ValueKind::BoxedF64 => 'l'
     ValueKind::ExternRef => 'r'
+    ValueKind::V128 => 'v'
   }
 }
 

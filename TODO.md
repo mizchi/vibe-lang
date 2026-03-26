@@ -16,7 +16,7 @@ Completed items are archived in `docs/DONE.md`.
 - [x] `special_manifest_header_deps` を撤去し、manifest 依存は実ソース header から組み立てる
 - [x] persistent module header / type env codec を shared helper に統一
 - [x] `index.vibe` の probe / `cli_cache` 重複 export を削減し、cache helper 経由へ寄せる
-- [x] `selfhost_cli_core_entry` から probe export を分離し、canonical CLI entry を薄く保つ
+- [x] probe export は `selfhost_cli_probe_entry` に分離し、0.1.0 canonical entry は直接実行可能な `selfhost_cli_support.vibe` とする
 
 ### 直近の完了
 
@@ -43,13 +43,43 @@ Completed items are archived in `docs/DONE.md`.
 
 ### 残タスク
 
-- [ ] GitHub Actions 上で `just release-selfhost-gates` を一発通しし、最終ログを固定
-- [ ] `just release-check` を最新 HEAD で通す
+- [x] 実使用ベースの `0.1.0` usability sign-off を 1 周通す
+  - `docs/report/0-1-0-usability-signoff.md`
+  - [x] `vibe shell`
+  - [x] `vibe check`
+  - [x] `vibe run`
+  - [x] `vibe build`
+  - [x] stale `index.lock` recovery / migration の扱いを決める
+  - [x] selfhost dist sample compile/run
+- [ ] GitHub Actions 上で `just ci-selfhost-gates-shard bootstrap` を通し、selfhost bootstrap の最終ログを固定
+- [x] `just release-check` を最新 HEAD で通す
+  - local `release-check` は 0.1.0 supported surface に絞る
+  - broad compiled package sweep は `just test-vibe-package-suite` へ分離
+  - heavy `wasm_opt` / `wasm_runtime` suite は `just test-wasm-heavy` に残し、release gate からは外す
 - [ ] `build-selfhost-dist` を latest HEAD で cold build し、sample compile/run を再確認
-- [ ] `0.1.0` の supported surface を文書化して freeze
+  - [x] latest HEAD の `build_selfhost_dist.sh` は pass（`wasm-opt` failure 時 raw fallback を含む）
+  - [ ] strict な cold-host 条件（既存 host CLI / dist artifact 非依存）でも再確認
+- [x] `0.1.0` の supported surface を文書化して freeze
+  - `docs/adr/0033-selfhost-0-1-0-release-profile.md`
   - linear/WASM selfhost dist を正式対象
   - GC backend は experimental
   - advanced effect/WIT mapping は experimental
+- [ ] selfhost check parity の host `Abort trap: 6` を原因特定して潰す
+  - gate 自体は pass しているが、host `vibe check` の失敗時終了が abort に見える
+  - `scripts/test_selfhost_check_command_parity.sh`
+  - `scripts/test_selfhost_check_direct_parity.sh`
+
+### 0.1.0 gate 外に出した broad package sweep
+
+- [ ] `just test-vibe-package-suite` の compiled-only parity を戻す
+  - runtime/effect 系 unsupported:
+    `vibe/path`, `vibe/io`, `vibe/fs`, `vibe/time`, `vibe/process`,
+    `vibe/shell`, `vibe/x/rlm`, `vibe/socket`
+  - current pure regressions:
+    `examples/string_add_test.vibe`
+    `vibe/json/test_json_import.vibe`
+    `vibe/json/jsonrpc_test.vibe`
+    `vibe/x/url_test.vibe`
 
 ## ビルドパイプライン
 
@@ -180,7 +210,6 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 ## vibe/wasm ツールチェーン
 
 - [x] wasm_opt: directize, call forwarding, signature pruning (remove_unused_types で実装済み)
-- [ ] wasm_opt: duckdb-mvp.wasm 対応 (39MB)
 - [x] wasm_runtime: テスト拡充 (64→81テスト、i64 ops + type conv + control flow)
 - [x] wat_encoder: S 式完全対応（f32/f64, table/elem, br_table, call_indirect, float tokenizer）
 - [ ] SIMD codegen: v128 命令の emit + lexer intrinsic 化
@@ -237,6 +266,22 @@ linked debug build を selfhost でも生成するには以下の移植が必要
   - [x] `eval` command を public CLI から外す
   - [ ] `src/runtime/lib.mbt` の `Runtime::eval_script_with_mode` caller を 0 にする
   - [ ] host / selfhost evaluator 実装と専用 test を削除する
+  - [x] 不要になった selfhost fixture smoke test を削除する
+    - [x] `vibe/compiler/fixture_selfhost_test.vibe`
+    - [x] `vibe/compiler/fixture_selfhost_roundtrip_test.vibe`
+    - [x] `vibe/compiler/fixture_parse_test_support.vibe`
+  - [ ] 不要になった interpreter/evaluator 専用 test を棚卸しして段階削除する
+    - [ ] `vibe/compiler/eval_*` の fixed-string smoke / wrapper test を分類する
+    - [ ] `test-selfhost-cache-probe` を compiled-only の gate へ載せ替えるか、release gate から外したまま整理する
+    - [ ] `vibe/compiler/fixture_*_test_support.vibe` の export 面を絞って、重複 fixture test を減らす
+    - [ ] host / selfhost で重複している evaluator smoke test を mainline test に統合する
+    - [ ] coverage / bootstrap gate に必要な test だけ残す
+
+## Release 運用メモ
+
+- [x] local の `just release-selfhost-gates` は bootstrap を外し、日常の sign-off を軽く保つ
+- [x] local の `just release-selfhost-gates` は selfbuild KPI も外し、bootstrap lane は CI と明示 target に閉じる
+- [ ] selfhost bootstrap (`test-selfhost-bootstrap`) と selfbuild KPI (`test-selfhost-wasi-selfbuild-kpi`) は CI shard 専用 gate として運用する
 
 ## ユーザビリティ改善
 

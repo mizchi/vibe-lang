@@ -852,3 +852,64 @@ test "codebase apply_annotations_to_source avoids duplicate when comment exists"
   assert_eq(applied, source)
   remove_if_exists(root)
 }
+
+///|
+test "codebase refresh_lock cross-directory transitive import" {
+  // Simulate url_test.vibe pattern:
+  // root/url_test.vibe -> ./url/pattern.vibe -> ../regexp/index.vibe
+  let root = make_temp_dir("cross_dir_import")
+  // index.vibe at root
+  write_file(root + "/index.vibe", "export let version = \"0.1.0\"\n")
+  // regexp module (sibling of url/)
+  @os_fs.create_dir(root + "/regexp") catch {
+    e => fail(e.to_string())
+  }
+  write_file(
+    root + "/regexp/regexp.vibe",
+    "export let compile = (s: String) -> String { s }\n",
+  )
+  write_file(
+    root + "/regexp/index.vibe",
+    "export ./regexp.vibe { compile }\nexport { compile }\n",
+  )
+  // url/ subdirectory
+  @os_fs.create_dir(root + "/url") catch {
+    e => fail(e.to_string())
+  }
+  write_file(
+    root + "/url/pattern.vibe",
+    "import ../regexp { compile }\nexport let make_pattern = (s: String) -> String { compile(s) }\n",
+  )
+  // Entry test file at root level
+  let entry = root + "/url_test.vibe"
+  write_file(
+    entry, "import ./url/pattern.vibe { make_pattern }\nlet result = make_pattern(\"test\")\nexport { result }\n",
+  )
+  match refresh_lock_path_refs(entry) {
+    Ok(lock) => {
+      // Verify all transitive dependencies are in the lock
+      let pattern_path = @vibe_fs.normalize_path(root + "/url/pattern.vibe")
+      let regexp_index = @vibe_fs.normalize_path(root + "/regexp/index.vibe")
+      let regexp_impl = @vibe_fs.normalize_path(root + "/regexp/regexp.vibe")
+      let mut found_pattern = false
+      let mut found_regexp_index = false
+      let mut found_regexp_impl = false
+      for path, _ in lock.path_refs {
+        if path == pattern_path {
+          found_pattern = true
+        }
+        if path == regexp_index {
+          found_regexp_index = true
+        }
+        if path == regexp_impl {
+          found_regexp_impl = true
+        }
+      }
+      assert_true(found_pattern)
+      assert_true(found_regexp_index)
+      assert_true(found_regexp_impl)
+    }
+    Err(err) => fail("cross-directory transitive import should succeed: " + err)
+  }
+  remove_if_exists(root)
+}

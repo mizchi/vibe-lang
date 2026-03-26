@@ -6,7 +6,7 @@ For full details see [index.md](index.md).
 ## CLI
 
 ```bash
-vibe run file.vibe    # Run script (calls _start)
+vibe run file.vibe    # Run script (evaluates the final top-level expression)
 vibe test file.vibe   # Run tests in a file
 vibe shell            # Interactive REPL (PosixMode)
 vibe check file.vibe  # Type check
@@ -14,15 +14,13 @@ vibe check file.vibe  # Type check
 
 ## Entry Point
 
-Every runnable `.vibe` file defines `export let _start` as its entry point.
-Top-level function calls are not allowed.
+Source-level scripts run the final top-level expression. When you `vibe build`,
+the generated WASM exports `_start` as the ABI entry point.
 
 ```vibe
 let add = (x: Int, y: Int) -> Int { x + y }
 
-export let _start = () -> Int {
-  add(1, 2)
-}
+add(1, 2)
 ```
 
 ## Basics
@@ -58,11 +56,9 @@ let identity = [T](x: T) -> T { x }
 > first argument. All collection HOFs take the array as the first argument,
 > so piping works naturally:
 > ```vibe
-> export let _start = () -> Int {
->   [1, 2, 3, 4, 5]
->     |> Array::filter((x: Int) -> Bool { x % 2 == 0 })
->     |> Array::fold(0, (acc: Int, x: Int) -> Int { acc + x })
-> }
+> [1, 2, 3, 4, 5]
+>   |> Array::filter((x: Int) -> Bool { x % 2 == 0 })
+>   |> Array::fold(0, (acc: Int, x: Int) -> Int { acc + x })
 > ```
 
 ## Types

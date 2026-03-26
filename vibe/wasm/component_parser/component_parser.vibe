@@ -1,36 +1,9 @@
-// Component Model Binary Parser
-// Parses WebAssembly Component Model binary format
-
 //# Functions
 
-// === LEB128 (inlined) ===
-
-let read_uleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
-  let len = Bytes::length(buf)
-  let mut i = offset
-  let mut result = 0
-  let mut shift = 0
-  let mut done = false
-  while (i < len) && (done == false) {
-    let byte = buf[i]
-    result = result | ((byte & 0x7F) << shift)
-    i = i + 1
-    if (byte & 0x80) == 0 {
-      done = true
-    } else {
-      shift = shift + 7
-    }
-  }
-  (result, i)
-}
-
-// === Component Model Header ===
-// Same magic as core WASM, but version bytes differ:
-// Core: [0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00]
-// Component: [0x00, 0x61, 0x73, 0x6D, 0x0D, 0x00, 0x01, 0x00]
-
 export let is_component = (bytes: Bytes) -> Bool {
-  if Bytes::length(bytes) < 8 { false }
+  if Bytes::length(bytes) < 8 {
+    false
+  }
   else {
     (bytes[0] == 0) &&
     (bytes[1] == 97) &&
@@ -44,7 +17,9 @@ export let is_component = (bytes: Bytes) -> Bool {
 }
 
 export let is_core_wasm = (bytes: Bytes) -> Bool {
-  if Bytes::length(bytes) < 8 { false }
+  if Bytes::length(bytes) < 8 {
+    false
+  }
   else {
     (bytes[0] == 0) &&
     (bytes[1] == 97) &&
@@ -57,44 +32,109 @@ export let is_core_wasm = (bytes: Bytes) -> Bool {
   }
 }
 
-// === Component Section IDs ===
-// Component sections have different IDs from core WASM
-
-// sec_id = 0: custom
-// sec_id = 1: core module
-// sec_id = 2: core instance
-// sec_id = 3: core type
-// sec_id = 4: component
-// sec_id = 5: instance
-// sec_id = 6: alias
-// sec_id = 7: type
-// sec_id = 8: canon
-// sec_id = 9: start
-// sec_id = 10: import
-// sec_id = 11: export
-
-export let comp_section_name = (id: Int) -> String {
-  if id == 0 { "custom" }
-  else if id == 1 { "core-module" }
-  else if id == 2 { "core-instance" }
-  else if id == 3 { "core-type" }
-  else if id == 4 { "component" }
-  else if id == 5 { "instance" }
-  else if id == 6 { "alias" }
-  else if id == 7 { "type" }
-  else if id == 8 { "canon" }
-  else if id == 9 { "start" }
-  else if id == 10 { "import" }
-  else if id == 11 { "export" }
-  else { "unknown" }
+let read_uleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
+  let len = Bytes::length(buf)
+  let mut i = offset
+  let mut result = 0
+  let mut shift = 0
+  let mut done = false
+  while (i < len) && (done == false) {
+    let byte = buf[i]
+    result = result|((byte&0x7F)<<shift)
+    i = i + 1
+    if (byte&0x80) == 0 {
+      done = true
+    } else {
+      shift = shift + 7
+    }
+  }
+  (result, i)
 }
 
-// === Section listing ===
+let read_name = (bytes: Bytes, offset: Int) -> (String, Int) {
+  let (name_len, pos) = read_uleb128(bytes, offset)
+  let mut s = ""
+  let mut i = 0
+  while i < name_len {
+    s = String::concat(s, String::from_char_code(bytes[pos + i]))
+    i = i + 1
+  }
+  (s, pos + name_len)
+}
+
+export let parse_canon = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Int)] {
+  let end_pos = offset + size
+  let result = Array::slice([
+    (0, 0, 0)
+  ], 0, 0)
+  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let mut i = 0
+  while (i < cnt) && (pos < end_pos) {
+    let op = bytes[pos]
+    pos = pos + 1
+    if op == 0 {
+      let (func_idx, np) = read_uleb128(bytes, pos)
+      pos = np
+      let (opt_count, np2) = read_uleb128(bytes, pos)
+      pos = np2
+      let mut o = 0
+      while (o < opt_count) && (pos < end_pos) {
+        let opt_kind = bytes[pos]
+        pos = pos + 1
+        if (opt_kind == 3) || (opt_kind == 4) {
+          let (_, np3) = read_uleb128(bytes, pos)
+          pos = np3
+        }
+        o = o + 1
+      }
+      let (_, np4) = read_uleb128(bytes, pos)
+      pos = np4
+      Array::push(result, (0, func_idx, opt_count))
+    } else {
+      if op == 1 {
+        let (func_idx, np) = read_uleb128(bytes, pos)
+        pos = np
+        let (opt_count, np2) = read_uleb128(bytes, pos)
+        pos = np2
+        let mut o = 0
+        while (o < opt_count) && (pos < end_pos) {
+          let opt_kind = bytes[pos]
+          pos = pos + 1
+          if (opt_kind == 3) || (opt_kind == 4) {
+            let (_, np3) = read_uleb128(bytes, pos)
+            pos = np3
+          }
+          o = o + 1
+        }
+        Array::push(result, (1, func_idx, opt_count))
+      } else {
+        i = cnt
+      }
+    }
+    i = i + 1
+  }
+  result
+}
+
+export let count_exports = (bytes: Bytes, offset: Int, size: Int) -> Int {
+  let (cnt, _) = read_uleb128(bytes, offset)
+  cnt
+}
+
+export let count_imports = (bytes: Bytes, offset: Int, size: Int) -> Int {
+  let (cnt, _) = read_uleb128(bytes, offset)
+  cnt
+}
 
 export let list_sections = (bytes: Bytes) -> Array[(Int, Int, Int)] {
   let len = Bytes::length(bytes)
-  let result = Array::slice([(0, 0, 0)], 0, 0)
-  if len < 8 { result }
+  let result = Array::slice([
+    (0, 0, 0)
+  ], 0, 0)
+  if len < 8 {
+    result
+  }
   else {
     let mut i = 8
     while i < len {
@@ -102,7 +142,9 @@ export let list_sections = (bytes: Bytes) -> Array[(Int, Int, Int)] {
       i = i + 1
       let (sec_size, content_start) = read_uleb128(bytes, i)
       let sec_end = content_start + sec_size
-      if sec_end > len { i = len }
+      if sec_end > len {
+        i = len
+      }
       else {
         Array::push(result, (sec_id, content_start, sec_size))
         i = sec_end
@@ -111,9 +153,6 @@ export let list_sections = (bytes: Bytes) -> Array[(Int, Int, Int)] {
     result
   }
 }
-
-// === Find section by ID ===
-// Returns (found, content_offset, content_size). found=1 if found, 0 otherwise.
 
 export let find_section = (bytes: Bytes, target_id: Int) -> (Int, Int, Int) {
   let sections = list_sections(bytes)
@@ -134,328 +173,11 @@ export let find_section = (bytes: Bytes, target_id: Int) -> (Int, Int, Int) {
   (found, r_off, r_sz)
 }
 
-// === Core module extraction ===
-
-// Extract embedded core WASM module bytes from a core-module section (id=1).
-// The section content IS the core module bytes directly.
-export let extract_core_module = (bytes: Bytes, offset: Int, size: Int) -> Bytes {
-  let result = Bytes::new()
-  let mut i = 0
-  while i < size {
-    Bytes::push(result, bytes[offset + i])
-    i = i + 1
-  }
-  result
-}
-
-// Extract ALL embedded core modules from a component.
-// Returns Array[(Int, Bytes)] - (module_index, module_bytes)
-export let extract_all_core_modules = (bytes: Bytes) -> Array[(Int, Bytes)] {
-  let sections = list_sections(bytes)
-  let len = Array::length(sections)
-  let empty_bytes = Bytes::new()
-  let result = Array::slice([(0, empty_bytes)], 0, 0)
-  let mut i = 0
-  let mut mod_idx = 0
-  while i < len {
-    let (sid, off, sz) = Array::get(sections, i)
-    if sid == 1 {
-      let mod_bytes = extract_core_module(bytes, off, sz)
-      Array::push(result, (mod_idx, mod_bytes))
-      mod_idx = mod_idx + 1
-    }
-    i = i + 1
-  }
-  result
-}
-
-// Count embedded core modules
-export let count_core_modules = (bytes: Bytes) -> Int {
-  let sections = list_sections(bytes)
-  let len = Array::length(sections)
-  let mut i = 0
-  let mut count = 0
-  while i < len {
-    let (sid, _, _) = Array::get(sections, i)
-    if sid == 1 {
-      count = count + 1
-    }
-    i = i + 1
-  }
-  count
-}
-
-// === Name reading ===
-
-let read_name = (bytes: Bytes, offset: Int) -> (String, Int) {
-  let (name_len, pos) = read_uleb128(bytes, offset)
-  let mut s = ""
-  let mut i = 0
-  while i < name_len {
-    s = String::concat(s, String::from_char_code(bytes[pos + i]))
-    i = i + 1
-  }
-  (s, pos + name_len)
-}
-
-// === Custom section name ===
-
-// Read custom section name from a custom section (id=0).
-// offset/size are the content offset/size from list_sections.
-export let get_custom_section_name = (bytes: Bytes, offset: Int, size: Int) -> String {
-  let end_pos = offset + size
-  if offset >= end_pos { "" }
-  else {
-    let (name, _) = read_name(bytes, offset)
-    name
-  }
-}
-
-// === Component import parsing ===
-
-// Parse component imports. Returns array of (name, extern_kind).
-// extern_kind: 0x00=module, 0x01=func, 0x02=value, 0x03=type, 0x04=component, 0x05=instance
-export let parse_imports = (bytes: Bytes, offset: Int, size: Int) -> Array[(String, Int)] {
-  let end_pos = offset + size
-  let result = Array::slice([("", 0)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
-  let mut pos = pos0
-  let mut i = 0
-  while (i < cnt) && (pos < end_pos) {
-    let (name, np) = read_name(bytes, pos)
-    pos = np
-    if pos < end_pos {
-      // import descriptor: externtype
-      let kind = bytes[pos]
-      pos = pos + 1
-      // skip the type descriptor (varies by kind)
-      pos = skip_extern_desc(bytes, pos, end_pos, kind)
-      Array::push(result, (name, kind))
-    }
-    i = i + 1
-  }
-  result
-}
-
-// Count imports in an import section
-export let count_imports = (bytes: Bytes, offset: Int, size: Int) -> Int {
-  let (cnt, _) = read_uleb128(bytes, offset)
-  cnt
-}
-
-// Skip component extern type descriptor
-let skip_extern_desc = (bytes: Bytes, offset: Int, end_pos: Int, kind: Int) -> Int {
-  let mut pos = offset
-  if kind == 1 {
-    // func: type index (uleb)
-    let (_, np) = read_uleb128(bytes, pos)
-    pos = np
-  } else {
-    if kind == 3 {
-      // type: type bounds
-      if pos < end_pos {
-        let bounds = bytes[pos]
-        pos = pos + 1
-        let (_, np) = read_uleb128(bytes, pos)
-        pos = np
-      }
-    } else {
-      if kind == 5 {
-        // instance: skip instance type (complex)
-        // For now, skip by scanning for next import
-        let (_, np) = read_uleb128(bytes, pos)
-        pos = np
-      } else {
-        // module(0), value(2), component(4): skip type index
-        let (_, np) = read_uleb128(bytes, pos)
-        pos = np
-      }
-    }
-  }
-  if pos > end_pos { end_pos } else { pos }
-}
-
-// === Component export parsing ===
-
-// Parse component exports. Returns array of (name, extern_kind, index).
-export let parse_exports = (bytes: Bytes, offset: Int, size: Int) -> Array[(String, Int, Int)] {
-  let end_pos = offset + size
-  let result = Array::slice([("", 0, 0)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
-  let mut pos = pos0
-  let mut i = 0
-  while (i < cnt) && (pos < end_pos) {
-    let (name, np) = read_name(bytes, pos)
-    pos = np
-    if pos < end_pos {
-      let sort = bytes[pos]
-      pos = pos + 1
-      let (index, np2) = read_uleb128(bytes, pos)
-      pos = np2
-      // optional extern desc
-      if (pos < end_pos) && (bytes[pos] != 0) {
-        // has type annotation, skip it
-        let kind = bytes[pos]
-        pos = pos + 1
-        pos = skip_extern_desc(bytes, pos, end_pos, kind)
-      } else {
-        if pos < end_pos { pos = pos + 1 }
-      }
-      Array::push(result, (name, sort, index))
-    }
-    i = i + 1
-  }
-  result
-}
-
-// Count exports in an export section
-export let count_exports = (bytes: Bytes, offset: Int, size: Int) -> Int {
-  let (cnt, _) = read_uleb128(bytes, offset)
-  cnt
-}
-
-// === Canon section parsing ===
-
-// Canon operations: lift (0x00), lower (0x01), resource.new (0x02), etc.
-// Parse canon section. Returns array of (op, func_idx, options_count).
-export let parse_canon = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Int)] {
-  let end_pos = offset + size
-  let result = Array::slice([(0, 0, 0)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
-  let mut pos = pos0
-  let mut i = 0
-  while (i < cnt) && (pos < end_pos) {
-    let op = bytes[pos]
-    pos = pos + 1
-    if op == 0 {
-      // canon lift: core func index + options + type index
-      let (func_idx, np) = read_uleb128(bytes, pos)
-      pos = np
-      // skip options
-      let (opt_count, np2) = read_uleb128(bytes, pos)
-      pos = np2
-      let mut o = 0
-      while (o < opt_count) && (pos < end_pos) {
-        let opt_kind = bytes[pos]
-        pos = pos + 1
-        if (opt_kind == 3) || (opt_kind == 4) {
-          // memory or realloc: index
-          let (_, np3) = read_uleb128(bytes, pos)
-          pos = np3
-        }
-        o = o + 1
-      }
-      // type index
-      let (_, np4) = read_uleb128(bytes, pos)
-      pos = np4
-      Array::push(result, (0, func_idx, opt_count))
-    } else {
-      if op == 1 {
-        // canon lower: func index + options
-        let (func_idx, np) = read_uleb128(bytes, pos)
-        pos = np
-        let (opt_count, np2) = read_uleb128(bytes, pos)
-        pos = np2
-        let mut o = 0
-        while (o < opt_count) && (pos < end_pos) {
-          let opt_kind = bytes[pos]
-          pos = pos + 1
-          if (opt_kind == 3) || (opt_kind == 4) {
-            let (_, np3) = read_uleb128(bytes, pos)
-            pos = np3
-          }
-          o = o + 1
-        }
-        Array::push(result, (1, func_idx, opt_count))
-      } else {
-        // unknown canon op, bail
-        i = cnt
-      }
-    }
-    i = i + 1
-  }
-  result
-}
-
-// === Enhanced canon parsing with options ===
-
-// Parse canon section with full option details.
-// Returns Array[(Int, Int, Array[(Int, Int)])] - (op, func_idx, [(option_kind, option_value)])
-// option_kind: 0=utf8, 1=utf16, 2=compact_utf16, 3=memory, 4=realloc, 5=post_return
-// option_value: index for memory/realloc/post_return, 0 for utf8/utf16/compact_utf16
-export let parse_canon_options = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Array[(Int, Int)])] {
-  let end_pos = offset + size
-  let empty_opts = Array::slice([(0, 0)], 0, 0)
-  let result = Array::slice([(0, 0, empty_opts)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
-  let mut pos = pos0
-  let mut i = 0
-  while (i < cnt) && (pos < end_pos) {
-    let op = bytes[pos]
-    pos = pos + 1
-    if op == 0 {
-      // canon lift: core func index + options + type index
-      let (func_idx, np) = read_uleb128(bytes, pos)
-      pos = np
-      let (opt_count, np2) = read_uleb128(bytes, pos)
-      pos = np2
-      let opts = Array::slice([(0, 0)], 0, 0)
-      let mut o = 0
-      while (o < opt_count) && (pos < end_pos) {
-        let opt_kind = bytes[pos]
-        pos = pos + 1
-        if (opt_kind == 3) || (opt_kind == 4) || (opt_kind == 5) {
-          let (opt_val, np3) = read_uleb128(bytes, pos)
-          pos = np3
-          Array::push(opts, (opt_kind, opt_val))
-        } else {
-          Array::push(opts, (opt_kind, 0))
-        }
-        o = o + 1
-      }
-      // type index
-      let (_, np4) = read_uleb128(bytes, pos)
-      pos = np4
-      Array::push(result, (0, func_idx, opts))
-    } else {
-      if op == 1 {
-        // canon lower: func index + options
-        let (func_idx, np) = read_uleb128(bytes, pos)
-        pos = np
-        let (opt_count, np2) = read_uleb128(bytes, pos)
-        pos = np2
-        let opts = Array::slice([(0, 0)], 0, 0)
-        let mut o = 0
-        while (o < opt_count) && (pos < end_pos) {
-          let opt_kind = bytes[pos]
-          pos = pos + 1
-          if (opt_kind == 3) || (opt_kind == 4) || (opt_kind == 5) {
-            let (opt_val, np3) = read_uleb128(bytes, pos)
-            pos = np3
-            Array::push(opts, (opt_kind, opt_val))
-          } else {
-            Array::push(opts, (opt_kind, 0))
-          }
-          o = o + 1
-        }
-        Array::push(result, (1, func_idx, opts))
-      } else {
-        // unknown canon op, bail
-        i = cnt
-      }
-    }
-    i = i + 1
-  }
-  result
-}
-
-// === Alias section parsing ===
-
-// Parse alias section. Returns array of (sort, kind, instance_idx, name).
-// kind=0: core export alias, kind=1: outer alias
 export let parse_aliases = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Int, String)] {
   let end_pos = offset + size
-  let result = Array::slice([(0, 0, 0, "")], 0, 0)
+  let result = Array::slice([
+    (0, 0, 0, "")
+  ], 0, 0)
   let (cnt, pos0) = read_uleb128(bytes, offset)
   let mut pos = pos0
   let mut i = 0
@@ -466,7 +188,6 @@ export let parse_aliases = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int,
       let alias_kind = bytes[pos]
       pos = pos + 1
       if alias_kind == 1 {
-        // core export from instance
         let (instance_idx, np) = read_uleb128(bytes, pos)
         pos = np
         let (name, np2) = read_name(bytes, pos)
@@ -474,7 +195,6 @@ export let parse_aliases = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int,
         Array::push(result, (sort, 0, instance_idx, name))
       } else {
         if alias_kind == 2 {
-          // outer alias
           let (outer_count, np) = read_uleb128(bytes, pos)
           pos = np
           let (outer_idx, np2) = read_uleb128(bytes, pos)
@@ -490,13 +210,313 @@ export let parse_aliases = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int,
   result
 }
 
-// === Core instance section ===
+export let extern_kind_name = (kind: Int) -> String {
+  if kind == 0 {
+    "module"
+  }
+  else if kind == 1 {
+    "func"
+  }
+  else if kind == 2 {
+    "value"
+  }
+  else if kind == 3 {
+    "type"
+  }
+  else if kind == 4 {
+    "component"
+  }
+  else if kind == 5 {
+    "instance"
+  }
+  else {
+    "unknown"
+  }
+}
 
-// Parse core instance section. Returns array of (kind, module_idx, arg_count).
-// kind=0: instantiate, kind=1: from exports
+let skip_extern_desc = (bytes: Bytes, offset: Int, end_pos: Int, kind: Int) -> Int {
+  let mut pos = offset
+  if kind == 1 {
+    let (_, np) = read_uleb128(bytes, pos)
+    pos = np
+  } else {
+    if kind == 3 {
+      if pos < end_pos {
+        let bounds = bytes[pos]
+        pos = pos + 1
+        let (_, np) = read_uleb128(bytes, pos)
+        pos = np
+      }
+    } else {
+      if kind == 5 {
+        let (_, np) = read_uleb128(bytes, pos)
+        pos = np
+      } else {
+        let (_, np) = read_uleb128(bytes, pos)
+        pos = np
+      }
+    }
+  }
+  if pos > end_pos {
+    end_pos
+  } else {
+    pos
+  }
+}
+
+export let parse_exports = (bytes: Bytes, offset: Int, size: Int) -> Array[(String, Int, Int)] {
+  let end_pos = offset + size
+  let result = Array::slice([
+    ("", 0, 0)
+  ], 0, 0)
+  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let mut i = 0
+  while (i < cnt) && (pos < end_pos) {
+    let (name, np) = read_name(bytes, pos)
+    pos = np
+    if pos < end_pos {
+      let sort = bytes[pos]
+      pos = pos + 1
+      let (index, np2) = read_uleb128(bytes, pos)
+      pos = np2
+      if (pos < end_pos) && (bytes[pos] != 0) {
+        let kind = bytes[pos]
+        pos = pos + 1
+        pos = skip_extern_desc(bytes, pos, end_pos, kind)
+      } else {
+        if pos < end_pos {
+          pos = pos + 1
+        }
+      }
+      Array::push(result, (name, sort, index))
+    }
+    i = i + 1
+  }
+  result
+}
+
+export let parse_imports = (bytes: Bytes, offset: Int, size: Int) -> Array[(String, Int)] {
+  let end_pos = offset + size
+  let result = Array::slice([
+    ("", 0)
+  ], 0, 0)
+  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let mut i = 0
+  while (i < cnt) && (pos < end_pos) {
+    let (name, np) = read_name(bytes, pos)
+    pos = np
+    if pos < end_pos {
+      let kind = bytes[pos]
+      pos = pos + 1
+      pos = skip_extern_desc(bytes, pos, end_pos, kind)
+      Array::push(result, (name, kind))
+    }
+    i = i + 1
+  }
+  result
+}
+
+export let comp_section_name = (id: Int) -> String {
+  if id == 0 {
+    "custom"
+  }
+  else if id == 1 {
+    "core-module"
+  }
+  else if id == 2 {
+    "core-instance"
+  }
+  else if id == 3 {
+    "core-type"
+  }
+  else if id == 4 {
+    "component"
+  }
+  else if id == 5 {
+    "instance"
+  }
+  else if id == 6 {
+    "alias"
+  }
+  else if id == 7 {
+    "type"
+  }
+  else if id == 8 {
+    "canon"
+  }
+  else if id == 9 {
+    "start"
+  }
+  else if id == 10 {
+    "import"
+  }
+  else if id == 11 {
+    "export"
+  }
+  else {
+    "unknown"
+  }
+}
+
+export let comp_valtype_name = (vt: Int) -> String {
+  if vt == 122 {
+    "s32"
+  }
+  else if vt == 121 {
+    "u32"
+  }
+  else if vt == 120 {
+    "s64"
+  }
+  else if vt == 119 {
+    "u64"
+  }
+  else if vt == 118 {
+    "f32"
+  }
+  else if vt == 117 {
+    "f64"
+  }
+  else if vt == 116 {
+    "bool"
+  }
+  else if vt == 115 {
+    "string"
+  }
+  else if vt == 114 {
+    "char"
+  }
+  else if vt == 113 {
+    "list"
+  }
+  else if vt == 112 {
+    "record"
+  }
+  else if vt == 111 {
+    "variant"
+  }
+  else if vt == 110 {
+    "tuple"
+  }
+  else if vt == 109 {
+    "flags"
+  }
+  else if vt == 108 {
+    "enum"
+  }
+  else if vt == 107 {
+    "option"
+  }
+  else if vt == 106 {
+    "result"
+  }
+  else {
+    "unknown"
+  }
+}
+
+export let count_core_modules = (bytes: Bytes) -> Int {
+  let sections = list_sections(bytes)
+  let len = Array::length(sections)
+  let mut i = 0
+  let mut count = 0
+  while i < len {
+    let (sid, _, _) = Array::get(sections, i)
+    if sid == 1 {
+      count = count + 1
+    }
+    i = i + 1
+  }
+  count
+}
+
+export let extract_core_module = (bytes: Bytes, offset: Int, size: Int) -> Bytes {
+  let result = Bytes::new()
+  let mut i = 0
+  while i < size {
+    Bytes::push(result, bytes[offset + i])
+    i = i + 1
+  }
+  result
+}
+
+export let parse_canon_options = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Array[(Int, Int)])] {
+  let end_pos = offset + size
+  let empty_opts = Array::slice([
+    (0, 0)
+  ], 0, 0)
+  let result = Array::slice([
+    (0, 0, empty_opts)
+  ], 0, 0)
+  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let mut i = 0
+  while (i < cnt) && (pos < end_pos) {
+    let op = bytes[pos]
+    pos = pos + 1
+    if op == 0 {
+      let (func_idx, np) = read_uleb128(bytes, pos)
+      pos = np
+      let (opt_count, np2) = read_uleb128(bytes, pos)
+      pos = np2
+      let opts = Array::slice([
+        (0, 0)
+      ], 0, 0)
+      let mut o = 0
+      while (o < opt_count) && (pos < end_pos) {
+        let opt_kind = bytes[pos]
+        pos = pos + 1
+        if (opt_kind == 3) || (opt_kind == 4) || (opt_kind == 5) {
+          let (opt_val, np3) = read_uleb128(bytes, pos)
+          pos = np3
+          Array::push(opts, (opt_kind, opt_val))
+        } else {
+          Array::push(opts, (opt_kind, 0))
+        }
+        o = o + 1
+      }
+      let (_, np4) = read_uleb128(bytes, pos)
+      pos = np4
+      Array::push(result, (0, func_idx, opts))
+    } else {
+      if op == 1 {
+        let (func_idx, np) = read_uleb128(bytes, pos)
+        pos = np
+        let (opt_count, np2) = read_uleb128(bytes, pos)
+        pos = np2
+        let opts = Array::slice([
+          (0, 0)
+        ], 0, 0)
+        let mut o = 0
+        while (o < opt_count) && (pos < end_pos) {
+          let opt_kind = bytes[pos]
+          pos = pos + 1
+          if (opt_kind == 3) || (opt_kind == 4) || (opt_kind == 5) {
+            let (opt_val, np3) = read_uleb128(bytes, pos)
+            pos = np3
+            Array::push(opts, (opt_kind, opt_val))
+          } else {
+            Array::push(opts, (opt_kind, 0))
+          }
+          o = o + 1
+        }
+        Array::push(result, (1, func_idx, opts))
+      } else {
+        i = cnt
+      }
+    }
+    i = i + 1
+  }
+  result
+}
+
 export let parse_core_instances = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Int)] {
   let end_pos = offset + size
-  let result = Array::slice([(0, 0, 0)], 0, 0)
+  let result = Array::slice([
+    (0, 0, 0)
+  ], 0, 0)
   let (cnt, pos0) = read_uleb128(bytes, offset)
   let mut pos = pos0
   let mut i = 0
@@ -504,15 +524,12 @@ export let parse_core_instances = (bytes: Bytes, offset: Int, size: Int) -> Arra
     let kind = bytes[pos]
     pos = pos + 1
     if kind == 0 {
-      // instantiate module
       let (module_idx, np) = read_uleb128(bytes, pos)
       pos = np
       let (arg_count, np2) = read_uleb128(bytes, pos)
       pos = np2
-      // skip args
       let mut a = 0
       while (a < arg_count) && (pos < end_pos) {
-        // name + sort(0x12) + index
         let (_, np3) = read_name(bytes, pos)
         pos = np3
         if pos < end_pos {
@@ -526,12 +543,10 @@ export let parse_core_instances = (bytes: Bytes, offset: Int, size: Int) -> Arra
       Array::push(result, (0, module_idx, arg_count))
     } else {
       if kind == 1 {
-        // from exports
         let (export_count, np) = read_uleb128(bytes, pos)
         pos = np
         let mut e = 0
         while (e < export_count) && (pos < end_pos) {
-          // name + sort + index
           let (_, np2) = read_name(bytes, pos)
           pos = np2
           if pos < end_pos {
@@ -552,15 +567,25 @@ export let parse_core_instances = (bytes: Bytes, offset: Int, size: Int) -> Arra
   result
 }
 
-// === Core type section parsing (id=3) ===
+export let get_custom_section_name = (bytes: Bytes, offset: Int, size: Int) -> String {
+  let end_pos = offset + size
+  if offset >= end_pos {
+    ""
+  }
+  else {
+    let (name, _) = read_name(bytes, offset)
+    name
+  }
+}
 
-// Parse core type section. Returns array of (param_types, result_types) for each core func type.
-// Core func type encoding: 0x60 + param vec + result vec
-// Each type value is a core valtype: 0x7F=i32, 0x7E=i64, 0x7D=f32, 0x7C=f64
 export let parse_core_type_section = (bytes: Bytes, offset: Int, size: Int) -> Array[(Array[Int], Array[Int])] {
   let end_pos = offset + size
-  let empty_ints = Array::slice([0], 0, 0)
-  let result = Array::slice([(empty_ints, empty_ints)], 0, 0)
+  let empty_ints = Array::slice([
+    0
+  ], 0, 0)
+  let result = Array::slice([
+    (empty_ints, empty_ints)
+  ], 0, 0)
   let (cnt, pos0) = read_uleb128(bytes, offset)
   let mut pos = pos0
   let mut i = 0
@@ -568,10 +593,11 @@ export let parse_core_type_section = (bytes: Bytes, offset: Int, size: Int) -> A
     let tag = bytes[pos]
     pos = pos + 1
     if tag == 0x60 {
-      // functype
       let (param_count, np) = read_uleb128(bytes, pos)
       pos = np
-      let params = Array::slice([0], 0, 0)
+      let params = Array::slice([
+        0
+      ], 0, 0)
       let mut p = 0
       while (p < param_count) && (pos < end_pos) {
         Array::push(params, bytes[pos])
@@ -580,7 +606,9 @@ export let parse_core_type_section = (bytes: Bytes, offset: Int, size: Int) -> A
       }
       let (result_count, np2) = read_uleb128(bytes, pos)
       pos = np2
-      let results = Array::slice([0], 0, 0)
+      let results = Array::slice([
+        0
+      ], 0, 0)
       let mut r = 0
       while (r < result_count) && (pos < end_pos) {
         Array::push(results, bytes[pos])
@@ -589,7 +617,6 @@ export let parse_core_type_section = (bytes: Bytes, offset: Int, size: Int) -> A
       }
       Array::push(result, (params, results))
     } else {
-      // unknown core type form, bail
       i = cnt
     }
     i = i + 1
@@ -597,17 +624,38 @@ export let parse_core_type_section = (bytes: Bytes, offset: Int, size: Int) -> A
   result
 }
 
-// === Component type section parsing (id=7) ===
+export let extract_all_core_modules = (bytes: Bytes) -> Array[(Int, Bytes)] {
+  let sections = list_sections(bytes)
+  let len = Array::length(sections)
+  let empty_bytes = Bytes::new()
+  let result = Array::slice([
+    (0, empty_bytes)
+  ], 0, 0)
+  let mut i = 0
+  let mut mod_idx = 0
+  while i < len {
+    let (sid, off, sz) = Array::get(sections, i)
+    if sid == 1 {
+      let mod_bytes = extract_core_module(bytes, off, sz)
+      Array::push(result, (mod_idx, mod_bytes))
+      mod_idx = mod_idx + 1
+    }
+    i = i + 1
+  }
+  result
+}
 
-// Parse component type section. Returns array of (param_names, param_types, result_types).
-// Component function types use named params and component valtypes.
-// Component valtype encoding uses negative-offset LEB (e.g., 0x7A=s32, 0x79=u32, 0x78=s64, etc.)
-// or positive type index references.
 export let parse_component_type_section = (bytes: Bytes, offset: Int, size: Int) -> Array[(Array[String], Array[Int], Array[Int])] {
   let end_pos = offset + size
-  let empty_strs = Array::slice([""], 0, 0)
-  let empty_ints = Array::slice([0], 0, 0)
-  let result = Array::slice([(empty_strs, empty_ints, empty_ints)], 0, 0)
+  let empty_strs = Array::slice([
+    ""
+  ], 0, 0)
+  let empty_ints = Array::slice([
+    0
+  ], 0, 0)
+  let result = Array::slice([
+    (empty_strs, empty_ints, empty_ints)
+  ], 0, 0)
   let (cnt, pos0) = read_uleb128(bytes, offset)
   let mut pos = pos0
   let mut i = 0
@@ -615,21 +663,21 @@ export let parse_component_type_section = (bytes: Bytes, offset: Int, size: Int)
     let def_kind = bytes[pos]
     pos = pos + 1
     if def_kind == 0x40 {
-      // component functype
-      // params: 0x01 = named params list
       let params_tag = bytes[pos]
       pos = pos + 1
-      let param_names = Array::slice([""], 0, 0)
-      let param_types = Array::slice([0], 0, 0)
+      let param_names = Array::slice([
+        ""
+      ], 0, 0)
+      let param_types = Array::slice([
+        0
+      ], 0, 0)
       if params_tag == 1 {
-        // named params
         let (param_count, np) = read_uleb128(bytes, pos)
         pos = np
         let mut p = 0
         while (p < param_count) && (pos < end_pos) {
           let (pname, np2) = read_name(bytes, pos)
           pos = np2
-          // valtype
           let (vt, np3) = read_uleb128(bytes, pos)
           pos = np3
           Array::push(param_names, pname)
@@ -637,16 +685,15 @@ export let parse_component_type_section = (bytes: Bytes, offset: Int, size: Int)
           p = p + 1
         }
       } else {
-        // type index reference for params
         let (_, np) = read_uleb128(bytes, pos)
         pos = np
       }
-      // results: 0x00 = named, 0x01 = single type
       let result_tag = bytes[pos]
       pos = pos + 1
-      let result_types = Array::slice([0], 0, 0)
+      let result_types = Array::slice([
+        0
+      ], 0, 0)
       if result_tag == 0 {
-        // named results
         let (res_count, np) = read_uleb128(bytes, pos)
         pos = np
         let mut r = 0
@@ -659,19 +706,13 @@ export let parse_component_type_section = (bytes: Bytes, offset: Int, size: Int)
           r = r + 1
         }
       } else {
-        // single unnamed result
         let (vt, np) = read_uleb128(bytes, pos)
         pos = np
         Array::push(result_types, vt)
       }
       Array::push(result, (param_names, param_types, result_types))
     } else {
-      // non-functype definition (instance type, component type, etc.)
-      // skip by reading remaining bytes for this entry - best effort
-      // For defined types that aren't functype, we skip the entry
-      // This is a simplification; full parsing would handle all type forms
       if def_kind == 0x41 {
-        // instance type: vec of instancetypedef
         let (inner_cnt, np) = read_uleb128(bytes, pos)
         pos = np
         let mut j = 0
@@ -679,11 +720,9 @@ export let parse_component_type_section = (bytes: Bytes, offset: Int, size: Int)
           let inner_kind = bytes[pos]
           pos = pos + 1
           if inner_kind == 0x01 {
-            // type def inside instance
             let inner_tag = bytes[pos]
             pos = pos + 1
             if inner_tag == 0x40 {
-              // functype inside instance type - skip params and results
               let pt = bytes[pos]
               pos = pos + 1
               if pt == 1 {
@@ -719,76 +758,48 @@ export let parse_component_type_section = (bytes: Bytes, offset: Int, size: Int)
                 pos = np2
               }
             } else {
-              // other type inside instance - skip index
               let (_, np2) = read_uleb128(bytes, pos)
               pos = np2
             }
           } else {
             if inner_kind == 0x04 {
-              // export alias inside instance type
               let (_, np2) = read_name(bytes, pos)
               pos = np2
               let ek = bytes[pos]
               pos = pos + 1
               pos = skip_extern_desc(bytes, pos, end_pos, ek)
             } else {
-              // unknown inner kind, bail this entry
               j = inner_cnt
             }
           }
           j = j + 1
         }
-        // add empty entry as placeholder for non-functype
-        let e_s = Array::slice([""], 0, 0)
-        let e_i = Array::slice([0], 0, 0)
-        let e_r = Array::slice([0], 0, 0)
+        let e_s = Array::slice([
+          ""
+        ], 0, 0)
+        let e_i = Array::slice([
+          0
+        ], 0, 0)
+        let e_r = Array::slice([
+          0
+        ], 0, 0)
         Array::push(result, (e_s, e_i, e_r))
       } else {
-        // other definition kinds - skip type index
         let (_, np) = read_uleb128(bytes, pos)
         pos = np
-        let e_s = Array::slice([""], 0, 0)
-        let e_i = Array::slice([0], 0, 0)
-        let e_r = Array::slice([0], 0, 0)
+        let e_s = Array::slice([
+          ""
+        ], 0, 0)
+        let e_i = Array::slice([
+          0
+        ], 0, 0)
+        let e_r = Array::slice([
+          0
+        ], 0, 0)
         Array::push(result, (e_s, e_i, e_r))
       }
     }
     i = i + 1
   }
   result
-}
-
-// === Component valtype names ===
-
-export let comp_valtype_name = (vt: Int) -> String {
-  if vt == 122 { "s32" }
-  else if vt == 121 { "u32" }
-  else if vt == 120 { "s64" }
-  else if vt == 119 { "u64" }
-  else if vt == 118 { "f32" }
-  else if vt == 117 { "f64" }
-  else if vt == 116 { "bool" }
-  else if vt == 115 { "string" }
-  else if vt == 114 { "char" }
-  else if vt == 113 { "list" }
-  else if vt == 112 { "record" }
-  else if vt == 111 { "variant" }
-  else if vt == 110 { "tuple" }
-  else if vt == 109 { "flags" }
-  else if vt == 108 { "enum" }
-  else if vt == 107 { "option" }
-  else if vt == 106 { "result" }
-  else { "unknown" }
-}
-
-// === Extern kind names ===
-
-export let extern_kind_name = (kind: Int) -> String {
-  if kind == 0 { "module" }
-  else if kind == 1 { "func" }
-  else if kind == 2 { "value" }
-  else if kind == 3 { "type" }
-  else if kind == 4 { "component" }
-  else if kind == 5 { "instance" }
-  else { "unknown" }
 }

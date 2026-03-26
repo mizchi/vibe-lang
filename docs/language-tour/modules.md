@@ -76,9 +76,7 @@ export module math {
 // main.vibe
 import ./lib.xm { module math }
 
-export let _start = () -> Int {
-  math::inc(41)  // => 42
-}
+math::inc(41)  // => 42
 ```
 
 ### Module with alias
@@ -86,9 +84,7 @@ export let _start = () -> Int {
 ```vibe
 import ./lib.xm { module math as m }
 
-export let _start = () -> Int {
-  m::inc(41)
-}
+m::inc(41)
 ```
 
 ## PinnedPath imports

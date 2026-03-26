@@ -174,6 +174,13 @@ test "line shell options show help" {
 }
 
 ///|
+test "check failure message returns exit text only for errors" {
+  assert_eq(check_failure_message(0), None)
+  assert_eq(check_failure_message(1), Some("check: 1 error(s) found"))
+  assert_eq(check_failure_message(3), Some("check: 3 error(s) found"))
+}
+
+///|
 test "resolve repl initial source ignores scratch db by default" {
   let root = wbtest_make_temp_dir("repl_initial_source_fresh")
   let scratch_db_path = root + "/scratch.db"
@@ -3834,11 +3841,11 @@ test "append eval db source hoists late import ahead of prior bindings" {
 }
 
 ///|
-test "compiled repl temp source path uses tmp dir" {
+test "compiled repl temp source path stays under workspace root" {
+  let root = current_workspace_index_root()
   let path = compiled_repl_temp_source_path()
-  assert_true(path.has_prefix("/tmp/vibe-compiled-repl-"))
+  assert_true(path.has_prefix(root + "/.vibe_compiled_repl_"))
   assert_true(path.has_suffix(".vibe"))
-  assert_false(path.has_prefix(@io.current_dir_or_root() + "/"))
 }
 
 ///|

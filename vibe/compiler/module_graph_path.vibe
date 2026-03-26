@@ -1,13 +1,5 @@
 //# Functions
 
-let join_relative_path = (base_dir: String, raw_path: String) -> String {
-  if base_dir == "" || base_dir == "/" {
-    String::concat(base_dir, raw_path)
-  } else {
-    String::concat(base_dir, String::concat("/", raw_path))
-  }
-}
-
 export let dir_of_path = (file_path: String) -> String {
   let idx = String::last_index_of(file_path, "/")
   if idx < 0 {
@@ -15,13 +7,41 @@ export let dir_of_path = (file_path: String) -> String {
   } else if idx == 0 {
     "/"
   } else {
-    file_path[0:idx]
+    file_path[0: idx]
   }
+}
+
+export let contains_name = (items: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    if Array::get(items, i) == name {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+export let contains_path = (visited: Array[String], path: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(visited) && !found {
+    if Array::get(visited, i) == path {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
 }
 
 export let normalize_path = (path: String) -> String {
   let is_absolute = String::length(path) > 0 && String::char_code_at(path, 0) == 47
-  let mut parts = Array::slice([""], 0, 0)
+  let mut parts = Array::slice([
+    ""
+  ], 0, 0)
   let len = String::length(path)
   let mut start = 0
   let mut i = 0
@@ -32,7 +52,7 @@ export let normalize_path = (path: String) -> String {
       String::char_code_at(path, i) == 47
     }
     if at_sep {
-      let part = path[start:i]
+      let part = path[start: i]
       let skip_part = if String::length(part) == 0 {
         true
       } else {
@@ -43,7 +63,9 @@ export let normalize_path = (path: String) -> String {
       } else if part == ".." {
         if Array::length(parts) > 0 {
           let next_len = Array::length(parts) - 1
-          let next_parts = Array::slice([""], 0, 0)
+          let next_parts = Array::slice([
+            ""
+          ], 0, 0)
           let mut j = 0
           while j < next_len {
             Array::push(next_parts, Array::get(parts, j))
@@ -58,7 +80,11 @@ export let normalize_path = (path: String) -> String {
     }
     i = i + 1
   }
-  let mut out = if is_absolute { "/" } else { "" }
+  let mut out = if is_absolute {
+    "/"
+  } else {
+    ""
+  }
   let mut pi = 0
   while pi < Array::length(parts) {
     if String::length(out) > 0 && !(out == "/") {
@@ -74,12 +100,61 @@ export let normalize_path = (path: String) -> String {
   out
 }
 
+export let get_export_name = (items: Array[(String, Option[String])], name: String) -> String {
+  let mut result = name
+  let mut i = 0
+  while i < Array::length(items) {
+    let (iname, irename) = Array::get(items, i)
+    if iname == name {
+      match irename {
+        Some(alias) => {
+          result = alias
+        },
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  result
+}
+
+let join_relative_path = (base_dir: String, raw_path: String) -> String {
+  if base_dir == "" || base_dir == "/" {
+    String::concat(base_dir, raw_path)
+  } else {
+    String::concat(base_dir, String::concat("/", raw_path))
+  }
+}
+
+export let path_to_module_name = (path: String) -> String {
+  let len = String::length(path)
+  let mut last_slash = -1
+  let mut i = 0
+  while i < len {
+    if String::char_code_at(path, i) == 47 {
+      last_slash = i
+    }
+    i = i + 1
+  }
+  let base = if last_slash >= 0 {
+    path[last_slash + 1: len]
+  } else {
+    path
+  }
+  let base_len = String::length(base)
+  if String::ends_with(base, ".vibe") {
+    base[0: base_len - 5]
+  } else {
+    base
+  }
+}
+
 export let path_has_relative_prefix = (raw_path: String, len: Int) -> Bool {
   if len >= 2 {
-    if raw_path[0:2] == "./" {
+    if raw_path[0: 2] == "./" {
       true
     } else if len >= 3 {
-      raw_path[0:3] == "../"
+      raw_path[0: 3] == "../"
     } else {
       false
     }
@@ -112,76 +187,13 @@ export let resolve_import_path_candidates = (base_dir: String, raw_path: String)
   }
   let normalized = normalize_path(joined)
   if String::ends_with(normalized, ".vibe") {
-    [normalized]
+    [
+      normalized
+    ]
   } else {
     [
       String::concat(normalized, ".vibe"),
       String::concat(normalized, "/index.vibe")
     ]
-  }
-}
-
-export let contains_path = (visited: Array[String], path: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(visited) && !found {
-    if Array::get(visited, i) == path {
-      found = true
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
-export let contains_name = (items: Array[String], name: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(items) && !found {
-    if Array::get(items, i) == name {
-      found = true
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
-export let get_export_name = (items: Array[(String, Option[String])], name: String) -> String {
-  let mut result = name
-  let mut i = 0
-  while i < Array::length(items) {
-    let (iname, irename) = Array::get(items, i)
-    if iname == name {
-      match irename {
-        Some(alias) => { result = alias },
-        None => ()
-      }
-    }
-    i = i + 1
-  }
-  result
-}
-
-export let path_to_module_name = (path: String) -> String {
-  let len = String::length(path)
-  let mut last_slash = -1
-  let mut i = 0
-  while i < len {
-    if String::char_code_at(path, i) == 47 {
-      last_slash = i
-    }
-    i = i + 1
-  }
-  let base = if last_slash >= 0 {
-    path[last_slash + 1:len]
-  } else {
-    path
-  }
-  let base_len = String::length(base)
-  if String::ends_with(base, ".vibe") {
-    base[0:base_len - 5]
-  } else {
-    base
   }
 }

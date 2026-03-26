@@ -1,11 +1,7 @@
 //# Imports
 
-import ../core/index.vibe {
+import .. / core {
   Expr, Pat, Stmt, TypeExpr
-}
-
-import ./token.vibe {
-  Token
 }
 
 import ./lexer.vibe {
@@ -16,10 +12,13 @@ import ./parser_expr.vibe {
   parse
 }
 
+import ./token.vibe {
+  Token
+}
+
 //# Functions
 
 let rec resolve_expr = (e: Expr) -> Expr with { Error } {
-  // Desugar EStringInterp(parts) into String::concat + __to_string calls.
   let desugar_parts = (parts: Array[String]) -> Expr with { Error } {
     let plen = Array::length(parts)
     let exprs = ArrayBuilder::new()
@@ -34,7 +33,9 @@ let rec resolve_expr = (e: Expr) -> Expr with { Error } {
         let expr_tokens = lex(expr_src)
         let parsed = parse(expr_tokens)
         let resolved = resolve_expr(parsed)
-        ArrayBuilder::push(exprs, ECall(EIdent("__to_string"), [resolved]))
+        ArrayBuilder::push(exprs, ECall(EIdent("__to_string"), [
+          resolved
+        ]))
       }
       i = i + 2
     }
@@ -46,7 +47,10 @@ let rec resolve_expr = (e: Expr) -> Expr with { Error } {
       let mut result = Array::get(result_arr, 0)
       let mut j = 1
       while j < result_len {
-        result = ECall(EIdent("String::concat"), [result, Array::get(result_arr, j)])
+        result = ECall(EIdent("String::concat"), [
+          result,
+          Array::get(result_arr, j)
+        ])
         j = j + 1
       }
       result
@@ -67,8 +71,12 @@ let rec resolve_expr = (e: Expr) -> Expr with { Error } {
     EIdent(_) => e,
     ETuple(elems) => ETuple(resolve_arr(elems)),
     EArray(elems) => EArray(resolve_arr(elems)),
-    ERecord(fields) => ERecord(for f in fields { let (n, v) = f; (n, resolve_expr(v)) }),
-    EMap(fields) => EMap(for f in fields { let (n, v) = f; (n, resolve_expr(v)) }),
+    ERecord(fields) => ERecord(for f in fields {
+      let (n, v) = f; (n, resolve_expr(v))
+    }),
+    EMap(fields) => EMap(for f in fields {
+      let (n, v) = f; (n, resolve_expr(v))
+    }),
     EIf(c, t, el) => EIf(resolve_expr(c), resolve_expr(t), resolve_expr(el)),
     ELet(n, v, b) => ELet(n, resolve_expr(v), resolve_expr(b)),
     ELetRec(n, v, b) => ELetRec(n, resolve_expr(v), resolve_expr(b)),
@@ -76,10 +84,16 @@ let rec resolve_expr = (e: Expr) -> Expr with { Error } {
     EAssign(n, v, b) => EAssign(n, resolve_expr(v), resolve_expr(b)),
     EAssignOp(n, op, v, b) => EAssignOp(n, op, resolve_expr(v), resolve_expr(b)),
     ESeq(a, b) => ESeq(resolve_expr(a), resolve_expr(b)),
-    EMatch(s, arms) => EMatch(resolve_expr(s), for a in arms { let (p, ex) = a; (p, resolve_expr(ex)) }),
-    EHandle(body, arms) => EHandle(resolve_expr(body), for a in arms { let (p, ex) = a; (p, resolve_expr(ex)) }),
+    EMatch(s, arms) => EMatch(resolve_expr(s), for a in arms {
+      let (p, ex) = a; (p, resolve_expr(ex))
+    }),
+    EHandle(body, arms) => EHandle(resolve_expr(body), for a in arms {
+      let (p, ex) = a; (p, resolve_expr(ex))
+    }),
     EWhile(c, b) => EWhile(resolve_expr(c), resolve_expr(b)),
-    ELoop(params, body) => ELoop(for param in params { let (name, init) = param; (name, resolve_expr(init)) }, resolve_expr(body)),
+    ELoop(params, body) => ELoop(for param in params {
+      let (name, init) = param; (name, resolve_expr(init))
+    }, resolve_expr(body)),
     EForIn(vn, idx, it, b) => EForIn(vn, idx, resolve_expr(it), resolve_expr(b)),
     ECall(callee, args) => ECall(resolve_expr(callee), resolve_arr(args)),
     EBinOp(op, l, r) => EBinOp(op, resolve_expr(l), resolve_expr(r)),
@@ -87,7 +101,10 @@ let rec resolve_expr = (e: Expr) -> Expr with { Error } {
     EFn(a, b, params, ret, eff, body) => EFn(a, b, params, ret, eff, resolve_expr(body)),
     EDot(inner, field) => EDot(resolve_expr(inner), field),
     EThrow(inner) => EThrow(resolve_expr(inner)),
-    EBreak(opt) => match opt { None => e, Some(v) => EBreak(Some(resolve_expr(v))) },
+    EBreak(opt) => match opt {
+      None => e,
+      Some(v) => EBreak(Some(resolve_expr(v)))
+    },
     EContinue(args) => EContinue(resolve_arr(args)),
     ELabeledArg(n, m, v) => ELabeledArg(n, m, resolve_expr(v)),
     ESpread(inner) => ESpread(resolve_expr(inner))
@@ -105,15 +122,12 @@ let resolve_stmt = (s: Stmt) -> Stmt with { Error } {
   }
 }
 
-// Resolve all EStringInterp nodes in a program's statements.
-// Call this after parse_program to desugar interpolations.
+export let resolve_interp_expr = (e: Expr) -> Expr with { Error } {
+  resolve_expr(e)
+}
+
 export let resolve_interp_stmts = (stmts: Array[Stmt]) -> Array[Stmt] with { Error } {
   for s in stmts {
     resolve_stmt(s)
   }
-}
-
-// Resolve all EStringInterp nodes in a single expression.
-export let resolve_interp_expr = (e: Expr) -> Expr with { Error } {
-  resolve_expr(e)
 }

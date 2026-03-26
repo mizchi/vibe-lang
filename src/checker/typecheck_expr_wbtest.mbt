@@ -224,3 +224,23 @@ test "normalize_type cache: expand and preserve enum caches are isolated" {
     other => fail("expected variant expansion, got \{other.to_string()}")
   }
 }
+
+///|
+test "type_check: for-in over String yields String elements" {
+  let script =
+    #|let main = () -> Array[String] {
+    #|  let s = "hello"
+    #|  for c in s {
+    #|    c
+    #|  }
+    #|}
+    #|main()
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let result : Result[TypeEnv, TypeError] = try? type_check(ast)
+  match result {
+    Ok(_) => () // type check passes — String for-in accepted
+    Err(err) => fail("unexpected type error: " + err.to_string())
+  }
+}

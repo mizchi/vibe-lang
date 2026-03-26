@@ -50,7 +50,4 @@ fn print_js_usage() -> Unit {
     "reason: moonbit async stdio lacks stdin/stdout values on js/wasm targets.",
   )
   println("use: --target native + `shell-stdin`")
-  println(
-    "for wasm stdio shell build: `moon build --target wasm src/cmd/vibe_wasi`",
-  )
 }

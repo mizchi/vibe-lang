@@ -360,6 +360,7 @@ fn eval_fixture(
   script : String,
   spec : FixtureSpec,
 ) -> Result[EvalResult, String] {
+  // TODO(#20): migrate to compiled backend once prelude is available in compile_module
   if not(script.contains("import ")) && not(script.contains("effect ")) {
     let rt = Runtime::new(@capability.CapabilitySet::developer())
     return Ok(rt.eval_script(script)) catch { e => Err(e.to_string()) }
@@ -591,6 +592,7 @@ test "fixtures compiled parity" {
       "labeled_arg_basic.vibe", // labeled arg codegen
        "labeled_arg_optional.vibe", // labeled arg codegen
        "let_pat_option.vibe", // let-pat-else codegen
+       "closure_capture.vibe", "closure_nested.vibe", // closure capture codegen
       // runtime gaps: interpreter errors but compiled succeeds
        "http_p3_client_test.vibe", // HTTP capability
        "err_type_map_key_type.vibe", // runtime-only error

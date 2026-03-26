@@ -73,6 +73,132 @@ test "vibe format roundtrip regression: effect signatures stay parse-equivalent"
 }
 
 ///|
+test "vibe format roundtrip regression: effect declarations stay parse-equivalent" {
+  let input =
+    #|effect ParseRecur {
+    #|  Call(Array[Token], Int, Int) -> (Expr, Int)
+    #|}
+  let formatted = format_script(input)
+  let before = parse_ast(input) catch {
+    e => fail("[before-format] parse failed: \{e.to_string()}\n---\n\{input}")
+  }
+  let after = parse_ast(formatted) catch {
+    e =>
+      fail("[after-format] parse failed: \{e.to_string()}\n---\n\{formatted}")
+  }
+  assert_eq(@core.normalize_module(after), @core.normalize_module(before))
+  if formatted.contains("ParseRecur::") {
+    fail("[effect decl regression] found ParseRecur::\n---\n\{formatted}")
+  }
+}
+
+///|
+test "vibe format roundtrip regression: suberror declarations stay parse-equivalent" {
+  let input =
+    #|suberror HttpError {
+    #|  BadRequest(String);
+    #|  NotFound;
+    #|  MethodNotAllowed;
+    #|  Forbidden;
+    #|  InternalError(String)
+    #|}
+  let formatted = format_script(input)
+  let before = parse_ast(input) catch {
+    e => fail("[before-format] parse failed: \{e.to_string()}\n---\n\{input}")
+  }
+  let after = parse_ast(formatted) catch {
+    e =>
+      fail("[after-format] parse failed: \{e.to_string()}\n---\n\{formatted}")
+  }
+  assert_eq(@core.normalize_module(after), @core.normalize_module(before))
+}
+
+///|
+test "vibe format roundtrip regression: sectioned suberror declarations stay parse-equivalent" {
+  let input =
+    #|//# Types
+    #|suberror HttpError {
+    #|  BadRequest(String);
+    #|  NotFound;
+    #|  MethodNotAllowed;
+    #|  Forbidden;
+    #|  InternalError(String)
+    #|}
+  let formatted = format_script(input)
+  let before = parse_ast(input) catch {
+    e => fail("[before-format] parse failed: \{e.to_string()}\n---\n\{input}")
+  }
+  let after = parse_ast(formatted) catch {
+    e =>
+      fail("[after-format] parse failed: \{e.to_string()}\n---\n\{formatted}")
+  }
+  assert_eq(@core.normalize_module(after), @core.normalize_module(before))
+}
+
+///|
+test "vibe format roundtrip regression: export struct declarations stay parse-equivalent" {
+  let input =
+    #|export struct HttpRequest {
+    #|  method: String;
+    #|  url: String;
+    #|  headers: Map[String, String];
+    #|  body: String
+    #|}
+  let formatted = format_script(input)
+  let before = parse_ast(input) catch {
+    e => fail("[before-format] parse failed: \{e.to_string()}\n---\n\{input}")
+  }
+  let after = parse_ast(formatted) catch {
+    e =>
+      fail("[after-format] parse failed: \{e.to_string()}\n---\n\{formatted}")
+  }
+  assert_eq(@core.normalize_module(after), @core.normalize_module(before))
+}
+
+///|
+test "vibe format roundtrip regression: namespaced struct constructors stay parse-equivalent" {
+  let input =
+    #|let resp = HttpResponse::{ status: 200, headers: MapBuilder::freeze(MapBuilder::new()), body: "" }
+  let formatted = format_script(input)
+  let before = parse_ast(input) catch {
+    e => fail("[before-format] parse failed: \{e.to_string()}\n---\n\{input}")
+  }
+  let after = parse_ast(formatted) catch {
+    e =>
+      fail("[after-format] parse failed: \{e.to_string()}\n---\n\{formatted}")
+  }
+  assert_eq(@core.normalize_module(after), @core.normalize_module(before))
+}
+
+///|
+test "vibe format roundtrip regression: array comment lines keep following hex items separated" {
+  let input =
+    #|let bytes = [
+    #|  // component section id=4, size=8
+    #|  0x04, 0x08,
+    #|  // nested component header
+    #|  0x00, 0x61
+    #|]
+  let before = parse_ast(input) catch {
+    e => fail("[before-format] parse failed: \{e.to_string()}\n---\n\{input}")
+  }
+  let formatted = format_script(input)
+  let after = parse_ast(formatted) catch {
+    e =>
+      fail("[after-format] parse failed: \{e.to_string()}\n---\n\{formatted}")
+  }
+  assert_eq(@core.normalize_module(after), @core.normalize_module(before))
+  if formatted.contains("size=80x04") {
+    fail("[format] comment swallowed following hex item\n---\n\{formatted}")
+  }
+  if formatted.contains("header0x00") {
+    fail(
+      "[format] second comment swallowed following hex item\n---\n\{formatted}",
+    )
+  }
+}
+
+///|
 test "vibe format keeps import list forms parse-equivalent" {
   let input =
     #|import ./mod.vibe { type Option, trait Eq, value as value_alias }

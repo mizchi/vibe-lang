@@ -3739,27 +3739,10 @@ fn handle_cd_builtin(
     }
   }
   if process_chdir(target) {
-    // Update runtime cwd via fs_chdir
-    let new_cwd = @io.current_dir_or_root()
-    let script = "Fs::chdir(\"" + escape_string_for_vibe(new_cwd) + "\")"
-    try rt.eval_script(script) |> ignore catch {
-      _ => ()
-    }
+    // Update runtime cwd directly
+    rt.set_cwd(@io.current_dir_or_root())
   } else {
     print_line("cd: no such file or directory: " + arg)
   }
   true
-}
-
-///|
-fn escape_string_for_vibe(s : String) -> String {
-  let buf = StringBuilder::new()
-  for ch in s {
-    match ch {
-      '\\' => buf.write_string("\\\\")
-      '"' => buf.write_string("\\\"")
-      _ => buf.write_char(ch)
-    }
-  }
-  buf.to_string()
 }

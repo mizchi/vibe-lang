@@ -230,7 +230,7 @@ fi
 
 if [ "$needs_cli_rebuild" -eq 1 ]; then
   run_stage "building vibe CLI (native release)" \
-    moon build --target native --release src/cmd/vibe --warn-list '-29'
+    moon build --target native --release --target-dir target src/cmd/vibe --warn-list '-29'
 fi
 
 # Build selfhost compiler wasm if cutover is enabled and binary is missing/stale
@@ -303,7 +303,7 @@ SELFHOST_COMPILED_TEST_FILES=()
 for test_path in "$PROJECT_ROOT"/vibe/compiler/*_test.vibe; do
   test_name="$(basename "$test_path")"
   case "$test_name" in
-    selfhost_s5_test.vibe|selfhost_s5_*_test.vibe|codegen_parser_test.vibe|compiler_cache_test.vibe|cli_cache_test.vibe|cli_adapter_cache_test.vibe|codegen_enum_import_test.vibe|cache_probe_*_bench_test.vibe|compiler_fs_test.vibe|module_loader_check_module_test.vibe|fixture_real_selfhost_test.vibe|checker_error_format_test.vibe)
+    selfhost_s5_test.vibe|selfhost_s5_*_test.vibe|codegen_test.vibe|codegen_*_test.vibe|compiler_cache_test.vibe|cli_cache_test.vibe|cli_adapter_cache_test.vibe|cache_probe_*_bench_test.vibe|cache_probe_test.vibe|compiler_fs_test.vibe|module_loader_check_module_test.vibe|fixture_real_selfhost_test.vibe|checker_error_format_test.vibe|compiler_cache_advanced_test.vibe|file_compile_mode_test.vibe|module_loader_collect_sources_test.vibe|persistent_cache_test.vibe|type_db_cross_module_test.vibe|type_db_test.vibe|compiler_cache_prepare_test.vibe|fixture_test.vibe|coverage_selfhost_suite_lib_test.vibe|loader_persistent_cache_test.vibe|wasm_emit_test.vibe|module_loader_test.vibe|fixture_roundtrip_test.vibe|checker_effects_test.vibe)
       ;;
     *)
       SELFHOST_COMPILED_TEST_FILES+=("$test_path")

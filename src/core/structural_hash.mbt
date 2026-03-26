@@ -520,6 +520,7 @@ pub fn Type::structural_hash(self : Type) -> Int {
       )
     Type::StringBuilder => 0x53744275
     Type::Bytes => 0x42797465
+    Type::V128 => 0x56313238
     Type::Variant(ctors) => {
       let mut h = 0x56617269
       for name, ty in ctors {

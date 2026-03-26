@@ -1369,6 +1369,7 @@ fn eval_report_json(request : String) -> String {
     Ok(value) => value
     Err(err) => return response_error_json(err)
   }
+  // TODO(#20): migrate to compiled backend (playground API)
   // Use the persistent runtime for parse + typecheck + eval (accumulates state)
   let rt = ensure_eval_runtime()
   let result = rt.eval_script(source) catch {

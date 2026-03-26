@@ -316,9 +316,7 @@ pub fn railway_boundary_notes_for_source(source : String) -> Array[String] {
 }
 
 ///|
-pub fn normalize_format_file_source(
-  path : String,
-) -> Result[String, String] {
+pub fn normalize_format_file_source(path : String) -> Result[String, String] {
   let src = @os_fs.read_file_to_string(path) catch {
     e => return Err("normalize: " + e.to_string())
   }
@@ -326,9 +324,7 @@ pub fn normalize_format_file_source(
 }
 
 ///|
-pub fn normalize_format_source_text(
-  source : String,
-) -> Result[String, String] {
+pub fn normalize_format_source_text(source : String) -> Result[String, String] {
   let normalized = match normalize_source_text(source) {
     Ok(v) => v
     Err(err) => return Err(err)

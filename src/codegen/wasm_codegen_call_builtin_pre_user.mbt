@@ -1480,6 +1480,163 @@ fn compile_call_builtin_pre_user_inner(
       emit_f64_store(buf, 0)
       emit_i64_const_tagged(buf, 0L)
     }
+    // --- SIMD V128 builtins ---
+    "v128_load" => {
+      // v128_load(bytes, offset) -> V128
+      // Load raw Bytes data pointer, add offset, v128.load, box result
+      let pos_args = extract_positional_exprs_with_arity(args, "v128_load", 2)
+      let addr_local = alloc_temp_local(ctx)
+      let v128_local = alloc_temp_local_with_kind(ctx, ValueKind::V128)
+      // Compute base+offset as i32 address
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      // Load raw data pointer from Bytes object at offset 12
+      emit_i32_load(buf, 12)
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_untag_int_i32(buf)
+      emit_i32_add(buf)
+      emit_v128_load(buf, 0)
+      emit_local_set(buf, v128_local)
+      // Box: allocate 20 bytes on heap (obj_type + v128)
+      require_heap(ctx)
+      emit_heap_alloc(ctx, buf, 20, addr_local)
+      emit_local_get(buf, addr_local)
+      emit_i32_const_raw(buf, obj_v128)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, addr_local)
+      emit_local_get(buf, v128_local)
+      emit_v128_store(buf, 4)
+      // Return tagged pointer
+      emit_local_get(buf, addr_local)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
+    }
+    "v128_store" => {
+      // v128_store(bytes, offset, v128) -> Unit
+      let pos_args = extract_positional_exprs_with_arity(args, "v128_store", 3)
+      let v128_local = alloc_temp_local_with_kind(ctx, ValueKind::V128)
+      // Unbox v128 arg
+      compile_expr_i32(ctx, buf, pos_args[2])
+      emit_untag_ptr_i32(buf)
+      emit_v128_load(buf, 4)
+      emit_local_set(buf, v128_local)
+      // Compute Bytes data ptr + offset
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      emit_i32_load(buf, 12)
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_untag_int_i32(buf)
+      emit_i32_add(buf)
+      // Store v128
+      emit_local_get(buf, v128_local)
+      emit_v128_store(buf, 0)
+      emit_i64_const_tagged(buf, 0L)
+    }
+    "v128_splat_i8x16" => {
+      // v128_splat_i8x16(int) -> V128
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "v128_splat_i8x16", 1,
+      )
+      let addr_local = alloc_temp_local(ctx)
+      let v128_local = alloc_temp_local_with_kind(ctx, ValueKind::V128)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_int_i32(buf)
+      emit_i8x16_splat(buf)
+      emit_local_set(buf, v128_local)
+      require_heap(ctx)
+      emit_heap_alloc(ctx, buf, 20, addr_local)
+      emit_local_get(buf, addr_local)
+      emit_i32_const_raw(buf, obj_v128)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, addr_local)
+      emit_local_get(buf, v128_local)
+      emit_v128_store(buf, 4)
+      emit_local_get(buf, addr_local)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
+    }
+    "v128_eq_i8x16" => {
+      // v128_eq_i8x16(V128, V128) -> V128
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "v128_eq_i8x16", 2,
+      )
+      emit_v128_binary_op(ctx, buf, pos_args[0], pos_args[1], emit_i8x16_eq)
+    }
+    "v128_le_u_i8x16" => {
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "v128_le_u_i8x16", 2,
+      )
+      emit_v128_binary_op(ctx, buf, pos_args[0], pos_args[1], emit_i8x16_le_u)
+    }
+    "v128_ge_u_i8x16" => {
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "v128_ge_u_i8x16", 2,
+      )
+      emit_v128_binary_op(ctx, buf, pos_args[0], pos_args[1], emit_i8x16_ge_u)
+    }
+    "v128_and" => {
+      let pos_args = extract_positional_exprs_with_arity(args, "v128_and", 2)
+      emit_v128_binary_op(ctx, buf, pos_args[0], pos_args[1], emit_v128_and)
+    }
+    "v128_or" => {
+      let pos_args = extract_positional_exprs_with_arity(args, "v128_or", 2)
+      emit_v128_binary_op(ctx, buf, pos_args[0], pos_args[1], emit_v128_or)
+    }
+    "v128_not" => {
+      // v128_not(V128) -> V128
+      let pos_args = extract_positional_exprs_with_arity(args, "v128_not", 1)
+      emit_v128_unary_op(ctx, buf, pos_args[0], emit_v128_not)
+    }
+    "v128_bitmask_i8x16" => {
+      // v128_bitmask_i8x16(V128) -> Int
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "v128_bitmask_i8x16", 1,
+      )
+      // Unbox v128
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      emit_v128_load(buf, 4)
+      // bitmask -> i32 result
+      emit_i8x16_bitmask(buf)
+      // Tag as Int
+      emit_i64_extend_i32_s(buf)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf)
+    }
+    "v128_any_true" => {
+      // v128_any_true(V128) -> Bool
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "v128_any_true", 1,
+      )
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      emit_v128_load(buf, 4)
+      emit_v128_any_true(buf)
+      emit_tag_bool_from_i32(buf)
+    }
+    "v128_all_true_i8x16" => {
+      // v128_all_true_i8x16(V128) -> Bool
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "v128_all_true_i8x16", 1,
+      )
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      emit_v128_load(buf, 4)
+      emit_i8x16_all_true(buf)
+      emit_tag_bool_from_i32(buf)
+    }
+    "int_ctz" => {
+      // int_ctz(Int) -> Int
+      let pos_args = extract_positional_exprs_with_arity(args, "int_ctz", 1)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_int_i32(buf)
+      emit_i32_ctz(buf)
+      emit_i64_extend_i32_s(buf)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf)
+    }
     "not" if not(is_user_fn) => {
       let pos_args = extract_positional_exprs_with_arity(args, "not", 1)
       compile_expr_i32(ctx, buf, pos_args[0])

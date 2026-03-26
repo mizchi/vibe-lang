@@ -204,7 +204,7 @@ test "pass_validate: valid render passes" {
     }
   }
   let rendered = "let x: Int = 1\n"
-  let result = pass_validate(rendered, ast.stmts)
+  let result = pass_validate(source, rendered, ast.stmts)
   inspect(result, content="Ok(())")
 }
 
@@ -220,7 +220,7 @@ test "pass_validate: semantics change detected" {
     }
   }
   let rendered = "let x: Int = 999\n"
-  let result = pass_validate(rendered, ast.stmts)
+  let result = pass_validate(source, rendered, ast.stmts)
   match result {
     Err(msg) => assert_true(msg.contains("changed semantics"))
     Ok(_) => fail("expected validation to fail")
@@ -283,7 +283,7 @@ test "pass pipeline: full chain produces same result as normalize_source_text" {
       return
     }
   }
-  match pass_validate(rendered, final_sorted) {
+  match pass_validate(quickfixed, rendered, final_sorted) {
     Ok(_) => ()
     Err(msg) => {
       fail(msg)

@@ -1,3 +1,5 @@
+//# Imports
+
 import ../json {
   Json, parse, stringify
 }
@@ -5,6 +7,8 @@ import ../json {
 import ../shell {
   join_str, split, trim
 }
+
+//# Types
 
 export struct CoverageCaseInput {
   report_path: String;
@@ -103,21 +107,60 @@ struct ParsedCoverageCase {
   case_branch_hit: Int
 }
 
-let empty_point_entries = () -> Array[PointEntry] {
-  Array::slice([
-    PointEntry::{ key: "", kind: "", hit: false }
-  ], 0, 0)
+//# Functions
+
+let int_json = (value: Int) -> Json {
+  JNum(Int::to_double(value))
 }
 
-let empty_branch_gap_entries = () -> Array[BranchGapEntry] {
-  Array::slice([
-    BranchGapEntry::{
-      entry_path: "",
-      branch_miss: 0,
-      branch_total: 0,
-      branch_hit: 0
+let bool_json = (value: Bool) -> Json {
+  JBool(value)
+}
+
+let string_lt = (a: String, b: String) -> Bool {
+  let len_a = String::length(a)
+  let len_b = String::length(b)
+  let rec go = (i: Int) -> Bool {
+    if i >= len_a || i >= len_b {
+      len_a < len_b
+    } else {
+      let ca = String::char_code_at(a, i)
+      let cb = String::char_code_at(b, i)
+      if ca < cb {
+        true
+      } else if ca > cb {
+        false
+      } else {
+        go(i + 1)
+      }
     }
-  ], 0, 0)
+  }
+  go(0)
+}
+
+let double_json = (value: Double) -> Json {
+  JNum(value)
+}
+
+let obj_get_opt = (obj: Json, key: String) -> Option[Json] {
+  match obj {
+    JObj(m) => if Map::has_key(m, key) {
+      Some(Map::get(m, key))
+    } else None,
+    _ => None
+  }
+}
+
+let string_json = (value: String) -> Json {
+  JStr(value)
+}
+
+let parse_int_or = (raw: String, fallback: Int) -> Int {
+  handle {
+    Int::parse(raw)
+  } {
+    Error(_) => fallback
+  }
 }
 
 let rate_percent = (hit: Int, total: Int) -> Double {
@@ -140,16 +183,86 @@ let format_fixed2 = (value: Double) -> String {
   String::concat(String::concat(__to_string(whole), "."), frac_text)
 }
 
+export let evaluate_kpi = (report: SuiteReport, min_point_rate: Option[Double], min_line_rate: Option[Double], min_branch_rate: Option[Double]) -> KpiResult {
+  let point_ok = match min_point_rate {
+    Some(min) => report.point_rate >= min,
+    None => true
+  }
+  let line_ok = match min_line_rate {
+    Some(min) => report.line_rate >= min,
+    None => true
+  }
+  let branch_ok = match min_branch_rate {
+    Some(min) => report.branch_rate >= min,
+    None => true
+  }
+  let failures_builder = ArrayBuilder::new()
+  if not(point_ok) {
+    let min = match min_point_rate {
+      Some(v) => v,
+      None => 0.0
+    }
+    ArrayBuilder::push(failures_builder, String::concat(String::concat(String::concat(String::concat("point_coverage ", format_fixed2(report.point_rate)), "% < "), format_fixed2(min)), "%"))
+  }
+  if not(line_ok) {
+    let min = match min_line_rate {
+      Some(v) => v,
+      None => 0.0
+    }
+    ArrayBuilder::push(failures_builder, String::concat(String::concat(String::concat(String::concat("line_coverage ", format_fixed2(report.line_rate)), "% < "), format_fixed2(min)), "%"))
+  }
+  if not(branch_ok) {
+    let min = match min_branch_rate {
+      Some(v) => v,
+      None => 0.0
+    }
+    ArrayBuilder::push(failures_builder, String::concat(String::concat(String::concat(String::concat("branch_coverage ", format_fixed2(report.branch_rate)), "% < "), format_fixed2(min)), "%"))
+  }
+  let failures = ArrayBuilder::freeze(failures_builder)
+  let has_point_threshold = match min_point_rate {
+    Some(_) => true,
+    None => false
+  }
+  let has_line_threshold = match min_line_rate {
+    Some(_) => true,
+    None => false
+  }
+  let has_branch_threshold = match min_branch_rate {
+    Some(_) => true,
+    None => false
+  }
+  KpiResult::{
+    ok: point_ok && line_ok && branch_ok,
+    point_rate: report.point_rate,
+    line_rate: report.line_rate,
+    branch_rate: report.branch_rate,
+    min_point_rate: min_point_rate,
+    min_line_rate: min_line_rate,
+    min_branch_rate: min_branch_rate,
+    has_thresholds: has_point_threshold || has_line_threshold || has_branch_threshold,
+    failures: failures
+  }
+}
+
 let percent_text = (hit: Int, total: Int) -> String {
   format_fixed2(rate_percent(hit, total))
 }
 
-let obj_get_opt = (obj: Json, key: String) -> Option[Json] {
-  match obj {
-    JObj(m) => if Map::has_key(m, key) {
-      Some(Map::get(m, key))
-    } else None,
-    _ => None
+let json_int_text = (value: Json) -> String {
+  match value {
+    JNum(n) => __to_string(Double::to_int(n)),
+    _ => ""
+  }
+}
+
+let json_value_int = (value: Int) -> String {
+  stringify(int_json(value))
+}
+
+let obj_get_num_or = (obj: Json, key: String, fallback: Int) -> Int {
+  match obj_get_opt(obj, key) {
+    Some(JNum(value)) => Double::to_int(value),
+    _ => fallback
   }
 }
 
@@ -160,6 +273,14 @@ let obj_get_str_or = (obj: Json, key: String, fallback: String) -> String {
   }
 }
 
+let json_array_text = (items: Array[String]) -> String {
+  String::concat(String::concat("[", join_str(items, ",")), "]")
+}
+
+let json_value_bool = (value: Bool) -> String {
+  stringify(bool_json(value))
+}
+
 let obj_get_bool_or = (obj: Json, key: String, fallback: Bool) -> Bool {
   match obj_get_opt(obj, key) {
     Some(JBool(value)) => value,
@@ -167,18 +288,22 @@ let obj_get_bool_or = (obj: Json, key: String, fallback: Bool) -> Bool {
   }
 }
 
-let obj_get_num_or = (obj: Json, key: String, fallback: Int) -> Int {
-  match obj_get_opt(obj, key) {
-    Some(JNum(value)) => Double::to_int(value),
-    _ => fallback
+export let parse_line_list = (content: String) -> Array[String] {
+  let out = ArrayBuilder::new()
+  let lines = split(content, "\n")
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = trim(Array::get(lines, i))
+    if String::length(line) > 0 {
+      ArrayBuilder::push(out, line)
+    }
+    i = i + 1
   }
+  ArrayBuilder::freeze(out)
 }
 
-let json_int_text = (value: Json) -> String {
-  match value {
-    JNum(n) => __to_string(Double::to_int(n)),
-    _ => ""
-  }
+let json_object_text = (fields: Array[String]) -> String {
+  String::concat(String::concat("{", join_str(fields, ",")), "}")
 }
 
 let obj_get_int_text = (obj: Json, key: String) -> String {
@@ -252,6 +377,83 @@ let point_signature = (entry_path: String, point_obj: Json) -> String {
   }
 }
 
+let json_value_double = (value: Double) -> String {
+  stringify(double_json(value))
+}
+
+let json_value_string = (value: String) -> String {
+  stringify(string_json(value))
+}
+
+let json_field_text = (key: String, value_json: String) -> String {
+  String::concat(String::concat(json_value_string(key), ":"), value_json)
+}
+
+let case_json_text = (case: CoverageCase) -> String {
+  let stats_fields = [
+    json_field_text("point_total", json_value_int(case.stats.point_total)),
+    json_field_text("point_hit", json_value_int(case.stats.point_hit)),
+    json_field_text("line_total", json_value_int(case.stats.line_total)),
+    json_field_text("line_hit", json_value_int(case.stats.line_hit)),
+    json_field_text("branch_total", json_value_int(case.stats.branch_total)),
+    json_field_text("branch_hit", json_value_int(case.stats.branch_hit))
+  ]
+  let rates_fields = [
+    json_field_text("point", json_value_double(case.point_rate)),
+    json_field_text("line", json_value_double(case.line_rate)),
+    json_field_text("branch", json_value_double(case.branch_rate))
+  ]
+  json_object_text([
+    json_field_text("report_path", json_value_string(case.report_path)),
+    json_field_text("entry_path", json_value_string(case.entry_path)),
+    json_field_text("execution_ok", json_value_bool(case.execution_ok)),
+    json_field_text("execution_error", json_value_string(case.execution_error)),
+    json_field_text("summary_only", json_value_bool(case.summary_only)),
+    json_field_text("stats", json_object_text(stats_fields)),
+    json_field_text("case_branch_total", json_value_int(case.case_branch_total)),
+    json_field_text("case_branch_hit", json_value_int(case.case_branch_hit)),
+    json_field_text("rates", json_object_text(rates_fields))
+  ])
+}
+
+let option_double_json = (value: Option[Double]) -> Json {
+  match value {
+    Some(v) => double_json(v),
+    None => JNull
+  }
+}
+
+let branch_gap_precedes = (lhs: BranchGapEntry, rhs: BranchGapEntry) -> Bool {
+  if lhs.branch_miss > rhs.branch_miss {
+    true
+  } else if lhs.branch_miss < rhs.branch_miss {
+    false
+  } else if lhs.branch_total > rhs.branch_total {
+    true
+  } else if lhs.branch_total < rhs.branch_total {
+    false
+  } else {
+    string_lt(lhs.entry_path, rhs.entry_path)
+  }
+}
+
+let empty_point_entries = () -> Array[PointEntry] {
+  Array::slice([
+    PointEntry::{
+      key: "", kind: "", hit: false
+    }
+  ], 0, 0)
+}
+
+let branch_gap_json_text = (gap: BranchGapEntry) -> String {
+  json_object_text([
+    json_field_text("entry_path", json_value_string(gap.entry_path)),
+    json_field_text("branch_miss", json_value_int(gap.branch_miss)),
+    json_field_text("branch_total", json_value_int(gap.branch_total)),
+    json_field_text("branch_hit", json_value_int(gap.branch_hit))
+  ])
+}
+
 let concat_point_entries = (a: Array[PointEntry], b: Array[PointEntry]) -> Array[PointEntry] {
   let out = ArrayBuilder::new()
   let mut i = 0
@@ -267,154 +469,7 @@ let concat_point_entries = (a: Array[PointEntry], b: Array[PointEntry]) -> Array
   ArrayBuilder::freeze(out)
 }
 
-let compact_point_entries = (raw: String, kind: String) -> Array[PointEntry] {
-  if String::length(raw) == 0 {
-    empty_point_entries()
-  } else {
-    let out = ArrayBuilder::new()
-    let items = split(raw, ",")
-    let mut i = 0
-    while i < Array::length(items) {
-      let item = trim(Array::get(items, i))
-      if String::length(item) > 0 {
-        let parts = split(item, ":")
-        if Array::length(parts) >= 2 {
-          let pid = Array::get(parts, 0)
-          let hit = Array::get(parts, 1) == "1"
-          if String::length(pid) > 0 {
-            ArrayBuilder::push(
-              out,
-              PointEntry::{ key: pid, kind: kind, hit: hit }
-            )
-          }
-        }
-      }
-      i = i + 1
-    }
-    ArrayBuilder::freeze(out)
-  }
-}
-
-let collect_point_entries = (raw_obj: Json) -> Array[PointEntry] with { Error } {
-  let entry_path = obj_get_str_or(raw_obj, "entry_path", "")
-  let line_points = obj_get_str_or(raw_obj, "line_points", "")
-  let branch_points = obj_get_str_or(raw_obj, "branch_points", "")
-  if String::length(line_points) > 0 || String::length(branch_points) > 0 {
-    concat_point_entries(
-      compact_point_entries(line_points, "line"),
-      compact_point_entries(branch_points, "branch")
-    )
-  } else {
-    match obj_get_opt(raw_obj, "points") {
-      Some(JArr(points)) => {
-        let out = ArrayBuilder::new()
-        let mut i = 0
-        while i < Array::length(points) {
-          let point_value = Array::get(points, i)
-          match point_value {
-            JStr(raw) => {
-              let parts = split(raw, "|")
-              if Array::length(parts) >= 3 {
-                let pid = Array::get(parts, 0)
-                let kind = Array::get(parts, 1)
-                let hit = Array::get(parts, 2) == "1"
-                if String::length(pid) > 0 && String::length(kind) > 0 {
-                  ArrayBuilder::push(
-                    out,
-                    PointEntry::{ key: pid, kind: kind, hit: hit }
-                  )
-                }
-              }
-            }
-            _ => {
-              let key = point_signature(entry_path, point_value)
-              if String::length(key) > 0 {
-                let kind = obj_get_str_or(point_value, "kind", "unknown")
-                let hit = obj_get_bool_or(point_value, "hit", false)
-                ArrayBuilder::push(
-                  out,
-                  PointEntry::{ key: key, kind: kind, hit: hit }
-                )
-              }
-            }
-          }
-          i = i + 1
-        }
-        ArrayBuilder::freeze(out)
-      }
-      _ => empty_point_entries()
-    }
-  }
-}
-
-let summarize_point_entries = (entries: Array[PointEntry]) -> Option[PointSummary] {
-  if Array::length(entries) == 0 {
-    None
-  } else {
-    let kind_builder = MapBuilder::new()
-    let hit_builder = MapBuilder::new()
-    let mut i = 0
-    while i < Array::length(entries) {
-      let entry = Array::get(entries, i)
-      let dedupe_key = String::concat(String::concat(entry.kind, ":"), entry.key)
-      MapBuilder::set(kind_builder, dedupe_key, entry.kind)
-      MapBuilder::set(hit_builder, dedupe_key, false)
-      i = i + 1
-    }
-    let mut j = 0
-    while j < Array::length(entries) {
-      let entry = Array::get(entries, j)
-      if entry.hit {
-        let dedupe_key = String::concat(String::concat(entry.kind, ":"), entry.key)
-        MapBuilder::set(hit_builder, dedupe_key, true)
-      }
-      j = j + 1
-    }
-    let kind_map: Map[String, String] = MapBuilder::freeze(kind_builder)
-    let hit_map: Map[String, Bool] = MapBuilder::freeze(hit_builder)
-    let keys = Map::keys(kind_map)
-    let mut point_total = 0
-    let mut point_hit = 0
-    let mut line_point_total = 0
-    let mut line_point_hit = 0
-    let mut branch_total = 0
-    let mut branch_hit = 0
-    let mut k = 0
-    while k < Array::length(keys) {
-      let key = Array::get(keys, k)
-      let kind = Map::get(kind_map, key)
-      let hit = Map::get(hit_map, key)
-      point_total = point_total + 1
-      if hit {
-        point_hit = point_hit + 1
-      }
-      if kind == "line" {
-        line_point_total = line_point_total + 1
-        if hit {
-          line_point_hit = line_point_hit + 1
-        }
-      } else {
-        branch_total = branch_total + 1
-        if hit {
-          branch_hit = branch_hit + 1
-        }
-      }
-      k = k + 1
-    }
-    Some(
-      PointSummary::{
-        point_total: point_total,
-        point_hit: point_hit,
-        line_point_total: line_point_total,
-        line_point_hit: line_point_hit,
-        branch_total: branch_total,
-        branch_hit: branch_hit
-      }
-    )
-  }
-}
-
-let normalize_line_stats = (raw_obj: Json, stats_obj: Json) -> (Int, Int) with { Error } {
+let normalize_line_stats = (raw_obj: Json, stats_obj: Json) -> (Int, Int)with { Error } {
   match obj_get_opt(raw_obj, "lines") {
     Some(JArr(lines)) => {
       let mut line_total = 0
@@ -435,32 +490,115 @@ let normalize_line_stats = (raw_obj: Json, stats_obj: Json) -> (Int, Int) with {
       (line_total, line_hit)
     }
     _ =>
-      (
-        obj_get_num_or(stats_obj, "line_total", 0),
-        obj_get_num_or(stats_obj, "line_hit", 0)
-      )
+    (obj_get_num_or(stats_obj, "line_total", 0), obj_get_num_or(stats_obj, "line_hit", 0))
   }
 }
 
-export let parse_line_list = (content: String) -> Array[String] {
-  let out = ArrayBuilder::new()
-  let lines = split(content, "\n")
-  let mut i = 0
-  while i < Array::length(lines) {
-    let line = trim(Array::get(lines, i))
-    if String::length(line) > 0 {
-      ArrayBuilder::push(out, line)
+let compact_point_entries = (raw: String, kind: String) -> Array[PointEntry] {
+  if String::length(raw) == 0 {
+    empty_point_entries()
+  } else {
+    let out = ArrayBuilder::new()
+    let items = split(raw, ",")
+    let mut i = 0
+    while i < Array::length(items) {
+      let item = trim(Array::get(items, i))
+      if String::length(item) > 0 {
+        let parts = split(item, ":")
+        if Array::length(parts) >= 2 {
+          let pid = Array::get(parts, 0)
+          let hit = Array::get(parts, 1) == "1"
+          if String::length(pid) > 0 {
+            ArrayBuilder::push(out, PointEntry::{
+              key: pid, kind: kind, hit: hit
+            })
+          }
+        }
+      }
+      i = i + 1
     }
-    i = i + 1
+    ArrayBuilder::freeze(out)
   }
-  ArrayBuilder::freeze(out)
 }
 
-let parse_int_or = (raw: String, fallback: Int) -> Int {
-  handle {
-    Int::parse(raw)
-  } {
-    Error(_) => fallback
+let collect_point_entries = (raw_obj: Json) -> Array[PointEntry] with { Error } {
+  let entry_path = obj_get_str_or(raw_obj, "entry_path", "")
+  let line_points = obj_get_str_or(raw_obj, "line_points", "")
+  let branch_points = obj_get_str_or(raw_obj, "branch_points", "")
+  if String::length(line_points) > 0 || String::length(branch_points) > 0 {
+    concat_point_entries(compact_point_entries(line_points, "line"), compact_point_entries(branch_points, "branch"))
+  } else {
+    match obj_get_opt(raw_obj, "points") {
+      Some(JArr(points)) => {
+        let out = ArrayBuilder::new()
+        let mut i = 0
+        while i < Array::length(points) {
+          let point_value = Array::get(points, i)
+          match point_value {
+            JStr(raw) => {
+              let parts = split(raw, "|")
+              if Array::length(parts) >= 3 {
+                let pid = Array::get(parts, 0)
+                let kind = Array::get(parts, 1)
+                let hit = Array::get(parts, 2) == "1"
+                if String::length(pid) > 0 && String::length(kind) > 0 {
+                  ArrayBuilder::push(out, PointEntry::{
+                    key: pid, kind: kind, hit: hit
+                  })
+                }
+              }
+            }
+            _ => {
+              let key = point_signature(entry_path, point_value)
+              if String::length(key) > 0 {
+                let kind = obj_get_str_or(point_value, "kind", "unknown")
+                let hit = obj_get_bool_or(point_value, "hit", false)
+                ArrayBuilder::push(out, PointEntry::{
+                  key: key, kind: kind, hit: hit
+                })
+              }
+            }
+          }
+          i = i + 1
+        }
+        ArrayBuilder::freeze(out)
+      }
+      _ => empty_point_entries()
+    }
+  }
+}
+
+let insert_branch_gap_entry = (entries: Array[BranchGapEntry], next: BranchGapEntry, limit: Int) -> Array[BranchGapEntry] {
+  if next.branch_miss <= 0 || limit <= 0 {
+    entries
+  } else {
+    let out = ArrayBuilder::new()
+    let mut out_len = 0
+    let mut inserted = false
+    let mut i = 0
+    while i < Array::length(entries) {
+      let current = Array::get(entries, i)
+      if not(inserted) && branch_gap_precedes(next, current) {
+        ArrayBuilder::push(out, next)
+        inserted = true
+        out_len = out_len + 1
+      }
+      if out_len < limit {
+        ArrayBuilder::push(out, current)
+        out_len = out_len + 1
+      }
+      i = i + 1
+    }
+    if not(inserted) && out_len < limit {
+      ArrayBuilder::push(out, next)
+      out_len = out_len + 1
+    }
+    let frozen = ArrayBuilder::freeze(out)
+    if Array::length(frozen) > limit {
+      Array::slice(frozen, 0, limit)
+    } else {
+      frozen
+    }
   }
 }
 
@@ -524,10 +662,7 @@ let parse_custom_case_input = (input: CoverageCaseInput) -> ParsedCoverageCase {
     execution_ok: execution_ok,
     execution_error: execution_error,
     summary_only: summary_only || ((case_branch_total > 0 || case_branch_hit > 0) && branch_total == 0),
-    point_entries: concat_point_entries(
-      compact_point_entries(line_points, "line"),
-      compact_point_entries(branch_points, "branch")
-    ),
+    point_entries: concat_point_entries(compact_point_entries(line_points, "line"), compact_point_entries(branch_points, "branch")),
     point_total: point_total,
     point_hit: point_hit,
     line_total: line_total,
@@ -544,6 +679,66 @@ let parse_custom_case_input = (input: CoverageCaseInput) -> ParsedCoverageCase {
     } else {
       branch_hit
     }
+  }
+}
+
+let summarize_point_entries = (entries: Array[PointEntry]) -> Option[PointSummary] {
+  if Array::length(entries) == 0 {
+    None
+  } else {
+    let kind_builder = MapBuilder::new()
+    let hit_builder = MapBuilder::new()
+    let mut i = 0
+    while i < Array::length(entries) {
+      let entry = Array::get(entries, i)
+      let dedupe_key = String::concat(String::concat(entry.kind, ":"), entry.key)
+      MapBuilder::set(kind_builder, dedupe_key, entry.kind)
+      MapBuilder::set(hit_builder, dedupe_key, false)
+      i = i + 1
+    }
+    let mut j = 0
+    while j < Array::length(entries) {
+      let entry = Array::get(entries, j)
+      if entry.hit {
+        let dedupe_key = String::concat(String::concat(entry.kind, ":"), entry.key)
+        MapBuilder::set(hit_builder, dedupe_key, true)
+      }
+      j = j + 1
+    }
+    let kind_map: Map[String, String] = MapBuilder::freeze(kind_builder)
+    let hit_map: Map[String, Bool] = MapBuilder::freeze(hit_builder)
+    let keys = Map::keys(kind_map)
+    let mut point_total = 0
+    let mut point_hit = 0
+    let mut line_point_total = 0
+    let mut line_point_hit = 0
+    let mut branch_total = 0
+    let mut branch_hit = 0
+    let mut k = 0
+    while k < Array::length(keys) {
+      let key = Array::get(keys, k)
+      let kind = Map::get(kind_map, key)
+      let hit = Map::get(hit_map, key)
+      point_total = point_total + 1
+      if hit {
+        point_hit = point_hit + 1
+      }
+      if kind == "line" {
+        line_point_total = line_point_total + 1
+        if hit {
+          line_point_hit = line_point_hit + 1
+        }
+      } else {
+        branch_total = branch_total + 1
+        if hit {
+          branch_hit = branch_hit + 1
+        }
+      }
+      k = k + 1
+    }
+    Some(PointSummary::{
+      point_total: point_total, point_hit: point_hit, line_point_total: line_point_total, line_point_hit: line_point_hit, branch_total: branch_total, branch_hit: branch_hit
+    })
   }
 }
 
@@ -601,275 +796,16 @@ let parse_case_input = (input: CoverageCaseInput) -> ParsedCoverageCase with { E
   }
 }
 
-export let build_suite_report_from_json_texts = (inputs: Array[CoverageCaseInput]) -> SuiteReport with { Error } {
-  let mut line_total = 0
-  let mut line_hit = 0
-  let mut fallback_point_total = 0
-  let mut fallback_point_hit = 0
-  let mut fallback_branch_total = 0
-  let mut fallback_branch_hit = 0
-  let mut has_point_map = false
-  let mut trap_case_count = 0
-
-  let global_point_entries_builder = ArrayBuilder::new()
-  let cases_builder = ArrayBuilder::new()
-
-  let mut i = 0
-  while i < Array::length(inputs) {
-    let input = Array::get(inputs, i)
-    let parsed = parse_case_input(input)
-    let point_entries = parsed.point_entries
-    let point_total = parsed.point_total
-    let point_hit = parsed.point_hit
-    let branch_total = parsed.branch_total
-    let branch_hit = parsed.branch_hit
-    let case_branch_total = parsed.case_branch_total
-    let case_branch_hit = parsed.case_branch_hit
-
-    if Array::length(point_entries) > 0 {
-      has_point_map = true
-      let mut j = 0
-      while j < Array::length(point_entries) {
-        ArrayBuilder::push(
-          global_point_entries_builder,
-          Array::get(point_entries, j)
-        )
-        j = j + 1
-      }
-    } else {
-      fallback_point_total = fallback_point_total + point_total
-      fallback_point_hit = fallback_point_hit + point_hit
-      fallback_branch_total = fallback_branch_total + branch_total
-      fallback_branch_hit = fallback_branch_hit + branch_hit
+let empty_branch_gap_entries = () -> Array[BranchGapEntry] {
+  Array::slice([
+    BranchGapEntry::{
+      entry_path: "", branch_miss: 0, branch_total: 0, branch_hit: 0
     }
-
-    let case_line_total = parsed.line_total
-    let case_line_hit = parsed.line_hit
-    line_total = line_total + case_line_total
-    line_hit = line_hit + case_line_hit
-
-    let execution_ok = parsed.execution_ok
-    if not(execution_ok) {
-      trap_case_count = trap_case_count + 1
-    }
-    let execution_error = parsed.execution_error
-
-    let case_stats = CaseStats::{
-      point_total: point_total,
-      point_hit: point_hit,
-      line_total: case_line_total,
-      line_hit: case_line_hit,
-      branch_total: branch_total,
-      branch_hit: branch_hit
-    }
-
-    ArrayBuilder::push(
-      cases_builder,
-      CoverageCase::{
-        report_path: input.report_path,
-        entry_path: parsed.entry_path,
-        execution_ok: execution_ok,
-        execution_error: execution_error,
-        summary_only: parsed.summary_only,
-        stats: case_stats,
-        case_branch_total: case_branch_total,
-        case_branch_hit: case_branch_hit,
-        point_rate: rate_percent(point_hit, point_total),
-        line_rate: rate_percent(case_line_hit, case_line_total),
-        branch_rate: rate_percent(branch_hit, branch_total)
-      }
-    )
-
-    i = i + 1
-  }
-
-  let global_summary_opt = if has_point_map {
-    summarize_point_entries(ArrayBuilder::freeze(global_point_entries_builder))
-  } else None
-
-  let total_point_total = match global_summary_opt {
-    Some(summary) => summary.point_total + fallback_point_total
-    None => fallback_point_total
-  }
-  let total_point_hit = match global_summary_opt {
-    Some(summary) => summary.point_hit + fallback_point_hit
-    None => fallback_point_hit
-  }
-  let total_branch_total = match global_summary_opt {
-    Some(summary) => summary.branch_total + fallback_branch_total
-    None => fallback_branch_total
-  }
-  let total_branch_hit = match global_summary_opt {
-    Some(summary) => summary.branch_hit + fallback_branch_hit
-    None => fallback_branch_hit
-  }
-
-  let stats = SuiteStats::{
-    point_total: total_point_total,
-    point_hit: total_point_hit,
-    line_total: line_total,
-    line_hit: line_hit,
-    branch_total: total_branch_total,
-    branch_hit: total_branch_hit
-  }
-  let cases = ArrayBuilder::freeze(cases_builder)
-
-  SuiteReport::{
-    case_count: Array::length(cases),
-    trap_case_count: trap_case_count,
-    stats: stats,
-    point_rate: rate_percent(stats.point_hit, stats.point_total),
-    line_rate: rate_percent(stats.line_hit, stats.line_total),
-    branch_rate: rate_percent(stats.branch_hit, stats.branch_total),
-    cases: cases
-  }
+  ], 0, 0)
 }
 
-export let evaluate_kpi = (
-  report: SuiteReport,
-  min_point_rate: Option[Double],
-  min_line_rate: Option[Double],
-  min_branch_rate: Option[Double]
-) -> KpiResult {
-  let point_ok = match min_point_rate {
-    Some(min) => report.point_rate >= min,
-    None => true
-  }
-  let line_ok = match min_line_rate {
-    Some(min) => report.line_rate >= min,
-    None => true
-  }
-  let branch_ok = match min_branch_rate {
-    Some(min) => report.branch_rate >= min,
-    None => true
-  }
-
-  let failures_builder = ArrayBuilder::new()
-
-  if not(point_ok) {
-    let min = match min_point_rate {
-      Some(v) => v,
-      None => 0.0
-    }
-    ArrayBuilder::push(
-      failures_builder,
-      String::concat(
-        String::concat(
-          String::concat(
-            String::concat("point_coverage ", format_fixed2(report.point_rate)),
-            "% < "
-          ),
-          format_fixed2(min)
-        ),
-        "%"
-      )
-    )
-  }
-
-  if not(line_ok) {
-    let min = match min_line_rate {
-      Some(v) => v,
-      None => 0.0
-    }
-    ArrayBuilder::push(
-      failures_builder,
-      String::concat(
-        String::concat(
-          String::concat(
-            String::concat("line_coverage ", format_fixed2(report.line_rate)),
-            "% < "
-          ),
-          format_fixed2(min)
-        ),
-        "%"
-      )
-    )
-  }
-
-  if not(branch_ok) {
-    let min = match min_branch_rate {
-      Some(v) => v,
-      None => 0.0
-    }
-    ArrayBuilder::push(
-      failures_builder,
-      String::concat(
-        String::concat(
-          String::concat(
-            String::concat("branch_coverage ", format_fixed2(report.branch_rate)),
-            "% < "
-          ),
-          format_fixed2(min)
-        ),
-        "%"
-      )
-    )
-  }
-
-  let failures = ArrayBuilder::freeze(failures_builder)
-  let has_point_threshold = match min_point_rate {
-    Some(_) => true,
-    None => false
-  }
-  let has_line_threshold = match min_line_rate {
-    Some(_) => true,
-    None => false
-  }
-  let has_branch_threshold = match min_branch_rate {
-    Some(_) => true,
-    None => false
-  }
-
-  KpiResult::{
-    ok: point_ok && line_ok && branch_ok,
-    point_rate: report.point_rate,
-    line_rate: report.line_rate,
-    branch_rate: report.branch_rate,
-    min_point_rate: min_point_rate,
-    min_line_rate: min_line_rate,
-    min_branch_rate: min_branch_rate,
-    has_thresholds: has_point_threshold || has_line_threshold || has_branch_threshold,
-    failures: failures
-  }
-}
-
-let string_lt = (a: String, b: String) -> Bool {
-  let len_a = String::length(a)
-  let len_b = String::length(b)
-  let rec go = (i: Int) -> Bool {
-    if i >= len_a || i >= len_b {
-      len_a < len_b
-    } else {
-      let ca = String::char_code_at(a, i)
-      let cb = String::char_code_at(b, i)
-      if ca < cb {
-        true
-      } else if ca > cb {
-        false
-      } else {
-        go(i + 1)
-      }
-    }
-  }
-  go(0)
-}
-
-let branch_gap_precedes = (lhs: BranchGapEntry, rhs: BranchGapEntry) -> Bool {
-  if lhs.branch_miss > rhs.branch_miss {
-    true
-  } else if lhs.branch_miss < rhs.branch_miss {
-    false
-  } else if lhs.branch_total > rhs.branch_total {
-    true
-  } else if lhs.branch_total < rhs.branch_total {
-    false
-  } else {
-    string_lt(lhs.entry_path, rhs.entry_path)
-  }
-}
-
-let is_non_aggregate_branch_case = (case: CoverageCase) -> Bool {
-  case.summary_only || (case.stats.branch_total <= 0 && case.case_branch_total > 0)
+let json_value_option_double = (value: Option[Double]) -> String {
+  stringify(option_double_json(value))
 }
 
 let branch_gap_entry_from_case = (case: CoverageCase) -> BranchGapEntry {
@@ -881,292 +817,21 @@ let branch_gap_entry_from_case = (case: CoverageCase) -> BranchGapEntry {
   }
 }
 
-let insert_branch_gap_entry = (
-  entries: Array[BranchGapEntry],
-  next: BranchGapEntry,
-  limit: Int
-) -> Array[BranchGapEntry] {
-  if next.branch_miss <= 0 || limit <= 0 {
-    entries
-  } else {
-    let out = ArrayBuilder::new()
-    let mut out_len = 0
-    let mut inserted = false
-    let mut i = 0
-    while i < Array::length(entries) {
-      let current = Array::get(entries, i)
-      if not(inserted) && branch_gap_precedes(next, current) {
-        ArrayBuilder::push(out, next)
-        inserted = true
-        out_len = out_len + 1
-      }
-      if out_len < limit {
-        ArrayBuilder::push(out, current)
-        out_len = out_len + 1
-      }
-      i = i + 1
-    }
-    if not(inserted) && out_len < limit {
-      ArrayBuilder::push(out, next)
-      out_len = out_len + 1
-    }
-    let frozen = ArrayBuilder::freeze(out)
-    if Array::length(frozen) > limit {
-      Array::slice(frozen, 0, limit)
-    } else {
-      frozen
-    }
-  }
+let is_non_aggregate_branch_case = (case: CoverageCase) -> Bool {
+  case.summary_only || (case.stats.branch_total <= 0 && case.case_branch_total > 0)
 }
 
-let top_branch_gap_entries = (
-  cases: Array[CoverageCase],
-  limit: Int,
-  include_non_aggregate: Bool
-) -> Array[BranchGapEntry] {
+let top_branch_gap_entries = (cases: Array[CoverageCase], limit: Int, include_non_aggregate: Bool) -> Array[BranchGapEntry] {
   let mut out = empty_branch_gap_entries()
   let mut i = 0
   while i < Array::length(cases) {
     let case = Array::get(cases, i)
     if is_non_aggregate_branch_case(case) == include_non_aggregate {
-      out = insert_branch_gap_entry(
-        out,
-        branch_gap_entry_from_case(case),
-        limit
-      )
+      out = insert_branch_gap_entry(out, branch_gap_entry_from_case(case), limit)
     }
     i = i + 1
   }
   out
-}
-
-export let build_summary_text = (report: SuiteReport, kpi: KpiResult) -> String {
-  let lines = ArrayBuilder::new()
-  ArrayBuilder::push(lines, "vibe selfhost suite coverage")
-  ArrayBuilder::push(lines, String::concat("cases: ", __to_string(report.case_count)))
-  ArrayBuilder::push(
-    lines,
-    String::concat(
-      String::concat(
-        String::concat(
-          String::concat(
-            String::concat("points: ", __to_string(report.stats.point_hit)),
-            "/"
-          ),
-          __to_string(report.stats.point_total)
-        ),
-        " ("
-      ),
-      String::concat(percent_text(report.stats.point_hit, report.stats.point_total), "%)")
-    )
-  )
-  ArrayBuilder::push(
-    lines,
-    String::concat(
-      String::concat(
-        String::concat(
-          String::concat(
-            String::concat("lines: ", __to_string(report.stats.line_hit)),
-            "/"
-          ),
-          __to_string(report.stats.line_total)
-        ),
-        " ("
-      ),
-      String::concat(percent_text(report.stats.line_hit, report.stats.line_total), "%)")
-    )
-  )
-  ArrayBuilder::push(
-    lines,
-    String::concat(
-      String::concat(
-        String::concat(
-          String::concat(
-            String::concat("branches: ", __to_string(report.stats.branch_hit)),
-            "/"
-          ),
-          __to_string(report.stats.branch_total)
-        ),
-        " ("
-      ),
-      String::concat(percent_text(report.stats.branch_hit, report.stats.branch_total), "%)")
-    )
-  )
-  ArrayBuilder::push(lines, String::concat("traps: ", __to_string(report.trap_case_count)))
-
-  let branch_gaps = top_branch_gap_entries(report.cases, 5, false)
-  if Array::length(branch_gaps) > 0 {
-    ArrayBuilder::push(lines, "top_branch_gaps:")
-    let mut i = 0
-    while i < Array::length(branch_gaps) {
-      let gap = Array::get(branch_gaps, i)
-      ArrayBuilder::push(
-        lines,
-        String::concat(
-          String::concat(
-            String::concat(
-              String::concat(
-                String::concat("- ", gap.entry_path),
-                " "
-              ),
-              __to_string(gap.branch_miss)
-            ),
-            " missed ("
-          ),
-          String::concat(
-            String::concat(__to_string(gap.branch_hit), "/"),
-            String::concat(__to_string(gap.branch_total), ")")
-          )
-        )
-      )
-      i = i + 1
-    }
-  }
-  let non_aggregate_branch_gaps = top_branch_gap_entries(report.cases, 5, true)
-  if Array::length(non_aggregate_branch_gaps) > 0 {
-    ArrayBuilder::push(lines, "top_non_aggregate_branch_gaps:")
-    let mut j = 0
-    while j < Array::length(non_aggregate_branch_gaps) {
-      let gap = Array::get(non_aggregate_branch_gaps, j)
-      ArrayBuilder::push(
-        lines,
-        String::concat(
-          String::concat(
-            String::concat(
-              String::concat(
-                String::concat("- ", gap.entry_path),
-                " "
-              ),
-              __to_string(gap.branch_miss)
-            ),
-            " missed ("
-          ),
-          String::concat(
-            String::concat(__to_string(gap.branch_hit), "/"),
-            String::concat(__to_string(gap.branch_total), ")")
-          )
-        )
-      )
-      j = j + 1
-    }
-  }
-
-  if kpi.has_thresholds {
-    let kpi_line = if kpi.ok {
-      "kpi: ok"
-    } else {
-      "kpi: fail"
-    }
-    ArrayBuilder::push(lines, kpi_line)
-    if not(kpi.ok) && Array::length(kpi.failures) > 0 {
-      ArrayBuilder::push(
-        lines,
-        String::concat("kpi_failures: ", join_str(kpi.failures, " | "))
-      )
-    }
-  }
-
-  String::concat(join_str(ArrayBuilder::freeze(lines), "\n"), "\n")
-}
-
-let int_json = (value: Int) -> Json {
-  JNum(Int::to_double(value))
-}
-
-let double_json = (value: Double) -> Json {
-  JNum(value)
-}
-
-let bool_json = (value: Bool) -> Json {
-  JBool(value)
-}
-
-let string_json = (value: String) -> Json {
-  JStr(value)
-}
-
-let option_double_json = (value: Option[Double]) -> Json {
-  match value {
-    Some(v) => double_json(v),
-    None => JNull
-  }
-}
-
-let json_value_string = (value: String) -> String {
-  stringify(string_json(value))
-}
-
-let json_value_int = (value: Int) -> String {
-  stringify(int_json(value))
-}
-
-let json_value_double = (value: Double) -> String {
-  stringify(double_json(value))
-}
-
-let json_value_bool = (value: Bool) -> String {
-  stringify(bool_json(value))
-}
-
-let json_value_option_double = (value: Option[Double]) -> String {
-  stringify(option_double_json(value))
-}
-
-let json_field_text = (key: String, value_json: String) -> String {
-  String::concat(
-    String::concat(json_value_string(key), ":"),
-    value_json
-  )
-}
-
-let json_object_text = (fields: Array[String]) -> String {
-  String::concat(
-    String::concat("{", join_str(fields, ",")),
-    "}"
-  )
-}
-
-let json_array_text = (items: Array[String]) -> String {
-  String::concat(
-    String::concat("[", join_str(items, ",")),
-    "]"
-  )
-}
-
-let case_json_text = (case: CoverageCase) -> String {
-  let stats_fields = [
-    json_field_text("point_total", json_value_int(case.stats.point_total)),
-    json_field_text("point_hit", json_value_int(case.stats.point_hit)),
-    json_field_text("line_total", json_value_int(case.stats.line_total)),
-    json_field_text("line_hit", json_value_int(case.stats.line_hit)),
-    json_field_text("branch_total", json_value_int(case.stats.branch_total)),
-    json_field_text("branch_hit", json_value_int(case.stats.branch_hit))
-  ]
-  let rates_fields = [
-    json_field_text("point", json_value_double(case.point_rate)),
-    json_field_text("line", json_value_double(case.line_rate)),
-    json_field_text("branch", json_value_double(case.branch_rate))
-  ]
-  json_object_text([
-    json_field_text("report_path", json_value_string(case.report_path)),
-    json_field_text("entry_path", json_value_string(case.entry_path)),
-    json_field_text("execution_ok", json_value_bool(case.execution_ok)),
-    json_field_text("execution_error", json_value_string(case.execution_error)),
-    json_field_text("summary_only", json_value_bool(case.summary_only)),
-    json_field_text("stats", json_object_text(stats_fields)),
-    json_field_text("case_branch_total", json_value_int(case.case_branch_total)),
-    json_field_text("case_branch_hit", json_value_int(case.case_branch_hit)),
-    json_field_text("rates", json_object_text(rates_fields))
-  ])
-}
-
-let branch_gap_json_text = (gap: BranchGapEntry) -> String {
-  json_object_text([
-    json_field_text("entry_path", json_value_string(gap.entry_path)),
-    json_field_text("branch_miss", json_value_int(gap.branch_miss)),
-    json_field_text("branch_total", json_value_int(gap.branch_total)),
-    json_field_text("branch_hit", json_value_int(gap.branch_hit))
-  ])
 }
 
 export let suite_report_json = (report: SuiteReport, kpi: KpiResult) -> String {
@@ -1176,32 +841,24 @@ export let suite_report_json = (report: SuiteReport, kpi: KpiResult) -> String {
     ArrayBuilder::push(failures_b, json_value_string(Array::get(kpi.failures, i)))
     i = i + 1
   }
-
   let cases_b = ArrayBuilder::new()
   let mut j = 0
   while j < Array::length(report.cases) {
     ArrayBuilder::push(cases_b, case_json_text(Array::get(report.cases, j)))
     j = j + 1
   }
-
   let branch_gaps_b = ArrayBuilder::new()
   let branch_gaps = top_branch_gap_entries(report.cases, 5, false)
   let mut k = 0
   while k < Array::length(branch_gaps) {
-    ArrayBuilder::push(
-      branch_gaps_b,
-      branch_gap_json_text(Array::get(branch_gaps, k))
-    )
+    ArrayBuilder::push(branch_gaps_b, branch_gap_json_text(Array::get(branch_gaps, k)))
     k = k + 1
   }
   let non_aggregate_branch_gaps_b = ArrayBuilder::new()
   let non_aggregate_branch_gaps = top_branch_gap_entries(report.cases, 5, true)
   let mut m = 0
   while m < Array::length(non_aggregate_branch_gaps) {
-    ArrayBuilder::push(
-      non_aggregate_branch_gaps_b,
-      branch_gap_json_text(Array::get(non_aggregate_branch_gaps, m))
-    )
+    ArrayBuilder::push(non_aggregate_branch_gaps_b, branch_gap_json_text(Array::get(non_aggregate_branch_gaps, m)))
     m = m + 1
   }
   let stats_json = json_object_text([
@@ -1241,14 +898,146 @@ export let suite_report_json = (report: SuiteReport, kpi: KpiResult) -> String {
     json_field_text("stats", stats_json),
     json_field_text("rates", rates_json),
     json_field_text("cases", json_array_text(ArrayBuilder::freeze(cases_b))),
-    json_field_text(
-      "top_branch_gaps",
-      json_array_text(ArrayBuilder::freeze(branch_gaps_b))
-    ),
-    json_field_text(
-      "top_non_aggregate_branch_gaps",
-      json_array_text(ArrayBuilder::freeze(non_aggregate_branch_gaps_b))
-    ),
+    json_field_text("top_branch_gaps", json_array_text(ArrayBuilder::freeze(branch_gaps_b))),
+    json_field_text("top_non_aggregate_branch_gaps", json_array_text(ArrayBuilder::freeze(non_aggregate_branch_gaps_b))),
     json_field_text("kpi", kpi_json)
   ])
+}
+
+export let build_summary_text = (report: SuiteReport, kpi: KpiResult) -> String {
+  let lines = ArrayBuilder::new()
+  ArrayBuilder::push(lines, "vibe selfhost suite coverage")
+  ArrayBuilder::push(lines, String::concat("cases: ", __to_string(report.case_count)))
+  ArrayBuilder::push(lines, String::concat(String::concat(String::concat(String::concat(String::concat("points: ", __to_string(report.stats.point_hit)), "/"), __to_string(report.stats.point_total)), " ("), String::concat(percent_text(report.stats.point_hit, report.stats.point_total), "%)")))
+  ArrayBuilder::push(lines, String::concat(String::concat(String::concat(String::concat(String::concat("lines: ", __to_string(report.stats.line_hit)), "/"), __to_string(report.stats.line_total)), " ("), String::concat(percent_text(report.stats.line_hit, report.stats.line_total), "%)")))
+  ArrayBuilder::push(lines, String::concat(String::concat(String::concat(String::concat(String::concat("branches: ", __to_string(report.stats.branch_hit)), "/"), __to_string(report.stats.branch_total)), " ("), String::concat(percent_text(report.stats.branch_hit, report.stats.branch_total), "%)")))
+  ArrayBuilder::push(lines, String::concat("traps: ", __to_string(report.trap_case_count)))
+  let branch_gaps = top_branch_gap_entries(report.cases, 5, false)
+  if Array::length(branch_gaps) > 0 {
+    ArrayBuilder::push(lines, "top_branch_gaps:")
+    let mut i = 0
+    while i < Array::length(branch_gaps) {
+      let gap = Array::get(branch_gaps, i)
+      ArrayBuilder::push(lines, String::concat(String::concat(String::concat(String::concat(String::concat("- ", gap.entry_path), " "), __to_string(gap.branch_miss)), " missed ("), String::concat(String::concat(__to_string(gap.branch_hit), "/"), String::concat(__to_string(gap.branch_total), ")"))))
+      i = i + 1
+    }
+  }
+  let non_aggregate_branch_gaps = top_branch_gap_entries(report.cases, 5, true)
+  if Array::length(non_aggregate_branch_gaps) > 0 {
+    ArrayBuilder::push(lines, "top_non_aggregate_branch_gaps:")
+    let mut j = 0
+    while j < Array::length(non_aggregate_branch_gaps) {
+      let gap = Array::get(non_aggregate_branch_gaps, j)
+      ArrayBuilder::push(lines, String::concat(String::concat(String::concat(String::concat(String::concat("- ", gap.entry_path), " "), __to_string(gap.branch_miss)), " missed ("), String::concat(String::concat(__to_string(gap.branch_hit), "/"), String::concat(__to_string(gap.branch_total), ")"))))
+      j = j + 1
+    }
+  }
+  if kpi.has_thresholds {
+    let kpi_line = if kpi.ok {
+      "kpi: ok"
+    } else {
+      "kpi: fail"
+    }
+    ArrayBuilder::push(lines, kpi_line)
+    if not(kpi.ok) && Array::length(kpi.failures) > 0 {
+      ArrayBuilder::push(lines, String::concat("kpi_failures: ", join_str(kpi.failures, " | ")))
+    }
+  }
+  String::concat(join_str(ArrayBuilder::freeze(lines), "\n"), "\n")
+}
+
+export let build_suite_report_from_json_texts = (inputs: Array[CoverageCaseInput]) -> SuiteReport with { Error } {
+  let mut line_total = 0
+  let mut line_hit = 0
+  let mut fallback_point_total = 0
+  let mut fallback_point_hit = 0
+  let mut fallback_branch_total = 0
+  let mut fallback_branch_hit = 0
+  let mut has_point_map = false
+  let mut trap_case_count = 0
+  let global_point_entries_builder = ArrayBuilder::new()
+  let cases_builder = ArrayBuilder::new()
+  let mut i = 0
+  while i < Array::length(inputs) {
+    let input = Array::get(inputs, i)
+    let parsed = parse_case_input(input)
+    let point_entries = parsed.point_entries
+    let point_total = parsed.point_total
+    let point_hit = parsed.point_hit
+    let branch_total = parsed.branch_total
+    let branch_hit = parsed.branch_hit
+    let case_branch_total = parsed.case_branch_total
+    let case_branch_hit = parsed.case_branch_hit
+    if Array::length(point_entries) > 0 {
+      has_point_map = true
+      let mut j = 0
+      while j < Array::length(point_entries) {
+        ArrayBuilder::push(global_point_entries_builder, Array::get(point_entries, j))
+        j = j + 1
+      }
+    } else {
+      fallback_point_total = fallback_point_total + point_total
+      fallback_point_hit = fallback_point_hit + point_hit
+      fallback_branch_total = fallback_branch_total + branch_total
+      fallback_branch_hit = fallback_branch_hit + branch_hit
+    }
+    let case_line_total = parsed.line_total
+    let case_line_hit = parsed.line_hit
+    line_total = line_total + case_line_total
+    line_hit = line_hit + case_line_hit
+    let execution_ok = parsed.execution_ok
+    if not(execution_ok) {
+      trap_case_count = trap_case_count + 1
+    }
+    let execution_error = parsed.execution_error
+    let case_stats = CaseStats::{
+      point_total: point_total,
+      point_hit: point_hit,
+      line_total: case_line_total,
+      line_hit: case_line_hit,
+      branch_total: branch_total,
+      branch_hit: branch_hit
+    }
+    ArrayBuilder::push(cases_builder, CoverageCase::{
+      report_path: input.report_path, entry_path: parsed.entry_path, execution_ok: execution_ok, execution_error: execution_error, summary_only: parsed.summary_only, stats: case_stats, case_branch_total: case_branch_total, case_branch_hit: case_branch_hit, point_rate: rate_percent(point_hit, point_total), line_rate: rate_percent(case_line_hit, case_line_total), branch_rate: rate_percent(branch_hit, branch_total)
+    })
+    i = i + 1
+  }
+  let global_summary_opt = if has_point_map {
+    summarize_point_entries(ArrayBuilder::freeze(global_point_entries_builder))
+  } else None
+  let total_point_total = match global_summary_opt {
+    Some(summary) => summary.point_total + fallback_point_total
+    None => fallback_point_total
+  }
+  let total_point_hit = match global_summary_opt {
+    Some(summary) => summary.point_hit + fallback_point_hit
+    None => fallback_point_hit
+  }
+  let total_branch_total = match global_summary_opt {
+    Some(summary) => summary.branch_total + fallback_branch_total
+    None => fallback_branch_total
+  }
+  let total_branch_hit = match global_summary_opt {
+    Some(summary) => summary.branch_hit + fallback_branch_hit
+    None => fallback_branch_hit
+  }
+  let stats = SuiteStats::{
+    point_total: total_point_total,
+    point_hit: total_point_hit,
+    line_total: line_total,
+    line_hit: line_hit,
+    branch_total: total_branch_total,
+    branch_hit: total_branch_hit
+  }
+  let cases = ArrayBuilder::freeze(cases_builder)
+  SuiteReport::{
+    case_count: Array::length(cases),
+    trap_case_count: trap_case_count,
+    stats: stats,
+    point_rate: rate_percent(stats.point_hit, stats.point_total),
+    line_rate: rate_percent(stats.line_hit, stats.line_total),
+    branch_rate: rate_percent(stats.branch_hit, stats.branch_total),
+    cases: cases
+  }
 }

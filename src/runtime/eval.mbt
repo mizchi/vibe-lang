@@ -1163,9 +1163,18 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       }
     }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
-      let desugared = @core.desugar_for_in(
-        value_name, index_name, iterable, body, span,
-      )
+      let iter_val = eval_expr(rt, iterable)
+      let is_string = match iter_val.value {
+        @core.Value::String(_) => true
+        _ => false
+      }
+      let desugared = if is_string {
+        @core.desugar_for_in_string(
+          value_name, index_name, iterable, body, span,
+        )
+      } else {
+        @core.desugar_for_in(value_name, index_name, iterable, body, span)
+      }
       eval_block_shared_mut(rt, desugared)
     }
     @core.Expr::Fn(
@@ -1734,6 +1743,49 @@ fn resolve_type_member_call_name_rt(
 }
 
 ///|
+/// Map a resolved type to its builtin namespace root for UFCS dispatch.
+fn builtin_ufcs_namespace_rt(ty : @core.Type) -> String? {
+  match ty {
+    @core.Type::Int => Some("Int")
+    @core.Type::Float => Some("Float")
+    @core.Type::Double => Some("Double")
+    @core.Type::Bool => Some("Bool")
+    @core.Type::Char => Some("Char")
+    @core.Type::String => Some("String")
+    @core.Type::Path => Some("Path")
+    @core.Type::Array(_) => Some("Array")
+    @core.Type::Map(_, _) => Some("Map")
+    @core.Type::ArrayBuilder(_) => Some("ArrayBuilder")
+    @core.Type::MapBuilder(_, _) => Some("MapBuilder")
+    @core.Type::Bytes => Some("Bytes")
+    @core.Type::PromptText => Some("PromptText")
+    _ => None
+  }
+}
+
+///|
+/// UFCS fallback for builtins at runtime: resolve unqualified name via first
+/// argument's type recorded by the checker. Returns "Array::push" etc.
+fn resolve_builtin_ufcs_name_rt(
+  rt : Runtime,
+  name : String,
+  args : Array[@core.CallArg],
+) -> String? {
+  match @core.first_positional_expr(args) {
+    None => None
+    Some(expr) =>
+      match rt.type_env.get_expr_type(expr.span()) {
+        Some(recv_ty) =>
+          match builtin_ufcs_namespace_rt(recv_ty) {
+            Some(ns) => Some(ns + "::" + name)
+            None => None
+          }
+        None => None
+      }
+  }
+}
+
+///|
 fn try_eval_hot_builtin_call(
   rt : Runtime,
   name : String,
@@ -2016,7 +2068,57 @@ fn eval_call(
                 }
               }
             } else {
-              eval_builtin_call(rt, name, args, call_span)
+              // Try eval_builtin_call first with original name.
+              // On failure, attempt UFCS resolution and retry all paths.
+              eval_builtin_call(rt, name, args, call_span) catch {
+                EvalError::BadCall(UnknownFn(_)) =>
+                  if not(name.contains("::")) && not(name.has_prefix("__")) {
+                    match resolve_builtin_ufcs_name_rt(rt, name, args) {
+                      Some(qualified) =>
+                        match try_eval_hot_builtin_call(rt, qualified, args) {
+                          Some(out) => out
+                          None =>
+                            if is_cheap_pure_builtin(qualified) {
+                              let out = eval_args(rt, args)
+                              let pos_args = extract_positional_values(
+                                out.args,
+                                qualified,
+                              )
+                              let value = eval_pure_builtin(qualified, pos_args)
+                              { value, effects: out.effects }
+                            } else if is_pure_builtin(qualified) {
+                              let out = eval_args(rt, args)
+                              let pos_args = extract_positional_values(
+                                out.args,
+                                qualified,
+                              )
+                              let key = pure_call_key(qualified, pos_args)
+                              match rt.pure_cache_get(key) {
+                                Some(v) => { value: v, effects: out.effects }
+                                None => {
+                                  let value = eval_pure_builtin(
+                                    qualified, pos_args,
+                                  )
+                                  rt.pure_cache_set(key, value)
+                                  { value, effects: out.effects }
+                                }
+                              }
+                            } else {
+                              eval_builtin_call(rt, qualified, args, call_span)
+                            }
+                        }
+                      None =>
+                        raise EvalError::BadCall(
+                          E("unknown function '" + name + "'"),
+                        )
+                    }
+                  } else {
+                    raise EvalError::BadCall(
+                      E("unknown function '" + name + "'"),
+                    )
+                  }
+                e => raise e
+              }
             }
         }
     }
@@ -4173,16 +4275,9 @@ fn eval_builtin_call(
               Some(v) => { value: v, effects: field_args_out.effects }
               None => raise EvalError::BadCall(NoField(field=name, on="Record"))
             }
-          val =>
-            raise EvalError::BadCall(
-              E(
-                "no field '" +
-                name +
-                "' on " +
-                value_type_name(val) +
-                " (field access requires a Record)",
-              ),
-            )
+          _ =>
+            // Not a record — treat as unknown function so UFCS fallback can try
+            raise EvalError::BadCall(UnknownFn(name~))
         }
       } else {
         raise EvalError::BadCall(UnknownFn(name~))

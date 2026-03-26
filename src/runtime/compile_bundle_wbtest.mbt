@@ -205,6 +205,7 @@ test "bundle_for_wasm_linked strips ReExport from entry and resolves types" {
   assert_true(has_color)
 }
 
+///|
 test "bundle_for_wasm_linked detects HOF through ReExport chain" {
   let db = VibeDb::new()
   db.set_source(
@@ -337,4 +338,46 @@ test "bundle_for_wasm keeps enum defs through nested wrapper re-exports" {
     }
   }
   assert_eq(type_enum_count, 1)
+}
+
+///|
+test "bundle_for_wasm resolves cross-directory transitive import via ../regexp" {
+  // Simulates vibe/x/url_test.vibe scenario:
+  // /x/url_test.vibe -> ./url/pattern.vibe -> ../regexp/index.vibe -> ./regexp.vibe
+  let db = VibeDb::new()
+  // regexp module (sibling of url/)
+  db.set_source(
+    "/x/regexp/regexp.vibe", "export let compile = (s: String) -> String { s }\n",
+  )
+  db.set_source(
+    "/x/regexp/index.vibe", "export ./regexp.vibe { compile }\nexport { compile }\n",
+  )
+  // url/pattern.vibe imports ../regexp (resolves to /x/regexp/index.vibe)
+  db.set_source(
+    "/x/url/pattern.vibe", "import ../regexp { compile }\nexport let make_pattern = (s: String) -> String { compile(s) }\n",
+  )
+  // Entry test file
+  db.set_source(
+    "/x/url_test.vibe", "import ./url/pattern.vibe { make_pattern }\nlet result = make_pattern(\"test\")\nresult\n",
+  )
+  let ast = db.ast_with_hash_imports("/x/url_test.vibe")
+  let bundled = bundle_for_wasm(db, "/x/url_test.vibe", ast)
+  // Verify that compile and make_pattern are both in the bundle
+  let mut has_compile = false
+  let mut has_make_pattern = false
+  for stmt in bundled.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, ..) => {
+        if name == "compile" {
+          has_compile = true
+        }
+        if name == "make_pattern" {
+          has_make_pattern = true
+        }
+      }
+      _ => ()
+    }
+  }
+  assert_true(has_compile)
+  assert_true(has_make_pattern)
 }

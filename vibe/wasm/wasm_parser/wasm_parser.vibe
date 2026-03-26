@@ -1,24 +1,14 @@
-// WASM Binary Parser (WASM 1.0 complete)
-// Parses WebAssembly binary format (.wasm) — all 12 section types
-
 //# Functions
 
-// === LEB128 ===
-
-let read_uleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
-  let len = Bytes::length(buf)
-  let mut i = offset
-  let mut result = 0
-  let mut shift = 0
-  let mut done = false
-  while (i < len) && (done == false) {
-    let byte = buf[i]
-    result = result | ((byte & 0x7F) << shift)
+export let count_locals = (local_decls: Array[(Int, Int)]) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(local_decls) {
+    let (c, _) = Array::get(local_decls, i)
+    total = total + c
     i = i + 1
-    if (byte & 0x80) == 0 { done = true }
-    else { shift = shift + 7 }
   }
-  (result, i)
+  total
 }
 
 let read_sleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
@@ -29,32 +19,38 @@ let read_sleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
   let mut done = false
   while (i < len) && (done == false) {
     let byte = buf[i]
-    result = result | ((byte & 0x7F) << shift)
+    result = result|((byte&0x7F)<<shift)
     shift = shift + 7
     i = i + 1
-    if (byte & 0x80) == 0 {
-      if (byte & 0x40) > 0 { result = result | ((-1) << shift) }
+    if (byte&0x80) == 0 {
+      if (byte&0x40) > 0 {
+        result = result|((-1)<<shift)
+      }
       done = true
     }
   }
   (result, i)
 }
 
-// === Header ===
-
-export let validate_magic = (bytes: Bytes) -> Bool {
-  if Bytes::length(bytes) < 8 { false }
-  else {
-    (bytes[0] == 0) && (bytes[1] == 97) && (bytes[2] == 115) && (bytes[3] == 109)
+let read_uleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
+  let len = Bytes::length(buf)
+  let mut i = offset
+  let mut result = 0
+  let mut shift = 0
+  let mut done = false
+  while (i < len) && (done == false) {
+    let byte = buf[i]
+    result = result|((byte&0x7F)<<shift)
+    i = i + 1
+    if (byte&0x80) == 0 {
+      done = true
+    }
+    else {
+      shift = shift + 7
+    }
   }
+  (result, i)
 }
-
-export let read_version = (bytes: Bytes) -> Int {
-  if Bytes::length(bytes) < 8 { -1 }
-  else { bytes[4] | (bytes[5] << 8) | (bytes[6] << 16) | (bytes[7] << 24) }
-}
-
-// === Name reading ===
 
 export let read_name = (bytes: Bytes, offset: Int) -> (String, Int) {
   let (name_len, pos) = read_uleb128(bytes, offset)
@@ -67,141 +63,24 @@ export let read_name = (bytes: Bytes, offset: Int) -> (String, Int) {
   (s, pos + name_len)
 }
 
-let skip_name = (bytes: Bytes, offset: Int) -> Int {
-  let (name_len, pos) = read_uleb128(bytes, offset)
-  pos + name_len
-}
-
-// === Section iteration ===
-
-// Returns array of (section_id, content_offset, content_size)
-export let list_sections = (bytes: Bytes) -> Array[(Int, Int, Int)] {
-  let len = Bytes::length(bytes)
-  let result = Array::slice([(0, 0, 0)], 0, 0)
-  if len < 8 { result }
+export let parse_start = (bytes: Bytes, offset: Int, size: Int) -> Int {
+  if size == 0 {
+    -1
+  }
   else {
-    let mut i = 8
-    while i < len {
-      let sec_id = bytes[i]
-      i = i + 1
-      let (sec_size, content_start) = read_uleb128(bytes, i)
-      let sec_end = content_start + sec_size
-      if sec_end > len { i = len }
-      else {
-        Array::push(result, (sec_id, content_start, sec_size))
-        i = sec_end
-      }
-    }
-    result
+    let (func_idx, _) = read_uleb128(bytes, offset); func_idx
   }
 }
 
-// Returns (content_offset, content_size) or (-1, 0) if not found
-export let find_section = (bytes: Bytes, section_id: Int) -> (Int, Int) {
-  let sections = list_sections(bytes)
-  let mut idx = 0
-  let cnt = Array::length(sections)
-  let mut found_offset = -1
-  let mut found_size = 0
-  while idx < cnt {
-    let (sid, off, sz) = Array::get(sections, idx)
-    if sid == section_id {
-      found_offset = off
-      found_size = sz
-      idx = cnt
-    } else { idx = idx + 1 }
-  }
-  (found_offset, found_size)
-}
-
-// === Init expression parsing ===
-
-// Read a constant init expression. Returns (opcode, value, new_pos).
-// opcode: 0x41=i32.const, 0x42=i64.const, 0x23=global.get
-// For f32.const/f64.const, value is the raw bits.
-export let read_init_expr = (bytes: Bytes, offset: Int, end_pos: Int) -> (Int, Int, Int) {
-  if offset >= end_pos { (0, 0, offset) }
-  else {
-    let op = bytes[offset]
-    let mut pos = offset + 1
-    if (op == 0x41) || (op == 0x42) {
-      // i32.const / i64.const
-      let (val, np) = read_sleb128(bytes, pos)
-      pos = np
-      // skip end (0x0B)
-      if (pos < end_pos) && (bytes[pos] == 0x0B) { pos = pos + 1 } else { () }
-      (op, val, pos)
-    } else {
-      if op == 0x43 {
-        // f32.const: 4 bytes LE
-        let val = if (pos + 4) <= end_pos {
-          bytes[pos] | (bytes[pos+1] << 8) | (bytes[pos+2] << 16) | (bytes[pos+3] << 24)
-        } else { 0 }
-        pos = pos + 4
-        if (pos < end_pos) && (bytes[pos] == 0x0B) { pos = pos + 1 } else { () }
-        (op, val, pos)
-      } else {
-        if op == 0x44 {
-          // f64.const: 8 bytes LE
-          let lo = if (pos + 4) <= end_pos {
-            bytes[pos] | (bytes[pos+1] << 8) | (bytes[pos+2] << 16) | (bytes[pos+3] << 24)
-          } else { 0 }
-          let hi = if (pos + 8) <= end_pos {
-            bytes[pos+4] | (bytes[pos+5] << 8) | (bytes[pos+6] << 16) | (bytes[pos+7] << 24)
-          } else { 0 }
-          pos = pos + 8
-          if (pos < end_pos) && (bytes[pos] == 0x0B) { pos = pos + 1 } else { () }
-          (op, lo | (hi << 32), pos)
-        } else {
-          if op == 0x23 {
-            // global.get
-            let (idx, np) = read_uleb128(bytes, pos)
-            pos = np
-            if (pos < end_pos) && (bytes[pos] == 0x0B) { pos = pos + 1 } else { () }
-            (op, idx, pos)
-          } else {
-            // skip to end
-            while (pos < end_pos) && (bytes[pos] != 0x0B) { pos = pos + 1 }
-            if pos < end_pos { pos = pos + 1 } else { () }
-            (op, 0, pos)
-          }
-        }
-      }
-    }
-  }
-}
-
-// === Limits parsing ===
-
-let parse_limits = (bytes: Bytes, offset: Int, end_pos: Int) -> (Int, Int, Int, Int) {
-  // Returns (flags, min, max, new_pos). max=-1 if no max.
-  let mut pos = offset
-  if pos >= end_pos { (0, 0, -1, pos) }
-  else {
-    let flags = bytes[pos]
-    pos = pos + 1
-    let (min_val, p1) = read_uleb128(bytes, pos)
-    pos = p1
-    if (flags & 1) != 0 {
-      let (max_val, p2) = read_uleb128(bytes, pos)
-      (flags, min_val, max_val, p2)
-    } else {
-      (flags, min_val, -1, pos)
-    }
-  }
-}
-
-let skip_limits = (bytes: Bytes, offset: Int, end_pos: Int) -> Int {
-  let (_, _, _, np) = parse_limits(bytes, offset, end_pos)
-  if np > end_pos { end_pos } else { np }
-}
-
-// === Section 1: Type ===
-
-// Returns array of (param_types, result_types)
 export let parse_types = (bytes: Bytes, offset: Int, size: Int) -> Array[(Array[Int], Array[Int])] {
   let end_pos = offset + size
-  let result = Array::slice([([0], [0])], 0, 0)
+  let result = Array::slice([
+    ([
+      0
+    ], [
+      0
+    ])
+  ], 0, 0)
   let (cnt, pos0) = read_uleb128(bytes, offset)
   let mut pos = pos0
   let mut t = 0
@@ -209,10 +88,11 @@ export let parse_types = (bytes: Bytes, offset: Int, size: Int) -> Array[(Array[
     let form = bytes[pos]
     pos = pos + 1
     if form == 96 {
-      // 0x60 = func type
       let (param_count, pp) = read_uleb128(bytes, pos)
       pos = pp
-      let params = Array::slice([0], 0, 0)
+      let params = Array::slice([
+        0
+      ], 0, 0)
       let mut p = 0
       while (p < param_count) && (pos < end_pos) {
         Array::push(params, bytes[pos])
@@ -221,7 +101,9 @@ export let parse_types = (bytes: Bytes, offset: Int, size: Int) -> Array[(Array[
       }
       let (result_count, rp) = read_uleb128(bytes, pos)
       pos = rp
-      let results = Array::slice([0], 0, 0)
+      let results = Array::slice([
+        0
+      ], 0, 0)
       let mut r = 0
       while (r < result_count) && (pos < end_pos) {
         Array::push(results, bytes[pos])
@@ -231,43 +113,52 @@ export let parse_types = (bytes: Bytes, offset: Int, size: Int) -> Array[(Array[
       Array::push(result, (params, results))
     }
     else if form == 0x5F {
-      // 0x5F = struct type: field_count, [field_type, mutability]...
       let (field_count, fp) = read_uleb128(bytes, pos)
       pos = fp
       let mut f = 0
       while (f < field_count) && (pos < end_pos) {
-        // skip field type (may be encoded valtype or ref type)
         let ft = bytes[pos]
         pos = pos + 1
-        // handle ref types that have an additional heap type byte
         if (ft == 0x63) || (ft == 0x64) {
-          // ref / ref null: skip heap type (sleb128)
           let (_, np) = read_sleb128(bytes, pos)
           pos = np
-        } else { () }
-        // skip mutability byte
-        if pos < end_pos { pos = pos + 1 } else { () }
+        } else {
+          ()
+        }
+        if pos < end_pos {
+          pos = pos + 1
+        } else {
+          ()
+        }
         f = f + 1
       }
-      // Return empty params/results for struct types
-      Array::push(result, (Array::slice([0], 0, 0), Array::slice([0], 0, 0)))
+      Array::push(result, (Array::slice([
+        0
+      ], 0, 0), Array::slice([
+        0
+      ], 0, 0)))
     }
     else if form == 0x5E {
-      // 0x5E = array type: element_type, mutability
       let et = bytes[pos]
       pos = pos + 1
       if (et == 0x63) || (et == 0x64) {
         let (_, np) = read_sleb128(bytes, pos)
         pos = np
-      } else { () }
-      if pos < end_pos { pos = pos + 1 } else { () }
-      Array::push(result, (Array::slice([0], 0, 0), Array::slice([0], 0, 0)))
+      } else {
+        ()
+      }
+      if pos < end_pos {
+        pos = pos + 1
+      } else {
+        ()
+      }
+      Array::push(result, (Array::slice([
+        0
+      ], 0, 0), Array::slice([
+        0
+      ], 0, 0)))
     }
     else if form == 0x50 {
-      // 0x50 = sub type: skip to next type entry
-      // sub type has: is_final flag, supertype count, supertypes, then the actual type
-      // For simplicity: skip all bytes until we find the next type boundary
-      // The sub type encoding: 0x50 type_count supertype_indices... composite_type
       let (super_count, sp) = read_uleb128(bytes, pos)
       pos = sp
       let mut si = 0
@@ -276,12 +167,10 @@ export let parse_types = (bytes: Bytes, offset: Int, size: Int) -> Array[(Array[
         pos = np
         si = si + 1
       }
-      // Now read the composite type (recursive call logic - just skip it)
       if pos < end_pos {
         let inner_form = bytes[pos]
         pos = pos + 1
         if inner_form == 0x60 {
-          // func type inside sub
           let (pc2, pp2) = read_uleb128(bytes, pos)
           pos = pp2 + pc2
           let (rc2, rp2) = read_uleb128(bytes, pos)
@@ -297,8 +186,14 @@ export let parse_types = (bytes: Bytes, offset: Int, size: Int) -> Array[(Array[
             if (ft2 == 0x63) || (ft2 == 0x64) {
               let (_, np2) = read_sleb128(bytes, pos)
               pos = np2
-            } else { () }
-            if pos < end_pos { pos = pos + 1 } else { () }
+            } else {
+              ()
+            }
+            if pos < end_pos {
+              pos = pos + 1
+            } else {
+              ()
+            }
             f2 = f2 + 1
           }
         }
@@ -308,25 +203,337 @@ export let parse_types = (bytes: Bytes, offset: Int, size: Int) -> Array[(Array[
           if (et2 == 0x63) || (et2 == 0x64) {
             let (_, np2) = read_sleb128(bytes, pos)
             pos = np2
-          } else { () }
-          if pos < end_pos { pos = pos + 1 } else { () }
+          } else {
+            ()
+          }
+          if pos < end_pos {
+            pos = pos + 1
+          } else {
+            ()
+          }
         }
-        else { () }
-      } else { () }
-      Array::push(result, (Array::slice([0], 0, 0), Array::slice([0], 0, 0)))
+        else {
+          ()
+        }
+      } else {
+        ()
+      }
+      Array::push(result, (Array::slice([
+        0
+      ], 0, 0), Array::slice([
+        0
+      ], 0, 0)))
     }
-    else { () }
+    else {
+      ()
+    }
     t = t + 1
   }
   result
 }
 
-// === Section 2: Import ===
+let parse_limits = (bytes: Bytes, offset: Int, end_pos: Int) -> (Int, Int, Int, Int) {
+  let mut pos = offset
+  if pos >= end_pos {
+    (0, 0, -1, pos)
+  }
+  else {
+    let flags = bytes[pos]
+    pos = pos + 1
+    let (min_val, p1) = read_uleb128(bytes, pos)
+    pos = p1
+    if (flags&1) != 0 {
+      let (max_val, p2) = read_uleb128(bytes, pos)
+      (flags, min_val, max_val, p2)
+    } else {
+      (flags, min_val, -1, pos)
+    }
+  }
+}
 
-// Simple: returns (module, name, kind, index_or_type_idx)
+let skip_limits = (bytes: Bytes, offset: Int, end_pos: Int) -> Int {
+  let (_, _, _, np) = parse_limits(bytes, offset, end_pos)
+  if np > end_pos {
+    end_pos
+  } else {
+    np
+  }
+}
+
+export let parse_tables = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Int)] {
+  let end_pos = offset + size
+  let result = Array::slice([
+    (0, 0, 0)
+  ], 0, 0)
+  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let mut i = 0
+  while (i < cnt) && (pos < end_pos) {
+    let reftype = bytes[pos]
+    pos = pos + 1
+    let (_, min_val, max_val, np) = parse_limits(bytes, pos, end_pos)
+    pos = np
+    Array::push(result, (reftype, min_val, max_val))
+    i = i + 1
+  }
+  result
+}
+
+export let read_version = (bytes: Bytes) -> Int {
+  if Bytes::length(bytes) < 8 {
+    -1
+  }
+  else {
+    bytes[4]|(bytes[5]<<8)|(bytes[6]<<16)|(bytes[7]<<24)
+  }
+}
+
+export let section_name = (id: Int) -> String {
+  if id == 0 {
+    "custom"
+  }
+  else if id == 1 {
+    "type"
+  }
+  else if id == 2 {
+    "import"
+  }
+  else if id == 3 {
+    "function"
+  }
+  else if id == 4 {
+    "table"
+  }
+  else if id == 5 {
+    "memory"
+  }
+  else if id == 6 {
+    "global"
+  }
+  else if id == 7 {
+    "export"
+  }
+  else if id == 8 {
+    "start"
+  }
+  else if id == 9 {
+    "element"
+  }
+  else if id == 10 {
+    "code"
+  }
+  else if id == 11 {
+    "data"
+  }
+  else if id == 12 {
+    "datacount"
+  }
+  else {
+    "unknown"
+  }
+}
+
+export let valtype_name = (vt: Int) -> String {
+  if vt == 127 {
+    "i32"
+  }
+  else if vt == 126 {
+    "i64"
+  }
+  else if vt == 125 {
+    "f32"
+  }
+  else if vt == 124 {
+    "f64"
+  }
+  else if vt == 123 {
+    "v128"
+  }
+  else if vt == 112 {
+    "funcref"
+  }
+  else if vt == 111 {
+    "externref"
+  }
+  else if vt == 110 {
+    "ref_null_func"
+  }
+  else if vt == 109 {
+    "ref_null_extern"
+  }
+  else if vt == 99 {
+    "ref"
+  }
+  else if vt == 100 {
+    "ref_null"
+  }
+  else {
+    "unknown"
+  }
+}
+
+let valtypes_str = (types: Array[Int]) -> String {
+  let mut s = ""
+  let mut i = 0
+  while i < Array::length(types) {
+    if i > 0 {
+      s = String::concat(s, " ")
+    } else {
+      ()
+    }
+    s = String::concat(s, valtype_name(Array::get(types, i)))
+    i = i + 1
+  }
+  s
+}
+
+let int_to_string = (n: Int) -> String {
+  if n == 0 {
+    "0"
+  }
+  else {
+    let mut val = if n < 0 {
+      0 - n
+    } else {
+      n
+    }
+    let mut s = ""
+    while val > 0 {
+      let digit = val - ((val / 10) * 10)
+      s = String::concat(String::from_char_code(48 + digit), s)
+      val = val / 10
+    }
+    if n < 0 {
+      String::concat("-", s)
+    } else {
+      s
+    }
+  }
+}
+
+export let list_sections = (bytes: Bytes) -> Array[(Int, Int, Int)] {
+  let len = Bytes::length(bytes)
+  let result = Array::slice([
+    (0, 0, 0)
+  ], 0, 0)
+  if len < 8 {
+    result
+  }
+  else {
+    let mut i = 8
+    while i < len {
+      let sec_id = bytes[i]
+      i = i + 1
+      let (sec_size, content_start) = read_uleb128(bytes, i)
+      let sec_end = content_start + sec_size
+      if sec_end > len {
+        i = len
+      }
+      else {
+        Array::push(result, (sec_id, content_start, sec_size))
+        i = sec_end
+      }
+    }
+    result
+  }
+}
+
+export let find_section = (bytes: Bytes, section_id: Int) -> (Int, Int) {
+  let sections = list_sections(bytes)
+  let mut idx = 0
+  let cnt = Array::length(sections)
+  let mut found_offset = -1
+  let mut found_size = 0
+  while idx < cnt {
+    let (sid, off, sz) = Array::get(sections, idx)
+    if sid == section_id {
+      found_offset = off
+      found_size = sz
+      idx = cnt
+    } else {
+      idx = idx + 1
+    }
+  }
+  (found_offset, found_size)
+}
+
+let find_sec = (bytes: Bytes, target_id: Int) -> (Int, Int) {
+  let (off, sz) = find_section(bytes, target_id)
+  if off < 0 {
+    (0, 0)
+  } else {
+    (off, sz)
+  }
+}
+
+export let module_start = (bytes: Bytes) -> Int {
+  let (off, sz) = find_sec(bytes, 8)
+  if sz == 0 {
+    -1
+  }
+  else {
+    parse_start(bytes, off, sz)
+  }
+}
+
+export let module_types = (bytes: Bytes) -> Array[(Array[Int], Array[Int])] {
+  let (off, sz) = find_sec(bytes, 1)
+  if sz == 0 {
+    Array::slice([
+      ([
+        0
+      ], [
+        0
+      ])
+    ], 0, 0)
+  }
+  else {
+    parse_types(bytes, off, sz)
+  }
+}
+
+export let module_tables = (bytes: Bytes) -> Array[(Int, Int, Int)] {
+  let (off, sz) = find_sec(bytes, 4)
+  if sz == 0 {
+    Array::slice([
+      (0, 0, 0)
+    ], 0, 0)
+  }
+  else {
+    parse_tables(bytes, off, sz)
+  }
+}
+
+export let parse_exports = (bytes: Bytes, offset: Int, size: Int) -> Array[(String, Int, Int)] {
+  let end_pos = offset + size
+  let result = Array::slice([
+    ("", 0, 0)
+  ], 0, 0)
+  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let mut i = 0
+  while (i < cnt) && (pos < end_pos) {
+    let (name, np) = read_name(bytes, pos)
+    pos = np
+    if pos < end_pos {
+      let kind = bytes[pos]
+      pos = pos + 1
+      let (index, np2) = read_uleb128(bytes, pos)
+      pos = np2
+      Array::push(result, (name, kind, index))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  result
+}
+
 export let parse_imports = (bytes: Bytes, offset: Int, size: Int) -> Array[(String, String, Int, Int)] {
   let end_pos = offset + size
-  let result = Array::slice([("", "", 0, 0)], 0, 0)
+  let result = Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0)
   let (cnt, pos0) = read_uleb128(bytes, offset)
   let mut pos = pos0
   let mut i = 0
@@ -343,7 +550,11 @@ export let parse_imports = (bytes: Bytes, offset: Int, size: Int) -> Array[(Stri
         Array::push(result, (mod_name, field_name, 0, type_idx))
       } else {
         if kind == 1 {
-          if pos < end_pos { pos = pos + 1 } else { () }
+          if pos < end_pos {
+            pos = pos + 1
+          } else {
+            ()
+          }
           pos = skip_limits(bytes, pos, end_pos)
           Array::push(result, (mod_name, field_name, 1, 0))
         } else {
@@ -352,7 +563,11 @@ export let parse_imports = (bytes: Bytes, offset: Int, size: Int) -> Array[(Stri
             Array::push(result, (mod_name, field_name, 2, 0))
           } else {
             if kind == 3 {
-              if (pos + 2) <= end_pos { pos = pos + 2 } else { () }
+              if (pos + 2) <= end_pos {
+                pos = pos + 2
+              } else {
+                ()
+              }
               Array::push(result, (mod_name, field_name, 3, 0))
             } else {
               Array::push(result, (mod_name, field_name, kind, 0))
@@ -361,110 +576,43 @@ export let parse_imports = (bytes: Bytes, offset: Int, size: Int) -> Array[(Stri
           }
         }
       }
-    } else { () }
+    } else {
+      ()
+    }
     i = i + 1
   }
   result
 }
 
-// Full: returns (module, name, kind, type_idx_or_0, detail1, detail2)
-// kind=0 (func): detail1=type_idx, detail2=0
-// kind=1 (table): detail1=reftype, detail2=min
-// kind=2 (memory): detail1=min, detail2=max (-1 if none)
-// kind=3 (global): detail1=valtype, detail2=mutability (0=const, 1=mut)
-export let parse_imports_full = (bytes: Bytes, offset: Int, size: Int) -> Array[(String, String, Int, Int, Int, Int)] {
-  let end_pos = offset + size
-  let result = Array::slice([("", "", 0, 0, 0, 0)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
-  let mut pos = pos0
-  let mut i = 0
-  while (i < cnt) && (pos < end_pos) {
-    let (mod_name, p1) = read_name(bytes, pos)
-    let (field_name, p2) = read_name(bytes, p1)
-    pos = p2
-    if pos < end_pos {
-      let kind = bytes[pos]
-      pos = pos + 1
-      if kind == 0 {
-        // func: typeidx
-        let (type_idx, np) = read_uleb128(bytes, pos)
-        pos = np
-        Array::push(result, (mod_name, field_name, 0, type_idx, type_idx, 0))
-      } else {
-        if kind == 1 {
-          // table: reftype + limits
-          let reftype = if pos < end_pos { let v = bytes[pos]; pos = pos + 1; v } else { 0 }
-          let (_, min_v, max_v, np) = parse_limits(bytes, pos, end_pos)
-          pos = np
-          Array::push(result, (mod_name, field_name, 1, 0, reftype, min_v))
-        } else {
-          if kind == 2 {
-            // memory: limits
-            let (_, min_v, max_v, np) = parse_limits(bytes, pos, end_pos)
-            pos = np
-            Array::push(result, (mod_name, field_name, 2, 0, min_v, max_v))
-          } else {
-            if kind == 3 {
-              // global: valtype + mutability
-              let valtype = if pos < end_pos { let v = bytes[pos]; pos = pos + 1; v } else { 0 }
-              let mutability = if pos < end_pos { let v = bytes[pos]; pos = pos + 1; v } else { 0 }
-              Array::push(result, (mod_name, field_name, 3, 0, valtype, mutability))
-            } else {
-              Array::push(result, (mod_name, field_name, kind, 0, 0, 0))
-              i = cnt
-            }
-          }
-        }
-      }
-    } else { () }
-    i = i + 1
+export let module_exports = (bytes: Bytes) -> Array[(String, Int, Int)] {
+  let (off, sz) = find_sec(bytes, 7)
+  if sz == 0 {
+    Array::slice([
+      ("", 0, 0)
+    ], 0, 0)
   }
-  result
+  else {
+    parse_exports(bytes, off, sz)
+  }
 }
 
-// === Section 3: Function ===
-
-export let parse_functions = (bytes: Bytes, offset: Int, size: Int) -> Array[Int] {
-  let end_pos = offset + size
-  let result = Array::slice([0], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
-  let mut pos = pos0
-  let mut i = 0
-  while (i < cnt) && (pos < end_pos) {
-    let (type_idx, np) = read_uleb128(bytes, pos)
-    pos = np
-    Array::push(result, type_idx)
-    i = i + 1
+export let module_imports = (bytes: Bytes) -> Array[(String, String, Int, Int)] {
+  let (off, sz) = find_sec(bytes, 2)
+  if sz == 0 {
+    Array::slice([
+      ("", "", 0, 0)
+    ], 0, 0)
   }
-  result
+  else {
+    parse_imports(bytes, off, sz)
+  }
 }
 
-// === Section 4: Table ===
-
-// Returns (reftype, min, max). max=-1 if unbounded.
-export let parse_tables = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Int)] {
-  let end_pos = offset + size
-  let result = Array::slice([(0, 0, 0)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
-  let mut pos = pos0
-  let mut i = 0
-  while (i < cnt) && (pos < end_pos) {
-    let reftype = bytes[pos]
-    pos = pos + 1
-    let (_, min_val, max_val, np) = parse_limits(bytes, pos, end_pos)
-    pos = np
-    Array::push(result, (reftype, min_val, max_val))
-    i = i + 1
-  }
-  result
-}
-
-// === Section 5: Memory ===
-
-// Returns (min_pages, max_pages). max=-1 if unbounded.
 export let parse_memories = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int)] {
   let end_pos = offset + size
-  let result = Array::slice([(0, 0)], 0, 0)
+  let result = Array::slice([
+    (0, 0)
+  ], 0, 0)
   let (cnt, pos0) = read_uleb128(bytes, offset)
   let mut pos = pos0
   let mut i = 0
@@ -477,13 +625,87 @@ export let parse_memories = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int
   result
 }
 
-// === Section 6: Global ===
+export let read_init_expr = (bytes: Bytes, offset: Int, end_pos: Int) -> (Int, Int, Int) {
+  if offset >= end_pos {
+    (0, 0, offset)
+  }
+  else {
+    let op = bytes[offset]
+    let mut pos = offset + 1
+    if (op == 0x41) || (op == 0x42) {
+      let (val, np) = read_sleb128(bytes, pos)
+      pos = np
+      if (pos < end_pos) && (bytes[pos] == 0x0B) {
+        pos = pos + 1
+      } else {
+        ()
+      }
+      (op, val, pos)
+    } else {
+      if op == 0x43 {
+        let val = if (pos + 4) <= end_pos {
+          bytes[pos]|(bytes[pos + 1]<<8)|(bytes[pos + 2]<<16)|(bytes[pos + 3]<<24)
+        } else {
+          0
+        }
+        pos = pos + 4
+        if (pos < end_pos) && (bytes[pos] == 0x0B) {
+          pos = pos + 1
+        } else {
+          ()
+        }
+        (op, val, pos)
+      } else {
+        if op == 0x44 {
+          let lo = if (pos + 4) <= end_pos {
+            bytes[pos]|(bytes[pos + 1]<<8)|(bytes[pos + 2]<<16)|(bytes[pos + 3]<<24)
+          } else {
+            0
+          }
+          let hi = if (pos + 8) <= end_pos {
+            bytes[pos + 4]|(bytes[pos + 5]<<8)|(bytes[pos + 6]<<16)|(bytes[pos + 7]<<24)
+          } else {
+            0
+          }
+          pos = pos + 8
+          if (pos < end_pos) && (bytes[pos] == 0x0B) {
+            pos = pos + 1
+          } else {
+            ()
+          }
+          (op, lo|(hi<<32), pos)
+        } else {
+          if op == 0x23 {
+            let (idx, np) = read_uleb128(bytes, pos)
+            pos = np
+            if (pos < end_pos) && (bytes[pos] == 0x0B) {
+              pos = pos + 1
+            } else {
+              ()
+            }
+            (op, idx, pos)
+          } else {
+            while (pos < end_pos) && (bytes[pos] != 0x0B) {
+              pos = pos + 1
+            }
+            if pos < end_pos {
+              pos = pos + 1
+            } else {
+              ()
+            }
+            (op, 0, pos)
+          }
+        }
+      }
+    }
+  }
+}
 
-// Returns (valtype, mutability, init_opcode, init_value)
-// init_opcode: 0x41=i32.const, 0x42=i64.const, 0x43=f32.const, 0x44=f64.const, 0x23=global.get
 export let parse_globals = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Int, Int)] {
   let end_pos = offset + size
-  let result = Array::slice([(0, 0, 0, 0)], 0, 0)
+  let result = Array::slice([
+    (0, 0, 0, 0)
+  ], 0, 0)
   let (cnt, pos0) = read_uleb128(bytes, offset)
   let mut pos = pos0
   let mut i = 0
@@ -499,44 +721,25 @@ export let parse_globals = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int,
   result
 }
 
-// === Section 7: Export ===
-
-// Returns (name, kind, index). kind: 0=func, 1=table, 2=memory, 3=global
-export let parse_exports = (bytes: Bytes, offset: Int, size: Int) -> Array[(String, Int, Int)] {
-  let end_pos = offset + size
-  let result = Array::slice([("", 0, 0)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
-  let mut pos = pos0
-  let mut i = 0
-  while (i < cnt) && (pos < end_pos) {
-    let (name, np) = read_name(bytes, pos)
-    pos = np
-    if pos < end_pos {
-      let kind = bytes[pos]
-      pos = pos + 1
-      let (index, np2) = read_uleb128(bytes, pos)
-      pos = np2
-      Array::push(result, (name, kind, index))
-    } else { () }
-    i = i + 1
+export let module_globals = (bytes: Bytes) -> Array[(Int, Int, Int, Int)] {
+  let (off, sz) = find_sec(bytes, 6)
+  if sz == 0 {
+    Array::slice([
+      (0, 0, 0, 0)
+    ], 0, 0)
   }
-  result
+  else {
+    parse_globals(bytes, off, sz)
+  }
 }
 
-// === Section 8: Start ===
-
-export let parse_start = (bytes: Bytes, offset: Int, size: Int) -> Int {
-  if size == 0 { -1 }
-  else { let (func_idx, _) = read_uleb128(bytes, offset); func_idx }
-}
-
-// === Section 9: Element ===
-
-// WASM 1.0 element segment: active only (table 0, offset expr, func indices)
-// Returns (table_idx, init_opcode, init_value, func_indices)
 export let parse_elements = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Int, Array[Int])] {
   let end_pos = offset + size
-  let result = Array::slice([(0, 0, 0, Array::slice([0], 0, 0))], 0, 0)
+  let result = Array::slice([
+    (0, 0, 0, Array::slice([
+      0
+    ], 0, 0))
+  ], 0, 0)
   let (cnt, pos0) = read_uleb128(bytes, offset)
   let mut pos = pos0
   let mut i = 0
@@ -544,12 +747,13 @@ export let parse_elements = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int
     let mode = bytes[pos]
     pos = pos + 1
     if mode == 0 {
-      // Active, table 0: offset_expr, vec(funcidx)
       let (init_op, init_val, np) = read_init_expr(bytes, pos, end_pos)
       pos = np
       let (func_count, fp) = read_uleb128(bytes, pos)
       pos = fp
-      let indices = Array::slice([0], 0, 0)
+      let indices = Array::slice([
+        0
+      ], 0, 0)
       let mut f = 0
       while (f < func_count) && (pos < end_pos) {
         let (fi, np2) = read_uleb128(bytes, pos)
@@ -560,12 +764,13 @@ export let parse_elements = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int
       Array::push(result, (0, init_op, init_val, indices))
     } else {
       if mode == 1 {
-        // Passive: kind + vec(funcidx)
         let elemkind = bytes[pos]
         pos = pos + 1
         let (func_count, fp) = read_uleb128(bytes, pos)
         pos = fp
-        let indices = Array::slice([0], 0, 0)
+        let indices = Array::slice([
+          0
+        ], 0, 0)
         let mut f = 0
         while (f < func_count) && (pos < end_pos) {
           let (fi, np2) = read_uleb128(bytes, pos)
@@ -576,7 +781,6 @@ export let parse_elements = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int
         Array::push(result, (-1, 0, 0, indices))
       } else {
         if mode == 2 {
-          // Active, explicit table: tableidx + offset_expr + kind + vec(funcidx)
           let (table_idx, tp) = read_uleb128(bytes, pos)
           pos = tp
           let (init_op, init_val, np) = read_init_expr(bytes, pos, end_pos)
@@ -585,7 +789,9 @@ export let parse_elements = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int
           pos = pos + 1
           let (func_count, fp) = read_uleb128(bytes, pos)
           pos = fp
-          let indices = Array::slice([0], 0, 0)
+          let indices = Array::slice([
+            0
+          ], 0, 0)
           let mut f = 0
           while (f < func_count) && (pos < end_pos) {
             let (fi, np2) = read_uleb128(bytes, pos)
@@ -595,7 +801,6 @@ export let parse_elements = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int
           }
           Array::push(result, (table_idx, init_op, init_val, indices))
         } else {
-          // modes 3-7: skip to end
           i = cnt
         }
       }
@@ -605,14 +810,88 @@ export let parse_elements = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int
   result
 }
 
-// === Section 10: Code ===
+export let validate_magic = (bytes: Bytes) -> Bool {
+  if Bytes::length(bytes) < 8 {
+    false
+  }
+  else {
+    (bytes[0] == 0) && (bytes[1] == 97) && (bytes[2] == 115) && (bytes[3] == 109)
+  }
+}
 
-// Returns (body_offset, body_size, local_decls)
-// body_offset is the start of the function body (after size LEB)
+export let module_elements = (bytes: Bytes) -> Array[(Int, Int, Int, Array[Int])] {
+  let (off, sz) = find_sec(bytes, 9)
+  if sz == 0 {
+    Array::slice([
+      (0, 0, 0, Array::slice([
+        0
+      ], 0, 0))
+    ], 0, 0)
+  }
+  else {
+    parse_elements(bytes, off, sz)
+  }
+}
+
+export let module_memories = (bytes: Bytes) -> Array[(Int, Int)] {
+  let (off, sz) = find_sec(bytes, 5)
+  if sz == 0 {
+    Array::slice([
+      (0, 0)
+    ], 0, 0)
+  }
+  else {
+    parse_memories(bytes, off, sz)
+  }
+}
+
+export let parse_functions = (bytes: Bytes, offset: Int, size: Int) -> Array[Int] {
+  let end_pos = offset + size
+  let result = Array::slice([
+    0
+  ], 0, 0)
+  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let mut i = 0
+  while (i < cnt) && (pos < end_pos) {
+    let (type_idx, np) = read_uleb128(bytes, pos)
+    pos = np
+    Array::push(result, type_idx)
+    i = i + 1
+  }
+  result
+}
+
+export let module_functions = (bytes: Bytes) -> Array[Int] {
+  let (off, sz) = find_sec(bytes, 3)
+  if sz == 0 {
+    Array::slice([
+      0
+    ], 0, 0)
+  }
+  else {
+    parse_functions(bytes, off, sz)
+  }
+}
+
+export let extract_data_bytes = (bytes: Bytes, data_offset: Int, data_size: Int) -> Bytes {
+  let result = Bytes::new()
+  let mut i = 0
+  while i < data_size {
+    Bytes::push(result, bytes[data_offset + i])
+    i = i + 1
+  }
+  result
+}
+
 export let parse_code_entries = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Array[(Int, Int)])] {
   let end_pos = offset + size
-  let empty_locals = Array::slice([(0, 0)], 0, 0)
-  let result = Array::slice([(0, 0, empty_locals)], 0, 0)
+  let empty_locals = Array::slice([
+    (0, 0)
+  ], 0, 0)
+  let result = Array::slice([
+    (0, 0, empty_locals)
+  ], 0, 0)
   let (cnt, pos0) = read_uleb128(bytes, offset)
   let mut pos = pos0
   let mut i = 0
@@ -621,7 +900,9 @@ export let parse_code_entries = (bytes: Bytes, offset: Int, size: Int) -> Array[
     let body_end = body_start + body_size
     let (local_decl_count, lp0) = read_uleb128(bytes, body_start)
     let mut lp = lp0
-    let locals = Array::slice([(0, 0)], 0, 0)
+    let locals = Array::slice([
+      (0, 0)
+    ], 0, 0)
     let mut d = 0
     while (d < local_decl_count) && (lp < body_end) {
       let (lcount, p1) = read_uleb128(bytes, lp)
@@ -630,7 +911,9 @@ export let parse_code_entries = (bytes: Bytes, offset: Int, size: Int) -> Array[
         let ltype = bytes[lp]
         lp = lp + 1
         Array::push(locals, (lcount, ltype))
-      } else { () }
+      } else {
+        ()
+      }
       d = d + 1
     }
     Array::push(result, (body_start, body_size, locals))
@@ -640,8 +923,82 @@ export let parse_code_entries = (bytes: Bytes, offset: Int, size: Int) -> Array[
   result
 }
 
-// Extract instruction bytes from a code entry (skipping local declarations).
-// Returns (expr_start, expr_end) pointing into the original bytes.
+export let module_code = (bytes: Bytes) -> Array[(Int, Int, Array[(Int, Int)])] {
+  let (off, sz) = find_sec(bytes, 10)
+  if sz == 0 {
+    let el = Array::slice([
+      (0, 0)
+    ], 0, 0); Array::slice([
+      (0, 0, el)
+    ], 0, 0)
+  }
+  else {
+    parse_code_entries(bytes, off, sz)
+  }
+}
+
+export let parse_imports_full = (bytes: Bytes, offset: Int, size: Int) -> Array[(String, String, Int, Int, Int, Int)] {
+  let end_pos = offset + size
+  let result = Array::slice([
+    ("", "", 0, 0, 0, 0)
+  ], 0, 0)
+  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let mut i = 0
+  while (i < cnt) && (pos < end_pos) {
+    let (mod_name, p1) = read_name(bytes, pos)
+    let (field_name, p2) = read_name(bytes, p1)
+    pos = p2
+    if pos < end_pos {
+      let kind = bytes[pos]
+      pos = pos + 1
+      if kind == 0 {
+        let (type_idx, np) = read_uleb128(bytes, pos)
+        pos = np
+        Array::push(result, (mod_name, field_name, 0, type_idx, type_idx, 0))
+      } else {
+        if kind == 1 {
+          let reftype = if pos < end_pos {
+            let v = bytes[pos]; pos = pos + 1; v
+          } else {
+            0
+          }
+          let (_, min_v, max_v, np) = parse_limits(bytes, pos, end_pos)
+          pos = np
+          Array::push(result, (mod_name, field_name, 1, 0, reftype, min_v))
+        } else {
+          if kind == 2 {
+            let (_, min_v, max_v, np) = parse_limits(bytes, pos, end_pos)
+            pos = np
+            Array::push(result, (mod_name, field_name, 2, 0, min_v, max_v))
+          } else {
+            if kind == 3 {
+              let valtype = if pos < end_pos {
+                let v = bytes[pos]; pos = pos + 1; v
+              } else {
+                0
+              }
+              let mutability = if pos < end_pos {
+                let v = bytes[pos]; pos = pos + 1; v
+              } else {
+                0
+              }
+              Array::push(result, (mod_name, field_name, 3, 0, valtype, mutability))
+            } else {
+              Array::push(result, (mod_name, field_name, kind, 0, 0, 0))
+              i = cnt
+            }
+          }
+        }
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  result
+}
+
 export let get_code_body_range = (bytes: Bytes, body_offset: Int, body_size: Int) -> (Int, Int) {
   let body_end = body_offset + body_size
   let (local_decl_count, pos0) = read_uleb128(bytes, body_offset)
@@ -650,13 +1007,12 @@ export let get_code_body_range = (bytes: Bytes, body_offset: Int, body_size: Int
   while d < local_decl_count {
     let (_, np) = read_uleb128(bytes, pos)
     pos = np
-    pos = pos + 1  // skip valtype
+    pos = pos + 1
     d = d + 1
   }
   (pos, body_end)
 }
 
-// Copy code body bytes into new Bytes
 export let extract_code_body = (bytes: Bytes, body_offset: Int, body_size: Int) -> Bytes {
   let (expr_start, expr_end) = get_code_body_range(bytes, body_offset, body_size)
   let result = Bytes::new()
@@ -668,12 +1024,23 @@ export let extract_code_body = (bytes: Bytes, body_offset: Int, body_size: Int) 
   result
 }
 
-// === Section 11: Data ===
+export let module_imports_full = (bytes: Bytes) -> Array[(String, String, Int, Int, Int, Int)] {
+  let (off, sz) = find_sec(bytes, 2)
+  if sz == 0 {
+    Array::slice([
+      ("", "", 0, 0, 0, 0)
+    ], 0, 0)
+  }
+  else {
+    parse_imports_full(bytes, off, sz)
+  }
+}
 
-// Returns (mode, mem_idx, init_opcode, init_value, data_offset, data_size)
 export let parse_data_segments = (bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Int, Int, Int, Int)] {
   let end_pos = offset + size
-  let result = Array::slice([(0, 0, 0, 0, 0, 0)], 0, 0)
+  let result = Array::slice([
+    (0, 0, 0, 0, 0, 0)
+  ], 0, 0)
   let (cnt, pos0) = read_uleb128(bytes, offset)
   let mut pos = pos0
   let mut i = 0
@@ -681,7 +1048,6 @@ export let parse_data_segments = (bytes: Bytes, offset: Int, size: Int) -> Array
     let mode = bytes[pos]
     pos = pos + 1
     if mode == 0 {
-      // Active, memory 0
       let (init_op, init_val, np) = read_init_expr(bytes, pos, end_pos)
       pos = np
       let (data_len, dp) = read_uleb128(bytes, pos)
@@ -690,14 +1056,12 @@ export let parse_data_segments = (bytes: Bytes, offset: Int, size: Int) -> Array
       pos = pos + data_len
     } else {
       if mode == 1 {
-        // Passive
         let (data_len, dp) = read_uleb128(bytes, pos)
         pos = dp
         Array::push(result, (1, 0, 0, 0, pos, data_len))
         pos = pos + data_len
       } else {
         if mode == 2 {
-          // Active, explicit memory
           let (mem_idx, mp) = read_uleb128(bytes, pos)
           pos = mp
           let (init_op, init_val, np) = read_init_expr(bytes, pos, end_pos)
@@ -716,18 +1080,17 @@ export let parse_data_segments = (bytes: Bytes, offset: Int, size: Int) -> Array
   result
 }
 
-// Extract raw data bytes from a data segment
-export let extract_data_bytes = (bytes: Bytes, data_offset: Int, data_size: Int) -> Bytes {
-  let result = Bytes::new()
-  let mut i = 0
-  while i < data_size {
-    Bytes::push(result, bytes[data_offset + i])
-    i = i + 1
+export let module_data = (bytes: Bytes) -> Array[(Int, Int, Int, Int, Int, Int)] {
+  let (off, sz) = find_sec(bytes, 11)
+  if sz == 0 {
+    Array::slice([
+      (0, 0, 0, 0, 0, 0)
+    ], 0, 0)
   }
-  result
+  else {
+    parse_data_segments(bytes, off, sz)
+  }
 }
-
-// === Section 0: Custom ===
 
 export let parse_custom_section = (bytes: Bytes, offset: Int, size: Int) -> (String, Int, Int) {
   let (name, payload_start) = read_name(bytes, offset)
@@ -735,195 +1098,32 @@ export let parse_custom_section = (bytes: Bytes, offset: Int, size: Int) -> (Str
   (name, payload_start, payload_size)
 }
 
-// === Convenience ===
-
-export let section_name = (id: Int) -> String {
-  if id == 0 { "custom" }
-  else if id == 1 { "type" }
-  else if id == 2 { "import" }
-  else if id == 3 { "function" }
-  else if id == 4 { "table" }
-  else if id == 5 { "memory" }
-  else if id == 6 { "global" }
-  else if id == 7 { "export" }
-  else if id == 8 { "start" }
-  else if id == 9 { "element" }
-  else if id == 10 { "code" }
-  else if id == 11 { "data" }
-  else if id == 12 { "datacount" }
-  else { "unknown" }
-}
-
-export let valtype_name = (vt: Int) -> String {
-  if vt == 127 { "i32" }
-  else if vt == 126 { "i64" }
-  else if vt == 125 { "f32" }
-  else if vt == 124 { "f64" }
-  else if vt == 123 { "v128" }
-  else if vt == 112 { "funcref" }
-  else if vt == 111 { "externref" }
-  else if vt == 110 { "ref_null_func" }
-  else if vt == 109 { "ref_null_extern" }
-  else if vt == 99 { "ref" }
-  else if vt == 100 { "ref_null" }
-  else { "unknown" }
-}
-
-export let count_locals = (local_decls: Array[(Int, Int)]) -> Int {
-  let mut total = 0
-  let mut i = 0
-  while i < Array::length(local_decls) {
-    let (c, _) = Array::get(local_decls, i)
-    total = total + c
-    i = i + 1
-  }
-  total
-}
-
-// ============================================================
-// High-level API: parse from raw WASM bytes (no offset needed)
-// ============================================================
-
-// Find section helper (returns offset, size or 0,0)
-let find_sec = (bytes: Bytes, target_id: Int) -> (Int, Int) {
-  let (off, sz) = find_section(bytes, target_id)
-  if off < 0 { (0, 0) } else { (off, sz) }
-}
-
-// --- module_types: parse type section from raw bytes ---
-export let module_types = (bytes: Bytes) -> Array[(Array[Int], Array[Int])] {
-  let (off, sz) = find_sec(bytes, 1)
-  if sz == 0 { Array::slice([([0], [0])], 0, 0) }
-  else { parse_types(bytes, off, sz) }
-}
-
-// --- module_imports: parse import section from raw bytes ---
-export let module_imports = (bytes: Bytes) -> Array[(String, String, Int, Int)] {
-  let (off, sz) = find_sec(bytes, 2)
-  if sz == 0 { Array::slice([("", "", 0, 0)], 0, 0) }
-  else { parse_imports(bytes, off, sz) }
-}
-
-// --- module_imports_full: parse import section with full descriptors ---
-export let module_imports_full = (bytes: Bytes) -> Array[(String, String, Int, Int, Int, Int)] {
-  let (off, sz) = find_sec(bytes, 2)
-  if sz == 0 { Array::slice([("", "", 0, 0, 0, 0)], 0, 0) }
-  else { parse_imports_full(bytes, off, sz) }
-}
-
-// --- module_functions: parse function section ---
-export let module_functions = (bytes: Bytes) -> Array[Int] {
-  let (off, sz) = find_sec(bytes, 3)
-  if sz == 0 { Array::slice([0], 0, 0) }
-  else { parse_functions(bytes, off, sz) }
-}
-
-// --- module_tables: parse table section ---
-export let module_tables = (bytes: Bytes) -> Array[(Int, Int, Int)] {
-  let (off, sz) = find_sec(bytes, 4)
-  if sz == 0 { Array::slice([(0, 0, 0)], 0, 0) }
-  else { parse_tables(bytes, off, sz) }
-}
-
-// --- module_memories: parse memory section ---
-export let module_memories = (bytes: Bytes) -> Array[(Int, Int)] {
-  let (off, sz) = find_sec(bytes, 5)
-  if sz == 0 { Array::slice([(0, 0)], 0, 0) }
-  else { parse_memories(bytes, off, sz) }
-}
-
-// --- module_globals: parse global section ---
-export let module_globals = (bytes: Bytes) -> Array[(Int, Int, Int, Int)] {
-  let (off, sz) = find_sec(bytes, 6)
-  if sz == 0 { Array::slice([(0, 0, 0, 0)], 0, 0) }
-  else { parse_globals(bytes, off, sz) }
-}
-
-// --- module_exports: parse export section ---
-export let module_exports = (bytes: Bytes) -> Array[(String, Int, Int)] {
-  let (off, sz) = find_sec(bytes, 7)
-  if sz == 0 { Array::slice([("", 0, 0)], 0, 0) }
-  else { parse_exports(bytes, off, sz) }
-}
-
-// --- module_start: parse start section ---
-export let module_start = (bytes: Bytes) -> Int {
-  let (off, sz) = find_sec(bytes, 8)
-  if sz == 0 { -1 }
-  else { parse_start(bytes, off, sz) }
-}
-
-// --- module_elements: parse element section ---
-export let module_elements = (bytes: Bytes) -> Array[(Int, Int, Int, Array[Int])] {
-  let (off, sz) = find_sec(bytes, 9)
-  if sz == 0 { Array::slice([(0, 0, 0, Array::slice([0], 0, 0))], 0, 0) }
-  else { parse_elements(bytes, off, sz) }
-}
-
-// --- module_code: parse code section ---
-export let module_code = (bytes: Bytes) -> Array[(Int, Int, Array[(Int, Int)])] {
-  let (off, sz) = find_sec(bytes, 10)
-  if sz == 0 { let el = Array::slice([(0, 0)], 0, 0); Array::slice([(0, 0, el)], 0, 0) }
-  else { parse_code_entries(bytes, off, sz) }
-}
-
-// --- module_data: parse data section ---
-export let module_data = (bytes: Bytes) -> Array[(Int, Int, Int, Int, Int, Int)] {
-  let (off, sz) = find_sec(bytes, 11)
-  if sz == 0 { Array::slice([(0, 0, 0, 0, 0, 0)], 0, 0) }
-  else { parse_data_segments(bytes, off, sz) }
-}
-
-// --- module_custom_sections: list all custom sections ---
 export let module_custom_sections = (bytes: Bytes) -> Array[(String, Int, Int)] {
   let sections = list_sections(bytes)
-  let result = Array::slice([("", 0, 0)], 0, 0)
+  let result = Array::slice([
+    ("", 0, 0)
+  ], 0, 0)
   let mut i = 0
   while i < Array::length(sections) {
     let (sid, off, sz) = Array::get(sections, i)
     if sid == 0 {
       let (name, payload_off, payload_sz) = parse_custom_section(bytes, off, sz)
       Array::push(result, (name, payload_off, payload_sz))
-    } else { () }
+    } else {
+      ()
+    }
     i = i + 1
   }
   result
 }
 
-// === Summary: human-readable module overview ===
-
-let int_to_string = (n: Int) -> String {
-  if n == 0 { "0" }
-  else {
-    let mut val = if n < 0 { 0 - n } else { n }
-    let mut s = ""
-    while val > 0 {
-      let digit = val - ((val / 10) * 10)
-      s = String::concat(String::from_char_code(48 + digit), s)
-      val = val / 10
-    }
-    if n < 0 { String::concat("-", s) } else { s }
-  }
-}
-
-let valtypes_str = (types: Array[Int]) -> String {
-  let mut s = ""
-  let mut i = 0
-  while i < Array::length(types) {
-    if i > 0 { s = String::concat(s, " ") } else { () }
-    s = String::concat(s, valtype_name(Array::get(types, i)))
-    i = i + 1
-  }
-  s
-}
-
 export let module_summary = (bytes: Bytes) -> String {
-  if not(validate_magic(bytes)) { "invalid WASM binary" }
+  if not(validate_magic(bytes)) {
+    "invalid WASM binary"
+  }
   else {
     let mut out = String::concat("wasm version ", int_to_string(read_version(bytes)))
     out = String::concat(out, String::concat(", size ", String::concat(int_to_string(Bytes::length(bytes)), " bytes\n")))
-
-    // types
     let types = module_types(bytes)
     out = String::concat(out, String::concat("types: ", String::concat(int_to_string(Array::length(types)), "\n")))
     let mut ti = 0
@@ -934,80 +1134,98 @@ export let module_summary = (bytes: Bytes) -> String {
       out = String::concat(out, String::concat(valtypes_str(results), ")\n"))
       ti = ti + 1
     }
-
-    // imports
     let imports = module_imports(bytes)
     if Array::length(imports) > 0 {
       out = String::concat(out, String::concat("imports: ", String::concat(int_to_string(Array::length(imports)), "\n")))
       let mut ii = 0
       while ii < Array::length(imports) {
         let (m, f, k, idx) = Array::get(imports, ii)
-        let kind_str = if k == 0 { "func" } else if k == 1 { "table" } else if k == 2 { "memory" } else { "global" }
+        let kind_str = if k == 0 {
+          "func"
+        } else if k == 1 {
+          "table"
+        } else if k == 2 {
+          "memory"
+        } else {
+          "global"
+        }
         out = String::concat(out, String::concat("  ", String::concat(m, String::concat(".", String::concat(f, String::concat(" : ", String::concat(kind_str, "\n")))))))
         ii = ii + 1
       }
-    } else { () }
-
-    // functions
+    } else {
+      ()
+    }
     let funcs = module_functions(bytes)
     out = String::concat(out, String::concat("functions: ", String::concat(int_to_string(Array::length(funcs)), "\n")))
-
-    // tables
     let tables = module_tables(bytes)
     if Array::length(tables) > 0 {
       out = String::concat(out, String::concat("tables: ", String::concat(int_to_string(Array::length(tables)), "\n")))
-    } else { () }
-
-    // memories
+    } else {
+      ()
+    }
     let mems = module_memories(bytes)
     if Array::length(mems) > 0 {
       out = String::concat(out, String::concat("memories: ", String::concat(int_to_string(Array::length(mems)), "\n")))
       let mut mi = 0
       while mi < Array::length(mems) {
         let (min_p, max_p) = Array::get(mems, mi)
-        out = String::concat(out, String::concat("  min=", String::concat(int_to_string(min_p), if max_p >= 0 { String::concat(" max=", int_to_string(max_p)) } else { "" })))
+        out = String::concat(out, String::concat("  min=", String::concat(int_to_string(min_p), if max_p >= 0 {
+          String::concat(" max=", int_to_string(max_p))
+        } else {
+          ""
+        })))
         out = String::concat(out, "\n")
         mi = mi + 1
       }
-    } else { () }
-
-    // globals
+    } else {
+      ()
+    }
     let globals = module_globals(bytes)
     if Array::length(globals) > 0 {
       out = String::concat(out, String::concat("globals: ", String::concat(int_to_string(Array::length(globals)), "\n")))
       let mut gi = 0
       while gi < Array::length(globals) {
         let (vt, mut_f, _, init_val) = Array::get(globals, gi)
-        out = String::concat(out, String::concat("  ", String::concat(valtype_name(vt), if mut_f == 1 { " mut" } else { "" })))
+        out = String::concat(out, String::concat("  ", String::concat(valtype_name(vt), if mut_f == 1 {
+          " mut"
+        } else {
+          ""
+        })))
         out = String::concat(out, String::concat(" = ", String::concat(int_to_string(init_val), "\n")))
         gi = gi + 1
       }
-    } else { () }
-
-    // exports
+    } else {
+      ()
+    }
     let exports = module_exports(bytes)
     out = String::concat(out, String::concat("exports: ", String::concat(int_to_string(Array::length(exports)), "\n")))
     let mut ei = 0
     while ei < Array::length(exports) {
       let (name, kind, idx) = Array::get(exports, ei)
-      let kind_str = if kind == 0 { "func" } else if kind == 1 { "table" } else if kind == 2 { "memory" } else { "global" }
+      let kind_str = if kind == 0 {
+        "func"
+      } else if kind == 1 {
+        "table"
+      } else if kind == 2 {
+        "memory"
+      } else {
+        "global"
+      }
       out = String::concat(out, String::concat("  ", String::concat(name, String::concat(" : ", String::concat(kind_str, String::concat(" ", String::concat(int_to_string(idx), "\n")))))))
       ei = ei + 1
     }
-
-    // start
     let start_idx = module_start(bytes)
     if start_idx >= 0 {
       out = String::concat(out, String::concat("start: func ", String::concat(int_to_string(start_idx), "\n")))
-    } else { () }
-
-    // elements
+    } else {
+      ()
+    }
     let elems = module_elements(bytes)
     if Array::length(elems) > 0 {
       out = String::concat(out, String::concat("elements: ", String::concat(int_to_string(Array::length(elems)), " segments\n")))
-    } else { () }
-
-    // code
+    } else {
+      ()
+    }
     let code = module_code(bytes)
     if Array::length(code) > 0 {
       out = String::concat(out, String::concat("code: ", String::concat(int_to_string(Array::length(code)), " bodies\n")))
@@ -1018,22 +1236,28 @@ export let module_summary = (bytes: Bytes) -> String {
         out = String::concat(out, String::concat("  [", String::concat(int_to_string(ci), String::concat("] size=", String::concat(int_to_string(bsz), String::concat(" locals=", String::concat(int_to_string(nloc), "\n")))))))
         ci = ci + 1
       }
-    } else { () }
-
-    // data
+    } else {
+      ()
+    }
     let data = module_data(bytes)
     if Array::length(data) > 0 {
       out = String::concat(out, String::concat("data: ", String::concat(int_to_string(Array::length(data)), " segments\n")))
       let mut di = 0
       while di < Array::length(data) {
         let (mode, _, _, _, _, dlen) = Array::get(data, di)
-        let mode_str = if mode == 0 { "active" } else if mode == 1 { "passive" } else { "active" }
+        let mode_str = if mode == 0 {
+          "active"
+        } else if mode == 1 {
+          "passive"
+        } else {
+          "active"
+        }
         out = String::concat(out, String::concat("  ", String::concat(mode_str, String::concat(" size=", String::concat(int_to_string(dlen), "\n")))))
         di = di + 1
       }
-    } else { () }
-
-    // custom sections
+    } else {
+      ()
+    }
     let customs = module_custom_sections(bytes)
     if Array::length(customs) > 0 {
       out = String::concat(out, String::concat("custom sections: ", String::concat(int_to_string(Array::length(customs)), "\n")))
@@ -1043,8 +1267,9 @@ export let module_summary = (bytes: Bytes) -> String {
         out = String::concat(out, String::concat("  \"", String::concat(name, String::concat("\" size=", String::concat(int_to_string(psz), "\n")))))
         ci = ci + 1
       }
-    } else { () }
-
+    } else {
+      ()
+    }
     out
   }
 }

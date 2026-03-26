@@ -1,13 +1,7 @@
 //# Imports
 
 import ./index.vibe {
-  strip_custom_sections, strip_named_section,
-  filter_exports, strip_empty_data,
-  count_exports, count_functions, count_types,
-  binary_size, section_sizes,
-  optimize_code_section, build_call_graph, find_reachable,
-  dce, optimize,
-  coalesce_locals, remove_unused_types, remove_empty_sections, minify, minify_fast
+  binary_size, build_call_graph, coalesce_locals, count_exports, count_functions, count_types, dce, filter_exports, find_reachable, minify, minify_fast, optimize, optimize_code_section, remove_empty_sections, remove_unused_types, section_sizes, strip_custom_sections, strip_empty_data, strip_named_section
 }
 
 //# Functions
@@ -22,140 +16,381 @@ let make_bytes = (values: Array[Int]) -> Bytes {
   buf
 }
 
-// Build a minimal module with some sections
 let minimal_module = () -> Bytes {
-  // header + type () -> (i32) + func [0] + export "main" func 0 + code body
   make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 6, 1, 4, 0, 65, 42, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    6,
+    1,
+    4,
+    0,
+    65,
+    42,
+    11
   ])
 }
 
-// Module with a custom section
-let module_with_custom = () -> Bytes {
-  // header + custom section "name" (id=0, name=4 bytes "name", payload=2 bytes)
-  //        + type section
-  make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    0, 8, 4, 110, 97, 109, 101, 1, 2, 3,
-    1, 5, 1, 96, 0, 1, 127
-  ])
-}
-
-// Module with two exports
-let module_two_exports = () -> Bytes {
-  // header + type + func + export section (2 exports: "main" func 0, "memory" memory 0)
-  //        + memory section + code
-  make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    5, 3, 1, 0, 1,
-    7, 16, 2,
-      4, 109, 97, 105, 110, 0, 0,
-      6, 109, 101, 109, 111, 114, 121, 2, 0,
-    10, 6, 1, 4, 0, 65, 42, 11
-  ])
-}
-
-// Module with constant folding opportunity: i32.const 3, i32.const 4, i32.add
-let module_const_fold = () -> Bytes {
-  // type () -> (i32), func [0], export "main" func 0
-  // code body: 0 locals, i32.const 3, i32.const 4, i32.add, end
-  make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 9, 1, 7, 0, 65, 3, 65, 4, 106, 11
-  ])
-}
-
-// Module with dead drop: i32.const 99, drop, i32.const 42
-let module_dead_drop = () -> Bytes {
-  // code body: 0 locals, i32.const 99, drop, i32.const 42, end
-  make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 9, 1, 7, 0, 65, 99, 26, 65, 42, 11
-  ])
-}
-
-// Module with identity: i32.const 42, i32.const 0, i32.add
 let module_identity = () -> Bytes {
-  // code body: 0 locals, i32.const 42, i32.const 0, i32.add, end
   make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 9, 1, 7, 0, 65, 42, 65, 0, 106, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    9,
+    1,
+    7,
+    0,
+    65,
+    42,
+    65,
+    0,
+    106,
+    11
   ])
 }
 
-// Module with two functions: func 0 calls func 1, only func 0 exported
+let module_dead_drop = () -> Bytes {
+  make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    9,
+    1,
+    7,
+    0,
+    65,
+    99,
+    26,
+    65,
+    42,
+    11
+  ])
+}
+
 let module_two_funcs = () -> Bytes {
-  // type () -> (i32)
-  // func section: 2 funcs, both type 0
-  // export "main" func 0
-  // code section:
-  //   func 0: 0 locals, call 1, end  (calls func 1)
-  //   func 1: 0 locals, i32.const 42, end
   make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 3, 2, 0, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 11, 2, 4, 0, 16, 1, 11, 4, 0, 65, 42, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    3,
+    2,
+    0,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    11,
+    2,
+    4,
+    0,
+    16,
+    1,
+    11,
+    4,
+    0,
+    65,
+    42,
+    11
   ])
 }
 
-// Module with unreachable function: func 0 exported, func 1 not called
-let module_unreachable_func = () -> Bytes {
-  // type () -> (i32)
-  // func section: 2 funcs, both type 0
-  // export "main" func 0
-  // code section:
-  //   func 0: 0 locals, i32.const 42, end  (does NOT call func 1)
-  //   func 1: 0 locals, i32.const 99, end  (unreachable)
+let module_const_fold = () -> Bytes {
   make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 3, 2, 0, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 11, 2, 4, 0, 65, 42, 11, 4, 0, 65, 99, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    9,
+    1,
+    7,
+    0,
+    65,
+    3,
+    65,
+    4,
+    106,
+    11
+  ])
+}
+
+let module_two_exports = () -> Bytes {
+  make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    5,
+    3,
+    1,
+    0,
+    1,
+    7,
+    16,
+    2,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    6,
+    109,
+    101,
+    109,
+    111,
+    114,
+    121,
+    2,
+    0,
+    10,
+    6,
+    1,
+    4,
+    0,
+    65,
+    42,
+    11
+  ])
+}
+
+let module_with_custom = () -> Bytes {
+  make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    0,
+    8,
+    4,
+    110,
+    97,
+    109,
+    101,
+    1,
+    2,
+    3,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127
+  ])
+}
+
+let module_unreachable_func = () -> Bytes {
+  make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    3,
+    2,
+    0,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    11,
+    2,
+    4,
+    0,
+    65,
+    42,
+    11,
+    4,
+    0,
+    65,
+    99,
+    11
   ])
 }
 
 //# Misc
-
-// === binary_size ===
 
 test "binary_size" {
   let m = minimal_module()
   assert(binary_size(m) > 8)
 }
 
-// === count_types ===
-
 test "count_types" {
   let m = minimal_module()
   assert(count_types(m) == 1)
 }
 
-// === count_functions ===
-
 test "count_functions" {
   let m = minimal_module()
   assert(count_functions(m) == 1)
 }
-
-// === count_exports ===
 
 test "count_exports single" {
   let m = minimal_module()
@@ -167,8 +402,6 @@ test "count_exports two" {
   assert(count_exports(m) == 2)
 }
 
-// === section_sizes ===
-
 test "section_sizes" {
   let m = minimal_module()
   let sizes = section_sizes(m)
@@ -177,8 +410,6 @@ test "section_sizes" {
   let (s0, _) = Array::get(sizes, 0)
   assert(s0 == 1)
 }
-
-// === strip_custom_sections ===
 
 test "strip_custom_sections" {
   let m = module_with_custom()
@@ -198,8 +429,6 @@ test "strip_custom_sections no custom" {
   assert(binary_size(stripped) == binary_size(m))
 }
 
-// === strip_named_section ===
-
 test "strip_named_section" {
   let m = module_with_custom()
   let stripped = strip_named_section(m, "name")
@@ -213,28 +442,31 @@ test "strip_named_section not found" {
   assert(binary_size(stripped) == binary_size(m))
 }
 
-// === filter_exports ===
-
 test "filter_exports keep one" {
   let m = module_two_exports()
   assert(count_exports(m) == 2)
-  let filtered = filter_exports(m, ["main"])
+  let filtered = filter_exports(m, [
+    "main"
+  ])
   assert(count_exports(filtered) == 1)
 }
 
 test "filter_exports keep all" {
   let m = module_two_exports()
-  let filtered = filter_exports(m, ["main", "memory"])
+  let filtered = filter_exports(m, [
+    "main",
+    "memory"
+  ])
   assert(count_exports(filtered) == 2)
 }
 
 test "filter_exports keep none" {
   let m = module_two_exports()
-  let filtered = filter_exports(m, Array::slice([""], 0, 0))
+  let filtered = filter_exports(m, Array::slice([
+    ""
+  ], 0, 0))
   assert(count_exports(filtered) == 0)
 }
-
-// === peephole: constant folding ===
 
 test "peephole constant folding" {
   let m = module_const_fold()
@@ -246,8 +478,6 @@ test "peephole constant folding" {
   assert(count_functions(optimized) == 1)
 }
 
-// === peephole: dead drop elimination ===
-
 test "peephole dead drop" {
   let m = module_dead_drop()
   let optimized = optimize_code_section(m)
@@ -256,8 +486,6 @@ test "peephole dead drop" {
   assert(count_functions(optimized) == 1)
 }
 
-// === peephole: identity elimination ===
-
 test "peephole identity" {
   let m = module_identity()
   let optimized = optimize_code_section(m)
@@ -265,8 +493,6 @@ test "peephole identity" {
   assert(binary_size(optimized) < binary_size(m))
   assert(count_functions(optimized) == 1)
 }
-
-// === build_call_graph ===
 
 test "build_call_graph" {
   let m = module_two_funcs()
@@ -284,8 +510,6 @@ test "build_call_graph" {
   assert(Array::length(callees1) == 0)
 }
 
-// === find_reachable ===
-
 test "find_reachable all reachable" {
   let m = module_two_funcs()
   let reachable = find_reachable(m)
@@ -299,8 +523,6 @@ test "find_reachable with unreachable" {
   // func 0 exported, func 1 not called -> only func 0 reachable
   assert(Array::length(reachable) == 1)
 }
-
-// === dce ===
 
 test "dce removes unreachable" {
   let m = module_unreachable_func()
@@ -318,8 +540,6 @@ test "dce keeps reachable" {
   assert(binary_size(optimized) == binary_size(m))
 }
 
-// === optimize (full pipeline) ===
-
 test "optimize pipeline" {
   let m = minimal_module()
   let optimized = optimize(m)
@@ -332,12 +552,53 @@ test "optimize pipeline" {
 test "optimize with custom section" {
   // Build a module with custom section + type + func + export + code
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    0, 8, 4, 110, 97, 109, 101, 1, 2, 3,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 6, 1, 4, 0, 65, 42, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    0,
+    8,
+    4,
+    110,
+    97,
+    109,
+    101,
+    1,
+    2,
+    3,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    6,
+    1,
+    4,
+    0,
+    65,
+    42,
+    11
   ])
   let optimized = optimize(m)
   // Custom section stripped
@@ -345,19 +606,51 @@ test "optimize with custom section" {
   assert(count_functions(optimized) == 1)
 }
 
-// === coalesce_locals ===
-
 test "coalesce_locals removes unused" {
   // Module with func that has 2 i32 locals but only uses local 0 (the first declared local)
   // type () -> (i32), func [0], export "main", code body: 2 locals (2 x i32), local.get 0, end
   // Params: 0, locals: index 0 and 1 are declared locals
   // Only local.get 0 used, so local 1 should be removed
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 8, 1, 6, 1, 2, 127, 32, 0, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    8,
+    1,
+    6,
+    1,
+    2,
+    127,
+    32,
+    0,
+    11
   ])
   let optimized = coalesce_locals(m)
   // Should be smaller: 2 locals -> 1 local
@@ -365,36 +658,87 @@ test "coalesce_locals removes unused" {
   assert(count_functions(optimized) == 1)
 }
 
-// === remove_unused_types ===
-
 test "remove_unused_types" {
   // Module with 3 types but only type 0 used by function section
   // type section: 3 entries: ()->i32, (i32)->i32, (i32,i32)->i32
   // func section: 1 func using type 0
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 13, 3,
-      96, 0, 1, 127,
-      96, 1, 127, 1, 127,
-      96, 2, 127, 127, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 6, 1, 4, 0, 65, 42, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    13,
+    3,
+    96,
+    0,
+    1,
+    127,
+    96,
+    1,
+    127,
+    1,
+    127,
+    96,
+    2,
+    127,
+    127,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    6,
+    1,
+    4,
+    0,
+    65,
+    42,
+    11
   ])
   assert(count_types(m) == 3)
   let optimized = remove_unused_types(m)
   assert(count_types(optimized) == 1)
 }
 
-// === remove_empty_sections ===
-
 test "remove_empty_sections" {
   // Module with an empty function section (count=0) added artificially
   // header + type section + empty func section (id=3, size=1, count=0) + actual content
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 1, 0
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    1,
+    0
   ])
   let original_size = binary_size(m)
   let optimized = remove_empty_sections(m)
@@ -402,17 +746,65 @@ test "remove_empty_sections" {
   assert(binary_size(optimized) < original_size)
 }
 
-// === minify pipeline ===
-
 test "minify pipeline" {
   // Module with custom section + unused func + dead code
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    0, 8, 4, 110, 97, 109, 101, 1, 2, 3,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 3, 2, 0, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 14, 2, 7, 0, 65, 3, 65, 4, 106, 11, 4, 0, 65, 99, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    0,
+    8,
+    4,
+    110,
+    97,
+    109,
+    101,
+    1,
+    2,
+    3,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    3,
+    2,
+    0,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    14,
+    2,
+    7,
+    0,
+    65,
+    3,
+    65,
+    4,
+    106,
+    11,
+    4,
+    0,
+    65,
+    99,
+    11
   ])
   let optimized = minify(m)
   // Should be smaller: custom section stripped + const folded + dead func stubbed
@@ -428,55 +820,153 @@ test "minify convergence" {
   assert(binary_size(pass1) == binary_size(pass2))
 }
 
-// === peephole: local.set X, local.get X -> local.tee X ===
-
 test "peephole local set get to tee" {
   // Code body: 1 local (i32), i32.const 42, local.set 0, local.get 0, end
   // After peephole: i32.const 42, local.tee 0, end
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 10, 1, 8, 1, 1, 127, 65, 42, 33, 0, 32, 0, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    10,
+    1,
+    8,
+    1,
+    1,
+    127,
+    65,
+    42,
+    33,
+    0,
+    32,
+    0,
+    11
   ])
   let optimized = optimize_code_section(m)
   // local.set 0 (33,0) + local.get 0 (32,0) = 4 bytes -> local.tee 0 (34,0) = 2 bytes
   assert(binary_size(optimized) < binary_size(m))
 }
 
-// === peephole: eqz eqz removal ===
-
 test "peephole eqz eqz removal" {
   // Code body: 1 local, local.get 0, i32.eqz, i32.eqz, end
   // After peephole: local.get 0, end
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 8, 1, 6, 1, 1, 127, 32, 0, 69, 69, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    8,
+    1,
+    6,
+    1,
+    1,
+    127,
+    32,
+    0,
+    69,
+    69,
+    11
   ])
   let optimized = optimize_code_section(m)
   // Two eqz (0x45) removed = 2 bytes saved
   assert(binary_size(optimized) < binary_size(m))
 }
 
-// ============================================================
-// Tests ported from wasm-opt / binaryen test cases
-// Verify that minify actually reduces binary size
-// ============================================================
-
-// --- constant folding reduces code size ---
-
 test "wasm-opt: const fold i32 add" {
   // func: i32.const 3, i32.const 4, i32.add → should fold to i32.const 7
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 9, 1, 7, 0, 65, 3, 65, 4, 106, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    9,
+    1,
+    7,
+    0,
+    65,
+    3,
+    65,
+    4,
+    106,
+    11
   ])
   let before = binary_size(m)
   let opt = minify(m)
@@ -489,11 +979,46 @@ test "wasm-opt: const fold i32 add" {
 test "wasm-opt: const fold i32 sub" {
   // i32.const 10, i32.const 3, i32.sub → i32.const 7
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 9, 1, 7, 0, 65, 10, 65, 3, 107, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    9,
+    1,
+    7,
+    0,
+    65,
+    10,
+    65,
+    3,
+    107,
+    11
   ])
   let opt = minify(m)
   assert(binary_size(opt) < binary_size(m))
@@ -502,26 +1027,95 @@ test "wasm-opt: const fold i32 sub" {
 test "wasm-opt: const fold i32 mul" {
   // i32.const 6, i32.const 7, i32.mul → i32.const 42
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 9, 1, 7, 0, 65, 6, 65, 7, 108, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    9,
+    1,
+    7,
+    0,
+    65,
+    6,
+    65,
+    7,
+    108,
+    11
   ])
   let opt = minify(m)
   assert(binary_size(opt) < binary_size(m))
 }
 
-// --- identity elimination ---
-
 test "wasm-opt: identity add zero" {
   // local.get 0, i32.const 0, i32.add → local.get 0
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 6, 1, 96, 1, 127, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 9, 1, 7, 0, 32, 0, 65, 0, 106, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    6,
+    1,
+    96,
+    1,
+    127,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    9,
+    1,
+    7,
+    0,
+    32,
+    0,
+    65,
+    0,
+    106,
+    11
   ])
   let opt = minify(m)
   assert(binary_size(opt) < binary_size(m))
@@ -530,44 +1124,149 @@ test "wasm-opt: identity add zero" {
 test "wasm-opt: identity mul one" {
   // local.get 0, i32.const 1, i32.mul → local.get 0
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 6, 1, 96, 1, 127, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 9, 1, 7, 0, 32, 0, 65, 1, 108, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    6,
+    1,
+    96,
+    1,
+    127,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    9,
+    1,
+    7,
+    0,
+    32,
+    0,
+    65,
+    1,
+    108,
+    11
   ])
   let opt = minify(m)
   assert(binary_size(opt) < binary_size(m))
 }
 
-// --- dead code after return ---
-
 test "wasm-opt: dead drop removal" {
   // i32.const 42, return, i32.const 99, drop → dead code after return
   // minify should at least remove the dead const+drop
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 9, 1, 7, 0, 65, 42, 65, 99, 26, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    9,
+    1,
+    7,
+    0,
+    65,
+    42,
+    65,
+    99,
+    26,
+    11
   ])
   let opt = minify(m)
   // i32.const 99, drop → removed by dead drop elimination
   assert(binary_size(opt) < binary_size(m))
 }
 
-// --- DCE: unreachable function removed ---
-
 test "wasm-opt: dce unreachable func" {
   // 2 functions: func 0 exported, func 1 not called
   // func 1 body should be stubbed after DCE
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 3, 2, 0, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 11, 2, 4, 0, 65, 42, 11, 4, 0, 65, 99, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    3,
+    2,
+    0,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    11,
+    2,
+    4,
+    0,
+    65,
+    42,
+    11,
+    4,
+    0,
+    65,
+    99,
+    11
   ])
   let before = binary_size(m)
   let opt = minify(m)
@@ -576,16 +1275,52 @@ test "wasm-opt: dce unreachable func" {
   assert(count_functions(opt) == 2)
 }
 
-// --- DCE: keep called function ---
-
 test "wasm-opt: dce keeps called func" {
   // func 0 calls func 1 → both reachable
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 3, 2, 0, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 11, 2, 4, 0, 16, 1, 11, 4, 0, 65, 42, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    3,
+    2,
+    0,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    11,
+    2,
+    4,
+    0,
+    16,
+    1,
+    11,
+    4,
+    0,
+    65,
+    42,
+    11
   ])
   let before = binary_size(m)
   let opt = minify(m)
@@ -593,37 +1328,103 @@ test "wasm-opt: dce keeps called func" {
   assert(count_functions(opt) == 2)
 }
 
-// --- coalesce: unused locals removed ---
-
 test "wasm-opt: coalesce unused locals" {
   // func with 2 locals declared but only local 0 used
   // code: 1 local group (2 x i32), local.get 0, end
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 8, 1, 6, 1, 2, 127, 32, 0, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    8,
+    1,
+    6,
+    1,
+    2,
+    127,
+    32,
+    0,
+    11
   ])
   let opt = minify(m)
   // unused local removed → smaller local declarations
   assert(binary_size(opt) <= binary_size(m))
 }
 
-// --- remove unused types ---
-
 test "wasm-opt: remove unused types" {
   // 3 types but only type 0 used by function
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
     // 3 types: () -> (), (i32) -> (i32), () -> (i32)
-    1, 13, 3,
-      96, 0, 0,
-      96, 1, 127, 1, 127,
-      96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 5, 1, 3, 0, 1, 11
+    1,
+    13,
+    3,
+    96,
+    0,
+    0,
+    96,
+    1,
+    127,
+    1,
+    127,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    5,
+    1,
+    3,
+    0,
+    1,
+    11
   ])
   let before = binary_size(m)
   let opt = minify(m)
@@ -632,72 +1433,220 @@ test "wasm-opt: remove unused types" {
   assert(count_types(opt) == 1)
 }
 
-// --- custom section stripped ---
-
 test "wasm-opt: strip custom section" {
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
     // custom section "name" (8 bytes)
-    0, 8, 4, 110, 97, 109, 101, 1, 2, 3,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 6, 1, 4, 0, 65, 42, 11
+    0,
+    8,
+    4,
+    110,
+    97,
+    109,
+    101,
+    1,
+    2,
+    3,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    6,
+    1,
+    4,
+    0,
+    65,
+    42,
+    11
   ])
   let before = binary_size(m)
   let opt = minify(m)
   assert(binary_size(opt) < before)
 }
 
-// --- multi-pass convergence ---
-
 test "wasm-opt: const fold chain" {
   // i32.const 1, i32.const 2, i32.add, i32.const 3, i32.add
   // Round 1: fold (1+2)=3, then 3+3 needs round 2
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 11, 1, 9, 0, 65, 1, 65, 2, 106, 65, 3, 106, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    11,
+    1,
+    9,
+    0,
+    65,
+    1,
+    65,
+    2,
+    106,
+    65,
+    3,
+    106,
+    11
   ])
   let opt = minify(m)
   // Should fold all the way to i32.const 6
   assert(binary_size(opt) < binary_size(m))
 }
 
-// --- already minimal module ---
-
 test "wasm-opt: already minimal" {
   // Simplest possible module: just i32.const 42
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 6, 1, 4, 0, 65, 42, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    6,
+    1,
+    4,
+    0,
+    65,
+    42,
+    11
   ])
   let opt = minify(m)
   // No change expected (already optimal)
   assert(binary_size(opt) == binary_size(m))
 }
 
-// --- combined: custom + unused func + dead code ---
-
 test "wasm-opt: combined optimizations" {
   // Module with: custom section + 2 funcs (1 unreachable) + dead drop in func 0
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
     // custom "x"
-    0, 3, 1, 120, 255,
+    0,
+    3,
+    1,
+    120,
+    255,
     // type
-    1, 5, 1, 96, 0, 1, 127,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
     // 2 funcs
-    3, 3, 2, 0, 0,
+    3,
+    3,
+    2,
+    0,
+    0,
     // export "main" func 0
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
     // code: func 0 = i32.const 99 drop i32.const 42 end, func 1 = i32.const 0 end
-    10, 13, 2, 7, 0, 65, 99, 26, 65, 42, 11, 4, 0, 65, 0, 11
+    10,
+    13,
+    2,
+    7,
+    0,
+    65,
+    99,
+    26,
+    65,
+    42,
+    11,
+    4,
+    0,
+    65,
+    0,
+    11
   ])
   let before = binary_size(m)
   let opt = minify(m)
@@ -706,32 +1655,110 @@ test "wasm-opt: combined optimizations" {
   assert(count_exports(opt) == 1)
 }
 
-// --- peephole: local.set then local.get → local.tee ---
-
 test "wasm-opt: set get to tee" {
   // i32.const 42, local.set 0, local.get 0, end
   // → i32.const 42, local.tee 0, end (saves 2 bytes)
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 10, 1, 8, 1, 1, 127, 65, 42, 33, 0, 32, 0, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    10,
+    1,
+    8,
+    1,
+    1,
+    127,
+    65,
+    42,
+    33,
+    0,
+    32,
+    0,
+    11
   ])
   let opt = minify(m)
   assert(binary_size(opt) < binary_size(m))
 }
 
-// --- verify minify output is valid WASM ---
-
 test "wasm-opt: minify output valid" {
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    0, 5, 3, 102, 111, 111, 255,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 3, 2, 0, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 11, 2, 4, 0, 65, 42, 11, 4, 0, 65, 0, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    0,
+    5,
+    3,
+    102,
+    111,
+    111,
+    255,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    3,
+    2,
+    0,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    11,
+    2,
+    4,
+    0,
+    65,
+    42,
+    11,
+    4,
+    0,
+    65,
+    0,
+    11
   ])
   let opt = minify(m)
   // Output must have valid WASM magic
@@ -749,16 +1776,55 @@ test "wasm-opt: minify output valid" {
   assert(count_exports(opt) == 1)
 }
 
-// === minify_fast ===
-
 test "minify_fast strips custom" {
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    0, 8, 4, 110, 97, 109, 101, 1, 2, 3,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 6, 1, 4, 0, 65, 42, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    0,
+    8,
+    4,
+    110,
+    97,
+    109,
+    101,
+    1,
+    2,
+    3,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    6,
+    1,
+    4,
+    0,
+    65,
+    42,
+    11
   ])
   let opt = minify_fast(m)
   assert(binary_size(opt) < binary_size(m))
@@ -768,11 +1834,43 @@ test "minify_fast strips custom" {
 
 test "minify_fast already minimal" {
   let m = make_bytes([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
-    3, 2, 1, 0,
-    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 6, 1, 4, 0, 65, 42, 11
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    96,
+    0,
+    1,
+    127,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    6,
+    1,
+    4,
+    0,
+    65,
+    42,
+    11
   ])
   let opt = minify_fast(m)
   assert(binary_size(opt) == binary_size(m))

@@ -1,38 +1,34 @@
 //# Imports
 
-import ../syntax/lexer.vibe {
-  lex,
+import .. / cache / module_header_codec.vibe {
+  parse_persistent_module_header_text, persistent_module_header_text
 }
 
-import ../syntax/parser.vibe {
-  parse_program
+import .. / cache / persistent {
+  compact_string_fingerprint, normalize_persistent_cache_text, persistent_module_header_cache_path
 }
 
-import ../core/ast.vibe {
-  Stmt,
+import .. / core / ast.vibe {
+  Stmt
 }
 
-import ../runtime/eval_loader/index.vibe {
+import .. / module_graph_path.vibe {
+  dir_of_path, resolve_import_path_candidates
+}
+
+import .. / runtime / eval_loader {
   collect_exports
 }
 
-import ../cache/persistent/index.vibe {
-  compact_string_fingerprint,
-  normalize_persistent_cache_text,
-  persistent_module_header_cache_path
+import .. / syntax / lexer.vibe {
+  lex
 }
 
-import ../module_graph_path.vibe {
-  dir_of_path,
-  resolve_import_path_candidates
+import .. / syntax / parser.vibe {
+  parse_program
 }
 
-import ../cache/module_header_codec.vibe {
-  persistent_module_header_text,
-  parse_persistent_module_header_text
-}
-
-//# Helpers
+//# Functions
 
 let dir_of = dir_of_path
 
@@ -58,33 +54,37 @@ let resolve_path_fs = (base_dir: String, raw_path: String) -> String with { Fs }
 
 let special_bundle_header = (path: String) -> Option[(Array[String], Array[String])] {
   if String::ends_with(path, "selfhost_sources_bundle.vibe") {
-    Some((
-      Array::slice([""], 0, 0),
-      ["selfhost_sources", "selfhost_source_groups"]
-    ))
+    Some((Array::slice([
+      ""
+    ], 0, 0), [
+      "selfhost_sources",
+      "selfhost_source_groups"
+    ]))
   } else if String::ends_with(path, "selfhost_cli_adapter_bundle.vibe") {
-    Some((
-      Array::slice([""], 0, 0),
-      [
-        "selfhost_cli_adapter_sources",
-        "selfhost_cli_adapter_source_groups",
-        "selfhost_cli_adapter_ordered_sources",
-        "selfhost_cli_adapter_merged_source",
-        "selfhost_cli_adapter_module_source"
-      ]
-    ))
+    Some((Array::slice([
+      ""
+    ], 0, 0), [
+      "selfhost_cli_adapter_sources",
+      "selfhost_cli_adapter_source_groups",
+      "selfhost_cli_adapter_ordered_sources",
+      "selfhost_cli_adapter_merged_source",
+      "selfhost_cli_adapter_module_source"
+    ]))
   } else if String::ends_with(path, "selfbuild_runtime_entry_bundle.vibe") {
-    Some((
-      Array::slice([""], 0, 0),
-      ["selfbuild_runtime_entry_source"]
-    ))
+    Some((Array::slice([
+      ""
+    ], 0, 0), [
+      "selfbuild_runtime_entry_source"
+    ]))
   } else {
     None
   }
 }
 
 let collect_import_deps_from_stmts = (stmts: Array[Stmt], base_dir: String) -> Array[String] with { Fs } {
-  let deps = Array::slice([""], 0, 0)
+  let deps = Array::slice([
+    ""
+  ], 0, 0)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -97,18 +97,10 @@ let collect_import_deps_from_stmts = (stmts: Array[Stmt], base_dir: String) -> A
   deps
 }
 
-//# Exports
-
-export let load_or_parse_module_header_fs_impl = (
-  path: String,
-  source: String,
-  parse_count: Int
-) -> (Array[String], Array[String], Int) with { Error, Fs } {
+export let load_or_parse_module_header_fs_impl = (path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int)with { Error, Fs } {
   let cache_path = persistent_module_header_cache_path(path, compact_string_fingerprint(source))
   if Fs::exists(cache_path) {
-    let parsed = parse_persistent_module_header_text(
-      normalize_persistent_cache_text(Fs::read_file(cache_path))
-    )
+    let parsed = parse_persistent_module_header_text(normalize_persistent_cache_text(Fs::read_file(cache_path)))
     (parsed.0, parsed.1, parse_count)
   } else {
     let header_result = match special_bundle_header(path) {
@@ -116,11 +108,7 @@ export let load_or_parse_module_header_fs_impl = (
       None => {
         let tokens = lex(source)
         let stmts = parse_program(tokens)
-        (
-          collect_import_deps_from_stmts(stmts, dir_of(path)),
-          collect_exports(stmts),
-          parse_count + 1
-        )
+        (collect_import_deps_from_stmts(stmts, dir_of(path)), collect_exports(stmts), parse_count + 1)
       }
     }
     let deps = header_result.0

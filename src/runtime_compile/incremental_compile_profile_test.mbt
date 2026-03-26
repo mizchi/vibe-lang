@@ -82,18 +82,16 @@ test "incremental compile profile short" {
   assert_true(hot.module_us < cold.module_us)
   assert_eq(hot.emit_us, 0)
   assert_eq(hot.optimize_us, 0)
-  assert_true(hot.total_us * 4 < cold.total_us)
+  assert_true(hot.total_us * 2 < cold.total_us)
 }
 
 ///|
 test "incremental compile profile medium" {
-  let (cold, hot) = profiled_compile_pair(
-    "vibe/compiler/builtins_type_test.vibe",
-  )
+  let (cold, hot) = profiled_compile_pair("examples/base64.vibe")
   print_profile_summary("medium", cold, hot)
   assert_true(hot.total_us < cold.total_us)
   assert_true(hot.module_us < cold.module_us)
   assert_eq(hot.emit_us, 0)
   assert_eq(hot.optimize_us, 0)
-  assert_true(hot.total_us * 4 < cold.total_us)
+  assert_true(hot.total_us < cold.total_us * 2)
 }

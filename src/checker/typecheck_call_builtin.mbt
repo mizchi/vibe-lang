@@ -262,5 +262,35 @@ fn type_call_builtin(
   let builtin_name = @core.lower_wasm_intrinsic_name(name)
   type_call_builtin_handler_core_io(
     env, name, builtin_name, args, aliases, effects, allow_effect, call_span,
-  )
+  ) catch {
+    TypeError::BadCall(message=msg, span=err_span) =>
+      // Only attempt UFCS when the error is "unknown function" (message == name).
+      // Concrete errors like "select: unknown field: X" must propagate as-is.
+      if msg == name && not(name.contains("::")) {
+        let ufcs_name = match @core.first_positional_expr(args) {
+          None => None
+          Some(expr) =>
+            match env.get_expr_type(expr.span()) {
+              Some(recv_ty) =>
+                match builtin_ufcs_namespace(resolve_type(env, recv_ty)) {
+                  Some(ns) => Some(ns + "::" + name)
+                  None => None
+                }
+              None => None
+            }
+        }
+        match ufcs_name {
+          Some(qualified) => {
+            let q_builtin = @core.lower_wasm_intrinsic_name(qualified)
+            type_call_builtin_handler_core_io(
+              env, qualified, q_builtin, args, aliases, effects, allow_effect, call_span,
+            )
+          }
+          None => raise TypeError::BadCall(message=name, span=call_span)
+        }
+      } else {
+        raise TypeError::BadCall(message=msg, span=err_span)
+      }
+    e => raise e
+  }
 }

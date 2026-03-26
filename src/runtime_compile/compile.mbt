@@ -80,6 +80,7 @@ fn elapsed_us_from(start : @bench.Timestamp) -> Int {
   @bench.monotonic_clock_end(start).to_int()
 }
 
+///|
 fn compile_module_cache_key(
   path : String,
   source : String,
@@ -234,7 +235,8 @@ pub fn compile_module(
   let desugared = @frontend.desugar_method_calls(raw_ast, aliases)
   let ast = @frontend.rewrite_effect_handles(desugared)
   let mono = @frontend.monoify_module(ast, env)
-  let resolved_ast = db.rewrite_imports_to_hash(path, mono.ast)
+  let rewritten = @frontend.rewrite_string_add(mono.ast, env)
+  let resolved_ast = db.rewrite_imports_to_hash(path, rewritten)
   let ir = @runtime.module_to_sexp(resolved_ast, aliases)
   let ir_hash = @core.git_blob_hash_string(ir)
   let module_ref = @core.module_ref_from_hash(ir_hash)
@@ -290,6 +292,7 @@ fn compile_module_wasm_with(
   }
 }
 
+///|
 fn wasm_emit_options(
   debug_errors : Bool,
   http_host_imports? : Bool = false,
@@ -665,6 +668,7 @@ pub fn compile_module_wasm_js_string(
   })
 }
 
+///|
 /// Compile a module to WASM using wasm-gc opcodes (fixture-focused).
 pub fn compile_module_wasm_gc(
   db : @runtime.VibeDb,
@@ -675,6 +679,7 @@ pub fn compile_module_wasm_gc(
   )
 }
 
+///|
 /// Compile a module to WASM without DCE (for benchmarking).
 pub fn compile_module_wasm_no_dce(
   db : @runtime.VibeDb,
@@ -799,6 +804,7 @@ pub fn compile_module_component_string_lift_auto(
   optimize_wasm_bytes_with_opt_level(component, opt_level)
 }
 
+///|
 /// Check if AST uses server builtins incompatible with P3 handler mode.
 fn check_incompatible_server_builtins(ast : @core.Module) -> Array[String] {
   let found : Array[String] = []
@@ -869,6 +875,7 @@ pub fn compile_module_component_with_opt_level(
   optimize_wasm_bytes_with_opt_level(component, opt_level)
 }
 
+///|
 /// Generate WIT world for component embedding (`wasm-tools component embed/new`).
 /// Uses bundled AST so builtins used through imports are reflected in the interface.
 pub fn generate_module_component_wit(
@@ -882,6 +889,320 @@ pub fn generate_module_component_wit(
   }
   let bundled = @runtime.bundle_for_wasm(db, path, compiled.ast)
   @codegen.generate_component_wit(bundled, package_name, world_name)
+}
+
+///|
+fn elapsed_ms_from_us(elapsed_us : Int) -> Int {
+  let elapsed_ms = elapsed_us / 1000
+  if elapsed_ms <= 0 {
+    1
+  } else {
+    elapsed_ms
+  }
+}
+
+///|
+fn profile_tsv_line(stage : String, elapsed_us : Int) -> String {
+  let elapsed_ms = if elapsed_us <= 0 {
+    0
+  } else {
+    elapsed_ms_from_us(elapsed_us)
+  }
+  stage + "\t" + elapsed_ms.to_string() + "\t" + elapsed_us.to_string() + "\n"
+}
+
+///|
+pub fn wasm_compile_profile_tsv(
+  load_us : Int,
+  type_us : Int,
+  compile_profile : WasmCompileStageProfile,
+  write_us : Int,
+  total_us : Int,
+) -> String {
+  "stage\telapsed_ms\telapsed_us\n" +
+  profile_tsv_line("load", load_us) +
+  profile_tsv_line("type", type_us) +
+  profile_tsv_line("compile_module", compile_profile.module_us) +
+  profile_tsv_line("bundle", compile_profile.bundle_us) +
+  profile_tsv_line("emit", compile_profile.emit_us) +
+  profile_tsv_line("optimize", compile_profile.optimize_us) +
+  profile_tsv_line("compile", compile_profile.total_us) +
+  profile_tsv_line("write", write_us) +
+  profile_tsv_line("total", total_us)
+}
+
+///|
+/// Compile in linked mode: don't inline imports, emit wasm imports instead.
+/// Returns (user_wasm_bytes, linked_imports_info).
+pub fn compile_module_wasm_linked(
+  db : @runtime.VibeDb,
+  path : String,
+  debug_errors? : Bool = false,
+  skip_typecheck? : Bool = false,
+) -> (Bytes, Array[@runtime.LinkedImport]) raise WasmCompileError {
+  let compiled_ast = if skip_typecheck {
+    let raw_ast = db.ast(path)
+    let imports = db.imports(path)
+    let aliases = build_alias_map(
+      raw_ast,
+      compile_module_import_aliases(imports),
+    )
+    let desugared = @frontend.desugar_method_calls(raw_ast, aliases)
+    @frontend.rewrite_effect_handles(desugared)
+  } else {
+    let compiled = compile_module(db, path) catch {
+      e => raise WasmCompileError::Compile(e)
+    }
+    compiled.ast
+  }
+  let (bundled, linked_imports) = @runtime.bundle_for_wasm_linked(
+    db, path, compiled_ast,
+  )
+  let codegen_linked : Array[(String, String, Int, Int)] = []
+  for li in linked_imports {
+    codegen_linked.push(
+      (li.module_name, li.func_name, li.param_count, li.return_count),
+    )
+  }
+  let wasm = @codegen.emit_module_wasm_with_options(
+    bundled,
+    @codegen.wasm_emit_options(
+      embed_error_strings=debug_errors,
+      linked_imports=codegen_linked,
+    ),
+  ) catch {
+    e => raise WasmCompileError::Gen(e)
+  }
+  (wasm, linked_imports)
+}
+
+///|
+/// Emit WASM with linked imports (used by fast path in build --debug).
+pub fn emit_wasm_with_linked_imports(
+  bundled : @core.Module,
+  linked_imports : Array[(String, String, Int, Int)],
+) -> Bytes raise WasmCompileError {
+  @codegen.emit_module_wasm_with_options(
+    bundled,
+    @codegen.wasm_emit_options(embed_error_strings=true, linked_imports~),
+  ) catch {
+    e => raise WasmCompileError::Gen(e)
+  }
+}
+
+///|
+pub fn emit_library_module_wasm(
+  ast : @core.Module,
+  debug_errors? : Bool = false,
+) -> Bytes raise WasmCompileError {
+  @codegen.emit_module_wasm_with_options(
+    ast,
+    @codegen.wasm_emit_options(
+      embed_error_strings=debug_errors,
+      library_mode=true,
+    ),
+  ) catch {
+    e => raise WasmCompileError::Gen(e)
+  }
+}
+
+///|
+pub fn compile_module_wasm_js_string_with_opt_level(
+  db : @runtime.VibeDb,
+  path : String,
+  no_dce? : Bool = false,
+  opt_level? : String? = None,
+  debug_errors? : Bool = false,
+) -> Bytes raise WasmCompileError {
+  let wasm = if no_dce {
+    compile_module_wasm_js_string_no_dce(db, path, debug_errors~)
+  } else {
+    compile_module_wasm_js_string(db, path, debug_errors~)
+  }
+  optimize_wasm_bytes_with_opt_level(wasm, opt_level)
+}
+
+///|
+pub fn compile_module_wasm_js_string_with_coverage(
+  db : @runtime.VibeDb,
+  path : String,
+  no_dce? : Bool = false,
+  opt_level? : String? = None,
+  run_tests? : Bool = false,
+  debug_errors? : Bool = false,
+) -> WasmCoverageArtifact raise WasmCompileError {
+  let coverage = if no_dce {
+    compile_module_wasm_js_string_no_dce_with_coverage(
+      db,
+      path,
+      run_tests~,
+      debug_errors~,
+    )
+  } else if run_tests {
+    compile_module_wasm_coverage_with(
+      db,
+      path,
+      @runtime.bundle_for_wasm_test_coverage,
+      ast => {
+        @codegen.emit_module_wasm_js_string_with_coverage_options(
+          ast,
+          wasm_emit_options(debug_errors),
+        )
+      },
+      run_tests=true,
+    )
+  } else {
+    compile_module_wasm_coverage_with(db, path, @runtime.bundle_for_wasm, ast => {
+      @codegen.emit_module_wasm_js_string_with_coverage_options(
+        ast,
+        wasm_emit_options(debug_errors),
+      )
+    })
+  }
+  optimize_wasm_coverage_with_opt_level(coverage, opt_level)
+}
+
+///|
+fn compile_module_wasm_js_string_no_dce_with_coverage(
+  db : @runtime.VibeDb,
+  path : String,
+  run_tests? : Bool = false,
+  debug_errors? : Bool = false,
+) -> WasmCoverageArtifact raise WasmCompileError {
+  compile_module_wasm_coverage_with(
+    db,
+    path,
+    @runtime.bundle_for_wasm_no_dce,
+    ast => {
+      @codegen.emit_module_wasm_js_string_with_coverage_options(
+        ast,
+        wasm_emit_options(debug_errors),
+      )
+    },
+    run_tests~,
+  )
+}
+
+///|
+/// Compile a module to WASM using wasm js-string builtins without DCE.
+pub fn compile_module_wasm_js_string_no_dce(
+  db : @runtime.VibeDb,
+  path : String,
+  debug_errors? : Bool = false,
+) -> Bytes raise WasmCompileError {
+  compile_module_wasm_with(db, path, @runtime.bundle_for_wasm_no_dce, ast => {
+    @codegen.emit_module_wasm_js_string_with_options(
+      ast,
+      wasm_emit_options(debug_errors),
+    )
+  })
+}
+
+///|
+pub fn compile_module_wasm_gc_with_opt_level(
+  db : @runtime.VibeDb,
+  path : String,
+  no_dce? : Bool = false,
+  opt_level? : String? = None,
+) -> Bytes raise WasmCompileError {
+  let wasm = if no_dce {
+    compile_module_wasm_gc_no_dce(db, path)
+  } else {
+    compile_module_wasm_gc(db, path)
+  }
+  optimize_wasm_bytes_with_opt_level(wasm, opt_level)
+}
+
+///|
+/// Compile a module to WASM using wasm-gc opcodes without DCE.
+pub fn compile_module_wasm_gc_no_dce(
+  db : @runtime.VibeDb,
+  path : String,
+) -> Bytes raise WasmCompileError {
+  compile_module_wasm_with(
+    db, path, @runtime.bundle_for_wasm_no_dce, @codegen.emit_module_wasm_gc,
+  )
+}
+
+///|
+/// Compile a module to Component WASM with string param support.
+pub fn compile_module_component_with_string_lift(
+  db : @runtime.VibeDb,
+  path : String,
+  target_func_name : String,
+  export_name : String,
+  string_param_count : Int,
+) -> Bytes raise WasmCompileError {
+  let compiled = compile_module(db, path) catch {
+    e => raise WasmCompileError::Compile(e)
+  }
+  let bundled = @runtime.bundle_for_wasm(db, path, compiled.ast)
+  let core_wasm = @codegen.emit_module_wasm_with_options(
+    bundled,
+    @codegen.wasm_emit_options(force_cabi_realloc=true),
+  ) catch {
+    e => raise WasmCompileError::Gen(e)
+  }
+  @codegen.emit_component_wasm_with_string_lift(
+    core_wasm, target_func_name, export_name, string_param_count,
+  )
+}
+
+///|
+/// Patch sync func types to async for P3 components.
+pub fn patch_p3_async_func_types(data : Bytes) -> Bytes {
+  let patterns : Array[Array[Byte]] = [
+    [
+      b'\x40', b'\x02', b'\x06', b'\x6d', b'\x65', b'\x74', b'\x68', b'\x6f', b'\x64',
+    ],
+    [
+      b'\x40', b'\x01', b'\x07', b'\x72', b'\x65', b'\x71', b'\x75', b'\x65', b'\x73',
+      b'\x74',
+    ],
+  ]
+  let buf = data.to_array()
+  for pattern in patterns {
+    for i in 0..<(buf.length() - pattern.length()) {
+      let mut match_ = true
+      for j in 0..<pattern.length() {
+        if buf[i + j] != pattern[j] {
+          match_ = false
+          break
+        }
+      }
+      if match_ {
+        buf[i] = b'\x43'
+      }
+    }
+  }
+  Bytes::from_array(buf)
+}
+
+///|
+/// Compose a vibe app component with a P3 adapter using mwac plug.
+pub fn compose_p3_component(
+  app_bytes : Bytes,
+  adapter_bytes : Bytes,
+) -> Bytes raise WasmCompileError {
+  match @mwac.plug_components(adapter_bytes, [app_bytes], best_effort=true) {
+    Ok(composed) => composed
+    Err(e) =>
+      raise WasmCompileError::Optimize("mwac plug failed: " + e.to_string())
+  }
+}
+
+///|
+/// Generate WIT interface definition for a module.
+pub fn generate_module_wit(
+  db : @runtime.VibeDb,
+  path : String,
+  package_name : String,
+  world_name : String,
+) -> String raise WasmCompileError {
+  let compiled = compile_module(db, path) catch {
+    e => raise WasmCompileError::Compile(e)
+  }
+  @codegen.generate_wit(compiled.ast, package_name, world_name)
 }
 
 ///|

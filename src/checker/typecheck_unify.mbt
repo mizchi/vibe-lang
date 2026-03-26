@@ -264,6 +264,7 @@ fn resolve_builtin_type_name(
         None
       }
     "Bytes" => if args.is_empty() { Some(@core.Type::Bytes) } else { None }
+    "V128" => if args.is_empty() { Some(@core.Type::V128) } else { None }
     "anyref" =>
       if args.is_empty() {
         Some(@core.Type::Named(name="anyref", args=[]))
@@ -762,6 +763,7 @@ fn type_contains_scoped_ref_inner_fast(
     | @core.Type::Unit
     | @core.Type::StringBuilder
     | @core.Type::Bytes
+    | @core.Type::V128
     | @core.Type::Param(_)
     | @core.Type::Var(_)
     | @core.Type::Never => false
@@ -1181,6 +1183,26 @@ pub fn classify_function_api_change(
   }
 }
 
+///|
+/// Completion helper: true if param type can accept receiver type.
+pub fn completion_param_matches(
+  env : TypeEnv,
+  receiver : @core.Type,
+  param : @core.Type,
+) -> Bool {
+  let recv = normalize_type(env, receiver) catch { _ => receiver }
+  let param_ty = normalize_type(env, param) catch { _ => param }
+  match param_ty {
+    @core.Type::Var(_) | @core.Type::Param(_) => true
+    _ =>
+      match recv {
+        @core.Type::Var(_) | @core.Type::Param(_) => true
+        _ => type_equal(env, recv, param_ty) catch { _ => false }
+      }
+  }
+}
+
+///|
 fn unify_pair_cache_key(left : @core.Type, right : @core.Type) -> (Int, Int) {
   (left.structural_hash(), right.structural_hash())
 }
@@ -1230,7 +1252,8 @@ fn unify_types_inner(
     | (@core.Type::Unit, @core.Type::Unit)
     | (@core.Type::Never, @core.Type::Never)
     | (@core.Type::StringBuilder, @core.Type::StringBuilder)
-    | (@core.Type::Bytes, @core.Type::Bytes) => return true
+    | (@core.Type::Bytes, @core.Type::Bytes)
+    | (@core.Type::V128, @core.Type::V128) => return true
     (@core.Type::Named(name=an, args=aa), @core.Type::Named(name=bn, args=bb)) =>
       if an == bn && aa.is_empty() && bb.is_empty() {
         return true
@@ -1359,6 +1382,7 @@ fn unify_types_inner(
       unify_types_inner(env, av, bv, cache)
     (@core.Type::StringBuilder, @core.Type::StringBuilder) => true
     (@core.Type::Bytes, @core.Type::Bytes) => true
+    (@core.Type::V128, @core.Type::V128) => true
     (@core.Type::Variant(ax), @core.Type::Variant(bx)) =>
       if ax.length() != bx.length() {
         false

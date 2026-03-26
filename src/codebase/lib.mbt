@@ -1679,7 +1679,20 @@ pub fn load_lock_data_with_fs(
     Ok(v) => v
     Err(err) => return Err("failed to read index.lock: " + err)
   }
-  parse_lock_data(content, base_dir)
+  match parse_lock_data(content, base_dir) {
+    Ok(v) => Ok(v)
+    Err(err) =>
+      if err.has_prefix("index.lock: invalid JSON:") {
+        Err(
+          err +
+          " (delete or regenerate " +
+          target +
+          " with `vibe update-lock <entry>`)",
+        )
+      } else {
+        Err(err)
+      }
+  }
 }
 
 ///|

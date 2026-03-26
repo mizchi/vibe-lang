@@ -1,45 +1,46 @@
 //# Imports
 
-import ../../../core/ast.vibe {
-  Expr, Stmt
-}
-
-import ../../../syntax/lexer.vibe {
-  lex,
-}
-
-import ../../../syntax/parser.vibe {
-  parse_program
-}
-
-import ../../../checker/checker_stmt.vibe {
+import .. / .. / .. / checker / checker_stmt.vibe {
   check_program
 }
 
-import ../../../codegen/wasi/index.vibe {
+import .. / .. / .. / codegen / wasi {
   compile_wasi_module_linked_impl
 }
 
-import ./preprocess.vibe {
-  strip_generic_type_params,
-  expand_interp_stmts
+import .. / .. / .. / core / ast.vibe {
+  Expr, Stmt
 }
 
-import ../../../module_graph_path.vibe {
-  dir_of_path,
-  resolve_import_path,
-  contains_name,
-  get_export_name,
-  path_to_module_name
+import .. / .. / .. / module_graph_path.vibe {
+  contains_name, dir_of_path, get_export_name, path_to_module_name, resolve_import_path
 }
+
+import .. / .. / .. / syntax / lexer.vibe {
+  lex
+}
+
+import .. / .. / .. / syntax / parser.vibe {
+  parse_program
+}
+
+import ./preprocess.vibe {
+  expand_interp_stmts, strip_generic_type_params
+}
+
+//# Functions
 
 let rec resolve_reexport_chain = (source_path: String, items: Array[(String, Option[String])], module_name: String, linked_imports: Array[(String, String, Int, Int)], type_stmts: Array[Stmt], depth: Int) -> Unit with { Error, Fs } {
-  if depth > 10 { () }
+  if depth > 10 {
+    ()
+  }
   else {
     let source = perform Fs::ReadFile(source_path)
     let stmts = parse_program(lex(source))
     let source_dir = dir_of_path(source_path)
-    let wanted_names = Array::slice([""], 0, 0)
+    let wanted_names = Array::slice([
+      ""
+    ], 0, 0)
     let mut wi = 0
     while wi < Array::length(items) {
       let (name, _) = Array::get(items, wi)
@@ -49,19 +50,19 @@ let rec resolve_reexport_chain = (source_path: String, items: Array[(String, Opt
     let mut si = 0
     while si < Array::length(stmts) {
       match Array::get(stmts, si) {
-        SLet(true, _, name, _, EFn(_, _, params, _, _, _)) => {
-          if contains_name(wanted_names, name) {
-            let export_name = get_export_name(items, name)
-            Array::push(linked_imports, (module_name, export_name, Array::length(params), 1))
-          }
-        },
-        SEnum(true, name, _) => {
-          if contains_name(wanted_names, name) {
-            Array::push(type_stmts, Array::get(stmts, si))
-          }
-        },
+        SLet(true, _, name, _, EFn(_, _, params, _, _, _)) => if contains_name(wanted_names, name) {
+          let export_name = get_export_name(items, name)
+          Array::push(linked_imports, (module_name, export_name, Array::length(params), 1))
+        }
+        ,
+        SEnum(true, name, _) => if contains_name(wanted_names, name) {
+          Array::push(type_stmts, Array::get(stmts, si))
+        }
+        ,
         SReExport(raw_path, inner_items) => {
-          let filtered = Array::slice([("", None)], 0, 0)
+          let filtered = Array::slice([
+            ("", None)
+          ], 0, 0)
           let mut fi = 0
           while fi < Array::length(inner_items) {
             let (iname, irename) = Array::get(inner_items, fi)
@@ -82,10 +83,8 @@ let rec resolve_reexport_chain = (source_path: String, items: Array[(String, Opt
   }
 }
 
-// Linked mode: direct deps become linked imports, not inlined.
-// Returns (entry_wasm, linked_imports, linked_dep_specs) where linked_dep_specs
+//# Misc
 
 export {
-  path_to_module_name,
-  resolve_reexport_chain
+  path_to_module_name, resolve_reexport_chain
 }
