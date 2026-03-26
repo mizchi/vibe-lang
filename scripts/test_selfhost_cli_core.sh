@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUT_DIR="$PROJECT_ROOT/_build/bench/selfhost_cli_core"
-ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/vibe/compiler/selfhost_cli_core_entry.vibe}"
+ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/vibe/compiler/selfhost_cli_support.vibe}"
 STAGE_TIMEOUT_SEC="${VIBE_SELFHOST_CLI_CORE_STAGE_TIMEOUT_SEC:-300}"
 STAGE1_CORE_WASM="$OUT_DIR/index_stage1.wasm"
 INPUT_SOURCE="$OUT_DIR/core_env_input.vibe"
@@ -123,7 +123,12 @@ EOF
 export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
 
 run_stage "stage1 core artifact -> sample wasm compile" \
-  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" "$STAGE1_CORE_WASM" "${INPUT_SOURCE#$PROJECT_ROOT/}" "${OUTPUT_WASM#$PROJECT_ROOT/}" "$ENTRY_NAME" || exit $?
+  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+    --invoke cli_main \
+    "$STAGE1_CORE_WASM" \
+    "${INPUT_SOURCE#$PROJECT_ROOT/}" \
+    "${OUTPUT_WASM#$PROJECT_ROOT/}" \
+    "$ENTRY_NAME" || exit $?
 
 unset VIBE_PREOPEN_DIR
 
@@ -164,6 +169,7 @@ EOF
 
 run_stage "stage1 core artifact -> linked debug wasm compile" \
   bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+  --invoke cli_main \
   "$STAGE1_CORE_WASM" \
   "${DEBUG_MAIN_SOURCE#$PROJECT_ROOT/}" \
   "${DEBUG_OUTPUT_WASM#$PROJECT_ROOT/}" \
@@ -210,6 +216,7 @@ EOF
 
 run_stage "stage1 core artifact -> linked debug string wasm compile" \
   bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+  --invoke cli_main \
   "$STAGE1_CORE_WASM" \
   "${DEBUG_STRING_MAIN_SOURCE#$PROJECT_ROOT/}" \
   "${DEBUG_STRING_OUTPUT_WASM#$PROJECT_ROOT/}" \

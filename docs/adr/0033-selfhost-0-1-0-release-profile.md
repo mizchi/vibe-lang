@@ -30,7 +30,7 @@ single-file core compiler wasm とする。
 - canonical artifact:
   `_build/dist/selfhost_compiler.wasm`
 - canonical entry:
-  `vibe/compiler/selfhost_cli_core_entry.vibe`
+  `vibe/compiler/selfhost_cli_support.vibe`
 - canonical build path:
   `just build-selfhost-dist`
 

@@ -2,7 +2,7 @@
 # Build distributable selfhost compiler WASM.
 #
 # Pipeline:
-#   1. MoonBit host compiles selfhost_cli_core_entry.vibe → stage1.wasm (host-compiled)
+#   1. MoonBit host compiles selfhost_cli_support.vibe → stage1.wasm (host-compiled)
 #   2. (optional) wasm-opt -O3 on stage1 → stage1_opt.wasm
 #   3. Validates output: compiles a sample program and runs it (answer=42)
 #
@@ -13,13 +13,13 @@
 # Env:
 #   VIBE_DIST_SKIP_OPT=1   — skip wasm-opt step
 #   VIBE_DIST_OPT_LEVEL    — wasm-opt level (default: -O3)
-#   VIBE_DIST_ENTRY_PATH   — entry file (default: selfhost_cli_core_entry.vibe)
+#   VIBE_DIST_ENTRY_PATH   — entry file (default: selfhost_cli_support.vibe)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 DIST_DIR="$PROJECT_ROOT/_build/dist"
-ENTRY_PATH="${VIBE_DIST_ENTRY_PATH:-$PROJECT_ROOT/vibe/compiler/selfhost_cli_core_entry.vibe}"
+ENTRY_PATH="${VIBE_DIST_ENTRY_PATH:-$PROJECT_ROOT/vibe/compiler/selfhost_cli_support.vibe}"
 OPT_LEVEL="${VIBE_DIST_OPT_LEVEL:--O3}"
 SKIP_OPT="${VIBE_DIST_SKIP_OPT:-0}"
 
@@ -54,13 +54,17 @@ if [ "$SKIP_OPT" = "1" ]; then
   echo "[dist] wasm-opt: skipped"
 elif command -v wasm-opt >/dev/null 2>&1; then
   echo "[dist] wasm-opt $OPT_LEVEL"
-  wasm-opt "$OPT_LEVEL" \
+  if wasm-opt "$OPT_LEVEL" \
     --enable-bulk-memory \
     --enable-multivalue \
     --enable-exception-handling \
-    "$RAW_WASM" -o "$DIST_WASM"
-  opt_size=$(wc -c < "$DIST_WASM")
-  echo "[dist] optimized: $opt_size bytes ($(echo "scale=0; $opt_size / 1024" | bc) KB, -$(echo "scale=0; ($raw_size - $opt_size) * 100 / $raw_size" | bc)%)"
+    "$RAW_WASM" -o "$DIST_WASM"; then
+    opt_size=$(wc -c < "$DIST_WASM")
+    echo "[dist] optimized: $opt_size bytes ($(echo "scale=0; $opt_size / 1024" | bc) KB, -$(echo "scale=0; ($raw_size - $opt_size) * 100 / $raw_size" | bc)%)"
+  else
+    echo "[dist] wasm-opt failed, using raw output" >&2
+    cp "$RAW_WASM" "$DIST_WASM"
+  fi
 else
   echo "[dist] wasm-opt not found, using raw output" >&2
   cp "$RAW_WASM" "$DIST_WASM"
@@ -77,6 +81,7 @@ VIBE
 
 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
   bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+    --invoke cli_main \
     "$DIST_WASM" \
     "${SAMPLE_DIR#$PROJECT_ROOT/}/sample.vibe" \
     "${SAMPLE_DIR#$PROJECT_ROOT/}/sample.wasm" \
