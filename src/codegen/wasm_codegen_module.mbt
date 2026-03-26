@@ -1711,11 +1711,6 @@ priv enum StaticFoldValue {
   Record(fields~ : Array[StaticFoldNamedField])
   Map(fields~ : Array[StaticFoldNamedField])
   Ctor(name~ : String, args~ : Array[StaticFoldValue])
-  Closure(
-    params~ : Array[@core.FuncParam],
-    body~ : @core.Module,
-    env~ : Map[String, StaticFoldValue]
-  )
 }
 
 ///|
@@ -1916,7 +1911,7 @@ fn static_fold_render_value(
           None => None
         }
       }
-    StaticFoldValue::Closure(..) => None
+    // No other variants to convert
   }
 }
 
@@ -2109,6 +2104,27 @@ fn static_fold_match_pat(
       }
       false
     }
+    @core.Pat::Record(fields~, ..) =>
+      match value {
+        StaticFoldValue::Record(fields=value_fields) => {
+          let value_map : Map[String, StaticFoldValue] = {}
+          for vf in value_fields {
+            value_map[vf.name] = vf.value
+          }
+          let mut ok = true
+          for pf in fields {
+            match value_map.get(pf.name) {
+              Some(vv) =>
+                if not(static_fold_match_pat(pf.pat, vv, bindings)) {
+                  ok = false
+                }
+              None => ok = false
+            }
+          }
+          ok
+        }
+        _ => false
+      }
     _ => false
   }
 }
@@ -2209,10 +2225,7 @@ fn static_fold_eval_expr(
       }
       Some(StaticFoldValue::Map(fields=values))
     }
-    @core.Expr::Fn(params~, body~, ..) =>
-      Some(
-        StaticFoldValue::Closure(params~, body~, env=static_fold_clone_env(env)),
-      )
+    @core.Expr::Fn(..) => None
     @core.Expr::Block(body~, ..) => static_fold_eval_block(body, env)
     @core.Expr::If(cond~, then_body~, else_body~, ..) =>
       match static_fold_eval_expr(cond, env) {
@@ -2274,20 +2287,7 @@ fn static_fold_eval_expr(
       } else {
         match static_fold_builtin_call(name, values) {
           Some(value) => Some(value)
-          None =>
-            match env.get(name) {
-              Some(StaticFoldValue::Closure(params~, body~, env=closure_env)) =>
-                if params.length() != values.length() {
-                  None
-                } else {
-                  let call_env = static_fold_clone_env(closure_env)
-                  for i in 0..<params.length() {
-                    call_env[params[i].name] = values[i]
-                  }
-                  static_fold_eval_block(body, call_env)
-                }
-              _ => None
-            }
+          None => None
         }
       }
     }
@@ -2903,9 +2903,14 @@ fn emit_module_with_coverage(
 ) -> WasmCoverageArtifact raise WasmGenError {
   // Pre-process: strip type-assertion identity blocks so that
   // collect_func_defs doesn't create dead identity stub functions.
-  let ast = strip_unused_thin_prelude_builtin_wrappers(
-    static_fold_module(strip_type_assert_module(ast)),
-  )
+  // Skip static folding when coverage is enabled to preserve counter globals.
+  let ast = if ctx.coverage_enabled {
+    strip_type_assert_module(ast)
+  } else {
+    strip_unused_thin_prelude_builtin_wrappers(
+      static_fold_module(strip_type_assert_module(ast)),
+    )
+  }
   // Collect exported function names
   for stmt in ast.stmts {
     match stmt {
