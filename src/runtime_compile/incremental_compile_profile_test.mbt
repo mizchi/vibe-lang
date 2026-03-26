@@ -87,9 +87,7 @@ test "incremental compile profile short" {
 
 ///|
 test "incremental compile profile medium" {
-  let (cold, hot) = profiled_compile_pair(
-    "vibe/compiler/builtins_type_test.vibe",
-  )
+  let (cold, hot) = profiled_compile_pair("examples/base64.vibe")
   print_profile_summary("medium", cold, hot)
   assert_true(hot.total_us < cold.total_us)
   assert_true(hot.module_us < cold.module_us)
