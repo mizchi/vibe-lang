@@ -4004,3 +4004,250 @@ test "compiled repl hoists import entered after prior binding" {
   wbtest_remove_if_exists(source_path)
   wbtest_remove_if_exists(root)
 }
+
+///|
+test "cli --allow-all flag parses to unrestricted permissions" {
+  let parsed = parse_cli_runtime_args(["--allow-all", "main.vibe"], "run")
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.cmd_args, ["main.vibe"])
+      match opts.permissions {
+        Some(caps) => {
+          assert_true(caps.can_read("/any/path"))
+          assert_true(caps.can_write("/any/path"))
+          assert_true(caps.can_connect("any.host", 443))
+          assert_true(caps.can_read_env("HOME"))
+          assert_true(caps.can_spawn("sh"))
+        }
+        None => fail("expected permissions to be set")
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli --allow-fs flag grants full filesystem" {
+  let parsed = parse_cli_runtime_args(["--allow-fs", "main.vibe"], "run")
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.cmd_args, ["main.vibe"])
+      match opts.permissions {
+        Some(caps) => {
+          assert_true(caps.can_read("/etc/passwd"))
+          assert_true(caps.can_write("/tmp/test"))
+          assert_false(caps.can_connect("any.host", 443))
+          assert_false(caps.can_read_env("HOME"))
+        }
+        None => fail("expected permissions to be set")
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli --allow-fs=read flag grants read-only filesystem" {
+  let parsed = parse_cli_runtime_args(["--allow-fs=read", "main.vibe"], "run")
+  match parsed {
+    Ok(opts) =>
+      match opts.permissions {
+        Some(caps) => {
+          assert_true(caps.can_read("/etc/passwd"))
+          assert_false(caps.can_write("/tmp/test"))
+        }
+        None => fail("expected permissions to be set")
+      }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli --allow-fs=path grants path-scoped filesystem" {
+  let parsed = parse_cli_runtime_args(
+    ["--allow-fs=/tmp,/data", "main.vibe"],
+    "run",
+  )
+  match parsed {
+    Ok(opts) =>
+      match opts.permissions {
+        Some(caps) => {
+          assert_true(caps.can_read("/tmp/test.txt"))
+          assert_true(caps.can_write("/tmp/test.txt"))
+          assert_true(caps.can_read("/data/db"))
+          assert_false(caps.can_read("/etc/passwd"))
+        }
+        None => fail("expected permissions to be set")
+      }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli --allow-net flag grants full network" {
+  let parsed = parse_cli_runtime_args(["--allow-net", "main.vibe"], "run")
+  match parsed {
+    Ok(opts) =>
+      match opts.permissions {
+        Some(caps) => {
+          assert_true(caps.can_connect("any.host", 443))
+          assert_true(caps.can_listen(8080))
+          assert_false(caps.can_read("/etc/passwd"))
+        }
+        None => fail("expected permissions to be set")
+      }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli --allow-net=host grants host-scoped network" {
+  let parsed = parse_cli_runtime_args(
+    ["--allow-net=api.example.com,cdn.example.com", "main.vibe"],
+    "run",
+  )
+  match parsed {
+    Ok(opts) =>
+      match opts.permissions {
+        Some(caps) => {
+          assert_true(caps.can_connect("api.example.com", 443))
+          assert_true(caps.can_connect("cdn.example.com", 80))
+          assert_false(caps.can_connect("evil.com", 443))
+          assert_false(caps.can_listen(8080))
+        }
+        None => fail("expected permissions to be set")
+      }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli --allow-env flag grants environment access" {
+  let parsed = parse_cli_runtime_args(["--allow-env", "main.vibe"], "run")
+  match parsed {
+    Ok(opts) =>
+      match opts.permissions {
+        Some(caps) => {
+          assert_true(caps.can_read_env("HOME"))
+          assert_true(caps.can_read_env("PATH"))
+        }
+        None => fail("expected permissions to be set")
+      }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli --allow-env=vars grants specific env vars" {
+  let parsed = parse_cli_runtime_args(
+    ["--allow-env=HOME,PATH", "main.vibe"],
+    "run",
+  )
+  match parsed {
+    Ok(opts) =>
+      match opts.permissions {
+        Some(caps) => {
+          assert_true(caps.can_read_env("HOME"))
+          assert_true(caps.can_read_env("PATH"))
+          assert_false(caps.can_read_env("SECRET"))
+        }
+        None => fail("expected permissions to be set")
+      }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli --allow-run flag grants process spawn" {
+  let parsed = parse_cli_runtime_args(["--allow-run", "main.vibe"], "run")
+  match parsed {
+    Ok(opts) =>
+      match opts.permissions {
+        Some(caps) => {
+          assert_true(caps.can_spawn("ls"))
+          assert_true(caps.can_spawn("rm"))
+        }
+        None => fail("expected permissions to be set")
+      }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli --allow-run=cmds grants specific commands" {
+  let parsed = parse_cli_runtime_args(
+    ["--allow-run=ls,cat", "main.vibe"],
+    "run",
+  )
+  match parsed {
+    Ok(opts) =>
+      match opts.permissions {
+        Some(caps) => {
+          assert_true(caps.can_spawn("ls"))
+          assert_true(caps.can_spawn("cat"))
+          assert_false(caps.can_spawn("rm"))
+        }
+        None => fail("expected permissions to be set")
+      }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli no --allow flags gives None permissions" {
+  let parsed = parse_cli_runtime_args(["main.vibe"], "run")
+  match parsed {
+    Ok(opts) =>
+      match opts.permissions {
+        None => ()
+        Some(_) => fail("expected no permissions when no --allow flags")
+      }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli multiple --allow flags combine" {
+  let parsed = parse_cli_runtime_args(
+    [
+      "--allow-fs=read", "--allow-net=api.example.com", "--allow-env=HOME", "main.vibe",
+    ],
+    "run",
+  )
+  match parsed {
+    Ok(opts) =>
+      match opts.permissions {
+        Some(caps) => {
+          assert_true(caps.can_read("/any/path"))
+          assert_false(caps.can_write("/any/path"))
+          assert_true(caps.can_connect("api.example.com", 443))
+          assert_false(caps.can_connect("evil.com", 443))
+          assert_true(caps.can_read_env("HOME"))
+          assert_false(caps.can_read_env("SECRET"))
+        }
+        None => fail("expected permissions to be set")
+      }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli dispatch args propagates permissions" {
+  let parsed = parse_cli_dispatch_args([
+    "vibe", "run", "--allow-fs", "main.vibe",
+  ])
+  match parsed {
+    Ok(v) => {
+      assert_eq(v.cmd, "run")
+      assert_eq(v.cmd_args, ["main.vibe"])
+      match v.permissions {
+        Some(caps) => {
+          assert_true(caps.can_read("/etc/passwd"))
+          assert_true(caps.can_write("/tmp/test"))
+        }
+        None => fail("expected permissions")
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}

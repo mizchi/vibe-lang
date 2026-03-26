@@ -16,7 +16,8 @@ struct CliRuntimeArgs {
   unstable_async : Bool
   unstable_threads : Bool
   enable_llm : Bool
-} derive(Show, Eq)
+  permissions : @capability.CapabilitySet?
+}
 
 ///|
 struct CliDispatchArgs {
@@ -26,7 +27,8 @@ struct CliDispatchArgs {
   unstable_async : Bool
   unstable_threads : Bool
   enable_llm : Bool
-} derive(Show, Eq)
+  permissions : @capability.CapabilitySet?
+}
 
 ///|
 fn parse_cli_syntax_args(
@@ -73,19 +75,152 @@ fn parse_cli_runtime_args(
   let mut unstable_async = false
   let mut unstable_threads = false
   let mut enable_llm = false
+  let allow_flags : Array[String] = []
   for arg in args {
     match arg {
       "--unstable-async" => unstable_async = true
       "--unstable-threads" => unstable_threads = true
       "--llm" => enable_llm = true
-      _ => filtered.push(arg)
+      _ =>
+        if arg == "--allow-all" ||
+          arg == "--allow-fs" ||
+          arg == "--allow-net" ||
+          arg == "--allow-env" ||
+          arg == "--allow-run" ||
+          arg.has_prefix("--allow-fs=") ||
+          arg.has_prefix("--allow-net=") ||
+          arg.has_prefix("--allow-env=") ||
+          arg.has_prefix("--allow-run=") {
+          allow_flags.push(arg)
+        } else {
+          filtered.push(arg)
+        }
     }
+  }
+  let permissions = if allow_flags.length() > 0 {
+    Some(parse_allow_flags_to_caps(allow_flags))
+  } else {
+    None
   }
   match parse_cli_syntax_args(filtered, cmd_name) {
     Ok((syntax_mode, cmd_args)) =>
-      Ok({ syntax_mode, cmd_args, unstable_async, unstable_threads, enable_llm })
+      Ok({
+        syntax_mode,
+        cmd_args,
+        unstable_async,
+        unstable_threads,
+        enable_llm,
+        permissions,
+      })
     Err(err) => Err(err)
   }
+}
+
+///|
+fn split_comma_values(value : String) -> Array[String] {
+  let result : Array[String] = []
+  let buf = StringBuilder::new()
+  for ch in value {
+    if ch == ',' {
+      let s = buf.to_string().trim().to_string()
+      if s.length() > 0 {
+        result.push(s)
+      }
+      buf.reset()
+    } else {
+      buf.write_char(ch)
+    }
+  }
+  let s = buf.to_string().trim().to_string()
+  if s.length() > 0 {
+    result.push(s)
+  }
+  result
+}
+
+///|
+fn extract_flag_value(arg : String, prefix : String) -> String? {
+  if arg.has_prefix(prefix) {
+    let value = arg[prefix.length():].to_string()
+    if value.length() > 0 {
+      Some(value)
+    } else {
+      None
+    }
+  } else {
+    None
+  }
+}
+
+///|
+fn parse_allow_flags_to_caps(
+  flags : Array[String],
+) -> @capability.CapabilitySet {
+  let caps : Array[@capability.Capability] = []
+  let mut has_allow_all = false
+  for flag in flags {
+    if flag == "--allow-all" {
+      has_allow_all = true
+    }
+  }
+  if has_allow_all {
+    return @capability.CapabilitySet::unrestricted()
+  }
+  for flag in flags {
+    if flag == "--allow-fs" {
+      caps.push(@capability.Capability::fs_read("/**"))
+      caps.push(@capability.Capability::fs_write("/**"))
+    } else if flag == "--allow-net" {
+      caps.push(@capability.Capability::net_connect("*", None))
+      caps.push(@capability.Capability::net_listen(0))
+    } else if flag == "--allow-env" {
+      caps.push(@capability.Capability::env_read(["*"]))
+    } else if flag == "--allow-run" {
+      caps.push(@capability.Capability::process_spawn(["*"]))
+    } else {
+      match extract_flag_value(flag, "--allow-fs=") {
+        Some(value) =>
+          if value == "read" {
+            caps.push(@capability.Capability::fs_read("/**"))
+          } else {
+            // Treat value as comma-separated path list
+            let paths = split_comma_values(value)
+            for path in paths {
+              caps.push(@capability.Capability::fs_read(path + "/**"))
+              caps.push(@capability.Capability::fs_write(path + "/**"))
+            }
+          }
+        None => ()
+      }
+      match extract_flag_value(flag, "--allow-net=") {
+        Some(value) => {
+          let hosts = split_comma_values(value)
+          for host in hosts {
+            caps.push(@capability.Capability::net_connect(host, None))
+          }
+        }
+        None => ()
+      }
+      match extract_flag_value(flag, "--allow-env=") {
+        Some(value) => {
+          let vars = split_comma_values(value)
+          caps.push(@capability.Capability::env_read(vars))
+        }
+        None => ()
+      }
+      match extract_flag_value(flag, "--allow-run=") {
+        Some(value) => {
+          let cmds = split_comma_values(value)
+          caps.push(@capability.Capability::process_spawn(cmds))
+        }
+        None => ()
+      }
+    }
+  }
+  // Always grant clock and random for basic usability
+  caps.push(@capability.Capability::clock_read())
+  caps.push(@capability.Capability::random_read())
+  @capability.CapabilitySet::from_array(caps)
 }
 
 ///|
@@ -139,6 +274,7 @@ pub fn parse_cli_dispatch_args(
         unstable_async: cli_args.unstable_async || global_unstable_async,
         unstable_threads: cli_args.unstable_threads || global_unstable_threads,
         enable_llm: cli_args.enable_llm || global_enable_llm,
+        permissions: cli_args.permissions,
       })
     Err(err) => Err(err)
   }

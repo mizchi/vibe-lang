@@ -25,8 +25,16 @@ pub fn run(args : Array[String]) -> Unit {
     parsed.unstable_threads,
   )
   let enable_llm = parsed.enable_llm
+  let permissions = parsed.permissions
   match cmd {
-    "run" => run_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
+    "run" =>
+      run_cmd(
+        cmd_args,
+        syntax_mode,
+        runtime_features,
+        enable_llm~,
+        permissions~,
+      )
     "eval" =>
       abort(
         "eval: command was removed from public CLI; use shell/shell-stdin for interactive evaluation or compile/run workflows",
@@ -226,6 +234,32 @@ fn print_usage() -> Unit {
   )
   println(
     "  llm flags: --llm  enable LLM/RLM capabilities (requires VIBE_LLM_PROVIDER)",
+  )
+  println("")
+  println("  permission flags (run/test):")
+  println(
+    "    --allow-fs                grant full filesystem read/write access",
+  )
+  println("    --allow-fs=read           grant filesystem read-only access")
+  println(
+    "    --allow-fs=/tmp,/data     grant filesystem access to specific paths",
+  )
+  println("    --allow-net               grant full network access")
+  println(
+    "    --allow-net=api.example.com  grant network access to specific hosts",
+  )
+  println(
+    "    --allow-env               grant access to all environment variables",
+  )
+  println(
+    "    --allow-env=HOME,PATH     grant access to specific environment variables",
+  )
+  println("    --allow-run               grant permission to spawn processes")
+  println(
+    "    --allow-run=ls,cat        grant permission to spawn specific commands",
+  )
+  println(
+    "    --allow-all               grant all permissions (development mode)",
   )
 }
 
@@ -1980,8 +2014,10 @@ fn run_cmd(
   _syntax_mode : @runtime.ParserMode,
   _features : @runtime.RuntimeFeatureFlags,
   enable_llm~ : Bool,
+  permissions~ : @capability.CapabilitySet?,
 ) -> Unit {
   let _ = enable_llm
+  let _ = permissions
   if args.length() != 1 {
     abort("run: expected <file>")
   }
