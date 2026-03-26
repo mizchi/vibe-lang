@@ -347,9 +347,8 @@ fn check_ast_without_imports(
   ast : @core.Module,
 ) -> (Array[@core.Diagnostic], Int, Int) {
   let desugared = @frontend.desugar_method_calls(ast, {})
-  let typed : Result[@checker.TypeEnv, @checker.TypeError] = try? @checker.type_check_with_aliases(
+  let typed : Result[@checker.TypeEnv, @checker.TypeError] = try? @checker.type_check(
     desugared,
-    {},
   )
   match typed {
     Ok(_) => {
@@ -829,6 +828,9 @@ fn main {
         println(report_to_human(diagnostics, error_count, warning_count, files))
       } else {
         println(report_to_json(diagnostics, error_count, warning_count, files))
+      }
+      if error_count > 0 {
+        @sys.exit(1)
       }
     }
     CommandMode::Format =>
