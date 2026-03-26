@@ -56,7 +56,12 @@ pub fn run(args : Array[String]) -> Unit {
     "bench-file" => bench_file_cmd(cmd_args, runtime_features)
     "shell" => repl_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
     "shell-stdin" =>
-      repl_stdin_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
+      repl_stdin_cmd(
+        cmd_args,
+        @runtime.ParserMode::PosixMode,
+        runtime_features,
+        enable_llm~,
+      )
     "wasm-shell-stdin" => wasm_repl_stdin_cmd(cmd_args)
     "hash" => hash_cmd(cmd_args)
     "save" => save_cmd(cmd_args)

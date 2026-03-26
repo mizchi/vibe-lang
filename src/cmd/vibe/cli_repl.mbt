@@ -8,7 +8,7 @@ fn repl_cmd(
 ) -> Unit {
   let mut tui_mode = false
   let mut ai_mode = false
-  let mut posix_mode = false
+  let mut posix_mode = true // default: posix mode (shell commands available)
   let sub_args : Array[String] = []
   let mut i = 0
   while i < args.length() {
@@ -25,6 +25,10 @@ fn repl_cmd(
         posix_mode = true
         i += 1
       }
+      "--no-posix" => {
+        posix_mode = false
+        i += 1
+      }
       _ => {
         sub_args.push(args[i])
         i += 1
@@ -36,12 +40,10 @@ fn repl_cmd(
   } else {
     @runtime.ParserMode::VibeMode
   }
-  if posix_mode {
-    match permissions {
-      Some(_) =>
-        println("posix: sandbox permissions active")
-      None => ()
-    }
+  match permissions {
+    Some(_) =>
+      println("shell: sandbox permissions active")
+    None => ()
   }
   if ai_mode {
     repl_ai_cmd(sub_args, syntax_mode, features, enable_llm~)
