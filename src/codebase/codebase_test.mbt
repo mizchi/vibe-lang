@@ -1,6 +1,8 @@
 ///|
 fn make_temp_dir(prefix : String) -> String {
-  let tmp_root = "/var/tmp/vibe_codebase_test"
+  let tmp_root = @vibe_fs.normalize_path(
+    @io.current_dir_or_root() + "/.tmp/codebase_test",
+  )
   if not(@os_fs.path_exists(tmp_root)) {
     @os_fs.create_dir(tmp_root) catch {
       e => abort("create temp root failed: " + e.to_string())
@@ -552,6 +554,23 @@ test "codebase load_lock_data reads from index.lock" {
   match loaded.path_refs.get(entry_norm) {
     Some(hash) => assert_eq(hash, "from_lock")
     None => fail("expected path ref from index.lock")
+  }
+  remove_if_exists(root)
+}
+
+///|
+test "codebase load_lock_data invalid JSON suggests regeneration" {
+  let root = make_temp_dir("load_lock_invalid_json")
+  let entry = root + "/main.vibe"
+  let lock_path = lock_file_path(entry)
+  write_file(lock_path, "{\"path\":{},\"version\":{},\"symbol\":{}}}}")
+  match load_lock_data(lock_path) {
+    Ok(_) => fail("expected invalid JSON error")
+    Err(err) => {
+      assert_true(err.contains("invalid JSON"))
+      assert_true(err.contains(lock_path))
+      assert_true(err.contains("vibe update-lock <entry>"))
+    }
   }
   remove_if_exists(root)
 }
