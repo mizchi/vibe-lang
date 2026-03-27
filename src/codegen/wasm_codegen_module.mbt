@@ -3455,9 +3455,11 @@ fn emit_module_with_coverage(
   if ctx.exported_fn_env_globals.length() > 0 {
     let mut env_global_idx = (if ctx.use_heap_global { 1 } else { 0 }) +
       (if ctx.need_stack_switching { 1 } else { 0 }) +
+      (if ctx.need_effect_resume { 3 } else { 0 }) +
       (if ctx.coverage_enabled { 2 } else { 0 }) +
       (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 }) +
-      (if ctx.need_socket { 1 } else { 0 })
+      (if ctx.need_socket { 1 } else { 0 }) +
+      (if ctx.enable_rc { 1 } else { 0 })
     for name, _ in ctx.exported_fn_env_globals {
       ctx.exported_fn_env_globals[name] = env_global_idx
       env_global_idx = env_global_idx + 1
