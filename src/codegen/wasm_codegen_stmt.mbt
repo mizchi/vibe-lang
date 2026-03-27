@@ -712,6 +712,10 @@ fn compile_stmt(
               emit_i64_load(buf, 0)
             }
           } else {
+            // RC: drop old value before overwriting
+            if ctx.enable_rc {
+              emit_rc_drop_i64(ctx, buf, idx)
+            }
             compile_expr(ctx, buf, expr)
             if is_last {
               emit_local_tee(buf, idx)
@@ -1030,6 +1034,7 @@ fn compile_block_expr(
   ctx : CodegenCtx,
   buf : ByteBuf,
   body : @core.Module,
+  emit_rc_stmt_actions? : Bool = false,
 ) -> Unit raise WasmGenError {
   let saved = ctx.locals.copy()
   let saved_kinds = ctx.local_kinds.copy()
@@ -1039,7 +1044,13 @@ fn compile_block_expr(
   } else {
     for i in 0..<len {
       let is_last = i == len - 1
+      if emit_rc_stmt_actions {
+        emit_rc_actions(ctx, buf, ctx.rc_pre_actions, i)
+      }
       compile_stmt(ctx, buf, body.stmts[i], is_last)
+      if emit_rc_stmt_actions {
+        emit_rc_actions(ctx, buf, ctx.rc_post_actions, i)
+      }
     }
   }
   restore_locals(ctx, saved)

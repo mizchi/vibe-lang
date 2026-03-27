@@ -196,14 +196,31 @@ fn emit_heap_alloc(
   size : Int,
   obj_local : Int,
 ) -> Unit {
-  emit_heap_reserve(ctx, buf, size)
-  emit_local_get(buf, ctx.heap_local)
-  emit_local_set(buf, obj_local)
-  emit_local_get(buf, ctx.heap_local)
-  emit_i32_const_raw(buf, size)
-  emit_i32_add(buf)
-  emit_local_set(buf, ctx.heap_local)
-  ctx.heap_synced = false
+  if ctx.enable_rc {
+    // Allocate size + 4 bytes: [rc_count(4)][object(size)]
+    // obj_local points past the RC field so all field offsets are unchanged
+    let total_size = size + rc_header_extra
+    emit_heap_reserve(ctx, buf, total_size)
+    emit_local_get(buf, ctx.heap_local)
+    emit_i32_const_raw(buf, rc_header_extra)
+    emit_i32_add(buf)
+    emit_local_set(buf, obj_local)
+    emit_local_get(buf, ctx.heap_local)
+    emit_i32_const_raw(buf, total_size)
+    emit_i32_add(buf)
+    emit_local_set(buf, ctx.heap_local)
+    ctx.heap_synced = false
+    emit_rc_init(buf, obj_local)
+  } else {
+    emit_heap_reserve(ctx, buf, size)
+    emit_local_get(buf, ctx.heap_local)
+    emit_local_set(buf, obj_local)
+    emit_local_get(buf, ctx.heap_local)
+    emit_i32_const_raw(buf, size)
+    emit_i32_add(buf)
+    emit_local_set(buf, ctx.heap_local)
+    ctx.heap_synced = false
+  }
 }
 
 ///|
@@ -269,14 +286,28 @@ fn emit_heap_alloc_local(
   size_local : Int,
   obj_local : Int,
 ) -> Unit {
+  if ctx.enable_rc {
+    // Add rc_header_extra to size_local for the prepended RC field
+    emit_local_get(buf, size_local)
+    emit_i32_const_raw(buf, rc_header_extra)
+    emit_i32_add(buf)
+    emit_local_set(buf, size_local)
+  }
   emit_heap_reserve_local(ctx, buf, size_local)
   emit_local_get(buf, ctx.heap_local)
+  if ctx.enable_rc {
+    emit_i32_const_raw(buf, rc_header_extra)
+    emit_i32_add(buf)
+  }
   emit_local_set(buf, obj_local)
   emit_local_get(buf, ctx.heap_local)
   emit_local_get(buf, size_local)
   emit_i32_add(buf)
   emit_local_set(buf, ctx.heap_local)
   ctx.heap_synced = false
+  if ctx.enable_rc {
+    emit_rc_init(buf, obj_local)
+  }
 }
 
 ///|
@@ -523,6 +554,7 @@ fn compile_func_body(
   need_heap : Bool,
   prelude : Array[Byte],
   multivalue_kinds? : Array[ValueKind]? = None,
+  emit_rc_stmt_actions? : Bool = false,
 ) -> Array[Byte] raise WasmGenError {
   let instr = ByteBuf::new()
   if multivalue_kinds is None &&
@@ -550,7 +582,7 @@ fn compile_func_body(
   }
   match multivalue_kinds {
     Some(kinds) => compile_block_multivalue(ctx, instr, ast, kinds)
-    None => compile_block_expr(ctx, instr, ast)
+    None => compile_block_expr(ctx, instr, ast, emit_rc_stmt_actions~)
   }
   ctx.is_tail_position = false
   if ctx.need_heap && ctx.use_heap_global {
@@ -598,6 +630,7 @@ fn compile_function(
   capture_kinds : Array[ValueKind],
   with_env : Bool,
   capture_is_ref_cell? : Array[Bool] = [],
+  emit_rc_stmt_actions? : Bool = false,
 ) -> WasmFunc raise WasmGenError {
   let saved_locals = ctx.locals
   let saved_kinds = ctx.local_kinds
@@ -789,6 +822,7 @@ fn compile_function(
     need_heap,
     prelude.to_array(),
     multivalue_kinds=mv_kinds,
+    emit_rc_stmt_actions~,
   )
   let locals = ctx.local_types
   let params_with_env : Array[ValueKind] = []

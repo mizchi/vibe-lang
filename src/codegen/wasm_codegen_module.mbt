@@ -3558,6 +3558,7 @@ fn emit_module_with_coverage(
       [],
       [],
       false,
+      emit_rc_stmt_actions=ctx.enable_rc,
     ),
   )
   @profiler.profiler_leave()
@@ -3602,6 +3603,12 @@ pub fn emit_module_wasm_with_options(
     library_mode=options.library_mode,
   )
   ctx.linked_fn_imports_list = options.linked_imports
+  if options.enable_rc {
+    ctx.enable_rc = true
+    let (pre, post) = build_rc_action_maps(options.rc_actions)
+    ctx.rc_pre_actions = pre
+    ctx.rc_post_actions = post
+  }
   emit_module(ctx, ast)
 }
 

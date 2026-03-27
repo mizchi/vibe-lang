@@ -16,6 +16,7 @@ pub using @frontend {
   type PerceusAction,
   type PerceusActionKind,
   build_perceus_plan_poc,
+  build_perceus_plan,
   perceus_action_debug_string,
 }
 

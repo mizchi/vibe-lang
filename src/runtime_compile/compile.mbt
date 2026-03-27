@@ -311,6 +311,43 @@ fn wasm_emit_options(
 }
 
 ///|
+/// Convert PerceusAction array to the (site, is_dup, name) tuples expected by codegen.
+fn perceus_actions_to_tuples(
+  actions : Array[@frontend.PerceusAction],
+) -> Array[(String, Bool, String)] {
+  let result : Array[(String, Bool, String)] = []
+  for action in actions {
+    let is_dup = match action.kind {
+      Dup => true
+      Drop => false
+    }
+    result.push((action.site, is_dup, action.name))
+  }
+  result
+}
+
+///|
+/// Run Perceus analysis on an AST and return RC-enabled emit options.
+fn wasm_emit_options_with_rc(
+  ast : @core.Module,
+  debug_errors? : Bool = false,
+  http_host_imports? : Bool = false,
+  http_component_wasi_shim? : Bool = false,
+  fs_host_imports? : Bool = false,
+) -> @codegen.WasmEmitOptions {
+  let plan = @frontend.build_perceus_plan(ast)
+  let rc_actions = perceus_actions_to_tuples(plan)
+  @codegen.wasm_emit_options(
+    embed_error_strings=debug_errors,
+    http_host_imports~,
+    http_component_wasi_shim~,
+    fs_host_imports~,
+    enable_rc=true,
+    rc_actions~,
+  )
+}
+
+///|
 fn compile_module_wasm_coverage_with(
   db : @runtime.VibeDb,
   path : String,
