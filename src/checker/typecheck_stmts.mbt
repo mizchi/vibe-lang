@@ -483,7 +483,9 @@ fn type_check_stmts(
                 let refs : Map[String, Bool] = {}
                 let bound = @core.WalkerScope::new()
                 @core.walk_expr_refs(expr, bound, refs, fn(n, b, r) {
-                  if not(b.contains(n)) { r[n] = true }
+                  if not(b.contains(n)) {
+                    r[n] = true
+                  }
                 })
                 refs.contains(name)
               } else {
@@ -492,8 +494,8 @@ fn type_check_stmts(
               if all_annotated && not(self_refs) {
                 let inferred_ret = fresh_type_var(env)
                 let result : Result[TypeScheme, TypeError] = try? build_forward_fn_scheme(
-                  env, type_params, type_bounds, params, inferred_ret,
-                  fn_effects, fn_span,
+                  env, type_params, type_bounds, params, inferred_ret, fn_effects,
+                  fn_span,
                 )
                 match result {
                   Ok(scheme) => {
