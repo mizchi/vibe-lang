@@ -10,8 +10,31 @@ import .. / core {
 
 //# Functions
 
+let parse_int_unwrap = (raw: String, fallback: Int) -> Int {
+  let len = String::length(raw)
+  if len == 0 { fallback }
+  else {
+    let mut result = 0
+    let mut i = 0
+    let mut neg = false
+    let mut valid = true
+    if String::char_code_at(raw, 0) == 45 { neg = true; i = 1 }
+    while i < len {
+      let c = String::char_code_at(raw, i)
+      if c < 48 || c > 57 { valid = false; i = len }
+      else {
+        result = result * 10 + (c - 48)
+        i = i + 1
+      }
+    }
+    if not(valid) { fallback }
+    else if neg { 0 - result }
+    else result
+  }
+}
+
 let serialize_segment = (text: String) -> String {
-  String::concat(__to_string(String::length(text)), String::concat(":", text))
+    String::concat(__to_string(String::length(text)), String::concat(":", text))
 }
 
 let decode_effect_name = (raw: String) -> Option[String] {
@@ -33,10 +56,7 @@ let parse_count_header = (text: String, pos: Int, terminator: Int) -> (Int, Int)
   if i >= len {
     throw("invalid persistent type env payload")
   } else {
-    let parsed = match Int::parse(text[pos: i]) {
-      Some(n) => n,
-      None => throw("invalid persistent type env payload: not a number")
-    }
+    let parsed = parse_int_unwrap(text[pos: i], 0)
     (parsed, i + 1)
   }
 }
@@ -60,10 +80,7 @@ let parse_int_array = (text: String, pos: Int) -> (Array[Int], Int)with { Error 
   let mut cursor = start
   while i < count {
     let (raw, next_cursor) = parse_segment(text, cursor)
-    let parsed_val = match Int::parse(raw) {
-      Some(n) => n,
-      None => throw("invalid persistent type env int array element")
-    }
+    let parsed_val = parse_int_unwrap(raw, 0)
     Array::push(items, parsed_val)
     cursor = next_cursor
     i = i + 1
@@ -107,10 +124,7 @@ let parse_bounds_array = (text: String, pos: Int) -> (Array[(Int, Array[String])
   while i < count {
     let (raw_id, next_cursor) = parse_segment(text, cursor)
     let (bounds, next_cursor2) = parse_string_array(text, next_cursor)
-    let parsed_id = match Int::parse(raw_id) {
-      Some(n) => n,
-      None => throw("invalid persistent type env bounds id")
-    }
+    let parsed_id = parse_int_unwrap(raw_id, 0)
     Array::push(items, (parsed_id, bounds))
     cursor = next_cursor2
     i = i + 1
@@ -162,10 +176,7 @@ let rec parse_cached_type = (source: String, pos: Int) -> (Type, Int)with { Erro
       88 => (CtUnknown, pos + 1),
       86 => {
         let (raw, next_pos) = parse_segment(source, pos + 1)
-        let var_id = match Int::parse(raw) {
-          Some(n) => n,
-          None => throw("invalid persistent type env var id")
-        }
+        let var_id = parse_int_unwrap(raw, 0)
         (CtVar(var_id), next_pos)
       },
       69 => {
