@@ -60,6 +60,10 @@ pub struct WasmEmitOptions {
   /// Linked imports: (wasm_module_name, func_name, param_count, return_count) tuples.
   /// These become wasm function imports instead of inlined definitions.
   linked_imports : Array[(String, String, Int, Int)]
+  /// Enable Perceus RC codegen (experimental).
+  enable_rc : Bool
+  /// Perceus actions: (site, is_dup, name) tuples from analysis.
+  rc_actions : Array[(String, Bool, String)]
 } derive(Show, Eq)
 
 ///|
@@ -71,6 +75,8 @@ pub fn wasm_emit_options(
   force_cabi_realloc? : Bool = false,
   library_mode? : Bool = false,
   linked_imports? : Array[(String, String, Int, Int)] = [],
+  enable_rc? : Bool = false,
+  rc_actions? : Array[(String, Bool, String)] = [],
 ) -> WasmEmitOptions {
   {
     embed_error_strings,
@@ -80,6 +86,8 @@ pub fn wasm_emit_options(
     force_cabi_realloc,
     library_mode,
     linked_imports,
+    enable_rc,
+    rc_actions,
   }
 }
 

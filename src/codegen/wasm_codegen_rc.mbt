@@ -1,4 +1,17 @@
 ///|
+/// Action to emit at a stmt boundary (pre or post).
+pub(all) enum RcStmtActionKind {
+  Dup
+  Drop
+} derive(Show, Eq)
+
+///|
+pub(all) struct RcStmtAction {
+  kind : RcStmtActionKind
+  name : String
+} derive(Show, Eq)
+
+///|
 /// Perceus RC codegen for WASM linear memory backend.
 ///
 /// Object header layout (with RC):
@@ -12,6 +25,14 @@
 ///
 /// For the prototype, "free" is a no-op (bump allocator).
 /// Future: free-list or arena reclamation.
+
+///|
+/// Debug counter for rc_init calls (prototype only).
+pub let rc_init_count : Ref[Int] = Ref::new(0)
+
+///|
+/// Debug counter for rc_action emissions.
+pub let rc_action_count : Ref[Int] = Ref::new(0)
 
 ///|
 /// Offset of the reference count field in the object header.
@@ -36,6 +57,7 @@ pub let rc_header_size : Int = 8
 ///   i32.const 1
 ///   i32.store offset=4   ; rc_count = 1
 fn emit_rc_init(buf : ByteBuf, obj_local : Int) -> Unit {
+  rc_init_count.val += 1
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, 1)
   emit_i32_store(buf, rc_offset)
@@ -139,6 +161,127 @@ fn emit_rc_drop(
   // Future: if new_rc == 0, add ptr to free list
   emit_i32_store(buf, rc_offset)
   emit_end(buf) // end block
+}
+
+///|
+/// Ensure RC temp locals are allocated for this function.
+fn ensure_rc_locals(ctx : CodegenCtx) -> Unit {
+  if ctx.rc_tmp_local < 0 {
+    ctx.rc_tmp_local = alloc_temp_local(ctx) // i32
+    ctx.rc_new_rc_local = alloc_temp_local(ctx) // i32
+  }
+}
+
+///|
+/// Emit RC dup for an i64 local (truncates to i32 internally).
+fn emit_rc_dup_i64(ctx : CodegenCtx, buf : ByteBuf, local_idx : Int) -> Unit {
+  ensure_rc_locals(ctx)
+  // Truncate i64 to i32 into rc_tmp_local, then do dup on that
+  let val32 = alloc_temp_local(ctx)
+  emit_local_get(buf, local_idx)
+  emit_i32_wrap_i64(buf)
+  emit_local_set(buf, val32)
+  emit_rc_dup(buf, val32, ctx.rc_tmp_local)
+}
+
+///|
+/// Emit RC drop for an i64 local (truncates to i32 internally).
+fn emit_rc_drop_i64(ctx : CodegenCtx, buf : ByteBuf, local_idx : Int) -> Unit {
+  ensure_rc_locals(ctx)
+  let val32 = alloc_temp_local(ctx)
+  emit_local_get(buf, local_idx)
+  emit_i32_wrap_i64(buf)
+  emit_local_set(buf, val32)
+  emit_rc_drop(buf, val32, ctx.rc_tmp_local, ctx.rc_new_rc_local)
+}
+
+///|
+/// Emit all RC actions for a given stmt index (pre or post).
+fn emit_rc_actions(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  actions : Map[Int, Array[RcStmtAction]],
+  stmt_idx : Int,
+) -> Unit {
+  match actions.get(stmt_idx) {
+    Some(acts) =>
+      for act in acts {
+        match ctx.locals.get(act.name) {
+          Some(local_idx) => {
+            rc_action_count.val += 1
+            match act.kind {
+              RcStmtActionKind::Dup => emit_rc_dup_i64(ctx, buf, local_idx)
+              RcStmtActionKind::Drop => emit_rc_drop_i64(ctx, buf, local_idx)
+            }
+          }
+          None => ()
+        }
+      }
+    None => ()
+  }
+}
+
+///|
+/// Build RC action maps from raw action tuples (site, is_dup, name).
+/// Called by the pipeline layer which converts from PerceusAction.
+pub fn build_rc_action_maps(
+  actions : Array[(String, Bool, String)],
+) -> (Map[Int, Array[RcStmtAction]], Map[Int, Array[RcStmtAction]]) {
+  let pre : Map[Int, Array[RcStmtAction]] = {}
+  let post : Map[Int, Array[RcStmtAction]] = {}
+  for action in actions {
+    let (site, is_dup, name) = action
+    let kind = if is_dup { RcStmtActionKind::Dup } else { RcStmtActionKind::Drop }
+    let act = RcStmtAction::{ kind, name }
+    let idx = parse_stmt_index(site)
+    if idx < 0 {
+      continue
+    }
+    // old_value drops go to pre-actions (before the stmt)
+    if site.contains(".old_value") {
+      match pre.get(idx) {
+        Some(arr) => arr.push(act)
+        None => pre[idx] = [act]
+      }
+    } else {
+      match post.get(idx) {
+        Some(arr) => arr.push(act)
+        None => post[idx] = [act]
+      }
+    }
+  }
+  (pre, post)
+}
+
+///|
+/// Parse "stmt[N]..." to extract N as Int. Returns -1 on failure.
+fn parse_stmt_index(site : String) -> Int {
+  // Expected format: "stmt[0]...", "stmt[12].old_value", etc.
+  if site.length() < 6 {
+    return -1
+  }
+  // Check prefix "stmt["
+  if not(site.has_prefix("stmt[")) {
+    return -1
+  }
+  let mut i = 5 // skip "stmt["
+  let mut result = 0
+  while i < site.length() {
+    let c = site[i]
+    if c == ']' {
+      break
+    }
+    if c >= '0' && c <= '9' {
+      result = result * 10 + (c.to_int() - '0'.to_int())
+    } else {
+      return -1
+    }
+    i += 1
+  }
+  if i == 5 {
+    return -1
+  }
+  result
 }
 
 ///|

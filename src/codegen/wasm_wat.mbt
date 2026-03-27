@@ -395,12 +395,30 @@ fn parse_instrs(cursor : Cursor) -> Array[Instr] raise WasmWatError {
           ),
         )
       }
+      0x02 => {
+        let block_type = cursor.read_u8()
+        let _ = block_type
+        instrs.push(Instr::Simple("block"))
+      }
+      0x03 => {
+        let block_type = cursor.read_u8()
+        let _ = block_type
+        instrs.push(Instr::Simple("loop"))
+      }
       0x04 => {
         let block_type = cursor.read_u8()
         instrs.push(Instr::If(block_type_name(block_type)))
       }
       0x05 => instrs.push(Instr::Else)
       0x0b => instrs.push(Instr::End)
+      0x0c => {
+        let label = cursor.read_leb_u32()
+        instrs.push(Instr::Simple("br " + label.to_string()))
+      }
+      0x0d => {
+        let label = cursor.read_leb_u32()
+        instrs.push(Instr::Simple("br_if " + label.to_string()))
+      }
       _ => raise WasmWatError::UnsupportedOpcode(op)
     }
   }

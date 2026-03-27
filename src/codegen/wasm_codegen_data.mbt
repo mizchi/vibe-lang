@@ -204,6 +204,10 @@ fn emit_heap_alloc(
   emit_i32_add(buf)
   emit_local_set(buf, ctx.heap_local)
   ctx.heap_synced = false
+  if ctx.enable_rc {
+    // Emit rc_init: set rc_count=1 at offset 4 of the new object
+    emit_rc_init(buf, obj_local)
+  }
 }
 
 ///|
@@ -523,6 +527,7 @@ fn compile_func_body(
   need_heap : Bool,
   prelude : Array[Byte],
   multivalue_kinds? : Array[ValueKind]? = None,
+  emit_rc_stmt_actions? : Bool = false,
 ) -> Array[Byte] raise WasmGenError {
   let instr = ByteBuf::new()
   if multivalue_kinds is None &&
@@ -550,7 +555,7 @@ fn compile_func_body(
   }
   match multivalue_kinds {
     Some(kinds) => compile_block_multivalue(ctx, instr, ast, kinds)
-    None => compile_block_expr(ctx, instr, ast)
+    None => compile_block_expr(ctx, instr, ast, emit_rc_stmt_actions~)
   }
   ctx.is_tail_position = false
   if ctx.need_heap && ctx.use_heap_global {
@@ -598,6 +603,7 @@ fn compile_function(
   capture_kinds : Array[ValueKind],
   with_env : Bool,
   capture_is_ref_cell? : Array[Bool] = [],
+  emit_rc_stmt_actions? : Bool = false,
 ) -> WasmFunc raise WasmGenError {
   let saved_locals = ctx.locals
   let saved_kinds = ctx.local_kinds
@@ -789,6 +795,7 @@ fn compile_function(
     need_heap,
     prelude.to_array(),
     multivalue_kinds=mv_kinds,
+    emit_rc_stmt_actions~,
   )
   let locals = ctx.local_types
   let params_with_env : Array[ValueKind] = []

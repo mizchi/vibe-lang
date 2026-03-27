@@ -135,6 +135,15 @@ priv struct CodegenCtx {
   linked_fn_return_counts : Map[String, Int]
   // Linked imports list: (wasm_module_name, func_name, param_count, return_count)
   mut linked_fn_imports_list : Array[(String, String, Int, Int)]
+  // Perceus RC: enable reference counting codegen
+  mut enable_rc : Bool
+  // Perceus RC: per-stmt actions indexed by site string prefix
+  // Key: "stmt[N]" → Array of actions to emit before/after that stmt
+  mut rc_pre_actions : Map[Int, Array[RcStmtAction]]
+  mut rc_post_actions : Map[Int, Array[RcStmtAction]]
+  // Perceus RC: temp locals for dup/drop operations (allocated per function)
+  mut rc_tmp_local : Int
+  mut rc_new_rc_local : Int
 }
 
 ///|
@@ -278,6 +287,11 @@ fn CodegenCtx::new(
     linked_fn_param_counts: {},
     linked_fn_return_counts: {},
     linked_fn_imports_list: [],
+    enable_rc: false,
+    rc_pre_actions: {},
+    rc_post_actions: {},
+    rc_tmp_local: -1,
+    rc_new_rc_local: -1,
   }
   // Register builtin None as singleton (strings is now initialized)
   let none_offset = ctx.strings.intern_enum_singleton("None", 0)
