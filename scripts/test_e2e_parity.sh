@@ -2,7 +2,7 @@
 # Run E2E parity tests for vibe language features.
 #
 # Usage:
-#   scripts/test_e2e_parity.sh                    # run all tests/e2e/*.vibe
+#   scripts/test_e2e_parity.sh                    # run all examples/*.vibe
 #   scripts/test_e2e_parity.sh file1.vibe ...     # specific files
 #   VIBE_CLI_BIN=/path/to/vibe scripts/test_e2e_parity.sh  # custom binary
 set -euo pipefail
@@ -13,7 +13,7 @@ if [[ -z "${VIBE_CLI_BIN:-}" ]]; then
 fi
 CLI="$VIBE_CLI_BIN"
 TIMEOUT="${VIBE_E2E_TIMEOUT:-30}"
-E2E_DIR="$ROOT_DIR/tests/e2e"
+E2E_DIR="$ROOT_DIR/examples"
 
 pass=0
 fail=0
