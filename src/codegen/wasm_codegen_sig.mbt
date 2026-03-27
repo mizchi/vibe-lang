@@ -333,6 +333,11 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
   if ctx.need_fs && ctx.fs_host_imports {
     count += 16
   }
+  if ctx.need_fs && ctx.fs_host_imports {
+    // Json host imports: json_parse(i64)->i64, json_stringify(i64)->i64
+    // Reuses fs_host_arity1_type (param i64 result i64)
+    count += 2
+  }
   if ctx.need_socket {
     count += 13
   }
@@ -1806,7 +1811,28 @@ fn import_index_after_fs(ctx : CodegenCtx) -> Int {
   if ctx.need_fs && ctx.fs_host_imports {
     idx += 16
   }
+  if ctx.need_fs && ctx.fs_host_imports {
+    // Json host imports: json_parse, json_stringify
+    idx += 2
+  }
   idx
+}
+
+///|
+fn import_index_json_host_parse(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_fs && ctx.fs_host_imports) {
+    raise WasmGenError::BackendLimit(backend="wasm", feature="json host import")
+  }
+  let mut idx = import_index_after_stdin(ctx)
+  if ctx.need_fs && ctx.fs_host_imports {
+    idx += 16
+  }
+  idx
+}
+
+///|
+fn import_index_json_host_stringify(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_json_host_parse(ctx) + 1
 }
 
 ///|

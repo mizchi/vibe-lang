@@ -673,6 +673,8 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     // fs host imports: read_file, exists, stat_token, write_file, write_bytes,
     // readdir, getcwd, chdir, is_dir, is_file, mkdir, mkdir_p, remove, rename, copy, append
     func_import_count += 16
+    // json host imports: json_parse, json_stringify
+    func_import_count += 2
   }
   if ctx.need_socket {
     func_import_count += 13
@@ -860,6 +862,15 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       write_fs_host_import(import_sec, "Fs::rename", fs_host_arity2_type)
       write_fs_host_import(import_sec, "Fs::copy", fs_host_arity2_type)
       write_fs_host_import(import_sec, "Fs::append", fs_host_arity2_type)
+      // Json host imports (reuse fs_host_arity1_type: i64 -> i64)
+      write_name(import_sec, "vibe")
+      write_name(import_sec, "json_parse")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, fs_host_arity1_type)
+      write_name(import_sec, "vibe")
+      write_name(import_sec, "json_stringify")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, fs_host_arity1_type)
     }
     if ctx.need_socket {
       // 1. instance-network
@@ -3112,6 +3123,8 @@ fn emit_module_with_coverage(
     }
     if ctx.need_fs && ctx.fs_host_imports {
       pre_import_count += 16
+      // json host imports: json_parse, json_stringify
+      pre_import_count += 2
     }
     if ctx.need_socket {
       pre_import_count += 13
