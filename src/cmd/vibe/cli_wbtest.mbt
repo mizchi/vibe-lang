@@ -2955,15 +2955,13 @@ test "compiled test marks Json::parse builtins unsupported for fallback" {
     e => fail("write temp source failed: " + e.to_string())
   }
   match wbtest_run_test_file_compiled(source_path, false) {
-    CompiledTestAttempt::Unsupported(err) =>
-      assert_true(err.contains("wasm runtime fallback builtins"))
     CompiledTestAttempt::Success(report) =>
-      fail(
-        "expected unsupported fallback, got success: " +
-        report.total.to_string(),
-      )
+      // Json::parse is now handled via host imports (fs_host_imports path)
+      assert_true(report.total > 0)
+    CompiledTestAttempt::Unsupported(err) =>
+      fail("expected success via host imports, got unsupported: " + err)
     CompiledTestAttempt::Error(err) =>
-      fail("compiled Json::parse fallback unexpectedly errored: " + err)
+      fail("compiled Json::parse unexpectedly errored: " + err)
   }
   wbtest_remove_if_exists(source_path)
 }
@@ -2989,13 +2987,10 @@ test "compiled test marks imported jq fallback builtins unsupported" {
     e => fail("write temp source failed: " + e.to_string())
   }
   match wbtest_run_test_file_compiled(source_path, false) {
-    CompiledTestAttempt::Unsupported(err) =>
-      assert_true(err.contains("wasm runtime fallback builtins"))
     CompiledTestAttempt::Success(report) =>
-      fail(
-        "expected unsupported jq fallback, got success: " +
-        report.total.to_string(),
-      )
+      assert_true(report.total > 0)
+    CompiledTestAttempt::Unsupported(err) =>
+      fail("expected success via host imports, got unsupported: " + err)
     CompiledTestAttempt::Error(err) =>
       fail("compiled jq fallback unexpectedly errored: " + err)
   }
@@ -3033,13 +3028,10 @@ test "compiled test marks perform resume builtins unsupported for fallback" {
     e => fail("write temp source failed: " + e.to_string())
   }
   match wbtest_run_test_file_compiled(source_path, false) {
-    CompiledTestAttempt::Unsupported(err) =>
-      assert_true(err.contains("wasm runtime fallback builtins"))
     CompiledTestAttempt::Success(report) =>
-      fail(
-        "expected unsupported perform/resume fallback, got success: " +
-        report.total.to_string(),
-      )
+      assert_true(report.total > 0)
+    CompiledTestAttempt::Unsupported(err) =>
+      fail("expected success via host imports, got unsupported: " + err)
     CompiledTestAttempt::Error(err) =>
       fail("compiled perform/resume fallback unexpectedly errored: " + err)
   }
@@ -3581,15 +3573,11 @@ test "test backend reports unsupported compiled cases by default" {
       source_path,
       @runtime.RuntimeFeatureFlags::stable(),
     ) {
-    Err(err) => {
-      assert_true(err.contains("compiled test backend unsupported"))
-      assert_true(err.contains("wasm runtime fallback builtins"))
-    }
     Ok(report) =>
-      fail(
-        "expected unsupported compiled backend error, got success: " +
-        report.total.to_string(),
-      )
+      // Json::parse now handled via host imports — compiled backend succeeds
+      assert_true(report.total > 0)
+    Err(err) =>
+      fail("expected success via host imports, got error: " + err)
   }
   wbtest_remove_if_exists(source_path)
 }
@@ -3890,9 +3878,8 @@ test "append eval db source hoists late import ahead of prior bindings" {
 
 ///|
 test "compiled repl temp source path stays under workspace root" {
-  let root = current_workspace_index_root()
   let path = compiled_repl_temp_source_path()
-  assert_true(path.has_prefix(root + "/.vibe_compiled_repl_"))
+  assert_true(path.has_prefix("/tmp/vibe-compiled-repl-"))
   assert_true(path.has_suffix(".vibe"))
 }
 

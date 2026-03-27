@@ -77,7 +77,9 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         | "Fs::append"
         | "Fs::open_write"
         | "Fs::write_chunk"
-        | "Fs::close_write" => {
+        | "Fs::close_write"
+        | "Json::parse"
+        | "Json::stringify" => {
           ctx.need_fs = true
           ctx.need_heap = true
         }

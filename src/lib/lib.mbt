@@ -1343,6 +1343,7 @@ fn value_type_name(value : @core.Value) -> String {
     @core.Value::MapBuilder(_) => "MapBuilder"
     @core.Value::StringBuilder(_) => "StringBuilder"
     @core.Value::Bytes(_) => "Bytes"
+    @core.Value::Set(_) => "Set"
     @core.Value::Fn(_) => "Fn"
   }
 }
