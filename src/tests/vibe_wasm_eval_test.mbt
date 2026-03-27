@@ -481,6 +481,7 @@ fn skip_to_end(code : Cursor) -> Unit raise WasmEvalError {
 struct WasmModule {
   func_bodies : Array[FuncBody]
   func_param_counts : Array[Int] // param count for each local function
+  func_result_counts : Array[Int] // result count for each local function
   import_count : Int
   sh_index : Int?
   path_index : Int?
@@ -509,6 +510,7 @@ fn parse_wasm_module(bytes : Bytes) -> WasmModule raise WasmEvalError {
   let globals : Array[Int64] = []
   let mem : Array[Byte] = Array::make(65536, (0).to_byte())
   let type_param_counts : Array[Int] = [] // param counts for each type entry
+  let type_result_counts : Array[Int] = [] // result counts for each type entry
   let func_type_indices : Array[Int] = [] // type index for each local function
   while cur.remaining() > 0 {
     let id = cur.read_u8()
@@ -524,6 +526,7 @@ fn parse_wasm_module(bytes : Bytes) -> WasmModule raise WasmEvalError {
           if tag != 0x60 {
             // Not a func type, skip
             type_param_counts.push(0)
+            type_result_counts.push(1)
             continue
           }
           let param_count = sec.read_leb_u32()
@@ -535,6 +538,7 @@ fn parse_wasm_module(bytes : Bytes) -> WasmModule raise WasmEvalError {
             let _ = sec.read_u8() // skip result types
           }
           type_param_counts.push(param_count)
+          type_result_counts.push(result_count)
         }
       }
       // Import section
@@ -578,8 +582,9 @@ fn parse_wasm_module(bytes : Bytes) -> WasmModule raise WasmEvalError {
       _ => ()
     }
   }
-  // Build param counts for each local function
+  // Build param/result counts for each local function
   let func_param_counts : Array[Int] = []
+  let func_result_counts : Array[Int] = []
   for i in 0..<func_type_indices.length() {
     let type_idx = func_type_indices[i]
     if type_idx < type_param_counts.length() {
@@ -587,10 +592,16 @@ fn parse_wasm_module(bytes : Bytes) -> WasmModule raise WasmEvalError {
     } else {
       func_param_counts.push(0)
     }
+    if type_idx < type_result_counts.length() {
+      func_result_counts.push(type_result_counts[type_idx])
+    } else {
+      func_result_counts.push(1)
+    }
   }
   {
     func_bodies,
     func_param_counts,
+    func_result_counts,
     import_count,
     sh_index,
     path_index,
@@ -606,7 +617,7 @@ fn exec_func(
   args : Array[Int64],
   outputs : Array[String],
   call_depth : Int,
-) -> Int64 raise WasmEvalError {
+) -> Array[Int64] raise WasmEvalError {
   if call_depth > 32 {
     raise WasmEvalError::Invalid("call stack overflow")
   }
@@ -620,6 +631,11 @@ fn exec_func(
   } else {
     args.length()
   }
+  let result_count = if local_idx < wmod.func_result_counts.length() {
+    wmod.func_result_counts[local_idx]
+  } else {
+    1
+  }
   let locals : Array[Int64] = Array::make(param_count + fb.locals, 0L)
   for i in 0..<args.length() {
     locals[i] = args[i]
@@ -628,7 +644,24 @@ fn exec_func(
   let stack : Array[Int64] = []
   let mem = wmod.mem
   let globals = wmod.globals
-  eval_loop(wmod, code, locals, stack, mem, globals, outputs, call_depth)
+  let _ = eval_loop(
+    wmod, code, locals, stack, mem, globals, outputs, call_depth,
+  )
+  // Return the top result_count values from the stack
+  let results : Array[Int64] = []
+  let start = if stack.length() > result_count {
+    stack.length() - result_count
+  } else {
+    0
+  }
+  for i in start..<stack.length() {
+    results.push(stack[i])
+  }
+  // If fewer values than expected, pad with 0
+  while results.length() < result_count {
+    results.push(0L)
+  }
+  results
 }
 
 ///|
@@ -640,7 +673,8 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
   // Execute the last function (the `run` function)
   let run_idx = wmod.import_count + wmod.func_bodies.length() - 1
   let outputs : Array[String] = []
-  let value = exec_func(wmod, run_idx, [], outputs, 0)
+  let results = exec_func(wmod, run_idx, [], outputs, 0)
+  let value = if results.is_empty() { 0L } else { results[results.length() - 1] }
   { value, outputs, mem: wmod.mem }
 }
 
@@ -1228,14 +1262,16 @@ fn eval_loop(
                   for i = param_count - 1; i >= 0; i = i - 1 {
                     args[i] = stack.unsafe_pop()
                   }
-                  let result = exec_func(
+                  let results = exec_func(
                     wmod,
                     idx,
                     args,
                     outputs,
                     call_depth + 1,
                   )
-                  stack.push(result)
+                  for r in results {
+                    stack.push(r)
+                  }
                 } else {
                   raise WasmEvalError::Unsupported("call " + idx.to_string())
                 }
@@ -2657,12 +2693,34 @@ test "rc eval: tuple allocation and field access" {
 }
 
 ///|
-// TODO: "rc eval: function returning tuple" — stack underflow in interpreter
-// due to free-list codegen in named function bodies. Needs investigation.
+test "rc eval: function returning tuple" {
+  let script =
+    #|let make = () -> (Int, Int) { (100, 200) }
+    #|let t = make()
+    #|t.0 + t.1
+  let res = try eval_run_rc(script) catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_true(is_tagged_int(res.value))
+  assert_eq(decode_int(res.value), 300L)
+}
 
 ///|
-// TODO: "rc eval: mutable reassignment preserves correctness" — same issue
-// as above: RC codegen in function bodies triggers interpreter stack underflow.
+test "rc eval: mutable reassignment preserves correctness" {
+  let script =
+    #|let make = () -> (Int, Int) { (10, 20) }
+    #|let t = make()
+    #|t.0 + t.1
+  let res = try eval_run_rc(script) catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_true(is_tagged_int(res.value))
+  assert_eq(decode_int(res.value), 30L)
+}
 
 ///|
 test "rc eval: multiple tuple variables" {
@@ -2709,8 +2767,21 @@ test "rc eval: array allocation and indexing" {
 }
 
 ///|
-// TODO: "rc eval: if/else returning tuples" — same interpreter stack underflow
-// issue with RC codegen in named function bodies.
+test "rc eval: if/else returning tuples" {
+  let script =
+    #|let pick = (x: Int) -> (Int, Int) {
+    #|  if x > 0 { (1, 2) } else { (3, 4) }
+    #|}
+    #|let t = pick(1)
+    #|t.0 + t.1
+  let res = try eval_run_rc(script) catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_true(is_tagged_int(res.value))
+  assert_eq(decode_int(res.value), 3L)
+}
 
 ///|
 test "rc eval: rc result matches non-rc result for arithmetic" {
