@@ -2257,7 +2257,7 @@ fn compile_call_builtin_pre_user_inner(
         let byte_local = alloc_temp_local(ctx)
         let valid_local = alloc_temp_local(ctx) // validity flag
         let has_digit_local = alloc_temp_local(ctx) // has at least one digit
-        let boxed_f64_local = alloc_temp_local(ctx) // boxed f64 tagged ptr
+        let boxed_f64_local = alloc_temp_local_with_kind(ctx, ValueKind::I64) // boxed f64 tagged ptr (i64)
         let obj_local = alloc_temp_local(ctx) // Option enum heap object
 
         // Untag pointer
@@ -2526,7 +2526,8 @@ fn compile_call_builtin_pre_user_inner(
         emit_i32_store(buf, 4)
         emit_local_get(buf, obj_local)
         emit_local_get(buf, boxed_f64_local)
-        emit_i64_store(buf, 8)
+        emit_i32_wrap_i64(buf)
+        emit_i32_store(buf, 8)
         // Return tagged pointer
         emit_local_get(buf, obj_local)
         emit_i64_extend_i32_u(buf)
