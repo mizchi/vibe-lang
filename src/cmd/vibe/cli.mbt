@@ -3089,12 +3089,8 @@ fn run_test_file_compiled_with_cache(
   }
   let ast = db.ast(entry)
   let detect_ast = @runtime.bundle_for_wasm_no_dce(db, entry, ast)
-  let use_http_host_runner = module_uses_http_builtins(detect_ast)
-  if module_uses_wasm_runtime_fallback_builtins(detect_ast) {
-    return CompiledTestAttempt::Unsupported(
-      "wasm runtime fallback builtins in test module",
-    )
-  }
+  let use_http_host_runner = module_uses_http_builtins(detect_ast) ||
+    module_uses_wasm_runtime_fallback_builtins(detect_ast)
   for stmt in ast.stmts {
     match stmt {
       @vibe_core.Stmt::Test(..) | @vibe_core.Stmt::Bench(..) => ()
