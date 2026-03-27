@@ -26,12 +26,14 @@ test "RC codegen: build_rc_action_maps parses site strings" {
     ("stmt[2].before", true, "z"),
   ]
   let (pre, post) = build_rc_action_maps(actions)
-  // stmt[1].old_value → pre[1]
-  inspect(pre.get(1).map(fn(a) { a.length() }), content="Some(1)")
-  // stmt[0].after → post[0]
-  inspect(post.get(0).map(fn(a) { a.length() }), content="Some(1)")
-  // stmt[2].before → post[2] (not old_value, so it's post)
-  inspect(post.get(2).map(fn(a) { a.length() }), content="Some(1)")
+  let pre_top = pre.get("").unwrap_or({})
+  let post_top = post.get("").unwrap_or({})
+  // stmt[1].old_value → pre[""][1]
+  inspect(pre_top.get(1).map(fn(a) { a.length() }), content="Some(1)")
+  // stmt[0].after → post[""][0]
+  inspect(post_top.get(0).map(fn(a) { a.length() }), content="Some(1)")
+  // stmt[2].before → post[""][2] (not old_value, so it's post)
+  inspect(post_top.get(2).map(fn(a) { a.length() }), content="Some(1)")
 }
 
 ///|
@@ -88,7 +90,8 @@ test "RC codegen: perceus plan actions emit dup/drop at stmt boundaries" {
   let (pre, post) = build_rc_action_maps(rc_actions)
   inspect(pre.length(), content="0")
   inspect(post.length(), content="1")
-  inspect(post.get(1).map(fn(a) { a[0].name }), content="Some(\"x\")")
+  let post_top = post.get("").unwrap_or({})
+  inspect(post_top.get(1).map(fn(a) { a[0].name }), content="Some(\"x\")")
   // Compile with RC + actions
   let options_rc = wasm_emit_options(enable_rc=true, rc_actions~)
   let wasm_rc = emit_module_wasm_with_options(ast, options_rc)
@@ -284,16 +287,33 @@ test "RC codegen: emit_rc_dup generates correct byte sequence" {
 }
 
 ///|
-test "RC codegen: parse_stmt_index extracts correct indices" {
-  assert_eq(parse_stmt_index("stmt[0].after"), 0)
-  assert_eq(parse_stmt_index("stmt[5].before"), 5)
-  assert_eq(parse_stmt_index("stmt[12].old_value"), 12)
-  assert_eq(parse_stmt_index("stmt[100].after"), 100)
+test "RC codegen: parse_site_path extracts prefix and index" {
+  // Top-level: no prefix
+  assert_eq(parse_site_path("stmt[0].after"), ("", 0))
+  assert_eq(parse_site_path("stmt[5].before"), ("", 5))
+  assert_eq(parse_site_path("stmt[12].old_value"), ("", 12))
+  assert_eq(parse_site_path("stmt[100].after"), ("", 100))
+  // Nested: prefix extracted
+  assert_eq(
+    parse_site_path("stmt[2].expr.body.stmt[1].after"),
+    ("stmt[2].expr.body", 1),
+  )
+  assert_eq(
+    parse_site_path("stmt[3].else.stmt[0].old_value"),
+    ("stmt[3].else", 0),
+  )
+  assert_eq(
+    parse_site_path("stmt[0].body.stmt[2].expr.body.stmt[1].after"),
+    ("stmt[0].body.stmt[2].expr.body", 1),
+  )
   // Invalid inputs
-  assert_eq(parse_stmt_index("bad"), -1)
-  assert_eq(parse_stmt_index("stmt"), -1)
-  assert_eq(parse_stmt_index("stmt["), -1)
-  assert_eq(parse_stmt_index("stmt[]"), -1)
+  assert_eq(parse_site_path("bad").1, -1)
+  assert_eq(parse_site_path("stmt").1, -1)
+  assert_eq(parse_site_path("stmt[").1, -1)
+  assert_eq(parse_site_path("stmt[]").1, -1)
+  // Legacy compat
+  assert_eq(parse_stmt_index("stmt[0].after"), 0)
+  assert_eq(parse_stmt_index("stmt[2].expr.body.stmt[3].after"), 3)
 }
 
 ///|
@@ -304,14 +324,16 @@ test "RC codegen: build_rc_action_maps separates old_value into pre-actions" {
     ("stmt[1].before", true, "y"),
   ]
   let (pre, post) = build_rc_action_maps(actions)
+  let pre_top = pre.get("").unwrap_or({})
+  let post_top = post.get("").unwrap_or({})
   // old_value → pre-action
-  inspect(pre.get(0).map(fn(a) { a.length() }), content="Some(1)")
-  inspect(pre.get(0).map(fn(a) { a[0].kind }), content="Some(Drop)")
+  inspect(pre_top.get(0).map(fn(a) { a.length() }), content="Some(1)")
+  inspect(pre_top.get(0).map(fn(a) { a[0].kind }), content="Some(Drop)")
   // after → post-action
-  inspect(post.get(0).map(fn(a) { a.length() }), content="Some(1)")
+  inspect(post_top.get(0).map(fn(a) { a.length() }), content="Some(1)")
   // before (dup) → post-action
-  inspect(post.get(1).map(fn(a) { a.length() }), content="Some(1)")
-  inspect(post.get(1).map(fn(a) { a[0].kind }), content="Some(Dup)")
+  inspect(post_top.get(1).map(fn(a) { a.length() }), content="Some(1)")
+  inspect(post_top.get(1).map(fn(a) { a[0].kind }), content="Some(Dup)")
 }
 
 ///|
@@ -365,11 +387,13 @@ test "RC codegen: build_rc_action_maps groups multiple actions on same stmt" {
     ("stmt[2].old_value", false, "z"),
   ]
   let (pre, post) = build_rc_action_maps(actions)
+  let post_top = post.get("").unwrap_or({})
+  let pre_top = pre.get("").unwrap_or({})
   // Two post actions on stmt 2 (drop x, dup y)
-  inspect(post.get(2).map(fn(a) { a.length() }), content="Some(2)")
+  inspect(post_top.get(2).map(fn(a) { a.length() }), content="Some(2)")
   // One pre action on stmt 2 (old_value drop z)
-  inspect(pre.get(2).map(fn(a) { a.length() }), content="Some(1)")
-  inspect(pre.get(2).map(fn(a) { a[0].name }), content="Some(\"z\")")
+  inspect(pre_top.get(2).map(fn(a) { a.length() }), content="Some(1)")
+  inspect(pre_top.get(2).map(fn(a) { a[0].name }), content="Some(\"z\")")
 }
 
 ///|
@@ -382,7 +406,51 @@ test "RC codegen: build_rc_action_maps skips invalid site strings" {
   // invalid_site should be skipped, only stmt[0] survives
   assert_eq(pre.length(), 0)
   assert_eq(post.length(), 1)
-  inspect(post.get(0).map(fn(a) { a[0].name }), content="Some(\"y\")")
+  let post_top = post.get("").unwrap_or({})
+  inspect(post_top.get(0).map(fn(a) { a[0].name }), content="Some(\"y\")")
+}
+
+///|
+test "RC codegen: build_rc_action_maps handles nested site paths" {
+  let actions : Array[(String, Bool, String)] = [
+    ("stmt[0].after", false, "x"),
+    ("stmt[2].expr.body.stmt[0].after", false, "y"),
+    ("stmt[2].expr.body.stmt[1].old_value", false, "z"),
+    ("stmt[3].else.stmt[0].after", true, "w"),
+  ]
+  let (pre, post) = build_rc_action_maps(actions)
+  // Top-level action
+  let post_top = post.get("").unwrap_or({})
+  inspect(post_top.get(0).map(fn(a) { a[0].name }), content="Some(\"x\")")
+  // Nested body action
+  let post_body = post.get("stmt[2].expr.body").unwrap_or({})
+  inspect(post_body.get(0).map(fn(a) { a[0].name }), content="Some(\"y\")")
+  // Nested old_value → pre
+  let pre_body = pre.get("stmt[2].expr.body").unwrap_or({})
+  inspect(pre_body.get(1).map(fn(a) { a[0].name }), content="Some(\"z\")")
+  // Nested else action
+  let post_else = post.get("stmt[3].else").unwrap_or({})
+  inspect(post_else.get(0).map(fn(a) { a[0].name }), content="Some(\"w\")")
+}
+
+///|
+test "RC codegen: emit_rc_init_dynamic writes size from local" {
+  // Test that dynamic init writes alloc_size from a local (not a constant 0)
+  let buf = ByteBuf::new()
+  let obj_local = 0
+  let size_local = 1
+  emit_rc_init_dynamic(buf, obj_local, size_local)
+  let bytes = buf.to_array()
+  // Should contain local.get for size_local (opcode 32, index 1)
+  let mut found_size_get = false
+  for i = 0; i < bytes.length() - 1; i = i + 1 {
+    if bytes[i].to_int() == 32 && bytes[i + 1].to_int() == 1 {
+      found_size_get = true
+    }
+  }
+  assert_true(found_size_get)
+  // Should NOT contain i32.const 0 for alloc_size (the old bug)
+  // The size is loaded from local, not hardcoded
 }
 
 ///|
@@ -408,4 +476,32 @@ test "RC codegen: two different-size tuples both get RC headers" {
   assert_true(wat.contains("global.get"))
   // Both get rc_init with i32.sub
   assert_true(wat.contains("i32.sub"))
+}
+
+///|
+test "RC codegen: emit_rc_drop_fields generates loop for container fields" {
+  // Verify that emit_rc_drop generates recursive field dropping code
+  // by checking the WAT output contains loop instructions
+  let tuple = @core.Expr::Tuple(items=[wb_int(1), wb_int(2)], span=wb_span())
+  // Mutable reassignment triggers drop of old value → recursive drop
+  let ast = @core.Module::{
+    stmts: [
+      rc_let_mut("x", tuple),
+      rc_assign(
+        "x",
+        @core.Expr::Tuple(items=[wb_int(3), wb_int(4)], span=wb_span()),
+      ),
+      wb_expr(wb_ident("x")),
+    ],
+  }
+  let actions : Array[(String, Bool, String)] = [
+    ("stmt[1].old_value", false, "x"),
+  ]
+  let options = wasm_emit_options(enable_rc=true, rc_actions=actions)
+  let wasm = emit_module_wasm_with_options(ast, options)
+  let wat = wasm_to_wat(wasm)
+  // Recursive drop should generate a loop for field iteration
+  assert_true(wat.contains("loop"))
+  // Should contain i32.ge_s for the loop termination check
+  assert_true(wat.contains("i32.ge_s"))
 }

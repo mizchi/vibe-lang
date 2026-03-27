@@ -1035,9 +1035,14 @@ fn compile_block_expr(
   buf : ByteBuf,
   body : @core.Module,
   emit_rc_stmt_actions? : Bool = false,
+  rc_prefix? : String = "",
 ) -> Unit raise WasmGenError {
   let saved = ctx.locals.copy()
   let saved_kinds = ctx.local_kinds.copy()
+  let saved_prefix = ctx.rc_action_prefix
+  if emit_rc_stmt_actions && rc_prefix.length() > 0 {
+    ctx.rc_action_prefix = rc_prefix
+  }
   let len = body.stmts.length()
   if len == 0 {
     emit_i64_const_tagged(buf, 0L)
@@ -1053,6 +1058,7 @@ fn compile_block_expr(
       }
     }
   }
+  ctx.rc_action_prefix = saved_prefix
   restore_locals(ctx, saved)
   restore_local_kinds(ctx, saved_kinds)
 }

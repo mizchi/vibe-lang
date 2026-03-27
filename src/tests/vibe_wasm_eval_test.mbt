@@ -674,7 +674,11 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
   let run_idx = wmod.import_count + wmod.func_bodies.length() - 1
   let outputs : Array[String] = []
   let results = exec_func(wmod, run_idx, [], outputs, 0)
-  let value = if results.is_empty() { 0L } else { results[results.length() - 1] }
+  let value = if results.is_empty() {
+    0L
+  } else {
+    results[results.length() - 1]
+  }
   { value, outputs, mem: wmod.mem }
 }
 
@@ -2815,4 +2819,22 @@ test "rc eval: rc result matches non-rc result for tuple" {
     r => r
   }
   assert_eq(res_rc.value, res_no_rc.value)
+}
+
+///|
+test "rc eval: mutable tuple reassignment with RC" {
+  let script =
+    #|let f = () -> Int {
+    #|  let mut t = (10, 20)
+    #|  t = (30, 40)
+    #|  t.0 + t.1
+    #|}
+    #|f()
+  let res = try eval_run_rc(script) catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_true(is_tagged_int(res.value))
+  assert_eq(decode_int(res.value), 70L)
 }

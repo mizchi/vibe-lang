@@ -61,6 +61,28 @@ fn emit_rc_init(buf : ByteBuf, obj_local : Int, alloc_size : Int) -> Unit {
 }
 
 ///|
+/// Emit RC initialization with dynamic alloc_size from a local variable.
+/// Used for variable-length allocations where size is computed at runtime.
+fn emit_rc_init_dynamic(
+  buf : ByteBuf,
+  obj_local : Int,
+  size_local : Int,
+) -> Unit {
+  // Write alloc_size at obj_ptr - 8
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, rc_header_extra)
+  emit_i32_sub(buf)
+  emit_local_get(buf, size_local) // dynamic size
+  emit_i32_store(buf, 0)
+  // Write rc_count = 1 at obj_ptr - 4
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_store(buf, 0)
+}
+
+///|
 /// Allocate from free-list or bump allocator.
 /// Scans the free-list for a block with matching alloc_size (exact-fit).
 /// If found, reuse it. Otherwise, bump-allocate.
@@ -236,6 +258,7 @@ fn emit_rc_drop(
   val_local : Int,
   tmp_local : Int,
   new_rc_local : Int,
+  recursive? : Bool = true,
 ) -> Unit {
   // Check if value is a heap object
   emit_local_get(buf, val_local)
@@ -265,10 +288,14 @@ fn emit_rc_drop(
   emit_local_tee(buf, new_rc_local)
   // store new_rc at obj_ptr - 4
   emit_i32_store(buf, 0)
-  // if new_rc == 0: free the block
+  // if new_rc == 0: recursively drop fields, then free the block
   emit_local_get(buf, new_rc_local)
   emit_i32_eqz(buf)
   emit_if(buf)
+  // Recursively drop fields of container types (tuple, record, array)
+  if recursive {
+    emit_rc_drop_fields(ctx, buf, tmp_local)
+  }
   // Tombstone: zero out type_id
   emit_local_get(buf, tmp_local)
   emit_i32_const_raw(buf, 0)
@@ -287,6 +314,92 @@ fn emit_rc_drop(
   }
   emit_end(buf) // end if
   emit_end(buf) // end block
+}
+
+///|
+/// Recursively drop fields of container types (tuple, record, array).
+/// Called when RC reaches 0, before tombstone/free-list.
+/// obj_local holds the obj_ptr (pointing to type_id).
+///
+/// For tuples (type_id=3), records (type_id=4), arrays (type_id=5):
+///   length = load(obj_ptr + 4)
+///   for i = 0..length: rc_drop(load(obj_ptr + 8 + i*4))
+///
+/// Each field is an i32 tagged value. Only fields with tag_obj are dropped.
+///
+/// Note: closures (type_id=7) store i64 captures at 8-byte stride without
+/// a length field, so they are NOT handled here. Closure capture drops
+/// require per-closure-type codegen (future work).
+fn emit_rc_drop_fields(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  obj_local : Int,
+) -> Unit {
+  let type_id_local = alloc_temp_local(ctx)
+  let len_local = alloc_temp_local(ctx)
+  let idx_local = alloc_temp_local(ctx)
+  let field_val_local = alloc_temp_local(ctx)
+  let field_tmp_local = alloc_temp_local(ctx)
+  let field_rc_local = alloc_temp_local(ctx)
+  // type_id = load(obj_ptr + 0)
+  emit_local_get(buf, obj_local)
+  emit_i32_load(buf, 0)
+  emit_local_set(buf, type_id_local)
+  // Check if container type: tuple(3), record(4), or array(5)
+  // type_id >= 3 && type_id <= 5
+  emit_local_get(buf, type_id_local)
+  emit_i32_const_raw(buf, 3)
+  emit_i32_lt_s(buf)
+  // if type_id < 3: skip
+  emit_block(buf)
+  emit_br_if(buf, 0)
+  emit_local_get(buf, type_id_local)
+  emit_i32_const_raw(buf, 5)
+  emit_i32_gt_s(buf)
+  // if type_id > 5: skip
+  emit_br_if(buf, 0)
+  // length = load(obj_ptr + 4)
+  emit_local_get(buf, obj_local)
+  emit_i32_load(buf, 4)
+  emit_local_set(buf, len_local)
+  // idx = 0
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, idx_local)
+  // loop: while idx < length
+  emit_block(buf) // block $break
+  emit_loop(buf) // loop $continue
+  // br_if $break if idx >= length
+  emit_local_get(buf, idx_local)
+  emit_local_get(buf, len_local)
+  emit_i32_ge_s(buf)
+  emit_br_if(buf, 1) // br to $break (2 levels: loop=0, block=1)
+  // field_val = load(obj_ptr + 8 + idx * 4)
+  emit_local_get(buf, obj_local)
+  emit_local_get(buf, idx_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i32_load(buf, 8) // offset 8 + idx*4 via dynamic base + static 8
+  emit_local_set(buf, field_val_local)
+  // rc_drop the field value (non-recursive to avoid codegen infinite loop)
+  emit_rc_drop(
+    ctx,
+    buf,
+    field_val_local,
+    field_tmp_local,
+    field_rc_local,
+    recursive=false,
+  )
+  // idx += 1
+  emit_local_get(buf, idx_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, idx_local)
+  // br $continue
+  emit_br(buf, 0)
+  emit_end(buf) // end loop
+  emit_end(buf) // end block
+  emit_end(buf) // end outer block (skip target)
 }
 
 ///|
@@ -326,10 +439,14 @@ fn emit_rc_drop_i64(ctx : CodegenCtx, buf : ByteBuf, local_idx : Int) -> Unit {
 fn emit_rc_actions(
   ctx : CodegenCtx,
   buf : ByteBuf,
-  actions : Map[Int, Array[RcStmtAction]],
+  actions : Map[String, Map[Int, Array[RcStmtAction]]],
   stmt_idx : Int,
 ) -> Unit {
-  match actions.get(stmt_idx) {
+  let prefix_map = match actions.get(ctx.rc_action_prefix) {
+    Some(m) => m
+    None => return
+  }
+  match prefix_map.get(stmt_idx) {
     Some(acts) =>
       for act in acts {
         match ctx.locals.get(act.name) {
@@ -348,11 +465,17 @@ fn emit_rc_actions(
 ///|
 /// Build RC action maps from raw action tuples (site, is_dup, name).
 /// Called by the pipeline layer which converts from PerceusAction.
+///
+/// Returns prefix-keyed maps: Map[prefix, Map[stmt_idx, actions]].
+/// prefix="" for top-level, "stmt[2].expr.body" for nested blocks, etc.
 pub fn build_rc_action_maps(
   actions : Array[(String, Bool, String)],
-) -> (Map[Int, Array[RcStmtAction]], Map[Int, Array[RcStmtAction]]) {
-  let pre : Map[Int, Array[RcStmtAction]] = {}
-  let post : Map[Int, Array[RcStmtAction]] = {}
+) -> (
+  Map[String, Map[Int, Array[RcStmtAction]]],
+  Map[String, Map[Int, Array[RcStmtAction]]],
+) {
+  let pre : Map[String, Map[Int, Array[RcStmtAction]]] = {}
+  let post : Map[String, Map[Int, Array[RcStmtAction]]] = {}
   for action in actions {
     let (site, is_dup, name) = action
     let kind = if is_dup {
@@ -361,20 +484,36 @@ pub fn build_rc_action_maps(
       RcStmtActionKind::Drop
     }
     let act = RcStmtAction::{ kind, name }
-    let idx = parse_stmt_index(site)
+    let (prefix, idx) = parse_site_path(site)
     if idx < 0 {
       continue
     }
     // old_value drops go to pre-actions (before the stmt)
     if site.contains(".old_value") {
-      match pre.get(idx) {
+      let map = match pre.get(prefix) {
+        Some(m) => m
+        None => {
+          let m : Map[Int, Array[RcStmtAction]] = {}
+          pre[prefix] = m
+          m
+        }
+      }
+      match map.get(idx) {
         Some(arr) => arr.push(act)
-        None => pre[idx] = [act]
+        None => map[idx] = [act]
       }
     } else {
-      match post.get(idx) {
+      let map = match post.get(prefix) {
+        Some(m) => m
+        None => {
+          let m : Map[Int, Array[RcStmtAction]] = {}
+          post[prefix] = m
+          m
+        }
+      }
+      match map.get(idx) {
         Some(arr) => arr.push(act)
-        None => post[idx] = [act]
+        None => map[idx] = [act]
       }
     }
   }
@@ -382,18 +521,39 @@ pub fn build_rc_action_maps(
 }
 
 ///|
-/// Parse "stmt[N]..." to extract N as Int. Returns -1 on failure.
-fn parse_stmt_index(site : String) -> Int {
-  // Expected format: "stmt[0]...", "stmt[12].old_value", etc.
-  if site.length() < 6 {
-    return -1
+/// Parse a site path into (prefix, leaf_stmt_index).
+/// "stmt[0].after" → ("", 0)
+/// "stmt[2].expr.body.stmt[1].after" → ("stmt[2].expr.body", 1)
+/// "stmt[3].else.stmt[0].old_value" → ("stmt[3].else", 0)
+fn parse_site_path(site : String) -> (String, Int) {
+  // Find the LAST occurrence of "stmt[" in the path
+  let mut last_stmt_pos = -1
+  for i = site.length() - 5; i >= 0; i = i - 1 {
+    if i + 4 < site.length() &&
+      site[i] == 's' &&
+      site[i + 1] == 't' &&
+      site[i + 2] == 'm' &&
+      site[i + 3] == 't' &&
+      site[i + 4] == '[' {
+      last_stmt_pos = i
+      break
+    }
   }
-  // Check prefix "stmt["
-  if not(site.has_prefix("stmt[")) {
-    return -1
+  if last_stmt_pos < 0 {
+    return ("", -1)
   }
-  let mut i = 5 // skip "stmt["
+  // Extract prefix: everything before the last "stmt["
+  // e.g., "stmt[2].expr.body.stmt[1]" → prefix = "stmt[2].expr.body"
+  let prefix = if last_stmt_pos == 0 {
+    ""
+  } else {
+    // Remove trailing '.' from prefix
+    site[:last_stmt_pos - 1].to_string()
+  }
+  // Extract index from "stmt[N]..."
+  let mut i = last_stmt_pos + 5 // skip "stmt["
   let mut result = 0
+  let mut found_digit = false
   while i < site.length() {
     let c = site[i]
     if c == ']' {
@@ -401,15 +561,24 @@ fn parse_stmt_index(site : String) -> Int {
     }
     if c >= '0' && c <= '9' {
       result = result * 10 + (c.to_int() - '0'.to_int())
+      found_digit = true
     } else {
-      return -1
+      return (prefix, -1)
     }
     i += 1
   }
-  if i == 5 {
-    return -1
+  if not(found_digit) {
+    return (prefix, -1)
   }
-  result
+  (prefix, result)
+}
+
+///|
+/// Parse "stmt[N]..." to extract N as Int. Returns -1 on failure.
+/// Legacy: only extracts the first (outermost) stmt index.
+fn parse_stmt_index(site : String) -> Int {
+  let (_, idx) = parse_site_path(site)
+  idx
 }
 
 ///|

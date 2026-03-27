@@ -137,10 +137,11 @@ priv struct CodegenCtx {
   mut linked_fn_imports_list : Array[(String, String, Int, Int)]
   // Perceus RC: enable reference counting codegen
   mut enable_rc : Bool
-  // Perceus RC: per-stmt actions indexed by site string prefix
-  // Key: "stmt[N]" → Array of actions to emit before/after that stmt
-  mut rc_pre_actions : Map[Int, Array[RcStmtAction]]
-  mut rc_post_actions : Map[Int, Array[RcStmtAction]]
+  // Perceus RC: per-stmt actions keyed by (prefix, stmt_index)
+  // prefix="" for top-level, "stmt[2].expr.body" for nested blocks, etc.
+  mut rc_pre_actions : Map[String, Map[Int, Array[RcStmtAction]]]
+  mut rc_post_actions : Map[String, Map[Int, Array[RcStmtAction]]]
+  mut rc_action_prefix : String
   // Per-function RC actions: func_name → raw action tuples
   mut rc_func_actions : Map[String, Array[(String, Bool, String)]]
   // RC free-list head global index (-1 if not allocated)
@@ -294,6 +295,7 @@ fn CodegenCtx::new(
     enable_rc: false,
     rc_pre_actions: {},
     rc_post_actions: {},
+    rc_action_prefix: "",
     rc_func_actions: {},
     rc_free_list_global: -1,
     rc_tmp_local: -1,

@@ -296,9 +296,8 @@ fn emit_heap_alloc_local(
   emit_local_set(buf, ctx.heap_local)
   ctx.heap_synced = false
   if ctx.enable_rc {
-    // For dynamic-size alloc, we don't know size at compile time.
-    // Write alloc_size=0 as placeholder (free-list won't reuse these).
-    emit_rc_init(buf, obj_local, 0)
+    // Dynamic-size alloc: write actual alloc_size from size_local
+    emit_rc_init_dynamic(buf, obj_local, size_local)
   }
 }
 
