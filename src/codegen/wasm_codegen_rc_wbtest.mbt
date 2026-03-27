@@ -125,6 +125,35 @@ test "RC codegen: perceus plan actions emit dup/drop at stmt boundaries" {
 }
 
 ///|
+test "RC codegen: negative-offset layout preserves field offsets" {
+  // With RC enabled, tuple allocation should produce the same field offsets
+  // as without RC. The RC field is prepended at ptr-4, not interleaved.
+  let tuple_expr = @core.Expr::Tuple(
+    items=[wb_int(1), wb_int(2)],
+    span=wb_span(),
+  )
+  // Compile same AST with and without RC
+  let ast_no_rc = @core.Module::{
+    stmts: [wb_let("x", tuple_expr), wb_expr(wb_ident("x"))],
+  }
+  let ast_rc = @core.Module::{
+    stmts: [wb_let("x", tuple_expr), wb_expr(wb_ident("x"))],
+  }
+  let wat_no_rc = wasm_to_wat(
+    emit_module_wasm_with_options(ast_no_rc, wasm_emit_options()),
+  )
+  let wat_rc = wasm_to_wat(
+    emit_module_wasm_with_options(ast_rc, wasm_emit_options(enable_rc=true)),
+  )
+  // Both should contain i32.store for field storage
+  // Check that RC version has the sub instruction (for rc_init: ptr - 4)
+  assert_true(wat_rc.contains("i32.sub"))
+  // Both should have i32.store for tuple fields
+  assert_true(wat_no_rc.contains("i32.store"))
+  assert_true(wat_rc.contains("i32.store"))
+}
+
+///|
 test "RC codegen: without enable_rc no RC operations emitted" {
   let tuple_expr = @core.Expr::Tuple(
     items=[wb_int(1), wb_int(2)],

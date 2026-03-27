@@ -196,17 +196,30 @@ fn emit_heap_alloc(
   size : Int,
   obj_local : Int,
 ) -> Unit {
-  emit_heap_reserve(ctx, buf, size)
-  emit_local_get(buf, ctx.heap_local)
-  emit_local_set(buf, obj_local)
-  emit_local_get(buf, ctx.heap_local)
-  emit_i32_const_raw(buf, size)
-  emit_i32_add(buf)
-  emit_local_set(buf, ctx.heap_local)
-  ctx.heap_synced = false
   if ctx.enable_rc {
-    // Emit rc_init: set rc_count=1 at offset 4 of the new object
+    // Allocate size + 4 bytes: [rc_count(4)][object(size)]
+    // obj_local points past the RC field so all field offsets are unchanged
+    let total_size = size + rc_header_extra
+    emit_heap_reserve(ctx, buf, total_size)
+    emit_local_get(buf, ctx.heap_local)
+    emit_i32_const_raw(buf, rc_header_extra)
+    emit_i32_add(buf)
+    emit_local_set(buf, obj_local)
+    emit_local_get(buf, ctx.heap_local)
+    emit_i32_const_raw(buf, total_size)
+    emit_i32_add(buf)
+    emit_local_set(buf, ctx.heap_local)
+    ctx.heap_synced = false
     emit_rc_init(buf, obj_local)
+  } else {
+    emit_heap_reserve(ctx, buf, size)
+    emit_local_get(buf, ctx.heap_local)
+    emit_local_set(buf, obj_local)
+    emit_local_get(buf, ctx.heap_local)
+    emit_i32_const_raw(buf, size)
+    emit_i32_add(buf)
+    emit_local_set(buf, ctx.heap_local)
+    ctx.heap_synced = false
   }
 }
 
@@ -273,14 +286,28 @@ fn emit_heap_alloc_local(
   size_local : Int,
   obj_local : Int,
 ) -> Unit {
+  if ctx.enable_rc {
+    // Add rc_header_extra to size_local for the prepended RC field
+    emit_local_get(buf, size_local)
+    emit_i32_const_raw(buf, rc_header_extra)
+    emit_i32_add(buf)
+    emit_local_set(buf, size_local)
+  }
   emit_heap_reserve_local(ctx, buf, size_local)
   emit_local_get(buf, ctx.heap_local)
+  if ctx.enable_rc {
+    emit_i32_const_raw(buf, rc_header_extra)
+    emit_i32_add(buf)
+  }
   emit_local_set(buf, obj_local)
   emit_local_get(buf, ctx.heap_local)
   emit_local_get(buf, size_local)
   emit_i32_add(buf)
   emit_local_set(buf, ctx.heap_local)
   ctx.heap_synced = false
+  if ctx.enable_rc {
+    emit_rc_init(buf, obj_local)
+  }
 }
 
 ///|

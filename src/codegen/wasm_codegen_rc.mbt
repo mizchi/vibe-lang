@@ -35,36 +35,36 @@ pub let rc_init_count : Ref[Int] = Ref::new(0)
 pub let rc_action_count : Ref[Int] = Ref::new(0)
 
 ///|
-/// Offset of the reference count field in the object header.
-let rc_offset = 4
-
-///|
-/// Size added to each object header for the RC field.
+/// Size added to each allocation block for the RC field (prepended before obj ptr).
 pub let rc_header_extra : Int = 4
 
 ///|
-/// RC-aware object header: type (4 bytes) + rc (4 bytes) = 8 bytes.
-/// All existing metadata shifts right by rc_header_extra.
-pub let rc_header_size : Int = 8
-
-///|
 /// Emit RC initialization for a freshly allocated object.
-/// Assumes the object pointer is on top of the WASM stack.
-/// After this, the pointer is consumed (stored to obj_local).
+/// The RC count is stored at obj_ptr - 4 (prepended before the object header).
+/// This allows all existing field offsets to remain unchanged.
+///
+/// Memory layout with RC:
+///   [rc_count@-4][type_id@0][length@4][data@8...]
+///   obj_ptr points to type_id (offset 0), rc_count is at obj_ptr - 4.
 ///
 /// Generated WASM pseudo-code:
 ///   local.get $obj_local
+///   i32.const 4
+///   i32.sub              ; ptr - 4
 ///   i32.const 1
-///   i32.store offset=4   ; rc_count = 1
+///   i32.store offset=0   ; rc_count = 1
 fn emit_rc_init(buf : ByteBuf, obj_local : Int) -> Unit {
   rc_init_count.val += 1
   emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, rc_header_extra)
+  emit_i32_sub(buf)
   emit_i32_const_raw(buf, 1)
-  emit_i32_store(buf, rc_offset)
+  emit_i32_store(buf, 0)
 }
 
 ///|
 /// Emit rc_dup: increment the reference count of a heap object.
+/// RC count is at obj_ptr - 4 (prepended before the object header).
 ///
 /// Generated WASM pseudo-code:
 ///   local.get $val
@@ -74,14 +74,16 @@ fn emit_rc_init(buf : ByteBuf, obj_local : Int) -> Unit {
 ///   i32.ne
 ///   br_if $skip          ; skip if not a heap object
 ///   local.get $val
-///   i32.const -1         ; clear tag bit
-///   i32.and              ; ptr = val & ~1
+///   i32.const -4         ; clear tag bits
+///   i32.and              ; obj_ptr = val & ~3
+///   i32.const 4
+///   i32.sub              ; rc_ptr = obj_ptr - 4
 ///   local.tee $tmp
 ///   local.get $tmp
-///   i32.load offset=4    ; load rc_count
+///   i32.load offset=0    ; load rc_count
 ///   i32.const 1
 ///   i32.add
-///   i32.store offset=4   ; rc_count += 1
+///   i32.store offset=0   ; rc_count += 1
 ///   $skip:
 fn emit_rc_dup(buf : ByteBuf, val_local : Int, tmp_local : Int) -> Unit {
   // Check if value is a heap object (tag == tag_obj == 1)
@@ -93,23 +95,27 @@ fn emit_rc_dup(buf : ByteBuf, val_local : Int, tmp_local : Int) -> Unit {
   // if (not heap object) → skip
   emit_block(buf) // block void
   emit_br_if(buf, 0) // br_if 0 → skip to end of block
-  // ptr = val & ~tag_mask (clear low 2 bits)
+  // obj_ptr = val & ~tag_mask (clear low 2 bits)
   emit_local_get(buf, val_local)
   emit_i32_const_raw(buf, -4) // 0xFFFFFFFC: mask off low 2 bits
   emit_i32_and(buf)
+  // rc_ptr = obj_ptr - 4
+  emit_i32_const_raw(buf, rc_header_extra)
+  emit_i32_sub(buf)
   emit_local_set(buf, tmp_local)
-  // rc_count = load(ptr + rc_offset) + 1
+  // rc_count = load(rc_ptr) + 1
   emit_local_get(buf, tmp_local)
   emit_local_get(buf, tmp_local)
-  emit_i32_load(buf, rc_offset)
+  emit_i32_load(buf, 0)
   emit_i32_const_raw(buf, 1)
   emit_i32_add(buf)
-  emit_i32_store(buf, rc_offset)
+  emit_i32_store(buf, 0)
   emit_end(buf) // end block
 }
 
 ///|
 /// Emit rc_drop: decrement the reference count of a heap object.
+/// RC count is at obj_ptr - 4 (prepended before the object header).
 /// If rc reaches 0, the memory could be reclaimed (no-op in prototype).
 ///
 /// Generated WASM pseudo-code:
@@ -122,14 +128,14 @@ fn emit_rc_dup(buf : ByteBuf, val_local : Int, tmp_local : Int) -> Unit {
 ///   local.get $val
 ///   i32.const -4
 ///   i32.and
+///   i32.const 4
+///   i32.sub              ; rc_ptr = obj_ptr - 4
 ///   local.tee $tmp
 ///   local.get $tmp
-///   i32.load offset=4
+///   i32.load offset=0
 ///   i32.const 1
 ///   i32.sub
-///   local.tee $new_rc
-///   i32.store offset=4   ; rc_count -= 1
-///   ;; if new_rc == 0 → could free (no-op for now)
+///   i32.store offset=0   ; rc_count -= 1
 ///   $skip:
 fn emit_rc_drop(
   buf : ByteBuf,
@@ -146,20 +152,23 @@ fn emit_rc_drop(
   // if (not heap object) → skip
   emit_block(buf)
   emit_br_if(buf, 0)
-  // ptr = val & ~tag_mask
+  // obj_ptr = val & ~tag_mask
   emit_local_get(buf, val_local)
   emit_i32_const_raw(buf, -4)
   emit_i32_and(buf)
+  // rc_ptr = obj_ptr - 4
+  emit_i32_const_raw(buf, rc_header_extra)
+  emit_i32_sub(buf)
   emit_local_set(buf, tmp_local)
-  // new_rc = load(ptr + rc_offset) - 1
+  // new_rc = load(rc_ptr) - 1
   emit_local_get(buf, tmp_local)
   emit_local_get(buf, tmp_local)
-  emit_i32_load(buf, rc_offset)
+  emit_i32_load(buf, 0)
   emit_i32_const_raw(buf, 1)
   emit_i32_sub(buf)
   // store new_rc back
   // Future: if new_rc == 0, add ptr to free list
-  emit_i32_store(buf, rc_offset)
+  emit_i32_store(buf, 0)
   emit_end(buf) // end block
 }
 
@@ -288,6 +297,9 @@ fn parse_stmt_index(site : String) -> Int {
 /// Summary of integration points for wiring Perceus actions into codegen:
 ///
 /// 1. After each `emit_heap_alloc`, call `emit_rc_init` to set rc=1.
+///    The RC field is prepended before the object: [rc@-4][type_id@0][data@4...]
+///    `emit_heap_alloc` allocates extra 4 bytes and offsets obj_ptr past RC field,
+///    so all existing field offsets remain unchanged.
 ///
 /// 2. At PerceusAction::Dup sites, emit `emit_rc_dup` on the local
 ///    holding the duplicated value.
@@ -295,19 +307,17 @@ fn parse_stmt_index(site : String) -> Int {
 /// 3. At PerceusAction::Drop sites, emit `emit_rc_drop` on the local
 ///    holding the dropped value.
 ///
-/// 4. All object field offsets shift by +4 (rc_header_extra) to
-///    accommodate the new RC field at offset 4.
-///
-/// 5. Mutable assignment (`Stmt::Assign`): emit rc_drop on old value
-///    before storing new value, then emit rc_dup on new value if needed.
+/// 4. Mutable assignment (`Stmt::Assign`): emit rc_drop on old value
+///    before storing new value.
 ///
 /// The Perceus analysis pass (`build_perceus_plan`) provides the exact
 /// sites for dup/drop insertion as `Array[PerceusAction]`.
 pub fn perceus_codegen_integration_notes() -> String {
   let notes = [
-    "1. emit_rc_init after emit_heap_alloc (set rc=1)", "2. emit_rc_dup at PerceusAction::Dup sites",
-    "3. emit_rc_drop at PerceusAction::Drop sites", "4. shift all field offsets by +4 for RC header",
-    "5. Assign: rc_drop(old) before store, rc_dup(new) if needed",
+    "1. emit_rc_init after emit_heap_alloc (rc at ptr-4, offsets unchanged)",
+    "2. emit_rc_dup at PerceusAction::Dup sites",
+    "3. emit_rc_drop at PerceusAction::Drop sites",
+    "4. Assign: rc_drop(old) before store",
   ]
   let mut result = ""
   for note in notes {
