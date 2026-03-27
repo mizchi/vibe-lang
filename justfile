@@ -73,6 +73,11 @@ test:
     bash scripts/test_parallel_cleanup_e2e.sh _build/native/debug/build/cmd/vibe/vibe.exe
     bash scripts/test_internal_parent_watchdog_e2e.sh _build/native/debug/build/cmd/vibe/vibe.exe
 
+# Acceptance suite for graduating wasm-gc to the main backend.
+# This is intentionally opt-in and currently expected to fail until roadmap work lands.
+test-wasm-gc-mainlane-e2e:
+    VIBE_WASM_GC_MAINLANE=1 moon test --target native src/tests/vibe_wasm_gc_mainlane_e2e_test.mbt --warn-list '{{moon_warn_list}}'
+
 # Broad compiled package sweep. Keep opt-in until compiled-only parity is restored
 # outside the 0.1.0 supported surface.
 test-vibe-package-suite:

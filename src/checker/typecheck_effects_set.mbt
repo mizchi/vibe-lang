@@ -258,7 +258,10 @@ fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
     | "Fs::is_file"
     | "Fs::copy"
     | "Fs::rename"
-    | "Fs::append" => [@core.EffectAtom::Const("Fs")]
+    | "Fs::append"
+    | "Fs::open_write"
+    | "Fs::write_chunk"
+    | "Fs::close_write" => [@core.EffectAtom::Const("Fs")]
     "Fs::read_string" => [@core.EffectAtom::Const("Fs")]
     "Fs::write_string" => [@core.EffectAtom::Const("Fs")]
     "Fs::read_bytes" => [@core.EffectAtom::Const("Fs")]

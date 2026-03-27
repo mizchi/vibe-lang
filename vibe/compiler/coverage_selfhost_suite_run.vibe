@@ -1,7 +1,7 @@
 //# Imports
 
 import ./coverage_selfhost_suite_lib.vibe {
-  CoverageCaseInput, build_suite_report_from_json_texts, build_summary_text, evaluate_kpi, parse_line_list, suite_report_json
+  CoverageCaseInput, build_suite_report_from_json_texts, build_summary_text, evaluate_kpi, parse_line_list, write_suite_report_json_stream
 }
 
 //# Functions
@@ -41,11 +41,9 @@ test "coverage selfhost suite run" {
   let kpi = evaluate_kpi(report, min_point_rate, min_line_rate, min_branch_rate)
   let summary = build_summary_text(report, kpi)
   if String::length(report_json_path) > 0 {
-    // suite_report_json uses stringify() which creates O(n) intermediate strings via
-    // String::concat chains. In the bump-allocator runtime, these are never freed,
-    // causing heap exhaustion for reports with many coverage points.
-    // TODO: implement streaming JSON write via WASI output-stream (ADR-0035 P0)
-    Fs::write_file(report_json_path, "{}\n")
+    let fd = Fs::open_write(report_json_path)
+    write_suite_report_json_stream(fd, report, kpi)
+    Fs::close_write(fd)
   }
   if String::length(summary_path) > 0 {
     Fs::write_file(summary_path, summary)

@@ -320,7 +320,7 @@ fn parse_type_tag(s : String) -> BuiltinTypeTag {
   let bracket_start = find_charcode(trimmed, cc_open_bracket)
   if bracket_start >= 0 {
     let container_name = trimmed[0:bracket_start].to_string()
-    let inner = trimmed[bracket_start + 1 : trimmed.length() - 1].to_string()
+    let inner = trimmed[bracket_start + 1:trimmed.length() - 1].to_string()
     if container_name == "Array" {
       return Array_(parse_type_tag(inner))
     }
@@ -352,7 +352,7 @@ fn parse_type_tag(s : String) -> BuiltinTypeTag {
     if arrow_pos >= 0 {
       let close_paren = find_matching_paren(trimmed, 0)
       let params_inner = trimmed[1:close_paren].trim().to_string()
-      let ret_str = trimmed[arrow_pos + 2 : trimmed.length()].trim().to_string()
+      let ret_str = trimmed[arrow_pos + 2:trimmed.length()].trim().to_string()
       let params = if params_inner.length() == 0 {
         []
       } else {
@@ -390,7 +390,7 @@ fn parse_declare_line(line : String) -> BuiltinDecl? {
     return None
   }
   // Parse params
-  let params_str = rest[paren_pos + 1 : close_paren].trim().to_string()
+  let params_str = rest[paren_pos + 1:close_paren].trim().to_string()
   let params : Array[BuiltinTypeTag] = if params_str.length() == 0 {
     []
   } else {
@@ -402,11 +402,9 @@ fn parse_declare_line(line : String) -> BuiltinDecl? {
     result
   }
   // Find "->" for return type
-  let arrow_str = rest[close_paren + 1 : rest.length()].trim().to_string()
+  let arrow_str = rest[close_paren + 1:rest.length()].trim().to_string()
   let ret = if arrow_str.has_prefix("->") {
-    parse_type_tag(
-      arrow_str[2:arrow_str.length()].to_string(),
-    )
+    parse_type_tag(arrow_str[2:arrow_str.length()].to_string())
   } else {
     BuiltinTypeTag::Unit
   }

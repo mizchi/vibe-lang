@@ -1072,3 +1072,161 @@ export let build_suite_report_from_json_texts = (inputs: Array[CoverageCaseInput
     cases: cases
   }
 }
+
+// ── Streaming JSON writer ──
+// Writes JSON directly to a file handle via Fs::write_chunk, avoiding
+// intermediate String::concat chains that exhaust the bump-allocator heap.
+
+let sw = (fd: Int, s: String) -> Unit {
+  Fs::write_chunk(fd, s)
+}
+
+let sw_str = (fd: Int, s: String) -> Unit {
+  sw(fd, stringify(string_json(s)))
+}
+
+let sw_int = (fd: Int, v: Int) -> Unit {
+  sw(fd, __to_string(v))
+}
+
+let sw_double = (fd: Int, v: Double) -> Unit {
+  sw(fd, stringify(double_json(v)))
+}
+
+let sw_bool = (fd: Int, v: Bool) -> Unit {
+  if v { sw(fd, "true") } else { sw(fd, "false") }
+}
+
+let sw_opt_double = (fd: Int, v: Option[Double]) -> Unit {
+  match v {
+    Some(d) => sw_double(fd, d),
+    None => sw(fd, "null")
+  }
+}
+
+let sw_field = (fd: Int, key: String, needs_comma: Bool) -> Unit {
+  if needs_comma { sw(fd, ",") }
+  sw_str(fd, key)
+  sw(fd, ":")
+}
+
+let sw_case = (fd: Int, case: CoverageCase) -> Unit {
+  sw(fd, "{")
+  sw_field(fd, "report_path", false); sw_str(fd, case.report_path)
+  sw_field(fd, "entry_path", true); sw_str(fd, case.entry_path)
+  sw_field(fd, "execution_ok", true); sw_bool(fd, case.execution_ok)
+  sw_field(fd, "execution_error", true); sw_str(fd, case.execution_error)
+  sw_field(fd, "summary_only", true); sw_bool(fd, case.summary_only)
+  sw_field(fd, "stats", true)
+  sw(fd, "{")
+  sw_field(fd, "point_total", false); sw_int(fd, case.stats.point_total)
+  sw_field(fd, "point_hit", true); sw_int(fd, case.stats.point_hit)
+  sw_field(fd, "line_total", true); sw_int(fd, case.stats.line_total)
+  sw_field(fd, "line_hit", true); sw_int(fd, case.stats.line_hit)
+  sw_field(fd, "branch_total", true); sw_int(fd, case.stats.branch_total)
+  sw_field(fd, "branch_hit", true); sw_int(fd, case.stats.branch_hit)
+  sw(fd, "}")
+  sw_field(fd, "case_branch_total", true); sw_int(fd, case.case_branch_total)
+  sw_field(fd, "case_branch_hit", true); sw_int(fd, case.case_branch_hit)
+  sw_field(fd, "rates", true)
+  sw(fd, "{")
+  sw_field(fd, "point", false); sw_double(fd, case.point_rate)
+  sw_field(fd, "line", true); sw_double(fd, case.line_rate)
+  sw_field(fd, "branch", true); sw_double(fd, case.branch_rate)
+  sw(fd, "}")
+  sw(fd, "}")
+}
+
+let sw_branch_gap = (fd: Int, gap: BranchGapEntry) -> Unit {
+  sw(fd, "{")
+  sw_field(fd, "entry_path", false); sw_str(fd, gap.entry_path)
+  sw_field(fd, "branch_miss", true); sw_int(fd, gap.branch_miss)
+  sw_field(fd, "branch_total", true); sw_int(fd, gap.branch_total)
+  sw_field(fd, "branch_hit", true); sw_int(fd, gap.branch_hit)
+  sw(fd, "}")
+}
+
+export let write_suite_report_json_stream = (fd: Int, report: SuiteReport, kpi: KpiResult) -> Unit {
+  sw(fd, "{")
+  sw_field(fd, "format", false); sw_str(fd, "vibe-selfhost-suite-coverage-v1")
+  sw_field(fd, "case_count", true); sw_int(fd, report.case_count)
+  // execution
+  sw_field(fd, "execution", true)
+  sw(fd, "{")
+  sw_field(fd, "trap_case_count", false); sw_int(fd, report.trap_case_count)
+  sw(fd, "}")
+  // stats
+  sw_field(fd, "stats", true)
+  sw(fd, "{")
+  sw_field(fd, "point_total", false); sw_int(fd, report.stats.point_total)
+  sw_field(fd, "point_hit", true); sw_int(fd, report.stats.point_hit)
+  sw_field(fd, "line_total", true); sw_int(fd, report.stats.line_total)
+  sw_field(fd, "line_hit", true); sw_int(fd, report.stats.line_hit)
+  sw_field(fd, "branch_total", true); sw_int(fd, report.stats.branch_total)
+  sw_field(fd, "branch_hit", true); sw_int(fd, report.stats.branch_hit)
+  sw(fd, "}")
+  // rates
+  sw_field(fd, "rates", true)
+  sw(fd, "{")
+  sw_field(fd, "point", false); sw_double(fd, report.point_rate)
+  sw_field(fd, "line", true); sw_double(fd, report.line_rate)
+  sw_field(fd, "branch", true); sw_double(fd, report.branch_rate)
+  sw(fd, "}")
+  // cases
+  sw_field(fd, "cases", true)
+  sw(fd, "[")
+  let mut ci = 0
+  while ci < Array::length(report.cases) {
+    if ci > 0 { sw(fd, ",") }
+    sw_case(fd, Array::get(report.cases, ci))
+    ci = ci + 1
+  }
+  sw(fd, "]")
+  // branch gaps
+  let branch_gaps = top_branch_gap_entries(report.cases, 5, false)
+  sw_field(fd, "top_branch_gaps", true)
+  sw(fd, "[")
+  let mut bi = 0
+  while bi < Array::length(branch_gaps) {
+    if bi > 0 { sw(fd, ",") }
+    sw_branch_gap(fd, Array::get(branch_gaps, bi))
+    bi = bi + 1
+  }
+  sw(fd, "]")
+  // non-aggregate branch gaps
+  let na_branch_gaps = top_branch_gap_entries(report.cases, 5, true)
+  sw_field(fd, "top_non_aggregate_branch_gaps", true)
+  sw(fd, "[")
+  let mut ni = 0
+  while ni < Array::length(na_branch_gaps) {
+    if ni > 0 { sw(fd, ",") }
+    sw_branch_gap(fd, Array::get(na_branch_gaps, ni))
+    ni = ni + 1
+  }
+  sw(fd, "]")
+  // kpi
+  sw_field(fd, "kpi", true)
+  sw(fd, "{")
+  sw_field(fd, "ok", false); sw_bool(fd, kpi.ok)
+  sw_field(fd, "point_rate", true); sw_double(fd, kpi.point_rate)
+  sw_field(fd, "line_rate", true); sw_double(fd, kpi.line_rate)
+  sw_field(fd, "branch_rate", true); sw_double(fd, kpi.branch_rate)
+  sw_field(fd, "thresholds", true)
+  sw(fd, "{")
+  sw_field(fd, "min_point_rate", false); sw_opt_double(fd, kpi.min_point_rate)
+  sw_field(fd, "min_line_rate", true); sw_opt_double(fd, kpi.min_line_rate)
+  sw_field(fd, "min_branch_rate", true); sw_opt_double(fd, kpi.min_branch_rate)
+  sw(fd, "}")
+  sw_field(fd, "has_thresholds", true); sw_bool(fd, kpi.has_thresholds)
+  sw_field(fd, "failures", true)
+  sw(fd, "[")
+  let mut fi = 0
+  while fi < Array::length(kpi.failures) {
+    if fi > 0 { sw(fd, ",") }
+    sw_str(fd, Array::get(kpi.failures, fi))
+    fi = fi + 1
+  }
+  sw(fd, "]")
+  sw(fd, "}")
+  sw(fd, "}\n")
+}

@@ -74,7 +74,10 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         | "Fs::remove"
         | "Fs::rename"
         | "Fs::copy"
-        | "Fs::append" => {
+        | "Fs::append"
+        | "Fs::open_write"
+        | "Fs::write_chunk"
+        | "Fs::close_write" => {
           ctx.need_fs = true
           ctx.need_heap = true
         }

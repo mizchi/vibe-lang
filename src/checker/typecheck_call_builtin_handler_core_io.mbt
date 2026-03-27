@@ -373,6 +373,17 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Unit,
         true,
       )
+    "Fs::open_write" =>
+      ctx.simple("Fs::open_write", [@core.Type::String], @core.Type::Int, true)
+    "Fs::write_chunk" =>
+      ctx.simple(
+        "Fs::write_chunk",
+        [@core.Type::Int, @core.Type::String],
+        @core.Type::Unit,
+        true,
+      )
+    "Fs::close_write" =>
+      ctx.simple("Fs::close_write", [@core.Type::Int], @core.Type::Unit, true)
     "Env::get" =>
       ctx.simple("Env::get", [@core.Type::String], @core.Type::String, true)
     "Env::args_len" => ctx.simple("Env::args_len", [], @core.Type::Int, true)

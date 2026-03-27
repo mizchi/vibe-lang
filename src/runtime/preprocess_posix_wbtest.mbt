@@ -1,6 +1,9 @@
 ///|
 test "preprocess_posix_source: cat maps to Fs::read_file" {
-  assert_eq(preprocess_posix_source("cat TODO.md"), "Fs::read_file(\"TODO.md\")")
+  assert_eq(
+    preprocess_posix_source("cat TODO.md"),
+    "Fs::read_file(\"TODO.md\")",
+  )
 }
 
 ///|
@@ -16,10 +19,7 @@ test "preprocess_posix_source: echo returns string value" {
 
 ///|
 test "preprocess_posix_source: unknown command falls to sh_lines" {
-  assert_eq(
-    preprocess_posix_source("git status"),
-    "sh_lines(\"git status\")",
-  )
+  assert_eq(preprocess_posix_source("git status"), "sh_lines(\"git status\")")
 }
 
 ///|
@@ -119,7 +119,10 @@ test "preprocess_posix_source: env maps to Env::get" {
 
 ///|
 test "preprocess_posix_source: exists maps to Fs::exists" {
-  assert_eq(preprocess_posix_source("exists foo.txt"), "Fs::exists(\"foo.txt\")")
+  assert_eq(
+    preprocess_posix_source("exists foo.txt"),
+    "Fs::exists(\"foo.txt\")",
+  )
 }
 
 ///|

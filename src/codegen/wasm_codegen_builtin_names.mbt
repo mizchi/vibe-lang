@@ -58,10 +58,9 @@ pub fn codegen_registered_builtin_names() -> Array[String] {
 pub fn codegen_runtime_fallback_builtin_names() -> Array[String] {
   [
     // JSON (interpreter-only, except Json::parse and Json::stringify which have host imports)
-    "Json::parse_lines", "Json::stringify_lines",
-    "Lines::parse", "Lines::stringify", "Json::type_of", "Json::string", "Json::get",
-    "Json::index", "Json::number", "Json::bool", "Json::is_null", "Json::length",
-    "Json::keys",
+    "Json::parse_lines", "Json::stringify_lines", "Lines::parse", "Lines::stringify",
+    "Json::type_of", "Json::string", "Json::get", "Json::index", "Json::number",
+    "Json::bool", "Json::is_null", "Json::length", "Json::keys",
     // Fs (not mapped to wasm imports yet)
      "Fs::chdir", "Fs::copy", "Fs::readdir", "Fs::is_dir", "Fs::is_file", "Fs::mkdir",
     "Fs::mkdir_p", "Fs::getcwd", "Fs::remove", "Fs::rename", "Fs::append",

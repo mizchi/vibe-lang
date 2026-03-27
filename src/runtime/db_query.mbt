@@ -938,7 +938,9 @@ pub fn VibeDb::new() -> VibeDb {
                                 Some(ctor_info) => {
                                   env.set_ctor(ctor.name, ctor_info)
                                   // Also import qualified form: EnumName::CtorName
-                                  let qualified_ctor = source_name + "::" + ctor.name
+                                  let qualified_ctor = source_name +
+                                    "::" +
+                                    ctor.name
                                   env.set_ctor(qualified_ctor, ctor_info)
                                 }
                                 None => ()
@@ -1134,7 +1136,9 @@ pub fn VibeDb::new() -> VibeDb {
                               Some(ctor_info) => {
                                 env.set_ctor(ctor.name, ctor_info)
                                 // Also import qualified form: EnumName::CtorName
-                                let qualified_ctor = source_name + "::" + ctor.name
+                                let qualified_ctor = source_name +
+                                  "::" +
+                                  ctor.name
                                 env.set_ctor(qualified_ctor, ctor_info)
                               }
                               None => ()

@@ -896,6 +896,22 @@ async function main() {
           return 0n;
         }
       },
+      fs_open_write(pathTagged) {
+        const filePath = decodeStringArg(instanceRef, pathTagged);
+        const fd = fs.openSync(filePath, "w");
+        return encodeTaggedInt(fd);
+      },
+      fs_write_chunk(fdTagged, strTagged) {
+        const fd = decodeTaggedInt(fdTagged);
+        const str = decodeStringArg(instanceRef, strTagged);
+        fs.writeSync(fd, str);
+        return 0n;
+      },
+      fs_close_write(fdTagged) {
+        const fd = decodeTaggedInt(fdTagged);
+        fs.closeSync(fd);
+        return 0n;
+      },
       json_parse(strTagged) {
         const str = decodeStringArg(instanceRef, strTagged);
         // Parse and re-stringify to validate JSON, then return as tagged string.
@@ -996,6 +1012,15 @@ async function main() {
     },
     Exists(pathTagged) {
       return vibeModule.fs_exists(pathTagged);
+    },
+    OpenWrite(pathTagged) {
+      return vibeModule.fs_open_write(pathTagged);
+    },
+    WriteChunk(fdTagged, strTagged) {
+      return vibeModule.fs_write_chunk(fdTagged, strTagged);
+    },
+    CloseWrite(fdTagged) {
+      return vibeModule.fs_close_write(fdTagged);
     },
   };
 

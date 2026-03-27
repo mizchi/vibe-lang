@@ -153,10 +153,7 @@ fn preprocess_posix_line_with_compat_note(line : String) -> (String, String?) {
 /// Convert known shell builtins to vibe builtin function calls.
 /// Maps posix commands to Fs::/Env::/builtin calls that the compiled backend supports.
 /// Returns None if the command is not a known builtin (fallback to sh_lines).
-fn convert_shell_builtin_command(
-  cmd : String,
-  args : String,
-) -> String? {
+fn convert_shell_builtin_command(cmd : String, args : String) -> String? {
   // Map posix commands to builtin names
   let escaped_args = if args.length() > 0 {
     escape_posix_for_vibe_string(args)
@@ -172,7 +169,11 @@ fn convert_shell_builtin_command(
         None
       }
     "ls" =>
-      Some("Fs::readdir(\"" + (if args.length() > 0 { escaped_args } else { "." }) + "\")")
+      Some(
+        "Fs::readdir(\"" +
+        (if args.length() > 0 { escaped_args } else { "." }) +
+        "\")",
+      )
     "pwd" => Some("Fs::getcwd()")
     "exists" =>
       if args.length() > 0 {

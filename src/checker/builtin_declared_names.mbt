@@ -13,7 +13,7 @@ pub fn checker_declared_builtin_names() -> Array[String] {
      "Fs::read_file", "Fs::read_string", "Fs::read_bytes", "Fs::write_file", "Fs::write_string",
     "Fs::write_bytes", "Fs::exists", "Fs::stat_token", "Fs::chdir", "Fs::copy", "Fs::readdir",
     "Fs::is_dir", "Fs::is_file", "Fs::mkdir", "Fs::mkdir_p", "Fs::getcwd", "Fs::remove",
-    "Fs::rename", "Fs::append",
+    "Fs::rename", "Fs::append", "Fs::open_write", "Fs::write_chunk", "Fs::close_write",
     // Http
      "Http::listen", "Http::accept", "Http::close", "Http::request", "Http::request_method",
     "Http::request_url", "Http::request_header", "Http::request_body", "Http::respond",

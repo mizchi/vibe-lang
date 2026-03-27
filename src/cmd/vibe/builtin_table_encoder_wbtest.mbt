@@ -114,10 +114,7 @@ test "parse_declare_line: multiple params" {
     Some(d) => {
       assert_eq(d.name, "Array::set")
       assert_eq(d.params.length(), 3)
-      assert_eq(
-        d.params[0],
-        BuiltinTypeTag::Array_(BuiltinTypeTag::TypeVar(0)),
-      )
+      assert_eq(d.params[0], BuiltinTypeTag::Array_(BuiltinTypeTag::TypeVar(0)))
       assert_eq(d.params[1], BuiltinTypeTag::Int_)
       assert_eq(d.params[2], BuiltinTypeTag::TypeVar(0))
       assert_eq(d.ret, BuiltinTypeTag::Unit)
@@ -255,13 +252,7 @@ test "parse_declarations: full declarations sample" {
   )
   assert_eq(decls[2].name, "Set::new")
   assert_eq(decls[2].params.length(), 0)
-  assert_eq(
-    decls[2].ret,
-    BuiltinTypeTag::Set_(BuiltinTypeTag::TypeVar(0)),
-  )
+  assert_eq(decls[2].ret, BuiltinTypeTag::Set_(BuiltinTypeTag::TypeVar(0)))
   assert_eq(decls[3].name, "Int::parse")
-  assert_eq(
-    decls[3].ret,
-    BuiltinTypeTag::Option_(BuiltinTypeTag::Int_),
-  )
+  assert_eq(decls[3].ret, BuiltinTypeTag::Option_(BuiltinTypeTag::Int_))
 }

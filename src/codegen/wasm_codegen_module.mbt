@@ -671,8 +671,9 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   }
   if ctx.need_fs && ctx.fs_host_imports {
     // fs host imports: read_file, exists, stat_token, write_file, write_bytes,
-    // readdir, getcwd, chdir, is_dir, is_file, mkdir, mkdir_p, remove, rename, copy, append
-    func_import_count += 16
+    // readdir, getcwd, chdir, is_dir, is_file, mkdir, mkdir_p, remove, rename, copy, append,
+    // open_write, write_chunk, close_write
+    func_import_count += 19
     // json host imports: json_parse, json_stringify
     func_import_count += 2
   }
@@ -862,6 +863,9 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       write_fs_host_import(import_sec, "Fs::rename", fs_host_arity2_type)
       write_fs_host_import(import_sec, "Fs::copy", fs_host_arity2_type)
       write_fs_host_import(import_sec, "Fs::append", fs_host_arity2_type)
+      write_fs_host_import(import_sec, "Fs::open_write", fs_host_arity1_type)
+      write_fs_host_import(import_sec, "Fs::write_chunk", fs_host_arity2_type)
+      write_fs_host_import(import_sec, "Fs::close_write", fs_host_arity1_type)
       // Json host imports (reuse fs_host_arity1_type: i64 -> i64)
       write_name(import_sec, "vibe")
       write_name(import_sec, "json_parse")
@@ -3122,7 +3126,7 @@ fn emit_module_with_coverage(
       pre_import_count += 7
     }
     if ctx.need_fs && ctx.fs_host_imports {
-      pre_import_count += 16
+      pre_import_count += 19
       // json host imports: json_parse, json_stringify
       pre_import_count += 2
     }

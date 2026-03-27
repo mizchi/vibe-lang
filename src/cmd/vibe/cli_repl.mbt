@@ -4,7 +4,7 @@ fn repl_cmd(
   _syntax_mode : @runtime.ParserMode,
   features : @runtime.RuntimeFeatureFlags,
   enable_llm~ : Bool,
-  permissions~ : @capability.CapabilitySet? = None,
+  permissions? : @capability.CapabilitySet? = None,
 ) -> Unit {
   let mut tui_mode = false
   let mut ai_mode = false
@@ -41,8 +41,7 @@ fn repl_cmd(
     @runtime.ParserMode::VibeMode
   }
   match permissions {
-    Some(_) =>
-      println("shell: sandbox permissions active")
+    Some(_) => println("shell: sandbox permissions active")
     None => ()
   }
   if ai_mode {
@@ -97,8 +96,8 @@ struct ReplSymbolsRow {
 ///|
 fn repl_meta_command_names() -> Array[String] {
   [
-    ":q", ":quit", ":exit", ":view", ":outline", ":peek", ":type",
-    ":save", ":load", ":clear", ":source",
+    ":q", ":quit", ":exit", ":view", ":outline", ":peek", ":type", ":save", ":load",
+    ":clear", ":source",
   ]
 }
 
@@ -1654,7 +1653,13 @@ fn handle_repl_meta_command(
           binding_count += 1
         }
       }
-      print_line("saved: " + path + " (" + binding_count.to_string() + " bindings, deduplicated)")
+      print_line(
+        "saved: " +
+        path +
+        " (" +
+        binding_count.to_string() +
+        " bindings, deduplicated)",
+      )
       ReplMetaCommandResult::HandledContinue
     }
     ":load" => {
@@ -1669,7 +1674,9 @@ fn handle_repl_meta_command(
           return ReplMetaCommandResult::HandledContinue
         }
       }
-      print_line("loaded: " + path + " (" + content.length().to_string() + " bytes)")
+      print_line(
+        "loaded: " + path + " (" + content.length().to_string() + " bytes)",
+      )
       ReplMetaCommandResult::HandledLoadSource(content)
     }
     ":clear" => {
@@ -2949,9 +2956,17 @@ fn run_compiled_repl_line_with_cache(
   let run_out = if use_node_runner {
     match resolve_http_host_runner(source_path) {
       Ok(http_runner) =>
-        run_http_host_invoke_run_capture(http_runner, wasm_path, wasm_path + ".invoke")
+        run_http_host_invoke_run_capture(
+          http_runner,
+          wasm_path,
+          wasm_path + ".invoke",
+        )
       Err(_) =>
-        run_wasmtime_invoke_run_capture(runner, wasm_path, wasm_path + ".invoke")
+        run_wasmtime_invoke_run_capture(
+          runner,
+          wasm_path,
+          wasm_path + ".invoke",
+        )
     }
   } else {
     run_wasmtime_invoke_run_capture(runner, wasm_path, wasm_path + ".invoke")
@@ -3046,12 +3061,10 @@ fn run_compiled_shell_line(
   if effective_line.has_prefix("sh_lines(\"") &&
     effective_line.has_suffix("\")") {
     let cmd = effective_line[10:effective_line.length() - 2].to_string()
-    let cmd_unescaped = cmd.replace(old="\\\\", new="\\").replace(
-      old="\\\"", new="\"",
-    )
-    let out_path = "/tmp/vibe-shell-cmd-" +
-      @env.now().to_string() +
-      ".out"
+    let cmd_unescaped = cmd
+      .replace(old="\\\\", new="\\")
+      .replace(old="\\\"", new="\"")
+    let out_path = "/tmp/vibe-shell-cmd-" + @env.now().to_string() + ".out"
     let err_path = out_path + ".err"
     let shell_cmd = cmd_unescaped +
       " >" +

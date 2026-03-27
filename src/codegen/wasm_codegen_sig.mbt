@@ -1803,13 +1803,28 @@ fn import_index_fs_host_append(ctx : CodegenCtx) -> Int raise WasmGenError {
 }
 
 ///|
+fn import_index_fs_host_open_write(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_host_read_file(ctx) + 16
+}
+
+///|
+fn import_index_fs_host_write_chunk(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_host_read_file(ctx) + 17
+}
+
+///|
+fn import_index_fs_host_close_write(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_host_read_file(ctx) + 18
+}
+
+///|
 fn import_index_after_fs(ctx : CodegenCtx) -> Int {
   let mut idx = import_index_after_stdin(ctx)
   if ctx.need_fs && not(ctx.fs_host_imports) {
     idx += 7
   }
   if ctx.need_fs && ctx.fs_host_imports {
-    idx += 16
+    idx += 19
   }
   if ctx.need_fs && ctx.fs_host_imports {
     // Json host imports: json_parse, json_stringify
@@ -1825,7 +1840,7 @@ fn import_index_json_host_parse(ctx : CodegenCtx) -> Int raise WasmGenError {
   }
   let mut idx = import_index_after_stdin(ctx)
   if ctx.need_fs && ctx.fs_host_imports {
-    idx += 16
+    idx += 19
   }
   idx
 }

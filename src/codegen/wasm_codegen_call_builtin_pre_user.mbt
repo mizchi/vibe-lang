@@ -4418,9 +4418,7 @@ fn compile_call_builtin_pre_user_inner(
       // string_builder() -> allocate empty array obj with len=0 (same layout as array_builder)
       // Uses hidden capacity prefix at obj_ptr-4 for grow-on-overflow in push.
       let obj_local = alloc_temp_local(ctx)
-      emit_builder_alloc(
-        ctx, buf, builder_initial_cap, 4, obj_array, obj_local,
-      )
+      emit_builder_alloc(ctx, buf, builder_initial_cap, 4, obj_array, obj_local)
       emit_local_get(buf, obj_local)
       emit_i64_extend_i32_u(buf)
       emit_i64_const_raw(buf, tag_obj.to_int64())
@@ -4610,9 +4608,7 @@ fn compile_call_builtin_pre_user_inner(
       // array_builder() -> allocate empty array obj with len=0
       // Uses hidden capacity prefix at obj_ptr-4 for grow-on-overflow in push.
       let obj_local = alloc_temp_local(ctx)
-      emit_builder_alloc(
-        ctx, buf, builder_initial_cap, 4, obj_array, obj_local,
-      )
+      emit_builder_alloc(ctx, buf, builder_initial_cap, 4, obj_array, obj_local)
       emit_local_get(buf, obj_local)
       emit_i64_extend_i32_u(buf)
       emit_i64_const_raw(buf, tag_obj.to_int64())
@@ -5023,9 +5019,7 @@ fn compile_call_builtin_pre_user_inner(
       // MapBuilder::new() -> allocate empty map obj with len=0
       // Uses hidden capacity prefix at obj_ptr-4 for grow-on-overflow in set.
       let obj_local = alloc_temp_local(ctx)
-      emit_builder_alloc(
-        ctx, buf, builder_initial_cap, 8, obj_map, obj_local,
-      )
+      emit_builder_alloc(ctx, buf, builder_initial_cap, 8, obj_map, obj_local)
       emit_local_get(buf, obj_local)
       emit_i64_extend_i32_u(buf)
       emit_i64_const_raw(buf, tag_obj.to_int64())
@@ -7354,70 +7348,74 @@ fn compile_call_builtin_pre_user_inner(
         raise WasmGenError::Unsupported("Fs::exists requires --wasm backend")
       }
       if ctx.fs_host_imports {
-        let pos_args = extract_positional_exprs_with_arity(args, "Fs::exists", 1)
+        let pos_args = extract_positional_exprs_with_arity(
+          args, "Fs::exists", 1,
+        )
         compile_expr(ctx, buf, pos_args[0])
         emit_heap_pre_call_sync(ctx, buf)
         emit_call(buf, import_index_fs_host_exists(ctx))
         emit_heap_post_call_sync(ctx, buf)
       } else {
-      let pos_args = extract_positional_exprs_with_arity(args, "Fs::exists", 1)
-      require_heap(ctx)
-      let raw_local = alloc_temp_local(ctx)
-      let len_local = alloc_temp_local(ctx)
-      let ret_area_local = alloc_temp_local(ctx)
-      let root_desc_local = alloc_temp_local(ctx)
-      let fs_global = fs_root_descriptor_global_index(ctx)
-      // Initialize root descriptor if needed
-      emit_global_get(buf, fs_global)
-      emit_i32_const_raw(buf, -1)
-      emit_i32_eq(buf)
-      buf.push((4).to_byte()) // if
-      buf.push((64).to_byte()) // void
-      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
-      emit_local_get(buf, ret_area_local)
-      emit_heap_pre_call_sync(ctx, buf)
-      emit_call(buf, import_index_fs_get_directories(ctx))
-      emit_heap_post_call_sync(ctx, buf)
-      // Load first descriptor from list: retptr[0]=list_ptr, retptr[4]=list_len
-      emit_local_get(buf, ret_area_local)
-      emit_i32_load(buf, 0)
-      emit_i32_load(buf, 0) // first entry: descriptor handle at [list_ptr+0]
-      emit_global_set(buf, fs_global)
-      buf.push((11).to_byte()) // end if
-      emit_global_get(buf, fs_global)
-      emit_local_set(buf, root_desc_local)
-      // Extract path string: raw_ptr, len
-      compile_expr_i32(ctx, buf, pos_args[0])
-      emit_untag_ptr_i32(buf)
-      emit_local_set(buf, raw_local)
-      emit_local_get(buf, raw_local)
-      emit_i32_load(buf, 4) // len
-      emit_local_set(buf, len_local)
-      // Allocate retptr for stat-at result (needs ~96 bytes)
-      emit_heap_alloc(ctx, buf, align4(96), ret_area_local)
-      // Sync heap before WASI call
-      emit_heap_pre_call_sync(ctx, buf)
-      // stat-at(root_desc, 0, path_ptr, path_len, retptr)
-      emit_local_get(buf, root_desc_local)
-      emit_i32_const_raw(buf, 0) // path-flags: no symlink follow
-      emit_local_get(buf, raw_local)
-      emit_i32_const_raw(buf, 8)
-      emit_i32_add(buf) // path data ptr
-      emit_local_get(buf, len_local)
-      emit_local_get(buf, ret_area_local)
-      emit_call(buf, import_index_fs_stat_at(ctx))
-      // Reload heap after WASI call
-      emit_heap_post_call_sync(ctx, buf)
-      // Check discriminant: 0=ok (exists), 1=err (not exists)
-      emit_local_get(buf, ret_area_local)
-      emit_i32_load8_u(buf, 0)
-      emit_i32_eqz(buf) // 0 means ok -> true
-      buf.push((4).to_byte()) // if
-      buf.push((126).to_byte()) // result i64
-      emit_i64_const_raw(buf, tag_int_value64(1L)) // true
-      buf.push((5).to_byte()) // else
-      emit_i64_const_raw(buf, tag_int_value64(0L)) // false
-      buf.push((11).to_byte()) // end if
+        let pos_args = extract_positional_exprs_with_arity(
+          args, "Fs::exists", 1,
+        )
+        require_heap(ctx)
+        let raw_local = alloc_temp_local(ctx)
+        let len_local = alloc_temp_local(ctx)
+        let ret_area_local = alloc_temp_local(ctx)
+        let root_desc_local = alloc_temp_local(ctx)
+        let fs_global = fs_root_descriptor_global_index(ctx)
+        // Initialize root descriptor if needed
+        emit_global_get(buf, fs_global)
+        emit_i32_const_raw(buf, -1)
+        emit_i32_eq(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+        emit_local_get(buf, ret_area_local)
+        emit_heap_pre_call_sync(ctx, buf)
+        emit_call(buf, import_index_fs_get_directories(ctx))
+        emit_heap_post_call_sync(ctx, buf)
+        // Load first descriptor from list: retptr[0]=list_ptr, retptr[4]=list_len
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load(buf, 0)
+        emit_i32_load(buf, 0) // first entry: descriptor handle at [list_ptr+0]
+        emit_global_set(buf, fs_global)
+        buf.push((11).to_byte()) // end if
+        emit_global_get(buf, fs_global)
+        emit_local_set(buf, root_desc_local)
+        // Extract path string: raw_ptr, len
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_untag_ptr_i32(buf)
+        emit_local_set(buf, raw_local)
+        emit_local_get(buf, raw_local)
+        emit_i32_load(buf, 4) // len
+        emit_local_set(buf, len_local)
+        // Allocate retptr for stat-at result (needs ~96 bytes)
+        emit_heap_alloc(ctx, buf, align4(96), ret_area_local)
+        // Sync heap before WASI call
+        emit_heap_pre_call_sync(ctx, buf)
+        // stat-at(root_desc, 0, path_ptr, path_len, retptr)
+        emit_local_get(buf, root_desc_local)
+        emit_i32_const_raw(buf, 0) // path-flags: no symlink follow
+        emit_local_get(buf, raw_local)
+        emit_i32_const_raw(buf, 8)
+        emit_i32_add(buf) // path data ptr
+        emit_local_get(buf, len_local)
+        emit_local_get(buf, ret_area_local)
+        emit_call(buf, import_index_fs_stat_at(ctx))
+        // Reload heap after WASI call
+        emit_heap_post_call_sync(ctx, buf)
+        // Check discriminant: 0=ok (exists), 1=err (not exists)
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load8_u(buf, 0)
+        emit_i32_eqz(buf) // 0 means ok -> true
+        buf.push((4).to_byte()) // if
+        buf.push((126).to_byte()) // result i64
+        emit_i64_const_raw(buf, tag_int_value64(1L)) // true
+        buf.push((5).to_byte()) // else
+        emit_i64_const_raw(buf, tag_int_value64(0L)) // false
+        buf.push((11).to_byte()) // end if
       } // end else (WASI path)
     }
     "Fs::stat_token" => {
@@ -7435,66 +7433,66 @@ fn compile_call_builtin_pre_user_inner(
         emit_call(buf, import_index_fs_host_stat_token(ctx))
         emit_heap_post_call_sync(ctx, buf)
       } else {
-      let pos_args = extract_positional_exprs_with_arity(
-        args, "Fs::stat_token", 1,
-      )
-      require_heap(ctx)
-      let raw_local = alloc_temp_local(ctx)
-      let len_local = alloc_temp_local(ctx)
-      let ret_area_local = alloc_temp_local(ctx)
-      let root_desc_local = alloc_temp_local(ctx)
-      let fs_global = fs_root_descriptor_global_index(ctx)
-      emit_global_get(buf, fs_global)
-      emit_i32_const_raw(buf, -1)
-      emit_i32_eq(buf)
-      buf.push((4).to_byte()) // if
-      buf.push((64).to_byte()) // void
-      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
-      emit_local_get(buf, ret_area_local)
-      emit_heap_pre_call_sync(ctx, buf)
-      emit_call(buf, import_index_fs_get_directories(ctx))
-      emit_heap_post_call_sync(ctx, buf)
-      emit_local_get(buf, ret_area_local)
-      emit_i32_load(buf, 0)
-      emit_i32_load(buf, 0)
-      emit_global_set(buf, fs_global)
-      buf.push((11).to_byte()) // end if
-      emit_global_get(buf, fs_global)
-      emit_local_set(buf, root_desc_local)
-      compile_expr_i32(ctx, buf, pos_args[0])
-      emit_untag_ptr_i32(buf)
-      emit_local_set(buf, raw_local)
-      emit_local_get(buf, raw_local)
-      emit_i32_load(buf, 4)
-      emit_local_set(buf, len_local)
-      emit_heap_alloc(ctx, buf, align4(24), ret_area_local)
-      emit_heap_pre_call_sync(ctx, buf)
-      emit_local_get(buf, root_desc_local)
-      emit_i32_const_raw(buf, 0)
-      emit_local_get(buf, raw_local)
-      emit_i32_const_raw(buf, 8)
-      emit_i32_add(buf)
-      emit_local_get(buf, len_local)
-      emit_local_get(buf, ret_area_local)
-      emit_call(buf, import_index_fs_metadata_hash_at(ctx))
-      emit_heap_post_call_sync(ctx, buf)
-      emit_local_get(buf, ret_area_local)
-      emit_i32_load8_u(buf, 0)
-      emit_i32_eqz(buf)
-      buf.push((4).to_byte()) // if
-      buf.push((126).to_byte()) // result i64
-      emit_local_get(buf, ret_area_local)
-      emit_i64_load(buf, 8)
-      emit_local_get(buf, ret_area_local)
-      emit_i64_load(buf, 16)
-      emit_i64_xor(buf)
-      emit_i64_const_raw(buf, 2305843009213693951L)
-      emit_i64_and(buf)
-      emit_i64_const_raw(buf, 2L)
-      emit_i64_shl(buf)
-      buf.push((5).to_byte()) // else
-      emit_i64_const_raw(buf, tag_int_value64(0L))
-      buf.push((11).to_byte()) // end if
+        let pos_args = extract_positional_exprs_with_arity(
+          args, "Fs::stat_token", 1,
+        )
+        require_heap(ctx)
+        let raw_local = alloc_temp_local(ctx)
+        let len_local = alloc_temp_local(ctx)
+        let ret_area_local = alloc_temp_local(ctx)
+        let root_desc_local = alloc_temp_local(ctx)
+        let fs_global = fs_root_descriptor_global_index(ctx)
+        emit_global_get(buf, fs_global)
+        emit_i32_const_raw(buf, -1)
+        emit_i32_eq(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+        emit_local_get(buf, ret_area_local)
+        emit_heap_pre_call_sync(ctx, buf)
+        emit_call(buf, import_index_fs_get_directories(ctx))
+        emit_heap_post_call_sync(ctx, buf)
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load(buf, 0)
+        emit_i32_load(buf, 0)
+        emit_global_set(buf, fs_global)
+        buf.push((11).to_byte()) // end if
+        emit_global_get(buf, fs_global)
+        emit_local_set(buf, root_desc_local)
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_untag_ptr_i32(buf)
+        emit_local_set(buf, raw_local)
+        emit_local_get(buf, raw_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, len_local)
+        emit_heap_alloc(ctx, buf, align4(24), ret_area_local)
+        emit_heap_pre_call_sync(ctx, buf)
+        emit_local_get(buf, root_desc_local)
+        emit_i32_const_raw(buf, 0)
+        emit_local_get(buf, raw_local)
+        emit_i32_const_raw(buf, 8)
+        emit_i32_add(buf)
+        emit_local_get(buf, len_local)
+        emit_local_get(buf, ret_area_local)
+        emit_call(buf, import_index_fs_metadata_hash_at(ctx))
+        emit_heap_post_call_sync(ctx, buf)
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load8_u(buf, 0)
+        emit_i32_eqz(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((126).to_byte()) // result i64
+        emit_local_get(buf, ret_area_local)
+        emit_i64_load(buf, 8)
+        emit_local_get(buf, ret_area_local)
+        emit_i64_load(buf, 16)
+        emit_i64_xor(buf)
+        emit_i64_const_raw(buf, 2305843009213693951L)
+        emit_i64_and(buf)
+        emit_i64_const_raw(buf, 2L)
+        emit_i64_shl(buf)
+        buf.push((5).to_byte()) // else
+        emit_i64_const_raw(buf, tag_int_value64(0L))
+        buf.push((11).to_byte()) // end if
       } // end else (WASI path)
     }
     "Fs::read_file" => {
@@ -7510,181 +7508,181 @@ fn compile_call_builtin_pre_user_inner(
         emit_call(buf, import_index_fs_host_read_file(ctx))
         emit_heap_post_call_sync(ctx, buf)
       } else {
-      let pos_args = extract_positional_exprs_with_arity(
-        args, "Fs::read_file", 1,
-      )
-      require_heap(ctx)
-      let raw_local = alloc_temp_local(ctx)
-      let len_local = alloc_temp_local(ctx)
-      let ret_area_local = alloc_temp_local(ctx)
-      let root_desc_local = alloc_temp_local(ctx)
-      let opened_desc_local = alloc_temp_local(ctx)
-      let data_ptr_local = alloc_temp_local(ctx)
-      let data_len_local = alloc_temp_local(ctx)
-      let obj_local = alloc_temp_local(ctx)
-      let copy_i_local = alloc_temp_local(ctx)
-      let alloc_size_local = alloc_temp_local(ctx)
-      let fs_global = fs_root_descriptor_global_index(ctx)
-      // Initialize root descriptor if needed
-      emit_global_get(buf, fs_global)
-      emit_i32_const_raw(buf, -1)
-      emit_i32_eq(buf)
-      buf.push((4).to_byte()) // if
-      buf.push((64).to_byte()) // void
-      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
-      emit_local_get(buf, ret_area_local)
-      emit_heap_pre_call_sync(ctx, buf)
-      emit_call(buf, import_index_fs_get_directories(ctx))
-      emit_heap_post_call_sync(ctx, buf)
-      emit_local_get(buf, ret_area_local)
-      emit_i32_load(buf, 0)
-      emit_i32_load(buf, 0)
-      emit_global_set(buf, fs_global)
-      buf.push((11).to_byte()) // end if
-      emit_global_get(buf, fs_global)
-      emit_local_set(buf, root_desc_local)
-      // Extract path string
-      compile_expr_i32(ctx, buf, pos_args[0])
-      emit_untag_ptr_i32(buf)
-      emit_local_set(buf, raw_local)
-      emit_local_get(buf, raw_local)
-      emit_i32_load(buf, 4) // len
-      emit_local_set(buf, len_local)
-      // Allocate retptr for open-at result
-      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
-      // Sync heap
-      emit_heap_pre_call_sync(ctx, buf)
-      // open-at(root_desc, 0, path_ptr, path_len, 0, 1, retptr)
-      // open-flags=0 (none), desc-flags=1 (read)
-      emit_local_get(buf, root_desc_local)
-      emit_i32_const_raw(buf, 0) // path-flags
-      emit_local_get(buf, raw_local)
-      emit_i32_const_raw(buf, 8)
-      emit_i32_add(buf) // path data ptr
-      emit_local_get(buf, len_local)
-      emit_i32_const_raw(buf, 0) // open-flags: none
-      emit_i32_const_raw(buf, 1) // desc-flags: read
-      emit_local_get(buf, ret_area_local)
-      emit_call(buf, import_index_fs_open_at(ctx))
-      // Reload heap
-      emit_heap_post_call_sync(ctx, buf)
-      // Check open result: retptr[0] discriminant
-      emit_local_get(buf, ret_area_local)
-      emit_i32_load8_u(buf, 0)
-      emit_i32_eqz(buf)
-      buf.push((4).to_byte()) // if (ok)
-      buf.push((126).to_byte()) // result i64
-      // opened_desc = retptr[4]
-      emit_local_get(buf, ret_area_local)
-      emit_i32_load(buf, 4)
-      emit_local_set(buf, opened_desc_local)
-      // Allocate retptr for read result
-      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
-      // Sync heap
-      emit_heap_pre_call_sync(ctx, buf)
-      // read(opened_desc, max_len=0x7FFFFFFF, offset=0, retptr)
-      emit_local_get(buf, opened_desc_local)
-      // i64.const 0x7FFFFFFF (max read length)
-      buf.push((66).to_byte())
-      write_i64_leb(buf, 0x7FFFFFFFL)
-      // i64.const 0 (offset)
-      buf.push((66).to_byte())
-      buf.push((0).to_byte())
-      emit_local_get(buf, ret_area_local)
-      emit_call(buf, import_index_fs_read(ctx))
-      // Reload heap
-      emit_heap_post_call_sync(ctx, buf)
-      // resource-drop opened descriptor
-      emit_local_get(buf, opened_desc_local)
-      emit_heap_pre_call_sync(ctx, buf)
-      emit_call(buf, import_index_fs_resource_drop(ctx))
-      emit_heap_post_call_sync(ctx, buf)
-      // Check read result: retptr[0] discriminant
-      emit_local_get(buf, ret_area_local)
-      emit_i32_load8_u(buf, 0)
-      emit_i32_eqz(buf)
-      buf.push((4).to_byte()) // if (ok)
-      buf.push((126).to_byte()) // result i64
-      // data_ptr = retptr[4], data_len = retptr[8]
-      emit_local_get(buf, ret_area_local)
-      emit_i32_load(buf, 4)
-      emit_local_set(buf, data_ptr_local)
-      emit_local_get(buf, ret_area_local)
-      emit_i32_load(buf, 8)
-      emit_local_set(buf, data_len_local)
-      // Allocate vibe string: align4(8 + data_len)
-      emit_local_get(buf, data_len_local)
-      emit_i32_const_raw(buf, 11) // (len + 8 + 3) & ~3 == (len + 11) & -4
-      emit_i32_add(buf)
-      emit_i32_const_raw(buf, -4)
-      emit_i32_and(buf)
-      emit_local_set(buf, alloc_size_local)
-      emit_heap_alloc_local(ctx, buf, alloc_size_local, obj_local)
-      // Write string header
-      emit_local_get(buf, obj_local)
-      emit_i32_const_raw(buf, obj_string) // tag = obj_string
-      emit_i32_store(buf, 0)
-      emit_local_get(buf, obj_local)
-      emit_local_get(buf, data_len_local)
-      emit_i32_store(buf, 4)
-      // Copy bytes from data_ptr to obj+8
-      emit_i32_const_raw(buf, 0)
-      emit_local_set(buf, copy_i_local)
-      emit_block(buf)
-      emit_loop(buf)
-      emit_local_get(buf, copy_i_local)
-      emit_local_get(buf, data_len_local)
-      emit_i32_lt_s(buf)
-      emit_i32_eqz(buf)
-      emit_br_if(buf, 1)
-      emit_local_get(buf, obj_local)
-      emit_local_get(buf, copy_i_local)
-      emit_i32_add(buf)
-      emit_local_get(buf, data_ptr_local)
-      emit_local_get(buf, copy_i_local)
-      emit_i32_add(buf)
-      emit_i32_load8_u(buf, 0)
-      emit_i32_store8(buf, 8)
-      emit_local_get(buf, copy_i_local)
-      emit_i32_const_raw(buf, 1)
-      emit_i32_add(buf)
-      emit_local_set(buf, copy_i_local)
-      emit_br(buf, 0)
-      emit_end(buf)
-      emit_end(buf)
-      // Return tagged string pointer
-      emit_local_get(buf, obj_local)
-      emit_i64_extend_i32_u(buf)
-      emit_i64_const_raw(buf, tag_obj.to_int64())
-      emit_i64_or(buf)
-      buf.push((5).to_byte()) // else (read error)
-      // Return empty string on read error
-      emit_heap_alloc(ctx, buf, align4(8), obj_local)
-      emit_local_get(buf, obj_local)
-      emit_i32_const_raw(buf, obj_string)
-      emit_i32_store(buf, 0)
-      emit_local_get(buf, obj_local)
-      emit_i32_const_raw(buf, 0)
-      emit_i32_store(buf, 4)
-      emit_local_get(buf, obj_local)
-      emit_i64_extend_i32_u(buf)
-      emit_i64_const_raw(buf, tag_obj.to_int64())
-      emit_i64_or(buf)
-      buf.push((11).to_byte()) // end if (read)
-      buf.push((5).to_byte()) // else (open error)
-      // Return empty string on open error
-      emit_heap_alloc(ctx, buf, align4(8), obj_local)
-      emit_local_get(buf, obj_local)
-      emit_i32_const_raw(buf, obj_string)
-      emit_i32_store(buf, 0)
-      emit_local_get(buf, obj_local)
-      emit_i32_const_raw(buf, 0)
-      emit_i32_store(buf, 4)
-      emit_local_get(buf, obj_local)
-      emit_i64_extend_i32_u(buf)
-      emit_i64_const_raw(buf, tag_obj.to_int64())
-      emit_i64_or(buf)
-      buf.push((11).to_byte()) // end if (open)
+        let pos_args = extract_positional_exprs_with_arity(
+          args, "Fs::read_file", 1,
+        )
+        require_heap(ctx)
+        let raw_local = alloc_temp_local(ctx)
+        let len_local = alloc_temp_local(ctx)
+        let ret_area_local = alloc_temp_local(ctx)
+        let root_desc_local = alloc_temp_local(ctx)
+        let opened_desc_local = alloc_temp_local(ctx)
+        let data_ptr_local = alloc_temp_local(ctx)
+        let data_len_local = alloc_temp_local(ctx)
+        let obj_local = alloc_temp_local(ctx)
+        let copy_i_local = alloc_temp_local(ctx)
+        let alloc_size_local = alloc_temp_local(ctx)
+        let fs_global = fs_root_descriptor_global_index(ctx)
+        // Initialize root descriptor if needed
+        emit_global_get(buf, fs_global)
+        emit_i32_const_raw(buf, -1)
+        emit_i32_eq(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+        emit_local_get(buf, ret_area_local)
+        emit_heap_pre_call_sync(ctx, buf)
+        emit_call(buf, import_index_fs_get_directories(ctx))
+        emit_heap_post_call_sync(ctx, buf)
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load(buf, 0)
+        emit_i32_load(buf, 0)
+        emit_global_set(buf, fs_global)
+        buf.push((11).to_byte()) // end if
+        emit_global_get(buf, fs_global)
+        emit_local_set(buf, root_desc_local)
+        // Extract path string
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_untag_ptr_i32(buf)
+        emit_local_set(buf, raw_local)
+        emit_local_get(buf, raw_local)
+        emit_i32_load(buf, 4) // len
+        emit_local_set(buf, len_local)
+        // Allocate retptr for open-at result
+        emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+        // Sync heap
+        emit_heap_pre_call_sync(ctx, buf)
+        // open-at(root_desc, 0, path_ptr, path_len, 0, 1, retptr)
+        // open-flags=0 (none), desc-flags=1 (read)
+        emit_local_get(buf, root_desc_local)
+        emit_i32_const_raw(buf, 0) // path-flags
+        emit_local_get(buf, raw_local)
+        emit_i32_const_raw(buf, 8)
+        emit_i32_add(buf) // path data ptr
+        emit_local_get(buf, len_local)
+        emit_i32_const_raw(buf, 0) // open-flags: none
+        emit_i32_const_raw(buf, 1) // desc-flags: read
+        emit_local_get(buf, ret_area_local)
+        emit_call(buf, import_index_fs_open_at(ctx))
+        // Reload heap
+        emit_heap_post_call_sync(ctx, buf)
+        // Check open result: retptr[0] discriminant
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load8_u(buf, 0)
+        emit_i32_eqz(buf)
+        buf.push((4).to_byte()) // if (ok)
+        buf.push((126).to_byte()) // result i64
+        // opened_desc = retptr[4]
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, opened_desc_local)
+        // Allocate retptr for read result
+        emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+        // Sync heap
+        emit_heap_pre_call_sync(ctx, buf)
+        // read(opened_desc, max_len=0x7FFFFFFF, offset=0, retptr)
+        emit_local_get(buf, opened_desc_local)
+        // i64.const 0x7FFFFFFF (max read length)
+        buf.push((66).to_byte())
+        write_i64_leb(buf, 0x7FFFFFFFL)
+        // i64.const 0 (offset)
+        buf.push((66).to_byte())
+        buf.push((0).to_byte())
+        emit_local_get(buf, ret_area_local)
+        emit_call(buf, import_index_fs_read(ctx))
+        // Reload heap
+        emit_heap_post_call_sync(ctx, buf)
+        // resource-drop opened descriptor
+        emit_local_get(buf, opened_desc_local)
+        emit_heap_pre_call_sync(ctx, buf)
+        emit_call(buf, import_index_fs_resource_drop(ctx))
+        emit_heap_post_call_sync(ctx, buf)
+        // Check read result: retptr[0] discriminant
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load8_u(buf, 0)
+        emit_i32_eqz(buf)
+        buf.push((4).to_byte()) // if (ok)
+        buf.push((126).to_byte()) // result i64
+        // data_ptr = retptr[4], data_len = retptr[8]
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, data_ptr_local)
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load(buf, 8)
+        emit_local_set(buf, data_len_local)
+        // Allocate vibe string: align4(8 + data_len)
+        emit_local_get(buf, data_len_local)
+        emit_i32_const_raw(buf, 11) // (len + 8 + 3) & ~3 == (len + 11) & -4
+        emit_i32_add(buf)
+        emit_i32_const_raw(buf, -4)
+        emit_i32_and(buf)
+        emit_local_set(buf, alloc_size_local)
+        emit_heap_alloc_local(ctx, buf, alloc_size_local, obj_local)
+        // Write string header
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, obj_string) // tag = obj_string
+        emit_i32_store(buf, 0)
+        emit_local_get(buf, obj_local)
+        emit_local_get(buf, data_len_local)
+        emit_i32_store(buf, 4)
+        // Copy bytes from data_ptr to obj+8
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, copy_i_local)
+        emit_block(buf)
+        emit_loop(buf)
+        emit_local_get(buf, copy_i_local)
+        emit_local_get(buf, data_len_local)
+        emit_i32_lt_s(buf)
+        emit_i32_eqz(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, obj_local)
+        emit_local_get(buf, copy_i_local)
+        emit_i32_add(buf)
+        emit_local_get(buf, data_ptr_local)
+        emit_local_get(buf, copy_i_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 0)
+        emit_i32_store8(buf, 8)
+        emit_local_get(buf, copy_i_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, copy_i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        // Return tagged string pointer
+        emit_local_get(buf, obj_local)
+        emit_i64_extend_i32_u(buf)
+        emit_i64_const_raw(buf, tag_obj.to_int64())
+        emit_i64_or(buf)
+        buf.push((5).to_byte()) // else (read error)
+        // Return empty string on read error
+        emit_heap_alloc(ctx, buf, align4(8), obj_local)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, obj_string)
+        emit_i32_store(buf, 0)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, 0)
+        emit_i32_store(buf, 4)
+        emit_local_get(buf, obj_local)
+        emit_i64_extend_i32_u(buf)
+        emit_i64_const_raw(buf, tag_obj.to_int64())
+        emit_i64_or(buf)
+        buf.push((11).to_byte()) // end if (read)
+        buf.push((5).to_byte()) // else (open error)
+        // Return empty string on open error
+        emit_heap_alloc(ctx, buf, align4(8), obj_local)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, obj_string)
+        emit_i32_store(buf, 0)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, 0)
+        emit_i32_store(buf, 4)
+        emit_local_get(buf, obj_local)
+        emit_i64_extend_i32_u(buf)
+        emit_i64_const_raw(buf, tag_obj.to_int64())
+        emit_i64_or(buf)
+        buf.push((11).to_byte()) // end if (open)
       } // end else (WASI path)
     }
     "Fs::write_file" => {
@@ -7703,105 +7701,105 @@ fn compile_call_builtin_pre_user_inner(
         emit_call(buf, import_index_fs_host_write_file(ctx))
         emit_heap_post_call_sync(ctx, buf)
       } else {
-      let pos_args = extract_positional_exprs_with_arity(
-        args, "Fs::write_file", 2,
-      )
-      require_heap(ctx)
-      let path_raw_local = alloc_temp_local(ctx)
-      let path_len_local = alloc_temp_local(ctx)
-      let content_raw_local = alloc_temp_local(ctx)
-      let content_len_local = alloc_temp_local(ctx)
-      let ret_area_local = alloc_temp_local(ctx)
-      let root_desc_local = alloc_temp_local(ctx)
-      let opened_desc_local = alloc_temp_local(ctx)
-      let fs_global = fs_root_descriptor_global_index(ctx)
-      // Initialize root descriptor if needed
-      emit_global_get(buf, fs_global)
-      emit_i32_const_raw(buf, -1)
-      emit_i32_eq(buf)
-      buf.push((4).to_byte()) // if
-      buf.push((64).to_byte()) // void
-      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
-      emit_local_get(buf, ret_area_local)
-      emit_heap_pre_call_sync(ctx, buf)
-      emit_call(buf, import_index_fs_get_directories(ctx))
-      emit_heap_post_call_sync(ctx, buf)
-      emit_local_get(buf, ret_area_local)
-      emit_i32_load(buf, 0)
-      emit_i32_load(buf, 0)
-      emit_global_set(buf, fs_global)
-      buf.push((11).to_byte()) // end if
-      emit_global_get(buf, fs_global)
-      emit_local_set(buf, root_desc_local)
-      // Extract path string
-      compile_expr_i32(ctx, buf, pos_args[0])
-      emit_untag_ptr_i32(buf)
-      emit_local_set(buf, path_raw_local)
-      emit_local_get(buf, path_raw_local)
-      emit_i32_load(buf, 4)
-      emit_local_set(buf, path_len_local)
-      // Extract content string
-      compile_expr_i32(ctx, buf, pos_args[1])
-      emit_untag_ptr_i32(buf)
-      emit_local_set(buf, content_raw_local)
-      emit_local_get(buf, content_raw_local)
-      emit_i32_load(buf, 4)
-      emit_local_set(buf, content_len_local)
-      // Allocate retptr for open-at result
-      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
-      // Sync heap
-      emit_heap_pre_call_sync(ctx, buf)
-      // open-at(root_desc, 0, path_ptr, path_len, 5, 2, retptr)
-      // open-flags=5 (create|truncate), desc-flags=2 (write)
-      emit_local_get(buf, root_desc_local)
-      emit_i32_const_raw(buf, 0) // path-flags
-      emit_local_get(buf, path_raw_local)
-      emit_i32_const_raw(buf, 8)
-      emit_i32_add(buf) // path data ptr
-      emit_local_get(buf, path_len_local)
-      emit_i32_const_raw(buf, 5) // open-flags: create(1) | truncate(4) = 5
-      emit_i32_const_raw(buf, 2) // desc-flags: write(2)
-      emit_local_get(buf, ret_area_local)
-      emit_call(buf, import_index_fs_open_at(ctx))
-      // Reload heap
-      emit_heap_post_call_sync(ctx, buf)
-      // Check open result
-      emit_local_get(buf, ret_area_local)
-      emit_i32_load8_u(buf, 0)
-      emit_i32_eqz(buf)
-      buf.push((4).to_byte()) // if (ok)
-      buf.push((126).to_byte()) // result i64
-      // opened_desc = retptr[4]
-      emit_local_get(buf, ret_area_local)
-      emit_i32_load(buf, 4)
-      emit_local_set(buf, opened_desc_local)
-      // Allocate retptr for write result
-      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
-      // Sync heap
-      emit_heap_pre_call_sync(ctx, buf)
-      // write(opened_desc, content_data_ptr, content_len, offset=0, retptr)
-      emit_local_get(buf, opened_desc_local)
-      emit_local_get(buf, content_raw_local)
-      emit_i32_const_raw(buf, 8)
-      emit_i32_add(buf) // content data ptr
-      emit_local_get(buf, content_len_local)
-      // i64.const 0 (offset)
-      buf.push((66).to_byte())
-      buf.push((0).to_byte())
-      emit_local_get(buf, ret_area_local)
-      emit_call(buf, import_index_fs_write(ctx))
-      // Reload heap
-      emit_heap_post_call_sync(ctx, buf)
-      // resource-drop opened descriptor
-      emit_local_get(buf, opened_desc_local)
-      emit_heap_pre_call_sync(ctx, buf)
-      emit_call(buf, import_index_fs_resource_drop(ctx))
-      emit_heap_post_call_sync(ctx, buf)
-      // Return Unit
-      emit_i64_const_raw(buf, tag_int_value64(0L))
-      buf.push((5).to_byte()) // else (open error)
-      emit_i64_const_raw(buf, tag_int_value64(0L))
-      buf.push((11).to_byte()) // end if
+        let pos_args = extract_positional_exprs_with_arity(
+          args, "Fs::write_file", 2,
+        )
+        require_heap(ctx)
+        let path_raw_local = alloc_temp_local(ctx)
+        let path_len_local = alloc_temp_local(ctx)
+        let content_raw_local = alloc_temp_local(ctx)
+        let content_len_local = alloc_temp_local(ctx)
+        let ret_area_local = alloc_temp_local(ctx)
+        let root_desc_local = alloc_temp_local(ctx)
+        let opened_desc_local = alloc_temp_local(ctx)
+        let fs_global = fs_root_descriptor_global_index(ctx)
+        // Initialize root descriptor if needed
+        emit_global_get(buf, fs_global)
+        emit_i32_const_raw(buf, -1)
+        emit_i32_eq(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+        emit_local_get(buf, ret_area_local)
+        emit_heap_pre_call_sync(ctx, buf)
+        emit_call(buf, import_index_fs_get_directories(ctx))
+        emit_heap_post_call_sync(ctx, buf)
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load(buf, 0)
+        emit_i32_load(buf, 0)
+        emit_global_set(buf, fs_global)
+        buf.push((11).to_byte()) // end if
+        emit_global_get(buf, fs_global)
+        emit_local_set(buf, root_desc_local)
+        // Extract path string
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_untag_ptr_i32(buf)
+        emit_local_set(buf, path_raw_local)
+        emit_local_get(buf, path_raw_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, path_len_local)
+        // Extract content string
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_untag_ptr_i32(buf)
+        emit_local_set(buf, content_raw_local)
+        emit_local_get(buf, content_raw_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, content_len_local)
+        // Allocate retptr for open-at result
+        emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+        // Sync heap
+        emit_heap_pre_call_sync(ctx, buf)
+        // open-at(root_desc, 0, path_ptr, path_len, 5, 2, retptr)
+        // open-flags=5 (create|truncate), desc-flags=2 (write)
+        emit_local_get(buf, root_desc_local)
+        emit_i32_const_raw(buf, 0) // path-flags
+        emit_local_get(buf, path_raw_local)
+        emit_i32_const_raw(buf, 8)
+        emit_i32_add(buf) // path data ptr
+        emit_local_get(buf, path_len_local)
+        emit_i32_const_raw(buf, 5) // open-flags: create(1) | truncate(4) = 5
+        emit_i32_const_raw(buf, 2) // desc-flags: write(2)
+        emit_local_get(buf, ret_area_local)
+        emit_call(buf, import_index_fs_open_at(ctx))
+        // Reload heap
+        emit_heap_post_call_sync(ctx, buf)
+        // Check open result
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load8_u(buf, 0)
+        emit_i32_eqz(buf)
+        buf.push((4).to_byte()) // if (ok)
+        buf.push((126).to_byte()) // result i64
+        // opened_desc = retptr[4]
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, opened_desc_local)
+        // Allocate retptr for write result
+        emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+        // Sync heap
+        emit_heap_pre_call_sync(ctx, buf)
+        // write(opened_desc, content_data_ptr, content_len, offset=0, retptr)
+        emit_local_get(buf, opened_desc_local)
+        emit_local_get(buf, content_raw_local)
+        emit_i32_const_raw(buf, 8)
+        emit_i32_add(buf) // content data ptr
+        emit_local_get(buf, content_len_local)
+        // i64.const 0 (offset)
+        buf.push((66).to_byte())
+        buf.push((0).to_byte())
+        emit_local_get(buf, ret_area_local)
+        emit_call(buf, import_index_fs_write(ctx))
+        // Reload heap
+        emit_heap_post_call_sync(ctx, buf)
+        // resource-drop opened descriptor
+        emit_local_get(buf, opened_desc_local)
+        emit_heap_pre_call_sync(ctx, buf)
+        emit_call(buf, import_index_fs_resource_drop(ctx))
+        emit_heap_post_call_sync(ctx, buf)
+        // Return Unit
+        emit_i64_const_raw(buf, tag_int_value64(0L))
+        buf.push((5).to_byte()) // else (open error)
+        emit_i64_const_raw(buf, tag_int_value64(0L))
+        buf.push((11).to_byte()) // end if
       } // end else (WASI path for Fs::write_file)
     }
     "Bytes::from_array" => {
@@ -8459,108 +8457,108 @@ fn compile_call_builtin_pre_user_inner(
         emit_call(buf, import_index_fs_host_write_bytes(ctx))
         emit_heap_post_call_sync(ctx, buf)
       } else {
-      let pos_args = extract_positional_exprs_with_arity(
-        args, "Fs::write_bytes", 2,
-      )
-      require_heap(ctx)
-      let path_raw_local = alloc_temp_local(ctx)
-      let path_len_local = alloc_temp_local(ctx)
-      let bytes_ptr_local = alloc_temp_local(ctx)
-      let bytes_len_local = alloc_temp_local(ctx)
-      let bytes_cap_local = alloc_temp_local(ctx)
-      let data_size_local = alloc_temp_local(ctx)
-      let data_ptr_local = alloc_temp_local(ctx)
-      let ret_area_local = alloc_temp_local(ctx)
-      let root_desc_local = alloc_temp_local(ctx)
-      let opened_desc_local = alloc_temp_local(ctx)
-      let _idx_local = alloc_temp_local(ctx) // reserved (packed bytes removed conversion loop)
-      let fs_global = fs_root_descriptor_global_index(ctx)
-      // Initialize root descriptor if needed
-      emit_global_get(buf, fs_global)
-      emit_i32_const_raw(buf, -1)
-      emit_i32_eq(buf)
-      buf.push((4).to_byte()) // if
-      buf.push((64).to_byte()) // void
-      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
-      emit_local_get(buf, ret_area_local)
-      emit_heap_pre_call_sync(ctx, buf)
-      emit_call(buf, import_index_fs_get_directories(ctx))
-      emit_heap_post_call_sync(ctx, buf)
-      emit_local_get(buf, ret_area_local)
-      emit_i32_load(buf, 0)
-      emit_i32_load(buf, 0)
-      emit_global_set(buf, fs_global)
-      buf.push((11).to_byte()) // end if
-      emit_global_get(buf, fs_global)
-      emit_local_set(buf, root_desc_local)
-      // Extract path string
-      compile_expr_i32(ctx, buf, pos_args[0])
-      emit_untag_ptr_i32(buf)
-      emit_local_set(buf, path_raw_local)
-      emit_local_get(buf, path_raw_local)
-      emit_i32_load(buf, 4)
-      emit_local_set(buf, path_len_local)
-      // Resolve bytes header so raw Bytes and BytesView share one path.
-      compile_expr_i32(ctx, buf, pos_args[1])
-      emit_untag_ptr_i32(buf)
-      emit_local_set(buf, bytes_ptr_local)
-      emit_bytes_load_header(
-        ctx, buf, bytes_ptr_local, bytes_len_local, bytes_cap_local, data_ptr_local,
-      )
-      emit_local_get(buf, bytes_len_local)
-      emit_local_set(buf, data_size_local)
-      // Allocate retptr for open-at result
-      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
-      // Sync heap
-      emit_heap_pre_call_sync(ctx, buf)
-      // open-at(root_desc, 0, path_ptr, path_len, 5, 2, retptr)
-      emit_local_get(buf, root_desc_local)
-      emit_i32_const_raw(buf, 0) // path-flags
-      emit_local_get(buf, path_raw_local)
-      emit_i32_const_raw(buf, 8)
-      emit_i32_add(buf) // path data ptr
-      emit_local_get(buf, path_len_local)
-      emit_i32_const_raw(buf, 5) // open-flags: create(1) | truncate(4) = 5
-      emit_i32_const_raw(buf, 2) // desc-flags: write(2)
-      emit_local_get(buf, ret_area_local)
-      emit_call(buf, import_index_fs_open_at(ctx))
-      // Reload heap
-      emit_heap_post_call_sync(ctx, buf)
-      // Check open result
-      emit_local_get(buf, ret_area_local)
-      emit_i32_load8_u(buf, 0)
-      emit_i32_eqz(buf)
-      buf.push((4).to_byte()) // if (ok)
-      buf.push((126).to_byte()) // result i64
-      // opened_desc = retptr[4]
-      emit_local_get(buf, ret_area_local)
-      emit_i32_load(buf, 4)
-      emit_local_set(buf, opened_desc_local)
-      // Allocate retptr for write result
-      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
-      // Sync heap
-      emit_heap_pre_call_sync(ctx, buf)
-      // write(opened_desc, data_ptr, bytes_len, offset=0, retptr)
-      emit_local_get(buf, opened_desc_local)
-      emit_local_get(buf, data_ptr_local)
-      emit_local_get(buf, data_size_local)
-      // i64.const 0 (offset)
-      buf.push((66).to_byte())
-      buf.push((0).to_byte())
-      emit_local_get(buf, ret_area_local)
-      emit_call(buf, import_index_fs_write(ctx))
-      // Reload heap
-      emit_heap_post_call_sync(ctx, buf)
-      // resource-drop opened descriptor
-      emit_local_get(buf, opened_desc_local)
-      emit_heap_pre_call_sync(ctx, buf)
-      emit_call(buf, import_index_fs_resource_drop(ctx))
-      emit_heap_post_call_sync(ctx, buf)
-      // Return Unit
-      emit_i64_const_raw(buf, tag_int_value64(0L))
-      buf.push((5).to_byte()) // else (open error)
-      emit_i64_const_raw(buf, tag_int_value64(0L))
-      buf.push((11).to_byte()) // end if
+        let pos_args = extract_positional_exprs_with_arity(
+          args, "Fs::write_bytes", 2,
+        )
+        require_heap(ctx)
+        let path_raw_local = alloc_temp_local(ctx)
+        let path_len_local = alloc_temp_local(ctx)
+        let bytes_ptr_local = alloc_temp_local(ctx)
+        let bytes_len_local = alloc_temp_local(ctx)
+        let bytes_cap_local = alloc_temp_local(ctx)
+        let data_size_local = alloc_temp_local(ctx)
+        let data_ptr_local = alloc_temp_local(ctx)
+        let ret_area_local = alloc_temp_local(ctx)
+        let root_desc_local = alloc_temp_local(ctx)
+        let opened_desc_local = alloc_temp_local(ctx)
+        let _idx_local = alloc_temp_local(ctx) // reserved (packed bytes removed conversion loop)
+        let fs_global = fs_root_descriptor_global_index(ctx)
+        // Initialize root descriptor if needed
+        emit_global_get(buf, fs_global)
+        emit_i32_const_raw(buf, -1)
+        emit_i32_eq(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+        emit_local_get(buf, ret_area_local)
+        emit_heap_pre_call_sync(ctx, buf)
+        emit_call(buf, import_index_fs_get_directories(ctx))
+        emit_heap_post_call_sync(ctx, buf)
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load(buf, 0)
+        emit_i32_load(buf, 0)
+        emit_global_set(buf, fs_global)
+        buf.push((11).to_byte()) // end if
+        emit_global_get(buf, fs_global)
+        emit_local_set(buf, root_desc_local)
+        // Extract path string
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_untag_ptr_i32(buf)
+        emit_local_set(buf, path_raw_local)
+        emit_local_get(buf, path_raw_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, path_len_local)
+        // Resolve bytes header so raw Bytes and BytesView share one path.
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_untag_ptr_i32(buf)
+        emit_local_set(buf, bytes_ptr_local)
+        emit_bytes_load_header(
+          ctx, buf, bytes_ptr_local, bytes_len_local, bytes_cap_local, data_ptr_local,
+        )
+        emit_local_get(buf, bytes_len_local)
+        emit_local_set(buf, data_size_local)
+        // Allocate retptr for open-at result
+        emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+        // Sync heap
+        emit_heap_pre_call_sync(ctx, buf)
+        // open-at(root_desc, 0, path_ptr, path_len, 5, 2, retptr)
+        emit_local_get(buf, root_desc_local)
+        emit_i32_const_raw(buf, 0) // path-flags
+        emit_local_get(buf, path_raw_local)
+        emit_i32_const_raw(buf, 8)
+        emit_i32_add(buf) // path data ptr
+        emit_local_get(buf, path_len_local)
+        emit_i32_const_raw(buf, 5) // open-flags: create(1) | truncate(4) = 5
+        emit_i32_const_raw(buf, 2) // desc-flags: write(2)
+        emit_local_get(buf, ret_area_local)
+        emit_call(buf, import_index_fs_open_at(ctx))
+        // Reload heap
+        emit_heap_post_call_sync(ctx, buf)
+        // Check open result
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load8_u(buf, 0)
+        emit_i32_eqz(buf)
+        buf.push((4).to_byte()) // if (ok)
+        buf.push((126).to_byte()) // result i64
+        // opened_desc = retptr[4]
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, opened_desc_local)
+        // Allocate retptr for write result
+        emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+        // Sync heap
+        emit_heap_pre_call_sync(ctx, buf)
+        // write(opened_desc, data_ptr, bytes_len, offset=0, retptr)
+        emit_local_get(buf, opened_desc_local)
+        emit_local_get(buf, data_ptr_local)
+        emit_local_get(buf, data_size_local)
+        // i64.const 0 (offset)
+        buf.push((66).to_byte())
+        buf.push((0).to_byte())
+        emit_local_get(buf, ret_area_local)
+        emit_call(buf, import_index_fs_write(ctx))
+        // Reload heap
+        emit_heap_post_call_sync(ctx, buf)
+        // resource-drop opened descriptor
+        emit_local_get(buf, opened_desc_local)
+        emit_heap_pre_call_sync(ctx, buf)
+        emit_call(buf, import_index_fs_resource_drop(ctx))
+        emit_heap_post_call_sync(ctx, buf)
+        // Return Unit
+        emit_i64_const_raw(buf, tag_int_value64(0L))
+        buf.push((5).to_byte()) // else (open error)
+        emit_i64_const_raw(buf, tag_int_value64(0L))
+        buf.push((11).to_byte()) // end if
       } // end else (WASI path)
     }
     "Socket::tcp_connect" => {
@@ -9344,6 +9342,34 @@ fn compile_call_builtin_pre_user_inner(
       compile_expr(ctx, buf, pos_args[0])
       compile_expr(ctx, buf, pos_args[1])
       emit_call(buf, import_index_fs_host_append(ctx))
+    }
+    "Fs::open_write" if ctx.fs_host_imports => {
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Fs::open_write", 1,
+      )
+      compile_expr(ctx, buf, pos_args[0])
+      emit_heap_pre_call_sync(ctx, buf)
+      emit_call(buf, import_index_fs_host_open_write(ctx))
+      emit_heap_post_call_sync(ctx, buf)
+    }
+    "Fs::write_chunk" if ctx.fs_host_imports => {
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Fs::write_chunk", 2,
+      )
+      compile_expr(ctx, buf, pos_args[0])
+      compile_expr(ctx, buf, pos_args[1])
+      emit_heap_pre_call_sync(ctx, buf)
+      emit_call(buf, import_index_fs_host_write_chunk(ctx))
+      emit_heap_post_call_sync(ctx, buf)
+    }
+    "Fs::close_write" if ctx.fs_host_imports => {
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Fs::close_write", 1,
+      )
+      compile_expr(ctx, buf, pos_args[0])
+      emit_heap_pre_call_sync(ctx, buf)
+      emit_call(buf, import_index_fs_host_close_write(ctx))
+      emit_heap_post_call_sync(ctx, buf)
     }
     // Json host imports (vibe module, available when fs_host_imports is set)
     "Json::parse" if ctx.fs_host_imports => {

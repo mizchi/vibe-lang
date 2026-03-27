@@ -3,6 +3,15 @@
 Spec-locked decisions are tracked in `docs/spec/decisions.md`.
 Completed items are archived in `docs/DONE.md`.
 
+## 0.2.0 roadmap: wasm-gc main backend gate (2026-03-27)
+
+- [ ] `just test-wasm-gc-mainlane-e2e` を green にする
+  - この acceptance suite を通せたら `wasm-gc` を main backend 候補として扱う
+  - 現在の gate: closure capture / returned closure call / `for-in` runtime / string runtime
+  - 実体: `src/tests/vibe_wasm_gc_mainlane_e2e_test.mbt`
+- [ ] 上記 gate を通した変更で `--wasm` の既定を `wasm-gc` に切り替える
+- [ ] gate 緑化後に `just test` / CI shard へ組み込み、experimental 扱いを解除する
+
 ## 0.1.0 release sign-off (2026-03-24)
 
 単一 `.wasm` artifact で build/check/compile/run の主要導線が通る状態までは来ている。

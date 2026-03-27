@@ -629,6 +629,9 @@ fn is_effectful_call_name(name : String) -> Bool {
   name == "Fs::copy" ||
   name == "Fs::rename" ||
   name == "Fs::append" ||
+  name == "Fs::open_write" ||
+  name == "Fs::write_chunk" ||
+  name == "Fs::close_write" ||
   name == "Env::get" ||
   name == "Env::args_len" ||
   name == "Env::args_get" ||

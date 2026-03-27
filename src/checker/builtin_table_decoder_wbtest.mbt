@@ -13,7 +13,7 @@ fn ints_to_bytes(arr : Array[Int]) -> Bytes {
 /// param_count is the logical number of parameters, param_tag_bytes is the raw
 /// byte sequence for all parameter type tags.
 fn build_test_table_v2(
-  entries : Array[(String, Int, Array[Int], Int, Int)]
+  entries : Array[(String, Int, Array[Int], Int, Int)],
 ) -> Bytes {
   let buf : Array[Int] = []
   // Magic
@@ -84,9 +84,9 @@ test "decode_builtin_table: Array::get with container type" {
   // Array::get(Array[T], Int) -> T
   // 2 params: Array[T] (0x10 0xF0), Int (0x01)
   // ret: T (0xF0)
-  let data = build_test_table_v2(
-    [("Array::get", 2, [0x10, 0xF0, 0x01], 0xF0, 0)],
-  )
+  let data = build_test_table_v2([
+    ("Array::get", 2, [0x10, 0xF0, 0x01], 0xF0, 0),
+  ])
   match decode_builtin_table(data) {
     Some(entries) => {
       assert_eq(entries.length(), 1)
@@ -108,9 +108,9 @@ test "decode_builtin_table: Map type" {
   // Map::get(Map[T,U], T) -> U
   // 2 params: Map[T,U] (0x11 0xF0 0xF1), T (0xF0)
   // ret: U (0xF1)
-  let data = build_test_table_v2(
-    [("Map::get", 2, [0x11, 0xF0, 0xF1, 0xF0], 0xF1, 0)],
-  )
+  let data = build_test_table_v2([
+    ("Map::get", 2, [0x11, 0xF0, 0xF1, 0xF0], 0xF1, 0),
+  ])
   match decode_builtin_table(data) {
     Some(entries) => {
       assert_eq(entries.length(), 1)
@@ -132,12 +132,10 @@ test "decode_builtin_table: Map type" {
 
 ///|
 test "decode_builtin_table: multiple entries" {
-  let data = build_test_table_v2(
-    [
-      ("Fs::getcwd", 0, [], 0x03, 0),
-      ("Bytes::length", 1, [0x06], 0x01, 0),
-    ],
-  )
+  let data = build_test_table_v2([
+    ("Fs::getcwd", 0, [], 0x03, 0),
+    ("Bytes::length", 1, [0x06], 0x01, 0),
+  ])
   match decode_builtin_table(data) {
     Some(entries) => {
       assert_eq(entries.length(), 2)

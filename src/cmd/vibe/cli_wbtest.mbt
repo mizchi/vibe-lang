@@ -1080,9 +1080,7 @@ test "check split args rejects missing profile path" {
 
 ///|
 test "check split args extracts builtin-contract flag" {
-  let parsed = split_check_cmd_args([
-    "--builtin-contract=warn", "a.vibe",
-  ])
+  let parsed = split_check_cmd_args(["--builtin-contract=warn", "a.vibe"])
   match parsed {
     Ok((args, None, contract)) => {
       assert_eq(args.length(), 1)
@@ -1096,9 +1094,7 @@ test "check split args extracts builtin-contract flag" {
 
 ///|
 test "check split args builtin-contract separate value" {
-  let parsed = split_check_cmd_args([
-    "--builtin-contract", "error", "a.vibe",
-  ])
+  let parsed = split_check_cmd_args(["--builtin-contract", "error", "a.vibe"])
   match parsed {
     Ok((args, None, contract)) => {
       assert_eq(args.length(), 1)
@@ -1111,15 +1107,12 @@ test "check split args builtin-contract separate value" {
 
 ///|
 test "check split args builtin-contract invalid value" {
-  let parsed = split_check_cmd_args([
-    "--builtin-contract=invalid", "a.vibe",
-  ])
+  let parsed = split_check_cmd_args(["--builtin-contract=invalid", "a.vibe"])
   match parsed {
     Ok(_) => fail("expected error")
     Err(msg) =>
       assert_eq(
-        msg,
-        "check: invalid --builtin-contract value: invalid (expected warn|error|ignore)",
+        msg, "check: invalid --builtin-contract value: invalid (expected warn|error|ignore)",
       )
   }
 }
