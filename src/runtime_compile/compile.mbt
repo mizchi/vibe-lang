@@ -329,9 +329,7 @@ fn perceus_actions_to_tuples(
 ///|
 /// Extract named function bodies from a module for per-function analysis.
 /// Returns (func_name, body_module) pairs.
-fn extract_func_bodies(
-  ast : @core.Module,
-) -> Array[(String, @core.Module)] {
+fn extract_func_bodies(ast : @core.Module) -> Array[(String, @core.Module)] {
   let result : Array[(String, @core.Module)] = []
   for stmt in ast.stmts {
     match stmt {
@@ -584,11 +582,7 @@ pub fn compile_module_wasm(
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(db, path, @runtime.bundle_for_wasm, ast => {
     let options = if enable_rc {
-      wasm_emit_options_with_rc(
-        ast,
-        debug_errors~,
-        http_host_imports~,
-      )
+      wasm_emit_options_with_rc(ast, debug_errors~, http_host_imports~)
     } else {
       @codegen.wasm_emit_options(
         embed_error_strings=debug_errors,

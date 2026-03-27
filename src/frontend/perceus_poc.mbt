@@ -2015,13 +2015,7 @@ pub fn perceus_simulate(mod : @core.Module) -> PerceusSimResult {
       }
     }
   }
-  {
-    total_allocs,
-    total_drops,
-    peak_bump: total_allocs,
-    peak_rc,
-    events,
-  }
+  { total_allocs, total_drops, peak_bump: total_allocs, peak_rc, events }
 }
 
 ///|

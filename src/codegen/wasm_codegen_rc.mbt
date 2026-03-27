@@ -355,7 +355,11 @@ pub fn build_rc_action_maps(
   let post : Map[Int, Array[RcStmtAction]] = {}
   for action in actions {
     let (site, is_dup, name) = action
-    let kind = if is_dup { RcStmtActionKind::Dup } else { RcStmtActionKind::Drop }
+    let kind = if is_dup {
+      RcStmtActionKind::Dup
+    } else {
+      RcStmtActionKind::Drop
+    }
     let act = RcStmtAction::{ kind, name }
     let idx = parse_stmt_index(site)
     if idx < 0 {
@@ -429,10 +433,8 @@ fn parse_stmt_index(site : String) -> Int {
 /// sites for dup/drop insertion as `Array[PerceusAction]`.
 pub fn perceus_codegen_integration_notes() -> String {
   let notes = [
-    "1. emit_rc_init after emit_heap_alloc (rc at ptr-4, offsets unchanged)",
-    "2. emit_rc_dup at PerceusAction::Dup sites",
-    "3. emit_rc_drop at PerceusAction::Drop sites",
-    "4. Assign: rc_drop(old) before store",
+    "1. emit_rc_init after emit_heap_alloc (rc at ptr-4, offsets unchanged)", "2. emit_rc_dup at PerceusAction::Dup sites",
+    "3. emit_rc_drop at PerceusAction::Drop sites", "4. Assign: rc_drop(old) before store",
   ]
   let mut result = ""
   for note in notes {

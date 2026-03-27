@@ -397,3 +397,99 @@ test "compile_module_wasm with enable_rc produces larger binary than without" {
   // RC version should be larger due to rc_init, rc_drop, etc.
   assert_true(wasm_rc.length() > wasm_no_rc.length())
 }
+
+///|
+test "extract_func_bodies finds named function definitions" {
+  let db = @runtime.VibeDb::new()
+  let src =
+    #|let f = () -> Int { 1 }
+    #|let g = () -> Int { 2 }
+    #|let x = 42
+    #|f()
+  db.set_source("main", src)
+  let compiled = compile_module(db, "main")
+  let bodies = extract_func_bodies(compiled.ast)
+  // Should find f and g but not x (not a function)
+  assert_eq(bodies.length(), 2)
+  assert_eq(bodies[0].0, "f")
+  assert_eq(bodies[1].0, "g")
+}
+
+///|
+test "extract_run_stmts excludes function definitions" {
+  let db = @runtime.VibeDb::new()
+  let src =
+    #|let f = () -> Int { 1 }
+    #|let x = 42
+    #|f()
+  db.set_source("main", src)
+  let compiled = compile_module(db, "main")
+  let run_ast = extract_run_stmts(compiled.ast)
+  // Function def excluded, only let x and f() call remain
+  assert_eq(run_ast.stmts.length(), 2)
+}
+
+///|
+test "compile_module_wasm with enable_rc handles mutable reassignment" {
+  let db = @runtime.VibeDb::new()
+  let src =
+    #|let run = () -> (Int, Int) {
+    #|  let mut x = (1, 2)
+    #|  x = (3, 4)
+    #|  x
+    #|}
+    #|run()
+  db.set_source("main", src)
+  let wasm_bytes = compile_module_wasm(db, "main", enable_rc=true)
+  // Valid WASM magic
+  assert_true(wasm_bytes.length() > 8)
+  assert_eq(wasm_bytes[0], b'\x00')
+  assert_eq(wasm_bytes[1], b'\x61')
+  assert_eq(wasm_bytes[2], b'\x73')
+  assert_eq(wasm_bytes[3], b'\x6d')
+}
+
+///|
+test "compile_module_wasm with enable_rc handles function calling function" {
+  let db = @runtime.VibeDb::new()
+  let src =
+    #|let make = () -> (Int, Int) { (10, 20) }
+    #|let use_it = (t: (Int, Int)) -> Int { t.0 }
+    #|let x = make()
+    #|use_it(x)
+  db.set_source("main", src)
+  let wasm_bytes = compile_module_wasm(db, "main", enable_rc=true)
+  assert_true(wasm_bytes.length() > 8)
+  assert_eq(wasm_bytes[0], b'\x00')
+  assert_eq(wasm_bytes[1], b'\x61')
+}
+
+///|
+test "compile_module_wasm with enable_rc handles array allocation" {
+  let db = @runtime.VibeDb::new()
+  let src =
+    #|let arr = [1, 2, 3]
+    #|arr
+  db.set_source("main", src)
+  let wasm_bytes = compile_module_wasm(db, "main", enable_rc=true)
+  assert_true(wasm_bytes.length() > 8)
+  assert_eq(wasm_bytes[0], b'\x00')
+  assert_eq(wasm_bytes[1], b'\x61')
+}
+
+///|
+test "wasm_emit_options_with_rc stores per-function actions" {
+  let db = @runtime.VibeDb::new()
+  let src =
+    #|let f = () -> (Int, Int) {
+    #|  let t = (1, 2)
+    #|  t
+    #|}
+    #|let x = f()
+    #|x
+  db.set_source("main", src)
+  let compiled = compile_module(db, "main")
+  let options = wasm_emit_options_with_rc(compiled.ast)
+  // enable_rc should be true
+  assert_true(options.enable_rc)
+}

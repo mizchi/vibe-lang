@@ -562,9 +562,7 @@ test "perceus sim: let mut overwrite in loop style → O(1) peak" {
   }
   stmts.push(
     @core.Stmt::Expr(
-      expr=perceus_test_call(
-        "use", [perceus_test_ident("acc", 900)], 901,
-      ),
+      expr=perceus_test_call("use", [perceus_test_ident("acc", 900)], 901),
       span=perceus_test_span(902),
     ),
   )
