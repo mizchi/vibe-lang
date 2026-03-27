@@ -27,35 +27,152 @@ pub(all) struct RcStmtAction {
 /// Future: free-list or arena reclamation.
 
 ///|
-/// Size added to each allocation block for the RC field (prepended before obj ptr).
-pub let rc_header_extra : Int = 4
+/// Size added to each allocation block for the RC header.
+/// Layout: [alloc_size@-8][rc_count@-4][type_id@0][length@4][data@8...]
+pub let rc_header_extra : Int = 8
 
 ///|
 /// Emit RC initialization for a freshly allocated object.
-/// The RC count is stored at obj_ptr - 4 (prepended before the object header).
-/// This allows all existing field offsets to remain unchanged.
+/// Writes both the allocation size and rc_count=1.
 ///
 /// Memory layout with RC:
-///   [rc_count@-4][type_id@0][length@4][data@8...]
-///   obj_ptr points to type_id (offset 0), rc_count is at obj_ptr - 4.
+///   [alloc_size@-8][rc_count@-4][type_id@0][length@4][data@8...]
+///   obj_ptr points to type_id (offset 0).
 ///
 /// Generated WASM pseudo-code:
-///   local.get $obj_local
-///   i32.const 4
-///   i32.sub              ; ptr - 4
-///   i32.const 1
-///   i32.store offset=0   ; rc_count = 1
-fn emit_rc_init(buf : ByteBuf, obj_local : Int) -> Unit {
+///   local.get $obj_local / i32.const 8 / i32.sub  ; base_ptr
+///   local.get $obj_local / i32.const 8 / i32.sub
+///   i32.const <alloc_size> / i32.store offset=0    ; alloc_size
+///   local.get $obj_local / i32.const 4 / i32.sub
+///   i32.const 1 / i32.store offset=0               ; rc_count = 1
+fn emit_rc_init(buf : ByteBuf, obj_local : Int, alloc_size : Int) -> Unit {
+  // Write alloc_size at obj_ptr - 8
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, rc_header_extra)
+  emit_i32_sub(buf)
+  emit_i32_const_raw(buf, alloc_size)
+  emit_i32_store(buf, 0)
+  // Write rc_count = 1 at obj_ptr - 4
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, 4)
   emit_i32_sub(buf)
   emit_i32_const_raw(buf, 1)
   emit_i32_store(buf, 0)
 }
 
 ///|
+/// Allocate from free-list or bump allocator.
+/// Scans the free-list for a block with matching alloc_size (exact-fit).
+/// If found, reuse it. Otherwise, bump-allocate.
+///
+/// Free-list: singly-linked via obj_ptr field in the global.
+/// Each freed block: [alloc_size@-8][next_ptr@-4][type_id=0@0]
+/// free_list_global stores the obj_ptr of the first free block (or 0).
+fn emit_rc_alloc_with_free_list(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  obj_size : Int,
+  total_size : Int,
+  obj_local : Int,
+) -> Unit {
+  if ctx.rc_free_list_global < 0 {
+    // No free-list global — just bump allocate
+    emit_heap_reserve(ctx, buf, total_size)
+    emit_local_get(buf, ctx.heap_local)
+    emit_i32_const_raw(buf, rc_header_extra)
+    emit_i32_add(buf)
+    emit_local_set(buf, obj_local)
+    emit_local_get(buf, ctx.heap_local)
+    emit_i32_const_raw(buf, total_size)
+    emit_i32_add(buf)
+    emit_local_set(buf, ctx.heap_local)
+    ctx.heap_synced = false
+    emit_rc_init(buf, obj_local, total_size)
+    return
+  }
+  // Try free-list first, then fall back to bump allocation
+  // Strategy: scan list for exact-size match (first-fit by total_size)
+  //
+  // Generated pseudo-code:
+  //   prev = 0; cur = global.get $free_list
+  //   block $found
+  //     loop $scan
+  //       br_if $found (cur == 0)  ; end of list
+  //       if load(cur - 8) == total_size:
+  //         ; unlink: if prev==0 { global.set(load(cur-4)) } else { store(prev-4, load(cur-4)) }
+  //         obj_local = cur
+  //         br $found
+  //       prev = cur; cur = load(cur - 4)
+  //       br $scan
+  //     end
+  //   end
+  //   ; if cur == 0: bump allocate
+  //   if obj_local == 0: bump_alloc(...)
+  //   rc_init(obj_local, total_size)
+  //
+  // This is complex inline WASM. For the prototype, use a simpler approach:
+  // Check only the HEAD of the free list for exact size match.
+  let _ = obj_size
+  require_heap(ctx)
+  let free_ptr = alloc_temp_local(ctx)
+  // free_ptr = free_list_head
+  emit_global_get(buf, ctx.rc_free_list_global)
+  emit_local_set(buf, free_ptr)
+  // if free_ptr != 0 && load(free_ptr - 8) == total_size
+  emit_local_get(buf, free_ptr)
+  emit_i32_const_raw(buf, 0)
+  emit_i32_ne(buf)
+  emit_if(buf) // if free_ptr != 0
+  emit_local_get(buf, free_ptr)
+  emit_i32_const_raw(buf, 8) // rc_header_extra
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 0) // load alloc_size
+  emit_i32_const_raw(buf, total_size)
+  emit_i32_eq(buf)
+  emit_if(buf) // if size matches
+  // Reuse: unlink from free list (head = next_ptr)
+  emit_local_get(buf, free_ptr)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 0) // load next_ptr
+  emit_global_set(buf, ctx.rc_free_list_global) // free_list_head = next
+  // obj_local = free_ptr (already points past RC header)
+  emit_local_get(buf, free_ptr)
+  emit_local_set(buf, obj_local)
+  // Re-initialize RC
+  emit_rc_init(buf, obj_local, total_size)
+  emit_else(buf) // size doesn't match → bump allocate
+  emit_rc_bump_alloc(ctx, buf, total_size, obj_local)
+  emit_end(buf) // end inner if
+  emit_else(buf) // free list empty → bump allocate
+  emit_rc_bump_alloc(ctx, buf, total_size, obj_local)
+  emit_end(buf) // end outer if
+}
+
+///|
+/// Bump-allocate with RC header.
+fn emit_rc_bump_alloc(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  total_size : Int,
+  obj_local : Int,
+) -> Unit {
+  emit_heap_reserve(ctx, buf, total_size)
+  emit_local_get(buf, ctx.heap_local)
+  emit_i32_const_raw(buf, rc_header_extra)
+  emit_i32_add(buf)
+  emit_local_set(buf, obj_local)
+  emit_local_get(buf, ctx.heap_local)
+  emit_i32_const_raw(buf, total_size)
+  emit_i32_add(buf)
+  emit_local_set(buf, ctx.heap_local)
+  ctx.heap_synced = false
+  emit_rc_init(buf, obj_local, total_size)
+}
+
+///|
 /// Emit rc_dup: increment the reference count of a heap object.
-/// RC count is at obj_ptr - 4 (prepended before the object header).
+/// RC count is at obj_ptr - 4.
 ///
 /// Generated WASM pseudo-code:
 ///   local.get $val
@@ -106,31 +223,15 @@ fn emit_rc_dup(buf : ByteBuf, val_local : Int, tmp_local : Int) -> Unit {
 
 ///|
 /// Emit rc_drop: decrement the reference count of a heap object.
-/// RC count is at obj_ptr - 4 (prepended before the object header).
-/// When rc reaches 0, zeroes the type_id field as a tombstone marker,
-/// signaling the object is logically freed.
+/// RC count is at obj_ptr - 4. Alloc size is at obj_ptr - 8.
+/// When rc reaches 0, prepends the block to the free-list and
+/// zeroes the type_id field as a tombstone marker.
 ///
-/// Generated WASM pseudo-code:
-///   local.get $val
-///   i32.const 3 / i32.and / i32.const 1 / i32.ne
-///   br_if $skip
-///   ;; rc_ptr = (val & ~3) - 4
-///   local.get $val / i32.const -4 / i32.and / i32.const 4 / i32.sub
-///   local.set $tmp
-///   ;; new_rc = load(rc_ptr) - 1
-///   local.get $tmp / local.get $tmp / i32.load offset=0
-///   i32.const 1 / i32.sub
-///   local.tee $new_rc
-///   i32.store offset=0
-///   ;; if new_rc == 0: tombstone type_id
-///   local.get $new_rc / i32.eqz
-///   if
-///     local.get $tmp / i32.const 4 / i32.add  ; obj_ptr = rc_ptr + 4
-///     i32.const 0 / i32.store offset=0         ; type_id = 0 (tombstone)
-///   end
-///   $skip:
+/// Free-list structure: singly-linked via the rc_count field (offset -4).
+/// Each freed block: [alloc_size@-8][next_ptr@-4][type_id=0@0]
+/// The free-list head is stored in a WASM global (rc_free_list_global).
 fn emit_rc_drop(
-  _ctx : CodegenCtx,
+  ctx : CodegenCtx,
   buf : ByteBuf,
   val_local : Int,
   tmp_local : Int,
@@ -149,29 +250,41 @@ fn emit_rc_drop(
   emit_local_get(buf, val_local)
   emit_i32_const_raw(buf, -4)
   emit_i32_and(buf)
-  // rc_ptr = obj_ptr - 4
-  emit_i32_const_raw(buf, rc_header_extra)
-  emit_i32_sub(buf)
+  // tmp = obj_ptr (not rc_ptr — we need obj_ptr for both rc and tombstone)
   emit_local_set(buf, tmp_local)
-  // new_rc = load(rc_ptr) - 1
+  // new_rc = load(obj_ptr - 4) - 1
   emit_local_get(buf, tmp_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_sub(buf)
   emit_local_get(buf, tmp_local)
-  emit_i32_load(buf, 0)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 0) // load rc_count
   emit_i32_const_raw(buf, 1)
   emit_i32_sub(buf)
   emit_local_tee(buf, new_rc_local)
-  // store new_rc back
+  // store new_rc at obj_ptr - 4
   emit_i32_store(buf, 0)
-  // if new_rc == 0: tombstone the object
+  // if new_rc == 0: free the block
   emit_local_get(buf, new_rc_local)
   emit_i32_eqz(buf)
   emit_if(buf)
-  // Tombstone: zero out type_id at obj_ptr (= rc_ptr + 4)
+  // Tombstone: zero out type_id
   emit_local_get(buf, tmp_local)
-  emit_i32_const_raw(buf, rc_header_extra)
-  emit_i32_add(buf)
   emit_i32_const_raw(buf, 0)
-  emit_i32_store(buf, 0) // type_id = 0 (tombstone)
+  emit_i32_store(buf, 0) // type_id = 0
+  // Prepend to free-list: block.next = free_list_head; free_list_head = obj_ptr
+  if ctx.rc_free_list_global >= 0 {
+    // obj_ptr - 4 (rc slot) = current free_list_head
+    emit_local_get(buf, tmp_local)
+    emit_i32_const_raw(buf, 4)
+    emit_i32_sub(buf)
+    emit_global_get(buf, ctx.rc_free_list_global)
+    emit_i32_store(buf, 0) // next_ptr = old head
+    // free_list_head = obj_ptr
+    emit_local_get(buf, tmp_local)
+    emit_global_set(buf, ctx.rc_free_list_global)
+  }
   emit_end(buf) // end if
   emit_end(buf) // end block
 }

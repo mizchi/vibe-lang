@@ -143,6 +143,8 @@ priv struct CodegenCtx {
   mut rc_post_actions : Map[Int, Array[RcStmtAction]]
   // Per-function RC actions: func_name → raw action tuples
   mut rc_func_actions : Map[String, Array[(String, Bool, String)]]
+  // RC free-list head global index (-1 if not allocated)
+  mut rc_free_list_global : Int
   // Perceus RC: temp locals for dup/drop operations (allocated per function)
   mut rc_tmp_local : Int
   mut rc_new_rc_local : Int
@@ -293,6 +295,7 @@ fn CodegenCtx::new(
     rc_pre_actions: {},
     rc_post_actions: {},
     rc_func_actions: {},
+    rc_free_list_global: -1,
     rc_tmp_local: -1,
     rc_new_rc_local: -1,
   }

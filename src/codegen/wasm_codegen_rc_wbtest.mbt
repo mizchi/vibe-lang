@@ -38,7 +38,7 @@ test "RC codegen: build_rc_action_maps parses site strings" {
 test "RC codegen: emit_rc_init generates extra WASM bytes" {
   let buf = ByteBuf::new()
   let len_before = buf.len
-  emit_rc_init(buf, 0)
+  emit_rc_init(buf, 0, 16)
   let len_after = buf.len
   // emit_rc_init: local.get + i32.const + i32.sub + i32.const + i32.store
   assert_true(len_after > len_before)

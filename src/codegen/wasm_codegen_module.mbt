@@ -1135,6 +1135,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     ctx.coverage_enabled ||
     need_fs_global ||
     ctx.need_socket ||
+    ctx.enable_rc ||
     exported_env_global_count > 0
   // In linked mode, __heap_ptr is imported (not defined in global section)
   let heap_global_in_section = ctx.use_heap_global && not(has_linked_imports)
@@ -1146,6 +1147,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       (if ctx.coverage_enabled { 2 } else { 0 }) +
       (if need_fs_global { 1 } else { 0 }) +
       (if ctx.need_socket { 1 } else { 0 }) +
+      (if ctx.enable_rc { 1 } else { 0 }) +
       exported_env_global_count
     write_u32_leb(global_sec, global_count)
     // Heap pointer global (skip when imported from library)
@@ -1209,6 +1211,19 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       emit_i32_const_raw(global_sec, 0)
       global_sec.push((11).to_byte()) // end
     }
+    if ctx.enable_rc {
+      // RC free-list head global: i32, mutable, init = 0 (empty list)
+      ctx.rc_free_list_global = (if ctx.use_heap_global { 1 } else { 0 }) +
+        (if ctx.need_stack_switching { 1 } else { 0 }) +
+        (if ctx.need_effect_resume { 3 } else { 0 }) +
+        (if ctx.coverage_enabled { 2 } else { 0 }) +
+        (if need_fs_global { 1 } else { 0 }) +
+        (if ctx.need_socket { 1 } else { 0 })
+      global_sec.push((127).to_byte()) // i32
+      global_sec.push((1).to_byte()) // mutable
+      emit_i32_const_raw(global_sec, 0)
+      global_sec.push((11).to_byte()) // end
+    }
     // Exported function env globals: store closure env pointers for external calls
     if exported_env_global_count > 0 {
       let mut env_global_idx = (if ctx.use_heap_global { 1 } else { 0 }) +
@@ -1216,7 +1231,8 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
         (if ctx.need_effect_resume { 3 } else { 0 }) +
         (if ctx.coverage_enabled { 2 } else { 0 }) +
         (if need_fs_global { 1 } else { 0 }) +
-        (if ctx.need_socket { 1 } else { 0 })
+        (if ctx.need_socket { 1 } else { 0 }) +
+        (if ctx.enable_rc { 1 } else { 0 })
       for name, _ in ctx.exported_fn_env_globals {
         // Mutable i32 global, initial value 0
         global_sec.push((127).to_byte()) // i32

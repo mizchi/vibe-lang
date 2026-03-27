@@ -197,20 +197,10 @@ fn emit_heap_alloc(
   obj_local : Int,
 ) -> Unit {
   if ctx.enable_rc {
-    // Allocate size + 4 bytes: [rc_count(4)][object(size)]
-    // obj_local points past the RC field so all field offsets are unchanged
+    // Allocate size + 8 bytes: [alloc_size(4)][rc_count(4)][object(size)]
+    // obj_local points past the RC header so all field offsets are unchanged
     let total_size = size + rc_header_extra
-    emit_heap_reserve(ctx, buf, total_size)
-    emit_local_get(buf, ctx.heap_local)
-    emit_i32_const_raw(buf, rc_header_extra)
-    emit_i32_add(buf)
-    emit_local_set(buf, obj_local)
-    emit_local_get(buf, ctx.heap_local)
-    emit_i32_const_raw(buf, total_size)
-    emit_i32_add(buf)
-    emit_local_set(buf, ctx.heap_local)
-    ctx.heap_synced = false
-    emit_rc_init(buf, obj_local)
+    emit_rc_alloc_with_free_list(ctx, buf, size, total_size, obj_local)
   } else {
     emit_heap_reserve(ctx, buf, size)
     emit_local_get(buf, ctx.heap_local)
@@ -306,7 +296,9 @@ fn emit_heap_alloc_local(
   emit_local_set(buf, ctx.heap_local)
   ctx.heap_synced = false
   if ctx.enable_rc {
-    emit_rc_init(buf, obj_local)
+    // For dynamic-size alloc, we don't know size at compile time.
+    // Write alloc_size=0 as placeholder (free-list won't reuse these).
+    emit_rc_init(buf, obj_local, 0)
   }
 }
 
