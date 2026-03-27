@@ -2278,6 +2278,437 @@ test "vibe eval Double::parse failure" {
 }
 
 ///|
+test "vibe backends match: String::length" {
+  assert_eval_backends_same("String::length(\"hello\")")
+  assert_eval_backends_same("String::length(\"\")")
+  assert_eval_backends_same("String::length(\"abc\")")
+}
+
+///|
+test "vibe backends match: String::char_code_at" {
+  assert_eval_backends_same("String::char_code_at(\"abc\", 0)")
+  assert_eval_backends_same("String::char_code_at(\"abc\", 2)")
+}
+
+///|
+test "vibe backends match: String::substring" {
+  assert_eval_backends_same("String::substring(\"hello world\", 0, 5)")
+  assert_eval_backends_same("String::substring(\"abcdef\", 2, 5)")
+  assert_eval_backends_same("String::substring(\"abc\", 0, 0)")
+}
+
+///|
+test "vibe backends match: String::concat" {
+  assert_eval_backends_same("String::concat(\"hello\", \" world\")")
+  assert_eval_backends_same("String::concat(\"\", \"abc\")")
+  assert_eval_backends_same("String::concat(\"abc\", \"\")")
+}
+
+///|
+test "vibe backends match: String::join" {
+  assert_eval_backends_same("String::join([\"a\", \"b\", \"c\"], \",\")")
+  assert_eval_backends_same("String::join([\"only\"], \"-\")")
+}
+
+///|
+test "vibe backends match: String::index_of" {
+  assert_eval_backends_same("String::index_of(\"hello world\", \"world\")")
+  assert_eval_backends_same("String::index_of(\"abcabc\", \"bc\")")
+}
+
+///|
+test "vibe backends match: String::contains" {
+  assert_eval_backends_same("String::contains(\"hello world\", \"world\")")
+  assert_eval_backends_same("String::contains(\"hello\", \"xyz\")")
+  assert_eval_backends_same("String::contains(\"abc\", \"\")")
+}
+
+///|
+test "vibe backends match: String::starts_with" {
+  assert_eval_backends_same("String::starts_with(\"hello world\", \"hello\")")
+  assert_eval_backends_same("String::starts_with(\"hello\", \"xyz\")")
+  assert_eval_backends_same("String::starts_with(\"abc\", \"\")")
+}
+
+///|
+test "vibe backends match: String::ends_with" {
+  assert_eval_backends_same("String::ends_with(\"hello world\", \"world\")")
+  assert_eval_backends_same("String::ends_with(\"hello\", \"xyz\")")
+  assert_eval_backends_same("String::ends_with(\"abc\", \"\")")
+}
+
+///|
+test "vibe backends match: String::last_index_of" {
+  assert_eval_backends_same("String::last_index_of(\"abcabc\", \"bc\")")
+  assert_eval_backends_same("String::last_index_of(\"aaa\", \"a\")")
+}
+
+///|
+test "vibe backends match: String::count" {
+  assert_eval_backends_same("String::count(\"abcabc\", \"bc\")")
+  assert_eval_backends_same("String::count(\"hello\", \"l\")")
+}
+
+///|
+test "vibe backends match: String::trim" {
+  assert_eval_backends_same("String::trim(\"  hello  \")")
+  assert_eval_backends_same("String::trim(\"abc\")")
+  assert_eval_backends_same("String::trim(\"  \")")
+}
+
+///|
+test "vibe backends match: String::trim_start" {
+  assert_eval_backends_same("String::trim_start(\"  hello\")")
+  assert_eval_backends_same("String::trim_start(\"abc\")")
+}
+
+///|
+test "vibe backends match: String::trim_end" {
+  assert_eval_backends_same("String::trim_end(\"hello  \")")
+  assert_eval_backends_same("String::trim_end(\"abc\")")
+}
+
+///|
+test "vibe backends match: String::to_upper" {
+  assert_eval_backends_same("String::to_upper(\"hello\")")
+  assert_eval_backends_same("String::to_upper(\"ABC\")")
+  assert_eval_backends_same("String::to_upper(\"aBc123\")")
+}
+
+///|
+test "vibe backends match: String::to_lower" {
+  assert_eval_backends_same("String::to_lower(\"HELLO\")")
+  assert_eval_backends_same("String::to_lower(\"abc\")")
+  assert_eval_backends_same("String::to_lower(\"AbC123\")")
+}
+
+///|
+test "vibe backends match: String::replace" {
+  assert_eval_backends_same(
+    "String::replace(\"hello world\", \"world\", \"there\")",
+  )
+  assert_eval_backends_same("String::replace(\"aaa\", \"a\", \"bb\")")
+}
+
+///|
+test "vibe backends match: String::replace_all" {
+  assert_eval_backends_same("String::replace_all(\"abcabc\", \"bc\", \"xy\")")
+  assert_eval_backends_same("String::replace_all(\"hello\", \"l\", \"r\")")
+}
+
+///|
+test "vibe backends match: String::split" {
+  assert_eval_backends_same("String::split(\"a,b,c\", \",\")")
+  assert_eval_backends_same("String::split(\"hello\", \",\")")
+  assert_eval_backends_same("String::split(\",a,,b,\", \",\")")
+}
+
+///|
+test "vibe backends match: String::equals" {
+  assert_eval_backends_same("String::equals(\"abc\", \"abc\")")
+  assert_eval_backends_same("String::equals(\"abc\", \"def\")")
+  assert_eval_backends_same("String::equals(\"\", \"\")")
+}
+
+///|
+test "vibe backends match: String::from_char_code" {
+  assert_eval_backends_same("String::from_char_code(65)")
+  assert_eval_backends_same("String::from_char_code(97)")
+}
+
+///|
+test "vibe backends match: Int::abs" {
+  assert_eval_backends_same("Int::abs(5)")
+  assert_eval_backends_same("Int::abs(-5)")
+  assert_eval_backends_same("Int::abs(0)")
+}
+
+///|
+// Int::max/min/clamp/signum use i32.select (opcode 0x1b) which the mini evaluator
+// does not support. Tested via interpreter-only path below.
+
+///|
+test "vibe eval Int::max interpreter" {
+  let value = try eval_run_interpreter("Int::max(3, 7)") catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  assert_eq(value, @core.Value::Int(7))
+}
+
+///|
+test "vibe eval Int::min interpreter" {
+  let value = try eval_run_interpreter("Int::min(3, 7)") catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  assert_eq(value, @core.Value::Int(3))
+}
+
+///|
+test "vibe eval Int::clamp interpreter" {
+  let value = try eval_run_interpreter("Int::clamp(15, 0, 10)") catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  assert_eq(value, @core.Value::Int(10))
+}
+
+///|
+test "vibe eval Int::signum interpreter" {
+  let value = try eval_run_interpreter("Int::signum(5)") catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  assert_eq(value, @core.Value::Int(1))
+  let neg = try eval_run_interpreter("Int::signum(-3)") catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  assert_eq(neg, @core.Value::Int(-1))
+  let zero = try eval_run_interpreter("Int::signum(0)") catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  assert_eq(zero, @core.Value::Int(0))
+}
+
+///|
+test "vibe backends match: Int::is_even and Int::is_odd" {
+  assert_eval_backends_same("Int::is_even(4)")
+  assert_eval_backends_same("Int::is_even(3)")
+  assert_eval_backends_same("Int::is_odd(3)")
+  assert_eval_backends_same("Int::is_odd(4)")
+  assert_eval_backends_same("Int::is_even(0)")
+}
+
+///|
+test "vibe backends match: Map::has_key" {
+  assert_eval_backends_same(
+    "let m = map { a: 1, b: 2 }\nMap::has_key(m, \"a\")",
+  )
+  assert_eval_backends_same(
+    "let m = map { a: 1, b: 2 }\nMap::has_key(m, \"c\")",
+  )
+}
+
+///|
+test "vibe backends match: Map::keys" {
+  assert_eval_backends_same("let m = map { a: 1, b: 2 }\nMap::keys(m)")
+}
+
+///|
+test "vibe backends match: Map::values" {
+  assert_eval_backends_same("let m = map { a: 1, b: 2 }\nMap::values(m)")
+}
+
+///|
+test "vibe backends match: Set::new and Set::size" {
+  assert_eval_backends_same("Set::size(Set::new())")
+}
+
+///|
+test "vibe backends match: Set::add and Set::contains" {
+  assert_eval_backends_same(
+    "let s = Set::new()\nlet s2 = Set::add(s, 42)\nSet::contains(s2, 42)",
+  )
+  assert_eval_backends_same(
+    "let s = Set::new()\nlet s2 = Set::add(s, 42)\nSet::contains(s2, 99)",
+  )
+}
+
+///|
+test "vibe backends match: Set::add and Set::size" {
+  assert_eval_backends_same(
+    "let s = Set::new()\nlet s2 = Set::add(s, 1)\nlet s3 = Set::add(s2, 2)\nSet::size(s3)",
+  )
+}
+
+///|
+test "vibe backends match: Set::remove" {
+  assert_eval_backends_same(
+    "let s = Set::new()\nlet s2 = Set::add(s, 1)\nlet s3 = Set::add(s2, 2)\nlet s4 = Set::remove(s3, 1)\nSet::size(s4)",
+  )
+}
+
+///|
+// Set::to_array returns an object type the mini decoder can't handle.
+// Test via interpreter only.
+test "vibe eval Set::to_array interpreter" {
+  let value = try
+    eval_run_interpreter(
+      "let s = Set::new()\nlet s2 = Set::add(s, 10)\nSet::to_array(s2)",
+    )
+  catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  assert_eq(value, @core.Value::Array([@core.Value::Int(10)]))
+}
+
+///|
+test "vibe backends match: Set::from_array" {
+  assert_eval_backends_same("Set::size(Set::from_array([1, 2, 3]))")
+  assert_eval_backends_same("Set::contains(Set::from_array([10, 20]), 10)")
+}
+
+///|
+test "vibe backends match: Bytes::length" {
+  assert_eval_backends_same(
+    "let b = Bytes::from_array([1, 2, 3])\nBytes::length(b)",
+  )
+}
+
+///|
+test "vibe backends match: Bytes::get and Bytes::set" {
+  assert_eval_backends_same(
+    "let b = Bytes::from_array([10, 20, 30])\nBytes::get(b, 1)",
+  )
+  assert_eval_backends_same(
+    "let b = Bytes::from_array([10, 20, 30])\nBytes::set(b, 1, 99)\nBytes::get(b, 1)",
+  )
+}
+
+///|
+test "vibe backends match: Bytes::push" {
+  assert_eval_backends_same(
+    "let b = Bytes::from_array([1])\nBytes::push(b, 42)\nBytes::length(b)",
+  )
+}
+
+///|
+test "vibe backends match: Bytes::from_string and Bytes::to_string" {
+  assert_eval_backends_same(
+    "let b = Bytes::from_string(\"abc\")\nBytes::length(b)",
+  )
+}
+
+///|
+test "vibe backends match: Bytes::append" {
+  assert_eval_backends_same(
+    "let a = Bytes::from_array([1, 2])\nlet b = Bytes::from_array([3, 4])\nBytes::append(a, b)\nBytes::length(a)",
+  )
+}
+
+///|
+// Bytes::fill and Bytes::blit are not registered in the checker.
+
+///|
+test "vibe backends match: Bytes::concat" {
+  assert_eval_backends_same(
+    "let a = Bytes::from_array([1, 2])\nlet b = Bytes::from_array([3, 4])\nlet c = Bytes::concat(a, b)\nBytes::length(c)",
+  )
+}
+
+///|
+// Bytes::to_array crashes the mini WASM evaluator.
+test "vibe eval Bytes::to_array interpreter" {
+  let value = try
+    eval_run_interpreter("Bytes::to_array(Bytes::from_array([10, 20, 30]))")
+  catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  assert_eq(
+    value,
+    @core.Value::Array([
+      @core.Value::Int(10),
+      @core.Value::Int(20),
+      @core.Value::Int(30),
+    ]),
+  )
+}
+
+///|
+test "vibe backends match: Array::length" {
+  assert_eval_backends_same("Array::length([1, 2, 3])")
+  assert_eval_backends_same("Array::length([])")
+}
+
+///|
+test "vibe backends match: Array::set" {
+  assert_eval_backends_same(
+    "let a = [1, 2, 3]\nArray::set(a, 1, 99)\nArray::get(a, 1)",
+  )
+}
+
+///|
+test "vibe backends match: Array::truncate" {
+  assert_eval_backends_same(
+    "let a = [1, 2, 3, 4, 5]\nArray::truncate(a, 3)\nArray::length(a)",
+  )
+}
+
+///|
+test "vibe backends match: FixedArray::make and FixedArray::length" {
+  assert_eval_backends_same("FixedArray::length(FixedArray::make(5, 0))")
+}
+
+///|
+test "vibe backends match: FixedArray::get and FixedArray::set" {
+  assert_eval_backends_same(
+    "let a = FixedArray::make(3, 0)\nFixedArray::set(a, 1, 42)\nFixedArray::get(a, 1)",
+  )
+}
+
+///|
+test "vibe backends match: FixedArray::blit" {
+  assert_eval_backends_same(
+    "let src = FixedArray::make(3, 10)\nlet dst = FixedArray::make(3, 0)\nFixedArray::blit(dst, 0, src, 0, 3)\nFixedArray::get(dst, 2)",
+  )
+}
+
+///|
+test "vibe backends match: StringBuilder" {
+  assert_eval_backends_same(
+    "let sb = StringBuilder::new()\nStringBuilder::push(sb, \"hello\")\nStringBuilder::push(sb, \" world\")\nStringBuilder::freeze(sb)",
+  )
+}
+
+///|
+// __to_string uses opcode 0x6f (table.get) and Int::to_double uses opcode 0xb9
+// (f64.convert_i64_s) which the mini evaluator does not support.
+// Test via interpreter only.
+test "vibe eval __to_string interpreter" {
+  let value = try
+    eval_run_interpreter("let main = () -> {\n  __to_string(42)\n}\nmain()")
+  catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  assert_eq(value, @core.Value::String("42"))
+}
+
+///|
+test "vibe eval Int::to_double interpreter" {
+  let value = try eval_run_interpreter("Int::to_double(42)") catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  assert_eq(value, @core.Value::Double(42.0))
+}
+
+///|
+test "vibe eval Double::to_int interpreter" {
+  let value = try eval_run_interpreter("Double::to_int(3.14)") catch {
+    e => fail("eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  assert_eq(value, @core.Value::Int(3))
+}
+
+///|
 test "vibe wasm eval while else mutable update" {
   let script =
     #|let main = () -> {
