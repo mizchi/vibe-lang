@@ -1077,40 +1077,54 @@ export let build_suite_report_from_json_texts = (inputs: Array[CoverageCaseInput
 // Writes JSON directly to a file handle via Fs::write_chunk, avoiding
 // intermediate String::concat chains that exhaust the bump-allocator heap.
 
-let sw = (fd: Int, s: String) -> Unit {
+let sw = (fd: Int, s: String) -> Unit with { Fs } {
   Fs::write_chunk(fd, s)
 }
 
-let sw_str = (fd: Int, s: String) -> Unit {
-  sw(fd, stringify(string_json(s)))
+let sw_str = (fd: Int, s: String) -> Unit with { Fs } {
+  // Stream JSON string directly: write quote, chars, quote — no intermediate concat
+  Fs::write_chunk(fd, "\"")
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(s, i)
+    if c == 34 { Fs::write_chunk(fd, "\\\"") }
+    else if c == 92 { Fs::write_chunk(fd, "\\\\") }
+    else if c == 10 { Fs::write_chunk(fd, "\\n") }
+    else if c == 13 { Fs::write_chunk(fd, "\\r") }
+    else if c == 9 { Fs::write_chunk(fd, "\\t") }
+    else { Fs::write_chunk(fd, String::from_char_code(c)) }
+    i = i + 1
+  }
+  Fs::write_chunk(fd, "\"")
 }
 
-let sw_int = (fd: Int, v: Int) -> Unit {
+let sw_int = (fd: Int, v: Int) -> Unit with { Fs } {
   sw(fd, __to_string(v))
 }
 
-let sw_double = (fd: Int, v: Double) -> Unit {
-  sw(fd, stringify(double_json(v)))
+let sw_double = (fd: Int, v: Double) -> Unit with { Fs } {
+  sw(fd, __to_string(v))
 }
 
-let sw_bool = (fd: Int, v: Bool) -> Unit {
+let sw_bool = (fd: Int, v: Bool) -> Unit with { Fs } {
   if v { sw(fd, "true") } else { sw(fd, "false") }
 }
 
-let sw_opt_double = (fd: Int, v: Option[Double]) -> Unit {
+let sw_opt_double = (fd: Int, v: Option[Double]) -> Unit with { Fs } {
   match v {
     Some(d) => sw_double(fd, d),
     None => sw(fd, "null")
   }
 }
 
-let sw_field = (fd: Int, key: String, needs_comma: Bool) -> Unit {
+let sw_field = (fd: Int, key: String, needs_comma: Bool) -> Unit with { Fs } {
   if needs_comma { sw(fd, ",") }
   sw_str(fd, key)
   sw(fd, ":")
 }
 
-let sw_case = (fd: Int, case: CoverageCase) -> Unit {
+let sw_case = (fd: Int, case: CoverageCase) -> Unit with { Fs } {
   sw(fd, "{")
   sw_field(fd, "report_path", false); sw_str(fd, case.report_path)
   sw_field(fd, "entry_path", true); sw_str(fd, case.entry_path)
@@ -1137,7 +1151,7 @@ let sw_case = (fd: Int, case: CoverageCase) -> Unit {
   sw(fd, "}")
 }
 
-let sw_branch_gap = (fd: Int, gap: BranchGapEntry) -> Unit {
+let sw_branch_gap = (fd: Int, gap: BranchGapEntry) -> Unit with { Fs } {
   sw(fd, "{")
   sw_field(fd, "entry_path", false); sw_str(fd, gap.entry_path)
   sw_field(fd, "branch_miss", true); sw_int(fd, gap.branch_miss)
@@ -1146,7 +1160,7 @@ let sw_branch_gap = (fd: Int, gap: BranchGapEntry) -> Unit {
   sw(fd, "}")
 }
 
-export let write_suite_report_json_stream = (fd: Int, report: SuiteReport, kpi: KpiResult) -> Unit {
+export let write_suite_report_json_stream = (fd: Int, report: SuiteReport, kpi: KpiResult) -> Unit with { Fs } {
   sw(fd, "{")
   sw_field(fd, "format", false); sw_str(fd, "vibe-selfhost-suite-coverage-v1")
   sw_field(fd, "case_count", true); sw_int(fd, report.case_count)

@@ -863,6 +863,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               opt_level=opts.opt_level,
               debug_errors=opts.debug_errors,
               http_host_imports=opts.http_host_imports,
+              fs_host_imports=opts.http_host_imports,
               force_cabi_realloc=opts.force_cabi_realloc,
               library_mode=opts.library_mode,
             ) catch {

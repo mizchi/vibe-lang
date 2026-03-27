@@ -331,7 +331,8 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
     count += 7
   }
   if ctx.need_fs && ctx.fs_host_imports {
-    count += 16
+    // 16 original fs imports + 3 streaming writes (open_write, write_chunk, close_write)
+    count += 19
   }
   if ctx.need_fs && ctx.fs_host_imports {
     // Json host imports: json_parse(i64)->i64, json_stringify(i64)->i64
