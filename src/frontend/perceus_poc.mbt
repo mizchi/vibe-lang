@@ -1920,3 +1920,136 @@ pub fn build_perceus_plan(mod : @core.Module) -> Array[PerceusAction] {
   }
   emit_ctx.actions
 }
+
+///|
+/// Heap simulation event: tracks allocations and frees in execution order.
+pub enum PerceusSimEvent {
+  Alloc(name~ : String)
+  Free(name~ : String)
+} derive(Show, Eq)
+
+///|
+/// Result of a Perceus memory simulation.
+pub struct PerceusSimResult {
+  total_allocs : Int
+  total_drops : Int
+  peak_bump : Int
+  peak_rc : Int
+  events : Array[PerceusSimEvent]
+} derive(Show, Eq)
+
+///|
+/// Walk the AST and Perceus plan to produce a unified event stream,
+/// then compute peak live object counts for bump vs RC allocation.
+pub fn perceus_simulate(mod : @core.Module) -> PerceusSimResult {
+  let plan = build_perceus_plan(mod)
+  let events : Array[PerceusSimEvent] = []
+  let pre_drops : Map[Int, Array[String]] = {}
+  let post_drops : Map[Int, Array[String]] = {}
+  for action in plan {
+    if action.kind == PerceusActionKind::Drop {
+      let idx = perceus_parse_top_stmt_index(action.site)
+      if idx >= 0 {
+        if action.site.contains(".old_value") {
+          match pre_drops.get(idx) {
+            Some(arr) => arr.push(action.name)
+            None => pre_drops[idx] = [action.name]
+          }
+        } else {
+          match post_drops.get(idx) {
+            Some(arr) => arr.push(action.name)
+            None => post_drops[idx] = [action.name]
+          }
+        }
+      }
+    }
+  }
+  let mut total_allocs = 0
+  for i = 0; i < mod.stmts.length(); i = i + 1 {
+    match pre_drops.get(i) {
+      Some(names) =>
+        for name in names {
+          events.push(PerceusSimEvent::Free(name~))
+        }
+      None => ()
+    }
+    match mod.stmts[i] {
+      @core.Stmt::Let(name~, ..)
+      | @core.Stmt::ExportLet(name~, ..)
+      | @core.Stmt::InternalExportLet(name~, ..) => {
+        events.push(PerceusSimEvent::Alloc(name~))
+        total_allocs += 1
+      }
+      @core.Stmt::LetMut(name~, ..) => {
+        events.push(PerceusSimEvent::Alloc(name~))
+        total_allocs += 1
+      }
+      @core.Stmt::Assign(name~, ..) => {
+        events.push(PerceusSimEvent::Alloc(name~))
+        total_allocs += 1
+      }
+      _ => ()
+    }
+    match post_drops.get(i) {
+      Some(names) =>
+        for name in names {
+          events.push(PerceusSimEvent::Free(name~))
+        }
+      None => ()
+    }
+  }
+  let mut live_rc = 0
+  let mut peak_rc = 0
+  let mut total_drops = 0
+  for event in events {
+    match event {
+      PerceusSimEvent::Alloc(..) => {
+        live_rc += 1
+        if live_rc > peak_rc {
+          peak_rc = live_rc
+        }
+      }
+      PerceusSimEvent::Free(..) => {
+        live_rc -= 1
+        total_drops += 1
+      }
+    }
+  }
+  {
+    total_allocs,
+    total_drops,
+    peak_bump: total_allocs,
+    peak_rc,
+    events,
+  }
+}
+
+///|
+fn perceus_parse_top_stmt_index(site : String) -> Int {
+  if site.length() < 6 {
+    return -1
+  }
+  let start = 5
+  let mut end = start
+  while end < site.length() {
+    if site[end] == ']' {
+      break
+    }
+    end += 1
+  }
+  if end == start {
+    return -1
+  }
+  let mut result = 0
+  let mut i = start
+  while i < end {
+    let c = site[i]
+    if c >= '0' && c <= '9' {
+      result = result * 10 + (c.to_int() - '0'.to_int())
+    } else {
+      return -1
+    }
+    i += 1
+  }
+  result
+}

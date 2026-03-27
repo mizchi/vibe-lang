@@ -460,3 +460,119 @@ test "perceus plan: three uses need two dups" {
     ),
   )
 }
+
+// ======================================================================
+// Perceus memory simulation tests
+// ======================================================================
+
+///|
+fn make_unused_let_stmts(n : Int) -> Array[@core.Stmt] {
+  let stmts : Array[@core.Stmt] = []
+  for i = 0; i < n; i = i + 1 {
+    let name = "x" + i.to_string()
+    stmts.push(
+      @core.Stmt::Let(
+        rec=false,
+        name~,
+        expr=perceus_test_call("make", [], i + 100),
+        span=perceus_test_span(i + 200),
+      ),
+    )
+  }
+  stmts
+}
+
+///|
+test "perceus sim: 10 unused bindings → peak_rc=1 vs peak_bump=10" {
+  let stmts = make_unused_let_stmts(10)
+  let mod : @core.Module = { stmts, }
+  let result = perceus_simulate(mod)
+  assert_eq(result.peak_bump, 10)
+  assert_eq(result.peak_rc, 1)
+  assert_eq(result.total_allocs, 10)
+  assert_eq(result.total_drops, 10)
+}
+
+///|
+test "perceus sim: 100 unused bindings → peak_rc=1 vs peak_bump=100" {
+  let stmts = make_unused_let_stmts(100)
+  let mod : @core.Module = { stmts, }
+  let result = perceus_simulate(mod)
+  assert_eq(result.peak_bump, 100)
+  assert_eq(result.peak_rc, 1)
+  assert_eq(result.total_drops, 100)
+}
+
+///|
+test "perceus sim: mutable reassignment chain → peak_rc=1" {
+  let stmts : Array[@core.Stmt] = []
+  stmts.push(
+    @core.Stmt::LetMut(
+      name="x",
+      expr=perceus_test_call("make", [], 1),
+      span=perceus_test_span(2),
+    ),
+  )
+  for i = 0; i < 9; i = i + 1 {
+    stmts.push(
+      @core.Stmt::Assign(
+        name="x",
+        expr=perceus_test_call("make", [], i + 10),
+        span=perceus_test_span(i + 20),
+      ),
+    )
+  }
+  let mod : @core.Module = { stmts, }
+  let result = perceus_simulate(mod)
+  assert_eq(result.total_allocs, 10)
+  assert_eq(result.total_drops, 10)
+  assert_eq(result.peak_bump, 10)
+  assert_eq(result.peak_rc, 1)
+}
+
+///|
+test "perceus sim: let mut overwrite in loop style → O(1) peak" {
+  // Realistic scenario: building a string incrementally via mut
+  // let mut acc = make()
+  // acc = concat(acc, x0)  — old acc freed before new alloc
+  // acc = concat(acc, x1)  — old acc freed before new alloc
+  // ...
+  // use(acc)
+  let n = 50
+  let stmts : Array[@core.Stmt] = []
+  stmts.push(
+    @core.Stmt::LetMut(
+      name="acc",
+      expr=perceus_test_call("make", [], 1),
+      span=perceus_test_span(2),
+    ),
+  )
+  for i = 0; i < n; i = i + 1 {
+    stmts.push(
+      @core.Stmt::Assign(
+        name="acc",
+        expr=perceus_test_call(
+          "concat",
+          [perceus_test_ident("acc", i * 10 + 100)],
+          i * 10 + 101,
+        ),
+        span=perceus_test_span(i * 10 + 102),
+      ),
+    )
+  }
+  stmts.push(
+    @core.Stmt::Expr(
+      expr=perceus_test_call(
+        "use", [perceus_test_ident("acc", 900)], 901,
+      ),
+      span=perceus_test_span(902),
+    ),
+  )
+  let mod : @core.Module = { stmts, }
+  let result = perceus_simulate(mod)
+  // Without RC: 51 allocs (1 + 50 assigns), peak = 51
+  assert_eq(result.peak_bump, 51)
+  // With RC: old_value drop before each assign → peak = 1
+  assert_eq(result.peak_rc, 1)
+  assert_eq(result.total_drops, 50)
+}
