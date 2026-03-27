@@ -104,6 +104,10 @@ fn preprocess_posix_line_with_compat_note(line : String) -> (String, String?) {
   if is_posix_keyword(first_word) {
     return (line, None)
   }
+  // If first_word contains ( it's a function call — leave unchanged
+  if first_word.contains("(") {
+    return (line, None)
+  }
   // Skip whitespace after first word
   let mut rest_start = word_end
   while rest_start < len &&
