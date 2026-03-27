@@ -35,7 +35,9 @@ fn compile_call_builtin_post_user_inner(
       // path_ref(s) -> same as path(s), calls the host import vibe.path
       let pos_args = extract_positional_exprs_with_arity(args, "Path::ref", 1)
       compile_expr_i32(ctx, buf, pos_args[0])
+      emit_heap_pre_call_sync(ctx, buf)
       emit_call(buf, import_index_path(ctx))
+      emit_heap_post_call_sync(ctx, buf)
     }
     "Path::resolve" => {
       // dynamic_path_resolve(s) -> host import vibe.resolve_path
@@ -43,7 +45,9 @@ fn compile_call_builtin_post_user_inner(
         args, "Path::resolve", 1,
       )
       compile_expr(ctx, buf, pos_args[0])
+      emit_heap_pre_call_sync(ctx, buf)
       emit_call(buf, import_index_dynamic_path_resolve(ctx))
+      emit_heap_post_call_sync(ctx, buf)
     }
     "Path::is_absolute" => {
       // path_is_absolute(path) -> check if first byte is '/'

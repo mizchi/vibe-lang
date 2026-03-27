@@ -807,7 +807,9 @@ fn compile_call_builtin_pre_user_inner(
       let pos_args = extract_positional_exprs_with_arity(args, "sh", 1)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_untag_ptr_i32(buf)
+      emit_heap_pre_call_sync(ctx, buf)
       emit_call(buf, import_index_sh(ctx))
+      emit_heap_post_call_sync(ctx, buf)
       emit_drop(buf)
       emit_i64_const_tagged(buf, 0L)
     }
@@ -815,24 +817,32 @@ fn compile_call_builtin_pre_user_inner(
       let pos_args = extract_positional_exprs_with_arity(args, "path", 1)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_untag_ptr_i32(buf)
+      emit_heap_pre_call_sync(ctx, buf)
       emit_call(buf, import_index_path(ctx))
+      emit_heap_post_call_sync(ctx, buf)
     }
     "Env::get" if not(is_user_fn) => {
       let pos_args = extract_positional_exprs_with_arity(args, "Env::get", 1)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_untag_ptr_i32(buf)
+      emit_heap_pre_call_sync(ctx, buf)
       emit_call(buf, import_index_env_get(ctx))
+      emit_heap_post_call_sync(ctx, buf)
     }
     "Env::args_len" if not(is_user_fn) => {
       let _ = extract_positional_exprs_with_arity(args, "Env::args_len", 0)
+      emit_heap_pre_call_sync(ctx, buf)
       emit_call(buf, import_index_env_args_len(ctx))
+      emit_heap_post_call_sync(ctx, buf)
     }
     "Env::args_get" if not(is_user_fn) => {
       let pos_args = extract_positional_exprs_with_arity(
         args, "Env::args_get", 1,
       )
       compile_expr(ctx, buf, pos_args[0])
+      emit_heap_pre_call_sync(ctx, buf)
       emit_call(buf, import_index_env_args_get(ctx))
+      emit_heap_post_call_sync(ctx, buf)
     }
     "add" if not(is_user_fn) || args.length() == 2 => {
       let pos_args = extract_positional_exprs_with_arity(args, "add", 2)
@@ -4206,7 +4216,10 @@ fn compile_call_builtin_pre_user_inner(
     }
     "StringBuilder::new" => {
       // string_builder() -> allocate empty array obj with len=0 (same layout as array_builder)
-      let max_cap = 4096
+      // NOTE: string_builder_push has no bounds check/realloc — this max_cap must
+      // be large enough for all use cases. 65536 covers large string concatenations.
+      // TODO: implement proper capacity management with grow-on-overflow realloc.
+      let max_cap = 65536
       require_heap(ctx)
       let size = align4(8 + max_cap * 4)
       let obj_local = alloc_temp_local(ctx)
@@ -4403,9 +4416,9 @@ fn compile_call_builtin_pre_user_inner(
       // array_builder() -> allocate empty array obj with len=0
       // Reserve max_capacity * 4 bytes after header for future pushes
       // NOTE: array_builder_push has no bounds check/realloc — this max_cap must
-      // be large enough for all use cases. 16384 covers selfhost parser tokens.
-      // TODO: implement proper capacity management with realloc.
-      let max_cap = 16384
+      // be large enough for all use cases. 65536 covers selfhost parser tokens.
+      // TODO: implement proper capacity management with grow-on-overflow realloc.
+      let max_cap = 65536
       require_heap(ctx)
       let size = align4(8 + max_cap * 4)
       let obj_local = alloc_temp_local(ctx)
@@ -4821,7 +4834,9 @@ fn compile_call_builtin_pre_user_inner(
     }
     "MapBuilder::new" => {
       // MapBuilder::new() -> allocate empty map obj with len=0
-      let max_cap = 128
+      // NOTE: no bounds check/realloc in MapBuilder::set — cap must cover all use cases.
+      // TODO: implement proper capacity management with realloc.
+      let max_cap = 65536
       require_heap(ctx)
       let size = align4(8 + max_cap * 8)
       let obj_local = alloc_temp_local(ctx)
@@ -7159,7 +7174,9 @@ fn compile_call_builtin_pre_user_inner(
       if ctx.fs_host_imports {
         let pos_args = extract_positional_exprs_with_arity(args, "Fs::exists", 1)
         compile_expr(ctx, buf, pos_args[0])
+        emit_heap_pre_call_sync(ctx, buf)
         emit_call(buf, import_index_fs_host_exists(ctx))
+        emit_heap_post_call_sync(ctx, buf)
       } else {
       let pos_args = extract_positional_exprs_with_arity(args, "Fs::exists", 1)
       require_heap(ctx)
@@ -7176,7 +7193,9 @@ fn compile_call_builtin_pre_user_inner(
       buf.push((64).to_byte()) // void
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
       emit_local_get(buf, ret_area_local)
+      emit_heap_pre_call_sync(ctx, buf)
       emit_call(buf, import_index_fs_get_directories(ctx))
+      emit_heap_post_call_sync(ctx, buf)
       // Load first descriptor from list: retptr[0]=list_ptr, retptr[4]=list_len
       emit_local_get(buf, ret_area_local)
       emit_i32_load(buf, 0)
@@ -7230,7 +7249,9 @@ fn compile_call_builtin_pre_user_inner(
           args, "Fs::stat_token", 1,
         )
         compile_expr(ctx, buf, pos_args[0])
+        emit_heap_pre_call_sync(ctx, buf)
         emit_call(buf, import_index_fs_host_stat_token(ctx))
+        emit_heap_post_call_sync(ctx, buf)
       } else {
       let pos_args = extract_positional_exprs_with_arity(
         args, "Fs::stat_token", 1,
@@ -7248,7 +7269,9 @@ fn compile_call_builtin_pre_user_inner(
       buf.push((64).to_byte()) // void
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
       emit_local_get(buf, ret_area_local)
+      emit_heap_pre_call_sync(ctx, buf)
       emit_call(buf, import_index_fs_get_directories(ctx))
+      emit_heap_post_call_sync(ctx, buf)
       emit_local_get(buf, ret_area_local)
       emit_i32_load(buf, 0)
       emit_i32_load(buf, 0)
@@ -7301,7 +7324,9 @@ fn compile_call_builtin_pre_user_inner(
           args, "Fs::read_file", 1,
         )
         compile_expr(ctx, buf, pos_args[0])
+        emit_heap_pre_call_sync(ctx, buf)
         emit_call(buf, import_index_fs_host_read_file(ctx))
+        emit_heap_post_call_sync(ctx, buf)
       } else {
       let pos_args = extract_positional_exprs_with_arity(
         args, "Fs::read_file", 1,
@@ -7326,7 +7351,9 @@ fn compile_call_builtin_pre_user_inner(
       buf.push((64).to_byte()) // void
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
       emit_local_get(buf, ret_area_local)
+      emit_heap_pre_call_sync(ctx, buf)
       emit_call(buf, import_index_fs_get_directories(ctx))
+      emit_heap_post_call_sync(ctx, buf)
       emit_local_get(buf, ret_area_local)
       emit_i32_load(buf, 0)
       emit_i32_load(buf, 0)
@@ -7387,7 +7414,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_heap_post_call_sync(ctx, buf)
       // resource-drop opened descriptor
       emit_local_get(buf, opened_desc_local)
+      emit_heap_pre_call_sync(ctx, buf)
       emit_call(buf, import_index_fs_resource_drop(ctx))
+      emit_heap_post_call_sync(ctx, buf)
       // Check read result: retptr[0] discriminant
       emit_local_get(buf, ret_area_local)
       emit_i32_load8_u(buf, 0)
@@ -7488,7 +7517,9 @@ fn compile_call_builtin_pre_user_inner(
         )
         compile_expr(ctx, buf, pos_args[0])
         compile_expr(ctx, buf, pos_args[1])
+        emit_heap_pre_call_sync(ctx, buf)
         emit_call(buf, import_index_fs_host_write_file(ctx))
+        emit_heap_post_call_sync(ctx, buf)
       } else {
       let pos_args = extract_positional_exprs_with_arity(
         args, "Fs::write_file", 2,
@@ -7510,7 +7541,9 @@ fn compile_call_builtin_pre_user_inner(
       buf.push((64).to_byte()) // void
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
       emit_local_get(buf, ret_area_local)
+      emit_heap_pre_call_sync(ctx, buf)
       emit_call(buf, import_index_fs_get_directories(ctx))
+      emit_heap_post_call_sync(ctx, buf)
       emit_local_get(buf, ret_area_local)
       emit_i32_load(buf, 0)
       emit_i32_load(buf, 0)
@@ -7579,7 +7612,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_heap_post_call_sync(ctx, buf)
       // resource-drop opened descriptor
       emit_local_get(buf, opened_desc_local)
+      emit_heap_pre_call_sync(ctx, buf)
       emit_call(buf, import_index_fs_resource_drop(ctx))
+      emit_heap_post_call_sync(ctx, buf)
       // Return Unit
       emit_i64_const_raw(buf, tag_int_value64(0L))
       buf.push((5).to_byte()) // else (open error)
@@ -8238,7 +8273,9 @@ fn compile_call_builtin_pre_user_inner(
         )
         compile_expr(ctx, buf, pos_args[0])
         compile_expr(ctx, buf, pos_args[1])
+        emit_heap_pre_call_sync(ctx, buf)
         emit_call(buf, import_index_fs_host_write_bytes(ctx))
+        emit_heap_post_call_sync(ctx, buf)
       } else {
       let pos_args = extract_positional_exprs_with_arity(
         args, "Fs::write_bytes", 2,
@@ -8264,7 +8301,9 @@ fn compile_call_builtin_pre_user_inner(
       buf.push((64).to_byte()) // void
       emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
       emit_local_get(buf, ret_area_local)
+      emit_heap_pre_call_sync(ctx, buf)
       emit_call(buf, import_index_fs_get_directories(ctx))
+      emit_heap_post_call_sync(ctx, buf)
       emit_local_get(buf, ret_area_local)
       emit_i32_load(buf, 0)
       emit_i32_load(buf, 0)
@@ -8332,7 +8371,9 @@ fn compile_call_builtin_pre_user_inner(
       emit_heap_post_call_sync(ctx, buf)
       // resource-drop opened descriptor
       emit_local_get(buf, opened_desc_local)
+      emit_heap_pre_call_sync(ctx, buf)
       emit_call(buf, import_index_fs_resource_drop(ctx))
+      emit_heap_post_call_sync(ctx, buf)
       // Return Unit
       emit_i64_const_raw(buf, tag_int_value64(0L))
       buf.push((5).to_byte()) // else (open error)
@@ -8885,14 +8926,18 @@ fn compile_call_builtin_pre_user_inner(
             compile_expr(ctx, buf, pos_args[1])
             compile_expr(ctx, buf, pos_args[2])
             compile_expr(ctx, buf, pos_args[3])
+            emit_heap_pre_call_sync(ctx, buf)
             emit_call(buf, import_index_http_request(ctx))
+            emit_heap_post_call_sync(ctx, buf)
           }
           "Http::response_status" => {
             let pos_args = extract_positional_exprs_with_arity(
               args, "Http::response_status", 1,
             )
             compile_expr(ctx, buf, pos_args[0])
+            emit_heap_pre_call_sync(ctx, buf)
             emit_call(buf, import_index_http_response_status(ctx))
+            emit_heap_post_call_sync(ctx, buf)
           }
           "Http::response_header" => {
             let pos_args = extract_positional_exprs_with_arity(
@@ -8900,21 +8945,27 @@ fn compile_call_builtin_pre_user_inner(
             )
             compile_expr(ctx, buf, pos_args[0])
             compile_expr(ctx, buf, pos_args[1])
+            emit_heap_pre_call_sync(ctx, buf)
             emit_call(buf, import_index_http_response_header(ctx))
+            emit_heap_post_call_sync(ctx, buf)
           }
           "Http::response_body" => {
             let pos_args = extract_positional_exprs_with_arity(
               args, "Http::response_body", 1,
             )
             compile_expr(ctx, buf, pos_args[0])
+            emit_heap_pre_call_sync(ctx, buf)
             emit_call(buf, import_index_http_response_body(ctx))
+            emit_heap_post_call_sync(ctx, buf)
           }
           "Http::close" => {
             let pos_args = extract_positional_exprs_with_arity(
               args, "Http::close", 1,
             )
             compile_expr(ctx, buf, pos_args[0])
+            emit_heap_pre_call_sync(ctx, buf)
             emit_call(buf, import_index_http_close(ctx))
+            emit_heap_post_call_sync(ctx, buf)
             buf.push((26).to_byte()) // drop host return
             emit_i64_const_raw(buf, tag_int_value64(0L))
           }
@@ -8923,21 +8974,27 @@ fn compile_call_builtin_pre_user_inner(
               args, "Http::listen", 1,
             )
             compile_expr(ctx, buf, pos_args[0])
+            emit_heap_pre_call_sync(ctx, buf)
             emit_call(buf, import_index_http_listen(ctx))
+            emit_heap_post_call_sync(ctx, buf)
           }
           "Http::accept" => {
             let pos_args = extract_positional_exprs_with_arity(
               args, "Http::accept", 1,
             )
             compile_expr(ctx, buf, pos_args[0])
+            emit_heap_pre_call_sync(ctx, buf)
             emit_call(buf, import_index_http_accept(ctx))
+            emit_heap_post_call_sync(ctx, buf)
           }
           "Http::request_method" => {
             let pos_args = extract_positional_exprs_with_arity(
               args, "Http::request_method", 1,
             )
             compile_expr(ctx, buf, pos_args[0])
+            emit_heap_pre_call_sync(ctx, buf)
             emit_call(buf, import_index_http_request_method(ctx))
+            emit_heap_post_call_sync(ctx, buf)
           }
           "Http::request_url" => {
             let pos_args = extract_positional_exprs_with_arity(
