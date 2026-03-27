@@ -14,25 +14,17 @@ pub(all) struct RcStmtAction {
 ///|
 /// Perceus RC codegen for WASM linear memory backend.
 ///
-/// Object header layout (with RC):
-///   offset 0: i32 obj_type   (existing)
-///   offset 4: i32 rc_count   (NEW: reference count, starts at 1)
-///   offset 8: ...            (existing metadata shifts by 4)
+/// Memory layout with RC (negative-offset design):
+///   [rc_count@-4][type_id@0][length@4][data@8...]
+///   obj_ptr points to type_id. All existing field offsets are unchanged.
+///   emit_heap_alloc prepends 4 extra bytes and returns ptr past RC field.
 ///
 /// RC operations:
-///   rc_dup(ptr):  rc_count += 1
-///   rc_drop(ptr): rc_count -= 1; if rc_count == 0 → free(ptr)
+///   rc_dup(ptr):  *(ptr-4) += 1
+///   rc_drop(ptr): *(ptr-4) -= 1; if rc_count == 0 → free(ptr) (no-op in prototype)
 ///
 /// For the prototype, "free" is a no-op (bump allocator).
 /// Future: free-list or arena reclamation.
-
-///|
-/// Debug counter for rc_init calls (prototype only).
-pub let rc_init_count : Ref[Int] = Ref::new(0)
-
-///|
-/// Debug counter for rc_action emissions.
-pub let rc_action_count : Ref[Int] = Ref::new(0)
 
 ///|
 /// Size added to each allocation block for the RC field (prepended before obj ptr).
@@ -54,7 +46,6 @@ pub let rc_header_extra : Int = 4
 ///   i32.const 1
 ///   i32.store offset=0   ; rc_count = 1
 fn emit_rc_init(buf : ByteBuf, obj_local : Int) -> Unit {
-  rc_init_count.val += 1
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, rc_header_extra)
   emit_i32_sub(buf)
@@ -216,14 +207,12 @@ fn emit_rc_actions(
     Some(acts) =>
       for act in acts {
         match ctx.locals.get(act.name) {
-          Some(local_idx) => {
-            rc_action_count.val += 1
+          Some(local_idx) =>
             match act.kind {
               RcStmtActionKind::Dup => emit_rc_dup_i64(ctx, buf, local_idx)
               RcStmtActionKind::Drop => emit_rc_drop_i64(ctx, buf, local_idx)
             }
-          }
-          None => ()
+          None => () // Variable not yet in scope; skip action
         }
       }
     None => ()

@@ -353,3 +353,33 @@ test "compile_module_wasm cross-directory transitive import" {
   assert_eq(wasm_bytes[2], b'\x73')
   assert_eq(wasm_bytes[3], b'\x6d')
 }
+
+///|
+test "compile_module_wasm with enable_rc produces valid WASM" {
+  let db = @runtime.VibeDb::new()
+  let src =
+    #|let x = (1, 2, 3)
+    #|let y = x
+    #|y
+  db.set_source("main", src)
+  let wasm_bytes = compile_module_wasm(db, "main", enable_rc=true)
+  // Valid WASM magic number
+  assert_true(wasm_bytes.length() > 8)
+  assert_eq(wasm_bytes[0], b'\x00')
+  assert_eq(wasm_bytes[1], b'\x61')
+  assert_eq(wasm_bytes[2], b'\x73')
+  assert_eq(wasm_bytes[3], b'\x6d')
+}
+
+///|
+test "compile_module_wasm with enable_rc produces larger binary than without" {
+  let db = @runtime.VibeDb::new()
+  let src =
+    #|let x = (1, 2, 3)
+    #|x
+  db.set_source("main", src)
+  let wasm_no_rc = compile_module_wasm(db, "main")
+  let wasm_rc = compile_module_wasm(db, "main", enable_rc=true)
+  // RC version should be larger due to rc_init, rc_drop, etc.
+  assert_true(wasm_rc.length() > wasm_no_rc.length())
+}

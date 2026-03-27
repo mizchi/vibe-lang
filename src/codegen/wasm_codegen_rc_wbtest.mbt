@@ -12,8 +12,6 @@ fn rc_assign(name : String, expr : @core.Expr) -> @core.Stmt {
 
 ///|
 test "RC codegen: enable_rc flag is set in context" {
-  // Verify that enable_rc flag works by checking the function exists
-  // and options propagate correctly
   let options = wasm_emit_options(enable_rc=true)
   assert_true(options.enable_rc)
   let options2 = wasm_emit_options()
@@ -38,37 +36,31 @@ test "RC codegen: build_rc_action_maps parses site strings" {
 
 ///|
 test "RC codegen: emit_rc_init generates extra WASM bytes" {
-  // Directly test that emit_rc_init adds bytes to a buffer
   let buf = ByteBuf::new()
   let len_before = buf.len
-  emit_rc_init(buf, 0) // obj_local=0
+  emit_rc_init(buf, 0)
   let len_after = buf.len
-  // emit_rc_init should add: local.get(2 bytes) + i32.const(2 bytes) + i32.store(3 bytes) = 7 bytes
+  // emit_rc_init: local.get + i32.const + i32.sub + i32.const + i32.store
   assert_true(len_after > len_before)
 }
 
 ///|
 test "RC codegen: emit_rc_init called during tuple compilation" {
-  // Reset counter
-  rc_init_count.val = 0
   let tuple_expr = @core.Expr::Tuple(
     items=[wb_int(1), wb_int(2)],
     span=wb_span(),
   )
-  // Use x as the final expression so it's not stripped as unused
   let ast = @core.Module::{
     stmts: [wb_let("x", tuple_expr), wb_expr(wb_ident("x"))],
   }
   let options = wasm_emit_options(enable_rc=true)
-  let _wasm = emit_module_wasm_with_options(ast, options)
-  // emit_rc_init should have been called at least once for the tuple allocation
-  assert_true(rc_init_count.val > 0)
+  let wat = wasm_to_wat(emit_module_wasm_with_options(ast, options))
+  // RC init uses i32.sub to compute ptr-4 for the RC field
+  assert_true(wat.contains("i32.sub"))
 }
 
 ///|
 test "RC codegen: mutable assign emits rc_drop on old value" {
-  // let mut x = (1, 2)
-  // x = (3, 4)
   let tuple1 = @core.Expr::Tuple(
     items=[wb_int(1), wb_int(2)],
     span=wb_span(),
@@ -80,21 +72,14 @@ test "RC codegen: mutable assign emits rc_drop on old value" {
   let ast = @core.Module::{
     stmts: [rc_let_mut("x", tuple1), rc_assign("x", tuple2)],
   }
-  // Compile with RC
   let options = wasm_emit_options(enable_rc=true)
   let wat = wasm_to_wat(emit_module_wasm_with_options(ast, options))
-  // Should contain RC drop pattern: tag check (i32.const 3 / i32.and / i32.const 1 / i32.ne)
-  // followed by i32.sub (the decrement)
+  // Should contain RC drop pattern: tag check + i32.sub (decrement)
   assert_true(wat.contains("i32.sub"))
 }
 
 ///|
 test "RC codegen: perceus plan actions emit dup/drop at stmt boundaries" {
-  rc_action_count.val = 0
-  // let x = (1,2)   -- stmt[0]
-  // use(x)          -- stmt[1]
-  // NOTE: ensure_run_ast_result adds stmt[2] = 0
-  // perceus action: drop x after stmt[1]
   let tuple_expr = @core.Expr::Tuple(
     items=[wb_int(1), wb_int(2)],
     span=wb_span(),
@@ -116,23 +101,17 @@ test "RC codegen: perceus plan actions emit dup/drop at stmt boundaries" {
   // Compile with RC + actions
   let options_rc = wasm_emit_options(enable_rc=true, rc_actions~)
   let wasm_rc = emit_module_wasm_with_options(ast, options_rc)
-  // rc_action_count tracks how many actions were emitted
-  // (may be 0 if variable is not in scope when action fires, e.g. after AST transformations)
-  // The key test is that the WAT output contains RC operations
   let wat = wasm_to_wat(wasm_rc)
-  // i32.sub should be present from either stmt-boundary actions or assign-time drops
+  // i32.sub should be present from stmt-boundary actions or assign-time drops
   assert_true(wat.contains("i32.sub"))
 }
 
 ///|
 test "RC codegen: negative-offset layout preserves field offsets" {
-  // With RC enabled, tuple allocation should produce the same field offsets
-  // as without RC. The RC field is prepended at ptr-4, not interleaved.
   let tuple_expr = @core.Expr::Tuple(
     items=[wb_int(1), wb_int(2)],
     span=wb_span(),
   )
-  // Compile same AST with and without RC
   let ast_no_rc = @core.Module::{
     stmts: [wb_let("x", tuple_expr), wb_expr(wb_ident("x"))],
   }
@@ -145,8 +124,7 @@ test "RC codegen: negative-offset layout preserves field offsets" {
   let wat_rc = wasm_to_wat(
     emit_module_wasm_with_options(ast_rc, wasm_emit_options(enable_rc=true)),
   )
-  // Both should contain i32.store for field storage
-  // Check that RC version has the sub instruction (for rc_init: ptr - 4)
+  // RC version has i32.sub for the ptr-4 computation
   assert_true(wat_rc.contains("i32.sub"))
   // Both should have i32.store for tuple fields
   assert_true(wat_no_rc.contains("i32.store"))
@@ -160,8 +138,8 @@ test "RC codegen: without enable_rc no RC operations emitted" {
     span=wb_span(),
   )
   let ast = @core.Module::{ stmts: [wb_let("x", tuple_expr)] }
-  let options = wasm_emit_options() // enable_rc=false (default)
+  let options = wasm_emit_options()
   let wat = wasm_to_wat(emit_module_wasm_with_options(ast, options))
-  // Without RC, no i32.sub for rc_drop should appear
+  // Without RC, no i32.sub for rc operations
   assert_false(wat.contains("i32.sub"))
 }

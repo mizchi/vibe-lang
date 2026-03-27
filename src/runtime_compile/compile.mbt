@@ -520,16 +520,23 @@ pub fn compile_module_wasm(
   debug_errors? : Bool = false,
   http_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
+  enable_rc? : Bool = false,
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(db, path, @runtime.bundle_for_wasm, ast => {
-    @codegen.emit_module_wasm_with_options(
-      ast,
+    let options = if enable_rc {
+      wasm_emit_options_with_rc(
+        ast,
+        debug_errors~,
+        http_host_imports~,
+      )
+    } else {
       @codegen.wasm_emit_options(
         embed_error_strings=debug_errors,
         http_host_imports~,
         force_cabi_realloc~,
-      ),
-    )
+      )
+    }
+    @codegen.emit_module_wasm_with_options(ast, options)
   })
 }
 
