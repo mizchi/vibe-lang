@@ -3508,6 +3508,23 @@ fn emit_module_with_coverage(
       Some(flags) => flags
       None => []
     }
+    // Set up per-function RC actions if available
+    let mut has_func_rc = false
+    if ctx.enable_rc {
+      match f.name {
+        Some(name) =>
+          match ctx.rc_func_actions.get(name) {
+            Some(actions) => {
+              let result = build_rc_action_maps(actions)
+              ctx.rc_pre_actions = result.0
+              ctx.rc_post_actions = result.1
+              has_func_rc = true
+            }
+            None => ()
+          }
+        None => ()
+      }
+    }
     compiled_funcs.push(
       compile_function(
         ctx,
@@ -3521,6 +3538,7 @@ fn emit_module_with_coverage(
         cap_kinds,
         true,
         capture_is_ref_cell=cap_ref_cells,
+        emit_rc_stmt_actions=has_func_rc,
       ),
     )
   }
@@ -3546,6 +3564,18 @@ fn emit_module_with_coverage(
   }
   // Set mut_captured_vars for the top-level run function
   ctx.mut_captured_vars = top_mut_captured
+  // Restore top-level RC action maps (may have been overwritten by per-function actions)
+  if ctx.enable_rc {
+    let (pre, post) = build_rc_action_maps(
+      ctx.rc_func_actions.get("_start").unwrap_or([]),
+    )
+    // Merge with the global rc_actions (from options.rc_actions)
+    // Global actions are for backwards compat; _start func actions take precedence
+    if pre.length() > 0 || post.length() > 0 {
+      ctx.rc_pre_actions = pre
+      ctx.rc_post_actions = post
+    }
+  }
   compiled_funcs.push(
     compile_function(
       ctx,
@@ -3608,6 +3638,7 @@ pub fn emit_module_wasm_with_options(
     let (pre, post) = build_rc_action_maps(options.rc_actions)
     ctx.rc_pre_actions = pre
     ctx.rc_post_actions = post
+    ctx.rc_func_actions = options.rc_func_actions
   }
   emit_module(ctx, ast)
 }

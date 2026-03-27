@@ -62,8 +62,10 @@ pub struct WasmEmitOptions {
   linked_imports : Array[(String, String, Int, Int)]
   /// Enable Perceus RC codegen (experimental).
   enable_rc : Bool
-  /// Perceus actions: (site, is_dup, name) tuples from analysis.
+  /// Perceus actions for top-level (_start): (site, is_dup, name) tuples.
   rc_actions : Array[(String, Bool, String)]
+  /// Per-function Perceus actions: func_name → (site, is_dup, name) tuples.
+  rc_func_actions : Map[String, Array[(String, Bool, String)]]
 } derive(Show, Eq)
 
 ///|
@@ -77,6 +79,7 @@ pub fn wasm_emit_options(
   linked_imports? : Array[(String, String, Int, Int)] = [],
   enable_rc? : Bool = false,
   rc_actions? : Array[(String, Bool, String)] = [],
+  rc_func_actions? : Map[String, Array[(String, Bool, String)]] = {},
 ) -> WasmEmitOptions {
   {
     embed_error_strings,
@@ -88,6 +91,7 @@ pub fn wasm_emit_options(
     linked_imports,
     enable_rc,
     rc_actions,
+    rc_func_actions,
   }
 }
 

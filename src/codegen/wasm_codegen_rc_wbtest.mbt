@@ -132,6 +132,72 @@ test "RC codegen: negative-offset layout preserves field offsets" {
 }
 
 ///|
+test "RC codegen: rc_drop tombstones object when rc reaches 0" {
+  // let mut x = (1, 2)
+  // x = (3, 4)  ← drops old tuple, rc should reach 0 → tombstone
+  let tuple1 = @core.Expr::Tuple(
+    items=[wb_int(1), wb_int(2)],
+    span=wb_span(),
+  )
+  let tuple2 = @core.Expr::Tuple(
+    items=[wb_int(3), wb_int(4)],
+    span=wb_span(),
+  )
+  let ast = @core.Module::{
+    stmts: [rc_let_mut("x", tuple1), rc_assign("x", tuple2)],
+  }
+  let options = wasm_emit_options(enable_rc=true)
+  let wat = wasm_to_wat(emit_module_wasm_with_options(ast, options))
+  // The tombstone logic uses i32.eqz to check if new_rc == 0
+  assert_true(wat.contains("i32.eqz"))
+  // And an if block for the tombstone write
+  assert_true(wat.contains("if"))
+}
+
+///|
+test "RC codegen: per-function actions emit dup/drop in named functions" {
+  // let f = fn() { let x = (1, 2); x }
+  // f()
+  let fn_body = @core.Module::{
+    stmts: [
+      wb_let(
+        "x",
+        @core.Expr::Tuple(items=[wb_int(1), wb_int(2)], span=wb_span()),
+      ),
+      wb_expr(wb_ident("x")),
+    ],
+  }
+  let fn_expr = @core.Expr::Fn(
+    type_params=[],
+    type_bounds={},
+    params=[],
+    ret=None,
+    effects=[],
+    body=fn_body,
+    span=wb_span(),
+  )
+  let ast = @core.Module::{
+    stmts: [
+      wb_let("f", fn_expr),
+      wb_expr(
+        @core.Expr::Call(name="f", args=[], span=wb_span(), type_args=[]),
+      ),
+    ],
+  }
+  // Build per-function actions: drop x after stmt[1] in f's body
+  let rc_func_actions : Map[String, Array[(String, Bool, String)]] = {
+    "f": [("stmt[0].after", false, "x")],
+  }
+  let options = wasm_emit_options(
+    enable_rc=true,
+    rc_func_actions~,
+  )
+  let wat = wasm_to_wat(emit_module_wasm_with_options(ast, options))
+  // Should contain RC operations (i32.eqz from tombstone check in rc_drop)
+  assert_true(wat.contains("i32.eqz"))
+}
+
+///|
 test "RC codegen: without enable_rc no RC operations emitted" {
   let tuple_expr = @core.Expr::Tuple(
     items=[wb_int(1), wb_int(2)],

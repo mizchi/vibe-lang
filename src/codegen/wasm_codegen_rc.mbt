@@ -107,32 +107,34 @@ fn emit_rc_dup(buf : ByteBuf, val_local : Int, tmp_local : Int) -> Unit {
 ///|
 /// Emit rc_drop: decrement the reference count of a heap object.
 /// RC count is at obj_ptr - 4 (prepended before the object header).
-/// If rc reaches 0, the memory could be reclaimed (no-op in prototype).
+/// When rc reaches 0, zeroes the type_id field as a tombstone marker,
+/// signaling the object is logically freed.
 ///
 /// Generated WASM pseudo-code:
 ///   local.get $val
-///   i32.const 3
-///   i32.and
-///   i32.const 1
-///   i32.ne
+///   i32.const 3 / i32.and / i32.const 1 / i32.ne
 ///   br_if $skip
-///   local.get $val
-///   i32.const -4
-///   i32.and
-///   i32.const 4
-///   i32.sub              ; rc_ptr = obj_ptr - 4
-///   local.tee $tmp
-///   local.get $tmp
-///   i32.load offset=0
-///   i32.const 1
-///   i32.sub
-///   i32.store offset=0   ; rc_count -= 1
+///   ;; rc_ptr = (val & ~3) - 4
+///   local.get $val / i32.const -4 / i32.and / i32.const 4 / i32.sub
+///   local.set $tmp
+///   ;; new_rc = load(rc_ptr) - 1
+///   local.get $tmp / local.get $tmp / i32.load offset=0
+///   i32.const 1 / i32.sub
+///   local.tee $new_rc
+///   i32.store offset=0
+///   ;; if new_rc == 0: tombstone type_id
+///   local.get $new_rc / i32.eqz
+///   if
+///     local.get $tmp / i32.const 4 / i32.add  ; obj_ptr = rc_ptr + 4
+///     i32.const 0 / i32.store offset=0         ; type_id = 0 (tombstone)
+///   end
 ///   $skip:
 fn emit_rc_drop(
+  _ctx : CodegenCtx,
   buf : ByteBuf,
   val_local : Int,
   tmp_local : Int,
-  _new_rc_local : Int,
+  new_rc_local : Int,
 ) -> Unit {
   // Check if value is a heap object
   emit_local_get(buf, val_local)
@@ -157,9 +159,20 @@ fn emit_rc_drop(
   emit_i32_load(buf, 0)
   emit_i32_const_raw(buf, 1)
   emit_i32_sub(buf)
+  emit_local_tee(buf, new_rc_local)
   // store new_rc back
-  // Future: if new_rc == 0, add ptr to free list
   emit_i32_store(buf, 0)
+  // if new_rc == 0: tombstone the object
+  emit_local_get(buf, new_rc_local)
+  emit_i32_eqz(buf)
+  emit_if(buf)
+  // Tombstone: zero out type_id at obj_ptr (= rc_ptr + 4)
+  emit_local_get(buf, tmp_local)
+  emit_i32_const_raw(buf, rc_header_extra)
+  emit_i32_add(buf)
+  emit_i32_const_raw(buf, 0)
+  emit_i32_store(buf, 0) // type_id = 0 (tombstone)
+  emit_end(buf) // end if
   emit_end(buf) // end block
 }
 
@@ -192,7 +205,7 @@ fn emit_rc_drop_i64(ctx : CodegenCtx, buf : ByteBuf, local_idx : Int) -> Unit {
   emit_local_get(buf, local_idx)
   emit_i32_wrap_i64(buf)
   emit_local_set(buf, val32)
-  emit_rc_drop(buf, val32, ctx.rc_tmp_local, ctx.rc_new_rc_local)
+  emit_rc_drop(ctx, buf, val32, ctx.rc_tmp_local, ctx.rc_new_rc_local)
 }
 
 ///|

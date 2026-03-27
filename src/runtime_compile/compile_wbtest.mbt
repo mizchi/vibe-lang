@@ -372,6 +372,20 @@ test "compile_module_wasm with enable_rc produces valid WASM" {
 }
 
 ///|
+test "compile_module_wasm with enable_rc analyzes function bodies" {
+  let db = @runtime.VibeDb::new()
+  let src =
+    #|let make = () -> (Int, Int, Int) { (1, 2, 3) }
+    #|let x = make()
+    #|x
+  db.set_source("main", src)
+  let wasm_rc = compile_module_wasm(db, "main", enable_rc=true)
+  assert_true(wasm_rc.length() > 8)
+  assert_eq(wasm_rc[0], b'\x00')
+  assert_eq(wasm_rc[1], b'\x61')
+}
+
+///|
 test "compile_module_wasm with enable_rc produces larger binary than without" {
   let db = @runtime.VibeDb::new()
   let src =

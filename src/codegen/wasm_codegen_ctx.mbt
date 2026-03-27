@@ -141,6 +141,8 @@ priv struct CodegenCtx {
   // Key: "stmt[N]" → Array of actions to emit before/after that stmt
   mut rc_pre_actions : Map[Int, Array[RcStmtAction]]
   mut rc_post_actions : Map[Int, Array[RcStmtAction]]
+  // Per-function RC actions: func_name → raw action tuples
+  mut rc_func_actions : Map[String, Array[(String, Bool, String)]]
   // Perceus RC: temp locals for dup/drop operations (allocated per function)
   mut rc_tmp_local : Int
   mut rc_new_rc_local : Int
@@ -290,6 +292,7 @@ fn CodegenCtx::new(
     enable_rc: false,
     rc_pre_actions: {},
     rc_post_actions: {},
+    rc_func_actions: {},
     rc_tmp_local: -1,
     rc_new_rc_local: -1,
   }
