@@ -2735,3 +2735,128 @@ test "vibe wasm eval while else-if mutable update" {
     #|main()
   assert_eval_backends_same(script)
 }
+
+///|
+test "vibe wasm eval Array::concat" {
+  let script =
+    #|let a = [1, 2]
+    #|let b = [3, 4]
+    #|Array::length(Array::concat(a, b))
+  assert_eval_backends_same(script)
+}
+
+///|
+test "vibe wasm eval Array::push_all" {
+  let script =
+    #|let a = [1, 2]
+    #|Array::push_all(a, [3, 4])
+    #|Array::length(a)
+  assert_eval_backends_same(script)
+}
+
+///|
+test "vibe wasm eval Array::slice" {
+  let script =
+    #|let a = [10, 20, 30, 40, 50]
+    #|let s = Array::slice(a, 1, 4)
+    #|Array::length(s)
+  assert_eval_backends_same(script)
+}
+
+///|
+test "vibe wasm eval String::utf8_length" {
+  let script =
+    #|String::utf8_length("hello")
+  assert_eval_backends_same(script)
+}
+
+///|
+test "vibe wasm eval String::replace_all" {
+  let script =
+    #|let s = String::replace_all("aabbcc", "bb", "XX")
+    #|String::length(s)
+  assert_eval_backends_same(script)
+}
+
+///|
+test "vibe wasm eval nested function call" {
+  let script =
+    #|let add = (a: Int, b: Int) -> Int { a + b }
+    #|let mul = (a: Int, b: Int) -> Int { a * b }
+    #|mul(add(1, 2), add(3, 4))
+  assert_eval_backends_same(script)
+}
+
+///|
+test "vibe wasm eval match with guard" {
+  let script =
+    #|let x = 5
+    #|match x {
+    #|  n if n > 3 => 1,
+    #|  _ => 0
+    #|}
+  assert_eval_backends_same(script)
+}
+
+///|
+test "vibe wasm eval string interpolation basic" {
+  let script =
+    #|let name = "world"
+    #|let msg = "hello \{name}"
+    #|String::length(msg)
+  assert_eval_backends_same(script)
+}
+
+///|
+test "vibe wasm eval recursive fibonacci" {
+  let script =
+    #|let rec fib = (n: Int) -> Int {
+    #|  if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
+    #|}
+    #|fib(10)
+  assert_eval_backends_same(script)
+}
+
+///|
+test "vibe wasm eval closure capture" {
+  let script =
+    #|let x = 10
+    #|let add_x = (n: Int) -> Int { n + x }
+    #|add_x(5)
+  assert_eval_backends_same(script)
+}
+
+///|
+test "vibe wasm eval while with accumulator and break" {
+  let script =
+    #|let main = () -> Int {
+    #|  let mut sum = 0
+    #|  let mut i = 0
+    #|  while i < 100 {
+    #|    sum = sum + i
+    #|    i = i + 1
+    #|    if sum > 50 { break }
+    #|  }
+    #|  sum
+    #|}
+    #|main()
+  assert_eval_backends_same(script)
+}
+
+///|
+test "vibe wasm eval tuple destructure" {
+  let script =
+    #|let pair = (10, 20)
+    #|let (a, b) = pair
+    #|a + b
+  assert_eval_backends_same(script)
+}
+
+///|
+test "vibe wasm eval enum with payload match" {
+  let script =
+    #|enum Result { Ok(Int); Err }
+    #|let x = Ok(42)
+    #|match x { Ok(n) => n, Err => 0 }
+  assert_eval_backends_same(script)
+}
