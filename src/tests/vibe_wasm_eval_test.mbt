@@ -2518,3 +2518,102 @@ test "vibe wasm eval enum with payload match" {
     #|match x { Ok(n) => n, Err => 0 }
   assert_eval_backends_same(script)
 }
+
+///|
+test "vibe wasm eval let rec with captured helpers" {
+  // Mimics markdown parse_blocks pattern: let rec that captures outer helpers
+  let script =
+    #|let is_special = (n: Int) -> Bool { n > 10 }
+    #|let transform = (n: Int) -> Int { n * 2 }
+    #|let rec process = (items: Array[Int], idx: Int) -> Int {
+    #|  if idx >= Array::length(items) {
+    #|    0
+    #|  } else {
+    #|    let item = Array::get(items, idx)
+    #|    let value = if is_special(item) { transform(item) } else { item }
+    #|    value + process(items, idx + 1)
+    #|  }
+    #|}
+    #|process([1, 2, 20, 3, 15], 0)
+  assert_eval_backends_same(script)
+}
+
+///|
+test "vibe wasm eval let rec with many captures" {
+  // Larger let rec with multiple captured helpers (closer to markdown parse_blocks)
+  let script =
+    #|let check_a = (n: Int) -> Bool { n == 1 }
+    #|let check_b = (n: Int) -> Bool { n == 2 }
+    #|let check_c = (n: Int) -> Bool { n == 3 }
+    #|let val_a = 100
+    #|let val_b = 200
+    #|let val_c = 300
+    #|let rec classify = (items: Array[Int], idx: Int, acc: Int) -> Int {
+    #|  if idx >= Array::length(items) {
+    #|    acc
+    #|  } else {
+    #|    let item = Array::get(items, idx)
+    #|    let contribution = if check_a(item) {
+    #|      val_a
+    #|    } else if check_b(item) {
+    #|      val_b
+    #|    } else if check_c(item) {
+    #|      val_c
+    #|    } else {
+    #|      item
+    #|    }
+    #|    classify(items, idx + 1, acc + contribution)
+    #|  }
+    #|}
+    #|classify([1, 2, 3, 4, 1], 0, 0)
+  // 100 + 200 + 300 + 4 + 100 = 704
+  let res = try eval_run(script) catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_true(is_tagged_int(res.value))
+  assert_eq(decode_int(res.value), 704L)
+}
+
+///|
+test "vibe wasm eval let rec called from two paths" {
+  // Tests that let rec works regardless of call path (issue #10)
+  let script =
+    #|let rec sum_arr = (arr: Array[Int], i: Int) -> Int {
+    #|  if i >= Array::length(arr) { 0 }
+    #|  else { Array::get(arr, i) + sum_arr(arr, i + 1) }
+    #|}
+    #|let via_direct = sum_arr([1, 2, 3], 0)
+    #|let wrapper = (arr: Array[Int]) -> Int { sum_arr(arr, 0) }
+    #|let via_wrapper = wrapper([4, 5, 6])
+    #|via_direct + via_wrapper
+  assert_eval_backends_same(script)
+}
+
+///|
+test "vibe wasm eval let rec multiple invocations with captures" {
+  // Issue #10: let rec should work reliably with multiple call sites
+  let script =
+    #|let threshold = 5
+    #|let rec count_above = (arr: Array[Int], idx: Int) -> Int {
+    #|  if idx >= Array::length(arr) { 0 }
+    #|  else {
+    #|    let item = Array::get(arr, idx)
+    #|    let add = if item > threshold { 1 } else { 0 }
+    #|    add + count_above(arr, idx + 1)
+    #|  }
+    #|}
+    #|let r1 = count_above([1, 10, 3, 20], 0)
+    #|let r2 = count_above([6, 7, 8], 0)
+    #|let r3 = count_above([1, 2, 3], 0)
+    #|r1 * 100 + r2 * 10 + r3
+  // r1=2, r2=3, r3=0 → 230
+  let res = try eval_run(script) catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_true(is_tagged_int(res.value))
+  assert_eq(decode_int(res.value), 230L)
+}
