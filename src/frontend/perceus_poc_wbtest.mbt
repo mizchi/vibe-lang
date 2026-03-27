@@ -148,3 +148,315 @@ test "perceus poc drops unused binding inside block expression" {
   let lines = perceus_action_lines(build_perceus_plan_poc(mod))
   assert_eq(lines, ["stmt[0].expr.body.stmt[0].after drop y"])
 }
+
+// ======================================================================
+// Tests for build_perceus_plan (branch-sensitive version)
+// ======================================================================
+
+///|
+fn perceus_test_if(
+  cond : @core.Expr,
+  then_stmts : Array[@core.Stmt],
+  else_stmts : Array[@core.Stmt],
+  id : Int,
+) -> @core.Expr {
+  @core.Expr::If(
+    cond~,
+    then_body={ stmts: then_stmts },
+    else_body={ stmts: else_stmts },
+    span=perceus_test_span(id),
+  )
+}
+
+///|
+test "perceus plan: unused let binding gets drop" {
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="x",
+        expr=perceus_test_call("make", [], 1),
+        span=perceus_test_span(2),
+      ),
+    ],
+  }
+  let lines = perceus_action_lines(build_perceus_plan(mod))
+  inspect(
+    lines,
+    content=(
+      #|["stmt[0].after drop x"]
+    ),
+  )
+}
+
+///|
+test "perceus plan: single use, no dup needed" {
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="x",
+        expr=perceus_test_call("make", [], 1),
+        span=perceus_test_span(2),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_call("consume", [perceus_test_ident("x", 3)], 4),
+        span=perceus_test_span(5),
+      ),
+    ],
+  }
+  let lines = perceus_action_lines(build_perceus_plan(mod))
+  // Single use → no dup, no drop
+  inspect(lines, content="[]")
+}
+
+///|
+test "perceus plan: two sequential uses, first gets dup" {
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="x",
+        expr=perceus_test_call("make", [], 1),
+        span=perceus_test_span(2),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_call("use1", [perceus_test_ident("x", 3)], 4),
+        span=perceus_test_span(5),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_call("use2", [perceus_test_ident("x", 6)], 7),
+        span=perceus_test_span(8),
+      ),
+    ],
+  }
+  let lines = perceus_action_lines(build_perceus_plan(mod))
+  inspect(
+    lines,
+    content=(
+      #|["stmt[1].expr.arg[0].before dup x"]
+    ),
+  )
+}
+
+///|
+test "perceus plan: if/else branch-sensitive drop" {
+  // let x = make()
+  // if cond { use(x) } else { /* x not used → drop */ }
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="x",
+        expr=perceus_test_call("make", [], 1),
+        span=perceus_test_span(2),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_if(
+          perceus_test_ident("cond", 3),
+          [
+            @core.Stmt::Expr(
+              expr=perceus_test_call("use", [perceus_test_ident("x", 4)], 5),
+              span=perceus_test_span(6),
+            ),
+          ],
+          [],
+          7,
+        ),
+        span=perceus_test_span(8),
+      ),
+    ],
+  }
+  let lines = perceus_action_lines(build_perceus_plan(mod))
+  // x is used in then but not in else → drop in else branch
+  inspect(lines, content="[\"stmt[1].expr.else.end drop x\"]")
+}
+
+///|
+test "perceus plan: if/else both use x, then also uses after → dup" {
+  // let x = make()
+  // if cond { use1(x) } else { use2(x) }
+  // use3(x)
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="x",
+        expr=perceus_test_call("make", [], 1),
+        span=perceus_test_span(2),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_if(
+          perceus_test_ident("cond", 3),
+          [
+            @core.Stmt::Expr(
+              expr=perceus_test_call("use1", [perceus_test_ident("x", 4)], 5),
+              span=perceus_test_span(6),
+            ),
+          ],
+          [
+            @core.Stmt::Expr(
+              expr=perceus_test_call("use2", [perceus_test_ident("x", 7)], 8),
+              span=perceus_test_span(9),
+            ),
+          ],
+          10,
+        ),
+        span=perceus_test_span(11),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_call("use3", [perceus_test_ident("x", 12)], 13),
+        span=perceus_test_span(14),
+      ),
+    ],
+  }
+  let lines = perceus_action_lines(build_perceus_plan(mod))
+  // x used in both branches (1 each) + 1 after = 2 total uses
+  // First use in then branch dups, first use in else branch dups
+  inspect(
+    lines,
+    content=(
+      #|["stmt[1].expr.then.stmt[0].expr.arg[0].before dup x", "stmt[1].expr.else.stmt[0].expr.arg[0].before dup x"]
+    ),
+  )
+}
+
+///|
+test "perceus plan: match with two arms, only one uses x" {
+  // let x = make()
+  // match y { A => use(x), B => () }
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="x",
+        expr=perceus_test_call("make", [], 1),
+        span=perceus_test_span(2),
+      ),
+      @core.Stmt::Expr(
+        expr=@core.Expr::Match(
+          scrutinee=perceus_test_ident("y", 3),
+          arms=[
+            {
+              pat: @core.Pat::Bind(name="a", span=perceus_test_span(4)),
+              cond: None,
+              expr: perceus_test_call("use", [perceus_test_ident("x", 5)], 6),
+              span: perceus_test_span(40),
+            },
+            {
+              pat: @core.Pat::Bind(name="b", span=perceus_test_span(7)),
+              cond: None,
+              expr: perceus_test_call("noop", [], 8),
+              span: perceus_test_span(41),
+            },
+          ],
+          span=perceus_test_span(9),
+        ),
+        span=perceus_test_span(10),
+      ),
+    ],
+  }
+  let lines = perceus_action_lines(build_perceus_plan(mod))
+  // x used in arm[0] but not arm[1] → drop in arm[1]
+  // a and b are unused pattern bindings → drop at scope end
+  inspect(
+    lines,
+    content=(
+      #|["stmt[1].expr.arm[0].pat_bind drop a", "stmt[1].expr.arm[1].pat_bind drop b", "stmt[1].expr.arm[1].end drop x"]
+    ),
+  )
+}
+
+///|
+test "perceus plan: scope-end drop in block" {
+  // { let y = make(); use(y) }  ← y consumed, no drop
+  // { let z = make() }          ← z unused, drop at scope end
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::Expr(
+        expr=@core.Expr::Block(
+          body={
+            stmts: [
+              @core.Stmt::Let(
+                rec=false,
+                name="z",
+                expr=perceus_test_call("make", [], 1),
+                span=perceus_test_span(2),
+              ),
+            ],
+          },
+          span=perceus_test_span(3),
+        ),
+        span=perceus_test_span(4),
+      ),
+    ],
+  }
+  let lines = perceus_action_lines(build_perceus_plan(mod))
+  inspect(
+    lines,
+    content=(
+      #|["stmt[0].expr.body.stmt[0].after drop z"]
+    ),
+  )
+}
+
+///|
+test "perceus plan: mutable reassignment drops old value" {
+  // let mut x = make1()
+  // x = make2()  ← old value of x should be dropped
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::LetMut(
+        name="x",
+        expr=perceus_test_call("make1", [], 1),
+        span=perceus_test_span(2),
+      ),
+      @core.Stmt::Assign(
+        name="x",
+        expr=perceus_test_call("make2", [], 3),
+        span=perceus_test_span(4),
+      ),
+    ],
+  }
+  let lines = perceus_action_lines(build_perceus_plan(mod))
+  inspect(
+    lines,
+    content=(
+      #|["stmt[0].after drop x", "stmt[1].old_value drop x"]
+    ),
+  )
+}
+
+///|
+test "perceus plan: three uses need two dups" {
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="x",
+        expr=perceus_test_call("make", [], 1),
+        span=perceus_test_span(2),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_call("a", [perceus_test_ident("x", 3)], 4),
+        span=perceus_test_span(5),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_call("b", [perceus_test_ident("x", 6)], 7),
+        span=perceus_test_span(8),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_call("c", [perceus_test_ident("x", 9)], 10),
+        span=perceus_test_span(11),
+      ),
+    ],
+  }
+  let lines = perceus_action_lines(build_perceus_plan(mod))
+  // 3 uses → dup before 1st and 2nd, last use is a move
+  inspect(
+    lines,
+    content=(
+      #|["stmt[1].expr.arg[0].before dup x", "stmt[2].expr.arg[0].before dup x"]
+    ),
+  )
+}
