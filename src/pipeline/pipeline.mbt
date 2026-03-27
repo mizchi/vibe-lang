@@ -13,6 +13,14 @@ pub using @frontend {monoify_module}
 
 ///|
 pub using @frontend {
+  type PerceusAction,
+  type PerceusActionKind,
+  build_perceus_plan_poc,
+  perceus_action_debug_string,
+}
+
+///|
+pub using @frontend {
   dce_module,
   dce_module_gc,
   dce_module_with_entry_names,
