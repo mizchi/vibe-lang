@@ -208,9 +208,9 @@ let rec parse_cached_type = (source: String, pos: Int) -> (Type, Int)with { Erro
         let (raw_effect, next_pos1) = parse_segment(source, pos + 1)
         let (params, next_pos2) = parse_type_array(source, next_pos1)
         let (ret, next_pos3) = parse_cached_type(source, next_pos2)
-        let eff = decode_effect_name(raw_effect)
-        let eff_opt = if eff == "" { None } else { Some(eff) }
-        (CtFn(params, ret, eff_opt), next_pos3)
+        let eff_raw = decode_effect_name(raw_effect)
+        let eff_name: Option[String] = if eff_raw == "" { None } else { Some(eff_raw) }
+        (CtFn(params, ret, eff_name), next_pos3)
       },
       78 => {
         let (name, next_pos1) = parse_segment(source, pos + 1)
@@ -238,11 +238,8 @@ let serialize_int_array = (items: Array[Int]) -> String {
   String::concat(out, "]")
 }
 
-let serialize_effect_name = (effect_name: Option[String]) -> String {
-  match effect_name {
-    Some(name) => name,
-    None => ""
-  }
+let serialize_effect_name_str = (effect_name: String) -> String {
+  effect_name
 }
 
 let serialize_string_array = (items: Array[String]) -> String {
@@ -292,8 +289,10 @@ let rec serialize_type = (ty: Type) -> String {
     CtArray(elem) => String::concat("A", serialize_type(elem)),
     CtOption(elem) => String::concat("O", serialize_type(elem)),
     CtTuple(elems) => String::concat("T", serialize_type_array(elems)),
-    CtFn(params, ret, effect_name) =>
-    String::concat("F", String::concat(serialize_segment(serialize_effect_name(effect_name)), String::concat(serialize_type_array(params), serialize_type(ret)))),
+    CtFn(params, ret, effect_name) => {
+      let eff_str = match effect_name { Some(n) => n, None => "" }
+      String::concat("F", String::concat(serialize_segment(eff_str), String::concat(serialize_type_array(params), serialize_type(ret))))
+    },
     CtNamed(name, args) =>
     String::concat("N", String::concat(serialize_segment(name), serialize_type_array(args))),
     CtForAll(vars, bounds, body) =>
