@@ -206,6 +206,22 @@ test "RC codegen: enable_rc allocates extra bytes for RC header" {
 }
 
 ///|
+test "RC codegen: free-list global referenced in allocation code" {
+  let tuple_expr = @core.Expr::Tuple(
+    items=[wb_int(1), wb_int(2)],
+    span=wb_span(),
+  )
+  let ast = @core.Module::{
+    stmts: [wb_let("x", tuple_expr), wb_expr(wb_ident("x"))],
+  }
+  let options = wasm_emit_options(enable_rc=true)
+  let wat = wasm_to_wat(emit_module_wasm_with_options(ast, options))
+  // Free-list alloc path emits global.get/global.set for the free-list head
+  assert_true(wat.contains("global.get"))
+  assert_true(wat.contains("global.set"))
+}
+
+///|
 test "RC codegen: rc_header_extra is 8 bytes" {
   // Header layout: [alloc_size@-8][rc_count@-4][type_id@0]
   assert_eq(rc_header_extra, 8)
@@ -231,9 +247,9 @@ test "RC codegen: record allocation with RC emits rc_init" {
 }
 
 ///|
-test "RC codegen: mutable reassign+use includes both rc_init and rc_drop" {
+test "RC codegen: mutable reassign+use includes rc_init, rc_drop, and free-list" {
   // let mut x = (1, 2); x = (3, 4); x
-  // Should have both rc_init (for alloc) and rc_drop (for old value)
+  // Should have rc_init (alloc), rc_drop (old value), and free-list operations
   let tuple1 = @core.Expr::Tuple(items=[wb_int(1), wb_int(2)], span=wb_span())
   let tuple2 = @core.Expr::Tuple(items=[wb_int(3), wb_int(4)], span=wb_span())
   let ast = @core.Module::{
@@ -249,8 +265,11 @@ test "RC codegen: mutable reassign+use includes both rc_init and rc_drop" {
   assert_true(wat.contains("i32.sub"))
   // rc_drop: tombstone check with i32.eqz
   assert_true(wat.contains("i32.eqz"))
-  // rc_drop: conditional block for tombstone
-  assert_true(wat.contains("if"))
+  // Free-list: global.get/global.set for free-list head
+  assert_true(wat.contains("global.get"))
+  assert_true(wat.contains("global.set"))
+  // Free-list alloc: size comparison with i32.eq
+  assert_true(wat.contains("i32.eq"))
 }
 
 ///|

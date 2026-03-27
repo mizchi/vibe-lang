@@ -3390,7 +3390,8 @@ fn emit_module_with_coverage(
     ctx.need_fs ||
     ctx.need_socket ||
     ctx.need_http ||
-    ctx.force_cabi_realloc {
+    ctx.force_cabi_realloc ||
+    ctx.enable_rc {
     ctx.use_heap_global = true
     // In linked mode, __heap_ptr is imported as the first global (index 0).
     // In non-linked mode, it's the first defined global (after js_string globals).
@@ -3491,6 +3492,16 @@ fn emit_module_with_coverage(
     ctx.effect_resume_idx_global = base
     ctx.effect_resume_count_global = base + 1
     ctx.effect_resume_buf_global = base + 2
+  }
+  // Pre-compute RC free-list global index before compile loop.
+  // This must match the global layout in build_module's global section.
+  if ctx.enable_rc {
+    ctx.rc_free_list_global = (if ctx.use_heap_global { 1 } else { 0 }) +
+      (if ctx.need_stack_switching { 1 } else { 0 }) +
+      (if ctx.need_effect_resume { 3 } else { 0 }) +
+      (if ctx.coverage_enabled { 2 } else { 0 }) +
+      (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 }) +
+      (if ctx.need_socket { 1 } else { 0 })
   }
   // Pre-compute ref cell capture flags for ALL functions before compile loop.
   // This is needed because compile_function runs before compile_expr_fn.
