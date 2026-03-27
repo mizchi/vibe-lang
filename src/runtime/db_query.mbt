@@ -935,8 +935,12 @@ pub fn VibeDb::new() -> VibeDb {
                             )
                             for ctor in enum_def.ctors {
                               match imported_env.get_ctor(ctor.name) {
-                                Some(ctor_info) =>
+                                Some(ctor_info) => {
                                   env.set_ctor(ctor.name, ctor_info)
+                                  // Also import qualified form: EnumName::CtorName
+                                  let qualified_ctor = source_name + "::" + ctor.name
+                                  env.set_ctor(qualified_ctor, ctor_info)
+                                }
                                 None => ()
                               }
                               match imported_env.get_scheme(ctor.name) {
@@ -1127,8 +1131,12 @@ pub fn VibeDb::new() -> VibeDb {
                           )
                           for ctor in enum_def.ctors {
                             match imported_env.get_ctor(ctor.name) {
-                              Some(ctor_info) =>
+                              Some(ctor_info) => {
                                 env.set_ctor(ctor.name, ctor_info)
+                                // Also import qualified form: EnumName::CtorName
+                                let qualified_ctor = source_name + "::" + ctor.name
+                                env.set_ctor(qualified_ctor, ctor_info)
+                              }
                               None => ()
                             }
                             match imported_env.get_scheme(ctor.name) {

@@ -472,7 +472,12 @@ fn copy_visible_enum_ctors(
     Some(enum_def) =>
       for ctor in enum_def.ctors {
         match source_env.get_ctor(ctor.name) {
-          Some(ctor_info) => surface_env.set_ctor(ctor.name, ctor_info)
+          Some(ctor_info) => {
+            surface_env.set_ctor(ctor.name, ctor_info)
+            // Also copy qualified form: EnumName::CtorName
+            let qualified = enum_name + "::" + ctor.name
+            surface_env.set_ctor(qualified, ctor_info)
+          }
           None => ()
         }
         match source_env.get_scheme(ctor.name) {
