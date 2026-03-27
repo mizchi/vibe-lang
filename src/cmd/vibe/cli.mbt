@@ -3038,7 +3038,7 @@ fn run_compiled_test_case(
   cache : CliEntryDbCache,
   runner : BenchWasmRunner,
   http_runner : HttpHostRunner?,
-  use_http_host_runner : Bool,
+  use_node_runner : Bool,
   source_path : String,
   wasm_path : String,
   source : String,
@@ -3051,8 +3051,8 @@ fn run_compiled_test_case(
   let wasm_bytes = compile_module_wasm_for_exec(
     db,
     entry,
-    http_host_imports=use_http_host_runner,
-    fs_host_imports=use_http_host_runner,
+    http_host_imports=use_node_runner,
+    fs_host_imports=use_node_runner,
   ) catch {
     e => {
       let msg = e.user_message()
@@ -3091,9 +3091,10 @@ fn run_test_file_compiled_with_cache(
     Ok(v) => v
   }
   let ast = db.ast(entry)
-  let detect_ast = @runtime.bundle_for_wasm_no_dce(db, entry, ast)
-  let use_http_host_runner = module_uses_http_builtins(detect_ast) ||
-    module_uses_wasm_runtime_fallback_builtins(detect_ast)
+  // Use ast (not bundled detect_ast) so test bodies are scanned for builtins
+  let use_http_host_runner = module_uses_http_builtins(ast)
+  let use_fs_host_runner = module_uses_wasm_runtime_fallback_builtins(ast)
+  let use_node_runner = use_http_host_runner || use_fs_host_runner
   for stmt in ast.stmts {
     match stmt {
       @vibe_core.Stmt::Test(..) | @vibe_core.Stmt::Bench(..) => ()
@@ -3139,7 +3140,7 @@ fn run_test_file_compiled_with_cache(
     Err(err) => return CompiledTestAttempt::Unsupported(err)
   }
   let (test_cache_dir, cached_batch_wasm_path, cached_batch_hash_path) = compiled_test_batch_cache_paths(
-    entry, use_http_host_runner,
+    entry, use_node_runner,
   )
   let use_cached_batch_wasm = if @os_fs.path_exists(cached_batch_wasm_path) &&
     @os_fs.path_exists(cached_batch_hash_path) {
@@ -3152,7 +3153,7 @@ fn run_test_file_compiled_with_cache(
   } else {
     false
   }
-  let http_runner = match use_http_host_runner {
+  let http_runner = match use_node_runner {
     true =>
       match resolve_http_host_runner(entry) {
         Ok(v) => Some(v)
@@ -3212,7 +3213,7 @@ fn run_test_file_compiled_with_cache(
         // Fallback to per-case execution on batch compile failure
         return run_test_file_compiled_per_case(
           cache, cases, source, top_level_source, wrapper_prelude_source, parent,
-          stamp, runner, http_runner, use_http_host_runner, stop_on_first_failure,
+          stamp, runner, http_runner, use_node_runner, stop_on_first_failure,
         )
       }
       Ok(v) => v
@@ -3220,8 +3221,8 @@ fn run_test_file_compiled_with_cache(
     let batch_wasm_bytes = compile_module_wasm_for_exec(
       batch_db,
       batch_entry,
-      http_host_imports=use_http_host_runner,
-      fs_host_imports=use_http_host_runner,
+      http_host_imports=use_node_runner,
+      fs_host_imports=use_node_runner,
     ) catch {
       e => {
         remove_file_if_exists(batch_source_path)
@@ -3232,7 +3233,7 @@ fn run_test_file_compiled_with_cache(
         // Fallback to per-case execution on batch compile failure
         return run_test_file_compiled_per_case(
           cache, cases, source, top_level_source, wrapper_prelude_source, parent,
-          stamp, runner, http_runner, use_http_host_runner, stop_on_first_failure,
+          stamp, runner, http_runner, use_node_runner, stop_on_first_failure,
         )
       }
     }
@@ -3292,7 +3293,7 @@ fn run_test_file_compiled_with_cache(
     // not depend on the legacy interpreter path.
     run_test_file_compiled_per_case(
       cache, cases, source, top_level_source, wrapper_prelude_source, parent, stamp,
-      runner, http_runner, use_http_host_runner, stop_on_first_failure,
+      runner, http_runner, use_node_runner, stop_on_first_failure,
     )
   } else {
     // ADR-0026: Save pure test result cache on success
@@ -3319,7 +3320,7 @@ fn run_test_file_compiled_per_case(
   stamp : String,
   runner : BenchWasmRunner,
   http_runner : HttpHostRunner?,
-  use_http_host_runner : Bool,
+  use_node_runner : Bool,
   stop_on_first_failure : Bool,
 ) -> CompiledTestAttempt {
   let failures : Array[CliTestFailure] = []
@@ -3341,7 +3342,7 @@ fn run_test_file_compiled_per_case(
       i.to_string() +
       ".wasm"
     let outcome = run_compiled_test_case(
-      cache, runner, http_runner, use_http_host_runner, source_path, wasm_path, case_source,
+      cache, runner, http_runner, use_node_runner, source_path, wasm_path, case_source,
     )
     remove_file_if_exists(source_path)
     remove_file_if_exists(wasm_path)
