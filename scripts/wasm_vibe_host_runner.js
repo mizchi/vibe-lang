@@ -896,6 +896,24 @@ async function main() {
           return 0n;
         }
       },
+      json_parse(strTagged) {
+        const str = decodeStringArg(instanceRef, strTagged);
+        // Parse and re-stringify to validate JSON, then return as tagged string.
+        // The vibe runtime treats Json values as opaque tagged strings at the
+        // host boundary; higher-level Json::get etc. operate on the parsed tree
+        // inside the vibe interpreter/compiled code.
+        try {
+          const parsed = JSON.parse(str);
+          return encodeTaggedString(instanceRef, JSON.stringify(parsed));
+        } catch (e) {
+          return encodeTaggedString(instanceRef, "null");
+        }
+      },
+      json_stringify(valueTagged) {
+        // The value is already a tagged string containing JSON text.
+        // Just pass it through (identity for string-encoded Json values).
+        return valueTagged;
+      },
       ["env-get"](nameTagged) {
         const name = decodeStringArg(instanceRef, nameTagged);
         const val = process.env[name] || "";

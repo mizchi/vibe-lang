@@ -47,6 +47,8 @@ pub fn codegen_registered_builtin_names() -> Array[String] {
     // Threads
      "Threads::probe_wat", "Threads::runtime_hints", "Threads::channel_new", "Threads::spawn",
     "Threads::send", "Threads::recv", "Threads::wait",
+    // Json (host imports when fs_host_imports is set)
+     "Json::parse", "Json::stringify",
   ]
 }
 
@@ -55,8 +57,8 @@ pub fn codegen_registered_builtin_names() -> Array[String] {
 /// have no codegen handler (they throw a runtime error when called in WASM).
 pub fn codegen_runtime_fallback_builtin_names() -> Array[String] {
   [
-    // JSON (interpreter-only)
-    "Json::parse", "Json::stringify", "Json::parse_lines", "Json::stringify_lines",
+    // JSON (interpreter-only, except Json::parse and Json::stringify which have host imports)
+    "Json::parse_lines", "Json::stringify_lines",
     "Lines::parse", "Lines::stringify", "Json::type_of", "Json::string", "Json::get",
     "Json::index", "Json::number", "Json::bool", "Json::is_null", "Json::length",
     "Json::keys",

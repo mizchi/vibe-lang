@@ -9106,6 +9106,19 @@ fn compile_call_builtin_pre_user_inner(
       compile_expr(ctx, buf, pos_args[1])
       emit_call(buf, import_index_fs_host_append(ctx))
     }
+    // Json host imports (vibe module, available when fs_host_imports is set)
+    "Json::parse" if ctx.fs_host_imports => {
+      let pos_args = extract_positional_exprs_with_arity(args, "Json::parse", 1)
+      compile_expr(ctx, buf, pos_args[0])
+      emit_call(buf, import_index_json_host_parse(ctx))
+    }
+    "Json::stringify" if ctx.fs_host_imports => {
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Json::stringify", 1,
+      )
+      compile_expr(ctx, buf, pos_args[0])
+      emit_call(buf, import_index_json_host_stringify(ctx))
+    }
     _ if not(is_user_fn) && is_wasm_runtime_fallback_builtin(name) =>
       emit_wasm_runtime_fallback_throw(ctx, buf, name)
     _ => raise WasmGenError::Unsupported(pre_user_builtin_unhandled_marker)
