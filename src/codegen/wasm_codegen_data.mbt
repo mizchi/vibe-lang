@@ -197,10 +197,20 @@ fn emit_heap_alloc(
   obj_local : Int,
 ) -> Unit {
   if ctx.enable_rc {
-    // Allocate size + 8 bytes: [alloc_size(4)][rc_count(4)][object(size)]
-    // obj_local points past the RC header so all field offsets are unchanged
     let total_size = size + rc_header_extra
-    emit_rc_alloc_with_free_list(ctx, buf, size, total_size, obj_local)
+    if ctx.rc_alloc_func_idx >= 0 {
+      // Call helper: $rc_alloc(total_size) -> obj_ptr
+      // Sync heap_local → heap_global before call
+      emit_heap_pre_call_sync(ctx, buf)
+      emit_i32_const_raw(buf, total_size)
+      let abs_idx = func_import_count(ctx) + ctx.rc_alloc_func_idx
+      emit_call(buf, abs_idx)
+      emit_local_set(buf, obj_local)
+      // Sync heap_global → heap_local after call
+      emit_heap_post_call_sync(ctx, buf)
+    } else {
+      emit_rc_alloc_with_free_list(ctx, buf, size, total_size, obj_local)
+    }
   } else {
     emit_heap_reserve(ctx, buf, size)
     emit_local_get(buf, ctx.heap_local)

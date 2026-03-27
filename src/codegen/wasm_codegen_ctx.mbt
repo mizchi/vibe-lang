@@ -149,6 +149,10 @@ priv struct CodegenCtx {
   // Perceus RC: temp locals for dup/drop operations (allocated per function)
   mut rc_tmp_local : Int
   mut rc_new_rc_local : Int
+  // RC helper function indices (compiled_funcs-relative, -1 if not allocated)
+  mut rc_dup_func_idx : Int
+  mut rc_drop_func_idx : Int
+  mut rc_alloc_func_idx : Int
 }
 
 ///|
@@ -300,6 +304,9 @@ fn CodegenCtx::new(
     rc_free_list_global: -1,
     rc_tmp_local: -1,
     rc_new_rc_local: -1,
+    rc_dup_func_idx: -1,
+    rc_drop_func_idx: -1,
+    rc_alloc_func_idx: -1,
   }
   // Register builtin None as singleton (strings is now initialized)
   let none_offset = ctx.strings.intern_enum_singleton("None", 0)

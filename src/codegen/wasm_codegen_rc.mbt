@@ -412,10 +412,17 @@ fn ensure_rc_locals(ctx : CodegenCtx) -> Unit {
 }
 
 ///|
-/// Emit RC dup for an i64 local (truncates to i32 internally).
+/// Emit RC dup for an i64 local.
+/// When helper function is available, emits a call; otherwise inlines.
 fn emit_rc_dup_i64(ctx : CodegenCtx, buf : ByteBuf, local_idx : Int) -> Unit {
+  if ctx.rc_dup_func_idx >= 0 {
+    // Call the helper function: $rc_dup(i64) -> void
+    emit_local_get(buf, local_idx)
+    let abs_idx = func_import_count(ctx) + ctx.rc_dup_func_idx
+    emit_call(buf, abs_idx)
+    return
+  }
   ensure_rc_locals(ctx)
-  // Truncate i64 to i32 into rc_tmp_local, then do dup on that
   let val32 = alloc_temp_local(ctx)
   emit_local_get(buf, local_idx)
   emit_i32_wrap_i64(buf)
@@ -424,8 +431,16 @@ fn emit_rc_dup_i64(ctx : CodegenCtx, buf : ByteBuf, local_idx : Int) -> Unit {
 }
 
 ///|
-/// Emit RC drop for an i64 local (truncates to i32 internally).
+/// Emit RC drop for an i64 local.
+/// When helper function is available, emits a call; otherwise inlines.
 fn emit_rc_drop_i64(ctx : CodegenCtx, buf : ByteBuf, local_idx : Int) -> Unit {
+  if ctx.rc_drop_func_idx >= 0 {
+    // Call the helper function: $rc_drop(i64) -> void
+    emit_local_get(buf, local_idx)
+    let abs_idx = func_import_count(ctx) + ctx.rc_drop_func_idx
+    emit_call(buf, abs_idx)
+    return
+  }
   ensure_rc_locals(ctx)
   let val32 = alloc_temp_local(ctx)
   emit_local_get(buf, local_idx)
@@ -600,6 +615,340 @@ fn parse_stmt_index(site : String) -> Int {
 ///
 /// The Perceus analysis pass (`build_perceus_plan`) provides the exact
 /// sites for dup/drop insertion as `Array[PerceusAction]`.
+/// Compile a standalone WASM function for rc_dup.
+/// Signature: (i64) -> void
+/// Truncates i64 to i32, checks tag, increments RC at obj_ptr - 4.
+fn compile_rc_dup_function() -> WasmFunc {
+  let body = ByteBuf::new()
+  // Locals: 0=param(i64), 1=val32(i32), 2=rc_ptr(i32)
+  let param = 0
+  let val32 = 1
+  let rc_ptr = 2
+  // val32 = i32.wrap_i64(param)
+  emit_local_get(body, param)
+  emit_i32_wrap_i64(body)
+  emit_local_set(body, val32)
+  // if (val32 & tag_mask) != tag_obj → return
+  emit_local_get(body, val32)
+  emit_i32_const_raw(body, tag_mask)
+  emit_i32_and(body)
+  emit_i32_const_raw(body, tag_obj)
+  emit_i32_ne(body)
+  emit_block(body)
+  emit_br_if(body, 0)
+  // obj_ptr = val32 & ~3
+  emit_local_get(body, val32)
+  emit_i32_const_raw(body, -4) // 0xFFFFFFFC
+  emit_i32_and(body)
+  // rc_ptr = obj_ptr - 4  (but we use -8 since rc_header_extra=8, rc is at -4 from obj)
+  emit_i32_const_raw(body, 4)
+  emit_i32_sub(body)
+  emit_local_set(body, rc_ptr)
+  // *rc_ptr = *rc_ptr + 1
+  emit_local_get(body, rc_ptr)
+  emit_local_get(body, rc_ptr)
+  emit_i32_load(body, 0)
+  emit_i32_const_raw(body, 1)
+  emit_i32_add(body)
+  emit_i32_store(body, 0)
+  emit_end(body) // end block
+  emit_end(body) // end func
+  WasmFunc::{
+    params: [ValueKind::I64],
+    locals: [ValueKind::I32, ValueKind::I32],
+    results: [],
+    body: body.to_array(),
+  }
+}
+
+///|
+/// Compile a standalone WASM function for rc_drop.
+/// Signature: (i64) -> void
+/// Truncates i64 to i32, checks tag, decrements RC.
+/// When RC reaches 0: recursively drops container fields, tombstones type_id,
+/// and prepends to free-list.
+fn compile_rc_drop_function(
+  _heap_global : Int,
+  free_list_global : Int,
+) -> WasmFunc {
+  let body = ByteBuf::new()
+  // Locals: 0=param(i64), 1=val32, 2=obj_ptr, 3=new_rc,
+  //         4=type_id, 5=len, 6=idx, 7=field_val, 8=field_obj
+  let param = 0
+  let val32 = 1
+  let obj_ptr = 2
+  let new_rc = 3
+  let type_id = 4
+  let len = 5
+  let idx = 6
+  let field_val = 7
+  let field_obj = 8
+  // val32 = i32.wrap_i64(param)
+  emit_local_get(body, param)
+  emit_i32_wrap_i64(body)
+  emit_local_set(body, val32)
+  // if (val32 & tag_mask) != tag_obj → return
+  emit_local_get(body, val32)
+  emit_i32_const_raw(body, tag_mask)
+  emit_i32_and(body)
+  emit_i32_const_raw(body, tag_obj)
+  emit_i32_ne(body)
+  emit_block(body)
+  emit_br_if(body, 0)
+  // obj_ptr = val32 & ~3
+  emit_local_get(body, val32)
+  emit_i32_const_raw(body, -4)
+  emit_i32_and(body)
+  emit_local_set(body, obj_ptr)
+  // new_rc = load(obj_ptr - 4) - 1
+  emit_local_get(body, obj_ptr)
+  emit_i32_const_raw(body, 4)
+  emit_i32_sub(body)
+  emit_local_get(body, obj_ptr)
+  emit_i32_const_raw(body, 4)
+  emit_i32_sub(body)
+  emit_i32_load(body, 0)
+  emit_i32_const_raw(body, 1)
+  emit_i32_sub(body)
+  emit_local_tee(body, new_rc)
+  emit_i32_store(body, 0) // store new_rc at obj_ptr - 4
+  // if new_rc == 0: drop fields, tombstone, free-list
+  emit_local_get(body, new_rc)
+  emit_i32_eqz(body)
+  emit_if(body)
+  // --- Recursive drop fields (1 level: tuple/record/array type_id 3-5) ---
+  emit_local_get(body, obj_ptr)
+  emit_i32_load(body, 0)
+  emit_local_set(body, type_id)
+  // if type_id >= 3 && type_id <= 5
+  emit_local_get(body, type_id)
+  emit_i32_const_raw(body, 3)
+  emit_i32_ge_s(body)
+  emit_if(body) // if type_id >= 3
+  emit_local_get(body, type_id)
+  emit_i32_const_raw(body, 5)
+  emit_i32_le_s(body)
+  emit_if(body) // if type_id <= 5
+  // len = load(obj_ptr + 4)
+  emit_local_get(body, obj_ptr)
+  emit_i32_load(body, 4)
+  emit_local_set(body, len)
+  // idx = 0
+  emit_i32_const_raw(body, 0)
+  emit_local_set(body, idx)
+  // loop
+  emit_block(body) // block $break
+  emit_loop(body) // loop $continue
+  emit_local_get(body, idx)
+  emit_local_get(body, len)
+  emit_i32_ge_s(body)
+  emit_br_if(body, 1) // br $break
+  // field_val = load(obj_ptr + 8 + idx * 4)
+  emit_local_get(body, obj_ptr)
+  emit_local_get(body, idx)
+  emit_i32_const_raw(body, 4)
+  emit_i32_mul(body)
+  emit_i32_add(body)
+  emit_i32_load(body, 8)
+  emit_local_set(body, field_val)
+  // Check field is heap object
+  emit_local_get(body, field_val)
+  emit_i32_const_raw(body, tag_mask)
+  emit_i32_and(body)
+  emit_i32_const_raw(body, tag_obj)
+  emit_i32_eq(body)
+  emit_if(body) // if field is heap obj
+  // field_obj = field_val & ~3
+  emit_local_get(body, field_val)
+  emit_i32_const_raw(body, -4)
+  emit_i32_and(body)
+  emit_local_set(body, field_obj)
+  // field_new_rc = load(field_obj - 4) - 1; store
+  emit_local_get(body, field_obj)
+  emit_i32_const_raw(body, 4)
+  emit_i32_sub(body)
+  emit_local_get(body, field_obj)
+  emit_i32_const_raw(body, 4)
+  emit_i32_sub(body)
+  emit_i32_load(body, 0)
+  emit_i32_const_raw(body, 1)
+  emit_i32_sub(body)
+  emit_local_tee(body, new_rc) // reuse new_rc for field
+  emit_i32_store(body, 0)
+  // if field RC == 0: tombstone + free-list
+  emit_local_get(body, new_rc)
+  emit_i32_eqz(body)
+  emit_if(body)
+  // tombstone
+  emit_local_get(body, field_obj)
+  emit_i32_const_raw(body, 0)
+  emit_i32_store(body, 0)
+  // free-list: next = head; head = field_obj
+  if free_list_global >= 0 {
+    emit_local_get(body, field_obj)
+    emit_i32_const_raw(body, 4)
+    emit_i32_sub(body)
+    emit_global_get(body, free_list_global)
+    emit_i32_store(body, 0)
+    emit_local_get(body, field_obj)
+    emit_global_set(body, free_list_global)
+  }
+  emit_end(body) // end if field RC == 0
+  emit_end(body) // end if field is heap obj
+  // idx += 1
+  emit_local_get(body, idx)
+  emit_i32_const_raw(body, 1)
+  emit_i32_add(body)
+  emit_local_set(body, idx)
+  emit_br(body, 0) // br $continue
+  emit_end(body) // end loop
+  emit_end(body) // end block $break
+  emit_end(body) // end if type_id <= 5
+  emit_end(body) // end if type_id >= 3
+  // --- End recursive drop fields ---
+  // Tombstone: type_id = 0
+  emit_local_get(body, obj_ptr)
+  emit_i32_const_raw(body, 0)
+  emit_i32_store(body, 0)
+  // Free-list: next = head; head = obj_ptr
+  if free_list_global >= 0 {
+    emit_local_get(body, obj_ptr)
+    emit_i32_const_raw(body, 4)
+    emit_i32_sub(body)
+    emit_global_get(body, free_list_global)
+    emit_i32_store(body, 0)
+    emit_local_get(body, obj_ptr)
+    emit_global_set(body, free_list_global)
+  }
+  emit_end(body) // end if new_rc == 0
+  emit_end(body) // end block (tag check skip)
+  emit_end(body) // end func
+  WasmFunc::{
+    params: [ValueKind::I64],
+    locals: [
+      ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32,
+      ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32,
+    ],
+    results: [],
+    body: body.to_array(),
+  }
+}
+
+///|
+/// Compile a standalone WASM function for rc_alloc.
+/// Signature: (i32 total_size) -> i32 obj_ptr
+/// Checks free-list head for exact-size match, otherwise bump-allocates.
+/// Writes alloc_size and rc_count=1 to the RC header.
+fn compile_rc_alloc_function(
+  heap_global : Int,
+  free_list_global : Int,
+) -> WasmFunc {
+  let body = ByteBuf::new()
+  // Locals: 0=total_size(param), 1=obj_ptr, 2=free_ptr,
+  //         3=new_heap, 4=cur_pages, 5=req_pages
+  let total_size = 0
+  let obj_ptr = 1
+  let free_ptr = 2
+  let new_heap = 3
+  let cur_pages = 4
+  let req_pages = 5
+  // block $allocated — both paths set obj_ptr, then br here
+  emit_block(body)
+  if free_list_global >= 0 {
+    // free_ptr = global.get $free_list
+    emit_global_get(body, free_list_global)
+    emit_local_set(body, free_ptr)
+    // if free_ptr != 0 && load(free_ptr-8) == total_size → reuse
+    emit_local_get(body, free_ptr)
+    emit_i32_const_raw(body, 0)
+    emit_i32_ne(body)
+    emit_if(body)
+    emit_local_get(body, free_ptr)
+    emit_i32_const_raw(body, 8)
+    emit_i32_sub(body)
+    emit_i32_load(body, 0)
+    emit_local_get(body, total_size)
+    emit_i32_eq(body)
+    emit_if(body)
+    // Reuse: unlink from free list
+    emit_local_get(body, free_ptr)
+    emit_i32_const_raw(body, 4)
+    emit_i32_sub(body)
+    emit_i32_load(body, 0)
+    emit_global_set(body, free_list_global) // head = next
+    emit_local_get(body, free_ptr)
+    emit_local_set(body, obj_ptr)
+    // Write rc_count = 1
+    emit_local_get(body, obj_ptr)
+    emit_i32_const_raw(body, 4)
+    emit_i32_sub(body)
+    emit_i32_const_raw(body, 1)
+    emit_i32_store(body, 0)
+    emit_br(body, 2) // br $allocated (block=2: inner if=0, outer if=1, block=2)
+    emit_end(body) // end inner if
+    emit_end(body) // end outer if
+  }
+  // Bump allocate: check memory.grow, then advance heap
+  emit_global_get(body, heap_global)
+  emit_local_get(body, total_size)
+  emit_i32_add(body)
+  emit_local_set(body, new_heap)
+  emit_memory_size(body)
+  emit_local_set(body, cur_pages)
+  emit_local_get(body, new_heap)
+  emit_i32_const_raw(body, 65535)
+  emit_i32_add(body)
+  emit_i32_const_raw(body, 16)
+  emit_i32_shr_u(body)
+  emit_local_set(body, req_pages)
+  emit_local_get(body, cur_pages)
+  emit_local_get(body, req_pages)
+  emit_i32_lt_s(body)
+  emit_if(body)
+  emit_local_get(body, req_pages)
+  emit_local_get(body, cur_pages)
+  emit_i32_sub(body)
+  emit_memory_grow(body)
+  emit_drop(body)
+  emit_end(body)
+  // obj_ptr = heap + 8
+  emit_global_get(body, heap_global)
+  emit_i32_const_raw(body, rc_header_extra)
+  emit_i32_add(body)
+  emit_local_set(body, obj_ptr)
+  // heap = heap + total_size
+  emit_global_get(body, heap_global)
+  emit_local_get(body, total_size)
+  emit_i32_add(body)
+  emit_global_set(body, heap_global)
+  // Write alloc_size at obj_ptr - 8
+  emit_local_get(body, obj_ptr)
+  emit_i32_const_raw(body, rc_header_extra)
+  emit_i32_sub(body)
+  emit_local_get(body, total_size)
+  emit_i32_store(body, 0)
+  // Write rc_count = 1 at obj_ptr - 4
+  emit_local_get(body, obj_ptr)
+  emit_i32_const_raw(body, 4)
+  emit_i32_sub(body)
+  emit_i32_const_raw(body, 1)
+  emit_i32_store(body, 0)
+  emit_end(body) // end block $allocated
+  // Return obj_ptr
+  emit_local_get(body, obj_ptr)
+  emit_end(body) // end func
+  WasmFunc::{
+    params: [ValueKind::I32],
+    locals: [
+      ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32,
+      ValueKind::I32,
+    ],
+    results: [ValueKind::I32],
+    body: body.to_array(),
+  }
+}
+
+///|
 pub fn perceus_codegen_integration_notes() -> String {
   let notes = [
     "1. emit_rc_init after emit_heap_alloc (rc at ptr-4, offsets unchanged)", "2. emit_rc_dup at PerceusAction::Dup sites",

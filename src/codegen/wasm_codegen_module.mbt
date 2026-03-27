@@ -3505,6 +3505,14 @@ fn emit_module_with_coverage(
       (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 }) +
       (if ctx.need_socket { 1 } else { 0 })
   }
+  // Pre-compute RC helper function indices before compile loop.
+  // Helpers are appended right after user functions in compiled_funcs.
+  if ctx.enable_rc {
+    let base = funcs.length()
+    ctx.rc_dup_func_idx = base
+    ctx.rc_drop_func_idx = base + 1
+    ctx.rc_alloc_func_idx = base + 2
+  }
   // Pre-compute ref cell capture flags for ALL functions before compile loop.
   // This is needed because compile_function runs before compile_expr_fn.
   precompute_ref_cell_captures_block(ctx, ast.stmts, top_mut_captured)
@@ -3569,6 +3577,31 @@ fn emit_module_with_coverage(
         capture_is_ref_cell=cap_ref_cells,
         emit_rc_stmt_actions=has_func_rc,
       ),
+    )
+  }
+  // Append RC helper functions (dup, drop, alloc) right after user functions
+  if ctx.enable_rc {
+    let rc_dup_sig = FuncSig::{
+      params: [ValueKind::I64],
+      results: [],
+    }
+    let _ = ensure_sig_index(ctx, rc_dup_sig)
+    compiled_funcs.push(compile_rc_dup_function())
+    let rc_drop_sig = FuncSig::{
+      params: [ValueKind::I64],
+      results: [],
+    }
+    let _ = ensure_sig_index(ctx, rc_drop_sig)
+    compiled_funcs.push(
+      compile_rc_drop_function(ctx.heap_global, ctx.rc_free_list_global),
+    )
+    let rc_alloc_sig = FuncSig::{
+      params: [ValueKind::I32],
+      results: [ValueKind::I32],
+    }
+    let _ = ensure_sig_index(ctx, rc_alloc_sig)
+    compiled_funcs.push(
+      compile_rc_alloc_function(ctx.heap_global, ctx.rc_free_list_global),
     )
   }
   if ctx.need_stdin_read_char ||
