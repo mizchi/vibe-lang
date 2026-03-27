@@ -1099,7 +1099,7 @@ async function main() {
     const heapGlobal = instance.exports.__heap_ptr;
     const mem = new Uint8Array(instance.exports.memory.buffer);
     const hp = heapGlobal?.value;
-    console.error(`[crash debug] heap_ptr=${hp} (0x${hp?.toString(16)}), memory_size=${mem.length} (${(mem.length / 65536)} pages)`);
+    console.error(`[crash debug] heap_ptr=${hp} (0x${hp?.toString(16)}), memory_size=${mem.length} (${(mem.length / 65536)} pages) / ${err?.message || err}`);
     // Dump first few bytes and around heap pointer
     const dv = new DataView(instance.exports.memory.buffer);
     console.error(`[crash debug] mem[0..32]: ${Array.from(mem.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);

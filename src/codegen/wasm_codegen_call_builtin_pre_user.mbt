@@ -9551,6 +9551,8 @@ fn emit_string_split_impl(
   let sub_len = alloc_temp_local(ctx)
   let copy_j = alloc_temp_local(ctx)
   let obj_size_local = alloc_temp_local(ctx)
+  let seg_count = alloc_temp_local(ctx)
+  let arr_size_local = alloc_temp_local(ctx)
   // Untag source string
   compile_expr_i32(ctx, buf, pos_args[0])
   emit_untag_ptr_i32(buf)
@@ -9565,14 +9567,98 @@ fn emit_string_split_impl(
   emit_local_get(buf, del_ptr)
   emit_i32_load(buf, 4)
   emit_local_set(buf, del_len)
-  // Allocate result array (max 4096 elements)
-  let max_cap = 4096
-  let arr_size = align4(8 + max_cap * 4)
-  emit_heap_alloc(ctx, buf, arr_size, arr_ptr)
+  // ── Pass 1: Count segments ──
+  emit_local_get(buf, del_len)
+  emit_i32_eqz(buf)
+  emit_if(buf) // if del_len == 0
+  // Empty delimiter: count = str_len (one segment per character)
+  emit_local_get(buf, str_len)
+  emit_local_set(buf, seg_count)
+  emit_else(buf) // else: del_len > 0
+  // Count delimiter matches; segments = matches + 1
+  emit_i32_const_raw(buf, 1) // start with 1 (final trailing segment)
+  emit_local_set(buf, seg_count)
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, scan_i)
+  emit_block(buf) // block $count_done
+  emit_loop(buf) // loop $count_loop
+  // if scan_i + del_len > str_len: break
+  emit_local_get(buf, scan_i)
+  emit_local_get(buf, del_len)
+  emit_i32_add(buf)
+  emit_local_get(buf, str_len)
+  emit_i32_gt_s(buf)
+  emit_br_if(buf, 1) // break $count_done
+  // Try to match delimiter at scan_i
+  emit_i32_const_raw(buf, 1)
+  emit_local_set(buf, matched)
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, inner_j)
+  emit_block(buf) // block $cmp_done
+  emit_loop(buf) // loop $cmp_loop
+  emit_local_get(buf, inner_j)
+  emit_local_get(buf, del_len)
+  emit_i32_ge_s(buf)
+  emit_br_if(buf, 1) // break $cmp_done
+  emit_local_get(buf, str_ptr)
+  emit_local_get(buf, scan_i)
+  emit_i32_add(buf)
+  emit_local_get(buf, inner_j)
+  emit_i32_add(buf)
+  emit_i32_load8_u(buf, 8)
+  emit_local_get(buf, del_ptr)
+  emit_local_get(buf, inner_j)
+  emit_i32_add(buf)
+  emit_i32_load8_u(buf, 8)
+  emit_i32_eq(buf)
+  emit_i32_eqz(buf)
+  emit_if(buf) // if not equal
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, matched)
+  emit_br(buf, 2) // break $cmp_done
+  emit_end(buf) // end if
+  emit_local_get(buf, inner_j)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, inner_j)
+  emit_br(buf, 0) // continue $cmp_loop
+  emit_end(buf) // end $cmp_loop
+  emit_end(buf) // end $cmp_done
+  // If matched: count++, scan_i += del_len; else: scan_i++
+  emit_local_get(buf, matched)
+  emit_if(buf)
+  emit_local_get(buf, seg_count)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, seg_count)
+  emit_local_get(buf, scan_i)
+  emit_local_get(buf, del_len)
+  emit_i32_add(buf)
+  emit_local_set(buf, scan_i)
+  emit_else(buf)
+  emit_local_get(buf, scan_i)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, scan_i)
+  emit_end(buf) // end if matched
+  emit_br(buf, 0) // continue $count_loop
+  emit_end(buf) // end $count_loop
+  emit_end(buf) // end $count_done
+  emit_end(buf) // end if/else (del_len check)
+  // ── Allocate exact-sized array: align4(8 + seg_count * 4) ──
+  emit_local_get(buf, seg_count)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_mul(buf)
+  emit_i32_const_raw(buf, 8 + 3) // header + alignment padding
+  emit_i32_add(buf)
+  emit_i32_const_raw(buf, -4) // mask: 0xFFFFFFFC
+  emit_i32_and(buf)
+  emit_local_set(buf, arr_size_local)
+  emit_heap_alloc_local(ctx, buf, arr_size_local, arr_ptr)
   emit_local_get(buf, arr_ptr)
   emit_i32_const_raw(buf, obj_array)
   emit_i32_store(buf, 0)
-  // Initialize arr_len = 0, scan_i = 0, seg_start = 0
+  // ── Pass 2: Populate ── (reuse existing scan logic)
   emit_i32_const_raw(buf, 0)
   emit_local_set(buf, arr_len)
   emit_i32_const_raw(buf, 0)

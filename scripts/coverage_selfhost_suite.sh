@@ -257,7 +257,7 @@ else
   append_collect_task "$INDEX_ENTRY" "$INDEX_ENTRY" 1 "" 0
 fi
 for extra_entry in "${extra_entries[@]-}"; do
-  append_collect_task "$extra_entry (run_tests=$EXTRA_RUN_TESTS)" "$extra_entry" 1 "" "$EXTRA_RUN_TESTS"
+  append_collect_task "$extra_entry (run_tests=$EXTRA_RUN_TESTS)" "$extra_entry" 0 "" "$EXTRA_RUN_TESTS"
 done
 
 collect_log_dir="$OUT_DIR/.collect-logs"
