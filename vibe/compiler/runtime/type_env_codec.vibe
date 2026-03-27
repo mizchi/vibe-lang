@@ -12,38 +12,41 @@ import .. / core {
 
 let parse_int_unwrap = (raw: String, fallback: Int) -> Int {
   let len = String::length(raw)
-  if len == 0 { fallback }
-  else {
-    let mut result = 0
-    let mut i = 0
-    let mut neg = false
-    let mut valid = true
+  let mut result = 0
+  let mut i = 0
+  let mut neg = false
+  let mut valid = true
+  if len == 0 { valid = false }
+  if valid {
     if String::char_code_at(raw, 0) == 45 { neg = true; i = 1 }
-    while i < len {
-      let c = String::char_code_at(raw, i)
-      if c < 48 || c > 57 { valid = false; i = len }
-      else {
-        result = result * 10 + (c - 48)
-        i = i + 1
-      }
-    }
-    if not(valid) { fallback }
-    else if neg { 0 - result }
-    else result
   }
+  while valid {
+    if i >= len { break }
+    let c = String::char_code_at(raw, i)
+    if c < 48 { valid = false }
+    else if c > 57 { valid = false }
+    else {
+      result = result * 10 + (c - 48)
+      i = i + 1
+    }
+  }
+  if valid {
+    if neg { 0 - result } else result
+  } else fallback
 }
 
 let serialize_segment = (text: String) -> String {
-    String::concat(__to_string(String::length(text)), String::concat(":", text))
+  let len_str = __to_string(String::length(text))
+  String::concat(len_str, String::concat(":", text))
 }
 
-let decode_effect_name = (raw: String) -> Option[String] {
+let decode_effect_name = (raw: String) -> String {
   if raw == "" || raw == "0" {
-    None
+    ""
   } else if raw == "1" {
-    Some("Error")
+    "Error"
   } else {
-    Some(raw)
+    raw
   }
 }
 
@@ -203,7 +206,9 @@ let rec parse_cached_type = (source: String, pos: Int) -> (Type, Int)with { Erro
         let (raw_effect, next_pos1) = parse_segment(source, pos + 1)
         let (params, next_pos2) = parse_type_array(source, next_pos1)
         let (ret, next_pos3) = parse_cached_type(source, next_pos2)
-        (CtFn(params, ret, decode_effect_name(raw_effect)), next_pos3)
+        let eff = decode_effect_name(raw_effect)
+        let eff_opt = if eff == "" { None } else { Some(eff) }
+        (CtFn(params, ret, eff_opt), next_pos3)
       },
       78 => {
         let (name, next_pos1) = parse_segment(source, pos + 1)
