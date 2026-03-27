@@ -72,6 +72,26 @@ moon doc 'String::*rev*'  # Glob pattern search
 - `moon test` to check the test is passed. Use `moon test --update` to update snapshots.
 - `moon check` to check the code is linted correctly.
 
+## Task Management
+
+タスクは GitHub Issues (`gh issue`) で管理する。`TODO.md` はロードマップの概要のみ。
+
+```bash
+# タスク一覧
+gh issue list --state open
+
+# 新規タスク作成
+gh issue create --title "タイトル" --body "内容"
+
+# タスク完了
+gh issue close <number>
+
+# ラベル付き
+gh issue create --title "タイトル" --label bug
+```
+
+設計判断は `docs/adr/` に ADR として記録する。
+
 ## Before Commit
 
 ```bash
