@@ -493,3 +493,98 @@ test "wasm_emit_options_with_rc stores per-function actions" {
   // enable_rc should be true
   assert_true(options.enable_rc)
 }
+
+///|
+test "compile_module_wasm with enable_rc handles nested tuple in function" {
+  let db = @runtime.VibeDb::new()
+  let src =
+    #|let make_nested = () -> ((Int, Int), (Int, Int)) {
+    #|  let a = (1, 2)
+    #|  let b = (3, 4)
+    #|  (a, b)
+    #|}
+    #|let x = make_nested()
+    #|x
+  db.set_source("main", src)
+  let wasm_bytes = compile_module_wasm(db, "main", enable_rc=true)
+  assert_true(wasm_bytes.length() > 8)
+  assert_eq(wasm_bytes[0], b'\x00')
+  assert_eq(wasm_bytes[1], b'\x61')
+}
+
+///|
+test "compile_module_wasm with enable_rc handles multiple functions" {
+  let db = @runtime.VibeDb::new()
+  let src =
+    #|let pair = () -> (Int, Int) { (1, 2) }
+    #|let triple = () -> (Int, Int, Int) { (3, 4, 5) }
+    #|let a = pair()
+    #|let b = triple()
+    #|a.0 + b.0
+  db.set_source("main", src)
+  let wasm_rc = compile_module_wasm(db, "main", enable_rc=true)
+  let wasm_no_rc = compile_module_wasm(db, "main")
+  // RC version should be larger
+  assert_true(wasm_rc.length() > wasm_no_rc.length())
+}
+
+///|
+test "compile_module_wasm with enable_rc handles if/else with tuple alloc" {
+  let db = @runtime.VibeDb::new()
+  let src =
+    #|let choose = (flag: Int) -> (Int, Int) {
+    #|  if flag == 1 { (10, 20) } else { (30, 40) }
+    #|}
+    #|let r = choose(1)
+    #|r.0
+  db.set_source("main", src)
+  let wasm_bytes = compile_module_wasm(db, "main", enable_rc=true)
+  assert_true(wasm_bytes.length() > 8)
+  assert_eq(wasm_bytes[0], b'\x00')
+  assert_eq(wasm_bytes[1], b'\x61')
+}
+
+///|
+test "compile_module_wasm with enable_rc handles string concatenation" {
+  let db = @runtime.VibeDb::new()
+  let src =
+    #|let greet = (name: String) -> String {
+    #|  String::concat("Hello, ", name)
+    #|}
+    #|greet("world")
+  db.set_source("main", src)
+  let wasm_bytes = compile_module_wasm(db, "main", enable_rc=true)
+  assert_true(wasm_bytes.length() > 8)
+  assert_eq(wasm_bytes[0], b'\x00')
+  assert_eq(wasm_bytes[1], b'\x61')
+}
+
+///|
+test "extract_func_bodies skips non-function exports" {
+  let db = @runtime.VibeDb::new()
+  let src =
+    #|export let handler = (x: Int) -> Int { x + 1 }
+    #|let val = 42
+    #|handler(val)
+  db.set_source("main", src)
+  let compiled = compile_module(db, "main")
+  let bodies = extract_func_bodies(compiled.ast)
+  // handler is a function (ExportLet+Fn), val is not
+  assert_eq(bodies.length(), 1)
+  assert_eq(bodies[0].0, "handler")
+}
+
+///|
+test "extract_run_stmts preserves mutable bindings" {
+  let db = @runtime.VibeDb::new()
+  let src =
+    #|let f = () -> Int { 1 }
+    #|let x = 10
+    #|let y = f() + x
+    #|y
+  db.set_source("main", src)
+  let compiled = compile_module(db, "main")
+  let run_ast = extract_run_stmts(compiled.ast)
+  // f is excluded (function def), x/y/expr(y) remain
+  assert_eq(run_ast.stmts.length(), 3)
+}

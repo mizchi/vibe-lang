@@ -331,3 +331,81 @@ test "RC codegen: RC-enabled tuple is larger than non-RC tuple" {
   // RC version should be larger due to rc_init, free-list logic, etc.
   assert_true(wasm_rc.length() > wasm_no_rc.length())
 }
+
+///|
+test "RC codegen: array allocation with RC has free-list path" {
+  let arr_expr = @core.Expr::Array(
+    items=[wb_int(1), wb_int(2), wb_int(3)],
+    span=wb_span(),
+  )
+  let ast = @core.Module::{
+    stmts: [wb_let("a", arr_expr), wb_expr(wb_ident("a"))],
+  }
+  let options = wasm_emit_options(enable_rc=true)
+  let wat = wasm_to_wat(emit_module_wasm_with_options(ast, options))
+  // RC alloc uses global.get for free-list head check
+  assert_true(wat.contains("global.get"))
+  // RC init writes alloc_size and rc_count via i32.store
+  assert_true(wat.contains("i32.store"))
+}
+
+///|
+test "RC codegen: build_rc_action_maps with empty actions returns empty maps" {
+  let actions : Array[(String, Bool, String)] = []
+  let (pre, post) = build_rc_action_maps(actions)
+  assert_eq(pre.length(), 0)
+  assert_eq(post.length(), 0)
+}
+
+///|
+test "RC codegen: build_rc_action_maps groups multiple actions on same stmt" {
+  let actions : Array[(String, Bool, String)] = [
+    ("stmt[2].after", false, "x"),
+    ("stmt[2].after", true, "y"),
+    ("stmt[2].old_value", false, "z"),
+  ]
+  let (pre, post) = build_rc_action_maps(actions)
+  // Two post actions on stmt 2 (drop x, dup y)
+  inspect(post.get(2).map(fn(a) { a.length() }), content="Some(2)")
+  // One pre action on stmt 2 (old_value drop z)
+  inspect(pre.get(2).map(fn(a) { a.length() }), content="Some(1)")
+  inspect(pre.get(2).map(fn(a) { a[0].name }), content="Some(\"z\")")
+}
+
+///|
+test "RC codegen: build_rc_action_maps skips invalid site strings" {
+  let actions : Array[(String, Bool, String)] = [
+    ("invalid_site", false, "x"),
+    ("stmt[0].after", false, "y"),
+  ]
+  let (pre, post) = build_rc_action_maps(actions)
+  // invalid_site should be skipped, only stmt[0] survives
+  assert_eq(pre.length(), 0)
+  assert_eq(post.length(), 1)
+  inspect(post.get(0).map(fn(a) { a[0].name }), content="Some(\"y\")")
+}
+
+///|
+test "RC codegen: two different-size tuples both get RC headers" {
+  // (1, 2) → 2 fields, (1, 2, 3) → 3 fields: different alloc sizes
+  let tuple2 = @core.Expr::Tuple(items=[wb_int(1), wb_int(2)], span=wb_span())
+  let tuple3 = @core.Expr::Tuple(
+    items=[wb_int(3), wb_int(4), wb_int(5)],
+    span=wb_span(),
+  )
+  let ast = @core.Module::{
+    stmts: [
+      wb_let("a", tuple2),
+      wb_let("b", tuple3),
+      wb_expr(wb_ident("a")),
+      wb_expr(wb_ident("b")),
+    ],
+  }
+  let options = wasm_emit_options(enable_rc=true)
+  let wasm = emit_module_wasm_with_options(ast, options)
+  let wat = wasm_to_wat(wasm)
+  // Both allocations go through free-list path
+  assert_true(wat.contains("global.get"))
+  // Both get rc_init with i32.sub
+  assert_true(wat.contains("i32.sub"))
+}

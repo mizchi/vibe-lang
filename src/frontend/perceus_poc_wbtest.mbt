@@ -574,3 +574,356 @@ test "perceus sim: let mut overwrite in loop style → O(1) peak" {
   assert_eq(result.peak_rc, 1)
   assert_eq(result.total_drops, 50)
 }
+
+// ======================================================================
+// Additional Perceus analysis tests
+// ======================================================================
+
+///|
+test "perceus plan: for-in loop drops iterable when unused after" {
+  // let xs = make()
+  // for x in xs { use(x) }
+  // → xs consumed by for-in, no dup needed
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="xs",
+        expr=perceus_test_call("make", [], 1),
+        span=perceus_test_span(2),
+      ),
+      @core.Stmt::Expr(
+        expr=@core.Expr::ForIn(
+          value_name="x",
+          index_name=None,
+          iterable=perceus_test_ident("xs", 3),
+          body={
+            stmts: [
+              @core.Stmt::Expr(
+                expr=perceus_test_call("use", [perceus_test_ident("x", 4)], 5),
+                span=perceus_test_span(6),
+              ),
+            ],
+          },
+          span=perceus_test_span(7),
+        ),
+        span=perceus_test_span(8),
+      ),
+    ],
+  }
+  let lines = perceus_action_lines(build_perceus_plan(mod))
+  // xs is consumed by the for-in, x is consumed inside body → no dup/drop needed
+  inspect(lines, content="[]")
+}
+
+///|
+test "perceus plan: for-in loop iterable used after needs dup" {
+  // let xs = make()
+  // for x in xs { use(x) }
+  // use(xs)
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="xs",
+        expr=perceus_test_call("make", [], 1),
+        span=perceus_test_span(2),
+      ),
+      @core.Stmt::Expr(
+        expr=@core.Expr::ForIn(
+          value_name="x",
+          index_name=None,
+          iterable=perceus_test_ident("xs", 3),
+          body={
+            stmts: [
+              @core.Stmt::Expr(
+                expr=perceus_test_call("use", [perceus_test_ident("x", 4)], 5),
+                span=perceus_test_span(6),
+              ),
+            ],
+          },
+          span=perceus_test_span(7),
+        ),
+        span=perceus_test_span(8),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_call("use", [perceus_test_ident("xs", 9)], 10),
+        span=perceus_test_span(11),
+      ),
+    ],
+  }
+  let lines = perceus_action_lines(build_perceus_plan(mod))
+  // xs used in for-in + after → first use gets dup
+  assert_true(lines.length() > 0)
+}
+
+///|
+test "perceus plan: multiple variables, only unused ones get drops" {
+  // let x = make()
+  // let y = make()
+  // use(x)
+  // → y unused → drop, x consumed → no action
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="x",
+        expr=perceus_test_call("make", [], 1),
+        span=perceus_test_span(2),
+      ),
+      @core.Stmt::Let(
+        rec=false,
+        name="y",
+        expr=perceus_test_call("make", [], 3),
+        span=perceus_test_span(4),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_call("use", [perceus_test_ident("x", 5)], 6),
+        span=perceus_test_span(7),
+      ),
+    ],
+  }
+  let lines = perceus_action_lines(build_perceus_plan(mod))
+  // Only y gets dropped (unused), x is consumed exactly once
+  inspect(
+    lines,
+    content=(
+      #|["stmt[1].after drop y"]
+    ),
+  )
+}
+
+///|
+test "perceus plan: nested if/else with inner variable" {
+  // let x = make()
+  // if cond1 {
+  //   if cond2 { use1(x) } else { use2(x) }
+  // } else {
+  //   use3(x)
+  // }
+  let inner_if = perceus_test_if(
+    perceus_test_ident("cond2", 10),
+    [
+      @core.Stmt::Expr(
+        expr=perceus_test_call("use1", [perceus_test_ident("x", 11)], 12),
+        span=perceus_test_span(13),
+      ),
+    ],
+    [
+      @core.Stmt::Expr(
+        expr=perceus_test_call("use2", [perceus_test_ident("x", 14)], 15),
+        span=perceus_test_span(16),
+      ),
+    ],
+    17,
+  )
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="x",
+        expr=perceus_test_call("make", [], 1),
+        span=perceus_test_span(2),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_if(
+          perceus_test_ident("cond1", 3),
+          [@core.Stmt::Expr(expr=inner_if, span=perceus_test_span(18))],
+          [
+            @core.Stmt::Expr(
+              expr=perceus_test_call("use3", [perceus_test_ident("x", 4)], 5),
+              span=perceus_test_span(6),
+            ),
+          ],
+          7,
+        ),
+        span=perceus_test_span(8),
+      ),
+    ],
+  }
+  let lines = perceus_action_lines(build_perceus_plan(mod))
+  // x used exactly once in each path → no dup needed
+  inspect(lines, content="[]")
+}
+
+///|
+test "perceus plan: mutable with use before reassign" {
+  // let mut x = make1()
+  // use(x)
+  // x = make2()
+  // use(x)
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::LetMut(
+        name="x",
+        expr=perceus_test_call("make1", [], 1),
+        span=perceus_test_span(2),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_call("use", [perceus_test_ident("x", 3)], 4),
+        span=perceus_test_span(5),
+      ),
+      @core.Stmt::Assign(
+        name="x",
+        expr=perceus_test_call("make2", [], 6),
+        span=perceus_test_span(7),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_call("use", [perceus_test_ident("x", 8)], 9),
+        span=perceus_test_span(10),
+      ),
+    ],
+  }
+  let lines = perceus_action_lines(build_perceus_plan(mod))
+  // x used before reassign → dup at use, old_value dropped at assign
+  assert_true(lines.length() > 0)
+  // Must contain old_value drop for the reassignment
+  let mut has_old_value = false
+  for line in lines {
+    if line.contains("old_value") {
+      has_old_value = true
+    }
+  }
+  assert_true(has_old_value)
+}
+
+///|
+test "perceus plan: match with three arms asymmetric use" {
+  // let x = make()
+  // match y { A => use1(x), B => use2(x), C => () }
+  // → x used in arms 0,1 but not arm 2 → drop in arm 2
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="x",
+        expr=perceus_test_call("make", [], 1),
+        span=perceus_test_span(2),
+      ),
+      @core.Stmt::Expr(
+        expr=@core.Expr::Match(
+          scrutinee=perceus_test_ident("y", 3),
+          arms=[
+            {
+              pat: @core.Pat::Bind(name="a", span=perceus_test_span(4)),
+              cond: None,
+              expr: perceus_test_call("use1", [perceus_test_ident("x", 5)], 6),
+              span: perceus_test_span(40),
+            },
+            {
+              pat: @core.Pat::Bind(name="b", span=perceus_test_span(7)),
+              cond: None,
+              expr: perceus_test_call("use2", [perceus_test_ident("x", 8)], 9),
+              span: perceus_test_span(41),
+            },
+            {
+              pat: @core.Pat::Bind(name="c", span=perceus_test_span(10)),
+              cond: None,
+              expr: perceus_test_call("noop", [], 11),
+              span: perceus_test_span(42),
+            },
+          ],
+          span=perceus_test_span(12),
+        ),
+        span=perceus_test_span(13),
+      ),
+    ],
+  }
+  let lines = perceus_action_lines(build_perceus_plan(mod))
+  // x unused in arm[2] → drop in arm[2]
+  // a, b, c are unused pattern bindings
+  let mut has_arm2_drop = false
+  for line in lines {
+    if line.contains("arm[2].end drop x") {
+      has_arm2_drop = true
+    }
+  }
+  assert_true(has_arm2_drop)
+}
+
+///|
+test "perceus sim: single alloc single use → peak_rc=1 no drops" {
+  // let x = make()
+  // use(x)
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="x",
+        expr=perceus_test_call("make", [], 1),
+        span=perceus_test_span(2),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_call("use", [perceus_test_ident("x", 3)], 4),
+        span=perceus_test_span(5),
+      ),
+    ],
+  }
+  let result = perceus_simulate(mod)
+  assert_eq(result.total_allocs, 1)
+  assert_eq(result.total_drops, 0)
+  assert_eq(result.peak_rc, 1)
+  assert_eq(result.peak_bump, 1)
+}
+
+///|
+test "perceus sim: two variables, both consumed → peak_rc=2" {
+  // let x = make()
+  // let y = make()
+  // use(x)
+  // use(y)
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="x",
+        expr=perceus_test_call("make", [], 1),
+        span=perceus_test_span(2),
+      ),
+      @core.Stmt::Let(
+        rec=false,
+        name="y",
+        expr=perceus_test_call("make", [], 3),
+        span=perceus_test_span(4),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_call("use", [perceus_test_ident("x", 5)], 6),
+        span=perceus_test_span(7),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_call("use", [perceus_test_ident("y", 8)], 9),
+        span=perceus_test_span(10),
+      ),
+    ],
+  }
+  let result = perceus_simulate(mod)
+  assert_eq(result.total_allocs, 2)
+  assert_eq(result.total_drops, 0)
+  assert_eq(result.peak_bump, 2)
+  assert_eq(result.peak_rc, 2)
+}
+
+///|
+test "perceus sim: interleaved alloc-drop keeps peak_rc low" {
+  // let x0 = make(); let x1 = make(); ...
+  // But each is unused → dropped immediately
+  // With RC: peak stays at 1 because each alloc's drop frees before next alloc
+  let stmts : Array[@core.Stmt] = []
+  for i = 0; i < 5; i = i + 1 {
+    let name = "v" + i.to_string()
+    stmts.push(
+      @core.Stmt::Let(
+        rec=false,
+        name~,
+        expr=perceus_test_call("make", [], i + 100),
+        span=perceus_test_span(i + 200),
+      ),
+    )
+  }
+  let mod : @core.Module = { stmts, }
+  let result = perceus_simulate(mod)
+  assert_eq(result.total_allocs, 5)
+  assert_eq(result.total_drops, 5)
+  assert_eq(result.peak_bump, 5)
+  assert_eq(result.peak_rc, 1)
+}
