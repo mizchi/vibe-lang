@@ -2,6 +2,206 @@
 let pre_user_builtin_unhandled_marker = "__pre_user_builtin_unhandled__"
 
 ///|
+let builder_initial_cap = 256
+
+///|
+/// Emit code to allocate a builder with a hidden capacity prefix.
+/// Layout: [cap:i32][tag:i32][len:i32][data...]
+/// The returned obj_ptr points to the tag field (offset +4 from allocation start).
+/// Callers see the standard [tag][len][data...] layout.
+/// Capacity is stored at obj_ptr - 4 (hidden from consumers).
+fn emit_builder_alloc(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  initial_cap : Int,
+  elem_size : Int,
+  type_tag : Int,
+  obj_local : Int,
+) -> Unit {
+  require_heap(ctx)
+  // Total allocation: 4 (cap prefix) + 8 (tag + len) + initial_cap * elem_size
+  let alloc_size = align4(4 + 8 + initial_cap * elem_size)
+  let base_local = alloc_temp_local(ctx)
+  emit_heap_alloc(ctx, buf, alloc_size, base_local)
+  // Write capacity at base[0]
+  emit_local_get(buf, base_local)
+  emit_i32_const_raw(buf, initial_cap)
+  emit_i32_store(buf, 0)
+  // obj_ptr = base + 4
+  emit_local_get(buf, base_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_add(buf)
+  emit_local_set(buf, obj_local)
+  // Write type tag at obj_ptr[0]
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, type_tag)
+  emit_i32_store(buf, 0)
+  // Write len=0 at obj_ptr[4]
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, 0)
+  emit_i32_store(buf, 4)
+}
+
+///|
+/// Emit bounds check + heap-tip growth for builder push operations.
+/// Must be called BEFORE writing the new element.
+/// ptr_local holds the untagged obj pointer (points to tag field).
+/// elem_size is bytes per element (4 for array/string, 8 for map).
+/// After this code, it is safe to write at [ptr + 8 + len * elem_size].
+fn emit_builder_grow_check(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  ptr_local : Int,
+  elem_size : Int,
+) -> Unit {
+  require_heap(ctx)
+  let cap_local = alloc_temp_local(ctx)
+  let len_local = alloc_temp_local(ctx)
+  let old_end_local = alloc_temp_local(ctx)
+  let new_cap_local = alloc_temp_local(ctx)
+  let additional_local = alloc_temp_local(ctx)
+  // Read capacity from hidden prefix at ptr - 4
+  emit_local_get(buf, ptr_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 0)
+  emit_local_set(buf, cap_local)
+  // Read current length
+  emit_local_get(buf, ptr_local)
+  emit_i32_load(buf, 4)
+  emit_local_set(buf, len_local)
+  // if len >= cap: need to grow
+  emit_local_get(buf, len_local)
+  emit_local_get(buf, cap_local)
+  emit_i32_ge_s(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // void
+  // Compute old_alloc_end = (ptr - 4) + align4(4 + 8 + cap * elem_size)
+  // = ptr + align4(8 + cap * elem_size)
+  // Simplification: since we used align4 at alloc time, old_end = ptr - 4 + alloc_size
+  // But we don't know alloc_size. Recompute: alloc_size = align4(4 + 8 + cap * elem_size)
+  emit_local_get(buf, cap_local)
+  emit_i32_const_raw(buf, elem_size)
+  emit_i32_mul(buf)
+  emit_i32_const_raw(buf, 4 + 8 + 3) // 4(cap prefix) + 8(header) + 3(alignment)
+  emit_i32_add(buf)
+  emit_i32_const_raw(buf, -4)
+  emit_i32_and(buf) // align4
+  emit_local_get(buf, ptr_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_add(buf)
+  emit_local_set(buf, old_end_local)
+  // Check if at heap tip: old_end == heap_local
+  emit_local_get(buf, old_end_local)
+  emit_local_get(buf, ctx.heap_local)
+  emit_i32_eq(buf)
+  buf.push((4).to_byte()) // if (at heap tip)
+  buf.push((64).to_byte()) // void
+  // new_cap = cap * 2
+  emit_local_get(buf, cap_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_shl(buf)
+  emit_local_set(buf, new_cap_local)
+  // additional bytes = (new_cap - cap) * elem_size
+  emit_local_get(buf, new_cap_local)
+  emit_local_get(buf, cap_local)
+  emit_i32_sub(buf)
+  emit_i32_const_raw(buf, elem_size)
+  emit_i32_mul(buf)
+  emit_local_set(buf, additional_local)
+  // Reserve additional space (may grow WASM memory)
+  emit_heap_reserve_local(ctx, buf, additional_local)
+  // Advance heap pointer
+  emit_local_get(buf, ctx.heap_local)
+  emit_local_get(buf, additional_local)
+  emit_i32_add(buf)
+  emit_local_set(buf, ctx.heap_local)
+  ctx.heap_synced = false
+  // Update capacity in hidden prefix
+  emit_local_get(buf, ptr_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_sub(buf)
+  emit_local_get(buf, new_cap_local)
+  emit_i32_store(buf, 0)
+  buf.push((5).to_byte()) // else (not at heap tip — full realloc)
+  // new_cap = cap * 2
+  emit_local_get(buf, cap_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_shl(buf)
+  emit_local_set(buf, new_cap_local)
+  // Allocate new buffer: alloc_size = align4(4 + 8 + new_cap * elem_size)
+  let new_alloc_size_local = alloc_temp_local(ctx)
+  emit_local_get(buf, new_cap_local)
+  emit_i32_const_raw(buf, elem_size)
+  emit_i32_mul(buf)
+  emit_i32_const_raw(buf, 4 + 8 + 3)
+  emit_i32_add(buf)
+  emit_i32_const_raw(buf, -4)
+  emit_i32_and(buf)
+  emit_local_set(buf, new_alloc_size_local)
+  let new_base_local = alloc_temp_local(ctx)
+  emit_heap_alloc_local(ctx, buf, new_alloc_size_local, new_base_local)
+  // Write new_cap at new_base[0]
+  emit_local_get(buf, new_base_local)
+  emit_local_get(buf, new_cap_local)
+  emit_i32_store(buf, 0)
+  // Copy old data: memcpy(new_base + 4, ptr - 4 + 4, 8 + len * elem_size)
+  // i.e., copy [tag][len][data...] from ptr to new_base+4
+  let copy_size_local = alloc_temp_local(ctx)
+  emit_local_get(buf, len_local)
+  emit_i32_const_raw(buf, elem_size)
+  emit_i32_mul(buf)
+  emit_i32_const_raw(buf, 8)
+  emit_i32_add(buf)
+  emit_local_set(buf, copy_size_local)
+  // Copy i32 words: dst=new_base+4, src=ptr_local, count=copy_size/4
+  let copy_words_local = alloc_temp_local(ctx)
+  emit_local_get(buf, copy_size_local)
+  emit_i32_const_raw(buf, 2)
+  emit_i32_shr_u(buf) // copy_size / 4
+  emit_local_set(buf, copy_words_local)
+  let copy_i_local = alloc_temp_local(ctx)
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, copy_i_local)
+  emit_block(buf) // block $copy_done
+  emit_loop(buf) // loop $copy_loop
+  emit_local_get(buf, copy_i_local)
+  emit_local_get(buf, copy_words_local)
+  emit_i32_ge_s(buf)
+  emit_br_if(buf, 1) // break $copy_done
+  // dst[copy_i*4] = src[copy_i*4]
+  emit_local_get(buf, new_base_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_add(buf)
+  emit_local_get(buf, copy_i_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_local_get(buf, ptr_local)
+  emit_local_get(buf, copy_i_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i32_load(buf, 0)
+  emit_i32_store(buf, 0)
+  emit_local_get(buf, copy_i_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, copy_i_local)
+  emit_br(buf, 0) // continue $copy_loop
+  emit_end(buf) // end $copy_loop
+  emit_end(buf) // end $copy_done
+  // Update ptr_local to point to new_base + 4
+  emit_local_get(buf, new_base_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_add(buf)
+  emit_local_set(buf, ptr_local)
+  buf.push((11).to_byte()) // end if (at heap tip)
+  buf.push((11).to_byte()) // end if (len >= cap)
+}
+
+///|
 fn emit_bytes_raw_load_header(
   buf : ByteBuf,
   ptr_local : Int,
@@ -4216,20 +4416,11 @@ fn compile_call_builtin_pre_user_inner(
     }
     "StringBuilder::new" => {
       // string_builder() -> allocate empty array obj with len=0 (same layout as array_builder)
-      // NOTE: string_builder_push has no bounds check/realloc — this max_cap must
-      // be large enough for all use cases. 65536 covers large string concatenations.
-      // TODO: implement proper capacity management with grow-on-overflow realloc.
-      let max_cap = 65536
-      require_heap(ctx)
-      let size = align4(8 + max_cap * 4)
+      // Uses hidden capacity prefix at obj_ptr-4 for grow-on-overflow in push.
       let obj_local = alloc_temp_local(ctx)
-      emit_heap_alloc(ctx, buf, size, obj_local)
-      emit_local_get(buf, obj_local)
-      emit_i32_const_raw(buf, obj_array)
-      emit_i32_store(buf, 0)
-      emit_local_get(buf, obj_local)
-      emit_i32_const_raw(buf, 0)
-      emit_i32_store(buf, 4)
+      emit_builder_alloc(
+        ctx, buf, builder_initial_cap, 4, obj_array, obj_local,
+      )
       emit_local_get(buf, obj_local)
       emit_i64_extend_i32_u(buf)
       emit_i64_const_raw(buf, tag_obj.to_int64())
@@ -4237,6 +4428,7 @@ fn compile_call_builtin_pre_user_inner(
     }
     "StringBuilder::push" => {
       // string_builder_push(builder, value) -> same layout as array_builder_push
+      // Grows capacity when full (heap-tip extension or trap).
       let pos_args = extract_positional_exprs_with_arity(
         args, "StringBuilder::push", 2,
       )
@@ -4246,6 +4438,8 @@ fn compile_call_builtin_pre_user_inner(
       emit_untag_ptr_i32(buf)
       emit_local_tee(buf, builder_local)
       emit_local_set(buf, ptr_local)
+      // Bounds check + grow if needed (elem_size=4)
+      emit_builder_grow_check(ctx, buf, ptr_local, 4)
       // store value at [ptr + 8 + len*4]
       emit_local_get(buf, ptr_local)
       emit_local_get(buf, ptr_local)
@@ -4414,21 +4608,11 @@ fn compile_call_builtin_pre_user_inner(
     }
     "ArrayBuilder::new" => {
       // array_builder() -> allocate empty array obj with len=0
-      // Reserve max_capacity * 4 bytes after header for future pushes
-      // NOTE: array_builder_push has no bounds check/realloc — this max_cap must
-      // be large enough for all use cases. 65536 covers selfhost parser tokens.
-      // TODO: implement proper capacity management with grow-on-overflow realloc.
-      let max_cap = 65536
-      require_heap(ctx)
-      let size = align4(8 + max_cap * 4)
+      // Uses hidden capacity prefix at obj_ptr-4 for grow-on-overflow in push.
       let obj_local = alloc_temp_local(ctx)
-      emit_heap_alloc(ctx, buf, size, obj_local)
-      emit_local_get(buf, obj_local)
-      emit_i32_const_raw(buf, obj_array)
-      emit_i32_store(buf, 0)
-      emit_local_get(buf, obj_local)
-      emit_i32_const_raw(buf, 0)
-      emit_i32_store(buf, 4)
+      emit_builder_alloc(
+        ctx, buf, builder_initial_cap, 4, obj_array, obj_local,
+      )
       emit_local_get(buf, obj_local)
       emit_i64_extend_i32_u(buf)
       emit_i64_const_raw(buf, tag_obj.to_int64())
@@ -4436,6 +4620,7 @@ fn compile_call_builtin_pre_user_inner(
     }
     "ArrayBuilder::push" => {
       // array_builder_push(builder, value) -> store value at [builder + 8 + len*4], increment len
+      // Grows capacity when full (heap-tip extension or trap).
       let pos_args = extract_positional_exprs_with_arity(
         args, "ArrayBuilder::push", 2,
       )
@@ -4446,6 +4631,8 @@ fn compile_call_builtin_pre_user_inner(
       emit_untag_ptr_i32(buf)
       emit_local_tee(buf, builder_local)
       emit_local_set(buf, ptr_local)
+      // Bounds check + grow if needed (elem_size=4)
+      emit_builder_grow_check(ctx, buf, ptr_local, 4)
       // store value at [ptr + 8 + len*4]
       emit_local_get(buf, ptr_local)
       emit_local_get(buf, ptr_local)
@@ -4834,19 +5021,11 @@ fn compile_call_builtin_pre_user_inner(
     }
     "MapBuilder::new" => {
       // MapBuilder::new() -> allocate empty map obj with len=0
-      // NOTE: no bounds check/realloc in MapBuilder::set — cap must cover all use cases.
-      // TODO: implement proper capacity management with realloc.
-      let max_cap = 65536
-      require_heap(ctx)
-      let size = align4(8 + max_cap * 8)
+      // Uses hidden capacity prefix at obj_ptr-4 for grow-on-overflow in set.
       let obj_local = alloc_temp_local(ctx)
-      emit_heap_alloc(ctx, buf, size, obj_local)
-      emit_local_get(buf, obj_local)
-      emit_i32_const_raw(buf, obj_map)
-      emit_i32_store(buf, 0)
-      emit_local_get(buf, obj_local)
-      emit_i32_const_raw(buf, 0)
-      emit_i32_store(buf, 4)
+      emit_builder_alloc(
+        ctx, buf, builder_initial_cap, 8, obj_map, obj_local,
+      )
       emit_local_get(buf, obj_local)
       emit_i64_extend_i32_u(buf)
       emit_i64_const_raw(buf, tag_obj.to_int64())
@@ -4854,6 +5033,7 @@ fn compile_call_builtin_pre_user_inner(
     }
     "MapBuilder::set" => {
       // MapBuilder::set(builder, key, value) -> overwrite existing key or append new pair
+      // Grows capacity when full (heap-tip extension or trap).
       let pos_args = extract_positional_exprs_with_arity(
         args, "MapBuilder::set", 3,
       )
@@ -4865,6 +5045,8 @@ fn compile_call_builtin_pre_user_inner(
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_untag_ptr_i32(buf)
       emit_local_set(buf, ptr_local)
+      // Bounds check + grow if needed (elem_size=8) before search loop
+      emit_builder_grow_check(ctx, buf, ptr_local, 8)
       emit_local_get(buf, ptr_local)
       emit_i32_load(buf, 4) // len
       emit_local_set(buf, len_local)
