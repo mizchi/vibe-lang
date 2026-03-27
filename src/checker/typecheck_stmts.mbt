@@ -465,6 +465,49 @@ fn type_check_stmts(
                 Err(_) => ()
               }
             }
+            @core.Expr::Fn(
+              type_params~,
+              type_bounds~,
+              params~,
+              ret=None,
+              effects=fn_effects,
+              span=fn_span,
+              ..
+            ) => {
+              // Forward-declare functions without return type annotation
+              // when all parameters have explicit type annotations and
+              // the body does not self-reference (self-recursion needs
+              // explicit `let rec` with return type annotation).
+              let all_annotated = not(has_infer_placeholder(params))
+              let self_refs = if all_annotated {
+                let refs : Map[String, Bool] = {}
+                let bound = @core.WalkerScope::new()
+                @core.walk_expr_refs(expr, bound, refs, fn(n, b, r) {
+                  if not(b.contains(n)) { r[n] = true }
+                })
+                refs.contains(name)
+              } else {
+                false
+              }
+              if all_annotated && not(self_refs) {
+                let inferred_ret = fresh_type_var(env)
+                let result : Result[TypeScheme, TypeError] = try? build_forward_fn_scheme(
+                  env, type_params, type_bounds, params, inferred_ret,
+                  fn_effects, fn_span,
+                )
+                match result {
+                  Ok(scheme) => {
+                    env.set_scheme(name, scheme)
+                    env.set_purity_tier(name, TopLevelPurityTier::Pure)
+                    // Use forward_annotated_values instead of forward_fns
+                    // to avoid setting effective_rec=true, since the main
+                    // pass requires return type annotation for rec functions.
+                    forward_annotated_values[name] = true
+                  }
+                  Err(_) => ()
+                }
+              }
+            }
             _ =>
               // Check for type-annotated let: `let x: T = expr`
               match extract_let_annotation_type(expr) {

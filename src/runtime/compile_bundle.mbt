@@ -1071,20 +1071,52 @@ fn bundle_for_wasm_impl(
     }
   }
   // Add main module statements (excluding imports and expanding re-exports)
+  let main_stmts : Array[@core.Stmt] = []
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Import(..) => () // Skip imports
       @core.Stmt::ReExport(spec~, source~, span=_) =>
         // Expand re-exports in main module
         collect_reexport_defs(db, path, spec, source, bundled_stmts, visited)
-      _ => {
-        match bundle_stmt_value_name(stmt) {
-          Some(name) => non_prelude_names.push(name)
-          None => ()
+      _ => main_stmts.push(stmt)
+    }
+  }
+  // Topologically sort main module let-bindings so forward references
+  // are evaluated after their dependencies (mirrors checker pre-scan).
+  // Skip when interleaved side-effect statements exist (LetMut, Assign,
+  // IndexAssign, or non-trailing Expr) to preserve evaluation order.
+  let has_side_effects = {
+    let len = main_stmts.length()
+    let mut found = false
+    for idx = 0; idx < len; idx = idx + 1 {
+      match main_stmts[idx] {
+        @core.Stmt::LetMut(..)
+        | @core.Stmt::Assign(..)
+        | @core.Stmt::IndexAssign(..) => {
+          found = true
+          break
         }
-        bundled_stmts.push(stmt)
+        @core.Stmt::Expr(..) =>
+          if idx < len - 1 {
+            found = true
+            break
+          }
+        _ => ()
       }
     }
+    found
+  }
+  let sorted_main = if has_side_effects {
+    main_stmts
+  } else {
+    @core.topo_sort_let_stmts(main_stmts)
+  }
+  for stmt in sorted_main {
+    match bundle_stmt_value_name(stmt) {
+      Some(name) => non_prelude_names.push(name)
+      None => ()
+    }
+    bundled_stmts.push(stmt)
   }
   let bundled = @core.Module::{
     stmts: dedupe_bundle_structural_defs(bundled_stmts),
