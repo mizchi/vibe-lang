@@ -3569,106 +3569,10 @@ fn eval_builtin_call(
         Err(err) => raise EvalError::BadCall(Io(op="Http::respond", detail=err))
       }
     }
-    "Llm::complete" => {
-      let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "Llm::complete")
-      if pos_args.length() != 2 {
-        raise EvalError::BadCall(
-          BuiltinDetail(fn_name="Llm::complete", detail="bad call"),
-        )
-      }
-      let system = match pos_args[0] {
-        @core.Value::String(s) => s
-        @core.Value::PromptText(pt) => pt.as_string()
-        _ =>
-          raise EvalError::BadCall(
-            BuiltinDetail(fn_name="Llm::complete", detail="bad call"),
-          )
-      }
-      let user = match pos_args[1] {
-        @core.Value::String(s) => s
-        @core.Value::PromptText(pt) => pt.as_string()
-        _ =>
-          raise EvalError::BadCall(
-            BuiltinDetail(fn_name="Llm::complete", detail="bad call"),
-          )
-      }
-      let config = match LlmConfig::from_env() {
-        Some(c) => c
-        None =>
-          raise EvalError::BadCall(
-            E("Llm::complete: VIBE_LLM_PROVIDER env var not set"),
-          )
-      }
-      if not(rt.caps().can_call_llm(config.model)) {
-        raise EvalError::PermissionDenied("llm_call:" + config.model)
-      }
-      let response = llm_complete(config, system, user)
-      let effects = out.effects
-      effects.push(
-        Effect::LlmComplete(
-          config.model,
-          truncate_preview(user, 80),
-          truncate_preview(response, 80),
-        ),
+    "Llm::complete" | "Rlm::run" | "Rlm::finalize" =>
+      raise EvalError::BadCall(
+        E("Llm/Rlm builtins removed (use compiled backend)"),
       )
-      { value: @core.Value::String(response), effects }
-    }
-    "Rlm::run" => {
-      let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "Rlm::run")
-      if pos_args.length() != 2 {
-        raise EvalError::BadCall(
-          BuiltinDetail(fn_name="Rlm::run", detail="bad call"),
-        )
-      }
-      let task = match pos_args[0] {
-        @core.Value::String(s) => s
-        @core.Value::PromptText(pt) => pt.as_string()
-        _ =>
-          raise EvalError::BadCall(
-            BuiltinDetail(fn_name="Rlm::run", detail="bad call"),
-          )
-      }
-      let prompt = match pos_args[1] {
-        @core.Value::String(s) => s
-        @core.Value::PromptText(pt) => pt.as_string()
-        _ =>
-          raise EvalError::BadCall(
-            BuiltinDetail(fn_name="Rlm::run", detail="bad call"),
-          )
-      }
-      let budget = RlmBudget::default()
-      let result = rlm_run_loop(rt, task, prompt, budget)
-      let effects = out.effects
-      effects.push(
-        Effect::RlmTrace(
-          "{\"task\":" +
-          json_escape_string(truncate_preview(task, 80)) +
-          ",\"steps\":" +
-          budget.steps_used.to_string() +
-          "}",
-        ),
-      )
-      { value: @core.Value::String(result), effects }
-    }
-    "Rlm::finalize" => {
-      let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "Rlm::finalize")
-      if pos_args.length() != 1 {
-        raise EvalError::BadCall(
-          BuiltinDetail(fn_name="Rlm::finalize", detail="bad call"),
-        )
-      }
-      match pos_args[0] {
-        @core.Value::String(s) =>
-          { value: @core.Value::String(s), effects: out.effects }
-        _ =>
-          raise EvalError::BadCall(
-            BuiltinDetail(fn_name="Rlm::finalize", detail="bad call"),
-          )
-      }
-    }
     "addr" => {
       let out = eval_args(rt, args)
       let pos_args = extract_positional_values(out.args, "addr")
