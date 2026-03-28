@@ -238,6 +238,7 @@ pub fn compile_module(
   let desugared = @frontend.desugar_method_calls(raw_ast, aliases)
   let ast = @frontend.rewrite_effect_handles(desugared)
   let mono = @frontend.monoify_module(ast, env)
+  @core.clear_string_for_in_spans()
   let rewritten = @frontend.rewrite_string_add(mono.ast, env)
   let resolved_ast = db.rewrite_imports_to_hash(path, rewritten)
   let ir = @runtime.module_to_sexp(resolved_ast, aliases)

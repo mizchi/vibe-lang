@@ -719,9 +719,15 @@ fn collect_captures_expr(
       }
     }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
-      let desugared = @core.desugar_for_in(
-        value_name, index_name, iterable, body, span,
-      )
+      let desugared = if @core.is_string_for_in(span.start) {
+        @core.desugar_for_in_string(
+          value_name, index_name, iterable, body, span,
+        )
+      } else {
+        @core.desugar_for_in(
+          value_name, index_name, iterable, body, span,
+        )
+      }
       collect_captures_block(desugared, bound, outer_bound, captures, seen)
     }
     _ => ()
@@ -990,9 +996,15 @@ fn collect_nested_funcs_expr(
       collect_nested_funcs_block(body, bound, funcs, false)
     }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
-      let desugared = @core.desugar_for_in(
-        value_name, index_name, iterable, body, span,
-      )
+      let desugared = if @core.is_string_for_in(span.start) {
+        @core.desugar_for_in_string(
+          value_name, index_name, iterable, body, span,
+        )
+      } else {
+        @core.desugar_for_in(
+          value_name, index_name, iterable, body, span,
+        )
+      }
       collect_nested_funcs_block(desugared, bound, funcs, false)
     }
     _ => ()
@@ -1351,9 +1363,15 @@ fn collect_fn_span_keys_expr(expr : @core.Expr, out : Array[String]) -> Unit {
       }
     }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
-      let desugared = @core.desugar_for_in(
-        value_name, index_name, iterable, body, span,
-      )
+      let desugared = if @core.is_string_for_in(span.start) {
+        @core.desugar_for_in_string(
+          value_name, index_name, iterable, body, span,
+        )
+      } else {
+        @core.desugar_for_in(
+          value_name, index_name, iterable, body, span,
+        )
+      }
       for s in desugared.stmts {
         collect_fn_span_keys_stmt(s, out)
       }
@@ -1475,9 +1493,15 @@ fn precompute_ref_cell_captures_expr(
       precompute_ref_cell_captures_block(ctx, body.stmts, scope_mcv)
     }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
-      let desugared = @core.desugar_for_in(
-        value_name, index_name, iterable, body, span,
-      )
+      let desugared = if @core.is_string_for_in(span.start) {
+        @core.desugar_for_in_string(
+          value_name, index_name, iterable, body, span,
+        )
+      } else {
+        @core.desugar_for_in(
+          value_name, index_name, iterable, body, span,
+        )
+      }
       precompute_ref_cell_captures_block(ctx, desugared.stmts, scope_mcv)
     }
     @core.Expr::StructLit(fields~, ..) =>

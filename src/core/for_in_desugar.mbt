@@ -1,4 +1,28 @@
 ///|
+/// Global set of ForIn span starts whose iterable is String-typed.
+/// Populated by the frontend rewrite pass (rewrite_string_add),
+/// consumed by codegen backends to dispatch to string for-in desugar.
+let string_for_in_spans : Map[Int, Bool] = {}
+
+///|
+/// Register a ForIn span as iterating over a String.
+pub fn mark_string_for_in(span_start : Int) -> Unit {
+  string_for_in_spans[span_start] = true
+}
+
+///|
+/// Check whether a ForIn span iterates over a String.
+pub fn is_string_for_in(span_start : Int) -> Bool {
+  string_for_in_spans.contains(span_start)
+}
+
+///|
+/// Clear the string for-in registry (call before each compilation unit).
+pub fn clear_string_for_in_spans() -> Unit {
+  string_for_in_spans.clear()
+}
+
+///|
 /// Desugar ForIn AST node into a Block with array builder pattern.
 ///
 /// for x in iterable { body } →
@@ -163,6 +187,7 @@ pub fn desugar_for_in(
 
 ///|
 /// Desugar ForIn over String into a Block with array builder pattern.
+/// The loop variable receives char codes (Int), not substrings.
 ///
 /// for c in str_expr { body } →
 /// {
@@ -171,7 +196,7 @@ pub fn desugar_for_in(
 ///   let __for_b = array_builder()
 ///   let mut __for_i = 0
 ///   while __for_i < __for_len {
-///     let c = String::substring(__for_str, __for_i, __for_i + 1)
+///     let c = String::char_code_at(__for_str, __for_i)
 ///     [let i = __for_i]
 ///     __for_i = __for_i + 1
 ///     <body init stmts>
@@ -234,22 +259,17 @@ pub fn desugar_for_in_string(
   let (init_stmts, collect_expr) = desugar_split_body_last_expr(body, span)
   // Build while body stmts
   let while_stmts : Array[Stmt] = []
-  // let c = String::substring(__for_str, __for_i, __for_i + 1)
+  // let c = String::char_code_at(__for_str, __for_i)
   while_stmts.push(
     Stmt::Let(
       rec=false,
       name=value_name,
       expr=Expr::Call(
-        name="String::substring",
+        name="String::char_code_at",
         type_args=[],
         args=[
           CallArg::{ label: None, expr: str_ident, span: str_span },
           CallArg::{ label: None, expr: i_ident, span: i_span },
-          CallArg::{
-            label: None,
-            expr: desugar_call2("__add", i_ident, one),
-            span: i_span,
-          },
         ],
         span~,
       ),

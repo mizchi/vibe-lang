@@ -548,9 +548,15 @@ fn walk_expr(
       }
     }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
-      let desugared = @core.desugar_for_in(
-        value_name, index_name, iterable, body, span,
-      )
+      let desugared = if @core.is_string_for_in(span.start) {
+        @core.desugar_for_in_string(
+          value_name, index_name, iterable, body, span,
+        )
+      } else {
+        @core.desugar_for_in(
+          value_name, index_name, iterable, body, span,
+        )
+      }
       scopes.push(warning_scope_new())
       walk_module(desugared, scopes, out)
       warning_scope_pop(scopes, out)
