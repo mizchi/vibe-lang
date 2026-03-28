@@ -1115,6 +1115,221 @@ fn compile_rc_alloc_function(
 }
 
 ///|
+/// Compile a standalone WASM function for rc_try_reuse.
+/// Signature: (i64 val) -> i32 obj_ptr_or_0
+/// If val is a heap object with RC==1, recursively drops children,
+/// keeps RC at 1, and returns obj_ptr for in-place reuse.
+/// Otherwise, does a normal rc_drop and returns 0.
+fn compile_rc_try_reuse_function(
+  rc_drop_abs_idx : Int,
+) -> WasmFunc {
+  let body = ByteBuf::new()
+  // Locals: 0=param(i64), 1=val32, 2=obj_ptr, 3=rc_count,
+  //         4=type_id, 5=len, 6=idx, 7=field_val, 8=field_i64
+  let param = 0
+  let val32 = 1
+  let obj_ptr = 2
+  let rc_count = 3
+  let type_id = 4
+  let len = 5
+  let idx = 6
+  let field_val = 7
+  let field_i64 = 8
+  // val32 = i32.wrap_i64(param)
+  emit_local_get(body, param)
+  emit_i32_wrap_i64(body)
+  emit_local_set(body, val32)
+  // block $done (result i32)
+  emit_block_result_i32(body)
+  // if (val32 & tag_mask) != tag_obj → drop, return 0
+  emit_local_get(body, val32)
+  emit_i32_const_raw(body, tag_mask)
+  emit_i32_and(body)
+  emit_i32_const_raw(body, tag_obj)
+  emit_i32_ne(body)
+  emit_if(body)
+  // Not a heap object: call $rc_drop, return 0
+  emit_local_get(body, param)
+  emit_call(body, rc_drop_abs_idx)
+  emit_i32_const_raw(body, 0)
+  emit_br(body, 1) // br $done
+  emit_end(body) // end if
+  // obj_ptr = val32 & ~3
+  emit_local_get(body, val32)
+  emit_i32_const_raw(body, -4)
+  emit_i32_and(body)
+  emit_local_set(body, obj_ptr)
+  // rc_count = load(obj_ptr - 4)
+  emit_local_get(body, obj_ptr)
+  emit_i32_const_raw(body, 4)
+  emit_i32_sub(body)
+  emit_i32_load(body, 0)
+  emit_local_set(body, rc_count)
+  // if rc_count != 1 → normal drop, return 0
+  emit_local_get(body, rc_count)
+  emit_i32_const_raw(body, 1)
+  emit_i32_ne(body)
+  emit_if(body)
+  emit_local_get(body, param)
+  emit_call(body, rc_drop_abs_idx)
+  emit_i32_const_raw(body, 0)
+  emit_br(body, 1) // br $done
+  emit_end(body) // end if
+  // RC==1: reuse! Recursively drop children first.
+  emit_local_get(body, obj_ptr)
+  emit_i32_load(body, 0)
+  emit_local_set(body, type_id)
+  // --- Tuple(3) or Array(5): i32 at 8+idx*4 ---
+  emit_local_get(body, type_id)
+  emit_i32_const_raw(body, 3)
+  emit_i32_eq(body)
+  emit_local_get(body, type_id)
+  emit_i32_const_raw(body, 5)
+  emit_i32_eq(body)
+  emit_i32_or(body)
+  emit_if(body)
+  emit_local_get(body, obj_ptr)
+  emit_i32_load(body, 4)
+  emit_local_set(body, len)
+  emit_i32_const_raw(body, 0)
+  emit_local_set(body, idx)
+  emit_block(body)
+  emit_loop(body)
+  emit_local_get(body, idx)
+  emit_local_get(body, len)
+  emit_i32_ge_s(body)
+  emit_br_if(body, 1)
+  emit_local_get(body, obj_ptr)
+  emit_local_get(body, idx)
+  emit_i32_const_raw(body, 4)
+  emit_i32_mul(body)
+  emit_i32_add(body)
+  emit_i32_load(body, 8)
+  emit_i64_extend_i32_u(body)
+  emit_call(body, rc_drop_abs_idx)
+  emit_local_get(body, idx)
+  emit_i32_const_raw(body, 1)
+  emit_i32_add(body)
+  emit_local_set(body, idx)
+  emit_br(body, 0)
+  emit_end(body) // end loop
+  emit_end(body) // end block
+  emit_end(body) // end if tuple/array
+  // --- Record(4) or Map(6): values at 8+idx*8+4 ---
+  emit_local_get(body, type_id)
+  emit_i32_const_raw(body, 4)
+  emit_i32_eq(body)
+  emit_local_get(body, type_id)
+  emit_i32_const_raw(body, 6)
+  emit_i32_eq(body)
+  emit_i32_or(body)
+  emit_if(body)
+  emit_local_get(body, obj_ptr)
+  emit_i32_load(body, 4)
+  emit_local_set(body, len)
+  emit_i32_const_raw(body, 0)
+  emit_local_set(body, idx)
+  emit_block(body)
+  emit_loop(body)
+  emit_local_get(body, idx)
+  emit_local_get(body, len)
+  emit_i32_ge_s(body)
+  emit_br_if(body, 1)
+  emit_local_get(body, obj_ptr)
+  emit_local_get(body, idx)
+  emit_i32_const_raw(body, 8)
+  emit_i32_mul(body)
+  emit_i32_add(body)
+  emit_i32_load(body, 12)
+  emit_i64_extend_i32_u(body)
+  emit_call(body, rc_drop_abs_idx)
+  emit_local_get(body, idx)
+  emit_i32_const_raw(body, 1)
+  emit_i32_add(body)
+  emit_local_set(body, idx)
+  emit_br(body, 0)
+  emit_end(body) // end loop
+  emit_end(body) // end block
+  emit_end(body) // end if record/map
+  // --- Closure(7): i64 at 16+idx*8 ---
+  emit_local_get(body, type_id)
+  emit_i32_const_raw(body, 7)
+  emit_i32_eq(body)
+  emit_if(body)
+  emit_local_get(body, obj_ptr)
+  emit_i32_load(body, 4)
+  emit_local_set(body, len)
+  emit_i32_const_raw(body, 0)
+  emit_local_set(body, idx)
+  emit_block(body)
+  emit_loop(body)
+  emit_local_get(body, idx)
+  emit_local_get(body, len)
+  emit_i32_ge_s(body)
+  emit_br_if(body, 1)
+  emit_local_get(body, obj_ptr)
+  emit_local_get(body, idx)
+  emit_i32_const_raw(body, 8)
+  emit_i32_mul(body)
+  emit_i32_add(body)
+  emit_i64_load(body, 16)
+  emit_call(body, rc_drop_abs_idx)
+  emit_local_get(body, idx)
+  emit_i32_const_raw(body, 1)
+  emit_i32_add(body)
+  emit_local_set(body, idx)
+  emit_br(body, 0)
+  emit_end(body) // end loop
+  emit_end(body) // end block
+  emit_end(body) // end if closure
+  // --- Enum(10): i32 at 12+idx*4 ---
+  emit_local_get(body, type_id)
+  emit_i32_const_raw(body, 10)
+  emit_i32_eq(body)
+  emit_if(body)
+  emit_local_get(body, obj_ptr)
+  emit_i32_load(body, 4)
+  emit_local_set(body, len)
+  emit_i32_const_raw(body, 0)
+  emit_local_set(body, idx)
+  emit_block(body)
+  emit_loop(body)
+  emit_local_get(body, idx)
+  emit_local_get(body, len)
+  emit_i32_ge_s(body)
+  emit_br_if(body, 1)
+  emit_local_get(body, obj_ptr)
+  emit_local_get(body, idx)
+  emit_i32_const_raw(body, 4)
+  emit_i32_mul(body)
+  emit_i32_add(body)
+  emit_i32_load(body, 12)
+  emit_i64_extend_i32_u(body)
+  emit_call(body, rc_drop_abs_idx)
+  emit_local_get(body, idx)
+  emit_i32_const_raw(body, 1)
+  emit_i32_add(body)
+  emit_local_set(body, idx)
+  emit_br(body, 0)
+  emit_end(body) // end loop
+  emit_end(body) // end block
+  emit_end(body) // end if enum
+  // Return obj_ptr (RC is already 1, ready for reuse)
+  emit_local_get(body, obj_ptr)
+  emit_end(body) // end block $done
+  emit_end(body) // end func
+  WasmFunc::{
+    params: [ValueKind::I64],
+    locals: [
+      ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32,
+      ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I64,
+    ],
+    results: [ValueKind::I32],
+    body: body.to_array(),
+  }
+}
+
+///|
 pub fn perceus_codegen_integration_notes() -> String {
   let notes = [
     "1. emit_rc_init after emit_heap_alloc (rc at ptr-4, offsets unchanged)", "2. emit_rc_dup at PerceusAction::Dup sites",

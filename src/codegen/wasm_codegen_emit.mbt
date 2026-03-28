@@ -365,6 +365,15 @@ fn emit_else(buf : ByteBuf) -> Unit {
 }
 
 ///|
+/// Emit block instruction with i32 result type
+fn emit_block_result_i32(buf : ByteBuf) -> Unit {
+  buf.ensure(2)
+  buf.data.unsafe_set(buf.len, b'\x02')
+  buf.data.unsafe_set(buf.len + 1, b'\x7f')
+  buf.len += 2
+}
+
+///|
 /// Emit block instruction with i64 result type
 fn emit_block_i64(buf : ByteBuf) -> Unit {
   buf.ensure(2)

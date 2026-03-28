@@ -712,11 +712,23 @@ fn compile_stmt(
               emit_i64_load(buf, 0)
             }
           } else {
-            // RC: drop old value before overwriting
+            // RC: try reuse old value's memory, or drop it
             if ctx.enable_rc {
-              emit_rc_drop_i64(ctx, buf, idx)
+              if ctx.rc_try_reuse_func_idx >= 0 {
+                // Call $rc_try_reuse: returns obj_ptr if RC==1, else 0
+                let reuse_local = alloc_temp_local(ctx)
+                emit_local_get(buf, idx)
+                let abs_idx = func_import_count(ctx) + ctx.rc_try_reuse_func_idx
+                emit_call(buf, abs_idx)
+                emit_local_set(buf, reuse_local)
+                ctx.rc_reuse_local = reuse_local
+              } else {
+                emit_rc_drop_i64(ctx, buf, idx)
+              }
             }
             compile_expr(ctx, buf, expr)
+            // Clear reuse candidate after expression compilation
+            ctx.rc_reuse_local = -1
             if is_last {
               emit_local_tee(buf, idx)
             } else {

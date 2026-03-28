@@ -3512,6 +3512,7 @@ fn emit_module_with_coverage(
     ctx.rc_dup_func_idx = base
     ctx.rc_drop_func_idx = base + 1
     ctx.rc_alloc_func_idx = base + 2
+    ctx.rc_try_reuse_func_idx = base + 3
   }
   // Pre-compute ref cell capture flags for ALL functions before compile loop.
   // This is needed because compile_function runs before compile_expr_fn.
@@ -3608,6 +3609,12 @@ fn emit_module_with_coverage(
     compiled_funcs.push(
       compile_rc_alloc_function(ctx.heap_global, ctx.rc_free_list_global),
     )
+    let rc_try_reuse_sig = FuncSig::{
+      params: [ValueKind::I64],
+      results: [ValueKind::I32],
+    }
+    let _ = ensure_sig_index(ctx, rc_try_reuse_sig)
+    compiled_funcs.push(compile_rc_try_reuse_function(rc_drop_abs_idx))
   }
   if ctx.need_stdin_read_char ||
     ctx.need_socket ||

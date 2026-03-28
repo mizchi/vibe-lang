@@ -153,6 +153,9 @@ priv struct CodegenCtx {
   mut rc_dup_func_idx : Int
   mut rc_drop_func_idx : Int
   mut rc_alloc_func_idx : Int
+  mut rc_try_reuse_func_idx : Int
+  // Reuse candidate: local holding obj_ptr from try_reuse (-1 if none)
+  mut rc_reuse_local : Int
 }
 
 ///|
@@ -307,6 +310,8 @@ fn CodegenCtx::new(
     rc_dup_func_idx: -1,
     rc_drop_func_idx: -1,
     rc_alloc_func_idx: -1,
+    rc_try_reuse_func_idx: -1,
+    rc_reuse_local: -1,
   }
   // Register builtin None as singleton (strings is now initialized)
   let none_offset = ctx.strings.intern_enum_singleton("None", 0)
