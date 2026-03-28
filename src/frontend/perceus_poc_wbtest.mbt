@@ -1131,20 +1131,20 @@ test "perceus: while loop body drops bindings at scope end" {
   }
   let lines = perceus_action_lines(build_perceus_plan(mod))
   // While loop produces:
-  // - dup i for condition use (i has multiple uses: cond + body + return)
-  // - skip-branch drops to equalize with loop-body branch
+  // - i is bound to Int literal (scalar), so dup/drop are elided
+  // - skip-branch drops for non-scalar bindings to equalize
   let mut has_dup_i = false
-  let mut has_skip_drop = false
+  let mut has_skip_drop_i = false
   for line in lines {
     if line.contains("dup i") {
       has_dup_i = true
     }
-    if line.contains("skip.end drop") {
-      has_skip_drop = true
+    if line.contains("skip.end drop i") {
+      has_skip_drop_i = true
     }
   }
-  // i is used multiple times → needs dup
-  assert_eq(has_dup_i, true)
-  // Branch merge generates compensating drops for skip path
-  assert_eq(has_skip_drop, true)
+  // i is a known scalar (Int literal) → dup elided
+  assert_eq(has_dup_i, false)
+  // Scalar bindings also skip branch merge drops
+  assert_eq(has_skip_drop_i, false)
 }

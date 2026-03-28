@@ -1508,6 +1508,8 @@ priv struct PerceusEmitCtx2 {
   actions : Array[PerceusAction]
   /// Scope stack: name → binding_id
   scopes : Array[Map[String, Int]]
+  /// Known-scalar bindings: Int/Bool/Char literals need no RC ops
+  scalars : Map[Int, Bool]
 }
 
 ///|
@@ -1533,7 +1535,50 @@ fn p2_emit_ctx_new(
       }
     }
   })
-  { next_id: 0, remaining, remaining_owning, names, actions: [], scopes: [{}] }
+  {
+    next_id: 0,
+    remaining,
+    remaining_owning,
+    names,
+    actions: [],
+    scopes: [{}],
+    scalars: {},
+  }
+}
+
+///|
+/// Check whether an expression is a known-scalar (non-heap) literal.
+/// Int, Bool, Char use tagged representations and never need RC ops.
+fn is_known_scalar(expr : @core.Expr) -> Bool {
+  match expr {
+    @core.Expr::Int(..) | @core.Expr::Bool(..) | @core.Expr::Char(..) => true
+    // Arithmetic/comparison results are also scalar
+    @core.Expr::Call(name~, ..) =>
+      match name {
+        "__add"
+        | "__sub"
+        | "__mul"
+        | "__div"
+        | "__mod"
+        | "__neg"
+        | "__eq"
+        | "__ne"
+        | "__lt"
+        | "__le"
+        | "__gt"
+        | "__ge"
+        | "__and"
+        | "__or"
+        | "__not"
+        | "__bit_and"
+        | "__bit_or"
+        | "__bit_xor"
+        | "__shl"
+        | "__shr" => true
+        _ => false
+      }
+    _ => false
+  }
 }
 
 ///|
@@ -1571,7 +1616,7 @@ fn p2_emit_pop_scope(ctx : PerceusEmitCtx2, site : String) -> Unit {
     Some(bindings) =>
       bindings.each(fn(name, id) {
         let rem = ctx.remaining.get(id).unwrap_or(0)
-        if rem > 0 {
+        if rem > 0 && !ctx.scalars.contains(id) {
           ctx.actions.push({
             site: site + ".scope_end",
             kind: PerceusActionKind::Drop,
@@ -1591,7 +1636,7 @@ fn p2_emit_use(ctx : PerceusEmitCtx2, name : String, site : String) -> Unit {
     Some(id) => {
       let rem = ctx.remaining.get(id).unwrap_or(0)
       let rem_own = ctx.remaining_owning.get(id).unwrap_or(0)
-      if rem_own > 1 {
+      if rem_own > 1 && !ctx.scalars.contains(id) {
         ctx.actions.push({
           site: site + ".before",
           kind: PerceusActionKind::Dup,
@@ -1688,7 +1733,7 @@ fn p2_emit_merge_branches(
     min_remaining.each(fn(id, min_rem) {
       let branch_rem = snap.get(id).unwrap_or(0)
       let excess = branch_rem - min_rem
-      if excess > 0 {
+      if excess > 0 && !ctx.scalars.contains(id) {
         let name = ctx.names.get(id).unwrap_or("?")
         for _j = 0; _j < excess; _j = _j + 1 {
           ctx.actions.push({
@@ -1918,9 +1963,12 @@ fn p2_emit_stmt(
     | @core.Stmt::InternalExportLet(rec~, name~, expr~, ..) =>
       if rec {
         let id = p2_emit_declare(ctx, name)
+        if is_known_scalar(expr) {
+          ctx.scalars[id] = true
+        }
         p2_emit_expr(ctx, expr, site + ".expr")
         let rem = ctx.remaining.get(id).unwrap_or(0)
-        if rem == 0 {
+        if rem == 0 && !ctx.scalars.contains(id) {
           ctx.actions.push({
             site: site + ".after",
             kind: PerceusActionKind::Drop,
@@ -1930,8 +1978,11 @@ fn p2_emit_stmt(
       } else {
         p2_emit_expr(ctx, expr, site + ".expr")
         let id = p2_emit_declare(ctx, name)
+        if is_known_scalar(expr) {
+          ctx.scalars[id] = true
+        }
         let rem = ctx.remaining.get(id).unwrap_or(0)
-        if rem == 0 {
+        if rem == 0 && !ctx.scalars.contains(id) {
           ctx.actions.push({
             site: site + ".after",
             kind: PerceusActionKind::Drop,
