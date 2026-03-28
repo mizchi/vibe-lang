@@ -18,7 +18,7 @@ pub fn gc_e2e_system_cmd(cmd : String) -> Int {
 
 ///|
 pub fn gc_e2e_run_wasmtime(wasm_path : String, out_path : String) -> Int {
-  let cmd = "wasmtime run -W gc --invoke _start " +
+  let cmd = "wasmtime run -W gc -W function-references --invoke _start " +
     wasm_path +
     " > " +
     out_path +

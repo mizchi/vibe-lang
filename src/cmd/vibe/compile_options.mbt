@@ -104,6 +104,10 @@ pub fn parse_compile_cmd_args(
     let arg = args[i]
     match arg {
       "--wasm" => {
+        mode = CompileMode::WasmGc
+        i += 1
+      }
+      "--wasm-linear" => {
         mode = CompileMode::Wasm
         i += 1
       }

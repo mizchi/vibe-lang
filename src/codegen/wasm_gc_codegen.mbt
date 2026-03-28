@@ -144,6 +144,7 @@ priv enum GcValKind {
 priv enum GcTypeDef {
   Array(elem~ : GcValKind)
   Struct(fields~ : Array[GcValKind])
+  Func(params~ : Array[GcValKind], result~ : GcValKind)
 }
 
 ///|
@@ -171,6 +172,7 @@ priv struct GcFuncCtx {
   locals : Map[String, GcLocalInfo]
   local_kinds : Array[GcValKind]
   param_count : Int
+  closure_call_types : Map[String, Int]
 }
 
 ///|
@@ -178,6 +180,7 @@ priv struct GcWasmFunc {
   sig : GcFuncSig
   locals : Array[GcValKind]
   body : Array[Byte]
+  type_idx : Int
 }
 
 ///|
@@ -190,6 +193,11 @@ priv struct GcCodegenCtx {
   func_returns : Map[String, GcValKind]
   string_type : Int
   array_i32_type : Int
+  closure_fn_type_cache : Map[String, Int]
+  closure_struct_type_cache : Map[String, Int]
+  closure_lifted_funcs : Array[GcWasmFunc]
+  closure_call_type_for_func : Map[String, Int]
+  mut num_regular_funcs : Int
 }
 
 ///|
@@ -291,6 +299,11 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
     func_returns: {},
     string_type,
     array_i32_type,
+    closure_fn_type_cache: {},
+    closure_struct_type_cache: {},
+    closure_lifted_funcs: [],
+    closure_call_type_for_func: {},
+    num_regular_funcs: 0,
   }
 }
 
@@ -534,6 +547,11 @@ fn emit_i64_extend_i32_s_gc(buf : GcByteBuf) -> Unit {
 }
 
 ///|
+fn emit_i32_wrap_i64_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0xa7)
+}
+
+///|
 fn emit_i64_lt_s_gc(buf : GcByteBuf) -> Unit {
   buf.push(0x53)
 }
@@ -676,6 +694,276 @@ fn emit_array_len_gc(buf : GcByteBuf) -> Unit {
 }
 
 ///|
+fn emit_ref_func_gc(buf : GcByteBuf, func_idx : Int) -> Unit {
+  buf.push(0xd2)
+  write_u32_leb_gc(buf, func_idx)
+}
+
+///|
+fn emit_call_ref_gc(buf : GcByteBuf, type_idx : Int) -> Unit {
+  buf.push(0x14)
+  write_u32_leb_gc(buf, type_idx)
+}
+
+///|
+fn emit_ref_cast_gc(buf : GcByteBuf, type_idx : Int) -> Unit {
+  buf.push(0xfb)
+  buf.push(0x17)
+  write_u32_leb_gc(buf, type_idx)
+}
+
+///|
+fn emit_ref_null_any_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0xd0)
+  buf.push(0x6e)
+}
+
+///|
+fn collect_free_vars_expr_gc(
+  expr : @core.Expr,
+  bound : Map[String, Bool],
+  free : Map[String, Bool],
+) -> Unit {
+  match expr {
+    @core.Expr::Int(..) | @core.Expr::Float(..) | @core.Expr::Double(..)
+    | @core.Expr::Bool(..) | @core.Expr::Char(..) | @core.Expr::String(..) =>
+      ()
+    @core.Expr::Ident(name~, ..) =>
+      if not(bound.contains(name)) {
+        free[name] = true
+      }
+    @core.Expr::Call(args~, ..) => {
+      for arg in args {
+        collect_free_vars_expr_gc(arg.expr, bound, free)
+      }
+    }
+    @core.Expr::Fn(params~, body~, ..) => {
+      let inner_bound : Map[String, Bool] = {}
+      for k, v in bound {
+        inner_bound[k] = v
+      }
+      for param in params {
+        inner_bound[param.name] = true
+      }
+      collect_free_vars_module_gc(body, inner_bound, free)
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      collect_free_vars_expr_gc(cond, bound, free)
+      collect_free_vars_module_gc(then_body, bound, free)
+      collect_free_vars_module_gc(else_body, bound, free)
+    }
+    @core.Expr::Block(body~, ..) =>
+      collect_free_vars_module_gc(body, bound, free)
+    @core.Expr::Array(items~, ..) =>
+      for item in items {
+        collect_free_vars_expr_gc(item, bound, free)
+      }
+    @core.Expr::While(cond~, body~, ..) => {
+      collect_free_vars_expr_gc(cond, bound, free)
+      collect_free_vars_module_gc(body, bound, free)
+    }
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, ..) => {
+      collect_free_vars_expr_gc(iterable, bound, free)
+      let inner_bound : Map[String, Bool] = {}
+      for k, v in bound {
+        inner_bound[k] = v
+      }
+      inner_bound[value_name] = true
+      match index_name {
+        Some(n) => inner_bound[n] = true
+        None => ()
+      }
+      collect_free_vars_module_gc(body, inner_bound, free)
+    }
+    @core.Expr::Tuple(items~, ..) =>
+      for item in items {
+        collect_free_vars_expr_gc(item, bound, free)
+      }
+    @core.Expr::Record(fields~, ..) =>
+      for field in fields {
+        collect_free_vars_expr_gc(field.expr, bound, free)
+      }
+    @core.Expr::StructLit(fields~, ..) =>
+      for field in fields {
+        collect_free_vars_expr_gc(field.expr, bound, free)
+      }
+    @core.Expr::Match(scrutinee~, arms~, ..) => {
+      collect_free_vars_expr_gc(scrutinee, bound, free)
+      for arm in arms {
+        let inner_bound : Map[String, Bool] = {}
+        for k, v in bound {
+          inner_bound[k] = v
+        }
+        collect_free_vars_pat_gc(arm.pat, inner_bound)
+        collect_free_vars_expr_gc(arm.expr, inner_bound, free)
+      }
+    }
+    _ => ()
+  }
+}
+
+///|
+fn collect_free_vars_pat_gc(
+  pat : @core.Pat,
+  bound : Map[String, Bool],
+) -> Unit {
+  match pat {
+    @core.Pat::Bind(name~, ..) => bound[name] = true
+    @core.Pat::Tuple(items~, ..) =>
+      for item in items {
+        collect_free_vars_pat_gc(item, bound)
+      }
+    @core.Pat::Ctor(args~, ..) =>
+      for arg in args {
+        collect_free_vars_pat_gc(arg, bound)
+      }
+    _ => ()
+  }
+}
+
+///|
+fn collect_free_vars_module_gc(
+  body : @core.Module,
+  bound : Map[String, Bool],
+  free : Map[String, Bool],
+) -> Unit {
+  for stmt in body.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr~, ..) => {
+        collect_free_vars_expr_gc(expr, bound, free)
+        bound[name] = true
+      }
+      @core.Stmt::ExportLet(name~, expr~, ..) => {
+        collect_free_vars_expr_gc(expr, bound, free)
+        bound[name] = true
+      }
+      @core.Stmt::InternalExportLet(name~, expr~, ..) => {
+        collect_free_vars_expr_gc(expr, bound, free)
+        bound[name] = true
+      }
+      @core.Stmt::LetMut(name~, expr~, ..) => {
+        collect_free_vars_expr_gc(expr, bound, free)
+        bound[name] = true
+      }
+      @core.Stmt::Assign(expr~, ..) =>
+        collect_free_vars_expr_gc(expr, bound, free)
+      @core.Stmt::Expr(expr~, ..) =>
+        collect_free_vars_expr_gc(expr, bound, free)
+      _ => ()
+    }
+  }
+}
+
+///|
+fn has_free_vars_gc(
+  body : @core.Module,
+  params : Array[@core.FuncParam],
+  top_level_funcs : Map[String, Bool],
+) -> Bool {
+  let bound : Map[String, Bool] = {}
+  for param in params {
+    bound[param.name] = true
+  }
+  let free : Map[String, Bool] = {}
+  collect_free_vars_module_gc(body, bound, free)
+  for name, _ in free {
+    if not(top_level_funcs.contains(name)) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn closure_sig_key_gc(
+  param_kinds : Array[GcValKind],
+  result_kind : GcValKind,
+) -> String {
+  let sb = StringBuilder::new()
+  sb.write_string("closure:")
+  for k in param_kinds {
+    sb.write_string(gc_val_kind_key(k))
+    sb.write_char(',')
+  }
+  sb.write_string("->")
+  sb.write_string(gc_val_kind_key(result_kind))
+  sb.to_string()
+}
+
+///|
+fn ensure_closure_types_gc(
+  ctx : GcCodegenCtx,
+  param_kinds : Array[GcValKind],
+  result_kind : GcValKind,
+) -> (Int, Int) {
+  let key = closure_sig_key_gc(param_kinds, result_kind)
+  match ctx.closure_fn_type_cache.get(key) {
+    Some(fn_idx) =>
+      match ctx.closure_struct_type_cache.get(key) {
+        Some(st_idx) => (fn_idx, st_idx)
+        None => (fn_idx, fn_idx)
+      }
+    None => {
+      let fn_params : Array[GcValKind] = [GcValKind::AnyRef]
+      for k in param_kinds {
+        fn_params.push(k)
+      }
+      let fn_type_idx = ctx.types.length()
+      ctx.types.push(GcTypeDef::Func(params=fn_params, result=result_kind))
+      ctx.closure_fn_type_cache[key] = fn_type_idx
+      let struct_fields : Array[GcValKind] = [
+        GcValKind::Ref(fn_type_idx),
+        GcValKind::AnyRef,
+      ]
+      let struct_type_idx = ctx.types.length()
+      ctx.types.push(GcTypeDef::Struct(fields=struct_fields))
+      ctx.closure_struct_type_cache[key] = struct_type_idx
+      (fn_type_idx, struct_type_idx)
+    }
+  }
+}
+
+///|
+fn track_closure_binding_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  name : String,
+  expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  match expr {
+    @core.Expr::Fn(params~, ret~, body~, ..) => {
+      let param_kinds : Array[GcValKind] = []
+      for param in params {
+        param_kinds.push(gc_val_kind_from_type(ctx, param.ty))
+      }
+      let result_kind = match ret {
+        Some(ty) => gc_val_kind_from_type(ctx, ty)
+        None => {
+          let saved = clone_locals_gc(fctx.locals)
+          for param in params {
+            let k = gc_val_kind_from_type(ctx, param.ty)
+            fctx.locals[param.name] = { idx: 0, kind: k }
+          }
+          let kind = infer_block_kind_gc(ctx, fctx, body)
+          restore_locals_gc(fctx, saved)
+          kind
+        }
+      }
+      let (fn_type_idx, _) = ensure_closure_types_gc(
+        ctx, param_kinds, result_kind,
+      )
+      fctx.closure_call_types[name] = fn_type_idx
+    }
+    @core.Expr::Call(name=callee, ..) =>
+      match ctx.closure_call_type_for_func.get(callee) {
+        Some(fn_type_idx) => fctx.closure_call_types[name] = fn_type_idx
+        None => ()
+      }
+    _ => ()
+  }
+}
+
+///|
 fn gc_val_kind_from_type(
   ctx : GcCodegenCtx,
   ty : @core.Type,
@@ -749,9 +1037,17 @@ fn gc_val_kind_from_type(
       )
       GcValKind::Ref(type_idx)
     }
-    @core.Type::Func(..) =>
-      // Function values in GC mode are represented as funcref
-      GcValKind::FuncRef
+    @core.Type::Func(params~, ret~, ..) => {
+      let param_kinds : Array[GcValKind] = []
+      for p in params {
+        param_kinds.push(gc_val_kind_from_type(ctx, p.ty))
+      }
+      let result_kind = gc_val_kind_from_type(ctx, ret)
+      let (_, struct_type_idx) = ensure_closure_types_gc(
+        ctx, param_kinds, result_kind,
+      )
+      GcValKind::Ref(struct_type_idx)
+    }
     @core.Type::Param(_) =>
       // Unresolved type parameter — treat as anyref in GC mode
       GcValKind::AnyRef
@@ -772,7 +1068,7 @@ fn GcFuncCtx::new(
     locals[param.name] = { idx, kind }
     idx += 1
   }
-  { locals, local_kinds, param_count: idx }
+  { locals, local_kinds, param_count: idx, closure_call_types: {} }
 }
 
 ///|
@@ -808,10 +1104,15 @@ fn infer_block_kind_gc(
   if len == 0 {
     return GcValKind::I32
   }
+  let temp_cct : Map[String, Int] = {}
+  for k, v in fctx.closure_call_types {
+    temp_cct[k] = v
+  }
   let temp_ctx = GcFuncCtx::{
     locals: clone_locals_gc(fctx.locals),
     local_kinds: [],
     param_count: fctx.param_count,
+    closure_call_types: temp_cct,
   }
   for i in 0..<len {
     let stmt = body.stmts[i]
@@ -820,6 +1121,7 @@ fn infer_block_kind_gc(
       @core.Stmt::Let(name~, expr~, ..) => {
         let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
         temp_ctx.locals[name] = { idx: 0, kind }
+        track_closure_binding_gc(ctx, temp_ctx, name, expr)
         if is_last {
           return kind
         }
@@ -827,6 +1129,7 @@ fn infer_block_kind_gc(
       @core.Stmt::LetMut(name~, expr~, ..) => {
         let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
         temp_ctx.locals[name] = { idx: 0, kind }
+        track_closure_binding_gc(ctx, temp_ctx, name, expr)
         if is_last {
           return kind
         }
@@ -923,7 +1226,7 @@ fn infer_for_in_parts_gc(
   let saved_locals = clone_locals_gc(fctx.locals)
   fctx.locals[value_name] = { idx: 0, kind: iterable_elem_kind }
   match index_name {
-    Some(name) => fctx.locals[name] = { idx: 0, kind: GcValKind::I64 }
+    Some(name) => fctx.locals[name] = { idx: 0, kind: GcValKind::I32 }
     None => ()
   }
   let body_kind = infer_block_kind_gc(ctx, fctx, body)
@@ -1066,7 +1369,15 @@ fn infer_expr_kind_gc(
         _ =>
           match ctx.func_returns.get(name) {
             Some(kind) => kind
-            None => raise WasmGenError::UnknownName(name)
+            None =>
+              match fctx.closure_call_types.get(name) {
+                Some(fn_type_idx) =>
+                  match ctx.types[fn_type_idx] {
+                    GcTypeDef::Func(result~, ..) => result
+                    _ => raise WasmGenError::Unsupported("closure call type")
+                  }
+                None => raise WasmGenError::UnknownName(name)
+              }
           }
       }
     }
@@ -1123,6 +1434,29 @@ fn infer_expr_kind_gc(
         }
       }
       kind
+    }
+    @core.Expr::Fn(params~, ret~, body~, ..) => {
+      let param_kinds : Array[GcValKind] = []
+      for param in params {
+        param_kinds.push(gc_val_kind_from_type(ctx, param.ty))
+      }
+      let result_kind = match ret {
+        Some(ty) => gc_val_kind_from_type(ctx, ty)
+        None => {
+          let saved = clone_locals_gc(fctx.locals)
+          for param in params {
+            let k = gc_val_kind_from_type(ctx, param.ty)
+            fctx.locals[param.name] = { idx: 0, kind: k }
+          }
+          let kind = infer_block_kind_gc(ctx, fctx, body)
+          restore_locals_gc(fctx, saved)
+          kind
+        }
+      }
+      let (_, struct_type_idx) = ensure_closure_types_gc(
+        ctx, param_kinds, result_kind,
+      )
+      GcValKind::Ref(struct_type_idx)
     }
     _ => raise WasmGenError::Unsupported("expr")
   }
@@ -1515,6 +1849,7 @@ fn compile_len_gc(
             emit_i64_extend_i32_s_gc(buf)
           }
           GcTypeDef::Struct(..) => raise WasmGenError::Unsupported("__len ref")
+          GcTypeDef::Func(..) => raise WasmGenError::Unsupported("__len func ref")
         }
       }
     _ => raise WasmGenError::Unsupported("__len kind")
@@ -2281,6 +2616,10 @@ fn compile_expr_gc(
             )
             compile_expr_gc(ctx, fctx, buf, pos_args[0])
             compile_expr_gc(ctx, fctx, buf, pos_args[1])
+            let idx_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+            if idx_kind == GcValKind::I64 {
+              emit_i32_wrap_i64_gc(buf)
+            }
             emit_array_get_gc(buf, type_idx)
           }
         }
@@ -2417,7 +2756,29 @@ fn compile_expr_gc(
               }
               emit_call_gc(buf, idx)
             }
-            None => raise WasmGenError::UnknownName(name)
+            None =>
+              match fctx.closure_call_types.get(name) {
+                Some(fn_type_idx) =>
+                  match fctx.locals.get(name) {
+                    Some(closure_info) => {
+                      let closure_struct_type = match closure_info.kind {
+                        GcValKind::Ref(idx) => idx
+                        _ =>
+                          raise WasmGenError::Unsupported("closure kind")
+                      }
+                      emit_local_get_gc(buf, closure_info.idx)
+                      emit_struct_get_gc(buf, closure_struct_type, 1)
+                      for arg in pos_args {
+                        compile_expr_gc(ctx, fctx, buf, arg)
+                      }
+                      emit_local_get_gc(buf, closure_info.idx)
+                      emit_struct_get_gc(buf, closure_struct_type, 0)
+                      emit_call_ref_gc(buf, fn_type_idx)
+                    }
+                    None => raise WasmGenError::UnknownName(name)
+                  }
+                None => raise WasmGenError::UnknownName(name)
+              }
           }
       }
     }
@@ -2508,7 +2869,7 @@ fn compile_expr_gc(
       let saved_locals = clone_locals_gc(fctx.locals)
       let value_idx = bind_local_gc(fctx, value_name, iterable_elem_kind)
       let index_idx : Int? = match index_name {
-        Some(name) => Some(bind_local_gc(fctx, name, GcValKind::I64))
+        Some(name) => Some(bind_local_gc(fctx, name, GcValKind::I32))
         None => None
       }
       emit_block_gc(buf, None)
@@ -2524,7 +2885,6 @@ fn compile_expr_gc(
       match index_idx {
         Some(idx) => {
           emit_local_get_gc(buf, i_idx)
-          emit_i64_extend_i32_s_gc(buf)
           emit_local_set_gc(buf, idx)
         }
         None => ()
@@ -2543,6 +2903,118 @@ fn compile_expr_gc(
       restore_locals_gc(fctx, saved_locals)
       emit_local_get_gc(buf, result_idx)
     }
+    @core.Expr::Fn(params~, ret~, body~, ..) => {
+      let param_kinds : Array[GcValKind] = []
+      for param in params {
+        param_kinds.push(gc_val_kind_from_type(ctx, param.ty))
+      }
+      let bound : Map[String, Bool] = {}
+      for param in params {
+        bound[param.name] = true
+      }
+      let free : Map[String, Bool] = {}
+      collect_free_vars_module_gc(body, bound, free)
+      let capture_names : Array[String] = []
+      let capture_kinds : Array[GcValKind] = []
+      let capture_indices : Array[Int] = []
+      for name, _ in free {
+        match fctx.locals.get(name) {
+          Some(info) => {
+            capture_names.push(name)
+            capture_kinds.push(info.kind)
+            capture_indices.push(info.idx)
+          }
+          None => ()
+        }
+      }
+      let env_type_idx = ensure_struct_type(
+        ctx.types,
+        ctx.struct_type_index,
+        if capture_kinds.length() > 0 {
+          capture_kinds
+        } else {
+          []
+        },
+      )
+      let result_kind = match ret {
+        Some(ty) => gc_val_kind_from_type(ctx, ty)
+        None => {
+          let saved = clone_locals_gc(fctx.locals)
+          for param in params {
+            fctx.locals[param.name] = {
+              idx: 0,
+              kind: gc_val_kind_from_type(ctx, param.ty),
+            }
+          }
+          for i in 0..<capture_names.length() {
+            fctx.locals[capture_names[i]] = {
+              idx: 0,
+              kind: capture_kinds[i],
+            }
+          }
+          let kind = infer_block_kind_gc(ctx, fctx, body)
+          restore_locals_gc(fctx, saved)
+          kind
+        }
+      }
+      let (fn_type_idx, struct_type_idx) = ensure_closure_types_gc(
+        ctx, param_kinds, result_kind,
+      )
+      let lifted_fctx = GcFuncCtx::{
+        locals: {},
+        local_kinds: [],
+        param_count: 1 + params.length(),
+        closure_call_types: {},
+      }
+      for i in 0..<params.length() {
+        let k = gc_val_kind_from_type(ctx, params[i].ty)
+        lifted_fctx.locals[params[i].name] = { idx: i + 1, kind: k }
+      }
+      let lifted_buf = GcByteBuf::new()
+      if capture_names.length() > 0 {
+        let env_local = alloc_local_gc(
+          lifted_fctx,
+          GcValKind::Ref(env_type_idx),
+        )
+        emit_local_get_gc(lifted_buf, 0)
+        emit_ref_cast_gc(lifted_buf, env_type_idx)
+        emit_local_set_gc(lifted_buf, env_local)
+        for i in 0..<capture_names.length() {
+          let cap_local = bind_local_gc(
+            lifted_fctx,
+            capture_names[i],
+            capture_kinds[i],
+          )
+          emit_local_get_gc(lifted_buf, env_local)
+          emit_struct_get_gc(lifted_buf, env_type_idx, i)
+          emit_local_set_gc(lifted_buf, cap_local)
+        }
+      }
+      compile_block_expr_gc(ctx, lifted_fctx, lifted_buf, body)
+      let lifted_sig_params : Array[GcValKind] = [GcValKind::AnyRef]
+      for k in param_kinds {
+        lifted_sig_params.push(k)
+      }
+      let lifted_sig = GcFuncSig::{
+        params: lifted_sig_params,
+        result: result_kind,
+      }
+      let func_idx = ctx.num_regular_funcs + ctx.closure_lifted_funcs.length()
+      ctx.closure_lifted_funcs.push(
+        GcWasmFunc::{
+          sig: lifted_sig,
+          locals: lifted_fctx.local_kinds,
+          body: lifted_buf.to_array(),
+          type_idx: fn_type_idx,
+        },
+      )
+      emit_ref_func_gc(buf, func_idx)
+      for i in 0..<capture_indices.length() {
+        emit_local_get_gc(buf, capture_indices[i])
+      }
+      emit_struct_new_gc(buf, env_type_idx)
+      emit_struct_new_gc(buf, struct_type_idx)
+    }
     _ => raise WasmGenError::Unsupported("expr")
   }
 }
@@ -2560,6 +3032,7 @@ fn compile_stmt_gc(
       let _ = rec
       let kind = infer_expr_kind_gc(ctx, fctx, expr)
       let idx = bind_local_gc(fctx, name, kind)
+      track_closure_binding_gc(ctx, fctx, name, expr)
       compile_expr_gc(ctx, fctx, buf, expr)
       if is_last {
         emit_local_tee_gc(buf, idx)
@@ -2570,6 +3043,7 @@ fn compile_stmt_gc(
     @core.Stmt::LetMut(name~, expr~, ..) => {
       let kind = infer_expr_kind_gc(ctx, fctx, expr)
       let idx = bind_local_gc(fctx, name, kind)
+      track_closure_binding_gc(ctx, fctx, name, expr)
       compile_expr_gc(ctx, fctx, buf, expr)
       if is_last {
         emit_local_tee_gc(buf, idx)
@@ -2655,6 +3129,30 @@ fn compile_block_expr_gc(
 
 ///|
 fn collect_top_level_funcs_gc(ast : @core.Module) -> Array[GcFuncDef] {
+  let top_func_names : Map[String, Bool] = {}
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr~, ..) => {
+        match expr {
+          @core.Expr::Fn(..) => top_func_names[name] = true
+          _ => ()
+        }
+      }
+      @core.Stmt::ExportLet(name~, expr~, ..) => {
+        match expr {
+          @core.Expr::Fn(..) => top_func_names[name] = true
+          _ => ()
+        }
+      }
+      @core.Stmt::InternalExportLet(name~, expr~, ..) => {
+        match expr {
+          @core.Expr::Fn(..) => top_func_names[name] = true
+          _ => ()
+        }
+      }
+      _ => ()
+    }
+  }
   let funcs : Array[GcFuncDef] = []
   for stmt in ast.stmts {
     match stmt {
@@ -2662,7 +3160,9 @@ fn collect_top_level_funcs_gc(ast : @core.Module) -> Array[GcFuncDef] {
         let _ = rec
         match expr {
           @core.Expr::Fn(params~, ret~, body~, ..) =>
-            funcs.push({ name, params, ret, body })
+            if not(has_free_vars_gc(body, params, top_func_names)) {
+              funcs.push({ name, params, ret, body })
+            }
           _ => ()
         }
       }
@@ -2670,7 +3170,9 @@ fn collect_top_level_funcs_gc(ast : @core.Module) -> Array[GcFuncDef] {
         let _ = rec
         match expr {
           @core.Expr::Fn(params~, ret~, body~, ..) =>
-            funcs.push({ name, params, ret, body })
+            if not(has_free_vars_gc(body, params, top_func_names)) {
+              funcs.push({ name, params, ret, body })
+            }
           _ => ()
         }
       }
@@ -2678,7 +3180,9 @@ fn collect_top_level_funcs_gc(ast : @core.Module) -> Array[GcFuncDef] {
         let _ = rec
         match expr {
           @core.Expr::Fn(params~, ret~, body~, ..) =>
-            funcs.push({ name, params, ret, body })
+            if not(has_free_vars_gc(body, params, top_func_names)) {
+              funcs.push({ name, params, ret, body })
+            }
           _ => ()
         }
       }
@@ -2689,28 +3193,37 @@ fn collect_top_level_funcs_gc(ast : @core.Module) -> Array[GcFuncDef] {
 }
 
 ///|
-fn filter_top_level_funcs_gc(ast : @core.Module) -> @core.Module {
+fn filter_top_level_funcs_gc(
+  ast : @core.Module,
+  collected : Map[String, Bool],
+) -> @core.Module {
   let stmts : Array[@core.Stmt] = []
   for stmt in ast.stmts {
     match stmt {
-      @core.Stmt::Let(rec~, expr~, ..) => {
-        let _ = rec
+      @core.Stmt::Let(name~, expr~, ..) => {
         match expr {
-          @core.Expr::Fn(..) => ()
+          @core.Expr::Fn(..) =>
+            if not(collected.contains(name)) {
+              stmts.push(stmt)
+            }
           _ => stmts.push(stmt)
         }
       }
-      @core.Stmt::ExportLet(rec~, expr~, ..) => {
-        let _ = rec
+      @core.Stmt::ExportLet(name~, expr~, ..) => {
         match expr {
-          @core.Expr::Fn(..) => ()
+          @core.Expr::Fn(..) =>
+            if not(collected.contains(name)) {
+              stmts.push(stmt)
+            }
           _ => stmts.push(stmt)
         }
       }
-      @core.Stmt::InternalExportLet(rec~, expr~, ..) => {
-        let _ = rec
+      @core.Stmt::InternalExportLet(name~, expr~, ..) => {
         match expr {
-          @core.Expr::Fn(..) => ()
+          @core.Expr::Fn(..) =>
+            if not(collected.contains(name)) {
+              stmts.push(stmt)
+            }
           _ => stmts.push(stmt)
         }
       }
@@ -2736,7 +3249,7 @@ fn compile_function_gc(
   }
   let buf = GcByteBuf::new()
   compile_block_expr_gc(ctx, fctx, buf, def.body)
-  { sig, locals: fctx.local_kinds, body: buf.to_array() }
+  { sig, locals: fctx.local_kinds, body: buf.to_array(), type_idx: -1 }
 }
 
 ///|
@@ -2749,7 +3262,7 @@ fn compile_run_gc(
   let sig = GcFuncSig::{ params: [], result: result_kind }
   let buf = GcByteBuf::new()
   compile_block_expr_gc(ctx, fctx, buf, body)
-  { sig, locals: fctx.local_kinds, body: buf.to_array() }
+  { sig, locals: fctx.local_kinds, body: buf.to_array(), type_idx: -1 }
 }
 
 ///|
@@ -2774,6 +3287,15 @@ fn write_type_entry_gc(buf : GcByteBuf, ty : GcTypeDef) -> Unit {
         write_valtype_gc(buf, field)
         buf.push(0x01)
       }
+    }
+    GcTypeDef::Func(params~, result~) => {
+      buf.push(0x60)
+      write_u32_leb_gc(buf, params.length())
+      for p in params {
+        write_valtype_gc(buf, p)
+      }
+      write_u32_leb_gc(buf, 1)
+      write_valtype_gc(buf, result)
     }
   }
 }
@@ -2818,20 +3340,33 @@ fn build_module_gc(
   buf.push(0x00)
   buf.push(0x00)
   let type_sec = GcByteBuf::new()
-  let type_count = ctx.types.length() + funcs.length()
+  let mut auto_type_count = 0
+  for f in funcs {
+    if f.type_idx < 0 {
+      auto_type_count += 1
+    }
+  }
+  let type_count = ctx.types.length() + auto_type_count
   write_u32_leb_gc(type_sec, type_count)
   for ty in ctx.types {
     write_type_entry_gc(type_sec, ty)
   }
   for f in funcs {
-    write_func_type_gc(type_sec, f.sig)
+    if f.type_idx < 0 {
+      write_func_type_gc(type_sec, f.sig)
+    }
   }
   write_section_gc(buf, 1, type_sec.to_array())
   let func_sec = GcByteBuf::new()
   write_u32_leb_gc(func_sec, funcs.length())
-  let type_offset = ctx.types.length()
-  for i in 0..<funcs.length() {
-    write_u32_leb_gc(func_sec, type_offset + i)
+  let mut auto_type_offset = ctx.types.length()
+  for f in funcs {
+    if f.type_idx >= 0 {
+      write_u32_leb_gc(func_sec, f.type_idx)
+    } else {
+      write_u32_leb_gc(func_sec, auto_type_offset)
+      auto_type_offset += 1
+    }
   }
   write_section_gc(buf, 3, func_sec.to_array())
   let export_sec = GcByteBuf::new()
@@ -2844,6 +3379,22 @@ fn build_module_gc(
   export_sec.push(0x00)
   write_u32_leb_gc(export_sec, run_index)
   write_section_gc(buf, 7, export_sec.to_array())
+  // Element section: declare closure function refs for ref.func
+  if ctx.closure_lifted_funcs.length() > 0 {
+    let elem_sec = GcByteBuf::new()
+    write_u32_leb_gc(elem_sec, 1) // 1 element segment
+    // Declarative element segment (flags = 0x07: declarative, element type, elem exprs)
+    elem_sec.push(0x07) // declarative segment with element expressions
+    elem_sec.push(0x70) // funcref element type
+    write_u32_leb_gc(elem_sec, ctx.closure_lifted_funcs.length())
+    for i in 0..<ctx.closure_lifted_funcs.length() {
+      let func_idx = ctx.num_regular_funcs + i
+      elem_sec.push(0xd2) // ref.func
+      write_u32_leb_gc(elem_sec, func_idx)
+      elem_sec.push(0x0b) // end
+    }
+    write_section_gc(buf, 9, elem_sec.to_array())
+  }
   let code_sec = GcByteBuf::new()
   write_u32_leb_gc(code_sec, funcs.length())
   for f in funcs {
@@ -2862,12 +3413,29 @@ fn build_module_gc(
 pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
   let ctx = GcCodegenCtx::new()
   let funcs = collect_top_level_funcs_gc(ast)
+  ctx.num_regular_funcs = funcs.length() + 1
   for i in 0..<funcs.length() {
     ctx.func_indices[funcs[i].name] = i
     ctx.func_param_counts[funcs[i].name] = funcs[i].params.length()
     match funcs[i].ret {
-      Some(ty) =>
-        ctx.func_returns[funcs[i].name] = gc_val_kind_from_type(ctx, ty)
+      Some(ty) => {
+        let kind = gc_val_kind_from_type(ctx, ty)
+        ctx.func_returns[funcs[i].name] = kind
+        match ty {
+          @core.Type::Func(params~, ret~, ..) => {
+            let param_kinds : Array[GcValKind] = []
+            for p in params {
+              param_kinds.push(gc_val_kind_from_type(ctx, p.ty))
+            }
+            let result_kind = gc_val_kind_from_type(ctx, ret)
+            let (fn_type_idx, _) = ensure_closure_types_gc(
+              ctx, param_kinds, result_kind,
+            )
+            ctx.closure_call_type_for_func[funcs[i].name] = fn_type_idx
+          }
+          _ => ()
+        }
+      }
       None => ()
     }
   }
@@ -2877,9 +3445,16 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
     ctx.func_returns[f.name] = wf.sig.result
     wasm_funcs.push(wf)
   }
-  let run_body = filter_top_level_funcs_gc(ast)
+  let collected_names : Map[String, Bool] = {}
+  for f in funcs {
+    collected_names[f.name] = true
+  }
+  let run_body = filter_top_level_funcs_gc(ast, collected_names)
   let run_func = compile_run_gc(ctx, run_body)
   let run_index = wasm_funcs.length()
   wasm_funcs.push(run_func)
+  for lf in ctx.closure_lifted_funcs {
+    wasm_funcs.push(lf)
+  }
   build_module_gc(ctx, wasm_funcs, run_index)
 }
