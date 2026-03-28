@@ -393,11 +393,6 @@ fn Runtime::get_alias(self : Runtime, name : String) -> @core.Ref? {
 }
 
 ///|
-fn Runtime::get_name_alias(self : Runtime, name : String) -> String? {
-  self.names.get(name)
-}
-
-///|
 fn Runtime::pure_cache_get(self : Runtime, key : String) -> @core.Value? {
   self.pure_cache.get(key)
 }
@@ -450,18 +445,6 @@ fn Runtime::fork_for_test(self : Runtime) -> Runtime {
     cwd: self.cwd,
     loop_fuel: self.loop_fuel,
   }
-}
-
-///|
-fn Runtime::clear_perform_resume_overrides(self : Runtime) -> Unit {
-  let keys : Array[String] = []
-  for key, _ in self.perform_resume_overrides {
-    keys.push(key)
-  }
-  for key in keys {
-    self.perform_resume_overrides.remove(key)
-  }
-  self.active_handle_scope = None
 }
 
 ///|
