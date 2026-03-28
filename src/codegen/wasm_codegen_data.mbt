@@ -653,6 +653,9 @@ fn compile_func_body(
           0
         }
         let heap_start = align4(ctx.strings.next_offset + coverage_bytes)
+        if ctx.enable_rc && ctx.rc_heap_start == 0 {
+          ctx.rc_heap_start = heap_start
+        }
         emit_i32_const_raw(prologue, heap_start)
         emit_local_set(prologue, ctx.heap_local)
       }

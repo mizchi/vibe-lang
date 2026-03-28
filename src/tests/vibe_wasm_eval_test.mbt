@@ -3387,3 +3387,99 @@ test "rc eval: enum singleton None not corrupted by RC" {
   assert_eq(res_rc.value, res_no_rc.value)
   assert_eq(decode_int(res_rc.value), 42L)
 }
+
+///|
+test "rc eval: match destructuring with enum payload" {
+  // Some((10, 20)) wraps a tuple in an enum. Matching extracts the tuple.
+  // The enum wrapper should be dropped; the tuple payload lives on.
+  let script =
+    #|let f = () -> Int {
+    #|  let x = Some((10, 20))
+    #|  let result = match x {
+    #|    Some(t) => t.0 + t.1
+    #|    None => 0
+    #|  }
+    #|  result
+    #|}
+    #|f()
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res_rc.value, res_no_rc.value)
+  assert_eq(decode_int(res_rc.value), 30L)
+}
+
+///|
+test "rc eval: nested function calls with heap return values" {
+  // Functions that return heap objects need proper RC across call boundaries.
+  let script =
+    #|let make_pair = (a: Int, b: Int) -> (Int, Int) { (a, b) }
+    #|let sum_pair = (p: (Int, Int)) -> Int { p.0 + p.1 }
+    #|let result = sum_pair(make_pair(3, 4))
+    #|result
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res_rc.value, res_no_rc.value)
+  assert_eq(decode_int(res_rc.value), 7L)
+}
+
+///|
+test "rc eval: multiple string concats with RC" {
+  // Chain of string concats should not crash despite intermediate strings
+  // being in the data section or on heap.
+  let script =
+    #|let a = "hello"
+    #|let b = " "
+    #|let c = "world"
+    #|let d = String::concat(String::concat(a, b), c)
+    #|String::length(d)
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res_rc.value, res_no_rc.value)
+  assert_eq(decode_int(res_rc.value), 11L)
+}
+
+///|
+test "rc eval: closure captures tuple and uses it multiple times" {
+  // A closure captures a tuple and accesses its fields.
+  // The captured tuple should stay alive while the closure exists.
+  let script =
+    #|let t = (10, 20, 30)
+    #|let f = () -> Int { t.0 + t.1 + t.2 }
+    #|f() + f()
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res_rc.value, res_no_rc.value)
+  assert_eq(decode_int(res_rc.value), 120L)
+}
