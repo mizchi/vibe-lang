@@ -1521,7 +1521,10 @@ fn infer_expr_kind_gc(
         | "__bit_xor"
         | "__bit_not"
         | "__bit_lshift"
-        | "__bit_rshift" => GcValKind::I64
+        | "__bit_rshift"
+        | "__lshift"
+        | "__rshift"
+        | "i32_shr_u" => GcValKind::I64
         "__to_string"
         | "Int::to_string"
         | "Bool::to_string"
@@ -1547,7 +1550,24 @@ fn infer_expr_kind_gc(
           }
           infer_expr_kind_gc(ctx, fctx, pos_args[0])
         }
-        "ArrayBuilder::new" => GcValKind::EqRef
+        "ArrayBuilder::new" => {
+          // Return concrete builder struct type: { i32, ref array<i64> }
+          let arr_type = ensure_array_type(
+            ctx.types,
+            ctx.array_type_index,
+            GcValKind::I64,
+          )
+          let builder_fields : Array[GcValKind] = [
+            GcValKind::I32,
+            GcValKind::Ref(arr_type),
+          ]
+          let builder_type = ensure_struct_type(
+            ctx.types,
+            ctx.struct_type_index,
+            builder_fields,
+          )
+          GcValKind::Ref(builder_type)
+        }
         "ArrayBuilder::push" => GcValKind::I32
         "ArrayBuilder::freeze" => {
           if pos_args.length() != 1 {
@@ -1597,7 +1617,7 @@ fn infer_expr_kind_gc(
           let type_idx = ensure_array_type(
             ctx.types,
             ctx.array_type_index,
-            GcValKind::I32,
+            GcValKind::I64,
           )
           GcValKind::Ref(type_idx)
         }
@@ -4048,10 +4068,16 @@ fn compile_bytes_to_array_gc(
   buf : GcByteBuf,
   bytes_expr : @core.Expr,
 ) -> Unit raise WasmGenError {
+  // Return array<i64> (Int = i64 in GC mode), converting from internal array<i32>
+  let i64_arr_type = ensure_array_type(
+    ctx.types,
+    ctx.array_type_index,
+    GcValKind::I64,
+  )
   let b_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.bytes_type))
   let len_idx = alloc_local_gc(fctx, GcValKind::I32)
   let src_data = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
-  let new_arr = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
+  let new_arr = alloc_local_gc(fctx, GcValKind::Ref(i64_arr_type))
   let i_idx = alloc_local_gc(fctx, GcValKind::I32)
   compile_expr_gc(ctx, fctx, buf, bytes_expr)
   emit_local_set_gc(buf, b_idx)
@@ -4062,7 +4088,7 @@ fn compile_bytes_to_array_gc(
   emit_struct_get_gc(buf, ctx.bytes_type, 2)
   emit_local_set_gc(buf, src_data)
   emit_local_get_gc(buf, len_idx)
-  emit_array_new_default_gc(buf, ctx.array_i32_type)
+  emit_array_new_default_gc(buf, i64_arr_type)
   emit_local_set_gc(buf, new_arr)
   emit_i32_const_gc(buf, 0)
   emit_local_set_gc(buf, i_idx)
@@ -4077,7 +4103,8 @@ fn compile_bytes_to_array_gc(
   emit_local_get_gc(buf, src_data)
   emit_local_get_gc(buf, i_idx)
   emit_array_get_gc(buf, ctx.array_i32_type)
-  emit_array_set_gc(buf, ctx.array_i32_type)
+  emit_i64_extend_i32_s_gc(buf) // i32 → i64
+  emit_array_set_gc(buf, i64_arr_type)
   emit_local_get_gc(buf, i_idx)
   emit_i32_const_gc(buf, 1)
   emit_i32_add_gc(buf)
@@ -5483,6 +5510,22 @@ fn compile_expr_gc(
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
           emit_i64_shr_s_gc(buf)
+        }
+        "__lshift" => {
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_i64_shl_gc(buf)
+        }
+        "__rshift" => {
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_i64_shr_s_gc(buf)
+        }
+        "i32_shr_u" => {
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          // unsigned shift right
+          buf.push(0x88) // i64.shr_u
         }
         // Type conversions
         "Int::to_double" => {
