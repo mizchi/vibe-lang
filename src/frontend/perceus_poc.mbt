@@ -1301,6 +1301,16 @@ fn p2_count_expr(ctx : PerceusCountCtx2, expr : @core.Expr) -> Unit {
     @core.Expr::Ident(name~, ..) => p2_count_use(ctx, name)
     @core.Expr::Call(name~, args~, ..) => {
       p2_count_use(ctx, name)
+      // __index(obj, "field") borrows the container — no ownership transfer
+      if name == "__index" && args.length() == 2 {
+        match (args[0].expr, args[1].expr) {
+          (@core.Expr::Ident(name=obj_name, ..), @core.Expr::String(..)) => {
+            p2_count_borrow(ctx, obj_name)
+            return
+          }
+          _ => ()
+        }
+      }
       for arg in args {
         p2_count_expr(ctx, arg.expr)
       }
@@ -1710,6 +1720,16 @@ fn p2_emit_expr(
     @core.Expr::Ident(name~, ..) => p2_emit_use(ctx, name, site)
     @core.Expr::Call(name~, args~, ..) => {
       p2_emit_use(ctx, name, site + ".callee")
+      // __index(obj, "field") borrows the container
+      if name == "__index" && args.length() == 2 {
+        match (args[0].expr, args[1].expr) {
+          (@core.Expr::Ident(name=obj_name, ..), @core.Expr::String(..)) => {
+            p2_emit_borrow(ctx, obj_name, site + ".arg[0]")
+            return
+          }
+          _ => ()
+        }
+      }
       for i = 0; i < args.length(); i = i + 1 {
         p2_emit_expr(ctx, args[i].expr, site + ".arg[\{i.to_string()}]")
       }

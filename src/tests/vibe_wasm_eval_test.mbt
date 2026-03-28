@@ -3191,6 +3191,29 @@ test "rc eval: pure borrow access skips dup" {
 }
 
 ///|
+test "rc eval: record field borrow skips dup" {
+  // Record field access (r.a, r.b) should borrow, not dup the container.
+  let script =
+    #|let f = () -> Int {
+    #|  let r = record { a: 10, b: 20 }
+    #|  r.a + r.b
+    #|}
+    #|f()
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res_rc.value, res_no_rc.value)
+  assert_eq(decode_int(res_rc.value), 30L)
+}
+
+///|
 test "rc eval: ref cell write drops old heap value" {
   // When a mut_captured variable is reassigned, the old value must be RC-dropped.
   // A closure captures `x` mutably (ref cell), then reassigns it.
