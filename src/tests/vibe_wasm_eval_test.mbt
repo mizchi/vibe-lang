@@ -2898,9 +2898,8 @@ test "rc perf: binary size overhead is bounded" {
     " ratio=" +
     ratio.to_string(),
   )
-  // With lazy helper inclusion, non-heap programs have minimal overhead.
-  // Total ratio across the suite should stay under 4.5x.
-  assert_true(ratio < 4.5)
+  // With type-aware drop slimming, total RC overhead stays under 2.5x.
+  assert_true(ratio < 2.5)
 }
 
 ///|

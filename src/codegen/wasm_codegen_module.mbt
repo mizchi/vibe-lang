@@ -3639,7 +3639,16 @@ fn emit_module_with_coverage(
         results: [ValueKind::I32],
       }
       let _ = ensure_sig_index(ctx, rc_try_reuse_sig)
-      compiled_funcs.push(compile_rc_try_reuse_function(rc_drop_abs_idx))
+      compiled_funcs.push(
+        compile_rc_try_reuse_function(
+          rc_drop_abs_idx,
+          has_tuple_or_array=ctx.rc_has_tuple_or_array,
+          has_record_or_map=ctx.rc_has_record_or_map,
+          has_closure=ctx.rc_has_closure,
+          has_enum=ctx.rc_has_enum,
+          has_view=ctx.rc_has_view,
+        ),
+      )
     }
   }
   if ctx.need_stdin_read_char ||
