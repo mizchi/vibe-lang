@@ -703,6 +703,14 @@ fn compile_stmt(
         Some(idx) =>
           if ctx.mut_captured_vars.contains(name) {
             // Ref cell: write through pointer
+            // RC: drop old value before overwriting
+            if ctx.enable_rc {
+              let old_val_local = alloc_temp_local_with_kind(ctx, I64)
+              emit_local_get(buf, idx) // i32 addr
+              emit_i64_load(buf, 0) // load old i64 value
+              emit_local_set(buf, old_val_local)
+              emit_rc_drop_i64(ctx, buf, old_val_local)
+            }
             // Put addr on stack first, then value — avoids temp local
             emit_local_get(buf, idx) // i32 addr
             compile_expr(ctx, buf, expr) // i64 value

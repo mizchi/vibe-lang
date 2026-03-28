@@ -3164,3 +3164,31 @@ test "rc perf: in-place reuse avoids heap growth on reassignment" {
   // check memory layout. For now, verify the result is correct.
   // The free-list test already validates reuse; this ensures try_reuse path works.
 }
+
+///|
+test "rc eval: ref cell write drops old heap value" {
+  // When a mut_captured variable is reassigned, the old value must be RC-dropped.
+  // A closure captures `x` mutably (ref cell), then reassigns it.
+  let script =
+    #|let f = () -> Int {
+    #|  let mut x = (1, 2)
+    #|  let g = () -> Int {
+    #|    x = (3, 4)
+    #|    x.0 + x.1
+    #|  }
+    #|  g()
+    #|}
+    #|f()
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res_rc.value, res_no_rc.value)
+  assert_eq(decode_int(res_rc.value), 7L)
+}

@@ -444,6 +444,36 @@ fn emit_rc_drop_fields(
   emit_end(buf) // end loop
   emit_end(buf) // end block
   emit_end(buf) // end if enum
+  // --- View types (11, 12, 14): parent_ptr at offset 4 ---
+  emit_local_get(buf, type_id_local)
+  emit_i32_const_raw(buf, 11) // obj_string_view
+  emit_i32_eq(buf)
+  emit_local_get(buf, type_id_local)
+  emit_i32_const_raw(buf, 12) // obj_array_view
+  emit_i32_eq(buf)
+  emit_i32_or(buf)
+  emit_local_get(buf, type_id_local)
+  emit_i32_const_raw(buf, 14) // obj_bytes_view
+  emit_i32_eq(buf)
+  emit_i32_or(buf)
+  emit_if(buf)
+  // parent_ptr = load_i32(obj_ptr + 4)
+  emit_local_get(buf, obj_local)
+  emit_i32_load(buf, 4)
+  emit_local_set(buf, field_val_local)
+  emit_local_get(buf, field_val_local)
+  emit_i32_const_raw(buf, 0)
+  emit_i32_ne(buf)
+  emit_if(buf)
+  // Tag raw ptr as (ptr | tag_obj) for rc_drop
+  let tagged_local = alloc_temp_local(ctx)
+  emit_local_get(buf, field_val_local)
+  emit_i32_const_raw(buf, tag_obj)
+  emit_i32_or(buf)
+  emit_local_set(buf, tagged_local)
+  emit_rc_drop(ctx, buf, tagged_local, field_tmp_local, field_rc_local, recursive=false)
+  emit_end(buf) // end if ptr != 0
+  emit_end(buf) // end if view type
 }
 
 ///|
@@ -931,6 +961,38 @@ fn compile_rc_drop_function(
   emit_end(body) // end loop
   emit_end(body) // end block $break
   emit_end(body) // end if type_id == 10
+  // --- View types (11=StringView, 12=ArrayView, 14=BytesView): parent_ptr at offset 4 ---
+  // Views store a raw i32 heap pointer to the parent object at offset 4.
+  // Need to tag it as (ptr | tag_obj) before calling $rc_drop.
+  emit_local_get(body, type_id)
+  emit_i32_const_raw(body, 11) // obj_string_view
+  emit_i32_eq(body)
+  emit_local_get(body, type_id)
+  emit_i32_const_raw(body, 12) // obj_array_view
+  emit_i32_eq(body)
+  emit_i32_or(body)
+  emit_local_get(body, type_id)
+  emit_i32_const_raw(body, 14) // obj_bytes_view
+  emit_i32_eq(body)
+  emit_i32_or(body)
+  emit_if(body) // if view type
+  // parent_ptr = load_i32(obj_ptr + 4)
+  emit_local_get(body, obj_ptr)
+  emit_i32_load(body, 4)
+  emit_local_set(body, field_val)
+  // Only drop if parent_ptr != 0
+  emit_local_get(body, field_val)
+  emit_i32_const_raw(body, 0)
+  emit_i32_ne(body)
+  emit_if(body)
+  // Convert raw i32 ptr to tagged i64: (ptr | tag_obj)
+  emit_local_get(body, field_val)
+  emit_i64_extend_i32_u(body)
+  emit_i64_const_raw(body, tag_obj.to_int64())
+  emit_i64_or(body)
+  emit_call(body, self_func_abs_idx) // recursive $rc_drop on parent
+  emit_end(body) // end if ptr != 0
+  emit_end(body) // end if view type
   // --- End recursive drop fields ---
   // Tombstone: type_id = 0
   emit_local_get(body, obj_ptr)
@@ -1125,7 +1187,7 @@ fn compile_rc_try_reuse_function(
 ) -> WasmFunc {
   let body = ByteBuf::new()
   // Locals: 0=param(i64), 1=val32, 2=obj_ptr, 3=rc_count,
-  //         4=type_id, 5=len, 6=idx, 7=field_val, 8=field_i64
+  //         4=type_id, 5=len, 6=idx, 7=field_val
   let param = 0
   let val32 = 1
   let obj_ptr = 2
@@ -1134,7 +1196,6 @@ fn compile_rc_try_reuse_function(
   let len = 5
   let idx = 6
   let field_val = 7
-  let field_i64 = 8
   // val32 = i32.wrap_i64(param)
   emit_local_get(body, param)
   emit_i32_wrap_i64(body)
@@ -1314,6 +1375,33 @@ fn compile_rc_try_reuse_function(
   emit_end(body) // end loop
   emit_end(body) // end block
   emit_end(body) // end if enum
+  // --- View types (11, 12, 14): parent_ptr at offset 4 ---
+  emit_local_get(body, type_id)
+  emit_i32_const_raw(body, 11)
+  emit_i32_eq(body)
+  emit_local_get(body, type_id)
+  emit_i32_const_raw(body, 12)
+  emit_i32_eq(body)
+  emit_i32_or(body)
+  emit_local_get(body, type_id)
+  emit_i32_const_raw(body, 14)
+  emit_i32_eq(body)
+  emit_i32_or(body)
+  emit_if(body)
+  emit_local_get(body, obj_ptr)
+  emit_i32_load(body, 4)
+  emit_local_set(body, field_val)
+  emit_local_get(body, field_val)
+  emit_i32_const_raw(body, 0)
+  emit_i32_ne(body)
+  emit_if(body)
+  emit_local_get(body, field_val)
+  emit_i64_extend_i32_u(body)
+  emit_i64_const_raw(body, tag_obj.to_int64())
+  emit_i64_or(body)
+  emit_call(body, rc_drop_abs_idx)
+  emit_end(body) // end if ptr != 0
+  emit_end(body) // end if view type
   // Return obj_ptr (RC is already 1, ready for reuse)
   emit_local_get(body, obj_ptr)
   emit_end(body) // end block $done
