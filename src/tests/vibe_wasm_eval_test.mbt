@@ -3363,3 +3363,27 @@ test "rc eval: string literal passed to function with RC" {
   assert_eq(res_rc.value, res_no_rc.value)
   assert_eq(decode_int(res_rc.value), 10L)
 }
+
+///|
+test "rc eval: enum singleton None not corrupted by RC" {
+  // None is a data section singleton. RC must not touch it.
+  let script =
+    #|let x = None
+    #|let y = match x {
+    #|  Some(v) => v
+    #|  None => 42
+    #|}
+    #|y
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res_rc.value, res_no_rc.value)
+  assert_eq(decode_int(res_rc.value), 42L)
+}
