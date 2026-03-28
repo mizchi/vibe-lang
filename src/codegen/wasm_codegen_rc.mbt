@@ -772,21 +772,20 @@ fn compile_rc_dup_function(heap_start? : Int = 0) -> WasmFunc {
   emit_i32_ne(body)
   emit_block(body)
   emit_br_if(body, 0)
-  // obj_ptr = val32 & ~3
+  // obj_ptr = val32 & ~3, save to rc_ptr temporarily
   emit_local_get(body, val32)
   emit_i32_const_raw(body, -4) // 0xFFFFFFFC
   emit_i32_and(body)
+  emit_local_set(body, rc_ptr) // rc_ptr = obj_ptr (temporary)
   // Static data guard: skip dup for data section pointers (below heap_start)
   if heap_start > 0 {
+    emit_local_get(body, rc_ptr)
     emit_i32_const_raw(body, heap_start)
     emit_i32_lt_u(body)
     emit_br_if(body, 0)
-    // Recompute obj_ptr (consumed by lt_u)
-    emit_local_get(body, val32)
-    emit_i32_const_raw(body, -4)
-    emit_i32_and(body)
   }
   // rc_ptr = obj_ptr - 4
+  emit_local_get(body, rc_ptr)
   emit_i32_const_raw(body, 4)
   emit_i32_sub(body)
   emit_local_set(body, rc_ptr)
@@ -860,18 +859,17 @@ fn compile_rc_drop_function(
     emit_i32_lt_u(body)
     emit_br_if(body, 0) // skip if in data section
   }
-  // new_rc = load(obj_ptr - 4) - 1
+  // rc_ptr = obj_ptr - 4; new_rc = load(rc_ptr) - 1; store(rc_ptr, new_rc)
   emit_local_get(body, obj_ptr)
   emit_i32_const_raw(body, 4)
   emit_i32_sub(body)
-  emit_local_get(body, obj_ptr)
-  emit_i32_const_raw(body, 4)
-  emit_i32_sub(body)
+  emit_local_tee(body, new_rc) // new_rc = rc_ptr temporarily
+  emit_local_get(body, new_rc) // rc_ptr on stack for store
   emit_i32_load(body, 0)
   emit_i32_const_raw(body, 1)
   emit_i32_sub(body)
-  emit_local_tee(body, new_rc)
-  emit_i32_store(body, 0) // store new_rc at obj_ptr - 4
+  emit_local_tee(body, new_rc) // new_rc = rc_count - 1
+  emit_i32_store(body, 0) // store new_rc at rc_ptr
   // if new_rc == 0: recursively drop fields, tombstone, free-list
   emit_local_get(body, new_rc)
   emit_i32_eqz(body)
@@ -1080,16 +1078,20 @@ fn compile_rc_drop_function(
   emit_end(body) // end if new_rc == 0
   emit_end(body) // end block (tag check skip)
   emit_end(body) // end func
+  // Only declare locals that are actually used
+  let locals : Array[ValueKind] = [
+    ValueKind::I32, // val32
+    ValueKind::I32, // obj_ptr
+    ValueKind::I32, // new_rc
+  ]
+  if needs_type_dispatch {
+    locals.push(ValueKind::I32) // type_id
+    locals.push(ValueKind::I32) // len
+    locals.push(ValueKind::I32) // idx
+  }
   WasmFunc::{
     params: [ValueKind::I64],
-    locals: [
-      ValueKind::I32,
-      ValueKind::I32,
-      ValueKind::I32,
-      ValueKind::I32,
-      ValueKind::I32,
-      ValueKind::I32,
-    ],
+    locals,
     results: [],
     body: body.to_array(),
   }
@@ -1098,7 +1100,7 @@ fn compile_rc_drop_function(
 ///|
 /// Compile a standalone WASM function for rc_alloc.
 /// Signature: (i32 total_size) -> i32 obj_ptr
-/// Scans free-list for exact-size match (first-fit), otherwise bump-allocates.
+/// Checks free-list head for exact-size match, otherwise bump-allocates.
 /// Writes alloc_size and rc_count=1 to the RC header.
 fn compile_rc_alloc_function(
   heap_global : Int,
@@ -1106,122 +1108,66 @@ fn compile_rc_alloc_function(
   debug_alloc_global? : Int = -1,
 ) -> WasmFunc {
   let body = ByteBuf::new()
-  // Locals: 0=total_size(param), 1=obj_ptr, 2=cur,
-  //         3=new_heap, 4=cur_pages, 5=req_pages, 6=prev
+  // Locals: 0=total_size(param), 1=obj_ptr, 2=new_heap
   let total_size = 0
   let obj_ptr = 1
-  let cur = 2
-  let new_heap = 3
-  let cur_pages = 4
-  let req_pages = 5
-  let prev = 6
+  let new_heap = 2
   // block $allocated — both paths set obj_ptr, then br here
   emit_block(body)
   if free_list_global >= 0 {
-    // Walk the free-list with prev/cur pointers to find exact-size match.
-    // prev = 0 (sentinel: means cur is head)
-    // cur = free_list_head
-    emit_i32_const_raw(body, 0)
-    emit_local_set(body, prev)
+    // Head-only free-list check: if head != 0 && load(head-8) == total_size → reuse
     emit_global_get(body, free_list_global)
-    emit_local_set(body, cur)
-    // block $found
-    //   loop $scan
-    //     if cur == 0: br $found (not found)
-    //     if load(cur-8) == total_size: unlink, br $allocated
-    //     prev = cur; cur = load(cur-4); br $scan
-    //   end
-    // end $found
-    emit_block(body) // block $found
-    emit_loop(body) // loop $scan
-    // if cur == 0: break (end of list, not found)
-    emit_local_get(body, cur)
-    emit_i32_eqz(body)
-    emit_br_if(body, 1) // br $found
-    // if load(cur - 8) == total_size → match
-    emit_local_get(body, cur)
+    emit_i32_const_raw(body, 0)
+    emit_i32_ne(body)
+    emit_if(body) // if head != 0
+    emit_global_get(body, free_list_global)
     emit_i32_const_raw(body, 8)
     emit_i32_sub(body)
-    emit_i32_load(body, 0)
+    emit_i32_load(body, 0) // load alloc_size
     emit_local_get(body, total_size)
     emit_i32_eq(body)
     emit_if(body) // if size matches
-    // next = load(cur - 4)
-    // Unlink: if prev == 0: head = next; else: store(prev-4, next)
-    emit_local_get(body, prev)
-    emit_i32_eqz(body)
-    emit_if(body) // if prev == 0 (cur is head)
-    emit_local_get(body, cur)
-    emit_i32_const_raw(body, 4)
-    emit_i32_sub(body)
-    emit_i32_load(body, 0) // next
-    emit_global_set(body, free_list_global) // head = next
-    emit_else(body)
-    // prev.next = cur.next: store(prev-4, load(cur-4))
-    emit_local_get(body, prev)
-    emit_i32_const_raw(body, 4)
-    emit_i32_sub(body) // &prev.next
-    emit_local_get(body, cur)
-    emit_i32_const_raw(body, 4)
-    emit_i32_sub(body)
-    emit_i32_load(body, 0) // cur.next
-    emit_i32_store(body, 0) // prev.next = cur.next
-    emit_end(body) // end if prev==0
-    // obj_ptr = cur
-    emit_local_get(body, cur)
+    // Reuse: obj_ptr = head; head = load(head - 4)
+    emit_global_get(body, free_list_global)
     emit_local_set(body, obj_ptr)
+    emit_local_get(body, obj_ptr)
+    emit_i32_const_raw(body, 4)
+    emit_i32_sub(body)
+    emit_i32_load(body, 0)
+    emit_global_set(body, free_list_global) // head = next
     // Write rc_count = 1
     emit_local_get(body, obj_ptr)
     emit_i32_const_raw(body, 4)
     emit_i32_sub(body)
     emit_i32_const_raw(body, 1)
     emit_i32_store(body, 0)
-    emit_br(body, 3) // br $allocated (if_size=0, loop=1, block_found=2, block_allocated=3)
-    emit_end(body) // end if size matches
-    // Advance: prev = cur; cur = load(cur - 4)
-    emit_local_get(body, cur)
-    emit_local_set(body, prev)
-    emit_local_get(body, cur)
-    emit_i32_const_raw(body, 4)
-    emit_i32_sub(body)
-    emit_i32_load(body, 0) // next
-    emit_local_set(body, cur)
-    emit_br(body, 0) // br $scan
-    emit_end(body) // end loop $scan
-    emit_end(body) // end block $found
+    emit_br(body, 2) // br $allocated
+    emit_end(body) // end inner if (size match)
+    emit_end(body) // end outer if (head != 0)
   }
-  // Bump allocate: check memory.grow, then advance heap
+  // Bump allocate: new_heap = heap + total_size
   emit_global_get(body, heap_global)
   emit_local_get(body, total_size)
   emit_i32_add(body)
   emit_local_set(body, new_heap)
+  // Check memory.grow: if memory_size_bytes < new_heap → grow
   emit_memory_size(body)
-  emit_local_set(body, cur_pages)
-  emit_local_get(body, new_heap)
-  emit_i32_const_raw(body, 65535)
-  emit_i32_add(body)
   emit_i32_const_raw(body, 16)
-  emit_i32_shr_u(body)
-  emit_local_set(body, req_pages)
-  emit_local_get(body, cur_pages)
-  emit_local_get(body, req_pages)
-  emit_i32_lt_s(body)
+  emit_i32_shl(body) // pages → bytes
+  emit_local_get(body, new_heap)
+  emit_i32_lt_s(body) // mem_bytes < new_heap
   emit_if(body)
-  emit_local_get(body, req_pages)
-  emit_local_get(body, cur_pages)
-  emit_i32_sub(body)
+  emit_i32_const_raw(body, 1)
   emit_memory_grow(body)
   emit_drop(body)
   emit_end(body)
-  // obj_ptr = heap + 8
+  // obj_ptr = old_heap + 8
   emit_global_get(body, heap_global)
   emit_i32_const_raw(body, rc_header_extra)
   emit_i32_add(body)
   emit_local_set(body, obj_ptr)
-  // heap = heap + total_size
-  emit_global_get(body, heap_global)
-  emit_local_get(body, total_size)
-  emit_i32_add(body)
+  // heap = new_heap
+  emit_local_get(body, new_heap)
   emit_global_set(body, heap_global)
   // Write alloc_size at obj_ptr - 8
   emit_local_get(body, obj_ptr)
@@ -1245,14 +1191,7 @@ fn compile_rc_alloc_function(
   emit_end(body) // end func
   WasmFunc::{
     params: [ValueKind::I32],
-    locals: [
-      ValueKind::I32,
-      ValueKind::I32,
-      ValueKind::I32,
-      ValueKind::I32,
-      ValueKind::I32,
-      ValueKind::I32,
-    ],
+    locals: [ValueKind::I32, ValueKind::I32],
     results: [ValueKind::I32],
     body: body.to_array(),
   }

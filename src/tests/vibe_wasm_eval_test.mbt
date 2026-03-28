@@ -2890,6 +2890,35 @@ test "rc eval: mutable tuple reassignment with RC" {
 }
 
 ///|
+/// Parse WASM section sizes for binary analysis.
+/// Returns map of section_id -> total_bytes (including header).
+fn wasm_section_sizes(bytes : Bytes) -> Map[Int, Int] {
+  let arr = bytes.to_array()
+  let sizes : Map[Int, Int] = {}
+  let cur = Cursor::{ bytes: arr, pos: 8 } // skip magic+version
+  while cur.pos + 2 < arr.length() {
+    let id = arr[cur.pos].to_int()
+    cur.pos += 1
+    let start = cur.pos - 1
+    // Read LEB128 payload size manually (no raise)
+    let mut payload_size = 0
+    let mut shift = 0
+    while cur.pos < arr.length() {
+      let b = arr[cur.pos].to_int()
+      cur.pos += 1
+      payload_size = payload_size | ((b & 0x7F) << shift)
+      if (b & 0x80) == 0 {
+        break
+      }
+      shift += 7
+    }
+    cur.pos += payload_size
+    sizes[id] = cur.pos - start
+  }
+  sizes
+}
+
+///|
 test "rc perf: binary size overhead is bounded" {
   // Compare WASM binary size with and without RC for various programs.
   // RC helper functions (dup/drop/alloc) add ~400 bytes of fixed overhead
@@ -2948,6 +2977,30 @@ test "rc perf: binary size overhead is bounded" {
     " ratio=" +
     ratio.to_string(),
   )
+  // Section-level analysis for tuple_alloc (most overhead)
+  db.set_source("main", "(1, 2, 3)")
+  let rc_bytes = compile_module_wasm(db, "main", enable_rc=true) catch {
+    _ => b""
+  }
+  db.set_source("main", "(1, 2, 3)")
+  let no_rc_bytes = compile_module_wasm(db, "main") catch { _ => b"" }
+  let rc_secs = wasm_section_sizes(rc_bytes)
+  let no_rc_secs = wasm_section_sizes(no_rc_bytes)
+  let sec_names = [
+    (1, "type"), (3, "func"), (5, "memory"), (6, "global"),
+    (7, "export"), (10, "code"), (11, "data"),
+  ]
+  let mut sec_details = ""
+  for entry in sec_names {
+    let (id, name) = entry
+    let rc_s = rc_secs.get(id).or(0)
+    let no_rc_s = no_rc_secs.get(id).or(0)
+    if rc_s != no_rc_s {
+      sec_details += "\n  " + name + ": rc=" + rc_s.to_string() + " no_rc=" +
+        no_rc_s.to_string() + " diff=+" + (rc_s - no_rc_s).to_string()
+    }
+  }
+  println("Section breakdown (tuple_alloc):" + sec_details)
   // With type-aware drop slimming, total RC overhead stays under 2.5x.
   assert_true(ratio < 2.5)
 }
