@@ -3507,12 +3507,34 @@ fn emit_module_with_coverage(
   }
   // Pre-compute RC helper function indices before compile loop.
   // Helpers are appended right after user functions in compiled_funcs.
+  // Only include helpers that are actually needed to minimize binary size.
   if ctx.enable_rc && ctx.need_heap {
-    let base = funcs.length()
-    ctx.rc_dup_func_idx = base
-    ctx.rc_drop_func_idx = base + 1
-    ctx.rc_alloc_func_idx = base + 2
-    ctx.rc_try_reuse_func_idx = base + 3
+    // Scan actions to determine which helpers are needed
+    let mut has_dup = false
+    let mut has_assign_drop = false
+    ctx.rc_func_actions.each(fn(_name, actions) {
+      for action in actions {
+        let (site, is_dup, _) = action
+        if is_dup {
+          has_dup = true
+        }
+        if site.contains(".old_value") {
+          has_assign_drop = true
+        }
+      }
+    })
+    let mut next = funcs.length()
+    if has_dup {
+      ctx.rc_dup_func_idx = next
+      next = next + 1
+    }
+    ctx.rc_drop_func_idx = next // always needed
+    next = next + 1
+    ctx.rc_alloc_func_idx = next // always needed
+    next = next + 1
+    if has_assign_drop {
+      ctx.rc_try_reuse_func_idx = next
+    }
   }
   // Pre-compute ref cell capture flags for ALL functions before compile loop.
   // This is needed because compile_function runs before compile_expr_fn.
@@ -3580,12 +3602,14 @@ fn emit_module_with_coverage(
       ),
     )
   }
-  // Append RC helper functions (dup, drop, alloc) right after user functions.
-  // Only include when the program actually needs heap (allocates objects).
+  // Append RC helper functions right after user functions.
+  // Only include helpers that are actually needed to minimize binary size.
   if ctx.enable_rc && ctx.need_heap {
-    let rc_dup_sig = FuncSig::{ params: [ValueKind::I64], results: [] }
-    let _ = ensure_sig_index(ctx, rc_dup_sig)
-    compiled_funcs.push(compile_rc_dup_function())
+    if ctx.rc_dup_func_idx >= 0 {
+      let rc_dup_sig = FuncSig::{ params: [ValueKind::I64], results: [] }
+      let _ = ensure_sig_index(ctx, rc_dup_sig)
+      compiled_funcs.push(compile_rc_dup_function())
+    }
     let rc_drop_sig = FuncSig::{ params: [ValueKind::I64], results: [] }
     let _ = ensure_sig_index(ctx, rc_drop_sig)
     let rc_drop_abs_idx = func_import_count(ctx) + ctx.rc_drop_func_idx
@@ -3604,12 +3628,14 @@ fn emit_module_with_coverage(
     compiled_funcs.push(
       compile_rc_alloc_function(ctx.heap_global, ctx.rc_free_list_global),
     )
-    let rc_try_reuse_sig = FuncSig::{
-      params: [ValueKind::I64],
-      results: [ValueKind::I32],
+    if ctx.rc_try_reuse_func_idx >= 0 {
+      let rc_try_reuse_sig = FuncSig::{
+        params: [ValueKind::I64],
+        results: [ValueKind::I32],
+      }
+      let _ = ensure_sig_index(ctx, rc_try_reuse_sig)
+      compiled_funcs.push(compile_rc_try_reuse_function(rc_drop_abs_idx))
     }
-    let _ = ensure_sig_index(ctx, rc_try_reuse_sig)
-    compiled_funcs.push(compile_rc_try_reuse_function(rc_drop_abs_idx))
   }
   if ctx.need_stdin_read_char ||
     ctx.need_socket ||

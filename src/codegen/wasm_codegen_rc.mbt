@@ -691,14 +691,6 @@ fn parse_site_path(site : String) -> (String, Int) {
 }
 
 ///|
-/// Parse "stmt[N]..." to extract N as Int. Returns -1 on failure.
-/// Legacy: only extracts the first (outermost) stmt index.
-fn parse_stmt_index(site : String) -> Int {
-  let (_, idx) = parse_site_path(site)
-  idx
-}
-
-///|
 /// Summary of integration points for wiring Perceus actions into codegen:
 ///
 /// 1. After each `emit_heap_alloc`, call `emit_rc_init` to set rc=1.
