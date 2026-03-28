@@ -802,46 +802,76 @@ fn compile_rc_drop_function(
 ///|
 /// Compile a standalone WASM function for rc_alloc.
 /// Signature: (i32 total_size) -> i32 obj_ptr
-/// Checks free-list head for exact-size match, otherwise bump-allocates.
+/// Scans free-list for exact-size match (first-fit), otherwise bump-allocates.
 /// Writes alloc_size and rc_count=1 to the RC header.
 fn compile_rc_alloc_function(
   heap_global : Int,
   free_list_global : Int,
 ) -> WasmFunc {
   let body = ByteBuf::new()
-  // Locals: 0=total_size(param), 1=obj_ptr, 2=free_ptr,
-  //         3=new_heap, 4=cur_pages, 5=req_pages
+  // Locals: 0=total_size(param), 1=obj_ptr, 2=cur,
+  //         3=new_heap, 4=cur_pages, 5=req_pages, 6=prev
   let total_size = 0
   let obj_ptr = 1
-  let free_ptr = 2
+  let cur = 2
   let new_heap = 3
   let cur_pages = 4
   let req_pages = 5
+  let prev = 6
   // block $allocated — both paths set obj_ptr, then br here
   emit_block(body)
   if free_list_global >= 0 {
-    // free_ptr = global.get $free_list
-    emit_global_get(body, free_list_global)
-    emit_local_set(body, free_ptr)
-    // if free_ptr != 0 && load(free_ptr-8) == total_size → reuse
-    emit_local_get(body, free_ptr)
+    // Walk the free-list with prev/cur pointers to find exact-size match.
+    // prev = 0 (sentinel: means cur is head)
+    // cur = free_list_head
     emit_i32_const_raw(body, 0)
-    emit_i32_ne(body)
-    emit_if(body)
-    emit_local_get(body, free_ptr)
+    emit_local_set(body, prev)
+    emit_global_get(body, free_list_global)
+    emit_local_set(body, cur)
+    // block $found
+    //   loop $scan
+    //     if cur == 0: br $found (not found)
+    //     if load(cur-8) == total_size: unlink, br $allocated
+    //     prev = cur; cur = load(cur-4); br $scan
+    //   end
+    // end $found
+    emit_block(body) // block $found
+    emit_loop(body) // loop $scan
+    // if cur == 0: break (end of list, not found)
+    emit_local_get(body, cur)
+    emit_i32_eqz(body)
+    emit_br_if(body, 1) // br $found
+    // if load(cur - 8) == total_size → match
+    emit_local_get(body, cur)
     emit_i32_const_raw(body, 8)
     emit_i32_sub(body)
     emit_i32_load(body, 0)
     emit_local_get(body, total_size)
     emit_i32_eq(body)
-    emit_if(body)
-    // Reuse: unlink from free list
-    emit_local_get(body, free_ptr)
+    emit_if(body) // if size matches
+    // next = load(cur - 4)
+    // Unlink: if prev == 0: head = next; else: store(prev-4, next)
+    emit_local_get(body, prev)
+    emit_i32_eqz(body)
+    emit_if(body) // if prev == 0 (cur is head)
+    emit_local_get(body, cur)
     emit_i32_const_raw(body, 4)
     emit_i32_sub(body)
-    emit_i32_load(body, 0)
+    emit_i32_load(body, 0) // next
     emit_global_set(body, free_list_global) // head = next
-    emit_local_get(body, free_ptr)
+    emit_else(body)
+    // prev.next = cur.next: store(prev-4, load(cur-4))
+    emit_local_get(body, prev)
+    emit_i32_const_raw(body, 4)
+    emit_i32_sub(body) // &prev.next
+    emit_local_get(body, cur)
+    emit_i32_const_raw(body, 4)
+    emit_i32_sub(body)
+    emit_i32_load(body, 0) // cur.next
+    emit_i32_store(body, 0) // prev.next = cur.next
+    emit_end(body) // end if prev==0
+    // obj_ptr = cur
+    emit_local_get(body, cur)
     emit_local_set(body, obj_ptr)
     // Write rc_count = 1
     emit_local_get(body, obj_ptr)
@@ -849,9 +879,19 @@ fn compile_rc_alloc_function(
     emit_i32_sub(body)
     emit_i32_const_raw(body, 1)
     emit_i32_store(body, 0)
-    emit_br(body, 2) // br $allocated (block=2: inner if=0, outer if=1, block=2)
-    emit_end(body) // end inner if
-    emit_end(body) // end outer if
+    emit_br(body, 3) // br $allocated (if_size=0, loop=1, block_found=2, block_allocated=3)
+    emit_end(body) // end if size matches
+    // Advance: prev = cur; cur = load(cur - 4)
+    emit_local_get(body, cur)
+    emit_local_set(body, prev)
+    emit_local_get(body, cur)
+    emit_i32_const_raw(body, 4)
+    emit_i32_sub(body)
+    emit_i32_load(body, 0) // next
+    emit_local_set(body, cur)
+    emit_br(body, 0) // br $scan
+    emit_end(body) // end loop $scan
+    emit_end(body) // end block $found
   }
   // Bump allocate: check memory.grow, then advance heap
   emit_global_get(body, heap_global)
@@ -906,7 +946,7 @@ fn compile_rc_alloc_function(
     params: [ValueKind::I32],
     locals: [
       ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32,
-      ValueKind::I32,
+      ValueKind::I32, ValueKind::I32,
     ],
     results: [ValueKind::I32],
     body: body.to_array(),

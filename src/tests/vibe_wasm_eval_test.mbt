@@ -2992,3 +2992,34 @@ test "rc eval: deep recursive drop frees nested containers" {
   assert_eq(res_rc.value, res_no_rc.value)
   assert_eq(decode_int(res_rc.value), 36L)
 }
+
+///|
+test "rc eval: free-list scan reuses non-head blocks" {
+  // Create mixed-size allocations, drop them, then allocate same sizes.
+  // The free-list scan should find matches even if they aren't at the head.
+  // Flow: alloc 2-tuple, alloc 3-tuple, drop 2-tuple, drop 3-tuple,
+  //       alloc 2-tuple → should reuse the 2-tuple block (not head, which is 3-tuple)
+  let script =
+    #|let f = () -> Int {
+    #|  let mut a = (1, 2)
+    #|  let mut b = (3, 4, 5)
+    #|  a = (10, 20)
+    #|  b = (30, 40, 50)
+    #|  a = (100, 200)
+    #|  a.0 + a.1 + b.0 + b.1 + b.2
+    #|}
+    #|f()
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  // Correctness: 100 + 200 + 30 + 40 + 50 = 420
+  assert_eq(res_rc.value, res_no_rc.value)
+  assert_eq(decode_int(res_rc.value), 420L)
+}
