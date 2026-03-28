@@ -375,6 +375,7 @@ fn wasm_emit_options_with_rc(
   http_host_imports? : Bool = false,
   http_component_wasi_shim? : Bool = false,
   fs_host_imports? : Bool = false,
+  rc_debug? : Bool = false,
 ) -> (@codegen.WasmEmitOptions, @core.Module) {
   // Desugar StringInterp into let-binding chains before Perceus analysis
   // so that intermediate String::concat results are RC-tracked.
@@ -404,6 +405,7 @@ fn wasm_emit_options_with_rc(
       http_component_wasi_shim~,
       fs_host_imports~,
       enable_rc=true,
+      rc_debug~,
       rc_actions~,
       rc_func_actions~,
     ),
@@ -585,6 +587,7 @@ pub fn compile_module_wasm(
   http_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
   enable_rc? : Bool = false,
+  rc_debug? : Bool = false,
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(db, path, @runtime.bundle_for_wasm, ast => {
     if enable_rc {
@@ -592,6 +595,7 @@ pub fn compile_module_wasm(
         ast,
         debug_errors~,
         http_host_imports~,
+        rc_debug~,
       )
       @codegen.emit_module_wasm_with_options(desugared_ast, options)
     } else {

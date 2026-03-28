@@ -137,6 +137,7 @@ priv struct CodegenCtx {
   mut linked_fn_imports_list : Array[(String, String, Int, Int)]
   // Perceus RC: enable reference counting codegen
   mut enable_rc : Bool
+  mut rc_debug : Bool
   // Perceus RC: per-stmt actions keyed by (prefix, stmt_index)
   // prefix="" for top-level, "stmt[2].expr.body" for nested blocks, etc.
   mut rc_pre_actions : Map[String, Map[Int, Array[RcStmtAction]]]
@@ -166,6 +167,9 @@ priv struct CodegenCtx {
   // RC: heap_start boundary for static data protection.
   // Pointers below this are in the data section and must not be RC-dropped.
   mut rc_heap_start : Int
+  // RC debug mode: global indices for alloc/free counters (-1 if disabled)
+  mut rc_debug_alloc_global : Int
+  mut rc_debug_free_global : Int
 }
 
 ///|
@@ -310,6 +314,7 @@ fn CodegenCtx::new(
     linked_fn_return_counts: {},
     linked_fn_imports_list: [],
     enable_rc: false,
+    rc_debug: false,
     rc_pre_actions: {},
     rc_post_actions: {},
     rc_action_prefix: "",
@@ -328,6 +333,8 @@ fn CodegenCtx::new(
     rc_has_enum: false,
     rc_has_view: false,
     rc_heap_start: 0,
+    rc_debug_alloc_global: -1,
+    rc_debug_free_global: -1,
   }
   // Register builtin None as singleton (strings is now initialized)
   let none_offset = ctx.strings.intern_enum_singleton("None", 0)

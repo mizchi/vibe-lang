@@ -1148,6 +1148,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       (if need_fs_global { 1 } else { 0 }) +
       (if ctx.need_socket { 1 } else { 0 }) +
       (if ctx.enable_rc { 1 } else { 0 }) +
+      (if ctx.rc_debug { 2 } else { 0 }) +
       exported_env_global_count
     write_u32_leb(global_sec, global_count)
     // Heap pointer global (skip when imported from library)
@@ -1225,6 +1226,18 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       emit_i32_const_raw(global_sec, 0)
       global_sec.push((11).to_byte()) // end
     }
+    // RC debug mode: alloc_count and free_count globals
+    if ctx.rc_debug {
+      let debug_base = ctx.rc_free_list_global + 1
+      ctx.rc_debug_alloc_global = debug_base
+      ctx.rc_debug_free_global = debug_base + 1
+      for _ in 0..<2 {
+        global_sec.push((127).to_byte()) // i32
+        global_sec.push((1).to_byte()) // mutable
+        emit_i32_const_raw(global_sec, 0)
+        global_sec.push((11).to_byte()) // end
+      }
+    }
     // Exported function env globals: store closure env pointers for external calls
     if exported_env_global_count > 0 {
       let mut env_global_idx = (if ctx.use_heap_global { 1 } else { 0 }) +
@@ -1233,7 +1246,8 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
         (if ctx.coverage_enabled { 2 } else { 0 }) +
         (if need_fs_global { 1 } else { 0 }) +
         (if ctx.need_socket { 1 } else { 0 }) +
-        (if ctx.enable_rc { 1 } else { 0 })
+        (if ctx.enable_rc { 1 } else { 0 }) +
+        (if ctx.rc_debug { 2 } else { 0 })
       for name, _ in ctx.exported_fn_env_globals {
         // Mutable i32 global, initial value 0
         global_sec.push((127).to_byte()) // i32
@@ -3460,7 +3474,8 @@ fn emit_module_with_coverage(
       (if ctx.coverage_enabled { 2 } else { 0 }) +
       (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 }) +
       (if ctx.need_socket { 1 } else { 0 }) +
-      (if ctx.enable_rc { 1 } else { 0 })
+      (if ctx.enable_rc { 1 } else { 0 }) +
+      (if ctx.rc_debug { 2 } else { 0 })
     for name, _ in ctx.exported_fn_env_globals {
       ctx.exported_fn_env_globals[name] = env_global_idx
       env_global_idx = env_global_idx + 1
@@ -3505,6 +3520,10 @@ fn emit_module_with_coverage(
       (if ctx.coverage_enabled { 2 } else { 0 }) +
       (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 }) +
       (if ctx.need_socket { 1 } else { 0 })
+    if ctx.rc_debug {
+      ctx.rc_debug_alloc_global = ctx.rc_free_list_global + 1
+      ctx.rc_debug_free_global = ctx.rc_free_list_global + 2
+    }
   }
   // Pre-compute RC helper function indices before compile loop.
   // Helpers are appended right after user functions in compiled_funcs.
@@ -3625,6 +3644,7 @@ fn emit_module_with_coverage(
         has_enum=ctx.rc_has_enum,
         has_view=ctx.rc_has_view,
         heap_start=ctx.rc_heap_start,
+        debug_free_global=ctx.rc_debug_free_global,
       ),
     )
     let rc_alloc_sig = FuncSig::{
@@ -3633,7 +3653,11 @@ fn emit_module_with_coverage(
     }
     let _ = ensure_sig_index(ctx, rc_alloc_sig)
     compiled_funcs.push(
-      compile_rc_alloc_function(ctx.heap_global, ctx.rc_free_list_global),
+      compile_rc_alloc_function(
+        ctx.heap_global,
+        ctx.rc_free_list_global,
+        debug_alloc_global=ctx.rc_debug_alloc_global,
+      ),
     )
     if ctx.rc_try_reuse_func_idx >= 0 {
       let rc_try_reuse_sig = FuncSig::{
@@ -3747,6 +3771,7 @@ pub fn emit_module_wasm_with_options(
   ctx.linked_fn_imports_list = options.linked_imports
   if options.enable_rc {
     ctx.enable_rc = true
+    ctx.rc_debug = options.rc_debug
     let (pre, post) = build_rc_action_maps(options.rc_actions)
     ctx.rc_pre_actions = pre
     ctx.rc_post_actions = post

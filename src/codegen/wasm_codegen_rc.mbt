@@ -45,7 +45,21 @@ pub let rc_header_extra : Int = 8
 ///   i32.const <alloc_size> / i32.store offset=0    ; alloc_size
 ///   local.get $obj_local / i32.const 4 / i32.sub
 ///   i32.const 1 / i32.store offset=0               ; rc_count = 1
-fn emit_rc_init(buf : ByteBuf, obj_local : Int, alloc_size : Int) -> Unit {
+/// Emit debug counter increment: global[idx] += 1
+fn emit_rc_debug_increment(buf : ByteBuf, global_idx : Int) -> Unit {
+  emit_global_get(buf, global_idx)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_global_set(buf, global_idx)
+}
+
+///|
+fn emit_rc_init(
+  buf : ByteBuf,
+  obj_local : Int,
+  alloc_size : Int,
+  debug_alloc_global? : Int = -1,
+) -> Unit {
   // Write alloc_size at obj_ptr - 8
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, rc_header_extra)
@@ -58,6 +72,10 @@ fn emit_rc_init(buf : ByteBuf, obj_local : Int, alloc_size : Int) -> Unit {
   emit_i32_sub(buf)
   emit_i32_const_raw(buf, 1)
   emit_i32_store(buf, 0)
+  // Debug mode: increment alloc counter
+  if debug_alloc_global >= 0 {
+    emit_rc_debug_increment(buf, debug_alloc_global)
+  }
 }
 
 ///|
@@ -67,6 +85,7 @@ fn emit_rc_init_dynamic(
   buf : ByteBuf,
   obj_local : Int,
   size_local : Int,
+  debug_alloc_global? : Int = -1,
 ) -> Unit {
   // Write alloc_size at obj_ptr - 8
   emit_local_get(buf, obj_local)
@@ -80,6 +99,10 @@ fn emit_rc_init_dynamic(
   emit_i32_sub(buf)
   emit_i32_const_raw(buf, 1)
   emit_i32_store(buf, 0)
+  // Debug mode: increment alloc counter
+  if debug_alloc_global >= 0 {
+    emit_rc_debug_increment(buf, debug_alloc_global)
+  }
 }
 
 ///|
@@ -109,7 +132,12 @@ fn emit_rc_alloc_with_free_list(
     emit_i32_add(buf)
     emit_local_set(buf, ctx.heap_local)
     ctx.heap_synced = false
-    emit_rc_init(buf, obj_local, total_size)
+    emit_rc_init(
+      buf,
+      obj_local,
+      total_size,
+      debug_alloc_global=ctx.rc_debug_alloc_global,
+    )
     return
   }
   // Try free-list first, then fall back to bump allocation
@@ -162,7 +190,12 @@ fn emit_rc_alloc_with_free_list(
   emit_local_get(buf, free_ptr)
   emit_local_set(buf, obj_local)
   // Re-initialize RC
-  emit_rc_init(buf, obj_local, total_size)
+  emit_rc_init(
+    buf,
+    obj_local,
+    total_size,
+    debug_alloc_global=ctx.rc_debug_alloc_global,
+  )
   emit_else(buf) // size doesn't match → bump allocate
   emit_rc_bump_alloc(ctx, buf, total_size, obj_local)
   emit_end(buf) // end inner if
@@ -189,7 +222,12 @@ fn emit_rc_bump_alloc(
   emit_i32_add(buf)
   emit_local_set(buf, ctx.heap_local)
   ctx.heap_synced = false
-  emit_rc_init(buf, obj_local, total_size)
+  emit_rc_init(
+    buf,
+    obj_local,
+    total_size,
+    debug_alloc_global=ctx.rc_debug_alloc_global,
+  )
 }
 
 ///|
@@ -295,6 +333,10 @@ fn emit_rc_drop(
   // Recursively drop fields of container types (tuple, record, array)
   if recursive {
     emit_rc_drop_fields(ctx, buf, tmp_local)
+  }
+  // Debug mode: increment free counter
+  if ctx.rc_debug_free_global >= 0 {
+    emit_rc_debug_increment(buf, ctx.rc_debug_free_global)
   }
   // Tombstone: zero out type_id
   emit_local_get(buf, tmp_local)
@@ -781,6 +823,7 @@ fn compile_rc_drop_function(
   has_enum? : Bool = true,
   has_view? : Bool = true,
   heap_start? : Int = 0,
+  debug_free_global? : Int = -1,
 ) -> WasmFunc {
   let body = ByteBuf::new()
   // Locals: 0=param(i64), 1=val32, 2=obj_ptr, 3=new_rc,
@@ -1016,6 +1059,10 @@ fn compile_rc_drop_function(
     emit_end(body) // end if view type
   }
   // --- End recursive drop fields ---
+  // Debug mode: increment free counter
+  if debug_free_global >= 0 {
+    emit_rc_debug_increment(body, debug_free_global)
+  }
   // Tombstone: type_id = 0
   emit_local_get(body, obj_ptr)
   emit_i32_const_raw(body, 0)
@@ -1056,6 +1103,7 @@ fn compile_rc_drop_function(
 fn compile_rc_alloc_function(
   heap_global : Int,
   free_list_global : Int,
+  debug_alloc_global? : Int = -1,
 ) -> WasmFunc {
   let body = ByteBuf::new()
   // Locals: 0=total_size(param), 1=obj_ptr, 2=cur,
@@ -1188,6 +1236,10 @@ fn compile_rc_alloc_function(
   emit_i32_const_raw(body, 1)
   emit_i32_store(body, 0)
   emit_end(body) // end block $allocated
+  // Debug mode: increment alloc counter
+  if debug_alloc_global >= 0 {
+    emit_rc_debug_increment(body, debug_alloc_global)
+  }
   // Return obj_ptr
   emit_local_get(body, obj_ptr)
   emit_end(body) // end func

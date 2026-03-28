@@ -17,6 +17,7 @@ struct WasmEvalResult {
   value : Int64
   outputs : Array[String]
   mem : Array[Byte]
+  globals : Array[Int64]
 } derive(Show, Eq)
 
 ///|
@@ -691,7 +692,7 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
   } else {
     results[results.length() - 1]
   }
-  { value, outputs, mem: wmod.mem }
+  { value, outputs, mem: wmod.mem, globals: wmod.globals }
 }
 
 ///|
@@ -3585,4 +3586,129 @@ test "rc eval: string interpolation in loop with RC" {
     r => r
   }
   assert_eq(res_rc.value, res_no_rc.value)
+}
+
+///|
+/// Run a script with RC debug mode enabled.
+/// Returns the eval result with globals containing debug counters.
+fn eval_run_rc_debug(script : String) -> WasmEvalResult raise WasmRunError {
+  let db = VibeDb::new()
+  db.set_source("main", script)
+  let wasm = compile_module_wasm(db, "main", enable_rc=true, rc_debug=true) catch {
+    e => raise WasmRunError::Compile(e.to_string())
+  }
+  run_wasm(wasm) catch {
+    e => raise WasmRunError::Eval(e.to_string())
+  }
+}
+
+///|
+/// Extract RC debug counters from eval result.
+/// Returns (alloc_count, free_count). Debug globals are the last two.
+fn rc_debug_counts(res : WasmEvalResult) -> (Int64, Int64) {
+  let g = res.globals
+  let n = g.length()
+  (g[n - 2], g[n - 1])
+}
+
+///|
+test "rc debug: no leak for simple integer (no heap alloc)" {
+  let res = try eval_run_rc_debug("42") catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (allocs, frees) = rc_debug_counts(res)
+  assert_eq(allocs, 0L)
+  assert_eq(frees, 0L)
+}
+
+///|
+test "rc debug: tuple alloc and drop are balanced" {
+  let res = try eval_run_rc_debug("let t = (1, 2, 3)\nt.0") catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (allocs, frees) = rc_debug_counts(res)
+  assert_true(allocs > 0L)
+  assert_eq(allocs, frees)
+}
+
+///|
+test "rc debug: multiple tuples balanced" {
+  let script =
+    #|let a = (10, 20)
+    #|let b = (30, 40)
+    #|a.0 + b.1
+  let res = try eval_run_rc_debug(script) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (allocs, frees) = rc_debug_counts(res)
+  assert_true(allocs >= 2L)
+  assert_eq(allocs, frees)
+}
+
+///|
+test "rc debug: function returning tuple balanced" {
+  let script =
+    #|let make = () -> (Int, Int) { (100, 200) }
+    #|let t = make()
+    #|t.0 + t.1
+  let res = try eval_run_rc_debug(script) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (allocs, frees) = rc_debug_counts(res)
+  assert_true(allocs > 0L)
+  assert_eq(allocs, frees)
+}
+
+///|
+test "rc debug: function with local tuple balanced" {
+  let script =
+    #|let f = () -> Int {
+    #|  let t = (10, 20)
+    #|  t.0
+    #|}
+    #|f()
+  let res = try eval_run_rc_debug(script) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (allocs, frees) = rc_debug_counts(res)
+  assert_true(allocs > 0L)
+  assert_eq(allocs, frees)
+}
+
+///|
+test "rc debug: loop detects unbalanced allocs (known leak)" {
+  // While-loop bodies don't yet generate per-iteration drops for let bindings.
+  // This test verifies the debug counters correctly detect the leak.
+  let script =
+    #|let f = () -> Int {
+    #|  let mut i = 0
+    #|  let mut sum = 0
+    #|  while i < 5 {
+    #|    let t = (i, i + 1)
+    #|    sum = sum + t.0
+    #|    i = i + 1
+    #|  }
+    #|  sum
+    #|}
+    #|f()
+  let res = try eval_run_rc_debug(script) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (allocs, frees) = rc_debug_counts(res)
+  // Alloc counter should track all 5 tuple allocations
+  assert_true(allocs >= 5L)
+  // Free counter tracks actual frees — currently fewer than allocs (known leak)
+  assert_true(frees < allocs)
 }
