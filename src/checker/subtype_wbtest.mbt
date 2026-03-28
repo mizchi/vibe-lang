@@ -244,3 +244,94 @@ test "fn metadata version is not tracked for non-exported function" {
   let env2 = type_check_with_env(env1, next_ast, {})
   assert_eq(env2.get_fn_version("f"), None)
 }
+
+///|
+/// Parse and check with manual trait impl method desugaring
+/// (checker package cannot depend on frontend, so we inline the desugar)
+fn parse_desugar_and_check(script : String) -> TypeEnv raise {
+  let ast = parse_module(script)
+  // Inline desugar: expand TraitImpl methods into Let stmts
+  let stmts : Array[@core.Stmt] = []
+  for stmt in ast.stmts {
+    stmts.push(stmt)
+    match stmt {
+      @core.Stmt::TraitImpl(target~, methods~, ..) => {
+        let type_name = match target {
+          @core.Type::Int => "Int"
+          @core.Type::String => "String"
+          @core.Type::Bool => "Bool"
+          @core.Type::Float => "Float"
+          @core.Type::Double => "Double"
+          @core.Type::Named(name~, ..) => name
+          _ => continue
+        }
+        for m in methods {
+          stmts.push(
+            @core.Stmt::Let(
+              rec=false,
+              name=type_name + "::" + m.name,
+              expr=m.expr,
+              span=m.span,
+            ),
+          )
+        }
+      }
+      _ => ()
+    }
+  }
+  let desugared = @core.Module::{ stmts, }
+  let typed : Result[TypeEnv, TypeError] = try? type_check(desugared)
+  match typed {
+    Ok(env) => env
+    Err(err) => fail("type error: \{err.to_string()}")
+  }
+}
+
+///|
+test "trait impl body basic" {
+  let script =
+    #|trait MyEq {
+    #|  eq(Self, Self) -> Bool;
+    #|}
+    #|impl MyEq for Int {
+    #|  eq = (a: Int, b: Int) -> Bool { a == b }
+    #|}
+  let env = parse_desugar_and_check(script)
+  // The impl method should be registered as Int::eq
+  let eq_ty = env.get("Int::eq")
+  assert_true(eq_ty.is_some())
+}
+
+///|
+test "trait impl body method typechecks" {
+  let script =
+    #|trait MyShow {
+    #|  show(Self) -> String;
+    #|}
+    #|impl MyShow for Int {
+    #|  show = (x: Int) -> String { __to_string(x) }
+    #|}
+    #|let result = Int::show(42)
+  let env = parse_desugar_and_check(script)
+  let result_ty = env.get("result")
+  match result_ty {
+    Some(@core.Type::String) => ()
+    _ => fail("expected String type for result")
+  }
+}
+
+///|
+test "trait impl body empty methods" {
+  // Backward compat: impl with no body should still work
+  let script =
+    #|trait MyEq
+    #|impl MyEq for Int
+  let env = parse_and_check(script)
+  assert_true(
+    is_type_subtype(
+      env,
+      @core.Type::Int,
+      @core.Type::Named(name="MyEq", args=[]),
+    ),
+  )
+}

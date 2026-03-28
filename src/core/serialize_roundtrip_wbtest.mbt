@@ -333,6 +333,7 @@ test "roundtrip: trait def and trait impl" {
         type_bounds={ "T": ["Show"] },
         trait_name="Printable",
         target=Type::Named(name="MyType", args=[Type::Param("T")]),
+        methods=[],
         span=zero_span(),
       ),
     ],

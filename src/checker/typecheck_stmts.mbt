@@ -593,7 +593,8 @@ fn type_check_stmts(
         type_bounds~,
         trait_name~,
         target~,
-        span~
+        span~,
+        ..
       ) =>
         register_trait_impl(
           env, type_params, type_bounds, trait_name, target, span,

@@ -107,6 +107,13 @@ pub(all) struct TraitMethodSig {
 } derive(Show, Eq)
 
 ///|
+pub(all) struct ImplMethodDef {
+  name : String
+  expr : Expr
+  span : Span
+} derive(Show, Eq)
+
+///|
 pub(all) struct TypeCtor {
   name : String
   args : Array[Type]
@@ -195,6 +202,7 @@ pub(all) enum Stmt {
     type_bounds~ : Map[String, Array[String]],
     trait_name~ : String,
     target~ : Type,
+    methods~ : Array[ImplMethodDef],
     span~ : Span
   )
   Expr(expr~ : Expr, span~ : Span)

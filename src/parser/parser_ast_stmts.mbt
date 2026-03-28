@@ -624,6 +624,7 @@ fn AstParser::queue_derive_impls(
         type_bounds~,
         trait_name~,
         target~,
+        methods=[],
         span~,
       ),
     )
@@ -648,6 +649,7 @@ fn AstParser::queue_suberror_impl(
       type_bounds={},
       trait_name="Error",
       target~,
+      methods=[],
       span~,
     ),
   )
@@ -767,13 +769,39 @@ fn AstParser::parse_impl_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     )
   }
   let target = self.parse_type_with_params(param_set_from_params(type_params))
-  let _ = self.eat(semicolon())
+  self.skip_trivia()
+  let methods : Array[@core.ImplMethodDef] = []
+  if self.peek_kind() == lbrace() {
+    let _ = self.bump()
+    while ({
+            self.skip_trivia()
+            self.peek_kind() != rbrace() && self.peek_kind() != eof()
+          }) {
+      let method_start = self.pos
+      let method_tok = self.expect(name(), "method name")
+      self.skip_trivia()
+      let _ = self.expect(eq(), "=")
+      self.skip_trivia()
+      let expr = self.parse_expr()
+      self.skip_trivia()
+      let _ = self.eat(semicolon())
+      methods.push(@core.ImplMethodDef::{
+        name: method_tok.text(),
+        expr,
+        span: self.span_from(method_start),
+      })
+    }
+    let _ = self.expect(rbrace(), "}")
+  } else {
+    let _ = self.eat(semicolon())
+  }
   let span = self.span_from(start)
   @core.Stmt::TraitImpl(
     type_params~,
     type_bounds~,
     trait_name=trait_tok.text(),
     target~,
+    methods~,
     span~,
   )
 }

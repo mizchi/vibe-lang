@@ -299,12 +299,20 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
         open_impl~,
         span=zero_span,
       )
-    Stmt::TraitImpl(type_params~, type_bounds~, trait_name~, target~, ..) =>
+    Stmt::TraitImpl(
+      type_params~,
+      type_bounds~,
+      trait_name~,
+      target~,
+      methods~,
+      ..
+    ) =>
       Stmt::TraitImpl(
         type_params~,
         type_bounds~,
         trait_name~,
         target~,
+        methods~,
         span=zero_span,
       )
     Stmt::Import(spec~, source~, ..) =>

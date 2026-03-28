@@ -159,6 +159,7 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
           type_bounds~,
           trait_name~,
           target~,
+          methods=[],
           span=zero,
         )
       }

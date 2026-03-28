@@ -585,6 +585,21 @@ fn desugar_vibe_expr(
 }
 
 ///|
+fn impl_target_type_name(ty : @core.Type) -> String? {
+  match ty {
+    @core.Type::Int => Some("Int")
+    @core.Type::Float => Some("Float")
+    @core.Type::Double => Some("Double")
+    @core.Type::Bool => Some("Bool")
+    @core.Type::Char => Some("Char")
+    @core.Type::String => Some("String")
+    @core.Type::Path => Some("Path")
+    @core.Type::Named(name~, ..) => Some(name)
+    _ => None
+  }
+}
+
+///|
 fn desugar_block(
   body : @core.Module,
   scope : DesugarScope,
@@ -595,7 +610,26 @@ fn desugar_block(
   for stmt in body.stmts {
     let next = desugar_stmt(stmt, scope_map, aliases)
     out.push(next)
-    match stmt {
+    match next {
+      @core.Stmt::TraitImpl(target~, methods~, ..) => {
+        let type_name = impl_target_type_name(target)
+        match type_name {
+          Some(tn) =>
+            for m in methods {
+              let binding_name = tn + "::" + m.name
+              out.push(
+                @core.Stmt::Let(
+                  rec=false,
+                  name=binding_name,
+                  expr=m.expr,
+                  span=m.span,
+                ),
+              )
+              scope_map.bindings[binding_name] = true
+            }
+          None => ()
+        }
+      }
       @core.Stmt::Let(rec~, name~, expr~, span~)
       | @core.Stmt::ExportLet(rec~, name~, expr~, span~)
       | @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) => {
@@ -639,7 +673,31 @@ fn desugar_stmt(
     @core.Stmt::TypeAlias(..) => stmt
     @core.Stmt::TraitDef(..) => stmt
     @core.Stmt::InternalTraitDef(..) => stmt
-    @core.Stmt::TraitImpl(..) => stmt
+    @core.Stmt::TraitImpl(
+      type_params~,
+      type_bounds~,
+      trait_name~,
+      target~,
+      methods~,
+      span~
+    ) => {
+      let desugared_methods : Array[@core.ImplMethodDef] = []
+      for m in methods {
+        desugared_methods.push(@core.ImplMethodDef::{
+          name: m.name,
+          expr: desugar_expr(m.expr, scope, aliases),
+          span: m.span,
+        })
+      }
+      @core.Stmt::TraitImpl(
+        type_params~,
+        type_bounds~,
+        trait_name~,
+        target~,
+        methods=desugared_methods,
+        span~,
+      )
+    }
     @core.Stmt::Import(..) => stmt
     @core.Stmt::ExternLet(..) => stmt
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
