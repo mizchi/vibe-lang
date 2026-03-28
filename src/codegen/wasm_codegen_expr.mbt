@@ -114,9 +114,15 @@ fn compile_expr(
       compile_expr_match(ctx, buf, scrutinee, arms)
     }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
-      let desugared = @core.desugar_for_in(
-        value_name, index_name, iterable, body, span,
-      )
+      let desugared = if @core.is_string_for_in(span.start) {
+        @core.desugar_for_in_string(
+          value_name, index_name, iterable, body, span,
+        )
+      } else {
+        @core.desugar_for_in(
+          value_name, index_name, iterable, body, span,
+        )
+      }
       compile_block_expr(
         ctx,
         buf,

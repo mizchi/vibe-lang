@@ -206,9 +206,15 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       buf.to_string()
     }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
-      let desugared = @core.desugar_for_in(
-        value_name, index_name, iterable, body, span,
-      )
+      let desugared = if @core.is_string_for_in(span.start) {
+        @core.desugar_for_in_string(
+          value_name, index_name, iterable, body, span,
+        )
+      } else {
+        @core.desugar_for_in(
+          value_name, index_name, iterable, body, span,
+        )
+      }
       "(block " + block_to_addr_sexp(ctx, desugared) + ")"
     }
     @core.Expr::Handle(body~, arms~, span~) => {

@@ -182,7 +182,10 @@ fn rsa_rewrite_expr(expr : @core.Expr, env : @checker.TypeEnv) -> @core.Expr {
         body=rsa_rewrite_module(body, env),
         span~,
       )
-    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) =>
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
+      if rsa_is_string_valued(iterable, env) {
+        @core.mark_string_for_in(span.start)
+      }
       @core.Expr::ForIn(
         value_name~,
         index_name~,
@@ -190,6 +193,7 @@ fn rsa_rewrite_expr(expr : @core.Expr, env : @checker.TypeEnv) -> @core.Expr {
         body=rsa_rewrite_module(body, env),
         span~,
       )
+    }
     _ => expr
   }
 }

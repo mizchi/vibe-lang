@@ -716,9 +716,15 @@ fn infer_expr_kind_with(
       ValueKind::I64
     }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
-      let desugared = @core.desugar_for_in(
-        value_name, index_name, iterable, body, span,
-      )
+      let desugared = if @core.is_string_for_in(span.start) {
+        @core.desugar_for_in_string(
+          value_name, index_name, iterable, body, span,
+        )
+      } else {
+        @core.desugar_for_in(
+          value_name, index_name, iterable, body, span,
+        )
+      }
       infer_block_kind(ctx, desugared, locals)
     }
     @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
@@ -1247,9 +1253,15 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
       false
     }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
-      let desugared = @core.desugar_for_in(
-        value_name, index_name, iterable, body, span,
-      )
+      let desugared = if @core.is_string_for_in(span.start) {
+        @core.desugar_for_in_string(
+          value_name, index_name, iterable, body, span,
+        )
+      } else {
+        @core.desugar_for_in(
+          value_name, index_name, iterable, body, span,
+        )
+      }
       needs_heap_block(ctx, desugared)
     }
     @core.Expr::Handle(body~, arms~, span~) => {
@@ -2097,9 +2109,15 @@ fn expr_always_returns_tuple(
       true
     }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
-      let desugared = @core.desugar_for_in(
-        value_name, index_name, iterable, body, span,
-      )
+      let desugared = if @core.is_string_for_in(span.start) {
+        @core.desugar_for_in_string(
+          value_name, index_name, iterable, body, span,
+        )
+      } else {
+        @core.desugar_for_in(
+          value_name, index_name, iterable, body, span,
+        )
+      }
       body_always_returns_tuple(desugared, arity, self_name, eligible_fns~)
     }
     @core.Expr::Handle(body~, arms~, span=_) => {

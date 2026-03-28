@@ -226,9 +226,9 @@ test "normalize_type cache: expand and preserve enum caches are isolated" {
 }
 
 ///|
-test "type_check: for-in over String yields String elements" {
+test "type_check: for-in over String yields Int char code elements" {
   let script =
-    #|let main = () -> Array[String] {
+    #|let main = () -> Array[Int] {
     #|  let s = "hello"
     #|  for c in s {
     #|    c
@@ -240,7 +240,7 @@ test "type_check: for-in over String yields String elements" {
   }
   let result : Result[TypeEnv, TypeError] = try? type_check(ast)
   match result {
-    Ok(_) => () // type check passes — String for-in accepted
+    Ok(_) => () // type check passes — String for-in yields Int char codes
     Err(err) => fail("unexpected type error: " + err.to_string())
   }
 }

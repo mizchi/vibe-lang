@@ -1235,6 +1235,27 @@ fn infer_for_in_parts_gc(
 }
 
 ///|
+/// Infer kinds for string for-in: loop variable is I64 (char code).
+fn infer_string_for_in_parts_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  value_name : String,
+  index_name : String?,
+  body : @core.Module,
+) -> (GcValKind, GcValKind) raise WasmGenError {
+  let elem_kind = GcValKind::I64
+  let saved_locals = clone_locals_gc(fctx.locals)
+  fctx.locals[value_name] = { idx: 0, kind: elem_kind }
+  match index_name {
+    Some(name) => fctx.locals[name] = { idx: 0, kind: GcValKind::I32 }
+    None => ()
+  }
+  let body_kind = infer_block_kind_gc(ctx, fctx, body)
+  restore_locals_gc(fctx, saved_locals)
+  (elem_kind, body_kind)
+}
+
+///|
 fn infer_expr_kind_gc(
   ctx : GcCodegenCtx,
   fctx : GcFuncCtx,
@@ -1401,15 +1422,27 @@ fn infer_expr_kind_gc(
     }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
       let _ = span
-      let (_, _, body_kind) = infer_for_in_parts_gc(
-        ctx, fctx, value_name, index_name, iterable, body,
-      )
-      let type_idx = ensure_array_type(
-        ctx.types,
-        ctx.array_type_index,
-        body_kind,
-      )
-      GcValKind::Ref(type_idx)
+      if @core.is_string_for_in(span.start) {
+        let (_, body_kind) = infer_string_for_in_parts_gc(
+          ctx, fctx, value_name, index_name, body,
+        )
+        let type_idx = ensure_array_type(
+          ctx.types,
+          ctx.array_type_index,
+          body_kind,
+        )
+        GcValKind::Ref(type_idx)
+      } else {
+        let (_, _, body_kind) = infer_for_in_parts_gc(
+          ctx, fctx, value_name, index_name, iterable, body,
+        )
+        let type_idx = ensure_array_type(
+          ctx.types,
+          ctx.array_type_index,
+          body_kind,
+        )
+        GcValKind::Ref(type_idx)
+      }
     }
     @core.Expr::Tuple(items~, ..) => infer_tuple_kind_gc(ctx, fctx, items)
     @core.Expr::Record(fields~, ..) => infer_record_kind_gc(ctx, fctx, fields)
@@ -2844,64 +2877,142 @@ fn compile_expr_gc(
     }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
       let _ = span
-      let (iterable_type_idx, iterable_elem_kind, body_kind) = infer_for_in_parts_gc(
-        ctx, fctx, value_name, index_name, iterable, body,
-      )
-      let result_type_idx = ensure_array_type(
-        ctx.types,
-        ctx.array_type_index,
-        body_kind,
-      )
-      let iterable_idx = alloc_local_gc(fctx, GcValKind::Ref(iterable_type_idx))
-      let len_idx = alloc_local_gc(fctx, GcValKind::I32)
-      let result_idx = alloc_local_gc(fctx, GcValKind::Ref(result_type_idx))
-      let i_idx = alloc_local_gc(fctx, GcValKind::I32)
-      compile_expr_gc(ctx, fctx, buf, iterable)
-      emit_local_set_gc(buf, iterable_idx)
-      emit_local_get_gc(buf, iterable_idx)
-      emit_array_len_gc(buf)
-      emit_local_set_gc(buf, len_idx)
-      emit_local_get_gc(buf, len_idx)
-      emit_array_new_default_gc(buf, result_type_idx)
-      emit_local_set_gc(buf, result_idx)
-      emit_i32_const_gc(buf, 0)
-      emit_local_set_gc(buf, i_idx)
-      let saved_locals = clone_locals_gc(fctx.locals)
-      let value_idx = bind_local_gc(fctx, value_name, iterable_elem_kind)
-      let index_idx : Int? = match index_name {
-        Some(name) => Some(bind_local_gc(fctx, name, GcValKind::I32))
-        None => None
-      }
-      emit_block_gc(buf, None)
-      emit_loop_gc(buf, None)
-      emit_local_get_gc(buf, i_idx)
-      emit_local_get_gc(buf, len_idx)
-      emit_i32_ge_s_gc(buf)
-      emit_br_if_gc(buf, 1)
-      emit_local_get_gc(buf, iterable_idx)
-      emit_local_get_gc(buf, i_idx)
-      emit_array_get_gc(buf, iterable_type_idx)
-      emit_local_set_gc(buf, value_idx)
-      match index_idx {
-        Some(idx) => {
-          emit_local_get_gc(buf, i_idx)
-          emit_local_set_gc(buf, idx)
+      if @core.is_string_for_in(span.start) {
+        // String for-in: iterate char codes (I64)
+        let (elem_kind, body_kind) = infer_string_for_in_parts_gc(
+          ctx, fctx, value_name, index_name, body,
+        )
+        let result_type_idx = ensure_array_type(
+          ctx.types,
+          ctx.array_type_index,
+          body_kind,
+        )
+        let str_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.string_type))
+        let data_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
+        let len_idx = alloc_local_gc(fctx, GcValKind::I32)
+        let result_idx = alloc_local_gc(fctx, GcValKind::Ref(result_type_idx))
+        let i_idx = alloc_local_gc(fctx, GcValKind::I32)
+        // Evaluate string iterable
+        compile_expr_gc(ctx, fctx, buf, iterable)
+        emit_local_set_gc(buf, str_idx)
+        // Get string length
+        emit_local_get_gc(buf, str_idx)
+        emit_struct_get_gc(buf, ctx.string_type, 0) // length field
+        emit_local_set_gc(buf, len_idx)
+        // Get string data array
+        emit_local_get_gc(buf, str_idx)
+        emit_struct_get_gc(buf, ctx.string_type, 1) // data field
+        emit_local_set_gc(buf, data_idx)
+        // Allocate result array
+        emit_local_get_gc(buf, len_idx)
+        emit_array_new_default_gc(buf, result_type_idx)
+        emit_local_set_gc(buf, result_idx)
+        // Initialize counter
+        emit_i32_const_gc(buf, 0)
+        emit_local_set_gc(buf, i_idx)
+        let saved_locals = clone_locals_gc(fctx.locals)
+        let value_idx = bind_local_gc(fctx, value_name, elem_kind)
+        let index_idx : Int? = match index_name {
+          Some(name) => Some(bind_local_gc(fctx, name, GcValKind::I32))
+          None => None
         }
-        None => ()
+        // Loop
+        emit_block_gc(buf, None)
+        emit_loop_gc(buf, None)
+        emit_local_get_gc(buf, i_idx)
+        emit_local_get_gc(buf, len_idx)
+        emit_i32_ge_s_gc(buf)
+        emit_br_if_gc(buf, 1)
+        // Get char code: data[i] as i64
+        emit_local_get_gc(buf, data_idx)
+        emit_local_get_gc(buf, i_idx)
+        emit_array_get_gc(buf, ctx.array_i32_type)
+        emit_i64_extend_i32_s_gc(buf) // char code as I64
+        emit_local_set_gc(buf, value_idx)
+        // Optional index binding
+        match index_idx {
+          Some(idx) => {
+            emit_local_get_gc(buf, i_idx)
+            emit_local_set_gc(buf, idx)
+          }
+          None => ()
+        }
+        // Store body result
+        emit_local_get_gc(buf, result_idx)
+        emit_local_get_gc(buf, i_idx)
+        compile_block_expr_gc(ctx, fctx, buf, body)
+        emit_array_set_gc(buf, result_type_idx)
+        // Increment
+        emit_local_get_gc(buf, i_idx)
+        emit_i32_const_gc(buf, 1)
+        emit_i32_add_gc(buf)
+        emit_local_set_gc(buf, i_idx)
+        emit_br_gc(buf, 0)
+        emit_end_gc(buf)
+        emit_end_gc(buf)
+        restore_locals_gc(fctx, saved_locals)
+        emit_local_get_gc(buf, result_idx)
+      } else {
+        // Array for-in (existing logic)
+        let (iterable_type_idx, iterable_elem_kind, body_kind) = infer_for_in_parts_gc(
+          ctx, fctx, value_name, index_name, iterable, body,
+        )
+        let result_type_idx = ensure_array_type(
+          ctx.types,
+          ctx.array_type_index,
+          body_kind,
+        )
+        let iterable_idx = alloc_local_gc(fctx, GcValKind::Ref(iterable_type_idx))
+        let len_idx = alloc_local_gc(fctx, GcValKind::I32)
+        let result_idx = alloc_local_gc(fctx, GcValKind::Ref(result_type_idx))
+        let i_idx = alloc_local_gc(fctx, GcValKind::I32)
+        compile_expr_gc(ctx, fctx, buf, iterable)
+        emit_local_set_gc(buf, iterable_idx)
+        emit_local_get_gc(buf, iterable_idx)
+        emit_array_len_gc(buf)
+        emit_local_set_gc(buf, len_idx)
+        emit_local_get_gc(buf, len_idx)
+        emit_array_new_default_gc(buf, result_type_idx)
+        emit_local_set_gc(buf, result_idx)
+        emit_i32_const_gc(buf, 0)
+        emit_local_set_gc(buf, i_idx)
+        let saved_locals = clone_locals_gc(fctx.locals)
+        let value_idx = bind_local_gc(fctx, value_name, iterable_elem_kind)
+        let index_idx : Int? = match index_name {
+          Some(name) => Some(bind_local_gc(fctx, name, GcValKind::I32))
+          None => None
+        }
+        emit_block_gc(buf, None)
+        emit_loop_gc(buf, None)
+        emit_local_get_gc(buf, i_idx)
+        emit_local_get_gc(buf, len_idx)
+        emit_i32_ge_s_gc(buf)
+        emit_br_if_gc(buf, 1)
+        emit_local_get_gc(buf, iterable_idx)
+        emit_local_get_gc(buf, i_idx)
+        emit_array_get_gc(buf, iterable_type_idx)
+        emit_local_set_gc(buf, value_idx)
+        match index_idx {
+          Some(idx) => {
+            emit_local_get_gc(buf, i_idx)
+            emit_local_set_gc(buf, idx)
+          }
+          None => ()
+        }
+        emit_local_get_gc(buf, result_idx)
+        emit_local_get_gc(buf, i_idx)
+        compile_block_expr_gc(ctx, fctx, buf, body)
+        emit_array_set_gc(buf, result_type_idx)
+        emit_local_get_gc(buf, i_idx)
+        emit_i32_const_gc(buf, 1)
+        emit_i32_add_gc(buf)
+        emit_local_set_gc(buf, i_idx)
+        emit_br_gc(buf, 0)
+        emit_end_gc(buf)
+        emit_end_gc(buf)
+        restore_locals_gc(fctx, saved_locals)
+        emit_local_get_gc(buf, result_idx)
       }
-      emit_local_get_gc(buf, result_idx)
-      emit_local_get_gc(buf, i_idx)
-      compile_block_expr_gc(ctx, fctx, buf, body)
-      emit_array_set_gc(buf, result_type_idx)
-      emit_local_get_gc(buf, i_idx)
-      emit_i32_const_gc(buf, 1)
-      emit_i32_add_gc(buf)
-      emit_local_set_gc(buf, i_idx)
-      emit_br_gc(buf, 0)
-      emit_end_gc(buf)
-      emit_end_gc(buf)
-      restore_locals_gc(fctx, saved_locals)
-      emit_local_get_gc(buf, result_idx)
     }
     @core.Expr::Fn(params~, ret~, body~, ..) => {
       let param_kinds : Array[GcValKind] = []

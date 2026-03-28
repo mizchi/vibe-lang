@@ -53,6 +53,24 @@ test "wasm-gc mainlane: for-in runtime" {
 }
 
 ///|
+test "wasm-gc mainlane: string for-in char codes" {
+  if gc_mainlane_should_skip("string for-in char codes") {
+    return
+  }
+  // 'a'=97 + 'b'=98 + 'c'=99 = 294
+  let src =
+    #|let main = () -> Int {
+    #|  let mut sum = 0
+    #|  for c in "abc" {
+    #|    sum = sum + c
+    #|  }
+    #|  sum
+    #|}
+    #|main()
+  assert_gc_e2e_int_result(src, "mainlane_string_for_in_char_codes", 294)
+}
+
+///|
 test "wasm-gc mainlane: string runtime" {
   if gc_mainlane_should_skip("string runtime") {
     return
