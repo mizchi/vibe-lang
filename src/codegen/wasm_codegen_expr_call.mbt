@@ -160,10 +160,10 @@ fn compile_indirect_call(
   emit_i32_wrap_i64(buf)
   emit_local_set(buf, func_idx)
   buf.push((5).to_byte())
-  // Closure: untag ptr, load func index from memory
+  // Closure: untag ptr, load func_ref from offset 8 (cap_count at 4)
   emit_untag_ptr(buf, fn_value_idx)
   emit_local_tee(buf, env_idx)
-  emit_i32_load(buf, 4)
+  emit_i32_load(buf, 8)
   emit_local_set(buf, func_idx)
   buf.push((11).to_byte())
   // Args are not in tail position
@@ -230,10 +230,10 @@ fn compile_indirect_call_guessed(
   emit_i32_wrap_i64(buf)
   emit_local_set(buf, func_idx)
   buf.push((5).to_byte())
-  // Closure: untag ptr, load func index from memory
+  // Closure: untag ptr, load func_ref from offset 8 (cap_count at 4)
   emit_untag_ptr(buf, fn_value_idx)
   emit_local_tee(buf, env_idx)
-  emit_i32_load(buf, 4)
+  emit_i32_load(buf, 8)
   emit_local_set(buf, func_idx)
   buf.push((11).to_byte())
   // Args are not in tail position

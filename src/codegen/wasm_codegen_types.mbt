@@ -62,8 +62,12 @@ pub struct WasmEmitOptions {
   linked_imports : Array[(String, String, Int, Int)]
   /// Enable Perceus RC codegen (experimental).
   enable_rc : Bool
-  /// Perceus actions: (site, is_dup, name) tuples from analysis.
+  /// Enable RC debug mode: track alloc/free counts for leak detection.
+  rc_debug : Bool
+  /// Perceus actions for top-level (_start): (site, is_dup, name) tuples.
   rc_actions : Array[(String, Bool, String)]
+  /// Per-function Perceus actions: func_name → (site, is_dup, name) tuples.
+  rc_func_actions : Map[String, Array[(String, Bool, String)]]
 } derive(Show, Eq)
 
 ///|
@@ -76,7 +80,9 @@ pub fn wasm_emit_options(
   library_mode? : Bool = false,
   linked_imports? : Array[(String, String, Int, Int)] = [],
   enable_rc? : Bool = false,
+  rc_debug? : Bool = false,
   rc_actions? : Array[(String, Bool, String)] = [],
+  rc_func_actions? : Map[String, Array[(String, Bool, String)]] = {},
 ) -> WasmEmitOptions {
   {
     embed_error_strings,
@@ -87,7 +93,9 @@ pub fn wasm_emit_options(
     library_mode,
     linked_imports,
     enable_rc,
+    rc_debug,
     rc_actions,
+    rc_func_actions,
   }
 }
 
@@ -261,7 +269,8 @@ fn StringTable::intern_enum_singleton(
     None => {
       let data : Array[Byte] = []
       write_u32_le_bytes(data, obj_enum) // offset 0: obj_type
-      write_u32_le_bytes(data, ctor_tag) // offset 4: ctor_tag
+      write_u32_le_bytes(data, 0) // offset 4: arity = 0
+      write_u32_le_bytes(data, ctor_tag) // offset 8: ctor_tag
       let offset = self.next_offset
       self.map[key] = offset
       self.segments.push(StringSegment::{ offset, bytes: data })

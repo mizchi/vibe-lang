@@ -25,15 +25,18 @@ fn compile_call_enum_ctor_by_name(
       None => {
         // Fallback for unregistered singletons
         require_heap(ctx)
-        let size = align4(8)
+        let size = align4(12)
         let obj_local = alloc_temp_local(ctx)
         emit_heap_alloc(ctx, buf, size, obj_local)
         emit_local_get(buf, obj_local)
         emit_i32_const_raw(buf, obj_enum)
         emit_i32_store(buf, 0)
         emit_local_get(buf, obj_local)
-        emit_i32_const_raw(buf, tag)
+        emit_i32_const_raw(buf, 0) // arity = 0
         emit_i32_store(buf, 4)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, tag)
+        emit_i32_store(buf, 8)
         emit_local_get(buf, obj_local)
         emit_i64_extend_i32_u(buf)
         emit_i64_const_raw(buf, tag_obj.to_int64())
@@ -41,17 +44,20 @@ fn compile_call_enum_ctor_by_name(
       }
     }
   } else {
-    // Ctor with args: heap object with type + tag + payload
+    // Ctor with args: heap object with type + arity + tag + payload
     require_heap(ctx)
-    let size = align4(8 + arity * 4)
+    let size = align4(12 + arity * 4)
     let obj_local = alloc_temp_local(ctx)
     emit_heap_alloc(ctx, buf, size, obj_local)
     emit_local_get(buf, obj_local)
     emit_i32_const_raw(buf, obj_enum)
     emit_i32_store(buf, 0)
     emit_local_get(buf, obj_local)
-    emit_i32_const_raw(buf, tag)
+    emit_i32_const_raw(buf, arity)
     emit_i32_store(buf, 4)
+    emit_local_get(buf, obj_local)
+    emit_i32_const_raw(buf, tag)
+    emit_i32_store(buf, 8)
     for i in 0..<arity {
       let arg_kind = infer_expr_kind(ctx, pos_args[i])
       if ctx.use_js_strings && arg_kind == ValueKind::ExternRef {
@@ -64,12 +70,12 @@ fn compile_call_enum_ctor_by_name(
         emit_table_set(buf, ctx.extern_table_index)
         emit_local_get(buf, obj_local)
         emit_i32_const_raw(buf, slot)
-        emit_i32_store(buf, 8 + i * 4)
+        emit_i32_store(buf, 12 + i * 4)
       } else {
         emit_local_get(buf, obj_local)
         compile_expr_i32(ctx, buf, pos_args[i])
         emit_i32_wrap_i64(buf)
-        emit_i32_store(buf, 8 + i * 4)
+        emit_i32_store(buf, 12 + i * 4)
       }
     }
     emit_local_get(buf, obj_local)

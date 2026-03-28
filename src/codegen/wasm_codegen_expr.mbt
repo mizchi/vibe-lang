@@ -117,7 +117,12 @@ fn compile_expr(
       let desugared = @core.desugar_for_in(
         value_name, index_name, iterable, body, span,
       )
-      compile_block_expr(ctx, buf, desugared)
+      compile_block_expr(
+        ctx,
+        buf,
+        desugared,
+        emit_rc_stmt_actions=ctx.enable_rc,
+      )
     }
     @core.Expr::Perform(effect_name="Error", op_name="Throw", args~, span~) => {
       let value = if args.length() >= 1 {

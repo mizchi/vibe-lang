@@ -1,7 +1,7 @@
 (module
   (type (;0;) (func (result i64)))
   (func (;0;) (type 0) (local i32 i32 i32 i32 i32)
-    i32.const 32
+    i32.const 36
     local.set 0
     local.get 0
     i32.const 24
@@ -38,14 +38,14 @@
     i32.const 2
     i32.store align=2 offset=4
     local.get 1
-    i32.const 8
+    i32.const 12
     i32.store align=2 offset=8
     local.get 1
     i64.const 4
     i32.wrap_i64
     i32.store align=2 offset=12
     local.get 1
-    i32.const 20
+    i32.const 24
     i32.store align=2 offset=16
     local.get 1
     i64.const 8
@@ -60,5 +60,5 @@
   (memory (;0;) 1024)
   (export "_start" (func 0))
   (export "memory" (memory 0))
-  (data (i32.const 0) "\0a\00\00\00\00\00\00\00\01\00\00\00\01\00\00\00a\00\00\00\01\00\00\00\01\00\00\00b\00\00\00")
+  (data (i32.const 0) "\0a\00\00\00\00\00\00\00\00\00\00\00\01\00\00\00\01\00\00\00a\00\00\00\01\00\00\00\01\00\00\00b\00\00\00")
 )

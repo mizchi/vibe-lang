@@ -137,13 +137,43 @@ priv struct CodegenCtx {
   mut linked_fn_imports_list : Array[(String, String, Int, Int)]
   // Perceus RC: enable reference counting codegen
   mut enable_rc : Bool
-  // Perceus RC: per-stmt actions indexed by site string prefix
-  // Key: "stmt[N]" → Array of actions to emit before/after that stmt
-  mut rc_pre_actions : Map[Int, Array[RcStmtAction]]
-  mut rc_post_actions : Map[Int, Array[RcStmtAction]]
+  mut rc_debug : Bool
+  // Perceus RC: per-stmt actions keyed by (prefix, stmt_index)
+  // prefix="" for top-level, "stmt[2].expr.body" for nested blocks, etc.
+  mut rc_pre_actions : Map[String, Map[Int, Array[RcStmtAction]]]
+  mut rc_post_actions : Map[String, Map[Int, Array[RcStmtAction]]]
+  mut rc_action_prefix : String
+  // Per-function RC actions: func_name → raw action tuples
+  mut rc_func_actions : Map[String, Array[(String, Bool, String)]]
+  // RC free-list head global index (-1 if not allocated)
+  mut rc_free_list_global : Int
   // Perceus RC: temp locals for dup/drop operations (allocated per function)
   mut rc_tmp_local : Int
   mut rc_new_rc_local : Int
+  // RC helper function indices (compiled_funcs-relative, -1 if not allocated)
+  mut rc_dup_func_idx : Int
+  mut rc_drop_func_idx : Int
+  mut rc_alloc_func_idx : Int
+  mut rc_try_reuse_func_idx : Int
+  // Reuse candidate: local holding obj_ptr from try_reuse (-1 if none)
+  mut rc_reuse_local : Int
+  // RC drop optimization: which object types are actually allocated
+  // (used to slim down $rc_drop by only emitting relevant type branches)
+  mut rc_has_tuple_or_array : Bool
+  mut rc_has_record_or_map : Bool
+  mut rc_has_closure : Bool
+  mut rc_has_enum : Bool
+  mut rc_has_view : Bool
+  // RC header size: 4 bytes (no free-list) or 8 bytes (with free-list).
+  // Without free-list: [rc_count@-4][type_id@0][length@4][data@8...]
+  // With free-list:    [alloc_size@-8][rc_count@-4][type_id@0][length@4][data@8...]
+  mut rc_header_size : Int
+  // RC: heap_start boundary for static data protection.
+  // Pointers below this are in the data section and must not be RC-dropped.
+  mut rc_heap_start : Int
+  // RC debug mode: global indices for alloc/free counters (-1 if disabled)
+  mut rc_debug_alloc_global : Int
+  mut rc_debug_free_global : Int
 }
 
 ///|
@@ -288,10 +318,28 @@ fn CodegenCtx::new(
     linked_fn_return_counts: {},
     linked_fn_imports_list: [],
     enable_rc: false,
+    rc_debug: false,
     rc_pre_actions: {},
     rc_post_actions: {},
+    rc_action_prefix: "",
+    rc_func_actions: {},
+    rc_free_list_global: -1,
     rc_tmp_local: -1,
     rc_new_rc_local: -1,
+    rc_dup_func_idx: -1,
+    rc_drop_func_idx: -1,
+    rc_alloc_func_idx: -1,
+    rc_try_reuse_func_idx: -1,
+    rc_reuse_local: -1,
+    rc_has_tuple_or_array: false,
+    rc_has_record_or_map: false,
+    rc_has_closure: false,
+    rc_has_enum: false,
+    rc_has_view: false,
+    rc_header_size: 4, // default: no free-list, 4-byte header
+    rc_heap_start: 0,
+    rc_debug_alloc_global: -1,
+    rc_debug_free_global: -1,
   }
   // Register builtin None as singleton (strings is now initialized)
   let none_offset = ctx.strings.intern_enum_singleton("None", 0)

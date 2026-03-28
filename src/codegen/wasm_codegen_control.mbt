@@ -1076,7 +1076,7 @@ fn emit_load_record_value_raw(
 /// Load ctor tag using cached raw pointer
 fn emit_load_ctor_tag_raw(buf : ByteBuf, raw_ptr_idx : Int) -> Unit {
   emit_local_get(buf, raw_ptr_idx)
-  emit_i32_load(buf, 4)
+  emit_i32_load(buf, 8)
 }
 
 ///|
@@ -1087,6 +1087,6 @@ fn emit_load_ctor_arg_raw(
   index : Int,
 ) -> Unit {
   emit_local_get(buf, raw_ptr_idx)
-  emit_i32_load(buf, 8 + index * 4)
+  emit_i32_load(buf, 12 + index * 4)
   emit_i64_extend_i32_s(buf)
 }

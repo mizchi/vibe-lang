@@ -2987,8 +2987,7 @@ test "compiled test marks imported jq fallback builtins unsupported" {
     e => fail("write temp source failed: " + e.to_string())
   }
   match wbtest_run_test_file_compiled(source_path, false) {
-    CompiledTestAttempt::Success(report) =>
-      assert_true(report.total > 0)
+    CompiledTestAttempt::Success(report) => assert_true(report.total > 0)
     CompiledTestAttempt::Unsupported(err) =>
       fail("expected success via host imports, got unsupported: " + err)
     CompiledTestAttempt::Error(err) =>
@@ -3028,8 +3027,7 @@ test "compiled test marks perform resume builtins unsupported for fallback" {
     e => fail("write temp source failed: " + e.to_string())
   }
   match wbtest_run_test_file_compiled(source_path, false) {
-    CompiledTestAttempt::Success(report) =>
-      assert_true(report.total > 0)
+    CompiledTestAttempt::Success(report) => assert_true(report.total > 0)
     CompiledTestAttempt::Unsupported(err) =>
       fail("expected success via host imports, got unsupported: " + err)
     CompiledTestAttempt::Error(err) =>
@@ -3576,8 +3574,7 @@ test "test backend reports unsupported compiled cases by default" {
     Ok(report) =>
       // Json::parse now handled via host imports — compiled backend succeeds
       assert_true(report.total > 0)
-    Err(err) =>
-      fail("expected success via host imports, got error: " + err)
+    Err(err) => fail("expected success via host imports, got error: " + err)
   }
   wbtest_remove_if_exists(source_path)
 }

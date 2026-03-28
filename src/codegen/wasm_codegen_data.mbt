@@ -190,6 +190,27 @@ fn emit_heap_post_call_sync(ctx : CodegenCtx, buf : ByteBuf) -> Unit {
 }
 
 ///|
+/// Normal RC allocation: helper call or inline free-list.
+fn emit_heap_alloc_rc_normal(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  total_size : Int,
+  obj_local : Int,
+) -> Unit {
+  if ctx.rc_alloc_func_idx >= 0 {
+    emit_heap_pre_call_sync(ctx, buf)
+    emit_i32_const_raw(buf, total_size)
+    let abs_idx = func_import_count(ctx) + ctx.rc_alloc_func_idx
+    emit_call(buf, abs_idx)
+    emit_local_set(buf, obj_local)
+    emit_heap_post_call_sync(ctx, buf)
+  } else {
+    let size = total_size - ctx.rc_header_size
+    emit_rc_alloc_with_free_list(ctx, buf, size, total_size, obj_local)
+  }
+}
+
+///|
 fn emit_heap_alloc(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -197,20 +218,48 @@ fn emit_heap_alloc(
   obj_local : Int,
 ) -> Unit {
   if ctx.enable_rc {
-    // Allocate size + 4 bytes: [rc_count(4)][object(size)]
-    // obj_local points past the RC field so all field offsets are unchanged
-    let total_size = size + rc_header_extra
-    emit_heap_reserve(ctx, buf, total_size)
-    emit_local_get(buf, ctx.heap_local)
-    emit_i32_const_raw(buf, rc_header_extra)
-    emit_i32_add(buf)
-    emit_local_set(buf, obj_local)
-    emit_local_get(buf, ctx.heap_local)
-    emit_i32_const_raw(buf, total_size)
-    emit_i32_add(buf)
-    emit_local_set(buf, ctx.heap_local)
-    ctx.heap_synced = false
-    emit_rc_init(buf, obj_local)
+    let total_size = size + ctx.rc_header_size
+    // Check reuse candidate: if available and alloc_size matches, use it directly
+    if ctx.rc_reuse_local >= 0 {
+      let reuse = ctx.rc_reuse_local
+      ctx.rc_reuse_local = -1 // consume the candidate
+      // if reuse != 0 && load(reuse - header_size) == total_size → reuse in-place
+      emit_local_get(buf, reuse)
+      emit_i32_const_raw(buf, 0)
+      emit_i32_ne(buf)
+      emit_if(buf) // if reuse != 0
+      emit_local_get(buf, reuse)
+      emit_i32_const_raw(buf, ctx.rc_header_size)
+      emit_i32_sub(buf)
+      emit_i32_load(buf, 0) // load alloc_size
+      emit_i32_const_raw(buf, total_size)
+      emit_i32_eq(buf)
+      emit_if(buf) // if size matches → reuse
+      emit_local_get(buf, reuse)
+      emit_local_set(buf, obj_local)
+      emit_else(buf) // size mismatch → tombstone + free-list, then normal alloc
+      // Tombstone the unused candidate (children already dropped)
+      emit_local_get(buf, reuse)
+      emit_i32_const_raw(buf, 0)
+      emit_i32_store(buf, 0) // type_id = 0
+      if ctx.rc_free_list_global >= 0 {
+        // Link to free-list: next = head; head = ptr
+        emit_local_get(buf, reuse)
+        emit_i32_const_raw(buf, 4)
+        emit_i32_sub(buf)
+        emit_global_get(buf, ctx.rc_free_list_global)
+        emit_i32_store(buf, 0)
+        emit_local_get(buf, reuse)
+        emit_global_set(buf, ctx.rc_free_list_global)
+      }
+      emit_heap_alloc_rc_normal(ctx, buf, total_size, obj_local)
+      emit_end(buf) // end inner if
+      emit_else(buf) // reuse == 0 → normal alloc
+      emit_heap_alloc_rc_normal(ctx, buf, total_size, obj_local)
+      emit_end(buf) // end outer if
+      return
+    }
+    emit_heap_alloc_rc_normal(ctx, buf, total_size, obj_local)
   } else {
     emit_heap_reserve(ctx, buf, size)
     emit_local_get(buf, ctx.heap_local)
@@ -287,16 +336,16 @@ fn emit_heap_alloc_local(
   obj_local : Int,
 ) -> Unit {
   if ctx.enable_rc {
-    // Add rc_header_extra to size_local for the prepended RC field
+    // Add rc_header_size to size_local for the prepended RC field
     emit_local_get(buf, size_local)
-    emit_i32_const_raw(buf, rc_header_extra)
+    emit_i32_const_raw(buf, ctx.rc_header_size)
     emit_i32_add(buf)
     emit_local_set(buf, size_local)
   }
   emit_heap_reserve_local(ctx, buf, size_local)
   emit_local_get(buf, ctx.heap_local)
   if ctx.enable_rc {
-    emit_i32_const_raw(buf, rc_header_extra)
+    emit_i32_const_raw(buf, ctx.rc_header_size)
     emit_i32_add(buf)
   }
   emit_local_set(buf, obj_local)
@@ -306,7 +355,14 @@ fn emit_heap_alloc_local(
   emit_local_set(buf, ctx.heap_local)
   ctx.heap_synced = false
   if ctx.enable_rc {
-    emit_rc_init(buf, obj_local)
+    // Dynamic-size alloc: write actual alloc_size from size_local
+    emit_rc_init_dynamic(
+      buf,
+      obj_local,
+      size_local,
+      header_size=ctx.rc_header_size,
+      debug_alloc_global=ctx.rc_debug_alloc_global,
+    )
   }
 }
 
@@ -603,6 +659,9 @@ fn compile_func_body(
           0
         }
         let heap_start = align4(ctx.strings.next_offset + coverage_bytes)
+        if ctx.enable_rc && ctx.rc_heap_start == 0 {
+          ctx.rc_heap_start = heap_start
+        }
         emit_i32_const_raw(prologue, heap_start)
         emit_local_set(prologue, ctx.heap_local)
       }
@@ -781,7 +840,7 @@ fn compile_function(
         ctx.locals[name] = idx
         ctx.local_kinds[name] = ValueKind::I32
         emit_local_get(prelude, env_idx)
-        emit_i64_load(prelude, 8 + effective_idx * 8) // load pointer as i64
+        emit_i64_load(prelude, 16 + effective_idx * 8) // load pointer as i64
         emit_i32_wrap_i64(prelude) // → i32
         emit_local_set(prelude, idx)
         // Propagate ref cell status so nested closures work
@@ -792,7 +851,7 @@ fn compile_function(
         ctx.locals[name] = idx
         ctx.local_kinds[name] = ValueKind::ExternRef
         emit_local_get(prelude, env_idx)
-        emit_i64_load(prelude, 8 + effective_idx * 8) // load slot index as i64
+        emit_i64_load(prelude, 16 + effective_idx * 8) // load slot index as i64
         emit_i32_wrap_i64(prelude) // wrap to i32 for table.get
         emit_table_get(prelude, ctx.extern_table_index)
         emit_local_set(prelude, idx)
@@ -801,7 +860,7 @@ fn compile_function(
         ctx.locals[name] = idx
         ctx.local_kinds[name] = kind
         emit_local_get(prelude, env_idx)
-        emit_i64_load(prelude, 8 + effective_idx * 8)
+        emit_i64_load(prelude, 16 + effective_idx * 8)
         emit_local_set(prelude, idx)
       }
       effective_idx += 1

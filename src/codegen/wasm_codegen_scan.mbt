@@ -110,7 +110,10 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         | "to_double"
         | "Int::parse"
         | "Double::parse"
-        | "__slice" => ctx.need_heap = true
+        | "__slice" => {
+          ctx.need_heap = true
+          ctx.rc_has_view = true
+        }
         "Char::to_int" | "Char::from_int" => ()
         "__to_string" => if not(ctx.use_js_strings) { ctx.need_heap = true }
         _ =>
@@ -119,6 +122,7 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
           } else if ctx.enum_ctor_tags.contains(name) {
             // Enum constructor calls require heap allocation.
             ctx.need_heap = true
+            ctx.rc_has_enum = true
           }
       }
       for arg in args {
@@ -128,6 +132,7 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
     @core.Expr::Tuple(items~, span~) => {
       let _ = span
       ctx.need_heap = true
+      ctx.rc_has_tuple_or_array = true
       for item in items {
         scan_needs_expr(ctx, item)
       }
@@ -139,6 +144,7 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
     @core.Expr::Record(fields~, span~) => {
       let _ = span
       ctx.need_heap = true
+      ctx.rc_has_record_or_map = true
       for field in fields {
         scan_needs_expr(ctx, field.expr)
       }
@@ -146,6 +152,7 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
     @core.Expr::Array(items~, span~) => {
       let _ = span
       ctx.need_heap = true
+      ctx.rc_has_tuple_or_array = true
       for item in items {
         scan_needs_expr(ctx, item)
       }
@@ -153,6 +160,7 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
     @core.Expr::Map(fields~, span~) => {
       let _ = span
       ctx.need_heap = true
+      ctx.rc_has_record_or_map = true
       for field in fields {
         scan_needs_expr(ctx, field.expr)
       }
@@ -202,7 +210,11 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       let _ = ret
       let key = span_key_unique(span, params)
       match ctx.fn_closure_captures.get(key) {
-        Some(captures) => if captures.length() > 0 { ctx.need_heap = true }
+        Some(captures) =>
+          if captures.length() > 0 {
+            ctx.need_heap = true
+            ctx.rc_has_closure = true
+          }
         None => ()
       }
       scan_needs_block(ctx, body)
@@ -227,6 +239,7 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
     @core.Expr::StructLit(fields~, span~, ..) => {
       let _ = span
       ctx.need_heap = true
+      ctx.rc_has_record_or_map = true
       for field in fields {
         scan_needs_expr(ctx, field.expr)
       }

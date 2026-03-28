@@ -327,23 +327,89 @@ fn perceus_actions_to_tuples(
 }
 
 ///|
+/// Extract named function bodies from a module for per-function analysis.
+/// Returns (func_name, body_module) pairs.
+fn extract_func_bodies(ast : @core.Module) -> Array[(String, @core.Module)] {
+  let result : Array[(String, @core.Module)] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr~, ..)
+      | @core.Stmt::ExportLet(name~, expr~, ..)
+      | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
+        match expr {
+          @core.Expr::Fn(body~, ..) => result.push((name, body))
+          _ => ()
+        }
+      _ => ()
+    }
+  }
+  result
+}
+
+///|
+/// Build a "run AST" from the module — top-level stmts minus function defs.
+/// This approximates what the codegen's run_ast contains.
+fn extract_run_stmts(ast : @core.Module) -> @core.Module {
+  let stmts : Array[@core.Stmt] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(expr~, ..)
+      | @core.Stmt::ExportLet(expr~, ..)
+      | @core.Stmt::InternalExportLet(expr~, ..) =>
+        match expr {
+          @core.Expr::Fn(..) => () // skip function defs
+          _ => stmts.push(stmt)
+        }
+      _ => stmts.push(stmt)
+    }
+  }
+  @core.Module::{ stmts, }
+}
+
+///|
 /// Run Perceus analysis on an AST and return RC-enabled emit options.
+/// Analyzes both top-level statements and each named function body.
 fn wasm_emit_options_with_rc(
   ast : @core.Module,
   debug_errors? : Bool = false,
   http_host_imports? : Bool = false,
   http_component_wasi_shim? : Bool = false,
   fs_host_imports? : Bool = false,
-) -> @codegen.WasmEmitOptions {
-  let plan = @frontend.build_perceus_plan(ast)
-  let rc_actions = perceus_actions_to_tuples(plan)
-  @codegen.wasm_emit_options(
-    embed_error_strings=debug_errors,
-    http_host_imports~,
-    http_component_wasi_shim~,
-    fs_host_imports~,
-    enable_rc=true,
-    rc_actions~,
+  rc_debug? : Bool = false,
+) -> (@codegen.WasmEmitOptions, @core.Module) {
+  // Desugar StringInterp into let-binding chains before Perceus analysis
+  // so that intermediate String::concat results are RC-tracked.
+  let desugared_ast = @frontend.desugar_string_interp(ast)
+  // Analyze top-level (non-function) statements
+  let run_ast = extract_run_stmts(desugared_ast)
+  let top_plan = @frontend.build_perceus_plan(run_ast)
+  let rc_actions = perceus_actions_to_tuples(top_plan)
+  // Analyze each named function body
+  let rc_func_actions : Map[String, Array[(String, Bool, String)]] = {}
+  let func_bodies = extract_func_bodies(desugared_ast)
+  for pair in func_bodies {
+    let (name, body) = pair
+    let plan = @frontend.build_perceus_plan(body)
+    if plan.length() > 0 {
+      rc_func_actions[name] = perceus_actions_to_tuples(plan)
+    }
+  }
+  // Store top-level actions also under "_start" for the codegen to restore
+  if rc_actions.length() > 0 {
+    rc_func_actions["_start"] = rc_actions
+  }
+  (
+    @codegen.wasm_emit_options(
+      embed_error_strings=debug_errors,
+      http_host_imports~,
+      http_component_wasi_shim~,
+      fs_host_imports~,
+      enable_rc=true,
+      rc_debug~,
+      rc_actions~,
+      rc_func_actions~,
+    ),
+    desugared_ast,
   )
 }
 
@@ -520,16 +586,26 @@ pub fn compile_module_wasm(
   debug_errors? : Bool = false,
   http_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
+  enable_rc? : Bool = false,
+  rc_debug? : Bool = false,
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(db, path, @runtime.bundle_for_wasm, ast => {
-    @codegen.emit_module_wasm_with_options(
-      ast,
-      @codegen.wasm_emit_options(
+    if enable_rc {
+      let (options, desugared_ast) = wasm_emit_options_with_rc(
+        ast,
+        debug_errors~,
+        http_host_imports~,
+        rc_debug~,
+      )
+      @codegen.emit_module_wasm_with_options(desugared_ast, options)
+    } else {
+      let options = @codegen.wasm_emit_options(
         embed_error_strings=debug_errors,
         http_host_imports~,
         force_cabi_realloc~,
-      ),
-    )
+      )
+      @codegen.emit_module_wasm_with_options(ast, options)
+    }
   })
 }
 

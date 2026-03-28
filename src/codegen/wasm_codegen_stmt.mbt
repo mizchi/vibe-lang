@@ -196,7 +196,7 @@ fn compile_stmt(
                 emit_local_set(buf, env_local)
                 emit_local_get(buf, env_local)
                 emit_local_get(buf, idx) // closure value (i64)
-                emit_i64_store(buf, 8 + bp_effective_idx * 8) // write to capture slot
+                emit_i64_store(buf, 16 + bp_effective_idx * 8) // write to capture slot
               } else if is_forward_fn && ctx.forward_fn_keys.contains(cap_name) {
                 // Mutual reference: capture of another forward function
                 match ctx.locals.get(cap_name) {
@@ -210,7 +210,7 @@ fn compile_stmt(
                     emit_local_set(buf, env_local)
                     emit_local_get(buf, env_local)
                     emit_local_get(buf, cap_local)
-                    emit_i64_store(buf, 8 + bp_effective_idx * 8)
+                    emit_i64_store(buf, 16 + bp_effective_idx * 8)
                   }
                   None => () // Not yet compiled — will be patched by reverse pass below
                 }
@@ -242,7 +242,7 @@ fn compile_stmt(
                         emit_local_set(buf, env_local)
                         emit_local_get(buf, env_local)
                         emit_local_get(buf, idx)
-                        emit_i64_store(buf, 8 + rbp_effective_idx * 8)
+                        emit_i64_store(buf, 16 + rbp_effective_idx * 8)
                       }
                       rbp_effective_idx += 1
                     }
@@ -703,6 +703,14 @@ fn compile_stmt(
         Some(idx) =>
           if ctx.mut_captured_vars.contains(name) {
             // Ref cell: write through pointer
+            // RC: drop old value before overwriting
+            if ctx.enable_rc {
+              let old_val_local = alloc_temp_local_with_kind(ctx, I64)
+              emit_local_get(buf, idx) // i32 addr
+              emit_i64_load(buf, 0) // load old i64 value
+              emit_local_set(buf, old_val_local)
+              emit_rc_drop_i64(ctx, buf, old_val_local)
+            }
             // Put addr on stack first, then value — avoids temp local
             emit_local_get(buf, idx) // i32 addr
             compile_expr(ctx, buf, expr) // i64 value
@@ -712,11 +720,23 @@ fn compile_stmt(
               emit_i64_load(buf, 0)
             }
           } else {
-            // RC: drop old value before overwriting
+            // RC: try reuse old value's memory, or drop it
             if ctx.enable_rc {
-              emit_rc_drop_i64(ctx, buf, idx)
+              if ctx.rc_try_reuse_func_idx >= 0 {
+                // Call $rc_try_reuse: returns obj_ptr if RC==1, else 0
+                let reuse_local = alloc_temp_local(ctx)
+                emit_local_get(buf, idx)
+                let abs_idx = func_import_count(ctx) + ctx.rc_try_reuse_func_idx
+                emit_call(buf, abs_idx)
+                emit_local_set(buf, reuse_local)
+                ctx.rc_reuse_local = reuse_local
+              } else {
+                emit_rc_drop_i64(ctx, buf, idx)
+              }
             }
             compile_expr(ctx, buf, expr)
+            // Clear reuse candidate after expression compilation
+            ctx.rc_reuse_local = -1
             if is_last {
               emit_local_tee(buf, idx)
             } else {
@@ -905,9 +925,9 @@ fn compile_stmt(
                 ctx.local_types.push(ValueKind::I64)
                 ctx.locals[name] = local_idx
                 ctx.local_kinds[name] = ValueKind::I64
-                // Load from enum payload: offset 8 + i * 4
+                // Load from enum payload: offset 12 + i * 4
                 emit_untag_ptr(buf, ctor_local)
-                emit_i32_load(buf, 8 + i * 4)
+                emit_i32_load(buf, 12 + i * 4)
                 emit_i64_extend_i32_s(buf)
                 if is_last && i == len - 1 {
                   emit_local_tee(buf, local_idx)
@@ -918,14 +938,14 @@ fn compile_stmt(
               @core.Pat::Wildcard(..) =>
                 if is_last && i == len - 1 {
                   emit_untag_ptr(buf, ctor_local)
-                  emit_i32_load(buf, 8 + i * 4)
+                  emit_i32_load(buf, 12 + i * 4)
                   emit_i64_extend_i32_s(buf)
                 }
               _ => {
                 // Nested pattern
                 let elem_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
                 emit_untag_ptr(buf, ctor_local)
-                emit_i32_load(buf, 8 + i * 4)
+                emit_i32_load(buf, 12 + i * 4)
                 emit_i64_extend_i32_s(buf)
                 emit_local_set(buf, elem_local)
                 compile_let_pat_nested(ctx, buf, arg_pat, elem_local)
@@ -1013,13 +1033,13 @@ fn compile_let_pat_nested(
     @core.Pat::Ctor(name~, args~, span~) => {
       let _ = name
       let _ = span
-      // Ctor payload starts at offset 8 (after obj_type and tag)
-      // Each arg is at offset 8 + i * 4
+      // Ctor payload starts at offset 12 (after obj_type, arity, and tag)
+      // Each arg is at offset 12 + i * 4
       for i, arg_pat in args {
         let elem_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
-        // Load from enum payload: untag ptr, load at offset 8 + i * 4
+        // Load from enum payload: untag ptr, load at offset 12 + i * 4
         emit_untag_ptr(buf, value_local)
-        emit_i32_load(buf, 8 + i * 4)
+        emit_i32_load(buf, 12 + i * 4)
         emit_i64_extend_i32_s(buf)
         emit_local_set(buf, elem_local)
         compile_let_pat_nested(ctx, buf, arg_pat, elem_local)
@@ -1035,9 +1055,14 @@ fn compile_block_expr(
   buf : ByteBuf,
   body : @core.Module,
   emit_rc_stmt_actions? : Bool = false,
+  rc_prefix? : String = "",
 ) -> Unit raise WasmGenError {
   let saved = ctx.locals.copy()
   let saved_kinds = ctx.local_kinds.copy()
+  let saved_prefix = ctx.rc_action_prefix
+  if emit_rc_stmt_actions && rc_prefix.length() > 0 {
+    ctx.rc_action_prefix = rc_prefix
+  }
   let len = body.stmts.length()
   if len == 0 {
     emit_i64_const_tagged(buf, 0L)
@@ -1053,6 +1078,7 @@ fn compile_block_expr(
       }
     }
   }
+  ctx.rc_action_prefix = saved_prefix
   restore_locals(ctx, saved)
   restore_local_kinds(ctx, saved_kinds)
 }

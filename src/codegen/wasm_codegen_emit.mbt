@@ -365,6 +365,15 @@ fn emit_else(buf : ByteBuf) -> Unit {
 }
 
 ///|
+/// Emit block instruction with i32 result type
+fn emit_block_result_i32(buf : ByteBuf) -> Unit {
+  buf.ensure(2)
+  buf.data.unsafe_set(buf.len, b'\x02')
+  buf.data.unsafe_set(buf.len + 1, b'\x7f')
+  buf.len += 2
+}
+
+///|
 /// Emit block instruction with i64 result type
 fn emit_block_i64(buf : ByteBuf) -> Unit {
   buf.ensure(2)
@@ -409,7 +418,7 @@ fn emit_br_if(buf : ByteBuf, label_idx : Int) -> Unit {
 /// Emit br_table instruction (multi-way branch)
 /// labels: target label indices for each case (0..N-1)
 /// default_label: fallback label index
-fn _emit_br_table(
+fn emit_br_table(
   buf : ByteBuf,
   labels : Array[Int],
   default_label : Int,
@@ -477,6 +486,11 @@ fn emit_i32_ne(buf : ByteBuf) -> Unit {
 ///|
 fn emit_i32_lt_s(buf : ByteBuf) -> Unit {
   buf.push((72).to_byte())
+}
+
+///|
+fn emit_i32_lt_u(buf : ByteBuf) -> Unit {
+  buf.push((73).to_byte())
 }
 
 ///|
@@ -957,6 +971,11 @@ fn emit_i64_lt_s(buf : ByteBuf) -> Unit {
 ///|
 fn emit_i64_gt_s(buf : ByteBuf) -> Unit {
   buf.push((0x55).to_byte())
+}
+
+///|
+fn emit_i64_ne(buf : ByteBuf) -> Unit {
+  buf.push((0x52).to_byte())
 }
 
 ///|

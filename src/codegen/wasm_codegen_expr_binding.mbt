@@ -88,15 +88,18 @@ fn compile_expr_ident(
                           None => 0
                         }
                         require_heap(ctx)
-                        let size = align4(8)
+                        let size = align4(12)
                         let obj_local = alloc_temp_local(ctx)
                         emit_heap_alloc(ctx, buf, size, obj_local)
                         emit_local_get(buf, obj_local)
                         emit_i32_const_raw(buf, obj_enum)
                         emit_i32_store(buf, 0)
                         emit_local_get(buf, obj_local)
-                        emit_i32_const_raw(buf, tag)
+                        emit_i32_const_raw(buf, 0) // arity = 0
                         emit_i32_store(buf, 4)
+                        emit_local_get(buf, obj_local)
+                        emit_i32_const_raw(buf, tag)
+                        emit_i32_store(buf, 8)
                         emit_local_get(buf, obj_local)
                         emit_i64_extend_i32_u(buf)
                         emit_i64_const_raw(buf, tag_obj.to_int64())

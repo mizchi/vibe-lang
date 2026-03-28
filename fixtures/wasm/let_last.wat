@@ -7,5 +7,5 @@
   (memory (;0;) 1024)
   (export "_start" (func 0))
   (export "memory" (memory 0))
-  (data (i32.const 0) "\0a\00\00\00\00\00\00\00")
+  (data (i32.const 0) "\0a\00\00\00\00\00\00\00\00\00\00\00")
 )
