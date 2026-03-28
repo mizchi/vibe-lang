@@ -3214,6 +3214,32 @@ test "rc eval: record field borrow skips dup" {
 }
 
 ///|
+test "rc eval: nested tuple borrow and record access combined" {
+  // Exercises multiple RC patterns: tuple borrow, record borrow,
+  // nested allocation, and scope-end drops.
+  let script =
+    #|let f = () -> Int {
+    #|  let a = (1, 2)
+    #|  let b = (3, 4)
+    #|  let r = record { x: 10, y: 20 }
+    #|  a.0 + a.1 + b.0 + b.1 + r.x + r.y
+    #|}
+    #|f()
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res_rc.value, res_no_rc.value)
+  assert_eq(decode_int(res_rc.value), 40L)
+}
+
+///|
 test "rc eval: ref cell write drops old heap value" {
   // When a mut_captured variable is reassigned, the old value must be RC-dropped.
   // A closure captures `x` mutably (ref cell), then reassigns it.

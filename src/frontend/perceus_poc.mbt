@@ -2060,9 +2060,11 @@ pub fn build_perceus_plan(mod : @core.Module) -> Array[PerceusAction] {
     p2_emit_stmt(emit_ctx, mod.stmts[i], "stmt[\{i.to_string()}]")
   }
   // Pop the initial scope to emit scope-end drops for any remaining bindings
-  // (e.g., pure-borrow bindings that need cleanup)
-  let n = mod.stmts.length()
-  p2_emit_pop_scope(emit_ctx, "stmt[\{n.to_string()}]")
+  // (e.g., pure-borrow bindings that need cleanup).
+  // Use the last statement index so the drop attaches to the last stmt's
+  // post-actions (which the codegen actually processes).
+  let last_idx = if mod.stmts.length() > 0 { mod.stmts.length() - 1 } else { 0 }
+  p2_emit_pop_scope(emit_ctx, "stmt[\{last_idx.to_string()}]")
   // Pass 3: Optimize — cancel redundant dup-drop pairs
   optimize_perceus_actions(emit_ctx.actions)
 }

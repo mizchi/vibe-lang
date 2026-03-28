@@ -1018,7 +1018,7 @@ test "perceus plan: tuple field access borrows — no dup for t.0 + t.1" {
   inspect(
     lines,
     content=(
-      #|["stmt[2].scope_end drop t"]
+      #|["stmt[1].scope_end drop t"]
     ),
   )
 }
