@@ -2993,8 +2993,8 @@ test "rc perf: binary size overhead is bounded" {
   let mut sec_details = ""
   for entry in sec_names {
     let (id, name) = entry
-    let rc_s = rc_secs.get(id).or(0)
-    let no_rc_s = no_rc_secs.get(id).or(0)
+    let rc_s = rc_secs.get(id).unwrap_or(0)
+    let no_rc_s = no_rc_secs.get(id).unwrap_or(0)
     if rc_s != no_rc_s {
       sec_details += "\n  " + name + ": rc=" + rc_s.to_string() + " no_rc=" +
         no_rc_s.to_string() + " diff=+" + (rc_s - no_rc_s).to_string()
