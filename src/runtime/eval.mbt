@@ -37,8 +37,6 @@ pub enum Effect {
   FsRename(String, String) // (old, new)
   FsAppend(String, String) // (path, content_preview)
   EnvGet(String, String) // (name, value)
-  LlmComplete(String, String, String) // (model, prompt_preview, response_preview)
-  RlmTrace(String) // JSON trace event
 } derive(Show, Eq)
 
 ///|
