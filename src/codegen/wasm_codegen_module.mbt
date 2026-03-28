@@ -3582,16 +3582,10 @@ fn emit_module_with_coverage(
   }
   // Append RC helper functions (dup, drop, alloc) right after user functions
   if ctx.enable_rc {
-    let rc_dup_sig = FuncSig::{
-      params: [ValueKind::I64],
-      results: [],
-    }
+    let rc_dup_sig = FuncSig::{ params: [ValueKind::I64], results: [] }
     let _ = ensure_sig_index(ctx, rc_dup_sig)
     compiled_funcs.push(compile_rc_dup_function())
-    let rc_drop_sig = FuncSig::{
-      params: [ValueKind::I64],
-      results: [],
-    }
+    let rc_drop_sig = FuncSig::{ params: [ValueKind::I64], results: [] }
     let _ = ensure_sig_index(ctx, rc_drop_sig)
     let rc_drop_abs_idx = func_import_count(ctx) + ctx.rc_drop_func_idx
     compiled_funcs.push(

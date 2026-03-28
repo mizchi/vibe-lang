@@ -366,7 +366,14 @@ fn emit_rc_drop_fields(
   emit_i32_add(buf)
   emit_i32_load(buf, 8)
   emit_local_set(buf, field_val_local)
-  emit_rc_drop(ctx, buf, field_val_local, field_tmp_local, field_rc_local, recursive=false)
+  emit_rc_drop(
+    ctx,
+    buf,
+    field_val_local,
+    field_tmp_local,
+    field_rc_local,
+    recursive=false,
+  )
   emit_local_get(buf, idx_local)
   emit_i32_const_raw(buf, 1)
   emit_i32_add(buf)
@@ -403,7 +410,14 @@ fn emit_rc_drop_fields(
   emit_i32_add(buf)
   emit_i32_load(buf, 12) // 8 + 4
   emit_local_set(buf, field_val_local)
-  emit_rc_drop(ctx, buf, field_val_local, field_tmp_local, field_rc_local, recursive=false)
+  emit_rc_drop(
+    ctx,
+    buf,
+    field_val_local,
+    field_tmp_local,
+    field_rc_local,
+    recursive=false,
+  )
   emit_local_get(buf, idx_local)
   emit_i32_const_raw(buf, 1)
   emit_i32_add(buf)
@@ -435,7 +449,14 @@ fn emit_rc_drop_fields(
   emit_i32_add(buf)
   emit_i32_load(buf, 12)
   emit_local_set(buf, field_val_local)
-  emit_rc_drop(ctx, buf, field_val_local, field_tmp_local, field_rc_local, recursive=false)
+  emit_rc_drop(
+    ctx,
+    buf,
+    field_val_local,
+    field_tmp_local,
+    field_rc_local,
+    recursive=false,
+  )
   emit_local_get(buf, idx_local)
   emit_i32_const_raw(buf, 1)
   emit_i32_add(buf)
@@ -471,7 +492,14 @@ fn emit_rc_drop_fields(
   emit_i32_const_raw(buf, tag_obj)
   emit_i32_or(buf)
   emit_local_set(buf, tagged_local)
-  emit_rc_drop(ctx, buf, tagged_local, field_tmp_local, field_rc_local, recursive=false)
+  emit_rc_drop(
+    ctx,
+    buf,
+    tagged_local,
+    field_tmp_local,
+    field_rc_local,
+    recursive=false,
+  )
   emit_end(buf) // end if ptr != 0
   emit_end(buf) // end if view type
 }
@@ -1014,8 +1042,14 @@ fn compile_rc_drop_function(
   WasmFunc::{
     params: [ValueKind::I64],
     locals: [
-      ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32,
-      ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I64,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I64,
     ],
     results: [],
     body: body.to_array(),
@@ -1168,8 +1202,12 @@ fn compile_rc_alloc_function(
   WasmFunc::{
     params: [ValueKind::I32],
     locals: [
-      ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32,
-      ValueKind::I32, ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
     ],
     results: [ValueKind::I32],
     body: body.to_array(),
@@ -1182,9 +1220,7 @@ fn compile_rc_alloc_function(
 /// If val is a heap object with RC==1, recursively drops children,
 /// keeps RC at 1, and returns obj_ptr for in-place reuse.
 /// Otherwise, does a normal rc_drop and returns 0.
-fn compile_rc_try_reuse_function(
-  rc_drop_abs_idx : Int,
-) -> WasmFunc {
+fn compile_rc_try_reuse_function(rc_drop_abs_idx : Int) -> WasmFunc {
   let body = ByteBuf::new()
   // Locals: 0=param(i64), 1=val32, 2=obj_ptr, 3=rc_count,
   //         4=type_id, 5=len, 6=idx, 7=field_val
@@ -1409,8 +1445,14 @@ fn compile_rc_try_reuse_function(
   WasmFunc::{
     params: [ValueKind::I64],
     locals: [
-      ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32,
-      ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I64,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I64,
     ],
     results: [ValueKind::I32],
     body: body.to_array(),

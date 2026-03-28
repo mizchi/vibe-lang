@@ -927,3 +927,54 @@ test "perceus sim: interleaved alloc-drop keeps peak_rc low" {
   assert_eq(result.peak_bump, 5)
   assert_eq(result.peak_rc, 1)
 }
+
+///|
+test "optimize_perceus_actions: cancels adjacent dup-drop at same scope" {
+  let actions : Array[PerceusAction] = [
+    {
+      site: "stmt[1].expr.then.stmt[0].expr.arg[0].before",
+      kind: PerceusActionKind::Dup,
+      name: "x",
+    },
+    {
+      site: "stmt[1].expr.then.scope_end",
+      kind: PerceusActionKind::Drop,
+      name: "x",
+    },
+  ]
+  let optimized = optimize_perceus_actions(actions)
+  assert_eq(optimized.length(), 0)
+}
+
+///|
+test "optimize_perceus_actions: does not cancel across different scopes" {
+  let actions : Array[PerceusAction] = [
+    {
+      site: "stmt[1].expr.arg[0].before",
+      kind: PerceusActionKind::Dup,
+      name: "x",
+    },
+    { site: "stmt[2].old_value", kind: PerceusActionKind::Drop, name: "x" },
+  ]
+  let optimized = optimize_perceus_actions(actions)
+  // Different stmt indices → must not cancel
+  assert_eq(optimized.length(), 2)
+}
+
+///|
+test "optimize_perceus_actions: does not cancel different variables" {
+  let actions : Array[PerceusAction] = [
+    {
+      site: "stmt[1].expr.then.stmt[0].expr.before",
+      kind: PerceusActionKind::Dup,
+      name: "x",
+    },
+    {
+      site: "stmt[1].expr.then.scope_end",
+      kind: PerceusActionKind::Drop,
+      name: "y",
+    },
+  ]
+  let optimized = optimize_perceus_actions(actions)
+  assert_eq(optimized.length(), 2)
+}

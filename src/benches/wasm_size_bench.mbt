@@ -45,7 +45,6 @@ test "bench: wasm.size.pipeline" {
     snapshot,
     content=(
       #|{wasm_size: Some(74), ir_size: 237, note: None}
-
     ),
   )
 }
@@ -61,7 +60,6 @@ test "bench: wasm.size.pipeline_js_string" {
     snapshot,
     content=(
       #|{wasm_size: Some(153), ir_size: 185, note: None}
-
     ),
   )
 }
@@ -73,7 +71,6 @@ test "bench: wasm.size.user_fn" {
     snapshot,
     content=(
       #|{wasm_size: Some(104), ir_size: 344, note: None}
-
     ),
   )
 }
@@ -85,7 +82,6 @@ test "bench: wasm.size.effect_ho" {
     snapshot,
     content=(
       #|{wasm_size: Some(233), ir_size: 930, note: None}
-
     ),
   )
 }

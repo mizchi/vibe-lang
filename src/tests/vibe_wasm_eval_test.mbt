@@ -2850,13 +2850,16 @@ test "rc perf: binary size overhead is bounded" {
     ("tuple_alloc", "(1, 2, 3)"),
     ("func_call", "let f = (x: Int) -> Int { x + 1 }\nf(10)"),
     ("tuple_access", "let t = (1, 2)\nt.0 + t.1"),
-    ("multi_alloc", (
-      #|let a = (1, 2)
-      #|let b = (3, 4)
-      #|let c = (5, 6)
-      #|let d = (7, 8)
-      #|a.0 + b.0 + c.0 + d.0
-    )),
+    (
+      "multi_alloc",
+      (
+        #|let a = (1, 2)
+        #|let b = (3, 4)
+        #|let c = (5, 6)
+        #|let d = (7, 8)
+        #|a.0 + b.0 + c.0 + d.0
+      ),
+    ),
   ]
   let db = VibeDb::new()
   let mut total_rc = 0
@@ -2869,9 +2872,7 @@ test "rc perf: binary size overhead is bounded" {
       _ => b""
     }
     db.set_source("main", script)
-    let wasm_no_rc = compile_module_wasm(db, "main") catch {
-      _ => b""
-    }
+    let wasm_no_rc = compile_module_wasm(db, "main") catch { _ => b"" }
     let rc_len = wasm_rc.length()
     let no_rc_len = wasm_no_rc.length()
     total_rc += rc_len
@@ -2943,12 +2944,12 @@ test "rc perf: free-list reuse actually works" {
     #|f()
   let db = VibeDb::new()
   db.set_source("main", script)
-  let wasm = compile_module_wasm(db, "main", enable_rc=true) catch {
+  let wasm = try compile_module_wasm(db, "main", enable_rc=true) catch {
     e => fail("compile failed: " + e.to_string())
   } noraise {
     r => r
   }
-  let res = run_wasm(wasm) catch {
+  let res = try run_wasm(wasm) catch {
     e => fail("eval failed: " + e.to_string())
   } noraise {
     r => r
@@ -3148,12 +3149,12 @@ test "rc perf: in-place reuse avoids heap growth on reassignment" {
     #|f()
   let db = VibeDb::new()
   db.set_source("main", script)
-  let wasm_rc = compile_module_wasm(db, "main", enable_rc=true) catch {
+  let wasm_rc = try compile_module_wasm(db, "main", enable_rc=true) catch {
     e => fail("compile failed: " + e.to_string())
   } noraise {
     r => r
   }
-  let res_rc = run_wasm(wasm_rc) catch {
+  let res_rc = try run_wasm(wasm_rc) catch {
     e => fail("eval failed: " + e.to_string())
   } noraise {
     r => r

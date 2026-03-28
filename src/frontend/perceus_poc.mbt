@@ -1918,7 +1918,84 @@ pub fn build_perceus_plan(mod : @core.Module) -> Array[PerceusAction] {
   for i = 0; i < mod.stmts.length(); i = i + 1 {
     p2_emit_stmt(emit_ctx, mod.stmts[i], "stmt[\{i.to_string()}]")
   }
-  emit_ctx.actions
+  // Pass 3: Optimize — cancel redundant dup-drop pairs
+  optimize_perceus_actions(emit_ctx.actions)
+}
+
+///|
+/// Cancel adjacent dup-drop pairs for the same variable at the same
+/// statement scope. A dup followed immediately by a drop of the same
+/// variable is only safe to cancel when both share the same top-level
+/// statement index (i.e., no intervening use between them).
+fn optimize_perceus_actions(
+  actions : Array[PerceusAction],
+) -> Array[PerceusAction] {
+  let result : Array[PerceusAction] = []
+  let mut i = 0
+  while i < actions.length() {
+    let action = actions[i]
+    if action.kind == PerceusActionKind::Dup && i + 1 < actions.length() {
+      let next = actions[i + 1]
+      if next.kind == PerceusActionKind::Drop &&
+        next.name == action.name &&
+        perceus_same_stmt_scope(action.site, next.site) {
+        // Skip both — the dup and drop cancel out within the same scope
+        i = i + 2
+        continue
+      }
+    }
+    result.push(action)
+    i = i + 1
+  }
+  result
+}
+
+///|
+/// Check if two action sites share the same block-level scope.
+/// Sites like "stmt[1].expr.then.stmt[0].expr.arg[0].before" and
+/// "stmt[1].expr.then.scope_end" share block prefix "stmt[1].expr.then".
+fn perceus_same_stmt_scope(site_a : String, site_b : String) -> Bool {
+  let prefix_a = perceus_block_prefix(site_a)
+  let prefix_b = perceus_block_prefix(site_b)
+  prefix_a == prefix_b
+}
+
+///|
+/// Extract block-level prefix: everything before the last ".stmt[N]" or
+/// terminal component like ".scope_end", ".end", ".after", ".before".
+/// For "stmt[1].expr.then.stmt[0].expr.arg[0].before" → "stmt[1].expr.then"
+/// For "stmt[1].expr.then.scope_end" → "stmt[1].expr.then"
+fn perceus_block_prefix(site : String) -> String {
+  // Find the last occurrence of ".stmt[" in the site
+  let mut last_dot_stmt = -1
+  let mut i = 0
+  while i + 5 < site.length() {
+    if site[i] == '.' &&
+      site[i + 1] == 's' &&
+      site[i + 2] == 't' &&
+      site[i + 3] == 'm' &&
+      site[i + 4] == 't' &&
+      site[i + 5] == '[' {
+      last_dot_stmt = i
+    }
+    i = i + 1
+  }
+  if last_dot_stmt > 0 {
+    return site[0:last_dot_stmt].to_string()
+  }
+  // No nested stmt — find last '.' for terminal suffixes
+  let mut last_dot = -1
+  let mut j = 0
+  while j < site.length() {
+    if site[j] == '.' {
+      last_dot = j
+    }
+    j = j + 1
+  }
+  if last_dot > 0 {
+    return site[0:last_dot].to_string()
+  }
+  site
 }
 
 ///|
