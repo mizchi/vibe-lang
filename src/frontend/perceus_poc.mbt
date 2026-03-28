@@ -1157,15 +1157,17 @@ pub fn build_perceus_plan_poc(mod : @core.Module) -> Array[PerceusAction] {
 priv struct PerceusCountCtx2 {
   mut next_id : Int
   names : Map[Int, String]
-  /// Accumulated use counts per binding
+  /// Accumulated owning use counts per binding (triggers dup when > 1)
   uses : Map[Int, Int]
+  /// Accumulated borrow counts per binding (keeps alive but no dup)
+  borrows : Map[Int, Int]
   /// Scope stack: name → binding_id
   scopes : Array[Map[String, Int]]
 }
 
 ///|
 fn p2_count_ctx_new() -> PerceusCountCtx2 {
-  { next_id: 0, names: {}, uses: {}, scopes: [{}] }
+  { next_id: 0, names: {}, uses: {}, borrows: {}, scopes: [{}] }
 }
 
 ///|
@@ -1201,6 +1203,15 @@ fn p2_count_use(ctx : PerceusCountCtx2, name : String) -> Unit {
 }
 
 ///|
+/// Count a borrowing use: keeps the binding alive but does not require dup.
+fn p2_count_borrow(ctx : PerceusCountCtx2, name : String) -> Unit {
+  match p2_count_lookup(ctx, name) {
+    Some(id) => ctx.borrows[id] = ctx.borrows.get(id).unwrap_or(0) + 1
+    None => ()
+  }
+}
+
+///|
 fn p2_count_push_scope(ctx : PerceusCountCtx2) -> Unit {
   ctx.scopes.push({})
 }
@@ -1211,30 +1222,39 @@ fn p2_count_pop_scope(ctx : PerceusCountCtx2) -> Unit {
 }
 
 ///|
-fn p2_count_snapshot(ctx : PerceusCountCtx2) -> Map[Int, Int] {
+fn p2_count_snapshot(ctx : PerceusCountCtx2) -> (Map[Int, Int], Map[Int, Int]) {
   let snap : Map[Int, Int] = {}
   ctx.uses.each(fn(k, v) { snap[k] = v })
-  snap
+  let snap_b : Map[Int, Int] = {}
+  ctx.borrows.each(fn(k, v) { snap_b[k] = v })
+  (snap, snap_b)
 }
 
 ///|
-fn p2_count_restore(ctx : PerceusCountCtx2, snap : Map[Int, Int]) -> Unit {
-  snap.each(fn(k, v) { ctx.uses[k] = v })
+fn p2_count_restore(
+  ctx : PerceusCountCtx2,
+  snap : (Map[Int, Int], Map[Int, Int]),
+) -> Unit {
+  snap.0.each(fn(k, v) { ctx.uses[k] = v })
+  snap.1.each(fn(k, v) { ctx.borrows[k] = v })
 }
 
 ///|
-/// After analyzing all branches, merge by taking max use count per binding.
+/// After analyzing all branches, merge by taking max counts per binding.
 fn p2_count_merge_branches(
   ctx : PerceusCountCtx2,
-  pre : Map[Int, Int],
-  branch_snaps : Array[Map[Int, Int]],
+  pre : (Map[Int, Int], Map[Int, Int]),
+  branch_snaps : Array[(Map[Int, Int], Map[Int, Int])],
 ) -> Unit {
+  let pre_uses = pre.0
+  let pre_borrows = pre.1
   // For each binding, find max consumed across branches
   let max_uses : Map[Int, Int] = {}
-  pre.each(fn(id, pre_count) {
+  let max_borrows : Map[Int, Int] = {}
+  pre_uses.each(fn(id, pre_count) {
     let mut best = 0
     for snap in branch_snaps {
-      let post = snap.get(id).unwrap_or(pre_count)
+      let post = snap.0.get(id).unwrap_or(pre_count)
       let consumed = post - pre_count
       if consumed > best {
         best = consumed
@@ -1244,10 +1264,27 @@ fn p2_count_merge_branches(
       max_uses[id] = best
     }
   })
+  pre_borrows.each(fn(id, pre_count) {
+    let mut best = 0
+    for snap in branch_snaps {
+      let post = snap.1.get(id).unwrap_or(pre_count)
+      let consumed = post - pre_count
+      if consumed > best {
+        best = consumed
+      }
+    }
+    if best > 0 {
+      max_borrows[id] = best
+    }
+  })
   // Set uses = pre + max
   max_uses.each(fn(id, max_c) {
-    let pre_count = pre.get(id).unwrap_or(0)
+    let pre_count = pre_uses.get(id).unwrap_or(0)
     ctx.uses[id] = pre_count + max_c
+  })
+  max_borrows.each(fn(id, max_c) {
+    let pre_count = pre_borrows.get(id).unwrap_or(0)
+    ctx.borrows[id] = pre_count + max_c
   })
 }
 
@@ -1272,8 +1309,13 @@ fn p2_count_expr(ctx : PerceusCountCtx2, expr : @core.Expr) -> Unit {
       for item in items {
         p2_count_expr(ctx, item)
       }
-    @core.Expr::TupleIndex(expr~, ..) | @core.Expr::Spread(expr~, ..) =>
-      p2_count_expr(ctx, expr)
+    @core.Expr::TupleIndex(expr=inner, ..) =>
+      // Field access borrows the container — no ownership transfer
+      match inner {
+        @core.Expr::Ident(name~, ..) => p2_count_borrow(ctx, name)
+        _ => p2_count_expr(ctx, inner)
+      }
+    @core.Expr::Spread(expr~, ..) => p2_count_expr(ctx, expr)
     @core.Expr::Record(fields~, ..) | @core.Expr::StructLit(fields~, ..) =>
       for field in fields {
         p2_count_expr(ctx, field.expr)
@@ -1300,7 +1342,7 @@ fn p2_count_expr(ctx : PerceusCountCtx2, expr : @core.Expr) -> Unit {
         return
       }
       let pre = p2_count_snapshot(ctx)
-      let snaps : Array[Map[Int, Int]] = []
+      let snaps : Array[(Map[Int, Int], Map[Int, Int])] = []
       for i = 0; i < arms.length(); i = i + 1 {
         p2_count_restore(ctx, pre)
         p2_count_push_scope(ctx)
@@ -1444,8 +1486,10 @@ fn p2_count_block(ctx : PerceusCountCtx2, body : @core.Module) -> Unit {
 priv struct PerceusEmitCtx2 {
   /// Binding ID replayed in lock-step with pass 1
   mut next_id : Int
-  /// Map from binding_id → remaining uses (starts from pass 1 count, decrements)
+  /// Map from binding_id → remaining total tokens (owning + borrows)
   remaining : Map[Int, Int]
+  /// Map from binding_id → remaining owning uses only (triggers dup)
+  remaining_owning : Map[Int, Int]
   /// Variable names from pass 1
   names : Map[Int, String]
   /// Accumulated actions
@@ -1458,10 +1502,26 @@ priv struct PerceusEmitCtx2 {
 fn p2_emit_ctx_new(
   names : Map[Int, String],
   uses : Map[Int, Int],
+  borrows : Map[Int, Int],
 ) -> PerceusEmitCtx2 {
   let remaining : Map[Int, Int] = {}
-  uses.each(fn(k, v) { remaining[k] = v })
-  { next_id: 0, remaining, names, actions: [], scopes: [{}] }
+  let remaining_owning : Map[Int, Int] = {}
+  uses.each(fn(k, v) {
+    remaining[k] = v
+    remaining_owning[k] = v
+  })
+  // Pure-borrow bindings (0 owning uses, only field accesses):
+  // Need exactly 1 remaining token so scope-end drop fires.
+  borrows.each(fn(k, v) {
+    if v > 0 {
+      let owning = uses.get(k).unwrap_or(0)
+      if owning == 0 {
+        remaining[k] = 1
+        remaining_owning[k] = 0
+      }
+    }
+  })
+  { next_id: 0, remaining, remaining_owning, names, actions: [], scopes: [{}] }
 }
 
 ///|
@@ -1513,12 +1573,13 @@ fn p2_emit_pop_scope(ctx : PerceusEmitCtx2, site : String) -> Unit {
 }
 
 ///|
-/// Emit a use of a binding. If remaining > 1, emit dup before the use.
+/// Emit an owning use of a binding. If remaining owning > 1, emit dup.
 fn p2_emit_use(ctx : PerceusEmitCtx2, name : String, site : String) -> Unit {
   match p2_emit_lookup(ctx, name) {
     Some(id) => {
       let rem = ctx.remaining.get(id).unwrap_or(0)
-      if rem > 1 {
+      let rem_own = ctx.remaining_owning.get(id).unwrap_or(0)
+      if rem_own > 1 {
         ctx.actions.push({
           site: site + ".before",
           kind: PerceusActionKind::Dup,
@@ -1528,21 +1589,48 @@ fn p2_emit_use(ctx : PerceusEmitCtx2, name : String, site : String) -> Unit {
       if rem > 0 {
         ctx.remaining[id] = rem - 1
       }
+      if rem_own > 0 {
+        ctx.remaining_owning[id] = rem_own - 1
+      }
     }
     None => ()
   }
 }
 
 ///|
-fn p2_emit_snapshot(ctx : PerceusEmitCtx2) -> Map[Int, Int] {
-  let snap : Map[Int, Int] = {}
-  ctx.remaining.each(fn(k, v) { snap[k] = v })
-  snap
+/// Emit a borrowing use. For pure-borrow bindings (0 owning uses), this is
+/// a no-op — the container stays alive and gets dropped at scope end.
+/// For mixed bindings (borrows merged into owning), delegates to p2_emit_use.
+fn p2_emit_borrow(ctx : PerceusEmitCtx2, name : String, site : String) -> Unit {
+  match p2_emit_lookup(ctx, name) {
+    Some(id) => {
+      let rem_own = ctx.remaining_owning.get(id).unwrap_or(0)
+      if rem_own > 0 {
+        // Mixed case: borrows were merged into owning, use normal path
+        p2_emit_use(ctx, name, site)
+      }
+      // Pure-borrow case: no-op, container stays alive
+    }
+    None => ()
+  }
 }
 
 ///|
-fn p2_emit_restore(ctx : PerceusEmitCtx2, snap : Map[Int, Int]) -> Unit {
-  snap.each(fn(k, v) { ctx.remaining[k] = v })
+fn p2_emit_snapshot(ctx : PerceusEmitCtx2) -> (Map[Int, Int], Map[Int, Int]) {
+  let snap : Map[Int, Int] = {}
+  ctx.remaining.each(fn(k, v) { snap[k] = v })
+  let snap_own : Map[Int, Int] = {}
+  ctx.remaining_owning.each(fn(k, v) { snap_own[k] = v })
+  (snap, snap_own)
+}
+
+///|
+fn p2_emit_restore(
+  ctx : PerceusEmitCtx2,
+  snap : (Map[Int, Int], Map[Int, Int]),
+) -> Unit {
+  snap.0.each(fn(k, v) { ctx.remaining[k] = v })
+  snap.1.each(fn(k, v) { ctx.remaining_owning[k] = v })
 }
 
 ///|
@@ -1550,31 +1638,40 @@ fn p2_emit_restore(ctx : PerceusEmitCtx2, snap : Map[Int, Int]) -> Unit {
 /// Set remaining to the minimum across all branches (= most consumed path).
 fn p2_emit_merge_branches(
   ctx : PerceusEmitCtx2,
-  pre : Map[Int, Int],
-  branch_results : Array[(Map[Int, Int], String)],
+  pre : (Map[Int, Int], Map[Int, Int]),
+  branch_results : Array[((Map[Int, Int], Map[Int, Int]), String)],
 ) -> Unit {
+  let pre_rem = pre.0
   // Find the minimum remaining per binding across branches
   // (= maximum consumed = worst case for ownership)
   let min_remaining : Map[Int, Int] = {}
+  let min_remaining_own : Map[Int, Int] = {}
   let initialized : Map[Int, Bool] = {}
   for entry in branch_results {
-    let snap = entry.0
-    pre.each(fn(id, _pre_val) {
+    let snap = entry.0.0
+    let snap_own = entry.0.1
+    pre_rem.each(fn(id, _pre_val) {
       let post = snap.get(id).unwrap_or(0)
+      let post_own = snap_own.get(id).unwrap_or(0)
       if !initialized.contains(id) {
         min_remaining[id] = post
+        min_remaining_own[id] = post_own
         initialized[id] = true
       } else {
         let cur = min_remaining.get(id).unwrap_or(0)
         if post < cur {
           min_remaining[id] = post
         }
+        let cur_own = min_remaining_own.get(id).unwrap_or(0)
+        if post_own < cur_own {
+          min_remaining_own[id] = post_own
+        }
       }
     })
   }
   // Emit drops in branches that ended up with more remaining than the minimum
   for entry in branch_results {
-    let snap = entry.0
+    let snap = entry.0.0
     let branch_site = entry.1
     min_remaining.each(fn(id, min_rem) {
       let branch_rem = snap.get(id).unwrap_or(0)
@@ -1593,6 +1690,7 @@ fn p2_emit_merge_branches(
   }
   // Set remaining to the minimum
   min_remaining.each(fn(id, min_rem) { ctx.remaining[id] = min_rem })
+  min_remaining_own.each(fn(id, min_rem) { ctx.remaining_owning[id] = min_rem })
 }
 
 ///|
@@ -1620,8 +1718,14 @@ fn p2_emit_expr(
       for i = 0; i < items.length(); i = i + 1 {
         p2_emit_expr(ctx, items[i], site + ".item[\{i.to_string()}]")
       }
-    @core.Expr::TupleIndex(expr~, ..) | @core.Expr::Spread(expr~, ..) =>
-      p2_emit_expr(ctx, expr, site + ".inner")
+    @core.Expr::TupleIndex(expr=inner, ..) =>
+      // Field access borrows the container — no dup needed
+      match inner {
+        @core.Expr::Ident(name~, ..) =>
+          p2_emit_borrow(ctx, name, site + ".inner")
+        _ => p2_emit_expr(ctx, inner, site + ".inner")
+      }
+    @core.Expr::Spread(expr~, ..) => p2_emit_expr(ctx, expr, site + ".inner")
     @core.Expr::Record(fields~, ..) | @core.Expr::StructLit(fields~, ..) =>
       for i = 0; i < fields.length(); i = i + 1 {
         p2_emit_expr(ctx, fields[i].expr, site + ".field[\{i.to_string()}]")
@@ -1651,7 +1755,7 @@ fn p2_emit_expr(
         return
       }
       let pre = p2_emit_snapshot(ctx)
-      let branch_results : Array[(Map[Int, Int], String)] = []
+      let branch_results : Array[((Map[Int, Int], Map[Int, Int]), String)] = []
       for i = 0; i < arms.length(); i = i + 1 {
         p2_emit_restore(ctx, pre)
         let arm_site = site + ".arm[\{i.to_string()}]"
@@ -1913,11 +2017,32 @@ pub fn build_perceus_plan(mod : @core.Module) -> Array[PerceusAction] {
   for stmt in mod.stmts {
     p2_count_stmt(count_ctx, stmt)
   }
+  // Post-pass 1: Merge borrows into uses for mixed bindings.
+  // Borrow optimization only applies to pure-borrow bindings (0 owning uses).
+  // For mixed bindings (has both owning + borrow), treat borrows as owning
+  // to prevent use-after-free if a borrow occurs after the last owning use.
+  count_ctx.borrows.each(fn(id, b) {
+    if b > 0 {
+      let owning = count_ctx.uses.get(id).unwrap_or(0)
+      if owning > 0 {
+        count_ctx.uses[id] = owning + b
+        count_ctx.borrows[id] = 0
+      }
+    }
+  })
   // Pass 2: Emit
-  let emit_ctx = p2_emit_ctx_new(count_ctx.names, count_ctx.uses)
+  let emit_ctx = p2_emit_ctx_new(
+    count_ctx.names,
+    count_ctx.uses,
+    count_ctx.borrows,
+  )
   for i = 0; i < mod.stmts.length(); i = i + 1 {
     p2_emit_stmt(emit_ctx, mod.stmts[i], "stmt[\{i.to_string()}]")
   }
+  // Pop the initial scope to emit scope-end drops for any remaining bindings
+  // (e.g., pure-borrow bindings that need cleanup)
+  let n = mod.stmts.length()
+  p2_emit_pop_scope(emit_ctx, "stmt[\{n.to_string()}]")
   // Pass 3: Optimize — cancel redundant dup-drop pairs
   optimize_perceus_actions(emit_ctx.actions)
 }

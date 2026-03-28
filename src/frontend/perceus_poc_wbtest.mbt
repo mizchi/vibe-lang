@@ -978,3 +978,94 @@ test "optimize_perceus_actions: does not cancel different variables" {
   let optimized = optimize_perceus_actions(actions)
   assert_eq(optimized.length(), 2)
 }
+
+///|
+test "perceus plan: tuple field access borrows — no dup for t.0 + t.1" {
+  // let t = make()
+  // use(t.0, t.1)
+  // → t has 0 owning uses (both are borrows), drop at scope end
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="t",
+        expr=perceus_test_call("make", [], 1),
+        span=perceus_test_span(2),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_call(
+          "use",
+          [
+            @core.Expr::TupleIndex(
+              expr=perceus_test_ident("t", 3),
+              index=0,
+              span=perceus_test_span(4),
+            ),
+            @core.Expr::TupleIndex(
+              expr=perceus_test_ident("t", 5),
+              index=1,
+              span=perceus_test_span(6),
+            ),
+          ],
+          7,
+        ),
+        span=perceus_test_span(8),
+      ),
+    ],
+  }
+  let lines = perceus_action_lines(build_perceus_plan(mod))
+  // No dup should be emitted — both uses are borrows
+  inspect(
+    lines,
+    content=(
+      #|["stmt[2].scope_end drop t"]
+    ),
+  )
+}
+
+///|
+test "perceus plan: borrow + owning use — dup for owning only" {
+  // let t = make()
+  // use(t.0)   ← borrow
+  // consume(t) ← owning
+  // → t has 1 owning use + 1 borrow = no dup needed
+  let mod : @core.Module = {
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="t",
+        expr=perceus_test_call("make", [], 1),
+        span=perceus_test_span(2),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_call(
+          "use_field",
+          [
+            @core.Expr::TupleIndex(
+              expr=perceus_test_ident("t", 3),
+              index=0,
+              span=perceus_test_span(4),
+            ),
+          ],
+          5,
+        ),
+        span=perceus_test_span(6),
+      ),
+      @core.Stmt::Expr(
+        expr=perceus_test_call("consume", [perceus_test_ident("t", 7)], 8),
+        span=perceus_test_span(9),
+      ),
+    ],
+  }
+  let lines = perceus_action_lines(build_perceus_plan(mod))
+  // Mixed borrow+owning: borrows are merged into owning for safety
+  // (prevents use-after-free if borrow follows last owning use)
+  // 1 owning + 1 borrow = 2 owning → dup before first use
+  let mut has_dup = false
+  for line in lines {
+    if line.contains("dup t") {
+      has_dup = true
+    }
+  }
+  assert_eq(has_dup, true)
+}

@@ -3167,6 +3167,30 @@ test "rc perf: in-place reuse avoids heap growth on reassignment" {
 }
 
 ///|
+test "rc eval: pure borrow access skips dup" {
+  // Multiple field accesses on same tuple should not dup the container.
+  // Pure-borrow optimization: t has only borrow uses, no owning uses.
+  let script =
+    #|let f = () -> Int {
+    #|  let t = (10, 20)
+    #|  t.0 + t.1
+    #|}
+    #|f()
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res_rc.value, res_no_rc.value)
+  assert_eq(decode_int(res_rc.value), 30L)
+}
+
+///|
 test "rc eval: ref cell write drops old heap value" {
   // When a mut_captured variable is reassigned, the old value must be RC-dropped.
   // A closure captures `x` mutably (ref cell), then reassigns it.
