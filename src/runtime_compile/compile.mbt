@@ -375,7 +375,7 @@ fn wasm_emit_options_with_rc(
   http_host_imports? : Bool = false,
   http_component_wasi_shim? : Bool = false,
   fs_host_imports? : Bool = false,
-) -> @codegen.WasmEmitOptions {
+) -> (@codegen.WasmEmitOptions, @core.Module) {
   // Desugar StringInterp into let-binding chains before Perceus analysis
   // so that intermediate String::concat results are RC-tracked.
   let desugared_ast = @frontend.desugar_string_interp(ast)
@@ -397,14 +397,17 @@ fn wasm_emit_options_with_rc(
   if rc_actions.length() > 0 {
     rc_func_actions["_start"] = rc_actions
   }
-  @codegen.wasm_emit_options(
-    embed_error_strings=debug_errors,
-    http_host_imports~,
-    http_component_wasi_shim~,
-    fs_host_imports~,
-    enable_rc=true,
-    rc_actions~,
-    rc_func_actions~,
+  (
+    @codegen.wasm_emit_options(
+      embed_error_strings=debug_errors,
+      http_host_imports~,
+      http_component_wasi_shim~,
+      fs_host_imports~,
+      enable_rc=true,
+      rc_actions~,
+      rc_func_actions~,
+    ),
+    desugared_ast,
   )
 }
 
@@ -584,16 +587,21 @@ pub fn compile_module_wasm(
   enable_rc? : Bool = false,
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(db, path, @runtime.bundle_for_wasm, ast => {
-    let options = if enable_rc {
-      wasm_emit_options_with_rc(ast, debug_errors~, http_host_imports~)
+    if enable_rc {
+      let (options, desugared_ast) = wasm_emit_options_with_rc(
+        ast,
+        debug_errors~,
+        http_host_imports~,
+      )
+      @codegen.emit_module_wasm_with_options(desugared_ast, options)
     } else {
-      @codegen.wasm_emit_options(
+      let options = @codegen.wasm_emit_options(
         embed_error_strings=debug_errors,
         http_host_imports~,
         force_cabi_realloc~,
       )
+      @codegen.emit_module_wasm_with_options(ast, options)
     }
-    @codegen.emit_module_wasm_with_options(ast, options)
   })
 }
 

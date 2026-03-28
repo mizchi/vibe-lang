@@ -489,7 +489,7 @@ test "wasm_emit_options_with_rc stores per-function actions" {
     #|x
   db.set_source("main", src)
   let compiled = compile_module(db, "main")
-  let options = wasm_emit_options_with_rc(compiled.ast)
+  let (options, _desugared) = wasm_emit_options_with_rc(compiled.ast)
   // enable_rc should be true
   assert_true(options.enable_rc)
 }
