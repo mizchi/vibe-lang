@@ -376,13 +376,16 @@ fn wasm_emit_options_with_rc(
   http_component_wasi_shim? : Bool = false,
   fs_host_imports? : Bool = false,
 ) -> @codegen.WasmEmitOptions {
+  // Desugar StringInterp into let-binding chains before Perceus analysis
+  // so that intermediate String::concat results are RC-tracked.
+  let desugared_ast = @frontend.desugar_string_interp(ast)
   // Analyze top-level (non-function) statements
-  let run_ast = extract_run_stmts(ast)
+  let run_ast = extract_run_stmts(desugared_ast)
   let top_plan = @frontend.build_perceus_plan(run_ast)
   let rc_actions = perceus_actions_to_tuples(top_plan)
   // Analyze each named function body
   let rc_func_actions : Map[String, Array[(String, Bool, String)]] = {}
-  let func_bodies = extract_func_bodies(ast)
+  let func_bodies = extract_func_bodies(desugared_ast)
   for pair in func_bodies {
     let (name, body) = pair
     let plan = @frontend.build_perceus_plan(body)

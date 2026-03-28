@@ -3483,3 +3483,57 @@ test "rc eval: closure captures tuple and uses it multiple times" {
   assert_eq(res_rc.value, res_no_rc.value)
   assert_eq(decode_int(res_rc.value), 120L)
 }
+
+///|
+test "rc eval: string interpolation with RC tracks intermediates" {
+  // String interpolation desugars to let-binding chains so that
+  // intermediate String::concat results are RC-tracked by Perceus.
+  let script =
+    #|let x = "hello"
+    #|let y = "world"
+    #|let s = "\(x) \(y)!"
+    #|String::length(s)
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res_rc.value, res_no_rc.value)
+  // "hello world!" = 12 chars
+  assert_eq(decode_int(res_rc.value), 12L)
+}
+
+///|
+test "rc eval: string interpolation in loop with RC" {
+  // Intermediate concat results in a loop should be freed each iteration.
+  let script =
+    #|let f = () -> Int {
+    #|  let mut i = 0
+    #|  let mut len = 0
+    #|  let a = "hi"
+    #|  let b = "ok"
+    #|  while i < 50 {
+    #|    let s = "\(a) \(b)"
+    #|    len = len + String::length(s)
+    #|    i = i + 1
+    #|  }
+    #|  len
+    #|}
+    #|f()
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res_rc.value, res_no_rc.value)
+}
