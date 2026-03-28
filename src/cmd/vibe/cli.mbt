@@ -2372,7 +2372,8 @@ fn check_cmd(args : Array[String]) -> Unit {
     None => ()
   }
   if total_errors > 0 {
-    die("check: \{total_errors} error(s) found")
+    println("check: \{total_errors} error(s) found")
+    c_exit(1)
   }
 }
 
