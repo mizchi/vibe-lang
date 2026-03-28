@@ -1481,15 +1481,6 @@ fn eval_run(script : String) -> WasmEvalResult raise WasmRunError {
 }
 
 ///|
-/// Run script via compiled WASM backend and decode result to Value.
-fn eval_run_decoded(script : String) -> @core.Value raise WasmRunError {
-  let res = eval_run(script)
-  decode_tagged_value(res.mem, res.value, 0) catch {
-    e => raise WasmRunError::Eval(e.to_string())
-  }
-}
-
-///|
 fn decode_tagged_value(
   mem : Array[Byte],
   tagged : Int64,
