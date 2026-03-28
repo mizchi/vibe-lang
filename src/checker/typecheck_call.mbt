@@ -51,9 +51,12 @@ fn resolve_type_member_call_name(
         env,
         type_expr_eff(env, expr, aliases, effects, allow_effect),
       ) catch {
-        e => {
+        _ => {
+          // UFCS receiver typing failed — e.g. lambda with untyped params.
+          // Fall through to normal call dispatch where bidirectional inference
+          // can propagate expected types from the callee signature.
           resolve_member_depth.val -= 1
-          raise e
+          return None
         }
       }
       resolve_member_depth.val -= 1
