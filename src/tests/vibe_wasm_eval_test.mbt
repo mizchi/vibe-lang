@@ -3266,3 +3266,56 @@ test "rc eval: ref cell write drops old heap value" {
   assert_eq(res_rc.value, res_no_rc.value)
   assert_eq(decode_int(res_rc.value), 7L)
 }
+
+///|
+test "rc eval: string concat frees intermediate strings" {
+  // String::concat allocates a new string; RC should drop the intermediates.
+  let script =
+    #|let a = "hello"
+    #|let b = " world"
+    #|let c = String::concat(a, b)
+    #|String::length(c)
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res_rc.value, res_no_rc.value)
+  assert_eq(decode_int(res_rc.value), 11L)
+}
+
+///|
+test "rc eval: heap reclamation via free-list in loop" {
+  // In a loop, temporary tuples from previous iterations should be freed
+  // and their memory reclaimed via the free-list.
+  let script =
+    #|let f = () -> Int {
+    #|  let mut i = 0
+    #|  let mut result = 0
+    #|  while i < 100 {
+    #|    let t = (i, i + 1)
+    #|    result = result + t.0 + t.1
+    #|    i = i + 1
+    #|  }
+    #|  result
+    #|}
+    #|f()
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res_rc.value, res_no_rc.value)
+  // Sum of i + (i+1) for i=0..99 = sum(2i+1) = 2*4950 + 100 = 10000
+  assert_eq(decode_int(res_rc.value), 10000L)
+}

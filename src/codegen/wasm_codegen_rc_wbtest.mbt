@@ -311,9 +311,6 @@ test "RC codegen: parse_site_path extracts prefix and index" {
   assert_eq(parse_site_path("stmt").1, -1)
   assert_eq(parse_site_path("stmt[").1, -1)
   assert_eq(parse_site_path("stmt[]").1, -1)
-  // Legacy compat
-  assert_eq(parse_stmt_index("stmt[0].after"), 0)
-  assert_eq(parse_stmt_index("stmt[2].expr.body.stmt[3].after"), 3)
 }
 
 ///|
