@@ -784,7 +784,7 @@ fn compile_rc_drop_function(
 ) -> WasmFunc {
   let body = ByteBuf::new()
   // Locals: 0=param(i64), 1=val32, 2=obj_ptr, 3=new_rc,
-  //         4=type_id, 5=len, 6=idx, 7=field_val, 8=field_i64
+  //         4=type_id, 5=len, 6=idx
   let param = 0
   let val32 = 1
   let obj_ptr = 2
@@ -792,8 +792,6 @@ fn compile_rc_drop_function(
   let type_id = 4
   let len = 5
   let idx = 6
-  let field_val = 7
-  let field_i64 = 8
   // val32 = i32.wrap_i64(param)
   emit_local_get(body, param)
   emit_i32_wrap_i64(body)
@@ -874,11 +872,7 @@ fn compile_rc_drop_function(
     emit_i32_mul(body)
     emit_i32_add(body)
     emit_i32_load(body, 8)
-    emit_local_set(body, field_val)
-    emit_local_get(body, field_val)
     emit_i64_extend_i32_u(body)
-    emit_local_set(body, field_i64)
-    emit_local_get(body, field_i64)
     emit_call(body, self_func_abs_idx)
     emit_local_get(body, idx)
     emit_i32_const_raw(body, 1)
@@ -916,11 +910,7 @@ fn compile_rc_drop_function(
     emit_i32_mul(body)
     emit_i32_add(body)
     emit_i32_load(body, 12)
-    emit_local_set(body, field_val)
-    emit_local_get(body, field_val)
     emit_i64_extend_i32_u(body)
-    emit_local_set(body, field_i64)
-    emit_local_get(body, field_i64)
     emit_call(body, self_func_abs_idx)
     emit_local_get(body, idx)
     emit_i32_const_raw(body, 1)
@@ -954,8 +944,6 @@ fn compile_rc_drop_function(
     emit_i32_mul(body)
     emit_i32_add(body)
     emit_i64_load(body, 16)
-    emit_local_set(body, field_i64)
-    emit_local_get(body, field_i64)
     emit_call(body, self_func_abs_idx)
     emit_local_get(body, idx)
     emit_i32_const_raw(body, 1)
@@ -989,11 +977,7 @@ fn compile_rc_drop_function(
     emit_i32_mul(body)
     emit_i32_add(body)
     emit_i32_load(body, 12)
-    emit_local_set(body, field_val)
-    emit_local_get(body, field_val)
     emit_i64_extend_i32_u(body)
-    emit_local_set(body, field_i64)
-    emit_local_get(body, field_i64)
     emit_call(body, self_func_abs_idx)
     emit_local_get(body, idx)
     emit_i32_const_raw(body, 1)
@@ -1019,13 +1003,12 @@ fn compile_rc_drop_function(
     emit_i32_or(body)
     emit_if(body) // if view type
     emit_local_get(body, obj_ptr)
-    emit_i32_load(body, 4)
-    emit_local_set(body, field_val)
-    emit_local_get(body, field_val)
+    emit_i32_load(body, 4) // source_ptr
     emit_i32_const_raw(body, 0)
     emit_i32_ne(body)
     emit_if(body)
-    emit_local_get(body, field_val)
+    emit_local_get(body, obj_ptr)
+    emit_i32_load(body, 4) // reload source_ptr
     emit_i64_extend_i32_u(body)
     emit_i64_const_raw(body, tag_obj.to_int64())
     emit_i64_or(body)
@@ -1060,8 +1043,6 @@ fn compile_rc_drop_function(
       ValueKind::I32,
       ValueKind::I32,
       ValueKind::I32,
-      ValueKind::I32,
-      ValueKind::I64,
     ],
     results: [],
     body: body.to_array(),
@@ -1243,7 +1224,7 @@ fn compile_rc_try_reuse_function(
 ) -> WasmFunc {
   let body = ByteBuf::new()
   // Locals: 0=param(i64), 1=val32, 2=obj_ptr, 3=rc_count,
-  //         4=type_id, 5=len, 6=idx, 7=field_val
+  //         4=type_id, 5=len, 6=idx
   let param = 0
   let val32 = 1
   let obj_ptr = 2
@@ -1251,7 +1232,6 @@ fn compile_rc_try_reuse_function(
   let type_id = 4
   let len = 5
   let idx = 6
-  let field_val = 7
   // val32 = i32.wrap_i64(param)
   emit_local_get(body, param)
   emit_i32_wrap_i64(body)
@@ -1464,15 +1444,14 @@ fn compile_rc_try_reuse_function(
     emit_i32_const_raw(body, 14)
     emit_i32_eq(body)
     emit_i32_or(body)
-    emit_if(body)
+    emit_if(body) // if view type
     emit_local_get(body, obj_ptr)
-    emit_i32_load(body, 4)
-    emit_local_set(body, field_val)
-    emit_local_get(body, field_val)
+    emit_i32_load(body, 4) // source_ptr
     emit_i32_const_raw(body, 0)
     emit_i32_ne(body)
     emit_if(body)
-    emit_local_get(body, field_val)
+    emit_local_get(body, obj_ptr)
+    emit_i32_load(body, 4) // reload source_ptr
     emit_i64_extend_i32_u(body)
     emit_i64_const_raw(body, tag_obj.to_int64())
     emit_i64_or(body)
@@ -1493,8 +1472,6 @@ fn compile_rc_try_reuse_function(
       ValueKind::I32,
       ValueKind::I32,
       ValueKind::I32,
-      ValueKind::I32,
-      ValueKind::I64,
     ],
     results: [ValueKind::I32],
     body: body.to_array(),
