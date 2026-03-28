@@ -243,7 +243,22 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 
 - [ ] MoonBit host CLI を bootstrap 専用へ縮退
 - [ ] selfhost perf gap を cutover 水準まで詰める
-- [ ] GC backend セルフコンパイルで ~350KB 配布形
+- [ ] GC backend セルフコンパイルで ~350KB 配布形 (#59)
+  - [x] **P0: Enum/Variant codegen** — per-variant struct `[i32 tag, payload...]`, ref.test + ref.cast pattern match
+  - [x] **P1: Bytes mutable ops** — struct `(len, cap, data)` wrapper, 12 ops (new/push/set/get/append/blit/fill/slice/concat/from_array/to_array/length)
+  - [x] **P2: Record/Struct pattern** — Pat::Struct or-pattern with Pat::Record, Tuple binding
+  - [x] **P3: String ops** — 9 ops (index_of/last_index_of/contains/starts_with/ends_with/trim/replace/split/join)
+  - [x] **B1: Bitwise ops** — __bit_and/or/xor/not/lshift/rshift (i64 instructions)
+  - [x] **B2: Array ops** — Array::length/get/set/push/slice/concat, ArrayBuilder::new/push/freeze
+  - [x] **B3: Type conversions** — Int::to_string, Bool::to_string, __to_string, Int::to_double, Double::to_int, String::from_char_code
+  - [x] **B4: Func return type** — enum_ctor_names を free-var filter に追加, let rec pre-bind
+  - [x] **B5: Type coercion** — if kind mismatch → gc_common_kind, unknown Named type → EqRef fallback
+  - [ ] **B6: Effect system** — throw/handle/perform の GC codegen (85+ files が依存、selfhost 必須)
+  - [ ] **B7: let rec closure self-ref** — lifted fctx に closure_call_types 伝搬
+  - [ ] **B8: MapBuilder** — Map builder の GC 表現
+  - [ ] **B9: Pipe operator** — `|>` の GC codegen (24 files)
+  - [ ] **P4: selfhost compile E2E** — `vibe/compiler/index.vibe` を `--wasm-gc` でコンパイル
+  - [ ] **P5: DCE + wasm-opt** — 未使用コード除去と最適化で ~350KB 目標
 - [ ] `vibe/compiler` の論理分割
 
 ## Interpreter 廃止
