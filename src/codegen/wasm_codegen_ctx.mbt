@@ -164,6 +164,10 @@ priv struct CodegenCtx {
   mut rc_has_closure : Bool
   mut rc_has_enum : Bool
   mut rc_has_view : Bool
+  // RC header size: 4 bytes (no free-list) or 8 bytes (with free-list).
+  // Without free-list: [rc_count@-4][type_id@0][length@4][data@8...]
+  // With free-list:    [alloc_size@-8][rc_count@-4][type_id@0][length@4][data@8...]
+  mut rc_header_size : Int
   // RC: heap_start boundary for static data protection.
   // Pointers below this are in the data section and must not be RC-dropped.
   mut rc_heap_start : Int
@@ -332,6 +336,7 @@ fn CodegenCtx::new(
     rc_has_closure: false,
     rc_has_enum: false,
     rc_has_view: false,
+    rc_header_size: 4, // default: no free-list, 4-byte header
     rc_heap_start: 0,
     rc_debug_alloc_global: -1,
     rc_debug_free_global: -1,

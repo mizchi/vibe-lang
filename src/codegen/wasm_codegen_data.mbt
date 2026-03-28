@@ -205,7 +205,7 @@ fn emit_heap_alloc_rc_normal(
     emit_local_set(buf, obj_local)
     emit_heap_post_call_sync(ctx, buf)
   } else {
-    let size = total_size - rc_header_extra
+    let size = total_size - ctx.rc_header_size
     emit_rc_alloc_with_free_list(ctx, buf, size, total_size, obj_local)
   }
 }
@@ -218,18 +218,18 @@ fn emit_heap_alloc(
   obj_local : Int,
 ) -> Unit {
   if ctx.enable_rc {
-    let total_size = size + rc_header_extra
+    let total_size = size + ctx.rc_header_size
     // Check reuse candidate: if available and alloc_size matches, use it directly
     if ctx.rc_reuse_local >= 0 {
       let reuse = ctx.rc_reuse_local
       ctx.rc_reuse_local = -1 // consume the candidate
-      // if reuse != 0 && load(reuse - 8) == total_size → reuse in-place
+      // if reuse != 0 && load(reuse - header_size) == total_size → reuse in-place
       emit_local_get(buf, reuse)
       emit_i32_const_raw(buf, 0)
       emit_i32_ne(buf)
       emit_if(buf) // if reuse != 0
       emit_local_get(buf, reuse)
-      emit_i32_const_raw(buf, rc_header_extra)
+      emit_i32_const_raw(buf, ctx.rc_header_size)
       emit_i32_sub(buf)
       emit_i32_load(buf, 0) // load alloc_size
       emit_i32_const_raw(buf, total_size)
@@ -336,16 +336,16 @@ fn emit_heap_alloc_local(
   obj_local : Int,
 ) -> Unit {
   if ctx.enable_rc {
-    // Add rc_header_extra to size_local for the prepended RC field
+    // Add rc_header_size to size_local for the prepended RC field
     emit_local_get(buf, size_local)
-    emit_i32_const_raw(buf, rc_header_extra)
+    emit_i32_const_raw(buf, ctx.rc_header_size)
     emit_i32_add(buf)
     emit_local_set(buf, size_local)
   }
   emit_heap_reserve_local(ctx, buf, size_local)
   emit_local_get(buf, ctx.heap_local)
   if ctx.enable_rc {
-    emit_i32_const_raw(buf, rc_header_extra)
+    emit_i32_const_raw(buf, ctx.rc_header_size)
     emit_i32_add(buf)
   }
   emit_local_set(buf, obj_local)
@@ -360,6 +360,7 @@ fn emit_heap_alloc_local(
       buf,
       obj_local,
       size_local,
+      header_size=ctx.rc_header_size,
       debug_alloc_global=ctx.rc_debug_alloc_global,
     )
   }

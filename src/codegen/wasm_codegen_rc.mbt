@@ -58,14 +58,17 @@ fn emit_rc_init(
   buf : ByteBuf,
   obj_local : Int,
   alloc_size : Int,
+  header_size? : Int = 8,
   debug_alloc_global? : Int = -1,
 ) -> Unit {
-  // Write alloc_size at obj_ptr - 8
-  emit_local_get(buf, obj_local)
-  emit_i32_const_raw(buf, rc_header_extra)
-  emit_i32_sub(buf)
-  emit_i32_const_raw(buf, alloc_size)
-  emit_i32_store(buf, 0)
+  // Write alloc_size at obj_ptr - header_size (only when free-list is enabled, header=8)
+  if header_size > 4 {
+    emit_local_get(buf, obj_local)
+    emit_i32_const_raw(buf, header_size)
+    emit_i32_sub(buf)
+    emit_i32_const_raw(buf, alloc_size)
+    emit_i32_store(buf, 0)
+  }
   // Write rc_count = 1 at obj_ptr - 4
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, 4)
@@ -85,14 +88,17 @@ fn emit_rc_init_dynamic(
   buf : ByteBuf,
   obj_local : Int,
   size_local : Int,
+  header_size? : Int = 8,
   debug_alloc_global? : Int = -1,
 ) -> Unit {
-  // Write alloc_size at obj_ptr - 8
-  emit_local_get(buf, obj_local)
-  emit_i32_const_raw(buf, rc_header_extra)
-  emit_i32_sub(buf)
-  emit_local_get(buf, size_local) // dynamic size
-  emit_i32_store(buf, 0)
+  // Write alloc_size at obj_ptr - header_size (only when free-list enabled, header=8)
+  if header_size > 4 {
+    emit_local_get(buf, obj_local)
+    emit_i32_const_raw(buf, header_size)
+    emit_i32_sub(buf)
+    emit_local_get(buf, size_local) // dynamic size
+    emit_i32_store(buf, 0)
+  }
   // Write rc_count = 1 at obj_ptr - 4
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, 4)
@@ -124,7 +130,7 @@ fn emit_rc_alloc_with_free_list(
     // No free-list global — just bump allocate
     emit_heap_reserve(ctx, buf, total_size)
     emit_local_get(buf, ctx.heap_local)
-    emit_i32_const_raw(buf, rc_header_extra)
+    emit_i32_const_raw(buf, ctx.rc_header_size)
     emit_i32_add(buf)
     emit_local_set(buf, obj_local)
     emit_local_get(buf, ctx.heap_local)
@@ -136,6 +142,7 @@ fn emit_rc_alloc_with_free_list(
       buf,
       obj_local,
       total_size,
+      header_size=ctx.rc_header_size,
       debug_alloc_global=ctx.rc_debug_alloc_global,
     )
     return
@@ -168,13 +175,13 @@ fn emit_rc_alloc_with_free_list(
   // free_ptr = free_list_head
   emit_global_get(buf, ctx.rc_free_list_global)
   emit_local_set(buf, free_ptr)
-  // if free_ptr != 0 && load(free_ptr - 8) == total_size
+  // if free_ptr != 0 && load(free_ptr - header_size) == total_size
   emit_local_get(buf, free_ptr)
   emit_i32_const_raw(buf, 0)
   emit_i32_ne(buf)
   emit_if(buf) // if free_ptr != 0
   emit_local_get(buf, free_ptr)
-  emit_i32_const_raw(buf, 8) // rc_header_extra
+  emit_i32_const_raw(buf, ctx.rc_header_size) // header_size
   emit_i32_sub(buf)
   emit_i32_load(buf, 0) // load alloc_size
   emit_i32_const_raw(buf, total_size)
@@ -194,6 +201,7 @@ fn emit_rc_alloc_with_free_list(
     buf,
     obj_local,
     total_size,
+    header_size=ctx.rc_header_size,
     debug_alloc_global=ctx.rc_debug_alloc_global,
   )
   emit_else(buf) // size doesn't match → bump allocate
@@ -214,7 +222,7 @@ fn emit_rc_bump_alloc(
 ) -> Unit {
   emit_heap_reserve(ctx, buf, total_size)
   emit_local_get(buf, ctx.heap_local)
-  emit_i32_const_raw(buf, rc_header_extra)
+  emit_i32_const_raw(buf, ctx.rc_header_size)
   emit_i32_add(buf)
   emit_local_set(buf, obj_local)
   emit_local_get(buf, ctx.heap_local)
@@ -226,6 +234,7 @@ fn emit_rc_bump_alloc(
     buf,
     obj_local,
     total_size,
+    header_size=ctx.rc_header_size,
     debug_alloc_global=ctx.rc_debug_alloc_global,
   )
 }
@@ -1307,6 +1316,7 @@ fn compile_rc_drop_function(
 fn compile_rc_alloc_function(
   heap_global : Int,
   free_list_global : Int,
+  header_size? : Int = 8,
   debug_alloc_global? : Int = -1,
 ) -> WasmFunc {
   let body = ByteBuf::new()
@@ -1363,20 +1373,22 @@ fn compile_rc_alloc_function(
   emit_memory_grow(body)
   emit_drop(body)
   emit_end(body)
-  // obj_ptr = old_heap + 8
+  // obj_ptr = old_heap + header_size
   emit_global_get(body, heap_global)
-  emit_i32_const_raw(body, rc_header_extra)
+  emit_i32_const_raw(body, header_size)
   emit_i32_add(body)
   emit_local_set(body, obj_ptr)
   // heap = new_heap
   emit_local_get(body, new_heap)
   emit_global_set(body, heap_global)
-  // Write alloc_size at obj_ptr - 8
-  emit_local_get(body, obj_ptr)
-  emit_i32_const_raw(body, rc_header_extra)
-  emit_i32_sub(body)
-  emit_local_get(body, total_size)
-  emit_i32_store(body, 0)
+  // Write alloc_size at obj_ptr - header_size (only when free-list is enabled)
+  if free_list_global >= 0 {
+    emit_local_get(body, obj_ptr)
+    emit_i32_const_raw(body, header_size)
+    emit_i32_sub(body)
+    emit_local_get(body, total_size)
+    emit_i32_store(body, 0)
+  }
   // Write rc_count = 1 at obj_ptr - 4
   emit_local_get(body, obj_ptr)
   emit_i32_const_raw(body, 4)

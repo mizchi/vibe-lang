@@ -225,9 +225,10 @@ test "RC codegen: free-list global referenced in allocation code" {
 }
 
 ///|
-test "RC codegen: rc_header_extra is 8 bytes" {
-  // Header layout: [alloc_size@-8][rc_count@-4][type_id@0]
-  assert_eq(rc_header_extra, 8)
+test "RC codegen: rc_header_extra is max 8 bytes (with free-list)" {
+  // Header layout with free-list: [alloc_size@-8][rc_count@-4][type_id@0]
+  // Without free-list: [rc_count@-4][type_id@0] (4 bytes)
+  assert_eq(rc_header_extra, 8) // max value (used when free-list enabled)
 }
 
 ///|

@@ -1135,7 +1135,8 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     ctx.coverage_enabled ||
     need_fs_global ||
     ctx.need_socket ||
-    ctx.enable_rc ||
+    ctx.rc_free_list_global >= 0 ||
+    ctx.rc_debug ||
     exported_env_global_count > 0
   // In linked mode, __heap_ptr is imported (not defined in global section)
   let heap_global_in_section = ctx.use_heap_global && not(has_linked_imports)
@@ -1147,7 +1148,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       (if ctx.coverage_enabled { 2 } else { 0 }) +
       (if need_fs_global { 1 } else { 0 }) +
       (if ctx.need_socket { 1 } else { 0 }) +
-      (if ctx.enable_rc { 1 } else { 0 }) +
+      (if ctx.rc_free_list_global >= 0 { 1 } else { 0 }) +
       (if ctx.rc_debug { 2 } else { 0 }) +
       exported_env_global_count
     write_u32_leb(global_sec, global_count)
@@ -1213,14 +1214,8 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       emit_i32_const_raw(global_sec, 0)
       global_sec.push((11).to_byte()) // end
     }
-    if ctx.enable_rc {
+    if ctx.rc_free_list_global >= 0 {
       // RC free-list head global: i32, mutable, init = 0 (empty list)
-      ctx.rc_free_list_global = (if ctx.use_heap_global { 1 } else { 0 }) +
-        (if ctx.need_stack_switching { 1 } else { 0 }) +
-        (if ctx.need_effect_resume { 3 } else { 0 }) +
-        (if ctx.coverage_enabled { 2 } else { 0 }) +
-        (if need_fs_global { 1 } else { 0 }) +
-        (if ctx.need_socket { 1 } else { 0 })
       global_sec.push((127).to_byte()) // i32
       global_sec.push((1).to_byte()) // mutable
       emit_i32_const_raw(global_sec, 0)
@@ -1228,9 +1223,6 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     }
     // RC debug mode: alloc_count and free_count globals
     if ctx.rc_debug {
-      let debug_base = ctx.rc_free_list_global + 1
-      ctx.rc_debug_alloc_global = debug_base
-      ctx.rc_debug_free_global = debug_base + 1
       for _ in 0..<2 {
         global_sec.push((127).to_byte()) // i32
         global_sec.push((1).to_byte()) // mutable
@@ -1246,7 +1238,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
         (if ctx.coverage_enabled { 2 } else { 0 }) +
         (if need_fs_global { 1 } else { 0 }) +
         (if ctx.need_socket { 1 } else { 0 }) +
-        (if ctx.enable_rc { 1 } else { 0 }) +
+        (if ctx.rc_free_list_global >= 0 { 1 } else { 0 }) +
         (if ctx.rc_debug { 2 } else { 0 })
       for name, _ in ctx.exported_fn_env_globals {
         // Mutable i32 global, initial value 0
@@ -3474,7 +3466,7 @@ fn emit_module_with_coverage(
       (if ctx.coverage_enabled { 2 } else { 0 }) +
       (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 }) +
       (if ctx.need_socket { 1 } else { 0 }) +
-      (if ctx.enable_rc { 1 } else { 0 }) +
+      (if ctx.rc_free_list_global >= 0 { 1 } else { 0 }) +
       (if ctx.rc_debug { 2 } else { 0 })
     for name, _ in ctx.exported_fn_env_globals {
       ctx.exported_fn_env_globals[name] = env_global_idx
@@ -3511,20 +3503,6 @@ fn emit_module_with_coverage(
     ctx.effect_resume_count_global = base + 1
     ctx.effect_resume_buf_global = base + 2
   }
-  // Pre-compute RC free-list global index before compile loop.
-  // This must match the global layout in build_module's global section.
-  if ctx.enable_rc {
-    ctx.rc_free_list_global = (if ctx.use_heap_global { 1 } else { 0 }) +
-      (if ctx.need_stack_switching { 1 } else { 0 }) +
-      (if ctx.need_effect_resume { 3 } else { 0 }) +
-      (if ctx.coverage_enabled { 2 } else { 0 }) +
-      (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 }) +
-      (if ctx.need_socket { 1 } else { 0 })
-    if ctx.rc_debug {
-      ctx.rc_debug_alloc_global = ctx.rc_free_list_global + 1
-      ctx.rc_debug_free_global = ctx.rc_free_list_global + 2
-    }
-  }
   // Pre-compute RC helper function indices before compile loop.
   // Helpers are appended right after user functions in compiled_funcs.
   // Only include helpers that are actually needed to minimize binary size.
@@ -3543,6 +3521,35 @@ fn emit_module_with_coverage(
         }
       }
     })
+    // Free-list is only needed when mutable reassignment exists.
+    // Without free-list, RC header shrinks from 8 to 4 bytes (no alloc_size).
+    if has_assign_drop {
+      ctx.rc_header_size = 8 // [alloc_size@-8][rc_count@-4]
+      ctx.rc_free_list_global = (if ctx.use_heap_global { 1 } else { 0 }) +
+        (if ctx.need_stack_switching { 1 } else { 0 }) +
+        (if ctx.need_effect_resume { 3 } else { 0 }) +
+        (if ctx.coverage_enabled { 2 } else { 0 }) +
+        (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 }) +
+        (if ctx.need_socket { 1 } else { 0 })
+    } else {
+      ctx.rc_header_size = 4 // [rc_count@-4] only
+      ctx.rc_free_list_global = -1
+    }
+    if ctx.rc_debug {
+      // Debug globals are placed after free-list global (if present)
+      let debug_base = if ctx.rc_free_list_global >= 0 {
+        ctx.rc_free_list_global + 1
+      } else {
+        (if ctx.use_heap_global { 1 } else { 0 }) +
+          (if ctx.need_stack_switching { 1 } else { 0 }) +
+          (if ctx.need_effect_resume { 3 } else { 0 }) +
+          (if ctx.coverage_enabled { 2 } else { 0 }) +
+          (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 }) +
+          (if ctx.need_socket { 1 } else { 0 })
+      }
+      ctx.rc_debug_alloc_global = debug_base
+      ctx.rc_debug_free_global = debug_base + 1
+    }
     let mut next = funcs.length()
     if has_dup {
       ctx.rc_dup_func_idx = next
@@ -3656,6 +3663,7 @@ fn emit_module_with_coverage(
       compile_rc_alloc_function(
         ctx.heap_global,
         ctx.rc_free_list_global,
+        header_size=ctx.rc_header_size,
         debug_alloc_global=ctx.rc_debug_alloc_global,
       ),
     )
