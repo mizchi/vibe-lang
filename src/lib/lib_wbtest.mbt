@@ -74,11 +74,8 @@ test "init_state_report_json injects kv files for project requests" {
 }
 
 ///|
-test "eval_report_json reports PromptText value type" {
-  let _ = eval_reset_report_json("{}")
-  let request = "{\"source\":\"PromptText::new(\\\"hello\\\")\"}"
-  let json = eval_report_json(request)
-  assert_true(json.contains("\"ok\":true"))
-  assert_true(json.contains("\"value_type\":\"PromptText\""))
-  let _ = eval_reset_report_json("{}")
+test "eval_report_json returns unsupported after eval removal" {
+  let json = eval_report_json("{\"source\":\"1+1\"}")
+  assert_true(json.contains("\"ok\":false"))
+  assert_true(json.contains("compiled backend"))
 }

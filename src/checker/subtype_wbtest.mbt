@@ -299,7 +299,7 @@ test "trait impl body basic" {
   let env = parse_desugar_and_check(script)
   // The impl method should be registered as Int::eq
   let eq_ty = env.get("Int::eq")
-  assert_true(eq_ty.is_some())
+  assert_true(eq_ty is Some(_))
 }
 
 ///|

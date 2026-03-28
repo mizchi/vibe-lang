@@ -1309,106 +1309,26 @@ pub fn vibe_ide_search(
 }
 
 ///|
-let eval_runtime_ref : Ref[@runtime.Runtime?] = @ref.new(None)
-
-///|
-fn ensure_eval_runtime() -> @runtime.Runtime {
-  match eval_runtime_ref.val {
-    Some(rt) => rt
-    None => {
-      let rt = @runtime.Runtime::new(@capability.CapabilitySet::new())
-      eval_runtime_ref.val = Some(rt)
-      rt
-    }
-  }
-}
-
-///|
-fn value_type_name(value : @core.Value) -> String {
-  match value {
-    @core.Value::Int(_) => "Int"
-    @core.Value::Float(_) => "Float"
-    @core.Value::Double(_) => "Double"
-    @core.Value::Bool(_) => "Bool"
-    @core.Value::Char(_) => "Char"
-    @core.Value::String(_) => "String"
-    @core.Value::Path(_) => "Path"
-    @core.Value::PromptText(_) => "PromptText"
-    @core.Value::Unit => "Unit"
-    @core.Value::Tuple(_) => "Tuple"
-    @core.Value::Record(_) => "Record"
-    @core.Value::Array(_) => "Array"
-    @core.Value::Map(_) => "Map"
-    @core.Value::ArrayBuilder(_) => "ArrayBuilder"
-    @core.Value::MapBuilder(_) => "MapBuilder"
-    @core.Value::StringBuilder(_) => "StringBuilder"
-    @core.Value::Bytes(_) => "Bytes"
-    @core.Value::Set(_) => "Set"
-    @core.Value::Fn(_) => "Fn"
-  }
-}
-
-///|
-fn error_stage_from_vibe(err : @runtime.VibeError) -> String {
-  let s = err.to_string()
-  if s.has_prefix("Parse(") {
-    "parse"
-  } else if s.has_prefix("Type(") {
-    "type"
-  } else {
-    "eval"
-  }
-}
-
-///|
+// TODO(#20): migrate to compiled backend (playground API)
 fn eval_report_json(request : String) -> String {
-  let obj = match parse_request_object(request) {
-    Ok(value) => value
-    Err(err) => return response_error_json(err)
-  }
-  let source = match json_string_field(obj, "source") {
-    Ok(value) => value
-    Err(err) => return response_error_json(err)
-  }
-  // TODO(#20): migrate to compiled backend (playground API)
-  // Use the persistent runtime for parse + typecheck + eval (accumulates state)
-  let rt = ensure_eval_runtime()
-  let result = rt.eval_script(source) catch {
-    err => {
-      let root : Map[String, Json] = {}
-      root["ok"] = Json::boolean(false)
-      root["diagnostics"] = Json::array([
-        diagnostic_to_json(@core.Diagnostic::{
-          stage: error_stage_from_vibe(err),
-          message: err.to_string(),
-          span: None,
-          hint: None,
-          note: None,
-        }),
-      ])
-      return Json::object(root).stringify()
-    }
-  }
+  let _ = request
   let root : Map[String, Json] = {}
-  root["ok"] = Json::boolean(true)
-  root["diagnostics"] = Json::array([])
-  match result.last {
-    Some(value) => {
-      root["value"] = Json::string(value.to_string())
-      root["value_type"] = Json::string(value_type_name(value))
-    }
-    None => {
-      root["value"] = Json::null()
-      root["value_type"] = Json::string("Unit")
-    }
-  }
+  root["ok"] = Json::boolean(false)
+  root["diagnostics"] = Json::array([
+    diagnostic_to_json(@core.Diagnostic::{
+      stage: "eval",
+      message: "eval_script has been removed; use compiled backend",
+      span: None,
+      hint: None,
+      note: None,
+    }),
+  ])
   Json::object(root).stringify()
 }
 
 ///|
 fn eval_reset_report_json(request : String) -> String {
   let _ = request
-  eval_runtime_ref.val = None
   let root : Map[String, Json] = {}
   root["ok"] = Json::boolean(true)
   Json::object(root).stringify()

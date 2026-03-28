@@ -145,6 +145,7 @@ priv enum GcTypeDef {
   Array(elem~ : GcValKind)
   Struct(fields~ : Array[GcValKind])
   Func(params~ : Array[GcValKind], result~ : GcValKind)
+  TagFunc(params~ : Array[GcValKind])
 }
 
 ///|
@@ -204,6 +205,8 @@ priv struct GcCodegenCtx {
   enum_ctor_type_indices : Map[String, Int]
   enum_ctor_field_kinds : Map[String, Array[GcValKind]]
   enum_names : Map[String, Bool]
+  error_tag_index : Int
+  error_tag_type_index : Int
 }
 
 ///|
@@ -325,6 +328,10 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
     GcValKind::Ref(array_i32_type),
   ]
   let bytes_type = ensure_struct_type(types, struct_type_index, bytes_fields)
+  // Error tag type: (eqref) -> [] — a tag carrying one eqref payload
+  let error_tag_type_index = types.length()
+  types.push(GcTypeDef::TagFunc(params=[GcValKind::EqRef]))
+  let error_tag_index = 0 // The first (and only) tag
   {
     types,
     struct_type_index,
@@ -345,6 +352,8 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
     enum_ctor_type_indices: {},
     enum_ctor_field_kinds: {},
     enum_names: {},
+    error_tag_index,
+    error_tag_type_index,
   }
 }
 
@@ -435,6 +444,11 @@ fn emit_i32_mul_gc(buf : GcByteBuf) -> Unit {
 ///|
 fn emit_i32_div_s_gc(buf : GcByteBuf) -> Unit {
   buf.push(0x6d)
+}
+
+///|
+fn emit_i32_eqz_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x45)
 }
 
 ///|
@@ -936,6 +950,21 @@ fn collect_free_vars_expr_gc(
         collect_free_vars_expr_gc(arm.expr, inner_bound, free)
       }
     }
+    @core.Expr::Handle(body~, arms~, ..) => {
+      collect_free_vars_module_gc(body, bound, free)
+      for arm in arms {
+        let inner_bound : Map[String, Bool] = {}
+        for k, v in bound {
+          inner_bound[k] = v
+        }
+        collect_free_vars_pat_gc(arm.pat, inner_bound)
+        collect_free_vars_expr_gc(arm.expr, inner_bound, free)
+      }
+    }
+    @core.Expr::Perform(args~, ..) =>
+      for arg in args {
+        collect_free_vars_expr_gc(arg.expr, bound, free)
+      }
     _ => ()
   }
 }
@@ -1588,6 +1617,31 @@ fn infer_expr_kind_gc(
             _ => GcValKind::EqRef
           }
         }
+        "MapBuilder::new" | "MapBuilder::freeze" => {
+          let key_arr_type = ensure_array_type(
+            ctx.types,
+            ctx.array_type_index,
+            GcValKind::EqRef,
+          )
+          let val_arr_type = ensure_array_type(
+            ctx.types,
+            ctx.array_type_index,
+            GcValKind::I64,
+          )
+          let builder_fields : Array[GcValKind] = [
+            GcValKind::I32,
+            GcValKind::Ref(key_arr_type),
+            GcValKind::Ref(val_arr_type),
+          ]
+          let builder_type = ensure_struct_type(
+            ctx.types,
+            ctx.struct_type_index,
+            builder_fields,
+          )
+          GcValKind::Ref(builder_type)
+        }
+        "MapBuilder::set" => GcValKind::I32
+        "Map::get" => GcValKind::I64
         "__eq"
         | "__lt"
         | "String::equals"
@@ -1634,7 +1688,6 @@ fn infer_expr_kind_gc(
           )
           GcValKind::Ref(str_arr_type)
         }
-        "String::from_char_code" => GcValKind::Ref(ctx.string_type)
         "record_set" => {
           if pos_args.length() != 3 {
             raise WasmGenError::Unsupported("arity: record_set")
@@ -1753,6 +1806,13 @@ fn infer_expr_kind_gc(
       )
       GcValKind::Ref(struct_type_idx)
     }
+    @core.Expr::Perform(effect_name="Error", op_name="Throw", ..) =>
+      // throw always diverges, result type doesn't matter
+      GcValKind::EqRef
+    @core.Expr::Perform(..) => GcValKind::EqRef
+    @core.Expr::Handle(body~, ..) =>
+      // Handle result is the body's result type
+      infer_block_kind_gc(ctx, fctx, body)
     _ => raise WasmGenError::Unsupported("expr")
   }
 }
@@ -4322,7 +4382,7 @@ fn compile_len_gc(
             emit_i64_extend_i32_s_gc(buf)
           }
           GcTypeDef::Struct(..) => raise WasmGenError::Unsupported("__len ref")
-          GcTypeDef::Func(..) =>
+          GcTypeDef::Func(..) | GcTypeDef::TagFunc(..) =>
             raise WasmGenError::Unsupported("__len func ref")
         }
       }
@@ -4616,7 +4676,7 @@ fn bind_pat_kinds_gc(
 ///|
 fn compile_pat_cond_gc(
   ctx : GcCodegenCtx,
-  fctx : GcFuncCtx,
+  _fctx : GcFuncCtx,
   buf : GcByteBuf,
   scrut_idx : Int,
   scrut_kind : GcValKind,
@@ -5859,6 +5919,288 @@ fn compile_expr_gc(
           emit_end_gc(buf)
           emit_local_get_gc(buf, dst_l)
         }
+        "MapBuilder::new" => {
+          // Map: struct { len: i32, keys: ref array<ref string>, vals: ref array<i64> }
+          let init_cap = 8
+          let key_arr_type = ensure_array_type(
+            ctx.types,
+            ctx.array_type_index,
+            GcValKind::EqRef,
+          )
+          let val_arr_type = ensure_array_type(
+            ctx.types,
+            ctx.array_type_index,
+            GcValKind::I64,
+          )
+          let builder_fields : Array[GcValKind] = [
+            GcValKind::I32,
+            GcValKind::Ref(key_arr_type),
+            GcValKind::Ref(val_arr_type),
+          ]
+          let builder_type = ensure_struct_type(
+            ctx.types,
+            ctx.struct_type_index,
+            builder_fields,
+          )
+          emit_i32_const_gc(buf, 0) // len = 0
+          emit_i32_const_gc(buf, init_cap)
+          emit_array_new_default_gc(buf, key_arr_type)
+          emit_i32_const_gc(buf, init_cap)
+          emit_array_new_default_gc(buf, val_arr_type)
+          emit_struct_new_gc(buf, builder_type)
+        }
+        "MapBuilder::set" => {
+          // MapBuilder::set(builder, key, value)
+          if pos_args.length() != 3 {
+            raise WasmGenError::Unsupported("MapBuilder::set arity")
+          }
+          let key_arr_type = ensure_array_type(
+            ctx.types,
+            ctx.array_type_index,
+            GcValKind::EqRef,
+          )
+          let val_arr_type = ensure_array_type(
+            ctx.types,
+            ctx.array_type_index,
+            GcValKind::I64,
+          )
+          let builder_fields : Array[GcValKind] = [
+            GcValKind::I32,
+            GcValKind::Ref(key_arr_type),
+            GcValKind::Ref(val_arr_type),
+          ]
+          let builder_type = ensure_struct_type(
+            ctx.types,
+            ctx.struct_type_index,
+            builder_fields,
+          )
+          let b_idx = alloc_local_gc(fctx, GcValKind::Ref(builder_type))
+          let len_l = alloc_local_gc(fctx, GcValKind::I32)
+          let cap_l = alloc_local_gc(fctx, GcValKind::I32)
+          let keys_l = alloc_local_gc(fctx, GcValKind::Ref(key_arr_type))
+          let vals_l = alloc_local_gc(fctx, GcValKind::Ref(val_arr_type))
+          let new_keys = alloc_local_gc(fctx, GcValKind::Ref(key_arr_type))
+          let new_vals = alloc_local_gc(fctx, GcValKind::Ref(val_arr_type))
+          let i_l = alloc_local_gc(fctx, GcValKind::I32)
+          let key_l = alloc_local_gc(fctx, GcValKind::EqRef)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_local_set_gc(buf, b_idx)
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_local_set_gc(buf, key_l)
+          emit_local_get_gc(buf, b_idx)
+          emit_struct_get_gc(buf, builder_type, 0)
+          emit_local_set_gc(buf, len_l)
+          emit_local_get_gc(buf, b_idx)
+          emit_struct_get_gc(buf, builder_type, 1)
+          emit_local_set_gc(buf, keys_l)
+          emit_local_get_gc(buf, b_idx)
+          emit_struct_get_gc(buf, builder_type, 2)
+          emit_local_set_gc(buf, vals_l)
+          emit_local_get_gc(buf, keys_l)
+          emit_array_len_gc(buf)
+          emit_local_set_gc(buf, cap_l)
+          let found_l = alloc_local_gc(fctx, GcValKind::I32) // 1 if found
+          let val_l = alloc_local_gc(fctx, GcValKind::I64)
+          // Compile value once and save to local
+          compile_expr_gc(ctx, fctx, buf, pos_args[2])
+          emit_local_set_gc(buf, val_l)
+          // Search for existing key
+          emit_i32_const_gc(buf, 0)
+          emit_local_set_gc(buf, i_l)
+          emit_i32_const_gc(buf, 0)
+          emit_local_set_gc(buf, found_l)
+          // block $done
+          emit_block_gc(buf, None)
+          // loop $search
+          emit_loop_gc(buf, None)
+          emit_local_get_gc(buf, i_l)
+          emit_local_get_gc(buf, len_l)
+          emit_i32_ge_s_gc(buf)
+          emit_br_if_gc(buf, 1) // br $done
+          emit_local_get_gc(buf, keys_l)
+          emit_local_get_gc(buf, i_l)
+          emit_array_get_gc(buf, key_arr_type)
+          emit_local_get_gc(buf, key_l)
+          emit_ref_eq_gc(buf)
+          emit_if_gc(buf, None)
+          // Found: update value and break
+          emit_local_get_gc(buf, vals_l)
+          emit_local_get_gc(buf, i_l)
+          emit_local_get_gc(buf, val_l)
+          emit_array_set_gc(buf, val_arr_type)
+          emit_i32_const_gc(buf, 1)
+          emit_local_set_gc(buf, found_l)
+          emit_br_gc(buf, 2) // br $done
+          emit_end_gc(buf) // end if
+          emit_local_get_gc(buf, i_l)
+          emit_i32_const_gc(buf, 1)
+          emit_i32_add_gc(buf)
+          emit_local_set_gc(buf, i_l)
+          emit_br_gc(buf, 0) // br $search
+          emit_end_gc(buf) // end loop
+          emit_end_gc(buf) // end $done
+          // If not found, append
+          emit_local_get_gc(buf, found_l)
+          emit_i32_eqz_gc(buf)
+          emit_if_gc(buf, None)
+          // Grow if needed
+          emit_local_get_gc(buf, len_l)
+          emit_local_get_gc(buf, cap_l)
+          emit_i32_ge_s_gc(buf)
+          emit_if_gc(buf, None)
+          emit_local_get_gc(buf, cap_l)
+          emit_i32_const_gc(buf, 2)
+          emit_i32_mul_gc(buf)
+          emit_array_new_default_gc(buf, key_arr_type)
+          emit_local_set_gc(buf, new_keys)
+          emit_local_get_gc(buf, cap_l)
+          emit_i32_const_gc(buf, 2)
+          emit_i32_mul_gc(buf)
+          emit_array_new_default_gc(buf, val_arr_type)
+          emit_local_set_gc(buf, new_vals)
+          // copy old to new
+          emit_i32_const_gc(buf, 0)
+          emit_local_set_gc(buf, i_l)
+          emit_block_gc(buf, None)
+          emit_loop_gc(buf, None)
+          emit_local_get_gc(buf, i_l)
+          emit_local_get_gc(buf, len_l)
+          emit_i32_ge_s_gc(buf)
+          emit_br_if_gc(buf, 1)
+          emit_local_get_gc(buf, new_keys)
+          emit_local_get_gc(buf, i_l)
+          emit_local_get_gc(buf, keys_l)
+          emit_local_get_gc(buf, i_l)
+          emit_array_get_gc(buf, key_arr_type)
+          emit_array_set_gc(buf, key_arr_type)
+          emit_local_get_gc(buf, new_vals)
+          emit_local_get_gc(buf, i_l)
+          emit_local_get_gc(buf, vals_l)
+          emit_local_get_gc(buf, i_l)
+          emit_array_get_gc(buf, val_arr_type)
+          emit_array_set_gc(buf, val_arr_type)
+          emit_local_get_gc(buf, i_l)
+          emit_i32_const_gc(buf, 1)
+          emit_i32_add_gc(buf)
+          emit_local_set_gc(buf, i_l)
+          emit_br_gc(buf, 0)
+          emit_end_gc(buf) // end copy loop
+          emit_end_gc(buf) // end copy block
+          emit_local_get_gc(buf, b_idx)
+          emit_local_get_gc(buf, new_keys)
+          emit_struct_set_gc(buf, builder_type, 1)
+          emit_local_get_gc(buf, b_idx)
+          emit_local_get_gc(buf, new_vals)
+          emit_struct_set_gc(buf, builder_type, 2)
+          emit_local_get_gc(buf, new_keys)
+          emit_local_set_gc(buf, keys_l)
+          emit_local_get_gc(buf, new_vals)
+          emit_local_set_gc(buf, vals_l)
+          emit_end_gc(buf) // end if grow
+          // Append: keys[len] = key, vals[len] = val
+          emit_local_get_gc(buf, keys_l)
+          emit_local_get_gc(buf, len_l)
+          emit_local_get_gc(buf, key_l)
+          emit_array_set_gc(buf, key_arr_type)
+          emit_local_get_gc(buf, vals_l)
+          emit_local_get_gc(buf, len_l)
+          emit_local_get_gc(buf, val_l)
+          emit_array_set_gc(buf, val_arr_type)
+          // len++
+          emit_local_get_gc(buf, b_idx)
+          emit_local_get_gc(buf, len_l)
+          emit_i32_const_gc(buf, 1)
+          emit_i32_add_gc(buf)
+          emit_struct_set_gc(buf, builder_type, 0)
+          emit_end_gc(buf) // end if !found
+          emit_i32_const_gc(buf, 0) // return Unit
+        }
+        "MapBuilder::freeze" => {
+          // freeze returns builder as-is (same representation)
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("MapBuilder::freeze arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+        }
+        "Map::get" => {
+          // Map::get(map, key) -> eqref (None encoded as i31ref 0)
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("Map::get arity")
+          }
+          let key_arr_type = ensure_array_type(
+            ctx.types,
+            ctx.array_type_index,
+            GcValKind::EqRef,
+          )
+          let val_arr_type = ensure_array_type(
+            ctx.types,
+            ctx.array_type_index,
+            GcValKind::I64,
+          )
+          let builder_fields : Array[GcValKind] = [
+            GcValKind::I32,
+            GcValKind::Ref(key_arr_type),
+            GcValKind::Ref(val_arr_type),
+          ]
+          let builder_type = ensure_struct_type(
+            ctx.types,
+            ctx.struct_type_index,
+            builder_fields,
+          )
+          let b_idx = alloc_local_gc(fctx, GcValKind::Ref(builder_type))
+          let len_l = alloc_local_gc(fctx, GcValKind::I32)
+          let keys_l = alloc_local_gc(fctx, GcValKind::Ref(key_arr_type))
+          let vals_l = alloc_local_gc(fctx, GcValKind::Ref(val_arr_type))
+          let i_l = alloc_local_gc(fctx, GcValKind::I32)
+          let key_l = alloc_local_gc(fctx, GcValKind::EqRef)
+          let result_l = alloc_local_gc(fctx, GcValKind::I64)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_local_set_gc(buf, b_idx)
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_local_set_gc(buf, key_l)
+          emit_local_get_gc(buf, b_idx)
+          emit_struct_get_gc(buf, builder_type, 0)
+          emit_local_set_gc(buf, len_l)
+          emit_local_get_gc(buf, b_idx)
+          emit_struct_get_gc(buf, builder_type, 1)
+          emit_local_set_gc(buf, keys_l)
+          emit_local_get_gc(buf, b_idx)
+          emit_struct_get_gc(buf, builder_type, 2)
+          emit_local_set_gc(buf, vals_l)
+          // Linear search with result in local
+          emit_i32_const_gc(buf, 0)
+          emit_local_set_gc(buf, i_l)
+          // block $done
+          emit_block_gc(buf, None)
+          // loop $search
+          emit_loop_gc(buf, None)
+          emit_local_get_gc(buf, i_l)
+          emit_local_get_gc(buf, len_l)
+          emit_i32_ge_s_gc(buf)
+          emit_br_if_gc(buf, 1) // br $done (not found)
+          emit_local_get_gc(buf, keys_l)
+          emit_local_get_gc(buf, i_l)
+          emit_array_get_gc(buf, key_arr_type)
+          emit_local_get_gc(buf, key_l)
+          emit_ref_eq_gc(buf)
+          emit_if_gc(buf, None)
+          // Found: store vals[i] and break
+          emit_local_get_gc(buf, vals_l)
+          emit_local_get_gc(buf, i_l)
+          emit_array_get_gc(buf, val_arr_type)
+          emit_local_set_gc(buf, result_l)
+          emit_br_gc(buf, 2) // br $done
+          emit_end_gc(buf) // end if
+          emit_local_get_gc(buf, i_l)
+          emit_i32_const_gc(buf, 1)
+          emit_i32_add_gc(buf)
+          emit_local_set_gc(buf, i_l)
+          emit_br_gc(buf, 0) // br $search
+          emit_end_gc(buf) // end loop
+          emit_end_gc(buf) // end $done
+          // result_l has the value (or default null eqref if not found)
+          emit_local_get_gc(buf, result_l)
+        }
         _ =>
           match ctx.func_indices.get(name) {
             Some(idx) => {
@@ -6221,6 +6563,99 @@ fn compile_expr_gc(
       emit_struct_new_gc(buf, env_type_idx)
       emit_struct_new_gc(buf, struct_type_idx)
     }
+    @core.Expr::Perform(effect_name="Error", op_name="Throw", args~, span~) => {
+      let _ = span
+      // throw: compile error value, then emit throw instruction
+      let value = if args.length() >= 1 {
+        args[0].expr
+      } else {
+        @core.Expr::Int(value=0L, span~)
+      }
+      compile_expr_gc(ctx, fctx, buf, value)
+      buf.push(0x08) // throw opcode
+      write_u32_leb_gc(buf, ctx.error_tag_index)
+    }
+    @core.Expr::Perform(effect_name~, op_name~, args~, span~) => {
+      let _ = span
+      let _ = args
+      raise WasmGenError::Unsupported(
+        "perform " + effect_name + "::" + op_name,
+      )
+    }
+    @core.Expr::Handle(body~, arms~, span~) => {
+      let _ = span
+      // Error-only handle: try_table with catch
+      let catch_arm = if arms.length() > 0 {
+        arms[0]
+      } else {
+        raise WasmGenError::Unsupported("handle with no arms")
+      }
+      // Infer result type from body
+      let result_kind = infer_block_kind_gc(ctx, fctx, body)
+      // Structure:
+      // block $outer (result result_kind)     ; depth +1
+      //   block $catch_target (result eqref)  ; depth +1 — catch lands here
+      //     try_table (result result_kind) (catch error_tag $catch_target)
+      //       {body}
+      //     end try_table
+      //     br $outer                         ; success → skip handler
+      //   end $catch_target                   ; error value (eqref) on stack
+      //   {handler code}
+      // end $outer
+      // block $outer
+      emit_block_gc(buf, Some(result_kind))
+      // block $catch_target (result eqref)
+      emit_block_gc(buf, Some(GcValKind::EqRef))
+      // try_table (result result_kind) (catch error_tag 0)
+      buf.push(0x1f) // try_table opcode
+      write_valtype_gc(buf, result_kind)
+      write_u32_leb_gc(buf, 1) // 1 handler
+      buf.push(0x00) // catch (not catch_ref)
+      write_u32_leb_gc(buf, ctx.error_tag_index)
+      write_u32_leb_gc(buf, 0) // branch depth 0 = $catch_target
+      // {body}
+      compile_block_expr_gc(ctx, fctx, buf, body)
+      // end try_table
+      emit_end_gc(buf)
+      // br $outer (success)
+      emit_br_gc(buf, 1)
+      // end $catch_target — eqref error value on stack
+      emit_end_gc(buf)
+      // Handler code: error value is on stack as eqref
+      let error_local = alloc_local_gc(fctx, GcValKind::EqRef)
+      emit_local_set_gc(buf, error_local)
+      // Bind error name if pattern is Error(e) or Bind(e)
+      let saved_locals = clone_locals_gc(fctx.locals)
+      match catch_arm.pat {
+        @core.Pat::Bind(name~, ..) => {
+          let idx = alloc_local_gc(fctx, GcValKind::EqRef)
+          emit_local_get_gc(buf, error_local)
+          emit_local_set_gc(buf, idx)
+          fctx.locals[name] = { idx, kind: GcValKind::EqRef }
+        }
+        @core.Pat::Ctor(name="Error", args~, ..) if args.length() > 0 =>
+          match args[0] {
+            @core.Pat::Bind(name~, ..) => {
+              let idx = alloc_local_gc(fctx, GcValKind::EqRef)
+              emit_local_get_gc(buf, error_local)
+              emit_local_set_gc(buf, idx)
+              fctx.locals[name] = { idx, kind: GcValKind::EqRef }
+            }
+            _ => ()
+          }
+        _ => ()
+      }
+      // Compile handler body
+      let catch_body = match catch_arm.expr {
+        @core.Expr::Block(body=blk_body, ..) => blk_body
+        other =>
+          @core.Module::{ stmts: [@core.Stmt::Expr(expr=other, span~)] }
+      }
+      compile_block_expr_gc(ctx, fctx, buf, catch_body)
+      restore_locals_gc(fctx, saved_locals)
+      // end $outer
+      emit_end_gc(buf)
+    }
     _ => raise WasmGenError::Unsupported("expr")
   }
 }
@@ -6545,6 +6980,14 @@ fn write_type_entry_gc(buf : GcByteBuf, ty : GcTypeDef) -> Unit {
       write_u32_leb_gc(buf, 1)
       write_valtype_gc(buf, result)
     }
+    GcTypeDef::TagFunc(params~) => {
+      buf.push(0x60)
+      write_u32_leb_gc(buf, params.length())
+      for p in params {
+        write_valtype_gc(buf, p)
+      }
+      write_u32_leb_gc(buf, 0) // no results (tag payload type)
+    }
   }
 }
 
@@ -6617,6 +7060,13 @@ fn build_module_gc(
     }
   }
   write_section_gc(buf, 3, func_sec.to_array())
+  // Tag section (section 13): error tag for throw/catch
+  // Must appear between func(3) and export(7) per exception handling proposal
+  let tag_sec = GcByteBuf::new()
+  write_u32_leb_gc(tag_sec, 1) // 1 tag
+  tag_sec.push(0x00) // tag attribute: exception
+  write_u32_leb_gc(tag_sec, ctx.error_tag_type_index) // type index
+  write_section_gc(buf, 13, tag_sec.to_array())
   let export_sec = GcByteBuf::new()
   write_u32_leb_gc(export_sec, 1)
   let name = "_start"

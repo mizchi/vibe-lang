@@ -1,7 +1,6 @@
 ///|
 /// Evaluation for vibe
 pub enum Effect {
-  PosixDesugar(String)
   ShellExec(String)
   StdoutWriteChar(Int)
   StdinReadChar(Int)
