@@ -399,6 +399,51 @@ fn emit_rc_drop_fields(
   emit_br(buf, 0)
   emit_end(buf) // end loop
   emit_end(buf) // end block
+  // Check for enum (type_id=10): arity at +4, fields at 12+idx*4
+  emit_local_get(buf, type_id_local)
+  emit_i32_const_raw(buf, 10) // obj_enum
+  emit_i32_ne(buf)
+  emit_br_if(buf, 0) // skip if not enum
+  // length = load(obj_ptr + 4) = arity
+  emit_local_get(buf, obj_local)
+  emit_i32_load(buf, 4)
+  emit_local_set(buf, len_local)
+  // idx = 0
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, idx_local)
+  // loop: while idx < arity
+  emit_block(buf) // block $break
+  emit_loop(buf) // loop $continue
+  emit_local_get(buf, idx_local)
+  emit_local_get(buf, len_local)
+  emit_i32_ge_s(buf)
+  emit_br_if(buf, 1) // br to $break
+  // field_val = load(obj_ptr + 12 + idx * 4)
+  emit_local_get(buf, obj_local)
+  emit_local_get(buf, idx_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i32_load(buf, 12) // offset 12 + idx*4 via dynamic base + static 12
+  emit_local_set(buf, field_val_local)
+  // rc_drop the field value (non-recursive to avoid codegen infinite loop)
+  emit_rc_drop(
+    ctx,
+    buf,
+    field_val_local,
+    field_tmp_local,
+    field_rc_local,
+    recursive=false,
+  )
+  // idx += 1
+  emit_local_get(buf, idx_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, idx_local)
+  // br $continue
+  emit_br(buf, 0)
+  emit_end(buf) // end loop
+  emit_end(buf) // end block
   emit_end(buf) // end outer block (skip target)
 }
 
@@ -806,6 +851,46 @@ fn compile_rc_drop_function(
   emit_end(body) // end loop
   emit_end(body) // end block $break
   emit_end(body) // end if type_id == 7
+  // --- Enum payloads (type_id=10): i32 fields at 12+idx*4 ---
+  emit_local_get(body, type_id)
+  emit_i32_const_raw(body, 10) // obj_enum
+  emit_i32_eq(body)
+  emit_if(body) // if type_id == 10
+  // len = load(obj_ptr + 4) = arity
+  emit_local_get(body, obj_ptr)
+  emit_i32_load(body, 4)
+  emit_local_set(body, len)
+  emit_i32_const_raw(body, 0)
+  emit_local_set(body, idx)
+  emit_block(body) // block $break
+  emit_loop(body) // loop $continue
+  emit_local_get(body, idx)
+  emit_local_get(body, len)
+  emit_i32_ge_s(body)
+  emit_br_if(body, 1) // br $break
+  // field_val = load_i32(obj_ptr + 12 + idx * 4)
+  emit_local_get(body, obj_ptr)
+  emit_local_get(body, idx)
+  emit_i32_const_raw(body, 4)
+  emit_i32_mul(body)
+  emit_i32_add(body)
+  emit_i32_load(body, 12)
+  emit_local_set(body, field_val)
+  // Convert i32 field to i64 and call $rc_drop recursively
+  emit_local_get(body, field_val)
+  emit_i64_extend_i32_u(body)
+  emit_local_set(body, field_i64)
+  emit_local_get(body, field_i64)
+  emit_call(body, self_func_abs_idx) // recursive $rc_drop
+  // idx += 1
+  emit_local_get(body, idx)
+  emit_i32_const_raw(body, 1)
+  emit_i32_add(body)
+  emit_local_set(body, idx)
+  emit_br(body, 0) // br $continue
+  emit_end(body) // end loop
+  emit_end(body) // end block $break
+  emit_end(body) // end if type_id == 10
   // --- End recursive drop fields ---
   // Tombstone: type_id = 0
   emit_local_get(body, obj_ptr)

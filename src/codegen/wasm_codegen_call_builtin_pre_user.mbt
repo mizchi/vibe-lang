@@ -2403,24 +2403,28 @@ fn compile_call_builtin_pre_user_inner(
         // Tag result as i64 Int: (result << 2) | tag_int
         // Then wrap in Some: heap alloc enum obj with tag=1, payload=tagged_int
         // Some tag index = 1 (None=0, Some=1)
-        let some_size = align4(8 + 8) // obj_type(4) + enum_tag(4) + payload(8)
+        let some_size = align4(12 + 8) // obj_type(4) + arity(4) + enum_tag(4) + payload(8)
         emit_heap_alloc(ctx, buf, some_size, obj_local)
         // Store obj_type = obj_enum (10)
         emit_local_get(buf, obj_local)
         emit_i32_const_raw(buf, obj_enum)
         emit_i32_store(buf, 0)
-        // Store enum tag = 1 (Some)
+        // Store arity = 1
         emit_local_get(buf, obj_local)
         emit_i32_const_raw(buf, 1)
         emit_i32_store(buf, 4)
-        // Store payload: tagged int value at offset 8
+        // Store enum tag = 1 (Some)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_store(buf, 8)
+        // Store payload: tagged int value at offset 12
         emit_local_get(buf, obj_local)
         emit_local_get(buf, result_local)
         emit_i64_extend_i32_s(buf)
         emit_i64_const_raw(buf, 2L)
         emit_i64_shl(buf)
         // tag_int = 0, i64.or is a no-op
-        emit_i64_store(buf, 8)
+        emit_i64_store(buf, 12)
         // Return tagged pointer: (obj_local as i64) | tag_obj
         emit_local_get(buf, obj_local)
         emit_i64_extend_i32_u(buf)
@@ -2430,14 +2434,17 @@ fn compile_call_builtin_pre_user_inner(
         emit_else(buf) // else: produce None
 
         // None: heap alloc enum obj with tag=0, no payload
-        let none_size = align4(8) // obj_type(4) + enum_tag(4)
+        let none_size = align4(12) // obj_type(4) + arity(4) + enum_tag(4)
         emit_heap_alloc(ctx, buf, none_size, obj_local)
         emit_local_get(buf, obj_local)
         emit_i32_const_raw(buf, obj_enum)
         emit_i32_store(buf, 0)
         emit_local_get(buf, obj_local)
-        emit_i32_const_raw(buf, 0) // None tag = 0
+        emit_i32_const_raw(buf, 0) // arity = 0
         emit_i32_store(buf, 4)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, 0) // None tag = 0
+        emit_i32_store(buf, 8)
         emit_local_get(buf, obj_local)
         emit_i64_extend_i32_u(buf)
         emit_i64_const_raw(buf, tag_obj.to_int64())
@@ -2726,18 +2733,21 @@ fn compile_call_builtin_pre_user_inner(
         emit_local_set(buf, boxed_f64_local)
 
         // Wrap in Some: enum obj with tag=1, payload=boxed_f64
-        let some_size = align4(8 + 8) // obj_type(4) + enum_tag(4) + payload(8)
+        let some_size = align4(12 + 4) // obj_type(4) + arity(4) + enum_tag(4) + payload(4)
         emit_heap_alloc(ctx, buf, some_size, obj_local)
         emit_local_get(buf, obj_local)
         emit_i32_const_raw(buf, obj_enum)
         emit_i32_store(buf, 0)
         emit_local_get(buf, obj_local)
-        emit_i32_const_raw(buf, 1) // Some tag = 1
+        emit_i32_const_raw(buf, 1) // arity = 1
         emit_i32_store(buf, 4)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, 1) // Some tag = 1
+        emit_i32_store(buf, 8)
         emit_local_get(buf, obj_local)
         emit_local_get(buf, boxed_f64_local)
         emit_i32_wrap_i64(buf)
-        emit_i32_store(buf, 8)
+        emit_i32_store(buf, 12)
         // Return tagged pointer
         emit_local_get(buf, obj_local)
         emit_i64_extend_i32_u(buf)
@@ -2746,14 +2756,17 @@ fn compile_call_builtin_pre_user_inner(
 
         emit_else(buf) // else: produce None
 
-        let none_size = align4(8) // obj_type(4) + enum_tag(4)
+        let none_size = align4(12) // obj_type(4) + arity(4) + enum_tag(4)
         emit_heap_alloc(ctx, buf, none_size, obj_local)
         emit_local_get(buf, obj_local)
         emit_i32_const_raw(buf, obj_enum)
         emit_i32_store(buf, 0)
         emit_local_get(buf, obj_local)
-        emit_i32_const_raw(buf, 0) // None tag = 0
+        emit_i32_const_raw(buf, 0) // arity = 0
         emit_i32_store(buf, 4)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, 0) // None tag = 0
+        emit_i32_store(buf, 8)
         emit_local_get(buf, obj_local)
         emit_i64_extend_i32_u(buf)
         emit_i64_const_raw(buf, tag_obj.to_int64())

@@ -265,7 +265,8 @@ fn StringTable::intern_enum_singleton(
     None => {
       let data : Array[Byte] = []
       write_u32_le_bytes(data, obj_enum) // offset 0: obj_type
-      write_u32_le_bytes(data, ctor_tag) // offset 4: ctor_tag
+      write_u32_le_bytes(data, 0) // offset 4: arity = 0
+      write_u32_le_bytes(data, ctor_tag) // offset 8: ctor_tag
       let offset = self.next_offset
       self.map[key] = offset
       self.segments.push(StringSegment::{ offset, bytes: data })

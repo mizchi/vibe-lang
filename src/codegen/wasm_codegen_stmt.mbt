@@ -905,9 +905,9 @@ fn compile_stmt(
                 ctx.local_types.push(ValueKind::I64)
                 ctx.locals[name] = local_idx
                 ctx.local_kinds[name] = ValueKind::I64
-                // Load from enum payload: offset 8 + i * 4
+                // Load from enum payload: offset 12 + i * 4
                 emit_untag_ptr(buf, ctor_local)
-                emit_i32_load(buf, 8 + i * 4)
+                emit_i32_load(buf, 12 + i * 4)
                 emit_i64_extend_i32_s(buf)
                 if is_last && i == len - 1 {
                   emit_local_tee(buf, local_idx)
@@ -918,14 +918,14 @@ fn compile_stmt(
               @core.Pat::Wildcard(..) =>
                 if is_last && i == len - 1 {
                   emit_untag_ptr(buf, ctor_local)
-                  emit_i32_load(buf, 8 + i * 4)
+                  emit_i32_load(buf, 12 + i * 4)
                   emit_i64_extend_i32_s(buf)
                 }
               _ => {
                 // Nested pattern
                 let elem_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
                 emit_untag_ptr(buf, ctor_local)
-                emit_i32_load(buf, 8 + i * 4)
+                emit_i32_load(buf, 12 + i * 4)
                 emit_i64_extend_i32_s(buf)
                 emit_local_set(buf, elem_local)
                 compile_let_pat_nested(ctx, buf, arg_pat, elem_local)
@@ -1013,13 +1013,13 @@ fn compile_let_pat_nested(
     @core.Pat::Ctor(name~, args~, span~) => {
       let _ = name
       let _ = span
-      // Ctor payload starts at offset 8 (after obj_type and tag)
-      // Each arg is at offset 8 + i * 4
+      // Ctor payload starts at offset 12 (after obj_type, arity, and tag)
+      // Each arg is at offset 12 + i * 4
       for i, arg_pat in args {
         let elem_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
-        // Load from enum payload: untag ptr, load at offset 8 + i * 4
+        // Load from enum payload: untag ptr, load at offset 12 + i * 4
         emit_untag_ptr(buf, value_local)
-        emit_i32_load(buf, 8 + i * 4)
+        emit_i32_load(buf, 12 + i * 4)
         emit_i64_extend_i32_s(buf)
         emit_local_set(buf, elem_local)
         compile_let_pat_nested(ctx, buf, arg_pat, elem_local)

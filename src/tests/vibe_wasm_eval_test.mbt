@@ -3077,3 +3077,32 @@ test "rc eval: mutable closure with captured tuple" {
   assert_eq(res_rc.value, res_no_rc.value)
   assert_eq(decode_int(res_rc.value), 7L)
 }
+
+///|
+test "rc eval: enum payload drop frees inner heap objects" {
+  // Some((1, 2)) wraps a tuple inside an enum.
+  // When the enum is dropped, the tuple payload should also be freed.
+  let script =
+    #|let f = () -> Int {
+    #|  let mut x = Some((10, 20))
+    #|  let y = match x {
+    #|    Some(t) => t.0 + t.1
+    #|    None => 0
+    #|  }
+    #|  x = None
+    #|  y
+    #|}
+    #|f()
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res_rc.value, res_no_rc.value)
+  assert_eq(decode_int(res_rc.value), 30L)
+}
