@@ -712,7 +712,7 @@ fn parse_site_path(site : String) -> (String, Int) {
 /// Compile a standalone WASM function for rc_dup.
 /// Signature: (i64) -> void
 /// Truncates i64 to i32, checks tag, increments RC at obj_ptr - 4.
-fn compile_rc_dup_function() -> WasmFunc {
+fn compile_rc_dup_function(heap_start? : Int = 0) -> WasmFunc {
   let body = ByteBuf::new()
   // Locals: 0=param(i64), 1=val32(i32), 2=rc_ptr(i32)
   let param = 0
@@ -734,7 +734,17 @@ fn compile_rc_dup_function() -> WasmFunc {
   emit_local_get(body, val32)
   emit_i32_const_raw(body, -4) // 0xFFFFFFFC
   emit_i32_and(body)
-  // rc_ptr = obj_ptr - 4  (but we use -8 since rc_header_extra=8, rc is at -4 from obj)
+  // Static data guard: skip dup for data section pointers (below heap_start)
+  if heap_start > 0 {
+    emit_i32_const_raw(body, heap_start)
+    emit_i32_lt_u(body)
+    emit_br_if(body, 0)
+    // Recompute obj_ptr (consumed by lt_u)
+    emit_local_get(body, val32)
+    emit_i32_const_raw(body, -4)
+    emit_i32_and(body)
+  }
+  // rc_ptr = obj_ptr - 4
   emit_i32_const_raw(body, 4)
   emit_i32_sub(body)
   emit_local_set(body, rc_ptr)
@@ -770,6 +780,7 @@ fn compile_rc_drop_function(
   has_closure? : Bool = true,
   has_enum? : Bool = true,
   has_view? : Bool = true,
+  heap_start? : Int = 0,
 ) -> WasmFunc {
   let body = ByteBuf::new()
   // Locals: 0=param(i64), 1=val32, 2=obj_ptr, 3=new_rc,
@@ -800,6 +811,14 @@ fn compile_rc_drop_function(
   emit_i32_const_raw(body, -4)
   emit_i32_and(body)
   emit_local_set(body, obj_ptr)
+  // Static data guard: pointers in the data section (below heap_start)
+  // have no RC headers and must not be dropped.
+  if heap_start > 0 {
+    emit_local_get(body, obj_ptr)
+    emit_i32_const_raw(body, heap_start)
+    emit_i32_lt_u(body)
+    emit_br_if(body, 0) // skip if in data section
+  }
   // new_rc = load(obj_ptr - 4) - 1
   emit_local_get(body, obj_ptr)
   emit_i32_const_raw(body, 4)
@@ -1220,6 +1239,7 @@ fn compile_rc_try_reuse_function(
   has_closure? : Bool = true,
   has_enum? : Bool = true,
   has_view? : Bool = true,
+  heap_start? : Int = 0,
 ) -> WasmFunc {
   let body = ByteBuf::new()
   // Locals: 0=param(i64), 1=val32, 2=obj_ptr, 3=rc_count,
@@ -1256,6 +1276,16 @@ fn compile_rc_try_reuse_function(
   emit_i32_const_raw(body, -4)
   emit_i32_and(body)
   emit_local_set(body, obj_ptr)
+  // Static data guard: data section pointers can't be reused, return 0
+  if heap_start > 0 {
+    emit_local_get(body, obj_ptr)
+    emit_i32_const_raw(body, heap_start)
+    emit_i32_lt_u(body)
+    emit_if(body)
+    emit_i32_const_raw(body, 0)
+    emit_br(body, 1) // br $done
+    emit_end(body)
+  }
   // rc_count = load(obj_ptr - 4)
   emit_local_get(body, obj_ptr)
   emit_i32_const_raw(body, 4)

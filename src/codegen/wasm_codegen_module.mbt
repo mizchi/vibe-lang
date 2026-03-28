@@ -1155,6 +1155,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       global_sec.push((127).to_byte()) // i32
       global_sec.push((1).to_byte()) // mutable
       let heap_start = align4(ctx.strings.next_offset + coverage_bytes)
+      ctx.rc_heap_start = heap_start
       emit_i32_const_raw(global_sec, heap_start)
       global_sec.push((11).to_byte()) // end
     }
@@ -3608,7 +3609,7 @@ fn emit_module_with_coverage(
     if ctx.rc_dup_func_idx >= 0 {
       let rc_dup_sig = FuncSig::{ params: [ValueKind::I64], results: [] }
       let _ = ensure_sig_index(ctx, rc_dup_sig)
-      compiled_funcs.push(compile_rc_dup_function())
+      compiled_funcs.push(compile_rc_dup_function(heap_start=ctx.rc_heap_start))
     }
     let rc_drop_sig = FuncSig::{ params: [ValueKind::I64], results: [] }
     let _ = ensure_sig_index(ctx, rc_drop_sig)
@@ -3623,6 +3624,7 @@ fn emit_module_with_coverage(
         has_closure=ctx.rc_has_closure,
         has_enum=ctx.rc_has_enum,
         has_view=ctx.rc_has_view,
+        heap_start=ctx.rc_heap_start,
       ),
     )
     let rc_alloc_sig = FuncSig::{
@@ -3647,6 +3649,7 @@ fn emit_module_with_coverage(
           has_closure=ctx.rc_has_closure,
           has_enum=ctx.rc_has_enum,
           has_view=ctx.rc_has_view,
+          heap_start=ctx.rc_heap_start,
         ),
       )
     }

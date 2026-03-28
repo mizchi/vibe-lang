@@ -163,6 +163,9 @@ priv struct CodegenCtx {
   mut rc_has_closure : Bool
   mut rc_has_enum : Bool
   mut rc_has_view : Bool
+  // RC: heap_start boundary for static data protection.
+  // Pointers below this are in the data section and must not be RC-dropped.
+  mut rc_heap_start : Int
 }
 
 ///|
@@ -324,6 +327,7 @@ fn CodegenCtx::new(
     rc_has_closure: false,
     rc_has_enum: false,
     rc_has_view: false,
+    rc_heap_start: 0,
   }
   // Register builtin None as singleton (strings is now initialized)
   let none_offset = ctx.strings.intern_enum_singleton("None", 0)

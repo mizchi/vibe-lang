@@ -3318,3 +3318,48 @@ test "rc eval: heap reclamation via free-list in loop" {
   // Sum of i + (i+1) for i=0..99 = sum(2i+1) = 2*4950 + 100 = 10000
   assert_eq(decode_int(res_rc.value), 10000L)
 }
+
+///|
+test "rc eval: static string literal not corrupted by RC drop" {
+  // String literals live in the data section without RC headers.
+  // The static data guard must skip dup/drop for these pointers.
+  let script =
+    #|let s = "hello"
+    #|let t = "world"
+    #|String::length(s) + String::length(t)
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res_rc.value, res_no_rc.value)
+  assert_eq(decode_int(res_rc.value), 10L)
+}
+
+///|
+test "rc eval: string literal passed to function with RC" {
+  // A string literal is passed to a function that computes its length.
+  // RC dup/drop must not corrupt the data section pointer.
+  let script =
+    #|let len = (s: String) -> Int { String::length(s) }
+    #|let a = len("hello")
+    #|let b = len("world")
+    #|a + b
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res_rc.value, res_no_rc.value)
+  assert_eq(decode_int(res_rc.value), 10L)
+}
