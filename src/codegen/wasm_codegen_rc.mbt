@@ -670,10 +670,11 @@ fn compile_rc_dup_function() -> WasmFunc {
 fn compile_rc_drop_function(
   _heap_global : Int,
   free_list_global : Int,
+  self_func_abs_idx : Int,
 ) -> WasmFunc {
   let body = ByteBuf::new()
   // Locals: 0=param(i64), 1=val32, 2=obj_ptr, 3=new_rc,
-  //         4=type_id, 5=len, 6=idx, 7=field_val, 8=field_obj
+  //         4=type_id, 5=len, 6=idx, 7=field_val, 8=field_i64
   let param = 0
   let val32 = 1
   let obj_ptr = 2
@@ -682,12 +683,12 @@ fn compile_rc_drop_function(
   let len = 5
   let idx = 6
   let field_val = 7
-  let field_obj = 8
+  let field_i64 = 8
   // val32 = i32.wrap_i64(param)
   emit_local_get(body, param)
   emit_i32_wrap_i64(body)
   emit_local_set(body, val32)
-  // if (val32 & tag_mask) != tag_obj → return
+  // if (val32 & tag_mask) != tag_obj → skip
   emit_local_get(body, val32)
   emit_i32_const_raw(body, tag_mask)
   emit_i32_and(body)
@@ -712,11 +713,13 @@ fn compile_rc_drop_function(
   emit_i32_sub(body)
   emit_local_tee(body, new_rc)
   emit_i32_store(body, 0) // store new_rc at obj_ptr - 4
-  // if new_rc == 0: drop fields, tombstone, free-list
+  // if new_rc == 0: recursively drop fields, tombstone, free-list
   emit_local_get(body, new_rc)
   emit_i32_eqz(body)
   emit_if(body)
-  // --- Recursive drop fields (1 level: tuple/record/array type_id 3-5) ---
+  // --- Recursive drop fields via self-call (deep recursion) ---
+  // For container types (tuple=3, record=4, array=5), iterate fields
+  // and call $rc_drop(field_as_i64) for each heap-pointer field.
   emit_local_get(body, obj_ptr)
   emit_i32_load(body, 0)
   emit_local_set(body, type_id)
@@ -736,14 +739,14 @@ fn compile_rc_drop_function(
   // idx = 0
   emit_i32_const_raw(body, 0)
   emit_local_set(body, idx)
-  // loop
+  // loop: for each field, call $rc_drop(i64(field))
   emit_block(body) // block $break
   emit_loop(body) // loop $continue
   emit_local_get(body, idx)
   emit_local_get(body, len)
   emit_i32_ge_s(body)
   emit_br_if(body, 1) // br $break
-  // field_val = load(obj_ptr + 8 + idx * 4)
+  // field_val = load_i32(obj_ptr + 8 + idx * 4)
   emit_local_get(body, obj_ptr)
   emit_local_get(body, idx)
   emit_i32_const_raw(body, 4)
@@ -751,50 +754,12 @@ fn compile_rc_drop_function(
   emit_i32_add(body)
   emit_i32_load(body, 8)
   emit_local_set(body, field_val)
-  // Check field is heap object
+  // Convert i32 field to i64 and call $rc_drop recursively
   emit_local_get(body, field_val)
-  emit_i32_const_raw(body, tag_mask)
-  emit_i32_and(body)
-  emit_i32_const_raw(body, tag_obj)
-  emit_i32_eq(body)
-  emit_if(body) // if field is heap obj
-  // field_obj = field_val & ~3
-  emit_local_get(body, field_val)
-  emit_i32_const_raw(body, -4)
-  emit_i32_and(body)
-  emit_local_set(body, field_obj)
-  // field_new_rc = load(field_obj - 4) - 1; store
-  emit_local_get(body, field_obj)
-  emit_i32_const_raw(body, 4)
-  emit_i32_sub(body)
-  emit_local_get(body, field_obj)
-  emit_i32_const_raw(body, 4)
-  emit_i32_sub(body)
-  emit_i32_load(body, 0)
-  emit_i32_const_raw(body, 1)
-  emit_i32_sub(body)
-  emit_local_tee(body, new_rc) // reuse new_rc for field
-  emit_i32_store(body, 0)
-  // if field RC == 0: tombstone + free-list
-  emit_local_get(body, new_rc)
-  emit_i32_eqz(body)
-  emit_if(body)
-  // tombstone
-  emit_local_get(body, field_obj)
-  emit_i32_const_raw(body, 0)
-  emit_i32_store(body, 0)
-  // free-list: next = head; head = field_obj
-  if free_list_global >= 0 {
-    emit_local_get(body, field_obj)
-    emit_i32_const_raw(body, 4)
-    emit_i32_sub(body)
-    emit_global_get(body, free_list_global)
-    emit_i32_store(body, 0)
-    emit_local_get(body, field_obj)
-    emit_global_set(body, free_list_global)
-  }
-  emit_end(body) // end if field RC == 0
-  emit_end(body) // end if field is heap obj
+  emit_i64_extend_i32_u(body)
+  emit_local_set(body, field_i64)
+  emit_local_get(body, field_i64)
+  emit_call(body, self_func_abs_idx) // recursive call to $rc_drop
   // idx += 1
   emit_local_get(body, idx)
   emit_i32_const_raw(body, 1)
@@ -827,7 +792,7 @@ fn compile_rc_drop_function(
     params: [ValueKind::I64],
     locals: [
       ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32,
-      ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32,
+      ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I64,
     ],
     results: [],
     body: body.to_array(),

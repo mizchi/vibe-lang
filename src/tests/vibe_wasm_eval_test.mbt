@@ -2961,3 +2961,34 @@ test "rc perf: free-list reuse actually works" {
   // (We can't directly compare heap ptrs here, but we verify correctness
   //  which proves the drop + realloc path works end-to-end)
 }
+
+///|
+test "rc eval: deep recursive drop frees nested containers" {
+  // Nested tuples: dropping outer should recursively drop inner.
+  // ((1, 2), (3, 4)) → drop outer → inner tuples also freed
+  let script =
+    #|let f = () -> Int {
+    #|  let mut t = ((1, 2), (3, 4))
+    #|  let a = t.0
+    #|  let b = t.1
+    #|  let r = a.0 + a.1 + b.0 + b.1
+    #|  t = ((5, 6), (7, 8))
+    #|  let c = t.0
+    #|  let d = t.1
+    #|  r + c.0 + c.1 + d.0 + d.1
+    #|}
+    #|f()
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  // Correctness: same result (1+2+3+4+5+6+7+8 = 36)
+  assert_eq(res_rc.value, res_no_rc.value)
+  assert_eq(decode_int(res_rc.value), 36L)
+}

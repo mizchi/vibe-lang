@@ -3592,8 +3592,13 @@ fn emit_module_with_coverage(
       results: [],
     }
     let _ = ensure_sig_index(ctx, rc_drop_sig)
+    let rc_drop_abs_idx = func_import_count(ctx) + ctx.rc_drop_func_idx
     compiled_funcs.push(
-      compile_rc_drop_function(ctx.heap_global, ctx.rc_free_list_global),
+      compile_rc_drop_function(
+        ctx.heap_global,
+        ctx.rc_free_list_global,
+        rc_drop_abs_idx,
+      ),
     )
     let rc_alloc_sig = FuncSig::{
       params: [ValueKind::I32],
