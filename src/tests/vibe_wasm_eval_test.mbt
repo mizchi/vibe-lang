@@ -3106,3 +3106,28 @@ test "rc eval: enum payload drop frees inner heap objects" {
   assert_eq(res_rc.value, res_no_rc.value)
   assert_eq(decode_int(res_rc.value), 30L)
 }
+
+///|
+test "rc eval: record value drop frees heap objects in values" {
+  // Record values containing tuples should be recursively dropped.
+  let script =
+    #|let f = () -> Int {
+    #|  let mut r = record { a: (1, 2), b: (3, 4) }
+    #|  let v = r.a.0 + r.b.1
+    #|  r = record { a: (0, 0), b: (0, 0) }
+    #|  v
+    #|}
+    #|f()
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res_rc.value, res_no_rc.value)
+  assert_eq(decode_int(res_rc.value), 5L)
+}
