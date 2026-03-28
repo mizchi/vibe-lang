@@ -574,7 +574,7 @@ fn compile_lite_validate_opts(
   opts : CompileCmdOptions,
   in_memory : Bool,
 ) -> Result[Unit, String] {
-  if opts.mode != CompileMode::Wasm {
+  if opts.mode != CompileMode::Wasm && opts.mode != CompileMode::WasmGc {
     return Err("compile-lite: only --wasm mode is supported")
   }
   if opts.coverage || opts.coverage_run_tests {
