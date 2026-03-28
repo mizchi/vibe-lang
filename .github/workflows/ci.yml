@@ -399,7 +399,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [bootstrap, cli, check, coverage]
+        shard: [bootstrap, cli, check]
     steps:
       - uses: actions/checkout@v4
       - name: Install MoonBit CLI
@@ -444,7 +444,6 @@ jobs:
           curl -fsSL https://wasmtime.dev/install.sh | bash
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
       - name: Install wasm-tools
-        if: matrix.shard != 'coverage'
         run: |
           curl -LO https://github.com/bytecodealliance/wasm-tools/releases/download/v1.245.1/wasm-tools-1.245.1-x86_64-linux.tar.gz
           tar xzf wasm-tools-1.245.1-x86_64-linux.tar.gz
@@ -542,3 +541,85 @@ jobs:
       - name: Selfhost runtime fixtures
         if: always()
         run: just test-selfhost-runtime-fixtures || true
+
+  coverage-selfhost-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MoonBit CLI
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+
+      - name: Install ripgrep
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install just
+        run: curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+
+      - name: Install wasmtime
+        run: |
+          curl -fsSL https://wasmtime.dev/install.sh | bash
+          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+
+      - name: Cache MoonBit build
+        uses: actions/cache@v4
+        with:
+          path: |
+            _build
+            .mooncakes
+          key: moonbit-${{ runner.os }}-${{ hashFiles('moon.mod.json', 'src/**/*.mbt') }}
+          restore-keys: moonbit-${{ runner.os }}-
+
+      - name: Moon update
+        run: moon update
+
+      - name: Build vibe CLI (native)
+        run: VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
+
+      - name: Run selfhost perf KPI
+        env:
+          VIBE_USE_SESSION_HTTP: '0'
+        run: |
+          VIBE_SELFHOST_PERF_RUNS=1 \
+          VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt \
+          VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=2.5 \
+          VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=0.8 \
+          ./scripts/bench_selfhost_perf.sh
+
+      - name: Run selfhost suite coverage gate
+        env:
+          VIBE_USE_SESSION_HTTP: '0'
+        run: just coverage-selfhost-suite-gate
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          {
+            echo "### Selfhost Suite Coverage"
+            if [ -f _build/coverage/selfhost-suite/selfhost_suite.summary.txt ]; then
+              echo '```'
+              cat _build/coverage/selfhost-suite/selfhost_suite.summary.txt
+              echo '```'
+            else
+              echo "- No summary produced"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfhost-suite-coverage-report
+          path: |
+            _build/coverage/selfhost-suite/selfhost_suite.summary.txt
+            _build/coverage/selfhost-suite/selfhost_suite.report.json
+          if-no-files-found: ignore
