@@ -268,11 +268,10 @@ fn emit_rc_dup(buf : ByteBuf, val_local : Int, tmp_local : Int) -> Unit {
   emit_i32_const_raw(buf, -4) // 0xFFFFFFFC: mask off low 2 bits
   emit_i32_and(buf)
   // rc_ptr = obj_ptr - 4
-  emit_i32_const_raw(buf, rc_header_extra)
+  emit_i32_const_raw(buf, 4)
   emit_i32_sub(buf)
-  emit_local_set(buf, tmp_local)
+  emit_local_tee(buf, tmp_local)
   // rc_count = load(rc_ptr) + 1
-  emit_local_get(buf, tmp_local)
   emit_local_get(buf, tmp_local)
   emit_i32_load(buf, 0)
   emit_i32_const_raw(buf, 1)
@@ -756,41 +755,36 @@ fn parse_site_path(site : String) -> (String, Int) {
 /// Truncates i64 to i32, checks tag, increments RC at obj_ptr - 4.
 fn compile_rc_dup_function(heap_start? : Int = 0) -> WasmFunc {
   let body = ByteBuf::new()
-  // Locals: 0=param(i64), 1=val32(i32), 2=rc_ptr(i32)
+  // Locals: 0=param(i64), 1=rc_ptr(i32)
+  // Tag check in i64 space eliminates val32 local.
   let param = 0
-  let val32 = 1
-  let rc_ptr = 2
-  // val32 = i32.wrap_i64(param)
+  let rc_ptr = 1
+  // if (param & 3L) != 1L → skip (tag check in i64 space)
   emit_local_get(body, param)
-  emit_i32_wrap_i64(body)
-  emit_local_set(body, val32)
-  // if (val32 & tag_mask) != tag_obj → return
-  emit_local_get(body, val32)
-  emit_i32_const_raw(body, tag_mask)
-  emit_i32_and(body)
-  emit_i32_const_raw(body, tag_obj)
-  emit_i32_ne(body)
+  emit_i64_const_raw(body, tag_mask.to_int64())
+  emit_i64_and(body)
+  emit_i64_const_raw(body, tag_obj.to_int64())
+  emit_i64_ne(body)
   emit_block(body)
   emit_br_if(body, 0)
-  // obj_ptr = val32 & ~3, save to rc_ptr temporarily
-  emit_local_get(body, val32)
+  // obj_ptr = i32.wrap(param) & ~3
+  emit_local_get(body, param)
+  emit_i32_wrap_i64(body)
   emit_i32_const_raw(body, -4) // 0xFFFFFFFC
   emit_i32_and(body)
-  emit_local_set(body, rc_ptr) // rc_ptr = obj_ptr (temporary)
   // Static data guard: skip dup for data section pointers (below heap_start)
   if heap_start > 0 {
-    emit_local_get(body, rc_ptr)
+    emit_local_tee(body, rc_ptr) // save obj_ptr, keep on stack
     emit_i32_const_raw(body, heap_start)
     emit_i32_lt_u(body)
     emit_br_if(body, 0)
+    emit_local_get(body, rc_ptr)
   }
   // rc_ptr = obj_ptr - 4
-  emit_local_get(body, rc_ptr)
   emit_i32_const_raw(body, 4)
   emit_i32_sub(body)
-  emit_local_set(body, rc_ptr)
+  emit_local_tee(body, rc_ptr)
   // *rc_ptr = *rc_ptr + 1
-  emit_local_get(body, rc_ptr)
   emit_local_get(body, rc_ptr)
   emit_i32_load(body, 0)
   emit_i32_const_raw(body, 1)
@@ -800,7 +794,7 @@ fn compile_rc_dup_function(heap_start? : Int = 0) -> WasmFunc {
   emit_end(body) // end func
   WasmFunc::{
     params: [ValueKind::I64],
-    locals: [ValueKind::I32, ValueKind::I32],
+    locals: [ValueKind::I32],
     results: [],
     body: body.to_array(),
   }
@@ -825,29 +819,26 @@ fn compile_rc_drop_function(
   debug_free_global? : Int = -1,
 ) -> WasmFunc {
   let body = ByteBuf::new()
-  // Locals: 0=param(i64), 1=val32, 2=obj_ptr, 3=new_rc,
-  //         4=type_id, 5=len, 6=idx
+  // Locals: 0=param(i64), 1=obj_ptr, 2=new_rc,
+  //         3=type_id, 4=len, 5=idx
+  // Tag check in i64 space eliminates val32 local.
   let param = 0
-  let val32 = 1
-  let obj_ptr = 2
-  let new_rc = 3
-  let type_id = 4
-  let len = 5
-  let idx = 6
-  // val32 = i32.wrap_i64(param)
+  let obj_ptr = 1
+  let new_rc = 2
+  let type_id = 3
+  let len = 4
+  let idx = 5
+  // if (param & 3L) != 1L → skip (tag check in i64 space)
   emit_local_get(body, param)
-  emit_i32_wrap_i64(body)
-  emit_local_set(body, val32)
-  // if (val32 & tag_mask) != tag_obj → skip
-  emit_local_get(body, val32)
-  emit_i32_const_raw(body, tag_mask)
-  emit_i32_and(body)
-  emit_i32_const_raw(body, tag_obj)
-  emit_i32_ne(body)
+  emit_i64_const_raw(body, tag_mask.to_int64())
+  emit_i64_and(body)
+  emit_i64_const_raw(body, tag_obj.to_int64())
+  emit_i64_ne(body)
   emit_block(body)
   emit_br_if(body, 0)
-  // obj_ptr = val32 & ~3
-  emit_local_get(body, val32)
+  // obj_ptr = i32.wrap(param) & ~3
+  emit_local_get(body, param)
+  emit_i32_wrap_i64(body)
   emit_i32_const_raw(body, -4)
   emit_i32_and(body)
   emit_local_set(body, obj_ptr)
@@ -880,181 +871,393 @@ fn compile_rc_drop_function(
     has_closure ||
     has_enum ||
     has_view
+  // Count active type categories to decide if/else vs br_table
+  let type_category_count = (if has_tuple_or_array { 1 } else { 0 }) +
+    (if has_record_or_map { 1 } else { 0 }) +
+    (if has_closure { 1 } else { 0 }) +
+    (if has_enum { 1 } else { 0 }) +
+    (if has_view { 1 } else { 0 })
   if needs_type_dispatch {
     emit_local_get(body, obj_ptr)
     emit_i32_load(body, 0)
     emit_local_set(body, type_id)
   }
-  // For tuple(3) and array(5): i32 fields at 8+idx*4
-  if has_tuple_or_array {
+  // Use br_table for type dispatch when 3+ categories are active.
+  // Type IDs: 3=tuple, 4=record, 5=array, 6=map, 7=closure,
+  //           10=enum, 11=string_view, 12=array_view, 14=bytes_view
+  // br_table with range 3..14 (12 entries) dispatches in O(1).
+  if type_category_count >= 3 {
+    // br_table dispatch: subtract 3 from type_id (min relevant id),
+    // then index into jump table of 12 entries (ids 3-14).
+    //
+    // Block nesting (outermost = highest label):
+    //   block $done (label = N)
+    //     block $view (label = N-1)
+    //       block $enum (label = N-2)
+    //         block $closure (label = N-3)
+    //           block $record_map (label = N-4)
+    //             block $tuple_array (label = N-5)
+    //               br_table [...]
+    //             end $tuple_array
+    //             ... tuple/array code, br $done ...
+    //           end $record_map
+    //           ... record/map code, br $done ...
+    //         end $closure
+    //         ... closure code, br $done ...
+    //       end $enum
+    //       ... enum code, br $done ...
+    //     end $view
+    //     ... view code, br $done ...
+    //   end $done
+    //
+    // Label indices (relative to br_table):
+    //   0 = $tuple_array, 1 = $record_map, 2 = $closure,
+    //   3 = $enum, 4 = $view, 5 = $done (default/skip)
+    let lbl_tuple_array = 0
+    let lbl_record_map = 1
+    let lbl_closure = 2
+    let lbl_enum = 3
+    let lbl_view = 4
+    let lbl_done = 5
+    // Open blocks: $done, $view, $enum, $closure, $record_map, $tuple_array
+    emit_block(body) // $done
+    emit_block(body) // $view
+    emit_block(body) // $enum
+    emit_block(body) // $closure
+    emit_block(body) // $record_map
+    emit_block(body) // $tuple_array
+    // br_table index = type_id - 3
     emit_local_get(body, type_id)
     emit_i32_const_raw(body, 3)
-    emit_i32_eq(body)
-    emit_local_get(body, type_id)
-    emit_i32_const_raw(body, 5)
-    emit_i32_eq(body)
-    emit_i32_or(body)
-    emit_if(body) // if tuple or array
-    emit_local_get(body, obj_ptr)
-    emit_i32_load(body, 4)
-    emit_local_set(body, len)
-    emit_i32_const_raw(body, 0)
-    emit_local_set(body, idx)
-    emit_block(body) // block $break
-    emit_loop(body) // loop $continue
-    emit_local_get(body, idx)
-    emit_local_get(body, len)
-    emit_i32_ge_s(body)
-    emit_br_if(body, 1) // br $break
-    emit_local_get(body, obj_ptr)
-    emit_local_get(body, idx)
-    emit_i32_const_raw(body, 4)
-    emit_i32_mul(body)
-    emit_i32_add(body)
-    emit_i32_load(body, 8)
-    emit_i64_extend_i32_u(body)
-    emit_call(body, self_func_abs_idx)
-    emit_local_get(body, idx)
-    emit_i32_const_raw(body, 1)
-    emit_i32_add(body)
-    emit_local_set(body, idx)
-    emit_br(body, 0) // br $continue
-    emit_end(body) // end loop
-    emit_end(body) // end block $break
-    emit_end(body) // end if tuple or array
-  }
-  // --- Record(4) and Map(6): values at 8+idx*8+4, 8-byte stride ---
-  if has_record_or_map {
-    emit_local_get(body, type_id)
-    emit_i32_const_raw(body, 4) // obj_record
-    emit_i32_eq(body)
-    emit_local_get(body, type_id)
-    emit_i32_const_raw(body, 6) // obj_map
-    emit_i32_eq(body)
-    emit_i32_or(body)
-    emit_if(body) // if record or map
-    emit_local_get(body, obj_ptr)
-    emit_i32_load(body, 4)
-    emit_local_set(body, len)
-    emit_i32_const_raw(body, 0)
-    emit_local_set(body, idx)
-    emit_block(body) // block $break
-    emit_loop(body) // loop $continue
-    emit_local_get(body, idx)
-    emit_local_get(body, len)
-    emit_i32_ge_s(body)
-    emit_br_if(body, 1) // br $break
-    emit_local_get(body, obj_ptr)
-    emit_local_get(body, idx)
-    emit_i32_const_raw(body, 8)
-    emit_i32_mul(body)
-    emit_i32_add(body)
-    emit_i32_load(body, 12)
-    emit_i64_extend_i32_u(body)
-    emit_call(body, self_func_abs_idx)
-    emit_local_get(body, idx)
-    emit_i32_const_raw(body, 1)
-    emit_i32_add(body)
-    emit_local_set(body, idx)
-    emit_br(body, 0) // br $continue
-    emit_end(body) // end loop
-    emit_end(body) // end block $break
-    emit_end(body) // end if record or map
-  }
-  // --- Closure captures (type_id=7): i64 at 16+idx*8 ---
-  if has_closure {
-    emit_local_get(body, type_id)
-    emit_i32_const_raw(body, 7) // obj_fn
-    emit_i32_eq(body)
-    emit_if(body) // if type_id == 7
-    emit_local_get(body, obj_ptr)
-    emit_i32_load(body, 4)
-    emit_local_set(body, len)
-    emit_i32_const_raw(body, 0)
-    emit_local_set(body, idx)
-    emit_block(body) // block $break
-    emit_loop(body) // loop $continue
-    emit_local_get(body, idx)
-    emit_local_get(body, len)
-    emit_i32_ge_s(body)
-    emit_br_if(body, 1) // br $break
-    emit_local_get(body, obj_ptr)
-    emit_local_get(body, idx)
-    emit_i32_const_raw(body, 8)
-    emit_i32_mul(body)
-    emit_i32_add(body)
-    emit_i64_load(body, 16)
-    emit_call(body, self_func_abs_idx)
-    emit_local_get(body, idx)
-    emit_i32_const_raw(body, 1)
-    emit_i32_add(body)
-    emit_local_set(body, idx)
-    emit_br(body, 0) // br $continue
-    emit_end(body) // end loop
-    emit_end(body) // end block $break
-    emit_end(body) // end if type_id == 7
-  }
-  // --- Enum payloads (type_id=10): i32 fields at 12+idx*4 ---
-  if has_enum {
-    emit_local_get(body, type_id)
-    emit_i32_const_raw(body, 10) // obj_enum
-    emit_i32_eq(body)
-    emit_if(body) // if type_id == 10
-    emit_local_get(body, obj_ptr)
-    emit_i32_load(body, 4)
-    emit_local_set(body, len)
-    emit_i32_const_raw(body, 0)
-    emit_local_set(body, idx)
-    emit_block(body) // block $break
-    emit_loop(body) // loop $continue
-    emit_local_get(body, idx)
-    emit_local_get(body, len)
-    emit_i32_ge_s(body)
-    emit_br_if(body, 1) // br $break
-    emit_local_get(body, obj_ptr)
-    emit_local_get(body, idx)
-    emit_i32_const_raw(body, 4)
-    emit_i32_mul(body)
-    emit_i32_add(body)
-    emit_i32_load(body, 12)
-    emit_i64_extend_i32_u(body)
-    emit_call(body, self_func_abs_idx)
-    emit_local_get(body, idx)
-    emit_i32_const_raw(body, 1)
-    emit_i32_add(body)
-    emit_local_set(body, idx)
-    emit_br(body, 0) // br $continue
-    emit_end(body) // end loop
-    emit_end(body) // end block $break
-    emit_end(body) // end if type_id == 10
-  }
-  // --- View types (11=StringView, 12=ArrayView, 14=BytesView): parent_ptr at offset 4 ---
-  if has_view {
-    emit_local_get(body, type_id)
-    emit_i32_const_raw(body, 11) // obj_string_view
-    emit_i32_eq(body)
-    emit_local_get(body, type_id)
-    emit_i32_const_raw(body, 12) // obj_array_view
-    emit_i32_eq(body)
-    emit_i32_or(body)
-    emit_local_get(body, type_id)
-    emit_i32_const_raw(body, 14) // obj_bytes_view
-    emit_i32_eq(body)
-    emit_i32_or(body)
-    emit_if(body) // if view type
-    emit_local_get(body, obj_ptr)
-    emit_i32_load(body, 4) // source_ptr
-    emit_i32_const_raw(body, 0)
-    emit_i32_ne(body)
-    emit_if(body)
-    emit_local_get(body, obj_ptr)
-    emit_i32_load(body, 4) // reload source_ptr
-    emit_i64_extend_i32_u(body)
-    emit_i64_const_raw(body, tag_obj.to_int64())
-    emit_i64_or(body)
-    emit_call(body, self_func_abs_idx)
-    emit_end(body) // end if ptr != 0
-    emit_end(body) // end if view type
+    emit_i32_sub(body)
+    // Table for type_ids 3..14 (indices 0..11):
+    // 0(3)=tuple, 1(4)=record, 2(5)=array, 3(6)=map, 4(7)=closure,
+    // 5(8)=done, 6(9)=done, 7(10)=enum, 8(11)=view, 9(12)=view,
+    // 10(13)=done, 11(14)=view
+    let table : Array[Int] = [
+      lbl_tuple_array, // 3: tuple
+      lbl_record_map, // 4: record
+      lbl_tuple_array, // 5: array
+      lbl_record_map, // 6: map
+      lbl_closure, // 7: closure
+      lbl_done, // 8: unused
+      lbl_done, // 9: unused
+      lbl_enum, // 10: enum
+      lbl_view, // 11: string_view
+      lbl_view, // 12: array_view
+      lbl_done, // 13: unused
+      lbl_view, // 14: bytes_view
+    ]
+    emit_br_table(body, table, lbl_done) // default → $done
+    emit_end(body) // end $tuple_array
+    // --- Tuple(3)/Array(5): i32 fields at 8+idx*4 ---
+    if has_tuple_or_array {
+      emit_local_get(body, obj_ptr)
+      emit_i32_load(body, 4)
+      emit_local_set(body, len)
+      emit_i32_const_raw(body, 0)
+      emit_local_set(body, idx)
+      emit_block(body) // block $break
+      emit_loop(body) // loop $continue
+      emit_local_get(body, idx)
+      emit_local_get(body, len)
+      emit_i32_ge_s(body)
+      emit_br_if(body, 1) // br $break
+      emit_local_get(body, obj_ptr)
+      emit_local_get(body, idx)
+      emit_i32_const_raw(body, 4)
+      emit_i32_mul(body)
+      emit_i32_add(body)
+      emit_i32_load(body, 8)
+      emit_i64_extend_i32_u(body)
+      emit_call(body, self_func_abs_idx)
+      emit_local_get(body, idx)
+      emit_i32_const_raw(body, 1)
+      emit_i32_add(body)
+      emit_local_set(body, idx)
+      emit_br(body, 0) // br $continue
+      emit_end(body) // end loop
+      emit_end(body) // end block $break
+    }
+    emit_br(body, lbl_done - lbl_tuple_array - 1) // br $done (adjusted for consumed blocks)
+    emit_end(body) // end $record_map
+    // --- Record(4)/Map(6): values at 8+idx*8+4 ---
+    if has_record_or_map {
+      emit_local_get(body, obj_ptr)
+      emit_i32_load(body, 4)
+      emit_local_set(body, len)
+      emit_i32_const_raw(body, 0)
+      emit_local_set(body, idx)
+      emit_block(body) // block $break
+      emit_loop(body) // loop $continue
+      emit_local_get(body, idx)
+      emit_local_get(body, len)
+      emit_i32_ge_s(body)
+      emit_br_if(body, 1) // br $break
+      emit_local_get(body, obj_ptr)
+      emit_local_get(body, idx)
+      emit_i32_const_raw(body, 8)
+      emit_i32_mul(body)
+      emit_i32_add(body)
+      emit_i32_load(body, 12)
+      emit_i64_extend_i32_u(body)
+      emit_call(body, self_func_abs_idx)
+      emit_local_get(body, idx)
+      emit_i32_const_raw(body, 1)
+      emit_i32_add(body)
+      emit_local_set(body, idx)
+      emit_br(body, 0) // br $continue
+      emit_end(body) // end loop
+      emit_end(body) // end block $break
+    }
+    emit_br(body, lbl_done - lbl_record_map - 1) // br $done
+    emit_end(body) // end $closure
+    // --- Closure(7): i64 at 16+idx*8 ---
+    if has_closure {
+      emit_local_get(body, obj_ptr)
+      emit_i32_load(body, 4)
+      emit_local_set(body, len)
+      emit_i32_const_raw(body, 0)
+      emit_local_set(body, idx)
+      emit_block(body) // block $break
+      emit_loop(body) // loop $continue
+      emit_local_get(body, idx)
+      emit_local_get(body, len)
+      emit_i32_ge_s(body)
+      emit_br_if(body, 1) // br $break
+      emit_local_get(body, obj_ptr)
+      emit_local_get(body, idx)
+      emit_i32_const_raw(body, 8)
+      emit_i32_mul(body)
+      emit_i32_add(body)
+      emit_i64_load(body, 16)
+      emit_call(body, self_func_abs_idx)
+      emit_local_get(body, idx)
+      emit_i32_const_raw(body, 1)
+      emit_i32_add(body)
+      emit_local_set(body, idx)
+      emit_br(body, 0) // br $continue
+      emit_end(body) // end loop
+      emit_end(body) // end block $break
+    }
+    emit_br(body, lbl_done - lbl_closure - 1) // br $done
+    emit_end(body) // end $enum
+    // --- Enum(10): i32 at 12+idx*4 ---
+    if has_enum {
+      emit_local_get(body, obj_ptr)
+      emit_i32_load(body, 4)
+      emit_local_set(body, len)
+      emit_i32_const_raw(body, 0)
+      emit_local_set(body, idx)
+      emit_block(body) // block $break
+      emit_loop(body) // loop $continue
+      emit_local_get(body, idx)
+      emit_local_get(body, len)
+      emit_i32_ge_s(body)
+      emit_br_if(body, 1) // br $break
+      emit_local_get(body, obj_ptr)
+      emit_local_get(body, idx)
+      emit_i32_const_raw(body, 4)
+      emit_i32_mul(body)
+      emit_i32_add(body)
+      emit_i32_load(body, 12)
+      emit_i64_extend_i32_u(body)
+      emit_call(body, self_func_abs_idx)
+      emit_local_get(body, idx)
+      emit_i32_const_raw(body, 1)
+      emit_i32_add(body)
+      emit_local_set(body, idx)
+      emit_br(body, 0) // br $continue
+      emit_end(body) // end loop
+      emit_end(body) // end block $break
+    }
+    emit_br(body, lbl_done - lbl_enum - 1) // br $done
+    emit_end(body) // end $view
+    // --- View types (11, 12, 14): parent_ptr at offset 4 ---
+    if has_view {
+      emit_local_get(body, obj_ptr)
+      emit_i32_load(body, 4) // source_ptr
+      emit_i32_const_raw(body, 0)
+      emit_i32_ne(body)
+      emit_if(body)
+      emit_local_get(body, obj_ptr)
+      emit_i32_load(body, 4) // reload source_ptr
+      emit_i64_extend_i32_u(body)
+      emit_i64_const_raw(body, tag_obj.to_int64())
+      emit_i64_or(body)
+      emit_call(body, self_func_abs_idx)
+      emit_end(body) // end if ptr != 0
+    }
+    // br $done not needed — falls through to end
+    emit_end(body) // end $done
+  } else {
+    // Few type categories: use sequential if/else (smaller for 1-2 types)
+    if has_tuple_or_array {
+      emit_local_get(body, type_id)
+      emit_i32_const_raw(body, 3)
+      emit_i32_eq(body)
+      emit_local_get(body, type_id)
+      emit_i32_const_raw(body, 5)
+      emit_i32_eq(body)
+      emit_i32_or(body)
+      emit_if(body) // if tuple or array
+      emit_local_get(body, obj_ptr)
+      emit_i32_load(body, 4)
+      emit_local_set(body, len)
+      emit_i32_const_raw(body, 0)
+      emit_local_set(body, idx)
+      emit_block(body) // block $break
+      emit_loop(body) // loop $continue
+      emit_local_get(body, idx)
+      emit_local_get(body, len)
+      emit_i32_ge_s(body)
+      emit_br_if(body, 1) // br $break
+      emit_local_get(body, obj_ptr)
+      emit_local_get(body, idx)
+      emit_i32_const_raw(body, 4)
+      emit_i32_mul(body)
+      emit_i32_add(body)
+      emit_i32_load(body, 8)
+      emit_i64_extend_i32_u(body)
+      emit_call(body, self_func_abs_idx)
+      emit_local_get(body, idx)
+      emit_i32_const_raw(body, 1)
+      emit_i32_add(body)
+      emit_local_set(body, idx)
+      emit_br(body, 0) // br $continue
+      emit_end(body) // end loop
+      emit_end(body) // end block $break
+      emit_end(body) // end if tuple or array
+    }
+    if has_record_or_map {
+      emit_local_get(body, type_id)
+      emit_i32_const_raw(body, 4) // obj_record
+      emit_i32_eq(body)
+      emit_local_get(body, type_id)
+      emit_i32_const_raw(body, 6) // obj_map
+      emit_i32_eq(body)
+      emit_i32_or(body)
+      emit_if(body) // if record or map
+      emit_local_get(body, obj_ptr)
+      emit_i32_load(body, 4)
+      emit_local_set(body, len)
+      emit_i32_const_raw(body, 0)
+      emit_local_set(body, idx)
+      emit_block(body) // block $break
+      emit_loop(body) // loop $continue
+      emit_local_get(body, idx)
+      emit_local_get(body, len)
+      emit_i32_ge_s(body)
+      emit_br_if(body, 1) // br $break
+      emit_local_get(body, obj_ptr)
+      emit_local_get(body, idx)
+      emit_i32_const_raw(body, 8)
+      emit_i32_mul(body)
+      emit_i32_add(body)
+      emit_i32_load(body, 12)
+      emit_i64_extend_i32_u(body)
+      emit_call(body, self_func_abs_idx)
+      emit_local_get(body, idx)
+      emit_i32_const_raw(body, 1)
+      emit_i32_add(body)
+      emit_local_set(body, idx)
+      emit_br(body, 0) // br $continue
+      emit_end(body) // end loop
+      emit_end(body) // end block $break
+      emit_end(body) // end if record or map
+    }
+    if has_closure {
+      emit_local_get(body, type_id)
+      emit_i32_const_raw(body, 7) // obj_fn
+      emit_i32_eq(body)
+      emit_if(body) // if type_id == 7
+      emit_local_get(body, obj_ptr)
+      emit_i32_load(body, 4)
+      emit_local_set(body, len)
+      emit_i32_const_raw(body, 0)
+      emit_local_set(body, idx)
+      emit_block(body) // block $break
+      emit_loop(body) // loop $continue
+      emit_local_get(body, idx)
+      emit_local_get(body, len)
+      emit_i32_ge_s(body)
+      emit_br_if(body, 1) // br $break
+      emit_local_get(body, obj_ptr)
+      emit_local_get(body, idx)
+      emit_i32_const_raw(body, 8)
+      emit_i32_mul(body)
+      emit_i32_add(body)
+      emit_i64_load(body, 16)
+      emit_call(body, self_func_abs_idx)
+      emit_local_get(body, idx)
+      emit_i32_const_raw(body, 1)
+      emit_i32_add(body)
+      emit_local_set(body, idx)
+      emit_br(body, 0) // br $continue
+      emit_end(body) // end loop
+      emit_end(body) // end block $break
+      emit_end(body) // end if type_id == 7
+    }
+    if has_enum {
+      emit_local_get(body, type_id)
+      emit_i32_const_raw(body, 10) // obj_enum
+      emit_i32_eq(body)
+      emit_if(body) // if type_id == 10
+      emit_local_get(body, obj_ptr)
+      emit_i32_load(body, 4)
+      emit_local_set(body, len)
+      emit_i32_const_raw(body, 0)
+      emit_local_set(body, idx)
+      emit_block(body) // block $break
+      emit_loop(body) // loop $continue
+      emit_local_get(body, idx)
+      emit_local_get(body, len)
+      emit_i32_ge_s(body)
+      emit_br_if(body, 1) // br $break
+      emit_local_get(body, obj_ptr)
+      emit_local_get(body, idx)
+      emit_i32_const_raw(body, 4)
+      emit_i32_mul(body)
+      emit_i32_add(body)
+      emit_i32_load(body, 12)
+      emit_i64_extend_i32_u(body)
+      emit_call(body, self_func_abs_idx)
+      emit_local_get(body, idx)
+      emit_i32_const_raw(body, 1)
+      emit_i32_add(body)
+      emit_local_set(body, idx)
+      emit_br(body, 0) // br $continue
+      emit_end(body) // end loop
+      emit_end(body) // end block $break
+      emit_end(body) // end if type_id == 10
+    }
+    if has_view {
+      emit_local_get(body, type_id)
+      emit_i32_const_raw(body, 11) // obj_string_view
+      emit_i32_eq(body)
+      emit_local_get(body, type_id)
+      emit_i32_const_raw(body, 12) // obj_array_view
+      emit_i32_eq(body)
+      emit_i32_or(body)
+      emit_local_get(body, type_id)
+      emit_i32_const_raw(body, 14) // obj_bytes_view
+      emit_i32_eq(body)
+      emit_i32_or(body)
+      emit_if(body) // if view type
+      emit_local_get(body, obj_ptr)
+      emit_i32_load(body, 4) // source_ptr
+      emit_i32_const_raw(body, 0)
+      emit_i32_ne(body)
+      emit_if(body)
+      emit_local_get(body, obj_ptr)
+      emit_i32_load(body, 4) // reload source_ptr
+      emit_i64_extend_i32_u(body)
+      emit_i64_const_raw(body, tag_obj.to_int64())
+      emit_i64_or(body)
+      emit_call(body, self_func_abs_idx)
+      emit_end(body) // end if ptr != 0
+      emit_end(body) // end if view type
+    }
   }
   // --- End recursive drop fields ---
   // Debug mode: increment free counter
@@ -1080,7 +1283,6 @@ fn compile_rc_drop_function(
   emit_end(body) // end func
   // Only declare locals that are actually used
   let locals : Array[ValueKind] = [
-    ValueKind::I32, // val32
     ValueKind::I32, // obj_ptr
     ValueKind::I32, // new_rc
   ]

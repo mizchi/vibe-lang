@@ -974,6 +974,11 @@ fn emit_i64_gt_s(buf : ByteBuf) -> Unit {
 }
 
 ///|
+fn emit_i64_ne(buf : ByteBuf) -> Unit {
+  buf.push((0x52).to_byte())
+}
+
+///|
 fn emit_i64_eqz(buf : ByteBuf) -> Unit {
   buf.push((0x50).to_byte())
 }
