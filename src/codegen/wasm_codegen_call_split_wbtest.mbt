@@ -188,13 +188,14 @@ test "compile_call_by_name handles __set_index" {
 }
 
 ///|
-test "scan_needs_expr enables exceptions for wasm fallback builtins" {
+test "scan_needs_expr enables fs and heap for Json::parse" {
   let ctx = CodegenCtx::new(false)
   let expr = call_split_test_call("Json::parse", [
     call_split_test_arg(call_split_test_string("{}")),
   ])
   scan_needs_expr(ctx, expr)
-  assert_true(ctx.need_exceptions)
+  assert_true(ctx.need_fs)
+  assert_true(ctx.need_heap)
 }
 
 ///|
