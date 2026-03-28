@@ -1238,6 +1238,35 @@ pub fn compile_module_wasm_gc_with_opt_level(
 }
 
 ///|
+pub fn compile_module_wasm_gc_with_opt_level_profiled(
+  db : @runtime.VibeDb,
+  path : String,
+  no_dce? : Bool = false,
+  opt_level? : String? = None,
+) -> (Bytes, WasmCompileStageProfile) raise WasmCompileError {
+  let cache_namespace = if no_dce { "gc_no_dce" } else { "gc_default" }
+  if no_dce {
+    compile_module_wasm_profiled_with(
+      db,
+      path,
+      @runtime.bundle_for_wasm_no_dce,
+      @codegen.emit_module_wasm_gc,
+      cache_namespace,
+      opt_level,
+    )
+  } else {
+    compile_module_wasm_profiled_with(
+      db,
+      path,
+      @runtime.bundle_for_wasm_gc,
+      @codegen.emit_module_wasm_gc,
+      cache_namespace,
+      opt_level,
+    )
+  }
+}
+
+///|
 /// Compile a module to WASM using wasm-gc opcodes without DCE.
 pub fn compile_module_wasm_gc_no_dce(
   db : @runtime.VibeDb,

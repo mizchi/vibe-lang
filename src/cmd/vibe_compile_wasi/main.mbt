@@ -90,6 +90,10 @@ fn parse_compile_cmd_args(
     let arg = args[i]
     match arg {
       "--wasm" => {
+        mode = CompileMode::WasmGc
+        i += 1
+      }
+      "--wasm-linear" => {
         mode = CompileMode::Wasm
         i += 1
       }
@@ -203,7 +207,7 @@ fn print_usage() -> Unit {
     "vibe_compile_wasi [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wac|--wit|--wit-component] [--no-dce] [--debug-errors] [--http-host-imports] [--wite|-O{0,1,2,3,4,s,z}] [-o out] <file>",
   )
   println(
-    "vibe_compile_wasi compile-lite --wasm [--no-dce] [--in-memory] [--profile-tsv path] [-O{0,1,2,3,4,s,z}] [-o out] <file>",
+    "vibe_compile_wasi compile-lite [--wasm | --wasm-linear | --wasm-gc] [--no-dce] [--in-memory] [--profile-tsv path] [-O{0,1,2,3,4,s,z}] [-o out] <file>",
   )
 }
 
@@ -444,8 +448,8 @@ fn compile_lite_validate_opts(
   opts : CompileCmdOptions,
   in_memory : Bool,
 ) -> Result[Unit, String] {
-  if opts.mode != CompileMode::Wasm {
-    return Err("compile-lite: only --wasm mode is supported")
+  if opts.mode != CompileMode::Wasm && opts.mode != CompileMode::WasmGc {
+    return Err("compile-lite: only --wasm/--wasm-linear/--wasm-gc mode is supported")
   }
   if opts.debug_errors {
     return Err("compile-lite: --debug-errors is not supported")
@@ -529,15 +533,26 @@ fn compile_lite_cmd(
   let start_type = @bench.monotonic_clock_start()
   let _ = db.types(entry)
   let type_us = elapsed_us_from(start_type)
-  let (wasm_bytes, compile_profile) = @runtime_compile.compile_module_wasm_with_opt_level_profiled(
-    db,
-    entry,
-    no_dce=opts.no_dce,
-    opt_level=opts.opt_level,
-    debug_errors=false,
-    http_host_imports=false,
-  ) catch {
-    e => return Err("compile-lite: " + e.to_string())
+  let (wasm_bytes, compile_profile) = if opts.mode == CompileMode::WasmGc {
+    @runtime_compile.compile_module_wasm_gc_with_opt_level_profiled(
+      db,
+      entry,
+      no_dce=opts.no_dce,
+      opt_level=opts.opt_level,
+    ) catch {
+      e => return Err("compile-lite: " + e.to_string())
+    }
+  } else {
+    @runtime_compile.compile_module_wasm_with_opt_level_profiled(
+      db,
+      entry,
+      no_dce=opts.no_dce,
+      opt_level=opts.opt_level,
+      debug_errors=false,
+      http_host_imports=false,
+    ) catch {
+      e => return Err("compile-lite: " + e.to_string())
+    }
   }
   let mut write_us = 0
   if not(in_memory) {

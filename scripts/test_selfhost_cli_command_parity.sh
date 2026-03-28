@@ -37,9 +37,9 @@ run_case() {
   rm -f "$host_out" "$selfhost_out" "$host_run_log" "$selfhost_run_log"
 
   if [ "$mode" = "no-dce" ]; then
-    "$VIBE_BIN" compile-lite --wasm --no-dce "$input_path" -o "$host_out"
+    "$VIBE_BIN" compile-lite --wasm-linear --no-dce "$input_path" -o "$host_out"
   else
-    "$VIBE_BIN" compile-lite --wasm "$input_path" -o "$host_out"
+    "$VIBE_BIN" compile-lite --wasm-linear "$input_path" -o "$host_out"
   fi
   bash "$SCRIPT_DIR/run_selfhost_cli_preview2_component.sh" \
     "$COMPONENT_PATH" \

@@ -995,6 +995,40 @@ test "compile-lite validate allows wasm no-dce" {
 }
 
 ///|
+test "compile-lite validate allows wasm-linear no-dce" {
+  let parsed = parse_compile_cmd_args([
+    "--wasm-linear", "--no-dce", "-o", "/tmp/out.wasm", "main.vibe",
+  ])
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.mode, CompileMode::Wasm)
+      match compile_lite_validate_opts(opts, false) {
+        Ok(_) => ()
+        Err(msg) => fail("unexpected err: " + msg)
+      }
+    }
+    Err(msg) => fail("unexpected parse err: " + msg)
+  }
+}
+
+///|
+test "compile-lite validate allows wasm-gc" {
+  let parsed = parse_compile_cmd_args([
+    "--wasm-gc", "-o", "/tmp/out.wasm", "main.vibe",
+  ])
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.mode, CompileMode::WasmGc)
+      match compile_lite_validate_opts(opts, false) {
+        Ok(_) => ()
+        Err(msg) => fail("unexpected err: " + msg)
+      }
+    }
+    Err(msg) => fail("unexpected parse err: " + msg)
+  }
+}
+
+///|
 test "compile-lite validate rejects coverage" {
   let parsed = parse_compile_cmd_args([
     "--wasm", "--coverage", "-o", "/tmp/out.wasm", "main.vibe",

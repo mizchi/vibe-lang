@@ -104,7 +104,7 @@ host_import_out="$import_case_dir/host.wasm"
 selfhost_import_out="$import_case_dir/selfhost.wasm"
 host_import_log="$import_case_dir/host.run.log"
 selfhost_import_log="$import_case_dir/selfhost.run.log"
-"$VIBE_BIN" compile-lite --wasm "$import_case_dir/main.vibe" -o "$host_import_out"
+"$VIBE_BIN" compile-lite --wasm-linear "$import_case_dir/main.vibe" -o "$host_import_out"
 bash "$SCRIPT_DIR/run_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$import_case_dir/main.vibe" "$selfhost_import_out" "answer" "mvp"
 wasm-tools validate "$host_import_out" >/dev/null
 wasm-tools validate "$selfhost_import_out" >/dev/null

@@ -174,7 +174,7 @@ fn print_usage() -> Unit {
     "                                     --http-host-imports wires HTTP builtins to host imports (--wasm: vibe:http/*, --component: wasi:http/* shim)",
   )
   println(
-    "  compile-lite --wasm [--no-dce] [--in-memory] [--profile-tsv path] [-O{0,1,2,3,4,s,z}] [-o out] <file>",
+    "  compile-lite [--wasm | --wasm-linear | --wasm-gc] [--no-dce] [--in-memory] [--profile-tsv path] [-O{0,1,2,3,4,s,z}] [-o out] <file>",
   )
   println(
     "                                     minimal compile path for strict perf comparison (no coverage/debug/http/component)",
@@ -575,7 +575,7 @@ fn compile_lite_validate_opts(
   in_memory : Bool,
 ) -> Result[Unit, String] {
   if opts.mode != CompileMode::Wasm && opts.mode != CompileMode::WasmGc {
-    return Err("compile-lite: only --wasm mode is supported")
+    return Err("compile-lite: only --wasm/--wasm-linear/--wasm-gc mode is supported")
   }
   if opts.coverage || opts.coverage_run_tests {
     return Err(
@@ -705,16 +705,27 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
       let _ = db.types(entry)
       let type_us = elapsed_us_from(start_type)
       @profiler.profiler_leave()
-      let (wasm_bytes, compile_profile) = @runtime_compile.compile_module_wasm_with_opt_level_profiled(
-        db,
-        entry,
-        no_dce=opts.no_dce,
-        opt_level=opts.opt_level,
-        debug_errors=false,
-        http_host_imports=false,
-        force_cabi_realloc=false,
-      ) catch {
-        e => abort("compile-lite: " + e.user_message())
+      let (wasm_bytes, compile_profile) = if opts.mode == CompileMode::WasmGc {
+        @runtime_compile.compile_module_wasm_gc_with_opt_level_profiled(
+          db,
+          entry,
+          no_dce=opts.no_dce,
+          opt_level=opts.opt_level,
+        ) catch {
+          e => abort("compile-lite: " + e.user_message())
+        }
+      } else {
+        @runtime_compile.compile_module_wasm_with_opt_level_profiled(
+          db,
+          entry,
+          no_dce=opts.no_dce,
+          opt_level=opts.opt_level,
+          debug_errors=false,
+          http_host_imports=false,
+          force_cabi_realloc=false,
+        ) catch {
+          e => abort("compile-lite: " + e.user_message())
+        }
       }
       let mut write_us = 0
       if not(in_memory) {
