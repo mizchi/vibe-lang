@@ -196,7 +196,7 @@ fn compile_stmt(
                 emit_local_set(buf, env_local)
                 emit_local_get(buf, env_local)
                 emit_local_get(buf, idx) // closure value (i64)
-                emit_i64_store(buf, 8 + bp_effective_idx * 8) // write to capture slot
+                emit_i64_store(buf, 16 + bp_effective_idx * 8) // write to capture slot
               } else if is_forward_fn && ctx.forward_fn_keys.contains(cap_name) {
                 // Mutual reference: capture of another forward function
                 match ctx.locals.get(cap_name) {
@@ -210,7 +210,7 @@ fn compile_stmt(
                     emit_local_set(buf, env_local)
                     emit_local_get(buf, env_local)
                     emit_local_get(buf, cap_local)
-                    emit_i64_store(buf, 8 + bp_effective_idx * 8)
+                    emit_i64_store(buf, 16 + bp_effective_idx * 8)
                   }
                   None => () // Not yet compiled — will be patched by reverse pass below
                 }
@@ -242,7 +242,7 @@ fn compile_stmt(
                         emit_local_set(buf, env_local)
                         emit_local_get(buf, env_local)
                         emit_local_get(buf, idx)
-                        emit_i64_store(buf, 8 + rbp_effective_idx * 8)
+                        emit_i64_store(buf, 16 + rbp_effective_idx * 8)
                       }
                       rbp_effective_idx += 1
                     }

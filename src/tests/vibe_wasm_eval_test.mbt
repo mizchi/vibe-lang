@@ -3023,3 +3023,57 @@ test "rc eval: free-list scan reuses non-head blocks" {
   assert_eq(res_rc.value, res_no_rc.value)
   assert_eq(decode_int(res_rc.value), 420L)
 }
+
+///|
+test "rc eval: closure capture drop frees captured heap objects" {
+  // Closure captures a tuple. When the closure is dropped,
+  // its captured tuple should also be RC-dropped.
+  let script =
+    #|let f = () -> Int {
+    #|  let t = (10, 20)
+    #|  let g = () -> Int { t.0 + t.1 }
+    #|  g()
+    #|}
+    #|f()
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  // Correctness: 10 + 20 = 30
+  assert_eq(res_rc.value, res_no_rc.value)
+  assert_eq(decode_int(res_rc.value), 30L)
+}
+
+///|
+test "rc eval: mutable closure with captured tuple" {
+  // Closure captures a mutable variable holding a tuple.
+  // Reassignment inside should drop the old tuple via RC.
+  let script =
+    #|let f = () -> Int {
+    #|  let mut x = (1, 2)
+    #|  let g = () -> Int {
+    #|    x = (3, 4)
+    #|    x.0 + x.1
+    #|  }
+    #|  g()
+    #|}
+    #|f()
+  let res_rc = try eval_run_rc(script) catch {
+    e => fail("rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let res_no_rc = try eval_run(script) catch {
+    e => fail("non-rc eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res_rc.value, res_no_rc.value)
+  assert_eq(decode_int(res_rc.value), 7L)
+}

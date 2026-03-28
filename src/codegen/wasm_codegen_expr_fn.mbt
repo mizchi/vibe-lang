@@ -26,16 +26,22 @@ fn compile_expr_fn(
     // the function prologue is generated. Skipping env stores here while
     // the prologue still emits env loads causes an index mismatch and
     // reads uninitialized memory. Always allocate and store to be safe.
-    let size = align4(8 + len * 8)
+    let size = align4(16 + len * 8)
     let obj_local = alloc_temp_local(ctx)
     emit_heap_alloc(ctx, buf, size, obj_local)
+    // type_id @ offset 0
     emit_local_get(buf, obj_local)
     emit_i32_const_raw(buf, obj_fn)
     emit_i32_store(buf, 0)
+    // capture_count @ offset 4 (enables RC drop to iterate captures)
+    emit_local_get(buf, obj_local)
+    emit_i32_const_raw(buf, len)
+    emit_i32_store(buf, 4)
+    // func_ref @ offset 8
     emit_local_get(buf, obj_local)
     let slot = ensure_funcref_slot(ctx, func_idx)
     emit_i32_const_raw(buf, slot)
-    emit_i32_store(buf, 4)
+    emit_i32_store(buf, 8)
     let capture_kinds : Array[ValueKind] = []
     let capture_is_ref_cell : Array[Bool] = []
     let mut effective_idx = 0
@@ -62,7 +68,7 @@ fn compile_expr_fn(
           }
           None => raise WasmGenError::UnknownName(name)
         }
-        emit_i64_store(buf, 8 + effective_idx * 8)
+        emit_i64_store(buf, 16 + effective_idx * 8)
       } else if ctx.use_js_strings && cap_kind == ValueKind::ExternRef {
         // Store externref in extern table, put slot index in closure env
         ctx.need_extern_table = true
@@ -79,7 +85,7 @@ fn compile_expr_fn(
         emit_local_get(buf, obj_local)
         emit_i32_const_raw(buf, slot)
         emit_i64_extend_i32_u(buf)
-        emit_i64_store(buf, 8 + effective_idx * 8)
+        emit_i64_store(buf, 16 + effective_idx * 8)
       } else {
         emit_local_get(buf, obj_local)
         match ctx.locals.get(name) {
@@ -109,7 +115,7 @@ fn compile_expr_fn(
             }
         }
         // Store capture as i64 (all tagged values are i64)
-        emit_i64_store(buf, 8 + effective_idx * 8)
+        emit_i64_store(buf, 16 + effective_idx * 8)
       }
       effective_idx += 1
     }

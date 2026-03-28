@@ -770,6 +770,42 @@ fn compile_rc_drop_function(
   emit_end(body) // end block $break
   emit_end(body) // end if type_id <= 5
   emit_end(body) // end if type_id >= 3
+  // --- Closure captures (type_id=7): i64 at 16+idx*8 ---
+  emit_local_get(body, type_id)
+  emit_i32_const_raw(body, 7) // obj_fn
+  emit_i32_eq(body)
+  emit_if(body) // if type_id == 7
+  // len = load(obj_ptr + 4) = capture_count
+  emit_local_get(body, obj_ptr)
+  emit_i32_load(body, 4)
+  emit_local_set(body, len)
+  emit_i32_const_raw(body, 0)
+  emit_local_set(body, idx)
+  emit_block(body) // block $break
+  emit_loop(body) // loop $continue
+  emit_local_get(body, idx)
+  emit_local_get(body, len)
+  emit_i32_ge_s(body)
+  emit_br_if(body, 1) // br $break
+  // field_i64 = load_i64(obj_ptr + 16 + idx * 8)
+  emit_local_get(body, obj_ptr)
+  emit_local_get(body, idx)
+  emit_i32_const_raw(body, 8)
+  emit_i32_mul(body)
+  emit_i32_add(body)
+  emit_i64_load(body, 16)
+  emit_local_set(body, field_i64)
+  emit_local_get(body, field_i64)
+  emit_call(body, self_func_abs_idx) // recursive $rc_drop
+  // idx += 1
+  emit_local_get(body, idx)
+  emit_i32_const_raw(body, 1)
+  emit_i32_add(body)
+  emit_local_set(body, idx)
+  emit_br(body, 0) // br $continue
+  emit_end(body) // end loop
+  emit_end(body) // end block $break
+  emit_end(body) // end if type_id == 7
   // --- End recursive drop fields ---
   // Tombstone: type_id = 0
   emit_local_get(body, obj_ptr)
