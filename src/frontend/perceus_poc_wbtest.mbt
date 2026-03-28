@@ -1069,3 +1069,82 @@ test "perceus plan: borrow + owning use — dup for owning only" {
   }
   assert_eq(has_dup, true)
 }
+
+///|
+test "perceus: while loop body drops bindings at scope end" {
+  // let f = () -> Int {
+  //   let mut i = 0
+  //   while i < 10 {
+  //     let t = make_pair(i)   ← new binding each iteration
+  //     i = consume(t)         ← last use of t
+  //   }
+  //   i
+  // }
+  // t should be dropped at the end of the while body scope
+  // (since it's declared inside the loop and goes out of scope each iteration)
+  let while_body = @core.Module::{
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="t",
+        expr=perceus_test_call("make_pair", [perceus_test_ident("i", 1)], 2),
+        span=perceus_test_span(3),
+      ),
+      @core.Stmt::Assign(
+        name="i",
+        expr=perceus_test_call("consume", [perceus_test_ident("t", 4)], 5),
+        span=perceus_test_span(6),
+      ),
+    ],
+  }
+  let mod : @core.Module = {
+    stmts: [
+      // let i = 0
+      @core.Stmt::Let(
+        rec=false,
+        name="i",
+        expr=@core.Expr::Int(value=0L, span=perceus_test_span(0)),
+        span=perceus_test_span(10),
+      ),
+      // while i < 10 { ... }
+      @core.Stmt::Expr(
+        expr=@core.Expr::While(
+          cond=perceus_test_call(
+            "lt",
+            [
+              perceus_test_ident("i", 20),
+              @core.Expr::Int(value=10L, span=perceus_test_span(21)),
+            ],
+            22,
+          ),
+          body=while_body,
+          span=perceus_test_span(23),
+        ),
+        span=perceus_test_span(24),
+      ),
+      // i (return value)
+      @core.Stmt::Expr(
+        expr=perceus_test_ident("i", 30),
+        span=perceus_test_span(31),
+      ),
+    ],
+  }
+  let lines = perceus_action_lines(build_perceus_plan(mod))
+  // While loop produces:
+  // - dup i for condition use (i has multiple uses: cond + body + return)
+  // - skip-branch drops to equalize with loop-body branch
+  let mut has_dup_i = false
+  let mut has_skip_drop = false
+  for line in lines {
+    if line.contains("dup i") {
+      has_dup_i = true
+    }
+    if line.contains("skip.end drop") {
+      has_skip_drop = true
+    }
+  }
+  // i is used multiple times → needs dup
+  assert_eq(has_dup_i, true)
+  // Branch merge generates compensating drops for skip path
+  assert_eq(has_skip_drop, true)
+}

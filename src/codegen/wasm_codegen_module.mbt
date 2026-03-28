@@ -3618,6 +3618,11 @@ fn emit_module_with_coverage(
         ctx.heap_global,
         ctx.rc_free_list_global,
         rc_drop_abs_idx,
+        has_tuple_or_array=ctx.rc_has_tuple_or_array,
+        has_record_or_map=ctx.rc_has_record_or_map,
+        has_closure=ctx.rc_has_closure,
+        has_enum=ctx.rc_has_enum,
+        has_view=ctx.rc_has_view,
       ),
     )
     let rc_alloc_sig = FuncSig::{
