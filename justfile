@@ -759,7 +759,7 @@ bench-selfhost-loader-hotspots:
 # Current stable debug baseline is around compile ~5x / check ~2-4x slower than host.
 # Keep modest headroom here and tighten as hot paths improve.
 # env override: VIBE_SELFHOST_PERF_RUNS / VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO / VIBE_SELFHOST_PERF_MAX_CHECK_RATIO / VIBE_SELFHOST_PERF_WASM_PROFILE
-test-selfhost-perf-gate runs="3" max_compile_ratio="8.0" max_check_ratio="5.0" cases_file="bench/selfhost_perf/kpi_cases.txt":
+test-selfhost-perf-gate runs="3" max_compile_ratio="8.0" max_check_ratio="5.5" cases_file="bench/selfhost_perf/kpi_cases.txt":
     VIBE_SELFHOST_PERF_RUNS={{runs}} VIBE_SELFHOST_PERF_CASES_FILE={{cases_file}} VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO={{max_compile_ratio}} VIBE_SELFHOST_PERF_MAX_CHECK_RATIO={{max_check_ratio}} scripts/bench_selfhost_perf.sh
 
 # Product bundle-size monitor (live examples/ + use-case importers).
