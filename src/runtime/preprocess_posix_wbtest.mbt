@@ -125,20 +125,3 @@ test "preprocess_posix_source: exists maps to Fs::exists" {
   )
 }
 
-///|
-test "preprocess_posix_source_with_compat_notes: rewritten command emits note" {
-  let (result, notes) = preprocess_posix_source_with_compat_notes(
-    "echo hello world",
-  )
-  assert_eq(result, "\"hello world\"")
-  assert_eq(notes.length(), 1)
-  assert_true(notes[0].contains("line 1"))
-  assert_true(notes[0].contains("shell builtin"))
-}
-
-///|
-test "preprocess_posix_source_with_compat_notes: unchanged script has no notes" {
-  let (result, notes) = preprocess_posix_source_with_compat_notes("let x = 1")
-  assert_eq(result, "let x = 1")
-  assert_eq(notes.length(), 0)
-}

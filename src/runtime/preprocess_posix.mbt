@@ -16,33 +16,6 @@ pub fn preprocess_posix_source(script : String) -> String {
 }
 
 ///|
-fn preprocess_posix_source_with_compat_notes(
-  script : String,
-) -> (String, Array[String]) {
-  let buf = StringBuilder::new()
-  let notes : Array[String] = []
-  let mut first = true
-  let mut line_no = 1
-  for line_view in script.split("\n") {
-    if not(first) {
-      buf.write_char('\n')
-    }
-    first = false
-    let line = line_view.to_string()
-    let (preprocessed_line, compat_note) = preprocess_posix_line_with_compat_note(
-      line,
-    )
-    buf.write_string(preprocessed_line)
-    match compat_note {
-      Some(note) => notes.push("line " + line_no.to_string() + ": " + note)
-      None => ()
-    }
-    line_no += 1
-  }
-  (buf.to_string(), notes)
-}
-
-///|
 fn chars_slice(chars : Array[Char], start : Int, end : Int) -> String {
   let buf = StringBuilder::new()
   let mut i = start
