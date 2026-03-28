@@ -854,7 +854,6 @@ fn compile_rc_drop_function(
     emit_i32_eq(body)
     emit_i32_or(body)
     emit_if(body) // if tuple or array
-    // len = load(obj_ptr + 4)
     emit_local_get(body, obj_ptr)
     emit_i32_load(body, 4)
     emit_local_set(body, len)

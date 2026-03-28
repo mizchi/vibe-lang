@@ -440,6 +440,12 @@ fn skip_to_else_or_end(code : Cursor) -> Bool raise WasmEvalError {
         }
       }
       65 | 66 | 32 | 33 | 34 | 35 | 36 | 16 | 12 | 13 => skip_leb(code)
+      14 => { // br_table
+        let count = code.read_leb_u32()
+        for _i = 0; _i < count + 1; _i = _i + 1 {
+          skip_leb(code)
+        }
+      }
       40 | 41 | 42 | 43 | 45 | 54 | 55 | 56 | 57 | 58 => {
         skip_leb(code)
         skip_leb(code)
@@ -467,6 +473,12 @@ fn skip_to_end(code : Cursor) -> Unit raise WasmEvalError {
         }
       }
       65 | 66 | 32 | 33 | 34 | 35 | 36 | 16 | 12 | 13 => skip_leb(code)
+      14 => { // br_table
+        let count = code.read_leb_u32()
+        for _i = 0; _i < count + 1; _i = _i + 1 {
+          skip_leb(code)
+        }
+      }
       40 | 41 | 42 | 43 | 45 | 54 | 55 | 56 | 57 | 58 => {
         skip_leb(code)
         skip_leb(code)
@@ -1347,6 +1359,43 @@ fn eval_loop(
             for _ in 0..<blocks_to_exit {
               let _ = block_stack.pop()
             }
+          }
+        }
+      }
+      // br_table
+      14 => {
+        let count = code.read_leb_u32()
+        let labels : Array[Int] = []
+        for _i = 0; _i < count; _i = _i + 1 {
+          labels.push(code.read_leb_u32())
+        }
+        let default_label = code.read_leb_u32()
+        if stack.is_empty() {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let index = stack.unsafe_pop().to_int()
+        let depth = if index >= 0 && index < labels.length() {
+          labels[index]
+        } else {
+          default_label
+        }
+        let target_idx = block_stack.length() - 1 - depth
+        if target_idx < 0 {
+          raise WasmEvalError::Invalid("br_table depth")
+        }
+        let (kind, loop_pos, _sh) = block_stack[target_idx]
+        if kind == 1 {
+          code.pos = loop_pos
+          while block_stack.length() > target_idx + 1 {
+            let _ = block_stack.pop()
+          }
+        } else {
+          let blocks_to_exit = depth + 1
+          for _ in 0..<blocks_to_exit {
+            skip_to_end(code)
+          }
+          for _ in 0..<blocks_to_exit {
+            let _ = block_stack.pop()
           }
         }
       }
