@@ -3507,7 +3507,7 @@ fn emit_module_with_coverage(
   }
   // Pre-compute RC helper function indices before compile loop.
   // Helpers are appended right after user functions in compiled_funcs.
-  if ctx.enable_rc {
+  if ctx.enable_rc && ctx.need_heap {
     let base = funcs.length()
     ctx.rc_dup_func_idx = base
     ctx.rc_drop_func_idx = base + 1
@@ -3580,8 +3580,9 @@ fn emit_module_with_coverage(
       ),
     )
   }
-  // Append RC helper functions (dup, drop, alloc) right after user functions
-  if ctx.enable_rc {
+  // Append RC helper functions (dup, drop, alloc) right after user functions.
+  // Only include when the program actually needs heap (allocates objects).
+  if ctx.enable_rc && ctx.need_heap {
     let rc_dup_sig = FuncSig::{ params: [ValueKind::I64], results: [] }
     let _ = ensure_sig_index(ctx, rc_dup_sig)
     compiled_funcs.push(compile_rc_dup_function())

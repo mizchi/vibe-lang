@@ -2898,9 +2898,9 @@ test "rc perf: binary size overhead is bounded" {
     " ratio=" +
     ratio.to_string(),
   )
-  // With helper functions, fixed overhead dominates for tiny programs.
-  // Total ratio across the suite (including multi_alloc) should stay under 5x.
-  assert_true(ratio < 6.0)
+  // With lazy helper inclusion, non-heap programs have minimal overhead.
+  // Total ratio across the suite should stay under 4.5x.
+  assert_true(ratio < 4.5)
 }
 
 ///|
