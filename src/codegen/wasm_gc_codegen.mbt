@@ -6212,15 +6212,30 @@ fn compile_expr_gc(
           let builder_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
           let builder_type = match builder_kind {
             GcValKind::Ref(idx) => idx
-            _ => raise WasmGenError::Unsupported("ArrayBuilder::push kind")
+            _ => {
+              // Default ArrayBuilder type: {len: i32, data: ref array<i64>}
+              let arr_type = ensure_array_type(
+                ctx.types, ctx.array_type_index, GcValKind::I64,
+              )
+              ensure_struct_type(
+                ctx.types, ctx.struct_type_index,
+                [GcValKind::I32, GcValKind::Ref(arr_type)],
+              )
+            }
           }
           let arr_type = match ctx.types[builder_type] {
             GcTypeDef::Struct(fields~) =>
               match fields[1] {
                 GcValKind::Ref(idx) => idx
-                _ => raise WasmGenError::Unsupported("ArrayBuilder field")
+                _ =>
+                  ensure_array_type(
+                    ctx.types, ctx.array_type_index, GcValKind::I64,
+                  )
               }
-            _ => raise WasmGenError::Unsupported("ArrayBuilder type")
+            _ =>
+              ensure_array_type(
+                ctx.types, ctx.array_type_index, GcValKind::I64,
+              )
           }
           let b_idx = alloc_local_gc(fctx, builder_kind)
           let len_l = alloc_local_gc(fctx, GcValKind::I32)
@@ -6298,15 +6313,29 @@ fn compile_expr_gc(
           let builder_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
           let builder_type = match builder_kind {
             GcValKind::Ref(idx) => idx
-            _ => raise WasmGenError::Unsupported("ArrayBuilder::freeze kind")
+            _ => {
+              let arr_type = ensure_array_type(
+                ctx.types, ctx.array_type_index, GcValKind::I64,
+              )
+              ensure_struct_type(
+                ctx.types, ctx.struct_type_index,
+                [GcValKind::I32, GcValKind::Ref(arr_type)],
+              )
+            }
           }
           let arr_type = match ctx.types[builder_type] {
             GcTypeDef::Struct(fields~) =>
               match fields[1] {
                 GcValKind::Ref(idx) => idx
-                _ => raise WasmGenError::Unsupported("ArrayBuilder field")
+                _ =>
+                  ensure_array_type(
+                    ctx.types, ctx.array_type_index, GcValKind::I64,
+                  )
               }
-            _ => raise WasmGenError::Unsupported("ArrayBuilder type")
+            _ =>
+              ensure_array_type(
+                ctx.types, ctx.array_type_index, GcValKind::I64,
+              )
           }
           let b_idx = alloc_local_gc(fctx, builder_kind)
           let len_l = alloc_local_gc(fctx, GcValKind::I32)
