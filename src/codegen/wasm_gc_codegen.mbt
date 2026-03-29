@@ -1410,13 +1410,29 @@ fn GcFuncCtx::new(
 ) -> GcFuncCtx raise WasmGenError {
   let locals : Map[String, GcLocalInfo] = {}
   let local_kinds : Array[GcValKind] = []
+  let closure_call_types : Map[String, Int] = {}
   let mut idx = 0
   for param in params {
     let kind = gc_val_kind_from_type(ctx, param.ty)
     locals[param.name] = { idx, kind }
+    // Register function-typed parameters for closure call dispatch
+    match param.ty {
+      @core.Type::Func(params=fn_params, ret~, ..) => {
+        let fn_param_kinds : Array[GcValKind] = []
+        for fp in fn_params {
+          fn_param_kinds.push(gc_val_kind_from_type(ctx, fp.ty))
+        }
+        let result_kind = gc_val_kind_from_type(ctx, ret)
+        let (fn_type_idx, _) = ensure_closure_types_gc(
+          ctx, fn_param_kinds, result_kind,
+        )
+        closure_call_types[param.name] = fn_type_idx
+      }
+      _ => ()
+    }
     idx += 1
   }
-  { locals, local_kinds, param_count: idx, closure_call_types: {} }
+  { locals, local_kinds, param_count: idx, closure_call_types }
 }
 
 ///|
