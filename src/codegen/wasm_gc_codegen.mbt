@@ -1519,6 +1519,30 @@ fn infer_block_kind_gc(
           return kind
         }
       }
+      @core.Stmt::LetPat(pat~, expr~, ..) => {
+        let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
+        // Bind pattern names in temp_ctx
+        fn bind_pat_names(p : @core.Pat, k : GcValKind) -> Unit {
+          match p {
+            @core.Pat::Bind(name~, ..) =>
+              temp_ctx.locals[name] = { idx: 0, kind: k }
+            @core.Pat::Tuple(items~, ..) =>
+              for item in items {
+                bind_pat_names(item, GcValKind::EqRef)
+              }
+            @core.Pat::Ctor(args~, ..) =>
+              for arg in args {
+                bind_pat_names(arg, GcValKind::EqRef)
+              }
+            _ => ()
+          }
+        }
+
+        bind_pat_names(pat, kind)
+        if is_last {
+          return kind
+        }
+      }
       @core.Stmt::Expr(expr~, ..) =>
         if is_last {
           return infer_expr_kind_gc(ctx, temp_ctx, expr)
@@ -1782,6 +1806,7 @@ fn infer_expr_kind_gc(
           }
           infer_expr_kind_gc(ctx, fctx, pos_args[0])
         }
+        "Array::truncate" => GcValKind::I32
         "ArrayBuilder::new" => {
           // Return concrete builder struct type: { i32, ref array<i64> }
           let arr_type = ensure_array_type(
@@ -6137,6 +6162,28 @@ fn compile_expr_gc(
             "Array::concat",
           )
         }
+        "Array::truncate" => {
+          // Array::truncate(arr_builder, new_len) -> set len field
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("Array::truncate arity")
+          }
+          let builder_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let builder_type = match builder_kind {
+            GcValKind::Ref(idx) => idx
+            _ => raise WasmGenError::Unsupported("Array::truncate kind")
+          }
+          let b_idx = alloc_local_gc(fctx, builder_kind)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_local_set_gc(buf, b_idx)
+          emit_local_get_gc(buf, b_idx)
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          let idx_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          if idx_kind == GcValKind::I64 {
+            emit_i32_wrap_i64_gc(buf)
+          }
+          emit_struct_set_gc(buf, builder_type, 0)
+          emit_i32_const_gc(buf, 0)
+        }
         "ArrayBuilder::new" => {
           // Create struct { len: i32, data: ref array<i64> }
           let init_cap = 8
@@ -7435,6 +7482,33 @@ fn compile_stmt_gc(
         @core.Stmt::Let(rec~, name~, expr~, span~),
         is_last,
       )
+    @core.Stmt::LetPat(pat~, expr~, ..) => {
+      let kind = infer_expr_kind_gc(ctx, fctx, expr)
+      let scrut_idx = alloc_local_gc(fctx, kind)
+      compile_expr_gc(ctx, fctx, buf, expr)
+      emit_local_set_gc(buf, scrut_idx)
+      compile_pat_bind_gc(ctx, fctx, buf, scrut_idx, kind, pat)
+      if is_last {
+        emit_local_get_gc(buf, scrut_idx)
+      }
+    }
+    @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
+      let base_kind = infer_expr_kind_gc(ctx, fctx, target)
+      let type_idx = gc_array_type_idx_from_kind(
+        ctx, base_kind, "IndexAssign",
+      )
+      compile_expr_gc(ctx, fctx, buf, target)
+      compile_expr_gc(ctx, fctx, buf, index)
+      let idx_kind = infer_expr_kind_gc(ctx, fctx, index)
+      if idx_kind == GcValKind::I64 {
+        emit_i32_wrap_i64_gc(buf)
+      }
+      compile_expr_gc(ctx, fctx, buf, value)
+      emit_array_set_gc(buf, type_idx)
+      if is_last {
+        emit_i32_const_gc(buf, 0)
+      }
+    }
     // Type/trait/effect definitions, imports, etc. — no codegen needed
     _ =>
       if is_last {
