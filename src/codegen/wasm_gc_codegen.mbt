@@ -7476,6 +7476,12 @@ fn collect_top_level_funcs_gc(
           | @core.Expr::String(..) => top_func_names[name] = true
           _ => ()
         }
+      // Also scan Assign targets (let rec desugar produces Let + Assign)
+      @core.Stmt::Assign(name~, expr~, ..) =>
+        match expr {
+          @core.Expr::Fn(..) => top_func_names[name] = true
+          _ => ()
+        }
       _ => ()
     }
   }
