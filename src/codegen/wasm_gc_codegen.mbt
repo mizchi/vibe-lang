@@ -1191,6 +1191,7 @@ fn is_gc_builtin_name(name : String) -> Bool {
   name.has_prefix("ArrayBuilder::") ||
   name.has_prefix("MapBuilder::") ||
   name.has_prefix("Map::") ||
+  name.has_prefix("Set::") ||
   name.has_prefix("Bytes::") ||
   // Common builtins
   name == "add" ||
@@ -1836,6 +1837,15 @@ fn infer_expr_kind_gc(
         }
         "MapBuilder::set" => GcValKind::I32
         "Map::get" => GcValKind::I64
+        "Map::has_key" => GcValKind::I32
+        "Map::keys" => {
+          let str_arr_type = ensure_array_type(
+            ctx.types,
+            ctx.array_type_index,
+            GcValKind::EqRef,
+          )
+          GcValKind::Ref(str_arr_type)
+        }
         "__eq"
         | "__lt"
         | "String::equals"
@@ -6563,6 +6573,140 @@ fn compile_expr_gc(
           emit_end_gc(buf) // end loop
           emit_end_gc(buf) // end $done
           // result_l has the value (or default null eqref if not found)
+          emit_local_get_gc(buf, result_l)
+        }
+        "Map::has_key" => {
+          // Map::has_key(map, key) -> I32 (1 if found, 0 if not)
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("Map::has_key arity")
+          }
+          let key_arr_type = ensure_array_type(
+            ctx.types,
+            ctx.array_type_index,
+            GcValKind::EqRef,
+          )
+          let val_arr_type = ensure_array_type(
+            ctx.types,
+            ctx.array_type_index,
+            GcValKind::I64,
+          )
+          let builder_fields : Array[GcValKind] = [
+            GcValKind::I32,
+            GcValKind::Ref(key_arr_type),
+            GcValKind::Ref(val_arr_type),
+          ]
+          let builder_type = ensure_struct_type(
+            ctx.types,
+            ctx.struct_type_index,
+            builder_fields,
+          )
+          let b_idx = alloc_local_gc(fctx, GcValKind::Ref(builder_type))
+          let len_l = alloc_local_gc(fctx, GcValKind::I32)
+          let keys_l = alloc_local_gc(fctx, GcValKind::Ref(key_arr_type))
+          let i_l = alloc_local_gc(fctx, GcValKind::I32)
+          let key_l = alloc_local_gc(fctx, GcValKind::EqRef)
+          let result_l = alloc_local_gc(fctx, GcValKind::I32)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_local_set_gc(buf, b_idx)
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_local_set_gc(buf, key_l)
+          emit_local_get_gc(buf, b_idx)
+          emit_struct_get_gc(buf, builder_type, 0)
+          emit_local_set_gc(buf, len_l)
+          emit_local_get_gc(buf, b_idx)
+          emit_struct_get_gc(buf, builder_type, 1)
+          emit_local_set_gc(buf, keys_l)
+          emit_i32_const_gc(buf, 0)
+          emit_local_set_gc(buf, i_l)
+          emit_block_gc(buf, None)
+          emit_loop_gc(buf, None)
+          emit_local_get_gc(buf, i_l)
+          emit_local_get_gc(buf, len_l)
+          emit_i32_ge_s_gc(buf)
+          emit_br_if_gc(buf, 1)
+          emit_local_get_gc(buf, keys_l)
+          emit_local_get_gc(buf, i_l)
+          emit_array_get_gc(buf, key_arr_type)
+          emit_local_get_gc(buf, key_l)
+          emit_ref_eq_gc(buf)
+          emit_if_gc(buf, None)
+          emit_i32_const_gc(buf, 1)
+          emit_local_set_gc(buf, result_l)
+          emit_br_gc(buf, 2)
+          emit_end_gc(buf)
+          emit_local_get_gc(buf, i_l)
+          emit_i32_const_gc(buf, 1)
+          emit_i32_add_gc(buf)
+          emit_local_set_gc(buf, i_l)
+          emit_br_gc(buf, 0)
+          emit_end_gc(buf)
+          emit_end_gc(buf)
+          emit_local_get_gc(buf, result_l)
+        }
+        "Map::keys" => {
+          // Map::keys(map) -> Array of keys
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Map::keys arity")
+          }
+          let key_arr_type = ensure_array_type(
+            ctx.types,
+            ctx.array_type_index,
+            GcValKind::EqRef,
+          )
+          let val_arr_type = ensure_array_type(
+            ctx.types,
+            ctx.array_type_index,
+            GcValKind::I64,
+          )
+          let builder_fields : Array[GcValKind] = [
+            GcValKind::I32,
+            GcValKind::Ref(key_arr_type),
+            GcValKind::Ref(val_arr_type),
+          ]
+          let builder_type = ensure_struct_type(
+            ctx.types,
+            ctx.struct_type_index,
+            builder_fields,
+          )
+          let b_idx = alloc_local_gc(fctx, GcValKind::Ref(builder_type))
+          let len_l = alloc_local_gc(fctx, GcValKind::I32)
+          let keys_l = alloc_local_gc(fctx, GcValKind::Ref(key_arr_type))
+          let result_l = alloc_local_gc(fctx, GcValKind::Ref(key_arr_type))
+          let i_l = alloc_local_gc(fctx, GcValKind::I32)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_local_set_gc(buf, b_idx)
+          emit_local_get_gc(buf, b_idx)
+          emit_struct_get_gc(buf, builder_type, 0)
+          emit_local_set_gc(buf, len_l)
+          emit_local_get_gc(buf, b_idx)
+          emit_struct_get_gc(buf, builder_type, 1)
+          emit_local_set_gc(buf, keys_l)
+          // Create result array of exact size
+          emit_local_get_gc(buf, len_l)
+          emit_array_new_default_gc(buf, key_arr_type)
+          emit_local_set_gc(buf, result_l)
+          // Copy keys
+          emit_i32_const_gc(buf, 0)
+          emit_local_set_gc(buf, i_l)
+          emit_block_gc(buf, None)
+          emit_loop_gc(buf, None)
+          emit_local_get_gc(buf, i_l)
+          emit_local_get_gc(buf, len_l)
+          emit_i32_ge_s_gc(buf)
+          emit_br_if_gc(buf, 1)
+          emit_local_get_gc(buf, result_l)
+          emit_local_get_gc(buf, i_l)
+          emit_local_get_gc(buf, keys_l)
+          emit_local_get_gc(buf, i_l)
+          emit_array_get_gc(buf, key_arr_type)
+          emit_array_set_gc(buf, key_arr_type)
+          emit_local_get_gc(buf, i_l)
+          emit_i32_const_gc(buf, 1)
+          emit_i32_add_gc(buf)
+          emit_local_set_gc(buf, i_l)
+          emit_br_gc(buf, 0)
+          emit_end_gc(buf)
+          emit_end_gc(buf)
           emit_local_get_gc(buf, result_l)
         }
         _ =>
