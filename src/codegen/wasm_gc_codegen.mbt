@@ -1735,6 +1735,8 @@ fn infer_expr_kind_gc(
               ctx, param_kinds, result_kind,
             )
             GcValKind::Ref(struct_type_idx)
+          } else if is_gc_builtin_name(name) {
+            GcValKind::EqRef
           } else {
             raise WasmGenError::UnknownName(name)
           }
@@ -1984,6 +1986,8 @@ fn infer_expr_kind_gc(
                   if ctx.enum_ctor_tags.contains(name) ||
                     name == "Some" ||
                     name == "None" {
+                    GcValKind::EqRef
+                  } else if is_gc_builtin_name(name) {
                     GcValKind::EqRef
                   } else {
                     raise WasmGenError::UnknownName(name)
@@ -5404,6 +5408,8 @@ fn compile_expr_gc(
             )
             emit_struct_new_gc(buf, env_type_idx)
             emit_struct_new_gc(buf, struct_type_idx)
+          } else if is_gc_builtin_name(name) {
+            emit_unreachable_gc(buf)
           } else {
             raise WasmGenError::UnknownName(name)
           }
@@ -6955,7 +6961,17 @@ fn compile_expr_gc(
                       }
                       None => raise WasmGenError::UnknownName(name)
                     }
-                  None => raise WasmGenError::UnknownName(name)
+                  None =>
+                    if is_gc_builtin_name(name) {
+                      // Builtin/effect call — emit unreachable (trap at runtime)
+                      for arg in pos_args {
+                        compile_expr_gc(ctx, fctx, buf, arg)
+                        emit_drop_gc(buf)
+                      }
+                      emit_unreachable_gc(buf)
+                    } else {
+                      raise WasmGenError::UnknownName(name)
+                    }
                 }
               }
           }
