@@ -1123,15 +1123,25 @@ fn collect_free_vars_module_gc(
 ) -> Unit {
   for stmt in body.stmts {
     match stmt {
-      @core.Stmt::Let(name~, expr~, ..) => {
+      @core.Stmt::Let(rec~, name~, expr~, ..) => {
+        // For let rec, bind name BEFORE scanning expr (self-reference)
+        if rec {
+          bound[name] = true
+        }
         collect_free_vars_expr_gc(expr, bound, free)
         bound[name] = true
       }
-      @core.Stmt::ExportLet(name~, expr~, ..) => {
+      @core.Stmt::ExportLet(rec~, name~, expr~, ..) => {
+        if rec {
+          bound[name] = true
+        }
         collect_free_vars_expr_gc(expr, bound, free)
         bound[name] = true
       }
-      @core.Stmt::InternalExportLet(name~, expr~, ..) => {
+      @core.Stmt::InternalExportLet(rec~, name~, expr~, ..) => {
+        if rec {
+          bound[name] = true
+        }
         collect_free_vars_expr_gc(expr, bound, free)
         bound[name] = true
       }
