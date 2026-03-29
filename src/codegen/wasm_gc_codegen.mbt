@@ -7350,10 +7350,15 @@ fn compile_expr_gc(
     }
     @core.Expr::Perform(effect_name~, op_name~, args~, span~) => {
       let _ = span
-      let _ = args
-      raise WasmGenError::Unsupported(
-        "perform " + effect_name + "::" + op_name,
-      )
+      let _ = effect_name
+      let _ = op_name
+      // Non-Error effect: compile args (for side effects) then trap
+      // WASI/IO effects need proper import integration for runtime support
+      for arg in args {
+        compile_expr_gc(ctx, fctx, buf, arg.expr)
+        emit_drop_gc(buf)
+      }
+      emit_unreachable_gc(buf)
     }
     @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
