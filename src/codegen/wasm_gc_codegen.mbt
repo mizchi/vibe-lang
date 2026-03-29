@@ -882,6 +882,38 @@ fn scan_enum_defs_gc(
       }
     }
   }
+  // Register builtin Option enum (Some/None) if not already defined
+  if not(ctx.enum_ctor_tags.contains("Some")) {
+    let some_tag = next_tag
+    next_tag += 1
+    ctx.enum_ctor_tags["Some"] = some_tag
+    ctx.enum_ctor_arities["Some"] = 1
+    // Use EqRef payload so both I64 and ref types can be stored
+    // (I64 values will need wrapping — handled by compile_expr_gc)
+    let some_fields : Array[GcValKind] = [GcValKind::I32, GcValKind::EqRef]
+    let some_type = ensure_struct_type(
+      ctx.types,
+      ctx.struct_type_index,
+      some_fields,
+    )
+    ctx.enum_ctor_type_indices["Some"] = some_type
+    ctx.enum_ctor_field_kinds["Some"] = [GcValKind::EqRef]
+  }
+  if not(ctx.enum_ctor_tags.contains("None")) {
+    let none_tag = next_tag
+    let _ = next_tag + 1
+    ctx.enum_ctor_tags["None"] = none_tag
+    ctx.enum_ctor_arities["None"] = 0
+    let none_fields : Array[GcValKind] = [GcValKind::I32]
+    let none_type = ensure_struct_type(
+      ctx.types,
+      ctx.struct_type_index,
+      none_fields,
+    )
+    ctx.enum_ctor_type_indices["None"] = none_type
+    ctx.enum_ctor_field_kinds["None"] = []
+  }
+  ctx.enum_names["Option"] = true
 }
 
 ///|
@@ -1142,6 +1174,9 @@ fn has_free_vars_gc(
 ///|
 /// Check if a name is a known builtin that doesn't need to be captured.
 fn is_gc_builtin_name(name : String) -> Bool {
+  // Option constructors (registered as builtin enum)
+  name == "Some" ||
+  name == "None" ||
   // Boolean values
   name == "true" ||
   name == "false" ||
@@ -1607,6 +1642,8 @@ fn infer_expr_kind_gc(
           if ctx.enum_ctor_tags.contains(name) &&
             ctx.enum_ctor_arities[name] == 0 {
             GcValKind::EqRef
+          } else if name == "None" {
+            GcValKind::EqRef
           } else if ctx.global_consts.contains(name) {
             let (_, kind) = ctx.global_consts[name]
             kind
@@ -1862,8 +1899,10 @@ fn infer_expr_kind_gc(
                     _ => raise WasmGenError::Unsupported("closure call type")
                   }
                 None =>
-                  // Enum constructor call
-                  if ctx.enum_ctor_tags.contains(name) {
+                  // Enum constructor call (including builtin Some/None)
+                  if ctx.enum_ctor_tags.contains(name) ||
+                    name == "Some" ||
+                    name == "None" {
                     GcValKind::EqRef
                   } else {
                     raise WasmGenError::UnknownName(name)
@@ -4555,11 +4594,25 @@ fn compile_len_gc(
             emit_array_len_gc(buf)
             emit_i64_extend_i32_s_gc(buf)
           }
-          GcTypeDef::Struct(..) => raise WasmGenError::Unsupported("__len ref")
+          GcTypeDef::Struct(fields~) =>
+            if fields.length() > 0 && fields[0] == GcValKind::I32 {
+              // Struct with i32 first field (len) — e.g., ArrayBuilder, MapBuilder
+              compile_expr_gc(ctx, fctx, buf, expr)
+              emit_struct_get_gc(buf, type_idx, 0)
+              emit_i64_extend_i32_s_gc(buf)
+            } else {
+              raise WasmGenError::Unsupported("__len ref")
+            }
           GcTypeDef::Func(..) | GcTypeDef::TagFunc(..) =>
             raise WasmGenError::Unsupported("__len func ref")
         }
       }
+    GcValKind::EqRef => {
+      // Unknown ref type — try array.len, trap at runtime if not array
+      compile_expr_gc(ctx, fctx, buf, expr)
+      emit_array_len_gc(buf)
+      emit_i64_extend_i32_s_gc(buf)
+    }
     _ => raise WasmGenError::Unsupported("__len kind")
   }
 }
@@ -5162,6 +5215,16 @@ fn compile_expr_gc(
             let tag = ctx.enum_ctor_tags[name]
             let type_idx = ctx.enum_ctor_type_indices[name]
             emit_i32_const_gc(buf, tag)
+            emit_struct_new_gc(buf, type_idx)
+          } else if name == "None" {
+            // Builtin None: nullary struct {tag=0}
+            let fields : Array[GcValKind] = [GcValKind::I32]
+            let type_idx = ensure_struct_type(
+              ctx.types,
+              ctx.struct_type_index,
+              fields,
+            )
+            emit_i32_const_gc(buf, 0)
             emit_struct_new_gc(buf, type_idx)
           } else if ctx.global_consts.contains(name) {
             // Top-level constant (Int, Bool, String)
@@ -6521,11 +6584,44 @@ fn compile_expr_gc(
               if ctx.enum_ctor_tags.contains(name) {
                 // Enum constructor call
                 let tag = ctx.enum_ctor_tags[name]
-                let type_idx = ctx.enum_ctor_type_indices[name]
+                let type_idx = if name == "Some" && pos_args.length() == 1 {
+                  // Polymorphic Some: create per-call struct type
+                  let val_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+                  let fields : Array[GcValKind] = [GcValKind::I32, val_kind]
+                  ensure_struct_type(
+                    ctx.types,
+                    ctx.struct_type_index,
+                    fields,
+                  )
+                } else {
+                  ctx.enum_ctor_type_indices[name]
+                }
                 emit_i32_const_gc(buf, tag)
                 for arg in pos_args {
                   compile_expr_gc(ctx, fctx, buf, arg)
                 }
+                emit_struct_new_gc(buf, type_idx)
+              } else if name == "Some" && pos_args.length() == 1 {
+                // Builtin Some(value): wrap in ad-hoc struct {tag=1, payload}
+                let val_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+                let fields : Array[GcValKind] = [GcValKind::I32, val_kind]
+                let type_idx = ensure_struct_type(
+                  ctx.types,
+                  ctx.struct_type_index,
+                  fields,
+                )
+                emit_i32_const_gc(buf, 1) // tag = 1 (Some)
+                compile_expr_gc(ctx, fctx, buf, pos_args[0])
+                emit_struct_new_gc(buf, type_idx)
+              } else if name == "None" && pos_args.length() == 0 {
+                // Builtin None: nullary struct {tag=0}
+                let fields : Array[GcValKind] = [GcValKind::I32]
+                let type_idx = ensure_struct_type(
+                  ctx.types,
+                  ctx.struct_type_index,
+                  fields,
+                )
+                emit_i32_const_gc(buf, 0) // tag = 0 (None)
                 emit_struct_new_gc(buf, type_idx)
               } else {
                 match fctx.closure_call_types.get(name) {
