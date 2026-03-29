@@ -1224,15 +1224,7 @@ fn is_gc_builtin_name(name : String) -> Bool {
   name == "print" ||
   name == "abort" ||
   name == "throw" ||
-  name == "record_set" ||
-  // Effect operations (desugared from perform)
-  name.has_prefix("Fs::") ||
-  name.has_prefix("Env::") ||
-  name.has_prefix("Http::") ||
-  name.has_prefix("Socket::") ||
-  name.has_prefix("Io::") ||
-  // String builtins not yet in GC codegen
-  name == "String::replace_all"
+  name == "record_set"
 }
 
 ///|
@@ -7673,12 +7665,7 @@ fn collect_top_level_funcs_gc(
           @core.Expr::Fn(..)
           | @core.Expr::Int(..)
           | @core.Expr::Bool(..)
-          | @core.Expr::String(..)
-          | @core.Expr::Call(..)
-          | @core.Expr::Array(..)
-          | @core.Expr::Tuple(..)
-          | @core.Expr::Record(..)
-          | @core.Expr::Ident(..) => top_func_names[name] = true
+          | @core.Expr::String(..) => top_func_names[name] = true
           _ => ()
         }
       _ => ()
