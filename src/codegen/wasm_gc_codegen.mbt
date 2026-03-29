@@ -990,6 +990,84 @@ fn collect_free_vars_pat_gc(pat : @core.Pat, bound : Map[String, Bool]) -> Unit 
 }
 
 ///|
+/// Collect all function call target names from a module (for closure capture).
+fn collect_call_names_module_gc(
+  body : @core.Module,
+  names : Map[String, Bool],
+) -> Unit {
+  for stmt in body.stmts {
+    match stmt {
+      @core.Stmt::Let(expr~, ..)
+      | @core.Stmt::ExportLet(expr~, ..)
+      | @core.Stmt::InternalExportLet(expr~, ..)
+      | @core.Stmt::LetMut(expr~, ..) => collect_call_names_expr_gc(expr, names)
+      @core.Stmt::Assign(expr~, ..) => collect_call_names_expr_gc(expr, names)
+      @core.Stmt::Expr(expr~, ..) => collect_call_names_expr_gc(expr, names)
+      _ => ()
+    }
+  }
+}
+
+///|
+fn collect_call_names_expr_gc(
+  expr : @core.Expr,
+  names : Map[String, Bool],
+) -> Unit {
+  match expr {
+    @core.Expr::Call(name~, args~, ..) => {
+      names[name] = true
+      for arg in args {
+        collect_call_names_expr_gc(arg.expr, names)
+      }
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      collect_call_names_expr_gc(cond, names)
+      collect_call_names_module_gc(then_body, names)
+      collect_call_names_module_gc(else_body, names)
+    }
+    @core.Expr::Block(body~, ..) => collect_call_names_module_gc(body, names)
+    @core.Expr::Fn(body~, ..) => collect_call_names_module_gc(body, names)
+    @core.Expr::Match(scrutinee~, arms~, ..) => {
+      collect_call_names_expr_gc(scrutinee, names)
+      for arm in arms {
+        collect_call_names_expr_gc(arm.expr, names)
+      }
+    }
+    @core.Expr::Handle(body~, arms~, ..) => {
+      collect_call_names_module_gc(body, names)
+      for arm in arms {
+        collect_call_names_expr_gc(arm.expr, names)
+      }
+    }
+    @core.Expr::While(cond~, body~, ..) => {
+      collect_call_names_expr_gc(cond, names)
+      collect_call_names_module_gc(body, names)
+    }
+    @core.Expr::ForIn(iterable~, body~, ..) => {
+      collect_call_names_expr_gc(iterable, names)
+      collect_call_names_module_gc(body, names)
+    }
+    @core.Expr::Array(items~, ..) =>
+      for item in items {
+        collect_call_names_expr_gc(item, names)
+      }
+    @core.Expr::Tuple(items~, ..) =>
+      for item in items {
+        collect_call_names_expr_gc(item, names)
+      }
+    @core.Expr::Record(fields~, ..) =>
+      for field in fields {
+        collect_call_names_expr_gc(field.expr, names)
+      }
+    @core.Expr::StructLit(fields~, ..) =>
+      for field in fields {
+        collect_call_names_expr_gc(field.expr, names)
+      }
+    _ => ()
+  }
+}
+
+///|
 fn collect_free_vars_module_gc(
   body : @core.Module,
   bound : Map[String, Bool],
@@ -1341,10 +1419,7 @@ fn infer_block_kind_gc(
       }
       @core.Stmt::Assign(name~, expr~, ..) => {
         let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
-        match temp_ctx.locals.get(name) {
-          Some(_) => temp_ctx.locals[name] = { idx: 0, kind }
-          None => raise WasmGenError::UnknownName(name)
-        }
+        temp_ctx.locals[name] = { idx: 0, kind }
         if is_last {
           return kind
         }
@@ -6467,6 +6542,16 @@ fn compile_expr_gc(
       }
       let free : Map[String, Bool] = {}
       collect_free_vars_module_gc(body, bound, free)
+      // Also capture closure-typed call targets (let rec self-reference)
+      let call_names : Map[String, Bool] = {}
+      collect_call_names_module_gc(body, call_names)
+      for cname, _ in call_names {
+        if fctx.closure_call_types.contains(cname) &&
+          not(bound.contains(cname)) &&
+          not(free.contains(cname)) {
+          free[cname] = true
+        }
+      }
       let capture_names : Array[String] = []
       let capture_kinds : Array[GcValKind] = []
       let capture_indices : Array[Int] = []
@@ -6510,11 +6595,17 @@ fn compile_expr_gc(
       let (fn_type_idx, struct_type_idx) = ensure_closure_types_gc(
         ctx, param_kinds, result_kind,
       )
+      // Propagate closure_call_types from parent so let-rec and
+      // captured closures can be called inside the lifted body.
+      let lifted_closure_types : Map[String, Int] = {}
+      for k, v in fctx.closure_call_types {
+        lifted_closure_types[k] = v
+      }
       let lifted_fctx = GcFuncCtx::{
         locals: {},
         local_kinds: [],
         param_count: 1 + params.length(),
-        closure_call_types: {},
+        closure_call_types: lifted_closure_types,
       }
       for i in 0..<params.length() {
         let k = gc_val_kind_from_type(ctx, params[i].ty)
@@ -6731,7 +6822,20 @@ fn compile_stmt_gc(
         emit_local_set_gc(buf, idx)
       }
     }
-    @core.Stmt::Assign(name~, expr~, ..) =>
+    @core.Stmt::Assign(name~, expr~, ..) => {
+      // Track closure types for let rec desugar (Assign after Let placeholder)
+      track_closure_binding_gc(ctx, fctx, name, expr)
+      // Update local kind for Fn assignments (let rec desugar)
+      match expr {
+        @core.Expr::Fn(..) => {
+          let kind = infer_expr_kind_gc(ctx, fctx, expr)
+          match fctx.locals.get(name) {
+            Some(info) => fctx.locals[name] = { idx: info.idx, kind }
+            None => ()
+          }
+        }
+        _ => ()
+      }
       match fctx.locals.get(name) {
         Some(info) => {
           compile_expr_gc(ctx, fctx, buf, expr)
@@ -6741,8 +6845,19 @@ fn compile_stmt_gc(
             emit_local_set_gc(buf, info.idx)
           }
         }
-        None => raise WasmGenError::UnknownName(name)
+        None => {
+          // Assign to previously unknown name (e.g., from let rec desugar)
+          let kind = infer_expr_kind_gc(ctx, fctx, expr)
+          let idx = bind_local_gc(fctx, name, kind)
+          compile_expr_gc(ctx, fctx, buf, expr)
+          if is_last {
+            emit_local_tee_gc(buf, idx)
+          } else {
+            emit_local_set_gc(buf, idx)
+          }
+        }
       }
+    }
     @core.Stmt::Expr(expr~, ..) => {
       compile_expr_gc(ctx, fctx, buf, expr)
       if not(is_last) {

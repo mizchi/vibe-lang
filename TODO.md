@@ -253,10 +253,10 @@ linked debug build を selfhost でも生成するには以下の移植が必要
   - [x] **B3: Type conversions** — Int::to_string, Bool::to_string, __to_string, Int::to_double, Double::to_int, String::from_char_code
   - [x] **B4: Func return type** — enum_ctor_names を free-var filter に追加, let rec pre-bind
   - [x] **B5: Type coercion** — if kind mismatch → gc_common_kind, unknown Named type → EqRef fallback
-  - [ ] **B6: Effect system** — throw/handle/perform の GC codegen (85+ files が依存、selfhost 必須)
-  - [ ] **B7: let rec closure self-ref** — lifted fctx に closure_call_types 伝搬
-  - [ ] **B8: MapBuilder** — Map builder の GC 表現
-  - [ ] **B9: Pipe operator** — `|>` の GC codegen (24 files)
+  - [x] **B6: Effect system** — throw/handle/perform の GC codegen (85+ files が依存、selfhost 必須)
+  - [x] **B7: let rec closure self-ref** — lifted fctx に closure_call_types 伝搬 + call name capture + Assign tracking (nested deferred init は未対応)
+  - [x] **B8: MapBuilder** — Map builder の GC 表現
+  - [x] **B9: Pipe operator** — `|>` は parser でデシュガー済み、GC codegen 追加不要
   - [ ] **P4: selfhost compile E2E** — `vibe/compiler/index.vibe` を `--wasm-gc` でコンパイル
   - [ ] **P5: DCE + wasm-opt** — 未使用コード除去と最適化で ~350KB 目標
 - [ ] `vibe/compiler` の論理分割

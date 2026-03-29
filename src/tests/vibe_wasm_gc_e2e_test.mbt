@@ -287,3 +287,16 @@ test "wasm-gc e2e: handle success path" {
     #|main()
   assert_gc_e2e(src, "handle_success", 99)
 }
+
+///|
+test "wasm-gc e2e: let rec factorial top-level" {
+  let src =
+    #|let rec fact = (n: Int) -> Int {
+    #|  if n <= 1 { 1 } else { n * fact(n - 1) }
+    #|}
+    #|fact(5)
+  assert_gc_e2e(src, "let_rec_fact_top", 120)
+}
+
+// TODO(B7): nested let rec closure self-ref needs mutable box for deferred init
+// test "wasm-gc e2e: let rec factorial nested" { ... }
