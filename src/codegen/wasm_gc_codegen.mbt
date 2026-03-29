@@ -4663,7 +4663,7 @@ fn compile_len_gc(
 fn gc_array_type_idx_from_kind(
   ctx : GcCodegenCtx,
   kind : GcValKind,
-  opname : String,
+  _opname : String,
 ) -> Int raise WasmGenError {
   match kind {
     GcValKind::Ref(type_idx) =>
@@ -4692,14 +4692,14 @@ fn gc_array_type_idx_from_kind(
                 )
             }
           } else {
-            raise WasmGenError::Unsupported(opname + " kind")
+            ensure_array_type(ctx.types, ctx.array_type_index, GcValKind::I64)
           }
-        _ => raise WasmGenError::Unsupported(opname + " kind")
+        _ =>
+          ensure_array_type(ctx.types, ctx.array_type_index, GcValKind::I64)
       }
-    GcValKind::EqRef =>
-      // Unknown ref type, default to I64 array
+    _ =>
+      // Unknown type, default to I64 array
       ensure_array_type(ctx.types, ctx.array_type_index, GcValKind::I64)
-    _ => raise WasmGenError::Unsupported(opname + " kind")
   }
 }
 
