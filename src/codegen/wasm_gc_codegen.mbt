@@ -1139,6 +1139,14 @@ fn collect_free_vars_module_gc(
         collect_free_vars_expr_gc(expr, bound, free)
         bound[name] = true
       }
+      @core.Stmt::LetPat(pat~, expr~, ..) => {
+        collect_free_vars_expr_gc(expr, bound, free)
+        collect_free_vars_pat_gc(pat, bound)
+      }
+      @core.Stmt::LetPatElse(pat~, expr~, ..) => {
+        collect_free_vars_expr_gc(expr, bound, free)
+        collect_free_vars_pat_gc(pat, bound)
+      }
       @core.Stmt::Assign(expr~, ..) =>
         collect_free_vars_expr_gc(expr, bound, free)
       @core.Stmt::Expr(expr~, ..) =>
