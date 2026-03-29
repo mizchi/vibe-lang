@@ -6340,12 +6340,33 @@ fn compile_expr_gc(
                 ctx.types, ctx.array_type_index, GcValKind::I64,
               )
           }
-          let b_idx = alloc_local_gc(fctx, builder_kind)
-          let len_l = alloc_local_gc(fctx, GcValKind::I32)
-          let cap_l = alloc_local_gc(fctx, GcValKind::I32)
-          let data_l = alloc_local_gc(fctx, GcValKind::Ref(arr_type))
-          let new_data = alloc_local_gc(fctx, GcValKind::Ref(arr_type))
-          let i_l = alloc_local_gc(fctx, GcValKind::I32)
+          // Reuse locals across multiple push calls to avoid index drift
+          let b_idx = match fctx.locals.get("__ab_push_b") {
+            Some(info) => info.idx
+            None => bind_local_gc(fctx, "__ab_push_b", builder_kind)
+          }
+          let len_l = match fctx.locals.get("__ab_push_len") {
+            Some(info) => info.idx
+            None => bind_local_gc(fctx, "__ab_push_len", GcValKind::I32)
+          }
+          let cap_l = match fctx.locals.get("__ab_push_cap") {
+            Some(info) => info.idx
+            None => bind_local_gc(fctx, "__ab_push_cap", GcValKind::I32)
+          }
+          let data_l = match fctx.locals.get("__ab_push_data") {
+            Some(info) => info.idx
+            None =>
+              bind_local_gc(fctx, "__ab_push_data", GcValKind::Ref(arr_type))
+          }
+          let new_data = match fctx.locals.get("__ab_push_new") {
+            Some(info) => info.idx
+            None =>
+              bind_local_gc(fctx, "__ab_push_new", GcValKind::Ref(arr_type))
+          }
+          let i_l = match fctx.locals.get("__ab_push_i") {
+            Some(info) => info.idx
+            None => bind_local_gc(fctx, "__ab_push_i", GcValKind::I32)
+          }
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           emit_local_set_gc(buf, b_idx)
           emit_local_get_gc(buf, b_idx)

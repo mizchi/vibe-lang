@@ -289,6 +289,21 @@ test "wasm-gc e2e: handle success path" {
 }
 
 ///|
+test "wasm-gc e2e: ArrayBuilder push 3+ times (#64)" {
+  let src =
+    #|let main = () -> Int {
+    #|  let b = ArrayBuilder::new()
+    #|  ArrayBuilder::push(b, 10)
+    #|  ArrayBuilder::push(b, 20)
+    #|  ArrayBuilder::push(b, 30)
+    #|  let arr = ArrayBuilder::freeze(b)
+    #|  arr[0] + arr[1]
+    #|}
+    #|main()
+  assert_gc_e2e(src, "ab_push_3", 30)
+}
+
+///|
 test "wasm-gc e2e: let rec factorial top-level" {
   let src =
     #|let rec fact = (n: Int) -> Int {
