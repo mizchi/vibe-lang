@@ -4650,13 +4650,12 @@ fn compile_len_gc(
             raise WasmGenError::Unsupported("__len func ref")
         }
       }
-    GcValKind::EqRef => {
-      // Unknown ref type — try array.len, trap at runtime if not array
+    _ => {
+      // Unknown type — try array.len (may trap at runtime)
       compile_expr_gc(ctx, fctx, buf, expr)
       emit_array_len_gc(buf)
       emit_i64_extend_i32_s_gc(buf)
     }
-    _ => raise WasmGenError::Unsupported("__len kind")
   }
 }
 
