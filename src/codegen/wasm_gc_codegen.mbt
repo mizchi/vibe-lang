@@ -1224,7 +1224,15 @@ fn is_gc_builtin_name(name : String) -> Bool {
   name == "print" ||
   name == "abort" ||
   name == "throw" ||
-  name == "record_set"
+  name == "record_set" ||
+  // Effect operations (desugared from perform)
+  name.has_prefix("Fs::") ||
+  name.has_prefix("Env::") ||
+  name.has_prefix("Http::") ||
+  name.has_prefix("Socket::") ||
+  name.has_prefix("Io::") ||
+  // String builtins not yet in GC codegen
+  name == "String::replace_all"
 }
 
 ///|
@@ -5173,7 +5181,19 @@ fn compile_pat_bind_gc(
                 emit_struct_get_gc(buf, type_idx, i + 1)
                 emit_local_set_gc(buf, idx)
               }
-              _ => ()
+              sub_pat => {
+                // Nested pattern (Tuple, Ctor, etc.) — extract field, then recurse
+                let kind = if i < payload_kinds.length() {
+                  payload_kinds[i]
+                } else {
+                  GcValKind::EqRef
+                }
+                let sub_idx = alloc_local_gc(fctx, kind)
+                emit_local_get_gc(buf, casted_idx)
+                emit_struct_get_gc(buf, type_idx, i + 1)
+                emit_local_set_gc(buf, sub_idx)
+                compile_pat_bind_gc(ctx, fctx, buf, sub_idx, kind, sub_pat)
+              }
             }
           }
         }
@@ -7653,7 +7673,12 @@ fn collect_top_level_funcs_gc(
           @core.Expr::Fn(..)
           | @core.Expr::Int(..)
           | @core.Expr::Bool(..)
-          | @core.Expr::String(..) => top_func_names[name] = true
+          | @core.Expr::String(..)
+          | @core.Expr::Call(..)
+          | @core.Expr::Array(..)
+          | @core.Expr::Tuple(..)
+          | @core.Expr::Record(..)
+          | @core.Expr::Ident(..) => top_func_names[name] = true
           _ => ()
         }
       _ => ()
