@@ -207,6 +207,9 @@ priv struct GcCodegenCtx {
   enum_names : Map[String, Bool]
   error_tag_index : Int
   error_tag_type_index : Int
+  /// Compile-time known constants from top-level let bindings.
+  /// Maps name → (global_index, val_kind)
+  global_consts : Map[String, (Int, GcValKind)]
 }
 
 ///|
@@ -354,6 +357,7 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
     enum_names: {},
     error_tag_index,
     error_tag_type_index,
+    global_consts: {},
   }
 }
 
@@ -423,6 +427,18 @@ fn emit_local_tee_gc(buf : GcByteBuf, idx : Int) -> Unit {
 ///|
 fn emit_call_gc(buf : GcByteBuf, idx : Int) -> Unit {
   buf.push(0x10)
+  write_u32_leb_gc(buf, idx)
+}
+
+///|
+fn emit_global_get_gc(buf : GcByteBuf, idx : Int) -> Unit {
+  buf.push(0x23)
+  write_u32_leb_gc(buf, idx)
+}
+
+///|
+fn emit_global_set_gc(buf : GcByteBuf, idx : Int) -> Unit {
+  buf.push(0x24)
   write_u32_leb_gc(buf, idx)
 }
 
@@ -1556,6 +1572,9 @@ fn infer_expr_kind_gc(
           if ctx.enum_ctor_tags.contains(name) &&
             ctx.enum_ctor_arities[name] == 0 {
             GcValKind::EqRef
+          } else if ctx.global_consts.contains(name) {
+            let (_, kind) = ctx.global_consts[name]
+            kind
           } else if ctx.func_indices.contains(name) {
             // Top-level function used as value → closure ref
             let param_count = match ctx.func_param_counts.get(name) {
@@ -1916,6 +1935,23 @@ fn infer_expr_kind_gc(
     @core.Expr::Handle(body~, ..) =>
       // Handle result is the body's result type
       infer_block_kind_gc(ctx, fctx, body)
+    @core.Expr::StringInterp(..) => GcValKind::Ref(ctx.string_type)
+    @core.Expr::TupleIndex(expr~, index~, ..) => {
+      let kind = infer_expr_kind_gc(ctx, fctx, expr)
+      match kind {
+        GcValKind::Ref(type_idx) =>
+          match ctx.types[type_idx] {
+            GcTypeDef::Struct(fields~) =>
+              if index < fields.length() {
+                fields[index]
+              } else {
+                GcValKind::EqRef
+              }
+            _ => GcValKind::EqRef
+          }
+        _ => GcValKind::EqRef
+      }
+    }
     _ => raise WasmGenError::Unsupported("expr")
   }
 }
@@ -5064,6 +5100,10 @@ fn compile_expr_gc(
             let type_idx = ctx.enum_ctor_type_indices[name]
             emit_i32_const_gc(buf, tag)
             emit_struct_new_gc(buf, type_idx)
+          } else if ctx.global_consts.contains(name) {
+            // Top-level constant (Int, Bool, String)
+            let (idx, _) = ctx.global_consts[name]
+            emit_global_get_gc(buf, idx)
           } else if ctx.func_indices.contains(name) {
             // Top-level function used as value: wrap in closure struct
             let func_idx = ctx.func_indices[name]
@@ -6871,6 +6911,68 @@ fn compile_expr_gc(
       // end $outer
       emit_end_gc(buf)
     }
+    @core.Expr::StringInterp(parts~, span~) => {
+      // Build string by concatenating parts using compile_string_concat
+      if parts.length() == 0 {
+        emit_string_literal(ctx, buf, "")
+      } else if parts.length() == 1 {
+        match parts[0] {
+          @core.StringInterpPart::Lit(s) => emit_string_literal(ctx, buf, s)
+          @core.StringInterpPart::Expr(e) => compile_expr_gc(ctx, fctx, buf, e)
+        }
+      } else {
+        // Use wrapper Expr for each part to feed compile_string_concat
+        fn part_to_expr(p : @core.StringInterpPart) -> @core.Expr {
+          match p {
+            @core.StringInterpPart::Lit(s) =>
+              @core.Expr::String(value=s, span~)
+            @core.StringInterpPart::Expr(e) => e
+          }
+        }
+
+        // Concat parts left-to-right using compile_string_concat
+        compile_string_concat(
+          ctx,
+          fctx,
+          buf,
+          part_to_expr(parts[0]),
+          part_to_expr(parts[1]),
+        )
+        for i in 2..<parts.length() {
+          let acc_local = alloc_local_gc(
+            fctx,
+            GcValKind::Ref(ctx.string_type),
+          )
+          emit_local_set_gc(buf, acc_local)
+          let acc_expr = @core.Expr::Ident(
+            name="__interp_acc_" + i.to_string(),
+            span~,
+          )
+          // Bind the local so we can reference it
+          fctx.locals["__interp_acc_" + i.to_string()] = {
+            idx: acc_local,
+            kind: GcValKind::Ref(ctx.string_type),
+          }
+          compile_string_concat(
+            ctx,
+            fctx,
+            buf,
+            acc_expr,
+            part_to_expr(parts[i]),
+          )
+        }
+      }
+    }
+    @core.Expr::TupleIndex(expr~, index~, span~) => {
+      let _ = span
+      let kind = infer_expr_kind_gc(ctx, fctx, expr)
+      let type_idx = match kind {
+        GcValKind::Ref(idx) => idx
+        _ => raise WasmGenError::Unsupported("tuple index kind")
+      }
+      compile_expr_gc(ctx, fctx, buf, expr)
+      emit_struct_get_gc(buf, type_idx, index)
+    }
     _ => raise WasmGenError::Unsupported("expr")
   }
 }
@@ -7055,22 +7157,20 @@ fn collect_top_level_funcs_gc(
   ast : @core.Module,
   enum_ctor_names? : Map[String, Bool] = {},
 ) -> Array[GcFuncDef] {
+  // Collect top-level names that are safe for free-var filtering:
+  // - Fn definitions (extracted as wasm functions)
+  // - Simple literal constants (compiled as wasm globals)
   let top_func_names : Map[String, Bool] = {}
   for stmt in ast.stmts {
     match stmt {
-      @core.Stmt::Let(name~, expr~, ..) =>
+      @core.Stmt::Let(name~, expr~, ..)
+      | @core.Stmt::ExportLet(name~, expr~, ..)
+      | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
         match expr {
-          @core.Expr::Fn(..) => top_func_names[name] = true
-          _ => ()
-        }
-      @core.Stmt::ExportLet(name~, expr~, ..) =>
-        match expr {
-          @core.Expr::Fn(..) => top_func_names[name] = true
-          _ => ()
-        }
-      @core.Stmt::InternalExportLet(name~, expr~, ..) =>
-        match expr {
-          @core.Expr::Fn(..) => top_func_names[name] = true
+          @core.Expr::Fn(..)
+          | @core.Expr::Int(..)
+          | @core.Expr::Bool(..)
+          | @core.Expr::String(..) => top_func_names[name] = true
           _ => ()
         }
       _ => ()
@@ -7263,6 +7363,7 @@ fn build_module_gc(
   ctx : GcCodegenCtx,
   funcs : Array[GcWasmFunc],
   run_index : Int,
+  global_init_values~ : Array[(GcValKind, Int64)] = [],
 ) -> Bytes {
   let buf = GcByteBuf::new()
   buf.push(0x00)
@@ -7303,6 +7404,33 @@ fn build_module_gc(
     }
   }
   write_section_gc(buf, 3, func_sec.to_array())
+  // Global section (section 6): compile-time constants
+  if global_init_values.length() > 0 {
+    let global_sec = GcByteBuf::new()
+    write_u32_leb_gc(global_sec, global_init_values.length())
+    for entry in global_init_values {
+      let kind = entry.0
+      let value = entry.1
+      write_valtype_gc(global_sec, kind)
+      global_sec.push(0x00) // immutable
+      match kind {
+        GcValKind::I64 => {
+          global_sec.push(0x42) // i64.const
+          write_i64_leb_gc(global_sec, value)
+        }
+        GcValKind::I32 => {
+          global_sec.push(0x41) // i32.const
+          write_i32_leb_gc(global_sec, value.to_int())
+        }
+        _ => {
+          global_sec.push(0x41) // i32.const 0 fallback
+          write_i32_leb_gc(global_sec, 0)
+        }
+      }
+      global_sec.push(0x0b) // end
+    }
+    write_section_gc(buf, 6, global_sec.to_array())
+  }
   // Tag section (section 13): error tag for throw/catch
   // Must appear between func(3) and export(7) per exception handling proposal
   let tag_sec = GcByteBuf::new()
@@ -7359,6 +7487,35 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
   for name, _ in ctx.enum_ctor_tags {
     enum_ctor_names[name] = true
   }
+  // Scan for constant let bindings (non-Fn) and register as globals.
+  // Only simple literals (Int, Bool) are supported as immutable globals
+  // with compile-time known init values.
+  let mut global_idx = 0
+  let global_init_values : Array[(GcValKind, Int64)] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr~, ..)
+      | @core.Stmt::ExportLet(name~, expr~, ..)
+      | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
+        match expr {
+          @core.Expr::Fn(..) => () // Functions are extracted, not globals
+          @core.Expr::Int(value~, ..) => {
+            ctx.global_consts[name] = (global_idx, GcValKind::I64)
+            global_init_values.push((GcValKind::I64, value))
+            global_idx += 1
+          }
+          @core.Expr::Bool(value~, ..) => {
+            ctx.global_consts[name] = (global_idx, GcValKind::I32)
+            global_init_values.push(
+              (GcValKind::I32, if value { 1L } else { 0L }),
+            )
+            global_idx += 1
+          }
+          _ => ()
+        }
+      _ => ()
+    }
+  }
   let funcs = collect_top_level_funcs_gc(ast, enum_ctor_names~)
   ctx.num_regular_funcs = funcs.length() + 1
   for i in 0..<funcs.length() {
@@ -7403,5 +7560,5 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
   for lf in ctx.closure_lifted_funcs {
     wasm_funcs.push(lf)
   }
-  build_module_gc(ctx, wasm_funcs, run_index)
+  build_module_gc(ctx, wasm_funcs, run_index, global_init_values~)
 }
