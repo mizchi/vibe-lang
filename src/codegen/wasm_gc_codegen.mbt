@@ -1131,11 +1131,46 @@ fn has_free_vars_gc(
   collect_free_vars_module_gc(body, bound, free)
   for name, _ in free {
     if not(top_level_funcs.contains(name)) &&
-      not(enum_ctor_names.contains(name)) {
+      not(enum_ctor_names.contains(name)) &&
+      not(is_gc_builtin_name(name)) {
       return true
     }
   }
   false
+}
+
+///|
+/// Check if a name is a known builtin that doesn't need to be captured.
+fn is_gc_builtin_name(name : String) -> Bool {
+  // Boolean values
+  name == "true" ||
+  name == "false" ||
+  // Intrinsic functions used in codegen
+  name.has_prefix("__") ||
+  // Builtin type operations
+  name.has_prefix("Int::") ||
+  name.has_prefix("Bool::") ||
+  name.has_prefix("Double::") ||
+  name.has_prefix("String::") ||
+  name.has_prefix("Array::") ||
+  name.has_prefix("ArrayBuilder::") ||
+  name.has_prefix("MapBuilder::") ||
+  name.has_prefix("Map::") ||
+  name.has_prefix("Bytes::") ||
+  // Common builtins
+  name == "add" ||
+  name == "sub" ||
+  name == "mul" ||
+  name == "div" ||
+  name == "eq" ||
+  name == "lt" ||
+  name == "not" ||
+  name == "neg" ||
+  name == "println" ||
+  name == "print" ||
+  name == "abort" ||
+  name == "throw" ||
+  name == "record_set"
 }
 
 ///|
@@ -4539,8 +4574,36 @@ fn gc_array_type_idx_from_kind(
     GcValKind::Ref(type_idx) =>
       match ctx.types[type_idx] {
         GcTypeDef::Array(..) => type_idx
+        // Struct with array field (e.g., ArrayBuilder) → use inner array
+        GcTypeDef::Struct(fields~) =>
+          if fields.length() >= 2 {
+            match fields[1] {
+              GcValKind::Ref(inner_idx) =>
+                match ctx.types[inner_idx] {
+                  GcTypeDef::Array(..) => inner_idx
+                  _ =>
+                    // Default: assume I64 array
+                    ensure_array_type(
+                      ctx.types,
+                      ctx.array_type_index,
+                      GcValKind::I64,
+                    )
+                }
+              _ =>
+                ensure_array_type(
+                  ctx.types,
+                  ctx.array_type_index,
+                  GcValKind::I64,
+                )
+            }
+          } else {
+            raise WasmGenError::Unsupported(opname + " kind")
+          }
         _ => raise WasmGenError::Unsupported(opname + " kind")
       }
+    GcValKind::EqRef =>
+      // Unknown ref type, default to I64 array
+      ensure_array_type(ctx.types, ctx.array_type_index, GcValKind::I64)
     _ => raise WasmGenError::Unsupported(opname + " kind")
   }
 }
