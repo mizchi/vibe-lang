@@ -1322,6 +1322,16 @@ fn track_closure_binding_gc(
         Some(fn_type_idx) => fctx.closure_call_types[name] = fn_type_idx
         None => ()
       }
+    @core.Expr::Ident(name=alias_target, ..) =>
+      // Function alias: let f = g where g is a known function
+      match ctx.closure_call_type_for_func.get(alias_target) {
+        Some(fn_type_idx) => fctx.closure_call_types[name] = fn_type_idx
+        None =>
+          match fctx.closure_call_types.get(alias_target) {
+            Some(fn_type_idx) => fctx.closure_call_types[name] = fn_type_idx
+            None => ()
+          }
+      }
     _ => ()
   }
 }
@@ -7455,9 +7465,21 @@ fn compile_expr_gc(
       let kind = infer_expr_kind_gc(ctx, fctx, expr)
       let type_idx = match kind {
         GcValKind::Ref(idx) => idx
-        _ => raise WasmGenError::Unsupported("tuple index kind")
+        _ => {
+          // EqRef or unknown — create ad-hoc 2-field struct for tuple access
+          let fields : Array[GcValKind] = []
+          for _ in 0..< (index + 1) {
+            fields.push(GcValKind::EqRef)
+          }
+          ensure_struct_type(ctx.types, ctx.struct_type_index, fields)
+        }
       }
       compile_expr_gc(ctx, fctx, buf, expr)
+      // Cast to struct type if needed
+      match kind {
+        GcValKind::Ref(_) => ()
+        _ => emit_ref_cast_gc(buf, type_idx)
+      }
       emit_struct_get_gc(buf, type_idx, index)
     }
     @core.Expr::Break(..) => {

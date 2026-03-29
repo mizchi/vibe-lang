@@ -257,7 +257,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
   - [x] **B7: let rec closure self-ref** — lifted fctx に closure_call_types 伝搬 + call name capture + Assign tracking (nested deferred init は未対応)
   - [x] **B8: MapBuilder** — Map builder の GC 表現
   - [x] **B9: Pipe operator** — `|>` は parser でデシュガー済み、GC codegen 追加不要
-  - [ ] **P4: selfhost compile E2E** — `vibe/compiler/index.vibe` を `--wasm-gc` でコンパイル
+  - [ ] **P4: selfhost compile E2E** — 216/263 (82%) compile OK。残り: WASI effect, TypeExpr import, compile_fn HOF
   - [ ] **P5: DCE + wasm-opt** — 未使用コード除去と最適化で ~350KB 目標
 - [ ] `vibe/compiler` の論理分割
 
