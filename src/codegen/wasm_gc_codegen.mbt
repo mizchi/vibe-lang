@@ -8112,6 +8112,33 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
       None => ()
     }
   }
+  // Resolve function aliases: let f = g where g is in func_indices
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr~, ..)
+      | @core.Stmt::ExportLet(name~, expr~, ..)
+      | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
+        match expr {
+          @core.Expr::Ident(name=target, ..) =>
+            match ctx.func_indices.get(target) {
+              Some(idx) => {
+                ctx.func_indices[name] = idx
+                match ctx.func_param_counts.get(target) {
+                  Some(c) => ctx.func_param_counts[name] = c
+                  None => ()
+                }
+                match ctx.func_returns.get(target) {
+                  Some(k) => ctx.func_returns[name] = k
+                  None => ()
+                }
+              }
+              None => ()
+            }
+          _ => ()
+        }
+      _ => ()
+    }
+  }
   let wasm_funcs : Array[GcWasmFunc] = []
   for f in funcs {
     let wf = compile_function_gc(ctx, f)
