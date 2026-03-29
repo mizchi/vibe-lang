@@ -2069,7 +2069,8 @@ fn infer_expr_kind_gc(
         _ => GcValKind::EqRef
       }
     }
-    _ => raise WasmGenError::Unsupported("expr")
+    @core.Expr::Break(..) | @core.Expr::Continue(..) => GcValKind::I32
+    other => raise WasmGenError::Unsupported("expr: " + other.to_string()[:40].to_string())
   }
 }
 
@@ -7388,7 +7389,15 @@ fn compile_expr_gc(
       compile_expr_gc(ctx, fctx, buf, expr)
       emit_struct_get_gc(buf, type_idx, index)
     }
-    _ => raise WasmGenError::Unsupported("expr")
+    @core.Expr::Break(..) => {
+      // Break from while loop: br to outer block (depth 1 from inside loop)
+      emit_br_gc(buf, 1)
+    }
+    @core.Expr::Continue(..) => {
+      // Continue while loop: br to loop header (depth 0)
+      emit_br_gc(buf, 0)
+    }
+    other => raise WasmGenError::Unsupported("expr: " + other.to_string()[:40].to_string())
   }
 }
 
