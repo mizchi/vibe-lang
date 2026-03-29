@@ -4951,11 +4951,24 @@ fn bind_pat_kinds_gc(
       let _ = span
       let type_idx = match scrut_kind {
         GcValKind::Ref(idx) => idx
-        _ => return
+        _ => {
+          // EqRef or unknown — create ad-hoc struct for tuple destructure
+          let fields : Array[GcValKind] = []
+          for _ in items {
+            fields.push(GcValKind::EqRef)
+          }
+          ensure_struct_type(ctx.types, ctx.struct_type_index, fields)
+        }
       }
       let field_kinds = match ctx.types[type_idx] {
         GcTypeDef::Struct(fields~) => fields
-        _ => return
+        _ => {
+          let fields : Array[GcValKind] = []
+          for _ in items {
+            fields.push(GcValKind::EqRef)
+          }
+          fields
+        }
       }
       for i in 0..<items.length() {
         let kind = if i < field_kinds.length() {
@@ -5143,11 +5156,24 @@ fn compile_pat_bind_gc(
       let _ = span
       let type_idx = match scrut_kind {
         GcValKind::Ref(idx) => idx
-        _ => return
+        _ => {
+          // EqRef or unknown — create ad-hoc struct for tuple destructure
+          let fields : Array[GcValKind] = []
+          for _ in items {
+            fields.push(GcValKind::EqRef)
+          }
+          ensure_struct_type(ctx.types, ctx.struct_type_index, fields)
+        }
       }
       let field_kinds = match ctx.types[type_idx] {
         GcTypeDef::Struct(fields~) => fields
-        _ => return
+        _ => {
+          let fields : Array[GcValKind] = []
+          for _ in items {
+            fields.push(GcValKind::EqRef)
+          }
+          fields
+        }
       }
       for i in 0..<items.length() {
         let item = items[i]
@@ -5162,6 +5188,11 @@ fn compile_pat_bind_gc(
             }
             let idx = bind_local_gc(fctx, name, kind)
             emit_local_get_gc(buf, scrut_idx)
+            // Cast to struct type if scrutinee is not already the right ref
+            match scrut_kind {
+              GcValKind::Ref(_) => ()
+              _ => emit_ref_cast_gc(buf, type_idx)
+            }
             emit_struct_get_gc(buf, type_idx, i)
             emit_local_set_gc(buf, idx)
           }
