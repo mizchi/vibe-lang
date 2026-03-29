@@ -1803,6 +1803,7 @@ fn infer_expr_kind_gc(
         | "String::from_char_code" => GcValKind::Ref(ctx.string_type)
         "Int::to_double" => GcValKind::F64
         "Double::to_int" => GcValKind::I64
+        "Double::to_i64_bits" => GcValKind::I64
         "Double::parse" => GcValKind::F64
         "Array::length" => GcValKind::I64
         "Array::get" => {
@@ -6049,6 +6050,11 @@ fn compile_expr_gc(
         "Double::to_int" => {
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           emit_i64_trunc_f64_s_gc(buf)
+        }
+        "Double::to_i64_bits" => {
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          // f64.reinterpret_i64 → i64
+          buf.push(0xbd) // i64.reinterpret_f64
         }
         "Double::parse" => {
           // Stub: drop string arg, return 0.0
