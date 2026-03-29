@@ -4837,12 +4837,14 @@ fn compile_array_concat_gc(
 ) -> Unit raise WasmGenError {
   let left_kind = infer_expr_kind_gc(ctx, fctx, left_expr)
   let right_kind = infer_expr_kind_gc(ctx, fctx, right_expr)
-  if left_kind != right_kind {
-    raise WasmGenError::Unsupported(opname + " kind mismatch")
+  let arr_kind = if left_kind == right_kind {
+    left_kind
+  } else {
+    gc_common_kind(left_kind, right_kind)
   }
-  let type_idx = gc_array_type_idx_from_kind(ctx, left_kind, opname)
-  let left_idx = alloc_local_gc(fctx, left_kind)
-  let right_idx = alloc_local_gc(fctx, right_kind)
+  let type_idx = gc_array_type_idx_from_kind(ctx, arr_kind, opname)
+  let left_idx = alloc_local_gc(fctx, arr_kind)
+  let right_idx = alloc_local_gc(fctx, arr_kind)
   let left_len_idx = alloc_local_gc(fctx, GcValKind::I32)
   let right_len_idx = alloc_local_gc(fctx, GcValKind::I32)
   let total_len_idx = alloc_local_gc(fctx, GcValKind::I32)
