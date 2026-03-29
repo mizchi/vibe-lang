@@ -1211,6 +1211,13 @@ fn is_gc_builtin_name(name : String) -> Bool {
   name.has_prefix("Map::") ||
   name.has_prefix("Set::") ||
   name.has_prefix("Bytes::") ||
+  name.has_prefix("StringBuilder::") ||
+  // Effect operations (desugared from perform)
+  name.has_prefix("Fs::") ||
+  name.has_prefix("Env::") ||
+  name.has_prefix("Http::") ||
+  name.has_prefix("Socket::") ||
+  name.has_prefix("Io::") ||
   // Common builtins
   name == "add" ||
   name == "sub" ||
@@ -1224,7 +1231,10 @@ fn is_gc_builtin_name(name : String) -> Bool {
   name == "print" ||
   name == "abort" ||
   name == "throw" ||
-  name == "record_set"
+  name == "record_set" ||
+  name == "__assert" ||
+  name == "__assert_eq" ||
+  name == "String::replace_all"
 }
 
 ///|
@@ -1642,11 +1652,12 @@ fn infer_for_in_parts_gc(
   let iterable_kind = infer_expr_kind_gc(ctx, fctx, iterable)
   let iterable_type_idx = match iterable_kind {
     GcValKind::Ref(idx) => idx
-    _ => raise WasmGenError::Unsupported("for-in iterable kind")
+    _ =>
+      ensure_array_type(ctx.types, ctx.array_type_index, GcValKind::I64)
   }
   let iterable_elem_kind = match ctx.types[iterable_type_idx] {
     GcTypeDef::Array(elem~) => elem
-    _ => raise WasmGenError::Unsupported("for-in iterable type")
+    _ => GcValKind::I64
   }
   let saved_locals = clone_locals_gc(fctx.locals)
   fctx.locals[value_name] = { idx: 0, kind: iterable_elem_kind }
