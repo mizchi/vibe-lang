@@ -1556,6 +1556,24 @@ fn infer_expr_kind_gc(
           if ctx.enum_ctor_tags.contains(name) &&
             ctx.enum_ctor_arities[name] == 0 {
             GcValKind::EqRef
+          } else if ctx.func_indices.contains(name) {
+            // Top-level function used as value → closure ref
+            let param_count = match ctx.func_param_counts.get(name) {
+              Some(c) => c
+              None => 0
+            }
+            let result_kind = match ctx.func_returns.get(name) {
+              Some(k) => k
+              None => GcValKind::I64
+            }
+            let param_kinds : Array[GcValKind] = []
+            for _ in 0..<param_count {
+              param_kinds.push(GcValKind::I64)
+            }
+            let (_, struct_type_idx) = ensure_closure_types_gc(
+              ctx, param_kinds, result_kind,
+            )
+            GcValKind::Ref(struct_type_idx)
           } else {
             raise WasmGenError::UnknownName(name)
           }
@@ -5046,6 +5064,56 @@ fn compile_expr_gc(
             let type_idx = ctx.enum_ctor_type_indices[name]
             emit_i32_const_gc(buf, tag)
             emit_struct_new_gc(buf, type_idx)
+          } else if ctx.func_indices.contains(name) {
+            // Top-level function used as value: wrap in closure struct
+            let func_idx = ctx.func_indices[name]
+            let param_count = match ctx.func_param_counts.get(name) {
+              Some(c) => c
+              None => 0
+            }
+            let result_kind = match ctx.func_returns.get(name) {
+              Some(k) => k
+              None => GcValKind::I64
+            }
+            let param_kinds : Array[GcValKind] = []
+            for _ in 0..<param_count {
+              param_kinds.push(GcValKind::I64)
+            }
+            let (fn_type_idx, struct_type_idx) = ensure_closure_types_gc(
+              ctx, param_kinds, result_kind,
+            )
+            // Create a wrapper closure that calls the function
+            // We need a lifted function that takes (env, args...) and calls func_idx
+            let wrapper_buf = GcByteBuf::new()
+            for i in 0..<param_count {
+              emit_local_get_gc(wrapper_buf, i + 1) // skip env param
+            }
+            emit_call_gc(wrapper_buf, func_idx)
+            let wrapper_sig_params : Array[GcValKind] = [GcValKind::AnyRef]
+            for _ in 0..<param_count {
+              wrapper_sig_params.push(GcValKind::I64)
+            }
+            let wrapper_sig = GcFuncSig::{
+              params: wrapper_sig_params,
+              result: result_kind,
+            }
+            let wrapper_idx = ctx.num_regular_funcs +
+              ctx.closure_lifted_funcs.length()
+            ctx.closure_lifted_funcs.push(GcWasmFunc::{
+              sig: wrapper_sig,
+              locals: [],
+              body: wrapper_buf.to_array(),
+              type_idx: fn_type_idx,
+            })
+            emit_ref_func_gc(buf, wrapper_idx)
+            // Empty environment struct
+            let env_type_idx = ensure_struct_type(
+              ctx.types,
+              ctx.struct_type_index,
+              [],
+            )
+            emit_struct_new_gc(buf, env_type_idx)
+            emit_struct_new_gc(buf, struct_type_idx)
           } else {
             raise WasmGenError::UnknownName(name)
           }
@@ -6956,7 +7024,11 @@ fn compile_stmt_gc(
         @core.Stmt::Let(rec~, name~, expr~, span~),
         is_last,
       )
-    _ => raise WasmGenError::Unsupported("stmt")
+    // Type/trait/effect definitions, imports, etc. — no codegen needed
+    _ =>
+      if is_last {
+        emit_i32_const_gc(buf, 0) // Unit
+      }
   }
 }
 
