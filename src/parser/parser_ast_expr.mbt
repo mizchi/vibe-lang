@@ -2633,6 +2633,19 @@ pub fn parse_ast(input : String) -> @core.Module raise ParseError {
   desugar_module(parsed)
 }
 
+///|
+/// Parse with error recovery. Returns partial AST and all collected errors.
+/// Continues parsing after syntax errors by skipping to the next statement.
+pub fn parse_ast_with_recovery(
+  input : String,
+) -> (@core.Module, Array[ParseError]) {
+  let tokens = tokenize(input)
+  let parser = AstParser::new(tokens)
+  let (parsed, errors) = parser.parse_with_recovery()
+  let desugared = desugar_module(parsed)
+  (desugared, errors)
+}
+
 // ============================================================
 // Placeholder desugar: _ * 2 → x -> x * 2
 // ============================================================

@@ -5,6 +5,7 @@ pub struct AstParser {
   offsets : Array[Int]
   mut pos : Int
   mut pending_stmts : Array[@core.Stmt]
+  errors : Array[ParseError]
 }
 
 ///|
@@ -17,7 +18,7 @@ pub fn AstParser::new(tokens : Array[Token]) -> AstParser {
     acc += tokens[i].width()
   }
   offsets[len] = acc
-  AstParser::{ tokens, offsets, pos: 0, pending_stmts: [] }
+  AstParser::{ tokens, offsets, pos: 0, pending_stmts: [], errors: [] }
 }
 
 ///|
@@ -141,7 +142,16 @@ pub fn AstParser::parse(self : AstParser) -> @core.Module raise ParseError {
           self.skip_trivia()
           self.peek_kind() != eof()
         }) {
-    match self.parse_stmt() {
+    let result : @core.Stmt? = try {
+      self.parse_stmt()
+    } catch {
+      e => {
+        self.errors.push(e)
+        self.skip_to_sync_point()
+        None
+      }
+    }
+    match result {
       Some(stmt) => stmts.push(stmt)
       None => ()
     }
@@ -150,5 +160,69 @@ pub fn AstParser::parse(self : AstParser) -> @core.Module raise ParseError {
     }
     self.pending_stmts = []
   }
+  if self.errors.length() > 0 {
+    raise self.errors[0]
+  }
   @core.Module::{ stmts, }
+}
+
+///|
+/// Parse with error recovery, returning partial AST and all collected errors.
+pub fn AstParser::parse_with_recovery(
+  self : AstParser,
+) -> (@core.Module, Array[ParseError]) {
+  let stmts : Array[@core.Stmt] = []
+  while ({
+          self.skip_trivia()
+          self.peek_kind() != eof()
+        }) {
+    let result : @core.Stmt? = try {
+      self.parse_stmt()
+    } catch {
+      e => {
+        self.errors.push(e)
+        self.skip_to_sync_point()
+        None
+      }
+    }
+    match result {
+      Some(stmt) => stmts.push(stmt)
+      None => ()
+    }
+    for pending in self.pending_stmts {
+      stmts.push(pending)
+    }
+    self.pending_stmts = []
+  }
+  (@core.Module::{ stmts, }, self.errors)
+}
+
+///|
+/// Check if a token kind is a statement-start synchronization point.
+fn is_stmt_sync_point(kind : @cst.SyntaxKind) -> Bool {
+  kind == let_kw() ||
+  kind == enum_kw() ||
+  kind == struct_kw() ||
+  kind == type_kw() ||
+  kind == trait_kw() ||
+  kind == impl_kw() ||
+  kind == import_kw() ||
+  kind == export_kw() ||
+  kind == test_kw() ||
+  kind == bench_kw() ||
+  kind == rbrace()
+}
+
+///|
+/// Skip tokens until a synchronization point (statement-start keyword or `}`).
+fn AstParser::skip_to_sync_point(self : AstParser) -> Unit {
+  while self.peek_kind() != eof() {
+    self.skip_trivia()
+    let kind = self.peek_kind()
+    if is_stmt_sync_point(kind) {
+      return
+    }
+    // Consume the unrecognized token
+    self.pos += 1
+  }
 }
