@@ -77,7 +77,12 @@ pub fn run(args : Array[String]) -> Unit {
         "bundle: command was removed. Use 'vibe compile' to compile modules, or 'vibe precompile' for precompilation.",
       )
     "lsp" => lsp_cmd(cmd_args)
-    "help" => print_usage()
+    "help" =>
+      if cmd_args.length() > 0 {
+        print_subcommand_help(cmd_args[0])
+      } else {
+        print_usage()
+      }
     _ => {
       println("unknown command: " + cmd)
       print_usage()
@@ -111,130 +116,192 @@ extern "C" fn vibe_worker_parent_watchdog_stop() = "vibe_worker_parent_watchdog_
 
 ///|
 fn print_usage() -> Unit {
-  println("vibe <command> [args]")
+  println("Usage: vibe <command> [options]")
   println("")
-  println("commands:")
-  println("  run <file>                 run a script (requires `let main`)")
-  println("    demo: vibe run vibe/x/args/demo.vibe")
+  println("Build & Run:")
+  println("  run <file>                  Execute a script (requires `let main`)")
   println(
-    "  test [--jobs N] <file|dir...>  run test blocks (parallel for dirs; default jobs=VIBE_TEST_JOBS or 1, max 16)",
+    "  test <file|dir...>          Run test blocks (parallel for dirs)",
   )
-  println("  check [--profile-tsv path] <file...>  parse/type check scripts")
+  println("  compile <file> [-o <out>]   Compile to WASM or other targets")
+  println("  build <file>                Full pipeline build")
   println(
-    "  session-http --port N        internal: persistent localhost JSON session for run/check/test",
-  )
-  println(
-    "  session-json                internal: persistent stdin/stdout JSON session for run/check/test",
-  )
-  println(
-    "  emit-module-source <in> <out> <entry>  internal: extract entry-pruned module source",
-  )
-  println(
-    "  emit-closure-payload <in> <out>  internal: materialize transitive closure payload",
-  )
-  println(
-    "  compile-closure-payload <in> <out> [mvp|no-dce]  internal: compile closure payload to wasm",
-  )
-  println(
-    "  finalize [--db file] [--export file] [--library] [--print] [--dry-run]  refactor scratch/db source",
-  )
-  println(
-    "  apply <file>               resolve lock+graph head and apply artifacts",
-  )
-  println(
-    "  symbols [--json] <file>    list symbols and index inclusion status",
-  )
-  println(
-    "  init [dir]                 create index.vibe/index.lock/.vibe in target root",
-  )
-  println(
-    "  new <dir>                  scaffold a new project root (init + main.vibe)",
-  )
-  println("  history reset              reset scratch namespace history/db")
-  println(
-    "  write_file [--entry file] [--no-deps] [--dry-run] [--json] <selector> <out-file>  materialize selector",
-  )
-  println("  fmt [--dry-run] <file...>  normalize + format scripts")
-  println(
-    "  normalize [--write|--check] <file...>  normalize declaration order + DCE (+fmt)",
-  )
-  println(
-    "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wac | --wit | --wit-component] [--no-dce] [--coverage] [--coverage-run-tests] [--debug-errors] [--http-host-imports] [--wite|-O{0,1,2,3,4,s,z}] [-o out] <file>",
-  )
-  println(
-    "                                     emit to dist/ (or -o path). Formats: IR, Core WASM, Component WASM",
-  )
-  println(
-    "                                     --coverage is test-only (set VIBE_TEST_COVERAGE=1)",
-  )
-  println(
-    "                                     --coverage-run-tests executes top-level test blocks in coverage mode",
-  )
-  println(
-    "                                     --debug-errors keeps throw string literals in wasm (debug builds)",
-  )
-  println(
-    "                                     --http-host-imports wires HTTP builtins to host imports (--wasm: vibe:http/*, --component: wasi:http/* shim)",
-  )
-  println(
-    "  compile-lite [--wasm | --wasm-linear | --wasm-gc] [--no-dce] [--in-memory] [--profile-tsv path] [-O{0,1,2,3,4,s,z}] [-o out] <file>",
-  )
-  println(
-    "                                     minimal compile path for strict perf comparison (no coverage/debug/http/component)",
-  )
-  println(
-    "  precompile [--out-dir dir] [--wasm|--wasm-js-string] [-O<level>] <dir...>",
-  )
-  println(
-    "                                     precompile .vibe modules to .wasm",
-  )
-  println(
-    "  bench [--backend compiled] [--runs N] [--warmup N] [--n N] <file|dir...>  run `bench {}` blocks",
-  )
-  println("  bench-file [--n N] [--warmup N] <file>")
-  println("  shell                       interactive TUI shell")
-  println(
-    "  shell-stdin [--no-prompt] [--tty|--no-tty]  read-eval-print loop (stdin)",
-  )
-  println(
-    "  wasm-shell-stdin [--no-prompt] [-o dir]  compile each expr to WASM",
-  )
-  println("  hash <file>                 compute normalized AST hash")
-  println(
-    "  save <file>                 save module to content-addressed store",
-  )
-  println(
-    "  fetch <file>                resolve imports and sync lock payload (index.lock)",
-  )
-  println("  update-lock <file>          alias for fetch")
-  println(
-    "  explain-import <file>       visualize import ref normalization and lock lookup",
-  )
-  println(
-    "  ide <outline|peek-def|search> ... [--semantic-rows rows.json]  symbol/type index queries",
-  )
-  println(
-    "  lsif [-o out.lsif] [--semantic-rows rows.json] <file>   emit LSIF via shared symbol index",
-  )
-  println(
-    "  index <build|query|verify|wal|ref> ...  advanced graph index (POC)",
-  )
-  println(
-    "    ref: push|pull|push-delta|pull-delta <scope> <file>  git/bit distributed refs",
+    "  bench <file|dir...>         Run benchmark blocks",
   )
   println("")
-  println("  lsp                         start LSP server (stdin/stdout)")
-  println("  parser commands: --syntax vibe")
-  println("  runtime flags: --unstable-async --unstable-threads")
+  println("Development:")
+  println("  shell                       Interactive TUI shell")
+  println("  fmt <file...>               Format scripts")
+  println("  check <file...>             Type check scripts")
   println(
-    "  run mode env: VIBE_RUN_BACKEND=release|monolithic  disable linked debug fast path",
+    "  normalize <file...>         Normalize declaration order",
   )
+  println("")
+  println("IDE & Tooling:")
+  println("  lsp                         Start language server")
   println(
-    "                    run/check/test use a persistent localhost session worker by default; set VIBE_USE_SESSION_HTTP=0 to disable",
+    "  ide <subcommand> <file>     IDE queries (outline, peek-def, search)",
   )
+  println("  symbols <file>              List symbols")
+  println("")
+  println("Project:")
+  println("  init [dir]                  Initialize project")
+  println("  new <dir>                   Scaffold new project")
   println(
-    "  llm flags: --llm  enable LLM/RLM capabilities (requires VIBE_LLM_PROVIDER)",
+    "  fetch <file>                Resolve imports and sync lock",
   )
+  println("")
+  println("Flags:")
+  println("  --syntax vibe               Parser mode")
+  println("  --unstable-async            Enable async runtime")
+  println("  --unstable-threads          Enable threads runtime")
+  println(
+    "  --llm                       Enable LLM capabilities (requires VIBE_LLM_PROVIDER)",
+  )
+  println("")
+  println("Run 'vibe <command> --help' for command-specific options.")
+}
+
+///|
+fn print_subcommand_help(cmd : String) -> Unit {
+  match cmd {
+    "compile" => print_compile_help()
+    "test" => print_test_help()
+    "run" => print_run_help()
+    "check" => print_check_help()
+    "fmt" => print_fmt_help()
+    "bench" => print_bench_help()
+    "build" => print_build_help()
+    "normalize" => print_normalize_help()
+    _ => {
+      println("No detailed help for '" + cmd + "'.")
+      println("")
+      print_usage()
+    }
+  }
+}
+
+///|
+fn has_help_flag(args : Array[String]) -> Bool {
+  for arg in args {
+    if arg == "--help" || arg == "-h" {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn print_compile_help() -> Unit {
+  println("Usage: vibe compile [options] <file>")
+  println("")
+  println("Compile a vibe source file. Output defaults to dist/.")
+  println("")
+  println("Target format (pick one):")
+  println("  --wasm              Core WASM (default)")
+  println("  --wasm-js-string    Core WASM with JS string builtins")
+  println("  --wasm-gc           WASM GC")
+  println("  --component         Component Model WASM")
+  println("  --wac               WAC composition")
+  println("  --wit               Emit WIT interface")
+  println("  --wit-component     WIT + Component")
+  println("")
+  println("Options:")
+  println("  -o <path>           Output path (default: dist/)")
+  println("  -O{0,1,2,3,4,s,z}  Optimization level")
+  println("  --no-dce            Disable dead code elimination")
+  println("  --debug-errors      Keep throw string literals in output")
+  println("  --coverage          Enable coverage (test only, set VIBE_TEST_COVERAGE=1)")
+  println("  --coverage-run-tests  Run test blocks in coverage mode")
+  println("  --http-host-imports Wire HTTP builtins to host imports")
+  println("  --library           Library mode")
+}
+
+///|
+fn print_test_help() -> Unit {
+  println("Usage: vibe test [options] <file|dir...>")
+  println("")
+  println("Run test blocks. Directories are tested in parallel.")
+  println("")
+  println("Options:")
+  println(
+    "  --jobs <N>          Parallel jobs (default: VIBE_TEST_JOBS or 1, max 16)",
+  )
+  println("  --report-json       Output results as JSON")
+  println("  --no-cache          Disable test result caching")
+}
+
+///|
+fn print_run_help() -> Unit {
+  println("Usage: vibe run <file>")
+  println("")
+  println("Execute a vibe script. The file must contain `let main`.")
+  println("")
+  println("Environment:")
+  println(
+    "  VIBE_RUN_BACKEND=release|monolithic  Disable linked debug fast path",
+  )
+  println("  VIBE_USE_SESSION_HTTP=0              Disable session worker")
+}
+
+///|
+fn print_check_help() -> Unit {
+  println("Usage: vibe check [options] <file...>")
+  println("")
+  println("Parse and type check vibe scripts.")
+  println("")
+  println("Options:")
+  println("  --profile-tsv <path>   Write profiling data to TSV file")
+  println(
+    "  --builtin-contract <error|warn|ignore>  Builtin contract mode",
+  )
+}
+
+///|
+fn print_fmt_help() -> Unit {
+  println("Usage: vibe fmt [options] <file...>")
+  println("")
+  println("Normalize and format vibe scripts.")
+  println("")
+  println("Options:")
+  println("  --dry-run           Show diff without writing changes")
+  println("  --write, -w         Write changes (default behavior)")
+}
+
+///|
+fn print_bench_help() -> Unit {
+  println("Usage: vibe bench [options] <file|dir...>")
+  println("")
+  println("Run `bench {}` blocks.")
+  println("")
+  println("Options:")
+  println("  --backend compiled  Use compiled backend")
+  println("  --runs <N>          Number of benchmark runs")
+  println("  --warmup <N>        Number of warmup iterations")
+  println("  --n <N>             Iterations per run")
+}
+
+///|
+fn print_build_help() -> Unit {
+  println("Usage: vibe build [options] <file>")
+  println("")
+  println("Full pipeline build (compile + optimize).")
+  println("")
+  println("Options:")
+  println("  -o <path>           Output path")
+  println("  --release           Release build")
+  println("  --debug             Debug build (default)")
+}
+
+///|
+fn print_normalize_help() -> Unit {
+  println("Usage: vibe normalize [options] <file...>")
+  println("")
+  println("Normalize declaration order and apply DCE + formatting.")
+  println("")
+  println("Options:")
+  println("  --write             Write changes to files (default)")
+  println("  --check             Check only, exit 1 if changes needed")
 }
 
 ///|
@@ -780,6 +847,10 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
 
 ///|
 fn compile_cmd(args : Array[String]) -> Unit {
+  if has_help_flag(args) {
+    print_compile_help()
+    return
+  }
   let opts = match parse_compile_cmd_args(args) {
     Ok(v) => v
     Err(msg) => abort(msg)
@@ -2049,6 +2120,10 @@ fn run_cmd(
   enable_llm~ : Bool,
 ) -> Unit {
   let _ = enable_llm
+  if has_help_flag(args) {
+    print_run_help()
+    return
+  }
   if args.length() != 1 {
     abort("run: expected <file>")
   }
@@ -2306,6 +2381,10 @@ fn print_cli_check_report(report : CliCheckReport) -> Unit {
 
 ///|
 fn check_cmd(args : Array[String]) -> Unit {
+  if has_help_flag(args) {
+    print_check_help()
+    return
+  }
   let (check_args, profile_tsv, builtin_contract) = match
     split_check_cmd_args(args) {
     Ok(v) => v
@@ -3435,6 +3514,10 @@ fn test_cmd(
   args : Array[String],
   features : @runtime.RuntimeFeatureFlags,
 ) -> Unit {
+  if has_help_flag(args) {
+    print_test_help()
+    return
+  }
   if args.length() == 0 {
     abort("test: expected <file|dir...>")
   }
@@ -5857,6 +5940,10 @@ fn normalize_directory_to_index_source(
 
 ///|
 fn normalize_cmd(args : Array[String]) -> Unit {
+  if has_help_flag(args) {
+    print_normalize_help()
+    return
+  }
   let options = match parse_normalize_cmd_options(args) {
     Ok(v) => v
     Err(msg) => abort(msg)
@@ -6119,6 +6206,10 @@ fn normalize_merge_cmd(
 
 ///|
 fn fmt_cmd(args : Array[String]) -> Unit {
+  if has_help_flag(args) {
+    print_fmt_help()
+    return
+  }
   let options = match parse_fmt_cmd_options(args) {
     Ok(v) => v
     Err(msg) => abort(msg)
@@ -7270,6 +7361,10 @@ fn find_vibe_dir_from(start : String) -> String {
 /// --debug:   linked build (pre-compile imports as library .wasm, cache in .vibe/debug/)
 /// --release: monolithic build (default, same as `compile --wasm`)
 fn build_cmd(args : Array[String]) -> Unit {
+  if has_help_flag(args) {
+    print_build_help()
+    return
+  }
   let mut debug_mode = false
   let mut entry_path : String? = None
   let mut out_path : String? = None

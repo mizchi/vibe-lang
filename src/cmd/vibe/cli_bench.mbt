@@ -144,6 +144,10 @@ fn bench_cmd(
   features : @runtime.RuntimeFeatureFlags,
 ) -> Unit {
   ignore(features)
+  if has_help_flag(args) {
+    print_bench_help()
+    return
+  }
   let expr_mode = bench_uses_expr_mode(args)
   if expr_mode {
     abort(
