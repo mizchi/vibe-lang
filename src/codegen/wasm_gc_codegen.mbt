@@ -210,6 +210,7 @@ priv struct GcCodegenCtx {
   /// Compile-time known constants from top-level let bindings.
   /// Maps name → (global_index, val_kind)
   global_consts : Map[String, (Int, GcValKind)]
+  mut needs_exceptions : Bool
 }
 
 ///|
@@ -358,6 +359,7 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
     error_tag_index,
     error_tag_type_index,
     global_consts: {},
+    needs_exceptions: false,
   }
 }
 
@@ -7029,40 +7031,13 @@ fn compile_expr_gc(
                       }
                       emit_unreachable_gc(buf)
                     } else {
-                      // Last resort: check if name is in locals (HOF param with
-                      // Named type alias). Create a generic closure call.
-                      match fctx.locals.get(name) {
-                        Some(info) => {
-                          // Treat as closure call: assume standard closure struct
-                          let param_kinds : Array[GcValKind] = []
-                          for _ in pos_args {
-                            param_kinds.push(GcValKind::I64)
-                          }
-                          let (fn_type_idx, _) = ensure_closure_types_gc(
-                            ctx, param_kinds, GcValKind::I64,
-                          )
-                          let closure_struct_fields : Array[GcValKind] = [
-                            GcValKind::Ref(fn_type_idx),
-                            GcValKind::AnyRef,
-                          ]
-                          let closure_struct_type = ensure_struct_type(
-                            ctx.types,
-                            ctx.struct_type_index,
-                            closure_struct_fields,
-                          )
-                          emit_local_get_gc(buf, info.idx)
-                          emit_ref_cast_gc(buf, closure_struct_type)
-                          emit_struct_get_gc(buf, closure_struct_type, 1)
-                          for arg in pos_args {
-                            compile_expr_gc(ctx, fctx, buf, arg)
-                          }
-                          emit_local_get_gc(buf, info.idx)
-                          emit_ref_cast_gc(buf, closure_struct_type)
-                          emit_struct_get_gc(buf, closure_struct_type, 0)
-                          emit_call_ref_gc(buf, fn_type_idx)
-                        }
-                        None => raise WasmGenError::UnknownName(name)
+                      // Unknown call target — trap at runtime
+                      // (HOF params with Named type aliases fall here)
+                      for arg in pos_args {
+                        compile_expr_gc(ctx, fctx, buf, arg)
+                        emit_drop_gc(buf)
                       }
+                      emit_unreachable_gc(buf)
                     }
                 }
               }
@@ -7406,6 +7381,7 @@ fn compile_expr_gc(
         @core.Expr::Int(value=0L, span~)
       }
       compile_expr_gc(ctx, fctx, buf, value)
+      ctx.needs_exceptions = true
       buf.push(0x08) // throw opcode
       write_u32_leb_gc(buf, ctx.error_tag_index)
     }
@@ -7446,6 +7422,7 @@ fn compile_expr_gc(
       // block $catch_target (result eqref)
       emit_block_gc(buf, Some(GcValKind::EqRef))
       // try_table (result result_kind) (catch error_tag 0)
+      ctx.needs_exceptions = true
       buf.push(0x1f) // try_table opcode
       write_valtype_gc(buf, result_kind)
       write_u32_leb_gc(buf, 1) // 1 handler
@@ -8039,6 +8016,15 @@ fn build_module_gc(
     }
   }
   write_section_gc(buf, 3, func_sec.to_array())
+  // Tag section (section 13): only emit if throw/handle is used
+  // Per exception handling spec, placed between func(3) and global(6)
+  if ctx.needs_exceptions {
+    let tag_sec = GcByteBuf::new()
+    write_u32_leb_gc(tag_sec, 1) // 1 tag
+    tag_sec.push(0x00) // tag attribute: exception
+    write_u32_leb_gc(tag_sec, ctx.error_tag_type_index) // type index
+    write_section_gc(buf, 13, tag_sec.to_array())
+  }
   // Global section (section 6): compile-time constants
   if global_init_values.length() > 0 {
     let global_sec = GcByteBuf::new()
@@ -8077,13 +8063,6 @@ fn build_module_gc(
     }
     write_section_gc(buf, 6, global_sec.to_array())
   }
-  // Tag section (section 13): error tag for throw/catch
-  // Must appear between func(3) and export(7) per exception handling proposal
-  let tag_sec = GcByteBuf::new()
-  write_u32_leb_gc(tag_sec, 1) // 1 tag
-  tag_sec.push(0x00) // tag attribute: exception
-  write_u32_leb_gc(tag_sec, ctx.error_tag_type_index) // type index
-  write_section_gc(buf, 13, tag_sec.to_array())
   let export_sec = GcByteBuf::new()
   write_u32_leb_gc(export_sec, 1)
   let name = "_start"
