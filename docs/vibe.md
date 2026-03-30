@@ -989,7 +989,7 @@ Current hashing behavior for statements:
 ### Type forms
 
 ```sexp
-Int | Float | Double | Bool | String | @core.Path | Unit | Never
+Int | Float | Double | Bool | String | @core.Path | Unit
 (Named "Option" <type> ...)
 (Param "T")
 (Var 1)

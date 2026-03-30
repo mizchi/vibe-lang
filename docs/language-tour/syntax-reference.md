@@ -285,8 +285,8 @@ Int, Float, Double, Bool, Char, String, Unit
 i32, f32, f64
 
 // Collections
-Array[T], Map[V]
-ArrayBuilder[T], MapBuilder[V]
+Array[T], Map[K, V]
+ArrayBuilder[T], MapBuilder[K, V]
 
 // Generic
 Option[T], Result[T]
