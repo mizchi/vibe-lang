@@ -7024,7 +7024,40 @@ fn compile_expr_gc(
                       }
                       emit_unreachable_gc(buf)
                     } else {
-                      raise WasmGenError::UnknownName(name)
+                      // Last resort: check if name is in locals (HOF param with
+                      // Named type alias). Create a generic closure call.
+                      match fctx.locals.get(name) {
+                        Some(info) => {
+                          // Treat as closure call: assume standard closure struct
+                          let param_kinds : Array[GcValKind] = []
+                          for _ in pos_args {
+                            param_kinds.push(GcValKind::I64)
+                          }
+                          let (fn_type_idx, _) = ensure_closure_types_gc(
+                            ctx, param_kinds, GcValKind::I64,
+                          )
+                          let closure_struct_fields : Array[GcValKind] = [
+                            GcValKind::Ref(fn_type_idx),
+                            GcValKind::AnyRef,
+                          ]
+                          let closure_struct_type = ensure_struct_type(
+                            ctx.types,
+                            ctx.struct_type_index,
+                            closure_struct_fields,
+                          )
+                          emit_local_get_gc(buf, info.idx)
+                          emit_ref_cast_gc(buf, closure_struct_type)
+                          emit_struct_get_gc(buf, closure_struct_type, 1)
+                          for arg in pos_args {
+                            compile_expr_gc(ctx, fctx, buf, arg)
+                          }
+                          emit_local_get_gc(buf, info.idx)
+                          emit_ref_cast_gc(buf, closure_struct_type)
+                          emit_struct_get_gc(buf, closure_struct_type, 0)
+                          emit_call_ref_gc(buf, fn_type_idx)
+                        }
+                        None => raise WasmGenError::UnknownName(name)
+                      }
                     }
                 }
               }
