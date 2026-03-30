@@ -29,6 +29,10 @@ fmt:
 check:
     moon check --deny-warn --warn-list '{{moon_warn_list}}' --target {{target}}
 
+# Ensure codegen stays buildable without linking checker internals
+check-codegen-contract:
+    bash scripts/test_codegen_contract.sh
+
 # Verify index.lock files do not contain temporary probe/debug entries
 check-lock-clean:
     scripts/check_lock_clean.sh
@@ -97,6 +101,7 @@ ci-contract-moon:
     scripts/check_lock_clean.sh
     scripts/check_lock_clean_test.sh
     moon check --deny-warn --warn-list '{{moon_warn_list}}' --target js
+    bash scripts/test_codegen_contract.sh
     moon test --target js --warn-list '{{moon_warn_list}}'
 
 # PR-oriented native/runtime contract checks

@@ -6,7 +6,7 @@ pub struct MonoifyResult {
 
 ///|
 priv struct MonoifyContext {
-  env : @checker.TypeEnv
+  expr_types : @core.ExprTypeIndex
   instantiations : Map[String, Int]
   specializable : Map[String, @core.Expr]
 }
@@ -14,11 +14,11 @@ priv struct MonoifyContext {
 ///|
 pub fn monoify_module(
   ast : @core.Module,
-  env : @checker.TypeEnv,
+  expr_types : @core.ExprTypeIndex,
 ) -> MonoifyResult {
   let specializable = collect_specializable_defs(ast)
-  let instantiations = collect_instantiations(ast, env, specializable)
-  let ctx : MonoifyContext = { env, instantiations, specializable }
+  let instantiations = collect_instantiations(ast, expr_types, specializable)
+  let ctx : MonoifyContext = { expr_types, instantiations, specializable }
   if instantiations.is_empty() {
     return { ast, instantiations }
   }
@@ -54,11 +54,11 @@ fn collect_specializable_defs(ast : @core.Module) -> Map[String, @core.Expr] {
 ///|
 fn collect_instantiations(
   ast : @core.Module,
-  env : @checker.TypeEnv,
+  expr_types : @core.ExprTypeIndex,
   specializable : Map[String, @core.Expr],
 ) -> Map[String, Int] {
   let instantiations : Map[String, Int] = {}
-  let ctx : MonoifyContext = { env, instantiations, specializable }
+  let ctx : MonoifyContext = { expr_types, instantiations, specializable }
   let scope = DesugarScope::new()
   collect_instantiations_module(ast, ctx, scope, false)
   instantiations
@@ -613,7 +613,7 @@ fn MonoifyContext::num_tag_from_expr(
   self : MonoifyContext,
   expr : @core.Expr,
 ) -> String? {
-  match self.env.get_expr_type(expr.span()) {
+  match self.expr_types.get_expr_type(expr.span()) {
     Some(ty) => num_tag_from_type(ty)
     None => None
   }
@@ -624,7 +624,7 @@ fn MonoifyContext::array_elem_tag_from_expr(
   self : MonoifyContext,
   expr : @core.Expr,
 ) -> String? {
-  match self.env.get_expr_type(expr.span()) {
+  match self.expr_types.get_expr_type(expr.span()) {
     Some(@core.Type::Array(inner)) => num_tag_from_type(inner)
     _ => None
   }

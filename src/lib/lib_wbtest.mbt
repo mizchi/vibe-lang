@@ -14,6 +14,37 @@ test "format_report_json returns formatted payload" {
 }
 
 ///|
+test "diagnostic_to_json preserves span and optional fields" {
+  let json = diagnostic_to_json(@core.Diagnostic::{
+    stage: "check",
+    message: "type mismatch",
+    span: Some(@core.Span::{ start: 1, end: 3 }),
+    hint: Some("use Int"),
+    note: Some("from test"),
+  }).stringify()
+  assert_true(json.contains("\"stage\":\"check\""))
+  assert_true(json.contains("\"message\":\"type mismatch\""))
+  assert_true(json.contains("\"start\":1"))
+  assert_true(json.contains("\"end\":3"))
+  assert_true(json.contains("\"hint\":\"use Int\""))
+  assert_true(json.contains("\"note\":\"from test\""))
+}
+
+///|
+test "response_diag_error_json wraps diagnostic payload" {
+  let json = response_diag_error_json(@core.Diagnostic::{
+    stage: "ide",
+    message: "missing path",
+    span: None,
+    hint: None,
+    note: None,
+  })
+  assert_true(json.contains("\"ok\":false"))
+  assert_true(json.contains("\"error\":\"missing path\""))
+  assert_true(json.contains("\"diagnostics\""))
+}
+
+///|
 test "ide_outline_report_json returns symbols" {
   let request = "{\"source\":\"let foo = 1\\nlet bar = foo\\n\",\"path\":\"/main.vibe\"}"
   let json = ide_outline_report_json(request)

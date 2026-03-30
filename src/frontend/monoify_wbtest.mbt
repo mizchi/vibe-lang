@@ -84,7 +84,7 @@ test "monoify_module rewrites local Num add call to specialized symbol" {
     ],
   }
   let env = type_check_for_monoify_test(ast)
-  let result = monoify_module(ast, env)
+  let result = monoify_module(ast, env.expr_type_index())
   assert_true(result.instantiations.contains("add:i32"))
   let mut has_specialized_def = false
   let mut value_calls_specialized = false
