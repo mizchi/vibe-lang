@@ -18,7 +18,7 @@ fn AstParser::parse_type_with_params(
       let name = tok.text()
       let args = self.parse_type_args(params)
       if params.contains(name) {
-        if not(args.is_empty()) {
+        if !args.is_empty() {
           raise ParseError::UnexpectedToken(
             expected="type param",
             got=name,

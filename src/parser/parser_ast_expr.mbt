@@ -1897,7 +1897,7 @@ fn parse_hex_int64(text : String, span : @core.Span) -> Int64 raise ParseError {
   // for first digit >= 8
   if sig_len == 16 {
     let first = text[i].to_int().unsafe_to_char()
-    if not(first == '0' || first == '1') {
+    if !(first == '0' || first == '1') {
       raise ParseError::IntLiteralOverflow(literal=text, span~)
     }
   }
@@ -2199,7 +2199,7 @@ fn AstParser::parse_call_or_primary(
           span~,
         )
       }
-    } else if self.peek_kind() == question() && not(saw_newline) {
+    } else if self.peek_kind() == question() && !saw_newline {
       // Error propagation: expr? → handle { expr } { Error(e) => throw(e) }
       let _ = self.bump()
       let span = self.span_from(start)
@@ -2231,7 +2231,7 @@ fn AstParser::parse_call_or_primary(
         ],
         span~,
       )
-    } else if self.peek_kind() == lbracket() && not(saw_newline) {
+    } else if self.peek_kind() == lbracket() && !saw_newline {
       // Index/slice access: expr[index] or expr[i:j] — only on the same line.
       // A newline before [ starts a new array literal expression.
       let _ = self.bump()
@@ -2324,7 +2324,7 @@ fn AstParser::parse_call_or_primary(
           expr = call2("__index", expr, index)
         }
       }
-    } else if self.peek_kind() == lparen() && not(saw_newline) {
+    } else if self.peek_kind() == lparen() && !saw_newline {
       // Chained call: expr(args) where expr is not a simple name.
       // Only on the same line — a newline before ( starts a new statement.
       // Desugar f(a)(b) into { let __chain$N = f(a); __chain$N(b) }
@@ -2374,7 +2374,7 @@ fn AstParser::can_parse_slash_qualified_name(self : AstParser) -> Bool {
     }
     i += 1
   }
-  if not(saw_segment) {
+  if !saw_segment {
     return false
   }
   while i < self.tokens.length() && is_trivia(self.tokens[i].kind()) {
@@ -2839,7 +2839,7 @@ fn replace_placeholders(expr : @core.Expr) -> @core.Expr {
 ///|
 /// Desugar placeholder expression to lambda: _ * 2 → (__p0) -> __p0 * 2
 pub fn desugar_placeholder_expr(expr : @core.Expr) -> @core.Expr {
-  if not(contains_placeholder(expr)) {
+  if !contains_placeholder(expr) {
     return expr
   }
   let counter : Ref[Int] = @ref.new(0)

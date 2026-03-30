@@ -11,7 +11,7 @@ suberror ParseError {
 ///|
 fn parse_error_separator_name(expected : String) -> String? {
   let prefix = "; ("
-  if not(expected.has_prefix(prefix)) || not(expected.has_suffix(")")) {
+  if !expected.has_prefix(prefix) || !expected.has_suffix(")") {
     return None
   }
   if expected.length() <= prefix.length() + 1 {
@@ -194,7 +194,7 @@ fn Parser::peek_non_trivia_ahead(self : Parser, nth : Int) -> @cst.SyntaxKind {
   let mut i = self.pos + 1
   let mut seen = 0
   while i < self.tokens.length() {
-    if not(is_trivia(self.tokens[i].kind())) {
+    if !is_trivia(self.tokens[i].kind()) {
       seen += 1
       if seen == nth {
         return self.tokens[i].kind()
@@ -246,7 +246,7 @@ fn Parser::expect(self : Parser, kind : @cst.SyntaxKind) -> Unit {
 /// Skip tokens until braces {} are balanced (assumes opening brace was already consumed)
 fn Parser::skip_balanced_braces(self : Parser) -> Unit {
   let mut depth = 1
-  while depth > 0 && not(self.at(eof())) {
+  while depth > 0 && !self.at(eof()) {
     match self.peek_kind() {
       k if k == lbrace() => {
         self.bump()
@@ -265,7 +265,7 @@ fn Parser::skip_balanced_braces(self : Parser) -> Unit {
 /// Skip tokens until brackets [] are balanced (assumes opening bracket was already consumed)
 fn Parser::skip_balanced_brackets(self : Parser) -> Unit {
   let mut depth = 1
-  while depth > 0 && not(self.at(eof())) {
+  while depth > 0 && !self.at(eof()) {
     match self.peek_kind() {
       k if k == lbracket() => {
         self.bump()
@@ -284,7 +284,7 @@ fn Parser::skip_balanced_brackets(self : Parser) -> Unit {
 /// Skip tokens until parens () are balanced (assumes opening paren was already consumed)
 fn Parser::skip_balanced_parens(self : Parser) -> Unit {
   let mut depth = 1
-  while depth > 0 && not(self.at(eof())) {
+  while depth > 0 && !self.at(eof()) {
     match self.peek_kind() {
       k if k == lparen() => {
         self.bump()
@@ -302,7 +302,7 @@ fn Parser::skip_balanced_parens(self : Parser) -> Unit {
 ///|
 pub fn Parser::parse(self : Parser) -> @cst.GreenNode {
   self.builder.start_node(source_file())
-  while not(self.at(eof())) {
+  while !self.at(eof()) {
     self.skip_trivia()
     if self.at(eof()) {
       break
@@ -348,10 +348,10 @@ fn Parser::parse_stmt(self : Parser) -> Unit {
 
 ///|
 fn Parser::parse_module_ref_tokens(self : Parser) -> Unit {
-  while not(self.at(eof())) &&
-        not(self.at(semicolon())) &&
-        not(self.at(newline())) &&
-        not(self.at(lbrace())) {
+  while !self.at(eof()) &&
+        !self.at(semicolon()) &&
+        !self.at(newline()) &&
+        !self.at(lbrace()) {
     self.bump()
   }
 }
@@ -394,7 +394,7 @@ fn Parser::parse_export_tail(self : Parser) -> Unit {
   } else if self.at(lbrace()) {
     // export { name1, name2, Type::method, ... }
     self.bump()
-    while not(self.at(rbrace())) && not(self.at(eof())) {
+    while !self.at(rbrace()) && !self.at(eof()) {
       self.skip_trivia()
       if self.at(name()) {
         self.bump()
@@ -451,9 +451,9 @@ fn Parser::parse_extern_let_stmt(self : Parser) -> Unit {
   self.skip_trivia()
   self.expect(let_kw())
   self.skip_trivia()
-  while not(self.at(eof())) &&
-        not(self.at(semicolon())) &&
-        not(self.at(newline())) {
+  while !self.at(eof()) &&
+        !self.at(semicolon()) &&
+        !self.at(newline()) {
     if self.at(lbrace()) {
       self.skip_balanced_braces()
     } else if self.at(lparen()) {
@@ -771,7 +771,7 @@ fn Parser::parse_loop_expr(self : Parser) -> Unit {
   if self.at(lparen()) {
     self.bump() // (
     self.skip_trivia()
-    if not(self.at(rparen())) {
+    if !self.at(rparen()) {
       // Parse name = expr
       self.expect(name())
       self.expect(eq())
@@ -942,7 +942,7 @@ fn Parser::parse_break_expr(self : Parser) -> Unit {
   self.bump() // break
   self.skip_trivia()
   // Parse optional break value (not } or ; or EOF)
-  if not(self.at(rbrace())) && not(self.at(semicolon())) && not(self.at(eof())) {
+  if !self.at(rbrace()) && !self.at(semicolon()) && !self.at(eof()) {
     self.parse_expr()
   }
   self.builder.finish_node()
@@ -957,7 +957,7 @@ fn Parser::parse_continue_expr(self : Parser) -> Unit {
   if self.at(lparen()) {
     self.bump() // (
     self.skip_trivia()
-    if not(self.at(rparen())) {
+    if !self.at(rparen()) {
       self.parse_expr()
       while ({
               self.skip_trivia()
@@ -1075,7 +1075,7 @@ fn Parser::parse_brace_block_tokens(self : Parser) -> Unit {
 ///|
 fn Parser::parse_type_tokens(self : Parser) -> Unit {
   let mut depth = 0
-  while not(self.at(eof())) {
+  while !self.at(eof()) {
     match self.peek_kind() {
       k if k == lbrace() && depth == 0 => break
       k if k == lparen() => {
@@ -1096,7 +1096,7 @@ fn Parser::parse_binding_type_until_eq(self : Parser) -> Unit {
   let mut paren_depth = 0
   let mut bracket_depth = 0
   let mut brace_depth = 0
-  while not(self.at(eof())) {
+  while !self.at(eof()) {
     let kind = self.peek_kind()
     if paren_depth == 0 &&
       bracket_depth == 0 &&
@@ -1182,7 +1182,7 @@ fn Parser::parse_call_or_primary(self : Parser) -> Unit {
 fn Parser::parse_args(self : Parser) -> Unit {
   self.builder.start_node(arg_list())
   self.skip_trivia()
-  if not(self.at(rparen())) {
+  if !self.at(rparen()) {
     self.parse_arg()
     while ({
             self.skip_trivia()
