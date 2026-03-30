@@ -380,22 +380,22 @@ fn call_or_throw_expr(
   if name == "throw" {
     if type_args.length() != 0 {
       raise ParseError::UnexpectedToken(
-        expected="throw(<expr>)",
+        expected="throw does not accept type arguments. Use `throw(expr)` instead.",
         got="throw[<type>](...)",
         span~,
       )
     }
     if args.length() != 1 {
       raise ParseError::UnexpectedToken(
-        expected="throw(<expr>)",
-        got="throw(...)",
+        expected="throw takes exactly one argument. Use `throw(expr)` instead.",
+        got="throw(...) with \{args.length()} arguments",
         span~,
       )
     }
     match args[0].label {
       Some(_) =>
         raise ParseError::UnexpectedToken(
-          expected="throw(<expr>)",
+          expected="throw does not accept labeled arguments. Use `throw(expr)` instead.",
           got="throw(label=...)",
           span~,
         )
@@ -411,22 +411,22 @@ fn call_or_throw_expr(
   if name == "perform" {
     if type_args.length() != 0 {
       raise ParseError::UnexpectedToken(
-        expected="perform(<expr>)",
+        expected="perform does not accept type arguments. Use `perform(Effect::Op(args))` instead.",
         got="perform[<type>](...)",
         span~,
       )
     }
     if args.length() != 1 {
       raise ParseError::UnexpectedToken(
-        expected="perform(<expr>)",
-        got="perform(...)",
+        expected="perform requires the form `perform(Effect::Op(args))`.",
+        got="perform(...) with \{args.length()} arguments",
         span~,
       )
     }
     match args[0].label {
       Some(_) =>
         raise ParseError::UnexpectedToken(
-          expected="perform(<expr>)",
+          expected="perform does not accept labeled arguments. Use `perform(Effect::Op(args))` instead.",
           got="perform(label=...)",
           span~,
         )
@@ -436,22 +436,22 @@ fn call_or_throw_expr(
   }
   if type_args.length() != 0 {
     raise ParseError::UnexpectedToken(
-      expected="resume(<expr>)",
+      expected="resume does not accept type arguments. Use `resume(expr)` instead.",
       got="resume[<type>](...)",
       span~,
     )
   }
   if args.length() != 1 {
     raise ParseError::UnexpectedToken(
-      expected="resume(<expr>)",
-      got="resume(...)",
+      expected="resume takes exactly one argument. Use `resume(expr)` instead.",
+      got="resume(...) with \{args.length()} arguments",
       span~,
     )
   }
   match args[0].label {
     Some(_) =>
       raise ParseError::UnexpectedToken(
-        expected="resume(<expr>)",
+        expected="resume does not accept labeled arguments. Use `resume(expr)` instead.",
         got="resume(label=...)",
         span~,
       )
@@ -1064,7 +1064,7 @@ fn AstParser::parse_removed_raise_expr(
   let _ = self.expect(raise_kw(), "raise")
   let span = self.span_from(start)
   raise ParseError::UnexpectedToken(
-    expected="throw(<expr>)",
+    expected="`raise` is not supported. Use `throw(expr)` instead.",
     got=tok.text(),
     span~,
   )
@@ -2117,7 +2117,7 @@ fn AstParser::parse_call_or_primary(
     } else if qualified_name == "throw" {
       let span = self.span_from(start)
       raise ParseError::UnexpectedToken(
-        expected="throw(<expr>)",
+        expected="`throw` must be called as a function. Use `throw(expr)` instead.",
         got=qualified_name,
         span~,
       )
