@@ -215,3 +215,103 @@ test "wasm-gc e2e: bytes set" {
     #|main()
   assert_gc_e2e(src, "bytes_set", 42)
 }
+
+///|
+test "wasm-gc e2e: pipe operator" {
+  let src =
+    #|let double = (x: Int) -> Int { x + x }
+    #|let main = () -> Int { 21 |> double() }
+    #|main()
+  assert_gc_e2e(src, "pipe_op", 42)
+}
+
+///|
+test "wasm-gc e2e: MapBuilder new/freeze" {
+  let src =
+    #|let main = () -> Int {
+    #|  let b = MapBuilder::new()
+    #|  let m = MapBuilder::freeze(b)
+    #|  let _ = m
+    #|  30
+    #|}
+    #|main()
+  assert_gc_e2e(src, "map_builder_simple", 30)
+}
+
+///|
+test "wasm-gc e2e: MapBuilder set" {
+  let src =
+    #|let main = () -> Int {
+    #|  let b = MapBuilder::new()
+    #|  MapBuilder::set(b, "x", 10)
+    #|  MapBuilder::set(b, "y", 20)
+    #|  let m = MapBuilder::freeze(b)
+    #|  let _ = m
+    #|  30
+    #|}
+    #|main()
+  assert_gc_e2e(src, "map_builder_set", 30)
+}
+
+///|
+test "wasm-gc e2e: throw/handle error-only" {
+  let src =
+    #|let main = () -> Int {
+    #|  handle {
+    #|    throw("error")
+    #|    0
+    #|  } {
+    #|    Error(e) => {
+    #|      let _ = e
+    #|      42
+    #|    }
+    #|  }
+    #|}
+    #|main()
+  assert_gc_e2e(src, "throw_handle", 42)
+}
+
+///|
+test "wasm-gc e2e: handle success path" {
+  let src =
+    #|let main = () -> Int {
+    #|  handle {
+    #|    99
+    #|  } {
+    #|    Error(e) => {
+    #|      let _ = e
+    #|      0
+    #|    }
+    #|  }
+    #|}
+    #|main()
+  assert_gc_e2e(src, "handle_success", 99)
+}
+
+///|
+test "wasm-gc e2e: ArrayBuilder push 3+ times (#64)" {
+  let src =
+    #|let main = () -> Int {
+    #|  let b = ArrayBuilder::new()
+    #|  ArrayBuilder::push(b, 10)
+    #|  ArrayBuilder::push(b, 20)
+    #|  ArrayBuilder::push(b, 30)
+    #|  let arr = ArrayBuilder::freeze(b)
+    #|  arr[0] + arr[1]
+    #|}
+    #|main()
+  assert_gc_e2e(src, "ab_push_3", 30)
+}
+
+///|
+test "wasm-gc e2e: let rec factorial top-level" {
+  let src =
+    #|let rec fact = (n: Int) -> Int {
+    #|  if n <= 1 { 1 } else { n * fact(n - 1) }
+    #|}
+    #|fact(5)
+  assert_gc_e2e(src, "let_rec_fact_top", 120)
+}
+
+// TODO(B7): nested let rec closure self-ref needs mutable box for deferred init
+// test "wasm-gc e2e: let rec factorial nested" { ... }
