@@ -114,6 +114,20 @@ pub(all) struct FnValue {
 } derive(Eq)
 
 ///|
+/// Continuation for effect handlers (ADR-0021 Phase 0.5)
+/// Carries the state needed to resume a handled body from a perform site
+pub(all) struct ContinuationValue {
+  site_key : String
+  body : Module
+  arms : Array[MatchArm]
+} derive(Eq)
+
+///|
+pub impl Show for ContinuationValue with output(self, logger) {
+  logger.write_string("<continuation>")
+}
+
+///|
 pub impl Show for FnValue with output(self, logger) {
   logger.write_string("<fn(")
   for i, param in self.params {
@@ -256,6 +270,9 @@ pub(all) enum Value {
   StringBuilder(Array[String])
   Bytes(Array[Byte])
   Fn(FnValue)
+  /// Continuation value for effect handlers (ADR-0021)
+  /// When called with a value, resumes the handled body from the perform site
+  Continuation(ContinuationValue)
 } derive(Eq)
 
 ///|
@@ -395,6 +412,7 @@ pub impl Show for Value with output(self, logger) {
       logger.write_string("])")
     }
     Value::Fn(fn_value) => fn_value.output(logger)
+    Value::Continuation(k) => k.output(logger)
   }
 }
 

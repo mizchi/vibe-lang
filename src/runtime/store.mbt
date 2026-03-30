@@ -559,6 +559,7 @@ fn value_hash(value : @core.Value) -> String {
     @core.Value::StringBuilder(_) => "sb:"
     @core.Value::Bytes(_) => "by:"
     @core.Value::Fn(_) => "fn:"
+    @core.Value::Continuation(_) => "k:"
   }
   hasher.update_string(type_tag)
   // For Fn values, include body in hash since Show only outputs params
