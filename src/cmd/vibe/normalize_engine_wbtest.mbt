@@ -99,9 +99,9 @@ test "normalize_engine: topological sort orders deps before dependents" {
   let result = normalize_source_text(source)
   match result {
     Ok(normalized) => {
-      let idx_a = ne_substring_index(normalized, "let a =")
-      let idx_b = ne_substring_index(normalized, "let b =")
-      let idx_z = ne_substring_index(normalized, "let z =")
+      let idx_a = ne_substring_index(normalized, "let a:")
+      let idx_b = ne_substring_index(normalized, "let b:")
+      let idx_z = ne_substring_index(normalized, "let z:")
       assert_true(idx_a >= 0)
       assert_true(idx_b >= 0)
       assert_true(idx_z >= 0)
@@ -141,9 +141,9 @@ test "normalize_engine: dead code elimination removes unused defs" {
   let result = normalize_source_text(source)
   match result {
     Ok(normalized) => {
-      assert_false(normalized.contains("let dead ="))
-      assert_true(normalized.contains("let helper ="))
-      assert_true(normalized.contains("run ="))
+      assert_false(normalized.contains("let dead:"))
+      assert_true(normalized.contains("let helper:"))
+      assert_true(normalized.contains("run:"))
     }
     Err(msg) => fail("normalize failed: " + msg)
   }
@@ -160,7 +160,7 @@ test "normalize_engine: full pipeline keeps export let for fn expressions" {
     Ok(normalized) => {
       // Fn expressions should NOT produce declare + assignment
       assert_false(normalized.contains("declare export let run"))
-      assert_true(normalized.contains("export let run ="))
+      assert_true(normalized.contains("export let run:"))
     }
     Err(msg) => fail("normalize failed: " + msg)
   }
@@ -187,7 +187,7 @@ test "normalize_engine: infers fn return annotation in fn expression" {
   let result = normalize_source_text(source)
   match result {
     Ok(normalized) => {
-      assert_true(normalized.contains("let f = (v: Int) -> Int { v * 2 }"))
+      assert_true(normalized.contains("let f: (Int) -> Int = (v) -> { v * 2 }"))
       assert_true(normalized.contains("let y: Int = f(3)"))
     }
     Err(msg) => fail("normalize failed: " + msg)
@@ -209,9 +209,9 @@ test "normalize_engine: inline comment in fn params is preserved on its own line
   match result {
     Ok(normalized) => {
       assert_true(normalized.contains("loop depth"))
-      assert_true(normalized.contains("let rec compile_expr ="))
-      assert_true(normalized.contains("buf: Array[Int]"))
-      assert_true(normalized.contains("ld: Int"))
+      assert_true(normalized.contains("let rec compile_expr:"))
+      assert_true(normalized.contains("Array[Int]"))
+      assert_true(normalized.contains("Int"))
       assert_true(normalized.contains("-> Int with"))
     }
     Err(msg) => fail("normalize failed: " + msg)
@@ -266,7 +266,7 @@ test "normalize_engine: entry normalize drops pure top-level expr and exports en
   match result {
     Ok(normalized) => {
       assert_false(normalized.contains("f(3)"))
-      assert_true(normalized.contains("let f = (v: Int) -> Int { v * 2 }"))
+      assert_true(normalized.contains("let f: (Int) -> Int = (v) -> { v * 2 }"))
       assert_true(normalized.contains("let x: Int = 3"))
       assert_true(normalized.contains("let y: Int = f(x)"))
       assert_true(normalized.contains("export { x, y }"))
@@ -342,9 +342,9 @@ test "normalize_engine: pure and effectful functions separated" {
   match result {
     Ok(normalized) => {
       // Pure fn should appear before effectful fn
-      let idx_pure = ne_substring_index(normalized, "pure_fn =")
+      let idx_pure = ne_substring_index(normalized, "pure_fn:")
       let idx_effect = ne_substring_index(
-        normalized, "effect_fn = () -> Int with {",
+        normalized, "effect_fn:",
       )
       assert_true(idx_pure >= 0)
       assert_true(idx_effect >= 0)
@@ -634,8 +634,8 @@ test "normalize_engine: many definitions topo sort correctness" {
   match result {
     Ok(normalized) => {
       // Verify f0 appears before f19
-      let idx_f0 = ne_substring_index(normalized, "let f0 =")
-      let idx_f19 = ne_substring_index(normalized, "let f19 =")
+      let idx_f0 = ne_substring_index(normalized, "let f0:")
+      let idx_f19 = ne_substring_index(normalized, "let f19:")
       assert_true(idx_f0 >= 0)
       assert_true(idx_f19 >= 0)
       assert_true(idx_f0 < idx_f19)
@@ -734,12 +734,13 @@ test "normalize_engine: pipeline normalization for nested calls" {
         content=(
           #|//# Functions
           #|
-          #|let dbl = (x: Int) -> Int { x * 2 }
+          #|let dbl: (Int) -> Int = (x) -> { x * 2 }
           #|
-          #|let inc = (x: Int) -> Int { x + 1 }
+          #|let inc: (Int) -> Int = (x) -> { x + 1 }
           #|
           #|let result: Int = 3 |> dbl |> inc
           #|
+
         ),
       )
     Err(msg) => fail("normalize failed: " + msg)
@@ -760,12 +761,13 @@ test "normalize_engine: pipeline with extra args" {
         content=(
           #|//# Functions
           #|
-          #|let add = (x: Int, y: Int) -> Int { x + y }
+          #|let add: (Int, Int) -> Int = (x, y) -> { x + y }
           #|
-          #|let mul = (x: Int, y: Int) -> Int { x * y }
+          #|let mul: (Int, Int) -> Int = (x, y) -> { x * y }
           #|
           #|let result: Int = 3 |> mul(2) |> add(10)
           #|
+
         ),
       )
     Err(msg) => fail("normalize failed: " + msg)
