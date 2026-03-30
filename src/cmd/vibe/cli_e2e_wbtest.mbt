@@ -460,7 +460,7 @@ test "shell vibe normalize accepts entry symbols and drops pure expr stmt" {
   assert_eq(result, ReplMetaCommandResult::HandledContinue)
   let text = wbtest_join_lines(lines)
   assert_true(text.contains("normalize: scratch"))
-  assert_true(text.contains("let f = (v: Int) -> Int { v * 2 }"))
+  assert_true(text.contains("let f: (Int) -> Int = (v) -> { v * 2 }"))
   assert_true(text.contains("let y: Int = f(x)"))
   assert_false(text.contains("f(3)"))
   assert_false(text.contains("print(\"side\")"))

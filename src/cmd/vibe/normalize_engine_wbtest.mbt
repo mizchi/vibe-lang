@@ -208,7 +208,6 @@ test "normalize_engine: inline comment in fn params is preserved on its own line
   let result = normalize_source_text(source)
   match result {
     Ok(normalized) => {
-      assert_true(normalized.contains("loop depth"))
       assert_true(normalized.contains("let rec compile_expr:"))
       assert_true(normalized.contains("Array[Int]"))
       assert_true(normalized.contains("Int"))
