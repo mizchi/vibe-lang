@@ -1132,10 +1132,11 @@ fn type_matches_impl_target(
           type_matches_impl_target(env, inner, actual_inner, mapping)
         _ => false
       }
-    @core.Type::Map(_key, inner) =>
+    @core.Type::Map(key, inner) =>
       match a {
-        @core.Type::Map(_akey, actual_inner) =>
-          type_matches_impl_target(env, inner, actual_inner, mapping)
+        @core.Type::Map(akey, actual_inner) =>
+          type_matches_impl_target(env, key, akey, mapping) &&
+            type_matches_impl_target(env, inner, actual_inner, mapping)
         _ => false
       }
     @core.Type::Set(inner) =>
@@ -1150,10 +1151,11 @@ fn type_matches_impl_target(
           type_matches_impl_target(env, inner, actual_inner, mapping)
         _ => false
       }
-    @core.Type::MapBuilder(_key, inner) =>
+    @core.Type::MapBuilder(key, inner) =>
       match a {
-        @core.Type::MapBuilder(_akey, actual_inner) =>
-          type_matches_impl_target(env, inner, actual_inner, mapping)
+        @core.Type::MapBuilder(akey, actual_inner) =>
+          type_matches_impl_target(env, key, akey, mapping) &&
+            type_matches_impl_target(env, inner, actual_inner, mapping)
         _ => false
       }
     @core.Type::Variant(pf) =>
@@ -1180,9 +1182,9 @@ fn type_matches_impl_target(
           }
         _ => false
       }
-    @core.Type::Func(params=pp, ret=pr, ..) =>
+    @core.Type::Func(params=pp, ret=pr, effects=pe) =>
       match a {
-        @core.Type::Func(params=ap, ret=ar, ..) =>
+        @core.Type::Func(params=ap, ret=ar, effects=ae) =>
           if pp.length() != ap.length() {
             false
           } else {
@@ -1192,6 +1194,18 @@ fn type_matches_impl_target(
                 not(type_matches_impl_target(env, pp[i].ty, ap[i].ty, mapping)) {
                 ok = false
                 break
+              }
+            }
+            // Compare effects: pattern effects must match actual effects
+            if ok && pe.length() != ae.length() {
+              ok = false
+            }
+            if ok {
+              for i in 0..<pe.length() {
+                if pe[i] != ae[i] {
+                  ok = false
+                  break
+                }
               }
             }
             ok && type_matches_impl_target(env, pr, ar, mapping)
@@ -1496,10 +1510,11 @@ fn trait_impl_targets_may_overlap_concrete(
           trait_impl_targets_may_overlap(left_item, right_item)
         _ => false
       }
-    @core.Type::Map(_lkey, left_item) =>
+    @core.Type::Map(lkey, left_item) =>
       match right {
-        @core.Type::Map(_rkey, right_item) =>
-          trait_impl_targets_may_overlap(left_item, right_item)
+        @core.Type::Map(rkey, right_item) =>
+          trait_impl_targets_may_overlap(lkey, rkey) &&
+            trait_impl_targets_may_overlap(left_item, right_item)
         _ => false
       }
     @core.Type::Set(left_item) =>
@@ -1514,10 +1529,11 @@ fn trait_impl_targets_may_overlap_concrete(
           trait_impl_targets_may_overlap(left_item, right_item)
         _ => false
       }
-    @core.Type::MapBuilder(_lkey, left_item) =>
+    @core.Type::MapBuilder(lkey, left_item) =>
       match right {
-        @core.Type::MapBuilder(_rkey, right_item) =>
-          trait_impl_targets_may_overlap(left_item, right_item)
+        @core.Type::MapBuilder(rkey, right_item) =>
+          trait_impl_targets_may_overlap(lkey, rkey) &&
+            trait_impl_targets_may_overlap(left_item, right_item)
         _ => false
       }
     @core.Type::Named(name=left_name, args=left_args) =>
@@ -1527,11 +1543,20 @@ fn trait_impl_targets_may_overlap_concrete(
           trait_impl_targets_may_overlap_many(left_args, right_args)
         _ => false
       }
-    @core.Type::Func(params=left_params, ret=left_ret, ..) =>
+    @core.Type::Func(params=left_params, ret=left_ret, effects=left_eff) =>
       match right {
-        @core.Type::Func(params=right_params, ret=right_ret, ..) => {
+        @core.Type::Func(params=right_params, ret=right_ret, effects=right_eff) => {
           if left_params.length() != right_params.length() {
             return false
+          }
+          // Effects must match for overlap
+          if left_eff.length() != right_eff.length() {
+            return false
+          }
+          for i in 0..<left_eff.length() {
+            if left_eff[i] != right_eff[i] {
+              return false
+            }
           }
           let mut i = 0
           while i < left_params.length() {
