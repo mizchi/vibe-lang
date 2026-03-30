@@ -59,6 +59,12 @@ vibe apply my_lib.vibe
   - scratch と index が同一定義（同一 module hash / signature）なら `shadowed` にならない。
   - 実際に scratch 側で上書きしたときだけ `shadowed` になる。
 
+## Qualified Names（修飾名）
+
+`@` で始まるパッケージ参照では `-`（ハイフン）と `/`（スラッシュ）が識別子の一部として扱われる。
+`@` なしの場合、`-` は減算演算子、`/` は除算演算子になる。
+詳細は `docs/language-tour/syntax-reference.md` の "Qualified Names" セクションを参照。
+
 ## 反復デバッグ
 
 - 同じワークフローの連続実行:

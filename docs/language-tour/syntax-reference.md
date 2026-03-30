@@ -324,6 +324,62 @@ handle { perform(Ask(1)) } { Ask(v) => resume(v + 1) }
 let apply = [T](f: (T) -> T with { e }, x: T) -> T with { e } { f(x) }
 ```
 
+## Qualified Names
+
+Identifiers in vibe can contain special characters depending on context. The rules are:
+
+### Package references with `@`
+
+A `@` prefix introduces a package reference. After `@`, hyphens (`-`) and slashes (`/`) become part of the identifier (they are not treated as operators).
+
+```vibe
+@json                 // package "json"
+@lib/path             // package "lib/path"
+@my-utils/helpers     // package "my-utils/helpers"
+```
+
+Without `@`, a hyphen is the subtraction operator:
+
+```vibe
+x - y                 // subtraction
+@my-pkg               // identifier "my-pkg" (hyphen is part of the name)
+```
+
+### Member access with `.`
+
+Dots are used for field access on values:
+
+```vibe
+point.x               // field access
+tuple.0               // tuple index
+s.length              // field access
+```
+
+Dots are **not** part of a bare identifier. They are always parsed as the member access operator (precedence 1).
+
+### Type/module member access with `::`
+
+Double colons are used to access members of types or modules:
+
+```vibe
+Array::length          // type method
+Option::Some           // enum constructor
+String::substring      // type method
+MyModule::x            // module member
+Point::{ x: 1, y: 2 } // struct literal
+```
+
+### Summary table
+
+| Syntax | Meaning | Example |
+|--------|---------|---------|
+| `@name` | Package reference | `@json`, `@lib/path` |
+| `-` after `@` | Part of package name | `@my-pkg` |
+| `/` after `@` | Part of package path | `@lib/path` |
+| `-` without `@` | Subtraction operator | `x - 1` |
+| `.` | Field/member access | `point.x` |
+| `::` | Type/module member | `Array::length` |
+
 ## Module System
 
 ### export
