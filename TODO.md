@@ -262,9 +262,9 @@ linked debug build を selfhost でも生成するには以下の移植が必要
   - [x] **B12: Module-level globals** — Int/Bool 定数は immutable global、Call/String/Array 等は mutable EqRef global + run body で global.set
   - [x] **B13: Polymorphic Option** — builtin Some/None enum 登録、polymorphic Some with EqRef boxing、nested Ctor pattern bind
   - [x] **B14: HOF parameters** — Type::Func パラメータの closure_call_types 登録、Named 型 alias の generic closure call fallback
-  - [ ] **P4: selfhost compile E2E** — 248/263 (94%) compile OK
-    - 残り 15: `_test_*` type checker errors (8), unknown function (4), arity/source (3)
-    - 全て型チェッカー/bundler の上流問題で GC codegen 範囲外
+  - [ ] **P4: selfhost compile E2E** — 260/263 (99%) compile OK
+    - 残り 3: simd_patterns (Bytes::emit_end), gc_only/index (循環参照), selfhost_cli_gc_entry (上流依存)
+    - 全て型チェッカー/bundler の上流問題
   - [ ] **P5: DCE + wasm-opt** — 未使用コード除去と最適化で ~350KB 目標
 - [ ] `vibe/compiler` の論理分割
 
