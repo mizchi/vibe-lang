@@ -57,6 +57,21 @@ if command -v wkg &> /dev/null; then
   HAS_WKG=1
 fi
 
+decode_js_wasm_result() {
+  node -e "
+    const fs = require('fs');
+    const wasm = fs.readFileSync(process.argv[1]);
+    WebAssembly.instantiate(wasm, {vibe: {}}).then(({instance}) => {
+      const result = instance.exports._start();
+      if (typeof result === 'bigint') {
+        console.log(Number(result));
+      } else {
+        console.log(result);
+      }
+    });
+  " "$1" 2>/dev/null
+}
+
 # Test 1: Simple WASM compilation with while loop
 test_while_loop() {
   log_info "Test: While loop WASM compilation"
@@ -85,15 +100,7 @@ EOF
   fi
 
   # Run with Node.js and check result
-  RESULT=$(node -e "
-    const fs = require('fs');
-    const wasm = fs.readFileSync('$TMP_DIR/while_test.wasm');
-    WebAssembly.instantiate(wasm, {vibe: {}}).then(({instance}) => {
-      const result = instance.exports._start();
-      const value = typeof result === 'bigint' ? Number(result >> 2n) : (result >> 2);
-      console.log(value);
-    });
-  " 2>/dev/null)
+  RESULT="$(decode_js_wasm_result "$TMP_DIR/while_test.wasm")"
 
   if [ "$RESULT" = "10" ]; then
     log_pass "While loop returns correct value (10)"
@@ -219,15 +226,7 @@ EOF
     return
   fi
 
-  RESULT=$(node -e "
-    const fs = require('fs');
-    const wasm = fs.readFileSync('$TMP_DIR/arith_test.wasm');
-    WebAssembly.instantiate(wasm, {vibe: {}}).then(({instance}) => {
-      const result = instance.exports._start();
-      const value = typeof result === 'bigint' ? Number(result >> 2n) : (result >> 2);
-      console.log(value);
-    });
-  " 2>/dev/null)
+  RESULT="$(decode_js_wasm_result "$TMP_DIR/arith_test.wasm")"
 
   if [ "$RESULT" = "30" ]; then
     log_pass "Multiplication returns correct value (10 * 3 = 30)"
