@@ -643,7 +643,7 @@ pub fn VibeDb::new() -> VibeDb {
             message: "import cycle: " + render_import_cycle(cycle),
             span: None,
             hint: Some("break the cycle by extracting shared definitions"),
-            note: None,
+            note: Some("cycle: " + render_import_cycle(cycle)),
           })
         None => ()
       }
@@ -656,7 +656,7 @@ pub fn VibeDb::new() -> VibeDb {
             hint: Some(
               "break the module cycle by restructuring directory dependencies",
             ),
-            note: None,
+            note: Some("cycle: " + render_import_cycle(cycle)),
           })
         None => ()
       }

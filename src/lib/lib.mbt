@@ -75,7 +75,7 @@ fn entry_not_found_diagnostic(entry : String) -> @core.Diagnostic {
     message: "entry not found in files: " + entry,
     span: None,
     hint: None,
-    note: None,
+    note: Some("check your import statements for entry '" + entry + "'"),
   }
 }
 
@@ -86,7 +86,7 @@ fn path_not_found_diagnostic(path : String) -> @core.Diagnostic {
     message: "path not found in files: " + path,
     span: None,
     hint: None,
-    note: None,
+    note: Some("referenced path: " + path),
   }
 }
 
@@ -137,8 +137,8 @@ fn import_cycle_diagnostic(path : String) -> @core.Diagnostic {
     stage: "import",
     message: "import cycle detected: " + path,
     span: None,
-    hint: None,
-    note: None,
+    hint: Some("break the cycle by removing or reorganizing imports"),
+    note: Some("cycle involves module: " + path),
   }
 }
 
