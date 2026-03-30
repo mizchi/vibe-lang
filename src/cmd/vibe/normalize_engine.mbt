@@ -546,8 +546,16 @@ fn pass_validate(
   let expected_import_canonical = normalize_canonicalize_import_surface_module(
     expected_semantic,
   )
-  if @vibe_core.normalize_module(reparsed_import_canonical) !=
-    @vibe_core.normalize_module(expected_import_canonical) {
+  let norm_reparsed = @vibe_core.normalize_module(reparsed_import_canonical)
+  let norm_expected = @vibe_core.normalize_module(expected_import_canonical)
+  if norm_reparsed != norm_expected {
+    println("=== REPARSED ===")
+    println(norm_reparsed)
+    println("=== EXPECTED ===")
+    println(norm_expected)
+    println("=== FORMATTED ===")
+    println(formatted)
+    println("=== END ===")
     return Err("normalize: rendered source changed semantics")
   }
   Ok(())

@@ -274,11 +274,69 @@ export let rec print_stmt = (s: Stmt) -> String {
       let r = if is_rec {
         "let rec "
       } else "let "
-      let t = match ty_opt {
-        Some(ty) => String::concat(": ", print_type_expr(ty)),
-        None => ""
+      // Try new-style: extract type annotation from Fn params/ret into let binding
+      match val {
+        EFn(_, _, params, ret_ty, effect, body) => {
+          // Check if all params have type annotations
+          let mut all_typed = true
+          let mut i = 0
+          while i < Array::length(params) {
+            let (_, ty_opt2) = Array::get(params, i)
+            match ty_opt2 {
+              Some(_) => (),
+              None => { all_typed = false }
+            }
+            i = i + 1
+          }
+          if all_typed {
+            // Build type annotation: (ParamType, ...) -> RetType
+            let ty_parts = for param in params {
+              let (_, ty_opt2) = param
+              match ty_opt2 {
+                Some(ty) => print_type_expr(ty),
+                None => "_"
+              }
+            }
+            let fn_type_str = match ret_ty {
+              Some(rt) => {
+                let eff_str = match effect {
+                  Some(e) => String::concat(" with {", String::concat(e, "}")),
+                  None => ""
+                }
+                String::concat("(", String::concat(join(ty_parts, ", "), String::concat(") -> ", String::concat(print_type_expr(rt), eff_str))))
+              },
+              None => String::concat("(", String::concat(join(ty_parts, ", "), String::concat(") -> ", print_type_expr(TyName("_")))))
+            }
+            // Build body: (param_name, ...) -> { body }
+            let name_parts = for param in params {
+              let (pname, _) = param
+              pname
+            }
+            let body_str = match ret_ty {
+              Some(_) => String::concat("(", String::concat(join(name_parts, ", "), String::concat(") -> { ", String::concat(print_expr(body), " }")))),
+              None => String::concat("(", String::concat(join(name_parts, ", "), String::concat(") -> ", print_expr(body))))
+            }
+            let t = match ty_opt {
+              Some(ty) => String::concat(": ", print_type_expr(ty)),
+              None => String::concat(": ", fn_type_str)
+            }
+            String::concat(p, String::concat(r, String::concat(name, String::concat(t, String::concat(" = ", body_str)))))
+          } else {
+            let t = match ty_opt {
+              Some(ty) => String::concat(": ", print_type_expr(ty)),
+              None => ""
+            }
+            String::concat(p, String::concat(r, String::concat(name, String::concat(t, String::concat(" = ", print_expr(val))))))
+          }
+        },
+        _ => {
+          let t = match ty_opt {
+            Some(ty) => String::concat(": ", print_type_expr(ty)),
+            None => ""
+          }
+          String::concat(p, String::concat(r, String::concat(name, String::concat(t, String::concat(" = ", print_expr(val))))))
+        }
       }
-      String::concat(p, String::concat(r, String::concat(name, String::concat(t, String::concat(" = ", print_expr(val))))))
     },
     SLetMut(name, ty_opt, val) => {
       let t = match ty_opt {
