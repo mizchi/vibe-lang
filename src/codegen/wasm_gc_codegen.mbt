@@ -7617,14 +7617,6 @@ fn compile_stmt_gc(
         } else {
           emit_local_set_gc(buf, idx)
         }
-        // Store to mutable global if this is a module-level binding
-        match ctx.global_consts.get(name) {
-          Some((gidx, GcValKind::EqRef)) => {
-            emit_local_get_gc(buf, idx)
-            emit_global_set_gc(buf, gidx)
-          }
-          _ => ()
-        }
       }
     @core.Stmt::LetMut(name~, expr~, ..) => {
       let kind = infer_expr_kind_gc(ctx, fctx, expr)
@@ -7773,18 +7765,23 @@ fn collect_top_level_funcs_gc(
   ast : @core.Module,
   enum_ctor_names? : Map[String, Bool] = {},
 ) -> Array[GcFuncDef] {
-  // Collect ALL top-level let names for free-var filtering.
-  // Fn definitions are extracted as wasm functions.
-  // Literals are compiled as immutable globals.
-  // Other expressions (Call, Array, etc.) are compiled as mutable EqRef globals.
+  // Only Fn definitions and immutable literal constants are safe for
+  // free-var filtering. Non-literal bindings (Call, Array, String, etc.)
+  // are NOT added — functions referencing them become closures instead
+  // of top-level extractions. This avoids mutable wasm globals which
+  // would complicate future threading.
   let top_func_names : Map[String, Bool] = {}
   for stmt in ast.stmts {
     match stmt {
-      @core.Stmt::Let(name~, ..)
-      | @core.Stmt::ExportLet(name~, ..)
-      | @core.Stmt::InternalExportLet(name~, ..) =>
-        top_func_names[name] = true
-      @core.Stmt::LetMut(name~, ..) => top_func_names[name] = true
+      @core.Stmt::Let(name~, expr~, ..)
+      | @core.Stmt::ExportLet(name~, expr~, ..)
+      | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
+        match expr {
+          @core.Expr::Fn(..)
+          | @core.Expr::Int(..)
+          | @core.Expr::Bool(..) => top_func_names[name] = true
+          _ => ()
+        }
       _ => ()
     }
   }
@@ -8025,7 +8022,8 @@ fn build_module_gc(
     write_u32_leb_gc(tag_sec, ctx.error_tag_type_index) // type index
     write_section_gc(buf, 13, tag_sec.to_array())
   }
-  // Global section (section 6): compile-time constants
+  // Global section (section 6): immutable compile-time constants only
+  // No mutable globals — thread-safe by design
   if global_init_values.length() > 0 {
     let global_sec = GcByteBuf::new()
     write_u32_leb_gc(global_sec, global_init_values.length())
@@ -8033,30 +8031,19 @@ fn build_module_gc(
       let kind = entry.0
       let value = entry.1
       write_valtype_gc(global_sec, kind)
+      global_sec.push(0x00) // immutable
       match kind {
-        GcValKind::EqRef => {
-          // Mutable EqRef global, initialized as ref.null
-          global_sec.push(0x01) // mutable
-          global_sec.push(0xd0) // ref.null
-          global_sec.push(0x6d) // eqref
+        GcValKind::I64 => {
+          global_sec.push(0x42) // i64.const
+          write_i64_leb_gc(global_sec, value)
+        }
+        GcValKind::I32 => {
+          global_sec.push(0x41) // i32.const
+          write_i32_leb_gc(global_sec, value.to_int())
         }
         _ => {
-          // Immutable value global
-          global_sec.push(0x00) // immutable
-          match kind {
-            GcValKind::I64 => {
-              global_sec.push(0x42) // i64.const
-              write_i64_leb_gc(global_sec, value)
-            }
-            GcValKind::I32 => {
-              global_sec.push(0x41) // i32.const
-              write_i32_leb_gc(global_sec, value.to_int())
-            }
-            _ => {
-              global_sec.push(0x41)
-              write_i32_leb_gc(global_sec, 0)
-            }
-          }
+          global_sec.push(0x41)
+          write_i32_leb_gc(global_sec, 0)
         }
       }
       global_sec.push(0x0b) // end
@@ -8112,9 +8099,10 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
   for name, _ in ctx.enum_ctor_tags {
     enum_ctor_names[name] = true
   }
-  // Scan for constant let bindings (non-Fn) and register as globals.
-  // Only simple literals (Int, Bool) are supported as immutable globals
-  // with compile-time known init values.
+  // Scan for immutable constant let bindings and register as globals.
+  // Only Int/Bool literals are supported (compile-time known values).
+  // Non-literal bindings (String, Call, Array, etc.) stay in the run
+  // body and are accessed via closure capture — no mutable globals.
   let mut global_idx = 0
   let global_init_values : Array[(GcValKind, Int64)] = []
   for stmt in ast.stmts {
@@ -8123,7 +8111,6 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
       | @core.Stmt::ExportLet(name~, expr~, ..)
       | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
         match expr {
-          @core.Expr::Fn(..) => () // Functions are extracted, not globals
           @core.Expr::Int(value~, ..) => {
             ctx.global_consts[name] = (global_idx, GcValKind::I64)
             global_init_values.push((GcValKind::I64, value))
@@ -8136,32 +8123,16 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
             )
             global_idx += 1
           }
-          // Non-literal expressions: mutable EqRef globals (set in run body)
-          @core.Expr::String(..)
-          | @core.Expr::Call(..)
-          | @core.Expr::Array(..)
-          | @core.Expr::Ident(..)
-          | @core.Expr::Tuple(..)
-          | @core.Expr::Record(..) => {
-            ctx.global_consts[name] = (global_idx, GcValKind::EqRef)
-            global_init_values.push((GcValKind::EqRef, 0L))
-            global_idx += 1
-          }
           _ => ()
         }
       @core.Stmt::LetMut(name~, expr~, ..) =>
         match expr {
-          @core.Expr::Fn(..) => ()
           @core.Expr::Int(value~, ..) => {
             ctx.global_consts[name] = (global_idx, GcValKind::I64)
             global_init_values.push((GcValKind::I64, value))
             global_idx += 1
           }
-          _ => {
-            ctx.global_consts[name] = (global_idx, GcValKind::EqRef)
-            global_init_values.push((GcValKind::EqRef, 0L))
-            global_idx += 1
-          }
+          _ => ()
         }
       _ => ()
     }
