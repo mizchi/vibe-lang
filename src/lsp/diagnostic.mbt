@@ -74,7 +74,8 @@ pub fn to_lsp_diagnostic(
   let severity = match diag.stage {
     "parse" | "type" => Some(1) // Error
     "warning" => Some(2) // Warning
-    _ => Some(1)
+    "hint" | "info" => Some(3) // Information
+    _ => Some(1) // Error (default)
   }
   LspDiagnostic::{
     range,
