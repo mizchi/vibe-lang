@@ -41,7 +41,7 @@ pub fn run(args : Array[String]) -> Unit {
     "init" => init_cmd(cmd_args)
     "new" => new_cmd(cmd_args)
     "history" => history_cmd(cmd_args)
-    "write_file" => write_file_cmd(cmd_args)
+    "write-file" | "write_file" => write_file_cmd(cmd_args)
     "fmt" => fmt_cmd(cmd_args)
     "normalize" => normalize_cmd(cmd_args)
     "compile" => compile_cmd(cmd_args)
@@ -499,7 +499,9 @@ fn parse_bool_flag(value : String) -> Bool {
     "0" | "false" | "no" | "off" => false
     _ =>
       abort(
-        "invalid boolean value: '" + value + "'. Expected: true/false, yes/no, on/off, 1/0",
+        "invalid boolean value: '" +
+        value +
+        "'. Expected: true/false, yes/no, on/off, 1/0",
       )
   }
 }
@@ -582,7 +584,9 @@ fn compile_lite_validate_opts(
   in_memory : Bool,
 ) -> Result[Unit, String] {
   if opts.mode != CompileMode::Wasm && opts.mode != CompileMode::WasmGc {
-    return Err("compile-lite: only --wasm/--wasm-linear/--wasm-gc mode is supported")
+    return Err(
+      "compile-lite: only --wasm/--wasm-linear/--wasm-gc mode is supported",
+    )
   }
   if opts.coverage || opts.coverage_run_tests {
     return Err(
