@@ -249,15 +249,22 @@ linked debug build を selfhost でも生成するには以下の移植が必要
   - [x] **P2: Record/Struct pattern** — Pat::Struct or-pattern with Pat::Record, Tuple binding
   - [x] **P3: String ops** — 9 ops (index_of/last_index_of/contains/starts_with/ends_with/trim/replace/split/join)
   - [x] **B1: Bitwise ops** — __bit_and/or/xor/not/lshift/rshift (i64 instructions)
-  - [x] **B2: Array ops** — Array::length/get/set/push/slice/concat, ArrayBuilder::new/push/freeze
-  - [x] **B3: Type conversions** — Int::to_string, Bool::to_string, __to_string, Int::to_double, Double::to_int, String::from_char_code
+  - [x] **B2: Array ops** — Array::length/get/set/push/slice/concat, ArrayBuilder::new/push/freeze (#64 修正済)
+  - [x] **B3: Type conversions** — Int::to_string, Bool::to_string, __to_string, Int::to_double, Double::to_int, String::from_char_code, Double::to_i64_bits
   - [x] **B4: Func return type** — enum_ctor_names を free-var filter に追加, let rec pre-bind
   - [x] **B5: Type coercion** — if kind mismatch → gc_common_kind, unknown Named type → EqRef fallback
-  - [x] **B6: Effect system** — throw/handle/perform の GC codegen (85+ files が依存、selfhost 必須)
-  - [x] **B7: let rec closure self-ref** — lifted fctx に closure_call_types 伝搬 + call name capture + Assign tracking (nested deferred init は未対応)
-  - [x] **B8: MapBuilder** — Map builder の GC 表現
+  - [x] **B6: Effect system** — throw/handle の GC codegen、非 Error perform は trap fallback
+  - [x] **B7: let rec closure self-ref** — lifted fctx に closure_call_types 伝搬 + call name capture + Assign tracking + let rec free-var bind-before-scan
+  - [x] **B8: MapBuilder** — Map::new/set/freeze/get/has_key/keys の GC 表現
   - [x] **B9: Pipe operator** — `|>` は parser でデシュガー済み、GC codegen 追加不要
-  - [ ] **P4: selfhost compile E2E** — 248/263 (94%) compile OK。残り 15: _test_* (8), type errors (4), arity/source (3)
+  - [x] **B10: Additional codegen** — StringInterp, TupleIndex, Break/Continue, LetPat, IndexAssign, __rshift/__lshift/__set_index, string pattern, Array::truncate, for-in EqRef fallback
+  - [x] **B11: Function-as-value** — top-level 関数の closure wrapper (ref.func + env)、function alias (let f = g) 解決
+  - [x] **B12: Module-level globals** — Int/Bool 定数は immutable global、Call/String/Array 等は mutable EqRef global + run body で global.set
+  - [x] **B13: Polymorphic Option** — builtin Some/None enum 登録、polymorphic Some with EqRef boxing、nested Ctor pattern bind
+  - [x] **B14: HOF parameters** — Type::Func パラメータの closure_call_types 登録、Named 型 alias の generic closure call fallback
+  - [ ] **P4: selfhost compile E2E** — 248/263 (94%) compile OK
+    - 残り 15: `_test_*` type checker errors (8), unknown function (4), arity/source (3)
+    - 全て型チェッカー/bundler の上流問題で GC codegen 範囲外
   - [ ] **P5: DCE + wasm-opt** — 未使用コード除去と最適化で ~350KB 目標
 - [ ] `vibe/compiler` の論理分割
 
