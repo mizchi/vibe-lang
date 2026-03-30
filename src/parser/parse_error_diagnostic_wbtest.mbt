@@ -12,8 +12,8 @@ test "parse diagnostic suggests semicolon separator quickfix" {
   ).diagnostic()
   match diag.hint {
     Some(hint) => {
-      assert_true(hint.contains("replace `,` with `;`"))
-      assert_true(hint.contains("struct field separator"))
+      assert_true(hint.contains("use `;` to separate struct fields"))
+      assert_true(hint.contains("(not `,`)"))
     }
     None => fail("expected separator quickfix hint")
   }

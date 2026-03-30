@@ -23,6 +23,21 @@ fn parse_error_separator_name(expected : String) -> String? {
 }
 
 ///|
+fn separator_name_to_plural(separator_name : String) -> String {
+  if separator_name == "struct field separator" {
+    "struct fields"
+  } else if separator_name == "enum variant separator" {
+    "enum variants"
+  } else if separator_name == "suberror variant separator" {
+    "suberror variants"
+  } else if separator_name == "effect operation separator" {
+    "effect operations"
+  } else {
+    separator_name
+  }
+}
+
+///|
 fn parse_error_trim_label_suffix(label : String) -> String? {
   let chars = label.to_array()
   if chars.length() <= 1 {
@@ -52,12 +67,10 @@ fn parse_error_unexpected_token_hint(
   let got_trimmed = got.trim().to_string()
   if got_trimmed == "," {
     match parse_error_separator_name(expected) {
-      Some(separator_name) =>
-        return Some(
-          "replace `,` with `;` for " +
-          separator_name +
-          " (formatter can apply this rewrite automatically)",
-        )
+      Some(separator_name) => {
+        let plural = separator_name_to_plural(separator_name)
+        return Some("use `;` to separate " + plural + " (not `,`)")
+      }
       None => ()
     }
   }
@@ -451,9 +464,7 @@ fn Parser::parse_extern_let_stmt(self : Parser) -> Unit {
   self.skip_trivia()
   self.expect(let_kw())
   self.skip_trivia()
-  while !self.at(eof()) &&
-        !self.at(semicolon()) &&
-        !self.at(newline()) {
+  while !self.at(eof()) && !self.at(semicolon()) && !self.at(newline()) {
     if self.at(lbrace()) {
       self.skip_balanced_braces()
     } else if self.at(lparen()) {
