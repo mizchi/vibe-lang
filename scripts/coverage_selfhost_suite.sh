@@ -9,7 +9,7 @@ SOURCE_OUT_DIR="${VIBE_SELFHOST_SUITE_SOURCE_DIR:-$OUT_DIR/wasm-source}"
 SELFHOST_ENTRY="${VIBE_SELFHOST_SUITE_ENTRY_SELFHOST:-}"
 INDEX_ENTRY="${VIBE_SELFHOST_SUITE_ENTRY_INDEX:-vibe/compiler/selfhost_stage2_coverage_run.vibe}"
 INDEX_INVOKE="${VIBE_SELFHOST_SUITE_INDEX_INVOKE:-}"
-EXTRA_ENTRIES="${VIBE_SELFHOST_SUITE_EXTRA_ENTRIES:-vibe/compiler/fixture_test.vibe}"
+EXTRA_ENTRIES="${VIBE_SELFHOST_SUITE_EXTRA_ENTRIES:-vibe/compiler/fixture_test.vibe,vibe/compiler/coverage_compile_vibe_sources.vibe}"
 LEGACY_EXTRA_ENTRY="${VIBE_SELFHOST_SUITE_ENTRY_EXTRA:-}"
 EXTRA_RUN_TESTS="${VIBE_SELFHOST_SUITE_ENTRY_EXTRA_RUN_TESTS:-1}"
 MIN_POINT_RATE="${VIBE_SELFHOST_SUITE_MIN_POINT_RATE:-}"
@@ -250,7 +250,9 @@ run_collect_task() {
   fi
 }
 
-append_collect_task "$SELFHOST_ENTRY" "$SELFHOST_ENTRY" 0 "" 0
+if [ -n "$SELFHOST_ENTRY" ]; then
+  append_collect_task "$SELFHOST_ENTRY" "$SELFHOST_ENTRY" 0 "" 0
+fi
 if [ -n "$INDEX_INVOKE" ]; then
   append_collect_task "$INDEX_ENTRY (invoke=$INDEX_INVOKE)" "$INDEX_ENTRY" 1 "$INDEX_INVOKE" 0
 else
@@ -316,8 +318,16 @@ suite_status_path="$OUT_DIR/selfhost_suite.status"
 suite_log_path="$OUT_DIR/selfhost_suite.log"
 
 report_paths=()
+report_candidates=()
 collect_skipped=0
-for candidate_entry in "$SELFHOST_ENTRY" "$INDEX_ENTRY" "${extra_entries[@]-}"; do
+if [ -n "$SELFHOST_ENTRY" ]; then
+  report_candidates+=("$SELFHOST_ENTRY")
+fi
+report_candidates+=("$INDEX_ENTRY")
+for extra_entry in "${extra_entries[@]-}"; do
+  report_candidates+=("$extra_entry")
+done
+for candidate_entry in "${report_candidates[@]}"; do
   rp="$(report_path_for_entry "$candidate_entry")"
   if [ -f "$rp" ]; then
     report_paths+=("$rp")
