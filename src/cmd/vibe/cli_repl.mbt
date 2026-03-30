@@ -96,8 +96,8 @@ struct ReplSymbolsRow {
 ///|
 fn repl_meta_command_names() -> Array[String] {
   [
-    ":q", ":quit", ":exit", ":view", ":outline", ":peek", ":type", ":save", ":load",
-    ":clear", ":source",
+    ":q", ":quit", ":exit", ":help", ":view", ":outline", ":peek", ":type", ":save",
+    ":load", ":clear", ":source",
   ]
 }
 
@@ -465,6 +465,7 @@ fn repl_collect_shell_symbols_rows() -> Array[ReplSymbolsRow] {
   push_row(out, seen, "meta", ":q", "quit shell")
   push_row(out, seen, "meta", ":quit", "quit shell")
   push_row(out, seen, "meta", ":exit", "quit shell")
+  push_row(out, seen, "meta", ":help", "show help")
   push_row(out, seen, "meta", ":view", "view <symbol>")
   push_row(out, seen, "meta", ":outline", "outline [target]")
   push_row(out, seen, "meta", ":peek", "peek <symbol>")
@@ -1689,6 +1690,20 @@ fn handle_repl_meta_command(
       } else {
         print_line(scratch_source)
       }
+      ReplMetaCommandResult::HandledContinue
+    }
+    ":help" => {
+      print_line("Available commands:")
+      print_line("  :help            Show this help message")
+      print_line("  :q/:quit/:exit   Exit the REPL")
+      print_line("  :view <symbol>   View symbol definition")
+      print_line("  :outline [target] Show symbol outline")
+      print_line("  :peek <symbol>   Peek at symbol definition")
+      print_line("  :type <symbol>   Show type of expression")
+      print_line("  :save <file>     Save session to file")
+      print_line("  :load <file>     Load session from file")
+      print_line("  :clear           Clear session state")
+      print_line("  :source          Show source of current session")
       ReplMetaCommandResult::HandledContinue
     }
     _ => {
