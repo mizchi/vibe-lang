@@ -40,6 +40,16 @@ fn NormScope::bind(self : NormScope, name : String) -> String {
   let normalized = var_prefix + self.counter.to_string()
   self.counter += 1
   self.bindings[name] = normalized
+  // Also bind unqualified name for module-prefixed identifiers (e.g. "math::helper" -> bind "helper" too)
+  match name.rev_find("::") {
+    Some(idx) => {
+      let unqualified = name[idx + 2:].to_string()
+      if unqualified.length() > 0 && not(self.bindings.contains(unqualified)) {
+        self.bindings[unqualified] = normalized
+      }
+    }
+    None => ()
+  }
   normalized
 }
 
@@ -60,17 +70,13 @@ fn NormScope::lookup(self : NormScope, name : String) -> String {
 pub fn normalize_module(m : Module) -> Module {
   let scope = NormScope::new()
   let canonical_stmts = canonicalize_export_list_stmts(m.stmts)
-  // Pre-bind: forward-declarable function names (Fn with explicit return type)
+  // Pre-bind: forward-declarable function names (Fn expressions)
   for stmt in canonical_stmts {
     match stmt {
-      Stmt::Let(rec=false, name~, expr=Expr::Fn(ret=Some(_), ..), ..)
-      | Stmt::ExportLet(rec=false, name~, expr=Expr::Fn(ret=Some(_), ..), ..)
-      | Stmt::InternalExportLet(
-        rec=false,
-        name~,
-        expr=Expr::Fn(ret=Some(_), ..),
-        ..
-      ) => scope.bind(name) |> ignore
+      Stmt::Let(rec=false, name~, expr=Expr::Fn(..), ..)
+      | Stmt::ExportLet(rec=false, name~, expr=Expr::Fn(..), ..)
+      | Stmt::InternalExportLet(rec=false, name~, expr=Expr::Fn(..), ..) =>
+        scope.bind(name) |> ignore
       _ => ()
     }
   }

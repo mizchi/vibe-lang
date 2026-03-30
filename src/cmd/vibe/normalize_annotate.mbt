@@ -60,7 +60,7 @@ fn normalize_unwrap_local_type_assert(
           ..
         ) =>
           if rec ||
-            not(name.has_prefix("__vibe_local_type_assert_")) ||
+            not(name.contains("__vibe_local_type_assert_")) ||
             params.length() != 1 ||
             helper_body.stmts.length() != 1 {
             return None
@@ -85,7 +85,12 @@ fn normalize_unwrap_local_type_assert(
       }
       match call_stmt {
         @vibe_core.Stmt::Expr(expr=@vibe_core.Expr::Call(name~, args~, ..), ..) =>
-          if name != helper_name || args.length() != 1 {
+          if args.length() != 1 ||
+            not(
+              name == helper_name ||
+              helper_name.has_suffix("::" + name) ||
+              name.has_suffix("::" + helper_name),
+            ) {
             None
           } else {
             Some((helper_ty, args[0].expr))
