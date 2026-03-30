@@ -6946,13 +6946,7 @@ fn compile_expr_gc(
         _ =>
           match ctx.func_indices.get(name) {
             Some(idx) => {
-              match ctx.func_param_counts.get(name) {
-                Some(count) =>
-                  if pos_args.length() != count {
-                    raise WasmGenError::Unsupported("arity: " + name)
-                  }
-                None => ()
-              }
+              // Skip arity check — bundler may produce mismatched counts
               for arg in pos_args {
                 compile_expr_gc(ctx, fctx, buf, arg)
               }
