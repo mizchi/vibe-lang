@@ -29,7 +29,7 @@ pub fn run(args : Array[String]) -> Unit {
     "run" => run_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
     "eval" =>
       abort(
-        "eval: command was removed from public CLI; use shell/shell-stdin for interactive evaluation or compile/run workflows",
+        "eval: command was removed. Use 'vibe shell' or 'vibe shell-stdin' for interactive evaluation, or 'vibe run' for script execution.",
       )
     "test" => test_cmd(cmd_args, runtime_features)
     "check" => check_cmd(cmd_args)
@@ -72,7 +72,10 @@ pub fn run(args : Array[String]) -> Unit {
     "ide" => ide_cmd(cmd_args)
     "lsif" => lsif_cmd(cmd_args)
     "index" => index_cmd(cmd_args)
-    "bundle" => abort("bundle commands have been removed")
+    "bundle" =>
+      abort(
+        "bundle: command was removed. Use 'vibe compile' to compile modules, or 'vibe precompile' for precompilation.",
+      )
     "lsp" => lsp_cmd(cmd_args)
     "help" => print_usage()
     _ => {
