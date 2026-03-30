@@ -1424,7 +1424,10 @@ fn type_fn_literal(
   if env.session_state.skip_fn_body_check && ret is Some(_) {
     let r = match ret {
       Some(r) => r
-      None => abort("unreachable")
+      None =>
+        abort(
+          "internal error: typecheck_expr: ret was Some but matched None in skip_fn_body_check branch. Please report this as a bug.",
+        )
     }
     let ret_ty_with_num = match num_var {
       Some(n) => replace_num_type(r, n)
