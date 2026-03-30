@@ -417,8 +417,8 @@ fn normalize_let_stmt_prefers_rendered_expr(
   inferred_ty : @vibe_core.Type?,
 ) -> Bool {
   match expr {
-    @vibe_core.Expr::Fn(type_params~, type_bounds~, ret~, ..) =>
-      if type_params.length() > 0 || type_bounds.length() > 0 || ret is Some(_) {
+    @vibe_core.Expr::Fn(type_params~, type_bounds~, ..) =>
+      if type_params.length() > 0 || type_bounds.length() > 0 {
         false
       } else {
         match inferred_ty {
@@ -556,11 +556,52 @@ fn normalize_find_fn_body_start(snippet : String) -> Int? {
 }
 
 ///|
+/// Result of rendering a Fn expression: type annotation string and body string
+struct FnRenderResult {
+  type_annotation : String
+  body_text : String
+}
+
+///|
 fn normalize_render_fn_expr_with_inferred_type(
   source : String,
   expr : @vibe_core.Expr,
   inferred_ty : @vibe_core.Type?,
 ) -> String? {
+  match normalize_render_fn_separated(source, expr, inferred_ty) {
+    Some(result) => Some(result.body_text)
+    None => None
+  }
+}
+
+///|
+/// Validate that the new-style output can be re-parsed successfully.
+fn normalize_render_fn_separated_safe(
+  source : String,
+  expr : @vibe_core.Expr,
+  inferred_ty : @vibe_core.Type?,
+  name : String,
+) -> FnRenderResult? {
+  let result = match normalize_render_fn_separated(source, expr, inferred_ty) {
+    Some(v) => v
+    None => return None
+  }
+  // Probe: verify the new-style output can be parsed back
+  let probe = "let " + name + ": " + result.type_annotation + " = " +
+    result.body_text
+  let _ = @parser.parse_ast(probe) catch { _ => return None }
+  Some(result)
+}
+
+///|
+/// Render a Fn expression into separated type annotation and body.
+/// Type annotation: "(Int, Int) -> Int with { Error }"
+/// Body: "(x, y) -> { ... }"
+fn normalize_render_fn_separated(
+  source : String,
+  expr : @vibe_core.Expr,
+  inferred_ty : @vibe_core.Type?,
+) -> FnRenderResult? {
   let (type_params, type_bounds, params, ret, effects, span) = match expr {
     @vibe_core.Expr::Fn(
       type_params~,
@@ -637,33 +678,54 @@ fn normalize_render_fn_expr_with_inferred_type(
     end=snippet.length(),
   )
   let stripped_body_text = normalize_strip_comment_only_lines(body_text)
-  let out = StringBuilder::new()
-  out.write_char('(')
+  // Build type annotation: (ParamType, ParamType) -> RetType with { Effect }
+  let ann = StringBuilder::new()
+  ann.write_char('(')
   for i, param in resolved_params {
     if i > 0 {
-      out.write_string(", ")
+      ann.write_string(", ")
     }
-    let rendered = match normalize_render_fn_param(param) {
-      Some(v) => v
-      None => return None
+    let label_prefix = match param.label {
+      @vibe_core.ParamLabel::Required =>
+        param.name + "~: "
+      @vibe_core.ParamLabel::Optional =>
+        param.name + "?: "
+      _ => ""
     }
-    out.write_string(rendered)
+    let ty_text = normalize_render_type_annotation(param.ty)
+    if ty_text.length() == 0 {
+      return None
+    }
+    ann.write_string(label_prefix)
+    ann.write_string(ty_text)
   }
-  out.write_char(')')
+  ann.write_char(')')
   match resolved_ret {
     Some(ret_ty) => {
       let ret_text = normalize_render_type_annotation(ret_ty)
       if ret_text.length() > 0 {
-        out.write_string(" -> ")
-        out.write_string(ret_text)
+        ann.write_string(" -> ")
+        ann.write_string(ret_text)
       }
     }
     None => ()
   }
-  out.write_string(normalize_render_fn_effects(resolved_effects))
-  out.write_char(' ')
-  out.write_string(stripped_body_text)
-  Some(out.to_string())
+  ann.write_string(normalize_render_fn_effects(resolved_effects))
+  // Build body: (param_name, param_name) -> { ... }
+  let body = StringBuilder::new()
+  body.write_char('(')
+  for i, param in resolved_params {
+    if i > 0 {
+      body.write_string(", ")
+    }
+    body.write_string(normalize_render_fn_param_name(param))
+  }
+  body.write_string(") -> ")
+  body.write_string(stripped_body_text)
+  Some(FnRenderResult::{
+    type_annotation: ann.to_string(),
+    body_text: body.to_string(),
+  })
 }
 
 ///|
@@ -713,19 +775,18 @@ fn normalize_render_let_stmt(
     Some(expr) => expr
     None => original_expr
   }
-  let expr_text = match
-    normalize_render_fn_expr_with_inferred_type(
-      source,
-      target_expr,
-      env.get(name),
-    ) {
-    Some(v) => v
-    None =>
-      match
+  // Try new style: separate type annotation from body for Fn expressions
+  let (final_annotation, expr_text) = match
+    normalize_render_fn_separated_safe(source, target_expr, env.get(name), name) {
+    Some(result) => (Some(result.type_annotation), result.body_text)
+    None => {
+      let text = match
         normalize_render_stmt_expr_text(source, original_expr, rewritten_expr) {
         Some(v) => v
         None => return None
       }
+      (annotation, text)
+    }
   }
   let out = StringBuilder::new()
   if exported {
@@ -736,7 +797,7 @@ fn normalize_render_let_stmt(
     out.write_string("rec ")
   }
   out.write_string(name)
-  match annotation {
+  match final_annotation {
     Some(ty_text) => {
       out.write_string(": ")
       out.write_string(ty_text)

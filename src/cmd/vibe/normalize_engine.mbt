@@ -528,11 +528,17 @@ fn pass_validate(
   let expected_canonical = normalize_strip_decl_assign_fn_param_types(
     expected_stripped, expected_decl_assign_names,
   )
-  let reparsed_semantic = normalize_strip_fn_return_annotations_module(
+  let reparsed_param_stripped = normalize_strip_all_fn_param_types_module(
     reparsed_canonical,
   )
-  let expected_semantic = normalize_strip_fn_return_annotations_module(
+  let expected_param_stripped = normalize_strip_all_fn_param_types_module(
     expected_canonical,
+  )
+  let reparsed_semantic = normalize_strip_fn_return_annotations_module(
+    reparsed_param_stripped,
+  )
+  let expected_semantic = normalize_strip_fn_return_annotations_module(
+    expected_param_stripped,
   )
   let reparsed_import_canonical = normalize_canonicalize_import_surface_module(
     reparsed_semantic,
@@ -601,6 +607,82 @@ fn normalize_source_text_flat_with_entry_names_internal(
   // Pass 10: Signature comments
   let with_comments = normalize_inject_signature_comments(rendered, env)
   Ok(with_comments)
+}
+
+///|
+/// Strip all Fn parameter types in Let/ExportLet for semantic comparison.
+/// This ensures old-style `(x: Int) -> Int { ... }` and new-style
+/// `(x, y) -> { ... }` (with separate type annotation) compare as equal.
+fn normalize_strip_all_fn_param_types_module(
+  m : @vibe_core.Module,
+) -> @vibe_core.Module {
+  let next : Array[@vibe_core.Stmt] = []
+  for stmt in m.stmts {
+    next.push(normalize_strip_all_fn_param_types_stmt(stmt))
+  }
+  @vibe_core.Module::{ stmts: next }
+}
+
+///|
+fn normalize_strip_all_fn_param_types_stmt(
+  stmt : @vibe_core.Stmt,
+) -> @vibe_core.Stmt {
+  match stmt {
+    @vibe_core.Stmt::Let(rec~, name~, expr~, span~) =>
+      @vibe_core.Stmt::Let(
+        rec~,
+        name~,
+        expr=normalize_strip_all_fn_param_types_expr(expr),
+        span~,
+      )
+    @vibe_core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
+      @vibe_core.Stmt::ExportLet(
+        rec~,
+        name~,
+        expr=normalize_strip_all_fn_param_types_expr(expr),
+        span~,
+      )
+    _ => stmt
+  }
+}
+
+///|
+fn normalize_strip_all_fn_param_types_expr(
+  expr : @vibe_core.Expr,
+) -> @vibe_core.Expr {
+  match expr {
+    @vibe_core.Expr::Fn(
+      type_params~,
+      type_bounds~,
+      params~,
+      body~,
+      span~,
+      ..
+    ) =>
+      if type_params.length() > 0 || type_bounds.length() > 0 {
+        expr
+      } else {
+        let next_params : Array[@vibe_core.FuncParam] = []
+        for param in params {
+          next_params.push(@vibe_core.FuncParam::{
+            name: param.name,
+            label: param.label,
+            ty: @vibe_core.Type::Unit,
+            bounds: [],
+          })
+        }
+        @vibe_core.Expr::Fn(
+          type_params~,
+          type_bounds~,
+          params=next_params,
+          ret=None,
+          effects=[],
+          body~,
+          span~,
+        )
+      }
+    _ => expr
+  }
 }
 
 ///|
