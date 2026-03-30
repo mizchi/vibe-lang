@@ -257,24 +257,21 @@ fn AstParser::parse_pattern(self : AstParser) -> @core.Pat raise ParseError {
           raw = text[0:len - 1].to_string()
         }
       }
-      let parsed : Result[Double, @strconv.StrConvError] = try? @strconv.parse_double(
-        raw,
-      )
-      match parsed {
-        Ok(v) => {
-          let span = self.span_from(start)
-          if is_float {
-            @core.Pat::Float(value=Float::from_double(v), span~)
-          } else {
-            @core.Pat::Double(value=v, span~)
-          }
-        }
-        Err(_) =>
+      let v = try {
+        @strconv.parse_double(raw)
+      } catch {
+        _ =>
           raise ParseError::UnexpectedToken(
-            expected="float",
+            expected="valid numeric literal",
             got=tok.text(),
             span=self.token_span(),
           )
+      }
+      let span = self.span_from(start)
+      if is_float {
+        @core.Pat::Float(value=Float::from_double(v), span~)
+      } else {
+        @core.Pat::Double(value=v, span~)
       }
     }
     k if k == bool_lit() => {

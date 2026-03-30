@@ -1917,12 +1917,10 @@ fn parse_decimal_int64(
   text : String,
   span : @core.Span,
 ) -> Int64 raise ParseError {
-  let parsed : Result[Int64, @strconv.StrConvError] = try? @strconv.parse_int64(
-    text,
-  )
-  match parsed {
-    Ok(v) => v
-    Err(_) => raise ParseError::IntLiteralOverflow(literal=text, span~)
+  try {
+    @strconv.parse_int64(text)
+  } catch {
+    _ => raise ParseError::IntLiteralOverflow(literal=text, span~)
   }
 }
 
@@ -2459,24 +2457,21 @@ fn AstParser::parse_primary(self : AstParser) -> @core.Expr raise ParseError {
           raw = text[0:len - 1].to_string()
         }
       }
-      let parsed : Result[Double, @strconv.StrConvError] = try? @strconv.parse_double(
-        raw,
-      )
-      match parsed {
-        Ok(v) => {
-          let span = self.span_from(start)
-          if is_float {
-            @core.Expr::Float(value=Float::from_double(v), span~)
-          } else {
-            @core.Expr::Double(value=v, span~)
-          }
-        }
-        Err(_) =>
+      let v = try {
+        @strconv.parse_double(raw)
+      } catch {
+        _ =>
           raise ParseError::UnexpectedToken(
-            expected="float",
+            expected="valid numeric literal",
             got=tok.text(),
             span=self.token_span(),
           )
+      }
+      let span = self.span_from(start)
+      if is_float {
+        @core.Expr::Float(value=Float::from_double(v), span~)
+      } else {
+        @core.Expr::Double(value=v, span~)
       }
     }
     k if k == bool_lit() => {
