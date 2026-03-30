@@ -1458,7 +1458,28 @@ fn GcFuncCtx::new(
         )
         closure_call_types[param.name] = fn_type_idx
       }
-      _ => ()
+      _ =>
+        // For Named types (type aliases), check if the GC kind is a
+        // closure struct (Ref to a struct with [funcref, anyref])
+        match kind {
+          GcValKind::Ref(type_idx) =>
+            match ctx.types[type_idx] {
+              GcTypeDef::Struct(fields~) =>
+                if fields.length() == 2 {
+                  match fields[0] {
+                    GcValKind::Ref(fn_idx) =>
+                      match ctx.types[fn_idx] {
+                        GcTypeDef::Func(..) =>
+                          closure_call_types[param.name] = fn_idx
+                        _ => ()
+                      }
+                    _ => ()
+                  }
+                }
+              _ => ()
+            }
+          _ => ()
+        }
     }
     idx += 1
   }
@@ -8099,7 +8120,8 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
             global_idx += 1
           }
           // Non-literal expressions: mutable EqRef globals (set in run body)
-          @core.Expr::Call(..)
+          @core.Expr::String(..)
+          | @core.Expr::Call(..)
           | @core.Expr::Array(..)
           | @core.Expr::Ident(..)
           | @core.Expr::Tuple(..)
