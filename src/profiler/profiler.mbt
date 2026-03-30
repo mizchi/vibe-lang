@@ -42,7 +42,7 @@ pub fn profiler_reset() -> Unit {
 
 ///|
 pub fn profiler_enter(name : String) -> Unit {
-  if not(profiler_enabled_ref.val) {
+  if !profiler_enabled_ref.val {
     return
   }
   let state = profiler_state.val
@@ -52,7 +52,7 @@ pub fn profiler_enter(name : String) -> Unit {
 
 ///|
 pub fn profiler_leave() -> Unit {
-  if not(profiler_enabled_ref.val) {
+  if !profiler_enabled_ref.val {
     return
   }
   let state = profiler_state.val
@@ -72,7 +72,7 @@ pub fn profiler_leave() -> Unit {
     0
   }
   // Update parent's children_us
-  if not(state.stack.is_empty()) {
+  if !state.stack.is_empty() {
     let parent = state.stack[state.stack.length() - 1]
     parent.children_us = parent.children_us + elapsed_us
   }
@@ -95,7 +95,7 @@ pub fn profiler_leave() -> Unit {
     }
   }
   // Track children relationship
-  if not(state.stack.is_empty()) {
+  if !state.stack.is_empty() {
     let parent_name = state.stack[state.stack.length() - 1].name
     match state.entries.get(parent_name) {
       Some(parent_entry) => {
@@ -106,7 +106,7 @@ pub fn profiler_leave() -> Unit {
             break
           }
         }
-        if not(found) {
+        if !found {
           parent_entry.children_names.push(frame.name)
         }
       }
@@ -133,7 +133,7 @@ pub fn profiler_report_tsv() -> String {
         buf.write_string("\t")
         let mut first = true
         for child in entry.children_names {
-          if not(first) {
+          if !first {
             buf.write_string(",")
           }
           buf.write_string(child)

@@ -172,7 +172,7 @@ fn canonicalize_export_list_stmts(stmts : Array[Stmt]) -> Array[Stmt] {
       Stmt::Export(names~, span~) => {
         let unresolved : Array[String] = []
         for name in names {
-          if not(export_targets.contains(name)) {
+          if !export_targets.contains(name) {
             unresolved.push(name)
           }
         }
@@ -821,7 +821,7 @@ fn collect_and_normalize_imports(
       Stmt::Import(source~, ..) | Stmt::ReExport(source~, ..) =>
         match source {
           ModuleRef::Path(path~) =>
-            if not(path_to_hash.contains(path)) {
+            if !path_to_hash.contains(path) {
               match resolve_import(path) {
                 Some(imported_ast) => {
                   // Recursively process imports of the imported module

@@ -276,7 +276,7 @@ fn match_glob(pattern : String, path : String) -> Bool {
     }
   }
   // Handle single "*" wildcard
-  if pattern.contains("*") && not(pattern.contains("**")) {
+  if pattern.contains("*") && !pattern.contains("**") {
     return match_simple_glob(pattern, path)
   }
   false
