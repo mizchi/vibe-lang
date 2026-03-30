@@ -723,7 +723,7 @@ fn run_cmd_wasm_linked(
       (li.module_name, li.func_name, li.param_count, li.return_count),
     )
   }
-  let (bundled, _) = @runtime.bundle_for_wasm_linked_with_imports(
+  let (bundled, _) = @runtime_compile.bundle_for_wasm_linked_with_imports(
     ast, cached_imports,
   )
   let wasm_bytes = @runtime_compile.emit_wasm_with_linked_imports(

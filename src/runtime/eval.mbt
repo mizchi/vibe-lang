@@ -450,7 +450,7 @@ pub fn Runtime::eval_module(
         if name != "_" {
           match expr {
             @core.Expr::Fn(ret=Some(_), ..) => {
-              let addr = @codegen.expr_address(expr, self.addr_env, Some(name))
+              let addr = compute_expr_address(expr, self.addr_env, Some(name))
               self.env[name] = addr
               self.addr_env[name] = addr
               forward_fn_addrs[name] = addr
@@ -483,7 +483,7 @@ pub fn Runtime::eval_module(
           let addr = match forward_fn_addrs.get(name) {
             Some(pre_addr) => pre_addr
             None =>
-              @codegen.expr_address(
+              compute_expr_address(
                 expr,
                 self.addr_env,
                 if effective_rec {
@@ -817,7 +817,7 @@ pub fn Runtime::eval_module(
           let addr = match forward_fn_addrs.get(name) {
             Some(pre_addr) => pre_addr
             None =>
-              @codegen.expr_address(
+              compute_expr_address(
                 expr,
                 self.addr_env,
                 if effective_rec {

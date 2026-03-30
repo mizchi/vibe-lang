@@ -1,9 +1,10 @@
 ///|
 pub fn build_symbol_index(
-  db : VibeDb,
+  db : @runtime.VibeDb,
   paths : Array[String],
   skip_types? : Bool = false,
 ) -> @pipeline.SymbolIndex {
+  ensure_hooks()
   let entries : Array[@pipeline.SymbolEntry] = []
   let seen_module_hashes : Map[String, Bool] = {}
   let empty_types = @checker.TypeEnv::new()

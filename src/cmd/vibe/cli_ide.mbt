@@ -421,7 +421,7 @@ fn ide_outline_cmd(args : Array[String]) -> Unit {
   }
   match @loader.load_db_with_paths(path) {
     Ok((db, entry, _)) => {
-      let index = @runtime.build_symbol_index(db, [entry])
+      let index = @runtime_compile.build_symbol_index(db, [entry])
       if index.entries.length() == 0 {
         println("No symbols found in " + entry)
         return
@@ -558,7 +558,7 @@ fn ide_peek_def_cmd(args : Array[String]) -> Unit {
   }
   match @loader.load_db_with_paths(entry_file) {
     Ok((db, _, paths)) => {
-      let index = @runtime.build_symbol_index(db, paths)
+      let index = @runtime_compile.build_symbol_index(db, paths)
       let matches = index.find_exact(symbol)
       if matches.length() == 0 {
         println("No symbols found matching `" + symbol + "`")
@@ -654,7 +654,7 @@ fn ide_search_cmd(args : Array[String]) -> Unit {
   }
   match @loader.load_db_with_paths(entry_file) {
     Ok((db, _, paths)) => {
-      let index = @runtime.build_symbol_index(db, paths)
+      let index = @runtime_compile.build_symbol_index(db, paths)
       let matches = index.search(query)
       if matches.length() == 0 {
         println("No symbols found for query `" + query + "`")
@@ -788,7 +788,7 @@ fn lsif_cmd(args : Array[String]) -> Unit {
   }
   match @loader.load_db_with_paths(entries[0]) {
     Ok((db, _, paths)) => {
-      let index = @runtime.build_symbol_index(db, paths)
+      let index = @runtime_compile.build_symbol_index(db, paths)
       let lines = @frontend.symbol_index_to_lsif_lines(index, fn(path) {
         db.get_source(path)
       })

@@ -657,7 +657,7 @@ test "P3 handler: async component func type (0x43) prototype" {
   } noraise {
     c => c
   }
-  let bundled = @runtime.bundle_for_wasm(db, "main", compiled.ast)
+  let bundled = @runtime_compile.bundle_for_wasm(db, "main", compiled.ast)
   let core_wasm = try
     @codegen.emit_module_wasm_with_options(
       bundled,

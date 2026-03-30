@@ -227,8 +227,10 @@ fn compiled_test_batch_cache_paths(
 }
 
 ///|
-fn parse_linked_imports_cache(text : String) -> Array[@runtime.LinkedImport] {
-  let out : Array[@runtime.LinkedImport] = []
+fn parse_linked_imports_cache(
+  text : String,
+) -> Array[@runtime_compile.LinkedImport] {
+  let out : Array[@runtime_compile.LinkedImport] = []
   for line_view in text.split("\n") {
     let line = line_view.to_string().trim().to_string()
     if line.length() == 0 {
@@ -243,7 +245,7 @@ fn parse_linked_imports_cache(text : String) -> Array[@runtime.LinkedImport] {
       let rc : Result[Int, _] = try? @strconv.parse_int(parts[3])
       match (pc, rc) {
         (Ok(param_count), Ok(return_count)) =>
-          out.push(@runtime.LinkedImport::{
+          out.push(@runtime_compile.LinkedImport::{
             module_name: parts[0],
             func_name: parts[1],
             param_count,

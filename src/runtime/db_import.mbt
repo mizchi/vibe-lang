@@ -204,7 +204,7 @@ fn resolve_default_registry_path(
 }
 
 ///|
-fn normalize_path_obj(base_dir : String, raw_path : String) -> PathObj {
+pub fn normalize_path_obj(base_dir : String, raw_path : String) -> PathObj {
   let normalized_raw = if raw_path.has_prefix("/") {
     @path.Path(raw_path).normalize().to_string()
   } else if raw_path.has_prefix("./") || raw_path.has_prefix("../") {
@@ -318,7 +318,7 @@ fn resolve_hash_import(
 }
 
 ///|
-fn import_stmt_matches_spec(
+pub fn import_stmt_matches_spec(
   base_dir : String,
   source : @core.ModuleRef,
   imp : ImportSpec,

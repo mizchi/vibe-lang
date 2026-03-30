@@ -575,7 +575,7 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
     let extra_type_stmts = collect_reexport_type_stmts_standalone(
       resolved, raw_ast,
     )
-    let (bundled, _) = @runtime.bundle_for_wasm_linked_with_imports(
+    let (bundled, _) = @runtime_compile.bundle_for_wasm_linked_with_imports(
       ast,
       cached_imports,
       extra_type_stmts~,
@@ -670,19 +670,19 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
 fn save_library_modules(
   db : @runtime.VibeDb,
   entry : String,
-  imports : Array[@runtime.LinkedImport],
+  imports : Array[@runtime_compile.LinkedImport],
   cache_dir : String,
 ) -> Unit {
   let module_names : Map[String, Bool] = {}
   for li in imports {
     module_names[li.module_name] = true
   }
-  if module_names.contains(@runtime.prelude_core_module_name()) {
-    let mod_name = @runtime.prelude_core_module_name()
+  if module_names.contains(@runtime_compile.prelude_core_module_name()) {
+    let mod_name = @runtime_compile.prelude_core_module_name()
     let lib_wasm_path = cache_dir + "/" + mod_name + ".wasm"
     let maybe_lib_bytes = Some(
       @runtime_compile.emit_library_module_wasm(
-        @runtime.prelude_core_library_module(),
+        @runtime_compile.prelude_core_library_module(),
         debug_errors=true,
       ),
     ) catch {
@@ -712,7 +712,7 @@ fn save_library_modules(
   }
   let db_imports = db.imports(entry)
   for imp in db_imports {
-    let mod_name = @runtime.linked_module_name(imp.path)
+    let mod_name = @runtime_compile.linked_module_name(imp.path)
     if not(module_names.contains(mod_name)) {
       continue
     }
@@ -856,7 +856,7 @@ fn collect_reexport_types_recursive(
 
 ///|
 fn serialize_linked_imports_cache(
-  imports : Array[@runtime.LinkedImport],
+  imports : Array[@runtime_compile.LinkedImport],
 ) -> String {
   let buf = StringBuilder::new()
   for li in imports {

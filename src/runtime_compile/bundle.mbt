@@ -3,7 +3,7 @@
 /// This inlines all exported definitions from dependencies and removes imports.
 /// Applies DCE to eliminate unused definitions.
 pub fn bundle_for_wasm(
-  db : VibeDb,
+  db : @runtime.VibeDb,
   path : String,
   ast : @core.Module,
 ) -> @core.Module {
@@ -19,7 +19,7 @@ pub fn bundle_for_wasm(
 
 ///|
 pub fn bundle_for_wasm_gc(
-  db : VibeDb,
+  db : @runtime.VibeDb,
   path : String,
   ast : @core.Module,
 ) -> @core.Module {
@@ -36,7 +36,7 @@ pub fn bundle_for_wasm_gc(
 ///|
 /// Bundle without DCE (for benchmarking comparison).
 pub fn bundle_for_wasm_no_dce(
-  db : VibeDb,
+  db : @runtime.VibeDb,
   path : String,
   ast : @core.Module,
 ) -> @core.Module {
@@ -54,7 +54,7 @@ pub fn bundle_for_wasm_no_dce(
 /// Bundle for coverage mode that executes top-level tests.
 /// Keeps definitions referenced from test bodies when applying DCE.
 pub fn bundle_for_wasm_test_coverage(
-  db : VibeDb,
+  db : @runtime.VibeDb,
   path : String,
   ast : @core.Module,
 ) -> @core.Module {
@@ -210,7 +210,7 @@ fn linked_import_from_resolved_fn(
 
 ///|
 fn collect_dependency_defs_selected(
-  db : VibeDb,
+  db : @runtime.VibeDb,
   path : String,
   out : Array[@core.Stmt],
   visited : Map[String, Bool],
@@ -290,7 +290,7 @@ fn collect_dependency_defs_selected(
 /// their exported function names as linked imports. These become wasm imports
 /// that are resolved at runtime via `wasmtime --preload`.
 pub fn bundle_for_wasm_linked(
-  db : VibeDb,
+  db : @runtime.VibeDb,
   path : String,
   ast : @core.Module,
 ) -> (@core.Module, Array[LinkedImport]) {
@@ -517,7 +517,7 @@ fn linked_type_is_func(ty : @core.Type) -> Bool {
 
 ///|
 fn module_requires_preload_host_imports(
-  db : VibeDb,
+  db : @runtime.VibeDb,
   path : String,
   visited : Map[String, Bool],
 ) -> Bool {
@@ -803,7 +803,7 @@ fn import_local_name(item : @core.ImportItem) -> String {
 
 ///|
 fn resolve_bound_fn_via_imports(
-  db : VibeDb,
+  db : @runtime.VibeDb,
   source_path : String,
   source_ast : @core.Module,
   name : String,
@@ -836,7 +836,7 @@ fn resolve_bound_fn_via_imports(
 
 ///|
 fn resolve_bound_fn_at_path(
-  db : VibeDb,
+  db : @runtime.VibeDb,
   source_path : String,
   name : String,
   visited : Map[String, Bool],
@@ -884,13 +884,13 @@ fn resolve_bound_fn_at_path(
 fn resolve_module_ref_path(
   base_dir : String,
   source : @core.ModuleRef,
-  dep_imports? : Array[ImportSpec] = [],
+  dep_imports? : Array[@runtime.ImportSpec] = [],
 ) -> String? {
   match source {
     @core.ModuleRef::Path(path~) =>
-      Some(normalize_path_obj(base_dir, path).normalized)
+      Some(@runtime.normalize_path_obj(base_dir, path).normalized)
     @core.ModuleRef::PinnedPath(path~, ..) =>
-      Some(normalize_path_obj(base_dir, path).normalized)
+      Some(@runtime.normalize_path_obj(base_dir, path).normalized)
     @core.ModuleRef::Hash(hash~) => {
       // Resolve hash to path using pre-resolved import specs
       for imp in dep_imports {
@@ -911,7 +911,7 @@ fn resolve_module_ref_path(
 /// All item names are treated as potential matches regardless of ImportKind,
 /// because vibe import syntax uses Value kind by default for all names.
 fn resolve_reexport_all(
-  db : VibeDb,
+  db : @runtime.VibeDb,
   dep_path : String,
   spec : @core.ImportSpec,
   source : @core.ModuleRef,
@@ -942,7 +942,7 @@ fn resolve_reexport_all(
 ///|
 /// Resolve ReExport items at a known source path.
 fn resolve_reexport_at_path(
-  db : VibeDb,
+  db : @runtime.VibeDb,
   source_path : String,
   wanted : Map[String, String],
   result : ResolvedReExport,
@@ -1022,13 +1022,14 @@ fn resolve_reexport_at_path(
 
 ///|
 fn bundle_for_wasm_impl(
-  db : VibeDb,
+  db : @runtime.VibeDb,
   path : String,
   ast : @core.Module,
   apply_dce~ : Bool,
   include_test_entries~ : Bool,
   keep_for_in_helpers~ : Bool,
 ) -> @core.Module {
+  ensure_hooks()
   let bundled_stmts : Array[@core.Stmt] = []
   let visited : Map[String, Bool] = {}
   // Collect all dependency definitions in topological order
@@ -1152,7 +1153,7 @@ fn bundle_stmt_value_name(stmt : @core.Stmt) -> String? {
 ///|
 /// Recursively collect definitions from dependencies.
 fn collect_dependency_defs(
-  db : VibeDb,
+  db : @runtime.VibeDb,
   path : String,
   out : Array[@core.Stmt],
   visited : Map[String, Bool],
@@ -1261,7 +1262,7 @@ fn dedupe_bundle_structural_defs(
 ///|
 /// Collect definitions for re-export statement.
 fn collect_reexport_defs(
-  db : VibeDb,
+  db : @runtime.VibeDb,
   owner_path : String,
   spec : @core.ImportSpec,
   source : @core.ModuleRef,
@@ -1278,7 +1279,7 @@ fn collect_reexport_defs(
   let base_dir = @path.Path(owner_path).dirname().to_string()
   let resolved_from_imports = fn() -> String? {
     for imp in db.imports(owner_path) {
-      if import_stmt_matches_spec(base_dir, source, imp) {
+      if @runtime.import_stmt_matches_spec(base_dir, source, imp) {
         return Some(imp.path)
       }
     }

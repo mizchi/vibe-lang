@@ -1,6 +1,6 @@
 ///|
 test "bundle_for_wasm keeps enum defs from re-exported directory wrapper" {
-  let db = VibeDb::new()
+  let db = @runtime.VibeDb::new()
   db.set_source(
     "/project/core/types_impl.vibe",
     "export enum Type {\n" + "  CtInt;\n" + "  CtArray(Type)\n" + "}\n",
@@ -39,7 +39,7 @@ test "bundle_for_wasm keeps enum defs from re-exported directory wrapper" {
 
 ///|
 test "bundle_for_wasm_linked resolves ReExport function as linked import" {
-  let db = VibeDb::new()
+  let db = @runtime.VibeDb::new()
   db.set_source(
     "/project/adder.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }\n",
   )
@@ -73,7 +73,7 @@ test "bundle_for_wasm_linked resolves ReExport function as linked import" {
 
 ///|
 test "bundle_for_wasm_linked resolves export let ident alias as linked import" {
-  let db = VibeDb::new()
+  let db = @runtime.VibeDb::new()
   db.set_source(
     "/project/adder.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }\n",
   )
@@ -106,7 +106,7 @@ test "bundle_for_wasm_linked resolves export let ident alias as linked import" {
 
 ///|
 test "bundle_for_wasm_linked resolves ReExport enum type from chain" {
-  let db = VibeDb::new()
+  let db = @runtime.VibeDb::new()
   db.set_source(
     "/project/token_defs.vibe",
     "export enum Token { TEof; TInt(Int) }\n" +
@@ -146,7 +146,7 @@ test "bundle_for_wasm_linked resolves ReExport enum type from chain" {
 
 ///|
 test "bundle_for_wasm_linked resolves multi-level ReExport chain" {
-  let db = VibeDb::new()
+  let db = @runtime.VibeDb::new()
   // Level 2: actual definition
   db.set_source(
     "/project/inner.vibe", "export let parse = (s: String) -> Int { 42 }\n",
@@ -177,7 +177,7 @@ test "bundle_for_wasm_linked resolves multi-level ReExport chain" {
 
 ///|
 test "bundle_for_wasm_linked strips ReExport from entry and resolves types" {
-  let db = VibeDb::new()
+  let db = @runtime.VibeDb::new()
   db.set_source(
     "/project/defs.vibe",
     "export enum Color { Red; Blue }\n" + "export let name = () -> Int { 1 }\n",
@@ -207,7 +207,7 @@ test "bundle_for_wasm_linked strips ReExport from entry and resolves types" {
 
 ///|
 test "bundle_for_wasm_linked detects HOF through ReExport chain" {
-  let db = VibeDb::new()
+  let db = @runtime.VibeDb::new()
   db.set_source(
     "/project/hof_defs.vibe", "export let map_fn = (f: (Int) -> Int, x: Int) -> Int { f(x) }\n",
   )
@@ -243,7 +243,7 @@ test "bundle_for_wasm_linked detects HOF through ReExport chain" {
 
 ///|
 test "bundle_for_wasm_linked inlines deps that require Fs host imports" {
-  let db = VibeDb::new()
+  let db = @runtime.VibeDb::new()
   db.set_source(
     "/project/fs_dep.vibe", "export let load = (path: String) -> String with { Error, Fs } { perform Fs::ReadFile(path) }\n",
   )
@@ -274,7 +274,7 @@ test "bundle_for_wasm_linked inlines deps that require Fs host imports" {
 
 ///|
 test "bundle_for_wasm_linked inlines deps that require Env host imports" {
-  let db = VibeDb::new()
+  let db = @runtime.VibeDb::new()
   db.set_source(
     "/project/env_dep.vibe", "export let read_home = () -> String with { Env } { perform Env::Get(\"HOME\") }\n",
   )
@@ -305,7 +305,7 @@ test "bundle_for_wasm_linked inlines deps that require Env host imports" {
 
 ///|
 test "bundle_for_wasm keeps enum defs through nested wrapper re-exports" {
-  let db = VibeDb::new()
+  let db = @runtime.VibeDb::new()
   db.set_source(
     "/project/core/types_impl.vibe",
     "export enum Type {\n" + "  CtInt;\n" + "  CtArray(Type)\n" + "}\n",
@@ -344,7 +344,7 @@ test "bundle_for_wasm keeps enum defs through nested wrapper re-exports" {
 test "bundle_for_wasm resolves cross-directory transitive import via ../regexp" {
   // Simulates vibe/x/url_test.vibe scenario:
   // /x/url_test.vibe -> ./url/pattern.vibe -> ../regexp/index.vibe -> ./regexp.vibe
-  let db = VibeDb::new()
+  let db = @runtime.VibeDb::new()
   // regexp module (sibling of url/)
   db.set_source(
     "/x/regexp/regexp.vibe", "export let compile = (s: String) -> String { s }\n",

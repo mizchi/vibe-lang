@@ -192,7 +192,7 @@ test "symbol index lsif infers languageId from path extension" {
 
 ///|
 test "symbol index deduplicates identical module hash across paths" {
-  let db = VibeDb::new()
+  let db = @runtime.VibeDb::new()
   let source =
     #|let shared = 1
   db.set_source("/workspace/a.vibe", source)

@@ -488,7 +488,7 @@ test "bench: graph_build.current_symbol_index_cold" (b : @bench.T) {
   b.bench(fn() {
     let db = @runtime.VibeDb::new()
     db.set_source(bench_graph_path, source)
-    let index = @runtime.build_symbol_index(db, [bench_graph_path])
+    let index = @runtime_compile.build_symbol_index(db, [bench_graph_path])
     b.keep(index.entries.length())
   })
 }
@@ -515,7 +515,7 @@ test "bench: graph_search.current_cli_like" (b : @bench.T) {
   b.bench(fn() {
     let db = @runtime.VibeDb::new()
     db.set_source(bench_graph_path, source)
-    let index = @runtime.build_symbol_index(db, [bench_graph_path])
+    let index = @runtime_compile.build_symbol_index(db, [bench_graph_path])
     let matches = index.search("needle_fn_599")
     b.keep(matches.length())
   })
