@@ -2021,7 +2021,11 @@ fn infer_expr_kind_gc(
                   } else if is_gc_builtin_name(name) {
                     GcValKind::EqRef
                   } else {
-                    raise WasmGenError::UnknownName(name)
+                    // Unknown call — check if it's in locals (HOF param)
+                    match fctx.locals.get(name) {
+                      Some(_) => GcValKind::I64 // Assume I64 return
+                      None => raise WasmGenError::UnknownName(name)
+                    }
                   }
               }
           }
@@ -7013,7 +7017,14 @@ fn compile_expr_gc(
                         emit_struct_get_gc(buf, closure_struct_type, 0)
                         emit_call_ref_gc(buf, fn_type_idx)
                       }
-                      None => raise WasmGenError::UnknownName(name)
+                      None => {
+                        // Closure type known but not in locals — trap
+                        for arg in pos_args {
+                          compile_expr_gc(ctx, fctx, buf, arg)
+                          emit_drop_gc(buf)
+                        }
+                        emit_unreachable_gc(buf)
+                      }
                     }
                   None =>
                     if is_gc_builtin_name(name) {
