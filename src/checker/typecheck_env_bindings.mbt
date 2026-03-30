@@ -51,6 +51,11 @@ pub fn TypeEnv::get_expr_type(self : TypeEnv, span : @core.Span) -> @core.Type? 
 }
 
 ///|
+pub fn TypeEnv::expr_type_index(self : TypeEnv) -> @core.ExprTypeIndex {
+  @core.ExprTypeIndex::new(self.expr_types)
+}
+
+///|
 pub fn TypeEnv::set_scoped_ref_checks_enabled(
   self : TypeEnv,
   enabled : Bool,

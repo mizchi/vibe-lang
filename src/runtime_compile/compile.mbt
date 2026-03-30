@@ -65,6 +65,7 @@ pub struct CompiledModule {
   imports : Array[String]
   aliases : Map[String, @core.Ref]
   ast : @core.Module
+  expr_type_index : @core.ExprTypeIndex
   type_env : @checker.TypeEnv
   instantiations : Map[String, Int]
 }
@@ -237,9 +238,10 @@ pub fn compile_module(
   let aliases = build_alias_map(raw_ast, compile_module_import_aliases(imports))
   let desugared = @frontend.desugar_method_calls(raw_ast, aliases)
   let ast = @frontend.rewrite_effect_handles(desugared)
-  let mono = @frontend.monoify_module(ast, env)
+  let expr_type_index = env.expr_type_index()
+  let mono = @frontend.monoify_module(ast, expr_type_index)
   @core.clear_string_for_in_spans()
-  let rewritten = @frontend.rewrite_string_add(mono.ast, env)
+  let rewritten = @frontend.rewrite_string_add(mono.ast, expr_type_index)
   let resolved_ast = db.rewrite_imports_to_hash(path, rewritten)
   let ir = @runtime.module_to_sexp(resolved_ast, aliases)
   let ir_hash = @core.git_blob_hash_string(ir)
@@ -259,6 +261,7 @@ pub fn compile_module(
     imports: module_refs,
     aliases,
     ast: resolved_ast,
+    expr_type_index,
     type_env: env,
     instantiations: mono.instantiations,
   }
@@ -1248,20 +1251,12 @@ pub fn compile_module_wasm_gc_with_opt_level_profiled(
   let cache_namespace = if no_dce { "gc_no_dce" } else { "gc_default" }
   if no_dce {
     compile_module_wasm_profiled_with(
-      db,
-      path,
-      @runtime.bundle_for_wasm_no_dce,
-      @codegen.emit_module_wasm_gc,
-      cache_namespace,
+      db, path, @runtime.bundle_for_wasm_no_dce, @codegen.emit_module_wasm_gc, cache_namespace,
       opt_level,
     )
   } else {
     compile_module_wasm_profiled_with(
-      db,
-      path,
-      @runtime.bundle_for_wasm_gc,
-      @codegen.emit_module_wasm_gc,
-      cache_namespace,
+      db, path, @runtime.bundle_for_wasm_gc, @codegen.emit_module_wasm_gc, cache_namespace,
       opt_level,
     )
   }
