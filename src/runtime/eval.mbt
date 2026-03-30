@@ -127,7 +127,10 @@ pub fn EvalError::user_message(self : EvalError) -> String {
       ")"
     EvalError::LoopFuelExhausted =>
       "loop fuel exhausted (possible infinite loop)"
-    _ => self.to_string()
+    EvalError::Performed(_, _, _) => "unhandled effect operation"
+    EvalError::Resume(_) => "unexpected resume outside handler"
+    EvalError::LoopBreak(_) => "break outside loop"
+    EvalError::LoopContinue(_) => "continue outside loop"
   }
 }
 
