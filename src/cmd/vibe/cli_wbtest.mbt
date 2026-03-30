@@ -1390,17 +1390,15 @@ test "normalize source flattens module body and sorts functions" {
     Ok(v) => v
     Err(msg) => fail("normalize failed: " + msg)
   }
-  println("=== NORMALIZED OUTPUT ===")
-  println(normalized)
-  println("=== END ===")
   assert_false(normalized.contains("export module math {"))
   assert_false(normalized.contains("let dead ="))
   // Fn expressions should NOT produce declare+assign
-  assert_false(normalized.contains("declare export let run"))
-  assert_false(normalized.contains("declare export let run_io"))
-  let idx_helper = wbtest_substring_index(normalized, "let helper =")
-  let idx_run = wbtest_substring_index(normalized, "export let run =")
-  let idx_run_io = wbtest_substring_index(normalized, "export let run_io =")
+  assert_false(normalized.contains("declare export let"))
+  let idx_helper = wbtest_substring_index(normalized, "let math::helper:")
+  let idx_run = wbtest_substring_index(normalized, "export let math::run:")
+  let idx_run_io = wbtest_substring_index(
+    normalized, "export let math::run_io:",
+  )
   assert_true(idx_helper >= 0)
   assert_true(idx_run >= 0)
   assert_true(idx_run_io >= 0)
@@ -1425,13 +1423,13 @@ test "normalize source sorts function defs topologically with alpha tie" {
   // Fn expressions should NOT produce declare+assign
   assert_false(normalized.contains("declare export let"))
   // Pure fns sorted: a (leaf), b (leaf), z (depends on b)
-  let idx_a = wbtest_substring_index(normalized, "export let a =")
-  let idx_b = wbtest_substring_index(normalized, "export let b =")
-  let idx_z = wbtest_substring_index(normalized, "export let z =")
+  let idx_a = wbtest_substring_index(normalized, "export let a:")
+  let idx_b = wbtest_substring_index(normalized, "export let b:")
+  let idx_z = wbtest_substring_index(normalized, "export let z:")
   // Effect fns sorted: io_a (leaf), io_b (leaf), io_z (depends on io_b)
-  let idx_io_a = wbtest_substring_index(normalized, "export let io_a =")
-  let idx_io_b = wbtest_substring_index(normalized, "export let io_b =")
-  let idx_io_z = wbtest_substring_index(normalized, "export let io_z =")
+  let idx_io_a = wbtest_substring_index(normalized, "export let io_a:")
+  let idx_io_b = wbtest_substring_index(normalized, "export let io_b:")
+  let idx_io_z = wbtest_substring_index(normalized, "export let io_z:")
   assert_true(idx_a >= 0)
   assert_true(idx_b >= 0)
   assert_true(idx_z >= 0)
@@ -1457,9 +1455,9 @@ test "normalize source keeps Type:: wrappers after plain defs on alpha tie" {
   }
   // Fn expressions should NOT produce declare+assign
   assert_false(normalized.contains("declare export let"))
-  let idx_bar = wbtest_substring_index(normalized, "export let bar =")
-  let idx_baz = wbtest_substring_index(normalized, "export let baz =")
-  let idx_member = wbtest_substring_index(normalized, "export let Int::foo =")
+  let idx_bar = wbtest_substring_index(normalized, "export let bar:")
+  let idx_baz = wbtest_substring_index(normalized, "export let baz:")
+  let idx_member = wbtest_substring_index(normalized, "export let Int::foo:")
   assert_true(idx_bar >= 0)
   assert_true(idx_baz >= 0)
   assert_true(idx_member >= 0)
@@ -1495,7 +1493,8 @@ test "normalize source inserts inferred annotation on non-fn let" {
     Err(msg) => fail("normalize failed: " + msg)
   }
   assert_true(normalized.contains("let answer: Int = 42"))
-  assert_false(normalized.contains("let id:"))
+  // With new-style fn definitions, fn lets now get type annotations too
+  assert_true(normalized.contains("let id: (Int) -> Int ="))
 }
 
 ///|
@@ -1510,7 +1509,7 @@ test "normalize source keeps export let for fn expressions without declare" {
   }
   // Fn expressions should NOT produce declare+assign
   assert_false(normalized.contains("declare export let run"))
-  assert_true(normalized.contains("export let run ="))
+  assert_true(normalized.contains("export let run:"))
 }
 
 ///|
@@ -1683,10 +1682,10 @@ test "fmt pipeline applies normalize rules" {
     Err(err) => fail("fmt pipeline failed: " + err)
   }
   assert_false(output.contains("let dead ="))
-  assert_true(output.contains("let helper ="))
+  assert_true(output.contains("let helper:"))
   // Fn expressions should NOT produce declare+assign
   assert_false(output.contains("declare export let run"))
-  assert_true(output.contains("export let run ="))
+  assert_true(output.contains("export let run:"))
 }
 
 ///|
