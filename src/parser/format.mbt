@@ -245,7 +245,7 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
       container_stack[container_stack.length() - 1] ==
       ContainerKind::BraceEffects
     if line_has_content &&
-      not(insert_struct_double_colon) &&
+      !insert_struct_double_colon &&
       (
         effects_rbrace ||
         needs_space(prev_prev_kind, prev_kind, kind, prev_prefix, prev_pipe)
@@ -345,7 +345,7 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
         match container_stack.get(container_stack.length() - 1) {
           Some(container) =>
             if container_indents(container) &&
-              not(dedented_before) &&
+              !dedented_before &&
               indent > 0 {
               indent -= 1
             }
@@ -444,7 +444,7 @@ fn is_generic_param_bracket(
     Some(v) => v
     None => return false
   }
-  if not(bracket_tokens_look_like_type_params(tokens, start_idx, close_idx)) {
+  if !bracket_tokens_look_like_type_params(tokens, start_idx, close_idx) {
     return false
   }
   match next_non_trivia_kind(tokens, close_idx) {
@@ -779,7 +779,7 @@ fn maybe_end_type_context(
   if type_context_stack.length() == 0 {
     return
   }
-  if not(is_type_context_end(kind)) {
+  if !is_type_context_end(kind) {
     return
   }
   let effective_brace = if kind == lbrace() && brace_depth > 0 {

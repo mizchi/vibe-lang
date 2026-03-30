@@ -102,7 +102,7 @@ fn AstParser::parse_let_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     mut_flag = true
   }
   self.skip_trivia()
-  if not(rec_flag) && not(mut_flag) {
+  if !rec_flag && !mut_flag {
     // Check if this is a pattern: tuple, record, or ctor
     let next_kind = self.peek_non_trivia_kind(self.pos + 1)
     let next2_kind = self.peek_non_trivia_kind(self.pos + 2)
@@ -813,7 +813,7 @@ fn AstParser::parse_type_ctor(
 ) -> @core.TypeCtor raise ParseError {
   let start = self.pos
   let name_tok = self.expect(name(), "ctor")
-  if not(@core.is_ctor_name(name_tok.text())) {
+  if !@core.is_ctor_name(name_tok.text()) {
     raise ParseError::UnexpectedToken(
       expected="ctor",
       got=name_tok.text(),
@@ -1143,7 +1143,7 @@ fn collect_module_decl_names(stmts : Array[@core.Stmt]) -> Map[String, String] {
       | @core.Stmt::ExportLet(name~, ..)
       | @core.Stmt::InternalExportLet(name~, ..)
       | @core.Stmt::LetMut(name~, ..) =>
-        if not(name.contains("::")) {
+        if !name.contains("::") {
           out[name] = name
         }
       _ => ()
@@ -1178,7 +1178,7 @@ fn module_locals_without(
         break
       }
     }
-    if not(shadowed) {
+    if !shadowed {
       out[key] = value
     }
   }
@@ -1468,7 +1468,7 @@ fn rewrite_module_stmt(
       )
     @core.Stmt::Import(..) => stmt
     @core.Stmt::Export(names~, span~) =>
-      if not(exported_module) {
+      if !exported_module {
         @core.Stmt::Export(names=[], span~)
       } else {
         let qualified_names : Array[String] = []

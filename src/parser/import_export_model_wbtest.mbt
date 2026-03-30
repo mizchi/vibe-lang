@@ -15,7 +15,7 @@ test "import list syntax parses and formats" {
       )
   }
   assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
-  if not(formatted.contains("import ./math")) {
+  if !formatted.contains("import ./math") {
     fail(
       "formatted import script did not contain canonical source form:\n\{formatted}",
     )
@@ -38,7 +38,7 @@ test "export source list syntax parses and formats" {
       )
   }
   assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
-  if not(formatted.contains("export ./math")) {
+  if !formatted.contains("export ./math") {
     fail(
       "formatted export script did not contain canonical source form:\n\{formatted}",
     )

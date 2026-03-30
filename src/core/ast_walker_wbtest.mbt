@@ -5,7 +5,7 @@ fn add_all_refs(
   bound : WalkerScope,
   refs : Map[String, Bool],
 ) -> Unit {
-  if not(bound.contains(name)) {
+  if !bound.contains(name) {
     refs[name] = true
   }
 }

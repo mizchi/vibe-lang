@@ -70,13 +70,13 @@ fn parse_raw_identifier(text : String) -> String? {
     return None
   }
   let first = body[0].to_int().unsafe_to_char()
-  if not(is_alpha(first)) {
+  if !is_alpha(first) {
     return None
   }
   let mut i = 1
   while i < body.length() {
     let c = body[i].to_int().unsafe_to_char()
-    if not(is_alnum(c) || c == '_') {
+    if !(is_alnum(c) || c == '_') {
       return None
     }
     i += 1
@@ -403,7 +403,7 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
         // Only consume '.' as decimal point if the next char is NOT '.'
         // (to avoid consuming '..' range operator)
         if self.peek() == Some('.') &&
-          not(
+          !(
             self.pos + 1 < self.input.length() &&
             self.input[self.pos + 1].to_int().unsafe_to_char() == '.',
           ) {
@@ -661,7 +661,7 @@ fn Lexer::lex_multiline_string(self : Lexer) -> Token {
       let ch = self.input[self.pos - 1].to_int().unsafe_to_char()
       line_buf.write_char(ch)
     }
-    if not(first_line) {
+    if !first_line {
       buf.write_char('\n')
     }
     first_line = false
@@ -798,7 +798,7 @@ pub fn Lexer::is_eof(self : Lexer) -> Bool {
 pub fn tokenize(input : String) -> Array[Token] {
   let lexer = Lexer::new(input)
   let tokens : Array[Token] = []
-  while not(lexer.is_eof()) {
+  while !lexer.is_eof() {
     tokens.push(lexer.next_token())
   }
   tokens.push(Token::new(eof(), ""))

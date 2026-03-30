@@ -58,7 +58,7 @@ fn AstParser::peek_non_trivia_ahead(
   let mut i = self.pos + 1
   let mut seen = 0
   while i < self.tokens.length() {
-    if not(is_trivia(self.tokens[i].kind())) {
+    if !is_trivia(self.tokens[i].kind()) {
       seen += 1
       if seen == nth {
         return self.tokens[i].kind()

@@ -23,24 +23,24 @@ test "vibe format roundtrip regression: trait impl import test and literals" {
       fail("[after-format] parse failed: \{e.to_string()}\n---\n\{formatted}")
   }
   assert_eq(@core.normalize_module(after), @core.normalize_module(before))
-  if not(formatted.contains("trait Eq")) {
+  if !formatted.contains("trait Eq") {
     fail("[trait spacing] missing trait Eq\n---\n\{formatted}")
   }
-  if not(formatted.contains("impl Eq for Int")) {
+  if !formatted.contains("impl Eq for Int") {
     fail("[impl spacing] missing impl Eq for Int\n---\n\{formatted}")
   }
-  if not(formatted.contains("test \"quoted case\"")) {
+  if !formatted.contains("test \"quoted case\"") {
     fail("[test quoted name] missing quoted test name\n---\n\{formatted}")
   }
-  if not(formatted.contains("import ./mod.vibe")) {
+  if !formatted.contains("import ./mod.vibe") {
     fail(
       "[import source spacing] missing import source clause spacing\n---\n\{formatted}",
     )
   }
-  if not(formatted.contains("\"hello world\"")) {
+  if !formatted.contains("\"hello world\"") {
     fail("[string quotes] missing quoted string literal\n---\n\{formatted}")
   }
-  if not(formatted.contains("'z'")) {
+  if !formatted.contains("'z'") {
     fail("[char quotes] missing quoted char literal\n---\n\{formatted}")
   }
   if formatted.contains("traitEq") {
@@ -212,7 +212,7 @@ test "vibe format keeps import list forms parse-equivalent" {
       fail("[after-format] parse failed: \{e.to_string()}\n---\n\{formatted}")
   }
   assert_eq(@core.normalize_module(after), @core.normalize_module(before))
-  if not(formatted.contains("trait Eq")) {
+  if !formatted.contains("trait Eq") {
     fail("[import trait item spacing] missing trait Eq\n---\n\{formatted}")
   }
   if formatted.contains("}import") {
@@ -256,10 +256,10 @@ test "vibe parse/format import list supports module qualifier" {
       )
   }
   assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
-  if not(formatted.contains("module math")) {
+  if !formatted.contains("module math") {
     fail("[format] missing module qualifier\n---\n\{formatted}")
   }
-  if not(formatted.contains("import ./math.xm")) {
+  if !formatted.contains("import ./math.xm") {
     fail("[format] missing import source\n---\n\{formatted}")
   }
 }
@@ -283,7 +283,7 @@ test "vibe parse/format import list supports module qualifier alias" {
       )
   }
   assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
-  if not(formatted.contains("module math as m")) {
+  if !formatted.contains("module math as m") {
     fail("[format] missing module alias qualifier\n---\n\{formatted}")
   }
 }
@@ -547,12 +547,12 @@ test "vibe format generic parameter brackets stay compact" {
     #|impl [T: Eq] Eq for Option[T]
     #|let id = [T](x: T) -> T { x }
   let formatted = format_script(input)
-  if not(formatted.contains("impl [T: Eq] Eq for Option[T]")) {
+  if !formatted.contains("impl [T: Eq] Eq for Option[T]") {
     fail(
       "[generic impl] expected compact impl generic params\n---\n\{formatted}",
     )
   }
-  if not(formatted.contains("let id = [T](x: T) -> T {")) {
+  if !formatted.contains("let id = [T](x: T) -> T {") {
     fail("[generic let] expected compact let generic params\n---\n\{formatted}")
   }
   if formatted.contains("impl [\n") {

@@ -292,9 +292,9 @@ pub impl FileSystemBackend for MemFs with mkdir_p(self, path) {
   let mut current_path = ""
   for part in parts {
     current_path = current_path + "/" + part
-    if not(self.exists(current_path)) {
+    if !self.exists(current_path) {
       self.mkdir(current_path)
-    } else if not(self.is_dir(current_path)) {
+    } else if !self.is_dir(current_path) {
       raise FsError::NotADirectory(current_path)
     }
   }
@@ -396,7 +396,7 @@ pub impl FileSystemBackend for MemFs with rename(self, old_path, new_path) {
 pub impl FileSystemBackend for MemFs with copy_file(self, src, dst) {
   let src_normalized = normalize_path(src)
   let dst_normalized = normalize_path(dst)
-  if not(self.is_file(src_normalized)) {
+  if !self.is_file(src_normalized) {
     if self.is_dir(src_normalized) {
       raise FsError::IsADirectory(src)
     }
@@ -412,7 +412,7 @@ pub impl FileSystemBackend for MemFs with rm_rf(self, path) {
   if normalized == "/" {
     raise FsError::PermissionDenied("cannot remove root")
   }
-  if not(self.exists(normalized)) {
+  if !self.exists(normalized) {
     raise FsError::NotFound(path)
   }
   if self.is_file(normalized) {

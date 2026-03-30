@@ -157,7 +157,7 @@ fn format_type_compact(ty : Type) -> String {
       buf.write_string("{")
       let mut first = true
       for name, ty in fields {
-        if not(first) {
+        if !first {
           buf.write_string(", ")
         }
         first = false
@@ -300,7 +300,7 @@ pub impl Show for Value with output(self, logger) {
       logger.write_string("{")
       let mut first = true
       for name, value in fields {
-        if not(first) {
+        if !first {
           logger.write_string(", ")
         }
         first = false
@@ -324,7 +324,7 @@ pub impl Show for Value with output(self, logger) {
       logger.write_string("{|")
       let mut first = true
       for key, value in fields {
-        if not(first) {
+        if !first {
           logger.write_string(", ")
         }
         first = false
@@ -339,7 +339,7 @@ pub impl Show for Value with output(self, logger) {
       logger.write_string("Set{")
       let mut first = true
       for key, _ in items {
-        if not(first) {
+        if !first {
           logger.write_string(", ")
         }
         first = false
@@ -361,7 +361,7 @@ pub impl Show for Value with output(self, logger) {
       logger.write_string("{|..builder ")
       let mut first = true
       for key, value in fields {
-        if not(first) {
+        if !first {
           logger.write_string(", ")
         }
         first = false

@@ -3,7 +3,7 @@ fn make_temp_dir(prefix : String) -> String {
   let base = "/tmp/vibe_io_test_" + prefix
   for i in 0..<1000 {
     let path = if i == 0 { base } else { base + "_" + i.to_string() }
-    if not(@os_fs.path_exists(path)) {
+    if !@os_fs.path_exists(path) {
       @os_fs.create_dir(path) catch {
         e => abort("create temp dir failed: " + e.to_string())
       }
@@ -16,7 +16,7 @@ fn make_temp_dir(prefix : String) -> String {
 
 ///|
 fn remove_if_exists(path : String) -> Unit {
-  if not(@os_fs.path_exists(path)) {
+  if !@os_fs.path_exists(path) {
     return
   }
   let is_file = @os_fs.is_file(path) catch { _ => false }

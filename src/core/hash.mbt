@@ -126,7 +126,7 @@ fn content_hash_line_is_section_separator(line : String) -> Bool {
 /// Remove normalize section separators (`//# ...`) from source text and
 /// collapse duplicate blank lines introduced by those separators.
 pub fn normalize_content_address_source(source : String) -> String {
-  if not(source.contains("//#")) {
+  if !source.contains("//#") {
     return source
   }
   let line_starts = content_hash_collect_line_starts(source)

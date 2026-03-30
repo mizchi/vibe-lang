@@ -311,7 +311,7 @@ fn canonical_sort_fns_topo_alpha(stmts : Array[Stmt]) -> Array[Stmt] {
     }
     let unresolved : Array[String] = []
     for def in defs {
-      if not(emitted.contains(def.0)) {
+      if !emitted.contains(def.0) {
         unresolved.push(def.0)
         emitted[def.0] = true
       }
@@ -377,9 +377,9 @@ fn canonical_name_is_member(name : String) -> Bool {
 fn canonical_name_compare(a : String, b : String) -> Int {
   let a_member = canonical_name_is_member(a)
   let b_member = canonical_name_is_member(b)
-  if a_member && not(b_member) {
+  if a_member && !b_member {
     1
-  } else if not(a_member) && b_member {
+  } else if !a_member && b_member {
     -1
   } else {
     String::compare(a, b)

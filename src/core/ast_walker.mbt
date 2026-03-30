@@ -415,7 +415,7 @@ pub fn walk_stmt_refs(
         scope.bindings[name] = true
       }
       walk_expr_refs(expr, scope, refs, on_name)
-      if not(rec) {
+      if !rec {
         scope.bindings[name] = true
       }
     }
