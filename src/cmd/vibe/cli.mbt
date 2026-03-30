@@ -493,7 +493,11 @@ fn parse_bool_flag(value : String) -> Bool {
   let normalized = value.trim().to_string().to_lower()
   match normalized {
     "1" | "true" | "yes" | "on" => true
-    _ => false
+    "0" | "false" | "no" | "off" => false
+    _ =>
+      abort(
+        "invalid boolean value: '" + value + "'. Expected: true/false, yes/no, on/off, 1/0",
+      )
   }
 }
 
