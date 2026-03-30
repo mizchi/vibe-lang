@@ -1390,6 +1390,9 @@ test "normalize source flattens module body and sorts functions" {
     Ok(v) => v
     Err(msg) => fail("normalize failed: " + msg)
   }
+  println("=== NORMALIZED OUTPUT ===")
+  println(normalized)
+  println("=== END ===")
   assert_false(normalized.contains("export module math {"))
   assert_false(normalized.contains("let dead ="))
   // Fn expressions should NOT produce declare+assign
