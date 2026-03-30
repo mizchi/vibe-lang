@@ -8170,6 +8170,20 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
           }
           _ => ()
         }
+      @core.Stmt::LetMut(name~, expr~, ..) =>
+        match expr {
+          @core.Expr::Fn(..) => ()
+          @core.Expr::Int(value~, ..) => {
+            ctx.global_consts[name] = (global_idx, GcValKind::I64)
+            global_init_values.push((GcValKind::I64, value))
+            global_idx += 1
+          }
+          _ => {
+            ctx.global_consts[name] = (global_idx, GcValKind::EqRef)
+            global_init_values.push((GcValKind::EqRef, 0L))
+            global_idx += 1
+          }
+        }
       _ => ()
     }
   }
