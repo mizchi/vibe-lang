@@ -35,6 +35,7 @@ fn AstParser::parse_type_with_params(
         Some(t) => t
         None => self.parse_tuple_type(params)
       }
+    k if k == lbracket() => self.parse_generic_fn_type(params)
     _ =>
       raise ParseError::UnexpectedToken(
         expected="type",
@@ -107,6 +108,62 @@ fn AstParser::try_parse_fn_type(
       self.pos = saved
       None
     }
+  }
+}
+
+///|
+/// Parse generic function type: [T, U](T, U) -> (T, U)
+fn AstParser::parse_generic_fn_type(
+  self : AstParser,
+  params : Map[String, Bool],
+) -> @core.Type raise ParseError {
+  // Parse type parameters [T, U: Trait, ...]
+  let extended_params : Map[String, Bool] = {}
+  for k, v in params {
+    extended_params[k] = v
+  }
+  let _ = self.expect(lbracket(), "[")
+  self.skip_trivia()
+  if self.peek_kind() != rbracket() {
+    let name_tok = self.expect(name(), "type parameter name")
+    extended_params[name_tok.text()] = true
+    self.skip_trivia()
+    // Skip optional bounds: T: Trait
+    if self.peek_kind() == colon() {
+      let _ = self.bump()
+      self.skip_trivia()
+      let _ = self.parse_trait_bounds()
+    }
+    while ({
+            self.skip_trivia()
+            self.peek_kind() == comma()
+          }) {
+      let _ = self.bump()
+      self.skip_trivia()
+      if self.peek_kind() == rbracket() {
+        break
+      }
+      let name_tok = self.expect(name(), "type parameter name")
+      extended_params[name_tok.text()] = true
+      self.skip_trivia()
+      if self.peek_kind() == colon() {
+        let _ = self.bump()
+        self.skip_trivia()
+        let _ = self.parse_trait_bounds()
+      }
+    }
+  }
+  let _ = self.expect(rbracket(), "]")
+  self.skip_trivia()
+  // Now parse (params) -> ret with extended param scope
+  match self.try_parse_fn_type(extended_params) {
+    Some(t) => t
+    None =>
+      raise ParseError::UnexpectedToken(
+        expected="function type after type parameters",
+        got=self.peek().text(),
+        span=self.token_span(),
+      )
   }
 }
 

@@ -150,7 +150,7 @@ fn AstParser::parse_let_stmt(self : AstParser) -> @core.Stmt raise ParseError {
   let span = self.span_from(start)
   let expr = match ann_ty {
     Some(ty) =>
-      if rec_flag {
+      if rec_flag || type_contains_param(ty) {
         raw_expr
       } else {
         wrap_local_let_with_annotation(ty, raw_expr, span)
@@ -161,6 +161,25 @@ fn AstParser::parse_let_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     @core.Stmt::LetMut(name=binding_name, expr~, span~)
   } else {
     @core.Stmt::Let(rec=rec_flag, name=binding_name, expr~, span~)
+  }
+}
+
+///|
+fn type_contains_param(ty : @core.Type) -> Bool {
+  match ty {
+    @core.Type::Param(_) => true
+    @core.Type::Func(params~, ret~, ..) =>
+      params.iter().any(fn(p) { type_contains_param(p.ty) }) ||
+        type_contains_param(ret)
+    @core.Type::Array(inner) => type_contains_param(inner)
+    @core.Type::Map(k, v) =>
+      type_contains_param(k) || type_contains_param(v)
+    @core.Type::Set(inner) => type_contains_param(inner)
+    @core.Type::Tuple(items) =>
+      items.iter().any(fn(item) { type_contains_param(item) })
+    @core.Type::Named(args~, ..) =>
+      args.iter().any(fn(arg) { type_contains_param(arg) })
+    _ => false
   }
 }
 
