@@ -7636,6 +7636,14 @@ fn compile_stmt_gc(
       } else {
         emit_local_set_gc(buf, idx)
       }
+      // Store to mutable global if this is a module-level binding
+      match ctx.global_consts.get(name) {
+        Some((gidx, GcValKind::EqRef)) => {
+          emit_local_get_gc(buf, idx)
+          emit_global_set_gc(buf, gidx)
+        }
+        _ => ()
+      }
     }
     @core.Stmt::Assign(name~, expr~, ..) => {
       // Track closure types for let rec desugar (Assign after Let placeholder)
@@ -7658,6 +7666,14 @@ fn compile_stmt_gc(
             emit_local_tee_gc(buf, info.idx)
           } else {
             emit_local_set_gc(buf, info.idx)
+          }
+          // Update global if this is a module-level mutable binding
+          match ctx.global_consts.get(name) {
+            Some((gidx, GcValKind::EqRef)) => {
+              emit_local_get_gc(buf, info.idx)
+              emit_global_set_gc(buf, gidx)
+            }
+            _ => ()
           }
         }
         None => {
