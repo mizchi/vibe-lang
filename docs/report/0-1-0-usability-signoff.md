@@ -162,7 +162,7 @@ CI gate は発見の場ではなく、手元で詰めた導線の再現確認と
 - `check` の success/failure 表示
   - failure 時に path / span / expected / actual が出る
 - `run/build` の primary path
-  - `vibe run` は final top-level expression を返す
+  - `vibe run` は final top-level pure expression を返す
   - `vibe build` / `vibe build --debug` の生成 wasm は実行できる
 - selfhost dist sample compile/run
   - `scripts/build_selfhost_dist.sh` は raw fallback つきで通る
@@ -190,12 +190,12 @@ CI gate は発見の場ではなく、手元で詰めた導線の再現確認と
      fix 済み。`moon build --target native src/cmd/vibe` は通る。
 
 3. `run/build` の entrypoint 契約が docs 上で揺れている
-   - source-level は final top-level expression
+   - source-level は final top-level pure expression
    - generated wasm ABI は `_start`
    - 対応:
      `docs/language-tour/*` を source-level contract に合わせて更新した
    - 現状:
-     docs fix 済み。`vibe run` は final top-level expression、`vibe build` の wasm は `_start` を export する。
+     docs fix 済み。`vibe run` は final top-level pure expression、`vibe build` の wasm は `_start` を export する。
 
 4. stale な `index.lock` が残っている workspace では `run/build` が invalid JSON で落ちる
    - fresh workspace では再現しない
