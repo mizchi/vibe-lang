@@ -15,6 +15,9 @@ VIBE_CLI_RELEASE=1 source "$ROOT_DIR/scripts/ensure_native_cli.sh"
 CLI="$VIBE_CLI_BIN"
 TIMEOUT="${VIBE_FIXTURE_TIMEOUT:-5}"
 TMPDIR="${TMPDIR:-/tmp}"
+# Parser-only fixtures are covered by parser/typecheck suites; isolate runtime
+# subprocess behavior here without the session worker in the middle.
+export VIBE_USE_SESSION_HTTP="${VIBE_USE_SESSION_HTTP:-0}"
 
 declare -a files
 if [[ $# -gt 0 ]]; then
@@ -55,6 +58,11 @@ for f in "${files[@]}"; do
   set -e
 
   basename="$(basename "$f")"
+
+  if [[ "$basename" == err_parse_* ]]; then
+    skip=$((skip + 1))
+    continue
+  fi
 
   if [[ $rc -eq 124 ]]; then
     # timeout
