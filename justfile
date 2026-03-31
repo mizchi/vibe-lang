@@ -126,7 +126,7 @@ ci-contract-native:
     bash scripts/test_parallel_cleanup_e2e.sh "$cli" || failed="$failed parallel-cleanup"
     echo "=== contract-native: done ==="
     if [ -n "$failed" ]; then
-      echo "contract-native: FAILED tests:$failed"
+      echo "contract-native: FAILED tests:$failed (non-fatal, see individual test logs)"
     else
       echo "contract-native: all passed"
     fi
