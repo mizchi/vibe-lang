@@ -6,7 +6,7 @@ An experimental self-hosted compiler/interpreter for vibe-lang, written in vibe 
 
 - Core pipeline is implemented: `lex -> parse -> typecheck -> eval`.
 - Multi-file `import` / `export` resolution works in the interpreter.
-- Self-host smoke suites (`eval_selfhost*`) pass.
+- Self-host smoke suites (`selfhost_s5*`) pass.
 - Full self-host goal is not reached yet: running `vibe/compiler` itself end-to-end (`parse + eval`) is still in progress.
 
 ## Implemented
@@ -68,10 +68,5 @@ _build/native/debug/build/cmd/vibe/vibe.exe test \
   vibe/compiler/printer_test.vibe \
   vibe/compiler/checker_test.vibe \
   vibe/compiler/checker_stmt_test.vibe \
-  vibe/compiler/eval_test.vibe \
-  vibe/compiler/eval_stmt_test.vibe \
-  vibe/compiler/eval_import_test.vibe \
-  vibe/compiler/eval_selfhost_test.vibe \
-  vibe/compiler/eval_selfhost2_test.vibe \
-  vibe/compiler/eval_selfhost3_test.vibe
+  vibe/compiler/selfhost_s5_test.vibe
 ```
