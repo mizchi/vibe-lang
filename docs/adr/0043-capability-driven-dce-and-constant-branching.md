@@ -26,19 +26,106 @@ vibe は capability-based security を言語レベルで持つ (ADR-0041, ADR-00
 
 ビルド時に利用可能な capability set を指定し、それに基づいて DCE を拡張する。
 
-#### ビルドプロファイル
+#### パーミッション指定 (Deno-style allow/deny)
+
+Deno の `--allow-read` / `--deny-net` に倣いつつ、vibe の capability 体系に合わせてより細粒度にする。
+
+**基本構文**: `--allow-<capability>[=<pattern>]` / `--deny-<capability>[=<pattern>]`
 
 ```bash
-# プリセット
-vibe compile --profile minimal app.vibe    # ClockMonotonic, FsRead のみ
-vibe compile --profile sandbox app.vibe    # sandbox preset
-vibe compile --profile edge app.vibe       # Net のみ、Fs なし
+# --- ファイルシステム ---
+vibe compile --allow-read app.vibe                     # 全パス読み取り許可
+vibe compile --allow-read=/etc,/tmp app.vibe           # 特定パスのみ
+vibe compile --allow-read --deny-read=/etc/passwd app.vibe  # 除外パターン
+vibe compile --allow-write=/tmp app.vibe               # /tmp のみ書き込み
+vibe compile --deny-write app.vibe                     # 書き込み全禁止
 
-# 明示指定
-vibe compile --capabilities "Net,ClockRead" app.vibe
+# --- ネットワーク ---
+vibe compile --allow-net app.vibe                      # 全ホスト許可
+vibe compile --allow-net=api.example.com app.vibe      # 特定ホストのみ
+vibe compile --allow-net=*.example.com:443 app.vibe    # サブドメイン + ポート指定
+vibe compile --deny-net=*.internal.corp app.vibe       # 内部ネットワーク拒否
+vibe compile --allow-listen=8080,3000 app.vibe         # 特定ポートのみ listen
 
-# デフォルト (developer) — 全 capability 利用可能、DCE は通常通り
-vibe compile app.vibe
+# --- プロセス ---
+vibe compile --allow-run app.vibe                      # 全コマンド実行許可
+vibe compile --allow-run=git,node app.vibe             # 特定コマンドのみ
+vibe compile --deny-run=rm,sudo app.vibe               # 危険なコマンド拒否
+
+# --- 環境変数 ---
+vibe compile --allow-env app.vibe                      # 全環境変数
+vibe compile --allow-env=HOME,PATH,NODE_ENV app.vibe   # 特定変数のみ
+vibe compile --deny-env=AWS_SECRET_* app.vibe          # glob で秘密変数を拒否
+
+# --- LLM / AI ---
+vibe compile --allow-llm app.vibe                      # 全モデル
+vibe compile --allow-llm=claude-*,gpt-4* app.vibe      # 特定モデルパターン
+vibe compile --deny-llm app.vibe                       # LLM 呼び出し禁止
+
+# --- MCP / A2A ---
+vibe compile --allow-mcp=search,calculator app.vibe    # 特定ツールのみ
+vibe compile --allow-a2a=reviewer,coder app.vibe       # 特定エージェントのみ
+
+# --- システム ---
+vibe compile --allow-clock app.vibe                    # 時刻取得
+vibe compile --allow-random app.vibe                   # 乱数生成
+vibe compile --allow-git=snapshot,rollback app.vibe    # Git 操作の一部
+
+# --- プリセット (ショートハンド) ---
+vibe compile --profile minimal app.vibe       # = --allow-read --allow-clock
+vibe compile --profile sandbox app.vibe       # = --allow-read --allow-write=/tmp --allow-clock --allow-git=snapshot
+vibe compile --profile server app.vibe        # = --allow-read --allow-net --allow-listen --allow-env --allow-clock
+vibe compile --profile edge app.vibe          # = --allow-net --allow-clock (Fs なし)
+vibe compile --profile agent app.vibe         # = --allow-net --allow-llm --allow-mcp --allow-a2a --allow-clock
+
+# --- 全許可 (開発用デフォルト) ---
+vibe compile --allow-all app.vibe
+vibe compile app.vibe                         # = --allow-all (暗黙)
+```
+
+#### allow/deny の解決規則
+
+1. **deny は allow より優先**: `--allow-read --deny-read=/etc/shadow` → `/etc/shadow` 以外は読める
+2. **未指定 = 禁止**: `--allow-read` なしに `Fs::read_file` を使うコードは capability pruning の対象
+3. **パターンなし = 全許可/全禁止**: `--allow-net` = 全ホスト許可、`--deny-net` = 全ホスト禁止
+4. **glob パターン**: パス系は `/tmp/**`、ホスト系は `*.example.com`、環境変数は `AWS_*` など
+
+#### パーミッション → effect マッピング
+
+CLI フラグは内部で effect availability に変換される:
+
+| CLI フラグ | effect | DCE 対象 (フラグなし時) |
+|-----------|--------|----------------------|
+| `--allow-read` | `Fs` (read 系) | `Fs::read_file`, `Fs::read_dir`, ... |
+| `--allow-write` | `Fs` (write 系) | `Fs::write_file`, `Fs::append_file`, ... |
+| `--allow-net` | `Http`, `Socket` | `Http::get`, `Http::post`, `Socket::connect`, ... |
+| `--allow-listen` | `HttpServer` | `Http::listen`, `Socket::listen`, ... |
+| `--allow-run` | `Process` | `sh()`, `sh_lines()`, `Process::spawn`, ... |
+| `--allow-env` | `Env` | `Env::get`, `Env::set`, ... |
+| `--allow-llm` | `Llm` | `Llm::complete`, `Rlm::run`, ... |
+| `--allow-mcp` | `Mcp` | `Mcp::call`, ... |
+| `--allow-a2a` | `A2a` | `A2a::delegate`, ... |
+| `--allow-clock` | `Clock` | `Clock::now`, ... |
+| `--allow-random` | `Random` | `Random::int`, `Random::bytes`, ... |
+| `--allow-git` | `Git` | `Git::snapshot`, `Git::rollback`, ... |
+
+`Fs` effect は `--allow-read` と `--allow-write` で独立制御できる。`read` のみ許可の場合、`Fs::write_file` を呼ぶコードだけが pruning される。
+
+#### 細粒度パーミッションと `@build` 定数
+
+パスやホストの細粒度制約は DCE では使わない（静的に判定できない）。DCE は effect レベルの粗粒度で動作し、パターンレベルの制約はランタイムで enforce する:
+
+```
+// --allow-read=/tmp --deny-read=/etc
+// → DCE: Fs read 系は残す (allow-read が存在するので)
+// → ランタイム: /etc/passwd を読もうとすると PermissionDenied
+
+// ただし @build で明示分岐すれば DCE が効く:
+let config = if @build.allowed("read", "/etc") {
+  Fs::read_file("/etc/app.conf")     // deny-read=/etc なら除去
+} else {
+  "default config"
+}
 ```
 
 #### DCE の拡張フェーズ
@@ -88,27 +175,63 @@ let config = if @build.has_capability("Fs") {
 `@build` 名前空間でビルド時に確定する値を提供する:
 
 ```
-@build.has_capability("Fs")        // -> Bool  (ビルドプロファイルに Fs があるか)
-@build.has_capability("Net")       // -> Bool
+// effect レベルの判定 (DCE の粗粒度スイッチ)
+@build.has_capability("Fs")        // -> Bool  --allow-read または --allow-write があるか
+@build.has_capability("Net")       // -> Bool  --allow-net があるか
+@build.has_capability("Process")   // -> Bool  --allow-run があるか
+@build.has_capability("Llm")       // -> Bool  --allow-llm があるか
+
+// 細粒度パーミッション判定 (パターンレベル)
+@build.allowed("read")             // -> Bool  --allow-read があるか
+@build.allowed("read", "/etc")     // -> Bool  /etc の読み取りが allow かつ deny されていないか
+@build.allowed("write", "/tmp")    // -> Bool  /tmp への書き込みが許可されているか
+@build.allowed("net", "*.github.com")  // -> Bool  github.com へのアクセスが許可されているか
+@build.allowed("run", "git")       // -> Bool  git コマンドの実行が許可されているか
+@build.allowed("env", "HOME")      // -> Bool  HOME 環境変数の読み取りが許可されているか
+@build.allowed("llm", "claude-*")  // -> Bool  claude 系モデルの呼び出しが許可されているか
+
+// プロファイル・ターゲット
 @build.profile()                   // -> String ("minimal", "sandbox", "edge", ...)
 @build.target()                    // -> String ("wasm", "wasm-gc", "component")
 ```
 
 これらは checker 通過後、codegen 前に定数に置換される。
 
+パターンなしの `@build.allowed("read")` は effect レベルの判定と同等。パターン付きの `@build.allowed("read", "/etc")` は CLI の allow/deny パターンを静的にマッチし、確定できる場合のみ定数化する。確定できない場合（動的パスなど）はランタイムチェックにフォールバック。
+
 #### 定数畳み込みと分岐除去
 
 ```
-// ソースコード
+// ソースコード (粗粒度: effect レベル)
 let result = if @build.has_capability("Fs") {
   Fs::read_file("data.txt")
 } else {
   "default"
 }
-
 // --profile edge (Fs なし) でビルド後:
-// → if false { ... } else { "default" }
 // → "default"  (dead branch 除去)
+
+
+// 細粒度: パスパターンレベル
+let secret = if @build.allowed("read", "/etc/secrets") {
+  Fs::read_file("/etc/secrets/api_key.txt")
+} else if @build.allowed("env", "API_KEY") {
+  Env::get("API_KEY")
+} else {
+  ""
+}
+// --allow-read=/tmp --deny-read=/etc --allow-env=API_KEY でビルド後:
+// → Env::get("API_KEY") のみ残る
+
+
+// コマンド制限
+let version = if @build.allowed("run", "git") {
+  sh("git rev-parse HEAD")
+} else {
+  "unknown"
+}
+// --deny-run=git でビルド後:
+// → "unknown" のみ残る
 ```
 
 #### `match` 式での定数分岐
@@ -119,9 +242,16 @@ let backend = match @build.target() {
   "wasm"    => use_linear_allocator()
   _         => use_fallback()
 }
-
 // --target wasm-gc でビルド後:
 // → use_gc_allocator() のみ残る
+
+
+// プロファイルによる機能切り替え
+let ai_provider = match @build.profile() {
+  "agent" => AiProvider::full()       // LLM + MCP + A2A
+  "server" => AiProvider::headless()  // LLM のみ
+  _ => AiProvider::none()             // AI 機能なし
+}
 ```
 
 ### 3. Effect 到達可能性の伝播規則
