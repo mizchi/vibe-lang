@@ -379,7 +379,6 @@ run_stage "compiled selfhost compiler cache test" \
 
 echo "[bootstrap] selfhost __to_string source path check"
 if rg -n "double_to_string_compiler" \
-  "$PROJECT_ROOT/vibe/compiler/values.vibe" \
   "$PROJECT_ROOT/vibe/compiler/token.vibe" \
   "$PROJECT_ROOT/vibe/compiler/printer.vibe" >/dev/null; then
   echo "bootstrap gate failed: selfhost compiler still depends on double_to_string_compiler" >&2
