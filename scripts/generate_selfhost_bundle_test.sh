@@ -44,6 +44,7 @@ VIBE_SELFHOST_PROJECT_ROOT="$TMP_ROOT" \
 VIBE_SELFHOST_SOURCE_MANIFEST="$TMP_ROOT/vibe/compiler/selfhost_sources_manifest.tsv" \
 VIBE_SELFHOST_BUNDLE_OUT="$TMP_ROOT/vibe/compiler/selfhost_sources_bundle.vibe" \
 VIBE_SELFHOST_ADAPTER_BUNDLE_OUT="$TMP_ROOT/vibe/compiler/selfhost_cli_adapter_bundle.vibe" \
+VIBE_SELFHOST_BUNDLE_EXTRA_ENTRIES="" \
 bash "$BUNDLE_SCRIPT" >/dev/null
 
 OUT="$TMP_ROOT/vibe/compiler/selfhost_sources_bundle.vibe"
