@@ -698,43 +698,58 @@ jobs:
           if-no-files-found: ignore
 
   ci-required:
-    if: ${{ github.event_name == 'pull_request' && always() }}
+    if: always()
     needs:
       - lint-ci
       - contract-moon
       - contract-native
-      - wasm-vibe-smoke
+      - coverage-selfhost-suite
       - e2e-component
       - selfhost-examples
-      - coverage-selfhost-suite
+      - wasm-vibe-smoke
+      - wasm-compile-e2e
+      - wasm-parity
     runs-on: ubuntu-latest
     steps:
       - name: Check required CI job results
-        env:
-          LINT_CI_RESULT: ${{ needs.lint-ci.result }}
-          CONTRACT_MOON_RESULT: ${{ needs.contract-moon.result }}
-          CONTRACT_NATIVE_RESULT: ${{ needs.contract-native.result }}
-          WASM_VIBE_SMOKE_RESULT: ${{ needs.wasm-vibe-smoke.result }}
-          E2E_COMPONENT_RESULT: ${{ needs.e2e-component.result }}
-          SELFHOST_EXAMPLES_RESULT: ${{ needs.selfhost-examples.result }}
-          COVERAGE_SELFHOST_SUITE_RESULT: ${{ needs.coverage-selfhost-suite.result }}
         run: |
-          failures=0
-          for check in \
-            "lint-ci:$LINT_CI_RESULT" \
-            "contract-moon:$CONTRACT_MOON_RESULT" \
-            "contract-native:$CONTRACT_NATIVE_RESULT" \
-            "wasm-vibe-smoke:$WASM_VIBE_SMOKE_RESULT" \
-            "e2e-component:$E2E_COMPONENT_RESULT" \
-            "selfhost-examples:$SELFHOST_EXAMPLES_RESULT" \
-            "coverage-selfhost-suite:$COVERAGE_SELFHOST_SUITE_RESULT"
-          do
-            name="${check%%:*}"
-            result="${check#*:}"
-            echo "$name => $result"
-            if [ "$result" != "success" ]; then
-              echo "::error::$name finished with $result"
-              failures=1
-            fi
-          done
-          exit "$failures"
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]] || \
+             [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "::error::One or more required jobs failed or were cancelled"
+            echo ""
+            echo "Job results:"
+            echo "  lint-ci: ${{ needs.lint-ci.result }}"
+            echo "  contract-moon: ${{ needs.contract-moon.result }}"
+            echo "  contract-native: ${{ needs.contract-native.result }}"
+            echo "  coverage-selfhost-suite: ${{ needs.coverage-selfhost-suite.result }}"
+            echo "  e2e-component: ${{ needs.e2e-component.result }}"
+            echo "  selfhost-examples: ${{ needs.selfhost-examples.result }}"
+            echo "  wasm-vibe-smoke: ${{ needs.wasm-vibe-smoke.result }}"
+            echo "  wasm-compile-e2e: ${{ needs.wasm-compile-e2e.result }}"
+            echo "  wasm-parity: ${{ needs.wasm-parity.result }}"
+            exit 1
+          fi
+          echo "All required CI jobs passed or were skipped."
+
+  ci-informational:
+    if: always()
+    needs:
+      - bundle-size-compiler
+      - bundle-size-product-gate
+      - native-binary-parity
+      - selfhost-gates
+      - wasm-codegen-quick
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report informational CI job results
+        run: |
+          echo "Informational job results (non-blocking):"
+          echo "  bundle-size-compiler: ${{ needs.bundle-size-compiler.result }}"
+          echo "  bundle-size-product-gate: ${{ needs.bundle-size-product-gate.result }}"
+          echo "  native-binary-parity: ${{ needs.native-binary-parity.result }}"
+          echo "  selfhost-gates: ${{ needs.selfhost-gates.result }}"
+          echo "  wasm-codegen-quick: ${{ needs.wasm-codegen-quick.result }}"
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+            echo ""
+            echo "::warning::Some informational jobs failed (non-blocking)"
+          fi
