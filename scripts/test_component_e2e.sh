@@ -265,7 +265,7 @@ test_tuple_with_effects() {
 let parse = (s: String, i: Int) -> (String, Int) with {Error} {
   (s, i + 1)
 }
-parse("test", 5)
+handle { parse("test", 5) } { Error(_) => ("err", 0) }
 EOF
 
   # Compile to WASM to verify parsing works; tuple return is not yet supported at runtime
@@ -330,7 +330,7 @@ test_component_stdio_roundtrip() {
   fi
 
   cat > "$TMP_DIR/stdio_roundtrip.vibe" << 'EOF'
-let run = () -> Int with {Stdin, Stdout} {
+export let _start = () -> Unit with {Stdin, Stdout} {
   do {
     stdout_write_char(62)
     stdout_write_char(32)
@@ -343,8 +343,8 @@ let run = () -> Int with {Stdin, Stdout} {
       c
     }
   }
+  ()
 }
-run()
 EOF
 
   scripts/component_wkg_stdio.sh "$TMP_DIR/stdio_roundtrip.vibe" "$TMP_DIR/stdio_roundtrip.component.wasm" >/dev/null 2>&1 || {
@@ -375,7 +375,7 @@ test_component_stdio_stream_chunk() {
   fi
 
   cat > "$TMP_DIR/stdio_stream_chunk.vibe" << 'EOF'
-let run = () -> Int with {Stdin, Stdout} {
+export let _start = () -> Unit with {Stdin, Stdout} {
   do {
     stdout_write_stream("> ")
     let chunk = stdin_read_stream(4)
@@ -383,8 +383,8 @@ let run = () -> Int with {Stdin, Stdout} {
     stdout_write_char(10)
     7
   }
+  ()
 }
-run()
 EOF
 
   scripts/component_wkg_stdio.sh "$TMP_DIR/stdio_stream_chunk.vibe" "$TMP_DIR/stdio_stream_chunk.component.wasm" >/dev/null 2>&1 || {
