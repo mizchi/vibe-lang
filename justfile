@@ -211,6 +211,7 @@ ci-selfhost-examples-smoke:
     fail=0
     total=0
     examples=(
+      examples/async.vibe
       examples/module_export.vibe
       examples/module_types_export.vibe
     )
