@@ -587,7 +587,11 @@ fn normalize_render_fn_separated_safe(
     None => return None
   }
   // Probe: verify the new-style output can be parsed back
-  let probe = "let " + name + ": " + result.type_annotation + " = " +
+  let probe = "let " +
+    name +
+    ": " +
+    result.type_annotation +
+    " = " +
     result.body_text
   let _ = @parser.parse_ast(probe) catch { _ => return None }
   Some(result)
@@ -686,10 +690,8 @@ fn normalize_render_fn_separated(
       ann.write_string(", ")
     }
     let label_prefix = match param.label {
-      @vibe_core.ParamLabel::Required =>
-        param.name + "~: "
-      @vibe_core.ParamLabel::Optional =>
-        param.name + "?: "
+      @vibe_core.ParamLabel::Required => param.name + "~: "
+      @vibe_core.ParamLabel::Optional => param.name + "?: "
       _ => ""
     }
     let ty_text = normalize_render_type_annotation(param.ty)

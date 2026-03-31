@@ -1,8 +1,10 @@
 ///|
 fn usage() -> Unit {
-  println("warning-fixture [--update] [--dir <path>]")
+  println("warning-fixture [--update] [--path <path>]")
   println("  --update      rewrite fixtures/*.diag from current warning output")
-  println("  --dir <path>  fixture directory (default: fixtures/warnings)")
+  println(
+    "  --path <path> fixture path or directory (default: fixtures/warnings)",
+  )
 }
 
 ///|
@@ -24,18 +26,18 @@ fn collect_cli_args() -> Array[String] {
 ///|
 fn parse_args(args : Array[String]) -> Result[(Bool, String), String] {
   let mut update = false
-  let mut fixture_dir = "fixtures/warnings"
+  let mut fixture_path = "fixtures/warnings"
   let mut i = 0
   while i < args.length() {
     let arg = args[i]
     match arg {
       "--update" => update = true
-      "--dir" => {
+      "--dir" | "--path" => {
         i += 1
         if i >= args.length() {
           return Err("missing directory path after --dir")
         }
-        fixture_dir = args[i]
+        fixture_path = args[i]
       }
       "--help" | "-h" => {
         usage()
@@ -45,7 +47,7 @@ fn parse_args(args : Array[String]) -> Result[(Bool, String), String] {
     }
     i += 1
   }
-  Ok((update, fixture_dir))
+  Ok((update, fixture_path))
 }
 
 ///|
@@ -62,7 +64,7 @@ fn print_mismatch(mismatch : @checker.WarningFixtureMismatch) -> Unit {
 ///|
 fn main {
   let args = collect_cli_args()
-  let (update, fixture_dir) = match parse_args(args) {
+  let (update, fixture_path) = match parse_args(args) {
     Ok(v) => v
     Err(err) =>
       if err.length() == 0 {
@@ -72,22 +74,22 @@ fn main {
       }
   }
   if update {
-    match @checker.update_warning_fixtures(fixture_dir) {
+    match @checker.update_warning_fixtures(fixture_path) {
       Ok(updated) =>
         println(
           "updated warning fixtures: " +
           updated.to_string() +
           " file(s) in " +
-          fixture_dir,
+          fixture_path,
         )
       Err(err) => abort("warning-fixture: " + err)
     }
     return
   }
-  match @checker.verify_warning_fixtures(fixture_dir) {
+  match @checker.verify_warning_fixtures(fixture_path) {
     Ok(mismatches) => {
       if mismatches.length() == 0 {
-        println("warning fixtures: ok (\{fixture_dir})")
+        println("warning fixtures: ok (\{fixture_path})")
         return
       }
       for mismatch in mismatches {

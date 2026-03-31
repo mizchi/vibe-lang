@@ -721,9 +721,7 @@ fn infer_expr_kind_with(
           value_name, index_name, iterable, body, span,
         )
       } else {
-        @core.desugar_for_in(
-          value_name, index_name, iterable, body, span,
-        )
+        @core.desugar_for_in(value_name, index_name, iterable, body, span)
       }
       infer_block_kind(ctx, desugared, locals)
     }
@@ -1258,9 +1256,7 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
           value_name, index_name, iterable, body, span,
         )
       } else {
-        @core.desugar_for_in(
-          value_name, index_name, iterable, body, span,
-        )
+        @core.desugar_for_in(value_name, index_name, iterable, body, span)
       }
       needs_heap_block(ctx, desugared)
     }
@@ -2114,9 +2110,7 @@ fn expr_always_returns_tuple(
           value_name, index_name, iterable, body, span,
         )
       } else {
-        @core.desugar_for_in(
-          value_name, index_name, iterable, body, span,
-        )
+        @core.desugar_for_in(value_name, index_name, iterable, body, span)
       }
       body_always_returns_tuple(desugared, arity, self_name, eligible_fns~)
     }

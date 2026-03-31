@@ -553,9 +553,7 @@ fn walk_expr(
           value_name, index_name, iterable, body, span,
         )
       } else {
-        @core.desugar_for_in(
-          value_name, index_name, iterable, body, span,
-        )
+        @core.desugar_for_in(value_name, index_name, iterable, body, span)
       }
       scopes.push(warning_scope_new())
       walk_module(desugared, scopes, out)

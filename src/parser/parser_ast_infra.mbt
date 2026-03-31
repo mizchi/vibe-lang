@@ -142,11 +142,13 @@ pub fn AstParser::parse(self : AstParser) -> @core.Module raise ParseError {
           self.skip_trivia()
           self.peek_kind() != eof()
         }) {
-    let result : @core.Stmt? = try {
-      self.parse_stmt()
-    } catch {
+    let stmt_start = self.pos
+    let result : @core.Stmt? = self.parse_stmt() catch {
       e => {
         self.errors.push(e)
+        if self.pos == stmt_start && self.peek_kind() != eof() {
+          self.pos += 1
+        }
         self.skip_to_sync_point()
         None
       }
@@ -176,11 +178,13 @@ pub fn AstParser::parse_with_recovery(
           self.skip_trivia()
           self.peek_kind() != eof()
         }) {
-    let result : @core.Stmt? = try {
-      self.parse_stmt()
-    } catch {
+    let stmt_start = self.pos
+    let result : @core.Stmt? = self.parse_stmt() catch {
       e => {
         self.errors.push(e)
+        if self.pos == stmt_start && self.peek_kind() != eof() {
+          self.pos += 1
+        }
         self.skip_to_sync_point()
         None
       }

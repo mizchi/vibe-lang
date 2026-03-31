@@ -724,9 +724,7 @@ fn collect_captures_expr(
           value_name, index_name, iterable, body, span,
         )
       } else {
-        @core.desugar_for_in(
-          value_name, index_name, iterable, body, span,
-        )
+        @core.desugar_for_in(value_name, index_name, iterable, body, span)
       }
       collect_captures_block(desugared, bound, outer_bound, captures, seen)
     }
@@ -1001,9 +999,7 @@ fn collect_nested_funcs_expr(
           value_name, index_name, iterable, body, span,
         )
       } else {
-        @core.desugar_for_in(
-          value_name, index_name, iterable, body, span,
-        )
+        @core.desugar_for_in(value_name, index_name, iterable, body, span)
       }
       collect_nested_funcs_block(desugared, bound, funcs, false)
     }
@@ -1368,9 +1364,7 @@ fn collect_fn_span_keys_expr(expr : @core.Expr, out : Array[String]) -> Unit {
           value_name, index_name, iterable, body, span,
         )
       } else {
-        @core.desugar_for_in(
-          value_name, index_name, iterable, body, span,
-        )
+        @core.desugar_for_in(value_name, index_name, iterable, body, span)
       }
       for s in desugared.stmts {
         collect_fn_span_keys_stmt(s, out)
@@ -1498,9 +1492,7 @@ fn precompute_ref_cell_captures_expr(
           value_name, index_name, iterable, body, span,
         )
       } else {
-        @core.desugar_for_in(
-          value_name, index_name, iterable, body, span,
-        )
+        @core.desugar_for_in(value_name, index_name, iterable, body, span)
       }
       precompute_ref_cell_captures_block(ctx, desugared.stmts, scope_mcv)
     }

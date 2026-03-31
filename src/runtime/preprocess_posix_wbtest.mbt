@@ -124,4 +124,3 @@ test "preprocess_posix_source: exists maps to Fs::exists" {
     "Fs::exists(\"foo.txt\")",
   )
 }
-

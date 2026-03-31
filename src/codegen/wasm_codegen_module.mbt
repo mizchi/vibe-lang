@@ -3541,11 +3541,11 @@ fn emit_module_with_coverage(
         ctx.rc_free_list_global + 1
       } else {
         (if ctx.use_heap_global { 1 } else { 0 }) +
-          (if ctx.need_stack_switching { 1 } else { 0 }) +
-          (if ctx.need_effect_resume { 3 } else { 0 }) +
-          (if ctx.coverage_enabled { 2 } else { 0 }) +
-          (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 }) +
-          (if ctx.need_socket { 1 } else { 0 })
+        (if ctx.need_stack_switching { 1 } else { 0 }) +
+        (if ctx.need_effect_resume { 3 } else { 0 }) +
+        (if ctx.coverage_enabled { 2 } else { 0 }) +
+        (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 }) +
+        (if ctx.need_socket { 1 } else { 0 })
       }
       ctx.rc_debug_alloc_global = debug_base
       ctx.rc_debug_free_global = debug_base + 1

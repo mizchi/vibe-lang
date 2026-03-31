@@ -449,7 +449,9 @@ fn compile_lite_validate_opts(
   in_memory : Bool,
 ) -> Result[Unit, String] {
   if opts.mode != CompileMode::Wasm && opts.mode != CompileMode::WasmGc {
-    return Err("compile-lite: only --wasm/--wasm-linear/--wasm-gc mode is supported")
+    return Err(
+      "compile-lite: only --wasm/--wasm-linear/--wasm-gc mode is supported",
+    )
   }
   if opts.debug_errors {
     return Err("compile-lite: --debug-errors is not supported")

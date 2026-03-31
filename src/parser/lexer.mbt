@@ -403,10 +403,8 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
         // Only consume '.' as decimal point if the next char is NOT '.'
         // (to avoid consuming '..' range operator)
         if self.peek() == Some('.') &&
-          !(
-            self.pos + 1 < self.input.length() &&
-            self.input[self.pos + 1].to_int().unsafe_to_char() == '.',
-          ) {
+          !(self.pos + 1 < self.input.length() &&
+          self.input[self.pos + 1].to_int().unsafe_to_char() == '.') {
           is_float = true
           let _ = self.advance()
           while (match self.peek() {

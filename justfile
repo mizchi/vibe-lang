@@ -12,6 +12,7 @@ vibe_use_wasmtime_submodule := env_var_or_default("VIBE_USE_WASMTIME_SUBMODULE",
 vibe_wasmtime_wasm_flags := env_var_or_default("VIBE_WASMTIME_WASM_FLAGS", "unknown-imports-default=y")
 # space-separated flags, each token is passed as `-S <token>`
 vibe_wasmtime_wasi_flags := env_var_or_default("VIBE_WASMTIME_WASI_FLAGS", "")
+vibe_test_node_options := env_var_or_default("VIBE_TEST_NODE_OPTIONS", "--max-old-space-size=16384")
 # suppress noisy import-liveness warnings while keeping other warnings active
 moon_warn_list := env_var_or_default("VIBE_MOON_WARN_LIST", "-1-6-7-9-24-29")
 vibe_test_ulimit_n := env_var_or_default("VIBE_TEST_ULIMIT_N", "8192")
@@ -69,7 +70,9 @@ test-vibe-normalize:
 test:
     scripts/check_lock_clean.sh
     scripts/check_lock_clean_test.sh
-    moon test --target {{target}} --warn-list '{{moon_warn_list}}'
+    env NODE_OPTIONS='{{vibe_test_node_options}}' moon test --target {{target}} --warn-list '{{moon_warn_list}}'
+    bash scripts/test_typecheck_fixtures.sh
+    bash scripts/test_warning_fixtures.sh
     moon test -p mizchi/vibe/lib --target wasm-gc --warn-list '{{moon_warn_list}}'
     moon test -p mizchi/vibe/cmd/vibe -f cli_e2e_wbtest.mbt --target native --warn-list '{{moon_warn_list}}'
     moon test -p mizchi/vibe/cmd/vibe_check_wasi --target wasm --warn-list '{{moon_warn_list}}'
@@ -351,7 +354,7 @@ test-fixtures-isolation:
 
 # Run typecheck diagnostic fixture tests
 test-typecheck-fixtures:
-    moon test -p checker -f typecheck_fixture_test.mbt --target {{target}}
+    bash scripts/test_typecheck_fixtures.sh
 
 # Update typecheck diagnostic fixtures
 test-typecheck-fixtures-update:
@@ -359,7 +362,7 @@ test-typecheck-fixtures-update:
 
 # Run warning diagnostic fixture tests
 test-warning-fixtures:
-    moon test -p checker -f warning_fixture_test.mbt --target {{target}}
+    bash scripts/test_warning_fixtures.sh
 
 # Update warning diagnostic fixtures
 test-warning-fixtures-update:

@@ -659,14 +659,7 @@ fn normalize_strip_all_fn_param_types_expr(
   expr : @vibe_core.Expr,
 ) -> @vibe_core.Expr {
   match expr {
-    @vibe_core.Expr::Fn(
-      type_params~,
-      type_bounds~,
-      params~,
-      body~,
-      span~,
-      ..
-    ) =>
+    @vibe_core.Expr::Fn(type_params~, type_bounds~, params~, body~, span~, ..) =>
       if type_params.length() > 0 || type_bounds.length() > 0 {
         expr
       } else {

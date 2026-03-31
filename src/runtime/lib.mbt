@@ -31,4 +31,3 @@ pub fn is_vibe_script(script : String) -> Bool {
   }
   false
 }
-

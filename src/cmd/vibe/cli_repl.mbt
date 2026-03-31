@@ -2613,6 +2613,29 @@ fn repl_compiled_binding_display_override(line : String) -> String? {
 }
 
 ///|
+fn repl_compiled_display_override_for_internal_ctor(
+  line : String,
+  display : String,
+) -> String? {
+  if display != "Ctor(0, 0)" {
+    return None
+  }
+  match repl_compiled_binding_rhs(line) {
+    Some(rhs) =>
+      if rhs.contains(" ") ||
+        rhs.contains("(") ||
+        rhs.contains("{") ||
+        rhs.contains("[") ||
+        rhs.contains("\"") {
+        None
+      } else {
+        repl_compiled_binding_display_override(line)
+      }
+    None => None
+  }
+}
+
+///|
 let repl_node_display_runner_source : String =
   #|const fs = require("node:fs/promises");
   #|const decoder = new TextDecoder();
@@ -3001,13 +3024,23 @@ fn run_compiled_repl_line_with_cache(
       )
   }
   let (value, display_override) = match node_display {
-    Some(display) => (WasmRunValue::Int(0L), Some(display))
+    Some(display) =>
+      match repl_compiled_display_override_for_internal_ctor(line, display) {
+        Some(display_text) => (WasmRunValue::Int(0L), Some(display_text))
+        None => (WasmRunValue::Int(0L), Some(display))
+      }
     None =>
       match decode_tagged_wasm_run_value(tagged) {
         Some(v) => (v, None)
         None =>
           match repl_try_compiled_display(wasm_path) {
-            Some(display) => (WasmRunValue::Int(0L), Some(display))
+            Some(display) =>
+              match
+                repl_compiled_display_override_for_internal_ctor(line, display) {
+                Some(display_text) =>
+                  (WasmRunValue::Int(0L), Some(display_text))
+                None => (WasmRunValue::Int(0L), Some(display))
+              }
             None =>
               match repl_compiled_binding_display_override(line) {
                 Some(display) => (WasmRunValue::Int(0L), Some(display))

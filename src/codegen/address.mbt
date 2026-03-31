@@ -211,9 +211,7 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
           value_name, index_name, iterable, body, span,
         )
       } else {
-        @core.desugar_for_in(
-          value_name, index_name, iterable, body, span,
-        )
+        @core.desugar_for_in(value_name, index_name, iterable, body, span)
       }
       "(block " + block_to_addr_sexp(ctx, desugared) + ")"
     }

@@ -344,9 +344,7 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
       if container_stack.length() > 0 {
         match container_stack.get(container_stack.length() - 1) {
           Some(container) =>
-            if container_indents(container) &&
-              !dedented_before &&
-              indent > 0 {
+            if container_indents(container) && !dedented_before && indent > 0 {
               indent -= 1
             }
           None => ()

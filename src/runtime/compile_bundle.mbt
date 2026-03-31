@@ -1562,9 +1562,7 @@ fn collect_all_assign_targets_expr(
           value_name, index_name, iterable, body, span,
         )
       } else {
-        @core.desugar_for_in(
-          value_name, index_name, iterable, body, span,
-        )
+        @core.desugar_for_in(value_name, index_name, iterable, body, span)
       }
       collect_all_assign_targets_block(desugared, out)
     }

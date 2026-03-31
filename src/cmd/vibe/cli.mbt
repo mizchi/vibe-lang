@@ -119,23 +119,19 @@ fn print_usage() -> Unit {
   println("Usage: vibe <command> [options]")
   println("")
   println("Build & Run:")
-  println("  run <file>                  Execute a script (requires `let main`)")
   println(
-    "  test <file|dir...>          Run test blocks (parallel for dirs)",
+    "  run <file>                  Execute a script (requires `let main`)",
   )
+  println("  test <file|dir...>          Run test blocks (parallel for dirs)")
   println("  compile <file> [-o <out>]   Compile to WASM or other targets")
   println("  build <file>                Full pipeline build")
-  println(
-    "  bench <file|dir...>         Run benchmark blocks",
-  )
+  println("  bench <file|dir...>         Run benchmark blocks")
   println("")
   println("Development:")
   println("  shell                       Interactive TUI shell")
   println("  fmt <file...>               Format scripts")
   println("  check <file...>             Type check scripts")
-  println(
-    "  normalize <file...>         Normalize declaration order",
-  )
+  println("  normalize <file...>         Normalize declaration order")
   println("")
   println("IDE & Tooling:")
   println("  lsp                         Start language server")
@@ -147,9 +143,7 @@ fn print_usage() -> Unit {
   println("Project:")
   println("  init [dir]                  Initialize project")
   println("  new <dir>                   Scaffold new project")
-  println(
-    "  fetch <file>                Resolve imports and sync lock",
-  )
+  println("  fetch <file>                Resolve imports and sync lock")
   println("")
   println("Flags:")
   println("  --syntax vibe               Parser mode")
@@ -211,7 +205,9 @@ fn print_compile_help() -> Unit {
   println("  -O{0,1,2,3,4,s,z}  Optimization level")
   println("  --no-dce            Disable dead code elimination")
   println("  --debug-errors      Keep throw string literals in output")
-  println("  --coverage          Enable coverage (test only, set VIBE_TEST_COVERAGE=1)")
+  println(
+    "  --coverage          Enable coverage (test only, set VIBE_TEST_COVERAGE=1)",
+  )
   println("  --coverage-run-tests  Run test blocks in coverage mode")
   println("  --http-host-imports Wire HTTP builtins to host imports")
   println("  --library           Library mode")
@@ -252,9 +248,7 @@ fn print_check_help() -> Unit {
   println("")
   println("Options:")
   println("  --profile-tsv <path>   Write profiling data to TSV file")
-  println(
-    "  --builtin-contract <error|warn|ignore>  Builtin contract mode",
-  )
+  println("  --builtin-contract <error|warn|ignore>  Builtin contract mode")
 }
 
 ///|

@@ -1136,7 +1136,7 @@ fn type_matches_impl_target(
       match a {
         @core.Type::Map(akey, actual_inner) =>
           type_matches_impl_target(env, key, akey, mapping) &&
-            type_matches_impl_target(env, inner, actual_inner, mapping)
+          type_matches_impl_target(env, inner, actual_inner, mapping)
         _ => false
       }
     @core.Type::Set(inner) =>
@@ -1155,7 +1155,7 @@ fn type_matches_impl_target(
       match a {
         @core.Type::MapBuilder(akey, actual_inner) =>
           type_matches_impl_target(env, key, akey, mapping) &&
-            type_matches_impl_target(env, inner, actual_inner, mapping)
+          type_matches_impl_target(env, inner, actual_inner, mapping)
         _ => false
       }
     @core.Type::Variant(pf) =>
@@ -1514,7 +1514,7 @@ fn trait_impl_targets_may_overlap_concrete(
       match right {
         @core.Type::Map(rkey, right_item) =>
           trait_impl_targets_may_overlap(lkey, rkey) &&
-            trait_impl_targets_may_overlap(left_item, right_item)
+          trait_impl_targets_may_overlap(left_item, right_item)
         _ => false
       }
     @core.Type::Set(left_item) =>
@@ -1533,7 +1533,7 @@ fn trait_impl_targets_may_overlap_concrete(
       match right {
         @core.Type::MapBuilder(rkey, right_item) =>
           trait_impl_targets_may_overlap(lkey, rkey) &&
-            trait_impl_targets_may_overlap(left_item, right_item)
+          trait_impl_targets_may_overlap(left_item, right_item)
         _ => false
       }
     @core.Type::Named(name=left_name, args=left_args) =>
