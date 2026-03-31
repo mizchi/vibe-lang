@@ -127,6 +127,7 @@ ci-contract-native:
     echo "=== contract-native: done ==="
     if [ -n "$failed" ]; then
       echo "contract-native: FAILED tests:$failed"
+      exit 1
     else
       echo "contract-native: all passed"
     fi
