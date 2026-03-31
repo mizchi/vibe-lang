@@ -27,10 +27,7 @@ pub fn run(args : Array[String]) -> Unit {
   let enable_llm = parsed.enable_llm
   match cmd {
     "run" => run_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
-    "eval" =>
-      abort(
-        "eval: command was removed. Use 'vibe shell' or 'vibe shell-stdin' for interactive evaluation, or 'vibe run' for script execution.",
-      )
+    "eval" => eval_cmd(cmd_args, runtime_features, enable_llm~)
     "test" => test_cmd(cmd_args, runtime_features)
     "check" => check_cmd(cmd_args)
     "session-http" => session_http_cmd(cmd_args, runtime_features)
