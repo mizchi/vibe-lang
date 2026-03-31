@@ -17,7 +17,7 @@ fn type_check_with_aliases(
     env,
     ast.stmts,
     aliases,
-    effect_scope_all(),
+    effect_scope_none(),
     false,
     exported_names,
     is_top_level=true,
@@ -87,7 +87,7 @@ pub fn type_check_with_env(
     env,
     ast.stmts,
     aliases,
-    effect_scope_all(),
+    effect_scope_none(),
     false,
     exported_names,
     is_top_level=true,
@@ -601,7 +601,29 @@ fn type_check_stmts(
         )
       @core.Stmt::Expr(expr~, span~) => {
         let _ = span
-        let _ = type_expr_eff(env, expr, aliases, effects, allow_effect)
+        try {
+          let _ = type_expr_eff(env, expr, aliases, effects, allow_effect)
+        } catch {
+          TypeError::EffectGuardNotSatisfied(
+            operation~,
+            missing_effect~,
+            span=err_span
+          ) =>
+            if is_top_level {
+              raise TypeError::TopLevelUnhandledEffect(
+                operation~,
+                missing_effect~,
+                span=err_span,
+              )
+            } else {
+              raise TypeError::EffectGuardNotSatisfied(
+                operation~,
+                missing_effect~,
+                span=err_span,
+              )
+            }
+          e => raise e
+        }
       }
       @core.Stmt::Import(..) => ()
       @core.Stmt::ExternLet(name~, ty~, span~) => {
@@ -687,7 +709,7 @@ fn type_check_stmts(
           clone_env(env),
           body.stmts,
           aliases,
-          effects,
+          effect_scope_all(),
           true,
           {},
         )
@@ -699,7 +721,7 @@ fn type_check_stmts(
           clone_env(env),
           body.stmts,
           aliases,
-          effects,
+          effect_scope_all(),
           true,
           {},
         )
@@ -1191,6 +1213,7 @@ fn type_matches_impl_target(
             let mut ok = true
             for i in 0..<pp.length() {
               if pp[i].label != ap[i].label ||
+                (not(pp[i].label.is_positional()) && pp[i].name != ap[i].name) ||
                 not(type_matches_impl_target(env, pp[i].ty, ap[i].ty, mapping)) {
                 ok = false
                 break
@@ -1560,6 +1583,13 @@ fn trait_impl_targets_may_overlap_concrete(
           }
           let mut i = 0
           while i < left_params.length() {
+            if left_params[i].label != right_params[i].label ||
+              (
+                not(left_params[i].label.is_positional()) &&
+                left_params[i].name != right_params[i].name
+              ) {
+              return false
+            }
             if not(
                 trait_impl_targets_may_overlap(
                   left_params[i].ty,

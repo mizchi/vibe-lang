@@ -34,6 +34,40 @@ fn warning_scope_new() -> WarningScope {
 }
 
 ///|
+let context_keywords : Array[String] = [
+  "for", "in", "is", "map", "loop", "derive",
+]
+
+///|
+fn is_context_keyword(name : String) -> Bool {
+  for kw in context_keywords {
+    if kw == name {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn warn_context_keyword_binding(
+  name : String,
+  span : @core.Span,
+  out : Array[@core.Diagnostic],
+) -> Unit {
+  if is_context_keyword(name) {
+    out.push(@core.Diagnostic::{
+      stage: "warning",
+      message: "`" +
+      name +
+      "` is a context keyword and may cause unexpected parsing behavior",
+      span: Some(span),
+      hint: Some("use a different variable name to avoid ambiguity"),
+      note: None,
+    })
+  }
+}
+
+///|
 fn warning_scope_declare(
   scopes : Array[WarningScope],
   name : String,
@@ -236,6 +270,7 @@ fn walk_stmt(
 ) -> Unit {
   match stmt {
     @core.Stmt::Let(rec~, name~, expr~, span~) => {
+      warn_context_keyword_binding(name, span, out)
       if rec {
         warning_scope_declare(
           scopes,
@@ -257,6 +292,7 @@ fn walk_stmt(
       }
     }
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+      warn_context_keyword_binding(name, span, out)
       if rec {
         warning_scope_declare(
           scopes,
@@ -278,6 +314,7 @@ fn walk_stmt(
       }
     }
     @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) => {
+      warn_context_keyword_binding(name, span, out)
       if rec {
         warning_scope_declare(
           scopes,
@@ -299,6 +336,7 @@ fn walk_stmt(
       }
     }
     @core.Stmt::LetMut(name~, expr~, span~) => {
+      warn_context_keyword_binding(name, span, out)
       walk_expr(expr, scopes, out)
       warning_scope_declare(
         scopes,

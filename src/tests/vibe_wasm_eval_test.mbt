@@ -1682,9 +1682,11 @@ test "vibe wasm eval if expression" {
 
 ///|
 test "vibe wasm eval if branches effects" {
-  let res = try
-    eval_run("{ if false { sh(\"a\") } else { sh(\"b\") } }")
-  catch {
+  let script =
+    #|export let _start = () -> Unit with { Process } {
+    #|  if false { sh("a") } else { sh("b") }
+    #|}
+  let res = try eval_run(script) catch {
     e => fail(e.to_string())
   } noraise {
     r => r
@@ -1887,7 +1889,11 @@ test "vibe wasm eval bool ops" {
 
 ///|
 test "vibe wasm eval captures sh output" {
-  let res = try eval_run("{ sh(\"hello\") }") catch {
+  let script =
+    #|export let _start = () -> Unit with { Process } {
+    #|  sh("hello")
+    #|}
+  let res = try eval_run(script) catch {
     e => fail(e.to_string())
   } noraise {
     r => r
@@ -1936,9 +1942,13 @@ test "vibe wasm eval matches interpreter for map string key lookup" {
 
 ///|
 test "vibe wasm eval matches interpreter for shell effects" {
-  assert_eval_backends_same_with_shell_effects(
-    "{ sh(\"echo hello\") }\n{ sh(\"echo world\") }\n42",
-  )
+  let script =
+    #|export let _start = () -> Int with { Process } {
+    #|  { sh("echo hello") }
+    #|  { sh("echo world") }
+    #|  42
+    #|}
+  assert_eval_backends_same_with_shell_effects(script)
 }
 
 ///|

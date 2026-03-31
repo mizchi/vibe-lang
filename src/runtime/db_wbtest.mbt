@@ -358,8 +358,10 @@ test "type query imports transitive type deps from imported value schemes" {
   db.set_source(
     "main",
     "import ./dep_api.vibe { Db, f }\n" +
-    "let (_, db2) = f(Db(1))\n" +
-    "let x = match db2 { Db(n) => n }\n" +
+    "let x = handle {\n" +
+    "  let (_, db2) = f(Db(1))\n" +
+    "  match db2 { Db(n) => n }\n" +
+    "} { Error(_) => -1 }\n" +
     "x\n",
   )
   let env = db.types("main")
@@ -439,8 +441,8 @@ test "type query imports re-exported Process functions through index" {
   db.set_source(
     "main",
     "import ./index.vibe { run_lines }\n" +
-    "let lines = run_lines(\"ok\")\n" +
-    "assert(eq(Array::length(lines), 1))\n",
+    "let caller = () -> Array[String] with { Process } { run_lines(\"ok\") }\n" +
+    "0\n",
   )
   let env = db.types("main")
   let diags = db.diagnostics("main")

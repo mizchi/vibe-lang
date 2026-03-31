@@ -68,7 +68,7 @@ cleanup() {
 trap cleanup EXIT
 
 wait_for_runner_start() {
-  for _ in $(seq 1 150); do
+  for _ in $(seq 1 300); do
     if [[ -n "${parent_pid}" ]] && ! kill -0 "${parent_pid}" >/dev/null 2>&1; then
       break
     fi

@@ -120,7 +120,7 @@ fn print_usage() -> Unit {
   println("")
   println("Build & Run:")
   println(
-    "  run <file>                  Execute a script (requires `let main`)",
+    "  run <file>                  Execute a script (final top-level pure expression)",
   )
   println("  test <file|dir...>          Run test blocks (parallel for dirs)")
   println("  compile <file> [-o <out>]   Compile to WASM or other targets")
@@ -231,7 +231,7 @@ fn print_test_help() -> Unit {
 fn print_run_help() -> Unit {
   println("Usage: vibe run <file>")
   println("")
-  println("Execute a vibe script. The file must contain `let main`.")
+  println("Execute a vibe script. The final top-level expression must be pure.")
   println("")
   println("Environment:")
   println(

@@ -81,7 +81,7 @@ test "bench: wasm.size.effect_ho" {
   inspect(
     snapshot,
     content=(
-      #|{wasm_size: Some(233), ir_size: 930, note: None}
+      #|{wasm_size: Some(274), ir_size: 1044, note: None}
     ),
   )
 }

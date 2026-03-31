@@ -12,7 +12,7 @@ fn assert_contract(label : String, cond : Bool, msg : String) -> Unit {
 
 ///|
 fn parse_or_fail(label : String, input : String) -> @core.Module {
-  let parsed = (try? @parser.parse_ast(input))
+  let parsed = try? @parser.parse_ast(input)
   match parsed {
     Ok(module_) => module_
     Err(err) => fail_contract(label, "parse failed: " + err.to_string())
@@ -126,16 +126,32 @@ fn check_syntax_kind_lexer_contract() -> Unit {
     "yield_kw and plus_eq must differ",
   )
   let yield_tokens = @parser.tokenize("yield +=")
-  assert_eq_syntax_kind("yield-token", yield_tokens[0].kind(), @parser.yield_kw())
-  assert_eq_syntax_kind("plus-eq-token", yield_tokens[2].kind(), @parser.plus_eq())
+  assert_eq_syntax_kind(
+    "yield-token",
+    yield_tokens[0].kind(),
+    @parser.yield_kw(),
+  )
+  assert_eq_syntax_kind(
+    "plus-eq-token",
+    yield_tokens[2].kind(),
+    @parser.plus_eq(),
+  )
 
   let map_lit_tokens = @parser.tokenize("map { a: 1 }")
-  assert_eq_syntax_kind("map-literal", map_lit_tokens[0].kind(), @parser.map_kw())
+  assert_eq_syntax_kind(
+    "map-literal",
+    map_lit_tokens[0].kind(),
+    @parser.map_kw(),
+  )
   let map_call_tokens = @parser.tokenize("map(1)")
   assert_eq_syntax_kind("map-call", map_call_tokens[0].kind(), @parser.name())
 
   let raw_ident_tokens = @parser.tokenize("let r#bench = 1\nr#bench")
-  assert_eq_syntax_kind("raw-ident-kind", raw_ident_tokens[2].kind(), @parser.name())
+  assert_eq_syntax_kind(
+    "raw-ident-kind",
+    raw_ident_tokens[2].kind(),
+    @parser.name(),
+  )
   assert_eq_string("raw-ident-text", raw_ident_tokens[2].text(), "bench")
 
   let ns_tokens = @parser.tokenize("std/string::from_char_code(1)")
@@ -218,7 +234,11 @@ fn check_parse_slice_and_raw_string() -> Unit {
   }
 
   let raw_string = @parser.Lexer::new("r\"hello\\nworld\"").next_token()
-  assert_eq_syntax_kind("raw-string-kind", raw_string.kind(), @parser.string_lit())
+  assert_eq_syntax_kind(
+    "raw-string-kind",
+    raw_string.kind(),
+    @parser.string_lit(),
+  )
   assert_eq_string("raw-string-text", raw_string.text(), "hello\\nworld")
 }
 
@@ -229,7 +249,8 @@ fn check_import_alias_and_pinned_path() -> Unit {
     @core.Stmt::AliasDecl(alias_name~, source~, ..) => {
       assert_eq_string("alias-decl-name", alias_name, "types")
       match source {
-        @core.ModuleRef::Path(path~) => assert_eq_string("alias-decl-path", path, "../types")
+        @core.ModuleRef::Path(path~) =>
+          assert_eq_string("alias-decl-path", path, "../types")
         _ => fail_contract("alias-decl", "expected path source")
       }
     }
@@ -237,8 +258,7 @@ fn check_import_alias_and_pinned_path() -> Unit {
   }
 
   let pinned_import = parse_or_fail(
-    "pinned-import",
-    "import ./types#abc123 { Expr }",
+    "pinned-import", "import ./types#abc123 { Expr }",
   )
   match pinned_import.stmts[0] {
     @core.Stmt::Import(source~, spec~, ..) => {
@@ -255,6 +275,7 @@ fn check_import_alias_and_pinned_path() -> Unit {
   }
 }
 
+///|
 fn run_case(label : String, f : () -> Unit) -> Unit {
   println("parser contract case: " + label)
   f()

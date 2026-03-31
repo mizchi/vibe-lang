@@ -5,7 +5,7 @@ vibe is an ML-like statically typed scripting language with shell integration, t
 ## CLI
 
 ```bash
-vibe run file.vibe       # Run a script (evaluates the final top-level expression)
+vibe run file.vibe       # Run a script (evaluates the final top-level pure expression)
 vibe test file.vibe      # Run tests in a file
 vibe shell               # Interactive REPL (PosixMode)
 vibe bench file.vibe     # Run benchmarks
@@ -28,7 +28,7 @@ test "greeting" {
 
 ## Entry Point
 
-Source-level scripts run the final top-level expression.
+Source-level scripts run the final top-level pure expression.
 When you `vibe build`, the generated WASM exports `_start` as the ABI entry point.
 
 ```vibe
