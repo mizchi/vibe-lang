@@ -2999,11 +2999,17 @@ fn ensure_run_ast_result(
         span~,
       ),
     )
+  } else if stmts.length() == 0 {
+    stmts.push(@core.Stmt::Expr(expr=@core.Expr::Int(value=0L, span~), span~))
   } else {
-    // No explicit entry point: return 0.
-    stmts.push(
-      @core.Stmt::Expr(expr=@core.Expr::Int(value=0L, span~), span~),
-    )
+    // No explicit _start: use last expression as return value (for REPL/eval).
+    match stmts[stmts.length() - 1] {
+      @core.Stmt::Expr(..) => ()
+      _ =>
+        stmts.push(
+          @core.Stmt::Expr(expr=@core.Expr::Int(value=0L, span~), span~),
+        )
+    }
   }
   @core.Module::{ stmts, }
 }
