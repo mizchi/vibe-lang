@@ -342,9 +342,7 @@ test "normalize_engine: pure and effectful functions separated" {
     Ok(normalized) => {
       // Pure fn should appear before effectful fn
       let idx_pure = ne_substring_index(normalized, "pure_fn:")
-      let idx_effect = ne_substring_index(
-        normalized, "effect_fn:",
-      )
+      let idx_effect = ne_substring_index(normalized, "effect_fn:")
       assert_true(idx_pure >= 0)
       assert_true(idx_effect >= 0)
       assert_true(idx_pure < idx_effect)
@@ -739,7 +737,6 @@ test "normalize_engine: pipeline normalization for nested calls" {
           #|
           #|let result: Int = 3 |> dbl |> inc
           #|
-
         ),
       )
     Err(msg) => fail("normalize failed: " + msg)
@@ -766,7 +763,6 @@ test "normalize_engine: pipeline with extra args" {
           #|
           #|let result: Int = 3 |> mul(2) |> add(10)
           #|
-
         ),
       )
     Err(msg) => fail("normalize failed: " + msg)

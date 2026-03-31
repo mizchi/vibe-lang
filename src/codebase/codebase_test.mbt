@@ -1,6 +1,32 @@
 ///|
+fn test_repo_root() -> String {
+  let cwd = match @env.current_dir() {
+    Some(path) => path
+    None => "/tmp"
+  }
+  let git_ref_path = cwd + "/.git"
+  let git_ref_is_file = @os_fs.is_file(git_ref_path) catch { _ => false }
+  if !git_ref_is_file {
+    return cwd
+  }
+  let git_ref = @os_fs.read_file_to_string(git_ref_path) catch {
+    _ => return cwd
+  }
+  let prefix = "gitdir: "
+  if !git_ref.has_prefix(prefix) {
+    return cwd
+  }
+  let gitdir = git_ref[prefix.length():].trim().to_string()
+  let parts = gitdir.split("/.git/").map(StringView::to_string).collect()
+  if parts.length() == 0 || parts[0].length() == 0 {
+    return cwd
+  }
+  parts[0]
+}
+
+///|
 fn make_temp_dir(prefix : String) -> String {
-  let tmp_root = "/var/tmp/vibe_codebase_test"
+  let tmp_root = test_repo_root() + "/_build/vibe_codebase_test"
   if not(@os_fs.path_exists(tmp_root)) {
     @os_fs.create_dir(tmp_root) catch {
       e => abort("create temp root failed: " + e.to_string())

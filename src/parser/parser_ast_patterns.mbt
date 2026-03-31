@@ -257,9 +257,7 @@ fn AstParser::parse_pattern(self : AstParser) -> @core.Pat raise ParseError {
           raw = text[0:len - 1].to_string()
         }
       }
-      let v = try {
-        @strconv.parse_double(raw)
-      } catch {
+      let v = @strconv.parse_double(raw) catch {
         _ =>
           raise ParseError::UnexpectedToken(
             expected="valid numeric literal",

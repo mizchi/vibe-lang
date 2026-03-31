@@ -1685,8 +1685,7 @@ fn infer_for_in_parts_gc(
   let iterable_kind = infer_expr_kind_gc(ctx, fctx, iterable)
   let iterable_type_idx = match iterable_kind {
     GcValKind::Ref(idx) => idx
-    _ =>
-      ensure_array_type(ctx.types, ctx.array_type_index, GcValKind::I64)
+    _ => ensure_array_type(ctx.types, ctx.array_type_index, GcValKind::I64)
   }
   let iterable_elem_kind = match ctx.types[iterable_type_idx] {
     GcTypeDef::Array(elem~) => elem
@@ -2149,7 +2148,10 @@ fn infer_expr_kind_gc(
       }
     }
     @core.Expr::Break(..) | @core.Expr::Continue(..) => GcValKind::I32
-    other => raise WasmGenError::Unsupported("expr: " + other.to_string()[:40].to_string())
+    other =>
+      raise WasmGenError::Unsupported(
+        "expr: " + other.to_string()[:40].to_string(),
+      )
   }
 }
 
@@ -4774,8 +4776,7 @@ fn gc_array_type_idx_from_kind(
           } else {
             ensure_array_type(ctx.types, ctx.array_type_index, GcValKind::I64)
           }
-        _ =>
-          ensure_array_type(ctx.types, ctx.array_type_index, GcValKind::I64)
+        _ => ensure_array_type(ctx.types, ctx.array_type_index, GcValKind::I64)
       }
     _ =>
       // Unknown type, default to I64 array
@@ -5826,7 +5827,14 @@ fn compile_expr_gc(
           }
           let base_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
           if base_kind == GcValKind::Ref(ctx.bytes_type) {
-            compile_bytes_set_gc(ctx, fctx, buf, pos_args[0], pos_args[1], pos_args[2])
+            compile_bytes_set_gc(
+              ctx,
+              fctx,
+              buf,
+              pos_args[0],
+              pos_args[1],
+              pos_args[2],
+            )
           } else {
             let type_idx = gc_array_type_idx_from_kind(
               ctx, base_kind, "__set_index",
@@ -6347,12 +6355,14 @@ fn compile_expr_gc(
             _ => {
               // Default ArrayBuilder type: {len: i32, data: ref array<i64>}
               let arr_type = ensure_array_type(
-                ctx.types, ctx.array_type_index, GcValKind::I64,
+                ctx.types,
+                ctx.array_type_index,
+                GcValKind::I64,
               )
-              ensure_struct_type(
-                ctx.types, ctx.struct_type_index,
-                [GcValKind::I32, GcValKind::Ref(arr_type)],
-              )
+              ensure_struct_type(ctx.types, ctx.struct_type_index, [
+                GcValKind::I32,
+                GcValKind::Ref(arr_type),
+              ])
             }
           }
           let arr_type = match ctx.types[builder_type] {
@@ -6361,13 +6371,13 @@ fn compile_expr_gc(
                 GcValKind::Ref(idx) => idx
                 _ =>
                   ensure_array_type(
-                    ctx.types, ctx.array_type_index, GcValKind::I64,
+                    ctx.types,
+                    ctx.array_type_index,
+                    GcValKind::I64,
                   )
               }
             _ =>
-              ensure_array_type(
-                ctx.types, ctx.array_type_index, GcValKind::I64,
-              )
+              ensure_array_type(ctx.types, ctx.array_type_index, GcValKind::I64)
           }
           // Reuse locals across multiple push calls to avoid index drift
           let b_idx = match fctx.locals.get("__ab_push_b") {
@@ -6468,12 +6478,14 @@ fn compile_expr_gc(
             GcValKind::Ref(idx) => idx
             _ => {
               let arr_type = ensure_array_type(
-                ctx.types, ctx.array_type_index, GcValKind::I64,
+                ctx.types,
+                ctx.array_type_index,
+                GcValKind::I64,
               )
-              ensure_struct_type(
-                ctx.types, ctx.struct_type_index,
-                [GcValKind::I32, GcValKind::Ref(arr_type)],
-              )
+              ensure_struct_type(ctx.types, ctx.struct_type_index, [
+                GcValKind::I32,
+                GcValKind::Ref(arr_type),
+              ])
             }
           }
           let arr_type = match ctx.types[builder_type] {
@@ -6482,13 +6494,13 @@ fn compile_expr_gc(
                 GcValKind::Ref(idx) => idx
                 _ =>
                   ensure_array_type(
-                    ctx.types, ctx.array_type_index, GcValKind::I64,
+                    ctx.types,
+                    ctx.array_type_index,
+                    GcValKind::I64,
                   )
               }
             _ =>
-              ensure_array_type(
-                ctx.types, ctx.array_type_index, GcValKind::I64,
-              )
+              ensure_array_type(ctx.types, ctx.array_type_index, GcValKind::I64)
           }
           let b_idx = alloc_local_gc(fctx, builder_kind)
           let len_l = alloc_local_gc(fctx, GcValKind::I32)
@@ -7464,15 +7476,14 @@ fn compile_expr_gc(
       // Compile handler body
       let catch_body = match catch_arm.expr {
         @core.Expr::Block(body=blk_body, ..) => blk_body
-        other =>
-          @core.Module::{ stmts: [@core.Stmt::Expr(expr=other, span~)] }
+        other => @core.Module::{ stmts: [@core.Stmt::Expr(expr=other, span~)] }
       }
       compile_block_expr_gc(ctx, fctx, buf, catch_body)
       restore_locals_gc(fctx, saved_locals)
       // end $outer
       emit_end_gc(buf)
     }
-    @core.Expr::StringInterp(parts~, span~) => {
+    @core.Expr::StringInterp(parts~, span~) =>
       // Build string by concatenating parts using compile_string_concat
       if parts.length() == 0 {
         emit_string_literal(ctx, buf, "")
@@ -7485,8 +7496,7 @@ fn compile_expr_gc(
         // Use wrapper Expr for each part to feed compile_string_concat
         fn part_to_expr(p : @core.StringInterpPart) -> @core.Expr {
           match p {
-            @core.StringInterpPart::Lit(s) =>
-              @core.Expr::String(value=s, span~)
+            @core.StringInterpPart::Lit(s) => @core.Expr::String(value=s, span~)
             @core.StringInterpPart::Expr(e) => e
           }
         }
@@ -7500,10 +7510,7 @@ fn compile_expr_gc(
           part_to_expr(parts[1]),
         )
         for i in 2..<parts.length() {
-          let acc_local = alloc_local_gc(
-            fctx,
-            GcValKind::Ref(ctx.string_type),
-          )
+          let acc_local = alloc_local_gc(fctx, GcValKind::Ref(ctx.string_type))
           emit_local_set_gc(buf, acc_local)
           let acc_expr = @core.Expr::Ident(
             name="__interp_acc_" + i.to_string(),
@@ -7523,7 +7530,6 @@ fn compile_expr_gc(
           )
         }
       }
-    }
     @core.Expr::TupleIndex(expr~, index~, span~) => {
       let _ = span
       let kind = infer_expr_kind_gc(ctx, fctx, expr)
@@ -7532,7 +7538,7 @@ fn compile_expr_gc(
         _ => {
           // EqRef or unknown — create ad-hoc 2-field struct for tuple access
           let fields : Array[GcValKind] = []
-          for _ in 0..< (index + 1) {
+          for _ in 0..<(index + 1) {
             fields.push(GcValKind::EqRef)
           }
           ensure_struct_type(ctx.types, ctx.struct_type_index, fields)
@@ -7546,15 +7552,16 @@ fn compile_expr_gc(
       }
       emit_struct_get_gc(buf, type_idx, index)
     }
-    @core.Expr::Break(..) => {
+    @core.Expr::Break(..) =>
       // Break from while loop: br to outer block (depth 1 from inside loop)
       emit_br_gc(buf, 1)
-    }
-    @core.Expr::Continue(..) => {
+    @core.Expr::Continue(..) =>
       // Continue while loop: br to loop header (depth 0)
       emit_br_gc(buf, 0)
-    }
-    other => raise WasmGenError::Unsupported("expr: " + other.to_string()[:40].to_string())
+    other =>
+      raise WasmGenError::Unsupported(
+        "expr: " + other.to_string()[:40].to_string(),
+      )
   }
 }
 
@@ -7719,9 +7726,7 @@ fn compile_stmt_gc(
     }
     @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
       let base_kind = infer_expr_kind_gc(ctx, fctx, target)
-      let type_idx = gc_array_type_idx_from_kind(
-        ctx, base_kind, "IndexAssign",
-      )
+      let type_idx = gc_array_type_idx_from_kind(ctx, base_kind, "IndexAssign")
       compile_expr_gc(ctx, fctx, buf, target)
       compile_expr_gc(ctx, fctx, buf, index)
       let idx_kind = infer_expr_kind_gc(ctx, fctx, index)
@@ -7777,9 +7782,8 @@ fn collect_top_level_funcs_gc(
       | @core.Stmt::ExportLet(name~, expr~, ..)
       | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
         match expr {
-          @core.Expr::Fn(..)
-          | @core.Expr::Int(..)
-          | @core.Expr::Bool(..) => top_func_names[name] = true
+          @core.Expr::Fn(..) | @core.Expr::Int(..) | @core.Expr::Bool(..) =>
+            top_func_names[name] = true
           _ => ()
         }
       _ => ()
@@ -7972,7 +7976,7 @@ fn build_module_gc(
   ctx : GcCodegenCtx,
   funcs : Array[GcWasmFunc],
   run_index : Int,
-  global_init_values~ : Array[(GcValKind, Int64)] = [],
+  global_init_values? : Array[(GcValKind, Int64)] = [],
 ) -> Bytes {
   let buf = GcByteBuf::new()
   buf.push(0x00)

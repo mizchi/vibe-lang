@@ -1,12 +1,14 @@
 ///|
 fn usage() -> Unit {
   println(
-    "typecheck-fixture [--update] [--dir <path>] [--offset <n>] [--limit <n>] [--file <path> ...]",
+    "typecheck-fixture [--update] [--path <path>] [--offset <n>] [--limit <n>] [--file <path> ...]",
   )
   println(
     "  --update      rewrite fixtures/*.diag from current typecheck output",
   )
-  println("  --dir <path>  fixture directory (default: fixtures/typecheck)")
+  println(
+    "  --dir/--path <path> fixture path or directory (default: fixtures/typecheck)",
+  )
   println("  --offset <n>  start index in sorted fixture list")
   println("  --limit <n>   max number of fixtures to verify")
   println("  --file <path> verify specific fixture file(s)")
@@ -59,7 +61,7 @@ fn parse_args(
   args : Array[String],
 ) -> Result[(Bool, String, Int, Int?, Array[String]), String] {
   let mut update = false
-  let mut fixture_dir = "fixtures/typecheck"
+  let mut fixture_path = "fixtures/typecheck"
   let mut offset = 0
   let mut limit : Int? = None
   let files : Array[String] = []
@@ -68,12 +70,12 @@ fn parse_args(
     let arg = args[i]
     match arg {
       "--update" => update = true
-      "--dir" => {
+      "--dir" | "--path" => {
         i += 1
         if i >= args.length() {
-          return Err("missing directory path after --dir")
+          return Err("missing fixture path after --dir/--path")
         }
-        fixture_dir = args[i]
+        fixture_path = args[i]
       }
       "--offset" => {
         i += 1
@@ -111,7 +113,7 @@ fn parse_args(
     }
     i += 1
   }
-  Ok((update, fixture_dir, offset, limit, files))
+  Ok((update, fixture_path, offset, limit, files))
 }
 
 ///|
@@ -128,7 +130,7 @@ fn print_mismatch(mismatch : @checker.TypecheckFixtureMismatch) -> Unit {
 ///|
 fn main {
   let args = collect_cli_args()
-  let (update, fixture_dir, offset, limit, files) = match parse_args(args) {
+  let (update, fixture_path, offset, limit, files) = match parse_args(args) {
     Ok(v) => v
     Err(err) =>
       if err.length() == 0 {
@@ -141,13 +143,13 @@ fn main {
     abort("typecheck-fixture: --update does not support --file")
   }
   if update {
-    match @checker.update_typecheck_fixtures(fixture_dir) {
+    match @checker.update_typecheck_fixtures(fixture_path) {
       Ok(updated) =>
         println(
           "updated typecheck fixtures: " +
           updated.to_string() +
           " file(s) in " +
-          fixture_dir,
+          fixture_path,
         )
       Err(err) => abort("typecheck-fixture: " + err)
     }
@@ -156,7 +158,7 @@ fn main {
   let verify_result = if files.length() > 0 {
     @checker.verify_typecheck_fixture_paths(files)
   } else {
-    @checker.verify_typecheck_fixtures_range(fixture_dir, offset, limit)
+    @checker.verify_typecheck_fixtures_range(fixture_path, offset, limit)
   }
   match verify_result {
     Ok(mismatches) => {
@@ -166,7 +168,7 @@ fn main {
             "typecheck fixtures: ok (" + files.length().to_string() + " file(s))",
           )
         } else {
-          println("typecheck fixtures: ok (\{fixture_dir})")
+          println("typecheck fixtures: ok (\{fixture_path})")
         }
         return
       }

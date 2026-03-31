@@ -1917,9 +1917,7 @@ fn parse_decimal_int64(
   text : String,
   span : @core.Span,
 ) -> Int64 raise ParseError {
-  try {
-    @strconv.parse_int64(text)
-  } catch {
+  @strconv.parse_int64(text) catch {
     _ => raise ParseError::IntLiteralOverflow(literal=text, span~)
   }
 }
@@ -2457,9 +2455,7 @@ fn AstParser::parse_primary(self : AstParser) -> @core.Expr raise ParseError {
           raw = text[0:len - 1].to_string()
         }
       }
-      let v = try {
-        @strconv.parse_double(raw)
-      } catch {
+      let v = @strconv.parse_double(raw) catch {
         _ =>
           raise ParseError::UnexpectedToken(
             expected="valid numeric literal",

@@ -71,21 +71,31 @@ fn render_typecheck_fixture_result(path : String, source : String) -> String {
 fn collect_typecheck_fixture_entries(
   fixture_dir : String,
 ) -> Result[Array[TypecheckFixtureEntry], String] {
-  let entries = @os_fs.read_dir(fixture_dir) catch {
-    e => return Err("[\{fixture_dir}] read_dir failed: \{e.to_string()}")
-  }
   let files : Array[String] = []
-  for entry in entries {
-    let path = if entry.has_prefix(fixture_dir) {
-      entry
-    } else {
-      fixture_dir + "/" + entry
+  let target_is_file = @os_fs.is_file(fixture_dir) catch {
+    e => return Err("[\{fixture_dir}] stat failed: \{e.to_string()}")
+  }
+  if target_is_file {
+    if !fixture_dir.has_suffix(".vibe") {
+      return Err("[\{fixture_dir}] expected a .vibe fixture file")
     }
-    let is_file = @os_fs.is_file(path) catch {
-      e => return Err("[\{fixture_dir}] stat failed: \{e.to_string()}")
+    files.push(fixture_dir)
+  } else {
+    let entries = @os_fs.read_dir(fixture_dir) catch {
+      e => return Err("[\{fixture_dir}] read_dir failed: \{e.to_string()}")
     }
-    if is_file && path.has_suffix(".vibe") {
-      files.push(path)
+    for entry in entries {
+      let path = if entry.has_prefix(fixture_dir) {
+        entry
+      } else {
+        fixture_dir + "/" + entry
+      }
+      let is_file = @os_fs.is_file(path) catch {
+        e => return Err("[\{fixture_dir}] stat failed: \{e.to_string()}")
+      }
+      if is_file && path.has_suffix(".vibe") {
+        files.push(path)
+      }
     }
   }
   sort_strings_typecheck_fixture(files)

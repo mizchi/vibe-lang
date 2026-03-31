@@ -295,7 +295,6 @@ test "pass pipeline: full chain produces same result as normalize_source_text" {
     actual,
     content=(
       #|Ok("//# Functions\n\nlet a: () -> Int = () -> { 42 }\n\nlet b: () -> Int = () -> { a() }\n\nlet z: () -> Int = () -> { b() }\n")
-
     ),
   )
 }

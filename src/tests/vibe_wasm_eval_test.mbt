@@ -2978,8 +2978,13 @@ test "rc perf: binary size overhead is bounded" {
   let rc_secs = wasm_section_sizes(rc_bytes)
   let no_rc_secs = wasm_section_sizes(no_rc_bytes)
   let sec_names = [
-    (1, "type"), (3, "func"), (5, "memory"), (6, "global"),
-    (7, "export"), (10, "code"), (11, "data"),
+    (1, "type"),
+    (3, "func"),
+    (5, "memory"),
+    (6, "global"),
+    (7, "export"),
+    (10, "code"),
+    (11, "data"),
   ]
   let mut sec_details = ""
   for entry in sec_names {
@@ -2987,8 +2992,14 @@ test "rc perf: binary size overhead is bounded" {
     let rc_s = rc_secs.get(id).unwrap_or(0)
     let no_rc_s = no_rc_secs.get(id).unwrap_or(0)
     if rc_s != no_rc_s {
-      sec_details += "\n  " + name + ": rc=" + rc_s.to_string() + " no_rc=" +
-        no_rc_s.to_string() + " diff=+" + (rc_s - no_rc_s).to_string()
+      sec_details += "\n  " +
+        name +
+        ": rc=" +
+        rc_s.to_string() +
+        " no_rc=" +
+        no_rc_s.to_string() +
+        " diff=+" +
+        (rc_s - no_rc_s).to_string()
     }
   }
   println("Section breakdown (tuple_alloc):" + sec_details)

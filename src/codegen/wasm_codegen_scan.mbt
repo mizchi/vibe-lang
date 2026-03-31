@@ -250,9 +250,7 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
           value_name, index_name, iterable, body, span,
         )
       } else {
-        @core.desugar_for_in(
-          value_name, index_name, iterable, body, span,
-        )
+        @core.desugar_for_in(value_name, index_name, iterable, body, span)
       }
       scan_needs_block(ctx, desugared)
     }
@@ -593,9 +591,7 @@ fn scan_strings_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
           value_name, index_name, iterable, body, span,
         )
       } else {
-        @core.desugar_for_in(
-          value_name, index_name, iterable, body, span,
-        )
+        @core.desugar_for_in(value_name, index_name, iterable, body, span)
       }
       scan_strings(ctx, desugared)
     }

@@ -945,17 +945,17 @@ fn compile_rc_drop_function(
     // 10(13)=done, 11(14)=view
     let table : Array[Int] = [
       lbl_tuple_array, // 3: tuple
-      lbl_record_map, // 4: record
-      lbl_tuple_array, // 5: array
-      lbl_record_map, // 6: map
-      lbl_closure, // 7: closure
-      lbl_done, // 8: unused
-      lbl_done, // 9: unused
-      lbl_enum, // 10: enum
-      lbl_view, // 11: string_view
-      lbl_view, // 12: array_view
-      lbl_done, // 13: unused
-      lbl_view, // 14: bytes_view
+       lbl_record_map, // 4: record
+       lbl_tuple_array, // 5: array
+       lbl_record_map, // 6: map
+       lbl_closure, // 7: closure
+       lbl_done, // 8: unused
+       lbl_done, // 9: unused
+       lbl_enum, // 10: enum
+       lbl_view, // 11: string_view
+       lbl_view, // 12: array_view
+       lbl_done, // 13: unused
+       lbl_view, // 14: bytes_view
     ]
     emit_br_table(body, table, lbl_done) // default → $done
     emit_end(body) // end $tuple_array
