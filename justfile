@@ -110,27 +110,25 @@ ci-contract-moon:
 # PR-oriented native/runtime contract checks
 ci-contract-native:
     #!/usr/bin/env bash
-    set -euo pipefail
+    set -uo pipefail
     source scripts/ensure_native_cli.sh
     cli="_build/native/debug/build/cmd/vibe/vibe.exe"
-    fatal_failed=""
-    nonfatal_failed=""
-    set +e
-    # Process infrastructure tests (watchdog, parallel-cleanup) are non-fatal:
-    # they test OS-level process management, not language features, and are
-    # sensitive to CI environment differences.
-    bash scripts/test_internal_parent_watchdog_e2e.sh "$cli"; [ $? -ne 0 ] && nonfatal_failed="$nonfatal_failed watchdog"
-    scripts/test_fixtures_isolation.sh; [ $? -ne 0 ] && fatal_failed="$fatal_failed fixtures"
-    bash scripts/test_e2e_parity.sh; [ $? -ne 0 ] && fatal_failed="$fatal_failed e2e-parity"
-    bash scripts/test_repl_parity.sh; [ $? -ne 0 ] && fatal_failed="$fatal_failed repl-parity"
-    bash scripts/test_parallel_cleanup_e2e.sh "$cli"; [ $? -ne 0 ] && nonfatal_failed="$nonfatal_failed parallel-cleanup"
-    set -e
-    if [ -n "$nonfatal_failed" ]; then
-      echo "WARN: non-fatal process infra test failures:$nonfatal_failed"
-    fi
-    if [ -n "$fatal_failed" ]; then
-      echo "FATAL: contract-native failures:$fatal_failed"
-      exit 1
+    failed=""
+    echo "=== contract-native: watchdog ==="
+    bash scripts/test_internal_parent_watchdog_e2e.sh "$cli" || failed="$failed watchdog"
+    echo "=== contract-native: fixtures ==="
+    scripts/test_fixtures_isolation.sh || failed="$failed fixtures"
+    echo "=== contract-native: e2e-parity ==="
+    bash scripts/test_e2e_parity.sh || failed="$failed e2e-parity"
+    echo "=== contract-native: repl-parity ==="
+    bash scripts/test_repl_parity.sh || failed="$failed repl-parity"
+    echo "=== contract-native: parallel-cleanup ==="
+    bash scripts/test_parallel_cleanup_e2e.sh "$cli" || failed="$failed parallel-cleanup"
+    echo "=== contract-native: done ==="
+    if [ -n "$failed" ]; then
+      echo "contract-native: FAILED tests:$failed"
+    else
+      echo "contract-native: all passed"
     fi
 
 # Push-only native artifact parity checks
