@@ -29,7 +29,11 @@ fn bench_dce(
     c => c
   }
   // Count statements before/after DCE
-  let bundled_no_dce = @runtime.bundle_for_wasm_no_dce(db, "main", compiled.ast)
+  let bundled_no_dce = @runtime_compile.bundle_for_wasm_no_dce(
+    db,
+    "main",
+    compiled.ast,
+  )
   let bundled_with_dce = @frontend.dce_module(bundled_no_dce)
   let stmts_before = bundled_no_dce.stmts.length()
   let stmts_after = bundled_with_dce.stmts.length()

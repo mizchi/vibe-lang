@@ -124,7 +124,7 @@ fn wasm_artifact_cache_key(
   }
   buf.write_char('\n')
   buf.write_string(
-    @runtime.module_to_sexp(bundled, build_alias_map(bundled, import_aliases)),
+    module_to_sexp(bundled, build_alias_map(bundled, import_aliases)),
   )
   @core.git_blob_hash_string(buf.to_string())
 }
@@ -209,6 +209,7 @@ pub fn compile_module(
   db : @runtime.VibeDb,
   path : String,
 ) -> CompiledModule raise CompileError {
+  ensure_hooks()
   let source = match db.get_source(path) {
     Some(s) => s
     None => raise CompileError::MissingSource(path)
@@ -243,7 +244,7 @@ pub fn compile_module(
   @core.clear_string_for_in_spans()
   let rewritten = @frontend.rewrite_string_add(mono.ast, expr_type_index)
   let resolved_ast = db.rewrite_imports_to_hash(path, rewritten)
-  let ir = @runtime.module_to_sexp(resolved_ast, aliases)
+  let ir = module_to_sexp(resolved_ast, aliases)
   let ir_hash = @core.git_blob_hash_string(ir)
   let module_ref = @core.module_ref_from_hash(ir_hash)
   let module_refs : Array[String] = []
@@ -593,7 +594,7 @@ pub fn compile_module_wasm(
   enable_rc? : Bool = false,
   rc_debug? : Bool = false,
 ) -> Bytes raise WasmCompileError {
-  compile_module_wasm_with(db, path, @runtime.bundle_for_wasm, ast => {
+  compile_module_wasm_with(db, path, bundle_for_wasm, ast => {
     if enable_rc {
       let (options, desugared_ast) = wasm_emit_options_with_rc(
         ast,
@@ -619,7 +620,7 @@ pub fn compile_module_wasm_with_codegen_options(
   path : String,
   options : @codegen.WasmEmitOptions,
 ) -> Bytes raise WasmCompileError {
-  compile_module_wasm_with(db, path, @runtime.bundle_for_wasm, ast => {
+  compile_module_wasm_with(db, path, bundle_for_wasm, ast => {
     @codegen.emit_module_wasm_with_options(ast, options)
   })
 }
@@ -662,6 +663,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
   force_cabi_realloc? : Bool = false,
   library_mode? : Bool = false,
 ) -> (Bytes, WasmCompileStageProfile) raise WasmCompileError {
+  ensure_hooks()
   let cache_namespace = wasm_artifact_cache_namespace(
     if no_dce {
       "no_dce"
@@ -678,7 +680,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
     compile_module_wasm_profiled_with(
       db,
       path,
-      @runtime.bundle_for_wasm_no_dce,
+      bundle_for_wasm_no_dce,
       ast => {
         @codegen.emit_module_wasm_with_options(
           ast,
@@ -698,7 +700,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
     compile_module_wasm_profiled_with(
       db,
       path,
-      @runtime.bundle_for_wasm,
+      bundle_for_wasm,
       ast => {
         @codegen.emit_module_wasm_with_options(
           ast,
@@ -739,7 +741,7 @@ pub fn compile_module_wasm_with_coverage(
     compile_module_wasm_coverage_with(
       db,
       path,
-      @runtime.bundle_for_wasm_test_coverage,
+      bundle_for_wasm_test_coverage,
       ast => {
         @codegen.emit_module_wasm_with_coverage_options(
           ast,
@@ -749,7 +751,7 @@ pub fn compile_module_wasm_with_coverage(
       run_tests=true,
     )
   } else {
-    compile_module_wasm_coverage_with(db, path, @runtime.bundle_for_wasm, ast => {
+    compile_module_wasm_coverage_with(db, path, bundle_for_wasm, ast => {
       @codegen.emit_module_wasm_with_coverage_options(
         ast,
         wasm_emit_options(debug_errors, http_host_imports~),
@@ -770,7 +772,7 @@ fn compile_module_wasm_no_dce_with_coverage(
   compile_module_wasm_coverage_with(
     db,
     path,
-    @runtime.bundle_for_wasm_no_dce,
+    bundle_for_wasm_no_dce,
     ast => {
       @codegen.emit_module_wasm_with_coverage_options(
         ast,
@@ -788,7 +790,7 @@ pub fn compile_module_wasm_js_string(
   path : String,
   debug_errors? : Bool = false,
 ) -> Bytes raise WasmCompileError {
-  compile_module_wasm_with(db, path, @runtime.bundle_for_wasm, ast => {
+  compile_module_wasm_with(db, path, bundle_for_wasm, ast => {
     @codegen.emit_module_wasm_js_string_with_options(
       ast,
       wasm_emit_options(debug_errors),
@@ -803,7 +805,7 @@ pub fn compile_module_wasm_gc(
   path : String,
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(
-    db, path, @runtime.bundle_for_wasm_gc, @codegen.emit_module_wasm_gc,
+    db, path, bundle_for_wasm_gc, @codegen.emit_module_wasm_gc,
   )
 }
 
@@ -816,7 +818,7 @@ pub fn compile_module_wasm_no_dce(
   http_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
 ) -> Bytes raise WasmCompileError {
-  compile_module_wasm_with(db, path, @runtime.bundle_for_wasm_no_dce, ast => {
+  compile_module_wasm_with(db, path, bundle_for_wasm_no_dce, ast => {
     @codegen.emit_module_wasm_with_options(
       ast,
       @codegen.wasm_emit_options(
@@ -839,7 +841,7 @@ pub fn compile_module_component(
   let compiled = compile_module(db, path) catch {
     e => raise WasmCompileError::Compile(e)
   }
-  let bundled = @runtime.bundle_for_wasm(db, path, compiled.ast)
+  let bundled = bundle_for_wasm(db, path, compiled.ast)
   let core_wasm = @codegen.emit_module_wasm_with_options(
     bundled,
     wasm_emit_options(
@@ -913,7 +915,7 @@ pub fn compile_module_component_string_lift_auto(
         "no exported function with string params found",
       )
   }
-  let bundled = @runtime.bundle_for_wasm(db, path, compiled.ast)
+  let bundled = bundle_for_wasm(db, path, compiled.ast)
   let core_wasm = @codegen.emit_module_wasm_with_options(
     bundled,
     @codegen.wasm_emit_options(force_cabi_realloc=true),
@@ -1015,7 +1017,7 @@ pub fn generate_module_component_wit(
   let compiled = compile_module(db, path) catch {
     e => raise WasmCompileError::Compile(e)
   }
-  let bundled = @runtime.bundle_for_wasm(db, path, compiled.ast)
+  let bundled = bundle_for_wasm(db, path, compiled.ast)
   @codegen.generate_component_wit(bundled, package_name, world_name)
 }
 
@@ -1067,7 +1069,7 @@ pub fn compile_module_wasm_linked(
   path : String,
   debug_errors? : Bool = false,
   skip_typecheck? : Bool = false,
-) -> (Bytes, Array[@runtime.LinkedImport]) raise WasmCompileError {
+) -> (Bytes, Array[LinkedImport]) raise WasmCompileError {
   let compiled_ast = if skip_typecheck {
     let raw_ast = db.ast(path)
     let imports = db.imports(path)
@@ -1083,9 +1085,7 @@ pub fn compile_module_wasm_linked(
     }
     compiled.ast
   }
-  let (bundled, linked_imports) = @runtime.bundle_for_wasm_linked(
-    db, path, compiled_ast,
-  )
+  let (bundled, linked_imports) = bundle_for_wasm_linked(db, path, compiled_ast)
   let codegen_linked : Array[(String, String, Int, Int)] = []
   for li in linked_imports {
     codegen_linked.push(
@@ -1170,7 +1170,7 @@ pub fn compile_module_wasm_js_string_with_coverage(
     compile_module_wasm_coverage_with(
       db,
       path,
-      @runtime.bundle_for_wasm_test_coverage,
+      bundle_for_wasm_test_coverage,
       ast => {
         @codegen.emit_module_wasm_js_string_with_coverage_options(
           ast,
@@ -1180,7 +1180,7 @@ pub fn compile_module_wasm_js_string_with_coverage(
       run_tests=true,
     )
   } else {
-    compile_module_wasm_coverage_with(db, path, @runtime.bundle_for_wasm, ast => {
+    compile_module_wasm_coverage_with(db, path, bundle_for_wasm, ast => {
       @codegen.emit_module_wasm_js_string_with_coverage_options(
         ast,
         wasm_emit_options(debug_errors),
@@ -1200,7 +1200,7 @@ fn compile_module_wasm_js_string_no_dce_with_coverage(
   compile_module_wasm_coverage_with(
     db,
     path,
-    @runtime.bundle_for_wasm_no_dce,
+    bundle_for_wasm_no_dce,
     ast => {
       @codegen.emit_module_wasm_js_string_with_coverage_options(
         ast,
@@ -1218,7 +1218,7 @@ pub fn compile_module_wasm_js_string_no_dce(
   path : String,
   debug_errors? : Bool = false,
 ) -> Bytes raise WasmCompileError {
-  compile_module_wasm_with(db, path, @runtime.bundle_for_wasm_no_dce, ast => {
+  compile_module_wasm_with(db, path, bundle_for_wasm_no_dce, ast => {
     @codegen.emit_module_wasm_js_string_with_options(
       ast,
       wasm_emit_options(debug_errors),
@@ -1251,12 +1251,12 @@ pub fn compile_module_wasm_gc_with_opt_level_profiled(
   let cache_namespace = if no_dce { "gc_no_dce" } else { "gc_default" }
   if no_dce {
     compile_module_wasm_profiled_with(
-      db, path, @runtime.bundle_for_wasm_no_dce, @codegen.emit_module_wasm_gc, cache_namespace,
+      db, path, bundle_for_wasm_no_dce, @codegen.emit_module_wasm_gc, cache_namespace,
       opt_level,
     )
   } else {
     compile_module_wasm_profiled_with(
-      db, path, @runtime.bundle_for_wasm_gc, @codegen.emit_module_wasm_gc, cache_namespace,
+      db, path, bundle_for_wasm_gc, @codegen.emit_module_wasm_gc, cache_namespace,
       opt_level,
     )
   }
@@ -1269,7 +1269,7 @@ pub fn compile_module_wasm_gc_no_dce(
   path : String,
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(
-    db, path, @runtime.bundle_for_wasm_no_dce, @codegen.emit_module_wasm_gc,
+    db, path, bundle_for_wasm_no_dce, @codegen.emit_module_wasm_gc,
   )
 }
 
@@ -1285,7 +1285,7 @@ pub fn compile_module_component_with_string_lift(
   let compiled = compile_module(db, path) catch {
     e => raise WasmCompileError::Compile(e)
   }
-  let bundled = @runtime.bundle_for_wasm(db, path, compiled.ast)
+  let bundled = bundle_for_wasm(db, path, compiled.ast)
   let core_wasm = @codegen.emit_module_wasm_with_options(
     bundled,
     @codegen.wasm_emit_options(force_cabi_realloc=true),

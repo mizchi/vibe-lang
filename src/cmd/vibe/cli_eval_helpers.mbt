@@ -48,7 +48,7 @@ fn collect_eval_scope_symbols(
   }
   let db = @runtime.VibeDb::new()
   db.set_source(path, source)
-  let index = @runtime.build_symbol_index(db, [path])
+  let index = @runtime_compile.build_symbol_index(db, [path])
   let out : Array[EvalScopeSymbol] = []
   for entry in index.entries {
     if entry.path != path {

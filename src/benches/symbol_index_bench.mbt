@@ -117,7 +117,7 @@ test "bench: symbol_index.build_db_index.duplicate_hash_paths" (b : @bench.T) {
       db.set_source(path, source)
       paths.push(path)
     }
-    let index = @runtime.build_symbol_index(db, paths)
+    let index = @runtime_compile.build_symbol_index(db, paths)
     b.keep(index.entries.length())
   })
 }
@@ -133,7 +133,7 @@ test "bench: symbol_index.build_db_index.unique_hash_paths" (b : @bench.T) {
       db.set_source(path, source)
       paths.push(path)
     }
-    let index = @runtime.build_symbol_index(db, paths)
+    let index = @runtime_compile.build_symbol_index(db, paths)
     b.keep(index.entries.length())
   })
 }

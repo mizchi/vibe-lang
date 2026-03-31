@@ -97,7 +97,7 @@ test "bench: dce.overhead.analysis.small" (b : @bench.T) {
   let compiled = try? @runtime_compile.compile_module(db, "main")
   match compiled {
     Ok(c) => {
-      let bundled = @runtime.bundle_for_wasm_no_dce(db, "main", c.ast)
+      let bundled = @runtime_compile.bundle_for_wasm_no_dce(db, "main", c.ast)
       b.bench(fn() { b.keep(@frontend.dce_module(bundled)) })
     }
     Err(_) => ()
@@ -112,7 +112,7 @@ test "bench: dce.overhead.analysis.medium" (b : @bench.T) {
   let compiled = try? @runtime_compile.compile_module(db, "main")
   match compiled {
     Ok(c) => {
-      let bundled = @runtime.bundle_for_wasm_no_dce(db, "main", c.ast)
+      let bundled = @runtime_compile.bundle_for_wasm_no_dce(db, "main", c.ast)
       b.bench(fn() { b.keep(@frontend.dce_module(bundled)) })
     }
     Err(_) => ()
@@ -127,7 +127,7 @@ test "bench: dce.overhead.analysis.large" (b : @bench.T) {
   let compiled = try? @runtime_compile.compile_module(db, "main")
   match compiled {
     Ok(c) => {
-      let bundled = @runtime.bundle_for_wasm_no_dce(db, "main", c.ast)
+      let bundled = @runtime_compile.bundle_for_wasm_no_dce(db, "main", c.ast)
       b.bench(fn() { b.keep(@frontend.dce_module(bundled)) })
     }
     Err(_) => ()

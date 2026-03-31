@@ -436,7 +436,7 @@ fn load_scratch_write_file_candidates(
   }
   let db = @runtime.VibeDb::new()
   db.set_source(scratch_db_path, source)
-  let symbol_index = @runtime.build_symbol_index(db, [scratch_db_path])
+  let symbol_index = @runtime_compile.build_symbol_index(db, [scratch_db_path])
   let out : Array[WriteFileCandidate] = []
   for entry in symbol_index.entries {
     let def = write_file_graph_def_from_symbol_entry(db, entry)

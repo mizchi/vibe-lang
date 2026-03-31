@@ -543,7 +543,7 @@ fn repl_collect_current_symbol_matches(
   }
   let db = @runtime.VibeDb::new()
   db.set_source(scratch_db_path, scratch_source)
-  let index = @runtime.build_symbol_index(db, [scratch_db_path])
+  let index = @runtime_compile.build_symbol_index(db, [scratch_db_path])
   let entries : Array[@frontend.SymbolEntry] = []
   for entry in index.entries {
     if entry.path != scratch_db_path {
@@ -572,7 +572,7 @@ fn repl_load_workspace_symbol_matches(
   }
   match @loader.load_db_with_paths(workspace_entry) {
     Ok((db, _, paths)) => {
-      let index = @runtime.build_symbol_index(db, paths)
+      let index = @runtime_compile.build_symbol_index(db, paths)
       let entries : Array[@frontend.SymbolEntry] = []
       match symbol {
         Some(name) =>
@@ -813,7 +813,7 @@ fn repl_vibe_outline_json(
   }
   match @loader.load_db_with_paths(entry_path) {
     Ok((db, entry, paths)) => {
-      let index = @runtime.build_symbol_index(db, paths)
+      let index = @runtime_compile.build_symbol_index(db, paths)
       let items = repl_collect_symbol_matches_from_entries(db, index.entries)
       let obj : Map[String, Json] = {}
       obj["ok"] = Json::boolean(true)
@@ -1569,7 +1569,7 @@ fn repl_handle_outline_meta_command(
     }
     match @loader.load_db_with_paths(entry_path) {
       Ok((db, entry, paths)) => {
-        let index = @runtime.build_symbol_index(db, paths)
+        let index = @runtime_compile.build_symbol_index(db, paths)
         let items = repl_collect_symbol_matches_from_entries(db, index.entries)
         if items.length() == 0 {
           print_line("no symbols found in " + entry)
@@ -2967,7 +2967,7 @@ fn run_compiled_repl_line_with_cache(
   }
   let load_us = @bench.monotonic_clock_end(load_start).to_int()
   let ast = db.ast(entry)
-  let detect_ast = @runtime.bundle_for_wasm_no_dce(db, entry, ast)
+  let detect_ast = @runtime_compile.bundle_for_wasm_no_dce(db, entry, ast)
   let use_fs_host = module_uses_wasm_runtime_fallback_builtins(detect_ast)
   let use_http_host = module_uses_http_builtins(detect_ast)
   let use_node_runner = use_fs_host || use_http_host

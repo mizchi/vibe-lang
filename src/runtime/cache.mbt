@@ -142,6 +142,7 @@ fn encode_value(value : @core.Value) -> String {
       s
     }
     @core.Value::Fn(_) => "f:"
+    @core.Value::Continuation(_) => "k:"
   }
 }
 

@@ -321,7 +321,14 @@ fn eval_handle_expr(
             if matched_out is Some(_) {
               continue
             }
-            match match_pattern(arm.pat, performed_value) {
+            match
+              match_handle_pattern(
+                arm.pat,
+                performed_value,
+                site_key,
+                body,
+                arms,
+              ) {
               Some(bindings) => {
                 let guard_ok = match arm.cond {
                   Some(c) =>
@@ -384,6 +391,112 @@ fn eval_handle_expr(
     Ok(out) => out
     Err(err) => raise err
   }
+}
+
+///|
+/// Match a handle arm pattern against a performed value.
+/// Supports continuation parameters: Emit::Emit(v, k) where k is the extra
+/// last argument that gets bound to a Continuation value.
+fn match_handle_pattern(
+  pat : @core.Pat,
+  value : @core.Value,
+  site_key : String,
+  body : @core.Module,
+  arms : Array[@core.MatchArm],
+) -> Map[String, @core.Value]? {
+  match pat {
+    @core.Pat::Ctor(name~, args~, ..) =>
+      match value {
+        @core.Value::Record(map) =>
+          match map.get(name) {
+            Some(field_val) => {
+              // Count actual fields in the performed value
+              let value_arity = match field_val {
+                @core.Value::Tuple(values) => values.length()
+                @core.Value::Unit => 0
+                _ => 1
+              }
+              // If pattern has one extra arg beyond value arity,
+              // the last arg is a continuation parameter
+              if args.length() == value_arity + 1 {
+                // Match value args against all but last pattern arg
+                let value_args = args[0:args.length() - 1]
+                let cont_pat = args[args.length() - 1]
+                let bindings : Map[String, @core.Value] = {}
+                let mut ok = true
+                if value_arity == 0 {
+                  () // no value args to match
+                } else if value_arity == 1 {
+                  match match_pattern(value_args[0], field_val) {
+                    Some(map) =>
+                      for k, v in map {
+                        bindings[k] = v
+                      }
+                    None => ok = false
+                  }
+                } else {
+                  match field_val {
+                    @core.Value::Tuple(values) =>
+                      for i in 0..<value_arity {
+                        match match_pattern(value_args[i], values[i]) {
+                          Some(map) =>
+                            for k, v in map {
+                              bindings[k] = v
+                            }
+                          None => {
+                            ok = false
+                            break
+                          }
+                        }
+                      }
+                    _ => ok = false
+                  }
+                }
+                if ok {
+                  // Bind continuation parameter
+                  match cont_pat {
+                    @core.Pat::Bind(name=cont_name, ..) =>
+                      bindings[cont_name] = @core.Value::Continuation(@core.ContinuationValue::{
+                        site_key,
+                        body,
+                        arms,
+                      })
+                    @core.Pat::Wildcard(..) => () // continuation ignored
+                    _ => return None
+                  }
+                  Some(bindings)
+                } else {
+                  None
+                }
+              } else {
+                // No continuation parameter, use normal matching
+                match_pattern(pat, value)
+              }
+            }
+            None => None
+          }
+        _ => match_pattern(pat, value)
+      }
+    _ => match_pattern(pat, value)
+  }
+}
+
+///|
+/// Call a continuation value k(val): resumes the handled body from the
+/// perform site, returning val there, then continues the body and handle.
+fn eval_continuation_call(
+  rt : Runtime,
+  cont : @core.ContinuationValue,
+  args : Array[@core.CallArg],
+) -> EvalOutput raise EvalError {
+  let out = eval_args(rt, args)
+  let pos_args = extract_positional_values(out.args, "<continuation>")
+  if pos_args.length() != 1 {
+    raise EvalError::BadCall(E("continuation takes exactly one argument"))
+  }
+  let resume_value = pos_args[0]
+  rt.perform_resume_overrides[cont.site_key] = resume_value
+  eval_handle_expr(rt, cont.body, cont.arms)
 }
 
 ///|
@@ -450,7 +563,7 @@ pub fn Runtime::eval_module(
         if name != "_" {
           match expr {
             @core.Expr::Fn(ret=Some(_), ..) => {
-              let addr = @codegen.expr_address(expr, self.addr_env, Some(name))
+              let addr = compute_expr_address(expr, self.addr_env, Some(name))
               self.env[name] = addr
               self.addr_env[name] = addr
               forward_fn_addrs[name] = addr
@@ -483,7 +596,7 @@ pub fn Runtime::eval_module(
           let addr = match forward_fn_addrs.get(name) {
             Some(pre_addr) => pre_addr
             None =>
-              @codegen.expr_address(
+              compute_expr_address(
                 expr,
                 self.addr_env,
                 if effective_rec {
@@ -817,7 +930,7 @@ pub fn Runtime::eval_module(
           let addr = match forward_fn_addrs.get(name) {
             Some(pre_addr) => pre_addr
             None =>
-              @codegen.expr_address(
+              compute_expr_address(
                 expr,
                 self.addr_env,
                 if effective_rec {
@@ -1102,19 +1215,33 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
         v.effects.length() > 0,
       )
     }
-    @core.Expr::Perform(effect_name~, op_name~, args~, ..) => {
-      // Evaluate arguments
-      let arg_values : Array[@core.Value] = []
-      let effects : Array[Effect] = []
-      for arg in args {
-        let out = eval_expr(rt, arg.expr)
-        arg_values.push(out.value)
-        extend_effects(effects, out.effects)
+    @core.Expr::Perform(effect_name~, op_name~, args~, span~) => {
+      let site_key = perform_site_key(rt, span)
+      // Check for resume override (continuation was already called for this site)
+      match rt.perform_resume_overrides.get(site_key) {
+        Some(override_value) => {
+          rt.perform_resume_overrides.remove(site_key)
+          { value: override_value, effects: [] }
+        }
+        None => {
+          // Evaluate arguments
+          let arg_values : Array[@core.Value] = []
+          let effects : Array[Effect] = []
+          for arg in args {
+            let out = eval_expr(rt, arg.expr)
+            arg_values.push(out.value)
+            extend_effects(effects, out.effects)
+          }
+          // Encode as Ctor value for handle arm pattern matching
+          let ctor_key = effect_name + "::" + op_name
+          let performed_value = ctor_value_from_args(ctor_key, arg_values)
+          raise EvalError::Performed(
+            performed_value,
+            site_key,
+            effects.length() > 0,
+          )
+        }
       }
-      // Encode as Ctor value for handle arm pattern matching
-      let key = effect_name + "::" + op_name
-      let performed_value = ctor_value_from_args(key, arg_values)
-      raise EvalError::Performed(performed_value, key, effects.length() > 0)
     }
     @core.Expr::Handle(body~, arms~, ..) => eval_handle_expr(rt, body, arms)
     @core.Expr::Match(scrutinee~, arms~, ..) => {
@@ -2019,6 +2146,8 @@ fn eval_call(
   } else {
     match rt.get(name) {
       Some(@core.Value::Fn(fn_val)) => eval_user_call(rt, fn_val, args)
+      Some(@core.Value::Continuation(cont)) =>
+        eval_continuation_call(rt, cont, args)
       Some(val) => {
         // Name exists but isn't a function - try field access first
         let field_args_out = eval_args(rt, args)
@@ -4429,5 +4558,6 @@ fn value_type_name(value : @core.Value) -> String {
     @core.Value::StringBuilder(_) => "StringBuilder"
     @core.Value::Bytes(_) => "Bytes"
     @core.Value::PromptText(_) => "PromptText"
+    @core.Value::Continuation(_) => "Continuation"
   }
 }

@@ -735,7 +735,7 @@ pub fn VibeDb::new() -> VibeDb {
               if has_import {
                 None
               } else {
-                let desugared = @pipeline.desugar_method_calls(ast, {})
+                let desugared = desugar_method_calls(ast, {})
                 let env = try! @checker.get_prelude_only_env_for_module()
                 let typed = try
                   @checker.type_check_with_env(env, desugared, {})
@@ -769,7 +769,7 @@ pub fn VibeDb::new() -> VibeDb {
               let imports = import_query.fetch(rt, path)
               let ast = ast_query.fetch(rt, path).unwrap()
               let aliases = build_alias_map_from_ast(ast, imports)
-              let desugared = @pipeline.desugar_method_calls(ast, aliases)
+              let desugared = desugar_method_calls(ast, aliases)
               let env = try! @checker.get_prelude_only_env_for_module()
               @checker.type_check_with_env(env, desugared, aliases) catch {
                 e => {
@@ -783,7 +783,7 @@ pub fn VibeDb::new() -> VibeDb {
           let imports = import_query.fetch(rt, path)
           let ast = ast_query.fetch(rt, path).unwrap()
           let aliases = build_alias_map_from_ast(ast, imports)
-          let desugared = @pipeline.desugar_method_calls(ast, aliases)
+          let desugared = desugar_method_calls(ast, aliases)
           let env = try! @checker.get_prelude_only_env_for_module()
           @checker.type_check_with_env(env, desugared, aliases) catch {
             e => {
@@ -830,7 +830,7 @@ pub fn VibeDb::new() -> VibeDb {
     }
     let ast = ast_query.fetch(rt, file_path).unwrap()
     let aliases = build_alias_map_from_ast(ast, imports)
-    let desugared = @pipeline.desugar_method_calls(ast, aliases)
+    let desugared = desugar_method_calls(ast, aliases)
     let base_dir = @path.Path(file_path).dirname().to_string()
     let env = try! @checker.get_prelude_only_env_for_module()
     // Cross-directory dependencies must be imported explicitly.

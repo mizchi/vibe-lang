@@ -278,7 +278,7 @@ pub fn build_advanced_graph_index(
   created_at? : String = "",
   skip_types? : Bool = false,
 ) -> AdvancedGraphIndex {
-  let symbol_index = @runtime.build_symbol_index(db, paths, skip_types~)
+  let symbol_index = @runtime_compile.build_symbol_index(db, paths, skip_types~)
   let defs : Map[String, AdvancedGraphDef] = {}
   let symbols : Map[String, Array[String]] = {}
   let types : Map[String, Array[String]] = {}
@@ -397,7 +397,7 @@ pub fn update_advanced_graph_index_incremental(
       remove_def_from_indexes(symbols, types, def)
     }
   }
-  let next_entries = @runtime.build_symbol_index(db, changed_paths)
+  let next_entries = @runtime_compile.build_symbol_index(db, changed_paths)
   let hash_cache : Map[String, String] = {}
   for entry in next_entries.entries {
     let node = graph_def_from_entry(db, entry, hash_cache)
