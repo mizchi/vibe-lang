@@ -133,6 +133,18 @@ test "component invoke default uses run signature" {
 }
 
 ///|
+test "core wasm default omits invoke" {
+  let runner = { wasmtime_bin: "/bin/wasmtime", wasm_flags: [], wasi_flags: [] }
+  let cmd = build_wasmtime_invoke_command(
+    runner,
+    RunMode::CoreWasm,
+    "/tmp/app.wasm",
+    None,
+  )
+  assert_false(cmd.contains("--invoke"))
+}
+
+///|
 test "component mode filters unknown-imports-default wasm flag" {
   let filtered = filter_component_wasm_flags([
     "unknown-imports-default=y", "exceptions=y",

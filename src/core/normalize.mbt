@@ -44,7 +44,7 @@ fn NormScope::bind(self : NormScope, name : String) -> String {
   match name.rev_find("::") {
     Some(idx) => {
       let unqualified = name[idx + 2:].to_string()
-      if unqualified.length() > 0 && not(self.bindings.contains(unqualified)) {
+      if unqualified.length() > 0 && !self.bindings.contains(unqualified) {
         self.bindings[unqualified] = normalized
       }
     }
