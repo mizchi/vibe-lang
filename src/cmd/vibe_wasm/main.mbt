@@ -631,11 +631,11 @@ fn build_wasmtime_invoke_command(
   invoke_override : String?,
 ) -> String {
   let invoke = match invoke_override {
-    Some(value) => value
+    Some(value) => Some(value)
     None =>
       match mode {
-        RunMode::CoreWasm => "run"
-        RunMode::Component => "run()"
+        RunMode::CoreWasm => None
+        RunMode::Component => Some("run()")
       }
   }
   let cmd = StringBuilder::new()
@@ -648,8 +648,13 @@ fn build_wasmtime_invoke_command(
     cmd.write_string(" -S ")
     cmd.write_string(shell_quote_command_arg(flag))
   }
-  cmd.write_string(" --invoke ")
-  cmd.write_string(shell_quote_command_arg(invoke))
+  match invoke {
+    Some(value) => {
+      cmd.write_string(" --invoke ")
+      cmd.write_string(shell_quote_command_arg(value))
+    }
+    None => ()
+  }
   cmd.write_string(" ")
   cmd.write_string(shell_quote_command_arg(artifact_path))
   cmd.to_string()
