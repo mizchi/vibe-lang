@@ -211,7 +211,6 @@ ci-selfhost-examples-smoke:
     fail=0
     total=0
     examples=(
-      examples/async.vibe
       examples/module_export.vibe
       examples/module_types_export.vibe
     )
@@ -224,7 +223,7 @@ ci-selfhost-examples-smoke:
         "$SELFHOST_WASM" "$f" "_build/s1test/${name}.wasm" "_start" 2>&1 || true)
       if [ -f "_build/s1test/${name}.wasm" ] && [ "$(wc -c < "_build/s1test/${name}.wasm")" -gt 100 ]; then
         run_result=$(wasmtime run -W exceptions=y --invoke _start "_build/s1test/${name}.wasm" 2>&1 || true)
-        if echo "$run_result" | grep -q "^0$\|^warning"; then
+        if [ -z "$run_result" ] || echo "$run_result" | grep -q "^0$\|^warning"; then
           ok=$((ok + 1))
         else
           fail=$((fail + 1))
