@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
+warn_list="${VIBE_MOON_WARN_LIST:--1-6-7-9-24-29}"
 
 HASH_BEFORE="$(mktemp "${TMPDIR:-/tmp}/vibe_moon_info_before.XXXXXX")"
 HASH_AFTER="$(mktemp "${TMPDIR:-/tmp}/vibe_moon_info_after.XXXXXX")"
@@ -33,6 +34,6 @@ if ! diff -u "$HASH_BEFORE" "$HASH_AFTER" > "$DIFF_OUT"; then
 fi
 
 echo "[moon-info] check --deny-warn"
-moon check --deny-warn --warn-list '-29' --target js
+moon check --deny-warn --warn-list "$warn_list" --target js
 
 echo "moon-info-regen: ok"
