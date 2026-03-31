@@ -148,7 +148,11 @@ fn slice_typecheck_fixture_entries(
     Some(n) => {
       let requested = if n < 0 { 0 } else { n }
       let next = start + requested
-      if next > entries.length() { entries.length() } else { next }
+      if next > entries.length() {
+        entries.length()
+      } else {
+        next
+      }
     }
     None => entries.length()
   }

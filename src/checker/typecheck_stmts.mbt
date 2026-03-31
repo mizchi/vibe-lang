@@ -17,7 +17,7 @@ fn type_check_with_aliases(
     env,
     ast.stmts,
     aliases,
-    effect_scope_all(),
+    effect_scope_none(),
     false,
     exported_names,
     is_top_level=true,
@@ -87,7 +87,7 @@ pub fn type_check_with_env(
     env,
     ast.stmts,
     aliases,
-    effect_scope_all(),
+    effect_scope_none(),
     false,
     exported_names,
     is_top_level=true,
@@ -601,7 +601,29 @@ fn type_check_stmts(
         )
       @core.Stmt::Expr(expr~, span~) => {
         let _ = span
-        let _ = type_expr_eff(env, expr, aliases, effects, allow_effect)
+        try {
+          let _ = type_expr_eff(env, expr, aliases, effects, allow_effect)
+        } catch {
+          TypeError::EffectGuardNotSatisfied(
+            operation~,
+            missing_effect~,
+            span=err_span
+          ) =>
+            if is_top_level {
+              raise TypeError::TopLevelUnhandledEffect(
+                operation~,
+                missing_effect~,
+                span=err_span,
+              )
+            } else {
+              raise TypeError::EffectGuardNotSatisfied(
+                operation~,
+                missing_effect~,
+                span=err_span,
+              )
+            }
+          e => raise e
+        }
       }
       @core.Stmt::Import(..) => ()
       @core.Stmt::ExternLet(name~, ty~, span~) => {
