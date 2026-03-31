@@ -709,7 +709,7 @@ fn type_check_stmts(
           clone_env(env),
           body.stmts,
           aliases,
-          effects,
+          effect_scope_all(),
           true,
           {},
         )
@@ -721,7 +721,7 @@ fn type_check_stmts(
           clone_env(env),
           body.stmts,
           aliases,
-          effects,
+          effect_scope_all(),
           true,
           {},
         )

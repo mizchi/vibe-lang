@@ -221,9 +221,9 @@ ci-selfhost-examples-smoke:
       rm -f "_build/s1test/${name}.wasm"
       compile_out=$(VIBE_PREOPEN_DIR="$(pwd)" bash scripts/run_wasm_vibe_host_runner.sh \
         --invoke cli_main \
-        "$SELFHOST_WASM" "$f" "_build/s1test/${name}.wasm" "run" 2>&1 || true)
+        "$SELFHOST_WASM" "$f" "_build/s1test/${name}.wasm" "_start" 2>&1 || true)
       if [ -f "_build/s1test/${name}.wasm" ] && [ "$(wc -c < "_build/s1test/${name}.wasm")" -gt 100 ]; then
-        run_result=$(wasmtime run -W exceptions=y --invoke run "_build/s1test/${name}.wasm" 2>&1 || true)
+        run_result=$(wasmtime run -W exceptions=y --invoke _start "_build/s1test/${name}.wasm" 2>&1 || true)
         if echo "$run_result" | grep -q "^0$\|^warning"; then
           ok=$((ok + 1))
         else
