@@ -627,3 +627,45 @@ jobs:
             _build/coverage/selfhost-suite/selfhost_suite.summary.txt
             _build/coverage/selfhost-suite/selfhost_suite.report.json
           if-no-files-found: ignore
+
+  ci-required:
+    if: ${{ github.event_name == 'pull_request' && always() }}
+    needs:
+      - lint-ci
+      - contract-moon
+      - contract-native
+      - wasm-vibe-smoke
+      - e2e-component
+      - selfhost-examples
+      - coverage-selfhost-suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required CI job results
+        env:
+          LINT_CI_RESULT: ${{ needs.lint-ci.result }}
+          CONTRACT_MOON_RESULT: ${{ needs.contract-moon.result }}
+          CONTRACT_NATIVE_RESULT: ${{ needs.contract-native.result }}
+          WASM_VIBE_SMOKE_RESULT: ${{ needs.wasm-vibe-smoke.result }}
+          E2E_COMPONENT_RESULT: ${{ needs.e2e-component.result }}
+          SELFHOST_EXAMPLES_RESULT: ${{ needs.selfhost-examples.result }}
+          COVERAGE_SELFHOST_SUITE_RESULT: ${{ needs.coverage-selfhost-suite.result }}
+        run: |
+          failures=0
+          for check in \
+            "lint-ci:$LINT_CI_RESULT" \
+            "contract-moon:$CONTRACT_MOON_RESULT" \
+            "contract-native:$CONTRACT_NATIVE_RESULT" \
+            "wasm-vibe-smoke:$WASM_VIBE_SMOKE_RESULT" \
+            "e2e-component:$E2E_COMPONENT_RESULT" \
+            "selfhost-examples:$SELFHOST_EXAMPLES_RESULT" \
+            "coverage-selfhost-suite:$COVERAGE_SELFHOST_SUITE_RESULT"
+          do
+            name="${check%%:*}"
+            result="${check#*:}"
+            echo "$name => $result"
+            if [ "$result" != "success" ]; then
+              echo "::error::$name finished with $result"
+              failures=1
+            fi
+          done
+          exit "$failures"
