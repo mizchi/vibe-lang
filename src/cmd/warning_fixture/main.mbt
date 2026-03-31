@@ -13,6 +13,9 @@ fn collect_cli_args() -> Array[String] {
     if i == 0 {
       continue
     }
+    if i == 1 && arg.has_suffix(".js") {
+      continue
+    }
     out.push(arg)
   }
   out

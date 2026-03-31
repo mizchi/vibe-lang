@@ -102,7 +102,7 @@ ci-contract-moon:
     scripts/check_lock_clean_test.sh
     moon check --deny-warn --warn-list '{{moon_warn_list}}' --target js
     bash scripts/test_codegen_contract.sh
-    moon test --target js --warn-list '{{moon_warn_list}}'
+    VIBE_MOON_WARN_LIST='{{moon_warn_list}}' bash scripts/test_contract_moon.sh
 
 # PR-oriented native/runtime contract checks
 ci-contract-native:
