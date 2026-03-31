@@ -113,13 +113,23 @@ ci-contract-native:
     set -euo pipefail
     source scripts/ensure_native_cli.sh
     cli="_build/native/debug/build/cmd/vibe/vibe.exe"
-    bash scripts/test_internal_parent_watchdog_e2e.sh "$cli"
-    scripts/test_fixtures_isolation.sh
-    bash scripts/test_e2e_parity.sh
-    bash scripts/test_repl_parity.sh
-    # Parallel cleanup is an infrastructure stress-test; allow soft failure
-    # to avoid blocking PRs while the root cause is investigated.
-    bash scripts/test_parallel_cleanup_e2e.sh "$cli" || echo "WARN: parallel cleanup e2e failed (non-fatal)"
+    failed=""
+    set +e
+    bash scripts/test_internal_parent_watchdog_e2e.sh "$cli"; [ $? -ne 0 ] && failed="$failed watchdog"
+    scripts/test_fixtures_isolation.sh; [ $? -ne 0 ] && failed="$failed fixtures"
+    bash scripts/test_e2e_parity.sh; [ $? -ne 0 ] && failed="$failed e2e-parity"
+    bash scripts/test_repl_parity.sh; [ $? -ne 0 ] && failed="$failed repl-parity"
+    bash scripts/test_parallel_cleanup_e2e.sh "$cli"; [ $? -ne 0 ] && failed="$failed parallel-cleanup"
+    set -e
+    if [ -n "$failed" ]; then
+      echo "contract-native failures:$failed"
+      # parallel-cleanup is a known flaky infrastructure test; allow its sole failure
+      stripped="${failed// parallel-cleanup/}"
+      if [ -n "$stripped" ]; then
+        exit 1
+      fi
+      echo "WARN: only parallel-cleanup failed (non-fatal)"
+    fi
 
 # Push-only native artifact parity checks
 ci-native-binary-parity:
