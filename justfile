@@ -113,11 +113,11 @@ ci-contract-native:
     set -euo pipefail
     source scripts/ensure_native_cli.sh
     cli="_build/native/debug/build/cmd/vibe/vibe.exe"
-    bash scripts/test_parallel_cleanup_e2e.sh "$cli"
     bash scripts/test_internal_parent_watchdog_e2e.sh "$cli"
     scripts/test_fixtures_isolation.sh
     bash scripts/test_e2e_parity.sh
     bash scripts/test_repl_parity.sh
+    bash scripts/test_parallel_cleanup_e2e.sh "$cli"
 
 # Push-only native artifact parity checks
 ci-native-binary-parity:
