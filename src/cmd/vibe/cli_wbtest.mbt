@@ -3619,13 +3619,12 @@ test "test backend reports unsupported compiled cases by default" {
 test "compiled exec detects modules that use http builtins and emits host imports" {
   let db = @runtime.VibeDb::new()
   let src =
-    #|let run = () -> Int with {Net} {
+    #|export let _start = () -> Int with {Net} {
     #|  let req = Http::request("GET", "https://example.com", "", "")
     #|  let status = Http::response_status(req)
     #|  Http::close(req)
     #|  status
     #|}
-    #|run()
   db.set_source("main", src)
   let ast = db.ast("main")
   assert_true(module_uses_http_builtins(ast))
@@ -3646,10 +3645,9 @@ test "compiled exec detects modules without http builtins" {
   db.set_source(
     "main",
     (
-      #|let run = () -> Int {
+      #|export let _start = () -> Int {
       #|  42
-      #|}
-      #|run(),
+      #|},
     ),
   )
   let ast = db.ast("main")

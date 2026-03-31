@@ -826,7 +826,7 @@ Fixtures:
 
 Bench:
 - `just bench-wasmtime` builds `cmd/vibe`, compiles `bench/bench_simple.vibe` to wasm,
-  then benchmarks `wasmtime run --invoke run`.
+  then benchmarks `wasmtime run --invoke _start`.
 - `just bench-compare` compares interpreter (`cmd/vibe run`) vs `wasmtime run`.
 - `just bench-kpi [<file|dir...>]` runs `vibe bench` and writes a combined KPI report
   (`per_us` + `wasm_bytes`) to `dist/bench_kpi/latest.tsv`.

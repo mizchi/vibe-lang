@@ -235,7 +235,7 @@ just wasmtime-submodule-init
 just build-wasmtime-submodule
 
 # run wasmtime from submodule directly
-just wasmtime-submodule run -W gc --invoke run /tmp/out.wasm
+just wasmtime-submodule run -W gc --invoke _start /tmp/out.wasm
 
 # or switch existing vibe scripts/tasks to submodule wasmtime
 VIBE_USE_WASMTIME_SUBMODULE=1 just component-run script.vibe

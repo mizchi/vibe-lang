@@ -2716,7 +2716,7 @@ fn strip_unused_top_level_static_bindings(
     for stmt in current.stmts {
       match stmt {
         @core.Stmt::Let(name~, ..) =>
-          if name != "run" &&
+          if name != "_start" &&
             candidates.contains(name) &&
             not(counts.contains(name)) {
             changed = true
@@ -2990,25 +2990,20 @@ fn ensure_run_ast_result(
     stmts.push(stmt)
   }
   let span = @core.Span::empty(0)
-  // If user defined `export let run`, append a call to it so the
-  // auto-generated top-level function returns run()'s result.
-  if exported_fns.contains("run") {
+  // If user defined `export let _start`, append a call to it so the
+  // auto-generated top-level function returns _start()'s result.
+  if exported_fns.contains("_start") {
     stmts.push(
       @core.Stmt::Expr(
-        expr=@core.Expr::Call(name="run", type_args=[], args=[], span~),
+        expr=@core.Expr::Call(name="_start", type_args=[], args=[], span~),
         span~,
       ),
     )
-  } else if stmts.length() == 0 {
-    stmts.push(@core.Stmt::Expr(expr=@core.Expr::Int(value=0L, span~), span~))
   } else {
-    match stmts[stmts.length() - 1] {
-      @core.Stmt::Expr(..) => ()
-      _ =>
-        stmts.push(
-          @core.Stmt::Expr(expr=@core.Expr::Int(value=0L, span~), span~),
-        )
-    }
+    // No explicit entry point: return 0.
+    stmts.push(
+      @core.Stmt::Expr(expr=@core.Expr::Int(value=0L, span~), span~),
+    )
   }
   @core.Module::{ stmts, }
 }

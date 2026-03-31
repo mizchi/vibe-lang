@@ -1047,7 +1047,7 @@ test "vibe wasm can route http builtins to host imports via emit option" {
 test "vibe wasm compiles while with stdio char builtins" {
   let db = VibeDb::new()
   let src =
-    #|let run = () -> Int with {Stdin, Stdout} {
+    #|export let _start = () -> Int with {Stdin, Stdout} {
     #|  {
     #|    let mut i = 0
     #|    while i < 1 {
@@ -1062,7 +1062,6 @@ test "vibe wasm compiles while with stdio char builtins" {
     #|    0
     #|  }
     #|}
-    #|run()
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())

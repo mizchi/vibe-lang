@@ -227,7 +227,7 @@ just run test \
 
 # Validate WASM compilation (import/export usage)
 just run compile --wasm vibe/prelude/test_import.vibe -o /tmp/test.wasm
-wasmtime run --invoke run /tmp/test.wasm  # -> 484 (untagged: 121)
+wasmtime run --invoke _start /tmp/test.wasm  # -> 484 (untagged: 121)
 ```
 
 ## Notes

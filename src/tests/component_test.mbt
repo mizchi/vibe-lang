@@ -82,13 +82,12 @@ test "component wasm compile with wite opt level" {
 test "component wit includes wasi stdio imports when used" {
   let db = VibeDb::new()
   let src =
-    #|let run = () -> Int with {Stdout, Stdin} {
+    #|export let _start = () -> Int with {Stdout, Stdin} {
     #|  {
     #|    Stdout::write_char(65)
     #|    Stdin::read_char()
     #|  }
     #|}
-    #|run()
   db.set_source("main", src)
   let wit = try
     generate_module_component_wit(db, "main", "local:main", "main")
@@ -110,14 +109,13 @@ test "component wit includes wasi stdio imports when used" {
 test "component wit includes wasi stdio imports for stream builtins" {
   let db = VibeDb::new()
   let src =
-    #|let run = () -> Int with {Stdout, Stdin} {
+    #|export let _start = () -> Int with {Stdout, Stdin} {
     #|  {
     #|    Stdout::write_stream("hello")
     #|    Stdin::read_stream(16)
     #|    1
     #|  }
     #|}
-    #|run()
   db.set_source("main", src)
   let wit = try
     generate_module_component_wit(db, "main", "local:main", "main")
@@ -137,11 +135,10 @@ test "component wit includes wasi stdio imports for stream builtins" {
 test "component wit includes vibe env import when Env::get is used" {
   let db = VibeDb::new()
   let src =
-    #|let run = () -> Int with {Env} {
+    #|export let _start = () -> Int with {Env} {
     #|  let home = Env::get("HOME")
     #|  String::length(home)
     #|}
-    #|run()
   db.set_source("main", src)
   let wit = try
     generate_module_component_wit(db, "main", "local:main", "main")
@@ -160,14 +157,13 @@ test "component wit includes vibe env import when Env::get is used" {
 test "component wit includes vibe args imports when Env::args is used" {
   let db = VibeDb::new()
   let src =
-    #|let run = () -> Int with {Env} {
+    #|export let _start = () -> Int with {Env} {
     #|  if Env::args_len() > 0 {
     #|    String::length(Env::args_get(0))
     #|  } else {
     #|    0
     #|  }
     #|}
-    #|run()
   db.set_source("main", src)
   let wit = try
     generate_module_component_wit(db, "main", "local:main", "main")
@@ -187,14 +183,13 @@ test "component wit includes vibe args imports when Env::args is used" {
 test "component wit includes preview2 filesystem imports when fs builtins are used" {
   let db = VibeDb::new()
   let src =
-    #|let run = () -> Int with {Fs} {
+    #|export let _start = () -> Int with {Fs} {
     #|  if Fs::exists("foo.txt") {
     #|    String::length(Fs::read_file("foo.txt"))
     #|  } else {
     #|    0
     #|  }
     #|}
-    #|run()
   db.set_source("main", src)
   let wit = try
     generate_module_component_wit(db, "main", "local:main", "main")
@@ -213,7 +208,7 @@ test "component wit includes preview2 filesystem imports when fs builtins are us
 test "component wit includes preview2 metadata hash imports when Fs::stat_token is used" {
   let db = VibeDb::new()
   db.set_source(
-    "main", "let run = () -> Int with {Fs} { Fs::stat_token(\"foo.txt\") }\nrun()",
+    "main", "export let _start = () -> Int with {Fs} { Fs::stat_token(\"foo.txt\") }",
   )
   let wasm = try compile_module_wasm(db, "main") catch {
     e => fail("wasm error: " + e.to_string())
@@ -238,14 +233,13 @@ test "component wit includes preview2 metadata hash imports when Fs::stat_token 
 test "component wit scans for-in bodies for host imports" {
   let db = VibeDb::new()
   let src =
-    #|let run = () -> Int with {Sleep, Async} {
+    #|export let _start = () -> Int with {Sleep, Async} {
     #|  let _ = for x in [1, 2] {
     #|    sleep(x)
     #|    x
     #|  }
     #|  0
     #|}
-    #|run()
   db.set_source("main", src)
   let wit = try
     generate_module_component_wit(db, "main", "local:main", "main")
@@ -263,13 +257,12 @@ test "component wit scans for-in bodies for host imports" {
 test "component wit includes wasi http client imports when used" {
   let db = VibeDb::new()
   let src =
-    #|let run = () -> Int with {Net} {
+    #|export let _start = () -> Int with {Net} {
     #|  let req = Http::request("GET", "https://example.com", "", "")
     #|  let status = Http::response_status(req)
     #|  Http::close(req)
     #|  status
     #|}
-    #|run()
   db.set_source("main", src)
   let wit = try
     generate_module_component_wit(db, "main", "local:main", "main")
@@ -289,7 +282,7 @@ test "component wit includes wasi http client imports when used" {
 test "component wit includes wasi http handler imports when server builtins are used" {
   let db = VibeDb::new()
   let src =
-    #|let run = () -> Int with {Net} {
+    #|export let _start = () -> Int with {Net} {
     #|  let listener = Http::listen(8080)
     #|  let req = Http::accept(listener)
     #|  let method = Http::request_method(req)
@@ -299,7 +292,6 @@ test "component wit includes wasi http handler imports when server builtins are 
     #|  Http::respond(req, 200, "", "")
     #|  String::length(method)
     #|}
-    #|run()
   db.set_source("main", src)
   let wit = try
     generate_module_component_wit(db, "main", "local:main", "main")
@@ -320,11 +312,10 @@ test "component wit includes wasi http handler imports when server builtins are 
 test "component wasm instantiation carries import args when core has imports" {
   let db = VibeDb::new()
   let src =
-    #|let run = () -> Int with {Stdout} {
+    #|export let _start = () -> Int with {Stdout} {
     #|  Stdout::write_char(65)
     #|  1
     #|}
-    #|run()
   db.set_source("main", src)
   let wasm = try compile_module_component(db, "main") catch {
     e => fail("compile error: " + e.to_string())
@@ -338,11 +329,10 @@ test "component wasm instantiation carries import args when core has imports" {
 test "component wasm uses stable func imports for stdio" {
   let db = VibeDb::new()
   let src =
-    #|let run = () -> Int with {Stdout} {
+    #|export let _start = () -> Int with {Stdout} {
     #|  Stdout::write_char(65)
     #|  1
     #|}
-    #|run()
   db.set_source("main", src)
   let wasm = try compile_module_component(db, "main") catch {
     e => fail("compile error: " + e.to_string())
@@ -360,13 +350,12 @@ test "component wasm uses stable func imports for stdio" {
 test "component wasm uses wasi http shim imports for http host imports" {
   let db = VibeDb::new()
   let src =
-    #|let run = () -> Int with {Net} {
+    #|export let _start = () -> Int with {Net} {
     #|  let req = Http::request("GET", "https://example.com", "", "")
     #|  let status = Http::response_status(req)
     #|  Http::close(req)
     #|  status
     #|}
-    #|run()
   db.set_source("main", src)
   let wasm = try
     compile_module_component(db, "main", http_host_imports=true)
@@ -632,8 +621,7 @@ test "P3 handler: component_string_lift_auto injects run_init when run export ex
     #|export let handler = (method: String, url: String) -> Int {
     #|  if String::equals(method, "GET") { 200 } else { 405 }
     #|}
-    #|let run = () -> Int { handler("GET", "/") }
-    #|run()
+    #|export let _start = () -> Int { handler("GET", "/") }
   db.set_source("main", src)
   let wasm = try compile_module_component_string_lift_auto(db, "main") catch {
     e => fail("compile error: " + e.to_string())
