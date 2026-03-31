@@ -100,13 +100,59 @@ fn collect_typecheck_fixture_entries(
 }
 
 ///|
-pub fn verify_typecheck_fixtures(
-  fixture_dir : String,
-) -> Result[Array[TypecheckFixtureMismatch], String] {
-  let entries = match collect_typecheck_fixture_entries(fixture_dir) {
-    Ok(v) => v
-    Err(err) => return Err(err)
+fn collect_typecheck_fixture_entries_from_paths(
+  paths : Array[String],
+) -> Result[Array[TypecheckFixtureEntry], String] {
+  if paths.length() == 0 {
+    return Err("no typecheck fixture paths provided")
   }
+  let files = paths.copy()
+  sort_strings_typecheck_fixture(files)
+  let out : Array[TypecheckFixtureEntry] = []
+  for source_path in files {
+    if !source_path.has_suffix(".vibe") {
+      return Err("[\{source_path}] fixture path must end with .vibe")
+    }
+    let is_file = @os_fs.is_file(source_path) catch {
+      e => return Err("[\{source_path}] stat failed: \{e.to_string()}")
+    }
+    if !is_file {
+      return Err("[\{source_path}] fixture file not found")
+    }
+    out.push({ source_path, diag_path: diag_path_for_fixture(source_path) })
+  }
+  Ok(out)
+}
+
+///|
+fn slice_typecheck_fixture_entries(
+  entries : Array[TypecheckFixtureEntry],
+  offset : Int,
+  limit : Int?,
+) -> Array[TypecheckFixtureEntry] {
+  let start = if offset < 0 { 0 } else { offset }
+  if start >= entries.length() {
+    return []
+  }
+  let end = match limit {
+    Some(n) => {
+      let requested = if n < 0 { 0 } else { n }
+      let next = start + requested
+      if next > entries.length() { entries.length() } else { next }
+    }
+    None => entries.length()
+  }
+  let out : Array[TypecheckFixtureEntry] = []
+  for i in start..<end {
+    out.push(entries[i])
+  }
+  out
+}
+
+///|
+fn verify_typecheck_fixture_entries(
+  entries : Array[TypecheckFixtureEntry],
+) -> Result[Array[TypecheckFixtureMismatch], String] {
   let mismatches : Array[TypecheckFixtureMismatch] = []
   for entry in entries {
     let source = @os_fs.read_file_to_string(entry.source_path) catch {
@@ -135,6 +181,43 @@ pub fn verify_typecheck_fixtures(
     }
   }
   Ok(mismatches)
+}
+
+///|
+pub fn verify_typecheck_fixtures(
+  fixture_dir : String,
+) -> Result[Array[TypecheckFixtureMismatch], String] {
+  let entries = match collect_typecheck_fixture_entries(fixture_dir) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  verify_typecheck_fixture_entries(entries)
+}
+
+///|
+pub fn verify_typecheck_fixtures_range(
+  fixture_dir : String,
+  offset : Int,
+  limit : Int?,
+) -> Result[Array[TypecheckFixtureMismatch], String] {
+  let entries = match collect_typecheck_fixture_entries(fixture_dir) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  verify_typecheck_fixture_entries(
+    slice_typecheck_fixture_entries(entries, offset, limit),
+  )
+}
+
+///|
+pub fn verify_typecheck_fixture_paths(
+  paths : Array[String],
+) -> Result[Array[TypecheckFixtureMismatch], String] {
+  let entries = match collect_typecheck_fixture_entries_from_paths(paths) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  verify_typecheck_fixture_entries(entries)
 }
 
 ///|

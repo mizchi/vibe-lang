@@ -1,10 +1,15 @@
 ///|
 fn usage() -> Unit {
-  println("typecheck-fixture [--update] [--dir <path>]")
+  println(
+    "typecheck-fixture [--update] [--dir <path>] [--offset <n>] [--limit <n>] [--file <path> ...]",
+  )
   println(
     "  --update      rewrite fixtures/*.diag from current typecheck output",
   )
   println("  --dir <path>  fixture directory (default: fixtures/typecheck)")
+  println("  --offset <n>  start index in sorted fixture list")
+  println("  --limit <n>   max number of fixtures to verify")
+  println("  --file <path> verify specific fixture file(s)")
 }
 
 ///|
@@ -15,15 +20,49 @@ fn collect_cli_args() -> Array[String] {
     if i == 0 {
       continue
     }
+    if i == 1 && arg.has_suffix(".js") {
+      continue
+    }
     out.push(arg)
   }
   out
 }
 
 ///|
-fn parse_args(args : Array[String]) -> Result[(Bool, String), String] {
+fn parse_decimal_int_arg(raw : String) -> Result[Int, String] {
+  if raw.length() == 0 {
+    return Err("empty integer")
+  }
+  let chars = raw.to_array()
+  let mut sign = 1
+  let mut start = 0
+  if chars[0] == '-' {
+    sign = -1
+    start = 1
+  }
+  if start >= chars.length() {
+    return Err("empty integer")
+  }
+  let mut value = 0
+  for i in start..<chars.length() {
+    let ch = chars[i]
+    if ch < '0' || ch > '9' {
+      return Err("invalid integer: " + raw)
+    }
+    value = value * 10 + (ch.to_int() - '0'.to_int())
+  }
+  Ok(value * sign)
+}
+
+///|
+fn parse_args(
+  args : Array[String],
+) -> Result[(Bool, String, Int, Int?, Array[String]), String] {
   let mut update = false
   let mut fixture_dir = "fixtures/typecheck"
+  let mut offset = 0
+  let mut limit : Int? = None
+  let files : Array[String] = []
   let mut i = 0
   while i < args.length() {
     let arg = args[i]
@@ -36,6 +75,34 @@ fn parse_args(args : Array[String]) -> Result[(Bool, String), String] {
         }
         fixture_dir = args[i]
       }
+      "--offset" => {
+        i += 1
+        if i >= args.length() {
+          return Err("missing number after --offset")
+        }
+        offset = match parse_decimal_int_arg(args[i]) {
+          Ok(v) => v
+          Err(_) => return Err("invalid --offset: " + args[i])
+        }
+      }
+      "--limit" => {
+        i += 1
+        if i >= args.length() {
+          return Err("missing number after --limit")
+        }
+        let parsed = match parse_decimal_int_arg(args[i]) {
+          Ok(v) => v
+          Err(_) => return Err("invalid --limit: " + args[i])
+        }
+        limit = Some(parsed)
+      }
+      "--file" => {
+        i += 1
+        if i >= args.length() {
+          return Err("missing path after --file")
+        }
+        files.push(args[i])
+      }
       "--help" | "-h" => {
         usage()
         return Err("")
@@ -44,7 +111,7 @@ fn parse_args(args : Array[String]) -> Result[(Bool, String), String] {
     }
     i += 1
   }
-  Ok((update, fixture_dir))
+  Ok((update, fixture_dir, offset, limit, files))
 }
 
 ///|
@@ -61,7 +128,7 @@ fn print_mismatch(mismatch : @checker.TypecheckFixtureMismatch) -> Unit {
 ///|
 fn main {
   let args = collect_cli_args()
-  let (update, fixture_dir) = match parse_args(args) {
+  let (update, fixture_dir, offset, limit, files) = match parse_args(args) {
     Ok(v) => v
     Err(err) =>
       if err.length() == 0 {
@@ -69,6 +136,9 @@ fn main {
       } else {
         abort("typecheck-fixture: " + err)
       }
+  }
+  if update && files.length() > 0 {
+    abort("typecheck-fixture: --update does not support --file")
   }
   if update {
     match @checker.update_typecheck_fixtures(fixture_dir) {
@@ -83,10 +153,21 @@ fn main {
     }
     return
   }
-  match @checker.verify_typecheck_fixtures(fixture_dir) {
+  let verify_result = if files.length() > 0 {
+    @checker.verify_typecheck_fixture_paths(files)
+  } else {
+    @checker.verify_typecheck_fixtures_range(fixture_dir, offset, limit)
+  }
+  match verify_result {
     Ok(mismatches) => {
       if mismatches.length() == 0 {
-        println("typecheck fixtures: ok (\{fixture_dir})")
+        if files.length() > 0 {
+          println(
+            "typecheck fixtures: ok (" + files.length().to_string() + " file(s))",
+          )
+        } else {
+          println("typecheck fixtures: ok (\{fixture_dir})")
+        }
         return
       }
       for mismatch in mismatches {
