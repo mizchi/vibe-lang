@@ -303,17 +303,14 @@ examples/async_host/  # Rust/wasmtime host runtime
 ## Docs
 
 - `docs/vibe.md` - Language specification (normative for implemented behavior)
-- `docs/module_design.md` - Module design proposals (non-normative)
 - `docs/module-system.md` - Current module system spec
-- `docs/vibe-eval.md` - Legacy evaluator workflow notes
-- `docs/async_design.md` - Async design proposals (non-normative)
-- `docs/unstable_features.md` - Unstable runtime feature flags (`--unstable-async`, `--unstable-threads`)
 - `docs/coverage.md` - Coverage strategy for MoonBit + WASM integration
 
 ## Fixtures
 
 Fixtures live in `fixtures/*.vibe` and include a `__DATA__` JSON section.
 `moon test` runs them via `src/tests/fixture_test.mbt`.
+Runtime-style fixtures (effect, HTTP, struct) live in `fixtures/runtime/`.
 
 WASM fixtures live in `fixtures/wasm/*.vibe` and compare expected WAT.
 WASM GC fixtures live in `fixtures/wasm_gc/*.vibe` and check for `struct.new/get/set`.
