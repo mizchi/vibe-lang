@@ -123,7 +123,7 @@ pub(all) struct ContinuationValue {
 } derive(Eq)
 
 ///|
-pub impl Show for ContinuationValue with output(self, logger) {
+pub impl Show for ContinuationValue with output(_self, logger) {
   logger.write_string("<continuation>")
 }
 
