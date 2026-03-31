@@ -21,7 +21,7 @@
 
 ### 1. `vibe integration handle catches error`
 
-File: [src/tests/vibe_integration_test.mbt](/Users/mz/ghq/github.com/mizchi/vibe-lang/src/tests/vibe_integration_test.mbt)
+File: [src/tests/vibe_integration_test.mbt](src/tests/vibe_integration_test.mbt)
 
 Why:
 - 最小の `handle { ... } { ... }` と `perform` / `resume` の往復を確認できる
@@ -34,7 +34,7 @@ What it verifies:
 
 ### 2. `vibe integration perform handle typed payload`
 
-File: [src/tests/vibe_integration_test.mbt](/Users/mz/ghq/github.com/mizchi/vibe-lang/src/tests/vibe_integration_test.mbt)
+File: [src/tests/vibe_integration_test.mbt](src/tests/vibe_integration_test.mbt)
 
 Why:
 - typed payload を持つ effect op を扱える
@@ -46,7 +46,7 @@ What it verifies:
 
 ### 3. `vibe integration perform multi-layer handle`
 
-File: [src/tests/vibe_integration_test.mbt](/Users/mz/ghq/github.com/mizchi/vibe-lang/src/tests/vibe_integration_test.mbt)
+File: [src/tests/vibe_integration_test.mbt](src/tests/vibe_integration_test.mbt)
 
 Why:
 - handler の入れ子と pass-through を見られる
@@ -59,7 +59,7 @@ What it verifies:
 
 ### 4. `vibe integration resume continues after perform`
 
-File: [src/tests/vibe_integration_test.mbt](/Users/mz/ghq/github.com/mizchi/vibe-lang/src/tests/vibe_integration_test.mbt)
+File: [src/tests/vibe_integration_test.mbt](src/tests/vibe_integration_test.mbt)
 
 Why:
 - `resume` の後に callee の残り評価が継続するかを確かめる
@@ -71,7 +71,7 @@ What it verifies:
 
 ### 5. `vibe integration resume multi-layer perform`
 
-File: [src/tests/vibe_integration_test.mbt](/Users/mz/ghq/github.com/mizchi/vibe-lang/src/tests/vibe_integration_test.mbt)
+File: [src/tests/vibe_integration_test.mbt](src/tests/vibe_integration_test.mbt)
 
 Why:
 - multi-layer handler と `resume` を同時に使う
@@ -83,7 +83,7 @@ What it verifies:
 
 ### 6. `vibe integration resume rejects prior effects before perform`
 
-File: [src/tests/vibe_integration_test.mbt](/Users/mz/ghq/github.com/mizchi/vibe-lang/src/tests/vibe_integration_test.mbt)
+File: [src/tests/vibe_integration_test.mbt](src/tests/vibe_integration_test.mbt)
 
 Why:
 - continuation の不正な再利用・順序違反を明示的にチェックできる
@@ -95,7 +95,7 @@ What it verifies:
 
 ### 7. `filter all pass` / `map double` / `swap behavior`
 
-File: [vibe/x/collect/collect_effect_test.vibe](/Users/mz/ghq/github.com/mizchi/vibe-lang/vibe/x/collect/collect_effect_test.vibe)
+File: [vibe/x/collect/collect_effect_test.vibe](vibe/x/collect/collect_effect_test.vibe)
 
 Why:
 - 複数回の `perform` と handler の繰り返しを見られる
@@ -109,8 +109,8 @@ What it verifies:
 ### 8. `process mock exec` / `tcp mock connect + write + read`
 
 Files:
-- [vibe/process/process_effect_test.vibe](/Users/mz/ghq/github.com/mizchi/vibe-lang/vibe/process/process_effect_test.vibe)
-- [vibe/socket/socket_effect_test.vibe](/Users/mz/ghq/github.com/mizchi/vibe-lang/vibe/socket/socket_effect_test.vibe)
+- [vibe/process/process_effect_test.vibe](vibe/process/process_effect_test.vibe)
+- [vibe/socket/socket_effect_test.vibe](vibe/socket/socket_effect_test.vibe)
 
 Why:
 - capability 系 effect の実用例になる
