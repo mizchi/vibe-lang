@@ -90,7 +90,7 @@ gh issue close <number>
 gh issue create --title "タイトル" --label bug
 ```
 
-設計判断は `docs/adr/` に ADR として記録する。
+設計判断は `docs/adr.md` に記録する。旧個別ファイルは `docs/archive/adr/`。
 
 ## Before Commit
 

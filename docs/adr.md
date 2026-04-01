@@ -1,0 +1,91 @@
+# Architecture Decision Log
+
+軽量な意思決定レコード。各エントリは「何を決めたか」だけを記録する。
+詳細な経緯が必要な場合は git log や issue を参照。
+
+細粒度の locked decisions は [spec/decisions.md](spec/decisions.md) を参照。
+
+---
+
+## 凡例
+
+- **accepted** — 採用済み・実装済み
+- **proposed** — 方針決定済み・未実装または実装中
+- **deferred** — 延期
+- **superseded** — 後続の決定で置き換え済み
+
+---
+
+## Core Language
+
+| # | Decision | Status |
+|---|----------|--------|
+| 0001 | **MoonBit を実装言語に採用**。WASM/JS/Native ターゲット、snapshot テスト、MoonBit ツールチェーン活用。 | accepted |
+| 0006 | **62-bit タグ付き Int**。リテラル上限 2^61-1、i64 下位 2bit タグ、`>>` は算術シフト、`~` 非対応。 | accepted |
+| 0016 | **エラー制御構文を `handle`/`throw` に統一**。`throw()` で送出、`handle { } { Error(_) => }` で捕捉。try/catch/raise は廃止。 | accepted |
+| 0020 | **Pipe-first 呼び出し規約**。`x \|> f` → `f(x)`、parser でデシュガー。`.` はデータアクセス専用。名前解決: local > lexical > import > prelude。 | accepted |
+| 0023 | **`is` パターンマッチ式**。`expr is pattern` で Bool / binding。`EMatch` にデシュガー。 | accepted |
+| 0025 | **else 節を一般の式に統一**。else の後に任意の式を許可。 | accepted |
+| 0037 | **トップレベル前方参照**。codegen で topological sort + 前方アノテーション関数の pre-scan。パラメータ型注釈必須、自己再帰は `let rec` + 返り値注釈。 | accepted |
+
+## Effect System
+
+| # | Decision | Status |
+|---|----------|--------|
+| 0003 | **エフェクトセット検証**。`with { Effect }` 宣言で追跡。`do` 境界検証は廃止 (v2)。エフェクト名の個別追跡は ADR-0021 で拡張予定。 | accepted |
+| 0017 | **`let mut` は局所可変状態として許可**。`Ref[T]` は abandoned → ADR-0021 の Effect Handler で代替。 | superseded (→0021) |
+| 0021 | **ミュータビリティを Effect Handler で表現**。`effect Mut<T> { push(); build() }` + `handle ... with Mut<T>`。参照脱出を構造的に防止。tail-resumptive inline 最適化。Component Model `#import` 統合。WASI P3 HTTP を capability effect (Model 1) で表現。 | proposed |
+| 0041 | **`_start` は `() -> Unit` 固定**。`with { Effects }` で capability 宣言。exit code は panic/Process::exit。REPL は例外。 | proposed |
+| 0042 | **トップレベル未処理 effect 禁止**。ファイルモジュール top-level は pure (effect_scope_none)。shell/REPL/test は別スコープ。 | proposed |
+| 0043 | **Capability-driven DCE + 定数分岐**。`--allow-*`/`--deny-*` で capability 指定 → 不要コード除去。`@build.*` 定数 + dead branch elimination。`--profile` プリセット (minimal/sandbox/server/edge/agent)。 | proposed |
+
+## Module & Identity
+
+| # | Decision | Status |
+|---|----------|--------|
+| 0004 | **コンテンツアドレスモジュール (Unison 式)**。SHA1 ハッシュ。三層 ref: HashRef (実行時), VersionRef, SymbolRef (ユーザー向け)。 | accepted |
+| 0005 | **標準ライブラリ階層型境界**。5 層: trait-contract → pure-primitive → pure-data → ref-model → effect-boundary。外部パッケージ分離。 | accepted |
+| 0009 | **スクラッチワークフロー**。`vibe eval` で定義を蓄積、namespace head をコンテンツハッシュで管理、`.vibe` へ export。 | accepted |
+| 0015 | **分散 Ref (Git Object ストレージ)**。不変データ = Git object、可変ポインタ = `refs/bit/index/<scope>/graph/{head,wal_head}`。delta chain で append。 | accepted |
+| 0019 | **Canonical naming**。`domain_verb` パターン (`io_read`, `socket_connect`)。型所有は `Type::method`。 | accepted |
+
+## Compilation & Optimization
+
+| # | Decision | Status |
+|---|----------|--------|
+| 0024 | **Named 型の遅延展開 (Lazy Enum Expansion)**。`normalize_type(expand_enum=false)` がデフォルト。match/unify/pattern 時のみ展開。parser 5.2x 高速化達成。 | accepted |
+| 0032 | **Wite optimize hints**。`wite.cfp_const_hints` カスタムセクションで const-forward ヒントを emit。 | accepted |
+| 0034 | **Compiled-only execution surface**。run/test/bench/shell は compiled 固定。interpreter は内部のみ、段階的に削除。 | accepted |
+| 0036 | **WASM-GC main backend gate**。`test-wasm-gc-mainlane-e2e` pass で main 候補。`--wasm` → wasm-gc、旧 linear は `--wasm-linear`。 | accepted |
+| 0038 | **Perceus RC バイナリサイズ最適化**。4-byte RC header、free-list optional、i64 space tagging、br_table dispatch。1.95x→1.49x 達成。 | accepted |
+| 0040 | **Checker/Codegen contract boundary**。CheckedModule contract layer を導入し、codegen から checker 内部への依存を除去。checker-less codegen build を設計上保証。 | proposed |
+
+## Platform & Runtime
+
+| # | Decision | Status |
+|---|----------|--------|
+| 0007 | **HTTP バックエンドを純粋 MoonBit 実装に**。vibe/socket (WASI P2) 上の HTTP/1.1。C FFI なし。 | accepted |
+| 0010 | **WASM Component Model / WIT 統合**。`--component` ターゲット。stdio→wasi:cli、effect→host import。将来 WIT 自動生成。 | accepted |
+| 0011 | **AI エージェント向け WASM ランタイム**。Deno + WASM REPL。typecheck/compile/run/eval API は構造化 JSON 返却。 | accepted |
+| 0028 | **Selfhost CLI は pure compile API のみ**。I/O は host/adapter 層。将来 Preview2/Component adapter で WASI 追加。 | accepted |
+| 0033 | **Selfhost 0.1.0 release profile**。canonical artifact: `_build/dist/selfhost_compiler.wasm`。linear/WASM 正式、GC experimental。 | accepted |
+| 0039 | **WASM-GC / Component dual-track**。当面は component+linear と wasm-gc を並行。Canonical ABI GC 対応後に single-track へ。 | proposed |
+
+## Tooling
+
+| # | Decision | Status |
+|---|----------|--------|
+| 0008 | **不安定機能フラグ**。`--unstable-async`, `--unstable-threads` で experimental 機能をゲート。 | accepted |
+| 0018 | **ライブラリ API を Result ベースへ移行**。throw→Result[T, String]。bind/map_ok 合成。deprecated alias で段階移行。 | accepted |
+| 0026 | **純粋テストキャッシュと QuickCheck**。pure test は source hash + deps + compiler version でキャッシュ。fixed-seed QuickCheck は pure 扱い。 | proposed |
+| 0035 | **DAP デバッグ**。DWARF 不採用、カバレッジインフラ拡張で独自 DAP サーバー。`vibe.func_map`/`debug_map` カスタムセクション。Node.js ベース。 | proposed |
+
+## Deferred
+
+| # | Decision | Status |
+|---|----------|--------|
+| 0012 | **Async/Await (Stack Switching + WASI P3)**。`{Async}` effect + Future[T] + Stream[T]。WASM Stack Switching 安定化待ち。P3 HTTP は ADR-0021 の同期 effect で対応可能。 | deferred |
+
+---
+
+*旧個別ファイルは `docs/archive/adr/` に移動。*

@@ -70,7 +70,7 @@ Completed items are archived in `docs/DONE.md`.
   - [x] latest HEAD の `build_selfhost_dist.sh` は pass（`wasm-opt` failure 時 raw fallback を含む）
   - [ ] strict な cold-host 条件（既存 host CLI / dist artifact 非依存）でも再確認
 - [x] `0.1.0` の supported surface を文書化して freeze
-  - `docs/adr/0033-selfhost-0-1-0-release-profile.md`
+  - `docs/adr.md` (ADR-0033)
   - linear/WASM selfhost dist を正式対象
   - GC backend は experimental
   - advanced effect/WIT mapping は experimental
