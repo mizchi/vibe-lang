@@ -29,18 +29,16 @@ fn eval_cmd(
         inspect_scope = true
         i += 1
       }
-      _ => {
+      _ =>
         if args[i].has_prefix("--db=") {
           db_path = Some(
-            args[i]
-            .unsafe_substring(start=5, end=args[i].length()),
+            args[i].unsafe_substring(start=5, end=args[i].length()),
           )
           i += 1
         } else {
           positional.push(args[i])
           i += 1
         }
-      }
     }
   }
   // Resolve db path
