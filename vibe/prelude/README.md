@@ -29,7 +29,7 @@ Tests are separated into `*_test.vibe` files (for example, `string_test.vibe` fo
 
 ## Module Boundary (Layered Responsibilities)
 
-`vibe/prelude` is managed as layered modules. See `docs/adr/0005-std-layered-boundaries.md` for the canonical table and allowed import matrix.
+`vibe/prelude` is managed as layered modules. See `docs/adr.md` (ADR-0005) for the canonical table and allowed import matrix.
 
 - `trait-contract`: contracts (`builtin_traits.vibe`)
 - `pure-primitive`: pure scalar/string operations (`bool/cmp/char/int/float/double/string`)

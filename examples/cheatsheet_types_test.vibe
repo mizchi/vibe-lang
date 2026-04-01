@@ -1,0 +1,203 @@
+//# Types
+
+type Pair = (Int, Int)
+
+enum Color { Red; Green; Blue }
+enum Shape { Circle(Int); Rect(Int, Int); Empty }
+enum Maybe[T] { Just(T); Nothing }
+
+struct Point { x: Int; y: Int }
+
+//# Misc
+
+// --- 1. Type alias ---
+test "type alias" {
+  let p: Pair = (10, 20)
+  assert(p.0 == 10)
+  assert(p.1 == 20)
+}
+
+// --- 2a. Enum with no payload ---
+test "enum no payload" {
+  let c = Green
+  let result = match c {
+    Red => 0,
+    Green => 1,
+    Blue => 2,
+  }
+  assert(result == 1)
+}
+
+// --- 2b. Enum with payload ---
+test "enum with payload" {
+  let s = Circle(5)
+  let area = match s {
+    Circle(r) => r * r,
+    Rect(w, h) => w * h,
+    Empty => 0,
+  }
+  assert(area == 25)
+}
+
+// --- 2c. Generic enum ---
+test "generic enum" {
+  let x = Just(42)
+  let y: Maybe[Int] = Nothing
+  let get_or = (m: Maybe[Int], default: Int) -> Int {
+    match m {
+      Just(v) => v,
+      Nothing => default,
+    }
+  }
+  assert(get_or(x, 0) == 42)
+  assert(get_or(y, 99) == 99)
+}
+
+// --- 3. Struct literal, field access, pattern ---
+test "struct literal and field access" {
+  let p = Point::{ x: 3, y: 4 }
+  assert(p.x == 3)
+  assert(p.y == 4)
+}
+
+test "struct pattern in match" {
+  let p = Point::{ x: 5, y: 7 }
+  let sum = match p {
+    Point::{ x, y } => x + y,
+    _ => 0,
+  }
+  assert(sum == 12)
+}
+
+// --- 4. Tuple creation, index, destructuring ---
+test "tuple creation and index" {
+  let t = (1, "two", true)
+  assert(t.0 == 1)
+  assert(t.1 == "two")
+  assert(t.2 == true)
+}
+
+test "tuple destructuring" {
+  let (a, b, c) = (10, 20, 30)
+  assert(a == 10)
+  assert(b == 20)
+  assert(c == 30)
+}
+
+// --- 5. Record creation and field access ---
+test "record creation and field access" {
+  let r = record { name: "vibe", ver: 1 }
+  assert(r.name == "vibe")
+  assert(r.ver == 1)
+}
+
+test "record destructuring" {
+  let r = record { x: 5, y: 15 }
+  let record { x: a, y: b } = r
+  assert(a + b == 20)
+}
+
+// --- 6. Map creation and access ---
+test "map creation and index" {
+  let m = map { "key": 42 }
+  assert(m["key"] == 42)
+}
+
+test "map multiple entries" {
+  let m = map { "a": 1, "b": 2, "c": 3 }
+  assert(m["a"] == 1)
+  assert(m["b"] == 2)
+}
+
+// --- 7. Array operations ---
+test "array create and index" {
+  let a = [1, 2, 3]
+  assert(a[0] == 1)
+  assert(a[1] == 2)
+  assert(a[2] == 3)
+}
+
+test "array for-in" {
+  let arr = [1, 2, 3]
+  let _doubled = for x in arr { x * 2 }
+}
+
+test "array pipe with length" {
+  let arr = [10, 20, 30]
+  let _len = arr |> Array::length
+}
+
+// Array::map with placeholder lambda doesn't type-check in old wasm checker.
+// See cheatsheet_eval_test.vibe "lambda shorthand" for Array::filter/fold tests.
+
+// --- 8. Nested pattern matching ---
+test "nested pattern enum in tuple" {
+  let t = (Some(42), "hello")
+  let result = match t {
+    (Some(v), _) => v,
+    _ => 0,
+  }
+  assert(result == 42)
+}
+
+test "nested pattern struct in option" {
+  let opt = Some(Point::{ x: 10, y: 20 })
+  let result = match opt {
+    Some(p) => p.x + p.y,
+    None => 0,
+  }
+  assert(result == 30)
+}
+
+// --- 9. Or-pattern and guard in match ---
+test "or-pattern with ints" {
+  let x = 2
+  let result = match x {
+    1 | 2 | 3 => 100,
+    _ => 0,
+  }
+  assert(result == 100)
+}
+
+test "or-pattern with constructors" {
+  let x = Some(5)
+  let result = match x {
+    Some(1) | Some(2) | Some(5) => 200,
+    _ => 0,
+  }
+  assert(result == 200)
+}
+
+test "match guard" {
+  let classify = (x: Int) -> String {
+    match x {
+      x if x > 0 => "positive",
+      0 => "zero",
+      _ => "negative",
+    }
+  }
+  assert(classify(5) == "positive")
+  assert(classify(0) == "zero")
+  assert(classify(-3) == "negative")
+}
+
+// --- KNOWN ISSUES (features from cheatsheet that do not compile) ---
+
+// ISSUE: `let Point::{ x, y } = p` fails with:
+//   "codegen: unsupported: let pat: non-tuple/record/ctor"
+// Struct destructuring only works inside match arms, not in let bindings.
+
+// ISSUE: `derive(Eq)` fails with:
+//   "type definition: unknown trait: Eq"
+// The cheatsheet shows `enum Color { ... } derive(Eq)` and
+// `struct Point { ... } derive(Eq)` but this is not supported.
+
+// ISSUE: `is` expression - documented in cheatsheet but untested here
+// due to codegen limitations in some contexts.
+// Syntax: `if opt is Some(v) { v } else { 0 }`, `opt is None`
+
+// ISSUE: `Int?` type shorthand fails with:
+//   "unknown type: Int?"  -- must use `Option[Int]` instead.
+
+// ISSUE: `assert_eq(a, b)` compiles for Int but not for custom types.
+// Use `assert(a == b)` instead for reliability.
