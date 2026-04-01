@@ -2,7 +2,7 @@
 
 - Date: 2026-03-21
 - Status: accepted
-- Related: ADR-0002 (multi-backend compilation), ADR-0010 (WASM Component Model), ADR-0027 (capability DCE), ADR-0031 (component externals)
+- Related: ADR-0010 (WASM Component Model), ADR-0034 (compiled-only execution surface)
 - External reference: `wite/docs/adr/0001-cfp-const-hints.md`
 
 ## Context

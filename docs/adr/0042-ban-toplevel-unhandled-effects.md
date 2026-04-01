@@ -129,7 +129,7 @@ interactive / shell 用の entry point は `effect_scope_all()` を維持する�
 
 - **Pure contract の完成**: `let mut` 禁止と合わせて、ファイルモジュールのトップレベルが完全に pure になる
 - **ADR-0041 との整合**: `_start` のエフェクト宣言が唯一の副作用導入点となり、capability が明示される
-- **静的解析の強化**: トップレベルが pure であることを前提にした最適化 (ADR-0026 pure test cache) が安全になる
+- **静的解析の強化**: トップレベルが pure であることを前提にした最適化 (pure test cache 等) が安全になる
 - **Surface 契約の明文化**: `run`/`check`/`compile`/`test`/`shell` の違いが文書化される
 
 ### Bad
