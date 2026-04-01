@@ -1353,6 +1353,7 @@ fn unify_types_inner(
     (@core.Type::Path, @core.Type::Path) => true
     (@core.Type::PromptText, @core.Type::PromptText) => true
     (@core.Type::String, @core.Type::PromptText) => true
+    (@core.Type::PromptText, @core.Type::String) => true
     (@core.Type::Unit, @core.Type::Unit) => true
     (@core.Type::Tuple(xs), @core.Type::Tuple(ys)) =>
       if xs.length() != ys.length() {
