@@ -5,7 +5,7 @@
 - Status: proposed
 - Supersedes: ADR-0017 の Ref[T] 部分 (abandoned。Effect Handler で代替)
 - Extends: ADR-0003 (エフェクトセット検証を `Bool` → 名前付きエフェクトセットに拡張)
-- Related: ADR-0003 (エフェクトシステム), ADR-0016 (handle 統一構文), ADR-0010 (Component Model), ADR-0022 (ディレクティブ構文)
+- Related: ADR-0003 (エフェクトシステム), ADR-0016 (handle 統一構文), ADR-0010 (Component Model)
 
 **詳細実装計画**: [mut-effect-plan.md](../mut-effect-plan.md)
 
@@ -230,8 +230,8 @@ handle { handler() } {
 }
 ```
 
-**ADR-0027 との連携**: `--profile edge` で `HttpClient` が利用不可なら、
-`with { HttpClient }` を使う関数が DCE される。
+**Capability DCE との連携**: `--profile edge` で `HttpClient` が利用不可なら、
+`with { HttpClient }` を使う関数が DCE される (see ADR-0043)。
 
 ## Consequences
 

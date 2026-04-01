@@ -59,7 +59,7 @@ interpreter / evaluator 実装はただちに全削除しない。
 3. `cli_repl_js` を廃止し、runtime evaluator API の残存 caller を整理する
 4. host / selfhost の evaluator 実装と専用 test を削除する
 
-この判断により、ADR-0002 の「interpreter を public backend としてサポートする」決定は、
+この判断により、旧 ADR-0002 の「interpreter を public backend としてサポートする」決定は、
 execution surface に関して superseded とする。
 
 ## Consequences

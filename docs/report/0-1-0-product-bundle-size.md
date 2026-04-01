@@ -57,7 +57,7 @@ compiler-side の mirror case `bench/compiler_size/cases/effects.vibe` が
 - `bench/bundle_size/consumer_option_core.vibe`
 
 この値は、個別 source より共通 helper / prelude / codegen overhead の増分を疑うべきパターン。
-特に string-heavy examples では `[vibe/prelude/string.vibe](/Users/mz/ghq/github.com/mizchi/vibe-lang/vibe/prelude/string.vibe)` に
+特に string-heavy examples では `[vibe/prelude/string.vibe](vibe/prelude/string.vibe)` に
 `String::drop/head/init/last/tail/take/equals` などの wrapper 追加があり、
 `wasm-no-dce` monitor ではこれが効いている可能性が高い。
 

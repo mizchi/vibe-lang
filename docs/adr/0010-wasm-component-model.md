@@ -28,7 +28,7 @@ just component-run-moonix examples/wasm/hello.vibe
 
 ## 発展方針
 
-ADR-0021 で `#import` ディレクティブ (ADR-0022) を使い、エフェクト宣言と
+ADR-0021 で `#import` ディレクティブを使い、エフェクト宣言と
 Component Model import を型レベルで統合する計画がある。本 ADR の手動ワイヤリングを
 自動化し、export 関数のエフェクトセットから world を自動導出する:
 

@@ -161,9 +161,9 @@ Status: accepted and moved from `TODO.md`.
 - Symbol/type/signature indexing backend is implemented and shared:
   `vibe ide` (`outline`/`peek-def`/`search`) and `vibe lsif` consume the same
   module-level symbol index (`src/frontend/symbol_index.mbt`).
-- Scratch-first workflow design is documented:
+- Scratch-first workflow design:
   default namespace-backed eval/repl flow, symbol listing with index inclusion
-  status, and history reset policy are tracked in `docs/scratch-workflow.md`.
+  status, and history reset policy.
 - Advanced graph extension PoC is implemented on vibe side:
   `vibe index` (`build`/`query`/`verify`) provides a sidecar JSON index
   (`src/x/module_graph/advanced_graph_poc.mbt`) that models manifest + def graph +

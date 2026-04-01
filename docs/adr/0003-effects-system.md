@@ -106,7 +106,7 @@ effect HttpResponse {   // response の書き込み capability
 2. ~~`effect` 宣言 / `perform` / `resume` / effect handler の言語サポート~~ ✅
 3. builtin effect の統合 (Error → suberror ベース、Net → fine-grained capabilities)
 4. Http effect 定義 + P3 adapter 統合
-5. ADR-0027 capability-based DCE との連携
+5. ADR-0043 capability-driven DCE との連携
 
 ## builtin effect 統合方針 (2026-03-18)
 
