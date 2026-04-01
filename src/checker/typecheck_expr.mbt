@@ -2731,7 +2731,8 @@ fn check_call_args(
         }
         match expected_ty {
           Some(param_ty) =>
-            if not(type_equal(env, param_ty, arg.ty)) {
+            if not(type_equal(env, param_ty, arg.ty)) &&
+              not(is_type_subtype(env, arg.ty, param_ty)) {
               if is_active_polymorphic_recursive_call(env, callee_name) {
                 raise TypeError::BadRec(
                   message="polymorphic recursion is unsupported",
@@ -2770,7 +2771,8 @@ fn check_call_args(
         match found {
           Some(param) => {
             used_labels[label] = true
-            if not(type_equal(env, param.ty, arg.ty)) {
+            if not(type_equal(env, param.ty, arg.ty)) &&
+              not(is_type_subtype(env, arg.ty, param.ty)) {
               if is_active_polymorphic_recursive_call(env, callee_name) {
                 raise TypeError::BadRec(
                   message="polymorphic recursion is unsupported",

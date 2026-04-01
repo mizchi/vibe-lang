@@ -34,6 +34,17 @@ fn warning_scope_new() -> WarningScope {
 }
 
 ///|
+// context keywords (for, in, is, map, loop, derive) are now reserved keywords
+// and rejected by the parser, so no checker warning is needed.
+fn warn_context_keyword_binding(
+  _name : String,
+  _span : @core.Span,
+  _out : Array[@core.Diagnostic],
+) -> Unit {
+  // no-op: reserved keywords cannot appear as bindings
+}
+
+///|
 fn warning_scope_declare(
   scopes : Array[WarningScope],
   name : String,
@@ -236,6 +247,7 @@ fn walk_stmt(
 ) -> Unit {
   match stmt {
     @core.Stmt::Let(rec~, name~, expr~, span~) => {
+      warn_context_keyword_binding(name, span, out)
       if rec {
         warning_scope_declare(
           scopes,
@@ -257,6 +269,7 @@ fn walk_stmt(
       }
     }
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+      warn_context_keyword_binding(name, span, out)
       if rec {
         warning_scope_declare(
           scopes,
@@ -278,6 +291,7 @@ fn walk_stmt(
       }
     }
     @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) => {
+      warn_context_keyword_binding(name, span, out)
       if rec {
         warning_scope_declare(
           scopes,
@@ -299,6 +313,7 @@ fn walk_stmt(
       }
     }
     @core.Stmt::LetMut(name~, expr~, span~) => {
+      warn_context_keyword_binding(name, span, out)
       walk_expr(expr, scopes, out)
       warning_scope_declare(
         scopes,

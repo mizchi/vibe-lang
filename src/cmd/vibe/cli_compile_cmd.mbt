@@ -385,7 +385,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
 fn[T] die(msg : String) -> T {
   println(msg)
   c_exit(1)
-  abort("")
+  abort("unreachable")
 }
 
 ///|

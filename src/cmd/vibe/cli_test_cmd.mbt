@@ -244,7 +244,11 @@ fn build_compiled_test_case_source(
   // Keep `run: Int` contract by returning 0 explicitly.
   out.write_string("0\n")
   out.write_string("}\n")
+  out.write_string(
+    "export let _start = () -> Int with { Error, Fs, Process, Env, Stdout, Stdin, Net, Async, Threads, Llm } {\n",
+  )
   out.write_string("__vibe_compiled_test_case()\n")
+  out.write_string("}\n")
   out.to_string()
 }
 
@@ -288,6 +292,9 @@ fn build_compiled_test_batch_source(
     out.write_string("}\n")
   }
   // _start runs all tests sequentially, printing results
+  out.write_string(
+    "export let _start = () -> Int with { Error, Fs, Process, Env, Stdout, Stdin, Net, Async, Threads, Llm } {\n",
+  )
   out.write_string("let mut __test_failures = 0\n")
   for i = 0; i < body_sources.length(); i = i + 1 {
     let i_str = i.to_string()
@@ -305,6 +312,7 @@ fn build_compiled_test_batch_source(
     )
   }
   out.write_string("__test_failures\n")
+  out.write_string("}\n")
   out.to_string()
 }
 

@@ -3,15 +3,11 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
   self.skip_trivia()
   if self.peek_kind() == if_kw() {
     self.parse_if_expr()
-  } else if self.peek_kind() == name() && self.peek().text() == "for" {
+  } else if self.peek_kind() == for_kw() {
     self.parse_for_in_expr()
   } else if self.peek_kind() == while_kw() {
     self.parse_while_expr()
   } else if self.peek_kind() == loop_kw() {
-    self.parse_loop_expr()
-  } else if self.peek_kind() == name() &&
-    self.peek().text() == "loop" &&
-    self.is_parameterized_loop() {
     self.parse_loop_expr()
   } else if self.peek_kind() == match_kw() {
     self.parse_match_expr()
@@ -44,7 +40,7 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
     let left = self.parse_or_expr()
     // Check for `expr is pattern` (Bool-returning) outside if context
     self.skip_trivia()
-    if self.peek_kind() == name() && self.peek().text() == "is" {
+    if self.peek_kind() == is_kw() {
       let is_start = self.pos
       let _ = self.bump() // consume "is"
       let pat = self.parse_pattern()
@@ -571,8 +567,7 @@ fn AstParser::parse_if_expr(self : AstParser) -> @core.Expr raise ParseError {
   let cond = self.parse_or_expr()
   // Check for `if expr is pattern { ... }` syntax
   self.skip_trivia()
-  let is_pat : @core.Pat? = if self.peek_kind() == name() &&
-    self.peek().text() == "is" {
+  let is_pat : @core.Pat? = if self.peek_kind() == is_kw() {
     let _ = self.bump() // consume "is"
     Some(self.parse_pattern())
   } else {
@@ -620,7 +615,7 @@ fn AstParser::parse_for_in_expr(
   self : AstParser,
 ) -> @core.Expr raise ParseError {
   let start = self.pos
-  let _ = self.expect(name(), "for") // consume contextual keyword "for"
+  let _ = self.expect(for_kw(), "for") // consume keyword "for"
   // Parse first binding name
   let first_name = self.expect(name(), "binding name").text()
   self.skip_trivia()
@@ -637,15 +632,8 @@ fn AstParser::parse_for_in_expr(
   } else {
     (None, first_name)
   }
-  // Expect contextual keyword "in"
-  let in_tok = self.expect(name(), "in")
-  if in_tok.text() != "in" {
-    raise ParseError::UnexpectedToken(
-      expected="in",
-      got=in_tok.text(),
-      span=self.token_span(),
-    )
-  }
+  // Expect keyword "in"
+  let _ = self.expect(in_kw(), "in")
   let iterable = self.parse_expr()
   let body = self.parse_block()
   let span = self.span_from(start)
@@ -833,12 +821,7 @@ fn AstParser::is_parameterized_loop(self : AstParser) -> Bool {
 ///|
 fn AstParser::parse_loop_expr(self : AstParser) -> @core.Expr raise ParseError {
   let start = self.pos
-  // Accept either loop_kw() or name() "loop" (for parameterized loop via name token)
-  let loop_tok = if self.peek_kind() == loop_kw() {
-    self.expect(loop_kw(), "loop")
-  } else {
-    self.expect(name(), "loop")
-  }
+  let loop_tok = self.expect(loop_kw(), "loop")
   self.skip_trivia()
   // Check if parameterized loop: loop (name = expr, ...) { body }
   if self.peek_kind() == lparen() {
@@ -2064,11 +2047,11 @@ fn AstParser::parse_call_or_primary(
       let span = self.span_from(start)
       @core.Expr::StructLit(name=base_name, type_args~, fields~, span~)
     } else if self.peek_kind() == double_colon() &&
-      self.peek_non_trivia_kind(self.pos + 1) == name() {
+      is_name_like(self.peek_non_trivia_kind(self.pos + 1)) {
       // Type-qualified symbol: Type::member
       let _ = self.bump()
       self.skip_trivia()
-      let member_tok = self.expect(name(), "member name")
+      let member_tok = self.expect_name_like("member name")
       qualified_name = qualified_name + "::" + member_tok.text()
       self.skip_trivia()
       if self.peek_kind() == lparen() {
@@ -2153,7 +2136,7 @@ fn AstParser::parse_call_or_primary(
         expr = @core.Expr::TupleIndex(expr~, index~, span~)
         continue
       }
-      let method_tok = self.expect(name(), "method name")
+      let method_tok = self.expect_name_like("method name")
       self.skip_trivia()
       if self.peek_kind() == lparen() {
         // UFCS: expr.method(args) → method(expr, args)

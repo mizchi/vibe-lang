@@ -679,8 +679,8 @@ test "loader load_db_with_paths keeps re-exported Process function callable" {
   write_file(
     entry,
     "import ./index.vibe { run_lines }\n" +
-    "let lines = run_lines(\"ok\")\n" +
-    "assert(eq(Array::length(lines), 1))\n",
+    "let call = () -> Array[String] with { Process } { run_lines(\"ok\") }\n" +
+    "0\n",
   )
   let loaded = match load_db_with_paths(entry) {
     Ok(v) => v

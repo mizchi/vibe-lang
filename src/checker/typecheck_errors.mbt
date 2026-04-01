@@ -38,6 +38,11 @@ suberror TypeError {
   )
   ScopedRefEscape(context~ : String, span~ : @core.Span)
   TopLevelLetMut(name~ : String, span~ : @core.Span)
+  TopLevelUnhandledEffect(
+    operation~ : String,
+    missing_effect~ : String?,
+    span~ : @core.Span
+  )
 } derive(Show, Eq)
 
 ///|
@@ -268,6 +273,27 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         hint: Some("use `let` instead, or move mutable state into a function"),
         note: Some("top-level bindings must be immutable: `" + name + "`"),
       }
+    TypeError::TopLevelUnhandledEffect(operation~, missing_effect~, span~) => {
+      let effect_name = match missing_effect {
+        Some(name) => name
+        None => "effect"
+      }
+      @core.Diagnostic::{
+        stage: "type",
+        message: "top-level expression has unhandled effect: `" +
+        operation +
+        "`",
+        span: Some(span),
+        hint: Some(
+          "wrap with `handle { ... } { " +
+          effect_name +
+          "(...) => ... }` or move into a function with `with {" +
+          effect_name +
+          "}`",
+        ),
+        note: Some("missing effect: `" + effect_name + "`"),
+      }
+    }
   }
 }
 

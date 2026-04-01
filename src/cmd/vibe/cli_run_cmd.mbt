@@ -192,7 +192,13 @@ fn build_http_host_run_command(
   runner : HttpHostRunner,
   wasm_path : String,
 ) -> String {
+  let node_wasm_flags = match @sys.get_env_var("VIBE_NODE_WASM_FLAGS") {
+    Some(f) => f
+    None => "--experimental-wasm-exnref"
+  }
   shell_quote_command_arg(runner.node_bin) +
+  " " +
+  node_wasm_flags +
   " " +
   shell_quote_command_arg(runner.runner_script) +
   " --invoke _start " +

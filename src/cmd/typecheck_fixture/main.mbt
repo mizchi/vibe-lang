@@ -165,7 +165,9 @@ fn main {
       if mismatches.length() == 0 {
         if files.length() > 0 {
           println(
-            "typecheck fixtures: ok (" + files.length().to_string() + " file(s))",
+            "typecheck fixtures: ok (" +
+            files.length().to_string() +
+            " file(s))",
           )
         } else {
           println("typecheck fixtures: ok (\{fixture_path})")

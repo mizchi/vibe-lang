@@ -235,13 +235,13 @@ fn AstParser::parse_type_member_name(
   self : AstParser,
   label : String,
 ) -> String raise ParseError {
-  let base_tok = self.expect(name(), label)
+  let base_tok = self.expect_name_like(label)
   let mut out = base_tok.text()
   self.skip_trivia()
   if self.peek_kind() == double_colon() {
     let _ = self.bump()
     self.skip_trivia()
-    let member_tok = self.expect(name(), label + " member")
+    let member_tok = self.expect_name_like(label + " member")
     out = out + "::" + member_tok.text()
   }
   out
@@ -585,7 +585,7 @@ fn AstParser::parse_derive_clause(
   self : AstParser,
 ) -> Array[String] raise ParseError {
   self.skip_trivia()
-  if self.peek_kind() != name() || self.peek().text() != "derive" {
+  if self.peek_kind() != derive_kw() {
     return []
   }
   let _ = self.bump()
@@ -778,14 +778,7 @@ fn AstParser::parse_impl_stmt(self : AstParser) -> @core.Stmt raise ParseError {
   self.skip_trivia()
   let trait_tok = self.expect(name(), "trait name")
   self.skip_trivia()
-  let for_tok = self.expect(name(), "for")
-  if for_tok.text() != "for" {
-    raise ParseError::UnexpectedToken(
-      expected="for",
-      got=for_tok.text(),
-      span=self.token_span(),
-    )
-  }
+  let _ = self.expect(for_kw(), "for")
   let target = self.parse_type_with_params(param_set_from_params(type_params))
   self.skip_trivia()
   let methods : Array[@core.ImplMethodDef] = []

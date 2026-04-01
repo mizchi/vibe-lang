@@ -379,7 +379,6 @@ run_stage "compiled selfhost compiler cache test" \
 
 echo "[bootstrap] selfhost __to_string source path check"
 if rg -n "double_to_string_compiler" \
-  "$PROJECT_ROOT/vibe/compiler/values.vibe" \
   "$PROJECT_ROOT/vibe/compiler/token.vibe" \
   "$PROJECT_ROOT/vibe/compiler/printer.vibe" >/dev/null; then
   echo "bootstrap gate failed: selfhost compiler still depends on double_to_string_compiler" >&2
@@ -397,8 +396,8 @@ EOF
 run_stage "compiled __to_string(Double/Float) probe" \
   env VIBE_TEST_BACKEND=compiled "$VIBE_BIN" test "$TOSTRING_PROBE"
 
-run_stage "selfhost probe smoke (vibe integration test index 44)" \
-  moon test -p tests -f vibe_integration_test.mbt --target js --warn-list '-29' --index 44
+run_stage "selfhost probe smoke (vibe wasm eval test index 44)" \
+  moon test -p tests -f vibe_wasm_eval_test.mbt --target js --warn-list '-29' --index 44
 
 BASICS_FIXTURE="$PROJECT_ROOT/examples/basics.vibe"
 BASE64_FIXTURE="$PROJECT_ROOT/bench/compiler_size/cases/base64.vibe"

@@ -2,6 +2,10 @@
 
 This is a [MoonBit](https://docs.moonbitlang.com) project.
 
+## vibe 言語リファレンス
+
+vibe 言語の構文・機能を把握するには、最初に [docs/cheatsheet.md](docs/cheatsheet.md) を読むこと。型、関数、パターンマッチ、エフェクト、モジュールなど全機能を網羅している。
+
 ## Quick Commands
 
 ```bash
@@ -90,7 +94,7 @@ gh issue close <number>
 gh issue create --title "タイトル" --label bug
 ```
 
-設計判断は `docs/adr/` に ADR として記録する。
+設計判断は `docs/adr.md` に記録する。旧個別ファイルは `docs/archive/adr/`。
 
 ## Before Commit
 

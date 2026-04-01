@@ -27,10 +27,7 @@ pub fn run(args : Array[String]) -> Unit {
   let enable_llm = parsed.enable_llm
   match cmd {
     "run" => run_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
-    "eval" =>
-      abort(
-        "eval: command was removed. Use 'vibe shell' or 'vibe shell-stdin' for interactive evaluation, or 'vibe run' for script execution.",
-      )
+    "eval" => eval_cmd(cmd_args, runtime_features, enable_llm~)
     "test" => test_cmd(cmd_args, runtime_features)
     "check" => check_cmd(cmd_args)
     "session-http" => session_http_cmd(cmd_args, runtime_features)
@@ -120,7 +117,7 @@ fn print_usage() -> Unit {
   println("")
   println("Build & Run:")
   println(
-    "  run <file>                  Execute a script (requires `let main`)",
+    "  run <file>                  Execute a script (final top-level pure expression)",
   )
   println("  test <file|dir...>          Run test blocks (parallel for dirs)")
   println("  compile <file> [-o <out>]   Compile to WASM or other targets")
@@ -231,7 +228,7 @@ fn print_test_help() -> Unit {
 fn print_run_help() -> Unit {
   println("Usage: vibe run <file>")
   println("")
-  println("Execute a vibe script. The file must contain `let main`.")
+  println("Execute a vibe script. The final top-level expression must be pure.")
   println("")
   println("Environment:")
   println(

@@ -168,7 +168,11 @@ test "vibe wasm coverage run-tests keeps test-referenced branches" {
 ///|
 test "vibe wasm import sh" {
   let db = VibeDb::new()
-  db.set_source("main", "{ sh(\"ls\") }")
+  let src =
+    #|export let _start = () -> Unit with { Process } {
+    #|  sh("ls")
+    #|}
+  db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
@@ -194,7 +198,11 @@ test "vibe wasm import path" {
 ///|
 test "vibe wasm import env get" {
   let db = VibeDb::new()
-  db.set_source("main", "Env::get(\"HOME\")")
+  let src =
+    #|export let _start = () -> String with { Env } {
+    #|  Env::get("HOME")
+    #|}
+  db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
@@ -208,9 +216,11 @@ test "vibe wasm import env get" {
 ///|
 test "vibe wasm import env args" {
   let db = VibeDb::new()
-  db.set_source(
-    "main", "if Env::args_len() > 0 { Env::args_get(0) } else { \"\" }",
-  )
+  let src =
+    #|export let _start = () -> String with { Env } {
+    #|  if Env::args_len() > 0 { Env::args_get(0) } else { "" }
+    #|}
+  db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
@@ -526,7 +536,11 @@ test "vibe wasm compiles handle arm bind patterns" {
 ///|
 test "vibe wasm import sleep" {
   let db = VibeDb::new()
-  db.set_source("main", "{ sleep(100) }")
+  let src =
+    #|export let _start = () -> Unit with { Async } {
+    #|  sleep(100)
+    #|}
+  db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
@@ -931,7 +945,7 @@ test "vibe wasm compiles Int pipe-style to_double call" {
 test "vibe wasm imports stdio char builtins" {
   let db = VibeDb::new()
   let src =
-    #|{
+    #|export let _start = () -> Int with { Stdout, Stdin } {
     #|  Stdout::write_char(65)
     #|  Stdin::read_char()
     #|}
@@ -957,7 +971,7 @@ test "vibe wasm imports stdio char builtins" {
 test "vibe wasm imports stdio stream builtins" {
   let db = VibeDb::new()
   let src =
-    #|{
+    #|export let _start = () -> String with { Stdout, Stdin } {
     #|  Stdout::write_stream("hello")
     #|  Stdin::read_stream(8)
     #|}
@@ -983,7 +997,7 @@ test "vibe wasm imports stdio stream builtins" {
 test "vibe wasm imports fs builtins and exports cabi_realloc" {
   let db = VibeDb::new()
   let src =
-    #|{
+    #|export let _start = () -> String with { Fs } {
     #|  Fs::read_file("fixtures/hello.vibe")
     #|}
   db.set_source("main", src)
@@ -1001,7 +1015,7 @@ test "vibe wasm imports fs builtins and exports cabi_realloc" {
 test "vibe wasm http builtins default to fallback throw (no host import)" {
   let db = VibeDb::new()
   let src =
-    #|{
+    #|export let _start = () -> Int with { Http } {
     #|  let req = Http::request("GET", "https://example.com", "", "")
     #|  Http::response_status(req)
     #|}
@@ -1018,7 +1032,7 @@ test "vibe wasm http builtins default to fallback throw (no host import)" {
 test "vibe wasm can route http builtins to host imports via emit option" {
   let db = VibeDb::new()
   let src =
-    #|{
+    #|export let _start = () -> Int with { Http } {
     #|  let req = Http::request("GET", "https://example.com", "", "")
     #|  let status = Http::response_status(req)
     #|  Http::close(req)

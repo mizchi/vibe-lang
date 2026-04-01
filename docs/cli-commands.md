@@ -16,7 +16,7 @@ This document clarifies the role of each `vibe` CLI command, with special attent
 
 ### run
 
-Execute a vibe script. The file must contain a `let main` entry point.
+Execute a vibe script. The final top-level expression must be pure.
 
 ```
 vibe run <file>

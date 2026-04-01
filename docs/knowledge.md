@@ -262,7 +262,7 @@ let imp_dir = @path.Path(imp.path).dirname().to_string()
 
 ## K-009: セルフホストコンパイラの native compile テスト
 
-- 場所: `src/tests/vibe_integration_test.mbt`
+- 場所: `src/tests/vibe_wasm_eval_test.mbt (旧 vibe_integration_test.mbt)`
 - 発見: 2026-03
 - 状態: **完了**
 
@@ -277,20 +277,17 @@ vibe/compiler/
 ├── token.vibe          # トークン定義
 ├── ast.vibe            # AST 定義
 ├── lexer.vibe          # 字句解析
-├── parser.vibe         # 構文解析 (1614行)
+├── parser.vibe         # 構文解析
 ├── printer.vibe        # AST → ソース
-├── values.vibe         # ランタイム値
 ├── builtins.vibe       # 組み込み関数
 ├── types.vibe          # 型定義（import なし）
 ├── checker_resolve.vibe # 名前解決
 ├── checker.vibe        # 型チェッカー
 ├── checker_stmt.vibe   # 文の型チェック
-├── eval_builtins.vibe  # 評価器組み込み
-├── eval.vibe           # 評価器本体 (1354行)
-├── eval_loader.vibe    # モジュールローダー
-├── eval_stmt.vibe      # 文の評価
-├── eval_e2e_helpers.vibe # E2E ヘルパー
+├── codegen.vibe        # コード生成
+├── compiler.vibe       # コンパイルパイプライン
 ├── type_db.vibe        # 増分型チェック DB
+├── dce.vibe            # Dead Code Elimination
 └── index.vibe          # パッケージ re-export
 ```
 
@@ -359,7 +356,7 @@ compile_module(db, path)
 
 ## K-011: selfhost probe テストの長時間化ボトルネック
 
-- 場所: `src/tests/vibe_integration_test.mbt` (`probe: selfhost roundtrip all compiler sources`)
+- 場所: `src/tests/vibe_wasm_eval_test.mbt (旧 vibe_integration_test.mbt)` (`probe: selfhost roundtrip all compiler sources`)
 - 発見: 2026-03
 
 ### 問題
@@ -377,7 +374,7 @@ driver 返り値を配列で作る際、`[roundtrip(...), ...]` 形式が parser
 
 ### 修正
 
-- `probe` を **デフォルト smoke モード**に変更（`token.vibe`, `ast.vibe`, `values.vibe` の 3 ファイル）
+- `probe` を **デフォルト smoke モード**に変更（`token.vibe`, `ast.vibe` 等の少数ファイル）
 - 環境変数 `VIBE_SELFHOST_PROBE_FULL=1` のときのみ full モード（16 ファイル）を実行
 - 環境変数 `VIBE_SELFHOST_PROBE_STRICT=1` のときのみ strict roundtrip（2-pass）を有効化（デフォルトは 1-pass）
 - 環境変数 `VIBE_SELFHOST_PROBE_FILES` で対象ファイルをオーバーライド可能にし、1ファイル単位の実測を可能化
@@ -389,13 +386,15 @@ driver 返り値を配列で作る際、`[roundtrip(...), ...]` 形式が parser
 
 ### 効果
 
-- `moon test src/tests/vibe_integration_test.mbt --target js --serial --index 44`
+- `moon test src/tests/vibe_wasm_eval_test.mbt (旧 vibe_integration_test.mbt) --target js --serial --index 44`
   - smoke: **7.48s → 6.52s**（約 12.8% 改善）
   - full (`VIBE_SELFHOST_PROBE_FULL=1`): **199.1s → 201.6s**（誤差レベルで改善なし）
 
 ### 追加計測: full のファイル別所要時間（1ファイルずつ）
 
 `VIBE_SELFHOST_PROBE_FILES=<file>` で計測した結果（秒）:
+
+> 注: eval_*.vibe, values.vibe は eval 廃止に伴い削除済み。計測データは当時の記録。
 
 - 52.28: `vibe/compiler/types.vibe`
 - 43.34: `vibe/compiler/lexer.vibe`
@@ -448,7 +447,7 @@ wasm backend に同名 call ハンドラがないと `BackendLimit(call: iter_re
 
 ## K-013: DCE は pattern ctor 参照を依存として拾う必要がある
 
-- 場所: `src/core/ast_walker.mbt`, `src/runtime/dce_test.mbt`
+- 場所: `src/core/ast_walker.mbt`, `src/runtime_compile/dce_test.mbt`
 - 発見: 2026-03
 
 ### 問題

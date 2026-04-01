@@ -107,7 +107,8 @@ test "check_incompatible_server_builtins detects Http::listen" {
       #|  Http::respond(req, 200, "", "ok")
       #|  0
       #|}
-      #|run()
+      #|let main = () -> Int with {Net} { run() }
+      #|0
     ),
   )
   let compiled = compile_module(db, "main")
@@ -145,7 +146,8 @@ test "component_string_lift_auto rejects server builtins" {
       #|  let _ = Http::accept(listener)
       #|  200
       #|}
-      #|handler("GET", "/")
+      #|let main = () -> Int with {Net} { handler("GET", "/") }
+      #|0
     ),
   )
   let result : Result[Bytes, WasmCompileError] = try? compile_module_component_string_lift_auto(

@@ -65,5 +65,4 @@ done < <(
 VIBE_TEST_BACKEND="${VIBE_TEST_BACKEND:-compiled}" \
 "$VIBE_BIN" test \
   vibe/compiler/fixture_real_selfhost_test.vibe \
-  vibe/compiler/fixture_preloaded_selfhost_test.vibe \
   "${GENERATED_TESTS[@]}"

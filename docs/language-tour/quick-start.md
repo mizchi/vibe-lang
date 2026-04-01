@@ -6,7 +6,7 @@ For full details see [index.md](index.md).
 ## CLI
 
 ```bash
-vibe run file.vibe    # Run script (evaluates the final top-level expression)
+vibe run file.vibe    # Run script (evaluates the final top-level pure expression)
 vibe test file.vibe   # Run tests in a file
 vibe shell            # Interactive REPL (PosixMode)
 vibe check file.vibe  # Type check
@@ -14,7 +14,7 @@ vibe check file.vibe  # Type check
 
 ## Entry Point
 
-Source-level scripts run the final top-level expression. When you `vibe build`,
+Source-level scripts run the final top-level pure expression. When you `vibe build`,
 the generated WASM exports `_start` as the ABI entry point.
 
 ```vibe

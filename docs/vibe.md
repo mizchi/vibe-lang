@@ -8,9 +8,7 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 - `docs/vibe.md` is the normative spec for implemented behavior.
 - Items explicitly marked as "future", "proposal", or "draft" are non-normative.
 - Design explorations live in separate documents:
-  - `docs/module_design.md`
   - `docs/module-system.md`
-  - `docs/async_design.md`
 - Incident log for compiler/language regressions:
   - `docs/compiler_language_incidents.md`
 

@@ -44,8 +44,8 @@ require_cmd cargo
 require_cmd wasm-tools
 require_cmd wasmtime
 
-if [ -x "/Users/mz/.cargo/bin/cargo" ]; then
-  export PATH="/Users/mz/.cargo/bin:$PATH"
+if [ -x "$HOME/.cargo/bin/cargo" ]; then
+  export PATH="$HOME/.cargo/bin:$PATH"
 fi
 
 mkdir -p "$TMP_DIR/src"

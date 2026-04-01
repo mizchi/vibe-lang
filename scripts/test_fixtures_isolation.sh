@@ -26,6 +26,10 @@ else
   while IFS= read -r f; do
     files+=("$f")
   done < <(find "$ROOT_DIR/fixtures" -maxdepth 1 -name '*.vibe' -type f | sort)
+  # Also include runtime-style fixtures that need script execution
+  while IFS= read -r f; do
+    files+=("$f")
+  done < <(find "$ROOT_DIR/fixtures/runtime" -maxdepth 1 -name '*.vibe' -type f 2>/dev/null | sort)
 fi
 
 total=${#files[@]}

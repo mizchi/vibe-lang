@@ -17,6 +17,11 @@ fn effect_scope_all() -> EffectScope {
 }
 
 ///|
+fn effect_scope_none() -> EffectScope {
+  EffectScope::{ allow_all: false, allowed: {}, rest: None }
+}
+
+///|
 fn effect_scope_from_list(effects : Array[@core.EffectAtom]) -> EffectScope {
   let allowed : Map[String, Bool] = {}
   let mut rest : String? = None
