@@ -3512,6 +3512,69 @@ test "session http env overrides default" {
 }
 
 ///|
+test "session http worker token changes with binary contents" {
+  let bin = "/tmp/vibe-session-token"
+  let token1 = session_http_worker_token_from_bytes(bin, @utf8.encode("v1"))
+  let token2 = session_http_worker_token_from_bytes(bin, @utf8.encode("v1"))
+  let token3 = session_http_worker_token_from_bytes(bin, @utf8.encode("v2"))
+  assert_eq(token1, token2)
+  assert_true(token1 != token3)
+}
+
+///|
+test "session http reuse requires matching worker token" {
+  let expected = "worker-token"
+  assert_true(
+    session_http_can_reuse_worker(
+      SessionHttpPingState::Alive(Some(expected)),
+      expected,
+    ),
+  )
+  assert_false(
+    session_http_can_reuse_worker(
+      SessionHttpPingState::Alive(Some("stale-worker")),
+      expected,
+    ),
+  )
+  assert_false(
+    session_http_can_reuse_worker(SessionHttpPingState::Alive(None), expected),
+  )
+  assert_false(
+    session_http_can_reuse_worker(SessionHttpPingState::Unreachable, expected),
+  )
+}
+
+///|
+test "session http ping reports worker token" {
+  let req = CliSessionRequest::{ kind: CliSessionRequestKind::Ping, path: None }
+  let (json, should_shutdown) = handle_cli_session_request(
+    CliEntryDbCache::new(),
+    req,
+    @runtime.RuntimeFeatureFlags::new(false, false),
+    "worker-token",
+  )
+  assert_false(should_shutdown)
+  assert_eq(
+    parse_session_http_ping_state(json),
+    SessionHttpPingState::Alive(Some("worker-token")),
+  )
+}
+
+///|
+test "session http spawn command exports worker token" {
+  let cmd = build_session_http_spawn_command(
+    "/tmp/vibe.exe",
+    36123,
+    @runtime.RuntimeFeatureFlags::new(true, true),
+    "worker-token",
+  )
+  assert_true(cmd.contains("VIBE_SESSION_WORKER_TOKEN="))
+  assert_true(cmd.contains("session-http --port 36123"))
+  assert_true(cmd.contains("--unstable-async"))
+  assert_true(cmd.contains("--unstable-threads"))
+}
+
+///|
 test "session http port separates runtime feature sets" {
   let baseline = @runtime.RuntimeFeatureFlags::new(false, false)
   let async_only = @runtime.RuntimeFeatureFlags::new(true, false)

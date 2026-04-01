@@ -1,5 +1,9 @@
 //# Imports
 
+import ./entry / source_compile / wasi_only / linked_artifacts.vibe {
+  collect_linked_compile_inputs
+}
+
 import ./entry / source_compile / wasi_only {
   compile_file_wasi_library, compile_file_wasi_linked_artifacts, compile_file_wasi_only
 }
@@ -49,6 +53,28 @@ test "compile_file_wasi_linked_artifacts: returns direct linked deps for library
   assert(dep_path == helper_path)
   let lib_bytes = compile_file_wasi_library(dep_path)
   assert_wasm_magic(lib_bytes)
+}
+
+test "collect_linked_compile_inputs: captures linked dep metadata for debug/selfhost flow" {
+  let base_dir = "/tmp/vibe_compiler_linked_inputs"
+  let helper_path = String::concat(base_dir, "/lib.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(helper_path, string_to_bytes("export let add = (a: Int, b: Int) -> Int { a + b }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./lib.vibe { add }\nlet _start = () -> Int { add(1, 2) }\n"))
+  let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs) = collect_linked_compile_inputs(main_path)
+  assert(Array::length(entry_stmts) == 2)
+  assert(Array::length(resolved_type_stmts) == 0)
+  assert(Array::length(linked_imports) == 1)
+  let (module_name, func_name, param_count, return_count) = Array::get(linked_imports, 0)
+  assert(module_name == "lib")
+  assert(func_name == "add")
+  assert(param_count == 2)
+  assert(return_count == 1)
+  assert(Array::length(linked_dep_specs) == 1)
+  let (dep_module_name, dep_path) = Array::get(linked_dep_specs, 0)
+  assert(dep_module_name == "lib")
+  assert(dep_path == helper_path)
 }
 
 test "compile_file_wasi_only: simple file produces valid WASM" {
