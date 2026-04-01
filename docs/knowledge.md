@@ -262,7 +262,7 @@ let imp_dir = @path.Path(imp.path).dirname().to_string()
 
 ## K-009: セルフホストコンパイラの native compile テスト
 
-- 場所: `src/tests/vibe_integration_test.mbt`
+- 場所: `src/tests/vibe_wasm_eval_test.mbt (旧 vibe_integration_test.mbt)`
 - 発見: 2026-03
 - 状態: **完了**
 
@@ -359,7 +359,7 @@ compile_module(db, path)
 
 ## K-011: selfhost probe テストの長時間化ボトルネック
 
-- 場所: `src/tests/vibe_integration_test.mbt` (`probe: selfhost roundtrip all compiler sources`)
+- 場所: `src/tests/vibe_wasm_eval_test.mbt (旧 vibe_integration_test.mbt)` (`probe: selfhost roundtrip all compiler sources`)
 - 発見: 2026-03
 
 ### 問題
@@ -389,7 +389,7 @@ driver 返り値を配列で作る際、`[roundtrip(...), ...]` 形式が parser
 
 ### 効果
 
-- `moon test src/tests/vibe_integration_test.mbt --target js --serial --index 44`
+- `moon test src/tests/vibe_wasm_eval_test.mbt (旧 vibe_integration_test.mbt) --target js --serial --index 44`
   - smoke: **7.48s → 6.52s**（約 12.8% 改善）
   - full (`VIBE_SELFHOST_PROBE_FULL=1`): **199.1s → 201.6s**（誤差レベルで改善なし）
 
@@ -448,7 +448,7 @@ wasm backend に同名 call ハンドラがないと `BackendLimit(call: iter_re
 
 ## K-013: DCE は pattern ctor 参照を依存として拾う必要がある
 
-- 場所: `src/core/ast_walker.mbt`, `src/runtime/dce_test.mbt`
+- 場所: `src/core/ast_walker.mbt`, `src/runtime_compile/dce_test.mbt`
 - 発見: 2026-03
 
 ### 問題
