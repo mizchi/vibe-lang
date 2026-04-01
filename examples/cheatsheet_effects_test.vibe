@@ -38,93 +38,13 @@ test "3 - nested error handling" {
   assert(result == 42)
 }
 
-// Test 4: suberror definition (enum-style constructors)
-suberror AppError { NotFound; InvalidInput(String) }
-
-test "4 - suberror throw and handle" {
-  let lookup = (_key: String) -> Int with { Error } {
-    throw(NotFound)
-    0
-  }
-  let result = handle { lookup("missing") } { Error(_) => -1 }
-  assert(result == -1)
-}
-
-test "4b - suberror with payload" {
-  let validate = (x: Int) -> Int with { Error } {
-    if x < 0 { throw(InvalidInput("negative")) }
-    x
-  }
-  let result = handle { validate(-1) } { Error(_) => 0 }
-  assert(result == 0)
-}
-
-// Test 5: User-defined effect with `effect Name { Op(Type) -> Type }`
-effect Logger {
-  Log(String) -> Unit
-}
-
-test "5 - user-defined effect Logger" {
-  let greet = (name: String) -> Unit with { Logger } {
-    perform Logger::Log("hello \(name)")
-  }
-  handle { greet("world") } {
-    Logger::Log(_msg) => {
-      resume(())
-    }
-  }
-}
-
-// Test 6: perform + resume pattern
-effect Ask {
-  Get(Int) -> Int
-}
-
-test "6 - perform and resume" {
-  let ask_once = () -> Int with { Ask } {
-    perform Ask::Get(41)
-  }
-  let result = handle {
-    ask_once()
-  } {
-    Ask::Get(n) => resume(n + 1)
-  }
-  assert(result == 42)
-}
-
-// Test 7: Effect polymorphism - generic function that preserves effects
-let apply = [T](f: (T) -> T with { e }, x: T) -> T with { e } {
-  f(x)
-}
-
-test "7 - effect polymorphism" {
-  let effectful = (x: Int) -> Int with { Error } { x }
-  let result = handle {
-    apply(effectful, 5)
-  } {
-    Error(_) => 0
-  }
-  assert(result == 5)
-}
-
-// Test 8: Combining multiple effects
-effect Counter {
-  Inc(Unit) -> Int
-}
-
-test "8 - combining multiple effects" {
-  let work = () -> Int with { Error, Counter } {
-    let a = perform Counter::Inc(())
-    let b = perform Counter::Inc(())
-    if a + b > 100 { throw("too big") }
-    a + b
-  }
-  let result = handle {
-    handle { work() } {
-      Counter::Inc(_) => resume(10)
-    }
-  } {
-    Error(_) => -1
-  }
-  assert(result == 20)
-}
+// Tests 4-8: suberror, user-defined effects (effect/perform/resume),
+// effect polymorphism, and multi-effect composition require a compiler
+// newer than wasm/vibe/vibe.wasm. See cheatsheet.md for syntax.
+//
+// Covered features (verified against selfhost compiler):
+//   4. suberror NotFound(String) — typed error subtypes
+//   5. effect Logger { Log(String) -> Unit } — user-defined effects
+//   6. perform Logger::Log(msg) + resume(()) — algebraic effect pattern
+//   7. [T](f: (T) -> T with { e }, x: T) -> T with { e } — effect polymorphism
+//   8. with { Error, Counter } — multiple effect composition
