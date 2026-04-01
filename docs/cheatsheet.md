@@ -62,8 +62,8 @@ f(x=10, y=20)
 ### Lambda shorthand
 
 ```vibe
-Array::map(xs, x -> x * 2)
-Array::map(xs, _ * 2)           // placeholder
+Array::r#map(xs, x -> x * 2)
+Array::r#map(xs, _ * 2)         // placeholder
 Array::fold(xs, 0, _ + _)
 ```
 
@@ -179,7 +179,7 @@ impl [T: Eq] Eq for Array[T]              // conditional impl
 let a = [1, 2, 3]
 a[0]                          // index
 Array::length(a)
-Array::map(a, _ * 2)
+Array::r#map(a, _ * 2)            // r# escapes keyword
 
 // Tuple
 let t = (1, "two", true)
@@ -294,7 +294,7 @@ vibe test dir/            # run all tests in directory
 
 **String**: `String::length`, `concat`, `substring`, `contains`, `index_of`, `split`, `trim`, `replace`, `starts_with`, `ends_with`, `join`
 
-**Array**: `Array::length`, `get`, `slice`, `map`, `filter`, `fold`, `find`, `any`, `all`, `reverse`, `concat`
+**Array**: `Array::length`, `get`, `slice`, `r#map`, `filter`, `fold`, `find`, `any`, `all`, `reverse`, `concat` (`map` is a keyword — use `r#map`)
 
 **Map**: `Map::get`, `has_key`, `keys`, `values`, `set`
 
@@ -333,7 +333,7 @@ let doubled = for x in xs { x * 2 }
 input
   |> String::trim
   |> String::split(",")
-  |> Array::map(_, parse_int)
+  |> Array::r#map(_, parse_int)
 ```
 
 ## File Conventions
