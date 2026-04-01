@@ -374,7 +374,7 @@ driver 返り値を配列で作る際、`[roundtrip(...), ...]` 形式が parser
 
 ### 修正
 
-- `probe` を **デフォルト smoke モード**に変更（`token.vibe`, `ast.vibe`, `values.vibe` の 3 ファイル）
+- `probe` を **デフォルト smoke モード**に変更（`token.vibe`, `ast.vibe` 等の少数ファイル）
 - 環境変数 `VIBE_SELFHOST_PROBE_FULL=1` のときのみ full モード（16 ファイル）を実行
 - 環境変数 `VIBE_SELFHOST_PROBE_STRICT=1` のときのみ strict roundtrip（2-pass）を有効化（デフォルトは 1-pass）
 - 環境変数 `VIBE_SELFHOST_PROBE_FILES` で対象ファイルをオーバーライド可能にし、1ファイル単位の実測を可能化
@@ -393,6 +393,8 @@ driver 返り値を配列で作る際、`[roundtrip(...), ...]` 形式が parser
 ### 追加計測: full のファイル別所要時間（1ファイルずつ）
 
 `VIBE_SELFHOST_PROBE_FILES=<file>` で計測した結果（秒）:
+
+> 注: eval_*.vibe, values.vibe は eval 廃止に伴い削除済み。計測データは当時の記録。
 
 - 52.28: `vibe/compiler/types.vibe`
 - 43.34: `vibe/compiler/lexer.vibe`
