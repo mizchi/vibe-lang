@@ -40,10 +40,12 @@ fi
 VIBE_BIN="${VIBE_NORMALIZE_BIN:-$VIBE_CLI_BIN}"
 
 # Source roots (bench excluded: cross-root imports)
+# vibe/ excluded: normalize rewrites fn signatures to separated-annotation
+# style which the compiler cannot yet parse back (see #109)
 if [ ${#CLI_SOURCE_ROOTS[@]} -gt 0 ]; then
   SOURCE_ROOTS=("${CLI_SOURCE_ROOTS[@]}")
 else
-  SOURCE_ROOTS_RAW="${VIBE_NORMALIZE_SOURCE_ROOTS:-examples vibe}"
+  SOURCE_ROOTS_RAW="${VIBE_NORMALIZE_SOURCE_ROOTS:-examples}"
   SOURCE_ROOTS_RAW="${SOURCE_ROOTS_RAW//,/ }"
   # shellcheck disable=SC2206
   SOURCE_ROOTS=($SOURCE_ROOTS_RAW)
@@ -63,7 +65,9 @@ done
 
 # Directories to exclude from normalize
 # - examples/wasm: external runtime fixtures are maintained manually
-EXCLUDE_DIRS_RAW="${VIBE_NORMALIZE_EXCLUDE_DIRS:-examples/wasm}"
+# - examples: normalize rewrites fn signatures to separated-annotation
+#   style which the compiler cannot yet parse back (see #109)
+EXCLUDE_DIRS_RAW="${VIBE_NORMALIZE_EXCLUDE_DIRS:-examples/wasm examples}"
 EXCLUDE_DIRS_RAW="${EXCLUDE_DIRS_RAW//,/ }"
 EXCLUDE_DIRS_REGEX="$(echo "$EXCLUDE_DIRS_RAW" | awk '{$1=$1; print}' | tr ' ' '|')"
 
@@ -71,7 +75,7 @@ EXCLUDE_DIRS_REGEX="$(echo "$EXCLUDE_DIRS_RAW" | awk '{$1=$1; print}' | tr ' ' '
 # - vibe/compiler/coverage_selfhost_suite_lib.vibe currently crashes native normalize
 # - selfhost *_bundle.vibe files are generated artifacts; check-selfhost-bundle-sync
 #   compares them against the generator output and normalize would cause false drift
-EXCLUDE_FILES_RAW="${VIBE_NORMALIZE_EXCLUDE_FILES:-vibe/compiler/coverage_selfhost_suite_lib.vibe vibe/compiler/selfhost_sources_bundle.vibe vibe/compiler/selfhost_cli_adapter_bundle.vibe vibe/compiler/selfbuild_runtime_entry_bundle.vibe}"
+EXCLUDE_FILES_RAW="${VIBE_NORMALIZE_EXCLUDE_FILES:-vibe/compiler/coverage_selfhost_suite_lib.vibe vibe/compiler/selfhost_sources_bundle.vibe vibe/compiler/selfhost_cli_adapter_bundle.vibe vibe/compiler/selfbuild_runtime_entry_bundle.vibe vibe/builtins/declarations.vibe}"
 EXCLUDE_FILES_RAW="${EXCLUDE_FILES_RAW//,/ }"
 EXCLUDE_FILES_REGEX="$(echo "$EXCLUDE_FILES_RAW" | awk '{$1=$1; print}' | tr ' ' '|')"
 
