@@ -1901,8 +1901,10 @@ test "split test entry path batches with weights keeps same root on same worker 
   let root_a_vibe = root_a + "/vibe"
   let root_b_vibe = root_b + "/vibe"
   let root_a_compiler = root_a_vibe + "/compiler"
+  let root_a_prelude = root_a_vibe + "/prelude"
   let root_a_json = root_a_vibe + "/json"
   let root_b_compiler = root_b_vibe + "/compiler"
+  let root_b_prelude = root_b_vibe + "/prelude"
   let root_b_json = root_b_vibe + "/json"
   let a1 = root_a_compiler + "/a_test.vibe"
   let a2 = root_a_json + "/b_test.vibe"
@@ -1923,10 +1925,16 @@ test "split test entry path batches with weights keeps same root on same worker 
   @os_fs.create_dir(root_a_compiler) catch {
     e => fail(e.to_string())
   }
+  @os_fs.create_dir(root_a_prelude) catch {
+    e => fail(e.to_string())
+  }
   @os_fs.create_dir(root_a_json) catch {
     e => fail(e.to_string())
   }
   @os_fs.create_dir(root_b_compiler) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(root_b_prelude) catch {
     e => fail(e.to_string())
   }
   @os_fs.create_dir(root_b_json) catch {
@@ -1945,14 +1953,26 @@ test "split test entry path batches with weights keeps same root on same worker 
     e => fail(e.to_string())
   }
   @os_fs.write_string_to_file(
-    root_a_json + "/index.lock",
-    "{\"path\":{},\"version\":{},\"symbol\":{}}",
+    root_a_prelude + "/index.vibe",
+    "export let version = \"0.1.0\"\n",
   ) catch {
     e => fail(e.to_string())
   }
   @os_fs.write_string_to_file(
-    root_b_json + "/index.lock",
-    "{\"path\":{},\"version\":{},\"symbol\":{}}",
+    root_a_json + "/index.vibe",
+    "export let version = \"0.1.0\"\n",
+  ) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    root_b_prelude + "/index.vibe",
+    "export let version = \"0.1.0\"\n",
+  ) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    root_b_json + "/index.vibe",
+    "export let version = \"0.1.0\"\n",
   ) catch {
     e => fail(e.to_string())
   }
@@ -1992,11 +2012,15 @@ test "split test entry path batches with weights keeps same root on same worker 
   wbtest_remove_if_exists(b2)
   wbtest_remove_if_exists(root_a_compiler + "/index.vibe")
   wbtest_remove_if_exists(root_b_compiler + "/index.vibe")
-  wbtest_remove_if_exists(root_a_json + "/index.lock")
-  wbtest_remove_if_exists(root_b_json + "/index.lock")
+  wbtest_remove_if_exists(root_a_prelude + "/index.vibe")
+  wbtest_remove_if_exists(root_b_prelude + "/index.vibe")
+  wbtest_remove_if_exists(root_a_json + "/index.vibe")
+  wbtest_remove_if_exists(root_b_json + "/index.vibe")
   wbtest_remove_if_exists(root_a_compiler)
+  wbtest_remove_if_exists(root_a_prelude)
   wbtest_remove_if_exists(root_a_json)
   wbtest_remove_if_exists(root_b_compiler)
+  wbtest_remove_if_exists(root_b_prelude)
   wbtest_remove_if_exists(root_b_json)
   wbtest_remove_if_exists(root_a_vibe)
   wbtest_remove_if_exists(root_b_vibe)
@@ -2131,8 +2155,10 @@ test "split test entry task batches with weights keeps same root on same worker 
   let root_a_vibe = root_a + "/vibe"
   let root_b_vibe = root_b + "/vibe"
   let root_a_compiler = root_a_vibe + "/compiler"
+  let root_a_prelude = root_a_vibe + "/prelude"
   let root_a_json = root_a_vibe + "/json"
   let root_b_compiler = root_b_vibe + "/compiler"
+  let root_b_prelude = root_b_vibe + "/prelude"
   let root_b_json = root_b_vibe + "/json"
   let a1 = root_a_compiler + "/a_test.vibe"
   let a2 = root_a_json + "/b_test.vibe"
@@ -2153,10 +2179,16 @@ test "split test entry task batches with weights keeps same root on same worker 
   @os_fs.create_dir(root_a_compiler) catch {
     e => fail(e.to_string())
   }
+  @os_fs.create_dir(root_a_prelude) catch {
+    e => fail(e.to_string())
+  }
   @os_fs.create_dir(root_a_json) catch {
     e => fail(e.to_string())
   }
   @os_fs.create_dir(root_b_compiler) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(root_b_prelude) catch {
     e => fail(e.to_string())
   }
   @os_fs.create_dir(root_b_json) catch {
@@ -2175,14 +2207,26 @@ test "split test entry task batches with weights keeps same root on same worker 
     e => fail(e.to_string())
   }
   @os_fs.write_string_to_file(
-    root_a_json + "/index.lock",
-    "{\"path\":{},\"version\":{},\"symbol\":{}}",
+    root_a_prelude + "/index.vibe",
+    "export let version = \"0.1.0\"\n",
   ) catch {
     e => fail(e.to_string())
   }
   @os_fs.write_string_to_file(
-    root_b_json + "/index.lock",
-    "{\"path\":{},\"version\":{},\"symbol\":{}}",
+    root_a_json + "/index.vibe",
+    "export let version = \"0.1.0\"\n",
+  ) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    root_b_prelude + "/index.vibe",
+    "export let version = \"0.1.0\"\n",
+  ) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    root_b_json + "/index.vibe",
+    "export let version = \"0.1.0\"\n",
   ) catch {
     e => fail(e.to_string())
   }
@@ -2222,11 +2266,15 @@ test "split test entry task batches with weights keeps same root on same worker 
   wbtest_remove_if_exists(b2)
   wbtest_remove_if_exists(root_a_compiler + "/index.vibe")
   wbtest_remove_if_exists(root_b_compiler + "/index.vibe")
-  wbtest_remove_if_exists(root_a_json + "/index.lock")
-  wbtest_remove_if_exists(root_b_json + "/index.lock")
+  wbtest_remove_if_exists(root_a_prelude + "/index.vibe")
+  wbtest_remove_if_exists(root_b_prelude + "/index.vibe")
+  wbtest_remove_if_exists(root_a_json + "/index.vibe")
+  wbtest_remove_if_exists(root_b_json + "/index.vibe")
   wbtest_remove_if_exists(root_a_compiler)
+  wbtest_remove_if_exists(root_a_prelude)
   wbtest_remove_if_exists(root_a_json)
   wbtest_remove_if_exists(root_b_compiler)
+  wbtest_remove_if_exists(root_b_prelude)
   wbtest_remove_if_exists(root_b_json)
   wbtest_remove_if_exists(root_a_vibe)
   wbtest_remove_if_exists(root_b_vibe)

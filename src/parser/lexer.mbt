@@ -339,23 +339,17 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           "else" => else_kw()
           "match" => match_kw()
           "record" => record_kw()
-          "map" =>
-            if self.peek_next_significant_char() == Some('{') {
-              map_kw()
-            } else {
-              name()
-            }
+          "map" => map_kw()
+          "for" => for_kw()
+          "in" => in_kw()
+          "is" => is_kw()
+          "derive" => derive_kw()
           "fn" => fn_kw()
           "rec" => rec_kw()
           "type" => type_kw()
           "enum" => enum_kw()
           "while" => while_kw()
-          "loop" =>
-            if self.peek_next_significant_char() == Some('{') {
-              loop_kw()
-            } else {
-              name()
-            }
+          "loop" => loop_kw()
           "bench" => bench_kw()
           "mut" => mut_kw()
           "raise" => raise_kw()

@@ -450,22 +450,10 @@ test "codebase vibe_dir_path prefers shared vibe/.vibe for vibe subtree" {
   @os_fs.create_dir(sha1_dir) catch {
     e => fail(e.to_string())
   }
-  write_file(
-    prelude_dir + "/index.lock",
-    "{\"path\":{},\"version\":{},\"symbol\":{}}",
-  )
-  write_file(
-    json_dir + "/index.lock",
-    "{\"path\":{},\"version\":{},\"symbol\":{}}",
-  )
-  write_file(
-    base64_dir + "/index.lock",
-    "{\"path\":{},\"version\":{},\"symbol\":{}}",
-  )
-  write_file(
-    sha1_dir + "/index.lock",
-    "{\"path\":{},\"version\":{},\"symbol\":{}}",
-  )
+  write_file(prelude_dir + "/index.vibe", "export let version = \"0.1.0\"\n")
+  write_file(json_dir + "/index.vibe", "export let version = \"0.1.0\"\n")
+  write_file(base64_dir + "/index.vibe", "export let version = \"0.1.0\"\n")
+  write_file(sha1_dir + "/index.vibe", "export let version = \"0.1.0\"\n")
   let entry = prelude_dir + "/main.vibe"
   assert_eq(lock_file_path(entry), prelude_dir + "/index.lock")
   assert_eq(vibe_dir_path(entry), vibe_root + "/.vibe")
@@ -520,22 +508,10 @@ test "codebase resolve_index_root uses shared vibe root for repo subtree" {
   @os_fs.create_dir(sha1_dir) catch {
     e => fail(e.to_string())
   }
-  write_file(
-    prelude_dir + "/index.lock",
-    "{\"path\":{},\"version\":{},\"symbol\":{}}",
-  )
-  write_file(
-    json_dir + "/index.lock",
-    "{\"path\":{},\"version\":{},\"symbol\":{}}",
-  )
-  write_file(
-    base64_dir + "/index.lock",
-    "{\"path\":{},\"version\":{},\"symbol\":{}}",
-  )
-  write_file(
-    sha1_dir + "/index.lock",
-    "{\"path\":{},\"version\":{},\"symbol\":{}}",
-  )
+  write_file(prelude_dir + "/index.vibe", "export let version = \"0.1.0\"\n")
+  write_file(json_dir + "/index.vibe", "export let version = \"0.1.0\"\n")
+  write_file(base64_dir + "/index.vibe", "export let version = \"0.1.0\"\n")
+  write_file(sha1_dir + "/index.vibe", "export let version = \"0.1.0\"\n")
   write_file(compiler_dir + "/index.vibe", "export let version = \"0.1.0\"\n")
   let entry = compiler_dir + "/main.vibe"
   assert_eq(resolve_index_root(entry), vibe_root)

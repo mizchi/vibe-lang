@@ -53,28 +53,40 @@ test "lexer distinguishes yield from operators" {
   if loop_kw_tokens[0].kind() != loop_kw() {
     fail("loop before { must lex as loop_kw")
   }
-  let loop_ident_tokens = tokenize("let loop = 1\nloop(1)")
-  if loop_ident_tokens[2].kind() != name() {
-    fail("loop binding must lex as name")
-  }
-  if loop_ident_tokens[8].kind() != name() {
-    fail("loop before ( must lex as name")
+  let loop_always_tokens = tokenize("loop(1)")
+  if loop_always_tokens[0].kind() != loop_kw() {
+    fail("loop must always lex as loop_kw (now reserved)")
   }
 }
 
 ///|
-test "lexer treats map as contextual keyword" {
+test "lexer treats map as reserved keyword" {
   let map_lit_tokens = tokenize("map { a: 1 }")
   if map_lit_tokens[0].kind() != map_kw() {
     fail("map before { must lex as map_kw")
   }
-  let map_ident_tokens = tokenize("let map = 1\nmap(1)")
-  if map_ident_tokens[2].kind() != name() {
-    fail("map binding must lex as name")
-  }
   let map_call_tokens = tokenize("map(1)")
-  if map_call_tokens[0].kind() != name() {
-    fail("map before ( must lex as name")
+  if map_call_tokens[0].kind() != map_kw() {
+    fail("map must always lex as map_kw (now reserved)")
+  }
+}
+
+///|
+test "lexer treats for/in/is/derive as reserved keywords" {
+  let for_tokens = tokenize("for x in xs { }")
+  if for_tokens[0].kind() != for_kw() {
+    fail("for must lex as for_kw")
+  }
+  if for_tokens[4].kind() != in_kw() {
+    fail("in must lex as in_kw")
+  }
+  let is_tokens = tokenize("x is Some(y)")
+  if is_tokens[2].kind() != is_kw() {
+    fail("is must lex as is_kw")
+  }
+  let derive_tokens = tokenize("derive(Show)")
+  if derive_tokens[0].kind() != derive_kw() {
+    fail("derive must lex as derive_kw")
   }
 }
 

@@ -144,7 +144,7 @@ fn check_syntax_kind_lexer_contract() -> Unit {
     @parser.map_kw(),
   )
   let map_call_tokens = @parser.tokenize("map(1)")
-  assert_eq_syntax_kind("map-call", map_call_tokens[0].kind(), @parser.name())
+  assert_eq_syntax_kind("map-call", map_call_tokens[0].kind(), @parser.map_kw())
 
   let raw_ident_tokens = @parser.tokenize("let r#bench = 1\nr#bench")
   assert_eq_syntax_kind(

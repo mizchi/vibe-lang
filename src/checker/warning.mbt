@@ -34,37 +34,14 @@ fn warning_scope_new() -> WarningScope {
 }
 
 ///|
-let context_keywords : Array[String] = [
-  "for", "in", "is", "map", "loop", "derive",
-]
-
-///|
-fn is_context_keyword(name : String) -> Bool {
-  for kw in context_keywords {
-    if kw == name {
-      return true
-    }
-  }
-  false
-}
-
-///|
+// context keywords (for, in, is, map, loop, derive) are now reserved keywords
+// and rejected by the parser, so no checker warning is needed.
 fn warn_context_keyword_binding(
-  name : String,
-  span : @core.Span,
-  out : Array[@core.Diagnostic],
+  _name : String,
+  _span : @core.Span,
+  _out : Array[@core.Diagnostic],
 ) -> Unit {
-  if is_context_keyword(name) {
-    out.push(@core.Diagnostic::{
-      stage: "warning",
-      message: "`" +
-      name +
-      "` is a context keyword and may cause unexpected parsing behavior",
-      span: Some(span),
-      hint: Some("use a different variable name to avoid ambiguity"),
-      note: None,
-    })
-  }
+  // no-op: reserved keywords cannot appear as bindings
 }
 
 ///|

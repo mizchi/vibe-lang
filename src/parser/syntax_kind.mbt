@@ -148,6 +148,16 @@ pub fn enum_kw() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn is_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(61)
+}
+
+///|
+pub fn derive_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(62)
+}
+
+///|
 pub fn map_kw() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(57)
 }
