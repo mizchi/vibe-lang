@@ -36,6 +36,7 @@ test "prelude partition keeps builtin-dependent helpers out of core set" {
   assert_true(builtin_names.contains("add"))
   assert_true(builtin_names.contains("sub"))
   assert_true(builtin_names.contains("assert"))
+  assert_true(builtin_names.contains("assert_eq"))
   assert_true(builtin_names.contains("to_string"))
   assert_true(builtin_names.contains("iter_length"))
   assert_true(builtin_names.contains("iter_get"))
@@ -44,6 +45,7 @@ test "prelude partition keeps builtin-dependent helpers out of core set" {
   assert_true(builtin_names.contains("string_concat_all"))
   assert_true(builtin_names.contains("Map::get_or"))
   assert_false(core_names.contains("add"))
+  assert_false(core_names.contains("assert_eq"))
   assert_false(core_names.contains("Array::map"))
 }
 

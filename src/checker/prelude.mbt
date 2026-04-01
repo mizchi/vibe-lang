@@ -369,6 +369,7 @@ fn prelude_backend_builtin_name(name : String) -> Bool {
   name == "__eq" ||
   name == "__lt" ||
   name == "__assert" ||
+  name == "__assert_eq" ||
   name == "__to_string" ||
   name == "Array::length" ||
   name == "Array::get" ||

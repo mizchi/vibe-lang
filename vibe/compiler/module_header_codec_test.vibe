@@ -1,0 +1,50 @@
+//# Imports
+
+import ./cache / persistent_module_header_codec.vibe {
+  parse_persistent_module_header_text, persistent_module_header_text
+}
+
+//# Misc
+
+test "persistent_module_header_text: roundtrip" {
+  let deps = [
+    "./a.vibe",
+    "./b.vibe"
+  ]
+  let exports = [
+    "foo",
+    "bar"
+  ]
+  let text = persistent_module_header_text(deps, exports)
+  let (parsed_deps, parsed_exports) = parse_persistent_module_header_text(text)
+  assert(Array::length(parsed_deps) == 2)
+  assert(Array::get(parsed_deps, 0) == "./a.vibe")
+  assert(Array::get(parsed_deps, 1) == "./b.vibe")
+  assert(Array::length(parsed_exports) == 2)
+  assert(Array::get(parsed_exports, 0) == "foo")
+  assert(Array::get(parsed_exports, 1) == "bar")
+}
+
+test "parse_persistent_module_header_text: rejects invalid row" {
+  let ok = handle {
+    let _ = parse_persistent_module_header_text("version\t1\nbogus\trow\n")
+    false
+  } {
+    Error(_) => true
+  }
+  assert(ok)
+}
+
+test "parse_persistent_module_header_text: accepts crlf rows" {
+  let cr = String::from_char_code(13)
+  let crlf = String::concat(cr, "\n")
+  let raw = String::concat(
+    "version\t1",
+    String::concat(crlf, String::concat("dep\t./a.vibe", String::concat(crlf, String::concat("export\tfoo", crlf))))
+  )
+  let (deps, exports) = parse_persistent_module_header_text(raw)
+  assert(Array::length(deps) == 1)
+  assert(Array::get(deps, 0) == "./a.vibe")
+  assert(Array::length(exports) == 1)
+  assert(Array::get(exports, 0) == "foo")
+}
