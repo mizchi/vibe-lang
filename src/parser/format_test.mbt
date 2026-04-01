@@ -403,18 +403,18 @@ test "vibe parse/format test declaration accepts unquoted names" {
 }
 
 ///|
-test "vibe parse/format map keyword is contextual in identifier positions" {
+test "vibe parse/format map is a reserved keyword (not usable as identifier)" {
   let input =
-    #|let map = (x: Int) -> Int { x }
-    #|let y = map(1)
+    #|let r#map = (x: Int) -> Int { x }
+    #|let y = r#map(1)
   let ast = parse_ast(input) catch {
-    e => fail("[parse] contextual map identifier failed: \{e.to_string()}")
+    e => fail("[parse] raw map identifier failed: \{e.to_string()}")
   }
   let formatted = format_script(input)
   let reparsed = parse_ast(formatted) catch {
     e =>
       fail(
-        "[reparse] contextual map identifier format result failed: \{e.to_string()}\n---\n\{formatted}",
+        "[reparse] raw map identifier format result failed: \{e.to_string()}\n---\n\{formatted}",
       )
   }
   assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))

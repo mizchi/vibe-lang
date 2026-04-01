@@ -325,7 +325,7 @@ fn AstParser::parse_pattern(self : AstParser) -> @core.Pat raise ParseError {
             let _ = self.expect(rbrace(), "}")
             let span = self.span_from(start)
             @core.Pat::Struct(name=tok.text(), fields~, span~)
-          } else if self.peek_kind() == name() {
+          } else if is_name_like(self.peek_kind()) {
             // Qualified enum ctor: Enum::Ctor or Enum::Ctor(args)
             let ctor_tok = self.bump()
             let qualified = tok.text() + "::" + ctor_tok.text()

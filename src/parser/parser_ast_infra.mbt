@@ -136,6 +136,40 @@ fn AstParser::expect(
 }
 
 ///|
+/// Accept name() or any reserved keyword that may appear as identifier
+/// in member/method positions (e.g. Array::map, impl Show for).
+fn is_name_like(kind : @cst.SyntaxKind) -> Bool {
+  kind == name() ||
+  kind == map_kw() ||
+  kind == loop_kw() ||
+  kind == for_kw() ||
+  kind == in_kw() ||
+  kind == is_kw() ||
+  kind == derive_kw()
+}
+
+///|
+fn AstParser::expect_name_like(
+  self : AstParser,
+  label : String,
+) -> Token raise ParseError {
+  self.skip_trivia()
+  let tok = self.peek()
+  if is_name_like(tok.kind()) {
+    self.pos += 1
+    tok
+  } else if tok.kind() == eof() {
+    raise ParseError::UnexpectedEof(span=self.token_span())
+  } else {
+    raise ParseError::UnexpectedToken(
+      expected=label,
+      got=tok.text(),
+      span=self.token_span(),
+    )
+  }
+}
+
+///|
 pub fn AstParser::parse(self : AstParser) -> @core.Module raise ParseError {
   let stmts : Array[@core.Stmt] = []
   while ({

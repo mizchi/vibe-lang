@@ -409,14 +409,26 @@ fn Parser::parse_export_tail(self : Parser) -> Unit {
     self.bump()
     while !self.at(rbrace()) && !self.at(eof()) {
       self.skip_trivia()
-      if self.at(name()) {
+      if self.at(name()) ||
+        self.at(map_kw()) ||
+        self.at(loop_kw()) ||
+        self.at(for_kw()) ||
+        self.at(in_kw()) ||
+        self.at(is_kw()) ||
+        self.at(derive_kw()) {
         self.bump()
         // Handle qualified names like Type::method
         self.skip_trivia()
         if self.at(double_colon()) {
           self.bump()
           self.skip_trivia()
-          if self.at(name()) {
+          if self.at(name()) ||
+            self.at(map_kw()) ||
+            self.at(loop_kw()) ||
+            self.at(for_kw()) ||
+            self.at(in_kw()) ||
+            self.at(is_kw()) ||
+            self.at(derive_kw()) {
             self.bump()
           }
         }
@@ -599,7 +611,7 @@ fn Parser::parse_struct_stmt(self : Parser) -> Unit {
 ///|
 fn Parser::parse_optional_derive_clause(self : Parser) -> Unit {
   self.skip_trivia()
-  if self.at(name()) && self.peek().text() == "derive" {
+  if self.at(derive_kw()) {
     self.bump()
     self.skip_trivia()
     if self.at(lparen()) {
@@ -706,17 +718,11 @@ fn Parser::parse_expr(self : Parser) -> Unit {
   self.skip_trivia()
   if self.at(if_kw()) {
     self.parse_if_expr()
-  } else if self.at(name()) && self.peek().text() == "for" {
+  } else if self.at(for_kw()) {
     self.parse_for_in_expr()
   } else if self.at(while_kw()) {
     self.parse_while_expr()
   } else if self.at(loop_kw()) {
-    self.parse_loop_expr()
-  } else if self.at(name()) &&
-    self.peek().text() == "loop" &&
-    self.peek_non_trivia_ahead(1) == lparen() &&
-    self.peek_non_trivia_ahead(2) == name() &&
-    self.peek_non_trivia_ahead(3) == eq() {
     self.parse_loop_expr()
   } else if self.at(match_kw()) {
     self.parse_match_expr()
@@ -765,7 +771,7 @@ fn Parser::parse_for_in_expr(self : Parser) -> Unit {
     self.expect(name())
     self.skip_trivia()
   }
-  self.expect(name()) // contextual keyword "in"
+  self.expect(in_kw()) // keyword "in"
   self.skip_trivia()
   self.parse_expr()
   self.skip_trivia()

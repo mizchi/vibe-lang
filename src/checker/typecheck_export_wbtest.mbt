@@ -53,7 +53,7 @@ test "typecheck keeps exported schemes for path wrapper module" {
 test "typecheck keeps exported schemes with ArrayBuilder::new local recursion" {
   let script =
     #|export let build = (n: Int) -> Array[Int] {
-    #|  let rec loop = (i: Int, b: ArrayBuilder[Int]) -> Array[Int] {
+    #|  let rec go = (i: Int, b: ArrayBuilder[Int]) -> Array[Int] {
     #|    if i >= n {
     #|      {
     #|        ArrayBuilder::freeze(b)
@@ -61,12 +61,12 @@ test "typecheck keeps exported schemes with ArrayBuilder::new local recursion" {
     #|    } else {
     #|      {
     #|        ArrayBuilder::push(b, i)
-    #|        loop(i + 1, b)
+    #|        go(i + 1, b)
     #|      }
     #|    }
     #|  }
     #|  {
-    #|    loop(0, ArrayBuilder::new())
+    #|    go(0, ArrayBuilder::new())
     #|  }
     #|}
   let ast = @parser.parse_ast(script)
