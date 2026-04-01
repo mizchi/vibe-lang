@@ -850,6 +850,48 @@ test "loader load_db_with_paths: repo scan_root_import_test cross-directory" {
 }
 
 ///|
+test "loader load_db_with_paths: repo compiler index entry" {
+  let cwd = @io.current_dir_or_root()
+  let entry = @vibe_fs.normalize_path(cwd + "/vibe/compiler/index.vibe")
+  let loader_path = @vibe_fs.normalize_path(
+    cwd + "/vibe/compiler/loader/index.vibe",
+  )
+  let cache_path = @vibe_fs.normalize_path(
+    cwd + "/vibe/compiler/cache/persistent_cache.vibe",
+  )
+  let header_codec_path = @vibe_fs.normalize_path(
+    cwd + "/vibe/compiler/cache/persistent_module_header_codec.vibe",
+  )
+  let loaded = match load_db_with_paths(entry) {
+    Ok(v) => v
+    Err(err) => fail("compiler index should load: " + err)
+  }
+  let (db, resolved, paths) = loaded
+  assert_eq(resolved, entry)
+  assert_true(contains_path(paths, loader_path))
+  assert_true(contains_path(paths, cache_path))
+  assert_true(contains_path(paths, header_codec_path))
+  match db.get_source(entry) {
+    Some(source) => assert_true(source.contains("selfbuild_entry"))
+    None => fail("expected compiler entry source in db")
+  }
+  match db.get_source(loader_path) {
+    Some(source) => assert_true(source.contains("collect_all_sources_fs"))
+    None => fail("expected loader source in db")
+  }
+  match db.get_source(cache_path) {
+    Some(source) =>
+      assert_true(source.contains("persistent_module_header_cache_path"))
+    None => fail("expected persistent cache source in db")
+  }
+  match db.get_source(header_codec_path) {
+    Some(source) =>
+      assert_true(source.contains("parse_persistent_module_header_text"))
+    None => fail("expected persistent header codec source in db")
+  }
+}
+
+///|
 test "loader cross-root import via transitive dependency" {
   // Simulate url_test.vibe scenario:
   // /project/x/url_test.vibe imports ./url/pattern.vibe
