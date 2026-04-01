@@ -21,7 +21,7 @@
 
 ### 1. `vibe integration handle catches error`
 
-File: [src/tests/vibe_integration_test.mbt](src/tests/vibe_integration_test.mbt)
+File: [src/tests/vibe_wasm_eval_test.mbt](src/tests/vibe_wasm_eval_test.mbt)
 
 Why:
 - 最小の `handle { ... } { ... }` と `perform` / `resume` の往復を確認できる
@@ -34,7 +34,7 @@ What it verifies:
 
 ### 2. `vibe integration perform handle typed payload`
 
-File: [src/tests/vibe_integration_test.mbt](src/tests/vibe_integration_test.mbt)
+File: [src/tests/vibe_wasm_eval_test.mbt](src/tests/vibe_wasm_eval_test.mbt)
 
 Why:
 - typed payload を持つ effect op を扱える
@@ -46,7 +46,7 @@ What it verifies:
 
 ### 3. `vibe integration perform multi-layer handle`
 
-File: [src/tests/vibe_integration_test.mbt](src/tests/vibe_integration_test.mbt)
+File: [src/tests/vibe_wasm_eval_test.mbt](src/tests/vibe_wasm_eval_test.mbt)
 
 Why:
 - handler の入れ子と pass-through を見られる
@@ -59,7 +59,7 @@ What it verifies:
 
 ### 4. `vibe integration resume continues after perform`
 
-File: [src/tests/vibe_integration_test.mbt](src/tests/vibe_integration_test.mbt)
+File: [src/tests/vibe_wasm_eval_test.mbt](src/tests/vibe_wasm_eval_test.mbt)
 
 Why:
 - `resume` の後に callee の残り評価が継続するかを確かめる
@@ -71,7 +71,7 @@ What it verifies:
 
 ### 5. `vibe integration resume multi-layer perform`
 
-File: [src/tests/vibe_integration_test.mbt](src/tests/vibe_integration_test.mbt)
+File: [src/tests/vibe_wasm_eval_test.mbt](src/tests/vibe_wasm_eval_test.mbt)
 
 Why:
 - multi-layer handler と `resume` を同時に使う
@@ -83,7 +83,7 @@ What it verifies:
 
 ### 6. `vibe integration resume rejects prior effects before perform`
 
-File: [src/tests/vibe_integration_test.mbt](src/tests/vibe_integration_test.mbt)
+File: [src/tests/vibe_wasm_eval_test.mbt](src/tests/vibe_wasm_eval_test.mbt)
 
 Why:
 - continuation の不正な再利用・順序違反を明示的にチェックできる
@@ -240,7 +240,7 @@ prototype の最小実装で触る可能性が高い subsystem は次の通り�
 - `src/codegen/wasm_codegen_sig.mbt`
 - `src/codegen/wasm_codegen_expr_effect_wbtest.mbt`
 - `src/runtime/eval.mbt`
-- `src/tests/vibe_integration_test.mbt`
+- `src/tests/vibe_wasm_eval_test.mbt`
 - `src/tests/vibe_wasm_eval_test.mbt`
 
 ## Expected Output
