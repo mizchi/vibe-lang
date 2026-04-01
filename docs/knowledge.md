@@ -277,20 +277,17 @@ vibe/compiler/
 ├── token.vibe          # トークン定義
 ├── ast.vibe            # AST 定義
 ├── lexer.vibe          # 字句解析
-├── parser.vibe         # 構文解析 (1614行)
+├── parser.vibe         # 構文解析
 ├── printer.vibe        # AST → ソース
-├── values.vibe         # ランタイム値
 ├── builtins.vibe       # 組み込み関数
 ├── types.vibe          # 型定義（import なし）
 ├── checker_resolve.vibe # 名前解決
 ├── checker.vibe        # 型チェッカー
 ├── checker_stmt.vibe   # 文の型チェック
-├── eval_builtins.vibe  # 評価器組み込み
-├── eval.vibe           # 評価器本体 (1354行)
-├── eval_loader.vibe    # モジュールローダー
-├── eval_stmt.vibe      # 文の評価
-├── eval_e2e_helpers.vibe # E2E ヘルパー
+├── codegen.vibe        # コード生成
+├── compiler.vibe       # コンパイルパイプライン
 ├── type_db.vibe        # 増分型チェック DB
+├── dce.vibe            # Dead Code Elimination
 └── index.vibe          # パッケージ re-export
 ```
 
