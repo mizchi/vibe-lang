@@ -1069,7 +1069,6 @@ fn is_keyword_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == else_kw() ||
   kind == match_kw() ||
   kind == record_kw() ||
-  kind == map_kw() ||
   kind == for_kw() ||
   kind == in_kw() ||
   kind == is_kw() ||

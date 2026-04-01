@@ -140,7 +140,6 @@ fn AstParser::expect(
 /// in member/method positions (e.g. Array::map, impl Show for).
 fn is_name_like(kind : @cst.SyntaxKind) -> Bool {
   kind == name() ||
-  kind == map_kw() ||
   kind == loop_kw() ||
   kind == for_kw() ||
   kind == in_kw() ||

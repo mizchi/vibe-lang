@@ -410,7 +410,6 @@ fn Parser::parse_export_tail(self : Parser) -> Unit {
     while !self.at(rbrace()) && !self.at(eof()) {
       self.skip_trivia()
       if self.at(name()) ||
-        self.at(map_kw()) ||
         self.at(loop_kw()) ||
         self.at(for_kw()) ||
         self.at(in_kw()) ||
@@ -423,7 +422,6 @@ fn Parser::parse_export_tail(self : Parser) -> Unit {
           self.bump()
           self.skip_trivia()
           if self.at(name()) ||
-            self.at(map_kw()) ||
             self.at(loop_kw()) ||
             self.at(for_kw()) ||
             self.at(in_kw()) ||

@@ -60,14 +60,21 @@ test "lexer distinguishes yield from operators" {
 }
 
 ///|
-test "lexer treats map as reserved keyword" {
+test "lexer treats map as context-sensitive keyword" {
+  // map followed by { → keyword
   let map_lit_tokens = tokenize("map { a: 1 }")
   if map_lit_tokens[0].kind() != map_kw() {
     fail("map before { must lex as map_kw")
   }
+  // map followed by ( → identifier
   let map_call_tokens = tokenize("map(1)")
-  if map_call_tokens[0].kind() != map_kw() {
-    fail("map must always lex as map_kw (now reserved)")
+  if map_call_tokens[0].kind() != name() {
+    fail("map not before { must lex as name")
+  }
+  // map at end of input → identifier
+  let map_end_tokens = tokenize("map")
+  if map_end_tokens[0].kind() != name() {
+    fail("map at end of input must lex as name")
   }
 }
 
