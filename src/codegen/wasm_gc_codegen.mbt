@@ -192,6 +192,7 @@ priv struct GcCodegenCtx {
   func_indices : Map[String, Int]
   func_param_counts : Map[String, Int]
   func_returns : Map[String, GcValKind]
+  func_param_kinds : Map[String, Array[GcValKind]]
   string_type : Int
   array_i32_type : Int
   bytes_type : Int
@@ -343,6 +344,7 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
     func_indices: {},
     func_param_counts: {},
     func_returns: {},
+    func_param_kinds: {},
     string_type,
     array_i32_type,
     bytes_type,
@@ -1759,9 +1761,15 @@ fn infer_expr_kind_gc(
               Some(k) => k
               None => GcValKind::I64
             }
-            let param_kinds : Array[GcValKind] = []
-            for _ in 0..<param_count {
-              param_kinds.push(GcValKind::I64)
+            let param_kinds = match ctx.func_param_kinds.get(name) {
+              Some(kinds) => kinds
+              None => {
+                let kinds : Array[GcValKind] = []
+                for _ in 0..<param_count {
+                  kinds.push(GcValKind::I64)
+                }
+                kinds
+              }
             }
             let (_, struct_type_idx) = ensure_closure_types_gc(
               ctx, param_kinds, result_kind,
@@ -5409,9 +5417,15 @@ fn compile_expr_gc(
               Some(k) => k
               None => GcValKind::I64
             }
-            let param_kinds : Array[GcValKind] = []
-            for _ in 0..<param_count {
-              param_kinds.push(GcValKind::I64)
+            let param_kinds = match ctx.func_param_kinds.get(name) {
+              Some(kinds) => kinds
+              None => {
+                let kinds : Array[GcValKind] = []
+                for _ in 0..<param_count {
+                  kinds.push(GcValKind::I64)
+                }
+                kinds
+              }
             }
             let (fn_type_idx, struct_type_idx) = ensure_closure_types_gc(
               ctx, param_kinds, result_kind,
@@ -5424,8 +5438,8 @@ fn compile_expr_gc(
             }
             emit_call_gc(wrapper_buf, func_idx)
             let wrapper_sig_params : Array[GcValKind] = [GcValKind::AnyRef]
-            for _ in 0..<param_count {
-              wrapper_sig_params.push(GcValKind::I64)
+            for i in 0..<param_count {
+              wrapper_sig_params.push(param_kinds[i])
             }
             let wrapper_sig = GcFuncSig::{
               params: wrapper_sig_params,
@@ -8146,6 +8160,11 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
   for i in 0..<funcs.length() {
     ctx.func_indices[funcs[i].name] = i
     ctx.func_param_counts[funcs[i].name] = funcs[i].params.length()
+    let pk : Array[GcValKind] = []
+    for p in funcs[i].params {
+      pk.push(gc_val_kind_from_type(ctx, p.ty))
+    }
+    ctx.func_param_kinds[funcs[i].name] = pk
     match funcs[i].ret {
       Some(ty) => {
         let kind = gc_val_kind_from_type(ctx, ty)
