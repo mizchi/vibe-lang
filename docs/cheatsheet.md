@@ -52,6 +52,13 @@ let identity = [T](x: T) -> T { x }      // generic
 let show = [T: Eq + Ord](x: T) -> T { x } // trait bounds
 ```
 
+### Labeled arguments
+
+```vibe
+let f = (x~: Int, y~: Int) -> Int { x + y }
+f(x=10, y=20)
+```
+
 ### Lambda shorthand
 
 ```vibe
@@ -109,8 +116,9 @@ for x in arr { x * 2 }         // -> Array
 for i, x in arr { i + x }      // with index
 
 // loop (parameterized tail-recursion)
+let mut result = 0
 loop (i = 0, sum = 0) {
-  if i >= 10 { break sum }
+  if i >= 10 { result = sum; break }
   continue(i + 1, sum + i)
 }
 ```
@@ -214,7 +222,7 @@ let result = risky(n)?
 
 ```vibe
 suberror NotFound(String)
-suberror InvalidInput { code: Int; msg: String }
+suberror InvalidInput(Int, String)   // tuple payload only
 ```
 
 ### User-defined effects (algebraic)
@@ -313,7 +321,8 @@ let result = handle {
 // Builder pattern
 let arr = {
   let b = ArrayBuilder::new()
-  for x in input { ArrayBuilder::push(b, transform(x)) }
+  ArrayBuilder::push(b, 1)
+  ArrayBuilder::push(b, 2)
   ArrayBuilder::freeze(b)
 }
 
