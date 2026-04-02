@@ -251,6 +251,11 @@ write_test_source() {
   } > "$TMP_DIR/test.vibe"
 }
 
+write_program_source() {
+  local vibe_code="$1"
+  printf "%s\n" "$vibe_code" > "$TMP_DIR/test.vibe"
+}
+
 # Helper: compile .vibe to .wasm, run with wasmtime, compare untagged result
 expect_wasmtime_result() {
   # Shard: skip tests not assigned to this shard
@@ -268,6 +273,44 @@ expect_wasmtime_result() {
   local expected_value="$3"
 
   write_test_source "$vibe_code"
+
+  if ! $VIBE compile --wasm "$TMP_DIR/test.vibe" -o "$TMP_DIR/test.wasm" 2>/dev/null; then
+    log_fail "$test_name - compilation failed"
+    return
+  fi
+
+  local wasm_tagged
+  wasm_tagged=$("$WASMTIME_RUN" --invoke _start "$TMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning") || true
+
+  if [ -z "$wasm_tagged" ]; then
+    log_fail "$test_name - wasmtime returned no output"
+    return
+  fi
+
+  local result=$((wasm_tagged >> 2))
+
+  if [ "$result" = "$expected_value" ]; then
+    log_pass "$test_name (result: $expected_value)"
+  else
+    log_fail "$test_name - expected $expected_value but got $result (tagged: $wasm_tagged)"
+  fi
+}
+
+expect_wasmtime_program_result() {
+  if [ "$SHARD_TOTAL" -gt 1 ]; then
+    if [ $((TEST_INDEX % SHARD_TOTAL)) -ne "$SHARD_INDEX" ]; then
+      TEST_INDEX=$((TEST_INDEX + 1))
+      SKIPPED=$((SKIPPED + 1))
+      return
+    fi
+  fi
+  TEST_INDEX=$((TEST_INDEX + 1))
+
+  local test_name="$1"
+  local vibe_code="$2"
+  local expected_value="$3"
+
+  write_program_source "$vibe_code"
 
   if ! $VIBE compile --wasm "$TMP_DIR/test.vibe" -o "$TMP_DIR/test.wasm" 2>/dev/null; then
     log_fail "$test_name - compilation failed"
@@ -1356,6 +1399,25 @@ add(20)
 add(30)
 sum' \
 "60"
+
+expect_wasmtime_result "mutable capture: nested block expression" \
+'let result = {
+  let mut total = 0
+  let f = () -> Int { total = total + 1; total }
+  f()
+  f()
+}
+result' \
+"2"
+
+expect_wasmtime_program_result "mutable capture: top-level block" \
+'{
+  let mut total = 0
+  let f = () -> Int { total = total + 1; total }
+  f()
+  f()
+}' \
+"2"
 
 echo ""
 

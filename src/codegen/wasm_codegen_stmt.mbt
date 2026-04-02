@@ -1059,7 +1059,13 @@ fn compile_block_expr(
 ) -> Unit raise WasmGenError {
   let saved = ctx.locals.copy()
   let saved_kinds = ctx.local_kinds.copy()
+  let saved_mut_captured = ctx.mut_captured_vars.copy()
   let saved_prefix = ctx.rc_action_prefix
+  ctx.mut_captured_vars = scoped_mut_captured_for_block(
+    saved_mut_captured,
+    body.stmts,
+    ctx.fn_closure_captures,
+  )
   if emit_rc_stmt_actions && rc_prefix.length() > 0 {
     ctx.rc_action_prefix = rc_prefix
   }
@@ -1079,6 +1085,7 @@ fn compile_block_expr(
     }
   }
   ctx.rc_action_prefix = saved_prefix
+  ctx.mut_captured_vars = saved_mut_captured
   restore_locals(ctx, saved)
   restore_local_kinds(ctx, saved_kinds)
 }
@@ -1092,6 +1099,12 @@ fn compile_block_multivalue(
 ) -> Unit raise WasmGenError {
   let saved = ctx.locals.copy()
   let saved_kinds = ctx.local_kinds.copy()
+  let saved_mut_captured = ctx.mut_captured_vars.copy()
+  ctx.mut_captured_vars = scoped_mut_captured_for_block(
+    saved_mut_captured,
+    body.stmts,
+    ctx.fn_closure_captures,
+  )
   let len = body.stmts.length()
   if len == 0 {
     for kind in kinds {
@@ -1116,6 +1129,7 @@ fn compile_block_multivalue(
       // Should not happen — body_always_returns_tuple verified this
     }
   }
+  ctx.mut_captured_vars = saved_mut_captured
   restore_locals(ctx, saved)
   restore_local_kinds(ctx, saved_kinds)
 }
