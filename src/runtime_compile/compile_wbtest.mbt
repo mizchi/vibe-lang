@@ -186,28 +186,28 @@ test "prepare_bundled_ast_for_codegen specializes imported iterable helpers by c
   let compiled = compile_module(db, "/project/main.vibe")
   let bundled = bundle_for_wasm_no_dce(db, "/project/main.vibe", compiled.ast)
   let prepared = prepare_bundled_ast_for_codegen(bundled)
-  let mut has_specialized_def = false
+  let mut specialized_name : String? = None
   for stmt in prepared.stmts {
     match stmt {
       @core.Stmt::Let(name~, ..) =>
-        if name == "Iterator::fold$Trio" {
-          has_specialized_def = true
+        if name.has_prefix("Iterator::fold$Trio") {
+          specialized_name = Some(name)
         }
       _ => ()
     }
   }
-  assert_true(has_specialized_def)
-  assert_true(
-    runtime_compile_module_has_value_call(
-      prepared, "value", "Iterator::fold$Trio",
-    ),
-  )
-  if not(
-      runtime_compile_module_fn_body_has_call(
-        prepared, "Iterator::fold$Trio", "Trio::iter_get",
-      ),
-    ) {
-    fail(module_to_sexp(prepared, {}))
+  match specialized_name {
+    Some(name) => {
+      assert_true(
+        runtime_compile_module_has_value_call(prepared, "value", name),
+      )
+      if !runtime_compile_module_fn_body_has_call(
+          prepared, name, "Trio::iter_get",
+        ) {
+        fail(module_to_sexp(prepared, {}))
+      }
+    }
+    None => fail(module_to_sexp(prepared, {}))
   }
 }
 
@@ -259,6 +259,75 @@ test "prepare_bundled_ast_for_codegen keeps imported iterable impls" {
   assert_true(
     runtime_compile_module_has_value_call_prefix(
       prepared, "value", "Iterator::fold$Trio",
+    ),
+  )
+}
+
+///|
+test "prepare_bundled_ast_for_codegen specializes imported iterator flatmap helpers" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "/project/iterator.vibe",
+    (
+      #|export let Iterator::flatmap = [C: Iterable, A, B](xs: C, f: (x: A) -> Array[B]) -> Array[B] {
+      #|  let len = xs|>iter_length
+      #|  {
+      #|    let acc = ArrayBuilder::new()
+      #|    let mut i = 0
+      #|    while i < len {
+      #|      let chunk = f(xs|>iter_get(i))
+      #|      let chunk_len = Array::length(chunk)
+      #|      let mut j = 0
+      #|      while j < chunk_len {
+      #|        ArrayBuilder::push(acc, Array::get(chunk, j))
+      #|        j = j + 1
+      #|      }
+      #|      i = i + 1
+      #|    }
+      #|    ArrayBuilder::freeze(acc)
+      #|  }
+      #|}
+    ),
+  )
+  db.set_source(
+    "/project/main.vibe",
+    (
+      #|import ./iterator.vibe {
+      #|  Iterator::flatmap
+      #|}
+      #|enum Trio[T] {
+      #|  Trio(T, T, T)
+      #|}
+      #|impl [T] Iterable for Trio[T]
+      #|let trio_of3 = [T](a: T, b: T, c: T) -> Trio[T] {
+      #|  Trio(a, b, c)
+      #|}
+      #|let Trio::iter_length = [T](_xs: Trio[T]) -> Int { 3 }
+      #|let Trio::iter_get = [T](xs: Trio[T], index: Int) -> T {
+      #|  match xs {
+      #|    Trio(a, b, c) => if index == 0 { a } else if index == 1 { b } else { c }
+      #|  }
+      #|}
+      #|let value = Iterator::flatmap(trio_of3(1, 2, 3), (x: Int) -> Array[Int] { [x, x + 1] })
+    ),
+  )
+  let compiled = compile_module(db, "/project/main.vibe")
+  let bundled = bundle_for_wasm_no_dce(db, "/project/main.vibe", compiled.ast)
+  let prepared = prepare_bundled_ast_for_codegen(bundled)
+  let mut has_specialized_helper = false
+  for stmt in prepared.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, ..) =>
+        if name == "Trio::iter_get$Trio|T=Int" {
+          has_specialized_helper = true
+        }
+      _ => ()
+    }
+  }
+  assert_true(has_specialized_helper)
+  assert_true(
+    runtime_compile_module_fn_body_has_call(
+      prepared, "Iterator::flatmap$Trio|A=Int|B=Int", "Trio::iter_get$Trio|T=Int",
     ),
   )
 }
@@ -346,6 +415,127 @@ test "bundle_for_codegen keeps imported list iterator helper chain" {
   }
   assert_true(has_list_iter_get)
   assert_true(has_list_length)
+}
+
+///|
+test "bundle_for_codegen specializes imported list iterator helper types" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "/project/list_mod.vibe",
+    (
+      #|export enum List[T] {
+      #|  Nil;
+      #|  Cons(T, List[T])
+      #|}
+      #|impl [T] Iterable for List[T]
+      #|export let list_of3 = [T](a: T, b: T, c: T) -> List[T] {
+      #|  Cons(a, Cons(b, Cons(c, Nil)))
+      #|}
+      #|let rec list_iter_get = [T](xs: List[T], index: Int) -> T {
+      #|  match xs {
+      #|    Cons(h, t) => if index == 0 { h } else { list_iter_get(t, index - 1) },
+      #|    Nil => list_iter_get(xs, index)
+      #|  }
+      #|}
+      #|export let List::iter_get = [T](xs: List[T], index: Int) -> T { list_iter_get(xs, index) }
+      #|export let List::iter_length = [T](xs: List[T]) -> Int { 3 }
+    ),
+  )
+  db.set_source(
+    "/project/iter_mod.vibe",
+    (
+      #|export let Iterator::fold = [C: Iterable, T, B](xs: C, init: B, f: (acc: B, x: T) -> B) -> B {
+      #|  let len = xs|>iter_length
+      #|  let mut i = 0
+      #|  let mut acc = init
+      #|  while i < len {
+      #|    acc = f(acc, xs|>iter_get(i))
+      #|    i = i + 1
+      #|  }
+      #|  acc
+      #|}
+    ),
+  )
+  db.set_source(
+    "/project/main.vibe",
+    (
+      #|import ./iter_mod.vibe {
+      #|  Iterator::fold
+      #|}
+      #|import ./list_mod.vibe {
+      #|  list_of3
+      #|}
+      #|let value = Iterator::fold(list_of3(1, 2, 3), 0, (acc: Int, x: Int) -> Int { acc + x })
+    ),
+  )
+  let compiled = compile_module(db, "/project/main.vibe")
+  let prepared = bundle_for_codegen(
+    db,
+    "/project/main.vibe",
+    compiled.ast,
+    "default",
+  ) catch {
+    err => fail(err.to_string())
+  }
+  let gc_prepared = bundle_for_codegen(
+    db,
+    "/project/main.vibe",
+    compiled.ast,
+    "gc",
+  ) catch {
+    err => fail(err.to_string())
+  }
+  let mut has_concrete_list_iter_get = false
+  let mut has_gc_concrete_list_iter_get = false
+  for stmt in prepared.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr~, ..) =>
+        if name == "list_iter_get$List|T=Int" {
+          match expr {
+            @core.Expr::Fn(params~, ret~, ..) =>
+              if params.length() >= 1 &&
+                params[0].ty ==
+                @core.Type::Named(name="List", args=[@core.Type::Int]) &&
+                ret == Some(@core.Type::Int) {
+                has_concrete_list_iter_get = true
+              }
+            _ => ()
+          }
+        }
+      _ => ()
+    }
+  }
+  for stmt in gc_prepared.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr~, ..) =>
+        if name == "list_iter_get$List|T=Int" {
+          match expr {
+            @core.Expr::Fn(params~, ret~, ..) =>
+              if params.length() >= 1 &&
+                params[0].ty ==
+                @core.Type::Named(name="List", args=[@core.Type::Int]) &&
+                ret == Some(@core.Type::Int) {
+                has_gc_concrete_list_iter_get = true
+              }
+            _ => ()
+          }
+        }
+      _ => ()
+    }
+  }
+  if !has_concrete_list_iter_get ||
+    !has_gc_concrete_list_iter_get ||
+    !runtime_compile_module_fn_body_has_call(
+      prepared, "List::iter_get$List|T=Int", "list_iter_get$List|T=Int",
+    ) ||
+    !runtime_compile_module_fn_body_has_call(
+      gc_prepared, "list_iter_get$List|T=Int", "list_iter_get$List|T=Int",
+    ) ||
+    !runtime_compile_module_fn_body_has_call(
+      gc_prepared, "List::iter_get$List|T=Int", "list_iter_get$List|T=Int",
+    ) {
+    fail(module_to_sexp(gc_prepared, {}))
+  }
 }
 
 ///|

@@ -496,3 +496,148 @@ test "monoify_module specializes list iterable helper transitively" {
   assert_true(fold_calls_list_length)
   assert_true(fold_calls_list_get)
 }
+
+///|
+test "monoify_module specializes root helper type params for iterator filter" {
+  let ast = monoify_parse_and_desugar(
+    "enum Trio[T] { Trio(T, T, T) }\n" +
+    "impl [T] Iterable for Trio[T]\n" +
+    "let trio_of3 = [T](a: T, b: T, c: T) -> Trio[T] { Trio(a, b, c) }\n" +
+    "let Trio::iter_length = [T](_xs: Trio[T]) -> Int { 3 }\n" +
+    "let Trio::iter_get = [T](xs: Trio[T], index: Int) -> T {\n" +
+    "  match xs {\n" +
+    "    Trio(a, b, c) => if index == 0 { a } else if index == 1 { b } else { c }\n" +
+    "  }\n" +
+    "}\n" +
+    "let Iterator::filter = [C: Iterable, T](xs: C, pred: (x: T) -> Bool) -> Array[T] {\n" +
+    "  let len = xs|>iter_length\n" +
+    "  {\n" +
+    "    let acc = ArrayBuilder::new()\n" +
+    "    let mut i = 0\n" +
+    "    while i < len {\n" +
+    "      let value = xs|>iter_get(i)\n" +
+    "      if pred(value) {\n" +
+    "        ArrayBuilder::push(acc, value)\n" +
+    "      }\n" +
+    "      i = i + 1\n" +
+    "    }\n" +
+    "    ArrayBuilder::freeze(acc)\n" +
+    "  }\n" +
+    "}\n" +
+    "let value = Iterator::filter(trio_of3(1, 2, 4), (x: Int) -> Bool { x % 2 == 0 })\n",
+  )
+  let env = type_check_for_monoify_test(ast)
+  let result = monoify_module(ast, env.expr_type_index())
+  let mut has_filter_inst = false
+  let mut has_specialized_get = false
+  let mut filter_calls_specialized_get = false
+  for key, _ in result.instantiations {
+    if key.has_prefix("Iterator::filter:Trio") {
+      has_filter_inst = true
+    }
+  }
+  for stmt in result.ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr~, ..) => {
+        if name.has_prefix("Trio::iter_get$Trio|T=Int") {
+          has_specialized_get = true
+        }
+        if name.has_prefix("Iterator::filter$Trio|T=Int") {
+          match expr {
+            @core.Expr::Fn(body~, ..) =>
+              filter_calls_specialized_get = monoify_module_has_call_prefix(
+                body, "Trio::iter_get$Trio|T=Int",
+              )
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+  assert_true(has_filter_inst)
+  assert_true(has_specialized_get)
+  assert_true(filter_calls_specialized_get)
+}
+
+///|
+test "monoify_module specializes callback return type for iterator flatmap" {
+  let ast = monoify_parse_and_desugar(
+    "enum Trio[T] { Trio(T, T, T) }\n" +
+    "impl [T] Iterable for Trio[T]\n" +
+    "let trio_of3 = [T](a: T, b: T, c: T) -> Trio[T] { Trio(a, b, c) }\n" +
+    "let Trio::iter_length = [T](_xs: Trio[T]) -> Int { 3 }\n" +
+    "let Trio::iter_get = [T](xs: Trio[T], index: Int) -> T {\n" +
+    "  match xs {\n" +
+    "    Trio(a, b, c) => if index == 0 { a } else if index == 1 { b } else { c }\n" +
+    "  }\n" +
+    "}\n" +
+    "let Iterator::flatmap = [C: Iterable, A, B](xs: C, f: (x: A) -> Array[B]) -> Array[B] {\n" +
+    "  let len = xs|>iter_length\n" +
+    "  {\n" +
+    "    let acc = ArrayBuilder::new()\n" +
+    "    let mut i = 0\n" +
+    "    while i < len {\n" +
+    "      let chunk = f(xs|>iter_get(i))\n" +
+    "      let chunk_len = Array::length(chunk)\n" +
+    "      let mut j = 0\n" +
+    "      while j < chunk_len {\n" +
+    "        ArrayBuilder::push(acc, Array::get(chunk, j))\n" +
+    "        j = j + 1\n" +
+    "      }\n" +
+    "      i = i + 1\n" +
+    "    }\n" +
+    "    ArrayBuilder::freeze(acc)\n" +
+    "  }\n" +
+    "}\n" +
+    "let value = Iterator::flatmap(trio_of3(1, 2, 4), (x: Int) -> Array[Int] { [x, x + 1] })\n",
+  )
+  let env = type_check_for_monoify_test(ast)
+  let result = monoify_module(ast, env.expr_type_index())
+  let mut has_flatmap_inst = false
+  let mut callback_ret_specialized = false
+  let mut flatmap_calls_specialized_get = false
+  for key, _ in result.instantiations {
+    if key.has_prefix("Iterator::flatmap:Trio") {
+      has_flatmap_inst = true
+    }
+  }
+  for stmt in result.ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr~, ..) =>
+        if name.has_prefix("Iterator::flatmap$Trio") {
+          match expr {
+            @core.Expr::Fn(params~, body~, ..) =>
+              if params.length() >= 2 {
+                match params[1].ty {
+                  @core.Type::Func(params=cb_params, ret~, ..) => {
+                    if cb_params.length() >= 1 &&
+                      cb_params[0].ty == @core.Type::Int {
+                      match ret {
+                        @core.Type::Array(@core.Type::Int) =>
+                          callback_ret_specialized = true
+                        @core.Type::Named(name="Array", args~) =>
+                          if args.length() == 1 &&
+                            args[0] == @core.Type::Named(name="Int", args=[]) {
+                            callback_ret_specialized = true
+                          }
+                        _ => ()
+                      }
+                    }
+                    flatmap_calls_specialized_get = monoify_module_has_call_prefix(
+                      body, "Trio::iter_get$Trio|T=Int",
+                    )
+                  }
+                  _ => ()
+                }
+              }
+            _ => ()
+          }
+        }
+      _ => ()
+    }
+  }
+  assert_true(has_flatmap_inst)
+  assert_true(callback_ret_specialized)
+  assert_true(flatmap_calls_specialized_get)
+}

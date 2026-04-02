@@ -287,6 +287,79 @@ test "wasm-gc e2e: generic iterator fold over list" {
 }
 
 ///|
+test "wasm-gc e2e: generic iterator filter over trio" {
+  let src =
+    #|enum Trio[T] { Trio(T, T, T) }
+    #|impl [T] Iterable for Trio[T]
+    #|let trio_of3 = [T](a: T, b: T, c: T) -> Trio[T] { Trio(a, b, c) }
+    #|let Trio::iter_length = [T](_xs: Trio[T]) -> Int { 3 }
+    #|let Trio::iter_get = [T](xs: Trio[T], index: Int) -> T {
+    #|  match xs {
+    #|    Trio(a, b, c) => if index == 0 { a } else if index == 1 { b } else { c }
+    #|  }
+    #|}
+    #|let Iterator::filter = [C: Iterable, T](xs: C, pred: (x: T) -> Bool) -> Array[T] {
+    #|  let len = xs|>iter_length
+    #|  {
+    #|    let acc = ArrayBuilder::new()
+    #|    let mut i = 0
+    #|    while i < len {
+    #|      let value = xs|>iter_get(i)
+    #|      if pred(value) {
+    #|        ArrayBuilder::push(acc, value)
+    #|      }
+    #|      i = i + 1
+    #|    }
+    #|    ArrayBuilder::freeze(acc)
+    #|  }
+    #|}
+    #|let main = () -> Int {
+    #|  let evens = Iterator::filter(trio_of3(1, 2, 4), (x: Int) -> Bool { x % 2 == 0 })
+    #|  Array::get(evens, 1)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "generic_iterator_filter_trio", 4)
+}
+
+///|
+test "wasm-gc e2e: generic iterator flatmap over trio" {
+  let src =
+    #|enum Trio[T] { Trio(T, T, T) }
+    #|impl [T] Iterable for Trio[T]
+    #|let trio_of3 = [T](a: T, b: T, c: T) -> Trio[T] { Trio(a, b, c) }
+    #|let Trio::iter_length = [T](_xs: Trio[T]) -> Int { 3 }
+    #|let Trio::iter_get = [T](xs: Trio[T], index: Int) -> T {
+    #|  match xs {
+    #|    Trio(a, b, c) => if index == 0 { a } else if index == 1 { b } else { c }
+    #|  }
+    #|}
+    #|let Iterator::flatmap = [C: Iterable, A, B](xs: C, f: (x: A) -> Array[B]) -> Array[B] {
+    #|  let len = xs|>iter_length
+    #|  {
+    #|    let acc = ArrayBuilder::new()
+    #|    let mut i = 0
+    #|    while i < len {
+    #|      let chunk = f(xs|>iter_get(i))
+    #|      let chunk_len = Array::length(chunk)
+    #|      let mut j = 0
+    #|      while j < chunk_len {
+    #|        ArrayBuilder::push(acc, Array::get(chunk, j))
+    #|        j = j + 1
+    #|      }
+    #|      i = i + 1
+    #|    }
+    #|    ArrayBuilder::freeze(acc)
+    #|  }
+    #|}
+    #|let main = () -> Int {
+    #|  let duplicated = Iterator::flatmap(trio_of3(1, 3, 5), (x: Int) -> Array[Int] { [x, x + 1] })
+    #|  Array::get(duplicated, 5)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "generic_iterator_flatmap_trio", 6)
+}
+
+///|
 test "wasm-gc e2e: MapBuilder new/freeze" {
   let src =
     #|let main = () -> Int {

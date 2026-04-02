@@ -5567,7 +5567,9 @@ fn compile_match_chain_gc(
   compile_pat_cond_gc(ctx, fctx, buf, scrut_idx, scrut_kind, arm.pat)
   emit_if_gc(buf, Some(result_kind))
   compile_pat_bind_gc(ctx, fctx, buf, scrut_idx, scrut_kind, arm.pat)
+  let arm_kind = infer_expr_kind_gc(ctx, fctx, arm.expr)
   compile_expr_gc(ctx, fctx, buf, arm.expr)
+  emit_coerce_top_gc(ctx, buf, arm_kind, result_kind)
   restore_locals_gc(fctx, saved)
   emit_else_gc(buf)
   restore_locals_gc(fctx, saved)
@@ -7326,8 +7328,10 @@ fn compile_expr_gc(
       }
       emit_if_gc(buf, Some(result_kind))
       compile_block_expr_gc(ctx, fctx, buf, then_body)
+      emit_coerce_top_gc(ctx, buf, then_kind, result_kind)
       emit_else_gc(buf)
       compile_block_expr_gc(ctx, fctx, buf, else_body)
+      emit_coerce_top_gc(ctx, buf, else_kind, result_kind)
       emit_end_gc(buf)
     }
     @core.Expr::Match(scrutinee~, arms~, span~) => {
@@ -7341,7 +7345,7 @@ fn compile_expr_gc(
       emit_local_set_gc(buf, scrut_idx)
       let saved = clone_locals_gc(fctx.locals)
       bind_pat_kinds_gc(ctx, fctx, scrut_kind, arms[0].pat)
-      let result_kind = infer_expr_kind_gc(ctx, fctx, arms[0].expr)
+      let mut result_kind = infer_expr_kind_gc(ctx, fctx, arms[0].expr)
       restore_locals_gc(fctx, saved)
       for i in 1..<arms.length() {
         let saved_arm = clone_locals_gc(fctx.locals)
@@ -7349,8 +7353,7 @@ fn compile_expr_gc(
         let arm_kind = infer_expr_kind_gc(ctx, fctx, arms[i].expr)
         restore_locals_gc(fctx, saved_arm)
         if arm_kind != result_kind {
-          // Allow mismatched types by unifying to common supertype
-          ()
+          result_kind = gc_common_kind(result_kind, arm_kind)
         }
       }
       compile_match_chain_gc(
