@@ -83,6 +83,7 @@ struct WasmtimeInvokeOutput {
 ///|
 struct HttpHostRunner {
   node_bin : String
+  node_flags : Array[String]
   runner_script : String
 } derive(Show, Eq)
 
@@ -151,6 +152,7 @@ fn resolve_http_host_runner(
           )
       }
   }
+  let node_flags = resolve_http_host_runner_node_flags()
   let root_candidates : Array[String] = []
   let add_root = fn(root : String) -> Unit {
     if root.length() == 0 {
@@ -174,11 +176,11 @@ fn resolve_http_host_runner(
   for project_root in root_candidates {
     let vibe_runner = project_root + "/scripts/wasm_vibe_host_runner.js"
     if is_existing_file(vibe_runner) {
-      return Ok({ node_bin, runner_script: vibe_runner })
+      return Ok({ node_bin, node_flags, runner_script: vibe_runner })
     }
     let http_runner = project_root + "/scripts/wasm_http_host_runner.js"
     if is_existing_file(http_runner) {
-      return Ok({ node_bin, runner_script: http_runner })
+      return Ok({ node_bin, node_flags, runner_script: http_runner })
     }
   }
   Err(
@@ -188,21 +190,41 @@ fn resolve_http_host_runner(
 }
 
 ///|
+fn split_command_flag_words(raw : String) -> Array[String] {
+  let out : Array[String] = []
+  for part in raw.trim().to_string().split(" ") {
+    let token = part.trim().to_string()
+    if token.length() > 0 {
+      out.push(token)
+    }
+  }
+  out
+}
+
+///|
+fn resolve_http_host_runner_node_flags() -> Array[String] {
+  match @sys.get_env_var("VIBE_NODE_WASM_FLAGS") {
+    Some(raw) => split_command_flag_words(raw)
+    None => split_command_flag_words("--experimental-wasm-exnref")
+  }
+}
+
+///|
 fn build_http_host_run_command(
   runner : HttpHostRunner,
   wasm_path : String,
 ) -> String {
-  let node_wasm_flags = match @sys.get_env_var("VIBE_NODE_WASM_FLAGS") {
-    Some(f) => f
-    None => "--experimental-wasm-exnref"
+  let cmd = StringBuilder::new()
+  cmd.write_string(shell_quote_command_arg(runner.node_bin))
+  for flag in runner.node_flags {
+    cmd.write_string(" ")
+    cmd.write_string(shell_quote_command_arg(flag))
   }
-  shell_quote_command_arg(runner.node_bin) +
-  " " +
-  node_wasm_flags +
-  " " +
-  shell_quote_command_arg(runner.runner_script) +
-  " --invoke _start " +
-  shell_quote_command_arg(wasm_path)
+  cmd.write_string(" ")
+  cmd.write_string(shell_quote_command_arg(runner.runner_script))
+  cmd.write_string(" --invoke _start ")
+  cmd.write_string(shell_quote_command_arg(wasm_path))
+  cmd.to_string()
 }
 
 ///|

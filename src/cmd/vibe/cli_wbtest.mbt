@@ -181,6 +181,44 @@ test "check failure message returns exit text only for errors" {
 }
 
 ///|
+test "http host run command quotes default node wasm flag" {
+  let prev = @sys.get_env_var("VIBE_NODE_WASM_FLAGS")
+  defer wbtest_restore_env_var("VIBE_NODE_WASM_FLAGS", prev)
+  @sys.unset_env_var("VIBE_NODE_WASM_FLAGS")
+  let cmd = build_http_host_run_command(
+    {
+      node_bin: "/tmp/node",
+      node_flags: resolve_http_host_runner_node_flags(),
+      runner_script: "/tmp/runner.js",
+    },
+    "/tmp/app.wasm",
+  )
+  assert_eq(
+    cmd, "\"/tmp/node\" \"--experimental-wasm-exnref\" \"/tmp/runner.js\" --invoke _start \"/tmp/app.wasm\"",
+  )
+}
+
+///|
+test "http host run command splits node wasm flags into quoted args" {
+  let prev = @sys.get_env_var("VIBE_NODE_WASM_FLAGS")
+  defer wbtest_restore_env_var("VIBE_NODE_WASM_FLAGS", prev)
+  @sys.set_env_var(
+    "VIBE_NODE_WASM_FLAGS", "--experimental-wasm-exnref --trace-wasm",
+  )
+  let cmd = build_http_host_run_command(
+    {
+      node_bin: "/tmp/node",
+      node_flags: resolve_http_host_runner_node_flags(),
+      runner_script: "/tmp/runner.js",
+    },
+    "/tmp/app.wasm",
+  )
+  assert_eq(
+    cmd, "\"/tmp/node\" \"--experimental-wasm-exnref\" \"--trace-wasm\" \"/tmp/runner.js\" --invoke _start \"/tmp/app.wasm\"",
+  )
+}
+
+///|
 test "resolve repl initial source ignores scratch db by default" {
   let root = wbtest_make_temp_dir("repl_initial_source_fresh")
   let scratch_db_path = root + "/scratch.db"
