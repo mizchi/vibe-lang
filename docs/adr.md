@@ -27,6 +27,11 @@
 | 0023 | **`is` パターンマッチ式**。`expr is pattern` で Bool / binding。`EMatch` にデシュガー。 | accepted |
 | 0025 | **else 節を一般の式に統一**。else の後に任意の式を許可。 | accepted |
 | 0037 | **トップレベル前方参照**。codegen で topological sort + 前方アノテーション関数の pre-scan。パラメータ型注釈必須、自己再帰は `let rec` + 返り値注釈。 | accepted |
+| 0044 | **Iterator trait による map/filter/fold 汎用化**。`trait Iterator[T] { next(Self) -> Option[T] }` + `trait Iterable[T] { iter(Self) -> Iterator[T] }`。現状 `Array::map` 等は Array 固定かつ `(T)->T` で型変換不可。Iterator trait 導入で: (1) 任意コレクションに map/filter/fold を提供 (2) `(T)->U` 型変換対応 (3) lazy evaluation (collect まで実体化しない) (4) `for-in` を Iterable ベースにデシュガー統一。pipe-first との親和性高。段階移行: Phase 1 trait 定義+Array impl → Phase 2 for-in 統一 → Phase 3 String/Map/List 対応 → Phase 4 旧 builtin deprecated。 | proposed |
+| 0045 | **`derive(Eq)` の実装** (#148)。ユーザー定義 enum/struct に `==` を自動導出。`assert_eq` のカスタム型対応 (#153) もこれに依存。 | proposed |
+| 0046 | **`Option[T]` sugar `T?`** (#149)。parser で `T?` → `Option[T]` に展開。 | proposed |
+| 0047 | **`loop` 式 — `break(value)` で値返却** (#151)。現状 loop は Unit 固定。checker+codegen で break の値を loop 式の型に。 | proposed |
+| 0048 | **`map` コンテキストキーワード化** (#152)。`map {` の場合のみキーワード、それ以外は識別子。`Array::map` が `r#` なしで使用可能に。 | accepted |
 
 ## Effect System
 

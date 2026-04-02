@@ -339,7 +339,12 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           "else" => else_kw()
           "match" => match_kw()
           "record" => record_kw()
-          "map" => map_kw()
+          "map" =>
+            // context-sensitive: only keyword when followed by `{`
+            match self.peek_next_significant_char() {
+              Some('{') => map_kw()
+              _ => name()
+            }
           "for" => for_kw()
           "in" => in_kw()
           "is" => is_kw()
