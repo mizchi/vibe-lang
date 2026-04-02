@@ -1014,8 +1014,8 @@ test "compile_module_wasm_with_opt_level_profiled returns wasm and stage timings
   db.set_source(
     "main",
     (
-      #|let add = (x : Int, y : Int) -> Int { x + y }
-      #|add(20, 22)
+      #|let sum2 = (x : Int, y : Int) -> Int { x + y }
+      #|sum2(20, 22)
     ),
   )
   let plain = try compile_module_wasm_with_opt_level(db, "main") catch {
@@ -1161,13 +1161,13 @@ test "compile_module_wasm cross-directory transitive import" {
   // Simulates url_test.vibe: entry -> ./url/pattern.vibe -> ../regexp/index.vibe
   let db = @runtime.VibeDb::new()
   db.set_source(
-    "/x/regexp/regexp.vibe", "export let compile = (s: String) -> String { s }\n",
+    "/x/regexp/regexp.vibe", "export let make_regexp = (s: String) -> String { s }\n",
   )
   db.set_source(
-    "/x/regexp/index.vibe", "export ./regexp.vibe { compile }\nexport { compile }\n",
+    "/x/regexp/index.vibe", "import ./regexp.vibe { make_regexp }\nexport let compile_regexp = (s: String) -> String { make_regexp(s) }\n",
   )
   db.set_source(
-    "/x/url/pattern.vibe", "import ../regexp { compile }\nexport let make_pattern = (s: String) -> String { compile(s) }\n",
+    "/x/url/pattern.vibe", "import ../regexp { compile_regexp }\nexport let make_pattern = (s: String) -> String { compile_regexp(s) }\n",
   )
   db.set_source(
     "/x/url_test.vibe", "import ./url/pattern.vibe { make_pattern }\nlet main = () -> Int { let _ = make_pattern(\"x\")\n0 }\n",
