@@ -1231,6 +1231,82 @@ test "cli check resolves lock and graph artifacts" {
 }
 
 ///|
+test "cli check cache refresh keeps renamed same-content module paths out of graph snapshot" {
+  let root = wbtest_make_temp_dir("check_refresh_renamed_module_paths")
+  let cache_dir = root + "/cache"
+  let old_dep_dir = cache_dir + "/persistent"
+  let old_dep = old_dep_dir + "/index.vibe"
+  let new_dep = cache_dir + "/persistent_cache.vibe"
+  let entry = root + "/main.vibe"
+  let dep_source = "let value = 1\nexport { value }\n"
+  let old_entry_source = "import ./cache/persistent { value }\n" +
+    "let main = value\n" +
+    "export { main }\n"
+  let new_entry_source = "import ./cache/persistent_cache.vibe { value }\n" +
+    "let main = value\n" +
+    "export { main }\n"
+  @os_fs.create_dir(cache_dir) catch {
+    e => fail("create cache dir failed: " + e.to_string())
+  }
+  @os_fs.create_dir(old_dep_dir) catch {
+    e => fail("create old dep dir failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(old_dep, dep_source) catch {
+    e => fail("write old dep failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(entry, old_entry_source) catch {
+    e => fail("write old entry failed: " + e.to_string())
+  }
+  let cache = CliEntryDbCache::new()
+  let (codebase, first_graph_head) = match
+    resolve_entry_artifacts_with_cache(cache, entry, skip_types=true) {
+    Ok((_db, _entry, _lock, _index, graph_head)) =>
+      (@codebase.Codebase::new(find_vibe_dir(entry)), graph_head)
+    Err(err) => fail("first resolve failed: " + err)
+  }
+  let first_graph_source = match codebase.read_object(first_graph_head) {
+    Some(content) => content
+    None => fail("expected first graph snapshot object")
+  }
+  assert_true(first_graph_source.contains(old_dep))
+  wbtest_remove_if_exists(old_dep)
+  @os_fs.write_string_to_file(new_dep, dep_source) catch {
+    e => fail("write new dep failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(entry, new_entry_source) catch {
+    e => fail("write new entry failed: " + e.to_string())
+  }
+  let (_db2, _entry2, _lock2, _index2, second_graph_head) = match
+    resolve_entry_artifacts_with_cache(cache, entry, skip_types=true) {
+    Ok(v) => v
+    Err(err) => fail("second resolve failed: " + err)
+  }
+  let second_graph_source = match codebase.read_object(second_graph_head) {
+    Some(content) => content
+    None => fail("expected second graph snapshot object")
+  }
+  assert_false(second_graph_head == first_graph_head)
+  assert_true(second_graph_source.contains(new_dep))
+  assert_false(second_graph_source.contains(old_dep))
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "cli resolve entry artifacts: repo compiler index entry" {
+  let cwd = @io.current_dir_or_root()
+  let entry = @vibe_fs.normalize_path(cwd + "/vibe/compiler/index.vibe")
+  let cache = CliEntryDbCache::new()
+  match resolve_entry_artifacts_with_cache(cache, entry, skip_types=true) {
+    Ok((db, resolved, _lock, _index, graph_head)) => {
+      assert_eq(resolved, entry)
+      assert_eq(graph_head.length(), 40)
+      let _ = db.types(entry)
+    }
+    Err(err) => fail(err)
+  }
+}
+
+///|
 test "cli apply resolves lock and graph artifacts" {
   let root = wbtest_make_temp_dir("apply_resolve_artifacts")
   let entry = root + "/main.vibe"

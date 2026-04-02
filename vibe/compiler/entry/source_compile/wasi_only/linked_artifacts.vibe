@@ -38,10 +38,20 @@ import ./preprocess.vibe {
 
 //# Functions
 
-export let compile_file_wasi_linked_artifacts = (entry_path: String, entry_name: String) -> (Bytes, Array[(String, String, Int, Int)], Array[(String, String)])with { Error, Fs } {
-  let entry_source = perform Fs::ReadFile(entry_path)
-  let entry_stmts = parse_program(lex(entry_source))
-  let entry_dir = dir_of_path(entry_path)
+let read_program = (path: String) -> Array[Stmt] with { Error, Fs } {
+  let source = perform Fs::ReadFile(path)
+  parse_program(lex(source))
+}
+
+let append_stmt_array = (dst: Array[Stmt], src: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(src) {
+    Array::push(dst, Array::get(src, i))
+    i = i + 1
+  }
+}
+
+let collect_direct_dep_paths = (entry_stmts: Array[Stmt], entry_dir: String) -> Array[String] {
   let dep_paths = Array::slice([
     ""
   ], 0, 0)
@@ -65,11 +75,12 @@ export let compile_file_wasi_linked_artifacts = (entry_path: String, entry_name:
     }
     ei = ei + 1
   }
+  dep_paths
+}
+
+let collect_linked_dep_artifacts = (dep_paths: Array[String]) -> (Array[Stmt], Array[(String, String, Int, Int)], Array[(String, String)])with { Error, Fs } {
   let linked_imports = Array::slice([
     ("", "", 0, 0)
-  ], 0, 0)
-  let linked_dep_paths = Array::slice([
-    ""
   ], 0, 0)
   let linked_dep_specs = Array::slice([
     ("", "")
@@ -80,8 +91,7 @@ export let compile_file_wasi_linked_artifacts = (entry_path: String, entry_name:
   let mut di = 0
   while di < Array::length(dep_paths) {
     let dep_path = Array::get(dep_paths, di)
-    let dep_source = perform Fs::ReadFile(dep_path)
-    let dep_stmts = parse_program(lex(dep_source))
+    let dep_stmts = read_program(dep_path)
     let module_name = path_to_module_name(dep_path)
     let dep_dir = dir_of_path(dep_path)
     let mut has_linked = false
@@ -104,22 +114,25 @@ export let compile_file_wasi_linked_artifacts = (entry_path: String, entry_name:
       dsi = dsi + 1
     }
     if has_linked {
-      Array::push(linked_dep_paths, dep_path)
       Array::push(linked_dep_specs, (module_name, dep_path))
     }
     di = di + 1
   }
+  (resolved_type_stmts, linked_imports, linked_dep_specs)
+}
+
+export let collect_linked_compile_inputs = (entry_path: String) -> (Array[Stmt], Array[Stmt], Array[(String, String, Int, Int)], Array[(String, String)])with { Error, Fs } {
+  let entry_stmts = read_program(entry_path)
+  let dep_paths = collect_direct_dep_paths(entry_stmts, dir_of_path(entry_path))
+  let (resolved_type_stmts, linked_imports, linked_dep_specs) = collect_linked_dep_artifacts(dep_paths)
+  (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs)
+}
+
+export let compile_file_wasi_linked_artifacts = (entry_path: String, entry_name: String) -> (Bytes, Array[(String, String, Int, Int)], Array[(String, String)])with { Error, Fs } {
+  let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs) = collect_linked_compile_inputs(entry_path)
   let stmts = empty_stmt_array()
-  let mut rti = 0
-  while rti < Array::length(resolved_type_stmts) {
-    Array::push(stmts, Array::get(resolved_type_stmts, rti))
-    rti = rti + 1
-  }
-  let mut esi = 0
-  while esi < Array::length(entry_stmts) {
-    Array::push(stmts, Array::get(entry_stmts, esi))
-    esi = esi + 1
-  }
+  append_stmt_array(stmts, resolved_type_stmts)
+  append_stmt_array(stmts, entry_stmts)
   strip_generic_type_params(stmts)
   expand_interp_stmts(stmts)
   let _ = check_program(stmts)
