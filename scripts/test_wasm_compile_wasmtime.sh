@@ -212,10 +212,6 @@ let array_sort = (xs: Array[Int]) -> Array[Int] {
   }
   acc
 }
-let where = [T](xs: Array[T], pred: (x: T) -> Bool) -> Array[T] {
-  array_filter(xs, pred)
-}
-
 let parse_int_normalize = (s: String) -> String {
   let trimmed = String::trim(s)
   if String::starts_with(trimmed, "+") {

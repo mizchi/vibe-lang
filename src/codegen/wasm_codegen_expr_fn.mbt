@@ -3,7 +3,7 @@ fn compile_expr_fn_with_key(
   ctx : CodegenCtx,
   buf : ByteBuf,
   key : String,
-  params : Array[@core.FuncParam],
+  _params : Array[@core.FuncParam],
 ) -> Unit raise WasmGenError {
   let func_idx = match ctx.fn_closure_indices.get(key) {
     Some(idx) => idx
