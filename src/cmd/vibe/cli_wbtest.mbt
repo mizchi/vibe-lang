@@ -2904,6 +2904,42 @@ test "compiled test wrapper keeps recursive string helpers valid" {
 }
 
 ///|
+test "compiled test wrapper keeps array fold lambda valid" {
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/.wbtest_compiled_array_fold_lambda.vibe",
+  )
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "let sum_array = (xs: Array[Int]) -> Int {\n" +
+    "  Array::fold(xs, 0, (acc: Int, x: Int) -> Int { acc + x })\n" +
+    "}\n" +
+    "test \"array fold lambda\" {\n" +
+    "  assert(sum_array([1, 2, 3, 4]) == 10)\n" +
+    "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+  match wbtest_run_test_file_compiled(source_path, false) {
+    CompiledTestAttempt::Success(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    CompiledTestAttempt::Unsupported(err) =>
+      fail("compiled array fold lambda unexpectedly unsupported: " + err)
+    CompiledTestAttempt::Error(err) =>
+      fail("compiled array fold lambda unexpectedly errored: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
 test "compiled test wrapper keeps Map::keys results as strings" {
   let cwd = @io.current_dir_or_root()
   let source_path = @vibe_fs.normalize_path(

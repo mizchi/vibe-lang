@@ -1297,7 +1297,7 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
       let _ = ret
       let _ = effects
       let _ = body
-      let key = span_key(span)
+      let key = span_key_unique(span, params)
       match ctx.fn_closure_captures.get(key) {
         Some(captures) => captures.length() > 0
         None => false

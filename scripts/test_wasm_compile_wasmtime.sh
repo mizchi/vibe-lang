@@ -832,6 +832,21 @@ let add5 = make_adder(5)
 add5(10)' \
 "15"
 
+expect_wasmtime_result "nested function local let rec captures array" \
+'let sum_array = () -> Int {
+  let xs = [1, 2, 3, 4]
+  let rec go = (i: Int, acc: Int) -> Int {
+    if i >= Array::length(xs) {
+      acc
+    } else {
+      go(i + 1, acc + Array::get(xs, i))
+    }
+  }
+  go(0, 0)
+}
+sum_array()' \
+"10"
+
 echo ""
 
 # ============================================
