@@ -113,7 +113,7 @@ fn write_i32_leb_gc_inner(buf : GcByteBuf, value : Int, depth : Int) -> Unit {
   let byte = value & 0x7f
   let rest = value >> 7
   let sign_bit_set = (byte & 0x40) != 0
-  let done = (rest == 0 && not(sign_bit_set)) || (rest == -1 && sign_bit_set)
+  let done = (rest == 0 && !sign_bit_set) || (rest == -1 && sign_bit_set)
   if done {
     buf.push(byte)
   } else if depth < 4 {
@@ -568,9 +568,8 @@ fn write_i64_leb_gc(buf : GcByteBuf, n : Int64) -> Unit {
     let mut byte = (value & 0x7fL).to_int()
     value = value >> 7
     let sign_bit_set = (byte & 0x40) != 0
-    let done = (value == 0L && not(sign_bit_set)) ||
-      (value == -1L && sign_bit_set)
-    if not(done) {
+    let done = (value == 0L && !sign_bit_set) || (value == -1L && sign_bit_set)
+    if !done {
       byte = byte | 0x80
     }
     buf.push(byte)
@@ -855,7 +854,7 @@ fn scan_enum_defs_gc(
     }
     ctx.enum_names[enum_name] = true
     for ctor in ctors {
-      if not(ctx.enum_ctor_tags.contains(ctor.name)) {
+      if !ctx.enum_ctor_tags.contains(ctor.name) {
         ctx.enum_ctor_tags[ctor.name] = next_tag
         next_tag += 1
       }
@@ -878,7 +877,7 @@ fn scan_enum_defs_gc(
       ctx.enum_ctor_field_kinds[ctor.name] = payload_kinds
       // Register qualified form: EnumName::CtorName
       let qualified = enum_name + "::" + ctor.name
-      if not(ctx.enum_ctor_tags.contains(qualified)) {
+      if !ctx.enum_ctor_tags.contains(qualified) {
         ctx.enum_ctor_tags[qualified] = tag
         ctx.enum_ctor_arities[qualified] = ctor.args.length()
         ctx.enum_ctor_type_indices[qualified] = type_idx
@@ -887,7 +886,7 @@ fn scan_enum_defs_gc(
     }
   }
   // Register builtin Option enum (Some/None) if not already defined
-  if not(ctx.enum_ctor_tags.contains("Some")) {
+  if !ctx.enum_ctor_tags.contains("Some") {
     let some_tag = next_tag
     next_tag += 1
     ctx.enum_ctor_tags["Some"] = some_tag
@@ -903,7 +902,7 @@ fn scan_enum_defs_gc(
     ctx.enum_ctor_type_indices["Some"] = some_type
     ctx.enum_ctor_field_kinds["Some"] = [GcValKind::EqRef]
   }
-  if not(ctx.enum_ctor_tags.contains("None")) {
+  if !ctx.enum_ctor_tags.contains("None") {
     let none_tag = next_tag
     let _ = next_tag + 1
     ctx.enum_ctor_tags["None"] = none_tag
@@ -934,7 +933,7 @@ fn collect_free_vars_expr_gc(
     | @core.Expr::Char(..)
     | @core.Expr::String(..) => ()
     @core.Expr::Ident(name~, ..) =>
-      if not(bound.contains(name)) {
+      if !bound.contains(name) {
         free[name] = true
       }
     @core.Expr::Call(args~, ..) =>
@@ -1184,9 +1183,9 @@ fn has_free_vars_gc(
   let free : Map[String, Bool] = {}
   collect_free_vars_module_gc(body, bound, free)
   for name, _ in free {
-    if not(top_level_funcs.contains(name)) &&
-      not(enum_ctor_names.contains(name)) &&
-      not(is_gc_builtin_name(name)) {
+    if !top_level_funcs.contains(name) &&
+      !enum_ctor_names.contains(name) &&
+      !is_gc_builtin_name(name) {
       return true
     }
   }
@@ -4867,7 +4866,7 @@ fn gc_array_type_idx_from_kind(
   ctx : GcCodegenCtx,
   kind : GcValKind,
   _opname : String,
-) -> Int raise WasmGenError {
+) -> Int {
   match kind {
     GcValKind::Ref(type_idx) =>
       match ctx.types[type_idx] {
@@ -5070,7 +5069,7 @@ fn restore_locals_gc(
 ) -> Unit {
   let to_remove : Array[String] = []
   for name, _ in fctx.locals {
-    if not(saved.contains(name)) {
+    if !saved.contains(name) {
       to_remove.push(name)
     }
   }
@@ -7409,8 +7408,8 @@ fn compile_expr_gc(
       collect_call_names_module_gc(body, call_names)
       for cname, _ in call_names {
         if fctx.closure_call_types.contains(cname) &&
-          not(bound.contains(cname)) &&
-          not(free.contains(cname)) {
+          !bound.contains(cname) &&
+          !free.contains(cname) {
           free[cname] = true
         }
       }
@@ -7806,7 +7805,7 @@ fn compile_stmt_gc(
     }
     @core.Stmt::Expr(expr~, ..) => {
       compile_expr_gc(ctx, fctx, buf, expr)
-      if not(is_last) {
+      if !is_last {
         emit_drop_gc(buf)
       }
     }
@@ -7928,9 +7927,7 @@ fn collect_top_level_funcs_gc(
         let _ = rec
         match expr {
           @core.Expr::Fn(params~, ret~, body~, ..) =>
-            if not(
-                has_free_vars_gc(body, params, top_func_names, enum_ctor_names~),
-              ) {
+            if !has_free_vars_gc(body, params, top_func_names, enum_ctor_names~) {
               funcs.push({ name, params, ret, body })
             }
           _ => ()
@@ -7940,9 +7937,7 @@ fn collect_top_level_funcs_gc(
         let _ = rec
         match expr {
           @core.Expr::Fn(params~, ret~, body~, ..) =>
-            if not(
-                has_free_vars_gc(body, params, top_func_names, enum_ctor_names~),
-              ) {
+            if !has_free_vars_gc(body, params, top_func_names, enum_ctor_names~) {
               funcs.push({ name, params, ret, body })
             }
           _ => ()
@@ -7952,9 +7947,7 @@ fn collect_top_level_funcs_gc(
         let _ = rec
         match expr {
           @core.Expr::Fn(params~, ret~, body~, ..) =>
-            if not(
-                has_free_vars_gc(body, params, top_func_names, enum_ctor_names~),
-              ) {
+            if !has_free_vars_gc(body, params, top_func_names, enum_ctor_names~) {
               funcs.push({ name, params, ret, body })
             }
           _ => ()
@@ -7977,7 +7970,7 @@ fn filter_top_level_funcs_gc(
       @core.Stmt::Let(name~, expr~, ..) =>
         match expr {
           @core.Expr::Fn(..) =>
-            if not(collected.contains(name)) {
+            if !collected.contains(name) {
               stmts.push(stmt)
             }
           _ => stmts.push(stmt)
@@ -7985,7 +7978,7 @@ fn filter_top_level_funcs_gc(
       @core.Stmt::ExportLet(name~, expr~, ..) =>
         match expr {
           @core.Expr::Fn(..) =>
-            if not(collected.contains(name)) {
+            if !collected.contains(name) {
               stmts.push(stmt)
             }
           _ => stmts.push(stmt)
@@ -7993,7 +7986,7 @@ fn filter_top_level_funcs_gc(
       @core.Stmt::InternalExportLet(name~, expr~, ..) =>
         match expr {
           @core.Expr::Fn(..) =>
-            if not(collected.contains(name)) {
+            if !collected.contains(name) {
               stmts.push(stmt)
             }
           _ => stmts.push(stmt)

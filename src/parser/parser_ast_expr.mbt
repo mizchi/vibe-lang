@@ -1900,7 +1900,7 @@ fn parse_decimal_int64(
   text : String,
   span : @core.Span,
 ) -> Int64 raise ParseError {
-  @strconv.parse_int64(text) catch {
+  @string.parse_int64(text) catch {
     _ => raise ParseError::IntLiteralOverflow(literal=text, span~)
   }
 }
@@ -2128,7 +2128,7 @@ fn AstParser::parse_call_or_primary(
       // Check for tuple index access: expr.0, expr.1, etc.
       if self.peek_kind() == int_lit() {
         let index_tok = self.bump()
-        let index = @strconv.parse_int(index_tok.text()) catch {
+        let index = @string.parse_int(index_tok.text()) catch {
           // This shouldn't happen for valid int literals
           _ => 0
         }
@@ -2438,7 +2438,7 @@ fn AstParser::parse_primary(self : AstParser) -> @core.Expr raise ParseError {
           raw = text[0:len - 1].to_string()
         }
       }
-      let v = @strconv.parse_double(raw) catch {
+      let v = @string.parse_double(raw) catch {
         _ =>
           raise ParseError::UnexpectedToken(
             expected="valid numeric literal",
