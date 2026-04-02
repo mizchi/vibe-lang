@@ -9,6 +9,12 @@ fn compile_expr_while(
   let saved_break = ctx.loop_break_offset
   let saved_continue = ctx.loop_continue_offset
   let saved_param_locals = ctx.loop_param_locals
+  let saved_mut_captured = ctx.mut_captured_vars.copy()
+  ctx.mut_captured_vars = scoped_mut_captured_for_block(
+    saved_mut_captured,
+    body.stmts,
+    ctx.fn_closure_captures,
+  )
 
   // while は break 値を返せるため block result を i64 にする。
   emit_block_i64(buf) // block $exit (label 1)
@@ -59,6 +65,7 @@ fn compile_expr_while(
   ctx.loop_break_offset = saved_break
   ctx.loop_continue_offset = saved_continue
   ctx.loop_param_locals = saved_param_locals
+  ctx.mut_captured_vars = saved_mut_captured
 }
 
 ///|
@@ -126,6 +133,7 @@ fn compile_expr_loop(
   let saved_param_locals = ctx.loop_param_locals
   let saved_locals = ctx.locals.copy()
   let saved_kinds = ctx.local_kinds.copy()
+  let saved_mut_captured = ctx.mut_captured_vars.copy()
 
   // Allocate locals for loop params and compile init expressions
   let param_locals : Array[Int] = []
@@ -144,6 +152,11 @@ fn compile_expr_loop(
     param_locals.push(idx)
   }
   ctx.loop_param_locals = param_locals
+  ctx.mut_captured_vars = scoped_mut_captured_for_block(
+    saved_mut_captured,
+    body.stmts,
+    ctx.fn_closure_captures,
+  )
 
   // block $exit (result i64)  -- break value lands here
   //   loop $continue          -- continue jumps here
@@ -177,6 +190,7 @@ fn compile_expr_loop(
   ctx.loop_break_offset = saved_break
   ctx.loop_continue_offset = saved_continue
   ctx.loop_param_locals = saved_param_locals
+  ctx.mut_captured_vars = saved_mut_captured
   restore_locals(ctx, saved_locals)
   restore_local_kinds(ctx, saved_kinds)
 }

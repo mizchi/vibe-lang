@@ -1,6 +1,6 @@
 # Mut Effect Handler 実装計画
 
-ADR: [ADR-0021](adr/0021-mut-effect-handler.md)
+ADR: [ADR-0021](adr.md)
 
 ## 現状分析
 

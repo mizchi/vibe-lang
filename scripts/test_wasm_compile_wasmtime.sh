@@ -58,6 +58,204 @@ else
   VIBE="moon run src/cmd/vibe/main.mbt --target native --"
 fi
 
+COMMON_VIBE_HELPERS=$(cat <<'VIBE'
+let int_abs = (x: Int) -> Int { Int::abs(x) }
+let int_signum = (x: Int) -> Int { Int::signum(x) }
+let int_is_even = (x: Int) -> Bool { Int::is_even(x) }
+let int_is_odd = (x: Int) -> Bool { Int::is_odd(x) }
+let int_max = (a: Int, b: Int) -> Int { Int::max(a, b) }
+let int_min = (a: Int, b: Int) -> Int { Int::min(a, b) }
+let int_clamp = (x: Int, low: Int, high: Int) -> Int { Int::clamp(x, low, high) }
+
+let double_to_int = (x: Double) -> Int { Double::to_int(x) }
+let double_to_float = (x: Double) -> Float { Double::to_float(x) }
+let float_to_int = (x: Float) -> Int { Float::to_int(x) }
+let int_to_double = (x: Int) -> Double { Int::to_double(x) }
+let int_to_float = (x: Int) -> Float { Int::to_float(x) }
+
+let string_length = (s: String) -> Int { String::length(s) }
+let string_char_code_at = (s: String, index: Int) -> Int { String::char_code_at(s, index) }
+let string_concat = (a: String, b: String) -> String { String::concat(a, b) }
+let string_substring = (s: String, start: Int, end: Int) -> String { String::substring(s, start, end) }
+let string_index_of = (s: String, sub: String) -> Int { String::index_of(s, sub) }
+let string_last_index_of = (s: String, sub: String) -> Int { String::last_index_of(s, sub) }
+let string_count = (s: String, sub: String) -> Int { String::count(s, sub) }
+let string_equals = (a: String, b: String) -> Bool { String::equals(a, b) }
+let string_contains = (s: String, sub: String) -> Bool { String::contains(s, sub) }
+let string_starts_with = (s: String, prefix: String) -> Bool { String::starts_with(s, prefix) }
+let string_ends_with = (s: String, suffix: String) -> Bool { String::ends_with(s, suffix) }
+let string_trim = (s: String) -> String { String::trim(s) }
+let string_trim_start = (s: String) -> String { String::trim_start(s) }
+let string_trim_end = (s: String) -> String { String::trim_end(s) }
+let string_replace = (s: String, pattern: String, replacement: String) -> String { String::replace(s, pattern, replacement) }
+let string_replace_all = (s: String, pattern: String, replacement: String) -> String { String::replace_all(s, pattern, replacement) }
+let string_to_upper = (s: String) -> String { String::to_upper(s) }
+let string_to_lower = (s: String) -> String { String::to_lower(s) }
+let string_from_char_code = (code: Int) -> String { String::from_char_code(code) }
+let string_split = (s: String, sep: String) -> Array[String] { String::split(s, sep) }
+let string_builder = () -> StringBuilder { StringBuilder::new() }
+let string_builder_push = (builder: StringBuilder, part: String) -> Unit { StringBuilder::push(builder, part) }
+let string_builder_freeze = (builder: StringBuilder) -> String { StringBuilder::freeze(builder) }
+
+let array_length = [T](xs: Array[T]) -> Int { Array::length(xs) }
+let array_get = [T](xs: Array[T], index: Int) -> T { Array::get(xs, index) }
+let array_concat = [T](xs: Array[T], ys: Array[T]) -> Array[T] { Array::concat(xs, ys) }
+let array_slice = [T](xs: Array[T], start: Int, end: Int) -> Array[T] { Array::slice(xs, start, end) }
+let array_builder = [T]() -> ArrayBuilder[T] { ArrayBuilder::new() }
+let array_builder_push = [T](builder: ArrayBuilder[T], value: T) -> Unit { ArrayBuilder::push(builder, value) }
+let array_builder_freeze = [T](builder: ArrayBuilder[T]) -> Array[T] { ArrayBuilder::freeze(builder) }
+let array_map = [A, B](xs: Array[A], f: (x: A) -> B) -> Array[B] {
+  let len = Array::length(xs)
+  let acc = ArrayBuilder::new()
+  let mut i = 0
+  while i < len {
+    ArrayBuilder::push(acc, f(Array::get(xs, i)))
+    i = i + 1
+  }
+  ArrayBuilder::freeze(acc)
+}
+let array_filter = [T](xs: Array[T], pred: (x: T) -> Bool) -> Array[T] {
+  let len = Array::length(xs)
+  let acc = ArrayBuilder::new()
+  let mut i = 0
+  while i < len {
+    let value = Array::get(xs, i)
+    if pred(value) {
+      ArrayBuilder::push(acc, value)
+    }
+    i = i + 1
+  }
+  ArrayBuilder::freeze(acc)
+}
+let array_fold = [A, B](xs: Array[A], init: B, f: (acc: B, x: A) -> B) -> B {
+  let len = Array::length(xs)
+  let mut i = 0
+  let mut acc = init
+  while i < len {
+    acc = f(acc, Array::get(xs, i))
+    i = i + 1
+  }
+  acc
+}
+let array_any = [T](xs: Array[T], pred: (x: T) -> Bool) -> Bool {
+  let len = Array::length(xs)
+  let mut i = 0
+  let mut found = false
+  while !found && i < len {
+    found = pred(Array::get(xs, i))
+    i = i + 1
+  }
+  found
+}
+let array_all = [T](xs: Array[T], pred: (x: T) -> Bool) -> Bool {
+  let len = Array::length(xs)
+  let mut i = 0
+  let mut ok = true
+  while ok && i < len {
+    ok = pred(Array::get(xs, i))
+    i = i + 1
+  }
+  ok
+}
+let array_find = [T](xs: Array[T], pred: (x: T) -> Bool) -> Option[T] {
+  let len = Array::length(xs)
+  let rec r#loop = (i: Int) -> Option[T] {
+    if i >= len {
+      None
+    } else {
+      let value = Array::get(xs, i)
+      if pred(value) {
+        Some(value)
+      } else {
+        r#loop(i + 1)
+      }
+    }
+  }
+  r#loop(0)
+}
+let array_reverse = [T](xs: Array[T]) -> Array[T] {
+  let len = Array::length(xs)
+  let acc = ArrayBuilder::new()
+  let mut i = 0
+  while i < len {
+    ArrayBuilder::push(acc, Array::get(xs, len - i - 1))
+    i = i + 1
+  }
+  ArrayBuilder::freeze(acc)
+}
+let array_sort_insert = (xs: Array[Int], value: Int) -> Array[Int] {
+  let len = Array::length(xs)
+  let acc = ArrayBuilder::new()
+  let mut inserted = false
+  let mut i = 0
+  while i < len {
+    let current = Array::get(xs, i)
+    if !inserted && value <= current {
+      ArrayBuilder::push(acc, value)
+      inserted = true
+    }
+    ArrayBuilder::push(acc, current)
+    i = i + 1
+  }
+  if !inserted {
+    ArrayBuilder::push(acc, value)
+  }
+  ArrayBuilder::freeze(acc)
+}
+let array_sort = (xs: Array[Int]) -> Array[Int] {
+  let len = Array::length(xs)
+  let mut acc = Array::slice([0], 0, 0)
+  let mut i = 0
+  while i < len {
+    acc = array_sort_insert(acc, Array::get(xs, i))
+    i = i + 1
+  }
+  acc
+}
+let where = [T](xs: Array[T], pred: (x: T) -> Bool) -> Array[T] {
+  array_filter(xs, pred)
+}
+
+let parse_int_normalize = (s: String) -> String {
+  let trimmed = String::trim(s)
+  if String::starts_with(trimmed, "+") {
+    String::substring(trimmed, 1, String::length(trimmed))
+  } else trimmed
+}
+let parse_int = (s: String) -> Int {
+  match Int::parse(parse_int_normalize(s)) {
+    Some(value) => value,
+    None => 0
+  }
+}
+let parse_double_normalize = (s: String) -> String {
+  let trimmed = String::trim(s)
+  if String::starts_with(trimmed, "+") {
+    String::substring(trimmed, 1, String::length(trimmed))
+  } else trimmed
+}
+let parse_double = (s: String) -> Double {
+  match Double::parse(parse_double_normalize(s)) {
+    Some(value) => value,
+    None => 0.0
+  }
+}
+VIBE
+)
+
+write_test_source() {
+  local vibe_code="$1"
+  {
+    printf "%s\n" "$COMMON_VIBE_HELPERS"
+    printf "let __test_main = () -> Int {\n%s\n}\n\n__test_main()\n" "$vibe_code"
+  } > "$TMP_DIR/test.vibe"
+}
+
+write_program_source() {
+  local vibe_code="$1"
+  printf "%s\n" "$vibe_code" > "$TMP_DIR/test.vibe"
+}
+
 # Helper: compile .vibe to .wasm, run with wasmtime, compare untagged result
 expect_wasmtime_result() {
   # Shard: skip tests not assigned to this shard
@@ -74,7 +272,45 @@ expect_wasmtime_result() {
   local vibe_code="$2"
   local expected_value="$3"
 
-  echo "$vibe_code" > "$TMP_DIR/test.vibe"
+  write_test_source "$vibe_code"
+
+  if ! $VIBE compile --wasm "$TMP_DIR/test.vibe" -o "$TMP_DIR/test.wasm" 2>/dev/null; then
+    log_fail "$test_name - compilation failed"
+    return
+  fi
+
+  local wasm_tagged
+  wasm_tagged=$("$WASMTIME_RUN" --invoke _start "$TMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning") || true
+
+  if [ -z "$wasm_tagged" ]; then
+    log_fail "$test_name - wasmtime returned no output"
+    return
+  fi
+
+  local result=$((wasm_tagged >> 2))
+
+  if [ "$result" = "$expected_value" ]; then
+    log_pass "$test_name (result: $expected_value)"
+  else
+    log_fail "$test_name - expected $expected_value but got $result (tagged: $wasm_tagged)"
+  fi
+}
+
+expect_wasmtime_program_result() {
+  if [ "$SHARD_TOTAL" -gt 1 ]; then
+    if [ $((TEST_INDEX % SHARD_TOTAL)) -ne "$SHARD_INDEX" ]; then
+      TEST_INDEX=$((TEST_INDEX + 1))
+      SKIPPED=$((SKIPPED + 1))
+      return
+    fi
+  fi
+  TEST_INDEX=$((TEST_INDEX + 1))
+
+  local test_name="$1"
+  local vibe_code="$2"
+  local expected_value="$3"
+
+  write_program_source "$vibe_code"
 
   if ! $VIBE compile --wasm "$TMP_DIR/test.vibe" -o "$TMP_DIR/test.wasm" 2>/dev/null; then
     log_fail "$test_name - compilation failed"
@@ -1164,6 +1400,25 @@ add(30)
 sum' \
 "60"
 
+expect_wasmtime_result "mutable capture: nested block expression" \
+'let result = {
+  let mut total = 0
+  let f = () -> Int { total = total + 1; total }
+  f()
+  f()
+}
+result' \
+"2"
+
+expect_wasmtime_program_result "mutable capture: top-level block" \
+'{
+  let mut total = 0
+  let f = () -> Int { total = total + 1; total }
+  f()
+  f()
+}' \
+"2"
+
 echo ""
 
 # ============================================
@@ -1826,7 +2081,7 @@ expect_wasmtime_result_exceptions() {
   local vibe_code="$2"
   local expected_value="$3"
 
-  echo "$vibe_code" > "$TMP_DIR/test.vibe"
+  write_test_source "$vibe_code"
 
   if ! $VIBE compile --wasm "$TMP_DIR/test.vibe" -o "$TMP_DIR/test.wasm" 2>/dev/null; then
     log_fail "$test_name - compilation failed"

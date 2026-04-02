@@ -951,7 +951,7 @@ wasmtime-submodule *args:
 # Run wasmtime in x86_64 Linux container (for stack-switching support)
 wasmtime-x64 *args:
     container run --platform linux/amd64 -v $(pwd):/work -v /tmp:/tmp rust:bookworm bash -c '\
-      curl -sSf https://wasmtime.dev/install.sh | bash >/dev/null 2>&1 && \
+      WASMTIME_INSTALL_DIR="$HOME/.wasmtime" bash /work/scripts/install_wasmtime_release.sh >/dev/null 2>&1 && \
       export PATH="$HOME/.wasmtime/bin:$PATH" && \
       cd /work && \
       wasmtime {{args}}'
@@ -959,14 +959,14 @@ wasmtime-x64 *args:
 # Run wasmtime with stack-switching enabled (x86_64 only)
 experimental_wasmtime_stack_switching file *args:
     container run --platform linux/amd64 -v $(pwd):/work -v /tmp:/tmp rust:bookworm bash -c '\
-      curl -sSf https://wasmtime.dev/install.sh | bash >/dev/null 2>&1 && \
+      WASMTIME_INSTALL_DIR="$HOME/.wasmtime" bash /work/scripts/install_wasmtime_release.sh >/dev/null 2>&1 && \
       export PATH="$HOME/.wasmtime/bin:$PATH" && \
       wasmtime run -W stack-switching=y -W exceptions=y -W function-references=y {{args}} /work/{{file}}'
 
 # Backward-compatible alias
 wasmtime-stack-switching file *args:
     container run --platform linux/amd64 -v $(pwd):/work -v /tmp:/tmp rust:bookworm bash -c '\
-      curl -sSf https://wasmtime.dev/install.sh | bash >/dev/null 2>&1 && \
+      WASMTIME_INSTALL_DIR="$HOME/.wasmtime" bash /work/scripts/install_wasmtime_release.sh >/dev/null 2>&1 && \
       export PATH="$HOME/.wasmtime/bin:$PATH" && \
       wasmtime run -W stack-switching=y -W exceptions=y -W function-references=y {{args}} /work/{{file}}'
 

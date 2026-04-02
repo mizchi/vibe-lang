@@ -5,7 +5,7 @@
 CI gate を最終確認に回す前に、0.1.0 の primary supported surface を人間が実際に触って
 「とりあえず動く」だけでなく「安定して使える」ことを確認する。
 
-primary supported surface は [ADR-0033](../adr/0033-selfhost-0-1-0-release-profile.md) に従う。
+primary supported surface は [ADR-0033](../adr.md) に従う。
 
 - canonical artifact: `_build/dist/selfhost_compiler.wasm`
 - canonical build path: `just build-selfhost-dist`

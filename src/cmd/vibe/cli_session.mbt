@@ -178,6 +178,42 @@ fn current_cli_binary_path() -> String? {
 }
 
 ///|
+fn session_http_worker_token_from_bytes(
+  self_bin : String,
+  bytes : Bytes,
+) -> String {
+  let mod1 = 2147483647
+  let mod2 = 2147483629
+  let step1 = 131
+  let step2 = 65599
+  let len = bytes.length()
+  let mut h1 = 17
+  let mut h2 = 29
+  for i in 0..<len {
+    let byte = bytes[i].to_int()
+    h1 = (h1 * step1 + byte + 1) % mod1
+    h2 = (h2 * step2 + byte + i + 1) % mod2
+  }
+  self_bin + "#" + len.to_string() + ":" + h1.to_string() + ":" + h2.to_string()
+}
+
+///|
+fn session_http_worker_token_for_binary_path(self_bin : String) -> String {
+  let bytes = @os_fs.read_file_to_bytes(self_bin) catch {
+    _ => return self_bin + "#missing"
+  }
+  session_http_worker_token_from_bytes(self_bin, bytes)
+}
+
+///|
+fn session_http_worker_token_env() -> String {
+  match @sys.get_env_var("VIBE_SESSION_WORKER_TOKEN") {
+    Some(value) => value
+    None => ""
+  }
+}
+
+///|
 fn session_http_request_json(
   port : Int,
   request : Json,
@@ -217,11 +253,53 @@ fn session_http_request_json(
 }
 
 ///|
-fn session_http_ping(port : Int) -> Bool {
+enum SessionHttpPingState {
+  Unreachable
+  Alive(String?)
+} derive(Eq, Show)
+
+///|
+fn parse_session_http_ping_state(json : Json) -> SessionHttpPingState {
+  match json {
+    Json::Object(obj) =>
+      match obj.get("ok") {
+        Some(Json::True) =>
+          match obj.get("worker_token") {
+            Some(Json::String(value)) if value.length() > 0 =>
+              SessionHttpPingState::Alive(Some(value))
+            _ => SessionHttpPingState::Alive(None)
+          }
+        _ => SessionHttpPingState::Unreachable
+      }
+    _ => SessionHttpPingState::Unreachable
+  }
+}
+
+///|
+fn session_http_ping_state(port : Int) -> SessionHttpPingState {
   let req : Map[String, Json] = {}
   req["cmd"] = Json::string("ping")
   match session_http_request_json(port, Json::object(req)) {
-    Ok(Json::Object(obj)) =>
+    Ok(json) => parse_session_http_ping_state(json)
+    Err(_) => SessionHttpPingState::Unreachable
+  }
+}
+
+///|
+fn session_http_can_reuse_worker(
+  state : SessionHttpPingState,
+  expected_token : String,
+) -> Bool {
+  match state {
+    SessionHttpPingState::Alive(Some(token)) => token == expected_token
+    _ => false
+  }
+}
+
+///|
+fn session_http_response_ok(json : Json) -> Bool {
+  match json {
+    Json::Object(obj) =>
       match obj.get("ok") {
         Some(Json::True) => true
         _ => false
@@ -231,41 +309,83 @@ fn session_http_ping(port : Int) -> Bool {
 }
 
 ///|
+fn session_http_shutdown(port : Int) -> Bool {
+  let req : Map[String, Json] = {}
+  req["cmd"] = Json::string("shutdown")
+  match session_http_request_json(port, Json::object(req)) {
+    Ok(json) => session_http_response_ok(json)
+    Err(_) => false
+  }
+}
+
+///|
+fn session_http_wait_until_unreachable(port : Int) -> Bool {
+  for _ in 0..<25 {
+    @io.sleep_ms(20L)
+    if session_http_ping_state(port) is SessionHttpPingState::Unreachable {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn build_session_http_spawn_command(
+  self_bin : String,
+  port : Int,
+  features : @runtime.RuntimeFeatureFlags,
+  worker_token : String,
+) -> String {
+  "nohup env VIBE_SESSION_WORKER_TOKEN=" +
+  shell_quote_command_arg(worker_token) +
+  " " +
+  shell_quote_command_arg(self_bin) +
+  (if features.is_unstable_async_enabled() { " --unstable-async" } else { "" }) +
+  (if features.is_unstable_threads_enabled() {
+    " --unstable-threads"
+  } else {
+    ""
+  }) +
+  " session-http --port " +
+  port.to_string() +
+  " >/dev/null 2>&1 &"
+}
+
+///|
 fn ensure_session_http_worker(
   entry_path : String,
   features : @runtime.RuntimeFeatureFlags,
 ) -> Result[Int, String] {
   let port = session_http_port_for_entry_with_features(entry_path, features)
-  if session_http_ping(port) {
-    return Ok(port)
-  }
   let self_bin = match current_cli_binary_path() {
     Some(v) => v
     None =>
       return Err("session-http: failed to resolve current vibe binary path")
   }
-  let cmd = "nohup " +
-    shell_quote_command_arg(self_bin) +
-    (if features.is_unstable_async_enabled() {
-      " --unstable-async"
-    } else {
-      ""
-    }) +
-    (if features.is_unstable_threads_enabled() {
-      " --unstable-threads"
-    } else {
-      ""
-    }) +
-    " session-http --port " +
-    port.to_string() +
-    " >/dev/null 2>&1 &"
+  let worker_token = session_http_worker_token_for_binary_path(self_bin)
+  let ping_state = session_http_ping_state(port)
+  if session_http_can_reuse_worker(ping_state, worker_token) {
+    return Ok(port)
+  }
+  if ping_state is SessionHttpPingState::Alive(_) {
+    ignore(session_http_shutdown(port))
+    if not(session_http_wait_until_unreachable(port)) {
+      return Err("session-http: stale worker did not shut down")
+    }
+  }
+  let cmd = build_session_http_spawn_command(
+    self_bin, port, features, worker_token,
+  )
   let status = c_system(system_command_bytes(cmd))
   if status != 0 {
     return Err("session-http: failed to spawn worker")
   }
   for _ in 0..<25 {
     @io.sleep_ms(20L)
-    if session_http_ping(port) {
+    if session_http_can_reuse_worker(
+        session_http_ping_state(port),
+        worker_token,
+      ) {
       return Ok(port)
     }
   }
@@ -586,12 +706,16 @@ fn handle_cli_session_request(
   cache : CliEntryDbCache,
   req : CliSessionRequest,
   features : @runtime.RuntimeFeatureFlags,
+  worker_token : String,
 ) -> (Json, Bool) {
   match req.kind {
     CliSessionRequestKind::Ping => {
       let obj : Map[String, Json] = {}
       obj["cmd"] = Json::string("ping")
       obj["ok"] = Json::boolean(true)
+      if worker_token.length() > 0 {
+        obj["worker_token"] = Json::string(worker_token)
+      }
       (Json::object(obj), false)
     }
     CliSessionRequestKind::Shutdown => {
@@ -692,7 +816,10 @@ fn session_json_cmd(
           )
         Ok(req) => {
           let (response, should_shutdown) = handle_cli_session_request(
-            cache, req, features,
+            cache,
+            req,
+            features,
+            session_http_worker_token_env(),
           )
           println(response.stringify())
           if should_shutdown {
@@ -761,7 +888,13 @@ fn session_http_cmd(
         let request_body = request_buf.to_string()
         let (response, should_shutdown) = match
           parse_cli_session_request(request_body) {
-          Ok(req) => handle_cli_session_request(cache, req, features)
+          Ok(req) =>
+            handle_cli_session_request(
+              cache,
+              req,
+              features,
+              session_http_worker_token_env(),
+            )
           Err(err) =>
             (make_cli_session_error_json("session", "", "parse", err, 1), false)
         }
