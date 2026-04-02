@@ -2940,6 +2940,72 @@ test "compiled test wrapper keeps array fold lambda valid" {
 }
 
 ///|
+test "compiled test wrapper keeps mixed iterable fold specializations valid" {
+  let cwd = @io.current_dir_or_root()
+  let source_path = @vibe_fs.normalize_path(
+    cwd + "/vibe/prelude/wbtest_compiled_mixed_iterable_fold.vibe",
+  )
+  wbtest_remove_if_exists(source_path)
+  match ensure_parent_dir_for_file(source_path, "compiled-test-wbtest") {
+    Ok(_) => ()
+    Err(err) => fail("create temp source dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    source_path,
+    "import ./iterator.vibe {\n" +
+    "  Iterator::fold\n" +
+    "}\n" +
+    "import ../collection/list.vibe {\n" +
+    "  list_of3\n" +
+    "}\n" +
+    "enum Trio[T] {\n" +
+    "  Trio(T, T, T)\n" +
+    "}\n" +
+    "impl [T] Iterable for Trio[T]\n" +
+    "let trio_of3 = [T](a: T, b: T, c: T) -> Trio[T] {\n" +
+    "  Trio(a, b, c)\n" +
+    "}\n" +
+    "let Trio::iter_length = [T](_xs: Trio[T]) -> Int {\n" +
+    "  3\n" +
+    "}\n" +
+    "let Trio::iter_get = [T](xs: Trio[T], index: Int) -> T {\n" +
+    "  match xs {\n" +
+    "    Trio(a, b, c) => if index == 0 {\n" +
+    "      a\n" +
+    "    } else if index == 1 {\n" +
+    "      b\n" +
+    "    } else {\n" +
+    "      c\n" +
+    "    }\n" +
+    "  }\n" +
+    "}\n" +
+    "test \"mixed iterable fold specializations\" {\n" +
+    "  let xs = trio_of3(2, 4, 6)\n" +
+    "  assert(eq(Iterator::fold(xs, 0, (acc: Int, x: Int) -> Int {\n" +
+    "    acc + x\n" +
+    "  }), 12))\n" +
+    "  assert(eq(Iterator::fold(list_of3(1, 2, 3), 0, (acc: Int, x: Int) -> Int {\n" +
+    "    acc + x\n" +
+    "  }), 6))\n" +
+    "}\n",
+  ) catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+  match wbtest_run_test_file_compiled(source_path, false) {
+    CompiledTestAttempt::Success(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    CompiledTestAttempt::Unsupported(err) =>
+      fail("compiled mixed iterable fold unexpectedly unsupported: " + err)
+    CompiledTestAttempt::Error(err) =>
+      fail("compiled mixed iterable fold unexpectedly errored: " + err)
+  }
+  wbtest_remove_if_exists(source_path)
+}
+
+///|
 test "compiled test wrapper keeps Map::keys results as strings" {
   let cwd = @io.current_dir_or_root()
   let source_path = @vibe_fs.normalize_path(

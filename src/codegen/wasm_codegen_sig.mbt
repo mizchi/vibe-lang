@@ -879,7 +879,7 @@ fn collect_top_level_funcs(ast : @core.Module) -> Array[FuncDef] {
               params,
               ret,
               body,
-              span_key: span_key_unique(span, params),
+              span_key: span_key_named(Some(name), span, params),
               captures: [],
             })
           }
@@ -898,7 +898,7 @@ fn collect_top_level_funcs(ast : @core.Module) -> Array[FuncDef] {
               params,
               ret,
               body,
-              span_key: span_key_unique(span, params),
+              span_key: span_key_named(Some(name), span, params),
               captures: [],
             })
           }
@@ -916,12 +916,12 @@ fn filter_top_level_funcs(ctx : CodegenCtx, ast : @core.Module) -> @core.Module 
   let out : Array[@core.Stmt] = []
   for stmt in ast.stmts {
     let skip = match stmt {
-      @core.Stmt::Let(rec=_, name=_, expr~, span=_) =>
+      @core.Stmt::Let(rec=_, name~, expr~, span=_) =>
         match expr {
           @core.Expr::Fn(params~, ret=_, effects=_, body=_, span~, ..) => {
             // Only skip functions with NO captures
             // Functions with captures need to be processed in run() to create closure
-            let key = span_key_unique(span, params)
+            let key = span_key_named(Some(name), span, params)
             match ctx.fn_closure_captures.get(key) {
               Some(captures) => captures.length() == 0
               None => true // No capture info, assume no captures
@@ -936,7 +936,7 @@ fn filter_top_level_funcs(ctx : CodegenCtx, ast : @core.Module) -> @core.Module 
             if ctx.exported_fn_env_globals.contains(name) {
               false
             } else {
-              let key = span_key_unique(span, params)
+              let key = span_key_named(Some(name), span, params)
               match ctx.fn_closure_captures.get(key) {
                 Some(captures) => captures.length() == 0
                 None => true

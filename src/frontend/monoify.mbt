@@ -186,7 +186,7 @@ fn collect_instantiations_expr(
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
       if ctx.specializable.contains(name) && not(scope.contains(name)) {
-        match ctx.tag_for_call(name, args, {}) {
+        match ctx.tag_for_call(name, args, {}, {}) {
           Some(inst) => ctx.add_instantiation(name, inst)
           None => ()
         }
@@ -301,6 +301,7 @@ fn monoify_module_top(ast : @core.Module, ctx : MonoifyContext) -> @core.Module 
                 {},
                 {},
                 {},
+                {},
               )
               out_stmts.push(
                 @core.Stmt::Let(rec~, name~, expr=rewritten, span~),
@@ -323,20 +324,45 @@ fn monoify_module_top(ast : @core.Module, ctx : MonoifyContext) -> @core.Module 
               {},
               {},
               {},
+              {},
             )
             out_stmts.push(@core.Stmt::Let(rec~, name~, expr=rewritten, span~))
           }
         }
       @core.Stmt::Expr(expr~, span~) => {
-        let rewritten = monoify_expr(expr, ctx, DesugarScope::new(), {}, {}, {})
+        let rewritten = monoify_expr(
+          expr,
+          ctx,
+          DesugarScope::new(),
+          {},
+          {},
+          {},
+          {},
+        )
         out_stmts.push(@core.Stmt::Expr(expr=rewritten, span~))
       }
       @core.Stmt::Test(name~, body~, span~) => {
-        let rewritten = monoify_block(body, ctx, DesugarScope::new(), {}, {}, {})
+        let rewritten = monoify_block(
+          body,
+          ctx,
+          DesugarScope::new(),
+          {},
+          {},
+          {},
+          {},
+        )
         out_stmts.push(@core.Stmt::Test(name~, body=rewritten, span~))
       }
       @core.Stmt::Bench(name~, body~, span~) => {
-        let rewritten = monoify_block(body, ctx, DesugarScope::new(), {}, {}, {})
+        let rewritten = monoify_block(
+          body,
+          ctx,
+          DesugarScope::new(),
+          {},
+          {},
+          {},
+          {},
+        )
         out_stmts.push(@core.Stmt::Bench(name~, body=rewritten, span~))
       }
       _ => out_stmts.push(stmt)
@@ -353,12 +379,17 @@ fn monoify_block(
   current_spec : Map[String, String],
   iterable_spec : Map[String, String],
   local_types : Map[String, @core.Type],
+  scope_type_subst : Map[String, @core.Type],
 ) -> @core.Module {
   let out_stmts : Array[@core.Stmt] = []
   let local_scope = scope.child()
   let local_iterable_spec : Map[String, String] = {}
+  let local_local_types : Map[String, @core.Type] = {}
   for name, root in iterable_spec {
     local_iterable_spec[name] = root
+  }
+  for name, ty in local_types {
+    local_local_types[name] = ty
   }
   for stmt in body.stmts {
     match stmt {
@@ -371,35 +402,49 @@ fn monoify_block(
           local_scope
         }
         let rewritten = monoify_expr(
-          expr, ctx, expr_scope, current_spec, local_iterable_spec, local_types,
+          expr, ctx, expr_scope, current_spec, local_iterable_spec, local_local_types,
+          scope_type_subst,
         )
         out_stmts.push(@core.Stmt::Let(rec~, name~, expr=rewritten, span~))
         local_scope.bindings[name] = true
+        match ctx.actual_arg_type(expr, local_local_types, scope_type_subst) {
+          Some(ty) => local_local_types[name] = ty
+          None => ()
+        }
         ignore(local_iterable_spec.remove(name))
       }
       @core.Stmt::LetMut(name~, expr~, span~) => {
         let rewritten = monoify_expr(
-          expr, ctx, local_scope, current_spec, local_iterable_spec, local_types,
+          expr, ctx, local_scope, current_spec, local_iterable_spec, local_local_types,
+          scope_type_subst,
         )
         out_stmts.push(@core.Stmt::LetMut(name~, expr=rewritten, span~))
         local_scope.bindings[name] = true
+        match ctx.actual_arg_type(expr, local_local_types, scope_type_subst) {
+          Some(ty) => local_local_types[name] = ty
+          None => ()
+        }
         ignore(local_iterable_spec.remove(name))
       }
       @core.Stmt::Assign(name~, expr~, span~) => {
         let rewritten = monoify_expr(
-          expr, ctx, local_scope, current_spec, local_iterable_spec, local_types,
+          expr, ctx, local_scope, current_spec, local_iterable_spec, local_local_types,
+          scope_type_subst,
         )
         out_stmts.push(@core.Stmt::Assign(name~, expr=rewritten, span~))
       }
       @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
         let rewritten_target = monoify_expr(
-          target, ctx, local_scope, current_spec, local_iterable_spec, local_types,
+          target, ctx, local_scope, current_spec, local_iterable_spec, local_local_types,
+          scope_type_subst,
         )
         let rewritten_index = monoify_expr(
-          index, ctx, local_scope, current_spec, local_iterable_spec, local_types,
+          index, ctx, local_scope, current_spec, local_iterable_spec, local_local_types,
+          scope_type_subst,
         )
         let rewritten_value = monoify_expr(
-          value, ctx, local_scope, current_spec, local_iterable_spec, local_types,
+          value, ctx, local_scope, current_spec, local_iterable_spec, local_local_types,
+          scope_type_subst,
         )
         out_stmts.push(
           @core.Stmt::IndexAssign(
@@ -412,19 +457,22 @@ fn monoify_block(
       }
       @core.Stmt::Expr(expr~, span~) => {
         let rewritten = monoify_expr(
-          expr, ctx, local_scope, current_spec, local_iterable_spec, local_types,
+          expr, ctx, local_scope, current_spec, local_iterable_spec, local_local_types,
+          scope_type_subst,
         )
         out_stmts.push(@core.Stmt::Expr(expr=rewritten, span~))
       }
       @core.Stmt::Test(name~, body~, span~) => {
         let rewritten = monoify_block(
-          body, ctx, local_scope, current_spec, local_iterable_spec, local_types,
+          body, ctx, local_scope, current_spec, local_iterable_spec, local_local_types,
+          scope_type_subst,
         )
         out_stmts.push(@core.Stmt::Test(name~, body=rewritten, span~))
       }
       @core.Stmt::Bench(name~, body~, span~) => {
         let rewritten = monoify_block(
-          body, ctx, local_scope, current_spec, local_iterable_spec, local_types,
+          body, ctx, local_scope, current_spec, local_iterable_spec, local_local_types,
+          scope_type_subst,
         )
         out_stmts.push(@core.Stmt::Bench(name~, body=rewritten, span~))
       }
@@ -442,6 +490,7 @@ fn monoify_expr(
   current_spec : Map[String, String],
   iterable_spec : Map[String, String],
   local_types : Map[String, @core.Type],
+  scope_type_subst : Map[String, @core.Type],
 ) -> @core.Expr {
   match expr {
     @core.Expr::Call(name~, type_args~, args~, span~) => {
@@ -454,6 +503,7 @@ fn monoify_expr(
           current_spec,
           iterable_spec,
           local_types,
+          scope_type_subst,
         )
         next_args.push(@core.CallArg::{
           label: arg.label,
@@ -470,7 +520,10 @@ fn monoify_expr(
         None =>
           if ctx.specializable.contains(rewritten_name) &&
             not(scope.contains(rewritten_name)) {
-            match ctx.tag_for_call(rewritten_name, args, local_types) {
+            match
+              ctx.tag_for_call(
+                rewritten_name, args, local_types, scope_type_subst,
+              ) {
               Some(inst) => {
                 if !ctx.has_instantiation(rewritten_name, inst.tag) {
                   ctx.add_instantiation(rewritten_name, inst)
@@ -520,7 +573,7 @@ fn monoify_expr(
       for item in items {
         out.push(
           monoify_expr(
-            item, ctx, scope, current_spec, iterable_spec, local_types,
+            item, ctx, scope, current_spec, iterable_spec, local_types, scope_type_subst,
           ),
         )
       }
@@ -538,6 +591,7 @@ fn monoify_expr(
             current_spec,
             iterable_spec,
             local_types,
+            scope_type_subst,
           ),
           span: field.span,
         })
@@ -549,7 +603,7 @@ fn monoify_expr(
       for item in items {
         out.push(
           monoify_expr(
-            item, ctx, scope, current_spec, iterable_spec, local_types,
+            item, ctx, scope, current_spec, iterable_spec, local_types, scope_type_subst,
           ),
         )
       }
@@ -567,6 +621,7 @@ fn monoify_expr(
             current_spec,
             iterable_spec,
             local_types,
+            scope_type_subst,
           ),
           span: field.span,
         })
@@ -576,27 +631,27 @@ fn monoify_expr(
     @core.Expr::If(cond~, then_body~, else_body~, span~) =>
       @core.Expr::If(
         cond=monoify_expr(
-          cond, ctx, scope, current_spec, iterable_spec, local_types,
+          cond, ctx, scope, current_spec, iterable_spec, local_types, scope_type_subst,
         ),
         then_body=monoify_block(
-          then_body, ctx, scope, current_spec, iterable_spec, local_types,
+          then_body, ctx, scope, current_spec, iterable_spec, local_types, scope_type_subst,
         ),
         else_body=monoify_block(
-          else_body, ctx, scope, current_spec, iterable_spec, local_types,
+          else_body, ctx, scope, current_spec, iterable_spec, local_types, scope_type_subst,
         ),
         span~,
       )
     @core.Expr::Block(body~, span~) =>
       @core.Expr::Block(
         body=monoify_block(
-          body, ctx, scope, current_spec, iterable_spec, local_types,
+          body, ctx, scope, current_spec, iterable_spec, local_types, scope_type_subst,
         ),
         span~,
       )
     @core.Expr::While(cond~, body~, span~) =>
       @core.Expr::While(
         cond=monoify_expr(
-          cond, ctx, scope, current_spec, iterable_spec, local_types,
+          cond, ctx, scope, current_spec, iterable_spec, local_types, scope_type_subst,
         ),
         body=monoify_block(
           body,
@@ -605,6 +660,7 @@ fn monoify_expr(
           current_spec,
           iterable_spec,
           local_types,
+          scope_type_subst,
         ),
         span~,
       )
@@ -616,7 +672,7 @@ fn monoify_expr(
       @core.Expr::Loop(
         params~,
         body=monoify_block(
-          body, ctx, loop_scope, current_spec, iterable_spec, local_types,
+          body, ctx, loop_scope, current_spec, iterable_spec, local_types, scope_type_subst,
         ),
         span~,
       )
@@ -625,7 +681,7 @@ fn monoify_expr(
       @core.Expr::Break(
         value=value.map(fn(inner) {
           monoify_expr(
-            inner, ctx, scope, current_spec, iterable_spec, local_types,
+            inner, ctx, scope, current_spec, iterable_spec, local_types, scope_type_subst,
           )
         }),
         span~,
@@ -635,7 +691,7 @@ fn monoify_expr(
       for arg in args {
         next_args.push(
           monoify_expr(
-            arg, ctx, scope, current_spec, iterable_spec, local_types,
+            arg, ctx, scope, current_spec, iterable_spec, local_types, scope_type_subst,
           ),
         )
       }
@@ -646,6 +702,7 @@ fn monoify_expr(
       for arm in arms {
         let arm_scope = scope.child()
         let bindings : Array[String] = []
+        let arm_local_types = monoify_copy_type_map(local_types)
         collect_pat_bindings(arm.pat, bindings)
         for name in bindings {
           arm_scope.bindings[name] = true
@@ -657,7 +714,8 @@ fn monoify_expr(
           Some(c) =>
             Some(
               monoify_expr(
-                c, ctx, arm_scope, current_spec, arm_iterable_spec, local_types,
+                c, ctx, arm_scope, current_spec, arm_iterable_spec, arm_local_types,
+                scope_type_subst,
               ),
             )
           None => None
@@ -668,7 +726,8 @@ fn monoify_expr(
           arm_scope,
           current_spec,
           arm_iterable_spec,
-          local_types,
+          arm_local_types,
+          scope_type_subst,
         )
         next_arms.push(@core.MatchArm::{
           pat: arm.pat,
@@ -679,7 +738,7 @@ fn monoify_expr(
       }
       @core.Expr::Handle(
         body=monoify_block(
-          body, ctx, scope, current_spec, iterable_spec, local_types,
+          body, ctx, scope, current_spec, iterable_spec, local_types, scope_type_subst,
         ),
         arms=next_arms,
         span~,
@@ -688,14 +747,23 @@ fn monoify_expr(
     @core.Expr::Match(scrutinee~, arms~, span~) => {
       let next_arms : Array[@core.MatchArm] = []
       let scrut = monoify_expr(
-        scrutinee, ctx, scope, current_spec, iterable_spec, local_types,
+        scrutinee, ctx, scope, current_spec, iterable_spec, local_types, scope_type_subst,
+      )
+      let scrutinee_ty = ctx.actual_arg_type(
+        scrutinee, local_types, scope_type_subst,
       )
       for arm in arms {
         let arm_scope = scope.child()
         let bindings : Array[String] = []
+        let arm_local_types = monoify_copy_type_map(local_types)
         collect_pat_bindings(arm.pat, bindings)
         for name in bindings {
           arm_scope.bindings[name] = true
+        }
+        match scrutinee_ty {
+          Some(ty) =>
+            monoify_collect_pattern_types(arm.pat, ty, arm_local_types)
+          None => ()
         }
         let arm_iterable_spec = monoify_iterable_spec_without(
           iterable_spec, bindings,
@@ -704,7 +772,8 @@ fn monoify_expr(
           Some(c) =>
             Some(
               monoify_expr(
-                c, ctx, arm_scope, current_spec, arm_iterable_spec, local_types,
+                c, ctx, arm_scope, current_spec, arm_iterable_spec, arm_local_types,
+                scope_type_subst,
               ),
             )
           None => None
@@ -715,7 +784,8 @@ fn monoify_expr(
           arm_scope,
           current_spec,
           arm_iterable_spec,
-          local_types,
+          arm_local_types,
+          scope_type_subst,
         )
         next_arms.push(@core.MatchArm::{
           pat: arm.pat,
@@ -740,8 +810,13 @@ fn monoify_expr(
         iterable_spec,
         param_names(params),
       )
+      let fn_local_types = monoify_copy_type_map(local_types)
       for param in params {
         fn_scope.bindings[param.name] = true
+        fn_local_types[param.name] = replace_type_params(
+          param.ty,
+          scope_type_subst,
+        )
       }
       @core.Expr::Fn(
         type_params~,
@@ -750,7 +825,7 @@ fn monoify_expr(
         ret~,
         effects~,
         body=monoify_block(
-          body, ctx, fn_scope, current_spec, fn_iterable_spec, local_types,
+          body, ctx, fn_scope, current_spec, fn_iterable_spec, fn_local_types, scope_type_subst,
         ),
         span~,
       )
@@ -840,7 +915,7 @@ fn specialize_fn_expr(
           iter_root + "::iter_length",
         ]
         for helper_name in helper_names {
-          if ctx.specializable.contains(helper_name) {
+          if helper_name != name && ctx.specializable.contains(helper_name) {
             match ctx.specializable.get(helper_name) {
               Some(
                 @core.Expr::Fn(
@@ -880,6 +955,8 @@ fn specialize_fn_expr(
       }
       let iterable_spec = if is_num_tag(tag) {
         {}
+      } else if monoify_is_root_iter_helper_name(name, iter_root) {
+        {}
       } else {
         monoify_iter_dispatch_param_spec(params, body, iter_root)
       }
@@ -891,7 +968,7 @@ fn specialize_fn_expr(
         ret=updated_ret,
         effects~,
         body=monoify_block(
-          body, ctx, fn_scope, current_spec, iterable_spec, local_types,
+          body, ctx, fn_scope, current_spec, iterable_spec, local_types, type_subst,
         ),
         span~,
       )
@@ -928,6 +1005,7 @@ fn MonoifyContext::tag_for_call(
   name : String,
   args : Array[@core.CallArg],
   local_types : Map[String, @core.Type],
+  scope_type_subst : Map[String, @core.Type],
 ) -> MonoifyInstantiation? {
   let pos_args = positional_args(args)
   match name {
@@ -968,9 +1046,13 @@ fn MonoifyContext::tag_for_call(
       }
     _ =>
       if self.specializable_uses_iter_dispatch(name) && pos_args.length() >= 1 {
-        self.iter_dispatch_instantiation_for_call(name, pos_args, local_types)
+        self.iter_dispatch_instantiation_for_call(
+          name, pos_args, local_types, scope_type_subst,
+        )
       } else {
-        self.root_specialization_for_call(name, pos_args, local_types)
+        self.root_specialization_for_call(
+          name, pos_args, local_types, scope_type_subst,
+        )
       }
   }
 }
@@ -981,6 +1063,7 @@ fn MonoifyContext::root_specialization_for_call(
   name : String,
   pos_args : Array[@core.CallArg],
   local_types : Map[String, @core.Type],
+  scope_type_subst : Map[String, @core.Type],
 ) -> MonoifyInstantiation? {
   match self.specializable.get(name) {
     Some(@core.Expr::Fn(type_params~, type_bounds~, params~, ..)) =>
@@ -993,12 +1076,18 @@ fn MonoifyContext::root_specialization_for_call(
             pos_args.length()
           }
           for i in 0..<arg_count {
-            match self.actual_arg_type(pos_args[i].expr, local_types) {
+            match
+              self.actual_arg_type(
+                pos_args[i].expr,
+                local_types,
+                scope_type_subst,
+              ) {
               Some(actual_ty) =>
                 monoify_collect_type_subst(params[i].ty, actual_ty, type_subst)
               None => ()
             }
-            match monoify_expr_annotation_type(pos_args[i].expr) {
+            match
+              monoify_expr_annotation_type(pos_args[i].expr, scope_type_subst) {
               Some(actual_ty) =>
                 monoify_collect_type_subst(params[i].ty, actual_ty, type_subst)
               None => ()
@@ -1021,6 +1110,7 @@ fn MonoifyContext::iter_dispatch_instantiation_for_call(
   name : String,
   pos_args : Array[@core.CallArg],
   local_types : Map[String, @core.Type],
+  scope_type_subst : Map[String, @core.Type],
 ) -> MonoifyInstantiation? {
   match self.specializable.get(name) {
     Some(@core.Expr::Fn(type_params~, type_bounds~, params~, ..)) =>
@@ -1033,12 +1123,18 @@ fn MonoifyContext::iter_dispatch_instantiation_for_call(
             pos_args.length()
           }
           for i in 0..<arg_count {
-            match self.actual_arg_type(pos_args[i].expr, local_types) {
+            match
+              self.actual_arg_type(
+                pos_args[i].expr,
+                local_types,
+                scope_type_subst,
+              ) {
               Some(actual_ty) =>
                 monoify_collect_type_subst(params[i].ty, actual_ty, type_subst)
               None => ()
             }
-            match monoify_expr_annotation_type(pos_args[i].expr) {
+            match
+              monoify_expr_annotation_type(pos_args[i].expr, scope_type_subst) {
               Some(actual_ty) =>
                 monoify_collect_type_subst(params[i].ty, actual_ty, type_subst)
               None => ()
@@ -1060,26 +1156,140 @@ fn MonoifyContext::actual_arg_type(
   self : MonoifyContext,
   expr : @core.Expr,
   local_types : Map[String, @core.Type],
+  scope_type_subst : Map[String, @core.Type],
 ) -> @core.Type? {
   match expr {
     @core.Expr::Ident(name~, ..) =>
       match local_types.get(name) {
-        Some(ty) => Some(ty)
-        None => self.expr_types.get_expr_type(expr.span())
+        Some(ty) => Some(replace_type_params(ty, scope_type_subst))
+        None =>
+          self.expr_types
+          .get_expr_type(expr.span())
+          .map(fn(ty) { replace_type_params(ty, scope_type_subst) })
       }
-    _ => self.expr_types.get_expr_type(expr.span())
+    _ =>
+      self.expr_types
+      .get_expr_type(expr.span())
+      .map(fn(ty) { replace_type_params(ty, scope_type_subst) })
   }
 }
 
 ///|
-fn monoify_expr_annotation_type(expr : @core.Expr) -> @core.Type? {
+fn monoify_expr_annotation_type(
+  expr : @core.Expr,
+  scope_type_subst : Map[String, @core.Type],
+) -> @core.Type? {
   match expr {
     @core.Expr::Fn(params~, ret~, effects~, ..) =>
       match ret {
-        Some(ret_ty) => Some(@core.Type::Func(params~, ret=ret_ty, effects~))
+        Some(ret_ty) =>
+          Some(
+            replace_type_params(
+              @core.Type::Func(params~, ret=ret_ty, effects~),
+              scope_type_subst,
+            ),
+          )
         None => None
       }
     _ => None
+  }
+}
+
+///|
+fn monoify_copy_type_map(
+  local_types : Map[String, @core.Type],
+) -> Map[String, @core.Type] {
+  let out : Map[String, @core.Type] = {}
+  for name, ty in local_types {
+    out[name] = ty
+  }
+  out
+}
+
+///|
+fn monoify_collect_pattern_types(
+  pat : @core.Pat,
+  scrutinee_ty : @core.Type,
+  out : Map[String, @core.Type],
+) -> Unit {
+  match pat {
+    @core.Pat::Wildcard(..)
+    | @core.Pat::Int(..)
+    | @core.Pat::Float(..)
+    | @core.Pat::Double(..)
+    | @core.Pat::Bool(..)
+    | @core.Pat::Char(..)
+    | @core.Pat::String(..) => ()
+    @core.Pat::Bind(name~, ..) => out[name] = scrutinee_ty
+    @core.Pat::Ctor(name~, args~, ..) => {
+      let ctor_key = @core.strip_ctor_qualifier(name)
+      match scrutinee_ty {
+        @core.Type::Variant(types) =>
+          match types.get(ctor_key) {
+            Some(field_ty) =>
+              monoify_collect_ctor_arg_pattern_types(args, field_ty, out)
+            None => ()
+          }
+        @core.Type::Record(types) =>
+          match types.get(name) {
+            Some(field_ty) =>
+              monoify_collect_ctor_arg_pattern_types(args, field_ty, out)
+            None => ()
+          }
+        _ => ()
+      }
+    }
+    @core.Pat::Tuple(items~, ..) =>
+      match scrutinee_ty {
+        @core.Type::Tuple(types) =>
+          if items.length() == types.length() {
+            for i in 0..<items.length() {
+              monoify_collect_pattern_types(items[i], types[i], out)
+            }
+          }
+        _ => ()
+      }
+    @core.Pat::Record(fields~, ..) =>
+      match scrutinee_ty {
+        @core.Type::Record(types) =>
+          for field in fields {
+            match types.get(field.name) {
+              Some(field_ty) =>
+                monoify_collect_pattern_types(field.pat, field_ty, out)
+              None => ()
+            }
+          }
+        _ => ()
+      }
+    @core.Pat::Struct(..) => ()
+    @core.Pat::Or(pats~, ..) =>
+      if pats.length() > 0 {
+        monoify_collect_pattern_types(pats[0], scrutinee_ty, out)
+      }
+  }
+}
+
+///|
+fn monoify_collect_ctor_arg_pattern_types(
+  args : Array[@core.Pat],
+  field_ty : @core.Type,
+  out : Map[String, @core.Type],
+) -> Unit {
+  if args.length() == 0 {
+    return
+  }
+  if args.length() == 1 {
+    monoify_collect_pattern_types(args[0], field_ty, out)
+    return
+  }
+  match field_ty {
+    @core.Type::Tuple(items) =>
+      if items.length() == args.length() {
+        for i in 0..<args.length() {
+          monoify_collect_pattern_types(args[i], items[i], out)
+        }
+      }
+    _ => ()
   }
 }
 
@@ -1818,6 +2028,11 @@ fn monoify_type_bounds_contains(
 }
 
 ///|
+fn monoify_is_root_iter_helper_name(name : String, root : String) -> Bool {
+  name == root + "::iter_get" || name == root + "::iter_length"
+}
+
+///|
 fn monoify_iter_dispatch_root_type(
   ctx : MonoifyContext,
   type_params : Array[String],
@@ -2055,7 +2270,15 @@ fn rewrite_iter_dispatch_call_name(
       @core.Expr::Ident(name=recv, ..) =>
         match iterable_spec.get(recv) {
           Some(root) =>
-            return if root == "Array" { name } else { root + "::" + name }
+            return if root == "Array" {
+              match name {
+                "iter_get" => "Array::get"
+                "iter_length" => "Array::length"
+                _ => name
+              }
+            } else {
+              root + "::" + name
+            }
           None => ()
         }
       _ => ()
