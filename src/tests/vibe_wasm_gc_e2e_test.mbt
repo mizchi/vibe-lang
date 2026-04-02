@@ -254,6 +254,62 @@ test "wasm-gc e2e: MapBuilder set" {
 }
 
 ///|
+test "wasm-gc e2e: Map::get with string keys" {
+  let src =
+    #|let main = () -> Int {
+    #|  let b = MapBuilder::new()
+    #|  MapBuilder::set(b, "x", 10)
+    #|  MapBuilder::set(b, "y", 20)
+    #|  let m = MapBuilder::freeze(b)
+    #|  let vx = Map::get(m, "x")
+    #|  let vy = Map::get(m, "y")
+    #|  vx + vy
+    #|}
+    #|main()
+  assert_gc_e2e(src, "map_get_string_keys", 30)
+}
+
+///|
+test "wasm-gc e2e: Map::has_key with string keys" {
+  let src =
+    #|let main = () -> Int {
+    #|  let b = MapBuilder::new()
+    #|  MapBuilder::set(b, "k", 42)
+    #|  let m = MapBuilder::freeze(b)
+    #|  if Map::has_key(m, "k") { 1 } else { 0 }
+    #|}
+    #|main()
+  assert_gc_e2e(src, "map_has_key_string", 1)
+}
+
+///|
+test "wasm-gc e2e: Map::get not found returns 0" {
+  let src =
+    #|let main = () -> Int {
+    #|  let b = MapBuilder::new()
+    #|  MapBuilder::set(b, "a", 99)
+    #|  let m = MapBuilder::freeze(b)
+    #|  Map::get(m, "missing")
+    #|}
+    #|main()
+  assert_gc_e2e(src, "map_get_not_found", 0)
+}
+
+///|
+test "wasm-gc e2e: MapBuilder::set overwrites existing key" {
+  let src =
+    #|let main = () -> Int {
+    #|  let b = MapBuilder::new()
+    #|  MapBuilder::set(b, "k", 10)
+    #|  MapBuilder::set(b, "k", 42)
+    #|  let m = MapBuilder::freeze(b)
+    #|  Map::get(m, "k")
+    #|}
+    #|main()
+  assert_gc_e2e(src, "map_set_overwrite", 42)
+}
+
+///|
 test "wasm-gc e2e: throw/handle error-only" {
   let src =
     #|let main = () -> Int {

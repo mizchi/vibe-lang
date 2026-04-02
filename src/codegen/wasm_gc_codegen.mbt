@@ -2529,6 +2529,119 @@ fn compile_string_equals(
 }
 
 ///|
+/// Emit Map key equality comparison.
+/// Assumes key_a_local and key_b_local are eqref locals.
+/// Leaves i32 (0 or 1) on the stack.
+/// Strategy: ref_eq fast path → ref.test string → structural string compare → 0
+fn emit_map_key_eq_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  key_a_local : Int,
+  key_b_local : Int,
+) -> Unit {
+  let ok_idx = alloc_local_gc(fctx, GcValKind::I32)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, ok_idx)
+  // block $done
+  emit_block_gc(buf, None)
+  // Fast path: ref_eq
+  emit_local_get_gc(buf, key_a_local)
+  emit_local_get_gc(buf, key_b_local)
+  emit_ref_eq_gc(buf)
+  emit_if_gc(buf, None)
+  emit_i32_const_gc(buf, 1)
+  emit_local_set_gc(buf, ok_idx)
+  emit_br_gc(buf, 1) // br $done
+  emit_end_gc(buf) // end if
+  // Slow path: both must be string structs for structural comparison
+  emit_local_get_gc(buf, key_a_local)
+  emit_ref_test_gc(buf, ctx.string_type)
+  emit_i32_const_gc(buf, 0)
+  emit_i32_eq_gc(buf)
+  emit_br_if_gc(buf, 0) // br $done if not string
+  emit_local_get_gc(buf, key_b_local)
+  emit_ref_test_gc(buf, ctx.string_type)
+  emit_i32_const_gc(buf, 0)
+  emit_i32_eq_gc(buf)
+  emit_br_if_gc(buf, 0) // br $done if not string
+  // Both are strings: structural comparison
+  let a_str = alloc_local_gc(fctx, GcValKind::Ref(ctx.string_type))
+  let b_str = alloc_local_gc(fctx, GcValKind::Ref(ctx.string_type))
+  emit_local_get_gc(buf, key_a_local)
+  emit_ref_cast_gc(buf, ctx.string_type)
+  emit_local_set_gc(buf, a_str)
+  emit_local_get_gc(buf, key_b_local)
+  emit_ref_cast_gc(buf, ctx.string_type)
+  emit_local_set_gc(buf, b_str)
+  let len_a = alloc_local_gc(fctx, GcValKind::I32)
+  let len_b = alloc_local_gc(fctx, GcValKind::I32)
+  emit_local_get_gc(buf, a_str)
+  emit_struct_get_gc(buf, ctx.string_type, 0)
+  emit_local_set_gc(buf, len_a)
+  emit_local_get_gc(buf, b_str)
+  emit_struct_get_gc(buf, ctx.string_type, 0)
+  emit_local_set_gc(buf, len_b)
+  // Length mismatch → not equal
+  emit_local_get_gc(buf, len_a)
+  emit_local_get_gc(buf, len_b)
+  emit_i32_ne_gc(buf)
+  emit_br_if_gc(buf, 0) // br $done
+  // Empty strings are equal
+  emit_local_get_gc(buf, len_a)
+  emit_i32_const_gc(buf, 0)
+  emit_i32_eq_gc(buf)
+  emit_if_gc(buf, None)
+  emit_i32_const_gc(buf, 1)
+  emit_local_set_gc(buf, ok_idx)
+  emit_br_gc(buf, 1) // br $done
+  emit_end_gc(buf) // end if
+  // Compare data arrays element by element
+  let data_a = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
+  let data_b = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
+  let i_idx = alloc_local_gc(fctx, GcValKind::I32)
+  emit_local_get_gc(buf, a_str)
+  emit_struct_get_gc(buf, ctx.string_type, 1)
+  emit_local_set_gc(buf, data_a)
+  emit_local_get_gc(buf, b_str)
+  emit_struct_get_gc(buf, ctx.string_type, 1)
+  emit_local_set_gc(buf, data_b)
+  emit_i32_const_gc(buf, 1)
+  emit_local_set_gc(buf, ok_idx)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, i_idx)
+  // block $cmp_done
+  emit_block_gc(buf, None)
+  // loop $cmp_loop
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, i_idx)
+  emit_local_get_gc(buf, len_a)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1) // br $cmp_done
+  emit_local_get_gc(buf, data_a)
+  emit_local_get_gc(buf, i_idx)
+  emit_array_get_gc(buf, ctx.array_i32_type)
+  emit_local_get_gc(buf, data_b)
+  emit_local_get_gc(buf, i_idx)
+  emit_array_get_gc(buf, ctx.array_i32_type)
+  emit_i32_ne_gc(buf)
+  emit_if_gc(buf, None)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, ok_idx)
+  emit_br_gc(buf, 2) // br $cmp_done
+  emit_end_gc(buf) // end if
+  emit_local_get_gc(buf, i_idx)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, i_idx)
+  emit_br_gc(buf, 0) // br $cmp_loop
+  emit_end_gc(buf) // end loop
+  emit_end_gc(buf) // end $cmp_done
+  emit_end_gc(buf) // end $done
+  emit_local_get_gc(buf, ok_idx)
+}
+
+///|
 fn compile_string_index_of(
   ctx : GcCodegenCtx,
   fctx : GcFuncCtx,
@@ -6653,11 +6766,12 @@ fn compile_expr_gc(
           emit_local_get_gc(buf, len_l)
           emit_i32_ge_s_gc(buf)
           emit_br_if_gc(buf, 1) // br $done
+          let cur_key_l = alloc_local_gc(fctx, GcValKind::EqRef)
           emit_local_get_gc(buf, keys_l)
           emit_local_get_gc(buf, i_l)
           emit_array_get_gc(buf, key_arr_type)
-          emit_local_get_gc(buf, key_l)
-          emit_ref_eq_gc(buf)
+          emit_local_set_gc(buf, cur_key_l)
+          emit_map_key_eq_gc(ctx, fctx, buf, cur_key_l, key_l)
           emit_if_gc(buf, None)
           // Found: update value and break
           emit_local_get_gc(buf, vals_l)
@@ -6804,6 +6918,8 @@ fn compile_expr_gc(
           emit_struct_get_gc(buf, builder_type, 2)
           emit_local_set_gc(buf, vals_l)
           // Linear search with result in local
+          emit_i64_const_gc(buf, 0)
+          emit_local_set_gc(buf, result_l) // initialize to 0
           emit_i32_const_gc(buf, 0)
           emit_local_set_gc(buf, i_l)
           // block $done
@@ -6814,11 +6930,12 @@ fn compile_expr_gc(
           emit_local_get_gc(buf, len_l)
           emit_i32_ge_s_gc(buf)
           emit_br_if_gc(buf, 1) // br $done (not found)
+          let cur_key_get = alloc_local_gc(fctx, GcValKind::EqRef)
           emit_local_get_gc(buf, keys_l)
           emit_local_get_gc(buf, i_l)
           emit_array_get_gc(buf, key_arr_type)
-          emit_local_get_gc(buf, key_l)
-          emit_ref_eq_gc(buf)
+          emit_local_set_gc(buf, cur_key_get)
+          emit_map_key_eq_gc(ctx, fctx, buf, cur_key_get, key_l)
           emit_if_gc(buf, None)
           // Found: store vals[i] and break
           emit_local_get_gc(buf, vals_l)
@@ -6886,11 +7003,12 @@ fn compile_expr_gc(
           emit_local_get_gc(buf, len_l)
           emit_i32_ge_s_gc(buf)
           emit_br_if_gc(buf, 1)
+          let cur_key_has = alloc_local_gc(fctx, GcValKind::EqRef)
           emit_local_get_gc(buf, keys_l)
           emit_local_get_gc(buf, i_l)
           emit_array_get_gc(buf, key_arr_type)
-          emit_local_get_gc(buf, key_l)
-          emit_ref_eq_gc(buf)
+          emit_local_set_gc(buf, cur_key_has)
+          emit_map_key_eq_gc(ctx, fctx, buf, cur_key_has, key_l)
           emit_if_gc(buf, None)
           emit_i32_const_gc(buf, 1)
           emit_local_set_gc(buf, result_l)
