@@ -226,6 +226,67 @@ test "wasm-gc e2e: pipe operator" {
 }
 
 ///|
+test "wasm-gc e2e: generic list iter_get" {
+  let src =
+    #|enum List[T] { Nil; Cons(T, List[T]) }
+    #|impl [T] Iterable for List[T]
+    #|let list_of3 = [T](a: T, b: T, c: T) -> List[T] {
+    #|  Cons(a, Cons(b, Cons(c, Nil)))
+    #|}
+    #|let rec list_iter_get = [T](xs: List[T], index: Int) -> T {
+    #|  match xs {
+    #|    Cons(h, t) => if index == 0 { h } else { list_iter_get(t, index - 1) },
+    #|    Nil => list_iter_get(xs, index)
+    #|  }
+    #|}
+    #|let List::iter_get = [T](xs: List[T], index: Int) -> T { list_iter_get(xs, index) }
+    #|let main = () -> Int {
+    #|  List::iter_get(list_of3(1, 2, 3), 1)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "generic_list_iter_get", 2)
+}
+
+///|
+test "wasm-gc e2e: generic iterator fold over list" {
+  let src =
+    #|enum List[T] { Nil; Cons(T, List[T]) }
+    #|impl [T] Iterable for List[T]
+    #|let list_of3 = [T](a: T, b: T, c: T) -> List[T] {
+    #|  Cons(a, Cons(b, Cons(c, Nil)))
+    #|}
+    #|let rec list_length = [T](xs: List[T]) -> Int {
+    #|  match xs {
+    #|    Nil => 0,
+    #|    Cons(_, t) => 1 + list_length(t)
+    #|  }
+    #|}
+    #|let rec list_iter_get = [T](xs: List[T], index: Int) -> T {
+    #|  match xs {
+    #|    Cons(h, t) => if index == 0 { h } else { list_iter_get(t, index - 1) },
+    #|    Nil => list_iter_get(xs, index)
+    #|  }
+    #|}
+    #|let List::iter_get = [T](xs: List[T], index: Int) -> T { list_iter_get(xs, index) }
+    #|let List::iter_length = [T](xs: List[T]) -> Int { list_length(xs) }
+    #|let Iterator::fold = [C: Iterable, T, B](xs: C, init: B, f: (acc: B, x: T) -> B) -> B {
+    #|  let len = xs|>iter_length
+    #|  let mut i = 0
+    #|  let mut acc = init
+    #|  while i < len {
+    #|    acc = f(acc, xs|>iter_get(i))
+    #|    i = i + 1
+    #|  }
+    #|  acc
+    #|}
+    #|let main = () -> Int {
+    #|  Iterator::fold(list_of3(1, 2, 3), 0, (acc: Int, x: Int) -> Int { acc + x })
+    #|}
+    #|main()
+  assert_gc_e2e(src, "generic_iterator_fold_list", 6)
+}
+
+///|
 test "wasm-gc e2e: MapBuilder new/freeze" {
   let src =
     #|let main = () -> Int {

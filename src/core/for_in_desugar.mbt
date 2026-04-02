@@ -49,14 +49,7 @@ pub fn desugar_for_in(
   span : Span,
 ) -> Module {
   desugar_for_in_with(
-    value_name,
-    index_name,
-    iterable,
-    body,
-    span,
-    "iter_length",
-    "iter_get",
-    true,
+    value_name, index_name, iterable, body, span, "iter_length", "iter_get", true,
   )
 }
 
@@ -225,13 +218,7 @@ pub fn desugar_for_in_string(
   span : Span,
 ) -> Module {
   desugar_for_in_with(
-    value_name,
-    index_name,
-    iterable,
-    body,
-    span,
-    "String::length",
-    "String::char_code_at",
+    value_name, index_name, iterable, body, span, "String::length", "String::char_code_at",
     false,
   )
 }

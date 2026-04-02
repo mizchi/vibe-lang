@@ -38,6 +38,51 @@ test "bundle_for_wasm keeps enum defs from re-exported directory wrapper" {
 }
 
 ///|
+test "bundle_for_wasm_no_dce keeps imported trait impls" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "/project/iter_mod.vibe",
+    (
+      #|export enum Trio[T] {
+      #|  Trio(T, T, T)
+      #|}
+      #|impl [T] Iterable for Trio[T]
+      #|export let trio_of3 = [T](a: T, b: T, c: T) -> Trio[T] {
+      #|  Trio(a, b, c)
+      #|}
+    ),
+  )
+  db.set_source(
+    "/project/main.vibe",
+    (
+      #|import ./iter_mod.vibe {
+      #|  trio_of3
+      #|}
+      #|let value = trio_of3(1, 2, 3)
+    ),
+  )
+  let ast = db.ast_with_hash_imports("/project/main.vibe")
+  let bundled = bundle_for_wasm_no_dce(db, "/project/main.vibe", ast)
+  let mut has_trio_impl = false
+  for stmt in bundled.stmts {
+    match stmt {
+      @core.Stmt::TraitImpl(trait_name~, target~, ..) =>
+        if trait_name == "Iterable" {
+          match target {
+            @core.Type::Named(name~, ..) =>
+              if name == "Trio" {
+                has_trio_impl = true
+              }
+            _ => ()
+          }
+        }
+      _ => ()
+    }
+  }
+  assert_true(has_trio_impl)
+}
+
+///|
 test "bundle_for_wasm_linked resolves ReExport function as linked import" {
   let db = @runtime.VibeDb::new()
   db.set_source(

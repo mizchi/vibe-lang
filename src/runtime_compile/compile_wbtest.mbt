@@ -27,6 +27,74 @@ fn bytes_contains_ascii(bytes : Bytes, needle : String) -> Bool {
 }
 
 ///|
+fn runtime_compile_module_has_value_call(
+  ast : @core.Module,
+  binding_name : String,
+  target_call : String,
+) -> Bool {
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr~, ..) =>
+        if name == binding_name {
+          match expr {
+            @core.Expr::Call(name=call_name, ..) =>
+              return call_name == target_call
+            _ => return false
+          }
+        }
+      _ => ()
+    }
+  }
+  false
+}
+
+///|
+fn runtime_compile_module_has_value_call_prefix(
+  ast : @core.Module,
+  binding_name : String,
+  target_prefix : String,
+) -> Bool {
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr~, ..) =>
+        if name == binding_name {
+          match expr {
+            @core.Expr::Call(name=call_name, ..) =>
+              return call_name.has_prefix(target_prefix)
+            _ => return false
+          }
+        }
+      _ => ()
+    }
+  }
+  false
+}
+
+///|
+fn runtime_compile_module_fn_body_has_call(
+  ast : @core.Module,
+  binding_name : String,
+  target_call : String,
+) -> Bool {
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr~, ..)
+      | @core.Stmt::ExportLet(name~, expr~, ..)
+      | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
+        if name == binding_name {
+          match expr {
+            @core.Expr::Fn(body~, ..) =>
+              return module_to_sexp(body, {}).contains(target_call)
+            _ => return false
+          }
+        }
+      _ => ()
+    }
+  }
+  false
+}
+
+///|
 test "compile_module keeps parse error variant" {
   let db = @runtime.VibeDb::new()
   db.set_source("main", "let x =")
@@ -72,6 +140,212 @@ test "compile_module_wasm_with_opt_level_profiled reuses wasm artifact cache" {
   assert_true(profile1.emit_us > 0)
   assert_eq(profile2.emit_us, 0)
   assert_eq(profile2.optimize_us, 0)
+}
+
+///|
+test "prepare_bundled_ast_for_codegen specializes imported iterable helpers by concrete root" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "/project/iterator.vibe",
+    (
+      #|export let Iterator::fold = [C: Iterable, T, B](xs: C, init: B, f: (acc: B, x: T) -> B) -> B {
+      #|  let len = xs|>iter_length
+      #|  let mut i = 0
+      #|  let mut acc = init
+      #|  while i < len {
+      #|    acc = f(acc, xs|>iter_get(i))
+      #|    i = i + 1
+      #|  }
+      #|  acc
+      #|}
+    ),
+  )
+  db.set_source(
+    "/project/main.vibe",
+    (
+      #|import ./iterator.vibe {
+      #|  Iterator::fold
+      #|}
+      #|enum Trio[T] {
+      #|  Trio(T, T, T)
+      #|}
+      #|impl [T] Iterable for Trio[T]
+      #|let trio_of3 = [T](a: T, b: T, c: T) -> Trio[T] {
+      #|  Trio(a, b, c)
+      #|}
+      #|let _keep = trio_of3(0, 1, 2)
+      #|let Trio::iter_length = [T](_xs: Trio[T]) -> Int { 3 }
+      #|let Trio::iter_get = [T](xs: Trio[T], index: Int) -> T {
+      #|  match xs {
+      #|    Trio(a, b, c) => if index == 0 { a } else if index == 1 { b } else { c }
+      #|  }
+      #|}
+      #|let value = Iterator::fold(trio_of3(1, 2, 3), 0, (acc: Int, x: Int) -> Int { acc + x })
+    ),
+  )
+  let compiled = compile_module(db, "/project/main.vibe")
+  let bundled = bundle_for_wasm_no_dce(db, "/project/main.vibe", compiled.ast)
+  let prepared = prepare_bundled_ast_for_codegen(bundled)
+  let mut has_specialized_def = false
+  for stmt in prepared.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, ..) =>
+        if name == "Iterator::fold$Trio" {
+          has_specialized_def = true
+        }
+      _ => ()
+    }
+  }
+  assert_true(has_specialized_def)
+  assert_true(
+    runtime_compile_module_has_value_call(
+      prepared, "value", "Iterator::fold$Trio",
+    ),
+  )
+  if not(
+      runtime_compile_module_fn_body_has_call(
+        prepared, "Iterator::fold$Trio", "Trio::iter_get",
+      ),
+    ) {
+    fail(module_to_sexp(prepared, {}))
+  }
+}
+
+///|
+test "prepare_bundled_ast_for_codegen keeps imported iterable impls" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "/project/iter_mod.vibe",
+    (
+      #|export enum Trio[T] {
+      #|  Trio(T, T, T)
+      #|}
+      #|impl [T] Iterable for Trio[T]
+      #|export let trio_of3 = [T](a: T, b: T, c: T) -> Trio[T] {
+      #|  Trio(a, b, c)
+      #|}
+      #|export let Trio::iter_length = [T](_xs: Trio[T]) -> Int { 3 }
+      #|export let Trio::iter_get = [T](xs: Trio[T], index: Int) -> T {
+      #|  match xs {
+      #|    Trio(a, b, c) => if index == 0 { a } else if index == 1 { b } else { c }
+      #|  }
+      #|}
+      #|export let Iterator::fold = [C: Iterable, T, B](xs: C, init: B, f: (acc: B, x: T) -> B) -> B {
+      #|  let len = xs|>iter_length
+      #|  let mut i = 0
+      #|  let mut acc = init
+      #|  while i < len {
+      #|    acc = f(acc, xs|>iter_get(i))
+      #|    i = i + 1
+      #|  }
+      #|  acc
+      #|}
+    ),
+  )
+  db.set_source(
+    "/project/main.vibe",
+    (
+      #|import ./iter_mod.vibe {
+      #|  Iterator::fold, trio_of3
+      #|}
+      #|let value = Iterator::fold(trio_of3(1, 2, 3), 0, (acc: Int, x: Int) -> Int { acc + x })
+    ),
+  )
+  let compiled = compile_module(db, "/project/main.vibe")
+  let bundled = bundle_for_wasm_no_dce(db, "/project/main.vibe", compiled.ast)
+  let prepared = prepare_bundled_ast_for_codegen(bundled) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(
+    runtime_compile_module_has_value_call_prefix(
+      prepared, "value", "Iterator::fold$Trio",
+    ),
+  )
+}
+
+///|
+test "bundle_for_codegen keeps imported list iterator helper chain" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "/project/list_mod.vibe",
+    (
+      #|export enum List[T] {
+      #|  Nil;
+      #|  Cons(T, List[T])
+      #|}
+      #|impl [T] Iterable for List[T]
+      #|export let list_of3 = [T](a: T, b: T, c: T) -> List[T] {
+      #|  Cons(a, Cons(b, Cons(c, Nil)))
+      #|}
+      #|let rec list_length = [T](xs: List[T]) -> Int {
+      #|  match xs {
+      #|    Nil => 0,
+      #|    Cons(_, t) => 1 + list_length(t)
+      #|  }
+      #|}
+      #|let rec list_iter_get = [T](xs: List[T], index: Int) -> T {
+      #|  match xs {
+      #|    Cons(h, t) => if index == 0 { h } else { list_iter_get(t, index - 1) },
+      #|    Nil => list_iter_get(xs, index)
+      #|  }
+      #|}
+      #|export let List::iter_get = [T](xs: List[T], index: Int) -> T { list_iter_get(xs, index) }
+      #|export let List::iter_length = [T](xs: List[T]) -> Int { list_length(xs) }
+    ),
+  )
+  db.set_source(
+    "/project/iter_mod.vibe",
+    (
+      #|export let Iterator::fold = [C: Iterable, T, B](xs: C, init: B, f: (acc: B, x: T) -> B) -> B {
+      #|  let len = xs|>iter_length
+      #|  let mut i = 0
+      #|  let mut acc = init
+      #|  while i < len {
+      #|    acc = f(acc, xs|>iter_get(i))
+      #|    i = i + 1
+      #|  }
+      #|  acc
+      #|}
+    ),
+  )
+  db.set_source(
+    "/project/main.vibe",
+    (
+      #|import ./iter_mod.vibe {
+      #|  Iterator::fold
+      #|}
+      #|import ./list_mod.vibe {
+      #|  list_of3
+      #|}
+      #|let value = Iterator::fold(list_of3(1, 2, 3), 0, (acc: Int, x: Int) -> Int { acc + x })
+    ),
+  )
+  let compiled = compile_module(db, "/project/main.vibe")
+  let prepared = bundle_for_codegen(
+    db,
+    "/project/main.vibe",
+    compiled.ast,
+    "default",
+  ) catch {
+    err => fail(err.to_string())
+  }
+  let mut has_list_iter_get = false
+  let mut has_list_length = false
+  for stmt in prepared.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, ..) => {
+        if name.has_prefix("list_iter_get$") {
+          has_list_iter_get = true
+        }
+        if name.has_prefix("list_length$") {
+          has_list_length = true
+        }
+      }
+      _ => ()
+    }
+  }
+  assert_true(has_list_iter_get)
+  assert_true(has_list_length)
 }
 
 ///|

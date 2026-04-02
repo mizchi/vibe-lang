@@ -887,13 +887,13 @@ fn type_expr_eff(
       let desugared = match iter_ty {
         @core.Type::String =>
           @core.desugar_for_in_with(
-            value_name, index_name, iterable, body, span,
-            "String::length", "String::char_code_at", false,
+            value_name, index_name, iterable, body, span, "String::length", "String::char_code_at",
+            false,
           )
         @core.Type::Array(_) =>
           @core.desugar_for_in_with(
-            value_name, index_name, iterable, body, span,
-            "Array::length", "Array::get", false,
+            value_name, index_name, iterable, body, span, "Array::length", "Array::get",
+            false,
           )
         _ =>
           // Generic Iterable: use iter_require for trait check,

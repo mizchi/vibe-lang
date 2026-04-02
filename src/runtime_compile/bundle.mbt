@@ -267,7 +267,7 @@ fn collect_dependency_defs_selected(
         @core.Stmt::Test(..) | @core.Stmt::Bench(..) => ()
         @core.Stmt::TraitDef(..)
         | @core.Stmt::TraitImpl(..)
-        | @core.Stmt::InternalTraitDef(..) => ()
+        | @core.Stmt::InternalTraitDef(..) => out.push(stmt)
         @core.Stmt::LetMut(..) => out.push(stmt)
         _ => out.push(stmt)
       }
@@ -1054,6 +1054,10 @@ fn bundle_for_wasm_impl(
       Some(name) => non_prelude_names.push(name)
       None => ()
     }
+    match bundle_stmt_type_name(stmt) {
+      Some(name) => non_prelude_names.push(name)
+      None => ()
+    }
   }
   for
     prelude_stmts in [
@@ -1114,6 +1118,10 @@ fn bundle_for_wasm_impl(
   }
   for stmt in sorted_main {
     match bundle_stmt_value_name(stmt) {
+      Some(name) => non_prelude_names.push(name)
+      None => ()
+    }
+    match bundle_stmt_type_name(stmt) {
       Some(name) => non_prelude_names.push(name)
       None => ()
     }
@@ -1214,10 +1222,10 @@ fn collect_dependency_defs(
         @core.Stmt::Import(..) | @core.Stmt::Export(..) => ()
         // Skip tests from dependencies
         @core.Stmt::Test(..) | @core.Stmt::Bench(..) => ()
-        // Skip trait definitions (no-op in codegen)
+        // Keep trait defs/impls so bundle-time typecheck can resolve bounds.
         @core.Stmt::TraitDef(..)
         | @core.Stmt::TraitImpl(..)
-        | @core.Stmt::InternalTraitDef(..) => ()
+        | @core.Stmt::InternalTraitDef(..) => out.push(stmt)
         // Include mutable variable definitions
         @core.Stmt::LetMut(..) => out.push(stmt)
         // Other statements are passed through

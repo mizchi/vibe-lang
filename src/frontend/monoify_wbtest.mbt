@@ -35,6 +35,235 @@ fn monoify_test_arg(expr : @core.Expr, id : Int) -> @core.CallArg {
 }
 
 ///|
+fn monoify_parse_and_desugar(source : String) -> @core.Module raise {
+  let ast = @parser.parse_ast(source) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let aliases : Map[String, @core.Ref] = {}
+  rewrite_effect_handles(desugar_method_calls(ast, aliases))
+}
+
+///|
+fn monoify_expr_has_call_name(expr : @core.Expr, target : String) -> Bool {
+  match expr {
+    @core.Expr::Call(name~, args~, ..) => {
+      if name == target {
+        return true
+      }
+      for arg in args {
+        if monoify_expr_has_call_name(arg.expr, target) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Tuple(items~, ..) | @core.Expr::Array(items~, ..) => {
+      for item in items {
+        if monoify_expr_has_call_name(item, target) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Record(fields~, ..) => {
+      for field in fields {
+        if monoify_expr_has_call_name(field.expr, target) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Map(fields~, ..) => {
+      for field in fields {
+        if monoify_expr_has_call_name(field.expr, target) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) =>
+      monoify_expr_has_call_name(cond, target) ||
+      monoify_module_has_call_name(then_body, target) ||
+      monoify_module_has_call_name(else_body, target)
+    @core.Expr::Block(body~, ..) => monoify_module_has_call_name(body, target)
+    @core.Expr::Handle(body~, arms~, ..) => {
+      if monoify_module_has_call_name(body, target) {
+        return true
+      }
+      for arm in arms {
+        if monoify_expr_has_call_name(arm.expr, target) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Match(scrutinee~, arms~, ..) => {
+      if monoify_expr_has_call_name(scrutinee, target) {
+        return true
+      }
+      for arm in arms {
+        if monoify_expr_has_call_name(arm.expr, target) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::While(cond~, body~, ..) =>
+      monoify_expr_has_call_name(cond, target) ||
+      monoify_module_has_call_name(body, target)
+    @core.Expr::Loop(body~, ..) => monoify_module_has_call_name(body, target)
+    @core.Expr::Break(value~, ..) =>
+      match value {
+        Some(inner) => monoify_expr_has_call_name(inner, target)
+        None => false
+      }
+    @core.Expr::Continue(args~, ..) => {
+      for item in args {
+        if monoify_expr_has_call_name(item, target) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Fn(body~, ..) => monoify_module_has_call_name(body, target)
+    _ => false
+  }
+}
+
+///|
+fn monoify_expr_has_call_prefix(expr : @core.Expr, prefix : String) -> Bool {
+  match expr {
+    @core.Expr::Call(name~, args~, ..) => {
+      if name.has_prefix(prefix) {
+        return true
+      }
+      for arg in args {
+        if monoify_expr_has_call_prefix(arg.expr, prefix) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Tuple(items~, ..) | @core.Expr::Array(items~, ..) => {
+      for item in items {
+        if monoify_expr_has_call_prefix(item, prefix) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Record(fields~, ..) => {
+      for field in fields {
+        if monoify_expr_has_call_prefix(field.expr, prefix) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Map(fields~, ..) => {
+      for field in fields {
+        if monoify_expr_has_call_prefix(field.expr, prefix) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) =>
+      monoify_expr_has_call_prefix(cond, prefix) ||
+      monoify_module_has_call_prefix(then_body, prefix) ||
+      monoify_module_has_call_prefix(else_body, prefix)
+    @core.Expr::Block(body~, ..) => monoify_module_has_call_prefix(body, prefix)
+    @core.Expr::Handle(body~, arms~, ..) => {
+      if monoify_module_has_call_prefix(body, prefix) {
+        return true
+      }
+      for arm in arms {
+        if monoify_expr_has_call_prefix(arm.expr, prefix) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Match(scrutinee~, arms~, ..) => {
+      if monoify_expr_has_call_prefix(scrutinee, prefix) {
+        return true
+      }
+      for arm in arms {
+        if monoify_expr_has_call_prefix(arm.expr, prefix) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::While(cond~, body~, ..) =>
+      monoify_expr_has_call_prefix(cond, prefix) ||
+      monoify_module_has_call_prefix(body, prefix)
+    @core.Expr::Loop(body~, ..) => monoify_module_has_call_prefix(body, prefix)
+    @core.Expr::Break(value~, ..) =>
+      match value {
+        Some(inner) => monoify_expr_has_call_prefix(inner, prefix)
+        None => false
+      }
+    @core.Expr::Continue(args~, ..) => {
+      for item in args {
+        if monoify_expr_has_call_prefix(item, prefix) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Fn(body~, ..) => monoify_module_has_call_prefix(body, prefix)
+    _ => false
+  }
+}
+
+///|
+fn monoify_module_has_call_name(body : @core.Module, target : String) -> Bool {
+  for stmt in body.stmts {
+    match stmt {
+      @core.Stmt::Let(expr~, ..)
+      | @core.Stmt::ExportLet(expr~, ..)
+      | @core.Stmt::InternalExportLet(expr~, ..)
+      | @core.Stmt::LetMut(expr~, ..)
+      | @core.Stmt::Assign(expr~, ..)
+      | @core.Stmt::Expr(expr~, ..) =>
+        if monoify_expr_has_call_name(expr, target) {
+          return true
+        }
+      @core.Stmt::Test(body~, ..) | @core.Stmt::Bench(body~, ..) =>
+        if monoify_module_has_call_name(body, target) {
+          return true
+        }
+      _ => ()
+    }
+  }
+  false
+}
+
+///|
+fn monoify_module_has_call_prefix(body : @core.Module, prefix : String) -> Bool {
+  for stmt in body.stmts {
+    match stmt {
+      @core.Stmt::Let(expr~, ..)
+      | @core.Stmt::ExportLet(expr~, ..)
+      | @core.Stmt::InternalExportLet(expr~, ..)
+      | @core.Stmt::LetMut(expr~, ..)
+      | @core.Stmt::Assign(expr~, ..)
+      | @core.Stmt::Expr(expr~, ..) =>
+        if monoify_expr_has_call_prefix(expr, prefix) {
+          return true
+        }
+      @core.Stmt::Test(body~, ..) | @core.Stmt::Bench(body~, ..) =>
+        if monoify_module_has_call_prefix(body, prefix) {
+          return true
+        }
+      _ => ()
+    }
+  }
+  false
+}
+
+///|
 test "monoify_module rewrites local Num add call to specialized symbol" {
   let x_ident = @core.Expr::Ident(name="x", span=monoify_test_span(1))
   let y_ident = @core.Expr::Ident(name="y", span=monoify_test_span(2))
@@ -109,4 +338,161 @@ test "monoify_module rewrites local Num add call to specialized symbol" {
   }
   assert_true(has_specialized_def)
   assert_true(value_calls_specialized)
+}
+
+///|
+test "monoify_module specializes iterable dispatch call sites by concrete root" {
+  let ast = monoify_parse_and_desugar(
+    "enum Trio[T] { Trio(T, T, T) }\n" +
+    "impl [T] Iterable for Trio[T]\n" +
+    "let trio_of3 = [T](a: T, b: T, c: T) -> Trio[T] { Trio(a, b, c) }\n" +
+    "let Trio::iter_length = [T](_xs: Trio[T]) -> Int { 3 }\n" +
+    "let Trio::iter_get = [T](xs: Trio[T], index: Int) -> T {\n" +
+    "  match xs {\n" +
+    "    Trio(a, b, c) => if index == 0 { a } else if index == 1 { b } else { c }\n" +
+    "  }\n" +
+    "}\n" +
+    "let Iterator::fold = [C: Iterable, T, B](xs: C, init: B, f: (acc: B, x: T) -> B) -> B {\n" +
+    "  let len = xs|>iter_length\n" +
+    "  let mut i = 0\n" +
+    "  let mut acc = init\n" +
+    "  while i < len {\n" +
+    "    acc = f(acc, xs|>iter_get(i))\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  acc\n" +
+    "}\n" +
+    "let value = Iterator::fold(trio_of3(1, 2, 3), 0, (acc: Int, x: Int) -> Int { acc + x })\n",
+  )
+  let env = type_check_for_monoify_test(ast)
+  let result = monoify_module(ast, env.expr_type_index())
+  let mut has_fold_trio_inst = false
+  for key, _ in result.instantiations {
+    if key.has_prefix("Iterator::fold:Trio") {
+      has_fold_trio_inst = true
+    }
+  }
+  assert_true(has_fold_trio_inst)
+  let mut has_specialized_def = false
+  let mut value_calls_specialized = false
+  let mut body_calls_trio_length = false
+  let mut body_calls_trio_get = false
+  let mut body_calls_plain_iter_get = false
+  for stmt in result.ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr~, ..) => {
+        if name.has_prefix("Iterator::fold$Trio") {
+          has_specialized_def = true
+          match expr {
+            @core.Expr::Fn(body~, ..) => {
+              body_calls_trio_length = monoify_module_has_call_prefix(
+                body, "Trio::iter_length",
+              )
+              body_calls_trio_get = monoify_module_has_call_prefix(
+                body, "Trio::iter_get",
+              )
+              body_calls_plain_iter_get = monoify_module_has_call_name(
+                body, "iter_get",
+              )
+            }
+            _ => ()
+          }
+        }
+        if name == "value" {
+          match expr {
+            @core.Expr::Call(name=call_name, ..) =>
+              if call_name.has_prefix("Iterator::fold$Trio") {
+                value_calls_specialized = true
+              }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+  assert_true(has_specialized_def)
+  assert_true(value_calls_specialized)
+  assert_true(body_calls_trio_length)
+  if !body_calls_trio_get {
+    fail(
+      "expected Trio::iter_get rewrite, plain iter_get=" +
+      body_calls_plain_iter_get.to_string(),
+    )
+  }
+}
+
+///|
+test "monoify_module specializes list iterable helper transitively" {
+  let ast = monoify_parse_and_desugar(
+    "enum List[T] { Nil; Cons(T, List[T]) }\n" +
+    "impl [T] Iterable for List[T]\n" +
+    "let list_of3 = [T](a: T, b: T, c: T) -> List[T] { Cons(a, Cons(b, Cons(c, Nil))) }\n" +
+    "let rec list_length = [T](xs: List[T]) -> Int {\n" +
+    "  match xs {\n" +
+    "    Nil => 0,\n" +
+    "    Cons(_, t) => 1 + list_length(t)\n" +
+    "  }\n" +
+    "}\n" +
+    "let rec list_iter_get = [T](xs: List[T], index: Int) -> T {\n" +
+    "  match xs {\n" +
+    "    Cons(h, t) => if index == 0 { h } else { list_iter_get(t, index - 1) },\n" +
+    "    Nil => list_iter_get(xs, index)\n" +
+    "  }\n" +
+    "}\n" +
+    "let List::iter_get = [T](xs: List[T], index: Int) -> T { list_iter_get(xs, index) }\n" +
+    "let List::iter_length = [T](xs: List[T]) -> Int { list_length(xs) }\n" +
+    "let Iterator::fold = [C: Iterable, T, B](xs: C, init: B, f: (acc: B, x: T) -> B) -> B {\n" +
+    "  let len = xs|>iter_length\n" +
+    "  let mut i = 0\n" +
+    "  let mut acc = init\n" +
+    "  while i < len {\n" +
+    "    acc = f(acc, xs|>iter_get(i))\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  acc\n" +
+    "}\n" +
+    "let value = Iterator::fold(list_of3(1, 2, 3), 0, (acc: Int, x: Int) -> Int { acc + x })\n",
+  )
+  let env = type_check_for_monoify_test(ast)
+  let result = monoify_module(ast, env.expr_type_index())
+  let mut has_fold_list_inst = false
+  for key, _ in result.instantiations {
+    if key.has_prefix("Iterator::fold:List") {
+      has_fold_list_inst = true
+    }
+  }
+  assert_true(has_fold_list_inst)
+  let mut has_fold_list = false
+  let mut fold_calls_list_length = false
+  let mut fold_calls_list_get = false
+  let mut fold_param_specialized = false
+  for stmt in result.ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr~, ..) =>
+        if name.has_prefix("Iterator::fold$List") {
+          has_fold_list = true
+          match expr {
+            @core.Expr::Fn(params~, body~, ..) => {
+              if params.length() >= 1 {
+                fold_param_specialized = params[0].ty ==
+                  @core.Type::Named(name="List", args=[@core.Type::Int])
+              }
+              fold_calls_list_length = monoify_module_has_call_prefix(
+                body, "List::iter_length",
+              )
+              fold_calls_list_get = monoify_module_has_call_prefix(
+                body, "List::iter_get",
+              )
+            }
+            _ => ()
+          }
+        }
+      _ => ()
+    }
+  }
+  assert_true(has_fold_list)
+  assert_true(fold_param_specialized)
+  assert_true(fold_calls_list_length)
+  assert_true(fold_calls_list_get)
 }
