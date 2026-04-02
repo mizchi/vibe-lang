@@ -1255,6 +1255,35 @@ fn compute_mut_captured_for_block(
 }
 
 ///|
+fn scoped_mut_captured_for_block(
+  parent_mcv : Map[String, Bool],
+  stmts : Array[@core.Stmt],
+  fn_closure_captures : Map[String, Array[String]],
+) -> Map[String, Bool] {
+  let scoped = parent_mcv.copy()
+  for stmt in stmts {
+    match stmt {
+      @core.Stmt::LetMut(name~, ..)
+      | @core.Stmt::Let(name~, ..)
+      | @core.Stmt::ExportLet(name~, ..) => scoped.remove(name)
+      @core.Stmt::LetPat(pat~, ..) | @core.Stmt::LetPatElse(pat~, ..) => {
+        let bindings : Array[String] = []
+        collect_pat_bindings_codegen(pat, bindings)
+        for b in bindings {
+          scoped.remove(b)
+        }
+      }
+      _ => ()
+    }
+  }
+  let local_mcv = compute_mut_captured_for_block(stmts, fn_closure_captures)
+  for name, _ in local_mcv {
+    scoped[name] = true
+  }
+  scoped
+}
+
+///|
 fn collect_fn_span_keys_stmt(stmt : @core.Stmt, out : Array[String]) -> Unit {
   match stmt {
     @core.Stmt::Let(expr=@core.Expr::Fn(params~, span~, ..), ..)
@@ -1406,7 +1435,12 @@ fn precompute_ref_cell_captures_block(
         precompute_ref_cell_captures_expr(ctx, expr, scope_mcv)
       @core.Stmt::LetPatElse(expr~, else_body~, ..) => {
         precompute_ref_cell_captures_expr(ctx, expr, scope_mcv)
-        precompute_ref_cell_captures_block(ctx, else_body.stmts, scope_mcv)
+        let else_mcv = scoped_mut_captured_for_block(
+          scope_mcv,
+          else_body.stmts,
+          ctx.fn_closure_captures,
+        )
+        precompute_ref_cell_captures_block(ctx, else_body.stmts, else_mcv)
       }
       @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
         precompute_ref_cell_captures_expr(ctx, target, scope_mcv)
@@ -1451,11 +1485,27 @@ fn precompute_ref_cell_captures_expr(
       }
     @core.Expr::If(cond~, then_body~, else_body~, ..) => {
       precompute_ref_cell_captures_expr(ctx, cond, scope_mcv)
-      precompute_ref_cell_captures_block(ctx, then_body.stmts, scope_mcv)
-      precompute_ref_cell_captures_block(ctx, else_body.stmts, scope_mcv)
+      let then_mcv = scoped_mut_captured_for_block(
+        scope_mcv,
+        then_body.stmts,
+        ctx.fn_closure_captures,
+      )
+      let else_mcv = scoped_mut_captured_for_block(
+        scope_mcv,
+        else_body.stmts,
+        ctx.fn_closure_captures,
+      )
+      precompute_ref_cell_captures_block(ctx, then_body.stmts, then_mcv)
+      precompute_ref_cell_captures_block(ctx, else_body.stmts, else_mcv)
     }
-    @core.Expr::Block(body~, ..) =>
-      precompute_ref_cell_captures_block(ctx, body.stmts, scope_mcv)
+    @core.Expr::Block(body~, ..) => {
+      let body_mcv = scoped_mut_captured_for_block(
+        scope_mcv,
+        body.stmts,
+        ctx.fn_closure_captures,
+      )
+      precompute_ref_cell_captures_block(ctx, body.stmts, body_mcv)
+    }
     @core.Expr::Match(scrutinee~, arms~, ..) => {
       precompute_ref_cell_captures_expr(ctx, scrutinee, scope_mcv)
       for arm in arms {
@@ -1467,7 +1517,12 @@ fn precompute_ref_cell_captures_expr(
       }
     }
     @core.Expr::Handle(body~, arms~, ..) => {
-      precompute_ref_cell_captures_block(ctx, body.stmts, scope_mcv)
+      let body_mcv = scoped_mut_captured_for_block(
+        scope_mcv,
+        body.stmts,
+        ctx.fn_closure_captures,
+      )
+      precompute_ref_cell_captures_block(ctx, body.stmts, body_mcv)
       for arm in arms {
         precompute_ref_cell_captures_expr(ctx, arm.expr, scope_mcv)
         match arm.cond {
@@ -1478,13 +1533,23 @@ fn precompute_ref_cell_captures_expr(
     }
     @core.Expr::While(cond~, body~, ..) => {
       precompute_ref_cell_captures_expr(ctx, cond, scope_mcv)
-      precompute_ref_cell_captures_block(ctx, body.stmts, scope_mcv)
+      let body_mcv = scoped_mut_captured_for_block(
+        scope_mcv,
+        body.stmts,
+        ctx.fn_closure_captures,
+      )
+      precompute_ref_cell_captures_block(ctx, body.stmts, body_mcv)
     }
     @core.Expr::Loop(params~, body~, ..) => {
       for p in params {
         precompute_ref_cell_captures_expr(ctx, p.init, scope_mcv)
       }
-      precompute_ref_cell_captures_block(ctx, body.stmts, scope_mcv)
+      let body_mcv = scoped_mut_captured_for_block(
+        scope_mcv,
+        body.stmts,
+        ctx.fn_closure_captures,
+      )
+      precompute_ref_cell_captures_block(ctx, body.stmts, body_mcv)
     }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
       let desugared = if @core.is_string_for_in(span.start) {
@@ -1494,7 +1559,12 @@ fn precompute_ref_cell_captures_expr(
       } else {
         @core.desugar_for_in(value_name, index_name, iterable, body, span)
       }
-      precompute_ref_cell_captures_block(ctx, desugared.stmts, scope_mcv)
+      let body_mcv = scoped_mut_captured_for_block(
+        scope_mcv,
+        desugared.stmts,
+        ctx.fn_closure_captures,
+      )
+      precompute_ref_cell_captures_block(ctx, desugared.stmts, body_mcv)
     }
     @core.Expr::StructLit(fields~, ..) =>
       for f in fields {
