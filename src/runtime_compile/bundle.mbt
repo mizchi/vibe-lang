@@ -1041,6 +1041,12 @@ fn bundle_for_wasm_impl(
       None => ()
     }
   }
+  for stmt in ast.stmts {
+    match bundle_stmt_value_name(stmt) {
+      Some(name) => existing_value_names[name] = true
+      None => ()
+    }
+  }
   // Include prelude function definitions so that higher-order functions
   // like array_map, array_filter, array_fold etc. are available in WASM.
   // These are defined as user-level .vibe code using primitive builtins

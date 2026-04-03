@@ -143,6 +143,27 @@ test "compile_module_wasm_with_opt_level_profiled reuses wasm artifact cache" {
 }
 
 ///|
+test "compile_module_wasm_no_dce allows entry value shadowing prelude helper" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let add = (a: Int, b: Int) -> Int { a + b }
+      #|let value = add(1, 2)
+      #|value
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+  assert_eq(wasm_bytes[0], b'\x00')
+  assert_eq(wasm_bytes[1], b'\x61')
+  assert_eq(wasm_bytes[2], b'\x73')
+  assert_eq(wasm_bytes[3], b'\x6d')
+}
+
+///|
 test "prepare_bundled_ast_for_codegen specializes imported iterable helpers by concrete root" {
   let db = @runtime.VibeDb::new()
   db.set_source(
