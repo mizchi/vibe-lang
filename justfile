@@ -14,7 +14,7 @@ vibe_wasmtime_wasm_flags := env_var_or_default("VIBE_WASMTIME_WASM_FLAGS", "unkn
 vibe_wasmtime_wasi_flags := env_var_or_default("VIBE_WASMTIME_WASI_FLAGS", "")
 vibe_test_node_options := env_var_or_default("VIBE_TEST_NODE_OPTIONS", "--max-old-space-size=16384")
 # suppress noisy import-liveness warnings while keeping other warnings active
-moon_warn_list := env_var_or_default("VIBE_MOON_WARN_LIST", "-1-6-7-9-24-29")
+moon_warn_list := env_var_or_default("VIBE_MOON_WARN_LIST", "-1-6-7-9-20-24-29")
 vibe_test_ulimit_n := env_var_or_default("VIBE_TEST_ULIMIT_N", "8192")
 vibe_test_jobs := env_var_or_default("VIBE_TEST_JOBS", "1")
 selfhost_suite_branch_extra_entries := `node scripts/coverage_selfhost_suite_next_branches.mjs --preset branch --format env`
