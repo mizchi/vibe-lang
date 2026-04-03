@@ -25,6 +25,21 @@ let empty_expr_array = () -> Array[Expr] {
   ], 0, 0)
 }
 
+let rec desugar_pat = (pat: Pat) -> Pat {
+  match pat {
+    PStruct(_, fields) => {
+      let pats = for (_, fpat) in fields {
+        desugar_pat(fpat)
+      }
+      PTuple(pats)
+    },
+    PCtor(name, args) => PCtor(name, for a in args { desugar_pat(a) }),
+    PTuple(items) => PTuple(for item in items { desugar_pat(item) }),
+    POr(a, b) => POr(desugar_pat(a), desugar_pat(b)),
+    _ => pat
+  }
+}
+
 export let rec desugar_expr = (expr: Expr) -> Expr {
   match expr {
     EBinOp(op, left, right) => if op == "|>" {
@@ -144,7 +159,7 @@ export let rec desugar_expr = (expr: Expr) -> Expr {
       let mut i = 0
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
-        Array::push(out, (p, desugar_expr(b)))
+        Array::push(out, (desugar_pat(p), desugar_expr(b)))
         i = i + 1
       }
       EMatch(desugar_expr(scrutinee), out)
@@ -222,7 +237,30 @@ export let rec desugar_stmt = (stmt: Stmt) -> Stmt {
 }
 
 export let desugar_stmts = (stmts: Array[Stmt]) -> Array[Stmt] {
-  for stmt in stmts {
-    desugar_stmt(stmt)
+  let out = Array::slice([SExpr(EUnit)], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    match stmt {
+      SLetPat(PStruct(_, fields), expr) => {
+        let de = desugar_expr(expr)
+        let tmp_name = "__struct_tmp"
+        Array::push(out, SLet(false, false, tmp_name, None, de))
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (fname, fpat) = Array::get(fields, fi)
+          match fpat {
+            PBind(bname) => {
+              Array::push(out, SLet(false, false, bname, None, EDot(EIdent(tmp_name), fname)))
+            },
+            _ => Array::push(out, desugar_stmt(stmt))
+          }
+          fi = fi + 1
+        }
+      },
+      _ => Array::push(out, desugar_stmt(stmt))
+    }
+    i = i + 1
   }
+  out
 }
