@@ -105,8 +105,26 @@ test "init_state_report_json injects kv files for project requests" {
 }
 
 ///|
-test "eval_report_json returns unsupported after eval removal" {
+test "eval_report_json evaluates simple expression" {
+  eval_runtime_ref.val = None
   let json = eval_report_json("{\"source\":\"1+1\"}")
+  assert_true(json.contains("\"ok\":true"))
+  assert_true(json.contains("\"value\":\"2\""))
+  assert_true(json.contains("\"value_type\":\"Int\""))
+}
+
+///|
+test "eval_report_json returns error for invalid source" {
+  eval_runtime_ref.val = None
+  let json = eval_report_json("{\"source\":\"let x =\"}")
   assert_true(json.contains("\"ok\":false"))
-  assert_true(json.contains("compiled backend"))
+}
+
+///|
+test "eval_reset clears session state" {
+  eval_runtime_ref.val = None
+  let _ = eval_report_json("{\"source\":\"let y = 42\"}")
+  let _ = eval_reset_report_json("{}")
+  let json = eval_report_json("{\"source\":\"y\"}")
+  assert_true(json.contains("\"ok\":false"))
 }
