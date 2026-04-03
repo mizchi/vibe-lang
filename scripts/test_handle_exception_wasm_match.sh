@@ -27,19 +27,11 @@ failed=0
 run_case() {
   local name="$1"
   local source="$2"
+  local expected="$3"
   local file="$TMP_DIR/${name}.vibe"
   local wasm="$TMP_DIR/${name}.wasm"
-  local db="$TMP_DIR/${name}.db"
 
   printf "%s\n" "$source" > "$file"
-
-  local interp_result
-  interp_result="$($VIBE_BIN eval --db "$db" --include "$file" "main()" 2>/dev/null | sed -n 's/^last: //p' | head -n 1)"
-  if [ -z "$interp_result" ]; then
-    echo "FAIL: $name (interpreter result missing)"
-    failed=$((failed + 1))
-    return
-  fi
 
   if ! "$VIBE_BIN" compile --wasm --debug-errors "$file" -o "$wasm" >/dev/null 2>&1; then
     echo "FAIL: $name (wasm compile failed)"
@@ -58,14 +50,15 @@ run_case() {
   local wasm_result
   wasm_result=$((wasm_tagged >> 2))
 
-  if [ "$interp_result" = "$wasm_result" ]; then
-    echo "PASS: $name => $interp_result"
+  if [ "$expected" = "$wasm_result" ]; then
+    echo "PASS: $name => $wasm_result"
     passed=$((passed + 1))
-  else
+  else {
     echo "FAIL: $name"
-    echo "  interpreter: $interp_result"
-    echo "  wasm:        $wasm_result (tagged: $wasm_tagged)"
+    echo "  expected: $expected"
+    echo "  wasm:     $wasm_result (tagged: $wasm_tagged)"
     failed=$((failed + 1))
+  }
   fi
 }
 
@@ -137,10 +130,12 @@ main()
 VIBE
 )
 
-run_case "handle_passthrough" "$case_handle_passthrough"
-run_case "handle_throw_const" "$case_throw_const"
-run_case "handle_throw_bind" "$case_throw_bind"
-run_case "handle_nested_throw" "$case_nested_throw"
+# Expected values: handle_passthrough=42, throw_const=99,
+# throw_bind=4 (length of "boom"), nested_throw=5 (length of "outer")
+run_case "handle_passthrough" "$case_handle_passthrough" "42"
+run_case "handle_throw_const" "$case_throw_const" "99"
+run_case "handle_throw_bind" "$case_throw_bind" "4"
+run_case "handle_nested_throw" "$case_nested_throw" "5"
 
 echo "Summary: $passed passed, $failed failed"
 

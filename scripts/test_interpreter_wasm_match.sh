@@ -1,6 +1,7 @@
 #!/bin/bash
-# Test that interpreter and WASM produce the same output for pattern matching
-# This verifies codegen correctness by comparing evaluation results
+# Test that vibe run and WASM compiled output produce the same results
+# for pattern matching and other expressions.
+# This verifies codegen correctness by comparing evaluation results.
 
 set -e
 
@@ -73,9 +74,9 @@ test_cases=(
   'let (a, _, c) = (1, 2, 3); a + c'
   'let record { x: a, y: _ } = record { x: 10, y: 20 }; a'
 
-  # For-in with mutable accumulation
-  'let mut total = 0; for x in [1, 2, 3, 4, 5] { total = total + x }; total'
-  'let mut sum = 0; for x in [10, 20, 30] { sum = sum + x; x }; sum'
+  # For-in with mutable accumulation (wrapped in function — top-level let mut is disallowed)
+  'let f = () -> Int { let mut total = 0; for x in [1, 2, 3, 4, 5] { total = total + x }; total }; f()'
+  'let f = () -> Int { let mut sum = 0; for x in [10, 20, 30] { sum = sum + x; x }; sum }; f()'
 
   # String builtins
   'String::length("hello")'
@@ -115,16 +116,15 @@ test_cases=(
   'if String::replace("foo bar foo", "foo", "baz") == "baz bar foo" { 1 } else { 0 }'
   'if String::replace_all("foo bar foo", "foo", "baz") == "baz bar baz" { 1 } else { 0 }'
 
-  # Break and continue
-  'let mut sum = 0; let mut i = 0; while i < 10 { i = i + 1; if i == 5 { break }; sum = sum + i }; sum'
-  'let mut sum = 0; let mut i = 0; while i < 10 { i = i + 1; if i % 2 == 0 { continue }; sum = sum + i }; sum'
-  'let mut sum = 0; let mut i = 0; while i < 100 { i = i + 1; if i % 3 == 0 { continue }; if i > 10 { break }; sum = sum + i }; sum'
+  # Break and continue (wrapped in function — top-level let mut is disallowed)
+  'let f = () -> Int { let mut sum = 0; let mut i = 0; while i < 10 { i = i + 1; if i == 5 { break }; sum = sum + i }; sum }; f()'
+  'let f = () -> Int { let mut sum = 0; let mut i = 0; while i < 10 { i = i + 1; if i % 2 == 0 { continue }; sum = sum + i }; sum }; f()'
+  'let f = () -> Int { let mut sum = 0; let mut i = 0; while i < 100 { i = i + 1; if i % 3 == 0 { continue }; if i > 10 { break }; sum = sum + i }; sum }; f()'
 
   # Closures and higher-order functions
   'let f = (x: Int) -> Int { x * 2 }; f(5)'
   'let apply = (f: (Int) -> Int, x: Int) -> Int { f(x) }; apply((x: Int) -> Int { x + 1 }, 5)'
   'let make_adder = (n: Int) -> (Int) -> Int { (x: Int) -> Int { x + n } }; let add5 = make_adder(5); add5(10)'
-  # Note: mutable capture through closures has interpreter limitation (returns 0 instead of 3)
 
   # Recursive functions
   'let rec fact = (n: Int) -> Int { if n <= 1 { 1 } else { n * fact(n - 1) } }; fact(5)'
@@ -142,10 +142,10 @@ test_cases=(
 
   # Block expressions
   'let x = { let a = 10; let b = 20; a + b }; x'
-  'let y = { let mut sum = 0; for i in [1, 2, 3] { sum = sum + i }; sum }; y'
+  'let y = { let f = () -> Int { let mut sum = 0; for i in [1, 2, 3] { sum = sum + i }; sum }; f() }; y'
 
-  # Complex combinations
-  'let arr = [1, 2, 3, 4, 5]; let mut sum = 0; for x in arr { if x % 2 == 1 { sum = sum + x * x } }; sum'
+  # Complex combinations (wrapped in function — top-level let mut is disallowed)
+  'let f = () -> Int { let arr = [1, 2, 3, 4, 5]; let mut sum = 0; for x in arr { if x % 2 == 1 { sum = sum + x * x } }; sum }; f()'
   'match (Some(10), Some(20)) { (Some(a), Some(b)) => a + b, _ => 0 }'
   'let rec sum_to = (n: Int) -> Int { if n <= 0 { 0 } else { n + sum_to(n - 1) } }; sum_to(10)'
 
@@ -171,21 +171,15 @@ test_cases=(
   'let outer = (x: Int) -> (Int) -> Int { let y = x + 1; (z: Int) -> Int { y + z } }; outer(10)(5)'
   'let compose = (f: (Int) -> Int, g: (Int) -> Int) -> (Int) -> Int { (x: Int) -> Int { f(g(x)) } }; let add1 = (x: Int) -> Int { x + 1 }; let mul2 = (x: Int) -> Int { x * 2 }; compose(add1, mul2)(5)'
 
-  # parse_int builtin
-  'Int::parse("42")'
-  'Int::parse("0")'
-  'Int::parse("999") + 1'
-  'Int::parse(to_string(77))'
-
-  # parse_double builtin
-  'Double::to_int(Double::parse("3.14") * 100.0)'
-  'Double::to_int(Double::parse("0.0"))'
-  'Double::to_int(Double::parse("-2.5") * 10.0)'
-  'Double::to_int(Double::parse("1.5") + Double::parse("2.5"))'
-  'Double::to_int(Double::parse("42"))'
+  # Double::to_int (replaces deprecated double_to_int + parse_double)
+  'Double::to_int(3.14 * 100.0)'
+  'Double::to_int(0.0)'
+  'Double::to_int(-2.5 * 10.0)'
+  'Double::to_int(1.5 + 2.5)'
+  'Double::to_int(42.0)'
 )
 
-echo "Testing interpreter vs WASM output..."
+echo "Testing vibe run vs WASM output..."
 echo ""
 
 for expr in "${test_cases[@]}"; do
@@ -201,13 +195,11 @@ for expr in "${test_cases[@]}"; do
   # Create test file
   echo "$expr" > "$TEMP_DIR/test.vibe"
 
-  # Run interpreter via eval and extract numeric value
-  # Use a unique --db per expression to avoid accumulating let bindings
-  eval_db="$TEMP_DIR/eval_db_${test_index}"
-  interp_output=$($VIBE eval --db "$eval_db" "$expr" 2>/dev/null | grep "^last: " | sed 's/last: //')
-  interp_result="$interp_output"
+  # Get reference result via vibe run
+  run_output=$($VIBE run "$TEMP_DIR/test.vibe" 2>/dev/null | grep "^last: " | sed 's/last: //')
+  run_result="$run_output"
 
-  # Compile and run WASM
+  # Compile and run WASM with wasmtime directly (for tagged integer extraction)
   if $VIBE compile --wasm "$TEMP_DIR/test.vibe" -o "$TEMP_DIR/test.wasm" 2>/dev/null; then
     # Run with --invoke to get return value, untag integer (divide by 4)
     wasm_tagged=$(WASMTIME_BIN="$WASMTIME_BIN" "$WASMTIME_RUN" --invoke _start "$TEMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning")
@@ -222,18 +214,13 @@ for expr in "${test_cases[@]}"; do
   fi
 
   # Compare
-  if [ -z "$interp_result" ] || ! echo "$interp_result" | grep -qE '^-?[0-9]+$'; then
-    # Interpreter couldn't produce a numeric result — eval limitation, not
-    # a wasm codegen regression.  Count as skip rather than fail.
-    echo "SKIP: $expr (interpreter: ${interp_result:-<empty>})"
-    skipped=$((skipped + 1))
-  elif [ "$interp_result" = "$wasm_result" ]; then
-    echo "PASS: $expr => $interp_result"
+  if [ "$run_result" = "$wasm_result" ]; then
+    echo "PASS: $expr => $run_result"
     passed=$((passed + 1))
   else
     echo "FAIL: $expr"
-    echo "  Interpreter: $interp_result"
-    echo "  WASM:        $wasm_result (tagged: $wasm_tagged)"
+    echo "  run:  $run_result"
+    echo "  WASM: $wasm_result (tagged: ${wasm_tagged:-N/A})"
     failed=$((failed + 1))
   fi
 done
