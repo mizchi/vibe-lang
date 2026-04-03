@@ -881,8 +881,7 @@ pub fn compile_module(
   @core.clear_string_for_in_spans()
   let rewritten = @frontend.rewrite_string_add(mono.ast, expr_type_index)
   let resolved_ast = db.rewrite_imports_to_hash(path, rewritten)
-  let namespaced_ast = namespace_private_module_values(path, resolved_ast)
-  let ir = module_to_sexp(namespaced_ast, aliases)
+  let ir = module_to_sexp(resolved_ast, aliases)
   let ir_hash = @core.git_blob_hash_string(ir)
   let module_ref = @core.module_ref_from_hash(ir_hash)
   let module_refs : Array[String] = []
@@ -899,7 +898,7 @@ pub fn compile_module(
     module_ref,
     imports: module_refs,
     aliases,
-    ast: namespaced_ast,
+    ast: resolved_ast,
     expr_type_index,
     type_env: env,
     instantiations: mono.instantiations,
@@ -922,6 +921,54 @@ pub fn run_compiled(
 }
 
 ///|
+fn dedupe_bundled_value_defs(ast : @core.Module) -> @core.Module {
+  // Last-wins deduplication: when duplicate value names exist in a bundle
+  // (e.g. __to_string from multiple polyfill modules), keep the last
+  // definition so that module-local references resolve to their own version.
+  let last_index : Map[String, Int] = {}
+  for idx = 0; idx < ast.stmts.length(); idx = idx + 1 {
+    let name : String? = match ast.stmts[idx] {
+      @core.Stmt::Let(name~, ..)
+      | @core.Stmt::ExportLet(name~, ..)
+      | @core.Stmt::InternalExportLet(name~, ..)
+      | @core.Stmt::LetMut(name~, ..)
+      | @core.Stmt::ExternLet(name~, ..) => Some(name)
+      _ => None
+    }
+    match name {
+      Some(n) => last_index[n] = idx
+      None => ()
+    }
+  }
+  let out : Array[@core.Stmt] = []
+  let seen : Map[String, Bool] = {}
+  for idx = 0; idx < ast.stmts.length(); idx = idx + 1 {
+    let stmt = ast.stmts[idx]
+    let name : String? = match stmt {
+      @core.Stmt::Let(name~, ..)
+      | @core.Stmt::ExportLet(name~, ..)
+      | @core.Stmt::InternalExportLet(name~, ..)
+      | @core.Stmt::LetMut(name~, ..)
+      | @core.Stmt::ExternLet(name~, ..) => Some(name)
+      _ => None
+    }
+    match name {
+      Some(n) =>
+        if seen.contains(n) {
+          continue
+        } else if last_index.get(n) == Some(idx) {
+          seen[n] = true
+          out.push(stmt)
+        } else {
+          continue
+        }
+      None => out.push(stmt)
+    }
+  }
+  { stmts: out }
+}
+
+///|
 fn prepare_bundled_ast_for_codegen(
   bundled : @core.Module,
 ) -> @core.Module raise CompileError {
@@ -930,6 +977,7 @@ fn prepare_bundled_ast_for_codegen(
   let ast = @frontend.rewrite_effect_handles(desugared)
   let env : Result[@checker.TypeEnv, @checker.TypeError] = try? @checker.type_check(
     ast,
+    allow_duplicate_decl=true,
   )
   let typed_env = match env {
     Ok(value) => value
@@ -949,12 +997,11 @@ fn bundle_for_codegen(
   bundle_kind : String,
 ) -> @core.Module raise CompileError {
   let raw = bundle_for_wasm_no_dce(db, path, ast)
-  let prepared = prepare_bundled_ast_for_codegen(raw)
   match bundle_kind {
-    "default" => @pipeline.dce_module(prepared)
-    "gc" => @pipeline.dce_module_gc(prepared)
-    "tests" => @pipeline.dce_module_for_tests(prepared)
-    _ => prepared
+    "default" => @pipeline.dce_module(raw)
+    "gc" => @pipeline.dce_module_gc(raw)
+    "tests" => @pipeline.dce_module_for_tests(raw)
+    _ => raw
   }
 }
 
