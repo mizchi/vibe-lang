@@ -12,4 +12,3 @@ pub(all) enum ParserMode {
   PosixMode
   PosixStrictMode
 } derive(Show, Eq)
-
