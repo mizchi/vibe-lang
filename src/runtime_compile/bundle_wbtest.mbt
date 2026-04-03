@@ -83,6 +83,90 @@ test "bundle_for_wasm_no_dce keeps imported trait impls" {
 }
 
 ///|
+test "bundle_for_wasm_no_dce keeps mixed wrapper and direct type defs concrete" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "/project/core/types_impl.vibe",
+    (
+      #|export enum Type {
+      #|  CtUnit
+      #|}
+      #|export enum TypeDef {
+      #|  TDAlias(String, Type)
+      #|}
+    ),
+  )
+  db.set_source(
+    "/project/types.vibe",
+    (
+      #|export ./core/types_impl.vibe {
+      #|  Type, TypeDef
+      #|}
+      #|export {
+      #|  Type, TypeDef
+      #|}
+    ),
+  )
+  db.set_source(
+    "/project/use_wrapper.vibe",
+    (
+      #|import ./types.vibe {
+      #|  Type
+      #|}
+      #|export let make_type = () -> Type {
+      #|  CtUnit
+      #|}
+    ),
+  )
+  db.set_source(
+    "/project/use_core.vibe",
+    (
+      #|import ./core/types_impl.vibe {
+      #|  Type, TypeDef
+      #|}
+      #|export let make_type_def = () -> TypeDef {
+      #|  TDAlias("dummy", CtUnit)
+      #|}
+    ),
+  )
+  db.set_source(
+    "/project/main.vibe",
+    (
+      #|import ./use_wrapper.vibe {
+      #|  make_type
+      #|}
+      #|import ./use_core.vibe {
+      #|  make_type_def
+      #|}
+      #|let _t = make_type()
+      #|let _d = make_type_def()
+    ),
+  )
+  let ast = db.ast_with_hash_imports("/project/main.vibe")
+  let bundled = bundle_for_wasm_no_dce(db, "/project/main.vibe", ast)
+  let sexp = module_to_sexp(bundled, {})
+  if sexp.contains("Import ") || sexp.contains("ReExport ") {
+    fail(sexp)
+  }
+  let mut has_type = false
+  let mut has_typedef = false
+  for stmt in bundled.stmts {
+    match stmt {
+      @core.Stmt::EnumDef(name~, ..) =>
+        if name == "Type" {
+          has_type = true
+        } else if name == "TypeDef" {
+          has_typedef = true
+        }
+      _ => ()
+    }
+  }
+  if !has_type || !has_typedef {
+    fail(sexp)
+  }
+}
+
+///|
 test "bundle_for_wasm_linked resolves ReExport function as linked import" {
   let db = @runtime.VibeDb::new()
   db.set_source(

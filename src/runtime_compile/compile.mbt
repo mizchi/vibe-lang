@@ -77,6 +77,643 @@ let compile_module_cache : Ref[Map[String, CompiledModule]] = @ref.new({})
 let wasm_artifact_cache : Ref[Map[String, Bytes]] = @ref.new({})
 
 ///|
+priv struct RenameScope {
+  bindings : Map[String, String]
+  parent : RenameScope?
+}
+
+///|
+fn RenameScope::new() -> RenameScope {
+  { bindings: {}, parent: None }
+}
+
+///|
+fn RenameScope::child(self : RenameScope) -> RenameScope {
+  { bindings: {}, parent: Some(self) }
+}
+
+///|
+fn rename_scope_lookup(scope : RenameScope, name : String) -> String? {
+  if scope.bindings.contains(name) {
+    Some(scope.bindings[name])
+  } else {
+    match scope.parent {
+      Some(parent) => rename_scope_lookup(parent, name)
+      None => None
+    }
+  }
+}
+
+///|
+fn prefixed_private_value_name(path : String, name : String) -> String {
+  let hash = @core.git_blob_hash_string(path)
+  let short = hash.unsafe_substring(start=0, end=8)
+  name + "$dep$" + short
+}
+
+///|
+fn collect_exported_value_names(ast : @core.Module) -> Map[String, Bool] {
+  let exported : Map[String, Bool] = {}
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::ExportLet(name~, ..)
+      | @core.Stmt::InternalExportLet(name~, ..)
+      | @core.Stmt::ExportEnumDef(name~, ..)
+      | @core.Stmt::InternalExportEnumDef(name~, ..)
+      | @core.Stmt::ExportTypeAlias(name~, ..)
+      | @core.Stmt::InternalExportTypeAlias(name~, ..)
+      | @core.Stmt::ExportStructDef(name~, ..)
+      | @core.Stmt::InternalExportStructDef(name~, ..)
+      | @core.Stmt::ExportEffectDef(name~, ..) => exported[name] = true
+      @core.Stmt::Export(names~, ..) =>
+        for name in names {
+          exported[name] = true
+        }
+      _ => ()
+    }
+  }
+  exported
+}
+
+///|
+fn collect_private_value_rename_map(
+  path : String,
+  ast : @core.Module,
+) -> Map[String, String] {
+  let exported = collect_exported_value_names(ast)
+  let rename_map : Map[String, String] = {}
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, ..)
+      | @core.Stmt::LetMut(name~, ..)
+      | @core.Stmt::ExternLet(name~, ..) =>
+        if !exported.contains(name) {
+          rename_map[name] = prefixed_private_value_name(path, name)
+        }
+      _ => ()
+    }
+  }
+  rename_map
+}
+
+///|
+fn rename_lookup_name(
+  scope : RenameScope,
+  rename_map : Map[String, String],
+  name : String,
+) -> String {
+  match rename_scope_lookup(scope, name) {
+    Some(mapped) => mapped
+    None =>
+      match rename_map.get(name) {
+        Some(mapped) => mapped
+        None => name
+      }
+  }
+}
+
+///|
+fn bind_pattern_names_into_scope(scope : RenameScope, pat : @core.Pat) -> Unit {
+  let bound : Map[String, Bool] = {}
+  @core.bind_pattern_names_walker(bound, pat)
+  for name, _ in bound {
+    scope.bindings[name] = name
+  }
+}
+
+///|
+fn rename_call_args(
+  args : Array[@core.CallArg],
+  scope : RenameScope,
+  rename_map : Map[String, String],
+) -> Array[@core.CallArg] {
+  let next : Array[@core.CallArg] = []
+  for arg in args {
+    next.push({
+      label: arg.label,
+      expr: rename_private_expr_refs(arg.expr, scope, rename_map),
+      span: arg.span,
+    })
+  }
+  next
+}
+
+///|
+fn rename_match_arms(
+  arms : Array[@core.MatchArm],
+  scope : RenameScope,
+  rename_map : Map[String, String],
+) -> Array[@core.MatchArm] {
+  let next : Array[@core.MatchArm] = []
+  for arm in arms {
+    let arm_scope = scope.child()
+    bind_pattern_names_into_scope(arm_scope, arm.pat)
+    let cond = match arm.cond {
+      Some(expr) => Some(rename_private_expr_refs(expr, arm_scope, rename_map))
+      None => None
+    }
+    next.push({
+      pat: arm.pat,
+      cond,
+      expr: rename_private_expr_refs(arm.expr, arm_scope, rename_map),
+      span: arm.span,
+    })
+  }
+  next
+}
+
+///|
+fn rename_record_fields(
+  fields : Array[@core.RecordFieldExpr],
+  scope : RenameScope,
+  rename_map : Map[String, String],
+) -> Array[@core.RecordFieldExpr] {
+  let next : Array[@core.RecordFieldExpr] = []
+  for field in fields {
+    next.push({
+      name: field.name,
+      expr: rename_private_expr_refs(field.expr, scope, rename_map),
+      span: field.span,
+    })
+  }
+  next
+}
+
+///|
+fn rename_map_fields(
+  fields : Array[@core.MapFieldExpr],
+  scope : RenameScope,
+  rename_map : Map[String, String],
+) -> Array[@core.MapFieldExpr] {
+  let next : Array[@core.MapFieldExpr] = []
+  for field in fields {
+    next.push({
+      key: field.key,
+      expr: rename_private_expr_refs(field.expr, scope, rename_map),
+      span: field.span,
+    })
+  }
+  next
+}
+
+///|
+fn rename_private_expr_refs(
+  expr : @core.Expr,
+  scope : RenameScope,
+  rename_map : Map[String, String],
+) -> @core.Expr {
+  match expr {
+    @core.Expr::Int(..)
+    | @core.Expr::Float(..)
+    | @core.Expr::Double(..)
+    | @core.Expr::Bool(..)
+    | @core.Expr::Char(..)
+    | @core.Expr::String(..)
+    | @core.Expr::Placeholder(..) => expr
+    @core.Expr::StringInterp(parts~, span~) => {
+      let next : Array[@core.StringInterpPart] = []
+      for part in parts {
+        match part {
+          @core.StringInterpPart::Lit(text) =>
+            next.push(@core.StringInterpPart::Lit(text))
+          @core.StringInterpPart::Expr(inner) =>
+            next.push(
+              @core.StringInterpPart::Expr(
+                rename_private_expr_refs(inner, scope, rename_map),
+              ),
+            )
+        }
+      }
+      @core.Expr::StringInterp(parts=next, span~)
+    }
+    @core.Expr::Ident(name~, span~) =>
+      @core.Expr::Ident(
+        name=rename_lookup_name(scope, rename_map, name),
+        span~,
+      )
+    @core.Expr::Call(name~, type_args~, args~, span~) =>
+      @core.Expr::Call(
+        name=rename_lookup_name(scope, rename_map, name),
+        type_args~,
+        args=rename_call_args(args, scope, rename_map),
+        span~,
+      )
+    @core.Expr::Tuple(items~, span~) => {
+      let next : Array[@core.Expr] = []
+      for item in items {
+        next.push(rename_private_expr_refs(item, scope, rename_map))
+      }
+      @core.Expr::Tuple(items=next, span~)
+    }
+    @core.Expr::TupleIndex(expr~, index~, span~) =>
+      @core.Expr::TupleIndex(
+        expr=rename_private_expr_refs(expr, scope, rename_map),
+        index~,
+        span~,
+      )
+    @core.Expr::Record(fields~, span~) =>
+      @core.Expr::Record(
+        fields=rename_record_fields(fields, scope, rename_map),
+        span~,
+      )
+    @core.Expr::Array(items~, span~) => {
+      let next : Array[@core.Expr] = []
+      for item in items {
+        next.push(rename_private_expr_refs(item, scope, rename_map))
+      }
+      @core.Expr::Array(items=next, span~)
+    }
+    @core.Expr::Map(fields~, span~) =>
+      @core.Expr::Map(
+        fields=rename_map_fields(fields, scope, rename_map),
+        span~,
+      )
+    @core.Expr::If(cond~, then_body~, else_body~, span~) =>
+      @core.Expr::If(
+        cond=rename_private_expr_refs(cond, scope, rename_map),
+        then_body=rename_private_module_refs(
+          then_body,
+          scope,
+          rename_map,
+          false,
+        ),
+        else_body=rename_private_module_refs(
+          else_body,
+          scope,
+          rename_map,
+          false,
+        ),
+        span~,
+      )
+    @core.Expr::Block(body~, span~) =>
+      @core.Expr::Block(
+        body=rename_private_module_refs(
+          body,
+          scope,
+          rename_map,
+          false,
+        ),
+        span~,
+      )
+    @core.Expr::Match(scrutinee~, arms~, span~) =>
+      @core.Expr::Match(
+        scrutinee=rename_private_expr_refs(scrutinee, scope, rename_map),
+        arms=rename_match_arms(arms, scope, rename_map),
+        span~,
+      )
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
+      let body_scope = scope.child()
+      body_scope.bindings[value_name] = value_name
+      match index_name {
+        Some(name) => body_scope.bindings[name] = name
+        None => ()
+      }
+      @core.Expr::ForIn(
+        value_name~,
+        index_name~,
+        iterable=rename_private_expr_refs(iterable, scope, rename_map),
+        body=rename_private_module_refs(
+          body,
+          body_scope,
+          rename_map,
+          false,
+        ),
+        span~,
+      )
+    }
+    @core.Expr::Fn(
+      type_params~,
+      type_bounds~,
+      params~,
+      ret~,
+      effects~,
+      body~,
+      span~
+    ) => {
+      let body_scope = scope.child()
+      for param in params {
+        body_scope.bindings[param.name] = param.name
+      }
+      @core.Expr::Fn(
+        type_params~,
+        type_bounds~,
+        params~,
+        ret~,
+        effects~,
+        body=rename_private_module_refs(
+          body,
+          body_scope,
+          rename_map,
+          false,
+        ),
+        span~,
+      )
+    }
+    @core.Expr::While(cond~, body~, span~) =>
+      @core.Expr::While(
+        cond=rename_private_expr_refs(cond, scope, rename_map),
+        body=rename_private_module_refs(
+          body,
+          scope,
+          rename_map,
+          false,
+        ),
+        span~,
+      )
+    @core.Expr::Loop(params~, body~, span~) => {
+      let next_params : Array[@core.LoopParam] = []
+      let body_scope = scope.child()
+      for param in params {
+        next_params.push({
+          name: param.name,
+          init: rename_private_expr_refs(param.init, scope, rename_map),
+          span: param.span,
+        })
+        body_scope.bindings[param.name] = param.name
+      }
+      @core.Expr::Loop(
+        params=next_params,
+        body=rename_private_module_refs(
+          body,
+          body_scope,
+          rename_map,
+          false,
+        ),
+        span~,
+      )
+    }
+    @core.Expr::Break(value~, span~) =>
+      @core.Expr::Break(
+        value=match value {
+          Some(inner) => Some(rename_private_expr_refs(inner, scope, rename_map))
+          None => None
+        },
+        span~,
+      )
+    @core.Expr::Continue(args~, span~) => {
+      let next : Array[@core.Expr] = []
+      for arg in args {
+        next.push(rename_private_expr_refs(arg, scope, rename_map))
+      }
+      @core.Expr::Continue(args=next, span~)
+    }
+    @core.Expr::Yield(expr~, span~) =>
+      @core.Expr::Yield(
+        expr=rename_private_expr_refs(expr, scope, rename_map),
+        span~,
+      )
+    @core.Expr::Handle(body~, arms~, span~) =>
+      @core.Expr::Handle(
+        body=rename_private_module_refs(
+          body,
+          scope,
+          rename_map,
+          false,
+        ),
+        arms=rename_match_arms(arms, scope, rename_map),
+        span~,
+      )
+    @core.Expr::StructLit(name~, type_args~, fields~, span~) =>
+      @core.Expr::StructLit(
+        name~,
+        type_args~,
+        fields=rename_record_fields(fields, scope, rename_map),
+        span~,
+      )
+    @core.Expr::Spread(expr~, span~) =>
+      @core.Expr::Spread(
+        expr=rename_private_expr_refs(expr, scope, rename_map),
+        span~,
+      )
+    @core.Expr::Perform(effect_name~, op_name~, args~, span~) =>
+      @core.Expr::Perform(
+        effect_name~,
+        op_name~,
+        args=rename_call_args(args, scope, rename_map),
+        span~,
+      )
+  }
+}
+
+///|
+fn rename_private_stmt_refs(
+  stmt : @core.Stmt,
+  scope : RenameScope,
+  rename_map : Map[String, String],
+  rename_toplevel_binders : Bool,
+) -> @core.Stmt {
+  match stmt {
+    @core.Stmt::Let(rec~, name~, expr~, span~) => {
+      let next_name = if rename_toplevel_binders && rename_map.contains(name) {
+        rename_map[name]
+      } else {
+        name
+      }
+      let expr_scope = if rec {
+        let child = scope.child()
+        child.bindings[name] = next_name
+        child
+      } else {
+        scope
+      }
+      @core.Stmt::Let(
+        rec~,
+        name=next_name,
+        expr=rename_private_expr_refs(expr, expr_scope, rename_map),
+        span~,
+      )
+    }
+    @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
+      @core.Stmt::ExportLet(
+        rec~,
+        name~,
+        expr=rename_private_expr_refs(expr, scope, rename_map),
+        span~,
+      )
+    @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) =>
+      @core.Stmt::InternalExportLet(
+        rec~,
+        name~,
+        expr=rename_private_expr_refs(expr, scope, rename_map),
+        span~,
+      )
+    @core.Stmt::LetMut(name~, expr~, span~) => {
+      let next_name = if rename_toplevel_binders && rename_map.contains(name) {
+        rename_map[name]
+      } else {
+        name
+      }
+      @core.Stmt::LetMut(
+        name=next_name,
+        expr=rename_private_expr_refs(expr, scope, rename_map),
+        span~,
+      )
+    }
+    @core.Stmt::ExternLet(name~, ty~, span~) => {
+      let next_name = if rename_toplevel_binders && rename_map.contains(name) {
+        rename_map[name]
+      } else {
+        name
+      }
+      @core.Stmt::ExternLet(name=next_name, ty~, span~)
+    }
+    @core.Stmt::Assign(name~, expr~, span~) =>
+      @core.Stmt::Assign(
+        name=rename_lookup_name(scope, rename_map, name),
+        expr=rename_private_expr_refs(expr, scope, rename_map),
+        span~,
+      )
+    @core.Stmt::IndexAssign(target~, index~, value~, span~) =>
+      @core.Stmt::IndexAssign(
+        target=rename_private_expr_refs(target, scope, rename_map),
+        index=rename_private_expr_refs(index, scope, rename_map),
+        value=rename_private_expr_refs(value, scope, rename_map),
+        span~,
+      )
+    @core.Stmt::LetPat(pat~, expr~, span~) =>
+      @core.Stmt::LetPat(
+        pat~,
+        expr=rename_private_expr_refs(expr, scope, rename_map),
+        span~,
+      )
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) =>
+      @core.Stmt::LetPatElse(
+        pat~,
+        expr=rename_private_expr_refs(expr, scope, rename_map),
+        else_body=rename_private_module_refs(
+          else_body,
+          scope,
+          rename_map,
+          false,
+        ),
+        span~,
+      )
+    @core.Stmt::Expr(expr~, span~) =>
+      @core.Stmt::Expr(
+        expr=rename_private_expr_refs(expr, scope, rename_map),
+        span~,
+      )
+    @core.Stmt::Test(name~, body~, span~) =>
+      @core.Stmt::Test(
+        name~,
+        body=rename_private_module_refs(
+          body,
+          scope,
+          rename_map,
+          false,
+        ),
+        span~,
+      )
+    @core.Stmt::Bench(name~, body~, span~) =>
+      @core.Stmt::Bench(
+        name~,
+        body=rename_private_module_refs(
+          body,
+          scope,
+          rename_map,
+          false,
+        ),
+        span~,
+      )
+    @core.Stmt::TraitImpl(
+      type_params~,
+      type_bounds~,
+      trait_name~,
+      target~,
+      methods~,
+      span~
+    ) => {
+      let next_methods : Array[@core.ImplMethodDef] = []
+      for impl_method in methods {
+        next_methods.push({
+          name: impl_method.name,
+          expr: rename_private_expr_refs(impl_method.expr, scope, rename_map),
+          span: impl_method.span,
+        })
+      }
+      @core.Stmt::TraitImpl(
+        type_params~,
+        type_bounds~,
+        trait_name~,
+        target~,
+        methods=next_methods,
+        span~,
+      )
+    }
+    _ => stmt
+  }
+}
+
+///|
+fn extend_scope_with_stmt_bindings(
+  scope : RenameScope,
+  stmt : @core.Stmt,
+  rename_map : Map[String, String],
+  rename_toplevel_binders : Bool,
+) -> Unit {
+  match stmt {
+    @core.Stmt::Let(name~, ..)
+    | @core.Stmt::LetMut(name~, ..)
+    | @core.Stmt::ExternLet(name~, ..) =>
+      if rename_toplevel_binders && rename_map.contains(name) {
+        scope.bindings[name] = rename_map[name]
+      } else {
+        scope.bindings[name] = name
+      }
+    @core.Stmt::ExportLet(name~, ..)
+    | @core.Stmt::InternalExportLet(name~, ..) => scope.bindings[name] = name
+    @core.Stmt::LetPat(pat~, ..) | @core.Stmt::LetPatElse(pat~, ..) =>
+      bind_pattern_names_into_scope(scope, pat)
+    _ => ()
+  }
+}
+
+///|
+fn rename_private_module_refs(
+  mod_ : @core.Module,
+  parent_scope : RenameScope,
+  rename_map : Map[String, String],
+  rename_toplevel_binders : Bool,
+) -> @core.Module {
+  let scope = parent_scope.child()
+  let next_stmts : Array[@core.Stmt] = []
+  for stmt in mod_.stmts {
+    let next = rename_private_stmt_refs(
+      stmt,
+      scope,
+      rename_map,
+      rename_toplevel_binders,
+    )
+    next_stmts.push(next)
+    extend_scope_with_stmt_bindings(
+      scope,
+      stmt,
+      rename_map,
+      rename_toplevel_binders,
+    )
+  }
+  { stmts: next_stmts }
+}
+
+///|
+fn namespace_private_module_values(
+  path : String,
+  ast : @core.Module,
+) -> @core.Module {
+  let rename_map = collect_private_value_rename_map(path, ast)
+  if rename_map.length() == 0 {
+    ast
+  } else {
+    rename_private_module_refs(
+      ast,
+      RenameScope::new(),
+      rename_map,
+      true,
+    )
+  }
+}
+
+///|
 fn elapsed_us_from(start : @bench.Timestamp) -> Int {
   @bench.monotonic_clock_end(start).to_int()
 }
@@ -244,7 +881,8 @@ pub fn compile_module(
   @core.clear_string_for_in_spans()
   let rewritten = @frontend.rewrite_string_add(mono.ast, expr_type_index)
   let resolved_ast = db.rewrite_imports_to_hash(path, rewritten)
-  let ir = module_to_sexp(resolved_ast, aliases)
+  let namespaced_ast = namespace_private_module_values(path, resolved_ast)
+  let ir = module_to_sexp(namespaced_ast, aliases)
   let ir_hash = @core.git_blob_hash_string(ir)
   let module_ref = @core.module_ref_from_hash(ir_hash)
   let module_refs : Array[String] = []
@@ -261,7 +899,7 @@ pub fn compile_module(
     module_ref,
     imports: module_refs,
     aliases,
-    ast: resolved_ast,
+    ast: namespaced_ast,
     expr_type_index,
     type_env: env,
     instantiations: mono.instantiations,

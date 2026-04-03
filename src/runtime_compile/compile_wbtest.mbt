@@ -164,6 +164,72 @@ test "compile_module_wasm_no_dce allows entry value shadowing prelude helper" {
 }
 
 ///|
+test "compile_module_wasm_no_dce accepts mixed wrapper and direct type imports" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "/project/core/types_impl.vibe",
+    (
+      #|export enum Type {
+      #|  CtUnit
+      #|}
+      #|export enum TypeDef {
+      #|  TDAlias(String, Type)
+      #|}
+    ),
+  )
+  db.set_source(
+    "/project/types.vibe",
+    (
+      #|export ./core/types_impl.vibe {
+      #|  Type, TypeDef
+      #|}
+      #|export {
+      #|  Type, TypeDef
+      #|}
+    ),
+  )
+  db.set_source(
+    "/project/use_wrapper.vibe",
+    (
+      #|import ./types.vibe {
+      #|  Type
+      #|}
+      #|export let make_type = () -> Type {
+      #|  CtUnit
+      #|}
+    ),
+  )
+  db.set_source(
+    "/project/use_core.vibe",
+    (
+      #|import ./core/types_impl.vibe {
+      #|  Type, TypeDef
+      #|}
+      #|export let make_type_def = () -> TypeDef {
+      #|  TDAlias("dummy", CtUnit)
+      #|}
+    ),
+  )
+  db.set_source(
+    "/project/main.vibe",
+    (
+      #|import ./use_wrapper.vibe {
+      #|  make_type
+      #|}
+      #|import ./use_core.vibe {
+      #|  make_type_def
+      #|}
+      #|let _t = make_type()
+      #|let _d = make_type_def()
+    ),
+  )
+  let wasm = compile_module_wasm_no_dce(db, "/project/main.vibe") catch {
+    e => fail(e.user_message())
+  }
+  assert_true(wasm.length() > 8)
+}
+
+///|
 test "prepare_bundled_ast_for_codegen specializes imported iterable helpers by concrete root" {
   let db = @runtime.VibeDb::new()
   db.set_source(

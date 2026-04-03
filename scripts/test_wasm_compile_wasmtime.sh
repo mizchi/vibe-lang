@@ -1853,11 +1853,11 @@ match Hit(42) {
 "42"
 
 expect_wasmtime_result "custom enum: nested match" \
-'enum Result { Ok(Int); Err(Int) }
-let r = Ok(10)
+'enum MyResult { MyOk(Int); MyErr(Int) }
+let r = MyOk(10)
 match r {
-  Ok(v) => v + 1
-  Err(_) => -1
+  MyOk(v) => v + 1
+  MyErr(_) => -1
 }' \
 "11"
 

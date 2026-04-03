@@ -1030,10 +1030,11 @@ fn bundle_for_wasm_impl(
   keep_for_in_helpers~ : Bool,
 ) -> @core.Module {
   ensure_hooks()
-  let bundled_stmts : Array[@core.Stmt] = []
+  let collected_dep_stmts : Array[@core.Stmt] = []
   let visited : Map[String, Bool] = {}
   // Collect all dependency definitions in topological order
-  collect_dependency_defs(db, path, bundled_stmts, visited)
+  collect_dependency_defs(db, path, collected_dep_stmts, visited)
+  let bundled_stmts = dedupe_dependency_value_defs(collected_dep_stmts)
   let existing_value_names : Map[String, Bool] = {}
   for stmt in bundled_stmts {
     match bundle_stmt_value_name(stmt) {
@@ -1266,6 +1267,25 @@ fn dedupe_bundle_structural_defs(
         if not(seen_type_names.contains(name)) {
           out.push(stmt)
           seen_type_names[name] = true
+        }
+      None => out.push(stmt)
+    }
+  }
+  out
+}
+
+///|
+fn dedupe_dependency_value_defs(
+  stmts : Array[@core.Stmt],
+) -> Array[@core.Stmt] {
+  let out : Array[@core.Stmt] = []
+  let seen_value_names : Map[String, Bool] = {}
+  for stmt in stmts {
+    match bundle_stmt_value_name(stmt) {
+      Some(name) =>
+        if !seen_value_names.contains(name) {
+          out.push(stmt)
+          seen_value_names[name] = true
         }
       None => out.push(stmt)
     }
