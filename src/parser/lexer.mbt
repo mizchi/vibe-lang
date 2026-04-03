@@ -187,6 +187,11 @@ fn Lexer::lex_string(self : Lexer) -> Token {
                 raw.write_char('\\')
                 raw.write_char('t')
               }
+              Some('r') => {
+                buf.write_char('\r')
+                raw.write_char('\\')
+                raw.write_char('r')
+              }
               Some(c) => {
                 buf.write_char(c)
                 raw.write_char('\\')
