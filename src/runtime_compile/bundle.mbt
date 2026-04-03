@@ -1275,9 +1275,7 @@ fn dedupe_bundle_structural_defs(
 }
 
 ///|
-fn dedupe_dependency_value_defs(
-  stmts : Array[@core.Stmt],
-) -> Array[@core.Stmt] {
+fn dedupe_dependency_value_defs(stmts : Array[@core.Stmt]) -> Array[@core.Stmt] {
   let out : Array[@core.Stmt] = []
   let seen_value_names : Map[String, Bool] = {}
   for stmt in stmts {
