@@ -956,7 +956,50 @@ fn compile_stmt(
             emit_i64_const_tagged(buf, 0L)
           }
         }
-        _ => raise WasmGenError::Unsupported("let pat: non-tuple/record/ctor")
+        @core.Pat::Struct(fields~, span=pat_span, ..) => {
+          let _ = pat_span
+          compile_expr_i32(ctx, buf, expr) // struct pointer (tagged i64)
+          let record_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+          emit_local_set(buf, record_local)
+          let sorted = sort_record_fields_pat(fields)
+          let len = sorted.length()
+          for i, field in sorted {
+            match field.pat {
+              @core.Pat::Bind(name~, span=bind_span) => {
+                let _ = bind_span
+                let local_idx = ctx.local_count
+                ctx.local_count += 1
+                ctx.local_types.push(ValueKind::I64)
+                ctx.locals[name] = local_idx
+                ctx.local_kinds[name] = ValueKind::I64
+                emit_load_record_value(buf, record_local, i)
+                if is_last && i == len - 1 {
+                  emit_local_tee(buf, local_idx)
+                } else {
+                  emit_local_set(buf, local_idx)
+                }
+              }
+              @core.Pat::Wildcard(..) =>
+                if is_last && i == len - 1 {
+                  emit_load_record_value(buf, record_local, i)
+                }
+              _ => {
+                // Nested pattern - load element and recursively destructure
+                let elem_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+                emit_load_record_value(buf, record_local, i)
+                emit_local_set(buf, elem_local)
+                compile_let_pat_nested(ctx, buf, field.pat, elem_local)
+              }
+            }
+          }
+          if is_last && len == 0 {
+            emit_i64_const_tagged(buf, 0L)
+          }
+        }
+        _ =>
+          raise WasmGenError::Unsupported(
+            "let pat: non-tuple/record/ctor/struct",
+          )
       }
     }
     @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
@@ -1043,6 +1086,16 @@ fn compile_let_pat_nested(
         emit_i64_extend_i32_s(buf)
         emit_local_set(buf, elem_local)
         compile_let_pat_nested(ctx, buf, arg_pat, elem_local)
+      }
+    }
+    @core.Pat::Struct(fields~, span~, ..) => {
+      let _ = span
+      let sorted = sort_record_fields_pat(fields)
+      for i, field in sorted {
+        let elem_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+        emit_load_record_value(buf, value_local, i)
+        emit_local_set(buf, elem_local)
+        compile_let_pat_nested(ctx, buf, field.pat, elem_local)
       }
     }
     _ => raise WasmGenError::Unsupported("let pat nested: unsupported pattern")
