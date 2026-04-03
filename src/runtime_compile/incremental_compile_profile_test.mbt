@@ -75,7 +75,7 @@ fn print_profile_summary(
 ///|
 test "incremental compile profile short" {
   let (cold, hot) = profiled_compile_pair(
-    "vibe/compiler/checker_trait_test.vibe",
+    "vibe/compiler/checker_error.vibe",
   )
   print_profile_summary("short", cold, hot)
   assert_true(hot.total_us < cold.total_us)
