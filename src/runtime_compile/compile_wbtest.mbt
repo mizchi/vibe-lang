@@ -663,12 +663,8 @@ test "bundle_for_codegen keeps array iterator root separate from imported plain 
     ),
   )
   let compiled = compile_module(db, "/project/main.vibe")
-  let prepared = bundle_for_codegen(
-    db,
-    "/project/main.vibe",
-    compiled.ast,
-    "default",
-  ) catch {
+  let bundled = bundle_for_wasm_no_dce(db, "/project/main.vibe", compiled.ast)
+  let prepared = prepare_bundled_ast_for_codegen(bundled) catch {
     err => fail(err.to_string())
   }
   let mut array_fold_name : String? = None
@@ -889,12 +885,8 @@ test "bundle_for_codegen keeps imported list iterator helper chain" {
     ),
   )
   let compiled = compile_module(db, "/project/main.vibe")
-  let prepared = bundle_for_codegen(
-    db,
-    "/project/main.vibe",
-    compiled.ast,
-    "default",
-  ) catch {
+  let bundled = bundle_for_wasm_no_dce(db, "/project/main.vibe", compiled.ast)
+  let prepared = prepare_bundled_ast_for_codegen(bundled) catch {
     err => fail(err.to_string())
   }
   let mut has_list_iter_get = false
@@ -968,20 +960,12 @@ test "bundle_for_codegen specializes imported list iterator helper types" {
     ),
   )
   let compiled = compile_module(db, "/project/main.vibe")
-  let prepared = bundle_for_codegen(
-    db,
-    "/project/main.vibe",
-    compiled.ast,
-    "default",
-  ) catch {
+  let bundled = bundle_for_wasm_no_dce(db, "/project/main.vibe", compiled.ast)
+  let prepared = prepare_bundled_ast_for_codegen(bundled) catch {
     err => fail(err.to_string())
   }
-  let gc_prepared = bundle_for_codegen(
-    db,
-    "/project/main.vibe",
-    compiled.ast,
-    "gc",
-  ) catch {
+  let gc_bundled = bundle_for_wasm_no_dce(db, "/project/main.vibe", compiled.ast)
+  let gc_prepared = prepare_bundled_ast_for_codegen(gc_bundled) catch {
     err => fail(err.to_string())
   }
   let mut has_concrete_list_iter_get = false
@@ -1108,12 +1092,8 @@ test "bundle_for_codegen keeps prelude-style list iter helper recursion concrete
     ),
   )
   let compiled = compile_module(db, "/project/main.vibe")
-  let prepared = bundle_for_codegen(
-    db,
-    "/project/main.vibe",
-    compiled.ast,
-    "default",
-  ) catch {
+  let bundled = bundle_for_wasm_no_dce(db, "/project/main.vibe", compiled.ast)
+  let prepared = prepare_bundled_ast_for_codegen(bundled) catch {
     err => fail(err.to_string())
   }
   if !runtime_compile_module_fn_body_has_call(
