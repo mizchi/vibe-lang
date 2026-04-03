@@ -87,7 +87,7 @@ let fail = () -> Int with { Error } {
   throw("boom")
 }
 
-let main = () -> Int with { Error } {
+let main = () -> Int {
   handle {
     fail()
   } {
@@ -104,11 +104,11 @@ let fail = () -> Int with { Error } {
   throw("boom")
 }
 
-let main = () -> Int with { Error } {
+let main = () -> Int {
   handle {
     fail()
   } {
-    Error(msg) => string_length(msg)
+    Error(msg) => String::length(msg)
   }
 }
 
@@ -121,7 +121,7 @@ let fail = () -> Int with { Error } {
   throw("inner")
 }
 
-let main = () -> Int with { Error } {
+let main = () -> Int {
   handle {
     handle {
       fail()
@@ -129,7 +129,7 @@ let main = () -> Int with { Error } {
       _ => throw("outer")
     }
   } {
-    Error(msg) => string_length(msg)
+    Error(msg) => String::length(msg)
   }
 }
 
