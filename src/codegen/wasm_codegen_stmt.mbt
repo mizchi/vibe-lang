@@ -116,7 +116,7 @@ fn compile_stmt(
           let kinds = param_kinds(ctx, fn_params)
           let ret_kind = match fn_ret {
             Some(r) => value_kind_from_type(ctx, r)
-            None => ValueKind::I32
+            None => ValueKind::I64
           }
           ctx.fn_local_sigs[name] = match ctx.fn_multivalue_results.get(name) {
             Some(results) => func_sig_with_env_multi(kinds, results)
