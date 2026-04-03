@@ -25,9 +25,7 @@ test "type_expr_eff: loop param purity tier is state_local" {
 
 ///|
 test "type_expr_eff: loop break(value) returns value type" {
-  let expr = parse_first_expr_for_typecheck(
-    "loop (i = 0) { break 42 }",
-  ) catch {
+  let expr = parse_first_expr_for_typecheck("loop (i = 0) { break 42 }") catch {
     err => fail("parse error: \{err.to_string()}")
   }
   let env = TypeEnv::new()

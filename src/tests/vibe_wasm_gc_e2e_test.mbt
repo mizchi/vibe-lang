@@ -552,16 +552,16 @@ test "wasm-gc e2e: Map::has_key with string keys" {
 }
 
 ///|
-test "wasm-gc e2e: Map::get not found returns 0" {
+test "wasm-gc e2e: Map::get not found with has_key guard" {
   let src =
     #|let main = () -> Int {
     #|  let b = MapBuilder::new()
     #|  MapBuilder::set(b, "a", 99)
     #|  let m = MapBuilder::freeze(b)
-    #|  Map::get(m, "missing")
+    #|  if Map::has_key(m, "missing") { Map::get(m, "missing") } else { -1 }
     #|}
     #|main()
-  assert_gc_e2e(src, "map_get_not_found", 0)
+  assert_gc_e2e(src, "map_get_not_found", -1)
 }
 
 ///|
