@@ -92,26 +92,102 @@ fn check_project_report_json(request : String) -> String {
 }
 
 ///|
-// TODO(#20): migrate to compiled backend (playground API)
+fn eval_value_type_name(value : @core.Value) -> String {
+  match value {
+    @core.Value::Int(_) => "Int"
+    @core.Value::Float(_) => "Float"
+    @core.Value::Double(_) => "Double"
+    @core.Value::Bool(_) => "Bool"
+    @core.Value::Char(_) => "Char"
+    @core.Value::String(_) => "String"
+    @core.Value::Path(_) => "Path"
+    @core.Value::Unit => "Unit"
+    @core.Value::Tuple(_) => "Tuple"
+    @core.Value::Record(_) => "Record"
+    @core.Value::Array(_) => "Array"
+    @core.Value::Map(_) => "Map"
+    @core.Value::Set(_) => "Set"
+    @core.Value::Fn(_) => "Fn"
+    @core.Value::ArrayBuilder(_) => "ArrayBuilder"
+    @core.Value::MapBuilder(_) => "MapBuilder"
+    @core.Value::StringBuilder(_) => "StringBuilder"
+    @core.Value::Bytes(_) => "Bytes"
+    @core.Value::PromptText(_) => "PromptText"
+    @core.Value::Continuation(_) => "Continuation"
+  }
+}
+
+///|
+let eval_runtime_ref : Ref[@runtime.Runtime?] = @ref.new(None)
+
+///|
+fn get_or_create_eval_runtime() -> @runtime.Runtime {
+  match eval_runtime_ref.val {
+    Some(rt) => rt
+    None => {
+      let caps = @capability.CapabilitySet::new()
+      let rt = @runtime.Runtime::new(caps)
+      eval_runtime_ref.val = Some(rt)
+      rt
+    }
+  }
+}
+
+///|
 fn eval_report_json(request : String) -> String {
-  let _ = request
+  let obj = match parse_request_object(request) {
+    Ok(obj) => obj
+    Err(err) => return response_error_json(err)
+  }
+  let source = match json_string_field(obj, "source") {
+    Ok(s) => s
+    Err(err) => return response_error_json(err)
+  }
+  let ast = @parser.parse_ast(source) catch {
+    err => return response_diag_error_json(err.diagnostic())
+  }
+  let desugared = @frontend.rewrite_effect_handles(
+    @frontend.desugar_method_calls(ast, {}),
+  )
+  let rt = get_or_create_eval_runtime()
+  let eval_result = try? rt.eval_module(desugared)
+  let result = match eval_result {
+    Err(err) => {
+      let root : Map[String, Json] = {}
+      root["ok"] = Json::boolean(false)
+      root["diagnostics"] = Json::array([
+        diagnostic_to_json(@core.Diagnostic::{
+          stage: "eval",
+          message: err.to_string(),
+          span: None,
+          hint: None,
+          note: None,
+        }),
+      ])
+      return Json::object(root).stringify()
+    }
+    Ok(r) => r
+  }
   let root : Map[String, Json] = {}
-  root["ok"] = Json::boolean(false)
-  root["diagnostics"] = Json::array([
-    diagnostic_to_json(@core.Diagnostic::{
-      stage: "eval",
-      message: "eval_script has been removed; use compiled backend",
-      span: None,
-      hint: None,
-      note: None,
-    }),
-  ])
+  root["ok"] = Json::boolean(true)
+  match result.last {
+    Some(value) => {
+      root["value"] = Json::string(value.to_string())
+      root["value_type"] = Json::string(eval_value_type_name(value))
+    }
+    None => {
+      root["value"] = Json::null()
+      root["value_type"] = Json::string("Unit")
+    }
+  }
+  root["diagnostics"] = Json::array([])
   Json::object(root).stringify()
 }
 
 ///|
 fn eval_reset_report_json(request : String) -> String {
   let _ = request
+  eval_runtime_ref.val = None
   let root : Map[String, Json] = {}
   root["ok"] = Json::boolean(true)
   Json::object(root).stringify()
