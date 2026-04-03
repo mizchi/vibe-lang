@@ -70,7 +70,21 @@ pub fn VibeDb::new() -> VibeDb {
         match preparsed_import_hashes.get(rt, file_path) {
           Some(cached_hash) if cached_hash == source_hash =>
             match preparsed_imports.get(rt, file_path) {
-              Some(cached_imports) => return cached_imports
+              Some(cached_imports) => {
+                // Validate that all cached resolved paths still exist.
+                // If a module was renamed/moved, its old path will be missing
+                // from sources, so we must re-resolve instead of returning stale data.
+                let mut all_valid = true
+                for spec in cached_imports {
+                  match (sources.get(rt, spec.path), binary_sources.get(rt, spec.path)) {
+                    (None, None) => { all_valid = false; break }
+                    _ => ()
+                  }
+                }
+                if all_valid {
+                  return cached_imports
+                }
+              }
               None => ()
             }
           _ => ()
