@@ -20,8 +20,8 @@ pub fn VibeDb::new() -> VibeDb {
     path,
   ) {
     match sources.get(rt, path) {
-      Some(content) => @parser.parse_cst(content)
-      None => @parser.parse_cst("")
+      Some(content) => hook_parse_cst(content)
+      None => hook_parse_cst("")
     }
   })
   cst_query.register(rt)
@@ -36,7 +36,7 @@ pub fn VibeDb::new() -> VibeDb {
             match preparsed_asts.get(rt, path) {
               Some(cached_ast) => cached_ast
               None => {
-                let parsed = @parser.parse_ast(content) catch {
+                let parsed = hook_parse_ast(content) catch {
                   e => {
                     diags.push(rt, e.diagnostic())
                     { stmts: [] }
@@ -46,7 +46,7 @@ pub fn VibeDb::new() -> VibeDb {
               }
             }
           _ => {
-            let parsed = @parser.parse_ast(content) catch {
+            let parsed = hook_parse_ast(content) catch {
               e => {
                 diags.push(rt, e.diagnostic())
                 { stmts: [] }
@@ -536,7 +536,7 @@ pub fn VibeDb::new() -> VibeDb {
               let index_path = base_dir + "/index.vibe"
               let alias_path : String? = match sources.get(rt, index_path) {
                 Some(index_source) => {
-                  let index_ast = @parser.parse_ast(index_source) catch {
+                  let index_ast = hook_parse_ast(index_source) catch {
                     _ => @core.Module::{ stmts: [] }
                   }
                   let mut found : String? = None
@@ -738,7 +738,7 @@ pub fn VibeDb::new() -> VibeDb {
       match sources.get(rt, hash_source_key(hash)) {
         None => None
         Some(content) => {
-          let ast_opt = try @parser.parse_ast(content) catch {
+          let ast_opt = try hook_parse_ast(content) catch {
             _ => None
           } noraise {
             ast => Some(ast)

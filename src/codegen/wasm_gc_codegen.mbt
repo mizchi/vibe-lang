@@ -2656,7 +2656,7 @@ fn compile_string_equals(
 /// Emit Map key equality comparison.
 /// Assumes key_a_local and key_b_local are eqref locals.
 /// Leaves i32 (0 or 1) on the stack.
-/// Strategy: ref_eq fast path → ref.test string → structural string compare → 0
+/// Strategy: ref_eq fast path → i31ref int compare → string structural compare → 0
 fn emit_map_key_eq_gc(
   ctx : GcCodegenCtx,
   fctx : GcFuncCtx,
@@ -2669,7 +2669,7 @@ fn emit_map_key_eq_gc(
   emit_local_set_gc(buf, ok_idx)
   // block $done
   emit_block_gc(buf, None)
-  // Fast path: ref_eq
+  // Fast path: ref_eq (handles i31ref ints and identical object refs)
   emit_local_get_gc(buf, key_a_local)
   emit_local_get_gc(buf, key_b_local)
   emit_ref_eq_gc(buf)
@@ -2678,7 +2678,29 @@ fn emit_map_key_eq_gc(
   emit_local_set_gc(buf, ok_idx)
   emit_br_gc(buf, 1) // br $done
   emit_end_gc(buf) // end if
-  // Slow path: both must be string structs for structural comparison
+  // Int path: unbox and compare I64 values
+  let i64_box_type = ensure_struct_type(ctx.types, ctx.struct_type_index, [
+    GcValKind::I64,
+  ])
+  emit_local_get_gc(buf, key_a_local)
+  emit_ref_test_gc(buf, i64_box_type)
+  emit_if_gc(buf, None)
+  emit_local_get_gc(buf, key_b_local)
+  emit_ref_test_gc(buf, i64_box_type)
+  emit_if_gc(buf, None)
+  // Both are boxed I64 — unbox and compare
+  emit_local_get_gc(buf, key_a_local)
+  emit_ref_cast_gc(buf, i64_box_type)
+  emit_struct_get_gc(buf, i64_box_type, 0)
+  emit_local_get_gc(buf, key_b_local)
+  emit_ref_cast_gc(buf, i64_box_type)
+  emit_struct_get_gc(buf, i64_box_type, 0)
+  emit_i64_eq_gc(buf)
+  emit_local_set_gc(buf, ok_idx)
+  emit_br_gc(buf, 2) // br $done
+  emit_end_gc(buf) // end if (b is i64)
+  emit_end_gc(buf) // end if (a is i64)
+  // String path: structural comparison
   emit_local_get_gc(buf, key_a_local)
   emit_ref_test_gc(buf, ctx.string_type)
   emit_i32_const_gc(buf, 0)
@@ -7094,7 +7116,7 @@ fn compile_expr_gc(
           let val_arr_type = ensure_array_type(
             ctx.types,
             ctx.array_type_index,
-            GcValKind::I64,
+            GcValKind::EqRef,
           )
           let builder_fields : Array[GcValKind] = [
             GcValKind::I32,
@@ -7163,7 +7185,7 @@ fn compile_expr_gc(
           let val_arr_type = ensure_array_type(
             ctx.types,
             ctx.array_type_index,
-            GcValKind::I64,
+            GcValKind::EqRef,
           )
           let builder_fields : Array[GcValKind] = [
             GcValKind::I32,

@@ -61,3 +61,40 @@ pub fn desugar_method_calls(
 ) -> @core.Module {
   (desugar_method_calls_hook.val)(ast, aliases)
 }
+
+///|
+/// Hook: parse source code to AST.
+/// Default: calls @parser.parse_ast directly.
+/// Can be replaced by runtime_compile for testing with mock parsers.
+let parse_ast_hook : Ref[(String) -> @core.Module!@parser.ParseError] = {
+  val: fn(source) { @parser.parse_ast!(source) },
+}
+
+///|
+/// Hook: parse source code to CST.
+/// Default: calls @parser.parse_cst directly.
+let parse_cst_hook : Ref[(String) -> @cst.SyntaxNode] = {
+  val: fn(source) { @parser.parse_cst(source) },
+}
+
+///|
+pub fn set_parse_ast_hook(
+  f : (String) -> @core.Module!@parser.ParseError,
+) -> Unit {
+  parse_ast_hook.val = f
+}
+
+///|
+pub fn set_parse_cst_hook(f : (String) -> @cst.SyntaxNode) -> Unit {
+  parse_cst_hook.val = f
+}
+
+///|
+pub fn hook_parse_ast(source : String) -> @core.Module!@parser.ParseError {
+  (parse_ast_hook.val)!(source)
+}
+
+///|
+pub fn hook_parse_cst(source : String) -> @cst.SyntaxNode {
+  (parse_cst_hook.val)(source)
+}
