@@ -76,8 +76,15 @@ pub fn VibeDb::new() -> VibeDb {
                 // from sources, so we must re-resolve instead of returning stale data.
                 let mut all_valid = true
                 for spec in cached_imports {
-                  match (sources.get(rt, spec.path), binary_sources.get(rt, spec.path)) {
-                    (None, None) => { all_valid = false; break }
+                  match
+                    (
+                      sources.get(rt, spec.path),
+                      binary_sources.get(rt, spec.path),
+                    ) {
+                    (None, None) => {
+                      all_valid = false
+                      break
+                    }
                     _ => ()
                   }
                 }

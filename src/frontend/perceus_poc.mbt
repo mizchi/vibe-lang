@@ -1,7 +1,11 @@
 ///| Perceus RC analysis pass for linear memory WASM backend.
+
 ///|
+
 ///| This module performs reference counting analysis and is ONLY needed
+
 ///| for the linear memory backend. The wasm-gc backend does not require
+
 ///| this analysis pass.
 
 ///|

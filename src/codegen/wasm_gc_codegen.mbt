@@ -2058,7 +2058,7 @@ fn infer_expr_kind_gc(
           let val_arr_type = ensure_array_type(
             ctx.types,
             ctx.array_type_index,
-            GcValKind::I64,
+            GcValKind::EqRef,
           )
           let builder_fields : Array[GcValKind] = [
             GcValKind::I32,
@@ -2073,7 +2073,7 @@ fn infer_expr_kind_gc(
           GcValKind::Ref(builder_type)
         }
         "MapBuilder::set" => GcValKind::I32
-        "Map::get" => GcValKind::I64
+        "Map::get" => GcValKind::EqRef
         "Map::has_key" => GcValKind::I32
         "Map::keys" => {
           let str_arr_type = ensure_array_type(
@@ -6795,7 +6795,7 @@ fn compile_expr_gc(
           emit_local_get_gc(buf, dst_l)
         }
         "MapBuilder::new" => {
-          // Map: struct { len: i32, keys: ref array<ref string>, vals: ref array<i64> }
+          // Map: struct { len: i32, keys: ref array<eqref>, vals: ref array<eqref> }
           let init_cap = 8
           let key_arr_type = ensure_array_type(
             ctx.types,
@@ -6805,7 +6805,7 @@ fn compile_expr_gc(
           let val_arr_type = ensure_array_type(
             ctx.types,
             ctx.array_type_index,
-            GcValKind::I64,
+            GcValKind::EqRef,
           )
           let builder_fields : Array[GcValKind] = [
             GcValKind::I32,
@@ -6837,7 +6837,7 @@ fn compile_expr_gc(
           let val_arr_type = ensure_array_type(
             ctx.types,
             ctx.array_type_index,
-            GcValKind::I64,
+            GcValKind::EqRef,
           )
           let builder_fields : Array[GcValKind] = [
             GcValKind::I32,
@@ -6875,9 +6875,11 @@ fn compile_expr_gc(
           emit_array_len_gc(buf)
           emit_local_set_gc(buf, cap_l)
           let found_l = alloc_local_gc(fctx, GcValKind::I32) // 1 if found
-          let val_l = alloc_local_gc(fctx, GcValKind::I64)
-          // Compile value once and save to local
+          let val_l = alloc_local_gc(fctx, GcValKind::EqRef)
+          // Compile value once, box to eqref, and save to local
+          let val_kind = infer_expr_kind_gc(ctx, fctx, pos_args[2])
           compile_expr_gc(ctx, fctx, buf, pos_args[2])
+          emit_box_top_for_ref_kind_gc(ctx, buf, val_kind, GcValKind::EqRef)
           emit_local_set_gc(buf, val_l)
           // Search for existing key
           emit_i32_const_gc(buf, 0)
@@ -6999,7 +7001,7 @@ fn compile_expr_gc(
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
         }
         "Map::get" => {
-          // Map::get(map, key) -> eqref (None encoded as i31ref 0)
+          // Map::get(map, key) -> eqref (null eqref if not found)
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("Map::get arity")
           }
@@ -7011,7 +7013,7 @@ fn compile_expr_gc(
           let val_arr_type = ensure_array_type(
             ctx.types,
             ctx.array_type_index,
-            GcValKind::I64,
+            GcValKind::EqRef,
           )
           let builder_fields : Array[GcValKind] = [
             GcValKind::I32,
@@ -7029,7 +7031,7 @@ fn compile_expr_gc(
           let vals_l = alloc_local_gc(fctx, GcValKind::Ref(val_arr_type))
           let i_l = alloc_local_gc(fctx, GcValKind::I32)
           let key_l = alloc_local_gc(fctx, GcValKind::EqRef)
-          let result_l = alloc_local_gc(fctx, GcValKind::I64)
+          let result_l = alloc_local_gc(fctx, GcValKind::EqRef)
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           emit_local_set_gc(buf, b_idx)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
@@ -7044,8 +7046,7 @@ fn compile_expr_gc(
           emit_struct_get_gc(buf, builder_type, 2)
           emit_local_set_gc(buf, vals_l)
           // Linear search with result in local
-          emit_i64_const_gc(buf, 0)
-          emit_local_set_gc(buf, result_l) // initialize to 0
+          // result_l defaults to null eqref (not found)
           emit_i32_const_gc(buf, 0)
           emit_local_set_gc(buf, i_l)
           // block $done
@@ -7077,7 +7078,7 @@ fn compile_expr_gc(
           emit_br_gc(buf, 0) // br $search
           emit_end_gc(buf) // end loop
           emit_end_gc(buf) // end $done
-          // result_l has the value (or default null eqref if not found)
+          // result_l has the boxed value (or null eqref if not found)
           emit_local_get_gc(buf, result_l)
         }
         "Map::has_key" => {
