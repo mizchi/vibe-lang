@@ -44,6 +44,7 @@ fn ensure_prelude_seed(session : TypecheckSession) -> TypeEnv raise TypeError {
       let seed = session.new_env()
       ensure_prelude_option(seed)
       ensure_prelude_functions(seed, {})
+      ensure_prelude_builtin_traits(seed)
       session.cached_prelude_env.val = Some(seed)
       seed
     }
@@ -1035,7 +1036,12 @@ fn register_trait_def(
     if env.session_state.lenient_mode {
       return
     }
-    raise TypeError::BadTypeDef(message="duplicate trait: " + name, span~)
+    // Allow re-defining a prelude builtin trait (e.g. Eq, Hash, Ord).
+    // The prelude seed soft-registers these so derive(Eq) works, but
+    // user modules may redefine them via `export trait Eq`.
+    if not(is_prelude_builtin_trait(name)) {
+      raise TypeError::BadTypeDef(message="duplicate trait: " + name, span~)
+    }
   }
   let normalized_supertraits = dedup_trait_bounds(supertraits)
   for supertrait in normalized_supertraits {
