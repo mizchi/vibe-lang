@@ -76,24 +76,24 @@ test_cases=(
   'let mut sum = 0; for x in [10, 20, 30] { sum = sum + x; x }; sum'
 
   # String builtins
-  'string_length("hello")'
-  'if string_contains("hello world", "world") { 1 } else { 0 }'
-  'if string_contains("hello", "xyz") { 1 } else { 0 }'
-  'if string_starts_with("hello", "hel") { 1 } else { 0 }'
-  'if string_ends_with("hello", "llo") { 1 } else { 0 }'
-  'string_index_of("hello world", "world")'
-  'string_index_of("hello", "xyz")'
-  'string_last_index_of("abcabc", "abc")'
-  'string_char_code_at("A", 0)'
-  'string_count("abcabc", "abc")'
-  'string_count("aaaa", "aa")'
-  'string_length(string_trim("  hi  "))'
-  'string_length(string_trim_start("  hi  "))'
-  'string_length(string_trim_end("  hi  "))'
-  'string_length(string_concat("hello", " world"))'
-  'string_length(string_substring("hello world", 0, 5))'
-  'string_char_code_at(string_to_upper("abc"), 0)'
-  'string_char_code_at(string_to_lower("ABC"), 0)'
+  'String::length("hello")'
+  'if String::contains("hello world", "world") { 1 } else { 0 }'
+  'if String::contains("hello", "xyz") { 1 } else { 0 }'
+  'if String::starts_with("hello", "hel") { 1 } else { 0 }'
+  'if String::ends_with("hello", "llo") { 1 } else { 0 }'
+  'String::index_of("hello world", "world")'
+  'String::index_of("hello", "xyz")'
+  'String::last_index_of("abcabc", "abc")'
+  'String::char_code_at("A", 0)'
+  'String::count("abcabc", "abc")'
+  'String::count("aaaa", "aa")'
+  'String::length(String::trim("  hi  "))'
+  'String::length(String::trim_start("  hi  "))'
+  'String::length(String::trim_end("  hi  "))'
+  'String::length(String::concat("hello", " world"))'
+  'String::length(String::substring("hello world", 0, 5))'
+  'String::char_code_at(String::to_upper("abc"), 0)'
+  'String::char_code_at(String::to_lower("ABC"), 0)'
 
   # String equality operator (==)
   'if "hello" == "hello" { 1 } else { 0 }'
@@ -101,17 +101,17 @@ test_cases=(
   'if "" == "" { 1 } else { 0 }'
 
   # String split
-  'array_length(string_split("a,b,c", ","))'
-  'array_length(string_split("hello", ","))'
-  'array_length(string_split("a::b::c", "::"))'
-  'array_length(string_split("abc", ""))'
+  'Array::length(String::split("a,b,c", ","))'
+  'Array::length(String::split("hello", ","))'
+  'Array::length(String::split("a::b::c", "::"))'
+  'Array::length(String::split("abc", ""))'
 
   # String replace
-  'string_length(string_replace("hello world", "world", "vibe"))'
-  'string_length(string_replace("aaa", "a", "bb"))'
-  'string_length(string_replace_all("aaa", "a", "bb"))'
-  'if string_equals(string_replace("foo bar foo", "foo", "baz"), "baz bar foo") { 1 } else { 0 }'
-  'if string_equals(string_replace_all("foo bar foo", "foo", "baz"), "baz bar baz") { 1 } else { 0 }'
+  'String::length(String::replace("hello world", "world", "vibe"))'
+  'String::length(String::replace("aaa", "a", "bb"))'
+  'String::length(String::replace_all("aaa", "a", "bb"))'
+  'if String::replace("foo bar foo", "foo", "baz") == "baz bar foo" { 1 } else { 0 }'
+  'if String::replace_all("foo bar foo", "foo", "baz") == "baz bar baz" { 1 } else { 0 }'
 
   # Break and continue
   'let mut sum = 0; let mut i = 0; while i < 10 { i = i + 1; if i == 5 { break }; sum = sum + i }; sum'
@@ -129,10 +129,10 @@ test_cases=(
   'let rec fib = (n: Int) -> Int { if n <= 1 { n } else { fib(n - 1) + fib(n - 2) } }; fib(10)'
 
   # Array operations
-  'array_length([1, 2, 3, 4, 5])'
+  'Array::length([1, 2, 3, 4, 5])'
   'let arr = [10, 20, 30]; arr[1]'
-  'array_length(array_concat([1, 2], [3, 4]))'
-  'array_length(array_slice([1, 2, 3, 4, 5], 1, 3))'
+  'Array::length(Array::concat([1, 2], [3, 4]))'
+  'Array::length(Array::slice([1, 2, 3, 4, 5], 1, 3))'
 
   # Pipe operator
   'let double = (x: Int) -> Int { x * 2 }; 5 |> double'
@@ -170,17 +170,17 @@ test_cases=(
   'let compose = (f: (Int) -> Int, g: (Int) -> Int) -> (Int) -> Int { (x: Int) -> Int { f(g(x)) } }; let add1 = (x: Int) -> Int { x + 1 }; let mul2 = (x: Int) -> Int { x * 2 }; compose(add1, mul2)(5)'
 
   # parse_int builtin
-  'parse_int("42")'
-  'parse_int("0")'
-  'parse_int("999") + 1'
-  'parse_int(__to_string(77))'
+  'Int::parse("42")'
+  'Int::parse("0")'
+  'Int::parse("999") + 1'
+  'Int::parse(to_string(77))'
 
   # parse_double builtin
-  'double_to_int(parse_double("3.14") * 100.0)'
-  'double_to_int(parse_double("0.0"))'
-  'double_to_int(parse_double("-2.5") * 10.0)'
-  'double_to_int(parse_double("1.5") + parse_double("2.5"))'
-  'double_to_int(parse_double("42"))'
+  'Double::to_int(Double::parse("3.14") * 100.0)'
+  'Double::to_int(Double::parse("0.0"))'
+  'Double::to_int(Double::parse("-2.5") * 10.0)'
+  'Double::to_int(Double::parse("1.5") + Double::parse("2.5"))'
+  'Double::to_int(Double::parse("42"))'
 )
 
 echo "Testing interpreter vs WASM output..."
