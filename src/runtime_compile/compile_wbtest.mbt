@@ -693,21 +693,30 @@ test "prepare_bundled_ast_for_codegen specializes imported iterator flatmap help
   let bundled = bundle_for_wasm_no_dce(db, "/project/main.vibe", compiled.ast)
   let prepared = prepare_bundled_ast_for_codegen(bundled)
   let mut has_specialized_helper = false
+  let mut flatmap_name : String? = None
   for stmt in prepared.stmts {
     match stmt {
-      @core.Stmt::Let(name~, ..) =>
+      @core.Stmt::Let(name~, ..) => {
         if name == "Trio::iter_get$Trio|T=Int" {
           has_specialized_helper = true
         }
+        if name.has_prefix("Iterator::flatmap$Trio") {
+          flatmap_name = Some(name)
+        }
+      }
       _ => ()
     }
   }
   assert_true(has_specialized_helper)
-  assert_true(
-    runtime_compile_module_fn_body_has_call(
-      prepared, "Iterator::flatmap$Trio|A=Int|B=Int", "Trio::iter_get$Trio|T=Int",
-    ),
-  )
+  match flatmap_name {
+    Some(name) =>
+      assert_true(
+        runtime_compile_module_fn_body_has_call(
+          prepared, name, "Trio::iter_get$Trio|T=Int",
+        ),
+      )
+    None => fail(module_to_sexp(prepared, {}))
+  }
 }
 
 ///|

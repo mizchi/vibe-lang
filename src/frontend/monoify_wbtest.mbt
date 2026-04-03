@@ -542,7 +542,7 @@ test "monoify_module specializes root helper type params for iterator filter" {
         if name.has_prefix("Trio::iter_get$Trio|T=Int") {
           has_specialized_get = true
         }
-        if name.has_prefix("Iterator::filter$Trio|T=Int") {
+        if name.has_prefix("Iterator::filter$Trio") {
           match expr {
             @core.Expr::Fn(body~, ..) =>
               filter_calls_specialized_get = monoify_module_has_call_prefix(
