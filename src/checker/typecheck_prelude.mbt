@@ -226,3 +226,37 @@ pub fn ensure_builtin_modules(
     }
   }
 }
+
+///|
+/// Register builtin trait names (Eq, Hash, Ord, etc.) so that `derive(Eq)`
+/// works even when the full builtin modules have not been loaded yet.
+/// These are soft-registered: user modules can redefine them via
+/// `export trait Eq` without a duplicate-trait error.
+pub fn ensure_prelude_builtin_traits(env : TypeEnv) -> Unit {
+  let builtin_trait_names = [
+    "Eq", "Hash", "Ord", "Add", "Sub", "Mul", "Div", "Signed",
+  ]
+  for name in builtin_trait_names {
+    if not(env.has_trait(name)) {
+      env.set_trait_info(name, TraitDefInfo::{
+        supertraits: [],
+        open_impl: false,
+        is_local: true,
+      })
+    }
+  }
+}
+
+///|
+/// Known builtin trait names that are soft-registered in the prelude seed.
+/// User modules may redefine these without triggering a duplicate-trait error.
+pub fn is_prelude_builtin_trait(name : String) -> Bool {
+  name == "Eq" ||
+  name == "Hash" ||
+  name == "Ord" ||
+  name == "Add" ||
+  name == "Sub" ||
+  name == "Mul" ||
+  name == "Div" ||
+  name == "Signed"
+}

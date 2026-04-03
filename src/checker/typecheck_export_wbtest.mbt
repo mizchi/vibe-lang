@@ -1,4 +1,22 @@
 ///|
+test "derive(Eq) enum typechecks with builtin Eq trait" {
+  let script =
+    #|enum Color { Red; Green; Blue } derive(Eq)
+    #|let _x = Color::Red == Color::Blue
+  let ast = @parser.parse_ast(script)
+  let _ = type_check(ast)
+}
+
+///|
+test "derive(Eq) struct typechecks with builtin Eq trait" {
+  let script =
+    #|struct Point { x: Int; y: Int } derive(Eq)
+    #|let _x = Point::{ x: 1, y: 2 } == Point::{ x: 3, y: 4 }
+  let ast = @parser.parse_ast(script)
+  let _ = type_check(ast)
+}
+
+///|
 test "typecheck keeps exported schemes for struct-returning functions" {
   let script =
     #|export struct PathRef { raw : String }
