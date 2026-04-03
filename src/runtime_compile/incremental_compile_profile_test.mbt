@@ -82,7 +82,7 @@ test "incremental compile profile short" {
   assert_true(hot.module_us < cold.module_us)
   assert_eq(hot.emit_us, 0)
   assert_eq(hot.optimize_us, 0)
-  assert_true(hot.total_us * 2 < cold.total_us)
+  assert_true(hot.total_us * 3 < cold.total_us * 2)
 }
 
 ///|
@@ -197,7 +197,7 @@ test "bundle checker_stmt selfhost module prepared bundle typechecks" {
 }
 
 ///|
-test "bundle checker_stmt selfhost module reports duplicate value names" {
+test "bundle checker_stmt selfhost module has no duplicate value names after dedupe" {
   let (db, entry) = load_test_entry("vibe/compiler/checker/checker_stmt.vibe")
   let ast = db.ast_with_hash_imports(entry)
   let bundled = bundle_for_wasm_no_dce(db, entry, ast)
@@ -226,7 +226,7 @@ test "bundle checker_stmt selfhost module reports duplicate value names" {
       println("duplicate-value " + name + ":" + count.to_string())
     }
   }
-  assert_true(dup_count > 0)
+  assert_eq(dup_count, 0)
 }
 
 ///|

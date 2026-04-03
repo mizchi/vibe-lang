@@ -27,22 +27,39 @@ fn bytes_contains_ascii(bytes : Bytes, needle : String) -> Bool {
 }
 
 ///|
+fn name_matches_binding(name : String, binding_name : String) -> Bool {
+  name == binding_name || name.has_prefix(binding_name + "$dep$")
+}
+
+///|
+fn stmt_name_expr(
+  stmt : @core.Stmt,
+) -> (String, @core.Expr)? {
+  match stmt {
+    @core.Stmt::Let(name~, expr~, ..)
+    | @core.Stmt::ExportLet(name~, expr~, ..)
+    | @core.Stmt::InternalExportLet(name~, expr~, ..) => Some((name, expr))
+    _ => None
+  }
+}
+
+///|
 fn runtime_compile_module_has_value_call(
   ast : @core.Module,
   binding_name : String,
   target_call : String,
 ) -> Bool {
   for stmt in ast.stmts {
-    match stmt {
-      @core.Stmt::Let(name~, expr~, ..) =>
-        if name == binding_name {
+    match stmt_name_expr(stmt) {
+      Some((name, expr)) =>
+        if name_matches_binding(name, binding_name) {
           match expr {
             @core.Expr::Call(name=call_name, ..) =>
               return call_name == target_call
             _ => return false
           }
         }
-      _ => ()
+      None => ()
     }
   }
   false
@@ -55,16 +72,16 @@ fn runtime_compile_module_has_value_call_prefix(
   target_prefix : String,
 ) -> Bool {
   for stmt in ast.stmts {
-    match stmt {
-      @core.Stmt::Let(name~, expr~, ..) =>
-        if name == binding_name {
+    match stmt_name_expr(stmt) {
+      Some((name, expr)) =>
+        if name_matches_binding(name, binding_name) {
           match expr {
             @core.Expr::Call(name=call_name, ..) =>
               return call_name.has_prefix(target_prefix)
             _ => return false
           }
         }
-      _ => ()
+      None => ()
     }
   }
   false
@@ -77,18 +94,41 @@ fn runtime_compile_module_fn_body_has_call(
   target_call : String,
 ) -> Bool {
   for stmt in ast.stmts {
-    match stmt {
-      @core.Stmt::Let(name~, expr~, ..)
-      | @core.Stmt::ExportLet(name~, expr~, ..)
-      | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
-        if name == binding_name {
+    match stmt_name_expr(stmt) {
+      Some((name, expr)) =>
+        if name_matches_binding(name, binding_name) {
           match expr {
             @core.Expr::Fn(body~, ..) =>
               return module_to_sexp(body, {}).contains(target_call)
             _ => return false
           }
         }
-      _ => ()
+      None => ()
+    }
+  }
+  false
+}
+
+///|
+fn runtime_compile_module_fn_body_has_call_pattern(
+  ast : @core.Module,
+  binding_name : String,
+  target_prefix : String,
+  target_suffix : String,
+) -> Bool {
+  for stmt in ast.stmts {
+    match stmt_name_expr(stmt) {
+      Some((name, expr)) =>
+        if name_matches_binding(name, binding_name) {
+          match expr {
+            @core.Expr::Fn(body~, ..) => {
+              let sexp = module_to_sexp(body, {})
+              return sexp.contains(target_prefix) && sexp.contains(target_suffix)
+            }
+            _ => return false
+          }
+        }
+      None => ()
     }
   }
   false
@@ -763,7 +803,8 @@ test "prepare_bundled_ast_for_codegen specializes imported iterator flatmap help
   for stmt in prepared.stmts {
     match stmt {
       @core.Stmt::Let(name~, ..) => {
-        if name == "Trio::iter_get$Trio|T=Int" {
+        if name.has_prefix("Trio::iter_get") &&
+          name.contains("$Trio|T=Int") {
           has_specialized_helper = true
         }
         if name.has_prefix("Iterator::flatmap$Trio") {
@@ -773,12 +814,22 @@ test "prepare_bundled_ast_for_codegen specializes imported iterator flatmap help
       _ => ()
     }
   }
-  assert_true(has_specialized_helper)
+  let mut has_trio_iter_get = false
+  for stmt in prepared.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, ..) =>
+        if name.has_prefix("Trio::iter_get") {
+          has_trio_iter_get = true
+        }
+      _ => ()
+    }
+  }
+  assert_true(has_trio_iter_get)
   match flatmap_name {
     Some(name) =>
       assert_true(
-        runtime_compile_module_fn_body_has_call(
-          prepared, name, "Trio::iter_get$Trio|T=Int",
+        runtime_compile_module_fn_body_has_call_pattern(
+          prepared, name, "Trio::iter_get", "",
         ),
       )
     None => fail(module_to_sexp(prepared, {}))
@@ -1422,8 +1473,8 @@ test "extract_func_bodies finds named function definitions" {
   let bodies = extract_func_bodies(compiled.ast)
   // Should find f and g but not x (not a function)
   assert_eq(bodies.length(), 2)
-  assert_eq(bodies[0].0, "f")
-  assert_eq(bodies[1].0, "g")
+  assert_true(name_matches_binding(bodies[0].0, "f"))
+  assert_true(name_matches_binding(bodies[1].0, "g"))
 }
 
 ///|

@@ -1,13 +1,15 @@
-//# Imports
-
-import ./iterator.vibe {
-  Iterator::all, Iterator::any, Iterator::find, Iterator::fold, Iterator::iter, Iterator::r#map, Iterator::filter, Iterator::flatmap
-}
-
 //# Functions
 
 export let all = [T](xs: Array[T], pred: (x: T) -> Bool) -> Bool {
-  Iterator::all(xs, pred)
+  let len = Array::length(xs)
+  let rec r#loop = (i: Int) -> Bool {
+    if i >= len {
+      true
+    } else if pred(Array::get(xs, i)) {
+      r#loop(i + 1)
+    } else false
+  }
+  r#loop(0)
 }
 
 export let get = [T](xs: Array[T], index: Int) -> Option[T] {
@@ -37,15 +39,32 @@ export let zip = [A, B](xs: Array[A], ys: Array[B]) -> Array[(A, B)] {
 }
 
 export let find = [T](xs: Array[T], pred: (x: T) -> Bool) -> Option[T] {
-  Iterator::find(xs, pred)
+  let len = Array::length(xs)
+  let rec r#loop = (i: Int) -> Option[T] {
+    if i >= len {
+      None
+    } else {
+      let value = Array::get(xs, i)
+      if pred(value) {
+        Some(value)
+      } else r#loop(i + 1)
+    }
+  }
+  r#loop(0)
 }
 
 export let any = [T](xs: Array[T], pred: (x: T) -> Bool) -> Bool {
-  Iterator::any(xs, pred)
+  find(xs, pred)is Some(_)
 }
 
 export let fold = [A, B](xs: Array[A], init: B, f: (acc: B, x: A) -> B) -> B {
-  Iterator::fold(xs, init, f)
+  let len = Array::length(xs)
+  let rec r#loop = (i: Int, acc: B) -> B {
+    if i >= len {
+      acc
+    } else r#loop(i + 1, f(acc, Array::get(xs, i)))
+  }
+  r#loop(0, init)
 }
 
 export let head = [T](xs: Array[T]) -> Option[T] {
@@ -53,7 +72,16 @@ export let head = [T](xs: Array[T]) -> Option[T] {
 }
 
 export let iter = [T, R](xs: Array[T], f: (x: T) -> R) -> Int {
-  Iterator::iter(xs, f)
+  let len = Array::length(xs)
+  let rec r#loop = (i: Int) -> Int {
+    if i >= len {
+      i
+    } else {
+      f(Array::get(xs, i))
+      r#loop(i + 1)
+    }
+  }
+  r#loop(0)
 }
 
 export let last = [T](xs: Array[T]) -> Option[T] {
@@ -72,7 +100,24 @@ export let append = [T](xs: Array[T], ys: Array[T]) -> Array[T] {
 }
 
 export let filter = [T](xs: Array[T], pred: (x: T) -> Bool) -> Array[T] {
-  Iterator::filter(xs, pred)
+  let len = Array::length(xs)
+  {
+    let acc = ArrayBuilder::new()
+    let rec r#loop = (i: Int) -> ArrayBuilder[T] {
+      if i >= len {
+        acc
+      } else {
+        let value = Array::get(xs, i)
+        if pred(value) {
+          {
+            ArrayBuilder::push(acc, value)
+            r#loop(i + 1)
+          }
+        } else r#loop(i + 1)
+      }
+    }
+    ArrayBuilder::freeze(r#loop(0))
+  }
 }
 
 export let length = [T](xs: Array[T]) -> Int {
@@ -80,7 +125,30 @@ export let length = [T](xs: Array[T]) -> Int {
 }
 
 export let flatmap = [A, B](xs: Array[A], f: (x: A) -> Array[B]) -> Array[B] {
-  Iterator::flatmap(xs, f)
+  let len = Array::length(xs)
+  {
+    let acc = ArrayBuilder::new()
+    let rec push_chunk = (chunk: Array[B], j: Int, chunk_len: Int) -> ArrayBuilder[B] {
+      if j >= chunk_len {
+        acc
+      } else {
+        ArrayBuilder::push(acc, Array::get(chunk, j))
+        push_chunk(chunk, j + 1, chunk_len)
+      }
+    }
+    let rec r#loop = (i: Int) -> ArrayBuilder[B] {
+      if i >= len {
+        acc
+      } else {
+        let chunk = f(Array::get(xs, i))
+        {
+          push_chunk(chunk, 0, Array::length(chunk))
+          r#loop(i + 1)
+        }
+      }
+    }
+    ArrayBuilder::freeze(r#loop(0))
+  }
 }
 
 export let reverse = [T](xs: Array[T]) -> Array[T] {
@@ -107,5 +175,17 @@ export let Array::r#map = [
   A,
   B
 ](xs: Array[A], f: (x: A) -> B) -> Array[B] {
-  Iterator::r#map(xs, f)
+  let len = Array::length(xs)
+  {
+    let acc = ArrayBuilder::new()
+    let rec r#loop = (i: Int) -> ArrayBuilder[B] {
+      if i >= len {
+        acc
+      } else {
+        ArrayBuilder::push(acc, f(Array::get(xs, i)))
+        r#loop(i + 1)
+      }
+    }
+    ArrayBuilder::freeze(r#loop(0))
+  }
 }
