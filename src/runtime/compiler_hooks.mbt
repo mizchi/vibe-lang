@@ -66,8 +66,8 @@ pub fn desugar_method_calls(
 /// Hook: parse source code to AST.
 /// Default: calls @parser.parse_ast directly.
 /// Decouples db_query.mbt from direct @parser imports.
-let parse_ast_hook : Ref[(String) -> @core.Module!@parser.ParseError] = {
-  val: fn(source) { @parser.parse_ast!(source) },
+let parse_ast_hook : Ref[(String) -> @core.Module raise @parser.ParseError] = {
+  val: fn(source) -> @core.Module raise @parser.ParseError { @parser.parse_ast(source) },
 }
 
 ///|
@@ -78,8 +78,8 @@ let parse_cst_hook : Ref[(String) -> @cst.SyntaxNode] = {
 }
 
 ///|
-fn hook_parse_ast(source : String) -> @core.Module!@parser.ParseError {
-  (parse_ast_hook.val)!(source)
+fn hook_parse_ast(source : String) -> @core.Module raise @parser.ParseError {
+  (parse_ast_hook.val)(source)
 }
 
 ///|
