@@ -287,10 +287,7 @@ fn rename_private_expr_refs(
       @core.Expr::StringInterp(parts=next, span~)
     }
     @core.Expr::Ident(name~, span~) =>
-      @core.Expr::Ident(
-        name=rename_lookup_name(scope, rename_map, name),
-        span~,
-      )
+      @core.Expr::Ident(name=rename_lookup_name(scope, rename_map, name), span~)
     @core.Expr::Call(name~, type_args~, args~, span~) =>
       @core.Expr::Call(
         name=rename_lookup_name(scope, rename_map, name),
@@ -332,27 +329,16 @@ fn rename_private_expr_refs(
       @core.Expr::If(
         cond=rename_private_expr_refs(cond, scope, rename_map),
         then_body=rename_private_module_refs(
-          then_body,
-          scope,
-          rename_map,
-          false,
+          then_body, scope, rename_map, false,
         ),
         else_body=rename_private_module_refs(
-          else_body,
-          scope,
-          rename_map,
-          false,
+          else_body, scope, rename_map, false,
         ),
         span~,
       )
     @core.Expr::Block(body~, span~) =>
       @core.Expr::Block(
-        body=rename_private_module_refs(
-          body,
-          scope,
-          rename_map,
-          false,
-        ),
+        body=rename_private_module_refs(body, scope, rename_map, false),
         span~,
       )
     @core.Expr::Match(scrutinee~, arms~, span~) =>
@@ -372,12 +358,7 @@ fn rename_private_expr_refs(
         value_name~,
         index_name~,
         iterable=rename_private_expr_refs(iterable, scope, rename_map),
-        body=rename_private_module_refs(
-          body,
-          body_scope,
-          rename_map,
-          false,
-        ),
+        body=rename_private_module_refs(body, body_scope, rename_map, false),
         span~,
       )
     }
@@ -400,24 +381,14 @@ fn rename_private_expr_refs(
         params~,
         ret~,
         effects~,
-        body=rename_private_module_refs(
-          body,
-          body_scope,
-          rename_map,
-          false,
-        ),
+        body=rename_private_module_refs(body, body_scope, rename_map, false),
         span~,
       )
     }
     @core.Expr::While(cond~, body~, span~) =>
       @core.Expr::While(
         cond=rename_private_expr_refs(cond, scope, rename_map),
-        body=rename_private_module_refs(
-          body,
-          scope,
-          rename_map,
-          false,
-        ),
+        body=rename_private_module_refs(body, scope, rename_map, false),
         span~,
       )
     @core.Expr::Loop(params~, body~, span~) => {
@@ -433,19 +404,15 @@ fn rename_private_expr_refs(
       }
       @core.Expr::Loop(
         params=next_params,
-        body=rename_private_module_refs(
-          body,
-          body_scope,
-          rename_map,
-          false,
-        ),
+        body=rename_private_module_refs(body, body_scope, rename_map, false),
         span~,
       )
     }
     @core.Expr::Break(value~, span~) =>
       @core.Expr::Break(
         value=match value {
-          Some(inner) => Some(rename_private_expr_refs(inner, scope, rename_map))
+          Some(inner) =>
+            Some(rename_private_expr_refs(inner, scope, rename_map))
           None => None
         },
         span~,
@@ -464,12 +431,7 @@ fn rename_private_expr_refs(
       )
     @core.Expr::Handle(body~, arms~, span~) =>
       @core.Expr::Handle(
-        body=rename_private_module_refs(
-          body,
-          scope,
-          rename_map,
-          false,
-        ),
+        body=rename_private_module_refs(body, scope, rename_map, false),
         arms=rename_match_arms(arms, scope, rename_map),
         span~,
       )
@@ -581,10 +543,7 @@ fn rename_private_stmt_refs(
         pat~,
         expr=rename_private_expr_refs(expr, scope, rename_map),
         else_body=rename_private_module_refs(
-          else_body,
-          scope,
-          rename_map,
-          false,
+          else_body, scope, rename_map, false,
         ),
         span~,
       )
@@ -596,23 +555,13 @@ fn rename_private_stmt_refs(
     @core.Stmt::Test(name~, body~, span~) =>
       @core.Stmt::Test(
         name~,
-        body=rename_private_module_refs(
-          body,
-          scope,
-          rename_map,
-          false,
-        ),
+        body=rename_private_module_refs(body, scope, rename_map, false),
         span~,
       )
     @core.Stmt::Bench(name~, body~, span~) =>
       @core.Stmt::Bench(
         name~,
-        body=rename_private_module_refs(
-          body,
-          scope,
-          rename_map,
-          false,
-        ),
+        body=rename_private_module_refs(body, scope, rename_map, false),
         span~,
       )
     @core.Stmt::TraitImpl(
@@ -679,17 +628,11 @@ fn rename_private_module_refs(
   let next_stmts : Array[@core.Stmt] = []
   for stmt in mod_.stmts {
     let next = rename_private_stmt_refs(
-      stmt,
-      scope,
-      rename_map,
-      rename_toplevel_binders,
+      stmt, scope, rename_map, rename_toplevel_binders,
     )
     next_stmts.push(next)
     extend_scope_with_stmt_bindings(
-      scope,
-      stmt,
-      rename_map,
-      rename_toplevel_binders,
+      scope, stmt, rename_map, rename_toplevel_binders,
     )
   }
   { stmts: next_stmts }
@@ -704,12 +647,7 @@ fn namespace_private_module_values(
   if rename_map.length() == 0 {
     ast
   } else {
-    rename_private_module_refs(
-      ast,
-      RenameScope::new(),
-      rename_map,
-      true,
-    )
+    rename_private_module_refs(ast, RenameScope::new(), rename_map, true)
   }
 }
 

@@ -125,3 +125,11 @@ test "lex raw string with backslash" {
   assert_eq(t.kind, string_lit())
   assert_eq(t.text(), "a\\\\b")
 }
+
+///|
+test "lex string \\r escape produces carriage return" {
+  let lexer = Lexer::new("\"a\\rb\"")
+  let t = lexer.next_token()
+  assert_eq(t.kind, string_lit())
+  assert_eq(t.text(), "a\rb")
+}

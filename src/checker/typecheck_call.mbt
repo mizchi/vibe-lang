@@ -91,13 +91,7 @@ fn type_call(
   }
   if @core.lower_wasm_intrinsic_name(lookup_name) == "__to_string" {
     return type_call_builtin(
-      env,
-      lookup_name,
-      args,
-      aliases,
-      effects,
-      allow_effect,
-      call_span,
+      env, lookup_name, args, aliases, effects, allow_effect, call_span,
     )
   }
   match env.get(lookup_name) {

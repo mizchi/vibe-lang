@@ -2571,6 +2571,7 @@ fn desugar_string_interp(
       match chars[i + 1] {
         'n' => buf.write_char('\n')
         't' => buf.write_char('\t')
+        'r' => buf.write_char('\r')
         '"' => buf.write_char('"')
         '\\' => buf.write_char('\\')
         c => buf.write_char(c)

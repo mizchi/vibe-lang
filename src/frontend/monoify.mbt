@@ -856,9 +856,7 @@ fn specialize_fn_expr(
       let iter_param_types = if is_num_tag(tag) {
         {}
       } else {
-        monoify_iter_dispatch_param_types(
-          params, body, type_subst,
-        )
+        monoify_iter_dispatch_param_types(params, body, type_subst)
       }
       let updated_params : Array[@core.FuncParam] = []
       let updated_ret = if is_num_tag(tag) {
@@ -918,10 +916,7 @@ fn specialize_fn_expr(
         for param_name, root in iterable_spec {
           if !emitted_roots.contains(root) {
             emitted_roots[root] = true
-            let helper_names = [
-              root + "::iter_get",
-              root + "::iter_length",
-            ]
+            let helper_names = [root + "::iter_get", root + "::iter_length"]
             for helper_name in helper_names {
               if helper_name != name && ctx.specializable.contains(helper_name) {
                 match ctx.specializable.get(helper_name) {
@@ -1950,9 +1945,7 @@ fn monoify_iter_dispatch_param_types(
 }
 
 ///|
-fn monoify_iter_root_from_type(
-  ty : @core.Type,
-) -> String? {
+fn monoify_iter_root_from_type(ty : @core.Type) -> String? {
   match ty {
     @core.Type::Array(_) => Some("Array")
     @core.Type::Named(name~, ..) => Some(name)

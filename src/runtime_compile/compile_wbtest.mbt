@@ -32,9 +32,7 @@ fn name_matches_binding(name : String, binding_name : String) -> Bool {
 }
 
 ///|
-fn stmt_name_expr(
-  stmt : @core.Stmt,
-) -> (String, @core.Expr)? {
+fn stmt_name_expr(stmt : @core.Stmt) -> (String, @core.Expr)? {
   match stmt {
     @core.Stmt::Let(name~, expr~, ..)
     | @core.Stmt::ExportLet(name~, expr~, ..)
@@ -123,7 +121,8 @@ fn runtime_compile_module_fn_body_has_call_pattern(
           match expr {
             @core.Expr::Fn(body~, ..) => {
               let sexp = module_to_sexp(body, {})
-              return sexp.contains(target_prefix) && sexp.contains(target_suffix)
+              return sexp.contains(target_prefix) &&
+                sexp.contains(target_suffix)
             }
             _ => return false
           }
@@ -528,9 +527,19 @@ test "prepare_bundled_ast_for_codegen keeps iterable helper roots distinct per p
   }
   match pair_sum_name {
     Some(name) => {
-      assert_true(runtime_compile_module_has_value_call(prepared, "value", name))
-      assert_true(runtime_compile_module_fn_body_has_call(prepared, name, "Trio::iter_get"))
-      assert_true(runtime_compile_module_fn_body_has_call(prepared, name, "List::iter_get"))
+      assert_true(
+        runtime_compile_module_has_value_call(prepared, "value", name),
+      )
+      assert_true(
+        runtime_compile_module_fn_body_has_call(
+          prepared, name, "Trio::iter_get",
+        ),
+      )
+      assert_true(
+        runtime_compile_module_fn_body_has_call(
+          prepared, name, "List::iter_get",
+        ),
+      )
     }
     None => fail(module_to_sexp(prepared, {}))
   }
@@ -797,11 +806,10 @@ test "prepare_bundled_ast_for_codegen specializes imported iterator flatmap help
   let mut flatmap_name : String? = None
   for stmt in prepared.stmts {
     match stmt {
-      @core.Stmt::Let(name~, ..) => {
+      @core.Stmt::Let(name~, ..) =>
         if name.has_prefix("Iterator::flatmap$Trio") {
           flatmap_name = Some(name)
         }
-      }
       _ => ()
     }
   }
@@ -964,7 +972,11 @@ test "bundle_for_codegen specializes imported list iterator helper types" {
   let prepared = prepare_bundled_ast_for_codegen(bundled) catch {
     err => fail(err.to_string())
   }
-  let gc_bundled = bundle_for_wasm_no_dce(db, "/project/main.vibe", compiled.ast)
+  let gc_bundled = bundle_for_wasm_no_dce(
+    db,
+    "/project/main.vibe",
+    compiled.ast,
+  )
   let gc_prepared = prepare_bundled_ast_for_codegen(gc_bundled) catch {
     err => fail(err.to_string())
   }

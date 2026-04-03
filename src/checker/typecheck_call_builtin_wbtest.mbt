@@ -27,12 +27,7 @@ fn builtin_test_int_arg(value : Int) -> @core.CallArg {
 
 ///|
 fn builtin_test_fn_param(name : String, ty : @core.Type) -> @core.FuncParam {
-  {
-    name,
-    label: Positional,
-    ty,
-    bounds: [],
-  }
+  { name, label: Positional, ty, bounds: [] }
 }
 
 ///|

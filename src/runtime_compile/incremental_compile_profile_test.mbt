@@ -74,9 +74,7 @@ fn print_profile_summary(
 
 ///|
 test "incremental compile profile short" {
-  let (cold, hot) = profiled_compile_pair(
-    "vibe/compiler/checker_error.vibe",
-  )
+  let (cold, hot) = profiled_compile_pair("vibe/compiler/checker_error.vibe")
   print_profile_summary("short", cold, hot)
   assert_true(hot.total_us < cold.total_us)
   assert_true(hot.module_us < cold.module_us)
@@ -100,11 +98,7 @@ test "incremental compile profile medium" {
 test "compile checker_stmt selfhost module" {
   let (db, entry) = load_test_entry("vibe/compiler/checker/checker_stmt.vibe")
   let wasm = try
-    compile_module_wasm_with_opt_level(
-      db,
-      entry,
-      no_dce=true,
-    )
+    compile_module_wasm_with_opt_level(db, entry, no_dce=true)
   catch {
     e => fail("compile error: " + e.user_message())
   } noraise {
@@ -139,7 +133,8 @@ test "bundle checker_stmt selfhost module keeps TypeDef before checker lets" {
       | @core.Stmt::InternalExportLet(name~, ..) =>
         if name == "check_program" && check_program_idx < 0 {
           check_program_idx = i
-        } else if name == "check_program_with_env" && check_program_with_env_idx < 0 {
+        } else if name == "check_program_with_env" &&
+          check_program_with_env_idx < 0 {
           check_program_with_env_idx = i
         }
       _ => ()
@@ -176,7 +171,8 @@ test "bundle checker_stmt selfhost module raw bundle typechecks" {
   )
   match ok {
     Ok(_) => ()
-    Err(err) => fail("raw bundle typecheck failed: " + err.diagnostic().to_string())
+    Err(err) =>
+      fail("raw bundle typecheck failed: " + err.diagnostic().to_string())
   }
 }
 
@@ -192,7 +188,8 @@ test "bundle checker_stmt selfhost module prepared bundle typechecks" {
   )
   match ok {
     Ok(_) => ()
-    Err(err) => fail("prepared bundle typecheck failed: " + err.diagnostic().to_string())
+    Err(err) =>
+      fail("prepared bundle typecheck failed: " + err.diagnostic().to_string())
   }
 }
 
