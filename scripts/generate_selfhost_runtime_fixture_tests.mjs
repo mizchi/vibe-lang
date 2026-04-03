@@ -45,6 +45,84 @@ function fixtureSource(content) {
   return content.substring(0, idx).trimEnd();
 }
 
+function splitTopLevelChunks(source) {
+  const lines = source.split("\n");
+  const chunks = [];
+  let current = [];
+  let depth = 0;
+  let inString = false;
+  let stringQuote = "";
+  let escape = false;
+
+  function pushCurrent() {
+    const text = current.join("\n").trim();
+    if (text) chunks.push(text);
+    current = [];
+  }
+
+  function updateDepth(line) {
+    for (let i = 0; i < line.length; i += 1) {
+      const ch = line[i];
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (inString) {
+        if (ch === "\\") {
+          escape = true;
+        } else if (ch === stringQuote) {
+          inString = false;
+          stringQuote = "";
+        }
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        inString = true;
+        stringQuote = ch;
+        continue;
+      }
+      if (ch === "/" && i + 1 < line.length && line[i + 1] === "/") {
+        break;
+      }
+      if (ch === "{" || ch === "(" || ch === "[") {
+        depth += 1;
+      } else if (ch === "}" || ch === ")" || ch === "]") {
+        depth -= 1;
+      }
+    }
+  }
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed && depth === 0 && current.length > 0) {
+      pushCurrent();
+    }
+    current.push(line);
+    updateDepth(line);
+  }
+  pushCurrent();
+  return chunks;
+}
+
+function isPreludeChunk(chunk) {
+  const trimmed = chunk.trimStart();
+  return trimmed.startsWith("import ") || trimmed.startsWith("export ");
+}
+
+function isDeclarationChunk(chunk) {
+  const trimmed = chunk.trimStart();
+  return (
+    trimmed.startsWith("let ") ||
+    trimmed.startsWith("let rec ") ||
+    trimmed.startsWith("enum ") ||
+    trimmed.startsWith("struct ") ||
+    trimmed.startsWith("type ") ||
+    trimmed.startsWith("impl ") ||
+    trimmed.startsWith("trait ") ||
+    trimmed.startsWith("module ")
+  );
+}
+
 /**
  * A fixture is a runtime candidate when:
  *  - It has __DATA__ with a "last" key (expected runtime result)
@@ -125,28 +203,37 @@ function buildSingleFixtureTestContent(fixturePath) {
   const source = fixtureSource(content);
   const data = parseFixtureData(content);
   const expectedLast = data?.last ?? null;
+  const chunks = splitTopLevelChunks(source);
+  const preludeChunks = [];
+  const bodyChunks = [];
+  for (const chunk of chunks) {
+    if (isPreludeChunk(chunk)) {
+      preludeChunks.push(chunk);
+    } else if (isDeclarationChunk(chunk)) {
+      bodyChunks.push(chunk);
+    } else {
+      bodyChunks.push(`let _ = (\n${chunk}\n)`);
+    }
+  }
 
-  // The fixture source becomes the top-level prelude. The test block
-  // is intentionally minimal: if the prelude compiles and runs, the
-  // test passes.
   const parts = [];
-  if (source.trim()) {
-    parts.push(source);
+  if (preludeChunks.length > 0) {
+    parts.push(preludeChunks.join("\n\n"));
     parts.push("");
   }
 
-  if (expectedLast !== null) {
-    // The prelude's last expression is silently discarded by vibe test
-    // prelude handling. We add a test that simply verifies the module
-    // loaded without error.
-    parts.push(
-      `test "generated fixture: ${fixturePath}" {\n  ()\n}\n`,
-    );
-  } else {
-    parts.push(
-      `test "generated fixture: ${fixturePath}" {\n  ()\n}\n`,
-    );
+  const testBody = [];
+  for (const chunk of bodyChunks) {
+    const indented = chunk
+      .split("\n")
+      .map((line) => (line.length > 0 ? `  ${line}` : ""))
+      .join("\n");
+    testBody.push(indented);
   }
+  if (expectedLast !== null || bodyChunks.length === 0) {
+    testBody.push("  ()");
+  }
+  parts.push(`test "generated fixture: ${fixturePath}" {\n${testBody.join("\n\n")}\n}\n`);
 
   return parts.join("\n");
 }

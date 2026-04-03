@@ -1,6 +1,9 @@
 ///|
-pub fn type_check(ast : @core.Module) -> TypeEnv raise TypeError {
-  type_check_with_aliases(ast, {})
+pub fn type_check(
+  ast : @core.Module,
+  allow_duplicate_decl? : Bool = false,
+) -> TypeEnv raise TypeError {
+  type_check_with_aliases(ast, {}, allow_duplicate_decl~)
 }
 
 ///|
@@ -8,6 +11,7 @@ pub fn type_check(ast : @core.Module) -> TypeEnv raise TypeError {
 fn type_check_with_aliases(
   ast : @core.Module,
   aliases : Map[String, @core.Ref],
+  allow_duplicate_decl? : Bool = false,
 ) -> TypeEnv raise TypeError {
   @profiler.profiler_enter("checker/type_check")
   let env = get_cached_prelude_env_for_module()
@@ -21,6 +25,7 @@ fn type_check_with_aliases(
     false,
     exported_names,
     is_top_level=true,
+    allow_duplicate_decl~,
   ) catch {
     e => {
       @profiler.profiler_leave()
@@ -359,6 +364,7 @@ fn type_check_stmts(
   allow_effect : Bool,
   exported_names : Map[String, Bool],
   is_top_level? : Bool,
+  allow_duplicate_decl? : Bool = false,
 ) -> TypeEnv raise TypeError {
   let is_top_level = is_top_level.unwrap_or(false)
   let declared_in_scope : Map[String, Bool] = {}
@@ -370,7 +376,7 @@ fn type_check_stmts(
     if name == "_" {
       return
     }
-    if declared_in_scope.contains(name) {
+    if declared_in_scope.contains(name) && !allow_duplicate_decl {
       raise TypeError::DuplicateDecl(name~, span~)
     }
   }

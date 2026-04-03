@@ -267,7 +267,7 @@ fn collect_dependency_defs_selected(
         @core.Stmt::Test(..) | @core.Stmt::Bench(..) => ()
         @core.Stmt::TraitDef(..)
         | @core.Stmt::TraitImpl(..)
-        | @core.Stmt::InternalTraitDef(..) => ()
+        | @core.Stmt::InternalTraitDef(..) => out.push(stmt)
         @core.Stmt::LetMut(..) => out.push(stmt)
         _ => out.push(stmt)
       }
@@ -1030,12 +1030,19 @@ fn bundle_for_wasm_impl(
   keep_for_in_helpers~ : Bool,
 ) -> @core.Module {
   ensure_hooks()
-  let bundled_stmts : Array[@core.Stmt] = []
+  let collected_dep_stmts : Array[@core.Stmt] = []
   let visited : Map[String, Bool] = {}
   // Collect all dependency definitions in topological order
-  collect_dependency_defs(db, path, bundled_stmts, visited)
+  collect_dependency_defs(db, path, collected_dep_stmts, visited)
+  let bundled_stmts = dedupe_dependency_value_defs(collected_dep_stmts)
   let existing_value_names : Map[String, Bool] = {}
   for stmt in bundled_stmts {
+    match bundle_stmt_value_name(stmt) {
+      Some(name) => existing_value_names[name] = true
+      None => ()
+    }
+  }
+  for stmt in ast.stmts {
     match bundle_stmt_value_name(stmt) {
       Some(name) => existing_value_names[name] = true
       None => ()
@@ -1051,6 +1058,10 @@ fn bundle_for_wasm_impl(
   let non_prelude_names : Array[String] = []
   for stmt in bundled_stmts {
     match bundle_stmt_value_name(stmt) {
+      Some(name) => non_prelude_names.push(name)
+      None => ()
+    }
+    match bundle_stmt_type_name(stmt) {
       Some(name) => non_prelude_names.push(name)
       None => ()
     }
@@ -1114,6 +1125,10 @@ fn bundle_for_wasm_impl(
   }
   for stmt in sorted_main {
     match bundle_stmt_value_name(stmt) {
+      Some(name) => non_prelude_names.push(name)
+      None => ()
+    }
+    match bundle_stmt_type_name(stmt) {
       Some(name) => non_prelude_names.push(name)
       None => ()
     }
@@ -1214,10 +1229,10 @@ fn collect_dependency_defs(
         @core.Stmt::Import(..) | @core.Stmt::Export(..) => ()
         // Skip tests from dependencies
         @core.Stmt::Test(..) | @core.Stmt::Bench(..) => ()
-        // Skip trait definitions (no-op in codegen)
+        // Keep trait defs/impls so bundle-time typecheck can resolve bounds.
         @core.Stmt::TraitDef(..)
         | @core.Stmt::TraitImpl(..)
-        | @core.Stmt::InternalTraitDef(..) => ()
+        | @core.Stmt::InternalTraitDef(..) => out.push(stmt)
         // Include mutable variable definitions
         @core.Stmt::LetMut(..) => out.push(stmt)
         // Other statements are passed through
@@ -1252,6 +1267,25 @@ fn dedupe_bundle_structural_defs(
         if not(seen_type_names.contains(name)) {
           out.push(stmt)
           seen_type_names[name] = true
+        }
+      None => out.push(stmt)
+    }
+  }
+  out
+}
+
+///|
+fn dedupe_dependency_value_defs(
+  stmts : Array[@core.Stmt],
+) -> Array[@core.Stmt] {
+  let out : Array[@core.Stmt] = []
+  let seen_value_names : Map[String, Bool] = {}
+  for stmt in stmts {
+    match bundle_stmt_value_name(stmt) {
+      Some(name) =>
+        if !seen_value_names.contains(name) {
+          out.push(stmt)
+          seen_value_names[name] = true
         }
       None => out.push(stmt)
     }

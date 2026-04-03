@@ -108,7 +108,7 @@ fn compile_stmt(
           ..
         ) => {
           let _ = effects
-          let key = span_key_unique(fn_span, fn_params)
+          let key = span_key_named(Some(name), fn_span, fn_params)
           let func_idx = match ctx.fn_closure_indices.get(key) {
             Some(i) => i
             None => -1
@@ -154,7 +154,7 @@ fn compile_stmt(
           ctx.local_types.push(kind)
           ctx.locals[name] = idx
           ctx.local_kinds[name] = kind
-          compile_expr(ctx, buf, expr)
+          compile_expr_fn_with_key(ctx, buf, key, fn_params)
           if is_last {
             emit_local_tee(buf, idx)
           } else {

@@ -26,6 +26,16 @@ fn builtin_test_int_arg(value : Int) -> @core.CallArg {
 }
 
 ///|
+fn builtin_test_fn_param(name : String, ty : @core.Type) -> @core.FuncParam {
+  {
+    name,
+    label: Positional,
+    ty,
+    bounds: [],
+  }
+}
+
+///|
 test "type_call_builtin: path returns Path" {
   let env = TypeEnv::new()
   let span = builtin_test_span()
@@ -84,6 +94,34 @@ test "type_call_builtin: __len returns Int for Bytes" {
     err => fail(err.to_string())
   }
   assert_eq(actual, @core.Type::Int)
+}
+
+///|
+test "type_call: builtin __to_string beats local shadow" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  env.set("s", @core.Type::String)
+  env.set(
+    "__to_string",
+    @core.Type::Func(
+      params=[builtin_test_fn_param("n", @core.Type::Int)],
+      ret=@core.Type::String,
+      effects=[],
+    ),
+  )
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_call(
+    env,
+    "__to_string",
+    [builtin_test_ident_arg("s")],
+    aliases,
+    effect_scope_all(),
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(actual, @core.Type::String)
 }
 
 ///|

@@ -1,11 +1,10 @@
 ///|
-fn compile_expr_fn(
+fn compile_expr_fn_with_key(
   ctx : CodegenCtx,
   buf : ByteBuf,
-  span : @core.Span,
-  params : Array[@core.FuncParam],
+  key : String,
+  _params : Array[@core.FuncParam],
 ) -> Unit raise WasmGenError {
-  let key = span_key_unique(span, params)
   let func_idx = match ctx.fn_closure_indices.get(key) {
     Some(idx) => idx
     None => raise WasmGenError::Unsupported("fn index")
@@ -126,4 +125,14 @@ fn compile_expr_fn(
     emit_i64_const_raw(buf, tag_obj.to_int64())
     emit_i64_or(buf)
   }
+}
+
+///|
+fn compile_expr_fn(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  span : @core.Span,
+  params : Array[@core.FuncParam],
+) -> Unit raise WasmGenError {
+  compile_expr_fn_with_key(ctx, buf, span_key_unique(span, params), params)
 }

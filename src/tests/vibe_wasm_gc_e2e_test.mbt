@@ -52,8 +52,8 @@ test "wasm-gc e2e: while loop" {
 ///|
 test "wasm-gc e2e: function call" {
   let src =
-    #|let add = (a: Int, b: Int) -> Int { a + b }
-    #|let main = () -> Int { add(3, 4) }
+    #|let sum2 = (a: Int, b: Int) -> Int { a + b }
+    #|let main = () -> Int { sum2(3, 4) }
     #|main()
   assert_gc_e2e(src, "function_call", 7)
 }
@@ -133,12 +133,12 @@ test "wasm-gc e2e: enum nullary match" {
 ///|
 test "wasm-gc e2e: enum with payload" {
   let src =
-    #|enum Result { Ok(Int); Err }
+    #|enum Outcome { Success(Int); Failure }
     #|let main = () -> Int {
-    #|  let r = Ok(42)
+    #|  let r = Success(42)
     #|  match r {
-    #|    Ok(n) => n
-    #|    Err => 0
+    #|    Success(n) => n
+    #|    Failure => 0
     #|  }
     #|}
     #|main()
@@ -223,6 +223,275 @@ test "wasm-gc e2e: pipe operator" {
     #|let main = () -> Int { 21 |> double() }
     #|main()
   assert_gc_e2e(src, "pipe_op", 42)
+}
+
+///|
+test "wasm-gc e2e: generic list iter_get" {
+  let src =
+    #|enum List[T] { Nil; Cons(T, List[T]) }
+    #|impl [T] Iterable for List[T]
+    #|let list_of3 = [T](a: T, b: T, c: T) -> List[T] {
+    #|  Cons(a, Cons(b, Cons(c, Nil)))
+    #|}
+    #|let rec list_iter_get = [T](xs: List[T], index: Int) -> T {
+    #|  match xs {
+    #|    Cons(h, t) => if index == 0 { h } else { list_iter_get(t, index - 1) },
+    #|    Nil => list_iter_get(xs, index)
+    #|  }
+    #|}
+    #|let List::iter_get = [T](xs: List[T], index: Int) -> T { list_iter_get(xs, index) }
+    #|let main = () -> Int {
+    #|  List::iter_get(list_of3(1, 2, 3), 1)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "generic_list_iter_get", 2)
+}
+
+///|
+test "wasm-gc e2e: generic iterator fold over list" {
+  let src =
+    #|enum List[T] { Nil; Cons(T, List[T]) }
+    #|impl [T] Iterable for List[T]
+    #|let list_of3 = [T](a: T, b: T, c: T) -> List[T] {
+    #|  Cons(a, Cons(b, Cons(c, Nil)))
+    #|}
+    #|let rec list_length = [T](xs: List[T]) -> Int {
+    #|  match xs {
+    #|    Nil => 0,
+    #|    Cons(_, t) => 1 + list_length(t)
+    #|  }
+    #|}
+    #|let rec list_iter_get = [T](xs: List[T], index: Int) -> T {
+    #|  match xs {
+    #|    Cons(h, t) => if index == 0 { h } else { list_iter_get(t, index - 1) },
+    #|    Nil => list_iter_get(xs, index)
+    #|  }
+    #|}
+    #|let List::iter_get = [T](xs: List[T], index: Int) -> T { list_iter_get(xs, index) }
+    #|let List::iter_length = [T](xs: List[T]) -> Int { list_length(xs) }
+    #|let Iterator::fold = [C: Iterable, T, B](xs: C, init: B, f: (acc: B, x: T) -> B) -> B {
+    #|  let len = xs|>iter_length
+    #|  let mut i = 0
+    #|  let mut acc = init
+    #|  while i < len {
+    #|    acc = f(acc, xs|>iter_get(i))
+    #|    i = i + 1
+    #|  }
+    #|  acc
+    #|}
+    #|let main = () -> Int {
+    #|  Iterator::fold(list_of3(1, 2, 3), 0, (acc: Int, x: Int) -> Int { acc + x })
+    #|}
+    #|main()
+  assert_gc_e2e(src, "generic_iterator_fold_list", 6)
+}
+
+///|
+test "wasm-gc e2e: generic iterator map over list" {
+  let src =
+    #|enum List[T] { Nil; Cons(T, List[T]) }
+    #|impl [T] Iterable for List[T]
+    #|let list_of3 = [T](a: T, b: T, c: T) -> List[T] {
+    #|  Cons(a, Cons(b, Cons(c, Nil)))
+    #|}
+    #|let rec list_iter_get = [T](xs: List[T], index: Int) -> T {
+    #|  match xs {
+    #|    Cons(h, t) => if index == 0 { h } else { list_iter_get(t, index - 1) },
+    #|    Nil => list_iter_get(xs, index)
+    #|  }
+    #|}
+    #|let rec list_length = [T](xs: List[T]) -> Int {
+    #|  match xs {
+    #|    Nil => 0,
+    #|    Cons(_, t) => 1 + list_length(t)
+    #|  }
+    #|}
+    #|let List::iter_get = [T](xs: List[T], index: Int) -> T { list_iter_get(xs, index) }
+    #|let List::iter_length = [T](xs: List[T]) -> Int { list_length(xs) }
+    #|let Iterator::r#map = [C: Iterable, A, B](xs: C, f: (x: A) -> B) -> Array[B] {
+    #|  let len = xs|>iter_length
+    #|  {
+    #|    let acc = ArrayBuilder::new()
+    #|    let mut i = 0
+    #|    while i < len {
+    #|      ArrayBuilder::push(acc, f(xs|>iter_get(i)))
+    #|      i = i + 1
+    #|    }
+    #|    ArrayBuilder::freeze(acc)
+    #|  }
+    #|}
+    #|let main = () -> Int {
+    #|  let doubled = Iterator::r#map(list_of3(1, 2, 3), (x: Int) -> Int { x * 2 })
+    #|  Array::get(doubled, 2)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "generic_iterator_map_list", 6)
+}
+
+///|
+test "wasm-gc e2e: generic iterator filter over list" {
+  let src =
+    #|enum List[T] { Nil; Cons(T, List[T]) }
+    #|impl [T] Iterable for List[T]
+    #|let list_of4 = [T](a: T, b: T, c: T, d: T) -> List[T] {
+    #|  Cons(a, Cons(b, Cons(c, Cons(d, Nil))))
+    #|}
+    #|let rec list_iter_get = [T](xs: List[T], index: Int) -> T {
+    #|  match xs {
+    #|    Cons(h, t) => if index == 0 { h } else { list_iter_get(t, index - 1) },
+    #|    Nil => list_iter_get(xs, index)
+    #|  }
+    #|}
+    #|let rec list_length = [T](xs: List[T]) -> Int {
+    #|  match xs {
+    #|    Nil => 0,
+    #|    Cons(_, t) => 1 + list_length(t)
+    #|  }
+    #|}
+    #|let List::iter_get = [T](xs: List[T], index: Int) -> T { list_iter_get(xs, index) }
+    #|let List::iter_length = [T](xs: List[T]) -> Int { list_length(xs) }
+    #|let Iterator::filter = [C: Iterable, T](xs: C, pred: (x: T) -> Bool) -> Array[T] {
+    #|  let len = xs|>iter_length
+    #|  {
+    #|    let acc = ArrayBuilder::new()
+    #|    let mut i = 0
+    #|    while i < len {
+    #|      let value = xs|>iter_get(i)
+    #|      if pred(value) {
+    #|        ArrayBuilder::push(acc, value)
+    #|      }
+    #|      i = i + 1
+    #|    }
+    #|    ArrayBuilder::freeze(acc)
+    #|  }
+    #|}
+    #|let main = () -> Int {
+    #|  let evens = Iterator::filter(list_of4(1, 2, 3, 4), (x: Int) -> Bool { x % 2 == 0 })
+    #|  Array::get(evens, 1)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "generic_iterator_filter_list", 4)
+}
+
+///|
+test "wasm-gc e2e: generic iterator flatmap over list" {
+  let src =
+    #|enum List[T] { Nil; Cons(T, List[T]) }
+    #|impl [T] Iterable for List[T]
+    #|let list_of3 = [T](a: T, b: T, c: T) -> List[T] {
+    #|  Cons(a, Cons(b, Cons(c, Nil)))
+    #|}
+    #|let rec list_iter_get = [T](xs: List[T], index: Int) -> T {
+    #|  match xs {
+    #|    Cons(h, t) => if index == 0 { h } else { list_iter_get(t, index - 1) },
+    #|    Nil => list_iter_get(xs, index)
+    #|  }
+    #|}
+    #|let rec list_length = [T](xs: List[T]) -> Int {
+    #|  match xs {
+    #|    Nil => 0,
+    #|    Cons(_, t) => 1 + list_length(t)
+    #|  }
+    #|}
+    #|let List::iter_get = [T](xs: List[T], index: Int) -> T { list_iter_get(xs, index) }
+    #|let List::iter_length = [T](xs: List[T]) -> Int { list_length(xs) }
+    #|let Iterator::flatmap = [C: Iterable, A, B](xs: C, f: (x: A) -> Array[B]) -> Array[B] {
+    #|  let len = xs|>iter_length
+    #|  {
+    #|    let acc = ArrayBuilder::new()
+    #|    let mut i = 0
+    #|    while i < len {
+    #|      let chunk = f(xs|>iter_get(i))
+    #|      let chunk_len = Array::length(chunk)
+    #|      let mut j = 0
+    #|      while j < chunk_len {
+    #|        ArrayBuilder::push(acc, Array::get(chunk, j))
+    #|        j = j + 1
+    #|      }
+    #|      i = i + 1
+    #|    }
+    #|    ArrayBuilder::freeze(acc)
+    #|  }
+    #|}
+    #|let main = () -> Int {
+    #|  let duplicated = Iterator::flatmap(list_of3(1, 3, 5), (x: Int) -> Array[Int] { [x, x + 1] })
+    #|  Array::get(duplicated, 5)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "generic_iterator_flatmap_list", 6)
+}
+
+///|
+test "wasm-gc e2e: generic iterator filter over trio" {
+  let src =
+    #|enum Trio[T] { Trio(T, T, T) }
+    #|impl [T] Iterable for Trio[T]
+    #|let trio_of3 = [T](a: T, b: T, c: T) -> Trio[T] { Trio(a, b, c) }
+    #|let Trio::iter_length = [T](_xs: Trio[T]) -> Int { 3 }
+    #|let Trio::iter_get = [T](xs: Trio[T], index: Int) -> T {
+    #|  match xs {
+    #|    Trio(a, b, c) => if index == 0 { a } else if index == 1 { b } else { c }
+    #|  }
+    #|}
+    #|let Iterator::filter = [C: Iterable, T](xs: C, pred: (x: T) -> Bool) -> Array[T] {
+    #|  let len = xs|>iter_length
+    #|  {
+    #|    let acc = ArrayBuilder::new()
+    #|    let mut i = 0
+    #|    while i < len {
+    #|      let value = xs|>iter_get(i)
+    #|      if pred(value) {
+    #|        ArrayBuilder::push(acc, value)
+    #|      }
+    #|      i = i + 1
+    #|    }
+    #|    ArrayBuilder::freeze(acc)
+    #|  }
+    #|}
+    #|let main = () -> Int {
+    #|  let evens = Iterator::filter(trio_of3(1, 2, 4), (x: Int) -> Bool { x % 2 == 0 })
+    #|  Array::get(evens, 1)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "generic_iterator_filter_trio", 4)
+}
+
+///|
+test "wasm-gc e2e: generic iterator flatmap over trio" {
+  let src =
+    #|enum Trio[T] { Trio(T, T, T) }
+    #|impl [T] Iterable for Trio[T]
+    #|let trio_of3 = [T](a: T, b: T, c: T) -> Trio[T] { Trio(a, b, c) }
+    #|let Trio::iter_length = [T](_xs: Trio[T]) -> Int { 3 }
+    #|let Trio::iter_get = [T](xs: Trio[T], index: Int) -> T {
+    #|  match xs {
+    #|    Trio(a, b, c) => if index == 0 { a } else if index == 1 { b } else { c }
+    #|  }
+    #|}
+    #|let Iterator::flatmap = [C: Iterable, A, B](xs: C, f: (x: A) -> Array[B]) -> Array[B] {
+    #|  let len = xs|>iter_length
+    #|  {
+    #|    let acc = ArrayBuilder::new()
+    #|    let mut i = 0
+    #|    while i < len {
+    #|      let chunk = f(xs|>iter_get(i))
+    #|      let chunk_len = Array::length(chunk)
+    #|      let mut j = 0
+    #|      while j < chunk_len {
+    #|        ArrayBuilder::push(acc, Array::get(chunk, j))
+    #|        j = j + 1
+    #|      }
+    #|      i = i + 1
+    #|    }
+    #|    ArrayBuilder::freeze(acc)
+    #|  }
+    #|}
+    #|let main = () -> Int {
+    #|  let duplicated = Iterator::flatmap(trio_of3(1, 3, 5), (x: Int) -> Array[Int] { [x, x + 1] })
+    #|  Array::get(duplicated, 5)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "generic_iterator_flatmap_trio", 6)
 }
 
 ///|

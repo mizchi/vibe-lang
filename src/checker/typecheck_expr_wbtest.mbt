@@ -244,3 +244,55 @@ test "type_check: for-in over String yields Int char code elements" {
     Err(err) => fail("unexpected type error: " + err.to_string())
   }
 }
+
+///|
+test "type_check: direct iter dispatch accepts custom iterable" {
+  let script = "enum Trio[T] { Trio(T, T, T) }\n" +
+    "impl [T] Iterable for Trio[T]\n" +
+    "let trio_of3 = [T](a: T, b: T, c: T) -> Trio[T] { Trio(a, b, c) }\n" +
+    "let Trio::iter_length = [T](_xs: Trio[T]) -> Int { 3 }\n" +
+    "let Trio::iter_get = [T](xs: Trio[T], index: Int) -> T {\n" +
+    "  match xs {\n" +
+    "    Trio(a, b, c) => if index == 0 { a } else if index == 1 { b } else { c }\n" +
+    "  }\n" +
+    "}\n" +
+    "let xs = trio_of3(1, 2, 3)\n" +
+    "let len = xs|>iter_length\n" +
+    "let first = xs|>iter_get(0)\n"
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let result : Result[TypeEnv, TypeError] = try? type_check(ast)
+  match result {
+    Ok(env) => {
+      let stmt_count = ast.stmts.length()
+      if stmt_count < 2 {
+        fail("expected len/first bindings")
+      }
+      let len_expr = match ast.stmts[stmt_count - 2] {
+        @core.Stmt::Let(name~, expr~, ..) => {
+          assert_eq(name, "len")
+          expr
+        }
+        _ => fail("expected len binding")
+      }
+      let first_expr = match ast.stmts[stmt_count - 1] {
+        @core.Stmt::Let(name~, expr~, ..) => {
+          assert_eq(name, "first")
+          expr
+        }
+        _ => fail("expected first binding")
+      }
+      match env.get_expr_type(len_expr.span()) {
+        Some(ty) => assert_eq(ty, @core.Type::Int)
+        None => fail("missing recorded type for len")
+      }
+      match env.get_expr_type(first_expr.span()) {
+        Some(ty) => assert_eq(ty, @core.Type::Int)
+        None => fail("missing recorded type for first")
+      }
+    }
+    Err(err) =>
+      fail("expected direct iter dispatch to type-check: \{err.to_string()}")
+  }
+}

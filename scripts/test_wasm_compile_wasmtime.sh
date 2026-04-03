@@ -212,10 +212,6 @@ let array_sort = (xs: Array[Int]) -> Array[Int] {
   }
   acc
 }
-let where = [T](xs: Array[T], pred: (x: T) -> Bool) -> Array[T] {
-  array_filter(xs, pred)
-}
-
 let parse_int_normalize = (s: String) -> String {
   let trimmed = String::trim(s)
   if String::starts_with(trimmed, "+") {
@@ -831,6 +827,21 @@ expect_wasmtime_result "nested function with capture" \
 let add5 = make_adder(5)
 add5(10)' \
 "15"
+
+expect_wasmtime_result "nested function local let rec captures array" \
+'let sum_array = () -> Int {
+  let xs = [1, 2, 3, 4]
+  let rec go = (i: Int, acc: Int) -> Int {
+    if i >= Array::length(xs) {
+      acc
+    } else {
+      go(i + 1, acc + Array::get(xs, i))
+    }
+  }
+  go(0, 0)
+}
+sum_array()' \
+"10"
 
 echo ""
 
@@ -1842,11 +1853,11 @@ match Hit(42) {
 "42"
 
 expect_wasmtime_result "custom enum: nested match" \
-'enum Result { Ok(Int); Err(Int) }
-let r = Ok(10)
+'enum MyResult { MyOk(Int); MyErr(Int) }
+let r = MyOk(10)
 match r {
-  Ok(v) => v + 1
-  Err(_) => -1
+  MyOk(v) => v + 1
+  MyErr(_) => -1
 }' \
 "11"
 
