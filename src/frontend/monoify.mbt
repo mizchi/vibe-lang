@@ -857,7 +857,7 @@ fn specialize_fn_expr(
         {}
       } else {
         monoify_iter_dispatch_param_types(
-          ctx, type_params, type_bounds, params, body, iter_root, type_subst,
+          params, body, type_subst,
         )
       }
       let updated_params : Array[@core.FuncParam] = []
@@ -900,6 +900,13 @@ fn specialize_fn_expr(
           None => None
         }
       }
+      let iterable_spec = if is_num_tag(tag) {
+        {}
+      } else if monoify_is_root_iter_helper_name(name, iter_root) {
+        {}
+      } else {
+        monoify_iter_dispatch_param_spec(params, body, type_subst)
+      }
       let fn_scope = DesugarScope::new()
       for param in params {
         fn_scope.bindings[param.name] = true
@@ -907,58 +914,54 @@ fn specialize_fn_expr(
       let current_spec : Map[String, String] = {}
       current_spec[name] = specialized_name(name, tag)
       if !is_num_tag(tag) {
-        let helper_root_ty = monoify_first_iter_param_type(
-          params, updated_params, iter_param_types, type_bounds,
-        )
-        let helper_names = [
-          iter_root + "::iter_get",
-          iter_root + "::iter_length",
-        ]
-        for helper_name in helper_names {
-          if helper_name != name && ctx.specializable.contains(helper_name) {
-            match ctx.specializable.get(helper_name) {
-              Some(
-                @core.Expr::Fn(
-                  type_params=helper_type_params,
-                  type_bounds=helper_type_bounds,
-                  params=helper_params,
-                  ..
-                )
-              ) => {
-                let helper_subst : Map[String, @core.Type] = {}
-                match helper_root_ty {
-                  Some(actual_root_ty) =>
-                    if helper_params.length() >= 1 {
-                      monoify_collect_type_subst(
-                        helper_params[0].ty,
-                        actual_root_ty,
-                        helper_subst,
-                      )
+        let emitted_roots : Map[String, Bool] = {}
+        for param_name, root in iterable_spec {
+          if !emitted_roots.contains(root) {
+            emitted_roots[root] = true
+            let helper_names = [
+              root + "::iter_get",
+              root + "::iter_length",
+            ]
+            for helper_name in helper_names {
+              if helper_name != name && ctx.specializable.contains(helper_name) {
+                match ctx.specializable.get(helper_name) {
+                  Some(
+                    @core.Expr::Fn(
+                      type_params=helper_type_params,
+                      type_bounds=helper_type_bounds,
+                      params=helper_params,
+                      ..
+                    )
+                  ) => {
+                    let helper_subst : Map[String, @core.Type] = {}
+                    match iter_param_types.get(param_name) {
+                      Some(actual_root_ty) =>
+                        if helper_params.length() >= 1 {
+                          monoify_collect_type_subst(
+                            helper_params[0].ty,
+                            actual_root_ty,
+                            helper_subst,
+                          )
+                        }
+                      None => ()
                     }
-                  None => ()
+                    let helper_tag = monoify_iter_inst_tag(
+                      root, helper_type_params, helper_type_bounds, helper_subst,
+                    )
+                    ctx.add_instantiation(helper_name, {
+                      tag: helper_tag,
+                      type_subst: helper_subst,
+                    })
+                    current_spec[helper_name] = specialized_name(
+                      helper_name, helper_tag,
+                    )
+                  }
+                  _ => ()
                 }
-                let helper_tag = monoify_iter_inst_tag(
-                  iter_root, helper_type_params, helper_type_bounds, helper_subst,
-                )
-                ctx.add_instantiation(helper_name, {
-                  tag: helper_tag,
-                  type_subst: helper_subst,
-                })
-                current_spec[helper_name] = specialized_name(
-                  helper_name, helper_tag,
-                )
               }
-              _ => ()
             }
           }
         }
-      }
-      let iterable_spec = if is_num_tag(tag) {
-        {}
-      } else if monoify_is_root_iter_helper_name(name, iter_root) {
-        {}
-      } else {
-        monoify_iter_dispatch_param_spec(params, body, iter_root)
       }
       let local_types = monoify_param_type_map(updated_params)
       @core.Expr::Fn(
@@ -1411,15 +1414,10 @@ fn monoify_iter_inst_tag(
 ) -> String {
   let mut tag = root
   for name in type_params {
-    let should_include = match type_bounds.get(name) {
-      Some(bounds) => !monoify_type_bounds_contains(bounds, "Iterable")
-      None => true
-    }
-    if should_include {
-      match type_subst.get(name) {
-        Some(ty) => tag = tag + "|" + name + "=" + monoify_type_key(ty)
-        None => ()
-      }
+    let _ = type_bounds
+    match type_subst.get(name) {
+      Some(ty) => tag = tag + "|" + name + "=" + monoify_type_key(ty)
+      None => ()
     }
   }
   tag
@@ -1915,17 +1913,14 @@ fn monoify_iterable_spec_without(
 fn monoify_iter_dispatch_param_spec(
   params : Array[@core.FuncParam],
   body : @core.Module,
-  root : String,
+  type_subst : Map[String, @core.Type],
 ) -> Map[String, String] {
-  let params_map : Map[String, Bool] = {}
-  for param in params {
-    params_map[param.name] = true
-  }
   let out : Map[String, String] = {}
-  let names = monoify_iter_dispatch_param_names(body)
-  for name in names {
-    if params_map.contains(name) {
-      out[name] = root
+  let param_types = monoify_iter_dispatch_param_types(params, body, type_subst)
+  for name, ty in param_types {
+    match monoify_iter_root_from_type(ty) {
+      Some(root) => out[name] = root
+      None => ()
     }
   }
   out
@@ -1933,59 +1928,36 @@ fn monoify_iter_dispatch_param_spec(
 
 ///|
 fn monoify_iter_dispatch_param_types(
-  ctx : MonoifyContext,
-  type_params : Array[String],
-  type_bounds : Map[String, Array[String]],
   params : Array[@core.FuncParam],
   body : @core.Module,
-  root : String,
   type_subst : Map[String, @core.Type],
 ) -> Map[String, @core.Type] {
-  let root_ty = monoify_iter_dispatch_root_type(
-    ctx, type_params, type_bounds, root, type_subst,
-  )
   let out : Map[String, @core.Type] = {}
-  match root_ty {
-    Some(ty) => {
-      let names : Map[String, Bool] = {}
-      for name in monoify_iter_dispatch_param_names(body) {
-        names[name] = true
-      }
-      for param in params {
-        if names.contains(param.name) &&
-          monoify_param_is_iterable_type_param(param, type_bounds) {
-          out[param.name] = ty
-        }
-      }
-      out
-    }
-    None => out
+  let names : Map[String, Bool] = {}
+  for name in monoify_iter_dispatch_param_names(body) {
+    names[name] = true
   }
+  for param in params {
+    if names.contains(param.name) {
+      let actual_ty = replace_type_params(param.ty, type_subst)
+      match monoify_iter_root_from_type(actual_ty) {
+        Some(_) => out[param.name] = actual_ty
+        None => ()
+      }
+    }
+  }
+  out
 }
 
 ///|
-fn monoify_first_iter_param_type(
-  params : Array[@core.FuncParam],
-  updated_params : Array[@core.FuncParam],
-  iter_param_types : Map[String, @core.Type],
-  type_bounds : Map[String, Array[String]],
-) -> @core.Type? {
-  let param_count = if params.length() < updated_params.length() {
-    params.length()
-  } else {
-    updated_params.length()
+fn monoify_iter_root_from_type(
+  ty : @core.Type,
+) -> String? {
+  match ty {
+    @core.Type::Array(_) => Some("Array")
+    @core.Type::Named(name~, ..) => Some(name)
+    _ => None
   }
-  for i in 0..<param_count {
-    if iter_param_types.contains(params[i].name) {
-      return Some(updated_params[i].ty)
-    }
-  }
-  for i in 0..<param_count {
-    if monoify_param_is_iterable_type_param(params[i], type_bounds) {
-      return Some(updated_params[i].ty)
-    }
-  }
-  None
 }
 
 ///|
@@ -2000,159 +1972,8 @@ fn monoify_param_type_map(
 }
 
 ///|
-fn monoify_param_is_iterable_type_param(
-  param : @core.FuncParam,
-  type_bounds : Map[String, Array[String]],
-) -> Bool {
-  match param.ty {
-    @core.Type::Param(name) =>
-      match type_bounds.get(name) {
-        Some(bounds) => monoify_type_bounds_contains(bounds, "Iterable")
-        None => false
-      }
-    _ => false
-  }
-}
-
-///|
-fn monoify_type_bounds_contains(
-  bounds : Array[String],
-  target : String,
-) -> Bool {
-  for bound in bounds {
-    if bound == target {
-      return true
-    }
-  }
-  false
-}
-
-///|
 fn monoify_is_root_iter_helper_name(name : String, root : String) -> Bool {
   name == root + "::iter_get" || name == root + "::iter_length"
-}
-
-///|
-fn monoify_iter_dispatch_root_type(
-  ctx : MonoifyContext,
-  type_params : Array[String],
-  type_bounds : Map[String, Array[String]],
-  root : String,
-  type_subst : Map[String, @core.Type],
-) -> @core.Type? {
-  match monoify_iter_dispatch_root_type_from_helper(ctx, root, type_params) {
-    Some(ty) => Some(replace_type_params(ty, type_subst))
-    None =>
-      if root == "Array" {
-        match monoify_first_non_iterable_type_param(type_params, type_bounds) {
-          Some(name) =>
-            Some(
-              replace_type_params(
-                @core.Type::Array(@core.Type::Param(name)),
-                type_subst,
-              ),
-            )
-          None => None
-        }
-      } else {
-        None
-      }
-  }
-}
-
-///|
-fn monoify_iter_dispatch_root_type_from_helper(
-  ctx : MonoifyContext,
-  root : String,
-  type_params : Array[String],
-) -> @core.Type? {
-  let helper_names = [root + "::iter_get", root + "::iter_length"]
-  for helper_name in helper_names {
-    match ctx.specializable.get(helper_name) {
-      Some(@core.Expr::Fn(params~, ..)) =>
-        if params.length() >= 1 &&
-          monoify_type_uses_only_params(params[0].ty, type_params) {
-          return Some(params[0].ty)
-        }
-      _ => ()
-    }
-  }
-  None
-}
-
-///|
-fn monoify_first_non_iterable_type_param(
-  type_params : Array[String],
-  type_bounds : Map[String, Array[String]],
-) -> String? {
-  for name in type_params {
-    match type_bounds.get(name) {
-      Some(bounds) =>
-        if !monoify_type_bounds_contains(bounds, "Iterable") {
-          return Some(name)
-        }
-      None => return Some(name)
-    }
-  }
-  None
-}
-
-///|
-fn monoify_type_uses_only_params(
-  ty : @core.Type,
-  allowed_params : Array[String],
-) -> Bool {
-  match ty {
-    @core.Type::Param(name) => type_param_names_contains(allowed_params, name)
-    @core.Type::Named(args~, ..) => {
-      for arg in args {
-        if !monoify_type_uses_only_params(arg, allowed_params) {
-          return false
-        }
-      }
-      true
-    }
-    @core.Type::Tuple(items) => {
-      for item in items {
-        if !monoify_type_uses_only_params(item, allowed_params) {
-          return false
-        }
-      }
-      true
-    }
-    @core.Type::Record(fields) => {
-      for _, item in fields {
-        if !monoify_type_uses_only_params(item, allowed_params) {
-          return false
-        }
-      }
-      true
-    }
-    @core.Type::Array(inner)
-    | @core.Type::ArrayBuilder(inner)
-    | @core.Type::Set(inner) =>
-      monoify_type_uses_only_params(inner, allowed_params)
-    @core.Type::Map(key, inner) | @core.Type::MapBuilder(key, inner) =>
-      monoify_type_uses_only_params(key, allowed_params) &&
-      monoify_type_uses_only_params(inner, allowed_params)
-    @core.Type::Variant(fields) => {
-      for _, item in fields {
-        if !monoify_type_uses_only_params(item, allowed_params) {
-          return false
-        }
-      }
-      true
-    }
-    @core.Type::Func(params~, ret~, ..) => {
-      for param in params {
-        if !monoify_type_uses_only_params(param.ty, allowed_params) {
-          return false
-        }
-      }
-      monoify_type_uses_only_params(ret, allowed_params)
-    }
-    _ => true
-  }
 }
 
 ///|

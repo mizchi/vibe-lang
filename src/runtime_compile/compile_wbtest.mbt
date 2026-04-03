@@ -345,6 +345,92 @@ test "prepare_bundled_ast_for_codegen keeps mixed iterable fold roots distinct" 
 }
 
 ///|
+test "prepare_bundled_ast_for_codegen keeps iterable helper roots distinct per parameter" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "/project/list_mod.vibe",
+    (
+      #|export enum List[T] { Nil; Cons(T, List[T]) }
+      #|impl [T] Iterable for List[T]
+      #|export let list_of3 = [T](a: T, b: T, c: T) -> List[T] { Cons(a, Cons(b, Cons(c, Nil))) }
+      #|let rec list_length = [T](xs: List[T]) -> Int {
+      #|  match xs {
+      #|    Nil => 0,
+      #|    Cons(_, t) => 1 + list_length(t)
+      #|  }
+      #|}
+      #|let rec list_iter_get = [T](xs: List[T], index: Int) -> T {
+      #|  match xs {
+      #|    Cons(h, t) => if index == 0 { h } else { list_iter_get(t, index - 1) },
+      #|    Nil => list_iter_get(xs, index)
+      #|  }
+      #|}
+      #|export let List::iter_get = [T](xs: List[T], index: Int) -> T { list_iter_get(xs, index) }
+      #|export let List::iter_length = [T](xs: List[T]) -> Int { list_length(xs) }
+    ),
+  )
+  db.set_source(
+    "/project/main.vibe",
+    (
+      #|import ./list_mod.vibe {
+      #|  list_of3
+      #|}
+      #|enum Trio[T] {
+      #|  Trio(T, T, T)
+      #|}
+      #|impl [T] Iterable for Trio[T]
+      #|let trio_of3 = [T](a: T, b: T, c: T) -> Trio[T] {
+      #|  Trio(a, b, c)
+      #|}
+      #|let Trio::iter_length = [T](_xs: Trio[T]) -> Int { 3 }
+      #|let Trio::iter_get = [T](xs: Trio[T], index: Int) -> T {
+      #|  match xs {
+      #|    Trio(a, b, c) => if index == 0 { a } else if index == 1 { b } else { c }
+      #|  }
+      #|}
+      #|let pair_sum = [X: Iterable, Y: Iterable](xs: X, ys: Y) -> Int {
+      #|  let mut total = 0
+      #|  let mut i = 0
+      #|  let len_xs = xs|>iter_length
+      #|  while i < len_xs {
+      #|    total = total + (xs|>iter_get(i))
+      #|    i = i + 1
+      #|  }
+      #|  let mut j = 0
+      #|  let len_ys = ys|>iter_length
+      #|  while j < len_ys {
+      #|    total = total + (ys|>iter_get(j))
+      #|    j = j + 1
+      #|  }
+      #|  total
+      #|}
+      #|let value = pair_sum(trio_of3(1, 2, 3), list_of3(4, 5, 6))
+    ),
+  )
+  let compiled = compile_module(db, "/project/main.vibe")
+  let bundled = bundle_for_wasm_no_dce(db, "/project/main.vibe", compiled.ast)
+  let prepared = prepare_bundled_ast_for_codegen(bundled)
+  let mut pair_sum_name : String? = None
+  for stmt in prepared.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, ..) =>
+        if name.has_prefix("pair_sum$Trio") {
+          pair_sum_name = Some(name)
+        }
+      _ => ()
+    }
+  }
+  match pair_sum_name {
+    Some(name) => {
+      assert_true(runtime_compile_module_has_value_call(prepared, "value", name))
+      assert_true(runtime_compile_module_fn_body_has_call(prepared, name, "Trio::iter_get"))
+      assert_true(runtime_compile_module_fn_body_has_call(prepared, name, "List::iter_get"))
+    }
+    None => fail(module_to_sexp(prepared, {}))
+  }
+}
+
+///|
 test "prepare_bundled_ast_for_codegen keeps array iterator root separate from local iterable prelude" {
   let db = @runtime.VibeDb::new()
   db.set_source(

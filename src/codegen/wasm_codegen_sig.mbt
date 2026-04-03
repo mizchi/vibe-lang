@@ -1297,13 +1297,30 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
       let _ = ret
       let _ = effects
       let _ = body
-      let key = span_key_unique(span, params)
-      match ctx.fn_closure_captures.get(key) {
-        Some(captures) => captures.length() > 0
-        None => false
-      }
+      fn_closure_has_captures(ctx, span, params)
     }
     _ => false
+  }
+}
+
+///|
+fn fn_closure_has_captures(
+  ctx : CodegenCtx,
+  span : @core.Span,
+  params : Array[@core.FuncParam],
+) -> Bool {
+  let base = span_key_unique(span, params)
+  match ctx.fn_closure_captures.get(base) {
+    Some(captures) => captures.length() > 0
+    None => {
+      let prefix = base + "#"
+      for key, captures in ctx.fn_closure_captures {
+        if key.has_prefix(prefix) {
+          return captures.length() > 0
+        }
+      }
+      false
+    }
   }
 }
 

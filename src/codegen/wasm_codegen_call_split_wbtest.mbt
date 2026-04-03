@@ -241,6 +241,25 @@ test "needs_heap_expr returns true for multivalue user call" {
 }
 
 ///|
+test "needs_heap_expr returns true for named closure with captures" {
+  let ctx = CodegenCtx::new(false)
+  let span = call_split_test_span()
+  let params : Array[@core.FuncParam] = []
+  let key = span_key_named(Some("captured"), span, params)
+  ctx.fn_closure_captures[key] = ["outer"]
+  let expr = @core.Expr::Fn(
+    type_params=[],
+    type_bounds={},
+    params~,
+    ret=Some(@core.Type::Int),
+    effects=[],
+    body=@core.Module::{ stmts: [] },
+    span~,
+  )
+  assert_true(needs_heap_expr(ctx, expr))
+}
+
+///|
 test "scan_needs_stmt registers struct fields as known record fields" {
   let ctx = CodegenCtx::new(false)
   let field = @core.StructField::{
