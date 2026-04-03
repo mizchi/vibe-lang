@@ -63,7 +63,8 @@
 | 0034 | **Compiled-only execution surface**。run/test/bench/shell は compiled 固定。interpreter は内部のみ、段階的に削除。 | accepted |
 | 0036 | **WASM-GC main backend gate**。`test-wasm-gc-mainlane-e2e` pass で main 候補。`--wasm` → wasm-gc、旧 linear は `--wasm-linear`。 | accepted |
 | 0038 | **Perceus RC バイナリサイズ最適化**。4-byte RC header、free-list optional、i64 space tagging、br_table dispatch。1.95x→1.49x 達成。 | accepted |
-| 0040 | **Checker/Codegen contract boundary**。CheckedModule contract layer を導入し、codegen から checker 内部への依存を除去。checker-less codegen build を設計上保証。 | proposed |
+| 0040 | **Checker/Codegen contract boundary**。`@core` パッケージが checker と codegen の間の安定 contract を提供。codegen は checker に一切依存せず、`@core.Module` / `@core.Type` / `@core.ExprTypeIndex` のみを入力として動作。`runtime_compile` がオーケストレータとして両者を接続。 | accepted |
+| 0049 | **Perceus RC isolation boundary**。RC 専用コードは `wasm_codegen_rc.mbt` (1696 LOC) + `perceus_poc.mbt` (2327 LOC) に集約。`wasm_gc_codegen.mbt` は RC に一切依存しない。`enable_rc` フラグで linear backend 内でも RC パスを制御可能。将来の wasm-gc only build flavor では RC ファイルを link graph から除外可能。 | accepted |
 
 ## Platform & Runtime
 

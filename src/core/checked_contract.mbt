@@ -1,3 +1,13 @@
+///| Stable contract between checker and codegen.
+///|
+///| Both `@checker` and `@codegen` depend on `@core` but never on each other.
+///| - Checker input: `@core.Module` (AST)
+///| - Checker output: `TypeEnv` (stays in checker package)
+///| - Codegen input: `@core.Module` (AST) + `ExprTypeIndex` (optional type hints)
+///| - Codegen output: `Bytes` (WASM binary)
+///|
+///| `runtime_compile` orchestrates: parse → type_check → codegen.
+
 ///|
 /// Minimal checked-data surface consumed by frontend/codegen-adjacent rewrites.
 pub struct ExprTypeIndex {

@@ -1,3 +1,13 @@
+///| Perceus reference counting codegen for linear memory WASM backend.
+///|
+///| This module is ONLY used by the linear memory backend (wasm_codegen_*.mbt).
+///| The wasm-gc backend (wasm_gc_codegen.mbt) does NOT use RC at all.
+///|
+///| To build a wasm-gc-only flavor, this file and perceus_poc.mbt can be
+///| excluded from the link graph without affecting wasm-gc compilation.
+///|
+///| Controlled by: CodegenCtx.enable_rc flag
+
 ///|
 /// Action to emit at a stmt boundary (pre or post).
 pub(all) enum RcStmtActionKind {

@@ -27,6 +27,50 @@ pub fn Span::merge(a : Span, b : Span) -> Span {
 }
 
 ///|
+pub(all) enum DiagnosticStage {
+  Parse
+  Type
+  Warning
+  Check
+  Import
+  Lint
+} derive(Show, Eq)
+
+///|
+pub fn DiagnosticStage::from_string(s : String) -> DiagnosticStage {
+  match s {
+    "parse" => Parse
+    "type" => Type
+    "warning" => Warning
+    "check" => Check
+    "import" => Import
+    "lint" => Lint
+    _ => Check
+  }
+}
+
+///|
+pub fn DiagnosticStage::to_string(self : DiagnosticStage) -> String {
+  match self {
+    Parse => "parse"
+    Type => "type"
+    Warning => "warning"
+    Check => "check"
+    Import => "import"
+    Lint => "lint"
+  }
+}
+
+///|
+/// Returns severity level: 1=Error, 2=Warning, 3=Info
+pub fn DiagnosticStage::severity(self : DiagnosticStage) -> Int {
+  match self {
+    Parse | Type | Check | Import => 1
+    Warning | Lint => 2
+  }
+}
+
+///|
 pub(all) struct Diagnostic {
   stage : String
   message : String
@@ -34,3 +78,8 @@ pub(all) struct Diagnostic {
   hint : String?
   note : String?
 } derive(Show, Eq)
+
+///|
+pub fn Diagnostic::staged(self : Diagnostic) -> DiagnosticStage {
+  DiagnosticStage::from_string(self.stage)
+}
