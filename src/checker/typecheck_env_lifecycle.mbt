@@ -43,6 +43,7 @@ pub fn TypeEnv::clone(self : TypeEnv) -> TypeEnv {
     next_var: self.next_var,
     next_effect_var: self.next_effect_var,
     loop_depth: self.loop_depth,
+    loop_break_types: self.loop_break_types, // shared array ref
     handle_arm_depth: self.handle_arm_depth,
     handle_resume_types: self.handle_resume_types.copy(),
     handle_resume_types_active: self.handle_resume_types_active,
@@ -109,6 +110,7 @@ pub fn TypeEnv::fork_for_match_arm(self : TypeEnv) -> TypeEnv {
     next_var: self.next_var,
     next_effect_var: self.next_effect_var,
     loop_depth: self.loop_depth,
+    loop_break_types: self.loop_break_types, // shared array ref
     handle_arm_depth: self.handle_arm_depth,
     handle_resume_types: self.handle_resume_types.copy(),
     handle_resume_types_active: self.handle_resume_types_active,
@@ -173,6 +175,7 @@ pub fn TypeEnv::fork_for_expr(self : TypeEnv) -> TypeEnv {
     next_var: self.next_var,
     next_effect_var: self.next_effect_var,
     loop_depth: self.loop_depth,
+    loop_break_types: self.loop_break_types, // shared array ref
     handle_arm_depth: self.handle_arm_depth,
     handle_resume_types: self.handle_resume_types.copy(),
     handle_resume_types_active: self.handle_resume_types_active,
@@ -232,6 +235,7 @@ pub fn TypeEnv::fork_for_check(self : TypeEnv) -> TypeEnv {
     next_var: self.next_var,
     next_effect_var: self.next_effect_var,
     loop_depth: self.loop_depth,
+    loop_break_types: self.loop_break_types, // shared array ref
     handle_arm_depth: self.handle_arm_depth,
     handle_resume_types: self.handle_resume_types.copy(),
     handle_resume_types_active: self.handle_resume_types_active,
@@ -293,6 +297,7 @@ pub fn TypeEnv::clone_for_module(self : TypeEnv) -> TypeEnv {
     next_var: 0,
     next_effect_var: 0,
     loop_depth: 0,
+    loop_break_types: [],
     handle_arm_depth: 0,
     handle_resume_types: {},
     handle_resume_types_active: false,
@@ -355,6 +360,7 @@ pub fn TypeEnv::compact_for_eval(self : TypeEnv) -> TypeEnv {
     next_var: self.next_var,
     next_effect_var: self.next_effect_var,
     loop_depth: self.loop_depth,
+    loop_break_types: self.loop_break_types, // shared array ref
     handle_arm_depth: 0,
     handle_resume_types: {},
     handle_resume_types_active: false,

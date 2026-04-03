@@ -24,6 +24,21 @@ test "type_expr_eff: loop param purity tier is state_local" {
 }
 
 ///|
+test "type_expr_eff: loop break(value) returns value type" {
+  let expr = parse_first_expr_for_typecheck(
+    "loop (i = 0) { break 42 }",
+  ) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let env = TypeEnv::new()
+  let aliases : Map[String, @core.Ref] = {}
+  let ty = type_expr_eff(env, expr, aliases, effect_scope_all(), true) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(ty, @core.Type::Int)
+}
+
+///|
 test "type_check: handle resume value must match continuation destination type" {
   let script = "let run = () -> Int with { Error } {\n" +
     "  handle {\n" +

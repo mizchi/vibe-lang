@@ -958,24 +958,34 @@ fn type_expr_eff(
         env.set_scheme(param.name, scheme)
         env.set_purity_tier(param.name, TopLevelPurityTier::StateLocal)
       }
+      let saved_break_types = env.loop_break_types
+      env.loop_break_types = []
       env.loop_depth += 1
       let body_ty_result : Result[@core.Type, TypeError] = try? type_block(
         env, body, aliases, effects, allow_effect,
       )
       env.loop_depth -= 1
+      let break_types = env.loop_break_types
+      env.loop_break_types = saved_break_types
       match body_ty_result {
         Ok(_) => ()
         Err(err) => raise err
       }
-      @core.Type::Unit
+      if break_types.is_empty() {
+        @core.Type::Unit
+      } else {
+        break_types[0]
+      }
     }
     @core.Expr::Break(value~, span~) => {
       if env.loop_depth <= 0 {
         raise TypeError::BadCall(message="break used outside loop", span~)
       }
       match value {
-        Some(expr) =>
-          type_expr_eff(env, expr, aliases, effects, allow_effect) |> ignore
+        Some(expr) => {
+          let ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
+          env.loop_break_types.push(ty)
+        }
         None => ()
       }
       @core.Type::Unit

@@ -114,6 +114,7 @@ pub struct TypeEnv {
   mut next_var : Int
   mut next_effect_var : Int
   mut loop_depth : Int
+  mut loop_break_types : Array[@core.Type]
   mut handle_arm_depth : Int
   mut handle_resume_types : Map[String, @core.Type]
   mut handle_resume_types_active : Bool
@@ -172,6 +173,7 @@ pub fn TypeEnv::new() -> TypeEnv {
     next_var: 0,
     next_effect_var: 0,
     loop_depth: 0,
+    loop_break_types: [],
     handle_arm_depth: 0,
     handle_resume_types: {},
     handle_resume_types_active: false,
@@ -441,6 +443,7 @@ pub fn TypecheckSession::new_env(self : TypecheckSession) -> TypeEnv {
     next_var: 0,
     next_effect_var: 0,
     loop_depth: 0,
+    loop_break_types: [],
     handle_arm_depth: 0,
     handle_resume_types: {},
     handle_resume_types_active: false,
