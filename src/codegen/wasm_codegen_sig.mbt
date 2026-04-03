@@ -618,7 +618,12 @@ fn infer_expr_kind_with(
         "Threads::wait" => ValueKind::I64
         _ if ctx.fn_local_sigs.contains(name) =>
           match ctx.fn_local_sigs.get(name) {
-            Some(sig) => sig.results[0]
+            Some(sig) =>
+              if sig.results.length() > 0 {
+                sig.results[0]
+              } else {
+                ValueKind::I64
+              }
             None => ValueKind::I64
           }
         _ =>

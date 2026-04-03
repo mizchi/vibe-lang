@@ -3194,7 +3194,7 @@ fn emit_module_with_coverage(
         if top_keys.contains(f.span_key) {
           let default_ret = match f.ret {
             Some(r) => value_kind_from_type(ctx, r)
-            None => ValueKind::I32
+            None => ValueKind::I64
           }
           ctx.fn_returns[name] = default_ret
           // Register return signature if function returns a function type
