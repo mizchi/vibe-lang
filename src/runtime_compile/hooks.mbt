@@ -19,7 +19,9 @@ pub fn init_hooks() -> Unit {
   @runtime.set_parse_ast_hook(fn(
     source,
   ) -> (@core.Module, @core.Diagnostic?) raise Error {
-    let ast = @parser.parse_ast(source)
+    let ast = @parser.parse_ast(source) catch {
+      e => return ({ stmts: [] }, Some(e.diagnostic()))
+    }
     (ast, None)
   })
   @runtime.set_parse_cst_hook(@parser.parse_cst)
@@ -31,6 +33,7 @@ pub fn init_hooks() -> Unit {
     try! @checker.get_prelude_only_env_for_module()
   })
   @runtime.set_type_check_with_env_hook(@checker.type_check_with_env)
+  @runtime.mark_compiler_hooks_initialized()
   // Checker: runtime init
   @runtime.set_init_runtime_type_env_hook(fn() {
     let env = @checker.TypeEnv::new()

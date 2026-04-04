@@ -10,7 +10,9 @@ fn init {
   parse_ast_hook.val = fn(
     source,
   ) -> (@core.Module, @core.Diagnostic?) raise Error {
-    let ast = @parser.parse_ast(source)
+    let ast = @parser.parse_ast(source) catch {
+      e => return ({ stmts: [] }, Some(e.diagnostic()))
+    }
     (ast, None)
   }
   parse_cst_hook.val = fn(source) { @parser.parse_cst(source) }
@@ -21,6 +23,7 @@ fn init {
     try! @checker.get_prelude_only_env_for_module()
   }
   type_check_with_env_hook.val = @checker.type_check_with_env
+  compiler_hooks_initialized.val = true
   init_runtime_type_env_hook.val = fn() {
     let env = @checker.TypeEnv::new()
     let _ = try! @checker.ensure_prelude_option(env)

@@ -1,11 +1,35 @@
 ///|
 /// Compiler hook functions injected by runtime_compile to decouple runtime
-/// from direct compiler package imports (codegen, pipeline).
+/// from direct compiler package imports (codegen, pipeline, parser, checker).
 ///
 /// These are set once at initialization time before any VibeDb or Runtime
 /// usage. The default implementations provide basic functionality; when
 /// runtime_compile.init_hooks() is called, they are replaced with full
 /// compiler-backed implementations.
+///
+/// Critical hooks (type checking, prelude init) will abort with a clear
+/// message if called before init_hooks() — this prevents silent misuse.
+
+///|
+/// Tracks whether compiler hooks have been initialized.
+/// Critical hooks check this flag and abort if false.
+let compiler_hooks_initialized : Ref[Bool] = { val: false }
+
+///|
+/// Mark hooks as initialized. Called by set_type_check_with_env_hook.
+pub fn mark_compiler_hooks_initialized() -> Unit {
+  compiler_hooks_initialized.val = true
+}
+
+///|
+fn assert_hooks_initialized(caller : String) -> Unit {
+  if not(compiler_hooks_initialized.val) {
+    abort(
+      caller +
+      ": compiler hooks not initialized. Call runtime_compile.init_hooks() first.",
+    )
+  }
+}
 
 ///|
 /// Hook: compute a content-addressed expression address for caching.
@@ -203,6 +227,7 @@ pub fn set_get_prelude_env_hook(f : () -> @checker.TypeEnv) -> Unit {
 
 ///|
 pub fn hook_get_prelude_env() -> @checker.TypeEnv {
+  assert_hooks_initialized("hook_get_prelude_env")
   (get_prelude_env_hook.val)()
 }
 
@@ -231,6 +256,7 @@ pub fn hook_type_check_with_env(
   ast : @core.Module,
   aliases : Map[String, @core.Ref],
 ) -> @checker.TypeEnv raise @checker.TypeError {
+  assert_hooks_initialized("hook_type_check_with_env")
   (type_check_with_env_hook.val)(env, ast, aliases)
 }
 
@@ -249,6 +275,7 @@ pub fn set_init_runtime_type_env_hook(f : () -> @checker.TypeEnv) -> Unit {
 
 ///|
 pub fn hook_init_runtime_type_env() -> @checker.TypeEnv {
+  assert_hooks_initialized("hook_init_runtime_type_env")
   (init_runtime_type_env_hook.val)()
 }
 
