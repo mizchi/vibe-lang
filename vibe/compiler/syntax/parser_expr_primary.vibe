@@ -28,6 +28,11 @@ let rec desugar_loop_body = (expr: Expr, param_names: Array[String]) -> Expr {
         EContinue(args)
       } else {
         let nargs = Array::length(args)
+        let nparams = Array::length(param_names)
+        if nargs > nparams {
+          // Guard: more args than params → use only param count to avoid OOB
+          EContinue(args)
+        } else {
         let mut result = EContinue(Array::slice([EUnit], 0, 0))
         let mut ci = nargs - 1
         while ci >= 0 {
@@ -40,6 +45,7 @@ let rec desugar_loop_body = (expr: Expr, param_names: Array[String]) -> Expr {
           ci2 = ci2 - 1
         }
         result
+        }
       }
     },
     EWhile(_, _) => expr,
@@ -50,14 +56,26 @@ let rec desugar_loop_body = (expr: Expr, param_names: Array[String]) -> Expr {
     ELetMut(n, v, b) => ELetMut(n, desugar_loop_body(v, param_names), desugar_loop_body(b, param_names)),
     ESeq(a, b) => ESeq(desugar_loop_body(a, param_names), desugar_loop_body(b, param_names)),
     EAssign(n, v, c) => EAssign(n, desugar_loop_body(v, param_names), desugar_loop_body(c, param_names)),
+    // EMatch/EHandle: pass through unchanged.
+    // Limitation: break/continue inside match/handle arms won't be desugared.
+    // The host compiler crashes on (Pat, Expr) tuple operations, preventing
+    // arms transformation. The selfhost parser (which compiles user code) handles
+    // ELoop natively via this desugaring, so this only affects programs compiled
+    // by the host-compiled selfhost. A future fix could add arms recursion when
+    // the host compiler supports Pat tuple types.
+    EMatch(_, _) => expr,
+    EHandle(_, _) => expr,
     EBinOp(op, l, r) => EBinOp(op, desugar_loop_body(l, param_names), desugar_loop_body(r, param_names)),
+    ECall(_, _) => expr,
     ELetRec(n, v, b) => ELetRec(n, desugar_loop_body(v, param_names), desugar_loop_body(b, param_names)),
     EThrow(e) => EThrow(desugar_loop_body(e, param_names)),
     EUnaryOp(op, e) => EUnaryOp(op, desugar_loop_body(e, param_names)),
     EDot(obj, field) => EDot(desugar_loop_body(obj, param_names), field),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, desugar_loop_body(v, param_names), desugar_loop_body(c, param_names)),
     _ => expr
   }
 }
+
 
 let parse_loop_primary = (tokens: Array[Token], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int)with { Error }) -> (Expr, Int)with { Error } {
   match peek(tokens, pos + 1) {
