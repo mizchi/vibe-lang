@@ -237,6 +237,16 @@ fn gc_common_kind(a : GcValKind, b : GcValKind) -> GcValKind {
 }
 
 ///|
+/// Map a unified value kind to the arithmetic primitive kind.
+/// EqRef / Ref / AnyRef operands are treated as boxed I64.
+fn gc_arith_kind(kind : GcValKind) -> GcValKind {
+  match kind {
+    GcValKind::I64 | GcValKind::I32 | GcValKind::F32 | GcValKind::F64 => kind
+    _ => GcValKind::I64
+  }
+}
+
+///|
 fn emit_box_top_for_ref_kind_gc(
   ctx : GcCodegenCtx,
   buf : GcByteBuf,
@@ -5840,14 +5850,17 @@ fn compile_expr_gc(
           }
           let left_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
           let right_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
-          let left_kind = if left_kind == right_kind {
+          let unified = if left_kind == right_kind {
             left_kind
           } else {
             gc_common_kind(left_kind, right_kind)
           }
+          let arith = gc_arith_kind(unified)
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, left_kind, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          match left_kind {
+          emit_coerce_top_gc(ctx, buf, right_kind, arith)
+          match arith {
             GcValKind::I64 => emit_i64_add_gc(buf)
             GcValKind::I32 => emit_i32_add_gc(buf)
             GcValKind::F32 => emit_f32_add_gc(buf)
@@ -5861,14 +5874,17 @@ fn compile_expr_gc(
           }
           let left_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
           let right_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
-          let left_kind = if left_kind == right_kind {
+          let unified = if left_kind == right_kind {
             left_kind
           } else {
             gc_common_kind(left_kind, right_kind)
           }
+          let arith = gc_arith_kind(unified)
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, left_kind, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          match left_kind {
+          emit_coerce_top_gc(ctx, buf, right_kind, arith)
+          match arith {
             GcValKind::I64 => emit_i64_sub_gc(buf)
             GcValKind::I32 => emit_i32_sub_gc(buf)
             GcValKind::F32 => emit_f32_sub_gc(buf)
@@ -5882,14 +5898,17 @@ fn compile_expr_gc(
           }
           let left_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
           let right_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
-          let left_kind = if left_kind == right_kind {
+          let unified = if left_kind == right_kind {
             left_kind
           } else {
             gc_common_kind(left_kind, right_kind)
           }
+          let arith = gc_arith_kind(unified)
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, left_kind, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          match left_kind {
+          emit_coerce_top_gc(ctx, buf, right_kind, arith)
+          match arith {
             GcValKind::I64 => emit_i64_mul_gc(buf)
             GcValKind::I32 => emit_i32_mul_gc(buf)
             GcValKind::F32 => emit_f32_mul_gc(buf)
@@ -5903,14 +5922,17 @@ fn compile_expr_gc(
           }
           let left_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
           let right_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
-          let left_kind = if left_kind == right_kind {
+          let unified = if left_kind == right_kind {
             left_kind
           } else {
             gc_common_kind(left_kind, right_kind)
           }
+          let arith = gc_arith_kind(unified)
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, left_kind, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          match left_kind {
+          emit_coerce_top_gc(ctx, buf, right_kind, arith)
+          match arith {
             GcValKind::I64 => emit_i64_div_s_gc(buf)
             GcValKind::I32 => emit_i32_div_s_gc(buf)
             GcValKind::F32 => emit_f32_div_gc(buf)
@@ -5924,14 +5946,17 @@ fn compile_expr_gc(
           }
           let left_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
           let right_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
-          let left_kind = if left_kind == right_kind {
+          let unified = if left_kind == right_kind {
             left_kind
           } else {
             gc_common_kind(left_kind, right_kind)
           }
+          let arith = gc_arith_kind(unified)
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, left_kind, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          match left_kind {
+          emit_coerce_top_gc(ctx, buf, right_kind, arith)
+          match arith {
             GcValKind::I64 => emit_i64_rem_s_gc(buf)
             GcValKind::I32 => emit_i32_rem_s_gc(buf)
             _ => raise WasmGenError::Unsupported("__mod for float types")
@@ -5943,14 +5968,17 @@ fn compile_expr_gc(
           }
           let left_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
           let right_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
-          let left_kind = if left_kind == right_kind {
+          let unified = if left_kind == right_kind {
             left_kind
           } else {
             gc_common_kind(left_kind, right_kind)
           }
+          let arith = gc_arith_kind(unified)
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, left_kind, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          match left_kind {
+          emit_coerce_top_gc(ctx, buf, right_kind, arith)
+          match arith {
             GcValKind::I64 => emit_i64_eq_gc(buf)
             GcValKind::I32 => emit_i32_eq_gc(buf)
             GcValKind::F32 => emit_f32_eq_gc(buf)
@@ -5964,14 +5992,17 @@ fn compile_expr_gc(
           }
           let left_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
           let right_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
-          let left_kind = if left_kind == right_kind {
+          let unified = if left_kind == right_kind {
             left_kind
           } else {
             gc_common_kind(left_kind, right_kind)
           }
+          let arith = gc_arith_kind(unified)
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, left_kind, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          match left_kind {
+          emit_coerce_top_gc(ctx, buf, right_kind, arith)
+          match arith {
             GcValKind::I64 => emit_i64_lt_s_gc(buf)
             GcValKind::I32 => emit_i32_lt_s_gc(buf)
             GcValKind::F32 => emit_f32_lt_gc(buf)
@@ -5984,10 +6015,12 @@ fn compile_expr_gc(
             raise WasmGenError::Unsupported("__neg arity")
           }
           let kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
-          match kind {
+          let arith = gc_arith_kind(kind)
+          match arith {
             GcValKind::I64 => {
               emit_i64_const_gc(buf, 0L)
               compile_expr_gc(ctx, fctx, buf, pos_args[0])
+              emit_coerce_top_gc(ctx, buf, kind, arith)
               emit_i64_sub_gc(buf)
             }
             GcValKind::I32 => {
@@ -6003,7 +6036,12 @@ fn compile_expr_gc(
               compile_expr_gc(ctx, fctx, buf, pos_args[0])
               emit_f64_neg_gc(buf)
             }
-            _ => emit_i64_add_gc(buf)
+            _ => {
+              emit_i64_const_gc(buf, 0L)
+              compile_expr_gc(ctx, fctx, buf, pos_args[0])
+              emit_coerce_top_gc(ctx, buf, kind, GcValKind::I64)
+              emit_i64_sub_gc(buf)
+            }
           }
         }
         "anyref_eq"
@@ -6882,7 +6920,10 @@ fn compile_expr_gc(
           let key_l = alloc_local_gc(fctx, GcValKind::EqRef)
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           emit_local_set_gc(buf, b_idx)
+          // Box key to eqref (handles int keys, string keys, etc.)
+          let key_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_box_top_for_ref_kind_gc(ctx, buf, key_kind, GcValKind::EqRef)
           emit_local_set_gc(buf, key_l)
           emit_local_get_gc(buf, b_idx)
           emit_struct_get_gc(buf, builder_type, 0)
@@ -7056,7 +7097,10 @@ fn compile_expr_gc(
           let result_l = alloc_local_gc(fctx, GcValKind::EqRef)
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           emit_local_set_gc(buf, b_idx)
+          // Box key to eqref (handles int keys, string keys, etc.)
+          let get_key_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_box_top_for_ref_kind_gc(ctx, buf, get_key_kind, GcValKind::EqRef)
           emit_local_set_gc(buf, key_l)
           emit_local_get_gc(buf, b_idx)
           emit_struct_get_gc(buf, builder_type, 0)
@@ -7136,7 +7180,10 @@ fn compile_expr_gc(
           let result_l = alloc_local_gc(fctx, GcValKind::I32)
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           emit_local_set_gc(buf, b_idx)
+          // Box key to eqref (handles int keys, string keys, etc.)
+          let hk_key_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_box_top_for_ref_kind_gc(ctx, buf, hk_key_kind, GcValKind::EqRef)
           emit_local_set_gc(buf, key_l)
           emit_local_get_gc(buf, b_idx)
           emit_struct_get_gc(buf, builder_type, 0)
