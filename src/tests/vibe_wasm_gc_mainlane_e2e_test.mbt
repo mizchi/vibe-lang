@@ -80,3 +80,30 @@ test "wasm-gc mainlane: string runtime" {
     #|String::length(s)
   assert_gc_e2e_int_result(src, "mainlane_string_runtime", 4)
 }
+
+///|
+test "wasm-gc mainlane: call in if branch" {
+  if gc_mainlane_should_skip("call in if branch") {
+    return
+  }
+  // Regression: calling a top-level function inside an if branch crashes codegen.
+  // See: function call inside if-then/else body causes abort in compile_function_gc.
+  let src =
+    #|let g: (Int) -> Int = (n) -> { n + 1 }
+    #|let f: (Int) -> Int = (n) -> { if n > 0 { g(n) } else { 0 } }
+    #|f(3)
+  assert_gc_e2e_int_result(src, "mainlane_call_in_if_branch", 4)
+}
+
+///|
+test "wasm-gc mainlane: recursive function" {
+  if gc_mainlane_should_skip("recursive function") {
+    return
+  }
+  let src =
+    #|let fib: (Int) -> Int = (n) -> {
+    #|  if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }
+    #|}
+    #|fib(10)
+  assert_gc_e2e_int_result(src, "mainlane_recursive_function", 55)
+}
