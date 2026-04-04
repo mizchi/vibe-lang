@@ -15,6 +15,7 @@ fn span_to_json(span : @core.Span?) -> Json {
 fn diagnostic_to_json(diag : @core.Diagnostic) -> Json {
   let obj : Map[String, Json] = {}
   obj["stage"] = Json::string(diag.stage)
+  obj["severity"] = Json::string(diag.effective_severity().to_string())
   obj["message"] = Json::string(diag.message)
   obj["span"] = span_to_json(diag.span)
   match diag.hint {
@@ -23,6 +24,10 @@ fn diagnostic_to_json(diag : @core.Diagnostic) -> Json {
   }
   match diag.note {
     Some(note) => obj["note"] = Json::string(note)
+    None => ()
+  }
+  match diag.code {
+    Some(code) => obj["code"] = Json::string(code)
     None => ()
   }
   Json::object(obj)
@@ -162,6 +167,8 @@ fn eval_report_json(request : String) -> String {
           span: None,
           hint: None,
           note: None,
+          severity: None,
+          code: None,
         }),
       ])
       return Json::object(root).stringify()

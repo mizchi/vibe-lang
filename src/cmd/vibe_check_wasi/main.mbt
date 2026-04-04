@@ -337,6 +337,8 @@ fn push_layering_violation_diags(
       span: None,
       hint: None,
       note: None,
+      severity: None,
+      code: None,
     })
   }
   violations.length()
@@ -543,6 +545,8 @@ fn annotate_diagnostic_with_path(
     span: diag.span,
     hint: diag.hint,
     note: next_note,
+    severity: diag.severity,
+    code: diag.code,
   }
 }
 
@@ -784,6 +788,8 @@ fn main {
                   span: None,
                   hint: None,
                   note: None,
+                  severity: None,
+                  code: None,
                 })
                 summaries.push(CheckFileSummary::{
                   path,

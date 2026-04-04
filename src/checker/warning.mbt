@@ -73,6 +73,8 @@ fn warn_old_style_fn_def(
           span: Some(span),
           hint: Some("use `vibe fmt` to auto-convert"),
           note: None,
+          severity: None,
+          code: None,
         })
       }
     }
@@ -188,6 +190,8 @@ fn warning_scope_pop(
         span: Some(binding.span),
         hint,
         note: None,
+        severity: None,
+        code: None,
       })
       continue
     }
@@ -200,6 +204,8 @@ fn warning_scope_pop(
             span: Some(binding.span),
             hint: Some("use `let` instead of `let mut`"),
             note: None,
+            severity: None,
+            code: None,
           })
         }
       _ => ()
@@ -582,6 +588,8 @@ fn walk_expr(
                 " { ... }` instead of chained `==` comparisons",
               ),
               note: None,
+              severity: None,
+              code: None,
             })
             walk_eq_chain(expr, target, scopes, out)
             true
@@ -646,6 +654,8 @@ fn walk_expr(
               "this arm will never be matched because a previous arm catches all patterns",
             ),
             note: None,
+            severity: None,
+            code: None,
           })
         }
         scopes.push(warning_scope_new())

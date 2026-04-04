@@ -279,6 +279,8 @@ fn resolve_hash_import(
           span: Some(span),
           hint: None,
           note: None,
+          severity: None,
+          code: None,
         })
         (snapshot_key, None)
       }
@@ -299,6 +301,8 @@ fn resolve_hash_import(
               span: Some(span),
               hint: None,
               note: None,
+              severity: None,
+              code: None,
             })
             (snapshot_key, None)
           }
@@ -310,6 +314,8 @@ fn resolve_hash_import(
             span: Some(span),
             hint: None,
             note: None,
+            severity: None,
+            code: None,
           })
           (snapshot_key, None)
         }
