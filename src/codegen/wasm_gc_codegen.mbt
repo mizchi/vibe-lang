@@ -2149,27 +2149,33 @@ fn infer_expr_kind_gc(
           match ctx.func_returns.get(name) {
             Some(kind) => kind
             None =>
-              match fctx.closure_call_types.get(name) {
-                Some(fn_type_idx) =>
-                  match ctx.types[fn_type_idx] {
-                    GcTypeDef::Func(result~, ..) => result
-                    _ => raise WasmGenError::Unsupported("closure call type")
-                  }
-                None =>
-                  // Enum constructor call (including builtin Some/None)
-                  if ctx.enum_ctor_tags.contains(name) ||
-                    name == "Some" ||
-                    name == "None" {
-                    GcValKind::EqRef
-                  } else if is_gc_builtin_name(name) {
-                    GcValKind::EqRef
-                  } else {
-                    // Unknown call — check if it's in locals (HOF param)
-                    match fctx.locals.get(name) {
-                      Some(_) => GcValKind::I64 // Assume I64 return
-                      None => raise WasmGenError::UnknownName(name)
+              // Top-level function with no explicit return type annotation
+              // (ret field is None after bundler/DCE). Fall back to I64.
+              if ctx.func_indices.contains(name) {
+                GcValKind::I64
+              } else {
+                match fctx.closure_call_types.get(name) {
+                  Some(fn_type_idx) =>
+                    match ctx.types[fn_type_idx] {
+                      GcTypeDef::Func(result~, ..) => result
+                      _ => raise WasmGenError::Unsupported("closure call type")
                     }
-                  }
+                  None =>
+                    // Enum constructor call (including builtin Some/None)
+                    if ctx.enum_ctor_tags.contains(name) ||
+                      name == "Some" ||
+                      name == "None" {
+                      GcValKind::EqRef
+                    } else if is_gc_builtin_name(name) {
+                      GcValKind::EqRef
+                    } else {
+                      // Unknown call — check if it's in locals (HOF param)
+                      match fctx.locals.get(name) {
+                        Some(_) => GcValKind::I64 // Assume I64 return
+                        None => raise WasmGenError::UnknownName(name)
+                      }
+                    }
+                }
               }
           }
       }
@@ -8112,8 +8118,9 @@ fn collect_top_level_funcs_gc(
       @core.Stmt::Let(name~, expr~, ..)
       | @core.Stmt::ExportLet(name~, expr~, ..)
       | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
-        match expr {
-          @core.Expr::Fn(..) | @core.Expr::Int(..) | @core.Expr::Bool(..) =>
+        match unwrap_type_assert_block(expr) {
+          @core.Expr::Fn(..) => top_func_names[name] = true
+          @core.Expr::Int(..) | @core.Expr::Bool(..) =>
             top_func_names[name] = true
           _ => ()
         }
@@ -8125,7 +8132,7 @@ fn collect_top_level_funcs_gc(
     match stmt {
       @core.Stmt::Let(rec~, name~, expr~, ..) => {
         let _ = rec
-        match expr {
+        match unwrap_type_assert_block(expr) {
           @core.Expr::Fn(params~, ret~, body~, ..) =>
             if !has_free_vars_gc(body, params, top_func_names, enum_ctor_names~) {
               funcs.push({ name, params, ret, body })
@@ -8135,7 +8142,7 @@ fn collect_top_level_funcs_gc(
       }
       @core.Stmt::ExportLet(rec~, name~, expr~, ..) => {
         let _ = rec
-        match expr {
+        match unwrap_type_assert_block(expr) {
           @core.Expr::Fn(params~, ret~, body~, ..) =>
             if !has_free_vars_gc(body, params, top_func_names, enum_ctor_names~) {
               funcs.push({ name, params, ret, body })
@@ -8145,7 +8152,7 @@ fn collect_top_level_funcs_gc(
       }
       @core.Stmt::InternalExportLet(rec~, name~, expr~, ..) => {
         let _ = rec
-        match expr {
+        match unwrap_type_assert_block(expr) {
           @core.Expr::Fn(params~, ret~, body~, ..) =>
             if !has_free_vars_gc(body, params, top_func_names, enum_ctor_names~) {
               funcs.push({ name, params, ret, body })
@@ -8168,7 +8175,7 @@ fn filter_top_level_funcs_gc(
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Let(name~, expr~, ..) =>
-        match expr {
+        match unwrap_type_assert_block(expr) {
           @core.Expr::Fn(..) =>
             if !collected.contains(name) {
               stmts.push(stmt)
@@ -8176,7 +8183,7 @@ fn filter_top_level_funcs_gc(
           _ => stmts.push(stmt)
         }
       @core.Stmt::ExportLet(name~, expr~, ..) =>
-        match expr {
+        match unwrap_type_assert_block(expr) {
           @core.Expr::Fn(..) =>
             if !collected.contains(name) {
               stmts.push(stmt)
@@ -8184,7 +8191,7 @@ fn filter_top_level_funcs_gc(
           _ => stmts.push(stmt)
         }
       @core.Stmt::InternalExportLet(name~, expr~, ..) =>
-        match expr {
+        match unwrap_type_assert_block(expr) {
           @core.Expr::Fn(..) =>
             if !collected.contains(name) {
               stmts.push(stmt)
@@ -8497,7 +8504,10 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
           _ => ()
         }
       }
-      None => ()
+      None =>
+        // No explicit return type — default to I64 (tagged int).
+        // This happens when bundler/DCE strips type annotations.
+        ctx.func_returns[funcs[i].name] = GcValKind::I64
     }
   }
   // Resolve function aliases: let f = g where g is in func_indices
