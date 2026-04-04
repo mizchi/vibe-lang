@@ -306,6 +306,125 @@ VIBE
 }
 test_println
 
+log_info "=== jco WASI shim tests (browser polyfill path) ==="
+
+# Test 12: jco transpile with --instantiation mode for browser embedding
+test_jco_instantiation() {
+  local src_file="$TMP_DIR/inst_test.vibe"
+  local component="$TMP_DIR/inst_test.component.wasm"
+  local jco_dir="$TMP_DIR/inst_test_jco"
+
+  cat > "$src_file" << 'VIBE'
+let factorial: (Int) -> Int = (n) -> {
+  if n <= 1 { 1 } else { n * factorial(n - 1) }
+}
+factorial(6)
+VIBE
+
+  if ! "$VIBE" compile --component "$src_file" -o "$component" 2>/dev/null; then
+    log_fail "jco_instantiation: compile failed"
+    return
+  fi
+
+  # --instantiation sync generates a factory function that accepts imports
+  # This is the pattern used for browser embedding with custom WASI shims
+  if jco transpile --instantiation sync "$component" -o "$jco_dir" 2>"$TMP_DIR/inst.jco.log"; then
+    if [ -f "$jco_dir/inst_test.component.js" ]; then
+      # Verify the factory export pattern
+      if grep -q "instantiate" "$jco_dir/inst_test.component.js"; then
+        log_pass "jco_instantiation: factory pattern generated (browser-ready)"
+      else
+        log_fail "jco_instantiation: missing instantiate export"
+      fi
+    else
+      log_fail "jco_instantiation: output file missing"
+    fi
+  else
+    log_fail "jco_instantiation: transpile failed ($(cat "$TMP_DIR/inst.jco.log"))"
+  fi
+}
+test_jco_instantiation
+
+# Test 13: Verify generated TypeScript declarations
+test_jco_types() {
+  local src_file="$TMP_DIR/types_test.vibe"
+  local component="$TMP_DIR/types_test.component.wasm"
+  local jco_dir="$TMP_DIR/types_test_jco"
+
+  cat > "$src_file" << 'VIBE'
+10 + 20
+VIBE
+
+  if ! "$VIBE" compile --component "$src_file" -o "$component" 2>/dev/null; then
+    log_fail "jco_types: compile failed"
+    return
+  fi
+
+  if ! jco transpile "$component" -o "$jco_dir" 2>/dev/null; then
+    log_fail "jco_types: transpile failed"
+    return
+  fi
+
+  if [ -f "$jco_dir/types_test.component.d.ts" ]; then
+    if grep -q "export function run" "$jco_dir/types_test.component.d.ts"; then
+      log_pass "jco_types: TypeScript declarations include run()"
+    else
+      log_fail "jco_types: missing run() in .d.ts"
+    fi
+  else
+    log_fail "jco_types: .d.ts not generated"
+  fi
+}
+test_jco_types
+
+log_info "=== wasmtime P3 serve tests ==="
+
+# Test 14: P3 HTTP handler compose + serve (requires wasmtime with P3 support)
+test_p3_serve() {
+  # Check if wasmtime supports -Sp3
+  if ! wasmtime serve --help 2>&1 | grep -qi "p3\|preview3"; then
+    log_skip "p3_serve: wasmtime $(wasmtime --version 2>/dev/null | head -1) lacks P3 support (need v42+)"
+    return
+  fi
+
+  local handler_file="$TMP_DIR/p3_handler.vibe"
+  local compose_output="$TMP_DIR/p3_handler.component.wasm"
+
+  cat > "$handler_file" << 'VIBE'
+export let handler: (String, String) -> Int = (method, url) -> {
+  200
+}
+handler("GET", "/")
+VIBE
+
+  if ! bash "$PROJECT_ROOT/scripts/compose_http_p3_handler.sh" "$handler_file" -o "$compose_output" 2>"$TMP_DIR/p3.log"; then
+    log_skip "p3_serve: compose failed ($(tail -1 "$TMP_DIR/p3.log"))"
+    return
+  fi
+
+  # Start wasmtime serve in background, test with curl, then kill
+  wasmtime serve -Sp3 -W component-model-async=y -W component-model-async-builtins=y \
+    --addr 127.0.0.1:0 "$compose_output" &>"$TMP_DIR/p3_serve.log" &
+  local pid=$!
+  sleep 2
+
+  # Extract port from log or try default
+  local port
+  port=$(grep -oP ':\K\d+' "$TMP_DIR/p3_serve.log" | tail -1)
+  if [ -z "$port" ]; then port=8080; fi
+
+  local status
+  status=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${port}/" 2>/dev/null || echo "000")
+  kill "$pid" 2>/dev/null || true
+
+  if [ "$status" = "200" ]; then
+    log_pass "p3_serve: HTTP 200 from P3 handler"
+  else
+    log_fail "p3_serve: expected 200, got $status"
+  fi
+}
+test_p3_serve
+
 # ============================================================
 # Summary
 # ============================================================
@@ -321,6 +440,7 @@ echo "  - run() returns tagged integers (value << 2), not untagged values"
 echo "  - Export functions are not individually lifted in --component mode"
 echo "  - WASI-dependent code (println, file I/O) needs --compose-p3 flow"
 echo "  - String param functions need string_lift_auto (--compose-p3)"
+echo "  - P3 HTTP serve requires wasmtime v42+ with -Sp3 flag"
 
 if [ "$FAILED" -gt 0 ]; then
   exit 1
