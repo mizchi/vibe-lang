@@ -545,8 +545,8 @@ fn annotate_diagnostic_with_path(
     span: diag.span,
     hint: diag.hint,
     note: next_note,
-    severity: None,
-    code: None,
+    severity: diag.severity,
+    code: diag.code,
   }
 }
 
