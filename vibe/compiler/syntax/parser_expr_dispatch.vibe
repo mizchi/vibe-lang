@@ -351,7 +351,29 @@ export let parse_impl_dispatch = (tokens: Array[Token], pos: Int, mode: Int, par
               TLParen => true,
               _ => false
             }
-            if name == "record" && next_is_lbrace {
+            let next_is_struct_destr = match peek(tokens, next + 1) {
+              TDoubleColon => match peek(tokens, next + 2) {
+                TLBrace => true,
+                _ => false
+              },
+              _ => false
+            }
+            if next_is_struct_destr {
+              let (pat, pn) = parse_pattern(tokens, next)
+              let eq = expect_tk(tokens, pn, "=")
+              let val_pair = parse_recur(tokens, eq, 0)
+              let val = val_pair.0
+              let val_next = val_pair.1
+              let a = skip_semi(tokens, val_next)
+              let (body, end) = parse_recur(tokens, a, mode_block)
+              if end <= a {
+                throw("internal parser error: block let-struct-pat parser did not advance")
+              } else {
+                (EMatch(val, [
+                  (pat, body)
+                ]), end)
+              }
+            } else if name == "record" && next_is_lbrace {
               let (pat, pn) = parse_pattern(tokens, next)
               let eq = expect_tk(tokens, pn, "=")
               let val_pair = parse_recur(tokens, eq, 0)
