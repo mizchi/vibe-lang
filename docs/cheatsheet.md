@@ -5,7 +5,7 @@ WASM-targeting, pure-by-default language with algebraic effects. Compiled via Mo
 ## Quick Start
 
 ```vibe
-let main = () -> Unit with { Stdout } {
+let main: () -> Unit with { Stdout } = () -> {
   stdout_write("hello world\n")
 }
 ```
@@ -43,19 +43,23 @@ y += 1
 ## Functions
 
 ```vibe
-let add = (x: Int, y: Int) -> Int { x + y }
-let inc = (x: Int) { x + 1 }             // return type inferred
-let rec fact = (n: Int) -> Int {          // recursive
+// Preferred: type annotation separated from body
+let add: (Int, Int) -> Int = (x, y) -> { x + y }
+let inc: (Int) -> Int = (x) -> { x + 1 }
+let rec fact: (Int) -> Int = (n) -> {     // recursive
   if n < 2 { 1 } else { n * fact(n - 1) }
 }
-let identity = [T](x: T) -> T { x }      // generic
-let show = [T: Eq + Ord](x: T) -> T { x } // trait bounds
+let identity: [T](T) -> T = (x) -> { x }  // generic
+let show: [T: Eq + Ord](T) -> T = (x) -> { x } // trait bounds
 ```
+
+> **Deprecated**: `let f = (x: Int) -> Int { ... }` (inline param types)
+> is deprecated. Use `vibe fmt` to auto-convert.
 
 ### Labeled arguments
 
 ```vibe
-let f = (x~: Int, y~: Int) -> Int { x + y }
+let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }
 f(x=10, y=20)
 ```
 
@@ -206,7 +210,7 @@ vibe is **pure by default**. Side effects are tracked in the type system.
 ### Error handling
 
 ```vibe
-let risky = (x: Int) -> Int with { Error } {
+let risky: (Int) -> Int with { Error } = (x) -> {
   if x == 0 { throw("division by zero") }
   100 / x
 }
@@ -232,7 +236,7 @@ effect Logger {
   Log(String) -> Unit
 }
 
-let greet = (name: String) -> Unit with { Logger } {
+let greet: (String) -> Unit with { Logger } = (name) -> {
   perform Logger::Log("hello \(name)")
 }
 
@@ -247,7 +251,7 @@ handle { greet("world") } {
 ### Effect polymorphism
 
 ```vibe
-let apply = [T](f: (T) -> T with { e }, x: T) -> T with { e } {
+let apply: [T](f~: (T) -> T with { e }, x~: T) -> T with { e } = (f~, x~) -> {
   f(x)
 }
 ```
@@ -256,7 +260,7 @@ let apply = [T](f: (T) -> T with { e }, x: T) -> T with { e } {
 
 ```vibe
 // export
-export let f = (x: Int) -> Int { x + 1 }
+export let f: (Int) -> Int = (x) -> { x + 1 }
 export enum Color { Red; Green; Blue }
 export { name1, name2 }
 export use ./lib.vibe { helper1, helper2 }  // re-export
@@ -268,7 +272,7 @@ import ./lib.vibe { type MyType, trait Show }
 
 // module block
 module Math {
-  export let abs = (x: Int) -> Int { if x < 0 { 0 - x } else { x } }
+  export let abs: (Int) -> Int = (x) -> { if x < 0 { 0 - x } else { x } }
 }
 Math::abs(-5)
 ```

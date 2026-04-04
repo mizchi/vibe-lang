@@ -45,6 +45,42 @@ fn warn_context_keyword_binding(
 }
 
 ///|
+/// Warn when a top-level `let` uses old-style inline type annotations on the
+/// lambda (e.g. `let f = (x: Int) -> Int { ... }`) instead of the preferred
+/// separated type annotation style (`let f: (Int) -> Int = (x) -> { ... }`).
+fn warn_old_style_fn_def(
+  name : String,
+  expr : @core.Expr,
+  span : @core.Span,
+  out : Array[@core.Diagnostic],
+) -> Unit {
+  // Skip compiler-generated helpers from type-annotation desugaring
+  if name.has_prefix("__vibe_local_type_assert_") {
+    return
+  }
+  match expr {
+    @core.Expr::Fn(params~, ret~, ..) => {
+      let has_typed_param = params
+        .iter()
+        .any(fn(p) { p.ty != @core.Type::Unit })
+      let has_ret = ret is Some(_)
+      if has_typed_param || has_ret {
+        out.push(@core.Diagnostic::{
+          stage: "warning",
+          message: "deprecated function style: use `let " +
+          name +
+          ": <type> = <lambda>` instead",
+          span: Some(span),
+          hint: Some("use `vibe fmt` to auto-convert"),
+          note: None,
+        })
+      }
+    }
+    _ => ()
+  }
+}
+
+///|
 fn warning_scope_declare(
   scopes : Array[WarningScope],
   name : String,
@@ -248,6 +284,7 @@ fn walk_stmt(
   match stmt {
     @core.Stmt::Let(rec~, name~, expr~, span~) => {
       warn_context_keyword_binding(name, span, out)
+      warn_old_style_fn_def(name, expr, span, out)
       if rec {
         warning_scope_declare(
           scopes,
@@ -270,6 +307,7 @@ fn walk_stmt(
     }
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
       warn_context_keyword_binding(name, span, out)
+      warn_old_style_fn_def(name, expr, span, out)
       if rec {
         warning_scope_declare(
           scopes,
