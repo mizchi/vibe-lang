@@ -64,27 +64,226 @@ pub fn desugar_method_calls(
 
 ///|
 /// Hook: parse source code to AST.
-/// Default: calls @parser.parse_ast directly.
-/// Decouples db_query.mbt from direct @parser imports.
-let parse_ast_hook : Ref[(String) -> @core.Module raise @parser.ParseError] = {
-  val: fn(source) -> @core.Module raise @parser.ParseError {
-    @parser.parse_ast(source)
+/// Default: returns empty module (no parser linked).
+/// Replaced by @parser.parse_ast when runtime_compile is loaded.
+let parse_ast_hook : Ref[
+  (String) -> (@core.Module, @core.Diagnostic?) raise Error,
+] = {
+  val: fn(_source) -> (@core.Module, @core.Diagnostic?) raise Error {
+    ({ stmts: [] }, None)
   },
 }
 
 ///|
 /// Hook: parse source code to CST.
-/// Default: calls @parser.parse_cst directly.
+/// Default: returns empty node.
+/// Replaced by @parser.parse_cst when runtime_compile is loaded.
 let parse_cst_hook : Ref[(String) -> @cst.SyntaxNode] = {
-  val: fn(source) { @parser.parse_cst(source) },
+  val: fn(_source) {
+    let builder = @cst.GreenNodeBuilder::new()
+    builder.start_node(@cst.SyntaxKind::eof())
+    builder.finish_node()
+    @cst.SyntaxNode::new_root(builder.finish())
+  },
 }
 
 ///|
-fn hook_parse_ast(source : String) -> @core.Module raise @parser.ParseError {
-  (parse_ast_hook.val)(source)
+/// Set the parse_ast hook (called by runtime_compile at init time).
+pub fn set_parse_ast_hook(
+  f : (String) -> (@core.Module, @core.Diagnostic?) raise Error,
+) -> Unit {
+  parse_ast_hook.val = f
+}
+
+///|
+/// Set the parse_cst hook (called by runtime_compile at init time).
+pub fn set_parse_cst_hook(f : (String) -> @cst.SyntaxNode) -> Unit {
+  parse_cst_hook.val = f
+}
+
+///|
+fn hook_parse_ast(source : String) -> @core.Module raise Error {
+  let (m, _diag) = (parse_ast_hook.val)(source)
+  m
+}
+
+///|
+fn hook_parse_ast_diagnostic(
+  source : String,
+) -> (@core.Module?, @core.Diagnostic?) {
+  try {
+    let (m, diag) = (parse_ast_hook.val)(source)
+    (Some(m), diag)
+  } catch {
+    e =>
+      (
+        None,
+        Some(@core.Diagnostic::{
+          stage: "parse",
+          message: e.to_string(),
+          span: None,
+          hint: None,
+          note: None,
+        }),
+      )
+  }
 }
 
 ///|
 fn hook_parse_cst(source : String) -> @cst.SyntaxNode {
   (parse_cst_hook.val)(source)
+}
+
+///|
+/// Hook: compute purity info for a let binding.
+/// Default: returns impure.
+/// Replaced by @checker.purity_for_let when runtime_compile is loaded.
+let purity_for_let_hook : Ref[
+  (@checker.TypeEnv, Bool, String, @core.Expr) -> @checker.PurityInfo,
+] = {
+  val: fn(_env, _rec, _name, _expr) {
+    @checker.PurityInfo::{
+      expr: false,
+      value: false,
+      expr_tier: @checker.TopLevelPurityTier::Impure,
+      value_tier: @checker.TopLevelPurityTier::Impure,
+    }
+  },
+}
+
+///|
+/// Set the purity_for_let hook (called by runtime_compile at init time).
+pub fn set_purity_for_let_hook(
+  f : (@checker.TypeEnv, Bool, String, @core.Expr) -> @checker.PurityInfo,
+) -> Unit {
+  purity_for_let_hook.val = f
+}
+
+///|
+/// Compute purity info using the injected hook.
+pub fn hook_purity_for_let(
+  env : @checker.TypeEnv,
+  rec : Bool,
+  name : String,
+  expr : @core.Expr,
+) -> @checker.PurityInfo {
+  (purity_for_let_hook.val)(env, rec, name, expr)
+}
+
+///|
+/// Hook: create a new TypeEnv.
+/// Default: returns @checker.TypeEnv::new().
+let new_type_env_hook : Ref[() -> @checker.TypeEnv] = {
+  val: fn() { @checker.TypeEnv::new() },
+}
+
+///|
+pub fn set_new_type_env_hook(f : () -> @checker.TypeEnv) -> Unit {
+  new_type_env_hook.val = f
+}
+
+///|
+pub fn hook_new_type_env() -> @checker.TypeEnv {
+  (new_type_env_hook.val)()
+}
+
+///|
+/// Hook: initialize a prelude-equipped TypeEnv for a new module.
+/// Default: returns @checker.TypeEnv::new() (no prelude).
+/// Replaced by the real @checker.get_prelude_only_env_for_module when
+/// runtime_compile is loaded.
+let get_prelude_env_hook : Ref[() -> @checker.TypeEnv] = {
+  val: fn() { @checker.TypeEnv::new() },
+}
+
+///|
+pub fn set_get_prelude_env_hook(f : () -> @checker.TypeEnv) -> Unit {
+  get_prelude_env_hook.val = f
+}
+
+///|
+pub fn hook_get_prelude_env() -> @checker.TypeEnv {
+  (get_prelude_env_hook.val)()
+}
+
+///|
+/// Hook: type check a module with an existing TypeEnv.
+/// Default: returns the env unchanged (no type checking).
+/// Replaced by @checker.type_check_with_env when runtime_compile is loaded.
+let type_check_with_env_hook : Ref[
+  (@checker.TypeEnv, @core.Module, Map[String, @core.Ref]) -> @checker.TypeEnv raise @checker.TypeError,
+] = {
+  val: fn(env, _ast, _aliases) -> @checker.TypeEnv raise @checker.TypeError {
+    env
+  },
+}
+
+///|
+pub fn set_type_check_with_env_hook(
+  f : (@checker.TypeEnv, @core.Module, Map[String, @core.Ref]) -> @checker.TypeEnv raise @checker.TypeError,
+) -> Unit {
+  type_check_with_env_hook.val = f
+}
+
+///|
+pub fn hook_type_check_with_env(
+  env : @checker.TypeEnv,
+  ast : @core.Module,
+  aliases : Map[String, @core.Ref],
+) -> @checker.TypeEnv raise @checker.TypeError {
+  (type_check_with_env_hook.val)(env, ast, aliases)
+}
+
+///|
+/// Hook: initialize a Runtime's TypeEnv with prelude.
+/// Default: returns @checker.TypeEnv::new() (no prelude).
+/// Replaced by the real init logic when runtime_compile is loaded.
+let init_runtime_type_env_hook : Ref[() -> @checker.TypeEnv] = {
+  val: fn() { @checker.TypeEnv::new() },
+}
+
+///|
+pub fn set_init_runtime_type_env_hook(f : () -> @checker.TypeEnv) -> Unit {
+  init_runtime_type_env_hook.val = f
+}
+
+///|
+pub fn hook_init_runtime_type_env() -> @checker.TypeEnv {
+  (init_runtime_type_env_hook.val)()
+}
+
+///|
+/// Hook: get the prelude AST module.
+/// Default: returns empty module.
+/// Replaced by @checker.prelude_ast when runtime_compile is loaded.
+let prelude_ast_hook : Ref[() -> @core.Module] = { val: fn() { { stmts: [] } } }
+
+///|
+pub fn set_prelude_ast_hook(f : () -> @core.Module) -> Unit {
+  prelude_ast_hook.val = f
+}
+
+///|
+pub fn hook_prelude_ast() -> @core.Module {
+  (prelude_ast_hook.val)()
+}
+
+///|
+/// Hook: collect warnings from an AST.
+/// Default: returns empty array.
+/// Replaced by @checker.collect_warnings when runtime_compile is loaded.
+let collect_warnings_hook : Ref[(@core.Module) -> Array[@core.Diagnostic]] = {
+  val: fn(_ast) { [] },
+}
+
+///|
+pub fn set_collect_warnings_hook(
+  f : (@core.Module) -> Array[@core.Diagnostic],
+) -> Unit {
+  collect_warnings_hook.val = f
+}
+
+///|
+pub fn hook_collect_warnings(ast : @core.Module) -> Array[@core.Diagnostic] {
+  (collect_warnings_hook.val)(ast)
 }

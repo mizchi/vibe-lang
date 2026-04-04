@@ -1,7 +1,7 @@
 ///|
 /// vibe public API
 suberror VibeError {
-  Parse(@parser.ParseError)
+  Parse(@core.Diagnostic)
   Type(@checker.TypeError)
   Eval(EvalError)
 } derive(Show, Eq)

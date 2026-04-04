@@ -1,6 +1,6 @@
 ///|
 /// @core.Type checking for vibe
-pub enum TopLevelPurityTier {
+pub(all) enum TopLevelPurityTier {
   Pure
   StateLocal
   Impure

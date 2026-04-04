@@ -1,10 +1,10 @@
 ///|
 /// Helper: parse and eval a vibe source snippet, return the last value
 fn eval_snippet(source : String) -> @core.Value raise {
-  let ast = try @parser.parse_ast(source) catch {
-    e => fail("parse error: " + e.to_string())
-  } noraise {
-    a => a
+  let ast = match hook_parse_ast_diagnostic(source) {
+    (Some(m), _) => m
+    (None, Some(d)) => fail("parse error: " + d.to_string())
+    _ => fail("parse error")
   }
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result = try rt.eval_module(ast) catch {

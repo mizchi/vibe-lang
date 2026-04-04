@@ -36,23 +36,21 @@ pub fn VibeDb::new() -> VibeDb {
             match preparsed_asts.get(rt, path) {
               Some(cached_ast) => cached_ast
               None => {
-                let parsed = hook_parse_ast(content) catch {
-                  e => {
-                    diags.push(rt, e.diagnostic())
-                    { stmts: [] }
-                  }
+                let (parsed, diag) = hook_parse_ast_diagnostic(content)
+                match diag {
+                  Some(d) => diags.push(rt, d)
+                  None => ()
                 }
-                HashedModule::new(parsed)
+                HashedModule::new(parsed.or({ stmts: [] }))
               }
             }
           _ => {
-            let parsed = hook_parse_ast(content) catch {
-              e => {
-                diags.push(rt, e.diagnostic())
-                { stmts: [] }
-              }
+            let (parsed, diag) = hook_parse_ast_diagnostic(content)
+            match diag {
+              Some(d) => diags.push(rt, d)
+              None => ()
             }
-            HashedModule::new(parsed)
+            HashedModule::new(parsed.or({ stmts: [] }))
           }
         }
       }
@@ -536,7 +534,9 @@ pub fn VibeDb::new() -> VibeDb {
               let index_path = base_dir + "/index.vibe"
               let alias_path : String? = match sources.get(rt, index_path) {
                 Some(index_source) => {
-                  let index_ast = hook_parse_ast(index_source) catch {
+                  let index_ast = match
+                    hook_parse_ast_diagnostic(index_source) {
+                    (Some(m), _) => m
                     _ => @core.Module::{ stmts: [] }
                   }
                   let mut found : String? = None
@@ -738,11 +738,7 @@ pub fn VibeDb::new() -> VibeDb {
       match sources.get(rt, hash_source_key(hash)) {
         None => None
         Some(content) => {
-          let ast_opt = try hook_parse_ast(content) catch {
-            _ => None
-          } noraise {
-            ast => Some(ast)
-          }
+          let (ast_opt, _) = hook_parse_ast_diagnostic(content)
           match ast_opt {
             None => None
             Some(ast) => {
@@ -757,9 +753,9 @@ pub fn VibeDb::new() -> VibeDb {
                 None
               } else {
                 let desugared = desugar_method_calls(ast, {})
-                let env = try! @checker.get_prelude_only_env_for_module()
+                let env = hook_get_prelude_env()
                 let typed = try
-                  @checker.type_check_with_env(env, desugared, {})
+                  hook_type_check_with_env(env, desugared, {})
                 catch {
                   _ => None
                 } noraise {
@@ -780,7 +776,7 @@ pub fn VibeDb::new() -> VibeDb {
     path,
   ) {
     match sources.get(rt, path) {
-      None => @checker.TypeEnv::new()
+      None => hook_new_type_env()
       Some(content) =>
         if not(content.contains("import")) && not(content.contains("use")) {
           let hash = @core.content_address_hash_string(content)
@@ -791,11 +787,11 @@ pub fn VibeDb::new() -> VibeDb {
               let ast = ast_query.fetch(rt, path).unwrap()
               let aliases = build_alias_map_from_ast(ast, imports)
               let desugared = desugar_method_calls(ast, aliases)
-              let env = try! @checker.get_prelude_only_env_for_module()
-              @checker.type_check_with_env(env, desugared, aliases) catch {
+              let env = hook_get_prelude_env()
+              hook_type_check_with_env(env, desugared, aliases) catch {
                 e => {
                   diags.push(rt, e.diagnostic())
-                  @checker.TypeEnv::new()
+                  hook_new_type_env()
                 }
               }
             }
@@ -805,11 +801,11 @@ pub fn VibeDb::new() -> VibeDb {
           let ast = ast_query.fetch(rt, path).unwrap()
           let aliases = build_alias_map_from_ast(ast, imports)
           let desugared = desugar_method_calls(ast, aliases)
-          let env = try! @checker.get_prelude_only_env_for_module()
-          @checker.type_check_with_env(env, desugared, aliases) catch {
+          let env = hook_get_prelude_env()
+          hook_type_check_with_env(env, desugared, aliases) catch {
             e => {
               diags.push(rt, e.diagnostic())
-              @checker.TypeEnv::new()
+              hook_new_type_env()
             }
           }
         }
@@ -853,7 +849,7 @@ pub fn VibeDb::new() -> VibeDb {
     let aliases = build_alias_map_from_ast(ast, imports)
     let desugared = desugar_method_calls(ast, aliases)
     let base_dir = @path.Path(file_path).dirname().to_string()
-    let env = try! @checker.get_prelude_only_env_for_module()
+    let env = hook_get_prelude_env()
     // Cross-directory dependencies must be imported explicitly.
     // Implicitly inheriting sibling directory imports from `index.vibe`
     // creates hidden dependencies and can recurse through wrapper modules.
@@ -1491,10 +1487,10 @@ pub fn VibeDb::new() -> VibeDb {
       }
     }
     // Type check with the enriched environment
-    @checker.type_check_with_env(env, desugared, aliases) catch {
+    hook_type_check_with_env(env, desugared, aliases) catch {
       e => {
         diags.push(rt, e.diagnostic())
-        @checker.TypeEnv::new()
+        hook_new_type_env()
       }
     }
   })
