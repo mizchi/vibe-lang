@@ -325,13 +325,32 @@ pub fn normalize_format_file_source(path : String) -> Result[String, String] {
 
 ///|
 pub fn normalize_format_source_text(source : String) -> Result[String, String] {
-  let normalized = match normalize_source_text(source) {
+  let (code, data_suffix) = split_data_section(source)
+  let normalized = match normalize_source_text(code) {
     Ok(v) => v
     Err(err) => return Err(err)
   }
   let formatted = @parser.format_script(normalized)
   let stripped = strip_redundant_blocks_source(formatted)
-  Ok(@parser.format_script(stripped))
+  let result = @parser.format_script(stripped)
+  Ok(result + data_suffix)
+}
+
+///|
+fn split_data_section(source : String) -> (String, String) {
+  // Handle __DATA__ at the very start of the file
+  if source.has_prefix("__DATA__\n") {
+    return ("", source)
+  }
+  let marker = "\n__DATA__\n"
+  match source.split_once(marker) {
+    Some((before, after)) => {
+      let code = before.to_string()
+      let data = "\n__DATA__\n" + after.to_string()
+      (code, data)
+    }
+    None => (source, "")
+  }
 }
 
 ///|

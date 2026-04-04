@@ -67,7 +67,9 @@ pub fn desugar_method_calls(
 /// Default: calls @parser.parse_ast directly.
 /// Decouples db_query.mbt from direct @parser imports.
 let parse_ast_hook : Ref[(String) -> @core.Module raise @parser.ParseError] = {
-  val: fn(source) -> @core.Module raise @parser.ParseError { @parser.parse_ast(source) },
+  val: fn(source) -> @core.Module raise @parser.ParseError {
+    @parser.parse_ast(source)
+  },
 }
 
 ///|
