@@ -14,10 +14,56 @@ import ./token.vibe {
 
 //# Functions
 
+// Transform break(val) and continue(args) inside a loop body for desugaring.
+// break(val) → { __loop_result = val; break }
+// continue(a, b) → { let __lt0 = a; let __lt1 = b; p0 = __lt0; p1 = __lt1; continue }
+let rec desugar_loop_body = (expr: Expr, param_names: Array[String]) -> Expr {
+  match expr {
+    EBreak(opt) => match opt {
+      Some(val) => EAssign("__loop_result", desugar_loop_body(val, param_names), EBreak(None)),
+      None => EBreak(None)
+    },
+    EContinue(args) => {
+      if Array::length(args) == 0 {
+        EContinue(args)
+      } else {
+        let nargs = Array::length(args)
+        let mut result = EContinue(Array::slice([EUnit], 0, 0))
+        let mut ci = nargs - 1
+        while ci >= 0 {
+          result = EAssign(Array::get(param_names, ci), EIdent(String::concat("__lt", __to_string(ci))), result)
+          ci = ci - 1
+        }
+        let mut ci2 = nargs - 1
+        while ci2 >= 0 {
+          result = ELet(String::concat("__lt", __to_string(ci2)), desugar_loop_body(Array::get(args, ci2), param_names), result)
+          ci2 = ci2 - 1
+        }
+        result
+      }
+    },
+    EWhile(_, _) => expr,
+    ELoop(_, _) => expr,
+    EFn(_, _, _, _, _, _) => expr,
+    EIf(c, t, e) => EIf(desugar_loop_body(c, param_names), desugar_loop_body(t, param_names), desugar_loop_body(e, param_names)),
+    ELet(n, v, b) => ELet(n, desugar_loop_body(v, param_names), desugar_loop_body(b, param_names)),
+    ELetMut(n, v, b) => ELetMut(n, desugar_loop_body(v, param_names), desugar_loop_body(b, param_names)),
+    ESeq(a, b) => ESeq(desugar_loop_body(a, param_names), desugar_loop_body(b, param_names)),
+    EAssign(n, v, c) => EAssign(n, desugar_loop_body(v, param_names), desugar_loop_body(c, param_names)),
+    EBinOp(op, l, r) => EBinOp(op, desugar_loop_body(l, param_names), desugar_loop_body(r, param_names)),
+    ELetRec(n, v, b) => ELetRec(n, desugar_loop_body(v, param_names), desugar_loop_body(b, param_names)),
+    EThrow(e) => EThrow(desugar_loop_body(e, param_names)),
+    EUnaryOp(op, e) => EUnaryOp(op, desugar_loop_body(e, param_names)),
+    EDot(obj, field) => EDot(desugar_loop_body(obj, param_names), field),
+    _ => expr
+  }
+}
+
 let parse_loop_primary = (tokens: Array[Token], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int)with { Error }) -> (Expr, Int)with { Error } {
   match peek(tokens, pos + 1) {
     TLParen => {
-      let params_b = ArrayBuilder::new()
+      let param_names_b = ArrayBuilder::new()
+      let param_inits_b = ArrayBuilder::new()
       let mut cur = pos + 2
       let mut done = false
       while !done {
@@ -29,7 +75,8 @@ let parse_loop_primary = (tokens: Array[Token], pos: Int, parse_recur: (Array[To
           TIdent(name) => {
             let eq_pos = expect_tk(tokens, cur + 1, "=")
             let (init, next_pos) = parse_recur(tokens, eq_pos, 0)
-            ArrayBuilder::push(params_b, (name, init))
+            ArrayBuilder::push(param_names_b, name)
+            ArrayBuilder::push(param_inits_b, init)
             match peek(tokens, next_pos) {
               TComma => {
                 cur = next_pos + 1
@@ -46,7 +93,20 @@ let parse_loop_primary = (tokens: Array[Token], pos: Int, parse_recur: (Array[To
       }
       let body_pos = expect_tk(tokens, cur, "{")
       let (body, end_pos) = parse_recur(tokens, body_pos, mode_block)
-      (ELoop(ArrayBuilder::freeze(params_b), body), end_pos)
+      // Desugar ELoop into ELetMut + EWhile
+      let pnames = ArrayBuilder::freeze(param_names_b)
+      let pinits = ArrayBuilder::freeze(param_inits_b)
+      let transformed_body = desugar_loop_body(body, pnames)
+      let while_expr = EWhile(EBool(true), transformed_body)
+      let result = ELetMut("__loop_result", EInt(0),
+        ESeq(while_expr, EIdent("__loop_result")))
+      let mut wrapped = result
+      let mut wi = Array::length(pnames) - 1
+      while wi >= 0 {
+        wrapped = ELetMut(Array::get(pnames, wi), Array::get(pinits, wi), wrapped)
+        wi = wi - 1
+      }
+      (wrapped, end_pos)
     },
     _ => {
       let body_pos = expect_tk(tokens, pos + 1, "{")

@@ -226,6 +226,7 @@ ci-selfhost-examples-smoke:
       examples/module_export.vibe
       examples/module_types_export.vibe
       examples/async.vibe
+      examples/selfhost_features.vibe
     )
     for f in "${examples[@]}"; do
       name=$(basename "$f" .vibe)
