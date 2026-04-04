@@ -395,5 +395,5 @@ pub fn VibeDb::warnings(
   path : String,
 ) -> Array[@core.Diagnostic] {
   let ast = self.queries.ast_query.fetch(self.rt, path).unwrap()
-  @checker.collect_warnings(ast)
+  hook_collect_warnings(ast)
 }

@@ -584,7 +584,7 @@ pub fn Runtime::eval_module(
         } else {
           let is_forward = forward_fn_addrs.contains(name)
           let effective_rec = rec || is_forward
-          let info = @checker.purity_for_let(
+          let info = hook_purity_for_let(
             self.type_env,
             effective_rec,
             name,
@@ -920,7 +920,7 @@ pub fn Runtime::eval_module(
         } else {
           let is_forward = forward_fn_addrs.contains(name)
           let effective_rec = rec || is_forward
-          let info = @checker.purity_for_let(
+          let info = hook_purity_for_let(
             self.type_env,
             effective_rec,
             name,
@@ -1316,7 +1316,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       let _ = span
       let _ = ret
       let _ = fn_effects
-      let purity = @checker.purity_for_let(
+      let purity = hook_purity_for_let(
         rt.type_env,
         false,
         "_",

@@ -504,7 +504,7 @@ fn project_type_import_env(
   source_env : @checker.TypeEnv,
   ast : @core.Module,
 ) -> @checker.TypeEnv {
-  let surface_env = try! @checker.get_prelude_only_env_for_module()
+  let surface_env = hook_get_prelude_env()
   let meta = collect_type_import_meta(ast)
   let exported_names = meta.exported_names
   let internal_exported_names = meta.internal_exported_names

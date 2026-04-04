@@ -1,6 +1,6 @@
 ///|
 /// Purity inference for effect-aware caching.
-pub struct PurityInfo {
+pub(all) struct PurityInfo {
   expr : Bool
   value : Bool
   expr_tier : TopLevelPurityTier

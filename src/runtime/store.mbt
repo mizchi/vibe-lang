@@ -236,7 +236,7 @@ pub fn Runtime::new_with_features(
     aliases: {},
     pure_cache: PureCache::new(),
     test_cache: TestCache::new(),
-    type_env: @checker.TypeEnv::new(),
+    type_env: hook_new_type_env(),
     mut_vars: {},
     thread_runtime: ThreadRuntime::new(),
     module_cache: {},
@@ -257,11 +257,7 @@ pub fn Runtime::new_with_features(
       None => default_loop_fuel()
     },
   }
-  let env = @checker.TypeEnv::new()
-  let _ = try! @checker.ensure_prelude_option(env)
-  let _ = try! @checker.ensure_prelude_functions(env, {})
-  @checker.ensure_builtin_modules(env, {})
-  rt.type_env = env
+  rt.type_env = hook_init_runtime_type_env()
   rt.ensure_prelude()
   rt
 }
@@ -269,7 +265,7 @@ pub fn Runtime::new_with_features(
 ///|
 fn Runtime::ensure_prelude(self : Runtime) -> Unit {
   if not(self.prelude_loaded) {
-    let _ = try? self.eval_module(@checker.prelude_ast())
+    let _ = try? self.eval_module(hook_prelude_ast())
     self.prelude_loaded = true
   }
 }

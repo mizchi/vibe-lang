@@ -738,8 +738,10 @@ test "preparsed ast cache seeds ast and imports queries" {
   let db = VibeDb::new()
   db.set_source("/project/lib/dep.vibe", "export let dep = 1\nexport { dep }\n")
   let source = "import ./lib/dep.vibe { dep }\nlet x = dep\n"
-  let ast = @parser.parse_ast(source) catch {
-    e => fail("parse failed: " + e.to_string())
+  let ast = match hook_parse_ast_diagnostic(source) {
+    (Some(m), _) => m
+    (None, Some(d)) => fail("parse failed: " + d.to_string())
+    _ => fail("parse failed")
   }
   db.set_source("/project/main.vibe", source)
   db.set_preparsed_ast("/project/main.vibe", source, ast)
@@ -756,8 +758,10 @@ test "preparsed ast cache seeds ast and imports queries" {
 test "preparsed ast cache is ignored after source changes" {
   let db = VibeDb::new()
   let source1 = "let x = 1\n"
-  let ast1 = @parser.parse_ast(source1) catch {
-    e => fail("parse failed: " + e.to_string())
+  let ast1 = match hook_parse_ast_diagnostic(source1) {
+    (Some(m), _) => m
+    (None, Some(d)) => fail("parse failed: " + d.to_string())
+    _ => fail("parse failed")
   }
   db.set_source("/project/main.vibe", source1)
   db.set_preparsed_ast("/project/main.vibe", source1, ast1)
