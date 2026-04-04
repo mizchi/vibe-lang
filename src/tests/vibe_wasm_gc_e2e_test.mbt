@@ -579,6 +579,69 @@ test "wasm-gc e2e: MapBuilder::set overwrites existing key" {
 }
 
 ///|
+test "wasm-gc e2e: Map::get with int keys" {
+  let src =
+    #|let main = () -> Int {
+    #|  let b = MapBuilder::new()
+    #|  MapBuilder::set(b, 1, 100)
+    #|  MapBuilder::set(b, 2, 200)
+    #|  MapBuilder::set(b, 3, 300)
+    #|  let m = MapBuilder::freeze(b)
+    #|  Map::get(m, 2)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "map_get_int_keys", 200)
+}
+
+///|
+test "wasm-gc e2e: Map::keys" {
+  let src =
+    #|let main = () -> Int {
+    #|  let b = MapBuilder::new()
+    #|  MapBuilder::set(b, "a", 1)
+    #|  MapBuilder::set(b, "b", 2)
+    #|  MapBuilder::set(b, "c", 3)
+    #|  let m = MapBuilder::freeze(b)
+    #|  let keys = Map::keys(m)
+    #|  Array::length(keys)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "map_keys", 3)
+}
+
+///|
+test "wasm-gc e2e: Map::has_key with int keys" {
+  let src =
+    #|let main = () -> Int {
+    #|  let b = MapBuilder::new()
+    #|  MapBuilder::set(b, 10, 100)
+    #|  MapBuilder::set(b, 20, 200)
+    #|  let m = MapBuilder::freeze(b)
+    #|  let has10 = Map::has_key(m, 10)
+    #|  let has99 = Map::has_key(m, 99)
+    #|  if has10 && not(has99) { 1 } else { 0 }
+    #|}
+    #|main()
+  assert_gc_e2e(src, "map_has_key_int", 1)
+}
+
+///|
+test "wasm-gc e2e: Map::get arithmetic on results" {
+  let src =
+    #|let main = () -> Int {
+    #|  let b = MapBuilder::new()
+    #|  MapBuilder::set(b, "x", 10)
+    #|  MapBuilder::set(b, "y", 20)
+    #|  let m = MapBuilder::freeze(b)
+    #|  let vx = Map::get(m, "x")
+    #|  let vy = Map::get(m, "y")
+    #|  vx * vy
+    #|}
+    #|main()
+  assert_gc_e2e(src, "map_get_arithmetic", 200)
+}
+
+///|
 test "wasm-gc e2e: throw/handle error-only" {
   let src =
     #|let main = () -> Int {
