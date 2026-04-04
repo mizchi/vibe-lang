@@ -330,6 +330,7 @@ fn walk_stmt(
     }
     @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) => {
       warn_context_keyword_binding(name, span, out)
+      warn_old_style_fn_def(name, expr, span, out)
       if rec {
         warning_scope_declare(
           scopes,

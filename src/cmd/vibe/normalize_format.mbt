@@ -338,6 +338,10 @@ pub fn normalize_format_source_text(source : String) -> Result[String, String] {
 
 ///|
 fn split_data_section(source : String) -> (String, String) {
+  // Handle __DATA__ at the very start of the file
+  if source.has_prefix("__DATA__\n") {
+    return ("", source)
+  }
   let marker = "\n__DATA__\n"
   match source.split_once(marker) {
     Some((before, after)) => {
