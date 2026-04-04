@@ -76,6 +76,8 @@ fn entry_not_found_diagnostic(entry : String) -> @core.Diagnostic {
     span: None,
     hint: None,
     note: Some("check your import statements for entry '" + entry + "'"),
+    severity: None,
+    code: None,
   }
 }
 
@@ -87,6 +89,8 @@ fn path_not_found_diagnostic(path : String) -> @core.Diagnostic {
     span: None,
     hint: None,
     note: Some("referenced path: " + path),
+    severity: None,
+    code: None,
   }
 }
 
@@ -102,6 +106,8 @@ fn missing_import_diagnostic(
     span: Some(span),
     hint: None,
     note: Some("from: " + from_path),
+    severity: None,
+    code: None,
   }
 }
 
@@ -117,6 +123,8 @@ fn missing_export_diagnostic(
     span: Some(span),
     hint: None,
     note: Some("import source: " + import_path),
+    severity: None,
+    code: None,
   }
 }
 
@@ -128,6 +136,8 @@ fn unsupported_import_ref_diagnostic(span : @core.Span) -> @core.Diagnostic {
     span: Some(span),
     hint: None,
     note: None,
+    severity: None,
+    code: None,
   }
 }
 
@@ -139,6 +149,8 @@ fn import_cycle_diagnostic(path : String) -> @core.Diagnostic {
     span: None,
     hint: Some("break the cycle by removing or reorganizing imports"),
     note: Some("cycle involves module: " + path),
+    severity: None,
+    code: None,
   }
 }
 
@@ -325,6 +337,8 @@ fn analyze_module(
                         "import from `.xm` for multi-module files, or import explicit exported symbols from `.vibe`",
                       ),
                       note: None,
+                      severity: None,
+                      code: None,
                     })
                     continue
                   }

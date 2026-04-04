@@ -115,6 +115,8 @@ pub fn ParseError::diagnostic(self : ParseError) -> @core.Diagnostic {
         span: Some(span),
         hint: parse_error_unexpected_token_hint(expected, got),
         note: None,
+        severity: None,
+        code: None,
       }
     }
     ParseError::UnexpectedEof(span~) =>
@@ -124,6 +126,8 @@ pub fn ParseError::diagnostic(self : ParseError) -> @core.Diagnostic {
         span: Some(span),
         hint: None,
         note: None,
+        severity: None,
+        code: None,
       }
     ParseError::IntLiteralOverflow(literal~, span~) =>
       @core.Diagnostic::{
@@ -136,6 +140,8 @@ pub fn ParseError::diagnostic(self : ParseError) -> @core.Diagnostic {
           "use a smaller literal or rewrite as `0 - 2305843009213693951 - 1`",
         ),
         note: None,
+        severity: None,
+        code: None,
       }
     ParseError::IntMinLiteralBoundary(span~) =>
       @core.Diagnostic::{
@@ -146,6 +152,8 @@ pub fn ParseError::diagnostic(self : ParseError) -> @core.Diagnostic {
         note: Some(
           "parser treats `-` as unary operator applied after literal parsing",
         ),
+        severity: None,
+        code: None,
       }
     ParseError::MutableEnumFieldUnsupported(span~) =>
       @core.Diagnostic::{
@@ -158,6 +166,8 @@ pub fn ParseError::diagnostic(self : ParseError) -> @core.Diagnostic {
         note: Some(
           "mutable enum field syntax is tracked separately and not implemented in current grammar",
         ),
+        severity: None,
+        code: None,
       }
   }
 }

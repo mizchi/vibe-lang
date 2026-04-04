@@ -188,6 +188,8 @@ pub fn VibeDb::new() -> VibeDb {
                       "use `./...` paths for same-package re-export only",
                     ),
                     note: None,
+                    severity: None,
+                    code: None,
                   })
                   continue
                 }
@@ -221,6 +223,8 @@ pub fn VibeDb::new() -> VibeDb {
                         "import the module's index.vibe for cross-directory imports",
                       ),
                       note: None,
+                      severity: None,
+                      code: None,
                     })
                   }
                 }
@@ -259,6 +263,8 @@ pub fn VibeDb::new() -> VibeDb {
                                 "run `vibe fetch <entry>` to refresh index.lock",
                               ),
                               note: None,
+                              severity: None,
+                              code: None,
                             })
                             resolved_hash = None
                             module_ref = None
@@ -274,6 +280,8 @@ pub fn VibeDb::new() -> VibeDb {
                               "run `vibe fetch <entry>` to create index.lock",
                             ),
                             note: None,
+                            severity: None,
+                            code: None,
                           })
                           resolved_hash = None
                           module_ref = None
@@ -322,6 +330,8 @@ pub fn VibeDb::new() -> VibeDb {
                                     "run `vibe fetch <entry>` to refresh index.lock",
                                   ),
                                   note: None,
+                                  severity: None,
+                                  code: None,
                                 })
                                 resolved_hash = None
                                 module_ref = None
@@ -337,6 +347,8 @@ pub fn VibeDb::new() -> VibeDb {
                                   "run `vibe fetch <entry>` to create index.lock",
                                 ),
                                 note: None,
+                                severity: None,
+                                code: None,
                               })
                               resolved_hash = None
                               module_ref = None
@@ -362,6 +374,8 @@ pub fn VibeDb::new() -> VibeDb {
                         span: Some(span),
                         hint: None,
                         note: None,
+                        severity: None,
+                        code: None,
                       })
                       out.push(ImportSpec::{
                         path: final_path,
@@ -387,6 +401,8 @@ pub fn VibeDb::new() -> VibeDb {
                     "re-export from hash/version/symbol refs is not allowed",
                   ),
                   note: None,
+                  severity: None,
+                  code: None,
                 })
                 continue
               }
@@ -419,6 +435,8 @@ pub fn VibeDb::new() -> VibeDb {
                     "re-export from hash/version/symbol refs is not allowed",
                   ),
                   note: None,
+                  severity: None,
+                  code: None,
                 })
                 continue
               }
@@ -449,6 +467,8 @@ pub fn VibeDb::new() -> VibeDb {
                     span: Some(span),
                     hint: None,
                     note: None,
+                    severity: None,
+                    code: None,
                   })
                   out.push(ImportSpec::{
                     path: version_ref_key(name),
@@ -474,6 +494,8 @@ pub fn VibeDb::new() -> VibeDb {
                     "re-export from hash/version/symbol refs is not allowed",
                   ),
                   note: None,
+                  severity: None,
+                  code: None,
                 })
                 continue
               }
@@ -504,6 +526,8 @@ pub fn VibeDb::new() -> VibeDb {
                     span: Some(span),
                     hint: None,
                     note: None,
+                    severity: None,
+                    code: None,
                   })
                   out.push(ImportSpec::{
                     path: symbol_ref_key(name),
@@ -634,6 +658,8 @@ pub fn VibeDb::new() -> VibeDb {
                         span: Some(span),
                         hint: None,
                         note: None,
+                        severity: None,
+                        code: None,
                       })
                   }
                 }
@@ -648,6 +674,8 @@ pub fn VibeDb::new() -> VibeDb {
                       "add `import <path> @" + name + "` to index.vibe",
                     ),
                     note: None,
+                    severity: None,
+                    code: None,
                   })
               }
             }
@@ -665,6 +693,8 @@ pub fn VibeDb::new() -> VibeDb {
             span: None,
             hint: Some("break the cycle by extracting shared definitions"),
             note: Some("cycle: " + render_import_cycle(cycle)),
+            severity: None,
+            code: None,
           })
         None => ()
       }
@@ -678,6 +708,8 @@ pub fn VibeDb::new() -> VibeDb {
               "break the module cycle by restructuring directory dependencies",
             ),
             note: Some("cycle: " + render_import_cycle(cycle)),
+            severity: None,
+            code: None,
           })
         None => ()
       }
@@ -862,6 +894,8 @@ pub fn VibeDb::new() -> VibeDb {
         span: Some(span),
         hint: None,
         note: None,
+        severity: None,
+        code: None,
       })
     }
     let can_bind_import_value = fn(name : String, span : @core.Span) -> Bool {
@@ -1214,6 +1248,8 @@ pub fn VibeDb::new() -> VibeDb {
                       span: Some(span),
                       hint: None,
                       note: None,
+                      severity: None,
+                      code: None,
                     })
                   }
                   let report_non_exported_trait = fn(name : String) {
@@ -1227,6 +1263,8 @@ pub fn VibeDb::new() -> VibeDb {
                         "` as `export trait` (or `export open trait` for external impls)",
                       ),
                       note: None,
+                      severity: None,
+                      code: None,
                     })
                   }
                   let import_namespace_members = fn(
@@ -1326,6 +1364,8 @@ pub fn VibeDb::new() -> VibeDb {
                             "import from `.xm` for multi-module files, or import explicit exported symbols from `.vibe`",
                           ),
                           note: None,
+                          severity: None,
+                          code: None,
                         })
                         continue
                       }
@@ -1377,6 +1417,8 @@ pub fn VibeDb::new() -> VibeDb {
                               name +
                               "' could not be resolved because the dependency has type errors",
                             ),
+                            severity: None,
+                            code: None,
                           })
                         } else {
                           report_kind_mismatch(item, name)
@@ -1432,6 +1474,8 @@ pub fn VibeDb::new() -> VibeDb {
                               "wasm import currently exposes flat value exports only",
                             ),
                             note: None,
+                            severity: None,
+                            code: None,
                           })
                           continue
                         }
@@ -1444,6 +1488,8 @@ pub fn VibeDb::new() -> VibeDb {
                               "wasm import currently exposes values only",
                             ),
                             note: None,
+                            severity: None,
+                            code: None,
                           })
                           continue
                         }
@@ -1458,6 +1504,8 @@ pub fn VibeDb::new() -> VibeDb {
                                 "available exports are read from wasm export section",
                               ),
                               note: None,
+                              severity: None,
+                              code: None,
                             })
                         }
                       }
@@ -1476,6 +1524,8 @@ pub fn VibeDb::new() -> VibeDb {
                         span: Some(span),
                         hint: None,
                         note: Some(msg),
+                        severity: None,
+                        code: None,
                       })
                     }
                   _ => ()

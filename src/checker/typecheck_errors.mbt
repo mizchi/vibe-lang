@@ -105,6 +105,8 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         span: Some(span),
         hint: suggestion_hint(suggestion),
         note: None,
+        severity: None,
+        code: None,
       }
     TypeError::UnknownType(name~, span~, suggestion~) =>
       @core.Diagnostic::{
@@ -113,6 +115,8 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         span: Some(span),
         hint: suggestion_hint(suggestion),
         note: None,
+        severity: None,
+        code: None,
       }
     TypeError::DuplicateDecl(name~, span~) =>
       @core.Diagnostic::{
@@ -121,6 +125,8 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         span: Some(span),
         hint: None,
         note: None,
+        severity: None,
+        code: None,
       }
     TypeError::Mismatch(expected~, actual~, span~, context~) => {
       let message = match context {
@@ -138,6 +144,8 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
           "\nactual: " +
           actual.to_string(),
         ),
+        severity: None,
+        code: None,
       }
     }
     TypeError::BadCall(message~, span~) =>
@@ -147,6 +155,8 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         span: Some(span),
         hint: bad_call_hint(message),
         note: None,
+        severity: None,
+        code: None,
       }
     TypeError::PropertyAccessAmbiguous(
       property_name~,
@@ -179,6 +189,8 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
           "\n" +
           "resolution order: function call is checked before field-access fallback",
         ),
+        severity: None,
+        code: None,
       }
     TypeError::BadRec(message~, span~) =>
       @core.Diagnostic::{
@@ -187,6 +199,8 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         span: Some(span),
         hint: None,
         note: None,
+        severity: None,
+        code: None,
       }
     TypeError::BadMatch(message~, span~) =>
       @core.Diagnostic::{
@@ -195,6 +209,8 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         span: Some(span),
         hint: None,
         note: None,
+        severity: None,
+        code: None,
       }
     TypeError::NonExhaustiveMatch(missing~, span~) => {
       let note : String? = if missing.length() > 0 {
@@ -217,6 +233,8 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         span: Some(span),
         hint: Some("add the missing patterns or a wildcard `_` arm"),
         note,
+        severity: None,
+        code: None,
       }
     }
     TypeError::BadTypeDef(message~, span~) =>
@@ -226,6 +244,8 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         span: Some(span),
         hint: None,
         note: None,
+        severity: None,
+        code: None,
       }
     TypeError::TraitSealed(trait_name~, span~) =>
       @core.Diagnostic::{
@@ -238,6 +258,8 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
           "` as `export open trait` in the source module to allow external impls",
         ),
         note: None,
+        severity: None,
+        code: None,
       }
     TypeError::TraitImplOverlap(trait_name~, span~) =>
       @core.Diagnostic::{
@@ -248,6 +270,8 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
           "narrow the impl target or bounds so only one impl can match each concrete type",
         ),
         note: None,
+        severity: None,
+        code: None,
       }
     TypeError::EffectGuardNotSatisfied(operation~, missing_effect~, span~) =>
       @core.Diagnostic::{
@@ -256,6 +280,8 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         span: Some(span),
         hint: effect_guard_hint(operation, missing_effect),
         note: effect_guard_note(operation, missing_effect),
+        severity: None,
+        code: None,
       }
     TypeError::ScopedRefEscape(context~, span~) =>
       @core.Diagnostic::{
@@ -264,6 +290,8 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         span: Some(span),
         hint: Some(scoped_ref_escape_hint(context)),
         note: Some(scoped_ref_escape_note(context)),
+        severity: None,
+        code: None,
       }
     TypeError::TopLevelLetMut(name~, span~) =>
       @core.Diagnostic::{
@@ -272,6 +300,8 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         span: Some(span),
         hint: Some("use `let` instead, or move mutable state into a function"),
         note: Some("top-level bindings must be immutable: `" + name + "`"),
+        severity: None,
+        code: None,
       }
     TypeError::TopLevelUnhandledEffect(operation~, missing_effect~, span~) => {
       let effect_name = match missing_effect {
@@ -292,6 +322,8 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
           "}`",
         ),
         note: Some("missing effect: `" + effect_name + "`"),
+        severity: None,
+        code: None,
       }
     }
   }

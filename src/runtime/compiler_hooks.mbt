@@ -148,6 +148,8 @@ fn hook_parse_ast_diagnostic(
           span: None,
           hint: None,
           note: None,
+          severity: None,
+          code: None,
         }),
       )
   }

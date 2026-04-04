@@ -22,6 +22,8 @@ test "Diagnostic::render includes path, stage, snippet and note" {
     span: Some(Span::new(6, 8)),
     hint: Some("rewrite it"),
     note: Some("from test"),
+    severity: None,
+    code: None,
   }
   let rendered = diag.render("main.vibe", "alpha\nbeta")
   assert_eq(

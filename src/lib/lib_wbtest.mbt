@@ -38,6 +38,8 @@ test "response_diag_error_json wraps diagnostic payload" {
     span: None,
     hint: None,
     note: None,
+    severity: None,
+    code: None,
   })
   assert_true(json.contains("\"ok\":false"))
   assert_true(json.contains("\"error\":\"missing path\""))
