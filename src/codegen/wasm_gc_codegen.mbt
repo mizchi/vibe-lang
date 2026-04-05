@@ -70,6 +70,25 @@ fn GcByteBuf::to_bytes(self : GcByteBuf) -> Bytes {
 }
 
 ///|
+/// Write a signed LEB128 value (s33) — required for GC heap type indices.
+/// The GC spec encodes heap type references as signed s33 values where
+/// non-negative values represent type indices.
+fn write_s33_leb_gc(buf : GcByteBuf, n : Int) -> Unit {
+  let mut value = n
+  let mut more = true
+  while more {
+    let byte = value & 0x7f
+    value = value >> 7
+    if (value == 0 && (byte & 0x40) == 0) || (value == -1 && (byte & 0x40) != 0) {
+      more = false
+      buf.push(byte)
+    } else {
+      buf.push(byte | 0x80)
+    }
+  }
+}
+
+///|
 fn write_u32_leb_gc(buf : GcByteBuf, n : Int) -> Unit {
   let u = n.reinterpret_as_uint()
   let v0 = (u & 0x7fU).reinterpret_as_int()
@@ -515,8 +534,8 @@ fn write_valtype_gc(buf : GcByteBuf, kind : GcValKind) -> Unit {
     GcValKind::FuncRef => buf.push(0x70)
     GcValKind::ExternRef => buf.push(0x6f)
     GcValKind::Ref(idx) => {
-      buf.push(0x63)
-      write_u32_leb_gc(buf, idx)
+      buf.push(0x63) // ref null
+      write_s33_leb_gc(buf, idx) // heap type index as s33
     }
   }
 }
