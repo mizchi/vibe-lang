@@ -85,6 +85,10 @@ test:
 test-wasm-gc-mainlane-e2e:
     VIBE_WASM_GC_MAINLANE=1 moon test --target native src/tests/vibe_wasm_gc_mainlane_e2e_test.mbt --warn-list '{{moon_warn_list}}'
 
+# wasm-gc validation gate: type encoding, selfhost build, P4 import resolution
+test-wasm-gc-validate:
+    bash scripts/test_wasm_gc_validate.sh
+
 # Broad compiled package sweep. Keep opt-in until compiled-only parity is restored
 # outside the 0.1.0 supported surface.
 test-vibe-package-suite:
