@@ -2266,7 +2266,7 @@ test "string concat chain compiles to wasm" {
 
 ///|
 // Known failure: LetPatElse pattern bindings not registered in wasm codegen scope (#213)
-test "let pat else fails in wasm codegen (known issue #213)" {
+test "let pat else compiles to wasm" {
   let db = @runtime.VibeDb::new()
   db.set_source(
     "main",
@@ -2277,13 +2277,9 @@ test "let pat else fails in wasm codegen (known issue #213)" {
     ),
   )
   let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
-    // Expected to fail with "unknown name: v" until #213 is fixed
-    e => {
-      assert_true(e.user_message().contains("unknown name"))
-      Bytes::new(0)
-    }
+    e => fail("let pat else compile failed: " + e.user_message())
   }
-  ignore(wasm_bytes)
+  assert_true(wasm_bytes.length() > 8)
 }
 
 ///|

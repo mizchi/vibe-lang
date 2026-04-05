@@ -1024,9 +1024,14 @@ fn compile_stmt(
       }
       let arms = [success_arm, fallback_arm]
       compile_match_chain(ctx, buf, scrut_idx, arms, 0)
-      // Drop the result if not last
-      if not(is_last) {
-        emit_drop(buf)
+      // Drop the match result (Unit from success or else_body value)
+      emit_drop(buf)
+      // Re-bind pattern variables in the outer scope.
+      // compile_match_chain saves/restores ctx.locals, so bindings made
+      // during pattern matching are lost. Re-extract them from scrut_idx.
+      compile_let_pat_nested(ctx, buf, pat, scrut_idx)
+      if is_last {
+        emit_i64_const_tagged(buf, 0L)
       }
     }
   }
