@@ -3743,6 +3743,49 @@ test "struct with match destructure compiles to wasm" {
 }
 
 ///|
+test "struct match without wildcard compiles to wasm (#221)" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|struct Point { x: Int; y: Int }
+      #|let p = Point::{ x: 3, y: 4 }
+      #|let d = match p {
+      #|  Point::{ x, y } => x * x + y * y
+      #|}
+      #|d
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("struct match without wildcard failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "tuple Option match exhaustive (#216)" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let x: Option[Int] = Some(5)
+      #|let y: Option[Int] = None
+      #|let sum = match (x, y) {
+      #|  (Some(a), Some(b)) => a + b,
+      #|  (Some(a), None) => a,
+      #|  (None, Some(b)) => b,
+      #|  (None, None) => 0
+      #|}
+      #|sum
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("tuple Option match failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
 test "array spread not supported in parser (known limitation)" {
   let db = @runtime.VibeDb::new()
   db.set_source(

@@ -1267,6 +1267,8 @@ fn type_match_block(
           covered_false = true
         }
       }
+      @core.Pat::Tuple(..) | @core.Pat::Record(..) | @core.Pat::Struct(..) =>
+        has_ctor = true
       _ => ()
     }
     let arm_env = env.fork_for_match_arm()
