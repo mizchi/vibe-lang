@@ -2883,3 +2883,393 @@ test "hex literal compiles to wasm" {
   }
   assert_true(wasm_bytes.length() > 8)
 }
+
+///|
+test "mutual recursion compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let rec is_even: (Int) -> Bool = (n) -> {
+      #|  if n == 0 { true } else { is_odd(n - 1) }
+      #|}
+      #|let rec is_odd: (Int) -> Bool = (n) -> {
+      #|  if n == 0 { false } else { is_even(n - 1) }
+      #|}
+      #|is_even(10)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("mutual recursion compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "match on int literal compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let day = (n: Int) -> String {
+      #|  match n {
+      #|    1 => "mon",
+      #|    2 => "tue",
+      #|    3 => "wed",
+      #|    _ => "other"
+      #|  }
+      #|}
+      #|day(2)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("int literal match compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "nested option match compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let x: Option[Option[Int]] = Some(Some(42))
+      #|match x {
+      #|  Some(Some(n)) => n,
+      #|  Some(None) => -1,
+      #|  None => -2
+      #|}
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("nested option match compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "tuple match pair compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let x: Option[Int] = Some(5)
+      #|let y: Option[Int] = None
+      #|match (x, y) {
+      #|  (Some(a), Some(b)) => a + b,
+      #|  (Some(a), None) => a,
+      #|  (None, Some(b)) => b,
+      #|  _ => 0
+      #|}
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("tuple match pair compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "for-in collecting array compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let xs = [1, 2, 3]
+      #|for x in xs { x * 2 }
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("for-in collect compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "String::contains compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let s = "hello world"
+      #|String::contains(s, "world")
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("String::contains compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "String::substring compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let s = "hello world"
+      #|String::substring(s, 0, 5)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("String::substring compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "Array::find wrongly requires Ord (known limitation)" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let xs = [1, 2, 3, 4, 5]
+      #|Array::find(xs, x -> x > 3)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => {
+      // Array::find lambda parameter wrongly constrained to Ord
+      assert_true(e.user_message().contains("Ord"))
+      Bytes::new(0)
+    }
+  }
+  ignore(wasm_bytes)
+}
+
+///|
+test "Array::reverse compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let xs = [1, 2, 3]
+      #|Array::reverse(xs)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("Array::reverse compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "Array::concat compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let a = [1, 2]
+      #|let b = [3, 4]
+      #|Array::concat(a, b)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("Array::concat compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "Array::all wrongly requires Ord (known limitation)" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let xs = [2, 4, 6]
+      #|Array::all(xs, x -> x > 0)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => {
+      // Array::all lambda parameter wrongly constrained to Ord
+      assert_true(e.user_message().contains("Ord"))
+      Bytes::new(0)
+    }
+  }
+  ignore(wasm_bytes)
+}
+
+///|
+test "String::split compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let s = "a,b,c"
+      #|String::split(s, ",")
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("String::split compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "String::trim compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let s = "  hello  "
+      #|String::trim(s)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("String::trim compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "Map::has not available in wasm codegen (known limitation)" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let m = map { "a": 1, "b": 2 }
+      #|Map::has(m, "a")
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => {
+      // Map::has is not yet a wasm builtin
+      assert_true(e.user_message().contains("unknown function"))
+      Bytes::new(0)
+    }
+  }
+  ignore(wasm_bytes)
+}
+
+///|
+test "Map::keys compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let m = map { "x": 1, "y": 2 }
+      #|Map::keys(m)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("Map::keys compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "match with string literal pattern compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let greet = (name: String) -> String {
+      #|  match name {
+      #|    "world" => "hello world!",
+      #|    "vibe" => "hello vibe!",
+      #|    _ => "hello " + name
+      #|  }
+      #|}
+      #|greet("vibe")
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("string literal match compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "enum with multiple payload types compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|enum Value {
+      #|  IntVal(Int);
+      #|  StrVal(String);
+      #|  BoolVal(Bool);
+      #|  NoneVal
+      #|}
+      #|let to_string = (v: Value) -> String {
+      #|  match v {
+      #|    IntVal(_) => "int",
+      #|    StrVal(s) => s,
+      #|    BoolVal(b) => if b { "true" } else { "false" },
+      #|    NoneVal => "none"
+      #|  }
+      #|}
+      #|to_string(StrVal("hello"))
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("multi-payload enum compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "deeply nested closure compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let outer = 10
+      #|let f = () -> Int {
+      #|  let inner = 20
+      #|  let g = () -> Int {
+      #|    outer + inner
+      #|  }
+      #|  g()
+      #|}
+      #|f()
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("deeply nested closure compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "recursive fibonacci compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let rec fib: (Int) -> Int = (n) -> {
+      #|  if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
+      #|}
+      #|fib(10)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("fibonacci compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "complex pattern with guard compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let classify = (x: Option[Int]) -> String {
+      #|  match x {
+      #|    Some(n) if n > 0 => "positive",
+      #|    Some(n) if n < 0 => "negative",
+      #|    Some(_) => "zero",
+      #|    None => "nothing"
+      #|  }
+      #|}
+      #|classify(Some(-5))
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("complex guard compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
