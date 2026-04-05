@@ -3786,7 +3786,7 @@ test "tuple Option match exhaustive (#216)" {
 }
 
 ///|
-test "array spread not supported in parser (known limitation)" {
+test "array spread compiles to wasm" {
   let db = @runtime.VibeDb::new()
   db.set_source(
     "main",
@@ -3797,13 +3797,9 @@ test "array spread not supported in parser (known limitation)" {
     ),
   )
   let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
-    e => {
-      // Array spread syntax `..xs` not parsed
-      assert_true(e.user_message().contains(".."))
-      Bytes::new(0)
-    }
+    e => fail("array spread compile failed: " + e.user_message())
   }
-  ignore(wasm_bytes)
+  assert_true(wasm_bytes.length() > 8)
 }
 
 ///|
