@@ -73,6 +73,10 @@ pub fn run(args : Array[String]) -> Unit {
       abort(
         "bundle: command was removed. Use 'vibe compile' to compile modules, or 'vibe precompile' for precompilation.",
       )
+    "serve" =>
+      println(
+        "serve: use 'just serve <handler.vibe>' or 'bash scripts/vibe_serve.sh <handler.vibe>'",
+      )
     "lsp" => lsp_cmd(cmd_args)
     "help" =>
       if cmd_args.length() > 0 {
@@ -123,6 +127,7 @@ fn print_usage() -> Unit {
   println("  compile <file> [-o <out>]   Compile to WASM or other targets")
   println("  build <file>                Full pipeline build")
   println("  bench <file|dir...>         Run benchmark blocks")
+  println("  serve <file>                Serve HTTP handler (WASI P3)")
   println("")
   println("Development:")
   println("  shell                       Interactive TUI shell")
