@@ -546,7 +546,11 @@ fn infer_expr_kind_with(
         | "funcref_eq"
         | "externref_eq" => ValueKind::I64
         "__eq" | "__lt" | "__assert_eq" => ValueKind::I64
-        "__to_string" =>
+        "__to_string"
+        | "Int::to_string"
+        | "Float::to_string"
+        | "Double::to_string"
+        | "Bool::to_string" =>
           if ctx.use_js_strings {
             ValueKind::ExternRef
           } else {
@@ -1132,6 +1136,10 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "String::substring" ||
         name == "String::concat" ||
         name == "__to_string" ||
+        name == "Int::to_string" ||
+        name == "Float::to_string" ||
+        name == "Double::to_string" ||
+        name == "Bool::to_string" ||
         name == "String::from_char_code" ||
         name == "Array::slice" ||
         name == "Array::concat" ||

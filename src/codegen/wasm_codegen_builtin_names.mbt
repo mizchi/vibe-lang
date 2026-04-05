@@ -7,10 +7,11 @@ pub fn codegen_registered_builtin_names() -> Array[String] {
     // Env
     "Env::get", "Env::args_len", "Env::args_get",
     // Int numeric
-     "Int::to_float", "Int::to_double", "Int::abs", "Int::max", "Int::min", "Int::clamp",
-    "Int::signum", "Int::is_even", "Int::is_odd", "Int::parse",
+     "Int::to_float", "Int::to_double", "Int::to_string", "Int::abs", "Int::max",
+    "Int::min", "Int::clamp", "Int::signum", "Int::is_even", "Int::is_odd", "Int::parse",
     // Float / Double conversion
-     "Float::to_int", "Float::to_double", "Double::to_int", "Double::to_float", "Double::parse",
+     "Float::to_int", "Float::to_double", "Float::to_string", "Double::to_int", "Double::to_float",
+    "Double::to_string", "Double::parse", "Bool::to_string",
     // Char
      "Char::to_int", "Char::from_int",
     // String

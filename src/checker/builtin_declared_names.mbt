@@ -22,10 +22,11 @@ pub fn checker_declared_builtin_names() -> Array[String] {
      "Socket::tcp_connect", "Socket::tcp_read", "Socket::tcp_write", "Socket::tcp_close",
     // Int numeric
      "Int::abs", "Int::max", "Int::min", "Int::clamp", "Int::signum", "Int::is_even",
-    "Int::is_odd", "Int::parse", "Int::to_float", "Int::to_double",
+    "Int::is_odd", "Int::parse", "Int::to_float", "Int::to_double", "Int::to_string",
     // Float / Double
-     "Float::to_int", "Float::to_double", "Double::to_int", "Double::to_float", "Double::parse",
-    "Double::abs", "Double::ceil", "Double::floor", "Double::max", "Double::min",
+     "Float::to_int", "Float::to_double", "Float::to_string", "Double::to_int", "Double::to_float",
+    "Double::to_string", "Double::parse", "Bool::to_string", "Double::abs", "Double::ceil",
+    "Double::floor", "Double::max", "Double::min",
     // Char
      "Char::to_int", "Char::from_int",
     // String

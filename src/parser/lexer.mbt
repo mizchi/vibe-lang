@@ -127,6 +127,7 @@ fn Lexer::lex_string(self : Lexer) -> Token {
   let buf = StringBuilder::new()
   let raw = StringBuilder::new()
   let mut has_interp = false
+  let mut bad_escape = false
   while (match self.peek() {
           Some('"') => false
           Some(_) => true
@@ -193,6 +194,7 @@ fn Lexer::lex_string(self : Lexer) -> Token {
                 raw.write_char('r')
               }
               Some(c) => {
+                bad_escape = true
                 buf.write_char(c)
                 raw.write_char('\\')
                 raw.write_char(c)
@@ -211,7 +213,9 @@ fn Lexer::lex_string(self : Lexer) -> Token {
     Some('"') => {
       let _ = self.advance()
       let width = self.pos - start
-      if has_interp {
+      if bad_escape {
+        Token::new_with_width(error_kind(), buf.to_string(), width)
+      } else if has_interp {
         Token::new_with_width(string_interp_lit(), raw.to_string(), width)
       } else {
         Token::new_with_width(string_lit(), buf.to_string(), width)
@@ -267,7 +271,21 @@ fn Lexer::lex_char(self : Lexer) -> Token {
             'r' => '\r'
             '\'' => '\''
             '\\' => '\\'
-            _ => ch
+            _ => {
+              // Unknown escape sequence — skip to closing quote and return error
+              let _ = self.advance()
+              while self.peek() != Some('\'') && self.peek() != None {
+                let _ = self.advance()
+              }
+              if self.peek() == Some('\'') {
+                let _ = self.advance()
+              }
+              return Token::new_with_width(
+                error_kind(),
+                "'",
+                self.pos - start,
+              )
+            }
           }
           let _ = self.advance()
           if self.peek() == Some('\'') {

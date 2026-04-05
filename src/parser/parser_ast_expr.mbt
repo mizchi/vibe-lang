@@ -1215,9 +1215,9 @@ fn AstParser::parse_array_expr(self : AstParser) -> @core.Expr raise ParseError 
     if self.peek_kind() == eof() {
       raise ParseError::UnexpectedEof(span=self.token_span())
     }
-    if self.peek_kind() == dotdotdot() {
+    if self.peek_kind() == dotdotdot() || self.peek_kind() == dotdot() {
       let spread_start = self.pos
-      let _ = self.expect(dotdotdot(), "...")
+      let _ = self.bump() // consume .. or ...
       let expr = self.parse_expr()
       let spread_span = self.span_from(spread_start)
       items.push(@core.Expr::Spread(expr~, span=spread_span))

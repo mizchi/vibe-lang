@@ -955,6 +955,14 @@ fn desugar_expr(
       }
       @core.Expr::Continue(args=next_args, span~)
     }
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) =>
+      @core.Expr::ForIn(
+        value_name~,
+        index_name~,
+        iterable=desugar_expr(iterable, scope, aliases),
+        body=desugar_block(body, scope, aliases),
+        span~,
+      )
     @core.Expr::StringInterp(parts~, span~) => {
       // Lower StringInterp to String::concat chain with __to_string calls
       let exprs : Array[@core.Expr] = []
@@ -978,6 +986,9 @@ fn desugar_expr(
               ),
             )
         }
+      }
+      if exprs.is_empty() {
+        return @core.Expr::String(value="", span~)
       }
       let mut result = exprs[0]
       for j in 1..<exprs.length() {

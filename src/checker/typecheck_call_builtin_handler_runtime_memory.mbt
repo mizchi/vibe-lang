@@ -289,6 +289,54 @@ fn type_call_builtin_handler_runtime_memory(
         @core.Type::Double,
         @core.Type::Float,
       )
+    "Int::to_string" =>
+      type_check_unary_convert(
+        env,
+        args,
+        call_span,
+        aliases,
+        effects,
+        allow_effect,
+        name,
+        @core.Type::Int,
+        @core.Type::String,
+      )
+    "Float::to_string" =>
+      type_check_unary_convert(
+        env,
+        args,
+        call_span,
+        aliases,
+        effects,
+        allow_effect,
+        name,
+        @core.Type::Float,
+        @core.Type::String,
+      )
+    "Double::to_string" =>
+      type_check_unary_convert(
+        env,
+        args,
+        call_span,
+        aliases,
+        effects,
+        allow_effect,
+        name,
+        @core.Type::Double,
+        @core.Type::String,
+      )
+    "Bool::to_string" =>
+      type_check_unary_convert(
+        env,
+        args,
+        call_span,
+        aliases,
+        effects,
+        allow_effect,
+        name,
+        @core.Type::Bool,
+        @core.Type::String,
+      )
     "i32_shr_u" => {
       let pos_args = extract_positional_args(args, name, call_span)
       if pos_args.length() != 2 {

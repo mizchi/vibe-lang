@@ -774,7 +774,7 @@ fn type_expr_eff(
     @core.Expr::Array(items~, span~) => {
       let _ = span
       if items.is_empty() {
-        @core.Type::Array(@core.Type::Unit)
+        @core.Type::Array(fresh_type_var(env))
       } else {
         // Find first element type (handle Spread extracting inner type)
         let first_item = items[0]
@@ -1267,6 +1267,8 @@ fn type_match_block(
           covered_false = true
         }
       }
+      @core.Pat::Tuple(..) | @core.Pat::Record(..) | @core.Pat::Struct(..) =>
+        has_ctor = true
       _ => ()
     }
     let arm_env = env.fork_for_match_arm()

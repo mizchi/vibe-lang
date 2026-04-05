@@ -51,10 +51,14 @@ fn is_cheap_pure_builtin(name : String) -> Bool {
   name == "__bit_xor" ||
   name == "Int::to_float" ||
   name == "Int::to_double" ||
+  name == "Int::to_string" ||
   name == "Float::to_int" ||
   name == "Float::to_double" ||
+  name == "Float::to_string" ||
   name == "Double::to_int" ||
   name == "Double::to_float" ||
+  name == "Double::to_string" ||
+  name == "Bool::to_string" ||
   name == "Double::to_i64_bits" ||
   name == "Double::from_i64_bits" ||
   name == "Char::to_int" ||
@@ -940,7 +944,11 @@ fn eval_pure_builtin(
         _ => raise EvalError::BadCall(E("Double::from_i64_bits"))
       }
     }
-    "__to_string" => {
+    "__to_string"
+    | "Int::to_string"
+    | "Float::to_string"
+    | "Double::to_string"
+    | "Bool::to_string" => {
       if args.length() != 1 {
         raise EvalError::BadCall(
           E("to_string: expected 1 argument, got " + args.length().to_string()),
