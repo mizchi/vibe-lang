@@ -2016,6 +2016,8 @@ fn infer_expr_kind_gc(
         "__to_string"
         | "Int::to_string"
         | "Bool::to_string"
+        | "Float::to_string"
+        | "Double::to_string"
         | "String::from_char_code" => GcValKind::Ref(ctx.string_type)
         "Int::to_double" => GcValKind::F64
         "Double::to_int" => GcValKind::I64
@@ -6511,6 +6513,12 @@ fn compile_expr_gc(
             raise WasmGenError::Unsupported("Bool::to_string arity")
           }
           compile_bool_to_string_gc(ctx, fctx, buf, pos_args[0])
+        }
+        "Float::to_string" | "Double::to_string" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Float/Double::to_string arity")
+          }
+          compile_to_string_gc(ctx, fctx, buf, pos_args[0])
         }
         "__to_string" => {
           if pos_args.length() != 1 {
