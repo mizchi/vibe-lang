@@ -588,7 +588,7 @@ fn infer_expr_kind_with(
         "MapBuilder::set" => ValueKind::I64
         "Array::length" => ValueKind::I64
         "Array::get" => ValueKind::I64
-        "Map::get" => ValueKind::I64
+        "Map::get" | "Map::set" | "Map::delete" => ValueKind::I64
         "sleep" => ValueKind::I64
         "Stdout::write_char" => ValueKind::I64
         "Stdout::write_stream" => ValueKind::I64
@@ -1161,6 +1161,8 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "String::join" ||
         name == "StringBuilder::push" ||
         name == "StringBuilder::freeze" ||
+        name == "Map::set" ||
+        name == "Map::delete" ||
         name == "Map::keys" ||
         name == "Map::values" ||
         name == "String::trim" ||

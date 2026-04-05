@@ -386,6 +386,9 @@ fn prelude_backend_builtin_name(name : String) -> Bool {
   name == "StringBuilder::push" ||
   name == "StringBuilder::freeze" ||
   name == "Map::get" ||
+  name == "Map::set" ||
+  name == "Map::delete" ||
+  name == "Map::has" ||
   name == "Map::has_key" ||
   name == "Map::keys" ||
   name == "Set::new" ||

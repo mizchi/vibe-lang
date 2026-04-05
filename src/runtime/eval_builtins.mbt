@@ -78,6 +78,8 @@ fn is_cheap_pure_builtin(name : String) -> Bool {
   name == "Double::ceil" ||
   name == "Map::get" ||
   name == "Map::set" ||
+  name == "Map::delete" ||
+  name == "Map::has" ||
   name == "Map::has_key" ||
   name == "Set::new" ||
   name == "Set::add" ||

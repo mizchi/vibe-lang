@@ -280,11 +280,7 @@ fn Lexer::lex_char(self : Lexer) -> Token {
               if self.peek() == Some('\'') {
                 let _ = self.advance()
               }
-              return Token::new_with_width(
-                error_kind(),
-                "'",
-                self.pos - start,
-              )
+              return Token::new_with_width(error_kind(), "'", self.pos - start)
             }
           }
           let _ = self.advance()
