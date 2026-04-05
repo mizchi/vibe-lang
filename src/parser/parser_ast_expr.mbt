@@ -1371,6 +1371,18 @@ fn AstParser::parse_fn_type_param(
       }
     }
   }
+  // Handle type-only parameters that start with `(` or `[`
+  // e.g., `(Int) -> Int` or `[T](T) -> T`
+  if self.peek_kind() == lparen() || self.peek_kind() == lbracket() {
+    let ty = self.parse_type_with_params(params)
+    let param_name = "_" + idx.to_string()
+    return @core.FuncParam::{
+      name: param_name,
+      label: @core.ParamLabel::Positional,
+      ty,
+      bounds: [],
+    }
+  }
   // Fall back to normal param parsing
   self.parse_param(params)
 }

@@ -697,6 +697,9 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "__assert" ||
   name == "__assert_eq" ||
   name == "record_set" ||
+  name == "Map::set" ||
+  name == "Map::delete" ||
+  name == "Map::has" ||
   name == "Map::keys" ||
   name == "Map::values" ||
   name == "Map::has_key" ||

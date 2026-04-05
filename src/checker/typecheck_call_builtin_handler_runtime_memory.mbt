@@ -115,7 +115,7 @@ fn type_call_builtin_handler_runtime_memory(
         _ => raise TypeError::BadCall(message="Map::values", span=call_span)
       }
     }
-    "Map::has_key" => {
+    "Map::has_key" | "Map::has" => {
       let pos_args = extract_positional_args(args, "Map::has_key", call_span)
       if pos_args.length() != 2 {
         raise TypeError::BadCall(message="Map::has_key", span=call_span)
@@ -143,6 +143,35 @@ fn type_call_builtin_handler_runtime_memory(
         _ => raise TypeError::BadCall(message="Map::has_key", span=call_span)
       }
       @core.Type::Bool
+    }
+    "Map::delete" => {
+      let pos_args = extract_positional_args(args, "Map::delete", call_span)
+      if pos_args.length() != 2 {
+        raise TypeError::BadCall(message="Map::delete", span=call_span)
+      }
+      let map_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let key_arg_ty = type_expr_eff(
+        env,
+        pos_args[1],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let resolved = normalize_type(env, map_ty)
+      match resolved {
+        @core.Type::Map(key_ty, _) => {
+          ensure_type(env, key_arg_ty, key_ty, pos_args[1].span(), "argument")
+          ensure_map_key_hashable(env, key_arg_ty, pos_args[1].span())
+        }
+        _ => raise TypeError::BadCall(message="Map::delete", span=call_span)
+      }
+      map_ty
     }
     "Array::slice" => {
       let pos_args = extract_positional_args(args, "Array::slice", call_span)

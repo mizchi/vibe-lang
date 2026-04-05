@@ -2872,7 +2872,6 @@ test "hex literal compiles to wasm" {
   assert_true(wasm_bytes.length() > 8)
 }
 
-
 ///|
 test "match on int literal compiles to wasm" {
   let db = @runtime.VibeDb::new()
@@ -2987,7 +2986,7 @@ test "String::substring compiles to wasm" {
 }
 
 ///|
-test "Array::find wrongly requires Ord (known limitation)" {
+test "Array::find with Ord lambda compiles" {
   let db = @runtime.VibeDb::new()
   db.set_source(
     "main",
@@ -2997,13 +2996,9 @@ test "Array::find wrongly requires Ord (known limitation)" {
     ),
   )
   let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
-    e => {
-      // Array::find lambda parameter wrongly constrained to Ord
-      assert_true(e.user_message().contains("Ord"))
-      Bytes::new(0)
-    }
+    e => fail("Array::find compile failed: " + e.user_message())
   }
-  ignore(wasm_bytes)
+  assert_true(wasm_bytes.length() > 8)
 }
 
 ///|
@@ -3040,7 +3035,7 @@ test "Array::concat compiles to wasm" {
 }
 
 ///|
-test "Array::all wrongly requires Ord (known limitation)" {
+test "Array::all with Ord lambda compiles" {
   let db = @runtime.VibeDb::new()
   db.set_source(
     "main",
@@ -3050,13 +3045,9 @@ test "Array::all wrongly requires Ord (known limitation)" {
     ),
   )
   let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
-    e => {
-      // Array::all lambda parameter wrongly constrained to Ord
-      assert_true(e.user_message().contains("Ord"))
-      Bytes::new(0)
-    }
+    e => fail("Array::all compile failed: " + e.user_message())
   }
-  ignore(wasm_bytes)
+  assert_true(wasm_bytes.length() > 8)
 }
 
 ///|
@@ -3092,7 +3083,7 @@ test "String::trim compiles to wasm" {
 }
 
 ///|
-test "Map::has not available in wasm codegen (known limitation)" {
+test "Map::has compiles to wasm" {
   let db = @runtime.VibeDb::new()
   db.set_source(
     "main",
@@ -3102,13 +3093,9 @@ test "Map::has not available in wasm codegen (known limitation)" {
     ),
   )
   let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
-    e => {
-      // Map::has is not yet a wasm builtin
-      assert_true(e.user_message().contains("unknown function"))
-      Bytes::new(0)
-    }
+    e => fail("Map::has compile failed: " + e.user_message())
   }
-  ignore(wasm_bytes)
+  assert_true(wasm_bytes.length() > 8)
 }
 
 ///|
@@ -3358,46 +3345,37 @@ test "Array::slice compiles to wasm" {
 }
 
 ///|
-test "Map::set not supported in wasm backend (known limitation)" {
+test "Map::set compiles to wasm" {
   let db = @runtime.VibeDb::new()
   db.set_source(
     "main",
     (
       #|let m = map { "a": 1 }
-      #|Map::set(m, "b", 2)
-      #|m["a"] + m["b"]
+      #|let m2 = Map::set(m, "b", 2)
+      #|m2["a"] + m2["b"]
     ),
   )
   let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
-    e => {
-      assert_true(e.user_message().contains("Map::set"))
-      Bytes::new(0)
-    }
+    e => fail("Map::set compile failed: " + e.user_message())
   }
-  ignore(wasm_bytes)
+  assert_true(wasm_bytes.length() > 8)
 }
 
 ///|
-test "Map::delete not available in wasm codegen (known limitation)" {
+test "Map::delete compiles to wasm" {
   let db = @runtime.VibeDb::new()
   db.set_source(
     "main",
     (
       #|let m = map { "a": 1, "b": 2 }
-      #|Map::delete(m, "a")
-      #|Map::size(m)
+      #|let m2 = Map::delete(m, "a")
+      #|Map::size(m2)
     ),
   )
   let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
-    e => {
-      assert_true(
-        e.user_message().contains("unknown function") ||
-        e.user_message().contains("Map::delete"),
-      )
-      Bytes::new(0)
-    }
+    e => fail("Map::delete compile failed: " + e.user_message())
   }
-  ignore(wasm_bytes)
+  assert_true(wasm_bytes.length() > 8)
 }
 
 ///|
@@ -3877,6 +3855,23 @@ test "for-in with index and body compiles to wasm" {
   )
   let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
     e => fail("for-in index body compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "function type in tuple type annotation parses" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let apply: ((Int) -> Int, Int) -> Int = (f, x) -> f(x)
+      #|let double: (Int) -> Int = (x) -> x * 2
+      #|apply(double, 5)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("function type param parse failed: " + e.user_message())
   }
   assert_true(wasm_bytes.length() > 8)
 }

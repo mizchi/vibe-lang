@@ -237,7 +237,7 @@ fn eval_collection_builtin(
         _ => raise EvalError::BadCall(E("Map::values"))
       }
     }
-    "Map::has_key" => {
+    "Map::has_key" | "Map::has" => {
       if args.length() != 2 {
         raise EvalError::BadCall(E("Map::has_key"))
       }
@@ -247,6 +247,29 @@ fn eval_collection_builtin(
           Some(@core.Value::Bool(items.contains(key)))
         }
         _ => raise EvalError::BadCall(E("Map::has_key"))
+      }
+    }
+    "Map::delete" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall(
+          E(
+            "Map::delete: expected 2 arguments, got " +
+            args.length().to_string(),
+          ),
+        )
+      }
+      match args[0] {
+        @core.Value::Map(items) => {
+          let key = value_to_map_key(args[1])
+          let new_map : Map[String, @core.Value] = {}
+          items.each(fn(k, v) { new_map[k] = v })
+          new_map.remove(key)
+          Some(@core.Value::Map(new_map))
+        }
+        _ =>
+          raise EvalError::BadCall(
+            E("Map::delete: expected Map as first argument"),
+          )
       }
     }
     "Set::new" => {

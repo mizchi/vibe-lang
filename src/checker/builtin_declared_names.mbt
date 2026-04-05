@@ -45,8 +45,8 @@ pub fn checker_declared_builtin_names() -> Array[String] {
     "Bytes::blit", "Bytes::concat", "Bytes::fill", "Bytes::slice", "Bytes::from_array",
     "Bytes::from_string", "Bytes::to_array", "Bytes::to_string",
     // Map
-     "Map::get", "Map::get_or", "Map::set", "Map::has_key", "Map::keys", "Map::values",
-    "Map::map", "Map::filter",
+     "Map::get", "Map::get_or", "Map::set", "Map::delete", "Map::has", "Map::has_key",
+    "Map::keys", "Map::values", "Map::map", "Map::filter",
     // Set
      "Set::new", "Set::add", "Set::remove", "Set::contains", "Set::size", "Set::from_array",
     "Set::to_array",
