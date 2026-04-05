@@ -2360,12 +2360,17 @@ fn compile_builtin_collection(
       let pos_args = extract_positional_exprs_with_arity(args, "Array::set", 3)
       let ptr_local = alloc_temp_local(ctx)
       let idx_local = alloc_temp_local(ctx)
+      let val_local = alloc_temp_local(ctx)
+      // Evaluate all arguments first (preserve evaluation order)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_untag_ptr_i32(buf)
       emit_local_set(buf, ptr_local)
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_untag_int_i32(buf)
       emit_local_set(buf, idx_local)
+      compile_expr_i32(ctx, buf, pos_args[2])
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, val_local)
       // bounds check: trap if idx < 0 || idx >= length
       emit_local_get(buf, idx_local)
       emit_i32_const_raw(buf, 0)
@@ -2385,9 +2390,7 @@ fn compile_builtin_collection(
       emit_i32_const_raw(buf, 4)
       emit_i32_mul(buf)
       emit_i32_add(buf)
-      // store value
-      compile_expr_i32(ctx, buf, pos_args[2])
-      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, val_local)
       emit_i32_store(buf, 8)
       emit_i64_const_tagged(buf, 0L) // return Unit
     }

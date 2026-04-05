@@ -1252,12 +1252,24 @@ fn type_matches_impl_target(
 }
 
 ///|
-fn is_eq_ord_primitive(ty : @core.Type) -> Bool {
+fn is_eq_primitive(ty : @core.Type) -> Bool {
   match ty {
     @core.Type::Int
     | @core.Type::Float
     | @core.Type::Double
     | @core.Type::Bool
+    | @core.Type::Char
+    | @core.Type::String => true
+    _ => false
+  }
+}
+
+///|
+fn is_ord_primitive(ty : @core.Type) -> Bool {
+  match ty {
+    @core.Type::Int
+    | @core.Type::Float
+    | @core.Type::Double
     | @core.Type::Char
     | @core.Type::String => true
     _ => false
@@ -1279,8 +1291,11 @@ fn type_implements_trait(
       }
     _ => {
       // Primitive types implement Eq and Ord intrinsically
-      if (trait_name == "Eq" || trait_name == "Ord") &&
-        is_eq_ord_primitive(resolved) {
+      // (Bool has Eq but not Ord — runtime __lt does not handle booleans)
+      if trait_name == "Eq" && is_eq_primitive(resolved) {
+        return true
+      }
+      if trait_name == "Ord" && is_ord_primitive(resolved) {
         return true
       }
       // Option[T] implements Eq when T: Eq (intrinsic, avoids builtin module dep)
