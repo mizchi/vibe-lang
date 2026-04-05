@@ -1909,3 +1909,205 @@ test "while with break compiles to wasm" {
   }
   assert_true(wasm_bytes.length() > 8)
 }
+
+///|
+test "bitwise operators compile to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let a = 0xFF & 0x0F
+      #|let b = 0xF0 | 0x0F
+      #|let c = 5 ^ 3
+      #|let d = 1 << 8
+      #|let e = 256 >> 4
+      #|a + b + c + d + e
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("bitwise ops compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "string interpolation compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let x = 42
+      #|let s = "val=\(x)"
+      #|String::length(s)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("string interpolation compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "recursive enum compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|enum Tree { Leaf(Int); Node(Tree, Tree) }
+      #|let rec sum_tree = (t: Tree) -> Int {
+      #|  match t {
+      #|    Tree::Leaf(n) => n,
+      #|    Tree::Node(l, r) => sum_tree(l) + sum_tree(r)
+      #|  }
+      #|}
+      #|sum_tree(Tree::Node(Tree::Leaf(1), Tree::Node(Tree::Leaf(2), Tree::Leaf(3))))
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("recursive enum compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "closure capturing variable compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let make_adder = (n: Int) -> (Int) -> Int {
+      #|  (x: Int) -> Int { x + n }
+      #|}
+      #|let add5 = make_adder(5)
+      #|add5(10)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("closure capture compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "Array::map with lambda compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let arr = [1, 2, 3]
+      #|let doubled = Array::map(arr, x -> x * 2)
+      #|doubled[0]
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("Array::map lambda compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "Array::filter compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let arr = [1, 2, 3, 4, 5]
+      #|let evens = Array::filter(arr, x -> x % 2 == 0)
+      #|Array::length(evens)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("Array::filter compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "Array::fold compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let sum = Array::fold([1, 2, 3, 4], 0, _ + _)
+      #|sum
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("Array::fold compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "nested if-else chain compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let classify = (n: Int) -> String {
+      #|  if n > 100 { "big" }
+      #|  else if n > 10 { "medium" }
+      #|  else if n > 0 { "small" }
+      #|  else if n == 0 { "zero" }
+      #|  else { "negative" }
+      #|}
+      #|String::length(classify(50))
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("nested if-else compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "derive Eq struct comparison compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|struct Point { x: Int; y: Int } derive(Eq)
+      #|let a = Point::{ x: 1, y: 2 }
+      #|let b = Point::{ x: 1, y: 2 }
+      #|if a == b { 1 } else { 0 }
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("derive Eq struct compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "generic function instantiation compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let identity = [T](x: T) -> T { x }
+      #|let a = identity(42)
+      #|let b = identity("hello")
+      #|a + String::length(b)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("generic instantiation compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "string escape sequences compile to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let s = "a\nb\tc"
+      #|String::length(s)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("string escape compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
