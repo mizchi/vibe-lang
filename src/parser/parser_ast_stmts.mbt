@@ -150,7 +150,9 @@ fn AstParser::parse_let_stmt(self : AstParser) -> @core.Stmt raise ParseError {
   let span = self.span_from(start)
   let expr = match ann_ty {
     Some(ty) =>
-      if rec_flag || type_contains_param(ty) {
+      if rec_flag {
+        fill_fn_ret_from_annotation(ty, raw_expr)
+      } else if type_contains_param(ty) {
         raw_expr
       } else {
         wrap_local_let_with_annotation(ty, raw_expr, span)
@@ -161,6 +163,54 @@ fn AstParser::parse_let_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     @core.Stmt::LetMut(name=binding_name, expr~, span~)
   } else {
     @core.Stmt::Let(rec=rec_flag, name=binding_name, expr~, span~)
+  }
+}
+
+///|
+/// For `let rec f: (A) -> R = (x) -> { ... }`, fill in the Fn node's missing
+/// ret type and param types from the top-level annotation so the checker sees them.
+fn fill_fn_ret_from_annotation(
+  ann_ty : @core.Type,
+  raw_expr : @core.Expr,
+) -> @core.Expr {
+  match (ann_ty, raw_expr) {
+    (
+      @core.Type::Func(params=ann_params, ret=ann_ret, effects=ann_effects, ..),
+      @core.Expr::Fn(type_params~, type_bounds~, params~, ret~, effects~, body~, span~),
+    ) => {
+      // Fill param types from annotation when the Fn node params lack types
+      let filled_params : Array[@core.FuncParam] = []
+      for i, p in params {
+        if p.ty.is_infer_placeholder() && i < ann_params.length() {
+          filled_params.push(
+            @core.FuncParam::{ ..p, ty: ann_params[i].ty },
+          )
+        } else {
+          filled_params.push(p)
+        }
+      }
+      // Fill ret from annotation when missing
+      let filled_ret = match ret {
+        None => Some(ann_ret)
+        some => some
+      }
+      // Fill effects from annotation when the Fn node has none
+      let filled_effects = if effects.is_empty() && !ann_effects.is_empty() {
+        ann_effects
+      } else {
+        effects
+      }
+      @core.Expr::Fn(
+        type_params~,
+        type_bounds~,
+        params=filled_params,
+        ret=filled_ret,
+        effects=filled_effects,
+        body~,
+        span~,
+      )
+    }
+    _ => raw_expr
   }
 }
 
