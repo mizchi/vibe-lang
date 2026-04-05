@@ -2781,7 +2781,7 @@ test "Int::to_string compiles to wasm" {
 }
 
 ///|
-test "empty typed array annotation ignored in wasm codegen (known limitation)" {
+test "empty typed array compiles to wasm" {
   let db = @runtime.VibeDb::new()
   db.set_source(
     "main",
@@ -2793,13 +2793,9 @@ test "empty typed array annotation ignored in wasm codegen (known limitation)" {
     ),
   )
   let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
-    e => {
-      // Empty array `[]` is inferred as Array[Unit] despite type annotation
-      assert_true(e.user_message().contains("type mismatch"))
-      Bytes::new(0)
-    }
+    e => fail("empty typed array compile failed: " + e.user_message())
   }
-  ignore(wasm_bytes)
+  assert_true(wasm_bytes.length() > 8)
 }
 
 ///|
