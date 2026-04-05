@@ -390,6 +390,10 @@ test-update:
 run *args:
     moon run --target native src/cmd/vibe -- {{args}}
 
+# Serve a vibe HTTP handler via WASI P3 + wasmtime
+serve *args:
+    bash scripts/vibe_serve.sh {{args}}
+
 # Build native wasm-only runner CLI (`src/cmd/vibe_wasm`)
 build-vibe-wasm:
     moon build --target native src/cmd/vibe_wasm
