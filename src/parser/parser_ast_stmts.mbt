@@ -175,7 +175,7 @@ fn fill_fn_ret_from_annotation(
 ) -> @core.Expr {
   match (ann_ty, raw_expr) {
     (
-      @core.Type::Func(params=ann_params, ret=ann_ret, effects=ann_effects, ..),
+      @core.Type::Func(params=ann_params, ret=ann_ret, effects=ann_effects),
       @core.Expr::Fn(type_params~, type_bounds~, params~, ret~, effects~, body~, span~),
     ) => {
       // Fill param types from annotation when the Fn node params lack types
@@ -183,7 +183,12 @@ fn fill_fn_ret_from_annotation(
       for i, p in params {
         if p.ty.is_infer_placeholder() && i < ann_params.length() {
           filled_params.push(
-            @core.FuncParam::{ ..p, ty: ann_params[i].ty },
+            @core.FuncParam::{
+              name: p.name,
+              label: p.label,
+              ty: ann_params[i].ty,
+              bounds: p.bounds,
+            },
           )
         } else {
           filled_params.push(p)
@@ -192,7 +197,7 @@ fn fill_fn_ret_from_annotation(
       // Fill ret from annotation when missing
       let filled_ret = match ret {
         None => Some(ann_ret)
-        some => some
+        Some(_) => ret
       }
       // Fill effects from annotation when the Fn node has none
       let filled_effects = if effects.is_empty() && !ann_effects.is_empty() {
