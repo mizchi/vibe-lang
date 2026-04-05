@@ -203,6 +203,42 @@ test "compile_module_wasm_no_dce allows entry value shadowing prelude helper" {
 }
 
 ///|
+test "let rec with new-style annotation compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let rec f: (Int, Int) -> Int = (n, acc) -> {
+      #|  if n <= 0 { acc } else f(n - 1, acc + n)
+      #|}
+      #|f(10, 0)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("let rec new-style compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "let rec with old-style annotation compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let rec f: (Int, Int) -> Int = (n: Int, acc: Int) -> Int {
+      #|  if n <= 0 { acc } else f(n - 1, acc + n)
+      #|}
+      #|f(10, 0)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("let rec old-style compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
 test "compile_module_wasm_no_dce accepts mixed wrapper and direct type imports" {
   let db = @runtime.VibeDb::new()
   db.set_source(
