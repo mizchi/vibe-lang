@@ -1186,8 +1186,7 @@ fn type_call_builtin_handler_collection_numeric(
       }
       let a = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
       let b = type_expr_eff(env, pos_args[1], aliases, effects, allow_effect)
-      ensure_eq_operand(env, a, pos_args[0].span())
-      ensure_eq_operand(env, b, pos_args[1].span())
+      // Unify types first so type variables resolve before Eq check
       if not(type_equal(env, b, a)) && not(int_char_comparable_pair(env, a, b)) {
         raise TypeError::Mismatch(
           expected=a,
@@ -1196,6 +1195,9 @@ fn type_call_builtin_handler_collection_numeric(
           context=Some("argument"),
         )
       }
+      // Check Eq after unification so resolved types are checked
+      let resolved_a = resolve_type(env, a)
+      ensure_eq_operand(env, resolved_a, pos_args[0].span())
       @core.Type::Bool
     }
     "__assert_eq" => {

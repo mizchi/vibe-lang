@@ -332,6 +332,37 @@ fn Runtime::bind(self : Runtime, name : String, value : @core.Value) -> String {
 }
 
 ///|
+/// Bind a mutable variable using a stable unique ID (not content hash).
+/// This ensures closures that captured this variable via env snapshot
+/// will see mutations through the shared store.
+fn Runtime::bind_mut(
+  self : Runtime,
+  name : String,
+  value : @core.Value,
+) -> String {
+  let key = self.store.next_unique_id()
+  self.store.put(key, value)
+  self.env[name] = key
+  key
+}
+
+///|
+/// Reassign a mutable variable in-place: update the store value at
+/// the existing env key so closures sharing the key see the new value.
+fn Runtime::rebind_mut(
+  self : Runtime,
+  name : String,
+  value : @core.Value,
+) -> Unit {
+  match self.env.get(name) {
+    Some(key) => self.store.put(key, value)
+    None =>
+      // Fallback: bind normally if no existing key
+      self.bind(name, value) |> ignore
+  }
+}
+
+///|
 fn Runtime::bind_with_addr(
   self : Runtime,
   name : String,

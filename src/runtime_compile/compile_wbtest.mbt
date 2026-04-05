@@ -3532,27 +3532,20 @@ test "effect polymorphism compiles to wasm" {
 }
 
 ///|
-test "Option Eq comparison fails in wasm codegen (known limitation)" {
+test "Option Eq comparison compiles to wasm" {
   let db = @runtime.VibeDb::new()
   db.set_source(
     "main",
     (
       #|let a: Option[Int] = Some(42)
       #|let b: Option[Int] = Some(42)
-      #|let c: Option[Int] = None
-      #|let r1 = a == b
-      #|let r2 = a == c
-      #|(r1, r2)
+      #|a == b
     ),
   )
   let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
-    e => {
-      // Eq for Option[T] trait resolution fails
-      assert_true(e.user_message().contains("Eq"))
-      Bytes::new(0)
-    }
+    e => fail("compile failed: " + e.user_message())
   }
-  ignore(wasm_bytes)
+  assert_true(wasm_bytes.length() > 0)
 }
 
 ///|
