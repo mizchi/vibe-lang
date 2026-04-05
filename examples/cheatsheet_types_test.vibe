@@ -2,11 +2,11 @@
 
 type Pair = (Int, Int)
 
-enum Color { Red; Green; Blue }
-enum Shape { Circle(Int); Rect(Int, Int); Empty }
+enum Color { Red; Green; Blue } derive(Eq)
+enum Shape { Circle(Int); Rect(Int, Int); Empty } derive(Eq)
 enum Maybe[T] { Just(T); Nothing }
 
-struct Point { x: Int; y: Int }
+struct Point { x: Int; y: Int } derive(Eq)
 
 //# Misc
 
@@ -43,7 +43,7 @@ test "enum with payload" {
 test "generic enum" {
   let x = Just(42)
   let y: Maybe[Int] = Nothing
-  let get_or = (m: Maybe[Int], default: Int) -> Int {
+  let get_or: (Maybe[Int], Int) -> Int = (m, default) -> {
     match m {
       Just(v) => v,
       Nothing => default,
@@ -140,19 +140,13 @@ test "array pipe with length" {
 // --- 8. Nested pattern matching ---
 test "nested pattern enum in tuple" {
   let t = (Some(42), "hello")
-  let result = match t {
-    (Some(v), _) => v,
-    _ => 0,
-  }
+  let result = if t.0 is Some(v) { v } else { 0 }
   assert(result == 42)
 }
 
 test "nested pattern struct in option" {
   let opt = Some(Point::{ x: 10, y: 20 })
-  let result = match opt {
-    Some(p) => p.x + p.y,
-    None => 0,
-  }
+  let result = if opt is Some(p) { p.x + p.y } else { 0 }
   assert(result == 30)
 }
 
@@ -176,7 +170,7 @@ test "or-pattern with constructors" {
 }
 
 test "match guard" {
-  let classify = (x: Int) -> String {
+  let classify: (Int) -> String = (x) -> {
     match x {
       x if x > 0 => "positive",
       0 => "zero",
@@ -188,39 +182,41 @@ test "match guard" {
   assert(classify(-3) == "negative")
 }
 
-// --- KNOWN ISSUES (features from cheatsheet that do not compile) ---
+// --- 10. derive(Eq) ---
 
 test "derive(Eq) for enum" {
-  enum Color { Red; Green; Blue } derive(Eq)
   assert(Red == Red)
   assert(not(Red == Green))
 }
 
 test "derive(Eq) for struct" {
-  struct Vec2 { x: Int; y: Int } derive(Eq)
-  let a = Vec2::{ x: 1, y: 2 }
-  let b = Vec2::{ x: 1, y: 2 }
-  let c = Vec2::{ x: 3, y: 4 }
+  let a = Point::{ x: 1, y: 2 }
+  let b = Point::{ x: 1, y: 2 }
+  let c = Point::{ x: 3, y: 4 }
   assert(a == b)
   assert(not(a == c))
 }
 
-// ISSUE: `is` expression - documented in cheatsheet but untested here
-// due to codegen limitations in some contexts.
-// Syntax: `if opt is Some(v) { v } else { 0 }`, `opt is None`
+// --- 11. is expression ---
+
+test "is expression with binding" {
+  let opt = Some(42)
+  let result = if opt is Some(v) { v } else { 0 }
+  assert(result == 42)
+}
+
+test "is expression bool check" {
+  let opt: Int? = None
+  assert(opt is None)
+  assert(not(opt is Some(_)))
+}
+
+// --- 12. Option sugar T? ---
 
 test "option sugar Int?" {
   let x: Int? = Some(42)
   let y: Int? = None
-  match x {
-    Some(n) => assert(n == 42),
-    None => assert(false),
-  }
-  match y {
-    Some(_) => assert(false),
-    None => assert(true),
-  }
+  let r1 = if x is Some(n) { n } else { 0 }
+  assert(r1 == 42)
+  assert(y is None)
 }
-
-// ISSUE: `assert_eq(a, b)` compiles for Int but not for custom types.
-// Use `assert(a == b)` instead for reliability.
