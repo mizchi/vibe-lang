@@ -1,0 +1,88 @@
+//# Effects
+
+effect Logger {
+  Log(String) -> Unit
+}
+
+let log_all = (items: Array[String]) -> Unit with { Logger } {
+  let mut i = 0
+  while i < Array::length(items) {
+    perform Logger::Log(items[i])
+    i += 1
+  }
+}
+
+test "user-defined effect with perform/resume" {
+  let mut logs = ArrayBuilder::new()
+  handle { log_all(["a", "b", "c"]) } {
+    Logger::Log(msg) => {
+      ArrayBuilder::push(logs, msg)
+      resume(())
+    }
+  }
+  let result = ArrayBuilder::freeze(logs)
+  assert(Array::length(result) == 3)
+  assert(result[0] == "a")
+  assert(result[1] == "b")
+  assert(result[2] == "c")
+}
+
+test "error effect rethrow with ?" {
+  let risky = (x: Int) -> Int with { Error } {
+    if x == 0 { throw("zero") }
+    x * 2
+  }
+  let caller = () -> Int with { Error } {
+    let a = risky(5)?
+    let b = risky(3)?
+    a + b
+  }
+  let result = handle { caller() } { Error(_) => -1 }
+  assert(result == 16)
+}
+
+test "error rethrow short-circuits on first error" {
+  let risky = (x: Int) -> Int with { Error } {
+    if x == 0 { throw("zero") }
+    x
+  }
+  let caller = () -> Int with { Error } {
+    let a = risky(0)?
+    let b = risky(5)?
+    a + b
+  }
+  let result = handle { caller() } { Error(_) => -1 }
+  assert(result == -1)
+}
+
+suberror NotFound(String)
+
+test "suberror throw and catch" {
+  let find = (key: String) -> Int with { Error } {
+    if key == "" { throw(NotFound("empty")) }
+    42
+  }
+  let result = handle { find("") } { Error(_) => -1 }
+  assert(result == -1)
+}
+
+test "suberror with valid input" {
+  let find = (key: String) -> Int with { Error } {
+    if key == "" { throw(NotFound("empty")) }
+    42
+  }
+  let result = handle { find("ok") } { Error(_) => -1 }
+  assert(result == 42)
+}
+
+test "nested handle" {
+  let risky = (x: Int) -> Int with { Error } {
+    if x < 0 { throw("negative") }
+    x
+  }
+  let outer = handle {
+    let inner = handle { risky(-1) } { Error(_) => 0 }
+    inner + risky(10)
+  } { Error(_) => -1 }
+  assert(outer == 10)
+}
