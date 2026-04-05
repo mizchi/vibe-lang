@@ -707,10 +707,14 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "Set::from_array" ||
   name == "Int::to_float" ||
   name == "Int::to_double" ||
+  name == "Int::to_string" ||
   name == "Float::to_int" ||
   name == "Float::to_double" ||
+  name == "Float::to_string" ||
   name == "Double::to_int" ||
   name == "Double::to_float" ||
+  name == "Double::to_string" ||
+  name == "Bool::to_string" ||
   name == "Double::to_i64_bits" ||
   name == "Double::from_i64_bits" ||
   name == "f32_neg" ||

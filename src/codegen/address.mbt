@@ -996,6 +996,10 @@ fn is_builtin(name : String) -> Bool {
   name == "Double::to_int" ||
   name == "Double::to_float" ||
   name == "__to_string" ||
+  name == "Int::to_string" ||
+  name == "Float::to_string" ||
+  name == "Double::to_string" ||
+  name == "Bool::to_string" ||
   name == "Fs::read_file" ||
   name == "Fs::write_file" ||
   name == "Fs::exists" ||

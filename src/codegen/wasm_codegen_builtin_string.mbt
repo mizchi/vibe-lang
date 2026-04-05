@@ -7,8 +7,12 @@ fn compile_builtin_string(
   is_user_fn : Bool,
 ) -> Unit raise WasmGenError {
   match name {
-    "__to_string" => {
-      let pos_args = extract_positional_exprs_with_arity(args, "__to_string", 1)
+    "__to_string"
+    | "Int::to_string"
+    | "Float::to_string"
+    | "Double::to_string"
+    | "Bool::to_string" => {
+      let pos_args = extract_positional_exprs_with_arity(args, name, 1)
       if ctx.use_js_strings {
         let arg_kind = infer_expr_kind(ctx, pos_args[0])
         if arg_kind == ValueKind::ExternRef {

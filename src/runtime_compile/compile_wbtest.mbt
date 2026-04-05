@@ -2768,7 +2768,7 @@ test "mutual recursion compiles to wasm" {
 }
 
 ///|
-test "Int::to_string not available in wasm codegen (known limitation)" {
+test "Int::to_string compiles to wasm" {
   let db = @runtime.VibeDb::new()
   db.set_source(
     "main",
@@ -2779,13 +2779,9 @@ test "Int::to_string not available in wasm codegen (known limitation)" {
     ),
   )
   let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
-    e => {
-      // Int::to_string is not yet a wasm builtin
-      assert_true(e.user_message().contains("unknown function"))
-      Bytes::new(0)
-    }
+    e => fail("Int::to_string compile failed: " + e.user_message())
   }
-  ignore(wasm_bytes)
+  assert_true(wasm_bytes.length() > 8)
 }
 
 ///|
@@ -3422,7 +3418,10 @@ test "Map::delete not available in wasm codegen (known limitation)" {
   )
   let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
     e => {
-      assert_true(e.user_message().contains("unknown function") || e.user_message().contains("Map::delete"))
+      assert_true(
+        e.user_message().contains("unknown function") ||
+        e.user_message().contains("Map::delete"),
+      )
       Bytes::new(0)
     }
   }

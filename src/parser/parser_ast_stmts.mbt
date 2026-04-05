@@ -176,20 +176,26 @@ fn fill_fn_ret_from_annotation(
   match (ann_ty, raw_expr) {
     (
       @core.Type::Func(params=ann_params, ret=ann_ret, effects=ann_effects),
-      @core.Expr::Fn(type_params~, type_bounds~, params~, ret~, effects~, body~, span~),
+      @core.Expr::Fn(
+        type_params~,
+        type_bounds~,
+        params~,
+        ret~,
+        effects~,
+        body~,
+        span~
+      ),
     ) => {
       // Fill param types from annotation when the Fn node params lack types
       let filled_params : Array[@core.FuncParam] = []
       for i, p in params {
         if p.ty.is_infer_placeholder() && i < ann_params.length() {
-          filled_params.push(
-            @core.FuncParam::{
-              name: p.name,
-              label: p.label,
-              ty: ann_params[i].ty,
-              bounds: p.bounds,
-            },
-          )
+          filled_params.push(@core.FuncParam::{
+            name: p.name,
+            label: p.label,
+            ty: ann_params[i].ty,
+            bounds: p.bounds,
+          })
         } else {
           filled_params.push(p)
         }

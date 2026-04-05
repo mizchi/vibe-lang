@@ -371,6 +371,10 @@ fn prelude_backend_builtin_name(name : String) -> Bool {
   name == "__assert" ||
   name == "__assert_eq" ||
   name == "__to_string" ||
+  name == "Int::to_string" ||
+  name == "Float::to_string" ||
+  name == "Double::to_string" ||
+  name == "Bool::to_string" ||
   name == "Array::length" ||
   name == "Array::get" ||
   name == "Array::slice" ||
