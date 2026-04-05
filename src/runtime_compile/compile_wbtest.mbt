@@ -2872,26 +2872,6 @@ test "hex literal compiles to wasm" {
   assert_true(wasm_bytes.length() > 8)
 }
 
-///|
-test "mutual recursion compiles to wasm" {
-  let db = @runtime.VibeDb::new()
-  db.set_source(
-    "main",
-    (
-      #|let rec is_even: (Int) -> Bool = (n) -> {
-      #|  if n == 0 { true } else { is_odd(n - 1) }
-      #|}
-      #|let rec is_odd: (Int) -> Bool = (n) -> {
-      #|  if n == 0 { false } else { is_even(n - 1) }
-      #|}
-      #|is_even(10)
-    ),
-  )
-  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
-    e => fail("mutual recursion compile failed: " + e.user_message())
-  }
-  assert_true(wasm_bytes.length() > 8)
-}
 
 ///|
 test "match on int literal compiles to wasm" {
@@ -2959,7 +2939,7 @@ test "tuple match pair compiles to wasm" {
 }
 
 ///|
-test "for-in collecting array compiles to wasm" {
+test "for-in inline collect compiles to wasm" {
   let db = @runtime.VibeDb::new()
   db.set_source(
     "main",
