@@ -27,17 +27,20 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
           } else {
             ctx.need_heap = true
           }
-        "String::equals"
-        | "Map::get"
-        | "Map::set"
-        | "Map::delete"
-        | "Map::has" => if ctx.use_js_strings { ctx.need_js_equals = true }
+        "String::equals" | "Map::get" | "Map::has" =>
+          if ctx.use_js_strings {
+            ctx.need_js_equals = true
+          }
+        "Map::set" | "Map::delete" => {
+          ctx.need_heap = true
+          if ctx.use_js_strings {
+            ctx.need_js_equals = true
+          }
+        }
         "ArrayBuilder::new"
         | "MapBuilder::new"
         | "StringBuilder::new"
         | "String::join"
-        | "Map::set"
-        | "Map::delete"
         | "Map::keys"
         | "Map::values"
         | "String::trim"

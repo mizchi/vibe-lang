@@ -1613,6 +1613,14 @@ fn compile_builtin_collection(
       emit_local_get(buf, src_ptr)
       emit_i32_load(buf, 4)
       emit_local_set(buf, src_len)
+      // capacity guard: trap if src_len >= max_cap
+      emit_local_get(buf, src_len)
+      emit_i32_const_raw(buf, max_cap)
+      emit_i32_ge_s(buf)
+      buf.push((4).to_byte()) // if
+      buf.push((64).to_byte()) // void
+      buf.push((0).to_byte()) // unreachable (trap)
+      buf.push((11).to_byte()) // end if
       // pre-compile value to local
       compile_expr_i32(ctx, buf, pos_args[2])
       emit_i32_wrap_i64(buf)
