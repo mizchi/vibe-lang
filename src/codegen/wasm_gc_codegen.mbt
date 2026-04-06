@@ -2345,39 +2345,40 @@ fn infer_expr_kind_gc(
                     } else if is_gc_builtin_name(name) {
                       GcValKind::EqRef
                     } else if pos_args.length() == 1 {
-                      // Try struct field access: field_name(record_expr)
-                      match
-                        try_infer_struct_field_kind_gc(
-                          ctx,
-                          fctx,
-                          name,
-                          pos_args[0],
-                        ) {
-                        Some(kind) => kind
-                        None =>
-                          match fctx.locals.get(name) {
-                            Some(entry) =>
-                              match entry.kind {
-                                GcValKind::Ref(type_idx) =>
-                                  match ctx.types[type_idx] {
-                                    GcTypeDef::Struct(fields~) =>
-                                      if fields.length() == 2 {
-                                        match fields[0] {
-                                          GcValKind::Ref(fn_idx) =>
-                                            match ctx.types[fn_idx] {
-                                              GcTypeDef::Func(result~, ..) =>
-                                                result
-                                              _ => GcValKind::I64
-                                            }
+                      // Check local closure bindings first (they shadow field accessors)
+                      match fctx.locals.get(name) {
+                        Some(entry) =>
+                          match entry.kind {
+                            GcValKind::Ref(type_idx) =>
+                              match ctx.types[type_idx] {
+                                GcTypeDef::Struct(fields~) =>
+                                  if fields.length() == 2 {
+                                    match fields[0] {
+                                      GcValKind::Ref(fn_idx) =>
+                                        match ctx.types[fn_idx] {
+                                          GcTypeDef::Func(result~, ..) =>
+                                            result
                                           _ => GcValKind::I64
                                         }
-                                      } else {
-                                        GcValKind::I64
-                                      }
-                                    _ => GcValKind::I64
+                                      _ => GcValKind::I64
+                                    }
+                                  } else {
+                                    GcValKind::I64
                                   }
                                 _ => GcValKind::I64
                               }
+                            _ => GcValKind::I64
+                          }
+                        None =>
+                          // Try struct field access: field_name(record_expr)
+                          match
+                            try_infer_struct_field_kind_gc(
+                              ctx,
+                              fctx,
+                              name,
+                              pos_args[0],
+                            ) {
+                            Some(kind) => kind
                             None => raise WasmGenError::UnknownName(name)
                           }
                       }
@@ -7571,17 +7572,8 @@ fn compile_expr_gc(
                   }
                 }
                 emit_struct_new_gc(buf, type_idx)
-              } else if pos_args.length() == 1 &&
-                try_compile_struct_field_get_gc(
-                  ctx,
-                  fctx,
-                  buf,
-                  name,
-                  pos_args[0],
-                ) {
-                // Named struct field access: field_name(record) → struct.get
-                () // already compiled by try_compile_struct_field_get_gc
               } else {
+                // Check local closure bindings first (they shadow field accessors)
                 match fctx.closure_call_types.get(name) {
                   Some(fn_type_idx) =>
                     match fctx.locals.get(name) {
@@ -7722,13 +7714,24 @@ fn compile_expr_gc(
                               emit_unreachable_gc(buf)
                             }
                           }
-                        None => {
-                          for arg in pos_args {
-                            compile_expr_gc(ctx, fctx, buf, arg)
-                            emit_drop_gc(buf)
+                        None =>
+                          if pos_args.length() == 1 &&
+                            try_compile_struct_field_get_gc(
+                              ctx,
+                              fctx,
+                              buf,
+                              name,
+                              pos_args[0],
+                            ) {
+                            // Named struct field access: field_name(record) → struct.get
+                            () // already compiled by try_compile_struct_field_get_gc
+                          } else {
+                            for arg in pos_args {
+                              compile_expr_gc(ctx, fctx, buf, arg)
+                              emit_drop_gc(buf)
+                            }
+                            emit_unreachable_gc(buf)
                           }
-                          emit_unreachable_gc(buf)
-                        }
                       }
                     }
                 }

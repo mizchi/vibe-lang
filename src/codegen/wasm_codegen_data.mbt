@@ -505,14 +505,22 @@ fn compile_array_expr(
     compile_expr(ctx, buf, acc)
   } else {
     // Static path: direct heap allocation
+    // Layout: [cap:i32][tag:i32][len:i32][data...] — cap prefix for grow-on-push.
     let len = items.length()
-    // Over-allocate: arrays may grow via array_push; reserve capacity to avoid
-    // writing past the end of the allocated block and corrupting adjacent objects.
-    let min_cap = 65536
-    let cap = if len < min_cap { min_cap } else { len }
-    let size = align4(8 + cap * 4)
+    let cap = if len < builder_initial_cap { builder_initial_cap } else { len }
+    let size = align4(4 + 8 + cap * 4)
+    let base_local = alloc_temp_local(ctx)
     let obj_local = alloc_temp_local(ctx)
-    emit_heap_alloc(ctx, buf, size, obj_local)
+    emit_heap_alloc(ctx, buf, size, base_local)
+    // Write capacity at base[0]
+    emit_local_get(buf, base_local)
+    emit_i32_const_raw(buf, cap)
+    emit_i32_store(buf, 0)
+    // obj = base + 4
+    emit_local_get(buf, base_local)
+    emit_i32_const_raw(buf, 4)
+    emit_i32_add(buf)
+    emit_local_set(buf, obj_local)
     emit_local_get(buf, obj_local)
     emit_i32_const_raw(buf, obj_array)
     emit_i32_store(buf, 0)
