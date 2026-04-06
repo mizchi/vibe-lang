@@ -1,0 +1,232 @@
+//# Types
+
+enum Expr {
+  Lit(Int);
+  Add(Expr, Expr);
+  Mul(Expr, Expr);
+  Neg(Expr)
+} derive(Eq)
+
+enum Day { Mon; Tue; Wed; Thu; Fri; Sat; Sun } derive(Eq)
+
+struct Rect { w: Int; h: Int } derive(Eq)
+
+//# Functions
+
+let rec eval: (Expr) -> Int = (e) -> {
+  match e {
+    Expr::Lit(n) => n,
+    Expr::Add(a, b) => eval(a) + eval(b),
+    Expr::Mul(a, b) => eval(a) * eval(b),
+    Expr::Neg(a) => 0 - eval(a)
+  }
+}
+
+//# Misc
+
+test "or-pattern int" {
+  let classify: (Int) -> String = (n) -> {
+    match n {
+      0 => "zero",
+      1|2|3 => "small",
+      4|5|6|7|8|9 => "digit",
+      _ => "big"
+    }
+  }
+  assert(classify(0) == "zero")
+  assert(classify(1) == "small")
+  assert(classify(3) == "small")
+  assert(classify(9) == "digit")
+  assert(classify(100) == "big")
+}
+
+test "or-pattern enum" {
+  let is_weekday: (Day) -> Bool = (d) -> {
+    match d {
+      Day::Mon|Day::Tue|Day::Wed|Day::Thu|Day::Fri => true,
+      Day::Sat|Day::Sun => false
+    }
+  }
+  assert(is_weekday(Day::Mon))
+  assert(is_weekday(Day::Fri))
+  assert(not(is_weekday(Day::Sat)))
+  assert(not(is_weekday(Day::Sun)))
+}
+
+test "guard with complex condition" {
+  let classify: (Int) -> String = (n) -> {
+    match n {
+      x if x > 0 && x % 2 == 0 => "positive even",
+      x if x > 0 => "positive odd",
+      x if x < 0 && x % 2 == 0 => "negative even",
+      x if x < 0 => "negative odd",
+      _ => "zero"
+    }
+  }
+  assert(classify(4) == "positive even")
+  assert(classify(3) == "positive odd")
+  assert(classify(-6) == "negative even")
+  assert(classify(-3) == "negative odd")
+  assert(classify(0) == "zero")
+}
+
+test "match bool exhaustive" {
+  let to_int: (Bool) -> Int = (b) -> {
+    match b {
+      true => 1,
+      false => 0
+    }
+  }
+  assert(to_int(true) == 1)
+  assert(to_int(false) == 0)
+}
+
+test "match bool in tuple" {
+  let pair = (true, false)
+  let result = match pair {
+    (true, true) => "both",
+    (true, false) => "first",
+    (false, true) => "second",
+    (false, false) => "neither"
+  }
+  assert(result == "first")
+}
+
+test "match double literal" {
+  let classify: (Double) -> String = (d) -> {
+    match d {
+      0.0 => "zero",
+      1.0 => "one",
+      _ => "other"
+    }
+  }
+  assert(classify(0.0) == "zero")
+  assert(classify(1.0) == "one")
+  assert(classify(3.14) == "other")
+}
+
+test "match float literal" {
+  let classify: (Float) -> String = (f) -> {
+    match f {
+      0.0f => "zero",
+      1.0f => "one",
+      _ => "other"
+    }
+  }
+  assert(classify(0.0f) == "zero")
+  assert(classify(1.0f) == "one")
+  assert(classify(2.5f) == "other")
+}
+
+test "match nested enum" {
+  let e = Expr::Add(Expr::Lit(3), Expr::Mul(Expr::Lit(4), Expr::Lit(5)))
+  assert(eval(e) == 23)
+}
+
+test "match deeply nested enum" {
+  let e = Expr::Neg(Expr::Add(Expr::Lit(1), Expr::Neg(Expr::Lit(2))))
+  assert(eval(e) == 1)
+}
+
+test "match struct pattern" {
+  let area: (Rect) -> Int = (r) -> {
+    match r {
+      Rect::{ w, h } => w * h
+    }
+  }
+  assert(area(Rect::{ w: 3, h: 4 }) == 12)
+  assert(area(Rect::{ w: 0, h: 100 }) == 0)
+}
+
+test "match with wildcard binding" {
+  let first_or_zero: (Option[(Int, Int)]) -> Int = (opt) -> {
+    match opt {
+      Some((x, _)) => x,
+      None => 0
+    }
+  }
+  assert(first_or_zero(Some((42, 99))) == 42)
+  assert(first_or_zero(None) == 0)
+}
+
+test "match option or-pattern" {
+  let x: Option[Int] = Some(3)
+  let result = match x {
+    Some(1)|Some(2)|Some(3) => "small",
+    Some(_) => "big",
+    None => "none"
+  }
+  assert(result == "small")
+}
+
+test "match tuple 3 elements" {
+  let classify: ((Int, Int, Int)) -> String = (t) -> {
+    match t {
+      (0, 0, 0) => "origin",
+      (_, 0, 0) => "x-axis",
+      (0, _, 0) => "y-axis",
+      (0, 0, _) => "z-axis",
+      _ => "general"
+    }
+  }
+  assert(classify((0, 0, 0)) == "origin")
+  assert(classify((5, 0, 0)) == "x-axis")
+  assert(classify((0, 3, 0)) == "y-axis")
+  assert(classify((0, 0, 7)) == "z-axis")
+  assert(classify((1, 2, 3)) == "general")
+}
+
+test "match guard with function call" {
+  let arr = [10, 20, 30]
+  let result = match arr {
+    a if Array::length(a) > 2 => a[2],
+    _ => -1
+  }
+  assert(result == 30)
+}
+
+test "match nested option" {
+  let extract: (Option[Option[Option[Int]]]) -> Int = (x) -> {
+    match x {
+      Some(Some(Some(v))) => v,
+      Some(Some(None)) => -1,
+      Some(None) => -2,
+      None => -3
+    }
+  }
+  assert(extract(Some(Some(Some(42)))) == 42)
+  assert(extract(Some(Some(None))) == -1)
+  assert(extract(Some(None)) == -2)
+  assert(extract(None) == -3)
+}
+
+test "match string or-pattern" {
+  let greet: (String) -> String = (lang) -> {
+    match lang {
+      "en"|"EN" => "hello",
+      "ja"|"JA" => "konnichiwa",
+      _ => "hi"
+    }
+  }
+  assert(greet("en") == "hello")
+  assert(greet("EN") == "hello")
+  assert(greet("ja") == "konnichiwa")
+  assert(greet("xx") == "hi")
+}
+
+test "match enum all variants" {
+  let day_num: (Day) -> Int = (d) -> {
+    match d {
+      Day::Mon => 1,
+      Day::Tue => 2,
+      Day::Wed => 3,
+      Day::Thu => 4,
+      Day::Fri => 5,
+      Day::Sat => 6,
+      Day::Sun => 7
+    }
+  }
+  assert(day_num(Day::Mon) == 1)
+  assert(day_num(Day::Sun) == 7)
+  assert(day_num(Day::Wed) == 3)
+}
