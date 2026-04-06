@@ -40,6 +40,13 @@ fn reh_rewrite_stmt(stmt : @core.Stmt) -> @core.Stmt {
       @core.Stmt::Let(rec~, name~, expr=reh_rewrite_expr(expr), span~)
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
       @core.Stmt::ExportLet(rec~, name~, expr=reh_rewrite_expr(expr), span~)
+    @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) =>
+      @core.Stmt::InternalExportLet(
+        rec~,
+        name~,
+        expr=reh_rewrite_expr(expr),
+        span~,
+      )
     @core.Stmt::Expr(expr~, span~) =>
       @core.Stmt::Expr(expr=reh_rewrite_expr(expr), span~)
     @core.Stmt::LetMut(name~, expr~, span~) =>
@@ -200,6 +207,88 @@ fn reh_rewrite_expr(expr : @core.Expr) -> @core.Expr {
       }
       @core.Expr::Call(name~, type_args~, args=next_args, span~)
     }
+    @core.Expr::Tuple(items~, span~) =>
+      @core.Expr::Tuple(items=items.map(reh_rewrite_expr), span~)
+    @core.Expr::Array(items~, span~) =>
+      @core.Expr::Array(items=items.map(reh_rewrite_expr), span~)
+    @core.Expr::TupleIndex(expr=inner, index~, span~) =>
+      @core.Expr::TupleIndex(expr=reh_rewrite_expr(inner), index~, span~)
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) =>
+      @core.Expr::ForIn(
+        value_name~,
+        index_name~,
+        iterable=reh_rewrite_expr(iterable),
+        body=reh_rewrite_module(body),
+        span~,
+      )
+    @core.Expr::Loop(params~, body~, span~) => {
+      let next_params : Array[@core.LoopParam] = []
+      for param in params {
+        next_params.push(@core.LoopParam::{
+          name: param.name,
+          init: reh_rewrite_expr(param.init),
+          span: param.span,
+        })
+      }
+      @core.Expr::Loop(params=next_params, body=reh_rewrite_module(body), span~)
+    }
+    @core.Expr::Break(value~, span~) =>
+      @core.Expr::Break(
+        value=value.map(fn(v) { reh_rewrite_expr(v) }),
+        span~,
+      )
+    @core.Expr::Continue(args~, span~) =>
+      @core.Expr::Continue(args=args.map(reh_rewrite_expr), span~)
+    @core.Expr::Record(fields~, span~) => {
+      let next_fields : Array[@core.RecordFieldExpr] = []
+      for field in fields {
+        next_fields.push(@core.RecordFieldExpr::{
+          name: field.name,
+          expr: reh_rewrite_expr(field.expr),
+          span: field.span,
+        })
+      }
+      @core.Expr::Record(fields=next_fields, span~)
+    }
+    @core.Expr::Map(fields~, span~) => {
+      let next_fields : Array[@core.MapFieldExpr] = []
+      for field in fields {
+        next_fields.push(@core.MapFieldExpr::{
+          key: field.key,
+          expr: reh_rewrite_expr(field.expr),
+          span: field.span,
+        })
+      }
+      @core.Expr::Map(fields=next_fields, span~)
+    }
+    @core.Expr::StructLit(name~, type_args~, fields~, span~) => {
+      let next_fields : Array[@core.RecordFieldExpr] = []
+      for field in fields {
+        next_fields.push(@core.RecordFieldExpr::{
+          name: field.name,
+          expr: reh_rewrite_expr(field.expr),
+          span: field.span,
+        })
+      }
+      @core.Expr::StructLit(name~, type_args~, fields=next_fields, span~)
+    }
+    @core.Expr::StringInterp(parts~, span~) => {
+      let next_parts : Array[@core.StringInterpPart] = []
+      for part in parts {
+        match part {
+          @core.StringInterpPart::Lit(_) => next_parts.push(part)
+          @core.StringInterpPart::Expr(e) =>
+            next_parts.push(
+              @core.StringInterpPart::Expr(reh_rewrite_expr(e)),
+            )
+        }
+      }
+      @core.Expr::StringInterp(parts=next_parts, span~)
+    }
+    @core.Expr::Yield(expr=inner, span~) =>
+      @core.Expr::Yield(expr=reh_rewrite_expr(inner), span~)
+    @core.Expr::Spread(expr=inner, span~) =>
+      @core.Expr::Spread(expr=reh_rewrite_expr(inner), span~)
     _ => expr
   }
 }
@@ -448,6 +537,13 @@ fn reh_replace_performs_stmt(
         expr=reh_replace_performs_expr(expr, handlers),
         span~,
       )
+    @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) =>
+      @core.Stmt::InternalExportLet(
+        rec~,
+        name~,
+        expr=reh_replace_performs_expr(expr, handlers),
+        span~,
+      )
     @core.Stmt::Expr(expr~, span~) =>
       @core.Stmt::Expr(expr=reh_replace_performs_expr(expr, handlers), span~)
     @core.Stmt::LetMut(name~, expr~, span~) =>
@@ -578,6 +674,113 @@ fn reh_replace_performs_expr(
       }
       @core.Expr::Handle(body=inner_body, arms=inner_arms, span~)
     }
+    @core.Expr::Tuple(items~, span~) =>
+      @core.Expr::Tuple(
+        items=items.map(fn(e) { reh_replace_performs_expr(e, handlers) }),
+        span~,
+      )
+    @core.Expr::Array(items~, span~) =>
+      @core.Expr::Array(
+        items=items.map(fn(e) { reh_replace_performs_expr(e, handlers) }),
+        span~,
+      )
+    @core.Expr::TupleIndex(expr=inner, index~, span~) =>
+      @core.Expr::TupleIndex(
+        expr=reh_replace_performs_expr(inner, handlers),
+        index~,
+        span~,
+      )
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) =>
+      @core.Expr::ForIn(
+        value_name~,
+        index_name~,
+        iterable=reh_replace_performs_expr(iterable, handlers),
+        body=reh_replace_performs(body, handlers),
+        span~,
+      )
+    @core.Expr::Loop(params~, body~, span~) => {
+      let next_params : Array[@core.LoopParam] = []
+      for param in params {
+        next_params.push(@core.LoopParam::{
+          name: param.name,
+          init: reh_replace_performs_expr(param.init, handlers),
+          span: param.span,
+        })
+      }
+      @core.Expr::Loop(
+        params=next_params,
+        body=reh_replace_performs(body, handlers),
+        span~,
+      )
+    }
+    @core.Expr::Break(value~, span~) =>
+      @core.Expr::Break(
+        value=value.map(fn(v) { reh_replace_performs_expr(v, handlers) }),
+        span~,
+      )
+    @core.Expr::Continue(args~, span~) =>
+      @core.Expr::Continue(
+        args=args.map(fn(e) { reh_replace_performs_expr(e, handlers) }),
+        span~,
+      )
+    @core.Expr::Record(fields~, span~) => {
+      let next_fields : Array[@core.RecordFieldExpr] = []
+      for field in fields {
+        next_fields.push(@core.RecordFieldExpr::{
+          name: field.name,
+          expr: reh_replace_performs_expr(field.expr, handlers),
+          span: field.span,
+        })
+      }
+      @core.Expr::Record(fields=next_fields, span~)
+    }
+    @core.Expr::Map(fields~, span~) => {
+      let next_fields : Array[@core.MapFieldExpr] = []
+      for field in fields {
+        next_fields.push(@core.MapFieldExpr::{
+          key: field.key,
+          expr: reh_replace_performs_expr(field.expr, handlers),
+          span: field.span,
+        })
+      }
+      @core.Expr::Map(fields=next_fields, span~)
+    }
+    @core.Expr::StructLit(name~, type_args~, fields~, span~) => {
+      let next_fields : Array[@core.RecordFieldExpr] = []
+      for field in fields {
+        next_fields.push(@core.RecordFieldExpr::{
+          name: field.name,
+          expr: reh_replace_performs_expr(field.expr, handlers),
+          span: field.span,
+        })
+      }
+      @core.Expr::StructLit(name~, type_args~, fields=next_fields, span~)
+    }
+    @core.Expr::StringInterp(parts~, span~) => {
+      let next_parts : Array[@core.StringInterpPart] = []
+      for part in parts {
+        match part {
+          @core.StringInterpPart::Lit(_) => next_parts.push(part)
+          @core.StringInterpPart::Expr(e) =>
+            next_parts.push(
+              @core.StringInterpPart::Expr(
+                reh_replace_performs_expr(e, handlers),
+              ),
+            )
+        }
+      }
+      @core.Expr::StringInterp(parts=next_parts, span~)
+    }
+    @core.Expr::Yield(expr=inner, span~) =>
+      @core.Expr::Yield(
+        expr=reh_replace_performs_expr(inner, handlers),
+        span~,
+      )
+    @core.Expr::Spread(expr=inner, span~) =>
+      @core.Expr::Spread(
+        expr=reh_replace_performs_expr(inner, handlers),
+        span~,
+      )
     _ => expr
   }
 }

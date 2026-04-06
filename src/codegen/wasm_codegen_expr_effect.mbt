@@ -360,7 +360,49 @@ fn extract_resume_value_expr(expr : @core.Expr) -> @core.Expr {
         @core.Expr::Int(value=0L, span=expr.span())
       }
     }
+    @core.Expr::If(cond~, then_body~, else_body~, span~) =>
+      @core.Expr::If(
+        cond~,
+        then_body=extract_resume_module(then_body),
+        else_body=extract_resume_module(else_body),
+        span~,
+      )
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let next_arms : Array[@core.MatchArm] = []
+      for arm in arms {
+        next_arms.push(@core.MatchArm::{
+          pat: arm.pat,
+          cond: arm.cond,
+          expr: extract_resume_value_expr(arm.expr),
+          span: arm.span,
+        })
+      }
+      @core.Expr::Match(scrutinee~, arms=next_arms, span~)
+    }
     _ => expr
+  }
+}
+
+///|
+/// Extract resume value from the last statement of a Module.
+fn extract_resume_module(m : @core.Module) -> @core.Module {
+  let stmts = m.stmts
+  if stmts.length() > 0 {
+    match stmts[stmts.length() - 1] {
+      @core.Stmt::Expr(expr~, span~) => {
+        let next_stmts : Array[@core.Stmt] = []
+        for i = 0; i < stmts.length() - 1; i = i + 1 {
+          next_stmts.push(stmts[i])
+        }
+        next_stmts.push(
+          @core.Stmt::Expr(expr=extract_resume_value_expr(expr), span~),
+        )
+        @core.Module::{ stmts: next_stmts }
+      }
+      _ => m
+    }
+  } else {
+    m
   }
 }
 
