@@ -2332,6 +2332,19 @@ fn compile_builtin_collection(
       emit_i32_load(buf, 8) // load element
       emit_i64_extend_i32_s(buf)
       buf.push((5).to_byte()) // else (regular array)
+      // bounds check: trap if idx < 0 || idx >= length
+      emit_local_get(buf, idx_local)
+      emit_i32_const_raw(buf, 0)
+      emit_i32_lt_s(buf)
+      emit_local_get(buf, idx_local)
+      emit_local_get(buf, arr_ptr)
+      emit_i32_load(buf, 4) // length
+      emit_i32_ge_s(buf)
+      emit_i32_or(buf)
+      buf.push((4).to_byte()) // if (out of bounds)
+      buf.push((64).to_byte()) // void
+      buf.push((0).to_byte()) // unreachable (trap)
+      buf.push((11).to_byte()) // end if
       // offset = 8 + idx * 4
       emit_local_get(buf, arr_ptr)
       emit_local_get(buf, idx_local)
@@ -2346,19 +2359,38 @@ fn compile_builtin_collection(
       // array_set(arr, idx, value) -> arr[idx] = value
       let pos_args = extract_positional_exprs_with_arity(args, "Array::set", 3)
       let ptr_local = alloc_temp_local(ctx)
+      let idx_local = alloc_temp_local(ctx)
+      let val_local = alloc_temp_local(ctx)
+      // Evaluate all arguments first (preserve evaluation order)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_untag_ptr_i32(buf)
       emit_local_set(buf, ptr_local)
-      // addr = ptr + 8 + (idx >> 2) * 4
-      emit_local_get(buf, ptr_local)
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_untag_int_i32(buf)
+      emit_local_set(buf, idx_local)
+      compile_expr_i32(ctx, buf, pos_args[2])
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, val_local)
+      // bounds check: trap if idx < 0 || idx >= length
+      emit_local_get(buf, idx_local)
+      emit_i32_const_raw(buf, 0)
+      emit_i32_lt_s(buf)
+      emit_local_get(buf, idx_local)
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 4) // length
+      emit_i32_ge_s(buf)
+      emit_i32_or(buf)
+      buf.push((4).to_byte()) // if (out of bounds)
+      buf.push((64).to_byte()) // void
+      buf.push((0).to_byte()) // unreachable (trap)
+      buf.push((11).to_byte()) // end if
+      // addr = ptr + 8 + idx * 4
+      emit_local_get(buf, ptr_local)
+      emit_local_get(buf, idx_local)
       emit_i32_const_raw(buf, 4)
       emit_i32_mul(buf)
       emit_i32_add(buf)
-      // store value
-      compile_expr_i32(ctx, buf, pos_args[2])
-      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, val_local)
       emit_i32_store(buf, 8)
       emit_i64_const_tagged(buf, 0L) // return Unit
     }
@@ -2760,10 +2792,26 @@ fn compile_builtin_collection(
           emit_i32_load(buf, 8)
           emit_i64_extend_i32_s(buf)
           buf.push((5).to_byte()) // else (regular array)
-          // Array path: direct access at offset 8 + (idx >> 2) * 4
-          emit_local_get(buf, ptr_local)
+          // Array path: bounds check + access at offset 8 + idx * 4
+          let arr_idx = alloc_temp_local(ctx)
           compile_expr_i32(ctx, buf, pos_args[1])
           emit_untag_int_i32(buf)
+          emit_local_set(buf, arr_idx)
+          // bounds check: trap if idx < 0 || idx >= length
+          emit_local_get(buf, arr_idx)
+          emit_i32_const_raw(buf, 0)
+          emit_i32_lt_s(buf)
+          emit_local_get(buf, arr_idx)
+          emit_local_get(buf, ptr_local)
+          emit_i32_load(buf, 4) // length
+          emit_i32_ge_s(buf)
+          emit_i32_or(buf)
+          buf.push((4).to_byte()) // if (out of bounds)
+          buf.push((64).to_byte()) // void
+          buf.push((0).to_byte()) // unreachable (trap)
+          buf.push((11).to_byte()) // end if
+          emit_local_get(buf, ptr_local)
+          emit_local_get(buf, arr_idx)
           emit_i32_const_raw(buf, 4)
           emit_i32_mul(buf)
           emit_i32_add(buf)
@@ -2874,6 +2922,19 @@ fn compile_builtin_collection(
       emit_i32_wrap_i64(buf)
       emit_i32_store8(buf, 0)
       buf.push((5).to_byte()) // else (array)
+      // bounds check: trap if idx < 0 || idx >= length
+      emit_local_get(buf, idx_local)
+      emit_i32_const_raw(buf, 0)
+      emit_i32_lt_s(buf)
+      emit_local_get(buf, idx_local)
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 4) // length
+      emit_i32_ge_s(buf)
+      emit_i32_or(buf)
+      buf.push((4).to_byte()) // if (out of bounds)
+      buf.push((64).to_byte()) // void
+      buf.push((0).to_byte()) // unreachable (trap)
+      buf.push((11).to_byte()) // end if
       // Array: store i32 at [ptr + 8 + idx*4]
       emit_local_get(buf, ptr_local)
       emit_local_get(buf, idx_local)

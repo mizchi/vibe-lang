@@ -971,7 +971,7 @@ pub fn Runtime::eval_module(
         let out = eval_expr(self, expr)
         extend_effects(effects, out.effects)
         if name != "_" {
-          self.bind(name, out.value) |> ignore
+          self.bind_mut(name, out.value) |> ignore
           self.mut_vars[name] = true
         }
         last = Some(out.value)
@@ -982,7 +982,7 @@ pub fn Runtime::eval_module(
         }
         let out = eval_expr(self, expr)
         extend_effects(effects, out.effects)
-        self.bind(name, out.value) |> ignore
+        self.rebind_mut(name, out.value)
         last = Some(out.value)
       }
       @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
