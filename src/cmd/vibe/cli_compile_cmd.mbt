@@ -22,6 +22,7 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
     Some(path) => path
     None => ""
   }
+  @runtime_compile.init_hooks()
   let start_total = @bench.monotonic_clock_start()
   @profiler.profiler_enter("load")
   let start_load = @bench.monotonic_clock_start()
