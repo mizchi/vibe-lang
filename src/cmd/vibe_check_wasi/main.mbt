@@ -1,4 +1,40 @@
 ///|
+let checker_hooks_ready : Ref[Bool] = { val: false }
+
+///|
+fn ensure_checker_hooks() -> Unit {
+  if checker_hooks_ready.val {
+    return
+  }
+  checker_hooks_ready.val = true
+  @runtime.set_parse_ast_hook(fn(
+    source,
+  ) -> (@core.Module, @core.Diagnostic?) raise Error {
+    let ast = @parser.parse_ast(source) catch {
+      e => return ({ stmts: [] }, Some(e.diagnostic()))
+    }
+    (ast, None)
+  })
+  @runtime.set_parse_cst_hook(@parser.parse_cst)
+  @runtime.set_purity_for_let_hook(@checker.purity_for_let)
+  @runtime.set_new_type_env_hook(fn() { @checker.TypeEnv::new() })
+  @runtime.set_get_prelude_env_hook(fn() {
+    try! @checker.get_prelude_only_env_for_module()
+  })
+  @runtime.set_type_check_with_env_hook(@checker.type_check_with_env)
+  @runtime.mark_compiler_hooks_initialized()
+  @runtime.set_init_runtime_type_env_hook(fn() {
+    let env = @checker.TypeEnv::new()
+    let _ = try! @checker.ensure_prelude_option(env)
+    let _ = try! @checker.ensure_prelude_functions(env, {})
+    @checker.ensure_builtin_modules(env, {})
+    env
+  })
+  @runtime.set_prelude_ast_hook(@checker.prelude_ast)
+  @runtime.set_collect_warnings_hook(@checker.collect_warnings)
+}
+
+///|
 pub enum CheckInput {
   Source(String)
   File(String)
@@ -379,6 +415,7 @@ fn check_file_with_timing(
   entry_path : String,
   fs : &@io.FileSystemAdapter,
 ) -> Result[((Array[@core.Diagnostic], Int, Int), CheckTimingSummary), String] {
+  ensure_checker_hooks()
   let start_total = @bench.monotonic_clock_start()
   let start_load = @bench.monotonic_clock_start()
   let resolved = @loader.resolve_entry_path_with_fs(entry_path, fs)
