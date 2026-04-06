@@ -96,6 +96,25 @@ gh issue create --title "タイトル" --label bug
 
 設計判断は `docs/adr.md` に記録する。旧個別ファイルは `docs/archive/adr/`。
 
+## Local Test Execution
+
+ローカルでのテスト実行には `flaker run` を使う。全テスト（1162件、~2分）を毎回流す必要はない。
+
+```bash
+# 変更に影響するテストだけ実行（推奨、時間制約120秒）
+flaker run
+
+# CI と同じ hybrid サンプリング（30%）
+flaker run --profile ci
+
+# 全テスト実行（データ蓄積用、定期的に）
+flaker run --profile scheduled
+```
+
+`flaker run` はデフォルトで `--profile local`（affected 戦略）を使い、`git diff` から影響範囲のテストだけを選択する。データが蓄積されるほど選択精度が上がる。
+
+`just test` は全テスト実行。commit 前の最終確認や CI 用。
+
 ## Before Commit
 
 ```bash
