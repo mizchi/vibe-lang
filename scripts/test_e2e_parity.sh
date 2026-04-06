@@ -5,6 +5,9 @@
 #   scripts/test_e2e_parity.sh                    # run all examples/*.vibe
 #   scripts/test_e2e_parity.sh file1.vibe ...     # specific files
 #   VIBE_CLI_BIN=/path/to/vibe scripts/test_e2e_parity.sh  # custom binary
+#
+# Env:
+#   VIBE_E2E_JOBS  parallel workers (default: nproc)
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -13,11 +16,9 @@ if [[ -z "${VIBE_CLI_BIN:-}" ]]; then
 fi
 CLI="$VIBE_CLI_BIN"
 TIMEOUT="${VIBE_E2E_TIMEOUT:-30}"
+JOBS="${VIBE_E2E_JOBS:-$(nproc 2>/dev/null || echo 2)}"
 E2E_DIR="$ROOT_DIR/examples"
-
-pass=0
-fail=0
-failures=()
+export CLI TIMEOUT
 
 run_timeout() {
   local secs="$1"
@@ -31,7 +32,7 @@ run_timeout() {
   fi
 }
 
-run_test() {
+run_one_test() {
   local src="$1"
   local name
   name="$(basename "$src")"
@@ -41,15 +42,12 @@ run_test() {
   out="$(run_timeout "$TIMEOUT" "$CLI" test "$src" 2>&1)" || rc=$?
 
   if [[ $rc -eq 0 ]]; then
-    pass=$((pass + 1))
-    echo "  PASS  $name"
+    echo "pass	$name"
   else
-    fail=$((fail + 1))
-    failures+=("$name")
-    echo "  FAIL  $name"
-    echo "$out" | sed 's/^/        /'
+    echo "fail	$name	$out"
   fi
 }
+export -f run_one_test run_timeout
 
 # Collect test files
 if [[ $# -gt 0 ]]; then
@@ -69,11 +67,36 @@ fi
 echo "=== E2E Parity Test Suite ==="
 echo "CLI: $CLI"
 echo "Files: ${#files[@]}"
+echo "Jobs: $JOBS"
 echo ""
 
-for f in "${files[@]}"; do
-  run_test "$f"
-done
+# Run tests in parallel
+results_file="/tmp/vibe_e2e_results_$$.txt"
+trap 'rm -f "$results_file"' EXIT
+
+printf '%s\n' "${files[@]}" | xargs -P "$JOBS" -I {} bash -c 'run_one_test "$@"' _ {} > "$results_file"
+
+# Aggregate results
+pass=0
+fail=0
+failures=()
+
+while IFS=$'\t' read -r status name detail; do
+  case "$status" in
+    pass)
+      pass=$((pass + 1))
+      echo "  PASS  $name"
+      ;;
+    fail)
+      fail=$((fail + 1))
+      failures+=("$name")
+      echo "  FAIL  $name"
+      if [[ -n "${detail:-}" ]]; then
+        echo "$detail" | sed 's/^/        /'
+      fi
+      ;;
+  esac
+done < "$results_file"
 
 echo ""
 echo "=== Summary ==="
