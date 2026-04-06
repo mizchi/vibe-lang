@@ -1,0 +1,68 @@
+name: flaker-ci
+
+on:
+  pull_request:
+
+env:
+  VIBE_MOON_WARN_LIST: "-1-6-7-9-20-24-29"
+
+jobs:
+  sampled-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install MoonBit
+        run: bash scripts/install_moonbit.sh
+
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Install just
+        run: |
+          JUST_VERSION=1.48.1
+          curl -fsSL --retry 5 --retry-all-errors \
+            -o /tmp/just.tar.gz \
+            "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          tar -xzf /tmp/just.tar.gz -C /tmp just
+          sudo install -m 0755 /tmp/just /usr/local/bin/just
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install flaker
+        run: pnpm add -g @mizchi/flaker
+
+      - name: Moon update
+        run: moon update
+
+      - name: Cache MoonBit build
+        uses: actions/cache@v5
+        with:
+          path: |
+            _build
+            .mooncakes
+          key: moonbit-${{ runner.os }}-${{ hashFiles('moon.mod.json', 'src/**/*.mbt') }}
+          restore-keys: moonbit-${{ runner.os }}-
+
+      - name: Restore flaker DB
+        uses: actions/cache/restore@v4
+        with:
+          path: .flaker/
+          key: flaker-db-main
+          restore-keys: flaker-db-
+
+      - name: Sampled test run
+        run: flaker run --profile ci
+
+      - name: Save flaker DB
+        uses: actions/cache/save@v4
+        with:
+          path: .flaker/
+          key: flaker-db-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}
