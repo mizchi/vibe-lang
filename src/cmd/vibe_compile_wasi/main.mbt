@@ -524,6 +524,7 @@ fn compile_lite_cmd(
     Some(path) => path
     None => ""
   }
+  @runtime_compile.init_hooks()
   let start_total = @bench.monotonic_clock_start()
   let start_load = @bench.monotonic_clock_start()
   let loaded = match @loader.load_db_with_fs(opts.entry_path, fs) {

@@ -244,6 +244,7 @@ fn check_cmd(args : Array[String]) -> Unit {
   if check_args.length() == 0 {
     abort("check: expected <file...>")
   }
+  @runtime_compile.init_hooks()
   let check_debug = check_debug_enabled()
   let mut total_errors = 0
   let mut load_ms_total = 0
