@@ -6,6 +6,7 @@ fn repl_cmd(
   enable_llm~ : Bool,
   permissions? : @capability.CapabilitySet? = None,
 ) -> Unit {
+  @runtime_compile.init_hooks()
   let mut tui_mode = false
   let mut ai_mode = false
   let mut posix_mode = true // default: posix mode (shell commands available)
