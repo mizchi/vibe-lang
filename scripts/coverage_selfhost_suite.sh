@@ -358,7 +358,26 @@ if suite_cache_valid; then
     exit "$suite_status"
   fi
 else
+  echo "[selfhost suite coverage] debug: report_list_path=$report_list_path" >&2
+  echo "[selfhost suite coverage] debug: report count=${#report_paths[@]}" >&2
+  echo "[selfhost suite coverage] debug: VIBE_CMD=${VIBE_CMD[*]}" >&2
+  echo "[selfhost suite coverage] debug: binary exists: $(test -x "${VIBE_CMD[0]}" && echo yes || echo no)" >&2
+  echo "[selfhost suite coverage] debug: binary size: $(ls -la "${VIBE_CMD[0]}" 2>/dev/null | awk '{print $5}')" >&2
+  "${VIBE_CMD[@]}" --version 2>&1 || echo "[selfhost suite coverage] debug: --version failed" >&2
+  if [ -f "$report_list_path" ]; then
+    echo "[selfhost suite coverage] debug: report list contents:" >&2
+    cat "$report_list_path" >&2
+    echo "[selfhost suite coverage] debug: report file sizes:" >&2
+    while IFS= read -r rp; do
+      ls -la "$rp" >&2 2>/dev/null || echo "  MISSING: $rp" >&2
+    done < "$report_list_path"
+  fi
+  echo "[selfhost suite coverage] debug: trying examples/basics_test.vibe" >&2
   set +e
+  "${VIBE_CMD[@]}" test examples/basics_test.vibe 2>&1
+  existing_status="$?"
+  echo "[selfhost suite coverage] debug: basics_test status=$existing_status" >&2
+  echo "[selfhost suite coverage] debug: running full suite runner" >&2
   VIBE_TEST_BACKEND="$TEST_BACKEND" \
     VIBE_SELFHOST_SUITE_REPORT_LIST="$report_list_path" \
     VIBE_SELFHOST_SUITE_REPORT_JSON="$report_json_path" \
@@ -369,6 +388,11 @@ else
     "${VIBE_CMD[@]}" test vibe/compiler/coverage_selfhost_suite_run.vibe >"$suite_log_path" 2>&1
   suite_status="$?"
   set -e
+  echo "[selfhost suite coverage] debug: suite_status=$suite_status" >&2
+  if [ -f "$suite_log_path" ]; then
+    echo "[selfhost suite coverage] debug: suite log (last 50 lines):" >&2
+    tail -50 "$suite_log_path" >&2
+  fi
   cat "$suite_log_path"
   printf '%s' "$suite_cache_key" >"$suite_meta_path"
   printf '%s' "$suite_status" >"$suite_status_path"
