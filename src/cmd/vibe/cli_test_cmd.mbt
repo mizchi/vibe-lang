@@ -733,6 +733,7 @@ fn test_cmd(
   args : Array[String],
   features : @runtime.RuntimeFeatureFlags,
 ) -> Unit {
+  @runtime_compile.init_hooks()
   if has_help_flag(args) {
     print_test_help()
     return
