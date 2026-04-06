@@ -955,14 +955,21 @@ fn desugar_expr(
       }
       @core.Expr::Continue(args=next_args, span~)
     }
-    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) =>
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
+      let next_scope = scope.child()
+      next_scope.bindings[value_name] = true
+      match index_name {
+        Some(name) => next_scope.bindings[name] = true
+        None => ()
+      }
       @core.Expr::ForIn(
         value_name~,
         index_name~,
         iterable=desugar_expr(iterable, scope, aliases),
-        body=desugar_block(body, scope, aliases),
+        body=desugar_block(body, next_scope, aliases),
         span~,
       )
+    }
     @core.Expr::StringInterp(parts~, span~) => {
       // Lower StringInterp to String::concat chain with __to_string calls
       let exprs : Array[@core.Expr] = []

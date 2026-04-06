@@ -171,11 +171,25 @@ fn compile_expr(
             emit_i32_add(buf)
             emit_global_set(buf, ctx.effect_resume_idx_global)
             buf.push((5).to_byte()) // else
-            // Throw for cross-function dispatch
+            // Store perform arg in global before throwing
+            if args.length() > 0 {
+              compile_expr(ctx, buf, args[0].expr)
+            } else {
+              emit_i64_const_raw(buf, 0L) // Unit
+            }
+            emit_global_set(buf, ctx.effect_perform_arg_global)
+            // Throw op key for cross-function dispatch
             let tag_str = @core.Expr::String(value=key, span~)
             compile_expr_raise(ctx, buf, tag_str)
             buf.push((11).to_byte()) // end if
           } else {
+            // Store perform arg in global before throwing
+            if args.length() > 0 {
+              compile_expr(ctx, buf, args[0].expr)
+            } else {
+              emit_i64_const_raw(buf, 0L) // Unit
+            }
+            emit_global_set(buf, ctx.effect_perform_arg_global)
             let tag_str = @core.Expr::String(value=key, span~)
             compile_expr_raise(ctx, buf, tag_str)
           }

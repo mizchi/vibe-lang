@@ -63,6 +63,7 @@ priv struct CodegenCtx {
   mut effect_resume_idx_global : Int // i32: current read position
   mut effect_resume_count_global : Int // i32: number of stored resume values
   mut effect_resume_buf_global : Int // i32: pointer to resume value buffer
+  mut effect_perform_arg_global : Int // i64: perform argument value for cross-function dispatch
   // Stack switching for async
   mut need_stack_switching : Bool
   mut await_tag_type_index : Int
@@ -248,6 +249,7 @@ fn CodegenCtx::new(
     effect_resume_idx_global: -1,
     effect_resume_count_global: -1,
     effect_resume_buf_global: -1,
+    effect_perform_arg_global: -1,
     need_exceptions: false,
     error_tag_type_index: -1,
     error_tag_index: 0,
