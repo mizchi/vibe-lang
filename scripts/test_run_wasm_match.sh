@@ -177,6 +177,56 @@ test_cases=(
   'Double::to_int(-2.5 * 10.0)'
   'Double::to_int(1.5 + 2.5)'
   'Double::to_int(42.0)'
+
+  # derive(Eq) + match (#203 P1)
+  'enum Color { Red; Green; Blue } derive(Eq)
+   let c: Color = Color::Red
+   if c == Color::Red { 1 } else { 0 }'
+  'enum Color { Red; Green; Blue } derive(Eq)
+   if Color::Green == Color::Green { 1 } else { 0 }'
+  'enum Color { Red; Green; Blue } derive(Eq)
+   if Color::Red == Color::Blue { 1 } else { 0 }'
+
+  # Nested enum pattern matching (#203 P1)
+  'match Some(Some(42)) { Some(Some(x)) => x, _ => 0 }'
+  'match Some(None) { Some(Some(x)) => x, Some(None) => 99, None => 0, _ => -1 }'
+  'match Ok(Some(10)) { Ok(Some(x)) => x, Ok(None) => 0, Err(_) => -1 }'
+  'enum Tree { Leaf(Int); Node(Tree, Tree) }
+   let rec sum_tree = (t: Tree) -> Int {
+     match t { Leaf(v) => v, Node(l, r) => sum_tree(l) + sum_tree(r) }
+   }
+   sum_tree(Node(Node(Leaf(1), Leaf(2)), Leaf(3)))'
+
+  # loop + break(value) (#203 P1)
+  'let result = loop (i = 0, sum = 0) {
+     if i >= 10 { break(sum) }
+     continue(i + 1, sum + i)
+   }
+   result'
+  'let result = loop (i = 1, product = 1) {
+     if i > 5 { break(product) }
+     continue(i + 1, product * i)
+   }
+   result'
+
+  # for-in + index (#203 P1)
+  'let f = () -> Int { let mut total = 0; for i, x in [10, 20, 30] { total = total + i * x }; total }; f()'
+  'let f = () -> Int { let mut sum = 0; for i, _ in [5, 5, 5, 5] { sum = sum + i }; sum }; f()'
+
+  # Generic functions (#203 P2)
+  'let identity = [T](x: T) -> T { x }; identity(42)'
+  'let first = [A, B](a: A, b: B) -> A { a }; first(99, 1)'
+
+  # is-expression (#203 P2)
+  'let x: Option[Int] = Some(42); if x is Some(v) { v } else { 0 }'
+  'let x: Option[Int] = None; if x is Some(v) { v } else { 99 }'
+
+  # Array spread (#203 P2)
+  'let xs = [2, 3]; Array::length([1, ..xs, 4])'
+  'let xs = [10, 20, 30]; let ys = [..xs]; ys[1]'
+
+  # Pipe operator chains (#203 P2)
+  'let inc = (x: Int) -> Int { x + 1 }; let dbl = (x: Int) -> Int { x * 2 }; let sq = (x: Int) -> Int { x * x }; 3 |> inc |> dbl |> sq'
 )
 
 echo "Testing vibe run vs WASM output..."
