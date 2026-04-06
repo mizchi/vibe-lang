@@ -3868,3 +3868,83 @@ test "function type in tuple type annotation parses" {
   }
   assert_true(wasm_bytes.length() > 8)
 }
+
+///|
+test "HOF with non-Int types compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let apply: ((String) -> String, String) -> String = (f, x) -> f(x)
+      #|let shout: (String) -> String = (s) -> String::concat(s, "!")
+      #|String::length(apply(shout, "hello"))
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("HOF non-Int compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "HOF with Option return type compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let map_opt: ((Int) -> Int, Option[Int]) -> Option[Int] = (f, opt) -> {
+      #|  match opt {
+      #|    Some(v) => Some(f(v)),
+      #|    None => None
+      #|  }
+      #|}
+      #|let double: (Int) -> Int = (x) -> x * 2
+      #|match map_opt(double, Some(21)) {
+      #|  Some(v) => v,
+      #|  None => 0
+      #|}
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("HOF Option compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "HOF with error effect compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let apply = (f: (Int) -> Int with { Error }, x: Int) -> Int with { Error } { f(x) }
+      #|let risky = (x: Int) -> Int with { Error } {
+      #|  if x == 0 { throw("zero") }
+      #|  x * 2
+      #|}
+      #|let result = handle { apply(risky, 5) } { Error(_) => -1 }
+      #|result
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("effect polymorphism compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "HOF with pure function compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let apply = (f: (Int) -> Int, x: Int) -> Int { f(x) }
+      #|let safe = (x: Int) -> Int { x + 1 }
+      #|apply(safe, 41)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("effect polymorphism pure compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
