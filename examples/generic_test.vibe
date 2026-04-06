@@ -1,0 +1,170 @@
+//# Types
+
+enum Maybe[T] {
+  Just(T);
+  Nothing
+} derive(Eq)
+
+enum Either[A, B] {
+  Left(A);
+  Right(B)
+} derive(Eq)
+
+struct Pair[A, B] { fst: A; snd: B } derive(Eq)
+
+//# Functions
+
+let identity: [T](T) -> T = (x) -> x
+
+let const_fn: [A, B](A, B) -> A = (a, _b) -> a
+
+let swap: [A, B]((A, B)) -> (B, A) = (t) -> (t.1, t.0)
+
+let map_maybe: [A, B](Maybe[A], (A) -> B) -> Maybe[B] = (m, f) -> {
+  match m {
+    Maybe::Just(v) => Maybe::Just(f(v)),
+    Maybe::Nothing => Maybe::Nothing
+  }
+}
+
+let either_map: [A, B, C](Either[A, B], (B) -> C) -> Either[A, C] = (e, f) -> {
+  match e {
+    Either::Left(a) => Either::Left(a),
+    Either::Right(b) => Either::Right(f(b))
+  }
+}
+
+//# Misc
+
+test "identity generic" {
+  assert(identity(42) == 42)
+  assert(identity("hello") == "hello")
+  assert(identity(true) == true)
+}
+
+test "const function" {
+  assert(const_fn(1, "ignored") == 1)
+  assert(const_fn("keep", 999) == "keep")
+}
+
+test "swap tuple" {
+  let (a, b) = swap((1, "hello"))
+  assert(a == "hello")
+  assert(b == 1)
+}
+
+test "maybe just" {
+  let m: Maybe[Int] = Maybe::Just(42)
+  let result = match m {
+    Maybe::Just(v) => v,
+    Maybe::Nothing => 0
+  }
+  assert(result == 42)
+}
+
+test "maybe nothing" {
+  let m: Maybe[String] = Maybe::Nothing
+  let result = match m {
+    Maybe::Just(v) => v,
+    Maybe::Nothing => "default"
+  }
+  assert(result == "default")
+}
+
+test "map_maybe just" {
+  let m = Maybe::Just(5)
+  let result = map_maybe(m, x -> x * 2)
+  assert(result == Maybe::Just(10))
+}
+
+test "map_maybe nothing" {
+  let m: Maybe[Int] = Maybe::Nothing
+  let result = map_maybe(m, x -> x * 2)
+  assert(result == Maybe::Nothing)
+}
+
+test "either left" {
+  let e: Either[String, Int] = Either::Left("error")
+  let result = either_map(e, x -> x * 2)
+  assert(result == Either::Left("error"))
+}
+
+test "either right" {
+  let e: Either[String, Int] = Either::Right(21)
+  let result = either_map(e, x -> x * 2)
+  assert(result == Either::Right(42))
+}
+
+test "pair generic struct" {
+  let p = Pair::{ fst: 1, snd: "hello" }
+  assert(p.fst == 1)
+  assert(p.snd == "hello")
+}
+
+test "pair same type" {
+  let p = Pair::{ fst: 10, snd: 20 }
+  assert(p.fst + p.snd == 30)
+}
+
+test "nested generic types" {
+  let x: Maybe[Maybe[Int]] = Maybe::Just(Maybe::Just(42))
+  let result = match x {
+    Maybe::Just(Maybe::Just(v)) => v,
+    Maybe::Just(Maybe::Nothing) => -1,
+    Maybe::Nothing => -2
+  }
+  assert(result == 42)
+}
+
+test "generic with option" {
+  let wrap: [T](T) -> Option[T] = (x) -> Some(x)
+  assert(wrap(42) == Some(42))
+  assert(wrap("hi") == Some("hi"))
+}
+
+test "generic with array" {
+  let first: [T](Array[T]) -> Option[T] = (arr) -> {
+    if Array::length(arr) > 0 { Some(arr[0]) } else { None }
+  }
+  assert(first([1, 2, 3]) == Some(1))
+  assert(first(["a", "b"]) == Some("a"))
+  let empty: Array[Int] = []
+  assert(first(empty) == None)
+}
+
+test "generic pair with array" {
+  let p: Pair[Array[Int], String] = Pair::{ fst: [1, 2, 3], snd: "nums" }
+  assert(Array::length(p.fst) == 3)
+  assert(p.snd == "nums")
+}
+
+test "either with option" {
+  let e: Either[String, Option[Int]] = Either::Right(Some(42))
+  let result = match e {
+    Either::Right(Some(v)) => v,
+    Either::Right(None) => -1,
+    Either::Left(_) => -2
+  }
+  assert(result == 42)
+}
+
+test "generic function with eq bound" {
+  let contains: [T: Eq](Array[T], T) -> Bool = (arr, target) -> {
+    Array::any(arr, x -> x == target)
+  }
+  assert(contains([1, 2, 3], 2))
+  assert(not(contains([1, 2, 3], 5)))
+  assert(contains(["a", "b", "c"], "b"))
+}
+
+test "generic function composition" {
+  let compose: [A, B, C]((B) -> C, (A) -> B) -> (A) -> C = (f, g) -> {
+    (x: A) -> C { f(g(x)) }
+  }
+  let double = (x: Int) -> Int { x * 2 }
+  let inc = (x: Int) -> Int { x + 1 }
+  let double_then_inc = compose(inc, double)
+  let inc_then_double = compose(double, inc)
+  assert(double_then_inc(5) == 11)
+  assert(inc_then_double(5) == 12)
+}
