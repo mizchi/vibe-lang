@@ -190,7 +190,8 @@ test_cases=(
   # Nested enum pattern matching (#203 P1)
   'match Some(Some(42)) { Some(Some(x)) => x, _ => 0 }'
   'match Some(None) { Some(Some(x)) => x, Some(None) => 99, None => 0, _ => -1 }'
-  'match Ok(Some(10)) { Ok(Some(x)) => x, Ok(None) => 0, Err(_) => -1 }'
+  'enum Res { Succ(Option[Int]); Fail }
+   match Res::Succ(Some(10)) { Res::Succ(Some(x)) => x, Res::Succ(None) => 0, Res::Fail => -1 }'
   'enum Tree { Leaf(Int); Node(Tree, Tree) }
    let rec sum_tree = (t: Tree) -> Int {
      match t { Leaf(v) => v, Node(l, r) => sum_tree(l) + sum_tree(r) }

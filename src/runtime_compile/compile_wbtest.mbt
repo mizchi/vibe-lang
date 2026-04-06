@@ -4063,8 +4063,8 @@ test "nested enum pattern matching compiles to wasm" {
 }
 
 ///|
-// #203 P1: loop + break(value) compiles to wasm
-test "loop with break value compiles to wasm" {
+// #203 P1: loop + break(value) with multi-param compiles to wasm
+test "loop with break value multi-param compiles to wasm" {
   let db = @runtime.VibeDb::new()
   db.set_source(
     "main",

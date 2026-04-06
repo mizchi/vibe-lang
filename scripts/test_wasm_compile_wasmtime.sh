@@ -1930,9 +1930,10 @@ let sq = (x: Int) -> Int { x * x }
 2 |> inc |> dbl |> sq |> inc' \
 "37"
 
-expect_wasmtime_result "pipe: with string builtin" \
-'string_length("hello" |> string_to_upper)' \
-"5"
+expect_wasmtime_result "pipe: with multi-arg function" \
+'let add = (x: Int, y: Int) -> Int { x + y }
+5 |> add(10)' \
+"15"
 
 echo ""
 
@@ -1952,12 +1953,12 @@ if Color::Red == Color::Blue { 1 } else { 0 }' \
 "0"
 
 expect_wasmtime_result "derive(Eq): enum with payload" \
-'enum Val { Num(Int); None } derive(Eq)
+'enum Val { Num(Int); Empty } derive(Eq)
 if Val::Num(42) == Val::Num(42) { 1 } else { 0 }' \
 "1"
 
 expect_wasmtime_result "derive(Eq): enum payload not equal" \
-'enum Val { Num(Int); None } derive(Eq)
+'enum Val { Num(Int); Empty } derive(Eq)
 if Val::Num(1) == Val::Num(2) { 1 } else { 0 }' \
 "0"
 
@@ -1986,8 +1987,9 @@ expect_wasmtime_result "nested: Some(None)" \
 'match Some(None) { Some(Some(x)) => x, Some(None) => 99, None => 0, _ => -1 }' \
 "99"
 
-expect_wasmtime_result "nested: Ok(Some(x))" \
-'match Ok(Some(10)) { Ok(Some(x)) => x, Ok(None) => 0, Err(_) => -1 }' \
+expect_wasmtime_result "nested: enum wrapping Option" \
+'enum Res { Succ(Option[Int]); Fail }
+match Res::Succ(Some(10)) { Res::Succ(Some(x)) => x, Res::Succ(None) => 0, Res::Fail => -1 }' \
 "10"
 
 expect_wasmtime_result "nested: recursive tree sum" \
