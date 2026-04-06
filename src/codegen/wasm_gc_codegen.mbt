@@ -225,6 +225,10 @@ priv struct GcCodegenCtx {
   enum_ctor_type_indices : Map[String, Int]
   enum_ctor_field_kinds : Map[String, Array[GcValKind]]
   enum_names : Map[String, Bool]
+  /// Named struct types: name → gc struct type index
+  named_struct_types : Map[String, Int]
+  /// Named struct field order: name → sorted field names
+  named_struct_fields : Map[String, Array[String]]
   error_tag_index : Int
   error_tag_type_index : Int
   /// Compile-time known constants from top-level let bindings.
@@ -512,6 +516,8 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
     enum_ctor_type_indices: {},
     enum_ctor_field_kinds: {},
     enum_names: {},
+    named_struct_types: {},
+    named_struct_fields: {},
     error_tag_index,
     error_tag_type_index,
     global_consts: {},
@@ -820,6 +826,26 @@ fn emit_i64_lt_s_gc(buf : GcByteBuf) -> Unit {
 }
 
 ///|
+fn emit_i64_ne_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x52)
+}
+
+///|
+fn emit_i64_gt_s_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x55)
+}
+
+///|
+fn emit_i64_le_s_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x57)
+}
+
+///|
+fn emit_i64_ge_s_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x59)
+}
+
+///|
 fn emit_i32_eq_gc(buf : GcByteBuf) -> Unit {
   buf.push(0x46)
 }
@@ -1071,6 +1097,130 @@ fn scan_enum_defs_gc(
     ctx.enum_ctor_field_kinds["None"] = []
   }
   ctx.enum_names["Option"] = true
+}
+
+///|
+/// Register named struct types from StructDef statements.
+/// Maps struct name → gc struct type index, and tracks field order.
+fn register_struct_types_gc(
+  ctx : GcCodegenCtx,
+  ast : @core.Module,
+) -> Unit raise WasmGenError {
+  for stmt in ast.stmts {
+    let (struct_name, fields) = match stmt {
+      @core.Stmt::StructDef(name~, fields~, ..) => (name, fields)
+      @core.Stmt::ExportStructDef(name~, fields~, ..) => (name, fields)
+      @core.Stmt::InternalExportStructDef(name~, fields~, ..) => (name, fields)
+      _ => continue
+    }
+    // Sort fields alphabetically (same order as record types)
+    let sorted_names : Array[String] = []
+    for f in fields {
+      sorted_names.push(f.name)
+    }
+    // Insertion sort by name
+    for i in 1..<sorted_names.length() {
+      let mut j = i
+      while j > 0 && addr_string_lt(sorted_names[j], sorted_names[j - 1]) {
+        let tmp = sorted_names[j - 1]
+        sorted_names[j - 1] = sorted_names[j]
+        sorted_names[j] = tmp
+        j -= 1
+      }
+    }
+    // Build field type map
+    let field_types : Map[String, @core.Type] = {}
+    for f in fields {
+      field_types[f.name] = f.ty
+    }
+    // Create gc struct type with sorted field kinds
+    let gc_field_kinds : Array[GcValKind] = []
+    for name in sorted_names {
+      match field_types.get(name) {
+        Some(ty) => gc_field_kinds.push(gc_val_kind_from_type(ctx, ty))
+        None => ()
+      }
+    }
+    let type_idx = ensure_struct_type(
+      ctx.types,
+      ctx.struct_type_index,
+      gc_field_kinds,
+    )
+    ctx.named_struct_types[struct_name] = type_idx
+    ctx.named_struct_fields[struct_name] = sorted_names
+  }
+}
+
+///|
+/// Try to compile a struct field access: field_name(record_expr) → struct.get.
+/// Returns true if the access was successfully compiled, false otherwise.
+fn try_compile_struct_field_get_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  field_name : String,
+  record_expr : @core.Expr,
+) -> Bool raise WasmGenError {
+  let record_kind = infer_expr_kind_gc(ctx, fctx, record_expr)
+  match record_kind {
+    GcValKind::Ref(type_idx) => {
+      // Check if this struct type belongs to a named struct with this field
+      for struct_name, struct_type_idx in ctx.named_struct_types {
+        if struct_type_idx == type_idx {
+          match ctx.named_struct_fields.get(struct_name) {
+            Some(field_names) =>
+              for i in 0..<field_names.length() {
+                if field_names[i] == field_name {
+                  compile_expr_gc(ctx, fctx, buf, record_expr)
+                  emit_struct_get_gc(buf, type_idx, i)
+                  return true
+                }
+              }
+            None => ()
+          }
+        }
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+///|
+/// Try to infer the GcValKind for a struct field access.
+/// Returns Some(kind) if field_name is a valid field of the record expression's struct type.
+fn try_infer_struct_field_kind_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  field_name : String,
+  record_expr : @core.Expr,
+) -> GcValKind? raise WasmGenError {
+  let record_kind = infer_expr_kind_gc(ctx, fctx, record_expr)
+  match record_kind {
+    GcValKind::Ref(type_idx) => {
+      for struct_name, struct_type_idx in ctx.named_struct_types {
+        if struct_type_idx == type_idx {
+          match ctx.named_struct_fields.get(struct_name) {
+            Some(field_names) =>
+              for i in 0..<field_names.length() {
+                if field_names[i] == field_name {
+                  match ctx.types[type_idx] {
+                    GcTypeDef::Struct(fields~) =>
+                      if i < fields.length() {
+                        return Some(fields[i])
+                      }
+                    _ => ()
+                  }
+                }
+              }
+            None => ()
+          }
+        }
+      }
+      None
+    }
+    _ => None
+  }
 }
 
 ///|
@@ -1543,8 +1693,13 @@ fn gc_val_kind_from_type(
           "funcref" => GcValKind::FuncRef
           "externref" => GcValKind::ExternRef
           _ =>
-            // User-defined enum/struct types → eqref
-            GcValKind::EqRef
+            // User-defined named struct types → Ref to specific struct type
+            match ctx.named_struct_types.get(name) {
+              Some(type_idx) => GcValKind::Ref(type_idx)
+              None =>
+                // Enum or other user-defined types → eqref
+                GcValKind::EqRef
+            }
         }
       } else {
         match name {
@@ -2189,10 +2344,68 @@ fn infer_expr_kind_gc(
                       GcValKind::EqRef
                     } else if is_gc_builtin_name(name) {
                       GcValKind::EqRef
+                    } else if pos_args.length() == 1 {
+                      // Try struct field access: field_name(record_expr)
+                      match
+                        try_infer_struct_field_kind_gc(
+                          ctx,
+                          fctx,
+                          name,
+                          pos_args[0],
+                        ) {
+                        Some(kind) => kind
+                        None =>
+                          match fctx.locals.get(name) {
+                            Some(entry) =>
+                              match entry.kind {
+                                GcValKind::Ref(type_idx) =>
+                                  match ctx.types[type_idx] {
+                                    GcTypeDef::Struct(fields~) =>
+                                      if fields.length() == 2 {
+                                        match fields[0] {
+                                          GcValKind::Ref(fn_idx) =>
+                                            match ctx.types[fn_idx] {
+                                              GcTypeDef::Func(result~, ..) =>
+                                                result
+                                              _ => GcValKind::I64
+                                            }
+                                          _ => GcValKind::I64
+                                        }
+                                      } else {
+                                        GcValKind::I64
+                                      }
+                                    _ => GcValKind::I64
+                                  }
+                                _ => GcValKind::I64
+                              }
+                            None => raise WasmGenError::UnknownName(name)
+                          }
+                      }
                     } else {
                       // Unknown call — check if it's in locals (HOF param)
                       match fctx.locals.get(name) {
-                        Some(_) => GcValKind::I64 // Assume I64 return
+                        Some(entry) =>
+                          // Try to derive return type from closure struct type
+                          match entry.kind {
+                            GcValKind::Ref(type_idx) =>
+                              match ctx.types[type_idx] {
+                                GcTypeDef::Struct(fields~) =>
+                                  if fields.length() == 2 {
+                                    match fields[0] {
+                                      GcValKind::Ref(fn_idx) =>
+                                        match ctx.types[fn_idx] {
+                                          GcTypeDef::Func(result~, ..) => result
+                                          _ => GcValKind::I64
+                                        }
+                                      _ => GcValKind::I64
+                                    }
+                                  } else {
+                                    GcValKind::I64
+                                  }
+                                _ => GcValKind::I64
+                              }
+                            _ => GcValKind::I64
+                          }
                         None => raise WasmGenError::UnknownName(name)
                       }
                     }
@@ -2370,6 +2583,7 @@ fn compile_string_char_code_at(
   compile_expr_gc(ctx, fctx, buf, s_expr)
   emit_local_set_gc(buf, s_idx)
   compile_expr_gc(ctx, fctx, buf, i_expr)
+  emit_i32_wrap_i64_gc(buf) // Int (i64) → i32 index
   emit_local_set_gc(buf, i_idx)
   emit_local_get_gc(buf, s_idx)
   emit_struct_get_gc(buf, ctx.string_type, 0)
@@ -2508,8 +2722,10 @@ fn compile_string_substring(
   compile_expr_gc(ctx, fctx, buf, s_expr)
   emit_local_set_gc(buf, s_idx)
   compile_expr_gc(ctx, fctx, buf, a_expr)
+  emit_i32_wrap_i64_gc(buf) // Int (i64) → i32 index
   emit_local_set_gc(buf, a_idx)
   compile_expr_gc(ctx, fctx, buf, b_expr)
+  emit_i32_wrap_i64_gc(buf) // Int (i64) → i32 index
   emit_local_set_gc(buf, b_idx)
   emit_local_get_gc(buf, s_idx)
   emit_struct_get_gc(buf, ctx.string_type, 0)
@@ -7355,6 +7571,16 @@ fn compile_expr_gc(
                   }
                 }
                 emit_struct_new_gc(buf, type_idx)
+              } else if pos_args.length() == 1 &&
+                try_compile_struct_field_get_gc(
+                  ctx,
+                  fctx,
+                  buf,
+                  name,
+                  pos_args[0],
+                ) {
+                // Named struct field access: field_name(record) → struct.get
+                () // already compiled by try_compile_struct_field_get_gc
               } else {
                 match fctx.closure_call_types.get(name) {
                   Some(fn_type_idx) =>
@@ -7406,13 +7632,104 @@ fn compile_expr_gc(
                       }
                       emit_unreachable_gc(buf)
                     } else {
-                      // Unknown call target — trap at runtime
-                      // (HOF params with Named type aliases fall here)
-                      for arg in pos_args {
-                        compile_expr_gc(ctx, fctx, buf, arg)
-                        emit_drop_gc(buf)
+                      // Try to derive closure type from local's struct kind
+                      match fctx.locals.get(name) {
+                        Some(closure_info) =>
+                          match closure_info.kind {
+                            GcValKind::Ref(struct_idx) =>
+                              match ctx.types[struct_idx] {
+                                GcTypeDef::Struct(fields~) =>
+                                  if fields.length() == 2 {
+                                    match fields[0] {
+                                      GcValKind::Ref(fn_idx) =>
+                                        match ctx.types[fn_idx] {
+                                          GcTypeDef::Func(
+                                            params=call_param_kinds,
+                                            ..
+                                          ) => {
+                                            emit_local_get_gc(
+                                              buf,
+                                              closure_info.idx,
+                                            )
+                                            emit_struct_get_gc(
+                                              buf, struct_idx, 1,
+                                            )
+                                            for i in 0..<pos_args.length() {
+                                              let arg = pos_args[i]
+                                              let arg_kind = infer_expr_kind_gc(
+                                                ctx, fctx, arg,
+                                              )
+                                              compile_expr_gc(
+                                                ctx, fctx, buf, arg,
+                                              )
+                                              if i + 1 <
+                                                call_param_kinds.length() {
+                                                emit_coerce_top_gc(
+                                                  ctx,
+                                                  buf,
+                                                  arg_kind,
+                                                  call_param_kinds[i + 1],
+                                                )
+                                              }
+                                            }
+                                            emit_local_get_gc(
+                                              buf,
+                                              closure_info.idx,
+                                            )
+                                            emit_struct_get_gc(
+                                              buf, struct_idx, 0,
+                                            )
+                                            emit_call_ref_gc(buf, fn_idx)
+                                          }
+                                          _ => {
+                                            for arg in pos_args {
+                                              compile_expr_gc(
+                                                ctx, fctx, buf, arg,
+                                              )
+                                              emit_drop_gc(buf)
+                                            }
+                                            emit_unreachable_gc(buf)
+                                          }
+                                        }
+                                      _ => {
+                                        for arg in pos_args {
+                                          compile_expr_gc(ctx, fctx, buf, arg)
+                                          emit_drop_gc(buf)
+                                        }
+                                        emit_unreachable_gc(buf)
+                                      }
+                                    }
+                                  } else {
+                                    for arg in pos_args {
+                                      compile_expr_gc(ctx, fctx, buf, arg)
+                                      emit_drop_gc(buf)
+                                    }
+                                    emit_unreachable_gc(buf)
+                                  }
+                                _ => {
+                                  for arg in pos_args {
+                                    compile_expr_gc(ctx, fctx, buf, arg)
+                                    emit_drop_gc(buf)
+                                  }
+                                  emit_unreachable_gc(buf)
+                                }
+                              }
+                            _ => {
+                              for arg in pos_args {
+                                compile_expr_gc(ctx, fctx, buf, arg)
+                                emit_drop_gc(buf)
+                              }
+                              emit_unreachable_gc(buf)
+                            }
+                          }
+                        None => {
+                          for arg in pos_args {
+                            compile_expr_gc(ctx, fctx, buf, arg)
+                            emit_drop_gc(buf)
+                          }
+                          emit_unreachable_gc(buf)
+                        }
                       }
-                      emit_unreachable_gc(buf)
                     }
                 }
               }
@@ -8459,6 +8776,7 @@ fn build_module_gc(
 pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
   let ctx = GcCodegenCtx::new()
   scan_enum_defs_gc(ctx, ast)
+  register_struct_types_gc(ctx, ast)
   // Build enum ctor name set for free-var filtering
   let enum_ctor_names : Map[String, Bool] = {}
   for name, _ in ctx.enum_ctor_tags {

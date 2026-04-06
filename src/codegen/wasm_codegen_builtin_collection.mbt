@@ -60,7 +60,8 @@ fn compile_builtin_collection(
       compile_expr_i32(ctx, buf, pos_args[0])
     }
     "Array::push" => {
-      // array_push(arr, value) -> same as array_builder_push (arrays share layout)
+      // array_push(arr, value) -> store value at [ptr + 8 + len*4], increment len
+      // All arrays now have hidden capacity prefix at ptr[-4], same layout as ArrayBuilder.
       let pos_args = extract_positional_exprs_with_arity(args, "Array::push", 2)
       let builder_local = alloc_temp_local(ctx)
       let ptr_local = alloc_temp_local(ctx)
@@ -68,6 +69,9 @@ fn compile_builtin_collection(
       emit_untag_ptr_i32(buf)
       emit_local_tee(buf, builder_local)
       emit_local_set(buf, ptr_local)
+      // Bounds check + grow if needed (elem_size=4)
+      emit_builder_grow_check(ctx, buf, ptr_local, 4)
+      // store value at [ptr + 8 + len*4]
       emit_local_get(buf, ptr_local)
       emit_local_get(buf, ptr_local)
       emit_i32_load(buf, 4) // len
@@ -77,22 +81,28 @@ fn compile_builtin_collection(
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_i32_wrap_i64(buf)
       emit_i32_store(buf, 8)
+      // increment len
       emit_local_get(buf, ptr_local)
       emit_local_get(buf, ptr_local)
       emit_i32_load(buf, 4)
       emit_i32_const_raw(buf, 1)
       emit_i32_add(buf)
       emit_i32_store(buf, 4)
+      // return unit
       emit_i64_const_tagged(buf, 0L)
     }
     "array_new" => {
       // array_new(size, default_val) -> allocate array with given size, fill with default
+      // Layout: [cap:i32][tag:i32][len:i32][data...] — cap prefix for grow-on-push.
+      // obj_local points to tag field (base + 4).
       let pos_args = extract_positional_exprs_with_arity(args, "array_new", 2)
       require_heap(ctx)
       let size_local = alloc_temp_local(ctx)
       let val_local = alloc_temp_local(ctx)
+      let base_local = alloc_temp_local(ctx)
       let obj_local = alloc_temp_local(ctx)
       let idx_local = alloc_temp_local(ctx)
+      let alloc_size_local = alloc_temp_local(ctx)
       // Evaluate size (tagged int -> raw)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_untag_int_i32(buf)
@@ -101,26 +111,26 @@ fn compile_builtin_collection(
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, val_local)
-      // Alloc: header(8) + size*4
+      // Alloc: 4 (cap prefix) + 8 (header) + size*4, aligned
       emit_local_get(buf, size_local)
       emit_i32_const_raw(buf, 4)
       emit_i32_mul(buf)
-      emit_i32_const_raw(buf, 8)
-      emit_i32_add(buf)
-      // align to 4
-      emit_i32_const_raw(buf, 3)
+      emit_i32_const_raw(buf, 4 + 8 + 3) // cap prefix + header + alignment
       emit_i32_add(buf)
       emit_i32_const_raw(buf, -4)
       emit_i32_and(buf)
-      let alloc_size_local = alloc_temp_local(ctx)
       emit_local_set(buf, alloc_size_local)
       // heap alloc
-      emit_global_get(buf, ctx.heap_global)
-      emit_local_tee(buf, obj_local)
-      emit_local_get(buf, alloc_size_local)
+      emit_heap_alloc_local(ctx, buf, alloc_size_local, base_local)
+      // Write capacity at base[0]
+      emit_local_get(buf, base_local)
+      emit_local_get(buf, size_local)
+      emit_i32_store(buf, 0)
+      // obj = base + 4
+      emit_local_get(buf, base_local)
+      emit_i32_const_raw(buf, 4)
       emit_i32_add(buf)
-      emit_global_set(buf, ctx.heap_global)
-      ctx.heap_synced = false
+      emit_local_set(buf, obj_local)
       // Set header: tag=obj_array, len=size
       emit_local_get(buf, obj_local)
       emit_i32_const_raw(buf, obj_array)
