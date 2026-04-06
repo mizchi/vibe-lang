@@ -202,6 +202,165 @@ fn emit_builder_grow_check(
 }
 
 ///|
+/// Emit bulk capacity check for operations like push_all that add multiple elements.
+/// Ensures cap >= needed_total (len + additional_count).
+/// ptr_local may be updated if realloc occurs.
+fn emit_builder_bulk_grow_check(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  ptr_local : Int,
+  additional_count_local : Int,
+  elem_size : Int,
+) -> Unit {
+  require_heap(ctx)
+  let cap_local = alloc_temp_local(ctx)
+  let len_local = alloc_temp_local(ctx)
+  let needed_local = alloc_temp_local(ctx)
+  let old_end_local = alloc_temp_local(ctx)
+  let new_cap_local = alloc_temp_local(ctx)
+  let additional_bytes_local = alloc_temp_local(ctx)
+  // Read capacity from hidden prefix at ptr - 4
+  emit_local_get(buf, ptr_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 0)
+  emit_local_set(buf, cap_local)
+  // Read current length
+  emit_local_get(buf, ptr_local)
+  emit_i32_load(buf, 4)
+  emit_local_set(buf, len_local)
+  // needed = len + additional_count
+  emit_local_get(buf, len_local)
+  emit_local_get(buf, additional_count_local)
+  emit_i32_add(buf)
+  emit_local_set(buf, needed_local)
+  // if needed > cap: grow
+  emit_local_get(buf, needed_local)
+  emit_local_get(buf, cap_local)
+  emit_i32_gt_s(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // void
+  // new_cap = max(cap * 2, needed)
+  emit_local_get(buf, cap_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_shl(buf)
+  emit_local_set(buf, new_cap_local)
+  emit_local_get(buf, new_cap_local)
+  emit_local_get(buf, needed_local)
+  emit_i32_lt_s(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // void
+  emit_local_get(buf, needed_local)
+  emit_local_set(buf, new_cap_local)
+  buf.push((11).to_byte()) // end if
+  // Compute old_alloc_end
+  emit_local_get(buf, cap_local)
+  emit_i32_const_raw(buf, elem_size)
+  emit_i32_mul(buf)
+  emit_i32_const_raw(buf, 4 + 8 + 3)
+  emit_i32_add(buf)
+  emit_i32_const_raw(buf, -4)
+  emit_i32_and(buf)
+  emit_local_get(buf, ptr_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_add(buf)
+  emit_local_set(buf, old_end_local)
+  // Check if at heap tip
+  emit_local_get(buf, old_end_local)
+  emit_local_get(buf, ctx.heap_local)
+  emit_i32_eq(buf)
+  buf.push((4).to_byte()) // if (at heap tip)
+  buf.push((64).to_byte()) // void
+  // additional_bytes = (new_cap - cap) * elem_size
+  emit_local_get(buf, new_cap_local)
+  emit_local_get(buf, cap_local)
+  emit_i32_sub(buf)
+  emit_i32_const_raw(buf, elem_size)
+  emit_i32_mul(buf)
+  emit_local_set(buf, additional_bytes_local)
+  emit_heap_reserve_local(ctx, buf, additional_bytes_local)
+  emit_local_get(buf, ctx.heap_local)
+  emit_local_get(buf, additional_bytes_local)
+  emit_i32_add(buf)
+  emit_local_set(buf, ctx.heap_local)
+  ctx.heap_synced = false
+  // Update capacity
+  emit_local_get(buf, ptr_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_sub(buf)
+  emit_local_get(buf, new_cap_local)
+  emit_i32_store(buf, 0)
+  buf.push((5).to_byte()) // else (not at heap tip — full realloc)
+  // Allocate new buffer
+  let new_alloc_size_local = alloc_temp_local(ctx)
+  emit_local_get(buf, new_cap_local)
+  emit_i32_const_raw(buf, elem_size)
+  emit_i32_mul(buf)
+  emit_i32_const_raw(buf, 4 + 8 + 3)
+  emit_i32_add(buf)
+  emit_i32_const_raw(buf, -4)
+  emit_i32_and(buf)
+  emit_local_set(buf, new_alloc_size_local)
+  let new_base_local = alloc_temp_local(ctx)
+  emit_heap_alloc_local(ctx, buf, new_alloc_size_local, new_base_local)
+  // Write new_cap at new_base[0]
+  emit_local_get(buf, new_base_local)
+  emit_local_get(buf, new_cap_local)
+  emit_i32_store(buf, 0)
+  // Copy old data: memcpy(new_base + 4, ptr, 8 + len * elem_size)
+  let copy_size_local = alloc_temp_local(ctx)
+  emit_local_get(buf, len_local)
+  emit_i32_const_raw(buf, elem_size)
+  emit_i32_mul(buf)
+  emit_i32_const_raw(buf, 8)
+  emit_i32_add(buf)
+  emit_local_set(buf, copy_size_local)
+  let copy_words_local = alloc_temp_local(ctx)
+  emit_local_get(buf, copy_size_local)
+  emit_i32_const_raw(buf, 2)
+  emit_i32_shr_u(buf)
+  emit_local_set(buf, copy_words_local)
+  let copy_i_local = alloc_temp_local(ctx)
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, copy_i_local)
+  emit_block(buf)
+  emit_loop(buf)
+  emit_local_get(buf, copy_i_local)
+  emit_local_get(buf, copy_words_local)
+  emit_i32_ge_s(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, new_base_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_add(buf)
+  emit_local_get(buf, copy_i_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_local_get(buf, ptr_local)
+  emit_local_get(buf, copy_i_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i32_load(buf, 0)
+  emit_i32_store(buf, 0)
+  emit_local_get(buf, copy_i_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, copy_i_local)
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+  // Update ptr_local to new location
+  emit_local_get(buf, new_base_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_add(buf)
+  emit_local_set(buf, ptr_local)
+  buf.push((11).to_byte()) // end if (at heap tip)
+  buf.push((11).to_byte()) // end if (needed > cap)
+}
+
+///|
 fn emit_bytes_raw_load_header(
   buf : ByteBuf,
   ptr_local : Int,

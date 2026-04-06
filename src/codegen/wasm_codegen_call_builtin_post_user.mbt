@@ -243,7 +243,7 @@ fn compile_call_builtin_post_user_inner(
     }
     "Array::concat" => {
       // array_concat(xs, ys) -> new array with all elements from xs then ys
-      // Uses memory.copy for bulk transfer instead of element-by-element loops.
+      // Layout: [cap:i32][tag:i32][len:i32][data...] — cap prefix for grow-on-push.
       let pos_args = extract_positional_exprs_with_arity(
         args, "Array::concat", 2,
       )
@@ -253,6 +253,7 @@ fn compile_call_builtin_post_user_inner(
       let ys_ptr_local = alloc_temp_local(ctx)
       let ys_len_local = alloc_temp_local(ctx)
       let total_len_local = alloc_temp_local(ctx)
+      let base_local = alloc_temp_local(ctx)
       let obj_local = alloc_temp_local(ctx)
       let alloc_size_local = alloc_temp_local(ctx)
       // Untag xs pointer
@@ -278,17 +279,26 @@ fn compile_call_builtin_post_user_inner(
       emit_local_get(buf, ys_len_local)
       emit_i32_add(buf)
       emit_local_set(buf, total_len_local)
-      // alloc_size = align4(8 + total_len * 4)
+      // alloc_size = align4(4 + 8 + total_len * 4) — includes cap prefix
       emit_local_get(buf, total_len_local)
       emit_i32_const_raw(buf, 4)
       emit_i32_mul(buf)
-      emit_i32_const_raw(buf, 8 + 3)
+      emit_i32_const_raw(buf, 4 + 8 + 3)
       emit_i32_add(buf)
       emit_i32_const_raw(buf, -4)
       emit_i32_and(buf)
       emit_local_set(buf, alloc_size_local)
       // Allocate
-      emit_heap_alloc_local(ctx, buf, alloc_size_local, obj_local)
+      emit_heap_alloc_local(ctx, buf, alloc_size_local, base_local)
+      // Write capacity at base[0]
+      emit_local_get(buf, base_local)
+      emit_local_get(buf, total_len_local)
+      emit_i32_store(buf, 0)
+      // obj = base + 4
+      emit_local_get(buf, base_local)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_add(buf)
+      emit_local_set(buf, obj_local)
       // Set type = obj_array
       emit_local_get(buf, obj_local)
       emit_i32_const_raw(buf, obj_array)
@@ -331,7 +341,7 @@ fn compile_call_builtin_post_user_inner(
     }
     "Array::push_all" => {
       // array_push_all(dst, src) -> Unit: append all elements of src to dst in-place
-      // Uses memory.copy for bulk transfer instead of element-by-element loop.
+      // Uses bulk grow check + memory.copy for bulk transfer.
       let pos_args = extract_positional_exprs_with_arity(
         args, "Array::push_all", 2,
       )
@@ -345,9 +355,6 @@ fn compile_call_builtin_post_user_inner(
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, dst_ptr_local)
-      emit_local_get(buf, dst_ptr_local)
-      emit_i32_load(buf, 4) // dst.len
-      emit_local_set(buf, dst_len_local)
       // Untag src pointer
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_i64_const_raw(buf, (-4).to_int64())
@@ -357,6 +364,12 @@ fn compile_call_builtin_post_user_inner(
       emit_local_get(buf, src_ptr_local)
       emit_i32_load(buf, 4) // src.len
       emit_local_set(buf, src_len_local)
+      // Bulk grow check: ensure dst has capacity for dst_len + src_len elements
+      emit_builder_bulk_grow_check(ctx, buf, dst_ptr_local, src_len_local, 4)
+      // Re-read dst_len after potential realloc (ptr_local may have changed)
+      emit_local_get(buf, dst_ptr_local)
+      emit_i32_load(buf, 4) // dst.len
+      emit_local_set(buf, dst_len_local)
       // memory.copy(dst_data + dst_len*4, src_data + 0, src_len*4)
       // dst = dst_ptr + 8 + dst_len * 4
       emit_local_get(buf, dst_ptr_local)
@@ -387,6 +400,7 @@ fn compile_call_builtin_post_user_inner(
     }
     "Array::slice" => {
       // array_slice(arr, start, end) -> new array with elements arr[start..end]
+      // Layout: [cap:i32][tag:i32][len:i32][data...] — cap prefix for grow-on-push.
       let pos_args = extract_positional_exprs_with_arity(
         args, "Array::slice", 3,
       )
@@ -396,8 +410,9 @@ fn compile_call_builtin_post_user_inner(
       let start_local = alloc_temp_local(ctx)
       let end_local = alloc_temp_local(ctx)
       let slice_len_local = alloc_temp_local(ctx)
+      let cap_local = alloc_temp_local(ctx)
+      let base_local = alloc_temp_local(ctx)
       let obj_local = alloc_temp_local(ctx)
-      let _copy_i_local = alloc_temp_local(ctx)
       let alloc_size_local = alloc_temp_local(ctx)
       // Untag array pointer
       compile_expr_i32(ctx, buf, pos_args[0])
@@ -471,30 +486,37 @@ fn compile_call_builtin_post_user_inner(
       emit_local_get(buf, start_local)
       emit_i32_sub(buf)
       emit_local_set(buf, slice_len_local)
-      // alloc_size = align4(8 + max(slice_len, 16384) * 4)
-      // Reserve extra capacity so that array_push can append without realloc
-      // NOTE: array_push has no bounds check/realloc — this min_cap must be large
-      // enough for all use cases. 16384 covers the selfhost parser (~12000 tokens).
-      // TODO: implement proper capacity management with realloc in array_push.
-      let min_cap = 16384
+      // cap = max(slice_len, 256) — initial capacity with room to grow
       emit_local_get(buf, slice_len_local)
-      emit_i32_const_raw(buf, min_cap)
+      emit_i32_const_raw(buf, builder_initial_cap)
       emit_i32_gt_s(buf)
       buf.push((4).to_byte()) // if
       buf.push((127).to_byte()) // result i32
       emit_local_get(buf, slice_len_local)
       buf.push((5).to_byte()) // else
-      emit_i32_const_raw(buf, min_cap)
+      emit_i32_const_raw(buf, builder_initial_cap)
       buf.push((11).to_byte()) // end if
+      emit_local_set(buf, cap_local)
+      // alloc_size = align4(4 + 8 + cap * 4) — includes cap prefix
+      emit_local_get(buf, cap_local)
       emit_i32_const_raw(buf, 4)
       emit_i32_mul(buf)
-      emit_i32_const_raw(buf, 8 + 3) // header + alignment
+      emit_i32_const_raw(buf, 4 + 8 + 3)
       emit_i32_add(buf)
       emit_i32_const_raw(buf, -4)
       emit_i32_and(buf)
       emit_local_set(buf, alloc_size_local)
       // Allocate
-      emit_heap_alloc_local(ctx, buf, alloc_size_local, obj_local)
+      emit_heap_alloc_local(ctx, buf, alloc_size_local, base_local)
+      // Write capacity at base[0]
+      emit_local_get(buf, base_local)
+      emit_local_get(buf, cap_local)
+      emit_i32_store(buf, 0)
+      // obj = base + 4
+      emit_local_get(buf, base_local)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_add(buf)
+      emit_local_set(buf, obj_local)
       // Set type = obj_array
       emit_local_get(buf, obj_local)
       emit_i32_const_raw(buf, obj_array)
