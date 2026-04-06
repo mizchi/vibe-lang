@@ -143,6 +143,7 @@ fn bench_cmd(
   _syntax_mode : @runtime.ParserMode,
   features : @runtime.RuntimeFeatureFlags,
 ) -> Unit {
+  @runtime_compile.init_hooks()
   ignore(features)
   if has_help_flag(args) {
     print_bench_help()

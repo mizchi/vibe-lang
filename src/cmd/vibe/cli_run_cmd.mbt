@@ -1009,6 +1009,7 @@ fn run_cmd(
   _features : @runtime.RuntimeFeatureFlags,
   enable_llm~ : Bool,
 ) -> Unit {
+  @runtime_compile.init_hooks()
   let _ = enable_llm
   if has_help_flag(args) {
     print_run_help()
