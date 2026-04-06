@@ -259,31 +259,59 @@ fn compile_expr_handle_with_resume(
   write_u32_leb(buf, 2) // $exit = loop(1) → exit_block(2)
   // end $catch_target — error value now on stack
   buf.push((11).to_byte())
-  // Handler code: error value is on stack
+  // Handler code: error value (op key string) is on stack
   let caught_local = alloc_temp_local_with_kind(ctx, error_kind)
   emit_local_set(buf, caught_local)
+  // Pre-allocate resume value local shared across all arms
+  let resume_val_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
   if effect_arms.length() > 0 {
-    let arm = effect_arms[0]
-    let resume_expr = extract_resume_value_expr(arm.expr)
-    // Bind handler param if present
-    match arm.pat {
-      @core.Pat::Ctor(args~, ..) if args.length() > 0 =>
-        match args[0] {
-          @core.Pat::Bind(name~, ..) => {
-            let bind_local = alloc_temp_local_with_kind(ctx, error_kind)
-            emit_local_get(buf, caught_local)
-            emit_local_set(buf, bind_local)
-            ctx.locals[name] = bind_local
-            ctx.local_kinds[name] = error_kind
+    // Dispatch: compare caught op key against each arm's pattern key
+    for arm in effect_arms {
+      let arm_key = match arm.pat {
+        @core.Pat::Ctor(name~, ..) => name
+        _ => continue
+      }
+      // Compare caught_local with arm's op key string
+      if ctx.use_js_strings {
+        ctx.need_js_equals = true
+        emit_local_get(buf, caught_local)
+        let str_idx = ctx.js_strings.intern(arm_key)
+        emit_global_get(buf, str_idx)
+        emit_call(buf, import_index_js_equals(ctx))
+      } else {
+        emit_local_get(buf, caught_local)
+        let arm_key_expr = @core.Expr::String(
+          value=arm_key, span=arm.span,
+        )
+        compile_expr(ctx, buf, arm_key_expr)
+        emit_i64_eq(buf)
+      }
+      buf.push((4).to_byte()) // if
+      buf.push((64).to_byte()) // void
+      adjust_loop_offsets(ctx, 1)
+      // Bind handler param from perform_arg global
+      match arm.pat {
+        @core.Pat::Ctor(args~, ..) if args.length() > 0 =>
+          match args[0] {
+            @core.Pat::Bind(name~, ..) => {
+              let bind_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+              emit_global_get(buf, ctx.effect_perform_arg_global)
+              emit_local_set(buf, bind_local)
+              ctx.locals[name] = bind_local
+              ctx.local_kinds[name] = ValueKind::I64
+            }
+            _ => ()
           }
-          _ => ()
-        }
-      _ => ()
+        _ => ()
+      }
+      // Compile resume expression and store in shared local
+      let resume_expr = extract_resume_value_expr(arm.expr)
+      compile_expr(ctx, buf, resume_expr)
+      emit_local_set(buf, resume_val_local)
+      buf.push((11).to_byte()) // end if
+      adjust_loop_offsets(ctx, -1)
     }
-    compile_expr(ctx, buf, resume_expr)
     // Store resume value: buf[count * 8] = value
-    let resume_val_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
-    emit_local_set(buf, resume_val_local)
     emit_global_get(buf, ctx.effect_resume_buf_global)
     emit_global_get(buf, ctx.effect_resume_count_global)
     emit_i32_const_raw(buf, 8)

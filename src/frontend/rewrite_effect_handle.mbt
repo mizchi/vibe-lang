@@ -172,7 +172,7 @@ fn reh_rewrite_expr(expr : @core.Expr) -> @core.Expr {
       for arm in arms {
         next_arms.push(@core.MatchArm::{
           pat: arm.pat,
-          cond: arm.cond,
+          cond: arm.cond.map(fn(c) { reh_rewrite_expr(c) }),
           expr: reh_rewrite_expr(arm.expr),
           span: arm.span,
         })
@@ -545,6 +545,22 @@ fn reh_replace_performs_expr(
         body=reh_replace_performs(body, handlers),
         span~,
       )
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let next_arms : Array[@core.MatchArm] = []
+      for arm in arms {
+        next_arms.push(@core.MatchArm::{
+          pat: arm.pat,
+          cond: arm.cond.map(fn(c) { reh_replace_performs_expr(c, handlers) }),
+          expr: reh_replace_performs_expr(arm.expr, handlers),
+          span: arm.span,
+        })
+      }
+      @core.Expr::Match(
+        scrutinee=reh_replace_performs_expr(scrutinee, handlers),
+        arms=next_arms,
+        span~,
+      )
+    }
     @core.Expr::Handle(body~, arms~, span~) => {
       // Replace performs in the inner handle body, but do NOT re-enter
       // reh_rewrite_handle (which would cause infinite recursion when
@@ -555,7 +571,7 @@ fn reh_replace_performs_expr(
       for arm in arms {
         inner_arms.push(@core.MatchArm::{
           pat: arm.pat,
-          cond: arm.cond,
+          cond: arm.cond.map(fn(c) { reh_replace_performs_expr(c, handlers) }),
           expr: reh_replace_performs_expr(arm.expr, handlers),
           span: arm.span,
         })

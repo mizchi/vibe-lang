@@ -1,0 +1,68 @@
+//# Effects
+
+effect Transform {
+  Apply(String) -> String
+}
+
+effect Calc {
+  Add(Int) -> Int
+  Mul(Int) -> Int
+}
+
+effect Reader2 {
+  Read() -> String
+}
+
+//# Misc
+
+test "cross-function effect arg passing" {
+  let apply: (String) -> String with { Transform } = (s) -> {
+    perform Transform::Apply(s)
+  }
+  let result = handle {
+    apply("hello")
+  } {
+    Transform::Apply(s) => resume(s + "!")
+  }
+  assert(result == "hello!")
+}
+
+test "cross-function effect no-arg" {
+  let read: () -> String with { Reader2 } = () -> {
+    perform Reader2::Read()
+  }
+  let result = handle {
+    read()
+  } {
+    Reader2::Read() => resume("fixed")
+  }
+  assert(result == "fixed")
+}
+
+test "cross-function effect multiple calls" {
+  let read: () -> String with { Reader2 } = () -> {
+    perform Reader2::Read()
+  }
+  let result = handle {
+    let a = read()
+    let b = read()
+    a + " " + b
+  } {
+    Reader2::Read() => resume("hi")
+  }
+  assert(result == "hi hi")
+}
+
+test "cross-function multi-op dispatch" {
+  let add: (Int) -> Int with { Calc } = (n) -> perform Calc::Add(n)
+  let mul: (Int) -> Int with { Calc } = (n) -> perform Calc::Mul(n)
+  let result = handle {
+    let a = add(5)
+    let b = mul(3)
+    a + b
+  } {
+    Calc::Add(n) => resume(n + 10),
+    Calc::Mul(n) => resume(n * 10)
+  }
+  assert(result == 45)
+}

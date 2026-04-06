@@ -1144,7 +1144,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     let global_sec = ByteBuf::new()
     let global_count = (if heap_global_in_section { 1 } else { 0 }) +
       (if ctx.need_stack_switching { 1 } else { 0 }) +
-      (if ctx.need_effect_resume { 3 } else { 0 }) +
+      (if ctx.need_effect_resume { 4 } else { 0 }) +
       (if ctx.coverage_enabled { 2 } else { 0 }) +
       (if need_fs_global { 1 } else { 0 }) +
       (if ctx.need_socket { 1 } else { 0 }) +
@@ -1169,13 +1169,14 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       emit_i64_const_raw(global_sec, 0L) // initial value = 0
       global_sec.push((11).to_byte()) // end
     }
-    // Effect resume globals: idx, count, buf_ptr
+    // Effect resume globals: idx, count, buf_ptr, perform_arg
     if ctx.need_effect_resume {
       let base_idx = (if ctx.use_heap_global { 1 } else { 0 }) +
         (if ctx.need_stack_switching { 1 } else { 0 })
       ctx.effect_resume_idx_global = base_idx
       ctx.effect_resume_count_global = base_idx + 1
       ctx.effect_resume_buf_global = base_idx + 2
+      ctx.effect_perform_arg_global = base_idx + 3
       for i in 0..<3 {
         let _ = i
         global_sec.push((127).to_byte()) // i32
@@ -1183,11 +1184,16 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
         emit_i32_const_raw(global_sec, 0)
         global_sec.push((11).to_byte()) // end
       }
+      // perform_arg global (i64)
+      global_sec.push((126).to_byte()) // i64
+      global_sec.push((1).to_byte()) // mutable
+      emit_i64_const_raw(global_sec, 0L)
+      global_sec.push((11).to_byte()) // end
     }
     if ctx.coverage_enabled {
       ctx.coverage_base_global_index = (if ctx.use_heap_global { 1 } else { 0 }) +
         (if ctx.need_stack_switching { 1 } else { 0 }) +
-        (if ctx.need_effect_resume { 3 } else { 0 })
+        (if ctx.need_effect_resume { 4 } else { 0 })
       ctx.coverage_count_global_index = ctx.coverage_base_global_index + 1
       // Coverage counter base offset (immutable)
       global_sec.push((127).to_byte()) // i32
@@ -1234,7 +1240,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     if exported_env_global_count > 0 {
       let mut env_global_idx = (if ctx.use_heap_global { 1 } else { 0 }) +
         (if ctx.need_stack_switching { 1 } else { 0 }) +
-        (if ctx.need_effect_resume { 3 } else { 0 }) +
+        (if ctx.need_effect_resume { 4 } else { 0 }) +
         (if ctx.coverage_enabled { 2 } else { 0 }) +
         (if need_fs_global { 1 } else { 0 }) +
         (if ctx.need_socket { 1 } else { 0 }) +
@@ -3463,7 +3469,7 @@ fn emit_module_with_coverage(
   if ctx.exported_fn_env_globals.length() > 0 {
     let mut env_global_idx = (if ctx.use_heap_global { 1 } else { 0 }) +
       (if ctx.need_stack_switching { 1 } else { 0 }) +
-      (if ctx.need_effect_resume { 3 } else { 0 }) +
+      (if ctx.need_effect_resume { 4 } else { 0 }) +
       (if ctx.coverage_enabled { 2 } else { 0 }) +
       (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 }) +
       (if ctx.need_socket { 1 } else { 0 }) +
@@ -3503,6 +3509,7 @@ fn emit_module_with_coverage(
     ctx.effect_resume_idx_global = base
     ctx.effect_resume_count_global = base + 1
     ctx.effect_resume_buf_global = base + 2
+    ctx.effect_perform_arg_global = base + 3
   }
   // Pre-compute RC helper function indices before compile loop.
   // Helpers are appended right after user functions in compiled_funcs.
@@ -3528,7 +3535,7 @@ fn emit_module_with_coverage(
       ctx.rc_header_size = 8 // [alloc_size@-8][rc_count@-4]
       ctx.rc_free_list_global = (if ctx.use_heap_global { 1 } else { 0 }) +
         (if ctx.need_stack_switching { 1 } else { 0 }) +
-        (if ctx.need_effect_resume { 3 } else { 0 }) +
+        (if ctx.need_effect_resume { 4 } else { 0 }) +
         (if ctx.coverage_enabled { 2 } else { 0 }) +
         (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 }) +
         (if ctx.need_socket { 1 } else { 0 })
@@ -3543,7 +3550,7 @@ fn emit_module_with_coverage(
       } else {
         (if ctx.use_heap_global { 1 } else { 0 }) +
         (if ctx.need_stack_switching { 1 } else { 0 }) +
-        (if ctx.need_effect_resume { 3 } else { 0 }) +
+        (if ctx.need_effect_resume { 4 } else { 0 }) +
         (if ctx.coverage_enabled { 2 } else { 0 }) +
         (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 }) +
         (if ctx.need_socket { 1 } else { 0 })
