@@ -26,8 +26,8 @@ resolve_vibe_cmd() {
     return 0
   fi
   candidates+=(
-    "$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
     "$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe"
+    "$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
     "$PROJECT_ROOT/target/native/release/build/cmd/vibe/vibe.exe"
     "$PROJECT_ROOT/target/native/debug/build/cmd/vibe/vibe.exe"
   )
@@ -359,6 +359,11 @@ if suite_cache_valid; then
   fi
 else
   set +e
+  echo "[suite] testing without VIBE_TEST_BACKEND" >&2
+  printf 'test "hello" { assert(1 == 1) }\n' > /tmp/_vibe_diag.vibe
+  "${VIBE_CMD[@]}" test /tmp/_vibe_diag.vibe 2>&1 || true
+  echo "[suite] testing with VIBE_TEST_BACKEND=$TEST_BACKEND" >&2
+  VIBE_TEST_BACKEND="$TEST_BACKEND" "${VIBE_CMD[@]}" test /tmp/_vibe_diag.vibe 2>&1 || true
   VIBE_TEST_BACKEND="$TEST_BACKEND" \
     VIBE_SELFHOST_SUITE_REPORT_LIST="$report_list_path" \
     VIBE_SELFHOST_SUITE_REPORT_JSON="$report_json_path" \
