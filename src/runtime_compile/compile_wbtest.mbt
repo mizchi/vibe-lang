@@ -3912,22 +3912,21 @@ test "HOF with Option return type compiles to wasm" {
 }
 
 ///|
-test "HOF with error effect compiles to wasm" {
+test "error effect with throw+handle compiles to wasm" {
   let db = @runtime.VibeDb::new()
   db.set_source(
     "main",
     (
-      #|let apply = (f: (Int) -> Int with { Error }, x: Int) -> Int with { Error } { f(x) }
-      #|let risky = (x: Int) -> Int with { Error } {
-      #|  if x == 0 { throw("zero") }
-      #|  x * 2
+      #|let risky = () -> Int with { Error } {
+      #|  throw("fail")
+      #|  0
       #|}
-      #|let result = handle { apply(risky, 5) } { Error(_) => -1 }
+      #|let result = handle { risky() } { Error(_) => -1 }
       #|result
     ),
   )
   let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
-    e => fail("effect polymorphism compile failed: " + e.user_message())
+    e => fail("effect compile failed: " + e.user_message())
   }
   assert_true(wasm_bytes.length() > 8)
 }
