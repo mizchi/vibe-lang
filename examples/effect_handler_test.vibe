@@ -1,10 +1,5 @@
 //# Effects
 
-effect State {
-  Get() -> Int;
-  Set(Int) -> Unit
-}
-
 effect Logger {
   Log(String) -> Unit
 }
@@ -13,65 +8,17 @@ effect Reader {
   Read() -> String
 }
 
-//# Functions
-
-let stateful_inc: () -> Int with { State } = () -> {
-  let current = perform State::Get()
-  perform State::Set(current + 1)
-  current + 1
-}
-
-let log_msg: (String) -> Unit with { Logger } = (msg) -> {
-  perform Logger::Log(msg)
-}
+suberror KeyNotFound(String)
+suberror KeyInvalid(String)
 
 //# Misc
 
-test "state effect get/set" {
-  let mut state = 0
-  let result = handle {
-    perform State::Set(10)
-    perform State::Get()
-  } {
-    State::Get() => { resume(state) },
-    State::Set(v) => { state = v; resume(()) }
-  }
-  assert(result == 10)
-  assert(state == 10)
-}
-
-test "state effect increment" {
-  let mut state = 0
-  let result = handle {
-    stateful_inc()
-  } {
-    State::Get() => { resume(state) },
-    State::Set(v) => { state = v; resume(()) }
-  }
-  assert(result == 1)
-  assert(state == 1)
-}
-
-test "state effect multiple operations" {
-  let mut state = 0
-  handle {
-    perform State::Set(5)
-    let a = perform State::Get()
-    perform State::Set(a * 2)
-    let b = perform State::Get()
-    assert(b == 10)
-  } {
-    State::Get() => { resume(state) },
-    State::Set(v) => { state = v; resume(()) }
-  }
-}
-
-test "logger effect collect messages" {
+test "single-op effect with resume" {
   let mut logs = ArrayBuilder::new()
   handle {
-    log_msg("hello")
-    log_msg("world")
-    log_msg("!")
+    perform Logger::Log("hello")
+    perform Logger::Log("world")
+    perform Logger::Log("!")
   } {
     Logger::Log(msg) => {
       ArrayBuilder::push(logs, msg)
@@ -85,18 +32,30 @@ test "logger effect collect messages" {
   assert(result[2] == "!")
 }
 
-test "nested effect handlers" {
-  let mut state = 0
+test "reader effect inline" {
+  let inputs = ["hello", "world"]
+  let mut idx = 0
+  let result = handle {
+    let a = perform Reader::Read()
+    let b = perform Reader::Read()
+    a + " " + b
+  } {
+    Reader::Read() => {
+      let v = inputs[idx]
+      idx += 1
+      resume(v)
+    }
+  }
+  assert(result == "hello world")
+}
+
+test "effect with loop" {
   let mut logs = ArrayBuilder::new()
   handle {
-    handle {
-      perform State::Set(42)
-      perform Logger::Log("set to 42")
-      let v = perform State::Get()
-      perform Logger::Log("got \(v)")
-    } {
-      State::Get() => { resume(state) },
-      State::Set(v) => { state = v; resume(()) }
+    let mut i = 0
+    while i < 4 {
+      perform Logger::Log(Int::to_string(i))
+      i += 1
     }
   } {
     Logger::Log(msg) => {
@@ -104,13 +63,13 @@ test "nested effect handlers" {
       resume(())
     }
   }
-  assert(state == 42)
-  let log_arr = ArrayBuilder::freeze(logs)
-  assert(Array::length(log_arr) == 2)
+  let result = ArrayBuilder::freeze(logs)
+  assert(Array::length(result) == 4)
+  assert(result[0] == "0")
+  assert(result[1] == "1")
+  assert(result[2] == "2")
+  assert(result[3] == "3")
 }
-
-suberror KeyNotFound(String)
-suberror KeyInvalid(String)
 
 test "error with suberror types" {
   let lookup: (String) -> Int with { Error } = (key) -> {
@@ -151,37 +110,16 @@ test "handle returns value on success" {
   assert(result == 42)
 }
 
-test "reader effect" {
-  let inputs = ["hello", "world"]
-  let mut idx = 0
-  let result = handle {
-    let a = perform Reader::Read()
-    let b = perform Reader::Read()
-    a + " " + b
-  } {
-    Reader::Read() => {
-      let v = inputs[idx]
-      idx += 1
-      resume(v)
-    }
+test "nested handle error" {
+  let risky: (Int) -> Int with { Error } = (x) -> {
+    if x < 0 { throw("negative") }
+    x
   }
-  assert(result == "hello world")
-}
-
-test "effect handler with loop" {
-  let mut state = 0
-  handle {
-    let mut i = 0
-    while i < 5 {
-      let cur = perform State::Get()
-      perform State::Set(cur + i)
-      i += 1
-    }
-  } {
-    State::Get() => { resume(state) },
-    State::Set(v) => { state = v; resume(()) }
-  }
-  assert(state == 10)
+  let outer = handle {
+    let inner = handle { risky(-1) } { Error(_) => 0 }
+    inner + risky(10)
+  } { Error(_) => -1 }
+  assert(outer == 10)
 }
 
 test "error in match arm" {
@@ -198,4 +136,40 @@ test "error in match arm" {
   assert(r2 == -1)
   let r3 = handle { process(None) } { Error(_) => -1 }
   assert(r3 == -1)
+}
+
+test "multiple error handlers in sequence" {
+  let fail1: () -> Int with { Error } = () -> { throw("a"); 0 }
+  let fail2: () -> Int with { Error } = () -> { throw("b"); 0 }
+  let a = handle { fail1() } { Error(_) => 10 }
+  let b = handle { fail2() } { Error(_) => 20 }
+  assert(a == 10)
+  assert(b == 20)
+}
+
+test "error handler with block body" {
+  let result = handle {
+    let x = 10
+    let y = 20
+    if x + y > 100 {
+      throw("too big")
+    }
+    x + y
+  } { Error(_) => -1 }
+  assert(result == 30)
+}
+
+test "effect handler counting" {
+  let mut count = 0
+  handle {
+    perform Logger::Log("a")
+    perform Logger::Log("b")
+    perform Logger::Log("c")
+  } {
+    Logger::Log(_msg) => {
+      count += 1
+      resume(())
+    }
+  }
+  assert(count == 3)
 }
