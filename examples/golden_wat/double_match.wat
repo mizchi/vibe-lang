@@ -5,7 +5,7 @@
   (export "memory" (memory 0))
   (func (;0;) (type 0) (result i64)
     (local i32 i64 i32 i32 i32 i32)
-    i32.const 8
+    i32.const 12
     local.tee 0
     i32.const 12
     i32.add
@@ -46,5 +46,5 @@
     local.set 1
     i64.const 0
   )
-  (data (;0;) (i32.const 0) "\0a\00\00\00\00\00\00\00")
+  (data (;0;) (i32.const 0) "\0a\00\00\00\00\00\00\00\00\00\00\00")
 )

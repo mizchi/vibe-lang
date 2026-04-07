@@ -4,10 +4,7 @@
   (export "_start" (func 0))
   (export "memory" (memory 0))
   (func (;0;) (type 0) (result i64)
-    (local i64)
-    i64.const 9
-    local.set 0
     i64.const 0
   )
-  (data (;0;) (i32.const 0) "\0a\00\00\00\00\00\00\00\01\00\00\00\05\00\00\00hello\00\00\00")
+  (data (;0;) (i32.const 0) "\0a\00\00\00\00\00\00\00\00\00\00\00")
 )
