@@ -68,12 +68,12 @@ if [ "$SIZE1" -ne "$SIZE2" ]; then
 fi
 
 # Library module count
-LIB_COUNT=$(ls "$CACHE_DIR"/*.wasm 2>/dev/null | wc -l | tr -d ' ')
+LIB_COUNT=$(find "$CACHE_DIR" -name "*.wasm" 2>/dev/null | wc -l | tr -d ' ')
 echo "  library modules: $LIB_COUNT"
 
 # WASI import check
 WASI_MODULES=0
-for f in "$CACHE_DIR"/*.wasm; do
+for f in $(find "$CACHE_DIR" -name "*.wasm" 2>/dev/null); do
   count=$(wasm-tools print "$f" 2>/dev/null | grep -c "wasi:" || true)
   if [ "$count" -gt 0 ]; then
     WASI_MODULES=$((WASI_MODULES + 1))
@@ -107,7 +107,7 @@ if ! [ -f "$STRING_LIB_WASM" ]; then
   exit 1
 fi
 STRING_PRELOAD_ARGS=()
-for f in "$STRING_CASE_DIR/.vibe/debug/main/"*.wasm; do
+for f in $(find "$STRING_CASE_DIR/.vibe/debug/main/" -name "*.wasm" 2>/dev/null); do
   if ! [ -f "$f" ]; then
     continue
   fi
@@ -156,7 +156,7 @@ if ! [ -f "$PRELUDE_LIB_WASM" ]; then
   exit 1
 fi
 PRELUDE_PRELOAD_ARGS=()
-for f in "$PRELUDE_CASE_DIR/.vibe/debug/main/"*.wasm; do
+for f in $(find "$PRELUDE_CASE_DIR/.vibe/debug/main/" -name "*.wasm" 2>/dev/null); do
   if ! [ -f "$f" ]; then
     continue
   fi
@@ -208,7 +208,7 @@ if ! timeout 30 "$CLI" build --release "$MIXED_HOF_CASE_DIR/main.vibe" \
   exit 1
 fi
 MIXED_HOF_PRELOAD_ARGS=()
-for f in "$MIXED_HOF_CASE_DIR/.vibe/debug/main/"*.wasm; do
+for f in $(find "$MIXED_HOF_CASE_DIR/.vibe/debug/main/" -name "*.wasm" 2>/dev/null); do
   if ! [ -f "$f" ]; then
     continue
   fi
