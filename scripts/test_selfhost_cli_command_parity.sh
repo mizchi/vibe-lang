@@ -6,7 +6,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_cli_command_parity}"
 COMPONENT_PATH="$OUT_DIR/selfhost_cli_preview2.component.wasm"
 WIT_PATH="$OUT_DIR/selfhost_cli_preview2.component.wit"
-VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe}"
+VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe}"
 WASMTIME_RUN="$PROJECT_ROOT/scripts/wasmtime_run.sh"
 WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y}"
 
@@ -14,7 +14,7 @@ mkdir -p "$OUT_DIR"
 
 if [ ! -x "$VIBE_BIN" ]; then
   echo "[selfhost-cli-command-parity] building host CLI..." >&2
-  moon build --target native --release src/cmd/vibe --warn-list '-29'
+  moon build --target native src/cmd/vibe --warn-list '-29'
 fi
 
 bash "$SCRIPT_DIR/build_selfhost_cli_preview2_component.sh" "$COMPONENT_PATH" "$WIT_PATH"
