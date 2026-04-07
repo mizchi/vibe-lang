@@ -4,7 +4,7 @@
 pub struct HashedModule {
   ast : @core.Module
   hash : Int
-} derive(Show)
+}
 
 ///|
 pub fn HashedModule::new(m : @core.Module) -> HashedModule {
