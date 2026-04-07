@@ -25,6 +25,7 @@ pub fn run(args : Array[String]) -> Unit {
     parsed.unstable_threads,
   )
   let enable_llm = parsed.enable_llm
+  @runtime_compile.init_hooks()
   match cmd {
     "run" => run_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
     "eval" => eval_cmd(cmd_args, runtime_features, enable_llm~)
