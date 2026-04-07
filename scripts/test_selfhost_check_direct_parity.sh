@@ -6,12 +6,12 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_check_direct_parity}"
 COMPONENT_PATH="$OUT_DIR/selfhost_check_direct.component.wasm"
 WIT_PATH="$OUT_DIR/selfhost_check_direct.component.wit"
-VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe}"
+VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe}"
 
 mkdir -p "$OUT_DIR"
 
 if [ ! -x "$VIBE_BIN" ]; then
-  moon build --target native --release --warn-list '-29-55-67-23-24-7-1' src/cmd/vibe >/dev/null
+  moon build --target native --warn-list '-29-55-67-23-24-7-1' src/cmd/vibe >/dev/null
 fi
 
 bash "$SCRIPT_DIR/build_selfhost_check_direct_component.sh" "$COMPONENT_PATH" "$WIT_PATH" >/dev/null

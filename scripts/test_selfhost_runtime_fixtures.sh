@@ -3,14 +3,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/target/native/release/build/cmd/vibe/vibe.exe}"
+VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe}"
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_runtime_fixtures}"
 SNAPSHOT_FILE="${VIBE_SELFHOST_RUNTIME_FIXTURE_SNAPSHOT_FILE:-$PROJECT_ROOT/bench/golden/selfhost_runtime_fixture_snapshot.json}"
 SHARD_SIZE="${VIBE_SELFHOST_RUNTIME_FIXTURE_SHARD_SIZE:-10}"
 GENERATED_DIR="$PROJECT_ROOT/vibe/compiler/_generated_selfhost_runtime_fixtures"
 
 if [ ! -x "$VIBE_BIN" ]; then
-  moon build --target native --release src/cmd/vibe --warn-list '-29' >/dev/null
+  moon build --target native src/cmd/vibe --warn-list '-29' >/dev/null
 fi
 
 cd "$PROJECT_ROOT"

@@ -4,7 +4,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-VIBE_CLI_RELEASE=1 source "$ROOT_DIR/scripts/ensure_native_cli.sh"
+source "$ROOT_DIR/scripts/ensure_native_cli.sh"
 CLI="$VIBE_CLI_BIN"
 
 TMPDIR="${TMPDIR:-/tmp}"

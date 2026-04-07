@@ -6,7 +6,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUT_COMPONENT="${1:-$PROJECT_ROOT/dist/selfhost_check_preview2.component.wasm}"
 OUT_WIT="${2:-${OUT_COMPONENT%.wasm}.wit}"
 ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/vibe/compiler/selfhost_check_component_entry.vibe}"
-RELEASE_VIBE_EXE="$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
+VIBE_EXE="${VIBE_EXE:-$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe}"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -17,13 +17,13 @@ require_cmd() {
 
 require_cmd wasm-tools
 
-if [ ! -x "$RELEASE_VIBE_EXE" ]; then
-  moon build --target native --release --warn-list '-29-55-67-23-24-7-1' src/cmd/vibe >/dev/null
+if [ ! -x "$VIBE_EXE" ]; then
+  moon build --target native --warn-list '-29-55-67-23-24-7-1' src/cmd/vibe >/dev/null
 fi
 
 mkdir -p "$(dirname "$OUT_COMPONENT")" "$(dirname "$OUT_WIT")"
 
-"$RELEASE_VIBE_EXE" compile --component-string-lift "$ENTRY_PATH" -o "$OUT_COMPONENT"
+"$VIBE_EXE" compile --component-string-lift "$ENTRY_PATH" -o "$OUT_COMPONENT"
 wasm-tools validate --features exceptions "$OUT_COMPONENT" >/dev/null
 wasm-tools component wit "$OUT_COMPONENT" >"$OUT_WIT"
 
