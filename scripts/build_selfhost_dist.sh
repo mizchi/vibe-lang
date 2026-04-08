@@ -48,6 +48,13 @@ echo "[dist] stage1: host compile $ENTRY_PATH"
 raw_size=$(wc -c < "$RAW_WASM")
 echo "[dist] stage1: $raw_size bytes ($(echo "scale=0; $raw_size / 1024" | bc) KB)"
 
+if command -v wasm-tools >/dev/null 2>&1; then
+  if ! wasm-tools validate --features exceptions "$RAW_WASM" >/dev/null; then
+    echo "[dist] FAIL: raw selfhost compiler wasm failed validation" >&2
+    exit 1
+  fi
+fi
+
 # --- Step 2: wasm-opt ---
 if [ "$SKIP_OPT" = "1" ]; then
   cp "$RAW_WASM" "$DIST_WASM"
@@ -68,6 +75,13 @@ elif command -v wasm-opt >/dev/null 2>&1; then
 else
   echo "[dist] wasm-opt not found, using raw output" >&2
   cp "$RAW_WASM" "$DIST_WASM"
+fi
+
+if command -v wasm-tools >/dev/null 2>&1; then
+  if ! wasm-tools validate --features exceptions "$DIST_WASM" >/dev/null; then
+    echo "[dist] FAIL: distributable selfhost compiler wasm failed validation" >&2
+    exit 1
+  fi
 fi
 
 # --- Step 3: Validate ---

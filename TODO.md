@@ -53,6 +53,11 @@ Completed items are archived in `docs/DONE.md`.
 
 ### 残タスク
 
+- [ ] `0.1.0` までの進め方をこの順で固定する
+  - [ ] `build-selfhost-dist` の raw selfhost wasm validation failure を直し、strict cold-host 条件で再確認する (#17)
+  - [ ] GitHub Actions 上で bootstrap shard の最終ログを固定する (#16)
+  - [ ] `Error` surface を `Result::Ok/Err` に寄せる整理を仕様・stdlib・diagnostics まで確定する
+  - [ ] `main` の required checks / ruleset を release 前に有効化する (#120)
 - [x] 実使用ベースの `0.1.0` usability sign-off を 1 周通す
   - `docs/report/0-1-0-usability-signoff.md`
   - [x] `vibe shell`
@@ -67,17 +72,17 @@ Completed items are archived in `docs/DONE.md`.
   - broad compiled package sweep は `just test-vibe-package-suite` へ分離
   - heavy `wasm_opt` / `wasm_runtime` suite は `just test-wasm-heavy` に残し、release gate からは外す
 - [ ] `build-selfhost-dist` を latest HEAD で cold build し、sample compile/run を再確認
-  - [x] latest HEAD の `build_selfhost_dist.sh` は pass（`wasm-opt` failure 時 raw fallback を含む）
+  - [ ] latest HEAD は `selfhost_compiler_raw.wasm` が validate 失敗する (`func 14 failed to validate`)
   - [ ] strict な cold-host 条件（既存 host CLI / dist artifact 非依存）でも再確認
 - [x] `0.1.0` の supported surface を文書化して freeze
   - `docs/adr.md` (ADR-0033)
   - linear/WASM selfhost dist を正式対象
   - GC backend は experimental
   - advanced effect/WIT mapping は experimental
-- [ ] selfhost check parity の host `Abort trap: 6` を原因特定して潰す
-  - gate 自体は pass しているが、host `vibe check` の失敗時終了が abort に見える
-  - `scripts/test_selfhost_check_command_parity.sh`
-  - `scripts/test_selfhost_check_direct_parity.sh`
+- [x] selfhost check parity の host `Abort trap: 6` を原因特定して潰す
+  - 2026-04-08 時点で release host / stage1 selfhost checker の exit status は parity cases 11 件で一致
+  - 次は `bench/golden/selfhost_check_parity_snapshot.json` と allowlist を現状へ追従させる
+  - `scripts/test_selfhost_check_parity.sh`
 - [ ] `Error` surface を `Result::Ok/Err` に寄せる 0.1.0 前整理方針を確定し、syntax / diagnostics / stdlib migration を揃える
   - `throw` / `handle ... with Error` / `?` の surface を `Result` の `Ok/Err` 表現とどう対応づけるか決める
   - release note に載せる migration story を先に固定する
