@@ -267,6 +267,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
     - 全て型チェッカー/bundler の上流問題
   - [ ] **P5: DCE + wasm-opt** — 未使用コード除去と最適化で ~350KB 目標
 - [ ] `vibe/compiler` の論理分割
+  - [x] `loader/index.vibe` の manifest traversal を shared helper に寄せ、source list/source groups の二重 BFS を削減する
 
 ## Interpreter 廃止
 

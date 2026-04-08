@@ -1,0 +1,139 @@
+//# Imports
+
+import ./loader / manifest_sources.vibe {
+  build_grouped_sources_from_manifest_rows, try_collect_manifest_source_groups_fs, try_collect_manifest_sources_fs
+}
+
+//# Functions
+
+let string_to_bytes = (s: String) -> Bytes {
+  let out = Array::slice([
+    0
+  ], 0, 0)
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+let has_source_path = (sources: Array[(String, String)], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(sources) {
+    let (path, _) = Array::get(sources, i)
+    if path == target {
+      found = true
+      i = Array::length(sources)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+let find_group_sources = (groups: Array[(String, Array[(String, String)])], target: String) -> Option[Array[(String, String)]] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(groups) {
+    let (name, sources) = Array::get(groups, i)
+    if name == target {
+      found = Some(sources)
+      i = Array::length(groups)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+//# Misc
+
+test "try_collect_manifest_sources_fs: skips manifest rows outside the dependency closure" {
+  let base_dir = "/tmp/vibe_compiler_manifest_sources_closure"
+  let manifest_path = String::concat(base_dir, "/selfhost_sources_manifest.tsv")
+  let helper_path = String::concat(base_dir, "/helper.vibe")
+  let orphan_path = String::concat(base_dir, "/orphan.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(
+    manifest_path,
+    string_to_bytes("# group\tpath\ncore\thelper.vibe\nmisc\torphan.vibe\nentry\tmain.vibe\n")
+  )
+  Fs::write_bytes(helper_path, string_to_bytes("export let add = () -> Int { 1 }"))
+  Fs::write_bytes(orphan_path, string_to_bytes("export let dead = () -> Int { 0 }"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./helper.vibe { add }\nlet run = () -> Int { add() }"))
+  match try_collect_manifest_sources_fs(main_path) {
+    Some((_, sources)) => {
+      assert(eq(Array::length(sources), 2))
+      assert(has_source_path(sources, helper_path))
+      assert(has_source_path(sources, main_path))
+      assert(has_source_path(sources, orphan_path) == false)
+    },
+    None => assert(false)
+  }
+}
+
+test "try_collect_manifest_source_groups_fs: preserves manifest groups for the dependency closure" {
+  let base_dir = "/tmp/vibe_compiler_manifest_groups_closure"
+  let manifest_path = String::concat(base_dir, "/selfhost_sources_manifest.tsv")
+  let helper_path = String::concat(base_dir, "/helper.vibe")
+  let orphan_path = String::concat(base_dir, "/orphan.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(
+    manifest_path,
+    string_to_bytes("# group\tpath\ncore\thelper.vibe\nmisc\torphan.vibe\nentry\tmain.vibe\n")
+  )
+  Fs::write_bytes(helper_path, string_to_bytes("export let add = () -> Int { 1 }"))
+  Fs::write_bytes(orphan_path, string_to_bytes("export let dead = () -> Int { 0 }"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./helper.vibe { add }\nlet run = () -> Int { add() }"))
+  match try_collect_manifest_source_groups_fs(main_path) {
+    Some((_, groups)) => {
+      assert(eq(Array::length(groups), 2))
+      match find_group_sources(groups, "core") {
+        Some(sources) => assert(has_source_path(sources, helper_path)),
+        None => assert(false)
+      }
+      match find_group_sources(groups, "entry") {
+        Some(sources) => assert(has_source_path(sources, main_path)),
+        None => assert(false)
+      }
+      match find_group_sources(groups, "misc") {
+        Some(_) => assert(false),
+        None => assert(true)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "build_grouped_sources_from_manifest_rows: skips rows without loaded sources" {
+  let groups = build_grouped_sources_from_manifest_rows(
+    "/tmp/vibe_compiler_manifest_group_builder",
+    [
+      ("core", "helper.vibe"),
+      ("misc", "orphan.vibe"),
+      ("entry", "main.vibe")
+    ],
+    [
+      ("/tmp/vibe_compiler_manifest_group_builder/helper.vibe", "export let add = () -> Int { 1 }"),
+      ("/tmp/vibe_compiler_manifest_group_builder/main.vibe", "let run = () -> Int { 1 }")
+    ]
+  )
+  assert(eq(Array::length(groups), 2))
+  match find_group_sources(groups, "core") {
+    Some(sources) => assert(has_source_path(sources, "/tmp/vibe_compiler_manifest_group_builder/helper.vibe")),
+    None => assert(false)
+  }
+  match find_group_sources(groups, "entry") {
+    Some(sources) => assert(has_source_path(sources, "/tmp/vibe_compiler_manifest_group_builder/main.vibe")),
+    None => assert(false)
+  }
+  match find_group_sources(groups, "misc") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}

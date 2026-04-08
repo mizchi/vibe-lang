@@ -143,13 +143,35 @@ test "collect_all_sources_fs: reuses aggregated manifest headers when source cac
   remove_file_if_exists(persistent_source_list_cache_path(main_path))
   remove_file_if_exists(persistent_module_header_cache_path(main_path, compact_string_fingerprint(Fs::read_file(main_path))))
   remove_file_if_exists(persistent_module_header_cache_path(helper_path, compact_string_fingerprint(Fs::read_file(helper_path))))
-  Fs::write_bytes(helper_path, string_to_bytes("impl"))
+  Fs::write_bytes(helper_path, string_to_bytes("export let add = () -> Int { 2 }"))
   let rebuilt = collect_all_sources_fs(main_path)
   assert(eq(Array::length(rebuilt), 2))
   match lookup_group_source([
     ("recursive", rebuilt)
   ], helper_path) {
-    Some(source) => assert(source == "impl"),
+    Some(source) => assert(source == "export let add = () -> Int { 2 }"),
+    None => assert(false)
+  }
+}
+
+test "collect_source_groups_fs: reuses aggregated manifest headers when source caches are missing" {
+  let base_dir = "/tmp/vibe_compiler_persistent_manifest_group_headers"
+  let (_, helper_path, main_path) = setup_manifest_fixture(base_dir, "export let add = () -> Int { 1 }", "import ./helper.vibe { add }\nlet run = () -> Int { add() }")
+  remove_file_if_exists(persistent_manifest_header_cache_path(main_path))
+  remove_file_if_exists(persistent_source_group_cache_path(main_path))
+  remove_file_if_exists(persistent_source_list_cache_path(main_path))
+  let initial = collect_source_groups_fs(main_path)
+  assert(eq(Array::length(initial), 2))
+  assert(Fs::exists(persistent_manifest_header_cache_path(main_path)))
+  remove_file_if_exists(persistent_source_group_cache_path(main_path))
+  remove_file_if_exists(persistent_source_list_cache_path(main_path))
+  remove_file_if_exists(persistent_module_header_cache_path(main_path, compact_string_fingerprint(Fs::read_file(main_path))))
+  remove_file_if_exists(persistent_module_header_cache_path(helper_path, compact_string_fingerprint(Fs::read_file(helper_path))))
+  Fs::write_bytes(helper_path, string_to_bytes("export let add = () -> Int { 2 }"))
+  let rebuilt = collect_source_groups_fs(main_path)
+  assert(eq(Array::length(rebuilt), 2))
+  match lookup_group_source(rebuilt, helper_path) {
+    Some(source) => assert(source == "export let add = () -> Int { 2 }"),
     None => assert(false)
   }
 }
