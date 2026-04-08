@@ -76,6 +76,52 @@ fn exported_env_global_export_name(name : String) -> String {
 }
 
 ///|
+fn resolve_exported_fn_aliases(ctx : CodegenCtx) -> Unit {
+  for export_name, target_name in ctx.exported_fn_aliases {
+    match ctx.fn_indices.get(target_name) {
+      Some(idx) => {
+        ctx.fn_indices[export_name] = idx
+        match ctx.exported_fn_env_globals.get(target_name) {
+          Some(env_idx) => ctx.exported_fn_env_globals[export_name] = env_idx
+          None => ()
+        }
+      }
+      None =>
+        match ctx.linked_fn_imports.get(target_name) {
+          Some(import_idx) => {
+            ctx.linked_fn_imports[export_name] = import_idx
+            match ctx.linked_fn_param_counts.get(target_name) {
+              Some(param_count) =>
+                ctx.linked_fn_param_counts[export_name] = param_count
+              None => ()
+            }
+            match ctx.linked_fn_return_counts.get(target_name) {
+              Some(return_count) =>
+                ctx.linked_fn_return_counts[export_name] = return_count
+              None => ()
+            }
+          }
+          None => ()
+        }
+    }
+  }
+}
+
+///|
+fn collect_emittable_user_exports(ctx : CodegenCtx) -> Array[String] {
+  let names : Array[String] = []
+  for name, _ in ctx.exported_fns {
+    if name == "_start" {
+      continue
+    }
+    if ctx.fn_indices.contains(name) || ctx.linked_fn_imports.contains(name) {
+      names.push(name)
+    }
+  }
+  names
+}
+
+///|
 fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let buf = ByteBuf::new()
   // magic + version
@@ -1260,8 +1306,8 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   }
 
   // export section
-  let user_export_count = ctx.exported_fns.length() -
-    (if ctx.exported_fns.contains("_start") { 1 } else { 0 })
+  let user_exports = collect_emittable_user_exports(ctx)
+  let user_export_count = user_exports.length()
   let need_cabi_realloc_export = ctx.need_stdin_read_char ||
     ctx.need_socket ||
     ctx.need_http ||
@@ -1316,10 +1362,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   }
   // Export user functions (export let ...)
   // Skip "_start" here; handled above to avoid duplicate export.
-  for name, _ in ctx.exported_fns {
-    if name == "_start" {
-      continue
-    }
+  for name in user_exports {
     match ctx.fn_indices.get(name) {
       Some(idx) => {
         write_name(export_sec, name)
@@ -3261,7 +3304,10 @@ fn emit_module_with_coverage(
           @core.Expr::Fn(..) => ctx.exported_fns[name] = true
           // Alias: export let x = y — if y is a known function or linked import,
           // x should also be exported
-          @core.Expr::Ident(..) => ctx.exported_fns[name] = true
+          @core.Expr::Ident(name=target_name, ..) => {
+            ctx.exported_fns[name] = true
+            ctx.exported_fn_aliases[name] = target_name
+          }
           _ => ()
         }
       _ => ()
@@ -3393,6 +3439,7 @@ fn emit_module_with_coverage(
       pre_import_count += 1
     }
   }
+  resolve_exported_fn_aliases(ctx)
   if ctx.coverage_enabled {
     ctx.coverage_base_offset = align4(ctx.strings.next_offset)
   } else {
@@ -3613,6 +3660,7 @@ fn emit_module_with_coverage(
   // In linked mode, always enable heap_global (library provides memory/heap_ptr)
   if require_library_heap_global ||
     any_user_heap ||
+    ctx.need_effect_resume ||
     ctx.linked_fn_imports_list.length() > 0 ||
     ctx.need_env_get ||
     ctx.need_env_args_get ||

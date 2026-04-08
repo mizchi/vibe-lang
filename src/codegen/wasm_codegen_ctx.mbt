@@ -99,6 +99,7 @@ priv struct CodegenCtx {
   effect_op_param_counts : Map[String, Int]
   // Exported user functions (export let ...)
   exported_fns : Map[String, Bool]
+  exported_fn_aliases : Map[String, String]
   // Loop break/continue label offsets (-1 = not in loop)
   mut loop_break_offset : Int
   mut loop_continue_offset : Int
@@ -294,6 +295,7 @@ fn CodegenCtx::new(
     effect_op_imports: {},
     effect_op_param_counts: {},
     exported_fns: {},
+    exported_fn_aliases: {},
     // Loop offsets
     loop_break_offset: -1,
     loop_continue_offset: -1,
