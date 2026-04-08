@@ -323,11 +323,16 @@ priv struct EffectHandler {
 }
 
 ///|
+fn reh_is_builtin_error_handler_name(name : String) -> Bool {
+  name == "Error" || name == "Error::Throw" || name == "Throw"
+}
+
+///|
 fn reh_parse_effect_arm(arm : @core.MatchArm) -> EffectHandler? {
   // Pattern must be Ctor("Effect::Op", params)
   let (key, param_names) = match arm.pat {
     @core.Pat::Ctor(name~, args~, ..) =>
-      if name.contains("::") {
+      if name.contains("::") && not(reh_is_builtin_error_handler_name(name)) {
         let names : Array[String] = []
         for arg in args {
           match arg {

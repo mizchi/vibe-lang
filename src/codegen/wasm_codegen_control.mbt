@@ -634,6 +634,7 @@ fn compile_match_chain(
   let arm = arms[start]
   let saved = ctx.locals.copy()
   let saved_kinds = ctx.local_kinds.copy()
+  let saved_named_fn_scope = snapshot_named_fn_scope(ctx)
   let saved_heap_synced = ctx.heap_synced
   let bindings : Map[String, Int] = {}
   compile_pat_match(
@@ -650,6 +651,7 @@ fn compile_match_chain(
   )
   restore_locals(ctx, saved)
   restore_local_kinds(ctx, saved_kinds)
+  restore_named_fn_scope(ctx, saved_named_fn_scope)
   ctx.heap_synced = saved_heap_synced
 }
 
@@ -775,6 +777,7 @@ fn compile_enum_tag_chain(
   let ca = ctor_arms[index]
   let saved = ctx.locals.copy()
   let saved_kinds = ctx.local_kinds.copy()
+  let saved_named_fn_scope = snapshot_named_fn_scope(ctx)
   // Check ctor_tag only (3 instructions instead of ~11)
   emit_load_ctor_tag_raw(buf, raw_ptr)
   emit_i32_const_raw(buf, ca.tag)
@@ -813,6 +816,7 @@ fn compile_enum_tag_chain(
   buf.push((5).to_byte()) // else
   restore_locals(ctx, saved)
   restore_local_kinds(ctx, saved_kinds)
+  restore_named_fn_scope(ctx, saved_named_fn_scope)
   // Next arm
   compile_enum_tag_chain(
     ctx,
@@ -841,6 +845,7 @@ fn compile_enum_default_body(
     Some(arm) => {
       let saved = ctx.locals.copy()
       let saved_kinds = ctx.local_kinds.copy()
+      let saved_named_fn_scope = snapshot_named_fn_scope(ctx)
       let bindings : Map[String, Int] = {}
       // If it's a Bind pattern, bind the scrutinee
       match arm.pat {
@@ -858,6 +863,7 @@ fn compile_enum_default_body(
       )
       restore_locals(ctx, saved)
       restore_local_kinds(ctx, saved_kinds)
+      restore_named_fn_scope(ctx, saved_named_fn_scope)
     }
     None => emit_i64_const_tagged(buf, 0L)
   }
@@ -875,6 +881,7 @@ fn compile_guarded_arm_with_bindings(
 ) -> Unit raise WasmGenError {
   let saved = ctx.locals.copy()
   let saved_kinds = ctx.local_kinds.copy()
+  let saved_named_fn_scope = snapshot_named_fn_scope(ctx)
   let binding_kinds : Map[String, ValueKind] = {}
   collect_pat_binding_kinds_codegen(ctx, arm.pat, ValueKind::I64, binding_kinds)
   for name, idx in bindings {
@@ -901,18 +908,21 @@ fn compile_guarded_arm_with_bindings(
       buf.push((5).to_byte())
       restore_locals(ctx, saved)
       restore_local_kinds(ctx, saved_kinds)
+      restore_named_fn_scope(ctx, saved_named_fn_scope)
       compile_match_chain(ctx, buf, scrut_idx, arms, index + 1)
       ctx.heap_synced = false
       buf.push((11).to_byte())
       adjust_loop_offsets(ctx, -1)
       restore_locals(ctx, saved)
       restore_local_kinds(ctx, saved_kinds)
+      restore_named_fn_scope(ctx, saved_named_fn_scope)
     }
     None => {
       emit_coverage(ctx, buf, WasmCoveragePointKind::BranchMatchArm, arm.span)
       compile_expr(ctx, buf, arm.expr)
       restore_locals(ctx, saved)
       restore_local_kinds(ctx, saved_kinds)
+      restore_named_fn_scope(ctx, saved_named_fn_scope)
     }
   }
 }

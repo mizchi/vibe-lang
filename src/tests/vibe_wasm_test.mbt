@@ -344,6 +344,95 @@ fn bytes_range_equals(
 }
 
 ///|
+fn bytes_contains_subseq(bytes : Array[Byte], needle : Array[Byte]) -> Bool {
+  if needle.length() == 0 {
+    return true
+  }
+  let limit = bytes.length() - needle.length()
+  if limit < 0 {
+    return false
+  }
+  for i in 0..<=limit {
+    if bytes_range_equals(bytes, i, needle) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn find_section_payload(bytes : Bytes, section_id : Int) -> Array[Byte]? {
+  let arr = bytes.to_array()
+  if arr.length() < 8 {
+    return None
+  }
+  let mut i = 8
+  while i < arr.length() {
+    let id = arr[i].to_int()
+    i += 1
+    let (size, next_i) = read_u32_leb_at(arr, i)
+    i = next_i
+    let section_end = i + size
+    if section_end > arr.length() {
+      return None
+    }
+    if id == section_id {
+      let payload : Array[Byte] = []
+      for j in i..<section_end {
+        payload.push(arr[j])
+      }
+      return Some(payload)
+    }
+    i = section_end
+  }
+  None
+}
+
+///|
+fn wasm_global_count(bytes : Bytes) -> Int? {
+  match find_section_payload(bytes, 6) {
+    Some(payload) => {
+      let (count, _) = read_u32_leb_at(payload, 0)
+      Some(count)
+    }
+    None => Some(0)
+  }
+}
+
+///|
+fn wasm_export_section_is_well_formed(bytes : Bytes) -> Bool {
+  match find_section_payload(bytes, 7) {
+    Some(payload) => {
+      let (count, next_offset) = read_u32_leb_at(payload, 0)
+      let mut offset = next_offset
+      let mut remaining = count
+      while remaining > 0 {
+        if offset >= payload.length() {
+          return false
+        }
+        let (name_len, name_offset) = read_u32_leb_at(payload, offset)
+        let name_end = name_offset + name_len
+        if name_end >= payload.length() {
+          return false
+        }
+        let index_offset = name_end + 1
+        if index_offset > payload.length() {
+          return false
+        }
+        let (_, next_entry_offset) = read_u32_leb_at(payload, index_offset)
+        if next_entry_offset > payload.length() {
+          return false
+        }
+        offset = next_entry_offset
+        remaining -= 1
+      }
+      offset == payload.length()
+    }
+    None => false
+  }
+}
+
+///|
 fn find_custom_section_payload(
   bytes : Bytes,
   section_name : String,
@@ -537,6 +626,110 @@ test "vibe wasm compiles handle arm bind patterns" {
 }
 
 ///|
+test "vibe wasm lowers Error handles without resume buffer" {
+  let db = VibeDb::new()
+  let src =
+    #|let fail = () -> Int with {Error} {
+    #|  throw("boom")
+    #|}
+    #|handle {
+    #|  fail()
+    #|} with Error {
+    #|  Throw(_) => 99
+    #|}
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  match wasm_global_count(wasm) {
+    Some(count) => assert_eq(count, 0)
+    None => fail("expected global section to be present")
+  }
+}
+
+///|
+test "vibe wasm compiles nested error handles with outer bind" {
+  let db = VibeDb::new()
+  let src =
+    #|let fail = () -> Int with { Error } {
+    #|  throw("inner")
+    #|}
+    #|
+    #|handle {
+    #|  handle {
+    #|    fail()
+    #|  } with Error {
+    #|    Throw(_) => throw("outer")
+    #|  }
+    #|} with Error {
+    #|  Throw(msg) => String::length(msg)
+    #|}
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "_start"))
+}
+
+///|
+test "vibe wasm places resume globals after heap global" {
+  let db = VibeDb::new()
+  let src =
+    #|effect Reader2 {
+    #|  Read() -> String
+    #|}
+    #|
+    #|let read = () -> String with { Reader2 } {
+    #|  perform Reader2::Read()
+    #|}
+    #|
+    #|handle {
+    #|  read()
+    #|} with Reader2 {
+    #|  Read() => resume("fixed")
+    #|}
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(bytes_contains_ascii(wasm, "__heap_ptr"))
+  match wasm_global_count(wasm) {
+    Some(count) => assert_eq(count, 5)
+    None => fail("expected global section to be present")
+  }
+  let code = wasm.to_array()
+  let good_init : Array[Byte] = [
+    (65).to_byte(),
+    (0).to_byte(),
+    (36).to_byte(),
+    (1).to_byte(),
+    (65).to_byte(),
+    (0).to_byte(),
+    (36).to_byte(),
+    (2).to_byte(),
+  ]
+  let bad_init : Array[Byte] = [
+    (65).to_byte(),
+    (0).to_byte(),
+    (36).to_byte(),
+    (0).to_byte(),
+    (65).to_byte(),
+    (0).to_byte(),
+    (36).to_byte(),
+    (1).to_byte(),
+  ]
+  assert_true(bytes_contains_subseq(code, good_init))
+  assert_false(bytes_contains_subseq(code, bad_init))
+}
+
+///|
 test "vibe wasm import sleep" {
   let db = VibeDb::new()
   let src =
@@ -621,6 +814,23 @@ test "vibe wasm export user functions" {
   // Exported functions should be in the export section
   assert_true(bytes_contains_ascii(wasm, "add"))
   assert_true(bytes_contains_ascii(wasm, "mul"))
+}
+
+///|
+test "vibe wasm keeps alias exports valid" {
+  let db = VibeDb::new()
+  let src =
+    #|let parse_line_list = (src: String) -> Int { String::length(src) }
+    #|export let parse_line_list_export = parse_line_list
+    #|parse_line_list("abc")
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(bytes_contains_ascii(wasm, "parse_line_list_export"))
+  assert_true(wasm_export_section_is_well_formed(wasm))
 }
 
 ///|
@@ -917,6 +1127,34 @@ test "vibe wasm compiles recursive helper with captured function param" {
     #|  go(0, n)
     #|}
     #|apply_n((x: Int) -> Int { x + 2 }, 3)
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "_start"))
+}
+
+///|
+test "vibe wasm compiles nested recursive helper capturing outer recursive helper" {
+  let db = VibeDb::new()
+  let src =
+    #|let find = (n: Int) -> Int {
+    #|  let rec go_defs = (di: Int) -> Int {
+    #|    if di >= n {
+    #|      0
+    #|    } else {
+    #|      let rec go_variants = (vi: Int) -> Int {
+    #|        if vi >= n { go_defs(di + 1) } else { go_variants(vi + 1) }
+    #|      }
+    #|      go_variants(0)
+    #|    }
+    #|  }
+    #|  go_defs(0)
+    #|}
+    #|find(3)
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())

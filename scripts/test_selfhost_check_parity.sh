@@ -121,7 +121,7 @@ const out = {
   warning_count: warningCount,
   signatures,
 };
-process.stdout.write(JSON.stringify(out, null, 2));
+process.stdout.write(JSON.stringify(out, null, 2) + '\n');
 NODE
 
   node - "$rel_case" "$self_stdout" "$self_stderr" "$self_status" > "$self_norm" <<'NODE'
@@ -141,7 +141,7 @@ if (!stdout) {
     warning_count: 0,
     signatures: ['E:check:empty selfhost json output'],
   };
-  process.stdout.write(JSON.stringify(fail, null, 2));
+  process.stdout.write(JSON.stringify(fail, null, 2) + '\n');
   process.exit(0);
 }
 let payload;
@@ -159,7 +159,7 @@ try {
     warning_count: 0,
     signatures: ['E:check:invalid selfhost json output'],
   };
-  process.stdout.write(JSON.stringify(fail, null, 2));
+  process.stdout.write(JSON.stringify(fail, null, 2) + '\n');
   process.exit(0);
 }
 const diagnostics = Array.isArray(payload.diagnostics) ? payload.diagnostics : [];
@@ -182,7 +182,7 @@ const out = {
   warning_count: warningCount,
   signatures,
 };
-process.stdout.write(JSON.stringify(out, null, 2));
+process.stdout.write(JSON.stringify(out, null, 2) + '\n');
 NODE
 
 done
@@ -309,7 +309,7 @@ const out = {
   cases: perCase,
 };
 
-process.stdout.write(JSON.stringify(out, null, 2));
+process.stdout.write(JSON.stringify(out, null, 2) + '\n');
 NODE
 
 if [ "$UPDATE_SNAPSHOT" = "1" ]; then

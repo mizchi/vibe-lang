@@ -133,6 +133,7 @@ fn compile_expr_loop(
   let saved_param_locals = ctx.loop_param_locals
   let saved_locals = ctx.locals.copy()
   let saved_kinds = ctx.local_kinds.copy()
+  let saved_named_fn_scope = snapshot_named_fn_scope(ctx)
   let saved_mut_captured = ctx.mut_captured_vars.copy()
 
   // Allocate locals for loop params and compile init expressions
@@ -193,4 +194,5 @@ fn compile_expr_loop(
   ctx.mut_captured_vars = saved_mut_captured
   restore_locals(ctx, saved_locals)
   restore_local_kinds(ctx, saved_kinds)
+  restore_named_fn_scope(ctx, saved_named_fn_scope)
 }

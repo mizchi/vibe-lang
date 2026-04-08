@@ -1,4 +1,18 @@
 ///|
+fn is_builtin_error_handler_name(name : String) -> Bool {
+  name == "Error" || name == "Error::Throw" || name == "Throw"
+}
+
+///|
+fn is_resume_effect_pat(pat : @core.Pat) -> Bool {
+  match pat {
+    @core.Pat::Ctor(name~, ..) =>
+      name.contains("::") && not(is_builtin_error_handler_name(name))
+    _ => false
+  }
+}
+
+///|
 fn handle_arm_bind_name(pat : @core.Pat) -> String? {
   match pat {
     @core.Pat::Bind(name~, span~) => {
@@ -7,7 +21,7 @@ fn handle_arm_bind_name(pat : @core.Pat) -> String? {
     }
     @core.Pat::Ctor(name~, args~, span~) => {
       let _ = span
-      if (name == "Error" || name == "Error::Throw") && args.length() == 1 {
+      if is_builtin_error_handler_name(name) && args.length() == 1 {
         match args[0] {
           @core.Pat::Bind(name=bind_name, span~) => {
             let _ = span
@@ -135,9 +149,10 @@ fn compile_expr_handle(
   let effect_arms : Array[@core.MatchArm] = []
   let error_arms : Array[@core.MatchArm] = []
   for arm in arms {
-    match arm.pat {
-      @core.Pat::Ctor(name~, ..) if name.contains("::") => effect_arms.push(arm)
-      _ => error_arms.push(arm)
+    if is_resume_effect_pat(arm.pat) {
+      effect_arms.push(arm)
+    } else {
+      error_arms.push(arm)
     }
   }
   if effect_arms.length() > 0 && ctx.need_effect_resume {

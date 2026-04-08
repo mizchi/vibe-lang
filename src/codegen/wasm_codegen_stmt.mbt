@@ -1117,6 +1117,7 @@ fn compile_block_expr(
 ) -> Unit raise WasmGenError {
   let saved = ctx.locals.copy()
   let saved_kinds = ctx.local_kinds.copy()
+  let saved_named_fn_scope = snapshot_named_fn_scope(ctx)
   let saved_mut_captured = ctx.mut_captured_vars.copy()
   let saved_prefix = ctx.rc_action_prefix
   ctx.mut_captured_vars = scoped_mut_captured_for_block(
@@ -1146,6 +1147,7 @@ fn compile_block_expr(
   ctx.mut_captured_vars = saved_mut_captured
   restore_locals(ctx, saved)
   restore_local_kinds(ctx, saved_kinds)
+  restore_named_fn_scope(ctx, saved_named_fn_scope)
 }
 
 ///|
@@ -1157,6 +1159,7 @@ fn compile_block_multivalue(
 ) -> Unit raise WasmGenError {
   let saved = ctx.locals.copy()
   let saved_kinds = ctx.local_kinds.copy()
+  let saved_named_fn_scope = snapshot_named_fn_scope(ctx)
   let saved_mut_captured = ctx.mut_captured_vars.copy()
   ctx.mut_captured_vars = scoped_mut_captured_for_block(
     saved_mut_captured,
@@ -1190,6 +1193,7 @@ fn compile_block_multivalue(
   ctx.mut_captured_vars = saved_mut_captured
   restore_locals(ctx, saved)
   restore_local_kinds(ctx, saved_kinds)
+  restore_named_fn_scope(ctx, saved_named_fn_scope)
 }
 
 ///|

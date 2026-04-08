@@ -195,7 +195,7 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       for arm in arms {
         // Detect effect handler arms (Effect::Op pattern)
         match arm.pat {
-          @core.Pat::Ctor(name~, ..) if name.contains("::") => {
+          @core.Pat::Ctor(name~, ..) if is_resume_effect_pat(arm.pat) => {
             ctx.need_effect_resume = true
             ctx.effect_handled_ops[name] = true
           }

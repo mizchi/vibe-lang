@@ -11,114 +11,134 @@ fn compile_expr_call(
   // The actual call will check is_tail_position
   let saved_tail = ctx.is_tail_position
   ctx.is_tail_position = false
-  // Optimization: if name refers to a known module-level function with matching
-  // arity, use direct `call` instead of `call_indirect`. This avoids the
-  // overhead of table lookup, tag check (bare fn vs closure), and branch.
-  if ctx.fn_indices.contains(name) && not(ctx.enum_ctor_tags.contains(name)) {
+  // Respect lexical locals first. Named local functions also live in fn_indices,
+  // but env-backed captures may only be safely direct-called when the local
+  // function metadata is still in scope.
+  if ctx.locals.contains(name) && not(ctx.enum_ctor_tags.contains(name)) {
     let direct_arity_match = match ctx.fn_params.get(name) {
       Some(params) => args.length() == params.length()
       None => false
     }
-    if direct_arity_match {
+    let can_direct_call_local = if ctx.fn_indices.contains(name) {
+      if direct_arity_match {
+        match ctx.fn_indices.get(name) {
+          Some(idx) =>
+            if fn_index_needs_env(ctx, idx) {
+              ctx.fn_local_sigs.contains(name)
+            } else {
+              true
+            }
+          None => false
+        }
+      } else {
+        false
+      }
+    } else {
+      false
+    }
+    if can_direct_call_local {
       ctx.is_tail_position = saved_tail // restore for call dispatch
       compile_call_by_name(ctx, buf, name, args)
       return ()
     }
-  }
-  if ctx.fn_local_sigs.contains(name) &&
-    ctx.locals.contains(name) &&
-    not(ctx.enum_ctor_tags.contains(name)) {
-    let sig = match ctx.fn_local_sigs.get(name) {
-      Some(s) => s
-      None =>
-        raise WasmGenError::BackendLimit(
-          backend="wasm",
-          feature="call: " + name,
-        )
-    }
     let pos_args = extract_positional_exprs(args, name)
-    let sig_param_len = if sig.params.length() > 0 {
-      sig.params.length() - 1
-    } else {
-      0
-    }
-    if pos_args.length() != sig_param_len {
-      raise WasmGenError::Unsupported("arity: " + name)
-    }
-    let fn_value_idx = match ctx.locals.get(name) {
-      Some(idx) => idx
-      None => raise WasmGenError::UnknownName(name)
-    }
-    ctx.is_tail_position = saved_tail // restore for call dispatch
-    compile_indirect_call(ctx, buf, name, sig, pos_args, fn_value_idx)
-    // Multi-value re-boxing: only needed when the sig used for
-    // call_indirect actually returns multiple values.
-    if sig.results.length() > 1 {
-      match ctx.fn_multivalue_results.get(name) {
-        Some(mv_kinds) => emit_rebox_multivalue(ctx, buf, mv_kinds)
-        None => ()
+    match ctx.fn_local_sigs.get(name) {
+      Some(sig) => {
+        let sig_param_len = if sig.params.length() > 0 {
+          sig.params.length() - 1
+        } else {
+          0
+        }
+        if pos_args.length() != sig_param_len {
+          raise WasmGenError::Unsupported("arity: " + name)
+        }
+        let fn_value_idx = match ctx.locals.get(name) {
+          Some(idx) => idx
+          None => raise WasmGenError::UnknownName(name)
+        }
+        ctx.is_tail_position = saved_tail // restore for call dispatch
+        compile_indirect_call(ctx, buf, name, sig, pos_args, fn_value_idx)
+        // Multi-value re-boxing: only needed when the sig used for
+        // call_indirect actually returns multiple values.
+        if sig.results.length() > 1 {
+          match ctx.fn_multivalue_results.get(name) {
+            Some(mv_kinds) => emit_rebox_multivalue(ctx, buf, mv_kinds)
+            None => ()
+          }
+        }
       }
-    }
-  } else if ctx.locals.contains(name) && not(ctx.enum_ctor_tags.contains(name)) {
-    let pos_args = extract_positional_exprs(args, name)
-    if not(ctx.fn_local_sigs.contains(name)) {
-      let guessed_params : Array[ValueKind] = []
-      for arg in pos_args {
-        let arg_kind = if ctx.use_js_strings {
-          infer_expr_kind(ctx, arg)
+      None => {
+        let guessed_params : Array[ValueKind] = []
+        for arg in pos_args {
+          let arg_kind = if ctx.use_js_strings {
+            infer_expr_kind(ctx, arg)
+          } else {
+            ValueKind::I64
+          }
+          if ctx.use_js_strings && arg_kind == ValueKind::ExternRef {
+            guessed_params.push(ValueKind::ExternRef)
+          } else {
+            guessed_params.push(ValueKind::I64)
+          }
+        }
+        let guessed_result = if ctx.use_js_strings {
+          let kind = infer_expr_kind(ctx, expr)
+          if kind == ValueKind::ExternRef {
+            ValueKind::ExternRef
+          } else {
+            ValueKind::I64
+          }
         } else {
           ValueKind::I64
         }
-        if ctx.use_js_strings && arg_kind == ValueKind::ExternRef {
-          guessed_params.push(ValueKind::ExternRef)
-        } else {
-          guessed_params.push(ValueKind::I64)
-        }
-      }
-      let guessed_result = if ctx.use_js_strings {
-        let kind = infer_expr_kind(ctx, expr)
-        if kind == ValueKind::ExternRef {
-          ValueKind::ExternRef
-        } else {
-          ValueKind::I64
-        }
-      } else {
-        ValueKind::I64
-      }
-      ctx.fn_local_sigs[name] = func_sig_with_env(
-        guessed_params, guessed_result,
-      )
-    }
-    let sig = match ctx.fn_local_sigs.get(name) {
-      Some(s) => s
-      None =>
-        raise WasmGenError::BackendLimit(
-          backend="wasm",
-          feature="call: " + name,
+        ctx.fn_local_sigs[name] = func_sig_with_env(
+          guessed_params, guessed_result,
         )
-    }
-    let sig_param_len = if sig.params.length() > 0 {
-      sig.params.length() - 1
-    } else {
-      0
-    }
-    if pos_args.length() != sig_param_len {
-      raise WasmGenError::Unsupported("arity: " + name)
-    }
-    let fn_value_idx = match ctx.locals.get(name) {
-      Some(idx) => idx
-      None => raise WasmGenError::UnknownName(name)
-    }
-    ctx.is_tail_position = saved_tail // restore for call dispatch
-    compile_indirect_call_guessed(ctx, buf, sig, pos_args, fn_value_idx)
-    // Multi-value re-boxing: only when the guessed sig actually returns multi-value
-    if sig.results.length() > 1 {
-      match ctx.fn_multivalue_results.get(name) {
-        Some(mv_kinds) => emit_rebox_multivalue(ctx, buf, mv_kinds)
-        None => ()
+        let sig = match ctx.fn_local_sigs.get(name) {
+          Some(s) => s
+          None =>
+            raise WasmGenError::BackendLimit(
+              backend="wasm",
+              feature="call: " + name,
+            )
+        }
+        let sig_param_len = if sig.params.length() > 0 {
+          sig.params.length() - 1
+        } else {
+          0
+        }
+        if pos_args.length() != sig_param_len {
+          raise WasmGenError::Unsupported("arity: " + name)
+        }
+        let fn_value_idx = match ctx.locals.get(name) {
+          Some(idx) => idx
+          None => raise WasmGenError::UnknownName(name)
+        }
+        ctx.is_tail_position = saved_tail // restore for call dispatch
+        compile_indirect_call_guessed(ctx, buf, sig, pos_args, fn_value_idx)
+        // Multi-value re-boxing: only when the guessed sig actually returns multi-value
+        if sig.results.length() > 1 {
+          match ctx.fn_multivalue_results.get(name) {
+            Some(mv_kinds) => emit_rebox_multivalue(ctx, buf, mv_kinds)
+            None => ()
+          }
+        }
       }
     }
   } else {
+    // Optimization: if name refers to a known non-local function with matching
+    // arity, use direct `call` instead of `call_indirect`.
+    if ctx.fn_indices.contains(name) && not(ctx.enum_ctor_tags.contains(name)) {
+      let direct_arity_match = match ctx.fn_params.get(name) {
+        Some(params) => args.length() == params.length()
+        None => false
+      }
+      if direct_arity_match {
+        ctx.is_tail_position = saved_tail // restore for call dispatch
+        compile_call_by_name(ctx, buf, name, args)
+        return ()
+      }
+    }
     ctx.is_tail_position = saved_tail // restore for call dispatch
     compile_call_by_name(ctx, buf, name, args)
   }

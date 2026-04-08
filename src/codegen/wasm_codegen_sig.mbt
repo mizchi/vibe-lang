@@ -347,8 +347,8 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
     // listen/accept/request_* + respond
     count += 12
   }
-  // Exclude handled effect ops (they use throw/catch, not imports)
-  count += ctx.effect_op_imports.length() - ctx.effect_handled_ops.length()
+  // effect_op_imports is already populated with unhandled ops only.
+  count += ctx.effect_op_imports.length()
   count += ctx.linked_fn_imports_list.length()
   count
 }
@@ -1757,6 +1757,7 @@ fn import_index_fs_resource_drop(ctx : CodegenCtx) -> Int raise WasmGenError {
 fn fs_root_descriptor_global_index(ctx : CodegenCtx) -> Int {
   (if ctx.use_heap_global { 1 } else { 0 }) +
   (if ctx.need_stack_switching { 1 } else { 0 }) +
+  (if ctx.need_effect_resume { 4 } else { 0 }) +
   (if ctx.coverage_enabled { 2 } else { 0 })
 }
 
@@ -2050,6 +2051,7 @@ fn import_index_http_respond(ctx : CodegenCtx) -> Int raise WasmGenError {
 fn socket_table_global_index(ctx : CodegenCtx) -> Int {
   (if ctx.use_heap_global { 1 } else { 0 }) +
   (if ctx.need_stack_switching { 1 } else { 0 }) +
+  (if ctx.need_effect_resume { 4 } else { 0 }) +
   (if ctx.coverage_enabled { 2 } else { 0 }) +
   (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 })
 }
