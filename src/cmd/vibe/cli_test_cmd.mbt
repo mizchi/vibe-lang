@@ -303,7 +303,7 @@ fn build_compiled_test_batch_source(
       i_str +
       " = handle { __test_" +
       i_str +
-      "() } { Error(_e) => 1 }\n",
+      "() } with Error { Throw(_e) => 1 }\n",
     )
     out.write_string(
       "if __test_result_" +

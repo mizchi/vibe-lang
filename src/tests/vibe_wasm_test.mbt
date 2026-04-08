@@ -289,8 +289,8 @@ fn throw_literal_source(message : String) -> String {
     #|}
     #|handle {
     #|  fail()
-    #|} {
-    #|  Error(_) => 0
+    #|} with Error {
+    #|  Throw(_) => 0
     #|}
   src.replace(old="@MSG@", new=message)
 }
@@ -520,8 +520,11 @@ test "vibe wasm compiles handle arm bind patterns" {
     #|}
     #|handle {
     #|  fail()
-    #|} {
-    #|  Error(msg) => String::length(msg)
+    #|} with Error {
+    #|  Throw(msg) => {
+    #|    let _ = msg
+    #|    0
+    #|  }
     #|}
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {

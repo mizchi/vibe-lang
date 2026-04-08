@@ -424,8 +424,8 @@ test "normalize_engine: http handle harness snippet stays semantic" {
     #|        headers: MapBuilder::freeze(MapBuilder::new()),
     #|        body: ""
     #|      })
-    #|    } {
-    #|      Error(err) => error_to_response(err)
+    #|    } with Error {
+    #|      Throw(err) => error_to_response(err)
     #|    }
     #|    serialize_response(resp)
     #|  }

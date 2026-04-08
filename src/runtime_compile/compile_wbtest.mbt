@@ -1853,7 +1853,7 @@ test "error effect handle compiles to wasm" {
       #|  if x == 0 { throw("zero") }
       #|  x
       #|}
-      #|let result = handle { risky(0) } { Error(_) => 99 }
+      #|let result = handle { risky(0) } with Error { Throw(_) => 99 }
       #|result
     ),
   )
@@ -2462,7 +2462,7 @@ test "question mark operator compiles to wasm" {
       #|  let v = risky(1)?
       #|  v + 1
       #|}
-      #|handle { caller() } { Error(_) => -1 }
+      #|handle { caller() } with Error { Throw(_) => -1 }
     ),
   )
   let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
@@ -2486,11 +2486,11 @@ test "user-defined effect with perform/resume compiles to wasm" {
       #|}
       #|let run = () -> String {
       #|  let mut logged = ""
-      #|  handle { greet("world") } {
-      #|    Logger::Log(msg) => {
+      #|  handle { greet("world") } with Logger {
+      #|    Log(msg) => {
       #|      logged = msg
       #|      resume(())
-      #|    }
+      #|    };
       #|  }
       #|  logged
       #|}
@@ -2514,7 +2514,7 @@ test "suberror typed error compiles to wasm" {
       #|  if key == "" { throw(NotFound("empty key")) }
       #|  42
       #|}
-      #|handle { find("") } { Error(_) => -1 }
+      #|handle { find("") } with Error { Throw(_) => -1 }
     ),
   )
   let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
@@ -3782,9 +3782,9 @@ test "multiple error handlers compile to wasm" {
       #|  if x < 0 { throw("negative") }
       #|  x * 2
       #|}
-      #|let a = handle { risky(5) } { Error(_) => -1 }
-      #|let b = handle { risky(0) } { Error(_) => -2 }
-      #|let c = handle { risky(-1) } { Error(_) => -3 }
+      #|let a = handle { risky(5) } with Error { Throw(_) => -1 }
+      #|let b = handle { risky(0) } with Error { Throw(_) => -2 }
+      #|let c = handle { risky(-1) } with Error { Throw(_) => -3 }
       #|a + b + c
     ),
   )
@@ -3921,7 +3921,7 @@ test "error effect with throw+handle compiles to wasm" {
       #|  throw("fail")
       #|  0
       #|}
-      #|let result = handle { risky() } { Error(_) => -1 }
+      #|let result = handle { risky() } with Error { Throw(_) => -1 }
       #|result
     ),
   )

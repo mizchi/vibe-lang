@@ -92,6 +92,11 @@ fn parse_error_unexpected_token_hint(
       "wrap infix sides in parentheses (for example `(1 + 1) |> double` or `x |> (f + g)`)",
     )
   }
+  if expected == "`with`" && got_trimmed == "{" {
+    return Some(
+      "legacy handle syntax was removed; rewrite as `handle { ... } with EffectName { ... }`",
+    )
+  }
   None
 }
 

@@ -274,7 +274,7 @@ EOF
 let safe_div = (a: Int, b: Int) -> Int with { Error } {
   if b == 0 { throw("div by zero") } else { a / b }
 }
-let result = handle { safe_div(10, 2) } { Error(_) => -1 }
+let result = handle { safe_div(10, 2) } with Error { Throw(_) => -1 }
 result
 EOF
   files+=("$WORK/effect.vibe")
@@ -284,7 +284,7 @@ EOF
 let try_add = (a: Int, b: Int) -> Int with { Error } {
   if a < 0 { throw("negative") } else { a + b }
 }
-let total = handle { try_add(3, 4) + try_add(5, 6) } { Error(_) => -1 }
+let total = handle { try_add(3, 4) + try_add(5, 6) } with Error { Throw(_) => -1 }
 total
 EOF
   files+=("$WORK/effect_multi.vibe")

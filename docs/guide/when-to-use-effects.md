@@ -87,7 +87,7 @@ let get_user = () -> String with { Db } {
 }
 
 // テスト: mock handler
-handle { get_user() } { Db::Query(_sql) => resume("Alice") }
+handle { get_user() } with Db { Query(_sql) => resume("Alice") }
 
 // 本番: real handler (P3 adapter 経由)
 ```
@@ -109,8 +109,8 @@ let connect = () -> String with { Config } {
 }
 
 // 開発環境
-handle { connect() } {
-  Config::Get(key) => if String::equals(key, "DB_HOST") {
+handle { connect() } with Config {
+  Get(key) => if String::equals(key, "DB_HOST") {
     resume("localhost")
   } else { resume("5432") }
 }
@@ -134,9 +134,9 @@ let process = (data: String) -> Int with { Log } {
 }
 
 // テスト: ログを無視
-handle { process("hello") } {
-  Log::Info(_msg) => resume(0),
-  Log::Error(_msg) => resume(0)
+handle { process("hello") } with Log {
+  Info(_msg) => resume(0);
+  Error(_msg) => resume(0)
 }
 ```
 
@@ -167,7 +167,7 @@ let roll_dice = () -> Int with { Random } {
 }
 
 // テスト: 常に 4
-handle { roll_dice() } { Random::NextInt(_lo, _hi) => resume(4) }
+handle { roll_dice() } with Random { NextInt(_lo, _hi) => resume(4) }
 ```
 
 理由: 乱数は非決定的。テストでは決定的にすべき。

@@ -265,7 +265,7 @@ test_tuple_with_effects() {
 let parse = (s: String, i: Int) -> (String, Int) with {Error} {
   (s, i + 1)
 }
-handle { parse("test", 5) } { Error(_) => ("err", 0) }
+handle { parse("test", 5) } with Error { Throw(_) => ("err", 0) }
 EOF
 
   # Compile to WASM to verify parsing works; tuple return is not yet supported at runtime

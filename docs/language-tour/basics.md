@@ -350,7 +350,7 @@ let safe_div = (a: Int, b: Int) -> Int with { Error } {
 }
 
 // Catch errors with handle
-let result = handle { safe_div(8, 0) } { Error(_) => -1 }
+let result = handle { safe_div(8, 0) } with Error { Throw(_) => -1 }
 // => -1
 ```
 
@@ -380,7 +380,7 @@ let risky = () -> Int with { Error } {
   throw(NotFound("missing"))
 }
 
-let result = handle { risky() } { Error(_) => -1 }
+let result = handle { risky() } with Error { Throw(_) => -1 }
 // => -1
 ```
 
@@ -399,7 +399,7 @@ let ask_once = () -> Int with { Ask } {
 
 let result = handle {
   add(1, ask_once())
-} {
+} with Ask {
   Ask(v) => resume(add(v, 1))
 }
 // => 43

@@ -936,6 +936,11 @@ fn AstParser::parse_handle_expr(
   let start = self.pos
   let _ = self.expect(handle_kw(), "handle")
   let body = self.parse_block()
+  self.skip_trivia()
+  let _ = self.expect(with_kw(), "`with`")
+  self.skip_trivia()
+  let effect_name = self.expect(name(), "effect name").text()
+  self.skip_trivia()
   let _ = self.expect(lbrace(), "{")
   let arms : Array[@core.MatchArm] = []
   while ({
@@ -964,6 +969,7 @@ fn AstParser::parse_handle_expr(
     } else {
       first_pat
     }
+    let qualified_pat = qualify_handle_arm_pattern(effect_name, pat)
     self.skip_trivia()
     let mut cond : @core.Expr? = None
     if self.peek_kind() == if_kw() {
@@ -972,18 +978,38 @@ fn AstParser::parse_handle_expr(
     }
     let _ = self.expect(arrow(), "=>")
     let expr = self.parse_expr()
-    let mut arm_span = @core.Span::merge(pat.span(), expr.span())
+    let mut arm_span = @core.Span::merge(qualified_pat.span(), expr.span())
     match cond {
       Some(c) => arm_span = @core.Span::merge(arm_span, c.span())
       None => ()
     }
-    arms.push(@core.MatchArm::{ pat, cond, expr, span: arm_span })
-    let _ = self.eat(comma())
+    arms.push(@core.MatchArm::{ pat: qualified_pat, cond, expr, span: arm_span })
     let _ = self.eat(semicolon())
   }
   let _ = self.expect(rbrace(), "}")
   let span = self.span_from(start)
   @core.Expr::Handle(body~, arms~, span~)
+}
+
+///|
+fn qualify_handle_arm_pattern(
+  effect_name : String,
+  pat : @core.Pat,
+) -> @core.Pat {
+  match pat {
+    @core.Pat::Ctor(name~, args~, span~) =>
+      if name.contains("::") {
+        pat
+      } else {
+        @core.Pat::Ctor(name=effect_name + "::" + name, args~, span~)
+      }
+    @core.Pat::Or(pats~, span~) =>
+      @core.Pat::Or(
+        pats=pats.map(fn(item) { qualify_handle_arm_pattern(effect_name, item) }),
+        span~,
+      )
+    _ => pat
+  }
 }
 
 ///|
@@ -1238,7 +1264,7 @@ fn AstParser::parse_effect_list(
 ) -> Array[@core.EffectAtom] raise ParseError {
   let effects : Array[@core.EffectAtom] = []
   self.skip_trivia()
-  if self.peek_kind() == name() && self.peek().text() == "with" {
+  if self.peek_kind() == with_kw() {
     let _ = self.bump()
     self.skip_trivia()
     let _ = self.expect(lbrace(), "{")
@@ -1781,12 +1807,11 @@ fn AstParser::is_arrow_expr_body(self : AstParser) -> Bool {
     }
     self.skip_trivia()
     let after_kind = self.peek_kind()
-    let after_text = self.peek().text()
     self.pos = saved // restore position
     // If after () there's "with", "{", or "->", it's a type annotation
     if after_kind == lbrace() {
       return false // type annotation: (Int, String) { ... }
-    } else if after_kind == name() && after_text == "with" {
+    } else if after_kind == with_kw() {
       return false // type annotation: (Int, String) with {Error} { ... }
     } else if after_kind == thin_arrow() {
       return false // function type: (A) -> C { ... }
@@ -1804,14 +1829,13 @@ fn AstParser::is_arrow_expr_body(self : AstParser) -> Bool {
   let _ = self.bump() // consume the name
   self.skip_trivia()
   let next_kind = self.peek_kind()
-  let next_text = self.peek().text()
   self.pos = saved // restore position
   // If name is followed by { or [ (for generic type), it's likely a type annotation
   // If name is followed by "with" (for effects), it's also a type annotation
   // Otherwise it's an expression
   if next_kind == lbrace() || next_kind == lbracket() {
     false // type annotation: Int { ... } or Array[Int] { ... }
-  } else if next_kind == name() && next_text == "with" {
+  } else if next_kind == with_kw() {
     false // type annotation with effects: Int with {Error} { ... }
   } else {
     true // expression: x + 1, foo(bar), etc.
@@ -2191,7 +2215,7 @@ fn AstParser::parse_call_or_primary(
         )
       }
     } else if self.peek_kind() == question() && !saw_newline {
-      // Error propagation: expr? → handle { expr } { Error(e) => throw(e) }
+      // Error propagation: expr? → handle { expr } with Error { Throw(e) => throw(e) }
       let _ = self.bump()
       let span = self.span_from(start)
       let err_name = "__err$" + span.start.to_string()
@@ -2200,7 +2224,7 @@ fn AstParser::parse_call_or_primary(
         arms=[
           {
             pat: @core.Pat::Ctor(
-              name="Error",
+              name="Error::Throw",
               args=[@core.Pat::Bind(name=err_name, span~)],
               span~,
             ),

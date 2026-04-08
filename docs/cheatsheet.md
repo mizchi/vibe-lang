@@ -216,7 +216,7 @@ let risky: (Int) -> Int with { Error } = (x) -> {
 }
 
 // handle catches the effect
-let safe = handle { risky(0) } { Error(msg) => -1 }
+let safe = handle { risky(0) } with Error { Throw(msg) => -1 }
 
 // ? operator (sugar for handle + rethrow)
 let result = risky(n)?
@@ -240,8 +240,8 @@ let greet: (String) -> Unit with { Logger } = (name) -> {
   perform Logger::Log("hello \(name)")
 }
 
-handle { greet("world") } {
-  Logger::Log(msg) => {
+handle { greet("world") } with Logger {
+  Log(msg) => {
     stdout_write(msg)
     resume(())           // continue where perform left off
   }

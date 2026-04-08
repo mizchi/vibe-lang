@@ -21,7 +21,7 @@ let safe_div = (a: Int, b: Int) -> Int with { Error } {
   if eq(b, 0) { throw("division by zero") } else { a / b }
 }
 
-let result = handle { safe_div(8, 0) } { Error(_) => -1 }
+let result = handle { safe_div(8, 0) } with Error { Throw(_) => -1 }
 // => -1
 ```
 
@@ -29,7 +29,7 @@ Calling a `with { Error }` function from a pure function requires `handle`:
 
 ```vibe
 let safe = (x: Int) -> Int {
-  handle { safe_div(x, 0) } { Error(_) => 0 }
+  handle { safe_div(x, 0) } with Error { Throw(_) => 0 }
 }
 ```
 
@@ -80,7 +80,7 @@ let risky = () -> Int with { Error } {
   throw(NotFound("missing"))
 }
 
-let result = handle { risky() } { Error(_) => -1 }
+let result = handle { risky() } with Error { Throw(_) => -1 }
 // => -1
 ```
 
@@ -101,7 +101,7 @@ let ask_once = () -> Int with { Ask } {
 
 let result = handle {
   add(1, ask_once())
-} {
+} with Ask {
   Ask(v) => resume(add(v, 1))
 }
 // => 43
@@ -128,7 +128,7 @@ let bad = [T](f: (T) -> T with { e }, x: T) -> T { f(x) }
 
 // OK: Error is localized by handle
 let safe = [T](f: (T) -> T with { Error }, x: T) -> T {
-  handle { f(x) } { _ => x }
+  handle { f(x) } with Error { Throw(_) => x }
 }
 ```
 

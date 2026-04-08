@@ -525,6 +525,37 @@ test "vibe format match keeps tuple/call args compact in arms" {
 }
 
 ///|
+test "vibe format handle-with effect syntax is parser-equivalent" {
+  let input =
+    #|effect Counter {
+    #|  Get(Int) -> Int;
+    #|  Set(Int) -> Int
+    #|}
+    #|let run = () -> Int with { Counter } {
+    #|  handle {
+    #|    perform Counter::Get(1)
+    #|  } with Counter {
+    #|    Get(v) | Set(v) if v > 0 => resume(v);
+    #|  }
+    #|}
+  let formatted = format_script(input)
+  let before = parse_ast(input) catch {
+    e => fail("[before-format] parse failed: \{e.to_string()}\n---\n\{input}")
+  }
+  let after = parse_ast(formatted) catch {
+    e =>
+      fail("[after-format] parse failed: \{e.to_string()}\n---\n\{formatted}")
+  }
+  assert_eq(@core.normalize_module(after), @core.normalize_module(before))
+  if !formatted.contains("} with Counter {") {
+    fail("[handle with] missing canonical with-clause\n---\n\{formatted}")
+  }
+  if formatted.contains("perform Counter::Get(1)\n  } {\n") {
+    fail("[handle with] old double-block syntax leaked\n---\n\{formatted}")
+  }
+}
+
+///|
 test "vibe format type args and index" {
   let input =
     #|let x: Option[Int] = none

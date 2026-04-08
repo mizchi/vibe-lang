@@ -49,6 +49,74 @@ export let rec print_pat = (p: Pat) -> String {
   }
 }
 
+let handle_effect_name_from_ctor = (name: String) -> Option[String] {
+  let idx = String::last_index_of(name, "::")
+  if idx < 0 {
+    None
+  } else {
+    Some(name[0: idx])
+  }
+}
+
+let rec infer_handle_effect_name_from_pat = (pat: Pat) -> Option[String] {
+  match pat {
+    PCtor(name, _) => handle_effect_name_from_ctor(name),
+    POr(left, right) => match infer_handle_effect_name_from_pat(left) {
+      Some(name) => Some(name),
+      None => infer_handle_effect_name_from_pat(right)
+    },
+    _ => None
+  }
+}
+
+let infer_handle_effect_name = (arms: Array[(Pat, Expr)]) -> String {
+  let mut i = 0
+  let mut effect_name = "Error"
+  let mut found = false
+  while i < Array::length(arms) && !found {
+    let (pat, _) = Array::get(arms, i)
+    match infer_handle_effect_name_from_pat(pat) {
+      Some(name) => {
+        effect_name = name
+        found = true
+      },
+      None => {
+        i = i + 1
+      }
+    }
+  }
+  effect_name
+}
+
+let strip_handle_effect_ctor = (effect_name: String, ctor_name: String) -> String {
+  let prefix = String::concat(effect_name, "::")
+  if String::starts_with(ctor_name, prefix) {
+    let prefix_len = String::length(prefix)
+    let ctor_len = String::length(ctor_name)
+    ctor_name[prefix_len: ctor_len]
+  } else {
+    ctor_name
+  }
+}
+
+let rec print_handle_pat = (effect_name: String, pat: Pat) -> String {
+  match pat {
+    PCtor(name, args) => {
+      let short_name = strip_handle_effect_ctor(effect_name, name)
+      if Array::length(args) == 0 {
+        short_name
+      } else {
+        let parts = for arg in args {
+          print_pat(arg)
+        }
+        String::concat(short_name, String::concat("(", String::concat(join(parts, ", "), ")")))
+      }
+    },
+    POr(left, right) => String::concat(print_handle_pat(effect_name, left), String::concat(" | ", print_handle_pat(effect_name, right))),
+    _ => print_pat(pat)
+  }
+}
+
 let map_to_strings = (exprs: Array[Expr], f: (Expr) -> String) -> Array[String] {
   for expr in exprs {
     f(expr)
@@ -118,11 +186,12 @@ export let rec print_expr = (e: Expr) -> String {
       String::concat("match ", String::concat(print_expr(scrutinee), String::concat(" { ", String::concat(join(parts, ", "), " }"))))
     },
     EHandle(body, arms) => {
+      let effect_name = infer_handle_effect_name(arms)
       let parts = for arm in arms {
         let (pat, expr) = arm
-        String::concat(print_pat(pat), String::concat(" => ", print_expr(expr)))
+        String::concat(print_handle_pat(effect_name, pat), String::concat(" => ", print_expr(expr)))
       }
-      String::concat("handle { ", String::concat(print_expr(body), String::concat(" } { ", String::concat(join(parts, ", "), " }"))))
+      String::concat("handle { ", String::concat(print_expr(body), String::concat(" } with ", String::concat(effect_name, String::concat(" { ", String::concat(join(parts, "; "), " }"))))))
     },
     EWhile(cond, body) => String::concat("while ", String::concat(print_expr(cond), String::concat(" { ", String::concat(print_expr(body), " }")))),
     EForIn(name, index_name, iterable, body) => String::concat("for ", String::concat(match index_name {

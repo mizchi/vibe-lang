@@ -168,11 +168,28 @@ fn bind_handle_arm_pat(
           if name.contains("::") {
             match reh_resolve_effect_op_params(arm_env, name) {
               Some(op_params) => {
+                let effect_name = extract_effect_name(name)
                 for i = 0
                     i < args.length() && i < op_params.length()
                     i = i + 1 {
                   if args[i] is @core.Pat::Bind(name=bind_name, ..) {
-                    arm_env.set(bind_name, op_params[i])
+                    let bind_ty = match resolve_type(arm_env, op_params[i]) {
+                      @core.Type::Param(_) => {
+                        let fresh = fresh_type_var(arm_env)
+                        if effect_name == "Error" {
+                          let _ = ensure_type_satisfies_bounds(
+                            arm_env,
+                            fresh,
+                            ["Error"],
+                            pat.span(),
+                            "handle arm bind",
+                          )
+                        }
+                        fresh
+                      }
+                      other => other
+                    }
+                    arm_env.set(bind_name, bind_ty)
                   }
                 }
                 // Extra arg after op params = continuation (k)
@@ -496,7 +513,12 @@ fn infer_perform_effect_name(env : TypeEnv, value_expr : @core.Expr) -> String {
   match value_expr {
     @core.Expr::Call(name~, ..) | @core.Expr::Ident(name~, ..) =>
       match env.get_ctor(name) {
-        Some(_) => name
+        Some(_) =>
+          if name.contains("::") {
+            extract_effect_name(name)
+          } else {
+            name
+          }
         None => "Error"
       }
     _ => "Error"
@@ -506,7 +528,12 @@ fn infer_perform_effect_name(env : TypeEnv, value_expr : @core.Expr) -> String {
 ///|
 fn infer_handle_arm_effect_name(pat : @core.Pat) -> String? {
   match pat {
-    @core.Pat::Ctor(name~, ..) => Some(name)
+    @core.Pat::Ctor(name~, ..) =>
+      if name.contains("::") {
+        Some(extract_effect_name(name))
+      } else {
+        Some(name)
+      }
     @core.Pat::Wildcard(..) | @core.Pat::Bind(..) => Some("Error")
     _ => None
   }

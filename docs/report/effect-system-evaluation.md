@@ -20,7 +20,7 @@ effect Db { Query(String) -> String }
 
 // with_logging handles Logger, passes through Db
 let with_logging = (f: () -> String with { Logger, Db }) -> String with { Db } {
-  handle { f() } { Logger::Log(_msg) => resume(0) }
+  handle { f() } with Logger { Log(_msg) => resume(0) }
 }
 
 let result = handle {
@@ -28,7 +28,7 @@ let result = handle {
     perform Logger::Log("querying")
     perform Db::Query("SELECT 1")
   })
-} { Db::Query(_sql) => resume("result_from_db") }
+} with Db { Query(_sql) => resume("result_from_db") }
 ```
 
 **結果**: `String::length("result_from_db") = 14` ✅
@@ -53,7 +53,7 @@ let collect = () -> Int {
     perform Emit::Emit(20)
     count = count + 1
     count
-  } { Emit::Emit(_v) => resume(0) }
+  } with Emit { Emit(_v) => resume(0) }
 }
 ```
 

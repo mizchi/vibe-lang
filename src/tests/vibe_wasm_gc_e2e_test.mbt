@@ -648,11 +648,11 @@ test "wasm-gc e2e: throw/handle error-only" {
     #|  handle {
     #|    throw("error")
     #|    0
-    #|  } {
-    #|    Error(e) => {
+    #|  } with Error {
+    #|    Throw(e) => {
     #|      let _ = e
     #|      42
-    #|    }
+    #|    };
     #|  }
     #|}
     #|main()
@@ -665,11 +665,11 @@ test "wasm-gc e2e: handle success path" {
     #|let main = () -> Int {
     #|  handle {
     #|    99
-    #|  } {
-    #|    Error(e) => {
+    #|  } with Error {
+    #|    Throw(e) => {
     #|      let _ = e
     #|      0
-    #|    }
+    #|    };
     #|  }
     #|}
     #|main()

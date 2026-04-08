@@ -474,12 +474,12 @@ wasm backend に同名 call ハンドラがないと `BackendLimit(call: iter_re
 
 ### 問題
 
-`handle { ... } { Error(msg) => ... }` の catch payload を arm 側に束縛していなかったため、arm body で `msg` 参照時に `UnknownName("msg")` が発生した。
+`handle { ... } with Error { Throw(msg) => ... }` の catch payload を arm 側に束縛していなかったため、arm body で `msg` 参照時に `UnknownName("msg")` が発生した。
 
 ### 修正
 
 - `compile_expr_handle` で catch payload をローカルに受ける
-- `Error(msg)` / `Bind(msg)` を検出して arm body の前に束縛ローカルを注入
+- `Throw(msg)` / `Bind(msg)` を検出して arm body の前に束縛ローカルを注入
 - 回帰テスト: `vibe wasm compiles handle arm bind patterns`
 
 ### 教訓

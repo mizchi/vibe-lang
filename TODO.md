@@ -78,6 +78,9 @@ Completed items are archived in `docs/DONE.md`.
   - gate 自体は pass しているが、host `vibe check` の失敗時終了が abort に見える
   - `scripts/test_selfhost_check_command_parity.sh`
   - `scripts/test_selfhost_check_direct_parity.sh`
+- [ ] `Error` surface を `Result::Ok/Err` に寄せる 0.1.0 前整理方針を確定し、syntax / diagnostics / stdlib migration を揃える
+  - `throw` / `handle ... with Error` / `?` の surface を `Result` の `Ok/Err` 表現とどう対応づけるか決める
+  - release note に載せる migration story を先に固定する
 
 ### 0.1.0 gate 外に出した broad package sweep
 
@@ -321,4 +324,4 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 - [x] 軽量 struct リテラル sugar `Type { ... }`
 - [ ] `String` を `for-in` 対象にする
 - [x] トレイトにメソッドシグネチャを許可 (trait Name { method(Type) -> Type })
-- [x] `?` 演算子 (expr? → handle { expr } { Error(e) => throw(e) })
+- [x] `?` 演算子 (expr? → handle { expr } with Error { Throw(e) => throw(e) })

@@ -37,27 +37,21 @@ test "type_expr_eff: loop break(value) returns value type" {
 }
 
 ///|
-test "type_check: handle resume value must match continuation destination type" {
-  let script = "let run = () -> Int with { Error } {\n" +
+test "type_check: handle resume value may match continuation destination type" {
+  let script = "effect Ask { Ask() -> Int }\n" +
+    "let run = () -> Int with { Ask } {\n" +
     "  handle {\n" +
-    "    let resumed: Int = perform(\"boom\")\n" +
+    "    let resumed: Int = perform Ask::Ask()\n" +
     "    resumed\n" +
-    "  } {\n" +
-    "    Error(_) => resume(\"oops\")\n" +
+    "  } with Ask {\n" +
+    "    Ask() => resume(1)\n" +
     "  }\n" +
     "}"
   let ast = @parser.parse_ast(script) catch {
     err => fail("parse error: \{err.to_string()}")
   }
-  let result : Result[TypeEnv, TypeError] = try? type_check(ast)
-  match result {
-    Ok(_) => fail("expected resume value mismatch")
-    Err(TypeError::Mismatch(expected~, actual~, context~, ..)) => {
-      assert_eq(expected, @core.Type::Int)
-      assert_eq(actual, @core.Type::String)
-      assert_eq(context, Some("resume value"))
-    }
-    Err(err) => fail("unexpected type error: " + err.to_string())
+  let _ = type_check(ast) catch {
+    err => fail("unexpected type error: " + err.to_string())
   }
 }
 

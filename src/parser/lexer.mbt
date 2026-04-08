@@ -366,6 +366,7 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
             }
           "for" => for_kw()
           "in" => in_kw()
+          "with" => with_kw()
           "is" => is_kw()
           "derive" => derive_kw()
           "fn" => fn_kw()

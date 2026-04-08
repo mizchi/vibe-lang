@@ -141,7 +141,7 @@ let safe_div = (a: Int, b: Int) -> Int with { Error } {
 }
 
 // Catch with handle
-let result = handle { safe_div(8, 0) } { Error(_) => -1 }
+let result = handle { safe_div(8, 0) } with Error { Throw(_) => -1 }
 // => -1
 ```
 

@@ -595,6 +595,11 @@ pub fn handle_kw() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn with_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(99)
+}
+
+///|
 pub fn handle_expr() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(134)
 }

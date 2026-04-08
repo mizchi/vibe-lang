@@ -24,7 +24,7 @@
 File: [src/tests/vibe_wasm_eval_test.mbt](src/tests/vibe_wasm_eval_test.mbt)
 
 Why:
-- 最小の `handle { ... } { ... }` と `perform` / `resume` の往復を確認できる
+- 最小の `handle { ... } with Effect { ... }` と `perform` / `resume` の往復を確認できる
 - `Error` effect は既存の標準パスなので、prototype の baseline にしやすい
 
 What it verifies:

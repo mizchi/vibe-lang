@@ -361,7 +361,7 @@ test "type query imports transitive type deps from imported value schemes" {
     "let x = handle {\n" +
     "  let (_, db2) = f(Db(1))\n" +
     "  match db2 { Db(n) => n }\n" +
-    "} { Error(_) => -1 }\n" +
+    "} with Error { Throw(_) => -1 }\n" +
     "x\n",
   )
   let env = db.types("main")

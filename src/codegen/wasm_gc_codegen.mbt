@@ -2356,8 +2356,7 @@ fn infer_expr_kind_gc(
                                     match fields[0] {
                                       GcValKind::Ref(fn_idx) =>
                                         match ctx.types[fn_idx] {
-                                          GcTypeDef::Func(result~, ..) =>
-                                            result
+                                          GcTypeDef::Func(result~, ..) => result
                                           _ => GcValKind::I64
                                         }
                                       _ => GcValKind::I64
@@ -8136,7 +8135,7 @@ fn compile_expr_gc(
       // Handler code: error value is on stack as eqref
       let error_local = alloc_local_gc(fctx, GcValKind::EqRef)
       emit_local_set_gc(buf, error_local)
-      // Bind error name if pattern is Error(e) or Bind(e)
+      // Bind error name if pattern is Error::Throw(e) or Bind(e)
       let saved_locals = clone_locals_gc(fctx.locals)
       match catch_arm.pat {
         @core.Pat::Bind(name~, ..) => {
@@ -8145,7 +8144,7 @@ fn compile_expr_gc(
           emit_local_set_gc(buf, idx)
           fctx.locals[name] = { idx, kind: GcValKind::EqRef }
         }
-        @core.Pat::Ctor(name="Error", args~, ..) if args.length() > 0 =>
+        @core.Pat::Ctor(name="Error::Throw", args~, ..) if args.length() > 0 =>
           match args[0] {
             @core.Pat::Bind(name~, ..) => {
               let idx = alloc_local_gc(fctx, GcValKind::EqRef)

@@ -647,7 +647,7 @@ fn compile_module_wasm_for_exec(
     entry,
     no_dce=false,
     opt_level=None,
-    // Preserve thrown string payloads for `handle { ... } { Error(msg) => ... }`
+    // Preserve thrown string payloads for `handle { ... } with Error { Throw(msg) => ... }`
     // parity with interpreter on compiled execution paths.
     debug_errors=true,
     http_host_imports~,

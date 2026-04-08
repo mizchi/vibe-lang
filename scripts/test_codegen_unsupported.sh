@@ -124,8 +124,8 @@ log_info "Testing handle/yield compile path..."
 expect_compile_success "handle expression compiles" \
 'let value = handle {
   1
-} {
-  Error(_) => 2
+} with Error {
+  Throw(_) => 2
 }
 value'
 

@@ -112,8 +112,7 @@ fn reh_has_perform(expr : @core.Expr) -> Bool {
     }
     @core.Expr::TupleIndex(expr=inner, ..)
     | @core.Expr::Yield(expr=inner, ..)
-    | @core.Expr::Spread(expr=inner, ..) =>
-      reh_has_perform(inner)
+    | @core.Expr::Spread(expr=inner, ..) => reh_has_perform(inner)
     _ => false
   }
 }
@@ -126,8 +125,7 @@ fn reh_module_has_perform(m : @core.Module) -> Bool {
       | @core.Stmt::ExportLet(expr~, ..)
       | @core.Stmt::InternalExportLet(expr~, ..)
       | @core.Stmt::Expr(expr~, ..)
-      | @core.Stmt::LetMut(expr~, ..) =>
-        reh_has_perform(expr)
+      | @core.Stmt::LetMut(expr~, ..) => reh_has_perform(expr)
       @core.Stmt::Test(body~, ..) | @core.Stmt::Bench(body~, ..) =>
         reh_module_has_perform(body)
       _ => false
@@ -202,8 +200,7 @@ fn reh_module_has_call_name(m : @core.Module, target : String) -> Bool {
       | @core.Stmt::ExportLet(expr~, ..)
       | @core.Stmt::InternalExportLet(expr~, ..)
       | @core.Stmt::Expr(expr~, ..)
-      | @core.Stmt::LetMut(expr~, ..) =>
-        reh_has_call_name(expr, target)
+      | @core.Stmt::LetMut(expr~, ..) => reh_has_call_name(expr, target)
       @core.Stmt::Test(body~, ..) | @core.Stmt::Bench(body~, ..) =>
         reh_module_has_call_name(body, target)
       _ => false
@@ -279,8 +276,8 @@ test "reh: user perform in tuple is inlined by handler" {
     #|handle {
     #|  let pair = (perform MyEff::Op(1), perform MyEff::Op(2))
     #|  pair
-    #|} {
-    #|  MyEff::Op(n) => resume(n * 10)
+    #|} with MyEff {
+    #|  Op(n) => resume(n * 10);
     #|}
   let rewritten = reh_parse_and_rewrite(source)
   // The perform MyEff::Op in the tuple should be inlined (replaced with handler body)
@@ -303,8 +300,8 @@ test "reh: user perform in array is inlined by handler" {
     #|}
     #|handle {
     #|  [perform MyEff::Op(1), perform MyEff::Op(2)]
-    #|} {
-    #|  MyEff::Op(n) => resume(n * 10)
+    #|} with MyEff {
+    #|  Op(n) => resume(n * 10);
     #|}
   let rewritten = reh_parse_and_rewrite(source)
   let body_module = match rewritten.stmts[rewritten.stmts.length() - 1] {
@@ -326,8 +323,8 @@ test "reh: user perform in for-in is inlined by handler" {
     #|  for item in items {
     #|    perform MyEff::Op(item)
     #|  }
-    #|} {
-    #|  MyEff::Op(n) => resume(())
+    #|} with MyEff {
+    #|  Op(n) => resume(());
     #|}
   let rewritten = reh_parse_and_rewrite(source)
   let body_module = match rewritten.stmts[rewritten.stmts.length() - 1] {
@@ -347,8 +344,8 @@ test "reh: handler with if-else containing resume is accepted" {
     #|}
     #|handle {
     #|  perform Transform::Apply(5)
-    #|} {
-    #|  Transform::Apply(n) => if n > 0 { resume(n * 2) } else { resume(0) }
+    #|} with Transform {
+    #|  Apply(n) => if n > 0 { resume(n * 2) } else { resume(0) };
     #|}
   // Should parse and rewrite without error
   let rewritten = reh_parse_and_rewrite(source)
@@ -369,11 +366,11 @@ test "reh: handler with match containing resume is accepted" {
     #|}
     #|handle {
     #|  perform Transform::Apply(5)
-    #|} {
-    #|  Transform::Apply(n) => match n {
+    #|} with Transform {
+    #|  Apply(n) => match n {
     #|    0 => resume(0)
     #|    _ => resume(n * 2)
-    #|  }
+    #|  };
     #|}
   let rewritten = reh_parse_and_rewrite(source)
   match rewritten.stmts[rewritten.stmts.length() - 1] {

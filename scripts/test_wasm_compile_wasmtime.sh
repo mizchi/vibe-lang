@@ -2121,7 +2121,7 @@ expect_wasmtime_result_exceptions "throw/handle: catch division by zero" \
   if b == 0 { throw("division by zero") }
   a / b
 }
-handle { safe_div(10, 0) } { Error(_) => 99 }' \
+handle { safe_div(10, 0) } with Error { Throw(_) => 99 }' \
 "99"
 
 expect_wasmtime_result_exceptions "throw/handle: no error path" \
@@ -2129,7 +2129,7 @@ expect_wasmtime_result_exceptions "throw/handle: no error path" \
   if b == 0 { throw("division by zero") }
   a / b
 }
-handle { safe_div(10, 2) } { Error(_) => 99 }' \
+handle { safe_div(10, 2) } with Error { Throw(_) => 99 }' \
 "5"
 
 expect_wasmtime_result_exceptions "throw/handle: nested handle" \
@@ -2137,9 +2137,9 @@ expect_wasmtime_result_exceptions "throw/handle: nested handle" \
   throw(msg)
 }
 let outer = handle {
-  let inner = handle { fail("inner") } { Error(_) => 42 }
+  let inner = handle { fail("inner") } with Error { Throw(_) => 42 }
   inner + 1
-} { Error(_) => 0 }
+} with Error { Throw(_) => 0 }
 outer' \
 "43"
 

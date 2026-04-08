@@ -5,8 +5,8 @@ test "normalize_format: railway notes summarize handle/throw/unwrap boundaries" 
     #|  handle {
     #|    let value = Ok(1) |> unwrap
     #|    value
-    #|  } {
-    #|    Error(_) => throw("boom")
+    #|  } with Error {
+    #|    Throw(_) => throw("boom")
     #|  }
     #|}
   let notes = railway_boundary_notes_for_source(source)

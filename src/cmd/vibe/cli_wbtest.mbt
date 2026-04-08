@@ -3233,16 +3233,16 @@ test "compiled test marks perform resume builtins unsupported for fallback" {
   }
   @os_fs.write_string_to_file(
     source_path,
-    "enum Eff {\n" +
-    "  Ask(Int);\n" +
+    "effect Ask {\n" +
+    "  Ask(Int) -> Int\n" +
     "}\n" +
     "let ask_once = () -> Int with { Ask } {\n" +
-    "  perform(Ask(41))\n" +
+    "  perform Ask::Ask(41)\n" +
     "}\n" +
     "test \"perform fallback\" {\n" +
     "  let value = handle {\n" +
     "    add(1, ask_once())\n" +
-    "  } {\n" +
+    "  } with Ask {\n" +
     "    Ask(_) => resume(42)\n" +
     "  }\n" +
     "  assert(eq(value, 43))\n" +
@@ -3915,8 +3915,8 @@ test "compiled exec wasm embeds throw literal for handler parity" {
     #|}
     #|handle {
     #|  fail()
-    #|} {
-    #|  Error(msg) => if String::equals(msg, "@MSG@") { 1 } else { 2 }
+    #|} with Error {
+    #|  Throw(msg) => if String::equals(msg, "@MSG@") { 1 } else { 2 }
     #|}
   db.set_source("main", src.replace(old="@MSG@", new=needle))
   let wasm = try compile_module_wasm_for_exec(db, "main") catch {

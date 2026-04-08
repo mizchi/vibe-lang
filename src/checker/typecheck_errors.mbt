@@ -56,7 +56,9 @@ fn suggestion_hint(suggestion : String?) -> String? {
 ///|
 fn effect_not_allowed_hint(name : String) -> String? {
   if name == "Error" {
-    Some("declare `with {Error}` or handle with `handle { ... } { ... }`")
+    Some(
+      "declare `with {Error}` or handle with `handle { ... } with Error { Throw(...) => ... }`",
+    )
   } else if name == "effect" {
     Some("declare a compatible `with { ... }` effect set on this function")
   } else {
@@ -315,9 +317,9 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         "`",
         span: Some(span),
         hint: Some(
-          "wrap with `handle { ... } { " +
+          "wrap with `handle { ... } with " +
           effect_name +
-          "(...) => ... }` or move into a function with `with {" +
+          " { ... => ... }` or move into a function with `with {" +
           effect_name +
           "}`",
         ),

@@ -22,7 +22,7 @@
 |---|----------|--------|
 | 0001 | **MoonBit を実装言語に採用**。WASM/JS/Native ターゲット、snapshot テスト、MoonBit ツールチェーン活用。 | accepted |
 | 0006 | **62-bit タグ付き Int**。リテラル上限 2^61-1、i64 下位 2bit タグ、`>>` は算術シフト、`~` 非対応。 | accepted |
-| 0016 | **エラー制御構文を `handle`/`throw` に統一**。`throw()` で送出、`handle { } { Error(_) => }` で捕捉。try/catch/raise は廃止。 | accepted |
+| 0016 | **エラー制御構文を `handle`/`throw` に統一**。`throw()` で送出、`handle { ... } with Error { Throw(_) => ... }` で捕捉。try/catch/raise は廃止。 | accepted |
 | 0020 | **Pipe-first 呼び出し規約**。`x \|> f` → `f(x)`、parser でデシュガー。`.` はデータアクセス専用。名前解決: local > lexical > import > prelude。 | accepted |
 | 0023 | **`is` パターンマッチ式**。`expr is pattern` で Bool / binding。`EMatch` にデシュガー。 | accepted |
 | 0025 | **else 節を一般の式に統一**。else の後に任意の式を許可。 | accepted |
@@ -43,6 +43,7 @@
 | 0041 | **`_start` は `() -> Unit` 固定**。`with { Effects }` で capability 宣言。exit code は panic/Process::exit。REPL は例外。 | proposed |
 | 0042 | **トップレベル未処理 effect 禁止**。ファイルモジュール top-level は pure (effect_scope_none)。shell/REPL/test は別スコープ。 | proposed |
 | 0043 | **Capability-driven DCE + 定数分岐**。`--allow-*`/`--deny-*` で capability 指定 → 不要コード除去。`@build.*` 定数 + dead branch elimination。`--profile` プリセット (minimal/sandbox/server/edge/agent)。 | proposed |
+| 0050 | **`handle` を汎用 effect handler に統一**。canonical syntax は `handle { expr } with EffectName { Op(...) => ...; }`。`Error` も built-in effect として一般化し、`throw(e)` は `perform Error::Throw(e)` の sugar とする。`resume` は one-shot / lexical-scope 限定、arm は exhaustive・top-to-bottom first-match、複数 effect は nested handle で表現する。 | proposed |
 
 ## Module & Identity
 

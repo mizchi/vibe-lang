@@ -33,7 +33,7 @@ pub let sample_effect_ho_script : String =
   #|  x: Int,
   #|) -> Int with {e} { add(f(x), g(x)) }
   #|let run = (x: Int) -> Int with {Error} { chain(effectful, effectful, x) }
-  #|handle { run(10) } { Error(_) => -1 }
+  #|handle { run(10) } with Error { Throw(_) => -1 }
 
 ///|
 pub let sample_numeric_script : String =

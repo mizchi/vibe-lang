@@ -66,8 +66,8 @@ case_handle_passthrough=$(cat <<'VIBE'
 let main = () -> Int {
   handle {
     42
-  } {
-    _ => 0
+  } with Error {
+    Throw(_) => 0
   }
 }
 
@@ -83,8 +83,8 @@ let fail = () -> Int with { Error } {
 let main = () -> Int {
   handle {
     fail()
-  } {
-    _ => 99
+  } with Error {
+    Throw(_) => 99
   }
 }
 
@@ -100,8 +100,8 @@ let fail = () -> Int with { Error } {
 let main = () -> Int {
   handle {
     fail()
-  } {
-    Error(msg) => String::length(msg)
+  } with Error {
+    Throw(msg) => String::length(msg)
   }
 }
 
@@ -118,11 +118,11 @@ let main = () -> Int {
   handle {
     handle {
       fail()
-    } {
-      _ => throw("outer")
+    } with Error {
+      Throw(_) => throw("outer")
     }
-  } {
-    Error(msg) => String::length(msg)
+  } with Error {
+    Throw(msg) => String::length(msg)
   }
 }
 

@@ -40,8 +40,8 @@ let main = () -> Int with { Error, Net } {
   handle {
     $expr
     0
-  } {
-    Error(_) => $expected
+  } with Error {
+    Throw(_) => $expected
   }
 }
 

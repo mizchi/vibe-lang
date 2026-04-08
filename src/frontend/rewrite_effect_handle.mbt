@@ -1,4 +1,4 @@
-///| Rewrite `handle { body } { Effect::Op(x) => resume(val), ... }` into
+///| Rewrite `handle { body } with Effect { Op(x) => resume(val); ... }` into
 
 ///| inline calls. This implements tail-resumptive effect handler inlining.
 
@@ -6,7 +6,7 @@
 
 ///| Before:
 
-///|   handle { perform Console::ReadLine } { Console::ReadLine => resume("Alice") }
+///|   handle { perform Console::ReadLine } with Console { ReadLine => resume("Alice"); }
 
 ///|
 
@@ -233,10 +233,7 @@ fn reh_rewrite_expr(expr : @core.Expr) -> @core.Expr {
       @core.Expr::Loop(params=next_params, body=reh_rewrite_module(body), span~)
     }
     @core.Expr::Break(value~, span~) =>
-      @core.Expr::Break(
-        value=value.map(fn(v) { reh_rewrite_expr(v) }),
-        span~,
-      )
+      @core.Expr::Break(value=value.map(fn(v) { reh_rewrite_expr(v) }), span~)
     @core.Expr::Continue(args~, span~) =>
       @core.Expr::Continue(args=args.map(reh_rewrite_expr), span~)
     @core.Expr::Record(fields~, span~) => {
@@ -278,9 +275,7 @@ fn reh_rewrite_expr(expr : @core.Expr) -> @core.Expr {
         match part {
           @core.StringInterpPart::Lit(_) => next_parts.push(part)
           @core.StringInterpPart::Expr(e) =>
-            next_parts.push(
-              @core.StringInterpPart::Expr(reh_rewrite_expr(e)),
-            )
+            next_parts.push(@core.StringInterpPart::Expr(reh_rewrite_expr(e)))
         }
       }
       @core.Expr::StringInterp(parts=next_parts, span~)
@@ -429,7 +424,7 @@ fn reh_rewrite_handle(
 ) -> @core.Expr {
   let (effect_handlers, error_arms) = reh_extract_effect_handlers(arms)
   if effect_handlers.length() == 0 {
-    // No effect handlers — keep as normal handle (Error only)
+    // No effect handlers — keep as ordinary handle
     return @core.Expr::Handle(
       body=reh_rewrite_module(body),
       arms=error_arms,
@@ -772,15 +767,9 @@ fn reh_replace_performs_expr(
       @core.Expr::StringInterp(parts=next_parts, span~)
     }
     @core.Expr::Yield(expr=inner, span~) =>
-      @core.Expr::Yield(
-        expr=reh_replace_performs_expr(inner, handlers),
-        span~,
-      )
+      @core.Expr::Yield(expr=reh_replace_performs_expr(inner, handlers), span~)
     @core.Expr::Spread(expr=inner, span~) =>
-      @core.Expr::Spread(
-        expr=reh_replace_performs_expr(inner, handlers),
-        span~,
-      )
+      @core.Expr::Spread(expr=reh_replace_performs_expr(inner, handlers), span~)
     _ => expr
   }
 }

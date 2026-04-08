@@ -7,7 +7,7 @@ fn handle_arm_bind_name(pat : @core.Pat) -> String? {
     }
     @core.Pat::Ctor(name~, args~, span~) => {
       let _ = span
-      if name == "Error" && args.length() == 1 {
+      if (name == "Error" || name == "Error::Throw") && args.length() == 1 {
         match args[0] {
           @core.Pat::Bind(name=bind_name, span~) => {
             let _ = span
@@ -280,9 +280,7 @@ fn compile_expr_handle_with_resume(
         emit_call(buf, import_index_js_equals(ctx))
       } else {
         emit_local_get(buf, caught_local)
-        let arm_key_expr = @core.Expr::String(
-          value=arm_key, span=arm.span,
-        )
+        let arm_key_expr = @core.Expr::String(value=arm_key, span=arm.span)
         compile_expr(ctx, buf, arm_key_expr)
         emit_i64_eq(buf)
       }

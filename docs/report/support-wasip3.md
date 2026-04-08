@@ -67,7 +67,7 @@ content-type: application/json
 
 ### 1. WASM Exceptions の string throw/catch 破損
 
-`throw("NotFound")` → `handle { ... } { Error(err) => ... }` で `err` の値が破損する。
+`throw("NotFound")` → `handle { ... } with Error { Throw(err) => ... }` で `err` の値が破損する。
 WASM exceptions proposal 経由の tagged string の伝搬に問題あり。
 
 **影響**: `harness()` の自動エラーハンドリングが compiled backend で動かない
@@ -184,15 +184,18 @@ let logger = [A](inner: () -> A with { HttpRequest, HttpResponse })
 ```vibe
 // handler の単体テスト: HttpRequest を mock, HttpResponse を collect
 let (status, body) = handle {
-  handler()
-  (0, "")  // unreachable if Write is called
-} {
-  HttpRequest::Method => resume("GET"),
-  HttpRequest::Url => resume("/health"),
-  HttpRequest::Header(_) => resume(None),
-  HttpRequest::Body => resume(""),
-  HttpResponse::Status(code) => (code, ""),     // capture
-  HttpResponse::Write(text) => (200, text)       // capture
+  handle {
+    handler()
+    (0, "")  // unreachable if Write is called
+  } with HttpRequest {
+    Method => resume("GET");
+    Url => resume("/health");
+    Header(_) => resume(None);
+    Body => resume("")
+  }
+} with HttpResponse {
+  Status(code) => (code, "");     // capture
+  Write(text) => (200, text)      // capture
 }
 assert(status == 200)
 ```
@@ -230,7 +233,7 @@ let proxy = () -> Unit with { HttpRequest, HttpResponse, HttpClient } {
 
 - [ ] WASM exceptions での string tagged value 伝搬を修正
 - [ ] suberror → Error 型の自動変換を compiled backend で実装
-- [ ] `handle { } { Error(x) => }` での x の値が正しく伝搬されることを検証
+- [ ] `handle { ... } with Error { Throw(x) => ... }` での x の値が正しく伝搬されることを検証
 
 ### Phase 2: `effect` 宣言 + `perform` + effect handler
 
@@ -238,7 +241,7 @@ let proxy = () -> Unit with { HttpRequest, HttpResponse, HttpClient } {
 
 - [ ] `effect Name { Op1(Args) -> Ret; Op2 -> Ret }` 宣言の AST / parser / checker
 - [ ] `perform Effect::Op(args)` 式の AST / parser / checker / codegen
-- [ ] `handle { body } { Effect::Op(args) => resume(value) }` handler 構文
+- [ ] `handle { body } with Effect { Op(args) => resume(value) }` handler 構文
 - [ ] `resume(value)` — 中断した計算を値で再開する continuation
 - [ ] `with { Effect }` annotation — 既存の `with { Error }` を一般化
 - [ ] effect と suberror の関係整理 (`Error` は特殊な effect、suberror は Error の variant)

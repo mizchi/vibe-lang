@@ -50,3 +50,27 @@ test "parse diagnostic suggests parenthesize hint for infix+pipe mix" {
     None => fail("expected infix+pipe parenthesize quickfix hint")
   }
 }
+
+///|
+test "parse diagnostic suggests handle-with migration hint" {
+  let source = "handle {\n" +
+    "  perform Logger::Log(\"hi\")\n" +
+    "} {\n" +
+    "  Logger::Log(msg) => resume(())\n" +
+    "}"
+  let result : Result[@core.Module, ParseError] = try? parse_ast(source)
+  match result {
+    Ok(_) => fail("expected parse error for legacy handle syntax")
+    Err(err) => {
+      let diag = err.diagnostic()
+      assert_eq(diag.message, "expected `with`, got `{`")
+      match diag.hint {
+        Some(hint) => {
+          assert_true(hint.contains("handle { ... } with EffectName { ... }"))
+          assert_true(hint.contains("legacy"))
+        }
+        None => fail("expected handle-with migration hint")
+      }
+    }
+  }
+}

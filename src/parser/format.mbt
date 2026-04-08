@@ -893,6 +893,7 @@ fn should_insert_struct_double_colon(
   match prev_prev_text {
     Some("effect") => return false
     Some("suberror") => return false
+    Some("with") => return false
     _ => ()
   }
   if prev_prev_kind == Some(thin_arrow()) {
@@ -1071,6 +1072,7 @@ fn is_keyword_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == record_kw() ||
   kind == for_kw() ||
   kind == in_kw() ||
+  kind == with_kw() ||
   kind == is_kw() ||
   kind == derive_kw() ||
   kind == fn_kw() ||

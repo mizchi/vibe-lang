@@ -313,12 +313,12 @@ T, U, V
 let f = () -> Int with { Error } { throw("fail") }
 
 // Handle
-handle { f() } { Error(msg) => -1 }
+handle { f() } with Error { Throw(msg) => -1 }
 
 // User-defined effect
 enum Ask { Ask(Int) }
 perform(Ask(42))
-handle { perform(Ask(1)) } { Ask(v) => resume(v + 1) }
+handle { perform(Ask(1)) } with Ask { Ask(v) => resume(v + 1) }
 
 // Effect polymorphism
 let apply = [T](f: (T) -> T with { e }, x: T) -> T with { e } { f(x) }

@@ -10,21 +10,23 @@ effect Cache {
 
 // Service layer uses both effects
 let result = handle {
-  // Layer 1: check cache
-  let cached = perform Cache::Get("user:1")
-  if String::equals(cached, "") {
-    // Layer 2: cache miss → query db
-    let data = perform Db::Query("SELECT name FROM users")
-    perform Cache::Set("user:1", data)
-    data
-  } else {
-    cached
+  handle {
+    // Layer 1: check cache
+    let cached = perform Cache::Get("user:1")
+    if String::equals(cached, "") {
+      // Layer 2: cache miss → query db
+      let data = perform Db::Query("SELECT name FROM users")
+      perform Cache::Set("user:1", data)
+      data
+    } else {
+      cached
+    }
+  } with Cache {
+    Get(_key) => resume("");
+    Set(_key, _val) => resume(0)
   }
-} {
-  // Mock implementations (test double)
-  Cache::Get(_key) => resume(""),
-  Cache::Set(_key, _val) => resume(0),
-  Db::Query(_sql) => resume("Alice")
+} with Db {
+  Query(_sql) => resume("Alice")
 }
 // cache miss → db query → "Alice"
 String::length(result)

@@ -53,26 +53,38 @@ let rec parse_match_rest = (tokens: Array[Token], pos: Int, scrutinee: Expr, b: 
   }
 }
 
-let rec parse_handle_rest = (tokens: Array[Token], pos: Int, body: Expr, b: ArrayBuilder[(Pat, Expr)], parse_recur: (Array[Token], Int, Int) -> (Expr, Int)with { Error }) -> (Expr, Int)with { Error } {
+let rec qualify_handle_arm_pattern = (effect_name: String, pat: Pat) -> Pat {
+  match pat {
+    PCtor(name, args) => if String::contains(name, "::") {
+      PCtor(name, args)
+    } else {
+      PCtor(String::concat(effect_name, String::concat("::", name)), args)
+    },
+    POr(left, right) => POr(qualify_handle_arm_pattern(effect_name, left), qualify_handle_arm_pattern(effect_name, right)),
+    _ => pat
+  }
+}
+
+let parse_handle_arm = (tokens: Array[Token], pos: Int, effect_name: String, parse_recur: (Array[Token], Int, Int) -> (Expr, Int)with { Error }) -> ((Pat, Expr), Int)with { Error } {
+  let (pat, pat_next) = parse_pattern(tokens, pos)
+  let qualified_pat = qualify_handle_arm_pattern(effect_name, pat)
+  let arrow_pos = expect_tk(tokens, pat_next, "=>")
+  let (expr, next) = parse_recur(tokens, arrow_pos, 0)
+  ((qualified_pat, expr), next)
+}
+
+let rec parse_handle_rest = (tokens: Array[Token], pos: Int, body: Expr, effect_name: String, b: ArrayBuilder[(Pat, Expr)], parse_recur: (Array[Token], Int, Int) -> (Expr, Int)with { Error }) -> (Expr, Int)with { Error } {
   match peek(tokens, pos) {
-    TComma => match peek(tokens, pos + 1) {
+    TSemicolon => match peek(tokens, pos + 1) {
       TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 2),
       _ => {
-        let (pa, paa) = parse_pattern(tokens, pos + 1)
-        let a2 = expect_tk(tokens, paa, "=>")
-        let (ea, en) = parse_recur(tokens, a2, 0)
-        ArrayBuilder::push(b, (pa, ea))
-        parse_handle_rest(tokens, en, body, b, parse_recur)
+        let (arm, next) = parse_handle_arm(tokens, pos + 1, effect_name, parse_recur)
+        ArrayBuilder::push(b, arm)
+        parse_handle_rest(tokens, next, body, effect_name, b, parse_recur)
       }
     },
     TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 1),
-    _ => {
-      let (pa, paa) = parse_pattern(tokens, pos)
-      let a2 = expect_tk(tokens, paa, "=>")
-      let (ea, en) = parse_recur(tokens, a2, 0)
-      ArrayBuilder::push(b, (pa, ea))
-      parse_handle_rest(tokens, en, body, b, parse_recur)
-    }
+    _ => throw("expected ';' or '}' in handle arm list")
   }
 }
 
@@ -223,16 +235,19 @@ export let parse_impl_dispatch = (tokens: Array[Token], pos: Int, mode: Int, par
   } else if mode == mode_handle {
     let br = expect_tk(tokens, pos, "{")
     let (body, bn) = parse_recur(tokens, br, mode_block)
-    let hb = expect_tk(tokens, bn, "{")
+    let wp = expect_tk(tokens, bn, "with")
+    let (effect_name, effect_next) = match peek(tokens, wp) {
+      TIdent(name) => (name, wp + 1),
+      _ => throw("expected effect name after 'with'")
+    }
+    let hb = expect_tk(tokens, effect_next, "{")
     match peek(tokens, hb) {
       TRBrace => (EHandle(body, empty_arms()), hb + 1),
       _ => {
         let b = ArrayBuilder::new()
-        let (fp, fa) = parse_pattern(tokens, hb)
-        let aa = expect_tk(tokens, fa, "=>")
-        let (fe, fn1) = parse_recur(tokens, aa, 0)
-        ArrayBuilder::push(b, (fp, fe))
-        parse_handle_rest(tokens, fn1, body, b, parse_recur)
+        let (arm, next) = parse_handle_arm(tokens, hb, effect_name, parse_recur)
+        ArrayBuilder::push(b, arm)
+        parse_handle_rest(tokens, next, body, effect_name, b, parse_recur)
       }
     }
   } else if mode == mode_for_in {

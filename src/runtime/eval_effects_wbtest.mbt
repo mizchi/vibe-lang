@@ -30,8 +30,8 @@ test "effect handler with continuation: basic sum" {
     #|  perform Emit::Emit(20)
     #|  perform Emit::Emit(30)
     #|  0
-    #|} {
-    #|  Emit::Emit(v, k) => v + k(0)
+    #|} with Emit {
+    #|  Emit(v, k) => v + k(0);
     #|}
     #|count
   let result = eval_snippet(source)
@@ -46,21 +46,23 @@ test "effect handler with continuation: single perform" {
     #|}
     #|handle {
     #|  perform Ask::Ask(10)
-    #|} {
-    #|  Ask::Ask(x, k) => x + 1
+    #|} with Ask {
+    #|  Ask(x, k) => x + 1;
     #|}
   let result = eval_snippet(source)
   assert_eq(result, @core.Value::Int(11L))
 }
 
 ///|
-test "effect handler without continuation: legacy resume still works" {
+test "effect handler without continuation: resume still works" {
   let source =
-    #|enum Eff { Ask(Int) }
+    #|effect Ask {
+    #|  Ask(Int) -> Int
+    #|}
     #|handle {
-    #|  perform(Ask(41))
-    #|} {
-    #|  Ask(_) => resume(42)
+    #|  perform Ask::Ask(41)
+    #|} with Ask {
+    #|  Ask(_) => resume(42);
     #|}
   let result = eval_snippet(source)
   assert_eq(result, @core.Value::Int(42L))

@@ -155,7 +155,7 @@ EOF
 let safe_div = (a: Int, b: Int) -> Int with { Error } {
   if b == 0 { throw("div by zero") } else { a / b }
 }
-let result = handle { safe_div(10, 2) } { Error(_) => -1 }
+let result = handle { safe_div(10, 2) } with Error { Throw(_) => -1 }
 result
 EOF
   files+=("$WORK/effect.vibe")

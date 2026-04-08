@@ -136,9 +136,7 @@ pub fn EvalError::user_message(self : EvalError) -> String {
 
 ///|
 fn wrap_error_effect(payload : @core.Value) -> @core.Value {
-  let fields : Map[String, @core.Value] = {}
-  fields["Error"] = payload
-  @core.Value::Record(fields)
+  ctor_value_from_args("Error::Throw", [payload])
 }
 
 ///|

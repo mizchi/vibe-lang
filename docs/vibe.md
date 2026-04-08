@@ -110,7 +110,7 @@ let g2 = (y: Int) -> Int with {Error} { f(y) }
 
 // ok: effect is localized by handler pattern
 let g3 = (y: Int) -> Int {
-  handle { f(y) } { Error(_) => 0 }
+  handle { f(y) } with Error { Throw(_) => 0 }
 }
 ```
 
@@ -765,7 +765,7 @@ Rules:
 - `yield expr` requires `{Async}` and returns `Unit`.
 - Runtime execution for `yield` is gated by `--unstable-async`
   (disabled by default in CLI entrypoints).
-- Error boundary syntax is `handle { ... } { Error(_) => ... }`.
+- Error boundary syntax is `handle { ... } with Error { Throw(_) => ... }`.
 
 ## Test blocks (MoonBit-style)
 

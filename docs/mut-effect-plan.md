@@ -1,6 +1,21 @@
 # Mut Effect Handler 実装計画
 
-ADR: [ADR-0021](adr.md)
+ADR: [ADR-0021](adr.md), [ADR-0050](archive/adr/0050-unify-handle-as-generic-effect-handler.md)
+
+## 仕様固定
+
+`handle` の public surface は ADR-0050 で先に固定する。
+この文書は、その frozen surface に到達するための staged implementation plan として扱う。
+
+固定済みの前提:
+
+- canonical syntax は `handle { expr } with EffectName { Op(...) => expr; }`
+- `Error` は built-in effect の一種として扱う
+- 旧 bare-arm 版 `handle` は移行期間なしで廃止する
+- arm は `match` 相当の pattern / or-pattern / guard を許可する
+- arm 区切りは `;` のみ
+- `resume` は one-shot / lexical-scope 限定
+- 1 つの `handle` が消す effect は 1 個のみ。複数 effect は nested handle で表現する
 
 ## 現状分析
 
@@ -25,7 +40,8 @@ ADR: [ADR-0021](adr.md)
 2. `perform`/`resume` の言語レベルサポート（現在は関数呼び出しとして parse される）
 3. エフェクト型の追跡（`Bool` ではなくエフェクトセット）
 4. ハンドラによるエフェクト消去の型検査
-5. `handle ... with EffectName { ... }` 構文（現在は `handle { } { Pat => ... }` のみ）
+5. ADR-0050 canonical syntax への移行
+   (`handle { ... } with EffectName { ... }`、旧構文廃止、single-effect handle)
 
 ### 設計上の注意: `perform`/`resume` の構文選択
 
@@ -64,6 +80,9 @@ get() -> { let v = state; resume(v) }         // OK (これも tail-resumptive)
 - Phase 2: single-shot non-tail-resumptive → CPS or stack switching (ADR-0012)
 - Phase 3: multi-shot → 将来検討
 
+ADR-0050 の stable contract は one-shot handler 全体を対象とするが、
+実装は tail-resumptive から段階導入する。
+
 ---
 
 ## Phase 1: Tail-Resumptive Effect Handler
@@ -100,26 +119,28 @@ effect Mut<T> {
   build() -> Array<T>
 }
 
-// ハンドラ付き handle（既存の Error handle と共存）
+// ハンドラ付き handle（ADR-0050 canonical syntax）
 let xs = handle {
   perform push(1)
   perform push(2)
   perform build()
 } with Mut<Int> {
   let buf = @array.new()
-  push(v) -> { buf.push(v); resume(()) }
-  build() -> { resume(buf.to_array()) }
+  push(v) => { buf.push(v); resume(()) };
+  build() => { resume(buf.to_array()) };
 }
 
-// 既存の Error handle は変更なし
-handle { throw("err") } { Error(msg) => msg }
+// Error も通常 effect として扱う
+handle { throw("err") } with Error {
+  Throw(msg) => msg;
+}
 ```
 
 **パーサー変更点**:
 - `effect` キーワードをトップレベル宣言として追加
 - `perform` キーワードを式として追加
-- `handle { ... } with EffectName { ... }` を新構文として追加
-- 既存の `handle { ... } { Pat => ... }` は Error handle として維持
+- `handle { ... } with EffectName { ... }` を canonical syntax として実装
+- 旧 bare-arm 版 `handle` は parser error にする
 
 ### Step 3: 型チェック
 
@@ -139,6 +160,8 @@ EffectSet = Array[String]  // ["Error", "Mut", "IO"]
 //    → body は E をエフェクトセットに追加して検査
 //    → handle 全体の型からは E を除去
 // 3. resume(v) はハンドラ節の中でのみ使用可能
+// 4. with E の arm は exhaustive である必要がある
+// 5. resume は one-shot / lexical scope 限定
 ```
 
 **エフェクト脱出検査** (ADR-0021 の核心):
@@ -601,10 +624,10 @@ WASM stack switching (ADR-0012) が利用可能になった段階で:
    - → Phase 1 は案 A（シンプル）
 3. **エフェクトの型パラメータ**: `Mut<T>` の T をどう解決するか
    - Phase 1 は単相（`Mut<Int>` 等、具体型のみ）で開始
-4. **既存 Error handle との構文衝突**: `handle { } { ... }` vs `handle { } with E { ... }`
-   - `with` の有無で分岐 → パーサーで区別可能
+4. **旧構文からの移行**: bare-arm 版 `handle` をどう壊すか
+   - ADR-0050 に従い、互換期間なしで parser error + migration hint
 5. **複数エフェクトの合成**: `handle { } with (Mut<Int>, State<String>) { ... }`
-   - Phase 1 は単一エフェクトのみ、Phase 3 で合成対応
+   - ADR-0050 では単一エフェクトのみ。複数は nested handle で表現
 6. **`#import` の名前空間解決**:
    - Component Model の interface 名と effect 操作名のマッピング
    - snake_case (vibe) → kebab-case (CM) の自動変換をデフォルトに
