@@ -126,6 +126,8 @@ ci-contract-native:
     bash scripts/test_e2e_parity.sh || failed="$failed e2e-parity"
     echo "=== contract-native: repl-parity ==="
     bash scripts/test_repl_parity.sh || failed="$failed repl-parity"
+    echo "=== contract-native: feature-parity ==="
+    VIBE_BIN="$cli" scripts/test_feature_parity.sh || failed="$failed feature-parity"
     echo "=== contract-native: parallel-cleanup ==="
     bash scripts/test_parallel_cleanup_e2e.sh "$cli" || failed="$failed parallel-cleanup"
     echo "=== contract-native: done ==="
@@ -365,6 +367,13 @@ test-fixtures:
 # Verify build --debug and --release produce identical results
 test-build-parity:
     scripts/test_build_parity.sh
+
+# Cross-mode runtime parity (default: wasm vs wasm-linear)
+test-feature-parity modes="wasm,wasm-linear":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source scripts/ensure_native_cli.sh
+    VIBE_FEATURE_PARITY_MODES={{modes}} scripts/test_feature_parity.sh
 
 # Run each fixture in isolated subprocess (detects abort/crash/timeout)
 test-fixtures-isolation:
