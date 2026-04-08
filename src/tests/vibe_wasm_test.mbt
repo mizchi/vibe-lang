@@ -928,6 +928,34 @@ test "vibe wasm compiles recursive helper with captured function param" {
 }
 
 ///|
+test "vibe wasm compiles nested recursive helper capturing outer recursive helper" {
+  let db = VibeDb::new()
+  let src =
+    #|let find = (n: Int) -> Int {
+    #|  let rec go_defs = (di: Int) -> Int {
+    #|    if di >= n {
+    #|      0
+    #|    } else {
+    #|      let rec go_variants = (vi: Int) -> Int {
+    #|        if vi >= n { go_defs(di + 1) } else { go_variants(vi + 1) }
+    #|      }
+    #|      go_variants(0)
+    #|    }
+    #|  }
+    #|  go_defs(0)
+    #|}
+    #|find(3)
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "_start"))
+}
+
+///|
 test "vibe wasm compiles Int pipe-style to_double call" {
   let db = VibeDb::new()
   let src =
