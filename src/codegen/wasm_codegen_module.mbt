@@ -1611,6 +1611,223 @@ fn restore_local_kinds(
 }
 
 ///|
+fn restore_string_int_map(
+  target : Map[String, Int],
+  saved : Map[String, Int],
+) -> Unit {
+  let to_remove : Array[String] = []
+  for name, _ in target {
+    if not(saved.contains(name)) {
+      to_remove.push(name)
+    }
+  }
+  for name in to_remove {
+    target.remove(name)
+  }
+  for name, value in saved {
+    target[name] = value
+  }
+}
+
+///|
+fn restore_string_array_value_kind_map(
+  target : Map[String, Array[ValueKind]],
+  saved : Map[String, Array[ValueKind]],
+) -> Unit {
+  let to_remove : Array[String] = []
+  for name, _ in target {
+    if not(saved.contains(name)) {
+      to_remove.push(name)
+    }
+  }
+  for name in to_remove {
+    target.remove(name)
+  }
+  for name, value in saved {
+    target[name] = value
+  }
+}
+
+///|
+fn restore_string_array_string_map(
+  target : Map[String, Array[String]],
+  saved : Map[String, Array[String]],
+) -> Unit {
+  let to_remove : Array[String] = []
+  for name, _ in target {
+    if not(saved.contains(name)) {
+      to_remove.push(name)
+    }
+  }
+  for name in to_remove {
+    target.remove(name)
+  }
+  for name, value in saved {
+    target[name] = value
+  }
+}
+
+///|
+fn restore_string_value_kind_map(
+  target : Map[String, ValueKind],
+  saved : Map[String, ValueKind],
+) -> Unit {
+  let to_remove : Array[String] = []
+  for name, _ in target {
+    if not(saved.contains(name)) {
+      to_remove.push(name)
+    }
+  }
+  for name in to_remove {
+    target.remove(name)
+  }
+  for name, value in saved {
+    target[name] = value
+  }
+}
+
+///|
+fn restore_string_func_sig_map(
+  target : Map[String, FuncSig],
+  saved : Map[String, FuncSig],
+) -> Unit {
+  let to_remove : Array[String] = []
+  for name, _ in target {
+    if not(saved.contains(name)) {
+      to_remove.push(name)
+    }
+  }
+  for name in to_remove {
+    target.remove(name)
+  }
+  for name, value in saved {
+    target[name] = value
+  }
+}
+
+///|
+fn restore_string_string_map(
+  target : Map[String, String],
+  saved : Map[String, String],
+) -> Unit {
+  let to_remove : Array[String] = []
+  for name, _ in target {
+    if not(saved.contains(name)) {
+      to_remove.push(name)
+    }
+  }
+  for name in to_remove {
+    target.remove(name)
+  }
+  for name, value in saved {
+    target[name] = value
+  }
+}
+
+///|
+priv struct NamedFnScopeSnapshot {
+  fn_indices : Map[String, Int]
+  fn_params : Map[String, Array[ValueKind]]
+  fn_param_names : Map[String, Array[String]]
+  fn_returns : Map[String, ValueKind]
+  fn_multivalue_results : Map[String, Array[ValueKind]]
+  fn_return_sigs : Map[String, FuncSig]
+  fn_local_sigs : Map[String, FuncSig]
+  forward_fn_keys : Map[String, String]
+  linked_fn_imports : Map[String, Int]
+  linked_fn_param_counts : Map[String, Int]
+  linked_fn_return_counts : Map[String, Int]
+}
+
+///|
+fn snapshot_named_fn_scope(ctx : CodegenCtx) -> NamedFnScopeSnapshot {
+  NamedFnScopeSnapshot::{
+    fn_indices: ctx.fn_indices.copy(),
+    fn_params: ctx.fn_params.copy(),
+    fn_param_names: ctx.fn_param_names.copy(),
+    fn_returns: ctx.fn_returns.copy(),
+    fn_multivalue_results: ctx.fn_multivalue_results.copy(),
+    fn_return_sigs: ctx.fn_return_sigs.copy(),
+    fn_local_sigs: ctx.fn_local_sigs.copy(),
+    forward_fn_keys: ctx.forward_fn_keys.copy(),
+    linked_fn_imports: ctx.linked_fn_imports.copy(),
+    linked_fn_param_counts: ctx.linked_fn_param_counts.copy(),
+    linked_fn_return_counts: ctx.linked_fn_return_counts.copy(),
+  }
+}
+
+///|
+fn restore_named_fn_scope(
+  ctx : CodegenCtx,
+  saved : NamedFnScopeSnapshot,
+) -> Unit {
+  restore_string_int_map(ctx.fn_indices, saved.fn_indices)
+  restore_string_array_value_kind_map(ctx.fn_params, saved.fn_params)
+  restore_string_array_string_map(ctx.fn_param_names, saved.fn_param_names)
+  restore_string_value_kind_map(ctx.fn_returns, saved.fn_returns)
+  restore_string_array_value_kind_map(
+    ctx.fn_multivalue_results,
+    saved.fn_multivalue_results,
+  )
+  restore_string_func_sig_map(ctx.fn_return_sigs, saved.fn_return_sigs)
+  restore_string_func_sig_map(ctx.fn_local_sigs, saved.fn_local_sigs)
+  restore_string_string_map(ctx.forward_fn_keys, saved.forward_fn_keys)
+  restore_string_int_map(ctx.linked_fn_imports, saved.linked_fn_imports)
+  restore_string_int_map(
+    ctx.linked_fn_param_counts,
+    saved.linked_fn_param_counts,
+  )
+  restore_string_int_map(
+    ctx.linked_fn_return_counts,
+    saved.linked_fn_return_counts,
+  )
+}
+
+///|
+fn compile_function_with_scoped_names(
+  ctx : CodegenCtx,
+  f : FuncDef,
+  func_idx : Int,
+  param_kinds : Array[ValueKind],
+  result_kind : ValueKind,
+  need_heap : Bool,
+  capture_kinds : Array[ValueKind],
+  capture_is_ref_cell : Array[Bool],
+  has_func_rc : Bool,
+) -> WasmFunc raise WasmGenError {
+  let saved_named_fn_scope = snapshot_named_fn_scope(ctx)
+  match f.name {
+    Some(name) => {
+      ctx.fn_indices[name] = func_idx
+      ctx.fn_params[name] = param_kinds
+      let param_names : Array[String] = []
+      for p in f.params {
+        param_names.push(p.name)
+      }
+      ctx.fn_param_names[name] = param_names
+      ctx.fn_returns[name] = result_kind
+    }
+    None => ()
+  }
+  let compiled = compile_function(
+    ctx,
+    f.name,
+    f.params,
+    param_kinds,
+    result_kind,
+    f.body,
+    need_heap,
+    f.captures,
+    capture_kinds,
+    true,
+    capture_is_ref_cell~,
+    emit_rc_stmt_actions=has_func_rc,
+  )
+  restore_named_fn_scope(ctx, saved_named_fn_scope)
+  compiled
+}
+
+///|
 /// Recursively strip type-assertion identity blocks from an expression.
 /// First tries unwrap_type_assert_block, then recurses into sub-expressions.
 fn strip_type_assert_expr(expr : @core.Expr) -> @core.Expr {
@@ -3166,9 +3383,8 @@ fn emit_module_with_coverage(
     if ctx.need_http && ctx.http_host_imports {
       pre_import_count += 12
     }
-    // effect ops come before linked imports (exclude handled ops)
-    pre_import_count += ctx.effect_op_imports.length() -
-      ctx.effect_handled_ops.length()
+    // effect_op_imports is already populated with unhandled ops only.
+    pre_import_count += ctx.effect_op_imports.length()
     for entry in ctx.linked_fn_imports_list {
       let (_, func_name, param_count, return_count) = entry
       ctx.linked_fn_imports[func_name] = pre_import_count
@@ -3578,22 +3794,6 @@ fn emit_module_with_coverage(
   let compiled_funcs : Array[WasmFunc] = []
   for i in 0..<funcs.length() {
     let f = funcs[i]
-    match f.name {
-      Some(name) => {
-        // Function names can collide across lexical scopes (e.g. multiple `go`).
-        // Rebind the current function before compiling its body so recursive calls
-        // resolve to the right signature/index.
-        ctx.fn_indices[name] = i
-        ctx.fn_params[name] = func_param_kinds[i]
-        let param_names : Array[String] = []
-        for p in f.params {
-          param_names.push(p.name)
-        }
-        ctx.fn_param_names[name] = param_names
-        ctx.fn_returns[name] = func_return_kinds[i]
-      }
-      None => ()
-    }
     let cap_kinds = match ctx.fn_closure_capture_kinds.get(f.span_key) {
       Some(kinds) => kinds
       None => []
@@ -3621,19 +3821,16 @@ fn emit_module_with_coverage(
       }
     }
     compiled_funcs.push(
-      compile_function(
+      compile_function_with_scoped_names(
         ctx,
-        f.name,
-        f.params,
+        f,
+        i,
         func_param_kinds[i],
         func_return_kinds[i],
-        f.body,
         func_needs_heap[i],
-        f.captures,
         cap_kinds,
-        true,
-        capture_is_ref_cell=cap_ref_cells,
-        emit_rc_stmt_actions=has_func_rc,
+        cap_ref_cells,
+        has_func_rc,
       ),
     )
   }

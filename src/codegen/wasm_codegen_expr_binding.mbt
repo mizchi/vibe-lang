@@ -284,6 +284,7 @@ fn compile_expr_match(
 ) -> Unit raise WasmGenError {
   let saved = ctx.locals.copy()
   let saved_kinds = ctx.local_kinds.copy()
+  let saved_named_fn_scope = snapshot_named_fn_scope(ctx)
   let scrut_idx = ctx.local_count
   ctx.local_count += 1
   ctx.local_types.push(ValueKind::I64)
@@ -292,4 +293,5 @@ fn compile_expr_match(
   compile_match_chain(ctx, buf, scrut_idx, arms, 0)
   restore_locals(ctx, saved)
   restore_local_kinds(ctx, saved_kinds)
+  restore_named_fn_scope(ctx, saved_named_fn_scope)
 }

@@ -71,6 +71,11 @@ fn wb_let(name : String, expr : @core.Expr) -> @core.Stmt {
 }
 
 ///|
+fn wb_let_rec(name : String, expr : @core.Expr) -> @core.Stmt {
+  @core.Stmt::Let(rec=true, name~, expr~, span=wb_span())
+}
+
+///|
 fn wb_export_let(name : String, expr : @core.Expr) -> @core.Stmt {
   @core.Stmt::ExportLet(rec=false, name~, expr~, span=wb_span())
 }
@@ -235,4 +240,82 @@ test "nested lambda without return annotation keeps boxed int wasm result" {
   let wat = wasm_to_wat(emit_module_wasm(ast))
   assert_true(wat.contains("(param i64 i32) (result i64)"))
   assert_true(not(wat.contains("(param i64 i32) (result i32)")))
+}
+
+///|
+test "compile_function_with_scoped_names restores named function metadata after body compile" {
+  let ctx = CodegenCtx::new(false)
+  ctx.fn_indices["go"] = 7
+  ctx.fn_params["go"] = [ValueKind::I64]
+  ctx.fn_param_names["go"] = ["x"]
+  ctx.fn_returns["go"] = ValueKind::I64
+  ctx.forward_fn_keys["go"] = "outer-go-key"
+
+  let local_go_params = [wb_param("acc"), wb_param("rest")]
+  let local_go_key = span_key_named(Some("go"), wb_span(), local_go_params)
+  ctx.fn_closure_indices[local_go_key] = 42
+  ctx.fn_closure_captures[local_go_key] = []
+  ctx.fn_needs_env[42] = false
+
+  let outer_params = [wb_param("n")]
+  let outer_func = FuncDef::{
+    name: Some("outer"),
+    params: outer_params,
+    ret: Some(@core.Type::Int),
+    body: @core.Module::{
+      stmts: [
+        wb_let_rec("go", wb_fn(local_go_params, [wb_expr(wb_int(0))])),
+        wb_expr(wb_call("go", [wb_int(0), wb_int(0)])),
+      ],
+    },
+    span_key: span_key_named(Some("outer"), wb_span(), outer_params),
+    captures: [],
+  }
+  let _ = try
+    compile_function_with_scoped_names(
+      ctx,
+      outer_func,
+      1,
+      [ValueKind::I64],
+      ValueKind::I64,
+      false,
+      [],
+      [],
+      false,
+    )
+  catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    func => func
+  }
+
+  let go_idx = match ctx.fn_indices.get("go") {
+    Some(idx) => idx
+    None => -1
+  }
+  assert_eq(go_idx, 7)
+  let go_param_count = match ctx.fn_params.get("go") {
+    Some(kinds) => kinds.length()
+    None => 0
+  }
+  assert_eq(go_param_count, 1)
+  let go_param_name = match ctx.fn_param_names.get("go") {
+    Some(names) => if names.length() > 0 { names[0] } else { "" }
+    None => ""
+  }
+  assert_eq(go_param_name, "x")
+  let go_return = match ctx.fn_returns.get("go") {
+    Some(kind) => kind
+    None => ValueKind::I32
+  }
+  assert_eq(go_return, ValueKind::I64)
+  let go_forward_key = match ctx.forward_fn_keys.get("go") {
+    Some(key) => key
+    None => ""
+  }
+  assert_eq(go_forward_key, "outer-go-key")
+  assert_false(ctx.fn_indices.contains("outer"))
+  assert_false(ctx.fn_params.contains("outer"))
+  assert_false(ctx.fn_param_names.contains("outer"))
+  assert_false(ctx.fn_returns.contains("outer"))
 }
