@@ -39,6 +39,36 @@ test "placeholder bad-call diagnostic carries usage hint" {
 }
 
 ///|
+test "resume bad-call diagnostic carries effect-arm guidance" {
+  let diag = TypeError::BadCall(
+    message="resume used outside effect arm",
+    span=test_span_typecheck_errors(),
+  ).diagnostic()
+  match diag.hint {
+    Some(hint) => {
+      assert_true(hint.contains("`resume(...)`"))
+      assert_true(hint.contains("`Error` boundary arms"))
+    }
+    None => fail("expected resume usage hint")
+  }
+}
+
+///|
+test "partial handle diagnostic carries missing-arm guidance" {
+  let diag = TypeError::BadTypeDef(
+    message="handle is missing handler for `Ask::B` (effect `Ask` is partially handled)",
+    span=test_span_typecheck_errors(),
+  ).diagnostic()
+  match diag.hint {
+    Some(hint) => {
+      assert_true(hint.contains("`Op(...) => ...`"))
+      assert_true(hint.contains("`Result` boundary"))
+    }
+    None => fail("expected partial handle hint")
+  }
+}
+
+///|
 test "scoped ref escape diagnostic carries guidance" {
   let diag = TypeError::ScopedRefEscape(
     context="function return",

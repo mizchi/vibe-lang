@@ -98,6 +98,21 @@ fn scoped_ref_escape_note(context : String) -> String {
 }
 
 ///|
+fn bad_type_def_hint(message : String) -> String? {
+  if message.has_prefix("handle is missing handler for `") {
+    Some(
+      "add the missing `Op(...) => ...` arm for this effect, or keep the `Result` boundary outside the handled block",
+    )
+  } else if message.has_prefix("undefined effect `") {
+    Some(
+      "declare the effect with `effect Name { ... }`, or prefer `Result[T, E]` in library/core flows and keep `Error` at adapter boundaries",
+    )
+  } else {
+    None
+  }
+}
+
+///|
 pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
   match self {
     TypeError::UnknownName(name~, span~, suggestion~) =>
@@ -244,7 +259,7 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         stage: "type",
         message: "type definition: " + message,
         span: Some(span),
-        hint: None,
+        hint: bad_type_def_hint(message),
         note: None,
         severity: None,
         code: None,
@@ -353,6 +368,14 @@ fn bad_call_hint(message : String) -> String? {
   if message == "placeholder _ can only be used in function arguments" {
     Some(
       "use `_` only in call arguments (e.g. `map(xs, _ + 1)`), or rewrite as an explicit lambda `(x) -> ...`",
+    )
+  } else if message == "resume used outside handle arm" {
+    Some(
+      "use `resume(...)` only inside `handle { ... } with Effect { Op(...) => ... }` arms",
+    )
+  } else if message == "resume used outside effect arm" {
+    Some(
+      "`resume(...)` is only valid in effect arms like `Op(...) => ...`; `Error` boundary arms should return a fallback value directly",
     )
   } else {
     None

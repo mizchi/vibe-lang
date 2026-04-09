@@ -1,0 +1,69 @@
+import ./json_types.vibe {
+  Json
+}
+
+let escape_string = (s: String) -> String {
+  let len = String::length(s)
+  let rec go = (i: Int, acc: String) -> String {
+    if i < len {
+      let c = String::char_code_at(s, i)
+      let esc = if c == '"' {
+        "\\\""
+      } else if c == '\\' {
+        "\\\\"
+      } else if c == '\n' {
+        "\\n"
+      } else if c == '\t' {
+        "\\t"
+      } else if c == '\r' {
+        "\\r"
+      } else String::from_char_code(c)
+      go(i + 1, "\{acc}\{esc}")
+    } else acc
+  }
+  "\"\{go(0, "")}\""
+}
+
+let format_number = (n: Double) -> String {
+  let s = __to_string(n)
+  let len = String::length(s)
+  if len >= 2 && String::char_code_at(s, len - 1) == '0' && String::char_code_at(s, len - 2) == '.' {
+    s[0: len - 2]
+  } else s
+}
+
+let rec stringify_impl = (j: Json) -> String {
+  match j {
+    JNull => "null",
+    JBool(b) => if b { "true" } else "false",
+    JNum(n) => format_number(n),
+    JStr(s) => escape_string(s),
+    JArr(a) => {
+      let len = Array::length(a)
+      let rec go_arr = (i: Int, acc: String) -> String {
+        if i < len {
+          let sep = if i > 0 { "," } else { "" }
+          go_arr(i + 1, String::concat(acc, String::concat(sep, stringify_impl(Array::get(a, i)))))
+        } else acc
+      }
+      String::concat("[", String::concat(go_arr(0, ""), "]"))
+    },
+    JObj(m) => {
+      let keys = Map::keys(m)
+      let len = Array::length(keys)
+      let rec go_obj = (i: Int, acc: String) -> String {
+        if i < len {
+          let sep = if i > 0 { "," } else { "" }
+          let k = Array::get(keys, i)
+          let entry = String::concat(escape_string(k), String::concat(":", stringify_impl(Map::get(m, k))))
+          go_obj(i + 1, String::concat(acc, String::concat(sep, entry)))
+        } else acc
+      }
+      String::concat("{", String::concat(go_obj(0, ""), "}"))
+    }
+  }
+}
+
+export let stringify = (j: Json) -> String {
+  stringify_impl(j)
+}

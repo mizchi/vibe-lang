@@ -309,10 +309,14 @@ T, U, V
 ## Effects
 
 ```vibe
-// Declare
-let f = () -> Int with { Error } { throw("fail") }
+// Result-first core flow
+let parse_id = (raw: String) -> Result[Int, String] { ... }
+let load_user = (id: Int) -> Result[String, String] { ... }
 
-// Handle
+raw |> parse_id |> Result::and_then(load_user)
+
+// Error boundary
+let f = () -> Int with { Error } { throw("fail") }
 handle { f() } with Error { Throw(msg) => -1 }
 
 // User-defined effect

@@ -810,7 +810,7 @@ fn compile_builtin_numeric(
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf)
     }
-    "not" if not(is_user_fn) => {
+    "not" | "__not" if not(is_user_fn) => {
       let pos_args = extract_positional_exprs_with_arity(args, "not", 1)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, 4L)
@@ -822,7 +822,7 @@ fn compile_builtin_numeric(
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_i64_and(buf)
     }
-    "or" if not(is_user_fn) => {
+    "or" | "__or" if not(is_user_fn) => {
       let pos_args = extract_positional_exprs_with_arity(args, "or", 2)
       compile_expr_i32(ctx, buf, pos_args[0])
       compile_expr_i32(ctx, buf, pos_args[1])

@@ -765,6 +765,7 @@ Rules:
 - `yield expr` requires `{Async}` and returns `Unit`.
 - Runtime execution for `yield` is gated by `--unstable-async`
   (disabled by default in CLI entrypoints).
+- Result-first policy remains canonical for application/core flows.
 - Error boundary syntax is `handle { ... } with Error { Throw(_) => ... }`.
 
 ## Test blocks (MoonBit-style)

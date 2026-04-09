@@ -156,11 +156,11 @@ fn can_compile_cond_i32(
     @core.Expr::Call(name~, args~, ..) => {
       let name = @core.lower_wasm_intrinsic_name(name)
       match name {
-        "not" => {
+        "not" | "__not" => {
           let pos_args = extract_positional_exprs(args, name)
           pos_args.length() == 1 && can_compile_cond_i32(ctx, pos_args[0])
         }
-        "and" | "or" => {
+        "and" | "or" | "__or" => {
           let pos_args = extract_positional_exprs(args, name)
           pos_args.length() == 2 &&
           can_compile_cond_i32(ctx, pos_args[0]) &&
@@ -190,7 +190,7 @@ fn try_compile_cond_i32(
     @core.Expr::Call(name~, args~, ..) => {
       let name = @core.lower_wasm_intrinsic_name(name)
       match name {
-        "not" => {
+        "not" | "__not" => {
           let pos_args = extract_positional_exprs(args, name)
           if pos_args.length() == 1 &&
             try_compile_cond_i32(ctx, buf, pos_args[0]) {
@@ -213,7 +213,7 @@ fn try_compile_cond_i32(
             false
           }
         }
-        "or" => {
+        "or" | "__or" => {
           let pos_args = extract_positional_exprs(args, name)
           if pos_args.length() == 2 &&
             can_compile_cond_i32(ctx, pos_args[0]) &&

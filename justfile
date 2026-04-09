@@ -50,6 +50,14 @@ check-selfhost-bundle-sync:
 test-selfhost-bundle-sync:
     bash scripts/check_selfhost_bundle_sync_test.sh
 
+# Self-test selfhost bundle generator contract
+test-generate-selfhost-bundle:
+    bash scripts/generate_selfhost_bundle_test.sh
+
+# Self-test coverage helper Node scripts
+test-coverage-scripts:
+    node --test scripts/coverage_selfhost_suite_next_branches.test.mjs scripts/coverage_wasm_source.test.mjs
+
 # Refresh selfhost bootstrap batch weight seed from cached timings
 refresh-selfhost-batch-weights:
     bash scripts/refresh_selfhost_batch_weight_seed.sh
@@ -70,6 +78,8 @@ test-vibe-normalize:
 test:
     scripts/check_lock_clean.sh
     scripts/check_lock_clean_test.sh
+    bash scripts/generate_selfhost_bundle_test.sh
+    node --test scripts/coverage_selfhost_suite_next_branches.test.mjs scripts/coverage_wasm_source.test.mjs
     env NODE_OPTIONS='{{vibe_test_node_options}}' moon test --target {{target}} --warn-list '{{moon_warn_list}}'
     bash scripts/test_typecheck_fixtures.sh
     bash scripts/test_warning_fixtures.sh
@@ -107,6 +117,8 @@ test-full: test test-wasm-heavy
 ci-contract-moon:
     scripts/check_lock_clean.sh
     scripts/check_lock_clean_test.sh
+    bash scripts/generate_selfhost_bundle_test.sh
+    node --test scripts/coverage_selfhost_suite_next_branches.test.mjs scripts/coverage_wasm_source.test.mjs
     moon check --deny-warn --warn-list '{{moon_warn_list}}' --target js
     bash scripts/test_codegen_contract.sh
     VIBE_MOON_WARN_LIST='{{moon_warn_list}}' bash scripts/test_contract_moon.sh

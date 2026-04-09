@@ -1,7 +1,11 @@
 //# Imports
 
+import ../prelude/result.vibe {
+  Result, from_option
+}
+
 import ./json.vibe {
-  Json, Json::get, json_as_num, json_as_obj, json_as_str, parse, stringify
+  Json, parse, stringify
 }
 
 //# Types
@@ -21,72 +25,104 @@ export enum RpcMessage {
 
 //# Functions
 
-let require_key = (obj: Map[String, Json], key: String) -> Json with { Error } {
-  if Map::has_key(obj, key) {
-    Map::get(obj, key)
-  } else throw("missing key: \{key}")
+let require_key = (obj: Map[String, Json], key: String) -> Result[Json, String] {
+  let opt: Option[Json] = if Map::has_key(obj, key) {
+    Some(Map::get(obj, key))
+  } else {
+    None
+  }
+  from_option(opt, "missing key: \{key}")
 }
 
-let get_string = (obj: Map[String, Json], key: String) -> String with { Error } {
-  let v = require_key(obj, key)
-  match v {
-    JStr(s) => s,
-    _ => throw("expected string for key: \{key}")
+let get_string = (obj: Map[String, Json], key: String) -> Result[String, String] {
+  match require_key(obj, key) {
+    Result::Ok(JStr(s)) => Result::Ok(s),
+    Result::Ok(_) => Result::Err("expected string for key: \{key}"),
+    Result::Err(msg) => Result::Err(msg)
   }
 }
 
-let parse_rpc_id = (j: Json) -> RpcId with { Error } {
+let get_object = (j: Json, message: String) -> Result[Map[String, Json], String] {
   match j {
-    JNum(n) => IdNum(Double::to_int(n)),
-    JStr(s) => IdStr(s),
-    JNull => IdNull,
-    _ => throw("invalid id")
+    JObj(m) => Result::Ok(m),
+    _ => Result::Err(message)
   }
 }
 
-export let parse_message = (input: String) -> RpcMessage with { Error } {
-  let (json, _) = parse(input)
-  let obj = match json {
-    JObj(m) => m,
-    _ => throw("expected object")
+let parse_rpc_id = (j: Json) -> Result[RpcId, String] {
+  match j {
+    JNum(n) => Result::Ok(IdNum(Double::to_int(n))),
+    JStr(s) => Result::Ok(IdStr(s)),
+    JNull => Result::Ok(IdNull),
+    _ => Result::Err("invalid id")
   }
-  let jsonrpc = get_string(obj, "jsonrpc")
-  if jsonrpc != "2.0" {
-    throw("invalid jsonrpc version")
+}
+
+export let parse_message = (input: String) -> Result[RpcMessage, String] {
+  match parse(input) {
+    Result::Ok((json, _)) => match get_object(json, "expected object") {
+      Result::Ok(obj) => match get_string(obj, "jsonrpc") {
+        Result::Ok(jsonrpc) =>
+          if jsonrpc != "2.0" {
+            Result::Err("invalid jsonrpc version")
+          } else {
+            let has_method = Map::has_key(obj, "method")
+            let has_result = Map::has_key(obj, "result")
+            let has_error = Map::has_key(obj, "error")
+            if has_method {
+              match get_string(obj, "method") {
+                Result::Ok(method) => {
+                  let params = if Map::has_key(obj, "params") {
+                    Map::get(obj, "params")
+                  } else JNull
+                  if Map::has_key(obj, "id") {
+                    match parse_rpc_id(Map::get(obj, "id")) {
+                      Result::Ok(id) => Result::Ok(Request(method, params, id)),
+                      Result::Err(msg) => Result::Err(msg)
+                    }
+                  } else Result::Ok(Notification(method, params))
+                },
+                Result::Err(msg) => Result::Err(msg)
+              }
+            } else if has_result {
+              match require_key(obj, "id") {
+                Result::Ok(id_json) => match parse_rpc_id(id_json) {
+                  Result::Ok(id) => Result::Ok(SuccessResponse(id, Map::get(obj, "result"))),
+                  Result::Err(msg) => Result::Err(msg)
+                },
+                Result::Err(msg) => Result::Err(msg)
+              }
+            } else if has_error {
+              match require_key(obj, "id") {
+                Result::Ok(id_json) => match parse_rpc_id(id_json) {
+                  Result::Ok(id) => match get_object(Map::get(obj, "error"), "error must be object") {
+                    Result::Ok(err_obj) => match require_key(err_obj, "code") {
+                      Result::Ok(JNum(n)) => match get_string(err_obj, "message") {
+                        Result::Ok(message) => {
+                          let data = if Map::has_key(err_obj, "data") {
+                            Map::get(err_obj, "data")
+                          } else JNull
+                          Result::Ok(ErrorResponse(id, Double::to_int(n), message, data))
+                        },
+                        Result::Err(msg) => Result::Err(msg)
+                      },
+                      Result::Ok(_) => Result::Err("error code must be number"),
+                      Result::Err(msg) => Result::Err(msg)
+                    },
+                    Result::Err(msg) => Result::Err(msg)
+                  },
+                  Result::Err(msg) => Result::Err(msg)
+                },
+                Result::Err(msg) => Result::Err(msg)
+              }
+            } else Result::Err("invalid message: missing method, result, or error")
+          },
+        Result::Err(msg) => Result::Err(msg)
+      },
+      Result::Err(msg) => Result::Err(msg)
+    },
+    Result::Err(msg) => Result::Err(msg)
   }
-  let has_method = Map::has_key(obj, "method")
-  let has_result = Map::has_key(obj, "result")
-  let has_error = Map::has_key(obj, "error")
-  if has_method {
-    let method = get_string(obj, "method")
-    let params = if Map::has_key(obj, "params") {
-      Map::get(obj, "params")
-    } else JNull
-    if Map::has_key(obj, "id") {
-      let id = parse_rpc_id(Map::get(obj, "id"))
-      Request(method, params, id)
-    } else Notification(method, params)
-  } else if has_result {
-    let id = parse_rpc_id(require_key(obj, "id"))
-    let result = Map::get(obj, "result")
-    SuccessResponse(id, result)
-  } else if has_error {
-    let id = parse_rpc_id(require_key(obj, "id"))
-    let err_json = Map::get(obj, "error")
-    let err_obj = match err_json {
-      JObj(m) => m,
-      _ => throw("error must be object")
-    }
-    let code = match require_key(err_obj, "code") {
-      JNum(n) => Double::to_int(n),
-      _ => throw("error code must be number")
-    }
-    let message = get_string(err_obj, "message")
-    let data = if Map::has_key(err_obj, "data") {
-      Map::get(err_obj, "data")
-    } else JNull
-    ErrorResponse(id, code, message, data)
-  } else throw("invalid message: missing method, result, or error")
 }
 
 let rpc_id_json_str = (id: RpcId) -> String {

@@ -207,7 +207,22 @@ ArrayBuilder::freeze(b)       // -> Array[Int]
 
 vibe is **pure by default**. Side effects are tracked in the type system.
 
-### Error handling
+### Result-first pipeline (recommended)
+
+```vibe
+let parse_id: (String) -> Result[Int, String] = (raw) -> { ... }
+let validate_id: (Int) -> Result[Int, String] = (id) -> { ... }
+let load_user: (Int) -> Result[String, String] = (id) -> { ... }
+
+let fetch_user: (String) -> Result[String, String] = (raw) -> {
+  raw
+  |> parse_id
+  |> Result::and_then(validate_id)
+  |> Result::and_then(load_user)
+}
+```
+
+### Error boundary (`throw` / `handle`)
 
 ```vibe
 let risky: (Int) -> Int with { Error } = (x) -> {
@@ -316,11 +331,13 @@ sh_lines("ls")     // -> Array[String]
 
 ```vibe
 // Result composition (railway-style)
-let result = handle {
-  let config = read_config()?
-  let data = parse(config)?
-  process(data)
-} { Error(msg) => default_value }
+let result =
+  read_config()
+  |> Result::and_then(parse)
+  |> Result::and_then(process)
+
+// Boundary at the edge
+let value = handle { risky(0) } with Error { Throw(_) => default_value }
 
 // Builder pattern
 let arr = {

@@ -2391,7 +2391,7 @@ fn static_fold_builtin_call(
       } else {
         None
       }
-    "or" =>
+    "or" | "__or" =>
       if args.length() == 2 {
         match (args[0], args[1]) {
           (StaticFoldValue::Bool(value=left), StaticFoldValue::Bool(value=right)
@@ -2401,7 +2401,7 @@ fn static_fold_builtin_call(
       } else {
         None
       }
-    "not" =>
+    "not" | "__not" =>
       if args.length() == 1 {
         match args[0] {
           StaticFoldValue::Bool(value~) =>

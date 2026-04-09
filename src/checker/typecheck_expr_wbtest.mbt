@@ -56,6 +56,26 @@ test "type_check: handle resume value may match continuation destination type" {
 }
 
 ///|
+test "type_check: partial effect handle reports missing operation" {
+  let script = "effect Ask { A() -> Int; B() -> Int }\n" +
+    "handle { perform Ask::B() } with Ask {\n" +
+    "  A() => 1\n" +
+    "}"
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let result : Result[TypeEnv, TypeError] = try? type_check(ast)
+  match result {
+    Ok(_) => fail("expected partial handle to be rejected")
+    Err(TypeError::BadTypeDef(message~, ..)) => {
+      assert_true(message.contains("Ask::B"))
+      assert_true(message.contains("partially handled"))
+    }
+    Err(err) => fail("unexpected error: \{err.to_string()}")
+  }
+}
+
+///|
 test "type_check: recursive enum ctor payload keeps named references" {
   let script = "enum Expr { Lit(Int); Pair(Expr, Expr) }\n" +
     "let mk = (l: Expr, r: Expr) -> Expr { Pair(l, r) }"
