@@ -1977,6 +1977,29 @@ fn infer_block_kind_gc(
           return kind
         }
       }
+      @core.Stmt::LetPatElse(pat~, expr~, ..) => {
+        let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
+        fn bind_pat_names(p : @core.Pat, k : GcValKind) -> Unit {
+          match p {
+            @core.Pat::Bind(name~, ..) =>
+              temp_ctx.locals[name] = { idx: 0, kind: k }
+            @core.Pat::Tuple(items~, ..) =>
+              for item in items {
+                bind_pat_names(item, GcValKind::EqRef)
+              }
+            @core.Pat::Ctor(args~, ..) =>
+              for arg in args {
+                bind_pat_names(arg, GcValKind::EqRef)
+              }
+            _ => ()
+          }
+        }
+
+        bind_pat_names(pat, kind)
+        if is_last {
+          return GcValKind::I32
+        }
+      }
       @core.Stmt::Expr(expr~, ..) =>
         if is_last {
           return infer_expr_kind_gc(ctx, temp_ctx, expr)
@@ -8632,6 +8655,27 @@ fn compile_stmt_gc(
       compile_pat_bind_gc(ctx, fctx, buf, scrut_idx, kind, pat)
       if is_last {
         emit_local_get_gc(buf, scrut_idx)
+      }
+    }
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
+      let kind = infer_expr_kind_gc(ctx, fctx, expr)
+      let scrut_idx = alloc_local_gc(fctx, kind)
+      compile_expr_gc(ctx, fctx, buf, expr)
+      emit_local_set_gc(buf, scrut_idx)
+      let else_kind = infer_block_kind_gc(ctx, fctx, else_body)
+      let match_result_kind = gc_common_kind(GcValKind::I32, else_kind)
+      compile_pat_cond_gc(ctx, fctx, buf, scrut_idx, kind, pat)
+      emit_if_gc(buf, Some(match_result_kind))
+      compile_pat_bind_gc(ctx, fctx, buf, scrut_idx, kind, pat)
+      emit_i32_const_gc(buf, 0)
+      emit_coerce_top_gc(ctx, buf, GcValKind::I32, match_result_kind)
+      emit_else_gc(buf)
+      compile_block_expr_gc(ctx, fctx, buf, else_body)
+      emit_coerce_top_gc(ctx, buf, else_kind, match_result_kind)
+      emit_end_gc(buf)
+      emit_drop_gc(buf)
+      if is_last {
+        emit_i32_const_gc(buf, 0)
       }
     }
     @core.Stmt::IndexAssign(target~, index~, value~, ..) => {

@@ -235,6 +235,17 @@ test "wasm-gc e2e: Array::fold" {
 }
 
 ///|
+test "wasm-gc e2e: let-else success path" {
+  let src =
+    #|let extract = (x: Int) -> Int {
+    #|  let Some(v) = Some(x) else { 0 }
+    #|  v * 2
+    #|}
+    #|extract(21)
+  assert_gc_e2e(src, "let_else_success", 42)
+}
+
+///|
 test "wasm-gc e2e: generic list iter_get" {
   let src =
     #|enum List[T] { Nil; Cons(T, List[T]) }
