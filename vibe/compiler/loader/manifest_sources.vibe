@@ -9,7 +9,19 @@ import .. / cache / persistent_cache.vibe {
 }
 
 import .. / module_graph_path.vibe {
-  contains_path, dir_of_path
+  contains_path, dir_of_path, resolve_import_path_candidates
+}
+
+import .. / syntax / lexer.vibe {
+  lex
+}
+
+import .. / syntax / parser_base.vibe {
+  collect_import_path, peek, skip_semi
+}
+
+import .. / syntax / token.vibe {
+  Token
 }
 
 //# Path helpers
@@ -17,6 +29,151 @@ import .. / module_graph_path.vibe {
 let dir_of = dir_of_path
 
 let contains_str = contains_path
+
+let resolve_manifest_dep_path = (
+  base_dir: String,
+  raw_path: String,
+  preloaded_source_index: Map[String, String]
+) -> String with { Error, Fs } {
+  if String::length(raw_path) > 0 && String::char_code_at(raw_path, 0) == 64 {
+    raw_path
+  } else {
+    let candidates = resolve_import_path_candidates(base_dir, raw_path)
+    let mut i = 0
+    let mut found = ""
+    while i < Array::length(candidates) {
+      if found == "" {
+        let candidate = Array::get(candidates, i)
+        if Map::has_key(preloaded_source_index, candidate) || Fs::exists(candidate) {
+          found = candidate
+        }
+      }
+      i = i + 1
+    }
+    if found == "" {
+      Array::get(candidates, 0)
+    } else {
+      found
+    }
+  }
+}
+
+let starts_with_path_token = (tok: Token) -> Bool {
+  match tok {
+    TDot => true,
+    TDotDot => true,
+    TSlash => true,
+    TMinus => true,
+    TModule => true,
+    TType => true,
+    TMatch => true,
+    TTest => true,
+    TIdent(_) => true,
+    _ => false
+  }
+}
+
+let skip_brace_list = (tokens: Array[Token], pos: Int) -> Int with { Error } {
+  match peek(tokens, pos) {
+    TLBrace => {
+      let mut depth = 1
+      let mut i = pos + 1
+      while depth > 0 {
+        match peek(tokens, i) {
+          TLBrace => {
+            depth = depth + 1
+          },
+          TRBrace => {
+            depth = depth - 1
+          },
+          TEof => throw("unterminated brace list in manifest import scanner"),
+          _ => ()
+        }
+        i = i + 1
+      }
+      i
+    }
+    _ => throw("expected '{' in manifest import scanner")
+  }
+}
+
+let scan_header_import_dep = (
+  tokens: Array[Token],
+  pos: Int,
+  base_dir: String,
+  preloaded_source_index: Map[String, String]
+) -> (String, Int) with { Error, Fs } {
+  let (raw_path, next_pos) = match peek(tokens, pos) {
+    TIdent(name) =>
+      if String::length(name) > 1 && String::char_code_at(name, 0) == 64 {
+        (name, pos + 1)
+      } else {
+        collect_import_path(tokens, pos, "")
+      },
+    _ => collect_import_path(tokens, pos, "")
+  }
+  let after_path = match peek(tokens, next_pos) {
+    TIdent(alias_name) =>
+      if String::length(alias_name) > 1 && String::char_code_at(alias_name, 0) == 64 {
+        next_pos + 1
+      } else {
+        next_pos
+      },
+    _ => next_pos
+  }
+  let end_pos = match peek(tokens, after_path) {
+    TLBrace => skip_brace_list(tokens, after_path),
+    _ => after_path
+  }
+  (resolve_manifest_dep_path(base_dir, raw_path, preloaded_source_index), end_pos)
+}
+
+let collect_manifest_header_deps_from_source = (
+  path: String,
+  source: String,
+  preloaded_source_index: Map[String, String]
+) -> Array[String] with { Error, Fs } {
+  let tokens = lex(source)
+  let deps = Array::slice([""], 0, 0)
+  let base_dir = dir_of(path)
+  let mut pos = 0
+  let mut scanning = true
+  while scanning {
+    pos = skip_semi(tokens, pos)
+    match peek(tokens, pos) {
+      TImport => {
+        let (dep_path, next_pos) = scan_header_import_dep(
+          tokens,
+          pos + 1,
+          base_dir,
+          preloaded_source_index
+        )
+        Array::push(deps, dep_path)
+        pos = next_pos
+      },
+      TExport =>
+        if starts_with_path_token(peek(tokens, pos + 1)) {
+          let (dep_path, next_pos) = scan_header_import_dep(
+            tokens,
+            pos + 1,
+            base_dir,
+            preloaded_source_index
+          )
+          Array::push(deps, dep_path)
+          pos = next_pos
+        } else {
+          scanning = false
+        },
+      TEof => {
+        scanning = false
+      },
+      _ => {
+        scanning = false
+      }
+    }
+  }
+  deps
+}
 
 let build_source_index = (sources: Array[(String, String)]) -> Map[String, String] {
   let builder = MapBuilder::new()
@@ -587,12 +744,18 @@ let collect_needed_paths_from_manifest_headers = (
       let deps = match manifest_header_deps_lookup(rows, current) {
         Some(found) => found,
         None => {
-          let source = match source_lookup_in_index(preloaded_source_index, current) {
-            Some(preloaded) => preloaded,
-            None => Fs::read_file(current)
+          match source_lookup_in_index(preloaded_source_index, current) {
+            Some(preloaded) => collect_manifest_header_deps_from_source(
+              current,
+              preloaded,
+              preloaded_source_index
+            ),
+            None => {
+              let source = Fs::read_file(current)
+              let (fallback_deps, _, _) = load_or_parse_module_header_fs_impl(current, source, 0)
+              fallback_deps
+            }
           }
-          let (fallback_deps, _, _) = load_or_parse_module_header_fs_impl(current, source, 0)
-          fallback_deps
         }
       }
       let mut dep_i = 0
@@ -637,7 +800,17 @@ let collect_needed_paths_and_manifest_headers = (
       let deps = match manifest_header_deps_lookup(rows, current) {
         Some(found) => found,
         None => {
-          let (parsed_deps, _, _) = load_or_parse_module_header_fs_impl(current, source, 0)
+          let parsed_deps = match source_lookup_in_index(preloaded_source_index, current) {
+            Some(preloaded) => collect_manifest_header_deps_from_source(
+              current,
+              preloaded,
+              preloaded_source_index
+            ),
+            None => {
+              let (fallback_deps, _, _) = load_or_parse_module_header_fs_impl(current, source, 0)
+              fallback_deps
+            }
+          }
           append_manifest_header_row_if_missing(
             rows,
             (
