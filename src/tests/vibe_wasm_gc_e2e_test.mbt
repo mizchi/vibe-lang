@@ -662,6 +662,15 @@ test "wasm-gc e2e: Map::get arithmetic on results" {
 }
 
 ///|
+test "wasm-gc e2e: map literal index sugar" {
+  let src =
+    #|let m = map { "a": 10, "b": 20, "c": 30 }
+    #|let v = m["b"]
+    #|v
+  assert_gc_e2e(src, "map_literal_index", 20)
+}
+
+///|
 test "wasm-gc e2e: throw/handle error-only" {
   let src =
     #|let main = () -> Int {
