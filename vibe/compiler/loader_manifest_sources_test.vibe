@@ -137,3 +137,30 @@ test "build_grouped_sources_from_manifest_rows: skips rows without loaded source
     None => assert(true)
   }
 }
+
+test "try_collect_manifest_sources_fs: scans leading re-exports without full parse" {
+  let base_dir = "/tmp/vibe_compiler_manifest_reexport_scan"
+  let manifest_path = String::concat(base_dir, "/selfhost_sources_manifest.tsv")
+  let helper_path = String::concat(base_dir, "/helper.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(
+    manifest_path,
+    string_to_bytes("# group\tpath\ncore\thelper.vibe\nentry\tmain.vibe\n")
+  )
+  Fs::write_bytes(helper_path, string_to_bytes("export let add = () -> Int { 1 }"))
+  Fs::write_bytes(
+    main_path,
+    string_to_bytes(
+      "export ./helper.vibe { add }\nlet run = () -> Int { handle { add() } with Error { Throw(_) => 0 } }"
+    )
+  )
+  match try_collect_manifest_sources_fs(main_path) {
+    Some((_, sources)) => {
+      assert(eq(Array::length(sources), 2))
+      assert(has_source_path(sources, helper_path))
+      assert(has_source_path(sources, main_path))
+    },
+    None => assert(false)
+  }
+}
