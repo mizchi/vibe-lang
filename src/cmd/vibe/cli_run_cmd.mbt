@@ -636,6 +636,19 @@ fn module_uses_http_builtins(ast : @vibe_core.Module) -> Bool {
 }
 
 ///|
+fn detect_exec_host_runner_requirements(
+  db : @runtime.VibeDb,
+  entry : String,
+) -> (Bool, Bool) {
+  let ast = db.ast(entry)
+  let detect_ast = @runtime_compile.bundle_for_wasm_no_dce(db, entry, ast)
+  (
+    module_uses_http_builtins(detect_ast),
+    module_uses_wasm_runtime_fallback_builtins(detect_ast),
+  )
+}
+
+///|
 fn compile_module_wasm_for_exec(
   db : @runtime.VibeDb,
   entry : String,
@@ -852,9 +865,9 @@ fn run_cmd_wasm_backend_with_cache(
     Err(err) => return Err("load error: " + err)
     Ok(v) => v
   }
-  let ast = db.ast(entry)
-  let use_http_host_runner = module_uses_http_builtins(ast)
-  let use_fs_host_runner = module_uses_wasm_runtime_fallback_builtins(ast)
+  let (use_http_host_runner, use_fs_host_runner) = detect_exec_host_runner_requirements(
+    db, entry,
+  )
   let use_node_runner = use_http_host_runner || use_fs_host_runner
   let http_runner = match use_node_runner {
     true =>

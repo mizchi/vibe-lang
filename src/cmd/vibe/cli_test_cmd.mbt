@@ -413,9 +413,9 @@ fn run_test_file_compiled_with_cache(
     Ok(v) => v
   }
   let ast = db.ast(entry)
-  // Use ast (not bundled detect_ast) so test bodies are scanned for builtins
-  let use_http_host_runner = module_uses_http_builtins(ast)
-  let use_fs_host_runner = module_uses_wasm_runtime_fallback_builtins(ast)
+  let (use_http_host_runner, use_fs_host_runner) = detect_exec_host_runner_requirements(
+    db, entry,
+  )
   let use_node_runner = use_http_host_runner || use_fs_host_runner
   for stmt in ast.stmts {
     match stmt {

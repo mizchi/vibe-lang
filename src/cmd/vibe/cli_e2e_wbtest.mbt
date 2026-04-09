@@ -1064,6 +1064,7 @@ test "bench script cache paths are stable per source" {
     "/tmp/project/src/main_bench.vibe", "run_1", "let value = 2\n",
   )
   assert_true(paths1.0.contains("/.vibe/bench/"))
+  assert_true(paths1.1.contains("/src/.vibe_bench_run_1_"))
   assert_eq(paths1.1, paths2.1)
   assert_eq(paths1.2, paths2.2)
   assert_true(paths1.2.has_suffix(".wasm"))
@@ -1071,9 +1072,107 @@ test "bench script cache paths are stable per source" {
 }
 
 ///|
+test "cli bench keeps relative imports from the entry directory" {
+  let root = wbtest_make_temp_dir("bench_relative_import")
+  let helper_path = root + "/helper.vibe"
+  let entry_path = root + "/main_bench.vibe"
+  @os_fs.write_string_to_file(helper_path, "export let inc = () -> Int { 1 }\n") catch {
+    e => fail("write helper failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    entry_path, "import ./helper.vibe { inc }\nbench \"relative_import\" {\n  let _ = inc()\n}\n",
+  ) catch {
+    e => fail("write bench entry failed: " + e.to_string())
+  }
+  match run_bench_blocks_wasm_entry(entry_path, 1, 0) {
+    Ok(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    Err(err) => fail("bench run failed: " + err)
+  }
+  wbtest_remove_if_exists(root + "/.vibe")
+  wbtest_remove_if_exists(entry_path)
+  wbtest_remove_if_exists(helper_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "cli bench supports imported fallback builtins via host runner" {
+  let root = wbtest_make_temp_dir("bench_imported_fallback")
+  let helper_path = root + "/helper.vibe"
+  let entry_path = root + "/main_bench.vibe"
+  @os_fs.write_string_to_file(
+    helper_path,
+    "export let parse_name_len = () -> Int {\n" +
+    "  let data = Json::parse(\"{\\\"name\\\":\\\"vibe\\\"}\")\n" +
+    "  String::length(Json::string(Json::get(data, \"name\")))\n" +
+    "}\n",
+  ) catch {
+    e => fail("write helper failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    entry_path,
+    "import ./helper.vibe { parse_name_len }\n" +
+    "bench \"imported_fallback\" {\n" +
+    "  let _ = parse_name_len()\n" +
+    "}\n",
+  ) catch {
+    e => fail("write bench entry failed: " + e.to_string())
+  }
+  match
+    run_bench_blocks_wasm_entry_with_cases(entry_path, 1, 0, [
+      "imported_fallback",
+    ]) {
+    Ok(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    Err(err) => fail("bench run failed: " + err)
+  }
+  wbtest_remove_if_exists(root + "/.vibe")
+  wbtest_remove_if_exists(entry_path)
+  wbtest_remove_if_exists(helper_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "cli bench can filter cases by name" {
+  let root = wbtest_make_temp_dir("bench_case_filter")
+  let entry_path = root + "/main_bench.vibe"
+  @os_fs.write_string_to_file(
+    entry_path, "bench \"alpha\" {\n  let _ = 1\n}\nbench \"beta\" {\n  let _ = 2\n}\n",
+  ) catch {
+    e => fail("write bench entry failed: " + e.to_string())
+  }
+  match run_bench_blocks_wasm_entry_with_cases(entry_path, 1, 0, ["beta"]) {
+    Ok(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+      assert_eq(report.results.length(), 1)
+      assert_eq(report.results[0].name, Some("beta"))
+    }
+    Err(err) => fail("bench run failed: " + err)
+  }
+  match run_bench_blocks_wasm_entry_with_cases(entry_path, 1, 0, ["missing"]) {
+    Ok(_) => fail("expected case filter miss to fail")
+    Err(err) => assert_true(err.contains("no cases matched --case"))
+  }
+  wbtest_remove_if_exists(root + "/.vibe")
+  wbtest_remove_if_exists(entry_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "cli bench uses expr mode only for removed legacy flags" {
   assert_false(
     bench_uses_expr_mode(["--backend", "wasm", "examples/simple_bench.vibe"]),
+  )
+  assert_false(
+    bench_uses_expr_mode(["--case", "add_one", "examples/simple_bench.vibe"]),
   )
   assert_true(bench_uses_expr_mode(["--expr", "add(1,2)"]))
 }
@@ -1092,7 +1191,7 @@ test "cli wasm bench compile uses size-oriented optimize level" {
   let (_, source_path, wasm_path) = bench_script_cache_paths(
     entry_path, "size_opt", source,
   )
-  let (_, optimized_size) = match
+  let (_, optimized_size, _) = match
     compile_bench_script_to_wasm(entry_path, "size_opt", source) {
     Ok(bytes) => bytes
     Err(err) => fail("compile bench wasm failed: " + err)
@@ -1112,6 +1211,23 @@ test "cli wasm bench compile uses size-oriented optimize level" {
   assert_true(optimized_size < baseline_wasm.length())
   wbtest_remove_if_exists(wasm_path)
   wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "cli bench compile enables host runner for fallback builtins" {
+  let root = wbtest_make_temp_dir("bench_host_runner")
+  let entry_path = root + "/case.vibe"
+  let source =
+    #|let data = Json::parse("{\"name\":\"vibe\"}")
+    #|String::length(Json::string(Json::get(data, "name")))
+  let (wasm_path, _, use_node_runner) = match
+    compile_bench_script_to_wasm(entry_path, "host_runner", source) {
+    Ok(result) => result
+    Err(err) => fail("compile bench wasm failed: " + err)
+  }
+  assert_true(use_node_runner)
+  wbtest_remove_if_exists(wasm_path)
   wbtest_remove_if_exists(root)
 }
 
