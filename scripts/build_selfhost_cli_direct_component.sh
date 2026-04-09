@@ -87,7 +87,7 @@ use bindings::Guest;
 
 struct Component;
 
-const HEX_CHUNK_BYTES: usize = 1024;
+const HEX_CHUNK_BYTES: usize = 128;
 
 fn root_dir() -> Result<filesystem::types::Descriptor, ()> {
     filesystem::preopens::get_directories()

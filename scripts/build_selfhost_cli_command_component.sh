@@ -79,7 +79,7 @@ wit_bindgen::generate!({
 
 struct Component;
 
-const HEX_CHUNK_BYTES: usize = 1024;
+const HEX_CHUNK_BYTES: usize = 128;
 
 fn read_stdin_all() -> Result<String, ()> {
     let stream = wasi::cli::stdin::get_stdin();
