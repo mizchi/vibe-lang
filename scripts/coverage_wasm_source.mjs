@@ -511,6 +511,7 @@ export function isCoverageNoiseLine(sourceLines, lineNumber) {
     /^\],/.test(trimmed) ||
     /^\]\)+[,;]*$/.test(trimmed) ||
     /^\}\s+else\s+\{$/.test(trimmed) ||
+    /^\}\s+with\b.*\{$/.test(trimmed) ||
     /^\}\s+\{$/.test(trimmed) ||
     /^\}\s+from\b/.test(trimmed)
   ) {

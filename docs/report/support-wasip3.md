@@ -38,30 +38,12 @@ vibe/wasi/
     └── example_effect_server.vibe  # v2 + HttpEffect 型
 ```
 
-### Adapter バージョン
+### Active Adapter Scripts
 
-| adapter | WIT import | handler 返り値 | vibe 制御範囲 |
-|---------|-----------|--------------|-------------|
-| v1 (`build_wasi_http_p3_adapter.sh`) | `func(string, string) -> s64` | Int (tagged) | status code のみ |
-| v2 (`build_wasi_http_p3_adapter_v2.sh`) | `func(string, string) -> string` | String | status + headers + body |
-
-### v2 Wire Protocol
-
-```
-STATUS_CODE\n
-Header-Name: Header-Value\n
-...\n
-\n
-BODY
-```
-
-例:
-```
-200
-content-type: application/json
-
-{"status":"ok"}
-```
+| adapter | WIT import | handler 返り値 | 用途 |
+|---------|-----------|--------------|------|
+| `build_wasi_http_p3_adapter.sh` | `func(string, string) -> s64` | Int (tagged) | 最小の P3 adapter。`compile --compose-p3 --adapter ...` の基準 |
+| `build_wasi_http_p3_combined_adapter.sh` | `func(string, string) -> s64` + `wasi:http/client` | Int (tagged) | `compose_http_p3_handler.sh` / `vibe_serve.sh` の serve 向け adapter |
 
 ## 既知の問題
 
