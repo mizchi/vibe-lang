@@ -63,8 +63,7 @@ decode_js_wasm_result() {
     const wasm = fs.readFileSync(process.argv[1]);
     WebAssembly.instantiate(wasm, {vibe: {}}).then(({instance}) => {
       const result = instance.exports._start();
-      // Raw core Wasm exports still use Vibe's tagged small-int representation.
-      const value = typeof result === 'bigint' ? Number(result >> 2n) : (result >> 2);
+      const value = typeof result === 'bigint' ? Number(result) : result;
       console.log(value);
     });
   " "$1" 2>/dev/null

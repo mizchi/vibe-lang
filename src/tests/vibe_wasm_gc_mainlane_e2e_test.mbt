@@ -107,3 +107,21 @@ test "wasm-gc mainlane: recursive function" {
     #|fib(10)
   assert_gc_e2e_int_result(src, "mainlane_recursive_function", 55)
 }
+
+///|
+test "wasm-gc mainlane: nested recursive helper captures outer local" {
+  if gc_mainlane_should_skip("nested recursive helper captures outer local") {
+    return
+  }
+  let src =
+    #|let sum_range = (n: Int) -> Int {
+    #|  let rec helper: (Int, Int) -> Int = (i, acc) -> {
+    #|    if i > n { acc } else { helper(i + 1, acc + i) }
+    #|  }
+    #|  helper(1, 0)
+    #|}
+    #|sum_range(100)
+  assert_gc_e2e_int_result(
+    src, "mainlane_nested_recursive_helper_capture", 5050,
+  )
+}

@@ -1042,3 +1042,29 @@ fn compile_http_host_string_new_function(
     body: body.to_array(),
   }
 }
+
+///|
+fn compile_public_start_wrapper(run_func_index : Int) -> WasmFunc {
+  let body = ByteBuf::new()
+  let result_local = 0
+  emit_call(body, run_func_index)
+  emit_local_set(body, result_local)
+  // Public `_start` should expose raw integer results for Wasmtime/CLI parity.
+  // Keep non-int tagged values unchanged so object/string paths still work.
+  emit_local_get(body, result_local)
+  emit_i64_const_raw(body, 2L)
+  emit_i64_shr_s(body)
+  emit_local_get(body, result_local)
+  emit_local_get(body, result_local)
+  emit_i64_const_raw(body, tag_mask.to_int64())
+  emit_i64_and(body)
+  emit_i64_eqz(body)
+  emit_select(body)
+  emit_end(body)
+  WasmFunc::{
+    params: [],
+    locals: [ValueKind::I64],
+    results: [ValueKind::I64],
+    body: body.to_array(),
+  }
+}

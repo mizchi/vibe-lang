@@ -701,5 +701,15 @@ test "wasm-gc e2e: let rec factorial top-level" {
   assert_gc_e2e(src, "let_rec_fact_top", 120)
 }
 
-// TODO(B7): nested let rec closure self-ref needs mutable box for deferred init
-// test "wasm-gc e2e: let rec factorial nested" { ... }
+///|
+test "wasm-gc e2e: let rec nested helper captures outer local (#273)" {
+  let src =
+    #|let sum_range = (n: Int) -> Int {
+    #|  let rec helper: (Int, Int) -> Int = (i, acc) -> {
+    #|    if i > n { acc } else { helper(i + 1, acc + i) }
+    #|  }
+    #|  helper(1, 0)
+    #|}
+    #|sum_range(100)
+  assert_gc_e2e(src, "let_rec_nested_capture", 5050)
+}

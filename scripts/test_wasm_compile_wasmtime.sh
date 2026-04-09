@@ -252,7 +252,7 @@ write_program_source() {
   printf "%s\n" "$vibe_code" > "$TMP_DIR/test.vibe"
 }
 
-# Helper: compile .vibe to .wasm, run with wasmtime, compare untagged result
+# Helper: compile .vibe to .wasm, run with wasmtime, compare raw result
 expect_wasmtime_result() {
   # Shard: skip tests not assigned to this shard
   if [ "$SHARD_TOTAL" -gt 1 ]; then
@@ -275,20 +275,18 @@ expect_wasmtime_result() {
     return
   fi
 
-  local wasm_tagged
-  wasm_tagged=$("$WASMTIME_RUN" --invoke _start "$TMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning") || true
+  local wasm_result
+  wasm_result=$("$WASMTIME_RUN" --invoke _start "$TMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning") || true
 
-  if [ -z "$wasm_tagged" ]; then
+  if [ -z "$wasm_result" ]; then
     log_fail "$test_name - wasmtime returned no output"
     return
   fi
 
-  local result=$((wasm_tagged >> 2))
-
-  if [ "$result" = "$expected_value" ]; then
+  if [ "$wasm_result" = "$expected_value" ]; then
     log_pass "$test_name (result: $expected_value)"
   else
-    log_fail "$test_name - expected $expected_value but got $result (tagged: $wasm_tagged)"
+    log_fail "$test_name - expected $expected_value but got $wasm_result"
   fi
 }
 
@@ -313,20 +311,18 @@ expect_wasmtime_program_result() {
     return
   fi
 
-  local wasm_tagged
-  wasm_tagged=$("$WASMTIME_RUN" --invoke _start "$TMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning") || true
+  local wasm_result
+  wasm_result=$("$WASMTIME_RUN" --invoke _start "$TMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning") || true
 
-  if [ -z "$wasm_tagged" ]; then
+  if [ -z "$wasm_result" ]; then
     log_fail "$test_name - wasmtime returned no output"
     return
   fi
 
-  local result=$((wasm_tagged >> 2))
-
-  if [ "$result" = "$expected_value" ]; then
+  if [ "$wasm_result" = "$expected_value" ]; then
     log_pass "$test_name (result: $expected_value)"
   else
-    log_fail "$test_name - expected $expected_value but got $result (tagged: $wasm_tagged)"
+    log_fail "$test_name - expected $expected_value but got $wasm_result"
   fi
 }
 
@@ -2099,20 +2095,18 @@ expect_wasmtime_result_exceptions() {
     return
   fi
 
-  local wasm_tagged
-  wasm_tagged=$(VIBE_WASMTIME_WASM_FLAGS="exceptions=y" "$WASMTIME_RUN" --invoke _start "$TMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning") || true
+  local wasm_result
+  wasm_result=$(VIBE_WASMTIME_WASM_FLAGS="exceptions=y" "$WASMTIME_RUN" --invoke _start "$TMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning") || true
 
-  if [ -z "$wasm_tagged" ]; then
+  if [ -z "$wasm_result" ]; then
     log_fail "$test_name - wasmtime returned no output"
     return
   fi
 
-  local result=$((wasm_tagged >> 2))
-
-  if [ "$result" = "$expected_value" ]; then
+  if [ "$wasm_result" = "$expected_value" ]; then
     log_pass "$test_name (result: $expected_value)"
   else
-    log_fail "$test_name - expected $expected_value but got $result (tagged: $wasm_tagged)"
+    log_fail "$test_name - expected $expected_value but got $wasm_result"
   fi
 }
 
