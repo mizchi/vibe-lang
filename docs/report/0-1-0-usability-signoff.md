@@ -212,3 +212,27 @@ CI gate は発見の場ではなく、手元で詰めた導線の再現確認と
      `scripts/build_selfhost_dist.sh` は `wasm-opt` failure 時に raw output へフォールバックする
    - 現状:
      fix 済み。default path で sample compile/run まで通る。
+
+## 0.1.0 Migration Note: Result-first error surface
+
+0.1.0 では、library / package API の canonical なエラー表現は `Result[T, E]` とする。
+`throw` / `handle { ... } with Error { ... }` / `?` は廃止しないが、adapter boundary
+（CLI / HTTP / FFI / test helper）で使う構文として扱う。
+
+移行方針:
+
+- pipeline core は `Result::and_then` / `Result::map_ok` / `Result::map_err` で組む
+- boundary でだけ `throw` / `handle ... with Error` / project-local unwrap を使う
+- `?` は 0.1.0 では boundary sugar のまま維持する
+- package facade では `Result` を返す API を優先し、`parse_throw` のような throw-style helper は public surface に含めない
+
+JSON package の基準:
+
+- canonical: `parse(String) -> Result[(Json, Int), String]`
+- non-canonical: `parse_throw`, `parse_ok`, `parse_err`
+
+利用者向けの書き換え目安:
+
+1. `parse_ok(src)` / `parse_err(src)` を見つけたら `match parse(src) { ... }` へ寄せる
+2. `throw` を返していた public helper は `Result::Err(...)` を返す形へ変える
+3. `handle { ... } with Error { ... }` は module core ではなく adapter edge に寄せる

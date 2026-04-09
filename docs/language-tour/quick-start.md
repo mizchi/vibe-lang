@@ -135,12 +135,20 @@ let (a, b) = pair         // destructure
 ## Effects & Error Handling
 
 ```vibe
-// Error effect
+// Preferred: keep the core flow in Result
+let parse_id = (raw: String) -> Result[Int, String] { ... }
+let load_user = (id: Int) -> Result[String, String] { ... }
+
+let run = (raw: String) -> Result[String, String] {
+  raw
+  |> parse_id
+  |> Result::and_then(load_user)
+}
+
+// Boundary helper when you need to localize Error
 let safe_div = (a: Int, b: Int) -> Int with { Error } {
   if eq(b, 0) { throw("division by zero") } else { a / b }
 }
-
-// Catch with handle
 let result = handle { safe_div(8, 0) } with Error { Throw(_) => -1 }
 // => -1
 ```

@@ -345,11 +345,22 @@ let run = () -> Unit with { Stdout } {
 ### Error handling
 
 ```vibe
+let parse_id = (raw: String) -> Result[Int, String] { ... }
+let validate_id = (id: Int) -> Result[Int, String] { ... }
+let load_user = (id: Int) -> Result[String, String] { ... }
+
+let fetch_user = (raw: String) -> Result[String, String] {
+  raw
+  |> parse_id
+  |> Result::and_then(validate_id)
+  |> Result::and_then(load_user)
+}
+
+// Boundary helper when you need local Error handling
 let safe_div = (a: Int, b: Int) -> Int with { Error } {
   if eq(b, 0) { throw("division by zero") } else { a / b }
 }
 
-// Catch errors with handle
 let result = handle { safe_div(8, 0) } with Error { Throw(_) => -1 }
 // => -1
 ```
@@ -380,7 +391,16 @@ let risky = () -> Int with { Error } {
   throw(NotFound("missing"))
 }
 
-let result = handle { risky() } with Error { Throw(_) => -1 }
+let lookup_user = (raw: String) -> Result[String, AppError] {
+  if raw == "" { Err(NotFound("missing")) } else { Ok(raw) }
+}
+
+let result = match lookup_user("42") {
+  Ok(user) => user,
+  Err(_) => "guest"
+}
+
+let fallback = handle { risky() } with Error { Throw(_) => -1 }
 // => -1
 ```
 

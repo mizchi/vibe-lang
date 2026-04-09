@@ -12,27 +12,6 @@ let add = (a: Int, b: Int) -> Int { a + b }  // pure
 
 ## Error handling
 
-### throw / handle
-
-`throw` raises an error. `handle` catches it locally.
-
-```vibe
-let safe_div = (a: Int, b: Int) -> Int with { Error } {
-  if eq(b, 0) { throw("division by zero") } else { a / b }
-}
-
-let result = handle { safe_div(8, 0) } with Error { Throw(_) => -1 }
-// => -1
-```
-
-Calling a `with { Error }` function from a pure function requires `handle`:
-
-```vibe
-let safe = (x: Int) -> Int {
-  handle { safe_div(x, 0) } with Error { Throw(_) => 0 }
-}
-```
-
 ### Railway-oriented Result pipeline (recommended)
 
 Use `Result` composition in the pipeline core, and isolate error boundaries at edges.
@@ -62,6 +41,27 @@ Rule of thumb:
 - Keep pipeline core in `Result` (`and_then`, `map_ok`, `map_err`).
 - Place terminal boundaries (`handle`, `throw`, project-local `unwrap`) in adapter edges (CLI/HTTP/FFI/test helpers).
 - Keep each boundary explicit and localized to one place per flow.
+
+### throw / handle boundary
+
+`throw` raises an `Error` effect. `handle` catches it locally at the boundary.
+
+```vibe
+let safe_div = (a: Int, b: Int) -> Int with { Error } {
+  if eq(b, 0) { throw("division by zero") } else { a / b }
+}
+
+let result = handle { safe_div(8, 0) } with Error { Throw(_) => -1 }
+// => -1
+```
+
+Calling a `with { Error }` function from a pure function requires `handle`:
+
+```vibe
+let safe = (x: Int) -> Int {
+  handle { safe_div(x, 0) } with Error { Throw(_) => 0 }
+}
+```
 
 ### suberror
 

@@ -158,6 +158,11 @@ Status: accepted and moved from `TODO.md`.
 - Railway-style error boundary policy is fixed (ADR-0020):
   application pipelines prefer Result composition, and exception/handle
   boundaries must be explicit in the pipeline.
+- Result-first error surface policy is fixed for 0.1.0:
+  public/library APIs use `Result[T, E]` as canonical error transport,
+  while `throw` / `handle { ... } with Error { ... }` remain boundary syntax for
+  adapters (CLI/HTTP/FFI/tests). `?` remains boundary sugar in 0.1.0 and is
+  not promoted to the primary library surface.
 - Symbol/type/signature indexing backend is implemented and shared:
   `vibe ide` (`outline`/`peek-def`/`search`) and `vibe lsif` consume the same
   module-level symbol index (`src/frontend/symbol_index.mbt`).
