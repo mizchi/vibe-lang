@@ -1331,13 +1331,15 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let export_sec = ByteBuf::new()
   write_u32_leb(export_sec, export_count)
   let run_index = func_import_count + funcs.length() - 1
+  let start_export_index = run_index - 1
   if emit_start {
     write_name(export_sec, "_start")
     export_sec.push((0).to_byte()) // func export
-    write_u32_leb(export_sec, run_index)
+    write_u32_leb(export_sec, start_export_index)
   }
   let helper_count_before_run = (if need_cabi_realloc_export { 1 } else { 0 }) +
-    (if need_http_host_string_new_export { 1 } else { 0 })
+    (if need_http_host_string_new_export { 1 } else { 0 }) +
+    (if emit_start { 1 } else { 0 })
   let helper_base_func_index = run_index - helper_count_before_run
   if need_cabi_realloc_export {
     write_name(export_sec, "cabi_realloc")
@@ -3958,6 +3960,10 @@ fn emit_module_with_coverage(
     }
     let _ = ensure_sig_index(ctx, host_string_new_sig)
     compiled_funcs.push(compile_http_host_string_new_function(ctx))
+  }
+  if not(ctx.library_mode) {
+    let run_func_index = func_import_count(ctx) + compiled_funcs.length() + 1
+    compiled_funcs.push(compile_public_start_wrapper(run_func_index))
   }
   // Set mut_captured_vars for the top-level run function
   ctx.mut_captured_vars = top_mut_captured
