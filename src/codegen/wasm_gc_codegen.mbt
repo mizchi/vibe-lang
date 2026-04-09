@@ -1655,6 +1655,37 @@ fn track_closure_binding_gc(
 }
 
 ///|
+fn closure_call_sig_from_kind_gc(
+  ctx : GcCodegenCtx,
+  kind : GcValKind,
+  opname : String,
+) -> (Int, Int, Array[GcValKind], GcValKind) raise WasmGenError {
+  match kind {
+    GcValKind::Ref(struct_type_idx) =>
+      match ctx.types[struct_type_idx] {
+        GcTypeDef::Struct(fields~) =>
+          if fields.length() == 2 {
+            match fields[0] {
+              GcValKind::Ref(fn_type_idx) =>
+                match ctx.types[fn_type_idx] {
+                  GcTypeDef::Func(params~, result~) =>
+                    (struct_type_idx, fn_type_idx, params, result)
+                  _ =>
+                    raise WasmGenError::Unsupported(opname + " closure fn type")
+                }
+              _ =>
+                raise WasmGenError::Unsupported(opname + " closure callee type")
+            }
+          } else {
+            raise WasmGenError::Unsupported(opname + " closure struct arity")
+          }
+        _ => raise WasmGenError::Unsupported(opname + " closure kind")
+      }
+    _ => raise WasmGenError::Unsupported(opname + " expects closure")
+  }
+}
+
+///|
 fn gc_val_kind_from_type(
   ctx : GcCodegenCtx,
   ty : @core.Type,
@@ -1749,8 +1780,8 @@ fn gc_val_kind_from_type(
       GcValKind::Ref(struct_type_idx)
     }
     @core.Type::Param(_) =>
-      // Unresolved type parameter — treat as anyref in GC mode
-      GcValKind::AnyRef
+      // Generic payloads are boxed/ref-cast through eqref in GC mode.
+      GcValKind::EqRef
     @core.Type::Variant(_) => GcValKind::EqRef
     _ => raise WasmGenError::Unsupported("gc type: " + ty.to_string())
   }
@@ -2203,6 +2234,12 @@ fn infer_expr_kind_gc(
         "Double::to_i64_bits" => GcValKind::I64
         "Double::parse" => GcValKind::F64
         "Array::length" => GcValKind::I64
+        "Array::fold" | "fold" => {
+          if pos_args.length() != 3 {
+            raise WasmGenError::Unsupported("arity: Array::fold")
+          }
+          infer_expr_kind_gc(ctx, fctx, pos_args[1])
+        }
         "Array::get" => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("arity: Array::get")
@@ -5342,6 +5379,90 @@ fn gc_array_elem_kind_from_kind(
 }
 
 ///|
+fn compile_array_fold_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  array_expr : @core.Expr,
+  init_expr : @core.Expr,
+  func_expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  let array_kind = infer_expr_kind_gc(ctx, fctx, array_expr)
+  let array_type_idx = gc_array_type_idx_from_kind(
+    ctx, array_kind, "Array::fold",
+  )
+  let elem_kind = gc_array_elem_kind_from_kind(ctx, array_kind, "Array::fold")
+  let result_kind = infer_expr_kind_gc(ctx, fctx, init_expr)
+  let closure_kind = infer_expr_kind_gc(ctx, fctx, func_expr)
+  let (closure_struct_type, fn_type_idx, fn_param_kinds, fn_result_kind) = closure_call_sig_from_kind_gc(
+    ctx, closure_kind, "Array::fold",
+  )
+  if fn_param_kinds.length() != 3 {
+    raise WasmGenError::Unsupported("Array::fold callback arity")
+  }
+
+  let array_local = alloc_local_gc(fctx, array_kind)
+  let closure_local = alloc_local_gc(fctx, closure_kind)
+  let acc_local = alloc_local_gc(fctx, result_kind)
+  let len_local = alloc_local_gc(fctx, GcValKind::I32)
+  let i_local = alloc_local_gc(fctx, GcValKind::I32)
+
+  compile_expr_gc(ctx, fctx, buf, array_expr)
+  if array_kind != GcValKind::Ref(array_type_idx) {
+    emit_coerce_top_gc(ctx, buf, array_kind, GcValKind::Ref(array_type_idx))
+  }
+  emit_local_set_gc(buf, array_local)
+
+  let init_kind = infer_expr_kind_gc(ctx, fctx, init_expr)
+  compile_expr_gc(ctx, fctx, buf, init_expr)
+  emit_coerce_top_gc(ctx, buf, init_kind, result_kind)
+  emit_local_set_gc(buf, acc_local)
+
+  compile_expr_gc(ctx, fctx, buf, func_expr)
+  emit_local_set_gc(buf, closure_local)
+
+  emit_local_get_gc(buf, array_local)
+  emit_array_len_gc(buf)
+  emit_local_set_gc(buf, len_local)
+
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, i_local)
+
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, i_local)
+  emit_local_get_gc(buf, len_local)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+
+  emit_local_get_gc(buf, closure_local)
+  emit_struct_get_gc(buf, closure_struct_type, 1)
+
+  emit_local_get_gc(buf, acc_local)
+  emit_coerce_top_gc(ctx, buf, result_kind, fn_param_kinds[1])
+
+  emit_local_get_gc(buf, array_local)
+  emit_local_get_gc(buf, i_local)
+  emit_array_get_gc(buf, array_type_idx)
+  emit_coerce_top_gc(ctx, buf, elem_kind, fn_param_kinds[2])
+
+  emit_local_get_gc(buf, closure_local)
+  emit_struct_get_gc(buf, closure_struct_type, 0)
+  emit_call_ref_gc(buf, fn_type_idx)
+  emit_coerce_top_gc(ctx, buf, fn_result_kind, result_kind)
+  emit_local_set_gc(buf, acc_local)
+
+  emit_local_get_gc(buf, i_local)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, i_local)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  emit_local_get_gc(buf, acc_local)
+}
+
+///|
 fn compile_array_slice_gc(
   ctx : GcCodegenCtx,
   fctx : GcFuncCtx,
@@ -6787,6 +6908,19 @@ fn compile_expr_gc(
             raise WasmGenError::Unsupported("Array::length arity")
           }
           compile_len_gc(ctx, fctx, buf, pos_args[0])
+        }
+        "Array::fold" | "fold" => {
+          if pos_args.length() != 3 {
+            raise WasmGenError::Unsupported("Array::fold arity")
+          }
+          compile_array_fold_gc(
+            ctx,
+            fctx,
+            buf,
+            pos_args[0],
+            pos_args[1],
+            pos_args[2],
+          )
         }
         "Array::get" => {
           if pos_args.length() != 2 {

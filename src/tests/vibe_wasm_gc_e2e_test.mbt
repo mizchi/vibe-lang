@@ -226,6 +226,15 @@ test "wasm-gc e2e: pipe operator" {
 }
 
 ///|
+test "wasm-gc e2e: Array::fold" {
+  let src =
+    #|let arr = [1, 2, 3, 4, 5]
+    #|let sum = Array::fold(arr, 0, (acc: Int, x: Int) -> Int { acc + x })
+    #|sum
+  assert_gc_e2e(src, "array_fold", 15)
+}
+
+///|
 test "wasm-gc e2e: generic list iter_get" {
   let src =
     #|enum List[T] { Nil; Cons(T, List[T]) }
