@@ -3906,6 +3906,69 @@ test "compiled exec detects modules without http builtins" {
 }
 
 ///|
+test "compiled exec keeps >= lowering away from imported or helpers" {
+  let root = wbtest_make_temp_dir("compiled_exec_cmp_or_intrinsic_wb")
+  let entry_path = root + "/main.vibe"
+  let helper_path = root + "/result.vibe"
+  let wasm_path = root + "/main.wasm"
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    helper_path,
+    (
+      #|export enum Result[T, E] {
+      #|  Ok(T);
+      #|  Err(E)
+      #|}
+      #|
+      #|export let or = [T](res: T, default: T) -> T {
+      #|  default
+      #|}
+    ),
+  )
+  db.set_source(
+    entry_path,
+    (
+      #|import ./result.vibe { Result }
+      #|
+      #|export let _start = () -> Int {
+      #|  if 49 >= 48 { 1 } else { 99 }
+      #|}
+    ),
+  )
+  let wasm = try compile_module_wasm_for_exec(db, entry_path) catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  @os_fs.write_bytes_to_file(wasm_path, wasm) catch {
+    e => fail("write wasm failed: " + e.to_string())
+  }
+  let runner = match resolve_bench_wasm_runner(entry_path) {
+    Ok(v) => v
+    Err(err) => fail("resolve runner failed: " + err)
+  }
+  let run_out = run_wasmtime_invoke_run_capture(runner, wasm_path, wasm_path)
+  if run_out.status != 0 {
+    fail(
+      "run failed: " + wasmtime_failure_detail(run_out.stdout, run_out.stderr),
+    )
+  }
+  let tagged = match parse_last_numeric_line_int64(run_out.stdout) {
+    Some(v) => v
+    None => fail("missing numeric result")
+  }
+  let value = match decode_tagged_wasm_run_value(tagged) {
+    Some(v) => v
+    None => fail("unsupported tagged result: " + tagged.to_string())
+  }
+  assert_eq(value, WasmRunValue::Int(1L))
+  wbtest_remove_if_exists(wasm_path)
+  wbtest_remove_if_exists(entry_path)
+  wbtest_remove_if_exists(helper_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "compiled exec wasm embeds throw literal for handler parity" {
   let db = @runtime.VibeDb::new()
   let needle = "WB_EXEC_THROW_LITERAL_PARITY_3f64"

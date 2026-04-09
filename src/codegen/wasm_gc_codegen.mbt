@@ -856,6 +856,11 @@ fn emit_i32_and_gc(buf : GcByteBuf) -> Unit {
 }
 
 ///|
+fn emit_i32_or_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x72)
+}
+
+///|
 fn emit_i32_ne_gc(buf : GcByteBuf) -> Unit {
   buf.push(0x47)
 }
@@ -1533,6 +1538,8 @@ fn is_gc_builtin_name(name : String) -> Bool {
   name == "eq" ||
   name == "lt" ||
   name == "not" ||
+  name == "__not" ||
+  name == "__or" ||
   name == "neg" ||
   name == "println" ||
   name == "print" ||
@@ -6252,6 +6259,21 @@ fn compile_expr_gc(
             GcValKind::F64 => emit_f64_lt_gc(buf)
             _ => emit_i64_lt_s_gc(buf)
           }
+        }
+        "__or" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("__or arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_i32_or_gc(buf)
+        }
+        "__not" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("__not arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_i32_eqz_gc(buf)
         }
         "__neg" => {
           if pos_args.length() != 1 {

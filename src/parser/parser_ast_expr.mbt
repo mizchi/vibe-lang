@@ -305,12 +305,12 @@ fn cmp_expr_from_op(
 ) -> @core.Expr {
   match op {
     k if k == eqeq() => call2("__eq", left, right)
-    k if k == neq() => call1("not", call2("__eq", left, right))
+    k if k == neq() => call1("__not", call2("__eq", left, right))
     k if k == lt() => call2("__lt", left, right)
     k if k == gt() => call2("__lt", right, left)
     k if k == lte() =>
-      call2("or", call2("__lt", left, right), call2("__eq", left, right))
-    _ => call2("or", call2("__lt", right, left), call2("__eq", left, right))
+      call2("__or", call2("__lt", left, right), call2("__eq", left, right))
+    _ => call2("__or", call2("__lt", right, left), call2("__eq", left, right))
   }
 }
 
@@ -514,7 +514,7 @@ fn AstParser::parse_unary_expr(self : AstParser) -> @core.Expr raise ParseError 
     k if k == bang() => {
       let _ = self.bump()
       let value = self.parse_unary_expr()
-      call1("not", value)
+      call1("__not", value)
     }
     _ => self.parse_call_or_primary()
   }

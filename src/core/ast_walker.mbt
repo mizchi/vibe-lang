@@ -379,11 +379,15 @@ pub fn is_builtin_name(name : String) -> Bool {
 }
 
 ///|
-/// Check if a name is a logic builtin (not, and, or).
+/// Check if a name is a logic builtin.
 /// These are only excluded by the test runner, not by DCE,
 /// because users can shadow them with custom definitions.
 pub fn is_logic_builtin_name(name : String) -> Bool {
-  name == "not" || name == "and" || name == "or"
+  name == "not" ||
+  name == "and" ||
+  name == "or" ||
+  name == "__not" ||
+  name == "__or"
 }
 
 ///|

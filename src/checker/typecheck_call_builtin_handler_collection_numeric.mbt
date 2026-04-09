@@ -880,6 +880,47 @@ fn type_call_builtin_handler_collection_numeric(
       }
       @core.Type::Int
     }
+    "__or" => {
+      let pos_args = extract_positional_args(args, "__or", call_span)
+      if pos_args.length() != 2 {
+        raise TypeError::BadCall(message="__or", span=call_span)
+      }
+      let a = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
+      let b = type_expr_eff(env, pos_args[1], aliases, effects, allow_effect)
+      if not(type_equal(env, a, @core.Type::Bool)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Bool,
+          actual=a,
+          span=pos_args[0].span(),
+          context=Some("boolean operation"),
+        )
+      }
+      if not(type_equal(env, b, @core.Type::Bool)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Bool,
+          actual=b,
+          span=pos_args[1].span(),
+          context=Some("boolean operation"),
+        )
+      }
+      @core.Type::Bool
+    }
+    "__not" => {
+      let pos_args = extract_positional_args(args, "__not", call_span)
+      if pos_args.length() != 1 {
+        raise TypeError::BadCall(message="__not", span=call_span)
+      }
+      let a = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
+      if not(type_equal(env, a, @core.Type::Bool)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Bool,
+          actual=a,
+          span=pos_args[0].span(),
+          context=Some("boolean operation"),
+        )
+      }
+      @core.Type::Bool
+    }
     "i32_eqz" =>
       type_check_unary_convert(
         env,

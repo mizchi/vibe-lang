@@ -7,8 +7,10 @@ let prelude_source : String =
   #|let eq = (x: Num, y: Num) -> Bool { __eq(x, y) }
   #|let lt = (x: Num, y: Num) -> Bool { __lt(x, y) }
   #|let not = (x: Bool) -> Bool { if x { false } else { true } }
+  #|let __not = (x: Bool) -> Bool { if x { false } else { true } }
   #|let and = (x: Bool, y: Bool) -> Bool { if x { y } else { false } }
   #|let or = (x: Bool, y: Bool) -> Bool { if x { true } else { y } }
+  #|let __or = (x: Bool, y: Bool) -> Bool { if x { true } else { y } }
   #|let assert = (cond: Bool) -> Unit { __assert(cond) }
   #|let assert_true = (cond: Bool) -> Unit { __assert(cond) }
   #|let assert_eq = [T](a: T, b: T) -> Unit { __assert_eq(a, b) }
@@ -524,10 +526,10 @@ pub fn prelude_ast() -> @core.Module {
 ///|
 pub fn prelude_names() -> Array[String] {
   [
-    "add", "sub", "mul", "div", "eq", "lt", "not", "and", "or", "assert", "assert_true",
-    "to_string", "iter_require", "iter_length", "iter_get", "Array::map", "Array::fold",
-    "Array::filter", "Array::foreach", "Array::concat", "Array::reverse", "Array::any",
-    "Array::all", "Array::find", "assert_eq", "Array::sort", "Array::contains", "Array::join",
-    "Map::get_or", "Map::map", "Map::filter", "where",
+    "add", "sub", "mul", "div", "eq", "lt", "not", "and", "or", "__not", "__or",
+    "assert", "assert_true", "to_string", "iter_require", "iter_length", "iter_get",
+    "Array::map", "Array::fold", "Array::filter", "Array::foreach", "Array::concat",
+    "Array::reverse", "Array::any", "Array::all", "Array::find", "assert_eq", "Array::sort",
+    "Array::contains", "Array::join", "Map::get_or", "Map::map", "Map::filter", "where",
   ]
 }
