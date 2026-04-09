@@ -11,6 +11,7 @@ struct BenchSourceCase {
 
 ///|
 struct BenchSourcePlan {
+  import_source : String
   prelude_source : String
   cases : Array[BenchSourceCase]
 } derive(Show, Eq)
@@ -119,8 +120,8 @@ fn bench_uses_expr_mode(args : Array[String]) -> Bool {
   while i < args.length() {
     let arg = args[i]
     match arg {
-      "-e" | "--expr" | "--case" | "--cases" => return true
-      "-n" | "--n" | "--warmup" | "-b" | "--backend" =>
+      "-e" | "--expr" => return true
+      "-n" | "--n" | "--warmup" | "-b" | "--backend" | "--case" | "--cases" =>
         if i + 1 < args.length() {
           i += 2
         } else {
@@ -166,6 +167,7 @@ fn bench_blocks_cmd(args : Array[String]) -> Unit {
   let mut warmup = 3
   let mut legacy_n : Int? = None
   let paths : Array[String] = []
+  let case_filters : Array[String] = []
   let mut i = 0
   while i < args.length() {
     let arg = args[i]
@@ -197,6 +199,13 @@ fn bench_blocks_cmd(args : Array[String]) -> Unit {
         warmup = @strconv.parse_int(args[i + 1]) catch {
           e => abort("bench: invalid --warmup: " + e.to_string())
         }
+        i += 2
+      }
+      "--case" => {
+        if i + 1 >= args.length() {
+          abort("bench: missing value for --case")
+        }
+        case_filters.push(args[i + 1])
         i += 2
       }
       "-b" | "--backend" => {
@@ -245,7 +254,10 @@ fn bench_blocks_cmd(args : Array[String]) -> Unit {
         Some(n) => n
         None => 1000
       }
-      match run_bench_blocks_wasm_entry(resolved_entry_path, count, warmup) {
+      match
+        run_bench_blocks_wasm_entry_with_cases(
+          resolved_entry_path, count, warmup, case_filters,
+        ) {
         Err(err) => {
           println("[\{entry_path}] \{err}")
           failed = true
@@ -262,8 +274,8 @@ fn bench_blocks_cmd(args : Array[String]) -> Unit {
     } else {
       // Statistical mode (default)
       match
-        run_bench_blocks_wasm_statistical_entry(
-          resolved_entry_path, runs, warmup,
+        run_bench_blocks_wasm_statistical_entry_with_cases(
+          resolved_entry_path, runs, warmup, case_filters,
         ) {
         Err(err) => {
           println("[\{entry_path}] \{err}")
@@ -286,6 +298,53 @@ fn bench_blocks_cmd(args : Array[String]) -> Unit {
   if failed {
     abort("bench: failures detected")
   }
+}
+
+///|
+fn bench_case_matches_filters(
+  name : String?,
+  case_filters : Array[String],
+) -> Bool {
+  if case_filters.length() == 0 {
+    return true
+  }
+  match name {
+    None => false
+    Some(case_name) => {
+      for filter_name in case_filters {
+        if case_name == filter_name {
+          return true
+        }
+      }
+      false
+    }
+  }
+}
+
+///|
+fn filter_bench_source_plan_cases(
+  plan : BenchSourcePlan,
+  case_filters : Array[String],
+) -> Result[BenchSourcePlan, String] {
+  if case_filters.length() == 0 {
+    return Ok(plan)
+  }
+  let filtered_cases : Array[BenchSourceCase] = []
+  for case_item in plan.cases {
+    if bench_case_matches_filters(case_item.name, case_filters) {
+      filtered_cases.push(case_item)
+    }
+  }
+  if filtered_cases.length() == 0 {
+    return Err(
+      "bench: no cases matched --case (" + case_filters.join(", ") + ")",
+    )
+  }
+  Ok(BenchSourcePlan::{
+    import_source: plan.import_source,
+    prelude_source: plan.prelude_source,
+    cases: filtered_cases,
+  })
 }
 
 ///|
@@ -315,10 +374,13 @@ fn extract_bench_source_plan(
   let ast = @parser.parse_ast(source) catch {
     e => return Err("parse error: " + e.to_string())
   }
+  let import_stmts : Array[@vibe_core.Stmt] = []
   let prelude_stmts : Array[@vibe_core.Stmt] = []
   let cases : Array[BenchSourceCase] = []
   for stmt in ast.stmts {
     match stmt {
+      @vibe_core.Stmt::Import(..) | @vibe_core.Stmt::ReExport(..) =>
+        import_stmts.push(stmt)
       @vibe_core.Stmt::Bench(name~, body~, span~) => {
         let _ = body
         let stmt_source = source_slice_by_span(source, span.start, span.end)
@@ -328,8 +390,9 @@ fn extract_bench_source_plan(
       _ => prelude_stmts.push(stmt)
     }
   }
+  let import_source = module_source_from_stmt_spans(source, import_stmts)
   let prelude_source = module_source_from_stmt_spans(source, prelude_stmts)
-  Ok(BenchSourcePlan::{ prelude_source, cases })
+  Ok(BenchSourcePlan::{ import_source, prelude_source, cases })
 }
 
 ///|
@@ -352,18 +415,28 @@ fn bench_stmt_body_source(stmt_source : String) -> String {
 
 ///|
 fn build_bench_case_loop_script(
+  import_source : String,
   prelude_source : String,
   body_source : String,
   iterations : Int,
 ) -> String {
   let out = StringBuilder::new()
   let iter_name = "vibe_bench_iter_internal"
-  // Wrap everything in a block so that prelude `let mut` bindings are not
-  // at the top level (top-level `let mut` is rejected by the type checker).
+  if import_source.length() > 0 {
+    out.write_string(import_source)
+    if !import_source.has_suffix("\n") {
+      out.write_char('\n')
+    }
+  }
+  out.write_string(
+    "export let _start = () -> Int with { Error, Fs, Env, Net, Process, Stdout, Stdin, Time, Random } {\n",
+  )
+  // Wrap non-import setup in a block so that prelude `let mut` bindings are
+  // not at the top level (top-level `let mut` is rejected by the type checker).
   out.write_string("{\n")
   if prelude_source.length() > 0 {
     out.write_string(prelude_source)
-    if not(prelude_source.has_suffix("\n")) {
+    if !prelude_source.has_suffix("\n") {
       out.write_char('\n')
     }
   }
@@ -388,6 +461,7 @@ fn build_bench_case_loop_script(
   out.write_string("}\n")
   out.write_string("}\n")
   out.write_string("0\n")
+  out.write_string("}\n")
   out.to_string()
 }
 
@@ -401,8 +475,15 @@ fn bench_script_cache_paths(
   let (vibe_root, cache_key) = find_vibe_cache_root(resolved)
   let hash = @vibe_core.content_address_hash_string(script_kind + "\n" + source)
   let cache_dir = vibe_root + "/bench/" + cache_key
+  let entry_dir = @vibe_fs.parent_path(resolved)
   let prefix = cache_dir + "/" + script_kind + "_" + hash
-  (cache_dir, prefix + ".vibe", prefix + ".wasm")
+  let source_path = entry_dir +
+    "/.vibe_bench_" +
+    script_kind +
+    "_" +
+    hash +
+    ".vibe"
+  (cache_dir, source_path, prefix + ".wasm")
 }
 
 ///|
@@ -608,22 +689,49 @@ fn run_wasmtime_bench_module(
 }
 
 ///|
+fn run_bench_module(
+  runner : BenchWasmRunner,
+  entry_path : String,
+  wasm_path : String,
+  use_node_runner : Bool,
+) -> Result[Unit, String] {
+  let tmp_prefix = wasm_path + ".bench_exec"
+  let exec_out = if use_node_runner {
+    let host_runner = match resolve_http_host_runner(entry_path) {
+      Ok(v) => v
+      Err(err) => return Err(err)
+    }
+    run_http_host_invoke_run_capture(host_runner, wasm_path, tmp_prefix)
+  } else {
+    run_wasmtime_invoke_run_capture(runner, wasm_path, tmp_prefix)
+  }
+  if exec_out.status == 0 {
+    Ok(())
+  } else {
+    let runner_name = if use_node_runner {
+      "node host runner"
+    } else {
+      "wasmtime"
+    }
+    Err(
+      runner_name +
+      " command failed: status=" +
+      exec_out.status.to_string() +
+      " detail=" +
+      wasmtime_failure_detail(exec_out.stdout, exec_out.stderr),
+    )
+  }
+}
+
+///|
 fn compile_bench_script_to_wasm(
   entry_path : String,
   script_kind : String,
   source : String,
-) -> Result[(String, Int), String] {
+) -> Result[(String, Int, Bool), String] {
   let (cache_dir, source_path, wasm_path) = bench_script_cache_paths(
     entry_path, script_kind, source,
   )
-  if @os_fs.path_exists(wasm_path) {
-    let cached_bytes = @os_fs.read_file_to_bytes(wasm_path) catch {
-      _ => Bytes::new(0)
-    }
-    if cached_bytes.length() > 0 {
-      return Ok((wasm_path, cached_bytes.length()))
-    }
-  }
   match ensure_parent_dir_for_file(wasm_path, "bench cache") {
     Ok(_) => ()
     Err(err) => return Err("bench cache dir failed: " + err)
@@ -635,40 +743,97 @@ fn compile_bench_script_to_wasm(
     Err(err) => return Err("load error: " + err)
     Ok(v) => v
   }
-  let wasm_bytes = @runtime_compile.compile_module_wasm_with_opt_level(
-    db,
-    entry,
-    no_dce=true,
-    opt_level=Some("-Oz"),
-  ) catch {
-    e => {
-      let primary_err = e.user_message()
-      if primary_err.contains("optimize:") {
-        @runtime_compile.compile_module_wasm_with_opt_level(
-          db,
-          entry,
-          no_dce=true,
-          opt_level=None,
-        ) catch {
-          e2 =>
-            return Err(
-              "compile wasm error: " +
-              primary_err +
-              " (fallback without optimize failed: " +
-              e2.user_message() +
-              ")",
-            )
+  let (use_http_host_runner, use_fs_host_runner) = detect_exec_host_runner_requirements(
+    db, entry,
+  )
+  let use_node_runner = use_http_host_runner || use_fs_host_runner
+  let cached_hash_path = wasm_path + ".hashes"
+  let cached_mode_path = wasm_path + ".mode"
+  let current_hashes = collect_source_hash_cache(db, entry, true)
+  let current_mode = if use_node_runner { "host" } else { "plain" }
+  let has_cached_hashes = @os_fs.path_exists(cached_hash_path)
+  let cached_mode_matches = if @os_fs.path_exists(cached_mode_path) {
+    let saved_mode = @os_fs.read_file_to_string(cached_mode_path) catch {
+      _ => ""
+    }
+    saved_mode.trim().to_string() == current_mode
+  } else {
+    false
+  }
+  let use_cached_wasm = if @os_fs.path_exists(wasm_path) &&
+    has_cached_hashes &&
+    cached_mode_matches {
+    let saved_hashes = parse_source_hash_cache(
+      @os_fs.read_file_to_string(cached_hash_path) catch {
+        _ => ""
+      },
+    )
+    source_hash_cache_matches(saved_hashes, current_hashes)
+  } else {
+    false
+  }
+  if use_cached_wasm {
+    let cached_bytes = @os_fs.read_file_to_bytes(wasm_path) catch {
+      _ => Bytes::new(0)
+    }
+    if cached_bytes.length() > 0 {
+      return Ok((wasm_path, cached_bytes.length(), use_node_runner))
+    }
+  }
+  let wasm_bytes = if use_node_runner {
+    compile_module_wasm_for_exec(
+      db,
+      entry,
+      http_host_imports=true,
+      fs_host_imports=true,
+    ) catch {
+      e => return Err("compile wasm error: " + e.user_message())
+    }
+  } else {
+    @runtime_compile.compile_module_wasm_with_opt_level(
+      db,
+      entry,
+      no_dce=true,
+      opt_level=Some("-Oz"),
+    ) catch {
+      e => {
+        let primary_err = e.user_message()
+        if primary_err.contains("optimize:") {
+          @runtime_compile.compile_module_wasm_with_opt_level(
+            db,
+            entry,
+            no_dce=true,
+            opt_level=None,
+          ) catch {
+            e2 =>
+              return Err(
+                "compile wasm error: " +
+                primary_err +
+                " (fallback without optimize failed: " +
+                e2.user_message() +
+                ")",
+              )
+          }
+        } else {
+          return Err("compile wasm error: " + primary_err)
         }
-      } else {
-        return Err("compile wasm error: " + primary_err)
       }
     }
   }
   @os_fs.write_bytes_to_file(wasm_path, wasm_bytes) catch {
     e => return Err("write wasm failed: " + e.to_string())
   }
+  @os_fs.write_string_to_file(
+    cached_hash_path,
+    serialize_source_hash_cache(current_hashes),
+  ) catch {
+    _ => ()
+  }
+  @os_fs.write_string_to_file(cached_mode_path, current_mode + "\n") catch {
+    _ => ()
+  }
   let _ = cache_dir
-  Ok((wasm_path, wasm_bytes.length()))
+  Ok((wasm_path, wasm_bytes.length(), use_node_runner))
 }
 
 ///|
@@ -679,13 +844,13 @@ fn run_wasm_case_measure(
   source : String,
   count : Int,
 ) -> Result[(Double, Double, Int), String] {
-  let (wasm_path, wasm_bytes) = match
+  let (wasm_path, wasm_bytes, use_node_runner) = match
     compile_bench_script_to_wasm(entry_path, script_kind, source) {
     Ok(v) => v
     Err(err) => return Err(err)
   }
   let start = @bench.monotonic_clock_start()
-  match run_wasmtime_bench_module(runner, wasm_path) {
+  match run_bench_module(runner, entry_path, wasm_path, use_node_runner) {
     Ok(_) => ()
     Err(err) => return Err(err)
   }
@@ -701,16 +866,17 @@ fn run_wasm_bench_case(
   entry_path : String,
   case_index : Int,
   case_name : String?,
+  import_source : String,
   case_body_source : String,
   prelude_source : String,
   count : Int,
   warmup : Int,
 ) -> Result[WasmBenchResult, WasmBenchFailure] {
   let warm_source = build_bench_case_loop_script(
-    prelude_source, case_body_source, warmup,
+    import_source, prelude_source, case_body_source, warmup,
   )
   let run_source = build_bench_case_loop_script(
-    prelude_source, case_body_source, count,
+    import_source, prelude_source, case_body_source, count,
   )
   let measured = if warmup > 0 {
     match
@@ -719,8 +885,9 @@ fn run_wasm_bench_case(
         "warm_" + case_index.to_string() + "_" + warmup.to_string(),
         warm_source,
       ) {
-      Ok((warm_wasm_path, _)) =>
-        match run_wasmtime_bench_module(runner, warm_wasm_path) {
+      Ok((warm_wasm_path, _, use_node_runner)) =>
+        match
+          run_bench_module(runner, entry_path, warm_wasm_path, use_node_runner) {
           Ok(_) =>
             run_wasm_case_measure(
               runner,
@@ -762,10 +929,24 @@ fn run_bench_blocks_wasm_entry(
   count : Int,
   warmup : Int,
 ) -> Result[WasmBenchReport, String] {
+  run_bench_blocks_wasm_entry_with_cases(entry_path, count, warmup, [])
+}
+
+///|
+fn run_bench_blocks_wasm_entry_with_cases(
+  entry_path : String,
+  count : Int,
+  warmup : Int,
+  case_filters : Array[String],
+) -> Result[WasmBenchReport, String] {
   let source = @os_fs.read_file_to_string(entry_path) catch {
     e => return Err("read error: " + e.to_string())
   }
-  let plan = match extract_bench_source_plan(source) {
+  let raw_plan = match extract_bench_source_plan(source) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let plan = match filter_bench_source_plan_cases(raw_plan, case_filters) {
     Ok(v) => v
     Err(err) => return Err(err)
   }
@@ -787,6 +968,7 @@ fn run_bench_blocks_wasm_entry(
         entry_path,
         case_index,
         case_name,
+        plan.import_source,
         case_body_source,
         plan.prelude_source,
         count,
@@ -815,10 +997,24 @@ fn run_bench_blocks_wasm_statistical_entry(
   runs : Int,
   warmup : Int,
 ) -> Result[WasmBenchSummaryReport, String] {
+  run_bench_blocks_wasm_statistical_entry_with_cases(entry_path, runs, warmup, [])
+}
+
+///|
+fn run_bench_blocks_wasm_statistical_entry_with_cases(
+  entry_path : String,
+  runs : Int,
+  warmup : Int,
+  case_filters : Array[String],
+) -> Result[WasmBenchSummaryReport, String] {
   let source = @os_fs.read_file_to_string(entry_path) catch {
     e => return Err("read error: " + e.to_string())
   }
-  let plan = match extract_bench_source_plan(source) {
+  let raw_plan = match extract_bench_source_plan(source) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let plan = match filter_bench_source_plan_cases(raw_plan, case_filters) {
     Ok(v) => v
     Err(err) => return Err(err)
   }
@@ -841,6 +1037,7 @@ fn run_bench_blocks_wasm_statistical_entry(
     let mut trial = 1
     while true {
       let cal_source = build_bench_case_loop_script(
+        plan.import_source,
         plan.prelude_source,
         case_body_source,
         trial,
@@ -849,7 +1046,7 @@ fn run_bench_blocks_wasm_statistical_entry(
         case_index.to_string() +
         "_" +
         trial.to_string()
-      let cal_wasm_path = match
+      let (cal_wasm_path, cal_use_node_runner) = match
         compile_bench_script_to_wasm(entry_path, cal_script_kind, cal_source) {
         Err(err) => {
           failures.push(WasmBenchFailure::{
@@ -859,10 +1056,11 @@ fn run_bench_blocks_wasm_statistical_entry(
           calibration_ok = false
           break
         }
-        Ok((path, _)) => path
+        Ok((path, _, use_node_runner)) => (path, use_node_runner)
       }
       let start = @bench.monotonic_clock_start()
-      match run_wasmtime_bench_module(runner, cal_wasm_path) {
+      match
+        run_bench_module(runner, entry_path, cal_wasm_path, cal_use_node_runner) {
         Err(err) => {
           failures.push(WasmBenchFailure::{
             name: case_name,
@@ -888,6 +1086,7 @@ fn run_bench_blocks_wasm_statistical_entry(
     }
     // Compile the measurement script once
     let run_source = build_bench_case_loop_script(
+      plan.import_source,
       plan.prelude_source,
       case_body_source,
       batch_size,
@@ -896,7 +1095,7 @@ fn run_bench_blocks_wasm_statistical_entry(
       case_index.to_string() +
       "_" +
       batch_size.to_string()
-    let (run_wasm_path, wasm_bytes) = match
+    let (run_wasm_path, wasm_bytes, use_node_runner) = match
       compile_bench_script_to_wasm(entry_path, run_script_kind, run_source) {
       Ok(v) => v
       Err(err) => {
@@ -910,7 +1109,8 @@ fn run_bench_blocks_wasm_statistical_entry(
     // Warmup
     let mut warmup_ok = true
     for _ in 0..<warmup {
-      match run_wasmtime_bench_module(runner, run_wasm_path) {
+      match
+        run_bench_module(runner, entry_path, run_wasm_path, use_node_runner) {
         Ok(_) => ()
         Err(err) => {
           failures.push(WasmBenchFailure::{
@@ -930,7 +1130,8 @@ fn run_bench_blocks_wasm_statistical_entry(
     let mut sample_ok = true
     for _ in 0..<runs {
       let start = @bench.monotonic_clock_start()
-      match run_wasmtime_bench_module(runner, run_wasm_path) {
+      match
+        run_bench_module(runner, entry_path, run_wasm_path, use_node_runner) {
         Ok(_) => ()
         Err(err) => {
           failures.push(WasmBenchFailure::{
