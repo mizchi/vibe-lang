@@ -12,7 +12,9 @@ struct BenchSourceCase {
 ///|
 struct BenchSourcePlan {
   import_source : String
-  prelude_source : String
+  shared_prelude_source : String
+  local_prelude_source : String
+  setup_source : String
   cases : Array[BenchSourceCase]
 } derive(Show, Eq)
 
@@ -21,6 +23,18 @@ struct BenchWasmRunner {
   wasmtime_bin : String
   wasm_flags : Array[String]
   wasi_flags : Array[String]
+} derive(Show, Eq)
+
+///|
+struct BenchCmdOptions {
+  runs : Int
+  warmup : Int
+  legacy_n : Int?
+  paths : Array[String]
+  case_filters : Array[String]
+  backend : BenchBackend
+  output_json : Bool
+  json_out_path : String?
 } derive(Show, Eq)
 
 ///|
@@ -98,9 +112,18 @@ fn resolve_bench_backend(
         backend = parse_bench_backend_or_abort(args[i + 1])
         i += 2
       }
-      "-n" | "--n" | "--warmup" | "-e" | "--expr" | "--case" | "--cases" =>
+      "-n"
+      | "--n"
+      | "--warmup"
+      | "-e"
+      | "--expr"
+      | "--case"
+      | "--cases"
+      | "--runs"
+      | "--json"
+      | "--json-out" =>
         if i + 1 < args.length() {
-          i += 2
+          i += if arg == "--json" { 1 } else { 2 }
         } else {
           i += 1
         }
@@ -121,9 +144,18 @@ fn bench_uses_expr_mode(args : Array[String]) -> Bool {
     let arg = args[i]
     match arg {
       "-e" | "--expr" => return true
-      "-n" | "--n" | "--warmup" | "-b" | "--backend" | "--case" | "--cases" =>
+      "-n"
+      | "--n"
+      | "--warmup"
+      | "-b"
+      | "--backend"
+      | "--case"
+      | "--cases"
+      | "--runs"
+      | "--json"
+      | "--json-out" =>
         if i + 1 < args.length() {
-          i += 2
+          i += if arg == "--json" { 1 } else { 2 }
         } else {
           i += 1
         }
@@ -136,6 +168,107 @@ fn bench_uses_expr_mode(args : Array[String]) -> Bool {
     }
   }
   not(saw_path)
+}
+
+///|
+fn parse_bench_cmd_args(
+  args : Array[String],
+) -> Result[BenchCmdOptions, String] {
+  let mut runs = 10
+  let mut warmup = 3
+  let mut legacy_n : Int? = None
+  let paths : Array[String] = []
+  let case_filters : Array[String] = []
+  let mut backend = BenchBackend::Wasm
+  let mut output_json = false
+  let mut json_out_path : String? = None
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
+    match arg {
+      "--runs" => {
+        if i + 1 >= args.length() {
+          return Err("bench: missing value for --runs")
+        }
+        runs = @strconv.parse_int(args[i + 1]) catch {
+          e => return Err("bench: invalid --runs: " + e.to_string())
+        }
+        i += 2
+      }
+      "-n" | "--n" => {
+        if i + 1 >= args.length() {
+          return Err("bench: missing value for --n")
+        }
+        legacy_n = Some(
+          @strconv.parse_int(args[i + 1]) catch {
+            e => return Err("bench: invalid --n: " + e.to_string())
+          }
+        )
+        i += 2
+      }
+      "--warmup" => {
+        if i + 1 >= args.length() {
+          return Err("bench: missing value for --warmup")
+        }
+        warmup = @strconv.parse_int(args[i + 1]) catch {
+          e => return Err("bench: invalid --warmup: " + e.to_string())
+        }
+        i += 2
+      }
+      "--case" => {
+        if i + 1 >= args.length() {
+          return Err("bench: missing value for --case")
+        }
+        case_filters.push(args[i + 1])
+        i += 2
+      }
+      "-b" | "--backend" => {
+        if i + 1 >= args.length() {
+          return Err("bench: missing value for --backend")
+        }
+        backend = parse_bench_backend_or_abort(args[i + 1])
+        i += 2
+      }
+      "--json" => {
+        output_json = true
+        i += 1
+      }
+      "--json-out" => {
+        if i + 1 >= args.length() {
+          return Err("bench: missing value for --json-out")
+        }
+        output_json = true
+        json_out_path = Some(args[i + 1])
+        i += 2
+      }
+      _ =>
+        if arg.has_prefix("-") {
+          return Err("bench: unknown arg " + arg)
+        } else {
+          paths.push(arg)
+          i += 1
+        }
+    }
+  }
+  if runs <= 0 {
+    return Err("bench: --runs must be > 0")
+  }
+  if warmup < 0 {
+    return Err("bench: --warmup must be >= 0")
+  }
+  if paths.length() == 0 {
+    return Err("bench: expected <file|dir...>")
+  }
+  Ok({
+    runs,
+    warmup,
+    legacy_n,
+    paths,
+    case_filters,
+    backend,
+    output_json,
+    json_out_path,
+  })
 }
 
 ///|
@@ -163,82 +296,16 @@ fn bench_cmd(
 
 ///|
 fn bench_blocks_cmd(args : Array[String]) -> Unit {
-  let mut runs = 10
-  let mut warmup = 3
-  let mut legacy_n : Int? = None
-  let paths : Array[String] = []
-  let case_filters : Array[String] = []
-  let mut i = 0
-  while i < args.length() {
-    let arg = args[i]
-    match arg {
-      "--runs" => {
-        if i + 1 >= args.length() {
-          abort("bench: missing value for --runs")
-        }
-        runs = @strconv.parse_int(args[i + 1]) catch {
-          e => abort("bench: invalid --runs: " + e.to_string())
-        }
-        i += 2
-      }
-      "-n" | "--n" => {
-        if i + 1 >= args.length() {
-          abort("bench: missing value for --n")
-        }
-        legacy_n = Some(
-          @strconv.parse_int(args[i + 1]) catch {
-            e => abort("bench: invalid --n: " + e.to_string())
-          },
-        )
-        i += 2
-      }
-      "--warmup" => {
-        if i + 1 >= args.length() {
-          abort("bench: missing value for --warmup")
-        }
-        warmup = @strconv.parse_int(args[i + 1]) catch {
-          e => abort("bench: invalid --warmup: " + e.to_string())
-        }
-        i += 2
-      }
-      "--case" => {
-        if i + 1 >= args.length() {
-          abort("bench: missing value for --case")
-        }
-        case_filters.push(args[i + 1])
-        i += 2
-      }
-      "-b" | "--backend" => {
-        if i + 1 >= args.length() {
-          abort("bench: missing value for --backend")
-        }
-        let _ = parse_bench_backend_or_abort(args[i + 1])
-        i += 2
-      }
-      _ =>
-        if arg.has_prefix("-") {
-          abort("bench: unknown arg " + arg)
-        } else {
-          paths.push(arg)
-          i += 1
-        }
-    }
+  let options = match parse_bench_cmd_args(args) {
+    Ok(v) => v
+    Err(err) => abort(err)
   }
-  if runs <= 0 {
-    abort("bench: --runs must be > 0")
-  }
-  if warmup < 0 {
-    abort("bench: --warmup must be >= 0")
-  }
-  if paths.length() == 0 {
-    abort("bench: expected <file|dir...>")
-  }
-  let entry_paths = resolve_bench_entry_paths(paths)
+  let entry_paths = resolve_bench_entry_paths(options.paths)
   if entry_paths.length() == 0 {
     abort("bench: no bench files found")
   }
   // Legacy mode: if --n is specified without --runs, use old fixed-iteration behavior
-  let use_legacy = match legacy_n {
+  let use_legacy = match options.legacy_n {
     Some(_) => true
     None => false
   }
@@ -247,24 +314,42 @@ fn bench_blocks_cmd(args : Array[String]) -> Unit {
   let mut passed = 0
   let mut failed_count = 0
   let file_count = entry_paths.length()
+  let mut files_failed = 0
+  let file_reports : Array[Json] = []
+  let mode = if use_legacy { "legacy" } else { "statistical" }
   for entry_path in entry_paths {
     let resolved_entry_path = @loader.resolve_entry_path(entry_path)
     if use_legacy {
-      let count = match legacy_n {
+      let count = match options.legacy_n {
         Some(n) => n
         None => 1000
       }
       match
         run_bench_blocks_wasm_entry_with_cases(
-          resolved_entry_path, count, warmup, case_filters,
+          resolved_entry_path,
+          count,
+          options.warmup,
+          options.case_filters,
         ) {
         Err(err) => {
-          println("[\{entry_path}] \{err}")
+          if options.output_json {
+            file_reports.push(make_wasm_bench_error_json(entry_path, mode, err))
+          } else {
+            println("[\{entry_path}] \{err}")
+          }
           failed = true
+          files_failed += 1
         }
         Ok(report) => {
-          if !print_wasm_bench_report(entry_path, report) {
+          let ok = if options.output_json {
+            file_reports.push(make_wasm_bench_report_json(entry_path, report))
+            report.failed == 0
+          } else {
+            print_wasm_bench_report(entry_path, report)
+          }
+          if !ok {
             failed = true
+            files_failed += 1
           }
           total += report.total
           passed += report.passed
@@ -275,15 +360,32 @@ fn bench_blocks_cmd(args : Array[String]) -> Unit {
       // Statistical mode (default)
       match
         run_bench_blocks_wasm_statistical_entry_with_cases(
-          resolved_entry_path, runs, warmup, case_filters,
+          resolved_entry_path,
+          options.runs,
+          options.warmup,
+          options.case_filters,
         ) {
         Err(err) => {
-          println("[\{entry_path}] \{err}")
+          if options.output_json {
+            file_reports.push(make_wasm_bench_error_json(entry_path, mode, err))
+          } else {
+            println("[\{entry_path}] \{err}")
+          }
           failed = true
+          files_failed += 1
         }
         Ok(report) => {
-          if !print_wasm_bench_summary_report(entry_path, report) {
+          let ok = if options.output_json {
+            file_reports.push(
+              make_wasm_bench_summary_report_json(entry_path, report),
+            )
+            report.failed == 0
+          } else {
+            print_wasm_bench_summary_report(entry_path, report)
+          }
+          if !ok {
             failed = true
+            files_failed += 1
           }
           total += report.total
           passed += report.passed
@@ -292,9 +394,28 @@ fn bench_blocks_cmd(args : Array[String]) -> Unit {
       }
     }
   }
-  println(
-    "summary: files=\{file_count} backend=compiled total=\{total} passed=\{passed} failed=\{failed_count}",
-  )
+  if options.output_json {
+    let root_json = make_cli_bench_report_json(
+      mode,
+      file_count,
+      files_failed,
+      total,
+      passed,
+      failed_count,
+      not(failed),
+      file_reports,
+    )
+    let json_text = root_json.stringify()
+    match write_cli_bench_report_json(options.json_out_path, json_text) {
+      Ok(_) => ()
+      Err(err) => abort(err)
+    }
+    println(json_text)
+  } else {
+    println(
+      "summary: files=\{file_count} backend=compiled total=\{total} passed=\{passed} failed=\{failed_count}",
+    )
+  }
   if failed {
     abort("bench: failures detected")
   }
@@ -342,7 +463,9 @@ fn filter_bench_source_plan_cases(
   }
   Ok(BenchSourcePlan::{
     import_source: plan.import_source,
-    prelude_source: plan.prelude_source,
+    shared_prelude_source: plan.shared_prelude_source,
+    local_prelude_source: plan.local_prelude_source,
+    setup_source: plan.setup_source,
     cases: filtered_cases,
   })
 }
@@ -368,6 +491,29 @@ fn module_source_from_stmt_spans(
 }
 
 ///|
+fn is_bench_setup_stmt(stmt : @vibe_core.Stmt) -> Bool {
+  match stmt {
+    @vibe_core.Stmt::Let(name~, ..)
+    | @vibe_core.Stmt::ExportLet(name~, ..)
+    | @vibe_core.Stmt::InternalExportLet(name~, ..) => name == "bench_setup"
+    _ => false
+  }
+}
+
+///|
+fn can_hoist_bench_prelude_stmt(stmt : @vibe_core.Stmt) -> Bool {
+  match stmt {
+    @vibe_core.Stmt::Let(..)
+    | @vibe_core.Stmt::EnumDef(..)
+    | @vibe_core.Stmt::TypeAlias(..)
+    | @vibe_core.Stmt::TraitDef(..)
+    | @vibe_core.Stmt::TraitImpl(..)
+    | @vibe_core.Stmt::ExternLet(..) => true
+    _ => false
+  }
+}
+
+///|
 fn extract_bench_source_plan(
   source : String,
 ) -> Result[BenchSourcePlan, String] {
@@ -375,7 +521,9 @@ fn extract_bench_source_plan(
     e => return Err("parse error: " + e.to_string())
   }
   let import_stmts : Array[@vibe_core.Stmt] = []
-  let prelude_stmts : Array[@vibe_core.Stmt] = []
+  let shared_prelude_stmts : Array[@vibe_core.Stmt] = []
+  let local_prelude_stmts : Array[@vibe_core.Stmt] = []
+  let setup_stmts : Array[@vibe_core.Stmt] = []
   let cases : Array[BenchSourceCase] = []
   for stmt in ast.stmts {
     match stmt {
@@ -387,12 +535,33 @@ fn extract_bench_source_plan(
         let body_source = bench_stmt_body_source(stmt_source)
         cases.push({ name, body_source })
       }
-      _ => prelude_stmts.push(stmt)
+      _ =>
+        if is_bench_setup_stmt(stmt) {
+          setup_stmts.push(stmt)
+        } else if can_hoist_bench_prelude_stmt(stmt) {
+          shared_prelude_stmts.push(stmt)
+        } else {
+          local_prelude_stmts.push(stmt)
+        }
     }
   }
   let import_source = module_source_from_stmt_spans(source, import_stmts)
-  let prelude_source = module_source_from_stmt_spans(source, prelude_stmts)
-  Ok(BenchSourcePlan::{ import_source, prelude_source, cases })
+  let shared_prelude_source = module_source_from_stmt_spans(
+    source,
+    shared_prelude_stmts,
+  )
+  let local_prelude_source = module_source_from_stmt_spans(
+    source,
+    local_prelude_stmts,
+  )
+  let setup_source = module_source_from_stmt_spans(source, setup_stmts)
+  Ok(BenchSourcePlan::{
+    import_source,
+    shared_prelude_source,
+    local_prelude_source,
+    setup_source,
+    cases,
+  })
 }
 
 ///|
@@ -416,7 +585,8 @@ fn bench_stmt_body_source(stmt_source : String) -> String {
 ///|
 fn build_bench_case_loop_script(
   import_source : String,
-  prelude_source : String,
+  shared_prelude_source : String,
+  local_prelude_source : String,
   body_source : String,
   iterations : Int,
 ) -> String {
@@ -428,15 +598,21 @@ fn build_bench_case_loop_script(
       out.write_char('\n')
     }
   }
+  if shared_prelude_source.length() > 0 {
+    out.write_string(shared_prelude_source)
+    if !shared_prelude_source.has_suffix("\n") {
+      out.write_char('\n')
+    }
+  }
   out.write_string(
     "export let _start = () -> Int with { Error, Fs, Env, Net, Process, Stdout, Stdin, Time, Random } {\n",
   )
   // Wrap non-import setup in a block so that prelude `let mut` bindings are
   // not at the top level (top-level `let mut` is rejected by the type checker).
   out.write_string("{\n")
-  if prelude_source.length() > 0 {
-    out.write_string(prelude_source)
-    if !prelude_source.has_suffix("\n") {
+  if local_prelude_source.length() > 0 {
+    out.write_string(local_prelude_source)
+    if !local_prelude_source.has_suffix("\n") {
       out.write_char('\n')
     }
   }
@@ -459,6 +635,58 @@ fn build_bench_case_loop_script(
   out.write_string(" += 1\n")
   out.write_string("}\n")
   out.write_string("}\n")
+  out.write_string("}\n")
+  out.write_string("0\n")
+  out.write_string("}\n")
+  out.to_string()
+}
+
+///|
+fn build_bench_case_setup_script(
+  import_source : String,
+  shared_prelude_source : String,
+  setup_source : String,
+  body_source : String,
+) -> String {
+  let out = StringBuilder::new()
+  if import_source.length() > 0 {
+    out.write_string(import_source)
+    if !import_source.has_suffix("\n") {
+      out.write_char('\n')
+    }
+  }
+  if shared_prelude_source.length() > 0 {
+    out.write_string(shared_prelude_source)
+    if !shared_prelude_source.has_suffix("\n") {
+      out.write_char('\n')
+    }
+  }
+  if setup_source.length() > 0 {
+    out.write_string(setup_source)
+    if !setup_source.has_suffix("\n") {
+      out.write_char('\n')
+    }
+  }
+  out.write_string("let __bench_setup_done = [false]\n")
+  out.write_string(
+    "export let _start = () -> Int with { Error, Fs, Env, Net, Process, Stdout, Stdin, Time, Random } {\n",
+  )
+  out.write_string("0\n")
+  out.write_string("}\n")
+  out.write_string(
+    "export let _bench_run = () -> Int with { Error, Fs, Env, Net, Process, Stdout, Stdin, Time, Random } {\n",
+  )
+  out.write_string("{\n")
+  out.write_string("if !__bench_setup_done[0] {\n")
+  out.write_string("  let _ = bench_setup()\n")
+  out.write_string("  __bench_setup_done[0] = true\n")
+  out.write_string("}\n")
+  if body_source.length() > 0 {
+    out.write_string(body_source)
+    if !body_source.has_suffix("\n") {
+      out.write_char('\n')
+    }
+  }
   out.write_string("}\n")
   out.write_string("0\n")
   out.write_string("}\n")
@@ -724,10 +952,112 @@ fn run_bench_module(
 }
 
 ///|
+fn build_http_host_bench_command(
+  runner : HttpHostRunner,
+  wasm_path : String,
+  invoke_name : String,
+  count : Int,
+  warmup : Int,
+  setup_invoke : String?,
+) -> String {
+  let cmd = StringBuilder::new()
+  cmd.write_string(shell_quote_command_arg(runner.node_bin))
+  for flag in runner.node_flags {
+    cmd.write_string(" ")
+    cmd.write_string(shell_quote_command_arg(flag))
+  }
+  cmd.write_string(" ")
+  cmd.write_string(shell_quote_command_arg(runner.runner_script))
+  cmd.write_string(" --invoke ")
+  cmd.write_string(shell_quote_command_arg(invoke_name))
+  cmd.write_string(" --bench-count ")
+  cmd.write_string(shell_quote_command_arg(count.to_string()))
+  cmd.write_string(" --bench-warmup ")
+  cmd.write_string(shell_quote_command_arg(warmup.to_string()))
+  match setup_invoke {
+    Some(name) => {
+      cmd.write_string(" --bench-setup ")
+      cmd.write_string(shell_quote_command_arg(name))
+    }
+    None => ()
+  }
+  cmd.write_string(" ")
+  cmd.write_string(shell_quote_command_arg(wasm_path))
+  cmd.to_string()
+}
+
+///|
+fn parse_http_host_bench_elapsed_us(stdout : String) -> Result[Double, String] {
+  let text = stdout.trim().to_string()
+  let parsed : Result[Double, @strconv.StrConvError] = try? @strconv.parse_double(
+    text,
+  )
+  match parsed {
+    Ok(value) => Ok(value)
+    Err(_) => Err("invalid node host bench output: " + text)
+  }
+}
+
+///|
+fn run_http_host_bench_measure(
+  runner : HttpHostRunner,
+  wasm_path : String,
+  tmp_prefix : String,
+  invoke_name : String,
+  count : Int,
+  warmup : Int,
+  setup_invoke : String?,
+) -> Result[Double, String] {
+  let out_path = tmp_prefix + ".out"
+  let err_path = tmp_prefix + ".err"
+  let cmd = build_http_host_bench_command(
+    runner,
+    wasm_path,
+    invoke_name,
+    count,
+    warmup,
+    setup_invoke,
+  ) +
+    " >" +
+    shell_quote_command_arg(out_path) +
+    " 2>" +
+    shell_quote_command_arg(err_path)
+  let status = c_system(system_command_bytes(cmd))
+  let stdout = @os_fs.read_file_to_string(out_path) catch { _ => "" }
+  let stderr = @os_fs.read_file_to_string(err_path) catch { _ => "" }
+  remove_file_if_exists(out_path)
+  remove_file_if_exists(err_path)
+  if status != 0 {
+    return Err(
+      "node host runner command failed: status=" +
+      status.to_string() +
+      " detail=" +
+      wasmtime_failure_detail(stdout, stderr),
+    )
+  }
+  parse_http_host_bench_elapsed_us(stdout)
+}
+
+///|
 fn compile_bench_script_to_wasm(
   entry_path : String,
   script_kind : String,
   source : String,
+) -> Result[(String, Int, Bool), String] {
+  compile_bench_script_to_wasm_with_runner(
+    entry_path,
+    script_kind,
+    source,
+    false,
+  )
+}
+
+///|
+fn compile_bench_script_to_wasm_with_runner(
+  entry_path : String,
+  script_kind : String,
+  source : String,
+  force_node_runner : Bool,
 ) -> Result[(String, Int, Bool), String] {
   let (cache_dir, source_path, wasm_path) = bench_script_cache_paths(
     entry_path, script_kind, source,
@@ -746,7 +1076,7 @@ fn compile_bench_script_to_wasm(
   let (use_http_host_runner, use_fs_host_runner) = detect_exec_host_runner_requirements(
     db, entry,
   )
-  let use_node_runner = use_http_host_runner || use_fs_host_runner
+  let use_node_runner = force_node_runner || use_http_host_runner || use_fs_host_runner
   let cached_hash_path = wasm_path + ".hashes"
   let cached_mode_path = wasm_path + ".mode"
   let current_hashes = collect_source_hash_cache(db, entry, true)
@@ -867,47 +1197,105 @@ fn run_wasm_bench_case(
   case_index : Int,
   case_name : String?,
   import_source : String,
+  shared_prelude_source : String,
+  local_prelude_source : String,
+  setup_source : String,
   case_body_source : String,
-  prelude_source : String,
   count : Int,
   warmup : Int,
 ) -> Result[WasmBenchResult, WasmBenchFailure] {
-  let warm_source = build_bench_case_loop_script(
-    import_source, prelude_source, case_body_source, warmup,
-  )
-  let run_source = build_bench_case_loop_script(
-    import_source, prelude_source, case_body_source, count,
-  )
-  let measured = if warmup > 0 {
-    match
-      compile_bench_script_to_wasm(
-        entry_path,
-        "warm_" + case_index.to_string() + "_" + warmup.to_string(),
-        warm_source,
-      ) {
-      Ok((warm_wasm_path, _, use_node_runner)) =>
-        match
-          run_bench_module(runner, entry_path, warm_wasm_path, use_node_runner) {
-          Ok(_) =>
-            run_wasm_case_measure(
-              runner,
-              entry_path,
-              "run_" + case_index.to_string() + "_" + count.to_string(),
-              run_source,
-              count,
-            )
-          Err(err) => Err("warmup run failed: " + err)
-        }
-      Err(err) => Err("warmup compile failed: " + err)
+  let has_setup = setup_source.length() > 0
+  let measured = if has_setup {
+    if local_prelude_source.length() > 0 {
+      Err(
+        "bench setup requires hoistable top-level prelude only; found local prelude statements",
+      )
+    } else {
+      let run_source = build_bench_case_setup_script(
+        import_source,
+        shared_prelude_source,
+        setup_source,
+        case_body_source,
+      )
+      match
+        compile_bench_script_to_wasm_with_runner(
+          entry_path,
+          "setup_run_" + case_index.to_string(),
+          run_source,
+          true,
+        ) {
+        Ok((run_wasm_path, wasm_bytes, use_node_runner)) =>
+          if !use_node_runner {
+            Err("bench setup requires node host runner")
+          } else {
+            let host_runner = match resolve_http_host_runner(entry_path) {
+              Ok(v) => v
+              Err(err) => return Err(WasmBenchFailure::{ name: case_name, error: err })
+            }
+            match
+              run_http_host_bench_measure(
+                host_runner,
+                run_wasm_path,
+                run_wasm_path + ".bench_setup",
+                "_bench_run",
+                count,
+                warmup + 1,
+                None,
+              ) {
+              Ok(elapsed_us) =>
+                Ok((elapsed_us / 1000.0, elapsed_us / count.to_double(), wasm_bytes))
+              Err(err) => Err(err)
+            }
+          }
+        Err(err) => Err("compile failed: " + err)
+      }
     }
   } else {
-    run_wasm_case_measure(
-      runner,
-      entry_path,
-      "run_" + case_index.to_string() + "_" + count.to_string(),
-      run_source,
+    let warm_source = build_bench_case_loop_script(
+      import_source,
+      shared_prelude_source,
+      local_prelude_source,
+      case_body_source,
+      warmup,
+    )
+    let run_source = build_bench_case_loop_script(
+      import_source,
+      shared_prelude_source,
+      local_prelude_source,
+      case_body_source,
       count,
     )
+    if warmup > 0 {
+      match
+        compile_bench_script_to_wasm(
+          entry_path,
+          "warm_" + case_index.to_string() + "_" + warmup.to_string(),
+          warm_source,
+        ) {
+        Ok((warm_wasm_path, _, use_node_runner)) =>
+          match
+            run_bench_module(runner, entry_path, warm_wasm_path, use_node_runner) {
+            Ok(_) =>
+              run_wasm_case_measure(
+                runner,
+                entry_path,
+                "run_" + case_index.to_string() + "_" + count.to_string(),
+                run_source,
+                count,
+              )
+            Err(err) => Err("warmup run failed: " + err)
+          }
+        Err(err) => Err("warmup compile failed: " + err)
+      }
+    } else {
+      run_wasm_case_measure(
+        runner,
+        entry_path,
+        "run_" + case_index.to_string() + "_" + count.to_string(),
+        run_source,
+        count,
+      )
+    }
   }
   match measured {
     Ok((elapsed_ms, per_us, wasm_bytes)) =>
@@ -969,8 +1357,10 @@ fn run_bench_blocks_wasm_entry_with_cases(
         case_index,
         case_name,
         plan.import_source,
+        plan.shared_prelude_source,
+        plan.local_prelude_source,
+        plan.setup_source,
         case_body_source,
-        plan.prelude_source,
         count,
         warmup,
       ) {
@@ -1030,123 +1420,233 @@ fn run_bench_blocks_wasm_statistical_entry_with_cases(
     case_index += 1
     let case_name = case_item.name
     let case_body_source = case_item.body_source
+    let has_setup = plan.setup_source.length() > 0
     // Auto-calibrate: try increasing batch sizes until ~100ms
     let threshold_us = 100000.0
     let mut batch_size = 1
     let mut calibration_ok = true
-    let mut trial = 1
-    while true {
-      let cal_source = build_bench_case_loop_script(
-        plan.import_source,
-        plan.prelude_source,
-        case_body_source,
-        trial,
-      )
-      let cal_script_kind = "stat_cal_" +
-        case_index.to_string() +
-        "_" +
-        trial.to_string()
-      let (cal_wasm_path, cal_use_node_runner) = match
-        compile_bench_script_to_wasm(entry_path, cal_script_kind, cal_source) {
-        Err(err) => {
-          failures.push(WasmBenchFailure::{
-            name: case_name,
-            error: "calibration compile failed: " + err,
-          })
-          calibration_ok = false
-          break
-        }
-        Ok((path, _, use_node_runner)) => (path, use_node_runner)
-      }
-      let start = @bench.monotonic_clock_start()
-      match
-        run_bench_module(runner, entry_path, cal_wasm_path, cal_use_node_runner) {
-        Err(err) => {
-          failures.push(WasmBenchFailure::{
-            name: case_name,
-            error: "calibration run failed: " + err,
-          })
-          calibration_ok = false
-          break
-        }
-        Ok(_) => ()
-      }
-      let elapsed_us = @bench.monotonic_clock_end(start)
-      let single_us = elapsed_us / trial.to_double()
-      if trial.to_double() * single_us > threshold_us {
-        let target = threshold_us /
-          (if single_us < 1.0 { 1.0 } else { single_us })
-        batch_size = if target < 1.0 { 1 } else { target.ceil().to_int() }
-        break
-      }
-      trial = trial * 2
-    }
-    if not(calibration_ok) {
-      continue
-    }
-    // Compile the measurement script once
-    let run_source = build_bench_case_loop_script(
-      plan.import_source,
-      plan.prelude_source,
-      case_body_source,
-      batch_size,
-    )
-    let run_script_kind = "stat_run_" +
-      case_index.to_string() +
-      "_" +
-      batch_size.to_string()
-    let (run_wasm_path, wasm_bytes, use_node_runner) = match
-      compile_bench_script_to_wasm(entry_path, run_script_kind, run_source) {
-      Ok(v) => v
-      Err(err) => {
+    let samples : Array[Double] = []
+    let (run_wasm_path, wasm_bytes, use_node_runner) = if has_setup {
+      if plan.local_prelude_source.length() > 0 {
         failures.push(WasmBenchFailure::{
           name: case_name,
-          error: "compile failed: " + err,
+          error:
+            "bench setup requires hoistable top-level prelude only; found local prelude statements",
         })
         continue
       }
-    }
-    // Warmup
-    let mut warmup_ok = true
-    for _ in 0..<warmup {
+      let run_source = build_bench_case_setup_script(
+        plan.import_source,
+        plan.shared_prelude_source,
+        plan.setup_source,
+        case_body_source,
+      )
       match
-        run_bench_module(runner, entry_path, run_wasm_path, use_node_runner) {
-        Ok(_) => ()
+        compile_bench_script_to_wasm_with_runner(
+          entry_path,
+          "stat_setup_" + case_index.to_string(),
+          run_source,
+          true,
+        ) {
+        Ok(v) => v
         Err(err) => {
           failures.push(WasmBenchFailure::{
             name: case_name,
-            error: "warmup failed: " + err,
+            error: "compile failed: " + err,
           })
-          warmup_ok = false
-          break
+          continue
         }
       }
-    }
-    if not(warmup_ok) {
-      continue
-    }
-    // Collect samples
-    let samples : Array[Double] = []
-    let mut sample_ok = true
-    for _ in 0..<runs {
-      let start = @bench.monotonic_clock_start()
-      match
-        run_bench_module(runner, entry_path, run_wasm_path, use_node_runner) {
-        Ok(_) => ()
+    } else {
+      let mut trial = 1
+      while true {
+        let cal_source = build_bench_case_loop_script(
+          plan.import_source,
+          plan.shared_prelude_source,
+          plan.local_prelude_source,
+          case_body_source,
+          trial,
+        )
+        let cal_script_kind = "stat_cal_" +
+          case_index.to_string() +
+          "_" +
+          trial.to_string()
+        let (cal_wasm_path, cal_use_node_runner) = match
+          compile_bench_script_to_wasm(entry_path, cal_script_kind, cal_source) {
+          Err(err) => {
+            failures.push(WasmBenchFailure::{
+              name: case_name,
+              error: "calibration compile failed: " + err,
+            })
+            calibration_ok = false
+            break
+          }
+          Ok((path, _, use_node_runner)) => (path, use_node_runner)
+        }
+        let start = @bench.monotonic_clock_start()
+        match
+          run_bench_module(runner, entry_path, cal_wasm_path, cal_use_node_runner) {
+          Err(err) => {
+            failures.push(WasmBenchFailure::{
+              name: case_name,
+              error: "calibration run failed: " + err,
+            })
+            calibration_ok = false
+            break
+          }
+          Ok(_) => ()
+        }
+        let elapsed_us = @bench.monotonic_clock_end(start)
+        let single_us = elapsed_us / trial.to_double()
+        if trial.to_double() * single_us > threshold_us {
+          let target = threshold_us /
+            (if single_us < 1.0 { 1.0 } else { single_us })
+          batch_size = if target < 1.0 { 1 } else { target.ceil().to_int() }
+          break
+        }
+        trial = trial * 2
+      }
+      if not(calibration_ok) {
+        continue
+      }
+      let run_source = build_bench_case_loop_script(
+        plan.import_source,
+        plan.shared_prelude_source,
+        plan.local_prelude_source,
+        case_body_source,
+        batch_size,
+      )
+      let run_script_kind = "stat_run_" +
+        case_index.to_string() +
+        "_" +
+        batch_size.to_string()
+      match compile_bench_script_to_wasm(entry_path, run_script_kind, run_source) {
+        Ok(v) => v
         Err(err) => {
           failures.push(WasmBenchFailure::{
             name: case_name,
-            error: "measurement run failed: " + err,
+            error: "compile failed: " + err,
           })
-          sample_ok = false
-          break
+          continue
         }
       }
-      let elapsed_us = @bench.monotonic_clock_end(start)
-      samples.push(elapsed_us / batch_size.to_double())
     }
-    if not(sample_ok) {
-      continue
+    if has_setup {
+      if !use_node_runner {
+        failures.push(WasmBenchFailure::{
+          name: case_name,
+          error: "bench setup requires node host runner",
+        })
+        continue
+      }
+      let host_runner = match resolve_http_host_runner(entry_path) {
+        Ok(v) => v
+        Err(err) => {
+          failures.push(WasmBenchFailure::{ name: case_name, error: err })
+          continue
+        }
+      }
+      let mut trial = 1
+      while true {
+        let elapsed_us = match
+          run_http_host_bench_measure(
+            host_runner,
+            run_wasm_path,
+            run_wasm_path + ".stat_cal",
+            "_bench_run",
+            trial,
+            1,
+            None,
+          ) {
+          Ok(v) => v
+          Err(err) => {
+            failures.push(WasmBenchFailure::{
+              name: case_name,
+              error: "calibration run failed: " + err,
+            })
+            calibration_ok = false
+            break
+          }
+        }
+        let single_us = elapsed_us / trial.to_double()
+        if trial.to_double() * single_us > threshold_us {
+          let target = threshold_us /
+            (if single_us < 1.0 { 1.0 } else { single_us })
+          batch_size = if target < 1.0 { 1 } else { target.ceil().to_int() }
+          break
+        }
+        trial = trial * 2
+      }
+      if not(calibration_ok) {
+        continue
+      }
+      let mut sample_ok = true
+      for _ in 0..<runs {
+        let elapsed_us = match
+          run_http_host_bench_measure(
+            host_runner,
+            run_wasm_path,
+            run_wasm_path + ".stat_run",
+            "_bench_run",
+            batch_size,
+            warmup + 1,
+            None,
+          ) {
+          Ok(v) => v
+          Err(err) => {
+            failures.push(WasmBenchFailure::{
+              name: case_name,
+              error: "measurement run failed: " + err,
+            })
+            sample_ok = false
+            break
+          }
+        }
+        samples.push(elapsed_us / batch_size.to_double())
+      }
+      if not(sample_ok) {
+        continue
+      }
+    } else {
+      let mut warmup_ok = true
+      for _ in 0..<warmup {
+        match
+          run_bench_module(runner, entry_path, run_wasm_path, use_node_runner) {
+          Ok(_) => ()
+          Err(err) => {
+            failures.push(WasmBenchFailure::{
+              name: case_name,
+              error: "warmup failed: " + err,
+            })
+            warmup_ok = false
+            break
+          }
+        }
+      }
+      if not(warmup_ok) {
+        continue
+      }
+      let mut sample_ok = true
+      for _ in 0..<runs {
+        let start = @bench.monotonic_clock_start()
+        match
+          run_bench_module(runner, entry_path, run_wasm_path, use_node_runner) {
+          Ok(_) => ()
+          Err(err) => {
+            failures.push(WasmBenchFailure::{
+              name: case_name,
+              error: "measurement run failed: " + err,
+            })
+            sample_ok = false
+            break
+          }
+        }
+        let elapsed_us = @bench.monotonic_clock_end(start)
+        samples.push(elapsed_us / batch_size.to_double())
+      }
+      if not(sample_ok) {
+        continue
+      }
     }
     results.push(
       @runtime.compute_bench_summary(case_name, samples, batch_size, wasm_bytes),
@@ -1198,6 +1698,176 @@ fn pad_left_zero(n : Int, width : Int) -> String {
     out += "0"
   }
   out + s
+}
+
+///|
+fn bench_case_name_or_anon(name : String?) -> String {
+  match name {
+    Some(v) => v
+    None => "<anon>"
+  }
+}
+
+///|
+fn make_wasm_bench_failure_json(failure : WasmBenchFailure) -> Json {
+  let obj : Map[String, Json] = {}
+  obj["name"] = Json::string(bench_case_name_or_anon(failure.name))
+  obj["error"] = Json::string(failure.error)
+  Json::object(obj)
+}
+
+///|
+fn make_wasm_bench_result_json(result : WasmBenchResult) -> Json {
+  let obj : Map[String, Json] = {}
+  obj["name"] = Json::string(bench_case_name_or_anon(result.name))
+  obj["iterations"] = Json::number(result.iterations.to_double())
+  obj["warmup"] = Json::number(result.warmup.to_double())
+  obj["elapsed_ms"] = Json::number(result.elapsed_ms)
+  obj["per_us"] = Json::number(result.per_us)
+  obj["wasm_bytes"] = Json::number(result.wasm_bytes.to_double())
+  Json::object(obj)
+}
+
+///|
+fn make_wasm_bench_summary_json(result : @runtime.BenchSummary) -> Json {
+  let (q1, q2, q3) = result.quartiles
+  let quartiles : Array[Json] = [
+    Json::number(q1),
+    Json::number(q2),
+    Json::number(q3),
+  ]
+  let obj : Map[String, Json] = {}
+  obj["name"] = Json::string(bench_case_name_or_anon(result.name))
+  obj["runs"] = Json::number(result.runs.to_double())
+  obj["batch_size"] = Json::number(result.batch_size.to_double())
+  obj["min"] = Json::number(result.min)
+  obj["max"] = Json::number(result.max)
+  obj["mean"] = Json::number(result.mean)
+  obj["median"] = Json::number(result.median)
+  obj["std_dev"] = Json::number(result.std_dev)
+  obj["std_dev_pct"] = Json::number(result.std_dev_pct)
+  obj["median_abs_dev"] = Json::number(result.median_abs_dev)
+  obj["median_abs_dev_pct"] = Json::number(result.median_abs_dev_pct)
+  obj["quartiles"] = Json::array(quartiles)
+  obj["iqr"] = Json::number(result.iqr)
+  obj["wasm_bytes"] = Json::number(result.wasm_bytes.to_double())
+  Json::object(obj)
+}
+
+///|
+fn make_wasm_bench_report_json(path : String, report : WasmBenchReport) -> Json {
+  let results : Array[Json] = []
+  let failures : Array[Json] = []
+  for result in report.results {
+    results.push(make_wasm_bench_result_json(result))
+  }
+  for failure in report.failures {
+    failures.push(make_wasm_bench_failure_json(failure))
+  }
+  let obj : Map[String, Json] = {}
+  obj["file"] = Json::string(path)
+  obj["mode"] = Json::string("legacy")
+  obj["ok"] = Json::boolean(report.failed == 0)
+  obj["total"] = Json::number(report.total.to_double())
+  obj["passed"] = Json::number(report.passed.to_double())
+  obj["failed"] = Json::number(report.failed.to_double())
+  obj["results"] = Json::array(results)
+  obj["failures"] = Json::array(failures)
+  Json::object(obj)
+}
+
+///|
+fn make_wasm_bench_summary_report_json(
+  path : String,
+  report : WasmBenchSummaryReport,
+) -> Json {
+  let results : Array[Json] = []
+  let failures : Array[Json] = []
+  for result in report.results {
+    results.push(make_wasm_bench_summary_json(result))
+  }
+  for failure in report.failures {
+    failures.push(make_wasm_bench_failure_json(failure))
+  }
+  let obj : Map[String, Json] = {}
+  obj["file"] = Json::string(path)
+  obj["mode"] = Json::string("statistical")
+  obj["ok"] = Json::boolean(report.failed == 0)
+  obj["total"] = Json::number(report.total.to_double())
+  obj["passed"] = Json::number(report.passed.to_double())
+  obj["failed"] = Json::number(report.failed.to_double())
+  obj["results"] = Json::array(results)
+  obj["failures"] = Json::array(failures)
+  Json::object(obj)
+}
+
+///|
+fn make_wasm_bench_error_json(
+  path : String,
+  mode : String,
+  error : String,
+) -> Json {
+  let obj : Map[String, Json] = {}
+  obj["file"] = Json::string(path)
+  obj["mode"] = Json::string(mode)
+  obj["ok"] = Json::boolean(false)
+  obj["total"] = Json::number(0.0)
+  obj["passed"] = Json::number(0.0)
+  obj["failed"] = Json::number(1.0)
+  obj["results"] = Json::array([])
+  obj["failures"] = Json::array([
+    Json::object({
+      "name": Json::string("<file>"),
+      "error": Json::string(error),
+    }),
+  ])
+  Json::object(obj)
+}
+
+///|
+fn make_cli_bench_report_json(
+  mode : String,
+  file_count : Int,
+  files_failed : Int,
+  total : Int,
+  passed : Int,
+  failed : Int,
+  ok : Bool,
+  files : Array[Json],
+) -> Json {
+  let obj : Map[String, Json] = {}
+  obj["cmd"] = Json::string("bench")
+  obj["backend"] = Json::string("compiled")
+  obj["mode"] = Json::string(mode)
+  obj["ok"] = Json::boolean(ok)
+  obj["file_count"] = Json::number(file_count.to_double())
+  obj["files_passed"] = Json::number((file_count - files_failed).to_double())
+  obj["files_failed"] = Json::number(files_failed.to_double())
+  obj["total"] = Json::number(total.to_double())
+  obj["passed"] = Json::number(passed.to_double())
+  obj["failed"] = Json::number(failed.to_double())
+  obj["files"] = Json::array(files)
+  Json::object(obj)
+}
+
+///|
+fn write_cli_bench_report_json(
+  json_out_path : String?,
+  json_text : String,
+) -> Result[Unit, String] {
+  match json_out_path {
+    None => Ok(())
+    Some(path) => {
+      match ensure_parent_dir_for_file(path, "bench json") {
+        Ok(_) => ()
+        Err(err) => return Err("bench: json output dir failed: " + err)
+      }
+      @os_fs.write_string_to_file(path, json_text) catch {
+        e => return Err("bench: write --json-out failed: " + e.to_string())
+      }
+      Ok(())
+    }
+  }
 }
 
 ///|

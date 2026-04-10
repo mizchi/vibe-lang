@@ -214,6 +214,15 @@ fn build_http_host_run_command(
   runner : HttpHostRunner,
   wasm_path : String,
 ) -> String {
+  build_http_host_run_command_with_invokes(runner, wasm_path, ["_start"])
+}
+
+///|
+fn build_http_host_run_command_with_invokes(
+  runner : HttpHostRunner,
+  wasm_path : String,
+  invokes : Array[String],
+) -> String {
   let cmd = StringBuilder::new()
   cmd.write_string(shell_quote_command_arg(runner.node_bin))
   for flag in runner.node_flags {
@@ -222,7 +231,11 @@ fn build_http_host_run_command(
   }
   cmd.write_string(" ")
   cmd.write_string(shell_quote_command_arg(runner.runner_script))
-  cmd.write_string(" --invoke _start ")
+  for invoke_name in invokes {
+    cmd.write_string(" --invoke ")
+    cmd.write_string(shell_quote_command_arg(invoke_name))
+  }
+  cmd.write_string(" ")
   cmd.write_string(shell_quote_command_arg(wasm_path))
   cmd.to_string()
 }
@@ -233,9 +246,24 @@ fn run_http_host_invoke_run_capture(
   wasm_path : String,
   tmp_prefix : String,
 ) -> WasmtimeInvokeOutput {
+  run_http_host_invoke_run_capture_with_invokes(
+    runner,
+    wasm_path,
+    tmp_prefix,
+    ["_start"],
+  )
+}
+
+///|
+fn run_http_host_invoke_run_capture_with_invokes(
+  runner : HttpHostRunner,
+  wasm_path : String,
+  tmp_prefix : String,
+  invokes : Array[String],
+) -> WasmtimeInvokeOutput {
   let out_path = tmp_prefix + ".out"
   let err_path = tmp_prefix + ".err"
-  let cmd = build_http_host_run_command(runner, wasm_path) +
+  let cmd = build_http_host_run_command_with_invokes(runner, wasm_path, invokes) +
     " >" +
     shell_quote_command_arg(out_path) +
     " 2>" +

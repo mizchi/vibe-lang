@@ -570,22 +570,36 @@ let push_grouped_source_fingerprint = (
   path: String,
   source_fingerprint: String
 ) -> Unit {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(groups) {
-    let (name, specs) = Array::get(groups, i)
-    if name == group_name {
-      Array::push(specs, (path, source_fingerprint))
-      found = true
-      i = Array::length(groups)
+  let group_count = Array::length(groups)
+  let handled_by_tail = if group_count > 0 {
+    let (last_name, last_specs) = Array::get(groups, group_count - 1)
+    if last_name == group_name {
+      Array::push(last_specs, (path, source_fingerprint))
+      true
     } else {
+      false
+    }
+  } else {
+    false
+  }
+  if !handled_by_tail {
+    let mut i = 0
+    let mut found_index = -1
+    while i < group_count {
+      if found_index == -1 {
+        let (name, specs) = Array::get(groups, i)
+        if name == group_name {
+          Array::push(specs, (path, source_fingerprint))
+          found_index = i
+        }
+      }
       i = i + 1
     }
-  }
-  if !found {
-    let specs = Array::slice([("", "")], 0, 0)
-    Array::push(specs, (path, source_fingerprint))
-    Array::push(groups, (group_name, specs))
+    if found_index == -1 {
+      let specs = Array::slice([("", "")], 0, 0)
+      Array::push(specs, (path, source_fingerprint))
+      Array::push(groups, (group_name, specs))
+    }
   }
 }
 
@@ -842,22 +856,36 @@ let push_grouped_source = (
   path: String,
   source: String
 ) -> Unit {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(groups) {
-    let (name, sources) = Array::get(groups, i)
-    if name == group_name {
-      Array::push(sources, (path, source))
-      found = true
-      i = Array::length(groups)
+  let group_count = Array::length(groups)
+  let handled_by_tail = if group_count > 0 {
+    let (last_name, last_sources) = Array::get(groups, group_count - 1)
+    if last_name == group_name {
+      Array::push(last_sources, (path, source))
+      true
     } else {
+      false
+    }
+  } else {
+    false
+  }
+  if !handled_by_tail {
+    let mut i = 0
+    let mut found_index = -1
+    while i < group_count {
+      if found_index == -1 {
+        let (name, sources) = Array::get(groups, i)
+        if name == group_name {
+          Array::push(sources, (path, source))
+          found_index = i
+        }
+      }
       i = i + 1
     }
-  }
-  if !found {
-    let sources = Array::slice([("", "")], 0, 0)
-    Array::push(sources, (path, source))
-    Array::push(groups, (group_name, sources))
+    if found_index == -1 {
+      let sources = Array::slice([("", "")], 0, 0)
+      Array::push(sources, (path, source))
+      Array::push(groups, (group_name, sources))
+    }
   }
 }
 
@@ -1166,14 +1194,12 @@ export let collect_all_sources_fs = (entry_path: String) -> Array[(String, Strin
     },
     None =>
       match load_persistent_sources_cache_if_valid(entry_path) {
-        Some(sources) => {
-          copy_source_specs(sources)
-        },
+        Some(sources) => sources,
         None => {
           match try_collect_manifest_sources_fs(entry_path) {
             Some((manifest_path, sources)) => {
               store_persistent_sources_cache(entry_path, Some(manifest_path), sources)
-              copy_source_specs(sources)
+              sources
             },
             None => {
               match try_load_manifest_rows(entry_path) {
@@ -1181,14 +1207,14 @@ export let collect_all_sources_fs = (entry_path: String) -> Array[(String, Strin
                   let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
                   let preloaded_sources = load_manifest_full_sources(base_dir, rows)
                   store_persistent_sources_cache(entry_path, Some(manifest_path), preloaded_sources)
-                  copy_source_specs(preloaded_sources)
+                  preloaded_sources
                 },
                 None => {
                   let sources = Array::slice([("", "")], 0, 0)
                   let visited = Array::slice([""], 0, 0)
                   collect_sources_rec(entry_path, sources, visited)
                   store_persistent_sources_cache(entry_path, None, sources)
-                  copy_source_specs(sources)
+                  sources
                 }
               }
             }
@@ -1206,18 +1232,18 @@ export let collect_source_groups_fs = (entry_path: String) -> Array[(String, Arr
     },
     None =>
       match load_persistent_source_groups_cache_if_valid(entry_path) {
-        Some(groups) => copy_grouped_sources(groups),
+        Some(groups) => groups,
         None =>
           match load_persistent_source_groups_from_source_list_cache_if_valid(entry_path) {
             Some((manifest_path, groups)) => {
               store_persistent_source_groups_cache(entry_path, manifest_path, groups)
-              copy_grouped_sources(groups)
+              groups
             },
             None =>
               match try_collect_manifest_source_groups_fs(entry_path) {
                 Some((manifest_path, groups)) => {
                   store_persistent_source_groups_cache(entry_path, Some(manifest_path), groups)
-                  copy_grouped_sources(groups)
+                  groups
                 },
                 None =>
                   match try_load_manifest_rows(entry_path) {
@@ -1248,14 +1274,14 @@ export let collect_source_groups_fs = (entry_path: String) -> Array[(String, Arr
                         j = j + 1
                       }
                       store_persistent_source_groups_cache(entry_path, Some(manifest_path), groups)
-                      copy_grouped_sources(groups)
+                      groups
                     },
                     None => {
                       let groups = empty_grouped_sources()
                       let recursive_sources = collect_all_sources_fs(entry_path)
                       Array::push(groups, ("recursive", recursive_sources))
                       store_persistent_source_groups_cache(entry_path, None, groups)
-                      copy_grouped_sources(groups)
+                      groups
                     }
                   }
               }

@@ -219,6 +219,23 @@ test "http host run command splits node wasm flags into quoted args" {
 }
 
 ///|
+test "http host run command can invoke multiple exports in order" {
+  let cmd = build_http_host_run_command_with_invokes(
+    {
+      node_bin: "/tmp/node",
+      node_flags: ["--experimental-wasm-exnref"],
+      runner_script: "/tmp/runner.js",
+    },
+    "/tmp/app.wasm",
+    ["_bench_setup", "_bench_run"],
+  )
+  assert_eq(
+    cmd,
+    "\"/tmp/node\" \"--experimental-wasm-exnref\" \"/tmp/runner.js\" --invoke \"_bench_setup\" --invoke \"_bench_run\" \"/tmp/app.wasm\"",
+  )
+}
+
+///|
 test "p3 compose command quotes plug adapter and output paths" {
   let cmd = build_p3_compose_command(
     "/tmp/adapter path.wasm", "/tmp/app$plug.component.wasm", "/tmp/out\"component.wasm",
@@ -3600,6 +3617,25 @@ test "source hash cache match requires identical entries" {
   assert_true(source_hash_cache_matches(saved, same))
   assert_false(source_hash_cache_matches(saved, changed))
   assert_false(source_hash_cache_matches(saved, extra))
+}
+
+///|
+test "source hash cache includes transitive imports" {
+  let db = @runtime.VibeDb::new()
+  let main_path = "/tmp/source_hash_cache/main.vibe"
+  let dep_path = "/tmp/source_hash_cache/dep.vibe"
+  let leaf_path = "/tmp/source_hash_cache/leaf.vibe"
+  let main_source = "import ./dep.vibe { dep }\nlet run = dep\n"
+  let dep_source = "import ./leaf.vibe { leaf }\nlet dep = leaf\n"
+  let leaf_source = "let leaf = 1\n"
+  db.set_source(main_path, main_source)
+  db.set_source(dep_path, dep_source)
+  db.set_source(leaf_path, leaf_source)
+  let hashes = collect_source_hash_cache(db, main_path, true)
+  assert_eq(hashes.length(), 3)
+  assert_true(hashes.contains(main_path))
+  assert_true(hashes.contains(dep_path))
+  assert_true(hashes.contains(leaf_path))
 }
 
 ///|

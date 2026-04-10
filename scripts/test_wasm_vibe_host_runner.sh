@@ -69,6 +69,21 @@ if [ "$fs_result" != "5" ]; then
   exit 1
 fi
 
+preview2_stdout_result="$(
+  cd "$OUT_DIR"
+  compile_and_run preview2_stdout \
+    'export let _start = () -> Int with { Error, Fs, Stdout } {
+  let s = Fs::read_file("input.txt")
+  Stdout::write_stream(s)
+  String::length(s)
+}' \
+    _start
+)"
+if [ "$preview2_stdout_result" != "5" ]; then
+  echo "preview2 stdout/fs failed: expected 5, got '$preview2_stdout_result'" >&2
+  exit 1
+fi
+
 run_skip_init_result="$(
   cd "$OUT_DIR"
   VIBE_SKIP_RUN_INIT=1 compile_and_run fs_read_skip_init \
