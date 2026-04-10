@@ -1,7 +1,7 @@
 //# Imports
 
 import ./loader / manifest_sources.vibe {
-  build_grouped_sources_from_manifest_rows, try_collect_manifest_source_groups_fs, try_collect_manifest_sources_fs
+  build_grouped_sources_from_manifest_row_source_index, build_grouped_sources_from_manifest_rows, build_manifest_path_index, build_manifest_source_index, filter_manifest_sources_by_path_index, filter_manifest_sources_by_paths, filter_manifest_sources_by_paths_linear, filter_manifest_sources_by_source_index, try_collect_manifest_source_groups_fs, try_collect_manifest_sources_fs
 }
 
 //# Functions
@@ -47,6 +47,11 @@ let find_group_sources = (groups: Array[(String, Array[(String, String)])], targ
     }
   }
   found
+}
+
+let source_path_at = (sources: Array[(String, String)], index: Int) -> String {
+  let (path, _) = Array::get(sources, index)
+  path
 }
 
 //# Misc
@@ -138,6 +143,137 @@ test "build_grouped_sources_from_manifest_rows: skips rows without loaded source
   }
 }
 
+test "filter_manifest_sources_by_path_index: matches path list helper" {
+  let preloaded_sources = [
+    ("/tmp/vibe_compiler_manifest_filter_index/helper.vibe", "export let add = () -> Int { 1 }"),
+    ("/tmp/vibe_compiler_manifest_filter_index/main.vibe", "let run = () -> Int { 1 }"),
+    ("/tmp/vibe_compiler_manifest_filter_index/orphan.vibe", "export let dead = () -> Int { 0 }")
+  ]
+  let needed_paths = [
+    "/tmp/vibe_compiler_manifest_filter_index/helper.vibe",
+    "/tmp/vibe_compiler_manifest_filter_index/main.vibe"
+  ]
+  let filtered = filter_manifest_sources_by_path_index(
+    preloaded_sources,
+    build_manifest_path_index(needed_paths)
+  )
+  let expected = filter_manifest_sources_by_paths(preloaded_sources, needed_paths)
+  assert(eq(Array::length(filtered), Array::length(expected)))
+  assert(has_source_path(filtered, "/tmp/vibe_compiler_manifest_filter_index/helper.vibe"))
+  assert(has_source_path(filtered, "/tmp/vibe_compiler_manifest_filter_index/main.vibe"))
+  assert(has_source_path(filtered, "/tmp/vibe_compiler_manifest_filter_index/orphan.vibe") == false)
+}
+
+test "filter_manifest_sources_by_paths_linear: matches indexed helper" {
+  let preloaded_sources = [
+    ("/tmp/vibe_compiler_manifest_filter_linear/helper.vibe", "export let add = () -> Int { 1 }"),
+    ("/tmp/vibe_compiler_manifest_filter_linear/main.vibe", "let run = () -> Int { 1 }"),
+    ("/tmp/vibe_compiler_manifest_filter_linear/orphan.vibe", "export let dead = () -> Int { 0 }")
+  ]
+  let needed_paths = [
+    "/tmp/vibe_compiler_manifest_filter_linear/helper.vibe",
+    "/tmp/vibe_compiler_manifest_filter_linear/main.vibe"
+  ]
+  let filtered = filter_manifest_sources_by_paths_linear(
+    preloaded_sources,
+    needed_paths
+  )
+  let expected = filter_manifest_sources_by_paths(preloaded_sources, needed_paths)
+  assert(eq(Array::length(filtered), Array::length(expected)))
+  assert(has_source_path(filtered, "/tmp/vibe_compiler_manifest_filter_linear/helper.vibe"))
+  assert(has_source_path(filtered, "/tmp/vibe_compiler_manifest_filter_linear/main.vibe"))
+  assert(has_source_path(filtered, "/tmp/vibe_compiler_manifest_filter_linear/orphan.vibe") == false)
+}
+
+test "filter_manifest_sources_by_source_index: follows needed path order and skips missing entries" {
+  let preloaded_sources = [
+    ("/tmp/vibe_compiler_manifest_filter_source_index/helper.vibe", "export let add = () -> Int { 1 }"),
+    ("/tmp/vibe_compiler_manifest_filter_source_index/main.vibe", "let run = () -> Int { 1 }"),
+    ("/tmp/vibe_compiler_manifest_filter_source_index/orphan.vibe", "export let dead = () -> Int { 0 }")
+  ]
+  let needed_paths = [
+    "/tmp/vibe_compiler_manifest_filter_source_index/main.vibe",
+    "/tmp/vibe_compiler_manifest_filter_source_index/missing.vibe",
+    "/tmp/vibe_compiler_manifest_filter_source_index/helper.vibe"
+  ]
+  let filtered = filter_manifest_sources_by_source_index(
+    needed_paths,
+    build_manifest_source_index(preloaded_sources)
+  )
+  assert(eq(Array::length(filtered), 2))
+  assert(source_path_at(filtered, 0) == "/tmp/vibe_compiler_manifest_filter_source_index/main.vibe")
+  assert(source_path_at(filtered, 1) == "/tmp/vibe_compiler_manifest_filter_source_index/helper.vibe")
+  assert(has_source_path(filtered, "/tmp/vibe_compiler_manifest_filter_source_index/orphan.vibe") == false)
+}
+
+test "build_grouped_sources_from_manifest_row_source_index: matches source array helper" {
+  let rows = [
+    ("core", "helper.vibe"),
+    ("misc", "orphan.vibe"),
+    ("entry", "main.vibe")
+  ]
+  let sources = [
+    ("/tmp/vibe_compiler_manifest_group_index/helper.vibe", "export let add = () -> Int { 1 }"),
+    ("/tmp/vibe_compiler_manifest_group_index/main.vibe", "let run = () -> Int { 1 }")
+  ]
+  let groups = build_grouped_sources_from_manifest_row_source_index(
+    "/tmp/vibe_compiler_manifest_group_index",
+    rows,
+    build_manifest_source_index(sources)
+  )
+  let expected = build_grouped_sources_from_manifest_rows(
+    "/tmp/vibe_compiler_manifest_group_index",
+    rows,
+    sources
+  )
+  assert(eq(Array::length(groups), Array::length(expected)))
+  match find_group_sources(groups, "core") {
+    Some(group_sources) => assert(has_source_path(group_sources, "/tmp/vibe_compiler_manifest_group_index/helper.vibe")),
+    None => assert(false)
+  }
+  match find_group_sources(groups, "entry") {
+    Some(group_sources) => assert(has_source_path(group_sources, "/tmp/vibe_compiler_manifest_group_index/main.vibe")),
+    None => assert(false)
+  }
+  match find_group_sources(groups, "misc") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "build_grouped_sources_from_manifest_row_source_index: preserves first-group order and appends repeated rows" {
+  let rows = [
+    ("core", "a.vibe"),
+    ("core", "b.vibe"),
+    ("entry", "main.vibe"),
+    ("core", "c.vibe")
+  ]
+  let sources = [
+    ("/tmp/vibe_compiler_manifest_group_order/a.vibe", "let a = () -> Int { 1 }"),
+    ("/tmp/vibe_compiler_manifest_group_order/b.vibe", "let b = () -> Int { 2 }"),
+    ("/tmp/vibe_compiler_manifest_group_order/main.vibe", "let run = () -> Int { 0 }"),
+    ("/tmp/vibe_compiler_manifest_group_order/c.vibe", "let c = () -> Int { 3 }")
+  ]
+  let groups = build_grouped_sources_from_manifest_row_source_index(
+    "/tmp/vibe_compiler_manifest_group_order",
+    rows,
+    build_manifest_source_index(sources)
+  )
+  assert(eq(Array::length(groups), 2))
+  let (first_group_name, first_group_sources) = Array::get(groups, 0)
+  let (second_group_name, second_group_sources) = Array::get(groups, 1)
+  assert(first_group_name == "core")
+  assert(second_group_name == "entry")
+  assert(eq(Array::length(first_group_sources), 3))
+  assert(eq(Array::length(second_group_sources), 1))
+  let (first_path, _) = Array::get(first_group_sources, 0)
+  let (second_path, _) = Array::get(first_group_sources, 1)
+  let (third_path, _) = Array::get(first_group_sources, 2)
+  assert(first_path == "/tmp/vibe_compiler_manifest_group_order/a.vibe")
+  assert(second_path == "/tmp/vibe_compiler_manifest_group_order/b.vibe")
+  assert(third_path == "/tmp/vibe_compiler_manifest_group_order/c.vibe")
+}
+
 test "try_collect_manifest_sources_fs: scans leading re-exports without full parse" {
   let base_dir = "/tmp/vibe_compiler_manifest_reexport_scan"
   let manifest_path = String::concat(base_dir, "/selfhost_sources_manifest.tsv")
@@ -153,6 +289,33 @@ test "try_collect_manifest_sources_fs: scans leading re-exports without full par
     main_path,
     string_to_bytes(
       "export ./helper.vibe { add }\nlet run = () -> Int { handle { add() } with Error { Throw(_) => 0 } }"
+    )
+  )
+  match try_collect_manifest_sources_fs(main_path) {
+    Some((_, sources)) => {
+      assert(eq(Array::length(sources), 2))
+      assert(has_source_path(sources, helper_path))
+      assert(has_source_path(sources, main_path))
+    },
+    None => assert(false)
+  }
+}
+
+test "try_collect_manifest_sources_fs: ignores invalid body escapes after header imports" {
+  let base_dir = "/tmp/vibe_compiler_manifest_body_escape_scan"
+  let manifest_path = String::concat(base_dir, "/selfhost_sources_manifest.tsv")
+  let helper_path = String::concat(base_dir, "/helper.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(
+    manifest_path,
+    string_to_bytes("# group\tpath\ncore\thelper.vibe\nentry\tmain.vibe\n")
+  )
+  Fs::write_bytes(helper_path, string_to_bytes("export let add = () -> Int { 1 }"))
+  Fs::write_bytes(
+    main_path,
+    string_to_bytes(
+      "import ./helper.vibe { add }\nlet bad = \"\\\\x\"\nlet run = () -> Int { add() }"
     )
   )
   match try_collect_manifest_sources_fs(main_path) {

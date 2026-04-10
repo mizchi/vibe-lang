@@ -1167,6 +1167,53 @@ test "cli bench can filter cases by name" {
 }
 
 ///|
+test "cli bench extracts bench_setup from shared prelude" {
+  let source =
+    "let shared = [0]\n" +
+    "let bench_setup = () -> Int {\n  shared[0] = 42\n  0\n}\n" +
+    "bench \"setup\" {\n  let _ = shared[0]\n}\n"
+  match extract_bench_source_plan(source) {
+    Ok(plan) => {
+      assert_true(plan.shared_prelude_source.contains("let shared = [0]"))
+      assert_true(plan.setup_source.contains("let bench_setup = () -> Int"))
+      assert_eq(plan.local_prelude_source, "")
+      assert_eq(plan.cases.length(), 1)
+    }
+    Err(err) => fail("extract bench source plan failed: " + err)
+  }
+}
+
+///|
+test "cli bench runs bench_setup before measured case" {
+  let root = wbtest_make_temp_dir("bench_setup_hook")
+  let entry_path = root + "/main_bench.vibe"
+  @os_fs.write_string_to_file(
+    entry_path,
+    "let shared = [0]\n" +
+      "let bench_setup = () -> Int {\n" +
+      "  shared[0] = 42\n" +
+      "  0\n" +
+      "}\n" +
+      "bench \"setup\" {\n" +
+      "  let _ = if shared[0] == 42 { 0 } else { throw(\"setup missing\") }\n" +
+      "}\n",
+  ) catch {
+    e => fail("write bench entry failed: " + e.to_string())
+  }
+  match run_bench_blocks_wasm_entry_with_cases(entry_path, 1, 0, ["setup"]) {
+    Ok(report) => {
+      assert_eq(report.total, 1)
+      assert_eq(report.passed, 1)
+      assert_eq(report.failed, 0)
+    }
+    Err(err) => fail("bench run failed: " + err)
+  }
+  wbtest_remove_if_exists(root + "/.vibe")
+  wbtest_remove_if_exists(entry_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "cli bench uses expr mode only for removed legacy flags" {
   assert_false(
     bench_uses_expr_mode(["--backend", "wasm", "examples/simple_bench.vibe"]),
@@ -1174,7 +1221,108 @@ test "cli bench uses expr mode only for removed legacy flags" {
   assert_false(
     bench_uses_expr_mode(["--case", "add_one", "examples/simple_bench.vibe"]),
   )
+  assert_false(bench_uses_expr_mode(["--json", "examples/simple_bench.vibe"]))
   assert_true(bench_uses_expr_mode(["--expr", "add(1,2)"]))
+}
+
+///|
+test "cli bench parses json output options" {
+  match
+    parse_bench_cmd_args([
+      "--json", "--json-out", "/tmp/vibe-bench.json", "--runs", "5", "--warmup", "1", "--case", "beta", "--backend", "wasm",
+      "examples/simple_bench.vibe",
+    ]) {
+    Ok(opts) => {
+      assert_true(opts.output_json)
+      assert_eq(opts.json_out_path, Some("/tmp/vibe-bench.json"))
+      assert_eq(opts.runs, 5)
+      assert_eq(opts.warmup, 1)
+      assert_eq(opts.case_filters, ["beta"])
+      assert_eq(opts.backend, BenchBackend::Wasm)
+      assert_eq(opts.paths, ["examples/simple_bench.vibe"])
+    }
+    Err(err) => fail("parse bench args failed: " + err)
+  }
+}
+
+///|
+test "cli bench json report encodes statistical summaries" {
+  let summary = @runtime.compute_bench_summary(
+    Some("alpha"),
+    [10.0, 12.0, 11.0, 14.0, 13.0],
+    3,
+    1234,
+  )
+  let file_json = make_wasm_bench_summary_report_json(
+    "examples/simple_bench.vibe",
+    WasmBenchSummaryReport::{
+      total: 1,
+      passed: 1,
+      failed: 0,
+      results: [summary],
+      failures: [],
+    },
+  )
+  let root_json = make_cli_bench_report_json(
+    "statistical",
+    1,
+    0,
+    1,
+    1,
+    0,
+    true,
+    [file_json],
+  )
+  let text = root_json.stringify()
+  assert_true(text.contains("\"cmd\":\"bench\""))
+  assert_true(text.contains("\"mode\":\"statistical\""))
+  assert_true(text.contains("\"file\":\"examples/simple_bench.vibe\""))
+  assert_true(text.contains("\"name\":\"alpha\""))
+  assert_true(text.contains("\"median\":"))
+  assert_true(text.contains("\"runs\":5"))
+  assert_true(text.contains("\"files_failed\":0"))
+}
+
+///|
+test "cli bench json report encodes legacy run results" {
+  let file_json = make_wasm_bench_report_json("examples/simple_bench.vibe", WasmBenchReport::{
+    total: 1,
+    passed: 1,
+    failed: 0,
+    results: [
+      WasmBenchResult::{
+        name: Some("beta"),
+        iterations: 10,
+        warmup: 2,
+        elapsed_ms: 12.5,
+        per_us: 1250.0,
+        wasm_bytes: 321,
+      },
+    ],
+    failures: [],
+  })
+  let text = file_json.stringify()
+  assert_true(text.contains("\"mode\":\"legacy\""))
+  assert_true(text.contains("\"name\":\"beta\""))
+  assert_true(text.contains("\"iterations\":10"))
+  assert_true(text.contains("\"per_us\":1250"))
+}
+
+///|
+test "cli bench writes json report to file when requested" {
+  let out_path = "/tmp/vibe_bench_json_out/report.json"
+  wbtest_remove_if_exists(out_path)
+  wbtest_remove_if_exists("/tmp/vibe_bench_json_out")
+  match write_cli_bench_report_json(Some(out_path), "{\"ok\":true}") {
+    Ok(_) => ()
+    Err(err) => fail("write_cli_bench_report_json failed: " + err)
+  }
+  let saved = @os_fs.read_file_to_string(out_path) catch {
+    e => fail("read json out failed: " + e.to_string())
+  }
+  assert_eq(saved, "{\"ok\":true}")
+  wbtest_remove_if_exists(out_path)
+  wbtest_remove_if_exists("/tmp/vibe_bench_json_out")
 }
 
 ///|

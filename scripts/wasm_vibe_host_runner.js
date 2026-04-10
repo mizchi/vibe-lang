@@ -16,21 +16,54 @@ const OBJ_BYTES_VIEW = 14;
 
 function usage() {
   console.error(
-    "usage: node scripts/wasm_vibe_host_runner.js [--invoke <name>] <module.wasm> [argv...]",
+    "usage: node scripts/wasm_vibe_host_runner.js [--invoke <name>] [--bench-count <n> --bench-warmup <n> --bench-setup <name>] <module.wasm> [argv...]",
   );
 }
 
 function parseArgs(argv) {
-  let invoke = "_start";
+  const invokes = [];
   let wasmPath = null;
   const passthroughArgs = [];
+  let benchCount = null;
+  let benchWarmup = 0;
+  let benchSetup = null;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--invoke") {
       if (i + 1 >= argv.length) {
         throw new Error("--invoke requires function name");
       }
-      invoke = argv[i + 1];
+      invokes.push(argv[i + 1]);
+      i += 1;
+      continue;
+    }
+    if (arg === "--bench-count") {
+      if (i + 1 >= argv.length) {
+        throw new Error("--bench-count requires integer value");
+      }
+      benchCount = Number.parseInt(argv[i + 1], 10);
+      if (!Number.isFinite(benchCount) || benchCount <= 0) {
+        throw new Error(`invalid --bench-count: ${argv[i + 1]}`);
+      }
+      i += 1;
+      continue;
+    }
+    if (arg === "--bench-warmup") {
+      if (i + 1 >= argv.length) {
+        throw new Error("--bench-warmup requires integer value");
+      }
+      benchWarmup = Number.parseInt(argv[i + 1], 10);
+      if (!Number.isFinite(benchWarmup) || benchWarmup < 0) {
+        throw new Error(`invalid --bench-warmup: ${argv[i + 1]}`);
+      }
+      i += 1;
+      continue;
+    }
+    if (arg === "--bench-setup") {
+      if (i + 1 >= argv.length) {
+        throw new Error("--bench-setup requires function name");
+      }
+      benchSetup = argv[i + 1];
       i += 1;
       continue;
     }
@@ -46,7 +79,10 @@ function parseArgs(argv) {
   if (wasmPath === null) {
     throw new Error("missing wasm path");
   }
-  return { invoke, wasmPath, passthroughArgs };
+  if (invokes.length === 0) {
+    invokes.push("_start");
+  }
+  return { invokes, wasmPath, passthroughArgs, benchCount, benchWarmup, benchSetup };
 }
 
 function readU32LE(mem, pos) {
@@ -164,6 +200,39 @@ function decodeTaggedString(instance, tagged) {
     throw new Error(`string range out of bounds: ${start}..${end}`);
   }
   return new TextDecoder().decode(mem.subarray(start, end));
+}
+
+function decodeSelfhostPackedString(instance, packed) {
+  if (typeof packed !== "bigint") {
+    throw new Error(`expected selfhost packed string bigint, got ${typeof packed}`);
+  }
+  if (!(instance.exports.memory instanceof WebAssembly.Memory)) {
+    throw new Error("missing exported memory for selfhost string decode");
+  }
+  const mem = new Uint8Array(instance.exports.memory.buffer);
+  const ptr = Number(packed >> 32n);
+  const len = Number(packed & 0xffffffffn);
+  const start = ptr;
+  const end = start + len;
+  if (start < 0 || len < 0 || end < start || end > mem.length) {
+    throw new Error(`selfhost string range out of bounds: ${start}..${end}`);
+  }
+  return new TextDecoder().decode(mem.subarray(start, end));
+}
+
+function tryDecodeExceptionString(instance, payload) {
+  if (!instance || typeof payload !== "bigint") {
+    return null;
+  }
+  try {
+    if ((payload & TAG_MASK) === TAG_OBJ) {
+      return decodeTaggedString(instance, payload);
+    }
+  } catch (_) {}
+  try {
+    return decodeSelfhostPackedString(instance, payload);
+  } catch (_) {}
+  return null;
 }
 
 function decodeRawStringPtr(instance, ptr) {
@@ -550,6 +619,68 @@ function createPreview2FilesystemHost(projectRoot) {
   };
 }
 
+function createPreview2CliStreamsHost() {
+  const STDOUT_STREAM_HANDLE = 1;
+  const STDERR_STREAM_HANDLE = 2;
+
+  function writeEmptyResultOk(retptr) {
+    const mem = new Uint8Array(instanceRefGlobal.exports.memory.buffer);
+    writeU8(mem, retptr, 0);
+  }
+
+  function resolveWritableStream(handle) {
+    if (handle === STDOUT_STREAM_HANDLE) {
+      return process.stdout;
+    }
+    if (handle === STDERR_STREAM_HANDLE) {
+      return process.stderr;
+    }
+    throw new Error(`unknown output-stream handle: ${handle}`);
+  }
+
+  const cliStdout = {
+    "get-stdout"() {
+      return STDOUT_STREAM_HANDLE;
+    },
+  };
+
+  const cliStderr = {
+    "get-stderr"() {
+      return STDERR_STREAM_HANDLE;
+    },
+  };
+
+  const ioStreams = new Proxy(
+    {
+      "[method]output-stream.blocking-write-and-flush"(handle, dataPtr, dataLen, retptr) {
+        const instance = instanceRefGlobal;
+        if (!(instance?.exports?.memory instanceof WebAssembly.Memory)) {
+          throw new Error("missing exported memory for output-stream write");
+        }
+        const mem = new Uint8Array(instance.exports.memory.buffer);
+        const bytes = mem.subarray(dataPtr, dataPtr + dataLen);
+        resolveWritableStream(handle).write(Buffer.from(bytes));
+        writeEmptyResultOk(retptr);
+      },
+      "[resource-drop]output-stream"(_handle) {},
+    },
+    {
+      get(target, key) {
+        if (key in target) {
+          return target[key];
+        }
+        return () => 0;
+      },
+    },
+  );
+
+  return {
+    "wasi:cli/stdout@0.2.0": cliStdout,
+    "wasi:cli/stderr@0.2.0": cliStderr,
+    "wasi:io/streams@0.2.0": ioStreams,
+  };
+}
+
 function parseFuncToTableSlot(wasmBytes) {
   const buf = Buffer.from(wasmBytes);
   let pos = 8;
@@ -693,7 +824,14 @@ function findClosureEnv(instance, heapStart, tableSlot) {
 let instanceRefGlobal = null;
 
 async function main() {
-  const { invoke, wasmPath, passthroughArgs } = parseArgs(process.argv.slice(2));
+  const {
+    invokes,
+    wasmPath,
+    passthroughArgs,
+    benchCount,
+    benchWarmup,
+    benchSetup,
+  } = parseArgs(process.argv.slice(2));
   if (passthroughArgs.length > 0) {
     if (process.env.VIBE_INPUT === undefined && passthroughArgs.length >= 1) {
       process.env.VIBE_INPUT = passthroughArgs[0];
@@ -990,6 +1128,7 @@ async function main() {
   const preview2FsHost = createPreview2FilesystemHost(
     process.env.VIBE_PREOPEN_DIR || process.cwd(),
   );
+  const preview2CliStreamsHost = createPreview2CliStreamsHost();
 
   // Selfhost-compiled WASM uses "Env" and "Fs" module names for effect imports
   const envModule = {
@@ -1030,6 +1169,9 @@ async function main() {
       Env: envModule,
       Fs: fsModule,
       wasi_snapshot_preview1: wasiModule,
+      "wasi:cli/stdout@0.2.0": preview2CliStreamsHost["wasi:cli/stdout@0.2.0"],
+      "wasi:cli/stderr@0.2.0": preview2CliStreamsHost["wasi:cli/stderr@0.2.0"],
+      "wasi:io/streams@0.2.0": preview2CliStreamsHost["wasi:io/streams@0.2.0"],
       "wasi:filesystem/preopens@0.2.6":
         preview2FsHost["wasi:filesystem/preopens@0.2.6"],
       "wasi:filesystem/types@0.2.6":
@@ -1053,86 +1195,125 @@ async function main() {
   instanceRef = instance;
   instanceRefGlobal = instance;
   hostAllocPtrGlobal = null;
-
-  const fn = instance.exports[invoke];
-  if (typeof fn !== "function") {
-    throw new Error(`missing export: ${invoke}`);
-  }
-
-  // User-exported functions have an implicit i32 env parameter (closure ABI).
-  // The "run" entry has no params; all other exports take (i32) -> i64.
-  // For closure exports, resolve the real env pointer from the initialized heap.
-  const prefersZeroEnvFirst =
-    invoke.startsWith("probe_") ||
-    invoke.startsWith("selfbuild_") ||
-    process.env.VIBE_PREFER_ZERO_ENV_FIRST === "1";
-  const skipRunInit = process.env.VIBE_SKIP_RUN_INIT === "1";
-  if (!skipRunInit && invoke !== "_start" && typeof instance.exports._start === "function") {
-    const initHeap =
-      instance.exports.__heap_ptr instanceof WebAssembly.Global
-        ? instance.exports.__heap_ptr.value
-        : 0;
-    instance.exports._start();
-    const fsRootDescriptor = instance.exports.__fs_root_descriptor;
-    if (fsRootDescriptor instanceof WebAssembly.Global) {
-      fsRootDescriptor.value = -1;
+  let didInitStart = false;
+  let initHeapBeforeStart = 0;
+  const resolvedEnvCache = new Map();
+  const invokeExport = (invoke) => {
+    const fn = instance.exports[invoke];
+    if (typeof fn !== "function") {
+      throw new Error(`missing export: ${invoke}`);
     }
-    const funcIdx = exportFuncIndices[invoke];
-    const tableSlot = funcIdx !== undefined ? funcToTableSlot[funcIdx] : undefined;
-    var resolvedEnv =
-      tableSlot !== undefined ? findClosureEnv(instance, initHeap, tableSlot) : 0;
-  } else {
-    var resolvedEnv = 0;
+    const prefersZeroEnvFirst =
+      invoke.startsWith("probe_") ||
+      invoke.startsWith("selfbuild_") ||
+      process.env.VIBE_PREFER_ZERO_ENV_FIRST === "1";
+    const skipRunInit = process.env.VIBE_SKIP_RUN_INIT === "1";
+    let resolvedEnv = 0;
+    if (!skipRunInit && invoke !== "_start" && typeof instance.exports._start === "function") {
+      if (!didInitStart) {
+        initHeapBeforeStart =
+          instance.exports.__heap_ptr instanceof WebAssembly.Global
+            ? instance.exports.__heap_ptr.value
+            : 0;
+        instance.exports._start();
+        didInitStart = true;
+        const fsRootDescriptor = instance.exports.__fs_root_descriptor;
+        if (fsRootDescriptor instanceof WebAssembly.Global) {
+          fsRootDescriptor.value = -1;
+        }
+      }
+      if (resolvedEnvCache.has(invoke)) {
+        resolvedEnv = resolvedEnvCache.get(invoke);
+      } else {
+        const funcIdx = exportFuncIndices[invoke];
+        const tableSlot = funcIdx !== undefined ? funcToTableSlot[funcIdx] : undefined;
+        resolvedEnv =
+          tableSlot !== undefined ? findClosureEnv(instance, initHeapBeforeStart, tableSlot) : 0;
+        resolvedEnvCache.set(invoke, resolvedEnv);
+      }
+    }
+    let result;
+    let isSelfhost = false;
+    const invokeWithEnv = (envValue) => {
+      if (invoke === "_start") {
+        return { result: fn(), isSelfhost: false };
+      }
+      try {
+        return { result: fn(envValue), isSelfhost: false };
+      } catch (typeErr) {
+        if (typeErr instanceof TypeError) {
+          return { result: fn(BigInt(envValue)), isSelfhost: true };
+        }
+        throw typeErr;
+      }
+    };
+    try {
+      const envCandidates =
+        invoke === "_start"
+          ? [0]
+          : resolvedEnv !== 0
+            ? (prefersZeroEnvFirst ? [0, resolvedEnv] : [resolvedEnv, 0])
+            : [0];
+      let lastErr = null;
+      for (const envValue of envCandidates) {
+        try {
+          ({ result, isSelfhost } = invokeWithEnv(envValue));
+          lastErr = null;
+          break;
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+      if (lastErr !== null) {
+        throw lastErr;
+      }
+      if (invoke === "_start") {
+        didInitStart = true;
+      }
+      return { result, isSelfhost };
+    } catch (err) {
+      const heapGlobal = instance.exports.__heap_ptr;
+      const mem = new Uint8Array(instance.exports.memory.buffer);
+      const hpRaw = heapGlobal?.value;
+      const hp = typeof hpRaw === "bigint" ? Number(hpRaw) : hpRaw;
+      const hpHex =
+        typeof hpRaw === "bigint"
+          ? hpRaw.toString(16)
+          : hpRaw !== undefined && hpRaw !== null
+            ? hpRaw.toString(16)
+            : "n/a";
+      console.error(`[crash debug] heap_ptr=${hpRaw} (0x${hpHex}), memory_size=${mem.length} (${(mem.length / 65536)} pages) / ${err?.message || err}`);
+      console.error(`[crash debug] mem[0..32]: ${Array.from(mem.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+      if (typeof hp === "number" && hp >= 8 && hp < mem.length - 32) {
+        console.error(`[crash debug] mem[heap-8..heap+24]: ${Array.from(mem.slice(hp - 8, hp + 24)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+      }
+      throw err;
+    }
+  };
+  if (benchCount !== null) {
+    if (invokes.length !== 1) {
+      throw new Error("bench mode requires exactly one --invoke target");
+    }
+    if (benchSetup !== null) {
+      invokeExport(benchSetup);
+    }
+    for (let i = 0; i < benchWarmup; i += 1) {
+      invokeExport(invokes[0]);
+    }
+    const startNs = process.hrtime.bigint();
+    for (let i = 0; i < benchCount; i += 1) {
+      invokeExport(invokes[0]);
+    }
+    const elapsedUs = Number(process.hrtime.bigint() - startNs) / 1000;
+    console.log(String(elapsedUs));
+    return;
   }
   let result;
   let isSelfhost = false;
-  const invokeWithEnv = (envValue) => {
-    if (invoke === "_start") {
-      return { result: fn(), isSelfhost: false };
-    }
-    try {
-      return { result: fn(envValue), isSelfhost: false };
-    } catch (typeErr) {
-      if (typeErr instanceof TypeError) {
-        return { result: fn(BigInt(envValue)), isSelfhost: true };
-      }
-      throw typeErr;
-    }
-  };
-  try {
-    const envCandidates =
-      invoke === "_start"
-        ? [0]
-        : resolvedEnv !== 0
-          ? (prefersZeroEnvFirst ? [0, resolvedEnv] : [resolvedEnv, 0])
-          : [0];
-    let lastErr = null;
-    for (const envValue of envCandidates) {
-      try {
-        ({ result, isSelfhost } = invokeWithEnv(envValue));
-        lastErr = null;
-        break;
-      } catch (err) {
-        lastErr = err;
-      }
-    }
-    if (lastErr !== null) {
-      throw lastErr;
-    }
-  } catch (err) {
-    // Dump heap state on crash
-    const heapGlobal = instance.exports.__heap_ptr;
-    const mem = new Uint8Array(instance.exports.memory.buffer);
-    const hp = heapGlobal?.value;
-    console.error(`[crash debug] heap_ptr=${hp} (0x${hp?.toString(16)}), memory_size=${mem.length} (${(mem.length / 65536)} pages) / ${err?.message || err}`);
-    // Dump first few bytes and around heap pointer
-    const dv = new DataView(instance.exports.memory.buffer);
-    console.error(`[crash debug] mem[0..32]: ${Array.from(mem.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
-    if (hp && hp < mem.length - 32) {
-      console.error(`[crash debug] mem[heap-8..heap+24]: ${Array.from(mem.slice(hp - 8, hp + 24)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
-    }
-    throw err;
+  for (const invoke of invokes) {
+    ({ result, isSelfhost } = invokeExport(invoke));
   }
+  const invoke = invokes[invokes.length - 1];
   if (typeof result === "bigint") {
     // Check if the result is a tagged object (could be Bytes from selfbuild)
     if (
@@ -1197,8 +1378,8 @@ main().catch((err) => {
       const tag = instanceRefGlobal?.exports?.__error_tag;
       if (tag) {
         const payload = err.getArg(tag, 0);
-        if (typeof payload === "bigint" && (payload & TAG_MASK) === TAG_OBJ) {
-          const msg = decodeTaggedString(instanceRefGlobal, payload);
+        const msg = tryDecodeExceptionString(instanceRefGlobal, payload);
+        if (msg !== null) {
           console.error(`Error string: ${msg}`);
           process.exit(1);
         }
@@ -1211,8 +1392,8 @@ main().catch((err) => {
           if (exp instanceof WebAssembly.Tag) {
             try {
               const payload = err.getArg(exp, 0);
-              if (typeof payload === "bigint" && (payload & TAG_MASK) === TAG_OBJ) {
-                const msg = decodeTaggedString(instanceRefGlobal, payload);
+              const msg = tryDecodeExceptionString(instanceRefGlobal, payload);
+              if (msg !== null) {
                 console.error(`Error string (tag=${name}): ${msg}`);
                 process.exit(1);
               }
