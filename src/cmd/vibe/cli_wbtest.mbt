@@ -3536,11 +3536,16 @@ fn wbtest_run_test_file_with_backend(
   entry_path : String,
   features : @runtime.RuntimeFeatureFlags,
 ) -> Result[CliTestReport, String] {
-  run_test_file_with_backend_with_cache(
-    CliEntryDbCache::new(),
-    entry_path,
-    features,
-  )
+  match
+    run_test_file_with_backend_with_cache(
+      CliEntryDbCache::new(),
+      entry_path,
+      features,
+    ) {
+    TestFileOutcome::Done(report) => Ok(report)
+    TestFileOutcome::Skipped(reason) => Err(reason)
+    TestFileOutcome::Errored(err) => Err(err)
+  }
 }
 
 ///|

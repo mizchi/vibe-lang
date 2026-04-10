@@ -79,6 +79,26 @@ fn make_error_report_json(
 }
 
 ///|
+fn make_skipped_report_json(
+  entry_path : String,
+  phase : String,
+  reason : String,
+  elapsed_ms : Int,
+) -> Json {
+  let obj : Map[String, Json] = {}
+  obj["file"] = Json::string(entry_path)
+  obj["total"] = Json::number(0.0)
+  obj["passed"] = Json::number(0.0)
+  obj["failed"] = Json::number(0.0)
+  obj["skipped"] = Json::number(1.0)
+  obj["phase"] = Json::string(phase)
+  obj["reason"] = Json::string(reason)
+  obj["elapsed_ms"] = Json::number(elapsed_ms.to_double())
+  obj["failures"] = Json::array([])
+  Json::object(obj)
+}
+
+///|
 fn make_cli_session_test_report_json(
   path : String,
   report : CliTestReport,
@@ -590,17 +610,17 @@ fn test_cmd_report_json(
     }
     let start = @bench.monotonic_clock_start()
     let mut elapsed_ms = 1
-    let report = if use_session_http {
+    let outcome = if use_session_http {
       match run_test_file_via_session(entry_path, features) {
-        Ok(v) => Ok(v)
+        Ok(v) => TestFileOutcome::Done(v)
         Err(_) =>
           run_test_file_with_backend_with_cache(cache, entry_path, features)
       }
     } else {
       run_test_file_with_backend_with_cache(cache, entry_path, features)
     }
-    match report {
-      Ok(report) => {
+    match outcome {
+      TestFileOutcome::Done(report) => {
         let elapsed_us = @bench.monotonic_clock_end(start)
         elapsed_ms = elapsed_us_to_ms_int(elapsed_us)
         println(
@@ -610,7 +630,14 @@ fn test_cmd_report_json(
           any_failed = true
         }
       }
-      Err(err) => {
+      TestFileOutcome::Skipped(reason) => {
+        let elapsed_us = @bench.monotonic_clock_end(start)
+        elapsed_ms = elapsed_us_to_ms_int(elapsed_us)
+        println(
+          make_skipped_report_json(entry_path, "test", reason, elapsed_ms).stringify(),
+        )
+      }
+      TestFileOutcome::Errored(err) => {
         let elapsed_us = @bench.monotonic_clock_end(start)
         elapsed_ms = elapsed_us_to_ms_int(elapsed_us)
         println(
@@ -621,7 +648,10 @@ fn test_cmd_report_json(
     }
   }
   if any_failed {
-    abort("test: failures detected")
+    // Use c_exit(1) instead of abort() to avoid SIGABRT + core dump on
+    // Linux. See test_cmd_sequential and issue #266.
+    println("test: failures detected")
+    c_exit(1)
   }
 }
 
@@ -762,7 +792,7 @@ fn handle_cli_session_request(
         Some(path) => {
           let start = @bench.monotonic_clock_start()
           match run_test_file_with_backend_with_cache(cache, path, features) {
-            Ok(report) => {
+            TestFileOutcome::Done(report) => {
               let elapsed_us = @bench.monotonic_clock_end(start)
               let elapsed_ms = elapsed_us_to_ms_int(elapsed_us)
               (
@@ -770,7 +800,15 @@ fn handle_cli_session_request(
                 false,
               )
             }
-            Err(err) => {
+            TestFileOutcome::Skipped(reason) => {
+              let elapsed_us = @bench.monotonic_clock_end(start)
+              let elapsed_ms = elapsed_us_to_ms_int(elapsed_us)
+              (
+                make_skipped_report_json(path, "test", reason, elapsed_ms),
+                false,
+              )
+            }
+            TestFileOutcome::Errored(err) => {
               let elapsed_us = @bench.monotonic_clock_end(start)
               let elapsed_ms = elapsed_us_to_ms_int(elapsed_us)
               (
