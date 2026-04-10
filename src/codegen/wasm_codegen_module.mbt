@@ -1317,7 +1317,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let emit_start = not(ctx.library_mode)
   // Library mode: export funcref table for linked builds
   let export_funcref_table = ctx.library_mode && has_funcref_table
-  let export_count = (if emit_start { 2 } else { 1 }) + // _start + memory, or just memory
+  let export_count = (if emit_start { 3 } else { 1 }) + // _start + _vibe_run_tagged + memory, or just memory
     user_export_count +
     exported_env_global_count +
     (if need_cabi_realloc_export { 1 } else { 0 }) +
@@ -1336,6 +1336,9 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     write_name(export_sec, "_start")
     export_sec.push((0).to_byte()) // func export
     write_u32_leb(export_sec, start_export_index)
+    write_name(export_sec, "_vibe_run_tagged")
+    export_sec.push((0).to_byte()) // func export
+    write_u32_leb(export_sec, run_index)
   }
   let helper_count_before_run = (if need_cabi_realloc_export { 1 } else { 0 }) +
     (if need_http_host_string_new_export { 1 } else { 0 }) +

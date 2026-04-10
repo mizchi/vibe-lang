@@ -191,17 +191,19 @@ for expr in "${test_cases[@]}"; do
     fi
   fi
   test_index=$((test_index + 1))
+  case_path="$TEMP_DIR/test_${test_index}.vibe"
+  wasm_path="$TEMP_DIR/test_${test_index}.wasm"
 
   # Create test file
-  echo "$expr" > "$TEMP_DIR/test.vibe"
+  echo "$expr" > "$case_path"
 
   # Get reference result via vibe run
-  run_output=$($VIBE run "$TEMP_DIR/test.vibe" 2>/dev/null | grep "^last: " | sed 's/last: //')
+  run_output=$($VIBE run "$case_path" 2>/dev/null | grep "^last: " | sed 's/last: //')
   run_result="$run_output"
 
   # Compile and run WASM with wasmtime directly.
-  if $VIBE compile --wasm "$TEMP_DIR/test.vibe" -o "$TEMP_DIR/test.wasm" 2>/dev/null; then
-    wasm_result=$(WASMTIME_BIN="$WASMTIME_BIN" "$WASMTIME_RUN" --invoke _start "$TEMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning")
+  if $VIBE compile --wasm "$case_path" -o "$wasm_path" 2>/dev/null; then
+    wasm_result=$(WASMTIME_BIN="$WASMTIME_BIN" "$WASMTIME_RUN" --invoke _start "$wasm_path" 2>/dev/null | grep -v "^warning")
     if [ -z "$wasm_result" ]; then
       wasm_result="<no output>"
     fi

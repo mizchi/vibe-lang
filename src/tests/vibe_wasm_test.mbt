@@ -69,6 +69,7 @@ test "vibe wasm export run" {
     b => b
   }
   assert_true(bytes_contains_ascii(wasm, "_start"))
+  assert_true(bytes_contains_ascii(wasm, "_vibe_run_tagged"))
 }
 
 ///|

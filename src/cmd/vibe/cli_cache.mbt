@@ -92,7 +92,7 @@ fn save_source_hashes(
   hash_cache_path : String,
 ) -> Unit {
   let _ = cache_dir
-  let hashes = collect_source_hash_cache(db, entry, false)
+  let hashes = collect_source_hash_cache(db, entry, true)
   @os_fs.write_string_to_file(
     hash_cache_path,
     serialize_source_hash_cache(hashes),
