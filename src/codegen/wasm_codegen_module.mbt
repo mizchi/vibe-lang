@@ -122,7 +122,12 @@ fn collect_emittable_user_exports(ctx : CodegenCtx) -> Array[String] {
 }
 
 ///|
-fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
+fn build_module(
+  ctx : CodegenCtx,
+  funcs : Array[WasmFunc],
+  run_index : Int,
+  start_export_index : Int?,
+) -> Bytes {
   let buf = ByteBuf::new()
   // magic + version
   buf.push((0).to_byte())
@@ -1330,19 +1335,17 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     (if export_funcref_table { 1 } else { 0 })
   let export_sec = ByteBuf::new()
   write_u32_leb(export_sec, export_count)
-  let run_index = func_import_count + funcs.length() - 1
-  let start_export_index = run_index - 1
   if emit_start {
+    let start_idx = start_export_index.unwrap_or(run_index)
     write_name(export_sec, "_start")
     export_sec.push((0).to_byte()) // func export
-    write_u32_leb(export_sec, start_export_index)
+    write_u32_leb(export_sec, start_idx)
     write_name(export_sec, "_vibe_run_tagged")
     export_sec.push((0).to_byte()) // func export
     write_u32_leb(export_sec, run_index)
   }
   let helper_count_before_run = (if need_cabi_realloc_export { 1 } else { 0 }) +
-    (if need_http_host_string_new_export { 1 } else { 0 }) +
-    (if emit_start { 1 } else { 0 })
+    (if need_http_host_string_new_export { 1 } else { 0 })
   let helper_base_func_index = run_index - helper_count_before_run
   if need_cabi_realloc_export {
     write_name(export_sec, "cabi_realloc")
@@ -3964,10 +3967,6 @@ fn emit_module_with_coverage(
     let _ = ensure_sig_index(ctx, host_string_new_sig)
     compiled_funcs.push(compile_http_host_string_new_function(ctx))
   }
-  if not(ctx.library_mode) {
-    let run_func_index = func_import_count(ctx) + compiled_funcs.length() + 1
-    compiled_funcs.push(compile_public_start_wrapper(run_func_index))
-  }
   // Set mut_captured_vars for the top-level run function
   ctx.mut_captured_vars = top_mut_captured
   // Restore top-level RC action maps (may have been overwritten by per-function actions)
@@ -3982,6 +3981,7 @@ fn emit_module_with_coverage(
       ctx.rc_post_actions = post
     }
   }
+  let run_func_array_index = compiled_funcs.length()
   compiled_funcs.push(
     compile_function(
       ctx,
@@ -3997,9 +3997,18 @@ fn emit_module_with_coverage(
       emit_rc_stmt_actions=ctx.enable_rc,
     ),
   )
+  let run_func_index = func_import_count(ctx) + run_func_array_index
+  let mut start_export_index = None
+  if not(ctx.library_mode) {
+    let start_idx = func_import_count(ctx) + compiled_funcs.length()
+    compiled_funcs.push(compile_public_start_wrapper(run_func_index))
+    start_export_index = Some(start_idx)
+  }
   @profiler.profiler_leave()
   @profiler.profiler_enter("codegen/build_module")
-  let bytes = build_module(ctx, compiled_funcs)
+  let bytes = build_module(
+    ctx, compiled_funcs, run_func_index, start_export_index,
+  )
   @profiler.profiler_leave()
   {
     bytes,
