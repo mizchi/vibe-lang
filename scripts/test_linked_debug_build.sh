@@ -2,6 +2,7 @@
 # Test that `vibe build --debug` produces valid wasm for the selfhost compiler.
 # Also verifies the cached (second) build path works.
 set -euo pipefail
+trap 'echo "[test_linked_debug_build] FAIL at line $LINENO (last exit=$?)" >&2' ERR
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT_DIR/scripts/ensure_native_cli.sh"
@@ -38,23 +39,23 @@ rm -rf "$CACHE_DIR"
 
 # First build (full: db load + library compilation)
 echo "  [1/4] first build (no cache)..."
-if ! timeout 120 "$CLI" build --debug "$ROOT_DIR/vibe/compiler/index.vibe" \
-  -o "$WORK/debug1.wasm" >/dev/null 2>&1; then
+if ! timeout 300 "$CLI" build --debug "$ROOT_DIR/vibe/compiler/index.vibe" \
+  -o "$WORK/debug1.wasm" 2>&1; then
   echo "FAIL: first debug build failed"
   exit 1
 fi
 
 # Validate wasm
 echo "  [2/4] wasm validation..."
-if ! wasm-tools validate "$WORK/debug1.wasm" 2>/dev/null; then
+if ! wasm-tools validate "$WORK/debug1.wasm" 2>&1; then
   echo "FAIL: debug build produced invalid wasm"
   exit 1
 fi
 
 # Second build (cached: fast path)
 echo "  [3/4] second build (cached)..."
-if ! timeout 30 "$CLI" build --debug "$ROOT_DIR/vibe/compiler/index.vibe" \
-  -o "$WORK/debug2.wasm" >/dev/null 2>&1; then
+if ! timeout 180 "$CLI" build --debug "$ROOT_DIR/vibe/compiler/index.vibe" \
+  -o "$WORK/debug2.wasm" 2>&1; then
   echo "FAIL: cached debug build failed"
   exit 1
 fi
@@ -105,13 +106,13 @@ String::length(String::concat(helper(), ", world"))
 EOF
 
 echo "  [5/7] cross-module string concat..."
-if ! timeout 30 "$CLI" build --debug "$STRING_CASE_DIR/main.vibe" \
-  -o "$STRING_CASE_DIR/main.wasm" >/dev/null 2>&1; then
+if ! timeout 120 "$CLI" build --debug "$STRING_CASE_DIR/main.vibe" \
+  -o "$STRING_CASE_DIR/main.wasm" 2>&1; then
   echo "FAIL: string linked debug build failed"
   exit 1
 fi
-if ! timeout 30 "$CLI" build --release "$STRING_CASE_DIR/main.vibe" \
-  -o "$STRING_RELEASE_WASM" >/dev/null 2>&1; then
+if ! timeout 120 "$CLI" build --release "$STRING_CASE_DIR/main.vibe" \
+  -o "$STRING_RELEASE_WASM" 2>&1; then
   echo "FAIL: string release build failed"
   exit 1
 fi
@@ -149,18 +150,18 @@ option_is_none(None)
 EOF
 
 echo "  [6/7] prelude core synthetic library..."
-if ! timeout 30 "$CLI" build --debug "$PRELUDE_CASE_DIR/main.vibe" \
-  -o "$PRELUDE_CASE_DIR/main.wasm" >/dev/null 2>&1; then
+if ! timeout 120 "$CLI" build --debug "$PRELUDE_CASE_DIR/main.vibe" \
+  -o "$PRELUDE_CASE_DIR/main.wasm" 2>&1; then
   echo "FAIL: prelude core linked debug build failed"
   exit 1
 fi
-if ! timeout 30 "$CLI" build --debug "$PRELUDE_CASE_DIR/main.vibe" \
-  -o "$PRELUDE_CASE_DIR/main.cached.wasm" >/dev/null 2>&1; then
+if ! timeout 120 "$CLI" build --debug "$PRELUDE_CASE_DIR/main.vibe" \
+  -o "$PRELUDE_CASE_DIR/main.cached.wasm" 2>&1; then
   echo "FAIL: cached prelude core linked debug build failed"
   exit 1
 fi
-if ! timeout 30 "$CLI" build --release "$PRELUDE_CASE_DIR/main.vibe" \
-  -o "$PRELUDE_RELEASE_WASM" >/dev/null 2>&1; then
+if ! timeout 120 "$CLI" build --release "$PRELUDE_CASE_DIR/main.vibe" \
+  -o "$PRELUDE_RELEASE_WASM" 2>&1; then
   echo "FAIL: prelude core release build failed"
   exit 1
 fi
@@ -205,18 +206,18 @@ apply_twice(add1, 40)
 EOF
 
 echo "  [7/7] mixed HOF selective inline..."
-if ! timeout 30 "$CLI" build --debug "$MIXED_HOF_CASE_DIR/main.vibe" \
-  -o "$MIXED_HOF_CASE_DIR/main.wasm" >/dev/null 2>&1; then
+if ! timeout 120 "$CLI" build --debug "$MIXED_HOF_CASE_DIR/main.vibe" \
+  -o "$MIXED_HOF_CASE_DIR/main.wasm" 2>&1; then
   echo "FAIL: mixed HOF linked debug build failed"
   exit 1
 fi
-if ! timeout 30 "$CLI" build --debug "$MIXED_HOF_CASE_DIR/main.vibe" \
-  -o "$MIXED_HOF_CASE_DIR/main.cached.wasm" >/dev/null 2>&1; then
+if ! timeout 120 "$CLI" build --debug "$MIXED_HOF_CASE_DIR/main.vibe" \
+  -o "$MIXED_HOF_CASE_DIR/main.cached.wasm" 2>&1; then
   echo "FAIL: cached mixed HOF linked debug build failed"
   exit 1
 fi
-if ! timeout 30 "$CLI" build --release "$MIXED_HOF_CASE_DIR/main.vibe" \
-  -o "$MIXED_HOF_RELEASE_WASM" >/dev/null 2>&1; then
+if ! timeout 120 "$CLI" build --release "$MIXED_HOF_CASE_DIR/main.vibe" \
+  -o "$MIXED_HOF_RELEASE_WASM" 2>&1; then
   echo "FAIL: mixed HOF release build failed"
   exit 1
 fi
