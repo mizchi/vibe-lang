@@ -1,0 +1,80 @@
+//# Imports
+
+import ./loader_hotspot_probe.vibe {
+  load_selfhost_loader_hotspot_fixture,
+  load_selfhost_loader_hotspot_indexed_fixture
+}
+
+import ./loader/manifest_sources.vibe {
+  build_manifest_source_index
+}
+
+let empty_source_pairs: Array[(String, String)] = Array::slice([("", "")], 0, 0)
+let empty_paths: Array[String] = Array::slice([""], 0, 0)
+let empty_source_index = build_manifest_source_index(empty_source_pairs)
+
+let selfhost_preloaded_sources: Array[Array[(String, String)]] = [empty_source_pairs]
+let selfhost_needed_paths: Array[Array[String]] = [empty_paths]
+let selfhost_indexed_needed_paths: Array[Array[String]] = [empty_paths]
+let selfhost_preloaded_source_index: Array[Map[String, String]] = [empty_source_index]
+
+let bench_setup = () -> Int with { Error, Fs } {
+  let (
+    _selfhost_base_dir,
+    _selfhost_manifest_rows,
+    preloaded_sources,
+    _selfhost_needed_sources,
+    needed_paths
+  ) = load_selfhost_loader_hotspot_fixture()
+  selfhost_preloaded_sources[0] = preloaded_sources
+  selfhost_needed_paths[0] = needed_paths
+  let (
+    _selfhost_indexed_base_dir,
+    _selfhost_indexed_manifest_rows,
+    _selfhost_indexed_preloaded_sources,
+    _selfhost_indexed_needed_sources,
+    indexed_needed_paths,
+    preloaded_source_index,
+    _needed_path_index,
+    _
+  ) = load_selfhost_loader_hotspot_indexed_fixture()
+  selfhost_indexed_needed_paths[0] = indexed_needed_paths
+  selfhost_preloaded_source_index[0] = preloaded_source_index
+  0
+}
+
+bench "selfhost/loader_manifest_list_filter_linear" {
+  let filtered_sources = Array::slice([("", "")], 0, 0)
+  let mut i = 0
+  while i < Array::length(selfhost_preloaded_sources[0]) {
+    let (path, source) = Array::get(selfhost_preloaded_sources[0], i)
+    let mut found = false
+    let mut pi = 0
+    while pi < Array::length(selfhost_needed_paths[0]) {
+      if Array::get(selfhost_needed_paths[0], pi) == path {
+        found = true
+        pi = Array::length(selfhost_needed_paths[0])
+      } else {
+        pi = pi + 1
+      }
+    }
+    if found {
+      Array::push(filtered_sources, (path, source))
+    }
+    i = i + 1
+  }
+  let _ = Array::length(filtered_sources)
+}
+
+bench "selfhost/loader_manifest_list_filter_indexed" {
+  let filtered_sources = Array::slice([("", "")], 0, 0)
+  let mut i = 0
+  while i < Array::length(selfhost_indexed_needed_paths[0]) {
+    let path = Array::get(selfhost_indexed_needed_paths[0], i)
+    if Map::has_key(selfhost_preloaded_source_index[0], path) {
+      Array::push(filtered_sources, (path, Map::get(selfhost_preloaded_source_index[0], path)))
+    }
+    i = i + 1
+  }
+  let _ = Array::length(filtered_sources)
+}

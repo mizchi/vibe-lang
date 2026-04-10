@@ -6,8 +6,15 @@ CLI_BIN="${CLI_BIN:-$ROOT_DIR/_build/native/release/build/cmd/vibe/vibe.exe}"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/_build/bench/selfhost_loader_hotspots}"
 RUNS="${VIBE_SELFHOST_LOADER_HOTSPOT_RUNS:-3}"
 WARMUP="${VIBE_SELFHOST_LOADER_HOTSPOT_WARMUP:-0}"
-BACKEND="${VIBE_SELFHOST_LOADER_HOTSPOT_BACKEND:-interpreter}"
-TIMEOUT_SEC="${VIBE_SELFHOST_LOADER_HOTSPOT_TIMEOUT_SEC:-60}"
+MICRO_RUNS="${VIBE_SELFHOST_LOADER_HOTSPOT_MICRO_RUNS:-$RUNS}"
+SKIP_MICRO="${VIBE_SELFHOST_LOADER_HOTSPOT_SKIP_MICRO:-0}"
+BACKEND="${VIBE_SELFHOST_LOADER_HOTSPOT_BACKEND:-compiled}"
+COLLECT_BENCH_FILE="${VIBE_SELFHOST_LOADER_COLLECT_BENCH_FILE:-$ROOT_DIR/vibe/compiler/selfhost_loader_collect_bench.vibe}"
+GROUP_MATERIALIZE_BENCH_FILE="${VIBE_SELFHOST_LOADER_GROUP_MATERIALIZE_BENCH_FILE:-$ROOT_DIR/vibe/compiler/selfhost_loader_materialize_bench.vibe}"
+LIST_MATERIALIZE_BENCH_FILE="${VIBE_SELFHOST_LOADER_LIST_MATERIALIZE_BENCH_FILE:-$ROOT_DIR/vibe/compiler/selfhost_loader_list_materialize_bench.vibe}"
+COLLECT_JSON_OUT="$OUT_DIR/selfhost_loader_collect.json"
+GROUP_JSON_OUT="$OUT_DIR/selfhost_loader_groups_materialize.json"
+LIST_JSON_OUT="$OUT_DIR/selfhost_loader_list_materialize.json"
 
 mkdir -p "$OUT_DIR"
 
@@ -16,28 +23,38 @@ if [[ ! -x "$CLI_BIN" ]]; then
   exit 1
 fi
 
-cmd_loader_list="timeout $TIMEOUT_SEC env VIBE_RUN_BACKEND=$BACKEND \"$CLI_BIN\" run \"$ROOT_DIR/vibe/compiler/bench_loader_manifest_list_run.vibe\" >/dev/null"
-cmd_loader_groups="timeout $TIMEOUT_SEC env VIBE_RUN_BACKEND=$BACKEND \"$CLI_BIN\" run \"$ROOT_DIR/vibe/compiler/bench_loader_manifest_groups_run.vibe\" >/dev/null"
-cmd_file_compile_same="timeout $TIMEOUT_SEC env VIBE_RUN_BACKEND=$BACKEND \"$CLI_BIN\" run \"$ROOT_DIR/vibe/compiler/bench_file_compile_mode_same_content_run.vibe\" >/dev/null"
+"$CLI_BIN" bench \
+  --backend "$BACKEND" \
+  --runs "$RUNS" \
+  --warmup "$WARMUP" \
+  --json \
+  --json-out "$COLLECT_JSON_OUT" \
+  "$COLLECT_BENCH_FILE"
 
-if command -v hyperfine >/dev/null 2>&1; then
-  hyperfine \
+echo "bench-selfhost-loader-hotspots: wrote $COLLECT_JSON_OUT"
+if [[ "$SKIP_MICRO" != "1" ]]; then
+  "$CLI_BIN" bench \
+    --backend "$BACKEND" \
+    --runs "$MICRO_RUNS" \
     --warmup "$WARMUP" \
-    --runs "$RUNS" \
-    --export-json "$OUT_DIR/selfhost_loader_hotspots.json" \
-    -n "loader-manifest-list" "$cmd_loader_list" \
-    -n "loader-manifest-groups" "$cmd_loader_groups" \
-    -n "file-compile-mode-same-content" "$cmd_file_compile_same"
-  echo "bench-selfhost-loader-hotspots: wrote $OUT_DIR/selfhost_loader_hotspots.json"
+    --json \
+    --case selfhost/loader_manifest_groups_linear \
+    --case selfhost/loader_manifest_groups_indexed \
+    --json-out "$GROUP_JSON_OUT" \
+    "$GROUP_MATERIALIZE_BENCH_FILE"
+
+  "$CLI_BIN" bench \
+    --backend "$BACKEND" \
+    --runs "$MICRO_RUNS" \
+    --warmup "$WARMUP" \
+    --json \
+    --case selfhost/loader_manifest_list_filter_linear \
+    --case selfhost/loader_manifest_list_filter_indexed \
+    --json-out "$LIST_JSON_OUT" \
+    "$LIST_MATERIALIZE_BENCH_FILE"
+
+  echo "bench-selfhost-loader-hotspots: wrote $GROUP_JSON_OUT"
+  echo "bench-selfhost-loader-hotspots: wrote $LIST_JSON_OUT"
 else
-  echo "hyperfine not found; using /usr/bin/time" >&2
-  for name in "loader-manifest-list" "loader-manifest-groups" "file-compile-mode-same-content"; do
-    case "$name" in
-      "loader-manifest-list") cmd="$cmd_loader_list" ;;
-      "loader-manifest-groups") cmd="$cmd_loader_groups" ;;
-      "file-compile-mode-same-content") cmd="$cmd_file_compile_same" ;;
-    esac
-    echo "== $name =="
-    /usr/bin/time -p bash -lc "$cmd"
-  done
+  echo "bench-selfhost-loader-hotspots: skipping micro benches (set VIBE_SELFHOST_LOADER_HOTSPOT_SKIP_MICRO=0 to enable)"
 fi

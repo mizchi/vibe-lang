@@ -108,19 +108,33 @@ fn collect_source_hash_cache(
   include_entry : Bool,
 ) -> Map[String, String] {
   let out : Map[String, String] = {}
+  let visited : Map[String, Bool] = {}
+  let pending : Array[String] = []
   if include_entry {
-    match db.get_source(entry) {
-      Some(source) if source.length() > 0 =>
-        out[entry] = @vibe_core.content_address_hash_string(source)
-      _ => ()
+    pending.push(entry)
+  } else {
+    let imports = db.imports(entry)
+    for imp in imports {
+      pending.push(imp.path)
     }
   }
-  let imports = db.imports(entry)
-  for imp in imports {
-    match db.get_source(imp.path) {
+  while pending.length() > 0 {
+    let path = pending[pending.length() - 1]
+    let _ = pending.pop()
+    if visited.contains(path) {
+      continue
+    }
+    visited[path] = true
+    match db.get_source(path) {
       Some(source) if source.length() > 0 =>
-        out[imp.path] = @vibe_core.content_address_hash_string(source)
+        out[path] = @vibe_core.content_address_hash_string(source)
       _ => ()
+    }
+    let imports = db.imports(path)
+    for imp in imports {
+      if not(visited.contains(imp.path)) {
+        pending.push(imp.path)
+      }
     }
   }
   out

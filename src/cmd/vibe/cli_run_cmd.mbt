@@ -214,6 +214,15 @@ fn build_http_host_run_command(
   runner : HttpHostRunner,
   wasm_path : String,
 ) -> String {
+  build_http_host_run_command_with_invokes(runner, wasm_path, ["_start"])
+}
+
+///|
+fn build_http_host_run_command_with_invokes(
+  runner : HttpHostRunner,
+  wasm_path : String,
+  invokes : Array[String],
+) -> String {
   let cmd = StringBuilder::new()
   cmd.write_string(shell_quote_command_arg(runner.node_bin))
   for flag in runner.node_flags {
@@ -222,7 +231,11 @@ fn build_http_host_run_command(
   }
   cmd.write_string(" ")
   cmd.write_string(shell_quote_command_arg(runner.runner_script))
-  cmd.write_string(" --invoke _start ")
+  for invoke_name in invokes {
+    cmd.write_string(" --invoke ")
+    cmd.write_string(shell_quote_command_arg(invoke_name))
+  }
+  cmd.write_string(" ")
   cmd.write_string(shell_quote_command_arg(wasm_path))
   cmd.to_string()
 }
@@ -233,9 +246,24 @@ fn run_http_host_invoke_run_capture(
   wasm_path : String,
   tmp_prefix : String,
 ) -> WasmtimeInvokeOutput {
+  run_http_host_invoke_run_capture_with_invokes(
+    runner,
+    wasm_path,
+    tmp_prefix,
+    ["_start"],
+  )
+}
+
+///|
+fn run_http_host_invoke_run_capture_with_invokes(
+  runner : HttpHostRunner,
+  wasm_path : String,
+  tmp_prefix : String,
+  invokes : Array[String],
+) -> WasmtimeInvokeOutput {
   let out_path = tmp_prefix + ".out"
   let err_path = tmp_prefix + ".err"
-  let cmd = build_http_host_run_command(runner, wasm_path) +
+  let cmd = build_http_host_run_command_with_invokes(runner, wasm_path, invokes) +
     " >" +
     shell_quote_command_arg(out_path) +
     " 2>" +
@@ -636,6 +664,19 @@ fn module_uses_http_builtins(ast : @vibe_core.Module) -> Bool {
 }
 
 ///|
+fn detect_exec_host_runner_requirements(
+  db : @runtime.VibeDb,
+  entry : String,
+) -> (Bool, Bool) {
+  let ast = db.ast(entry)
+  let detect_ast = @runtime_compile.bundle_for_wasm_no_dce(db, entry, ast)
+  (
+    module_uses_http_builtins(detect_ast),
+    module_uses_wasm_runtime_fallback_builtins(detect_ast),
+  )
+}
+
+///|
 fn compile_module_wasm_for_exec(
   db : @runtime.VibeDb,
   entry : String,
@@ -852,9 +893,9 @@ fn run_cmd_wasm_backend_with_cache(
     Err(err) => return Err("load error: " + err)
     Ok(v) => v
   }
-  let ast = db.ast(entry)
-  let use_http_host_runner = module_uses_http_builtins(ast)
-  let use_fs_host_runner = module_uses_wasm_runtime_fallback_builtins(ast)
+  let (use_http_host_runner, use_fs_host_runner) = detect_exec_host_runner_requirements(
+    db, entry,
+  )
   let use_node_runner = use_http_host_runner || use_fs_host_runner
   let http_runner = match use_node_runner {
     true =>

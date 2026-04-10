@@ -2967,10 +2967,9 @@ fn run_compiled_repl_line_with_cache(
     Err(err) => return Err("load error: " + err)
   }
   let load_us = @bench.monotonic_clock_end(load_start).to_int()
-  let ast = db.ast(entry)
-  let detect_ast = @runtime_compile.bundle_for_wasm_no_dce(db, entry, ast)
-  let use_fs_host = module_uses_wasm_runtime_fallback_builtins(detect_ast)
-  let use_http_host = module_uses_http_builtins(detect_ast)
+  let (use_http_host, use_fs_host) = detect_exec_host_runner_requirements(
+    db, entry,
+  )
   let use_node_runner = use_fs_host || use_http_host
   let runner = match resolve_bench_wasm_runner(entry) {
     Ok(v) => v
