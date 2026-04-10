@@ -495,6 +495,7 @@ struct WasmModule {
   func_bodies : Array[FuncBody]
   func_param_counts : Array[Int] // param count for each local function
   func_result_counts : Array[Int] // result count for each local function
+  func_exports : Map[String, Int]
   import_count : Int
   sh_index : Int?
   path_index : Int?
@@ -520,6 +521,7 @@ fn parse_wasm_module(bytes : Bytes) -> WasmModule raise WasmEvalError {
   let mut import_count = 0
   let mut sh_index : Int? = None
   let mut path_index : Int? = None
+  let func_exports : Map[String, Int] = {}
   let globals : Array[Int64] = []
   let mem : Array[Byte] = Array::make(65536, (0).to_byte())
   let type_param_counts : Array[Int] = [] // param counts for each type entry
@@ -582,6 +584,18 @@ fn parse_wasm_module(bytes : Bytes) -> WasmModule raise WasmEvalError {
           func_type_indices.push(sec.read_leb_u32())
         }
       }
+      7 => {
+        let sec = Cursor::new(payload)
+        let count = sec.read_leb_u32()
+        for _ in 0..<count {
+          let name = sec.read_name()
+          let kind = sec.read_u8()
+          let index = sec.read_leb_u32()
+          if kind == 0 {
+            func_exports[name] = index
+          }
+        }
+      }
       6 => {
         let parsed = parse_global_section(payload)
         for g in parsed {
@@ -615,6 +629,7 @@ fn parse_wasm_module(bytes : Bytes) -> WasmModule raise WasmEvalError {
     func_bodies,
     func_param_counts,
     func_result_counts,
+    func_exports,
     import_count,
     sh_index,
     path_index,
@@ -687,6 +702,26 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
   let run_idx = wmod.import_count + wmod.func_bodies.length() - 1
   let outputs : Array[String] = []
   let results = exec_func(wmod, run_idx, [], outputs, 0)
+  let value = if results.is_empty() {
+    0L
+  } else {
+    results[results.length() - 1]
+  }
+  { value, outputs, mem: wmod.mem, globals: wmod.globals }
+}
+
+///|
+fn run_wasm_export(
+  bytes : Bytes,
+  export_name : String,
+) -> WasmEvalResult raise WasmEvalError {
+  let wmod = parse_wasm_module(bytes)
+  let export_idx = match wmod.func_exports.get(export_name) {
+    Some(idx) => idx
+    None => raise WasmEvalError::Invalid("missing export: " + export_name)
+  }
+  let outputs : Array[String] = []
+  let results = exec_func(wmod, export_idx, [], outputs, 0)
   let value = if results.is_empty() {
     0L
   } else {
@@ -827,6 +862,16 @@ fn eval_loop(
         }
         let a = stack.unsafe_pop()
         stack.push(if a.to_int() == 0 { 1L } else { 0L })
+      }
+      // select
+      27 => {
+        if stack.length() < 3 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let cond = stack.unsafe_pop()
+        let val2 = stack.unsafe_pop()
+        let val1 = stack.unsafe_pop()
+        stack.push(if cond != 0L { val1 } else { val2 })
       }
       // i32.or
       114 => {
@@ -1576,6 +1621,19 @@ test "vibe wasm eval returns value" {
   }
   assert_true(is_tagged_int(res.value))
   assert_eq(decode_int(res.value), 1L)
+}
+
+///|
+test "vibe wasm export _start returns raw int" {
+  let db = VibeDb::new()
+  db.set_source("main", "42")
+  let wasm = compile_module_wasm(db, "main") catch { e => fail(e.to_string()) }
+  let res = try run_wasm_export(wasm, "_start") catch {
+    e => fail(e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(res.value, 42L)
 }
 
 ///|

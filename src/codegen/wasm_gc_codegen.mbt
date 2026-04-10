@@ -190,9 +190,14 @@ priv struct GcLocalInfo {
 ///|
 priv struct GcFuncCtx {
   locals : Map[String, GcLocalInfo]
+  map_value_kinds : Map[String, GcValKind]
   local_kinds : Array[GcValKind]
   param_count : Int
   closure_call_types : Map[String, Int]
+  current_rec_binding : String?
+  direct_rec_call_name : String?
+  direct_rec_call_func_idx : Int
+  direct_rec_call_type_idx : Int
 }
 
 ///|
@@ -1651,6 +1656,37 @@ fn track_closure_binding_gc(
 }
 
 ///|
+fn closure_call_sig_from_kind_gc(
+  ctx : GcCodegenCtx,
+  kind : GcValKind,
+  opname : String,
+) -> (Int, Int, Array[GcValKind], GcValKind) raise WasmGenError {
+  match kind {
+    GcValKind::Ref(struct_type_idx) =>
+      match ctx.types[struct_type_idx] {
+        GcTypeDef::Struct(fields~) =>
+          if fields.length() == 2 {
+            match fields[0] {
+              GcValKind::Ref(fn_type_idx) =>
+                match ctx.types[fn_type_idx] {
+                  GcTypeDef::Func(params~, result~) =>
+                    (struct_type_idx, fn_type_idx, params, result)
+                  _ =>
+                    raise WasmGenError::Unsupported(opname + " closure fn type")
+                }
+              _ =>
+                raise WasmGenError::Unsupported(opname + " closure callee type")
+            }
+          } else {
+            raise WasmGenError::Unsupported(opname + " closure struct arity")
+          }
+        _ => raise WasmGenError::Unsupported(opname + " closure kind")
+      }
+    _ => raise WasmGenError::Unsupported(opname + " expects closure")
+  }
+}
+
+///|
 fn gc_val_kind_from_type(
   ctx : GcCodegenCtx,
   ty : @core.Type,
@@ -1745,8 +1781,8 @@ fn gc_val_kind_from_type(
       GcValKind::Ref(struct_type_idx)
     }
     @core.Type::Param(_) =>
-      // Unresolved type parameter — treat as anyref in GC mode
-      GcValKind::AnyRef
+      // Generic payloads are boxed/ref-cast through eqref in GC mode.
+      GcValKind::EqRef
     @core.Type::Variant(_) => GcValKind::EqRef
     _ => raise WasmGenError::Unsupported("gc type: " + ty.to_string())
   }
@@ -1758,6 +1794,7 @@ fn GcFuncCtx::new(
   params : Array[@core.FuncParam],
 ) -> GcFuncCtx raise WasmGenError {
   let locals : Map[String, GcLocalInfo] = {}
+  let map_value_kinds : Map[String, GcValKind] = {}
   let local_kinds : Array[GcValKind] = []
   let closure_call_types : Map[String, Int] = {}
   let mut idx = 0
@@ -1802,7 +1839,26 @@ fn GcFuncCtx::new(
     }
     idx += 1
   }
-  { locals, local_kinds, param_count: idx, closure_call_types }
+  {
+    locals,
+    map_value_kinds,
+    local_kinds,
+    param_count: idx,
+    closure_call_types,
+    current_rec_binding: None,
+    direct_rec_call_name: None,
+    direct_rec_call_func_idx: -1,
+    direct_rec_call_type_idx: -1,
+  }
+}
+
+///|
+fn clone_kind_map_gc(src : Map[String, GcValKind]) -> Map[String, GcValKind] {
+  let out : Map[String, GcValKind] = {}
+  for k, v in src {
+    out[k] = v
+  }
+  out
 }
 
 ///|
@@ -1844,9 +1900,14 @@ fn infer_block_kind_gc(
   }
   let temp_ctx = GcFuncCtx::{
     locals: clone_locals_gc(fctx.locals),
+    map_value_kinds: clone_kind_map_gc(fctx.map_value_kinds),
     local_kinds: [],
     param_count: fctx.param_count,
     closure_call_types: temp_cct,
+    current_rec_binding: None,
+    direct_rec_call_name: None,
+    direct_rec_call_func_idx: -1,
+    direct_rec_call_type_idx: -1,
   }
   for i in 0..<len {
     let stmt = body.stmts[i]
@@ -1877,6 +1938,10 @@ fn infer_block_kind_gc(
             _ => {
               let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
               temp_ctx.locals[name] = { idx: 0, kind }
+              match infer_map_value_kind_from_expr_gc(ctx, temp_ctx, expr) {
+                Some(value_kind) => temp_ctx.map_value_kinds[name] = value_kind
+                None => ()
+              }
               if is_last {
                 return kind
               }
@@ -1885,6 +1950,10 @@ fn infer_block_kind_gc(
         } else {
           let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
           temp_ctx.locals[name] = { idx: 0, kind }
+          match infer_map_value_kind_from_expr_gc(ctx, temp_ctx, expr) {
+            Some(value_kind) => temp_ctx.map_value_kinds[name] = value_kind
+            None => ()
+          }
           track_closure_binding_gc(ctx, temp_ctx, name, expr)
           if is_last {
             return kind
@@ -1893,6 +1962,10 @@ fn infer_block_kind_gc(
       @core.Stmt::LetMut(name~, expr~, ..) => {
         let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
         temp_ctx.locals[name] = { idx: 0, kind }
+        match infer_map_value_kind_from_expr_gc(ctx, temp_ctx, expr) {
+          Some(value_kind) => temp_ctx.map_value_kinds[name] = value_kind
+          None => ()
+        }
         track_closure_binding_gc(ctx, temp_ctx, name, expr)
         if is_last {
           return kind
@@ -1901,6 +1974,10 @@ fn infer_block_kind_gc(
       @core.Stmt::Assign(name~, expr~, ..) => {
         let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
         temp_ctx.locals[name] = { idx: 0, kind }
+        match infer_map_value_kind_from_expr_gc(ctx, temp_ctx, expr) {
+          Some(value_kind) => temp_ctx.map_value_kinds[name] = value_kind
+          None => ()
+        }
         if is_last {
           return kind
         }
@@ -1927,6 +2004,29 @@ fn infer_block_kind_gc(
         bind_pat_names(pat, kind)
         if is_last {
           return kind
+        }
+      }
+      @core.Stmt::LetPatElse(pat~, expr~, ..) => {
+        let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
+        fn bind_pat_names(p : @core.Pat, k : GcValKind) -> Unit {
+          match p {
+            @core.Pat::Bind(name~, ..) =>
+              temp_ctx.locals[name] = { idx: 0, kind: k }
+            @core.Pat::Tuple(items~, ..) =>
+              for item in items {
+                bind_pat_names(item, GcValKind::EqRef)
+              }
+            @core.Pat::Ctor(args~, ..) =>
+              for arg in args {
+                bind_pat_names(arg, GcValKind::EqRef)
+              }
+            _ => ()
+          }
+        }
+
+        bind_pat_names(pat, kind)
+        if is_last {
+          return GcValKind::I32
         }
       }
       @core.Stmt::Expr(expr~, ..) =>
@@ -2096,6 +2196,7 @@ fn infer_expr_kind_gc(
             raise WasmGenError::UnknownName(name)
           }
       }
+    @core.Expr::Map(..) => gc_map_builder_kind_gc(ctx)
     @core.Expr::Call(name~, args~, ..) => {
       let name = @core.lower_wasm_intrinsic_name(name)
       let pos_args = extract_positional_exprs(args, name)
@@ -2112,6 +2213,11 @@ fn infer_expr_kind_gc(
             GcValKind::I64
           } else if base_kind == GcValKind::Ref(ctx.bytes_type) {
             GcValKind::I64
+          } else if base_kind == gc_map_builder_kind_gc(ctx) {
+            match infer_map_value_kind_from_expr_gc(ctx, fctx, pos_args[0]) {
+              Some(kind) => kind
+              None => GcValKind::EqRef
+            }
           } else {
             gc_array_elem_kind_from_kind(ctx, base_kind, "__index")
           }
@@ -2186,6 +2292,12 @@ fn infer_expr_kind_gc(
         "Double::to_i64_bits" => GcValKind::I64
         "Double::parse" => GcValKind::F64
         "Array::length" => GcValKind::I64
+        "Array::fold" | "fold" => {
+          if pos_args.length() != 3 {
+            raise WasmGenError::Unsupported("arity: Array::fold")
+          }
+          infer_expr_kind_gc(ctx, fctx, pos_args[1])
+        }
         "Array::get" => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("arity: Array::get")
@@ -5269,6 +5381,113 @@ fn compile_len_gc(
 }
 
 ///|
+fn ensure_map_builder_type_gc(ctx : GcCodegenCtx) -> (Int, Int, Int) {
+  let key_arr_type = ensure_array_type(
+    ctx.types,
+    ctx.array_type_index,
+    GcValKind::EqRef,
+  )
+  let val_arr_type = ensure_array_type(
+    ctx.types,
+    ctx.array_type_index,
+    GcValKind::EqRef,
+  )
+  let builder_fields : Array[GcValKind] = [
+    GcValKind::I32,
+    GcValKind::Ref(key_arr_type),
+    GcValKind::Ref(val_arr_type),
+  ]
+  let builder_type = ensure_struct_type(
+    ctx.types,
+    ctx.struct_type_index,
+    builder_fields,
+  )
+  (builder_type, key_arr_type, val_arr_type)
+}
+
+///|
+fn gc_map_builder_kind_gc(ctx : GcCodegenCtx) -> GcValKind {
+  let (builder_type, _, _) = ensure_map_builder_type_gc(ctx)
+  GcValKind::Ref(builder_type)
+}
+
+///|
+fn compile_map_literal_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  fields : Array[@core.MapFieldExpr],
+) -> Unit raise WasmGenError {
+  let saved_locals = clone_locals_gc(fctx.locals)
+  let (builder_type, _, _) = ensure_map_builder_type_gc(ctx)
+  let tmp_name = "__map_lit_builder_" + fctx.local_kinds.length().to_string()
+  let tmp_idx = bind_local_gc(fctx, tmp_name, GcValKind::Ref(builder_type))
+  let call_span = if fields.is_empty() {
+    @core.Span::empty(0)
+  } else {
+    fields[0].span
+  }
+  let builder_new = @core.Expr::Call(
+    name="MapBuilder::new",
+    type_args=[],
+    args=[],
+    span=call_span,
+  )
+  compile_expr_gc(ctx, fctx, buf, builder_new)
+  emit_local_set_gc(buf, tmp_idx)
+  for field in fields {
+    let set_expr = @core.Expr::Call(
+      name="MapBuilder::set",
+      type_args=[],
+      args=[
+        @core.CallArg::{
+          label: None,
+          expr: @core.Expr::Ident(name=tmp_name, span=field.span),
+          span: field.span,
+        },
+        @core.CallArg::{
+          label: None,
+          expr: @core.Expr::String(value=field.key, span=field.span),
+          span: field.span,
+        },
+        @core.CallArg::{ label: None, expr: field.expr, span: field.span },
+      ],
+      span=field.span,
+    )
+    compile_expr_gc(ctx, fctx, buf, set_expr)
+    emit_drop_gc(buf)
+  }
+  emit_local_get_gc(buf, tmp_idx)
+  restore_locals_gc(fctx, saved_locals)
+}
+
+///|
+fn infer_map_value_kind_from_expr_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  expr : @core.Expr,
+) -> GcValKind? raise WasmGenError {
+  match expr {
+    @core.Expr::Map(fields~, ..) =>
+      if fields.is_empty() {
+        None
+      } else {
+        Some(infer_expr_kind_gc(ctx, fctx, fields[0].expr))
+      }
+    @core.Expr::Ident(name~, ..) => fctx.map_value_kinds.get(name)
+    @core.Expr::Call(name~, args~, ..) => {
+      let lowered = @core.lower_wasm_intrinsic_name(name)
+      if lowered == "MapBuilder::freeze" && args.length() == 1 {
+        infer_map_value_kind_from_expr_gc(ctx, fctx, args[0].expr)
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+///|
 fn gc_array_type_idx_from_kind(
   ctx : GcCodegenCtx,
   kind : GcValKind,
@@ -5322,6 +5541,90 @@ fn gc_array_elem_kind_from_kind(
     GcTypeDef::Array(elem~) => elem
     _ => raise WasmGenError::Unsupported(opname + " kind")
   }
+}
+
+///|
+fn compile_array_fold_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  array_expr : @core.Expr,
+  init_expr : @core.Expr,
+  func_expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  let array_kind = infer_expr_kind_gc(ctx, fctx, array_expr)
+  let array_type_idx = gc_array_type_idx_from_kind(
+    ctx, array_kind, "Array::fold",
+  )
+  let elem_kind = gc_array_elem_kind_from_kind(ctx, array_kind, "Array::fold")
+  let result_kind = infer_expr_kind_gc(ctx, fctx, init_expr)
+  let closure_kind = infer_expr_kind_gc(ctx, fctx, func_expr)
+  let (closure_struct_type, fn_type_idx, fn_param_kinds, fn_result_kind) = closure_call_sig_from_kind_gc(
+    ctx, closure_kind, "Array::fold",
+  )
+  if fn_param_kinds.length() != 3 {
+    raise WasmGenError::Unsupported("Array::fold callback arity")
+  }
+
+  let array_local = alloc_local_gc(fctx, array_kind)
+  let closure_local = alloc_local_gc(fctx, closure_kind)
+  let acc_local = alloc_local_gc(fctx, result_kind)
+  let len_local = alloc_local_gc(fctx, GcValKind::I32)
+  let i_local = alloc_local_gc(fctx, GcValKind::I32)
+
+  compile_expr_gc(ctx, fctx, buf, array_expr)
+  if array_kind != GcValKind::Ref(array_type_idx) {
+    emit_coerce_top_gc(ctx, buf, array_kind, GcValKind::Ref(array_type_idx))
+  }
+  emit_local_set_gc(buf, array_local)
+
+  let init_kind = infer_expr_kind_gc(ctx, fctx, init_expr)
+  compile_expr_gc(ctx, fctx, buf, init_expr)
+  emit_coerce_top_gc(ctx, buf, init_kind, result_kind)
+  emit_local_set_gc(buf, acc_local)
+
+  compile_expr_gc(ctx, fctx, buf, func_expr)
+  emit_local_set_gc(buf, closure_local)
+
+  emit_local_get_gc(buf, array_local)
+  emit_array_len_gc(buf)
+  emit_local_set_gc(buf, len_local)
+
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, i_local)
+
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, i_local)
+  emit_local_get_gc(buf, len_local)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+
+  emit_local_get_gc(buf, closure_local)
+  emit_struct_get_gc(buf, closure_struct_type, 1)
+
+  emit_local_get_gc(buf, acc_local)
+  emit_coerce_top_gc(ctx, buf, result_kind, fn_param_kinds[1])
+
+  emit_local_get_gc(buf, array_local)
+  emit_local_get_gc(buf, i_local)
+  emit_array_get_gc(buf, array_type_idx)
+  emit_coerce_top_gc(ctx, buf, elem_kind, fn_param_kinds[2])
+
+  emit_local_get_gc(buf, closure_local)
+  emit_struct_get_gc(buf, closure_struct_type, 0)
+  emit_call_ref_gc(buf, fn_type_idx)
+  emit_coerce_top_gc(ctx, buf, fn_result_kind, result_kind)
+  emit_local_set_gc(buf, acc_local)
+
+  emit_local_get_gc(buf, i_local)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, i_local)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  emit_local_get_gc(buf, acc_local)
 }
 
 ///|
@@ -6002,6 +6305,10 @@ fn compile_expr_gc(
       }
       emit_array_new_fixed_gc(buf, type_idx, items.length())
     }
+    @core.Expr::Map(fields~, span~) => {
+      let _ = span
+      compile_map_literal_gc(ctx, fctx, buf, fields)
+    }
     @core.Expr::Tuple(items~, span~) => {
       let _ = span
       let kind = infer_tuple_kind_gc(ctx, fctx, items)
@@ -6385,6 +6692,31 @@ fn compile_expr_gc(
             )
           } else if base_kind == GcValKind::Ref(ctx.bytes_type) {
             compile_bytes_get_gc(ctx, fctx, buf, pos_args[0], pos_args[1])
+          } else if base_kind == gc_map_builder_kind_gc(ctx) {
+            let value_kind = match
+              infer_map_value_kind_from_expr_gc(ctx, fctx, pos_args[0]) {
+              Some(kind) => kind
+              None => GcValKind::EqRef
+            }
+            let get_expr = @core.Expr::Call(
+              name="Map::get",
+              type_args=[],
+              args=[
+                @core.CallArg::{
+                  label: None,
+                  expr: pos_args[0],
+                  span: @core.Span::empty(0),
+                },
+                @core.CallArg::{
+                  label: None,
+                  expr: pos_args[1],
+                  span: @core.Span::empty(0),
+                },
+              ],
+              span=@core.Span::empty(0),
+            )
+            compile_expr_gc(ctx, fctx, buf, get_expr)
+            emit_coerce_top_gc(ctx, buf, GcValKind::EqRef, value_kind)
           } else {
             let type_idx = gc_array_type_idx_from_kind(
               ctx, base_kind, "__index",
@@ -6770,6 +7102,19 @@ fn compile_expr_gc(
             raise WasmGenError::Unsupported("Array::length arity")
           }
           compile_len_gc(ctx, fctx, buf, pos_args[0])
+        }
+        "Array::fold" | "fold" => {
+          if pos_args.length() != 3 {
+            raise WasmGenError::Unsupported("Array::fold arity")
+          }
+          compile_array_fold_gc(
+            ctx,
+            fctx,
+            buf,
+            pos_args[0],
+            pos_args[1],
+            pos_args[2],
+          )
         }
         "Array::get" => {
           if pos_args.length() != 2 {
@@ -7556,208 +7901,240 @@ fn compile_expr_gc(
           emit_end_gc(buf)
           emit_local_get_gc(buf, result_l)
         }
-        _ =>
-          match ctx.func_indices.get(name) {
-            Some(idx) => {
-              // Skip arity check — bundler may produce mismatched counts
-              match ctx.func_param_kinds.get(name) {
-                Some(param_kinds) =>
+        _ => {
+          let handled_direct_rec = match fctx.direct_rec_call_name {
+            Some(rec_name) if name == rec_name => {
+              let call_param_kinds = match
+                ctx.types[fctx.direct_rec_call_type_idx] {
+                GcTypeDef::Func(params~, ..) => params
+                _ =>
+                  raise WasmGenError::Unsupported("direct recursive call type")
+              }
+              emit_local_get_gc(buf, 0)
+              for i in 0..<pos_args.length() {
+                let arg = pos_args[i]
+                let arg_kind = infer_expr_kind_gc(ctx, fctx, arg)
+                compile_expr_gc(ctx, fctx, buf, arg)
+                if i + 1 < call_param_kinds.length() {
+                  emit_coerce_top_gc(
+                    ctx,
+                    buf,
+                    arg_kind,
+                    call_param_kinds[i + 1],
+                  )
+                }
+              }
+              emit_call_gc(buf, fctx.direct_rec_call_func_idx)
+              true
+            }
+            _ => false
+          }
+          if !handled_direct_rec {
+            match ctx.func_indices.get(name) {
+              Some(idx) => {
+                // Skip arity check — bundler may produce mismatched counts
+                match ctx.func_param_kinds.get(name) {
+                  Some(param_kinds) =>
+                    for i in 0..<pos_args.length() {
+                      let arg = pos_args[i]
+                      let arg_kind = infer_expr_kind_gc(ctx, fctx, arg)
+                      compile_expr_gc(ctx, fctx, buf, arg)
+                      if i < param_kinds.length() {
+                        emit_coerce_top_gc(ctx, buf, arg_kind, param_kinds[i])
+                      }
+                    }
+                  None =>
+                    for arg in pos_args {
+                      compile_expr_gc(ctx, fctx, buf, arg)
+                    }
+                }
+                emit_call_gc(buf, idx)
+              }
+              None =>
+                if ctx.enum_ctor_tags.contains(name) {
+                  // Enum constructor call
+                  let tag = ctx.enum_ctor_tags[name]
+                  let type_idx = ctx.enum_ctor_type_indices[name]
+                  let payload_kinds = ctx.enum_ctor_field_kinds[name]
+                  emit_i32_const_gc(buf, tag)
                   for i in 0..<pos_args.length() {
                     let arg = pos_args[i]
                     let arg_kind = infer_expr_kind_gc(ctx, fctx, arg)
                     compile_expr_gc(ctx, fctx, buf, arg)
-                    if i < param_kinds.length() {
-                      emit_coerce_top_gc(ctx, buf, arg_kind, param_kinds[i])
+                    if i < payload_kinds.length() {
+                      emit_coerce_top_gc(ctx, buf, arg_kind, payload_kinds[i])
                     }
                   }
-                None =>
-                  for arg in pos_args {
-                    compile_expr_gc(ctx, fctx, buf, arg)
-                  }
-              }
-              emit_call_gc(buf, idx)
-            }
-            None =>
-              if ctx.enum_ctor_tags.contains(name) {
-                // Enum constructor call
-                let tag = ctx.enum_ctor_tags[name]
-                let type_idx = ctx.enum_ctor_type_indices[name]
-                let payload_kinds = ctx.enum_ctor_field_kinds[name]
-                emit_i32_const_gc(buf, tag)
-                for i in 0..<pos_args.length() {
-                  let arg = pos_args[i]
-                  let arg_kind = infer_expr_kind_gc(ctx, fctx, arg)
-                  compile_expr_gc(ctx, fctx, buf, arg)
-                  if i < payload_kinds.length() {
-                    emit_coerce_top_gc(ctx, buf, arg_kind, payload_kinds[i])
-                  }
-                }
-                emit_struct_new_gc(buf, type_idx)
-              } else {
-                // Check local closure bindings first (they shadow field accessors)
-                match fctx.closure_call_types.get(name) {
-                  Some(fn_type_idx) =>
-                    match fctx.locals.get(name) {
-                      Some(closure_info) => {
-                        let closure_struct_type = match closure_info.kind {
-                          GcValKind::Ref(idx) => idx
-                          _ => raise WasmGenError::Unsupported("closure kind")
-                        }
-                        let call_param_kinds = match ctx.types[fn_type_idx] {
-                          GcTypeDef::Func(params~, ..) => params
-                          _ =>
-                            raise WasmGenError::Unsupported("closure call type")
-                        }
-                        emit_local_get_gc(buf, closure_info.idx)
-                        emit_struct_get_gc(buf, closure_struct_type, 1)
-                        for i in 0..<pos_args.length() {
-                          let arg = pos_args[i]
-                          let arg_kind = infer_expr_kind_gc(ctx, fctx, arg)
-                          compile_expr_gc(ctx, fctx, buf, arg)
-                          if i + 1 < call_param_kinds.length() {
-                            emit_coerce_top_gc(
-                              ctx,
-                              buf,
-                              arg_kind,
-                              call_param_kinds[i + 1],
-                            )
+                  emit_struct_new_gc(buf, type_idx)
+                } else {
+                  // Check local closure bindings first (they shadow field accessors)
+                  match fctx.closure_call_types.get(name) {
+                    Some(fn_type_idx) =>
+                      match fctx.locals.get(name) {
+                        Some(closure_info) => {
+                          let closure_struct_type = match closure_info.kind {
+                            GcValKind::Ref(idx) => idx
+                            _ => raise WasmGenError::Unsupported("closure kind")
                           }
+                          let call_param_kinds = match ctx.types[fn_type_idx] {
+                            GcTypeDef::Func(params~, ..) => params
+                            _ =>
+                              raise WasmGenError::Unsupported(
+                                "closure call type",
+                              )
+                          }
+                          emit_local_get_gc(buf, closure_info.idx)
+                          emit_struct_get_gc(buf, closure_struct_type, 1)
+                          for i in 0..<pos_args.length() {
+                            let arg = pos_args[i]
+                            let arg_kind = infer_expr_kind_gc(ctx, fctx, arg)
+                            compile_expr_gc(ctx, fctx, buf, arg)
+                            if i + 1 < call_param_kinds.length() {
+                              emit_coerce_top_gc(
+                                ctx,
+                                buf,
+                                arg_kind,
+                                call_param_kinds[i + 1],
+                              )
+                            }
+                          }
+                          emit_local_get_gc(buf, closure_info.idx)
+                          emit_struct_get_gc(buf, closure_struct_type, 0)
+                          emit_call_ref_gc(buf, fn_type_idx)
                         }
-                        emit_local_get_gc(buf, closure_info.idx)
-                        emit_struct_get_gc(buf, closure_struct_type, 0)
-                        emit_call_ref_gc(buf, fn_type_idx)
+                        None => {
+                          // Closure type known but not in locals — trap
+                          for arg in pos_args {
+                            compile_expr_gc(ctx, fctx, buf, arg)
+                            emit_drop_gc(buf)
+                          }
+                          emit_unreachable_gc(buf)
+                        }
                       }
-                      None => {
-                        // Closure type known but not in locals — trap
+                    None =>
+                      if is_gc_builtin_name(name) {
+                        // Builtin/effect call — emit unreachable (trap at runtime)
                         for arg in pos_args {
                           compile_expr_gc(ctx, fctx, buf, arg)
                           emit_drop_gc(buf)
                         }
                         emit_unreachable_gc(buf)
-                      }
-                    }
-                  None =>
-                    if is_gc_builtin_name(name) {
-                      // Builtin/effect call — emit unreachable (trap at runtime)
-                      for arg in pos_args {
-                        compile_expr_gc(ctx, fctx, buf, arg)
-                        emit_drop_gc(buf)
-                      }
-                      emit_unreachable_gc(buf)
-                    } else {
-                      // Try to derive closure type from local's struct kind
-                      match fctx.locals.get(name) {
-                        Some(closure_info) =>
-                          match closure_info.kind {
-                            GcValKind::Ref(struct_idx) =>
-                              match ctx.types[struct_idx] {
-                                GcTypeDef::Struct(fields~) =>
-                                  if fields.length() == 2 {
-                                    match fields[0] {
-                                      GcValKind::Ref(fn_idx) =>
-                                        match ctx.types[fn_idx] {
-                                          GcTypeDef::Func(
-                                            params=call_param_kinds,
-                                            ..
-                                          ) => {
-                                            emit_local_get_gc(
-                                              buf,
-                                              closure_info.idx,
-                                            )
-                                            emit_struct_get_gc(
-                                              buf, struct_idx, 1,
-                                            )
-                                            for i in 0..<pos_args.length() {
-                                              let arg = pos_args[i]
-                                              let arg_kind = infer_expr_kind_gc(
-                                                ctx, fctx, arg,
+                      } else {
+                        // Try to derive closure type from local's struct kind
+                        match fctx.locals.get(name) {
+                          Some(closure_info) =>
+                            match closure_info.kind {
+                              GcValKind::Ref(struct_idx) =>
+                                match ctx.types[struct_idx] {
+                                  GcTypeDef::Struct(fields~) =>
+                                    if fields.length() == 2 {
+                                      match fields[0] {
+                                        GcValKind::Ref(fn_idx) =>
+                                          match ctx.types[fn_idx] {
+                                            GcTypeDef::Func(
+                                              params=call_param_kinds,
+                                              ..
+                                            ) => {
+                                              emit_local_get_gc(
+                                                buf,
+                                                closure_info.idx,
                                               )
-                                              compile_expr_gc(
-                                                ctx, fctx, buf, arg,
+                                              emit_struct_get_gc(
+                                                buf, struct_idx, 1,
                                               )
-                                              if i + 1 <
-                                                call_param_kinds.length() {
-                                                emit_coerce_top_gc(
-                                                  ctx,
-                                                  buf,
-                                                  arg_kind,
-                                                  call_param_kinds[i + 1],
+                                              for i in 0..<pos_args.length() {
+                                                let arg = pos_args[i]
+                                                let arg_kind = infer_expr_kind_gc(
+                                                  ctx, fctx, arg,
                                                 )
+                                                compile_expr_gc(
+                                                  ctx, fctx, buf, arg,
+                                                )
+                                                if i + 1 <
+                                                  call_param_kinds.length() {
+                                                  emit_coerce_top_gc(
+                                                    ctx,
+                                                    buf,
+                                                    arg_kind,
+                                                    call_param_kinds[i + 1],
+                                                  )
+                                                }
                                               }
-                                            }
-                                            emit_local_get_gc(
-                                              buf,
-                                              closure_info.idx,
-                                            )
-                                            emit_struct_get_gc(
-                                              buf, struct_idx, 0,
-                                            )
-                                            emit_call_ref_gc(buf, fn_idx)
-                                          }
-                                          _ => {
-                                            for arg in pos_args {
-                                              compile_expr_gc(
-                                                ctx, fctx, buf, arg,
+                                              emit_local_get_gc(
+                                                buf,
+                                                closure_info.idx,
                                               )
-                                              emit_drop_gc(buf)
+                                              emit_struct_get_gc(
+                                                buf, struct_idx, 0,
+                                              )
+                                              emit_call_ref_gc(buf, fn_idx)
                                             }
-                                            emit_unreachable_gc(buf)
+                                            _ => {
+                                              for arg in pos_args {
+                                                compile_expr_gc(
+                                                  ctx, fctx, buf, arg,
+                                                )
+                                                emit_drop_gc(buf)
+                                              }
+                                              emit_unreachable_gc(buf)
+                                            }
                                           }
+                                        _ => {
+                                          for arg in pos_args {
+                                            compile_expr_gc(ctx, fctx, buf, arg)
+                                            emit_drop_gc(buf)
+                                          }
+                                          emit_unreachable_gc(buf)
                                         }
-                                      _ => {
-                                        for arg in pos_args {
-                                          compile_expr_gc(ctx, fctx, buf, arg)
-                                          emit_drop_gc(buf)
-                                        }
-                                        emit_unreachable_gc(buf)
                                       }
+                                    } else {
+                                      for arg in pos_args {
+                                        compile_expr_gc(ctx, fctx, buf, arg)
+                                        emit_drop_gc(buf)
+                                      }
+                                      emit_unreachable_gc(buf)
                                     }
-                                  } else {
+                                  _ => {
                                     for arg in pos_args {
                                       compile_expr_gc(ctx, fctx, buf, arg)
                                       emit_drop_gc(buf)
                                     }
                                     emit_unreachable_gc(buf)
                                   }
-                                _ => {
-                                  for arg in pos_args {
-                                    compile_expr_gc(ctx, fctx, buf, arg)
-                                    emit_drop_gc(buf)
-                                  }
-                                  emit_unreachable_gc(buf)
                                 }
+                              _ => {
+                                for arg in pos_args {
+                                  compile_expr_gc(ctx, fctx, buf, arg)
+                                  emit_drop_gc(buf)
+                                }
+                                emit_unreachable_gc(buf)
                               }
-                            _ => {
+                            }
+                          None =>
+                            if pos_args.length() == 1 &&
+                              try_compile_struct_field_get_gc(
+                                ctx,
+                                fctx,
+                                buf,
+                                name,
+                                pos_args[0],
+                              ) {
+                              // Named struct field access: field_name(record) → struct.get
+                              () // already compiled by try_compile_struct_field_get_gc
+                            } else {
                               for arg in pos_args {
                                 compile_expr_gc(ctx, fctx, buf, arg)
                                 emit_drop_gc(buf)
                               }
                               emit_unreachable_gc(buf)
                             }
-                          }
-                        None =>
-                          if pos_args.length() == 1 &&
-                            try_compile_struct_field_get_gc(
-                              ctx,
-                              fctx,
-                              buf,
-                              name,
-                              pos_args[0],
-                            ) {
-                            // Named struct field access: field_name(record) → struct.get
-                            () // already compiled by try_compile_struct_field_get_gc
-                          } else {
-                            for arg in pos_args {
-                              compile_expr_gc(ctx, fctx, buf, arg)
-                              emit_drop_gc(buf)
-                            }
-                            emit_unreachable_gc(buf)
-                          }
+                        }
                       }
-                    }
+                  }
                 }
-              }
+            }
           }
+        }
       }
     }
     @core.Expr::If(cond~, then_body~, else_body~, span~) => {
@@ -7977,6 +8354,7 @@ fn compile_expr_gc(
       }
       let free : Map[String, Bool] = {}
       collect_free_vars_module_gc(body, bound, free)
+      let rec_binding = fctx.current_rec_binding
       // Also capture closure-typed call targets (let rec self-reference)
       let call_names : Map[String, Bool] = {}
       collect_call_names_module_gc(body, call_names)
@@ -7984,7 +8362,10 @@ fn compile_expr_gc(
         if fctx.closure_call_types.contains(cname) &&
           !bound.contains(cname) &&
           !free.contains(cname) {
-          free[cname] = true
+          match rec_binding {
+            Some(self_name) => if cname != self_name { free[cname] = true }
+            None => free[cname] = true
+          }
         }
       }
       let capture_names : Array[String] = []
@@ -8030,6 +8411,7 @@ fn compile_expr_gc(
       let (fn_type_idx, struct_type_idx) = ensure_closure_types_gc(
         ctx, param_kinds, result_kind,
       )
+      let func_idx = ctx.num_regular_funcs + ctx.closure_lifted_funcs.length()
       // Propagate closure_call_types from parent so let-rec and
       // captured closures can be called inside the lifted body.
       let lifted_closure_types : Map[String, Int] = {}
@@ -8038,9 +8420,14 @@ fn compile_expr_gc(
       }
       let lifted_fctx = GcFuncCtx::{
         locals: {},
+        map_value_kinds: clone_kind_map_gc(fctx.map_value_kinds),
         local_kinds: [],
         param_count: 1 + params.length(),
         closure_call_types: lifted_closure_types,
+        current_rec_binding: None,
+        direct_rec_call_name: rec_binding,
+        direct_rec_call_func_idx: func_idx,
+        direct_rec_call_type_idx: fn_type_idx,
       }
       for i in 0..<params.length() {
         let k = gc_val_kind_from_type(ctx, params[i].ty)
@@ -8075,7 +8462,6 @@ fn compile_expr_gc(
         params: lifted_sig_params,
         result: result_kind,
       }
-      let func_idx = ctx.num_regular_funcs + ctx.closure_lifted_funcs.length()
       ctx.closure_lifted_funcs.push(GcWasmFunc::{
         sig: lifted_sig,
         locals: lifted_fctx.local_kinds,
@@ -8300,7 +8686,22 @@ fn compile_stmt_gc(
             let idx = bind_local_gc(fctx, name, kind)
             fctx.closure_call_types[name] = fn_type_idx
             track_closure_binding_gc(ctx, fctx, name, expr)
-            compile_expr_gc(ctx, fctx, buf, expr)
+            let rec_compile_cct : Map[String, Int] = {}
+            for k, v in fctx.closure_call_types {
+              rec_compile_cct[k] = v
+            }
+            let rec_compile_fctx = GcFuncCtx::{
+              locals: clone_locals_gc(fctx.locals),
+              map_value_kinds: clone_kind_map_gc(fctx.map_value_kinds),
+              local_kinds: [],
+              param_count: fctx.param_count,
+              closure_call_types: rec_compile_cct,
+              current_rec_binding: Some(name),
+              direct_rec_call_name: None,
+              direct_rec_call_func_idx: -1,
+              direct_rec_call_type_idx: -1,
+            }
+            compile_expr_gc(ctx, rec_compile_fctx, buf, expr)
             if is_last {
               emit_local_tee_gc(buf, idx)
             } else {
@@ -8310,6 +8711,10 @@ fn compile_stmt_gc(
           _ => {
             let kind = infer_expr_kind_gc(ctx, fctx, expr)
             let idx = bind_local_gc(fctx, name, kind)
+            match infer_map_value_kind_from_expr_gc(ctx, fctx, expr) {
+              Some(value_kind) => fctx.map_value_kinds[name] = value_kind
+              None => ()
+            }
             track_closure_binding_gc(ctx, fctx, name, expr)
             compile_expr_gc(ctx, fctx, buf, expr)
             if is_last {
@@ -8322,6 +8727,10 @@ fn compile_stmt_gc(
       } else {
         let kind = infer_expr_kind_gc(ctx, fctx, expr)
         let idx = bind_local_gc(fctx, name, kind)
+        match infer_map_value_kind_from_expr_gc(ctx, fctx, expr) {
+          Some(value_kind) => fctx.map_value_kinds[name] = value_kind
+          None => ()
+        }
         track_closure_binding_gc(ctx, fctx, name, expr)
         compile_expr_gc(ctx, fctx, buf, expr)
         if is_last {
@@ -8333,6 +8742,10 @@ fn compile_stmt_gc(
     @core.Stmt::LetMut(name~, expr~, ..) => {
       let kind = infer_expr_kind_gc(ctx, fctx, expr)
       let idx = bind_local_gc(fctx, name, kind)
+      match infer_map_value_kind_from_expr_gc(ctx, fctx, expr) {
+        Some(value_kind) => fctx.map_value_kinds[name] = value_kind
+        None => ()
+      }
       track_closure_binding_gc(ctx, fctx, name, expr)
       compile_expr_gc(ctx, fctx, buf, expr)
       if is_last {
@@ -8354,6 +8767,10 @@ fn compile_stmt_gc(
           }
         }
         _ => ()
+      }
+      match infer_map_value_kind_from_expr_gc(ctx, fctx, expr) {
+        Some(value_kind) => fctx.map_value_kinds[name] = value_kind
+        None => ()
       }
       match fctx.locals.get(name) {
         Some(info) => {
@@ -8427,6 +8844,27 @@ fn compile_stmt_gc(
       compile_pat_bind_gc(ctx, fctx, buf, scrut_idx, kind, pat)
       if is_last {
         emit_local_get_gc(buf, scrut_idx)
+      }
+    }
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, ..) => {
+      let kind = infer_expr_kind_gc(ctx, fctx, expr)
+      let scrut_idx = alloc_local_gc(fctx, kind)
+      compile_expr_gc(ctx, fctx, buf, expr)
+      emit_local_set_gc(buf, scrut_idx)
+      let else_kind = infer_block_kind_gc(ctx, fctx, else_body)
+      let match_result_kind = gc_common_kind(GcValKind::I32, else_kind)
+      compile_pat_cond_gc(ctx, fctx, buf, scrut_idx, kind, pat)
+      emit_if_gc(buf, Some(match_result_kind))
+      compile_pat_bind_gc(ctx, fctx, buf, scrut_idx, kind, pat)
+      emit_i32_const_gc(buf, 0)
+      emit_coerce_top_gc(ctx, buf, GcValKind::I32, match_result_kind)
+      emit_else_gc(buf)
+      compile_block_expr_gc(ctx, fctx, buf, else_body)
+      emit_coerce_top_gc(ctx, buf, else_kind, match_result_kind)
+      emit_end_gc(buf)
+      emit_drop_gc(buf)
+      if is_last {
+        emit_i32_const_gc(buf, 0)
       }
     }
     @core.Stmt::IndexAssign(target~, index~, value~, ..) => {

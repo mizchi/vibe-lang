@@ -226,6 +226,26 @@ test "wasm-gc e2e: pipe operator" {
 }
 
 ///|
+test "wasm-gc e2e: Array::fold" {
+  let src =
+    #|let arr = [1, 2, 3, 4, 5]
+    #|let sum = Array::fold(arr, 0, (acc: Int, x: Int) -> Int { acc + x })
+    #|sum
+  assert_gc_e2e(src, "array_fold", 15)
+}
+
+///|
+test "wasm-gc e2e: let-else success path" {
+  let src =
+    #|let extract = (x: Int) -> Int {
+    #|  let Some(v) = Some(x) else { 0 }
+    #|  v * 2
+    #|}
+    #|extract(21)
+  assert_gc_e2e(src, "let_else_success", 42)
+}
+
+///|
 test "wasm-gc e2e: generic list iter_get" {
   let src =
     #|enum List[T] { Nil; Cons(T, List[T]) }
@@ -642,6 +662,15 @@ test "wasm-gc e2e: Map::get arithmetic on results" {
 }
 
 ///|
+test "wasm-gc e2e: map literal index sugar" {
+  let src =
+    #|let m = map { "a": 10, "b": 20, "c": 30 }
+    #|let v = m["b"]
+    #|v
+  assert_gc_e2e(src, "map_literal_index", 20)
+}
+
+///|
 test "wasm-gc e2e: throw/handle error-only" {
   let src =
     #|let main = () -> Int {
@@ -701,5 +730,15 @@ test "wasm-gc e2e: let rec factorial top-level" {
   assert_gc_e2e(src, "let_rec_fact_top", 120)
 }
 
-// TODO(B7): nested let rec closure self-ref needs mutable box for deferred init
-// test "wasm-gc e2e: let rec factorial nested" { ... }
+///|
+test "wasm-gc e2e: let rec nested helper captures outer local (#273)" {
+  let src =
+    #|let sum_range = (n: Int) -> Int {
+    #|  let rec helper: (Int, Int) -> Int = (i, acc) -> {
+    #|    if i > n { acc } else { helper(i + 1, acc + i) }
+    #|  }
+    #|  helper(1, 0)
+    #|}
+    #|sum_range(100)
+  assert_gc_e2e(src, "let_rec_nested_capture", 5050)
+}

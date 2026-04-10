@@ -69,6 +69,14 @@ test "vibe wasm export run" {
     b => b
   }
   assert_true(bytes_contains_ascii(wasm, "_start"))
+  assert_true(bytes_contains_ascii(wasm, "_vibe_run_tagged"))
+  let start_index = find_export_func_index(wasm, "_start").unwrap_or(-1)
+  let tagged_index = find_export_func_index(wasm, "_vibe_run_tagged").unwrap_or(
+    -1,
+  )
+  assert_true(start_index >= 0)
+  assert_true(tagged_index >= 0)
+  assert_true(start_index != tagged_index)
 }
 
 ///|
@@ -429,6 +437,42 @@ fn wasm_export_section_is_well_formed(bytes : Bytes) -> Bool {
       offset == payload.length()
     }
     None => false
+  }
+}
+
+///|
+fn find_export_func_index(bytes : Bytes, export_name : String) -> Int? {
+  match find_section_payload(bytes, 7) {
+    Some(payload) => {
+      let export_name_bytes = @utf8.encode(export_name).to_array()
+      let (count, next_offset) = read_u32_leb_at(payload, 0)
+      let mut offset = next_offset
+      let mut remaining = count
+      while remaining > 0 {
+        if offset >= payload.length() {
+          return None
+        }
+        let (name_len, name_offset) = read_u32_leb_at(payload, offset)
+        let name_end = name_offset + name_len
+        if name_end >= payload.length() {
+          return None
+        }
+        let kind = payload[name_end].to_int()
+        let (index, next_entry_offset) = read_u32_leb_at(payload, name_end + 1)
+        if kind == 0 &&
+          name_len == export_name_bytes.length() &&
+          bytes_range_equals(payload, name_offset, export_name_bytes) {
+          return Some(index)
+        }
+        if next_entry_offset > payload.length() {
+          return None
+        }
+        offset = next_entry_offset
+        remaining -= 1
+      }
+      None
+    }
+    None => None
   }
 }
 

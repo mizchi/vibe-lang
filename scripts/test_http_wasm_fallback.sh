@@ -60,21 +60,19 @@ VIBE
     return
   fi
 
-  local wasm_tagged
-  wasm_tagged="$(VIBE_WASMTIME_WASM_FLAGS='exceptions=y' "$WASMTIME_RUN" --invoke _start "$wasm" 2>/dev/null | grep -E '^-?[0-9]+$' | tail -n 1 || true)"
-  if [ -z "$wasm_tagged" ]; then
+  local wasm_result
+  wasm_result="$(VIBE_WASMTIME_WASM_FLAGS='exceptions=y' "$WASMTIME_RUN" --invoke _start "$wasm" 2>/dev/null | grep -E '^-?[0-9]+$' | tail -n 1 || true)"
+  if [ -z "$wasm_result" ]; then
     echo "FAIL: $name (wasmtime output missing)"
     failed=$((failed + 1))
     return
   fi
 
-  local wasm_result
-  wasm_result=$((wasm_tagged >> 2))
   if [ "$wasm_result" = "$expected" ]; then
     echo "PASS: $name => $wasm_result"
     passed=$((passed + 1))
   else
-    echo "FAIL: $name (expected=$expected, got=$wasm_result tagged=$wasm_tagged)"
+    echo "FAIL: $name (expected=$expected, got=$wasm_result)"
     failed=$((failed + 1))
   fi
 }

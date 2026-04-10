@@ -94,12 +94,20 @@ enum WasmRunValue {
 } derive(Show, Eq)
 
 ///|
+let cli_tagged_run_export_name = "_vibe_run_tagged"
+
+///|
 fn run_wasmtime_invoke_run_capture(
   runner : BenchWasmRunner,
   wasm_path : String,
   tmp_prefix : String,
 ) -> WasmtimeInvokeOutput {
-  run_wasmtime_invoke_named_capture(runner, wasm_path, tmp_prefix, "_start")
+  run_wasmtime_invoke_named_capture(
+    runner,
+    wasm_path,
+    tmp_prefix,
+    cli_tagged_run_export_name,
+  )
 }
 
 ///|
@@ -214,7 +222,11 @@ fn build_http_host_run_command(
   runner : HttpHostRunner,
   wasm_path : String,
 ) -> String {
-  build_http_host_run_command_with_invokes(runner, wasm_path, ["_start"])
+  build_http_host_run_command_with_invokes(
+    runner,
+    wasm_path,
+    [cli_tagged_run_export_name],
+  )
 }
 
 ///|
@@ -250,7 +262,7 @@ fn run_http_host_invoke_run_capture(
     runner,
     wasm_path,
     tmp_prefix,
-    ["_start"],
+    [cli_tagged_run_export_name],
   )
 }
 
@@ -814,7 +826,11 @@ fn run_cmd_wasm_linked(
       return Err(err)
     }
   }
-  let mut cmd = build_wasmtime_invoke_command(runner, wasm_path, "_start")
+  let mut cmd = build_wasmtime_invoke_command(
+    runner,
+    wasm_path,
+    cli_tagged_run_export_name,
+  )
   let seen : Map[String, Bool] = {}
   for li in cached_imports {
     if not(seen.contains(li.module_name)) {
@@ -832,7 +848,11 @@ fn run_cmd_wasm_linked(
         shell_quote_command_arg(li.module_name) +
         "=" +
         shell_quote_command_arg(lib_path)
-      cmd = cmd + " --invoke _start " + shell_quote_command_arg(wasm_path)
+      cmd = cmd +
+        " --invoke " +
+        cli_tagged_run_export_name +
+        " " +
+        shell_quote_command_arg(wasm_path)
     }
   }
   let out_path = wasm_path + ".out"

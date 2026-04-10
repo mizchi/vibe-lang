@@ -194,7 +194,7 @@ test "http host run command quotes default node wasm flag" {
     "/tmp/app.wasm",
   )
   assert_eq(
-    cmd, "\"/tmp/node\" \"--experimental-wasm-exnref\" \"/tmp/runner.js\" --invoke _start \"/tmp/app.wasm\"",
+    cmd, "\"/tmp/node\" \"--experimental-wasm-exnref\" \"/tmp/runner.js\" --invoke _vibe_run_tagged \"/tmp/app.wasm\"",
   )
 }
 
@@ -214,7 +214,7 @@ test "http host run command splits node wasm flags into quoted args" {
     "/tmp/app.wasm",
   )
   assert_eq(
-    cmd, "\"/tmp/node\" \"--experimental-wasm-exnref\" \"--trace-wasm\" \"/tmp/runner.js\" --invoke _start \"/tmp/app.wasm\"",
+    cmd, "\"/tmp/node\" \"--experimental-wasm-exnref\" \"--trace-wasm\" \"/tmp/runner.js\" --invoke _vibe_run_tagged \"/tmp/app.wasm\"",
   )
 }
 
@@ -3629,6 +3629,30 @@ test "source hash cache includes transitive imports" {
 }
 
 ///|
+test "save source hashes includes entry for linked cache" {
+  let root = wbtest_make_temp_dir("save_source_hashes_includes_entry")
+  let cache_dir = root + "/.vibe/debug/test"
+  let hash_path = cache_dir + "/source_hashes.txt"
+  let entry_path = root + "/main.vibe"
+  let dep_path = root + "/dep.vibe"
+  let db = @runtime.VibeDb::new()
+  db.set_source(entry_path, "import ./dep.vibe { dep }\nlet main = dep\n")
+  db.set_source(dep_path, "let dep = 1\n")
+  let _ = c_system(system_command_bytes("mkdir -p " + shell_quote_command_arg(cache_dir)))
+  save_source_hashes(db, entry_path, cache_dir, hash_path)
+  let saved = parse_source_hash_cache(
+    @os_fs.read_file_to_string(hash_path) catch { _ => "" },
+  )
+  assert_true(saved.contains(entry_path))
+  assert_true(saved.contains(dep_path))
+  wbtest_remove_if_exists(hash_path)
+  wbtest_remove_if_exists(cache_dir)
+  wbtest_remove_if_exists(root + "/.vibe/debug")
+  wbtest_remove_if_exists(root + "/.vibe")
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "run monolithic cache paths separate http mode" {
   let paths1 = run_monolithic_cache_paths("/tmp/project/src/main.vibe", false)
   let paths2 = run_monolithic_cache_paths("/tmp/project/src/main.vibe", true)
@@ -4031,6 +4055,11 @@ test "decode tagged wasm run value" {
   assert_eq(decode_tagged_wasm_run_value(168L), Some(WasmRunValue::Int(42L)))
   assert_eq(decode_tagged_wasm_run_value(7L), Some(WasmRunValue::Bool(true)))
   assert_eq(decode_tagged_wasm_run_value(3L), Some(WasmRunValue::Bool(false)))
+}
+
+///|
+test "cli tagged run export name stays stable" {
+  assert_eq(cli_tagged_run_export_name, "_vibe_run_tagged")
 }
 
 ///|

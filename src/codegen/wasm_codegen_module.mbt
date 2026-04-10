@@ -122,7 +122,12 @@ fn collect_emittable_user_exports(ctx : CodegenCtx) -> Array[String] {
 }
 
 ///|
-fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
+fn build_module(
+  ctx : CodegenCtx,
+  funcs : Array[WasmFunc],
+  run_index : Int,
+  start_export_index : Int?,
+) -> Bytes {
   let buf = ByteBuf::new()
   // magic + version
   buf.push((0).to_byte())
@@ -1317,7 +1322,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let emit_start = not(ctx.library_mode)
   // Library mode: export funcref table for linked builds
   let export_funcref_table = ctx.library_mode && has_funcref_table
-  let export_count = (if emit_start { 2 } else { 1 }) + // _start + memory, or just memory
+  let export_count = (if emit_start { 3 } else { 1 }) + // _start + _vibe_run_tagged + memory, or just memory
     user_export_count +
     exported_env_global_count +
     (if need_cabi_realloc_export { 1 } else { 0 }) +
@@ -1330,9 +1335,12 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     (if export_funcref_table { 1 } else { 0 })
   let export_sec = ByteBuf::new()
   write_u32_leb(export_sec, export_count)
-  let run_index = func_import_count + funcs.length() - 1
   if emit_start {
+    let start_idx = start_export_index.unwrap_or(run_index)
     write_name(export_sec, "_start")
+    export_sec.push((0).to_byte()) // func export
+    write_u32_leb(export_sec, start_idx)
+    write_name(export_sec, "_vibe_run_tagged")
     export_sec.push((0).to_byte()) // func export
     write_u32_leb(export_sec, run_index)
   }
@@ -3973,6 +3981,7 @@ fn emit_module_with_coverage(
       ctx.rc_post_actions = post
     }
   }
+  let run_func_array_index = compiled_funcs.length()
   compiled_funcs.push(
     compile_function(
       ctx,
@@ -3988,9 +3997,18 @@ fn emit_module_with_coverage(
       emit_rc_stmt_actions=ctx.enable_rc,
     ),
   )
+  let run_func_index = func_import_count(ctx) + run_func_array_index
+  let mut start_export_index = None
+  if not(ctx.library_mode) {
+    let start_idx = func_import_count(ctx) + compiled_funcs.length()
+    compiled_funcs.push(compile_public_start_wrapper(run_func_index))
+    start_export_index = Some(start_idx)
+  }
   @profiler.profiler_leave()
   @profiler.profiler_enter("codegen/build_module")
-  let bytes = build_module(ctx, compiled_funcs)
+  let bytes = build_module(
+    ctx, compiled_funcs, run_func_index, start_export_index,
+  )
   @profiler.profiler_leave()
   {
     bytes,
