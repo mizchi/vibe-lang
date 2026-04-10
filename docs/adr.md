@@ -86,6 +86,7 @@
 | 0018 | **ライブラリ API を Result ベースへ移行**。throw→Result[T, String]。bind/map_ok 合成。deprecated alias で段階移行。 | accepted |
 | 0026 | **純粋テストキャッシュと QuickCheck**。pure test は source hash + deps + compiler version でキャッシュ。fixed-seed QuickCheck は pure 扱い。 | proposed |
 | 0035 | **DAP デバッグ**。DWARF 不採用、カバレッジインフラ拡張で独自 DAP サーバー。`vibe.func_map`/`debug_map` カスタムセクション。Node.js ベース。 | proposed |
+| 0049 | **CI キャッシュキーに moonc バージョンを含める**。`scripts/install_moonbit.sh` が install 後に `.moon-version` スタンプを書き、全ワークフローの `actions/cache` key が `hashFiles('.moon-version')` を参照する。moonc 上流更新時に古い `_build` 成果物が再利用されるのを防ぐ。きっかけは Linux native CLI 回帰クラスタ (#265/#266/#267/#268/#280/#281) — moon 0.1.20260403 で作られた成果物が、source 未変更のまま stale 再利用されていた。 | accepted |
 
 ## Deferred
 

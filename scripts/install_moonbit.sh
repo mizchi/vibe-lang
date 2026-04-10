@@ -7,18 +7,32 @@ set -euo pipefail
 #   bash scripts/install_moonbit.sh
 #
 # Environment variables:
-#   MOONBIT_VERSION  — desired version (default: "latest")
-#                      When set, attempts versioned URL first, falls back to latest.
+#   MOONBIT_VERSION  — desired version (default: "latest").
+#                      Note: the official CDN only exposes "latest" and
+#                      "nightly" for GET; dated versions return 403. We
+#                      therefore can't fully pin, but we DO record the
+#                      installed version in a stamp file so CI cache keys
+#                      can invalidate when moonc changes (see below).
 #   MOONBIT_INSTALL_DIR — install prefix (default: ~/.moon)
 #
 # What it does:
 #   1. Downloads MoonBit via the official install script
 #   2. Runs `moon update` to fetch core libraries
-#   3. Logs the installed version for CI reproducibility
+#   3. Writes the installed version to a stamp file at the repo root
+#      (.moon-version) so GitHub Actions `hashFiles` can pick up the
+#      version change in its cache key. This prevents stale `_build`
+#      artifacts produced by a previous (possibly buggy) moonc from
+#      being reused after an upstream release.
 #   4. Retries on transient network failures (up to 3 attempts)
 #
 # Outputs:
 #   Sets MOONBIT_INSTALLED_VERSION for subsequent steps.
+#   Writes <repo-root>/.moon-version containing the full version string.
+#
+# Context: this stamp mechanism was added after a Linux-only moonc
+# regression cluster (#265/#266/#267/#268/#280/#281) where CI kept
+# reusing build artifacts from moon 0.1.20260403 because the cache key
+# only hashed source files.
 
 MOONBIT_VERSION="${MOONBIT_VERSION:-latest}"
 MOONBIT_INSTALL_DIR="${MOONBIT_INSTALL_DIR:-$HOME/.moon}"
@@ -49,7 +63,17 @@ retry() {
 
 log "installing MoonBit (requested: $MOONBIT_VERSION)..."
 
-if ! retry "curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash"; then
+# The official installer accepts a positional version argument (or
+# MOONBIT_INSTALL_VERSION env var). We pass the version explicitly so
+# that CI is deterministic and a buggy upstream moonc cannot silently
+# get picked up.
+if [ "$MOONBIT_VERSION" = "latest" ]; then
+  install_cmd="curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash"
+else
+  install_cmd="curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash -s -- $MOONBIT_VERSION"
+fi
+
+if ! retry "$install_cmd"; then
   log "ERROR: failed to install MoonBit after $MAX_RETRIES attempts"
   exit 1
 fi
@@ -73,6 +97,14 @@ fi
 
 INSTALLED_VERSION=$(moon version 2>/dev/null | head -1 || echo "unknown")
 log "installed: $INSTALLED_VERSION"
+
+# --- Write version stamp file for CI cache invalidation ---
+# Resolve repo root relative to this script so the stamp lands at a
+# stable location regardless of where the installer was invoked from.
+_STAMP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
+_STAMP_FILE="$_STAMP_ROOT/.moon-version"
+printf '%s\n' "$INSTALLED_VERSION" > "$_STAMP_FILE"
+log "stamped version -> $_STAMP_FILE"
 
 # Export for GitHub Actions
 if [ -n "${GITHUB_OUTPUT:-}" ]; then

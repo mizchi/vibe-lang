@@ -36,7 +36,7 @@ run_case() {
   local file="$TMP_DIR/${name}.vibe"
   local wasm="$TMP_DIR/${name}.wasm"
   cat > "$file" <<VIBE
-let main = () -> Int with { Error, Net } {
+export let _start = () -> Int with { Net } {
   handle {
     $expr
     0
@@ -44,8 +44,6 @@ let main = () -> Int with { Error, Net } {
     Throw(_) => $expected
   }
 }
-
-main()
 VIBE
 
   if ! "$VIBE_BIN" compile --wasm --debug-errors "$file" -o "$wasm" >/dev/null 2>&1; then
@@ -77,9 +75,9 @@ VIBE
   fi
 }
 
-run_case "http_request_throw_is_catchable" "let _ = http_request(\"GET\", \"https://example.com\", \"\", \"\")" "11"
-run_case "http_listen_throw_is_catchable" "let _ = http_listen(8080)" "12"
-run_case "http_respond_throw_is_catchable" "http_respond(0, 200, \"\", \"\")" "13"
+run_case "http_request_throw_is_catchable" "let _ = Http::request(\"GET\", \"https://example.com\", \"\", \"\")" "11"
+run_case "http_listen_throw_is_catchable" "let _ = Http::listen(8080)" "12"
+run_case "http_respond_throw_is_catchable" "Http::respond(0, 200, \"\", \"\")" "13"
 
 echo "Summary: $passed passed, $failed failed"
 if [ "$failed" -gt 0 ]; then

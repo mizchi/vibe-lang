@@ -20,27 +20,26 @@ SRC_PATH="$TMP_DIR/http_host_imports_probe.vibe"
 WASM_PATH="$TMP_DIR/http_host_imports_probe.wasm"
 
 cat >"$SRC_PATH" <<'EOF'
-let run = () -> Int with {Net} {
-  let req = http_request("GET", "https://example.com", "", "")
-  let status = http_response_status(req)
-  http_close(req)
-  let listener = http_listen(8080)
-  let incoming = http_accept(listener)
-  let method = http_request_method(incoming)
-  let url = http_request_url(incoming)
-  let header = http_request_header(incoming, "x-test")
-  let body = http_request_body(incoming)
+export let run = () -> Int with {Net} {
+  let req = Http::request("GET", "https://example.com", "", "")
+  let status = Http::response_status(req)
+  Http::close(req)
+  let listener = Http::listen(8080)
+  let incoming = Http::accept(listener)
+  let method = Http::request_method(incoming)
+  let url = Http::request_url(incoming)
+  let header = Http::request_header(incoming, "x-test")
+  let body = Http::request_body(incoming)
   let meta_len =
-    string_length(method) +
-    string_length(url) +
-    string_length(header) +
-    string_length(body)
-  http_respond(incoming, 204, "", "")
-  http_close(incoming)
-  http_close(listener)
+    String::length(method) +
+    String::length(url) +
+    String::length(header) +
+    String::length(body)
+  Http::respond(incoming, 204, "", "")
+  Http::close(incoming)
+  Http::close(listener)
   status + meta_len
 }
-run()
 EOF
 
 moon run --target native src/cmd/vibe -- compile --wasm --http-host-imports "$SRC_PATH" -o "$WASM_PATH"
@@ -200,14 +199,14 @@ const createHost = (options) => {
   };
 
   const host = {
-    http_request: (_method, url, _headers, _body) => {
+    "Http::request": (_method, url, _headers, _body) => {
       const decodedUrl = decodeTaggedString(instanceRef, url);
       ensureConnectAllowed(decodedUrl);
       calls.push('request');
       handleKind.set(reqHandle, 'response');
       return reqHandle;
     },
-    http_response_status: (handle) => {
+    "Http::response_status": (handle) => {
       if (handleKind.get(handle) !== 'response') {
         throw new Error(`unexpected response handle: ${handle}`);
       }
@@ -215,34 +214,34 @@ const createHost = (options) => {
       calls.push('status');
       return tagInt(200);
     },
-    http_response_header: (handle, _name) => {
+    "Http::response_header": (handle, _name) => {
       if (handleKind.get(handle) !== 'response') {
         throw new Error(`unexpected response-header handle: ${handle}`);
       }
       ensureConnectAnyAllowed('net_response_header');
       return 0n;
     },
-    http_response_body: (handle) => {
+    "Http::response_body": (handle) => {
       if (handleKind.get(handle) !== 'response') {
         throw new Error(`unexpected response-body handle: ${handle}`);
       }
       ensureConnectAnyAllowed('net_response_body');
       return 0n;
     },
-    http_close: (handle) => {
+    "Http::close": (handle) => {
       ensureConnectAnyAllowed('net_close');
       calls.push(`close:${handle.toString()}`);
       handleKind.delete(handle);
       return 0n;
     },
-    http_listen: (portValue) => {
+    "Http::listen": (portValue) => {
       const port = untagInt(portValue);
       ensureListenAllowed(port);
       calls.push('listen');
       handleKind.set(listenerHandle, 'listener');
       return listenerHandle;
     },
-    http_accept: (handle) => {
+    "Http::accept": (handle) => {
       ensureListenAnyAllowed('net_accept');
       if (handleKind.get(handle) !== 'listener') {
         throw new Error(`unexpected listener handle: ${handle}`);
@@ -251,7 +250,7 @@ const createHost = (options) => {
       handleKind.set(incomingHandle, 'incoming');
       return incomingHandle;
     },
-    http_request_method: (handle) => {
+    "Http::request_method": (handle) => {
       ensureListenAnyAllowed('net_request_method');
       if (handleKind.get(handle) !== 'incoming') {
         throw new Error(`unexpected request-method handle: ${handle}`);
@@ -259,7 +258,7 @@ const createHost = (options) => {
       calls.push('request_method');
       return encodeTaggedString(instanceRef, 'GET');
     },
-    http_request_url: (handle) => {
+    "Http::request_url": (handle) => {
       ensureListenAnyAllowed('net_request_url');
       if (handleKind.get(handle) !== 'incoming') {
         throw new Error(`unexpected request-url handle: ${handle}`);
@@ -267,7 +266,7 @@ const createHost = (options) => {
       calls.push('request_url');
       return encodeTaggedString(instanceRef, '/probe');
     },
-    http_request_header: (handle, name) => {
+    "Http::request_header": (handle, name) => {
       ensureListenAnyAllowed('net_request_header');
       if (handleKind.get(handle) !== 'incoming') {
         throw new Error(`unexpected request-header handle: ${handle}`);
@@ -279,7 +278,7 @@ const createHost = (options) => {
       calls.push('request_header');
       return encodeTaggedString(instanceRef, 'ok');
     },
-    http_request_body: (handle) => {
+    "Http::request_body": (handle) => {
       ensureListenAnyAllowed('net_request_body');
       if (handleKind.get(handle) !== 'incoming') {
         throw new Error(`unexpected request-body handle: ${handle}`);
@@ -287,7 +286,7 @@ const createHost = (options) => {
       calls.push('request_body');
       return encodeTaggedString(instanceRef, 'body');
     },
-    http_respond: (handle, status, _headers, _body) => {
+    "Http::respond": (handle, status, _headers, _body) => {
       ensureListenAnyAllowed('net_respond');
       if (handleKind.get(handle) !== 'incoming') {
         throw new Error(`unexpected incoming handle: ${handle}`);

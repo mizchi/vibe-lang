@@ -22,11 +22,9 @@ STDIO_WIT="$TMP_DIR/stdio_probe.component.wit"
 STDIO_PRINT="$TMP_DIR/stdio_probe.component.wat"
 
 cat >"$STDIO_SRC" <<'EOF'
-let run = () -> Int with {Stdout} {
-  stdout_write_char(65)
-  1
+export let _start = () -> Unit with {Stdout} {
+  Stdout::write_char(65)
 }
-run()
 EOF
 
 moon run --target native src/cmd/vibe -- compile --component "$STDIO_SRC" -o "$STDIO_COMPONENT"
@@ -50,13 +48,11 @@ HTTP_COMPONENT="$TMP_DIR/http_probe.component.wasm"
 HTTP_PRINT="$TMP_DIR/http_probe.component.wat"
 
 cat >"$HTTP_SRC" <<'EOF'
-let run = () -> Int with {Net} {
-  let req = http_request("GET", "https://example.com", "", "")
-  let status = http_response_status(req)
-  http_close(req)
-  status
+export let _start = () -> Unit with {Net} {
+  let req = Http::request("GET", "https://example.com", "", "")
+  let _ = Http::response_status(req)
+  Http::close(req)
 }
-run()
 EOF
 
 moon run --target native src/cmd/vibe -- compile --component --http-host-imports "$HTTP_SRC" -o "$HTTP_COMPONENT"

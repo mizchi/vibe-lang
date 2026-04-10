@@ -34,27 +34,25 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
 fi
 
 cat >"$SRC_PATH" <<'EOF'
-let run = () -> Int with {Net} {
-  let req = http_request("GET", "https://example.com", "", "")
-  let status = http_response_status(req)
-  http_close(req)
+export let run = () -> Int with {Net} {
+  let req = Http::request("GET", "https://example.com", "", "")
+  let status = Http::response_status(req)
+  Http::close(req)
   status
 }
-run()
 EOF
 
 cat >"$SERVER_SRC_PATH" <<'EOF'
-let run = () -> Int with {Net} {
-  let listener = http_listen(8080)
-  let req = http_accept(listener)
-  let method = http_request_method(req)
-  let _ = http_request_url(req)
-  let _ = http_request_header(req, "x-test")
-  let _ = http_request_body(req)
-  http_respond(req, 200, "", "")
-  string_length(method)
+export let run = () -> Int with {Net} {
+  let listener = Http::listen(8080)
+  let req = Http::accept(listener)
+  let method = Http::request_method(req)
+  let _ = Http::request_url(req)
+  let _ = Http::request_header(req, "x-test")
+  let _ = Http::request_body(req)
+  Http::respond(req, 200, "", "")
+  String::length(method)
 }
-run()
 EOF
 
 run_stage "stage0 (wasm compiler cli) -> component compile" \

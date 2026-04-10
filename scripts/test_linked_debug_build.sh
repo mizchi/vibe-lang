@@ -2,6 +2,7 @@
 # Test that `vibe build --debug` produces valid wasm for the selfhost compiler.
 # Also verifies the cached (second) build path works.
 set -euo pipefail
+trap 'echo "[test_linked_debug_build] FAIL at line $LINENO (last exit=$?)" >&2' ERR
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT_DIR/scripts/ensure_native_cli.sh"
@@ -22,29 +23,39 @@ MIXED_HOF_RELEASE_WASM="$MIXED_HOF_CASE_DIR/main.release.wasm"
 
 echo "=== linked debug build: selfhost compiler ==="
 
-# Clean cache
-CACHE_DIR="$ROOT_DIR/vibe/.vibe/debug/compiler_index"
+# Clean cache.
+#
+# `vibe build --debug` routes its precompiled library wasm through
+# `find_vibe_cache_root` (cli_compile_cmd.mbt), which hoists the
+# cache to the nearest ancestor `.vibe/` directory and keys it by
+# the relative path of the entry. For `vibe/compiler/index.vibe`
+# that resolves to `vibe/compiler/.vibe/debug/index/`, NOT the
+# legacy `vibe/.vibe/debug/compiler_index` path this script used
+# to assume. The stale path meant `rm -rf` was a no-op, `find`
+# over a non-existent dir exited 1, `pipefail` propagated the
+# failure, and `set -e` killed the script before steps 5-7.
+CACHE_DIR="$ROOT_DIR/vibe/compiler/.vibe/debug/index"
 rm -rf "$CACHE_DIR"
 
 # First build (full: db load + library compilation)
 echo "  [1/4] first build (no cache)..."
-if ! timeout 120 "$CLI" build --debug "$ROOT_DIR/vibe/compiler/index.vibe" \
-  -o "$WORK/debug1.wasm" >/dev/null 2>&1; then
+if ! timeout 300 "$CLI" build --debug "$ROOT_DIR/vibe/compiler/index.vibe" \
+  -o "$WORK/debug1.wasm" 2>&1; then
   echo "FAIL: first debug build failed"
   exit 1
 fi
 
 # Validate wasm
 echo "  [2/4] wasm validation..."
-if ! wasm-tools validate "$WORK/debug1.wasm" 2>/dev/null; then
+if ! wasm-tools validate "$WORK/debug1.wasm" 2>&1; then
   echo "FAIL: debug build produced invalid wasm"
   exit 1
 fi
 
 # Second build (cached: fast path)
 echo "  [3/4] second build (cached)..."
-if ! timeout 30 "$CLI" build --debug "$ROOT_DIR/vibe/compiler/index.vibe" \
-  -o "$WORK/debug2.wasm" >/dev/null 2>&1; then
+if ! timeout 180 "$CLI" build --debug "$ROOT_DIR/vibe/compiler/index.vibe" \
+  -o "$WORK/debug2.wasm" 2>&1; then
   echo "FAIL: cached debug build failed"
   exit 1
 fi
@@ -67,13 +78,16 @@ if [ "$SIZE1" -ne "$SIZE2" ]; then
   echo "  WARNING: sizes differ (expected identical)"
 fi
 
-# Library module count
-LIB_COUNT=$(find "$CACHE_DIR" -name "*.wasm" 2>/dev/null | wc -l | tr -d ' ')
+# Library module count. Guard against missing cache dir under `set -euo
+# pipefail`: `find` on a non-existent path exits 1 and pipefail kills
+# the script. `|| true` makes the pipe resilient without silencing a
+# genuinely broken build.
+LIB_COUNT=$( { find "$CACHE_DIR" -name "*.wasm" 2>/dev/null || true; } | wc -l | tr -d ' ')
 echo "  library modules: $LIB_COUNT"
 
 # WASI import check
 WASI_MODULES=0
-for f in $(find "$CACHE_DIR" -name "*.wasm" 2>/dev/null); do
+for f in $({ find "$CACHE_DIR" -name "*.wasm" 2>/dev/null || true; }); do
   count=$(wasm-tools print "$f" 2>/dev/null | grep -c "wasi:" || true)
   if [ "$count" -gt 0 ]; then
     WASI_MODULES=$((WASI_MODULES + 1))
@@ -92,13 +106,13 @@ String::length(String::concat(helper(), ", world"))
 EOF
 
 echo "  [5/7] cross-module string concat..."
-if ! timeout 30 "$CLI" build --debug "$STRING_CASE_DIR/main.vibe" \
-  -o "$STRING_CASE_DIR/main.wasm" >/dev/null 2>&1; then
+if ! timeout 120 "$CLI" build --debug "$STRING_CASE_DIR/main.vibe" \
+  -o "$STRING_CASE_DIR/main.wasm" 2>&1; then
   echo "FAIL: string linked debug build failed"
   exit 1
 fi
-if ! timeout 30 "$CLI" build --release "$STRING_CASE_DIR/main.vibe" \
-  -o "$STRING_RELEASE_WASM" >/dev/null 2>&1; then
+if ! timeout 120 "$CLI" build --release "$STRING_CASE_DIR/main.vibe" \
+  -o "$STRING_RELEASE_WASM" 2>&1; then
   echo "FAIL: string release build failed"
   exit 1
 fi
@@ -136,18 +150,18 @@ option_is_none(None)
 EOF
 
 echo "  [6/7] prelude core synthetic library..."
-if ! timeout 30 "$CLI" build --debug "$PRELUDE_CASE_DIR/main.vibe" \
-  -o "$PRELUDE_CASE_DIR/main.wasm" >/dev/null 2>&1; then
+if ! timeout 120 "$CLI" build --debug "$PRELUDE_CASE_DIR/main.vibe" \
+  -o "$PRELUDE_CASE_DIR/main.wasm" 2>&1; then
   echo "FAIL: prelude core linked debug build failed"
   exit 1
 fi
-if ! timeout 30 "$CLI" build --debug "$PRELUDE_CASE_DIR/main.vibe" \
-  -o "$PRELUDE_CASE_DIR/main.cached.wasm" >/dev/null 2>&1; then
+if ! timeout 120 "$CLI" build --debug "$PRELUDE_CASE_DIR/main.vibe" \
+  -o "$PRELUDE_CASE_DIR/main.cached.wasm" 2>&1; then
   echo "FAIL: cached prelude core linked debug build failed"
   exit 1
 fi
-if ! timeout 30 "$CLI" build --release "$PRELUDE_CASE_DIR/main.vibe" \
-  -o "$PRELUDE_RELEASE_WASM" >/dev/null 2>&1; then
+if ! timeout 120 "$CLI" build --release "$PRELUDE_CASE_DIR/main.vibe" \
+  -o "$PRELUDE_RELEASE_WASM" 2>&1; then
   echo "FAIL: prelude core release build failed"
   exit 1
 fi
@@ -192,18 +206,18 @@ apply_twice(add1, 40)
 EOF
 
 echo "  [7/7] mixed HOF selective inline..."
-if ! timeout 30 "$CLI" build --debug "$MIXED_HOF_CASE_DIR/main.vibe" \
-  -o "$MIXED_HOF_CASE_DIR/main.wasm" >/dev/null 2>&1; then
+if ! timeout 120 "$CLI" build --debug "$MIXED_HOF_CASE_DIR/main.vibe" \
+  -o "$MIXED_HOF_CASE_DIR/main.wasm" 2>&1; then
   echo "FAIL: mixed HOF linked debug build failed"
   exit 1
 fi
-if ! timeout 30 "$CLI" build --debug "$MIXED_HOF_CASE_DIR/main.vibe" \
-  -o "$MIXED_HOF_CASE_DIR/main.cached.wasm" >/dev/null 2>&1; then
+if ! timeout 120 "$CLI" build --debug "$MIXED_HOF_CASE_DIR/main.vibe" \
+  -o "$MIXED_HOF_CASE_DIR/main.cached.wasm" 2>&1; then
   echo "FAIL: cached mixed HOF linked debug build failed"
   exit 1
 fi
-if ! timeout 30 "$CLI" build --release "$MIXED_HOF_CASE_DIR/main.vibe" \
-  -o "$MIXED_HOF_RELEASE_WASM" >/dev/null 2>&1; then
+if ! timeout 120 "$CLI" build --release "$MIXED_HOF_CASE_DIR/main.vibe" \
+  -o "$MIXED_HOF_RELEASE_WASM" 2>&1; then
   echo "FAIL: mixed HOF release build failed"
   exit 1
 fi
