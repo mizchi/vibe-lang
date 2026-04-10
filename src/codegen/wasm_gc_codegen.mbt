@@ -8846,7 +8846,7 @@ fn compile_stmt_gc(
         emit_local_get_gc(buf, scrut_idx)
       }
     }
-    @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, ..) => {
       let kind = infer_expr_kind_gc(ctx, fctx, expr)
       let scrut_idx = alloc_local_gc(fctx, kind)
       compile_expr_gc(ctx, fctx, buf, expr)
