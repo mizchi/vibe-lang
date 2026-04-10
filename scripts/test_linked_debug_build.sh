@@ -22,8 +22,18 @@ MIXED_HOF_RELEASE_WASM="$MIXED_HOF_CASE_DIR/main.release.wasm"
 
 echo "=== linked debug build: selfhost compiler ==="
 
-# Clean cache
-CACHE_DIR="$ROOT_DIR/vibe/.vibe/debug/compiler_index"
+# Clean cache.
+#
+# `vibe build --debug` routes its precompiled library wasm through
+# `find_vibe_cache_root` (cli_compile_cmd.mbt), which hoists the
+# cache to the nearest ancestor `.vibe/` directory and keys it by
+# the relative path of the entry. For `vibe/compiler/index.vibe`
+# that resolves to `vibe/compiler/.vibe/debug/index/`, NOT the
+# legacy `vibe/.vibe/debug/compiler_index` path this script used
+# to assume. The stale path meant `rm -rf` was a no-op, `find`
+# over a non-existent dir exited 1, `pipefail` propagated the
+# failure, and `set -e` killed the script before steps 5-7.
+CACHE_DIR="$ROOT_DIR/vibe/compiler/.vibe/debug/index"
 rm -rf "$CACHE_DIR"
 
 # First build (full: db load + library compilation)
@@ -67,13 +77,16 @@ if [ "$SIZE1" -ne "$SIZE2" ]; then
   echo "  WARNING: sizes differ (expected identical)"
 fi
 
-# Library module count
-LIB_COUNT=$(find "$CACHE_DIR" -name "*.wasm" 2>/dev/null | wc -l | tr -d ' ')
+# Library module count. Guard against missing cache dir under `set -euo
+# pipefail`: `find` on a non-existent path exits 1 and pipefail kills
+# the script. `|| true` makes the pipe resilient without silencing a
+# genuinely broken build.
+LIB_COUNT=$( { find "$CACHE_DIR" -name "*.wasm" 2>/dev/null || true; } | wc -l | tr -d ' ')
 echo "  library modules: $LIB_COUNT"
 
 # WASI import check
 WASI_MODULES=0
-for f in $(find "$CACHE_DIR" -name "*.wasm" 2>/dev/null); do
+for f in $({ find "$CACHE_DIR" -name "*.wasm" 2>/dev/null || true; }); do
   count=$(wasm-tools print "$f" 2>/dev/null | grep -c "wasi:" || true)
   if [ "$count" -gt 0 ]; then
     WASI_MODULES=$((WASI_MODULES + 1))
