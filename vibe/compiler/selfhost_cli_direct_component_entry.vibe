@@ -124,13 +124,39 @@ let decode_hex_payload = (hex: String) -> String with { Error } {
   }
 }
 
+// Pre-allocate the 16 hex-digit strings in an Array once, outside the hot
+// loop, so the StringBuilder::push calls only forward cached string refs and
+// do not allocate anything fresh between pushes. See issue #268:
+//
+// `StringBuilder::push`'s full-realloc grow path (triggered when interleaved
+// heap allocations move the heap tip away from the builder between pushes)
+// updates only the callee's local pointer, not the caller's variable
+// binding, so every realloc silently drops subsequent pushes. The original
+// implementation called `hex_digit(...)` inside the push argument, which
+// allocates a fresh String via `String::from_char_code` and bumps the heap
+// tip — after the first 256 pushes (the StringBuilder's initial capacity),
+// grow_check takes the full-realloc path on every push and the caller's
+// `out` binding keeps seeing the stale, pre-realloc buffer. For a 1024-byte
+// chunk this truncated the hex encoding at 256 chars (128 bytes) regardless
+// of input size, corrupting every subsequent self-compile output.
+//
+// Caching the hex digits in a local Array keeps the StringBuilder at the
+// heap tip throughout the loop, so only the cheap in-place extension path
+// runs and all 2 * count pushes land in the same buffer. A proper fix
+// belongs in the wasm codegen for StringBuilder::push: the realloc path
+// needs to either keep the old header as a forwarding pointer, or update
+// the caller's binding. Tracked in #268.
 let encode_cached_hex_chunk = (start: Int, count: Int) -> String {
+  let hex_table = Array::slice([
+    "0", "1", "2", "3", "4", "5", "6", "7",
+    "8", "9", "a", "b", "c", "d", "e", "f"
+  ], 0, 16)
   let out = StringBuilder::new()
   let mut i = 0
   while i < count {
     let byte = Bytes::get(cached_compile_bytes, start + i)
-    StringBuilder::push(out, hex_digit((byte>>4)&15))
-    StringBuilder::push(out, hex_digit(byte&15))
+    StringBuilder::push(out, Array::get(hex_table, (byte >> 4) & 15))
+    StringBuilder::push(out, Array::get(hex_table, byte & 15))
     i = i + 1
   }
   StringBuilder::freeze(out)
