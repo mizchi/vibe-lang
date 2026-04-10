@@ -64,6 +64,7 @@ fi
 log_info "Using wasmtime: $WASMTIME ($($WASMTIME --version 2>/dev/null || echo unknown))"
 if ! require_cmd wasm-tools; then log_skip "wasm-tools not found"; exit 0; fi
 if ! require_cmd cargo; then log_skip "cargo not found (needed for Rust adapter build)"; exit 0; fi
+if ! require_cmd wac; then log_skip "wac not found (needed for P3 component composition)"; exit 0; fi
 
 # Step 1: Build adapter
 log_info "Building P3 adapter component..."
@@ -87,6 +88,7 @@ fi
 test_scalar_handler() {
   local name="scalar_hello"
   local src="$OUT_DIR/${name}.vibe"
+  local plug_component="$OUT_DIR/${name}.plug.wasm"
   local component="$OUT_DIR/${name}.p3.component.wasm"
 
   cat > "$src" << 'VIBE'
@@ -96,9 +98,23 @@ export let handler = (method: String, url: String) -> Int {
 handler("GET", "/")
 VIBE
 
-  log_info "Compiling $name..."
-  if ! "$VIBE" compile --compose-p3 "$src" --adapter "$ADAPTER_COMPONENT" -o "$component" 2>/dev/null; then
-    log_fail "$name: compose-p3 compilation failed"
+  # Compose via wac rather than `vibe compile --compose-p3` because the
+  # built-in mwac plug_components does not forward component type definitions
+  # referenced by the socket's imports (issue #267). wac handles this case
+  # correctly and is already required by the selfhost-cli direct-component
+  # test, so assuming it is on PATH is consistent with the rest of the
+  # component-model test fleet.
+  log_info "Compiling $name plug..."
+  if ! "$VIBE" compile --component-string-lift "$src" -o "$plug_component" 2>/dev/null; then
+    log_fail "$name: component-string-lift compilation failed"
+    return
+  fi
+  log_info "Composing $name with adapter via wac plug..."
+  if ! wac plug \
+        --plug "$plug_component" \
+        -o "$component" \
+        "$ADAPTER_COMPONENT" 2>/dev/null; then
+    log_fail "$name: wac plug composition failed"
     return
   fi
   log_pass "$name: compiled to P3 component"
