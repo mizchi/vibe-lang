@@ -330,9 +330,11 @@ SELFHOST_COMPILED_TEST_FILES=()
 #        helpers were defined identically in both builtins_string1.vibe and
 #        builtins_string2.vibe, and `dedupe_dependency_value_defs` kept only
 #        string1's version, so string2 lookups silently returned None and
-#        traped on assert(false). Renamed to `lookup_string2_group_*` (in
-#        builtins_string2.vibe) to sidestep the collision. #287 tracks the
-#        underlying bundler bug.
+#        traped on assert(false). Fixed properly in bundle_rename.mbt: the
+#        bundler now detects non-exported let-bindings with colliding names
+#        and rewrites the second module's definition + references with a
+#        source-prefixed mangle (`__m_<basename>__<name>`). Both modules'
+#        helpers survive intact in the bundled AST.
 #        - checker_parity_test.vibe :: 172 test cases — the compiled batch
 #                                  wasm for this file never produces any
 #                                  output before the stage timeout. 10+

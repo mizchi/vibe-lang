@@ -1195,7 +1195,19 @@ fn collect_dependency_defs(
   // Skip the entry module itself (it will be added separately)
   if not(is_entry) {
     let dep_ast = db.ast_with_hash_imports(path)
-    for stmt in dep_ast.stmts {
+    // #287 fix: detect non-exported Let name collisions with already-
+    // emitted stmts from earlier-processed modules and rewrite this
+    // module's definitions + references to use a mangled name. Without
+    // this, `dedupe_dependency_value_defs` below would silently drop
+    // one of the colliding bindings and leave downstream calls to
+    // dispatch to the wrong function.
+    let rename_map = compute_module_rename_map(dep_ast.stmts, out, path)
+    let source_stmts = if rename_map.size() > 0 {
+      apply_module_rename(dep_ast.stmts, rename_map)
+    } else {
+      dep_ast.stmts
+    }
+    for stmt in source_stmts {
       match stmt {
         // Convert exports to regular definitions
         @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
