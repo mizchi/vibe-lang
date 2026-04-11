@@ -49,6 +49,8 @@ fn compile_builtin_collection(
       emit_i32_const_raw(buf, 1)
       emit_i32_add(buf)
       emit_i32_store(buf, 4)
+      // Write updated pointer back to caller local if realloc happened (see #285).
+      emit_writeback_builder_ptr_if_local(ctx, buf, pos_args[0], ptr_local)
       // return unit
       emit_i64_const_tagged(buf, 0L)
     }
@@ -88,6 +90,8 @@ fn compile_builtin_collection(
       emit_i32_const_raw(buf, 1)
       emit_i32_add(buf)
       emit_i32_store(buf, 4)
+      // Write updated pointer back to caller local if realloc happened (see #285).
+      emit_writeback_builder_ptr_if_local(ctx, buf, pos_args[0], ptr_local)
       // return unit
       emit_i64_const_tagged(buf, 0L)
     }
@@ -570,6 +574,8 @@ fn compile_builtin_collection(
         emit_i32_store(buf, 4)
         buf.push((11).to_byte()) // end if
       }
+      // Write updated pointer back to caller local if realloc happened (see #285).
+      emit_writeback_builder_ptr_if_local(ctx, buf, pos_args[0], ptr_local)
       // return unit
       emit_i64_const_tagged(buf, 0L)
     }

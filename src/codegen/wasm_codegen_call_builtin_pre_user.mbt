@@ -202,6 +202,42 @@ fn emit_builder_grow_check(
 }
 
 ///|
+/// If `caller_arg` is a simple identifier bound to a local (not a captured mut
+/// var), re-tag `ptr_local` as obj and write it back to the caller local.
+/// This propagates realloc results across the push boundary — without this,
+/// the caller's variable would hold a stale pointer and subsequent accesses
+/// would read/write the abandoned pre-realloc buffer, silently losing data.
+/// See #285.
+fn emit_writeback_builder_ptr_if_local(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  caller_arg : @core.Expr,
+  ptr_local : Int,
+) -> Unit {
+  match caller_arg {
+    @core.Expr::Ident(name~, ..) => {
+      // Mut captured vars are stored through a ref cell — skip for now; the
+      // write-back would need an i64.store through the cell pointer.
+      if ctx.mut_captured_vars.contains(name) {
+        return
+      }
+      match ctx.locals.get(name) {
+        Some(caller_local_idx) => {
+          // Re-tag ptr_local: tagged_i64 = (i32 as u64) | tag_obj
+          emit_local_get(buf, ptr_local)
+          emit_i64_extend_i32_u(buf)
+          emit_i64_const_raw(buf, tag_obj.to_int64())
+          emit_i64_or(buf)
+          emit_local_set(buf, caller_local_idx)
+        }
+        None => ()
+      }
+    }
+    _ => ()
+  }
+}
+
+///|
 /// Emit bulk capacity check for operations like push_all that add multiple elements.
 /// Ensures cap >= needed_total (len + additional_count).
 /// ptr_local may be updated if realloc occurs.

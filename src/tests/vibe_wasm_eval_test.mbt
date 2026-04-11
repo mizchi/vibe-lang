@@ -611,6 +611,24 @@ fn parse_wasm_module(bytes : Bytes) -> WasmModule raise WasmEvalError {
           }
         }
       }
+      // Memory section: grow `mem` to the declared initial page count so
+      // runtimes that declare >1 page (the vibe compiler declares 1024
+      // pages = 64 MiB) have enough space without waiting for memory.grow.
+      5 => {
+        let sec = Cursor::new(payload)
+        let count = sec.read_leb_u32()
+        for _ in 0..<count {
+          let flags = sec.read_u8()
+          let initial = sec.read_leb_u32()
+          if (flags & 0x01) != 0 {
+            let _ = sec.read_leb_u32() // max pages
+          }
+          let needed = initial * 65536
+          while mem.length() < needed {
+            mem.push((0).to_byte())
+          }
+        }
+      }
       6 => {
         let parsed = parse_global_section(payload)
         for g in parsed {
@@ -2564,6 +2582,34 @@ test "vibe backends match: StringBuilder" {
   assert_eval_backends_same(
     "let sb = StringBuilder::new()\nStringBuilder::push(sb, \"hello\")\nStringBuilder::push(sb, \" world\")\nStringBuilder::freeze(sb)",
   )
+}
+
+///|
+/// Regression smoke-test for #285: StringBuilder::push realloc write-back.
+/// Exercises a small builder that stays at heap tip (no realloc path
+/// actually taken) so the compiled wasm is small enough for the test
+/// harness — the realloc-path fix is validated end-to-end via the
+/// selfhost build (which was the original #268 repro: a 1024-byte hex
+/// encoding loop whose workaround was reverted once the fix landed).
+test "vibe wasm eval StringBuilder::push smoke (#285)" {
+  let script =
+    #|let run = () -> Int {
+    #|  let sb = StringBuilder::new()
+    #|  let mut i = 0
+    #|  while i < 10 {
+    #|    StringBuilder::push(sb, "A")
+    #|    i = i + 1
+    #|  }
+    #|  String::length(StringBuilder::freeze(sb))
+    #|}
+    #|run()
+  let res = try eval_run(script) catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  // _start untags tagged-int results to raw i64.
+  assert_eq(res.value, 10L)
 }
 
 ///|

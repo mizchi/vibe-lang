@@ -395,6 +395,8 @@ fn compile_call_builtin_post_user_inner(
       emit_local_get(buf, src_len_local)
       emit_i32_add(buf)
       emit_i32_store(buf, 4)
+      // Write updated pointer back to caller local if realloc happened (see #285).
+      emit_writeback_builder_ptr_if_local(ctx, buf, pos_args[0], dst_ptr_local)
       // return Unit (tagged 0)
       emit_i64_const_tagged(buf, 0L)
     }
