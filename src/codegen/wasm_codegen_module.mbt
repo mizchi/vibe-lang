@@ -3333,6 +3333,15 @@ fn emit_module_with_coverage(
           }
           _ => ()
         }
+      // Standalone `export { name1, name2, ... }` block. Typically used to
+      // re-export names imported from another file via `import ./file { name }`
+      // in the same translation unit. After bundling, those names are regular
+      // Let/ExportLet statements in the merged AST, so `collect_emittable_
+      // user_exports` can resolve them via `ctx.fn_indices`. See #286.
+      @core.Stmt::Export(names~, ..) =>
+        for name in names {
+          ctx.exported_fns[name] = true
+        }
       _ => ()
     }
   }

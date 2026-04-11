@@ -413,8 +413,15 @@ fn collect_entry_points(
       | @core.Stmt::InternalTraitDef(..)
       | @core.Stmt::TraitImpl(..)
       | @core.Stmt::InternalExportLet(..)
-      | @core.Stmt::Export(..)
       | @core.Stmt::ReExport(..) => ()
+      // `export { name1, name2, ... }` — names are re-exports whose
+      // definitions live elsewhere in the (post-bundle) module. Mark each
+      // name as a DCE root so the definition and its transitive deps are
+      // preserved through the wasm export. See #286.
+      @core.Stmt::Export(names~, ..) =>
+        for name in names {
+          entries[name] = true
+        }
       @core.Stmt::ExportStructDef(name~, ..) => entries[name] = true
       @core.Stmt::ExportEffectDef(name~, ..) => entries[name] = true
     }

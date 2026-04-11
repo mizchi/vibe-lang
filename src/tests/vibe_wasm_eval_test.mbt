@@ -611,24 +611,6 @@ fn parse_wasm_module(bytes : Bytes) -> WasmModule raise WasmEvalError {
           }
         }
       }
-      // Memory section: grow `mem` to the declared initial page count so
-      // runtimes that declare >1 page (the vibe compiler declares 1024
-      // pages = 64 MiB) have enough space without waiting for memory.grow.
-      5 => {
-        let sec = Cursor::new(payload)
-        let count = sec.read_leb_u32()
-        for _ in 0..<count {
-          let flags = sec.read_u8()
-          let initial = sec.read_leb_u32()
-          if (flags & 0x01) != 0 {
-            let _ = sec.read_leb_u32() // max pages
-          }
-          let needed = initial * 65536
-          while mem.length() < needed {
-            mem.push((0).to_byte())
-          }
-        }
-      }
       6 => {
         let parsed = parse_global_section(payload)
         for g in parsed {
@@ -2608,8 +2590,9 @@ test "vibe wasm eval StringBuilder::push smoke (#285)" {
   } noraise {
     r => r
   }
-  // _start untags tagged-int results to raw i64.
-  assert_eq(res.value, 10L)
+  // run_wasm calls _vibe_run_tagged, which returns the raw tagged i64.
+  assert_true(is_tagged_int(res.value))
+  assert_eq(decode_int(res.value), 10L)
 }
 
 ///|
