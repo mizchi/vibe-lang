@@ -625,11 +625,32 @@ fn run_test_file_compiled_with_cache(
     0
   }
   if fail_count > 0 {
+    // If the batch reports a clearly large failure count (e.g. the
+    // batch wasm traped before outputting "last: N" and we defaulted to
+    // `cases.length()`), skip per-case diagnostics entirely — running
+    // per-case on 150+ tests takes an hour. See #288.
+    if fail_count >= cases.length() && cases.length() >= 30 {
+      let failures : Array[CliTestFailure] = []
+      let msg = "batch wasm exited non-zero and did not report a test count; " +
+        "per-case diagnostics skipped because the file has " +
+        cases.length().to_string() +
+        " tests (#288). Run with a smaller test subset to diagnose."
+      failures.push(
+        CliTestFailure::{ name: Some("<batch mode failure>"), error: msg },
+      )
+      return CompiledTestAttempt::Success({
+        total: cases.length(),
+        passed: 0,
+        failed: 1,
+        failures,
+      })
+    }
     // Any batch failure falls back to per-case execution so failure details do
     // not depend on the legacy interpreter path.
     run_test_file_compiled_per_case(
       cache, cases, source, top_level_source, wrapper_prelude_source, parent, stamp,
       runner, http_runner, use_node_runner, stop_on_first_failure,
+      batch_fail_count=fail_count,
     )
   } else {
     // ADR-0026: Save pure test result cache on success
@@ -658,10 +679,30 @@ fn run_test_file_compiled_per_case(
   http_runner : HttpHostRunner?,
   use_node_runner : Bool,
   stop_on_first_failure : Bool,
+  batch_fail_count~ : Int = 0,
 ) -> CompiledTestAttempt {
   let failures : Array[CliTestFailure] = []
   let mut passed = 0
+  // Per-case fallback diagnostics are O(N) compile+run, and each compile
+  // of a test case re-runs the whole frontend pipeline (no incremental
+  // cache at this layer).  For files with ~150+ test cases this can take
+  // 60+ minutes to run to completion, which looks like a hang in CI.
+  // Cap the per-case diagnostic runs at `max_per_case_runs` cases OR
+  // `max_reported_failures` failures, whichever comes first, and append
+  // a synthetic "capped" failure entry so the user sees what happened.
+  // See #288.
+  let max_per_case_runs = 20
+  let max_reported_failures = 3
+  let mut skipped_remaining = false
   for i, case in cases {
+    if failures.length() >= max_reported_failures {
+      skipped_remaining = true
+      break
+    }
+    if i >= max_per_case_runs {
+      skipped_remaining = true
+      break
+    }
     let case_body_source = render_stmt_snippets(source, case.body.stmts)
     let case_source = build_compiled_test_case_source(
       top_level_source, wrapper_prelude_source, case_body_source,
@@ -695,6 +736,28 @@ fn run_test_file_compiled_per_case(
       CompiledTestCaseExec::Error(err) =>
         failures.push(CliTestFailure::{ name: case.name, error: err })
     }
+  }
+  if skipped_remaining {
+    let remaining = cases.length() - passed - failures.length()
+    let batch_hint = if batch_fail_count > 0 {
+      " (batch mode reported " + batch_fail_count.to_string() + " failing case(s))"
+    } else {
+      ""
+    }
+    let msg = "stopped per-case diagnosis after " +
+      passed.to_string() +
+      " passed, " +
+      failures.length().to_string() +
+      " failed; " +
+      remaining.to_string() +
+      " cases not individually verified (#288)" +
+      batch_hint
+    failures.push(
+      CliTestFailure::{
+        name: Some("<per-case diagnosis capped>"),
+        error: msg,
+      },
+    )
   }
   CompiledTestAttempt::Success({
     total: cases.length(),
