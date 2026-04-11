@@ -459,7 +459,12 @@ fn run_test_file_compiled_with_cache(
   }
   let runner = match resolve_bench_wasm_runner(entry) {
     Ok(v) => v
-    Err(err) => return CompiledTestAttempt::Unsupported(err)
+    // Tooling unavailability (e.g. wasmtime not found) must NOT degrade to a
+    // skip in #266's TestFileOutcome::Skipped path — that would silently
+    // green-light a broken environment in CI / local gating. Return an
+    // explicit Error so the file ends up in TestFileOutcome::Errored and the
+    // process exits with a failure code.
+    Err(err) => return CompiledTestAttempt::Error(err)
   }
   let (test_cache_dir, cached_batch_wasm_path, cached_batch_hash_path) = compiled_test_batch_cache_paths(
     entry, use_node_runner,
@@ -479,7 +484,11 @@ fn run_test_file_compiled_with_cache(
     true =>
       match resolve_http_host_runner(entry) {
         Ok(v) => Some(v)
-        Err(err) => return CompiledTestAttempt::Unsupported(err)
+        // Same as resolve_bench_wasm_runner above: a missing host runner
+        // (e.g. node not in PATH) is an environment problem, not an
+        // unsupported test feature, and must surface as Errored so the
+        // process fails instead of silently skipping.
+        Err(err) => return CompiledTestAttempt::Error(err)
       }
     false => None
   }
