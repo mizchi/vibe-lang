@@ -459,7 +459,12 @@ fn run_test_file_compiled_with_cache(
   }
   let runner = match resolve_bench_wasm_runner(entry) {
     Ok(v) => v
-    Err(err) => return CompiledTestAttempt::Unsupported(err)
+    // Tooling unavailability (e.g. wasmtime not found) must NOT degrade to a
+    // skip in #266's TestFileOutcome::Skipped path — that would silently
+    // green-light a broken environment in CI / local gating. Return an
+    // explicit Error so the file ends up in TestFileOutcome::Errored and the
+    // process exits with a failure code.
+    Err(err) => return CompiledTestAttempt::Error(err)
   }
   let (test_cache_dir, cached_batch_wasm_path, cached_batch_hash_path) = compiled_test_batch_cache_paths(
     entry, use_node_runner,
@@ -479,7 +484,11 @@ fn run_test_file_compiled_with_cache(
     true =>
       match resolve_http_host_runner(entry) {
         Ok(v) => Some(v)
-        Err(err) => return CompiledTestAttempt::Unsupported(err)
+        // Same as resolve_bench_wasm_runner above: a missing host runner
+        // (e.g. node not in PATH) is an environment problem, not an
+        // unsupported test feature, and must surface as Errored so the
+        // process fails instead of silently skipping.
+        Err(err) => return CompiledTestAttempt::Error(err)
       }
     false => None
   }
@@ -691,11 +700,22 @@ fn run_test_file_compiled_per_case(
 }
 
 ///|
+/// Outcome of running a single test file. Skipped is used for cases the
+/// compiled backend cannot attempt at all (e.g. unsupported host imports);
+/// these should not count as failures and should not cause CI wrappers like
+/// the selfhost bootstrap gate to fail. See issue #266.
+enum TestFileOutcome {
+  Done(CliTestReport)
+  Skipped(String)
+  Errored(String)
+}
+
+///|
 fn run_test_file_with_backend_with_cache(
   cache : CliEntryDbCache,
   entry_path : String,
   features : @runtime.RuntimeFeatureFlags,
-) -> Result[CliTestReport, String] {
+) -> TestFileOutcome {
   ignore(features)
   // Runtime import failures are detected from compiled failure reports, so
   // ordinary failing tests keep the compiled per-case reporting path.
@@ -705,15 +725,15 @@ fn run_test_file_with_backend_with_cache(
     CompiledTestAttempt::Success(report) => {
       if report.failed > 0 &&
         compiled_report_has_runtime_import_failures(report) {
-        return Err(
+        return TestFileOutcome::Skipped(
           "compiled test backend unsupported: runtime imports are not available in compiled mode",
         )
       }
-      Ok(report)
+      TestFileOutcome::Done(report)
     }
     CompiledTestAttempt::Unsupported(err) =>
-      Err("compiled test backend unsupported: " + err)
-    CompiledTestAttempt::Error(err) => Err(err)
+      TestFileOutcome::Skipped("compiled test backend unsupported: " + err)
+    CompiledTestAttempt::Error(err) => TestFileOutcome::Errored(err)
   }
 }
 
@@ -820,21 +840,22 @@ fn test_cmd_sequential(
   let mut total = 0
   let mut passed = 0
   let mut failed_count = 0
+  let mut skipped_count = 0
   let file_count = entry_paths.length()
   let cache = CliEntryDbCache::new()
   let use_session_http = cli_use_session_http()
   for entry_path in entry_paths {
-    let report = if use_session_http {
+    let outcome = if use_session_http {
       match run_test_file_via_session(entry_path, features) {
-        Ok(v) => Ok(v)
+        Ok(v) => TestFileOutcome::Done(v)
         Err(_) =>
           run_test_file_with_backend_with_cache(cache, entry_path, features)
       }
     } else {
       run_test_file_with_backend_with_cache(cache, entry_path, features)
     }
-    match report {
-      Ok(report) => {
+    match outcome {
+      TestFileOutcome::Done(report) => {
         if !print_cli_test_report(entry_path, report) {
           failed = true
         }
@@ -842,17 +863,27 @@ fn test_cmd_sequential(
         passed += report.passed
         failed_count += report.failed
       }
-      Err(err) => {
+      TestFileOutcome::Skipped(reason) => {
+        println("\{entry_path}: skipped (\{reason})")
+        skipped_count += 1
+      }
+      TestFileOutcome::Errored(err) => {
         println("[\{entry_path}] \{err}")
         failed = true
       }
     }
   }
   println(
-    "summary: files=\{file_count} total=\{total} passed=\{passed} failed=\{failed_count}",
+    "summary: files=\{file_count} total=\{total} passed=\{passed} failed=\{failed_count} skipped=\{skipped_count}",
   )
   if failed {
-    abort("test: failures detected")
+    // Use c_exit(1) instead of abort() so the process terminates cleanly
+    // instead of sending SIGABRT, which on Linux generates a noisy core
+    // dump and causes CI wrappers like `timeout` to report confusing
+    // "command dumped core" messages even though the failure is a normal
+    // test-suite exit. See issue #266.
+    println("test: failures detected")
+    c_exit(1)
   }
 }
 
@@ -1621,6 +1652,7 @@ fn test_cmd_parallel(
     let mut total = 0
     let mut passed = 0
     let mut failed_count = 0
+    let mut skipped_count = 0
     let mut any_failed = false
     let file_count = entry_paths.length()
     for result in results {
@@ -1661,15 +1693,28 @@ fn test_cmd_parallel(
             let file_total = parse_report_json_int(json, "total")
             let file_passed = parse_report_json_int(json, "passed")
             let file_failed = parse_report_json_int(json, "failed")
+            let file_skipped = parse_report_json_int(json, "skipped")
             let file_elapsed_ms = parse_report_json_int(json, "elapsed_ms")
             total += file_total
             passed += file_passed
             failed_count += file_failed
+            if file_skipped > 0 {
+              skipped_count += file_skipped
+            }
             if file_elapsed_ms > 0 {
               merged_batch_weights[test_batch_weight_cache_key(path)] = file_elapsed_ms
             }
-            let status = if file_failed == 0 { "ok" } else { "fail" }
-            println("\{path}: \{status} (\{file_passed}/\{file_total})")
+            if file_skipped > 0 && file_total == 0 && file_failed == 0 {
+              let reason = parse_report_json_string(json, "reason")
+              if reason.length() > 0 {
+                println("\{path}: skipped (\{reason})")
+              } else {
+                println("\{path}: skipped")
+              }
+            } else {
+              let status = if file_failed == 0 { "ok" } else { "fail" }
+              println("\{path}: \{status} (\{file_passed}/\{file_total})")
+            }
             if file_failed > 0 {
               any_failed = true
               match json {
@@ -1733,10 +1778,13 @@ fn test_cmd_parallel(
       None => ()
     }
     println(
-      "summary: files=\{file_count} total=\{total} passed=\{passed} failed=\{failed_count}",
+      "summary: files=\{file_count} total=\{total} passed=\{passed} failed=\{failed_count} skipped=\{skipped_count}",
     )
     if any_failed {
-      abort("test: failures detected")
+      // Use c_exit(1) instead of abort() to avoid SIGABRT + core dump on
+      // Linux. See the sequential path and issue #266.
+      println("test: failures detected")
+      c_exit(1)
     }
   })
 }
