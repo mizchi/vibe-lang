@@ -14,68 +14,14 @@ import ./token.vibe {
 
 //# Functions
 
-// Transform break(val) and continue(args) inside a loop body for desugaring.
-// break(val) → { __loop_result = val; break }
-// continue(a, b) → { let __lt0 = a; let __lt1 = b; p0 = __lt0; p1 = __lt1; continue }
-let rec desugar_loop_body = (expr: Expr, param_names: Array[String]) -> Expr {
-  match expr {
-    EBreak(opt) => match opt {
-      Some(val) => EAssign("__loop_result", desugar_loop_body(val, param_names), EBreak(None)),
-      None => EBreak(None)
-    },
-    EContinue(args) => {
-      if Array::length(args) == 0 {
-        EContinue(args)
-      } else {
-        let nargs = Array::length(args)
-        let nparams = Array::length(param_names)
-        if nargs > nparams {
-          // Guard: more args than params → use only param count to avoid OOB
-          EContinue(args)
-        } else {
-        let mut result = EContinue(Array::slice([EUnit], 0, 0))
-        let mut ci = nargs - 1
-        while ci >= 0 {
-          result = EAssign(Array::get(param_names, ci), EIdent(String::concat("__lt", __to_string(ci))), result)
-          ci = ci - 1
-        }
-        let mut ci2 = nargs - 1
-        while ci2 >= 0 {
-          result = ELet(String::concat("__lt", __to_string(ci2)), desugar_loop_body(Array::get(args, ci2), param_names), result)
-          ci2 = ci2 - 1
-        }
-        result
-        }
-      }
-    },
-    EWhile(_, _) => expr,
-    ELoop(_, _) => expr,
-    EFn(_, _, _, _, _, _) => expr,
-    EIf(c, t, e) => EIf(desugar_loop_body(c, param_names), desugar_loop_body(t, param_names), desugar_loop_body(e, param_names)),
-    ELet(n, v, b) => ELet(n, desugar_loop_body(v, param_names), desugar_loop_body(b, param_names)),
-    ELetMut(n, v, b) => ELetMut(n, desugar_loop_body(v, param_names), desugar_loop_body(b, param_names)),
-    ESeq(a, b) => ESeq(desugar_loop_body(a, param_names), desugar_loop_body(b, param_names)),
-    EAssign(n, v, c) => EAssign(n, desugar_loop_body(v, param_names), desugar_loop_body(c, param_names)),
-    // EMatch/EHandle: pass through unchanged.
-    // Limitation: break/continue inside match/handle arms won't be desugared.
-    // The host compiler crashes on (Pat, Expr) tuple operations, preventing
-    // arms transformation. The selfhost parser (which compiles user code) handles
-    // ELoop natively via this desugaring, so this only affects programs compiled
-    // by the host-compiled selfhost. A future fix could add arms recursion when
-    // the host compiler supports Pat tuple types.
-    EMatch(_, _) => expr,
-    EHandle(_, _) => expr,
-    EBinOp(op, l, r) => EBinOp(op, desugar_loop_body(l, param_names), desugar_loop_body(r, param_names)),
-    ECall(_, _) => expr,
-    ELetRec(n, v, b) => ELetRec(n, desugar_loop_body(v, param_names), desugar_loop_body(b, param_names)),
-    EThrow(e) => EThrow(desugar_loop_body(e, param_names)),
-    EUnaryOp(op, e) => EUnaryOp(op, desugar_loop_body(e, param_names)),
-    EDot(obj, field) => EDot(desugar_loop_body(obj, param_names), field),
-    EAssignOp(n, op, v, c) => EAssignOp(n, op, desugar_loop_body(v, param_names), desugar_loop_body(c, param_names)),
-    _ => expr
-  }
-}
-
+// `parse_loop_primary` returns a structural `ELoop(params, body)` node
+// for parameterized loops.  The break/continue desugaring and the
+// eventual lowering into `letmut + while` both live in
+// `vibe/compiler/lower_loop.vibe`, which runs inside
+// `compile_wasi_module_linked_impl` (and `compile_module`) before the
+// AST reaches codegen.  Keeping ELoop in the parser output preserves
+// the AST-to-source roundtrip for tools like `parse_print` and the
+// printer (see parser_loop_test.vibe "parse parameterized loop").
 
 let parse_loop_primary = (tokens: Array[Token], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int)with { Error }) -> (Expr, Int)with { Error } {
   match peek(tokens, pos + 1) {
@@ -111,20 +57,26 @@ let parse_loop_primary = (tokens: Array[Token], pos: Int, parse_recur: (Array[To
       }
       let body_pos = expect_tk(tokens, cur, "{")
       let (body, end_pos) = parse_recur(tokens, body_pos, mode_block)
-      // Desugar ELoop into ELetMut + EWhile
+      // Return a structural `ELoop(params, body)` node instead of
+      // eager-desugaring into `ELetMut + EWhile`. The print_expr
+      // roundtrip relies on this to reconstruct the original source
+      // form — see parser_loop_test.vibe "parse parameterized loop".
+      //
+      // The break/continue desugaring + while/letmut lowering still
+      // happens later in the pipeline (`lower_loop.vibe:
+      // lower_loop_expr`) before the AST reaches codegen, which does
+      // not know how to emit ELoop natively.
       let pnames = ArrayBuilder::freeze(param_names_b)
       let pinits = ArrayBuilder::freeze(param_inits_b)
-      let transformed_body = desugar_loop_body(body, pnames)
-      let while_expr = EWhile(EBool(true), transformed_body)
-      let result = ELetMut("__loop_result", EInt(0),
-        ESeq(while_expr, EIdent("__loop_result")))
-      let mut wrapped = result
-      let mut wi = Array::length(pnames) - 1
-      while wi >= 0 {
-        wrapped = ELetMut(Array::get(pnames, wi), Array::get(pinits, wi), wrapped)
-        wi = wi - 1
+      let params = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
+      let mut pi = 0
+      while pi < Array::length(pnames) {
+        Array::push(params, (Array::get(pnames, pi), Array::get(pinits, pi)))
+        pi = pi + 1
       }
-      (wrapped, end_pos)
+      (ELoop(params, body), end_pos)
     },
     _ => {
       let body_pos = expect_tk(tokens, pos + 1, "{")

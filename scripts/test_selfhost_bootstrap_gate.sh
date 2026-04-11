@@ -311,14 +311,15 @@ SELFHOST_COMPILED_TEST_FILES=()
 #      issue #266 — the original bootstrap gate masked them with SIGABRT;
 #      now that the runner exits cleanly, they need to be excluded explicitly
 #      until the underlying selfhost codegen bugs are fixed.
-#        - parser_loop_test.vibe :: "parse parameterized loop" fails on a
-#                                  long `result == "<expected>"` string
-#                                  equality assertion. The parse/print
-#                                  pipeline itself succeeds in isolation,
-#                                  but the final equality check trips an
-#                                  unreachable trap — probably a selfhost
-#                                  compiler issue with String equality on
-#                                  long literals. (6/7 pass.)
+#        NOTE: parser_loop_test.vibe was previously excluded because the
+#        parser eager-desugared `loop (i = 10, ...) { ... }` into a
+#        `letmut + while` form at parse time, so the `parse_print`
+#        roundtrip produced the desugared shape (254 chars) instead of
+#        the original `loop (...)` syntax (88 chars) the test asserts on.
+#        Fixed by: parser now returns `ELoop(params, body)` structurally,
+#        and `vibe/compiler/lower_loop.vibe` runs before codegen to
+#        transform `ELoop` → `ELetMut + EWhile`. parser_loop_test.vibe now
+#        reports 7/7 passing and is back in the compiled shard.
 #                                  NOTE: dce_test.vibe / desugar_test.vibe
 #                                  were previously excluded here; they are
 #                                  fixed in this PR (dce.vibe early-return
@@ -351,7 +352,7 @@ SELFHOST_COMPILED_TEST_FILES=()
 for test_path in "$PROJECT_ROOT"/vibe/compiler/*_test.vibe; do
   test_name="$(basename "$test_path")"
   case "$test_name" in
-    selfhost_s5_test.vibe|selfhost_s5_*_test.vibe|codegen_test.vibe|codegen_*_test.vibe|compiler_cache_test.vibe|cli_cache_test.vibe|cli_adapter_cache_test.vibe|cache_probe_*_bench_test.vibe|cache_probe_test.vibe|compiler_fs_test.vibe|module_loader_check_module_test.vibe|fixture_real_selfhost_test.vibe|checker_error_format_test.vibe|compiler_cache_advanced_test.vibe|file_compile_mode_test.vibe|module_loader_collect_sources_test.vibe|persistent_cache_test.vibe|type_db_cross_module_test.vibe|type_db_test.vibe|compiler_cache_prepare_test.vibe|fixture_test.vibe|coverage_selfhost_suite_lib_test.vibe|loader_persistent_cache_test.vibe|wasm_emit_test.vibe|module_loader_test.vibe|fixture_roundtrip_test.vibe|checker_effects_test.vibe|parser_loop_test.vibe|checker_parity_test.vibe|component_codegen_test.vibe)
+    selfhost_s5_test.vibe|selfhost_s5_*_test.vibe|codegen_test.vibe|codegen_*_test.vibe|compiler_cache_test.vibe|cli_cache_test.vibe|cli_adapter_cache_test.vibe|cache_probe_*_bench_test.vibe|cache_probe_test.vibe|compiler_fs_test.vibe|module_loader_check_module_test.vibe|fixture_real_selfhost_test.vibe|checker_error_format_test.vibe|compiler_cache_advanced_test.vibe|file_compile_mode_test.vibe|module_loader_collect_sources_test.vibe|persistent_cache_test.vibe|type_db_cross_module_test.vibe|type_db_test.vibe|compiler_cache_prepare_test.vibe|fixture_test.vibe|coverage_selfhost_suite_lib_test.vibe|loader_persistent_cache_test.vibe|wasm_emit_test.vibe|module_loader_test.vibe|fixture_roundtrip_test.vibe|checker_effects_test.vibe|checker_parity_test.vibe|component_codegen_test.vibe)
       ;;
     *)
       SELFHOST_COMPILED_TEST_FILES+=("$test_path")
