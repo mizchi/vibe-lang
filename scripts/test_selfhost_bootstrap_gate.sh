@@ -325,16 +325,14 @@ SELFHOST_COMPILED_TEST_FILES=()
 #                                  on empty input, desugar.vibe rewritten
 #                                  without tuple destructuring in for-in
 #                                  loop variable).
-#        - builtins_test.vibe   :: 6 of 62 lookup_builtin tests trap with
-#                                  unreachable in compiled mode for the
-#                                  newer String:: methods (index_of,
-#                                  contains, starts_with, ends_with,
-#                                  from_char_code, char_code_at). The
-#                                  builtins_string1/2 lookup tables are
-#                                  evaluated correctly on the native
-#                                  interpreter; the compiled wasm test
-#                                  runner traps somewhere downstream. 56/62
-#                                  pass.
+#        NOTE: builtins_test.vibe was previously excluded for 6/62 failures
+#        on the `lookup_string2` path. Root cause: `lookup_string_group_a/b/c`
+#        helpers were defined identically in both builtins_string1.vibe and
+#        builtins_string2.vibe, and `dedupe_dependency_value_defs` kept only
+#        string1's version, so string2 lookups silently returned None and
+#        traped on assert(false). Renamed to `lookup_string2_group_*` (in
+#        builtins_string2.vibe) to sidestep the collision. #287 tracks the
+#        underlying bundler bug.
 #        - checker_parity_test.vibe :: 172 test cases — the compiled batch
 #                                  wasm for this file never produces any
 #                                  output before the stage timeout. 10+
@@ -351,7 +349,7 @@ SELFHOST_COMPILED_TEST_FILES=()
 for test_path in "$PROJECT_ROOT"/vibe/compiler/*_test.vibe; do
   test_name="$(basename "$test_path")"
   case "$test_name" in
-    selfhost_s5_test.vibe|selfhost_s5_*_test.vibe|codegen_test.vibe|codegen_*_test.vibe|compiler_cache_test.vibe|cli_cache_test.vibe|cli_adapter_cache_test.vibe|cache_probe_*_bench_test.vibe|cache_probe_test.vibe|compiler_fs_test.vibe|module_loader_check_module_test.vibe|fixture_real_selfhost_test.vibe|checker_error_format_test.vibe|compiler_cache_advanced_test.vibe|file_compile_mode_test.vibe|module_loader_collect_sources_test.vibe|persistent_cache_test.vibe|type_db_cross_module_test.vibe|type_db_test.vibe|compiler_cache_prepare_test.vibe|fixture_test.vibe|coverage_selfhost_suite_lib_test.vibe|loader_persistent_cache_test.vibe|wasm_emit_test.vibe|module_loader_test.vibe|fixture_roundtrip_test.vibe|checker_effects_test.vibe|parser_loop_test.vibe|builtins_test.vibe|checker_parity_test.vibe|component_codegen_test.vibe)
+    selfhost_s5_test.vibe|selfhost_s5_*_test.vibe|codegen_test.vibe|codegen_*_test.vibe|compiler_cache_test.vibe|cli_cache_test.vibe|cli_adapter_cache_test.vibe|cache_probe_*_bench_test.vibe|cache_probe_test.vibe|compiler_fs_test.vibe|module_loader_check_module_test.vibe|fixture_real_selfhost_test.vibe|checker_error_format_test.vibe|compiler_cache_advanced_test.vibe|file_compile_mode_test.vibe|module_loader_collect_sources_test.vibe|persistent_cache_test.vibe|type_db_cross_module_test.vibe|type_db_test.vibe|compiler_cache_prepare_test.vibe|fixture_test.vibe|coverage_selfhost_suite_lib_test.vibe|loader_persistent_cache_test.vibe|wasm_emit_test.vibe|module_loader_test.vibe|fixture_roundtrip_test.vibe|checker_effects_test.vibe|parser_loop_test.vibe|checker_parity_test.vibe|component_codegen_test.vibe)
       ;;
     *)
       SELFHOST_COMPILED_TEST_FILES+=("$test_path")
