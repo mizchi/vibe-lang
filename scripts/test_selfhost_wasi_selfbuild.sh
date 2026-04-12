@@ -111,6 +111,18 @@ is_non_negative_int() {
 SELFBUILD_START_SEC="$(date +%s)"
 mkdir -p "$OUT_DIR"
 rm -f "$STAGE1_WASM" "$STAGE2_WASM"
+# Probe-side leftover artifacts: the fs_parse / module_source / cli /
+# selfbuild_probe_type_db_* probes write fingerprint-keyed cache files
+# under `_build/vibe_selfhost_*.tsv` and a couple of test source files
+# under `_build/persistent_type_env_probe_*.vibe`. If a previous run
+# left these around with stale content, the second probe call sees a
+# warm cache that was written for a DIFFERENT compiler version and
+# decodes garbage as a string, surfacing as a "[crash debug]" tag-error
+# dump from wasm_vibe_host_runner.js. Wipe them at the start of each
+# run so the probes always start from a cold cache.
+rm -f "$PROJECT_ROOT"/_build/vibe_selfhost_*.tsv
+rm -f "$PROJECT_ROOT"/_build/vibe_selfhost_*.hex
+rm -f "$PROJECT_ROOT"/_build/persistent_type_env_probe_*.vibe
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
     echo "### Selfhost WASI Selfbuild Timings"
@@ -381,6 +393,97 @@ if [ "$HASH_STAGE1" != "$HASH_STAGE2" ]; then
   fi
 fi
 
+# ----------------------------------------------------------------------
+# Stage2 determinism check.
+#
+# Stage2 in this pipeline is the result of running stage1's
+# `selfbuild_compile_stage2` function: it takes the runtime entry source
+# and produces a small wasm module (`selfbuild_runtime_entry.vibe`,
+# currently ~2.5 KB).  This is the smoke-test that the selfhost
+# compiler — including the new bundler rename pass (#287) and the
+# ELoop lowering pass (#287 follow-up) — actually produces working
+# wasm output, not just an "I parsed and typechecked" stub.
+#
+# Determinism property: invoking `selfbuild_compile_stage2` on the
+# same stage1 input twice MUST produce byte-identical output.  Any
+# divergence indicates non-determinism in the selfhost codegen
+# pipeline (e.g. iteration order over a hash map, timestamps, an
+# uninitialized buffer).  For a release candidate this is critical:
+# CI runs across machines and a flaky hash makes binary
+# distribution unverifiable.
+#
+# Implementation: re-invoke `selfbuild_compile_stage2` on stage1.wasm,
+# and compare the resulting wasm bytes to stage2.wasm.
+#
+# Gated on `recursive_stage2_ok=1` because the seed-fallback path
+# uses host codegen for both stage2 generations and would tautologically
+# pass; the determinism check is only meaningful for the selfhost
+# codegen path.
+#
+# Set `VIBE_SELFHOST_SELFBUILD_SKIP_DETERMINISM=1` to disable this
+# check (escape hatch for local development).
+STAGE2_REPLAY_WASM="$OUT_DIR/index_stage2_replay.wasm"
+SKIP_DETERMINISM="${VIBE_SELFHOST_SELFBUILD_SKIP_DETERMINISM:-0}"
+if [ "$recursive_stage2_ok" -eq 1 ] && [ "$SKIP_DETERMINISM" != "1" ]; then
+  rm -f "$STAGE2_REPLAY_WASM"
+  STAGE2_REPLAY_LOG="$OUT_DIR/stage2_replay_compile.log"
+  # The runner hardcodes stage2's output path; cp stage2.wasm aside,
+  # re-invoke selfbuild_compile_stage2 on stage1, then move the new
+  # output to STAGE2_REPLAY_WASM and restore the original stage2.wasm.
+  STAGE2_BACKUP="$OUT_DIR/index_stage2_backup.wasm"
+  cp "$STAGE2_WASM" "$STAGE2_BACKUP"
+  echo "[selfbuild] stage1 -> stage2 replay (determinism check)"
+  determ_start="$(date +%s)"
+  set +e
+  (
+    cd "$PROJECT_ROOT"
+    run_with_timeout "$STAGE_TIMEOUT_SEC" \
+      "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_compile_stage2 "$STAGE1_WASM"
+  ) >"$STAGE2_REPLAY_LOG" 2>&1
+  determ_status=$?
+  set -e
+  if [ "$determ_status" -ne 0 ]; then
+    echo "selfbuild gate failed: stage2 replay invocation failed (status=$determ_status)" >&2
+    if [ -s "$STAGE2_REPLAY_LOG" ]; then
+      echo "[selfbuild] stage2 replay log (tail):" >&2
+      tail -n 20 "$STAGE2_REPLAY_LOG" >&2 || true
+    fi
+    cp "$STAGE2_BACKUP" "$STAGE2_WASM"
+    rm -f "$STAGE2_BACKUP"
+    exit 1
+  fi
+  if [ ! -s "$STAGE2_WASM" ]; then
+    echo "selfbuild gate failed: stage2 replay produced no wasm output" >&2
+    cp "$STAGE2_BACKUP" "$STAGE2_WASM"
+    rm -f "$STAGE2_BACKUP"
+    exit 1
+  fi
+  mv "$STAGE2_WASM" "$STAGE2_REPLAY_WASM"
+  cp "$STAGE2_BACKUP" "$STAGE2_WASM"
+  rm -f "$STAGE2_BACKUP"
+  determ_end="$(date +%s)"
+  determ_elapsed="$((determ_end - determ_start))"
+  echo "[selfbuild] done: stage1 -> stage2 replay (${determ_elapsed}s)"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    printf -- "- %s: %ss\n" "stage1 -> stage2 replay" "$determ_elapsed" >> "$GITHUB_STEP_SUMMARY" || true
+  fi
+
+  HASH_STAGE2_REPLAY="$(shasum -a 256 "$STAGE2_REPLAY_WASM" | awk '{print $1}')"
+  if [ "$HASH_STAGE2" != "$HASH_STAGE2_REPLAY" ]; then
+    echo "selfbuild gate failed: stage2 determinism check — replay hash differs" >&2
+    echo "  stage2 (first):  $HASH_STAGE2" >&2
+    echo "  stage2 (replay): $HASH_STAGE2_REPLAY" >&2
+    echo "  -> the selfhost compiler is non-deterministic; same input produced different bytes" >&2
+    exit 1
+  fi
+  echo "[selfbuild] stage2 replay hash matches: $HASH_STAGE2"
+  rm -f "$STAGE2_REPLAY_WASM"
+else
+  echo "[selfbuild] skipping stage2 determinism check (recursive_stage2_ok=$recursive_stage2_ok skip=$SKIP_DETERMINISM)"
+  HASH_STAGE2_REPLAY="skipped"
+fi
+# ----------------------------------------------------------------------
+
 run_stage_capture_stdout "run stage1 wasm via wasmtime (--invoke _start)" \
   "$OUT_DIR/stage1_run.out" \
   env VIBE_WASMTIME_WASM_FLAGS="unknown-imports-default=y exceptions=y" \
@@ -432,4 +535,4 @@ fi
 
 SIZE_STAGE1="$(wc -c < "$STAGE1_WASM" | tr -d ' ')"
 SIZE_STAGE2="$(wc -c < "$STAGE2_WASM" | tr -d ' ')"
-echo "selfbuild gate passed: stage1_hash=$HASH_STAGE1 stage2_hash=$HASH_STAGE2 stage1_size=$SIZE_STAGE1 stage2_size=$SIZE_STAGE2 stage1_run=$RUN_STAGE1 stage2_run=$RUN_STAGE2 cache_prepare_count1=$CACHE_PROBE_COUNT1 cache_prepare_count2=$CACHE_PROBE_COUNT2 group_merge_cache_count1=$GROUP_MERGE_CACHE_PROBE_COUNT1 group_merge_cache_count2=$GROUP_MERGE_CACHE_PROBE_COUNT2 module_source_cache_count1=$MODULE_SOURCE_CACHE_PROBE_COUNT1 module_source_cache_count2=$MODULE_SOURCE_CACHE_PROBE_COUNT2 codegen_cache_count1=$CODEGEN_CACHE_PROBE_COUNT1 codegen_cache_count2=$CODEGEN_CACHE_PROBE_COUNT2 cli_cache_prepare_count1=$CLI_CACHE_PROBE_COUNT1 cli_cache_prepare_count2=$CLI_CACHE_PROBE_COUNT2 mode=$recursive_mode recursive=$recursive_stage2_ok total=${SELFBUILD_TOTAL_SEC}s"
+echo "selfbuild gate passed: stage1_hash=$HASH_STAGE1 stage2_hash=$HASH_STAGE2 stage2_replay_hash=$HASH_STAGE2_REPLAY stage1_size=$SIZE_STAGE1 stage2_size=$SIZE_STAGE2 stage1_run=$RUN_STAGE1 stage2_run=$RUN_STAGE2 cache_prepare_count1=$CACHE_PROBE_COUNT1 cache_prepare_count2=$CACHE_PROBE_COUNT2 group_merge_cache_count1=$GROUP_MERGE_CACHE_PROBE_COUNT1 group_merge_cache_count2=$GROUP_MERGE_CACHE_PROBE_COUNT2 module_source_cache_count1=$MODULE_SOURCE_CACHE_PROBE_COUNT1 module_source_cache_count2=$MODULE_SOURCE_CACHE_PROBE_COUNT2 codegen_cache_count1=$CODEGEN_CACHE_PROBE_COUNT1 codegen_cache_count2=$CODEGEN_CACHE_PROBE_COUNT2 cli_cache_prepare_count1=$CLI_CACHE_PROBE_COUNT1 cli_cache_prepare_count2=$CLI_CACHE_PROBE_COUNT2 mode=$recursive_mode recursive=$recursive_stage2_ok total=${SELFBUILD_TOTAL_SEC}s"
