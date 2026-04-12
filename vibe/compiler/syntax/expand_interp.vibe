@@ -33,9 +33,8 @@ let rec resolve_expr = (e: Expr) -> Expr with { Error } {
         let expr_tokens = lex(expr_src)
         let parsed = parse(expr_tokens)
         let resolved = resolve_expr(parsed)
-        ArrayBuilder::push(exprs, ECall(EIdent("__to_string"), [
-          resolved
-        ]))
+        let to_str_args = Array::slice([resolved], 0, 1)
+        ArrayBuilder::push(exprs, ECall(EIdent("__to_string"), to_str_args))
       }
       i = i + 2
     }
@@ -47,19 +46,51 @@ let rec resolve_expr = (e: Expr) -> Expr with { Error } {
       let mut result = Array::get(result_arr, 0)
       let mut j = 1
       while j < result_len {
-        result = ECall(EIdent("String::concat"), [
-          result,
-          Array::get(result_arr, j)
-        ])
+        let concat_args = Array::slice([result, Array::get(result_arr, j)], 0, 2)
+        result = ECall(EIdent("String::concat"), concat_args)
         j = j + 1
       }
       result
     }
   }
   let resolve_arr = (exprs: Array[Expr]) -> Array[Expr] with { Error } {
-    for ex in exprs {
-      resolve_expr(ex)
+    let out = Array::slice([EUnit], 0, 0)
+    let mut i = 0
+    while i < Array::length(exprs) {
+      Array::push(out, resolve_expr(Array::get(exprs, i)))
+      i = i + 1
     }
+    out
+  }
+  let resolve_fields = (fields: Array[(String, Expr)]) -> Array[(String, Expr)] with { Error } {
+    let out = Array::slice([("", EUnit)], 0, 0)
+    let mut i = 0
+    while i < Array::length(fields) {
+      let (n, v) = Array::get(fields, i)
+      Array::push(out, (n, resolve_expr(v)))
+      i = i + 1
+    }
+    out
+  }
+  let resolve_arms = (arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] with { Error } {
+    let out = Array::slice([(PWildcard, EUnit)], 0, 0)
+    let mut i = 0
+    while i < Array::length(arms) {
+      let (p, ex) = Array::get(arms, i)
+      Array::push(out, (p, resolve_expr(ex)))
+      i = i + 1
+    }
+    out
+  }
+  let resolve_loop_params = (params: Array[(String, Expr)]) -> Array[(String, Expr)] with { Error } {
+    let out = Array::slice([("", EUnit)], 0, 0)
+    let mut i = 0
+    while i < Array::length(params) {
+      let (name, init) = Array::get(params, i)
+      Array::push(out, (name, resolve_expr(init)))
+      i = i + 1
+    }
+    out
   }
   match e {
     EStringInterp(parts) => desugar_parts(parts),
@@ -71,12 +102,8 @@ let rec resolve_expr = (e: Expr) -> Expr with { Error } {
     EIdent(_) => e,
     ETuple(elems) => ETuple(resolve_arr(elems)),
     EArray(elems) => EArray(resolve_arr(elems)),
-    ERecord(fields) => ERecord(for f in fields {
-      let (n, v) = f; (n, resolve_expr(v))
-    }),
-    EMap(fields) => EMap(for f in fields {
-      let (n, v) = f; (n, resolve_expr(v))
-    }),
+    ERecord(fields) => ERecord(resolve_fields(fields)),
+    EMap(fields) => EMap(resolve_fields(fields)),
     EIf(c, t, el) => EIf(resolve_expr(c), resolve_expr(t), resolve_expr(el)),
     ELet(n, v, b) => ELet(n, resolve_expr(v), resolve_expr(b)),
     ELetRec(n, v, b) => ELetRec(n, resolve_expr(v), resolve_expr(b)),
@@ -84,16 +111,10 @@ let rec resolve_expr = (e: Expr) -> Expr with { Error } {
     EAssign(n, v, b) => EAssign(n, resolve_expr(v), resolve_expr(b)),
     EAssignOp(n, op, v, b) => EAssignOp(n, op, resolve_expr(v), resolve_expr(b)),
     ESeq(a, b) => ESeq(resolve_expr(a), resolve_expr(b)),
-    EMatch(s, arms) => EMatch(resolve_expr(s), for a in arms {
-      let (p, ex) = a; (p, resolve_expr(ex))
-    }),
-    EHandle(body, arms) => EHandle(resolve_expr(body), for a in arms {
-      let (p, ex) = a; (p, resolve_expr(ex))
-    }),
+    EMatch(s, arms) => EMatch(resolve_expr(s), resolve_arms(arms)),
+    EHandle(body, arms) => EHandle(resolve_expr(body), resolve_arms(arms)),
     EWhile(c, b) => EWhile(resolve_expr(c), resolve_expr(b)),
-    ELoop(params, body) => ELoop(for param in params {
-      let (name, init) = param; (name, resolve_expr(init))
-    }, resolve_expr(body)),
+    ELoop(params, body) => ELoop(resolve_loop_params(params), resolve_expr(body)),
     EForIn(vn, idx, it, b) => EForIn(vn, idx, resolve_expr(it), resolve_expr(b)),
     ECall(callee, args) => ECall(resolve_expr(callee), resolve_arr(args)),
     EBinOp(op, l, r) => EBinOp(op, resolve_expr(l), resolve_expr(r)),
@@ -127,7 +148,10 @@ export let resolve_interp_expr = (e: Expr) -> Expr with { Error } {
 }
 
 export let resolve_interp_stmts = (stmts: Array[Stmt]) -> Array[Stmt] with { Error } {
-  for s in stmts {
-    resolve_stmt(s)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::set(stmts, i, resolve_stmt(Array::get(stmts, i)))
+    i = i + 1
   }
+  stmts
 }
