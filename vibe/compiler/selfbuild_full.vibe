@@ -18,7 +18,69 @@ import ./codegen.vibe {
   compile_wasi_module_with_sources
 }
 
+import ./core/dce.vibe {
+  dce_stmts
+}
+
+import ./core/ast.vibe {
+  Stmt
+}
+
 //# Functions
+
+// Essential exports for the self-compiled compiler.
+// Everything not in this list gets DCE'd to reduce memory during compilation.
+let essential_export_names = () -> Array[String] {
+  [
+    "selfbuild_compile_stage2",
+    "selfbuild_entry",
+    "version"
+  ]
+}
+
+// Strip non-essential exports: demote exported let-bindings to internal,
+// and remove SExport blocks. Only keep functions in the essential list.
+let strip_non_essential_exports = (stmts: Array[Stmt], keep: Array[String]) -> Array[Stmt] {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(true, is_rec, name, ann, expr) => {
+        let mut found = false
+        let mut ki = 0
+        while ki < Array::length(keep) {
+          if Array::get(keep, ki) == name {
+            found = true
+            ki = Array::length(keep)
+          } else {
+            ki = ki + 1
+          }
+        }
+        if !found {
+          Array::set(stmts, i, SLet(false, is_rec, name, ann, expr))
+        }
+      },
+      SExport(_) => Array::set(stmts, i, SExport(Array::slice([""], 0, 0))),
+      _ => ()
+    }
+    i = i + 1
+  }
+  stmts
+}
+
+let collect_export_names = (stmts: Array[Stmt]) -> Array[String] {
+  let names = Array::slice([""], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(is_export, _, name, _, _) => if is_export {
+        Array::push(names, name)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  names
+}
 
 // Compile the entire selfhost compiler from embedded sources.
 // The resulting WASM embeds the selfhost source strings so that
@@ -26,5 +88,9 @@ import ./codegen.vibe {
 export let selfbuild_compile_full = () -> Bytes with { Error } {
   let sources = selfhost_sources()
   let merged = collect_merged_stmts(sources)
-  compile_wasi_module_with_sources(merged, "selfbuild_compile_full", sources)
+  let keep = essential_export_names()
+  strip_non_essential_exports(merged, keep)
+  let entry_names = collect_export_names(merged)
+  let trimmed = dce_stmts(merged, entry_names)
+  compile_wasi_module_with_sources(trimmed, "selfbuild_compile_full", sources)
 }
