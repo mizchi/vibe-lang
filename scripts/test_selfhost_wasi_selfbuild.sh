@@ -484,6 +484,145 @@ else
 fi
 # ----------------------------------------------------------------------
 
+# ----------------------------------------------------------------------
+# Full compile fixpoint check.
+#
+# When enabled (VIBE_SELFHOST_FULL_FIXPOINT=1), stage1 compiles the
+# FULL selfhost compiler from its embedded sources via
+# selfbuild_compile_full (re-exported from selfbuild_full.vibe).
+# This produces a real stage2 compiler WASM — not the trivial runtime
+# entry. selfbuild_full.vibe is not in the selfhost manifest, so the
+# export is available only in host-compiled stage1.
+#
+# Verification steps:
+#   1. stage1 -> full_stage2 (selfbuild_compile_full)
+#   2. Validate full_stage2 by running selfbuild_compile_stage2 on it
+#   3. Determinism: re-run selfbuild_compile_full on stage1 and compare
+#
+# This is expensive, so it's opt-in and not run by default.
+FULL_FIXPOINT="${VIBE_SELFHOST_FULL_FIXPOINT:-0}"
+FULL_STAGE2_WASM="$OUT_DIR/index_stage2_full.wasm"
+HASH_FULL_STAGE2="skipped"
+FULL_STAGE2_VALID="skipped"
+FULL_DETERMINISM="skipped"
+if [ "$recursive_stage2_ok" -eq 1 ] && [ "$FULL_FIXPOINT" = "1" ]; then
+  rm -f "$FULL_STAGE2_WASM"
+  FULL_STAGE2_LOG="$OUT_DIR/stage2_full_compile.log"
+  echo "[selfbuild] stage1 -> full stage2 (selfbuild_compile_full)"
+  full_s2_start="$(date +%s)"
+  set +e
+  (
+    cd "$PROJECT_ROOT"
+    run_with_timeout "$STAGE_TIMEOUT_SEC" \
+      "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_compile_full "$STAGE1_WASM"
+  ) >"$FULL_STAGE2_LOG" 2>&1
+  full_s2_status=$?
+  set -e
+  if [ "$full_s2_status" -ne 0 ]; then
+    echo "[selfbuild] full stage2 compile failed (status=$full_s2_status)" >&2
+    if [ -s "$FULL_STAGE2_LOG" ]; then
+      echo "[selfbuild] full stage2 compile log (tail):" >&2
+      tail -n 20 "$FULL_STAGE2_LOG" >&2 || true
+    fi
+    echo "[selfbuild] full fixpoint check: FAIL (stage2 compile failed)" >&2
+  elif [ ! -s "$FULL_STAGE2_WASM" ]; then
+    echo "[selfbuild] full fixpoint check: FAIL (stage2 produced no output)" >&2
+  else
+    full_s2_end="$(date +%s)"
+    full_s2_elapsed="$((full_s2_end - full_s2_start))"
+    echo "[selfbuild] done: stage1 -> full stage2 (${full_s2_elapsed}s)"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      printf -- "- %s: %ss\n" "stage1 -> full stage2" "$full_s2_elapsed" >> "$GITHUB_STEP_SUMMARY" || true
+    fi
+    HASH_FULL_STAGE2="$(shasum -a 256 "$FULL_STAGE2_WASM" | awk '{print $1}')"
+    SIZE_FULL_STAGE2="$(wc -c < "$FULL_STAGE2_WASM" | tr -d ' ')"
+    echo "[selfbuild] full stage2: hash=$HASH_FULL_STAGE2 size=$SIZE_FULL_STAGE2"
+
+    # Validate: invoke selfbuild_compile_stage2 on the full stage2.
+    # This exercises the selfhost-compiled compiler's codegen end-to-end.
+    # selfbuild_compile_stage2 output overwrites index_stage2.wasm, so
+    # back up and restore the existing stage2.
+    FULL_VALIDATE_LOG="$OUT_DIR/stage2_full_validate.log"
+    STAGE2_PRE_VALIDATE="$OUT_DIR/index_stage2_pre_validate.wasm"
+    cp "$STAGE2_WASM" "$STAGE2_PRE_VALIDATE"
+    echo "[selfbuild] validating full stage2 (selfbuild_compile_stage2)"
+    full_val_start="$(date +%s)"
+    set +e
+    (
+      cd "$PROJECT_ROOT"
+      run_with_timeout "$STAGE_TIMEOUT_SEC" \
+        "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_compile_stage2 "$FULL_STAGE2_WASM"
+    ) >"$FULL_VALIDATE_LOG" 2>&1
+    full_val_status=$?
+    set -e
+    # Restore original stage2
+    cp "$STAGE2_PRE_VALIDATE" "$STAGE2_WASM"
+    rm -f "$STAGE2_PRE_VALIDATE"
+    if [ "$full_val_status" -eq 0 ]; then
+      full_val_end="$(date +%s)"
+      full_val_elapsed="$((full_val_end - full_val_start))"
+      echo "[selfbuild] full stage2 validation passed (${full_val_elapsed}s)"
+      FULL_STAGE2_VALID="pass"
+    else
+      echo "[selfbuild] full stage2 validation failed (status=$full_val_status)" >&2
+      if [ -s "$FULL_VALIDATE_LOG" ]; then
+        echo "[selfbuild] full stage2 validate log (tail):" >&2
+        tail -n 20 "$FULL_VALIDATE_LOG" >&2 || true
+      fi
+      FULL_STAGE2_VALID="fail"
+    fi
+
+    # Determinism: re-run selfbuild_compile_full on stage1, compare hash
+    FULL_REPLAY_WASM="$OUT_DIR/index_stage2_full_replay.wasm"
+    FULL_REPLAY_LOG="$OUT_DIR/stage2_full_replay.log"
+    FULL_STAGE2_BACKUP="$OUT_DIR/index_stage2_full_backup.wasm"
+    cp "$FULL_STAGE2_WASM" "$FULL_STAGE2_BACKUP"
+    echo "[selfbuild] full stage2 replay (determinism check)"
+    full_det_start="$(date +%s)"
+    set +e
+    (
+      cd "$PROJECT_ROOT"
+      run_with_timeout "$STAGE_TIMEOUT_SEC" \
+        "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_compile_full "$STAGE1_WASM"
+    ) >"$FULL_REPLAY_LOG" 2>&1
+    full_det_status=$?
+    set -e
+    # The replay output goes to index_stage2_full.wasm (runner hardcoded path)
+    if [ "$full_det_status" -eq 0 ] && [ -s "$FULL_STAGE2_WASM" ]; then
+      mv "$FULL_STAGE2_WASM" "$FULL_REPLAY_WASM"
+    fi
+    cp "$FULL_STAGE2_BACKUP" "$FULL_STAGE2_WASM"
+    rm -f "$FULL_STAGE2_BACKUP"
+    if [ "$full_det_status" -ne 0 ]; then
+      echo "[selfbuild] full determinism replay failed (status=$full_det_status)" >&2
+      FULL_DETERMINISM="fail"
+    elif [ ! -s "$FULL_REPLAY_WASM" ]; then
+      echo "[selfbuild] full determinism replay produced no output" >&2
+      FULL_DETERMINISM="fail"
+    else
+      full_det_end="$(date +%s)"
+      full_det_elapsed="$((full_det_end - full_det_start))"
+      echo "[selfbuild] done: full stage2 replay (${full_det_elapsed}s)"
+      HASH_FULL_REPLAY="$(shasum -a 256 "$FULL_REPLAY_WASM" | awk '{print $1}')"
+      if [ "$HASH_FULL_STAGE2" = "$HASH_FULL_REPLAY" ]; then
+        echo "[selfbuild] full compile determinism passed: $HASH_FULL_STAGE2"
+        FULL_DETERMINISM="pass"
+      else
+        echo "[selfbuild] full compile determinism FAILED" >&2
+        echo "  first:  $HASH_FULL_STAGE2" >&2
+        echo "  replay: $HASH_FULL_REPLAY" >&2
+        FULL_DETERMINISM="fail"
+      fi
+    fi
+    rm -f "$FULL_REPLAY_WASM"
+  fi
+else
+  if [ "$FULL_FIXPOINT" = "1" ]; then
+    echo "[selfbuild] skipping full fixpoint check (recursive_stage2_ok=$recursive_stage2_ok)"
+  fi
+fi
+# ----------------------------------------------------------------------
+
 run_stage_capture_stdout "run stage1 wasm via wasmtime (--invoke _start)" \
   "$OUT_DIR/stage1_run.out" \
   env VIBE_WASMTIME_WASM_FLAGS="unknown-imports-default=y exceptions=y" \
@@ -535,4 +674,4 @@ fi
 
 SIZE_STAGE1="$(wc -c < "$STAGE1_WASM" | tr -d ' ')"
 SIZE_STAGE2="$(wc -c < "$STAGE2_WASM" | tr -d ' ')"
-echo "selfbuild gate passed: stage1_hash=$HASH_STAGE1 stage2_hash=$HASH_STAGE2 stage2_replay_hash=$HASH_STAGE2_REPLAY stage1_size=$SIZE_STAGE1 stage2_size=$SIZE_STAGE2 stage1_run=$RUN_STAGE1 stage2_run=$RUN_STAGE2 cache_prepare_count1=$CACHE_PROBE_COUNT1 cache_prepare_count2=$CACHE_PROBE_COUNT2 group_merge_cache_count1=$GROUP_MERGE_CACHE_PROBE_COUNT1 group_merge_cache_count2=$GROUP_MERGE_CACHE_PROBE_COUNT2 module_source_cache_count1=$MODULE_SOURCE_CACHE_PROBE_COUNT1 module_source_cache_count2=$MODULE_SOURCE_CACHE_PROBE_COUNT2 codegen_cache_count1=$CODEGEN_CACHE_PROBE_COUNT1 codegen_cache_count2=$CODEGEN_CACHE_PROBE_COUNT2 cli_cache_prepare_count1=$CLI_CACHE_PROBE_COUNT1 cli_cache_prepare_count2=$CLI_CACHE_PROBE_COUNT2 mode=$recursive_mode recursive=$recursive_stage2_ok total=${SELFBUILD_TOTAL_SEC}s"
+echo "selfbuild gate passed: stage1_hash=$HASH_STAGE1 stage2_hash=$HASH_STAGE2 stage2_replay_hash=$HASH_STAGE2_REPLAY full_stage2_hash=$HASH_FULL_STAGE2 full_stage2_valid=$FULL_STAGE2_VALID full_determinism=$FULL_DETERMINISM stage1_size=$SIZE_STAGE1 stage2_size=$SIZE_STAGE2 stage1_run=$RUN_STAGE1 stage2_run=$RUN_STAGE2 cache_prepare_count1=$CACHE_PROBE_COUNT1 cache_prepare_count2=$CACHE_PROBE_COUNT2 group_merge_cache_count1=$GROUP_MERGE_CACHE_PROBE_COUNT1 group_merge_cache_count2=$GROUP_MERGE_CACHE_PROBE_COUNT2 module_source_cache_count1=$MODULE_SOURCE_CACHE_PROBE_COUNT1 module_source_cache_count2=$MODULE_SOURCE_CACHE_PROBE_COUNT2 codegen_cache_count1=$CODEGEN_CACHE_PROBE_COUNT1 codegen_cache_count2=$CODEGEN_CACHE_PROBE_COUNT2 cli_cache_prepare_count1=$CLI_CACHE_PROBE_COUNT1 cli_cache_prepare_count2=$CLI_CACHE_PROBE_COUNT2 mode=$recursive_mode recursive=$recursive_stage2_ok total=${SELFBUILD_TOTAL_SEC}s"

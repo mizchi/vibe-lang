@@ -368,12 +368,17 @@ fn parse_data_section(
     }
     let size = cur.read_leb_u32()
     let data = cur.read_bytes(size)
-    for i in 0..<data.length() {
-      let idx = offset + i
-      if idx >= mem.length() {
-        raise WasmEvalError::UnexpectedEof
+    // Grow memory if data extends beyond current allocation
+    let needed = offset + data.length()
+    if needed > mem.length() {
+      let pages_needed = (needed + 65535) / 65536
+      let grow = pages_needed * 65536 - mem.length()
+      for _ in 0..<grow {
+        mem.push((0).to_byte())
       }
-      mem[idx] = data[i]
+    }
+    for i in 0..<data.length() {
+      mem[offset + i] = data[i]
     }
     let end = offset + data.length()
     if end > max_end {
@@ -538,7 +543,7 @@ fn parse_wasm_module(bytes : Bytes) -> WasmModule raise WasmEvalError {
   let mut path_index : Int? = None
   let func_exports : Map[String, Int] = {}
   let globals : Array[Int64] = []
-  let mem : Array[Byte] = Array::make(65536, (0).to_byte())
+  let mut mem : Array[Byte] = Array::make(65536, (0).to_byte())
   let type_param_counts : Array[Int] = [] // param counts for each type entry
   let type_result_counts : Array[Int] = [] // result counts for each type entry
   let func_type_indices : Array[Int] = [] // type index for each local function
@@ -611,6 +616,24 @@ fn parse_wasm_module(bytes : Bytes) -> WasmModule raise WasmEvalError {
           }
         }
       }
+      // memory section – resize mem to declared initial pages (cap 64 pages = 4 MB)
+      5 => {
+        let sec = Cursor::new(payload)
+        let count = sec.read_leb_u32()
+        if count > 0 {
+          let flags = sec.read_u8()
+          let initial_pages = sec.read_leb_u32()
+          // Skip max if present (flags bit 0 = has-max)
+          if flags.land(1) != 0 {
+            let _ = sec.read_leb_u32()
+          }
+          let capped = if initial_pages > 64 { 64 } else { initial_pages }
+          let target_bytes = capped * 65536
+          if target_bytes > mem.length() {
+            mem = Array::make(target_bytes, (0).to_byte())
+          }
+        }
+      }
       6 => {
         let parsed = parse_global_section(payload)
         for g in parsed {
@@ -619,6 +642,7 @@ fn parse_wasm_module(bytes : Bytes) -> WasmModule raise WasmEvalError {
       }
       10 => func_bodies = parse_all_func_bodies(payload)
       11 => {
+        // Grow mem if data section needs more space than current allocation
         let _ = parse_data_section(payload, mem)
       }
       _ => ()
@@ -1142,7 +1166,7 @@ fn eval_loop(
         }
         let delta_pages = stack.unsafe_pop().to_int()
         let old_pages = mem.length() / 65536
-        if delta_pages < 0 {
+        if delta_pages < 0 || old_pages + delta_pages > 256 {
           stack.push(-1L)
         } else {
           let grow_bytes = delta_pages * 65536

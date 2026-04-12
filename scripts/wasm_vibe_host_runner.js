@@ -1345,6 +1345,7 @@ async function main() {
     if (
       (result & TAG_MASK) === TAG_OBJ &&
       (invoke === "selfbuild_compile_stage2" ||
+        invoke === "selfbuild_compile_full" ||
         invoke === "selfbuild_compile_cli_adapter")
     ) {
       // Decode result as Bytes and write to expected output path
@@ -1352,7 +1353,9 @@ async function main() {
       const outPath =
         invoke === "selfbuild_compile_cli_adapter"
           ? "_build/bench/selfhost_cli_adapter/selfhost_cli_stage1.wasm"
-          : "_build/bench/selfhost_wasi_selfbuild/index_stage2.wasm";
+          : invoke === "selfbuild_compile_full"
+            ? "_build/bench/selfhost_wasi_selfbuild/index_stage2_full.wasm"
+            : "_build/bench/selfhost_wasi_selfbuild/index_stage2.wasm";
       const outDir = path.dirname(outPath);
       if (!fs.existsSync(outDir)) {
         fs.mkdirSync(outDir, { recursive: true });
