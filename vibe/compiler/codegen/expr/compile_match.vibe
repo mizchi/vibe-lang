@@ -146,47 +146,59 @@ export let compile_match = (buf: Bytes, expr: Expr, local_names: Array[String], 
       -1
     }
     let arm_nl = if is_pctor(__cond_p) {
-      let cargs_bind = get_pctor_args(__cond_p)
-      let mut cbi = 0
-      while cbi < Array::length(cargs_bind) {
-        let __sub_p = Array::get(cargs_bind, cbi)
-        if is_pbind(__sub_p) {
-          let pname = get_pbind_name(__sub_p)
-          let fl = Array::length(local_names)
-          emit_local_get(buf, scrut_local)
-          emit_i64_const(buf, -2)
-          emit_i64_and(buf)
-          emit_i32_wrap_i64(buf)
-          emit_i64_load(buf, 3, 8 + cbi * 8)
-          emit_local_set(buf, fl)
-          Array::push(local_names, pname)
-        } else if is_ptuple(__sub_p) {
-          let tpats = get_ptuple_pats(__sub_p)
-          let tup_local = Array::length(local_names)
-          emit_local_get(buf, scrut_local)
-          emit_i64_const(buf, -2)
-          emit_i64_and(buf)
-          emit_i32_wrap_i64(buf)
-          emit_i64_load(buf, 3, 8 + cbi * 8)
-          emit_local_set(buf, tup_local)
-          Array::push(local_names, "__ctor_tup")
-          let mut ti = 0
-          while ti < Array::length(tpats) {
-            let tp = Array::get(tpats, ti)
-            if is_pbind(tp) {
-              let tpname = get_pbind_name(tp)
-              let tfl = Array::length(local_names)
-              emit_local_get(buf, tup_local)
-              emit_i32_wrap_i64(buf)
-              emit_i64_load(buf, 3, ti * 8)
-              emit_local_set(buf, tfl)
-              Array::push(local_names, tpname)
+      let rec bind_ctor_args = (parent_local: Int, cargs_bind: Array[Pat]) -> Unit with { Error } {
+        let mut cbi = 0
+        while cbi < Array::length(cargs_bind) {
+          let __sub_p = Array::get(cargs_bind, cbi)
+          if is_pbind(__sub_p) {
+            let pname = get_pbind_name(__sub_p)
+            let fl = Array::length(local_names)
+            emit_local_get(buf, parent_local)
+            emit_i64_const(buf, -2)
+            emit_i64_and(buf)
+            emit_i32_wrap_i64(buf)
+            emit_i64_load(buf, 3, 8 + cbi * 8)
+            emit_local_set(buf, fl)
+            Array::push(local_names, pname)
+          } else if is_ptuple(__sub_p) {
+            let tpats = get_ptuple_pats(__sub_p)
+            let tup_local = Array::length(local_names)
+            emit_local_get(buf, parent_local)
+            emit_i64_const(buf, -2)
+            emit_i64_and(buf)
+            emit_i32_wrap_i64(buf)
+            emit_i64_load(buf, 3, 8 + cbi * 8)
+            emit_local_set(buf, tup_local)
+            Array::push(local_names, "__ctor_tup")
+            let mut ti = 0
+            while ti < Array::length(tpats) {
+              let tp = Array::get(tpats, ti)
+              if is_pbind(tp) {
+                let tpname = get_pbind_name(tp)
+                let tfl = Array::length(local_names)
+                emit_local_get(buf, tup_local)
+                emit_i32_wrap_i64(buf)
+                emit_i64_load(buf, 3, ti * 8)
+                emit_local_set(buf, tfl)
+                Array::push(local_names, tpname)
+              }
+              ti = ti + 1
             }
-            ti = ti + 1
+          } else if is_pctor(__sub_p) {
+            let nested_local = Array::length(local_names)
+            emit_local_get(buf, parent_local)
+            emit_i64_const(buf, -2)
+            emit_i64_and(buf)
+            emit_i32_wrap_i64(buf)
+            emit_i64_load(buf, 3, 8 + cbi * 8)
+            emit_local_set(buf, nested_local)
+            Array::push(local_names, "__nested_ctor")
+            bind_ctor_args(nested_local, get_pctor_args(__sub_p))
           }
+          cbi = cbi + 1
         }
-        cbi = cbi + 1
       }
+      bind_ctor_args(scrut_local, get_pctor_args(__cond_p))
       ce(buf, __arm_body, local_names, Array::length(local_names), ctx, ld_arm)
     } else {
       ce(buf, __arm_body, local_names, nl1, ctx, ld_arm)
