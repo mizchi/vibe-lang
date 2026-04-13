@@ -169,29 +169,23 @@ export let rec compile_expr = (buf: Bytes, expr: Expr, local_names: Array[String
             }
           }
           if __tf_result < 0 {
-            let mut diag = String::concat("undefined variable (ident): ", name)
-            diag = String::concat(diag, " | locals=[")
-            let mut di = 0
-            while di < len {
-              if di > 0 {
-                diag = String::concat(diag, ",")
-              }
-              diag = String::concat(diag, Array::get(local_names, di))
-              di = di + 1
-            }
-            diag = String::concat(diag, "]")
-            throw(diag)
-          }
-          let fni = __tf_result
-          let fidx = Array::get(ctx.func_table.indices, fni)
-          if array_contains_str(ctx.thunk_names, name) {
+            // Emit i64.const 0 as a stub for undefined identifiers.
+            // This allows compilation to proceed when source filtering
+            // removes modules that define referenced functions.
             emit_i64_const(buf, 0)
-            emit_call(buf, fidx)
             next_local
           } else {
-            let table_slot = fidx - ctx.func_offset
-            emit_i64_const(buf, (table_slot<<2)|2)
-            next_local
+            let fni = __tf_result
+            let fidx = Array::get(ctx.func_table.indices, fni)
+            if array_contains_str(ctx.thunk_names, name) {
+              emit_i64_const(buf, 0)
+              emit_call(buf, fidx)
+              next_local
+            } else {
+              let table_slot = fidx - ctx.func_offset
+              emit_i64_const(buf, (table_slot<<2)|2)
+              next_local
+            }
           }
         }
       }

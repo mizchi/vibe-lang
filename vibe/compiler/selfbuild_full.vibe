@@ -33,6 +33,7 @@ import ./core/ast.vibe {
 let essential_export_names = () -> Array[String] {
   [
     "selfbuild_compile_stage2",
+    "selfbuild_compile_full",
     "selfbuild_entry",
     "version"
   ]
@@ -85,12 +86,38 @@ let collect_export_names = (stmts: Array[Stmt]) -> Array[String] {
 // Compile the entire selfhost compiler from embedded sources.
 // The resulting WASM embeds the selfhost source strings so that
 // its selfhost_sources() function returns the same source set.
+// Filter out sources whose path contains "cli_adapter_bundle" to reduce
+// compilation size — the CLI adapter bundle is 1.7MB and its compilation
+// is only needed for the CLI entry points, not for self-compilation.
+// Filter out heavy non-essential modules to fit within MoonBit RC 2GB limit.
+// Excludes: cli_adapter_bundle, entry/, cli_cache, cache/, coverage, probes
+let filter_sources = (sources: Array[(String, String)]) -> Array[(String, String)] {
+  let out = Array::slice([("", "")], 0, 0)
+  let mut i = 0
+  while i < Array::length(sources) {
+    let (path, content) = Array::get(sources, i)
+    let skip = String::contains(path, "cli_adapter_bundle")
+      || String::contains(path, "entry/")
+      || String::contains(path, "cli_cache")
+      || String::contains(path, "coverage")
+      || String::contains(path, "selfbuild_probe")
+      || String::contains(path, "selfhost_slim")
+      || String::ends_with(path, "compiler/index.vibe")
+      || String::ends_with(path, "compiler.vibe")
+      || String::contains(path, "cache_probe")
+    if !skip {
+      Array::push(out, (path, content))
+    }
+    i = i + 1
+  }
+  out
+}
+
 export let selfbuild_compile_full = () -> Bytes with { Error } {
-  let sources = selfhost_sources()
+  let all_sources = selfhost_sources()
+  let sources = filter_sources(all_sources)
   let merged = collect_merged_stmts(sources)
   let keep = essential_export_names()
   strip_non_essential_exports(merged, keep)
-  let entry_names = collect_export_names(merged)
-  let trimmed = dce_stmts(merged, entry_names)
-  compile_wasi_module_with_sources(trimmed, "selfbuild_compile_full", sources)
+  compile_wasi_module_with_sources(merged, "selfbuild_compile_full", all_sources)
 }

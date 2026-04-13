@@ -1243,6 +1243,15 @@ async function main() {
             : 0;
         instance.exports._start();
         didInitStart = true;
+        // Workaround for MoonBit runtime emit_heap_alloc_unchecked bug:
+        // Pre-grow memory to ensure headroom for unchecked allocations
+        // that follow checked allocations at page boundaries.
+        if (instance.exports.memory instanceof WebAssembly.Memory) {
+          const extraPages = parseInt(process.env.VIBE_EXTRA_MEM_PAGES || "0", 10);
+          if (extraPages > 0) {
+            instance.exports.memory.grow(extraPages);
+          }
+        }
         const fsRootDescriptor = instance.exports.__fs_root_descriptor;
         if (fsRootDescriptor instanceof WebAssembly.Global) {
           fsRootDescriptor.value = -1;
