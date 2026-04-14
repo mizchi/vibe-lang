@@ -245,9 +245,45 @@ export let compile_wasi_module_linked_impl = (stmts_raw: Array[Stmt], entry_name
     }
     ei = ei + 1
   }
-  let str_strs = collect_strings_stmts(stmts)
-  // NOTE: No dedup — the O(n^2) dedup uses ~1.8GB of MoonBit RC overhead.
-  // Duplicate strings waste ~50KB in the output WASM data section.
+  let raw_strs = collect_strings_stmts(stmts)
+  // Deduplicate using hash-bucket approach: O(n) amortized instead of O(n^2).
+  // Bucket by string length mod 64 to reduce per-insertion scan cost.
+  let num_buckets = 64
+  let buckets = Array::slice([Array::slice([""], 0, 0)], 0, 0)
+  let mut __bk = 0
+  while __bk < num_buckets {
+    Array::push(buckets, Array::slice([""], 0, 0))
+    __bk = __bk + 1
+  }
+  let str_strs = Array::slice([""], 0, 0)
+  let mut __di = 0
+  while __di < Array::length(raw_strs) {
+    let s = Array::get(raw_strs, __di)
+    let slen = String::length(s)
+    let bucket_idx = if slen < num_buckets { slen } else { slen - (slen / num_buckets) * num_buckets }
+    let bucket = Array::get(buckets, bucket_idx)
+    if !array_contains_str(bucket, s) {
+      Array::push(bucket, s)
+      Array::push(str_strs, s)
+    }
+    __di = __di + 1
+  }
+  // Build lookup buckets for O(1) amortized str_table_lookup_fast
+  let lookup_num_buckets = 64
+  let lookup_buckets = Array::slice([Array::slice([("", 0)], 0, 0)], 0, 0)
+  let mut __lbi = 0
+  while __lbi < lookup_num_buckets {
+    Array::push(lookup_buckets, Array::slice([("", 0)], 0, 0))
+    __lbi = __lbi + 1
+  }
+  let mut __lsi = 0
+  while __lsi < Array::length(str_strs) {
+    let ls = Array::get(str_strs, __lsi)
+    let lslen = String::length(ls)
+    let lb_idx = if lslen < lookup_num_buckets { lslen } else { lslen - (lslen / lookup_num_buckets) * lookup_num_buckets }
+    Array::push(Array::get(lookup_buckets, lb_idx), (ls, __lsi))
+    __lsi = __lsi + 1
+  }
   let src_str_base = Array::length(str_strs)
   let num_src_pairs = Array::length(selfhost_srcs)
   let mut __src_i = 0
@@ -276,24 +312,26 @@ export let compile_wasi_module_linked_impl = (stmts_raw: Array[Stmt], entry_name
     si = si + 1
   }
   let heap_start = ((str_pos + 7) / 8) * 8
-  let need_env_get_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::get")
-  let need_env_args_len_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::args_len")
-  let need_env_args_get_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::args_get")
-  let need_fs_read_file_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::read_file")
-  let need_fs_exists_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::exists")
-  let need_fs_stat_token_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::stat_token")
-  let need_fs_write_bytes_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::write_bytes")
-  let need_fs_write_file_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::write_file")
-  let need_fs_readdir_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::readdir")
-  let need_fs_getcwd_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::getcwd")
-  let need_fs_chdir_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::chdir")
-  let need_fs_is_dir_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::is_dir")
-  let need_fs_is_file_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::is_file")
-  let need_fs_mkdir_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::mkdir")
-  let need_fs_copy_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::copy")
-  let need_fs_remove_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::remove")
-  let need_fs_append_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::append")
-  let need_fs_read_bytes_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::read_bytes")
+  // Always import all builtins to avoid 18x full-AST traversal via
+  // stmts_use_builtin, which creates ~2GB of MoonBit RC temporaries.
+  let need_env_get_builtin = true
+  let need_env_args_len_builtin = true
+  let need_env_args_get_builtin = true
+  let need_fs_read_file_builtin = true
+  let need_fs_exists_builtin = true
+  let need_fs_stat_token_builtin = true
+  let need_fs_write_bytes_builtin = true
+  let need_fs_write_file_builtin = true
+  let need_fs_readdir_builtin = true
+  let need_fs_getcwd_builtin = true
+  let need_fs_chdir_builtin = true
+  let need_fs_is_dir_builtin = true
+  let need_fs_is_file_builtin = true
+  let need_fs_mkdir_builtin = true
+  let need_fs_copy_builtin = true
+  let need_fs_remove_builtin = true
+  let need_fs_append_builtin = true
+  let need_fs_read_bytes_builtin = true
   let mut next_import_idx = 1
   let env_get_import_idx = if need_env_get_builtin {
     let idx = next_import_idx
@@ -919,6 +957,7 @@ export let compile_wasi_module_linked_impl = (stmts_raw: Array[Stmt], entry_name
       str_table: StrTable::{
         strs: str_strs, offsets: str_offsets, lengths: str_lengths
       },
+      str_lookup_buckets: lookup_buckets,
       lambda_table: lt_w,
       num_user_funcs: num_user_funcs, func_offset: func_offset,
       ref_cell_names: Array::slice([
