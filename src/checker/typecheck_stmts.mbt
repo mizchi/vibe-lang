@@ -966,7 +966,7 @@ fn trait_is_subtrait_inner(
     Some(info) => {
       let next_visiting = visiting.copy()
       next_visiting[sub_trait] = true
-      for parent in info.supertraits {
+      for parent in info.supertraits_copy() {
         if parent == super_trait {
           return true
         }
@@ -1053,11 +1053,10 @@ fn register_trait_def(
     }
   }
   ensure_traits_defined(env, normalized_supertraits, span)
-  env.set_trait_info(name, TraitDefInfo::{
-    supertraits: normalized_supertraits,
-    open_impl,
-    is_local: true,
-  })
+  env.set_trait_info(
+    name,
+    TraitDefInfo::defined_here(normalized_supertraits, open_impl),
+  )
 }
 
 ///|
@@ -1419,7 +1418,7 @@ fn register_trait_impl(
   if not(env.has_trait(trait_name)) {
     raise TypeError::BadTypeDef(message="unknown trait: " + trait_name, span~)
   }
-  if not(env.trait_is_local(trait_name)) && not(env.trait_is_open(trait_name)) {
+  if not(env.trait_accepts_impl_here(trait_name)) {
     raise TypeError::TraitSealed(trait_name~, span~)
   }
   ensure_unique_params(type_params, span)

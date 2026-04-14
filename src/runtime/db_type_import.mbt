@@ -132,7 +132,11 @@ fn import_trait_dependency_for_scheme(
     Some(alias_name) => alias_name
     None => source_trait_name
   }
-  let source_supertraits = imported_env.trait_supertraits(source_trait_name)
+  let source_info = match imported_env.get_trait_info(source_trait_name) {
+    Some(info) => info
+    None => return
+  }
+  let source_supertraits = source_info.supertraits_copy()
   for supertrait in source_supertraits {
     import_trait_dependency_for_scheme(
       env, imported_env, supertrait, trait_aliases, exported_names, visiting,
@@ -142,11 +146,7 @@ fn import_trait_dependency_for_scheme(
     source_trait_name, local_trait_name, source_supertraits, trait_aliases,
   )
   if not(env.has_trait(local_trait_name)) {
-    env.import_trait(
-      local_trait_name,
-      imported_env.trait_is_open(source_trait_name),
-      local_supertraits,
-    )
+    env.import_trait(local_trait_name, source_info, local_supertraits)
   }
   for impl_def in imported_env.trait_impls_for(source_trait_name) {
     maybe_add_trait_impl(env, local_trait_name, impl_def)
