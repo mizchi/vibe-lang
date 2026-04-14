@@ -3,7 +3,7 @@ enum WriteFileSelector {
   Name(String)
   NameHash(String, String)
   Hash(String)
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct WriteFileCmdOptions {
@@ -13,7 +13,7 @@ struct WriteFileCmdOptions {
   no_deps : Bool
   dry_run : Bool
   output_json : Bool
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct WriteFileDef {
@@ -25,13 +25,13 @@ struct WriteFileDef {
   start : Int
   end : Int
   module_hash : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct WriteFileCandidate {
   def : WriteFileDef
   origin : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 fn first_char_index(text : String, target : Char) -> Int? {

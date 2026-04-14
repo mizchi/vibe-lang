@@ -5,7 +5,7 @@
 pub(all) struct DocumentManager {
   contents : Map[String, String]
   versions : Map[String, Int]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn DocumentManager::new() -> DocumentManager {

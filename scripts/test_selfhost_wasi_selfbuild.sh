@@ -192,9 +192,9 @@ if [ "$ENTRY_PATH" = "$DEFAULT_ENTRY_PATH" ] && \
 fi
 if [ "$cache_probe_runner_mode" -eq 1 ]; then
   CACHE_PROBE_OUT="$OUT_DIR/stage1_cache_probe.out"
-  run_stage_capture_stdout "run stage1 cache probe (--invoke selfbuild_probe_type_db_cache_counts)" \
+  run_stage_capture_stdout "run stage1 cache probe (--invoke selfbuild_stage1_probe_type_db_cache_counts)" \
     "$CACHE_PROBE_OUT" \
-    "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_probe_type_db_cache_counts "$STAGE1_WASM"
+    "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_stage1_probe_type_db_cache_counts "$STAGE1_WASM"
   CACHE_PROBE_RAW="$(rg -v '^warning' "$CACHE_PROBE_OUT" | tail -n 1)"
   if ! is_non_negative_int "$CACHE_PROBE_RAW"; then
     echo "selfbuild gate failed: stage1 cache probe did not return packed counts: $CACHE_PROBE_RAW" >&2
@@ -213,9 +213,9 @@ if [ "$cache_probe_runner_mode" -eq 1 ]; then
   echo "[selfbuild] cache probe counts: $CACHE_PROBE_COUNT1 -> $CACHE_PROBE_COUNT2"
 
   FS_PARSE_CACHE_PROBE_OUT="$OUT_DIR/stage1_fs_parse_cache_probe.out"
-  run_stage_capture_stdout "run stage1 fs parse cache probe (--invoke selfbuild_probe_type_db_fs_parse_counts)" \
+  run_stage_capture_stdout "run stage1 fs parse cache probe (--invoke selfbuild_stage1_probe_type_db_fs_parse_counts)" \
     "$FS_PARSE_CACHE_PROBE_OUT" \
-    "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_probe_type_db_fs_parse_counts "$STAGE1_WASM"
+    "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_stage1_probe_type_db_fs_parse_counts "$STAGE1_WASM"
   FS_PARSE_CACHE_PROBE_RAW="$(rg -v '^warning' "$FS_PARSE_CACHE_PROBE_OUT" | tail -n 1)"
   if ! is_non_negative_int "$FS_PARSE_CACHE_PROBE_RAW"; then
     echo "selfbuild gate failed: stage1 fs parse cache probe did not return packed counts: $FS_PARSE_CACHE_PROBE_RAW" >&2
@@ -230,9 +230,9 @@ if [ "$cache_probe_runner_mode" -eq 1 ]; then
   echo "[selfbuild] fs parse cache probe counts: $FS_PARSE_CACHE_PROBE_COUNT1 -> $FS_PARSE_CACHE_PROBE_COUNT2"
 
   GROUP_MERGE_CACHE_PROBE_OUT="$OUT_DIR/stage1_group_merge_cache_probe.out"
-  run_stage_capture_stdout "run stage1 grouped merge cache probe (--invoke selfbuild_probe_type_db_group_merge_counts)" \
+  run_stage_capture_stdout "run stage1 grouped merge cache probe (--invoke selfbuild_stage1_probe_type_db_group_merge_counts)" \
     "$GROUP_MERGE_CACHE_PROBE_OUT" \
-    "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_probe_type_db_group_merge_counts "$STAGE1_WASM"
+    "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_stage1_probe_type_db_group_merge_counts "$STAGE1_WASM"
   GROUP_MERGE_CACHE_PROBE_RAW="$(rg -v '^warning' "$GROUP_MERGE_CACHE_PROBE_OUT" | tail -n 1)"
   if ! is_non_negative_int "$GROUP_MERGE_CACHE_PROBE_RAW"; then
     echo "selfbuild gate failed: stage1 grouped merge cache probe did not return packed counts: $GROUP_MERGE_CACHE_PROBE_RAW" >&2
@@ -251,9 +251,9 @@ if [ "$cache_probe_runner_mode" -eq 1 ]; then
   echo "[selfbuild] grouped merge cache probe counts: $GROUP_MERGE_CACHE_PROBE_COUNT1 -> $GROUP_MERGE_CACHE_PROBE_COUNT2"
 
   MODULE_SOURCE_CACHE_PROBE_OUT="$OUT_DIR/stage1_module_source_cache_probe.out"
-  run_stage_capture_stdout "run stage1 module source cache probe (--invoke selfbuild_probe_type_db_module_source_counts)" \
+  run_stage_capture_stdout "run stage1 module source cache probe (--invoke selfbuild_stage1_probe_type_db_module_source_counts)" \
     "$MODULE_SOURCE_CACHE_PROBE_OUT" \
-    "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_probe_type_db_module_source_counts "$STAGE1_WASM"
+    "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_stage1_probe_type_db_module_source_counts "$STAGE1_WASM"
   MODULE_SOURCE_CACHE_PROBE_RAW="$(rg -v '^warning' "$MODULE_SOURCE_CACHE_PROBE_OUT" | tail -n 1)"
   if ! is_non_negative_int "$MODULE_SOURCE_CACHE_PROBE_RAW"; then
     echo "selfbuild gate failed: stage1 module source cache probe did not return packed counts: $MODULE_SOURCE_CACHE_PROBE_RAW" >&2
@@ -272,9 +272,9 @@ if [ "$cache_probe_runner_mode" -eq 1 ]; then
   echo "[selfbuild] module source cache probe counts: $MODULE_SOURCE_CACHE_PROBE_COUNT1 -> $MODULE_SOURCE_CACHE_PROBE_COUNT2"
 
   CODEGEN_CACHE_PROBE_OUT="$OUT_DIR/stage1_codegen_cache_probe.out"
-  run_stage_capture_stdout "run stage1 codegen cache probe (--invoke selfbuild_probe_type_db_codegen_counts)" \
+  run_stage_capture_stdout "run stage1 codegen cache probe (--invoke selfbuild_stage1_probe_type_db_codegen_counts)" \
     "$CODEGEN_CACHE_PROBE_OUT" \
-    "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_probe_type_db_codegen_counts "$STAGE1_WASM"
+    "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_stage1_probe_type_db_codegen_counts "$STAGE1_WASM"
   CODEGEN_CACHE_PROBE_RAW="$(rg -v '^warning' "$CODEGEN_CACHE_PROBE_OUT" | tail -n 1)"
   if ! is_non_negative_int "$CODEGEN_CACHE_PROBE_RAW"; then
     echo "selfbuild gate failed: stage1 codegen cache probe did not return packed counts: $CODEGEN_CACHE_PROBE_RAW" >&2
@@ -293,9 +293,9 @@ if [ "$cache_probe_runner_mode" -eq 1 ]; then
   echo "[selfbuild] codegen cache probe counts: $CODEGEN_CACHE_PROBE_COUNT1 -> $CODEGEN_CACHE_PROBE_COUNT2"
 
   CLI_CACHE_PROBE_OUT="$OUT_DIR/stage1_cli_cache_probe.out"
-  run_stage_capture_stdout "run stage1 cli cache probe (--invoke selfbuild_probe_cli_file_cache_counts)" \
+  run_stage_capture_stdout "run stage1 cli cache probe (--invoke selfbuild_stage1_probe_cli_file_cache_counts)" \
     "$CLI_CACHE_PROBE_OUT" \
-    "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_probe_cli_file_cache_counts "$STAGE1_WASM"
+    "${node_runner_cmd[@]}" "$VIBE_HOST_RUNNER" --invoke selfbuild_stage1_probe_cli_file_cache_counts "$STAGE1_WASM"
   CLI_CACHE_PROBE_RAW="$(rg -v '^warning' "$CLI_CACHE_PROBE_OUT" | tail -n 1)"
   if ! is_non_negative_int "$CLI_CACHE_PROBE_RAW"; then
     echo "selfbuild gate failed: stage1 cli cache probe did not return packed counts: $CLI_CACHE_PROBE_RAW" >&2

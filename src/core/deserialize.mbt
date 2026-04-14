@@ -3,7 +3,12 @@
 ///|
 pub(all) suberror DeserializeError {
   DeserializeError(String)
-} derive(Show)
+} derive(Debug)
+
+///|
+pub impl Show for DeserializeError with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 let deser_zero_span : Span = Span::{ start: 0, end: 0 }

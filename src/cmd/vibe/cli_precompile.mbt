@@ -4,7 +4,7 @@ struct PrecompileOptions {
   out_dir : String
   wasm_js_string : Bool
   opt_level : String?
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 fn parse_precompile_cmd_args(

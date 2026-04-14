@@ -2,13 +2,18 @@
 /// AST types for vibe
 pub(all) struct Module {
   stmts : Array[Stmt]
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for Module with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 pub(all) struct Ref {
   name : String
   hash_prefix : String?
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) enum Pat {
@@ -25,7 +30,7 @@ pub(all) enum Pat {
   Char(value~ : Char, span~ : Span)
   String(value~ : String, span~ : Span)
   Or(pats~ : Array[Pat], span~ : Span)
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 
@@ -38,14 +43,14 @@ pub(all) struct EffectDef_ {
   name : String
   params : Array[String]
   ops : Map[String, EffectOpSig]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 /// Resolved effect operation signature
 pub(all) struct EffectOpSig {
   params : Array[Type]
   ret : Type
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn strip_ctor_qualifier(name : String) -> String {
@@ -82,13 +87,13 @@ pub(all) struct RecordFieldPat {
   name : String
   pat : Pat
   span : Span
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) enum StringInterpPart {
   Lit(String)
   Expr(Expr)
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) struct MatchArm {
@@ -96,7 +101,7 @@ pub(all) struct MatchArm {
   cond : Expr?
   expr : Expr
   span : Span
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) struct TraitMethodSig {
@@ -104,28 +109,28 @@ pub(all) struct TraitMethodSig {
   params : Array[FuncParam]
   ret : Type
   span : Span
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) struct ImplMethodDef {
   name : String
   expr : Expr
   span : Span
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) struct TypeCtor {
   name : String
   args : Array[Type]
   span : Span
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) struct StructField {
   name : String
   ty : Type
   span : Span
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 /// Effect operation: `Op(Args) -> ReturnType`
@@ -134,7 +139,7 @@ pub(all) struct EffectOp {
   params : Array[Type]
   ret : Type
   span : Span
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 /// Import item kind for explicit import namespaces.
@@ -146,7 +151,7 @@ pub(all) enum ImportKind {
   Effect
   Suberror
   Module
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 /// Import item: `foo`, `foo as bar`, `type Foo`, or `trait Eq`
@@ -154,14 +159,14 @@ pub(all) struct ImportItem {
   kind : ImportKind
   name : String
   rename : String? // alias name if using `as`
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 /// Import specification: only named imports allowed
 /// import ./path.vibe { foo, bar as b }
 pub(all) struct ImportSpec {
   items : Array[ImportItem]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 /// Module reference: path, content hash, or lock-managed ref
@@ -172,7 +177,7 @@ pub(all) enum ModuleRef {
   Symbol(name~ : String) // symbol@std/math
   Alias(name~ : String) // @types → Alias(name="types")
   PinnedPath(path~ : String, hash~ : String) // ./types#abc123 — path with hash pin
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) enum Stmt {
@@ -282,14 +287,14 @@ pub(all) enum Stmt {
     ops~ : Array[EffectOp],
     span~ : Span
   )
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) struct LoopParam {
   name : String
   init : Expr
   span : Span
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) enum Expr {
@@ -353,28 +358,58 @@ pub(all) enum Expr {
     args~ : Array[CallArg],
     span~ : Span
   )
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) struct RecordFieldExpr {
   name : String
   expr : Expr
   span : Span
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) struct MapFieldExpr {
   key : String
   expr : Expr
   span : Span
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) struct CallArg {
   label : String?
   expr : Expr
   span : Span
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for Ref with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
+
+///|
+pub impl Show for Pat with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
+
+///|
+pub impl Show for ImportKind with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
+
+///|
+pub impl Show for ModuleRef with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
+
+///|
+pub impl Show for Stmt with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
+
+///|
+pub impl Show for Expr with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 pub fn first_positional_expr(args : Array[CallArg]) -> Expr? {

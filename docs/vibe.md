@@ -538,7 +538,7 @@ Current lock file:
   - index root is the nearest ancestor directory containing `index.vibe`
     (fallback: entry directory).
   - `index.vibe` must export version:
-    `export let version = "0.1.0"` (simple semver `x.y.z`).
+    `export let version = "0.0.1"` (simple semver `x.y.z`).
   - Path imports are rejected when resolved path escapes index root.
   - `index.vibe` may define `export let module = record { <ns>: "<dir>" }` to map
     namespace imports (for example `std/...`) under root.

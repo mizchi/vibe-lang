@@ -2,7 +2,7 @@
 struct FmtCmdOptions {
   dry_run : Bool
   files : Array[String]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn parse_fmt_cmd_options(

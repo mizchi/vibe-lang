@@ -5,7 +5,7 @@ pub struct BuiltinContractReport {
   missing_handlers : Array[String]
   /// Builtins with codegen handlers but not declared in checker.
   undeclared_handlers : Array[String]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 /// Verify that checker-declared builtins are covered by codegen handlers

@@ -2,7 +2,7 @@
 pub struct MonoifyResult {
   ast : @core.Module
   instantiations : Map[String, Int]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 priv struct MonoifyInstantiation {

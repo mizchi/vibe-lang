@@ -318,6 +318,7 @@ test "format_files_report_to_json includes per-file outputs" {
 
 ///|
 test "check_file reports dependency error propagation through transitive imports" {
+  ensure_checker_hooks()
   let root = "/workspace"
   let fs = MemIoAdapter::new(root)
   let a = root + "/a.vibe"

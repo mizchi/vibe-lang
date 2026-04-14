@@ -3,18 +3,34 @@
 pub enum TestOutcome {
   Passed(@core.Value)
   Failed(String)
-} derive(Show, Eq)
+} derive(Eq)
+
+///|
+pub impl Show for TestOutcome with output(self, logger) {
+  match self {
+    TestOutcome::Passed(value) => {
+      logger.write_string("Passed(")
+      value.output(logger)
+      logger.write_string(")")
+    }
+    TestOutcome::Failed(message) => {
+      logger.write_string("Failed(")
+      logger.write_string(message)
+      logger.write_string(")")
+    }
+  }
+}
 
 ///|
 pub struct TestCacheEntry {
   deps : Map[String, String]
   outcome : TestOutcome
-} derive(Show, Eq)
+} derive(Eq)
 
 ///|
 pub struct TestCache {
   entries : Map[String, TestCacheEntry]
-} derive(Show, Eq)
+} derive(Eq)
 
 ///|
 pub fn TestCache::new() -> TestCache {

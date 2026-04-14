@@ -7,7 +7,7 @@ pub struct AdvancedGraphManifest {
   features : Array[String]
   chunk_roots : Array[String]
   language_ids : Array[String]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 /// Flattened definition node for symbol/type lookup.
@@ -21,7 +21,7 @@ pub struct AdvancedGraphDef {
   start : Int
   end : Int
   module_hash : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 /// Single-file sidecar index POC.
@@ -30,7 +30,7 @@ pub struct AdvancedGraphIndex {
   defs : Map[String, AdvancedGraphDef]
   symbol_index : Map[String, Array[String]]
   type_index : Map[String, Array[String]]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 /// Incremental transfer payload for remote sync simulation.
@@ -44,7 +44,7 @@ pub struct AdvancedGraphDelta {
   symbol_removes : Array[String]
   type_upserts : Map[String, Array[String]]
   type_removes : Array[String]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 /// Symbol/type query result used for remote lookup + lazy fetch planning.
@@ -54,20 +54,20 @@ pub struct AdvancedGraphRemoteQueryResult {
   hits : Array[AdvancedGraphDef]
   requested_module_hashes : Array[String]
   missing_module_hashes : Array[String]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct AdvancedGraphWalStats {
   record_count : Int
   byte_size : Int
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct AdvancedGraphWalLoadResult {
   index : AdvancedGraphIndex
   wal_stats : AdvancedGraphWalStats
   compacted : Bool
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 fn ag_json_int(value : Int) -> Json {

@@ -1125,11 +1125,10 @@ test "cli bench supports imported fallback builtins via host runner" {
     run_bench_blocks_wasm_entry_with_cases(entry_path, 1, 0, [
       "imported_fallback",
     ]) {
-    Ok(report) => {
-      assert_eq(report.total, 1)
-      assert_eq(report.passed, 1)
-      assert_eq(report.failed, 0)
-    }
+    Ok(report) =>
+      if report.total != 1 || report.passed != 1 || report.failed != 0 {
+        fail("unexpected bench report: " + Debug::to_repr(report).to_string())
+      }
     Err(err) => fail("bench run failed: " + err)
   }
   wbtest_remove_if_exists(root + "/.vibe")
@@ -1168,8 +1167,7 @@ test "cli bench can filter cases by name" {
 
 ///|
 test "cli bench extracts bench_setup from shared prelude" {
-  let source =
-    "let shared = [0]\n" +
+  let source = "let shared = [0]\n" +
     "let bench_setup = () -> Int {\n  shared[0] = 42\n  0\n}\n" +
     "bench \"setup\" {\n  let _ = shared[0]\n}\n"
   match extract_bench_source_plan(source) {
@@ -1190,13 +1188,13 @@ test "cli bench runs bench_setup before measured case" {
   @os_fs.write_string_to_file(
     entry_path,
     "let shared = [0]\n" +
-      "let bench_setup = () -> Int {\n" +
-      "  shared[0] = 42\n" +
-      "  0\n" +
-      "}\n" +
-      "bench \"setup\" {\n" +
-      "  let _ = if shared[0] == 42 { 0 } else { throw(\"setup missing\") }\n" +
-      "}\n",
+    "let bench_setup = () -> Int {\n" +
+    "  shared[0] = 42\n" +
+    "  0\n" +
+    "}\n" +
+    "bench \"setup\" {\n" +
+    "  let _ = if shared[0] == 42 { 0 } else { throw(\"setup missing\") }\n" +
+    "}\n",
   ) catch {
     e => fail("write bench entry failed: " + e.to_string())
   }
@@ -1229,8 +1227,8 @@ test "cli bench uses expr mode only for removed legacy flags" {
 test "cli bench parses json output options" {
   match
     parse_bench_cmd_args([
-      "--json", "--json-out", "/tmp/vibe-bench.json", "--runs", "5", "--warmup", "1", "--case", "beta", "--backend", "wasm",
-      "examples/simple_bench.vibe",
+      "--json", "--json-out", "/tmp/vibe-bench.json", "--runs", "5", "--warmup",
+      "1", "--case", "beta", "--backend", "wasm", "examples/simple_bench.vibe",
     ]) {
     Ok(opts) => {
       assert_true(opts.output_json)

@@ -3,13 +3,13 @@ pub enum CommandKind {
   Run
   Compile
   Compare
-} derive(Eq, Show)
+} derive(Eq, Debug)
 
 ///|
 pub enum RunMode {
   CoreWasm
   Component
-} derive(Eq, Show)
+} derive(Eq, Debug)
 
 ///|
 pub struct CmdOptions {
@@ -21,14 +21,14 @@ pub struct CmdOptions {
   opt_level : String?
   http_host_imports : Bool
   invoke : String?
-} derive(Eq, Show)
+} derive(Eq, Debug)
 
 ///|
 struct WasmtimeRunner {
   wasmtime_bin : String
   wasm_flags : Array[String]
   wasi_flags : Array[String]
-} derive(Eq, Show)
+} derive(Eq, Debug)
 
 ///|
 struct ExecCapture {
@@ -36,13 +36,13 @@ struct ExecCapture {
   elapsed_ms : Int
   stdout : String
   stderr : String
-} derive(Eq, Show)
+} derive(Eq, Debug)
 
 ///|
 struct FileSnapshot {
   exists : Bool
   content : String
-} derive(Eq, Show)
+} derive(Eq, Debug)
 
 ///|
 fn args_tail(args : Array[String], start : Int) -> Array[String] {

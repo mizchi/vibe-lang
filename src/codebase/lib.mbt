@@ -52,12 +52,22 @@ fn extract_vibe_from_markdown(markdown : String) -> String {
 /// Nix-like codebase object/lock management.
 pub struct Codebase {
   root : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for Codebase with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 suberror CodebaseError {
   Io(String)
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for CodebaseError with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 pub fn Codebase::new(root : String) -> Codebase {
@@ -1333,7 +1343,12 @@ pub struct LockData {
   symbol_refs : Map[String, String]
   module_refs : Map[String, String]
   annotations : Map[String, String]
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for LockData with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 pub fn LockData::new(

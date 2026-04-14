@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe}"
+VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe}"
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_bootstrap}"
 ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/vibe/compiler/index.vibe}"
 KPI_BASELINE_SEC="${VIBE_SELFHOST_BOOTSTRAP_BASELINE_SEC:-}"
@@ -452,17 +452,8 @@ EOF
 run_stage "compiled __to_string(Double/Float) probe" \
   env VIBE_TEST_BACKEND=compiled "$VIBE_BIN" test "$TOSTRING_PROBE"
 
-# TEMP: vibe_wasm_eval_test.mbt index 44 ("vibe backends match:
-# String::length") has been failing on main with
-# "wasm decode failed: Unsupported('decode unsupported object type')"
-# — the decode_tagged_value helper in the host-side MoonBit test
-# harness does not recognise a new object type that String::length's
-# tagged result now carries. Pre-existing; reproduces on `main` without
-# any of this PR's changes. Skipping the probe until the harness is
-# updated in a follow-up (tracked by #266).
-# run_stage "selfhost probe smoke (vibe wasm eval test index 44)" \
-#   moon test -p tests -f vibe_wasm_eval_test.mbt --target js --warn-list '-29' --index 44
-echo "[bootstrap] skipping selfhost probe smoke (pre-existing decode failure, see #266)"
+run_stage "selfhost probe smoke (vibe wasm eval test index 44)" \
+  moon test -p tests -f vibe_wasm_eval_test.mbt --target js --warn-list '-29' --index 44
 
 BASICS_FIXTURE="$PROJECT_ROOT/examples/basics.vibe"
 BASE64_FIXTURE="$PROJECT_ROOT/bench/compiler_size/cases/base64.vibe"

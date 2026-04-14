@@ -79,7 +79,7 @@ pub(all) struct LinkedImport {
   param_count : Int
   /// number of i64 return values (1 for scalar, 2+ for tuple)
   return_count : Int
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn prelude_core_module_name() -> String {

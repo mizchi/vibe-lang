@@ -2,7 +2,7 @@
 pub(all) struct LineCol {
   line : Int
   column : Int
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 fn clamp_offset(source : String, offset : Int) -> Int {

@@ -8,7 +8,7 @@ pub enum CompileMode {
   Wac
   Wit
   WitComponent
-} derive(Eq, Show)
+} derive(Eq, Debug)
 
 ///|
 pub struct CompileCmdOptions {

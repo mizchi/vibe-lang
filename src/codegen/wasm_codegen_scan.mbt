@@ -83,11 +83,29 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         | "Fs::append"
         | "Fs::open_write"
         | "Fs::write_chunk"
-        | "Fs::close_write"
-        | "Json::parse"
-        | "Json::stringify" => {
+        | "Fs::close_write" => {
           ctx.need_fs = true
           ctx.need_heap = true
+        }
+        "Json::parse" => {
+          ctx.need_fs = true
+          ctx.need_heap = true
+          ctx.need_json_host_parse = true
+        }
+        "Json::stringify" => {
+          ctx.need_fs = true
+          ctx.need_heap = true
+          ctx.need_json_host_stringify = true
+        }
+        "Json::get" => {
+          ctx.need_fs = true
+          ctx.need_heap = true
+          ctx.need_json_host_get = true
+        }
+        "Json::string" => {
+          ctx.need_fs = true
+          ctx.need_heap = true
+          ctx.need_json_host_string = true
         }
         "Socket::tcp_connect"
         | "Socket::tcp_read"

@@ -4,7 +4,7 @@ enum CompletionContext {
   VibeLetName
   VibeLetExpr
   VibeExpr
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct TokenSpan {

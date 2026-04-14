@@ -18,7 +18,7 @@ pub struct BenchSummary {
   quartiles : (Double, Double, Double)
   iqr : Double
   wasm_bytes : Int
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 fn bench_percentile(sorted : Array[Double], pct : Double) -> Double {
@@ -158,17 +158,15 @@ pub fn calibrate_batch_size(
   run_n : (Int) -> Double,
   threshold_us : Double,
 ) -> Int {
-  let batch_size = loop 1 {
-    trial => {
-      let elapsed = run_n(trial)
-      let single_us = elapsed / trial.to_double()
-      if trial.to_double() * single_us > threshold_us {
-        let target = threshold_us /
-          (if single_us < 1.0 { 1.0 } else { single_us })
-        break if target < 1.0 { 1 } else { target.ceil().to_int() }
-      }
-      continue trial * 2
+  let batch_size = for trial = 1 {
+    let elapsed = run_n(trial)
+    let single_us = elapsed / trial.to_double()
+    if trial.to_double() * single_us > threshold_us {
+      let target = threshold_us /
+        (if single_us < 1.0 { 1.0 } else { single_us })
+      break if target < 1.0 { 1 } else { target.ceil().to_int() }
     }
+    continue trial * 2
   }
   batch_size
 }

@@ -160,7 +160,7 @@ fn apply_cmd(args : Array[String]) -> Unit {
 struct SymbolsCmdOptions {
   entry_path : String
   output_json : Bool
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct SymbolsRow {
@@ -172,7 +172,7 @@ struct SymbolsRow {
   def_id : String
   signature : String
   module_hash : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 fn parse_symbols_cmd_args(

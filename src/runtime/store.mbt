@@ -3,13 +3,22 @@
 pub struct Store {
   values : Map[String, @core.Value]
   mut next_uid : Int
-} derive(Show, Eq)
+} derive(Eq)
+
+///|
+pub impl Show for Store with output(self, logger) {
+  logger.write_string("Store(values=")
+  logger.write_string(self.values.length().to_string())
+  logger.write_string(", next_uid=")
+  logger.write_string(self.next_uid.to_string())
+  logger.write_string(")")
+}
 
 ///|
 pub struct RuntimeFeatureFlags {
   unstable_async : Bool
   unstable_threads : Bool
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn RuntimeFeatureFlags::new(
@@ -84,14 +93,14 @@ fn Store::remove(self : Store, hash : String) -> Unit {
 pub struct ThreadChannel {
   capacity : Int
   queue : Array[String]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct ThreadTask {
   name : String
   mailbox : Int
   done : Bool
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct ThreadRuntime {
@@ -99,7 +108,7 @@ pub struct ThreadRuntime {
   mut next_task_id : Int
   channels : Map[String, ThreadChannel]
   tasks : Map[String, ThreadTask]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 fn thread_runtime_key(id : Int) -> String {

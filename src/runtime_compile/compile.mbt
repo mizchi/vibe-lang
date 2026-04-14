@@ -4,14 +4,24 @@ suberror CompileError {
   MissingSource(String)
   Parse(@parser.ParseError)
   TypeDiag(@core.Diagnostic)
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for CompileError with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 suberror WasmCompileError {
   Compile(CompileError)
   Gen(@codegen.WasmGenError)
   Optimize(String)
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for WasmCompileError with output(self, logger) {
+  logger.write_string(self.user_message())
+}
 
 ///|
 pub fn WasmCompileError::user_message(self : WasmCompileError) -> String {
@@ -30,14 +40,14 @@ pub enum WasmCoveragePointKind {
   BranchIfThen
   BranchIfElse
   BranchMatchArm
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct WasmCoveragePoint {
   id : Int
   kind : WasmCoveragePointKind
   span : @core.Span
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct WasmCoverageArtifact {
@@ -45,7 +55,7 @@ pub struct WasmCoverageArtifact {
   counter_base : Int
   counter_count : Int
   points : Array[WasmCoveragePoint]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct WasmCompileStageProfile {
@@ -54,7 +64,12 @@ pub struct WasmCompileStageProfile {
   emit_us : Int
   optimize_us : Int
   total_us : Int
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for WasmCompileStageProfile with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 pub struct CompiledModule {

@@ -3,7 +3,7 @@ pub struct CtorInfo {
   type_name : String
   params : Array[String]
   payload : @core.Type
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 priv struct CtorInstance {
@@ -16,27 +16,27 @@ pub struct EnumDef {
   name : String
   params : Array[String]
   ctors : Array[@core.TypeCtor]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct TypeAlias {
   name : String
   params : Array[String]
   target : @core.Type
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct StructFieldDef {
   name : String
   ty : @core.Type
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct StructDef {
   name : String
   params : Array[String]
   fields : Array[StructFieldDef]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn StructDef::get_field(self : StructDef, name : String) -> StructFieldDef? {

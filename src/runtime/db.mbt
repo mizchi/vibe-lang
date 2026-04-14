@@ -4,7 +4,7 @@ pub struct PathObj {
   raw : String
   base : String
   normalized : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 /// Resolved import metadata used by compile/type phases.
@@ -17,7 +17,7 @@ pub struct ImportSpec {
   source_hash : String?
   source_version : String?
   source_symbol : String?
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct VibeDbInputs {

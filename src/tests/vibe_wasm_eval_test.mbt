@@ -4,13 +4,23 @@ suberror WasmEvalError {
   UnexpectedEof
   Invalid(String)
   Unsupported(String)
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+impl Show for WasmEvalError with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 suberror WasmRunError {
   Compile(String)
   Eval(String)
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+impl Show for WasmRunError with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 struct WasmEvalResult {
@@ -18,7 +28,12 @@ struct WasmEvalResult {
   outputs : Array[String]
   mem : Array[Byte]
   globals : Array[Int64]
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+impl Show for WasmEvalResult with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 struct Cursor {
@@ -382,7 +397,7 @@ fn align4(n : Int) -> Int {
 struct AllocResult {
   ptr : Int
   next : Int
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 fn alloc_string(
@@ -698,8 +713,16 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
   if wmod.func_bodies.is_empty() {
     raise WasmEvalError::Invalid("missing code")
   }
-  // Execute the last function (the `run` function)
-  let run_idx = wmod.import_count + wmod.func_bodies.length() - 1
+  // Prefer the tagged eval export when present. `_start` intentionally
+  // strips int tags for Wasmtime/CLI parity, so using the last function or
+  // `_start` here breaks the decoder on scalar results.
+  let run_idx = match wmod.func_exports.get("_vibe_run_tagged") {
+    Some(idx) => idx
+    None =>
+      // Backward compatibility for modules emitted before `_vibe_run_tagged`
+      // was added: fall back to the last function body.
+      wmod.import_count + wmod.func_bodies.length() - 1
+  }
   let outputs : Array[String] = []
   let results = exec_func(wmod, run_idx, [], outputs, 0)
   let value = if results.is_empty() {

@@ -4,7 +4,18 @@ pub struct Token {
   kind : @cst.SyntaxKind
   text : String
   width : Int
-} derive(Show, Eq)
+} derive(Eq)
+
+///|
+pub impl Show for Token with output(self, logger) {
+  logger.write_string("Token(kind=")
+  logger.write_string(self.kind.raw().to_string())
+  logger.write_string(", text=")
+  logger.write_string(self.text.to_string())
+  logger.write_string(", width=")
+  logger.write_string(self.width.to_string())
+  logger.write_string(")")
+}
 
 ///|
 pub fn Token::new(kind : @cst.SyntaxKind, text : String) -> Token {

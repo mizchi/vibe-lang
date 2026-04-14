@@ -1,0 +1,46 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  github-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install MoonBit
+        run: bash scripts/install_moonbit.sh
+
+      - name: Install wasmtime
+        run: |
+          bash scripts/install_wasmtime_release.sh
+          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+
+      - name: Build release assets
+        run: bash scripts/build_release_assets.sh "${GITHUB_REF_NAME}"
+
+      - name: Upload staged assets
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-assets-${{ github.ref_name }}
+          path: dist/release/${{ github.ref_name }}/*
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/release/${{ github.ref_name }}/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true

@@ -9,7 +9,7 @@ pub enum SymbolKind {
   TraitSym
   CtorSym
   ImplSym
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct SymbolEntry {
@@ -18,7 +18,7 @@ pub struct SymbolEntry {
   signature : String
   path : String
   span : @core.Span
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct SymbolIndex {
@@ -26,7 +26,7 @@ pub struct SymbolIndex {
   name_index : Map[String, Int]
   name_dup_index : Map[String, Array[Int]]
   vibe_query_index : Map[String, Array[Int]]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn symbol_kind_name(kind : SymbolKind) -> String {

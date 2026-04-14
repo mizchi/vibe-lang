@@ -78,20 +78,25 @@ struct WasmtimeInvokeOutput {
   status : Int
   stdout : String
   stderr : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct HttpHostRunner {
   node_bin : String
   node_flags : Array[String]
   runner_script : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 enum WasmRunValue {
   Int(Int64)
   Bool(Bool)
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+impl Show for WasmRunValue with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 let cli_tagged_run_export_name = "_vibe_run_tagged"
@@ -103,10 +108,7 @@ fn run_wasmtime_invoke_run_capture(
   tmp_prefix : String,
 ) -> WasmtimeInvokeOutput {
   run_wasmtime_invoke_named_capture(
-    runner,
-    wasm_path,
-    tmp_prefix,
-    cli_tagged_run_export_name,
+    runner, wasm_path, tmp_prefix, cli_tagged_run_export_name,
   )
 }
 
@@ -222,11 +224,9 @@ fn build_http_host_run_command(
   runner : HttpHostRunner,
   wasm_path : String,
 ) -> String {
-  build_http_host_run_command_with_invokes(
-    runner,
-    wasm_path,
-    [cli_tagged_run_export_name],
-  )
+  build_http_host_run_command_with_invokes(runner, wasm_path, [
+    cli_tagged_run_export_name,
+  ])
 }
 
 ///|
@@ -258,12 +258,9 @@ fn run_http_host_invoke_run_capture(
   wasm_path : String,
   tmp_prefix : String,
 ) -> WasmtimeInvokeOutput {
-  run_http_host_invoke_run_capture_with_invokes(
-    runner,
-    wasm_path,
-    tmp_prefix,
-    [cli_tagged_run_export_name],
-  )
+  run_http_host_invoke_run_capture_with_invokes(runner, wasm_path, tmp_prefix, [
+    cli_tagged_run_export_name,
+  ])
 }
 
 ///|
@@ -827,9 +824,7 @@ fn run_cmd_wasm_linked(
     }
   }
   let mut cmd = build_wasmtime_invoke_command(
-    runner,
-    wasm_path,
-    cli_tagged_run_export_name,
+    runner, wasm_path, cli_tagged_run_export_name,
   )
   let seen : Map[String, Bool] = {}
   for li in cached_imports {

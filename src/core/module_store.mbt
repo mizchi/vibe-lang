@@ -7,7 +7,7 @@
 ///|
 pub(all) suberror StoreError {
   StoreError(String)
-} derive(Show)
+} derive(Debug)
 
 ///|
 /// Object path from hash (git-style: first 2 chars as directory)
@@ -48,7 +48,7 @@ pub fn hash_from_object_path(path : String) -> String? {
 pub(all) struct PathMapping {
   path : String
   hash : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 /// Serialize path mappings to JSON

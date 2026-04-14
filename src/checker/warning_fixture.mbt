@@ -3,7 +3,7 @@ pub struct WarningFixtureMismatch {
   source_path : String
   expected : String
   actual : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 fn trim_trailing_newlines_warning(text : String) -> String {

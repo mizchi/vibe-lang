@@ -1009,7 +1009,12 @@ pub enum ApiVersionBump {
   Patch
   Minor
   Major
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for ApiVersionBump with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 fn semver_init() -> ApiSemver {

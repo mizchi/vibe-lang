@@ -20,7 +20,7 @@ struct EvalScopeSymbol {
   signature : String
   path : String
   def_id : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 fn eval_scope_symbol_id_from_entry(entry : @frontend.SymbolEntry) -> String {

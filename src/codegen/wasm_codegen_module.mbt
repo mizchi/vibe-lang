@@ -725,9 +725,8 @@ fn build_module(
     // readdir, getcwd, chdir, is_dir, is_file, mkdir, mkdir_p, remove, rename, copy, append,
     // open_write, write_chunk, close_write
     func_import_count += 19
-    // json host imports: json_parse, json_stringify
-    func_import_count += 2
   }
+  func_import_count += json_host_import_count(ctx)
   if ctx.need_socket {
     func_import_count += 13
   }
@@ -917,15 +916,31 @@ fn build_module(
       write_fs_host_import(import_sec, "Fs::open_write", fs_host_arity1_type)
       write_fs_host_import(import_sec, "Fs::write_chunk", fs_host_arity2_type)
       write_fs_host_import(import_sec, "Fs::close_write", fs_host_arity1_type)
-      // Json host imports (reuse fs_host_arity1_type: i64 -> i64)
-      write_name(import_sec, "vibe")
-      write_name(import_sec, "json_parse")
-      import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, fs_host_arity1_type)
-      write_name(import_sec, "vibe")
-      write_name(import_sec, "json_stringify")
-      import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, fs_host_arity1_type)
+      // Json host imports (tagged calling convention)
+      if ctx.need_json_host_parse {
+        write_name(import_sec, "vibe")
+        write_name(import_sec, "json_parse")
+        import_sec.push((0).to_byte())
+        write_u32_leb(import_sec, fs_host_arity1_type)
+      }
+      if ctx.need_json_host_stringify {
+        write_name(import_sec, "vibe")
+        write_name(import_sec, "json_stringify")
+        import_sec.push((0).to_byte())
+        write_u32_leb(import_sec, fs_host_arity1_type)
+      }
+      if ctx.need_json_host_get {
+        write_name(import_sec, "vibe")
+        write_name(import_sec, "json_get")
+        import_sec.push((0).to_byte())
+        write_u32_leb(import_sec, fs_host_arity2_type)
+      }
+      if ctx.need_json_host_string {
+        write_name(import_sec, "vibe")
+        write_name(import_sec, "json_string")
+        import_sec.push((0).to_byte())
+        write_u32_leb(import_sec, fs_host_arity1_type)
+      }
     }
     if ctx.need_socket {
       // 1. instance-network
@@ -3428,9 +3443,8 @@ fn emit_module_with_coverage(
     }
     if ctx.need_fs && ctx.fs_host_imports {
       pre_import_count += 19
-      // json host imports: json_parse, json_stringify
-      pre_import_count += 2
     }
+    pre_import_count += json_host_import_count(ctx)
     if ctx.need_socket {
       pre_import_count += 13
     }
