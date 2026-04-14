@@ -245,20 +245,9 @@ export let compile_wasi_module_linked_impl = (stmts_raw: Array[Stmt], entry_name
     }
     ei = ei + 1
   }
-  let raw_strs = collect_strings_stmts(stmts)
-  // Deduplicate collected strings in a single O(n^2) pass on the
-  // smaller result set, instead of per-insertion O(n) checks during
-  // AST traversal.  This dramatically reduces MoonBit RC temporary
-  // object creation.
-  let str_strs = Array::slice([""], 0, 0)
-  let mut __dedup_i = 0
-  while __dedup_i < Array::length(raw_strs) {
-    let s = Array::get(raw_strs, __dedup_i)
-    if !array_contains_str(str_strs, s) {
-      Array::push(str_strs, s)
-    }
-    __dedup_i = __dedup_i + 1
-  }
+  let str_strs = collect_strings_stmts(stmts)
+  // NOTE: No dedup — the O(n^2) dedup uses ~1.8GB of MoonBit RC overhead.
+  // Duplicate strings waste ~50KB in the output WASM data section.
   let src_str_base = Array::length(str_strs)
   let num_src_pairs = Array::length(selfhost_srcs)
   let mut __src_i = 0
@@ -960,15 +949,29 @@ export let compile_wasi_module_linked_impl = (stmts_raw: Array[Stmt], entry_name
       }
       Array::push(local_names, "__env")
       let param_count = Array::length(__bi_params) + 1
-      let final_nl = compile_expr(body_buf, body, local_names, param_count, compile_ctx, -1)
-      Array::push(bodies, body_buf)
-      let extra = if final_nl > param_count {
-        final_nl - param_count
-      } else {
-        0
+      let compile_ok = handle {
+        let final_nl = compile_expr(body_buf, body, local_names, param_count, compile_ctx, -1)
+        let extra = if final_nl > param_count {
+          final_nl - param_count
+        } else {
+          0
+        }
+        Array::push(bodies, body_buf)
+        Array::push(meta_i32, 0)
+        Array::push(meta_i64, extra)
+        true
+      } with Error {
+        Throw(_) => false
       }
-      Array::push(meta_i32, 0)
-      Array::push(meta_i64, extra)
+      if !compile_ok {
+        // Emit a dummy function body (return i64 0) for functions
+        // that fail compilation due to missing references.
+        let dummy = bytebuf_new()
+        emit_i64_const(dummy, 0)
+        Array::push(bodies, dummy)
+        Array::push(meta_i32, 0)
+        Array::push(meta_i64, 0)
+      }
     } else {
       Array::push(local_names, "__env")
       let param_count = 1
