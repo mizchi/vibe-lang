@@ -6,7 +6,12 @@ pub(all) enum JsonRpcId {
   Num(Int)
   Str(String)
   Null
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for JsonRpcId with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 pub(all) struct JsonRpcRequest {
@@ -14,7 +19,7 @@ pub(all) struct JsonRpcRequest {
   id : JsonRpcId?
   meth : String
   params : Json?
-} derive(Show, Eq)
+} derive(Eq)
 
 ///|
 pub(all) struct JsonRpcResponse {
@@ -22,14 +27,14 @@ pub(all) struct JsonRpcResponse {
   id : JsonRpcId?
   result : Json?
   error : JsonRpcError?
-} derive(Show, Eq)
+} derive(Eq)
 
 ///|
 pub(all) struct JsonRpcError {
   code : Int
   message : String
   data : Json?
-} derive(Show, Eq)
+} derive(Eq)
 
 ///|
 pub fn parse_request(json : Json) -> JsonRpcRequest? {

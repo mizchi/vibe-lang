@@ -230,8 +230,7 @@ test "http host run command can invoke multiple exports in order" {
     ["_bench_setup", "_bench_run"],
   )
   assert_eq(
-    cmd,
-    "\"/tmp/node\" \"--experimental-wasm-exnref\" \"/tmp/runner.js\" --invoke \"_bench_setup\" --invoke \"_bench_run\" \"/tmp/app.wasm\"",
+    cmd, "\"/tmp/node\" \"--experimental-wasm-exnref\" \"/tmp/runner.js\" --invoke \"_bench_setup\" --invoke \"_bench_run\" \"/tmp/app.wasm\"",
   )
 }
 
@@ -3196,9 +3195,12 @@ test "compiled test marks Json::parse builtins unsupported for fallback" {
     e => fail("write temp source failed: " + e.to_string())
   }
   match wbtest_run_test_file_compiled(source_path, false) {
-    CompiledTestAttempt::Success(report) =>
-      // Json::parse is now handled via host imports (fs_host_imports path)
+    CompiledTestAttempt::Success(report) => {
+      // Json::parse/get/string now run through fs host imports.
       assert_true(report.total > 0)
+      assert_eq(report.failed, 0)
+      assert_eq(report.passed, report.total)
+    }
     CompiledTestAttempt::Unsupported(err) =>
       fail("expected success via host imports, got unsupported: " + err)
     CompiledTestAttempt::Error(err) =>
@@ -3643,10 +3645,14 @@ test "save source hashes includes entry for linked cache" {
   let db = @runtime.VibeDb::new()
   db.set_source(entry_path, "import ./dep.vibe { dep }\nlet main = dep\n")
   db.set_source(dep_path, "let dep = 1\n")
-  let _ = c_system(system_command_bytes("mkdir -p " + shell_quote_command_arg(cache_dir)))
+  let _ = c_system(
+    system_command_bytes("mkdir -p " + shell_quote_command_arg(cache_dir)),
+  )
   save_source_hashes(db, entry_path, cache_dir, hash_path)
   let saved = parse_source_hash_cache(
-    @os_fs.read_file_to_string(hash_path) catch { _ => "" },
+    @os_fs.read_file_to_string(hash_path) catch {
+      _ => ""
+    },
   )
   assert_true(saved.contains(entry_path))
   assert_true(saved.contains(dep_path))
@@ -3923,9 +3929,12 @@ test "test backend reports unsupported compiled cases by default" {
       source_path,
       @runtime.RuntimeFeatureFlags::stable(),
     ) {
-    Ok(report) =>
-      // Json::parse now handled via host imports — compiled backend succeeds
+    Ok(report) => {
+      // Json::parse/get/string now handled via host imports.
       assert_true(report.total > 0)
+      assert_eq(report.failed, 0)
+      assert_eq(report.passed, report.total)
+    }
     Err(err) => fail("expected success via host imports, got error: " + err)
   }
   wbtest_remove_if_exists(source_path)

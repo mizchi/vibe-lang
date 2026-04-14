@@ -3,7 +3,7 @@ pub struct SessionState {
   mut type_var_counter : Int
   mut lenient_mode : Bool
   mut skip_fn_body_check : Bool
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct TypecheckSession {
@@ -41,7 +41,7 @@ let default_typecheck_session : TypecheckSession = TypecheckSession::new()
 pub(all) struct ScopedRefContainsCacheEntry {
   ty : @core.Type
   has_scoped_ref : Bool
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct ScopedRefProfile {
@@ -57,7 +57,7 @@ pub struct ScopedRefProfile {
   return_time_us : Double
   toplevel_checks : Int
   toplevel_time_us : Double
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct TypeEnv {
@@ -126,7 +126,7 @@ pub struct TypeEnv {
   subs : Map[Int, @core.Type]
   effect_subs : Map[String, Array[@core.EffectAtom]]
   session_state : SessionState
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn TypeEnv::new() -> TypeEnv {

@@ -5,13 +5,13 @@
 pub(all) struct LspPosition {
   line : Int
   character : Int
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) struct LspRange {
   start : LspPosition
   end : LspPosition
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) struct LspDiagnostic {
@@ -19,12 +19,12 @@ pub(all) struct LspDiagnostic {
   severity : Int? // 1=Error, 2=Warning, 3=Info, 4=Hint
   source : String?
   message : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) struct LspTextDocumentIdentifier {
   uri : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) struct LspTextDocumentItem {
@@ -32,18 +32,18 @@ pub(all) struct LspTextDocumentItem {
   language_id : String
   version : Int
   text : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) struct LspVersionedTextDocumentIdentifier {
   uri : String
   version : Int
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) struct LspTextDocumentContentChangeEvent {
   text : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn position_to_json(pos : LspPosition) -> Json {

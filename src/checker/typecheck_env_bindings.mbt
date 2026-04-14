@@ -5,14 +5,19 @@ pub struct TypeScheme {
   effect_vars : Array[String]
   trait_bounds : Map[Int, Array[String]]
   ty : @core.Type
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct ApiSemver {
   major : Int
   minor : Int
   patch : Int
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for ApiSemver with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 pub fn TypeEnv::get(self : TypeEnv, name : String) -> @core.Type? {

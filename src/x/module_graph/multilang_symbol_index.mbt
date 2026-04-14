@@ -15,7 +15,7 @@ pub struct GraphIrRow {
   refs : Array[String]
   calls : Array[String]
   imports : Array[String]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn new_graph_ir_row(
@@ -65,7 +65,7 @@ pub struct GraphIrDef {
   refs : Array[String]
   calls : Array[String]
   imports : Array[String]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 /// Shared backend index keyed by language-aware symbol/type keys.
@@ -74,7 +74,7 @@ pub struct MultiLangSymbolIndex {
   anchor_to_def : Map[String, String]
   symbol_index : Map[String, Array[String]]
   type_index : Map[String, Array[String]]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 fn ml_sorted_unique_strings(values : Array[String]) -> Array[String] {

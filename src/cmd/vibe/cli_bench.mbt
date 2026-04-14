@@ -1,13 +1,18 @@
 ///|
 enum BenchBackend {
   Wasm
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+impl Show for BenchBackend with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 struct BenchSourceCase {
   name : String?
   body_source : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct BenchSourcePlan {
@@ -16,14 +21,14 @@ struct BenchSourcePlan {
   local_prelude_source : String
   setup_source : String
   cases : Array[BenchSourceCase]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct BenchWasmRunner {
   wasmtime_bin : String
   wasm_flags : Array[String]
   wasi_flags : Array[String]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct BenchCmdOptions {
@@ -35,13 +40,13 @@ struct BenchCmdOptions {
   backend : BenchBackend
   output_json : Bool
   json_out_path : String?
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct WasmBenchFailure {
   name : String?
   error : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct WasmBenchResult {
@@ -51,7 +56,7 @@ struct WasmBenchResult {
   elapsed_ms : Double
   per_us : Double
   wasm_bytes : Int
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct WasmBenchReport {
@@ -60,7 +65,7 @@ struct WasmBenchReport {
   failed : Int
   results : Array[WasmBenchResult]
   failures : Array[WasmBenchFailure]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct WasmBenchSummaryReport {
@@ -69,7 +74,7 @@ struct WasmBenchSummaryReport {
   failed : Int
   results : Array[@runtime.BenchSummary]
   failures : Array[WasmBenchFailure]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 fn is_wasm_unsupported_compile_error(message : String) -> Bool {
@@ -202,7 +207,7 @@ fn parse_bench_cmd_args(
         legacy_n = Some(
           @strconv.parse_int(args[i + 1]) catch {
             e => return Err("bench: invalid --n: " + e.to_string())
-          }
+          },
         )
         i += 2
       }
@@ -547,12 +552,10 @@ fn extract_bench_source_plan(
   }
   let import_source = module_source_from_stmt_spans(source, import_stmts)
   let shared_prelude_source = module_source_from_stmt_spans(
-    source,
-    shared_prelude_stmts,
+    source, shared_prelude_stmts,
   )
   let local_prelude_source = module_source_from_stmt_spans(
-    source,
-    local_prelude_stmts,
+    source, local_prelude_stmts,
   )
   let setup_source = module_source_from_stmt_spans(source, setup_stmts)
   Ok(BenchSourcePlan::{
@@ -929,7 +932,14 @@ fn run_bench_module(
       Ok(v) => v
       Err(err) => return Err(err)
     }
-    run_http_host_invoke_run_capture(host_runner, wasm_path, tmp_prefix)
+    // Bench scripts export `_start` (and optional `_bench_run` for setup mode),
+    // not the CLI tagged runner entrypoint.
+    run_http_host_invoke_run_capture_with_invokes(
+      host_runner,
+      wasm_path,
+      tmp_prefix,
+      ["_start"],
+    )
   } else {
     run_wasmtime_invoke_run_capture(runner, wasm_path, tmp_prefix)
   }
@@ -1011,13 +1021,8 @@ fn run_http_host_bench_measure(
   let out_path = tmp_prefix + ".out"
   let err_path = tmp_prefix + ".err"
   let cmd = build_http_host_bench_command(
-    runner,
-    wasm_path,
-    invoke_name,
-    count,
-    warmup,
-    setup_invoke,
-  ) +
+      runner, wasm_path, invoke_name, count, warmup, setup_invoke,
+    ) +
     " >" +
     shell_quote_command_arg(out_path) +
     " 2>" +
@@ -1045,10 +1050,7 @@ fn compile_bench_script_to_wasm(
   source : String,
 ) -> Result[(String, Int, Bool), String] {
   compile_bench_script_to_wasm_with_runner(
-    entry_path,
-    script_kind,
-    source,
-    false,
+    entry_path, script_kind, source, false,
   )
 }
 
@@ -1076,7 +1078,9 @@ fn compile_bench_script_to_wasm_with_runner(
   let (use_http_host_runner, use_fs_host_runner) = detect_exec_host_runner_requirements(
     db, entry,
   )
-  let use_node_runner = force_node_runner || use_http_host_runner || use_fs_host_runner
+  let use_node_runner = force_node_runner ||
+    use_http_host_runner ||
+    use_fs_host_runner
   let cached_hash_path = wasm_path + ".hashes"
   let cached_mode_path = wasm_path + ".mode"
   let current_hashes = collect_source_hash_cache(db, entry, true)
@@ -1111,13 +1115,41 @@ fn compile_bench_script_to_wasm_with_runner(
     }
   }
   let wasm_bytes = if use_node_runner {
-    compile_module_wasm_for_exec(
+    @runtime_compile.compile_module_wasm_with_opt_level(
       db,
       entry,
+      no_dce=true,
+      opt_level=Some("-Oz"),
+      // Preserve thrown string payloads for host-runner parity with `run`.
+      debug_errors=true,
       http_host_imports=true,
       fs_host_imports=true,
     ) catch {
-      e => return Err("compile wasm error: " + e.user_message())
+      e => {
+        let primary_err = e.user_message()
+        if primary_err.contains("optimize:") {
+          @runtime_compile.compile_module_wasm_with_opt_level(
+            db,
+            entry,
+            no_dce=true,
+            opt_level=None,
+            debug_errors=true,
+            http_host_imports=true,
+            fs_host_imports=true,
+          ) catch {
+            e2 =>
+              return Err(
+                "compile wasm error: " +
+                primary_err +
+                " (fallback without optimize failed: " +
+                e2.user_message() +
+                ")",
+              )
+          }
+        } else {
+          return Err("compile wasm error: " + primary_err)
+        }
+      }
     }
   } else {
     @runtime_compile.compile_module_wasm_with_opt_level(
@@ -1212,10 +1244,7 @@ fn run_wasm_bench_case(
       )
     } else {
       let run_source = build_bench_case_setup_script(
-        import_source,
-        shared_prelude_source,
-        setup_source,
-        case_body_source,
+        import_source, shared_prelude_source, setup_source, case_body_source,
       )
       match
         compile_bench_script_to_wasm_with_runner(
@@ -1230,7 +1259,8 @@ fn run_wasm_bench_case(
           } else {
             let host_runner = match resolve_http_host_runner(entry_path) {
               Ok(v) => v
-              Err(err) => return Err(WasmBenchFailure::{ name: case_name, error: err })
+              Err(err) =>
+                return Err(WasmBenchFailure::{ name: case_name, error: err })
             }
             match
               run_http_host_bench_measure(
@@ -1243,7 +1273,13 @@ fn run_wasm_bench_case(
                 None,
               ) {
               Ok(elapsed_us) =>
-                Ok((elapsed_us / 1000.0, elapsed_us / count.to_double(), wasm_bytes))
+                Ok(
+                  (
+                    elapsed_us / 1000.0,
+                    elapsed_us / count.to_double(),
+                    wasm_bytes,
+                  ),
+                )
               Err(err) => Err(err)
             }
           }
@@ -1252,17 +1288,11 @@ fn run_wasm_bench_case(
     }
   } else {
     let warm_source = build_bench_case_loop_script(
-      import_source,
-      shared_prelude_source,
-      local_prelude_source,
-      case_body_source,
+      import_source, shared_prelude_source, local_prelude_source, case_body_source,
       warmup,
     )
     let run_source = build_bench_case_loop_script(
-      import_source,
-      shared_prelude_source,
-      local_prelude_source,
-      case_body_source,
+      import_source, shared_prelude_source, local_prelude_source, case_body_source,
       count,
     )
     if warmup > 0 {
@@ -1274,7 +1304,9 @@ fn run_wasm_bench_case(
         ) {
         Ok((warm_wasm_path, _, use_node_runner)) =>
           match
-            run_bench_module(runner, entry_path, warm_wasm_path, use_node_runner) {
+            run_bench_module(
+              runner, entry_path, warm_wasm_path, use_node_runner,
+            ) {
             Ok(_) =>
               run_wasm_case_measure(
                 runner,
@@ -1430,8 +1462,7 @@ fn run_bench_blocks_wasm_statistical_entry_with_cases(
       if plan.local_prelude_source.length() > 0 {
         failures.push(WasmBenchFailure::{
           name: case_name,
-          error:
-            "bench setup requires hoistable top-level prelude only; found local prelude statements",
+          error: "bench setup requires hoistable top-level prelude only; found local prelude statements",
         })
         continue
       }
@@ -1485,7 +1516,9 @@ fn run_bench_blocks_wasm_statistical_entry_with_cases(
         }
         let start = @bench.monotonic_clock_start()
         match
-          run_bench_module(runner, entry_path, cal_wasm_path, cal_use_node_runner) {
+          run_bench_module(
+            runner, entry_path, cal_wasm_path, cal_use_node_runner,
+          ) {
           Err(err) => {
             failures.push(WasmBenchFailure::{
               name: case_name,
@@ -1520,7 +1553,8 @@ fn run_bench_blocks_wasm_statistical_entry_with_cases(
         case_index.to_string() +
         "_" +
         batch_size.to_string()
-      match compile_bench_script_to_wasm(entry_path, run_script_kind, run_source) {
+      match
+        compile_bench_script_to_wasm(entry_path, run_script_kind, run_source) {
         Ok(v) => v
         Err(err) => {
           failures.push(WasmBenchFailure::{

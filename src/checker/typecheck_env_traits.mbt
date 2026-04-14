@@ -3,14 +3,14 @@ pub struct TraitImplDef {
   type_params : Array[String]
   type_bounds : Map[String, Array[String]]
   target : @core.Type
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct TraitDefInfo {
   supertraits : Array[String]
   open_impl : Bool
   is_local : Bool
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn TypeEnv::has_trait(self : TypeEnv, name : String) -> Bool {

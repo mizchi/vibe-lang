@@ -5,7 +5,7 @@ pub(all) struct PurityInfo {
   value : Bool
   expr_tier : TopLevelPurityTier
   value_tier : TopLevelPurityTier
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 priv struct PurityScope {

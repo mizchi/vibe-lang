@@ -12,28 +12,28 @@ enum ContainerKind {
   BracketArray
   BracketTypeArgs
   BracketIndex
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct MatchPending {
   paren : Int
   brace : Int
   bracket : Int
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 enum TypeDeclMode {
   DeclNone
   DeclTypeAlias
   DeclEnum
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct TypeContext {
   paren : Int
   brace : Int
   bracket : Int
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn format_script(script : String) -> String {

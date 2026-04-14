@@ -4,7 +4,12 @@ suberror WasmGenError {
   UnknownName(String)
   Unsupported(String)
   BackendLimit(backend~ : String, feature~ : String)
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for WasmGenError with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 pub fn WasmGenError::is_backend_limit(self : WasmGenError) -> Bool {
@@ -30,14 +35,24 @@ pub enum WasmCoveragePointKind {
   BranchIfThen
   BranchIfElse
   BranchMatchArm
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for WasmCoveragePointKind with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 pub struct WasmCoveragePoint {
   id : Int
   kind : WasmCoveragePointKind
   span : @core.Span
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for WasmCoveragePoint with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 pub struct WasmCoverageArtifact {
@@ -45,7 +60,12 @@ pub struct WasmCoverageArtifact {
   counter_base : Int
   counter_count : Int
   points : Array[WasmCoveragePoint]
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for WasmCoverageArtifact with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 pub struct WasmEmitOptions {
@@ -68,7 +88,12 @@ pub struct WasmEmitOptions {
   rc_actions : Array[(String, Bool, String)]
   /// Per-function Perceus actions: func_name → (site, is_dup, name) tuples.
   rc_func_actions : Map[String, Array[(String, Bool, String)]]
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for WasmEmitOptions with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 pub fn wasm_emit_options(
@@ -192,7 +217,12 @@ enum ValueKind {
   BoxedF64
   ExternRef
   V128
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+impl Show for ValueKind with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 fn valtype_byte(kind : ValueKind) -> Byte {

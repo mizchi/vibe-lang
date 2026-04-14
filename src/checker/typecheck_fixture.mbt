@@ -2,14 +2,14 @@
 struct TypecheckFixtureEntry {
   source_path : String
   diag_path : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct TypecheckFixtureMismatch {
   source_path : String
   expected : String
   actual : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 fn sort_strings_typecheck_fixture(arr : Array[String]) -> Unit {

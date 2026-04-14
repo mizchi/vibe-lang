@@ -21,13 +21,23 @@
 pub(all) enum RcStmtActionKind {
   Dup
   Drop
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for RcStmtActionKind with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 pub(all) struct RcStmtAction {
   kind : RcStmtActionKind
   name : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for RcStmtAction with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 /// Perceus RC codegen for WASM linear memory backend.

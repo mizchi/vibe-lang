@@ -2,7 +2,7 @@
 struct BenchCase {
   name : String
   expr : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 fn is_valid_bench_case_name(name : String) -> Bool {

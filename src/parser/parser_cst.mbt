@@ -6,7 +6,12 @@ suberror ParseError {
   IntLiteralOverflow(literal~ : String, span~ : @core.Span)
   IntMinLiteralBoundary(span~ : @core.Span)
   MutableEnumFieldUnsupported(span~ : @core.Span)
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for ParseError with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 fn parse_error_separator_name(expected : String) -> String? {

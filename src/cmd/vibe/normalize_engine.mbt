@@ -2,7 +2,7 @@
 struct NormalizeSourceRange {
   start : Int
   end : Int
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 enum NormalizeStmtGroup {
@@ -11,7 +11,7 @@ enum NormalizeStmtGroup {
   TraitDecl
   FnDef
   Other
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct NormalizeEngine {

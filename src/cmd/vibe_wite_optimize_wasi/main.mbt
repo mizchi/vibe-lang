@@ -2,7 +2,7 @@
 pub enum InputMode {
   Binary
   Wac
-} derive(Eq, Show)
+} derive(Eq, Debug)
 
 ///|
 pub struct CmdOptions {
@@ -10,7 +10,7 @@ pub struct CmdOptions {
   input_path : String
   output_path : String
   opt_level : String?
-} derive(Eq, Show)
+} derive(Eq, Debug)
 
 ///|
 fn args_tail(args : Array[String], start : Int) -> Array[String] {

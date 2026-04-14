@@ -5,7 +5,12 @@ suberror WasmWatError {
   InvalidMagic
   InvalidSection(String)
   UnsupportedOpcode(Int)
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for WasmWatError with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 priv struct Cursor {
@@ -419,6 +424,7 @@ fn parse_instrs(cursor : Cursor) -> Array[Instr] raise WasmWatError {
         let label = cursor.read_leb_u32()
         instrs.push(Instr::Simple("br_if " + label.to_string()))
       }
+      0x1b => instrs.push(Instr::Simple("select"))
       _ => raise WasmWatError::UnsupportedOpcode(op)
     }
   }

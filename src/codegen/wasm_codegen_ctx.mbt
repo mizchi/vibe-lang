@@ -79,6 +79,10 @@ priv struct CodegenCtx {
   mut need_stdin_read_char : Bool
   // Filesystem WASI imports
   mut need_fs : Bool
+  mut need_json_host_parse : Bool
+  mut need_json_host_stringify : Bool
+  mut need_json_host_get : Bool
+  mut need_json_host_string : Bool
   // Socket WASI imports
   mut need_socket : Bool
   // HTTP WASI imports (P3 draft — stub for now)
@@ -278,6 +282,10 @@ fn CodegenCtx::new(
     need_stdin_read_char: false,
     // Filesystem WASI imports
     need_fs: false,
+    need_json_host_parse: false,
+    need_json_host_stringify: false,
+    need_json_host_get: false,
+    need_json_host_string: false,
     // Socket WASI imports
     need_socket: false,
     // HTTP WASI imports

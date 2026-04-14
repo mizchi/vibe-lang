@@ -2,7 +2,14 @@
 /// Pure function result cache (external snapshot)
 pub struct PureCache {
   entries : Map[String, @core.Value]
-} derive(Show, Eq)
+} derive(Eq)
+
+///|
+pub impl Show for PureCache with output(self, logger) {
+  logger.write_string("PureCache(len=")
+  logger.write_string(self.entries.length().to_string())
+  logger.write_string(")")
+}
 
 ///|
 pub fn PureCache::new() -> PureCache {

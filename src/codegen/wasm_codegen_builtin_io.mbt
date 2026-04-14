@@ -2115,6 +2115,19 @@ fn compile_builtin_io(
       compile_expr(ctx, buf, pos_args[0])
       emit_call(buf, import_index_json_host_stringify(ctx))
     }
+    "Json::get" if ctx.fs_host_imports => {
+      let pos_args = extract_positional_exprs_with_arity(args, "Json::get", 2)
+      compile_expr(ctx, buf, pos_args[0])
+      compile_expr(ctx, buf, pos_args[1])
+      emit_call(buf, import_index_json_host_get(ctx))
+    }
+    "Json::string" if ctx.fs_host_imports => {
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Json::string", 1,
+      )
+      compile_expr(ctx, buf, pos_args[0])
+      emit_call(buf, import_index_json_host_string(ctx))
+    }
     _ => raise WasmGenError::Unsupported(pre_user_builtin_unhandled_marker)
   }
 }

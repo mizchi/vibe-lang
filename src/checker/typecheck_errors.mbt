@@ -4,7 +4,12 @@ pub(all) enum TopLevelPurityTier {
   Pure
   StateLocal
   Impure
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for TopLevelPurityTier with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 suberror TypeError {
@@ -43,7 +48,12 @@ suberror TypeError {
     missing_effect~ : String?,
     span~ : @core.Span
   )
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for TypeError with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 fn suggestion_hint(suggestion : String?) -> String? {

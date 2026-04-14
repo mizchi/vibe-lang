@@ -9,7 +9,12 @@ struct DceBenchResult {
   wasm_no_dce : Int?
   wasm_with_dce : Int?
   reduction_percent : Double?
-} derive(Show)
+} derive(Debug)
+
+///|
+impl Show for DceBenchResult with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 fn bench_dce(
@@ -102,7 +107,14 @@ test "bench: dce.many_unused" {
   inspect(
     result,
     content=(
-      #|{name: "many_unused", stmts_before: 18, stmts_after: 3, wasm_no_dce: Some(194), wasm_with_dce: Some(104), reduction_percent: Some(46.391752577319586)}
+      #|{
+      #|  name: "many_unused",
+      #|  stmts_before: 18,
+      #|  stmts_after: 3,
+      #|  wasm_no_dce: Some(238),
+      #|  wasm_with_dce: Some(147),
+      #|  reduction_percent: Some(38.23529411764706),
+      #|}
     ),
   )
 }
@@ -124,7 +136,14 @@ test "bench: dce.single_module" {
   inspect(
     result,
     content=(
-      #|{name: "single_module", stmts_before: 6, stmts_after: 3, wasm_no_dce: Some(103), wasm_with_dce: Some(103), reduction_percent: Some(0)}
+      #|{
+      #|  name: "single_module",
+      #|  stmts_before: 6,
+      #|  stmts_after: 3,
+      #|  wasm_no_dce: Some(146),
+      #|  wasm_with_dce: Some(146),
+      #|  reduction_percent: Some(0),
+      #|}
     ),
   )
 }
@@ -151,7 +170,14 @@ test "bench: dce.dependency_chain" {
   inspect(
     result,
     content=(
-      #|{name: "dependency_chain", stmts_before: 6, stmts_after: 5, wasm_no_dce: Some(151), wasm_with_dce: Some(132), reduction_percent: Some(12.582781456953644)}
+      #|{
+      #|  name: "dependency_chain",
+      #|  stmts_before: 6,
+      #|  stmts_after: 5,
+      #|  wasm_no_dce: Some(194),
+      #|  wasm_with_dce: Some(175),
+      #|  reduction_percent: Some(9.793814432989691),
+      #|}
     ),
   )
 }
@@ -174,7 +200,14 @@ test "bench: dce.all_used" {
   inspect(
     result,
     content=(
-      #|{name: "all_used", stmts_before: 3, stmts_after: 3, wasm_no_dce: Some(109), wasm_with_dce: Some(109), reduction_percent: Some(0)}
+      #|{
+      #|  name: "all_used",
+      #|  stmts_before: 3,
+      #|  stmts_after: 3,
+      #|  wasm_no_dce: Some(152),
+      #|  wasm_with_dce: Some(152),
+      #|  reduction_percent: Some(0),
+      #|}
     ),
   )
 }

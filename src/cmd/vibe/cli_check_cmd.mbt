@@ -102,13 +102,18 @@ enum CliSessionRequestKind {
   Check
   Test
   Shutdown
-} derive(Eq, Show)
+} derive(Eq, Debug)
+
+///|
+impl Show for CliSessionRequestKind with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 struct CliSessionRequest {
   kind : CliSessionRequestKind
   path : String?
-} derive(Eq, Show)
+} derive(Eq, Debug)
 
 ///|
 fn run_check_entry_with_cache(

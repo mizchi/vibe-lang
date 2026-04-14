@@ -21,6 +21,26 @@ test "builtin type count includes fs and socket together" {
 }
 
 ///|
+test "func import count only includes used json host imports" {
+  let ctx = CodegenCtx::new(false, fs_host_imports=true)
+  ctx.need_fs = true
+  ctx.need_json_host_get = true
+  ctx.need_json_host_string = true
+  assert_eq(func_import_count(ctx), 21)
+}
+
+///|
+test "json host import indices collapse when earlier imports are unused" {
+  let ctx = CodegenCtx::new(false, fs_host_imports=true)
+  ctx.need_fs = true
+  ctx.need_json_host_stringify = true
+  ctx.need_json_host_string = true
+  assert_eq(import_index_json_host_stringify(ctx), 19)
+  assert_eq(import_index_json_host_string(ctx), 20)
+  assert_eq(import_index_after_fs(ctx), 21)
+}
+
+///|
 test "infer kind treats mut-captured locals as boxed values" {
   let ctx = CodegenCtx::new(false)
   ctx.local_kinds["x"] = ValueKind::I32

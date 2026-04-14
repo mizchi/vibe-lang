@@ -20,7 +20,7 @@
 /// Minimal checked-data surface consumed by frontend/codegen-adjacent rewrites.
 pub struct ExprTypeIndex {
   expr_types : Map[Int64, Type]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn ExprTypeIndex::new(expr_types : Map[Int64, Type]) -> ExprTypeIndex {

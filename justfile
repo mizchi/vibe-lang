@@ -208,19 +208,7 @@ ci-selfhost-gates-shard shard:
       bootstrap)
         just check-selfhost-bundle-sync
         just test-selfhost-bootstrap
-        # TEMP: test-selfhost-wasi-selfbuild-kpi is disabled until the
-        # selfhost compiler's `export { imported_name }` re-export pattern
-        # actually emits wasm exports for imported functions. Currently
-        # `selfbuild_probe_type_db_cache_counts` is `import`-ed at
-        # vibe/compiler/index.vibe:46 and re-listed in the terminal
-        # `export { ... }` block at line 382, but the compiled stage1 wasm
-        # has no corresponding wasm export, so the selfbuild script fails
-        # at the `--invoke selfbuild_probe_type_db_cache_counts` stage with
-        # "missing export". This is a pre-existing issue on main that was
-        # being masked by earlier bootstrap failures. Tracked in #266
-        # follow-up.
-        # just test-selfhost-wasi-selfbuild-kpi
-        echo "[ci-selfhost-gates-shard] skipping test-selfhost-wasi-selfbuild-kpi (pre-existing export issue, see #266)"
+        just test-selfhost-wasi-selfbuild-kpi
         ;;
       cli)
         just test-selfhost-cli-core
@@ -310,6 +298,14 @@ build-integration-deno-wasm:
 build-wasm-vibe: build-integration-deno-wasm
     mkdir -p wasm/vibe
     cp _build/wasm-gc/release/build/lib/lib.wasm wasm/vibe/vibe.wasm
+
+# Build versioned GitHub release assets for a tag (example: `just build-release-assets v0.0.1`)
+build-release-assets tag:
+    bash scripts/build_release_assets.sh {{tag}}
+
+# Full release preflight for a tag: gates + versioned release assets
+release-tag-preflight tag: release-check
+    bash scripts/build_release_assets.sh {{tag}}
 
 # Build distributable selfhost compiler wasm (with wasm-opt)
 build-selfhost-dist:

@@ -2,13 +2,13 @@
 struct CompiledTestCase {
   name : String?
   body : @vibe_core.Module
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct CliTestFailure {
   name : String?
   error : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct CliTestReport {
@@ -16,7 +16,12 @@ struct CliTestReport {
   passed : Int
   failed : Int
   failures : Array[CliTestFailure]
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+impl Show for CliTestReport with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 enum CompiledTestAttempt {

@@ -103,7 +103,12 @@ struct BuiltinDecl {
   params : Array[BuiltinTypeTag]
   ret : BuiltinTypeTag
   flags : Int
-} derive(Eq, Show)
+} derive(Eq, Debug)
+
+///|
+impl Show for BuiltinDecl with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 /// Type tag for binary encoding. Supports nested container types.
@@ -130,7 +135,12 @@ enum BuiltinTypeTag {
   Fn_(Array[BuiltinTypeTag], BuiltinTypeTag)
   TypeVar(Int) // 0=T, 1=U, 2=V
   Unknown
-} derive(Eq, Show)
+} derive(Eq, Debug)
+
+///|
+impl Show for BuiltinTypeTag with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 /// Write LEB128 unsigned integer to buffer.

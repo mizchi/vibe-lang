@@ -36,13 +36,30 @@ pub enum Effect {
   FsRename(String, String) // (old, new)
   FsAppend(String, String) // (path, content_preview)
   EnvGet(String, String) // (name, value)
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for Effect with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 pub struct EvalResult {
   last : @core.Value?
   effects : Array[Effect]
-} derive(Show, Eq)
+} derive(Eq)
+
+///|
+pub impl Show for EvalResult with output(self, logger) {
+  logger.write_string("EvalResult(last=")
+  match self.last {
+    Some(value) => value.output(logger)
+    None => logger.write_string("None")
+  }
+  logger.write_string(", effects=")
+  logger.write_string(self.effects.length().to_string())
+  logger.write_string(")")
+}
 
 ///|
 fn extend_effects(dest : Array[Effect], src : Array[Effect]) -> Unit {
@@ -109,7 +126,12 @@ suberror EvalError {
   LoopBreak(@core.Value?)
   LoopContinue(Array[@core.Value])
   LoopFuelExhausted
-} derive(Show, Eq)
+} derive(Eq)
+
+///|
+pub impl Show for EvalError with output(self, logger) {
+  logger.write_string(self.user_message())
+}
 
 ///|
 pub fn EvalError::user_message(self : EvalError) -> String {

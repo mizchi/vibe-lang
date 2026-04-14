@@ -21,14 +21,14 @@
 pub enum PerceusActionKind {
   Dup
   Drop
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub struct PerceusAction {
   site : String
   kind : PerceusActionKind
   name : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 priv struct PerceusScope {
@@ -2214,7 +2214,7 @@ fn perceus_block_prefix(site : String) -> String {
 pub enum PerceusSimEvent {
   Alloc(name~ : String)
   Free(name~ : String)
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 /// Result of a Perceus memory simulation.
@@ -2224,7 +2224,7 @@ pub struct PerceusSimResult {
   peak_bump : Int
   peak_rc : Int
   events : Array[PerceusSimEvent]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 /// Walk the AST and Perceus plan to produce a unified event stream,

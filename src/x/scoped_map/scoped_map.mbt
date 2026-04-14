@@ -7,7 +7,7 @@
 pub(all) struct ScopedMap[V] {
   own : Map[String, V]
   parent : ScopedMap[V]?
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn[V] ScopedMap::new() -> ScopedMap[V] {

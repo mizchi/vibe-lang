@@ -63,7 +63,12 @@ enum ReplMetaCommandResult {
   HandledContinue
   HandledExit
   HandledLoadSource(String)
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+impl Show for ReplMetaCommandResult with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 struct ReplSymbolMatch {
@@ -83,7 +88,7 @@ struct ReplSymbolsOptions {
   include_local : Bool
   include_builtin : Bool
   include_shell : Bool
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 struct ReplSymbolsRow {
@@ -92,7 +97,7 @@ struct ReplSymbolsRow {
   name : String
   signature : String
   address : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 fn repl_meta_command_names() -> Array[String] {
@@ -2520,7 +2525,7 @@ struct CompiledReplExec {
   bundle_us : Int
   emit_us : Int
   optimize_us : Int
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 fn compiled_repl_temp_source_path() -> String {

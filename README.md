@@ -86,6 +86,8 @@ WASM 向けは 3 層で測る:
 - `wasm/vibe/vibe.wasm`
 - `just build-wasm-vibe` で更新
 - `just test-wasm-vibe-wasmtime` で `wasmtime --invoke vibe_check` 疎通確認
+- `just build-release-assets v0.0.1` で GitHub Release 添付用の versioned asset を `dist/release/v0.0.1/` に生成
+- `v*` tag push で `.github/workflows/release.yml` が `vibe-v*.wasm` と checksum を GitHub Release に公開
 
 ## CLI
 

@@ -3,7 +3,12 @@
 pub(all) struct Span {
   start : Int
   end : Int
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for Span with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 pub fn Span::new(start : Int, end : Int) -> Span {
@@ -34,7 +39,7 @@ pub(all) enum DiagnosticStage {
   Check
   Import
   Lint
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn DiagnosticStage::from_string(s : String) -> DiagnosticStage {
@@ -76,7 +81,7 @@ pub(all) enum DiagnosticSeverity {
   Error
   Warning
   Info
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn DiagnosticSeverity::to_string(self : DiagnosticSeverity) -> String {
@@ -96,7 +101,12 @@ pub(all) struct Diagnostic {
   note : String?
   severity : DiagnosticSeverity?
   code : String?
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for Diagnostic with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 pub fn Diagnostic::staged(self : Diagnostic) -> DiagnosticStage {

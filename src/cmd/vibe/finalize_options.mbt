@@ -5,7 +5,7 @@ struct FinalizeCmdOptions {
   library_mode : Bool
   print_source : Bool
   dry_run : Bool
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn parse_finalize_cmd_args(

@@ -39,13 +39,13 @@ pub enum CheckInput {
   Source(String)
   File(String)
   Files(Array[String])
-} derive(Eq, Show)
+} derive(Eq, Debug)
 
 ///|
 pub enum CommandMode {
   Check
   Format
-} derive(Eq, Show)
+} derive(Eq, Debug)
 
 ///|
 pub struct CmdOptions {
@@ -53,7 +53,7 @@ pub struct CmdOptions {
   input : CheckInput
   human_readable : Bool
   profile_tsv : String?
-} derive(Eq, Show)
+} derive(Eq, Debug)
 
 ///|
 struct CheckFileSummary {
@@ -212,7 +212,7 @@ enum StdModuleLayer {
   PureData
   RefModel
   EffectBoundary
-} derive(Eq, Show)
+} derive(Eq, Debug)
 
 ///|
 fn std_layer_name(layer : StdModuleLayer) -> String {

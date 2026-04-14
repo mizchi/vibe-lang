@@ -11,7 +11,7 @@ pub struct ProfileEntry {
   self_us : Int
   call_count : Int
   children_names : Array[String]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 priv struct ProfilerState {

@@ -196,6 +196,27 @@ test "scan_needs_expr enables fs and heap for Json::parse" {
   scan_needs_expr(ctx, expr)
   assert_true(ctx.need_fs)
   assert_true(ctx.need_heap)
+  assert_true(ctx.need_json_host_parse)
+}
+
+///|
+test "scan_needs_expr enables targeted json host imports" {
+  let ctx = CodegenCtx::new(false)
+  let get_expr = call_split_test_call("Json::get", [
+    call_split_test_arg(call_split_test_string("{}")),
+    call_split_test_arg(call_split_test_string("name")),
+  ])
+  let string_expr = call_split_test_call("Json::string", [
+    call_split_test_arg(call_split_test_string("\"ok\"")),
+  ])
+  scan_needs_expr(ctx, get_expr)
+  scan_needs_expr(ctx, string_expr)
+  assert_true(ctx.need_fs)
+  assert_true(ctx.need_heap)
+  assert_true(ctx.need_json_host_get)
+  assert_true(ctx.need_json_host_string)
+  assert_false(ctx.need_json_host_parse)
+  assert_false(ctx.need_json_host_stringify)
 }
 
 ///|

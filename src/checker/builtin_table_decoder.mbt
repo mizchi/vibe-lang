@@ -14,7 +14,12 @@ struct BuiltinTableEntry {
   params : Array[BuiltinTypeId]
   ret : BuiltinTypeId
   flags : Int
-} derive(Eq, Show)
+} derive(Eq, Debug)
+
+///|
+impl Show for BuiltinTableEntry with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 /// Type identifier decoded from binary.
@@ -41,7 +46,12 @@ enum BuiltinTypeId {
   BTFn(Array[BuiltinTypeId], BuiltinTypeId)
   BTTypeVar(Int) // 0=T, 1=U, 2=V
   BTUnknown
-} derive(Eq, Show)
+} derive(Eq, Debug)
+
+///|
+impl Show for BuiltinTypeId with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 /// Read LEB128 unsigned integer from bytes at position.

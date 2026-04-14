@@ -334,11 +334,7 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
     // 16 original fs imports + 3 streaming writes (open_write, write_chunk, close_write)
     count += 19
   }
-  if ctx.need_fs && ctx.fs_host_imports {
-    // Json host imports: json_parse(i64)->i64, json_stringify(i64)->i64
-    // Reuses fs_host_arity1_type (param i64 result i64)
-    count += 2
-  }
+  count += json_host_import_count(ctx)
   if ctx.need_socket {
     count += 13
   }
@@ -350,6 +346,27 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
   // effect_op_imports is already populated with unhandled ops only.
   count += ctx.effect_op_imports.length()
   count += ctx.linked_fn_imports_list.length()
+  count
+}
+
+///|
+fn json_host_import_count(ctx : CodegenCtx) -> Int {
+  if not(ctx.need_fs && ctx.fs_host_imports) {
+    return 0
+  }
+  let mut count = 0
+  if ctx.need_json_host_parse {
+    count += 1
+  }
+  if ctx.need_json_host_stringify {
+    count += 1
+  }
+  if ctx.need_json_host_get {
+    count += 1
+  }
+  if ctx.need_json_host_string {
+    count += 1
+  }
   count
 }
 
@@ -1868,16 +1885,13 @@ fn import_index_after_fs(ctx : CodegenCtx) -> Int {
   if ctx.need_fs && ctx.fs_host_imports {
     idx += 19
   }
-  if ctx.need_fs && ctx.fs_host_imports {
-    // Json host imports: json_parse, json_stringify
-    idx += 2
-  }
+  idx += json_host_import_count(ctx)
   idx
 }
 
 ///|
 fn import_index_json_host_parse(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_fs && ctx.fs_host_imports) {
+  if not(ctx.need_fs && ctx.fs_host_imports && ctx.need_json_host_parse) {
     raise WasmGenError::BackendLimit(backend="wasm", feature="json host import")
   }
   let mut idx = import_index_after_stdin(ctx)
@@ -1889,7 +1903,56 @@ fn import_index_json_host_parse(ctx : CodegenCtx) -> Int raise WasmGenError {
 
 ///|
 fn import_index_json_host_stringify(ctx : CodegenCtx) -> Int raise WasmGenError {
-  import_index_json_host_parse(ctx) + 1
+  if not(ctx.need_fs && ctx.fs_host_imports && ctx.need_json_host_stringify) {
+    raise WasmGenError::BackendLimit(backend="wasm", feature="json host import")
+  }
+  let mut idx = import_index_after_stdin(ctx)
+  if ctx.need_fs && ctx.fs_host_imports {
+    idx += 19
+  }
+  if ctx.need_json_host_parse {
+    idx += 1
+  }
+  idx
+}
+
+///|
+fn import_index_json_host_get(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_fs && ctx.fs_host_imports && ctx.need_json_host_get) {
+    raise WasmGenError::BackendLimit(backend="wasm", feature="json host import")
+  }
+  let mut idx = import_index_after_stdin(ctx)
+  if ctx.need_fs && ctx.fs_host_imports {
+    idx += 19
+  }
+  if ctx.need_json_host_parse {
+    idx += 1
+  }
+  if ctx.need_json_host_stringify {
+    idx += 1
+  }
+  idx
+}
+
+///|
+fn import_index_json_host_string(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_fs && ctx.fs_host_imports && ctx.need_json_host_string) {
+    raise WasmGenError::BackendLimit(backend="wasm", feature="json host import")
+  }
+  let mut idx = import_index_after_stdin(ctx)
+  if ctx.need_fs && ctx.fs_host_imports {
+    idx += 19
+  }
+  if ctx.need_json_host_parse {
+    idx += 1
+  }
+  if ctx.need_json_host_stringify {
+    idx += 1
+  }
+  if ctx.need_json_host_get {
+    idx += 1
+  }
+  idx
 }
 
 ///|

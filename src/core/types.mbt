@@ -5,7 +5,7 @@ pub(all) enum ParamLabel {
   Variadic
   Required
   Optional
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn ParamLabel::is_positional(self : ParamLabel) -> Bool {
@@ -22,13 +22,13 @@ pub(all) struct FuncParam {
   label : ParamLabel
   ty : Type
   bounds : Array[String]
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) enum EffectAtom {
   Const(String)
   Var(String)
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub(all) enum Type {
@@ -57,7 +57,12 @@ pub(all) enum Type {
   Var(Int)
   Func(params~ : Array[FuncParam], ret~ : Type, effects~ : Array[EffectAtom])
   Never
-} derive(Show, Eq)
+} derive(Debug, Eq)
+
+///|
+pub impl Show for Type with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 /// Check if a type is a placeholder for inference (Unit is used as placeholder)
@@ -71,7 +76,7 @@ pub fn Type::is_infer_placeholder(self : Type) -> Bool {
 ///|
 pub(all) struct Path {
   raw : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn Path::new(raw : String) -> Path {
@@ -92,7 +97,7 @@ pub fn Path::as_string(self : Path) -> String {
 ///|
 pub(all) struct PromptText {
   content : String
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn PromptText::new(content : String) -> PromptText {

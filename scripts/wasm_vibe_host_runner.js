@@ -864,6 +864,14 @@ async function main() {
     },
   );
 
+  function decodeJsonHostValue(jsonTagged) {
+    return JSON.parse(decodeStringArg(instanceRef, jsonTagged));
+  }
+
+  function encodeJsonHostValue(value) {
+    return encodeTaggedString(instanceRef, JSON.stringify(value));
+  }
+
   const vibeModule = new Proxy(
     {
       sh(cmdTagged) {
@@ -1067,6 +1075,24 @@ async function main() {
         // The value is already a tagged string containing JSON text.
         // Just pass it through (identity for string-encoded Json values).
         return valueTagged;
+      },
+      json_get(valueTagged, keyTagged) {
+        const value = decodeJsonHostValue(valueTagged);
+        const key = decodeStringArg(instanceRef, keyTagged);
+        if (value === null || Array.isArray(value) || typeof value !== "object") {
+          throw new Error("Json::get: not an object");
+        }
+        if (!Object.prototype.hasOwnProperty.call(value, key)) {
+          throw new Error(`Json::get: missing key '${key}'`);
+        }
+        return encodeJsonHostValue(value[key]);
+      },
+      json_string(valueTagged) {
+        const value = decodeJsonHostValue(valueTagged);
+        if (typeof value !== "string") {
+          throw new Error("Json::string: not a string");
+        }
+        return encodeTaggedString(instanceRef, value);
       },
       ["env-get"](nameTagged) {
         const name = decodeStringArg(instanceRef, nameTagged);

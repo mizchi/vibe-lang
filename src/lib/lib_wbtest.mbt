@@ -21,6 +21,8 @@ test "diagnostic_to_json preserves span and optional fields" {
     span: Some(@core.Span::{ start: 1, end: 3 }),
     hint: Some("use Int"),
     note: Some("from test"),
+    severity: None,
+    code: None,
   }).stringify()
   assert_true(json.contains("\"stage\":\"check\""))
   assert_true(json.contains("\"message\":\"type mismatch\""))

@@ -126,7 +126,44 @@ fn eval_value_type_name(value : @core.Value) -> String {
 let eval_runtime_ref : Ref[@runtime.Runtime?] = @ref.new(None)
 
 ///|
+let eval_hooks_ready : Ref[Bool] = @ref.new(false)
+
+///|
+fn ensure_eval_runtime_hooks() -> Unit {
+  if eval_hooks_ready.val {
+    return
+  }
+  eval_hooks_ready.val = true
+  @runtime.set_parse_ast_hook(fn(
+    source,
+  ) -> (@core.Module, @core.Diagnostic?) raise Error {
+    let ast = @parser.parse_ast(source) catch {
+      e => return ({ stmts: [] }, Some(e.diagnostic()))
+    }
+    (ast, None)
+  })
+  @runtime.set_parse_cst_hook(@parser.parse_cst)
+  @runtime.set_purity_for_let_hook(@checker.purity_for_let)
+  @runtime.set_new_type_env_hook(fn() { @checker.TypeEnv::new() })
+  @runtime.set_get_prelude_env_hook(fn() {
+    try! @checker.get_prelude_only_env_for_module()
+  })
+  @runtime.set_type_check_with_env_hook(@checker.type_check_with_env)
+  @runtime.mark_compiler_hooks_initialized()
+  @runtime.set_init_runtime_type_env_hook(fn() {
+    let env = @checker.TypeEnv::new()
+    let _ = try! @checker.ensure_prelude_option(env)
+    let _ = try! @checker.ensure_prelude_functions(env, {})
+    @checker.ensure_builtin_modules(env, {})
+    env
+  })
+  @runtime.set_prelude_ast_hook(@checker.prelude_ast)
+  @runtime.set_collect_warnings_hook(@checker.collect_warnings)
+}
+
+///|
 fn get_or_create_eval_runtime() -> @runtime.Runtime {
+  ensure_eval_runtime_hooks()
   match eval_runtime_ref.val {
     Some(rt) => rt
     None => {

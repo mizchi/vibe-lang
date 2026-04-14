@@ -6,7 +6,7 @@ pub(all) struct LspServer {
   documents : DocumentManager
   mut initialized : Bool
   mut shutdown_requested : Bool
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 pub fn LspServer::new() -> LspServer {

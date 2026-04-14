@@ -5,7 +5,12 @@
 pub struct Lexer {
   input : String
   mut pos : Int
-} derive(Show)
+} derive(Debug)
+
+///|
+pub impl Show for Lexer with output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
 
 ///|
 pub fn Lexer::new(input : String) -> Lexer {
