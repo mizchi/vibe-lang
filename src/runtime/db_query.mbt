@@ -1036,17 +1036,20 @@ pub fn VibeDb::new() -> VibeDb {
                       // Import trait
                       if import_item_accepts_trait(item) &&
                         imported_env.has_trait(source_name) {
-                        let local_supertraits = imported_env.trait_supertraits(
-                          source_name,
-                        )
-                        env.import_trait(
-                          target_name,
-                          imported_env.trait_is_open(source_name),
-                          local_supertraits,
-                        )
-                        let impls = imported_env.trait_impls_for(source_name)
-                        for impl_def in impls {
-                          env.add_trait_impl(target_name, impl_def)
+                        match imported_env.get_trait_info(source_name) {
+                          Some(source_info) => {
+                            let local_supertraits = source_info.supertraits_copy()
+                            env.import_trait(
+                              target_name, source_info, local_supertraits,
+                            )
+                            let impls = imported_env.trait_impls_for(
+                              source_name,
+                            )
+                            for impl_def in impls {
+                              env.add_trait_impl(target_name, impl_def)
+                            }
+                          }
+                          None => ()
                         }
                       }
                     }
@@ -1097,20 +1100,23 @@ pub fn VibeDb::new() -> VibeDb {
                     let mut imported_any = false
                     if import_item_accepts_trait(item) &&
                       imported_env.has_trait(source_name) {
-                      let local_supertraits = resolve_imported_trait_supertraits(
-                        source_name,
-                        target_name,
-                        imported_env.trait_supertraits(source_name),
-                        trait_aliases,
-                      )
-                      env.import_trait(
-                        target_name,
-                        imported_env.trait_is_open(source_name),
-                        local_supertraits,
-                      )
-                      let impls = imported_env.trait_impls_for(source_name)
-                      for impl_def in impls {
-                        env.add_trait_impl(target_name, impl_def)
+                      match imported_env.get_trait_info(source_name) {
+                        Some(source_info) => {
+                          let local_supertraits = resolve_imported_trait_supertraits(
+                            source_name,
+                            target_name,
+                            source_info.supertraits_copy(),
+                            trait_aliases,
+                          )
+                          env.import_trait(
+                            target_name, source_info, local_supertraits,
+                          )
+                          let impls = imported_env.trait_impls_for(source_name)
+                          for impl_def in impls {
+                            env.add_trait_impl(target_name, impl_def)
+                          }
+                        }
+                        None => ()
                       }
                       imported_any = true
                     }

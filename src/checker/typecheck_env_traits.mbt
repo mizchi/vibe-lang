@@ -1,4 +1,11 @@
 ///|
+pub enum TraitOrigin {
+  DefinedHere
+  Imported
+  PreludeSeed
+} derive(Debug, Eq)
+
+///|
 pub struct TraitImplDef {
   type_params : Array[String]
   type_bounds : Map[String, Array[String]]
@@ -9,8 +16,55 @@ pub struct TraitImplDef {
 pub struct TraitDefInfo {
   supertraits : Array[String]
   open_impl : Bool
-  is_local : Bool
+  origin : TraitOrigin
 } derive(Debug, Eq)
+
+///|
+pub fn TraitDefInfo::defined_here(
+  supertraits : Array[String],
+  open_impl : Bool,
+) -> TraitDefInfo {
+  { supertraits, open_impl, origin: TraitOrigin::DefinedHere }
+}
+
+///|
+pub fn TraitDefInfo::imported(
+  supertraits : Array[String],
+  open_impl : Bool,
+) -> TraitDefInfo {
+  { supertraits, open_impl, origin: TraitOrigin::Imported }
+}
+
+///|
+pub fn TraitDefInfo::prelude_seeded() -> TraitDefInfo {
+  { supertraits: [], open_impl: false, origin: TraitOrigin::PreludeSeed }
+}
+
+///|
+pub fn TraitDefInfo::is_defined_here(self : TraitDefInfo) -> Bool {
+  self.origin == TraitOrigin::DefinedHere
+}
+
+///|
+pub fn TraitDefInfo::allows_impl_here(self : TraitDefInfo) -> Bool {
+  match self.origin {
+    TraitOrigin::Imported => self.open_impl
+    TraitOrigin::DefinedHere | TraitOrigin::PreludeSeed => true
+  }
+}
+
+///|
+pub fn TraitDefInfo::to_imported(
+  self : TraitDefInfo,
+  supertraits : Array[String],
+) -> TraitDefInfo {
+  TraitDefInfo::imported(supertraits, self.open_impl)
+}
+
+///|
+pub fn TraitDefInfo::supertraits_copy(self : TraitDefInfo) -> Array[String] {
+  self.supertraits.copy()
+}
 
 ///|
 pub fn TypeEnv::has_trait(self : TypeEnv, name : String) -> Bool {
@@ -19,11 +73,7 @@ pub fn TypeEnv::has_trait(self : TypeEnv, name : String) -> Bool {
 
 ///|
 pub fn TypeEnv::set_trait(self : TypeEnv, name : String) -> Unit {
-  self.set_trait_info(name, TraitDefInfo::{
-    supertraits: [],
-    open_impl: false,
-    is_local: true,
-  })
+  self.set_trait_info(name, TraitDefInfo::defined_here([], false))
 }
 
 ///|
@@ -41,43 +91,20 @@ pub fn TypeEnv::get_trait_info(self : TypeEnv, name : String) -> TraitDefInfo? {
 }
 
 ///|
-pub fn TypeEnv::trait_is_open(self : TypeEnv, name : String) -> Bool {
-  match self.traits.get(name) {
-    Some(info) => info.open_impl
-    None => false
-  }
-}
-
-///|
-pub fn TypeEnv::trait_is_local(self : TypeEnv, name : String) -> Bool {
-  match self.traits.get(name) {
-    Some(info) => info.is_local
-    None => false
-  }
-}
-
-///|
 pub fn TypeEnv::import_trait(
   self : TypeEnv,
   name : String,
-  open_impl : Bool,
+  source_info : TraitDefInfo,
   supertraits : Array[String],
 ) -> Unit {
-  self.set_trait_info(name, TraitDefInfo::{
-    supertraits,
-    open_impl,
-    is_local: false,
-  })
+  self.set_trait_info(name, source_info.to_imported(supertraits))
 }
 
 ///|
-pub fn TypeEnv::trait_supertraits(
-  self : TypeEnv,
-  name : String,
-) -> Array[String] {
+pub fn TypeEnv::trait_accepts_impl_here(self : TypeEnv, name : String) -> Bool {
   match self.traits.get(name) {
-    Some(info) => info.supertraits.copy()
-    None => []
+    Some(info) => info.allows_impl_here()
+    None => false
   }
 }
 

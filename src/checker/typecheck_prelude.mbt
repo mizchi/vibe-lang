@@ -238,11 +238,7 @@ pub fn ensure_prelude_builtin_traits(env : TypeEnv) -> Unit {
   ]
   for name in builtin_trait_names {
     if not(env.has_trait(name)) {
-      env.set_trait_info(name, TraitDefInfo::{
-        supertraits: [],
-        open_impl: false,
-        is_local: true,
-      })
+      env.set_trait_info(name, TraitDefInfo::prelude_seeded())
     }
   }
 }
