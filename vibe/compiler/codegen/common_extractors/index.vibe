@@ -354,6 +354,19 @@ export let str_table_lookup = (strs: Array[String], s: String) -> Int with { Err
   found
 }
 
+// O(log n) version using sorted_index from StrTable
+export let str_table_lookup_sorted = (sorted: Array[(String, Int)], strs: Array[String], s: String) -> Int with { Error } {
+  let found = if Array::length(sorted) > 0 {
+    sorted_index_lookup(sorted, s)
+  } else {
+    str_table_lookup(strs, s)
+  }
+  if found < 0 {
+    throw(String::concat("string not in table: ", s))
+  }
+  found
+}
+
 export let str_table_lookup_fast = (buckets: Array[Array[(String, Int)]], s: String) -> Int with { Error } {
   let slen = String::length(s)
   let num_buckets = Array::length(buckets)
@@ -459,4 +472,119 @@ export let get_match_scrutinee = (expr: Expr) -> Expr with { Error } {
     EMatch(scrutinee, _) => scrutinee,
     _ => throw("get_match_scrutinee: not an EMatch")
   }
+}
+
+// --- Sorted index for O(log n) string lookup ---
+
+// Compare two strings lexicographically. Returns <0, 0, or >0.
+export let string_compare = (a: String, b: String) -> Int {
+  let la = String::length(a)
+  let lb = String::length(b)
+  let min_len = if la < lb { la } else { lb }
+  let mut i = 0
+  let mut result = 0
+  let mut done = false
+  while i < min_len && !done {
+    let ca = String::char_code_at(a, i)
+    let cb = String::char_code_at(b, i)
+    if ca != cb {
+      result = ca - cb
+      done = true
+    }
+    i = i + 1
+  }
+  if !done {
+    result = la - lb
+  }
+  result
+}
+
+// Build a sorted index: returns Array[(String, Int)] sorted by string.
+// Each entry is (name, original_index).
+export let build_sorted_index = (names: Array[String]) -> Array[(String, Int)] {
+  let len = Array::length(names)
+  // Create index array
+  let idx = Array::slice([("", 0)], 0, 0)
+  let mut i = 0
+  while i < len {
+    Array::push(idx, (Array::get(names, i), i))
+    i = i + 1
+  }
+  // Insertion sort (stable, simple, O(n^2) but runs once at init,
+  // not per-lookup — 1300 elements = 1.7M comparisons = ~1.6GB...
+  // Actually too expensive. Use merge sort instead.)
+  // --- Merge sort ---
+  let rec merge_sort = (arr: Array[(String, Int)], start: Int, end: Int, tmp: Array[(String, Int)]) -> Unit {
+    if end - start <= 1 {
+      ()
+    } else {
+      let mid = start + (end - start) / 2
+      merge_sort(arr, start, mid, tmp)
+      merge_sort(arr, mid, end, tmp)
+      // Merge [start..mid) and [mid..end) into tmp, then copy back
+      let mut li = start
+      let mut ri = mid
+      let mut ti = start
+      while li < mid && ri < end {
+        let (la, _) = Array::get(arr, li)
+        let (ra, _) = Array::get(arr, ri)
+        if string_compare(la, ra) <= 0 {
+          Array::set(tmp, ti, Array::get(arr, li))
+          li = li + 1
+        } else {
+          Array::set(tmp, ti, Array::get(arr, ri))
+          ri = ri + 1
+        }
+        ti = ti + 1
+      }
+      while li < mid {
+        Array::set(tmp, ti, Array::get(arr, li))
+        li = li + 1
+        ti = ti + 1
+      }
+      while ri < end {
+        Array::set(tmp, ti, Array::get(arr, ri))
+        ri = ri + 1
+        ti = ti + 1
+      }
+      // Copy back
+      let mut ci = start
+      while ci < end {
+        Array::set(arr, ci, Array::get(tmp, ci))
+        ci = ci + 1
+      }
+    }
+  }
+  // Allocate tmp buffer (same size as idx)
+  let tmp = Array::slice([("", 0)], 0, 0)
+  let mut ti = 0
+  while ti < len {
+    Array::push(tmp, ("", 0))
+    ti = ti + 1
+  }
+  merge_sort(idx, 0, len, tmp)
+  idx
+}
+
+// Binary search in a sorted (String, Int) array. Returns the Int value or -1.
+export let sorted_index_lookup = (sorted: Array[(String, Int)], name: String) -> Int {
+  let len = Array::length(sorted)
+  let mut lo = 0
+  let mut hi = len
+  let mut result = -1
+  while lo < hi {
+    let mid = lo + (hi - lo) / 2
+    let (s, _) = Array::get(sorted, mid)
+    let cmp = string_compare(name, s)
+    if cmp == 0 {
+      let (_, idx) = Array::get(sorted, mid)
+      result = idx
+      lo = hi
+    } else if cmp < 0 {
+      hi = mid
+    } else {
+      lo = mid + 1
+    }
+  }
+  result
 }

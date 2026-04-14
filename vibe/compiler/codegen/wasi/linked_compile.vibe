@@ -17,7 +17,7 @@ import .. / common_base {
 }
 
 import .. / common_extractors {
-  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_earray_elems, get_eassign_body, get_eassign_name, get_eassign_val, get_eassignop_body, get_eassignop_name, get_eassignop_op, get_eassignop_val, get_ebinop_lhs, get_ebinop_rhs, get_ebool_value, get_ecall_args, get_ecall_callee, get_efloat_value, get_efn_params, get_eforin_body, get_eforin_iter, get_eforin_name, get_eident_name, get_eint_value, get_eletmut_body, get_eletmut_name, get_eletmut_val, get_eletrec_body, get_eletrec_name, get_eletrec_val, get_eseq_first, get_eseq_second, get_estring_value, get_ethrow_expr, get_etuple_elems, get_eunaryop_expr, get_eunaryop_op, get_ewhile_body, get_ewhile_cond, get_match_arms, get_match_scrutinee, get_pbind_name, get_pbool_value, get_pctor_args, get_pctor_name, get_pint_value, get_pstring_value, get_ptuple_pats, get_slet_export, str_table_lookup
+  array_contains_str, build_sorted_index, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_earray_elems, get_eassign_body, get_eassign_name, get_eassign_val, get_eassignop_body, get_eassignop_name, get_eassignop_op, get_eassignop_val, get_ebinop_lhs, get_ebinop_rhs, get_ebool_value, get_ecall_args, get_ecall_callee, get_efloat_value, get_efn_params, get_eforin_body, get_eforin_iter, get_eforin_name, get_eident_name, get_eint_value, get_eletmut_body, get_eletmut_name, get_eletmut_val, get_eletrec_body, get_eletrec_name, get_eletrec_val, get_eseq_first, get_eseq_second, get_estring_value, get_ethrow_expr, get_etuple_elems, get_eunaryop_expr, get_eunaryop_op, get_ewhile_body, get_ewhile_cond, get_match_arms, get_match_scrutinee, get_pbind_name, get_pbool_value, get_pctor_args, get_pctor_name, get_pint_value, get_pstring_value, get_ptuple_pats, get_slet_export, str_table_lookup
 }
 
 import .. / expr {
@@ -267,22 +267,6 @@ export let compile_wasi_module_linked_impl = (stmts_raw: Array[Stmt], entry_name
       Array::push(str_strs, s)
     }
     __di = __di + 1
-  }
-  // Build lookup buckets for O(1) amortized str_table_lookup_fast
-  let lookup_num_buckets = 64
-  let lookup_buckets = Array::slice([Array::slice([("", 0)], 0, 0)], 0, 0)
-  let mut __lbi = 0
-  while __lbi < lookup_num_buckets {
-    Array::push(lookup_buckets, Array::slice([("", 0)], 0, 0))
-    __lbi = __lbi + 1
-  }
-  let mut __lsi = 0
-  while __lsi < Array::length(str_strs) {
-    let ls = Array::get(str_strs, __lsi)
-    let lslen = String::length(ls)
-    let lb_idx = if lslen < lookup_num_buckets { lslen } else { lslen - (lslen / lookup_num_buckets) * lookup_num_buckets }
-    Array::push(Array::get(lookup_buckets, lb_idx), (ls, __lsi))
-    __lsi = __lsi + 1
   }
   let src_str_base = Array::length(str_strs)
   let num_src_pairs = Array::length(selfhost_srcs)
@@ -937,6 +921,9 @@ export let compile_wasi_module_linked_impl = (stmts_raw: Array[Stmt], entry_name
   Array::push(bodies, gen_bytes_to_array_body(arr_new_idx, arr_push_idx, bytes_len_idx, bytes_get_idx))
   Array::push(meta_i32, 2)
   Array::push(meta_i64, 1)
+  // Build sorted index for O(log n) resolve_func
+  let fn_sorted_index = build_sorted_index(fn_names_list)
+  let str_sorted_index = build_sorted_index(str_strs)
   let mut bi = 0
   while bi < num_user_funcs {
     let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
@@ -952,12 +939,13 @@ export let compile_wasi_module_linked_impl = (stmts_raw: Array[Stmt], entry_name
         indices: fn_indices_list,
         params: fn_param_counts,
         returns: fn_returns_list,
-        needs_env: fn_needs_env_list
+        needs_env: fn_needs_env_list,
+        sorted_index: fn_sorted_index
       },
       str_table: StrTable::{
-        strs: str_strs, offsets: str_offsets, lengths: str_lengths
+        strs: str_strs, offsets: str_offsets, lengths: str_lengths,
+        sorted_index: str_sorted_index
       },
-      str_lookup_buckets: lookup_buckets,
       lambda_table: lt_w,
       num_user_funcs: num_user_funcs, func_offset: func_offset,
       ref_cell_names: Array::slice([
