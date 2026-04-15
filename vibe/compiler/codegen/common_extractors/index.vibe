@@ -500,69 +500,35 @@ export let string_compare = (a: String, b: String) -> Int {
 }
 
 // Build a sorted index: returns Array[(String, Int)] sorted by string.
-// Each entry is (name, original_index).
+// Each entry is (name, original_index). Uses insertion sort (simple,
+// no temporary arrays, avoids MoonBit RC overhead from merge sort).
 export let build_sorted_index = (names: Array[String]) -> Array[(String, Int)] {
   let len = Array::length(names)
-  // Create index array
   let idx = Array::slice([("", 0)], 0, 0)
   let mut i = 0
   while i < len {
     Array::push(idx, (Array::get(names, i), i))
     i = i + 1
   }
-  // Insertion sort (stable, simple, O(n^2) but runs once at init,
-  // not per-lookup — 1300 elements = 1.7M comparisons = ~1.6GB...
-  // Actually too expensive. Use merge sort instead.)
-  // --- Merge sort ---
-  let rec merge_sort = (arr: Array[(String, Int)], start: Int, end: Int, tmp: Array[(String, Int)]) -> Unit {
-    if end - start <= 1 {
-      ()
-    } else {
-      let mid = start + (end - start) / 2
-      merge_sort(arr, start, mid, tmp)
-      merge_sort(arr, mid, end, tmp)
-      // Merge [start..mid) and [mid..end) into tmp, then copy back
-      let mut li = start
-      let mut ri = mid
-      let mut ti = start
-      while li < mid && ri < end {
-        let (la, _) = Array::get(arr, li)
-        let (ra, _) = Array::get(arr, ri)
-        if string_compare(la, ra) <= 0 {
-          Array::set(tmp, ti, Array::get(arr, li))
-          li = li + 1
-        } else {
-          Array::set(tmp, ti, Array::get(arr, ri))
-          ri = ri + 1
-        }
-        ti = ti + 1
-      }
-      while li < mid {
-        Array::set(tmp, ti, Array::get(arr, li))
-        li = li + 1
-        ti = ti + 1
-      }
-      while ri < end {
-        Array::set(tmp, ti, Array::get(arr, ri))
-        ri = ri + 1
-        ti = ti + 1
-      }
-      // Copy back
-      let mut ci = start
-      while ci < end {
-        Array::set(arr, ci, Array::get(tmp, ci))
-        ci = ci + 1
+  // Insertion sort — O(n^2) but no temp allocations, fast for n < 3000
+  let mut si = 1
+  while si < len {
+    let key = Array::get(idx, si)
+    let (ks, _) = key
+    let mut j = si - 1
+    let mut done = false
+    while j >= 0 && !done {
+      let (js, _) = Array::get(idx, j)
+      if string_compare(js, ks) > 0 {
+        Array::set(idx, j + 1, Array::get(idx, j))
+        j = j - 1
+      } else {
+        done = true
       }
     }
+    Array::set(idx, j + 1, key)
+    si = si + 1
   }
-  // Allocate tmp buffer (same size as idx)
-  let tmp = Array::slice([("", 0)], 0, 0)
-  let mut ti = 0
-  while ti < len {
-    Array::push(tmp, ("", 0))
-    ti = ti + 1
-  }
-  merge_sort(idx, 0, len, tmp)
   idx
 }
 
