@@ -9,9 +9,7 @@ import ../wasm_emit/index.vibe {
   emit_call_indirect, emit_else, emit_end, emit_i32_load, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_xor, emit_if_void, emit_local_get, emit_local_set
 }
 
-import ../common_extractors/index.vibe {
-  sorted_index_lookup, string_compare
-}
+// (no import from common_extractors needed — hash-bucket lookup is inlined)
 
 // WASM opcodes (local constants for readability)
 let op_i32_eq = 70
@@ -33,8 +31,9 @@ export struct FuncTable {
   params: Array[Int];
   returns: Array[Int];
   needs_env: Array[Bool];
-  // Sorted index for O(log n) resolve_func. Array of (name, original_index).
-  sorted_index: Array[(String, Int)]
+  // Hash-bucket index for O(1) amortized resolve_func.
+  // Buckets keyed by string length mod N. Each entry is (name, original_index).
+  lookup_buckets: Array[Array[(String, Int)]]
 }
 
 // String table: groups string data with their WASM data segment offsets/lengths
@@ -42,7 +41,7 @@ export struct StrTable {
   strs: Array[String];
   offsets: Array[Int];
   lengths: Array[Int];
-  sorted_index: Array[(String, Int)]
+  lookup_buckets: Array[Array[(String, Int)]]
 }
 
 // Lambda accumulator: collects compiled lambda bodies and metadata
@@ -303,9 +302,25 @@ export let get_elet_val = (expr: Expr) -> Expr with { Error } {
 
 // Resolve function: returns (func_index, param_count, has_return)
 export let resolve_func = (ft: FuncTable, name: String) -> (Int, Int, Int)with { Error } {
-  // Use sorted_index for O(log n) lookup when available
-  let found = if Array::length(ft.sorted_index) > 0 {
-    sorted_index_lookup(ft.sorted_index, name)
+  // Use hash-bucket lookup when available, fall back to linear scan
+  let found = if Array::length(ft.lookup_buckets) > 0 {
+    let slen = String::length(name)
+    let num_bk = Array::length(ft.lookup_buckets)
+    let bk_idx = if slen < num_bk { slen } else { slen - (slen / num_bk) * num_bk }
+    let bk = Array::get(ft.lookup_buckets, bk_idx)
+    let bk_len = Array::length(bk)
+    let mut ri = 0
+    let mut res = -1
+    while ri < bk_len {
+      let (bs, bi) = Array::get(bk, ri)
+      if bs == name {
+        res = bi
+        ri = bk_len
+      } else {
+        ri = ri + 1
+      }
+    }
+    res
   } else {
     // Fallback to linear scan
     let len = Array::length(ft.names)
