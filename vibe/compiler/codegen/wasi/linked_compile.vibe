@@ -921,11 +921,41 @@ export let compile_wasi_module_linked_impl = (stmts_raw: Array[Stmt], entry_name
   Array::push(bodies, gen_bytes_to_array_body(arr_new_idx, arr_push_idx, bytes_len_idx, bytes_get_idx))
   Array::push(meta_i32, 2)
   Array::push(meta_i64, 1)
-  // Build sorted indices — pass empty for now to diagnose compile time
-  let fn_sorted_index = Array::slice([("", 0)], 0, 0)
-  let str_sorted_index = Array::slice([("", 0)], 0, 0)
+  // Build sorted indices for O(log n) resolve_func and str_table_lookup
+  let fn_sorted_index = build_sorted_index(fn_names_list)
+  let str_sorted_index = build_sorted_index(str_strs)
+  // Create CompileCtx once outside the loop; ref_cell_names is truncated
+  // at the start of each iteration since compile_expr mutates it.
+  let shared_ref_cells = Array::slice([""], 0, 0)
+  // Pre-compute fn+ctor name list once for collect_free_vars in lambdas
+  let fn_ctor_names = Array::concat(fn_names_list, ctor_names_list)
+  let compile_ctx = CompileCtx::{
+    func_table: FuncTable::{
+      names: fn_names_list,
+      indices: fn_indices_list,
+      params: fn_param_counts,
+      returns: fn_returns_list,
+      needs_env: fn_needs_env_list,
+      sorted_index: fn_sorted_index
+    },
+    str_table: StrTable::{
+      strs: str_strs, offsets: str_offsets, lengths: str_lengths,
+      sorted_index: str_sorted_index
+    },
+    lambda_table: lt_w,
+    num_user_funcs: num_user_funcs, func_offset: func_offset,
+    ref_cell_names: shared_ref_cells,
+    ctor_table: CtorTable::{
+      names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
+    },
+    thunk_names: thunk_names_list,
+    const_int_names: const_int_names_list,
+    const_int_values: const_int_values_list,
+    fn_and_ctor_names: fn_ctor_names
+  }
   let mut bi = 0
   while bi < num_user_funcs {
+    Array::truncate(shared_ref_cells, 0)
     let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
     let __bi_expr = get_slet_expr(__bi_stmt)
     let body_buf = bytebuf_new()
@@ -933,31 +963,6 @@ export let compile_wasi_module_linked_impl = (stmts_raw: Array[Stmt], entry_name
       ""
     ], 0, 0)
     let fn_name_dbg = Array::get(fn_names_list, bi)
-    let compile_ctx = CompileCtx::{
-      func_table: FuncTable::{
-        names: fn_names_list,
-        indices: fn_indices_list,
-        params: fn_param_counts,
-        returns: fn_returns_list,
-        needs_env: fn_needs_env_list,
-        sorted_index: fn_sorted_index
-      },
-      str_table: StrTable::{
-        strs: str_strs, offsets: str_offsets, lengths: str_lengths,
-        sorted_index: str_sorted_index
-      },
-      lambda_table: lt_w,
-      num_user_funcs: num_user_funcs, func_offset: func_offset,
-      ref_cell_names: Array::slice([
-        ""
-      ], 0, 0),
-      ctor_table: CtorTable::{
-        names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
-      },
-      thunk_names: thunk_names_list,
-      const_int_names: const_int_names_list,
-      const_int_values: const_int_values_list
-    }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
       let body = get_efn_body(__bi_expr)
