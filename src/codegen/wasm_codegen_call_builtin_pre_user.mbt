@@ -48,6 +48,33 @@ fn emit_builder_alloc(
 /// ptr_local holds the untagged obj pointer (points to tag field).
 /// elem_size is bytes per element (4 for array/string, 8 for map).
 /// After this code, it is safe to write at [ptr + 8 + len * elem_size].
+/// Follow forwarding pointer if the builder was relocated by a previous realloc.
+/// A relocated builder has cap == -1 (sentinel) at ptr[-4] and the new pointer
+/// stored at ptr[0]. This resolves stale caller bindings after realloc.
+fn emit_builder_follow_forwarding(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  ptr_local : Int,
+) -> Unit {
+  let _ = ctx
+  // Read capacity from ptr[-4]
+  emit_local_get(buf, ptr_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 0)
+  // Check if cap == -1 (forwarding sentinel)
+  emit_i32_const_raw(buf, -1)
+  emit_i32_eq(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // void
+  // Follow forwarding pointer: new_ptr = old_ptr[0]
+  emit_local_get(buf, ptr_local)
+  emit_i32_load(buf, 0)
+  emit_local_set(buf, ptr_local)
+  buf.push((11).to_byte()) // end if
+}
+
+///|
 fn emit_builder_grow_check(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -55,6 +82,8 @@ fn emit_builder_grow_check(
   elem_size : Int,
 ) -> Unit {
   require_heap(ctx)
+  // Follow forwarding pointer if the builder was relocated by a prior realloc
+  emit_builder_follow_forwarding(ctx, buf, ptr_local)
   let cap_local = alloc_temp_local(ctx)
   let len_local = alloc_temp_local(ctx)
   let old_end_local = alloc_temp_local(ctx)
@@ -125,6 +154,10 @@ fn emit_builder_grow_check(
   emit_local_get(buf, new_cap_local)
   emit_i32_store(buf, 0)
   buf.push((5).to_byte()) // else (not at heap tip — full realloc)
+  // Save old ptr before realloc (for forwarding header)
+  let old_ptr_local = alloc_temp_local(ctx)
+  emit_local_get(buf, ptr_local)
+  emit_local_set(buf, old_ptr_local)
   // new_cap = cap * 2
   emit_local_get(buf, cap_local)
   emit_i32_const_raw(buf, 1)
@@ -197,6 +230,18 @@ fn emit_builder_grow_check(
   emit_i32_const_raw(buf, 4)
   emit_i32_add(buf)
   emit_local_set(buf, ptr_local)
+  // Write forwarding header at old location so stale caller bindings
+  // can find the new buffer on subsequent operations:
+  // old_ptr[-4] = -1 (sentinel cap, signals forwarding)
+  // old_ptr[0] = new_ptr (forwarding pointer)
+  emit_local_get(buf, old_ptr_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_const_raw(buf, -1)
+  emit_i32_store(buf, 0)
+  emit_local_get(buf, old_ptr_local)
+  emit_local_get(buf, ptr_local)
+  emit_i32_store(buf, 0)
   buf.push((11).to_byte()) // end if (at heap tip)
   buf.push((11).to_byte()) // end if (len >= cap)
 }
@@ -213,6 +258,8 @@ fn emit_builder_bulk_grow_check(
   elem_size : Int,
 ) -> Unit {
   require_heap(ctx)
+  // Follow forwarding pointer if the builder was relocated by a prior realloc
+  emit_builder_follow_forwarding(ctx, buf, ptr_local)
   let cap_local = alloc_temp_local(ctx)
   let len_local = alloc_temp_local(ctx)
   let needed_local = alloc_temp_local(ctx)
@@ -292,6 +339,10 @@ fn emit_builder_bulk_grow_check(
   emit_local_get(buf, new_cap_local)
   emit_i32_store(buf, 0)
   buf.push((5).to_byte()) // else (not at heap tip — full realloc)
+  // Save old ptr before realloc (for forwarding header)
+  let old_ptr_local = alloc_temp_local(ctx)
+  emit_local_get(buf, ptr_local)
+  emit_local_set(buf, old_ptr_local)
   // Allocate new buffer
   let new_alloc_size_local = alloc_temp_local(ctx)
   emit_local_get(buf, new_cap_local)
@@ -356,6 +407,15 @@ fn emit_builder_bulk_grow_check(
   emit_i32_const_raw(buf, 4)
   emit_i32_add(buf)
   emit_local_set(buf, ptr_local)
+  // Write forwarding header at old location
+  emit_local_get(buf, old_ptr_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_const_raw(buf, -1)
+  emit_i32_store(buf, 0)
+  emit_local_get(buf, old_ptr_local)
+  emit_local_get(buf, ptr_local)
+  emit_i32_store(buf, 0)
   buf.push((11).to_byte()) // end if (at heap tip)
   buf.push((11).to_byte()) // end if (needed > cap)
 }

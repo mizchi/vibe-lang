@@ -2562,6 +2562,8 @@ fn compile_builtin_string(
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_untag_ptr_i32(buf)
       emit_local_set(buf, builder_ptr)
+      // Follow forwarding pointer if builder was relocated by push realloc
+      emit_builder_follow_forwarding(ctx, buf, builder_ptr)
       // read number of strings
       emit_local_get(buf, builder_ptr)
       emit_i32_load(buf, 4)
