@@ -3500,6 +3500,165 @@ test "Double::to_int conversion compiles to wasm" {
 }
 
 ///|
+test "Float arithmetic compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let a = 1.5f
+      #|let b = 2.5f
+      #|let c = a + b
+      #|let d = b - a
+      #|let e = a * b
+      #|let f = b / a
+      #|c
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("float arithmetic compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "Float comparison compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let a = 1.5f
+      #|let b = 2.5f
+      #|let lt = a < b
+      #|let gt = b > a
+      #|let le = a <= a
+      #|let ge = b >= a
+      #|let eq = a == a
+      #|let ne = a != b
+      #|lt
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("float comparison compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "Float negation compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let x = 5.0f
+      #|let y = -x
+      #|y
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("float negation compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "Double negation compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let x = 5.0
+      #|let y = -x
+      #|y
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("double negation compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "Double division compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let a = 10.0
+      #|let b = 4.0
+      #|a / b
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("double division compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "Int::to_float conversion compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let n = 42
+      #|Int::to_float(n)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("Int::to_float compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "Float::to_int conversion compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let f = 42.9f
+      #|Float::to_int(f)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("Float::to_int compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "Float::to_double conversion compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let f = 1.5f
+      #|Float::to_double(f)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("Float::to_double compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+test "Double::to_float conversion compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let d = 1.5
+      #|Double::to_float(d)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("Double::to_float compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
 test "String::from_char_code compiles to wasm" {
   let db = @runtime.VibeDb::new()
   db.set_source(
