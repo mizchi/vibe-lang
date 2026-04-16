@@ -1661,12 +1661,28 @@ fn decode_tagged_value(
     }
     return @core.Value::Tuple(args)
   }
-  if ty == obj_bytes || ty == obj_bytes_view {
-    let len = object_len(mem, tagged)
+  if ty == obj_bytes {
+    // Layout: [type:i32][len:i32][cap:i32][data_ptr:i32]
     let base = untag_ptr(tagged)
+    let len = read_u32_le(mem, base + 4)
+    let data_ptr = read_u32_le(mem, base + 12)
     let out : Array[Byte] = []
     for i in 0..<len {
-      out.push(mem[base + 8 + i])
+      out.push(mem[data_ptr + i])
+    }
+    return @core.Value::Bytes(out)
+  }
+  if ty == obj_bytes_view {
+    // Layout: [type:i32][source_ptr:i32][start:i32][end:i32]
+    let base = untag_ptr(tagged)
+    let source_ptr = read_u32_le(mem, base + 4)
+    let start = read_u32_le(mem, base + 8)
+    let end = read_u32_le(mem, base + 12)
+    let len = end - start
+    let source_data_ptr = read_u32_le(mem, source_ptr + 12)
+    let out : Array[Byte] = []
+    for i in 0..<len {
+      out.push(mem[source_data_ptr + start + i])
     }
     return @core.Value::Bytes(out)
   }

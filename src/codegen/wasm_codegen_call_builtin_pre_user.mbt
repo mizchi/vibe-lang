@@ -48,15 +48,19 @@ fn emit_builder_alloc(
 /// ptr_local holds the untagged obj pointer (points to tag field).
 /// elem_size is bytes per element (4 for array/string, 8 for map).
 /// After this code, it is safe to write at [ptr + 8 + len * elem_size].
-/// Follow forwarding pointer if the builder was relocated by a previous realloc.
-/// A relocated builder has cap == -1 (sentinel) at ptr[-4] and the new pointer
-/// stored at ptr[0]. This resolves stale caller bindings after realloc.
+/// Follow forwarding pointer chain if the builder was relocated by previous
+/// reallocs. A relocated builder has cap == -1 (sentinel) at ptr[-4] and the
+/// new pointer stored at ptr[0]. Loops to handle multi-hop chains (e.g. when
+/// multiple non-tip reallocations accumulate: old0 -> old1 -> new).
 fn emit_builder_follow_forwarding(
   ctx : CodegenCtx,
   buf : ByteBuf,
   ptr_local : Int,
 ) -> Unit {
   let _ = ctx
+  // Loop until cap != -1 (reached a live builder)
+  emit_block(buf) // block $done
+  emit_loop(buf) // loop $chase
   // Read capacity from ptr[-4]
   emit_local_get(buf, ptr_local)
   emit_i32_const_raw(buf, 4)
@@ -64,14 +68,15 @@ fn emit_builder_follow_forwarding(
   emit_i32_load(buf, 0)
   // Check if cap == -1 (forwarding sentinel)
   emit_i32_const_raw(buf, -1)
-  emit_i32_eq(buf)
-  buf.push((4).to_byte()) // if
-  buf.push((64).to_byte()) // void
+  emit_i32_ne(buf)
+  emit_br_if(buf, 1) // break $done if cap != -1
   // Follow forwarding pointer: new_ptr = old_ptr[0]
   emit_local_get(buf, ptr_local)
   emit_i32_load(buf, 0)
   emit_local_set(buf, ptr_local)
-  buf.push((11).to_byte()) // end if
+  emit_br(buf, 0) // continue $chase
+  emit_end(buf) // end $chase
+  emit_end(buf) // end $done
 }
 
 ///|
