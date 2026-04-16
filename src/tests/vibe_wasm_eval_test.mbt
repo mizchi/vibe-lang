@@ -204,10 +204,25 @@ let obj_string = 1
 let obj_path = 2
 
 ///|
+let obj_tuple = 3
+
+///|
+let obj_record = 4
+
+///|
 let obj_array = 5
 
 ///|
 let obj_map = 6
+
+///|
+let obj_float = 8
+
+///|
+let obj_double = 9
+
+///|
+let obj_enum = 10
 
 ///|
 let obj_bytes = 13
@@ -1600,7 +1615,80 @@ fn decode_tagged_value(
     }
     return @core.Value::Map(out)
   }
-  raise WasmEvalError::Unsupported("decode unsupported object type")
+  if ty == obj_tuple {
+    let len = object_len(mem, tagged)
+    let base = untag_ptr(tagged)
+    let out : Array[@core.Value] = []
+    for i in 0..<len {
+      let item = read_u32_le(mem, base + 8 + i * 4).to_int64()
+      out.push(decode_tagged_value(mem, item, depth + 1))
+    }
+    return @core.Value::Tuple(out)
+  }
+  if ty == obj_record {
+    let len = object_len(mem, tagged)
+    let base = untag_ptr(tagged)
+    let out : Map[String, @core.Value] = {}
+    for i in 0..<len {
+      let key_ptr = read_u32_le(mem, base + 8 + i * 8).to_int64()
+      let value = read_u32_le(mem, base + 12 + i * 8).to_int64()
+      let key = read_string_object(mem, key_ptr)
+      out[key] = decode_tagged_value(mem, value, depth + 1)
+    }
+    return @core.Value::Record(out)
+  }
+  if ty == obj_float {
+    let base = untag_ptr(tagged)
+    let bits = read_u32_le(mem, base + 4)
+    return @core.Value::Float(Float::reinterpret_from_int(bits))
+  }
+  if ty == obj_double {
+    let base = untag_ptr(tagged)
+    let lo = read_u32_le(mem, base + 4)
+    let hi = read_u32_le(mem, base + 8)
+    let bits = (hi.to_int64().reinterpret_as_uint64() << 32) |
+      (lo.to_int64() & 0xFFFFFFFFL).reinterpret_as_uint64()
+    return @core.Value::Double(bits.reinterpret_as_double())
+  }
+  if ty == obj_enum {
+    let base = untag_ptr(tagged)
+    let arity = read_u32_le(mem, base + 4)
+    let _ctor_tag = read_u32_le(mem, base + 8)
+    let args : Array[@core.Value] = []
+    for i in 0..<arity {
+      let arg = read_u32_le(mem, base + 12 + i * 4).to_int64()
+      args.push(decode_tagged_value(mem, arg, depth + 1))
+    }
+    return @core.Value::Tuple(args)
+  }
+  if ty == obj_bytes {
+    // Layout: [type:i32][len:i32][cap:i32][data_ptr:i32]
+    let base = untag_ptr(tagged)
+    let len = read_u32_le(mem, base + 4)
+    let data_ptr = read_u32_le(mem, base + 12)
+    let out : Array[Byte] = []
+    for i in 0..<len {
+      out.push(mem[data_ptr + i])
+    }
+    return @core.Value::Bytes(out)
+  }
+  if ty == obj_bytes_view {
+    // Layout: [type:i32][source_ptr:i32][start:i32][end:i32]
+    let base = untag_ptr(tagged)
+    let source_ptr = read_u32_le(mem, base + 4)
+    let start = read_u32_le(mem, base + 8)
+    let end = read_u32_le(mem, base + 12)
+    let len = end - start
+    let source_data_ptr = read_u32_le(mem, source_ptr + 12)
+    let out : Array[Byte] = []
+    for i in 0..<len {
+      out.push(mem[source_data_ptr + start + i])
+    }
+    return @core.Value::Bytes(out)
+  }
+  raise WasmEvalError::Unsupported(
+    "decode unsupported object type: " + ty.to_string(),
+  )
 }
 
 ///|

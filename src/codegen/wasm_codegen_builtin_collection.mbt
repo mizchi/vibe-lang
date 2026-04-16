@@ -54,10 +54,19 @@ fn compile_builtin_collection(
     }
     "ArrayBuilder::freeze" => {
       // array_builder_freeze(builder) -> return builder as-is (it is already an array obj)
+      // Follow forwarding pointer in case push triggered realloc
       let pos_args = extract_positional_exprs_with_arity(
         args, "ArrayBuilder::freeze", 1,
       )
+      let ptr_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      emit_local_set(buf, ptr_local)
+      emit_builder_follow_forwarding(ctx, buf, ptr_local)
+      emit_local_get(buf, ptr_local)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
     }
     "Array::push" => {
       // array_push(arr, value) -> store value at [ptr + 8 + len*4], increment len

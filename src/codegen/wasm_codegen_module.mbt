@@ -3333,6 +3333,11 @@ fn emit_module_with_coverage(
           }
           _ => ()
         }
+      // export { name1, name2 } — re-export of imported/local names
+      @core.Stmt::Export(names~, span=_) =>
+        for name in names {
+          ctx.exported_fns[name] = true
+        }
       _ => ()
     }
   }
