@@ -3,6 +3,47 @@
 Spec-locked decisions are tracked in `docs/spec/decisions.md`.
 Completed items are archived in `docs/DONE.md`.
 
+## 次の一手 (2026-04-17 時点)
+
+優先順。各項目は該当セクションに詳細あり。
+
+### 🔴 0.1.0 release blocker
+
+- [ ] **#275 Error surface → `Result::Ok/Err`** — syntax / diagnostics / stdlib migration 設計。release note migration story を先に固定（§[0.1.0 release sign-off](#010-release-sign-off-2026-03-24)）
+- [ ] **#16 selfhost bootstrap 最終ログ固定** — GitHub Actions で `just ci-selfhost-gates-shard bootstrap` を通す
+- [ ] **`just test-vibe-package-suite` compiled-only parity** — 4 本の pure regression 復旧（§[broad package sweep](#010-gate-外に出した-broad-package-sweep)）
+
+### 🟠 近場の重要
+
+- [ ] **normalize / DCE / loader テスト拡充** — #298 で一部着手、カバー範囲を埋める
+- [ ] **CI カバレッジ gate** — branch coverage 70% target
+- [ ] **selfhost bootstrap / selfbuild KPI を CI shard 専用 gate 化**
+
+### 🟡 機能追加
+
+- [ ] **WASI P3: effect → WIT マッピング + `vibe serve`**
+- [ ] **SIMD codegen 本番化** — selfhost codegen の 0xFD prefix emit + `simd_skip_ws` / `simd_scan_alnum` 組込
+- [ ] **#59 WASM-GC selfbuild ~350KB** — P4 compile E2E の残 3 ケース（simd_patterns / gc_only/index / selfhost_cli_gc_entry）+ P5 DCE + wasm-opt
+
+### 🔵 リファクタ / 長期
+
+- [ ] `vibe/types/` / `vibe/parser/` 分離
+- [ ] `vibe/compiler` 論理分割
+- [ ] MoonBit host CLI を bootstrap 専用へ縮退
+- [ ] selfhost perf gap cutover 水準まで（素材: `claude/chunk-compile-experiment` ブランチに hash-bucket lookup / sorted index / O(n) string dedup 等 23 commits、#295）
+
+### ⚪ upstream / infra 待ち
+
+- #294 MoonBit v0.1.20260409 の 10x compile 遅延（upstream）
+- #290 mwac `plug_components` の typed imports forward バグ（upstream）
+- #293 selfbuild_compile_full の MoonBit RC 2GB 超過（host 側制約）
+
+### 既知ギャップ（issue として追跡中）
+
+- #287 4 test files が compiled backend で `unreachable` trap
+- #288 `checker_parity_test.vibe` batch compile が 10+min hang
+- derive(Eq) enum with payload の deep 比較は codegen 未実装（#203 e2e で該当テスト除外、issue 未作成）
+
 ## 0.2.0 roadmap: wasm-gc main backend gate (2026-03-27)
 
 - [x] `just test-wasm-gc-mainlane-e2e` を green にする
