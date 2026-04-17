@@ -235,6 +235,16 @@ test "http host run command can invoke multiple exports in order" {
 }
 
 ///|
+test "p3 compose command quotes plug adapter and output paths" {
+  let cmd = build_p3_compose_command(
+    "/tmp/adapter path.wasm", "/tmp/app$plug.component.wasm", "/tmp/out\"component.wasm",
+  )
+  assert_eq(
+    cmd, "wac plug --plug \"/tmp/app\\$plug.component.wasm\" -o \"/tmp/out\\\"component.wasm\" \"/tmp/adapter path.wasm\"",
+  )
+}
+
+///|
 test "resolve repl initial source ignores scratch db by default" {
   let root = wbtest_make_temp_dir("repl_initial_source_fresh")
   let scratch_db_path = root + "/scratch.db"
