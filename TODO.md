@@ -31,6 +31,7 @@ Completed items are archived in `docs/DONE.md`.
 - [ ] `vibe/compiler` 論理分割
 - [ ] MoonBit host CLI を bootstrap 専用へ縮退
 - [ ] selfhost perf gap cutover 水準まで（素材: `claude/chunk-compile-experiment` ブランチに hash-bucket lookup / sorted index / O(n) string dedup 等 23 commits、#295）
+- [ ] MoonBit host 重複削減（similarity-mbt 抽出、§[MoonBit host 重複削減](#moonbit-host-重複削減-similarity-mbt-ベース)）
 
 ### ⚪ upstream / infra 待ち
 
@@ -282,6 +283,23 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 - [x] method syntax の仕様固定 (expr.field = property access, expr.method() = error, Type::method() = static call)
 - [x] 演算子型規則の checker/evaluator 一致
 - [x] 文字列補間を typed AST 化 (Expr::StringInterp)
+
+## MoonBit host 重複削減 (similarity-mbt ベース)
+
+2026-04-17 に `nix develop -c similarity-mbt src/` で計測（326 files）。
+閾値 0.98 で pairs 14,392。ただし `parser/syntax_kind.mbt` 7626 / `codegen/wasm_codegen_emit.mbt` 3677 / `codegen/wasm_gc_codegen.mbt` 1506 / `flatbuffers_generated.mbt` 636 は「各 token/opcode の同形 3 行 boilerplate」「自動生成コード」が主因で構造上の偽陽性。
+
+ノイズを除いた中規模ファイル (5–100 pairs) が現実的な refactor 候補:
+
+- [ ] `src/runtime/store.mbt` (40 pairs) — `get` / `get_by_addr` / `get_alias` / `pure_cache_get` / `get_module` の Map.get + tag チェック同型。共通 helper 抽出
+- [ ] `src/backend/http_wasm.mbt` vs `src/backend/http_js.mbt` (30 pairs each) — backend 実装が並走。`src/backend/http_impl.mbt` 側に共通化
+- [ ] `src/benches/advanced_graph_bench.mbt` — `parse_graph_{index,delta}_{json,cbor,flexbuffer}` / `bench_graph_watch_*_{cbor,flexbuffer}` の format 軸をパラメータ化
+- [ ] `src/codegen/wasm_codegen_rc.mbt` — `emit_rc_init` / `emit_rc_init_dynamic` (98.8%), `emit_rc_dup_i64` / `emit_rc_drop_i64` (97%) を closure で差分抽出
+- [ ] `src/cmd/vibe/cli_repl.mbt` — `repl_vibe_view_json` / `repl_vibe_peek_json` (96.2%), `repl_is_vibe_shell_subcommand` / `repl_is_reserved_shell_command_name` (100%)、`compiled_repl_temp_{source,wasm}_path` (100%)
+- [ ] `src/cmd/vibe/cli_test_cmd.mbt` — `sort_test_entry_paths_for_batching` / `sort_test_entry_batch_units` を共通 sort helper へ
+- [ ] `src/runtime/db.mbt` — `set_version_ref` / `set_symbol_ref` (100%), `set_source` / `set_binary_source` (99%) の ref kind 引数化
+- [ ] `src/runtime_compile/ir_sexp.mbt` — `sort_map_fields_expr` / `sort_record_fields_expr` (100%) を generic sort helper へ
+- [ ] 計測を CI に載せる (`flaker` か独立 job で閾値 0.98 を回し、新規重複を検出)
 
 ## モジュール分離
 
