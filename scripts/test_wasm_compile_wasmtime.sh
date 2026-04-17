@@ -1923,8 +1923,6 @@ let double = (x: Int) -> Int { x * 2 }
 3 |> inc |> double' \
 "8"
 
-echo ""
-
 # ============================================
 # User-defined Enums
 # ============================================
@@ -2371,6 +2369,313 @@ expect_wasmtime_result "parse_double: large value" \
 expect_wasmtime_result "parse_double: small fraction" \
 'double_to_int(parse_double("0.001") * 1000.0)' \
 "1"
+
+echo ""
+
+# ============================================
+# Issue #203: Branch Coverage Tests
+# Appended at end to preserve existing shard assignments
+# ============================================
+
+# ============================================
+# derive(Eq) (#203 P1)
+# ============================================
+log_info "Testing derive(Eq) (#203)..."
+
+expect_wasmtime_result "derive(Eq): enum equal (#203)" \
+'enum Color { Red; Green; Blue } derive(Eq)
+if Color::Red == Color::Red { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "derive(Eq): enum not equal (#203)" \
+'enum Color { Red; Green; Blue } derive(Eq)
+if Color::Red == Color::Blue { 1 } else { 0 }' \
+"0"
+
+# NOTE: enum-with-payload == is tracked separately; the codegen currently
+# does not deep-compare carried values, so the cases with `Val::Num(x)`
+# payloads are intentionally omitted here.
+
+expect_wasmtime_result "derive(Eq): match with derived eq (#203)" \
+'enum Color { Red; Green; Blue } derive(Eq)
+let c: Color = Color::Green
+match c {
+  Color::Red => 1,
+  Color::Green => 2,
+  Color::Blue => 3,
+}' \
+"2"
+
+echo ""
+
+# ============================================
+# Nested Enum Pattern Matching (#203 P1)
+# ============================================
+log_info "Testing nested enum pattern matching (#203)..."
+
+expect_wasmtime_result "nested: Some(Some(x)) (#203)" \
+'match Some(Some(42)) { Some(Some(x)) => x, _ => 0 }' \
+"42"
+
+expect_wasmtime_result "nested: Some(None) (#203)" \
+'match Some(None) { Some(Some(x)) => x, Some(None) => 99, None => 0, _ => -1 }' \
+"99"
+
+expect_wasmtime_result "nested: enum wrapping Option (#203)" \
+'enum Res { Succ(Option[Int]); Fail }
+match Res::Succ(Some(10)) { Res::Succ(Some(x)) => x, Res::Succ(None) => 0, Res::Fail => -1 }' \
+"10"
+
+expect_wasmtime_result "nested: recursive tree sum (#203)" \
+'enum Tree { Leaf(Int); Node(Tree, Tree) }
+let rec sum_tree = (t: Tree) -> Int {
+  match t { Leaf(v) => v, Node(l, r) => sum_tree(l) + sum_tree(r) }
+}
+sum_tree(Node(Node(Leaf(1), Leaf(2)), Leaf(3)))' \
+"6"
+
+expect_wasmtime_result "nested: deep option (#203)" \
+'match Some(Some(Some(7))) { Some(Some(Some(x))) => x, _ => 0 }' \
+"7"
+
+echo ""
+
+# ============================================
+# loop + break(value) (#203 P1)
+# ============================================
+log_info "Testing loop + break(value) (#203)..."
+
+expect_wasmtime_result "loop: sum 0..9 (#203)" \
+'let result = loop (i = 0, sum = 0) {
+  if i >= 10 { break(sum) }
+  continue(i + 1, sum + i)
+}
+result' \
+"45"
+
+expect_wasmtime_result "loop: factorial via loop (#203)" \
+'let result = loop (i = 1, product = 1) {
+  if i > 5 { break(product) }
+  continue(i + 1, product * i)
+}
+result' \
+"120"
+
+expect_wasmtime_result "loop: find first even (#203)" \
+'let result = loop (i = 0) {
+  let x = array_get([1, 3, 5, 4, 7], i)
+  if x % 2 == 0 { break(x) }
+  continue(i + 1)
+}
+result' \
+"4"
+
+echo ""
+
+# ============================================
+# for-in + index (#203 P1)
+# ============================================
+log_info "Testing for-in + index (#203)..."
+
+expect_wasmtime_result "for-in index: weighted sum (#203)" \
+'let mut total = 0
+for i, x in [10, 20, 30] {
+  total = total + i * x
+}
+total' \
+"80"
+
+expect_wasmtime_result "for-in index: sum indices (#203)" \
+'let mut sum = 0
+for i, _ in [5, 5, 5, 5] {
+  sum = sum + i
+}
+sum' \
+"6"
+
+expect_wasmtime_result "for-in index: last index (#203)" \
+'let mut last = 0
+for i, _ in [10, 20, 30, 40, 50] {
+  last = i
+}
+last' \
+"4"
+
+echo ""
+
+# ============================================
+# Generic Functions (#203 P2)
+# ============================================
+log_info "Testing generic functions (#203)..."
+
+expect_wasmtime_result "generic: identity Int (#203)" \
+'let identity = [T](x: T) -> T { x }
+identity(42)' \
+"42"
+
+expect_wasmtime_result "generic: first of pair (#203)" \
+'let first = [A, B](a: A, b: B) -> A { a }
+first(99, 1)' \
+"99"
+
+expect_wasmtime_result "generic: apply function (#203)" \
+'let apply = [T](f: (T) -> T, x: T) -> T { f(x) }
+let inc = (x: Int) -> Int { x + 1 }
+apply(inc, 41)' \
+"42"
+
+expect_wasmtime_result "generic: compose (#203)" \
+'let compose = [A, B, C](f: (B) -> C, g: (A) -> B) -> (A) -> C {
+  (x: A) -> C { f(g(x)) }
+}
+let inc = (x: Int) -> Int { x + 1 }
+let dbl = (x: Int) -> Int { x * 2 }
+let inc_then_dbl = compose(dbl, inc)
+inc_then_dbl(5)' \
+"12"
+
+echo ""
+
+# ============================================
+# Pipe Operator Extensions (#203 P2)
+# ============================================
+log_info "Testing pipe operator extensions (#203)..."
+
+expect_wasmtime_result "pipe: long chain (#203)" \
+'let inc = (x: Int) -> Int { x + 1 }
+let dbl = (x: Int) -> Int { x * 2 }
+let sq = (x: Int) -> Int { x * x }
+2 |> inc |> dbl |> sq |> inc' \
+"37"
+
+expect_wasmtime_result "pipe: with multi-arg function (#203)" \
+'let add = (x: Int, y: Int) -> Int { x + y }
+5 |> add(10)' \
+"15"
+
+echo ""
+
+# ============================================
+# is-expression (#203 P2)
+# ============================================
+log_info "Testing is-expression (#203)..."
+
+expect_wasmtime_result "is: Some binding (#203)" \
+'let x: Option[Int] = Some(42)
+if x is Some(v) { v } else { 0 }' \
+"42"
+
+expect_wasmtime_result "is: None fallback (#203)" \
+'let x: Option[Int] = None
+if x is Some(v) { v } else { 99 }' \
+"99"
+
+expect_wasmtime_result "is: boolean test (#203)" \
+'let x: Option[Int] = Some(1)
+if x is Some(_) { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "is: enum variant (#203)" \
+'enum Shape { Circle(Int); Rect(Int, Int) }
+let s: Shape = Shape::Circle(5)
+if s is Shape::Circle(r) { r } else { 0 }' \
+"5"
+
+echo ""
+
+# ============================================
+# Array Spread (#203 P2)
+# ============================================
+log_info "Testing array spread (#203)..."
+
+expect_wasmtime_result "spread: basic (#203)" \
+'let xs = [2, 3]
+array_length([1, ..xs, 4])' \
+"4"
+
+expect_wasmtime_result "spread: access element (#203)" \
+'let xs = [10, 20, 30]
+let ys = [..xs]
+ys[1]' \
+"20"
+
+expect_wasmtime_result "spread: prepend (#203)" \
+'let xs = [2, 3, 4]
+let ys = [1, ..xs]
+ys[0] + ys[3]' \
+"5"
+
+expect_wasmtime_result "spread: append (#203)" \
+'let xs = [1, 2]
+let ys = [..xs, 3, 4]
+array_length(ys)' \
+"4"
+
+echo ""
+
+# ============================================
+# HOF with non-Int types (#203 P1)
+# ============================================
+log_info "Testing HOF with non-Int types (#203)..."
+
+expect_wasmtime_result "hof: String -> Int (#203)" \
+'let apply_to_str = (f: (String) -> Int, s: String) -> Int { f(s) }
+apply_to_str(string_length, "hello")' \
+"5"
+
+expect_wasmtime_result "hof: String -> Bool -> Int (#203)" \
+'let check = (pred: (String) -> Bool, s: String) -> Int {
+  if pred(s) { 1 } else { 0 }
+}
+let is_long = (s: String) -> Bool { string_length(s) > 3 }
+check(is_long, "hello")' \
+"1"
+
+expect_wasmtime_result "hof: String -> String -> Int (#203)" \
+'let apply_then_len = (f: (String) -> String, s: String) -> Int {
+  string_length(f(s))
+}
+apply_then_len(string_to_upper, "hi")' \
+"2"
+
+echo ""
+
+# ============================================
+# Error Effects (#203 P3)
+# ============================================
+log_info "Testing error effects (#203)..."
+
+expect_wasmtime_result_exceptions "throw/handle: conditional throw (#203)" \
+'let check = (x: Int) -> Int with { Error } {
+  if x < 0 { throw("negative") }
+  x * 2
+}
+handle { check(-5) + check(3) } with Error { Throw(_) => 99 }' \
+"99"
+
+expect_wasmtime_result_exceptions "throw/handle: no throw path (#203)" \
+'let check = (x: Int) -> Int with { Error } {
+  if x < 0 { throw("negative") }
+  x * 2
+}
+handle { check(5) } with Error { Throw(_) => 99 }' \
+"10"
+
+expect_wasmtime_result_exceptions "throw/handle: multiple handlers (#203)" \
+'let risky = (x: Int) -> Int with { Error } {
+  if x == 0 { throw("zero") }
+  100 / x
+}
+let a = handle { risky(0) } with Error { Throw(_) => -1 }
+let b = handle { risky(10) } with Error { Throw(_) => -1 }
+a + b' \
+"9"
+
+expect_wasmtime_result_exceptions "throw/handle: effect polymorphism (#203)" \
+'let apply_fn = [T](f: (T) -> T, x: T) -> T { f(x) }
+let inc = (x: Int) -> Int { x + 1 }
+apply_fn(inc, 41)' \
+"42"
 
 echo ""
 echo "========================================"

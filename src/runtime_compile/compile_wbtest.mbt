@@ -4029,6 +4029,148 @@ test "function type in tuple type annotation parses" {
 }
 
 ///|
+// #203 P1: derive(Eq) + match compiles to wasm
+test "derive(Eq) enum compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|enum Color { Red; Green; Blue } derive(Eq)
+      #|let c: Color = Color::Red
+      #|if c == Color::Red { 1 } else { 0 }
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("derive(Eq) compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+// #203 P1: nested enum pattern matching compiles to wasm
+test "nested enum pattern matching compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|match Some(Some(42)) { Some(Some(x)) => x, _ => 0 }
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("nested enum match compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+// #203 P1: loop + break(value) with multi-param compiles to wasm
+test "loop with break value multi-param compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let result = loop (i = 0, sum = 0) {
+      #|  if i >= 10 { break(sum) }
+      #|  continue(i + 1, sum + i)
+      #|}
+      #|result
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("loop break(value) compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+// #203 P2: generic function compiles to wasm
+test "generic function compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let identity = [T](x: T) -> T { x }
+      #|identity(42)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("generic function compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+// #203 P2: is-expression compiles to wasm
+test "is-expression compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let x: Option[Int] = Some(42)
+      #|if x is Some(v) { v } else { 0 }
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("is-expression compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+// #203 P2: array spread with concat compiles to wasm
+test "array spread with concat compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let xs = [2, 3]
+      #|let ys = [1, ..xs, 4]
+      #|Array::length(ys)
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("array spread compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+// #203 P2: multi-step pipe chain compiles to wasm
+test "multi-step pipe chain compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let inc = (x: Int) -> Int { x + 1 }
+      #|let dbl = (x: Int) -> Int { x * 2 }
+      #|3 |> inc |> dbl
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("pipe chain compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+// #203 P1: HOF with non-Int return type compiles to wasm
+test "HOF with non-Int return type compiles to wasm" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let apply = (f: (Int) -> Bool, x: Int) -> Bool { f(x) }
+      #|let is_pos = (n: Int) -> Bool { n > 0 }
+      #|if apply(is_pos, 5) { 1 } else { 0 }
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("HOF non-Int compile failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
 test "HOF with non-Int types compiles to wasm" {
   let db = @runtime.VibeDb::new()
   db.set_source(
@@ -4040,7 +4182,7 @@ test "HOF with non-Int types compiles to wasm" {
     ),
   )
   let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
-    e => fail("HOF non-Int compile failed: " + e.user_message())
+    e => fail("HOF non-Int types compile failed: " + e.user_message())
   }
   assert_true(wasm_bytes.length() > 8)
 }
