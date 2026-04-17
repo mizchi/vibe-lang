@@ -44,6 +44,7 @@
             # Build tools
             pkgs.just
             pkgs.ripgrep
+            pkgs.ast-grep
           ];
 
           shellHook = ''
