@@ -762,8 +762,17 @@ fn sort_record_type_keys(fields : Map[String, @core.Type]) -> Array[String] {
   let out : Array[String] = []
   for name, _ in fields {
     out.push(name)
+  }
+  sort_by_key(out, fn(s) { s })
+}
+
+///|
+fn[T] sort_by_key(items : Array[T], key : (T) -> String) -> Array[T] {
+  let out : Array[T] = []
+  for item in items {
+    out.push(item)
     let mut i = out.length() - 1
-    while i > 0 && out[i] < out[i - 1] {
+    while i > 0 && key(out[i]) < key(out[i - 1]) {
       let tmp = out[i - 1]
       out[i - 1] = out[i]
       out[i] = tmp
@@ -777,52 +786,19 @@ fn sort_record_type_keys(fields : Map[String, @core.Type]) -> Array[String] {
 fn sort_map_fields_expr(
   fields : Array[@core.MapFieldExpr],
 ) -> Array[@core.MapFieldExpr] {
-  let out : Array[@core.MapFieldExpr] = []
-  for field in fields {
-    out.push(field)
-    let mut i = out.length() - 1
-    while i > 0 && out[i].key < out[i - 1].key {
-      let tmp = out[i - 1]
-      out[i - 1] = out[i]
-      out[i] = tmp
-      i -= 1
-    }
-  }
-  out
+  sort_by_key(fields, fn(f) { f.key })
 }
 
 ///|
 fn sort_record_fields_expr(
   fields : Array[@core.RecordFieldExpr],
 ) -> Array[@core.RecordFieldExpr] {
-  let out : Array[@core.RecordFieldExpr] = []
-  for field in fields {
-    out.push(field)
-    let mut i = out.length() - 1
-    while i > 0 && out[i].name < out[i - 1].name {
-      let tmp = out[i - 1]
-      out[i - 1] = out[i]
-      out[i] = tmp
-      i -= 1
-    }
-  }
-  out
+  sort_by_key(fields, fn(f) { f.name })
 }
 
 ///|
 fn sort_type_ctors(ctors : Array[@core.TypeCtor]) -> Array[@core.TypeCtor] {
-  let out : Array[@core.TypeCtor] = []
-  for ctor in ctors {
-    out.push(ctor)
-    let mut i = out.length() - 1
-    while i > 0 && out[i].name < out[i - 1].name {
-      let tmp = out[i - 1]
-      out[i - 1] = out[i]
-      out[i] = tmp
-      i -= 1
-    }
-  }
-  out
+  sort_by_key(ctors, fn(c) { c.name })
 }
 
 ///|

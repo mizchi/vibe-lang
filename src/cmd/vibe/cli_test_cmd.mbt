@@ -1061,24 +1061,32 @@ fn compare_test_entry_batch_path(a : String, b : String) -> Int {
 }
 
 ///|
-fn sort_test_entry_paths_for_batching(paths : Array[String]) -> Unit {
-  let n = paths.length()
+fn[T] test_entry_selection_sort(
+  items : Array[T],
+  compare : (T, T) -> Int,
+) -> Unit {
+  let n = items.length()
   if n < 2 {
     return
   }
   for i in 0..<(n - 1) {
     let mut min_index = i
     for j in (i + 1)..<n {
-      if compare_test_entry_batch_path(paths[j], paths[min_index]) < 0 {
+      if compare(items[j], items[min_index]) < 0 {
         min_index = j
       }
     }
     if min_index != i {
-      let tmp = paths[i]
-      paths[i] = paths[min_index]
-      paths[min_index] = tmp
+      let tmp = items[i]
+      items[i] = items[min_index]
+      items[min_index] = tmp
     }
   }
+}
+
+///|
+fn sort_test_entry_paths_for_batching(paths : Array[String]) -> Unit {
+  test_entry_selection_sort(paths, compare_test_entry_batch_path)
 }
 
 ///|
@@ -1110,23 +1118,7 @@ fn compare_test_entry_batch_unit(
 
 ///|
 fn sort_test_entry_batch_units(units : Array[TestEntryBatchUnit]) -> Unit {
-  let n = units.length()
-  if n < 2 {
-    return
-  }
-  for i in 0..<(n - 1) {
-    let mut min_index = i
-    for j in (i + 1)..<n {
-      if compare_test_entry_batch_unit(units[j], units[min_index]) < 0 {
-        min_index = j
-      }
-    }
-    if min_index != i {
-      let tmp = units[i]
-      units[i] = units[min_index]
-      units[min_index] = tmp
-    }
-  }
+  test_entry_selection_sort(units, compare_test_entry_batch_unit)
 }
 
 ///|
