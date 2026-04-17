@@ -31,7 +31,7 @@ Status: draft memo for implementation planning.
 
 ## Current preview mapping
 
-- `Runtime::eval_script_with_mode(..., PosixMode)` では command head を
+- internal PosixMode preprocessing/desugar path では command head を
   `sh_lines("<cmd>")` へデシュガーする。
 - `where(xs, pred)` は `Array[String]` 用の first step として提供する。
 - `sh_lines` は現状 `ls/cat/echo` サブセット実装。

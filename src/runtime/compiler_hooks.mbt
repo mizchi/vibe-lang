@@ -293,11 +293,6 @@ pub fn set_prelude_ast_hook(f : () -> @core.Module) -> Unit {
 }
 
 ///|
-pub fn hook_prelude_ast() -> @core.Module {
-  (prelude_ast_hook.val)()
-}
-
-///|
 /// Hook: collect warnings from an AST.
 /// Default: returns empty array.
 /// Replaced by @checker.collect_warnings when runtime_compile is loaded.

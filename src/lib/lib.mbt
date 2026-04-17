@@ -1228,25 +1228,3 @@ pub fn vibe_ide_search(
     source_ptr, source_len, out_ptr, out_cap, ide_search_report_json,
   )
 }
-
-///|
-pub fn vibe_eval(
-  source_ptr : Int,
-  source_len : Int,
-  out_ptr : Int,
-  out_cap : Int,
-) -> Int {
-  run_utf8_transform(source_ptr, source_len, out_ptr, out_cap, eval_report_json)
-}
-
-///|
-pub fn vibe_eval_reset(
-  source_ptr : Int,
-  source_len : Int,
-  out_ptr : Int,
-  out_cap : Int,
-) -> Int {
-  run_utf8_transform(
-    source_ptr, source_len, out_ptr, out_cap, eval_reset_report_json,
-  )
-}

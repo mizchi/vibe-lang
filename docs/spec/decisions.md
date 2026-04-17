@@ -76,10 +76,10 @@ Status: accepted and moved from `TODO.md`.
   (default `vibe`) with no automatic fallback.
   Posix parser mode remains internal/runtime-only and is not exposed on the
   public CLI surface.
-- PosixMode runtime preview semantics are fixed:
-  `Runtime::eval_script_with_mode(..., PosixMode)` desugars unresolved
-  command-like bare identifiers to `sh_lines("<name>")`, while preserving bound
-  identifiers (`let`/params/pattern/import names).
+- Internal PosixMode preprocessing/desugar semantics are fixed:
+  unresolved command-like bare identifiers are rewritten to
+  `sh_lines("<name>")`, while preserving bound identifiers
+  (`let`/params/pattern/import names).
 - Docs index references are fixed:
   `README.md` now points to existing language/design documents with status.
 - Effects semantics are fixed in spec:
@@ -102,8 +102,8 @@ Status: accepted and moved from `TODO.md`.
   placeholder lambda shorthand, `while`/`yield`, and member/index/pipe call
   forms.
 - Generated builtin contract table is published:
-  `docs/builtin_contract_table.generated.md` is generated from checker/eval/wasm
-  sources by `scripts/gen_builtin_contract_table.mjs` (also exposed as
+  `docs/builtin_contract_table.generated.md` is generated from
+  checker/wasm builtin sources by `scripts/gen_builtin_contract_table.mjs` (also exposed as
   `just gen-builtin-contract-table`).
 - Import cycle reporting is implemented for path imports:
   import graph cycles are diagnosed in `stage: "import"` with `import cycle:`
@@ -115,10 +115,10 @@ Status: accepted and moved from `TODO.md`.
   compile-fatal.
   `index.vibe` root registry now requires
   `export let version = "<semver>"` (simple `x.y.z` form).
-- Eval include alias workflow is fixed for local registry usage:
-  `vibe eval --include vibe/prelude@<version>.vdb` resolves aliases from
-  `VIBE_LIB_DIR` (fallback `$HOME/.vibe/lib`), and `.vdb` can point to
-  object content via `hash:<sha1>` / `{ "hash": "<sha1>" }`.
+- Scratch workflow alias resolution is fixed for local registry usage:
+  persisted sources containing `import vibe/prelude@<version>.vdb` resolve
+  aliases from `VIBE_LIB_DIR` (fallback `$HOME/.vibe/lib`), and `.vdb` can
+  point to object content via `hash:<sha1>` / `{ "hash": "<sha1>" }`.
 - Advanced graph distributed refs workflow is introduced:
   snapshot/delta payloads can be stored as git/bit objects and addressed by
   refs under `refs/bit/index/<scope>/graph/(head|wal_head)`.
@@ -167,8 +167,8 @@ Status: accepted and moved from `TODO.md`.
   `vibe ide` (`outline`/`peek-def`/`search`) and `vibe lsif` consume the same
   module-level symbol index (`src/frontend/symbol_index.mbt`).
 - Scratch-first workflow design:
-  default namespace-backed eval/repl flow, symbol listing with index inclusion
-  status, and history reset policy.
+  default namespace-backed scratch/shell flow, symbol listing with index
+  inclusion status, and history reset policy.
 - Advanced graph extension PoC is implemented on vibe side:
   `vibe index` (`build`/`query`/`verify`) provides a sidecar JSON index
   (`src/x/module_graph/advanced_graph_poc.mbt`) that models manifest + def graph +

@@ -12,7 +12,7 @@ let main: () -> Unit with { Stdout } = () -> {
 
 ```bash
 vibe run hello.vibe        # compile & execute
-vibe shell                 # REPL
+vibe shell                 # interactive shell
 vibe test file.vibe        # run tests
 vibe check file.vibe       # type check only
 vibe build --release app.vibe  # standalone .wasm

@@ -7,11 +7,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-TEMP_DIR="/tmp/interpreter_wasm_match"
+TEMP_DIR="/tmp/run_wasm_match"
 WASMTIME_BIN="${WASMTIME_BIN:-$("$PROJECT_DIR/scripts/wasmtime_bin.sh")}"
 WASMTIME_RUN="$PROJECT_DIR/scripts/wasmtime_run.sh"
 
-# Clean stale temp dir to avoid accumulated eval db state
+# Clean stale temp dir to avoid carrying over generated test artifacts
 rm -rf "$TEMP_DIR"
 mkdir -p "$TEMP_DIR"
 

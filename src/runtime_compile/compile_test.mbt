@@ -1,14 +1,11 @@
 ///|
-test "vibe compile simple" {
+test "vibe compile simple to wasm" {
   let db = @runtime.VibeDb::new()
   db.set_source("main", "export let x = 1\nexport let y = 2")
-  let compiled = compile_module(db, "main")
-  let rt = @runtime.Runtime::new(@capability.CapabilitySet::new())
-  let _ = run_compiled(rt, compiled)
-  match rt.get("x") {
-    Some(@core.Value::Int(v)) => assert_eq(v, 1)
-    _ => fail("missing x binding")
+  let wasm = compile_module_wasm(db, "main") catch {
+    e => fail("compile_module_wasm failed: " + e.user_message())
   }
+  assert_true(wasm.length() > 8)
 }
 
 ///|

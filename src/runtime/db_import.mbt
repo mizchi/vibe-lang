@@ -363,7 +363,7 @@ pub fn import_stmt_matches_spec(
         Some(source_symbol) => source_symbol == name
         None => false
       }
-    @core.ModuleRef::Alias(_) => false
+    @core.ModuleRef::Alias(name~) => imp.alias_name == "@" + name
     @core.ModuleRef::PinnedPath(path~, hash~) =>
       match imp.source_hash {
         Some(source_hash) => source_hash == hash

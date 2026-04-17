@@ -960,6 +960,24 @@ test "vibe wasm-gc compiles for-in expressions" {
 }
 
 ///|
+test "vibe wasm-gc compiles string for-in expressions" {
+  let db = VibeDb::new()
+  let src =
+    #|let xs = for i, c in "abc" {
+    #|  i + c
+    #|}
+    #|Array::length(xs)
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm_gc(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "_start"))
+}
+
+///|
 test "vibe wasm-gc compiles exported top-level function" {
   let db = VibeDb::new()
   let src =
@@ -1018,6 +1036,24 @@ test "vibe wasm compiles for-in expressions" {
     #|for x in xs {
     #|  x + 1
     #|}
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "_start"))
+}
+
+///|
+test "vibe wasm compiles string for-in expressions" {
+  let db = VibeDb::new()
+  let src =
+    #|let xs = for i, c in "abc" {
+    #|  i + c
+    #|}
+    #|Array::length(xs)
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())

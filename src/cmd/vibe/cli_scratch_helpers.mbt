@@ -1,20 +1,21 @@
 ///|
-fn load_eval_db_source(path : String) -> Result[String, String] {
+fn load_scratch_db_source(path : String) -> Result[String, String] {
   if not(@os_fs.path_exists(path)) {
     return Ok("")
   }
   let is_file = @os_fs.is_file(path) catch { _ => false }
   if not(is_file) {
-    return Err("db path is not a file: " + path)
+    return Err("scratch-db path is not a file: " + path)
   }
   let source = @os_fs.read_file_to_string(path) catch {
-    e => return Err("failed to read db `" + path + "`: " + e.to_string())
+    e =>
+      return Err("failed to read scratch-db `" + path + "`: " + e.to_string())
   }
   Ok(source)
 }
 
 ///|
-struct EvalScopeSymbol {
+struct ScratchScopeSymbol {
   name : String
   kind : String
   signature : String
@@ -23,7 +24,7 @@ struct EvalScopeSymbol {
 } derive(Debug, Eq)
 
 ///|
-fn eval_scope_symbol_id_from_entry(entry : @frontend.SymbolEntry) -> String {
+fn scratch_scope_symbol_id_from_entry(entry : @frontend.SymbolEntry) -> String {
   let key = entry.path +
     "|" +
     entry.span.start.to_string() +
@@ -39,17 +40,17 @@ fn eval_scope_symbol_id_from_entry(entry : @frontend.SymbolEntry) -> String {
 }
 
 ///|
-fn collect_eval_scope_symbols(
+fn collect_scratch_scope_symbols(
   path : String,
   source : String,
-) -> Array[EvalScopeSymbol] {
+) -> Array[ScratchScopeSymbol] {
   if source.trim().to_string().length() == 0 {
     return []
   }
   let db = @runtime.VibeDb::new()
   db.set_source(path, source)
   let index = @runtime_compile.build_symbol_index(db, [path])
-  let out : Array[EvalScopeSymbol] = []
+  let out : Array[ScratchScopeSymbol] = []
   for entry in index.entries {
     if entry.path != path {
       continue
@@ -59,7 +60,7 @@ fn collect_eval_scope_symbols(
       kind: @frontend.symbol_kind_name(entry.kind),
       signature: entry.signature,
       path: entry.path,
-      def_id: eval_scope_symbol_id_from_entry(entry),
+      def_id: scratch_scope_symbol_id_from_entry(entry),
     })
   }
   out
@@ -230,12 +231,12 @@ fn resolve_scratch_db_path_for_index_root(
 }
 
 ///|
-fn eval_source_is_import_stmt(source : String) -> Bool {
+fn scratch_source_is_import_stmt(source : String) -> Bool {
   source.trim().to_string().has_prefix("import ")
 }
 
 ///|
-fn eval_source_is_import_prefix_line(line : String) -> Bool {
+fn scratch_source_is_import_prefix_line(line : String) -> Bool {
   let trimmed = line.trim().to_string()
   trimmed.length() == 0 ||
   trimmed.has_prefix("//") ||
@@ -245,19 +246,97 @@ fn eval_source_is_import_prefix_line(line : String) -> Bool {
 }
 
 ///|
-fn append_eval_db_source_hoist_import(
+fn scratch_source_contains_import_stmt(
+  base_source : String,
+  import_stmt : String,
+) -> Bool {
+  let target = try @parser.parse_ast(import_stmt) catch {
+    _ => None
+  } noraise {
+    ast =>
+      match ast.stmts {
+        [@vibe_core.Stmt::Import(spec~, source~, ..)] => Some((spec, source))
+        _ => None
+      }
+  }
+  match target {
+    Some((target_spec, target_source)) => {
+      let base_ast = try @parser.parse_ast(base_source) catch {
+        _ => None
+      } noraise {
+        ast => Some(ast)
+      }
+      match base_ast {
+        Some(ast) =>
+          for stmt in ast.stmts {
+            match stmt {
+              @vibe_core.Stmt::Import(spec~, source~, ..) =>
+                if spec == target_spec && source == target_source {
+                  return true
+                }
+              _ => ()
+            }
+          }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  let target = import_stmt.trim().to_string()
+  for line_view in base_source.split("\n") {
+    if line_view.to_string().trim().to_string() == target {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn scratch_source_import_block_delta(line : String) -> Int {
+  let mut delta = 0
+  for ch in line {
+    if ch == '{' {
+      delta += 1
+    } else if ch == '}' {
+      delta -= 1
+    }
+  }
+  delta
+}
+
+///|
+fn append_scratch_db_source_hoist_import(
   base_source : String,
   import_stmt : String,
 ) -> String {
+  if scratch_source_contains_import_stmt(base_source, import_stmt) {
+    return base_source
+  }
   let head = StringBuilder::new()
   let tail = StringBuilder::new()
   let mut in_prefix = true
   let mut inserted = false
+  let mut import_block_depth = 0
   for line_view in base_source.split("\n") {
     let line = line_view.to_string()
-    if in_prefix && eval_source_is_import_prefix_line(line) {
+    if import_block_depth > 0 {
       head.write_string(line)
       head.write_char('\n')
+      import_block_depth += scratch_source_import_block_delta(line)
+      if import_block_depth < 0 {
+        import_block_depth = 0
+      }
+      continue
+    }
+    if in_prefix && scratch_source_is_import_prefix_line(line) {
+      head.write_string(line)
+      head.write_char('\n')
+      if line.trim().to_string().has_prefix("import ") {
+        import_block_depth = scratch_source_import_block_delta(line)
+        if import_block_depth < 0 {
+          import_block_depth = 0
+        }
+      }
       continue
     }
     if in_prefix {
@@ -278,16 +357,16 @@ fn append_eval_db_source_hoist_import(
 }
 
 ///|
-fn append_eval_db_source(base_source : String, expr : String) -> String {
+fn append_scratch_db_source(base_source : String, expr : String) -> String {
   let trimmed = expr.trim().to_string()
   if trimmed.length() == 0 {
     return base_source
   }
-  let next_source = if eval_source_is_import_stmt(trimmed) {
+  let next_source = if scratch_source_is_import_stmt(trimmed) {
     if base_source.length() == 0 {
       trimmed + "\n"
     } else {
-      append_eval_db_source_hoist_import(base_source, trimmed)
+      append_scratch_db_source_hoist_import(base_source, trimmed)
     }
   } else {
     let out = StringBuilder::new()
@@ -316,8 +395,11 @@ fn append_eval_db_source(base_source : String, expr : String) -> String {
 }
 
 ///|
-fn write_eval_db_source(path : String, source : String) -> Result[Unit, String] {
-  match ensure_parent_dir_for_file(path, "eval") {
+fn write_scratch_db_source(
+  path : String,
+  source : String,
+) -> Result[Unit, String] {
+  match ensure_parent_dir_for_file(path, "scratch-db") {
     Ok(_) => ()
     Err(err) => return Err(err)
   }
@@ -328,8 +410,8 @@ fn write_eval_db_source(path : String, source : String) -> Result[Unit, String] 
 }
 
 ///|
-fn write_eval_export(path : String, source : String) -> Result[Unit, String] {
-  match ensure_parent_dir_for_file(path, "eval") {
+fn write_output_source(path : String, source : String) -> Result[Unit, String] {
+  match ensure_parent_dir_for_file(path, "output") {
     Ok(_) => ()
     Err(err) => return Err(err)
   }

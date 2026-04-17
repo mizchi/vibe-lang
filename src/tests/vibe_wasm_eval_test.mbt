@@ -1693,7 +1693,7 @@ fn decode_tagged_value(
 
 ///|
 /// Assert that a script compiles and runs successfully via WASM backend.
-fn assert_eval_backends_same(script : String) -> Unit raise {
+fn assert_wasm_eval_decodes(script : String) -> Unit raise {
   let wasm_res = try eval_run(script) catch {
     e => fail("wasm eval failed: " + e.to_string())
   } noraise {
@@ -1708,7 +1708,7 @@ fn assert_eval_backends_same(script : String) -> Unit raise {
 }
 
 ///|
-fn assert_eval_backends_same_with_shell_effects(script : String) -> Unit raise {
+fn assert_wasm_eval_captures_shell_effects(script : String) -> Unit raise {
   let wasm_res = try eval_run(script) catch {
     e => fail("wasm eval failed: " + e.to_string())
   } noraise {
@@ -2091,139 +2091,139 @@ test "vibe wasm eval normalizes path" {
 }
 
 ///|
-test "vibe wasm eval matches interpreter for scalar outputs" {
-  assert_eval_backends_same("let x = 1\nadd(x, 2)")
-  assert_eval_backends_same("if lt(1, 2) { \"ok\" } else { \"ng\" }")
-  assert_eval_backends_same("not(and(true, false))")
-  assert_eval_backends_same("let p = path(\"a/../b\")\np")
+test "vibe wasm eval decodes scalar outputs" {
+  assert_wasm_eval_decodes("let x = 1\nadd(x, 2)")
+  assert_wasm_eval_decodes("if lt(1, 2) { \"ok\" } else { \"ng\" }")
+  assert_wasm_eval_decodes("not(and(true, false))")
+  assert_wasm_eval_decodes("let p = path(\"a/../b\")\np")
 }
 
 ///|
-test "vibe wasm eval matches interpreter for collection outputs" {
-  assert_eval_backends_same("[1, add(1, 2), 5]")
-  assert_eval_backends_same("map { a: 1, b: add(1, 2) }")
+test "vibe wasm eval decodes collection outputs" {
+  assert_wasm_eval_decodes("[1, add(1, 2), 5]")
+  assert_wasm_eval_decodes("map { a: 1, b: add(1, 2) }")
 }
 
 ///|
-test "vibe wasm eval matches interpreter for map string key lookup" {
-  assert_eval_backends_same("let m = map { a: 1, b: 2 }\nMap::get(m, \"a\")")
+test "vibe wasm eval supports map string key lookup" {
+  assert_wasm_eval_decodes("let m = map { a: 1, b: 2 }\nMap::get(m, \"a\")")
 }
 
 ///|
-test "vibe wasm eval matches interpreter for shell effects" {
+test "vibe wasm eval captures shell effects" {
   let script =
     #|export let _start = () -> Int with { Process } {
     #|  { sh("echo hello") }
     #|  { sh("echo world") }
     #|  42
     #|}
-  assert_eval_backends_same_with_shell_effects(script)
+  assert_wasm_eval_captures_shell_effects(script)
 }
 
 ///|
-test "vibe backends match: arithmetic operators" {
-  assert_eval_backends_same("1 + 2")
-  assert_eval_backends_same("10 - 3")
-  assert_eval_backends_same("3 * 4")
-  assert_eval_backends_same("10 / 3")
-  assert_eval_backends_same("10 % 3")
-  assert_eval_backends_same("-5")
-  assert_eval_backends_same("-(3 + 2)")
-  assert_eval_backends_same("1 + 2 * 3")
-  assert_eval_backends_same("(1 + 2) * 3")
+test "vibe wasm eval supports arithmetic operators" {
+  assert_wasm_eval_decodes("1 + 2")
+  assert_wasm_eval_decodes("10 - 3")
+  assert_wasm_eval_decodes("3 * 4")
+  assert_wasm_eval_decodes("10 / 3")
+  assert_wasm_eval_decodes("10 % 3")
+  assert_wasm_eval_decodes("-5")
+  assert_wasm_eval_decodes("-(3 + 2)")
+  assert_wasm_eval_decodes("1 + 2 * 3")
+  assert_wasm_eval_decodes("(1 + 2) * 3")
 }
 
 ///|
-test "vibe backends match: comparison operators" {
-  assert_eval_backends_same("1 == 1")
-  assert_eval_backends_same("1 != 2")
-  assert_eval_backends_same("1 < 2")
-  assert_eval_backends_same("2 > 1")
-  assert_eval_backends_same("1 <= 1")
-  assert_eval_backends_same("2 >= 1")
-  assert_eval_backends_same("1 > 2")
-  assert_eval_backends_same("1 >= 2")
-  assert_eval_backends_same("3 <= 2")
-  assert_eval_backends_same("0 == 0")
+test "vibe wasm eval supports comparison operators" {
+  assert_wasm_eval_decodes("1 == 1")
+  assert_wasm_eval_decodes("1 != 2")
+  assert_wasm_eval_decodes("1 < 2")
+  assert_wasm_eval_decodes("2 > 1")
+  assert_wasm_eval_decodes("1 <= 1")
+  assert_wasm_eval_decodes("2 >= 1")
+  assert_wasm_eval_decodes("1 > 2")
+  assert_wasm_eval_decodes("1 >= 2")
+  assert_wasm_eval_decodes("3 <= 2")
+  assert_wasm_eval_decodes("0 == 0")
 }
 
 ///|
-test "vibe backends match: bitwise operators" {
-  assert_eval_backends_same("5 & 3")
-  assert_eval_backends_same("5 | 3")
-  assert_eval_backends_same("5 ^ 3")
-  assert_eval_backends_same("1 << 3")
-  assert_eval_backends_same("8 >> 2")
-  assert_eval_backends_same("0 & 0")
-  assert_eval_backends_same("255 & 15")
+test "vibe wasm eval supports bitwise operators" {
+  assert_wasm_eval_decodes("5 & 3")
+  assert_wasm_eval_decodes("5 | 3")
+  assert_wasm_eval_decodes("5 ^ 3")
+  assert_wasm_eval_decodes("1 << 3")
+  assert_wasm_eval_decodes("8 >> 2")
+  assert_wasm_eval_decodes("0 & 0")
+  assert_wasm_eval_decodes("255 & 15")
 }
 
 ///|
-test "vibe backends match: boolean expressions" {
-  assert_eval_backends_same("true")
-  assert_eval_backends_same("false")
-  assert_eval_backends_same("not(false)")
-  assert_eval_backends_same("and(true, true)")
-  assert_eval_backends_same("or(false, true)")
-  assert_eval_backends_same("and(true, false)")
-  assert_eval_backends_same("not(or(false, false))")
-  assert_eval_backends_same("and(not(false), true)")
+test "vibe wasm eval supports boolean expressions" {
+  assert_wasm_eval_decodes("true")
+  assert_wasm_eval_decodes("false")
+  assert_wasm_eval_decodes("not(false)")
+  assert_wasm_eval_decodes("and(true, true)")
+  assert_wasm_eval_decodes("or(false, true)")
+  assert_wasm_eval_decodes("and(true, false)")
+  assert_wasm_eval_decodes("not(or(false, false))")
+  assert_wasm_eval_decodes("and(not(false), true)")
 }
 
 ///|
-test "vibe backends match: block expressions" {
-  assert_eval_backends_same("{ let x = 10\n x }")
-  assert_eval_backends_same("{ let a = 1\n let b = 2\n a + b }")
-  assert_eval_backends_same("{ let x = { let y = 3\n y * 2 }\n x + 1 }")
+test "vibe wasm eval supports: block expressions" {
+  assert_wasm_eval_decodes("{ let x = 10\n x }")
+  assert_wasm_eval_decodes("{ let a = 1\n let b = 2\n a + b }")
+  assert_wasm_eval_decodes("{ let x = { let y = 3\n y * 2 }\n x + 1 }")
 }
 
 ///|
-test "vibe backends match: nested conditionals" {
-  assert_eval_backends_same("if true { if false { 1 } else { 2 } } else { 3 }")
-  assert_eval_backends_same("if false { 1 } else { if true { 2 } else { 3 } }")
-  assert_eval_backends_same(
+test "vibe wasm eval supports: nested conditionals" {
+  assert_wasm_eval_decodes("if true { if false { 1 } else { 2 } } else { 3 }")
+  assert_wasm_eval_decodes("if false { 1 } else { if true { 2 } else { 3 } }")
+  assert_wasm_eval_decodes(
     "if 1 < 2 { if 3 > 4 { 10 } else { 20 } } else { 30 }",
   )
 }
 
 ///|
-test "vibe backends match: match expressions" {
-  assert_eval_backends_same("match 2 { 1 => 10, 2 => 20, _ => 0 }")
-  assert_eval_backends_same("match 5 { v => v + 1 }")
-  assert_eval_backends_same("match 3 { v if v < 5 => 1, _ => 0 }")
-  assert_eval_backends_same("match 10 { v if v < 5 => 1, _ => 0 }")
-  assert_eval_backends_same("match (1, 2) { (a, b) => a + b, _ => 0 }")
-  assert_eval_backends_same(
+test "vibe wasm eval supports: match expressions" {
+  assert_wasm_eval_decodes("match 2 { 1 => 10, 2 => 20, _ => 0 }")
+  assert_wasm_eval_decodes("match 5 { v => v + 1 }")
+  assert_wasm_eval_decodes("match 3 { v if v < 5 => 1, _ => 0 }")
+  assert_wasm_eval_decodes("match 10 { v if v < 5 => 1, _ => 0 }")
+  assert_wasm_eval_decodes("match (1, 2) { (a, b) => a + b, _ => 0 }")
+  assert_wasm_eval_decodes(
     "match (1, (2, 3)) { (a, (b, c)) => a + b + c, _ => 0 }",
   )
-  assert_eval_backends_same(
+  assert_wasm_eval_decodes(
     "match record { a: 1, b: 2 } { record { a: x, b: y } => x + y, _ => 0 }",
   )
 }
 
 ///|
-test "vibe backends match: let binding chains" {
-  assert_eval_backends_same("let a = 1\nlet b = a + 2\nlet c = b * 3\nc")
-  assert_eval_backends_same("let x = 10\nlet y = x - 3\ny")
-  assert_eval_backends_same("let a = 5\nlet b = a\nlet c = b\nc")
+test "vibe wasm eval supports: let binding chains" {
+  assert_wasm_eval_decodes("let a = 1\nlet b = a + 2\nlet c = b * 3\nc")
+  assert_wasm_eval_decodes("let x = 10\nlet y = x - 3\ny")
+  assert_wasm_eval_decodes("let a = 5\nlet b = a\nlet c = b\nc")
 }
 
 ///|
-test "vibe backends match: edge cases" {
-  assert_eval_backends_same("0")
-  assert_eval_backends_same("add(0, 0)")
-  assert_eval_backends_same("1000 * 1000")
-  assert_eval_backends_same("sub(0, 1)")
-  assert_eval_backends_same("\"\"")
-  assert_eval_backends_same("\"hello world\"")
+test "vibe wasm eval supports: edge cases" {
+  assert_wasm_eval_decodes("0")
+  assert_wasm_eval_decodes("add(0, 0)")
+  assert_wasm_eval_decodes("1000 * 1000")
+  assert_wasm_eval_decodes("sub(0, 1)")
+  assert_wasm_eval_decodes("\"\"")
+  assert_wasm_eval_decodes("\"hello world\"")
 }
 
 ///|
-test "vibe backends match: nested collections" {
-  assert_eval_backends_same("[1, 2, 3]")
-  assert_eval_backends_same("[[1, 2], [3, 4]]")
-  assert_eval_backends_same("map { a: 1, b: 2, c: 3 }")
-  assert_eval_backends_same("[map { x: 1 }, map { x: 2 }]")
+test "vibe wasm eval supports: nested collections" {
+  assert_wasm_eval_decodes("[1, 2, 3]")
+  assert_wasm_eval_decodes("[[1, 2], [3, 4]]")
+  assert_wasm_eval_decodes("map { a: 1, b: 2, c: 3 }")
+  assert_wasm_eval_decodes("[map { x: 1 }, map { x: 2 }]")
 }
 
 ///|
@@ -2275,15 +2275,15 @@ test "vibe wasm eval: mutating a slice materializes bytes" {
 }
 
 ///|
-test "vibe backends match: mixed expressions" {
-  assert_eval_backends_same("if eq(1, 1) { add(2, 3) } else { 0 }")
-  assert_eval_backends_same("let x = mul(3, 3)\nadd(x, 1)")
-  assert_eval_backends_same("match true { true => 1, false => 0 }")
+test "vibe wasm eval supports: mixed expressions" {
+  assert_wasm_eval_decodes("if eq(1, 1) { add(2, 3) } else { 0 }")
+  assert_wasm_eval_decodes("let x = mul(3, 3)\nadd(x, 1)")
+  assert_wasm_eval_decodes("match true { true => 1, false => 0 }")
 }
 
 ///|
-test "vibe backends match: P3 handler pattern" {
-  // handler returns status codes — interpreter and wasm should agree
+test "vibe wasm eval supports: P3 handler pattern" {
+  // handler returns status codes with decodable WASM results
   let handler_code =
     #|let handler = (method: String, url: String) -> Int {
     #|  if String::equals(method, "GET") {
@@ -2295,11 +2295,11 @@ test "vibe backends match: P3 handler pattern" {
     #|    405
     #|  }
     #|}
-  assert_eval_backends_same(handler_code + "\nhandler(\"GET\", \"/\")")
-  assert_eval_backends_same(handler_code + "\nhandler(\"GET\", \"/health\")")
-  assert_eval_backends_same(handler_code + "\nhandler(\"GET\", \"/notfound\")")
-  assert_eval_backends_same(handler_code + "\nhandler(\"POST\", \"/\")")
-  assert_eval_backends_same(
+  assert_wasm_eval_decodes(handler_code + "\nhandler(\"GET\", \"/\")")
+  assert_wasm_eval_decodes(handler_code + "\nhandler(\"GET\", \"/health\")")
+  assert_wasm_eval_decodes(handler_code + "\nhandler(\"GET\", \"/notfound\")")
+  assert_wasm_eval_decodes(handler_code + "\nhandler(\"POST\", \"/\")")
+  assert_wasm_eval_decodes(
     handler_code + "\nhandler(\"GET\", \"/proxy?target=http://example.com\")",
   )
 }
@@ -2315,7 +2315,7 @@ test "vibe wasm eval for-c loop basic" {
     #|  sum
     #|}
     #|_start()
-  assert_eval_backends_same(script)
+  assert_wasm_eval_decodes(script)
 }
 
 ///|
@@ -2330,7 +2330,28 @@ test "vibe wasm eval for-c loop with continue" {
     #|  sum
     #|}
     #|_start()
-  assert_eval_backends_same(script)
+  assert_wasm_eval_decodes(script)
+}
+
+///|
+test "vibe wasm eval string for-in char codes" {
+  let script =
+    #|let main = () -> Int {
+    #|  let mut sum = 0
+    #|  for i, c in "abc" {
+    #|    sum = sum + i + c
+    #|  }
+    #|  sum
+    #|}
+    #|main()
+  let res = try eval_run(script) catch {
+    e => fail(e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_true(is_tagged_int(res.value))
+  // ('a' + 0) + ('b' + 1) + ('c' + 2)
+  assert_eq(decode_int(res.value), 297L)
 }
 
 ///|
@@ -2347,253 +2368,249 @@ test "vibe wasm eval while loop with continue" {
     #|  sum
     #|}
     #|_start()
-  assert_eval_backends_same(script)
+  assert_wasm_eval_decodes(script)
 }
 
 ///|
-test "vibe backends match: String::length" {
-  assert_eval_backends_same("String::length(\"hello\")")
-  assert_eval_backends_same("String::length(\"\")")
-  assert_eval_backends_same("String::length(\"abc\")")
+test "vibe wasm eval supports: String::length" {
+  assert_wasm_eval_decodes("String::length(\"hello\")")
+  assert_wasm_eval_decodes("String::length(\"\")")
+  assert_wasm_eval_decodes("String::length(\"abc\")")
 }
 
 ///|
-test "vibe backends match: String::char_code_at" {
-  assert_eval_backends_same("String::char_code_at(\"abc\", 0)")
-  assert_eval_backends_same("String::char_code_at(\"abc\", 2)")
+test "vibe wasm eval supports: String::char_code_at" {
+  assert_wasm_eval_decodes("String::char_code_at(\"abc\", 0)")
+  assert_wasm_eval_decodes("String::char_code_at(\"abc\", 2)")
 }
 
 ///|
-test "vibe backends match: String::substring" {
-  assert_eval_backends_same("String::substring(\"hello world\", 0, 5)")
-  assert_eval_backends_same("String::substring(\"abcdef\", 2, 5)")
-  assert_eval_backends_same("String::substring(\"abc\", 0, 0)")
+test "vibe wasm eval supports: String::substring" {
+  assert_wasm_eval_decodes("String::substring(\"hello world\", 0, 5)")
+  assert_wasm_eval_decodes("String::substring(\"abcdef\", 2, 5)")
+  assert_wasm_eval_decodes("String::substring(\"abc\", 0, 0)")
 }
 
 ///|
-test "vibe backends match: String::concat" {
-  assert_eval_backends_same("String::concat(\"hello\", \" world\")")
-  assert_eval_backends_same("String::concat(\"\", \"abc\")")
-  assert_eval_backends_same("String::concat(\"abc\", \"\")")
+test "vibe wasm eval supports: String::concat" {
+  assert_wasm_eval_decodes("String::concat(\"hello\", \" world\")")
+  assert_wasm_eval_decodes("String::concat(\"\", \"abc\")")
+  assert_wasm_eval_decodes("String::concat(\"abc\", \"\")")
 }
 
 ///|
-test "vibe backends match: String::join" {
-  assert_eval_backends_same("String::join([\"a\", \"b\", \"c\"], \",\")")
-  assert_eval_backends_same("String::join([\"only\"], \"-\")")
+test "vibe wasm eval supports: String::join" {
+  assert_wasm_eval_decodes("String::join([\"a\", \"b\", \"c\"], \",\")")
+  assert_wasm_eval_decodes("String::join([\"only\"], \"-\")")
 }
 
 ///|
-test "vibe backends match: String::index_of" {
-  assert_eval_backends_same("String::index_of(\"hello world\", \"world\")")
-  assert_eval_backends_same("String::index_of(\"abcabc\", \"bc\")")
+test "vibe wasm eval supports: String::index_of" {
+  assert_wasm_eval_decodes("String::index_of(\"hello world\", \"world\")")
+  assert_wasm_eval_decodes("String::index_of(\"abcabc\", \"bc\")")
 }
 
 ///|
-test "vibe backends match: String::contains" {
-  assert_eval_backends_same("String::contains(\"hello world\", \"world\")")
-  assert_eval_backends_same("String::contains(\"hello\", \"xyz\")")
-  assert_eval_backends_same("String::contains(\"abc\", \"\")")
+test "vibe wasm eval supports: String::contains" {
+  assert_wasm_eval_decodes("String::contains(\"hello world\", \"world\")")
+  assert_wasm_eval_decodes("String::contains(\"hello\", \"xyz\")")
+  assert_wasm_eval_decodes("String::contains(\"abc\", \"\")")
 }
 
 ///|
-test "vibe backends match: String::starts_with" {
-  assert_eval_backends_same("String::starts_with(\"hello world\", \"hello\")")
-  assert_eval_backends_same("String::starts_with(\"hello\", \"xyz\")")
-  assert_eval_backends_same("String::starts_with(\"abc\", \"\")")
+test "vibe wasm eval supports: String::starts_with" {
+  assert_wasm_eval_decodes("String::starts_with(\"hello world\", \"hello\")")
+  assert_wasm_eval_decodes("String::starts_with(\"hello\", \"xyz\")")
+  assert_wasm_eval_decodes("String::starts_with(\"abc\", \"\")")
 }
 
 ///|
-test "vibe backends match: String::ends_with" {
-  assert_eval_backends_same("String::ends_with(\"hello world\", \"world\")")
-  assert_eval_backends_same("String::ends_with(\"hello\", \"xyz\")")
-  assert_eval_backends_same("String::ends_with(\"abc\", \"\")")
+test "vibe wasm eval supports: String::ends_with" {
+  assert_wasm_eval_decodes("String::ends_with(\"hello world\", \"world\")")
+  assert_wasm_eval_decodes("String::ends_with(\"hello\", \"xyz\")")
+  assert_wasm_eval_decodes("String::ends_with(\"abc\", \"\")")
 }
 
 ///|
-test "vibe backends match: String::last_index_of" {
-  assert_eval_backends_same("String::last_index_of(\"abcabc\", \"bc\")")
-  assert_eval_backends_same("String::last_index_of(\"aaa\", \"a\")")
+test "vibe wasm eval supports: String::last_index_of" {
+  assert_wasm_eval_decodes("String::last_index_of(\"abcabc\", \"bc\")")
+  assert_wasm_eval_decodes("String::last_index_of(\"aaa\", \"a\")")
 }
 
 ///|
-test "vibe backends match: String::count" {
-  assert_eval_backends_same("String::count(\"abcabc\", \"bc\")")
-  assert_eval_backends_same("String::count(\"hello\", \"l\")")
+test "vibe wasm eval supports: String::count" {
+  assert_wasm_eval_decodes("String::count(\"abcabc\", \"bc\")")
+  assert_wasm_eval_decodes("String::count(\"hello\", \"l\")")
 }
 
 ///|
-test "vibe backends match: String::trim" {
-  assert_eval_backends_same("String::trim(\"  hello  \")")
-  assert_eval_backends_same("String::trim(\"abc\")")
-  assert_eval_backends_same("String::trim(\"  \")")
+test "vibe wasm eval supports: String::trim" {
+  assert_wasm_eval_decodes("String::trim(\"  hello  \")")
+  assert_wasm_eval_decodes("String::trim(\"abc\")")
+  assert_wasm_eval_decodes("String::trim(\"  \")")
 }
 
 ///|
-test "vibe backends match: String::trim_start" {
-  assert_eval_backends_same("String::trim_start(\"  hello\")")
-  assert_eval_backends_same("String::trim_start(\"abc\")")
+test "vibe wasm eval supports: String::trim_start" {
+  assert_wasm_eval_decodes("String::trim_start(\"  hello\")")
+  assert_wasm_eval_decodes("String::trim_start(\"abc\")")
 }
 
 ///|
-test "vibe backends match: String::trim_end" {
-  assert_eval_backends_same("String::trim_end(\"hello  \")")
-  assert_eval_backends_same("String::trim_end(\"abc\")")
+test "vibe wasm eval supports: String::trim_end" {
+  assert_wasm_eval_decodes("String::trim_end(\"hello  \")")
+  assert_wasm_eval_decodes("String::trim_end(\"abc\")")
 }
 
 ///|
-test "vibe backends match: String::to_upper" {
-  assert_eval_backends_same("String::to_upper(\"hello\")")
-  assert_eval_backends_same("String::to_upper(\"ABC\")")
-  assert_eval_backends_same("String::to_upper(\"aBc123\")")
+test "vibe wasm eval supports: String::to_upper" {
+  assert_wasm_eval_decodes("String::to_upper(\"hello\")")
+  assert_wasm_eval_decodes("String::to_upper(\"ABC\")")
+  assert_wasm_eval_decodes("String::to_upper(\"aBc123\")")
 }
 
 ///|
-test "vibe backends match: String::to_lower" {
-  assert_eval_backends_same("String::to_lower(\"HELLO\")")
-  assert_eval_backends_same("String::to_lower(\"abc\")")
-  assert_eval_backends_same("String::to_lower(\"AbC123\")")
+test "vibe wasm eval supports: String::to_lower" {
+  assert_wasm_eval_decodes("String::to_lower(\"HELLO\")")
+  assert_wasm_eval_decodes("String::to_lower(\"abc\")")
+  assert_wasm_eval_decodes("String::to_lower(\"AbC123\")")
 }
 
 ///|
-test "vibe backends match: String::replace" {
-  assert_eval_backends_same(
+test "vibe wasm eval supports: String::replace" {
+  assert_wasm_eval_decodes(
     "String::replace(\"hello world\", \"world\", \"there\")",
   )
-  assert_eval_backends_same("String::replace(\"aaa\", \"a\", \"bb\")")
+  assert_wasm_eval_decodes("String::replace(\"aaa\", \"a\", \"bb\")")
 }
 
 ///|
-test "vibe backends match: String::replace_all" {
-  assert_eval_backends_same("String::replace_all(\"abcabc\", \"bc\", \"xy\")")
-  assert_eval_backends_same("String::replace_all(\"hello\", \"l\", \"r\")")
+test "vibe wasm eval supports: String::replace_all" {
+  assert_wasm_eval_decodes("String::replace_all(\"abcabc\", \"bc\", \"xy\")")
+  assert_wasm_eval_decodes("String::replace_all(\"hello\", \"l\", \"r\")")
 }
 
 ///|
-test "vibe backends match: String::split" {
-  assert_eval_backends_same("String::split(\"a,b,c\", \",\")")
-  assert_eval_backends_same("String::split(\"hello\", \",\")")
-  assert_eval_backends_same("String::split(\",a,,b,\", \",\")")
+test "vibe wasm eval supports: String::split" {
+  assert_wasm_eval_decodes("String::split(\"a,b,c\", \",\")")
+  assert_wasm_eval_decodes("String::split(\"hello\", \",\")")
+  assert_wasm_eval_decodes("String::split(\",a,,b,\", \",\")")
 }
 
 ///|
-test "vibe backends match: String::equals" {
-  assert_eval_backends_same("String::equals(\"abc\", \"abc\")")
-  assert_eval_backends_same("String::equals(\"abc\", \"def\")")
-  assert_eval_backends_same("String::equals(\"\", \"\")")
+test "vibe wasm eval supports: String::equals" {
+  assert_wasm_eval_decodes("String::equals(\"abc\", \"abc\")")
+  assert_wasm_eval_decodes("String::equals(\"abc\", \"def\")")
+  assert_wasm_eval_decodes("String::equals(\"\", \"\")")
 }
 
 ///|
-test "vibe backends match: String::from_char_code" {
-  assert_eval_backends_same("String::from_char_code(65)")
-  assert_eval_backends_same("String::from_char_code(97)")
+test "vibe wasm eval supports: String::from_char_code" {
+  assert_wasm_eval_decodes("String::from_char_code(65)")
+  assert_wasm_eval_decodes("String::from_char_code(97)")
 }
 
 ///|
-test "vibe backends match: Int::abs" {
-  assert_eval_backends_same("Int::abs(5)")
-  assert_eval_backends_same("Int::abs(-5)")
-  assert_eval_backends_same("Int::abs(0)")
+test "vibe wasm eval supports: Int::abs" {
+  assert_wasm_eval_decodes("Int::abs(5)")
+  assert_wasm_eval_decodes("Int::abs(-5)")
+  assert_wasm_eval_decodes("Int::abs(0)")
 }
 
 ///|
-test "vibe backends match: Int::is_even and Int::is_odd" {
-  assert_eval_backends_same("Int::is_even(4)")
-  assert_eval_backends_same("Int::is_even(3)")
-  assert_eval_backends_same("Int::is_odd(3)")
-  assert_eval_backends_same("Int::is_odd(4)")
-  assert_eval_backends_same("Int::is_even(0)")
+test "vibe wasm eval supports: Int::is_even and Int::is_odd" {
+  assert_wasm_eval_decodes("Int::is_even(4)")
+  assert_wasm_eval_decodes("Int::is_even(3)")
+  assert_wasm_eval_decodes("Int::is_odd(3)")
+  assert_wasm_eval_decodes("Int::is_odd(4)")
+  assert_wasm_eval_decodes("Int::is_even(0)")
 }
 
 ///|
-test "vibe backends match: Map::has_key" {
-  assert_eval_backends_same(
-    "let m = map { a: 1, b: 2 }\nMap::has_key(m, \"a\")",
-  )
-  assert_eval_backends_same(
-    "let m = map { a: 1, b: 2 }\nMap::has_key(m, \"c\")",
-  )
+test "vibe wasm eval supports: Map::has_key" {
+  assert_wasm_eval_decodes("let m = map { a: 1, b: 2 }\nMap::has_key(m, \"a\")")
+  assert_wasm_eval_decodes("let m = map { a: 1, b: 2 }\nMap::has_key(m, \"c\")")
 }
 
 ///|
-test "vibe backends match: Map::keys" {
-  assert_eval_backends_same("let m = map { a: 1, b: 2 }\nMap::keys(m)")
+test "vibe wasm eval supports: Map::keys" {
+  assert_wasm_eval_decodes("let m = map { a: 1, b: 2 }\nMap::keys(m)")
 }
 
 ///|
-test "vibe backends match: Map::values" {
-  assert_eval_backends_same("let m = map { a: 1, b: 2 }\nMap::values(m)")
+test "vibe wasm eval supports: Map::values" {
+  assert_wasm_eval_decodes("let m = map { a: 1, b: 2 }\nMap::values(m)")
 }
 
 ///|
-test "vibe backends match: Set::new and Set::size" {
-  assert_eval_backends_same("Set::size(Set::new())")
+test "vibe wasm eval supports: Set::new and Set::size" {
+  assert_wasm_eval_decodes("Set::size(Set::new())")
 }
 
 ///|
-test "vibe backends match: Set::add and Set::contains" {
-  assert_eval_backends_same(
+test "vibe wasm eval supports: Set::add and Set::contains" {
+  assert_wasm_eval_decodes(
     "let s = Set::new()\nlet s2 = Set::add(s, 42)\nSet::contains(s2, 42)",
   )
-  assert_eval_backends_same(
+  assert_wasm_eval_decodes(
     "let s = Set::new()\nlet s2 = Set::add(s, 42)\nSet::contains(s2, 99)",
   )
 }
 
 ///|
-test "vibe backends match: Set::add and Set::size" {
-  assert_eval_backends_same(
+test "vibe wasm eval supports: Set::add and Set::size" {
+  assert_wasm_eval_decodes(
     "let s = Set::new()\nlet s2 = Set::add(s, 1)\nlet s3 = Set::add(s2, 2)\nSet::size(s3)",
   )
 }
 
 ///|
-test "vibe backends match: Set::remove" {
-  assert_eval_backends_same(
+test "vibe wasm eval supports: Set::remove" {
+  assert_wasm_eval_decodes(
     "let s = Set::new()\nlet s2 = Set::add(s, 1)\nlet s3 = Set::add(s2, 2)\nlet s4 = Set::remove(s3, 1)\nSet::size(s4)",
   )
 }
 
 ///|
-test "vibe backends match: Set::from_array" {
-  assert_eval_backends_same("Set::size(Set::from_array([1, 2, 3]))")
-  assert_eval_backends_same("Set::contains(Set::from_array([10, 20]), 10)")
+test "vibe wasm eval supports: Set::from_array" {
+  assert_wasm_eval_decodes("Set::size(Set::from_array([1, 2, 3]))")
+  assert_wasm_eval_decodes("Set::contains(Set::from_array([10, 20]), 10)")
 }
 
 ///|
-test "vibe backends match: Bytes::length" {
-  assert_eval_backends_same(
+test "vibe wasm eval supports: Bytes::length" {
+  assert_wasm_eval_decodes(
     "let b = Bytes::from_array([1, 2, 3])\nBytes::length(b)",
   )
 }
 
 ///|
-test "vibe backends match: Bytes::get and Bytes::set" {
-  assert_eval_backends_same(
+test "vibe wasm eval supports: Bytes::get and Bytes::set" {
+  assert_wasm_eval_decodes(
     "let b = Bytes::from_array([10, 20, 30])\nBytes::get(b, 1)",
   )
-  assert_eval_backends_same(
+  assert_wasm_eval_decodes(
     "let b = Bytes::from_array([10, 20, 30])\nBytes::set(b, 1, 99)\nBytes::get(b, 1)",
   )
 }
 
 ///|
-test "vibe backends match: Bytes::push" {
-  assert_eval_backends_same(
+test "vibe wasm eval supports: Bytes::push" {
+  assert_wasm_eval_decodes(
     "let b = Bytes::from_array([1])\nBytes::push(b, 42)\nBytes::length(b)",
   )
 }
 
 ///|
-test "vibe backends match: Bytes::from_string and Bytes::to_string" {
-  assert_eval_backends_same(
+test "vibe wasm eval supports: Bytes::from_string and Bytes::to_string" {
+  assert_wasm_eval_decodes(
     "let b = Bytes::from_string(\"abc\")\nBytes::length(b)",
   )
 }
 
 ///|
-test "vibe backends match: Bytes::append" {
-  assert_eval_backends_same(
+test "vibe wasm eval supports: Bytes::append" {
+  assert_wasm_eval_decodes(
     "let a = Bytes::from_array([1, 2])\nlet b = Bytes::from_array([3, 4])\nBytes::append(a, b)\nBytes::length(a)",
   )
 }
@@ -2602,54 +2619,54 @@ test "vibe backends match: Bytes::append" {
 // Bytes::fill and Bytes::blit are not registered in the checker.
 
 ///|
-test "vibe backends match: Bytes::concat" {
-  assert_eval_backends_same(
+test "vibe wasm eval supports: Bytes::concat" {
+  assert_wasm_eval_decodes(
     "let a = Bytes::from_array([1, 2])\nlet b = Bytes::from_array([3, 4])\nlet c = Bytes::concat(a, b)\nBytes::length(c)",
   )
 }
 
 ///|
-test "vibe backends match: Array::length" {
-  assert_eval_backends_same("Array::length([1, 2, 3])")
-  assert_eval_backends_same("Array::length([])")
+test "vibe wasm eval supports: Array::length" {
+  assert_wasm_eval_decodes("Array::length([1, 2, 3])")
+  assert_wasm_eval_decodes("Array::length([])")
 }
 
 ///|
-test "vibe backends match: Array::set" {
-  assert_eval_backends_same(
+test "vibe wasm eval supports: Array::set" {
+  assert_wasm_eval_decodes(
     "let a = [1, 2, 3]\nArray::set(a, 1, 99)\nArray::get(a, 1)",
   )
 }
 
 ///|
-test "vibe backends match: Array::truncate" {
-  assert_eval_backends_same(
+test "vibe wasm eval supports: Array::truncate" {
+  assert_wasm_eval_decodes(
     "let a = [1, 2, 3, 4, 5]\nArray::truncate(a, 3)\nArray::length(a)",
   )
 }
 
 ///|
-test "vibe backends match: FixedArray::make and FixedArray::length" {
-  assert_eval_backends_same("FixedArray::length(FixedArray::make(5, 0))")
+test "vibe wasm eval supports: FixedArray::make and FixedArray::length" {
+  assert_wasm_eval_decodes("FixedArray::length(FixedArray::make(5, 0))")
 }
 
 ///|
-test "vibe backends match: FixedArray::get and FixedArray::set" {
-  assert_eval_backends_same(
+test "vibe wasm eval supports: FixedArray::get and FixedArray::set" {
+  assert_wasm_eval_decodes(
     "let a = FixedArray::make(3, 0)\nFixedArray::set(a, 1, 42)\nFixedArray::get(a, 1)",
   )
 }
 
 ///|
-test "vibe backends match: FixedArray::blit" {
-  assert_eval_backends_same(
+test "vibe wasm eval supports: FixedArray::blit" {
+  assert_wasm_eval_decodes(
     "let src = FixedArray::make(3, 10)\nlet dst = FixedArray::make(3, 0)\nFixedArray::blit(dst, 0, src, 0, 3)\nFixedArray::get(dst, 2)",
   )
 }
 
 ///|
-test "vibe backends match: StringBuilder" {
-  assert_eval_backends_same(
+test "vibe wasm eval supports: StringBuilder" {
+  assert_wasm_eval_decodes(
     "let sb = StringBuilder::new()\nStringBuilder::push(sb, \"hello\")\nStringBuilder::push(sb, \" world\")\nStringBuilder::freeze(sb)",
   )
 }
@@ -2660,7 +2677,7 @@ test "vibe wasm eval Array::concat" {
     #|let a = [1, 2]
     #|let b = [3, 4]
     #|Array::length(Array::concat(a, b))
-  assert_eval_backends_same(script)
+  assert_wasm_eval_decodes(script)
 }
 
 ///|
@@ -2669,7 +2686,7 @@ test "vibe wasm eval Array::push_all" {
     #|let a = [1, 2]
     #|Array::push_all(a, [3, 4])
     #|Array::length(a)
-  assert_eval_backends_same(script)
+  assert_wasm_eval_decodes(script)
 }
 
 ///|
@@ -2678,14 +2695,14 @@ test "vibe wasm eval Array::slice" {
     #|let a = [10, 20, 30, 40, 50]
     #|let s = Array::slice(a, 1, 4)
     #|Array::length(s)
-  assert_eval_backends_same(script)
+  assert_wasm_eval_decodes(script)
 }
 
 ///|
 test "vibe wasm eval String::utf8_length" {
   let script =
     #|String::utf8_length("hello")
-  assert_eval_backends_same(script)
+  assert_wasm_eval_decodes(script)
 }
 
 ///|
@@ -2693,7 +2710,7 @@ test "vibe wasm eval String::replace_all" {
   let script =
     #|let s = String::replace_all("aabbcc", "bb", "XX")
     #|String::length(s)
-  assert_eval_backends_same(script)
+  assert_wasm_eval_decodes(script)
 }
 
 ///|
@@ -2702,7 +2719,7 @@ test "vibe wasm eval nested function call" {
     #|let add = (a: Int, b: Int) -> Int { a + b }
     #|let mul = (a: Int, b: Int) -> Int { a * b }
     #|mul(add(1, 2), add(3, 4))
-  assert_eval_backends_same(script)
+  assert_wasm_eval_decodes(script)
 }
 
 ///|
@@ -2713,7 +2730,7 @@ test "vibe wasm eval match with guard" {
     #|  n if n > 3 => 1,
     #|  _ => 0
     #|}
-  assert_eval_backends_same(script)
+  assert_wasm_eval_decodes(script)
 }
 
 ///|
@@ -2722,7 +2739,7 @@ test "vibe wasm eval string interpolation basic" {
     #|let name = "world"
     #|let msg = "hello \{name}"
     #|String::length(msg)
-  assert_eval_backends_same(script)
+  assert_wasm_eval_decodes(script)
 }
 
 ///|
@@ -2732,7 +2749,7 @@ test "vibe wasm eval recursive fibonacci" {
     #|  if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
     #|}
     #|fib(10)
-  assert_eval_backends_same(script)
+  assert_wasm_eval_decodes(script)
 }
 
 ///|
@@ -2741,7 +2758,7 @@ test "vibe wasm eval closure capture" {
     #|let x = 10
     #|let add_x = (n: Int) -> Int { n + x }
     #|add_x(5)
-  assert_eval_backends_same(script)
+  assert_wasm_eval_decodes(script)
 }
 
 ///|
@@ -2758,7 +2775,7 @@ test "vibe wasm eval while with accumulator and break" {
     #|  sum
     #|}
     #|main()
-  assert_eval_backends_same(script)
+  assert_wasm_eval_decodes(script)
 }
 
 ///|
@@ -2767,7 +2784,7 @@ test "vibe wasm eval tuple destructure" {
     #|let pair = (10, 20)
     #|let (a, b) = pair
     #|a + b
-  assert_eval_backends_same(script)
+  assert_wasm_eval_decodes(script)
 }
 
 ///|
@@ -2776,7 +2793,7 @@ test "vibe wasm eval enum with payload match" {
     #|enum Result { Ok(Int); Err }
     #|let x = Ok(42)
     #|match x { Ok(n) => n, Err => 0 }
-  assert_eval_backends_same(script)
+  assert_wasm_eval_decodes(script)
 }
 
 ///|
@@ -2795,7 +2812,7 @@ test "vibe wasm eval let rec with captured helpers" {
     #|  }
     #|}
     #|process([1, 2, 20, 3, 15], 0)
-  assert_eval_backends_same(script)
+  assert_wasm_eval_decodes(script)
 }
 
 ///|
@@ -2848,7 +2865,7 @@ test "vibe wasm eval let rec called from two paths" {
     #|let wrapper = (arr: Array[Int]) -> Int { sum_arr(arr, 0) }
     #|let via_wrapper = wrapper([4, 5, 6])
     #|via_direct + via_wrapper
-  assert_eval_backends_same(script)
+  assert_wasm_eval_decodes(script)
 }
 
 ///|

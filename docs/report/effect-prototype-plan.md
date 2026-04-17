@@ -239,8 +239,8 @@ prototype の最小実装で触る可能性が高い subsystem は次の通り�
 - `src/codegen/wasm_codegen_call_builtin_pre_user.mbt`
 - `src/codegen/wasm_codegen_sig.mbt`
 - `src/codegen/wasm_codegen_expr_effect_wbtest.mbt`
-- `src/runtime/eval.mbt`
-- `src/tests/vibe_wasm_eval_test.mbt`
+- `src/runtime/store.mbt`
+- `src/runtime_compile/compile.mbt`
 - `src/tests/vibe_wasm_eval_test.mbt`
 
 ## Expected Output

@@ -589,7 +589,7 @@ fn finalize_cmd(args : Array[String]) -> Unit {
         Err(err) => abort("finalize: " + err)
       }
   }
-  let source = match load_eval_db_source(db_path) {
+  let source = match load_scratch_db_source(db_path) {
     Ok(v) => v
     Err(err) => abort("finalize: " + err)
   }
@@ -612,13 +612,13 @@ fn finalize_cmd(args : Array[String]) -> Unit {
     println(finalized_source)
   }
   if not(options.dry_run) {
-    match write_eval_db_source(db_path, finalized_source) {
+    match write_scratch_db_source(db_path, finalized_source) {
       Ok(_) => ()
       Err(err) => abort("finalize: " + err)
     }
     match options.export_path {
       Some(path) =>
-        match write_eval_export(path, finalized_source) {
+        match write_output_source(path, finalized_source) {
           Ok(_) => println("exported: " + path)
           Err(err) => abort("finalize: " + err)
         }

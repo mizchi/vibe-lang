@@ -267,6 +267,47 @@ test "resolve repl initial source restores scratch db when requested" {
 }
 
 ///|
+test "load scratch db source reports scratch-db context for non-file path" {
+  let root = wbtest_make_temp_dir("load_scratch_db_not_file")
+  match load_scratch_db_source(root) {
+    Ok(_) => fail("expected non-file error")
+    Err(err) => assert_eq(err, "scratch-db path is not a file: " + root)
+  }
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "collect scratch scope symbols returns stable local defs" {
+  let root = wbtest_make_temp_dir("collect_scratch_scope_symbols")
+  let scratch_db_path = root + "/scratch.db"
+  let scratch_source =
+    #|let answer = 41
+    #|let add_one = (x: Int) -> Int {
+    #|  answer + x
+    #|}
+  let symbols = collect_scratch_scope_symbols(scratch_db_path, scratch_source)
+  assert_eq(symbols.length(), 2)
+  let names : Array[String] = []
+  for symbol in symbols {
+    names.push(symbol.name)
+    assert_eq(symbol.path, scratch_db_path)
+    assert_true(symbol.def_id.length() > 0)
+  }
+  assert_true(names.contains("answer"))
+  assert_true(names.contains("add_one"))
+  let symbols2 = collect_scratch_scope_symbols(scratch_db_path, scratch_source)
+  assert_eq(symbols2.length(), symbols.length())
+  for i in 0..<symbols.length() {
+    assert_eq(symbols2[i].name, symbols[i].name)
+    assert_eq(symbols2[i].path, symbols[i].path)
+    assert_eq(symbols2[i].signature, symbols[i].signature)
+    assert_eq(symbols2[i].kind, symbols[i].kind)
+    assert_eq(symbols2[i].def_id, symbols[i].def_id)
+  }
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "repl parser mode hint removed with do keyword" {
   // do keyword was removed; these tests are no longer relevant.
   // Kept as placeholder to maintain test count stability.
@@ -573,6 +614,56 @@ test "cli dispatch args rejects missing command" {
     Ok(_) => fail("expected error")
     Err(msg) => assert_eq(msg, "missing command")
   }
+}
+
+///|
+test "removed public commands stay blocked" {
+  assert_eq(
+    removed_command_message("eval"),
+    Some(
+      "eval: command was removed. Use 'vibe shell' or 'vibe shell-stdin' for interactive evaluation, and 'vibe finalize --db <path>' for persisted scratch-db workflows.",
+    ),
+  )
+  assert_eq(
+    removed_command_message("bundle"),
+    Some(
+      "bundle: command was removed. Use 'vibe compile' to compile modules, or 'vibe precompile' for precompilation.",
+    ),
+  )
+  assert_eq(removed_command_message("run"), None)
+}
+
+///|
+test "cli usage advertises scratch workflow replacements" {
+  let text = wbtest_join_lines(usage_lines())
+  assert_true(text.contains("shell-stdin"))
+  assert_true(text.contains("finalize --db <path>"))
+  assert_false(text.contains("  eval "))
+  assert_false(text.contains("  bundle "))
+  assert_false(text.contains("REPL"))
+}
+
+///|
+test "bench help advertises compiled-only surface" {
+  let text = wbtest_join_lines(bench_help_lines())
+  assert_true(text.contains("--backend compiled|wasm"))
+  assert_true(text.contains("compiled backend"))
+  assert_false(text.contains("interpreter"))
+  assert_false(text.contains("--expr"))
+}
+
+///|
+test "shell meta help uses shell terminology" {
+  let lines : Array[String] = []
+  let result = handle_repl_meta_command(":help", "/tmp/scratch.db", "", fn(
+    line,
+  ) {
+    lines.push(line)
+  })
+  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  let text = wbtest_join_lines(lines)
+  assert_true(text.contains("Exit the shell"))
+  assert_false(text.contains("REPL"))
 }
 
 ///|
@@ -1862,7 +1953,7 @@ test "collect vibe files recursive skips .vibe internal directories" {
 test "ensure_parent_dir_for_file creates nested directories" {
   let root = wbtest_make_temp_dir("ensure_parent_nested")
   let target = root + "/nested/dir/.vibe/namespaces/scratch.db"
-  match ensure_parent_dir_for_file(target, "eval") {
+  match ensure_parent_dir_for_file(target, "scratch-db") {
     Ok(_) => ()
     Err(err) => fail("expected mkdir success: " + err)
   }
@@ -1884,7 +1975,7 @@ test "ensure_parent_dir_for_file resolves relative target from current directory
     cwd + "/" + rel_root + "/nested",
   )
   wbtest_remove_if_exists(@vibe_fs.normalize_path(cwd + "/" + rel_root))
-  match ensure_parent_dir_for_file(rel_target, "eval") {
+  match ensure_parent_dir_for_file(rel_target, "scratch-db") {
     Ok(_) => ()
     Err(err) => fail("expected relative mkdir success: " + err)
   }
@@ -1900,10 +1991,10 @@ test "ensure_parent_dir_for_file errors when parent path is file" {
     e => fail("write failed: " + e.to_string())
   }
   let target = parent_file + "/child/out.vibe"
-  match ensure_parent_dir_for_file(target, "eval") {
+  match ensure_parent_dir_for_file(target, "scratch-db") {
     Ok(_) => fail("expected mkdir error")
     Err(err) => {
-      assert_true(err.contains("eval:"))
+      assert_true(err.contains("scratch-db:"))
       assert_true(err.contains("not directory"))
     }
   }
@@ -2340,15 +2431,18 @@ test "split test entry task batches with weights keeps same root on same worker 
 ///|
 test "test batch weight cache key relativizes cwd absolute path" {
   let cwd = @io.current_dir_or_root()
-  let abs = @vibe_fs.normalize_path(cwd + "/vibe/compiler/eval_test.vibe")
+  let abs = @vibe_fs.normalize_path(cwd + "/vibe/compiler/fixture_test.vibe")
   if @vibe_fs.normalize_path(cwd).has_prefix("/") {
-    assert_eq(test_batch_weight_cache_key(abs), "vibe/compiler/eval_test.vibe")
+    assert_eq(
+      test_batch_weight_cache_key(abs),
+      "vibe/compiler/fixture_test.vibe",
+    )
   } else {
     assert_eq(test_batch_weight_cache_key(abs), abs)
   }
   assert_eq(
-    test_batch_weight_cache_key("vibe/compiler/eval_test.vibe"),
-    "vibe/compiler/eval_test.vibe",
+    test_batch_weight_cache_key("vibe/compiler/fixture_test.vibe"),
+    "vibe/compiler/fixture_test.vibe",
   )
 }
 
@@ -4287,9 +4381,9 @@ test "graph ir rows convert to symbol index for lsif emission" {
 }
 
 ///|
-test "append eval db source hoists late import ahead of prior bindings" {
-  let saved1 = append_eval_db_source("", "let x=1")
-  let saved2 = append_eval_db_source(saved1, "import ./helper.vibe { inc }")
+test "append scratch db source hoists late import ahead of prior bindings" {
+  let saved1 = append_scratch_db_source("", "let x=1")
+  let saved2 = append_scratch_db_source(saved1, "import ./helper.vibe { inc }")
   let ast = @parser.parse_ast(saved2) catch {
     e => fail("saved source parse failed: " + e.to_string())
   }
@@ -4298,6 +4392,28 @@ test "append eval db source hoists late import ahead of prior bindings" {
     [@vibe_core.Stmt::Import(..), @vibe_core.Stmt::Let(..), ..] => ()
     _ => fail("expected hoisted import before prior binding")
   }
+}
+
+///|
+test "append scratch db source does not duplicate same import" {
+  let saved1 = append_scratch_db_source("", "import ./helper.vibe { inc }")
+  let saved2 = append_scratch_db_source(saved1, "let x=1")
+  let saved3 = append_scratch_db_source(saved2, "import ./helper.vibe { inc }")
+  let ast = @parser.parse_ast(saved3) catch {
+    e => fail("saved source parse failed: " + e.to_string())
+  }
+  let mut import_count = 0
+  for stmt in ast.stmts {
+    match stmt {
+      @vibe_core.Stmt::Import(
+        source=@vibe_core.ModuleRef::Path(path="./helper.vibe"),
+        ..
+      ) => import_count += 1
+      _ => ()
+    }
+  }
+  assert_eq(import_count, 1)
+  assert_true(saved3.contains("let x = 1"))
 }
 
 ///|

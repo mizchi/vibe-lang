@@ -70,4 +70,3 @@ Principles:
 - `just bench-std-baseline-update` updates:
   - `bench/golden/bundle_size_budget.tsv` (with `vibe/prelude` + importer no-dce groups)
   - `bench/golden/kpi_wasm.tsv`
-  - `bench/golden/kpi_interpreter.tsv`

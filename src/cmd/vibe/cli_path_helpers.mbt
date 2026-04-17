@@ -1,5 +1,5 @@
 ///|
-fn resolve_eval_path(path : String) -> String {
+fn resolve_cli_path(path : String) -> String {
   if path.has_prefix("/") {
     @vibe_fs.normalize_path(path)
   } else {
@@ -29,7 +29,7 @@ pub fn resolve_vibe_lib_dir(base_dir : String) -> String {
 }
 
 ///|
-fn ensure_dir_recursive_for_eval(path : String) -> Result[Unit, String] {
+fn ensure_dir_recursive_for_parent_path(path : String) -> Result[Unit, String] {
   let normalized = @vibe_fs.normalize_path(path)
   if normalized.length() == 0 || normalized == "." || normalized == "/" {
     return Ok(())
@@ -43,7 +43,7 @@ fn ensure_dir_recursive_for_eval(path : String) -> Result[Unit, String] {
   }
   let parent = @vibe_fs.parent_path(normalized)
   if parent != normalized && parent.length() > 0 {
-    match ensure_dir_recursive_for_eval(parent) {
+    match ensure_dir_recursive_for_parent_path(parent) {
       Ok(_) => ()
       Err(err) => return Err(err)
     }
@@ -69,12 +69,12 @@ pub fn ensure_parent_dir_for_file(
   path : String,
   context : String,
 ) -> Result[Unit, String] {
-  let resolved_path = resolve_eval_path(path)
+  let resolved_path = resolve_cli_path(path)
   let parent = @vibe_fs.parent_path(resolved_path)
   if parent == "." || parent.length() == 0 {
     return Ok(())
   }
-  match ensure_dir_recursive_for_eval(parent) {
+  match ensure_dir_recursive_for_parent_path(parent) {
     Ok(_) => Ok(())
     Err(err) => Err(context + ": " + err)
   }

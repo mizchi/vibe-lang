@@ -424,7 +424,7 @@ fn load_scratch_write_file_candidates(
   if not(@os_fs.path_exists(scratch_db_path)) {
     return Ok([])
   }
-  let source = match load_eval_db_source(scratch_db_path) {
+  let source = match load_scratch_db_source(scratch_db_path) {
     Ok(v) => v
     Err(err) => return Err(err)
   }
@@ -622,7 +622,7 @@ fn write_file_cmd(args : Array[String]) -> Unit {
     }
     return
   }
-  match write_eval_export(options.out_path, out_source) {
+  match write_output_source(options.out_path, out_source) {
     Ok(_) => ()
     Err(err) => abort("write_file: " + err)
   }

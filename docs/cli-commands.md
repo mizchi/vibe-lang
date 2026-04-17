@@ -101,7 +101,7 @@ vibe check <file...>
 vibe check --profile-tsv timing.tsv <file...>
 ```
 
-### shell (Interactive REPL)
+### shell (Interactive Shell)
 
 Interactive TUI shell for evaluating vibe expressions.
 
@@ -114,7 +114,7 @@ vibe shell --no-posix      # disable shell/POSIX commands
 
 ### shell-stdin
 
-Read-eval-print loop reading from stdin. Suitable for piping input or non-interactive use.
+Line-oriented shell reading from stdin. Suitable for piping input or non-interactive use.
 
 ```
 vibe shell-stdin
@@ -160,7 +160,7 @@ vibe normalize --check <file...>
 
 | Command | Description |
 |---------|-------------|
-| `bench <file\|dir...>` | Run `bench {}` blocks with optional `--runs`, `--warmup`, `--n` |
+| `bench <file\|dir...>` | Run compiled `bench {}` blocks with optional `--runs`, `--warmup`, `--n` |
 | `bench-file <file>` | Run benchmarks in a single file |
 | `hash <file>` | Compute normalized AST hash |
 | `save <file>` | Save module to content-addressed store |
@@ -217,7 +217,7 @@ vibe emit-closure-payload <in> <out>
 
 ### wasm-shell-stdin
 
-REPL that compiles each expression to a separate WASM file. Used for testing the compilation pipeline.
+Line-oriented shell that compiles each expression to a separate WASM file. Used for testing the compilation pipeline.
 
 ```
 vibe wasm-shell-stdin [--no-prompt] [-o dir]
@@ -242,7 +242,7 @@ Persistent session workers that accelerate `run`/`check`/`test` by keeping compi
 | Mode | Interface | Use Case |
 |------|-----------|----------|
 | `shell` | Interactive TUI | Day-to-day interactive exploration |
-| `shell-stdin` | stdin/stdout line REPL | Scripting, piping, CI, editor integration |
+| `shell-stdin` | stdin/stdout line shell | Scripting, piping, CI, editor integration |
 | `wasm-shell-stdin` | stdin/stdout, writes `.wasm` per expression | Internal: testing the WASM compilation pipeline |
 
 ## Global Flags

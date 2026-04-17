@@ -96,7 +96,8 @@ fn parse_bench_backend(value : String) -> BenchBackend? {
 fn parse_bench_backend_or_abort(value : String) -> BenchBackend {
   match parse_bench_backend(value) {
     Some(v) => v
-    None => abort("bench: invalid --backend: " + value + " (expected compiled)")
+    None =>
+      abort("bench: invalid --backend: " + value + " (expected compiled|wasm)")
   }
 }
 
@@ -958,6 +959,31 @@ fn run_bench_module(
       " detail=" +
       wasmtime_failure_detail(exec_out.stdout, exec_out.stderr),
     )
+  }
+}
+
+///|
+fn compile_and_run_bench_file_once(
+  runner : BenchWasmRunner,
+  db : @runtime.VibeDb,
+  entry : String,
+  wasm_path : String,
+  use_node_runner : Bool,
+) -> Result[Int, String] {
+  let wasm_bytes = compile_module_wasm_for_exec(
+    db,
+    entry,
+    http_host_imports=use_node_runner,
+    fs_host_imports=use_node_runner,
+  ) catch {
+    e => return Err("compile wasm error: " + e.user_message())
+  }
+  @os_fs.write_bytes_to_file(wasm_path, wasm_bytes) catch {
+    e => return Err("write wasm failed: " + e.to_string())
+  }
+  match run_bench_module(runner, entry, wasm_path, use_node_runner) {
+    Ok(_) => Ok(wasm_bytes.length())
+    Err(err) => Err(err)
   }
 }
 
@@ -2016,7 +2042,7 @@ fn print_wasm_bench_report(path : String, report : WasmBenchReport) -> Bool {
 ///|
 fn bench_file_cmd(
   args : Array[String],
-  features : @runtime.RuntimeFeatureFlags,
+  _features : @runtime.RuntimeFeatureFlags,
 ) -> Unit {
   let mut count = 1000
   let mut warmup = 10
@@ -2068,29 +2094,41 @@ fn bench_file_cmd(
   match entry_path {
     None => abort("bench-file: missing <file>")
     Some(path) => {
+      let runner = match resolve_bench_wasm_runner(path) {
+        Ok(v) => v
+        Err(err) => abort("bench-file: " + err)
+      }
       let (db, entry) = match load_entry_db(path) {
         Err(err) => abort("bench-file: " + err)
         Ok(v) => v
       }
-      let rt = new_runtime_with_features(features)
+      let (use_http_host_runner, use_fs_host_runner) = detect_exec_host_runner_requirements(
+        db, entry,
+      )
+      let use_node_runner = use_http_host_runner || use_fs_host_runner
+      let wasm_path = @vibe_fs.parent_path(entry) + "/.vibe_bench_file.wasm"
+      defer remove_file_if_exists(wasm_path)
+      let mut wasm_bytes = 0
       for _ in 0..<warmup {
-        let compiled = match compile_entry_with_db(db, entry) {
-          Err(err) => abort("bench-file: " + err)
+        let compiled_bytes = match
+          compile_and_run_bench_file_once(
+            runner, db, entry, wasm_path, use_node_runner,
+          ) {
           Ok(v) => v
+          Err(err) => abort("bench-file: " + err)
         }
-        let _ = @runtime_compile.run_compiled(rt, compiled) catch {
-          e => abort("bench-file: " + e.to_string())
-        }
+        wasm_bytes = compiled_bytes
       }
       let start = @bench.monotonic_clock_start()
       for _ in 0..<count {
-        let compiled = match compile_entry_with_db(db, entry) {
-          Err(err) => abort("bench-file: " + err)
+        let compiled_bytes = match
+          compile_and_run_bench_file_once(
+            runner, db, entry, wasm_path, use_node_runner,
+          ) {
           Ok(v) => v
+          Err(err) => abort("bench-file: " + err)
         }
-        let _ = @runtime_compile.run_compiled(rt, compiled) catch {
-          e => abort("bench-file: " + e.to_string())
-        }
+        wasm_bytes = compiled_bytes
       }
       let elapsed_us = @bench.monotonic_clock_end(start)
       let elapsed_ms = elapsed_us / 1000.0
@@ -2106,7 +2144,9 @@ fn bench_file_cmd(
         " total_ms=" +
         elapsed_ms.to_string() +
         " per_us=" +
-        per_us.to_string(),
+        per_us.to_string() +
+        " wasm_bytes=" +
+        wasm_bytes.to_string(),
       )
     }
   }

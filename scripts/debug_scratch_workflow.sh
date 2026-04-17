@@ -47,19 +47,40 @@ run_cmd() {
   "$@" >>"$log_path" 2>&1
 }
 
+run_shell_line() {
+  local log_path="$1"
+  local db_path="$2"
+  local line="$3"
+  {
+    printf '+ VIBE_SCRATCH_DB_PATH=%s %s shell-stdin --no-prompt --restore <<< %q\n' \
+      "$db_path" "$CLI_BIN" "$line"
+  } >>"$log_path"
+  printf '%s\n' "$line" | \
+    VIBE_SCRATCH_DB_PATH="$db_path" \
+    "$CLI_BIN" shell-stdin --no-prompt --restore >>"$log_path" 2>&1
+}
+
 run_iteration() {
   local app_dir="$1"
   local log_path="$2"
+  local scratch_db_path="$app_dir/.vibe/namespaces/scratch.db"
 
   run_cmd "$log_path" "$CLI_BIN" new "$app_dir"
   (
     cd "$app_dir"
-    run_cmd "$log_path" "$CLI_BIN" eval "let base = 10"
-    run_cmd "$log_path" "$CLI_BIN" eval "let inc = (x: Int) -> Int { x + base }"
-    run_cmd "$log_path" "$CLI_BIN" eval "let answer = inc(2)"
-    run_cmd "$log_path" "$CLI_BIN" eval "export { answer }"
-    run_cmd "$log_path" "$CLI_BIN" eval --inspect-scope
-    run_cmd "$log_path" "$CLI_BIN" finalize --library --export main.vibe
+    run_shell_line "$log_path" "$scratch_db_path" "let base = 10"
+    run_shell_line "$log_path" "$scratch_db_path" "let inc = (x: Int) -> Int { x + base }"
+    run_shell_line "$log_path" "$scratch_db_path" "let answer = inc(2)"
+    run_shell_line "$log_path" "$scratch_db_path" "export { answer }"
+    run_shell_line "$log_path" "$scratch_db_path" "vibe symbols --local"
+    run_cmd \
+      "$log_path" \
+      "$CLI_BIN" \
+      finalize \
+      "--db=$scratch_db_path" \
+      --library \
+      --export \
+      main.vibe
     run_cmd "$log_path" "$CLI_BIN" normalize --write main.vibe
     if [ "$CHECK_MAIN" = "1" ]; then
       run_cmd "$log_path" "$CLI_BIN" check main.vibe

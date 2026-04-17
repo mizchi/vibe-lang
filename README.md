@@ -15,24 +15,24 @@ vibe language prototype and runtime (MoonBit).
 
 | Target | Description |
 |--------|-------------|
-| Interpreter (native) | Full-featured runtime with FFI |
-| Interpreter (js) | Browser/Node.js compatible |
-| WASM | Minimal core WASM output |
-| WASM + js-string | WASM with JS string builtins |
-| Component Model | WASM Component for composition |
+| Native CLI | Compiled execution via the host runtime (`run` / `test` / `shell`) |
+| WASM (linear) | Core WASM backend kept for fallback / compatibility |
+| WASM + js-string | WASM with JS string builtins for embedding |
+| WASM GC | Main `--wasm` backend |
+| Component Model | WASI/component packaging for composition |
 
 ### Builtin Functions
 
-| Function | Interpreter | WASM | Description |
-|----------|-------------|------|-------------|
-| `sleep(ms)` | native only | host runtime | Sleep for milliseconds |
-| `sh(cmd)` | native only | host import | Execute shell command |
-| `path(str)` | native only | host import | Normalize path |
-| `Stdout::write_char(code)` | effect trace | `wasi:cli/stdout` + `wasi:io/streams` import | Write one char code to stdout |
-| `Stdout::write_stream(text)` | effect trace | `wasi:cli/stdout` + `wasi:io/streams` import | Write a string chunk to stdout |
-| `Stdin::read_char()` | returns `-1` on eof | `wasi:cli/stdin` + `wasi:io/streams` import | Read one char code from stdin |
-| `Stdin::read_stream(max)` | returns `\"\"` on eof/error | `wasi:cli/stdin` + `wasi:io/streams` import | Read up to `max` bytes as a string chunk |
-| `await expr` | interpreter | stack-switching (x86_64) | Async operation |
+| Function | Native CLI | WASM | Description |
+|----------|------------|------|-------------|
+| `sleep(ms)` | host runtime | host runtime | Sleep for milliseconds |
+| `sh(cmd)` | host runtime | host import | Execute shell command |
+| `path(str)` | host runtime | host import | Normalize path |
+| `Stdout::write_char(code)` | host stdout | `wasi:cli/stdout` + `wasi:io/streams` import | Write one char code to stdout |
+| `Stdout::write_stream(text)` | host stdout | `wasi:cli/stdout` + `wasi:io/streams` import | Write a string chunk to stdout |
+| `Stdin::read_char()` | host stdin (`-1` on eof) | `wasi:cli/stdin` + `wasi:io/streams` import | Read one char code from stdin |
+| `Stdin::read_stream(max)` | host stdin (`\"\"` on eof/error) | `wasi:cli/stdin` + `wasi:io/streams` import | Read up to `max` bytes as a string chunk |
+| `await expr` | `--unstable-async` runtime gate | stack-switching (x86_64) | Async operation |
 
 ## Development
 
@@ -101,10 +101,10 @@ just run run examples/syntax.vibe
 just run run --unstable-async examples/async.vibe
 # flags can also be placed before command
 just run --unstable-async run examples/async.vibe
-# unstable threads probe builtin (via line repl)
-printf 'Threads::probe_wat()\nexit\n' | just run repl-stdin --no-prompt --unstable-threads
+# unstable threads probe builtin (via line shell)
+printf 'Threads::probe_wat()\nexit\n' | just run shell-stdin --no-prompt --unstable-threads
 # unstable threads runtime hints (recommended -W/-S flags)
-printf 'Threads::runtime_hints()\nexit\n' | just run repl-stdin --no-prompt --unstable-threads
+printf 'Threads::runtime_hints()\nexit\n' | just run shell-stdin --no-prompt --unstable-threads
 
 # Run tests in script
 just run test examples/*.vibe
@@ -128,13 +128,13 @@ just run compile --wit-component script.vibe -o out.component.wit
 just component-wkg script.vibe
 # (stdio builtins are wired through wasi:cli/stdin|stdout + wasi:io/streams)
 
-# Interactive REPL
-just run repl
+# Interactive shell
+just run shell
 
-# Line REPL for stdio/wasi-like environments
-just run repl-wasi --no-prompt
-# Enable unstable async in REPL
-just run repl-wasi --unstable-async
+# Line shell for stdio/pipeline environments
+just run shell-stdin --no-prompt
+# Enable unstable async in line shell
+just run shell-stdin --unstable-async
 
 # IDE-like symbol queries
 just run ide outline examples/syntax.vibe
@@ -154,8 +154,8 @@ just run index verify /tmp/advanced-graph-index.json
 # Emit LSIF from the same symbol index backend
 just run lsif -o /tmp/vibe.lsif examples/syntax.vibe
 
-# Build wasm line REPL (preview2 stdio imports)
-just build-repl-wasi-wasm
+# Build wasm line shell (preview2 stdio imports)
+just build-shell-wasi-wasm
 # Build wasm compiler CLI (wasi)
 just build-compiler-wasi-wasm
 # Build wasm checker CLI (json diagnostics)
@@ -191,7 +191,7 @@ just bootstrap-moonix
 just install
 ```
 
-`build-repl-wasi-wasm` output:
+`build-shell-wasi-wasm` output:
 - `_build/wasm/release/build/vibe_wasi/vibe_wasi.wasm`
 - this binary imports `wasi:cli/stdin|stdout@0.2.0` and `wasi:io/streams@0.2.0` directly
 - run it with a component/p3-compatible host (for example moon-component/mwac integration), not `moon run --target wasm`
@@ -285,15 +285,15 @@ src/
 ├── parser/         # Lexer and parser
 ├── checker/        # Type checker with effects
 ├── codegen/        # WASM code generation
-├── runtime/        # Interpreter and compilation
+├── runtime/        # Runtime state, caches, compiler hooks, and shell support
 ├── x/fp/           # Floating-point to decimal formatter utilities
 ├── x/module_graph/ # Experimental module graph index and codecs
 ├── cmd/vibe/       # CLI command implementation (native/js)
-├── cmd/vibe_wasi/  # WASI line-REPL command (wasm)
+├── cmd/vibe_wasi/  # WASI line-shell command (wasm)
 └── tests/          # Integration-like blackbox tests
 
 examples/
-├── *.vibe           # Example scripts (interpreter)
+├── *.vibe           # Example scripts
 └── wasm/           # WASM-only examples (require host)
 
 vibe/
@@ -334,16 +334,16 @@ just bench-typechecker
 ```
 
 `vibe bench` は `bench {}` ブロックを言語機能として実行する。  
-`<file|dir...>` 指定時は `--backend wasm` のみをサポートする。  
+`<file|dir...>` 指定時の canonical backend は `--backend compiled` で、`--backend wasm` は互換 alias として受け付ける。  
 legacy の式ベンチ (`--expr/--case/--cases`) は廃止。`bench {}` を含む `.vibe` file を渡す。
-`--backend wasm` ではサイズ優先で `--no-dce -Oz` 相当のコンパイルを使い、各ケースに `wasm_bytes=<size>` を出力する。
+compiled bench path ではサイズ優先で `--no-dce -Oz` 相当のコンパイルを使い、各ケースに `wasm_bytes=<size>` を出力する。
 `just bench-kpi` は `vibe bench` の結果を `dist/bench_kpi/latest.tsv` に保存し、`per_us` と `wasm_bytes` を同時に確認できる。
 KPI しきい値は `VIBE_BENCH_KPI_MAX_PER_US` / `VIBE_BENCH_KPI_MAX_WASM_BYTES` / `VIBE_BENCH_KPI_MAX_SCORE` で設定可能。
 引数なしの `just bench-kpi` は `bench/kpi_bench.vibe`（数値パイプライン/状態更新の4ケース）を対象にする。
-`VIBE_BENCH_KPI_N` / `VIBE_BENCH_KPI_WARMUP` 未指定時は `wasm=20000/1000` を使う。
+`VIBE_BENCH_KPI_N` / `VIBE_BENCH_KPI_WARMUP` 未指定時は `compiled=20000/1000` を使う。
 `just bench-std-baseline-update` は `vibe/prelude` を含む bundle-size budget
 (`bench/golden/bundle_size_budget.tsv`) と KPI snapshot
-(`bench/golden/kpi_wasm.tsv`, `bench/golden/kpi_interpreter.tsv`) を更新する。
+(`bench/golden/kpi_wasm.tsv`) を更新する。
 
 `bench-scratch-workflow` は scratch 開発フローを段階別に計測する。
 

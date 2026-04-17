@@ -45,13 +45,20 @@ TMP_DIR="\$(mktemp -d /tmp/vibe_bench_scratch_XXXXXX)"
 DB_PATH="\$TMP_DIR/tmp1.db"
 trap 'rm -rf "\$TMP_DIR"' EXIT
 
-"\$CLI_BIN" eval --db="\$DB_PATH" "let v0 = 0" >/dev/null
+run_shell_line() {
+  local line="\$1"
+  printf '%s\n' "\$line" | \
+    VIBE_SCRATCH_DB_PATH="\$DB_PATH" \
+    "\$CLI_BIN" shell-stdin --no-prompt --restore >/dev/null
+}
+
+run_shell_line "let v0 = 0"
 for i in \$(seq 1 "$CHAIN"); do
   prev=\$((i - 1))
-  "\$CLI_BIN" eval --db="\$DB_PATH" "let v\$i = v\$prev + 1" >/dev/null
+  run_shell_line "let v\$i = v\$prev + 1"
 done
-"\$CLI_BIN" eval --db="\$DB_PATH" "v$CHAIN" >/dev/null
-"\$CLI_BIN" eval --db="\$DB_PATH" "export { v$CHAIN }" >/dev/null
+run_shell_line "v$CHAIN"
+run_shell_line "export { v$CHAIN }"
 EOF_SCRIPT
 
 cat >"$RUN_FINALIZE" <<EOF_SCRIPT
@@ -95,12 +102,19 @@ DB_PATH="\$TMP_DIR/tmp1.db"
 OUT_PATH="\$TMP_DIR/main.vibe"
 trap 'rm -rf "\$TMP_DIR"' EXIT
 
-"\$CLI_BIN" eval --db="\$DB_PATH" "let v0 = 0" >/dev/null
+run_shell_line() {
+  local line="\$1"
+  printf '%s\n' "\$line" | \
+    VIBE_SCRATCH_DB_PATH="\$DB_PATH" \
+    "\$CLI_BIN" shell-stdin --no-prompt --restore >/dev/null
+}
+
+run_shell_line "let v0 = 0"
 for i in \$(seq 1 "$CHAIN"); do
   prev=\$((i - 1))
-  "\$CLI_BIN" eval --db="\$DB_PATH" "let v\$i = v\$prev + 1" >/dev/null
+  run_shell_line "let v\$i = v\$prev + 1"
 done
-"\$CLI_BIN" eval --db="\$DB_PATH" "export { v$CHAIN }" >/dev/null
+run_shell_line "export { v$CHAIN }"
 "\$CLI_BIN" finalize --db="\$DB_PATH" --library --export="\$OUT_PATH" >/dev/null
 "\$CLI_BIN" fetch "\$OUT_PATH" >/dev/null
 "\$CLI_BIN" apply "\$OUT_PATH" >/dev/null

@@ -205,24 +205,14 @@ pub struct Runtime {
   features : RuntimeFeatureFlags
   aliases : Map[String, @core.Ref]
   pure_cache : PureCache
-  test_cache : TestCache
   mut type_env : @checker.TypeEnv
   mut_vars : Map[String, Bool]
   thread_runtime : ThreadRuntime
   // Module cache for import resolution: hash -> Module
   module_cache : Map[String, @core.Module]
-  // Evaluated module cache: hash -> evaluated Runtime (avoids redundant eval_module calls)
-  import_eval_cache : Map[String, Runtime]
   perform_resume_overrides : Map[String, @core.Value]
-  mut active_handle_scope : String?
-  mut prelude_loaded : Bool
+  active_handle_scope : String?
   mut cwd : String
-  mut loop_fuel : Int
-}
-
-///|
-fn default_loop_fuel() -> Int {
-  100_000
 }
 
 ///|
@@ -244,39 +234,16 @@ pub fn Runtime::new_with_features(
     features,
     aliases: {},
     pure_cache: PureCache::new(),
-    test_cache: TestCache::new(),
     type_env: hook_new_type_env(),
     mut_vars: {},
     thread_runtime: ThreadRuntime::new(),
     module_cache: {},
-    import_eval_cache: {},
     perform_resume_overrides: {},
     active_handle_scope: None,
-    prelude_loaded: false,
     cwd: @io.current_dir_or_root(),
-    loop_fuel: match @io.get_env_var("VIBE_LOOP_FUEL") {
-      Some(s) => {
-        let n = @strconv.parse_int(s) catch { _ => default_loop_fuel() }
-        if n > 0 {
-          n
-        } else {
-          default_loop_fuel()
-        }
-      }
-      None => default_loop_fuel()
-    },
   }
   rt.type_env = hook_init_runtime_type_env()
-  rt.ensure_prelude()
   rt
-}
-
-///|
-fn Runtime::ensure_prelude(self : Runtime) -> Unit {
-  if not(self.prelude_loaded) {
-    let _ = try? self.eval_module(hook_prelude_ast())
-    self.prelude_loaded = true
-  }
 }
 
 ///|
@@ -458,62 +425,6 @@ pub fn Runtime::load_pure_cache(self : Runtime, snapshot : String) -> Unit {
 }
 
 ///|
-/// Fork runtime for test execution (isolated env, shared store/cache).
-fn Runtime::fork_for_test(self : Runtime) -> Runtime {
-  {
-    store: self.store,
-    env: clone_string_map(self.env),
-    addr_env: clone_string_map(self.addr_env),
-    names: clone_string_map(self.names),
-    caps: self.caps,
-    features: self.features,
-    aliases: clone_ref_map(self.aliases),
-    pure_cache: self.pure_cache,
-    test_cache: self.test_cache,
-    type_env: self.type_env.clone(),
-    mut_vars: self.mut_vars.copy(),
-    thread_runtime: self.thread_runtime,
-    module_cache: self.module_cache,
-    import_eval_cache: self.import_eval_cache,
-    perform_resume_overrides: self.perform_resume_overrides.copy(),
-    active_handle_scope: self.active_handle_scope,
-    prelude_loaded: self.prelude_loaded,
-    cwd: self.cwd,
-    loop_fuel: self.loop_fuel,
-  }
-}
-
-///|
-fn Runtime::env_snapshot(self : Runtime) -> Map[String, String] {
-  clone_string_map(self.env)
-}
-
-///|
-fn Runtime::fork_with_env(self : Runtime, env : Map[String, String]) -> Runtime {
-  {
-    store: self.store,
-    env: clone_string_map(env),
-    addr_env: clone_string_map(self.addr_env),
-    names: clone_string_map(self.names),
-    caps: self.caps,
-    features: self.features,
-    aliases: clone_ref_map(self.aliases),
-    pure_cache: self.pure_cache,
-    test_cache: self.test_cache,
-    type_env: self.type_env.clone(),
-    mut_vars: self.mut_vars.copy(),
-    thread_runtime: self.thread_runtime,
-    module_cache: self.module_cache,
-    import_eval_cache: self.import_eval_cache,
-    perform_resume_overrides: self.perform_resume_overrides.copy(),
-    active_handle_scope: self.active_handle_scope,
-    prelude_loaded: self.prelude_loaded,
-    cwd: self.cwd,
-    loop_fuel: self.loop_fuel,
-  }
-}
-
-///|
 pub fn Runtime::type_env(self : Runtime) -> @checker.TypeEnv {
   self.type_env
 }
@@ -526,24 +437,6 @@ pub fn Runtime::set_type_env(self : Runtime, env : @checker.TypeEnv) -> Unit {
 ///|
 pub fn Runtime::set_cwd(self : Runtime, cwd : String) -> Unit {
   self.cwd = cwd
-}
-
-///|
-fn clone_string_map(src : Map[String, String]) -> Map[String, String] {
-  let out : Map[String, String] = {}
-  for k, v in src {
-    out[k] = v
-  }
-  out
-}
-
-///|
-fn clone_ref_map(src : Map[String, @core.Ref]) -> Map[String, @core.Ref] {
-  let out : Map[String, @core.Ref] = {}
-  for k, v in src {
-    out[k] = v
-  }
-  out
 }
 
 ///|

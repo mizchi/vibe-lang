@@ -51,7 +51,7 @@
 |---|----------|--------|
 | 0004 | **コンテンツアドレスモジュール (Unison 式)**。SHA1 ハッシュ。三層 ref: HashRef (実行時), VersionRef, SymbolRef (ユーザー向け)。 | accepted |
 | 0005 | **標準ライブラリ階層型境界**。5 層: trait-contract → pure-primitive → pure-data → ref-model → effect-boundary。外部パッケージ分離。 | accepted |
-| 0009 | **スクラッチワークフロー**。`vibe eval` で定義を蓄積、namespace head をコンテンツハッシュで管理、`.vibe` へ export。 | accepted |
+| 0009 | **スクラッチワークフロー**。`vibe shell` / `shell-stdin` で定義を蓄積し、namespace head をコンテンツハッシュで管理、`finalize` で `.vibe` へ反映する。 | accepted |
 | 0015 | **分散 Ref (Git Object ストレージ)**。不変データ = Git object、可変ポインタ = `refs/bit/index/<scope>/graph/{head,wal_head}`。delta chain で append。 | accepted |
 | 0019 | **Canonical naming**。`domain_verb` パターン (`io_read`, `socket_connect`)。型所有は `Type::method`。 | accepted |
 

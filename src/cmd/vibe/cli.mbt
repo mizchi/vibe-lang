@@ -26,9 +26,12 @@ pub fn run(args : Array[String]) -> Unit {
   )
   let enable_llm = parsed.enable_llm
   @runtime_compile.init_hooks()
+  match removed_command_message(cmd) {
+    Some(msg) => abort(msg)
+    None => ()
+  }
   match cmd {
     "run" => run_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
-    "eval" => eval_cmd(cmd_args, runtime_features, enable_llm~)
     "test" => test_cmd(cmd_args, runtime_features)
     "check" => check_cmd(cmd_args)
     "session-http" => session_http_cmd(cmd_args, runtime_features)
@@ -70,10 +73,6 @@ pub fn run(args : Array[String]) -> Unit {
     "ide" => ide_cmd(cmd_args)
     "lsif" => lsif_cmd(cmd_args)
     "index" => index_cmd(cmd_args)
-    "bundle" =>
-      abort(
-        "bundle: command was removed. Use 'vibe compile' to compile modules, or 'vibe precompile' for precompilation.",
-      )
     "serve" =>
       println(
         "serve: use 'just serve <handler.vibe>' or 'bash scripts/vibe_serve.sh <handler.vibe>'",
@@ -89,6 +88,21 @@ pub fn run(args : Array[String]) -> Unit {
       println("unknown command: " + cmd)
       print_usage()
     }
+  }
+}
+
+///|
+fn removed_command_message(cmd : String) -> String? {
+  match cmd {
+    "eval" =>
+      Some(
+        "eval: command was removed. Use 'vibe shell' or 'vibe shell-stdin' for interactive evaluation, and 'vibe finalize --db <path>' for persisted scratch-db workflows.",
+      )
+    "bundle" =>
+      Some(
+        "bundle: command was removed. Use 'vibe compile' to compile modules, or 'vibe precompile' for precompilation.",
+      )
+    _ => None
   }
 }
 
@@ -118,49 +132,20 @@ extern "C" fn vibe_worker_parent_watchdog_stop() = "vibe_worker_parent_watchdog_
 
 ///|
 fn print_usage() -> Unit {
-  println("Usage: vibe <command> [options]")
-  println("")
-  println("Build & Run:")
-  println(
-    "  run <file>                  Execute a script (final top-level pure expression)",
-  )
-  println("  test <file|dir...>          Run test blocks (parallel for dirs)")
-  println("  compile <file> [-o <out>]   Compile to WASM or other targets")
-  println("  build <file>                Full pipeline build")
-  println("  bench <file|dir...>         Run benchmark blocks")
-  println("  serve <file>                Serve HTTP handler (WASI P3)")
-  println("")
-  println("Development:")
-  println("  shell                       Interactive TUI shell")
-  println("  fmt <file...>               Format scripts")
-  println("  check <file...>             Type check scripts")
-  println("  normalize <file...>         Normalize declaration order")
-  println("")
-  println("IDE & Tooling:")
-  println("  lsp                         Start language server")
-  println(
-    "  ide <subcommand> <file>     IDE queries (outline, peek-def, search)",
-  )
-  println("  symbols <file>              List symbols")
-  println("")
-  println("Project:")
-  println("  init [dir]                  Initialize project")
-  println("  new <dir>                   Scaffold new project")
-  println("  fetch <file>                Resolve imports and sync lock")
-  println("")
-  println("Flags:")
-  println("  --syntax vibe               Parser mode")
-  println("  --unstable-async            Enable async runtime")
-  println("  --unstable-threads          Enable threads runtime")
-  println(
-    "  --llm                       Enable LLM capabilities (requires VIBE_LLM_PROVIDER)",
-  )
-  println("")
-  println("Run 'vibe <command> --help' for command-specific options.")
+  for line in usage_lines() {
+    println(line)
+  }
 }
 
 ///|
 fn print_subcommand_help(cmd : String) -> Unit {
+  match removed_command_message(cmd) {
+    Some(msg) => {
+      println(msg)
+      return
+    }
+    None => ()
+  }
   match cmd {
     "compile" => print_compile_help()
     "test" => print_test_help()
@@ -176,6 +161,26 @@ fn print_subcommand_help(cmd : String) -> Unit {
       print_usage()
     }
   }
+}
+
+///|
+fn usage_lines() -> Array[String] {
+  [
+    "Usage: vibe <command> [options]", "", "Build & Run:", "  run <file>                  Execute a script (final top-level pure expression)",
+    "  test <file|dir...>          Run test blocks (parallel for dirs)", "  compile <file> [-o <out>]   Compile to WASM or other targets",
+    "  build <file>                Full pipeline build", "  bench <file|dir...>         Run benchmark blocks",
+    "  serve <file>                Serve HTTP handler (WASI P3)", "", "Development:",
+    "  shell                       Interactive TUI shell", "  shell-stdin                 Line-oriented shell for pipes and editor integration",
+    "  fmt <file...>               Format scripts", "  check <file...>             Type check scripts",
+    "  normalize <file...>         Normalize declaration order", "", "Scratch Workflow:",
+    "  finalize --db <path>        Materialize scratch DB state into source", "",
+    "IDE & Tooling:", "  lsp                         Start language server", "  ide <subcommand> <file>     IDE queries (outline, peek-def, search)",
+    "  symbols <file>              List symbols", "", "Project:", "  init [dir]                  Initialize project",
+    "  new <dir>                   Scaffold new project", "  fetch <file>                Resolve imports and sync lock",
+    "", "Flags:", "  --syntax vibe               Parser mode", "  --unstable-async            Enable async runtime",
+    "  --unstable-threads          Enable threads runtime", "  --llm                       Enable LLM capabilities (requires VIBE_LLM_PROVIDER)",
+    "", "Run 'vibe <command> --help' for command-specific options.",
+  ]
 }
 
 ///|
@@ -267,15 +272,19 @@ fn print_fmt_help() -> Unit {
 
 ///|
 fn print_bench_help() -> Unit {
-  println("Usage: vibe bench [options] <file|dir...>")
-  println("")
-  println("Run `bench {}` blocks.")
-  println("")
-  println("Options:")
-  println("  --backend compiled  Use compiled backend")
-  println("  --runs <N>          Number of benchmark runs")
-  println("  --warmup <N>        Number of warmup iterations")
-  println("  --n <N>             Iterations per run")
+  for line in bench_help_lines() {
+    println(line)
+  }
+}
+
+///|
+fn bench_help_lines() -> Array[String] {
+  [
+    "Usage: vibe bench [options] <file|dir...>", "", "Run `bench {}` blocks with the compiled backend.",
+    "", "Options:", "  --backend compiled|wasm  Use compiled backend (`wasm` compatibility alias accepted)",
+    "  --runs <N>               Number of benchmark runs", "  --warmup <N>             Number of warmup iterations",
+    "  --n <N>                  Iterations per run",
+  ]
 }
 
 ///|

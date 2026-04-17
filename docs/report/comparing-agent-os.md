@@ -69,7 +69,7 @@
 
 ### 2. runtime enforcement
 
-`CapabilitySet` は単なる型ではなく、少なくとも interpreter runtime では実際に enforcement されている。
+`CapabilitySet` は単なる型ではなく、capability 判定ロジックと runtime contract で意味を持っている。
 
 - `sh` / `sh_lines` は `ProcessSpawn`
 - `Fs::*` は `FsRead` / `FsWrite`
@@ -78,7 +78,7 @@
 
 参照:
 
-- [src/runtime/eval.mbt](/Users/mz/ghq/github.com/mizchi/vibe-lang/src/runtime/eval.mbt)
+- [src/capability/set.mbt](/Users/mz/ghq/github.com/mizchi/vibe-lang/src/capability/set.mbt)
 - [docs/http_server_contract.md](/Users/mz/ghq/github.com/mizchi/vibe-lang/docs/http_server_contract.md)
 
 つまり `agentOS` 側の許可結果を `vibe` の capability に写像すれば、

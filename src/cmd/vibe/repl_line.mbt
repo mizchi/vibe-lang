@@ -1,5 +1,5 @@
 ///|
-/// Line-based REPL I/O mode.
+/// Line-based shell I/O mode.
 /// `Tty` is a capability marker for future raw-mode/backspace/arrow handling.
 pub enum LineReplIoMode {
   Plain
