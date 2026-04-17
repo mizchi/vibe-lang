@@ -170,9 +170,9 @@ case "$EXTRA_RUN_TESTS" in
 esac
 
 case "$TEST_BACKEND" in
-  compiled|interpreter|auto) ;;
+  compiled) ;;
   *)
-    echo "[selfhost suite coverage] invalid test backend: $TEST_BACKEND (expected: compiled|interpreter|auto)" >&2
+    echo "[selfhost suite coverage] compiled backend only: $TEST_BACKEND" >&2
     exit 1
     ;;
 esac

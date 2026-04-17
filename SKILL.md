@@ -1,6 +1,6 @@
 ---
 name: vibe-scratch-workflow
-description: `vibe new` から `vibe eval` の積み上げでライブラリを実装し、`finalize`/`normalize`/`apply` まで安全に回すための実践手順。
+description: `vibe new` から `vibe shell-stdin --restore` で scratch-db を積み上げ、`finalize`/`normalize`/`apply` まで安全に回すための実践手順。
 ---
 
 # Vibe Scratch Workflow
@@ -20,44 +20,49 @@ vibe new tmp/tmp-hash-<id>/my_lib
 cd tmp/tmp-hash-<id>/my_lib
 ```
 
-2. `eval` で定義を積み上げる
+2. scratch-db を固定する
 
 ```bash
-vibe eval 'export enum MyType { A; B }'
-vibe eval 'export let f = (x: Int) -> Int { x + 1 }'
+export VIBE_SCRATCH_DB_PATH="$PWD/.vibe/namespaces/my_lib.db"
 ```
 
-3. 関数ごとの sidecar テストを追加し、その場で実行する
+3. `shell-stdin --restore` で定義を積み上げる
 
 ```bash
-vibe eval --test-for f --run 'test "f/basic" { assert(f(1) == 2) }'
+printf '%s\n' \
+  'export enum MyType { A; B }' \
+  'export let f = (x: Int) -> Int { x + 1 }' \
+  'exit' | vibe shell-stdin --no-prompt --restore
 ```
 
-4. スコープ確認
+4. 追加の式や確認を同じ scratch-db で続ける
 
 ```bash
-vibe eval --inspect-scope
+printf '%s\n' \
+  'f(1)' \
+  'exit' | vibe shell-stdin --no-prompt --restore
 ```
 
 5. 仕上げ
 
 ```bash
-vibe finalize --library --export my_lib.vibe
+vibe finalize --db "$VIBE_SCRATCH_DB_PATH" --library --export my_lib.vibe
 vibe normalize --write my_lib.vibe
 vibe check my_lib.vibe
+vibe test my_lib.vibe
 vibe fetch my_lib.vibe
 vibe apply my_lib.vibe
 ```
 
 ## ベストプラクティス
 
-- 長い式や `test` ブロックはシェルで heredoc 変数に入れてから `vibe eval` に渡す。
-  - 直接クオートを重ねると `Parse(UnexpectedToken)` を起こしやすい。
-- `--test-for <symbol>` を使うとテストは `.vibe/namespaces/<ns>.tests/` に保存され、本体 DB と `--export` 出力に混ざらない。
+- `shell-stdin` は `--restore` を付けないと空の scratch source から始まる。
+- 長い式や複数行入力は heredoc / `printf '%s\n' ...` でまとめて `shell-stdin` に渡す。
+  - 直接クオートを重ねるより parse 崩れを起こしにくい。
+- scratch-db を明示的に分けたいときは `VIBE_SCRATCH_DB_PATH` を固定する。
 - `finalize --library` は未使用定義と副作用文を落としてからエクスポートできるため、ライブラリ整形の基準にする。
-- `symbols --json <entry>` の見方:
-  - scratch と index が同一定義（同一 module hash / signature）なら `shadowed` にならない。
-  - 実際に scratch 側で上書きしたときだけ `shadowed` になる。
+- scratch の破棄は `vibe history reset`、または対象 DB ファイルの削除で行う。
+- エクスポート後の確認は `vibe test my_lib.vibe` と `vibe symbols --json my_lib.vibe` を基準にする。
 
 ## Qualified Names（修飾名）
 
@@ -78,16 +83,15 @@ just debug-scratch-workflow
   - `VIBE_SCRATCH_KEEP_SUCCESS=1` 成功ケースも保持
   - `VIBE_SCRATCH_CLI_BUILD=debug|release|skip` CLI ビルドモード
 
-## eval テストのカバレッジ
+## scratch 反映後の検証
 
-- `vibe eval --test-for <symbol>` で蓄積した sidecar テストは次で coverage 計測できる:
+- exported module を lock/apply まで含めて確認する場合:
 
 ```bash
-just coverage-eval-sidecar <db-path> <symbol>
+vibe finalize --db "$VIBE_SCRATCH_DB_PATH" --library --export my_lib.vibe
+vibe fetch my_lib.vibe
+vibe apply my_lib.vibe
+vibe test my_lib.vibe
 ```
 
-- これは `<db>.tests/<symbol>_test.vibe` を一時エントリへ連結し、
-  `compile --coverage --coverage-run-tests` + wasm counter 集計を実行する。
-- 注意:
-  - 対象コードが wasm backend で未対応機能（`Unsupported(...)`）を使う場合は計測できない。
-  - その場合は通常の `vibe eval --test-for ... --run` で動作確認し、coverage は backend 対応後に再計測する。
+- scratch-db 自体は中間生成物なので、共有・レビュー対象は `finalize` 後の `.vibe` を優先する。

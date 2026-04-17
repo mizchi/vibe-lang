@@ -271,7 +271,7 @@ VIBE_USE_WASMTIME_SUBMODULE=1 just component-run vibe/prelude/test_import.vibe
 - `scripts/wasmtime_run.sh` 経由で `VIBE_WASMTIME_WASM_FLAGS` / `VIBE_WASMTIME_WASI_FLAGS` を注入できる。
 - 2 つの環境変数は空白区切りで複数指定でき、各トークンが `-W` / `-S` として渡される。
 - `justfile` 側でも `vibe_wasmtime_wasm_flags` / `vibe_wasmtime_wasi_flags` として env を取り込み、
-  `component-run` / `bench-*` / `test-component-e2e` / `test-interpreter-wasm` などのタスクへ伝搬される。
+  `component-run` / `bench-*` / `test-component-e2e` / `test-run-wasm-match` などのタスクへ伝搬される。
 - 現在値は `just show-wasmtime-flags` で確認できる。
 
 例:

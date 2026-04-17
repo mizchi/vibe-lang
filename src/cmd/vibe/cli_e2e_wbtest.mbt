@@ -526,6 +526,37 @@ test "shell warns when binding reserved vibe subcommand name" {
 }
 
 ///|
+test "shell persist failure reports scratch-db context" {
+  let root = wbtest_make_temp_dir("repl_persist_failure_reports_scratch_db")
+  let scratch_db_path = root
+  let source_path = root + "/compiled_repl.vibe"
+  let wasm_path = root + "/expr_0.wasm"
+  let lines : Array[String] = []
+  let rt = new_cli_runtime(
+    @runtime.RuntimeFeatureFlags::stable(),
+    enable_llm=false,
+  )
+  let cache = CliEntryDbCache::new()
+  let next_source = run_compiled_shell_line(
+    cache,
+    rt,
+    @runtime.ParserMode::VibeMode,
+    scratch_db_path,
+    source_path,
+    wasm_path,
+    "",
+    "let answer = 1",
+    print_line=fn(s) { lines.push(s) },
+  )
+  assert_eq(next_source, "")
+  let text = wbtest_join_lines(lines)
+  assert_true(text.contains("error: failed to persist scratch-db:"))
+  wbtest_remove_if_exists(wasm_path)
+  wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "compiled repl line preserves let bindings across lines" {
   let root = wbtest_make_temp_dir("compiled_repl_state")
   let source_path = root + "/compiled_repl.vibe"
@@ -742,12 +773,12 @@ test "compiled repl line renders string let binding and reuse" {
 // The hint mechanism for `do { ... }` in posix mode is no longer needed.
 
 ///|
-test "append eval db source formats persisted script" {
-  let saved1 = append_eval_db_source("", "let f = (v: Int) { v * 2 }")
+test "append scratch db source formats persisted script" {
+  let saved1 = append_scratch_db_source("", "let f = (v: Int) { v * 2 }")
   assert_true(saved1.contains("let f = (v: Int) {"))
   assert_true(saved1.contains("  v * 2"))
   assert_true(saved1.has_suffix("\n"))
-  let saved2 = append_eval_db_source(saved1, "let x=1")
+  let saved2 = append_scratch_db_source(saved1, "let x=1")
   assert_true(saved2.contains("let x = 1"))
   assert_true(saved2.has_suffix("\n"))
   let _ = @parser.parse_ast(saved2) catch {
@@ -1034,6 +1065,10 @@ test "cli normalize directory hoists non-index import into index" {
 
 ///|
 test "cli bench backend parse" {
+  match parse_bench_backend("compiled") {
+    Some(backend) => assert_eq(backend, BenchBackend::Wasm)
+    None => fail("expected compiled backend")
+  }
   match parse_bench_backend("wasm") {
     Some(backend) => assert_eq(backend, BenchBackend::Wasm)
     None => fail("expected wasm backend")
@@ -1663,12 +1698,12 @@ test "cli apply tracks rename continuity for similar function" {
 }
 
 ///|
-test "cli history reset clears scratch namespace db" {
+test "cli history reset clears scratch db" {
   let root = wbtest_make_temp_dir("history_reset_scratch")
   let scratch_db = root + "/scratch.db"
   let prev = @sys.get_env_var("VIBE_SCRATCH_DB_PATH")
   @sys.set_env_var("VIBE_SCRATCH_DB_PATH", scratch_db)
-  match write_eval_db_source(scratch_db, "let v = 1\n") {
+  match write_scratch_db_source(scratch_db, "let v = 1\n") {
     Ok(_) => ()
     Err(err) => fail("write scratch db failed: " + err)
   }
@@ -1729,7 +1764,7 @@ test "cli symbols marks shadowed when scratch overrides index symbol" {
   apply_cmd([entry])
   let prev = @sys.get_env_var("VIBE_SCRATCH_DB_PATH")
   @sys.set_env_var("VIBE_SCRATCH_DB_PATH", scratch_db)
-  match write_eval_db_source(scratch_db, "let foo = 1\n") {
+  match write_scratch_db_source(scratch_db, "let foo = 1\n") {
     Ok(_) => ()
     Err(err) => fail("write scratch db failed: " + err)
   }
@@ -1769,7 +1804,7 @@ test "cli write_file selector name prefers scratch namespace symbol" {
   apply_cmd([entry])
   let prev = @sys.get_env_var("VIBE_SCRATCH_DB_PATH")
   @sys.set_env_var("VIBE_SCRATCH_DB_PATH", scratch_db)
-  match write_eval_db_source(scratch_db, "let foo = 1\n") {
+  match write_scratch_db_source(scratch_db, "let foo = 1\n") {
     Ok(_) => ()
     Err(err) => fail("write scratch db failed: " + err)
   }
@@ -1867,7 +1902,7 @@ test "cli finalize library mode prunes scratch db toward exports" {
     "helper(0)\n" +
     "test \"answer\" { assert(answer == 42) }\n" +
     "export { answer }\n"
-  match write_eval_db_source(db_path, source) {
+  match write_scratch_db_source(db_path, source) {
     Ok(_) => ()
     Err(err) => fail("write seed db failed: " + err)
   }
@@ -1903,7 +1938,7 @@ test "cli finalize safe mode drops pure expressions after normalization" {
     "helper(0)\n" +
     "test \"answer\" { assert(answer == 42) }\n" +
     "export { answer }\n"
-  match write_eval_db_source(db_path, source) {
+  match write_scratch_db_source(db_path, source) {
     Ok(_) => ()
     Err(err) => fail("write seed db failed: " + err)
   }
@@ -1936,7 +1971,7 @@ test "cli finalize export workflow supports fetch and apply" {
     "let answer = helper(41)\n" +
     "helper(0)\n" +
     "export { answer }\n"
-  match write_eval_db_source(db_path, source) {
+  match write_scratch_db_source(db_path, source) {
     Ok(_) => ()
     Err(err) => fail("write seed db failed: " + err)
   }
@@ -1987,7 +2022,7 @@ test "cli finalize library mode keeps re-export stmt parseable" {
   let root = wbtest_make_temp_dir("finalize_library_mode_reexport")
   let db_path = root + "/tmp1.db"
   let source = "let local = 1\n" + "local\n" + "export ./mod.vibe { helper }\n"
-  match write_eval_db_source(db_path, source) {
+  match write_scratch_db_source(db_path, source) {
     Ok(_) => ()
     Err(err) => fail("write seed db failed: " + err)
   }

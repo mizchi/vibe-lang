@@ -369,7 +369,7 @@ coverage-selfhost-suite-gate point="36" line="97" branch="30":
 coverage-selfhost-suite-next-branches report="_build/coverage/selfhost-suite/selfhost_suite.report.json":
     node scripts/coverage_selfhost_suite_next_branches.mjs {{report}} --format {{env_var_or_default("VIBE_SELFHOST_SUITE_NEXT_BRANCHES_FORMAT", "text")}}
 
-# Run branch-focused selfhost suite coverage (adds lexer/printer/eval_builtins/checker tests)
+# Run branch-focused selfhost suite coverage (adds lexer/printer/checker-heavy entries)
 coverage-selfhost-suite-branch:
     VIBE_SELFHOST_SUITE_COVERAGE_DIR=_build/coverage/selfhost-suite-branch VIBE_SELFHOST_SUITE_EXTRA_ENTRIES='{{selfhost_suite_branch_extra_entries}}' scripts/coverage_selfhost_suite.sh
 
@@ -377,10 +377,14 @@ coverage-selfhost-suite-branch:
 coverage-selfhost-suite-branch-gate point="40" line="93" branch="33":
     VIBE_SELFHOST_SUITE_COVERAGE_DIR=_build/coverage/selfhost-suite-branch VIBE_SELFHOST_SUITE_EXTRA_ENTRIES='{{selfhost_suite_branch_extra_entries}}' VIBE_SELFHOST_SUITE_MIN_POINT_RATE={{point}} VIBE_SELFHOST_SUITE_MIN_LINE_RATE={{line}} VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE={{branch}} scripts/coverage_selfhost_suite.sh
 
-# Run source-level WASM coverage for eval sidecar tests (`<db>.tests/<target>_test.vibe`)
-# env: VIBE_EVAL_COVERAGE_DIR, VIBE_WASM_SOURCE_COVERAGE_MODE, VIBE_WASM_SOURCE_COVERAGE_NO_DCE, VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP, VIBE_WASM_SOURCE_COVERAGE_DIR
+# Run source-level WASM coverage for scratch-db sidecar tests (`<db>.tests/<target>_test.vibe`)
+# env: VIBE_SCRATCH_COVERAGE_DIR, VIBE_EVAL_COVERAGE_DIR, VIBE_WASM_SOURCE_COVERAGE_MODE, VIBE_WASM_SOURCE_COVERAGE_NO_DCE, VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP, VIBE_WASM_SOURCE_COVERAGE_DIR
+coverage-scratch-sidecar db target:
+    scripts/coverage_scratch_sidecar.sh {{db}} {{target}}
+
+# Backward-compatible alias for the old eval-sidecar name.
 coverage-eval-sidecar db target:
-    scripts/coverage_eval_sidecar.sh {{db}} {{target}}
+    scripts/coverage_scratch_sidecar.sh {{db}} {{target}}
 
 # Run vibe/prelude coverage from *_test.vibe via wasm source coverage
 # env: VIBE_WASM_STD_COVERAGE_MODES, VIBE_WASM_STD_COVERAGE_MODE, VIBE_WASM_STD_COVERAGE_NO_DCE, VIBE_WASM_STD_COVERAGE_STRICT, VIBE_WASM_STD_COVERAGE_ALLOW_TRAP, VIBE_WASM_STD_COVERAGE_MIN_MEASURED_RATE, VIBE_WASM_STD_COVERAGE_MIN_LINE_RATE, VIBE_WASM_STD_COVERAGE_FILTER, VIBE_WASM_STD_COVERAGE_EXCLUDE, VIBE_WASM_STD_COVERAGE_MATRIX, VIBE_WASM_STD_COVERAGE_DIR
@@ -554,12 +558,12 @@ bench-wasmtime:
 bench-wasmtime-overhead path='':
     VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/bench_wasmtime_overhead.sh {{path}}
 
-# Compare interpreter vs wasmtime
+# Compare `vibe run` vs wasmtime
 bench-compare:
     VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/bench_compare.sh
 
 # Run language bench and collect latency + wasm size KPI in one report
-# env: VIBE_BENCH_KPI_N, VIBE_BENCH_KPI_WARMUP, VIBE_BENCH_KPI_BACKEND, VIBE_BENCH_KPI_MAX_PER_US, VIBE_BENCH_KPI_MAX_WASM_BYTES, VIBE_BENCH_KPI_MAX_SCORE, VIBE_BENCH_KPI_DIR, VIBE_BENCH_KPI_REPORT
+# env: VIBE_BENCH_KPI_N, VIBE_BENCH_KPI_WARMUP, VIBE_BENCH_KPI_BACKEND=compiled|wasm, VIBE_BENCH_KPI_MAX_PER_US, VIBE_BENCH_KPI_MAX_WASM_BYTES, VIBE_BENCH_KPI_MAX_SCORE, VIBE_BENCH_KPI_DIR, VIBE_BENCH_KPI_REPORT
 bench-kpi *paths:
     scripts/bench_kpi.sh {{paths}}
 
@@ -605,7 +609,8 @@ bench-array-build:
 bench-char-conversion:
     moon run --target native src/cmd/vibe/main.mbt -- bench bench/bench_char_conversion.vibe
 
-# HTTP request latency benchmark (interpreter, requires network)
+# HTTP benchmark placeholder.
+# The public compiled bench path does not support Http builtins yet.
 # env: VIBE_BENCH_HTTP_N (default 50), VIBE_BENCH_HTTP_WARMUP (default 5)
 # Run HTTP E2E tests (requires network, starts test server)
 test-http-e2e:
@@ -776,7 +781,7 @@ test-selfhost-warning-fixtures:
 bench-http:
     scripts/bench_http.sh
 
-# Measure per-command latency after startup
+# Backward-compatible alias for source-vs-wasmtime command comparison
 bench-cmd-latency:
     scripts/bench_cmd_latency.sh
 
@@ -878,7 +883,6 @@ bench-bundle-size-monitor-strict:
 bench-std-baseline-update:
     VIBE_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1 VIBE_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1 scripts/bench_bundle_size.sh --update
     VIBE_BENCH_KPI_BACKEND=compiled VIBE_BENCH_KPI_REPORT=bench/golden/kpi_wasm.tsv scripts/bench_kpi.sh bench/kpi_bench.vibe bench/kpi_bench_large_fn.vibe bench/kpi_bench_strings.vibe bench/kpi_bench_effects.vibe bench/kpi_bench_match.vibe
-    VIBE_BENCH_KPI_BACKEND=interpreter VIBE_BENCH_KPI_REPORT=bench/golden/kpi_interpreter.tsv scripts/bench_kpi.sh bench/kpi_bench.vibe bench/kpi_bench_large_fn.vibe bench/kpi_bench_strings.vibe bench/kpi_bench_effects.vibe bench/kpi_bench_match.vibe
 
 # Regenerate advanced graph flatbuffers schema bindings
 gen-advanced-graph-fb:
@@ -942,9 +946,9 @@ test-golden-wat:
 test-golden-wat-update:
     scripts/test_golden_wat.sh --update
 
-# Test interpreter vs WASM output consistency
-test-interpreter-wasm:
-    VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/test_interpreter_wasm_match.sh
+# Test `vibe run` vs WASM output consistency
+test-run-wasm-match:
+    VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} bash scripts/test_run_wasm_match.sh
 
 # Test `vibe run` and `vibe_wasm run/compare` consistency
 test-vibe-wasm-compare:

@@ -861,19 +861,6 @@ pub fn compile_module(
 }
 
 ///|
-/// Execute compiled module using the vibe runtime (interpreter).
-pub fn run_compiled(
-  rt : @runtime.Runtime,
-  compiled : CompiledModule,
-) -> @runtime.EvalResult raise @runtime.EvalError {
-  rt.set_type_env(compiled.type_env)
-  for name, target in compiled.aliases {
-    rt.set_alias(name, target)
-  }
-  rt.eval_module(compiled.ast)
-}
-
-///|
 fn dedupe_bundled_value_defs(ast : @core.Module) -> @core.Module {
   // Last-wins deduplication: when duplicate value names exist in a bundle
   // (e.g. __to_string from multiple polyfill modules), keep the last

@@ -116,7 +116,7 @@ match p { Point::{ x, y } => x + y }
 
 ```vibe
 type Pair = (Int, Int)
-type IntResult = Result[Int]
+type IntResult = Result[Int, String]
 ```
 
 ### trait / impl
@@ -289,7 +289,7 @@ Array[T], Map[K, V]
 ArrayBuilder[T], MapBuilder[K, V]
 
 // Generic
-Option[T], Result[T]
+Option[T], Result[T, E]
 
 // Function type
 (Int, String) -> Bool

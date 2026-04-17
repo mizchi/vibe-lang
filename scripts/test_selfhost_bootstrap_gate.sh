@@ -301,16 +301,14 @@ fi
 
 SELFHOST_COMPILED_TEST_FILES=()
 # Files in this case-list are excluded from the compiled-backend bootstrap
-# shard. They still run on the native interpreter via other gates. Two
-# categories live here:
+# shard. Two categories live here:
 #   1. Tests that depend on backends/features the compiled wasm test runner
 #      cannot provide (cache, fs, fixture, etc.).
 #   2. Pre-existing selfhost compiler bugs that trap on specific cases when
-#      the test body is run through the compiled wasm test backend, but
-#      compile and run fine on the native interpreter. These are tracked in
-#      issue #266 — the original bootstrap gate masked them with SIGABRT;
-#      now that the runner exits cleanly, they need to be excluded explicitly
-#      until the underlying selfhost codegen bugs are fixed.
+#      the test body is run through the compiled wasm test backend. These are
+#      tracked in issue #266 — the original bootstrap gate masked them with
+#      SIGABRT; now that the runner exits cleanly, they need to be excluded
+#      explicitly until the underlying selfhost codegen bugs are fixed.
 #        - parser_loop_test.vibe :: "parse parameterized loop" fails on a
 #                                  long `result == "<expected>"` string
 #                                  equality assertion. The parse/print
@@ -331,10 +329,9 @@ SELFHOST_COMPILED_TEST_FILES=()
 #                                  contains, starts_with, ends_with,
 #                                  from_char_code, char_code_at). The
 #                                  builtins_string1/2 lookup tables are
-#                                  evaluated correctly on the native
-#                                  interpreter; the compiled wasm test
-#                                  runner traps somewhere downstream. 56/62
-#                                  pass.
+#                                  evaluated correctly in focused runs; the
+#                                  compiled wasm test runner traps somewhere
+#                                  downstream. 56/62 pass.
 #        - checker_parity_test.vibe :: 172 test cases — the compiled batch
 #                                  wasm for this file never produces any
 #                                  output before the stage timeout. 10+
@@ -342,7 +339,7 @@ SELFHOST_COMPILED_TEST_FILES=()
 #                                  output suggests the selfhost compiler's
 #                                  batch compile or the batch wasm
 #                                  execution is stuck in a near-infinite
-#                                  loop. Native interpreter path passes.
+#                                  loop.
 #        - component_codegen_test.vibe :: "component: string lift injects
 #                                  run_init when core exports run" trips
 #                                  an unreachable trap in compiled mode
@@ -417,9 +414,9 @@ run_stage "compiled selfhost cli cache test" \
 # unreachable in compiled mode ("selfhost cli adapter bundle preserves
 # grouped layers" and "selfhost cli adapter module source is embedded").
 # Same underlying selfhost compiler bug family as dce_test / parser_loop_test
-# — the tests pass on the native interpreter but trip an unreachable
-# instruction in the compiled wasm test backend. Skipping the whole stage
-# until #266 follow-up fixes the root cause.
+# — the tests trip an unreachable instruction in the compiled wasm test
+# backend. Skipping the whole stage until #266 follow-up fixes the root
+# cause.
 # run_stage "compiled selfhost cli adapter cache test" \
 #   env VIBE_TEST_BACKEND=compiled \
 #   "$VIBE_BIN" test "$PROJECT_ROOT/vibe/compiler/cli_adapter_cache_test.vibe"
@@ -451,9 +448,6 @@ test "__to_string number parity" {
 EOF
 run_stage "compiled __to_string(Double/Float) probe" \
   env VIBE_TEST_BACKEND=compiled "$VIBE_BIN" test "$TOSTRING_PROBE"
-
-run_stage "selfhost probe smoke (vibe wasm eval test index 44)" \
-  moon test -p tests -f vibe_wasm_eval_test.mbt --target js --warn-list '-29' --index 44
 
 BASICS_FIXTURE="$PROJECT_ROOT/examples/basics.vibe"
 BASE64_FIXTURE="$PROJECT_ROOT/bench/compiler_size/cases/base64.vibe"

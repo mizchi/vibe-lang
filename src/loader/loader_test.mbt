@@ -139,6 +139,230 @@ pub impl @io.FileSystemAdapter for MemIoAdapter with write_bytes(
 }
 
 ///|
+test "loader load_db_with_paths_with_fs resolves alias imports declared in index.vibe" {
+  let root = "/workspace/pkg"
+  let entry = root + "/main.vibe"
+  let alias_target = root + "/types.vibe"
+  let index_path = root + "/index.vibe"
+  let fs = MemIoAdapter::new(root)
+  match
+    fs.write_string(
+      index_path, "export let version = \"0.1.0\"\nimport ./types.vibe @types\n",
+    ) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match fs.write_string(alias_target, "let value = 41\nexport { value }\n") {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match
+    fs.write_string(
+      entry, "import @types { value }\nlet main = value\nexport { main }\n",
+    ) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  let loaded = match load_db_with_paths_with_fs(entry, fs) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let (db, resolved, paths) = loaded
+  let entry_norm = @vibe_fs.normalize_path(entry)
+  let index_norm = @vibe_fs.normalize_path(index_path)
+  let alias_norm = @vibe_fs.normalize_path(alias_target)
+  assert_eq(resolved, entry_norm)
+  assert_true(contains_path(paths, alias_norm))
+  match db.get_source(index_norm) {
+    Some(source) => assert_true(source.contains("import ./types.vibe @types"))
+    None => fail("expected index.vibe source for alias resolution")
+  }
+  let env = db.types(resolved)
+  let diags = db.diagnostics(resolved)
+  if not(diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected diagnostics: " + lines.join(","))
+  }
+  match env.get_scheme("value") {
+    Some(_) => ()
+    None => fail("expected alias-imported value in env")
+  }
+}
+
+///|
+test "loader load_db_with_paths_with_fs reports unresolved alias declaration" {
+  let root = "/workspace/missing_alias"
+  let entry = root + "/main.vibe"
+  let fs = MemIoAdapter::new(root)
+  match
+    fs.write_string(root + "/index.vibe", "export let version = \"0.1.0\"\n") {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match
+    fs.write_string(
+      entry, "import @types { value }\nlet main = value\nexport { main }\n",
+    ) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match load_db_with_paths_with_fs(entry, fs) {
+    Ok(_) => fail("expected unresolved alias error")
+    Err(err) => {
+      assert_true(err.contains("alias @types not found"))
+      assert_true(err.contains("index.vibe"))
+    }
+  }
+}
+
+///|
+test "loader load_db_with_paths_with_fs resolves alias re-exports declared in index.vibe" {
+  let root = "/workspace/alias_reexport"
+  let entry = root + "/main.vibe"
+  let alias_target = root + "/types.vibe"
+  let index_path = root + "/index.vibe"
+  let fs = MemIoAdapter::new(root)
+  match
+    fs.write_string(
+      index_path,
+      "export let version = \"0.1.0\"\n" +
+      "import ./types.vibe @types\n" +
+      "export @types { value }\n",
+    ) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match fs.write_string(alias_target, "let value = 41\nexport { value }\n") {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match
+    fs.write_string(
+      entry, "import ./index.vibe { value }\nlet main = value\nexport { main }\n",
+    ) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  let loaded = match load_db_with_paths_with_fs(entry, fs) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let (db, resolved, paths) = loaded
+  let alias_norm = @vibe_fs.normalize_path(alias_target)
+  assert_true(contains_path(paths, alias_norm))
+  let diags = db.import_diagnostics(resolved)
+  if !diags.is_empty() {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected import diagnostics: " + lines.join(","))
+  }
+  let env = db.types(resolved)
+  match env.get_scheme("value") {
+    Some(_) => ()
+    None => fail("expected alias re-exported value in env")
+  }
+}
+
+///|
+test "loader load_db_with_paths_with_fs extracts vibe blocks from markdown entry" {
+  let root = "/workspace/docs"
+  let entry = root + "/guide.md"
+  let lib = root + "/lib.vibe"
+  let fs = MemIoAdapter::new(root)
+  match fs.write_string(lib, "let value = 7\nexport { value }\n") {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match
+    fs.write_string(
+      entry, "# Guide\n\n```js\nconst hidden = 1\n```\n\n```vibe\nimport ./lib.vibe { value }\nlet main = value\nexport { main }\n```\n\n```vibe\nlet extra = main + 1\n```\n",
+    ) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  let loaded = match load_db_with_paths_with_fs(entry, fs) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let (db, resolved, paths) = loaded
+  let entry_norm = @vibe_fs.normalize_path(entry)
+  let lib_norm = @vibe_fs.normalize_path(lib)
+  assert_eq(resolved, entry_norm)
+  assert_true(contains_path(paths, lib_norm))
+  match db.get_source(entry_norm) {
+    Some(source) => {
+      assert_true(source.contains("let main = value"))
+      assert_true(source.contains("let extra = main + 1"))
+      assert_false(source.contains("const hidden = 1"))
+    }
+    None => fail("expected markdown source to be extracted")
+  }
+  let diags = db.import_diagnostics(resolved)
+  if not(diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected import diagnostics: " + lines.join(","))
+  }
+}
+
+///|
+test "loader load_db_with_paths_with_fs loads wasm binary imports" {
+  let lib_db = @runtime.VibeDb::new()
+  lib_db.set_source(
+    "lib", "export let inflate = (src: Int, dst: Int) -> Int { src + dst }\n",
+  )
+  let wasm = try @runtime_compile.compile_module_wasm(lib_db, "lib") catch {
+    e => fail("failed to build wasm fixture: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  let root = "/workspace/wasm_loader"
+  let entry = root + "/main.vibe"
+  let wasm_path = root + "/zlib.wasm"
+  let fs = MemIoAdapter::new(root)
+  match fs.write_bytes(wasm_path, wasm) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match
+    fs.write_string(
+      entry, "import ./zlib.wasm { inflate }\nlet main = inflate(1, 2, 0)\nexport { main }\n",
+    ) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  let loaded = match load_db_with_paths_with_fs(entry, fs) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let (db, resolved, paths) = loaded
+  let entry_norm = @vibe_fs.normalize_path(entry)
+  let wasm_norm = @vibe_fs.normalize_path(wasm_path)
+  assert_eq(resolved, entry_norm)
+  assert_true(contains_path(paths, wasm_norm))
+  let imports = db.imports(resolved)
+  assert_eq(imports.length(), 1)
+  assert_eq(imports[0].path, wasm_norm)
+  assert_true(imports[0].hash is Some(_))
+  let _ = db.types(resolved)
+  let diags = db.diagnostics(resolved)
+  if not(diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected diagnostics: " + lines.join(","))
+  }
+}
+
+///|
 test "loader load_db_with_paths loads transitive modules" {
   let root = make_temp_dir("transitive")
   let entry = root + "/main.vibe"

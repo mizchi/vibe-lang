@@ -8,7 +8,7 @@ For full details see [index.md](index.md).
 ```bash
 vibe run file.vibe    # Run script (evaluates the final top-level pure expression)
 vibe test file.vibe   # Run tests in a file
-vibe shell            # Interactive REPL (PosixMode)
+vibe shell            # Interactive shell (PosixMode)
 vibe check file.vibe  # Type check
 ```
 
@@ -98,7 +98,7 @@ let result = match Hit(42) {
 
 ```vibe
 type Pair = (Int, Int)                       // alias
-enum Result[T] { Ok(T); Err }               // enum
+enum Result[T, E] { Ok(T); Err(E) }         // enum
 struct Point { x: Int; y: Int }              // struct
 let p = Point::{ x: 3, y: 4 }
 trait Eq                                     // trait (declaration only)

@@ -18,16 +18,16 @@ mkdir -p "$ROOT_DIR/target/bench"
 
 "$CLI_BIN" compile --wasm -o "$WASM_OUT" "$SCRIPT_PATH"
 
-INTERP_CMD="\"$CLI_BIN\" run \"$SCRIPT_PATH\" >/dev/null"
+RUN_CMD="\"$CLI_BIN\" run \"$SCRIPT_PATH\" >/dev/null"
 WASM_CMD="WASMTIME_BIN=\"$WASMTIME_BIN\" \"$WASMTIME_RUN\" --invoke _start \"$WASM_OUT\" >/dev/null"
 
 if command -v hyperfine >/dev/null 2>&1; then
-  hyperfine --warmup 3 "$INTERP_CMD" "$WASM_CMD"
+  hyperfine --warmup 3 "$RUN_CMD" "$WASM_CMD"
 else
   echo "hyperfine not found; using /usr/bin/time (10 runs each)"
-  echo "[interp]"
+  echo "[run]"
   for _ in $(seq 1 10); do
-    /usr/bin/time -p bash -c "$INTERP_CMD"
+    /usr/bin/time -p bash -c "$RUN_CMD"
   done
   echo "[wasmtime]"
   for _ in $(seq 1 10); do

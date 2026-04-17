@@ -244,7 +244,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 
 ## モジュール分離
 
-- [ ] ルート制約の緩和（兄弟ディレクトリ import 許可）
+- [x] ルート制約の緩和（兄弟ディレクトリ import 許可）
 - [ ] `vibe/types/`, `vibe/parser/` の分離
 
 ## Self-Host Compiler
@@ -295,7 +295,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
   - [x] `run/test` の明示 interpreter backend も削除する
   - [x] `bench --backend interpreter` を削除する
   - [x] `bench` の legacy expr mode (`--expr`, `--case`, `--cases`) を削除する
-- [ ] compiled parity が揃ったので evaluator / interpreter 実装を削除
+- [x] compiled parity が揃ったので evaluator / interpreter 実装を削除
   - [x] `wasm-shell-stdin` で scalar let / late import / bool 行が stateful に動く
   - [x] 関数値 `let` 束縛は placeholder 表示に degrade して shell を継続する
   - [x] String 値は compiled REPL の repr transport で表示する
@@ -305,18 +305,20 @@ linked debug build を selfhost でも生成するには以下の移植が必要
   - [x] `cli_repl_js` の evaluator 依存を廃止する
   - [x] public CLI の `--syntax posix-*` shell 導線を閉じる
   - [x] `eval` command を public CLI から外す
-  - [ ] `src/runtime/lib.mbt` の `Runtime::eval_script_with_mode` caller を 0 にする
-  - [ ] host / selfhost evaluator 実装と専用 test を削除する
+  - [x] active runtime surface / docs から `Runtime::eval_script_with_mode` 記述を外す
+  - [x] host / selfhost evaluator 実装と専用 test を削除する
   - [x] 不要になった selfhost fixture smoke test を削除する
     - [x] `vibe/compiler/fixture_selfhost_test.vibe`
     - [x] `vibe/compiler/fixture_selfhost_roundtrip_test.vibe`
     - [x] `vibe/compiler/fixture_parse_test_support.vibe`
-  - [ ] 不要になった interpreter/evaluator 専用 test を棚卸しして段階削除する
-    - [ ] `vibe/compiler/eval_*` の fixed-string smoke / wrapper test を分類する
-    - [ ] `test-selfhost-cache-probe` を compiled-only の gate へ載せ替えるか、release gate から外したまま整理する
-    - [ ] `vibe/compiler/fixture_*_test_support.vibe` の export 面を絞って、重複 fixture test を減らす
-    - [ ] host / selfhost で重複している evaluator smoke test を mainline test に統合する
-    - [ ] coverage / bootstrap gate に必要な test だけ残す
+  - [x] 不要になった interpreter/evaluator 専用 test を棚卸しして段階削除する
+    - [x] `src/runtime/eval_effects_wbtest.mbt` を削除し、compiled shell / scratch-db 側の coverage に寄せる
+    - [x] `src/tests/vibe_wasm_eval_test.mbt` の interpreter parity 前提を外し、WASM decode / effect capture の mainline test に寄せる
+    - [x] `vibe/compiler/eval_*` の fixed-string smoke / wrapper test は削除済みで、fixture/mainline test 側へ整理した
+    - [x] `test-selfhost-cache-probe` は standalone probe のまま維持し、release gate から外して運用する
+    - [x] `vibe/compiler/fixture_*_test_support.vibe` の export 面は `parse_ok` / `roundtrip_ok` / `parse_fixture_spec` に絞り、fixture test を集約した
+    - [x] host / selfhost で重複していた evaluator smoke test は削除済みで、compiled mainline test (`src/tests/vibe_wasm_eval_test.mbt` / CLI scratch-db coverage) へ統合した
+    - [x] coverage / bootstrap gate は compiled-only 前提に揃え、古い interpreter backend 前提を除去した
 
 ## Release 運用メモ
 
@@ -327,6 +329,6 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 ## ユーザビリティ改善
 
 - [x] 軽量 struct リテラル sugar `Type { ... }`
-- [ ] `String` を `for-in` 対象にする
+- [x] `String` を `for-in` 対象にする
 - [x] トレイトにメソッドシグネチャを許可 (trait Name { method(Type) -> Type })
 - [x] `?` 演算子 (expr? → handle { expr } with Error { Throw(e) => throw(e) })

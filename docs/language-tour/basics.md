@@ -225,15 +225,15 @@ let sum = "result: \(add(1, 2))" // => "result: 3"
 
 ```vibe
 type Pair = (Int, Int)
-type IntResult = Result[Int]
+type IntResult = Result[Int, String]
 ```
 
 ### enum
 
 ```vibe
-enum Result[T] {
+enum Result[T, E] {
   Ok(T);
-  Err
+  Err(E)
 }
 
 enum Color {

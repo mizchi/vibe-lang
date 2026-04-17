@@ -395,7 +395,7 @@ fn repl_collect_local_symbols_rows(
     let entry = item.entry
     let address = match rt.get_addr(entry.name) {
       Some(addr) => addr
-      None => eval_scope_symbol_id_from_entry(entry)
+      None => scratch_scope_symbol_id_from_entry(entry)
     }
     out.push({
       scope: "local",
@@ -1701,7 +1701,7 @@ fn handle_repl_meta_command(
     ":help" => {
       print_line("Available commands:")
       print_line("  :help            Show this help message")
-      print_line("  :q/:quit/:exit   Exit the REPL")
+      print_line("  :q/:quit/:exit   Exit the shell")
       print_line("  :view <symbol>   View symbol definition")
       print_line("  :outline [target] Show symbol outline")
       print_line("  :peek <symbol>   Peek at symbol definition")
@@ -2495,7 +2495,7 @@ fn resolve_repl_initial_source(
   restore_namespace : Bool,
 ) -> Result[String, String] {
   if restore_namespace {
-    load_eval_db_source(scratch_db_path)
+    load_scratch_db_source(scratch_db_path)
   } else {
     Ok("")
   }
@@ -2942,7 +2942,7 @@ fn repl_try_compiled_display(wasm_path : String) -> String? {
 ///|
 fn repl_build_compiled_source(scratch_source : String, line : String) -> String {
   let buf = StringBuilder::new()
-  let base = append_eval_db_source(scratch_source, line)
+  let base = append_scratch_db_source(scratch_source, line)
   buf.write_string(base)
   if not(base.has_suffix("\n")) {
     buf.write_string("\n")
@@ -3060,7 +3060,7 @@ fn run_compiled_repl_line_with_cache(
   }
   let total_us = @bench.monotonic_clock_end(total_start).to_int()
   Ok({
-    next_source: append_eval_db_source(scratch_source, line),
+    next_source: append_scratch_db_source(scratch_source, line),
     value,
     display_override,
     load_us,
@@ -3151,10 +3151,10 @@ fn run_compiled_shell_line(
     None => repl_print_wasm_run_value(exec.value, print_line)
   }
   let next_source = exec.next_source
-  match write_eval_db_source(scratch_db_path, next_source) {
+  match write_scratch_db_source(scratch_db_path, next_source) {
     Ok(_) => ()
     Err(err) => {
-      print_line("error: failed to persist namespace db: " + err)
+      print_line("error: failed to persist scratch-db: " + err)
       return scratch_source
     }
   }
@@ -3359,7 +3359,7 @@ fn print_ai_symbols(
   scratch_source : String,
   print_line? : (String) -> Unit = fn(s) { println(s) },
 ) -> Unit {
-  let symbols = collect_eval_scope_symbols(scratch_db_path, scratch_source)
+  let symbols = collect_scratch_scope_symbols(scratch_db_path, scratch_source)
   if symbols.length() > 0 {
     print_line("symbols:")
     for symbol in symbols {

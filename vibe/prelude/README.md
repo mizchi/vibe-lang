@@ -208,7 +208,7 @@ vibe --unstable-threads run my_threaded_app.vibe
 ## Running Tests
 
 ```bash
-# Run in interpreter
+# Run with the default compiled backend
 just run test \
   vibe/prelude/builtin_traits_test.vibe \
   vibe/prelude/bool_test.vibe \
@@ -233,7 +233,7 @@ wasmtime run --invoke _start /tmp/test.wasm  # -> 484 (untagged: 121)
 ## Notes
 
 - `vibe/prelude/test_import.vibe` is only for compilation validation (no `test` blocks).
-- `vibe/prelude/io.vibe` depends on `string_*` builtins, so it is primarily interpreter-oriented rather than pure Core WASM (`--wasm`) today.
+- `vibe/prelude/io.vibe` depends on runtime builtins, so it is exercised via the native/compiled test path rather than pure Core WASM (`--wasm`) today.
 - `vibe/prelude/threads.vibe` では runtime wrappers
   (`probe_wat` / `runtime_hints` / `channel_new` / `spawn` / `send` / `recv` / `wait`)
   の実行に `--unstable-threads` が必要。

@@ -224,9 +224,19 @@ fn build_http_host_run_command(
   runner : HttpHostRunner,
   wasm_path : String,
 ) -> String {
-  build_http_host_run_command_with_invokes(runner, wasm_path, [
-    cli_tagged_run_export_name,
-  ])
+  let cmd = StringBuilder::new()
+  cmd.write_string(shell_quote_command_arg(runner.node_bin))
+  for flag in runner.node_flags {
+    cmd.write_string(" ")
+    cmd.write_string(shell_quote_command_arg(flag))
+  }
+  cmd.write_string(" ")
+  cmd.write_string(shell_quote_command_arg(runner.runner_script))
+  cmd.write_string(" --invoke ")
+  cmd.write_string(cli_tagged_run_export_name)
+  cmd.write_string(" ")
+  cmd.write_string(shell_quote_command_arg(wasm_path))
+  cmd.to_string()
 }
 
 ///|
@@ -698,7 +708,7 @@ fn compile_module_wasm_for_exec(
     no_dce=false,
     opt_level=None,
     // Preserve thrown string payloads for `handle { ... } with Error { Throw(msg) => ... }`
-    // parity with interpreter on compiled execution paths.
+    // across compiled CLI execution paths.
     debug_errors=true,
     http_host_imports~,
     fs_host_imports~,

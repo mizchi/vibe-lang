@@ -6,12 +6,12 @@
 
 ## K-001: Pure cache と effect 関数の相互作用
 
-- 場所: `src/checker/purity.mbt`, `src/runtime/eval.mbt`
+- 場所: `src/checker/purity.mbt`, `src/runtime/store.mbt`
 - 発見: 2026-02
 
 ### 背景
 
-vibe ランタイムは pure 関数の結果を content-addressed cache に保存する（`eval_user_call` の `pure_cache`）。同じ引数で呼ばれた pure 関数は cache から即座に返される。
+vibe ランタイムは pure 関数の結果を content-addressed cache に保存する。旧 evaluator では `eval_user_call` の `pure_cache`、現行 runtime では `Runtime` の `pure_cache` がその保持場所だった。同じ引数で呼ばれた pure 関数は cache から即座に返される。
 
 ### 問題
 
@@ -23,7 +23,7 @@ export let exists = (path: String) -> Bool with { Fs } {
 }
 ```
 
-この関数は `fn_val.pure = true` になり、同じ `path` で2回呼ぶと2回目は cache から stale な結果が返った。
+旧 evaluator ではこの関数が `fn_val.pure = true` になり、同じ `path` で2回呼ぶと2回目は cache から stale な結果が返った。
 
 ```vibe
 let before = do { exists(path) }  // true (実行)
@@ -69,16 +69,16 @@ vibe には2つの独立した purity 系統がある:
 
 ---
 
-## K-003: インタプリタの loop fuel
+## K-003: 旧 interpreter の loop fuel
 
-- 場所: `src/runtime/eval.mbt`, `src/runtime/store.mbt`
+- 場所: `src/runtime/eval.mbt` (削除済み), `src/runtime/store.mbt` (当時の補助設定)
 - 発見: 2026-02
 
 ### 背景
 
-`eval_while_expr` と `eval_loop_expr` に反復上限がなく、`while true {}` で CPU 300% (3スレッド: メイン + MoonBit GC) の暴走が発生。
+旧 interpreter の `while` / `loop` 実行系に反復上限がなく、`while true {}` で CPU 300% (3スレッド: メイン + MoonBit GC) の暴走が発生。
 
-### 設計
+### 当時の設計
 
 - デフォルト fuel: **100,000** 反復
 - 環境変数 `VIBE_LOOP_FUEL` で上書き可能
@@ -95,10 +95,15 @@ vibe には2つの独立した purity 系統がある:
 
 インタプリタの1反復あたりオーバーヘッドが大きいため、重い計算は WASM コンパイル実行を使う方針。
 
+### 現状
+
+- compiled-only execution surface への移行に伴い、interpreter/evaluator 本体と `VIBE_LOOP_FUEL` は active runtime surface から削除済み。
+- この項目は「探索用 backend でも runaway guard が必要だった」という履歴として残す。
+
 ### 教訓
 
-- インタプリタは簡易テスト・REPL 向け。ベンチマーク等は `BenchBackend::Wasm` がデフォルト。
-- `fork_for_test` でも fuel をリセットする（テストごとに独立した fuel 予算）。
+- exploratory backend でも無限ループ対策は必要。
+- 廃止済み runtime knob を public / active surface に残さない。
 
 ---
 
@@ -381,7 +386,7 @@ driver 返り値を配列で作る際、`[roundtrip(...), ...]` 形式が parser
 - driver の集約結果は array ではなく tuple で返す
 - 追加の高速化（2026-03-02）:
   - `vibe/compiler/printer.vibe`: `join` / `escape_string` を builder ベースに変更
-  - `src/runtime/eval.mbt`: `String::length` / `String::char_code_at` / `String::substring` / `String::concat` / `Array::length` / `Array::get` にホットパス追加
+  - 旧 interpreter runtime: `String::length` / `String::char_code_at` / `String::substring` / `String::concat` / `Array::length` / `Array::get` にホットパス追加
   - `vibe/compiler/lexer.vibe`: `keyword_lookup` を length + 先頭文字ディスパッチに変更
 
 ### 効果
@@ -417,7 +422,7 @@ driver 返り値を配列で作る際、`[roundtrip(...), ...]` 形式が parser
 
 ### 教訓
 
-- interpreter 上の selfhost 系 probe は、CI の常時実行では **smoke/full を分離**すべき。
+- 当時の interpreter 上の selfhost 系 probe は、CI の常時実行では **smoke/full を分離**すべきだった。
 - parser の曖昧構文（特に `[` 起点）に触れる生成コードは、最小ケースでも parse check を先に行うと切り分けが速い。
 - full 高速化は「MoonBit 側 typechecker の equality 畳み込み」より、**vibe selfhost 側の lexer/printer/types の実行コスト削減**が支配的。
 
@@ -569,7 +574,7 @@ top-level 関数が他の top-level 関数を機械的に capture すると、�
     - 省略時は `*`（developer preset 相当）
     - 空文字は deny-all
     - 例: `8080,3000,*`
-  - `can_connect_any` / `can_listen_any` は interpreter 契約に合わせて「該当 capability が1件でもあれば true」。
+- `can_connect_any` / `can_listen_any` は旧 runtime 契約に合わせて「該当 capability が1件でもあれば true」。
 - `moon run --target native src/cmd/vibe -- ...` 経路では、`die()` が内部で使う `exit(1)` の終了コードが script から安定して観測できないケースがある。
   - policy gate（`scripts/test_compiled_backend_http_policy.sh`）は `vibe.exe` 直実行に切り替えて終了コード判定を安定化。
 

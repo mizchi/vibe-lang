@@ -11,7 +11,7 @@ Source: TODO.md "P0 [done 2026-02-10]: Add PosixMode command-head desugar diagno
 
 - `--syntax posix` で未解決のベア識別子（例: `ls`）は `sh_lines("ls")` にデシュガーされる
 - デシュガー時に `note: posix-mode command-head desugar: ...` の明示的ノートを出力
-- `run`/`repl` 出力でマイグレーション動作が可視化される
+- `run`/`shell-stdin` 出力でマイグレーション動作が可視化される
 
 ## 背景・理由
 
@@ -23,4 +23,4 @@ POSIX モードでは通常の変数参照とコマンド実行の区別が曖�
 
 ## テスト
 
-- `run`/`repl` 出力における `note: posix-mode command-head desugar` メッセージの確認
+- `run`/`shell-stdin` 出力における `note: posix-mode command-head desugar` メッセージの確認

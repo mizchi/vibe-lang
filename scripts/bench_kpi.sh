@@ -5,21 +5,32 @@ set -euo pipefail
 trap 'trap - EXIT; kill -- -$$ 2>/dev/null || true' INT TERM
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-VIBE_CLI_RELEASE=1 source "$ROOT_DIR/scripts/ensure_native_cli.sh"
-CLI_BIN="$VIBE_CLI_BIN"
 REPORT_DIR="${VIBE_BENCH_KPI_DIR:-$ROOT_DIR/dist/bench_kpi}"
 REPORT_FILE="${VIBE_BENCH_KPI_REPORT:-$REPORT_DIR/latest.tsv}"
 N_RAW="${VIBE_BENCH_KPI_N:-}"
 WARMUP_RAW="${VIBE_BENCH_KPI_WARMUP:-}"
 BACKEND="${VIBE_BENCH_KPI_BACKEND:-compiled}"
+BACKEND_LABEL="$BACKEND"
 MAX_PER_US="${VIBE_BENCH_KPI_MAX_PER_US:-}"
 MAX_WASM_BYTES="${VIBE_BENCH_KPI_MAX_WASM_BYTES:-}"
 MAX_SCORE="${VIBE_BENCH_KPI_MAX_SCORE:-}"
 
-if [[ "$BACKEND" != "compiled" && "$BACKEND" != "wasm" && "$BACKEND" != "interpreter" ]]; then
-  echo "bench-kpi: invalid backend: $BACKEND (expected compiled|interpreter)" >&2
+if [[ "$BACKEND" == "interpreter" ]]; then
+  echo "bench-kpi: interpreter backend was removed; use compiled (or wasm alias)." >&2
   exit 2
 fi
+
+if [[ "$BACKEND" != "compiled" && "$BACKEND" != "wasm" ]]; then
+  echo "bench-kpi: invalid backend: $BACKEND (expected compiled|wasm)" >&2
+  exit 2
+fi
+
+if [[ "$BACKEND" == "wasm" ]]; then
+  BACKEND_LABEL="compiled"
+fi
+
+VIBE_CLI_RELEASE=1 source "$ROOT_DIR/scripts/ensure_native_cli.sh"
+CLI_BIN="$VIBE_CLI_BIN"
 
 if [[ -n "$N_RAW" ]]; then
   N="$N_RAW"
@@ -51,7 +62,7 @@ else
 fi
 printf '%s\n' "$bench_out"
 
-printf '%s\n' "$bench_out" | awk -v backend_name="$BACKEND" '
+printf '%s\n' "$bench_out" | awk -v backend_name="$BACKEND_LABEL" '
 BEGIN {
   OFS = "\t"
   print "path", "name", "backend", "iterations", "elapsed_ms", "per_us", "wasm_bytes", "size_x_latency"

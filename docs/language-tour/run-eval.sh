@@ -1,12 +1,12 @@
 #!/bin/bash
-# vibe shell evaluation runner
+# vibe shell/run evaluation runner
 # Usage: ./run-eval.sh [eval-tasks.json] [output-dir]
 #
-# Runs each task from eval-tasks.json through vibe shell or vibe run,
+# Runs each task from eval-tasks.json through vibe shell-stdin or vibe run,
 # captures output, checks expected results, and generates a report.
 #
 # Task modes:
-#   "shell" - pipe input to vibe shell (REPL, line-by-line)
+#   "shell" - pipe input to vibe shell-stdin (line-by-line)
 #   "run"   - write temp .vibe file and run with vibe run
 
 set -euo pipefail
@@ -35,7 +35,7 @@ PASS=0
 FAIL=0
 ERROR=0
 
-echo "=== vibe eval: $TIMESTAMP ==="
+echo "=== vibe shell-stdin/run: $TIMESTAMP ==="
 echo ""
 
 TASK_COUNT=$(jq length "$TASKS_FILE")
@@ -56,7 +56,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   set +e
   if [ "$TASK_MODE" = "run" ] || [ "$TASK_MODE" = "test" ]; then
     # Write temp file and run with vibe run/test
-    TMPFILE=$(mktemp /tmp/vibe_eval_XXXXXX.vibe)
+    TMPFILE=$(mktemp /tmp/vibe_script_XXXXXX.vibe)
     printf '%s\n' "$TASK_INPUT" > "$TMPFILE"
     cd "$VIBE_ROOT"
     VIBE_CMD="run"
@@ -71,9 +71,9 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     wait $WATCHDOG 2>/dev/null || true
     rm -f "$TMPFILE"
   else
-    # Pipe to vibe shell
+    # Pipe to vibe shell-stdin
     cd "$VIBE_ROOT"
-    printf '%s\n' "$TASK_INPUT" | vibe shell 2>"$TASK_ERROR_FILE" | \
+    printf '%s\n' "$TASK_INPUT" | vibe shell-stdin --no-prompt 2>"$TASK_ERROR_FILE" | \
       grep -v '^vibe-lang>' | grep -v '^$' > "$TASK_OUTPUT_FILE" 2>&1 &
     BGPID=$!
     ( sleep 10 && kill $BGPID 2>/dev/null ) &

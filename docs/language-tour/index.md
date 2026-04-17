@@ -7,7 +7,7 @@ vibe is an ML-like statically typed scripting language with shell integration, t
 ```bash
 vibe run file.vibe       # Run a script (evaluates the final top-level pure expression)
 vibe test file.vibe      # Run tests in a file
-vibe shell               # Interactive REPL (PosixMode)
+vibe shell               # Interactive shell (PosixMode)
 vibe bench file.vibe     # Run benchmarks
 vibe check file.vibe     # Type check
 ```

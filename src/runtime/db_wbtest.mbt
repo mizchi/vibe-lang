@@ -51,6 +51,49 @@ test "type query resolves extensionless directory import to index.vibe" {
 }
 
 ///|
+test "type query resolves cross-directory transitive dependency through sibling index" {
+  let db = VibeDb::new()
+  db.set_source("/project/x/index.vibe", "export let version = \"0.1.0\"\n")
+  db.set_source(
+    "/project/x/regexp/index.vibe",
+    "export ./regexp.vibe { compile }\n" + "export { compile }\n",
+  )
+  db.set_source(
+    "/project/x/regexp/regexp.vibe", "export let compile = (s: String) -> String { s }\n",
+  )
+  db.set_source(
+    "/project/x/url/pattern.vibe",
+    "import ../regexp { compile }\n" +
+    "export let make_pattern = (s: String) -> String { compile(s) }\n",
+  )
+  db.set_source(
+    "/project/x/url/index.vibe",
+    "export ./pattern.vibe { make_pattern }\n" + "export { make_pattern }\n",
+  )
+  db.set_source(
+    "/project/x/url_test.vibe",
+    "import ./url { make_pattern }\n" + "let x = make_pattern(\"x\")\n" + "x\n",
+  )
+  let env = db.types("/project/x/url_test.vibe")
+  let diags = db.diagnostics("/project/x/url_test.vibe")
+  if not(diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected diagnostics: " + lines.join(","))
+  }
+  match env.get_scheme("x") {
+    Some(scheme) =>
+      match scheme.ty {
+        @core.Type::String => ()
+        _ => fail("expected String scheme for x")
+      }
+    None => fail("expected imported symbol type for x")
+  }
+}
+
+///|
 test "type query keeps re-exported value return type through directory index" {
   let db = VibeDb::new()
   db.set_source(

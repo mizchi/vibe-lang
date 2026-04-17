@@ -26,14 +26,13 @@ Parser dispatch is explicit:
 - parser-consuming CLI commands accept `--syntax vibe`.
 - default is `--syntax vibe`.
 - static/compile-oriented commands (`check`, `test`, `compile`, `hash`, `save`,
-  `fetch`, `update-lock`, `bench-file`, `wasm-repl-stdin`) remain vibe-only.
+  `fetch`, `update-lock`, `bench-file`, `wasm-shell-stdin`) remain vibe-only.
 - non-`vibe` syntax values are rejected by the public CLI.
-- Runtime API preview remains available for internal/runtime tests:
-  `Runtime::eval_script_with_mode(script, PosixMode)` supports vibe shell-style
-  command-head desugaring (`ls` -> `sh_lines("ls")`).
+- Internal PosixMode preprocessing/desugar remains available for
+  shell-style command-head preview (`ls` -> `sh_lines("ls")`).
 - In internal `PosixMode`, each unresolved bare identifier command-head rewrite
   emits a runtime note (`note: posix-mode command-head desugar: ...`) so
-  migration behavior is explicit in `run`/`repl` output.
+  migration behavior is explicit in `run`/`shell-stdin` output.
 
 Reserved leading keyword detection (`let`, `fn`, `type`, `effect`, `import`,
 `test`, `handle`, `throw`) exists as helper logic only and does not switch parser modes.
@@ -87,7 +86,7 @@ Rules:
   - `sleep(...)` requires `{Async}`
 - Runtime gate (current CLI behavior):
   - `sleep(...)`, `yield` execution is disabled by default.
-  - enable with `--unstable-async` (`vibe run/test/repl/bench ...`).
+  - enable with `--unstable-async` (`vibe run/test/shell/bench ...`).
   - `Threads::probe_wat()` execution is disabled by default.
   - `Threads::runtime_hints()` execution is disabled by default.
   - enable with `--unstable-threads`.
@@ -273,7 +272,7 @@ String (aligned with wasm js-string builtins when using `--wasm-js-string`):
 
 StdIO (wasi stream primitives for wasm/component-friendly interop):
 - `sh_lines(cmd)` -> `Array[String]` with `{Stdout}`.
-  Current interpreter executes a builtin command subset (`ls`, `cat`, `echo`)
+  Current host runtime executes a builtin command subset (`ls`, `cat`, `echo`)
   and returns output lines while also recording `ShellExec(cmd)` effect.
 - `Stdout::write_char(code)` -> `Unit` with `{Stdout}`
 - `Stdout::write_stream(text)` -> `Unit` with `{Stdout}` (chunk write)
@@ -782,8 +781,8 @@ Notes:
 - Optional name form: `test "name" { ... }` (label only).
 Runtime API:
 - `Runtime::run_script_tests(script)` parses, type-checks, and runs tests with isolated envs.
-- `Runtime::eval_script_with_mode(script, PosixMode)` remains as an internal
-  runtime API for preview shell-style command-head desugaring.
+- Internal PosixMode preprocessing/desugar remains available for preview
+  shell-style command-head rewriting in runtime tests.
 CLI:
 - `moon run --target native src/cmd/vibe -- run <file>` executes a script (ignores `test {}`).
 - `moon run --target native src/cmd/vibe -- eval ...` was removed from the public CLI.
@@ -794,10 +793,9 @@ CLI:
   - `vibe_compile_wasi` only: `--wasm` prefers `wasm-gc`; use `--wasm-mvp` for core wasm backend (broader language coverage).
   - selfhost compiler boundary: compile logic stays in `vibe/compiler/*`; filesystem / environ / stdio stay in the host wrapper (`src/cmd/vibe_compile_wasi`). See ADR-0028.
 - Public CLI parser-consuming commands support `--syntax vibe` only.
-- `moon run --target native src/cmd/vibe -- repl` launches the TUI interactive shell (completion + layout, history).
-- `moon run --target native src/cmd/vibe -- repl-stdin [--no-prompt]` reads lines from stdin and evaluates them.
-- `moon run --target native src/cmd/vibe -- repl-wasi [--no-prompt] [--tty|--no-tty]` runs line REPL with wasi-style prompt/tty options.
-- `moon build --target wasm src/cmd/vibe_wasi` builds a wasm line REPL wired to preview2 imports (`wasi:cli/stdin|stdout`, `wasi:io/streams`).
+- `moon run --target native src/cmd/vibe -- shell` launches the TUI interactive shell (completion + layout, history).
+- `moon run --target native src/cmd/vibe -- shell-stdin [--no-prompt]` reads lines from stdin and evaluates them.
+- `moon run --target native src/cmd/vibe -- wasm-shell-stdin [--no-prompt] [-o dir]` compiles each entered line to a separate WASM file for pipeline testing.
 - `moon build --target wasm src/cmd/vibe_compile_wasi` builds wasm compiler CLI (filesystem side is abstracted via `src/io.FileSystemAdapter`).
 - `just component-run script.vibe` builds a stdio-capable component and runs it via wasmtime (`--invoke 'run()'`).
 - `just component-run-moonix script.vibe` builds the same component and runs it via moonix.
@@ -826,20 +824,20 @@ Fixtures:
 Bench:
 - `just bench-wasmtime` builds `cmd/vibe`, compiles `bench/bench_simple.vibe` to wasm,
   then benchmarks `wasmtime run --invoke _start`.
-- `just bench-compare` compares interpreter (`cmd/vibe run`) vs `wasmtime run`.
+- `just bench-compare` compares source `vibe run` vs `wasmtime run`.
 - `just bench-kpi [<file|dir...>]` runs `vibe bench` and writes a combined KPI report
   (`per_us` + `wasm_bytes`) to `dist/bench_kpi/latest.tsv`.
   - Default target (no args): `bench/kpi_bench.vibe` with numeric pipeline/state-mix cases.
-  - Default iterations/warmup: `wasm=20000/1000`, `interpreter=2000/200`.
+  - Default iterations/warmup: `compiled=20000/1000`.
   - `VIBE_BENCH_KPI_N` / `VIBE_BENCH_KPI_WARMUP` to tune iterations.
   - Optional thresholds: `VIBE_BENCH_KPI_MAX_PER_US`,
     `VIBE_BENCH_KPI_MAX_WASM_BYTES`, `VIBE_BENCH_KPI_MAX_SCORE`.
 - 言語組み込み benchmark:
   - `bench "name" { ... }` を `.vibe` に書き、`vibe bench <file|dir...>` で実行。
-  - backend は `--backend wasm` のみ（`<file|dir...>` 指定時のデフォルトも `wasm`）。
+  - backend の canonical surface は `--backend compiled`（`--backend wasm` は互換 alias）。
   - ディレクトリ指定時は top-level の `*_bench.vibe` を探索。
   - `--n` / `--warmup` は benchmark 実行回数に適用。
-  - `--backend wasm` はサイズ優先で `--no-dce -Oz` 相当のコンパイルを使い、出力に `wasm_bytes=<size>` を含める。
+  - compiled bench path はサイズ優先で `--no-dce -Oz` 相当のコンパイルを使い、出力に `wasm_bytes=<size>` を含める。
 - 互換の expression benchmark モード（legacy）:
   - legacy expr mode (`--expr`, `--case`, `--cases`) は廃止
   - `bench {}` を含む `.vibe` file を `vibe bench <file>` で実行する
@@ -847,8 +845,7 @@ Bench:
   `refs/bit/index/<scope>/graph/head`.
 - `vibe index ref push-delta <scope> <delta-file>` / `pull-delta <scope> <out-file>` maps advanced graph deltas to
   `refs/bit/index/<scope>/graph/wal_head`.
-- `just bench-cmd-latency` compares per-command latency between interpreter and a
-  resident wasmtime instance.
+- `just bench-cmd-latency` is a backward-compatible alias of `just bench-compare`.
 - `just bench-scratch-workflow` benchmarks scratch workflow stages
   (`eval` / `finalize` / `export+apply` / `full`) and supports:
   - `VIBE_BENCH_SCENARIOS=all|eval|finalize|export_apply|full` (comma-separated)
@@ -891,7 +888,7 @@ Bench:
 
 ### WASM backend gaps (for shell usage)
 
-- No persistent evaluator API (only a single `run` export; no REPL-style eval).
+- No persistent evaluator API (only a single `run` export; no shell-session eval API).
 - No `import` statements; no qualified names or qualified calls.
 - Builtins are limited to fixed-arity core ops (`+/-/==/<` on `Int`,
   `not/and/or` on `Bool`, plus `path/sh`; internally lowered to
@@ -1010,7 +1007,7 @@ Int | Float | Double | Bool | String | @core.Path | Unit
 - Tests and import/export metadata are excluded from hash input.
 - `i32`/`f32`/`f64` surface aliases normalize to `Int`/`Float`/`Double`.
 
-## Compile + run (prototype)
+## Compile + run
 
 - `compile_module(db, path)`:
   - parse + type check
@@ -1018,5 +1015,7 @@ Int | Float | Double | Bool | String | @core.Path | Unit
   - rewrite imports to hash refs
   - serialize canonical S-expression IR
   - compute Git blob `sha1` and module ref
-- `Runtime::run_compiled(compiled)`:
-  - executes via interpreter (WASM backend is a prototype codegen)
+- Public execution path (`vibe run` / `vibe test` / `vibe shell`):
+  - uses compiled execution as the default surface
+  - prepares host runtime state (for example type/import metadata) around the
+    generated module before execution
