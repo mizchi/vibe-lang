@@ -325,11 +325,65 @@ fn load_sources_recursive_impl(
               }
             }
           }
+          @vibe_core.ModuleRef::Alias(name~) => {
+            let index_path = @vibe_fs.normalize_path(base + "/index.vibe")
+            if !visited.contains(index_path) {
+              match @io.read_string_with(fs, index_path) {
+                Ok(index_src) => db.set_source(index_path, index_src)
+                Err(_) => ()
+              }
+            }
+            let alias_source = match resolve_alias_to_source(base, name, fs) {
+              Ok(resolved_source) => resolved_source
+              Err(err) => {
+                let _ = stack.pop()
+                return Err(err)
+              }
+            }
+            match alias_source {
+              @vibe_core.ModuleRef::Path(path~) => {
+                let resolved = match
+                  @codebase.resolve_import_path_with_registry(
+                    base, path, root, registry_modules,
+                  ) {
+                  Ok(v) => v
+                  Err(err) => {
+                    let _ = stack.pop()
+                    return Err(err)
+                  }
+                }
+                if resolved.has_suffix(".wasm") {
+                  if !visited.contains(resolved) {
+                    visited.set(resolved, true)
+                    let wasm_bytes = match @io.read_bytes_with(fs, resolved) {
+                      Ok(v) => v
+                      Err(err) => {
+                        let _ = stack.pop()
+                        return Err("io: " + err)
+                      }
+                    }
+                    db.set_binary_source(resolved, wasm_bytes)
+                  }
+                } else {
+                  match
+                    load_sources_recursive_impl(
+                      db, resolved, visited, stack, fs, root, registry_modules,
+                    ) {
+                    Ok(_) => ()
+                    Err(err) => {
+                      let _ = stack.pop()
+                      return Err(err)
+                    }
+                  }
+                }
+              }
+              _ => ()
+            }
+          }
           @vibe_core.ModuleRef::Hash(..)
           | @vibe_core.ModuleRef::Version(..)
           | @vibe_core.ModuleRef::Symbol(..)
           | @vibe_core.ModuleRef::PinnedPath(..) => ()
-          @vibe_core.ModuleRef::Alias(..) => ()
         }
       }
       _ => ()
@@ -343,6 +397,29 @@ fn load_sources_recursive_impl(
   }
   let _ = stack.pop()
   Ok(())
+}
+
+///|
+fn preparsed_source_hash_and_module_ref(
+  db : @runtime.VibeDb,
+  resolved : String,
+) -> (String?, String?) {
+  let source_hash = if resolved.has_suffix(".wasm") {
+    match @ripple.Input::get(db.inputs.binary_sources, db.rt, resolved) {
+      Some(content) => Some(@vibe_core.git_blob_hash_bytes(content))
+      None => None
+    }
+  } else {
+    match db.get_source(resolved) {
+      Some(content) => Some(@vibe_core.content_address_hash_string(content))
+      None => None
+    }
+  }
+  let module_ref = match source_hash {
+    Some(hash) => Some(@vibe_core.module_ref_from_hash(hash))
+    None => None
+  }
+  (source_hash, module_ref)
 }
 
 ///|
@@ -371,19 +448,9 @@ fn build_preparsed_path_import_specs(
               Ok(v) => v
               Err(_) => return None
             }
-            let source_hash = if resolved.has_suffix(".wasm") {
-              None
-            } else {
-              match db.get_source(resolved) {
-                Some(content) =>
-                  Some(@vibe_core.content_address_hash_string(content))
-                None => None
-              }
-            }
-            let module_ref = match source_hash {
-              Some(hash) => Some(@vibe_core.module_ref_from_hash(hash))
-              None => None
-            }
+            let (source_hash, module_ref) = preparsed_source_hash_and_module_ref(
+              db, resolved,
+            )
             out.push(
               @runtime.make_import_spec(
                 resolved,
@@ -411,19 +478,9 @@ fn build_preparsed_path_import_specs(
               Ok(v) => v
               Err(_) => return None
             }
-            let source_hash = if resolved.has_suffix(".wasm") {
-              None
-            } else {
-              match db.get_source(resolved) {
-                Some(content) =>
-                  Some(@vibe_core.content_address_hash_string(content))
-                None => None
-              }
-            }
-            let module_ref = match source_hash {
-              Some(hash) => Some(@vibe_core.module_ref_from_hash(hash))
-              None => None
-            }
+            let (source_hash, module_ref) = preparsed_source_hash_and_module_ref(
+              db, resolved,
+            )
             out.push(
               @runtime.make_import_spec(
                 resolved,

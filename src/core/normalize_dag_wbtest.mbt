@@ -67,6 +67,40 @@ fn mk_import(path : String, items : Array[String]) -> Stmt {
 }
 
 ///|
+fn mk_hash_import(hash : String, items : Array[String]) -> Stmt {
+  let import_items : Array[ImportItem] = []
+  for name in items {
+    import_items.push(ImportItem::{
+      kind: ImportKind::Value,
+      name,
+      rename: None,
+    })
+  }
+  Stmt::Import(
+    spec=ImportSpec::{ items: import_items },
+    source=ModuleRef::Hash(hash~),
+    span=s,
+  )
+}
+
+///|
+fn mk_hash_reexport(hash : String, items : Array[String]) -> Stmt {
+  let export_items : Array[ImportItem] = []
+  for name in items {
+    export_items.push(ImportItem::{
+      kind: ImportKind::Value,
+      name,
+      rename: None,
+    })
+  }
+  Stmt::ReExport(
+    spec=ImportSpec::{ items: export_items },
+    source=ModuleRef::Hash(hash~),
+    span=s,
+  )
+}
+
+///|
 test "same AST structure with different variable names produces same hash" {
   // File A: let x = 42; x
   let module_a = Module::{
@@ -245,4 +279,108 @@ test "DAG: diamond dependency produces same hash regardless of path layout" {
   assert_eq(bundle_a.main_hash, bundle_b.main_hash)
   // Both bundles should contain the same set of modules (leaf + left + right + root)
   assert_eq(bundle_a.modules.length(), bundle_b.modules.length())
+}
+
+///|
+test "collect_import_hashes keeps hashed imports and re-exports in order" {
+  let mod_ast = Module::{
+    stmts: [
+      mk_hash_import("dep-main", ["value"]),
+      mk_import("./dep.vibe", ["ignored_path"]),
+      mk_hash_reexport("dep-reexport", ["tool"]),
+      Stmt::Expr(expr=mk_int(1), span=s),
+    ],
+  }
+  let hashes = collect_import_hashes(mod_ast)
+  assert_eq(hashes.length(), 2)
+  assert_eq(hashes[0], "dep-main")
+  assert_eq(hashes[1], "dep-reexport")
+}
+
+///|
+test "expand_module respects depth limit" {
+  let leaf = Module::{ stmts: [mk_export_let("leaf", mk_int(1))] }
+  let dep = Module::{
+    stmts: [
+      mk_hash_import("leaf-hash", ["leaf"]),
+      mk_export_let("dep", mk_ident("leaf")),
+    ],
+  }
+  let main = Module::{
+    stmts: [
+      mk_hash_import("dep-hash", ["dep"]),
+      Stmt::Expr(expr=mk_ident("dep"), span=s),
+    ],
+  }
+  let load_module : (String) -> Module? = fn(hash) {
+    if hash == "main-hash" {
+      Some(main)
+    } else if hash == "dep-hash" {
+      Some(dep)
+    } else if hash == "leaf-hash" {
+      Some(leaf)
+    } else {
+      None
+    }
+  }
+
+  let depth0 = expand_module("main-hash", load_module, Some(0))
+  assert_eq(depth0.modules.length(), 1)
+  assert_eq(depth0.order, ["main-hash"])
+
+  let depth1 = expand_module("main-hash", load_module, Some(1))
+  assert_eq(depth1.modules.length(), 2)
+  assert_eq(depth1.order, ["dep-hash", "main-hash"])
+
+  let depth_all = expand_module("main-hash", load_module, None)
+  assert_eq(depth_all.modules.length(), 3)
+  assert_eq(depth_all.order, ["leaf-hash", "dep-hash", "main-hash"])
+}
+
+///|
+test "expand_module skips missing dependency hashes" {
+  let main = Module::{
+    stmts: [
+      mk_hash_import("missing-dep", ["dep"]),
+      Stmt::Expr(expr=mk_int(1), span=s),
+    ],
+  }
+  let load_module : (String) -> Module? = fn(hash) {
+    if hash == "main-hash" {
+      Some(main)
+    } else {
+      None
+    }
+  }
+  let expanded = expand_module("main-hash", load_module, None)
+  assert_eq(expanded.modules.length(), 1)
+  assert_eq(expanded.order, ["main-hash"])
+}
+
+///|
+test "expand_module handles cyclic hashes once" {
+  let main = Module::{
+    stmts: [
+      mk_hash_import("dep-hash", ["dep"]),
+      Stmt::Expr(expr=mk_ident("dep"), span=s),
+    ],
+  }
+  let dep = Module::{
+    stmts: [
+      mk_hash_import("main-hash", ["main"]),
+      mk_export_let("dep", mk_ident("main")),
+    ],
+  }
+  let load_module : (String) -> Module? = fn(hash) {
+    if hash == "main-hash" {
+      Some(main)
+    } else if hash == "dep-hash" {
+      Some(dep)
+    } else {
+      None
+    }
+  }
+  let expanded = expand_module("main-hash", load_module, None)
+  assert_eq(expanded.modules.length(), 2)
+  assert_eq(expanded.order, ["dep-hash", "main-hash"])
 }
