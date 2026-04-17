@@ -23,6 +23,18 @@
         rustToolchain = pkgs.rust-bin.stable."1.91.0".default.override {
           targets = [ "wasm32-wasip1" "wasm32-wasip2" ];
         };
+
+        # MoonBit code duplication detector (crates.io / github:mizchi/similarity)
+        similarity-mbt = pkgs.rustPlatform.buildRustPackage rec {
+          pname = "similarity-mbt";
+          version = "0.5.2";
+          src = pkgs.fetchCrate {
+            inherit pname version;
+            hash = "sha256-PTsTXYk6keh92HHbb8E3XD2qi49sg/JPwFKWzPoeqtw=";
+          };
+          cargoHash = "sha256-U5c+C99+bwCTpkEDV3nLFITmIk+n56eWQoq0oqc7qMI=";
+          doCheck = false;
+        };
       in
       {
         devShells.default = pkgs.mkShell {
@@ -44,6 +56,8 @@
             # Build tools
             pkgs.just
             pkgs.ripgrep
+            pkgs.ast-grep
+            similarity-mbt
           ];
 
           shellHook = ''
