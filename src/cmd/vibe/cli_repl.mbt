@@ -171,22 +171,12 @@ fn repl_vibe_shell_subcommand_names() -> Array[String] {
 
 ///|
 fn repl_is_vibe_shell_subcommand(name : String) -> Bool {
-  for subcommand in repl_vibe_shell_subcommand_names() {
-    if subcommand == name {
-      return true
-    }
-  }
-  false
+  repl_vibe_shell_subcommand_names().contains(name)
 }
 
 ///|
 fn repl_is_reserved_shell_command_name(name : String) -> Bool {
-  for cmd in repl_reserved_shell_command_names() {
-    if cmd == name {
-      return true
-    }
-  }
-  false
+  repl_reserved_shell_command_names().contains(name)
 }
 
 ///|
@@ -834,33 +824,50 @@ fn repl_vibe_outline_json(
 }
 
 ///|
-fn repl_vibe_view_json(
+fn repl_vibe_symbol_lookup_json(
+  command : String,
   args : Array[String],
   scratch_db_path : String,
   scratch_source : String,
+  include_snippet : Bool,
 ) -> Json {
   if args.length() != 1 {
-    return repl_vibe_error_json("view", "usage: vibe view <symbol>")
+    return repl_vibe_error_json(command, "usage: vibe " + command + " <symbol>")
   }
   let symbol = args[0]
   let matches = repl_resolve_symbol_matches(
     symbol, scratch_db_path, scratch_source,
   )
   if matches.length() == 0 {
-    return repl_vibe_error_json("view", "symbol not found: " + symbol)
+    return repl_vibe_error_json(command, "symbol not found: " + symbol)
   }
   let obj : Map[String, Json] = {}
-  obj["command"] = Json::string("view")
+  obj["command"] = Json::string(command)
   if matches.length() > 1 {
     obj["ok"] = Json::boolean(false)
     obj["error"] = Json::string("multiple matches")
     obj["query"] = Json::string(symbol)
-    obj["candidates"] = repl_symbol_matches_to_json(matches)
+    obj["candidates"] = repl_symbol_matches_to_json(
+      matches, include_snippet=include_snippet,
+    )
   } else {
     obj["ok"] = Json::boolean(true)
-    obj["item"] = repl_symbol_match_to_json(matches[0])
+    obj["item"] = repl_symbol_match_to_json(
+      matches[0], include_snippet=include_snippet,
+    )
   }
   Json::object(obj)
+}
+
+///|
+fn repl_vibe_view_json(
+  args : Array[String],
+  scratch_db_path : String,
+  scratch_source : String,
+) -> Json {
+  repl_vibe_symbol_lookup_json(
+    "view", args, scratch_db_path, scratch_source, false,
+  )
 }
 
 ///|
@@ -869,31 +876,9 @@ fn repl_vibe_peek_json(
   scratch_db_path : String,
   scratch_source : String,
 ) -> Json {
-  if args.length() != 1 {
-    return repl_vibe_error_json("peek", "usage: vibe peek <symbol>")
-  }
-  let symbol = args[0]
-  let matches = repl_resolve_symbol_matches(
-    symbol, scratch_db_path, scratch_source,
+  repl_vibe_symbol_lookup_json(
+    "peek", args, scratch_db_path, scratch_source, true,
   )
-  if matches.length() == 0 {
-    return repl_vibe_error_json("peek", "symbol not found: " + symbol)
-  }
-  let obj : Map[String, Json] = {}
-  obj["command"] = Json::string("peek")
-  if matches.length() > 1 {
-    obj["ok"] = Json::boolean(false)
-    obj["error"] = Json::string("multiple matches")
-    obj["query"] = Json::string(symbol)
-    obj["candidates"] = repl_symbol_matches_to_json(
-      matches,
-      include_snippet=true,
-    )
-  } else {
-    obj["ok"] = Json::boolean(true)
-    obj["item"] = repl_symbol_match_to_json(matches[0], include_snippet=true)
-  }
-  Json::object(obj)
 }
 
 ///|
@@ -2528,13 +2513,18 @@ struct CompiledReplExec {
 } derive(Debug, Eq)
 
 ///|
+fn compiled_repl_temp_path(ext : String) -> String {
+  "/tmp/vibe-compiled-repl-" + vibe_getpid().to_string() + "." + ext
+}
+
+///|
 fn compiled_repl_temp_source_path() -> String {
-  "/tmp/vibe-compiled-repl-" + vibe_getpid().to_string() + ".vibe"
+  compiled_repl_temp_path("vibe")
 }
 
 ///|
 fn compiled_repl_temp_wasm_path() -> String {
-  "/tmp/vibe-compiled-repl-" + vibe_getpid().to_string() + ".wasm"
+  compiled_repl_temp_path("wasm")
 }
 
 ///|

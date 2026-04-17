@@ -295,10 +295,10 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 - [ ] `src/backend/http_wasm.mbt` vs `src/backend/http_js.mbt` (30 pairs each) — backend 実装が並走。`src/backend/http_impl.mbt` 側に共通化
 - [ ] `src/benches/advanced_graph_bench.mbt` — `parse_graph_{index,delta}_{json,cbor,flexbuffer}` / `bench_graph_watch_*_{cbor,flexbuffer}` の format 軸をパラメータ化
 - [ ] `src/codegen/wasm_codegen_rc.mbt` — `emit_rc_init` / `emit_rc_init_dynamic` (98.8%), `emit_rc_dup_i64` / `emit_rc_drop_i64` (97%) を closure で差分抽出
-- [ ] `src/cmd/vibe/cli_repl.mbt` — `repl_vibe_view_json` / `repl_vibe_peek_json` (96.2%), `repl_is_vibe_shell_subcommand` / `repl_is_reserved_shell_command_name` (100%)、`compiled_repl_temp_{source,wasm}_path` (100%)
-- [ ] `src/cmd/vibe/cli_test_cmd.mbt` — `sort_test_entry_paths_for_batching` / `sort_test_entry_batch_units` を共通 sort helper へ
-- [ ] `src/runtime/db.mbt` — `set_version_ref` / `set_symbol_ref` (100%), `set_source` / `set_binary_source` (99%) の ref kind 引数化
-- [ ] `src/runtime_compile/ir_sexp.mbt` — `sort_map_fields_expr` / `sort_record_fields_expr` (100%) を generic sort helper へ
+- [x] `src/cmd/vibe/cli_repl.mbt` — `repl_vibe_view_json` / `repl_vibe_peek_json` は `repl_vibe_symbol_lookup_json` に集約、`repl_is_*` は `Array::contains` へ、`compiled_repl_temp_{source,wasm}_path` は共通 `compiled_repl_temp_path(ext)` 経由
+- [x] `src/cmd/vibe/cli_test_cmd.mbt` — `sort_test_entry_paths_for_batching` / `sort_test_entry_batch_units` を `test_entry_selection_sort[T]` 共通 helper に統合
+- [ ] `src/runtime/db.mbt` — `set_source` / `set_binary_source` (99%) の共通化（String/Bytes の差をどう吸収するか要検討）。`set_version_ref` / `set_symbol_ref` / `set_path_ref` は `set_ref` 共通 helper 経由に移行済み
+- [x] `src/runtime_compile/ir_sexp.mbt` — `sort_map_fields_expr` / `sort_record_fields_expr` / `sort_type_ctors` / `sort_record_type_keys` を `sort_by_key[T]` に統合
 - [ ] 計測を CI に載せる (`flaker` か独立 job で閾値 0.98 を回し、新規重複を検出)
 
 ## モジュール分離

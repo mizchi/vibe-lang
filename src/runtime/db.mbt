@@ -247,16 +247,17 @@ pub fn VibeDb::set_binary_source(
 }
 
 ///|
+fn VibeDb::set_ref(self : VibeDb, key : String, hash : String) -> Unit {
+  let _ = self.inputs.sources.set(self.rt, key, normalize_hash(hash))
+}
+
+///|
 pub fn VibeDb::set_version_ref(
   self : VibeDb,
   name : String,
   hash : String,
 ) -> Unit {
-  let _ = self.inputs.sources.set(
-    self.rt,
-    version_ref_key(name),
-    normalize_hash(hash),
-  )
+  self.set_ref(version_ref_key(name), hash)
 }
 
 ///|
@@ -265,12 +266,7 @@ pub fn VibeDb::set_path_ref(
   path : String,
   hash : String,
 ) -> Unit {
-  let normalized = normalize_lock_path(path)
-  let _ = self.inputs.sources.set(
-    self.rt,
-    path_ref_key(normalized),
-    normalize_hash(hash),
-  )
+  self.set_ref(path_ref_key(normalize_lock_path(path)), hash)
 }
 
 ///|
@@ -289,11 +285,7 @@ pub fn VibeDb::set_symbol_ref(
   name : String,
   hash : String,
 ) -> Unit {
-  let _ = self.inputs.sources.set(
-    self.rt,
-    symbol_ref_key(name),
-    normalize_hash(hash),
-  )
+  self.set_ref(symbol_ref_key(name), hash)
 }
 
 ///|
