@@ -1176,3 +1176,139 @@ test "loader cross-root import via transitive dependency" {
     Err(err) => fail("cross-root import should succeed: " + err)
   }
 }
+
+///|
+test "loader resolve_entry_path_with_fs preserves .md extension" {
+  let root = "/workspace"
+  let fs = MemIoAdapter::new(root)
+  let resolved = resolve_entry_path_with_fs(root + "/guide.md", fs)
+  assert_eq(resolved, @vibe_fs.normalize_path(root + "/guide.md"))
+}
+
+///|
+test "loader resolve_entry_path_with_fs preserves .wasm extension" {
+  let root = "/workspace"
+  let fs = MemIoAdapter::new(root)
+  let resolved = resolve_entry_path_with_fs(root + "/mod.wasm", fs)
+  assert_eq(resolved, @vibe_fs.normalize_path(root + "/mod.wasm"))
+}
+
+///|
+test "loader resolve_entry_path_with_fs joins relative path against cwd" {
+  let root = "/workspace/proj"
+  let fs = MemIoAdapter::new(root)
+  let resolved = resolve_entry_path_with_fs("./main.vibe", fs)
+  assert_eq(resolved, @vibe_fs.normalize_path(root + "/main.vibe"))
+}
+
+///|
+test "loader resolve_entry_path_with_fs returns missing extensionless path unchanged" {
+  let root = "/workspace"
+  let fs = MemIoAdapter::new(root)
+  let resolved = resolve_entry_path_with_fs(root + "/does_not_exist", fs)
+  assert_eq(resolved, @vibe_fs.normalize_path(root + "/does_not_exist"))
+}
+
+///|
+test "loader resolve_entry_graph_head_with_fs returns None when cache.json is missing" {
+  let root = "/workspace"
+  let pkg = root + "/pkg"
+  let fs = MemIoAdapter::new(root)
+  match fs.create_dir(pkg) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match fs.write_string(pkg + "/index.vibe", "let version = \"0.1.0\"\n") {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  assert_eq(resolve_entry_graph_head_with_fs(pkg, fs), None)
+}
+
+///|
+test "loader resolve_entry_graph_head_with_fs returns None for malformed cache.json" {
+  let root = "/workspace"
+  let pkg = root + "/pkg"
+  let fs = MemIoAdapter::new(root)
+  match fs.create_dir(pkg) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match fs.write_string(pkg + "/index.vibe", "let version = \"0.1.0\"\n") {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match fs.create_dir(pkg + "/.vibe") {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match fs.write_string(pkg + "/.vibe/cache.json", "not-json{") {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  assert_eq(resolve_entry_graph_head_with_fs(pkg, fs), None)
+}
+
+///|
+test "loader resolve_entry_graph_head_with_fs returns None when graph_head is non-string" {
+  let root = "/workspace"
+  let pkg = root + "/pkg"
+  let fs = MemIoAdapter::new(root)
+  match fs.create_dir(pkg) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match fs.write_string(pkg + "/index.vibe", "let version = \"0.1.0\"\n") {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match fs.create_dir(pkg + "/.vibe") {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match fs.write_string(pkg + "/.vibe/cache.json", "{\"graph_head\":42}") {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  assert_eq(resolve_entry_graph_head_with_fs(pkg, fs), None)
+}
+
+///|
+test "loader resolve_import_path preserves absolute path" {
+  let base = "/workspace/pkg"
+  let resolved = resolve_import_path(base, "/other/dep.vibe")
+  assert_eq(resolved, @vibe_fs.normalize_path("/other/dep.vibe"))
+}
+
+///|
+test "loader resolve_import_path preserves .wasm extension" {
+  let base = "/workspace/pkg"
+  let resolved = resolve_import_path(base, "./plugin.wasm")
+  assert_eq(resolved, @vibe_fs.normalize_path("/workspace/pkg/plugin.wasm"))
+}
+
+///|
+test "loader load_db_with_paths_with_fs ignores unlabeled fenced block in markdown entry" {
+  let root = "/workspace/docs"
+  let entry = root + "/notes.md"
+  let fs = MemIoAdapter::new(root)
+  match
+    fs.write_string(
+      entry, "# Notes\n\n```\nplain prose\n```\n\n```vibe\nlet main = 1\nexport { main }\n```\n",
+    ) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  let loaded = match load_db_with_paths_with_fs(entry, fs) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let (db, resolved, _) = loaded
+  match db.get_source(resolved) {
+    Some(source) => {
+      assert_true(source.contains("let main = 1"))
+      assert_false(source.contains("plain prose"))
+    }
+    None => fail("expected extracted markdown source")
+  }
+}
