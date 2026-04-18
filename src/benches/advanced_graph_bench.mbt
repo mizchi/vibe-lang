@@ -102,14 +102,26 @@ fn build_graph_index_from_source(
 }
 
 ///|
+fn[T] decode_graph_or_abort(
+  label : String,
+  format : String,
+  result : Result[T, String],
+) -> T {
+  match result {
+    Ok(v) => v
+    Err(err) =>
+      abort("graph " + label + " " + format + " decode failed: " + err)
+  }
+}
+
+///|
 fn parse_graph_index_json(source : String) -> @x_exp.AdvancedGraphIndex {
   let parsed = @json.parse(source) catch {
     e => abort("json parse failed: " + e.to_string())
   }
-  match @x_exp.advanced_graph_index_from_json(parsed) {
-    Ok(index) => index
-    Err(err) => abort("graph index decode failed: " + err)
-  }
+  decode_graph_or_abort(
+    "index", "json", @x_exp.advanced_graph_index_from_json(parsed),
+  )
 }
 
 ///|
@@ -117,42 +129,41 @@ fn parse_graph_delta_json(source : String) -> @x_exp.AdvancedGraphDelta {
   let parsed = @json.parse(source) catch {
     e => abort("json parse failed: " + e.to_string())
   }
-  match @x_exp.advanced_graph_delta_from_json(parsed) {
-    Ok(delta) => delta
-    Err(err) => abort("graph delta decode failed: " + err)
-  }
+  decode_graph_or_abort(
+    "delta", "json", @x_exp.advanced_graph_delta_from_json(parsed),
+  )
 }
 
 ///|
 fn parse_graph_index_cbor(payload : Bytes) -> @x_exp.AdvancedGraphIndex {
-  match @x_exp.advanced_graph_index_from_cbor_bytes(payload) {
-    Ok(index) => index
-    Err(err) => abort("graph index cbor decode failed: " + err)
-  }
+  decode_graph_or_abort(
+    "index", "cbor", @x_exp.advanced_graph_index_from_cbor_bytes(payload),
+  )
 }
 
 ///|
 fn parse_graph_delta_cbor(payload : Bytes) -> @x_exp.AdvancedGraphDelta {
-  match @x_exp.advanced_graph_delta_from_cbor_bytes(payload) {
-    Ok(delta) => delta
-    Err(err) => abort("graph delta cbor decode failed: " + err)
-  }
+  decode_graph_or_abort(
+    "delta", "cbor", @x_exp.advanced_graph_delta_from_cbor_bytes(payload),
+  )
 }
 
 ///|
 fn parse_graph_index_flexbuffer(payload : Bytes) -> @x_exp.AdvancedGraphIndex {
-  match @x_exp.advanced_graph_index_from_flexbuffer_bytes(payload) {
-    Ok(index) => index
-    Err(err) => abort("graph index flexbuffer decode failed: " + err)
-  }
+  decode_graph_or_abort(
+    "index",
+    "flexbuffer",
+    @x_exp.advanced_graph_index_from_flexbuffer_bytes(payload),
+  )
 }
 
 ///|
 fn parse_graph_delta_flexbuffer(payload : Bytes) -> @x_exp.AdvancedGraphDelta {
-  match @x_exp.advanced_graph_delta_from_flexbuffer_bytes(payload) {
-    Ok(delta) => delta
-    Err(err) => abort("graph delta flexbuffer decode failed: " + err)
-  }
+  decode_graph_or_abort(
+    "delta",
+    "flexbuffer",
+    @x_exp.advanced_graph_delta_from_flexbuffer_bytes(payload),
+  )
 }
 
 ///|
@@ -385,7 +396,11 @@ fn bench_graph_watch_realtime_save_event_cbor(b : @bench.T) -> Unit {
 }
 
 ///|
-fn bench_graph_watch_realtime_save_rolling_cbor(b : @bench.T) -> Unit {
+fn bench_graph_watch_realtime_save_rolling_impl(
+  b : @bench.T,
+  encode : (@x_exp.AdvancedGraphDelta) -> Bytes,
+  decode : (Bytes) -> @x_exp.AdvancedGraphDelta,
+) -> Unit {
   let source_a = gen_advanced_graph_source(600, None, 0)
   let source_b = gen_advanced_graph_source(600, Some(320), 4)
   let hash_a = source_hash(source_a)
@@ -419,8 +434,8 @@ fn bench_graph_watch_realtime_save_rolling_cbor(b : @bench.T) -> Unit {
       created_at="2026-02-08T00:00:00Z",
     )
     let delta = @x_exp.advanced_graph_diff(state_index.val, next_index)
-    let payload = delta.to_cbor_bytes()
-    let loaded = parse_graph_delta_cbor(payload)
+    let payload = encode(delta)
+    let loaded = decode(payload)
     let applied = @x_exp.apply_advanced_graph_delta(state_index.val, loaded)
     let keep = watch_visualization_keep(
       state_index.val,
@@ -434,52 +449,17 @@ fn bench_graph_watch_realtime_save_rolling_cbor(b : @bench.T) -> Unit {
 }
 
 ///|
+fn bench_graph_watch_realtime_save_rolling_cbor(b : @bench.T) -> Unit {
+  bench_graph_watch_realtime_save_rolling_impl(
+    b, fn(d) { d.to_cbor_bytes() }, parse_graph_delta_cbor,
+  )
+}
+
+///|
 fn bench_graph_watch_realtime_save_rolling_flexbuffer(b : @bench.T) -> Unit {
-  let source_a = gen_advanced_graph_source(600, None, 0)
-  let source_b = gen_advanced_graph_source(600, Some(320), 4)
-  let hash_a = source_hash(source_a)
-  let hash_b = source_hash(source_b)
-  let db = @runtime.VibeDb::new()
-  db.set_source(bench_graph_path, source_a)
-  let state_index : Ref[@x_exp.AdvancedGraphIndex] = {
-    val: @x_exp.build_advanced_graph_index(
-      db,
-      [bench_graph_path],
-      base_commit="watch-roll-a",
-      created_at="2026-02-08T00:00:00Z",
-    ),
-  }
-  let state_hash : Ref[String] = { val: hash_a }
-  let tick : Ref[Int] = { val: 0 }
-  b.bench(fn() {
-    let use_b = tick.val % 2 == 0
-    tick.val += 1
-    let next_source = if use_b { source_b } else { source_a }
-    let next_hash = if use_b { hash_b } else { hash_a }
-    if next_hash == state_hash.val {
-      b.keep(0)
-      return
-    }
-    db.set_source(bench_graph_path, next_source)
-    let next_index = @x_exp.build_advanced_graph_index(
-      db,
-      [bench_graph_path],
-      base_commit="watch-roll",
-      created_at="2026-02-08T00:00:00Z",
-    )
-    let delta = @x_exp.advanced_graph_diff(state_index.val, next_index)
-    let payload = delta.to_flexbuffer_bytes()
-    let loaded = parse_graph_delta_flexbuffer(payload)
-    let applied = @x_exp.apply_advanced_graph_delta(state_index.val, loaded)
-    let keep = watch_visualization_keep(
-      state_index.val,
-      next_index,
-      loaded.upsert_defs.length(),
-    )
-    state_index.val = applied
-    state_hash.val = next_hash
-    b.keep(keep)
-  })
+  bench_graph_watch_realtime_save_rolling_impl(
+    b, fn(d) { d.to_flexbuffer_bytes() }, parse_graph_delta_flexbuffer,
+  )
 }
 
 ///|
