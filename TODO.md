@@ -293,7 +293,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 
 - [x] `src/runtime/store.mbt` — `get_by_addr` / `get_alias` / `pure_cache_get` / `pure_cache_set` / `get_module` は未使用 helper だったので削除（`Runtime::get` は公開 API で残存）
 - [ ] `src/backend/http_wasm.mbt` vs `src/backend/http_js.mbt` (30 pairs each) — backend 実装が並走。`src/backend/http_impl.mbt` 側に共通化
-- [ ] `src/benches/advanced_graph_bench.mbt` — `parse_graph_{index,delta}_{json,cbor,flexbuffer}` / `bench_graph_watch_*_{cbor,flexbuffer}` の format 軸をパラメータ化
+- [x] `src/benches/advanced_graph_bench.mbt` — parse 6 本を `decode_graph_or_abort[T]` に集約、`bench_graph_watch_realtime_save_rolling_{cbor,flexbuffer}` を `rolling_impl(encode, decode)` で共通化
 - [x] `src/codegen/wasm_codegen_rc.mbt` — `emit_rc_init_impl(emit_size closure)` に共通化、`emit_rc_call_or_inline_i64(emit_inline closure)` で dup/drop の分岐を抽出
 - [x] `src/cmd/vibe/cli_repl.mbt` — `repl_vibe_view_json` / `repl_vibe_peek_json` は `repl_vibe_symbol_lookup_json` に集約、`repl_is_*` は `Array::contains` へ、`compiled_repl_temp_{source,wasm}_path` は共通 `compiled_repl_temp_path(ext)` 経由
 - [x] `src/cmd/vibe/cli_test_cmd.mbt` — `sort_test_entry_paths_for_batching` / `sort_test_entry_batch_units` を `test_entry_selection_sort[T]` 共通 helper に統合
