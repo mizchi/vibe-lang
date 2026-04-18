@@ -206,6 +206,80 @@ test "normalize_module canonicalizes EffectDef export list into ExportEffectDef"
 }
 
 ///|
+test "normalize_expr unwraps single-Stmt::Expr Block to the inner expression" {
+  // `let x = { 42 }` should collapse the one-expr Block to `let x = 42`.
+  let inner = Expr::Block(
+    body=Module::{
+      stmts: [
+        Stmt::Expr(
+          expr=int_expr_for_export_norm_test(42),
+          span=zero_span_for_export_norm_test,
+        ),
+      ],
+    },
+    span=zero_span_for_export_norm_test,
+  )
+  let mod_ast = Module::{
+    stmts: [
+      Stmt::Let(
+        rec=false,
+        name="x",
+        expr=inner,
+        span=zero_span_for_export_norm_test,
+      ),
+    ],
+  }
+  let normalized = normalize_module(mod_ast)
+  assert_eq(normalized.stmts.length(), 1)
+  assert_true(
+    match normalized.stmts[0] {
+      Stmt::Let(expr=Expr::Int(value=42L, ..), ..) => true
+      _ => false
+    },
+  )
+}
+
+///|
+test "normalize_expr keeps Block wrapper when it contains multiple stmts" {
+  // `let x = { let y = 1; y }` should remain a Block (two stmts).
+  let inner = Expr::Block(
+    body=Module::{
+      stmts: [
+        Stmt::Let(
+          rec=false,
+          name="y",
+          expr=int_expr_for_export_norm_test(1),
+          span=zero_span_for_export_norm_test,
+        ),
+        Stmt::Expr(
+          expr=Expr::Ident(name="y", span=zero_span_for_export_norm_test),
+          span=zero_span_for_export_norm_test,
+        ),
+      ],
+    },
+    span=zero_span_for_export_norm_test,
+  )
+  let mod_ast = Module::{
+    stmts: [
+      Stmt::Let(
+        rec=false,
+        name="x",
+        expr=inner,
+        span=zero_span_for_export_norm_test,
+      ),
+    ],
+  }
+  let normalized = normalize_module(mod_ast)
+  assert_eq(normalized.stmts.length(), 1)
+  assert_true(
+    match normalized.stmts[0] {
+      Stmt::Let(expr=Expr::Block(..), ..) => true
+      _ => false
+    },
+  )
+}
+
+///|
 test "normalize_with_imports returns only the main module when resolver always fails" {
   let main_mod = Module::{
     stmts: [
