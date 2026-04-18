@@ -278,3 +278,104 @@ test "desugar_vibe_commands: known name not desugared" {
     _ => abort("expected path call unchanged")
   }
 }
+
+///|
+test "split_method_call_name: single dot splits receiver and method" {
+  match split_method_call_name("foo.bar") {
+    Some((recv, method)) => {
+      assert_eq(recv, "foo")
+      assert_eq(method, "bar")
+    }
+    None => abort("expected Some")
+  }
+}
+
+///|
+test "split_method_call_name: no dot returns None" {
+  assert_true(split_method_call_name("foo") is None)
+}
+
+///|
+test "split_method_call_name: multi-dot returns None" {
+  assert_true(split_method_call_name("foo.bar.baz") is None)
+}
+
+///|
+test "split_method_call_name: leading dot returns None" {
+  assert_true(split_method_call_name(".bar") is None)
+}
+
+///|
+test "split_method_call_name: trailing dot returns None" {
+  assert_true(split_method_call_name("foo.") is None)
+}
+
+///|
+test "split_method_call_name: non-ident receiver returns None" {
+  assert_true(split_method_call_name("foo-x.bar") is None)
+}
+
+///|
+test "is_simple_ident: alnum and underscore pass" {
+  assert_true(is_simple_ident("foo_Bar123"))
+}
+
+///|
+test "is_simple_ident: empty rejected" {
+  assert_false(is_simple_ident(""))
+}
+
+///|
+test "is_simple_ident: hyphen rejected" {
+  assert_false(is_simple_ident("foo-bar"))
+}
+
+///|
+test "is_command_like_name: lowercase with digits accepted" {
+  assert_true(is_command_like_name("ls"))
+  assert_true(is_command_like_name("ls123"))
+}
+
+///|
+test "is_command_like_name: empty rejected" {
+  assert_false(is_command_like_name(""))
+}
+
+///|
+test "is_command_like_name: uppercase first rejected" {
+  assert_false(is_command_like_name("Ls"))
+}
+
+///|
+test "is_command_like_name: digit first rejected" {
+  assert_false(is_command_like_name("1ls"))
+}
+
+///|
+test "is_command_like_name: underscore rejected" {
+  assert_false(is_command_like_name("ls_all"))
+}
+
+///|
+test "is_command_like_name: hyphen rejected" {
+  assert_false(is_command_like_name("ls-all"))
+}
+
+///|
+test "desugar_vibe_commands: identifier in scope stays untouched" {
+  let let_stmt = @core.Stmt::Let(
+    rec=false,
+    name="ls",
+    expr=@core.Expr::Int(value=1, span=test_span()),
+    span=test_span(),
+  )
+  let call = make_call("ls", [])
+  let expr_stmt = @core.Stmt::Expr(expr=call, span=test_span())
+  let ast = @core.Module::{ stmts: [let_stmt, expr_stmt] }
+  let (desugared, notes) = desugar_vibe_commands_with_notes(ast)
+  assert_eq(notes.length(), 0)
+  match desugared.stmts[1] {
+    @core.Stmt::Expr(expr=@core.Expr::Call(name~, ..), ..) => assert_eq(name, "ls")
+    _ => abort("expected ls call unchanged")
+  }
+}
