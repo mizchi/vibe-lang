@@ -82,19 +82,19 @@ fn emit_rc_debug_increment(buf : ByteBuf, global_idx : Int) -> Unit {
 }
 
 ///|
-fn emit_rc_init(
+fn emit_rc_init_impl(
   buf : ByteBuf,
   obj_local : Int,
-  alloc_size : Int,
-  header_size? : Int = 8,
-  debug_alloc_global? : Int = -1,
+  emit_size : (ByteBuf) -> Unit,
+  header_size : Int,
+  debug_alloc_global : Int,
 ) -> Unit {
   // Write alloc_size at obj_ptr - header_size (only when free-list is enabled, header=8)
   if header_size > 4 {
     emit_local_get(buf, obj_local)
     emit_i32_const_raw(buf, header_size)
     emit_i32_sub(buf)
-    emit_i32_const_raw(buf, alloc_size)
+    emit_size(buf)
     emit_i32_store(buf, 0)
   }
   // Write rc_count = 1 at obj_ptr - 4
@@ -110,6 +110,23 @@ fn emit_rc_init(
 }
 
 ///|
+fn emit_rc_init(
+  buf : ByteBuf,
+  obj_local : Int,
+  alloc_size : Int,
+  header_size? : Int = 8,
+  debug_alloc_global? : Int = -1,
+) -> Unit {
+  emit_rc_init_impl(
+    buf,
+    obj_local,
+    fn(b) { emit_i32_const_raw(b, alloc_size) },
+    header_size,
+    debug_alloc_global,
+  )
+}
+
+///|
 /// Emit RC initialization with dynamic alloc_size from a local variable.
 /// Used for variable-length allocations where size is computed at runtime.
 fn emit_rc_init_dynamic(
@@ -119,24 +136,13 @@ fn emit_rc_init_dynamic(
   header_size? : Int = 8,
   debug_alloc_global? : Int = -1,
 ) -> Unit {
-  // Write alloc_size at obj_ptr - header_size (only when free-list enabled, header=8)
-  if header_size > 4 {
-    emit_local_get(buf, obj_local)
-    emit_i32_const_raw(buf, header_size)
-    emit_i32_sub(buf)
-    emit_local_get(buf, size_local) // dynamic size
-    emit_i32_store(buf, 0)
-  }
-  // Write rc_count = 1 at obj_ptr - 4
-  emit_local_get(buf, obj_local)
-  emit_i32_const_raw(buf, 4)
-  emit_i32_sub(buf)
-  emit_i32_const_raw(buf, 1)
-  emit_i32_store(buf, 0)
-  // Debug mode: increment alloc counter
-  if debug_alloc_global >= 0 {
-    emit_rc_debug_increment(buf, debug_alloc_global)
-  }
+  emit_rc_init_impl(
+    buf,
+    obj_local,
+    fn(b) { emit_local_get(b, size_local) },
+    header_size,
+    debug_alloc_global,
+  )
 }
 
 ///|
@@ -592,13 +598,19 @@ fn ensure_rc_locals(ctx : CodegenCtx) -> Unit {
 }
 
 ///|
-/// Emit RC dup for an i64 local.
-/// When helper function is available, emits a call; otherwise inlines.
-fn emit_rc_dup_i64(ctx : CodegenCtx, buf : ByteBuf, local_idx : Int) -> Unit {
-  if ctx.rc_dup_func_idx >= 0 {
-    // Call the helper function: $rc_dup(i64) -> void
+/// Emit RC dup/drop for an i64 local.
+/// When helper function is available, emits a call; otherwise inlines via
+/// the supplied `emit_inline` closure (which receives the val32 temp index).
+fn emit_rc_call_or_inline_i64(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  local_idx : Int,
+  helper_func_idx : Int,
+  emit_inline : (Int) -> Unit,
+) -> Unit {
+  if helper_func_idx >= 0 {
     emit_local_get(buf, local_idx)
-    let abs_idx = func_import_count(ctx) + ctx.rc_dup_func_idx
+    let abs_idx = func_import_count(ctx) + helper_func_idx
     emit_call(buf, abs_idx)
     return
   }
@@ -607,26 +619,25 @@ fn emit_rc_dup_i64(ctx : CodegenCtx, buf : ByteBuf, local_idx : Int) -> Unit {
   emit_local_get(buf, local_idx)
   emit_i32_wrap_i64(buf)
   emit_local_set(buf, val32)
-  emit_rc_dup(buf, val32, ctx.rc_tmp_local)
+  emit_inline(val32)
 }
 
 ///|
-/// Emit RC drop for an i64 local.
-/// When helper function is available, emits a call; otherwise inlines.
+fn emit_rc_dup_i64(ctx : CodegenCtx, buf : ByteBuf, local_idx : Int) -> Unit {
+  emit_rc_call_or_inline_i64(ctx, buf, local_idx, ctx.rc_dup_func_idx, fn(
+    val32,
+  ) {
+    emit_rc_dup(buf, val32, ctx.rc_tmp_local)
+  })
+}
+
+///|
 fn emit_rc_drop_i64(ctx : CodegenCtx, buf : ByteBuf, local_idx : Int) -> Unit {
-  if ctx.rc_drop_func_idx >= 0 {
-    // Call the helper function: $rc_drop(i64) -> void
-    emit_local_get(buf, local_idx)
-    let abs_idx = func_import_count(ctx) + ctx.rc_drop_func_idx
-    emit_call(buf, abs_idx)
-    return
-  }
-  ensure_rc_locals(ctx)
-  let val32 = alloc_temp_local(ctx)
-  emit_local_get(buf, local_idx)
-  emit_i32_wrap_i64(buf)
-  emit_local_set(buf, val32)
-  emit_rc_drop(ctx, buf, val32, ctx.rc_tmp_local, ctx.rc_new_rc_local)
+  emit_rc_call_or_inline_i64(ctx, buf, local_idx, ctx.rc_drop_func_idx, fn(
+    val32,
+  ) {
+    emit_rc_drop(ctx, buf, val32, ctx.rc_tmp_local, ctx.rc_new_rc_local)
+  })
 }
 
 ///|

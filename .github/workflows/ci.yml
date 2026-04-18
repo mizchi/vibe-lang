@@ -721,6 +721,58 @@ jobs:
             _build/coverage/selfhost-suite/selfhost_suite.report.json
           if-no-files-found: ignore
 
+  similarity-mbt-report:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache similarity-mbt binary
+        id: similarity-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/bin/similarity-mbt
+          key: similarity-mbt-${{ runner.os }}-v0.5.2
+
+      - name: Install similarity-mbt
+        if: steps.similarity-cache.outputs.cache-hit != 'true'
+        run: cargo install similarity-mbt --version 0.5.2 --locked
+
+      - name: Run similarity-mbt
+        id: sim
+        run: |
+          set +e
+          similarity-mbt src/ --threshold 0.98 > sim-report.txt 2>&1
+          status=$?
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          lines=$(wc -l < sim-report.txt)
+          echo "lines=$lines" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Similarity summary
+        if: always()
+        run: |
+          {
+            echo "### similarity-mbt duplicate report (threshold 0.98)"
+            echo ""
+            echo "- Report lines: ${{ steps.sim.outputs.lines }}"
+            echo ""
+            echo '```'
+            head -120 sim-report.txt || echo "(no report)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload similarity report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: similarity-mbt-report
+          path: sim-report.txt
+          if-no-files-found: ignore
+
   ci-required:
     if: always()
     needs:
@@ -761,6 +813,7 @@ jobs:
       - coverage-selfhost-suite
       - native-binary-parity
       - selfhost-gates
+      - similarity-mbt-report
       - wasm-codegen-quick
     runs-on: ubuntu-latest
     steps:
@@ -772,6 +825,7 @@ jobs:
           echo "  coverage-selfhost-suite: ${{ needs.coverage-selfhost-suite.result }}"
           echo "  native-binary-parity: ${{ needs.native-binary-parity.result }}"
           echo "  selfhost-gates: ${{ needs.selfhost-gates.result }}"
+          echo "  similarity-mbt-report: ${{ needs.similarity-mbt-report.result }}"
           echo "  wasm-codegen-quick: ${{ needs.wasm-codegen-quick.result }}"
           if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
             echo ""

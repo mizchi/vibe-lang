@@ -359,11 +359,6 @@ pub fn Runtime::get(self : Runtime, name : String) -> @core.Value? {
 }
 
 ///|
-fn Runtime::get_by_addr(self : Runtime, addr : String) -> @core.Value? {
-  self.store.get(addr)
-}
-
-///|
 pub fn Runtime::get_addr(self : Runtime, name : String) -> String? {
   self.addr_env.get(name)
 }
@@ -388,25 +383,6 @@ pub fn Runtime::set_alias(
   target : @core.Ref,
 ) -> Unit {
   self.aliases[name] = target
-}
-
-///|
-fn Runtime::get_alias(self : Runtime, name : String) -> @core.Ref? {
-  self.aliases.get(name)
-}
-
-///|
-fn Runtime::pure_cache_get(self : Runtime, key : String) -> @core.Value? {
-  self.pure_cache.get(key)
-}
-
-///|
-fn Runtime::pure_cache_set(
-  self : Runtime,
-  key : String,
-  value : @core.Value,
-) -> Unit {
-  self.pure_cache.set(key, value)
 }
 
 ///|
@@ -513,8 +489,3 @@ pub fn Runtime::register_module(
   self.module_cache.set(hash, mod_ast)
 }
 
-///|
-/// Get a cached module by hash
-fn Runtime::get_module(self : Runtime, hash : String) -> @core.Module? {
-  self.module_cache.get(hash)
-}

@@ -291,15 +291,15 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 
 ノイズを除いた中規模ファイル (5–100 pairs) が現実的な refactor 候補:
 
-- [ ] `src/runtime/store.mbt` (40 pairs) — `get` / `get_by_addr` / `get_alias` / `pure_cache_get` / `get_module` の Map.get + tag チェック同型。共通 helper 抽出
+- [x] `src/runtime/store.mbt` — `get_by_addr` / `get_alias` / `pure_cache_get` / `pure_cache_set` / `get_module` は未使用 helper だったので削除（`Runtime::get` は公開 API で残存）
 - [ ] `src/backend/http_wasm.mbt` vs `src/backend/http_js.mbt` (30 pairs each) — backend 実装が並走。`src/backend/http_impl.mbt` 側に共通化
 - [ ] `src/benches/advanced_graph_bench.mbt` — `parse_graph_{index,delta}_{json,cbor,flexbuffer}` / `bench_graph_watch_*_{cbor,flexbuffer}` の format 軸をパラメータ化
-- [ ] `src/codegen/wasm_codegen_rc.mbt` — `emit_rc_init` / `emit_rc_init_dynamic` (98.8%), `emit_rc_dup_i64` / `emit_rc_drop_i64` (97%) を closure で差分抽出
+- [x] `src/codegen/wasm_codegen_rc.mbt` — `emit_rc_init_impl(emit_size closure)` に共通化、`emit_rc_call_or_inline_i64(emit_inline closure)` で dup/drop の分岐を抽出
 - [x] `src/cmd/vibe/cli_repl.mbt` — `repl_vibe_view_json` / `repl_vibe_peek_json` は `repl_vibe_symbol_lookup_json` に集約、`repl_is_*` は `Array::contains` へ、`compiled_repl_temp_{source,wasm}_path` は共通 `compiled_repl_temp_path(ext)` 経由
 - [x] `src/cmd/vibe/cli_test_cmd.mbt` — `sort_test_entry_paths_for_batching` / `sort_test_entry_batch_units` を `test_entry_selection_sort[T]` 共通 helper に統合
 - [ ] `src/runtime/db.mbt` — `set_source` / `set_binary_source` (99%) の共通化（String/Bytes の差をどう吸収するか要検討）。`set_version_ref` / `set_symbol_ref` / `set_path_ref` は `set_ref` 共通 helper 経由に移行済み
 - [x] `src/runtime_compile/ir_sexp.mbt` — `sort_map_fields_expr` / `sort_record_fields_expr` / `sort_type_ctors` / `sort_record_type_keys` を `sort_by_key[T]` に統合
-- [ ] 計測を CI に載せる (`flaker` か独立 job で閾値 0.98 を回し、新規重複を検出)
+- [x] 計測を CI に載せる — `similarity-mbt-report` job を informational として追加（閾値 0.98、sim-report.txt を artifact、`ci-informational` 集約経由）
 
 ## モジュール分離
 
