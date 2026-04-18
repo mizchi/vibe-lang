@@ -174,3 +174,63 @@ test "hash_module treats export list and export let equally" {
   }
   assert_eq(hash_module(list_export_ast), hash_module(explicit_export_ast))
 }
+
+///|
+test "normalize_module canonicalizes EffectDef export list into ExportEffectDef" {
+  let mod_ast = Module::{
+    stmts: [
+      Stmt::EffectDef(
+        name="Net",
+        params=[],
+        ops=[
+          EffectOp::{
+            name: "Get",
+            params: [Type::String],
+            ret: Type::String,
+            span: zero_span_for_export_norm_test,
+          },
+        ],
+        span=zero_span_for_export_norm_test,
+      ),
+      Stmt::Export(names=["Net"], span=zero_span_for_export_norm_test),
+    ],
+  }
+  let normalized = normalize_module(mod_ast)
+  assert_eq(normalized.stmts.length(), 1)
+  assert_true(
+    match normalized.stmts[0] {
+      Stmt::ExportEffectDef(name="Net", ..) => true
+      _ => false
+    },
+  )
+}
+
+///|
+test "normalize_with_imports returns only the main module when resolver always fails" {
+  let main_mod = Module::{
+    stmts: [
+      Stmt::Import(
+        spec=ImportSpec::{
+          items: [
+            ImportItem::{
+              kind: ImportKind::Value,
+              name: "missing",
+              rename: None,
+            },
+          ],
+        },
+        source=ModuleRef::Path(path="./not_found.vibe"),
+        span=zero_span_for_export_norm_test,
+      ),
+      Stmt::Let(
+        rec=false,
+        name="v",
+        expr=int_expr_for_export_norm_test(1),
+        span=zero_span_for_export_norm_test,
+      ),
+    ],
+  }
+  let bundle = normalize_with_imports(main_mod, fn(_path) { None })
+  assert_eq(bundle.modules.length(), 1)
+  assert_true(bundle.modules.contains(bundle.main_hash))
+}
