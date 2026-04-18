@@ -399,3 +399,95 @@ test "dce keeps enum when qualified constructor name is explicit entry" {
   assert_true(has_enum_stmt(filtered.stmts, "Color"))
   assert_false(names.contains("drop"))
 }
+
+///|
+fn has_type_alias_stmt(stmts : Array[@core.Stmt], target : String) -> Bool {
+  for stmt in stmts {
+    match stmt {
+      @core.Stmt::TypeAlias(name~, ..)
+      | @core.Stmt::ExportTypeAlias(name~, ..)
+      | @core.Stmt::InternalExportTypeAlias(name~, ..) =>
+        if name == target {
+          return true
+        }
+      _ => ()
+    }
+  }
+  false
+}
+
+///|
+test "dce drops TypeAlias when not referenced" {
+  let mod = @core.Module::{
+    stmts: [
+      @core.Stmt::TypeAlias(
+        name="UnusedAlias",
+        params=[],
+        target=@core.Type::Int,
+        span=dce_test_span(),
+      ),
+      @core.Stmt::Let(
+        rec=false,
+        name="x",
+        expr=dce_test_int(1L),
+        span=dce_test_span(),
+      ),
+    ],
+  }
+  let filtered = dce_module(mod)
+  assert_false(has_type_alias_stmt(filtered.stmts, "UnusedAlias"))
+}
+
+///|
+test "dce keeps ExportTypeAlias as always-kept entry" {
+  // drop_me is not last so it is not promoted to an entry; PublicAlias is
+  // always an entry because it's an ExportTypeAlias.
+  let mod = @core.Module::{
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="drop_me",
+        expr=dce_test_int(1L),
+        span=dce_test_span(),
+      ),
+      @core.Stmt::ExportTypeAlias(
+        name="PublicAlias",
+        params=[],
+        target=@core.Type::Int,
+        span=dce_test_span(),
+      ),
+    ],
+  }
+  let filtered = dce_module(mod)
+  assert_true(has_type_alias_stmt(filtered.stmts, "PublicAlias"))
+  let names = collect_stmt_names(filtered.stmts)
+  assert_false(names.contains("drop_me"))
+}
+
+///|
+test "dce keeps TypeAlias when referenced from reachable StructDef field" {
+  let mod = @core.Module::{
+    stmts: [
+      @core.Stmt::TypeAlias(
+        name="UserId",
+        params=[],
+        target=@core.Type::Int,
+        span=dce_test_span(),
+      ),
+      @core.Stmt::ExportStructDef(
+        name="Profile",
+        params=[],
+        fields=[
+          @core.StructField::{
+            name: "id",
+            ty: @core.Type::Named(name="UserId", args=[]),
+            span: dce_test_span(),
+          },
+        ],
+        span=dce_test_span(),
+      ),
+    ],
+  }
+  let filtered = dce_module(mod)
+  assert_true(has_type_alias_stmt(filtered.stmts, "UserId"))
+}
