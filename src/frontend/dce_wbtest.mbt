@@ -491,3 +491,96 @@ test "dce keeps TypeAlias when referenced from reachable StructDef field" {
   let filtered = dce_module(mod)
   assert_true(has_type_alias_stmt(filtered.stmts, "UserId"))
 }
+
+///|
+fn has_extern_let_stmt(stmts : Array[@core.Stmt], target : String) -> Bool {
+  for stmt in stmts {
+    match stmt {
+      @core.Stmt::ExternLet(name~, ..) => if name == target { return true }
+      _ => ()
+    }
+  }
+  false
+}
+
+///|
+test "dce keeps LetMut as last-statement entry" {
+  let mod = @core.Module::{
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="unused",
+        expr=dce_test_int(1L),
+        span=dce_test_span(),
+      ),
+      @core.Stmt::LetMut(
+        name="counter",
+        expr=dce_test_int(0L),
+        span=dce_test_span(),
+      ),
+    ],
+  }
+  let filtered = dce_module(mod)
+  let names = collect_stmt_names(filtered.stmts)
+  assert_true(names.contains("counter"))
+  assert_false(names.contains("unused"))
+}
+
+///|
+test "dce keeps TypeAlias referenced via reachable ExternLet" {
+  // export let reader = fd  -> fd (ExternLet) -> Handle (TypeAlias)
+  let mod = @core.Module::{
+    stmts: [
+      @core.Stmt::TypeAlias(
+        name="Handle",
+        params=[],
+        target=@core.Type::Int,
+        span=dce_test_span(),
+      ),
+      @core.Stmt::ExternLet(
+        name="fd",
+        ty=@core.Type::Named(name="Handle", args=[]),
+        span=dce_test_span(),
+      ),
+      @core.Stmt::ExportLet(
+        rec=false,
+        name="reader",
+        expr=dce_test_ident("fd"),
+        span=dce_test_span(),
+      ),
+    ],
+  }
+  let filtered = dce_module(mod)
+  assert_true(has_type_alias_stmt(filtered.stmts, "Handle"))
+  assert_true(has_extern_let_stmt(filtered.stmts, "fd"))
+  let names = collect_stmt_names(filtered.stmts)
+  assert_true(names.contains("reader"))
+}
+
+///|
+test "dce drops ExternLet + its TypeAlias when nothing references them" {
+  let mod = @core.Module::{
+    stmts: [
+      @core.Stmt::TypeAlias(
+        name="Handle",
+        params=[],
+        target=@core.Type::Int,
+        span=dce_test_span(),
+      ),
+      @core.Stmt::ExternLet(
+        name="fd",
+        ty=@core.Type::Named(name="Handle", args=[]),
+        span=dce_test_span(),
+      ),
+      @core.Stmt::ExportLet(
+        rec=false,
+        name="reader",
+        expr=dce_test_int(0L),
+        span=dce_test_span(),
+      ),
+    ],
+  }
+  let filtered = dce_module(mod)
+  assert_false(has_type_alias_stmt(filtered.stmts, "Handle"))
+  assert_false(has_extern_let_stmt(filtered.stmts, "fd"))
+}

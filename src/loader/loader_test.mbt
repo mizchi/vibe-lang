@@ -1312,3 +1312,59 @@ test "loader load_db_with_paths_with_fs ignores unlabeled fenced block in markdo
     None => fail("expected extracted markdown source")
   }
 }
+
+///|
+test "loader load_db_with_paths_with_fs joins multiple vibe blocks with blank line" {
+  // Verifies the "\n\n" block separator in extract_vibe_from_markdown
+  // (lib.mbt:42-47) which previously had no direct assertion.
+  let root = "/workspace/docs"
+  let entry = root + "/multi.md"
+  let fs = MemIoAdapter::new(root)
+  match
+    fs.write_string(
+      entry, "```vibe\nlet a = 1\n```\n\n```vibe\nlet b = 2\n```\n\n```vibe\nlet main = a + b\nexport { main }\n```\n",
+    ) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  let loaded = match load_db_with_paths_with_fs(entry, fs) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let (db, resolved, _) = loaded
+  match db.get_source(resolved) {
+    Some(source) => {
+      assert_true(source.contains("let a = 1\n\nlet b = 2"))
+      assert_true(source.contains("let b = 2\n\nlet main = a + b"))
+    }
+    None => fail("expected extracted markdown source")
+  }
+}
+
+///|
+test "loader load_db_with_paths_with_fs closes vibe block on trimmed fence" {
+  // Verifies that a closing fence with trailing whitespace still terminates
+  // the block (extract_vibe_from_markdown uses line.trim(), lib.mbt:21).
+  let root = "/workspace/docs"
+  let entry = root + "/spacey.md"
+  let fs = MemIoAdapter::new(root)
+  match
+    fs.write_string(
+      entry, "```vibe\nlet main = 1\nexport { main }\n```   \n\nTrailing prose that must not leak.\n",
+    ) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  let loaded = match load_db_with_paths_with_fs(entry, fs) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let (db, resolved, _) = loaded
+  match db.get_source(resolved) {
+    Some(source) => {
+      assert_true(source.contains("let main = 1"))
+      assert_false(source.contains("Trailing prose"))
+    }
+    None => fail("expected extracted markdown source")
+  }
+}
