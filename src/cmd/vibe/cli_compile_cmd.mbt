@@ -324,10 +324,21 @@ fn compile_cmd(args : Array[String]) -> Unit {
           ) catch {
             e => abort("compile: " + e.user_message())
           }
-          match
-            compose_p3_component_with_wac(adapter_path, app_bytes, resolved_out) {
+          // Step 2: Compose with P3 adapter via mwac.plug_components (in-process)
+          let adapter_bytes = @os_fs.read_file_to_bytes(adapter_path) catch {
+            e => abort("compile: failed to read adapter: " + e.to_string())
+          }
+          let composed = @runtime_compile.compose_p3_component(
+            app_bytes, adapter_bytes,
+          ) catch {
+            e => abort("compile: " + e.user_message())
+          }
+          match ensure_parent_dir_for_file(resolved_out, "compile") {
             Ok(_) => ()
             Err(err) => abort("compile: " + err)
+          }
+          @os_fs.write_bytes_to_file(resolved_out, composed) catch {
+            e => abort("compile: failed to write output: " + e.to_string())
           }
           println("wrote " + resolved_out)
         }
@@ -369,91 +380,6 @@ fn compile_cmd(args : Array[String]) -> Unit {
         }
       }
     }
-  }
-}
-
-///|
-fn build_p3_compose_command(
-  adapter_path : String,
-  app_path : String,
-  out_path : String,
-) -> String {
-  "wac plug --plug " +
-  shell_quote_command_arg(app_path) +
-  " -o " +
-  shell_quote_command_arg(out_path) +
-  " " +
-  shell_quote_command_arg(adapter_path)
-}
-
-///|
-fn compose_p3_component_with_wac(
-  adapter_path : String,
-  app_bytes : Bytes,
-  out_path : String,
-) -> Result[Unit, String] {
-  if !@backend.exec_available() {
-    return Err(
-      "--compose-p3 requires external process execution on this target",
-    )
-  }
-  match ensure_parent_dir_for_file(out_path, "compile") {
-    Ok(_) => ()
-    Err(err) => return Err(err)
-  }
-  let tmp_dir = match make_cli_temp_dir("compose_p3") {
-    Ok(path) => path
-    Err(err) => return Err(err)
-  }
-  defer remove_path_if_exists(tmp_dir)
-  let app_path = tmp_dir + "/app.component.wasm"
-  @os_fs.write_bytes_to_file(app_path, app_bytes) catch {
-    e => return Err("failed to write temp component: " + e.to_string())
-  }
-  let cmd = build_p3_compose_command(adapter_path, app_path, out_path)
-  match @backend.exec_command_lines(cmd) {
-    Ok(_) => Ok(())
-    Err(err) => Err("wac plug failed: " + err)
-  }
-}
-
-///|
-fn make_cli_temp_dir(prefix : String) -> Result[String, String] {
-  let base = "/tmp/vibe_cli_" +
-    prefix +
-    "_" +
-    @env.now().to_string() +
-    "_" +
-    vibe_getpid().to_string()
-  for i in 0..<1000 {
-    let path = if i == 0 { base } else { base + "_" + i.to_string() }
-    if !@os_fs.path_exists(path) {
-      @os_fs.create_dir(path) catch {
-        e => return Err("create temp dir failed: " + e.to_string())
-      }
-      return Ok(path)
-    }
-  }
-  Err("failed to allocate temp dir")
-}
-
-///|
-fn remove_path_if_exists(path : String) -> Unit {
-  if !@os_fs.path_exists(path) {
-    return
-  }
-  let is_file = @os_fs.is_file(path) catch { _ => false }
-  if is_file {
-    ignore(@os_fs.remove_file(path) catch { _ => () })
-    return
-  }
-  let is_dir = @os_fs.is_dir(path) catch { _ => false }
-  if is_dir {
-    let entries = @os_fs.read_dir(path) catch { _ => [] }
-    for name in entries {
-      remove_path_if_exists(path + "/" + name)
-    }
-    ignore(@os_fs.remove_dir(path) catch { _ => () })
   }
 }
 
