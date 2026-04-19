@@ -88,7 +88,6 @@ fi
 test_scalar_handler() {
   local name="scalar_hello"
   local src="$OUT_DIR/${name}.vibe"
-  local plug_component="$OUT_DIR/${name}.plug.wasm"
   local component="$OUT_DIR/${name}.p3.component.wasm"
 
   cat > "$src" << 'VIBE'
@@ -98,23 +97,9 @@ export let handler = (method: String, url: String) -> Int {
 handler("GET", "/")
 VIBE
 
-  # Compose via wac rather than `vibe compile --compose-p3` because the
-  # built-in mwac plug_components does not forward component type definitions
-  # referenced by the socket's imports (issue #267). wac handles this case
-  # correctly and is already required by the selfhost-cli direct-component
-  # test, so assuming it is on PATH is consistent with the rest of the
-  # component-model test fleet.
-  log_info "Compiling $name plug..."
-  if ! "$VIBE" compile --component-string-lift "$src" -o "$plug_component" 2>/dev/null; then
-    log_fail "$name: component-string-lift compilation failed"
-    return
-  fi
-  log_info "Composing $name with adapter via wac plug..."
-  if ! wac plug \
-        --plug "$plug_component" \
-        -o "$component" \
-        "$ADAPTER_COMPONENT" 2>/dev/null; then
-    log_fail "$name: wac plug composition failed"
+  log_info "Compiling $name and composing with adapter..."
+  if ! "$VIBE" compile --compose-p3 "$src" --adapter "$ADAPTER_COMPONENT" -o "$component" 2>/dev/null; then
+    log_fail "$name: compose-p3 compilation failed"
     return
   fi
   log_pass "$name: compiled to P3 component"

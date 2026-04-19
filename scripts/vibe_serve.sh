@@ -142,30 +142,17 @@ else
   COMPONENT="$TEMP_COMPONENT"
 fi
 
-TEMP_PLUG="$(mktemp /tmp/vibe_serve_plug_XXXXXX.wasm)"
-
 cleanup() {
   if [ -n "$TEMP_COMPONENT" ] && [ -f "$TEMP_COMPONENT" ]; then
     rm -f "$TEMP_COMPONENT"
   fi
-  rm -f "$TEMP_PLUG"
 }
 trap cleanup EXIT
 
-if ! command -v wac >/dev/null 2>&1; then
-  echo "error: wac not found" >&2
-  echo "install: cargo install wac-cli" >&2
-  exit 1
-fi
-
-# Compile the handler to a sync component, then compose with the adapter via
-# wac. See issue #267: the built-in `vibe compile --compose-p3` mode uses the
-# mwac plug_components routine which does not forward component type
-# definitions referenced by the socket's imports and produces an invalid
-# component for non-trivial adapters.
+# Compile the handler and compose with the adapter via the built-in
+# mwac plug path (vibe compile --compose-p3).
 echo "[serve] compiling $INPUT..."
-$VIBE compile --component-string-lift "$INPUT" -o "$TEMP_PLUG" 2>/dev/null
-wac plug --plug "$TEMP_PLUG" -o "$COMPONENT" "$ADAPTER"
+$VIBE compile --compose-p3 "$INPUT" --adapter "$ADAPTER" -o "$COMPONENT" 2>/dev/null
 
 if [ "$VALIDATE" = "1" ] && command -v wasm-tools >/dev/null 2>&1; then
   if ! wasm-tools validate --features all "$COMPONENT" 2>/dev/null; then
