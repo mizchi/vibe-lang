@@ -3,15 +3,17 @@
 Spec-locked decisions are tracked in `docs/spec/decisions.md`.
 Completed items are archived in `docs/DONE.md`.
 
-## 次の一手 (2026-04-17 時点)
+## 次の一手 (2026-04-19 時点)
 
 優先順。各項目は該当セクションに詳細あり。
 
 ### 🔴 0.1.0 release blocker
 
-- [ ] **#275 Error surface → `Result::Ok/Err`** — syntax / diagnostics / stdlib migration 設計。release note migration story を先に固定（§[0.1.0 release sign-off](#010-release-sign-off-2026-03-24)）
-- [ ] **#16 selfhost bootstrap 最終ログ固定** — GitHub Actions で `just ci-selfhost-gates-shard bootstrap` を通す
-- [ ] **`just test-vibe-package-suite` compiled-only parity** — 4 本の pure regression 復旧（§[broad package sweep](#010-gate-外に出した-broad-package-sweep)）
+- [ ] **`just test-vibe-package-suite` compiled-only parity** — 大規模回帰。227 files / 1,422 tests のうち **59 files / 424 tests fail**（2026-04-19 計測、`VIBE_USE_SESSION_HTTP=0` + wasmtime v42）。failure 内訳:
+  - **examples/effects** 系: `() -> T with { Error } = () -> { throw(...) }` で「effect requirements not satisfied: throw」。effect annotation が lambda 本体へ伝播していない (`examples/effects.vibe`, `cheatsheet_effects_test.vibe`, `effect_handler_test.vibe`, etc.)
+  - **fs / io / path / time / shell**: runtime/effect support 未実装（`vibe/fs`, `vibe/io`, `vibe/path`, `vibe/time`, `vibe/shell`）
+  - **examples/syntax**: 0/59 — surface 移行で全体的に失効
+  - 旧来の "current pure regressions" (`examples/string_add_test.vibe`, `vibe/json/test_json_import.vibe`, `vibe/json/jsonrpc_test.vibe`, `vibe/x/url_test.vibe`) は **既に pass**
 
 ### 🟠 近場の重要
 
@@ -35,13 +37,10 @@ Completed items are archived in `docs/DONE.md`.
 
 ### ⚪ upstream / infra 待ち
 
-- #294 MoonBit v0.1.20260409 の 10x compile 遅延（upstream）
-- #293 selfbuild_compile_full の MoonBit RC 2GB 超過（host 側制約）
+- なし（#293/#294 は 2026-04-19 に再現せずクローズ）
 
 ### 既知ギャップ（issue として追跡中）
 
-- #287 4 test files が compiled backend で `unreachable` trap
-- #288 `checker_parity_test.vibe` batch compile が 10+min hang
 - derive(Eq) enum with payload の deep 比較は codegen 未実装（#203 e2e で該当テスト除外、issue 未作成）
 
 ## 0.2.0 roadmap: wasm-gc main backend gate (2026-03-27)
@@ -94,10 +93,10 @@ Completed items are archived in `docs/DONE.md`.
 
 ### 残タスク
 
-- [ ] `0.1.0` までの進め方をこの順で固定する
+- [x] `0.1.0` までの進め方をこの順で固定する
   - [x] `build-selfhost-dist` の raw selfhost wasm validation failure を直し、strict cold-host 条件で再確認する (#17)
-  - [ ] GitHub Actions 上で bootstrap shard の最終ログを固定する (#16)
-  - [ ] `Error` surface を `Result::Ok/Err` に寄せる整理を仕様・stdlib・diagnostics まで確定する (#275)
+  - [x] GitHub Actions 上で bootstrap shard の最終ログを固定する (#16, 2026-04-04 closed)
+  - [x] `Error` surface を `Result::Ok/Err` に寄せる整理を仕様・stdlib・diagnostics まで確定する (#275, 2026-04-09 commit `719c176`)
   - [x] `main` の required checks / ruleset を release 前に有効化する (#120)
 - [x] 実使用ベースの `0.1.0` usability sign-off を 1 周通す
   - `docs/report/0-1-0-usability-signoff.md`
@@ -107,7 +106,7 @@ Completed items are archived in `docs/DONE.md`.
   - [x] `vibe build`
   - [x] stale `index.lock` recovery / migration の扱いを決める
   - [x] selfhost dist sample compile/run
-- [ ] GitHub Actions 上で `just ci-selfhost-gates-shard bootstrap` を通し、selfhost bootstrap の最終ログを固定
+- [x] GitHub Actions 上で `just ci-selfhost-gates-shard bootstrap` を通し、selfhost bootstrap の最終ログを固定（#16）
 - [x] `just release-check` を最新 HEAD で通す
   - local `release-check` は 0.1.0 supported surface に絞る
   - broad compiled package sweep は `just test-vibe-package-suite` へ分離
@@ -124,21 +123,22 @@ Completed items are archived in `docs/DONE.md`.
   - 2026-04-08 時点で release host / stage1 selfhost checker の exit status は parity cases 11 件で一致
   - 次は `bench/golden/selfhost_check_parity_snapshot.json` と allowlist を現状へ追従させる
   - `scripts/test_selfhost_check_parity.sh`
-- [ ] `Error` surface を `Result::Ok/Err` に寄せる 0.1.0 前整理方針を確定し、syntax / diagnostics / stdlib migration を揃える (#275)
-  - `throw` / `handle ... with Error` / `?` の surface を `Result` の `Ok/Err` 表現とどう対応づけるか決める
-  - release note に載せる migration story を先に固定する
+- [x] `Error` surface を `Result::Ok/Err` に寄せる 0.1.0 前整理方針を確定し、syntax / diagnostics / stdlib migration を揃える (#275, 2026-04-09 完了)
+  - 結論: public library API は `Result[T, E]` canonical / `throw` + `handle with Error` は boundary 用 / `?` は現行の Error rethrow sugar のまま freeze
+  - 反映先: `vibe/json/`, `docs/{cheatsheet,language-tour,vibe,spec/decisions}.md`, `src/checker/typecheck_errors.mbt` (resume / partial handle hint 追加)
 
 ### 0.1.0 gate 外に出した broad package sweep
 
-- [ ] `just test-vibe-package-suite` の compiled-only parity を戻す
+- [ ] `just test-vibe-package-suite` の compiled-only parity を戻す（2026-04-19 計測: 59 files / 424 tests fail）
   - runtime/effect 系 unsupported:
     `vibe/path`, `vibe/io`, `vibe/fs`, `vibe/time`, `vibe/process`,
     `vibe/shell`, `vibe/x/rlm`, `vibe/socket`
-  - current pure regressions:
-    `examples/string_add_test.vibe`
-    `vibe/json/test_json_import.vibe`
-    `vibe/json/jsonrpc_test.vibe`
-    `vibe/x/url_test.vibe`
+  - 旧来 listed regressions は **全て pass**（`examples/string_add_test.vibe`, `vibe/json/test_json_import.vibe`, `vibe/json/jsonrpc_test.vibe`, `vibe/x/url_test.vibe`）
+  - 新たに表面化した主要 failure カテゴリ:
+    - **examples/effects 系**: lambda body への effect annotation 伝播抜け（"effect requirements not satisfied: throw" + 既に `with { Error }` 宣言済みでも fail）
+    - **examples/syntax**: 0/59 — surface 移行で全失効
+    - **examples/cheatsheet_*_test**: 全失効。docs ↔ examples 同期切れ
+    - **examples/{enum,record,struct,generic,pattern_match,module_advanced}_test**: 0/N — 仕様変更追従漏れ
 
 ## ビルドパイプライン
 
