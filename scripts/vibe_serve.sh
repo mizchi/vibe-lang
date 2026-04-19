@@ -150,7 +150,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "[serve] compiling $INPUT..."
-$VIBE compile --compose-p3 --adapter "$ADAPTER" "$INPUT" -o "$COMPONENT" 2>/dev/null
+$VIBE compile --compose-p3 --adapter "$ADAPTER" "$INPUT" -o "$COMPONENT"
 
 if [ "$VALIDATE" = "1" ] && command -v wasm-tools >/dev/null 2>&1; then
   if ! wasm-tools validate --features all "$COMPONENT" 2>/dev/null; then

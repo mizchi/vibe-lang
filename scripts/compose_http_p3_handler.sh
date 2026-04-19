@@ -64,7 +64,7 @@ fi
 
 # Step 2: Compile + compose + patch via vibe CLI
 echo "[compose] compiling and composing $INPUT..."
-$VIBE compile --compose-p3 --adapter "$ADAPTER" "$INPUT" -o "$OUTPUT" 2>/dev/null
+$VIBE compile --compose-p3 --adapter "$ADAPTER" "$INPUT" -o "$OUTPUT"
 
 # Step 3: Validate
 wasm-tools validate --features all "$OUTPUT"
