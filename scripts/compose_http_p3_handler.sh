@@ -30,7 +30,6 @@ require_cmd() {
 
 require_cmd moon
 require_cmd wasm-tools
-require_cmd wac
 
 INPUT=""
 OUTPUT=""
@@ -63,16 +62,9 @@ else
   echo "[compose] using cached adapter"
 fi
 
-# Step 2: Compile vibe source to a sync component, then compose with the
-# adapter via wac. We use wac rather than `vibe compile --compose-p3` because
-# the built-in mwac plug_components does not forward component type
-# definitions referenced by the socket's imports (issue #267) and produces
-# an invalid component for non-trivial adapter imports.
-PLUG="${OUTPUT%.wasm}.plug.wasm"
-echo "[compose] compiling $INPUT to plug component..."
-$VIBE compile --component-string-lift "$INPUT" -o "$PLUG" 2>/dev/null
-echo "[compose] composing plug into adapter via wac plug..."
-wac plug --plug "$PLUG" -o "$OUTPUT" "$ADAPTER"
+# Step 2: Compile + compose + patch via vibe CLI
+echo "[compose] compiling and composing $INPUT..."
+$VIBE compile --compose-p3 --adapter "$ADAPTER" "$INPUT" -o "$OUTPUT" 2>/dev/null
 
 # Step 3: Validate
 wasm-tools validate --features all "$OUTPUT"
