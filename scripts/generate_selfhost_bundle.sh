@@ -447,11 +447,11 @@ write_adapter_bundle() {
   echo ""
   echo "//# Selfhost CLI adapter bundle"
   echo ""
-  echo "let empty_grouped_sources = () -> Array[(String, Array[(String, String)])] {"
+  echo "let cli_adapter_empty_grouped_sources = () -> Array[(String, Array[(String, String)])] {"
   echo "  Array::slice([(\"\", Array::slice([(\"\", \"\")], 0, 0))], 0, 0)"
   echo "}"
   echo ""
-  echo "let push_grouped_source_pair = (groups: Array[(String, Array[(String, String)])], group_name: String, pair: (String, String)) -> Unit {"
+  echo "let cli_adapter_push_grouped_source_pair = (groups: Array[(String, Array[(String, String)])], group_name: String, pair: (String, String)) -> Unit {"
   echo "  let (path, source) = pair"
   echo "  let mut i = 0"
   echo "  let mut found = false"
@@ -496,11 +496,11 @@ write_adapter_bundle() {
   echo "}"
   echo ""
   echo "export let selfhost_cli_adapter_source_groups = () -> Array[(String, Array[(String, String)])] {"
-  echo "  let groups = empty_grouped_sources()"
+  echo "  let groups = cli_adapter_empty_grouped_sources()"
   adapter_local_idx=0
   for idx in "${CLI_ADAPTER_INDEXES[@]}"; do
     group="${MANIFEST_GROUPS[$idx]}"
-    echo "  push_grouped_source_pair(groups, \"$group\", source_$adapter_local_idx)"
+    echo "  cli_adapter_push_grouped_source_pair(groups, \"$group\", source_$adapter_local_idx)"
     adapter_local_idx=$((adapter_local_idx + 1))
   done
   echo "  groups"

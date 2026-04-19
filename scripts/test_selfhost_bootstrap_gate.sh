@@ -323,15 +323,6 @@ SELFHOST_COMPILED_TEST_FILES=()
 #                                  on empty input, desugar.vibe rewritten
 #                                  without tuple destructuring in for-in
 #                                  loop variable).
-#        - builtins_test.vibe   :: 6 of 62 lookup_builtin tests trap with
-#                                  unreachable in compiled mode for the
-#                                  newer String:: methods (index_of,
-#                                  contains, starts_with, ends_with,
-#                                  from_char_code, char_code_at). The
-#                                  builtins_string1/2 lookup tables are
-#                                  evaluated correctly in focused runs; the
-#                                  compiled wasm test runner traps somewhere
-#                                  downstream. 56/62 pass.
 #        - checker_parity_test.vibe :: 172 test cases — the compiled batch
 #                                  wasm for this file never produces any
 #                                  output before the stage timeout. 10+
@@ -340,15 +331,11 @@ SELFHOST_COMPILED_TEST_FILES=()
 #                                  batch compile or the batch wasm
 #                                  execution is stuck in a near-infinite
 #                                  loop.
-#        - component_codegen_test.vibe :: "component: string lift injects
-#                                  run_init when core exports run" trips
-#                                  an unreachable trap in compiled mode
-#                                  (7/8 pass).
-#      Restore all six files to the shard once #266 follow-up fixes them.
+#      Restore remaining files to the shard once #287 follow-up fixes them.
 for test_path in "$PROJECT_ROOT"/vibe/compiler/*_test.vibe; do
   test_name="$(basename "$test_path")"
   case "$test_name" in
-    selfhost_s5_test.vibe|selfhost_s5_*_test.vibe|codegen_test.vibe|codegen_*_test.vibe|compiler_cache_test.vibe|cli_cache_test.vibe|cli_adapter_cache_test.vibe|cache_probe_*_bench_test.vibe|cache_probe_test.vibe|compiler_fs_test.vibe|module_loader_check_module_test.vibe|fixture_real_selfhost_test.vibe|checker_error_format_test.vibe|compiler_cache_advanced_test.vibe|file_compile_mode_test.vibe|module_loader_collect_sources_test.vibe|persistent_cache_test.vibe|type_db_cross_module_test.vibe|type_db_test.vibe|compiler_cache_prepare_test.vibe|fixture_test.vibe|coverage_selfhost_suite_lib_test.vibe|loader_persistent_cache_test.vibe|wasm_emit_test.vibe|module_loader_test.vibe|fixture_roundtrip_test.vibe|checker_effects_test.vibe|parser_loop_test.vibe|builtins_test.vibe|checker_parity_test.vibe|component_codegen_test.vibe)
+    selfhost_s5_test.vibe|selfhost_s5_*_test.vibe|codegen_test.vibe|codegen_*_test.vibe|compiler_cache_test.vibe|cli_cache_test.vibe|cli_adapter_cache_test.vibe|cache_probe_*_bench_test.vibe|cache_probe_test.vibe|compiler_fs_test.vibe|module_loader_check_module_test.vibe|fixture_real_selfhost_test.vibe|checker_error_format_test.vibe|compiler_cache_advanced_test.vibe|file_compile_mode_test.vibe|module_loader_collect_sources_test.vibe|persistent_cache_test.vibe|type_db_cross_module_test.vibe|type_db_test.vibe|compiler_cache_prepare_test.vibe|fixture_test.vibe|coverage_selfhost_suite_lib_test.vibe|loader_persistent_cache_test.vibe|wasm_emit_test.vibe|module_loader_test.vibe|fixture_roundtrip_test.vibe|checker_effects_test.vibe|parser_loop_test.vibe|checker_parity_test.vibe)
       ;;
     *)
       SELFHOST_COMPILED_TEST_FILES+=("$test_path")
@@ -410,17 +397,9 @@ run_stage "compiled selfhost cli cache test" \
   env VIBE_TEST_BACKEND=compiled \
   "$VIBE_BIN" test "$PROJECT_ROOT/vibe/compiler/cli_cache_test.vibe"
 
-# TEMP: cli_adapter_cache_test.vibe has 2 of 4 cases that trap with
-# unreachable in compiled mode ("selfhost cli adapter bundle preserves
-# grouped layers" and "selfhost cli adapter module source is embedded").
-# Same underlying selfhost compiler bug family as dce_test / parser_loop_test
-# — the tests trip an unreachable instruction in the compiled wasm test
-# backend. Skipping the whole stage until #266 follow-up fixes the root
-# cause.
-# run_stage "compiled selfhost cli adapter cache test" \
-#   env VIBE_TEST_BACKEND=compiled \
-#   "$VIBE_BIN" test "$PROJECT_ROOT/vibe/compiler/cli_adapter_cache_test.vibe"
-echo "[bootstrap] skipping compiled selfhost cli adapter cache test (see issue #266)"
+run_stage "compiled selfhost cli adapter cache test" \
+  env VIBE_TEST_BACKEND=compiled \
+  "$VIBE_BIN" test "$PROJECT_ROOT/vibe/compiler/cli_adapter_cache_test.vibe"
 
 run_stage "compiled selfhost codegen enum import test" \
   env VIBE_TEST_BACKEND=compiled \
