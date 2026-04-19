@@ -36,7 +36,6 @@ Completed items are archived in `docs/DONE.md`.
 ### ⚪ upstream / infra 待ち
 
 - #294 MoonBit v0.1.20260409 の 10x compile 遅延（upstream）
-- #290 mwac `plug_components` の typed imports forward バグ（upstream）
 - #293 selfbuild_compile_full の MoonBit RC 2GB 超過（host 側制約）
 
 ### 既知ギャップ（issue として追跡中）
