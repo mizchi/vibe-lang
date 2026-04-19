@@ -61,10 +61,13 @@ test "parse loop sugar" {
 }
 
 test "parse parameterized loop" {
+  // Parser desugars `loop (params) { body }` into nested `let mut` + `while true { ... }`;
+  // `break val` becomes `{ __loop_result = val; break }` and `continue(args)` becomes
+  // `{ let __lt0 = <a0>; ...; p0 = __lt0; ...; continue }`.
   let result = handle {
     parse_print("loop (i = 10, acc = 0) { if i <= 0 { break acc } else { continue(i - 1, acc + i) } }")
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)
   }
-  assert(result == "loop (i = 10, acc = 0) { if (i <= 0) { break acc } else { continue((i - 1), (acc + i)) } }")
+  assert(result == "{ let mut i = 10; { let mut acc = 0; { let mut __loop_result = 0; { while true { if (i <= 0) { { __loop_result = acc; break } } else { { let __lt0 = (i - 1); { let __lt1 = (acc + i); { i = __lt0; { acc = __lt1; continue } } } } } }; __loop_result } } } }")
 }
