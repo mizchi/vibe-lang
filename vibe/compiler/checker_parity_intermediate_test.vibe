@@ -1,0 +1,180 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_ok, check_source_err
+}
+
+//# Misc
+
+test "parity: multiple let bindings" {
+  assert(check_source_ok("let a = 1\nlet b = 2\nlet c = 3\na + b + c"))
+}
+
+test "parity: nested match" {
+  assert(check_source_ok("enum Op { Add; Sub }\nlet calc = (op: Op, a: Int, b: Int) -> Int { match op { Add => a + b, Sub => a - b } }\ncalc(Add, 10, 3)"))
+}
+
+test "parity: bitwise ops" {
+  assert(check_source_ok("let a = 0xFF & 0x0F\nlet b = a | 0x10\nb"))
+}
+
+test "parity: handle propagation" {
+  assert(check_source_ok("let inner = () -> Int with { Error } { throw(\"err\")\n0 }\nlet outer = () -> Int with { Error } { inner() + 1 }\nlet r = handle { outer() } with Error { Throw(_) => -1 }\nr"))
+}
+
+test "parity: suberror definition" {
+  assert(check_source_ok("suberror AppError { NotFound; InvalidInput(String) }\nlet f = () -> Int with { Error } { throw(NotFound)\n0 }\nhandle { f() } with Error { Throw(_) => 42 }"))
+}
+
+test "parity: type alias" {
+  assert(check_source_ok("type Pair = (Int, Int)\nlet sum = (p: Pair) -> Int { let (a, b) = p\na + b }\nsum((3, 7))"))
+}
+
+test "parity: struct field access" {
+  assert(check_source_ok("struct Point { x: Int; y: Int }\nlet p = Point::{ x: 3, y: 4 }\np.x + p.y"))
+}
+
+test "parity: labeled function" {
+  assert(check_source_ok("let add = (x~: Int, y~: Int) -> Int { x + y }\nadd(x=1, y=2)"))
+}
+
+test "parity err: return type mismatch" {
+  assert(check_source_err("let f = () -> Int { \"hello\" }"))
+}
+
+test "parity err: function arity" {
+  assert(check_source_err("let f = (x: Int) -> Int { x }\nf(1, 2)"))
+}
+
+test "parity err: while condition not bool" {
+  assert(check_source_err("while 42 { 0 }"))
+}
+
+test "parity err: logic op non-bool" {
+  assert(check_source_err("1 && 2"))
+}
+
+test "parity err: subtract string" {
+  assert(check_source_err("\"a\" - \"b\""))
+}
+
+test "parity: loop with params" {
+  assert(check_source_ok("loop (i = 0, acc = 0) { if i >= 5 { break(acc) } else { continue(i + 1, acc + i) } }"))
+}
+
+test "parity: for-in with index" {
+  assert(check_source_ok("let arr = [10, 20, 30]\nlet mut total = 0\nfor x, i in arr { total = total + x + i }\ntotal"))
+}
+
+test "parity: nested while" {
+  assert(check_source_ok("let mut sum = 0\nlet mut i = 0\nwhile i < 3 { let mut j = 0\nwhile j < 3 { sum = sum + 1\nj = j + 1 }\ni = i + 1 }\nsum"))
+}
+
+test "parity: enum with payload" {
+  assert(check_source_ok("enum Shape { Circle(Int); Rect(Int, Int); Point }\nlet area = (s: Shape) -> Int { match s { Circle(r) => r * r, Rect(w, h) => w * h, Point => 0 } }\narea(Circle(5))"))
+}
+
+test "parity: nested enum match" {
+  assert(check_source_ok("enum Tree { Leaf(Int); Node(Tree, Tree) }\nlet rec sum = (t: Tree) -> Int { match t { Leaf(n) => n, Node(l, r) => sum(l) + sum(r) } }\nsum(Node(Leaf(1), Leaf(2)))"))
+}
+
+test "parity: record literal" {
+  assert(check_source_ok("let p = record { x: 3, y: 4 }\np.x + p.y"))
+}
+
+test "parity: array builder" {
+  assert(check_source_ok("let b = ArrayBuilder::new()\nArrayBuilder::push(b, 1)\nArrayBuilder::push(b, 2)\nlet arr = ArrayBuilder::freeze(b)\nArray::length(arr)"))
+}
+
+test "parity: map builder" {
+  assert(check_source_ok("let b = MapBuilder::new()\nMapBuilder::set(b, \"k\", 1)\nlet m = MapBuilder::freeze(b)\nMap::get(m, \"k\")"))
+}
+
+test "parity: let rec" {
+  assert(check_source_ok("let rec fact = (n: Int) -> Int { if n <= 1 { 1 } else { n * fact(n - 1) } }\nfact(5)"))
+}
+
+test "parity: function returning function" {
+  assert(check_source_ok("let make_adder = (n: Int) -> (Int) -> Int { (x: Int) -> Int { x + n } }\nlet add5 = make_adder(5)\nadd5(10)"))
+}
+
+test "parity: generic pair" {
+  assert(check_source_ok("let fst = [A, B](p: (A, B)) -> A { let (a, _) = p\na }\nfst((42, \"hi\"))"))
+}
+
+test "parity: pipe operator" {
+  assert(check_source_ok("let double = (x: Int) -> Int { x * 2 }\n5 |> double"))
+}
+
+test "parity: string interpolation" {
+  assert(check_source_ok("let name = \"world\"\nlet s = \"hello \\{name}\"\nString::length(s)"))
+}
+
+test "parity: spread array" {
+  assert(check_source_ok("let a = [1, 2]\nlet b = [...a, 3]\nArray::length(b)"))
+}
+
+test "parity: String::length" {
+  assert(check_source_ok("String::length(\"hello\")"))
+}
+
+test "parity: String::contains" {
+  assert(check_source_ok("String::contains(\"hello world\", \"world\")"))
+}
+
+test "parity: Array::length" {
+  assert(check_source_ok("Array::length([1, 2, 3])"))
+}
+
+test "parity: Map::has_key" {
+  assert(check_source_ok("let m = map { \"a\": 1 }\nMap::has_key(m, \"a\")"))
+}
+
+test "parity: not operator" {
+  assert(check_source_ok("let x = !true\nif x { 0 } else { 1 }"))
+}
+
+test "parity: unary minus" {
+  assert(check_source_ok("let x = -5\n0 - x"))
+}
+
+test "parity err: unknown builtin" {
+  assert(check_source_err("NonExistent::method(42)"))
+}
+
+test "parity err: division type mismatch" {
+  assert(check_source_err("\"hello\" / 2"))
+}
+
+test "parity err: modulo type mismatch" {
+  assert(check_source_err("\"hello\" % 2"))
+}
+
+test "parity err: comparison type mismatch" {
+  assert(check_source_err("1 < \"hello\""))
+}
+
+test "parity err: equality type mismatch" {
+  assert(check_source_err("1 == \"hello\""))
+}
+
+test "parity builtin: String::concat" {
+  assert(check_source_ok("String::concat(\"a\", \"b\")"))
+}
+
+test "parity builtin: String::equals" {
+  assert(check_source_ok("String::equals(\"a\", \"a\")"))
+}
+
+test "parity builtin: String::substring" {
+  assert(check_source_ok("String::substring(\"hello\", 1, 3)"))
+}
+
+test "parity builtin: String::index_of" {
+  assert(check_source_ok("String::index_of(\"hello\", \"ll\")"))
+}
+
+test "parity builtin: String::starts_with" {
+  assert(check_source_ok("String::starts_with(\"hello\", \"he\")"))
+}
+

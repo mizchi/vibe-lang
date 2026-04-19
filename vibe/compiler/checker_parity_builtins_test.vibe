@@ -1,0 +1,180 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_ok, check_source_err
+}
+
+//# Misc
+
+test "parity builtin: String::ends_with" {
+  assert(check_source_ok("String::ends_with(\"hello\", \"lo\")"))
+}
+
+test "parity builtin: String::char_code_at" {
+  assert(check_source_ok("String::char_code_at(\"abc\", 0)"))
+}
+
+test "parity builtin: String::from_char_code" {
+  assert(check_source_ok("String::from_char_code(65)"))
+}
+
+test "parity builtin: String::last_index_of" {
+  assert(check_source_ok("String::last_index_of(\"abab\", \"ab\")"))
+}
+
+test "parity builtin: String::split" {
+  assert(check_source_ok("String::split(\"a,b,c\", \",\")"))
+}
+
+test "parity builtin: Array::get" {
+  assert(check_source_ok("Array::get([10, 20, 30], 1)"))
+}
+
+test "parity builtin: Array::set" {
+  assert(check_source_ok("let arr = [1, 2, 3]\nArray::set(arr, 0, 99)\nArray::get(arr, 0)"))
+}
+
+test "parity builtin: Array::push" {
+  assert(check_source_ok("let arr = [1]\nArray::push(arr, 2)\nArray::length(arr)"))
+}
+
+test "parity builtin: Array::slice" {
+  assert(check_source_ok("let arr = [1, 2, 3, 4]\nlet s = Array::slice(arr, 1, 3)\nArray::length(s)"))
+}
+
+test "parity builtin: Array::concat" {
+  assert(check_source_ok("let a = [1, 2]\nlet b = [3, 4]\nlet c = Array::concat(a, b)\nArray::length(c)"))
+}
+
+test "parity builtin: Array::push_all" {
+  assert(check_source_ok("let a = [1, 2]\nlet b = [3, 4]\nArray::push_all(a, b)\nArray::length(a)"))
+}
+
+test "parity builtin: ArrayBuilder::new+push+freeze" {
+  assert(check_source_ok("let b = ArrayBuilder::new()\nArrayBuilder::push(b, 42)\nlet arr = ArrayBuilder::freeze(b)\nArray::get(arr, 0)"))
+}
+
+test "parity builtin: MapBuilder::new+set+freeze" {
+  assert(check_source_ok("let b = MapBuilder::new()\nMapBuilder::set(b, \"key\", 99)\nlet m = MapBuilder::freeze(b)\nMap::get(m, \"key\")"))
+}
+
+test "parity builtin: Map::get" {
+  assert(check_source_ok("let m = map { \"x\": 42 }\nMap::get(m, \"x\")"))
+}
+
+test "parity builtin: Map::keys" {
+  assert(check_source_ok("let m = map { \"a\": 1, \"b\": 2 }\nlet keys = Map::keys(m)\nArray::length(keys)"))
+}
+
+test "parity builtin: Bytes::new+push+length" {
+  assert(check_source_ok("let b = Bytes::new()\nBytes::push(b, 65)\nArray::length(Bytes::to_array(b))"))
+}
+
+test "parity builtin: Bytes::from_array+to_array" {
+  assert(check_source_ok("let b = Bytes::from_array([1, 2, 3])\nlet a = Bytes::to_array(b)\nArray::length(a)"))
+}
+
+test "parity builtin: Bytes::concat" {
+  assert(check_source_ok("let a = Bytes::from_array([1])\nlet b = Bytes::from_array([2])\nlet c = Bytes::concat(a, b)\nArray::length(Bytes::to_array(c))"))
+}
+
+test "parity builtin: Bytes::slice" {
+  assert(check_source_ok("let b = Bytes::from_array([1, 2, 3, 4])\nlet s = Bytes::slice(b, 1, 3)\nArray::length(Bytes::to_array(s))"))
+}
+
+test "parity builtin: Int::to_double" {
+  assert(check_source_ok("Int::to_double(42)"))
+}
+
+test "parity builtin: __to_string" {
+  assert(check_source_ok("__to_string(42)"))
+}
+
+test "parity: compound assign" {
+  assert(check_source_ok("let mut x = 10\nx += 5\nx -= 2\nx *= 3\nx"))
+}
+
+test "parity: option unwrap" {
+  assert(check_source_ok("let x = Some(42)\nmatch x { Some(v) => v, None => 0 }"))
+}
+
+test "parity: option chain" {
+  assert(check_source_ok("let mut result: Option[Int] = None\nlet arr = [10, 20, 30]\nlet mut i = 0\nwhile i < Array::length(arr) {\n  if Array::get(arr, i) == 20 {\n    result = Some(i)\n    break\n  }\n  i = i + 1\n}\nmatch result { Some(i) => i, None => -1 }"))
+}
+
+test "parity: while mutable" {
+  assert(check_source_ok("let mut total = 0\nlet mut i = 0\nwhile i < 5 { total = total + i * i\ni = i + 1 }\ntotal"))
+}
+
+test "parity: nested option" {
+  assert(check_source_ok("match Some(Some(42)) { Some(Some(n)) => n, _ => 0 }"))
+}
+
+test "parity: for-in squares" {
+  assert(check_source_ok("let squares = for x in [1, 2, 3] { x * x }\nArray::get(squares, 2)"))
+}
+
+test "parity: handle multiple" {
+  assert(check_source_ok("let risky = (n: Int) -> Int with { Error } { if n < 0 { throw(\"neg\") }\nn * 2 }\nlet a = handle { risky(5) } with Error { Throw(_) => -1 }\nlet b = handle { risky(-1) } with Error { Throw(_) => -1 }\na + b"))
+}
+
+test "parity: suberror propagate" {
+  assert(check_source_ok("suberror AppError { NotFound; BadInput(String) }\nlet inner = () -> Int with { Error } { throw(BadInput(\"x\"))\n0 }\nhandle { inner() } with Error { Throw(_) => 99 }"))
+}
+
+test "parity: enum with functions" {
+  assert(check_source_ok("enum Shape { Circle(Int); Rect(Int, Int) }\nlet area = (s: Shape) -> Int { match s { Circle(r) => r * r, Rect(w, h) => w * h } }\narea(Circle(5))"))
+}
+
+test "parity: generic option map" {
+  assert(check_source_ok("let opt_map = [A, B](opt: Option[A], f: (A) -> B) -> Option[B] { match opt { Some(v) => Some(f(v)), None => None } }\nmatch opt_map(Some(5), (x: Int) -> Int { x * 10 }) { Some(n) => n, None => 0 }"))
+}
+
+test "parity: string builder" {
+  assert(check_source_ok("let b = StringBuilder::new()\nStringBuilder::push(b, \"hi\")\nStringBuilder::freeze(b)"))
+}
+
+test "parity: nested loop" {
+  assert(check_source_ok("let mut sum = 0\nlet mut i = 0\nwhile i < 3 { let mut j = 0\nwhile j < 4 { sum = sum + 1\nj = j + 1 }\ni = i + 1 }\nsum"))
+}
+
+test "parity: array filter collect" {
+  assert(check_source_ok("let b = ArrayBuilder::new()\nfor x in [1, 2, 3, 4, 5] { if x % 2 == 0 { ArrayBuilder::push(b, x) } }\nArray::length(ArrayBuilder::freeze(b))"))
+}
+
+test "parity: recursive list" {
+  assert(check_source_ok("enum IntList { Nil; Cons(Int, IntList) }\nlet rec sum_list = (l: IntList) -> Int { match l { Nil => 0, Cons(h, t) => h + sum_list(t) } }\nsum_list(Cons(1, Cons(2, Cons(3, Nil))))"))
+}
+
+test "parity: map literal" {
+  assert(check_source_ok("let m = map { \"x\": 1, \"y\": 2 }\nMap::get(m, \"x\")"))
+}
+
+test "parity: empty map" {
+  assert(check_source_ok("let m: Map[String, Int] = map {}\nm"))
+}
+
+test "parity: tuple index" {
+  assert(check_source_ok("let t = (10, 20, 30)\nt.0 + t.1 + t.2"))
+}
+
+test "parity: nested tuple" {
+  assert(check_source_ok("let t = ((1, 2), (3, 4))\nlet (a, b) = t\na.0 + b.1"))
+}
+
+test "parity: string interpolation" {
+  assert(check_source_ok("let x = 42\nlet s = \"value is \\{__to_string(x)}\"\nString::length(s)"))
+}
+
+test "parity: loop with break" {
+  assert(check_source_ok("let result = loop (i = 0) { if i >= 5 { break(i) } else { continue(i + 1) } }\nresult"))
+}
+
+test "parity: loop multi param" {
+  assert(check_source_ok("let result = loop (i = 0, sum = 0) { if i >= 3 { break(sum) } else { continue(i + 1, sum + i) } }\nresult"))
+}
+
+test "parity: while break" {
+  assert(check_source_ok("let mut i = 0\nwhile true { if i >= 10 { break }\ni = i + 1 }\ni"))
+}
+
