@@ -152,10 +152,23 @@ fn AstParser::parse_let_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     Some(ty) =>
       if rec_flag {
         fill_fn_ret_from_annotation(ty, raw_expr)
-      } else if type_contains_param(ty) {
-        raw_expr
       } else {
-        wrap_local_let_with_annotation(ty, raw_expr, span)
+        // For `let f: (A) -> R with {E} = (x) -> body`, propagate the
+        // annotation (param types, return type, effects) into the Fn RHS so
+        // the checker sees the declared effects and tuple/generic shapes
+        // when typing `body`. This mirrors the rec path. For non-Fn RHS
+        // (plain values): skip generic-param annotations (wrap helper cannot
+        // be instantiated), otherwise fall back to the type-assertion wrapper.
+        match (ty, raw_expr) {
+          (@core.Type::Func(_), @core.Expr::Fn(_)) =>
+            fill_fn_ret_from_annotation(ty, raw_expr)
+          _ =>
+            if type_contains_param(ty) {
+              raw_expr
+            } else {
+              wrap_local_let_with_annotation(ty, raw_expr, span)
+            }
+        }
       }
     None => raw_expr
   }
