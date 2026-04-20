@@ -786,29 +786,30 @@ fn type_call_builtin_handler_collection_numeric(
       }
       let a = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
       let b = type_expr_eff(env, pos_args[1], aliases, effects, allow_effect)
-      // String + String is allowed (desugared to String::concat at codegen)
+      // String + String is allowed (desugared to String::concat at codegen).
+      // Use pure pattern matches on resolved types; `type_equal` would unify
+      // here and spuriously bind an unresolved `a` to `String` (observed
+      // cascading through `(acc, x) -> acc + x + n` in `Array::fold`).
+      // Check BOTH operands so that either `(x) -> "!" + x` or
+      // `(x) -> x + "!"` infers `x: String` via the later same-type unify
+      // without the numeric-var pre-constraint blocking it.
       let resolved_a = resolve_type(env, a)
-      if not(type_equal(env, resolved_a, @core.Type::String)) {
+      let resolved_b = resolve_type(env, b)
+      let is_string = match (resolved_a, resolved_b) {
+        (@core.Type::String, _) => true
+        (_, @core.Type::String) => true
+        _ => false
+      }
+      if not(is_string) {
         ensure_num_operand(env, a, pos_args[0].span())
       }
       // Char + Int is allowed for char arithmetic (`'A' + 1 == 'B'`); both
       // sides are 62-bit tagged at runtime so no conversion needed. The
-      // result type follows the first operand. Keep this probe purely
-      // side-effect-free: only resolve `b` when `a` is already concretely
-      // Char or Int (otherwise the same-type `type_equal` below will handle
-      // unification), and match on resolved concrete variants instead of
-      // calling `type_equal` which unifies.
-      let char_int_mix = match resolved_a {
-        @core.Type::Char =>
-          match resolve_type(env, b) {
-            @core.Type::Int => true
-            _ => false
-          }
-        @core.Type::Int =>
-          match resolve_type(env, b) {
-            @core.Type::Char => true
-            _ => false
-          }
+      // result type follows the first operand. Pure pattern match against
+      // the already-resolved types (computed above) — no unification.
+      let char_int_mix = match (resolved_a, resolved_b) {
+        (@core.Type::Char, @core.Type::Int) => true
+        (@core.Type::Int, @core.Type::Char) => true
         _ => false
       }
       if not(char_int_mix) && not(type_equal(env, b, a)) {
