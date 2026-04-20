@@ -1504,13 +1504,24 @@ fn rewrite_module_stmt(
   exported_module : Bool,
 ) -> @core.Stmt raise ParseError {
   match stmt {
-    @core.Stmt::Let(rec~, name~, expr~, span~) =>
+    @core.Stmt::Let(rec~, name~, expr~, span~) => {
+      // Only qualify names that appear in the module's top-level decl set.
+      // Nested `Let` stmts inside a RHS block (e.g. the type-assert helper
+      // emitted by `wrap_local_let_with_annotation` for `export let f: T = ...`)
+      // are block-local; qualifying them would break their call-sites which
+      // reference the bare helper name inside the same block.
+      let next_name = if locals.contains(name) {
+        module_qualified_name(module_name, name)
+      } else {
+        name
+      }
       @core.Stmt::Let(
         rec~,
-        name=module_qualified_name(module_name, name),
+        name=next_name,
         expr=rewrite_module_expr(module_name, expr, locals),
         span~,
       )
+    }
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
       let next_expr = rewrite_module_expr(module_name, expr, locals)
       let qualified_name = module_qualified_name(module_name, name)
@@ -1530,12 +1541,18 @@ fn rewrite_module_stmt(
         span~,
       )
     }
-    @core.Stmt::LetMut(name~, expr~, span~) =>
+    @core.Stmt::LetMut(name~, expr~, span~) => {
+      let next_name = if locals.contains(name) {
+        module_qualified_name(module_name, name)
+      } else {
+        name
+      }
       @core.Stmt::LetMut(
-        name=module_qualified_name(module_name, name),
+        name=next_name,
         expr=rewrite_module_expr(module_name, expr, locals),
         span~,
       )
+    }
     @core.Stmt::Assign(name~, expr~, span~) =>
       @core.Stmt::Assign(
         name=local_module_name(module_name, name, locals),

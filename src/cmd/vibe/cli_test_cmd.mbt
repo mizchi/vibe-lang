@@ -54,6 +54,36 @@ fn collect_compiled_test_cases(
 }
 
 ///|
+/// Return the module-qualifier prefix of a stmt's binding name, if any.
+/// For `Stmt::Let(name="Math::abs", ...)` → `Some("Math")`; otherwise `None`.
+/// The parser lowers `module Math { export let abs = ... }` into bare
+/// `Let(name="Math::abs", ...)` stmts, dropping the wrapper; the test
+/// batch-source renderer needs to re-inject that wrapper so the sliced
+/// source text (which is the *inner* `export let abs = ...`) parses back
+/// into the same qualified binding.
+fn compiled_test_stmt_module_prefix(stmt : @vibe_core.Stmt) -> String? {
+  let name = match stmt {
+    @vibe_core.Stmt::Let(name~, ..) => name
+    @vibe_core.Stmt::ExportLet(name~, ..) => name
+    @vibe_core.Stmt::InternalExportLet(name~, ..) => name
+    @vibe_core.Stmt::LetMut(name~, ..) => name
+    _ => return None
+  }
+  let idx = name.find("::")
+  match idx {
+    Some(i) => {
+      let prefix = name.substring(start=0, end=i)
+      if prefix.length() == 0 || prefix.contains("::") {
+        None
+      } else {
+        Some(prefix)
+      }
+    }
+    None => None
+  }
+}
+
+///|
 fn render_stmt_snippets(
   source : String,
   stmts : Array[@vibe_core.Stmt],
@@ -66,20 +96,80 @@ fn render_stmt_snippets(
   // in the generated batch source and trigger a spurious "duplicate type"
   // checker error.
   let seen_spans : Map[String, Bool] = {}
-  for stmt in stmts {
+  // Group consecutive stmts that share a `Name::member` qualifier prefix so
+  // they can be re-wrapped in `module Name { ... }`. Without this, the
+  // source-sliced text loses the module wrapper and the inner `export let
+  // abs = ...` re-parses as a bare `abs` binding, making `Math::abs(...)`
+  // unresolvable in test bodies.
+  let mut i = 0
+  let n = stmts.length()
+  while i < n {
+    let stmt = stmts[i]
     let span = stmt.span()
     let span_key = span.start.to_string() + "-" + span.end.to_string()
     if seen_spans.contains(span_key) {
+      i = i + 1
       continue
     }
-    seen_spans[span_key] = true
-    let snippet = source_slice_by_span(source, span.start, span.end)
-    if snippet.trim().to_string().length() == 0 {
-      continue
-    }
-    out.write_string(snippet)
-    if not(snippet.has_suffix("\n")) {
-      out.write_char('\n')
+    let prefix = compiled_test_stmt_module_prefix(stmt)
+    match prefix {
+      Some(mod_name) => {
+        // Scan forward to collect all consecutive stmts sharing the same
+        // module prefix. Intervening stmts from other modules break the run.
+        let group_start = i
+        let mut group_end = i
+        while group_end < n {
+          let peek = stmts[group_end]
+          match compiled_test_stmt_module_prefix(peek) {
+            Some(p) if p == mod_name => group_end = group_end + 1
+            _ => break
+          }
+        }
+        out.write_string("module ")
+        out.write_string(mod_name)
+        out.write_string(" {\n")
+        let mut j = group_start
+        while j < group_end {
+          let inner = stmts[j]
+          let inner_span = inner.span()
+          let inner_key = inner_span.start.to_string() +
+            "-" +
+            inner_span.end.to_string()
+          if seen_spans.contains(inner_key) {
+            j = j + 1
+            continue
+          }
+          seen_spans[inner_key] = true
+          let snippet = source_slice_by_span(
+            source, inner_span.start, inner_span.end,
+          )
+          if snippet.trim().to_string().length() == 0 {
+            j = j + 1
+            continue
+          }
+          out.write_string("  ")
+          out.write_string(snippet)
+          if not(snippet.has_suffix("\n")) {
+            out.write_char('\n')
+          }
+          j = j + 1
+        }
+        out.write_string("}\n")
+        i = group_end
+      }
+      None => {
+        seen_spans[span_key] = true
+        let snippet = source_slice_by_span(source, span.start, span.end)
+        if snippet.trim().to_string().length() == 0 {
+          i = i + 1
+          continue
+        }
+        out.write_string(snippet)
+        if not(snippet.has_suffix("\n")) {
+          out.write_char('\n')
+        }
+        i = i + 1
+      }
     }
   }
   out.to_string()
