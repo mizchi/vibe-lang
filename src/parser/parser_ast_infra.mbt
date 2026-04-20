@@ -6,6 +6,13 @@ pub struct AstParser {
   mut pos : Int
   mut pending_stmts : Array[@core.Stmt]
   errors : Array[ParseError]
+  // Side-channel for trait bounds parsed by the most recent call to
+  // `parse_generic_fn_type`. The `[T: Bound + ...]` form only appears in
+  // type annotations and the `Type::Func` AST variant has no place to hold
+  // bounds, so they would otherwise be discarded. `parse_let_stmt` reads
+  // this map after `parse_type` to attach bounds to the Fn AST's
+  // `type_bounds` field when the annotation is a generic function.
+  mut last_generic_type_bounds : Map[String, Array[String]]
 }
 
 ///|
@@ -18,7 +25,14 @@ pub fn AstParser::new(tokens : Array[Token]) -> AstParser {
     acc += tokens[i].width()
   }
   offsets[len] = acc
-  AstParser::{ tokens, offsets, pos: 0, pending_stmts: [], errors: [] }
+  AstParser::{
+    tokens,
+    offsets,
+    pos: 0,
+    pending_stmts: [],
+    errors: [],
+    last_generic_type_bounds: {},
+  }
 }
 
 ///|

@@ -167,17 +167,20 @@ fn AstParser::parse_generic_fn_type(
   for k, v in params {
     extended_params[k] = v
   }
+  // Capture trait bounds for `parse_let_stmt` to re-attach to the Fn AST
+  // (see `AstParser.last_generic_type_bounds`).
+  let captured_bounds : Map[String, Array[String]] = {}
   let _ = self.expect(lbracket(), "[")
   self.skip_trivia()
   if self.peek_kind() != rbracket() {
     let name_tok = self.expect(name(), "type parameter name")
     extended_params[name_tok.text()] = true
     self.skip_trivia()
-    // Skip optional bounds: T: Trait
+    // Optional bounds: T: Trait
     if self.peek_kind() == colon() {
       let _ = self.bump()
       self.skip_trivia()
-      let _ = self.parse_trait_bounds()
+      captured_bounds[name_tok.text()] = self.parse_trait_bounds()
     }
     while ({
             self.skip_trivia()
@@ -194,10 +197,11 @@ fn AstParser::parse_generic_fn_type(
       if self.peek_kind() == colon() {
         let _ = self.bump()
         self.skip_trivia()
-        let _ = self.parse_trait_bounds()
+        captured_bounds[name_tok.text()] = self.parse_trait_bounds()
       }
     }
   }
+  self.last_generic_type_bounds = captured_bounds
   let _ = self.expect(rbracket(), "]")
   self.skip_trivia()
   // Now parse (params) -> ret with extended param scope
