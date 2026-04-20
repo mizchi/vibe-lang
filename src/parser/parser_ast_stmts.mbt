@@ -227,17 +227,51 @@ fn fill_fn_ret_from_annotation(
       } else {
         effects
       }
+      // If the annotation's return type is itself a function type and the
+      // body reduces to a single `Fn` expression (the common curried-function
+      // pattern `let f: (A) -> (B) -> C = (a) -> (b) -> body`), recursively
+      // fill the inner Fn so its placeholder params also get the expected
+      // types. Without this the checker sees the inner lambda's params as
+      // `Unit` (the placeholder sentinel) and raises a spurious "expected
+      // <ann ret param type>, actual Unit" mismatch.
+      let filled_body = descend_fn_ret_annotation_into_body(ann_ret, body)
       @core.Expr::Fn(
         type_params~,
         type_bounds~,
         params=filled_params,
         ret=filled_ret,
         effects=filled_effects,
-        body~,
+        body=filled_body,
         span~,
       )
     }
     _ => raw_expr
+  }
+}
+
+///|
+/// If `body` is a single-expression block `{ Fn(..) }` and `ann_ret` is a
+/// `Type::Func`, re-build the body with the inner Fn's placeholders filled
+/// from `ann_ret`. Returns the original body otherwise.
+fn descend_fn_ret_annotation_into_body(
+  ann_ret : @core.Type,
+  body : @core.Module,
+) -> @core.Module {
+  if body.stmts.length() != 1 {
+    return body
+  }
+  match body.stmts[0] {
+    @core.Stmt::Expr(expr~, span=stmt_span) =>
+      match (ann_ret, expr) {
+        (@core.Type::Func(_), @core.Expr::Fn(_)) => {
+          let new_expr = fill_fn_ret_from_annotation(ann_ret, expr)
+          @core.Module::{
+            stmts: [@core.Stmt::Expr(expr=new_expr, span=stmt_span)],
+          }
+        }
+        _ => body
+      }
+    _ => body
   }
 }
 
