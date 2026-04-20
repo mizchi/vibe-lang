@@ -1461,7 +1461,15 @@ fn type_fn_literal(
       None => effective_ty
     }
     let param_ty = substitute_type_params(param_ty_with_num, type_param_vars)
-    let resolved = normalize_type(env, param_ty)
+    let normalized = normalize_type(env, param_ty)
+    // Un-annotated lambda param (`(x) -> ...`) arrives with Type::Unit as the
+    // infer sentinel. When no contextual expected type is available (let RHS,
+    // IIFE), allocate a fresh type var so the body check can unify normally.
+    let resolved = if normalized.is_infer_placeholder() {
+      fresh_type_var(env)
+    } else {
+      normalized
+    }
     ensure_no_scoped_ref_param_decl(env, resolved, span)
     let _ = ensure_type_satisfies_bounds(
       env,
