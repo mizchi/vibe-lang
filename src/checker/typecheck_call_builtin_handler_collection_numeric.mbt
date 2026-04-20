@@ -793,13 +793,22 @@ fn type_call_builtin_handler_collection_numeric(
       }
       // Char + Int is allowed for char arithmetic (`'A' + 1 == 'B'`); both
       // sides are 62-bit tagged at runtime so no conversion needed. The
-      // result type follows the first operand. Use a pure equality check
-      // (`type_equal` would unify and could bind an unresolved operand to
-      // Char, skipping the later same-type unification).
-      let resolved_b = resolve_type(env, b)
-      let char_int_mix = match (resolved_a, resolved_b) {
-        (@core.Type::Char, @core.Type::Int) => true
-        (@core.Type::Int, @core.Type::Char) => true
+      // result type follows the first operand. Keep this probe purely
+      // side-effect-free: only resolve `b` when `a` is already concretely
+      // Char or Int (otherwise the same-type `type_equal` below will handle
+      // unification), and match on resolved concrete variants instead of
+      // calling `type_equal` which unifies.
+      let char_int_mix = match resolved_a {
+        @core.Type::Char =>
+          match resolve_type(env, b) {
+            @core.Type::Int => true
+            _ => false
+          }
+        @core.Type::Int =>
+          match resolve_type(env, b) {
+            @core.Type::Char => true
+            _ => false
+          }
         _ => false
       }
       if not(char_int_mix) && not(type_equal(env, b, a)) {
