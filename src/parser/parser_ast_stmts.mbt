@@ -152,26 +152,30 @@ fn AstParser::parse_let_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     Some(ty) =>
       if rec_flag {
         fill_fn_ret_from_annotation(ty, raw_expr)
+      } else if type_contains_param(ty) {
+        // Generic annotation (e.g. `[T](T) -> T`): fill the Fn's params /
+        // return / effects from the annotation AND populate the Fn's
+        // `type_params` field from the Type::Param references collected
+        // from the annotation so the checker knows which bare `Param(T)`
+        // names to open into fresh vars. Skip the type-assertion wrapper
+        // (its helper signature can't be instantiated at an unresolved
+        // type param).
+        match (ty, raw_expr) {
+          (@core.Type::Func(_), @core.Expr::Fn(_)) =>
+            fill_fn_generic_from_annotation(ty, raw_expr)
+          _ => raw_expr
+        }
       } else {
-        // Step 1: propagate the annotation (param types, return type, effects)
-        // into the Fn RHS so the checker sees the declared effects and
-        // tuple/generic shapes when typing `body`. `fill_fn_ret_from_annotation`
-        // only fills *missing* fields — user-written param types, return type,
-        // and effects are preserved so mismatches can still be flagged.
+        // Non-generic: fill missing annotations in the Fn RHS from the
+        // declared type (effect/ret/placeholder params), then wrap in the
+        // type-assertion helper so the checker verifies the lambda shape
+        // matches the declaration.
         let filled = match (ty, raw_expr) {
           (@core.Type::Func(_), @core.Expr::Fn(_)) =>
             fill_fn_ret_from_annotation(ty, raw_expr)
           _ => raw_expr
         }
-        // Step 2: wrap the (possibly filled) RHS in a type-assertion helper so
-        // the checker still verifies that the lambda type actually matches the
-        // declared annotation. Skip the wrapper only for generic annotations
-        // (the helper cannot be instantiated at an unresolved type param).
-        if type_contains_param(ty) {
-          filled
-        } else {
-          wrap_local_let_with_annotation(ty, filled, span)
-        }
+        wrap_local_let_with_annotation(ty, filled, span)
       }
     None => raw_expr
   }
@@ -246,6 +250,89 @@ fn fill_fn_ret_from_annotation(
       )
     }
     _ => raw_expr
+  }
+}
+
+///|
+/// Collect the `Type::Param(name)` references that appear anywhere inside
+/// `ty`, preserving first-seen order. Used to recover the `[A, B, ...]`
+/// type-parameter list that the parser throws away after `parse_generic_fn_type`.
+fn collect_type_param_names(
+  ty : @core.Type,
+  out : Array[String],
+  seen : Map[String, Bool],
+) -> Unit {
+  match ty {
+    @core.Type::Param(name) =>
+      if not(seen.contains(name)) {
+        seen[name] = true
+        out.push(name)
+      }
+    @core.Type::Func(params~, ret~, ..) => {
+      for p in params {
+        collect_type_param_names(p.ty, out, seen)
+      }
+      collect_type_param_names(ret, out, seen)
+    }
+    @core.Type::Array(inner) => collect_type_param_names(inner, out, seen)
+    @core.Type::Map(k, v) => {
+      collect_type_param_names(k, out, seen)
+      collect_type_param_names(v, out, seen)
+    }
+    @core.Type::Set(inner) => collect_type_param_names(inner, out, seen)
+    @core.Type::Tuple(items) =>
+      for item in items {
+        collect_type_param_names(item, out, seen)
+      }
+    @core.Type::Named(args~, ..) =>
+      for arg in args {
+        collect_type_param_names(arg, out, seen)
+      }
+    _ => ()
+  }
+}
+
+///|
+/// Variant of `fill_fn_ret_from_annotation` for generic annotations:
+/// in addition to filling the Fn's params/ret/effects from the annotation,
+/// populates the Fn's `type_params` field with the `Type::Param` names
+/// collected from the annotation (the `[T, U, ...]` list the parser
+/// dropped after `parse_generic_fn_type`). The checker opens these into
+/// fresh type variables at instantiation time.
+fn fill_fn_generic_from_annotation(
+  ann_ty : @core.Type,
+  raw_expr : @core.Expr,
+) -> @core.Expr {
+  let filled = fill_fn_ret_from_annotation(ann_ty, raw_expr)
+  match filled {
+    @core.Expr::Fn(
+      type_params~,
+      type_bounds~,
+      params~,
+      ret~,
+      effects~,
+      body~,
+      span~
+    ) => {
+      let collected : Array[String] = []
+      let seen : Map[String, Bool] = {}
+      collect_type_param_names(ann_ty, collected, seen)
+      let next_type_params = if type_params.is_empty() {
+        collected
+      } else {
+        type_params
+      }
+      @core.Expr::Fn(
+        type_params=next_type_params,
+        type_bounds~,
+        params~,
+        ret~,
+        effects~,
+        body~,
+        span~,
+      )
+    }
+    _ => filled
   }
 }
 
