@@ -15,20 +15,39 @@ fn AstParser::parse_type_with_params(
       let name_start = self.pos
       let _ = self.bump()
       let name_span = self.span_from(name_start)
-      let name = tok.text()
+      let raw_name = tok.text()
+      // The lexer absorbs trailing `?` into identifier tokens (see
+      // `is_ident_extra` in lexer.mbt) so that `y?=val` lexes as one name
+      // token "y?" for labeled-optional argument syntax. In *type* position
+      // the trailing `?` is the Option sugar (`T? === Option[T]`), so strip
+      // any number of `?` from the tail and apply them as post-fix
+      // `Option` wrappers after the base type is built.
+      let mut q_suffix_count = 0
+      let mut core_name = raw_name
+      while core_name.length() > 0 && core_name[core_name.length() - 1] == '?' {
+        core_name = core_name.substring(start=0, end=core_name.length() - 1)
+        q_suffix_count = q_suffix_count + 1
+      }
       let args = self.parse_type_args(params)
-      if params.contains(name) {
+      let bare = if params.contains(core_name) {
         if !args.is_empty() {
           raise ParseError::UnexpectedToken(
             expected="type param",
-            got=name,
+            got=core_name,
             span=name_span,
           )
         }
-        @core.Type::Param(name)
+        @core.Type::Param(core_name)
       } else {
-        @core.Type::Named(name~, args~)
+        @core.Type::Named(name=core_name, args~)
       }
+      let mut wrapped = bare
+      let mut qi = 0
+      while qi < q_suffix_count {
+        wrapped = @core.Type::Named(name="Option", args=[wrapped])
+        qi = qi + 1
+      }
+      wrapped
     }
     k if k == lparen() =>
       match self.try_parse_fn_type(params) {
@@ -43,7 +62,33 @@ fn AstParser::parse_type_with_params(
         span=self.token_span(),
       )
   }
-  self.parse_array_type_suffixes(base_ty)
+  self.parse_type_post_suffixes(base_ty)
+}
+
+///|
+/// Apply post-fix type constructors: `T[]` → `Array[T]`, `T?` → `Option[T]`.
+/// Both suffixes may chain, e.g. `Int?[]` → `Array[Option[Int]]`.
+fn AstParser::parse_type_post_suffixes(
+  self : AstParser,
+  base_ty : @core.Type,
+) -> @core.Type raise ParseError {
+  let mut out = base_ty
+  let mut done = false
+  while not(done) {
+    self.skip_trivia()
+    let k = self.peek_kind()
+    if k == lbracket() && self.peek_non_trivia_ahead(1) == rbracket() {
+      let _ = self.bump()
+      let _ = self.expect(rbracket(), "]")
+      out = @core.Type::Array(out)
+    } else if k == question() {
+      let _ = self.bump()
+      out = @core.Type::Named(name="Option", args=[out])
+    } else {
+      done = true
+    }
+  }
+  out
 }
 
 ///|
