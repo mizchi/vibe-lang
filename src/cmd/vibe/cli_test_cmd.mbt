@@ -59,8 +59,20 @@ fn render_stmt_snippets(
   stmts : Array[@vibe_core.Stmt],
 ) -> String {
   let out = StringBuilder::new()
+  // Dedupe by (start, end) span: `derive(EqualityTrait, ...)` on an enum or
+  // struct definition produces multiple AST stmts (the data decl plus one
+  // synthetic `TraitImpl` per derive) that all share the *same* source span.
+  // Naively emitting each would produce duplicate `enum Color { ... }` lines
+  // in the generated batch source and trigger a spurious "duplicate type"
+  // checker error.
+  let seen_spans : Map[String, Bool] = {}
   for stmt in stmts {
     let span = stmt.span()
+    let span_key = span.start.to_string() + "-" + span.end.to_string()
+    if seen_spans.contains(span_key) {
+      continue
+    }
+    seen_spans[span_key] = true
     let snippet = source_slice_by_span(source, span.start, span.end)
     if snippet.trim().to_string().length() == 0 {
       continue
