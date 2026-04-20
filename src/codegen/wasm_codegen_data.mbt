@@ -372,6 +372,13 @@ fn compile_tuple_expr(
   buf : ByteBuf,
   items : Array[@core.Expr],
 ) -> Unit raise WasmGenError {
+  // Empty tuple `()` is the Unit singleton — emit tagged 0 to match the
+  // sentinel used elsewhere and to make `() == ()` return true (two
+  // distinct heap allocations would compare as inequal pointers).
+  if items.length() == 0 {
+    emit_i64_const_tagged(buf, 0L)
+    return
+  }
   require_heap(ctx)
   let len = items.length()
   let size = align4(8 + len * 4)

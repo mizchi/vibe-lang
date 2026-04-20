@@ -1993,8 +1993,8 @@ fn ensure_eq_operand(
     | @core.Type::Double
     | @core.Type::Bool
     | @core.Type::Char
-    | @core.Type::String => ()
-    @core.Type::Unit => ()
+    | @core.Type::String
+    | @core.Type::Unit => ()
     @core.Type::Var(_) => ()
     @core.Type::Tuple(items) =>
       // Recurse — tuple eq is element-wise, so every element must itself be Eq.
