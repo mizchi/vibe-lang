@@ -791,7 +791,15 @@ fn type_call_builtin_handler_collection_numeric(
       if not(type_equal(env, resolved_a, @core.Type::String)) {
         ensure_num_operand(env, a, pos_args[0].span())
       }
-      if not(type_equal(env, b, a)) {
+      // Char + Int is allowed for char arithmetic (`'A' + 1 == 'B'`); both
+      // sides are 62-bit tagged at runtime so no conversion needed. The
+      // result type follows the first operand.
+      let resolved_b = resolve_type(env, b)
+      let char_int_mix = (type_equal(env, resolved_a, @core.Type::Char) &&
+        type_equal(env, resolved_b, @core.Type::Int)) ||
+        (type_equal(env, resolved_a, @core.Type::Int) &&
+        type_equal(env, resolved_b, @core.Type::Char))
+      if not(char_int_mix) && not(type_equal(env, b, a)) {
         raise TypeError::Mismatch(
           expected=a,
           actual=b,

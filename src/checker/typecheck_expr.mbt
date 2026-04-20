@@ -1902,7 +1902,7 @@ fn ensure_num_operand(
 ) -> Unit raise TypeError {
   let resolved = resolve_type(env, ty)
   match resolved {
-    @core.Type::Int | @core.Type::Float | @core.Type::Double => ()
+    @core.Type::Int | @core.Type::Float | @core.Type::Double | @core.Type::Char => ()
     @core.Type::Var(id) => mark_num_var(env, id)
     @core.Type::Named(..) =>
       if type_implements_trait(env, resolved, "Add") {
