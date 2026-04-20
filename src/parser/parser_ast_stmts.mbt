@@ -152,10 +152,26 @@ fn AstParser::parse_let_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     Some(ty) =>
       if rec_flag {
         fill_fn_ret_from_annotation(ty, raw_expr)
-      } else if type_contains_param(ty) {
-        raw_expr
       } else {
-        wrap_local_let_with_annotation(ty, raw_expr, span)
+        // Step 1: propagate the annotation (param types, return type, effects)
+        // into the Fn RHS so the checker sees the declared effects and
+        // tuple/generic shapes when typing `body`. `fill_fn_ret_from_annotation`
+        // only fills *missing* fields — user-written param types, return type,
+        // and effects are preserved so mismatches can still be flagged.
+        let filled = match (ty, raw_expr) {
+          (@core.Type::Func(_), @core.Expr::Fn(_)) =>
+            fill_fn_ret_from_annotation(ty, raw_expr)
+          _ => raw_expr
+        }
+        // Step 2: wrap the (possibly filled) RHS in a type-assertion helper so
+        // the checker still verifies that the lambda type actually matches the
+        // declared annotation. Skip the wrapper only for generic annotations
+        // (the helper cannot be instantiated at an unresolved type param).
+        if type_contains_param(ty) {
+          filled
+        } else {
+          wrap_local_let_with_annotation(ty, filled, span)
+        }
       }
     None => raw_expr
   }
