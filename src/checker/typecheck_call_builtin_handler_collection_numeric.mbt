@@ -786,9 +786,17 @@ fn type_call_builtin_handler_collection_numeric(
       }
       let a = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
       let b = type_expr_eff(env, pos_args[1], aliases, effects, allow_effect)
-      // String + String is allowed (desugared to String::concat at codegen)
+      // String + String is allowed (desugared to String::concat at codegen).
+      // Use a pure pattern match on the resolved type; `type_equal` would
+      // unify here and spuriously bind an unresolved `a` to `String`
+      // (observed cascading through `(acc, x) -> acc + x + n` in
+      // `Array::fold`).
       let resolved_a = resolve_type(env, a)
-      if not(type_equal(env, resolved_a, @core.Type::String)) {
+      let is_string = match resolved_a {
+        @core.Type::String => true
+        _ => false
+      }
+      if not(is_string) {
         ensure_num_operand(env, a, pos_args[0].span())
       }
       // Char + Int is allowed for char arithmetic (`'A' + 1 == 'B'`); both
