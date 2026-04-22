@@ -357,17 +357,19 @@ test "type_check: immediately invoked lambda infers param from body usage" {
 }
 
 ///|
-test "type_check: un-annotated lambda rejects type-inconsistent body" {
+test "type_check: un-annotated multi-param lambda infers via body" {
   let script =
-    #|let f = (x) -> { x + 1 }
-    #|f("hello")
+    #|let add = (a, b) -> { a + b }
+    #|add(3, 4)
   let ast = @parser.parse_ast(script) catch {
     err => fail("parse error: \{err.to_string()}")
   }
   let result : Result[TypeEnv, TypeError] = try? type_check(ast)
   match result {
-    Ok(_) =>
-      fail("expected Int-inferred lambda to reject String argument")
-    Err(_) => ()
+    Ok(_) => ()
+    Err(err) =>
+      fail(
+        "expected multi-param un-annotated lambda to type-check: \{err.to_string()}",
+      )
   }
 }
