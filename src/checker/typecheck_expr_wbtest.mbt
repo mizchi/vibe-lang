@@ -323,3 +323,51 @@ test "type_check: direct iter dispatch accepts custom iterable" {
       fail("expected direct iter dispatch to type-check: \{err.to_string()}")
   }
 }
+
+///|
+test "type_check: un-annotated lambda param is inferred via body arithmetic" {
+  let script =
+    #|let f = (x) -> { x + 1 }
+    #|f(5)
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let result : Result[TypeEnv, TypeError] = try? type_check(ast)
+  match result {
+    Ok(_) => ()
+    Err(err) =>
+      fail(
+        "expected un-annotated lambda param to be inferred: \{err.to_string()}",
+      )
+  }
+}
+
+///|
+test "type_check: immediately invoked lambda infers param from body usage" {
+  let script =
+    #|((x) -> { x * x })(7)
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let result : Result[TypeEnv, TypeError] = try? type_check(ast)
+  match result {
+    Ok(_) => ()
+    Err(err) => fail("expected IIFE to type-check: \{err.to_string()}")
+  }
+}
+
+///|
+test "type_check: un-annotated lambda rejects type-inconsistent body" {
+  let script =
+    #|let f = (x) -> { x + 1 }
+    #|f("hello")
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let result : Result[TypeEnv, TypeError] = try? type_check(ast)
+  match result {
+    Ok(_) =>
+      fail("expected Int-inferred lambda to reject String argument")
+    Err(_) => ()
+  }
+}
