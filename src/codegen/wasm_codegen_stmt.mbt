@@ -1011,16 +1011,23 @@ fn compile_stmt(
       // payload at offset 12). Re-lower via a match whose success arm
       // captures the ctor payload, falling back to `else_body`; bind the
       // inner pattern against the match result.
-      let single_arg_ctor = match pat {
+      //
+      // The fast path only applies to single-arg ctor patterns whose inner
+      // pattern is *irrefutable* (Bind, Wildcard, Tuple/Record/Struct of
+      // irrefutable). If the inner pattern is refutable (e.g. `Some(None)`)
+      // we must keep the original pattern in the match so the outer match
+      // itself decides success vs. else; fall back to the legacy two-arm
+      // form for those cases.
+      let single_arg_ctor_irrefutable = match pat {
         @core.Pat::Ctor(name~, args~, span=pat_span) =>
-          if args.length() == 1 {
+          if args.length() == 1 && pat_is_irrefutable(args[0]) {
             Some((name, args[0], pat_span))
           } else {
             None
           }
         _ => None
       }
-      match single_arg_ctor {
+      match single_arg_ctor_irrefutable {
         Some((ctor_name, inner_pat, pat_span)) => {
           let inner_tmp = "__let_pat_else_inner"
           let success_arm = @core.MatchArm::{
@@ -1083,6 +1090,44 @@ fn compile_stmt(
         }
       }
     }
+  }
+}
+
+///|
+/// Whether a pattern always matches any value of its type — i.e. it binds
+/// values but never rejects the scrutinee. Used by `LetPatElse` lowering to
+/// decide whether the outer match can safely collapse a ctor arg to a single
+/// `Bind`: only when the inner pattern cannot itself reject the scrutinee.
+/// A nested `Ctor` (e.g. `Some(None)`) is refutable and must preserve the
+/// original pattern in the match arm.
+fn pat_is_irrefutable(pat : @core.Pat) -> Bool {
+  match pat {
+    @core.Pat::Bind(..) | @core.Pat::Wildcard(..) => true
+    @core.Pat::Tuple(items~, ..) => {
+      for item in items {
+        if not(pat_is_irrefutable(item)) {
+          return false
+        }
+      }
+      true
+    }
+    @core.Pat::Record(fields~, ..) => {
+      for field in fields {
+        if not(pat_is_irrefutable(field.pat)) {
+          return false
+        }
+      }
+      true
+    }
+    @core.Pat::Struct(fields~, ..) => {
+      for field in fields {
+        if not(pat_is_irrefutable(field.pat)) {
+          return false
+        }
+      }
+      true
+    }
+    _ => false
   }
 }
 
