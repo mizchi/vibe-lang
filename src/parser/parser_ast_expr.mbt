@@ -1461,7 +1461,7 @@ fn AstParser::parse_param(
         span=name_span,
       )
     }
-    @core.Type::Unit // Placeholder for type inference
+    @core.Type::Infer // Placeholder for type inference
   }
   self.skip_trivia()
   let bounds : Array[String] = if self.peek_kind() == colon() {
@@ -2001,7 +2001,7 @@ fn AstParser::parse_call_or_primary(
       let param = @core.FuncParam::{
         name: base_name,
         label: @core.ParamLabel::Positional,
-        ty: @core.Type::Unit, // Placeholder for inference
+        ty: @core.Type::Infer, // Placeholder for inference
         bounds: [],
       }
       // Check if block body or expression body
@@ -2889,7 +2889,7 @@ pub fn desugar_placeholder_expr(expr : @core.Expr) -> @core.Expr {
     params.push(@core.FuncParam::{
       name: "__p" + i.to_string(),
       label: @core.ParamLabel::Positional,
-      ty: @core.Type::Unit, // Placeholder for type inference
+      ty: @core.Type::Infer, // Placeholder for type inference
       bounds: [],
     })
   }

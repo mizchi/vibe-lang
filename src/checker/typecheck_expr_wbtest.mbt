@@ -411,3 +411,26 @@ test "type_check: Tuple equality type-checks" {
     Err(err) => fail("expected Tuple == Tuple to type-check: \{err.to_string()}")
   }
 }
+
+///|
+/// Explicit `(x: Unit) -> ...` is NOT an inference placeholder — it's a concrete
+/// Unit-typed param. The parser emits `Type::Named("Unit")` for the annotation
+/// form and `Type::Infer` for the placeholder, so `is_infer_placeholder`
+/// distinguishes them. A call with a non-Unit argument must still fail.
+/// Regression guard for the P1 concern on PR #332.
+test "type_check: explicit Unit-typed lambda param rejects non-Unit arg" {
+  let script =
+    #|let f = (x: Unit) -> { x }
+    #|f(1)
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let result : Result[TypeEnv, TypeError] = try? type_check(ast)
+  match result {
+    Ok(_) =>
+      fail(
+        "expected (x: Unit) -> x; f(1) to be rejected — explicit Unit param must not accept Int",
+      )
+    Err(_) => ()
+  }
+}

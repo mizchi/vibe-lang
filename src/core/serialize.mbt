@@ -770,6 +770,7 @@ fn serialize_type_to(ty : Type, buf : StringBuilder) -> Unit {
     Type::Path => buf.write_string("{\"Path\":{}}")
     Type::PromptText => buf.write_string("{\"PromptText\":{}}")
     Type::Unit => buf.write_string("{\"Unit\":{}}")
+    Type::Infer => buf.write_string("{\"Infer\":{}}")
     Type::Never => buf.write_string("{\"Never\":{}}")
     Type::Tuple(items) => {
       buf.write_string("{\"Tuple\":")

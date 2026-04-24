@@ -873,6 +873,7 @@ fn collect_refs_type(ty : @core.Type, refs : Map[String, Bool]) -> Unit {
     | @core.Type::Path
     | @core.Type::PromptText
     | @core.Type::Unit
+    | @core.Type::Infer
     | @core.Type::Never
     | @core.Type::Param(_)
     | @core.Type::Var(_) => ()
