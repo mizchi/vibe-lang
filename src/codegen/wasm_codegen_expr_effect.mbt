@@ -317,9 +317,36 @@ fn compile_expr_handle_with_resume(
           }
         _ => ()
       }
-      // Compile resume expression and store in shared local
-      let resume_expr = extract_resume_value_expr(arm.expr)
-      compile_expr(ctx, buf, resume_expr)
+      // Compile resume expression and store in shared local.
+      // When the arm body is a Block ending in resume(...), the prefix stmts
+      // establish bindings (`let v = ...`) and side effects that the resume
+      // value expression references; compile them first, then extract the
+      // final resume value so its locals are in scope.
+      match arm.expr {
+        @core.Expr::Block(body=arm_block, ..) => {
+          let arm_stmts = arm_block.stmts
+          let arm_len = arm_stmts.length()
+          if arm_len > 0 {
+            for i in 0..<(arm_len - 1) {
+              compile_stmt(ctx, buf, arm_stmts[i], false)
+            }
+            let last_stmt = arm_stmts[arm_len - 1]
+            let last_expr = match last_stmt {
+              @core.Stmt::Expr(expr~, ..) => expr
+              _ => arm.expr
+            }
+            let resume_expr = extract_resume_value_expr(last_expr)
+            compile_expr(ctx, buf, resume_expr)
+          } else {
+            let resume_expr = extract_resume_value_expr(arm.expr)
+            compile_expr(ctx, buf, resume_expr)
+          }
+        }
+        _ => {
+          let resume_expr = extract_resume_value_expr(arm.expr)
+          compile_expr(ctx, buf, resume_expr)
+        }
+      }
       emit_local_set(buf, resume_val_local)
       buf.push((11).to_byte()) // end if
       adjust_loop_offsets(ctx, -1)
