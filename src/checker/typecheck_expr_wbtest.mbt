@@ -373,3 +373,22 @@ test "type_check: un-annotated multi-param lambda infers via body" {
       )
   }
 }
+
+///|
+/// Unit equality is accepted at the checker layer. Regression guard for #327
+/// where `ensure_eq_operand` rejected `Type::Unit` with
+/// "expected: Int, actual: Unit".
+test "type_check: Unit equality type-checks" {
+  let script =
+    #|let u = ()
+    #|let v = ()
+    #|u == v
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let result : Result[TypeEnv, TypeError] = try? type_check(ast)
+  match result {
+    Ok(_) => ()
+    Err(err) => fail("expected Unit == Unit to type-check: \{err.to_string()}")
+  }
+}
